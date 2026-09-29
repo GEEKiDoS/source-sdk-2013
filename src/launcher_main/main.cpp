@@ -7,6 +7,7 @@
 #if defined( _WIN32 )
 #include <windows.h>
 #include <stdio.h>
+#include <shellapi.h>
 #include <assert.h>
 #include <direct.h>
 #endif
@@ -26,6 +27,9 @@
 #include <vector>
 
 #include "tier0/basetypes.h"
+#if defined( _WIN64 )
+#include "shaderapi_redirect_win64.h"
+#endif
 
 #ifdef WIN32
 typedef int (*LauncherMain_t)( HINSTANCE hInstance, HINSTANCE hPrevInstance, 
@@ -342,7 +346,7 @@ static void RelaunchAs64Bit( std::vector<std::wstring> &args )
 #endif
 }
 
-static BOOL FileExists( wchar_t *pwcsPath )
+static BOOL FileExists( const wchar_t *pwcsPath )
 {
 	DWORD dwAttrib = GetFileAttributesW( pwcsPath );
 
@@ -431,6 +435,50 @@ static void HandleRelaunching()
 int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow )
 {
 	HandleRelaunching();
+#if defined( _WIN64 )
+	bool bDx12Requested = false;
+	bool bConflictingRenderer = false;
+	int nArgs = 0;
+	LPWSTR *pArgs = CommandLineToArgvW( GetCommandLineW(), &nArgs );
+	if ( !pArgs )
+	{
+		MessageBoxA( 0, "Failed to parse the launcher arguments.", "Launcher Error", MB_OK );
+		return 1;
+	}
+	for ( int i = 1; i < nArgs; ++i )
+	{
+		const wchar_t *pArg = pArgs[i];
+		if ( wcscmp( pArg, L"-dx12" ) == 0 )
+			bDx12Requested = true;
+		else if ( wcscmp( pArg, L"-dx9" ) == 0 || wcscmp( pArg, L"-gl" ) == 0 ||
+			wcscmp( pArg, L"-vulkan" ) == 0 || wcscmp( pArg, L"-noshaderapi" ) == 0 )
+			bConflictingRenderer = true;
+	}
+	LocalFree( pArgs );
+	if ( bDx12Requested && bConflictingRenderer )
+	{
+		MessageBoxA( 0, "-dx12 cannot be combined with -dx9, -gl, -vulkan or -noshaderapi.", "Launcher Error", MB_OK );
+		return 1;
+	}
+
+	std::wstring sRendererDll;
+	if ( bDx12Requested )
+	{
+		const std::wstring sExePath = GetExePath();
+		const size_t slash = sExePath.find_last_of( L"\\/" );
+		if ( sExePath.empty() || slash == std::wstring::npos )
+		{
+			MessageBoxA( 0, "Could not determine the complete launcher EXE path.", "Launcher Error", MB_OK );
+			return 1;
+		}
+		sRendererDll = sExePath.substr( 0, slash + 1 ) + L"bin\\x64\\shaderapidx12.dll";
+		if ( sRendererDll.size() >= MAX_PATH || !FileExists( sRendererDll.c_str() ) )
+		{
+			MessageBoxW( 0, L"The EXE-local bin\\x64\\shaderapidx12.dll is missing or its path is too long.", L"Launcher Error", MB_OK );
+			return 1;
+		}
+	}
+#endif
 
 	// Must add 'bin' to the path....
 	char* pPath = getenv("PATH");
@@ -464,6 +512,17 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 	_snprintf( szBuffer, sizeof( szBuffer ), "PATH=" LAUNCHER_PATH ";%s", pBinaryGameDir, pPath );
 	szBuffer[sizeof( szBuffer ) - 1] = '\0';
 	_putenv( szBuffer );
+#if defined( _WIN64 )
+	if ( bDx12Requested )
+	{
+		wchar_t error[256] = {};
+		if ( !InstallShaderApiDx12Redirect( sRendererDll.c_str(), error, sizeof( error ) / sizeof( error[0] ) ) )
+		{
+			MessageBoxW( 0, error, L"Launcher Error", MB_OK );
+			return 1;
+		}
+	}
+#endif
 
 	// Assemble the full path to our "launcher.dll"
 	_snprintf( szBuffer, sizeof( szBuffer ), LAUNCHER_DLL_PATH, pBinaryGameDir );

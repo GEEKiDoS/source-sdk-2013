@@ -1,0 +1,64 @@
+// Private DX12 shader compiler: CPU-only D3D9On12 converter and DXBC builder/parser.
+// This project deliberately does not link D3D12TranslationLayer or any renderer.
+$macro SRCDIR "..\.."
+$Macro OUTLIBNAME "dx12_shaderconv"
+$include "$SRCDIR\vpc_scripts\source_lib_base.vpc"
+
+$Configuration
+{
+    $Compiler
+    {
+        $AdditionalIncludeDirectories "$SRCDIR\thirdparty\dx12_shaderconv\ShaderConverter\Inc;$SRCDIR\thirdparty\dx12_shaderconv\ShaderConverter\ShaderConv;$SRCDIR\thirdparty\dx12_shaderconv\external;$SRCDIR\thirdparty\dx12_shaderconv\DxbcParser\include;$SRCDIR\thirdparty\dx12_shaderconv\packages\Microsoft.Windows.WDK.x64.10.0.26100.1\c\Include\10.0.26100.0\um;$SRCDIR\thirdparty\dx12_shaderconv\packages\Microsoft.Windows.WDK.x64.10.0.26100.1\c\Include\10.0.26100.0\shared;$SRCDIR\thirdparty\tracy\public"
+        $AdditionalOptions "$BASE /std:c++17"
+        $EnableC++Exceptions "Yes (/EHsc)"
+        $Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+        $PreprocessorDefinitions "$BASE;D3D12_SHADER_CONVERTER_PRIVATE;_CRT_SECURE_NO_WARNINGS"
+        $DisableSpecificWarnings "$BASE;4201;4324;4238"
+    }
+}
+
+$Project "dx12_shaderconv"
+{
+    $Folder "D3D9On12 ShaderConverter"
+    {
+        $File "ShaderConverter\ShaderBinary\ShaderBinary.cpp"
+        $File "ShaderConverter\ShaderBinary\pch.hpp"
+        $File "ShaderConverter\ShaderConv\ShaderBinaryEx.cpp"
+        $File "ShaderConverter\ShaderConv\ShaderBinaryEx.hpp"
+        $File "ShaderConverter\ShaderConv\ShaderConv.cpp"
+        $File "ShaderConverter\ShaderConv\context.cpp"
+        $File "ShaderConverter\ShaderConv\context.hpp"
+        $File "ShaderConverter\ShaderConv\disasm20.cpp"
+        $File "ShaderConverter\ShaderConv\disasm.hpp"
+        $File "ShaderConverter\ShaderConv\gsconv.cpp"
+        $File "ShaderConverter\ShaderConv\pch.h"
+        $File "ShaderConverter\ShaderConv\psconv.cpp"
+        $File "ShaderConverter\ShaderConv\shaderconv.hpp"
+        $File "ShaderConverter\ShaderConv\tlvsconv.cpp"
+        $File "ShaderConverter\ShaderConv\translator.cpp"
+        $File "ShaderConverter\ShaderConv\vsconv.cpp"
+    }
+    $Folder "DXBC builder and parser"
+    {
+        $File "DxbcParser\src\BlobContainer.cpp"
+        $File "DxbcParser\src\DXBCUtils.cpp"
+        $File "DxbcParser\src\DxbcBuilder.cpp"
+        $File "DxbcParser\include\BlobContainer.h"
+        $File "DxbcParser\include\DXBCUtils.h"
+        $File "DxbcParser\include\DxbcBuilder.hpp"
+        $File "DxbcParser\include\pch.h"
+    }
+    $Folder "Native shader reconstruction"
+    {
+        $File "$SRCDIR\materialsystem\shaderapidx12\shader_translate_dx12.cpp"
+        $File "$SRCDIR\materialsystem\shaderapidx12\shader_translate_dx12.h"
+    }
+    $Folder "Public and external headers"
+    {
+        $File "ShaderConverter\Inc\ShaderBinary.h"
+        $File "ShaderConverter\Inc\ShaderConv.h"
+        $File "ShaderConverter\Inc\ShaderConvCommon.h"
+        $File "ShaderConverter\Inc\ShaderConvInternal.h"
+        $File "external\ddithunk.h"
+    }
+}

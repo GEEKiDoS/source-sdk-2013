@@ -13,6 +13,20 @@ $Project "captioncompiler"
 	"utils\captioncompiler\captioncompiler.vpc" [$WINDOWS]
 }
 
+$Project "dx12_shaderconv"
+{
+	"thirdparty\dx12_shaderconv\dx12_shaderconv.vpc" [$WIN64]
+}
+$Project "unicode"
+{
+	"unicode\unicode.vpc" [$WIN64]
+}
+
+$Project "shaderapidx12"
+{
+    "materialsystem\shaderapidx12\shaderapidx12.vpc" [$WIN64]
+}
+
 $Project "client"
 {
 	"game\client\client_tf.vpc"			[$TF]

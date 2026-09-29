@@ -32,6 +32,9 @@ public:
 
 	virtual void	Init();
 	virtual int		GetDeathMessageStartHeight( void );
+	// Logo maps (info_player_logo) hide the viewport and ignore game input, as in CS:S.
+	virtual void	Update();
+	virtual int		KeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding );
 };
 
 extern IClientMode *GetClientModeNormal();

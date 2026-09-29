@@ -18,6 +18,7 @@
 #include "hl2mpclientscoreboard.h"
 #include "hl2mptextwindow.h"
 #include "ienginevgui.h"
+#include "hl2mp_gamerules.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -122,6 +123,27 @@ void ClientModeHL2MPNormal::Init()
 	{
 		Warning( "Couldn't load combine panel scheme!\n" );
 	}
+}
+
+void ClientModeHL2MPNormal::Update()
+{
+	BaseClass::Update();
+
+	// Override the hud's visibility if this is a logo (like the test_hardware benchmark) map.
+	if ( HL2MPRules() && HL2MPRules()->IsLogoMap() )
+		m_pViewport->SetVisible( false );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: We've received a keypress from the engine. Return 1 if the engine is allowed to handle it.
+//-----------------------------------------------------------------------------
+int ClientModeHL2MPNormal::KeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding )
+{
+	// don't process input in logo maps
+	if ( HL2MPRules() && HL2MPRules()->IsLogoMap() )
+		return 1;
+
+	return BaseClass::KeyInput( down, keynum, pszCurrentBinding );
 }
 
 

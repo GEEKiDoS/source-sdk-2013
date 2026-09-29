@@ -32,10 +32,22 @@ $Group "shaders"
 	//"game_shader_generic_std"
 }
 
+$Group "dx12"
+{
+	"dx12_shaderconv"
+	"unicode"
+	"shaderapidx12"
+	"tier1"
+	"mathlib"
+	"launcher_main"
+}
+
 $Group "everything"
 {
 	"captioncompiler"
 	"client"
+	"dx12_shaderconv"
+	"unicode"
 	"fgdlib"
 	"glview"
 	"height2normal"
@@ -48,6 +60,7 @@ $Group "everything"
 	"raytrace"
 	"server"
 	"serverplugin_empty"
+	"shaderapidx12"
 	"tgadiff"
 	"tier1"
 	"vbsp"

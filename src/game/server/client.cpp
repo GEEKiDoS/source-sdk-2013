@@ -640,6 +640,11 @@ public:
 	void InputCommand( inputdata_t& inputdata );
 };
 
+// The engine's bench_start forces host_framerate to one tick per rendered frame, which plays scripted benchmark
+// maps (test_hardware) back as fast as the machine renders. With this set, the benchmark runs in real time.
+ConVar sv_benchmark_realtime( "sv_benchmark_realtime", "1", FCVAR_NONE,
+	"Run map-issued bench_start benchmarks in real time instead of the engine's fixed one-tick-per-frame timestep." );
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Input  : inputdata - 
@@ -660,6 +665,8 @@ void CPointServerCommand::InputCommand( inputdata_t& inputdata )
 	if ( bAllowed )
 	{
 		engine->ServerCommand( UTIL_VarArgs( "%s\n", inputdata.value.String() ) );
+		if ( sv_benchmark_realtime.GetBool() && !V_strnicmp( inputdata.value.String(), "bench_start", 11 ) )
+			engine->ServerCommand( "host_framerate 0\n" );
 	}
 	else
 	{

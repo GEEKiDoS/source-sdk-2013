@@ -1,0 +1,81 @@
+// Native DirectX 12 backend. Registered only for Windows x64.
+$Macro SRCDIR "..\.."
+$Macro OUTBINNAME "shaderapidx12"
+$Macro OUTBINDIR "$SRCDIR\..\game\bin"
+$Include "$SRCDIR\vpc_scripts\source_dll_base.vpc"
+
+$Configuration
+{
+    $General
+    {
+        $AdditionalProjectDependencies "tier1;mathlib;dx12_shaderconv"
+    }
+    $Compiler
+    {
+        $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\thirdparty\tracy\public"
+        $AdditionalOptions "$BASE /std:c++17"
+        $EnableC++Exceptions "Yes (/EHsc)"
+        $Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+        $ForceIncludes " "
+        $PreprocessorDefinitions "$BASE;NOMINMAX;SHADERAPIDX12_EXPORTS;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_DELAYED_INIT;TRACY_MANUAL_LIFETIME"
+    }
+    $Linker
+    {
+        $AdditionalDependencies "$BASE d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib"
+    }
+    $PostBuildEvent
+    {
+        $CommandLine "$BASE" "\n" \
+            "copy /y $QUOTE$SRCDIR\thirdparty\dx12_shaderconv\packages\Microsoft.Direct3D.DxbcSigner.1.0.0\build\native\bin\x64\dxbcSigner.dll$QUOTE $QUOTE$OUTBINDIR\dxbcSigner.dll$QUOTE" "\n" \
+            "if errorlevel 1 exit /b 1" "\n"
+    }
+}
+$Project "shaderapidx12"
+{
+    $Folder "Source Files"
+    {
+        $File "$SRCDIR\thirdparty\tracy\public\TracyClient.cpp"
+        $File "shaderapidx12.cpp"
+        $File "shaderdevice_dx12.cpp"
+        $File "hardwareconfig_dx12.cpp"
+        $File "dxsupport_dx12.cpp"
+        $File "resources_dx12.cpp"
+        $File "bindings_dx12.cpp"
+        $File "pipeline_dx12.cpp"
+        $File "textures_dx12.cpp"
+        $File "shaderapi_dx12.cpp"
+        $File "shadershadow_dx12.cpp"
+        $File "fixed_function_dx12.cpp"
+        $File "shader_state_dx12.cpp"
+        $File "shader_vcs_dx12.cpp"
+        $File "mesh_dx12.cpp"
+        $File "vertex_layout_dx12.cpp"
+        $File "vballoctracker_dx12.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "shaderdevice_dx12.h"
+        $File "hardwareconfig_dx12.h"
+        $File "dxsupport_dx12.h"
+        $File "resources_dx12.h"
+        $File "bindings_dx12.h"
+        $File "pipeline_dx12.h"
+        $File "textures_dx12.h"
+        $File "shaderapi_dx12.h"
+        $File "shadershadow_dx12.h"
+        $File "fixed_function_dx12.h"
+        $File "shader_state_dx12.h"
+        $File "shader_vcs_dx12.h"
+        $File "shader_translate_dx12.h"
+        $File "mesh_dx12.h"
+        $File "vertex_layout_dx12.h"
+        $File "vballoctracker_dx12.h"
+    }
+    $Folder "Link Libraries"
+    {
+        $Lib mathlib
+        $Lib tier2
+        $Lib dx12_shaderconv
+        $Lib "$LIBCOMMON\bzip2"
+    }
+}

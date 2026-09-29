@@ -2864,6 +2864,9 @@ public:
 
 	// Always transmit to clients so they know where to move the view to
 	virtual int UpdateTransmitState();
+	// Enabled with no player to control (no activator, and no player had connected yet).
+	bool IsWaitingForPlayer( void ) const { return m_state == USE_ON && m_hPlayer == NULL; }
+	void AttachPlayer( CBasePlayer *pPlayer ) { m_hPlayer = pPlayer; Enable(); }
 	
 	DECLARE_DATADESC();
 
@@ -2910,6 +2913,20 @@ private:
 private:
 	COutputEvent m_OnEndFollow;
 };
+
+//-----------------------------------------------------------------------------
+// Attaches every enabled point_viewcontrol that is still waiting for a player. Map logic can enable a scripted
+// camera before the listen-server host has spawned (e.g. test_hardware at 0.1 s after map spawn).
+//-----------------------------------------------------------------------------
+void AttachWaitingViewControls( CBasePlayer *pPlayer )
+{
+	for ( CBaseEntity *pEntity = gEntList.FindEntityByClassname( NULL, "point_viewcontrol" ); pEntity; pEntity = gEntList.FindEntityByClassname( pEntity, "point_viewcontrol" ) )
+	{
+		CTriggerCamera *pCamera = static_cast<CTriggerCamera *>( pEntity );
+		if ( pCamera->IsWaitingForPlayer() )
+			pCamera->AttachPlayer( pPlayer );
+	}
+}
 
 #if HL2_EPISODIC
 const float CTriggerCamera::kflPosInterpTime = 2.0f;
@@ -3048,7 +3065,11 @@ void CTriggerCamera::Enable( void )
 
 	if ( !m_hPlayer || !m_hPlayer->IsPlayer() )
 	{
+		// Map-driven cameras (e.g. test_hardware's logic_auto "view,Enable") have no activator. Single player uses
+		// the local player; a listen server uses its host, so scripted benchmark sequences work in multiplayer mods.
 		m_hPlayer = UTIL_GetLocalPlayer();
+		if ( !m_hPlayer && !engine->IsDedicatedServer() )
+			m_hPlayer = UTIL_GetListenServerHost();
 	}
 
 	if ( !m_hPlayer )

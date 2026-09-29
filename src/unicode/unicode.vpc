@@ -1,0 +1,19 @@
+//-----------------------------------------------------------------------------
+//	UNICODE.VPC
+//
+//	Windows Unicode interface DLL for the x64 Source runtime.
+//-----------------------------------------------------------------------------
+
+$Macro SRCDIR		".."
+$Macro OUTBINDIR	"$SRCDIR\..\game\bin"
+$Macro OUTBINNAME	"unicode"
+
+$Include "$SRCDIR\vpc_scripts\source_dll_base.vpc"
+
+$Project "Unicode"
+{
+	$Folder "Source Files"
+	{
+		$File "unicode.cpp"
+	}
+}

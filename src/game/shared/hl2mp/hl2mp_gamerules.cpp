@@ -58,14 +58,19 @@ BEGIN_NETWORK_TABLE_NOBASE( CHL2MPRules, DT_HL2MPRules )
 
 	#ifdef CLIENT_DLL
 		RecvPropBool( RECVINFO( m_bTeamPlayEnabled ) ),
+		RecvPropBool( RECVINFO( m_bLogoMap ) ),
 	#else
 		SendPropBool( SENDINFO( m_bTeamPlayEnabled ) ),
+		SendPropBool( SENDINFO( m_bLogoMap ) ),
 	#endif
 
 END_NETWORK_TABLE()
 
 
 LINK_ENTITY_TO_CLASS( hl2mp_gamerules, CHL2MPGameRulesProxy );
+#ifndef CLIENT_DLL
+LINK_ENTITY_TO_CLASS( info_player_logo, CPointEntity );
+#endif
 IMPLEMENT_NETWORKCLASS_ALIASED( HL2MPGameRulesProxy, DT_HL2MPGameRulesProxy )
 
 static HL2MPViewVectors g_HL2MPViewVectors(
@@ -193,6 +198,7 @@ CHL2MPRules::CHL2MPRules()
 	}
 
 	m_bTeamPlayEnabled = teamplay.GetBool();
+	m_bLogoMap = false;
 	m_flIntermissionEndTime = 0.0f;
 	m_flGameStartTime = 0;
 
@@ -217,6 +223,14 @@ const HL2MPViewVectors* CHL2MPRules::GetHL2MPViewVectors()const
 	return &g_HL2MPViewVectors;
 }
 	
+#ifndef CLIENT_DLL
+void CHL2MPRules::LevelInitPostEntity( void )
+{
+	BaseClass::LevelInitPostEntity();
+	m_bLogoMap = gEntList.FindEntityByClassname( NULL, "info_player_logo" ) != NULL;
+}
+#endif
+
 CHL2MPRules::~CHL2MPRules( void )
 {
 #ifndef CLIENT_DLL
@@ -1070,6 +1084,10 @@ void CHL2MPRules::OnNavMeshLoad( void )
 
 void CHL2MPRules::CleanUpMap()
 {
+	// Logo maps run a fixed scripted sequence; never recreate their entities.
+	if ( IsLogoMap() )
+		return;
+
 	// Recreate all the map entities from the map data (preserving their indices),
 	// then remove everything else except the players.
 

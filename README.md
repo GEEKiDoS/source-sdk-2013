@@ -34,6 +34,28 @@ You can then select the `Client (Mod Name)` project you wish to run, right click
 
 The default launch options should be already filled in for the `Release` configuration.
 
+### DX12 Unicode title DLL (Windows x64)
+
+The `unicode` project builds a source-compatible replacement for the installed x64 `unicode.dll`. It exports the same `CreateInterface` factory and `VENGINEUNICODE001` methods; only a `-dx12` launch changes an incoming `Direct3D 9` window-title substring to `Direct3D 12`. Do not overwrite the Steam SDK installation. Generate and build the isolated project from `src`:
+
+```bat
+cd /d F:\repo\source-sdk-2013\src
+devtools\bin\vpc.exe /hl2mp /win64 /define:SOURCESDK +unicode /mksln unicode
+msbuild unicode.sln /m /p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0
+```
+
+The VPC post-build step publishes the build artifact directly to the mod launcher's effective lookup path, `game\bin\x64\unicode.dll`. Launch from the `game` directory so the Source loader resolves this artifact before the SDK installation's PATH fallback; do not overwrite the Steam SDK installation.
+
+Run the x64 launcher from `game` and inspect `MainWindowTitle` while each process is running:
+
+```bat
+cd /d F:\repo\source-sdk-2013\game
+mod_hl2mp_win64.exe -game mod_hl2mp -dx9 -windowed -novid
+mod_hl2mp_win64.exe -game mod_hl2mp -dx12 -windowed -novid
+```
+
+Expected result: the DX9 launch retains `My First HL2MP Mod - Direct3D 9 - 64 Bit`, while the DX12 launch displays `My First HL2MP Mod - Direct3D 12 - 64 Bit`. Both launches should load `F:\repo\source-sdk-2013\game\bin\x64\unicode.dll`; the read-only Steam SDK `bin\x64\unicode.dll` remains untouched.
+
 ### Linux
 
 Requirements:

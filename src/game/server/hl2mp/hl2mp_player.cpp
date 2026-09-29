@@ -40,6 +40,7 @@ ConVar hl2mp_spawn_frag_fallback_radius( "hl2mp_spawn_frag_fallback_radius", "48
 #define HL2MP_COMMAND_MAX_RATE 0.3
 
 void DropPrimedFragGrenade( CHL2MP_Player *pPlayer, CBaseCombatWeapon *pGrenade );
+void AttachWaitingViewControls( CBasePlayer *pPlayer ); // triggers.cpp
 
 LINK_ENTITY_TO_CLASS( player, CHL2MP_Player );
 
@@ -360,7 +361,8 @@ void CHL2MP_Player::Spawn(void)
 
 	m_impactEnergyScale = HL2MPPLAYER_PHYSDAMAGE_SCALE;
 
-	if ( HL2MPRules()->IsIntermission() )
+	// Logo maps keep the player locked (see EntSelectSpawnPoint).
+	if ( HL2MPRules()->IsIntermission() || HL2MPRules()->IsLogoMap() )
 	{
 		AddFlag( FL_FROZEN );
 	}
@@ -376,6 +378,10 @@ void CHL2MP_Player::Spawn(void)
 	SetPlayerUnderwater(false);
 
 	m_bReady = false;
+
+	// Logo maps drive the view with a scripted camera that may have been enabled before this player existed.
+	if ( HL2MPRules()->IsLogoMap() )
+		AttachWaitingViewControls( this );
 }
 
 bool CHL2MP_Player::ValidatePlayerModel( const char *pModel )
@@ -1387,12 +1393,33 @@ void CHL2MP_Player::DeathSound( const CTakeDamageInfo &info )
 	EmitSound( filter, entindex(), ep );
 }
 
+void CHL2MP_Player::ShowViewPortPanel( const char * name, bool bShow, KeyValues *data )
+{
+	if ( HL2MPRules()->IsLogoMap() )
+		return;
+
+	BaseClass::ShowViewPortPanel( name, bShow, data );
+}
+
 CBaseEntity* CHL2MP_Player::EntSelectSpawnPoint( void )
 {
 	CBaseEntity *pSpot = NULL;
 	CBaseEntity *pLastSpawnPoint = g_pLastSpawn;
 	edict_t		*player = edict();
 	const char *pSpawnpointName = "info_player_deathmatch";
+
+	if ( HL2MPRules()->IsLogoMap() )
+	{
+		// This is a logo map. Don't allow movement or menus (as in CS:S).
+		pSpot = gEntList.FindEntityByClassname( NULL, "info_player_logo" );
+		LockPlayerInPlace();
+		if ( !pSpot )
+		{
+			Warning( "PutClientInServer: no info_player_logo on level\n" );
+			return CBaseEntity::Instance( INDEXENT( 0 ) );
+		}
+		return pSpot;
+	}
 
 	if ( HL2MPRules()->IsTeamplay() == true )
 	{
