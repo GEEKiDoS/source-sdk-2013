@@ -1,0 +1,103 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/lightmappedgeneric_decal_ps2x.fxc for logical lightmappedgeneric_decal_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// DYNAMIC: "PIXELFOGTYPE"		"0..2"
+
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#include "common_ps_fxc.h"
+#include "shader_constant_register_map.h"
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D LightMap0Sampler_Texture : register( t1 );
+SamplerState LightMap0Sampler_Sampler : register( s1 );
+static const DX12Sampler2D LightMap0Sampler = { LightMap0Sampler_Texture, LightMap0Sampler_Sampler };
+Texture2D LightMap1Sampler_Texture : register( t2 );
+SamplerState LightMap1Sampler_Sampler : register( s2 );
+static const DX12Sampler2D LightMap1Sampler = { LightMap1Sampler_Texture, LightMap1Sampler_Sampler };
+Texture2D LightMap2Sampler_Texture : register( t3 );
+SamplerState LightMap2Sampler_Sampler : register( s3 );
+static const DX12Sampler2D LightMap2Sampler = { LightMap2Sampler_Texture, LightMap2Sampler_Sampler };
+
+
+cbuffer lightmappedgeneric_decal_ps2x : register( b1, space1 )
+{
+	float4 g_LightMap0Color; // @legacy ps:c0
+	float4 g_LightMap1Color; // @legacy ps:c1
+	float4 g_LightMap2Color; // @legacy ps:c2
+	float4 g_ModulationColor; // @legacy ps:c3
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+struct PS_INPUT
+{
+	float4 vProjPos;
+	float2 vTexCoord0;
+	float2 vTexCoord1;
+	float2 vTexCoord2;
+	float2 vTexCoord3;
+	float4 worldPos_projPosZ;		// Necessary for pixel fog
+
+	float4 vColor;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPos : SV_Position;
+	float2 vTexCoord0 : TEXCOORD0;
+	float2 vTexCoord1 : TEXCOORD1;
+	float2 vTexCoord2 : TEXCOORD2;
+	float2 vTexCoord3 : TEXCOORD3;
+	float4 worldPos_projPosZ : TEXCOORD4;
+	float4 vColor : COLOR0;
+	float4 fogFactorW : COLOR1;
+#if !defined( _X360 )    
+	float fog : FOG;
+#endif
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	// vProjPos : POSITION (ps2.x cannot read POSITION)
+	l.vTexCoord0 = dx12In.vTexCoord0;
+	l.vTexCoord1 = dx12In.vTexCoord1;
+	l.vTexCoord2 = dx12In.vTexCoord2;
+	l.vTexCoord3 = dx12In.vTexCoord3;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.vColor = dx12In.vColor;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 resultColor;
+	
+	// output = lightmapColor[0] * ( ( N dot basis[0] )^2 ) + 
+	//	       lightmapColor[1] * ( ( N dot basis[1] )^2 ) +
+	//	       lightmapColor[2] * ( ( N dot basis[2] )^2 ) +
+	resultColor = LightMap0Sampler.tex.Sample( LightMap0Sampler.smp, i.vTexCoord1 ) * g_LightMap0Color;
+	resultColor = (LightMap1Sampler.tex.Sample( LightMap1Sampler.smp, i.vTexCoord2 ) * g_LightMap1Color) + resultColor;
+	resultColor = (LightMap2Sampler.tex.Sample( LightMap2Sampler.smp, i.vTexCoord3 ) * g_LightMap2Color) + resultColor;
+	
+	// Modulate by decal texture
+	float4 decalColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vTexCoord0 );
+	resultColor.rgb = resultColor * decalColor;
+	resultColor.a = decalColor.a;
+	
+	// Modulate by constant color
+	resultColor = resultColor * g_ModulationColor;
+	
+	// Modulate by per-vertex factor
+	resultColor = resultColor * i.vColor;
+	
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( resultColor, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );	
+}

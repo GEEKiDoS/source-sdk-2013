@@ -1,0 +1,573 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/pyro_vision_ps2x.fxc for logical pyro_vision_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+// STATIC: "EFFECT"						"0..3"
+// STATIC: "VERTEX_LIT"					"0..1"
+// STATIC: "BASETEXTURE2"				"0..1"
+// STATIC: "FANCY_BLENDING"				"0..1"
+// STATIC: "SELFILLUM"					"0..1"
+// STATIC: "COLOR_BAR"					"0..1"
+// STATIC: "STRIPES"					"0..1"
+// STATIC: "STRIPES_USE_NORMAL2"		"0..1"
+
+// DYNAMIC: "PIXELFOGTYPE"				"0..1"
+// DYNAMIC: "VISUALIZE_DOF"				"0..1"
+// DYNAMIC: "HEATHAZE"					"0..1"
+
+// SKIP: ( STRIPES == 0 ) &&  ( STRIPES_USE_NORMAL2 == 1 )
+// SKIP: ( EFFECT != 1 ) &&  ( COLOR_BAR == 1 )
+// SKIP: ( EFFECT != 2 ) &&  ( VISUALIZE_DOF == 1 )
+// SKIP: ( EFFECT == 2 || EFFECT == 3 ) && ( STRIPES == 1 || STRIPES_USE_NORMAL2 == 1 || COLOR_BAR == 1 || BASETEXTURE2 == 1 || FANCY_BLENDING == 1 || VERTEX_LIT == 1 || PIXELFOGTYPE == 1 || SELFILLUM == 1 )
+// SKIP: ( EFFECT != 3 ) && ( HEATHAZE == 1 )
+
+#include "shader_constant_register_map.h"
+#include "common_ps_fxc.h"
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+
+#if BASETEXTURE2 == 1
+
+Texture2D BaseTexture2Sampler_Texture : register( t4 );
+SamplerState BaseTexture2Sampler_Sampler : register( s4 );
+static const DX12Sampler2D BaseTexture2Sampler = { BaseTexture2Sampler_Texture, BaseTexture2Sampler_Sampler };
+
+#if FANCY_BLENDING == 1
+
+Texture2D BlendModulationSampler_Texture : register( t3 );
+SamplerState BlendModulationSampler_Sampler : register( s3 );
+static const DX12Sampler2D BlendModulationSampler = { BlendModulationSampler_Texture, BlendModulationSampler_Sampler };
+
+#endif
+
+#endif
+
+
+cbuffer pyro_vision_ps2x : register( b1, space1 )
+{
+	float4 g_vPyroParms1; // @legacy ps:c0
+	float4 g_vPyroParms2; // @legacy ps:c1
+	float4 g_vPyroParms3; // @legacy ps:c2
+	float4 g_vPyroParms4; // @legacy ps:c3
+	float4 g_vPyroParms5; // @legacy ps:c4
+	float4 g_vPyroParms6; // @legacy ps:c5
+	float4 g_vPyroParms7; // @legacy ps:c6
+	float4 g_vPyroParms8; // @legacy ps:c7
+	HALF3 g_EyePos; // @legacy ps:c10
+	float4 g_vGeneralPyroParms1; // @legacy ps:c12
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+#if STRIPES
+
+Texture2D StripeSampler_Texture : register( t5 );
+SamplerState StripeSampler_Sampler : register( s5 );
+static const DX12Sampler2D StripeSampler = { StripeSampler_Texture, StripeSampler_Sampler };
+
+
+	#define g_vStripeColor			g_vPyroParms6.rgb
+	#define g_flStripeLMScale		g_vPyroParms6.a
+
+
+	#define g_vStripeNormal1		g_vPyroParms6.xyz
+	#define g_flUnused6				g_vPyroParms6.w
+
+#if ( STRIPES_USE_NORMAL2 == 1 )
+
+
+	#define g_vStripeNormal2		g_vPyroParms7.xyz
+	#define g_flUnused7				g_vPyroParms7.w
+
+#endif
+
+#endif
+
+
+#if EFFECT == 0
+
+Texture2D LightmapSampler_Texture : register( t1 );
+SamplerState LightmapSampler_Sampler : register( s1 );
+static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+Texture2D CanvasSampler_Texture : register( t2 );
+SamplerState CanvasSampler_Sampler : register( s2 );
+static const DX12Sampler2D CanvasSampler = { CanvasSampler_Texture, CanvasSampler_Sampler };
+
+
+	#define g_vBaseStepRange		g_vPyroParms1.xy
+	#define g_vLightmapStepRange	g_vPyroParms1.zw
+
+
+	#define g_vColorModulation		g_vPyroParms2.rgb
+	#define g_flUnused1				g_vPyroParms2.w
+
+
+	#define g_vCanvasStepRange		g_vPyroParms3.xy
+	#define g_vUnused2				g_vPyroParms3.zw
+
+
+	#define g_vCanvasColorStart		g_vPyroParms4.rgb
+	#define g_flUnused3				g_vPyroParms4.w
+
+
+	#define g_vCanvasColorEnd		g_vPyroParms5.rgb
+	#define g_flUnused4				g_vPyroParms5.w
+
+#elif EFFECT == 1
+
+Texture2D LightmapSampler_Texture : register( t1 );
+SamplerState LightmapSampler_Sampler : register( s1 );
+static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+Texture2D ColorBarSampler_Texture : register( t2 );
+SamplerState ColorBarSampler_Sampler : register( s2 );
+static const DX12Sampler1D ColorBarSampler = { ColorBarSampler_Texture, ColorBarSampler_Sampler };
+
+
+	#define g_flGrayPower			g_vPyroParms1.x
+	#define g_flGrayStep			g_vPyroParms1.yz
+	#define g_flLightMapGradients	g_vPyroParms1.w
+
+
+	#define g_vColorModulation		g_vPyroParms2.rgb
+	#define g_flDiffuseLighting		g_vPyroParms2.w
+
+
+	#define g_flDiffuseBase			g_vPyroParms3.x
+	#define g_vSelfIllumTint		g_vPyroParms3.yzw
+
+#elif EFFECT == 2
+
+Texture2D BlurredFrameSampler_Texture : register( t4 );
+SamplerState BlurredFrameSampler_Sampler : register( s4 );
+static const DX12Sampler2D BlurredFrameSampler = { BlurredFrameSampler_Texture, BlurredFrameSampler_Sampler };
+
+
+	#define g_flDoFStartDistance	g_vPyroParms1.x
+	#define g_flDoFPower			g_vPyroParms1.y
+	#define g_flDoFMax				g_vPyroParms1.z
+	#define g_flUnused1				g_vPyroParms1.w
+
+#elif EFFECT == 3
+
+Texture2D NoiseSampler_Texture : register( t3 );
+SamplerState NoiseSampler_Sampler : register( s3 );
+static const DX12Sampler2D NoiseSampler = { NoiseSampler_Texture, NoiseSampler_Sampler };
+Texture2D WarpFrameSampler_Texture : register( t4 );
+SamplerState WarpFrameSampler_Sampler : register( s4 );
+static const DX12Sampler2D WarpFrameSampler = { WarpFrameSampler_Texture, WarpFrameSampler_Sampler };
+Texture2D VignetteSampler_Texture : register( t5 );
+SamplerState VignetteSampler_Sampler : register( s5 );
+static const DX12Sampler2D VignetteSampler = { VignetteSampler_Texture, VignetteSampler_Sampler };
+Texture2D VignetteTileSampler_Texture : register( t6 );
+SamplerState VignetteTileSampler_Sampler : register( s6 );
+static const DX12Sampler2D VignetteTileSampler = { VignetteTileSampler_Texture, VignetteTileSampler_Sampler };
+
+
+	#define g_flNoiseScale			g_vPyroParms1.x	// 0.2
+	#define g_flTimeScale			g_vPyroParms1.y // 0.020
+	#define g_flHeatHazeScale		g_vPyroParms1.z	// 0.2
+	#define g_flUnused1				g_vPyroParms1.w
+
+#endif
+
+
+	#define g_fWriteDepthToAlpha	g_vGeneralPyroParms1.x
+	#define g_flTime				g_vGeneralPyroParms1.y
+	#define g_flGeneralUnused2		g_vGeneralPyroParms1.z
+	#define g_flGeneralUnused3		g_vGeneralPyroParms1.w
+
+
+struct PS_INPUT
+{
+#if EFFECT == 0 || EFFECT == 1
+
+	float4 vBaseAndSeamlessTexCoord;
+#if ( STRIPES == 1 )
+	float2 vStripeSeamlessTexCoord;
+#endif
+#if ( VERTEX_LIT == 0 )
+	float2 vLightmapBlendTexCoord;
+#endif
+#if BASETEXTURE2 == 1
+	float3 vBlendFactor;
+#endif
+	float4 worldPos_projPosZ;
+	float3 vWorldNormal;
+	float4 vVertexColor;
+
+#else
+
+	float2 vBaseTexCoord;
+
+#endif
+
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPos : SV_Position;
+#if EFFECT == 0 || EFFECT == 1
+	float4 vBaseAndSeamlessTexCoord : TEXCOORD0;
+#if ( STRIPES == 1 )
+	float2 vStripeSeamlessTexCoord : TEXCOORD1;
+#endif
+#if ( VERTEX_LIT == 0 )
+	float2 vLightmapBlendTexCoord : TEXCOORD2;
+#endif
+#if BASETEXTURE2 == 1
+	float3 vBlendFactor : TEXCOORD3;
+#endif
+	float4 worldPos_projPosZ : TEXCOORD4;
+	float3 vWorldNormal : TEXCOORD5;
+	float4 vVertexColor : COLOR;
+#else
+	float2 vBaseTexCoord : TEXCOORD0;
+#endif
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+#if EFFECT == 0 || EFFECT == 1
+#if ( ( EFFECT == 0 || EFFECT == 1 ) )
+	l.vBaseAndSeamlessTexCoord = dx12In.vBaseAndSeamlessTexCoord;
+#endif
+#if ( !( EFFECT == 0 || EFFECT == 1 ) )
+	l.vBaseAndSeamlessTexCoord.xy = dx12In.vBaseTexCoord;
+#endif
+#if ( STRIPES == 1 )
+#if ( ( EFFECT == 0 || EFFECT == 1 ) && ( ( STRIPES == 1 ) ) )
+	l.vStripeSeamlessTexCoord = dx12In.vStripeSeamlessTexCoord;
+#endif
+#endif
+#if ( VERTEX_LIT == 0 )
+#if ( ( EFFECT == 0 || EFFECT == 1 ) && ( ( VERTEX_LIT == 0 ) ) )
+	l.vLightmapBlendTexCoord = dx12In.vLightmapBlendTexCoord;
+#endif
+#endif
+#if BASETEXTURE2 == 1
+#if ( ( EFFECT == 0 || EFFECT == 1 ) && ( BASETEXTURE2 == 1 ) )
+	l.vBlendFactor = dx12In.vBlendFactor;
+#endif
+#endif
+#if ( ( EFFECT == 0 || EFFECT == 1 ) )
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+#endif
+#if ( ( EFFECT == 0 || EFFECT == 1 ) )
+	l.vWorldNormal = dx12In.vWorldNormal;
+#endif
+#if ( ( EFFECT == 0 || EFFECT == 1 ) )
+	l.vVertexColor = dx12In.vVertexColor;
+#endif
+#else
+#if ( ( EFFECT == 0 || EFFECT == 1 ) )
+	l.vBaseTexCoord = ( dx12In.vBaseAndSeamlessTexCoord ).xy;
+#endif
+#if ( !( EFFECT == 0 || EFFECT == 1 ) )
+	l.vBaseTexCoord = dx12In.vBaseTexCoord;
+#endif
+#endif
+	return l;
+}
+
+
+float ToGray( const float3 vColor )
+{
+	return 	dot( vColor, float3( 0.30f, 0.59f, 0.11f ) );
+}
+
+
+void HandleBlending( const float2 vBaseTextureCoord, const float3 vBlendFactor, inout float4 vBaseColor )
+{
+#if BASETEXTURE2 == 1
+
+	float4	vBaseColor2 = BaseTexture2Sampler.tex.Sample( BaseTexture2Sampler.smp, vBaseTextureCoord );
+	float	flBlendFactor = vBlendFactor.z;
+
+#if FANCY_BLENDING == 1
+
+	float4	modt = BlendModulationSampler.tex.Sample( BlendModulationSampler.smp, vBlendFactor.xy );
+	float	minb = saturate( modt.g - modt.r );
+	float	maxb = saturate( modt.g + modt.r );
+	flBlendFactor = smoothstep( minb, maxb, flBlendFactor );
+
+#endif
+
+	vBaseColor = lerp( vBaseColor, vBaseColor2, flBlendFactor );
+
+#endif
+}
+
+
+#if STRIPES
+
+void CalculateStripe( const float2 vStripeSeamlessTexCoord, const float3 vWorldNormal, const float flLMScale, inout float3 vResult )
+{
+	float4	vStripeColor = StripeSampler.tex.Sample( StripeSampler.smp, vStripeSeamlessTexCoord );
+
+	vStripeColor.rgb *= g_vStripeColor;
+	vStripeColor.rgb *= lerp( float3( 1.0, 1.0, 1.0 ), flLMScale, g_flStripeLMScale );
+
+#if VERTEX_LIT == 1 && 0
+
+	float flAngle = saturate( dot( vWorldNormal, g_vStripeNormal1 ) );
+	vResult.rgb = ( vWorldNormal * 0.5 ) + 0.5;
+	return;
+
+	flAngle = 1 - flAngle;
+	vStripeColor.a *= flAngle;
+
+#endif
+
+	vResult = lerp( vResult, vStripeColor.rgb, vStripeColor.a );
+}
+
+#endif
+
+
+#if EFFECT == -1
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4	vBaseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vBaseAndSeamlessTexCoord.xy );
+
+#if BASETEXTURE2 == 1
+	HandleBlending( i.vBaseAndSeamlessTexCoord.xy, i.vBlendFactor, vBaseColor );
+#endif
+
+//	return vBaseColor;
+
+	vBaseColor *= i.vVertexColor;
+
+#if VERTEX_LIT == 0
+	float4	vLightmapSample = LightmapSampler.tex.Sample( LightmapSampler.smp, i.vLightmapBlendTexCoord.xy ) * float4( g_vColorModulation, 1.0 );
+#endif
+	float4	vCanvas = CanvasSampler.tex.Sample( CanvasSampler.smp, i.vBaseAndSeamlessTexCoord.zw );
+
+	float	flFogFactor = CalcPixelFogFactor( 0, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+
+//	return saturate( min( g_FogParams.z, (i.worldPos_projPosZ.w * g_FogParams.w) - g_FogParams.x ) );
+
+//	return float4( g_FogParams.x, g_FogParams.z, g_FogParams.w, 1 );
+
+//	return g_LinearFogColor;
+//	flFogFactor = 1;
+
+	float4	vResult;
+
+#if 0
+	vResult = vBaseColor * vLightmapSample;
+#else
+	float	flBaseGray = dot( vBaseColor.rgb, float3( 0.30f, 0.59f, 0.11f ) );
+#if VERTEX_LIT == 0
+	float	flLightmapGray = dot( vLightmapSample.rgb, float3( 0.30f, 0.59f, 0.11f ) );
+#endif
+
+	flBaseGray = smoothstep( g_vBaseStepRange.x, g_vBaseStepRange.y, flBaseGray );
+	vResult = float4( flBaseGray.rrr, vBaseColor.a );
+
+#if VERTEX_LIT == 0
+//	flLightmapGray = pow( flLightmapGray, 0.01 );
+	flLightmapGray = smoothstep( g_vLightmapStepRange.x, g_vLightmapStepRange.y, flLightmapGray );
+	vResult *= flLightmapGray;
+#endif
+
+	float	flCanvasGray = dot( vCanvas.rgb, float3( 0.30f, 0.59f, 0.11f ) );
+	flCanvasGray = smoothstep( g_vCanvasStepRange.x, g_vCanvasStepRange.y, flCanvasGray );
+
+	vCanvas.rgb = lerp( g_vCanvasColorStart, g_vCanvasColorEnd, flCanvasGray );
+
+	vResult *= vCanvas;
+
+#endif	
+
+	return DX12FinishPixel( FinalOutput( vResult, flFogFactor, 0, TONEMAP_SCALE_LINEAR, true, i.worldPos_projPosZ.w ), 0.0f );
+}
+
+#elif EFFECT == 0
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4	vBaseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vBaseAndSeamlessTexCoord.xy );
+
+#if BASETEXTURE2 == 1
+	HandleBlending( i.vBaseAndSeamlessTexCoord.xy, i.vBlendFactor, vBaseColor );
+#endif
+
+	vBaseColor.rgb *= i.vVertexColor.rgb;
+	vBaseColor.rgb = ceil( vBaseColor.rgb * 16.0 ) / 16.0;
+
+#if VERTEX_LIT == 0
+	float4	vLightmapSample = LightmapSampler.tex.Sample( LightmapSampler.smp, i.vLightmapBlendTexCoord.xy ) * float4( g_vColorModulation, 1.0 );
+#endif
+	float4	vCanvas = CanvasSampler.tex.Sample( CanvasSampler.smp, i.vBaseAndSeamlessTexCoord.zw );
+
+	float	flFogFactor = CalcPixelFogFactor( 0, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+
+	float4	vResult;
+
+	float	flBaseGray = dot( vBaseColor.rgb, float3( 0.30f, 0.59f, 0.11f ) );
+#if VERTEX_LIT == 0
+	float	flLightmapGray = dot( vLightmapSample.rgb, float3( 0.30f, 0.59f, 0.11f ) );
+#endif
+
+#ifdef GRAY_DIFFUSE
+	flBaseGray = smoothstep( g_vBaseStepRange.x, g_vBaseStepRange.y, flBaseGray );
+	vResult = float4( flBaseGray.rrr, vBaseColor.a );
+#else
+	vResult.rgb = smoothstep( g_vBaseStepRange.xxx, g_vBaseStepRange.yyy, vBaseColor.rgb );
+	vResult.a = vBaseColor.a;
+#endif
+
+
+#if VERTEX_LIT == 0
+
+#ifdef GRAY_LM
+
+	flLightmapGray = pow( flLightmapGray, 0.01 );
+	flLightmapGray = smoothstep( g_vLightmapStepRange.x, g_vLightmapStepRange.y, flLightmapGray );
+	vResult.rgb *= flLightmapGray;
+
+#else
+
+	vLightmapSample.rgb = smoothstep( g_vLightmapStepRange.xxx, g_vLightmapStepRange.yyy, vLightmapSample.rgb );
+//	vLightmapSample.rgb = lerp( float3( 0.0, 0.0, 0.0 ), float3( 3.1, 1.1, 5.1 ), vLightmapSample.rgb );
+	vResult.rgb *= vLightmapSample.rgb;
+
+#endif
+
+#endif
+
+	float	flCanvasGray = dot( vCanvas.rgb, float3( 0.30f, 0.59f, 0.11f ) );
+	flCanvasGray = smoothstep( g_vCanvasStepRange.x, g_vCanvasStepRange.y, flCanvasGray );
+
+	vCanvas.rgb = lerp( g_vCanvasColorStart, g_vCanvasColorEnd, flCanvasGray );
+//	vCanvas.rgb = pow( vCanvas.rgb, 0.6 );
+
+	vResult *= vCanvas;
+
+	return DX12FinishPixel( FinalOutput( vResult, flFogFactor, 0, TONEMAP_SCALE_LINEAR, true, i.worldPos_projPosZ.w ), 0.0f );
+}
+
+#elif EFFECT == 1
+
+#define GRAY_DIFFUSE 1
+#define GRAY_LM	1
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4	vResult;
+
+	float4	vBaseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vBaseAndSeamlessTexCoord.xy );
+
+#if BASETEXTURE2 == 1
+	HandleBlending( i.vBaseAndSeamlessTexCoord.xy, i.vBlendFactor, vBaseColor );
+#endif
+
+	float	flFogFactor = CalcPixelFogFactor( 0, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+
+	vBaseColor.rgb = lerp( vBaseColor.rgb, 1.0, g_flDiffuseBase );
+	vResult = vBaseColor * i.vVertexColor;
+
+#if VERTEX_LIT == 0
+	float4	vLightmapSample = LightmapSampler.tex.Sample( LightmapSampler.smp, i.vLightmapBlendTexCoord.xy ) * float4( g_vColorModulation, 1.0 );
+	vResult.rgb = lerp( vResult.rgb, 0.5, g_flDiffuseLighting );
+	vResult.rgb *= vLightmapSample.rgb;
+#endif
+
+#if SELFILLUM
+
+	float3 vSelfIllumComponent = g_vSelfIllumTint * vBaseColor.rgb;
+	vResult.rgb = lerp( vResult.rgb, vSelfIllumComponent, vBaseColor.a );
+
+#endif
+
+	float flGray =  dot( vResult.rgb, float3( 0.30f, 0.59f, 0.11f ) );
+
+	flGray = pow( flGray, g_flGrayPower );
+	flGray = smoothstep( g_flGrayStep.x, g_flGrayStep.y, flGray );
+	
+	flGray = ceil( flGray * g_flLightMapGradients ) / g_flLightMapGradients;
+
+#if COLOR_BAR == 1
+
+	float4	vCanvas = ColorBarSampler.tex.Sample( ColorBarSampler.smp, ( flGray ).xx );
+	vResult.rgb = vCanvas.rgb * flGray;
+
+#endif
+
+#if STRIPES
+
+	CalculateStripe( i.vStripeSeamlessTexCoord, i.vWorldNormal, flGray, vResult.rgb );
+
+#endif
+
+	return DX12FinishPixel( FinalOutput( vResult, flFogFactor, 0, TONEMAP_SCALE_LINEAR, false, i.worldPos_projPosZ.w ), 0.0f );
+}
+
+#elif EFFECT == 2
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float	flDepth = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vBaseTexCoord.xy ).r;
+	float4	vBaseColor = BlurredFrameSampler.tex.Sample( BlurredFrameSampler.smp, i.vBaseTexCoord.xy );
+
+
+	float flAmount;
+	flAmount = flDepth;
+	
+	flAmount = saturate( flDepth - g_flDoFStartDistance );
+	flAmount = pow( flAmount, g_flDoFPower );
+	flAmount *= g_flDoFMax;
+
+#if VISUALIZE_DOF == 1
+
+	return DX12FinishPixel( float4( flAmount.rrr, 1 ), 0.0f );
+
+#else
+
+	return DX12FinishPixel( float4( vBaseColor.rgb, flAmount ), 0.0f );
+
+#endif
+}
+
+#elif EFFECT == 3
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float	flVignetteAmount = VignetteSampler.tex.Sample( VignetteSampler.smp, i.vBaseTexCoord.xy );
+	float4	vVignetteTile = VignetteTileSampler.tex.Sample( VignetteTileSampler.smp, i.vBaseTexCoord.xy * 50.0f );
+
+#if HEATHAZE == 1
+	float2  vOffset = WarpFrameSampler.tex.Sample( WarpFrameSampler.smp, i.vBaseTexCoord.xy ).aa;
+	float	flDynamicOffset = NoiseSampler.tex.Sample( NoiseSampler.smp, float2( i.vBaseTexCoord.x, ( i.vBaseTexCoord.y * g_flNoiseScale ) + ( g_flTime * g_flTimeScale ) ) ).r;
+
+//	return float4( vOffset.yyy, 1 );
+//	return float4( flDynamicOffset.xxx, 1.0 );
+	
+//	vOffset = ( vOffset - 0.5 );
+	vOffset = smoothstep( 0.1, 1.0, vOffset );
+	vOffset *= flDynamicOffset * g_flHeatHazeScale;
+	float4	vOriginal = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vBaseTexCoord.xy + float2( 0, vOffset.y ) );
+
+#else
+
+	float4	vOriginal = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vBaseTexCoord.xy );
+
+#endif
+
+	float flDelta = flVignetteAmount.x - vVignetteTile.a;
+
+	float flFinal = flDelta <= 0.0f ? 0.0f : lerp( flVignetteAmount.x, 1.0, flDelta / flVignetteAmount.x );
+	vOriginal.rgb = lerp( vOriginal.rgb, vVignetteTile.rgb, flFinal * flVignetteAmount.x );
+
+	return DX12FinishPixel( float4( vOriginal ), 0.0f );
+}
+
+#endif

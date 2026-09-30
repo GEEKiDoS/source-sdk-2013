@@ -35,6 +35,8 @@ public:
     // The first existing GAME path is authoritative; an invalid file is an error,
     // not a reason to search a different shader in fxc.
     bool Open(IFileSystem &filesystem, const char *name, VcsStage stage, std::string &error);
+    // Legacy DX9 logical for a native <base>_vs51/_ps51 name (shaders/native_dx12_legacy_names.txt), else name.
+    static std::string LegacyShaderName(IFileSystem &filesystem, const char *name, VcsStage stage);
 
     // Also usable for deterministic byte-for-byte fixtures without a filesystem.
     bool OpenBytes(const uint8_t *bytes, size_t length, VcsStage stage,

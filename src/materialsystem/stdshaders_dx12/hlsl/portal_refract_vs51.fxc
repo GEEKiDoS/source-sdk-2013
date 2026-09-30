@@ -1,0 +1,143 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/portal_refract_vs20.fxc for logical portal_refract_vs20 (legacy profile vs20);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs20 set.
+#define DX12_LEGACY_VS20 1
+#include "dx12_preamble.h"
+//========= Copyright © 1996-2006, Valve Corporation, All rights reserved. ============//
+
+// STATIC: "STAGE" "0..2"
+
+// Includes
+#include "common_vs_fxc.h"
+
+// Globals
+
+cbuffer portal_refract_vs20 : register( b2, space1 )
+{
+	float g_flTime; // @legacy vs:c48
+	float4 cBaseTexCoordTransform[2]; // @legacy vs:c49
+	float2 g_vConst3; // @legacy vs:c51
+};
+
+
+#define g_flPortalOpenAmount g_vConst3.x
+#define g_flPortalStaticAmount g_vConst3.y
+
+// Structs
+struct VS_INPUT
+{
+	float4 vPos;		// Position
+	float4 vNormal;		// Normal
+	float4 vTexCoord0;	// Base texture coordinates
+	float4 vTangent;		// Flip in w
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	uint4 vNormal : NORMAL;
+#else
+	float4 vNormal : NORMAL;
+#endif
+	float4 vTexCoord0 : TEXCOORD0;
+#if COMPRESSED_VERTS
+	uint4 vTangent : TANGENT;
+#else
+	float4 vTangent : TANGENT;
+#endif
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+#if COMPRESSED_VERTS
+	l.vNormal = (float4)i.vNormal;
+#else
+	l.vNormal = i.vNormal;
+#endif
+	l.vTexCoord0 = i.vTexCoord0;
+#if COMPRESSED_VERTS
+	l.vTangent = (float4)i.vTangent;
+#else
+	l.vTangent = i.vTangent;
+#endif
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 vProjPosition : SV_Position;   // Projection-space position
+	float2 vUv0 : TEXCOORD0;
+	float3 vWorldTangent : TEXCOORD1;
+	float3 vWorldBinormal : TEXCOORD2;
+	float4 vWorldPosition : TEXCOORD3;  // Proj pos z in w
+	float3 vProjPosForRefract : TEXCOORD4;
+	float4 vNoiseTexCoord : TEXCOORD5;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.vProjPosition );
+	o.vProjPosition = DX12Position( o.vProjPosition );
+	return o;
+}
+
+
+// Main
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT i = DX12ConvertInput( dx12In );
+	float kFlPortalOuterBorder = 0.075f; // Must match PS!
+
+	VS_OUTPUT o = (VS_OUTPUT)0;
+
+	float3 vObjNormal;
+	DecompressVertex_Normal( i.vNormal, vObjNormal );
+
+	// Transform the position
+	float3 vWorldPosition = mul( i.vPos, cModel[0] );
+	float3 vWorldNormal = normalize( mul( vObjNormal, ( float3x3 )cModel[0] ) );
+	float3 vWorldTangent = normalize( mul( i.vTangent, ( float3x3 )cModel[0] ) );
+	float3 vWorldBinormal = normalize( cross( vWorldNormal, vWorldTangent ) * i.vTangent.w );
+
+	o.vWorldPosition.xyz = vWorldPosition.xyz;
+	//o.vWorldNormal.xyz = vWorldNormal.xyz;
+	o.vWorldTangent.xyz = vWorldTangent.xyz + vWorldPosition.xyz;
+	o.vWorldBinormal.xyz = vWorldBinormal.xyz + vWorldPosition.xyz;
+
+	// Transform into projection space
+	float4 vProjPosition = mul( float4( vWorldPosition, 1.0f ), cViewProj );
+	o.vProjPosition.xyzw = vProjPosition.xyzw;
+	o.vWorldPosition.w = vProjPosition.z;
+
+	// Map projected position to the refraction texture
+	float2 vRefractPos;
+	vRefractPos.x = vProjPosition.x;
+	vRefractPos.y = -vProjPosition.y; // Invert Y
+	vRefractPos = ( vRefractPos + vProjPosition.w ) * 0.5f;
+	o.vProjPosForRefract.xyz = float3(vRefractPos.x, vRefractPos.y, vProjPosition.w);
+
+	// View vector
+	float3 vWorldViewVector = normalize (vWorldPosition.xyz - cEyePos.xyz);
+
+	// Texture coordinates
+	float2 vBaseUv;
+	vBaseUv.x = dot( i.vTexCoord0.xy, cBaseTexCoordTransform[0] );
+	vBaseUv.y = dot( i.vTexCoord0.xy, cBaseTexCoordTransform[1] );
+	//o.vUv0.xy = vBaseUv.xy;
+	o.vUv0.xy = vBaseUv.xy * ( 1.0f + kFlPortalOuterBorder ) - ( kFlPortalOuterBorder * 0.5f ); // Adjust uv's for shrunken portal
+
+	// Portal open time
+	float flPortalOpenAmount = saturate( g_flPortalOpenAmount + 0.001f ); // 0.001f to avoid divide by zero
+
+	// Noise UV
+	float kFlBorderNoiseScale = 0.3f;
+	float kFlNoiseUvScroll = g_flTime * 0.0275f;
+	float2 vNoiseUv = ( ( vBaseUv.xy - 0.5f ) / flPortalOpenAmount ) + 0.5f;
+	o.vNoiseTexCoord.xy = ( vNoiseUv.xy * kFlBorderNoiseScale ) + float2( kFlNoiseUvScroll, 0 );
+	o.vNoiseTexCoord.zw = ( vNoiseUv.xy * kFlBorderNoiseScale ) - float2( kFlNoiseUvScroll, 0 ); // Will fetch as wz to avoid matching layers
+
+	return DX12FinishVertex( o );
+}

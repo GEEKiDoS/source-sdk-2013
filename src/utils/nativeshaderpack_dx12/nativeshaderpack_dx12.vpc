@@ -1,0 +1,47 @@
+$Macro SRCDIR "..\.."
+$Macro OUTBINDIR "$SRCDIR\devtools\bin"
+$Macro OUTBINNAME "nativeshaderpack_dx12"
+$Include "$SRCDIR\vpc_scripts\source_exe_con_base.vpc"
+$Configuration
+{
+    $General
+    {
+        $AdditionalProjectDependencies "tier1"
+    }
+    $Compiler
+    {
+        $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\materialsystem\shaderapidx12"
+        $AdditionalOptions "$BASE /std:c++17"
+        $EnableC++Exceptions "Yes (/EHsc)"
+        $Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+        $ForceIncludes " "
+        $PreprocessorDefinitions "$BASE;NOMINMAX"
+    }
+    $Linker
+    {
+        $AdditionalDependencies "$BASE d3dcompiler.lib"
+    }
+$PostBuildEvent
+{
+    $CommandLine "$BASE" "\n" \
+        "if not exist $QUOTE$OUTBINDIR$QUOTE mkdir $QUOTE$OUTBINDIR$QUOTE" "\n" \
+        "copy /y $QUOTE$SRCDIR\\devtools\\bin\\tier0.dll$QUOTE $QUOTE$OUTBINDIR\\tier0.dll$QUOTE" "\n" \
+        "copy /y $QUOTE$SRCDIR\\devtools\\bin\\x64\\nativeshaderpack_dx12.exe$QUOTE $QUOTE$SRCDIR\\devtools\\bin\\nativeshaderpack_dx12.exe$QUOTE" "\n" \
+        "copy /y $QUOTE$SRCDIR\\devtools\\bin\\tier0.dll$QUOTE $QUOTE$OUTBINDIR\\tier0.dll$QUOTE" "\n" \
+        "copy /y $QUOTE$SRCDIR\\devtools\\bin\\vstdlib.dll$QUOTE $QUOTE$OUTBINDIR\\vstdlib.dll$QUOTE" "\n"
+}
+}
+$Project "nativeshaderpack_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "nativeshaderpack_dx12.cpp"
+        $File "$SRCDIR\materialsystem\shaderapidx12\shader_vcs_dx12.cpp"
+    }
+    $Folder "Link Libraries"
+    {
+        $Lib "$LIBCOMMON\bzip2"
+        $Lib tier1
+        $Lib tier2
+    }
+}

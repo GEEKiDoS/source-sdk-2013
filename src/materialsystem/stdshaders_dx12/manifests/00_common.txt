@@ -1,0 +1,1 @@
+# Shared HLSL includes and backend-owned engine cbuffers have no standalone VCS outputs.

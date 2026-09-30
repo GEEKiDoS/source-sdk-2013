@@ -1,0 +1,26 @@
+logical=cloak_ps51 stage=ps source=cloak_ps51.fxc legacy=cloak_ps2x.fxc legacyName=cloak_ps30 profile=30 static=4 dynamic=20 present=60
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=cloak_ps2x space=1 register=b1 size=144 layoutHash=0xe7a051e573afb64f material
+    member=g_ViewProj type=3 class=3 offset=0 size=44 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_CloakControl type=3 class=1 offset=48 size=8 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_EyePos_SpecExponent type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c11
+    member=g_FlashlightAttenuationFactors_RimMask type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c13
+    member=g_RimBoost type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c14
+    member=g_FresnelSpecParams type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c19
+    member=g_SpecularRimParams type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=ps:c26
+    legacyEntry=0,16,3,16,0,0,0
+    legacyEntry=48,8,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,11
+    legacyEntry=80,16,1,0,0,0,13
+    legacyEntry=96,16,1,0,0,0,14
+    legacyEntry=112,16,1,0,0,0,19
+    legacyEntry=128,16,1,0,0,0,26
+    bridge=WriteNativeCBuffer(api, block)

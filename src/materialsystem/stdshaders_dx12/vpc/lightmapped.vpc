@@ -1,0 +1,19 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\DecalBaseTimesLightmapAlphaBlendSelfIllum_dx12.cpp"
+        $File "cpp\lightmappedgeneric_dx12.cpp"
+        $File "cpp\lightmappedgeneric_dx9_helper.cpp"
+        $File "cpp\lightmappedreflective.cpp"
+        $File "cpp\worldtwotextureblend.cpp"
+        $File "cpp\worldvertexalpha.cpp"
+        $File "cpp\worldvertextransition.cpp"
+        $File "cpp\worldvertextransition_dx8_helper.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "cpp\lightmappedgeneric_dx9_helper.h"
+        $File "cpp\worldvertextransition_dx8_helper.h"
+    }
+}

@@ -6,8 +6,11 @@
 #include "tier1/diff.h"
 #include "tier1/lzmaDecoder.h"
 #include "thirdparty/bzip2/bzlib.h"
+#include "tier0/threadtools.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -134,6 +137,42 @@ bool ShaderVcsFile::Fail(const std::string &message, std::string &error) const
     return false;
 }
 
+// Parsed once per process from GAME shaders/native_dx12_legacy_names.txt ("<native> <vs|ps> <legacy>" per line).
+std::string ShaderVcsFile::LegacyShaderName(IFileSystem &filesystem, const char *name, VcsStage stage)
+{
+    static CThreadFastMutex mutex;
+    static bool loaded = false;
+    static std::vector<std::pair<std::string, std::string>> names;   // "<vs|ps>:<native lowercase>" -> legacy
+    {
+        AUTO_LOCK(mutex);
+        if (!loaded) {
+            loaded = true;
+            FileHandle_t file = filesystem.Open("shaders/native_dx12_legacy_names.txt", "rb", "GAME");
+            if (file != FILESYSTEM_INVALID_HANDLE) {
+                std::string text(filesystem.Size(file), '\0');
+                filesystem.Read(text.data(), static_cast<int>(text.size()), file);
+                filesystem.Close(file);
+                for (size_t line = 0; line < text.size();) {
+                    size_t end = text.find('\n', line); if (end == std::string::npos) end = text.size();
+                    char logical[256] = {}, stageName[8] = {}, legacy[256] = {};
+                    if (std::sscanf(text.substr(line, end - line).c_str(), "%255s %7s %255s", logical, stageName, legacy) == 3) {
+                        std::string key = std::string(stageName) + ":" + logical;
+                        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+                        names.emplace_back(std::move(key), legacy);
+                    }
+                    line = end + 1;
+                }
+                std::sort(names.begin(), names.end());
+            }
+        }
+    }
+    std::string key = std::string(stage == VcsStage::Vertex ? "vs:" : "ps:") + name;
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    const auto found = std::lower_bound(names.begin(), names.end(), key,
+        [](const std::pair<std::string, std::string> &entry, const std::string &k) { return entry.first < k; });
+    return found != names.end() && found->first == key ? found->second : std::string(name);
+}
+
 bool ShaderVcsFile::Open(IFileSystem &filesystem, const char *name, VcsStage stage, std::string &error)
 {
     if (!name || !*name || std::strchr(name, '/') || std::strchr(name, '\\') ||
@@ -145,7 +184,10 @@ bool ShaderVcsFile::Open(IFileSystem &filesystem, const char *name, VcsStage sta
     }
     const std::string filename = std::string("shaders/") +
         (stage == VcsStage::Vertex ? "vsh/" : "psh/") + name + ".vcs";
-    const std::string fallback = std::string("shaders/fxc/") + name + ".vcs";
+    // A native logical (<base>_vs51/_ps51) whose native record is absent resolves to the legacy DX9 logical of the same
+    // shader in shaders/fxc (shaders/native_dx12_legacy_names.txt, written by nativeshaderpack_dx12); other names use
+    // their own shaders/fxc record.
+    const std::string fallback = std::string("shaders/fxc/") + LegacyShaderName(filesystem, name, stage) + ".vcs";
     FileHandle_t file = filesystem.Open(filename.c_str(), "rb", "GAME");
     const std::string &selected = file == FILESYSTEM_INVALID_HANDLE ? fallback : filename;
     if (file == FILESYSTEM_INVALID_HANDLE) file = filesystem.Open(fallback.c_str(), "rb", "GAME");
@@ -322,6 +364,40 @@ bool ShaderVcsFile::ParseBytes(const uint8_t *bytes, size_t length, VcsStage sta
 
 bool ShaderVcsFile::ValidateTokens(const uint8_t *data, size_t size, std::string &error) const
 {
+    if (size >= 4 && !std::memcmp(data, "DXBC", 4))
+    {
+        // DXBC header: magic, checksum[4], one, total bytes, chunk count, chunk offsets.
+        uint32_t total = 0, chunks = 0, one = 0;
+        if ((size & 3) || size < 36 || !U32(data, size, 20, one) || one != 1 ||
+            !U32(data, size, 24, total) || total != size ||
+            !U32(data, size, 28, chunks) || !chunks || chunks > 128 ||
+            chunks > (size - 32) / 4)
+            return Fail("invalid DXBC header or chunk directory", error);
+        bool program = false;
+        for (uint32_t i = 0; i < chunks; ++i)
+        {
+            uint32_t offset = 0, length = 0, token = 0;
+            U32(data, size, 32 + 4 * i, offset);
+            if ((offset & 3) || offset < 32 + chunks * 4 || offset > size - 8 ||
+                !U32(data, size, offset + 4, length) || length > size - offset - 8)
+                return Fail("truncated or misaligned DXBC chunk", error);
+            if (!std::memcmp(data + offset, "SHDR", 4) || !std::memcmp(data + offset, "SHEX", 4))
+            {
+                // SM4+ version token: program type in bits 16-31 (0 = pixel, 1 = vertex),
+                // major in bits 4-7, minor in bits 0-3; the second token is the length in DWORDs.
+                uint32_t words = 0;
+                if (program || length < 8 || (length & 3) ||
+                    !U32(data, size, offset + 8, token) || !U32(data, size, offset + 12, words) ||
+                    words < 2 || words > length / 4 ||
+                    (token >> 16) != (stage_ == VcsStage::Vertex ? 1u : 0u) ||
+                    ((token >> 4) & 0xfu) != 5u || (token & 0xfu) > 1u)
+                    return Fail("invalid or wrong-stage DXBC shader program", error);
+                program = true;
+            }
+        }
+        if (!program) return Fail("DXBC has no SHDR/SHEX shader program", error);
+        return true;
+    }
     uint32_t profile, end;
     if (size < 8 || size % 4 || !U32(data, size, 0, profile) ||
         !U32(data, size, size - 4, end) || end != 0x0000ffffu)

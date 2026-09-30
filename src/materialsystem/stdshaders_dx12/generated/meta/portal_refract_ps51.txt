@@ -1,0 +1,24 @@
+logical=portal_refract_ps51 stage=ps source=portal_refract_ps51.fxc legacy=portal_refract_ps2x.fxc legacyName=portal_refract_ps20b profile=20b static=12 dynamic=2 present=24
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=portal_refract_ps2x space=1 register=b1 size=96 layoutHash=0x146c879958674667 material
+    member=g_mViewProj0 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_mViewProj1 type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_mViewProj2 type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_mViewProj3 type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_vConst4 type=3 class=1 offset=64 size=12 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_vCameraPosition type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c5
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,16,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,12,1,0,0,0,4
+    legacyEntry=80,16,1,0,0,0,5
+    bridge=WriteNativeCBuffer(api, block)

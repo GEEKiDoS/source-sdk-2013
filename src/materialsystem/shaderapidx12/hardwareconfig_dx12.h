@@ -23,7 +23,7 @@ public:
     void SetDXLevel(int level);
     bool DisableShaderOptimizations() const { return disableShaderOptimizations_; }
     const MaterialAdapterInfo_t &Adapter() const { return adapter_; }
-    const char *GetHWSpecificShaderDLLName() const override { return nullptr; }
+    const char *GetHWSpecificShaderDLLName() const override { return "stdshader_dx12.dll"; }
 
     bool HasDestAlphaBuffer() const override { return true; }
     bool HasStencilBuffer() const override { return true; }
@@ -58,7 +58,7 @@ public:
     int MaxUserClipPlanes() const override { return 6; }
     bool UseFastClipping() const override { return fastClipping_; }
     int GetDXSupportLevel() const override { return dxLevel_; }
-    const char *GetShaderDLLName() const override { return "DEFAULT"; }
+    const char *GetShaderDLLName() const override { return "stdshader_dx12"; }
     bool ReadPixelsFromFrontBuffer() const override { return false; }
     bool PreferDynamicTextures() const override { return false; }
     bool SupportsHDR() const override { return true; }

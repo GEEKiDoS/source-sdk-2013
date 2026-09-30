@@ -1,0 +1,105 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/shadow_ps2x.fxc for logical shadow_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// DYNAMIC: "PIXELFOGTYPE"		"0..1"
+
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+
+cbuffer shadow_ps2x : register( b1, space1 )
+{
+	HALF4 g_ShadowColor; // @legacy ps:c1
+	HALF3 g_EyePos; // @legacy ps:c2
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+Texture2D ShadowSampler_Texture : register( t0 );
+SamplerState ShadowSampler_Sampler : register( s0 );
+static const DX12Sampler2D ShadowSampler = { ShadowSampler_Texture, ShadowSampler_Sampler };
+
+// CENTROID: TEXCOORD0
+// CENTROID: TEXCOORD1
+// CENTROID: TEXCOORD2
+// CENTROID: TEXCOORD3
+// CENTROID: TEXCOORD4
+struct PS_INPUT
+{
+	float2 texCoord0;
+	float2 texCoord1;
+	float2 texCoord2;
+	float2 texCoord3;
+	float2 texCoord4;
+	HALF4 worldPos_projPosZ;
+	HALF4 shadowColor;
+	HALF4 fogFactorW;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	centroid  float2 texCoord0 : TEXCOORD0;
+	centroid  float2 texCoord1 : TEXCOORD1;
+	centroid  float2 texCoord2 : TEXCOORD2;
+	centroid  float2 texCoord3 : TEXCOORD3;
+	centroid  float2 texCoord4 : TEXCOORD4;
+	HALF4 worldPos_projPosZ : TEXCOORD5;
+	float4 shadowColor : COLOR0;
+	float4 fogFactorW : COLOR1;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.texCoord0 = dx12In.texCoord0;
+	l.texCoord1 = dx12In.texCoord1;
+	l.texCoord2 = dx12In.texCoord2;
+	l.texCoord3 = dx12In.texCoord3;
+	l.texCoord4 = dx12In.texCoord4;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.shadowColor = dx12In.shadowColor;
+	l.fogFactorW = dx12In.fogFactorW;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	HALF4 samples[5];
+	samples[0] = ShadowSampler.tex.Sample( ShadowSampler.smp, i.texCoord0 );
+	samples[1] = ShadowSampler.tex.Sample( ShadowSampler.smp, i.texCoord1 );
+	samples[2] = ShadowSampler.tex.Sample( ShadowSampler.smp, i.texCoord2 );
+	samples[3] = ShadowSampler.tex.Sample( ShadowSampler.smp, i.texCoord3 );
+	samples[4] = ShadowSampler.tex.Sample( ShadowSampler.smp, i.texCoord4 );
+
+	// Interpolate between a bunch of jittered shadow samples.
+	HALF shadowCoverage = (samples[0].a + samples[1].a + samples[2].a + samples[3].a + samples[4].a) * 0.2;
+
+	// To accomplish shadow fading, subtract vertex alpha from texture alpha
+	shadowCoverage = saturate( shadowCoverage - i.shadowColor.a );
+		
+	// Blend between white and the constant color...
+	// return lerp( 1.0-shadowCoverage, 1.0, g_ShadowColor );  
+	
+	// this is equivalent, and saves an instruction
+	HALF4 result = shadowCoverage*g_ShadowColor - shadowCoverage;
+	result = 1.0 + result;
+
+	float alpha = 1.0f;
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	
+	// Apply fog here to compensate for our srcColor*dstColor alpha blend into already fogged pixels
+	result.rgb = 1.0f - ( ( 1.0f - result.rgb ) * pow( ( 1.0f - fogFactor ), 4.0f ) );
+
+	// Call FinalOutput without fog!
+	return DX12FinishPixel( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
+}

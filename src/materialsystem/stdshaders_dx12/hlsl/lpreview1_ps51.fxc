@@ -1,0 +1,102 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/lpreview1_ps2x.fxc for logical lpreview1_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#define HDRENABLED 0
+#include "common_ps_fxc.h"
+
+Texture2D AlbedoSampler_Texture : register( t0 );
+SamplerState AlbedoSampler_Sampler : register( s0 );
+static const DX12Sampler2D AlbedoSampler = { AlbedoSampler_Texture, AlbedoSampler_Sampler };
+Texture2D NormalSampler_Texture : register( t1 );
+SamplerState NormalSampler_Sampler : register( s1 );
+static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+Texture2D PositionSampler_Texture : register( t2 );
+SamplerState PositionSampler_Sampler : register( s2 );
+static const DX12Sampler2D PositionSampler = { PositionSampler_Texture, PositionSampler_Sampler };
+Texture2D AccBuf_In_Texture : register( t3 );
+SamplerState AccBuf_In_Sampler : register( s3 );
+static const DX12Sampler2D AccBuf_In = { AccBuf_In_Texture, AccBuf_In_Sampler };
+
+
+cbuffer lpreview1_ps2x : register( b1, space1 )
+{
+	float4 Light_origin; // @legacy ps:c0
+	float4 Light_dir; // @legacy ps:c1
+	float4 Light_attn; // @legacy ps:c2
+	float3 Light_color; // @legacy ps:c3
+	float4 EyePosition; // @legacy ps:c10
+};
+
+
+#define INNER_COS (Light_origin.w)
+#define OUTER_COS (Light_dir.w)
+
+
+#define QUADRATIC_ATTN (Light_attn.x)
+#define LINEAR_ATTN (Light_attn.y)
+#define CONSTANT_ATTN (Light_attn.z)
+#define SCALE_FACTOR (Light_attn.w)
+
+
+struct PS_INPUT
+{
+	float2 texCoord;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 baseTexCoord : TEXCOORD0;
+	float2 ZeroTexCoord : TEXCOORD1;
+	float2 bloomTexCoord : TEXCOORD2;
+	float4 vColor : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.texCoord = dx12In.baseTexCoord;
+	return l;
+}
+
+
+float Lerp5(float f1, float f2, float i1, float i2, float x)
+{
+  return f1+(f2-f1)*(x-i1)/(i2-i1);
+}
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 normal=NormalSampler.tex.Sample( NormalSampler.smp, i.texCoord );
+	float4 albedo=AlbedoSampler.tex.Sample( AlbedoSampler.smp, i.texCoord );
+	float4 pos=PositionSampler.tex.Sample( PositionSampler.smp, i.texCoord );
+	float3 old_acc=AccBuf_In.tex.Sample( AccBuf_In.smp, i.texCoord );
+//	pos.xyz+=EyePosition.xyz;
+
+	float3 ldir=Light_origin.xyz-pos.xyz;
+	float dist=sqrt(dot(ldir,ldir));
+	ldir=normalize(ldir);
+	float spot_dot=dot(ldir,-Light_dir);
+	float3 ret=Light_color*0.09*albedo.xyz;         // ambient
+	float dist_falloff=(SCALE_FACTOR/(QUADRATIC_ATTN*dist*dist+LINEAR_ATTN*dist+CONSTANT_ATTN));
+ 	if (spot_dot>OUTER_COS)
+ 	{
+		float falloff=1;
+		if (spot_dot<INNER_COS)
+		{
+			falloff=Lerp5(1,0,INNER_COS,OUTER_COS,spot_dot);
+		}
+		float dotprod=max(0,dot(ldir.xyz,normal.xyz));
+		ret+=dotprod*falloff*(Light_color*albedo.xyz);
+	}
+	else
+		dist_falloff=min(1,dist_falloff);
+	ret*=dist_falloff;
+//	ret=float3(1,0,0);
+	return DX12FinishPixel( FinalOutput( float4(ret+old_acc,1), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

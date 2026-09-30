@@ -1,0 +1,164 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/particlesphere_vs20.fxc for logical particlesphere_vs20 (legacy profile vs20);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs20 set.
+#define DX12_LEGACY_VS20 1
+#include "dx12_preamble.h"
+// DYNAMIC: "FOGTYPE" "0..1"
+
+#include "common_vs_fxc.h"
+
+static const int g_FogType = FOGTYPE;
+
+cbuffer particlesphere_vs20 : register( b2, space1 )
+{
+	float4 cCustomConstants[6]; // @legacy vs:c48
+	float4 g_vLightPosition; // @legacy vs:c48
+	float4 g_vLightColor; // @legacy vs:c49
+	float g_flLightIntensity; // @legacy vs:c50
+};
+
+
+struct VS_INPUT
+{
+	// If this is float4, and the input is float3, the w component default to one.
+	float4 vPos; 
+	float2 vBumpTexCoord;
+	float4 vAmbientColor;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+	float2 vBumpTexCoord : TEXCOORD0;
+	float4 vAmbientColor : COLOR0;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+	l.vBumpTexCoord = i.vBumpTexCoord;
+	l.vAmbientColor = i.vAmbientColor;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 projPos : SV_Position; 	
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	float2 vBumpTexCoord : TEXCOORD0;
+	float3 vTangentSpaceLightDir : TEXCOORD1;
+	float3 vAmbientColor : TEXCOORD2;
+#if defined( _X360 )
+	float4 vScreenPos_ReverseZ : TEXCOORD3;
+#else
+	float4 vScreenPos : TEXCOORD3;
+#endif
+	float4 vDirLightScale : COLOR0;
+	float4 worldPos_projPosZ : TEXCOORD7; 		// Necessary for pixel fog
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.projPos );
+	o.projPos = DX12Position( o.projPos );
+#if !defined( _X360 )
+#endif
+#if defined( _X360 )
+#else
+#endif
+	o.vDirLightScale = saturate( o.vDirLightScale );	// vs_2_0 oD# clamp (vsconv.cpp:1033-1035)
+	return o;
+}
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = (VS_OUTPUT)0;
+
+	// Transform the input position.
+	float4 projPos = mul( v.vPos, cModelViewProj );
+	o.projPos = projPos;
+	projPos.z = dot( v.vPos, cModelViewProjZ );
+	
+#if defined( _X360 )
+	o.vScreenPos_ReverseZ.x = projPos.x;
+	o.vScreenPos_ReverseZ.y = -projPos.y; // invert Y
+	o.vScreenPos_ReverseZ.xy = (o.vScreenPos_ReverseZ.xy + projPos.w) * 0.5f;
+	o.vScreenPos_ReverseZ.z = projPos.w - projPos.z;
+	o.vScreenPos_ReverseZ.w = projPos.w;
+#else	
+	o.vScreenPos.x = projPos.x;
+	o.vScreenPos.y = -projPos.y; // invert Y
+	o.vScreenPos.xy = (o.vScreenPos.xy + projPos.w) * 0.5f;
+	o.vScreenPos.z = projPos.z;
+	o.vScreenPos.w = projPos.w;
+#endif
+	
+	o.worldPos_projPosZ = float4( v.vPos.xyz, projPos.z );
+
+#if !defined( _X360 )
+	// Setup fog.
+	o.fog = CalcFog( mul( v.vPos, cModel[0] ), projPos, g_FogType );
+#endif
+
+	// Copy texcoords over.
+	o.vBumpTexCoord = v.vBumpTexCoord;
+
+	// Copy the vertex color over.
+	o.vAmbientColor = v.vAmbientColor;
+
+	// ------------------------------------------------------------------------------
+	//  Generate a tangent space and rotate L.
+	//  This can be thought of as rotating the normal map to face the viewer.
+	// 
+	//  This is useful when a particle is way off to the side of the screen.
+	//  You should be looking at the half-sphere with a normal pointing from the
+	//  particle to the viewer. Instead, you're looking at the half-sphere with
+	//  a normal along Z. This tangent space builder code fixes the problem.
+	// 
+	//  Note that since the model and view matrices are identity, the coordinate
+	//  system has X=right, Y=up, and Z=behind you  (negative Z goes into the screen).
+	// ------------------------------------------------------------------------------
+	
+	// This basis wants Z positive going into the screen so flip it here.
+	float4 vForward = normalize( float4( v.vPos.x, v.vPos.y, -v.vPos.z, 1 ) );
+
+	// This is the same as CrossProduct( vForward, Vector( 1, 0, 0 ) )
+	float4 vUp = normalize( float4( 0, vForward.z, -vForward.y, vForward.w ) );
+	
+	// vRight = CrossProduct( vUp, vForward )
+	float4 vRight =  vUp.yzxw * vForward.zxyw;
+	vRight       += -vUp.zxyw * vForward.yzxw;
+
+	
+	// Put the light in tangent space.
+	float4 vToLight = g_vLightPosition - v.vPos;
+	float4 vTangentSpaceLight = vRight*vToLight.x + vUp*vToLight.y + vForward*vToLight.z;
+
+	// Output texcoord 1 holds the normalized transformed light direction.
+	o.vTangentSpaceLightDir = normalize( vTangentSpaceLight ) * 0.5 + 0.5; // make it 0-1 for the pixel shader
+	
+	
+	// Handle oversaturation here. The shader code already scaled the light color so its max value is 1,
+	// so if our intensity/distance scale is > 1, then all we need to do is use the light color.
+	float flTransposedLenSqr = dot( vTangentSpaceLight, vTangentSpaceLight );
+	float flScaledIntensity = g_flLightIntensity / flTransposedLenSqr;
+	if ( flScaledIntensity > 1 )
+	{
+		o.vDirLightScale.xyz = g_vLightColor;
+	}
+	else
+	{
+		o.vDirLightScale.xyz = g_vLightColor * flScaledIntensity;
+	}
+	
+	// Alpha comes right from the vertex color.
+	o.vDirLightScale.a = v.vAmbientColor.a;
+	return DX12FinishVertex( o );
+}
+
+

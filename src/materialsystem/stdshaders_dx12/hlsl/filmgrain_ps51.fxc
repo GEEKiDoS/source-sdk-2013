@@ -1,0 +1,50 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/filmgrain_ps20.fxc for logical filmgrain_ps20 (legacy profile ps20);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20 set.
+#define DX12_LEGACY_PS20 1
+#include "dx12_preamble.h"
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+Texture2D FilmGrainSampler_Texture : register( t0 );
+SamplerState FilmGrainSampler_Sampler : register( s0 );
+static const DX12Sampler2D FilmGrainSampler = { FilmGrainSampler_Texture, FilmGrainSampler_Sampler };
+
+
+cbuffer filmgrain_ps20 : register( b1, space1 )
+{
+	float4 vNoiseScale; // @legacy ps:c0
+};
+
+
+struct PS_INPUT
+{
+	float2 grainTexCoord;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 baseTexCoord : TEXCOORD0;
+	float2 ZeroTexCoord : TEXCOORD1;
+	float2 bloomTexCoord : TEXCOORD2;
+	float4 vColor : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.grainTexCoord = dx12In.baseTexCoord;
+	return l;
+}
+
+ 
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+   float4 noise = FilmGrainSampler.tex.Sample( FilmGrainSampler.smp, i.grainTexCoord );
+
+   noise.w = noise.x*(1.0-vNoiseScale.w) + vNoiseScale.w;
+   noise.xyz *= vNoiseScale.xyz;
+
+   return DX12FinishPixel( float4( noise.x, noise.y, noise.z, noise.w ), 0.0f );
+}

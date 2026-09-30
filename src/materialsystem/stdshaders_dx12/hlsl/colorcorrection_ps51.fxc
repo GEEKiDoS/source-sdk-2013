@@ -1,0 +1,91 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/colorcorrection_ps2x.fxc for logical colorcorrection_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// DYNAMIC: "NUM_LOOKUPS" "0..4"
+
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture3D ColorCorrectionVolumeTexture0_Texture : register( t1 );
+SamplerState ColorCorrectionVolumeTexture0_Sampler : register( s1 );
+static const DX12Sampler3D ColorCorrectionVolumeTexture0 = { ColorCorrectionVolumeTexture0_Texture, ColorCorrectionVolumeTexture0_Sampler };
+Texture3D ColorCorrectionVolumeTexture1_Texture : register( t2 );
+SamplerState ColorCorrectionVolumeTexture1_Sampler : register( s2 );
+static const DX12Sampler3D ColorCorrectionVolumeTexture1 = { ColorCorrectionVolumeTexture1_Texture, ColorCorrectionVolumeTexture1_Sampler };
+Texture3D ColorCorrectionVolumeTexture2_Texture : register( t3 );
+SamplerState ColorCorrectionVolumeTexture2_Sampler : register( s3 );
+static const DX12Sampler3D ColorCorrectionVolumeTexture2 = { ColorCorrectionVolumeTexture2_Texture, ColorCorrectionVolumeTexture2_Sampler };
+Texture3D ColorCorrectionVolumeTexture3_Texture : register( t4 );
+SamplerState ColorCorrectionVolumeTexture3_Sampler : register( s4 );
+static const DX12Sampler3D ColorCorrectionVolumeTexture3 = { ColorCorrectionVolumeTexture3_Texture, ColorCorrectionVolumeTexture3_Sampler };
+
+
+cbuffer colorcorrection_ps2x : register( b1, space1 )
+{
+	float ColorCorrectionDefaultWeight; // @legacy ps:c0
+	float ColorCorrectionVolumeWeight0; // @legacy ps:c1
+	float ColorCorrectionVolumeWeight1; // @legacy ps:c2
+	float ColorCorrectionVolumeWeight2; // @legacy ps:c3
+	float ColorCorrectionVolumeWeight3; // @legacy ps:c4
+};
+
+
+struct PS_INPUT
+{
+	float2 baseTexCoord;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 baseTexCoord : TEXCOORD0;
+	float2 ZeroTexCoord : TEXCOORD1;
+	float2 bloomTexCoord : TEXCOORD2;
+	float4 vColor : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.baseTexCoord = dx12In.baseTexCoord;
+	return l;
+}
+
+	   
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 baseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord );
+	
+	// NOTE: This code requires the color correction texture to be 32 units to be correct.
+	// This code will cause (0,0,0) to be read from 0.5f/32
+	// and (1,1,1) to be read from 31.5f/32
+	float4 offsetBaseColor = baseColor*( 31.0f / 32.0f ) + ( 0.5f / 32.0f );
+
+	float4 outColor = float4( 0.0f, 0.0f, 0.0f, baseColor.a ); 
+	outColor.rgb = baseColor * ColorCorrectionDefaultWeight;
+	if (NUM_LOOKUPS > 0)
+	{
+		outColor.rgb += ColorCorrectionVolumeTexture0.tex.Sample( ColorCorrectionVolumeTexture0.smp, offsetBaseColor.rgb ) * ColorCorrectionVolumeWeight0;
+		if (NUM_LOOKUPS > 1)
+		{
+			outColor.rgb += ColorCorrectionVolumeTexture1.tex.Sample( ColorCorrectionVolumeTexture1.smp, offsetBaseColor.rgb ) * ColorCorrectionVolumeWeight1;
+			if (NUM_LOOKUPS > 2)
+			{
+				outColor.rgb += ColorCorrectionVolumeTexture2.tex.Sample( ColorCorrectionVolumeTexture2.smp, offsetBaseColor.rgb ) * ColorCorrectionVolumeWeight2;
+				if (NUM_LOOKUPS > 3)
+				{
+					outColor.rgb += ColorCorrectionVolumeTexture3.tex.Sample( ColorCorrectionVolumeTexture3.smp, offsetBaseColor.rgb ) * ColorCorrectionVolumeWeight3;
+				}
+			}
+		}
+	}
+
+	return DX12FinishPixel( FinalOutput( outColor, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

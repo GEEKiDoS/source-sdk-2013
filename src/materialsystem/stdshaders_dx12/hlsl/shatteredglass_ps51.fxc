@@ -1,0 +1,181 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/ShatteredGlass_ps2x.fxc for logical shatteredglass_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB"		"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "CUBEMAP"				"0..1"
+// STATIC: "VERTEXCOLOR"			"0..1"
+// STATIC: "ENVMAPMASK"				"0..1"
+// STATIC: "BASEALPHAENVMAPMASK"	"0..1"
+// STATIC: "HDRTYPE"				"0..2"
+				   
+// DYNAMIC: "HDRENABLED" "0..1"
+// DYNAMIC: "PIXELFOGTYPE" "0..1"
+
+// HDRFIXME: Need to make this work.
+
+#define USE_32BIT_LIGHTMAPS_ON_360 //uncomment to use 32bit lightmaps, be sure to keep this in sync with the same #define in materialsystem/cmatlightmaps.cpp
+
+#include "common_ps_fxc.h"
+#include "common_lightmappedgeneric_fxc.h"
+
+
+cbuffer ShatteredGlass_ps2x : register( b1, space1 )
+{
+	HALF4 g_EnvmapTint; // @legacy ps:c0
+	HALF3 g_DiffuseModulation; // @legacy ps:c1
+	HALF3 g_EnvmapContrast; // @legacy ps:c2
+	HALF3 g_EnvmapSaturation; // @legacy ps:c3
+	HALF4 g_FresnelReflection; // @legacy ps:c4
+	HALF3 g_EyePos; // @legacy ps:c5
+	HALF3 g_OverbrightFactor; // @legacy ps:c6
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+// CENTROID: TEXCOORD2
+	    
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D LightmapSampler_Texture : register( t1 );
+SamplerState LightmapSampler_Sampler : register( s1 );
+static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+TextureCube EnvmapSampler_Texture : register( t2 );
+SamplerState EnvmapSampler_Sampler : register( s2 );
+static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+Texture2D DetailSampler_Texture : register( t3 );
+SamplerState DetailSampler_Sampler : register( s3 );
+static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+Texture2D EnvmapMaskSampler_Texture : register( t5 );
+SamplerState EnvmapMaskSampler_Sampler : register( s5 );
+static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
+
+TextureCube NormalizeSampler_Texture : register( t6 );
+SamplerState NormalizeSampler_Sampler : register( s6 );
+static const DX12SamplerCube NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+
+struct PS_INPUT
+{
+	HALF2 baseTexCoord;
+	HALF2 detailTexCoord;
+	HALF2 lightmapTexCoord;
+	HALF2 envmapMaskTexCoord;
+	HALF4 worldPos_projPosZ;
+	HALF3 worldSpaceNormal;
+	HALF4 vertexColor;
+	HALF4 fogFactorW;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	float2 baseTexCoord : TEXCOORD0;
+	float2 detailTexCoord : TEXCOORD1;
+	centroid  float2 lightmapTexCoord : TEXCOORD2;
+	float2 envmapMaskTexCoord : TEXCOORD3;
+	float4 worldPos_projPosZ : TEXCOORD4;
+	float3 worldNormal : TEXCOORD5;
+	float4 vertexColor : COLOR;
+	float4 fogFactorW : COLOR1;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.baseTexCoord = dx12In.baseTexCoord;
+	l.detailTexCoord = dx12In.detailTexCoord;
+	l.lightmapTexCoord = dx12In.lightmapTexCoord;
+	l.envmapMaskTexCoord = dx12In.envmapMaskTexCoord;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.worldSpaceNormal = dx12In.worldNormal;
+	l.vertexColor = dx12In.vertexColor;
+	l.fogFactorW = dx12In.fogFactorW;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	bool bCubemap = CUBEMAP ? true : false;
+	bool bVertexColor = VERTEXCOLOR ? true : false;
+	bool bEnvmapMask = ENVMAPMASK ? true : false;
+	bool bBaseAlphaEnvmapMask = BASEALPHAENVMAPMASK ? true : false;
+
+	HALF4 baseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord );
+	HALF4 detailColor = DetailSampler.tex.Sample( DetailSampler.smp, i.detailTexCoord );
+
+	HALF2 lightmapCoordinates = i.lightmapTexCoord;
+	HALF3 lightmapColor = LightMapSample( LightmapSampler, lightmapCoordinates );
+
+	HALF3 specularFactor = 1.0f;
+	if( bEnvmapMask )
+	{
+		specularFactor = EnvmapMaskSampler.tex.Sample( EnvmapMaskSampler.smp, i.detailTexCoord ).xyz;	
+	}
+
+	if( bBaseAlphaEnvmapMask )
+	{
+		specularFactor *= 1.0 - baseColor.a; // this blows!
+	}
+
+	HALF3 diffuseLighting = lightmapColor;
+	diffuseLighting *= g_DiffuseModulation;
+	diffuseLighting *= LIGHT_MAP_SCALE;
+
+	HALF3 albedo = baseColor;
+	HALF alpha = 1.0f;
+
+	if( !bBaseAlphaEnvmapMask )
+	{
+		alpha *= baseColor.a;
+	}
+
+	albedo *= detailColor;
+	alpha *= detailColor.a;
+
+	// FIXME: seperate vertexcolor and vertexalpha?
+	// vertex alpha is ignored if vertexcolor isn't set. . need to check other version.
+	if( bVertexColor )
+	{
+		albedo *= i.vertexColor;
+		alpha *= i.vertexColor.a; // not sure about this one
+	}
+
+	HALF3 specularLighting = HALF3( 0.0f, 0.0f, 0.0f );
+	if( bCubemap )
+	{
+		float3 worldVertToEyeVector = g_EyePos - i.worldPos_projPosZ.xyz;
+		worldVertToEyeVector = NormalizeWithCubemap( NormalizeSampler, worldVertToEyeVector );
+		HALF3 reflectVect = CalcReflectionVectorUnnormalized( i.worldSpaceNormal, worldVertToEyeVector );
+
+		// Calc Fresnel factor
+		HALF3 worldSpaceNormal = NormalizeWithCubemap( NormalizeSampler, i.worldSpaceNormal );
+		HALF fresnel = 1.0 - dot( worldSpaceNormal, worldVertToEyeVector );
+		fresnel = pow( fresnel, 5.0 );
+		fresnel = fresnel * g_FresnelReflection.b + g_FresnelReflection.a;
+			 
+		specularLighting = EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+		specularLighting *= specularFactor;
+
+		specularLighting *= g_EnvmapTint;
+#if HDRTYPE == HDR_TYPE_NONE
+		HALF3 specularLightingSquared = specularLighting * specularLighting;
+		specularLighting = lerp( specularLighting, specularLightingSquared, g_EnvmapContrast );
+		HALF3 greyScale = dot( specularLighting, HALF3( 0.299f, 0.587f, 0.114f ) );
+		specularLighting = lerp( greyScale, specularLighting, g_EnvmapSaturation );
+#endif
+		specularLighting *= fresnel;
+	}
+
+	// Do it somewhat unlit
+	HALF3 result = albedo*(g_OverbrightFactor.z*diffuseLighting + g_OverbrightFactor.y) + specularLighting;
+	
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( HALF4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+}
+

@@ -1,0 +1,123 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/particlesphere_ps2x.fxc for logical particlesphere_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// DYNAMIC: "PIXELFOGTYPE"		"0..1"
+
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "DEPTHBLEND"			"0..1"
+
+#include "shader_constant_register_map.h"
+
+
+cbuffer particlesphere_ps2x : register( b1, space1 )
+{
+	float4 g_DepthFeatheringConstants; // @legacy ps:c0
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+Texture2D BumpmapSampler_Texture : register( t0 );
+SamplerState BumpmapSampler_Sampler : register( s0 );
+static const DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
+Texture2D DepthSampler_Texture : register( t1 );
+SamplerState DepthSampler_Sampler : register( s1 );
+static const DX12Sampler2D DepthSampler = { DepthSampler_Texture, DepthSampler_Sampler };
+
+struct PS_INPUT
+{
+	float2 vBumpTexCoord;
+	float3 vTangentSpaceLightDir;
+	float3 vAmbientColor;
+#if defined( _X360 )
+	float4 vScreenPos_ReverseZ;
+#else
+	float4 vScreenPos;
+#endif
+	
+	float4 vDirLightScale;
+	
+	float4 worldPos_projPosZ;		// Necessary for pixel fog
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	float2 vBumpTexCoord : TEXCOORD0;
+	float3 vTangentSpaceLightDir : TEXCOORD1;
+	float3 vAmbientColor : TEXCOORD2;
+#if defined( _X360 )
+	float4 vScreenPos_ReverseZ : TEXCOORD3;
+#else
+	float4 vScreenPos : TEXCOORD3;
+#endif
+	float4 vDirLightScale : COLOR0;
+	float4 worldPos_projPosZ : TEXCOORD7;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vBumpTexCoord = dx12In.vBumpTexCoord;
+	l.vTangentSpaceLightDir = dx12In.vTangentSpaceLightDir;
+	l.vAmbientColor = dx12In.vAmbientColor;
+#if defined( _X360 )
+#if ( ( defined( _X360 ) ) )
+	l.vScreenPos_ReverseZ = dx12In.vScreenPos_ReverseZ;
+#endif
+#if ( !( defined( _X360 ) ) )
+	l.vScreenPos_ReverseZ = dx12In.vScreenPos;
+#endif
+#else
+#if ( ( defined( _X360 ) ) )
+	l.vScreenPos = dx12In.vScreenPos_ReverseZ;
+#endif
+#if ( !( defined( _X360 ) ) )
+	l.vScreenPos = dx12In.vScreenPos;
+#endif
+#endif
+	l.vDirLightScale = dx12In.vDirLightScale;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 baseColor = BumpmapSampler.tex.Sample( BumpmapSampler.smp, i.vBumpTexCoord );
+	
+	// Dot the bump normal and the light vector.
+	float4 vBumpMapNormal = (baseColor - 0.5);				// The format of the sphere map is 0 to 1, 
+															// so this is now -0.5 to 0.5.
+
+	float3 vTangentSpaceLightDir = (i.vTangentSpaceLightDir - 0.5) * 2;	// This is  -1  to 1
+	float4 vOutput = dot( vBumpMapNormal, vTangentSpaceLightDir ) + 0.5;
+	
+	// Scale by the light color outputted by the vertex shader (ie: based on distance).
+	vOutput *= i.vDirLightScale;
+
+	// Add ambient.
+	vOutput += float4( i.vAmbientColor.x, i.vAmbientColor.y, i.vAmbientColor.z, 0 );
+
+	// Alpha = normal map alpha * vertex alpha
+	vOutput.a = baseColor.a * i.vDirLightScale.a;	
+	
+	//Soft Particles FTW
+#	if (DEPTHBLEND == 1)
+#		if defined( _X360 )
+			vOutput.a *= DepthFeathering( DepthSampler, i.vScreenPos_ReverseZ.xy / i.vScreenPos_ReverseZ.w, i.vScreenPos_ReverseZ.z, i.vScreenPos_ReverseZ.w, g_DepthFeatheringConstants );
+#		else
+			vOutput.a *= DepthFeathering( DepthSampler, i.vScreenPos.xy / i.vScreenPos.w, i.vScreenPos.z, i.vScreenPos.w, g_DepthFeatheringConstants );
+#		endif
+#	endif
+	
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( vOutput, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+}
+
+

@@ -1,0 +1,90 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/morphaccumulate_vs30.fxc for logical morphaccumulate_vs30 (legacy profile vs30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs30 set.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+//======= Copyright © 1996-2006, Valve Corporation, All rights reserved. ======
+
+//  STATIC: "CONSTANTBASEDMORPH"	"0..1"
+
+#include "common_vs_fxc.h"
+
+struct VS_INPUT
+{
+	float4 vSrcCoord;
+	float vMorphWeightId;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vSrcCoord : TEXCOORD0;
+	float vMorphWeightId : TEXCOORD1;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vSrcCoord = i.vSrcCoord;
+	l.vMorphWeightId = i.vMorphWeightId;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 vDestCoord : SV_Position;
+	float2 vSrcCoord : TEXCOORD0;
+	float2 vSideSpeedCoord : TEXCOORD1;
+#if CONSTANTBASEDMORPH
+	float4 vMorphWeights : TEXCOORD2;
+#else
+	float2 vMorphWeightCoord : TEXCOORD2;
+#endif
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.vDestCoord );
+	o.vDestCoord = DX12Position( o.vDestCoord );
+#if CONSTANTBASEDMORPH
+#else
+#endif
+	return o;
+}
+
+
+cbuffer morphaccumulate_vs30 : register( b2, space1 )
+{
+	float4 vMorphWeightSubrect; // @legacy vs:c48
+	float4 vMorphWeightDimensions; // @legacy vs:c49
+	float4 cFlexWeights[512]; // @legacy vs:c1024
+};
+#if !CONSTANTBASEDMORPH
+
+
+#endif
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+
+	// FIXME: Want these to be in pixel centers!
+	float2 projSpace = v.vSrcCoord.zw;
+	projSpace *= 2.0f;
+	projSpace -= 1.0f;
+	projSpace.y *= -1.0f;
+	
+	o.vDestCoord = float4( projSpace.x, projSpace.y, 0.0f, 1.0f );
+	o.vSrcCoord = v.vSrcCoord.xy;
+	o.vSideSpeedCoord = v.vSrcCoord.xy;
+
+#if CONSTANTBASEDMORPH
+	o.vMorphWeights = cFlexWeights[ v.vMorphWeightId ];
+#else
+	float flColumn = floor( v.vMorphWeightId / vMorphWeightSubrect.w );
+	o.vMorphWeightCoord.x = vMorphWeightSubrect.x + flColumn + 0.5f;
+	o.vMorphWeightCoord.y = vMorphWeightSubrect.y + v.vMorphWeightId - flColumn * vMorphWeightSubrect.w + 0.5f;
+	o.vMorphWeightCoord.xy /= vMorphWeightDimensions.xy;
+#endif	
+	return DX12FinishVertex( o );
+}

@@ -41,6 +41,9 @@ public:
         explicit BindingInputDX12(D3D12_CPU_DESCRIPTOR_HANDLE nullView) { srvSources.fill(nullView); }
         std::array<const void *,10> constantData{}; std::array<size_t,10> constantSizes{}; std::array<uint64_t,10> constantVersions{};
         std::array<uint64_t,6> constantShaderIds{}; std::array<uint32_t,6> consumedRegisters{};
+        // Native space-1 CBVs: slots 0-7 VS b0-b7, 8-15 PS b0-b7; only stages flagged in nativeStage are bound.
+        std::array<const void *,16> nativeData{}; std::array<uint32_t,16> nativeSizes{}; std::array<uint64_t,16> nativeVersions{};
+        std::array<bool,2> nativeStage{};
         std::array<ID3D12Resource *,32> textures{}; std::array<D3D12_CPU_DESCRIPTOR_HANDLE,32> srvSources;
         // Descriptions are only read for slots whose source handle is zero; those slots must supply a description.
         std::array<D3D12_SHADER_RESOURCE_VIEW_DESC,32> srvDescs;
@@ -118,7 +121,8 @@ private:
     struct RetiredResource{Microsoft::WRL::ComPtr<ID3D12Resource> resource;uint64_t fence=0;};
     // Largest legal cbuffer; also the read slack kept past every upload page used for root CBVs.
     static constexpr size_t kConstantBufferMaxBytes=65536;
-    static constexpr UINT kRootVertexConstants=4,kRootPixelConstants=8,kRootGeometryConstants=14,kRootParameterCount=18;
+    // 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables.
+    static constexpr UINT kRootVertexConstants=4,kRootPixelConstants=8,kRootGeometryConstants=14,kRootNativeVertex=18,kRootNativePixel=19,kRootParameterCount=20;
     bool AllocateUploadLocked(const void *data,size_t bytes,size_t allocationBytes,size_t alignment,uint64_t retireFence,D3D12_GPU_VIRTUAL_ADDRESS &gpuAddress,ID3D12Resource **source,size_t *sourceOffset,const uint32_t *swapOffsets,size_t swapCount,size_t vertexStride);
     void RetainGeometryLocked(ID3D12Resource *resource, uint64_t retireFence);
     CBindingCacheDX12 bindings_;CUtlVector<UploadPage> uploadPages_;int uploadPageHint_=0;
@@ -139,7 +143,11 @@ private:
     static constexpr size_t kRecentConstants=64;
     std::array<std::array<LastConstantSlot,kRecentConstants>,10> recentConstants_{};
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE,4> boundRootTables_{};
-    std::array<D3D12_GPU_VIRTUAL_ADDRESS,kRootParameterCount-kRootVertexConstants> boundRootConstants_{};
+    std::array<D3D12_GPU_DESCRIPTOR_HANDLE,2> boundNativeTables_{};
+    std::array<LastConstantSlot,16> lastNativeSlots_{};
+    struct NativeTableCache { std::array<D3D12_GPU_VIRTUAL_ADDRESS,8> addresses{}; std::array<UINT,8> sizes{}; D3D12_GPU_DESCRIPTOR_HANDLE gpu{}; uint64_t fence=0,heapGeneration=0; };
+    std::array<NativeTableCache,2> nativeTableCache_{};
+    std::array<D3D12_GPU_VIRTUAL_ADDRESS,kRootNativeVertex-kRootVertexConstants> boundRootConstants_{};
     ID3D12DescriptorHeap *boundResourceHeap_=nullptr,*boundSamplerHeap_=nullptr;
     uint64_t graphicsBindingsFence_=0;
     bool graphicsBindingsValid_=false;

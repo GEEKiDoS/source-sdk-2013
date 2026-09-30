@@ -1,4 +1,6 @@
 #pragma once
+#include "materialsystem/shaderapidx12/native_cbuffer_dx12.h"
+#include "materialsystem/shaderapidx12/native_engine_cbuffers_dx12.h"
 #include "shaderapi/ishaderapi.h"
 #include "materialsystem/idebugtextureinfo.h"
 #include "shaderapi/ishadershadow.h"
@@ -141,6 +143,17 @@ protected:
     std::array<bool,16> vsBool_{};
     std::array<bool,16> psBool_{};
     std::array<uint64_t,6> constantVersions_{{1,1,1,1,1,1}};
+    // Material space-1 blocks written through the private pointer bridge (VS b2-b7, PS b1-b7); sticky like registers.
+    struct NativeCBufferSlotDX12 { std::vector<unsigned char> bytes; const dx12native::NativeCBufferLegacyMapDX12 *legacyMap=nullptr; uint64_t layoutHash=0, version=0; uint32_t byteSize=0; bool written=false; };
+    std::array<NativeCBufferSlotDX12,6> nativeVSBlocks_{};
+    std::array<NativeCBufferSlotDX12,7> nativePSBlocks_{};
+    uint64_t nativeVSVersion_=1, nativePSVersion_=1;
+    // Engine-owned space-1 blocks for native records, rebuilt only when their legacy inputs change.
+    dx12native::DX12VSEngine nativeVSEngine_{};
+    dx12native::DX12VSBones nativeVSBones_{};
+    dx12native::DX12PSEngine nativePSEngine_{};
+    std::array<uint64_t,5> nativeVSEngineInputs_{};
+    uint64_t nativeVSEngineVersion_=1, nativePSEngineVersion_=1;
     std::array<uint64_t,4> extensionVersions_{};
     ShaderVertexExtensionDX12 previousVertexExtension_{};
     uint32_t vertexExtensionClipMask_=0;
@@ -446,6 +459,15 @@ public:
     void SetShaderUtil(IShaderUtil *util) { shaderUtil_ = util; }
     bool InitializeDeviceResources(CShaderDeviceDX12 *device);
     void ShutdownDeviceResources();
+    // Development-only shader_precache: any thread queues; the recording owner validates in BeginFrame.
+    void QueueShaderPrecacheRequest(const char *name, int staticIndex, int dynamicIndex);
+    void ProcessShaderPrecacheRequests();
+    void SetShaderPrecacheAccepting(bool accepting);
+    void ApplyNativeCBufferWrite(const dx12native::NativeCBufferWriteDX12 &write,bool pixel);
+    struct PrecacheRequestDX12 { CUtlString name; int staticIndex = -1, dynamicIndex = -1; };
+    CThreadFastMutex precacheMutex_;
+    CUtlVector<PrecacheRequestDX12> precacheRequests_;
+    bool precacheAccepting_ = false;
     // IDebugTextureInfo
     void EnableDebugTextureList(bool bEnable) override;
     void EnableGetAllTextures(bool bEnable) override;

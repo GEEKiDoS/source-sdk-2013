@@ -1,0 +1,267 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/core_ps2x.fxc for logical core_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//====== Copyright © 1996-2005, Valve Corporation, All rights reserved. =======
+//
+// Purpose: 
+//
+//=============================================================================
+
+// STATIC: "CONVERT_TO_SRGB"		"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "CUBEMAP"				"0..1"
+// STATIC: "FLOWMAP"				"0..1"
+// STATIC: "CORECOLORTEXTURE"		"0..1"
+// STATIC: "REFRACT"				"0..1"
+// DYNAMIC: "PIXELFOGTYPE"			"0..1"
+
+// SKIP: ( $REFRACT || $CORECOLORTEXTURE ) && $CUBEMAP
+
+#include "common_ps_fxc.h"
+
+Texture2D RefractSampler_Texture : register( t2 );
+SamplerState RefractSampler_Sampler : register( s2 );
+static const DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+Texture2D NormalSampler_Texture : register( t3 );
+SamplerState NormalSampler_Sampler : register( s3 );
+static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+#if CUBEMAP
+TextureCube EnvmapSampler_Texture : register( t4 );
+SamplerState EnvmapSampler_Sampler : register( s4 );
+static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+#endif
+#if FLOWMAP
+Texture2D FlowmapSampler_Texture : register( t6 );
+SamplerState FlowmapSampler_Sampler : register( s6 );
+static const DX12Sampler2D FlowmapSampler = { FlowmapSampler_Texture, FlowmapSampler_Sampler };
+#endif
+
+#if CORECOLORTEXTURE
+Texture2D CoreColorSampler_Texture : register( t7 );
+SamplerState CoreColorSampler_Sampler : register( s7 );
+static const DX12Sampler2D CoreColorSampler = { CoreColorSampler_Texture, CoreColorSampler_Sampler };
+#endif
+
+
+cbuffer core_ps2x : register( b1, space1 )
+{
+	HALF3 g_EnvmapTint; // @legacy ps:c0
+	HALF3 g_RefractTint; // @legacy ps:c1
+	HALF3 g_EnvmapContrast; // @legacy ps:c2
+	HALF3 g_EnvmapSaturation; // @legacy ps:c3
+	HALF2 g_RefractScale; // @legacy ps:c5
+	float g_Time; // @legacy ps:c6
+	float2 g_FlowScrollRate; // @legacy ps:c7
+	float3 g_EyePos; // @legacy ps:c8
+	float g_CoreColorTexCoordOffset; // @legacy ps:c9
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+#if FLOWMAP
+
+
+//const float3 g_SphereCenter		: register( c9 );
+//const float3 g_SphereRadius		: register( c10 );
+
+#endif
+
+
+float LengthThroughSphere( float3 vecRayOrigin, float3 vecRayDelta, 
+						  float3 vecSphereCenter, float flRadius, out float alpha )
+{
+	// Solve using the ray equation + the sphere equation
+	// P = o + dt
+	// (x - xc)^2 + (y - yc)^2 + (z - zc)^2 = r^2
+	// (ox + dx * t - xc)^2 + (oy + dy * t - yc)^2 + (oz + dz * t - zc)^2 = r^2
+	// (ox - xc)^2 + 2 * (ox-xc) * dx * t + dx^2 * t^2 +
+	//		(oy - yc)^2 + 2 * (oy-yc) * dy * t + dy^2 * t^2 +
+	//		(oz - zc)^2 + 2 * (oz-zc) * dz * t + dz^2 * t^2 = r^2
+	// (dx^2 + dy^2 + dz^2) * t^2 + 2 * ((ox-xc)dx + (oy-yc)dy + (oz-zc)dz) t +
+	//		(ox-xc)^2 + (oy-yc)^2 + (oz-zc)^2 - r^2 = 0
+	// or, t = (-b +/- sqrt( b^2 - 4ac)) / 2a
+	// a = DotProduct( vecRayDelta, vecRayDelta );
+	// b = 2 * DotProduct( vecRayOrigin - vecCenter, vecRayDelta )
+	// c = DotProduct(vecRayOrigin - vecCenter, vecRayOrigin - vecCenter) - flRadius * flRadius;
+
+	float3 vecSphereToRay;
+	vecSphereToRay = vecRayOrigin - vecSphereCenter;
+
+	float a = dot( vecRayDelta, vecRayDelta );
+
+	// This would occur in the case of a zero-length ray
+	//	if ( a == 0.0f )
+	//	{
+	//		*pT1 = *pT2 = 0.0f;
+	//		return vecSphereToRay.LengthSqr() <= flRadius * flRadius;
+	//	}
+
+	float b = 2 * dot( vecSphereToRay, vecRayDelta );
+	float c = dot( vecSphereToRay, vecSphereToRay ) - flRadius * flRadius;
+	float flDiscrim = b * b - 4 * a * c;
+	//	if ( flDiscrim < 0.0f )
+	//		return 0.0f;
+
+	float hack = flDiscrim;
+	flDiscrim = 1.0f / rsqrt( flDiscrim );
+	float oo2a = 0.5f / a;
+	
+
+	//if( hack < 0.0f )
+	//{
+	//	alpha = 0.0f;
+	//	return 0.0f;
+	//}
+	//else
+	//{
+	//	alpha = 1.0f;
+	//	return abs( flDiscrim ) * 2 * oo2a;
+	//}
+	
+	//replacing the if's above because if's in hlsl are bad.....
+	float fHackGreaterThanZero = step( 0.0f, hack );
+	alpha = fHackGreaterThanZero;
+	return (fHackGreaterThanZero * (abs( flDiscrim ) * 2 * oo2a));
+
+
+	//	*pT1 = ( - b - flDiscrim ) * oo2a;
+	//	*pT2 = ( - b + flDiscrim ) * oo2a;
+	//	return true;
+}
+
+
+struct PS_INPUT
+{
+	float2 vBumpTexCoord; // dudvMapAndNormalMapTexCoord
+	HALF3 vWorldVertToEyeVector;
+	HALF3x3 tangentSpaceTranspose;
+	float3 vRefractXYW; 
+	float3 projNormal;
+	float4 worldPos_projPosZ;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPos_POSITION : SV_Position;
+	float vFog : FOG;
+	float2 vBumpTexCoord : TEXCOORD0;
+	float3 vTangentEyeVect : TEXCOORD1;
+	float3x3 tangentSpaceTranspose : TEXCOORD2;
+	float3 vRefractXYW : TEXCOORD5;
+	float4 projNormal_screenCoordW : TEXCOORD6;
+	float4 worldPos_projPosZ : TEXCOORD7;
+	float4 fogFactorW : COLOR1;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vBumpTexCoord = dx12In.vBumpTexCoord;
+	l.vWorldVertToEyeVector = dx12In.vTangentEyeVect;
+	l.tangentSpaceTranspose = dx12In.tangentSpaceTranspose;
+	l.vRefractXYW = dx12In.vRefractXYW;
+	l.projNormal = ( dx12In.projNormal_screenCoordW ).xyz;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	HALF3 result = 0.0f;
+
+	HALF blend = 1.0f;
+
+#if FLOWMAP
+	// hack
+	float3 g_SphereCenter = { 2688.0f, 12139.0f, 5170.0f };
+	float g_SphereDiameter = 430.0f;
+	float g_SphereRadius = g_SphereDiameter * 0.5f;
+
+	float3 tmp = i.worldPos_projPosZ.xyz - g_SphereCenter;
+	float hackRadius = 1.05f * ( 1.0f / rsqrt( dot( tmp, tmp ) ) );
+
+	float sphereAlpha;
+	float lengthThroughSphere = LengthThroughSphere( g_EyePos, normalize( i.worldPos_projPosZ.xyz - g_EyePos ),
+		g_SphereCenter, /*g_SphereRadius*/ hackRadius, sphereAlpha );
+
+	float normalizedLengthThroughSphere = lengthThroughSphere / g_SphereDiameter;
+
+
+	float3 hackWorldSpaceNormal = normalize( i.worldPos_projPosZ.xyz - g_SphereCenter );
+	float3 realFuckingNormal = abs( hackWorldSpaceNormal );
+	hackWorldSpaceNormal = 0.5f * ( hackWorldSpaceNormal + 1.0f );
+
+	//	hackWorldSpaceNormal = abs( hackWorldSpaceNormal );
+
+	//	return float4( hackWorldSpaceNormal.x, 0.0f, 0.0f, 1.0f );
+
+	i.vBumpTexCoord.xy = 0.0f;
+	i.vBumpTexCoord.xy = realFuckingNormal.z * FlowmapSampler.tex.Sample( FlowmapSampler.smp, hackWorldSpaceNormal.xy );
+	i.vBumpTexCoord.xy += realFuckingNormal.y * FlowmapSampler.tex.Sample( FlowmapSampler.smp, hackWorldSpaceNormal.xz );
+	i.vBumpTexCoord.xy += realFuckingNormal.x * FlowmapSampler.tex.Sample( FlowmapSampler.smp, hackWorldSpaceNormal.yz );
+	i.vBumpTexCoord.xy += g_Time * g_FlowScrollRate;
+	//	return float4( i.vBumpTexCoord.xy, 0.0f, 0.0f );
+#endif
+
+	// Load normal and expand range
+	HALF4 vNormalSample = NormalSampler.tex.Sample( NormalSampler.smp, i.vBumpTexCoord );
+	//	return vNormalSample;
+	HALF3 tangentSpaceNormal = vNormalSample * 2.0 - 1.0;
+
+	HALF3 refractTintColor = g_RefractTint;
+
+	// Perform division by W only once
+	float ooW = 1.0f / i.vRefractXYW.z;
+
+	// Compute coordinates for sampling refraction
+	float2 vRefractTexCoordNoWarp = i.vRefractXYW.xy * ooW;
+	float2 vRefractTexCoord = tangentSpaceNormal.xy;
+	HALF scale = vNormalSample.a * g_RefractScale.x;
+#if FLOWMAP
+	scale *= normalizedLengthThroughSphere;
+#endif
+	vRefractTexCoord *= scale;
+#if FLOWMAP
+	float2 hackOffset = vRefractTexCoord;
+#endif
+	vRefractTexCoord += vRefractTexCoordNoWarp;
+
+	float3 colorWarp = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoord.xy );
+	float3 colorNoWarp = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoordNoWarp.xy );
+
+	colorWarp *= refractTintColor;
+#if REFRACT
+	result = lerp( colorNoWarp, colorWarp, blend );
+	//	return float4( 1.0f, 0.0f, 0.0f, 1.0f );
+#endif
+
+#if CUBEMAP
+	HALF specularFactor = vNormalSample.a;
+
+	HALF3 worldSpaceNormal = mul( i.tangentSpaceTranspose, tangentSpaceNormal );
+
+	HALF3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, i.vWorldVertToEyeVector );
+	HALF3 specularLighting = EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+	specularLighting *= specularFactor;
+	specularLighting *= g_EnvmapTint;
+	HALF3 specularLightingSquared = specularLighting * specularLighting;
+	specularLighting = lerp( specularLighting, specularLightingSquared, g_EnvmapContrast );
+	HALF3 greyScale = dot( specularLighting, HALF3( 0.299f, 0.587f, 0.114f ) );
+	specularLighting = lerp( greyScale, specularLighting, g_EnvmapSaturation );
+	result += specularLighting;
+#endif
+
+#if CORECOLORTEXTURE && FLOWMAP
+	float4 coreColorTexel = CoreColorSampler.tex.Sample( CoreColorSampler.smp, hackOffset + float2( normalizedLengthThroughSphere, g_CoreColorTexCoordOffset ) );
+	HALF4 rgba = HALF4( lerp( result, coreColorTexel, coreColorTexel.a /*normalizedLengthThroughSphere*/ ), sphereAlpha );
+#else
+	HALF4 rgba = HALF4( result, vNormalSample.a );
+#endif
+
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( rgba, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE ), dx12In.vFog );
+}
+

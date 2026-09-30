@@ -1,0 +1,133 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/portal_ps2x.fxc for logical portal_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "HASALPHAMASK"		"0..1"
+// STATIC: "HASSTATICTEXTURE"	"0..1"
+
+// DYNAMIC: "ADDSTATIC"			"0..1"
+// DYNAMIC: "HDRENABLED"		"0..1"
+// DYNAMIC: "PIXELFOGTYPE"		"0..1"
+
+#define USESTATICTEXTURE (((ADDSTATIC == 1) && (HASSTATICTEXTURE == 1))?(1):(0))
+
+#include "common_ps_fxc.h"
+#include "shader_constant_register_map.h"
+
+
+cbuffer portal_ps2x : register( b1, space1 )
+{
+	float4 g_StaticAmount; // @legacy ps:c0
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+Texture2D PortalSampler_Texture : register( t0 );
+SamplerState PortalSampler_Sampler : register( s0 );
+static const DX12Sampler2D PortalSampler = { PortalSampler_Texture, PortalSampler_Sampler };
+
+#if( (HASALPHAMASK == 1) || (USESTATICTEXTURE == 1) )
+	Texture2D SecondarySampler_Texture : register( t1 );
+	SamplerState SecondarySampler_Sampler : register( s1 );
+	static const DX12Sampler2D SecondarySampler = { SecondarySampler_Texture, SecondarySampler_Sampler };
+#	if( (HASALPHAMASK == 1) && (USESTATICTEXTURE == 1) )
+		Texture2D TertiarySampler_Texture : register( t2 );
+		SamplerState TertiarySampler_Sampler : register( s2 );
+		static const DX12Sampler2D TertiarySampler = { TertiarySampler_Texture, TertiarySampler_Sampler };
+#	endif
+#endif
+
+
+struct PS_INPUT
+{
+	float3 vPortalTexCoord;	
+
+#	if( (HASALPHAMASK == 1) || (USESTATICTEXTURE == 1) )
+		float2 vSecondaryTexCoord;
+#		if( (HASALPHAMASK == 1) && (USESTATICTEXTURE == 1) )
+			float2 vTertiaryTexCoord;
+#		endif
+#	endif
+
+	float4 worldPos_projPosZ;		// Necessary for pixel fog
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPos : SV_Position;
+	float3 vPortalTexCoord : TEXCOORD0;
+#	if( (HASALPHAMASK == 1) || (USESTATICTEXTURE == 1) )
+	float2 vSecondaryTexCoord : TEXCOORD1;
+#		if( (HASALPHAMASK == 1) && (USESTATICTEXTURE == 1) )
+	float2 vTertiaryTexCoord : TEXCOORD2;
+#		endif
+#	endif
+#	if !defined( _X360  )
+	float vFog : FOG;
+#	endif
+	float4 worldPos_projPosZ : TEXCOORD7;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vPortalTexCoord = dx12In.vPortalTexCoord;
+#	if( (HASALPHAMASK == 1) || (USESTATICTEXTURE == 1) )
+#if ( ( ( (HASALPHAMASK == 1) || (USESTATICTEXTURE == 1) ) ) )
+	l.vSecondaryTexCoord = dx12In.vSecondaryTexCoord;
+#endif
+#		if( (HASALPHAMASK == 1) && (USESTATICTEXTURE == 1) )
+#if ( ( ( (HASALPHAMASK == 1) || (USESTATICTEXTURE == 1) ) ) && ( ( (HASALPHAMASK == 1) && (USESTATICTEXTURE == 1) ) ) )
+	l.vTertiaryTexCoord = dx12In.vTertiaryTexCoord;
+#endif
+#		endif
+#	endif
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	HALF4 result;	
+	result.rgb = PortalSampler.tex.Sample( PortalSampler.smp, i.vPortalTexCoord.xy / i.vPortalTexCoord.z ).rgb;
+		
+	//mix in static	
+#	if( ADDSTATIC == 1 )
+	{
+		result.rgb *= g_StaticAmount.y; //inverse static on original colors
+		
+#		if( HASSTATICTEXTURE == 1 )
+		{
+#			if( HASALPHAMASK == 1 )
+				result.rgb += TertiarySampler.tex.Sample( TertiarySampler.smp, i.vTertiaryTexCoord ).rgb * g_StaticAmount.x; //static
+#			else
+				result.rgb += SecondarySampler.tex.Sample( SecondarySampler.smp, i.vSecondaryTexCoord ).rgb * g_StaticAmount.x; //static	
+#			endif
+		}
+#		else
+		{
+			result.rgb += g_StaticAmount.x * 0.25; //mix in gray	
+		}
+#		endif
+	}	
+#	endif
+	
+#	if( HASALPHAMASK == 1 )
+	{
+		//alpha mask
+		result.a = SecondarySampler.tex.Sample( SecondarySampler.smp, i.vSecondaryTexCoord ).a;
+	}
+#	else
+	{
+		result.a = 1;
+	}
+#	endif
+
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( result, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.vFog );
+}

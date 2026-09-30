@@ -13,7 +13,7 @@ bool CPipelineCacheDX12::Initialize(ID3D12Device *device)
     ++srvDescriptorEpoch_;
     InvalidateGraphicsBindings();
     // Fence values restart with a new device; drop every fence-keyed reuse record.
-    lastSrvTable_={};lastConstantSlots_={};srvTables_={};for(auto &bank:recentConstants_)bank.fill({});uploadPageHint_=0;
+    lastSrvTable_={};lastConstantSlots_={};lastNativeSlots_={};nativeTableCache_={};srvTables_={};for(auto &bank:recentConstants_)bank.fill({});uploadPageHint_=0;
     nullSrvDesc_={};nullSrvDesc_.Format=DXGI_FORMAT_R8G8B8A8_UNORM;nullSrvDesc_.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;nullSrvDesc_.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;nullSrvDesc_.Texture2D.MipLevels=1;
     const auto nullViews=bindings_.AllocatePersistentResource(1,0);if(nullViews.count!=1)return false;
     nullSrv_=nullViews.cpu;device_->CreateShaderResourceView(nullptr,&nullSrvDesc_,nullSrv_);
@@ -29,16 +29,19 @@ bool CPipelineCacheDX12::Initialize(ID3D12Device *device)
         void *mapped=nullptr;D3D12_RANGE read{};if(FAILED(zeroConstants_->Map(0,&read,&mapped)))return false;std::memset(mapped,0,kConstantBufferMaxBytes);zeroConstants_->Unmap(0,nullptr);
         zeroConstantAddress_=zeroConstants_->GetGPUVirtualAddress();
     }
-    D3D12_DESCRIPTOR_RANGE ranges[2]{};ranges[0].RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;ranges[0].NumDescriptors=16;ranges[0].BaseShaderRegister=0;ranges[1].RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;ranges[1].NumDescriptors=16;ranges[1].BaseShaderRegister=0;
-    // 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs.
+    // Ranges: SRV t0-15, sampler s0-15, native CBV b0-b7 in register space 1.
+    D3D12_DESCRIPTOR_RANGE ranges[3]{};ranges[0].RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;ranges[0].NumDescriptors=16;ranges[0].BaseShaderRegister=0;ranges[1].RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;ranges[1].NumDescriptors=16;ranges[1].BaseShaderRegister=0;
+    ranges[2].RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_CBV;ranges[2].NumDescriptors=8;ranges[2].BaseShaderRegister=0;ranges[2].RegisterSpace=1;
+    // 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables.
     D3D12_ROOT_PARAMETER params[kRootParameterCount]{};
     for(int i=0;i<4;++i){params[i].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;params[i].DescriptorTable.NumDescriptorRanges=1;params[i].DescriptorTable.pDescriptorRanges=&ranges[i&1];params[i].ShaderVisibility=i<2?D3D12_SHADER_VISIBILITY_PIXEL:D3D12_SHADER_VISIBILITY_VERTEX;}
-    for(UINT i=kRootVertexConstants;i<kRootParameterCount;++i){
+    for(UINT i=kRootVertexConstants;i<kRootNativeVertex;++i){
         params[i].ParameterType=D3D12_ROOT_PARAMETER_TYPE_CBV;
         if(i<kRootPixelConstants){params[i].Descriptor.ShaderRegister=i-kRootVertexConstants;params[i].ShaderVisibility=D3D12_SHADER_VISIBILITY_VERTEX;}
         else if(i<kRootGeometryConstants){params[i].Descriptor.ShaderRegister=i-kRootPixelConstants;params[i].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;}
         else{params[i].Descriptor.ShaderRegister=i-kRootGeometryConstants;params[i].ShaderVisibility=D3D12_SHADER_VISIBILITY_GEOMETRY;}
     }
+    for(UINT i=kRootNativeVertex;i<kRootParameterCount;++i){params[i].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;params[i].DescriptorTable.NumDescriptorRanges=1;params[i].DescriptorTable.pDescriptorRanges=&ranges[2];params[i].ShaderVisibility=i==kRootNativeVertex?D3D12_SHADER_VISIBILITY_VERTEX:D3D12_SHADER_VISIBILITY_PIXEL;}
     D3D12_ROOT_SIGNATURE_DESC desc{};desc.NumParameters=kRootParameterCount;desc.pParameters=params;desc.Flags=D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     Microsoft::WRL::ComPtr<ID3DBlob> blob,error;HRESULT hr=D3D12SerializeRootSignature(&desc,D3D_ROOT_SIGNATURE_VERSION_1,&blob,&error);if(FAILED(hr)){Warning("ShaderAPIDX12: root signature serialization failed 0x%08x: %s\n",static_cast<unsigned>(hr),error?static_cast<const char *>(error->GetBufferPointer()):"unknown");return false;}hr=device_->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root_));if(FAILED(hr))Warning("ShaderAPIDX12: root signature creation failed 0x%08x\n",static_cast<unsigned>(hr));return SUCCEEDED(hr);
 }
@@ -188,6 +191,29 @@ bool CPipelineCacheDX12::PrepareBindings(CCommandRecorderDX12 *list,const Bindin
   constantAddresses[i]=gpu;
  }
  }
+ // Native space-1 CBV tables exist only for stages bound to native records; legacy-only draws skip them.
+ D3D12_GPU_DESCRIPTOR_HANDLE nativeTables[2]{};
+ for(unsigned stage=0;stage<2;++stage){
+  if(!input.nativeStage[stage])continue;
+  std::array<D3D12_GPU_VIRTUAL_ADDRESS,8> addresses;std::array<UINT,8> sizes;
+  for(unsigned slot=0;slot<8;++slot){
+   const unsigned i=stage*8+slot;const size_t bytes=input.nativeSizes[i];
+   sizes[slot]=bytes?static_cast<UINT>((bytes+255)&~size_t(255)):256u;
+   if(!bytes){addresses[slot]=zeroConstantAddress_;continue;}
+   if(!input.nativeData[i]||bytes>kConstantBufferMaxBytes||(bytes&15))return false;
+   const uint64_t version=input.nativeVersions[i];auto &last=lastNativeSlots_[i];
+   if(version&&last.fence==input.retireFence&&last.version==version&&last.bytes==bytes){addresses[slot]=last.address;++stats_.constantHits;continue;}
+   if(!AllocateUploadLocked(input.nativeData[i],bytes,sizes[slot],256,input.retireFence,addresses[slot],nullptr,nullptr,nullptr,0,0))return false;
+   ++stats_.constantUploads;
+   last={input.retireFence,version,0,bytes,addresses[slot]};
+  }
+  // An unchanged address set within this fence reuses the previous table.
+  auto &cached=nativeTableCache_[stage];
+  if(cached.fence==input.retireFence&&cached.heapGeneration==bindings_.ResourceHeap().Generation()&&cached.addresses==addresses&&cached.sizes==sizes){nativeTables[stage]=cached.gpu;continue;}
+  const DescriptorRangeDX12 table=bindings_.AllocateDescriptors(8,input.retireFence);if(table.count!=8)return false;
+  for(unsigned slot=0;slot<8;++slot){D3D12_CPU_DESCRIPTOR_HANDLE cpu=table.cpu;cpu.ptr+=SIZE_T(slot)*resourceStride;const D3D12_CONSTANT_BUFFER_VIEW_DESC view{addresses[slot],sizes[slot]};device_->CreateConstantBufferView(&view,cpu);}
+  cached={addresses,sizes,table.gpu,input.retireFence,table.generation};nativeTables[stage]=table.gpu;
+ }
  D3D12_GPU_DESCRIPTOR_HANDLE srvs{};
  {
   ZoneNamedN(___tracy_scoped_zone, "DX12 SRVBindings", DX12_DRAW_ZONES_ACTIVE);
@@ -264,6 +290,10 @@ bool CPipelineCacheDX12::PrepareBindings(CCommandRecorderDX12 *list,const Bindin
  }
  if(input.vertexTextures)vertexTablesCurrent_=true;
  else if(boundRootTables_[2].ptr!=vertexSrvs.ptr||boundRootTables_[3].ptr!=vertexSamplers.ptr)vertexTablesCurrent_=false;
+ for(unsigned stage=0;stage<2;++stage)if(input.nativeStage[stage]){
+  const UINT root=stage?kRootNativePixel:kRootNativeVertex;auto &bound=boundNativeTables_[stage];
+  if(!graphicsBindingsValid_||bound.ptr!=nativeTables[stage].ptr){++stats_.rootTableSets;list->SetGraphicsRootDescriptorTable(root,nativeTables[stage]);bound=nativeTables[stage];}
+ }
  // Slots 0-3 feed VS b0-b3 (mirrored to GS b0-b3 when a geometry stage runs); slots 4-9 feed PS b0-b5.
  for(UINT slot=0;slot<10;++slot){
   const UINT root=slot<4?kRootVertexConstants+slot:kRootPixelConstants+(slot-4);

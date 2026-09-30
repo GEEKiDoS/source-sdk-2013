@@ -1,0 +1,73 @@
+// Native SM5 material DLL; shader source and generated artifacts are built offline.
+$Macro SRCDIR "..\.."
+$Macro OUTBINNAME "stdshader_dx12"
+$Macro OUTBINDIR "$SRCDIR\..\game\bin"
+$Include "$SRCDIR\vpc_scripts\source_dll_base.vpc"
+
+$Configuration "Debug"
+{
+    $General
+    {
+        $OutputDirectory "Debug_dx12"
+        $IntermediateDirectory "Debug_dx12"
+    }
+}
+$Configuration "Release"
+{
+    $General
+    {
+        $OutputDirectory "Release_dx12"
+        $IntermediateDirectory "Release_dx12"
+    }
+}
+$Configuration
+{
+    $Compiler
+    {
+        $AdditionalIncludeDirectories "$BASE;cpp;generated\inc;generated\cbuffers;$SRCDIR\materialsystem\shaderapidx12"
+        $PreprocessorDefinitions "$BASE;STDSHADER_DX12_DLL_EXPORT;FAST_MATERIALVAR_ACCESS;GAME_SHADER_DLL;USE_ACTUAL_DX"
+        $AdditionalOptions "$BASE /std:c++17"
+        $Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+        $ForceIncludes " "
+    }
+    $Linker
+    {
+        $AdditionalDependencies "$BASE version.lib winmm.lib"
+    }
+}
+
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\BaseVSShaderDX12.cpp"
+        $File "cpp\shader_dll_verify_dx12.cpp"
+        $File "cpp\shaderdll_dx12.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "cpp\BaseVSShaderDX12.h"
+        $File "cpp\cpp_shader_constant_register_map.h"
+        $File "cpp\commandbuilder.h"
+        $File "cpp\common_hlsl_cpp_consts.h"
+        $File "cpp\shader_dll_verify_dx12.h"
+    }
+    $Folder "Link Libraries"
+    {
+        $Lib mathlib
+        $Lib shaderlib
+        $Lib tier2
+        $Lib tier1
+    }
+}
+
+$Include "vpc\postfx.vpc"
+$Include "vpc\screenspace.vpc"
+$Include "vpc\lightmapped.vpc"
+$Include "vpc\vertexlit.vpc"
+$Include "vpc\eyes_teeth_skin.vpc"
+$Include "vpc\water_refract.vpc"
+$Include "vpc\sprites_particles.vpc"
+$Include "vpc\world_misc.vpc"
+$Include "vpc\effects_misc.vpc"
+$Include "vpc\morph_debug.vpc"

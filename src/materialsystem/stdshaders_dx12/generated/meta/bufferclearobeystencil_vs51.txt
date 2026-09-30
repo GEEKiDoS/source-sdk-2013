@@ -1,0 +1,19 @@
+logical=bufferclearobeystencil_vs51 stage=vs source=bufferclearobeystencil_vs51.fxc legacy=bufferclearobeystencil_vs20.fxc legacyName=bufferclearobeystencil_vs20 profile=20b static=2 dynamic=1 present=2
+  cbuffer=DX12VSEngine space=1 register=b0 size=880 layoutHash=0x9842d51544efb330 engine
+    member=cConstants0 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cConstants1 type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cEyePosWaterZ type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cFlexScale type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=none
+    member=cModelViewProj type=3 class=3 offset=64 size=64 elements=0 arrayStride=0 legacy=none
+    member=cViewProj type=3 class=3 offset=128 size=64 elements=0 arrayStride=0 legacy=none
+    member=cModelViewProjZ type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=none
+    member=cViewProjZ type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=none
+    member=cFogParams type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=none
+    member=cViewModel type=3 class=3 offset=240 size=64 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=304 size=96 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=400 size=320 elements=4 arrayStride=80 legacy=none
+    member=cLightCount type=2 class=1 offset=720 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightEnabled type=19 class=1 offset=736 size=16 elements=0 arrayStride=0 legacy=none
+    member=cViewportScale type=3 class=1 offset=752 size=16 elements=0 arrayStride=0 legacy=none
+    member=cClipPlanes type=3 class=1 offset=768 size=96 elements=6 arrayStride=16 legacy=none
+    member=cClipMask type=19 class=1 offset=864 size=16 elements=0 arrayStride=0 legacy=none

@@ -6,6 +6,7 @@
 #include "vertex_layout_dx12.h"
 #include <d3dcompiler.h>
 #include <d3d11shader.h>
+#include <d3d12shader.h>
 #include <wrl/client.h>
 #include "shader_translate_dx12.h"
 
@@ -24,14 +25,18 @@ bool ReadShaderInputSignatureDX12(const void *bytecode, size_t bytes,
     if (FAILED(reflection->GetDesc(&shader))) return false;
     if (constantRegisters)
     {
+        // Only register space 0 carries the legacy root-CBV register counts; space-1 blocks (engine and material
+        // named cbuffers) are bound through the space-1 descriptor tables.
         constantRegisters->fill(0);
+        Microsoft::WRL::ComPtr<ID3D12ShaderReflection> spaces;
+        if (FAILED(D3DReflect(bytecode, bytes, IID_PPV_ARGS(&spaces)))) return false;
         for (UINT i=0;i<shader.BoundResources;++i)
         {
-            D3D11_SHADER_INPUT_BIND_DESC binding = {};
-            if (FAILED(reflection->GetResourceBindingDesc(i,&binding))) return false;
-            if (binding.Type!=D3D_SIT_CBUFFER || binding.BindPoint>=3) continue;
-            D3D11_SHADER_BUFFER_DESC buffer = {};
-            if (FAILED(reflection->GetConstantBufferByName(binding.Name)->GetDesc(&buffer))) return false;
+            D3D12_SHADER_INPUT_BIND_DESC binding = {};
+            if (FAILED(spaces->GetResourceBindingDesc(i,&binding))) return false;
+            if (binding.Type!=D3D_SIT_CBUFFER || binding.Space!=0 || binding.BindPoint>=3) continue;
+            D3D12_SHADER_BUFFER_DESC buffer = {};
+            if (FAILED(spaces->GetConstantBufferByName(binding.Name)->GetDesc(&buffer))) return false;
             (*constantRegisters)[binding.BindPoint]=(buffer.Size+(binding.BindPoint==2?3:15))/(binding.BindPoint==2?4:16);
         }
     }

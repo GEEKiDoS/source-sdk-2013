@@ -1,0 +1,55 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/hsl_filmgrain_pass1_ps2x.fxc for logical hsl_filmgrain_pass1_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+Texture2D InputSampler_Texture : register( t0 );
+SamplerState InputSampler_Sampler : register( s0 );
+static const DX12Sampler2D InputSampler = { InputSampler_Texture, InputSampler_Sampler };
+Texture2D FilmGrain_Texture : register( t1 );
+SamplerState FilmGrain_Sampler : register( s1 );
+static const DX12Sampler2D FilmGrain = { FilmGrain_Texture, FilmGrain_Sampler };
+
+
+cbuffer hsl_filmgrain_pass1_ps2x : register( b1, space1 )
+{
+	float4 vNoiseScale; // @legacy ps:c0
+};
+
+
+struct PS_INPUT
+{
+	float2 inputImageCoords;	// Input image having grain added
+	float2 filmGrainCoords;	// Tiling film grain texture
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 InputImageCoord : TEXCOORD0;
+	float2 FilmGrainCoord : TEXCOORD1;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.inputImageCoords = dx12In.InputImageCoord;
+	l.filmGrainCoords = dx12In.FilmGrainCoord;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float3 hsl = RGBtoHSL( InputSampler.tex.Sample( InputSampler.smp, i.inputImageCoords ) );
+	float3 hslNoise = FilmGrain.tex.Sample( FilmGrain.smp, i.filmGrainCoords ) * 2.0f - 1.0f;
+
+	hsl += hslNoise * vNoiseScale * float3( 0.5f, 1.0f, 1.0f );
+
+	return DX12FinishPixel( FinalOutput( float4 ( hsl, 1.0f  ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

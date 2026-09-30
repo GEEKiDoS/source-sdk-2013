@@ -11,6 +11,8 @@
 #include "tier1/tier1.h"
 #include "tracy_dx12.h"
 #include "tier2/tier2.h"
+#include "tier1/convar.h"
+#include "icvar.h"
 #include <d3dcompiler.h>
 #include <algorithm>
 #include <cstring>
@@ -90,6 +92,7 @@ bool CShaderDeviceDX12::Initialize(void *hwnd, int adapter, const ShaderDeviceIn
     hr = D3D12CreateDevice(selectedAdapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
     if (FAILED(hr)) { Warning("ShaderAPIDX12: D3D12CreateDevice failed (0x%08x)\n", static_cast<unsigned>(hr)); ShutdownDevice(); return false; }
     if (!LoadDxbcSigner(signerModule_, signer_)) { Warning("ShaderAPIDX12: required dxbcSigner.dll/SignDxbc missing beside renderer\n"); ShutdownDevice(); return false; }
+    char rendererPath[MAX_PATH]{};HMODULE rendererModule=nullptr;GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCSTR>(&LoadDxbcSigner),&rendererModule);if(!rendererModule||!GetModuleFileNameA(rendererModule,rendererPath,sizeof(rendererPath))){Warning("ShaderAPIDX12: unable to locate renderer module while checking stdshader_dx12.dll\n");ShutdownDevice();return false;}char *rendererSlash=strrchr(rendererPath,'\\');if(!rendererSlash)rendererSlash=strrchr(rendererPath,'/');if(rendererSlash)rendererSlash[1]=0;const std::string nativeShaderDll=std::string(rendererPath)+"stdshader_dx12.dll";if(GetFileAttributesA(nativeShaderDll.c_str())==INVALID_FILE_ATTRIBUTES){Warning("ShaderAPIDX12: required stdshader_dx12.dll missing beside renderer: %s\n",nativeShaderDll.c_str());ShutdownDevice();return false;}
     D3D12_COMMAND_QUEUE_DESC queueDesc{}; queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     hr = device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue_));
     if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateCommandQueue failed (0x%08x)\n", static_cast<unsigned>(hr)); ShutdownDevice(); return false; }
@@ -905,6 +908,9 @@ bool CShaderDeviceMgrDX12::Connect(CreateInterfaceFn factory)
     if (!filesystem_ || !shaderUtil_) { Warning("ShaderAPIDX12: required host filesystem/shader utility interface missing\n");hostFactory_=nullptr;filesystem_=nullptr;shaderUtil_=nullptr;return false; }
     ConnectTier1Libraries(&factory, 1);
     ConnectTier2Libraries(&factory, 1);
+    // Registers this module's development commands (shader_precache) with the host cvar system. FCVAR_CHEAT gates
+    // them behind sv_cheats; FCVAR_DEVELOPMENTONLY would make retail engines reject them outright (cmd.cpp:1036).
+    if (g_pCVar) ConVar_Register(FCVAR_CHEAT);
     MathLib_Init(2.2f, 2.2f, 0.0f, 2);
     dxSupport_.Load(filesystem_); // Malformed profiles log and leave hardware-derived caps intact.
     return true;
@@ -913,7 +919,7 @@ void CShaderDeviceMgrDX12::Disconnect()
 {
     Shutdown();
     dxSupport_.Clear();
-    if (hostFactory_) { DisconnectTier2Libraries(); DisconnectTier1Libraries(); }
+    if (hostFactory_) { if (g_pCVar) ConVar_Unregister(); DisconnectTier2Libraries(); DisconnectTier1Libraries(); }
     filesystem_ = nullptr; shaderUtil_ = nullptr; hostFactory_ = nullptr;
 }
 void *CShaderDeviceMgrDX12::QueryInterface(const char *name)

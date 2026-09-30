@@ -1,0 +1,313 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/refract_ps2x.fxc for logical refract_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//====== Copyright � 1996-2007, Valve Corporation, All rights reserved. =======
+//
+//=============================================================================
+
+// STATIC: "CONVERT_TO_SRGB"				"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "BLUR"							"0..1"
+// STATIC: "FADEOUTONSILHOUETTE"			"0..1"
+// STATIC: "CUBEMAP"						"0..1"
+// STATIC: "REFRACTTINTTEXTURE"				"0..1"
+// STATIC: "MASKED"							"0..1"
+// STATIC: "COLORMODULATE"					"0..1"
+// STATIC: "SECONDARY_NORMAL"				"0..1"
+// STATIC: "NORMAL_DECODE_MODE"				"0..0"
+// STATIC: "SHADER_SRGB_READ"				"0..1"
+
+// DYNAMIC: "PIXELFOGTYPE"					"0..2"
+// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"		"0..1"
+
+// SKIP: $MASKED && $BLUR
+
+#if defined( DX12_LEGACY_PS20 )
+#	define WRITE_DEPTH_TO_DESTALPHA 0
+#endif
+
+#include "common_ps_fxc.h"
+#include "shader_constant_register_map.h"
+
+Texture2D NormalSampler2_Texture : register( t1 );
+SamplerState NormalSampler2_Sampler : register( s1 );
+static const DX12Sampler2D NormalSampler2 = { NormalSampler2_Texture, NormalSampler2_Sampler };
+Texture2D RefractSampler_Texture : register( t2 );
+SamplerState RefractSampler_Sampler : register( s2 );
+static const DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+Texture2D NormalSampler_Texture : register( t3 );
+SamplerState NormalSampler_Sampler : register( s3 );
+static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+#if CUBEMAP
+TextureCube EnvmapSampler_Texture : register( t4 );
+SamplerState EnvmapSampler_Sampler : register( s4 );
+static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+#endif
+#if REFRACTTINTTEXTURE
+Texture2D RefractTintSampler_Texture : register( t5 );
+SamplerState RefractTintSampler_Sampler : register( s5 );
+static const DX12Sampler2D RefractTintSampler = { RefractTintSampler_Texture, RefractTintSampler_Sampler };
+#endif
+
+#if NORMAL_DECODE_MODE == NORM_DECODE_ATI2N_ALPHA
+Texture2D AlphaMapSampler_Texture : register( t6 );
+SamplerState AlphaMapSampler_Sampler : register( s6 );	// alpha
+static const DX12Sampler2D AlphaMapSampler = { AlphaMapSampler_Texture, AlphaMapSampler_Sampler };
+Texture2D AlphaMapSampler2_Texture : register( t7 );
+SamplerState AlphaMapSampler2_Sampler : register( s7 );
+static const DX12Sampler2D AlphaMapSampler2 = { AlphaMapSampler2_Texture, AlphaMapSampler2_Sampler };
+#else
+#define AlphaMapSampler2			NormalSampler
+#define AlphaMapSampler				NormalSampler2
+#endif
+
+
+cbuffer refract_ps2x : register( b1, space1 )
+{
+	float3 g_EnvmapTint; // @legacy ps:c0
+	float3 g_RefractTint; // @legacy ps:c1
+	float3 g_EnvmapContrast; // @legacy ps:c2
+	float3 g_EnvmapSaturation; // @legacy ps:c3
+	float4 g_c5; // @legacy ps:c5
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+#define g_RefractScale g_c5.x
+#define g_flTime g_c5.w
+
+
+static const int g_BlurCount = BLUR;
+static const float g_BlurFraction = 1.0f / 512.0f;
+static const float g_HalfBlurFraction = 0.5 * g_BlurFraction;
+static const float4 g_BlurFractionVec = float4( g_BlurFraction, g_HalfBlurFraction, 
+                                               -g_BlurFraction,-g_HalfBlurFraction );
+
+struct PS_INPUT
+{
+	float4 vBumpTexCoord;			// NormalMap1 in xy, NormalMap2 in wz
+	float3 vTangentVertToEyeVector;
+	float3 vWorldNormal; 
+	float3 vWorldTangent; 
+	float3 vWorldBinormal; 
+	float3 vRefractXYW; 
+	float3 vWorldViewVector;
+#if COLORMODULATE
+	float4 ColorModulate;
+#endif
+
+	float4 worldPos_projPosZ;		// Necessary for pixel fog
+	float4 fogFactorW;	
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPos_POSITION : SV_Position;
+#if !defined( _X360 )
+	float vFog : FOG;
+#endif
+	float4 vBumpTexCoord : TEXCOORD0;
+	float3 vTangentEyeVect : TEXCOORD1;
+	float3 vWorldNormal : TEXCOORD2;
+	float3 vWorldTangent : TEXCOORD3;
+	float3 vWorldBinormal : TEXCOORD4;
+	float3 vRefractXYW : TEXCOORD5;
+	float3 vWorldViewVector : TEXCOORD6;
+#if COLORMODULATE
+	float4 vColor : COLOR0;
+#endif
+	float4 fogFactorW : COLOR1;
+	float4 worldPos_projPosZ : TEXCOORD7;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vBumpTexCoord = dx12In.vBumpTexCoord;
+	l.vTangentVertToEyeVector = dx12In.vTangentEyeVect;
+	l.vWorldNormal = dx12In.vWorldNormal;
+	l.vWorldTangent = dx12In.vWorldTangent;
+	l.vWorldBinormal = dx12In.vWorldBinormal;
+	l.vRefractXYW = dx12In.vRefractXYW;
+	l.vWorldViewVector = dx12In.vWorldViewVector;
+#if COLORMODULATE
+#if ( ( COLORMODULATE ) )
+	l.ColorModulate = dx12In.vColor;
+#endif
+#endif
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.fogFactorW = dx12In.fogFactorW;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float3 result;
+	
+	float pixelFogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
+
+#if FADEOUTONSILHOUETTE
+	//float blend = -i.projNormal.z;
+	float blend = saturate( dot( -i.vWorldViewVector.xyz, i.vWorldNormal.xyz ) );
+	blend = blend * blend * blend;
+#else
+	float blend = 1.0f;
+#endif
+
+	// Decompress normal
+	float4 vNormal = DecompressNormal( NormalSampler, i.vBumpTexCoord.xy, NORMAL_DECODE_MODE, AlphaMapSampler );
+
+#if SECONDARY_NORMAL
+	float3 vNormal2 = DecompressNormal( NormalSampler2, i.vBumpTexCoord.wz, NORMAL_DECODE_MODE, AlphaMapSampler2 );
+	vNormal.xyz = normalize( vNormal.xyz + vNormal2.xyz );
+#endif
+
+#if REFRACTTINTTEXTURE
+	float3 refractTintColor = 2.0 * g_RefractTint * RefractTintSampler.tex.Sample( RefractTintSampler.smp, i.vBumpTexCoord.xy );
+#else
+	float3 refractTintColor = g_RefractTint;
+#endif
+
+#if COLORMODULATE
+	refractTintColor *= i.ColorModulate.rgb;
+#endif
+
+	// Perform division by W only once
+	float ooW = 1.0f / i.vRefractXYW.z;
+	
+	// Compute coordinates for sampling refraction
+	float2 vRefractTexCoordNoWarp = i.vRefractXYW.xy * ooW;
+	float2 vRefractTexCoord = vNormal.xy;
+	float scale = vNormal.a * g_RefractScale;
+#if COLORMODULATE
+	scale *= i.ColorModulate.a;
+#endif
+	vRefractTexCoord *= scale;
+	vRefractTexCoord += vRefractTexCoordNoWarp;
+
+#if (BLUR==1)  // use polyphase magic to convert 9 lookups into 4
+
+	//  basic principle behind this transformation:
+	//  [ A  B  C ]
+	//  [ D  E  F ]
+	//  [ G  H  I ]
+	//  use bilinear filtering hardware to weight upper 2x2 samples evenly (0.25* [A + B + D + E]).
+	//  scale the upper 2x2 by 4/9 (total area of kernel occupied)
+	//  use bilinear filtering hardware to weight right 1x2 samples evenly (0.5*[C + F])
+	//  scale right 1x2 by 2/9
+	//  use bilinear filtering hardware to weight lower 2x1 samples evenly (0.5*[G + H])
+	//  scale bottom 2x1 by 2/9
+	//  fetch last sample (I) and scale by 1/9.
+	
+	float2 upper_2x2_loc = vRefractTexCoord.xy - float2(g_HalfBlurFraction, g_HalfBlurFraction);
+	float2 right_1x2_loc = vRefractTexCoord.xy + float2(g_BlurFraction, -g_HalfBlurFraction);
+	float2 lower_2x1_loc = vRefractTexCoord.xy + float2(-g_HalfBlurFraction, g_BlurFraction);
+	float2 singleton_loc = vRefractTexCoord.xy + float2(g_BlurFraction, g_BlurFraction);
+	result  = RefractSampler.tex.Sample( RefractSampler.smp, upper_2x2_loc ) * 0.4444444;
+	result += RefractSampler.tex.Sample( RefractSampler.smp, right_1x2_loc ) * 0.2222222;
+	result += RefractSampler.tex.Sample( RefractSampler.smp, lower_2x1_loc ) * 0.2222222;
+	result += RefractSampler.tex.Sample( RefractSampler.smp, singleton_loc ) * 0.1111111;
+
+	#if ( SHADER_SRGB_READ == 1 )
+	{
+		// Just do this once rather than after every blur step, which is wrong, but much more efficient
+		result = GammaToLinear( result );
+	}
+	#endif
+
+	float3 unblurredColor = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoordNoWarp.xy );
+	#if ( SHADER_SRGB_READ == 1 )
+	{
+		unblurredColor = GammaToLinear( unblurredColor );
+	}
+	#endif
+
+	result = lerp(unblurredColor, result * refractTintColor, blend);
+
+#elif (BLUR>0)  // iteratively step through render target
+	int x, y;
+
+	result = float3( 0.0f, 0.0f, 0.0f );
+	for( x = -g_BlurCount; x <= g_BlurCount; x++ )
+	{
+		for( y = -g_BlurCount; y <= g_BlurCount; y++ )
+		{
+			result += RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoord.xy + float2( g_BlurFraction * x, g_BlurFraction * y ) );
+		}
+	}
+
+	int width = g_BlurCount * 2 + 1;
+	result *= 1.0f / ( width * width );
+
+	#if ( SHADER_SRGB_READ == 1 )
+	{
+		// Just do this once rather than after every blur step, which is wrong, but much more efficient
+		result = GammaToLinear( result );
+	}
+	#endif
+
+	// result is the blurred one now. . .now lerp.
+	float3 unblurredColor = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoordNoWarp.xy );
+	#if ( SHADER_SRGB_READ == 1 )
+	{
+		unblurredColor = GammaToLinear( unblurredColor );
+	}
+	#endif
+
+	result = lerp( unblurredColor, result * refractTintColor, blend );
+#else
+#	if MASKED
+	float4 fMaskedResult = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoord.xy );
+	#if ( SHADER_SRGB_READ == 1 )
+	{
+		fMaskedResult = GammaToLinear( fMaskedResult );
+	}
+	#endif
+
+	return DX12FinishPixel( FinalOutput( fMaskedResult, pixelFogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE ), dx12In.vFog );
+#	else
+	float3 colorWarp = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoord.xy );
+	#if ( SHADER_SRGB_READ == 1 )
+	{
+		colorWarp = GammaToLinear( colorWarp );
+	}
+	#endif
+	float3 colorNoWarp = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoordNoWarp.xy );
+	#if ( SHADER_SRGB_READ == 1 )
+	{
+		colorNoWarp = GammaToLinear( colorNoWarp );
+	}
+	#endif
+
+	colorWarp *= refractTintColor;
+	result = lerp( colorNoWarp, colorWarp, blend );
+#	endif
+#endif
+
+#if CUBEMAP
+	float specularFactor = vNormal.a;
+
+	float3 worldSpaceNormal = Vec3TangentToWorld( vNormal.xyz, i.vWorldNormal, i.vWorldTangent, i.vWorldBinormal );
+
+	float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, i.vTangentVertToEyeVector );
+	float3 specularLighting = EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+	specularLighting *= specularFactor;
+	specularLighting *= g_EnvmapTint;
+	float3 specularLightingSquared = specularLighting * specularLighting;
+	specularLighting = lerp( specularLighting, specularLightingSquared, g_EnvmapContrast );
+	float3 greyScale = dot( specularLighting, float3( 0.299f, 0.587f, 0.114f ) );
+	specularLighting = lerp( greyScale, specularLighting, g_EnvmapSaturation );
+	result += specularLighting;
+#endif
+
+#if COLORMODULATE
+	float resultAlpha = i.ColorModulate.a * vNormal.a;
+#else
+	float resultAlpha = vNormal.a;
+#endif
+
+	return DX12FinishPixel( FinalOutput( float4( result, resultAlpha ), pixelFogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE, (WRITE_DEPTH_TO_DESTALPHA != 0), i.worldPos_projPosZ.w ), dx12In.vFog );
+}

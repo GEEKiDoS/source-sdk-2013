@@ -1,0 +1,114 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/Downsample_nohdr_ps2x.fxc for logical downsample_nohdr_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "SRGB_ADAPTER"		"0..1"
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	 [= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "CSTRIKE"			"0..1"
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+Texture2D TexSampler_Texture : register( t0 );
+SamplerState TexSampler_Sampler : register( s0 );
+static const DX12Sampler2D TexSampler = { TexSampler_Texture, TexSampler_Sampler };
+
+cbuffer Downsample_nohdr_ps2x : register( b1, space1 )
+{
+	float4 params; // @legacy ps:c0
+};
+
+
+struct PS_INPUT
+{
+	float2 coordTap0;
+	float2 coordTap1;
+	float2 coordTap2;
+	float2 coordTap3;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 coordTap0 : TEXCOORD0;
+	float2 coordTap1 : TEXCOORD1;
+	float2 coordTap2 : TEXCOORD2;
+	float2 coordTap3 : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.coordTap0 = dx12In.coordTap0;
+	l.coordTap1 = dx12In.coordTap1;
+	l.coordTap2 = dx12In.coordTap2;
+	l.coordTap3 = dx12In.coordTap3;
+	return l;
+}
+
+
+#if ( CSTRIKE == 0 )
+	//---------------------------------------//
+	// Everything but Counter-Strike: Source //
+	//---------------------------------------//
+	float4 Shape( float2 uv )
+	{
+		float4 pixel = TexSampler.tex.Sample( TexSampler.smp, uv );
+
+		#if ( SRGB_ADAPTER == 1 )
+		{
+			pixel.rgb = LinearToGamma( pixel.rgb );
+		}
+		#endif
+
+		float lum = dot( pixel.xyz, params.xyz );
+		pixel.xyz = pow( pixel.xyz, params.w ) * lum;
+
+		#if ( SRGB_ADAPTER == 1 )
+		{
+			pixel.rgb = GammaToLinear( pixel.rgb );
+		}
+		#endif
+
+		return pixel;
+	}
+
+	float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+	{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+		float4 s0, s1, s2, s3;
+
+		// Sample 4 taps
+		s0 = Shape( i.coordTap0 );
+		s1 = Shape( i.coordTap1 );
+		s2 = Shape( i.coordTap2 );
+		s3 = Shape( i.coordTap3 );
+
+		float4 avgColor = ( s0 + s1 + s2 + s3 ) * 0.25f;
+		return DX12FinishPixel( FinalOutput( avgColor, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+	}
+#else
+	//------------------------//
+	// Counter-Strike: Source //
+	//------------------------//
+	float3 Shape( float3 s )
+	{
+		float lum = ( 0.3f * s.x ) + ( 0.59f * s.y ) + ( 0.11f * s.z );
+		return lum * s;
+	}
+
+	float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+	{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+		float3 s0, s1, s2, s3;
+
+		// Sample 4 taps
+		s0 = Shape( GammaToLinear( TexSampler.tex.Sample( TexSampler.smp, i.coordTap0 ) ) );
+		s1 = Shape( GammaToLinear( TexSampler.tex.Sample( TexSampler.smp, i.coordTap1 ) ) );
+		s2 = Shape( GammaToLinear( TexSampler.tex.Sample( TexSampler.smp, i.coordTap2 ) ) );
+		s3 = Shape( GammaToLinear( TexSampler.tex.Sample( TexSampler.smp, i.coordTap3 ) ) );
+
+		float3 avgColor = ( s0 + s1 + s2 + s3 ) * 0.25f;
+		return DX12FinishPixel( float4( avgColor, 1.0f ), 0.0f );
+	}
+#endif

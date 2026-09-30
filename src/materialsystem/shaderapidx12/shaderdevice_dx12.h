@@ -36,12 +36,20 @@ struct ShaderRecordDX12
     std::vector<unsigned char> legacyBytecode;
     std::vector<unsigned char> bytecode;
     bool stagePixel=false;
+    // SM2 centroid declarations live in the VCS header, not the bytecode's DCL tokens.
+    uint32_t centroidTexcoordMask=0;
     ShaderTranslationResultDX12 translated;
     bool stageGeometry=false;
     uint64_t activeVariantKey=0;
     bool activeVariantValid=false, inputSignatureReady=false;
     std::vector<ShaderInputElementDX12> inputSignature;
     std::array<uint32_t,3> nativeConstantRegisters{};
+    // Native records: reflected cbuffers (engine or bridge-written material blocks) and their combined ABI hash.
+    struct NativeCBufferMemberDX12 { std::string name; uint32_t offset=0, byteSize=0; };
+    struct NativeCBufferBindingDX12 { std::string name; uint32_t shaderRegister=0, registerSpace=0, byteSize=0; uint64_t layoutHash=0; std::vector<NativeCBufferMemberDX12> members; };
+    std::vector<NativeCBufferBindingDX12> nativeCBuffers;
+    uint64_t nativeAbiHash=0;
+    bool nativeReflectionReady=false;
     // Hash of translated.outputLinkage for the active variant; cleared whenever the linkage or variant changes.
     uint64_t linkageHash=0,linkageHashVariant=0;
     bool linkageHashValid=false;

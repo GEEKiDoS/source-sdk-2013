@@ -1,0 +1,81 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/floatcombine_autoexpose_ps2x.fxc for logical floatcombine_autoexpose_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_FLOAT
+#define HDRENABLED 1
+#include "common_ps_fxc.h"
+
+Texture2D FBSampler_Texture : register( t0 );
+SamplerState FBSampler_Sampler : register( s0 );
+static const DX12Sampler2D FBSampler = { FBSampler_Texture, FBSampler_Sampler };
+Texture2D BloomSampler_Texture : register( t1 );
+SamplerState BloomSampler_Sampler : register( s1 );
+static const DX12Sampler2D BloomSampler = { BloomSampler_Texture, BloomSampler_Sampler };
+Texture2D Exposure_Sampler_Texture : register( t2 );
+SamplerState Exposure_Sampler_Sampler : register( s2 );
+static const DX12Sampler2D Exposure_Sampler = { Exposure_Sampler_Texture, Exposure_Sampler_Sampler };
+
+
+cbuffer floatcombine_autoexpose_ps2x : register( b1, space1 )
+{
+	HALF4 settings; // @legacy ps:c0
+	HALF4 settings2; // @legacy ps:c1
+	HALF4 settings3; // @legacy ps:c2
+};
+
+						// x=sharpness,y=woodcut,z=bloom_amt,w=alpha sharpen factor
+
+
+struct PS_INPUT
+{
+	float2 texCoord;
+	float2 ZeroTexCoord;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 baseTexCoord : TEXCOORD0;
+	float2 ZeroTexCoord : TEXCOORD1;
+	float2 bloomTexCoord : TEXCOORD2;
+	float4 vColor : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.texCoord = dx12In.baseTexCoord;
+	l.ZeroTexCoord = dx12In.ZeroTexCoord;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 fbSample = FBSampler.tex.Sample( FBSampler.smp, i.texCoord );
+	float4 bloom=BloomSampler.tex.Sample( BloomSampler.smp, i.texCoord );
+	float4 exposure_data=Exposure_Sampler.tex.Sample( Exposure_Sampler.smp, i.ZeroTexCoord );
+	float avg_lum=exposure_data.r;
+	float tmscale=max(0.18/max(avg_lum,0.0001),settings3.x);
+	tmscale=min(tmscale,settings3.y);
+
+	
+	float2 xofs=2*(i.texCoord-float2(0.5,0.5));
+	float dist=(1.0/2.0)*(xofs.x*xofs.x+xofs.y*xofs.y);
+	float vig=pow(1-dist,settings2.z);
+
+	fbSample=lerp(fbSample,bloom,(1-vig)*settings2.w);
+	fbSample=lerp(bloom,fbSample,settings.x+settings.w*fbSample.a*settings2.w);
+
+	bloom.xyz=min(bloom.xyz,1.0);
+	float lum=.3*bloom.x+.59*bloom.y+.11*bloom.z;
+	lum=min(1.0,lum);
+
+	float4 c_out=(fbSample)+settings.z*pow(lum,settings2.x)*bloom;
+	c_out.xyz*=tmscale;
+	return DX12FinishPixel( FinalOutput( c_out, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

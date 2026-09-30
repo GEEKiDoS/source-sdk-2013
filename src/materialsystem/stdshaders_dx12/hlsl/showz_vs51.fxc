@@ -1,0 +1,61 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/showz_vs20.fxc for logical showz_vs20 (legacy profile vs20);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs20 set.
+#define DX12_LEGACY_VS20 1
+#include "dx12_preamble.h"
+//====== Copyright © 1996-2004, Valve Corporation, All rights reserved. =======
+//
+// Purpose: 
+//
+//=============================================================================
+
+#include "common_vs_fxc.h"
+
+struct VS_INPUT
+{
+	// If this is float4, and the input is float3, the w component defaults to one.
+	float4 vPos; 
+	float2 vBaseTexCoords;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+	float2 vBaseTexCoords : TEXCOORD0;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+	l.vBaseTexCoords = i.vBaseTexCoords;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 projPos : SV_Position; 	
+	float2 vBaseTexCoords : TEXCOORD0;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.projPos );
+	o.projPos = DX12Position( o.projPos );
+	return o;
+}
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = (VS_OUTPUT)0;
+
+	float4 projPos;
+
+	projPos = mul( v.vPos, cModelViewProj );
+	o.projPos = projPos;
+
+	o.vBaseTexCoords = v.vBaseTexCoords;	
+	return DX12FinishVertex( o );
+}

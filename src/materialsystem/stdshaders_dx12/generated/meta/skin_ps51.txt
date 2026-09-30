@@ -1,0 +1,40 @@
+logical=skin_ps51 stage=ps source=skin_ps51.fxc legacy=skin_ps20b.fxc legacyName=skin_ps30 profile=30 static=2592 dynamic=240 present=332160
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=skin_ps20b space=1 register=b1 size=272 layoutHash=0xff43f7269a0b071d material
+    member=g_SelfIllumTint_and_DetailBlendFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_EnvmapTint_ShadowTweaks type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_SelfIllumScaleBiasExpBrightness type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_EnvMapFresnel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c10
+    member=g_EyePos_SpecExponent type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c11
+    member=g_FlashlightAttenuationFactors_RimMask type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c13
+    member=g_FlashlightPos_RimBoost type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c14
+    member=g_FlashlightWorldToTexture type=3 class=3 offset=128 size=64 elements=0 arrayStride=0 legacy=ps:c15
+    member=g_FresnelSpecParams type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=ps:c19
+    member=g_SpecularRimParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=ps:c26
+    member=g_ShaderControls type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=ps:c27
+    member=cFlashlightColor type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=ps:c28
+    member=cFlashlightScreenScale type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=ps:c31
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,16,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,10
+    legacyEntry=80,16,1,0,0,0,11
+    legacyEntry=96,16,1,0,0,0,13
+    legacyEntry=112,16,1,0,0,0,14
+    legacyEntry=128,16,4,16,0,0,15
+    legacyEntry=192,16,1,0,0,0,19
+    legacyEntry=208,16,1,0,0,0,26
+    legacyEntry=224,16,1,0,0,0,27
+    legacyEntry=240,16,1,0,0,0,28
+    legacyEntry=256,16,1,0,0,0,31
+    bridge=WriteNativeCBuffer(api, block)

@@ -1,0 +1,177 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/depthwrite_vs20.fxc for logical depthwrite_vs30 (legacy profile vs30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs30 set.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+//	STATIC: "ONLY_PROJECT_POSITION"	"0..0"
+//  STATIC: "COLOR_DEPTH"			"0..1"
+//  STATIC: "TREESWAY"				"0..2"
+
+//	DYNAMIC: "COMPRESSED_VERTS"		"0..1"
+//	DYNAMIC: "SKINNING"				"0..1"
+//  DYNAMIC: "MORPHING"				"0..1"
+
+#include "common_vs_fxc.h"
+
+static const bool g_bSkinning = SKINNING ? true : false;
+
+
+cbuffer depthwrite_vs20 : register( b2, space1 )
+{
+	float4 g_vTreeSwayParams0; // @legacy vs:c50
+	float4 g_vTreeSwayParams1; // @legacy vs:c51
+	float4 g_vTreeSwayParams2; // @legacy vs:c52
+	float4 g_vTreeSwayParams3; // @legacy vs:c53
+	float3 cMorphTargetTextureDim; // @legacy vs:c54
+	float4 cMorphSubrect; // @legacy vs:c55
+	float4 g_vTreeSwayParams4; // @legacy vs:c57
+};
+#ifdef DX12_LEGACY_VS30
+// NOTE: cMorphTargetTextureDim.xy = target dimensions,
+//		 cMorphTargetTextureDim.z = 4tuples/morph
+
+
+Texture2D morphSampler_Texture : register( t0 );
+SamplerState morphSampler_Sampler : register( s0 );
+static const DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
+#endif
+
+#if ( TREESWAY )
+
+
+	#define g_flTime				g_vTreeSwayParams0.x
+	#define g_vWindDir				g_vTreeSwayParams0.yz
+
+	#define g_flScrumbleFalloffCurve g_vTreeSwayParams1.x
+	#define g_flSwayFalloffCurve	g_vTreeSwayParams1.y
+	#define g_flScrumbleSpeed		g_vTreeSwayParams1.z
+	#define g_flFastSwaySpeedScale	g_vTreeSwayParams1.w
+
+
+	#define g_flHeight				g_vTreeSwayParams2.x
+	#define g_flStartHeight			g_vTreeSwayParams2.y
+	#define g_flRadius				g_vTreeSwayParams2.z
+	#define g_flStartRadius			g_vTreeSwayParams2.w
+
+	#define g_flSwaySpeed			g_vTreeSwayParams3.x
+	#define g_flSwayIntensity		g_vTreeSwayParams3.y
+	#define g_flScrumbleWaveCount	g_vTreeSwayParams3.z
+	#define g_flScrumbleIntensity	g_vTreeSwayParams3.w
+
+	#define g_flWindSpeedLerpStart	g_vTreeSwayParams4.x
+	#define g_flWindSpeedLerpEnd	g_vTreeSwayParams4.y
+#endif
+
+struct VS_INPUT
+{
+	float4 vPos;
+	float2 vTexCoord;
+	float4 vBoneWeights;
+	float4 vBoneIndices;
+
+	// Position delta stream
+	float3 vPosFlex;
+
+#ifdef DX12_LEGACY_VS30
+	float vVertexID;
+#endif
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+	float2 vTexCoord : TEXCOORD0;
+#if COMPRESSED_VERTS
+	int2 vBoneWeights : BLENDWEIGHT;
+#else
+	float4 vBoneWeights : BLENDWEIGHT;
+#endif
+	float4 vBoneIndices : BLENDINDICES;
+	float3 vPosFlex : POSITION1;
+#ifdef DX12_LEGACY_VS30
+	float vVertexID : POSITION2;
+#endif
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+	l.vTexCoord = i.vTexCoord;
+#if COMPRESSED_VERTS
+	l.vBoneWeights = float4( (float2)i.vBoneWeights, 0, 1 );
+#else
+	l.vBoneWeights = i.vBoneWeights;
+#endif
+	l.vBoneIndices = i.vBoneIndices;
+	l.vPosFlex = i.vPosFlex;
+#ifdef DX12_LEGACY_VS30
+	l.vVertexID = i.vVertexID;
+#endif
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 vProjPos : SV_Position;
+#if (ONLY_PROJECT_POSITION == 0) //360 sometimes runs without the pixel shader component, but has to patch this output if it does.
+	float2 texCoord : TEXCOORD0;
+#endif
+#if COLOR_DEPTH
+	float4 vWorldPos_projPosZ : TEXCOORD1;
+#endif
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.vProjPos );
+	o.vProjPos = DX12Position( o.vProjPos );
+#if (ONLY_PROJECT_POSITION == 0) //360 sometimes runs without the pixel shader component, but has to patch this output if it does.
+#endif
+#if COLOR_DEPTH
+#endif
+	return o;
+}
+
+
+#include "tree_sway.h"
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+	float3 vWorldPos;
+	float4 vPosition = v.vPos;
+
+#if !defined( DX12_LEGACY_VS30 ) || !MORPHING
+	ApplyMorph( v.vPosFlex, vPosition.xyz );
+#else
+	ApplyMorph( morphSampler, cMorphTargetTextureDim, cMorphSubrect, 
+		v.vVertexID, float3(0, 0, 0), vPosition.xyz );
+#endif
+
+	#if ( TREESWAY )
+	{
+		vPosition.xyz = ComputeTreeSway( vPosition.xyz, g_flTime );
+	}
+	#endif
+
+	SkinPosition( g_bSkinning, vPosition, v.vBoneWeights, v.vBoneIndices, vWorldPos );
+
+	float4 vProjPos = mul( float4( vWorldPos, 1.0f ), cViewProj );
+
+	o.vProjPos    = vProjPos;
+
+#if (ONLY_PROJECT_POSITION == 0)
+	o.texCoord   = v.vTexCoord;
+#endif
+
+#if ( COLOR_DEPTH && !ONLY_PROJECT_POSITION )
+	o.vWorldPos_projPosZ.z = vProjPos.z;
+	o.vWorldPos_projPosZ.w = vProjPos.w;
+#endif
+
+	return DX12FinishVertex( o );
+}
+
+

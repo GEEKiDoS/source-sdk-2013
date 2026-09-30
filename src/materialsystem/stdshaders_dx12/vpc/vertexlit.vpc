@@ -1,0 +1,22 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\DecalModulate_dx12.cpp"
+        $File "cpp\MonitorScreen_dx12.cpp"
+        $File "cpp\TreeLeaf.cpp"
+        $File "cpp\cable_dx12.cpp"
+        $File "cpp\modulate_dx12.cpp"
+        $File "cpp\unlitgeneric_dx12.cpp"
+        $File "cpp\unlittwotexture_dx12.cpp"
+        $File "cpp\vertexlitgeneric_dx12.cpp"
+        $File "cpp\vertexlitgeneric_dx9_helper.cpp"
+        $File "cpp\windowimposter_dx90.cpp"
+        $File "cpp\wireframe_dx12.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "cpp\vertexlitgeneric_dx95_helper.h"
+        $File "cpp\vertexlitgeneric_dx9_helper.h"
+    }
+}

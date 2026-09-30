@@ -1,0 +1,36 @@
+logical=eye_refract_ps51 stage=ps source=eye_refract_ps51.fxc legacy=eye_refract_ps2x.fxc legacyName=eye_refract_ps30 profile=30 static=36 dynamic=30 present=378
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=eye_refract_ps2x space=1 register=b1 size=192 layoutHash=0x8b147f7ec4bc365d material
+    member=g_vPackedConst0 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_vEyeOrigin type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_vIrisProjectionU type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_vIrisProjectionV type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_vCameraPosition type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_cAmbientOcclColor type=3 class=1 offset=80 size=12 elements=0 arrayStride=0 legacy=ps:c5
+    member=g_vPackedConst6 type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c6
+    member=g_vFlashlightAttenuationFactors type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=g_vFlashlightPos type=3 class=1 offset=128 size=12 elements=0 arrayStride=0 legacy=ps:c8
+    member=g_vShadowTweaks type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=ps:c9
+    member=cFlashlightColor type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=ps:c28
+    member=cFlashlightScreenScale type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=ps:c31
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,12,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,4
+    legacyEntry=80,12,1,0,0,0,5
+    legacyEntry=96,16,1,0,0,0,6
+    legacyEntry=112,16,1,0,0,0,7
+    legacyEntry=128,12,1,0,0,0,8
+    legacyEntry=144,16,1,0,0,0,9
+    legacyEntry=160,16,1,0,0,0,28
+    legacyEntry=176,16,1,0,0,0,31
+    bridge=WriteNativeCBuffer(api, block)

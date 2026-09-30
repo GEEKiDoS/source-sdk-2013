@@ -1,0 +1,116 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/unlittwotexture_ps2x.fxc for logical unlittwotexture_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// DYNAMIC: "PIXELFOGTYPE"				"0..1"
+// DYNAMIC: "LIGHTING_PREVIEW"			"0..2"
+// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"	"0..1"
+
+// STATIC: "CONVERT_TO_SRGB"			"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#if defined( DX12_LEGACY_PS20 )
+#	define WRITE_DEPTH_TO_DESTALPHA 0
+#endif
+
+#include "common_ps_fxc.h"
+#include "shader_constant_register_map.h"
+
+
+cbuffer unlittwotexture_ps2x : register( b1, space1 )
+{
+	HALF4 g_DiffuseModulation; // @legacy ps:c1
+	HALF3 g_EnvmapContrast; // @legacy ps:c2
+	HALF3 g_EnvmapSaturation; // @legacy ps:c3
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+	float4 g_FlashlightAttenuationFactors; // @legacy ps:c22
+	HALF3 g_FlashlightPos; // @legacy ps:c23
+	float4x4 g_FlashlightWorldToTexture; // @legacy ps:c24
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+#if !FLASHLIGHT
+		// we don't use these with HDR.
+
+
+#endif
+
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D BaseTextureSampler2_Texture : register( t1 );
+SamplerState BaseTextureSampler2_Sampler : register( s1 );
+static const DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
+
+struct PS_INPUT
+{
+    float4 projPos;			// Projection-space position	
+	HALF2 baseTexCoord;		// Base texture coordinate
+	HALF2 baseTexCoord2;		// Base texture coordinate
+	float4 worldPos_projPosZ;		// Necessary for water fog dest alpha
+	float4 fogFactorW;
+	
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+	float4 vColor;
+#endif
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	HALF2 baseTexCoord : TEXCOORD0;
+	HALF2 baseTexCoord2 : TEXCOORD1;
+	float4 worldPos_projPosZ : TEXCOORD7;
+	float4 vColor : COLOR0;
+	float4 fogFactorW : COLOR1;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	// projPos : POSITION (ps2.x cannot read POSITION)
+	l.baseTexCoord = dx12In.baseTexCoord;
+	l.baseTexCoord2 = dx12In.baseTexCoord2;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.fogFactorW = dx12In.fogFactorW;
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+	l.vColor = dx12In.vColor;
+#endif
+	return l;
+}
+
+
+#if LIGHTING_PREVIEW == 2
+LPREVIEW_PS_OUT main( DX12_PS_INPUT dx12In )
+#else
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+#endif
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+
+#if LIGHTING_PREVIEW
+# if LIGHTING_PREVIEW == 1
+	return DX12FinishPixel( FinalOutput( float4( 0.0f, 0.0f, 0.0f, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+# else
+	LPREVIEW_PS_OUT ret;
+	float alpha = 1.0f;
+	ret.flags=float4(1,1,1,1);
+	ret.color=float4( 0.0f, 0.0f, 0.0f, alpha );
+	ret.normal=float4( 0.0f, 0.0f, 1.0f, 1.0f );
+	ret.position=float4( i.worldPos_projPosZ.xyz, alpha );
+	return DX12FinishPixel( FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
+# endif
+#else
+	HALF4 baseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord.xy );
+	HALF4 baseColor2 = BaseTextureSampler2.tex.Sample( BaseTextureSampler2.smp, i.baseTexCoord2.xy );
+	HALF4 result = baseColor * baseColor2 * g_DiffuseModulation;
+	float alpha = 1.0f;
+	
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, (WRITE_DEPTH_TO_DESTALPHA != 0), i.worldPos_projPosZ.w ), dx12In.fog );
+#endif
+}
+

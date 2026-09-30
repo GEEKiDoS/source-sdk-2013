@@ -1,0 +1,52 @@
+logical=vertexlit_and_unlit_generic_ps51 stage=ps source=vertexlit_and_unlit_generic_ps51.fxc legacy=vertexlit_and_unlit_generic_ps2x.fxc legacyName=vertexlit_and_unlit_generic_ps30 profile=30 static=8872 dynamic=72 present=178776
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=vertexlit_and_unlit_generic_ps2x space=1 register=b1 size=368 layoutHash=0x72a66b8d05057c6a material
+    member=g_EnvmapTint_TintReplaceFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_EnvmapContrast_ShadowTweaks type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_EnvmapSaturation_SelfIllumMask type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_SelfIllumTint_and_BlendFactor type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_GlowParameters type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c5
+    member=g_GlowColor type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c6
+    member=g_DistanceAlphaParams type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=g_OutlineColor type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=ps:c8
+    member=g_OutlineParams type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=ps:c9
+    member=g_DetailTint type=3 class=1 offset=160 size=12 elements=0 arrayStride=0 legacy=ps:c10
+    member=g_LuxelScale type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=ps:c11
+    member=g_ShaderControls type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=ps:c12
+    member=g_DepthFeatheringConstants type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=ps:c13
+    member=g_EyePos type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=ps:c20
+    member=g_FlashlightAttenuationFactors type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=ps:c22
+    member=g_FlashlightPos type=3 class=1 offset=256 size=12 elements=0 arrayStride=0 legacy=ps:c23
+    member=g_FlashlightWorldToTexture type=3 class=3 offset=272 size=64 elements=0 arrayStride=0 legacy=ps:c24
+    member=cFlashlightColor type=3 class=1 offset=336 size=16 elements=0 arrayStride=0 legacy=ps:c28
+    member=cFlashlightScreenScale type=3 class=1 offset=352 size=16 elements=0 arrayStride=0 legacy=ps:c31
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,16,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,4
+    legacyEntry=80,16,1,0,0,0,5
+    legacyEntry=96,16,1,0,0,0,6
+    legacyEntry=112,16,1,0,0,0,7
+    legacyEntry=128,16,1,0,0,0,8
+    legacyEntry=144,16,1,0,0,0,9
+    legacyEntry=160,12,1,0,0,0,10
+    legacyEntry=176,16,1,0,0,0,11
+    legacyEntry=192,16,1,0,0,0,12
+    legacyEntry=208,16,1,0,0,0,13
+    legacyEntry=224,16,1,0,0,0,20
+    legacyEntry=240,16,1,0,0,0,22
+    legacyEntry=256,12,1,0,0,0,23
+    legacyEntry=272,16,4,16,0,0,24
+    legacyEntry=336,16,1,0,0,0,28
+    legacyEntry=352,16,1,0,0,0,31
+    bridge=WriteNativeCBuffer(api, block)

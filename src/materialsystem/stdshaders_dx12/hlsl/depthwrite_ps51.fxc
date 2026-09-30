@@ -1,0 +1,86 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/depthwrite_ps2x.fxc for logical depthwrite_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+//  STATIC: "COLOR_DEPTH"					"0..1"
+
+//	DYNAMIC: "ALPHACLIP"					"0..1"
+
+
+cbuffer depthwrite_ps2x : register( b1, space1 )
+{
+	float g_AlphaThreshold; // @legacy ps:c0
+	float2 g_vNearFarPlanes; // @legacy ps:c1
+};
+
+
+	#define g_flNearPlane			g_vNearFarPlanes.x
+	#define g_flFarPlane			g_vNearFarPlanes.y
+
+struct PS_INPUT
+{
+#if ALPHACLIP
+	float2 texCoord0;
+#endif
+
+#if COLOR_DEPTH
+	float4 vWorldPos_projPosZ;
+#endif
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+#define ONLY_PROJECT_POSITION 0	// value the material always gives the paired vertex shader
+struct DX12_PS_INPUT
+{
+	float4 vProjPos : SV_Position;
+#if (ONLY_PROJECT_POSITION == 0) //360 sometimes runs without the pixel shader component, but has to patch this output if it does.
+	float2 texCoord : TEXCOORD0;
+#endif
+#if COLOR_DEPTH
+	float4 vWorldPos_projPosZ : TEXCOORD1;
+#endif
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+#if ALPHACLIP
+#if ( ( (ONLY_PROJECT_POSITION == 0) ) )
+	l.texCoord0 = dx12In.texCoord;
+#endif
+#endif
+#if COLOR_DEPTH
+#if ( ( COLOR_DEPTH ) )
+	l.vWorldPos_projPosZ = dx12In.vWorldPos_projPosZ;
+#endif
+#endif
+	return l;
+}
+#undef ONLY_PROJECT_POSITION
+
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 color = float4( 1, 0, 0, 1 );	// opaque alpha....the color doesn't matter for this shader
+
+#if ALPHACLIP
+	color = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.texCoord0 );
+
+	clip( color.a - g_AlphaThreshold );
+
+#endif
+
+#if ( COLOR_DEPTH == 1 )
+
+	return DX12FinishPixel( float4( i.vWorldPos_projPosZ.w / g_flFarPlane, 0.0, 0.0, 1.0 ), 0.0f );
+
+#else
+
+	return DX12FinishPixel( color, 0.0f );
+
+#endif
+}

@@ -1,0 +1,22 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\cloak.cpp"
+        $File "cpp\cloak_blended_pass_helper.cpp"
+        $File "cpp\cloak_dx9_helper.cpp"
+        $File "cpp\portal_refract.cpp"
+        $File "cpp\portal_refract_helper.cpp"
+        $File "cpp\refract.cpp"
+        $File "cpp\refract_dx9_helper.cpp"
+        $File "cpp\shatteredglass.cpp"
+        $File "cpp\water.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "cpp\cloak_blended_pass_helper.h"
+        $File "cpp\cloak_dx9_helper.h"
+        $File "cpp\portal_refract_helper.h"
+        $File "cpp\refract_dx9_helper.h"
+    }
+}

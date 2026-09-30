@@ -1,0 +1,118 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/decalmodulate_ps2x.fxc for logical decalmodulate_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+//======= Copyright � 1996-2006, Valve Corporation, All rights reserved. ======
+
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+// DYNAMIC: "PIXELFOGTYPE"		"0..2"
+
+#include "common_ps_fxc.h"
+#include "shader_constant_register_map.h"
+
+Texture2D TexSampler_Texture : register( t0 );
+SamplerState TexSampler_Sampler : register( s0 );
+static const DX12Sampler2D TexSampler = { TexSampler_Texture, TexSampler_Sampler };
+
+
+cbuffer decalmodulate_ps2x : register( b1, space1 )
+{
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+struct PS_INPUT
+{
+	HALF2 baseTexCoord;		// Base texture coordinate
+	
+	float4 worldPos_projPosZ;		// Necessary for pixel fog
+	float4 fogFactorW;
+	
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+    HALF2 detailTexCoord;
+    float4 color;
+    float3 worldVertToEyeVector;
+    float3 worldSpaceNormal;
+    float4 vProjPos;
+#endif
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+#define CUBEMAP 0	// value the material always gives the paired vertex shader
+#define FLASHLIGHT 0	// value the material always gives the paired vertex shader
+#define SEAMLESS_BASE 0	// value the material always gives the paired vertex shader
+#define SEAMLESS_DETAIL 0	// value the material always gives the paired vertex shader
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+#if SEAMLESS_BASE
+	HALF3 SeamlessTexCoord : TEXCOORD0;
+#else
+	HALF2 baseTexCoord : TEXCOORD0;
+#endif
+#if SEAMLESS_DETAIL
+	HALF3 SeamlessDetailTexCoord : TEXCOORD1;
+#else
+	HALF2 detailTexCoord : TEXCOORD1;
+#endif
+	float4 color : TEXCOORD2;
+#if CUBEMAP || _X360
+	float3 worldVertToEyeVector : TEXCOORD3;
+#endif
+	float3 worldSpaceNormal : TEXCOORD4;
+#if defined ( _X360 ) && FLASHLIGHT
+	float4 flashlightSpacePos : TEXCOORD5;
+#endif
+	float4 vProjPos : TEXCOORD6;
+	float4 worldPos_ProjPosZ : TEXCOORD7;
+	float4 fogFactorW : COLOR1;
+#if SEAMLESS_DETAIL || SEAMLESS_BASE
+	float3 SeamlessWeights : COLOR0;
+#endif
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+#if ( !( SEAMLESS_BASE ) )
+	l.baseTexCoord = dx12In.baseTexCoord;
+#endif
+	l.worldPos_projPosZ = dx12In.worldPos_ProjPosZ;
+	l.fogFactorW = dx12In.fogFactorW;
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+#if ( !( SEAMLESS_DETAIL ) )
+	l.detailTexCoord = dx12In.detailTexCoord;
+#endif
+	l.color = dx12In.color;
+#if ( ( CUBEMAP || _X360 ) )
+	l.worldVertToEyeVector = dx12In.worldVertToEyeVector;
+#endif
+	l.worldSpaceNormal = dx12In.worldSpaceNormal;
+	l.vProjPos = dx12In.vProjPos;
+#endif
+	return l;
+}
+#undef CUBEMAP
+#undef FLASHLIGHT
+#undef SEAMLESS_BASE
+#undef SEAMLESS_DETAIL
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 result = TexSampler.tex.Sample( TexSampler.smp, i.baseTexCoord );
+	
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
+	
+	// Since we're blending with a mod2x, we need to compensate with this hack
+	// NOTE: If the fog color (not fog density) is extremely dark, this can makes some decals seem
+	//       a little transparent, but it's better than not doing this
+	fogFactor = pow( saturate( fogFactor ), 0.4f );
+
+	return DX12FinishPixel( FinalOutput( result, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE ), dx12In.fog );
+}

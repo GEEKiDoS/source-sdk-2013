@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstring>
 #include <intrin.h>
+#include <d3dcompiler.h>
+#include <d3d12shader.h>
 #include <climits>
 
 #include "tracy_dx12.h"
@@ -34,6 +36,54 @@ static uint64_t TranslationLayoutKey(const VertexLayoutDX12 &layout)
     mix(layout.stride);mix(layout.inputCount);
     for(uint32_t i=0;i<layout.inputCount;++i){for(const char *name=layout.inputs[i].semantic;*name;++name)mix(static_cast<unsigned char>(*name));mix(layout.inputs[i].semanticIndex);mix(layout.inputs[i].format);mix(layout.inputs[i].inputSlot);mix(layout.inputs[i].byteOffset);mix(layout.inputs[i].integerToFloat);}
     return key;
+}
+// Reflects every register-space-1 cbuffer of a native record once: name, binding, size, member
+// table and the canonical FNV-1a layout hash shared with the packer and generated C++ blocks.
+static void HashReflectedTypeDX12(ID3D12ShaderReflectionType *type,const D3D12_SHADER_TYPE_DESC &desc,std::string &canonical)
+{
+    canonical+=std::to_string(static_cast<int>(desc.Class))+","+std::to_string(static_cast<int>(desc.Type))+","+std::to_string(desc.Rows)+","+std::to_string(desc.Columns)+","+std::to_string(desc.Elements);
+    if(desc.Class!=D3D_SVC_STRUCT)return;
+    canonical+="{";
+    for(UINT i=0;i<desc.Members;++i){
+        ID3D12ShaderReflectionType *member=type->GetMemberTypeByIndex(i);D3D12_SHADER_TYPE_DESC memberDesc{};
+        if(!member||FAILED(member->GetDesc(&memberDesc)))continue;
+        canonical+=std::string(type->GetMemberTypeName(i))+":";HashReflectedTypeDX12(member,memberDesc,canonical);
+        UINT end=0;
+        if(i+1<desc.Members){D3D12_SHADER_TYPE_DESC next{};if(SUCCEEDED(type->GetMemberTypeByIndex(i+1)->GetDesc(&next)))end=next.Offset;}
+        else end=desc.Elements?memberDesc.Offset+desc.Elements:memberDesc.Offset;
+        canonical+=":"+std::to_string(memberDesc.Offset)+":"+std::to_string(end>=memberDesc.Offset?end-memberDesc.Offset:0)+";";
+    }
+    canonical+="}";
+}
+static bool ReflectNativeCBuffersDX12(ShaderRecordDX12 *record)
+{
+    if(!record||!record->legacyBytecode.empty()||record->nativeReflectionReady)return true;
+    Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
+    const auto bytecode=record->Bytecode();
+    if(!bytecode.pShaderBytecode||FAILED(D3DReflect(bytecode.pShaderBytecode,bytecode.BytecodeLength,IID_PPV_ARGS(&reflection))))return false;
+    D3D12_SHADER_DESC shader{};if(FAILED(reflection->GetDesc(&shader)))return false;
+    record->nativeCBuffers.clear();record->nativeAbiHash=dx12native::kFnvOffset;
+    for(UINT i=0;i<shader.BoundResources;++i){
+        D3D12_SHADER_INPUT_BIND_DESC binding{};if(FAILED(reflection->GetResourceBindingDesc(i,&binding)))return false;
+        if(binding.Type!=D3D_SIT_CBUFFER)continue;
+        ShaderRecordDX12::NativeCBufferBindingDX12 reflected;reflected.name=binding.Name;reflected.shaderRegister=binding.BindPoint;reflected.registerSpace=binding.Space;
+        ID3D12ShaderReflectionConstantBuffer *buffer=reflection->GetConstantBufferByName(binding.Name);D3D12_SHADER_BUFFER_DESC bufferDesc{};
+        if(!buffer||FAILED(buffer->GetDesc(&bufferDesc)))return false;
+        reflected.byteSize=bufferDesc.Size;
+        std::string canonical=reflected.name+"|"+std::to_string(bufferDesc.Size)+";";
+        for(UINT v=0;v<bufferDesc.Variables;++v){
+            ID3D12ShaderReflectionVariable *variable=buffer->GetVariableByIndex(v);D3D12_SHADER_VARIABLE_DESC variableDesc{};D3D12_SHADER_TYPE_DESC typeDesc{};
+            if(!variable||FAILED(variable->GetDesc(&variableDesc))||!variable->GetType()||FAILED(variable->GetType()->GetDesc(&typeDesc)))return false;
+            canonical+=std::string(variableDesc.Name)+":";HashReflectedTypeDX12(variable->GetType(),typeDesc,canonical);
+            canonical+=":"+std::to_string(variableDesc.StartOffset)+":"+std::to_string(variableDesc.Size)+";";
+            reflected.members.push_back({variableDesc.Name,variableDesc.StartOffset,variableDesc.Size});
+        }
+        reflected.layoutHash=dx12native::HashString(canonical.c_str());
+        record->nativeAbiHash=dx12native::HashBytes(reflected.name.c_str(),reflected.name.size(),record->nativeAbiHash);
+        record->nativeAbiHash=(record->nativeAbiHash^reflected.layoutHash)*dx12native::kFnvPrime;
+        record->nativeCBuffers.push_back(std::move(reflected));
+    }
+    record->nativeReflectionReady=true;return true;
 }
 static uint64_t TranslationStateKey(uint64_t key,const ShaderRasterStateDX12 &raster)
 {
@@ -85,6 +135,7 @@ static __declspec(noinline) bool TranslateVariant(ShaderRecordDX12 *record,bool 
     for(uint32_t i=0;i<layout.inputCount;++i){const char *s=layout.inputs[i].semantic;uint32_t usage=0,index=layout.inputs[i].semanticIndex;if(!std::strcmp(s,"POSITION"))usage=0;else if(!std::strcmp(s,"BLENDWEIGHT"))usage=1;else if(!std::strcmp(s,"BLENDINDICES"))usage=2;else if(!std::strcmp(s,"NORMAL"))usage=3;else if(!std::strcmp(s,"PSIZE"))usage=4;else if(!std::strcmp(s,"TEXCOORD"))usage=5;else if(!std::strcmp(s,"TANGENT"))usage=6;else if(!std::strcmp(s,"BINORMAL"))usage=7;else if(!std::strcmp(s,"COLOR"))usage=10;const bool convert=layout.inputs[i].integerToFloat;inputs[i]={usage,index,i,convert?1u:0u,convert?(layout.inputs[i].format==DXGI_FORMAT_R16G16_SINT?2u:1u):3u,false};}
     ShaderTranslationRequestDX12 request{};
     request.legacyBytes=record->legacyBytecode.data();request.byteCount=record->legacyBytecode.size();request.pixel=pixel;request.vertexInputs=inputs.data();request.vertexInputCount=layout.inputCount;request.linkedOutputs=linked;request.linkedOutputCount=linkedCount;request.raster=raster;
+    request.centroidTexcoordMask=record->centroidTexcoordMask;
     CShaderTranslatorDX12 translator;ShaderTranslationResultDX12 translated;std::string error;
     if(!translator.TranslateLegacy(request,signer,translated,error)){Warning("ShaderAPIDX12: deferred shader translation failed: %s\n",error.c_str());return false;}
     if(record->activeVariantValid){
@@ -186,6 +237,10 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader(const char *name,bool pixel
   if(!file->Open(*g_pShaderDeviceMgrDX12->HostFileSystem(),name,pixel?VcsStage::Pixel:VcsStage::Vertex,error)){
    Warning("ShaderAPIDX12: unable to load named shader %s: %s\n",name,error.c_str());namedShaderFiles_.Insert(fileKey.String(),nullptr);return nullptr;
   }
+  // -dx12shaderlog: one line per named shader file, stating which VCS path won (shaders/vsh|psh native DXBC or
+  // shaders/fxc legacy). Development diagnostic; files open once, so this never runs per draw.
+  static const bool logNamedShaders=CommandLine()&&CommandLine()->CheckParm("-dx12shaderlog");
+  if(logNamedShaders)Msg("ShaderAPIDX12: %s shader %s from %s\n",pixel?"pixel":"vertex",name,file->Path().c_str());
   shaderFile=namedShaderFiles_.Insert(fileKey.String(),file.release());
  }
  auto *file=namedShaderFiles_[shaderFile];
@@ -208,6 +263,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader(const char *name,bool pixel
  } buffer(*payload);
  auto *record=pixel?reinterpret_cast<ShaderRecordDX12 *>(device_->CreatePixelShader(&buffer)):reinterpret_cast<ShaderRecordDX12 *>(device_->CreateVertexShader(&buffer));
  if(!record){Warning("ShaderAPIDX12: failed to create %s shader %s combo %d/%d\n",pixel?"pixel":"vertex",name,staticIndex,dynamic);return nullptr;}
+ record->centroidTexcoordMask=file->CentroidMask();
  found=namedShaderCombos_.Find(key);namedShaderCombos_[found]=record;return record;
 }
 ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader(bool pixel,int dynamicIndex)
@@ -486,7 +542,9 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  }
  if(!EnsureTranslated(vsRecord,false,sourceLayout,nullptr,0,0,raster,translationStateKey,device_->Signer()))return;
  const auto reflect=[](ShaderRecordDX12 *record)->bool{
-  if(!record||record->inputSignatureReady)return true;
+  if(!record)return true;
+  if(!ReflectNativeCBuffersDX12(record))return false;
+  if(record->inputSignatureReady)return true;
   const auto bytecode=record->Bytecode();const bool native=record->legacyBytecode.empty();
   if(!ReadShaderInputSignatureDX12(bytecode.pShaderBytecode,bytecode.BytecodeLength,record->inputSignature,
      native?&record->nativeConstantRegisters:nullptr,native&&!record->stagePixel?&record->translated.outputLinkage:nullptr))return false;
@@ -519,6 +577,36 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
   if(!EnsureTranslated(psRecord,true,sourceLayout,linkage.data(),linkage.size(),vsRecord->linkageHash,raster,translationStateKey,device_->Signer()))return;
  }
  if(!reflect(psRecord))return;
+ // A native record's space-1 cbuffers must be engine blocks with the backend layout or material blocks
+ // written through the bridge with the same layout hash; anything else rejects the draw before PSO creation.
+ auto validateNative=[&](ShaderRecordDX12 *record,bool pixel)->bool{
+  if(!record||!record->legacyBytecode.empty())return true;
+  const char *stageName=pixel?"PS":"VS";
+  const char *logical=(pixel?activeSnapshot_.pixelShaderName:activeSnapshot_.vertexShaderName).c_str();
+  const int staticIndex=pixel?activeSnapshot_.staticPixelIndex:activeSnapshot_.staticVertexIndex,dynamicIndex=pixel?pixelShaderIndex_:vertexShaderIndex_;
+  for(const auto &binding:record->nativeCBuffers){
+   // Space 0 is the existing native-source contract (Source register banks at root b0-b5); space 1 is the named-block ABI.
+   if(binding.registerSpace!=1)continue;
+   const dx12native::EngineCBufferLayoutDX12 *engine=nullptr;
+   for(const auto &candidate:dx12native::kEngineCBufferLayouts)if(binding.name==candidate.name){engine=&candidate;break;}
+   if(engine){
+    bool matches=engine->stage==(pixel?dx12native::kStagePixel:dx12native::kStageVertex)&&engine->shaderRegister==binding.shaderRegister&&engine->byteSize==binding.byteSize&&engine->memberCount==binding.members.size();
+    for(uint32_t m=0;matches&&m<engine->memberCount;++m)matches=binding.members[m].name==engine->members[m].name&&binding.members[m].offset==engine->members[m].offset&&binding.members[m].byteSize==engine->members[m].size;
+    if(!matches){Warning("ShaderAPIDX12: native %s shader %s (static %d dynamic %d abi %016llx) engine cbuffer %s b%u size %u does not match the backend layout\n",stageName,logical,staticIndex,dynamicIndex,static_cast<unsigned long long>(record->nativeAbiHash),binding.name.c_str(),binding.shaderRegister,binding.byteSize);return false;}
+    continue;
+   }
+   const unsigned firstMaterial=pixel?1u:2u;
+   const NativeCBufferSlotDX12 *slot=nullptr;
+   if(binding.shaderRegister>=firstMaterial&&binding.shaderRegister<=7u)slot=pixel?&nativePSBlocks_[binding.shaderRegister-1]:&nativeVSBlocks_[binding.shaderRegister-2];
+   if(!slot||!slot->written||slot->layoutHash!=binding.layoutHash||slot->byteSize!=binding.byteSize){
+    Warning("ShaderAPIDX12: native %s shader %s (static %d dynamic %d abi %016llx) material cbuffer %s b%u,space1 expected layout %016llx size %u, bound %016llx size %u\n",stageName,logical,staticIndex,dynamicIndex,static_cast<unsigned long long>(record->nativeAbiHash),binding.name.c_str(),binding.shaderRegister,static_cast<unsigned long long>(binding.layoutHash),binding.byteSize,
+     static_cast<unsigned long long>(slot&&slot->written?slot->layoutHash:0),slot&&slot->written?slot->byteSize:0u);
+    return false;
+   }
+  }
+  return true;
+ };
+ if(!validateNative(vsRecord,false)||!validateNative(psRecord,true))return;
  }
  const auto constants=[&](ShaderRecordDX12 *record,bool pixel,bool generated)->bool{
   ZoneNamedN(derivedConstants, "DX12 DerivedConstants", DX12_DRAW_ZONES_ACTIVE);
@@ -640,6 +728,41 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
   if(!extensionVersions_[0]||std::memcmp(&vertexExtension,&previousVertexExtension_,sizeof(vertexExtension))){previousVertexExtension_=vertexExtension;++extensionVersions_[0];}
   vertexExtensionClipMask_=drawClipMask;
  }
+ // Native records read engine state from space-1 blocks built from the same values the legacy registers hold.
+ const bool nativeVS=vsRecord&&vsRecord->legacyBytecode.empty(),nativePS=psRecord&&psRecord->legacyBytecode.empty();
+ bindingInput.nativeStage={nativeVS,nativePS};
+ bindingInput.nativeData.fill(nullptr);bindingInput.nativeSizes.fill(0);bindingInput.nativeVersions.fill(0);
+ if(nativeVS){
+  ZoneNamedN(nativeEngine, "DX12 NativeVSEngine", DX12_DRAW_ZONES_ACTIVE);
+  // Rebuilt only when a source register bank, the vertex extension (viewport/clip planes) or the clip mask changed.
+  const std::array<uint64_t,5> engineInputs{constantVersions_[0],constantVersions_[1],constantVersions_[2],extensionVersions_[0],drawClipMask};
+  if(nativeVSEngineInputs_!=engineInputs){
+   auto &e=nativeVSEngine_;const auto copy=[&](float *dst,unsigned reg,unsigned count){std::memcpy(dst,vsFloat_[reg].data(),sizeof(float)*4*count);};
+   copy(e.cConstants0,VERTEX_SHADER_MATH_CONSTANTS0,1);copy(e.cConstants1,VERTEX_SHADER_MATH_CONSTANTS1,1);copy(e.cEyePosWaterZ,VERTEX_SHADER_CAMERA_POS,1);copy(e.cFlexScale,VERTEX_SHADER_FLEXSCALE,1);
+   copy(e.cModelViewProj,VERTEX_SHADER_MODELVIEWPROJ,4);copy(e.cViewProj,VERTEX_SHADER_VIEWPROJ,4);copy(e.cModelViewProjZ,VERTEX_SHADER_MODELVIEWPROJ_THIRD_ROW,1);copy(e.cViewProjZ,VERTEX_SHADER_VIEWPROJ_THIRD_ROW,1);
+   copy(e.cFogParams,VERTEX_SHADER_FOG_PARAMS,1);copy(e.cViewModel,VERTEX_SHADER_VIEWMODEL,4);copy(e.cAmbientCube[0],VERTEX_SHADER_AMBIENT_LIGHT,6);copy(e.cLightInfo[0].color,VERTEX_SHADER_LIGHTS,20);
+   std::memcpy(e.cLightCount,vsInt_[0].data(),sizeof(e.cLightCount));for(unsigned i=0;i<4;++i)e.cLightEnabled[i]=vsBool_[VERTEX_SHADER_LIGHT_ENABLE_BOOL_CONST+i]?1u:0u;
+   std::memcpy(e.cViewportScale,previousVertexExtension_.viewportScale,sizeof(e.cViewportScale));std::memcpy(e.cClipPlanes,previousVertexExtension_.clipPlanes,sizeof(e.cClipPlanes));
+   e.cClipMask[0]=drawClipMask;e.cClipMask[1]=e.cClipMask[2]=e.cClipMask[3]=0;
+   static_assert(sizeof(nativeVSBones_.cModel)==sizeof(float)*4*3*53,"bone rows");std::memcpy(nativeVSBones_.cModel,vsFloat_[VERTEX_SHADER_MODEL].data(),sizeof(nativeVSBones_.cModel));
+   nativeVSEngineInputs_=engineInputs;++nativeVSEngineVersion_;
+  }
+  bindingInput.nativeData[0]=&nativeVSEngine_;bindingInput.nativeSizes[0]=sizeof(nativeVSEngine_);bindingInput.nativeVersions[0]=nativeVSEngineVersion_;
+  bindingInput.nativeData[1]=&nativeVSBones_;bindingInput.nativeSizes[1]=sizeof(nativeVSBones_);bindingInput.nativeVersions[1]=nativeVSEngineVersion_;
+  for(unsigned slot=0;slot<nativeVSBlocks_.size();++slot)if(nativeVSBlocks_[slot].written){bindingInput.nativeData[2+slot]=nativeVSBlocks_[slot].bytes.data();bindingInput.nativeSizes[2+slot]=nativeVSBlocks_[slot].byteSize;bindingInput.nativeVersions[2+slot]=nativeVSBlocks_[slot].version;}
+ }
+ if(nativePS){
+  auto &e=nativePSEngine_;
+  const float alphaTest[4]={activeSnapshot_.alphaTest?1.f:0.f,static_cast<float>(activeSnapshot_.alphaFunction)+1.f,previousPixelExtension_.alphaReference,0.f};
+  const float rasterFog[4]={previousPixelExtension_.fogColor[0],previousPixelExtension_.fogColor[1],previousPixelExtension_.fogColor[2],raster.fog?1.f:0.f};
+  const float rasterFogParams[4]={previousPixelExtension_.fogStart,previousPixelExtension_.fogEnd,previousPixelExtension_.fogDistanceInverse,previousPixelExtension_.fogDensity};
+  const float lightScale[4]={toneScale_.x,toneScale_.y,toneScale_.z,toneScaleGamma_};
+  const auto update=[&](float *dst,const float *value,size_t bytes){if(std::memcmp(dst,value,bytes)){std::memcpy(dst,value,bytes);++nativePSEngineVersion_;}};
+  update(e.cPixelFogParams,fogPixelParams_.data(),sizeof(e.cPixelFogParams));update(e.cLinearFogColor,fogPixelColor_.data(),sizeof(e.cLinearFogColor));update(e.cLightScale,lightScale,sizeof(lightScale));
+  update(e.cAlphaTest,alphaTest,sizeof(alphaTest));update(e.cRasterFogColor,rasterFog,sizeof(rasterFog));update(e.cRasterFogParams,rasterFogParams,sizeof(rasterFogParams));
+  bindingInput.nativeData[8]=&nativePSEngine_;bindingInput.nativeSizes[8]=sizeof(nativePSEngine_);bindingInput.nativeVersions[8]=nativePSEngineVersion_;
+  for(unsigned slot=0;slot<nativePSBlocks_.size();++slot)if(nativePSBlocks_[slot].written){bindingInput.nativeData[9+slot]=nativePSBlocks_[slot].bytes.data();bindingInput.nativeSizes[9+slot]=nativePSBlocks_[slot].byteSize;bindingInput.nativeVersions[9+slot]=nativePSBlocks_[slot].version;}
+ }
  bindingInput.constantData[3]=&previousVertexExtension_;bindingInput.constantSizes[3]=sizeof(previousVertexExtension_);
  bindingInput.constantData[7]=&previousPixelExtension_;bindingInput.constantSizes[7]=sizeof(previousPixelExtension_);
  bindingInput.constantData[8]=&previousBumpExtension_;bindingInput.constantSizes[8]=sizeof(previousBumpExtension_);
@@ -647,7 +770,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  bindingInput.constantData[9]=&colorKeyExtension;bindingInput.constantSizes[9]=sizeof(colorKeyExtension);
  for(unsigned bank=0;bank<4;++bank)bindingInput.constantVersions[6+bank]=extensionVersions_[bank];
  bindingInput.vertexTextures=vertexSamplers!=0;bindingInput.geometryStage=geometryStage;
- { ZoneNamedN(___tracy_scoped_zone, "DX12 PrepareBindings", DX12_DRAW_ZONES_ACTIVE); if(!pipeline_.PrepareBindings(list,bindingInput)){Warning("ShaderAPIDX12: binding descriptors unavailable\\n");return;} }
+ { ZoneNamedN(___tracy_scoped_zone, "DX12 PrepareBindings", DX12_DRAW_ZONES_ACTIVE); if(!pipeline_.PrepareBindings(list,bindingInput)){Warning("ShaderAPIDX12: binding descriptors unavailable\n");return;} }
  const D3D12_PRIMITIVE_TOPOLOGY_TYPE topologyType=primitive==MATERIAL_POINTS?D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT:(primitive==MATERIAL_LINES||primitive==MATERIAL_LINE_STRIP||primitive==MATERIAL_LINE_LOOP?D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE:D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
  const D3D12_PRIMITIVE_TOPOLOGY iaTopology=primitive==MATERIAL_POINTS?D3D_PRIMITIVE_TOPOLOGY_POINTLIST:(primitive==MATERIAL_LINES?D3D_PRIMITIVE_TOPOLOGY_LINELIST:(primitive==MATERIAL_LINE_STRIP?D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:(primitive==MATERIAL_TRIANGLE_STRIP?D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)));
  const UINT instanceCount=bindings[0].repetitions;
@@ -887,8 +1010,38 @@ void CShaderAPIDX12::Color3ub( unsigned char r, unsigned char g, unsigned char b
 void CShaderAPIDX12::Color3ubv( unsigned char const* pColor ) { if(pColor) Color3ub(pColor[0],pColor[1],pColor[2]); }
 void CShaderAPIDX12::Color4ub( unsigned char r, unsigned char g, unsigned char b, unsigned char a ) { Color4f(r/255.0f,g/255.0f,b/255.0f,a/255.0f); }
 void CShaderAPIDX12::Color4ubv( unsigned char const* pColor ) { if(pColor) Color4ub(pColor[0],pColor[1],pColor[2],pColor[3]); }
-void CShaderAPIDX12::SetVertexShaderConstant(int var,float const *values,int count,bool) { ZoneNamedN(constants, "DX12 SetVertexConstants sampled", DX12_DRAW_ZONES_ACTIVE && (frameCounter_&63)==0); if(!values||var<0||count<=0)return;const int end=std::min(var+count,static_cast<int>(vsFloat_.size()));bool changed=false;for(int r=var;r<end;++r){const __m128i incoming=_mm_loadu_si128(reinterpret_cast<const __m128i *>(values+(r-var)*4));auto *slot=reinterpret_cast<__m128i *>(vsFloat_[r].data());if(_mm_movemask_epi8(_mm_cmpeq_epi32(incoming,_mm_loadu_si128(slot)))!=0xFFFF){_mm_storeu_si128(slot,incoming);changed=true;}}if(changed)++constantVersions_[0]; }
-void CShaderAPIDX12::SetPixelShaderConstant(int var,float const *values,int count,bool) { ZoneNamedN(constants, "DX12 SetPixelConstants sampled", DX12_DRAW_ZONES_ACTIVE && (frameCounter_&63)==0); if(!values||var<0||count<=0)return;const int end=std::min(var+count,static_cast<int>(psFloat_.size()));bool changed=false;for(int r=var;r<end;++r){const __m128i incoming=_mm_loadu_si128(reinterpret_cast<const __m128i *>(values+(r-var)*4));auto *slot=reinterpret_cast<__m128i *>(psFloat_[r].data());if(_mm_movemask_epi8(_mm_cmpeq_epi32(incoming,_mm_loadu_si128(slot)))!=0xFFFF){_mm_storeu_si128(slot,incoming);changed=true;}}if(changed)++constantVersions_[3]; }
+// Stores a validated bridge write and mirrors it into the legacy register files immediately, so a legacy
+// record for the same logical name reads identical values with last-writer-wins ordering against direct
+// register writes (exactly as the DX9 material code's own SetPixel/VertexShaderConstant calls would).
+void CShaderAPIDX12::ApplyNativeCBufferWrite(const dx12native::NativeCBufferWriteDX12 &write,bool pixel)
+{
+    auto &slot=pixel?nativePSBlocks_[write.shaderRegister-1]:nativeVSBlocks_[write.shaderRegister-2];
+    slot.bytes.resize(write.byteSize);std::memcpy(slot.bytes.data(),write.data,write.byteSize);
+    slot.legacyMap=write.legacyMap;slot.layoutHash=write.layoutHash;slot.byteSize=write.byteSize;slot.written=true;
+    slot.version=pixel?++nativePSVersion_:++nativeVSVersion_;
+    const unsigned first=pixel?3:0;bool floats=false,ints=false,bools=false;
+    const auto *bytes=static_cast<const unsigned char *>(write.data);
+    for(uint32_t e=0;e<write.legacyMap->entryCount;++e){
+        const auto &entry=write.legacyMap->entries[e];
+        for(uint32_t n=0;n<entry.elementCount;++n){
+            const unsigned char *src=bytes+entry.byteOffset+size_t(n)*entry.srcStride;const size_t reg=size_t(entry.reg)+n;
+            if(size_t(entry.byteOffset)+size_t(n)*entry.srcStride+entry.elementBytes>write.byteSize)break;
+            if(entry.bank==dx12native::kLegacyFloat&&reg<vsFloat_.size()){
+                auto &dst=pixel?psFloat_[reg]:vsFloat_[reg];const size_t count=std::min<size_t>(entry.elementBytes,16u-entry.component*4u);
+                if(std::memcmp(dst.data()+entry.component,src,count)){std::memcpy(dst.data()+entry.component,src,count);floats=true;}
+            }else if(entry.bank==dx12native::kLegacyInt&&reg<vsInt_.size()){
+                auto &dst=pixel?psInt_[reg]:vsInt_[reg];const size_t count=std::min<size_t>(entry.elementBytes,16u-entry.component*4u);
+                if(std::memcmp(dst.data()+entry.component,src,count)){std::memcpy(dst.data()+entry.component,src,count);ints=true;}
+            }else if(entry.bank==dx12native::kLegacyBool&&reg<vsBool_.size()){
+                uint32_t value;std::memcpy(&value,src,4);bool &dst=pixel?psBool_[reg]:vsBool_[reg];
+                if(dst!=(value!=0)){dst=value!=0;bools=true;}
+            }
+        }
+    }
+    if(floats)++constantVersions_[first];if(ints)++constantVersions_[first+1];if(bools)++constantVersions_[first+2];
+}
+void CShaderAPIDX12::SetVertexShaderConstant(int var,float const *values,int count,bool) { ZoneNamedN(constants, "DX12 SetVertexConstants sampled", DX12_DRAW_ZONES_ACTIVE && (frameCounter_&63)==0); if(var==dx12native::kDX12NativeCBufferPointerVar){ const auto *write=reinterpret_cast<const dx12native::NativeCBufferWriteDX12 *>(values); if(!write||write->magic!=dx12native::kDX12NativeCBufferWriteMagic||write->version!=dx12native::kDX12NativeCBufferVersion||write->stage!=dx12native::kStageVertex||write->registerSpace!=1||write->shaderRegister<2||write->shaderRegister>7||!write->data||!write->legacyMap||write->byteSize==0||(write->byteSize&15)||write->byteSize>65536||write->legacyMap->layoutHash!=write->layoutHash){Warning("ShaderAPIDX12: rejected native VS cbuffer write (magic/version/stage/space/register/size/data/map validation failed)\n");return;} ApplyNativeCBufferWrite(*write,false);return;} if(!values||var<0||count<=0)return;const int end=std::min(var+count,static_cast<int>(vsFloat_.size()));bool changed=false;for(int r=var;r<end;++r){const __m128i incoming=_mm_loadu_si128(reinterpret_cast<const __m128i *>(values+(r-var)*4));auto *slot=reinterpret_cast<__m128i *>(vsFloat_[r].data());if(_mm_movemask_epi8(_mm_cmpeq_epi32(incoming,_mm_loadu_si128(slot)))!=0xFFFF){_mm_storeu_si128(slot,incoming);changed=true;}}if(changed)++constantVersions_[0]; }
+void CShaderAPIDX12::SetPixelShaderConstant(int var,float const *values,int count,bool) { ZoneNamedN(constants, "DX12 SetPixelConstants sampled", DX12_DRAW_ZONES_ACTIVE && (frameCounter_&63)==0); if(var==dx12native::kDX12NativeCBufferPointerVar){ const auto *write=reinterpret_cast<const dx12native::NativeCBufferWriteDX12 *>(values); if(!write||write->magic!=dx12native::kDX12NativeCBufferWriteMagic||write->version!=dx12native::kDX12NativeCBufferVersion||write->stage!=dx12native::kStagePixel||write->registerSpace!=1||write->shaderRegister<1||write->shaderRegister>7||!write->data||!write->legacyMap||write->byteSize==0||(write->byteSize&15)||write->byteSize>65536||write->legacyMap->layoutHash!=write->layoutHash){Warning("ShaderAPIDX12: rejected native PS cbuffer write (magic/version/stage/space/register/size/data/map validation failed)\n");return;} ApplyNativeCBufferWrite(*write,true);return;} if(!values||var<0||count<=0)return;const int end=std::min(var+count,static_cast<int>(psFloat_.size()));bool changed=false;for(int r=var;r<end;++r){const __m128i incoming=_mm_loadu_si128(reinterpret_cast<const __m128i *>(values+(r-var)*4));auto *slot=reinterpret_cast<__m128i *>(psFloat_[r].data());if(_mm_movemask_epi8(_mm_cmpeq_epi32(incoming,_mm_loadu_si128(slot)))!=0xFFFF){_mm_storeu_si128(slot,incoming);changed=true;}}if(changed)++constantVersions_[3]; }
 void CShaderAPIDX12::ResetNativeState() {
  shadowState_=Snapshot{};activeSnapshot_=Snapshot{};
  boundVS_=VERTEX_SHADER_HANDLE_INVALID;boundGS_=GEOMETRY_SHADER_HANDLE_INVALID;boundPS_=PIXEL_SHADER_HANDLE_INVALID;
@@ -1017,7 +1170,10 @@ void CShaderAPIDX12::SetPixelShaderFogParams(int reg)
 }
 void CShaderAPIDX12::SetVertexShaderStateAmbientLightCube() { SetVertexShaderConstant(VERTEX_SHADER_AMBIENT_LIGHT,ambientCube_[0].data(),6); }
 void CShaderAPIDX12::SetPixelShaderStateAmbientLightCube(int reg,bool forceBlack) {
-    static constexpr float black[24]{};SetPixelShaderConstant(reg,forceBlack?black:ambientCube_[0].data(),6);
+    static constexpr float black[24]{};const float *cube=forceBlack?black:ambientCube_[0].data();
+    SetPixelShaderConstant(reg,cube,6);
+    // Native pixel shaders read the same values from DX12PSEngine.cAmbientCube.
+    if(std::memcmp(nativePSEngine_.cAmbientCube,cube,sizeof(nativePSEngine_.cAmbientCube))){std::memcpy(nativePSEngine_.cAmbientCube,cube,sizeof(nativePSEngine_.cAmbientCube));++nativePSEngineVersion_;}
 }
 int CShaderAPIDX12::SortLocalLights(std::array<int,4> &indices) const {
     const auto rank=[](LightType_t type){return type==MATERIAL_LIGHT_SPOT?0:(type==MATERIAL_LIGHT_POINT?1:2);};
@@ -1061,6 +1217,8 @@ void CShaderAPIDX12::CommitPixelShaderLighting(int reg) {
         else for(int component=0;component<3;++component){constants[component][3]=light.m_Color[component];constants[component+3][3]=position[component];}
     }
     SetPixelShaderConstant(reg,constants[0],6);
+    // Native pixel shaders read the same values from DX12PSEngine.cLightInfo.
+    if(std::memcmp(nativePSEngine_.cLightInfo,constants,sizeof(nativePSEngine_.cLightInfo))){std::memcpy(nativePSEngine_.cLightInfo,constants,sizeof(nativePSEngine_.cLightInfo));++nativePSEngineVersion_;}
 }
 CMeshBuilder* CShaderAPIDX12::GetVertexModifyBuilder() { return &vertexModifyBuilder_; }
 const FlashlightState_t &CShaderAPIDX12::GetFlashlightState( VMatrix &worldToTexture ) const { worldToTexture=flashlightMatrix_; return flashlight_; }
@@ -1224,12 +1382,14 @@ void CShaderAPIDX12::SetPSNearAndFarZ(int reg)
     const float farDistance=w*nearDistance/(nearDistance+w);
     float values[4]={nearDistance,farDistance,0.f,0.f};SetPixelShaderConstant(reg,values,1);
 }
-void CShaderAPIDX12::SetDepthFeatheringPixelShaderConstant(int reg,float scale) { if(scale==0.f)return;float values[4]={1.f/scale,0.f,0.f,0.f};SetPixelShaderConstant(reg,values,1); }
+// shaderapidx8.cpp:5225-5253 (PC): x = dest-alpha depth range / scale (8192 float HDR, else 192), yzw = 0.
+void CShaderAPIDX12::SetDepthFeatheringPixelShaderConstant(int reg,float scale) { const HDRType_t hdr=g_pHardwareConfigDX12?g_pHardwareConfigDX12->GetHDRType():HDR_TYPE_NONE;const float values[4]={(hdr==HDR_TYPE_FLOAT?8192.f:192.f)/scale,0.f,0.f,0.f};SetPixelShaderConstant(reg,values,1); }
 int CShaderAPIDX12::GetPixelFogCombo1(bool supportsRadial) { return !ShouldUsePixelFog()?0:(fogMode_==MATERIAL_FOG_LINEAR_BELOW_FOG_Z?1:(supportsRadial&&fogRadial_?2:0)); }
 void CShaderAPIDX12::ClearColor3ub( unsigned char r, unsigned char g, unsigned char b ) { ClearColor4ub(r,g,b,255); }
 void CShaderAPIDX12::ClearColor4ub( unsigned char r, unsigned char g, unsigned char b, unsigned char a ) { clearColor_[0]=r/255.0f;clearColor_[1]=g/255.0f;clearColor_[2]=b/255.0f;clearColor_[3]=a/255.0f; }
 void CShaderAPIDX12::ShutdownDeviceResources()
 {
+    SetShaderPrecacheAccepting(false);
     ProcessPendingTextureDeletes();
     if(device_&&device_->IsRecordingOwner()&&device_->CommandList())device_->Submit(true);
     ReleaseTextureDeviceResources();
@@ -1248,6 +1408,7 @@ bool CShaderAPIDX12::InitializeDeviceResources(CShaderDeviceDX12 *device)
     pixelFogConVar_=pixelFog.IsValid()?static_cast<ConVar *>(pixelFog.GetLinkedConVar()):nullptr;
     fogDirty_=true;
     if(!device||!device->NativeDevice()||!pipeline_.Initialize(device->NativeDevice())){Warning("ShaderAPIDX12: pipeline initialization failed\n");ShutdownDeviceResources();return false;}
+    SetShaderPrecacheAccepting(true);
     return true;
 }
 bool CShaderAPIDX12::SetMode(void *hwnd,int adapter,const ShaderDeviceInfo_t &info)
@@ -1399,6 +1560,7 @@ void CShaderAPIDX12::BeginFrame()
 {
     ZoneNamedN(___tracy_scoped_zone, "DX12 BeginFrame", DX12_ZONES_ACTIVE);
     ProcessPendingTextureDeletes();
+    ProcessShaderPrecacheRequests();
     frameDrawCount_=0;
     frameFlushCount_=0;
     frameSyncCount_=0;

@@ -1,0 +1,504 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/eye_refract_ps2x.fxc for logical eye_refract_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+//====== Copyright � 1996-2007, Valve Corporation, All rights reserved. ===========================
+
+// STATIC: "FLASHLIGHT"					"0..1"
+// STATIC: "LIGHTWARPTEXTURE"			"0..1"
+
+// STATIC: "SPHERETEXKILLCOMBO"			"0..1"
+
+// STATIC: "RAYTRACESPHERE"				"0..1"
+
+// STATIC: "FLASHLIGHTDEPTHFILTERMODE"	"0..2"
+
+// DYNAMIC: "NUM_LIGHTS"				"0..4"
+
+// DYNAMIC: "FLASHLIGHTSHADOWS"			"0..1"
+
+// DYNAMIC: "PIXELFOGTYPE"				"0..2"
+
+// We don't use other lights when doing the flashlight
+// SKIP: ( $FLASHLIGHT != 0 ) && ( $NUM_LIGHTS > 0 )
+
+// We don't care about flashlight depth unless the flashlight is on
+// SKIP: ( $FLASHLIGHT == 0 ) && ( $FLASHLIGHTSHADOWS == 1 )
+
+// SKIP: ( $RAYTRACESPHERE == 0 ) && ( $SPHERETEXKILLCOMBO == 1 )
+
+// Debug 2.0 shader locally
+//#ifdef DX12_LEGACY_PS20B
+//#undef DX12_LEGACY_PS20B
+//#define DX12_LEGACY_PS20
+//#endif
+
+
+// Includes =======================================================================================
+#include "common_flashlight_fxc.h"
+#include "shader_constant_register_map.h"
+
+// Texture Samplers ===============================================================================
+Texture2D g_tCorneaSampler_Texture : register( t0 );
+SamplerState g_tCorneaSampler_Sampler : register( s0 );
+static const DX12Sampler2D g_tCorneaSampler = { g_tCorneaSampler_Texture, g_tCorneaSampler_Sampler };
+Texture2D g_tIrisSampler_Texture : register( t1 );
+SamplerState g_tIrisSampler_Sampler : register( s1 );
+static const DX12Sampler2D g_tIrisSampler = { g_tIrisSampler_Texture, g_tIrisSampler_Sampler };
+TextureCube g_tEyeReflectionCubemapSampler_Texture : register( t2 );
+SamplerState g_tEyeReflectionCubemapSampler_Sampler : register( s2 );
+static const DX12SamplerCube g_tEyeReflectionCubemapSampler = { g_tEyeReflectionCubemapSampler_Texture, g_tEyeReflectionCubemapSampler_Sampler };
+Texture2D g_tEyeAmbientOcclSampler_Texture : register( t3 );
+SamplerState g_tEyeAmbientOcclSampler_Sampler : register( s3 );
+static const DX12Sampler2D g_tEyeAmbientOcclSampler = { g_tEyeAmbientOcclSampler_Texture, g_tEyeAmbientOcclSampler_Sampler };
+Texture2D g_tLightwarpSampler_Texture : register( t4 );
+SamplerState g_tLightwarpSampler_Sampler : register( s4 ); // 1D texture for TF NPR lighting
+static const DX12Sampler1D g_tLightwarpSampler = { g_tLightwarpSampler_Texture, g_tLightwarpSampler_Sampler };
+
+Texture2D g_tFlashlightCookieSampler_Texture : register( t5 );
+SamplerState g_tFlashlightCookieSampler_Sampler : register( s5 );
+static const DX12Sampler2D g_tFlashlightCookieSampler = { g_tFlashlightCookieSampler_Texture, g_tFlashlightCookieSampler_Sampler };
+Texture2D g_tFlashlightDepthSampler_Texture : register( t6 );
+SamplerComparisonState g_tFlashlightDepthSampler_Sampler : register( s6 );
+static const DX12ShadowSampler g_tFlashlightDepthSampler = { g_tFlashlightDepthSampler_Texture, g_tFlashlightDepthSampler_Sampler };
+Texture2D g_tRandomRotationSampler_Texture : register( t7 );
+SamplerState g_tRandomRotationSampler_Sampler : register( s7 );
+static const DX12Sampler2D g_tRandomRotationSampler = { g_tRandomRotationSampler_Texture, g_tRandomRotationSampler_Sampler };
+
+// Shaders Constants and Globals ==================================================================
+
+cbuffer eye_refract_ps2x : register( b1, space1 )
+{
+	float4 g_vPackedConst0; // @legacy ps:c0
+	float3 g_vEyeOrigin; // @legacy ps:c1
+	float4 g_vIrisProjectionU; // @legacy ps:c2
+	float4 g_vIrisProjectionV; // @legacy ps:c3
+	float4 g_vCameraPosition; // @legacy ps:c4
+	float3 g_cAmbientOcclColor; // @legacy ps:c5
+	float4 g_vPackedConst6; // @legacy ps:c6
+	float4 g_vFlashlightAttenuationFactors; // @legacy ps:c7
+	float3 g_vFlashlightPos; // @legacy ps:c8
+	float4 g_vShadowTweaks; // @legacy ps:c9
+	float4 cFlashlightColor; // @legacy ps:c28
+	float4 cFlashlightScreenScale; // @legacy ps:c31
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+#define g_sLightInfo cLightInfo	// engine-owned (DX12PSEngine)
+
+#define g_flDilationFactor				g_vPackedConst0.x
+#define g_flGlossiness					g_vPackedConst0.y
+#define g_flAverageAmbient				g_vPackedConst0.z
+#define g_flCorneaBumpStrength			g_vPackedConst0.w
+
+
+#define g_flEyeballRadius    g_vPackedConst6.y //0.51f
+//#define g_bRaytraceSphere    g_vPackedConst6.z //1.0f
+#define g_flParallaxStrength g_vPackedConst6.w //0.25f
+
+// Flashlight constants
+
+
+// Interpolated values ============================================================================
+struct PS_INPUT
+{
+	float4 vAmbientOcclUv_fallbackCorneaUv;
+	float4 cVertexLight; // w is used for the flashlight pass
+	float4 vTangentViewVector; // Tangent view vector (Note: w is used for flashlight pass)
+	float4 vWorldPosition_ProjPosZ;
+	float3 vWorldNormal; // World-space normal
+	float3 vWorldTangent; // World-space tangent
+	float4 vLightFalloffCosine01; // Light falloff and cosine terms for first two local lights
+	float4 vLightFalloffCosine23; // Light falloff and cosine terms for next two local lights
+
+	float3 vWorldBinormal;	// World-space normal
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	float4 vAmbientOcclUv_fallbackCorneaUv : TEXCOORD0;
+	float4 cVertexLight : TEXCOORD1;
+	float4 vTangentViewVector : TEXCOORD2;
+	float4 vWorldPosition_ProjPosZ : TEXCOORD3;
+	float3 vWorldNormal : TEXCOORD4;
+	float3 vWorldTangent : TEXCOORD5;
+	float4 vLightFalloffCosine01 : TEXCOORD6;
+	float4 vLightFalloffCosine23 : TEXCOORD7;
+	float3 vWorldBinormal : COLOR0;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vAmbientOcclUv_fallbackCorneaUv = dx12In.vAmbientOcclUv_fallbackCorneaUv;
+	l.cVertexLight = dx12In.cVertexLight;
+	l.vTangentViewVector = dx12In.vTangentViewVector;
+	l.vWorldPosition_ProjPosZ = dx12In.vWorldPosition_ProjPosZ;
+	l.vWorldNormal = dx12In.vWorldNormal;
+	l.vWorldTangent = dx12In.vWorldTangent;
+	l.vLightFalloffCosine01 = dx12In.vLightFalloffCosine01;
+	l.vLightFalloffCosine23 = dx12In.vLightFalloffCosine23;
+	l.vWorldBinormal = dx12In.vWorldBinormal;
+	return l;
+}
+
+
+// Ray sphere intersect returns distance along ray to intersection ================================
+float IntersectRaySphere ( float3 cameraPos, float3 ray, float3 sphereCenter, float sphereRadius)
+{
+	float3 dst = cameraPos.xyz - sphereCenter.xyz;
+	float B = dot(dst, ray);
+	float C = dot(dst, dst) - (sphereRadius * sphereRadius);
+	float D = B*B - C;
+	return (D > 0) ? (-B - rcp( rsqrt( D ) )) : 0;
+}
+
+// Main ===========================================================================================
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	// Set bools to compile out code
+	bool bFlashlight = ( FLASHLIGHT != 0 ) ? true : false;
+	bool bDoDiffuseWarp = LIGHTWARPTEXTURE ? true : false;
+	int nNumLights = FLASHLIGHT ? 1 : NUM_LIGHTS;	// Flashlight is considered one light, otherwise, use numlights combo
+
+#if !defined( DX12_LEGACY_PS20 )
+	bool bRayCast = RAYTRACESPHERE ? true : false;
+	bool bRayCastTexKill = SPHERETEXKILLCOMBO ? true : false;
+#endif
+
+	float flFlashlightNDotL = i.vTangentViewVector.w;
+	float4 vFlashlightTexCoord = { 0.0f, 0.0f, 0.0f, 0.0f };
+	if ( bFlashlight )
+	{
+		vFlashlightTexCoord.xyzw = i.cVertexLight.xyzw; // This was hidden in this interpolator
+		i.cVertexLight.rgba = float4( 0.0f, 0.0f, 0.0f, 0.0f );
+	}
+
+	// Interpolated vectors
+	float3 vWorldNormal = i.vWorldNormal.xyz;
+	float3 vWorldTangent = i.vWorldTangent.xyz;
+	float3 vWorldBinormal = ( i.vWorldBinormal.xyz * 2.0f ) - 1.0f; // normalize( cross( vWorldNormal.xyz, vWorldTangent.xyz ) );
+
+	float3 vTangentViewVector = i.vTangentViewVector.xyz;
+
+	// World position
+	float3 vWorldPosition = i.vWorldPosition_ProjPosZ.xyz;
+
+	// World view vector to pixel
+	float3 vWorldViewVector = normalize( vWorldPosition.xyz - g_vCameraPosition.xyz );
+
+	//=================//
+	// TF NPR lighting //
+	//=================//
+	if ( bDoDiffuseWarp )
+	{
+		// Replace the interpolated vertex light
+		if ( bFlashlight == true )
+		{
+			// Deal with this below in the flashlight section
+		}
+		else
+		{
+			if ( nNumLights > 0 )
+			{
+				float3 cWarpedLight = 2.0f * g_tLightwarpSampler.tex.Sample( g_tLightwarpSampler.smp, ( i.vLightFalloffCosine01.z ).xx ).rgb;
+				i.cVertexLight.rgb += i.vLightFalloffCosine01.x * PixelShaderGetLightColor( g_sLightInfo, 0 ) * cWarpedLight.rgb;
+			}
+
+			if ( nNumLights > 1 )
+			{
+				float3 cWarpedLight = 2.0f * g_tLightwarpSampler.tex.Sample( g_tLightwarpSampler.smp, ( i.vLightFalloffCosine01.w ).xx ).rgb;
+				i.cVertexLight.rgb += i.vLightFalloffCosine01.y * PixelShaderGetLightColor( g_sLightInfo, 1 ) * cWarpedLight.rgb;
+			}
+
+			if ( nNumLights > 2 )
+			{
+				float3 cWarpedLight = 2.0f * g_tLightwarpSampler.tex.Sample( g_tLightwarpSampler.smp, ( i.vLightFalloffCosine23.z ).xx ).rgb;
+				i.cVertexLight.rgb += i.vLightFalloffCosine23.x * PixelShaderGetLightColor( g_sLightInfo, 2 ) * cWarpedLight.rgb;
+			}
+
+			if ( nNumLights > 3 )
+			{
+				float3 cWarpedLight = 2.0f * g_tLightwarpSampler.tex.Sample( g_tLightwarpSampler.smp, ( i.vLightFalloffCosine23.w ).xx ).rgb;
+				i.cVertexLight.rgb += i.vLightFalloffCosine23.y * PixelShaderGetLightColor( g_sLightInfo, 3 ) * cWarpedLight.rgb;
+			}
+		}
+	}
+
+	//==========================================================================================================//
+	// Ray cast against sphere representing eyeball to reduce artifacts from non-spherical morphed eye geometry //
+	//==========================================================================================================//
+#if !defined( DX12_LEGACY_PS20 )
+	if ( bRayCast )
+	{
+		float fSphereRayCastDistance = IntersectRaySphere( g_vCameraPosition.xyz, vWorldViewVector.xyz, g_vEyeOrigin.xyz, g_flEyeballRadius );
+		vWorldPosition.xyz = g_vCameraPosition.xyz + ( vWorldViewVector.xyz * fSphereRayCastDistance );
+		if (fSphereRayCastDistance == 0)
+		{
+			if ( bRayCastTexKill )
+				clip(-1); // texkill to get a better silhouette
+			vWorldPosition.xyz = g_vEyeOrigin.xyz + ( vWorldNormal.xyz * g_flEyeballRadius );
+		}
+	}
+#endif
+
+	//=================================//
+	// Generate sphere and cornea uv's //
+	//=================================//
+#if !defined( DX12_LEGACY_PS20 )
+	float2 vCorneaUv; // Note: Cornea texture is a cropped version of the iris texture
+	vCorneaUv.x = dot( g_vIrisProjectionU, float4( vWorldPosition, 1.0f ) );
+	vCorneaUv.y = dot( g_vIrisProjectionV, float4( vWorldPosition, 1.0f ) );
+	float2 vSphereUv = ( vCorneaUv.xy * 0.5f ) + 0.25f;
+#else // ps_20
+	float2 vCorneaUv = i.vAmbientOcclUv_fallbackCorneaUv.wz; // Note: Cornea texture is a cropped version of the iris texture
+	float2 vSphereUv = ( vCorneaUv.xy * 0.5f ) + 0.25f;
+#endif
+
+	//=================================//
+	// Hacked parallax mapping on iris //
+	//=================================//
+	float fIrisOffset = g_tCorneaSampler.tex.Sample( g_tCorneaSampler.smp, vCorneaUv.xy ).b;
+
+#if !defined( DX12_LEGACY_PS20 )
+	float2 vParallaxVector = ( ( vTangentViewVector.xy * fIrisOffset * g_flParallaxStrength ) / ( 1.0f - vTangentViewVector.z ) ); // Note: 0.25 is a magic number
+	vParallaxVector.x = -vParallaxVector.x; //Need to flip x...not sure why.
+	//vParallaxVector.x *= -1.0; //Need to flip x...not sure why.
+	//vParallaxVector = 0.0f; //Disable parallax for debugging
+#else // Disable parallax effect in 2.0 version
+	float2 vParallaxVector = { 0.0f, 0.0f };
+#endif
+
+	float2 vIrisUv = vSphereUv.xy - vParallaxVector.xy;
+
+	// Note: We fetch from this texture twice right now with different uv's for the color and alpha
+	float2 vCorneaNoiseUv = vSphereUv.xy + ( vParallaxVector.xy * 0.5 );
+	float fCorneaNoise = g_tIrisSampler.tex.Sample( g_tIrisSampler.smp, vCorneaNoiseUv.xy ).a;
+
+	//===============//
+	// Cornea normal //
+	//===============//
+	// Sample 2D normal from texture
+	float3 vCorneaTangentNormal = { 0.0, 0.0, 1.0 };
+	float4 vCorneaSample = g_tCorneaSampler.tex.Sample( g_tCorneaSampler.smp, vCorneaUv.xy );
+	vCorneaTangentNormal.xy = vCorneaSample.rg - 0.5f; // Note: This scales the bump to 50% strength
+
+	// Scale strength of normal
+	vCorneaTangentNormal.xy *= g_flCorneaBumpStrength;
+
+	// Add in surface noise and imperfections (NOTE: This should be baked into the normal map!)
+	vCorneaTangentNormal.xy += fCorneaNoise * 0.1f;
+
+	// Normalize tangent vector
+#if !defined( DX12_LEGACY_PS20 )
+	// Since this isn't used later in 2.0, skip the normalize to save shader instructions
+	vCorneaTangentNormal.xyz = normalize( vCorneaTangentNormal.xyz );
+#endif
+
+	// Transform into world space
+	float3 vCorneaWorldNormal = Vec3TangentToWorldNormalized( vCorneaTangentNormal.xyz, vWorldNormal.xyz, vWorldTangent.xyz, vWorldBinormal.xyz );
+
+	//============//
+	// Flashlight //
+	//============//
+	float3 vFlashlightVector = { 0.0f, 0.0f, 0.0f };
+	float3 cFlashlightColorFalloff = { 0.0f, 0.0f, 0.0f };
+	if ( bFlashlight == true )
+	{
+		// Flashlight vector
+		vFlashlightVector.xyz = normalize( g_vFlashlightPos.xyz - i.vWorldPosition_ProjPosZ.xyz );
+
+		// Distance attenuation for flashlight and to fade out shadow over distance
+		float3 vDelta = g_vFlashlightPos.xyz - i.vWorldPosition_ProjPosZ.xyz;
+		float flDistSquared = dot( vDelta, vDelta );
+		float flDist = sqrt( flDistSquared );
+		float flFlashlightAttenuation = dot( g_vFlashlightAttenuationFactors.xyz, float3( 1.0f, 1.0f/flDist, 1.0f/flDistSquared ) );
+
+		// Flashlight cookie
+#if !defined( DX12_LEGACY_PS20 )
+		float3 vProjCoords = vFlashlightTexCoord.xyz / vFlashlightTexCoord.w;
+		float3 cFlashlightCookieColor = g_tFlashlightCookieSampler.tex.Sample( g_tFlashlightCookieSampler.smp, vProjCoords );
+#else 
+		float3 cFlashlightCookieColor = g_tFlashlightCookieSampler.tex.Sample( g_tFlashlightCookieSampler.smp, ( vFlashlightTexCoord.xyzw ).xy / ( vFlashlightTexCoord.xyzw ).w );
+#endif
+
+		// Shadow depth map
+#if FLASHLIGHTSHADOWS && !defined( DX12_LEGACY_PS20 )
+		int nShadowLevel = FLASHLIGHTDEPTHFILTERMODE;
+		float flShadow = DoFlashlightShadow( g_tFlashlightDepthSampler, g_tRandomRotationSampler, vProjCoords, float2(0,0), nShadowLevel, g_vShadowTweaks, false, cFlashlightScreenScale );
+		float flAttenuated = lerp( flShadow, 1.0f, g_vShadowTweaks.y );		// Blend between fully attenuated and not attenuated
+		flShadow = lerp( flAttenuated, flShadow, flFlashlightAttenuation ); // Blend between shadow and above, according to light attenuation
+		cFlashlightCookieColor *= flShadow; // Apply shadow term to cookie color
+#endif
+
+		// Flashlight color intensity (needs to be multiplied by global flashlight color later)
+		cFlashlightColorFalloff.rgb = flFlashlightAttenuation * cFlashlightCookieColor.rgb;
+
+		// Add this into the interpolated lighting
+		if ( bDoDiffuseWarp )
+		{
+			//float3 cWarpedLight = 2.0f * tex1D( g_tLightwarpSampler, flFlashlightNDotL ).rgb;
+			//i.cVertexLight.rgb += cFlashlightColorFalloff.rgb * cFlashlightColor.rgb * cWarpedLight.rgb;
+			i.cVertexLight.rgb += cFlashlightColorFalloff.rgb * cFlashlightColor.rgb * flFlashlightNDotL; // No light warp for now
+		}
+		else
+		{
+			i.cVertexLight.rgb += cFlashlightColorFalloff.rgb * cFlashlightColor.rgb * flFlashlightNDotL;
+		}
+	}
+
+	//==============//
+	// Dilate pupil //
+	//==============//
+#if !defined( DX12_LEGACY_PS20 )
+	vIrisUv.xy -= 0.5f; // Center around (0,0)
+	float fPupilCenterToBorder = saturate( length( vIrisUv.xy ) / 0.2f ); //Note: 0.2 is the uv radius of the iris
+	float fPupilDilateFactor = g_flDilationFactor; // This value should be between 0-1
+	vIrisUv.xy *= lerp (1.0f, fPupilCenterToBorder, saturate( fPupilDilateFactor ) * 2.5f - 1.25f );
+	vIrisUv.xy += 0.5f;
+#endif
+
+	//============//
+	// Iris color //
+	//============//
+	float4 cIrisColor = g_tIrisSampler.tex.Sample( g_tIrisSampler.smp, vIrisUv.xy );
+
+	//==========================//
+	// Iris lighting highlights //
+	//==========================//
+	float3 cIrisLighting = float3( 0.0f, 0.0f, 0.0f );
+
+#if !defined( DX12_LEGACY_PS20 )
+	// Mask off everything but the iris pixels
+	float fIrisHighlightMask = g_tCorneaSampler.tex.Sample( g_tCorneaSampler.smp, vCorneaUv.xy ).a;
+
+	// Generate the normal
+	float3 vIrisTangentNormal = vCorneaTangentNormal.xyz;
+	vIrisTangentNormal.xy *= -2.5f; // I'm not normalizing on purpose
+
+	for ( int j=0; j < nNumLights; j++ )
+	{
+		// World light vector
+		float3 vWorldLightVector;
+		if ( ( j == 0 ) && ( bFlashlight == true ) )
+			vWorldLightVector = vFlashlightVector.xyz;
+		else
+			vWorldLightVector = PixelShaderGetLightVector( i.vWorldPosition_ProjPosZ.xyz, g_sLightInfo, j );
+
+		// Tangent light vector
+		float3 vTangentLightVector = Vec3WorldToTangent( vWorldLightVector.xyz, vWorldNormal.xyz, vWorldTangent.xyz, vWorldBinormal.xyz );
+
+		// Adjust the tangent light vector to generate the iris lighting
+		float3 tmpv = -vTangentLightVector.xyz;
+		tmpv.xy *= -0.5f; //Flatten tangent view
+		tmpv.z = max( tmpv.z, 0.5f ); //Clamp z of tangent view to help maintain highlight
+		tmpv.xyz = normalize( tmpv.xyz );
+
+		// Core iris lighting math
+		float fIrisFacing = pow( abs( dot( vIrisTangentNormal.xyz, tmpv.xyz ) ), 6.0f ) * 0.5f; // Yes, 6.0 and 0.5 are magic numbers
+
+		// Cone of darkness to darken iris highlights when light falls behind eyeball past a certain point
+		float flConeOfDarkness = pow( 1.0f - saturate( ( -vTangentLightVector.z - 0.25f ) / 0.75f ), 4.0f );
+		//float flConeOfDarkness = pow( 1.0f - saturate( ( -dot( vIrisTangentNormal.xyz, vTangentLightVector.xyz ) - 0.15f ) / 0.85f ), 8.0f );
+
+		// Tint by iris color and cone of darkness
+		float3 cIrisLightingTmp = fIrisFacing * fIrisHighlightMask * flConeOfDarkness;
+
+		// Attenuate by light color and light falloff
+		if ( ( j == 0 ) && ( bFlashlight == true ) )
+			cIrisLightingTmp.rgb *= cFlashlightColorFalloff.rgb * cFlashlightColor.rgb;
+		else if ( j == 0 )
+			cIrisLightingTmp.rgb *= i.vLightFalloffCosine01.x * PixelShaderGetLightColor( g_sLightInfo, 0 );
+		else if ( j == 1 )
+			cIrisLightingTmp.rgb *= i.vLightFalloffCosine01.y * PixelShaderGetLightColor( g_sLightInfo, 1 );
+		else if ( j == 2 )
+			cIrisLightingTmp.rgb *= i.vLightFalloffCosine23.x * PixelShaderGetLightColor( g_sLightInfo, 2 );
+		else
+			cIrisLightingTmp.rgb *= i.vLightFalloffCosine23.y * PixelShaderGetLightColor( g_sLightInfo, 3 );
+
+		// Sum into final variable
+		cIrisLighting.rgb += cIrisLightingTmp.rgb;
+	}
+
+	// Add slight view dependent iris lighting based on ambient light intensity to enhance situations with no local lights (0.5f is to help keep it subtle)
+	cIrisLighting.rgb += saturate( dot( vIrisTangentNormal.xyz, -vTangentViewVector.xyz ) ) * g_flAverageAmbient * fIrisHighlightMask * 0.5f;
+#else
+	// Else, intensify light over cornea to simulate the brightening that happens above
+	cIrisLighting.rgb += i.cVertexLight.rgb * vCorneaSample.a;
+#endif
+
+	//===================//
+	// Ambient occlusion //
+	//===================//
+	float3 cAmbientOcclFromTexture = g_tEyeAmbientOcclSampler.tex.Sample( g_tEyeAmbientOcclSampler.smp, i.vAmbientOcclUv_fallbackCorneaUv.xy ).rgb;
+	float3 cAmbientOcclColor = lerp( g_cAmbientOcclColor, 1.0f, cAmbientOcclFromTexture.rgb ); // Color the ambient occlusion
+	i.cVertexLight.rgb *= cAmbientOcclColor.rgb;
+
+	//==========================//
+	// Reflection from cube map //
+	//==========================//
+	float3 vCorneaReflectionVector = reflect ( vWorldViewVector.xyz, vCorneaWorldNormal.xyz );
+
+	//float3 cReflection = ENV_MAP_SCALE * texCUBE( g_tEyeReflectionCubemapSampler, vCorneaReflectionVector.xyz ).rgb;
+	float3 cReflection = g_flGlossiness * g_tEyeReflectionCubemapSampler.tex.Sample( g_tEyeReflectionCubemapSampler.smp, vCorneaReflectionVector.xyz ).rgb;
+
+	// Hack: Only add in half of the env map for the flashlight pass. This looks reasonable.
+	if ( bFlashlight )
+	{
+		cReflection.rgb *= 0.5f;
+	}
+
+	//===========================//
+	// Glint specular highlights //
+	//===========================//
+	float3 cSpecularHighlights = 0.0f;
+	if ( bFlashlight )
+	{
+		cSpecularHighlights.rgb += pow( saturate( dot( vCorneaReflectionVector.xyz, vFlashlightVector.xyz ) ), 128.0f ) * cFlashlightColorFalloff.rgb * cFlashlightColor.rgb;
+	}
+	else // no flashlight
+	{
+		if ( nNumLights > 0 )
+			cSpecularHighlights.rgb += pow( saturate( dot( vCorneaReflectionVector.xyz, PixelShaderGetLightVector( i.vWorldPosition_ProjPosZ.xyz, g_sLightInfo, 0 ) ) ), 128.0f ) * i.vLightFalloffCosine01.x * PixelShaderGetLightColor( g_sLightInfo, 0 );
+
+		if ( nNumLights > 1 )
+			cSpecularHighlights.rgb += pow( saturate( dot( vCorneaReflectionVector.xyz, PixelShaderGetLightVector( i.vWorldPosition_ProjPosZ.xyz, g_sLightInfo, 1 ) ) ), 128.0f ) * i.vLightFalloffCosine01.y * PixelShaderGetLightColor( g_sLightInfo, 1 );
+
+		if ( nNumLights > 2 )
+			cSpecularHighlights.rgb += pow( saturate( dot( vCorneaReflectionVector.xyz, PixelShaderGetLightVector( i.vWorldPosition_ProjPosZ.xyz, g_sLightInfo, 2 ) ) ), 128.0f ) * i.vLightFalloffCosine23.x * PixelShaderGetLightColor( g_sLightInfo, 2 );
+
+		if ( nNumLights > 3 )
+			cSpecularHighlights.rgb += pow( saturate( dot( vCorneaReflectionVector.xyz, PixelShaderGetLightVector( i.vWorldPosition_ProjPosZ.xyz, g_sLightInfo, 3 ) ) ), 128.0f ) * i.vLightFalloffCosine23.y * PixelShaderGetLightColor( g_sLightInfo, 3 );
+	}
+
+	//===============//
+	// Combine terms //
+	//===============//
+	float4 result;
+
+	// Unlit iris, pupil, and sclera color
+	result.rgb = cIrisColor.rgb;
+
+	// Add in slight cornea noise to help define raised cornea layer for close-ups
+	result.rgb += fCorneaNoise * 0.1f;
+
+	// Diffuse light (Vertex lighting + extra iris caustic lighting)
+	result.rgb *= i.cVertexLight.rgb + cIrisLighting.rgb;
+
+	// Environment map
+	result.rgb += cReflection.rgb * i.cVertexLight.rgb;
+
+	// Local light glints
+	result.rgb += cSpecularHighlights.rgb;
+
+	// Set alpha to 1.0 by default
+	result.a = 1.0;
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_vCameraPosition.xyz, i.vWorldPosition_ProjPosZ.xyz, i.vWorldPosition_ProjPosZ.w );
+	return DX12FinishPixel( FinalOutput( result, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+
+}

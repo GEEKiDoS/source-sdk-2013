@@ -1,0 +1,129 @@
+// Native SM5 port of materialsystem/stdshaders/colorcorrection.cpp (cport.py + review): constants stage into the
+// legacy register file of BaseVSShaderDX12; hardware-config branches are resolved for the DX12 config.
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: 
+//
+// $NoKeywords: $
+//=============================================================================
+
+#include "BaseVSShaderDX12.h"
+
+#include "screenspaceeffect_vs51.inc"
+#include "colorcorrection_ps51.inc"
+
+#include "../materialsystem_global.h"
+
+
+BEGIN_VS_SHADER_FLAGS( ColorCorrection, "Help for ColorCorrection", SHADER_NOT_EDITABLE )
+	BEGIN_SHADER_PARAMS
+		SHADER_PARAM( WEIGHT_DEFAULT, SHADER_PARAM_TYPE_FLOAT,   "1", "Volume Texture Default Weight" )
+		SHADER_PARAM( WEIGHT0,		  SHADER_PARAM_TYPE_FLOAT,   "0", "Volume Texture Weight 0" )
+		SHADER_PARAM( WEIGHT1,		  SHADER_PARAM_TYPE_FLOAT,   "0", "Volume Texture Weight 1" )
+		SHADER_PARAM( WEIGHT2,		  SHADER_PARAM_TYPE_FLOAT,   "0", "Volume Texture Weight 2" )
+		SHADER_PARAM( WEIGHT3,		  SHADER_PARAM_TYPE_FLOAT,   "0", "Volume Texture Weight 3" )
+		SHADER_PARAM( NUM_LOOKUPS,    SHADER_PARAM_TYPE_INTEGER, "0", "Number of lookup maps" )
+		SHADER_PARAM( USE_FB_TEXTURE, SHADER_PARAM_TYPE_BOOL,    "0", "Use frame buffer texture as input" )
+		SHADER_PARAM( INPUT_TEXTURE,  SHADER_PARAM_TYPE_TEXTURE, "0", "Input texture" )
+	END_SHADER_PARAMS
+
+	SHADER_INIT_PARAMS()
+	{
+		if( !params[ WEIGHT_DEFAULT ]->IsDefined() )
+		{
+			params[ WEIGHT_DEFAULT ]->SetFloatValue( 1.0f) ;
+		}
+		if( !params[ WEIGHT0 ]->IsDefined() )
+		{
+			params[ WEIGHT0 ]->SetFloatValue( 1.0f );
+		}
+		if( !params[ WEIGHT1 ]->IsDefined() )
+		{
+			params[ WEIGHT1 ]->SetFloatValue( 1.0f );
+		}
+		if( !params[ WEIGHT2 ]->IsDefined() )
+		{
+			params[ WEIGHT2 ]->SetFloatValue( 1.0f );
+		}
+		if( !params[ WEIGHT3 ]->IsDefined() )
+		{
+			params[ WEIGHT3 ]->SetFloatValue( 1.0f );
+		}
+		if( !params[ NUM_LOOKUPS ]->IsDefined() )
+		{
+			params[ NUM_LOOKUPS ]->SetIntValue( 0 );
+		}
+		SET_FLAGS2( MATERIAL_VAR2_NEEDS_FULL_FRAME_BUFFER_TEXTURE );
+	}
+
+	SHADER_FALLBACK
+	{
+		// Requires DX9 + above
+		
+		return 0;
+	}
+
+	SHADER_INIT
+	{
+	}
+
+	SHADER_DRAW
+	{
+		SHADOW_STATE
+		{
+			pShaderShadow->EnableTexture( SHADER_SAMPLER0, true );
+			pShaderShadow->EnableTexture( SHADER_SAMPLER1, true );
+			pShaderShadow->EnableTexture( SHADER_SAMPLER2, true );
+			pShaderShadow->EnableTexture( SHADER_SAMPLER3, true );
+			pShaderShadow->EnableTexture( SHADER_SAMPLER4, true );
+
+			int fmt = VERTEX_POSITION;
+			pShaderShadow->VertexShaderVertexFormat( fmt, 1, 0, 0 );
+
+			const bool bForceSRGBWrite = false;
+			pShaderShadow->EnableSRGBWrite( bForceSRGBWrite );
+
+			DECLARE_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+			SET_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+
+			{
+				DECLARE_STATIC_PIXEL_SHADER( colorcorrection_ps51 );
+				SET_STATIC_PIXEL_SHADER( colorcorrection_ps51 );
+			}
+		}
+		DYNAMIC_STATE
+		{
+			if( params[ USE_FB_TEXTURE ]->GetIntValue() )
+				pShaderAPI->BindStandardTexture( SHADER_SAMPLER0, TEXTURE_FRAME_BUFFER_FULL_TEXTURE_0 );
+			else
+				BindTexture( SHADER_SAMPLER0, INPUT_TEXTURE, -1 );
+
+			for( int i=0;i<params[NUM_LOOKUPS]->GetIntValue();i++ )
+			{
+				pShaderAPI->BindStandardTexture( (Sampler_t)(SHADER_SAMPLER1+i), (StandardTextureId_t)(TEXTURE_COLOR_CORRECTION_VOLUME_0+i) );
+			}
+
+			float default_weight = params[ WEIGHT_DEFAULT ]->GetFloatValue();
+			float weights[4] = { params[ WEIGHT0 ]->GetFloatValue(),
+								 params[ WEIGHT1 ]->GetFloatValue(),
+								 params[ WEIGHT2 ]->GetFloatValue(),
+								 params[ WEIGHT3 ]->GetFloatValue()  };
+
+			DX12SetPixelShaderConstant( 0, &default_weight );
+			DX12SetPixelShaderConstant( 1, &weights[0] );
+			DX12SetPixelShaderConstant( 2, &weights[1] );
+			DX12SetPixelShaderConstant( 3, &weights[2] );
+			DX12SetPixelShaderConstant( 4, &weights[3] );
+
+			{
+				DECLARE_DYNAMIC_PIXEL_SHADER( colorcorrection_ps51 );
+				SET_DYNAMIC_PIXEL_SHADER_COMBO( NUM_LOOKUPS, params[ NUM_LOOKUPS ]->GetIntValue() );
+				SET_DYNAMIC_PIXEL_SHADER( colorcorrection_ps51 );
+			}
+
+			DECLARE_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+			SET_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+		}
+		Draw();
+	}
+END_SHADER

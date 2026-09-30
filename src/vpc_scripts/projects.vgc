@@ -27,6 +27,21 @@ $Project "shaderapidx12"
     "materialsystem\shaderapidx12\shaderapidx12.vpc" [$WIN64]
 }
 
+$Project "nativeshaderpack_dx12"
+{
+	"utils\nativeshaderpack_dx12\nativeshaderpack_dx12.vpc" [$WIN64]
+}
+
+$Project "stdshader_dx12"
+{
+	"materialsystem\stdshaders_dx12\stdshader_dx12.vpc" [$WIN64]
+}
+
+$Project "shaderapidx12_smoke"
+{
+	"utils\shaderapidx12_smoke\shaderapidx12_smoke.vpc" [$WIN64]
+}
+
 $Project "client"
 {
 	"game\client\client_tf.vpc"			[$TF]

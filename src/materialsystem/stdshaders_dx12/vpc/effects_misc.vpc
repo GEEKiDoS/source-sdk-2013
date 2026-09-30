@@ -1,0 +1,15 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\emissive_scroll_blended_pass_helper.cpp"
+        $File "cpp\flesh_interior_blended_pass_helper.cpp"
+        $File "cpp\weapon_sheen_pass_helper.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "cpp\emissive_scroll_blended_pass_helper.h"
+        $File "cpp\flesh_interior_blended_pass_helper.h"
+        $File "cpp\weapon_sheen_pass_helper.h"
+    }
+}
