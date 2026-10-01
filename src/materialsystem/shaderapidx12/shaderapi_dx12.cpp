@@ -822,8 +822,13 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
   const float slope=offset==SHADER_POLYOFFSET_SHADOW_BIAS?fastFloatParams_[0]:(offset==SHADER_POLYOFFSET_DECAL?config.m_SlopeScaleDepthBias_Decal:config.m_SlopeScaleDepthBias_Normal);
   const float depth=offset==SHADER_POLYOFFSET_SHADOW_BIAS?fastFloatParams_[1]:(offset==SHADER_POLYOFFSET_DECAL?config.m_DepthBias_Decal:config.m_DepthBias_Normal);
   const float direction=reverseDepth?-1.f:1.f;
-  key.slopeScaledDepthBias=slope!=0.f?direction/slope:0.f;
-  key.depthBiasValue=depth!=0.f?static_cast<int>(std::clamp(std::round(direction*16777216.f/depth),-16777216.f,16777216.f)):0;
+  // DX9 (ApplyZBias) feeds decal/normal biases as the reciprocal of the configured values but passes the
+  // shadow-map factors through unchanged. D3D12's integer depth bias is in units of 1/2^24 for a 24-bit depth buffer.
+  const bool shadowBias=offset==SHADER_POLYOFFSET_SHADOW_BIAS;
+  const float slopeFactor=slope!=0.f?(shadowBias?slope:1.f/slope):0.f;
+  const float depthFactor=depth!=0.f?(shadowBias?depth:1.f/depth):0.f;
+  key.slopeScaledDepthBias=direction*slopeFactor;
+  key.depthBiasValue=static_cast<int>(std::clamp(std::round(direction*16777216.f*depthFactor),-16777216.f,16777216.f));
   key.colorWrites=colorWriteOverride_?colorWriteOverrideValue_:activeSnapshot_.colorWrites;key.alphaWrites=alphaWriteOverride_?alphaWriteOverrideValue_:activeSnapshot_.alphaWrites;key.alphaToCoverage=alphaToCoverage_||activeSnapshot_.alphaToCoverage;key.stencil=stencilEnabled_||activeSnapshot_.stencil;key.raster=(key.alphaToCoverage?1:0)|(key.stencil?2:0)|(activeSnapshot_.alphaTest?4:0);
   if(stencilEnabled_){key.stencilFunction=stencilCompare_;key.stencilFail=stencilFailOp_;key.stencilDepthFail=stencilDepthFailOp_;key.stencilPass=stencilPassOp_;key.stencilReadMask=stencilReadMask_;key.stencilWriteMask=stencilWriteMask_;}
   else{key.stencilFunction=static_cast<uint32_t>(activeSnapshot_.stencilFunction)+1;key.stencilFail=static_cast<uint32_t>(activeSnapshot_.stencilFail)+1;key.stencilDepthFail=static_cast<uint32_t>(activeSnapshot_.stencilDepthFail)+1;key.stencilPass=static_cast<uint32_t>(activeSnapshot_.stencilPass)+1;key.stencilReadMask=activeSnapshot_.stencilReadMask;key.stencilWriteMask=activeSnapshot_.stencilWriteMask;}
