@@ -122,10 +122,11 @@ std::string PixelSource(const FixedFunctionStateDX12 &st,const std::vector<Shade
     if(st.fogMode!=SHADER_FOGMODE_DISABLED)s<<"float ndcDepth=i.pos.z;float eyeDepth=abs((pc[2].y-ndcDepth*pc[2].w)/max(abs(ndcDepth*pc[2].z-pc[2].x),1e-6));float fogFactor=max(1-pc[28].w,saturate((pc[28].y-eyeDepth)*pc[28].z));prev.rgb=lerp(pc[29].rgb,prev.rgb,fogFactor);\n";
     s<<"return saturate(prev);}\n";return s.str();
 }
-ShaderRecordDX12 *Compile(CShaderDeviceDX12 *device,const std::string &src,bool pixel)
+} // anonymous namespace
+ShaderRecordDX12 *CompileNativeShaderRecordDX12(CShaderDeviceDX12 *device,const std::string &src,bool pixel,const char *profile)
 {
-    if(!device)return nullptr;
-    IShaderBuffer *buffer=device->CompileShader(src.data(),src.size(),pixel?"ps_5_0":"vs_5_0");
+    if(!device||!profile)return nullptr;
+    IShaderBuffer *buffer=device->CompileShader(src.data(),src.size(),profile);
     if(!buffer)return nullptr;
     auto record=std::make_unique<ShaderRecordDX12>();static std::atomic<uint64_t> next{0x100000000ull};record->identity=next.fetch_add(1);record->stagePixel=pixel;
     const unsigned char *bits=static_cast<const unsigned char *>(buffer->GetBits());record->bytecode.assign(bits,bits+buffer->GetSize());buffer->Release();
@@ -144,6 +145,5 @@ ShaderRecordDX12 *Compile(CShaderDeviceDX12 *device,const std::string &src,bool 
     }
     return record.release();
 }
-}
-ShaderRecordDX12 *CreateFixedFunctionShaderDX12(CShaderDeviceDX12 *device,const FixedFunctionStateDX12 &state,bool pixel,const std::vector<ShaderLinkageDX12> *linkedInputs){return Compile(device,pixel?PixelSource(state,linkedInputs):VertexSource(state),pixel);}
+ShaderRecordDX12 *CreateFixedFunctionShaderDX12(CShaderDeviceDX12 *device,const FixedFunctionStateDX12 &state,bool pixel,const std::vector<ShaderLinkageDX12> *linkedInputs){return CompileNativeShaderRecordDX12(device,pixel?PixelSource(state,linkedInputs):VertexSource(state),pixel,pixel?"ps_5_0":"vs_5_0");}
 } // namespace shaderapidx12

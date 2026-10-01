@@ -14,6 +14,7 @@
 #include "clientsideeffects.h"
 #include "particlemgr.h"
 #include "viewrender.h"
+#include "motionvectors_dx12.h"
 #include "iclientmode.h"
 #include "voice_status.h"
 #include "glow_overlay.h"
@@ -484,6 +485,8 @@ protected:
 
 	void			SSAO_DepthPass();
 	void			DrawDepthOfField();
+	void			CollectMotionVectorRenderables( CUtlVector< CClientRenderablesList::CEntry > &list );
+	void			DrawMotionVectors( const CUtlVector< CClientRenderablesList::CEntry > &list );
 };
 
 
@@ -1043,6 +1046,41 @@ void CViewRender::DrawRenderablesInList( CUtlVector< IClientRenderable * > &list
 	m_pCurrentlyDrawingEntity = NULL;
 }
 
+void CViewRender::DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< IClientRenderable * > &list )
+{
+	VPROF_BUDGET( "CViewRender::DrawViewModelMotionVectors", VPROF_BUDGETGROUP_OTHER_UNACCOUNTED );
+
+	ITexture *pRT = MotionVectorsDX12_RenderTarget();
+	if ( !pRT )
+		return;
+
+	CMatRenderContextPtr pRenderContext( materials );
+	pRenderContext->PushRenderTargetAndViewport( pRT, viewRender.x, viewRender.y, viewRender.width, viewRender.height );
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_PASS, DX12_MOTION_PASS_BEGIN_VIEWMODEL );
+
+	Assert( m_pCurrentlyDrawingEntity == NULL );
+	int nCount = list.Count();
+	for ( int i = 0; i < nCount; ++i )
+	{
+		IClientRenderable *pRenderable = list[i];
+		IClientUnknown *pUnk = pRenderable->GetIClientUnknown();
+		Assert( pUnk );
+
+		if ( pRenderable->ShouldDraw() )
+		{
+			pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_OBJECT, MotionVectorsDX12_ObjectKey( pRenderable ) );
+			m_pCurrentlyDrawingEntity = pUnk->GetBaseEntity();
+			pRenderable->DrawModel( STUDIO_RENDER );
+		}
+	}
+	m_pCurrentlyDrawingEntity = NULL;
+
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_OBJECT, 0 );
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_PASS, DX12_MOTION_PASS_END );
+	pRenderContext->PopRenderTargetAndViewport();
+}
+
+
 
 //-----------------------------------------------------------------------------
 // Purpose: Actually draw the view model
@@ -1147,6 +1185,8 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 		}
 
 		DrawRenderablesInList( opaqueViewModelList );
+		if ( MotionVectorsDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() )
+			DrawViewModelMotionVectors( viewRender, opaqueViewModelList );
 		DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
 	}
 
@@ -5484,6 +5524,57 @@ void MaybeInvalidateLocalPlayerAnimation()
 	}
 }
 
+static void AppendMotionVectorEntries( CClientRenderablesList::CEntry *pEntries, int nEntries, CUtlVector< CClientRenderablesList::CEntry > &list )
+{
+	for ( int i = 0; i < nEntries; ++i )
+	{
+		IClientRenderable *pRenderable = pEntries[i].m_pRenderable;
+		if ( pRenderable && pRenderable->GetIClientUnknown()->GetBaseEntity() )
+			list.AddToTail( pEntries[i] );
+	}
+}
+
+void CBaseWorldView::CollectMotionVectorRenderables( CUtlVector< CClientRenderablesList::CEntry > &list )
+{
+	list.RemoveAll();
+
+	AppendMotionVectorEntries( m_pRenderablesList->m_RenderGroups[ RENDER_GROUP_OPAQUE_BRUSH ], m_pRenderablesList->m_RenderGroupCounts[ RENDER_GROUP_OPAQUE_BRUSH ], list );
+	for ( int bucket = 0; bucket < RENDER_GROUP_CFG_NUM_OPAQUE_ENT_BUCKETS; ++bucket )
+	{
+		const int group = RENDER_GROUP_OPAQUE_ENTITY_HUGE + 2 * bucket;
+		AppendMotionVectorEntries( m_pRenderablesList->m_RenderGroups[ group ], m_pRenderablesList->m_RenderGroupCounts[ group ], list );
+	}
+}
+
+void CBaseWorldView::DrawMotionVectors( const CUtlVector< CClientRenderablesList::CEntry > &list )
+{
+	VPROF_BUDGET( "CBaseWorldView::DrawMotionVectors", VPROF_BUDGETGROUP_OTHER_UNACCOUNTED );
+
+	ITexture *pRT = MotionVectorsDX12_RenderTarget();
+	if ( !pRT )
+		return;
+
+	// Water views draw VIEW_MAIN several times per frame: the first call begins the pass, later calls append.
+	static int s_nLastFrame = -1;
+	const bool bFirstThisFrame = s_nLastFrame != gpGlobals->framecount;
+	s_nLastFrame = gpGlobals->framecount;
+
+	CMatRenderContextPtr pRenderContext( materials );
+	pRenderContext->PushRenderTargetAndViewport( pRT, x, y, width, height );
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_PASS, bFirstThisFrame ? DX12_MOTION_PASS_BEGIN_MAIN : DX12_MOTION_PASS_APPEND_MAIN );
+
+	for ( int i = 0; i < list.Count(); ++i )
+	{
+		const CClientRenderablesList::CEntry &entry = list[i];
+		pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_OBJECT, MotionVectorsDX12_ObjectKey( entry.m_pRenderable ) );
+		DrawOpaqueRenderable( entry.m_pRenderable, entry.m_TwoPass != 0, DEPTH_MODE_NORMAL );
+	}
+
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_OBJECT, 0 );
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_PASS, DX12_MOTION_PASS_END );
+	pRenderContext->PopRenderTargetAndViewport();
+}
+
 void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float waterZAdjust )
 {
 	int savedViewID = g_CurrentViewID;
@@ -5524,7 +5615,13 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	if ( m_DrawFlags & DF_DRAW_ENTITITES )
 	{
 		DrawWorld( waterZAdjust );
+		CUtlVector< CClientRenderablesList::CEntry > motionEntries;
+		const bool bMotionVectors = ( viewID == VIEW_MAIN ) && ( m_eStereoEye == STEREO_EYE_MONO ) && MotionVectorsDX12_Enabled() && !building_cubemaps.GetBool();
+		if ( bMotionVectors )
+			CollectMotionVectorRenderables( motionEntries );
 		DrawOpaqueRenderables( DepthMode );
+		if ( bMotionVectors )
+			DrawMotionVectors( motionEntries );
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles

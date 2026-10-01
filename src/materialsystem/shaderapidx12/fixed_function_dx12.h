@@ -27,4 +27,5 @@ struct FixedFunctionStateDX12
 // The caller owns the returned shader record and must retain it until all PSOs retire.
 ShaderRecordDX12 *CreateFixedFunctionShaderDX12(CShaderDeviceDX12 *device, const FixedFunctionStateDX12 &state, bool pixel,
                                                 const std::vector<ShaderLinkageDX12> *linkedInputs=nullptr);
+ShaderRecordDX12 *CompileNativeShaderRecordDX12(CShaderDeviceDX12 *device, const std::string &source, bool pixel, const char *profile);
 }

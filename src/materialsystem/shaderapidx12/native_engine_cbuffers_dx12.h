@@ -88,12 +88,26 @@ static constexpr EngineCBufferMemberDX12 kDX12PSEngineMembers[] = {
     DX12_ENGINE_MEMBER(DX12PSEngine, cRasterFogColor, 256),
     DX12_ENGINE_MEMBER(DX12PSEngine, cRasterFogParams, 272),
 };
+struct alignas(16) DX12MotionVS {
+    float cPrevViewProj[16];
+    float cMotionParams[4];
+    float cBaseTexTransform[2][4];
+    float cPrevModel[53][12];
+};
+static_assert(sizeof(DX12MotionVS) == 2656, "DX12MotionVS size");
+static constexpr EngineCBufferMemberDX12 kDX12MotionVSMembers[] = {
+    DX12_ENGINE_MEMBER(DX12MotionVS, cPrevViewProj, 0),
+    DX12_ENGINE_MEMBER(DX12MotionVS, cMotionParams, 64),
+    DX12_ENGINE_MEMBER(DX12MotionVS, cBaseTexTransform, 80),
+    DX12_ENGINE_MEMBER(DX12MotionVS, cPrevModel, 112),
+};
 #undef DX12_ENGINE_MEMBER
 #undef DX12_ENGINE_MEMBER_SIZED
 static constexpr EngineCBufferLayoutDX12 kEngineCBufferLayouts[] = {
     { "DX12VSEngine", kStageVertex, 0, sizeof(DX12VSEngine), sizeof(kDX12VSEngineMembers) / sizeof(*kDX12VSEngineMembers), kDX12VSEngineMembers },
     { "DX12VSBones", kStageVertex, 1, sizeof(DX12VSBones), sizeof(kDX12VSBonesMembers) / sizeof(*kDX12VSBonesMembers), kDX12VSBonesMembers },
     { "DX12PSEngine", kStagePixel, 0, sizeof(DX12PSEngine), sizeof(kDX12PSEngineMembers) / sizeof(*kDX12PSEngineMembers), kDX12PSEngineMembers },
+    { "DX12MotionVS", kStageVertex, 7, sizeof(DX12MotionVS), sizeof(kDX12MotionVSMembers) / sizeof(*kDX12MotionVSMembers), kDX12MotionVSMembers },
 };
 } // namespace dx12native
 #endif

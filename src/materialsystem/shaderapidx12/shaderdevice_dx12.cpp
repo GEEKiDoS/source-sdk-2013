@@ -106,6 +106,7 @@ bool CShaderDeviceDX12::Initialize(void *hwnd, int adapter, const ShaderDeviceIn
     if (SUCCEEDED(factory_.As(&factory5))) factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &supported, sizeof(supported));
     allowTearing_ = supported != FALSE;
     rtvStride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    dsvStride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
     RECT rect{}; GetClientRect(static_cast<HWND>(hwnd), &rect);
     const int w = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : static_cast<int>(rect.right-rect.left);
     const int h = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : static_cast<int>(rect.bottom-rect.top);
@@ -117,16 +118,17 @@ bool CShaderDeviceDX12::Initialize(void *hwnd, int adapter, const ShaderDeviceIn
     return true;
 }
 
-bool CShaderDeviceDX12::SupportsMSAA(int count, int quality) const
+bool CShaderDeviceDX12::SupportsMSAAFormat(DXGI_FORMAT format, int count, int quality) const
 {
     if (!device_ || count < 1 || quality < 0) return false;
     if (count == 1) return quality == 0;
-    for (DXGI_FORMAT format : { DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT })
-    {
-        D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS levels{format, static_cast<UINT>(count), D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE, 0};
-        if (FAILED(device_->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &levels, sizeof(levels))) || static_cast<UINT>(quality) >= levels.NumQualityLevels) return false;
-    }
-    return true;
+    D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS levels{format, static_cast<UINT>(count), D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE, 0};
+    return SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &levels, sizeof(levels))) && static_cast<UINT>(quality) < levels.NumQualityLevels;
+}
+
+bool CShaderDeviceDX12::SupportsMSAA(int count, int quality) const
+{
+    return SupportsMSAAFormat(DXGI_FORMAT_B8G8R8A8_UNORM, count, quality) && SupportsMSAAFormat(DXGI_FORMAT_D24_UNORM_S8_UINT, count, quality);
 }
 
 bool CShaderDeviceDX12::CreateFrameObjects()
@@ -262,6 +264,7 @@ ID3D12Resource *CShaderDeviceDX12::SceneColor() const { return currentView_ ? cu
 ID3D12Resource *CShaderDeviceDX12::SceneDepth() const { return currentView_ ? currentView_->sceneDepth.Get() : nullptr; }
 D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneRTV(bool srgb) const { auto handle=currentView_ && currentView_->sceneRTVHeap ? currentView_->sceneRTVStart : D3D12_CPU_DESCRIPTOR_HANDLE{};if(srgb&&handle.ptr)handle.ptr+=rtvStride_;return handle; }
 D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneDSV() const { return currentView_ && currentView_->sceneDSVHeap ? currentView_->sceneDSVStart : D3D12_CPU_DESCRIPTOR_HANDLE{}; }
+D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneReadOnlyDSV() const { auto handle=SceneDSV();if(handle.ptr)handle.ptr+=dsvStride_;return handle; }
 uint32_t CShaderDeviceDX12::CurrentBackBufferIndex() const { return currentView_ && currentView_->swap ? currentView_->swap->GetCurrentBackBufferIndex() : 0; }
 ID3D12Resource *CShaderDeviceDX12::CurrentBackBuffer() const { return currentView_ && currentView_->swap ? currentView_->backBuffers[CurrentBackBufferIndex()] : nullptr; }
 D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::CurrentBackBufferRTV() const { auto h=currentView_ && currentView_->rtvHeap ? currentView_->rtvHeap->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{}; h.ptr+=static_cast<SIZE_T>(CurrentBackBufferIndex())*rtvStride_; return h; }
@@ -285,7 +288,7 @@ bool CShaderDeviceDX12::CreateViewTargets(View &view)
     if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&view.rtvHeap)))) return false;
     heap.NumDescriptors=2;
     if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&view.sceneRTVHeap)))) return false;
-    heap.NumDescriptors=1;
+    heap.NumDescriptors=2;
     heap.Type=D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&view.sceneDSVHeap)))) return false;
     view.ReleaseBackBuffers();
@@ -309,13 +312,16 @@ bool CShaderDeviceDX12::CreateViewTargets(View &view)
     const auto sceneViewStart=view.sceneRTVHeap->GetCPUDescriptorHandleForHeapStart();view.sceneRTVStart=sceneViewStart;
     colorView.Format=SceneColorFormat(false);device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,sceneViewStart);
     colorView.Format=SceneColorFormat(true);D3D12_CPU_DESCRIPTOR_HANDLE gammaView{sceneViewStart.ptr+rtvStride_};device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,gammaView);
-    resource.Format=SceneDepthFormat();resource.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-    D3D12_CLEAR_VALUE depth{};depth.Format=resource.Format;depth.DepthStencil.Depth=1;
+    resource.Format=DXGI_FORMAT_R24G8_TYPELESS;resource.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_CLEAR_VALUE depth{};depth.Format=SceneDepthFormat();depth.DepthStencil.Depth=1;
     hr=device_->CreateCommittedResource(&heapProperties,D3D12_HEAP_FLAG_NONE,&resource,D3D12_RESOURCE_STATE_DEPTH_WRITE,&depth,IID_PPV_ARGS(&view.sceneDepth));
     if (FAILED(hr)) { Warning("ShaderAPIDX12: Create scene depth failed (0x%08x)\n",static_cast<unsigned>(hr)); return false; }
     view.sceneDepthState=D3D12_RESOURCE_STATE_DEPTH_WRITE;
     view.sceneDSVStart=view.sceneDSVHeap->GetCPUDescriptorHandleForHeapStart();
-    device_->CreateDepthStencilView(view.sceneDepth.Get(),nullptr,view.sceneDSVStart);
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};dsv.Format=SceneDepthFormat();dsv.ViewDimension=sampleCount_>1?D3D12_DSV_DIMENSION_TEXTURE2DMS:D3D12_DSV_DIMENSION_TEXTURE2D;
+    device_->CreateDepthStencilView(view.sceneDepth.Get(),&dsv,view.sceneDSVStart);
+    dsv.Flags=D3D12_DSV_FLAG_READ_ONLY_DEPTH|D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+    D3D12_CPU_DESCRIPTOR_HANDLE readOnly{view.sceneDSVStart.ptr+dsvStride_};device_->CreateDepthStencilView(view.sceneDepth.Get(),&dsv,readOnly);
     return true;
 }
 

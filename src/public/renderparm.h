@@ -53,12 +53,26 @@ enum RenderParamInt_t
 
 	INT_RENDERPARM_BACK_BUFFER_INDEX,
 
+	// DX12 motion-vector pass (shaderapidx12 only; other backends store and ignore).
+	// PASS: 0 = end pass (resolve into render target 0), 1 = begin main pass (clear, camera reprojection, VP slot 0),
+	//       2 = append to main pass (VP slot 0), 3 = begin viewmodel append pass (VP slot 1).
+	INT_RENDERPARM_DX12_MOTION_PASS,
+	// Object identity for bone history: CBaseHandle::ToInt() of the renderable; 0 = static (no history).
+	INT_RENDERPARM_DX12_MOTION_OBJECT,
+	// Backend-written status (read by the client through IShaderAPI, never through a render context):
+	// 0 = not evaluated, 1 = available, -1 = private shaders unavailable (sticky), -2 = unavailable for the current MSAA mode.
+	INT_RENDERPARM_DX12_MOTION_STATUS,
+
 	MAX_INT_RENDER_PARMS = 20
 };
 
 // for INT_RENDERPARM_BACK_BUFFER_INDEX
 #define BACK_BUFFER_INDEX_DEFAULT	0
 #define BACK_BUFFER_INDEX_HDR		1
+#define DX12_MOTION_PASS_END            0
+#define DX12_MOTION_PASS_BEGIN_MAIN     1
+#define DX12_MOTION_PASS_APPEND_MAIN    2
+#define DX12_MOTION_PASS_BEGIN_VIEWMODEL 3
 
 enum RenderParamTexture_t
 {

@@ -8,6 +8,7 @@
 #include "tf_rendertargets.h"
 #include "materialsystem/imaterialsystem.h"
 #include "rendertexture.h"
+#include "motionvectors_dx12.h"
 #if defined( REPLAY_ENABLED )
 #include "replay/replay_screenshot.h"
 #endif
@@ -52,6 +53,8 @@ void CTFRenderTargets::InitClientRenderTargets( IMaterialSystem* pMaterialSystem
 	m_tfRenderTargets[index].Init( CreateItemModelPanelTexture( g_pszModelImagePanelRTName, pMaterialSystem, 256 ) );
 
 	CReplayScreenshotTaker::CreateRenderTarget( pMaterialSystem );
+
+	MotionVectorsDX12_CreateRenderTarget( pMaterialSystem, pHardwareConfig );
 }
 
 //-----------------------------------------------------------------------------
@@ -61,6 +64,7 @@ void CTFRenderTargets::InitClientRenderTargets( IMaterialSystem* pMaterialSystem
 void CTFRenderTargets::ShutdownClientRenderTargets()
 {
 	BaseClass::ShutdownClientRenderTargets();
+	MotionVectorsDX12_ShutdownRenderTarget();
 
 	for ( int i = 0; i < m_tfRenderTargets.Count(); i++ )
 	{

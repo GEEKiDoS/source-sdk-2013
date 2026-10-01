@@ -55,7 +55,7 @@ static void HashReflectedTypeDX12(ID3D12ShaderReflectionType *type,const D3D12_S
     }
     canonical+="}";
 }
-static bool ReflectNativeCBuffersDX12(ShaderRecordDX12 *record)
+bool shaderapidx12::ReflectNativeCBuffersDX12(ShaderRecordDX12 *record)
 {
     if(!record||!record->legacyBytecode.empty()||record->nativeReflectionReady)return true;
     Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
@@ -323,6 +323,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
 {
     ZoneNamedN(___tracy_scoped_zone, "DX12 DrawBuffers", DX12_DRAW_ZONES_ACTIVE);
  if(!device_||disallowAccess_||!device_->CommandList()||!device_->NativeDevice()||!bindings[0].buffer||firstIndex<0||indexCount<=0)return;
+ if(motionPassState_==MotionPassStateDX12::Suppressed)return;
  ++frameDrawCount_;++drawStats_.draws;
  const bool indexed=primitive!=MATERIAL_POINTS;
  const size_t indexBytes=indices?static_cast<size_t>(indices->WrittenCount())*indices->IndexSize():0;
@@ -347,6 +348,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  if(namedVertexShaderDirty_){auto *record=ResolveActiveNamedShader(false,vertexShaderIndex_);boundVS_=reinterpret_cast<VertexShaderHandle_t>(record);boundVertexShaderIsNamed_=record!=nullptr;namedVertexShaderDirty_=false;}
  if(namedPixelShaderDirty_){auto *record=ResolveActiveNamedShader(true,pixelShaderIndex_);boundPS_=reinterpret_cast<PixelShaderHandle_t>(record);boundPixelShaderIsNamed_=record!=nullptr;namedPixelShaderDirty_=false;}
  VertexFormat_t format=bindings[0].format;
+ const bool motionActive=MotionPassActive();
  VertexLayoutDX12 explicitLayout;
  // Mesh layouts depend only on (format, stream flags); a small direct-mapped cache covers alternating formats.
  const uint8_t meshLayoutFlags=static_cast<uint8_t>((bindings[1].buffer?1:0)|(bindings[2].buffer?2:0)|((format&VERTEX_WRINKLE)?4:0));
@@ -380,8 +382,8 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  }
  }
  if(!sourceLayout.valid)return;
- auto *vsRecord=boundVS_==VERTEX_SHADER_HANDLE_INVALID?nullptr:reinterpret_cast<ShaderRecordDX12 *>(boundVS_);
- auto *psRecord=boundPS_==PIXEL_SHADER_HANDLE_INVALID?nullptr:reinterpret_cast<ShaderRecordDX12 *>(boundPS_);
+ auto *vsRecord=motionActive?MotionVertexShader(format):(boundVS_==VERTEX_SHADER_HANDLE_INVALID?nullptr:reinterpret_cast<ShaderRecordDX12 *>(boundVS_));
+ auto *psRecord=motionActive?motionPS_:(boundPS_==PIXEL_SHADER_HANDLE_INVALID?nullptr:reinterpret_cast<ShaderRecordDX12 *>(boundPS_));
  // Until legacy analysis exists, retain the complete binding path. Native/fixed-function
  // shaders and explicit geometry shaders also retain it; their resource use is not in this metadata.
  const auto samplerMask=[&](const ShaderRecordDX12 *record,uint32_t all){
@@ -458,7 +460,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  auto *list=device_->CommandList();
  bool pipelineBound=false;
  RenderTargetBindingDX12 target; // PrepareRenderTargets assigns it before any use
- { ZoneNamedN(drawTargets, "DX12 DrawTargets", DX12_DRAW_ZONES_ACTIVE); if(!PrepareRenderTargets(target)||(!target.colorCount&&!target.depth)){static unsigned invalidTarget=0;if(invalidTarget++<6)Warning("ShaderAPIDX12: draw target unavailable colorCount=%u depth=%p\n",target.colorCount,target.depth);return;}pipeline_.BindRenderTargets(list,target.colorCount,target.rtvs.data(),target.colors.data(),target.depth?&target.dsv:nullptr,target.depth,retireFence); }
+ { ZoneNamedN(drawTargets, "DX12 DrawTargets", DX12_DRAW_ZONES_ACTIVE); if(!(motionActive?PrepareMotionBinding(target):PrepareRenderTargets(target))||(!target.colorCount&&!target.depth)){static unsigned invalidTarget=0;if(invalidTarget++<6)Warning("ShaderAPIDX12: draw target unavailable colorCount=%u depth=%p\n",target.colorCount,target.depth);return;}pipeline_.BindRenderTargets(list,target.colorCount,target.rtvs.data(),target.colors.data(),target.depth?&target.dsv:nullptr,target.depth,retireFence); }
  D3D12_VIEWPORT viewport{0,0,static_cast<float>(target.width),static_cast<float>(target.height),0,1};
  if(viewportCount_>0){const auto &v=viewports_[0];viewport.TopLeftX=static_cast<float>(v.m_nTopLeftX);viewport.TopLeftY=static_cast<float>(v.m_nTopLeftY);viewport.Width=static_cast<float>(std::max(0,v.m_nWidth));viewport.Height=static_cast<float>(std::max(0,v.m_nHeight));viewport.MinDepth=v.m_flMinZ;viewport.MaxDepth=v.m_flMaxZ;}
  D3D12_RECT scissor{0,0,target.width,target.height};
@@ -492,7 +494,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
   signature.vs=reinterpret_cast<uint64_t>(boundVS_);signature.ps=reinterpret_cast<uint64_t>(boundPS_);signature.gs=reinterpret_cast<uint64_t>(boundGS_);
   signature.textureTypes=textureTypesPacked;signature.format=static_cast<uint64_t>(format);signature.layoutKey=sourceLayoutTranslationKey_;
   signature.policy=unusedVertexFields_;for(size_t i=0;i<unusedTextureCoordinates_.size();++i)if(unusedTextureCoordinates_[i])signature.policy|=uint64_t(1)<<(32+i);
-  signature.instanceCount=bindings[0].repetitions;signature.primitive=static_cast<uint32_t>(primitive);signature.streamFlags=meshStreamFlags;signature.clipMask=drawClipMask;
+  signature.instanceCount=bindings[0].repetitions;signature.primitive=static_cast<uint32_t>(primitive);signature.streamFlags=meshStreamFlags;signature.motionPass=motionActive?1:0;signature.clipMask=drawClipMask;
   signature.colorFormats=target.colorFormats;signature.depthFormat=target.depthFormat;signature.colorCount=target.colorCount;signature.samples=target.sampleCount;signature.quality=target.sampleQuality;signature.hasDepth=target.depth!=nullptr;
   std::memcpy(&signature.rasterState,&rasterState_,sizeof(rasterState_));signature.rasterOverride=rasterOverride_;signature.shadeMode=shadeMode_;signature.fogMode=fogMode_;signature.pixelFog=ShouldUsePixelFog();signature.cullMode=cullMode_;
   signature.stencilEnabled=stencilEnabled_;signature.stencilCompare=stencilCompare_;signature.stencilFail=stencilFailOp_;signature.stencilDepthFail=stencilDepthFailOp_;signature.stencilPass=stencilPassOp_;signature.stencilReadMask=stencilReadMask_;signature.stencilWriteMask=stencilWriteMask_;
@@ -517,7 +519,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  raster.fog=activeSnapshot_.fogMode!=SHADER_FOGMODE_DISABLED&&fogMode_!=MATERIAL_FOG_NONE&&!ShouldUsePixelFog();raster.fogTableMode=0;raster.comparisonPixelSamplers=activeSnapshot_.comparisonSamplerMask;
  raster.fillMode=rasterOverride_?(rasterState_.m_FillMode==SHADER_FILL_WIREFRAME?2:3):(activeSnapshot_.polyFront==SHADER_POLYMODE_POINT?1:(activeSnapshot_.polyFront==SHADER_POLYMODE_LINE?2:3));
  raster.primitiveType=primitive==MATERIAL_POINTS?1:(primitive==MATERIAL_LINES?2:(primitive==MATERIAL_LINE_STRIP?3:(primitive==MATERIAL_TRIANGLE_STRIP?5:4)));
- depthOnly=target.depth&&!(colorWriteOverride_?colorWriteOverrideValue_:activeSnapshot_.colorWrites)&&!(alphaWriteOverride_?alphaWriteOverrideValue_:activeSnapshot_.alphaWrites)&&!activeSnapshot_.alphaTest;
+  depthOnly=!motionActive&&target.depth&&!(colorWriteOverride_?colorWriteOverrideValue_:activeSnapshot_.colorWrites)&&!(alphaWriteOverride_?alphaWriteOverrideValue_:activeSnapshot_.alphaWrites)&&!activeSnapshot_.alphaTest;
  generatedVS=!vsRecord;generatedPS=!psRecord&&!depthOnly;
  auto fixedShader=[&](bool pixel)->ShaderRecordDX12 *{
   uint32_t textureTypes=0;uint64_t linkage=1469598103934665603ull;
@@ -728,6 +730,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
   if(!extensionVersions_[0]||std::memcmp(&vertexExtension,&previousVertexExtension_,sizeof(vertexExtension))){previousVertexExtension_=vertexExtension;++extensionVersions_[0];}
   vertexExtensionClipMask_=drawClipMask;
  }
+ if(motionActive)CommitTransforms();
  // Native records read engine state from space-1 blocks built from the same values the legacy registers hold.
  const bool nativeVS=vsRecord&&vsRecord->legacyBytecode.empty(),nativePS=psRecord&&psRecord->legacyBytecode.empty();
  bindingInput.nativeStage={nativeVS,nativePS};
@@ -750,6 +753,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
   bindingInput.nativeData[0]=&nativeVSEngine_;bindingInput.nativeSizes[0]=sizeof(nativeVSEngine_);bindingInput.nativeVersions[0]=nativeVSEngineVersion_;
   bindingInput.nativeData[1]=&nativeVSBones_;bindingInput.nativeSizes[1]=sizeof(nativeVSBones_);bindingInput.nativeVersions[1]=nativeVSEngineVersion_;
   for(unsigned slot=0;slot<nativeVSBlocks_.size();++slot)if(nativeVSBlocks_[slot].written){bindingInput.nativeData[2+slot]=nativeVSBlocks_[slot].bytes.data();bindingInput.nativeSizes[2+slot]=nativeVSBlocks_[slot].byteSize;bindingInput.nativeVersions[2+slot]=nativeVSBlocks_[slot].version;}
+  if(motionActive){FillMotionBlock(bindings[0],indices,indexOffset,firstIndex,indexCount);bindingInput.nativeData[7]=&motionBlock_;bindingInput.nativeSizes[7]=sizeof(motionBlock_);bindingInput.nativeVersions[7]=motionBlockVersion_;}
  }
  if(nativePS){
   auto &e=nativePSEngine_;
@@ -823,6 +827,9 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
   key.colorWrites=colorWriteOverride_?colorWriteOverrideValue_:activeSnapshot_.colorWrites;key.alphaWrites=alphaWriteOverride_?alphaWriteOverrideValue_:activeSnapshot_.alphaWrites;key.alphaToCoverage=alphaToCoverage_||activeSnapshot_.alphaToCoverage;key.stencil=stencilEnabled_||activeSnapshot_.stencil;key.raster=(key.alphaToCoverage?1:0)|(key.stencil?2:0)|(activeSnapshot_.alphaTest?4:0);
   if(stencilEnabled_){key.stencilFunction=stencilCompare_;key.stencilFail=stencilFailOp_;key.stencilDepthFail=stencilDepthFailOp_;key.stencilPass=stencilPassOp_;key.stencilReadMask=stencilReadMask_;key.stencilWriteMask=stencilWriteMask_;}
   else{key.stencilFunction=static_cast<uint32_t>(activeSnapshot_.stencilFunction)+1;key.stencilFail=static_cast<uint32_t>(activeSnapshot_.stencilFail)+1;key.stencilDepthFail=static_cast<uint32_t>(activeSnapshot_.stencilDepthFail)+1;key.stencilPass=static_cast<uint32_t>(activeSnapshot_.stencilPass)+1;key.stencilReadMask=activeSnapshot_.stencilReadMask;key.stencilWriteMask=activeSnapshot_.stencilWriteMask;}
+  if(motionActive){key.depthState=0;key.depthWrite=false;key.depthTest=true;key.depthFunction=reverseDepth?SHADER_DEPTHFUNC_FARTHEROREQUAL:SHADER_DEPTHFUNC_NEAREROREQUAL;
+   key.blend=0;key.blendSource=SHADER_BLEND_ONE;key.blendDestination=SHADER_BLEND_ZERO;key.blendOperation=SHADER_BLEND_OP_ADD;key.separateAlpha=false;
+   key.colorWrites=true;key.alphaWrites=true;key.alphaToCoverage=false;key.stencil=false;key.raster=0;key.slopeScaledDepthBias=0.f;key.depthBiasValue=reverseDepth?-kMotionDepthBias:kMotionDepthBias;}
   ID3D12PipelineState *pso=nullptr;
  { ZoneNamedN(___tracy_scoped_zone, "DX12 GetOrCreatePSO", DX12_DRAW_ZONES_ACTIVE); pso=pipeline_.GetOrCreate(key,vs->Bytecode(),ps?ps->Bytecode():D3D12_SHADER_BYTECODE{},geometryCode,input,retireFence); }
   if(pso){
@@ -939,7 +946,7 @@ void CShaderAPIDX12::CommitTransforms()
     SetVertexShaderConstant(VERTEX_SHADER_MODELVIEWPROJ_THIRD_ROW,modelViewProjection[2],1);
     SetVertexShaderConstant(VERTEX_SHADER_VIEWPROJ_THIRD_ROW,viewProjection[2],1);
     SetVertexShaderConstant(VERTEX_SHADER_VIEWMODEL,modelView.Base(),4);
-    for(int bone=0;bone<=maxBoneLoaded_;++bone)
+    for(int bone=0;bone<std::max(maxBoneLoaded_+1,motionBoneRows_);++bone)
         SetVertexShaderConstant(VERTEX_SHADER_MODEL+bone*3,matrices_[MATERIAL_MODEL+bone].Base(),3);
     if(cachedCameraValid_) {
         if(cameraPosition_!=cachedCameraPosition_)fogDirty_=true;
@@ -1250,7 +1257,7 @@ float CShaderAPIDX12::GetLightMapScaleFactor() const
 void CShaderAPIDX12::LoadBoneMatrix(int boneIndex,const float *m) {
     if(!m||boneIndex<0||boneIndex>=NUM_MODEL_TRANSFORMS)return;
     VMatrix &bone=matrices_[MATERIAL_MODEL+boneIndex];bone.Identity();std::memcpy(bone.Base(),m,12*sizeof(float));
-    maxBoneLoaded_=std::max(maxBoneLoaded_,boneIndex);transformsDirty_=true;
+    maxBoneLoaded_=std::max(maxBoneLoaded_,boneIndex);motionBoneRows_=std::max(motionBoneRows_,boneIndex+1);transformsDirty_=true;
     if(boneIndex==0)matrixMode_=MATERIAL_MODEL;
 }
 void CShaderAPIDX12::PerspectiveOffCenterX(double fovx,double aspect,double zNear,double zFar,double bottom,double top,double left,double right) {
@@ -1478,7 +1485,7 @@ IMesh* CShaderAPIDX12::GetDynamicMeshEx(IMaterial *material,VertexFormat_t reque
   if(skinBoneCount>0)format|=VERTEX_BONEWEIGHT(2)|VERTEX_BONE_INDEX;
  }
  if(!VertexFormatSizeDX12(format)){Warning("ShaderAPIDX12: dynamic mesh requires a valid material or explicit vertex format\n");return nullptr;}
- boneCount_=skinBoneCount;
+ boneCount_=skinBoneCount; motionBoneRows_=std::max(motionBoneRows_,std::max(1,boneCount_));
  (void)buffered;
  auto *vertexSource=vertexOverride?static_cast<CMeshDX12 *>(vertexOverride)->VertexSourceMesh():nullptr;
  auto *indexSource=indexOverride?static_cast<CMeshDX12 *>(indexOverride)->IndexSourceMesh():nullptr;
@@ -1536,7 +1543,7 @@ void CShaderAPIDX12::RenderPass( int nPass, int nPassCount ) {
  if(!renderMesh_||nPass<0||nPass>=nPassCount)return;
  DrawMesh(renderMesh_,renderFirstIndex_,renderIndexCount_);
 }
-void CShaderAPIDX12::SetNumBoneWeights(int numBones) { boneCount_=std::clamp(numBones,0,NUM_MODEL_TRANSFORMS); }
+void CShaderAPIDX12::SetNumBoneWeights(int numBones) { boneCount_=std::clamp(numBones,0,NUM_MODEL_TRANSFORMS); motionBoneRows_=std::max(1,boneCount_); }
 void CShaderAPIDX12::SetLight(int number,const LightDesc_t &light) { if(number<0||number>=static_cast<int>(lights_.size()))return;lights_[number]=light;lightingDirty_=true; }
 void CShaderAPIDX12::SetLightingOrigin(Vector origin) { lightingOrigin_=origin; }
 void CShaderAPIDX12::SetAmbientLight(float r,float g,float b) { if(ambientLight_.x!=r||ambientLight_.y!=g||ambientLight_.z!=b){ambientLight_.Init(r,g,b);++fixedVSVersion_;} }
@@ -1549,7 +1556,7 @@ void CShaderAPIDX12::SetHeightClipZ( float z ) { heightClipZ_=z; }
 void CShaderAPIDX12::SetHeightClipMode( enum MaterialHeightClipMode_t heightClipMode ) { heightClipMode_=heightClipMode; }
 void CShaderAPIDX12::SetClipPlane( int index, const float *pPlane ) { if(index<0||index>=static_cast<int>(worldClipPlanes_.size())||!pPlane)return;worldClipPlanes_[index]={pPlane[0],pPlane[1],pPlane[2],-pPlane[3]}; }
 void CShaderAPIDX12::EnableClipPlane( int index, bool bEnable ) { if(index<0||index>=static_cast<int>(worldClipPlanes_.size()))return;const uint32_t bit=1u<<index;if(bEnable)clipPlaneMask_|=bit;else clipPlaneMask_&=~bit; }
-void CShaderAPIDX12::SetSkinningMatrices() { maxBoneLoaded_=std::max(maxBoneLoaded_,std::max(0,boneCount_-1));transformsDirty_=true;CommitTransforms(); }
+void CShaderAPIDX12::SetSkinningMatrices() { maxBoneLoaded_=std::max(maxBoneLoaded_,std::max(0,boneCount_-1)); motionBoneRows_=std::max(motionBoneRows_,std::max(1,boneCount_)); transformsDirty_=true;CommitTransforms(); }
 void CShaderAPIDX12::FlushHardware()
 {
     ZoneNamedN(___tracy_scoped_zone, "DX12 FlushHardware", DX12_ZONES_ACTIVE);
@@ -1689,7 +1696,7 @@ MorphFormat_t CShaderAPIDX12::ComputeMorphFormat(int count,StateSnapshot_t *ids)
 void CShaderAPIDX12::HandleDeviceLost() { if(device_ && device_->NativeDevice()) Warning("ShaderAPIDX12: device removal reason 0x%08x\n",static_cast<unsigned>(device_->NativeDevice()->GetDeviceRemovedReason())); }
 void CShaderAPIDX12::EnableLinearColorSpaceFrameBuffer( bool bEnable ) { if(linearColorSpaceFramebuffer_!=bEnable){FlushBufferedPrimitives();linearColorSpaceFramebuffer_=bEnable;} }
 void CShaderAPIDX12::SetFullScreenTextureHandle( ShaderAPITextureHandle_t h ) { fullScreenTexture_=h; }
-void CShaderAPIDX12::SetIntRenderingParameter(int parm_number, int value) { if(parm_number>=0 && parm_number<(int)renderingInts_.size()) renderingInts_[parm_number]=value; }
+void CShaderAPIDX12::SetIntRenderingParameter(int parm_number, int value) { if(parm_number==INT_RENDERPARM_DX12_MOTION_STATUS)return; if(parm_number>=0 && parm_number<(int)renderingInts_.size()) renderingInts_[parm_number]=value; if(parm_number==INT_RENDERPARM_DX12_MOTION_PASS)SetMotionPass(value);else if(parm_number==INT_RENDERPARM_DX12_MOTION_OBJECT)motionObjectKey_=value; }
 void CShaderAPIDX12::SetVectorRenderingParameter(int parm_number, Vector const &value) { if(parm_number>=0 && parm_number<(int)renderingVectors_.size()) renderingVectors_[parm_number]=value; }
 float CShaderAPIDX12::GetFloatRenderingParameter(int parm_number) const { return parm_number>=0 && parm_number<(int)renderingFloats_.size()?renderingFloats_[parm_number]:0.0f; }
 int CShaderAPIDX12::GetIntRenderingParameter(int parm_number) const { return parm_number>=0 && parm_number<(int)renderingInts_.size()?renderingInts_[parm_number]:0; }

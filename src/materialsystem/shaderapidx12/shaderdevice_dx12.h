@@ -124,8 +124,10 @@ public:
     D3D12_CPU_DESCRIPTOR_HANDLE SceneRTV(bool srgb = false) const;
     ID3D12Resource *SceneDepth() const;
     D3D12_CPU_DESCRIPTOR_HANDLE SceneDSV() const;
+    D3D12_CPU_DESCRIPTOR_HANDLE SceneReadOnlyDSV() const;
     DXGI_FORMAT SceneColorFormat(bool srgb = false) const { return srgb ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM; }
     DXGI_FORMAT SceneDepthFormat() const { return DXGI_FORMAT_D24_UNORM_S8_UINT; }
+    int SceneSampleQuality() const { return sampleQuality_; }
     int SceneSampleCount() const { return sampleCount_; }
     int SceneWidth() const { return width_; }
     int SceneHeight() const { return height_; }
@@ -138,6 +140,7 @@ public:
     // Relaxed hint; a request queued concurrently is taken by the next check.
     bool HasTextureDeletionRequests() const { return pendingTextureDeletionCount_.load(std::memory_order_relaxed) != 0; }
     bool SupportsMSAA(int count, int quality = 0) const;
+    bool SupportsMSAAFormat(DXGI_FORMAT format, int count, int quality) const;
     bool ChangeMode(const ShaderDeviceInfo_t &info);
     // x64 TEB ClientId.UniqueThread (what GetCurrentThreadId returns), read inline on the per-draw path.
     bool IsRecordingOwner() const { return ownerThread_ == static_cast<DWORD>(__readgsdword(0x48)); }
@@ -268,6 +271,7 @@ private:
     HMODULE signerModule_ = nullptr;
     SignDxbcFnDX12 signer_ = nullptr;
     UINT rtvStride_ = 0;
+    UINT dsvStride_ = 0;
     int adapterIndex_ = -1;
     int width_ = 0, height_ = 0;
     int sampleCount_ = 1, sampleQuality_ = 0;

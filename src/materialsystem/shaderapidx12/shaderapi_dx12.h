@@ -11,6 +11,7 @@
 #include "materialsystem/shaderapidx12/textures_dx12.h"
 #include "materialsystem/shaderapidx12/shader_vcs_dx12.h"
 #include "materialsystem/shaderapidx12/fixed_function_dx12.h"
+#include "materialsystem/shaderapidx12/motion_vectors_dx12.h"
 #include "materialsystem/shaderapidx12/mesh_dx12.h"
 #include <d3d12.h>
 #include <DirectXMath.h>
@@ -21,6 +22,7 @@
 #include "tier1/utlstring.h"
 #include <string>
 #include <memory>
+#include <climits>
 
 #include "materialsystem/shaderapidx12/pipeline_dx12.h"
 class IShaderUtil;
@@ -182,6 +184,9 @@ protected:
     unsigned char fogColor_[3] = {0,0,0};
     int vertexShaderIndex_ = -1, pixelShaderIndex_ = 0;
     int boneCount_ = 0;
+    // Number of model-matrix rows needed by the motion history block. This is
+    // independent from the vertex weight-channel count.
+    int motionBoneRows_ = 1;
     bool flashlightMode_ = false, editorMode_ = false, morphing_ = false;
     CUtlVector<BoxDeformation_t> deformations_;
     std::array<CUtlVector<VMatrix>, MATERIAL_MODEL_MAX + 1> matrixStacks_;
@@ -552,6 +557,7 @@ public:
     // Zero-filled before assignment so memcmp is exact.
     struct PipelineSignatureDX12 {
         uint64_t resolveEpoch,vs,ps,gs,format,layoutKey,policy;
+        uint32_t motionPass;
         int64_t snapshot;
         uint64_t textureTypes;
         std::array<DXGI_FORMAT,RenderTargetBindingDX12::kMaxColorTargets> colorFormats;
@@ -588,6 +594,17 @@ private:
     void DrawBuffers(const std::array<VertexBindingDX12,16> &streams, CIndexBufferDX12 *indices,
                      size_t indexOffset, MaterialPrimitiveType_t primitive, int firstIndex, int indexCount,
                      bool meshStreams=false);
+    void SetMotionPass(int mode);
+    bool EnsureMotionResources();
+    bool PrepareMotionBinding(RenderTargetBindingDX12 &binding);
+    void DrawMotionReprojection();
+    void ResolveMotionTarget();
+    ShaderRecordDX12 *MotionVertexShader(VertexFormat_t format);
+    void FillMotionBlock(const VertexBindingDX12 &vb, CIndexBufferDX12 *ib, size_t indexOffset, int firstIndex, int indexCount);
+    void MarkMotionTargetStale();
+    bool MotionPassActive() const { return motionPassState_ == MotionPassStateDX12::Active; }
+    void ReleaseMotionResources();
+    void TransitionMotionTarget(D3D12_RESOURCE_STATES desired);
     CMeshBuilder vertexModifyBuilder_;
     struct NamedShaderKeyView {
         const char *name;
@@ -809,6 +826,34 @@ private:
     IMesh *dynamicMesh_=nullptr;
     CUtlVector<CMeshDX12 *> dynamicMeshes_;
     uint64_t frameCounter_=0;
+    // Motion-vector pass (motion_vectors_dx12.cpp); contracts C2/C4/C7.
+    MotionPassStateDX12 motionPassState_=MotionPassStateDX12::None;
+    int motionPassSlot_=0;
+    bool motionUnavailable_=false;
+    uint64_t motionMainFrame_=~0ull;
+    uint8_t motionWarned_=0;
+    ShaderAPITextureHandle_t motionResolveTarget_=0;
+    Microsoft::WRL::ComPtr<ID3D12Resource> motionTarget_;
+    D3D12_RESOURCE_STATES motionTargetState_=D3D12_RESOURCE_STATE_RENDER_TARGET;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> motionRtvHeap_;
+    D3D12_CPU_DESCRIPTOR_HANDLE motionRtv_{};
+    UINT motionTargetWidth_=0,motionTargetHeight_=0,motionTargetSamples_=0,motionTargetQuality_=0;
+    std::array<ShaderRecordDX12 *,2> motionVS_{};
+    ShaderRecordDX12 *motionPS_=nullptr;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> motionReprojectRoot_;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> motionReprojectPso_;
+    UINT motionReprojectSamples_=0;
+    std::array<std::array<float,16>,2> motionCurViewProj_{},motionPrevViewProj_{};
+    std::array<bool,2> motionCurViewProjValid_{},motionPrevViewProjValid_{};
+    dx12native::DX12MotionVS motionBlock_{};
+    uint64_t motionBlockVersion_=0;
+    int motionObjectKey_=0,motionLastObjectKey_=INT_MIN;
+    uint32_t motionObjectOrdinal_=0;
+    MotionHistoryTableDX12 motionHistory_[2];
+    int motionHistoryCurrent_=0;
+    uint32_t motionPassDraws_=0,motionPassObjects_=0,motionSuppressedPasses_=0;
+    uint64_t motionLogFrame_=0;
+    static constexpr int kMotionDepthBias=0;
     uint32_t frameDrawCount_=0;
     uint32_t frameFlushCount_=0;
     uint32_t frameSyncCount_=0;

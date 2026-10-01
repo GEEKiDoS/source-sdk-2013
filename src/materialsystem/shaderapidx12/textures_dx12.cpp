@@ -300,8 +300,47 @@ CShaderAPIDX12::ResolveTextureRecord *CShaderAPIDX12::AcquireResolveTexture(cons
     trim(record);
     return record;
 }
+void CShaderAPIDX12::ResolveMotionTarget()
+{
+    if (!motionResolveTarget_ || !motionTarget_ || !device_ || !device_->CommandList()) return;
+    auto *record = FindTexture(motionResolveTarget_);
+    if (!record || !(record->flags & TEXTURE_CREATE_RENDERTARGET) || !EnsureTextureResident(*record)) return;
+    const int sub = record->currentCopy * Faces(*record) * record->mipLevels;
+    D3D12_RESOURCE_STATES &destinationState = record->subresourceStates[sub];
+    auto *list = device_->CommandList();
+    if (motionTargetSamples_ > 1) {
+        if (destinationState != D3D12_RESOURCE_STATE_RESOLVE_DEST) {
+            D3D12_RESOURCE_BARRIER barrier{}; barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; barrier.Transition.pResource = record->resource.Get(); barrier.Transition.Subresource = sub; barrier.Transition.StateBefore = destinationState; barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RESOLVE_DEST; list->ResourceBarrier(1, &barrier); destinationState = barrier.Transition.StateAfter;
+        }
+        TransitionMotionTarget(D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+        list->ResolveSubresource(record->resource.Get(), 0, motionTarget_.Get(), 0, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    } else {
+        if (destinationState != D3D12_RESOURCE_STATE_COPY_DEST) {
+            D3D12_RESOURCE_BARRIER barrier{}; barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; barrier.Transition.pResource = record->resource.Get(); barrier.Transition.Subresource = sub; barrier.Transition.StateBefore = destinationState; barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST; list->ResourceBarrier(1, &barrier); destinationState = barrier.Transition.StateAfter;
+        }
+        TransitionMotionTarget(D3D12_RESOURCE_STATE_COPY_SOURCE);
+        list->CopyResource(record->resource.Get(), motionTarget_.Get());
+    }
+    if (destinationState != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+        D3D12_RESOURCE_BARRIER barrier{}; barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; barrier.Transition.pResource = record->resource.Get(); barrier.Transition.Subresource = sub; barrier.Transition.StateBefore = destinationState; barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET; list->ResourceBarrier(1, &barrier); destinationState = barrier.Transition.StateAfter;
+    }
+    record->dirtySubresources[sub] = 0; record->initializedSubresources[sub] = 0; record->gpuAuthoritativeSubresources[sub] = 1; record->gpuDirty = std::any_of(record->dirtySubresources.begin(),record->dirtySubresources.end(),[](unsigned char dirty){return dirty != 0;});
+    TransitionMotionTarget(D3D12_RESOURCE_STATE_RENDER_TARGET);
+    device_->TransitionSceneDepth(D3D12_RESOURCE_STATE_DEPTH_WRITE);
+}
+
+void CShaderAPIDX12::MarkMotionTargetStale()
+{
+    auto *record = FindTexture(renderTargets_[0]);
+    if (!record || !(record->flags & TEXTURE_CREATE_RENDERTARGET)) return;
+    RenderTargetBindingDX12 binding{};
+    if (!PrepareRenderTargets(binding,false) || binding.colorCount < 1) return;
+    const float zero[4]{};
+    device_->CommandList()->ClearRenderTargetView(binding.rtvs[0], zero, 0, nullptr);
+}
 void CShaderAPIDX12::ReleaseTextureDeviceResources()
 {
+    ReleaseMotionResources();
     for(auto &slot:preparedTextureSlots_)slot.valid=false; textureSetValid_=false; for(auto &layoutCache:inputLayoutCaches_)layoutCache.valid=false; textureTypeHandles_.fill(0); drawBindingNull_={}; ++pipelineMemoEpoch_;
     preparedSamplerTable_={};preparedSamplerFence_=0;
     for (auto *record : resolveTextures_) delete record;
