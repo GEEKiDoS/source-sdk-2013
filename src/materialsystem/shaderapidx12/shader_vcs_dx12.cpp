@@ -137,7 +137,8 @@ bool ShaderVcsFile::Fail(const std::string &message, std::string &error) const
     return false;
 }
 
-// Parsed once per process from GAME shaders/native_dx12_legacy_names.txt ("<native> <vs|ps> <legacy>" per line).
+// Parsed once per process from GAME shaders/native_dx12_legacy_names.txt: "<native> <vs|ps> <legacy>" per line, or
+// "<native> <vs|ps>" for a native-only logical, which maps to kNativeOnlyMarker (no shaders/fxc fallback).
 std::string ShaderVcsFile::LegacyShaderName(IFileSystem &filesystem, const char *name, VcsStage stage)
 {
     static CThreadFastMutex mutex;
@@ -155,10 +156,11 @@ std::string ShaderVcsFile::LegacyShaderName(IFileSystem &filesystem, const char 
                 for (size_t line = 0; line < text.size();) {
                     size_t end = text.find('\n', line); if (end == std::string::npos) end = text.size();
                     char logical[256] = {}, stageName[8] = {}, legacy[256] = {};
-                    if (std::sscanf(text.substr(line, end - line).c_str(), "%255s %7s %255s", logical, stageName, legacy) == 3) {
+                    const int fields = std::sscanf(text.substr(line, end - line).c_str(), "%255s %7s %255s", logical, stageName, legacy);
+                    if (fields >= 2) {
                         std::string key = std::string(stageName) + ":" + logical;
                         std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-                        names.emplace_back(std::move(key), legacy);
+                        names.emplace_back(std::move(key), fields == 3 ? legacy : kNativeOnlyMarker);
                     }
                     line = end + 1;
                 }
@@ -184,11 +186,18 @@ bool ShaderVcsFile::Open(IFileSystem &filesystem, const char *name, VcsStage sta
     }
     const std::string filename = std::string("shaders/") +
         (stage == VcsStage::Vertex ? "vsh/" : "psh/") + name + ".vcs";
-    // A native logical (<base>_vs51/_ps51) whose native record is absent resolves to the legacy DX9 logical of the same
-    // shader in shaders/fxc (shaders/native_dx12_legacy_names.txt, written by nativeshaderpack_dx12); other names use
-    // their own shaders/fxc record.
-    const std::string fallback = std::string("shaders/fxc/") + LegacyShaderName(filesystem, name, stage) + ".vcs";
+    // A native logical whose native record is absent normally resolves to its legacy DX9 logical.
+    // A two-column native-only marker deliberately has no shaders/fxc fallback.
+    const std::string legacyName = LegacyShaderName(filesystem, name, stage);
+    const bool nativeOnly = legacyName == kNativeOnlyMarker;
+    const std::string fallback = std::string("shaders/fxc/") + legacyName + ".vcs";
     FileHandle_t file = filesystem.Open(filename.c_str(), "rb", "GAME");
+    if (file == FILESYSTEM_INVALID_HANDLE && nativeOnly)
+    {
+        path_ = filename;
+        stage_ = stage;
+        return Fail("native-only shader file not found in GAME", error);
+    }
     const std::string &selected = file == FILESYSTEM_INVALID_HANDLE ? fallback : filename;
     if (file == FILESYSTEM_INVALID_HANDLE) file = filesystem.Open(fallback.c_str(), "rb", "GAME");
     path_ = selected;

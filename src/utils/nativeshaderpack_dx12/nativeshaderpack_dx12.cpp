@@ -39,8 +39,9 @@ struct Block {
     std::string canonical;
 };
 struct Shader {
-    // logical: native name (<base>_vs51|_ps51); legacyName: the DX9 logical of the same shader (<base>_vs20, ps20b,
-    // ...), i.e. the combo-ABI reference and the shaders/fxc record name.
+    // logical: native name (<base>_vs51|_ps51). legacyName: the DX9 logical of the same shader (<base>_vs20, ps20b,
+    // ...), i.e. the combo-ABI reference and the shaders/fxc record name. Native-only logicals (profile "native")
+    // have neither legacySource nor legacyName.
     std::string source, legacySource, stage, logical, profile, generatedBase, inc, legacyInc, legacyName;
     fs::path artifactRoot;
     fs::path vcs;
@@ -313,7 +314,8 @@ std::string header(const Block &b) {
 std::string describe(const Shader &shader) {
     std::ostringstream s;
     s << "logical=" << shader.logical << " stage=" << shader.stage << " source=" << shader.source
-      << " legacy=" << shader.legacySource << " legacyName=" << shader.legacyName << " profile=" << shader.profile
+      << " legacy=" << (shader.legacySource.empty() ? "-" : shader.legacySource)
+      << " legacyName=" << (shader.legacyName.empty() ? "-" : shader.legacyName) << " profile=" << shader.profile
       << " static=" << shader.staticCount << " dynamic=" << shader.dynamicCount << " present=" << shader.present << "\n";
     for (const auto &[name, b] : shader.blocks) {
         s << "  cbuffer=" << name << " space=" << b.space << " register=b" << b.reg << " size=" << b.size
@@ -363,7 +365,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
     std::vector<fs::path> manifests;
     for (const auto &entry : fs::directory_iterator(root / "manifests")) if (entry.path().extension() == ".txt") manifests.push_back(entry.path());
     std::sort(manifests.begin(), manifests.end());
-    const std::regex manifest(R"(^\s*(\S+\.fxc)\s+(vs|ps)\s+(\w+)\s+(20b|20|30)(?:\s+(\S+\.fxc))?\s*$)");
+    const std::regex manifest(R"(^\s*(\S+\.fxc)\s+(vs|ps)\s+(\w+)\s+(20b|20|30|native)(?:\s+(\S+))?\s*$)");
     for (const auto &file : manifests) {
         std::istringstream text(readText(file)); std::string line;
         while (std::getline(text, line)) {
@@ -374,7 +376,9 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
             std::smatch m;
             if (!std::regex_match(line, m, manifest)) throw std::runtime_error("Malformed manifest line in " + file.string() + ": " + line);
             Shader shader; shader.source = m[1]; shader.stage = m[2]; shader.logical = m[3]; shader.profile = m[4];
-            shader.legacySource = m[5].matched ? m[5].str() : shader.logical + ".fxc";
+            shader.legacySource = m[5].matched && m[5].str() != "-" ? m[5].str() : "";
+            if (shader.profile == "native" && !shader.legacySource.empty())
+                throw std::runtime_error("Native-only manifest line has a legacy source: " + line);
             const auto mapIt = nativeMap.find(shader.logical + "|" + shader.stage + "|" + shader.source);
             if (mapIt == nativeMap.end()) throw std::runtime_error("No compiled artifacts for manifest line: " + line);
             shader.generatedBase = mapIt->second.first; shader.artifactRoot = mapIt->second.second;
@@ -383,9 +387,20 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         }
     }
     if (shaders.empty()) throw std::runtime_error("No shaders in manifests");
-    // Annotations and declared register spaces come from the checked-in native sources.
-    const auto tags = annotations(root / "hlsl");
-    const auto spaces = declaredSpaces(root / "hlsl");
+    // Native-only hand-authored sources live outside generated hlsl/ but participate in the same
+    // cbuffer-space and @legacy annotation validation.
+    auto tags = annotations(root / "hlsl");
+    const auto nativeTags = annotations(root / "native_src");
+    for (const auto &[name, tag] : nativeTags) {
+        if (tags.count(name) && tags.at(name) != tag) throw std::runtime_error("Conflicting @legacy annotation for " + name);
+        tags[name] = tag;
+    }
+    auto spaces = declaredSpaces(root / "hlsl");
+    const auto nativeSpaces = declaredSpaces(root / "native_src");
+    for (const auto &[name, space] : nativeSpaces) {
+        if (spaces.count(name) && spaces.at(name) != space) throw std::runtime_error("Conflicting cbuffer register spaces: " + name);
+        spaces[name] = space;
+    }
     for (const auto &[name, space] : spaces) if (space != 1) throw std::runtime_error("Space-0 cbuffer rejected: " + name);
     std::map<std::string, Block> shared;
     std::map<std::string, std::string> output;
@@ -395,14 +410,19 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
     std::vector<RegistryEntry> registry;
     for (auto &sh : shaders) {
         const fs::path nativeInc = sh.artifactRoot / "include" / (sh.generatedBase + ".inc");
-        const std::string legacyBase = legacyIncludeBase(sh.legacySource, sh.stage, sh.profile);
-        // Profile "20" logicals keep their _ps20 runtime name (the -ver 20b reference is only the ABI check).
-        sh.legacyName = sh.profile == "20" ? baseName(sh.legacySource, sh.stage, "20") : legacyBase;
-        const fs::path legacyInc = staging / "legacy" / sh.profile / "include" / (legacyBase + ".inc");
-        if (!fs::exists(legacyInc)) throw std::runtime_error("Missing legacy combo include: " + legacyInc.string());
-        sh.inc = readText(nativeInc); sh.legacyInc = readText(legacyInc);
-        if (comboABI(sh.inc, sh.generatedBase) != comboABI(sh.legacyInc, legacyBase) || skips(sh.inc) != skips(sh.legacyInc))
-            throw std::runtime_error("Combo ABI mismatch: " + sh.logical + " vs " + sh.legacySource + " (" + sh.profile + ")");
+        const bool nativeOnly = sh.profile == "native";
+        if (nativeOnly) {
+            sh.inc = readText(nativeInc);
+        } else {
+            const std::string legacyBase = legacyIncludeBase(sh.legacySource, sh.stage, sh.profile);
+            // Profile "20" logicals keep their _ps20 runtime name (the -ver 20b reference is only the ABI check).
+            sh.legacyName = sh.profile == "20" ? baseName(sh.legacySource, sh.stage, "20") : legacyBase;
+            const fs::path legacyInc = staging / "legacy" / sh.profile / "include" / (legacyBase + ".inc");
+            if (!fs::exists(legacyInc)) throw std::runtime_error("Missing legacy combo include: " + legacyInc.string());
+            sh.inc = readText(nativeInc); sh.legacyInc = readText(legacyInc);
+            if (comboABI(sh.inc, sh.generatedBase) != comboABI(sh.legacyInc, legacyBase) || skips(sh.inc) != skips(sh.legacyInc))
+                throw std::runtime_error("Combo ABI mismatch: " + sh.logical + " vs " + sh.legacySource + " (" + sh.profile + ")");
+        }
         const fs::path nativeVcs = sh.artifactRoot / "shaders" / "fxc" / (sh.generatedBase + ".vcs");
         sh.vcs = nativeVcs;
         const auto bytes = readBytes(nativeVcs);
@@ -448,10 +468,9 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
             }
         }
         if (!sh.present) throw std::runtime_error("No present DXBC payloads: " + sh.logical);
-        // The same logical name's legacy runtime VCS (shaders/fxc) must expose the same combo set.
-        // A missing legacy VCS is normal in clean checkouts; the -dynamic ABI above is mandatory.
+        // Native-only logicals have no legacy runtime record or combo-ABI comparison.
         const fs::path legacyVcs = game / "shaders" / "fxc" / (sh.legacyName + ".vcs");
-        if (fs::exists(legacyVcs)) {
+        if (!nativeOnly && fs::exists(legacyVcs)) {
             const auto old = readBytes(legacyVcs);
             ShaderVcsFile legacy; if (!legacy.OpenBytes(old.data(), old.size(), stage, legacyVcs.string().c_str(), error)) throw std::runtime_error(error);
             if (legacy.DynamicComboCount() != sh.dynamicCount || *reinterpret_cast<const uint32_t *>(old.data() + 4) != total)
@@ -572,10 +591,13 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         ownedList << fs::relative(target, game).generic_string() << '\n';
         std::cout << "published " << target.string() << '\n';
     }
-    // Native logical -> legacy DX9 logical (shaders/fxc record) for the renderer's fallback when a native record is
-    // absent: <native> <stage> <legacy>. Profile-20 logicals map to their _ps20 runtime name.
+    // Native logical -> legacy DX9 logical for fallback. Native-only logicals get a two-column
+    // marker so runtime can fail closed without attempting a shaders/fxc fallback.
     std::ostringstream legacyNames;
-    for (const auto &sh : shaders) legacyNames << sh.logical << ' ' << sh.stage << ' ' << sh.legacyName << '\n';
+    for (const auto &sh : shaders) {
+        if (sh.profile == "native") legacyNames << sh.logical << ' ' << sh.stage << '\n';
+        else legacyNames << sh.logical << ' ' << sh.stage << ' ' << sh.legacyName << '\n';
+    }
     const fs::path legacyNamesPath = game / "shaders" / "native_dx12_legacy_names.txt";
     writeText(legacyNamesPath, legacyNames.str());
     ownedList << fs::relative(legacyNamesPath, game).generic_string() << '\n';

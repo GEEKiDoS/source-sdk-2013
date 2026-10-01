@@ -436,8 +436,8 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 {
 	HandleRelaunching();
 #if defined( _WIN64 )
-	bool bDx12Requested = false;
-	bool bConflictingRenderer = false;
+	// Native DX12 is the default renderer. -dx9 (or another explicit legacy backend) keeps the stock shaderapi.
+	bool bLegacyRendererRequested = false;
 	int nArgs = 0;
 	LPWSTR *pArgs = CommandLineToArgvW( GetCommandLineW(), &nArgs );
 	if ( !pArgs )
@@ -448,18 +448,12 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 	for ( int i = 1; i < nArgs; ++i )
 	{
 		const wchar_t *pArg = pArgs[i];
-		if ( wcscmp( pArg, L"-dx12" ) == 0 )
-			bDx12Requested = true;
-		else if ( wcscmp( pArg, L"-dx9" ) == 0 || wcscmp( pArg, L"-gl" ) == 0 ||
+		if ( wcscmp( pArg, L"-dx9" ) == 0 || wcscmp( pArg, L"-gl" ) == 0 ||
 			wcscmp( pArg, L"-vulkan" ) == 0 || wcscmp( pArg, L"-noshaderapi" ) == 0 )
-			bConflictingRenderer = true;
+			bLegacyRendererRequested = true;
 	}
 	LocalFree( pArgs );
-	if ( bDx12Requested && bConflictingRenderer )
-	{
-		MessageBoxA( 0, "-dx12 cannot be combined with -dx9, -gl, -vulkan or -noshaderapi.", "Launcher Error", MB_OK );
-		return 1;
-	}
+	const bool bDx12Requested = !bLegacyRendererRequested;
 
 	std::wstring sRendererDll;
 	if ( bDx12Requested )
@@ -474,7 +468,7 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 		sRendererDll = sExePath.substr( 0, slash + 1 ) + L"bin\\x64\\shaderapidx12.dll";
 		if ( sRendererDll.size() >= MAX_PATH || !FileExists( sRendererDll.c_str() ) )
 		{
-			MessageBoxW( 0, L"The EXE-local bin\\x64\\shaderapidx12.dll is missing or its path is too long.", L"Launcher Error", MB_OK );
+			MessageBoxW( 0, L"The EXE-local bin\\x64\\shaderapidx12.dll is missing or its path is too long.\n\nLaunch with -dx9 to use the legacy DirectX 9 renderer.", L"Launcher Error", MB_OK );
 			return 1;
 		}
 	}

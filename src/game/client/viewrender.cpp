@@ -800,6 +800,7 @@ CLIENTEFFECT_REGISTER_BEGIN( PrecachePostProcessingEffects )
 	CLIENTEFFECT_MATERIAL( "dev/copyfullframefb" )
 	CLIENTEFFECT_MATERIAL( "dev/engine_post" )
 	CLIENTEFFECT_MATERIAL( "dev/motion_blur" )
+	CLIENTEFFECT_MATERIAL( "dev/motion_blur_mv" )
 	CLIENTEFFECT_MATERIAL( "dev/upscale" )
 
 #ifdef TF_CLIENT_DLL
@@ -2179,25 +2180,37 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 
 		RenderPlayerSprites();
 
-		// Image-space motion blur
-		if ( !building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping ) // We probably should use a different view. variable here
+		// Image-space motion blur. The legacy camera-angle blur keeps its original point in the frame. The DX12
+		// velocity blur runs after DrawViewModels instead, so both the colour and the velocity buffers it reads
+		// already contain the opaque viewmodel.
+		const bool bDX12VelocityBlur = MotionVectorsDX12_Enabled();
+		const bool bDoMotionBlur = !building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping; // We probably should use a different view. variable here
+		static ConVarRef mat_motion_blur_enabled( "mat_motion_blur_enabled" );
+		const bool bMotionBlurAllowed = bDoMotionBlur && mat_motion_blur_enabled.GetInt() && g_pMaterialSystemHardwareConfig->GetDXSupportLevel() >= 90;
+		if ( bMotionBlurAllowed && !bDX12VelocityBlur )
 		{
-			static ConVarRef mat_motion_blur_enabled( "mat_motion_blur_enabled" );
-			if ( ( mat_motion_blur_enabled.GetInt() ) && ( g_pMaterialSystemHardwareConfig->GetDXSupportLevel() >= 90 ) )
+			pRenderContext.GetFrom( materials );
 			{
-				pRenderContext.GetFrom( materials );
-				{
-					PIXEVENT( pRenderContext, "DoImageSpaceMotionBlur" );
-					DoImageSpaceMotionBlur( viewRender, viewRender.x, viewRender.y, viewRender.width, viewRender.height );
-				}
-				pRenderContext.SafeRelease();
+				PIXEVENT( pRenderContext, "DoImageSpaceMotionBlur" );
+				DoImageSpaceMotionBlur( viewRender, viewRender.x, viewRender.y, viewRender.width, viewRender.height );
 			}
+			pRenderContext.SafeRelease();
 		}
 
 		GetClientModeNormal()->DoPostScreenSpaceEffects( &viewRender );
 
 		// Now actually draw the viewmodel
 		DrawViewModels( viewRender, whatToDraw & RENDERVIEW_DRAWVIEWMODEL );
+
+		if ( bMotionBlurAllowed && bDX12VelocityBlur )
+		{
+			pRenderContext.GetFrom( materials );
+			{
+				PIXEVENT( pRenderContext, "DoImageSpaceMotionBlur" );
+				DoImageSpaceMotionBlur( viewRender, viewRender.x, viewRender.y, viewRender.width, viewRender.height );
+			}
+			pRenderContext.SafeRelease();
+		}
 
 		DrawUnderwaterOverlay();
 
@@ -5562,6 +5575,8 @@ void CBaseWorldView::DrawMotionVectors( const CUtlVector< CClientRenderablesList
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->PushRenderTargetAndViewport( pRT, x, y, width, height );
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_PASS, bFirstThisFrame ? DX12_MOTION_PASS_BEGIN_MAIN : DX12_MOTION_PASS_APPEND_MAIN );
+	if ( bFirstThisFrame )
+		MotionVectorsDX12_RecordMainPassBegin();
 
 	for ( int i = 0; i < list.Count(); ++i )
 	{

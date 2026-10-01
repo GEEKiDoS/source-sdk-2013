@@ -57,6 +57,7 @@
 #include "monitorscreen_ps2x.h"
 #include "morphaccumulate_ps30.h"
 #include "morphaccumulate_vs30.h"
+#include "motion_blur_mv.h"
 #include "motion_blur_ps2x.h"
 #include "particlesphere_ps2x.h"
 #include "particlesphere_vs20.h"
@@ -205,6 +206,7 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "morphaccumulate_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::morphaccumulate_vs30 > },
 	{ "morphweight_ps51", dx12native::kStagePixel, nullptr },
 	{ "morphweight_vs51", dx12native::kStageVertex, nullptr },
+	{ "motion_blur_mv_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::motion_blur_mv > },
 	{ "motion_blur_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::motion_blur_ps2x > },
 	{ "motion_blur_vs51", dx12native::kStageVertex, nullptr },
 	{ "particlesphere_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::particlesphere_ps2x > },

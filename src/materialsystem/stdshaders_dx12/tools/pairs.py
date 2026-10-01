@@ -1,4 +1,4 @@
-from genmat import pair
+from genmat import native_only, pair
 SCREENSPACE = [
     pair('screenspace', 'writez_vs20', None, ['writez_dx9.cpp']),
     pair('screenspace', 'bufferclearobeystencil_vs20', 'bufferclearobeystencil_ps20b', ['BufferClearObeyStencil_dx9.cpp']),
@@ -129,6 +129,11 @@ EFFECTS = [
     pair('effects_misc', 'flesh_interior_blended_pass_vs20', 'flesh_interior_blended_pass_ps20b', ['flesh_interior_blended_pass_helper.cpp']),
     pair('effects_misc', 'weapon_sheen_pass_vs30', 'weapon_sheen_pass_ps30', ['weapon_sheen_pass_helper.cpp']),
 ]
+
+NATIVE_ONLY = [
+    native_only('postfx', 'motion_blur_mv_ps51.fxc', 'ps', 'motion_blur_mv_ps51'),
+]
+
 ALL = SCREENSPACE + POSTFX + VERTEXLIT + WORLD_MISC + SPRITES + WATER + EYES + LIGHTMAPPED + MORPH + EFFECTS
 
 # Logical shaders the SDK ships only as compiled VCS (no .fxc source): legacy records via passthrough.

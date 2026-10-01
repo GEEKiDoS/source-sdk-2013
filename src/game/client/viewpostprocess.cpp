@@ -21,6 +21,7 @@
 
 #include "proxyentity.h"
 
+#include "motionvectors_dx12.h"
 //-----------------------------------------------------------------------------
 // Globals
 //-----------------------------------------------------------------------------
@@ -2698,6 +2699,38 @@ ConVar mat_motion_blur_falling_intensity( "mat_motion_blur_falling_intensity", "
 //ConVar mat_motion_blur_roll_intensity( "mat_motion_blur_roll_intensity", "1.0" );
 ConVar mat_motion_blur_rotation_intensity( "mat_motion_blur_rotation_intensity", "1.0" );
 ConVar mat_motion_blur_strength( "mat_motion_blur_strength", "1.0" );
+ConVar mat_motion_blur_shutter_time( "mat_motion_blur_shutter_time", "0.016667", FCVAR_ARCHIVE, "DX12 velocity motion blur exposure time in seconds.", true, 0.0f, false, 0.0f );
+
+// Composites a motion blur material over the frame; the material proxy supplies g_vMotionBlurValues.
+static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, int h )
+{
+	CMatRenderContextPtr pRenderContext( materials );
+	ITexture *pSrc = materials->FindTexture( "_rt_FullFrameFB", TEXTURE_GROUP_RENDER_TARGET );
+	int nSrcWidth = pSrc->GetActualWidth();
+	int nSrcHeight = pSrc->GetActualHeight();
+	int dest_width, dest_height, nDummy;
+	pRenderContext->GetViewport( nDummy, nDummy, dest_width, dest_height );
+
+	if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT )
+	{
+		UpdateScreenEffectTexture( 0, x, y, w, h, true ); // Do we need to check if we already did this?
+	}
+
+	IMaterial *pMatMotionBlur = materials->FindMaterial( pMaterialName, TEXTURE_GROUP_OTHER, true );
+	if ( pMatMotionBlur != NULL )
+	{
+		pRenderContext->DrawScreenSpaceRectangle(
+			pMatMotionBlur,
+			0, 0, dest_width, dest_height,
+			0, 0, nSrcWidth-1, nSrcHeight-1,
+			nSrcWidth, nSrcHeight, GetClientWorldEntity()->GetClientRenderable() );
+
+		if ( g_bDumpRenderTargets )
+		{
+			DumpTGAofRenderTarget( dest_width, dest_height, "MotionBlur" );
+		}
+	}
+}
 
 void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, int h )
 {
@@ -2708,6 +2741,28 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 
 	if ( ( !mat_motion_blur_enabled.GetInt() ) || ( g_pMaterialSystemHardwareConfig->GetDXSupportLevel() < 90 ) )
 	{
+		return;
+	}
+	static float s_flLastTimeUpdate = 0.0f;
+
+	// DX12 velocity blur: blur vectors come from _rt_MotionVectors, scaled to an exposure of mat_motion_blur_shutter_time.
+	float flMotionVectorDelta = 0.0f;
+	if ( MotionVectorsDX12_Enabled() && MotionVectorsDX12_FrameValid( &flMotionVectorDelta ) )
+	{
+		static ConVarRef mat_motion_blur_percent_of_screen_max( "mat_motion_blur_percent_of_screen_max", true );
+		const float flMaxBlurLength = mat_motion_blur_percent_of_screen_max.IsValid() ?
+			( mat_motion_blur_percent_of_screen_max.GetFloat() / 100.0f ) : 0.04f;
+		// No blur across hitches (same policy as the legacy path: slower than 15 fps).
+		const float flMotionBlurScale = ( flMotionVectorDelta > 0.0f && flMotionVectorDelta <= ( 1.0f / 15.0f ) ) ?
+			( mat_motion_blur_strength.GetFloat() * mat_motion_blur_shutter_time.GetFloat() / flMotionVectorDelta ) : 0.0f;
+		g_vMotionBlurValues[0] = flMotionBlurScale;
+		g_vMotionBlurValues[1] = flMaxBlurLength;
+		g_vMotionBlurValues[2] = 0.0f;
+		g_vMotionBlurValues[3] = 0.0f;
+		// Keep the legacy path's timing coherent if the blur mode switches at runtime.
+		s_flLastTimeUpdate = gpGlobals->realtime;
+
+		DrawMotionBlurQuad( "dev/motion_blur_mv", x, y, w, h );
 		return;
 	}
 
@@ -2729,7 +2784,6 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 		//=====================//
 		// Previous frame data //
 		//=====================//
-		static float s_flLastTimeUpdate = 0.0f;
 		static float s_flPreviousPitch = 0.0f;
 		static float s_flPreviousYaw = 0.0f;
 		static float s_vPreviousPositon[3] = { 0.0f, 0.0f, 0.0f };
@@ -2960,42 +3014,6 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 		s_flLastTimeUpdate = gpGlobals->realtime;
 	}
 
-	//=============================================================================================//
-	// Render quad and let material proxy pick up the g_vMotionBlurValues[4] values just set above //
-	//=============================================================================================//
-	if ( true )
-	{
-		CMatRenderContextPtr pRenderContext( materials );
-		//pRenderContext->PushRenderTargetAndViewport();
-		ITexture *pSrc = materials->FindTexture( "_rt_FullFrameFB", TEXTURE_GROUP_RENDER_TARGET );
-		int nSrcWidth = pSrc->GetActualWidth();
-		int nSrcHeight = pSrc->GetActualHeight();
-		int dest_width, dest_height, nDummy;
-		pRenderContext->GetViewport( nDummy, nDummy, dest_width, dest_height );
-
-		if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT )
-		{
-			UpdateScreenEffectTexture( 0, x, y, w, h, true ); // Do we need to check if we already did this?
-		}
-
-		// Get material pointer
-		IMaterial *pMatMotionBlur = materials->FindMaterial( "dev/motion_blur", TEXTURE_GROUP_OTHER, true );
-
-		//SetRenderTargetAndViewPort( dest_rt0 );
-		//pRenderContext->PopRenderTargetAndViewport();
-
-		if ( pMatMotionBlur != NULL )
-		{
-			pRenderContext->DrawScreenSpaceRectangle(
-				pMatMotionBlur,
-				0, 0, dest_width, dest_height,
-				0, 0, nSrcWidth-1, nSrcHeight-1,
-				nSrcWidth, nSrcHeight, GetClientWorldEntity()->GetClientRenderable() );
-
-			if ( g_bDumpRenderTargets )
-			{
-				DumpTGAofRenderTarget( dest_width, dest_height, "MotionBlur" );
-			}
-		}
-	}
+	// Render quad and let the material proxy pick up the g_vMotionBlurValues[4] values just set above.
+	DrawMotionBlurQuad( "dev/motion_blur", x, y, w, h );
 }

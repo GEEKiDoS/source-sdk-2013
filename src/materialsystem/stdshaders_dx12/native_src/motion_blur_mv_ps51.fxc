@@ -1,0 +1,176 @@
+// Native SM5.1 motion-vector motion blur shader.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+
+// DYNAMIC: "QUALITY" "0..3"
+
+#ifdef HDRTYPE
+#undef HDRTYPE
+#endif
+#define HDRTYPE HDR_TYPE_NONE
+
+#include "common_ps_fxc.h"
+
+Texture2D g_tSceneSampler_Texture : register( t0 );
+SamplerState g_tSceneSampler_Sampler : register( s0 );
+Texture2D g_tVelocitySampler_Texture : register( t1 );
+SamplerState g_tVelocitySampler_Sampler : register( s1 );
+
+cbuffer motion_blur_mv : register( b1, space1 )
+{
+	float4 g_vMotionBlurInternal; // @legacy ps:c0
+};
+
+struct PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 vUv0 : TEXCOORD0;
+};
+
+float4 LoadVelocityPointClamp( float2 uv )
+{
+	uint width, height;
+	g_tVelocitySampler_Texture.GetDimensions( width, height );
+	int2 pixel = int2( floor( saturate( uv ) * float2( width, height ) ) );
+	pixel = clamp( pixel, int2( 0, 0 ), int2( width, height ) - 1 );
+	return g_tVelocitySampler_Texture.Load( int3( pixel, 0 ) );
+}
+
+float4 SampleSceneClamp( float2 uv )
+{
+	uint width, height;
+	g_tSceneSampler_Texture.GetDimensions( width, height );
+	float2 halfTexel = 0.5f / float2( width, height );
+	uv = clamp( uv, halfTexel, 1.0f - halfTexel );
+	return g_tSceneSampler_Texture.SampleLevel( g_tSceneSampler_Sampler, uv, 0.0f );
+}
+
+float2 ClampBlurVector( float2 blurVector, float maxLength )
+{
+	float vectorLength = length( blurVector );
+	if ( vectorLength > maxLength )
+	{
+		blurVector = normalize( blurVector ) * maxLength;
+	}
+	return blurVector;
+}
+
+float4 main( PS_INPUT i ) : SV_Target0
+{
+	float2 uv = i.vUv0;
+	float4 centerColor = SampleSceneClamp( uv );
+	float blurMultiplier = g_vMotionBlurInternal.x;
+
+	if ( blurMultiplier == 0.0f )
+	{
+		return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+	}
+
+	float4 centerVelocity = LoadVelocityPointClamp( uv );
+	if ( centerVelocity.w < 0.5f )
+	{
+		return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+	}
+
+	float maxBlurLength = max( g_vMotionBlurInternal.y, 0.0f );
+	float2 centerV = ClampBlurVector( centerVelocity.xy * blurMultiplier, maxBlurLength );
+
+#if QUALITY == 0
+	return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+#else
+#if QUALITY == 1
+	const int kNumSamples = 8;
+#elif QUALITY == 2
+	const int kNumSamples = 12;
+#else
+	const int kNumSamples = 16;
+#endif
+
+	// Heuristic neighbour-max dilation: a candidate contributes only when its
+	// centred blur segment reaches this pixel, then the longest reachable
+	// velocity wins. This recovers thin moving objects beside static pixels.
+	float2 blurV = centerV;
+	float blurVLength = length( blurV );
+	const float searchRadius = 0.5f * maxBlurLength;
+	uint velocityWidth, velocityHeight;
+	g_tVelocitySampler_Texture.GetDimensions( velocityWidth, velocityHeight );
+	const float2 velocityTexelSize = 1.0f / float2( velocityWidth, velocityHeight );
+	const int kInnerSamples = kNumSamples / 2;
+	const float kInnerRadiusMinPixels = 1.0f;
+	const float kInnerRadiusMaxPixels = 3.0f;
+	const float interleavedNoise = frac( 52.9829189f *
+		frac( dot( i.projPos.xy, float2( 0.06711056f, 0.00583715f ) ) ) );
+	for ( int sample = 0; sample < kNumSamples; ++sample )
+	{
+		float sampleAngle = (float)sample * 2.39996323f +
+			6.2831853f * interleavedNoise;
+		float2 sampleDirection = float2( cos( sampleAngle ), sin( sampleAngle ) );
+		float2 searchOffset;
+		if ( sample < kInnerSamples )
+		{
+			// The first half of the same fixed load budget probes the
+			// centre-adjacent 1-3 pixel neighbourhood. The old radius was
+			// proportional only to maxBlurLength, so a 5 px weapon edge
+			// could be missed entirely by every dilation tap.
+			float innerT = ( (float)sample + 0.5f ) / (float)kInnerSamples;
+			float innerRadiusPixels = lerp(
+				kInnerRadiusMinPixels, kInnerRadiusMaxPixels, sqrt( innerT ) );
+			searchOffset = sampleDirection * innerRadiusPixels * velocityTexelSize;
+		}
+		else
+		{
+			int outerSample = sample - kInnerSamples;
+			int outerSamples = kNumSamples - kInnerSamples;
+			float outerT = ( (float)outerSample + 0.5f ) / (float)outerSamples;
+			searchOffset = sampleDirection * searchRadius * sqrt( outerT );
+		}
+		float2 searchUv = saturate( uv + searchOffset );
+		float4 searchVelocity = LoadVelocityPointClamp( searchUv );
+		if ( searchVelocity.w >= 0.5f )
+		{
+			float2 candidateV = ClampBlurVector(
+				searchVelocity.xy * blurMultiplier, maxBlurLength );
+			float candidateLength = length( candidateV );
+			if ( length( searchOffset ) <= 0.5f * candidateLength &&
+				candidateLength > blurVLength )
+			{
+				blurV = candidateV;
+				blurVLength = candidateLength;
+			}
+		}
+	}
+
+	float4 accumulatedColor = float4( 0.0f, 0.0f, 0.0f, 0.0f );
+	float accumulatedWeight = 0.0f;
+	for ( int tap = 0; tap < kNumSamples; ++tap )
+	{
+		float t = (float)tap / (float)( kNumSamples - 1 );
+		float2 tapUv = saturate( uv + blurV * ( t - 0.5f ) );
+		float4 tapColor = SampleSceneClamp( tapUv );
+		float4 tapVelocity = LoadVelocityPointClamp( tapUv );
+		float2 tapBlur = ClampBlurVector( tapVelocity.xy * blurMultiplier, maxBlurLength );
+		float distanceInUv = blurVLength * abs( t - 0.5f );
+		float tapWeight = saturate( length( tapBlur ) / max( distanceInUv, 0.00001f ) );
+
+		// The middle tap is always retained, even when the spread test
+		// rejects it. The remaining taps use their own velocity as the
+		// foreground/background bleed guard.
+		if ( tap == kNumSamples / 2 )
+		{
+			tapWeight = 1.0f;
+		}
+		else if ( tapVelocity.w < 0.5f )
+		{
+			tapWeight = 0.0f;
+		}
+
+		accumulatedColor += tapColor * tapWeight;
+		accumulatedWeight += tapWeight;
+	}
+
+	// No depth is available here: a fast background can bleed a few pixels
+	// into a sharp static foreground edge (and vice versa).
+	float3 result = accumulatedColor.rgb / max( accumulatedWeight, 0.00001f );
+	return DX12FinishPixel( FinalOutput( float4( result, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+#endif
+}

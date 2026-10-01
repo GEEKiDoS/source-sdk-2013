@@ -6,10 +6,10 @@
 // ---- DX12 native preamble (not in the legacy header) ----------------------------------------------------------
 #if defined(DX12_LEGACY_VS20) || defined(DX12_LEGACY_VS30)
 #define DX12_STAGE_VERTEX 1
-#elif defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+#elif defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30) || defined(DX12_NATIVE_PS)
 #define DX12_STAGE_PIXEL 1
 #else
-#error Native sources must define exactly one DX12_LEGACY_{VS20,VS30,PS20,PS20B,PS30}
+#error Native sources must define a vertex or pixel DX12 stage macro
 #endif
 #include "dx12_engine_cbuffers.h"
 #include "dx12_raster_emulation.h"

@@ -36,7 +36,7 @@ The default launch options should be already filled in for the `Release` configu
 
 ### DX12 Unicode title DLL (Windows x64)
 
-The `unicode` project builds a source-compatible replacement for the installed x64 `unicode.dll`. It exports the same `CreateInterface` factory and `VENGINEUNICODE001` methods; only a `-dx12` launch changes an incoming `Direct3D 9` window-title substring to `Direct3D 12`. Do not overwrite the Steam SDK installation. Generate and build the isolated project from `src`:
+The `unicode` project builds a source-compatible replacement for the installed x64 `unicode.dll`. It exports the same `CreateInterface` factory and `VENGINEUNICODE001` methods; unless `-dx9` (or `-gl`/`-vulkan`/`-noshaderapi`) is passed, an x64 launch changes an incoming `Direct3D 9` window-title substring to `Direct3D 12`. Do not overwrite the Steam SDK installation. Generate and build the isolated project from `src`:
 
 ```bat
 cd /d F:\repo\source-sdk-2013\src
@@ -51,10 +51,10 @@ Run the x64 launcher from `game` and inspect `MainWindowTitle` while each proces
 ```bat
 cd /d F:\repo\source-sdk-2013\game
 mod_hl2mp_win64.exe -game mod_hl2mp -dx9 -windowed -novid
-mod_hl2mp_win64.exe -game mod_hl2mp -dx12 -windowed -novid
+mod_hl2mp_win64.exe -game mod_hl2mp -windowed -novid
 ```
 
-Expected result: the DX9 launch retains `My First HL2MP Mod - Direct3D 9 - 64 Bit`, while the DX12 launch displays `My First HL2MP Mod - Direct3D 12 - 64 Bit`. Both launches should load `F:\repo\source-sdk-2013\game\bin\x64\unicode.dll`; the read-only Steam SDK `bin\x64\unicode.dll` remains untouched.
+Expected result: the `-dx9` launch retains `My First HL2MP Mod - Direct3D 9 - 64 Bit`, while the default launch (native DX12) displays `My First HL2MP Mod - Direct3D 12 - 64 Bit`. Both launches should load `F:\repo\source-sdk-2013\game\bin\x64\unicode.dll`; the read-only Steam SDK `bin\x64\unicode.dll` remains untouched.
 
 ### Linux
 

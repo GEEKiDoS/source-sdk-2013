@@ -1229,7 +1229,7 @@ void CShaderAPIDX12::CommitPixelShaderLighting(int reg) {
 }
 CMeshBuilder* CShaderAPIDX12::GetVertexModifyBuilder() { return &vertexModifyBuilder_; }
 const FlashlightState_t &CShaderAPIDX12::GetFlashlightState( VMatrix &worldToTexture ) const { worldToTexture=flashlightMatrix_; return flashlight_; }
-bool CShaderAPIDX12::InFlashlightMode() const { return flashlightMode_; }
+bool CShaderAPIDX12::InFlashlightMode() const { return shaderUtil_ && shaderUtil_->InFlashlightMode(); }
 bool CShaderAPIDX12::InEditorMode() const { return editorMode_; }
 MorphFormat_t CShaderAPIDX12::GetBoundMorphFormat() { return shaderUtil_?shaderUtil_->GetBoundMorphFormat():0; }
 void CShaderAPIDX12::BindStandardTexture(Sampler_t sampler,StandardTextureId_t id)
@@ -1274,7 +1274,7 @@ void CShaderAPIDX12::SetStencilReferenceValue(int ref) { stencilRef_=ref; }
 void CShaderAPIDX12::SetStencilTestMask(uint32 msk) { stencilReadMask_=static_cast<uint8_t>(msk); }
 void CShaderAPIDX12::SetStencilWriteMask(uint32 msk) { stencilWriteMask_=static_cast<uint8_t>(msk); }
 void CShaderAPIDX12::GetDXLevelDefaults(uint &max_dxlevel,uint &recommended_dxlevel) { max_dxlevel=95; recommended_dxlevel=95; }
-const FlashlightState_t &CShaderAPIDX12::GetFlashlightStateEx( VMatrix &worldToTexture, ITexture **pFlashlightDepthTexture ) const { worldToTexture=flashlightMatrix_; if(pFlashlightDepthTexture)*pFlashlightDepthTexture=flashlight_.m_pSpotlightTexture; return flashlight_; }
+const FlashlightState_t &CShaderAPIDX12::GetFlashlightStateEx( VMatrix &worldToTexture, ITexture **pFlashlightDepthTexture ) const { worldToTexture=flashlightMatrix_; if(pFlashlightDepthTexture)*pFlashlightDepthTexture=flashlightDepthTexture_; return flashlight_; }
 float CShaderAPIDX12::GetAmbientLightCubeLuminance() {
     float luminance=0.f;for(const auto &face:ambientCube_)luminance+=.3f*face[0]+.59f*face[1]+.11f*face[2];return luminance/6.f;
 }
@@ -1656,7 +1656,7 @@ int CShaderAPIDX12::OcclusionQuery_GetNumPixelsRendered(ShaderAPIOcclusionQuery_
     ZoneNamedN(___tracy_scoped_zone, "DX12 OcclusionQueryResult", DX12_ZONES_ACTIVE);
     auto *query=reinterpret_cast<OcclusionQueryDX12 *>(handle);if(!query||query->destroyed||query->error)return OCCLUSION_QUERY_RESULT_ERROR;if(query->active||!query->ended)return OCCLUSION_QUERY_RESULT_PENDING;if(device_->CompletedFenceValue()<query->fence){if(flush){TracyPlot("DX12 occlusion flush",static_cast<int64_t>(1));if(device_->IsRecordingOwner() && device_->CommandList()){ProcessPendingTextureDeletes();device_->Submit(true);pipeline_.Reclaim(device_->CompletedFenceValue());}}if(device_->CompletedFenceValue()<query->fence)return OCCLUSION_QUERY_RESULT_PENDING;}uint64_t value=0;void *mapped=nullptr;D3D12_RANGE range{0,sizeof(value)};if(FAILED(query->readback->Map(0,&range,&mapped))||!mapped){query->error=true;return OCCLUSION_QUERY_RESULT_ERROR;}std::memcpy(&value,mapped,sizeof(value));query->readback->Unmap(0,nullptr);return value>INT_MAX?INT_MAX:static_cast<int>(value);
 }
-void CShaderAPIDX12::SetFlashlightState( const FlashlightState_t &state, const VMatrix &worldToTexture ) { flashlight_=state; flashlightMatrix_=worldToTexture; flashlightMode_=state.m_bEnableShadows || state.m_pSpotlightTexture!=nullptr; }
+void CShaderAPIDX12::SetFlashlightState( const FlashlightState_t &state, const VMatrix &worldToTexture ) { flashlight_=state; flashlightDepthTexture_=nullptr; flashlightMatrix_=worldToTexture; }
 void CShaderAPIDX12::ClearVertexAndPixelShaderRefCounts() {
     FOR_EACH_HASHTABLE(namedShaderReferences_,entry)namedShaderReferences_[entry]=false;
     ++namedReferenceEpoch_;
@@ -1709,7 +1709,7 @@ int CShaderAPIDX12::GetMaxIndicesToRender( ) { return INDEX_BUFFER_SIZE; }
 void CShaderAPIDX12::DisableAllLocalLights() { for(auto &light:lights_)light.m_Type=MATERIAL_LIGHT_DISABLE;lightingDirty_=true; }
 int CShaderAPIDX12::CompareSnapshots( StateSnapshot_t snapshot0, StateSnapshot_t snapshot1 ) { if(snapshot0==snapshot1)return 0; if(snapshot0<0||snapshot1<0||snapshot0>=(StateSnapshot_t)snapshots_.Count()||snapshot1>=(StateSnapshot_t)snapshots_.Count())return snapshot0<snapshot1?-1:1; const Snapshot&a=snapshots_[snapshot0],&b=snapshots_[snapshot1]; if(a.alphaTest!=b.alphaTest)return a.alphaTest?1:-1; if(a.translucent!=b.translucent)return a.translucent?1:-1; return snapshot0<snapshot1?-1:1; }
 IMesh *CShaderAPIDX12::GetFlexMesh() { return dynamicMesh_ ? dynamicMesh_ : (dynamicMesh_=new CMeshDX12(0,65536,true,[](void *context,CMeshDX12*m,int f,int n){static_cast<CShaderAPIDX12 *>(context)->DrawMaterialMesh(m,f,n);},this)); }
-void CShaderAPIDX12::SetFlashlightStateEx( const FlashlightState_t &state, const VMatrix &worldToTexture, ITexture *pFlashlightDepthTexture ) { flashlight_=state; flashlightMatrix_=worldToTexture; flashlight_.m_pSpotlightTexture=pFlashlightDepthTexture; flashlightMode_=state.m_bEnableShadows||state.m_pSpotlightTexture!=nullptr||pFlashlightDepthTexture!=nullptr; }
+void CShaderAPIDX12::SetFlashlightStateEx( const FlashlightState_t &state, const VMatrix &worldToTexture, ITexture *pFlashlightDepthTexture ) { flashlight_=state; flashlightDepthTexture_=pFlashlightDepthTexture; flashlightMatrix_=worldToTexture; }
 bool CShaderAPIDX12::SupportsMSAAMode( int nMSAAMode ) { return device_ && device_->SupportsMSAA(nMSAAMode); }
 bool CShaderAPIDX12::OwnGPUResources( bool bEnable )
 {

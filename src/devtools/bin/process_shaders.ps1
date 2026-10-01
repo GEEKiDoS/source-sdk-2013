@@ -34,17 +34,21 @@ if ($Native) {
     try {
         New-Item -ItemType Directory -Path "$staging\legacy", "$staging\native" -Force | Out-Null
         $hlslFiles = @{}
-        Get-ChildItem (Join-Path $rootPath 'hlsl') -Recurse -File | ForEach-Object {
-            # ShaderCompile2 resolves #include by file name within -shaderpath only: hlsl\ and hlsl\common\ are flattened.
-            if ($hlslFiles.ContainsKey($_.Name)) { throw "Duplicate HLSL file name in native tree: $($_.Name)" }
-            $hlslFiles[$_.Name] = $_.FullName
+        foreach ($sourceDir in @('hlsl', 'native_src')) {
+            $sourcePath = Join-Path $rootPath $sourceDir
+            if (!(Test-Path $sourcePath)) { continue }
+            Get-ChildItem $sourcePath -Recurse -File | ForEach-Object {
+                # ShaderCompile2 resolves #include by file name within -shaderpath; flatten both native trees.
+                if ($hlslFiles.ContainsKey($_.Name)) { throw "Duplicate HLSL file name in native trees: $($_.Name)" }
+                $hlslFiles[$_.Name] = $_.FullName
+            }
         }
         $outputs = @()
         foreach ($manifest in (Get-ChildItem (Join-Path $rootPath 'manifests') -Filter '*.txt' | Sort-Object Name)) {
             foreach ($line in (Get-Content $manifest.FullName)) {
-                if ($line -notmatch '^\s*([^#\s]\S*)\s+(vs|ps)\s+(\w+)\s+(20b|20|30)(?:\s+(\S+))?\s*$') { continue }
+                if ($line -notmatch '^\s*([^#\s]\S*)\s+(vs|ps)\s+(\w+)\s+(20b|20|30|native)(?:\s+(\S+))?\s*$') { continue }
                 $source,$stageName,$logical,$profile = $Matches[1],$Matches[2],$Matches[3],$Matches[4]
-                $legacySource = if ($Matches[5]) { $Matches[5] } else { "$logical.fxc" }
+                $legacySource = if ($profile -eq 'native') { $null } elseif ($Matches[5] -and $Matches[5] -ne '-') { $Matches[5] } else { "$logical.fxc" }
                 $outputs += [pscustomobject]@{Source=$source;Stage=$stageName;Logical=$logical;Legacy=$legacySource;Profile=$profile}
             }
         }
@@ -75,8 +79,9 @@ if ($Native) {
         $live = @{}; foreach ($item in $outputs) { $live[$item.Logical] = $true }
         Get-ChildItem "$staging\native" -Directory | Where-Object { !$live.ContainsKey($_.Name) } | Remove-Item -Recurse -Force
         Set-Content "$staging\native-map.txt" $nativeMap
-        # Legacy combo ABI reference: DX9 source, with generated shipped-contract overrides where necessary.
-        foreach ($item in ($outputs | Sort-Object Legacy,Profile -Unique)) {
+        # Legacy combo ABI references: DX9 sources, with generated shipped-contract overrides where necessary.
+        # Native-only logicals intentionally have no legacy compile or fallback reference.
+        foreach ($item in ($outputs | Where-Object { $_.Profile -ne 'native' } | Sort-Object Legacy,Profile -Unique)) {
             $original = Join-Path $legacyPath $item.Legacy
             $reference = Join-Path (Join-Path $rootPath 'legacy_reference') $item.Legacy
             if (Test-Path $reference) { $original = $reference }

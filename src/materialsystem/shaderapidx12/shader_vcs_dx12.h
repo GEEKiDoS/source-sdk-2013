@@ -17,6 +17,9 @@ namespace shaderapidx12
 
 enum class VcsStage { Vertex, Pixel };
 
+// LegacyShaderName() result for a native-only logical: it has no shaders/fxc record to fall back to.
+inline constexpr const char *kNativeOnlyMarker = "-";
+
 struct VcsPayload
 {
     // Owned by ShaderVcsFile; valid until the file is reopened or destroyed.
@@ -33,9 +36,10 @@ public:
     ShaderVcsFile &operator=(const ShaderVcsFile &) = delete;
 
     // The first existing GAME path is authoritative; an invalid file is an error,
-    // not a reason to search a different shader in fxc.
+    // not a reason to search a different shader in fxc. Native-only map markers
+    // fail closed when their native record is missing.
     bool Open(IFileSystem &filesystem, const char *name, VcsStage stage, std::string &error);
-    // Legacy DX9 logical for a native <base>_vs51/_ps51 name (shaders/native_dx12_legacy_names.txt), else name.
+    // Legacy DX9 logical for a native name, kNativeOnlyMarker for a native-only logical, else name.
     static std::string LegacyShaderName(IFileSystem &filesystem, const char *name, VcsStage stage);
 
     // Also usable for deterministic byte-for-byte fixtures without a filesystem.

@@ -11,14 +11,29 @@
 
 namespace
 {
+static bool IsLegacyRendererSwitch( const wchar_t *pArgument, size_t length )
+{
+	static const wchar_t *const kLegacySwitches[] = { L"-dx9", L"-gl", L"-vulkan", L"-noshaderapi" };
+	for ( const wchar_t *pSwitch : kLegacySwitches )
+	{
+		if ( wcslen( pSwitch ) == length && wcsncmp( pArgument, pSwitch, length ) == 0 )
+			return true;
+	}
+	return false;
+}
+
 static bool IsDx12CommandLine()
 {
+#if !defined( _WIN64 )
+	// Only the x64 launcher redirects to the native DX12 renderer.
+	return false;
+#else
 	const wchar_t *pCommandLine = ::GetCommandLineW();
 	if ( !pCommandLine )
 		return false;
 
-	// The launcher passes -dx12 as a standalone switch. Handle quoted executable
-	// paths and quoted switches without changing the command line or allocating.
+	// DX12 is the launcher default; -dx9 (or another explicit legacy renderer) opts out.
+	// Handle quoted executable paths and quoted switches without changing the command line or allocating.
 	while ( *pCommandLine )
 	{
 		while ( *pCommandLine == L' ' || *pCommandLine == L'\t' )
@@ -37,10 +52,9 @@ static bool IsDx12CommandLine()
 		while ( *pCommandLine && ( bQuoted ? *pCommandLine != L'"' : ( *pCommandLine != L' ' && *pCommandLine != L'\t' ) ) )
 			++pCommandLine;
 
-		const bool bSwitchMatch = pCommandLine - pArgument == 5 && wcsncmp( pArgument, L"-dx12", 5 ) == 0;
 		const bool bTokenEnded = !bQuoted || ( *pCommandLine == L'"' && ( pCommandLine[1] == L'\0' || pCommandLine[1] == L' ' || pCommandLine[1] == L'\t' ) );
-		if ( bSwitchMatch && bTokenEnded )
-			return true;
+		if ( bTokenEnded && IsLegacyRendererSwitch( pArgument, static_cast<size_t>( pCommandLine - pArgument ) ) )
+			return false;
 
 		if ( bQuoted && *pCommandLine == L'"' )
 			++pCommandLine;
@@ -48,7 +62,8 @@ static bool IsDx12CommandLine()
 			++pCommandLine;
 	}
 
-	return false;
+	return true;
+#endif
 }
 
 static bool Dx12WindowTitle( LPCWSTR lpWindowName, std::wstring &title )

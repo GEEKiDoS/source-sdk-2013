@@ -179,6 +179,7 @@ protected:
     LightDesc_t *lights_ = nullptr;
     LightState_t lightState_{};
     FlashlightState_t flashlight_{};
+    ITexture *flashlightDepthTexture_ = nullptr;
     VMatrix flashlightMatrix_{};
     MaterialFogMode_t fogMode_ = MATERIAL_FOG_NONE;
     unsigned char fogColor_[3] = {0,0,0};
@@ -187,7 +188,7 @@ protected:
     // Number of model-matrix rows needed by the motion history block. This is
     // independent from the vertex weight-channel count.
     int motionBoneRows_ = 1;
-    bool flashlightMode_ = false, editorMode_ = false, morphing_ = false;
+    bool editorMode_ = false, morphing_ = false;
     CUtlVector<BoxDeformation_t> deformations_;
     std::array<CUtlVector<VMatrix>, MATERIAL_MODEL_MAX + 1> matrixStacks_;
 };

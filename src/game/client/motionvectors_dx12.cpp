@@ -18,6 +18,17 @@ ConVar r_dx12_motionvectors( "r_dx12_motionvectors", "1", FCVAR_ARCHIVE, "DX12: 
 static CTextureReference s_MotionVectorTexture;
 static bool s_bDX12 = false;
 static IShaderAPI *s_pShaderAPI = nullptr;
+static int s_nMotionVectorFrame = -1;
+static double s_flPreviousMainPassTime = -1.0;
+static float s_flCurrentMainPassDelta = 0.0f;
+
+void MotionVectorsDX12_RecordMainPassBegin()
+{
+	const double flNow = Plat_FloatTime();
+	s_flCurrentMainPassDelta = ( s_flPreviousMainPassTime >= 0.0 ) ? float( flNow - s_flPreviousMainPassTime ) : 0.0f;
+	s_flPreviousMainPassTime = flNow;
+	s_nMotionVectorFrame = gpGlobals ? gpGlobals->framecount : -1;
+}
 
 void MotionVectorsDX12_CreateRenderTarget( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig )
 {
@@ -38,12 +49,23 @@ void MotionVectorsDX12_CreateRenderTarget( IMaterialSystem *pMaterialSystem, IMa
 void MotionVectorsDX12_ShutdownRenderTarget()
 {
 	s_MotionVectorTexture.Shutdown();
+	s_nMotionVectorFrame = -1;
+	s_flPreviousMainPassTime = -1.0;
+	s_flCurrentMainPassDelta = 0.0f;
 }
 
 bool MotionVectorsDX12_Enabled()
 {
 	return s_bDX12 && r_dx12_motionvectors.GetBool() && s_MotionVectorTexture.IsValid() &&
 		( !s_pShaderAPI || s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_STATUS ) >= 0 );
+}
+
+bool MotionVectorsDX12_FrameValid( float *pDeltaSeconds )
+{
+	if ( pDeltaSeconds )
+		*pDeltaSeconds = s_flCurrentMainPassDelta;
+
+	return gpGlobals && s_nMotionVectorFrame == gpGlobals->framecount && MotionVectorsDX12_Enabled();
 }
 
 ITexture *MotionVectorsDX12_RenderTarget()

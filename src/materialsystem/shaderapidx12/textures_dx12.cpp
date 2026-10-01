@@ -447,7 +447,11 @@ bool CShaderAPIDX12::AllocateNativeTexture(TextureRecord &texture)
 ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture(int width, int height, int depth, ImageFormat format, int mipLevels, int copies, int flags, const char *debugName, const char *)
 {
     ZoneNamedN(___tracy_scoped_zone, "DX12 CreateTexture", DX12_ZONES_ACTIVE);
-    if (!device_ || !device_->NativeDevice() || width <= 0 || height <= 0 || depth <= 0 || format == IMAGE_FORMAT_UNKNOWN || width > 16384 || height > 16384 || depth > 2048 || mipLevels > 15 || copies > 64 || ((flags & TEXTURE_CREATE_CUBEMAP) && (width != height || depth != 1)) || (depth > 1 && (flags & TEXTURE_CREATE_RENDERTARGET)) || (IsDepthFormat(format) && !(flags & TEXTURE_CREATE_DEPTHBUFFER))) return 0;
+    // Source's shadow-depth render targets are allocated through InitRenderTarget with
+    // MATERIAL_RT_DEPTH_NONE, while their vendor format still identifies them as depth.
+    // Normalize that legacy format contract before validation and native allocation.
+    if (IsDepthFormat(format)) flags |= TEXTURE_CREATE_DEPTHBUFFER;
+    if (!device_ || !device_->NativeDevice() || width <= 0 || height <= 0 || depth <= 0 || format == IMAGE_FORMAT_UNKNOWN || width > 16384 || height > 16384 || depth > 2048 || mipLevels > 15 || copies > 64 || ((flags & TEXTURE_CREATE_CUBEMAP) && (width != height || depth != 1)) || (depth > 1 && (flags & TEXTURE_CREATE_RENDERTARGET))) return 0;
     const ImageFormat nativeFormat = (flags & TEXTURE_CREATE_DEPTHBUFFER) ? format : (flags & TEXTURE_CREATE_RENDERTARGET) ? GetNearestRenderTargetFormat(format) : GetNearestSupportedFormat(format);
     if (nativeFormat == IMAGE_FORMAT_UNKNOWN || (nativeFormat != format && IsBlockCompressed(nativeFormat))) return 0;
     auto record = std::make_unique<TextureRecord>(); record->id = nextTexture_++; record->width = width; record->height = height; record->depth = depth; record->mipLevels = std::max(1,mipLevels); record->copies = std::max(1,copies); record->format = nativeFormat; record->requestedFormat = format; record->flags = flags; record->name = debugName ? debugName : "";
@@ -639,7 +643,18 @@ bool PrepareSampledTextureDX12(CShaderAPIDX12 &api, ShaderAPITextureHandle_t h, 
         *out = nullptr; return false;
     }
     auto it = api.FindTexture(h); if (it == nullptr || !api.device_ || !api.device_->CommandList()) { *out = nullptr; return false; }
-    if (comparison && !(it->flags & TEXTURE_CREATE_DEPTHBUFFER)) { Warning("ShaderAPIDX12: comparison sampling requires a depth texture (handle %lld)\n",static_cast<long long>(h)); *out = nullptr; return false; }
+    if (comparison && !(it->flags & TEXTURE_CREATE_DEPTHBUFFER)) {
+        // Warn once per texture: this runs per draw and some materials legitimately bind plain textures to
+        // comparison-mask slots (the typed SRV is used, as in DX9).
+        static ShaderAPITextureHandle_t warned[16]{};
+        ShaderAPITextureHandle_t *const warnedEnd = warned + std::size(warned);
+        if (std::find(warned, warnedEnd, h) == warnedEnd) {
+            if (ShaderAPITextureHandle_t *const slot = std::find(warned, warnedEnd, ShaderAPITextureHandle_t(0)); slot != warnedEnd) *slot = h;
+            Warning("ShaderAPIDX12: comparison sampling non-depth texture handle=%lld name=%s format=%d requested=%d flags=0x%x shader=%s comparisonMask=0x%04x; using its typed SRV\n",
+                static_cast<long long>(h), it->name.c_str(), static_cast<int>(it->format), static_cast<int>(it->requestedFormat), it->flags,
+                api.activeSnapshot_.pixelShaderName.c_str(), api.activeSnapshot_.comparisonSamplerMask);
+        }
+    }
     auto &t = *it; if (!api.EnsureTextureResident(t)) { *out = nullptr; return false; } *out = t.resource.Get(); const int faces = Faces(t), count = faces * t.mipLevels;
     if (!t.sampledStateValid) {
     for (int sub = 0; sub < count; ++sub) {
