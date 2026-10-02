@@ -209,6 +209,7 @@ CShaderAPIDX12::~CShaderAPIDX12()
 {
  ShutdownDeviceResources();
  dynamicMeshes_.PurgeAndDeleteElements();
+ delete flexMesh_;flexMesh_=nullptr;
  if(g_pShaderAPIDX12==this)g_pShaderAPIDX12=nullptr;
  FOR_EACH_HASHTABLE(textures_,entry){delete textures_[entry];}
  FOR_EACH_HASHTABLE(namedShaderCombos_,entry){delete namedShaderCombos_[entry];}
@@ -351,13 +352,15 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  const bool motionActive=MotionPassActive();
  VertexLayoutDX12 explicitLayout;
  // Mesh layouts depend only on (format, stream flags); a small direct-mapped cache covers alternating formats.
- const uint8_t meshLayoutFlags=static_cast<uint8_t>((bindings[1].buffer?1:0)|(bindings[2].buffer?2:0)|((format&VERTEX_WRINKLE)?4:0));
+ // The stream-2 declaration follows the flex mesh's own format (28-byte position/wrinkle/normal from GetFlexMesh).
+ const bool flexWrinkle=bindings[2].buffer&&(bindings[2].format&VERTEX_WRINKLE);
+ const uint8_t meshLayoutFlags=static_cast<uint8_t>((bindings[1].buffer?1:0)|(bindings[2].buffer?2:0)|(flexWrinkle?4:0));
  auto &meshLayout=sourceLayouts_[(static_cast<uint32_t>(format)^static_cast<uint32_t>(format>>29)^static_cast<uint32_t>(format>>41)^meshLayoutFlags*0x9E3779B1u)%sourceLayouts_.size()];
  VertexLayoutDX12 &sourceLayout=meshStreams?meshLayout.layout:explicitLayout;
  { ZoneNamedN(sourceLayoutSetup, "DX12 SourceLayout", DX12_DRAW_ZONES_ACTIVE);
  if(meshStreams){
   if(!meshLayout.valid||meshLayout.format!=format||meshLayout.flags!=meshLayoutFlags){
-   const VertexInputStreamsDX12 streams{bindings[1].buffer!=nullptr,bindings[2].buffer!=nullptr,false,(format&VERTEX_WRINKLE)!=0};
+   const VertexInputStreamsDX12 streams{bindings[1].buffer!=nullptr,bindings[2].buffer!=nullptr,false,flexWrinkle};
    sourceLayout=ComputeVertexLayoutDX12(format,nullptr,nullptr,streams);meshLayout.format=format;meshLayout.flags=meshLayoutFlags;
    meshLayout.translationKey=sourceLayout.valid?TranslationLayoutKey(sourceLayout):0;meshLayout.valid=true;
   }
@@ -474,7 +477,7 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  // Pipeline-state memo: a mesh draw whose pipeline inputs equal the previous successful mesh draw in
  // this recording reuses its shader records, translated variants, input layout and PSO. The slow path
  // clears the memo before it can switch any record's active variant and stores it only on success.
- const uint8_t meshStreamFlags=static_cast<uint8_t>(meshStreams?((bindings[1].buffer?1:0)|(bindings[2].buffer?2:0)|((format&VERTEX_WRINKLE)?4:0)):0);
+ const uint8_t meshStreamFlags=static_cast<uint8_t>(meshStreams?((bindings[1].buffer?1:0)|(bindings[2].buffer?2:0)|(flexWrinkle?4:0)):0);
  // Texture dimensions (not identities) are the only texture inputs of pipeline selection.
  ShaderRasterStateDX12 raster{};
  uint32_t textureTypesPacked=0;
@@ -1417,6 +1420,7 @@ void CShaderAPIDX12::ShutdownDeviceResources()
     for(auto *query:occlusionQueries_)delete query;
     occlusionQueries_.RemoveAll();pipeline_.Shutdown();
     for(auto *mesh:dynamicMeshes_){mesh->Vertices().NativeResourceRef().Reset();mesh->Indices().NativeResourceRef().Reset();}
+    if(flexMesh_){flexMesh_->Vertices().NativeResourceRef().Reset();flexMesh_->Indices().NativeResourceRef().Reset();}
     for(auto &cached:targetDescs_)cached=CachedResourceDescDX12{};
     ++namedResolveEpoch_;++pipelineMemoEpoch_;
     SetDevice(nullptr);
@@ -1514,7 +1518,7 @@ IMesh* CShaderAPIDX12::GetDynamicMeshEx(IMaterial *material,VertexFormat_t reque
   dynamicMeshes_.AddToTail(selected);
  }
  if(!selected->OverrideBuffers(vertexSource,indexSource)){Warning("ShaderAPIDX12: cyclic dynamic mesh override\n");return nullptr;}
- dynamicMesh_=selected;return dynamicMesh_;
+ return selected;
 }
 bool CShaderAPIDX12::IsTranslucent( StateSnapshot_t id ) const { return id>=0 && id<(StateSnapshot_t)snapshots_.Count() ? snapshots_[id].translucent : false; }
 bool CShaderAPIDX12::IsAlphaTested( StateSnapshot_t id ) const { return id>=0 && id<(StateSnapshot_t)snapshots_.Count() ? snapshots_[id].alphaTest : false; }
@@ -1732,7 +1736,12 @@ int CShaderAPIDX12::GetMaxVerticesToRender( IMaterial *pMaterial ) { return 6553
 int CShaderAPIDX12::GetMaxIndicesToRender( ) { return INDEX_BUFFER_SIZE; }
 void CShaderAPIDX12::DisableAllLocalLights() { for(auto &light:lights_)light.m_Type=MATERIAL_LIGHT_DISABLE;lightingDirty_=true; }
 int CShaderAPIDX12::CompareSnapshots( StateSnapshot_t snapshot0, StateSnapshot_t snapshot1 ) { if(snapshot0==snapshot1)return 0; if(snapshot0<0||snapshot1<0||snapshot0>=(StateSnapshot_t)snapshots_.Count()||snapshot1>=(StateSnapshot_t)snapshots_.Count())return snapshot0<snapshot1?-1:1; const Snapshot&a=snapshots_[snapshot0],&b=snapshots_[snapshot1]; if(a.alphaTest!=b.alphaTest)return a.alphaTest?1:-1; if(a.translucent!=b.translucent)return a.translucent?1:-1; return snapshot0<snapshot1?-1:1; }
-IMesh *CShaderAPIDX12::GetFlexMesh() { return dynamicMesh_ ? dynamicMesh_ : (dynamicMesh_=new CMeshDX12(0,65536,true,[](void *context,CMeshDX12*m,int f,int n){static_cast<CShaderAPIDX12 *>(context)->DrawMaterialMesh(m,f,n);},this)); }
+IMesh *CShaderAPIDX12::GetFlexMesh()
+{
+ // DX9's CMeshMgr::GetFlexMesh layout: 28-byte position, wrinkle, normal delta per vertex.
+ if(!flexMesh_)flexMesh_=new CMeshDX12(VERTEX_POSITION|VERTEX_NORMAL|VERTEX_WRINKLE|VERTEX_FORMAT_USE_EXACT_FORMAT,65536,true,[](void *context,CMeshDX12 *m,int f,int n){static_cast<CShaderAPIDX12 *>(context)->DrawMaterialMesh(m,f,n);},this);
+ return flexMesh_;
+}
 void CShaderAPIDX12::SetFlashlightStateEx( const FlashlightState_t &state, const VMatrix &worldToTexture, ITexture *pFlashlightDepthTexture ) { flashlight_=state; flashlightDepthTexture_=pFlashlightDepthTexture; flashlightMatrix_=worldToTexture; }
 bool CShaderAPIDX12::SupportsMSAAMode( int nMSAAMode ) { return device_ && device_->SupportsMSAA(nMSAAMode); }
 bool CShaderAPIDX12::OwnGPUResources( bool bEnable )

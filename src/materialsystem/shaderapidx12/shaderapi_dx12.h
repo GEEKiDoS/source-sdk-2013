@@ -845,8 +845,9 @@ private:
     IMaterial *boundMaterial_=nullptr;
     CMeshDX12 *renderMesh_=nullptr;
     int renderFirstIndex_=0,renderIndexCount_=0;
-    IMesh *dynamicMesh_=nullptr;
     CUtlVector<CMeshDX12 *> dynamicMeshes_;
+    // Stream-2 flex deltas (studiorender writes position, wrinkle and normal deltas); never handed out as a dynamic mesh.
+    CMeshDX12 *flexMesh_=nullptr;
     uint64_t frameCounter_=0;
     // Motion-vector pass (motion_vectors_dx12.cpp); contracts C2/C4/C7.
     MotionPassStateDX12 motionPassState_=MotionPassStateDX12::None;
