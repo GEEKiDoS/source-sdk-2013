@@ -8,6 +8,11 @@ $Configuration
     {
         $AdditionalProjectDependencies "tier1"
     }
+    // The shared exe publish step copies into $OUTBINDIR without creating it; devtools\bin\x64 is not in the tree.
+    $PreBuildEvent
+    {
+        $CommandLine "$BASE" "\n" "if not exist $QUOTE$OUTBINDIR$QUOTE mkdir $QUOTE$OUTBINDIR$QUOTE" "\n"
+    }
     $Compiler
     {
         $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\materialsystem\shaderapidx12"

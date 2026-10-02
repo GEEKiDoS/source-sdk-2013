@@ -715,8 +715,17 @@ void CShaderAPIDX12::DrawBuffers(const std::array<VertexBindingDX12,16> &binding
  if(!extensionVersions_[3])extensionVersions_[3]=1;
  // Vertex extension: viewport scale, point size and user clip planes transformed to clip space. Without clip
  // planes (now and in the stored buffer) only the viewport can change it.
- if(drawClipMask||vertexExtensionClipMask_||!extensionVersions_[0]||previousVertexExtension_.viewportScale[0]!=(viewport.Width>0?1.f/viewport.Width:1.f)||previousVertexExtension_.viewportScale[1]!=(viewport.Height>0?-1.f/viewport.Height:-1.f)){
-  ShaderVertexExtensionDX12 vertexExtension{};vertexExtension.viewportScale[0]=viewport.Width>0?1.f/viewport.Width:1.f;vertexExtension.viewportScale[1]=viewport.Height>0?-1.f/viewport.Height:-1.f;vertexExtension.pointSize[0]=1.f;
+ // Native-AA jitter shifts eligible perspective scene draws by (jx, jy) pixels (y down) through the same clip-space
+ // epilogue; projection and motion-vector matrices stay unjittered. .xy is the translated/native epilogue (half-pixel
+ // offset plus jitter); .zw is the jitter alone for generated fixed-function shaders, which have no half-pixel offset.
+ // Generated point-expansion geometry shaders also scale point size by .xy, so those draws stay unjittered.
+ float viewportScale[4]={viewport.Width>0?1.f/viewport.Width:1.f,viewport.Height>0?-1.f/viewport.Height:-1.f,0.f,0.f};
+ if(!geometryStage&&UpscalerJitterActive(motionActive)&&viewport.Width>0&&viewport.Height>0){
+  viewportScale[2]=2.f*upscalerJitter_[0]/viewport.Width;viewportScale[3]=-2.f*upscalerJitter_[1]/viewport.Height;
+  viewportScale[0]+=viewportScale[2];viewportScale[1]+=viewportScale[3];
+ }
+ if(drawClipMask||vertexExtensionClipMask_||!extensionVersions_[0]||std::memcmp(previousVertexExtension_.viewportScale,viewportScale,sizeof(viewportScale))){
+  ShaderVertexExtensionDX12 vertexExtension{};std::memcpy(vertexExtension.viewportScale,viewportScale,sizeof(viewportScale));vertexExtension.pointSize[0]=1.f;
   if(drawClipMask){
    ZoneNamedN(clipTransform, "DX12 ClipPlaneTransform", DX12_DRAW_ZONES_ACTIVE);
    VMatrix worldToClip;MatrixMultiply(matrices_[MATERIAL_PROJECTION],userClipViewOverride_?userClipView_:matrices_[MATERIAL_VIEW],worldToClip);
@@ -1577,6 +1586,8 @@ void CShaderAPIDX12::BeginFrame()
     frameFlushCount_=0;
     frameSyncCount_=0;
     frameActive_=true;++frameCounter_;
+    ConsumeUpscalerReplays(false);
+    if (device_ && device_->IsRecordingOwner() && device_->CommandList()) ReleaseIdleUpscaler();
 }
 void CShaderAPIDX12::EndFrame()
 {
@@ -1701,7 +1712,15 @@ MorphFormat_t CShaderAPIDX12::ComputeMorphFormat(int count,StateSnapshot_t *ids)
 void CShaderAPIDX12::HandleDeviceLost() { if(device_ && device_->NativeDevice()) Warning("ShaderAPIDX12: device removal reason 0x%08x\n",static_cast<unsigned>(device_->NativeDevice()->GetDeviceRemovedReason())); }
 void CShaderAPIDX12::EnableLinearColorSpaceFrameBuffer( bool bEnable ) { if(linearColorSpaceFramebuffer_!=bEnable){FlushBufferedPrimitives();linearColorSpaceFramebuffer_=bEnable;} }
 void CShaderAPIDX12::SetFullScreenTextureHandle( ShaderAPITextureHandle_t h ) { fullScreenTexture_=h; }
-void CShaderAPIDX12::SetIntRenderingParameter(int parm_number, int value) { if(parm_number==INT_RENDERPARM_DX12_MOTION_STATUS)return; if(parm_number>=0 && parm_number<(int)renderingInts_.size()) renderingInts_[parm_number]=value; if(parm_number==INT_RENDERPARM_DX12_MOTION_PASS)SetMotionPass(value);else if(parm_number==INT_RENDERPARM_DX12_MOTION_OBJECT)motionObjectKey_=value; }
+void CShaderAPIDX12::SetIntRenderingParameter(int parm_number, int value)
+{
+    if(parm_number==INT_RENDERPARM_DX12_MOTION_STATUS||parm_number==INT_RENDERPARM_DX12_UPSCALE_STATUS||parm_number==INT_RENDERPARM_DX12_NR_STATUS)return;
+    if(parm_number>=0 && parm_number<(int)renderingInts_.size()) renderingInts_[parm_number]=value;
+    if(parm_number==INT_RENDERPARM_DX12_MOTION_PASS)SetMotionPass(value);
+    else if(parm_number==INT_RENDERPARM_DX12_MOTION_OBJECT)motionObjectKey_=value;
+    else if(parm_number==INT_RENDERPARM_DX12_UPSCALE_MODE)SetUpscalerMode(value);
+    else if(parm_number==INT_RENDERPARM_DX12_UPSCALE_DISPATCH)DispatchUpscaler(value);
+}
 void CShaderAPIDX12::SetVectorRenderingParameter(int parm_number, Vector const &value) { if(parm_number>=0 && parm_number<(int)renderingVectors_.size()) renderingVectors_[parm_number]=value; }
 float CShaderAPIDX12::GetFloatRenderingParameter(int parm_number) const { return parm_number>=0 && parm_number<(int)renderingFloats_.size()?renderingFloats_[parm_number]:0.0f; }
 int CShaderAPIDX12::GetIntRenderingParameter(int parm_number) const { return parm_number>=0 && parm_number<(int)renderingInts_.size()?renderingInts_[parm_number]:0; }

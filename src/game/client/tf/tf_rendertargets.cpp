@@ -9,6 +9,7 @@
 #include "materialsystem/imaterialsystem.h"
 #include "rendertexture.h"
 #include "motionvectors_dx12.h"
+#include "upscaler_dx12.h"
 #if defined( REPLAY_ENABLED )
 #include "replay/replay_screenshot.h"
 #endif
@@ -55,6 +56,7 @@ void CTFRenderTargets::InitClientRenderTargets( IMaterialSystem* pMaterialSystem
 	CReplayScreenshotTaker::CreateRenderTarget( pMaterialSystem );
 
 	MotionVectorsDX12_CreateRenderTarget( pMaterialSystem, pHardwareConfig );
+	UpscalerDX12_Init( pHardwareConfig );
 }
 
 //-----------------------------------------------------------------------------
@@ -64,6 +66,7 @@ void CTFRenderTargets::InitClientRenderTargets( IMaterialSystem* pMaterialSystem
 void CTFRenderTargets::ShutdownClientRenderTargets()
 {
 	BaseClass::ShutdownClientRenderTargets();
+	UpscalerDX12_Shutdown();
 	MotionVectorsDX12_ShutdownRenderTarget();
 
 	for ( int i = 0; i < m_tfRenderTargets.Count(); i++ )

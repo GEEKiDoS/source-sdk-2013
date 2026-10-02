@@ -3,9 +3,14 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <type_traits>
 
 namespace shaderapidx12
 {
+// Worker-side callback for ExternalCommand. Runs only on the submission worker (or inline without one) with the
+// native list and device; it must not call the recorder, the shader API, the pipeline cache or any
+// recording-thread container. `payload` points at the bytes copied at record time.
+using ExternalFnDX12 = void (*)(ID3D12GraphicsCommandList *, ID3D12Device *, const void *) noexcept;
 // Records the graphics command-list subset used by the renderer into byte chunks. The owning device
 // replays full chunks onto the native list on its submission worker, so driver work leaves the
 // recording thread. All pointed-to arguments are copied at record time.
@@ -24,7 +29,7 @@ public:
         SetPipelineState, SetDescriptorHeaps, IASetVertexBuffers, IASetIndexBuffer, IASetPrimitiveTopology,
         DrawInstanced, DrawIndexedInstanced, ResourceBarrier, CopyBufferRegion, CopyTextureRegion, CopyResource,
         ResolveSubresource, ClearRenderTargetView, ClearDepthStencilView, BeginQuery, EndQuery, ResolveQueryData,
-        CopyDescriptorTable,
+        CopyDescriptorTable, ExternalCommand,
     };
     static constexpr size_t kChunkBytes = 256 * 1024;
 
@@ -119,6 +124,19 @@ public:
     {
         auto *p = Begin(Op::CopyDescriptorTable, sizeof(destination) + 8 + count * sizeof(D3D12_CPU_DESCRIPTOR_HANDLE));
         Put(p, destination); Put(p, count); Put(p, count); PutArray(p, sources, count);
+    }
+
+    // Copies exactly `bytes` of a trivially-copyable, non-owning payload; `fn` receives a pointer to the copy at replay.
+    // The recording owner must invalidate its cached graphics bindings afterwards: the callback may change any list state.
+    void ExternalCommand(ExternalFnDX12 fn, const void *payload, uint32_t bytes)
+    {
+        auto *p = Begin(Op::ExternalCommand, sizeof(fn) + 8 + bytes); Put(p, fn); Put(p, bytes); Put(p, bytes);
+        if (bytes) std::memcpy(p, payload, bytes);
+    }
+    template<class T> void ExternalCommand(ExternalFnDX12 fn, const T &payload)
+    {
+        static_assert(std::is_trivially_copyable<T>::value, "external command payloads are copied bytewise");
+        ExternalCommand(fn, &payload, static_cast<uint32_t>(sizeof(T)));
     }
 
     // Replays [data, data+size) onto the native list; device performs descriptor copies.

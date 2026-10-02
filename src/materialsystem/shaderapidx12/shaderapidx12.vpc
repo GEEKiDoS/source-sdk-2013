@@ -12,7 +12,7 @@ $Configuration
     }
     $Compiler
     {
-        $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\thirdparty\tracy\public"
+        $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\thirdparty\tracy\public;$SRCDIR\thirdparty\upscalers\xess\inc;$SRCDIR\thirdparty\upscalers\fidelityfx2\include;$SRCDIR\thirdparty\upscalers\ngx\include"
         $AdditionalOptions "$BASE /std:c++17"
         $EnableC++Exceptions "Yes (/EHsc)"
         $Create/UsePrecompiledHeader "Not Using Precompiled Headers"
@@ -21,13 +21,19 @@ $Configuration
     }
     $Linker
     {
-        $AdditionalDependencies "$BASE d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib"
+        $AdditionalDependencies "$BASE d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib version.lib"
     }
+    // Runtime DLLs the renderer loads beside itself. dxbcSigner.dll is required and in the tree; the upscaler
+    // runtimes are supplied locally (thirdparty\upscalers\README.txt) and copied only when present.
     $PostBuildEvent
     {
         $CommandLine "$BASE" "\n" \
-            "copy /y $QUOTE$SRCDIR\thirdparty\dx12_shaderconv\packages\Microsoft.Direct3D.DxbcSigner.1.0.0\build\native\bin\x64\dxbcSigner.dll$QUOTE $QUOTE$OUTBINDIR\dxbcSigner.dll$QUOTE" "\n" \
-            "if errorlevel 1 exit /b 1" "\n"
+            "copy /y $QUOTE$SRCDIR\thirdparty\dx12_shaderconv\dxbcsigner\dxbcSigner.dll$QUOTE $QUOTE$OUTBINDIR$QUOTE" "\n" \
+            "if errorlevel 1 exit /b 1" "\n" \
+            "for %%D in (xess fidelityfx2 ngx dlssnr) do for %%F in ($QUOTE$SRCDIR\thirdparty\upscalers\%%D\redist\*.dll$QUOTE) do (" "\n" \
+            "    copy /y $QUOTE%%F$QUOTE $QUOTE$OUTBINDIR$QUOTE" "\n" \
+            "    if errorlevel 1 exit /b 1" "\n" \
+            ")" "\n"
     }
 }
 $Project "shaderapidx12"
@@ -50,6 +56,7 @@ $Project "shaderapidx12"
         $File "shader_vcs_dx12.cpp"
         $File "shader_precache_dx12.cpp"
         $File "motion_vectors_dx12.cpp"
+        $File "upscaler_dx12.cpp"
         $File "mesh_dx12.cpp"
         $File "vertex_layout_dx12.cpp"
         $File "vballoctracker_dx12.cpp"
@@ -75,6 +82,8 @@ $Project "shaderapidx12"
         $File "vertex_layout_dx12.h"
         $File "vballoctracker_dx12.h"
         $File "motion_vectors_dx12.h"
+        $File "upscaler_dx12.h"
+        $File "upscaler_nr_shaders_dx12.h"
     }
     $Folder "Link Libraries"
     {

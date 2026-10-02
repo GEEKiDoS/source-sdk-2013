@@ -99,8 +99,11 @@ Debug_*/
 *.vpc_crc
 *.vpc_cache
 
-# Local, hash-verified DX12 compiler SDK/WDK and signer prerequisites.
+# Local NuGet restore cache of the DX12 compiler SDK/WDK packages (the build uses the vendored copies instead).
 /src/thirdparty/dx12_shaderconv/packages/
+
+# Upscaler runtimes are supplied locally; see src/thirdparty/upscalers/README.txt.
+/src/thirdparty/upscalers/*/redist/
 
 # Local DX12 renderer hardware smoke-test harness (kept out of tree).
 /src/utils/shaderapidx12_smoke/

@@ -71,7 +71,9 @@ std::string VertexSource(const FixedFunctionStateDX12 &st)
         else s<<"o.tc"<<i<<"=float4(0,0,0,1);\n";
         if(i<8)s<<"if(tc["<<(32+i)<<"].x>0.5){o.tc"<<i<<"=mul(float4x4(tc["<<(i*4)<<"],tc["<<(i*4+1)<<"],tc["<<(i*4+2)<<"],tc["<<(i*4+3)<<"]),o.tc"<<i<<");if(tc["<<(32+i)<<"].y>0.5){float q=(tc["<<(32+i)<<"].z>3.5?o.tc"<<i<<".w:(tc["<<(32+i)<<"].z>2.5?o.tc"<<i<<".z:o.tc"<<i<<".y));o.tc"<<i<<".xyz/=max(abs(q),1e-6)*(q<0?-1:1);}}\n";
     }
-    s<<"return o;}\n";return s.str();
+    // Generated shaders keep their exact clip position (no D3D9 half-pixel offset); clipViewport.zw carries only the
+    // native-AA jitter delta that translated and native shaders receive through clipViewport.xy.
+    s<<"o.pos.xy=mad(clipViewport.zw,o.pos.ww,o.pos.xy);\nreturn o;}\n";return s.str();
 }
 std::string ArgExpr(int stage,ShaderTexArg_t arg)
 {

@@ -15,6 +15,7 @@
 #include "particlemgr.h"
 #include "viewrender.h"
 #include "motionvectors_dx12.h"
+#include "upscaler_dx12.h"
 #include "iclientmode.h"
 #include "voice_status.h"
 #include "glow_overlay.h"
@@ -2129,6 +2130,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 
 		pRenderContext.GetFrom( materials );
 		pRenderContext->TurnOnToneMapping();
+		// Native-AA latch for this RenderView: the mode (or 0) is submitted before the skybox and every 3D draw, so
+		// monitor/intro/loading/stereo/render-target views never leave a provider armed for later draws.
+		const bool bMainTemporalViewEligible = UpscalerDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO &&
+			!building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping && saveRenderTarget == NULL &&
+			!g_pIntroData && !engine->IsDrawingLoadingImage();
+		UpscalerDX12_BeginFrame( pRenderContext, bMainTemporalViewEligible, viewRender );
 		pRenderContext.SafeRelease();
 
 		// clear happens here probably
@@ -2201,6 +2208,15 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 
 		// Now actually draw the viewmodel
 		DrawViewModels( viewRender, whatToDraw & RENDERVIEW_DRAWVIEWMODEL );
+
+		// Native AA runs on the complete opaque+viewmodel scene, before velocity blur and every overlay/post pass.
+		// MotionVectorsDX12_FrameValid only drives the reset: the backend decides -3/-5 itself.
+		if ( bMainTemporalViewEligible )
+		{
+			pRenderContext.GetFrom( materials );
+			UpscalerDX12_Dispatch( pRenderContext, viewRender, !MotionVectorsDX12_FrameValid( NULL ) );
+			pRenderContext.SafeRelease();
+		}
 
 		if ( bMotionBlurAllowed && bDX12VelocityBlur )
 		{

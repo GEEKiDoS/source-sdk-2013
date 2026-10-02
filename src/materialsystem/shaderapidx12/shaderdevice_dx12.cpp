@@ -91,6 +91,7 @@ bool CShaderDeviceDX12::Initialize(void *hwnd, int adapter, const ShaderDeviceIn
     if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateDXGIFactory2 failed (0x%08x)\n", static_cast<unsigned>(hr)); ShutdownDevice(); return false; }
     hr = D3D12CreateDevice(selectedAdapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
     if (FAILED(hr)) { Warning("ShaderAPIDX12: D3D12CreateDevice failed (0x%08x)\n", static_cast<unsigned>(hr)); ShutdownDevice(); return false; }
+    if ((debug || gbv) && SUCCEEDED(device_.As(&infoQueue_))) infoQueue_->SetMuteDebugOutput(FALSE);
     if (!LoadDxbcSigner(signerModule_, signer_)) { Warning("ShaderAPIDX12: required dxbcSigner.dll/SignDxbc missing beside renderer\n"); ShutdownDevice(); return false; }
     char rendererPath[MAX_PATH]{};HMODULE rendererModule=nullptr;GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCSTR>(&LoadDxbcSigner),&rendererModule);if(!rendererModule||!GetModuleFileNameA(rendererModule,rendererPath,sizeof(rendererPath))){Warning("ShaderAPIDX12: unable to locate renderer module while checking stdshader_dx12.dll\n");ShutdownDevice();return false;}char *rendererSlash=strrchr(rendererPath,'\\');if(!rendererSlash)rendererSlash=strrchr(rendererPath,'/');if(rendererSlash)rendererSlash[1]=0;const std::string nativeShaderDll=std::string(rendererPath)+"stdshader_dx12.dll";if(GetFileAttributesA(nativeShaderDll.c_str())==INVALID_FILE_ATTRIBUTES){Warning("ShaderAPIDX12: required stdshader_dx12.dll missing beside renderer: %s\n",nativeShaderDll.c_str());ShutdownDevice();return false;}
     D3D12_COMMAND_QUEUE_DESC queueDesc{}; queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -128,7 +129,7 @@ bool CShaderDeviceDX12::SupportsMSAAFormat(DXGI_FORMAT format, int count, int qu
 
 bool CShaderDeviceDX12::SupportsMSAA(int count, int quality) const
 {
-    return SupportsMSAAFormat(DXGI_FORMAT_B8G8R8A8_UNORM, count, quality) && SupportsMSAAFormat(DXGI_FORMAT_D24_UNORM_S8_UINT, count, quality);
+    return SupportsMSAAFormat(SceneColorFormat(), count, quality) && SupportsMSAAFormat(SceneDepthFormat(), count, quality);
 }
 
 bool CShaderDeviceDX12::CreateFrameObjects()
@@ -220,6 +221,7 @@ uint64_t CShaderDeviceDX12::Submit(bool wait)
         ZoneNamedN(___tracy_scoped_zone, "DX12 Submit Wait", DX12_ZONES_ACTIVE);
         if (!WaitForFence(value)) return 0;
     }
+    ReportDebugMessages();
     if (!BeginRecording()) return 0;
     if (timing) GpuTimingAfterSubmit();
     return value;
@@ -239,6 +241,29 @@ uint64_t CShaderDeviceDX12::SubmitFrameSync()
 }
 
 
+void CShaderDeviceDX12::ReportDebugMessages()
+{
+    if (!infoQueue_) return;
+    const UINT64 count = infoQueue_->GetNumStoredMessages();
+    for (UINT64 i = 0; i < count; ++i)
+    {
+        SIZE_T bytes = 0;
+        if (FAILED(infoQueue_->GetMessage(i, nullptr, &bytes)) || !bytes) continue;
+        std::vector<unsigned char> storage(bytes);
+        auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+        if (FAILED(infoQueue_->GetMessage(i, message, &bytes))) continue;
+        if (message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR)
+            Warning("ShaderAPIDX12 debug layer %s %d: %s\n", message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ? "CORRUPTION" : "ERROR", static_cast<int>(message->ID), message->pDescription);
+    }
+    infoQueue_->ClearStoredMessages();
+}
+bool CShaderDeviceDX12::SubmitAndWaitForGpu()
+{
+    if (failed_ || !IsRecordingOwner()) return false;
+    if (recording_) return Submit(true) != 0;
+    FlushSubmissions();
+    return WaitForFence(fenceValue_);
+}
 bool CShaderDeviceDX12::WaitForFence(uint64_t value)
 {
     if (!value || !fence_) return true;
@@ -303,15 +328,15 @@ bool CShaderDeviceDX12::CreateViewTargets(View &view)
     }
     D3D12_HEAP_PROPERTIES heapProperties{}; heapProperties.Type=D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC resource{};resource.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;resource.Width=view.width;resource.Height=view.height;resource.DepthOrArraySize=1;resource.MipLevels=1;resource.SampleDesc.Count=sampleCount_;resource.SampleDesc.Quality=sampleQuality_;
-    resource.Format=DXGI_FORMAT_B8G8R8A8_TYPELESS;resource.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    resource.Format=SceneColorFormat();resource.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     D3D12_CLEAR_VALUE color{};color.Format=SceneColorFormat();color.Color[3]=1;
     HRESULT hr=device_->CreateCommittedResource(&heapProperties,D3D12_HEAP_FLAG_NONE,&resource,D3D12_RESOURCE_STATE_RENDER_TARGET,&color,IID_PPV_ARGS(&view.sceneColor));
     if (FAILED(hr)) { Warning("ShaderAPIDX12: Create scene color failed (0x%08x)\n",static_cast<unsigned>(hr)); return false; }
     view.sceneColorState=D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RENDER_TARGET_VIEW_DESC colorView{};colorView.ViewDimension=sampleCount_>1?D3D12_RTV_DIMENSION_TEXTURE2DMS:D3D12_RTV_DIMENSION_TEXTURE2D;
     const auto sceneViewStart=view.sceneRTVHeap->GetCPUDescriptorHandleForHeapStart();view.sceneRTVStart=sceneViewStart;
-    colorView.Format=SceneColorFormat(false);device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,sceneViewStart);
-    colorView.Format=SceneColorFormat(true);D3D12_CPU_DESCRIPTOR_HANDLE gammaView{sceneViewStart.ptr+rtvStride_};device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,gammaView);
+    colorView.Format=SceneColorFormat();device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,sceneViewStart);
+    D3D12_CPU_DESCRIPTOR_HANDLE gammaView{sceneViewStart.ptr+rtvStride_};device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,gammaView);
     resource.Format=DXGI_FORMAT_R24G8_TYPELESS;resource.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     D3D12_CLEAR_VALUE depth{};depth.Format=SceneDepthFormat();depth.DepthStencil.Depth=1;
     hr=device_->CreateCommittedResource(&heapProperties,D3D12_HEAP_FLAG_NONE,&resource,D3D12_RESOURCE_STATE_DEPTH_WRITE,&depth,IID_PPV_ARGS(&view.sceneDepth));
@@ -336,6 +361,14 @@ bool CShaderDeviceDX12::CreateView(View &view, HWND hwnd, int width, int height)
     HRESULT hr=factory_->CreateSwapChainForHwnd(queue_.Get(),hwnd,&desc,nullptr,nullptr,&swap);
     if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateSwapChainForHwnd failed (0x%08x)\n",static_cast<unsigned>(hr)); return false; }
     if (FAILED(swap.As(&view.swap))) return false;
+    // scRGB: linear Rec.709 primaries, values may exceed 1. Unsupported colour spaces keep the FP16 swap chain.
+    UINT colorSpaceSupport=0;
+    if (SUCCEEDED(view.swap->CheckColorSpaceSupport(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,&colorSpaceSupport)) && (colorSpaceSupport&DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+    {
+        const HRESULT colorSpace=view.swap->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+        if (FAILED(colorSpace)) Warning("ShaderAPIDX12: SetColorSpace1(scRGB) failed (0x%08x); presenting FP16 without an explicit colour space\n",static_cast<unsigned>(colorSpace));
+    }
+    else Warning("ShaderAPIDX12: scRGB swap-chain colour space unsupported; presenting FP16 without an explicit colour space\n");
     factory_->MakeWindowAssociation(hwnd,DXGI_MWA_NO_ALT_ENTER);
     if (!windowed_ && !CheckDevice("SetFullscreenState",view.swap->SetFullscreenState(TRUE,nullptr))) return false;
     return CreateViewTargets(view);
@@ -422,6 +455,14 @@ void CCommandRecorderDX12::Replay(ID3D12GraphicsCommandList *list,ID3D12Device *
         case Op::EndQuery:{ID3D12QueryHeap *heap;D3D12_QUERY_TYPE type;UINT index;get(heap);get(type);get(index);list->EndQuery(heap,type,index);break;}
         case Op::CopyDescriptorTable:{D3D12_CPU_DESCRIPTOR_HANDLE destination;UINT count,pad;get(destination);get(count);get(pad);D3D12_CPU_DESCRIPTOR_HANDLE sources[32];const UINT n=count<32?count:32;std::memcpy(sources,p,n*sizeof(D3D12_CPU_DESCRIPTOR_HANDLE));device->CopyDescriptors(1,&destination,&n,n,sources,nullptr,D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);break;}
         case Op::ResolveQueryData:{ID3D12QueryHeap *heap;D3D12_QUERY_TYPE type;UINT start,count;ID3D12Resource *dst;UINT64 destOffset;get(heap);get(type);get(start);get(count);get(dst);get(destOffset);list->ResolveQueryData(heap,type,start,count,dst,destOffset);break;}
+        case Op::ExternalCommand:
+        {
+            ExternalFnDX12 fn;uint32_t bytes,copy;get(fn);get(bytes);get(copy);
+            const size_t fixed=sizeof(Header)+sizeof(fn)+8;
+            if(header.size<fixed||bytes!=copy||bytes>header.size-fixed||offset>size||!fn){Warning("ShaderAPIDX12: malformed external command (%u payload bytes in a %u-byte record)\n",bytes,header.size);break;}
+            fn(list,device,p);
+            break;
+        }
         }
     }
 }
@@ -549,6 +590,7 @@ void CShaderDeviceDX12::ShutdownDevice()
     recorder_.Flush();if(auto *chunk=recorder_.TakeEmptyChunk()){AUTO_LOCK(chunkMutex_);freeChunks_.AddToTail(chunk);}
     ReleaseCommandChunks();
     for(auto &frame:frames_){frame.list.Reset();for(int i=0;i<frame.retained.Count();++i)frame.retained[i]->Release();frame.retained.RemoveAll();frame.allocator.Reset();frame.fence=0;}
+    ReportDebugMessages();infoQueue_.Reset();
     fence_.Reset();queue_.Reset();device_.Reset();factory_.Reset();
     if(signerModule_){FreeLibrary(signerModule_);signerModule_=nullptr;}signer_=nullptr;
     fenceValue_=frameSyncFence_=0;frameIndex_=0;recording_=false;failed_=false;ownerThread_=0;window_=nullptr;width_=height_=0;

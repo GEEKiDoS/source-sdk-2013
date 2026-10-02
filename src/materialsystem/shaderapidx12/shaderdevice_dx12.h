@@ -115,6 +115,13 @@ public:
     uint64_t Submit(bool wait);
     uint64_t SubmitFrameSync();
     bool WaitForFence(uint64_t value);
+    // Owner-thread GPU-idle boundary: replays every recorded command (external callbacks included), executes the
+    // current list and waits for its fence. DrainRecording alone only replays on the CPU.
+    bool SubmitAndWaitForGpu();
+    // Blocks until the worker retires one more queued operation; returns false when nothing is queued.
+    bool WaitForSubmissionProgress() { if(submitTail_.load(std::memory_order_acquire)==submitHead_.load(std::memory_order_relaxed))return false; submitDoneEvent_.Wait(); return true; }
+    // -dx12debug/-dx12gpuvalidation: forwards stored corruption/error messages as "ShaderAPIDX12 debug layer" warnings.
+    void ReportDebugMessages();
     // Commands are recorded and replayed onto the native list on the submission worker.
     CCommandRecorderDX12 *CommandList() { return !failed_ && recording_ && IsRecordingOwner() ? &recorder_ : nullptr; }
     ID3D12Resource *CurrentBackBuffer() const;
@@ -125,7 +132,10 @@ public:
     ID3D12Resource *SceneDepth() const;
     D3D12_CPU_DESCRIPTOR_HANDLE SceneDSV() const;
     D3D12_CPU_DESCRIPTOR_HANDLE SceneReadOnlyDSV() const;
-    DXGI_FORMAT SceneColorFormat(bool srgb = false) const { return srgb ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM; }
+    // Scene colour, swap chain and full-frame targets are linear scRGB FP16; FLOAT has no sRGB view, so both
+    // SceneRTV(true) and SceneRTV(false) name identical FLOAT RTVs.
+    static constexpr ImageFormat kSceneImageFormat = IMAGE_FORMAT_RGBA16161616F;
+    DXGI_FORMAT SceneColorFormat(bool = false) const { return DXGI_FORMAT_R16G16B16A16_FLOAT; }
     DXGI_FORMAT SceneDepthFormat() const { return DXGI_FORMAT_D24_UNORM_S8_UINT; }
     int SceneSampleQuality() const { return sampleQuality_; }
     int SceneSampleCount() const { return sampleCount_; }
@@ -133,6 +143,10 @@ public:
     int SceneHeight() const { return height_; }
     void TransitionSceneColor(D3D12_RESOURCE_STATES state);
     void TransitionSceneDepth(D3D12_RESOURCE_STATES state);
+    D3D12_RESOURCE_STATES SceneColorState() const { return currentView_ ? currentView_->sceneColorState : D3D12_RESOURCE_STATE_RENDER_TARGET; }
+    D3D12_RESOURCE_STATES SceneDepthState() const { return currentView_ ? currentView_->sceneDepthState : D3D12_RESOURCE_STATE_DEPTH_WRITE; }
+    // Records the states an external command leaves the scene resources in (it issued its own barriers).
+    void SetSceneStatesAfterExternal(D3D12_RESOURCE_STATES color, D3D12_RESOURCE_STATES depth) { if (currentView_) { currentView_->sceneColorState = color; currentView_->sceneDepthState = depth; } }
     void RetainResource(ID3D12Resource *resource);
     // Workers enqueue handles only; the recording owner drains at public API boundaries.
     void QueueTextureDeletion(uintptr_t handle);
@@ -153,7 +167,7 @@ public:
     uint64_t CompletedFence() const { return CompletedFenceValue(); }
     void ReleaseResources() override;
     void ReacquireResources() override;
-    ImageFormat GetBackBufferFormat() const override { return IMAGE_FORMAT_BGRX8888; }
+    ImageFormat GetBackBufferFormat() const override { return kSceneImageFormat; }
     void GetBackBufferDimensions(int &width, int &height) const override { width = width_; height = height_; }
     int GetCurrentAdapter() const override { return adapterIndex_; }
     bool IsUsingGraphics() const override { return IsInitialized(); }
@@ -252,6 +266,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Device> device_;
     Microsoft::WRL::ComPtr<IDXGIFactory6> factory_;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue_;
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue_;
     struct FrameContext { Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator; Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list; uint64_t fence=0; CUtlVector<ID3D12Resource *> retained; };
     std::array<FrameContext,3> frames_{};
     uint32_t frameIndex_=0;

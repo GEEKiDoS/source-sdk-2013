@@ -327,6 +327,7 @@ void CShaderAPIDX12::ResolveMotionTarget()
     record->dirtySubresources[sub] = 0; record->initializedSubresources[sub] = 0; record->gpuAuthoritativeSubresources[sub] = 1; record->gpuDirty = std::any_of(record->dirtySubresources.begin(),record->dirtySubresources.end(),[](unsigned char dirty){return dirty != 0;});
     TransitionMotionTarget(D3D12_RESOURCE_STATE_RENDER_TARGET);
     device_->TransitionSceneDepth(D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    motionResolvedHandle_ = motionResolveTarget_; motionResolvedFrame_ = frameCounter_;
 }
 
 void CShaderAPIDX12::MarkMotionTargetStale()
@@ -340,6 +341,7 @@ void CShaderAPIDX12::MarkMotionTargetStale()
 }
 void CShaderAPIDX12::ReleaseTextureDeviceResources()
 {
+    ReleaseUpscalerResources();
     ReleaseMotionResources();
     for(auto &slot:preparedTextureSlots_)slot.valid=false; textureSetValid_=false; for(auto &layoutCache:inputLayoutCaches_)layoutCache.valid=false; textureTypeHandles_.fill(0); drawBindingNull_={}; ++pipelineMemoEpoch_;
     preparedSamplerTable_={};preparedSamplerFence_=0;
@@ -849,18 +851,23 @@ void CShaderAPIDX12::ReadPixels(Rect_t *srcRect, Rect_t *dstRect, unsigned char 
     if (srcRect->x < 0 || srcRect->y < 0 || srcRect->x + srcRect->width > binding.width || srcRect->y + srcRect->height > binding.height || dstRect->x < 0 || dstRect->y < 0 || stride < (dstRect->x + dstRect->width) * static_cast<int>(BytesPerPixel(format))) return;
     const bool scene = renderTarget_ == SHADER_RENDERTARGET_BACKBUFFER;
     TextureRecord *record = nullptr; if (!scene) { auto it = FindTexture(renderTarget_); if (it == nullptr) return; record = it; }
-    const ImageFormat sourceFormat = scene ? IMAGE_FORMAT_BGRX8888 : record->format;
+    const ImageFormat sourceFormat = scene ? CShaderDeviceDX12::kSceneImageFormat : record->format;
     ID3D12Resource *source = binding.color;
     D3D12_RESOURCE_STATES sceneState = D3D12_RESOURCE_STATE_RENDER_TARGET, temporaryState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES *state = record ? &record->subresourceStates[record->currentCopy*Faces(*record)*record->mipLevels] : &sceneState;
     Microsoft::WRL::ComPtr<ID3D12Resource> temporary;
     Rect_t readRect = *srcRect;
-    if (source->GetDesc().SampleDesc.Count > 1 || srcRect->width != dstRect->width || srcRect->height != dstRect->height) {
+    // FP16 targets hold linear scRGB; 8-bit readers get sRGB bytes from a hardware-encoded blit, not a raw conversion.
+    const bool encodeSRGB = source->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT && format != IMAGE_FORMAT_RGBA16161616F;
+    if (encodeSRGB || source->GetDesc().SampleDesc.Count > 1 || srcRect->width != dstRect->width || srcRect->height != dstRect->height) {
         D3D12_RESOURCE_DESC desc = source->GetDesc(); desc.Width = dstRect->width; desc.Height = dstRect->height; desc.DepthOrArraySize = 1; desc.MipLevels = 1; desc.SampleDesc.Count = 1; desc.SampleDesc.Quality = 0; desc.Alignment = 0; desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        if (encodeSRGB) desc.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
         D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
         const HRESULT hr = device_->NativeDevice()->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,temporaryState,nullptr,IID_PPV_ARGS(&temporary)); if (FAILED(hr)) { Warning("ShaderAPIDX12: ReadPixels temporary render texture creation failed (0x%08x), alignment %llu format %u\n",static_cast<unsigned>(hr),static_cast<unsigned long long>(desc.Alignment),static_cast<unsigned>(desc.Format)); return; }
         const Rect_t region{0,0,dstRect->width,dstRect->height};
-        if (!BlitTexture(source,*state,scene,sourceFormat,temporary.Get(),temporaryState,false,sourceFormat,*srcRect,region,false,false)) { Warning("ShaderAPIDX12: ReadPixels MSAA resolve or scaling blit failed\n"); return; }
+        const bool blitted = BlitTexture(source,*state,scene,sourceFormat,temporary.Get(),temporaryState,false,encodeSRGB ? IMAGE_FORMAT_BGRA8888 : sourceFormat,*srcRect,region,false,encodeSRGB);
+        if (scene) device_->TransitionSceneColor(D3D12_RESOURCE_STATE_RENDER_TARGET);
+        if (!blitted) { Warning("ShaderAPIDX12: ReadPixels resolve, scaling or sRGB encode blit failed\n"); return; }
         device_->RetainResource(temporary.Get()); source = temporary.Get(); state = &temporaryState; readRect = region;
     }
     const D3D12_RESOURCE_DESC td = source->GetDesc(); UINT rows = 0; UINT64 bytes = 0; D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{}; device_->NativeDevice()->GetCopyableFootprints(&td,0,1,0,&fp,&rows,nullptr,&bytes);
@@ -1010,7 +1017,7 @@ bool CShaderAPIDX12::PresentGamma(ID3D12Resource *back, float gamma, float tvMin
     const float correction[4] = {gamma / 2.2f, tvEnabled ? 2.2f / tvExponent : 1.f, tvEnabled ? (tvMax-tvMin)/255.f : 1.f, tvEnabled ? tvMin/255.f : 0.f};
     D3D12_RESOURCE_STATES sceneState = D3D12_RESOURCE_STATE_RENDER_TARGET, backState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     Rect_t area{0,0,static_cast<int>(backDesc.Width),static_cast<int>(backDesc.Height)};
-    const bool result = BlitTexture(device_->SceneColor(),sceneState,true,IMAGE_FORMAT_BGRA8888,back,backState,false,IMAGE_FORMAT_BGRA8888,area,area,false,false,correction);
+    const bool result = BlitTexture(device_->SceneColor(),sceneState,true,CShaderDeviceDX12::kSceneImageFormat,back,backState,false,CShaderDeviceDX12::kSceneImageFormat,area,area,false,false,correction);
     device_->TransitionSceneColor(D3D12_RESOURCE_STATE_RENDER_TARGET);
     return result;
 }
@@ -1042,7 +1049,7 @@ void CShaderAPIDX12::CopyTextureRegionDX12(ShaderAPITextureHandle_t from, Shader
     D3D12_RESOURCE_STATES sceneSourceState = D3D12_RESOURCE_STATE_RENDER_TARGET, sceneDestinationState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES &fromState = srcRecord ? srcRecord->subresourceStates[srcRecord->currentCopy*Faces(*srcRecord)*srcRecord->mipLevels] : sceneSourceState;
     D3D12_RESOURCE_STATES &toState = dstRecord ? dstRecord->subresourceStates[dstRecord->currentCopy*Faces(*dstRecord)*dstRecord->mipLevels] : sceneDestinationState;
-    const ImageFormat fromFormat = srcRecord ? srcRecord->format : IMAGE_FORMAT_BGRX8888, toFormat = dstRecord ? dstRecord->format : IMAGE_FORMAT_BGRX8888;
+    const ImageFormat fromFormat = srcRecord ? srcRecord->format : CShaderDeviceDX12::kSceneImageFormat, toFormat = dstRecord ? dstRecord->format : CShaderDeviceDX12::kSceneImageFormat;
     if (BlitTexture(srcResource,fromState,sceneSource,fromFormat,dstResource,toState,sceneDestination,toFormat,s,d,(srcRecord && (srcRecord->flags & TEXTURE_CREATE_SRGB) != 0),(dstRecord && (dstRecord->flags & TEXTURE_CREATE_SRGB) != 0))) {
         if (dstRecord) { const int sub = dstRecord->currentCopy*Faces(*dstRecord)*dstRecord->mipLevels; dstRecord->dirtySubresources[sub] = 0; dstRecord->initializedSubresources[sub] = 0; dstRecord->gpuAuthoritativeSubresources[sub] = 1; dstRecord->gpuDirty = std::any_of(dstRecord->dirtySubresources.begin(),dstRecord->dirtySubresources.end(),[](unsigned char dirty){return dirty != 0;}); }
     }

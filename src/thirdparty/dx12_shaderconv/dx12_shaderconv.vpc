@@ -8,7 +8,7 @@ $Configuration
 {
     $Compiler
     {
-        $AdditionalIncludeDirectories "$SRCDIR\thirdparty\dx12_shaderconv\ShaderConverter\Inc;$SRCDIR\thirdparty\dx12_shaderconv\ShaderConverter\ShaderConv;$SRCDIR\thirdparty\dx12_shaderconv\external;$SRCDIR\thirdparty\dx12_shaderconv\DxbcParser\include;$SRCDIR\thirdparty\dx12_shaderconv\packages\Microsoft.Windows.WDK.x64.10.0.26100.1\c\Include\10.0.26100.0\um;$SRCDIR\thirdparty\dx12_shaderconv\packages\Microsoft.Windows.WDK.x64.10.0.26100.1\c\Include\10.0.26100.0\shared;$SRCDIR\thirdparty\tracy\public"
+        $AdditionalIncludeDirectories "$SRCDIR\thirdparty\dx12_shaderconv\ShaderConverter\Inc;$SRCDIR\thirdparty\dx12_shaderconv\ShaderConverter\ShaderConv;$SRCDIR\thirdparty\dx12_shaderconv\external;$SRCDIR\thirdparty\dx12_shaderconv\DxbcParser\include;$SRCDIR\thirdparty\dx12_shaderconv\wdk\include\um;$SRCDIR\thirdparty\dx12_shaderconv\wdk\include\shared;$SRCDIR\thirdparty\tracy\public"
         $AdditionalOptions "$BASE /std:c++17"
         $EnableC++Exceptions "Yes (/EHsc)"
         $Create/UsePrecompiledHeader "Not Using Precompiled Headers"

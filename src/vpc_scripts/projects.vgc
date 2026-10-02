@@ -27,6 +27,11 @@ $Project "shaderapidx12"
     "materialsystem\shaderapidx12\shaderapidx12.vpc" [$WIN64]
 }
 
+$Project "nvngx_forwarder_dx12"
+{
+    "materialsystem\shaderapidx12\nvngx_forwarder\nvngx_forwarder_dx12.vpc" [$WIN64]
+}
+
 $Project "nativeshaderpack_dx12"
 {
 	"utils\nativeshaderpack_dx12\nativeshaderpack_dx12.vpc" [$WIN64]

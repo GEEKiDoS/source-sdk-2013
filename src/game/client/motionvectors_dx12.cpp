@@ -13,7 +13,7 @@
 #include "tier1/interface.h"
 #include "renderparm.h"
 
-ConVar r_dx12_motionvectors( "r_dx12_motionvectors", "1", FCVAR_ARCHIVE, "DX12: build _rt_MotionVectors after the opaque pass" );
+ConVar r_motionvectors( "r_motionvectors", "1", FCVAR_ARCHIVE, "DX12: build _rt_MotionVectors after the opaque pass" );
 
 static CTextureReference s_MotionVectorTexture;
 static bool s_bDX12 = false;
@@ -56,7 +56,7 @@ void MotionVectorsDX12_ShutdownRenderTarget()
 
 bool MotionVectorsDX12_Enabled()
 {
-	return s_bDX12 && r_dx12_motionvectors.GetBool() && s_MotionVectorTexture.IsValid() &&
+	return s_bDX12 && r_motionvectors.GetBool() && s_MotionVectorTexture.IsValid() &&
 		( !s_pShaderAPI || s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_STATUS ) >= 0 );
 }
 

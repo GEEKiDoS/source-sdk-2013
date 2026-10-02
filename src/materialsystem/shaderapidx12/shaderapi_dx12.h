@@ -12,6 +12,7 @@
 #include "materialsystem/shaderapidx12/shader_vcs_dx12.h"
 #include "materialsystem/shaderapidx12/fixed_function_dx12.h"
 #include "materialsystem/shaderapidx12/motion_vectors_dx12.h"
+#include "materialsystem/shaderapidx12/upscaler_dx12.h"
 #include "materialsystem/shaderapidx12/mesh_dx12.h"
 #include <d3d12.h>
 #include <DirectXMath.h>
@@ -606,6 +607,26 @@ private:
     bool MotionPassActive() const { return motionPassState_ == MotionPassStateDX12::Active; }
     void ReleaseMotionResources();
     void TransitionMotionTarget(D3D12_RESOURCE_STATES desired);
+    // Native-AA upscaler (upscaler_dx12.cpp); contract U1-U4 of the upscaler plan.
+    void SetUpscalerMode(int mode);
+    void DispatchUpscaler(int flags);
+    void ConsumeUpscalerReplays(bool wait);
+    bool EnsureUpscalerOutput(UINT width, UINT height);
+    void ReleaseUpscalerFeature();
+    // DLSS-NR chain after the temporal AA, configured by INT_RENDERPARM_DX12_NR_CONFIG and the NR float parameters.
+    // Returns the layer count this dispatch runs (0 when off, unavailable or failed; status says which).
+    uint32_t PrepareUpscalerNr(DlssNrComposeDX12 &compose);
+    void ReleaseUpscalerNr();
+    void ReleaseIdleUpscaler();
+    bool WaitUpscalerGpuIdle();
+    void ReleaseUpscalerResources();
+    void SampleUpscalerJitter();
+    // Jitter goes only into eligible perspective scene draws (or the motion pass) before this frame's dispatch.
+    bool UpscalerJitterActive(bool motionActive) const {
+        return upscalerViewEligible_ && upscalerFrameToken_ == frameCounter_ && upscalerQueuedFrame_ != frameCounter_ &&
+            (upscalerJitter_[0] != 0.f || upscalerJitter_[1] != 0.f) && (motionActive || renderTargets_[0] == SHADER_RENDERTARGET_BACKBUFFER) &&
+            matrices_[MATERIAL_PROJECTION][3][3] == 0.f && matrices_[MATERIAL_PROJECTION][3][2] != 0.f && device_ && device_->SceneSampleCount() == 1;
+    }
     CMeshBuilder vertexModifyBuilder_;
     struct NamedShaderKeyView {
         const char *name;
@@ -854,6 +875,30 @@ private:
     int motionHistoryCurrent_=0;
     uint32_t motionPassDraws_=0,motionPassObjects_=0,motionSuppressedPasses_=0;
     uint64_t motionLogFrame_=0;
+    // Native-AA upscaler. Every field is owned by the recording thread; replay results arrive through upscalerReplay_.
+    static constexpr uint64_t kUpscalerReplaySlots = 4;
+    CUpscalerDX12 upscaler_;
+    bool upscalerInitialized_=false;
+    int upscalerMode_=0, upscalerSelectedMode_=0;
+    uint64_t upscalerEnabledFrame_=~0ull;
+    UpscalerKindDX12 upscalerKind_=UpscalerKindDX12::None;
+    bool upscalerViewEligible_=false, upscalerHistoryGap_=true;
+    uint64_t upscalerFrameToken_=~0ull;
+    uint64_t upscalerQueuedFrame_=~0ull, upscalerLastDispatchFrame_=~0ull, upscalerLastSuccessFrame_=~0ull;
+    uint64_t upscalerPendingSerial_=0, upscalerConsumedSerial_=0, upscalerJitterIndex_=0;
+    float upscalerJitter_[2]{};
+    double upscalerLastDispatchTime_=0.0;
+    std::array<UpscalerReplayResultDX12,kUpscalerReplaySlots> upscalerReplay_{};
+    Microsoft::WRL::ComPtr<ID3D12Resource> upscalerOutput_;
+    D3D12_RESOURCE_STATES upscalerOutputState_=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    // DLSS-NR: the failed key suppresses per-frame re-creation until the tuning, layer count or output changes.
+    bool upscalerNrHistoryGap_=true, upscalerNrFailed_=false, upscalerNrUnavailableLogged_=false;
+    DlssNrTuningDX12 upscalerNrFailedTuning_{};
+    uint32_t upscalerNrFailedLayers_=0, upscalerNrLastReversible_=0;
+    ID3D12Resource *upscalerNrFailedSource_=nullptr;
+    // Set only by a successful ResolveMotionTarget, never by stale marking.
+    ShaderAPITextureHandle_t motionResolvedHandle_=0;
+    uint64_t motionResolvedFrame_=~0ull;
     static constexpr int kMotionDepthBias=0;
     uint32_t frameDrawCount_=0;
     uint32_t frameFlushCount_=0;

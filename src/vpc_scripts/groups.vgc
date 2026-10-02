@@ -37,12 +37,18 @@ $Group "dx12"
 	"dx12_shaderconv"
 	"unicode"
 	"shaderapidx12"
+	"nvngx_forwarder_dx12"
 	"nativeshaderpack_dx12"
 	"stdshader_dx12"
-	"shaderapidx12_smoke"
 	"tier1"
 	"mathlib"
 	"launcher_main"
+}
+
+// Local hardware smoke harness; utils/shaderapidx12_smoke is kept out of tree, so it is not part of "dx12".
+$Group "dx12_smoke"
+{
+	"shaderapidx12_smoke"
 }
 
 $Group "everything"
@@ -64,6 +70,7 @@ $Group "everything"
 	"server"
 	"serverplugin_empty"
 	"shaderapidx12"
+	"nvngx_forwarder_dx12"
 	"tgadiff"
 	"tier1"
 	"vbsp"

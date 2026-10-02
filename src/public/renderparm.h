@@ -35,6 +35,26 @@ enum RenderParamVector_t
 
 #define MAX_FLOAT_RENDER_PARMS 20
 
+// DX12 native-AA upscaler camera (main CViewSetup, submitted before the dispatch); <= 0 derives from the projection.
+enum RenderParamFloat_t
+{
+	FLOAT_RENDERPARM_DX12_UPSCALE_FOV_Y = 0,	// vertical field of view, radians
+	FLOAT_RENDERPARM_DX12_UPSCALE_NEAR,
+	FLOAT_RENDERPARM_DX12_UPSCALE_FAR,
+	// DLSS-NR model tuning (read when each layer's feature is created; a change rebuilds the chain).
+	FLOAT_RENDERPARM_DX12_NR_INTENSITY,
+	FLOAT_RENDERPARM_DX12_NR_LOCAL_STRUCTURE,
+	FLOAT_RENDERPARM_DX12_NR_LOCAL_TONE,
+	FLOAT_RENDERPARM_DX12_NR_SKIN_STRUCTURE,	// -1 follows local structure
+	// DLSS-NR composition of each layer's model answer back onto that layer's input (read per dispatch).
+	FLOAT_RENDERPARM_DX12_NR_WHITE_POINT,
+	FLOAT_RENDERPARM_DX12_NR_TRANSFER_STRENGTH,
+	FLOAT_RENDERPARM_DX12_NR_COLOUR_STRENGTH,
+	FLOAT_RENDERPARM_DX12_NR_MAX_RATIO,
+	FLOAT_RENDERPARM_DX12_NR_COMPARE_SPLIT,
+	FLOAT_RENDERPARM_DX12_NR_COMPARE_ZOOM,
+};
+
 enum RenderParamInt_t
 {
 	INT_RENDERPARM_ENABLE_FIXED_LIGHTING = 0,
@@ -63,6 +83,17 @@ enum RenderParamInt_t
 	// 0 = not evaluated, 1 = available, -1 = private shaders unavailable (sticky), -2 = unavailable for the current MSAA mode.
 	INT_RENDERPARM_DX12_MOTION_STATUS,
 
+	// DX12 native-AA upscaler; other backends store and ignore these values.
+	INT_RENDERPARM_DX12_UPSCALE_MODE,     // 0 off, 1 auto, 2 DLSS/DLAA, 3 FSR native AA, 4 XeSS AA.
+	INT_RENDERPARM_DX12_UPSCALE_DISPATCH, // bit 0 run, bit 1 reset.
+	INT_RENDERPARM_DX12_UPSCALE_STATUS,   // backend-owned: 0 off/unevaluated, 1|(kind<<8) active (DLSS 1, FSR 2, XeSS 3),
+	                                      // -1 no provider, -2 feature creation failed, -3 MSAA, -4 wrong target/owner,
+	                                      // -5 no motion resolve this frame, -6 provider replay error.
+	// DLSS-NR layers chained after the temporal AA dispatch (layer N+1 is fed layer N's output).
+	INT_RENDERPARM_DX12_NR_CONFIG,        // DX12_NR_CONFIG_* bit fields; 0 layers disables NR.
+	INT_RENDERPARM_DX12_NR_STATUS,        // backend-owned: 0 off, N > 0 layers active, -1 unavailable, -2 creation failed,
+	                                      // -3 no temporal AA dispatch this frame, -6 replay error.
+
 	MAX_INT_RENDER_PARMS = 20
 };
 
@@ -73,6 +104,20 @@ enum RenderParamInt_t
 #define DX12_MOTION_PASS_BEGIN_MAIN     1
 #define DX12_MOTION_PASS_APPEND_MAIN    2
 #define DX12_MOTION_PASS_BEGIN_VIEWMODEL 3
+#define DX12_UPSCALE_DISPATCH_RUN   1
+#define DX12_UPSCALE_DISPATCH_RESET 2
+// INT_RENDERPARM_DX12_NR_CONFIG bit fields.
+#define DX12_NR_MAX_LAYERS                8
+#define DX12_NR_CONFIG_LAYERS_SHIFT       0	// 4 bits, 0..DX12_NR_MAX_LAYERS
+#define DX12_NR_CONFIG_PRESET_SHIFT       4	// 4 bits, 0 default, 1..3 model presets
+#define DX12_NR_CONFIG_STYLE_SHIFT        8	// 2 bits, 0 standard, 1 natural, 2 cinematic
+#define DX12_NR_CONFIG_REVERSIBLE_SHIFT   10	// 3 bits, 0 soft knee, 1 Neutwo composed, 2 Neutwo replace, 3 hybrid composed, 4 hybrid replace
+#define DX12_NR_CONFIG_DEBUG_VIEW_SHIFT   13	// 2 bits, 0 off, 1 proxy, 2 model answer, 3 amplified edit
+#define DX12_NR_CONFIG_COMPARE_SHIFT      15	// 2 bits, 0 off, 1 side by side, 2 wipe
+#define DX12_NR_CONFIG_AUTO_MASK          (1 << 17)
+#define DX12_NR_CONFIG_UI_CORRECTION      (1 << 18)
+#define DX12_NR_CONFIG_APPLY_MODEL        (1 << 19)
+#define DX12_NR_CONFIG_COMPARE_SWAP       (1 << 20)
 
 enum RenderParamTexture_t
 {
