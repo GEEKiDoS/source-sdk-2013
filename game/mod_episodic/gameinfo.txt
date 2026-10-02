@@ -1,0 +1,88 @@
+"GameInfo"
+{
+	game	"My First Episodic Mod"
+	title	"HALF-LIFE'"
+	title2	"== episode two =="
+	type singleplayer_only
+	nomodels 1
+	nohimodel 1
+	nocrosshair 0
+	supportsvr	1
+
+
+	FileSystem
+	{
+		// Engine install that runs this mod (Source SDK Base 2013 Multiplayer, x64). Half-Life 2
+		// (appid 220) has no x64 engine.
+		SteamAppId				243750
+		
+		//
+		// Setup engine search paths.
+		//
+		// If a search path contains "_english", and the current language is not english, then
+		// another search path will be inserted above the english one by replacing "_english" with
+		// the appropriate language.
+		//
+		// To debug how the engine has parsed this file, type "path" at the console.
+		//
+		// |gameinfo_path| points at the directory where gameinfo.txt is.
+		// |appid_243730| is Source SDK Base 2013 Singleplayer: its Episode One/Two VPKs are the
+		// content this SDK's game code and UI resources were made for. The Half-Life 2 anniversary
+		// copies (appid 220) use UI resources ([$DECK] conditionals, new schemes) this code can't read.
+		// |appid_243750| is the engine install: its hl2 content goes before the Singleplayer copy
+		// because its shaders/fxc VCS match this engine's stdshader_dx9.
+		// |appid_220| supplies only the episode maps, which it ships as loose files: this engine
+		// mounts the pakfile (patched water, cubemaps) of a BSP read from disk, not of a BSP packed
+		// in a VPK. Both Source SDK Base 2013 Singleplayer and Half-Life 2 must be installed.
+		//
+		SearchPaths
+		{
+
+			// First, mount all user customizations.  This will search for VPKs and subfolders
+			// and mount them in alphabetical order.  The easiest way to distribute a mod is to
+			// pack up the custom content into a VPK.  To "install" a mod, just drop it in this
+			// folder.
+			//
+			// Note that this folder is scanned only when the game is booted.
+			game+mod			mod_episodic/custom/*
+
+			// Now search loose files.  We'll set the directory containing the gameinfo.txt file
+			// as the first "mod" search path (after any user customizations).  This is also the one
+			// that's used when writing to the "mod" path.
+			mod+mod_write		|gameinfo_path|.
+			game+game_write		|gameinfo_path|.
+			default_write_path	|gameinfo_path|.
+			gamebin				|gameinfo_path|bin
+
+			// Loose episode maps, ahead of the Singleplayer VPKs that also contain them (see above).
+			// These folders otherwise only add localization, captions, fonts and chapter cfgs.
+			game				|appid_220|ep2
+			game				|appid_220|episodic
+
+			// We search VPK files before ordinary folders, because most files will be found in
+			// VPK and we can avoid making thousands of file system calls to attempt to open files
+			// in folders where they don't exist.  (Searching a VPK is much faster than making an operating
+			// system call.)
+			game+mod			|appid_243730|ep2/ep2_pak.vpk
+			game+mod			|appid_243730|episodic/ep1_pak.vpk
+
+			game				|appid_243750|hl2/hl2_textures.vpk
+			game				|appid_243750|hl2/hl2_sound_vo_english.vpk
+			game				|appid_243750|hl2/hl2_sound_misc.vpk
+			game				|appid_243750|hl2/hl2_misc.vpk
+
+			game				|appid_243730|hl2/hl2_textures.vpk
+			game				|appid_243730|hl2/hl2_sound_vo_english.vpk
+			game				|appid_243730|hl2/hl2_sound_misc.vpk
+			game				|appid_243730|hl2/hl2_misc.vpk
+
+			platform			|appid_243750|platform/platform_misc.vpk
+
+			// Last, mount in shared episodic and HL2 loose files
+			game				|appid_243730|ep2
+			game				|appid_243730|episodic
+			game				|appid_243750|hl2
+			platform			|appid_243750|platform
+		}
+	}
+}

@@ -26,13 +26,29 @@ Inside the cloned directory, navigate to `src`, run:
 ```bat
 createallprojects.bat
 ```
-This will generate the Visual Studio project `everything.sln` which will be used to build your mod.
+This will generate the Visual Studio project `everything.sln` which will be used to build your mod. The generated game projects are the Episodic ones (`client_win64_episodic`, `server_win64_episodic`, `launcher_main_win64_episodic`); to target TF2 or HL2: DM instead, replace `/episodic` in `createallprojects.bat` (and `buildallprojects`) with `/tf` and/or `/hl2mp`.
 
 Then, on the menu bar, go to `Build > Build Solution`, and wait for everything to build.
 
 You can then select the `Client (Mod Name)` project you wish to run, right click and select `Set as Startup Project` and hit the big green `> Local Windows Debugger` button on the tool bar in order to launch your mod.
 
 The default launch options should be already filled in for the `Release` configuration.
+
+### Episodic mod (Windows x64)
+
+`game\mod_episodic` runs Episode One/Two game code on the x64 Source SDK Base 2013 Multiplayer engine. Its `gameinfo.txt` mounts content from three Steam installs, which must all be present:
+ - Source SDK Base 2013 Multiplayer (243750): the engine and its `hl2` content, whose shaders match the engine.
+ - Source SDK Base 2013 Singleplayer (243730): the Episode One/Two VPKs this SDK's game code and UI were made for.
+ - Half-Life 2 (220): only for the loose episode maps. This engine does not mount the embedded pakfile (patched water materials, cubemaps) of a map read from a VPK.
+
+The client sets `cl_localnetworkbackdoor 0` on x64 because the engine crashes with the singleplayer network backdoor ([#610](https://github.com/ValveSoftware/source-sdk-2013/issues/610)).
+
+The DX12 renderer needs the native shader pack published into the mod once (and after shader changes):
+```bat
+cd src
+devtools\bin\buildshaders_dx12.bat -game ..\game\mod_episodic
+```
+Without it every DX12 draw fails and the screen stays black. Launch with `game\mod_episodic_win64.exe`, or `game\start_ep2.bat` (extra arguments such as `-dx9` or `+map ep2_outland_01` are passed through).
 
 ### DX12 Unicode title DLL (Windows x64)
 
@@ -71,7 +87,7 @@ This will build all the projects related to the SDK and your mods automatically 
 
 You can then, in the root of the cloned directory, you can navigate to `game` and run your mod by launching the build launcher for your mod project, eg:
 ```bash
-./mod_tf
+./mod_episodic
 ```
 
 *Mods that are distributed on Steam MUST be built against the Steam Runtime, which the above steps will automatically do for you.*

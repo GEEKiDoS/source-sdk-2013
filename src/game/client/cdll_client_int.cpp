@@ -1193,6 +1193,15 @@ void CHLClient::PostInit()
 		r_lightmap_bicubic.SetValue( info.m_nMaxDXSupportLevel >= 95 || ( info.m_nMaxDXSupportLevel >= 90 && IsLinux() ) );
 		r_lightmap_bicubic_set.SetValue( true );
 	}
+
+#if defined( PLATFORM_64BITS ) && defined( HL2_CLIENT_DLL ) && !defined( HL2MP )
+	// The x64 Source SDK Base 2013 Multiplayer engine crashes in the server's send proxies
+	// (SendProxy_AnimTime) when the singleplayer local network backdoor transfers entities:
+	// https://github.com/ValveSoftware/source-sdk-2013/issues/610. Use the regular
+	// loopback path instead.
+	ConVarRef cl_localnetworkbackdoor( "cl_localnetworkbackdoor" );
+	cl_localnetworkbackdoor.SetValue( 0 );
+#endif
 }
 
 //-----------------------------------------------------------------------------
