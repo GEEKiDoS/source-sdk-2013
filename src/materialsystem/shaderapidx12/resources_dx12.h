@@ -47,6 +47,11 @@ public:
     int GetRoomRemaining() const override;
     bool Lock(int nVertexCount, bool bAppend, VertexDesc_t &desc) override;
     void Unlock(int nVertexCount, VertexDesc_t &desc) override;
+    // CMeshDX8 static-mesh locks (dynamicvb.h CVertexBuffer): every lock starts at vertex 0, the contents beyond it
+    // persist, and unlocking defines the whole locked range whatever count is reported. Callers fill the lock
+    // pointer directly and unlock with 0 (engine static-prop color meshes copy .vhv lighting with memcpy).
+    bool LockStatic(int nVertexCount, VertexDesc_t &desc);
+    void UnlockStatic();
     void Spew(int nVertexCount, const VertexDesc_t &desc) override;
     void ValidateData(int nVertexCount, const VertexDesc_t &desc) override;
     ByteSpanDX12<const unsigned char> Bytes() const { return {bytes_.Base(), byteSize_}; }
@@ -76,11 +81,14 @@ public:
     // GPU address of the retained resource; valid while IsRetainedFor holds.
     D3D12_GPU_VIRTUAL_ADDRESS RetainedAddress() const { return retainedAddress_; }
     void MarkModified();
+private:
+    bool LockRange(int first, int nVertexCount, VertexDesc_t &desc);
 protected:
     VertexFormat_t format_ = 0;
     VertexLayoutDX12 layout_{};
     int vertexCount_ = 0;
     int written_ = 0;
+    int staticLockCount_ = 0;
     bool dynamic_ = false;
     uint32_t stride_ = 0;
     CUtlMemoryConservative<unsigned char> bytes_;

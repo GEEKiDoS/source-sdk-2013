@@ -91,6 +91,20 @@ bool CVertexBufferDX12::Lock(int nVertexCount, bool bAppend, VertexDesc_t &desc)
         return false;
     const int first = bAppend ? written_ : 0;
     if (!bAppend) written_ = 0;
+    return LockRange(first, nVertexCount, desc);
+}
+
+bool CVertexBufferDX12::LockStatic(int nVertexCount, VertexDesc_t &desc)
+{
+    staticLockCount_ = 0;
+    if (dynamic_ || nVertexCount < 0 || nVertexCount > vertexCount_ || !LockRange(0, nVertexCount, desc))
+        return false;
+    staticLockCount_ = nVertexCount;
+    return true;
+}
+
+bool CVertexBufferDX12::LockRange(int first, int nVertexCount, VertexDesc_t &desc)
+{
     const size_t firstSize = static_cast<size_t>(first);
     const size_t countSize = static_cast<size_t>(nVertexCount);
     if (!stride_ || firstSize > static_cast<size_t>(-1) / stride_ || countSize > static_cast<size_t>(-1) / stride_ - firstSize)
@@ -113,6 +127,16 @@ void CVertexBufferDX12::Unlock(int nVertexCount, VertexDesc_t &desc)
         written_ = std::min(vertexCount_, std::max(written_, static_cast<int>(desc.m_nFirstVertex)) + nVertexCount);
         MarkModified();
     }
+}
+
+void CVertexBufferDX12::UnlockStatic()
+{
+    if (staticLockCount_ > 0)
+    {
+        written_ = std::max(written_, std::min(vertexCount_, staticLockCount_));
+        MarkModified();
+    }
+    staticLockCount_ = 0;
 }
 void CVertexBufferDX12::Spew(int nVertexCount, const VertexDesc_t &desc)
 {
@@ -333,7 +357,7 @@ void CMeshDX12::LockMesh(int nVertexCount, int nIndexCount, MeshDesc_t &desc)
     const int writableVertices=vertexOverride_?0:nVertexCount;
     const int writableIndices=indexOverride_&&nIndexCount>=0?0:nIndexCount;
     if(!vertices_.EnsureCapacity(writableVertices)||(writableIndices>=0&&!indices_.EnsureCapacity(writableIndices))) {std::memset(&desc,0,sizeof(desc));return;}
-    const bool vertices=vertices_.Lock(writableVertices,false,desc);
+    const bool vertices=vertices_.IsDynamic()?vertices_.Lock(writableVertices,false,desc):vertices_.LockStatic(writableVertices,desc);
     const bool indices=writableIndices<0||indices_.Lock(writableIndices,false,desc);
     if(!vertices||!indices)std::memset(&desc,0,sizeof(desc));
 }
@@ -362,7 +386,8 @@ void CMeshDX12::ModifyEnd(MeshDesc_t &desc)
 
 void CMeshDX12::UnlockMesh(int nVertexCount, int nIndexCount, MeshDesc_t &desc)
 {
-    vertices_.Unlock(vertexOverride_?0:nVertexCount, desc);
+    if(vertices_.IsDynamic())vertices_.Unlock(vertexOverride_?0:nVertexCount, desc);
+    else vertices_.UnlockStatic();
     if (nIndexCount >= 0) indices_.Unlock(indexOverride_?0:nIndexCount, desc);
 }
 
