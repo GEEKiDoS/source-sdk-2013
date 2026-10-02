@@ -426,9 +426,9 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         const fs::path nativeVcs = sh.artifactRoot / "shaders" / "fxc" / (sh.generatedBase + ".vcs");
         sh.vcs = nativeVcs;
         const auto bytes = readBytes(nativeVcs);
-        ShaderVcsFile vcs; std::string error;
+        ShaderVcsFile vcs; CUtlString error;
         const auto stage = sh.stage == "vs" ? VcsStage::Vertex : VcsStage::Pixel;
-        if (!vcs.OpenBytes(bytes.data(), bytes.size(), stage, nativeVcs.string().c_str(), error)) throw std::runtime_error(error);
+        if (!vcs.OpenBytes(bytes.data(), bytes.size(), stage, nativeVcs.string().c_str(), error)) throw std::runtime_error(error.Get());
         if (vcs.Version() != 6) throw std::runtime_error("Native compiler did not emit VCS v6: " + sh.logical);
         sh.dynamicCount = vcs.DynamicComboCount();
         const unsigned total = static_cast<unsigned>(*reinterpret_cast<const uint32_t *>(bytes.data() + 4));
@@ -436,14 +436,14 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         for (size_t ordinal = 0;; ++ordinal) { unsigned index = 0; if (!vcs.StaticComboIndex(ordinal, index)) break; staticIndices.push_back(index); }
         sh.staticCount = static_cast<unsigned>(staticIndices.size());
         for (const unsigned index : staticIndices) {
-            if (!vcs.LoadStaticCombo(index, error)) throw std::runtime_error(error);
+            if (!vcs.LoadStaticCombo(index, error)) throw std::runtime_error(error.Get());
             for (unsigned dynamic = 0; dynamic < sh.dynamicCount; ++dynamic) {
                 const auto *payload = vcs.DynamicPayload(index, dynamic);
                 if (!payload) continue;
                 ++sh.present;
                 sh.presentCombos.insert(uint64_t(index) * sh.dynamicCount + dynamic);
                 ComPtr<ID3D11ShaderReflection> reflection;
-                HRESULT hr = D3DReflect(payload->tokens.data(), payload->tokens.size(), IID_PPV_ARGS(&reflection));
+                HRESULT hr = D3DReflect(payload->tokens.Base(), payload->tokens.Count(), IID_PPV_ARGS(&reflection));
                 if (FAILED(hr)) throw std::runtime_error("D3DReflect rejected DXBC: " + sh.logical);
                 D3D11_SHADER_DESC desc{};
                 if (FAILED(reflection->GetDesc(&desc)) || static_cast<unsigned>(D3D11_SHVER_GET_TYPE(desc.Version)) !=
@@ -472,11 +472,11 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         const fs::path legacyVcs = game / "shaders" / "fxc" / (sh.legacyName + ".vcs");
         if (!nativeOnly && fs::exists(legacyVcs)) {
             const auto old = readBytes(legacyVcs);
-            ShaderVcsFile legacy; if (!legacy.OpenBytes(old.data(), old.size(), stage, legacyVcs.string().c_str(), error)) throw std::runtime_error(error);
+            ShaderVcsFile legacy; if (!legacy.OpenBytes(old.data(), old.size(), stage, legacyVcs.string().c_str(), error)) throw std::runtime_error(error.Get());
             if (legacy.DynamicComboCount() != sh.dynamicCount || *reinterpret_cast<const uint32_t *>(old.data() + 4) != total)
                 throw std::runtime_error("Legacy runtime combo count mismatch: " + sh.logical);
             for (const unsigned index : staticIndices) {
-                if (!legacy.LoadStaticCombo(index, error)) throw std::runtime_error(error);
+                if (!legacy.LoadStaticCombo(index, error)) throw std::runtime_error(error.Get());
                 for (unsigned dynamic = 0; dynamic < sh.dynamicCount; ++dynamic)
                     if ((legacy.DynamicPayload(index, dynamic) != nullptr) !=
                         (sh.presentCombos.count(uint64_t(index) * sh.dynamicCount + dynamic) != 0))

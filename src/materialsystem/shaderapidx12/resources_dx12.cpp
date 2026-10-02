@@ -1,417 +1,637 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: DX12 shader, vertex, index buffers and meshes backed by CPU byte storage.
+//
+//=============================================================================//
+
 #include "resources_dx12.h"
 #include "shaderdevice_dx12.h"
 #include "shaderapi/ishaderutil.h"
 #include "tier0/dbg.h"
-#include <algorithm>
-#include <cstring>
 
 namespace shaderapidx12
 {
-namespace
+
+//-----------------------------------------------------------------------------
+// Purpose: Grows the byte storage geometrically and zero-fills the new tail
+//-----------------------------------------------------------------------------
+static bool ResizeBytes( CUtlMemoryConservative<unsigned char> &bytes, size_t &nCurrentSize, size_t nRequestedSize )
 {
-bool ResizeBytes(CUtlMemoryConservative<unsigned char> &bytes, size_t &currentSize, size_t requestedSize)
-{
-    if (requestedSize > currentSize)
-    {
-        const size_t capacity = bytes.AllocSize();
-        if (requestedSize > capacity)
-        {
-            size_t newCapacity = capacity ? capacity : 64;
-            const size_t maxSize = static_cast<size_t>(-1);
-            while (newCapacity < requestedSize)
-            {
-                if (newCapacity > maxSize / 2)
-                {
-                    newCapacity = requestedSize;
-                    break;
-                }
-                newCapacity *= 2;
-            }
-            bytes.ReAlloc(newCapacity);
-            if (!bytes.Base()) return false;
-        }
-        std::memset(bytes.Base() + currentSize, 0, requestedSize - currentSize);
-    }
-    currentSize = requestedSize;
-    return true;
-}
+	if ( nRequestedSize > nCurrentSize )
+	{
+		const size_t nCapacity = bytes.AllocSize();
+		if ( nRequestedSize > nCapacity )
+		{
+			size_t nNewCapacity = nCapacity ? nCapacity : 64;
+			const size_t nMaxSize = static_cast<size_t>( -1 );
+			while ( nNewCapacity < nRequestedSize )
+			{
+				if ( nNewCapacity > nMaxSize / 2 )
+				{
+					nNewCapacity = nRequestedSize;
+					break;
+				}
+				nNewCapacity *= 2;
+			}
+			bytes.ReAlloc( nNewCapacity );
+			if ( !bytes.Base() )
+				return false;
+		}
+		memset( bytes.Base() + nCurrentSize, 0, nRequestedSize - nCurrentSize );
+	}
+	nCurrentSize = nRequestedSize;
+	return true;
 }
 
-CShaderBufferDX12::CShaderBufferDX12(const void *data, size_t size)
+//-----------------------------------------------------------------------------
+// Purpose: Copies the shader blob into owned storage
+//-----------------------------------------------------------------------------
+CShaderBufferDX12::CShaderBufferDX12( const void *pData, size_t nSize )
 {
-    if (data && size)
-    {
-        bytes_.ReAlloc(size);
-        if (!bytes_.Base()) return;
-        std::memcpy(bytes_.Base(), data, size);
-        byteSize_ = size;
-    }
+	if ( pData && nSize )
+	{
+		m_Bytes.ReAlloc( nSize );
+		if ( !m_Bytes.Base() )
+			return;
+		memcpy( m_Bytes.Base(), pData, nSize );
+		m_nByteSize = nSize;
+	}
 }
 
-CVertexBufferDX12::CVertexBufferDX12(VertexFormat_t format, int count, bool dynamic)
-    : format_(format), vertexCount_(std::max(0, count)), dynamic_(dynamic)
+//-----------------------------------------------------------------------------
+// Purpose: Static buffers allocate their whole storage up front
+//-----------------------------------------------------------------------------
+CVertexBufferDX12::CVertexBufferDX12( VertexFormat_t format, int nCount, bool bDynamic )
+    : m_Format( format ), m_nVertexCount( MAX( 0, nCount ) ), m_bDynamic( bDynamic )
 {
-    layout_=ComputeVertexLayoutDX12(format);stride_=layout_.valid?layout_.stride:0;
-    if (!dynamic_ && stride_ && vertexCount_ > 0 &&
-        !ResizeBytes(bytes_, byteSize_, static_cast<size_t>(stride_) * static_cast<size_t>(vertexCount_)))
-        vertexCount_ = 0;
+	m_Layout = ComputeVertexLayoutDX12( format );
+	m_nStride = m_Layout.valid ? m_Layout.stride : 0;
+	if ( !m_bDynamic && m_nStride && m_nVertexCount > 0 &&
+	    !ResizeBytes( m_Bytes, m_nByteSize, static_cast<size_t>( m_nStride ) * static_cast<size_t>( m_nVertexCount ) ) )
+		m_nVertexCount = 0;
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Bumps the content version; zero is reserved for "never uploaded"
+//-----------------------------------------------------------------------------
 void CVertexBufferDX12::MarkModified()
 {
-    ++contentVersion_; if (!contentVersion_) contentVersion_=1;
-}
-bool CVertexBufferDX12::EnsureCapacity(int count)
-{
-    if(count<0||!stride_||static_cast<size_t>(count)>static_cast<size_t>(-1)/stride_)return false;
-    if(count<=vertexCount_)return true;
-    if(!ResizeBytes(bytes_,byteSize_,static_cast<size_t>(count)*stride_))return false;
-    vertexCount_=count;MarkModified();return true;
+	++m_nContentVersion;
+	if ( !m_nContentVersion )
+		m_nContentVersion = 1;
 }
 
-void CVertexBufferDX12::BeginCastBuffer(VertexFormat_t format)
+//-----------------------------------------------------------------------------
+// Purpose: Grows the buffer to hold at least nCount vertices
+//-----------------------------------------------------------------------------
+bool CVertexBufferDX12::EnsureCapacity( int nCount )
 {
-    format_ = format;
-    layout_=ComputeVertexLayoutDX12(format);stride_=layout_.valid?layout_.stride:0;
-    written_ = 0;
-    byteSize_ = 0;
-    if (!dynamic_ && stride_ && vertexCount_ > 0 &&
-        !ResizeBytes(bytes_, byteSize_, static_cast<size_t>(stride_) * static_cast<size_t>(vertexCount_)))
-        vertexCount_ = 0;
-    MarkModified();
+	if ( nCount < 0 || !m_nStride || static_cast<size_t>( nCount ) > static_cast<size_t>( -1 ) / m_nStride )
+		return false;
+	if ( nCount <= m_nVertexCount )
+		return true;
+	if ( !ResizeBytes( m_Bytes, m_nByteSize, static_cast<size_t>( nCount ) * m_nStride ) )
+		return false;
+	m_nVertexCount = nCount;
+	MarkModified();
+	return true;
 }
-void CVertexBufferDX12::EndCastBuffer() {}
+
+//-----------------------------------------------------------------------------
+// Purpose: Reinterprets the buffer with a new vertex format
+//-----------------------------------------------------------------------------
+void CVertexBufferDX12::BeginCastBuffer( VertexFormat_t format )
+{
+	m_Format = format;
+	m_Layout = ComputeVertexLayoutDX12( format );
+	m_nStride = m_Layout.valid ? m_Layout.stride : 0;
+	m_nWritten = 0;
+	m_nByteSize = 0;
+	if ( !m_bDynamic && m_nStride && m_nVertexCount > 0 &&
+	    !ResizeBytes( m_Bytes, m_nByteSize, static_cast<size_t>( m_nStride ) * static_cast<size_t>( m_nVertexCount ) ) )
+		m_nVertexCount = 0;
+	MarkModified();
+}
+
+void CVertexBufferDX12::EndCastBuffer()
+{
+}
+
 int CVertexBufferDX12::GetRoomRemaining() const
 {
-    return std::max(0, vertexCount_ - written_);
+	return MAX( 0, m_nVertexCount - m_nWritten );
 }
 
-bool CVertexBufferDX12::Lock(int nVertexCount, bool bAppend, VertexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Dynamic-style lock: append after the written range or restart at 0
+//-----------------------------------------------------------------------------
+bool CVertexBufferDX12::Lock( int nVertexCount, bool bAppend, VertexDesc_t &desc )
 {
-    if (nVertexCount < 0 || nVertexCount > (bAppend ? GetRoomRemaining() : vertexCount_))
-        return false;
-    const int first = bAppend ? written_ : 0;
-    if (!bAppend) written_ = 0;
-    return LockRange(first, nVertexCount, desc);
+	if ( nVertexCount < 0 || nVertexCount > ( bAppend ? GetRoomRemaining() : m_nVertexCount ) )
+		return false;
+	const int nFirst = bAppend ? m_nWritten : 0;
+	if ( !bAppend )
+		m_nWritten = 0;
+	return LockRange( nFirst, nVertexCount, desc );
 }
 
-bool CVertexBufferDX12::LockStatic(int nVertexCount, VertexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Static-mesh lock; always starts at vertex 0
+//-----------------------------------------------------------------------------
+bool CVertexBufferDX12::LockStatic( int nVertexCount, VertexDesc_t &desc )
 {
-    staticLockCount_ = 0;
-    if (dynamic_ || nVertexCount < 0 || nVertexCount > vertexCount_ || !LockRange(0, nVertexCount, desc))
-        return false;
-    staticLockCount_ = nVertexCount;
-    return true;
+	m_nStaticLockCount = 0;
+	if ( m_bDynamic || nVertexCount < 0 || nVertexCount > m_nVertexCount || !LockRange( 0, nVertexCount, desc ) )
+		return false;
+	m_nStaticLockCount = nVertexCount;
+	return true;
 }
 
-bool CVertexBufferDX12::LockRange(int first, int nVertexCount, VertexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Fills desc for vertices [nFirst, nFirst + nVertexCount)
+//-----------------------------------------------------------------------------
+bool CVertexBufferDX12::LockRange( int nFirst, int nVertexCount, VertexDesc_t &desc )
 {
-    const size_t firstSize = static_cast<size_t>(first);
-    const size_t countSize = static_cast<size_t>(nVertexCount);
-    if (!stride_ || firstSize > static_cast<size_t>(-1) / stride_ || countSize > static_cast<size_t>(-1) / stride_ - firstSize)
-        return false;
-    const size_t required=(firstSize+countSize)*stride_;
-    if ((dynamic_ && byteSize_ < required && !ResizeBytes(bytes_, byteSize_, required)) ||
-        (!dynamic_ && byteSize_ < required)) return false;
-    unsigned char *data = byteSize_ ? bytes_.Base() + static_cast<size_t>(first) * stride_ : nullptr;
-    VertexLayoutDX12 layout = ComputeVertexLayoutDX12(format_, data, &desc);
-    if (!layout.valid) return false;
-    desc.m_nFirstVertex = first;
-    desc.m_nOffset = static_cast<unsigned int>(static_cast<size_t>(first) * stride_);
-    return true;
+	const size_t nFirstSize = static_cast<size_t>( nFirst );
+	const size_t nCountSize = static_cast<size_t>( nVertexCount );
+	if ( !m_nStride || nFirstSize > static_cast<size_t>( -1 ) / m_nStride || nCountSize > static_cast<size_t>( -1 ) / m_nStride - nFirstSize )
+		return false;
+	const size_t nRequired = ( nFirstSize + nCountSize ) * m_nStride;
+	if ( ( m_bDynamic && m_nByteSize < nRequired && !ResizeBytes( m_Bytes, m_nByteSize, nRequired ) ) ||
+	    ( !m_bDynamic && m_nByteSize < nRequired ) )
+		return false;
+	unsigned char *pData = m_nByteSize ? m_Bytes.Base() + nFirstSize * m_nStride : nullptr;
+	VertexLayoutDX12 layout = ComputeVertexLayoutDX12( m_Format, pData, &desc );
+	if ( !layout.valid )
+		return false;
+	desc.m_nFirstVertex = nFirst;
+	desc.m_nOffset = static_cast<unsigned int>( nFirstSize * m_nStride );
+	return true;
 }
 
-void CVertexBufferDX12::Unlock(int nVertexCount, VertexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Extends the written range past the locked vertices
+//-----------------------------------------------------------------------------
+void CVertexBufferDX12::Unlock( int nVertexCount, VertexDesc_t &desc )
 {
-    if (nVertexCount > 0)
-    {
-        written_ = std::min(vertexCount_, std::max(written_, static_cast<int>(desc.m_nFirstVertex)) + nVertexCount);
-        MarkModified();
-    }
+	if ( nVertexCount > 0 )
+	{
+		m_nWritten = MIN( m_nVertexCount, MAX( m_nWritten, static_cast<int>( desc.m_nFirstVertex ) ) + nVertexCount );
+		MarkModified();
+	}
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: A static unlock defines the whole locked range
+//-----------------------------------------------------------------------------
 void CVertexBufferDX12::UnlockStatic()
 {
-    if (staticLockCount_ > 0)
-    {
-        written_ = std::max(written_, std::min(vertexCount_, staticLockCount_));
-        MarkModified();
-    }
-    staticLockCount_ = 0;
-}
-void CVertexBufferDX12::Spew(int nVertexCount, const VertexDesc_t &desc)
-{
-    Msg("ShaderAPIDX12: vertex buffer %d vertices, stride %u, offset %u\n", nVertexCount, stride_, desc.m_nOffset);
+	if ( m_nStaticLockCount > 0 )
+	{
+		m_nWritten = MAX( m_nWritten, MIN( m_nVertexCount, m_nStaticLockCount ) );
+		MarkModified();
+	}
+	m_nStaticLockCount = 0;
 }
 
-void CVertexBufferDX12::ValidateData(int nVertexCount, const VertexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Debug output and validation
+//-----------------------------------------------------------------------------
+void CVertexBufferDX12::Spew( int nVertexCount, const VertexDesc_t &desc )
 {
-    if (nVertexCount < 0 || nVertexCount > vertexCount_ || desc.m_ActualVertexSize != static_cast<int>(stride_))
-        Warning("ShaderAPIDX12: invalid vertex buffer range or stride\n");
+	Msg( "ShaderAPIDX12: vertex buffer %d vertices, stride %u, offset %u\n", nVertexCount, m_nStride, desc.m_nOffset );
 }
 
-CIndexBufferDX12::CIndexBufferDX12(MaterialIndexFormat_t format, int count, bool dynamic)
-    : format_(format), indexCount_(std::max(0, count)), dynamic_(dynamic)
+void CVertexBufferDX12::ValidateData( int nVertexCount, const VertexDesc_t &desc )
 {
-    indexSize_ = format == MATERIAL_INDEX_FORMAT_32BIT ? 4u : 2u;
-    if(!dynamic_ && !ResizeBytes(bytes_,byteSize_,static_cast<size_t>(indexSize_) * static_cast<size_t>(indexCount_)))indexCount_=0;
+	if ( nVertexCount < 0 || nVertexCount > m_nVertexCount || desc.m_ActualVertexSize != static_cast<int>( m_nStride ) )
+		Warning( "ShaderAPIDX12: invalid vertex buffer range or stride\n" );
 }
-bool CIndexBufferDX12::EnsureCapacity(int count)
+
+//-----------------------------------------------------------------------------
+// Purpose: Static buffers allocate their whole storage up front
+//-----------------------------------------------------------------------------
+CIndexBufferDX12::CIndexBufferDX12( MaterialIndexFormat_t format, int nCount, bool bDynamic )
+    : m_Format( format ), m_nIndexCount( MAX( 0, nCount ) ), m_bDynamic( bDynamic )
 {
-    if(count<0||static_cast<size_t>(count)>static_cast<size_t>(-1)/indexSize_)return false;
-    if(count<=indexCount_)return true;
-    if(!ResizeBytes(bytes_,byteSize_,static_cast<size_t>(count)*indexSize_))return false;
-    indexCount_=count;MarkModified();return true;
+	m_nIndexSize = format == MATERIAL_INDEX_FORMAT_32BIT ? 4u : 2u;
+	if ( !m_bDynamic && !ResizeBytes( m_Bytes, m_nByteSize, static_cast<size_t>( m_nIndexSize ) * static_cast<size_t>( m_nIndexCount ) ) )
+		m_nIndexCount = 0;
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Grows the buffer to hold at least nCount indices
+//-----------------------------------------------------------------------------
+bool CIndexBufferDX12::EnsureCapacity( int nCount )
+{
+	if ( nCount < 0 || static_cast<size_t>( nCount ) > static_cast<size_t>( -1 ) / m_nIndexSize )
+		return false;
+	if ( nCount <= m_nIndexCount )
+		return true;
+	if ( !ResizeBytes( m_Bytes, m_nByteSize, static_cast<size_t>( nCount ) * m_nIndexSize ) )
+		return false;
+	m_nIndexCount = nCount;
+	MarkModified();
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Bumps the content version; zero is reserved for "never uploaded"
+//-----------------------------------------------------------------------------
 void CIndexBufferDX12::MarkModified()
 {
-    ++contentVersion_; if (!contentVersion_) contentVersion_=1;
+	++m_nContentVersion;
+	if ( !m_nContentVersion )
+		m_nContentVersion = 1;
 }
 
-void CIndexBufferDX12::BeginCastBuffer(MaterialIndexFormat_t format)
+//-----------------------------------------------------------------------------
+// Purpose: Reinterprets the buffer with a new index format
+//-----------------------------------------------------------------------------
+void CIndexBufferDX12::BeginCastBuffer( MaterialIndexFormat_t format )
 {
-    format_ = format;
-    indexSize_ = format == MATERIAL_INDEX_FORMAT_32BIT ? 4u : 2u;
-    written_ = 0;
-    byteSize_=0;if(!dynamic_ && !ResizeBytes(bytes_,byteSize_,static_cast<size_t>(indexSize_) * static_cast<size_t>(indexCount_)))indexCount_=0;MarkModified();
+	m_Format = format;
+	m_nIndexSize = format == MATERIAL_INDEX_FORMAT_32BIT ? 4u : 2u;
+	m_nWritten = 0;
+	m_nByteSize = 0;
+	if ( !m_bDynamic && !ResizeBytes( m_Bytes, m_nByteSize, static_cast<size_t>( m_nIndexSize ) * static_cast<size_t>( m_nIndexCount ) ) )
+		m_nIndexCount = 0;
+	MarkModified();
 }
 
-void CIndexBufferDX12::EndCastBuffer() {}
+void CIndexBufferDX12::EndCastBuffer()
+{
+}
 
 int CIndexBufferDX12::GetRoomRemaining() const
 {
-    return std::max(0, indexCount_ - written_);
+	return MAX( 0, m_nIndexCount - m_nWritten );
 }
 
-bool CIndexBufferDX12::Lock(int nMaxIndexCount, bool bAppend, IndexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Dynamic-style lock: append after the written range or restart at 0
+//-----------------------------------------------------------------------------
+bool CIndexBufferDX12::Lock( int nMaxIndexCount, bool bAppend, IndexDesc_t &desc )
 {
-    if (nMaxIndexCount < 0 || nMaxIndexCount > (bAppend ? GetRoomRemaining() : indexCount_))
-        return false;
-    const int first = bAppend ? written_ : 0;
-    if (!bAppend) written_ = 0;
-    const size_t firstSize = static_cast<size_t>(first);
-    const size_t countSize = static_cast<size_t>(nMaxIndexCount);
-    if (firstSize > static_cast<size_t>(-1) / indexSize_ || countSize > static_cast<size_t>(-1) / indexSize_ - firstSize)
-        return false;
-    const size_t required=(firstSize+countSize)*indexSize_;
-    if ((dynamic_ && byteSize_ < required && !ResizeBytes(bytes_, byteSize_, required)) ||
-        (!dynamic_ && byteSize_ < required)) return false;
-    desc.m_pIndices = byteSize_ ? reinterpret_cast<unsigned short *>(bytes_.Base() + static_cast<size_t>(first) * indexSize_) : nullptr;
-    desc.m_nOffset = static_cast<unsigned int>(static_cast<size_t>(first) * indexSize_);
-    desc.m_nFirstIndex = static_cast<unsigned int>(first);
-    desc.m_nIndexSize = static_cast<unsigned char>(indexSize_ / sizeof(unsigned short));
-    return true;
+	if ( nMaxIndexCount < 0 || nMaxIndexCount > ( bAppend ? GetRoomRemaining() : m_nIndexCount ) )
+		return false;
+	const int nFirst = bAppend ? m_nWritten : 0;
+	if ( !bAppend )
+		m_nWritten = 0;
+	const size_t nFirstSize = static_cast<size_t>( nFirst );
+	const size_t nCountSize = static_cast<size_t>( nMaxIndexCount );
+	if ( nFirstSize > static_cast<size_t>( -1 ) / m_nIndexSize || nCountSize > static_cast<size_t>( -1 ) / m_nIndexSize - nFirstSize )
+		return false;
+	const size_t nRequired = ( nFirstSize + nCountSize ) * m_nIndexSize;
+	if ( ( m_bDynamic && m_nByteSize < nRequired && !ResizeBytes( m_Bytes, m_nByteSize, nRequired ) ) ||
+	    ( !m_bDynamic && m_nByteSize < nRequired ) )
+		return false;
+	desc.m_pIndices = m_nByteSize ? reinterpret_cast<unsigned short *>( m_Bytes.Base() + nFirstSize * m_nIndexSize ) : nullptr;
+	desc.m_nOffset = static_cast<unsigned int>( nFirstSize * m_nIndexSize );
+	desc.m_nFirstIndex = static_cast<unsigned int>( nFirst );
+	desc.m_nIndexSize = static_cast<unsigned char>( m_nIndexSize / sizeof( unsigned short ) );
+	return true;
 }
 
-void CIndexBufferDX12::Unlock(int nWrittenIndexCount, IndexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Extends the written range past the locked indices
+//-----------------------------------------------------------------------------
+void CIndexBufferDX12::Unlock( int nWrittenIndexCount, IndexDesc_t &desc )
 {
-    if (nWrittenIndexCount > 0)
-    {
-        written_ = std::min(indexCount_, std::max(written_, static_cast<int>(desc.m_nFirstIndex)) + nWrittenIndexCount);
-        MarkModified();
-    }
+	if ( nWrittenIndexCount > 0 )
+	{
+		m_nWritten = MIN( m_nIndexCount, MAX( m_nWritten, static_cast<int>( desc.m_nFirstIndex ) ) + nWrittenIndexCount );
+		MarkModified();
+	}
 }
 
-void CIndexBufferDX12::ModifyBegin(bool bReadOnly, int nFirstIndex, int nIndexCount, IndexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Exposes an existing index range; desc is zeroed on failure
+//-----------------------------------------------------------------------------
+void CIndexBufferDX12::ModifyBegin( bool bReadOnly, int nFirstIndex, int nIndexCount, IndexDesc_t &desc )
 {
-    modifyingWritable_ = false;
-    if (nFirstIndex < 0 || nIndexCount < 0 || nFirstIndex > indexCount_ || nIndexCount > indexCount_ - nFirstIndex)
-    {
-        std::memset(&desc, 0, sizeof(desc));
-        return;
-    }
-    const size_t firstSize = static_cast<size_t>(nFirstIndex);
-    const size_t countSize = static_cast<size_t>(nIndexCount);
-    if (firstSize > static_cast<size_t>(-1) / indexSize_ || countSize > static_cast<size_t>(-1) / indexSize_ - firstSize)
-    {
-        std::memset(&desc, 0, sizeof(desc));
-        return;
-    }
-    const size_t required=(firstSize+countSize)*indexSize_;
-    if(required>byteSize_)
-    {
-        if(bReadOnly||!dynamic_||!ResizeBytes(bytes_,byteSize_,required)){std::memset(&desc,0,sizeof(desc));return;}
-    }
-    desc.m_pIndices = byteSize_ ? reinterpret_cast<unsigned short *>(bytes_.Base() + static_cast<size_t>(nFirstIndex) * indexSize_) : nullptr;
-    desc.m_nOffset = static_cast<unsigned int>(static_cast<size_t>(nFirstIndex) * indexSize_);
-    desc.m_nFirstIndex = static_cast<unsigned int>(nFirstIndex);
-    desc.m_nIndexSize = static_cast<unsigned char>(indexSize_ / sizeof(unsigned short));
-    if (!bReadOnly && nIndexCount > 0)
-    {
-        written_ = std::max(written_, nFirstIndex + nIndexCount);
-        modifyingWritable_ = true;
-    }
+	m_bModifyingWritable = false;
+	if ( nFirstIndex < 0 || nIndexCount < 0 || nFirstIndex > m_nIndexCount || nIndexCount > m_nIndexCount - nFirstIndex )
+	{
+		memset( &desc, 0, sizeof( desc ) );
+		return;
+	}
+	const size_t nFirstSize = static_cast<size_t>( nFirstIndex );
+	const size_t nCountSize = static_cast<size_t>( nIndexCount );
+	if ( nFirstSize > static_cast<size_t>( -1 ) / m_nIndexSize || nCountSize > static_cast<size_t>( -1 ) / m_nIndexSize - nFirstSize )
+	{
+		memset( &desc, 0, sizeof( desc ) );
+		return;
+	}
+	const size_t nRequired = ( nFirstSize + nCountSize ) * m_nIndexSize;
+	if ( nRequired > m_nByteSize )
+	{
+		if ( bReadOnly || !m_bDynamic || !ResizeBytes( m_Bytes, m_nByteSize, nRequired ) )
+		{
+			memset( &desc, 0, sizeof( desc ) );
+			return;
+		}
+	}
+	desc.m_pIndices = m_nByteSize ? reinterpret_cast<unsigned short *>( m_Bytes.Base() + nFirstSize * m_nIndexSize ) : nullptr;
+	desc.m_nOffset = static_cast<unsigned int>( nFirstSize * m_nIndexSize );
+	desc.m_nFirstIndex = static_cast<unsigned int>( nFirstIndex );
+	desc.m_nIndexSize = static_cast<unsigned char>( m_nIndexSize / sizeof( unsigned short ) );
+	if ( !bReadOnly && nIndexCount > 0 )
+	{
+		m_nWritten = MAX( m_nWritten, nFirstIndex + nIndexCount );
+		m_bModifyingWritable = true;
+	}
 }
 
-void CIndexBufferDX12::ModifyEnd(IndexDesc_t &) { if(modifyingWritable_)MarkModified();modifyingWritable_=false; }
-
-void CIndexBufferDX12::Spew(int nIndexCount, const IndexDesc_t &desc)
+void CIndexBufferDX12::ModifyEnd( IndexDesc_t & )
 {
-    Msg("ShaderAPIDX12: index buffer %d indices, %u-byte elements, offset %u\n", nIndexCount, indexSize_, desc.m_nOffset);
+	if ( m_bModifyingWritable )
+		MarkModified();
+	m_bModifyingWritable = false;
 }
 
-void CIndexBufferDX12::ValidateData(int nIndexCount, const IndexDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Debug output and validation
+//-----------------------------------------------------------------------------
+void CIndexBufferDX12::Spew( int nIndexCount, const IndexDesc_t &desc )
 {
-    if (nIndexCount < 0 || nIndexCount > indexCount_ || desc.m_nIndexSize != indexSize_ / sizeof(unsigned short))
-        Warning("ShaderAPIDX12: invalid index buffer range or format\n");
+	Msg( "ShaderAPIDX12: index buffer %d indices, %u-byte elements, offset %u\n", nIndexCount, m_nIndexSize, desc.m_nOffset );
 }
 
-CMeshDX12::CMeshDX12(VertexFormat_t format, int vertexCount, bool dynamic, DrawCallback draw, void *drawContext)
-    : vertices_(format, vertexCount, dynamic), indices_(MATERIAL_INDEX_FORMAT_16BIT, INDEX_BUFFER_SIZE, dynamic), draw_(draw), drawContext_(drawContext)
+void CIndexBufferDX12::ValidateData( int nIndexCount, const IndexDesc_t &desc )
+{
+	if ( nIndexCount < 0 || nIndexCount > m_nIndexCount || desc.m_nIndexSize != m_nIndexSize / sizeof( unsigned short ) )
+		Warning( "ShaderAPIDX12: invalid index buffer range or format\n" );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Constructor; draws are forwarded to the owning shader API
+//-----------------------------------------------------------------------------
+CMeshDX12::CMeshDX12( VertexFormat_t format, int nVertexCount, bool bDynamic, DrawCallback pfnDraw, void *pDrawContext )
+    : m_Vertices( format, nVertexCount, bDynamic ), m_Indices( MATERIAL_INDEX_FORMAT_16BIT, INDEX_BUFFER_SIZE, bDynamic ), m_pfnDraw( pfnDraw ), m_pDrawContext( pDrawContext )
 {
 }
-bool CMeshDX12::DependsOn(const CMeshDX12 *mesh) const
+
+//-----------------------------------------------------------------------------
+// Purpose: Whether pMesh is this mesh or one of its buffer overrides
+//-----------------------------------------------------------------------------
+bool CMeshDX12::DependsOn( const CMeshDX12 *pMesh ) const
 {
-    return this==mesh||(vertexOverride_&&vertexOverride_->DependsOn(mesh))||(indexOverride_&&indexOverride_->DependsOn(mesh));
+	return this == pMesh || ( m_pVertexOverride && m_pVertexOverride->DependsOn( pMesh ) ) || ( m_pIndexOverride && m_pIndexOverride->DependsOn( pMesh ) );
 }
-bool CMeshDX12::OverrideBuffers(IMesh *vertexMesh, IMesh *indexMesh)
+
+//-----------------------------------------------------------------------------
+// Purpose: Draws from another mesh's buffers; rejects override cycles
+//-----------------------------------------------------------------------------
+bool CMeshDX12::OverrideBuffers( IMesh *pVertexMesh, IMesh *pIndexMesh )
 {
-    auto *vertex=static_cast<CMeshDX12 *>(vertexMesh);
-    auto *index=static_cast<CMeshDX12 *>(indexMesh);
-    if((vertex&&vertex->DependsOn(this))||(index&&index->DependsOn(this)))return false;
-    vertexOverride_=vertex;indexOverride_=index;
-    return true;
+	CMeshDX12 *pVertex = static_cast<CMeshDX12 *>( pVertexMesh );
+	CMeshDX12 *pIndex = static_cast<CMeshDX12 *>( pIndexMesh );
+	if ( ( pVertex && pVertex->DependsOn( this ) ) || ( pIndex && pIndex->DependsOn( this ) ) )
+		return false;
+	m_pVertexOverride = pVertex;
+	m_pIndexOverride = pIndex;
+	return true;
 }
+
 void CMeshDX12::EndCastBuffer()
 {
-    vertices_.EndCastBuffer();
-    indices_.EndCastBuffer();
+	m_Vertices.EndCastBuffer();
+	m_Indices.EndCastBuffer();
 }
 
 bool CMeshDX12::IsDynamic() const
 {
-    return vertices_.IsDynamic() || indices_.IsDynamic();
+	return m_Vertices.IsDynamic() || m_Indices.IsDynamic();
 }
 
-void CMeshDX12::SetPrimitiveType(MaterialPrimitiveType_t type)
+//-----------------------------------------------------------------------------
+// Purpose: Mesh state setters; the host shader util may intercept them
+//-----------------------------------------------------------------------------
+void CMeshDX12::SetPrimitiveType( MaterialPrimitiveType_t type )
 {
-    if(g_pShaderDeviceMgrDX12&&g_pShaderDeviceMgrDX12->HostShaderUtil()&&!g_pShaderDeviceMgrDX12->HostShaderUtil()->OnSetPrimitiveType(this,type))return;
-    primitive_=type;
-}
-void CMeshDX12::SetColorMesh(IMesh *mesh,int offset)
-{
-    if(g_pShaderDeviceMgrDX12&&g_pShaderDeviceMgrDX12->HostShaderUtil()&&!g_pShaderDeviceMgrDX12->HostShaderUtil()->OnSetColorMesh(this,mesh,offset))return;
-    colorMesh_=mesh;colorOffset_=offset;
-}
-void CMeshDX12::SetFlexMesh(IMesh *mesh,int offset)
-{
-    if(g_pShaderDeviceMgrDX12&&g_pShaderDeviceMgrDX12->HostShaderUtil()&&!g_pShaderDeviceMgrDX12->HostShaderUtil()->OnSetFlexMesh(this,mesh,offset))return;
-    flexMesh_=mesh;flexOffset_=offset;
-}
-void CMeshDX12::Draw(int nFirstIndex,int nIndexCount)
-{
-    if(g_pShaderDeviceMgrDX12&&g_pShaderDeviceMgrDX12->HostShaderUtil()&&!g_pShaderDeviceMgrDX12->HostShaderUtil()->OnDrawMesh(this,nFirstIndex,nIndexCount)){drawn_=true;return;}
-    if(nFirstIndex<0)nFirstIndex=0;
-    if(nIndexCount<=0)nIndexCount=DrawIndices().WrittenCount();
-    if(nFirstIndex>DrawIndices().WrittenCount()||nIndexCount>DrawIndices().WrittenCount()-nFirstIndex)return;
-    if(draw_)draw_(drawContext_,this,nFirstIndex,nIndexCount);
-    drawn_=true;
-}
-void CMeshDX12::Draw(CPrimList *lists,int nLists)
-{
-    if(g_pShaderDeviceMgrDX12&&g_pShaderDeviceMgrDX12->HostShaderUtil()&&!g_pShaderDeviceMgrDX12->HostShaderUtil()->OnDrawMesh(this,lists,nLists)){drawn_=true;return;}
-    if(!lists||nLists<=0)return;
-    for(int i=0;i<nLists;++i){int first=lists[i].m_FirstIndex,count=lists[i].m_NumIndices;if(first>=0&&count>0&&first<=DrawIndices().WrittenCount()&&count<=DrawIndices().WrittenCount()-first&&draw_)draw_(drawContext_,this,first,count);}drawn_=true;
-}
-void CMeshDX12::CopyToMeshBuilder(int firstVertex,int vertexCount,int firstIndex,int indexCount,int indexOffset,CMeshBuilder &builder)
-{
-    const auto &sourceVertices=DrawVertices();const auto &sourceIndices=DrawIndices();
-    if(firstVertex<0||vertexCount<0||firstIndex<0||indexCount<0||firstVertex>sourceVertices.WrittenCount()||vertexCount>sourceVertices.WrittenCount()-firstVertex||firstIndex>sourceIndices.WrittenCount()||indexCount>sourceIndices.WrittenCount()-firstIndex||
-       (vertexCount>0&&(builder.VertexSize()!=static_cast<int>(sourceVertices.Stride())||!builder.Position())))
-    {
-        Warning("ShaderAPIDX12: CopyToMeshBuilder received incompatible vertex layout or range\n");return;
-    }
-    const unsigned char *source=sourceIndices.Bytes().data()+static_cast<size_t>(firstIndex)*sourceIndices.IndexSize();
-    for(int i=0;i<indexCount;++i)
-    {
-        uint32_t index=0;
-        if(sourceIndices.IndexSize()==2){uint16_t value;std::memcpy(&value,source+static_cast<size_t>(i)*2,2);index=value;}
-        else std::memcpy(&index,source+static_cast<size_t>(i)*4,4);
-        const int64_t adjusted=static_cast<int64_t>(index)+indexOffset;
-        if(adjusted<0||adjusted>UINT16_MAX){Warning("ShaderAPIDX12: CopyToMeshBuilder index exceeds 16-bit destination\n");return;}
-    }
-    if(vertexCount){std::memcpy(const_cast<float *>(builder.Position()),sourceVertices.Bytes().data()+static_cast<size_t>(firstVertex)*sourceVertices.Stride(),static_cast<size_t>(vertexCount)*sourceVertices.Stride());builder.AdvanceVertices(vertexCount);}
-    for(int i=0;i<indexCount;++i)
-    {
-        uint32_t index=0;
-        if(sourceIndices.IndexSize()==2){uint16_t value;std::memcpy(&value,source+static_cast<size_t>(i)*2,2);index=value;}
-        else std::memcpy(&index,source+static_cast<size_t>(i)*4,4);
-        builder.Index(static_cast<unsigned short>(static_cast<int64_t>(index)+indexOffset));builder.AdvanceIndex();
-    }
+	if ( g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() && !g_pShaderDeviceMgrDX12->HostShaderUtil()->OnSetPrimitiveType( this, type ) )
+		return;
+	m_Primitive = type;
 }
 
-void CMeshDX12::Spew(int nVertexCount, int nIndexCount, const MeshDesc_t &desc)
+void CMeshDX12::SetColorMesh( IMesh *pMesh, int nOffset )
 {
-    vertices_.Spew(nVertexCount, desc);
-    indices_.Spew(nIndexCount, desc);
+	if ( g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() && !g_pShaderDeviceMgrDX12->HostShaderUtil()->OnSetColorMesh( this, pMesh, nOffset ) )
+		return;
+	m_pColorMesh = pMesh;
+	m_nColorOffset = nOffset;
 }
 
-void CMeshDX12::ValidateData(int nVertexCount, int nIndexCount, const MeshDesc_t &desc)
+void CMeshDX12::SetFlexMesh( IMesh *pMesh, int nOffset )
 {
-    vertices_.ValidateData(nVertexCount, desc);
-    indices_.ValidateData(nIndexCount, desc);
+	if ( g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() && !g_pShaderDeviceMgrDX12->HostShaderUtil()->OnSetFlexMesh( this, pMesh, nOffset ) )
+		return;
+	m_pFlexMesh = pMesh;
+	m_nFlexOffset = nOffset;
 }
 
-void CMeshDX12::LockMesh(int nVertexCount, int nIndexCount, MeshDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Draws a range of the written indices through the draw callback
+//-----------------------------------------------------------------------------
+void CMeshDX12::Draw( int nFirstIndex, int nIndexCount )
 {
-    if(nVertexCount<0||nIndexCount<-1){std::memset(&desc,0,sizeof(desc));return;}
-    const int writableVertices=vertexOverride_?0:nVertexCount;
-    const int writableIndices=indexOverride_&&nIndexCount>=0?0:nIndexCount;
-    if(!vertices_.EnsureCapacity(writableVertices)||(writableIndices>=0&&!indices_.EnsureCapacity(writableIndices))) {std::memset(&desc,0,sizeof(desc));return;}
-    const bool vertices=vertices_.IsDynamic()?vertices_.Lock(writableVertices,false,desc):vertices_.LockStatic(writableVertices,desc);
-    const bool indices=writableIndices<0||indices_.Lock(writableIndices,false,desc);
-    if(!vertices||!indices)std::memset(&desc,0,sizeof(desc));
+	if ( g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() && !g_pShaderDeviceMgrDX12->HostShaderUtil()->OnDrawMesh( this, nFirstIndex, nIndexCount ) )
+	{
+		m_bDrawn = true;
+		return;
+	}
+	if ( nFirstIndex < 0 )
+		nFirstIndex = 0;
+	if ( nIndexCount <= 0 )
+		nIndexCount = DrawIndices().WrittenCount();
+	if ( nFirstIndex > DrawIndices().WrittenCount() || nIndexCount > DrawIndices().WrittenCount() - nFirstIndex )
+		return;
+	if ( m_pfnDraw )
+		m_pfnDraw( m_pDrawContext, this, nFirstIndex, nIndexCount );
+	m_bDrawn = true;
 }
 
-void CMeshDX12::ModifyBegin(int nFirstVertex, int nVertexCount, int nFirstIndex, int nIndexCount, MeshDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Draws each valid primitive list through the draw callback
+//-----------------------------------------------------------------------------
+void CMeshDX12::Draw( CPrimList *pLists, int nLists )
 {
-    if (nFirstVertex < 0 || nVertexCount < 0 || nFirstIndex < 0 || nIndexCount < 0 ||
-        nFirstVertex > vertices_.VertexCount() || nVertexCount > vertices_.VertexCount()-nFirstVertex || nFirstIndex > indices_.IndexCount() || nIndexCount > indices_.IndexCount()-nFirstIndex)
-    {
-        std::memset(&desc, 0, sizeof(desc));
-        return;
-    }
-    if(nVertexCount>0)vertices_.MarkModified();
-    VertexLayoutDX12 layout = ComputeVertexLayoutDX12(vertices_.GetVertexFormat(),
-        vertices_.Data().empty()?nullptr:const_cast<unsigned char *>(vertices_.Data().data()) + static_cast<size_t>(nFirstVertex) * vertices_.Stride(), &desc);
-    indices_.ModifyBegin(false, nFirstIndex, nIndexCount, desc);
-    desc.m_nFirstVertex = nFirstVertex;
-    desc.VertexDesc_t::m_nOffset = static_cast<unsigned int>(static_cast<size_t>(nFirstVertex) * vertices_.Stride());
-    if (!layout.valid) std::memset(&desc, 0, sizeof(desc));
+	if ( g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() && !g_pShaderDeviceMgrDX12->HostShaderUtil()->OnDrawMesh( this, pLists, nLists ) )
+	{
+		m_bDrawn = true;
+		return;
+	}
+	if ( !pLists || nLists <= 0 )
+		return;
+	for ( int i = 0; i < nLists; ++i )
+	{
+		int nFirst = pLists[i].m_FirstIndex, nCount = pLists[i].m_NumIndices;
+		if ( nFirst >= 0 && nCount > 0 && nFirst <= DrawIndices().WrittenCount() && nCount <= DrawIndices().WrittenCount() - nFirst && m_pfnDraw )
+			m_pfnDraw( m_pDrawContext, this, nFirst, nCount );
+	}
+	m_bDrawn = true;
 }
 
-void CMeshDX12::ModifyEnd(MeshDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Copies vertices and rebased 16-bit indices into a mesh builder
+//-----------------------------------------------------------------------------
+void CMeshDX12::CopyToMeshBuilder( int nFirstVertex, int nVertexCount, int nFirstIndex, int nIndexCount, int nIndexOffset, CMeshBuilder &builder )
 {
-    indices_.ModifyEnd(desc);
+	const CVertexBufferDX12 &sourceVertices = DrawVertices();
+	const CIndexBufferDX12 &sourceIndices = DrawIndices();
+	if ( nFirstVertex < 0 || nVertexCount < 0 || nFirstIndex < 0 || nIndexCount < 0 || nFirstVertex > sourceVertices.WrittenCount() || nVertexCount > sourceVertices.WrittenCount() - nFirstVertex || nFirstIndex > sourceIndices.WrittenCount() || nIndexCount > sourceIndices.WrittenCount() - nFirstIndex ||
+	    ( nVertexCount > 0 && ( builder.VertexSize() != static_cast<int>( sourceVertices.Stride() ) || !builder.Position() ) ) )
+	{
+		Warning( "ShaderAPIDX12: CopyToMeshBuilder received incompatible vertex layout or range\n" );
+		return;
+	}
+	const unsigned char *pSource = sourceIndices.Bytes().data() + static_cast<size_t>( nFirstIndex ) * sourceIndices.IndexSize();
+	for ( int i = 0; i < nIndexCount; ++i )
+	{
+		uint32_t nIndex = 0;
+		if ( sourceIndices.IndexSize() == 2 )
+		{
+			uint16_t nValue;
+			memcpy( &nValue, pSource + static_cast<size_t>( i ) * 2, 2 );
+			nIndex = nValue;
+		}
+		else
+			memcpy( &nIndex, pSource + static_cast<size_t>( i ) * 4, 4 );
+		const int64_t nAdjusted = static_cast<int64_t>( nIndex ) + nIndexOffset;
+		if ( nAdjusted < 0 || nAdjusted > UINT16_MAX )
+		{
+			Warning( "ShaderAPIDX12: CopyToMeshBuilder index exceeds 16-bit destination\n" );
+			return;
+		}
+	}
+	if ( nVertexCount )
+	{
+		memcpy( const_cast<float *>( builder.Position() ), sourceVertices.Bytes().data() + static_cast<size_t>( nFirstVertex ) * sourceVertices.Stride(), static_cast<size_t>( nVertexCount ) * sourceVertices.Stride() );
+		builder.AdvanceVertices( nVertexCount );
+	}
+	for ( int i = 0; i < nIndexCount; ++i )
+	{
+		uint32_t nIndex = 0;
+		if ( sourceIndices.IndexSize() == 2 )
+		{
+			uint16_t nValue;
+			memcpy( &nValue, pSource + static_cast<size_t>( i ) * 2, 2 );
+			nIndex = nValue;
+		}
+		else
+			memcpy( &nIndex, pSource + static_cast<size_t>( i ) * 4, 4 );
+		builder.Index( static_cast<unsigned short>( static_cast<int64_t>( nIndex ) + nIndexOffset ) );
+		builder.AdvanceIndex();
+	}
 }
 
-void CMeshDX12::UnlockMesh(int nVertexCount, int nIndexCount, MeshDesc_t &desc)
+//-----------------------------------------------------------------------------
+// Purpose: Debug output and validation forwarded to both buffers
+//-----------------------------------------------------------------------------
+void CMeshDX12::Spew( int nVertexCount, int nIndexCount, const MeshDesc_t &desc )
 {
-    if(vertices_.IsDynamic())vertices_.Unlock(vertexOverride_?0:nVertexCount, desc);
-    else vertices_.UnlockStatic();
-    if (nIndexCount >= 0) indices_.Unlock(indexOverride_?0:nIndexCount, desc);
+	m_Vertices.Spew( nVertexCount, desc );
+	m_Indices.Spew( nIndexCount, desc );
 }
 
-void CMeshDX12::ModifyBeginEx(bool bReadOnly, int nFirstVertex, int nVertexCount, int nFirstIndex, int nIndexCount, MeshDesc_t &desc)
+void CMeshDX12::ValidateData( int nVertexCount, int nIndexCount, const MeshDesc_t &desc )
 {
-    if (bReadOnly)
-    {
-        if (nFirstVertex < 0 || nVertexCount < 0 || nFirstVertex > vertices_.VertexCount() || nVertexCount > vertices_.VertexCount()-nFirstVertex)
-        {
-            std::memset(&desc, 0, sizeof(desc));
-            return;
-        }
-        ComputeVertexLayoutDX12(vertices_.GetVertexFormat(), vertices_.Data().empty()?nullptr:const_cast<unsigned char *>(vertices_.Data().data()) + static_cast<size_t>(nFirstVertex) * vertices_.Stride(), &desc);
-        desc.m_nFirstVertex = nFirstVertex;
-        desc.VertexDesc_t::m_nOffset = static_cast<unsigned int>(static_cast<size_t>(nFirstVertex) * vertices_.Stride());
-        if (nIndexCount >= 0) indices_.ModifyBegin(true, nFirstIndex, nIndexCount, desc);
-    }
-    else
-        ModifyBegin(nFirstVertex, nVertexCount, nFirstIndex, nIndexCount, desc);
+	m_Vertices.ValidateData( nVertexCount, desc );
+	m_Indices.ValidateData( nIndexCount, desc );
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: Locks writable vertices and indices; overridden buffers lock 0
+//-----------------------------------------------------------------------------
+void CMeshDX12::LockMesh( int nVertexCount, int nIndexCount, MeshDesc_t &desc )
+{
+	if ( nVertexCount < 0 || nIndexCount < -1 )
+	{
+		memset( &desc, 0, sizeof( desc ) );
+		return;
+	}
+	const int nWritableVertices = m_pVertexOverride ? 0 : nVertexCount;
+	const int nWritableIndices = m_pIndexOverride && nIndexCount >= 0 ? 0 : nIndexCount;
+	if ( !m_Vertices.EnsureCapacity( nWritableVertices ) || ( nWritableIndices >= 0 && !m_Indices.EnsureCapacity( nWritableIndices ) ) )
+	{
+		memset( &desc, 0, sizeof( desc ) );
+		return;
+	}
+	const bool bVertices = m_Vertices.IsDynamic() ? m_Vertices.Lock( nWritableVertices, false, desc ) : m_Vertices.LockStatic( nWritableVertices, desc );
+	const bool bIndices = nWritableIndices < 0 || m_Indices.Lock( nWritableIndices, false, desc );
+	if ( !bVertices || !bIndices )
+		memset( &desc, 0, sizeof( desc ) );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Exposes existing vertex and index ranges for writing
+//-----------------------------------------------------------------------------
+void CMeshDX12::ModifyBegin( int nFirstVertex, int nVertexCount, int nFirstIndex, int nIndexCount, MeshDesc_t &desc )
+{
+	if ( nFirstVertex < 0 || nVertexCount < 0 || nFirstIndex < 0 || nIndexCount < 0 ||
+	    nFirstVertex > m_Vertices.VertexCount() || nVertexCount > m_Vertices.VertexCount() - nFirstVertex || nFirstIndex > m_Indices.IndexCount() || nIndexCount > m_Indices.IndexCount() - nFirstIndex )
+	{
+		memset( &desc, 0, sizeof( desc ) );
+		return;
+	}
+	if ( nVertexCount > 0 )
+		m_Vertices.MarkModified();
+	VertexLayoutDX12 layout = ComputeVertexLayoutDX12( m_Vertices.GetVertexFormat(),
+	    m_Vertices.Data().empty() ? nullptr : const_cast<unsigned char *>( m_Vertices.Data().data() ) + static_cast<size_t>( nFirstVertex ) * m_Vertices.Stride(), &desc );
+	m_Indices.ModifyBegin( false, nFirstIndex, nIndexCount, desc );
+	desc.m_nFirstVertex = nFirstVertex;
+	desc.VertexDesc_t::m_nOffset = static_cast<unsigned int>( static_cast<size_t>( nFirstVertex ) * m_Vertices.Stride() );
+	if ( !layout.valid )
+		memset( &desc, 0, sizeof( desc ) );
+}
+
+void CMeshDX12::ModifyEnd( MeshDesc_t &desc )
+{
+	m_Indices.ModifyEnd( desc );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Ends a LockMesh; overridden buffers do not advance
+//-----------------------------------------------------------------------------
+void CMeshDX12::UnlockMesh( int nVertexCount, int nIndexCount, MeshDesc_t &desc )
+{
+	if ( m_Vertices.IsDynamic() )
+		m_Vertices.Unlock( m_pVertexOverride ? 0 : nVertexCount, desc );
+	else
+		m_Vertices.UnlockStatic();
+	if ( nIndexCount >= 0 )
+		m_Indices.Unlock( m_pIndexOverride ? 0 : nIndexCount, desc );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Read-only modify exposes data without bumping content versions
+//-----------------------------------------------------------------------------
+void CMeshDX12::ModifyBeginEx( bool bReadOnly, int nFirstVertex, int nVertexCount, int nFirstIndex, int nIndexCount, MeshDesc_t &desc )
+{
+	if ( bReadOnly )
+	{
+		if ( nFirstVertex < 0 || nVertexCount < 0 || nFirstVertex > m_Vertices.VertexCount() || nVertexCount > m_Vertices.VertexCount() - nFirstVertex )
+		{
+			memset( &desc, 0, sizeof( desc ) );
+			return;
+		}
+		ComputeVertexLayoutDX12( m_Vertices.GetVertexFormat(), m_Vertices.Data().empty() ? nullptr : const_cast<unsigned char *>( m_Vertices.Data().data() ) + static_cast<size_t>( nFirstVertex ) * m_Vertices.Stride(), &desc );
+		desc.m_nFirstVertex = nFirstVertex;
+		desc.VertexDesc_t::m_nOffset = static_cast<unsigned int>( static_cast<size_t>( nFirstVertex ) * m_Vertices.Stride() );
+		if ( nIndexCount >= 0 )
+			m_Indices.ModifyBegin( true, nFirstIndex, nIndexCount, desc );
+	}
+	else
+		ModifyBegin( nFirstVertex, nVertexCount, nFirstIndex, nIndexCount, desc );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: CPU bytes held by the mesh's own buffers
+//-----------------------------------------------------------------------------
 unsigned CMeshDX12::ComputeMemoryUsed()
 {
-    return static_cast<unsigned>(vertices_.Data().size() + indices_.Data().size());
+	return static_cast<unsigned>( m_Vertices.Data().size() + m_Indices.Data().size() );
 }
 
 } // namespace shaderapidx12

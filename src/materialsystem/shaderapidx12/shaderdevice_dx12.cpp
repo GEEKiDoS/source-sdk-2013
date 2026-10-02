@@ -1,1163 +1,2507 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
-// Native DX12 device; display-gamma CPU curve follows shaderdevicedx8.cpp.
+//
+// Purpose: Native DX12 device; display-gamma CPU curve follows shaderdevicedx8.cpp.
+//
+//=============================================================================//
+
 #include "shaderdevice_dx12.h"
 #include "shaderapi_dx12.h"
 #include "hardwareconfig_dx12.h"
 #include "resources_dx12.h"
-#include "filesystem.h"
 #include "shader_translate_dx12.h"
-#include "tier0/dbg.h"
-#include "tier0/platform.h"
-#include "tier1/tier1.h"
 #include "tracy_dx12.h"
-#include "tier2/tier2.h"
-#include "tier1/convar.h"
+#include "filesystem.h"
 #include "icvar.h"
-#include <d3dcompiler.h>
-#include <algorithm>
-#include <cstring>
-#include <windows.h>
-#include "tier0/icommandline.h"
-#include <d3d12sdklayers.h>
 #include "shaderapi/ishaderutil.h"
-#include <climits>
-#include <cmath>
-#include <atomic>
+#include "tier0/dbg.h"
+#include "tier0/icommandline.h"
+#include "tier0/platform.h"
+#include "tier1/convar.h"
+#include "tier1/strtools.h"
+#include "tier1/tier1.h"
+#include "tier1/utlstring.h"
+#include "tier2/tier2.h"
+#include <windows.h>
+#include <d3dcompiler.h>
+#include <d3d12sdklayers.h>
+#include <math.h>
 
 namespace shaderapidx12
 {
-static bool LoadDxbcSigner(HMODULE &module,SignDxbcFnDX12 &signer)
+//-----------------------------------------------------------------------------
+// Purpose: Loads dxbcSigner.dll from the renderer's directory and resolves SignDxbc
+//-----------------------------------------------------------------------------
+static bool LoadDxbcSigner( HMODULE &hModule, SignDxbcFnDX12 &pfnSigner )
 {
- char path[MAX_PATH]{};HMODULE self=nullptr;GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCSTR>(&LoadDxbcSigner),&self);if(!self||!GetModuleFileNameA(self,path,sizeof(path)))return false;char *slash=strrchr(path,'\\');if(!slash)slash= strrchr(path,'/');if(slash)slash[1]=0;std::string full=std::string(path)+"dxbcSigner.dll";module=LoadLibraryExA(full.c_str(),nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);if(!module)return false;signer=reinterpret_cast<SignDxbcFnDX12>(GetProcAddress(module,"SignDxbc"));if(!signer){FreeLibrary(module);module=nullptr;return false;}return true;
+	char szPath[MAX_PATH]{};
+	HMODULE hSelf = nullptr;
+	GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCSTR>( &LoadDxbcSigner ), &hSelf );
+	if ( !hSelf || !GetModuleFileNameA( hSelf, szPath, sizeof( szPath ) ) )
+		return false;
+	char *pszSlash = strrchr( szPath, '\\' );
+	if ( !pszSlash )
+		pszSlash = strrchr( szPath, '/' );
+	if ( pszSlash )
+		pszSlash[1] = 0;
+	CUtlString full( szPath );
+	full += "dxbcSigner.dll";
+	hModule = LoadLibraryExA( full.Get(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH );
+	if ( !hModule )
+		return false;
+	pfnSigner = reinterpret_cast<SignDxbcFnDX12>( GetProcAddress( hModule, "SignDxbc" ) );
+	if ( !pfnSigner )
+	{
+		FreeLibrary( hModule );
+		hModule = nullptr;
+		return false;
+	}
+	return true;
 }
- 
+
 CShaderDeviceMgrDX12 *g_pShaderDeviceMgrDX12 = nullptr;
 CShaderDeviceDX12 *g_pShaderDeviceDX12 = nullptr;
-std::atomic<bool> g_tracyZonesActiveDX12{false};
+CInterlockedInt g_bTracyZonesActiveDX12;
+
+//-----------------------------------------------------------------------------
+// Purpose: Recomputes g_bTracyZonesActiveDX12 (once per presented frame)
+//-----------------------------------------------------------------------------
 void RefreshTracyZonesDX12()
 {
 #ifdef TRACY_ENABLE
-    // -dx12nozones keeps Tracy sampling/frames while disabling renderer zones, so sampled
-    // captures measure the disconnected hot path rather than instrumentation cost.
-    static const bool zonesDisabled = CommandLine() && CommandLine()->CheckParm("-dx12nozones");
-    g_tracyZonesActiveDX12.store(!zonesDisabled && TracyIsStarted && tracy::GetProfiler().IsConnected(), std::memory_order_relaxed);
+	// -dx12nozones keeps Tracy sampling/frames while disabling renderer zones, so sampled
+	// captures measure the disconnected hot path rather than instrumentation cost.
+	static const bool s_bZonesDisabled = CommandLine() && CommandLine()->CheckParm( "-dx12nozones" );
+	g_bTracyZonesActiveDX12 = ( !s_bZonesDisabled && TracyIsStarted && tracy::GetProfiler().IsConnected() ) ? 1 : 0;
 #endif
 }
 
 CShaderDeviceDX12::CShaderDeviceDX12() = default;
-CShaderDeviceDX12::~CShaderDeviceDX12() { ShutdownDevice(); }
 
-void CShaderDeviceDX12::FailDevice(const char *operation, HRESULT hr)
+CShaderDeviceDX12::~CShaderDeviceDX12()
 {
-    if (failed_) return;
-    failed_ = true;
-    const HRESULT reason = device_ ? device_->GetDeviceRemovedReason() : S_OK;
-    Warning("ShaderAPIDX12: %s failed (0x%08x), device removal reason 0x%08x\n", operation, static_cast<unsigned>(hr), static_cast<unsigned>(reason));
-    Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
-    if (device_ && SUCCEEDED(device_.As(&dred)))
-    {
-        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
-        D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
-        if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs)) && breadcrumbs.pHeadAutoBreadcrumbNode)
-            Warning("ShaderAPIDX12: DRED breadcrumbs available at %p\n", breadcrumbs.pHeadAutoBreadcrumbNode);
-        if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&fault)) && fault.PageFaultVA)
-            Warning("ShaderAPIDX12: DRED page fault GPU VA 0x%llx\n", static_cast<unsigned long long>(fault.PageFaultVA));
-    }
-    Error("ShaderAPIDX12: native D3D12 rendering stopped at %s (0x%08x), removal 0x%08x\n", operation, static_cast<unsigned>(hr), static_cast<unsigned>(reason));
+	ShutdownDevice();
+	for ( int i = 0; i < ARRAYSIZE( m_pDynamicVertices ); ++i )
+		delete m_pDynamicVertices[i];
+	for ( int i = 0; i < ARRAYSIZE( m_pDynamicIndices ); ++i )
+		delete m_pDynamicIndices[i];
 }
 
-bool CShaderDeviceDX12::CheckDevice(const char *operation, HRESULT hr)
+//-----------------------------------------------------------------------------
+// Purpose: Marks the device failed, logs DRED data and stops with a fatal error
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::FailDevice( const char *pszOperation, HRESULT hr )
 {
-    if (SUCCEEDED(hr)) return true;
-    FailDevice(operation, hr);
-    return false;
+	if ( m_bFailed )
+		return;
+	m_bFailed = true;
+	const HRESULT reason = m_pDevice ? m_pDevice->GetDeviceRemovedReason() : S_OK;
+	Warning( "ShaderAPIDX12: %s failed (0x%08x), device removal reason 0x%08x\n", pszOperation, static_cast<unsigned>( hr ), static_cast<unsigned>( reason ) );
+	Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+	if ( m_pDevice && SUCCEEDED( m_pDevice.As( &dred ) ) )
+	{
+		D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
+		D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
+		if ( SUCCEEDED( dred->GetAutoBreadcrumbsOutput( &breadcrumbs ) ) && breadcrumbs.pHeadAutoBreadcrumbNode )
+			Warning( "ShaderAPIDX12: DRED breadcrumbs available at %p\n", breadcrumbs.pHeadAutoBreadcrumbNode );
+		if ( SUCCEEDED( dred->GetPageFaultAllocationOutput( &fault ) ) && fault.PageFaultVA )
+			Warning( "ShaderAPIDX12: DRED page fault GPU VA 0x%llx\n", static_cast<unsigned long long>( fault.PageFaultVA ) );
+	}
+	Error( "ShaderAPIDX12: native D3D12 rendering stopped at %s (0x%08x), removal 0x%08x\n", pszOperation, static_cast<unsigned>( hr ), static_cast<unsigned>( reason ) );
 }
 
-bool CShaderDeviceDX12::Initialize(void *hwnd, int adapter, const ShaderDeviceInfo_t &info, IDXGIAdapter1 *selectedAdapter)
+//-----------------------------------------------------------------------------
+// Purpose: Returns true when hr succeeded, otherwise fails the device
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::CheckDevice( const char *pszOperation, HRESULT hr )
 {
-    ShutdownDevice();
-    if (!hwnd || !IsWindow(static_cast<HWND>(hwnd)) || !selectedAdapter) { Warning("ShaderAPIDX12: valid HWND and adapter required\n"); return false; }
-    const bool debug = CommandLine() && CommandLine()->CheckParm("-dx12debug");
-    const bool gbv = CommandLine() && CommandLine()->CheckParm("-dx12gpuvalidation");
-    if (debug || gbv)
-    {
-        Microsoft::WRL::ComPtr<ID3D12Debug> controller;
-        const HRESULT hr = D3D12GetDebugInterface(IID_PPV_ARGS(&controller));
-        if (FAILED(hr)) { Warning("ShaderAPIDX12: requested DX12 debug layer unavailable (0x%08x); install Graphics Tools\n", static_cast<unsigned>(hr)); return false; }
-        controller->EnableDebugLayer();
-        if (gbv) { Microsoft::WRL::ComPtr<ID3D12Debug1> validation; if (FAILED(controller.As(&validation))) { Warning("ShaderAPIDX12: GPU validation interface unavailable\n"); return false; } validation->SetEnableGPUBasedValidation(TRUE); }
-    }
-    HRESULT hr = CreateDXGIFactory2((debug || gbv) ? DXGI_CREATE_FACTORY_DEBUG : 0, IID_PPV_ARGS(&factory_));
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateDXGIFactory2 failed (0x%08x)\n", static_cast<unsigned>(hr)); ShutdownDevice(); return false; }
-    hr = D3D12CreateDevice(selectedAdapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: D3D12CreateDevice failed (0x%08x)\n", static_cast<unsigned>(hr)); ShutdownDevice(); return false; }
-    if ((debug || gbv) && SUCCEEDED(device_.As(&infoQueue_))) infoQueue_->SetMuteDebugOutput(FALSE);
-    if (!LoadDxbcSigner(signerModule_, signer_)) { Warning("ShaderAPIDX12: required dxbcSigner.dll/SignDxbc missing beside renderer\n"); ShutdownDevice(); return false; }
-    char rendererPath[MAX_PATH]{};HMODULE rendererModule=nullptr;GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCSTR>(&LoadDxbcSigner),&rendererModule);if(!rendererModule||!GetModuleFileNameA(rendererModule,rendererPath,sizeof(rendererPath))){Warning("ShaderAPIDX12: unable to locate renderer module while checking stdshader_dx12.dll\n");ShutdownDevice();return false;}char *rendererSlash=strrchr(rendererPath,'\\');if(!rendererSlash)rendererSlash=strrchr(rendererPath,'/');if(rendererSlash)rendererSlash[1]=0;const std::string nativeShaderDll=std::string(rendererPath)+"stdshader_dx12.dll";if(GetFileAttributesA(nativeShaderDll.c_str())==INVALID_FILE_ATTRIBUTES){Warning("ShaderAPIDX12: required stdshader_dx12.dll missing beside renderer: %s\n",nativeShaderDll.c_str());ShutdownDevice();return false;}
-    D3D12_COMMAND_QUEUE_DESC queueDesc{}; queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    hr = device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue_));
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateCommandQueue failed (0x%08x)\n", static_cast<unsigned>(hr)); ShutdownDevice(); return false; }
-    adapterIndex_ = adapter; window_ = hwnd; ownerThread_ = GetCurrentThreadId();
-    waitForVsync_ = info.m_bWaitForVSync; windowed_ = info.m_bWindowed;
-    backBufferCount_ = std::clamp(info.m_nBackBufferCount, 1, 2) + 1;
-    sampleCount_ = std::max(1, info.m_nAASamples); sampleQuality_ = info.m_nAAQuality;
-    if (!SupportsMSAA(sampleCount_, sampleQuality_)) { Warning("ShaderAPIDX12: unsupported MSAA count %d quality %d\n", sampleCount_, sampleQuality_); ShutdownDevice(); return false; }
-    Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
-    BOOL supported = FALSE;
-    if (SUCCEEDED(factory_.As(&factory5))) factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &supported, sizeof(supported));
-    allowTearing_ = supported != FALSE;
-    rtvStride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    dsvStride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-    RECT rect{}; GetClientRect(static_cast<HWND>(hwnd), &rect);
-    const int w = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : static_cast<int>(rect.right-rect.left);
-    const int h = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : static_cast<int>(rect.bottom-rect.top);
-    if (!CreateFrameObjects() || !AddView(hwnd)) { ShutdownDevice(); return false; }
-    if (w > 0 && h > 0 && (w != width_ || h != height_) && !ResizeView(*currentView_, w, h)) { ShutdownDevice(); return false; }
-    width_ = currentView_->width; height_ = currentView_->height;
-    g_pShaderDeviceDX12 = this;
-    StartSubmitThread();
-    return true;
+	if ( SUCCEEDED( hr ) )
+		return true;
+	FailDevice( pszOperation, hr );
+	return false;
 }
 
-bool CShaderDeviceDX12::SupportsMSAAFormat(DXGI_FORMAT format, int count, int quality) const
+//-----------------------------------------------------------------------------
+// Purpose: Creates the device, queue, frame objects and the primary view on hWnd
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::Initialize( void *hWnd, int nAdapter, const ShaderDeviceInfo_t &info, IDXGIAdapter1 *pSelectedAdapter )
 {
-    if (!device_ || count < 1 || quality < 0) return false;
-    if (count == 1) return quality == 0;
-    D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS levels{format, static_cast<UINT>(count), D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE, 0};
-    return SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &levels, sizeof(levels))) && static_cast<UINT>(quality) < levels.NumQualityLevels;
+	ShutdownDevice();
+	if ( !hWnd || !IsWindow( static_cast<HWND>( hWnd ) ) || !pSelectedAdapter )
+	{
+		Warning( "ShaderAPIDX12: valid HWND and adapter required\n" );
+		return false;
+	}
+	const bool bDebug = CommandLine() && CommandLine()->CheckParm( "-dx12debug" );
+	const bool bGpuValidation = CommandLine() && CommandLine()->CheckParm( "-dx12gpuvalidation" );
+	if ( bDebug || bGpuValidation )
+	{
+		Microsoft::WRL::ComPtr<ID3D12Debug> controller;
+		const HRESULT hr = D3D12GetDebugInterface( IID_PPV_ARGS( &controller ) );
+		if ( FAILED( hr ) )
+		{
+			Warning( "ShaderAPIDX12: requested DX12 debug layer unavailable (0x%08x); install Graphics Tools\n", static_cast<unsigned>( hr ) );
+			return false;
+		}
+		controller->EnableDebugLayer();
+		if ( bGpuValidation )
+		{
+			Microsoft::WRL::ComPtr<ID3D12Debug1> validation;
+			if ( FAILED( controller.As( &validation ) ) )
+			{
+				Warning( "ShaderAPIDX12: GPU validation interface unavailable\n" );
+				return false;
+			}
+			validation->SetEnableGPUBasedValidation( TRUE );
+		}
+	}
+	HRESULT hr = CreateDXGIFactory2( ( bDebug || bGpuValidation ) ? DXGI_CREATE_FACTORY_DEBUG : 0, IID_PPV_ARGS( &m_pFactory ) );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: CreateDXGIFactory2 failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		ShutdownDevice();
+		return false;
+	}
+	hr = D3D12CreateDevice( pSelectedAdapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS( &m_pDevice ) );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: D3D12CreateDevice failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		ShutdownDevice();
+		return false;
+	}
+	if ( ( bDebug || bGpuValidation ) && SUCCEEDED( m_pDevice.As( &m_pInfoQueue ) ) )
+		m_pInfoQueue->SetMuteDebugOutput( FALSE );
+	if ( !LoadDxbcSigner( m_hSignerModule, m_pfnSigner ) )
+	{
+		Warning( "ShaderAPIDX12: required dxbcSigner.dll/SignDxbc missing beside renderer\n" );
+		ShutdownDevice();
+		return false;
+	}
+	char szRendererPath[MAX_PATH]{};
+	HMODULE hRendererModule = nullptr;
+	GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCSTR>( &LoadDxbcSigner ), &hRendererModule );
+	if ( !hRendererModule || !GetModuleFileNameA( hRendererModule, szRendererPath, sizeof( szRendererPath ) ) )
+	{
+		Warning( "ShaderAPIDX12: unable to locate renderer module while checking stdshader_dx12.dll\n" );
+		ShutdownDevice();
+		return false;
+	}
+	char *pszRendererSlash = strrchr( szRendererPath, '\\' );
+	if ( !pszRendererSlash )
+		pszRendererSlash = strrchr( szRendererPath, '/' );
+	if ( pszRendererSlash )
+		pszRendererSlash[1] = 0;
+	CUtlString nativeShaderDll( szRendererPath );
+	nativeShaderDll += "stdshader_dx12.dll";
+	if ( GetFileAttributesA( nativeShaderDll.Get() ) == INVALID_FILE_ATTRIBUTES )
+	{
+		Warning( "ShaderAPIDX12: required stdshader_dx12.dll missing beside renderer: %s\n", nativeShaderDll.Get() );
+		ShutdownDevice();
+		return false;
+	}
+	D3D12_COMMAND_QUEUE_DESC queueDesc{};
+	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+	hr = m_pDevice->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( &m_pQueue ) );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: CreateCommandQueue failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		ShutdownDevice();
+		return false;
+	}
+	m_nAdapterIndex = nAdapter;
+	m_pWindow = hWnd;
+	m_nOwnerThread = GetCurrentThreadId();
+	m_bWaitForVsync = info.m_bWaitForVSync;
+	m_bWindowed = info.m_bWindowed;
+	m_nBackBufferCount = clamp( info.m_nBackBufferCount, 1, 2 ) + 1;
+	m_nSampleCount = MAX( 1, info.m_nAASamples );
+	m_nSampleQuality = info.m_nAAQuality;
+	if ( !SupportsMSAA( m_nSampleCount, m_nSampleQuality ) )
+	{
+		Warning( "ShaderAPIDX12: unsupported MSAA count %d quality %d\n", m_nSampleCount, m_nSampleQuality );
+		ShutdownDevice();
+		return false;
+	}
+	Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
+	BOOL bSupported = FALSE;
+	if ( SUCCEEDED( m_pFactory.As( &factory5 ) ) )
+		factory5->CheckFeatureSupport( DXGI_FEATURE_PRESENT_ALLOW_TEARING, &bSupported, sizeof( bSupported ) );
+	m_bAllowTearing = bSupported != FALSE;
+	m_nRtvStride = m_pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
+	m_nDsvStride = m_pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+	RECT rect{};
+	GetClientRect( static_cast<HWND>( hWnd ), &rect );
+	const int nWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : static_cast<int>( rect.right - rect.left );
+	const int nHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : static_cast<int>( rect.bottom - rect.top );
+	if ( !CreateFrameObjects() || !AddView( hWnd ) )
+	{
+		ShutdownDevice();
+		return false;
+	}
+	if ( nWidth > 0 && nHeight > 0 && ( nWidth != m_nWidth || nHeight != m_nHeight ) && !ResizeView( *m_pCurrentView, nWidth, nHeight ) )
+	{
+		ShutdownDevice();
+		return false;
+	}
+	m_nWidth = m_pCurrentView->width;
+	m_nHeight = m_pCurrentView->height;
+	g_pShaderDeviceDX12 = this;
+	StartSubmitThread();
+	return true;
 }
 
-bool CShaderDeviceDX12::SupportsMSAA(int count, int quality) const
+//-----------------------------------------------------------------------------
+// Purpose: MSAA support queries for one format / for both scene formats
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::SupportsMSAAFormat( DXGI_FORMAT format, int nCount, int nQuality ) const
 {
-    return SupportsMSAAFormat(SceneColorFormat(), count, quality) && SupportsMSAAFormat(SceneDepthFormat(), count, quality);
+	if ( !m_pDevice || nCount < 1 || nQuality < 0 )
+		return false;
+	if ( nCount == 1 )
+		return nQuality == 0;
+	D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS levels{ format, static_cast<UINT>( nCount ), D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE, 0 };
+	return SUCCEEDED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &levels, sizeof( levels ) ) ) && static_cast<UINT>( nQuality ) < levels.NumQualityLevels;
 }
 
+bool CShaderDeviceDX12::SupportsMSAA( int nCount, int nQuality ) const
+{
+	return SupportsMSAAFormat( SceneColorFormat(), nCount, nQuality ) && SupportsMSAAFormat( SceneDepthFormat(), nCount, nQuality );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Recorder chunk callbacks; pContext is the owning device
+//-----------------------------------------------------------------------------
+unsigned char *CShaderDeviceDX12::AcquireRecorderChunk( void *pContext )
+{
+	return static_cast<CShaderDeviceDX12 *>( pContext )->AcquireCommandChunk();
+}
+
+void CShaderDeviceDX12::FlushRecorderChunk( void *pContext, unsigned char *pChunk, size_t nBytes )
+{
+	static_cast<CShaderDeviceDX12 *>( pContext )->FlushCommandChunk( pChunk, nBytes );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Creates per-frame allocators/lists, the fence and its event
+//-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::CreateFrameObjects()
 {
-    for (auto &frame : frames_) if (FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&frame.allocator)))) { Warning("ShaderAPIDX12: CreateCommandAllocator failed\n"); return false; }
-    // One list per frame context: the submission worker may still be closing/executing the previous list.
-    for (size_t i = 0; i < frames_.size(); ++i)
-    {
-        HRESULT hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, frames_[i].allocator.Get(), nullptr, IID_PPV_ARGS(&frames_[i].list));
-        if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateCommandList failed (0x%08x)\n", static_cast<unsigned>(hr)); return false; }
-        if (i != 0 && FAILED(frames_[i].list->Close())) return false;
-    }
-    frameIndex_ = 0;
-    recording_ = true;
-    recorder_.acquireChunk=[this]{return AcquireCommandChunk();};
-    recorder_.flushChunk=[this](unsigned char *chunk,size_t bytes){FlushCommandChunk(chunk,bytes);};
-    HRESULT hr;
-    hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateFence failed (0x%08x)\n", static_cast<unsigned>(hr)); return false; }
-    fenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    return fenceEvent_ != nullptr;
+	for ( int i = 0; i < ARRAYSIZE( m_Frames ); ++i )
+		if ( FAILED( m_pDevice->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( &m_Frames[i].allocator ) ) ) )
+		{
+			Warning( "ShaderAPIDX12: CreateCommandAllocator failed\n" );
+			return false;
+		}
+	// One list per frame context: the submission worker may still be closing/executing the previous list.
+	for ( int i = 0; i < ARRAYSIZE( m_Frames ); ++i )
+	{
+		HRESULT hr = m_pDevice->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_Frames[i].allocator.Get(), nullptr, IID_PPV_ARGS( &m_Frames[i].list ) );
+		if ( FAILED( hr ) )
+		{
+			Warning( "ShaderAPIDX12: CreateCommandList failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+			return false;
+		}
+		if ( i != 0 && FAILED( m_Frames[i].list->Close() ) )
+			return false;
+	}
+	m_nFrameIndex = 0;
+	m_bRecording = true;
+	m_Recorder.m_pfnAcquireChunk = AcquireRecorderChunk;
+	m_Recorder.m_pfnFlushChunk = FlushRecorderChunk;
+	m_Recorder.m_pChunkContext = this;
+	HRESULT hr = m_pDevice->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( &m_pFence ) );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: CreateFence failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		return false;
+	}
+	m_hFenceEvent = CreateEventW( nullptr, FALSE, FALSE, nullptr );
+	return m_hFenceEvent != nullptr;
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: Advances to the next frame context once its fence completed and resets its list
+//-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::BeginRecording()
 {
-    ZoneNamedN(___tracy_scoped_zone, "DX12 BeginRecording", DX12_ZONES_ACTIVE);
-    frameIndex_ = (frameIndex_ + 1) % frames_.size();
-    FrameContext &frame = frames_[frameIndex_];
-    {
-        ZoneNamedN(___tracy_scoped_zone, "DX12 BeginRecording Fence Wait", DX12_ZONES_ACTIVE);
-        if (frame.fence && !WaitForFence(frame.fence)) return false;
-    }
-    {
-        ZoneNamedN(___tracy_scoped_zone, "DX12 BeginRecording Retained Release", DX12_ZONES_ACTIVE);
-        for (int i = 0; i < frame.retained.Count(); ++i) frame.retained[i]->Release();
-        frame.retained.RemoveAll();
-        frame.fence = 0;
-    }
-    {
-        // The allocator's previous list completed on the GPU (fence above); reset runs in submission order.
-        SubmitOpDX12 op{};op.kind=SubmitOpDX12::Reset;op.list=frame.list.Get();op.allocator=frame.allocator.Get();
-        EnqueueSubmission(op);
-        if (failed_) return false;
-    }
-    recording_ = true;
-    return true;
-}
-void CShaderDeviceDX12::RetainResource(ID3D12Resource *resource)
-{
-    if (resource && recording_ && IsRecordingOwner())
-    {
-        resource->AddRef();
-        frames_[frameIndex_].retained.AddToTail(resource);
-    }
-}
-void CShaderDeviceDX12::QueueTextureDeletion(uintptr_t handle)
-{
-    if (!handle) return;
-    AUTO_LOCK(textureDeletionMutex_);
-    pendingTextureDeletions_.AddToTail(handle);
-    pendingTextureDeletionCount_.store(pendingTextureDeletions_.Count(), std::memory_order_relaxed);
-}
-void CShaderDeviceDX12::TakeTextureDeletionRequests(CUtlVector<uintptr_t> &handles)
-{
-    handles.RemoveAll();
-    AUTO_LOCK(textureDeletionMutex_);
-    handles.Swap(pendingTextureDeletions_);
-    pendingTextureDeletionCount_.store(0, std::memory_order_relaxed);
+	ZoneNamedN( ___tracy_scoped_zone, "DX12 BeginRecording", DX12_ZONES_ACTIVE );
+	m_nFrameIndex = ( m_nFrameIndex + 1 ) % ARRAYSIZE( m_Frames );
+	FrameContext &frame = m_Frames[m_nFrameIndex];
+	{
+		ZoneNamedN( ___tracy_scoped_zone, "DX12 BeginRecording Fence Wait", DX12_ZONES_ACTIVE );
+		if ( frame.fence && !WaitForFence( frame.fence ) )
+			return false;
+	}
+	{
+		ZoneNamedN( ___tracy_scoped_zone, "DX12 BeginRecording Retained Release", DX12_ZONES_ACTIVE );
+		for ( int i = 0; i < frame.retained.Count(); ++i )
+			frame.retained[i]->Release();
+		frame.retained.RemoveAll();
+		frame.fence = 0;
+	}
+	{
+		// The allocator's previous list completed on the GPU (fence above); reset runs in submission order.
+		SubmitOpDX12 op{};
+		op.kind = SubmitOpDX12::Reset;
+		op.list = frame.list.Get();
+		op.allocator = frame.allocator.Get();
+		EnqueueSubmission( op );
+		if ( m_bFailed )
+			return false;
+	}
+	m_bRecording = true;
+	return true;
 }
 
-uint64_t CShaderDeviceDX12::Submit(bool wait)
+//-----------------------------------------------------------------------------
+// Purpose: Keeps pResource alive until the current recording's fence completes
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::RetainResource( ID3D12Resource *pResource )
 {
-    ZoneNamedN(___tracy_scoped_zone, "DX12 Submit", DX12_ZONES_ACTIVE);
-    if (!recording_ || !IsRecordingOwner() || !queue_ || !fence_ || failed_) { Warning("ShaderAPIDX12: Submit rejected (wrong owner or no recording)\n"); return 0; }
-    const bool timing = GpuTimingBeforeSubmit();
-    FrameContext &frame = frames_[frameIndex_];
-    const uint64_t value = fenceValue_ + 1;
-    // Recorded commands replay, then Close/ExecuteCommandLists/Signal run, in FIFO order (inline without a worker).
-    recorder_.Flush();
-    SubmitOpDX12 op{};op.kind=SubmitOpDX12::Execute;op.list=frame.list.Get();op.value=value;
-    EnqueueSubmission(op);
-    if (failed_) return 0;
-    recording_ = false;
-    fenceValue_ = value;
-    frame.fence = value;
-    if (currentView_) currentView_->lastFence = value;
-    if (wait)
-    {
-        ZoneNamedN(___tracy_scoped_zone, "DX12 Submit Wait", DX12_ZONES_ACTIVE);
-        if (!WaitForFence(value)) return 0;
-    }
-    ReportDebugMessages();
-    if (!BeginRecording()) return 0;
-    if (timing) GpuTimingAfterSubmit();
-    return value;
+	if ( pResource && m_bRecording && IsRecordingOwner() )
+	{
+		pResource->AddRef();
+		m_Frames[m_nFrameIndex].retained.AddToTail( pResource );
+	}
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Thread-safe texture deletion queue drained by the recording owner
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::QueueTextureDeletion( uintptr_t hTexture )
+{
+	if ( !hTexture )
+		return;
+	AUTO_LOCK( m_TextureDeletionMutex );
+	m_PendingTextureDeletions.AddToTail( hTexture );
+	m_nPendingTextureDeletionCount = m_PendingTextureDeletions.Count();
+}
+
+void CShaderDeviceDX12::TakeTextureDeletionRequests( CUtlVector<uintptr_t> &handles )
+{
+	handles.RemoveAll();
+	AUTO_LOCK( m_TextureDeletionMutex );
+	handles.Swap( m_PendingTextureDeletions );
+	m_nPendingTextureDeletionCount = 0;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Replays the recording, executes and signals the current list, then starts the next recording.
+//          Returns the submitted fence value, or 0 on failure.
+//-----------------------------------------------------------------------------
+uint64_t CShaderDeviceDX12::Submit( bool bWait )
+{
+	ZoneNamedN( ___tracy_scoped_zone, "DX12 Submit", DX12_ZONES_ACTIVE );
+	if ( !m_bRecording || !IsRecordingOwner() || m_bFailed )
+	{
+		Warning( "ShaderAPIDX12: Submit rejected (wrong owner or no recording)\n" );
+		return 0;
+	}
+	const bool bTiming = GpuTimingBeforeSubmit();
+	FrameContext &frame = m_Frames[m_nFrameIndex];
+	const uint64_t nValue = m_nFenceValue + 1;
+	// Recorded commands replay, then Close/ExecuteCommandLists/Signal run, in FIFO order (inline without a worker).
+	m_Recorder.Flush();
+	SubmitOpDX12 op{};
+	op.kind = SubmitOpDX12::Execute;
+	op.list = frame.list.Get();
+	op.value = nValue;
+	EnqueueSubmission( op );
+	if ( m_bFailed )
+		return 0;
+	m_bRecording = false;
+	m_nFenceValue = nValue;
+	frame.fence = nValue;
+	if ( m_pCurrentView )
+		m_pCurrentView->lastFence = nValue;
+	if ( bWait )
+	{
+		ZoneNamedN( ___tracy_scoped_zone, "DX12 Submit Wait", DX12_ZONES_ACTIVE );
+		if ( !WaitForFence( nValue ) )
+			return 0;
+	}
+	ReportDebugMessages();
+	if ( !BeginRecording() )
+		return 0;
+	if ( bTiming )
+		GpuTimingAfterSubmit();
+	return nValue;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Frame-paced submit: waits for the previous frame's fence, then submits without waiting
+//-----------------------------------------------------------------------------
 uint64_t CShaderDeviceDX12::SubmitFrameSync()
 {
-    if (!CommandList()) return 0;
-    // Reference DX9 waits for the previous sync query, then issues this frame's query.
-    // Current-frame completion remains mandatory in readback/resource lifecycle paths.
-    {
-        ZoneNamedN(___tracy_scoped_zone, "DX12 PreviousFrameWait", DX12_ZONES_ACTIVE);
-        if (!WaitForFence(frameSyncFence_)) return 0;
-    }
-    const uint64_t value = Submit(false);
-    if (value) frameSyncFence_ = value;
-    return value;
+	if ( !CommandList() )
+		return 0;
+	// Reference DX9 waits for the previous sync query, then issues this frame's query.
+	// Current-frame completion remains mandatory in readback/resource lifecycle paths.
+	{
+		ZoneNamedN( ___tracy_scoped_zone, "DX12 PreviousFrameWait", DX12_ZONES_ACTIVE );
+		if ( !WaitForFence( m_nFrameSyncFence ) )
+			return 0;
+	}
+	const uint64_t nValue = Submit( false );
+	if ( nValue )
+		m_nFrameSyncFence = nValue;
+	return nValue;
 }
 
-
+//-----------------------------------------------------------------------------
+// Purpose: Forwards stored debug-layer corruption/error messages as warnings
+//-----------------------------------------------------------------------------
 void CShaderDeviceDX12::ReportDebugMessages()
 {
-    if (!infoQueue_) return;
-    const UINT64 count = infoQueue_->GetNumStoredMessages();
-    for (UINT64 i = 0; i < count; ++i)
-    {
-        SIZE_T bytes = 0;
-        if (FAILED(infoQueue_->GetMessage(i, nullptr, &bytes)) || !bytes) continue;
-        std::vector<unsigned char> storage(bytes);
-        auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
-        if (FAILED(infoQueue_->GetMessage(i, message, &bytes))) continue;
-        if (message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR)
-            Warning("ShaderAPIDX12 debug layer %s %d: %s\n", message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ? "CORRUPTION" : "ERROR", static_cast<int>(message->ID), message->pDescription);
-    }
-    infoQueue_->ClearStoredMessages();
+	if ( !m_pInfoQueue )
+		return;
+	const UINT64 nCount = m_pInfoQueue->GetNumStoredMessages();
+	CUtlVector<unsigned char> storage;
+	for ( UINT64 i = 0; i < nCount; ++i )
+	{
+		SIZE_T nBytes = 0;
+		if ( FAILED( m_pInfoQueue->GetMessage( i, nullptr, &nBytes ) ) || !nBytes )
+			continue;
+		storage.SetCount( static_cast<int>( nBytes ) );
+		D3D12_MESSAGE *pMessage = reinterpret_cast<D3D12_MESSAGE *>( storage.Base() );
+		if ( FAILED( m_pInfoQueue->GetMessage( i, pMessage, &nBytes ) ) )
+			continue;
+		if ( pMessage->Severity <= D3D12_MESSAGE_SEVERITY_ERROR )
+			Warning( "ShaderAPIDX12 debug layer %s %d: %s\n", pMessage->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ? "CORRUPTION" : "ERROR", static_cast<int>( pMessage->ID ), pMessage->pDescription );
+	}
+	m_pInfoQueue->ClearStoredMessages();
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Owner-thread GPU-idle boundary (see header)
+//-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::SubmitAndWaitForGpu()
 {
-    if (failed_ || !IsRecordingOwner()) return false;
-    if (recording_) return Submit(true) != 0;
-    FlushSubmissions();
-    return WaitForFence(fenceValue_);
-}
-bool CShaderDeviceDX12::WaitForFence(uint64_t value)
-{
-    if (!value || !fence_) return true;
-    const uint64_t initial = fence_->GetCompletedValue();
-    if (initial == UINT64_MAX) { FailDevice("fence device removal", device_ ? device_->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED); return false; }
-    if (initial >= value) return true;
-    if (!CheckDevice("fence SetEventOnCompletion", fence_->SetEventOnCompletion(value, fenceEvent_))) return false;
-    while (fence_->GetCompletedValue() < value)
-    {
-        const DWORD result = WaitForSingleObject(fenceEvent_, 5000);
-        if (result == WAIT_OBJECT_0) continue;
-        const HRESULT reason = device_ ? device_->GetDeviceRemovedReason() : E_FAIL;
-        FailDevice(result == WAIT_TIMEOUT ? "fence wait timed out" : "fence wait failed", FAILED(reason) ? reason : HRESULT_FROM_WIN32(ERROR_TIMEOUT));
-        return false;
-    }
-    const uint64_t completed=fence_->GetCompletedValue();if(completed==UINT64_MAX){const HRESULT reason=device_?device_->GetDeviceRemovedReason():DXGI_ERROR_DEVICE_REMOVED;FailDevice("fence device removal",reason);return false;}
-    return fence_->GetCompletedValue() >= value;
+	if ( m_bFailed || !IsRecordingOwner() )
+		return false;
+	if ( m_bRecording )
+		return Submit( true ) != 0;
+	FlushSubmissions();
+	return WaitForFence( m_nFenceValue );
 }
 
-
-CShaderDeviceDX12::View *CShaderDeviceDX12::CurrentView() const { return currentView_; }
-ID3D12Resource *CShaderDeviceDX12::SceneColor() const { return currentView_ ? currentView_->sceneColor.Get() : nullptr; }
-ID3D12Resource *CShaderDeviceDX12::SceneDepth() const { return currentView_ ? currentView_->sceneDepth.Get() : nullptr; }
-D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneRTV(bool srgb) const { auto handle=currentView_ && currentView_->sceneRTVHeap ? currentView_->sceneRTVStart : D3D12_CPU_DESCRIPTOR_HANDLE{};if(srgb&&handle.ptr)handle.ptr+=rtvStride_;return handle; }
-D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneDSV() const { return currentView_ && currentView_->sceneDSVHeap ? currentView_->sceneDSVStart : D3D12_CPU_DESCRIPTOR_HANDLE{}; }
-D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneReadOnlyDSV() const { auto handle=SceneDSV();if(handle.ptr)handle.ptr+=dsvStride_;return handle; }
-uint32_t CShaderDeviceDX12::CurrentBackBufferIndex() const { return currentView_ && currentView_->swap ? currentView_->swap->GetCurrentBackBufferIndex() : 0; }
-ID3D12Resource *CShaderDeviceDX12::CurrentBackBuffer() const { return currentView_ && currentView_->swap ? currentView_->backBuffers[CurrentBackBufferIndex()] : nullptr; }
-D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::CurrentBackBufferRTV() const { auto h=currentView_ && currentView_->rtvHeap ? currentView_->rtvHeap->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{}; h.ptr+=static_cast<SIZE_T>(CurrentBackBufferIndex())*rtvStride_; return h; }
-
-void CShaderDeviceDX12::TransitionSceneColor(D3D12_RESOURCE_STATES state)
+//-----------------------------------------------------------------------------
+// Purpose: Blocks until the fence reaches nValue; fails the device on removal or a 5 s timeout
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::WaitForFence( uint64_t nValue )
 {
-    if (!currentView_ || !SceneColor() || !CommandList() || currentView_->sceneColorState == state) return;
-    D3D12_RESOURCE_BARRIER barrier{};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;barrier.Transition.pResource=SceneColor();barrier.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;barrier.Transition.StateBefore=currentView_->sceneColorState;barrier.Transition.StateAfter=state;
-    recorder_.ResourceBarrier(1,&barrier);currentView_->sceneColorState=state;
-}
-void CShaderDeviceDX12::TransitionSceneDepth(D3D12_RESOURCE_STATES state)
-{
-    if (!currentView_ || !SceneDepth() || !CommandList() || currentView_->sceneDepthState == state) return;
-    D3D12_RESOURCE_BARRIER barrier{};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;barrier.Transition.pResource=SceneDepth();barrier.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;barrier.Transition.StateBefore=currentView_->sceneDepthState;barrier.Transition.StateAfter=state;
-    recorder_.ResourceBarrier(1,&barrier);currentView_->sceneDepthState=state;
-}
-
-bool CShaderDeviceDX12::CreateViewTargets(View &view)
-{
-    D3D12_DESCRIPTOR_HEAP_DESC heap{}; heap.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV; heap.NumDescriptors=backBufferCount_;
-    if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&view.rtvHeap)))) return false;
-    heap.NumDescriptors=2;
-    if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&view.sceneRTVHeap)))) return false;
-    heap.NumDescriptors=2;
-    heap.Type=D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&view.sceneDSVHeap)))) return false;
-    view.ReleaseBackBuffers();
-    view.backBuffers.SetCount(backBufferCount_);
-    for (auto &buffer : view.backBuffers) buffer = nullptr;
-    D3D12_CPU_DESCRIPTOR_HANDLE handle=view.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    for (int i=0;i<backBufferCount_;++i)
-    {
-        HRESULT hr=view.swap->GetBuffer(i,IID_PPV_ARGS(&view.backBuffers[i]));
-        if (FAILED(hr)) { Warning("ShaderAPIDX12: GetBuffer failed (0x%08x)\n",static_cast<unsigned>(hr)); return false; }
-        device_->CreateRenderTargetView(view.backBuffers[i],nullptr,handle); handle.ptr+=rtvStride_;
-    }
-    D3D12_HEAP_PROPERTIES heapProperties{}; heapProperties.Type=D3D12_HEAP_TYPE_DEFAULT;
-    D3D12_RESOURCE_DESC resource{};resource.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;resource.Width=view.width;resource.Height=view.height;resource.DepthOrArraySize=1;resource.MipLevels=1;resource.SampleDesc.Count=sampleCount_;resource.SampleDesc.Quality=sampleQuality_;
-    resource.Format=SceneColorFormat();resource.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    D3D12_CLEAR_VALUE color{};color.Format=SceneColorFormat();color.Color[3]=1;
-    HRESULT hr=device_->CreateCommittedResource(&heapProperties,D3D12_HEAP_FLAG_NONE,&resource,D3D12_RESOURCE_STATE_RENDER_TARGET,&color,IID_PPV_ARGS(&view.sceneColor));
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: Create scene color failed (0x%08x)\n",static_cast<unsigned>(hr)); return false; }
-    view.sceneColorState=D3D12_RESOURCE_STATE_RENDER_TARGET;
-    D3D12_RENDER_TARGET_VIEW_DESC colorView{};colorView.ViewDimension=sampleCount_>1?D3D12_RTV_DIMENSION_TEXTURE2DMS:D3D12_RTV_DIMENSION_TEXTURE2D;
-    const auto sceneViewStart=view.sceneRTVHeap->GetCPUDescriptorHandleForHeapStart();view.sceneRTVStart=sceneViewStart;
-    colorView.Format=SceneColorFormat();device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,sceneViewStart);
-    D3D12_CPU_DESCRIPTOR_HANDLE gammaView{sceneViewStart.ptr+rtvStride_};device_->CreateRenderTargetView(view.sceneColor.Get(),&colorView,gammaView);
-    resource.Format=DXGI_FORMAT_R24G8_TYPELESS;resource.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-    D3D12_CLEAR_VALUE depth{};depth.Format=SceneDepthFormat();depth.DepthStencil.Depth=1;
-    hr=device_->CreateCommittedResource(&heapProperties,D3D12_HEAP_FLAG_NONE,&resource,D3D12_RESOURCE_STATE_DEPTH_WRITE,&depth,IID_PPV_ARGS(&view.sceneDepth));
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: Create scene depth failed (0x%08x)\n",static_cast<unsigned>(hr)); return false; }
-    view.sceneDepthState=D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    view.sceneDSVStart=view.sceneDSVHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};dsv.Format=SceneDepthFormat();dsv.ViewDimension=sampleCount_>1?D3D12_DSV_DIMENSION_TEXTURE2DMS:D3D12_DSV_DIMENSION_TEXTURE2D;
-    device_->CreateDepthStencilView(view.sceneDepth.Get(),&dsv,view.sceneDSVStart);
-    dsv.Flags=D3D12_DSV_FLAG_READ_ONLY_DEPTH|D3D12_DSV_FLAG_READ_ONLY_STENCIL;
-    D3D12_CPU_DESCRIPTOR_HANDLE readOnly{view.sceneDSVStart.ptr+dsvStride_};device_->CreateDepthStencilView(view.sceneDepth.Get(),&dsv,readOnly);
-    return true;
+	if ( !nValue || !m_pFence )
+		return true;
+	const uint64_t nInitial = m_pFence->GetCompletedValue();
+	if ( nInitial == UINT64_MAX )
+	{
+		FailDevice( "fence device removal", m_pDevice->GetDeviceRemovedReason() );
+		return false;
+	}
+	if ( nInitial >= nValue )
+		return true;
+	if ( !CheckDevice( "fence SetEventOnCompletion", m_pFence->SetEventOnCompletion( nValue, m_hFenceEvent ) ) )
+		return false;
+	while ( m_pFence->GetCompletedValue() < nValue )
+	{
+		const DWORD nResult = WaitForSingleObject( m_hFenceEvent, 5000 );
+		if ( nResult == WAIT_OBJECT_0 )
+			continue;
+		const HRESULT reason = m_pDevice->GetDeviceRemovedReason();
+		FailDevice( nResult == WAIT_TIMEOUT ? "fence wait timed out" : "fence wait failed", FAILED( reason ) ? reason : HRESULT_FROM_WIN32( ERROR_TIMEOUT ) );
+		return false;
+	}
+	const uint64_t nCompleted = m_pFence->GetCompletedValue();
+	if ( nCompleted == UINT64_MAX )
+	{
+		FailDevice( "fence device removal", m_pDevice->GetDeviceRemovedReason() );
+		return false;
+	}
+	return m_pFence->GetCompletedValue() >= nValue;
 }
 
-bool CShaderDeviceDX12::CreateView(View &view, HWND hwnd, int width, int height)
+//-----------------------------------------------------------------------------
+// Scene target and back buffer accessors
+//-----------------------------------------------------------------------------
+ID3D12Resource *CShaderDeviceDX12::SceneColor() const
 {
-    view.hwnd=hwnd;view.width=width;view.height=height;
-    if (width<=0 || height<=0) { view.suspended=true; return true; }
-    view.suspended=false;view.occluded=false;
-    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=width;desc.Height=height;desc.Format=SceneColorFormat();desc.BufferCount=backBufferCount_;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.SampleDesc.Count=1;
-    if (allowTearing_) desc.Flags=DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-    Microsoft::WRL::ComPtr<IDXGISwapChain1> swap;
-    HRESULT hr=factory_->CreateSwapChainForHwnd(queue_.Get(),hwnd,&desc,nullptr,nullptr,&swap);
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: CreateSwapChainForHwnd failed (0x%08x)\n",static_cast<unsigned>(hr)); return false; }
-    if (FAILED(swap.As(&view.swap))) return false;
-    // scRGB: linear Rec.709 primaries, values may exceed 1. Unsupported colour spaces keep the FP16 swap chain.
-    UINT colorSpaceSupport=0;
-    if (SUCCEEDED(view.swap->CheckColorSpaceSupport(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,&colorSpaceSupport)) && (colorSpaceSupport&DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
-    {
-        const HRESULT colorSpace=view.swap->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
-        if (FAILED(colorSpace)) Warning("ShaderAPIDX12: SetColorSpace1(scRGB) failed (0x%08x); presenting FP16 without an explicit colour space\n",static_cast<unsigned>(colorSpace));
-    }
-    else Warning("ShaderAPIDX12: scRGB swap-chain colour space unsupported; presenting FP16 without an explicit colour space\n");
-    factory_->MakeWindowAssociation(hwnd,DXGI_MWA_NO_ALT_ENTER);
-    if (!windowed_ && !CheckDevice("SetFullscreenState",view.swap->SetFullscreenState(TRUE,nullptr))) return false;
-    return CreateViewTargets(view);
+	return m_pCurrentView ? m_pCurrentView->sceneColor.Get() : nullptr;
 }
 
-bool CShaderDeviceDX12::ResizeView(View &view, int width, int height)
+ID3D12Resource *CShaderDeviceDX12::SceneDepth() const
 {
-    FlushSubmissions();
-    if (width<=0 || height<=0) { view.suspended=true; return true; }
-    if (view.swap && !view.suspended && width==view.width && height==view.height) return true;
-    if (!changingMode_ && g_pShaderDeviceDX12==this && view.swap && (width!=view.width || height!=view.height)) { changingMode_=true; if(g_pShaderDeviceMgrDX12)g_pShaderDeviceMgrDX12->NotifyModeChange(); changingMode_=false; }
-    if (recording_ && !Submit(false)) return false;
-    if (!WaitForFence(view.lastFence)) return false;
-    view.sceneColor.Reset();view.sceneDepth.Reset();view.ReleaseBackBuffers();view.rtvHeap.Reset();view.sceneRTVHeap.Reset();view.sceneDSVHeap.Reset();
-    view.width=width;view.height=height;view.suspended=false;view.occluded=false;
-    if (!view.swap) return CreateView(view,view.hwnd,width,height);
-    DXGI_SWAP_CHAIN_DESC1 old{}; if (FAILED(view.swap->GetDesc1(&old))) return false;
-    HRESULT hr=view.swap->ResizeBuffers(backBufferCount_,width,height,SceneColorFormat(),old.Flags);
-    if (!CheckDevice("ResizeBuffers",hr)) return false;
-    return CreateViewTargets(view);
+	return m_pCurrentView ? m_pCurrentView->sceneDepth.Get() : nullptr;
 }
 
-bool CShaderDeviceDX12::ChangeMode(const ShaderDeviceInfo_t &info)
+D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneRTV( bool bSRGB ) const
 {
-    if (!IsRecordingOwner()) return false;
-    FlushSubmissions();
-    if (!SupportsMSAA(std::max(1,info.m_nAASamples),info.m_nAAQuality)) return false;
-    RECT newRect{};if(currentView_)GetClientRect(currentView_->hwnd,&newRect);
-    const int newWidth=info.m_DisplayMode.m_nWidth>0?info.m_DisplayMode.m_nWidth:newRect.right-newRect.left;
-    const int newHeight=info.m_DisplayMode.m_nHeight>0?info.m_DisplayMode.m_nHeight:newRect.bottom-newRect.top;
-    const bool changesResources=info.m_bWindowed!=windowed_||std::max(1,info.m_nAASamples)!=sampleCount_||info.m_nAAQuality!=sampleQuality_||std::clamp(info.m_nBackBufferCount,1,2)+1!=backBufferCount_||(currentView_&&(newWidth!=currentView_->width||newHeight!=currentView_->height));
-    changingMode_=true;struct ChangeScope{bool &flag;~ChangeScope(){flag=false;}} changeScope{changingMode_};
-    if(changesResources&&g_pShaderDeviceMgrDX12)g_pShaderDeviceMgrDX12->NotifyModeChange();
-    if (recording_ && !Submit(true)) return false;
-    for (auto &view:views_) if (!WaitForFence(view->lastFence)) return false;
-    const bool fullscreen=!info.m_bWindowed;
-    for (auto &view:views_) if (view->swap && windowed_ != info.m_bWindowed && !CheckDevice("SetFullscreenState",view->swap->SetFullscreenState(fullscreen,nullptr))) return false;
-    windowed_=info.m_bWindowed;waitForVsync_=info.m_bWaitForVSync;
-    const int samples=std::max(1,info.m_nAASamples),quality=info.m_nAAQuality;
-    const int buffers=std::clamp(info.m_nBackBufferCount, 1, 2)+1;
-    if (samples != sampleCount_ || quality != sampleQuality_ || buffers != backBufferCount_)
-    {
-        sampleCount_=samples;sampleQuality_=quality;backBufferCount_=buffers;
-        for (auto &view:views_) {view->sceneColor.Reset();view->sceneDepth.Reset();view->ReleaseBackBuffers();view->rtvHeap.Reset();view->sceneRTVHeap.Reset();view->sceneDSVHeap.Reset();if(view->swap){view->swap.Reset();}if(!CreateView(*view,view->hwnd,view->width,view->height)) return false;}
-    }
-    if (currentView_) { RECT rect{};GetClientRect(currentView_->hwnd,&rect);const int w=info.m_DisplayMode.m_nWidth>0?info.m_DisplayMode.m_nWidth:rect.right-rect.left;const int h=info.m_DisplayMode.m_nHeight>0?info.m_DisplayMode.m_nHeight:rect.bottom-rect.top;if(!ResizeView(*currentView_,w,h))return false;width_=currentView_->width;height_=currentView_->height; }
-    return true;
+	D3D12_CPU_DESCRIPTOR_HANDLE handle = m_pCurrentView && m_pCurrentView->sceneRTVHeap ? m_pCurrentView->sceneRTVStart : D3D12_CPU_DESCRIPTOR_HANDLE{};
+	if ( bSRGB && handle.ptr )
+		handle.ptr += m_nRtvStride;
+	return handle;
 }
 
-void CCommandRecorderDX12::Replay(ID3D12GraphicsCommandList *list,ID3D12Device *device,const unsigned char *data,size_t size)
+D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneDSV() const
 {
-    ZoneNamedN(replayZone, "DX12 CommandReplay", DX12_ZONES_ACTIVE);
-    size_t offset=0;
-    while(offset<size)
-    {
-        Header header;std::memcpy(&header,data+offset,sizeof(header));
-        const unsigned char *p=data+offset+sizeof(Header);offset+=header.size;
-        const auto get=[&](auto &value){std::memcpy(&value,p,sizeof(value));p+=sizeof(value);};
-        switch(header.op)
-        {
-        case Op::OMSetRenderTargets:{UINT count,single,stored,hasDepth;get(count);get(single);get(stored);get(hasDepth);D3D12_CPU_DESCRIPTOR_HANDLE rtvs[8];std::memcpy(rtvs,p,stored*sizeof(D3D12_CPU_DESCRIPTOR_HANDLE));p+=stored*sizeof(D3D12_CPU_DESCRIPTOR_HANDLE);D3D12_CPU_DESCRIPTOR_HANDLE dsv;get(dsv);list->OMSetRenderTargets(count,stored?rtvs:nullptr,single,hasDepth?&dsv:nullptr);break;}
-        case Op::OMSetStencilRef:{UINT value;get(value);list->OMSetStencilRef(value);break;}
-        case Op::RSSetViewports:{UINT count;get(count);D3D12_VIEWPORT viewports[16];std::memcpy(viewports,p,count*sizeof(D3D12_VIEWPORT));list->RSSetViewports(count,viewports);break;}
-        case Op::RSSetScissorRects:{UINT count;get(count);D3D12_RECT rects[16];std::memcpy(rects,p,count*sizeof(D3D12_RECT));list->RSSetScissorRects(count,rects);break;}
-        case Op::SetGraphicsRootSignature:{ID3D12RootSignature *root;get(root);list->SetGraphicsRootSignature(root);break;}
-        case Op::SetGraphicsRootDescriptorTable:{UINT index;D3D12_GPU_DESCRIPTOR_HANDLE table;get(index);get(table);list->SetGraphicsRootDescriptorTable(index,table);break;}
-        case Op::SetGraphicsRootConstantBufferView:{UINT index;D3D12_GPU_VIRTUAL_ADDRESS address;get(index);get(address);list->SetGraphicsRootConstantBufferView(index,address);break;}
-        case Op::SetGraphicsRoot32BitConstants:{UINT index,count,first;get(index);get(count);get(first);UINT values[64];std::memcpy(values,p,(count<64?count:64)*4);list->SetGraphicsRoot32BitConstants(index,count,values,first);break;}
-        case Op::SetPipelineState:{ID3D12PipelineState *pso;get(pso);list->SetPipelineState(pso);break;}
-        case Op::SetDescriptorHeaps:{UINT count;get(count);ID3D12DescriptorHeap *heaps[2]={};std::memcpy(heaps,p,count*sizeof(void *));list->SetDescriptorHeaps(count,heaps);break;}
-        case Op::IASetVertexBuffers:{UINT start,count,stored;get(start);get(count);get(stored);D3D12_VERTEX_BUFFER_VIEW views[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];std::memcpy(views,p,stored*sizeof(D3D12_VERTEX_BUFFER_VIEW));list->IASetVertexBuffers(start,count,stored?views:nullptr);break;}
-        case Op::IASetIndexBuffer:{UINT present;D3D12_INDEX_BUFFER_VIEW view;get(present);get(view);list->IASetIndexBuffer(present?&view:nullptr);break;}
-        case Op::IASetPrimitiveTopology:{D3D12_PRIMITIVE_TOPOLOGY topology;get(topology);list->IASetPrimitiveTopology(topology);break;}
-        case Op::DrawInstanced:{UINT a,b,c,d;get(a);get(b);get(c);get(d);list->DrawInstanced(a,b,c,d);break;}
-        case Op::DrawIndexedInstanced:{UINT a,b,c,e;INT d;get(a);get(b);get(c);get(d);get(e);list->DrawIndexedInstanced(a,b,c,d,e);break;}
-        case Op::ResourceBarrier:{UINT count;get(count);D3D12_RESOURCE_BARRIER barriers[16];for(UINT done=0;done<count;){const UINT n=(count-done)<16?count-done:16;std::memcpy(barriers,p+done*sizeof(D3D12_RESOURCE_BARRIER),n*sizeof(D3D12_RESOURCE_BARRIER));list->ResourceBarrier(n,barriers);done+=n;}break;}
-        case Op::CopyBufferRegion:{ID3D12Resource *dst,*src;UINT64 dstOffset,srcOffset,bytes;get(dst);get(dstOffset);get(src);get(srcOffset);get(bytes);list->CopyBufferRegion(dst,dstOffset,src,srcOffset,bytes);break;}
-        case Op::CopyTextureRegion:{D3D12_TEXTURE_COPY_LOCATION dst,src;UINT x,y,z,hasBox;D3D12_BOX box;get(dst);get(x);get(y);get(z);get(src);get(hasBox);get(box);list->CopyTextureRegion(&dst,x,y,z,&src,hasBox?&box:nullptr);break;}
-        case Op::CopyResource:{ID3D12Resource *dst,*src;get(dst);get(src);list->CopyResource(dst,src);break;}
-        case Op::ResolveSubresource:{ID3D12Resource *dst,*src;UINT dstSub,srcSub;DXGI_FORMAT format;get(dst);get(dstSub);get(src);get(srcSub);get(format);list->ResolveSubresource(dst,dstSub,src,srcSub,format);break;}
-        case Op::ClearRenderTargetView:{D3D12_CPU_DESCRIPTOR_HANDLE rtv;FLOAT color[4];UINT count,stored;get(rtv);get(color);get(count);get(stored);D3D12_RECT rects[16];std::memcpy(rects,p,(stored<16?stored:16)*sizeof(D3D12_RECT));list->ClearRenderTargetView(rtv,color,count,stored?rects:nullptr);break;}
-        case Op::ClearDepthStencilView:{D3D12_CPU_DESCRIPTOR_HANDLE dsv;D3D12_CLEAR_FLAGS flags;FLOAT depth;UINT stencil,count,stored;get(dsv);get(flags);get(depth);get(stencil);get(count);get(stored);D3D12_RECT rects[16];std::memcpy(rects,p,(stored<16?stored:16)*sizeof(D3D12_RECT));list->ClearDepthStencilView(dsv,flags,depth,static_cast<UINT8>(stencil),count,stored?rects:nullptr);break;}
-        case Op::BeginQuery:{ID3D12QueryHeap *heap;D3D12_QUERY_TYPE type;UINT index;get(heap);get(type);get(index);list->BeginQuery(heap,type,index);break;}
-        case Op::EndQuery:{ID3D12QueryHeap *heap;D3D12_QUERY_TYPE type;UINT index;get(heap);get(type);get(index);list->EndQuery(heap,type,index);break;}
-        case Op::CopyDescriptorTable:{D3D12_CPU_DESCRIPTOR_HANDLE destination;UINT count,pad;get(destination);get(count);get(pad);D3D12_CPU_DESCRIPTOR_HANDLE sources[32];const UINT n=count<32?count:32;std::memcpy(sources,p,n*sizeof(D3D12_CPU_DESCRIPTOR_HANDLE));device->CopyDescriptors(1,&destination,&n,n,sources,nullptr,D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);break;}
-        case Op::ResolveQueryData:{ID3D12QueryHeap *heap;D3D12_QUERY_TYPE type;UINT start,count;ID3D12Resource *dst;UINT64 destOffset;get(heap);get(type);get(start);get(count);get(dst);get(destOffset);list->ResolveQueryData(heap,type,start,count,dst,destOffset);break;}
-        case Op::ExternalCommand:
-        {
-            ExternalFnDX12 fn;uint32_t bytes,copy;get(fn);get(bytes);get(copy);
-            const size_t fixed=sizeof(Header)+sizeof(fn)+8;
-            if(header.size<fixed||bytes!=copy||bytes>header.size-fixed||offset>size||!fn){Warning("ShaderAPIDX12: malformed external command (%u payload bytes in a %u-byte record)\n",bytes,header.size);break;}
-            fn(list,device,p);
-            break;
-        }
-        }
-    }
+	return m_pCurrentView && m_pCurrentView->sceneDSVHeap ? m_pCurrentView->sceneDSVStart : D3D12_CPU_DESCRIPTOR_HANDLE{};
 }
-void CShaderDeviceDX12::ReleaseViews() { FlushSubmissions(); for (auto &view:views_) { if (view->swap && !windowed_) view->swap->SetFullscreenState(FALSE,nullptr); } views_.PurgeAndDeleteElements();currentView_=nullptr; }
-HRESULT CShaderDeviceDX12::RunSubmission(const SubmitOpDX12 &op)
+
+D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::SceneReadOnlyDSV() const
 {
-    HRESULT hr=S_OK;
-    switch(op.kind)
-    {
-    case SubmitOpDX12::Replay:
-        CCommandRecorderDX12::Replay(op.list,device_.Get(),op.chunk,op.chunkBytes);
-        {AUTO_LOCK(chunkMutex_);freeChunks_.AddToTail(op.chunk);}
-        break;
-    case SubmitOpDX12::Reset:
-        hr=op.allocator->Reset();
-        if(SUCCEEDED(hr))hr=op.list->Reset(op.allocator,nullptr);
-        break;
-    case SubmitOpDX12::Execute:
-    {
-        ZoneNamedN(submitZone, "DX12 Submit Execute", DX12_ZONES_ACTIVE);
-        hr=op.list->Close();
-        if(SUCCEEDED(hr)){ID3D12CommandList *lists[]={op.list};queue_->ExecuteCommandLists(1,lists);}
-        // Signal even after a failed Close so fence waits cannot hang; the error is reported at the next flush.
-        const HRESULT signal=queue_->Signal(fence_.Get(),op.value);
-        if(SUCCEEDED(hr))hr=signal;
-        break;
-    }
-    case SubmitOpDX12::Present:
-    {
-        ZoneNamedN(nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE);
-        hr=op.swap->Present(op.interval,op.flags);
-        if(hr==DXGI_STATUS_OCCLUDED){op.view->occluded=true;hr=S_OK;}
-        break;
-    }
-    }
-    return hr;
+	D3D12_CPU_DESCRIPTOR_HANDLE handle = SceneDSV();
+	if ( handle.ptr )
+		handle.ptr += m_nDsvStride;
+	return handle;
 }
+
+uint32_t CShaderDeviceDX12::CurrentBackBufferIndex() const
+{
+	return m_pCurrentView && m_pCurrentView->swap ? m_pCurrentView->swap->GetCurrentBackBufferIndex() : 0;
+}
+
+ID3D12Resource *CShaderDeviceDX12::CurrentBackBuffer() const
+{
+	return m_pCurrentView && m_pCurrentView->swap ? m_pCurrentView->backBuffers[CurrentBackBufferIndex()] : nullptr;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE CShaderDeviceDX12::CurrentBackBufferRTV() const
+{
+	D3D12_CPU_DESCRIPTOR_HANDLE handle = m_pCurrentView && m_pCurrentView->rtvHeap ? m_pCurrentView->rtvHeap->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+	handle.ptr += static_cast<SIZE_T>( CurrentBackBufferIndex() ) * m_nRtvStride;
+	return handle;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Records a scene colour / depth state transition when the state changes
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::TransitionSceneColor( D3D12_RESOURCE_STATES state )
+{
+	if ( !m_pCurrentView || !SceneColor() || !CommandList() || m_pCurrentView->sceneColorState == state )
+		return;
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = SceneColor();
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = m_pCurrentView->sceneColorState;
+	barrier.Transition.StateAfter = state;
+	m_Recorder.ResourceBarrier( 1, &barrier );
+	m_pCurrentView->sceneColorState = state;
+}
+
+void CShaderDeviceDX12::TransitionSceneDepth( D3D12_RESOURCE_STATES state )
+{
+	if ( !m_pCurrentView || !SceneDepth() || !CommandList() || m_pCurrentView->sceneDepthState == state )
+		return;
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = SceneDepth();
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = m_pCurrentView->sceneDepthState;
+	barrier.Transition.StateAfter = state;
+	m_Recorder.ResourceBarrier( 1, &barrier );
+	m_pCurrentView->sceneDepthState = state;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Creates the back-buffer RTVs and the scene colour/depth targets of a view
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::CreateViewTargets( View &view )
+{
+	D3D12_DESCRIPTOR_HEAP_DESC heap{};
+	heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+	heap.NumDescriptors = m_nBackBufferCount;
+	if ( FAILED( m_pDevice->CreateDescriptorHeap( &heap, IID_PPV_ARGS( &view.rtvHeap ) ) ) )
+		return false;
+	heap.NumDescriptors = 2;
+	if ( FAILED( m_pDevice->CreateDescriptorHeap( &heap, IID_PPV_ARGS( &view.sceneRTVHeap ) ) ) )
+		return false;
+	heap.NumDescriptors = 2;
+	heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+	if ( FAILED( m_pDevice->CreateDescriptorHeap( &heap, IID_PPV_ARGS( &view.sceneDSVHeap ) ) ) )
+		return false;
+	view.ReleaseBackBuffers();
+	view.backBuffers.SetCount( m_nBackBufferCount );
+	for ( int i = 0; i < view.backBuffers.Count(); ++i )
+		view.backBuffers[i] = nullptr;
+	D3D12_CPU_DESCRIPTOR_HANDLE handle = view.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	for ( int i = 0; i < m_nBackBufferCount; ++i )
+	{
+		HRESULT hr = view.swap->GetBuffer( i, IID_PPV_ARGS( &view.backBuffers[i] ) );
+		if ( FAILED( hr ) )
+		{
+			Warning( "ShaderAPIDX12: GetBuffer failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+			return false;
+		}
+		m_pDevice->CreateRenderTargetView( view.backBuffers[i], nullptr, handle );
+		handle.ptr += m_nRtvStride;
+	}
+	D3D12_HEAP_PROPERTIES heapProperties{};
+	heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC resource{};
+	resource.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	resource.Width = view.width;
+	resource.Height = view.height;
+	resource.DepthOrArraySize = 1;
+	resource.MipLevels = 1;
+	resource.SampleDesc.Count = m_nSampleCount;
+	resource.SampleDesc.Quality = m_nSampleQuality;
+	resource.Format = SceneColorFormat();
+	resource.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	D3D12_CLEAR_VALUE color{};
+	color.Format = SceneColorFormat();
+	color.Color[3] = 1;
+	HRESULT hr = m_pDevice->CreateCommittedResource( &heapProperties, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_RENDER_TARGET, &color, IID_PPV_ARGS( &view.sceneColor ) );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: Create scene color failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		return false;
+	}
+	view.sceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	D3D12_RENDER_TARGET_VIEW_DESC colorView{};
+	colorView.ViewDimension = m_nSampleCount > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
+	const D3D12_CPU_DESCRIPTOR_HANDLE sceneViewStart = view.sceneRTVHeap->GetCPUDescriptorHandleForHeapStart();
+	view.sceneRTVStart = sceneViewStart;
+	colorView.Format = SceneColorFormat();
+	m_pDevice->CreateRenderTargetView( view.sceneColor.Get(), &colorView, sceneViewStart );
+	D3D12_CPU_DESCRIPTOR_HANDLE gammaView{ sceneViewStart.ptr + m_nRtvStride };
+	m_pDevice->CreateRenderTargetView( view.sceneColor.Get(), &colorView, gammaView );
+	resource.Format = DXGI_FORMAT_R24G8_TYPELESS;
+	resource.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	D3D12_CLEAR_VALUE depth{};
+	depth.Format = SceneDepthFormat();
+	depth.DepthStencil.Depth = 1;
+	hr = m_pDevice->CreateCommittedResource( &heapProperties, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth, IID_PPV_ARGS( &view.sceneDepth ) );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: Create scene depth failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		return false;
+	}
+	view.sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	view.sceneDSVStart = view.sceneDSVHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};
+	dsv.Format = SceneDepthFormat();
+	dsv.ViewDimension = m_nSampleCount > 1 ? D3D12_DSV_DIMENSION_TEXTURE2DMS : D3D12_DSV_DIMENSION_TEXTURE2D;
+	m_pDevice->CreateDepthStencilView( view.sceneDepth.Get(), &dsv, view.sceneDSVStart );
+	dsv.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+	D3D12_CPU_DESCRIPTOR_HANDLE readOnly{ view.sceneDSVStart.ptr + m_nDsvStride };
+	m_pDevice->CreateDepthStencilView( view.sceneDepth.Get(), &dsv, readOnly );
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Creates the swap chain and targets of a view; a zero-sized view stays suspended
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeight )
+{
+	view.hwnd = hWnd;
+	view.width = nWidth;
+	view.height = nHeight;
+	if ( nWidth <= 0 || nHeight <= 0 )
+	{
+		view.suspended = true;
+		return true;
+	}
+	view.suspended = false;
+	view.occluded = false;
+	DXGI_SWAP_CHAIN_DESC1 desc{};
+	desc.Width = nWidth;
+	desc.Height = nHeight;
+	desc.Format = SceneColorFormat();
+	desc.BufferCount = m_nBackBufferCount;
+	desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+	desc.SampleDesc.Count = 1;
+	if ( m_bAllowTearing )
+		desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+	Microsoft::WRL::ComPtr<IDXGISwapChain1> swap;
+	HRESULT hr = m_pFactory->CreateSwapChainForHwnd( m_pQueue.Get(), hWnd, &desc, nullptr, nullptr, &swap );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: CreateSwapChainForHwnd failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		return false;
+	}
+	if ( FAILED( swap.As( &view.swap ) ) )
+		return false;
+	// scRGB: linear Rec.709 primaries, values may exceed 1. Unsupported colour spaces keep the FP16 swap chain.
+	UINT nColorSpaceSupport = 0;
+	if ( SUCCEEDED( view.swap->CheckColorSpaceSupport( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &nColorSpaceSupport ) ) && ( nColorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT ) )
+	{
+		const HRESULT hrColorSpace = view.swap->SetColorSpace1( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 );
+		if ( FAILED( hrColorSpace ) )
+			Warning( "ShaderAPIDX12: SetColorSpace1(scRGB) failed (0x%08x); presenting FP16 without an explicit colour space\n", static_cast<unsigned>( hrColorSpace ) );
+	}
+	else
+		Warning( "ShaderAPIDX12: scRGB swap-chain colour space unsupported; presenting FP16 without an explicit colour space\n" );
+	m_pFactory->MakeWindowAssociation( hWnd, DXGI_MWA_NO_ALT_ENTER );
+	if ( !m_bWindowed && !CheckDevice( "SetFullscreenState", view.swap->SetFullscreenState( TRUE, nullptr ) ) )
+		return false;
+	return CreateViewTargets( view );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Resizes a view's swap chain and recreates its targets (notifies mode-change listeners)
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight )
+{
+	FlushSubmissions();
+	if ( nWidth <= 0 || nHeight <= 0 )
+	{
+		view.suspended = true;
+		return true;
+	}
+	if ( view.swap && !view.suspended && nWidth == view.width && nHeight == view.height )
+		return true;
+	if ( !m_bChangingMode && g_pShaderDeviceDX12 == this && view.swap && ( nWidth != view.width || nHeight != view.height ) )
+	{
+		m_bChangingMode = true;
+		if ( g_pShaderDeviceMgrDX12 )
+			g_pShaderDeviceMgrDX12->NotifyModeChange();
+		m_bChangingMode = false;
+	}
+	if ( m_bRecording && !Submit( false ) )
+		return false;
+	if ( !WaitForFence( view.lastFence ) )
+		return false;
+	view.sceneColor.Reset();
+	view.sceneDepth.Reset();
+	view.ReleaseBackBuffers();
+	view.rtvHeap.Reset();
+	view.sceneRTVHeap.Reset();
+	view.sceneDSVHeap.Reset();
+	view.width = nWidth;
+	view.height = nHeight;
+	view.suspended = false;
+	view.occluded = false;
+	if ( !view.swap )
+		return CreateView( view, view.hwnd, nWidth, nHeight );
+	DXGI_SWAP_CHAIN_DESC1 old{};
+	if ( FAILED( view.swap->GetDesc1( &old ) ) )
+		return false;
+	HRESULT hr = view.swap->ResizeBuffers( m_nBackBufferCount, nWidth, nHeight, SceneColorFormat(), old.Flags );
+	if ( !CheckDevice( "ResizeBuffers", hr ) )
+		return false;
+	return CreateViewTargets( view );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Applies a new windowed/vsync/MSAA/back-buffer configuration to every view
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
+{
+	if ( !IsRecordingOwner() )
+		return false;
+	FlushSubmissions();
+	if ( !SupportsMSAA( MAX( 1, info.m_nAASamples ), info.m_nAAQuality ) )
+		return false;
+	RECT newRect{};
+	if ( m_pCurrentView )
+		GetClientRect( m_pCurrentView->hwnd, &newRect );
+	const int nNewWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : newRect.right - newRect.left;
+	const int nNewHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : newRect.bottom - newRect.top;
+	const bool bChangesResources = info.m_bWindowed != m_bWindowed || MAX( 1, info.m_nAASamples ) != m_nSampleCount || info.m_nAAQuality != m_nSampleQuality || clamp( info.m_nBackBufferCount, 1, 2 ) + 1 != m_nBackBufferCount || ( m_pCurrentView && ( nNewWidth != m_pCurrentView->width || nNewHeight != m_pCurrentView->height ) );
+	m_bChangingMode = true;
+
+	struct ChangeScope
+	{
+		bool &m_bFlag;
+
+		~ChangeScope() { m_bFlag = false; }
+	} changeScope{ m_bChangingMode };
+
+	if ( bChangesResources && g_pShaderDeviceMgrDX12 )
+		g_pShaderDeviceMgrDX12->NotifyModeChange();
+	if ( m_bRecording && !Submit( true ) )
+		return false;
+	for ( View *pView : m_Views )
+		if ( !WaitForFence( pView->lastFence ) )
+			return false;
+	const bool bFullscreen = !info.m_bWindowed;
+	for ( View *pView : m_Views )
+		if ( pView->swap && m_bWindowed != info.m_bWindowed && !CheckDevice( "SetFullscreenState", pView->swap->SetFullscreenState( bFullscreen, nullptr ) ) )
+			return false;
+	m_bWindowed = info.m_bWindowed;
+	m_bWaitForVsync = info.m_bWaitForVSync;
+	const int nSamples = MAX( 1, info.m_nAASamples ), nQuality = info.m_nAAQuality;
+	const int nBuffers = clamp( info.m_nBackBufferCount, 1, 2 ) + 1;
+	if ( nSamples != m_nSampleCount || nQuality != m_nSampleQuality || nBuffers != m_nBackBufferCount )
+	{
+		m_nSampleCount = nSamples;
+		m_nSampleQuality = nQuality;
+		m_nBackBufferCount = nBuffers;
+		for ( View *pView : m_Views )
+		{
+			pView->sceneColor.Reset();
+			pView->sceneDepth.Reset();
+			pView->ReleaseBackBuffers();
+			pView->rtvHeap.Reset();
+			pView->sceneRTVHeap.Reset();
+			pView->sceneDSVHeap.Reset();
+			pView->swap.Reset();
+			if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
+				return false;
+		}
+	}
+	if ( m_pCurrentView )
+	{
+		RECT rect{};
+		GetClientRect( m_pCurrentView->hwnd, &rect );
+		const int nWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : rect.right - rect.left;
+		const int nHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : rect.bottom - rect.top;
+		if ( !ResizeView( *m_pCurrentView, nWidth, nHeight ) )
+			return false;
+		m_nWidth = m_pCurrentView->width;
+		m_nHeight = m_pCurrentView->height;
+	}
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Replays recorded commands onto the native list; the device performs descriptor copies
+//-----------------------------------------------------------------------------
+void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device *device, const unsigned char *data, size_t size )
+{
+	ZoneNamedN( replayZone, "DX12 CommandReplay", DX12_ZONES_ACTIVE );
+	size_t offset = 0;
+	while ( offset < size )
+	{
+		Header header;
+		memcpy( &header, data + offset, sizeof( header ) );
+		const unsigned char *p = data + offset + sizeof( Header );
+		offset += header.size;
+		const auto get = [&]( auto &value )
+		{
+			memcpy( &value, p, sizeof( value ) );
+			p += sizeof( value );
+		};
+		switch ( header.op )
+		{
+		case Op::OMSetRenderTargets:
+		{
+			UINT count, single, stored, hasDepth;
+			get( count );
+			get( single );
+			get( stored );
+			get( hasDepth );
+			D3D12_CPU_DESCRIPTOR_HANDLE rtvs[8];
+			memcpy( rtvs, p, stored * sizeof( D3D12_CPU_DESCRIPTOR_HANDLE ) );
+			p += stored * sizeof( D3D12_CPU_DESCRIPTOR_HANDLE );
+			D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+			get( dsv );
+			list->OMSetRenderTargets( count, stored ? rtvs : nullptr, single, hasDepth ? &dsv : nullptr );
+			break;
+		}
+		case Op::OMSetStencilRef:
+		{
+			UINT value;
+			get( value );
+			list->OMSetStencilRef( value );
+			break;
+		}
+		case Op::RSSetViewports:
+		{
+			UINT count;
+			get( count );
+			D3D12_VIEWPORT viewports[16];
+			memcpy( viewports, p, count * sizeof( D3D12_VIEWPORT ) );
+			list->RSSetViewports( count, viewports );
+			break;
+		}
+		case Op::RSSetScissorRects:
+		{
+			UINT count;
+			get( count );
+			D3D12_RECT rects[16];
+			memcpy( rects, p, count * sizeof( D3D12_RECT ) );
+			list->RSSetScissorRects( count, rects );
+			break;
+		}
+		case Op::SetGraphicsRootSignature:
+		{
+			ID3D12RootSignature *root;
+			get( root );
+			list->SetGraphicsRootSignature( root );
+			break;
+		}
+		case Op::SetGraphicsRootDescriptorTable:
+		{
+			UINT index;
+			D3D12_GPU_DESCRIPTOR_HANDLE table;
+			get( index );
+			get( table );
+			list->SetGraphicsRootDescriptorTable( index, table );
+			break;
+		}
+		case Op::SetGraphicsRootConstantBufferView:
+		{
+			UINT index;
+			D3D12_GPU_VIRTUAL_ADDRESS address;
+			get( index );
+			get( address );
+			list->SetGraphicsRootConstantBufferView( index, address );
+			break;
+		}
+		case Op::SetGraphicsRoot32BitConstants:
+		{
+			UINT index, count, first;
+			get( index );
+			get( count );
+			get( first );
+			UINT values[64];
+			memcpy( values, p, ( count < 64 ? count : 64 ) * 4 );
+			list->SetGraphicsRoot32BitConstants( index, count, values, first );
+			break;
+		}
+		case Op::SetPipelineState:
+		{
+			ID3D12PipelineState *pso;
+			get( pso );
+			list->SetPipelineState( pso );
+			break;
+		}
+		case Op::SetDescriptorHeaps:
+		{
+			UINT count;
+			get( count );
+			ID3D12DescriptorHeap *heaps[2] = {};
+			memcpy( heaps, p, count * sizeof( void * ) );
+			list->SetDescriptorHeaps( count, heaps );
+			break;
+		}
+		case Op::IASetVertexBuffers:
+		{
+			UINT start, count, stored;
+			get( start );
+			get( count );
+			get( stored );
+			D3D12_VERTEX_BUFFER_VIEW views[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+			memcpy( views, p, stored * sizeof( D3D12_VERTEX_BUFFER_VIEW ) );
+			list->IASetVertexBuffers( start, count, stored ? views : nullptr );
+			break;
+		}
+		case Op::IASetIndexBuffer:
+		{
+			UINT present;
+			D3D12_INDEX_BUFFER_VIEW view;
+			get( present );
+			get( view );
+			list->IASetIndexBuffer( present ? &view : nullptr );
+			break;
+		}
+		case Op::IASetPrimitiveTopology:
+		{
+			D3D12_PRIMITIVE_TOPOLOGY topology;
+			get( topology );
+			list->IASetPrimitiveTopology( topology );
+			break;
+		}
+		case Op::DrawInstanced:
+		{
+			UINT a, b, c, d;
+			get( a );
+			get( b );
+			get( c );
+			get( d );
+			list->DrawInstanced( a, b, c, d );
+			break;
+		}
+		case Op::DrawIndexedInstanced:
+		{
+			UINT a, b, c, e;
+			INT d;
+			get( a );
+			get( b );
+			get( c );
+			get( d );
+			get( e );
+			list->DrawIndexedInstanced( a, b, c, d, e );
+			break;
+		}
+		case Op::ResourceBarrier:
+		{
+			UINT count;
+			get( count );
+			D3D12_RESOURCE_BARRIER barriers[16];
+			for ( UINT done = 0; done < count; )
+			{
+				const UINT n = ( count - done ) < 16 ? count - done : 16;
+				memcpy( barriers, p + done * sizeof( D3D12_RESOURCE_BARRIER ), n * sizeof( D3D12_RESOURCE_BARRIER ) );
+				list->ResourceBarrier( n, barriers );
+				done += n;
+			}
+			break;
+		}
+		case Op::CopyBufferRegion:
+		{
+			ID3D12Resource *dst, *src;
+			UINT64 dstOffset, srcOffset, bytes;
+			get( dst );
+			get( dstOffset );
+			get( src );
+			get( srcOffset );
+			get( bytes );
+			list->CopyBufferRegion( dst, dstOffset, src, srcOffset, bytes );
+			break;
+		}
+		case Op::CopyTextureRegion:
+		{
+			D3D12_TEXTURE_COPY_LOCATION dst, src;
+			UINT x, y, z, hasBox;
+			D3D12_BOX box;
+			get( dst );
+			get( x );
+			get( y );
+			get( z );
+			get( src );
+			get( hasBox );
+			get( box );
+			list->CopyTextureRegion( &dst, x, y, z, &src, hasBox ? &box : nullptr );
+			break;
+		}
+		case Op::CopyResource:
+		{
+			ID3D12Resource *dst, *src;
+			get( dst );
+			get( src );
+			list->CopyResource( dst, src );
+			break;
+		}
+		case Op::ResolveSubresource:
+		{
+			ID3D12Resource *dst, *src;
+			UINT dstSub, srcSub;
+			DXGI_FORMAT format;
+			get( dst );
+			get( dstSub );
+			get( src );
+			get( srcSub );
+			get( format );
+			list->ResolveSubresource( dst, dstSub, src, srcSub, format );
+			break;
+		}
+		case Op::ClearRenderTargetView:
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+			FLOAT color[4];
+			UINT count, stored;
+			get( rtv );
+			get( color );
+			get( count );
+			get( stored );
+			D3D12_RECT rects[16];
+			memcpy( rects, p, ( stored < 16 ? stored : 16 ) * sizeof( D3D12_RECT ) );
+			list->ClearRenderTargetView( rtv, color, count, stored ? rects : nullptr );
+			break;
+		}
+		case Op::ClearDepthStencilView:
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+			D3D12_CLEAR_FLAGS flags;
+			FLOAT depth;
+			UINT stencil, count, stored;
+			get( dsv );
+			get( flags );
+			get( depth );
+			get( stencil );
+			get( count );
+			get( stored );
+			D3D12_RECT rects[16];
+			memcpy( rects, p, ( stored < 16 ? stored : 16 ) * sizeof( D3D12_RECT ) );
+			list->ClearDepthStencilView( dsv, flags, depth, static_cast<UINT8>( stencil ), count, stored ? rects : nullptr );
+			break;
+		}
+		case Op::BeginQuery:
+		{
+			ID3D12QueryHeap *heap;
+			D3D12_QUERY_TYPE type;
+			UINT index;
+			get( heap );
+			get( type );
+			get( index );
+			list->BeginQuery( heap, type, index );
+			break;
+		}
+		case Op::EndQuery:
+		{
+			ID3D12QueryHeap *heap;
+			D3D12_QUERY_TYPE type;
+			UINT index;
+			get( heap );
+			get( type );
+			get( index );
+			list->EndQuery( heap, type, index );
+			break;
+		}
+		case Op::CopyDescriptorTable:
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE destination;
+			UINT count, pad;
+			get( destination );
+			get( count );
+			get( pad );
+			D3D12_CPU_DESCRIPTOR_HANDLE sources[32];
+			const UINT n = count < 32 ? count : 32;
+			memcpy( sources, p, n * sizeof( D3D12_CPU_DESCRIPTOR_HANDLE ) );
+			device->CopyDescriptors( 1, &destination, &n, n, sources, nullptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+			break;
+		}
+		case Op::ResolveQueryData:
+		{
+			ID3D12QueryHeap *heap;
+			D3D12_QUERY_TYPE type;
+			UINT start, count;
+			ID3D12Resource *dst;
+			UINT64 destOffset;
+			get( heap );
+			get( type );
+			get( start );
+			get( count );
+			get( dst );
+			get( destOffset );
+			list->ResolveQueryData( heap, type, start, count, dst, destOffset );
+			break;
+		}
+		case Op::ExternalCommand:
+		{
+			ExternalFnDX12 fn;
+			uint32_t bytes, copy;
+			get( fn );
+			get( bytes );
+			get( copy );
+			const size_t fixed = sizeof( Header ) + sizeof( fn ) + 8;
+			if ( header.size < fixed || bytes != copy || bytes > header.size - fixed || offset > size || !fn )
+			{
+				Warning( "ShaderAPIDX12: malformed external command (%u payload bytes in a %u-byte record)\n", bytes, header.size );
+				break;
+			}
+			fn( list, device, p );
+			break;
+		}
+		}
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Leaves fullscreen and destroys every view
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::ReleaseViews()
+{
+	FlushSubmissions();
+	for ( View *pView : m_Views )
+	{
+		if ( pView->swap && !m_bWindowed )
+			pView->swap->SetFullscreenState( FALSE, nullptr );
+	}
+	m_Views.PurgeAndDeleteElements();
+	m_pCurrentView = nullptr;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Executes one queued operation (on the worker, or inline without one)
+//-----------------------------------------------------------------------------
+HRESULT CShaderDeviceDX12::RunSubmission( const SubmitOpDX12 &op )
+{
+	HRESULT hr = S_OK;
+	switch ( op.kind )
+	{
+	case SubmitOpDX12::Replay:
+		CCommandRecorderDX12::Replay( op.list, m_pDevice.Get(), op.chunk, op.chunkBytes );
+		{
+			AUTO_LOCK( m_ChunkMutex );
+			m_FreeChunks.AddToTail( op.chunk );
+		}
+		break;
+	case SubmitOpDX12::Reset:
+		hr = op.allocator->Reset();
+		if ( SUCCEEDED( hr ) )
+			hr = op.list->Reset( op.allocator, nullptr );
+		break;
+	case SubmitOpDX12::Execute:
+	{
+		ZoneNamedN( submitZone, "DX12 Submit Execute", DX12_ZONES_ACTIVE );
+		hr = op.list->Close();
+		if ( SUCCEEDED( hr ) )
+		{
+			ID3D12CommandList *pLists[] = { op.list };
+			m_pQueue->ExecuteCommandLists( 1, pLists );
+		}
+		// Signal even after a failed Close so fence waits cannot hang; the error is reported at the next flush.
+		const HRESULT hrSignal = m_pQueue->Signal( m_pFence.Get(), op.value );
+		if ( SUCCEEDED( hr ) )
+			hr = hrSignal;
+		break;
+	}
+	case SubmitOpDX12::Present:
+	{
+		ZoneNamedN( nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE );
+		hr = op.swap->Present( op.interval, op.flags );
+		if ( hr == DXGI_STATUS_OCCLUDED )
+		{
+			op.view->occluded = true;
+			hr = S_OK;
+		}
+		break;
+	}
+	}
+	return hr;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Returns a free recording chunk, allocating up to kMaxCommandChunks (unbounded without a worker)
+//-----------------------------------------------------------------------------
 unsigned char *CShaderDeviceDX12::AcquireCommandChunk()
 {
-    for(;;)
-    {
-        {
-            AUTO_LOCK(chunkMutex_);
-            if(freeChunks_.Count()){unsigned char *chunk=freeChunks_.Tail();freeChunks_.RemoveMultipleFromTail(1);return chunk;}
-            if(allChunks_.Count()<kMaxCommandChunks||!submitThread_){auto *chunk=static_cast<unsigned char *>(MemAlloc_AllocAligned(CCommandRecorderDX12::kChunkBytes,64));allChunks_.AddToTail(chunk);return chunk;}
-        }
-        // Every chunk is queued: wait for the worker to replay one.
-        submitDoneEvent_.Wait();
-    }
-}
-void CShaderDeviceDX12::FlushCommandChunk(unsigned char *chunk,size_t bytes)
-{
-    SubmitOpDX12 op{};op.kind=SubmitOpDX12::Replay;op.list=frames_[frameIndex_].list.Get();op.chunk=chunk;op.chunkBytes=bytes;
-    EnqueueSubmission(op);
-}
-void CShaderDeviceDX12::ReleaseCommandChunks()
-{
-    AUTO_LOCK(chunkMutex_);
-    for(auto *chunk:allChunks_)MemAlloc_FreeAligned(chunk);
-    allChunks_.RemoveAll();freeChunks_.RemoveAll();
-}
-uintp CShaderDeviceDX12::SubmitThreadMain(void *param)
-{
-    auto &device=*static_cast<CShaderDeviceDX12 *>(param);
-    for(;;)
-    {
-        device.submitWorkEvent_.Wait();
-        for(;;)
-        {
-            const uint32_t tail=device.submitTail_.load(std::memory_order_relaxed);
-            if(tail==device.submitHead_.load(std::memory_order_acquire))break;
-            auto &op=device.submitOps_[tail%device.submitOps_.size()];
-            const HRESULT hr=device.RunSubmission(op);
-            if(FAILED(hr)){HRESULT expected=S_OK;device.submitError_.compare_exchange_strong(expected,hr);}
-            device.submitTail_.store(tail+1,std::memory_order_release);
-            device.submitDoneEvent_.Set();
-        }
-        if(device.submitExit_.load(std::memory_order_acquire))break;
-    }
-    return 0;
-}
-void CShaderDeviceDX12::StartSubmitThread()
-{
-    if(submitThread_||(CommandLine()&&CommandLine()->CheckParm("-dx12syncsubmit")))return;
-    submitExit_.store(false,std::memory_order_release);submitHead_.store(0);submitTail_.store(0);submitError_.store(S_OK);
-    submitThread_=CreateSimpleThread(&CShaderDeviceDX12::SubmitThreadMain,this);
-}
-void CShaderDeviceDX12::StopSubmitThread()
-{
-    if(!submitThread_)return;
-    FlushSubmissions();
-    submitExit_.store(true,std::memory_order_release);submitWorkEvent_.Set();
-    ThreadJoin(submitThread_);ReleaseThreadHandle(submitThread_);submitThread_=nullptr;
-}
-void CShaderDeviceDX12::EnqueueSubmission(const SubmitOpDX12 &op)
-{
-    if(!submitThread_){CheckDevice("submission",RunSubmission(op));return;}
-    const uint32_t head=submitHead_.load(std::memory_order_relaxed);
-    while(head-submitTail_.load(std::memory_order_acquire)>=submitOps_.size())submitDoneEvent_.Wait();
-    submitOps_[head%submitOps_.size()]=op;
-    submitHead_.store(head+1,std::memory_order_release);
-    submitWorkEvent_.Set();
-}
-void CShaderDeviceDX12::FlushSubmissions()
-{
-    if(!submitThread_)return;
-    if(submitTail_.load(std::memory_order_acquire)!=submitHead_.load(std::memory_order_relaxed))
-    {
-        ZoneNamedN(presentWait, "DX12 SubmitThreadWait", DX12_ZONES_ACTIVE);
-        DrainSubmissions();
-    }
-    const HRESULT hr=submitError_.exchange(S_OK);
-    if(FAILED(hr))CheckDevice("queued submission",hr);
-}
-void CShaderDeviceDX12::ShutdownDevice()
-{
-    StopSubmitThread();
-    if (recording_ && IsRecordingOwner() && queue_ && fence_ && !failed_) Submit(true);
-    if (queue_ && fence_ && fenceValue_ && !failed_) WaitForFence(fenceValue_);
-    ReleaseViews();
-    for (auto &buffer : dynamicVertices_) if (buffer) buffer->NativeResourceRef().Reset();
-    for (auto &buffer : dynamicIndices_) if (buffer) buffer->NativeResourceRef().Reset();
-    if (fenceEvent_) {CloseHandle(fenceEvent_);fenceEvent_=nullptr;}
-    if(timestampReadback_)timestampReadback_->Unmap(0,nullptr);timestampReadback_.Reset();timestampHeap_.Reset();timestampData_=nullptr;timestampBegun_=false;
-    recorder_.Flush();if(auto *chunk=recorder_.TakeEmptyChunk()){AUTO_LOCK(chunkMutex_);freeChunks_.AddToTail(chunk);}
-    ReleaseCommandChunks();
-    for(auto &frame:frames_){frame.list.Reset();for(int i=0;i<frame.retained.Count();++i)frame.retained[i]->Release();frame.retained.RemoveAll();frame.allocator.Reset();frame.fence=0;}
-    ReportDebugMessages();infoQueue_.Reset();
-    fence_.Reset();queue_.Reset();device_.Reset();factory_.Reset();
-    if(signerModule_){FreeLibrary(signerModule_);signerModule_=nullptr;}signer_=nullptr;
-    fenceValue_=frameSyncFence_=0;frameIndex_=0;recording_=false;failed_=false;ownerThread_=0;window_=nullptr;width_=height_=0;
-    if(g_pShaderDeviceDX12==this)g_pShaderDeviceDX12=nullptr;
+	for ( ;; )
+	{
+		{
+			AUTO_LOCK( m_ChunkMutex );
+			if ( m_FreeChunks.Count() )
+			{
+				unsigned char *pChunk = m_FreeChunks.Tail();
+				m_FreeChunks.RemoveMultipleFromTail( 1 );
+				return pChunk;
+			}
+			if ( m_AllChunks.Count() < kMaxCommandChunks || !m_hSubmitThread )
+			{
+				unsigned char *pChunk = static_cast<unsigned char *>( MemAlloc_AllocAligned( CCommandRecorderDX12::kChunkBytes, 64 ) );
+				m_AllChunks.AddToTail( pChunk );
+				return pChunk;
+			}
+		}
+		// Every chunk is queued: wait for the worker to replay one.
+		m_SubmitDoneEvent.Wait();
+	}
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: Queues a filled chunk for replay onto the current frame's list
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::FlushCommandChunk( unsigned char *pChunk, size_t nBytes )
+{
+	SubmitOpDX12 op{};
+	op.kind = SubmitOpDX12::Replay;
+	op.list = m_Frames[m_nFrameIndex].list.Get();
+	op.chunk = pChunk;
+	op.chunkBytes = nBytes;
+	EnqueueSubmission( op );
+}
+
+void CShaderDeviceDX12::ReleaseCommandChunks()
+{
+	AUTO_LOCK( m_ChunkMutex );
+	for ( unsigned char *pChunk : m_AllChunks )
+		MemAlloc_FreeAligned( pChunk );
+	m_AllChunks.RemoveAll();
+	m_FreeChunks.RemoveAll();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Submission worker: runs queued operations in FIFO order until asked to exit
+//-----------------------------------------------------------------------------
+uintp CShaderDeviceDX12::SubmitThreadMain( void *pParam )
+{
+	CShaderDeviceDX12 &device = *static_cast<CShaderDeviceDX12 *>( pParam );
+	for ( ;; )
+	{
+		device.m_SubmitWorkEvent.Wait();
+		for ( ;; )
+		{
+			const uint32_t nTail = device.m_nSubmitTail;
+			if ( nTail == device.m_nSubmitHead )
+				break;
+			const SubmitOpDX12 &op = device.m_SubmitOps[nTail % ARRAYSIZE( device.m_SubmitOps )];
+			const HRESULT hr = device.RunSubmission( op );
+			if ( FAILED( hr ) )
+				device.m_nSubmitError.AssignIf( S_OK, hr );
+			device.m_nSubmitTail = nTail + 1;
+			device.m_SubmitDoneEvent.Set();
+		}
+		if ( device.m_bSubmitExit )
+			break;
+	}
+	return 0;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Starts / stops the submission worker (-dx12syncsubmit keeps submission inline)
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::StartSubmitThread()
+{
+	if ( m_hSubmitThread || ( CommandLine() && CommandLine()->CheckParm( "-dx12syncsubmit" ) ) )
+		return;
+	m_bSubmitExit = 0;
+	m_nSubmitHead = 0;
+	m_nSubmitTail = 0;
+	m_nSubmitError = S_OK;
+	m_hSubmitThread = CreateSimpleThread( &CShaderDeviceDX12::SubmitThreadMain, this );
+}
+
+void CShaderDeviceDX12::StopSubmitThread()
+{
+	if ( !m_hSubmitThread )
+		return;
+	FlushSubmissions();
+	m_bSubmitExit = 1;
+	m_SubmitWorkEvent.Set();
+	ThreadJoin( m_hSubmitThread );
+	ReleaseThreadHandle( m_hSubmitThread );
+	m_hSubmitThread = nullptr;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Queues an operation for the worker, blocking while the ring is full
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::EnqueueSubmission( const SubmitOpDX12 &op )
+{
+	if ( !m_hSubmitThread )
+	{
+		CheckDevice( "submission", RunSubmission( op ) );
+		return;
+	}
+	const uint32_t nHead = m_nSubmitHead;
+	while ( nHead - m_nSubmitTail >= ARRAYSIZE( m_SubmitOps ) )
+		m_SubmitDoneEvent.Wait();
+	m_SubmitOps[nHead % ARRAYSIZE( m_SubmitOps )] = op;
+	m_nSubmitHead = nHead + 1;
+	m_SubmitWorkEvent.Set();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Waits for queued operations and reports the first queued failure
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::FlushSubmissions()
+{
+	if ( !m_hSubmitThread )
+		return;
+	if ( m_nSubmitTail != m_nSubmitHead )
+	{
+		ZoneNamedN( presentWait, "DX12 SubmitThreadWait", DX12_ZONES_ACTIVE );
+		DrainSubmissions();
+	}
+	const HRESULT hr = ThreadInterlockedExchange( reinterpret_cast<int32 volatile *>( &m_nSubmitError ), S_OK );
+	if ( FAILED( hr ) )
+		CheckDevice( "queued submission", hr );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Submits outstanding work, waits for the GPU and releases every device object
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::ShutdownDevice()
+{
+	StopSubmitThread();
+	if ( m_bRecording && IsRecordingOwner() && m_pFence && !m_bFailed )
+		Submit( true );
+	if ( m_nFenceValue && !m_bFailed )
+		WaitForFence( m_nFenceValue );
+	ReleaseViews();
+	for ( int i = 0; i < ARRAYSIZE( m_pDynamicVertices ); ++i )
+		if ( m_pDynamicVertices[i] )
+			m_pDynamicVertices[i]->NativeResourceRef().Reset();
+	for ( int i = 0; i < ARRAYSIZE( m_pDynamicIndices ); ++i )
+		if ( m_pDynamicIndices[i] )
+			m_pDynamicIndices[i]->NativeResourceRef().Reset();
+	if ( m_hFenceEvent )
+	{
+		CloseHandle( m_hFenceEvent );
+		m_hFenceEvent = nullptr;
+	}
+	if ( m_pTimestampReadback )
+		m_pTimestampReadback->Unmap( 0, nullptr );
+	m_pTimestampReadback.Reset();
+	m_pTimestampHeap.Reset();
+	m_pTimestampData = nullptr;
+	m_bTimestampBegun = false;
+	m_Recorder.Flush();
+	if ( unsigned char *pChunk = m_Recorder.TakeEmptyChunk() )
+	{
+		AUTO_LOCK( m_ChunkMutex );
+		m_FreeChunks.AddToTail( pChunk );
+	}
+	ReleaseCommandChunks();
+	for ( int nFrame = 0; nFrame < ARRAYSIZE( m_Frames ); ++nFrame )
+	{
+		FrameContext &frame = m_Frames[nFrame];
+		frame.list.Reset();
+		for ( int i = 0; i < frame.retained.Count(); ++i )
+			frame.retained[i]->Release();
+		frame.retained.RemoveAll();
+		frame.allocator.Reset();
+		frame.fence = 0;
+	}
+	ReportDebugMessages();
+	m_pInfoQueue.Reset();
+	m_pFence.Reset();
+	m_pQueue.Reset();
+	m_pDevice.Reset();
+	m_pFactory.Reset();
+	if ( m_hSignerModule )
+	{
+		FreeLibrary( m_hSignerModule );
+		m_hSignerModule = nullptr;
+	}
+	m_pfnSigner = nullptr;
+	m_nFenceValue = m_nFrameSyncFence = 0;
+	m_nFrameIndex = 0;
+	m_bRecording = false;
+	m_bFailed = false;
+	m_nOwnerThread = 0;
+	m_pWindow = nullptr;
+	m_nWidth = m_nHeight = 0;
+	if ( g_pShaderDeviceDX12 == this )
+		g_pShaderDeviceDX12 = nullptr;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Releases / recreates swap chains and view targets (queued to the owner from other threads)
+//-----------------------------------------------------------------------------
 void CShaderDeviceDX12::ReleaseResources()
 {
-    if (!IsRecordingOwner())
-    {
-        if (g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil()) g_pShaderDeviceMgrDX12->HostShaderUtil()->OnThreadEvent(SHADER_THREAD_RELEASE_RESOURCES);
-        else Warning("ShaderAPIDX12: cannot queue resource release without host shader utility\n");
-        return;
-    }
-    FlushSubmissions();
-    if (recording_) Submit(true);
-    for (auto &view:views_) { if (!WaitForFence(view->lastFence)) return;view->sceneColor.Reset();view->sceneDepth.Reset();view->ReleaseBackBuffers();view->rtvHeap.Reset();view->sceneRTVHeap.Reset();view->sceneDSVHeap.Reset();if(view->swap && !windowed_)view->swap->SetFullscreenState(FALSE,nullptr);view->swap.Reset(); }
+	if ( !IsRecordingOwner() )
+	{
+		if ( g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() )
+			g_pShaderDeviceMgrDX12->HostShaderUtil()->OnThreadEvent( SHADER_THREAD_RELEASE_RESOURCES );
+		else
+			Warning( "ShaderAPIDX12: cannot queue resource release without host shader utility\n" );
+		return;
+	}
+	FlushSubmissions();
+	if ( m_bRecording )
+		Submit( true );
+	for ( View *pView : m_Views )
+	{
+		if ( !WaitForFence( pView->lastFence ) )
+			return;
+		pView->sceneColor.Reset();
+		pView->sceneDepth.Reset();
+		pView->ReleaseBackBuffers();
+		pView->rtvHeap.Reset();
+		pView->sceneRTVHeap.Reset();
+		pView->sceneDSVHeap.Reset();
+		if ( pView->swap && !m_bWindowed )
+			pView->swap->SetFullscreenState( FALSE, nullptr );
+		pView->swap.Reset();
+	}
 }
 
 void CShaderDeviceDX12::ReacquireResources()
 {
-    if (!IsRecordingOwner())
-    {
-        if (g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil()) g_pShaderDeviceMgrDX12->HostShaderUtil()->OnThreadEvent(SHADER_THREAD_ACQUIRE_RESOURCES);
-        else Warning("ShaderAPIDX12: cannot queue resource acquisition without host shader utility\n");
-        return;
-    }
-    for (auto &view:views_) if (!view->swap) {RECT rect{};GetClientRect(view->hwnd,&rect);if(!CreateView(*view,view->hwnd,rect.right-rect.left,rect.bottom-rect.top)) { FailDevice("reacquire view",E_FAIL);return; }}
+	if ( !IsRecordingOwner() )
+	{
+		if ( g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() )
+			g_pShaderDeviceMgrDX12->HostShaderUtil()->OnThreadEvent( SHADER_THREAD_ACQUIRE_RESOURCES );
+		else
+			Warning( "ShaderAPIDX12: cannot queue resource acquisition without host shader utility\n" );
+		return;
+	}
+	for ( View *pView : m_Views )
+		if ( !pView->swap )
+		{
+			RECT rect{};
+			GetClientRect( pView->hwnd, &rect );
+			if ( !CreateView( *pView, pView->hwnd, rect.right - rect.left, rect.bottom - rect.top ) )
+			{
+				FailDevice( "reacquire view", E_FAIL );
+				return;
+			}
+		}
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: Logs the device's maximum supported feature level
+//-----------------------------------------------------------------------------
 void CShaderDeviceDX12::SpewDriverInfo() const
 {
-    if(!device_)return;
-    D3D12_FEATURE_DATA_FEATURE_LEVELS levels{};
-    const D3D_FEATURE_LEVEL requested[]={D3D_FEATURE_LEVEL_12_2,D3D_FEATURE_LEVEL_12_1,D3D_FEATURE_LEVEL_12_0,D3D_FEATURE_LEVEL_11_1,D3D_FEATURE_LEVEL_11_0};
-    levels.NumFeatureLevels=ARRAYSIZE(requested);levels.pFeatureLevelsRequested=requested;
-    Msg("ShaderAPIDX12: native feature level 0x%x\n",SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS,&levels,sizeof(levels)))?levels.MaxSupportedFeatureLevel:D3D_FEATURE_LEVEL_11_0);
+	if ( !m_pDevice )
+		return;
+	D3D12_FEATURE_DATA_FEATURE_LEVELS levels{};
+	const D3D_FEATURE_LEVEL requested[] = { D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+	levels.NumFeatureLevels = ARRAYSIZE( requested );
+	levels.pFeatureLevelsRequested = requested;
+	Msg( "ShaderAPIDX12: native feature level 0x%x\n", SUCCEEDED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof( levels ) ) ) ? levels.MaxSupportedFeatureLevel : D3D_FEATURE_LEVEL_11_0 );
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: -dx12stats: closes the open timestamp interval and collects completed ones.
+//          Returns true when the next interval may begin after this submit.
+//-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::GpuTimingBeforeSubmit()
 {
-    static const bool enabled=CommandLine()&&CommandLine()->CheckParm("-dx12stats");
-    if(!enabled)return false;
-    if(!timestampHeap_)
-    {
-        D3D12_QUERY_HEAP_DESC heapDesc{};heapDesc.Type=D3D12_QUERY_HEAP_TYPE_TIMESTAMP;heapDesc.Count=kTimestampSlots*2;
-        if(FAILED(device_->CreateQueryHeap(&heapDesc,IID_PPV_ARGS(&timestampHeap_))))return false;
-        D3D12_HEAP_PROPERTIES properties{};properties.Type=D3D12_HEAP_TYPE_READBACK;
-        D3D12_RESOURCE_DESC desc{};desc.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;desc.Width=kTimestampSlots*2*sizeof(uint64_t);desc.Height=1;desc.DepthOrArraySize=1;desc.MipLevels=1;desc.SampleDesc.Count=1;desc.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        if(FAILED(device_->CreateCommittedResource(&properties,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&timestampReadback_)))){timestampHeap_.Reset();return false;}
-        void *mapped=nullptr;if(FAILED(timestampReadback_->Map(0,nullptr,&mapped))){timestampHeap_.Reset();timestampReadback_.Reset();return false;}
-        timestampData_=static_cast<const uint64_t *>(mapped);
-        FlushSubmissions();if(FAILED(queue_->GetTimestampFrequency(&timestampFrequency_))||!timestampFrequency_){timestampHeap_.Reset();return false;}
-        timestampFences_.fill(0);timestampSlot_=0;timestampBegun_=false;
-    }
-    const uint64_t completed=CompletedFenceValue();
-    for(uint32_t slot=0;slot<kTimestampSlots;++slot)if(timestampFences_[slot]&&timestampFences_[slot]<=completed)
-    {
-        const uint64_t begin=timestampData_[slot*2],end=timestampData_[slot*2+1];
-        if(end>begin)gpuTimeSumMs_+=1000.0*static_cast<double>(end-begin)/static_cast<double>(timestampFrequency_);
-        timestampFences_[slot]=0;
-    }
-    if(timestampBegun_)
-    {
-        const uint32_t slot=timestampSlot_;
-        recorder_.EndQuery(timestampHeap_.Get(),D3D12_QUERY_TYPE_TIMESTAMP,slot*2+1);
-        recorder_.ResolveQueryData(timestampHeap_.Get(),D3D12_QUERY_TYPE_TIMESTAMP,slot*2,2,timestampReadback_.Get(),slot*2*sizeof(uint64_t));
-        timestampFences_[slot]=NextFenceValue();timestampSlot_=(slot+1)%kTimestampSlots;timestampBegun_=false;
-    }
-    return timestampFences_[timestampSlot_]==0;
+	static const bool s_bEnabled = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
+	if ( !s_bEnabled )
+		return false;
+	if ( !m_pTimestampHeap )
+	{
+		D3D12_QUERY_HEAP_DESC heapDesc{};
+		heapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+		heapDesc.Count = kTimestampSlots * 2;
+		if ( FAILED( m_pDevice->CreateQueryHeap( &heapDesc, IID_PPV_ARGS( &m_pTimestampHeap ) ) ) )
+			return false;
+		D3D12_HEAP_PROPERTIES properties{};
+		properties.Type = D3D12_HEAP_TYPE_READBACK;
+		D3D12_RESOURCE_DESC desc{};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Width = kTimestampSlots * 2 * sizeof( uint64_t );
+		desc.Height = 1;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		if ( FAILED( m_pDevice->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pTimestampReadback ) ) ) )
+		{
+			m_pTimestampHeap.Reset();
+			return false;
+		}
+		void *pMapped = nullptr;
+		if ( FAILED( m_pTimestampReadback->Map( 0, nullptr, &pMapped ) ) )
+		{
+			m_pTimestampHeap.Reset();
+			m_pTimestampReadback.Reset();
+			return false;
+		}
+		m_pTimestampData = static_cast<const uint64_t *>( pMapped );
+		FlushSubmissions();
+		if ( FAILED( m_pQueue->GetTimestampFrequency( &m_nTimestampFrequency ) ) || !m_nTimestampFrequency )
+		{
+			m_pTimestampHeap.Reset();
+			return false;
+		}
+		memset( m_TimestampFences, 0, sizeof( m_TimestampFences ) );
+		m_nTimestampSlot = 0;
+		m_bTimestampBegun = false;
+	}
+	const uint64_t nCompleted = CompletedFenceValue();
+	for ( uint32_t nSlot = 0; nSlot < kTimestampSlots; ++nSlot )
+		if ( m_TimestampFences[nSlot] && m_TimestampFences[nSlot] <= nCompleted )
+		{
+			const uint64_t nBegin = m_pTimestampData[nSlot * 2], nEnd = m_pTimestampData[nSlot * 2 + 1];
+			if ( nEnd > nBegin )
+				m_flGpuTimeSumMs += 1000.0 * static_cast<double>( nEnd - nBegin ) / static_cast<double>( m_nTimestampFrequency );
+			m_TimestampFences[nSlot] = 0;
+		}
+	if ( m_bTimestampBegun )
+	{
+		const uint32_t nSlot = m_nTimestampSlot;
+		m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, nSlot * 2 + 1 );
+		m_Recorder.ResolveQueryData( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, nSlot * 2, 2, m_pTimestampReadback.Get(), nSlot * 2 * sizeof( uint64_t ) );
+		m_TimestampFences[nSlot] = NextFenceValue();
+		m_nTimestampSlot = ( nSlot + 1 ) % kTimestampSlots;
+		m_bTimestampBegun = false;
+	}
+	return m_TimestampFences[m_nTimestampSlot] == 0;
 }
+
 void CShaderDeviceDX12::GpuTimingAfterSubmit()
 {
-    // The next list's first command starts its GPU interval; intervals sum per presented frame.
-    recorder_.EndQuery(timestampHeap_.Get(),D3D12_QUERY_TYPE_TIMESTAMP,timestampSlot_*2);timestampBegun_=true;
+	// The next list's first command starts its GPU interval; intervals sum per presented frame.
+	m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, m_nTimestampSlot * 2 );
+	m_bTimestampBegun = true;
 }
-bool CShaderDeviceDX12::ConsumeGpuTime(double &averageMs,uint32_t &frames)
+
+//-----------------------------------------------------------------------------
+// Purpose: Returns and resets the average GPU frame time accumulated since the last call
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::ConsumeGpuTime( double &flAverageMs, uint32_t &nFrames )
 {
-    frames=gpuTimePresented_;averageMs=frames?gpuTimeSumMs_/frames:0.0;gpuTimeSumMs_=0.0;gpuTimePresented_=0;return frames!=0;
+	nFrames = m_nGpuTimePresented;
+	flAverageMs = nFrames ? m_flGpuTimeSumMs / nFrames : 0.0;
+	m_flGpuTimeSumMs = 0.0;
+	m_nGpuTimePresented = 0;
+	return nFrames != 0;
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Copies/resolves (or gamma-corrects) scene colour to the back buffer, submits and presents
+//-----------------------------------------------------------------------------
 void CShaderDeviceDX12::Present()
 {
-    ZoneNamedN(___tracy_scoped_zone, "DX12 Present", DX12_ZONES_ACTIVE);
-    if (!IsRecordingOwner() || !currentView_ || !CommandList()) return;
-    FlushSubmissions();
-    View &view=*currentView_;
-    RECT rect{};GetClientRect(view.hwnd,&rect);
-    const int w=rect.right-rect.left,h=rect.bottom-rect.top;
-    if (w<=0 || h<=0 || IsIconic(view.hwnd)) {view.suspended=true;Submit(false);return;}
-    if (!ResizeView(view,w,h)) return;
-    width_=view.width;height_=view.height;
-    if (!view.sceneColor || !view.swap) return;
-    if (view.occluded)
-    {
-        const HRESULT test=view.swap->Present(0,DXGI_PRESENT_TEST);
-        if (test==DXGI_STATUS_OCCLUDED) {Submit(false);return;}
-        if (!CheckDevice("occlusion test",test)) return;
-        view.occluded=false;
-    }
-    const bool correctGamma = windowed_ && (gammaTV_ || gamma_ != 2.2f);
-    auto *back=CurrentBackBuffer();
-    D3D12_RESOURCE_BARRIER barrier{};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;barrier.Transition.pResource=back;barrier.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;barrier.Transition.StateBefore=D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter=correctGamma?D3D12_RESOURCE_STATE_RENDER_TARGET:(sampleCount_>1?D3D12_RESOURCE_STATE_RESOLVE_DEST:D3D12_RESOURCE_STATE_COPY_DEST);
-    recorder_.ResourceBarrier(1,&barrier);
-    if (correctGamma)
-    {
-        if (!g_pShaderAPIDX12 || !g_pShaderAPIDX12->PresentGamma(back, gamma_, gammaMin_, gammaMax_, gammaExponent_, gammaTV_))
-        {
-            FailDevice("windowed gamma presentation", E_FAIL);
-            return;
-        }
-    }
-    else if (sampleCount_ > 1)
-    {
-        TransitionSceneColor(D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
-        recorder_.ResolveSubresource(back, 0, view.sceneColor.Get(), 0, SceneColorFormat());
-    }
-    else
-    {
-        TransitionSceneColor(D3D12_RESOURCE_STATE_COPY_SOURCE);
-        recorder_.CopyResource(back, view.sceneColor.Get());
-    }
-    std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);recorder_.ResourceBarrier(1,&barrier);
-    TransitionSceneColor(D3D12_RESOURCE_STATE_RENDER_TARGET);
-    if(!Submit(false))return;
-    ++gpuTimePresented_;
-    const UINT interval=waitForVsync_?1:0;
-    const UINT flags=!waitForVsync_ && allowTearing_ && windowed_ ? DXGI_PRESENT_ALLOW_TEARING : 0;
-    if(submitThread_)
-    {
-        // Present runs on the submission worker after this frame's ExecuteCommandLists. Every later
-        // swap-chain or queue access on this thread calls FlushPresent/FlushSubmissions first.
-        SubmitOpDX12 op{};op.kind=SubmitOpDX12::Present;op.swap=view.swap.Get();op.view=&view;op.interval=interval;op.flags=flags;
-        EnqueueSubmission(op);
-    }
-    else
-    {
-        HRESULT hr;
-        { ZoneNamedN(nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE); hr=view.swap->Present(interval,flags); }
-        if(hr==DXGI_STATUS_OCCLUDED){view.occluded=true;return;}
-        CheckDevice("Present",hr);
-    }
+	ZoneNamedN( ___tracy_scoped_zone, "DX12 Present", DX12_ZONES_ACTIVE );
+	if ( !IsRecordingOwner() || !m_pCurrentView || !CommandList() )
+		return;
+	FlushSubmissions();
+	View &view = *m_pCurrentView;
+	RECT rect{};
+	GetClientRect( view.hwnd, &rect );
+	const int nWidth = rect.right - rect.left, nHeight = rect.bottom - rect.top;
+	if ( nWidth <= 0 || nHeight <= 0 || IsIconic( view.hwnd ) )
+	{
+		view.suspended = true;
+		Submit( false );
+		return;
+	}
+	if ( !ResizeView( view, nWidth, nHeight ) )
+		return;
+	m_nWidth = view.width;
+	m_nHeight = view.height;
+	if ( !view.sceneColor || !view.swap )
+		return;
+	if ( view.occluded )
+	{
+		const HRESULT hrTest = view.swap->Present( 0, DXGI_PRESENT_TEST );
+		if ( hrTest == DXGI_STATUS_OCCLUDED )
+		{
+			Submit( false );
+			return;
+		}
+		if ( !CheckDevice( "occlusion test", hrTest ) )
+			return;
+		view.occluded = false;
+	}
+	const bool bCorrectGamma = m_bWindowed && ( m_bGammaTV || m_flGamma != 2.2f );
+	ID3D12Resource *pBack = CurrentBackBuffer();
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = pBack;
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+	barrier.Transition.StateAfter = bCorrectGamma ? D3D12_RESOURCE_STATE_RENDER_TARGET : ( m_nSampleCount > 1 ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_COPY_DEST );
+	m_Recorder.ResourceBarrier( 1, &barrier );
+	if ( bCorrectGamma )
+	{
+		if ( !g_pShaderAPIDX12 || !g_pShaderAPIDX12->PresentGamma( pBack, m_flGamma, m_flGammaMin, m_flGammaMax, m_flGammaExponent, m_bGammaTV ) )
+		{
+			FailDevice( "windowed gamma presentation", E_FAIL );
+			return;
+		}
+	}
+	else if ( m_nSampleCount > 1 )
+	{
+		TransitionSceneColor( D3D12_RESOURCE_STATE_RESOLVE_SOURCE );
+		m_Recorder.ResolveSubresource( pBack, 0, view.sceneColor.Get(), 0, SceneColorFormat() );
+	}
+	else
+	{
+		TransitionSceneColor( D3D12_RESOURCE_STATE_COPY_SOURCE );
+		m_Recorder.CopyResource( pBack, view.sceneColor.Get() );
+	}
+	V_swap( barrier.Transition.StateBefore, barrier.Transition.StateAfter );
+	m_Recorder.ResourceBarrier( 1, &barrier );
+	TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
+	if ( !Submit( false ) )
+		return;
+	++m_nGpuTimePresented;
+	const UINT nInterval = m_bWaitForVsync ? 1 : 0;
+	const UINT nFlags = !m_bWaitForVsync && m_bAllowTearing && m_bWindowed ? DXGI_PRESENT_ALLOW_TEARING : 0;
+	if ( m_hSubmitThread )
+	{
+		// Present runs on the submission worker after this frame's ExecuteCommandLists. Every later
+		// swap-chain or queue access on this thread calls FlushPresent/FlushSubmissions first.
+		SubmitOpDX12 op{};
+		op.kind = SubmitOpDX12::Present;
+		op.swap = view.swap.Get();
+		op.view = &view;
+		op.interval = nInterval;
+		op.flags = nFlags;
+		EnqueueSubmission( op );
+	}
+	else
+	{
+		HRESULT hr;
+		{
+			ZoneNamedN( nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE );
+			hr = view.swap->Present( nInterval, nFlags );
+		}
+		if ( hr == DXGI_STATUS_OCCLUDED )
+		{
+			view.occluded = true;
+			return;
+		}
+		CheckDevice( "Present", hr );
+	}
 #ifdef TRACY_ENABLE
-    if(TracyIsStarted) { FrameMark; }
+	if ( TracyIsStarted )
+	{
+		FrameMark;
+	}
 #endif
-    RefreshTracyZonesDX12();
+	RefreshTracyZonesDX12();
 }
 
-void CShaderDeviceDX12::SetHardwareGammaRamp(float fGamma,float fGammaTVRangeMin,float fGammaTVRangeMax,float fGammaTVExponent,bool bTVEnabled)
+//-----------------------------------------------------------------------------
+// Purpose: Stores the gamma settings; exclusive fullscreen also programs the DXGI output ramp
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::SetHardwareGammaRamp( float fGamma, float fGammaTVRangeMin, float fGammaTVRangeMax, float fGammaTVExponent, bool bTVEnabled )
 {
-    gamma_=fGamma;gammaMin_=fGammaTVRangeMin;gammaMax_=fGammaTVRangeMax;gammaExponent_=fGammaTVExponent;gammaTV_=bTVEnabled;
-    // DXGI output gamma is defined only for exclusive fullscreen presentation.
-    FlushSubmissions();
-    if (windowed_ || !currentView_ || !currentView_->swap) return;
-    Microsoft::WRL::ComPtr<IDXGIOutput> output;
-    HRESULT hr = currentView_->swap->GetContainingOutput(&output);
-    DXGI_GAMMA_CONTROL_CAPABILITIES caps{};
-    if (SUCCEEDED(hr)) hr = output->GetGammaControlCapabilities(&caps);
-    if (FAILED(hr)) { Warning("ShaderAPIDX12: gamma capabilities failed (0x%08x)\n", static_cast<unsigned>(hr)); return; }
-    DXGI_GAMMA_CONTROL ramp{};
-    ramp.Scale = {1, 1, 1};
-    for (UINT i = 0; i < caps.NumGammaControlPoints; ++i)
-    {
-        float correction = std::pow(std::clamp(caps.ControlPointPositions[i], 0.0f, 1.0f), fGamma / 2.2f);
-        if (bTVEnabled)
-        {
-            correction = std::pow(correction, 2.2f / fGammaTVExponent);
-            correction = correction * (fGammaTVRangeMax - fGammaTVRangeMin) / 255.0f + fGammaTVRangeMin / 255.0f;
-        }
-        correction = std::clamp(correction, caps.MinConvertedValue, caps.MaxConvertedValue);
-        ramp.GammaCurve[i] = {correction, correction, correction};
-    }
-    hr = output->SetGammaControl(&ramp);
-    if (FAILED(hr)) Warning("ShaderAPIDX12: SetGammaControl failed (0x%08x)\n", static_cast<unsigned>(hr));
+	m_flGamma = fGamma;
+	m_flGammaMin = fGammaTVRangeMin;
+	m_flGammaMax = fGammaTVRangeMax;
+	m_flGammaExponent = fGammaTVExponent;
+	m_bGammaTV = bTVEnabled;
+	// DXGI output gamma is defined only for exclusive fullscreen presentation.
+	FlushSubmissions();
+	if ( m_bWindowed || !m_pCurrentView || !m_pCurrentView->swap )
+		return;
+	Microsoft::WRL::ComPtr<IDXGIOutput> output;
+	HRESULT hr = m_pCurrentView->swap->GetContainingOutput( &output );
+	DXGI_GAMMA_CONTROL_CAPABILITIES caps{};
+	if ( SUCCEEDED( hr ) )
+		hr = output->GetGammaControlCapabilities( &caps );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: gamma capabilities failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		return;
+	}
+	DXGI_GAMMA_CONTROL ramp{};
+	ramp.Scale = { 1, 1, 1 };
+	for ( UINT i = 0; i < caps.NumGammaControlPoints; ++i )
+	{
+		float flCorrection = powf( clamp( caps.ControlPointPositions[i], 0.0f, 1.0f ), fGamma / 2.2f );
+		if ( bTVEnabled )
+		{
+			flCorrection = powf( flCorrection, 2.2f / fGammaTVExponent );
+			flCorrection = flCorrection * ( fGammaTVRangeMax - fGammaTVRangeMin ) / 255.0f + fGammaTVRangeMin / 255.0f;
+		}
+		flCorrection = clamp( flCorrection, caps.MinConvertedValue, caps.MaxConvertedValue );
+		ramp.GammaCurve[i] = { flCorrection, flCorrection, flCorrection };
+	}
+	hr = output->SetGammaControl( &ramp );
+	if ( FAILED( hr ) )
+		Warning( "ShaderAPIDX12: SetGammaControl failed (0x%08x)\n", static_cast<unsigned>( hr ) );
 }
 
-bool CShaderDeviceDX12::AddView(void *hwnd)
+//-----------------------------------------------------------------------------
+// Purpose: View management; the first view becomes current
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::AddView( void *hWnd )
 {
-    if(!IsRecordingOwner() || !hwnd || !IsWindow(static_cast<HWND>(hwnd)))return false;
-    FlushSubmissions();
-    for(const auto &view:views_)if(view->hwnd==hwnd)return true;
-    RECT rect{};GetClientRect(static_cast<HWND>(hwnd),&rect);
-    View *view=new View;
-    if(!CreateView(*view,static_cast<HWND>(hwnd),rect.right-rect.left,rect.bottom-rect.top)){delete view;return false;}
-    if(!currentView_){currentView_=view;width_=view->width;height_=view->height;}
-    views_.AddToTail(view);return true;
-}
-void CShaderDeviceDX12::RemoveView(void *hwnd)
-{
-    if(!IsRecordingOwner())return;
-    FlushSubmissions();
-    for(int i=0;i<views_.Count();++i)if(views_[i]->hwnd==hwnd)
-    {
-        View *view=views_[i];if(recording_)Submit(false);
-        if(!WaitForFence(view->lastFence))return;
-        if(view->swap && !windowed_)view->swap->SetFullscreenState(FALSE,nullptr);
-        if(currentView_==view)currentView_=nullptr;
-        delete view;views_.Remove(i);if(!currentView_ && !views_.IsEmpty())currentView_=views_[0];
-        width_=currentView_?currentView_->width:0;height_=currentView_?currentView_->height:0;
-        return;
-    }
-}
-
-void CShaderDeviceDX12::SetView(void *hwnd)
-{
-    if(!IsRecordingOwner())return;
-    FlushSubmissions();
-    if(!hwnd)hwnd=window_;
-    bool found=false;for(const auto &view:views_)if(view->hwnd==hwnd){found=true;break;}
-    if(!found&&hwnd&&IsWindow(static_cast<HWND>(hwnd))){if(!AddView(hwnd))return;found=true;}
-    if(!found){Warning("ShaderAPIDX12: SetView requires a valid HWND\n");return;}
-    for(auto &view:views_)if(view->hwnd==hwnd)
-    {
-        if(view!=currentView_ && recording_ && !Submit(false))return;
-        currentView_=view;width_=view->width;height_=view->height;return;
-    }
+	if ( !IsRecordingOwner() || !hWnd || !IsWindow( static_cast<HWND>( hWnd ) ) )
+		return false;
+	FlushSubmissions();
+	for ( const View *pView : m_Views )
+		if ( pView->hwnd == hWnd )
+			return true;
+	RECT rect{};
+	GetClientRect( static_cast<HWND>( hWnd ), &rect );
+	View *pView = new View;
+	if ( !CreateView( *pView, static_cast<HWND>( hWnd ), rect.right - rect.left, rect.bottom - rect.top ) )
+	{
+		delete pView;
+		return false;
+	}
+	if ( !m_pCurrentView )
+	{
+		m_pCurrentView = pView;
+		m_nWidth = pView->width;
+		m_nHeight = pView->height;
+	}
+	m_Views.AddToTail( pView );
+	return true;
 }
 
+void CShaderDeviceDX12::RemoveView( void *hWnd )
+{
+	if ( !IsRecordingOwner() )
+		return;
+	FlushSubmissions();
+	for ( int i = 0; i < m_Views.Count(); ++i )
+		if ( m_Views[i]->hwnd == hWnd )
+		{
+			View *pView = m_Views[i];
+			if ( m_bRecording )
+				Submit( false );
+			if ( !WaitForFence( pView->lastFence ) )
+				return;
+			if ( pView->swap && !m_bWindowed )
+				pView->swap->SetFullscreenState( FALSE, nullptr );
+			if ( m_pCurrentView == pView )
+				m_pCurrentView = nullptr;
+			delete pView;
+			m_Views.Remove( i );
+			if ( !m_pCurrentView && !m_Views.IsEmpty() )
+				m_pCurrentView = m_Views[0];
+			m_nWidth = m_pCurrentView ? m_pCurrentView->width : 0;
+			m_nHeight = m_pCurrentView ? m_pCurrentView->height : 0;
+			return;
+		}
+}
+
+void CShaderDeviceDX12::SetView( void *hWnd )
+{
+	if ( !IsRecordingOwner() )
+		return;
+	FlushSubmissions();
+	if ( !hWnd )
+		hWnd = m_pWindow;
+	bool bFound = false;
+	for ( const View *pView : m_Views )
+		if ( pView->hwnd == hWnd )
+		{
+			bFound = true;
+			break;
+		}
+	if ( !bFound && hWnd && IsWindow( static_cast<HWND>( hWnd ) ) )
+	{
+		if ( !AddView( hWnd ) )
+			return;
+		bFound = true;
+	}
+	if ( !bFound )
+	{
+		Warning( "ShaderAPIDX12: SetView requires a valid HWND\n" );
+		return;
+	}
+	for ( View *pView : m_Views )
+		if ( pView->hwnd == hWnd )
+		{
+			if ( pView != m_pCurrentView && m_bRecording && !Submit( false ) )
+				return;
+			m_pCurrentView = pView;
+			m_nWidth = pView->width;
+			m_nHeight = pView->height;
+			return;
+		}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Claims / releases the single recording-owner thread
+//-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::AcquireRecordingOwnership()
 {
-    const DWORD thread = GetCurrentThreadId();
-    DWORD expected = 0;
-    if (ownerThread_.compare_exchange_strong(expected, thread, std::memory_order_acq_rel) || expected == thread) return true;
-    Warning("ShaderAPIDX12: recording owner still active on another thread\n");
-    return false;
+	const unsigned nThread = GetCurrentThreadId();
+	// A failed claim can only observe our own id if this thread already owns recording.
+	if ( m_nOwnerThread.AssignIf( 0, nThread ) || m_nOwnerThread == nThread )
+		return true;
+	Warning( "ShaderAPIDX12: recording owner still active on another thread\n" );
+	return false;
 }
+
 void CShaderDeviceDX12::ReleaseRecordingOwnership()
 {
-    if(!IsRecordingOwner()) {Warning("ShaderAPIDX12: release recording owner from wrong thread\n");return;}
-    FlushSubmissions();
-    if(recording_)Submit(true);
-    ownerThread_.store(0, std::memory_order_release);
-}
-IShaderBuffer *CShaderDeviceDX12::CompileShader(const char *pProgram,size_t nBufLen,const char *pShaderVersion)
-{
-    if (!pProgram || !nBufLen) return nullptr;
-    if (nBufLen >= 4 && std::memcmp(pProgram, "DXBC", 4) == 0)
-        return new CShaderBufferDX12(pProgram, nBufLen);
-    if (!pShaderVersion || !*pShaderVersion) return nullptr;
-    Microsoft::WRL::ComPtr<ID3DBlob> code, errors;
-    const bool legacy = std::strlen(pShaderVersion) > 3 && pShaderVersion[3] < '4';
-    const UINT flags = (legacy ? D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY : D3DCOMPILE_ENABLE_STRICTNESS) | ((g_pHardwareConfigDX12 && g_pHardwareConfigDX12->DisableShaderOptimizations()) ? D3DCOMPILE_SKIP_OPTIMIZATION : 0);
-    HRESULT hr = D3DCompile(pProgram, nBufLen, "shaderapidx12", nullptr, nullptr, "main", pShaderVersion,
-        flags, 0, &code, &errors);
-    if (FAILED(hr))
-    {
-        if (errors) Warning("ShaderAPIDX12: shader compile failed: %s\n", static_cast<const char *>(errors->GetBufferPointer()));
-        else Warning("ShaderAPIDX12: shader compile failed (0x%08x)\n", static_cast<unsigned>(hr));
-        return nullptr;
-    }
-    return new CShaderBufferDX12(code->GetBufferPointer(), code->GetBufferSize());
+	if ( !IsRecordingOwner() )
+	{
+		Warning( "ShaderAPIDX12: release recording owner from wrong thread\n" );
+		return;
+	}
+	FlushSubmissions();
+	if ( m_bRecording )
+		Submit( true );
+	m_nOwnerThread = 0;
 }
 
-namespace
+//-----------------------------------------------------------------------------
+// Purpose: Wraps DXBC directly; compiles HLSL source with D3DCompile
+//-----------------------------------------------------------------------------
+IShaderBuffer *CShaderDeviceDX12::CompileShader( const char *pProgram, size_t nBufLen, const char *pShaderVersion )
 {
-template <typename T> T *CreateShaderRecord(IShaderBuffer *buffer,bool pixel)
-{
-    if (!buffer || !buffer->GetBits() || buffer->GetSize() < 4) return nullptr;
-    const unsigned char *bits = static_cast<const unsigned char *>(buffer->GetBits());
-    static std::atomic<uint64_t> nextIdentity{1};T *record = new T;record->identity=nextIdentity.fetch_add(1,std::memory_order_relaxed);record->stagePixel=pixel;
-    if (std::memcmp(bits,"DXBC",4)==0) record->bytecode.assign(bits,bits+buffer->GetSize());
-    else record->legacyBytecode.assign(bits,bits+buffer->GetSize());
-    return record;
+	if ( !pProgram || !nBufLen )
+		return nullptr;
+	if ( nBufLen >= 4 && memcmp( pProgram, "DXBC", 4 ) == 0 )
+		return new CShaderBufferDX12( pProgram, nBufLen );
+	if ( !pShaderVersion || !*pShaderVersion )
+		return nullptr;
+	Microsoft::WRL::ComPtr<ID3DBlob> code, errors;
+	const bool bLegacy = V_strlen( pShaderVersion ) > 3 && pShaderVersion[3] < '4';
+	const UINT nFlags = ( bLegacy ? D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY : D3DCOMPILE_ENABLE_STRICTNESS ) | ( ( g_pHardwareConfigDX12 && g_pHardwareConfigDX12->DisableShaderOptimizations() ) ? D3DCOMPILE_SKIP_OPTIMIZATION : 0 );
+	HRESULT hr = D3DCompile( pProgram, nBufLen, "shaderapidx12", nullptr, nullptr, "main", pShaderVersion,
+	    nFlags, 0, &code, &errors );
+	if ( FAILED( hr ) )
+	{
+		if ( errors )
+			Warning( "ShaderAPIDX12: shader compile failed: %s\n", static_cast<const char *>( errors->GetBufferPointer() ) );
+		else
+			Warning( "ShaderAPIDX12: shader compile failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		return nullptr;
+	}
+	return new CShaderBufferDX12( code->GetBufferPointer(), code->GetBufferSize() );
 }
-} // namespace
 
-VertexShaderHandle_t CShaderDeviceDX12::CreateVertexShader(IShaderBuffer *buffer)
+//-----------------------------------------------------------------------------
+// Purpose: Allocates a shader record holding a copy of the DXBC or legacy (VCS) bytecode
+//-----------------------------------------------------------------------------
+static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool bPixel )
 {
-    return reinterpret_cast<VertexShaderHandle_t>(CreateShaderRecord<ShaderRecordDX12>(buffer,false));
+	if ( !pShaderBuffer || !pShaderBuffer->GetBits() || pShaderBuffer->GetSize() < 4 )
+		return nullptr;
+	const unsigned char *pBits = static_cast<const unsigned char *>( pShaderBuffer->GetBits() );
+	const int nBytes = static_cast<int>( pShaderBuffer->GetSize() );
+	static CInterlockedIntT<uint64> s_nNextIdentity( 1 );
+	ShaderRecordDX12 *pRecord = new ShaderRecordDX12;
+	pRecord->identity = s_nNextIdentity.AtomicAdd( 1 );
+	pRecord->stagePixel = bPixel;
+	if ( memcmp( pBits, "DXBC", 4 ) == 0 )
+		pRecord->bytecode.CopyArray( pBits, nBytes );
+	else
+		pRecord->legacyBytecode.CopyArray( pBits, nBytes );
+	return pRecord;
 }
-void CShaderDeviceDX12::DestroyVertexShader(VertexShaderHandle_t hShader) { auto *record=reinterpret_cast<ShaderRecordDX12 *>(hShader);if(g_pShaderAPIDX12)g_pShaderAPIDX12->RetireShaderPipelines(record);delete record; }
-GeometryShaderHandle_t CShaderDeviceDX12::CreateGeometryShader(IShaderBuffer *buffer)
-{
-    ShaderRecordDX12 *record=CreateShaderRecord<ShaderRecordDX12>(buffer,false);if(record)record->stageGeometry=true;return reinterpret_cast<GeometryShaderHandle_t>(record);
-}
-void CShaderDeviceDX12::DestroyGeometryShader(GeometryShaderHandle_t hShader) { auto *record=reinterpret_cast<ShaderRecordDX12 *>(hShader);if(g_pShaderAPIDX12)g_pShaderAPIDX12->RetireShaderPipelines(record);delete record; }
-PixelShaderHandle_t CShaderDeviceDX12::CreatePixelShader(IShaderBuffer *buffer)
-{
-    return reinterpret_cast<PixelShaderHandle_t>(CreateShaderRecord<ShaderRecordDX12>(buffer,true));
-}
-void CShaderDeviceDX12::DestroyPixelShader(PixelShaderHandle_t hShader) { auto *record=reinterpret_cast<ShaderRecordDX12 *>(hShader);if(g_pShaderAPIDX12)g_pShaderAPIDX12->RetireShaderPipelines(record);delete record; }
 
-IMesh *CShaderDeviceDX12::CreateStaticMesh(VertexFormat_t format,const char *,IMaterial *)
+//-----------------------------------------------------------------------------
+// Purpose: Shader handles are ShaderRecordDX12 pointers; destruction retires dependent pipelines first
+//-----------------------------------------------------------------------------
+VertexShaderHandle_t CShaderDeviceDX12::CreateVertexShader( IShaderBuffer *pShaderBuffer )
 {
-    return new CMeshDX12(format,0,false,+[](void *, CMeshDX12 *mesh,int first,int count){if(g_pShaderAPIDX12)g_pShaderAPIDX12->DrawMaterialMesh(mesh,first,count);},nullptr);
+	return reinterpret_cast<VertexShaderHandle_t>( CreateShaderRecord( pShaderBuffer, false ) );
 }
-void CShaderDeviceDX12::DestroyStaticMesh(IMesh *mesh) { delete mesh; }
-IVertexBuffer *CShaderDeviceDX12::CreateVertexBuffer(ShaderBufferType_t type,VertexFormat_t fmt,int nVertexCount,const char *)
+
+void CShaderDeviceDX12::DestroyVertexShader( VertexShaderHandle_t hShader )
 {
-    return new CVertexBufferDX12(fmt, nVertexCount, IsDynamicBufferType(type));
+	ShaderRecordDX12 *pRecord = reinterpret_cast<ShaderRecordDX12 *>( hShader );
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->RetireShaderPipelines( pRecord );
+	delete pRecord;
 }
-void CShaderDeviceDX12::DestroyVertexBuffer(IVertexBuffer *buffer) { delete buffer; }
-IIndexBuffer *CShaderDeviceDX12::CreateIndexBuffer(ShaderBufferType_t type,MaterialIndexFormat_t fmt,int nIndexCount,const char *)
+
+GeometryShaderHandle_t CShaderDeviceDX12::CreateGeometryShader( IShaderBuffer *pShaderBuffer )
 {
-    return new CIndexBufferDX12(fmt, nIndexCount, IsDynamicBufferType(type));
+	ShaderRecordDX12 *pRecord = CreateShaderRecord( pShaderBuffer, false );
+	if ( pRecord )
+		pRecord->stageGeometry = true;
+	return reinterpret_cast<GeometryShaderHandle_t>( pRecord );
 }
-void CShaderDeviceDX12::DestroyIndexBuffer(IIndexBuffer *buffer) { delete buffer; }
-IVertexBuffer *CShaderDeviceDX12::GetDynamicVertexBuffer(int stream,VertexFormat_t fmt,bool buffered)
+
+void CShaderDeviceDX12::DestroyGeometryShader( GeometryShaderHandle_t hShader )
 {
-    if (stream < 0 || stream >= 32) return nullptr;
-    auto &buffer = dynamicVertices_[stream * 2 + (buffered ? 1 : 0)];
-    if (!buffer) buffer = std::make_unique<CVertexBufferDX12>(fmt, 65536, true);
-    else if (buffer->GetVertexFormat() != fmt) buffer->BeginCastBuffer(fmt);
-    return buffer.get();
+	ShaderRecordDX12 *pRecord = reinterpret_cast<ShaderRecordDX12 *>( hShader );
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->RetireShaderPipelines( pRecord );
+	delete pRecord;
 }
-IIndexBuffer *CShaderDeviceDX12::GetDynamicIndexBuffer(MaterialIndexFormat_t fmt,bool buffered)
+
+PixelShaderHandle_t CShaderDeviceDX12::CreatePixelShader( IShaderBuffer *pShaderBuffer )
 {
-    if (fmt != MATERIAL_INDEX_FORMAT_16BIT && fmt != MATERIAL_INDEX_FORMAT_32BIT) return nullptr;
-    auto &buffer = dynamicIndices_[(fmt == MATERIAL_INDEX_FORMAT_32BIT ? 2 : 0) + (buffered ? 1 : 0)];
-    if (!buffer) buffer = std::make_unique<CIndexBufferDX12>(fmt, 65536, true);
-    return buffer.get();
+	return reinterpret_cast<PixelShaderHandle_t>( CreateShaderRecord( pShaderBuffer, true ) );
 }
+
+void CShaderDeviceDX12::DestroyPixelShader( PixelShaderHandle_t hShader )
+{
+	ShaderRecordDX12 *pRecord = reinterpret_cast<ShaderRecordDX12 *>( hShader );
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->RetireShaderPipelines( pRecord );
+	delete pRecord;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Draw callback of static meshes; renders through the shader API's material path
+//-----------------------------------------------------------------------------
+static void DrawStaticMesh( void *, CMeshDX12 *pMesh, int nFirst, int nCount )
+{
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->DrawMaterialMesh( pMesh, nFirst, nCount );
+}
+
+//-----------------------------------------------------------------------------
+// Mesh and buffer creation
+//-----------------------------------------------------------------------------
+IMesh *CShaderDeviceDX12::CreateStaticMesh( VertexFormat_t vertexFormat, const char *, IMaterial * )
+{
+	return new CMeshDX12( vertexFormat, 0, false, DrawStaticMesh, nullptr );
+}
+
+void CShaderDeviceDX12::DestroyStaticMesh( IMesh *pMesh )
+{
+	delete pMesh;
+}
+
+IVertexBuffer *CShaderDeviceDX12::CreateVertexBuffer( ShaderBufferType_t type, VertexFormat_t fmt, int nVertexCount, const char * )
+{
+	return new CVertexBufferDX12( fmt, nVertexCount, IsDynamicBufferType( type ) );
+}
+
+void CShaderDeviceDX12::DestroyVertexBuffer( IVertexBuffer *pBuffer )
+{
+	delete pBuffer;
+}
+
+IIndexBuffer *CShaderDeviceDX12::CreateIndexBuffer( ShaderBufferType_t type, MaterialIndexFormat_t fmt, int nIndexCount, const char * )
+{
+	return new CIndexBufferDX12( fmt, nIndexCount, IsDynamicBufferType( type ) );
+}
+
+void CShaderDeviceDX12::DestroyIndexBuffer( IIndexBuffer *pBuffer )
+{
+	delete pBuffer;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Shared dynamic buffers, created on first use per stream/format and buffering mode
+//-----------------------------------------------------------------------------
+IVertexBuffer *CShaderDeviceDX12::GetDynamicVertexBuffer( int nStreamID, VertexFormat_t vertexFormat, bool bBuffered )
+{
+	if ( nStreamID < 0 || nStreamID >= 32 )
+		return nullptr;
+	CVertexBufferDX12 *&pBuffer = m_pDynamicVertices[nStreamID * 2 + ( bBuffered ? 1 : 0 )];
+	if ( !pBuffer )
+		pBuffer = new CVertexBufferDX12( vertexFormat, 65536, true );
+	else if ( pBuffer->GetVertexFormat() != vertexFormat )
+		pBuffer->BeginCastBuffer( vertexFormat );
+	return pBuffer;
+}
+
+IIndexBuffer *CShaderDeviceDX12::GetDynamicIndexBuffer( MaterialIndexFormat_t fmt, bool bBuffered )
+{
+	if ( fmt != MATERIAL_INDEX_FORMAT_16BIT && fmt != MATERIAL_INDEX_FORMAT_32BIT )
+		return nullptr;
+	CIndexBufferDX12 *&pBuffer = m_pDynamicIndices[( fmt == MATERIAL_INDEX_FORMAT_32BIT ? 2 : 0 ) + ( bBuffered ? 1 : 0 )];
+	if ( !pBuffer )
+		pBuffer = new CIndexBufferDX12( fmt, 65536, true );
+	return pBuffer;
+}
+
 // These callbacks tick a console front buffer during loading; Windows has no such path.
-void CShaderDeviceDX12::EnableNonInteractiveMode(MaterialNonInteractiveMode_t,ShaderNonInteractiveInfo_t *) {}
+void CShaderDeviceDX12::EnableNonInteractiveMode( MaterialNonInteractiveMode_t, ShaderNonInteractiveInfo_t * ) {}
+
 void CShaderDeviceDX12::RefreshFrontBufferNonInteractive() {}
-void CShaderDeviceDX12::HandleThreadEvent(uint32 threadEvent)
+
+//-----------------------------------------------------------------------------
+// Purpose: Runs a host-queued device event on the recording owner
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::HandleThreadEvent( uint32 threadEvent )
 {
-    if (!IsRecordingOwner()) { Warning("ShaderAPIDX12: queued device event executed on non-owner thread\n"); return; }
-    switch (threadEvent)
-    {
-    case SHADER_THREAD_RELEASE_RESOURCES:
-    case SHADER_THREAD_OTHER_APP_START: ReleaseResources(); break;
-    case SHADER_THREAD_ACQUIRE_RESOURCES:
-    case SHADER_THREAD_OTHER_APP_END: ReacquireResources(); break;
-    case SHADER_THREAD_EVICT_RESOURCES: if (g_pShaderAPIDX12) g_pShaderAPIDX12->EvictManagedResources(); break;
-    case SHADER_THREAD_RESET_RENDER_STATE: if (g_pShaderAPIDX12) g_pShaderAPIDX12->ResetRenderState(); break;
-    case SHADER_THREAD_DEVICE_LOST: FailDevice("host device-lost event", device_ ? device_->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED); break;
-    default: Warning("ShaderAPIDX12: unknown thread event %u\n", threadEvent); break;
-    }
-}
-void CShaderDeviceDX12::GetWindowSize(int &width, int &height) const
-{
-    RECT rect{};
-    if (currentView_) GetClientRect(currentView_->hwnd, &rect);
-    width = rect.right - rect.left;
-    height = rect.bottom - rect.top;
+	if ( !IsRecordingOwner() )
+	{
+		Warning( "ShaderAPIDX12: queued device event executed on non-owner thread\n" );
+		return;
+	}
+	switch ( threadEvent )
+	{
+	case SHADER_THREAD_RELEASE_RESOURCES:
+	case SHADER_THREAD_OTHER_APP_START:
+		ReleaseResources();
+		break;
+	case SHADER_THREAD_ACQUIRE_RESOURCES:
+	case SHADER_THREAD_OTHER_APP_END:
+		ReacquireResources();
+		break;
+	case SHADER_THREAD_EVICT_RESOURCES:
+		if ( g_pShaderAPIDX12 )
+			g_pShaderAPIDX12->EvictManagedResources();
+		break;
+	case SHADER_THREAD_RESET_RENDER_STATE:
+		if ( g_pShaderAPIDX12 )
+			g_pShaderAPIDX12->ResetRenderState();
+		break;
+	case SHADER_THREAD_DEVICE_LOST:
+		FailDevice( "host device-lost event", m_pDevice ? m_pDevice->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED );
+		break;
+	default:
+		Warning( "ShaderAPIDX12: unknown thread event %u\n", threadEvent );
+		break;
+	}
 }
 
+void CShaderDeviceDX12::GetWindowSize( int &nWidth, int &nHeight ) const
+{
+	RECT rect{};
+	if ( m_pCurrentView )
+		GetClientRect( m_pCurrentView->hwnd, &rect );
+	nWidth = rect.right - rect.left;
+	nHeight = rect.bottom - rect.top;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: UTF-8 name of the output showing the current view (or of the adapter's first output)
+//-----------------------------------------------------------------------------
 char *CShaderDeviceDX12::GetDisplayDeviceName()
 {
-    Microsoft::WRL::ComPtr<IDXGIOutput> output;
-    if (currentView_ && currentView_->swap) currentView_->swap->GetContainingOutput(&output);
-    if (!output && g_pShaderDeviceMgrDX12 && !g_pShaderDeviceMgrDX12->Adapters().empty())
-    {
-        const size_t index = adapterIndex_ >= 0 ? static_cast<size_t>(adapterIndex_) : 0;
-        if (index < g_pShaderDeviceMgrDX12->Adapters().size()) g_pShaderDeviceMgrDX12->Adapters()[index]->EnumOutputs(0, &output);
-    }
-    DXGI_OUTPUT_DESC desc{};
-    displayDeviceName_[0] = 0;
-    if (output && SUCCEEDED(output->GetDesc(&desc))) WideCharToMultiByte(CP_UTF8, 0, desc.DeviceName, -1, displayDeviceName_.data(), static_cast<int>(displayDeviceName_.size()), nullptr, nullptr);
-    return displayDeviceName_.data();
+	Microsoft::WRL::ComPtr<IDXGIOutput> output;
+	if ( m_pCurrentView && m_pCurrentView->swap )
+		m_pCurrentView->swap->GetContainingOutput( &output );
+	if ( !output && g_pShaderDeviceMgrDX12 )
+	{
+		const int nIndex = m_nAdapterIndex >= 0 ? m_nAdapterIndex : 0;
+		if ( nIndex < g_pShaderDeviceMgrDX12->Adapters().Count() )
+			g_pShaderDeviceMgrDX12->Adapters()[nIndex]->EnumOutputs( 0, &output );
+	}
+	DXGI_OUTPUT_DESC desc{};
+	m_szDisplayDeviceName[0] = 0;
+	if ( output && SUCCEEDED( output->GetDesc( &desc ) ) )
+		WideCharToMultiByte( CP_UTF8, 0, desc.DeviceName, -1, m_szDisplayDeviceName, sizeof( m_szDisplayDeviceName ), nullptr, nullptr );
+	return m_szDisplayDeviceName;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Releases the reference each adapter entry holds and empties the list
+//-----------------------------------------------------------------------------
+static void ReleaseAdapters( CUtlVector<IDXGIAdapter1 *> &adapters )
+{
+	for ( IDXGIAdapter1 *pAdapter : adapters )
+		pAdapter->Release();
+	adapters.RemoveAll();
 }
 
 CShaderDeviceMgrDX12::CShaderDeviceMgrDX12() = default;
-CShaderDeviceMgrDX12::~CShaderDeviceMgrDX12() { Shutdown(); }
 
-bool CShaderDeviceMgrDX12::Connect(CreateInterfaceFn factory)
+CShaderDeviceMgrDX12::~CShaderDeviceMgrDX12()
 {
-    if (!factory) return false;
-    hostFactory_=factory;
-    filesystem_=static_cast<IFileSystem *>(factory(FILESYSTEM_INTERFACE_VERSION,nullptr));
-    shaderUtil_=static_cast<IShaderUtil *>(factory(SHADER_UTIL_INTERFACE_VERSION,nullptr));
-    if (!filesystem_ || !shaderUtil_) { Warning("ShaderAPIDX12: required host filesystem/shader utility interface missing\n");hostFactory_=nullptr;filesystem_=nullptr;shaderUtil_=nullptr;return false; }
-    ConnectTier1Libraries(&factory, 1);
-    ConnectTier2Libraries(&factory, 1);
-    // Registers this module's development commands (shader_precache) with the host cvar system. FCVAR_CHEAT gates
-    // them behind sv_cheats; FCVAR_DEVELOPMENTONLY would make retail engines reject them outright (cmd.cpp:1036).
-    if (g_pCVar) ConVar_Register(FCVAR_CHEAT);
-    MathLib_Init(2.2f, 2.2f, 0.0f, 2);
-    dxSupport_.Load(filesystem_); // Malformed profiles log and leave hardware-derived caps intact.
-    return true;
+	Shutdown();
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Resolves the host filesystem/shader utility and connects tier1/tier2
+//-----------------------------------------------------------------------------
+bool CShaderDeviceMgrDX12::Connect( CreateInterfaceFn factory )
+{
+	if ( !factory )
+		return false;
+	m_pfnHostFactory = factory;
+	m_pFilesystem = static_cast<IFileSystem *>( factory( FILESYSTEM_INTERFACE_VERSION, nullptr ) );
+	m_pShaderUtil = static_cast<IShaderUtil *>( factory( SHADER_UTIL_INTERFACE_VERSION, nullptr ) );
+	if ( !m_pFilesystem || !m_pShaderUtil )
+	{
+		Warning( "ShaderAPIDX12: required host filesystem/shader utility interface missing\n" );
+		m_pfnHostFactory = nullptr;
+		m_pFilesystem = nullptr;
+		m_pShaderUtil = nullptr;
+		return false;
+	}
+	ConnectTier1Libraries( &factory, 1 );
+	ConnectTier2Libraries( &factory, 1 );
+	// Registers this module's development commands (shader_precache) with the host cvar system. FCVAR_CHEAT gates
+	// them behind sv_cheats; FCVAR_DEVELOPMENTONLY would make retail engines reject them outright (cmd.cpp:1036).
+	if ( g_pCVar )
+		ConVar_Register( FCVAR_CHEAT );
+	MathLib_Init( 2.2f, 2.2f, 0.0f, 2 );
+	m_DxSupport.Load( m_pFilesystem ); // Malformed profiles log and leave hardware-derived caps intact.
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Shuts down and disconnects the tier libraries connected in Connect
+//-----------------------------------------------------------------------------
 void CShaderDeviceMgrDX12::Disconnect()
 {
-    Shutdown();
-    dxSupport_.Clear();
-    if (hostFactory_) { if (g_pCVar) ConVar_Unregister(); DisconnectTier2Libraries(); DisconnectTier1Libraries(); }
-    filesystem_ = nullptr; shaderUtil_ = nullptr; hostFactory_ = nullptr;
+	Shutdown();
+	m_DxSupport.Clear();
+	if ( m_pfnHostFactory )
+	{
+		if ( g_pCVar )
+			ConVar_Unregister();
+		DisconnectTier2Libraries();
+		DisconnectTier1Libraries();
+	}
+	m_pFilesystem = nullptr;
+	m_pShaderUtil = nullptr;
+	m_pfnHostFactory = nullptr;
 }
-void *CShaderDeviceMgrDX12::QueryInterface(const char *name)
+
+void *CShaderDeviceMgrDX12::QueryInterface( const char *pszName )
 {
-    return name ? Sys_GetFactoryThis()(name, nullptr) : nullptr;
+	return pszName ? Sys_GetFactoryThis()( pszName, nullptr ) : nullptr;
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Enumerates hardware adapters (plus WARP with -dx12warp), their caps and display modes
+//-----------------------------------------------------------------------------
 InitReturnVal_t CShaderDeviceMgrDX12::Init()
 {
-    adapters_.clear();adapterInfo_.clear();adapterCaps_.clear();adapterModes_.clear();const bool allowWarp=CommandLine()&&CommandLine()->CheckParm("-dx12warp");
-    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;HRESULT hr=CreateDXGIFactory2(0,IID_PPV_ARGS(&factory));if(FAILED(hr)){Warning("ShaderAPIDX12: adapter factory failed (0x%08x)\n",static_cast<unsigned>(hr));return INIT_FAILED;}
-    for(UINT i=0;;++i)
-    {
-        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;const HRESULT enumResult=factory->EnumAdapters1(i,&adapter);if(enumResult==DXGI_ERROR_NOT_FOUND)break;if(FAILED(enumResult)){Warning("ShaderAPIDX12: adapter enumeration failed (0x%08x)\n",static_cast<unsigned>(enumResult));return INIT_FAILED;}
-        DXGI_ADAPTER_DESC1 desc{};if(FAILED(adapter->GetDesc1(&desc))||(desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE))continue;
-        adapters_.push_back(adapter);MaterialAdapterInfo_t info{};WideCharToMultiByte(CP_UTF8,0,desc.Description,-1,info.m_pDriverName,sizeof(info.m_pDriverName),nullptr,nullptr);info.m_VendorID=desc.VendorId;info.m_DeviceID=desc.DeviceId;info.m_SubSysID=desc.SubSysId;info.m_Revision=desc.Revision;
-        DXSupportCapsDX12 caps{};caps.vendor=desc.VendorId;caps.device=desc.DeviceId;caps.memory=desc.DedicatedVideoMemory;dxSupport_.ReadDXSupportLevels(caps);info.m_nDXSupportLevel=caps.recommended;info.m_nMaxDXSupportLevel=caps.max;adapterInfo_.push_back(info);adapterCaps_.push_back(caps);
-    }
-    if(allowWarp)
-    {
-        Microsoft::WRL::ComPtr<IDXGIAdapter> warpBase;if(SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warpBase))))
-        {
-            Microsoft::WRL::ComPtr<IDXGIAdapter1> warp;if(SUCCEEDED(warpBase.As(&warp))){DXGI_ADAPTER_DESC1 desc{};if(SUCCEEDED(warp->GetDesc1(&desc))){adapters_.push_back(warp);MaterialAdapterInfo_t info{};WideCharToMultiByte(CP_UTF8,0,desc.Description,-1,info.m_pDriverName,sizeof(info.m_pDriverName),nullptr,nullptr);info.m_VendorID=desc.VendorId;info.m_DeviceID=desc.DeviceId;info.m_SubSysID=desc.SubSysId;info.m_Revision=desc.Revision;DXSupportCapsDX12 caps{};caps.vendor=desc.VendorId;caps.device=desc.DeviceId;caps.memory=desc.DedicatedVideoMemory;dxSupport_.ReadDXSupportLevels(caps);info.m_nDXSupportLevel=caps.recommended;info.m_nMaxDXSupportLevel=caps.max;adapterInfo_.push_back(info);adapterCaps_.push_back(caps);}}
-        }
-    }
-    adapterModes_.resize(adapters_.size());
-    for (size_t index = 0; index < adapters_.size(); ++index)
-    {
-        Microsoft::WRL::ComPtr<IDXGIOutput> output;
-        for (UINT outputIndex = 0; ; ++outputIndex)
-        {
-            Microsoft::WRL::ComPtr<IDXGIOutput> candidate;
-            if (adapters_[index]->EnumOutputs(outputIndex, &candidate) == DXGI_ERROR_NOT_FOUND) break;
-            if (!candidate) continue;
-            DXGI_OUTPUT_DESC desc{};
-            if (FAILED(candidate->GetDesc(&desc)) || !desc.AttachedToDesktop) continue;
-            output = candidate;
-            break;
-        }
-        if (!output && FAILED(adapters_[index]->EnumOutputs(0, &output)))
-        {
-            DEVMODEW desktop{}; desktop.dmSize = sizeof(desktop);
-            ShaderDisplayMode_t mode; mode.m_Format = IMAGE_FORMAT_UNKNOWN;
-            if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &desktop))
-            {
-                mode.m_nWidth = desktop.dmPelsWidth; mode.m_nHeight = desktop.dmPelsHeight;
-                mode.m_nRefreshRateNumerator = desktop.dmDisplayFrequency; mode.m_nRefreshRateDenominator = 1;
-            }
-            else
-            {
-                mode.m_nWidth = GetSystemMetrics(SM_CXSCREEN); mode.m_nHeight = GetSystemMetrics(SM_CYSCREEN);
-                mode.m_nRefreshRateNumerator = mode.m_nRefreshRateDenominator = 0;
-            }
-            if (mode.m_nWidth > 0 && mode.m_nHeight > 0) adapterModes_[index].push_back(mode);
-            continue;
-        }
+	ReleaseAdapters( m_pAdapters );
+	m_AdapterInfo.RemoveAll();
+	m_AdapterCaps.RemoveAll();
+	m_AdapterModes.RemoveAll();
+	const bool bAllowWarp = CommandLine() && CommandLine()->CheckParm( "-dx12warp" );
+	Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+	HRESULT hr = CreateDXGIFactory2( 0, IID_PPV_ARGS( &factory ) );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: adapter factory failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		return INIT_FAILED;
+	}
+	for ( UINT i = 0;; ++i )
+	{
+		Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+		const HRESULT hrEnum = factory->EnumAdapters1( i, &adapter );
+		if ( hrEnum == DXGI_ERROR_NOT_FOUND )
+			break;
+		if ( FAILED( hrEnum ) )
+		{
+			Warning( "ShaderAPIDX12: adapter enumeration failed (0x%08x)\n", static_cast<unsigned>( hrEnum ) );
+			return INIT_FAILED;
+		}
+		DXGI_ADAPTER_DESC1 desc{};
+		if ( FAILED( adapter->GetDesc1( &desc ) ) || ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) )
+			continue;
+		m_pAdapters.AddToTail( adapter.Detach() );
+		MaterialAdapterInfo_t info{};
+		WideCharToMultiByte( CP_UTF8, 0, desc.Description, -1, info.m_pDriverName, sizeof( info.m_pDriverName ), nullptr, nullptr );
+		info.m_VendorID = desc.VendorId;
+		info.m_DeviceID = desc.DeviceId;
+		info.m_SubSysID = desc.SubSysId;
+		info.m_Revision = desc.Revision;
+		DXSupportCapsDX12 caps{};
+		caps.vendor = desc.VendorId;
+		caps.device = desc.DeviceId;
+		caps.memory = desc.DedicatedVideoMemory;
+		m_DxSupport.ReadDXSupportLevels( caps );
+		info.m_nDXSupportLevel = caps.recommended;
+		info.m_nMaxDXSupportLevel = caps.max;
+		m_AdapterInfo.AddToTail( info );
+		m_AdapterCaps.AddToTail( caps );
+	}
+	if ( bAllowWarp )
+	{
+		Microsoft::WRL::ComPtr<IDXGIAdapter> warpBase;
+		if ( SUCCEEDED( factory->EnumWarpAdapter( IID_PPV_ARGS( &warpBase ) ) ) )
+		{
+			Microsoft::WRL::ComPtr<IDXGIAdapter1> warp;
+			if ( SUCCEEDED( warpBase.As( &warp ) ) )
+			{
+				DXGI_ADAPTER_DESC1 desc{};
+				if ( SUCCEEDED( warp->GetDesc1( &desc ) ) )
+				{
+					m_pAdapters.AddToTail( warp.Detach() );
+					MaterialAdapterInfo_t info{};
+					WideCharToMultiByte( CP_UTF8, 0, desc.Description, -1, info.m_pDriverName, sizeof( info.m_pDriverName ), nullptr, nullptr );
+					info.m_VendorID = desc.VendorId;
+					info.m_DeviceID = desc.DeviceId;
+					info.m_SubSysID = desc.SubSysId;
+					info.m_Revision = desc.Revision;
+					DXSupportCapsDX12 caps{};
+					caps.vendor = desc.VendorId;
+					caps.device = desc.DeviceId;
+					caps.memory = desc.DedicatedVideoMemory;
+					m_DxSupport.ReadDXSupportLevels( caps );
+					info.m_nDXSupportLevel = caps.recommended;
+					info.m_nMaxDXSupportLevel = caps.max;
+					m_AdapterInfo.AddToTail( info );
+					m_AdapterCaps.AddToTail( caps );
+				}
+			}
+		}
+	}
+	m_AdapterModes.SetCount( m_pAdapters.Count() );
+	for ( int nIndex = 0; nIndex < m_pAdapters.Count(); ++nIndex )
+	{
+		Microsoft::WRL::ComPtr<IDXGIOutput> output;
+		for ( UINT nOutput = 0;; ++nOutput )
+		{
+			Microsoft::WRL::ComPtr<IDXGIOutput> candidate;
+			if ( m_pAdapters[nIndex]->EnumOutputs( nOutput, &candidate ) == DXGI_ERROR_NOT_FOUND )
+				break;
+			if ( !candidate )
+				continue;
+			DXGI_OUTPUT_DESC desc{};
+			if ( FAILED( candidate->GetDesc( &desc ) ) || !desc.AttachedToDesktop )
+				continue;
+			output = candidate;
+			break;
+		}
+		if ( !output && FAILED( m_pAdapters[nIndex]->EnumOutputs( 0, &output ) ) )
+		{
+			DEVMODEW desktop{};
+			desktop.dmSize = sizeof( desktop );
+			ShaderDisplayMode_t mode;
+			mode.m_Format = IMAGE_FORMAT_UNKNOWN;
+			if ( EnumDisplaySettingsW( nullptr, ENUM_CURRENT_SETTINGS, &desktop ) )
+			{
+				mode.m_nWidth = desktop.dmPelsWidth;
+				mode.m_nHeight = desktop.dmPelsHeight;
+				mode.m_nRefreshRateNumerator = desktop.dmDisplayFrequency;
+				mode.m_nRefreshRateDenominator = 1;
+			}
+			else
+			{
+				mode.m_nWidth = GetSystemMetrics( SM_CXSCREEN );
+				mode.m_nHeight = GetSystemMetrics( SM_CYSCREEN );
+				mode.m_nRefreshRateNumerator = mode.m_nRefreshRateDenominator = 0;
+			}
+			if ( mode.m_nWidth > 0 && mode.m_nHeight > 0 )
+				m_AdapterModes[nIndex].AddToTail( mode );
+			continue;
+		}
 
-        UINT count = 0;
-        DXGI_FORMAT modeFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-        HRESULT modeResult = output->GetDisplayModeList(modeFormat, 0, &count, nullptr);
-        if (FAILED(modeResult) || count == 0)
-        {
-            modeFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-            count = 0;
-            modeResult = output->GetDisplayModeList(modeFormat, 0, &count, nullptr);
-        }
-        if (FAILED(modeResult) || count == 0)
-        {
-            modeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-            count = 0;
-            modeResult = output->GetDisplayModeList(modeFormat, 0, &count, nullptr);
-        }
-        if (FAILED(modeResult) || count == 0) continue;
+		UINT nCount = 0;
+		DXGI_FORMAT modeFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+		HRESULT hrMode = output->GetDisplayModeList( modeFormat, 0, &nCount, nullptr );
+		if ( FAILED( hrMode ) || nCount == 0 )
+		{
+			modeFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+			nCount = 0;
+			hrMode = output->GetDisplayModeList( modeFormat, 0, &nCount, nullptr );
+		}
+		if ( FAILED( hrMode ) || nCount == 0 )
+		{
+			modeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+			nCount = 0;
+			hrMode = output->GetDisplayModeList( modeFormat, 0, &nCount, nullptr );
+		}
+		if ( FAILED( hrMode ) || nCount == 0 )
+			continue;
 
-        std::vector<DXGI_MODE_DESC> modes(count);
-        if (FAILED(output->GetDisplayModeList(modeFormat, 0, &count, modes.data()))) continue;
-        auto &dest = adapterModes_[index];
-        dest.reserve(count);
-        for (UINT i = 0; i < count; ++i)
-        {
-            ShaderDisplayMode_t mode;
-            mode.m_nWidth = modes[i].Width;
-            mode.m_nHeight = modes[i].Height;
-            mode.m_Format = IMAGE_FORMAT_UNKNOWN;
-            mode.m_nRefreshRateNumerator = modes[i].RefreshRate.Numerator;
-            mode.m_nRefreshRateDenominator = modes[i].RefreshRate.Denominator;
-            if (mode.m_nWidth > 0 && mode.m_nHeight > 0) dest.push_back(mode);
-        }
-        if (adapterModes_[index].empty())
-        {
-            DEVMODEW desktop{};
-            desktop.dmSize = sizeof(desktop);
-            ShaderDisplayMode_t mode;
-            if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &desktop))
-            {
-                mode.m_nWidth = desktop.dmPelsWidth;
-                mode.m_nHeight = desktop.dmPelsHeight;
-                mode.m_nRefreshRateNumerator = desktop.dmDisplayFrequency;
-                mode.m_nRefreshRateDenominator = 1;
-            }
-            else
-            {
-                mode.m_nWidth = GetSystemMetrics(SM_CXSCREEN);
-                mode.m_nHeight = GetSystemMetrics(SM_CYSCREEN);
-                mode.m_nRefreshRateNumerator = 0;
-                mode.m_nRefreshRateDenominator = 0;
-            }
-            mode.m_Format = IMAGE_FORMAT_UNKNOWN;
-            if (mode.m_nWidth > 0 && mode.m_nHeight > 0) adapterModes_[index].push_back(mode);
-        }
-    }
-    if(adapters_.empty())return INIT_FAILED;
+		CUtlVector<DXGI_MODE_DESC> modes;
+		modes.SetCount( static_cast<int>( nCount ) );
+		if ( FAILED( output->GetDisplayModeList( modeFormat, 0, &nCount, modes.Base() ) ) )
+			continue;
+		CUtlVector<ShaderDisplayMode_t> &dest = m_AdapterModes[nIndex];
+		dest.EnsureCapacity( static_cast<int>( nCount ) );
+		for ( UINT i = 0; i < nCount; ++i )
+		{
+			ShaderDisplayMode_t mode;
+			mode.m_nWidth = modes[i].Width;
+			mode.m_nHeight = modes[i].Height;
+			mode.m_Format = IMAGE_FORMAT_UNKNOWN;
+			mode.m_nRefreshRateNumerator = modes[i].RefreshRate.Numerator;
+			mode.m_nRefreshRateDenominator = modes[i].RefreshRate.Denominator;
+			if ( mode.m_nWidth > 0 && mode.m_nHeight > 0 )
+				dest.AddToTail( mode );
+		}
+		if ( m_AdapterModes[nIndex].IsEmpty() )
+		{
+			DEVMODEW desktop{};
+			desktop.dmSize = sizeof( desktop );
+			ShaderDisplayMode_t mode;
+			if ( EnumDisplaySettingsW( nullptr, ENUM_CURRENT_SETTINGS, &desktop ) )
+			{
+				mode.m_nWidth = desktop.dmPelsWidth;
+				mode.m_nHeight = desktop.dmPelsHeight;
+				mode.m_nRefreshRateNumerator = desktop.dmDisplayFrequency;
+				mode.m_nRefreshRateDenominator = 1;
+			}
+			else
+			{
+				mode.m_nWidth = GetSystemMetrics( SM_CXSCREEN );
+				mode.m_nHeight = GetSystemMetrics( SM_CYSCREEN );
+				mode.m_nRefreshRateNumerator = 0;
+				mode.m_nRefreshRateDenominator = 0;
+			}
+			mode.m_Format = IMAGE_FORMAT_UNKNOWN;
+			if ( mode.m_nWidth > 0 && mode.m_nHeight > 0 )
+				m_AdapterModes[nIndex].AddToTail( mode );
+		}
+	}
+	if ( m_pAdapters.IsEmpty() )
+		return INIT_FAILED;
 #ifdef TRACY_ENABLE
-    if(!TracyIsStarted)tracy::StartupProfiler();
+	if ( !TracyIsStarted )
+		tracy::StartupProfiler();
 #endif
-    return INIT_OK;
+	return INIT_OK;
 }
+
+//-----------------------------------------------------------------------------
+// Purpose: Releases the device and adapter lists; stops the profiler
+//-----------------------------------------------------------------------------
 void CShaderDeviceMgrDX12::Shutdown()
 {
-    if (g_pShaderAPIDX12) g_pShaderAPIDX12->ShutdownDeviceResources();
-    device_.ShutdownDevice();
-    adapters_.clear(); adapterInfo_.clear(); adapterCaps_.clear(); adapterModes_.clear(); currentAdapter_=-1;
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->ShutdownDeviceResources();
+	m_Device.ShutdownDevice();
+	ReleaseAdapters( m_pAdapters );
+	m_AdapterInfo.RemoveAll();
+	m_AdapterCaps.RemoveAll();
+	m_AdapterModes.RemoveAll();
+	m_nCurrentAdapter = -1;
 #ifdef TRACY_ENABLE
-    // Join profiler workers before FreeLibrary acquires the Windows loader lock.
-    g_tracyZonesActiveDX12.store(false, std::memory_order_relaxed);
-    if(TracyIsStarted)tracy::ShutdownProfiler();
+	// Join profiler workers before FreeLibrary acquires the Windows loader lock.
+	g_bTracyZonesActiveDX12 = 0;
+	if ( TracyIsStarted )
+		tracy::ShutdownProfiler();
 #endif
 }
-void CShaderDeviceMgrDX12::GetAdapterInfo(int nAdapter,MaterialAdapterInfo_t &info) const { std::memset(&info,0,sizeof(info));if(nAdapter>=0&&nAdapter<(int)adapterInfo_.size())info=adapterInfo_[nAdapter]; }
-bool CShaderDeviceMgrDX12::GetRecommendedConfigurationInfo(int nAdapter,int nDXLevel,KeyValues *configuration)
+
+//-----------------------------------------------------------------------------
+// Adapter and display mode queries
+//-----------------------------------------------------------------------------
+void CShaderDeviceMgrDX12::GetAdapterInfo( int nAdapter, MaterialAdapterInfo_t &info ) const
 {
-    if(nAdapter<0||nAdapter>=(int)adapterCaps_.size()||!configuration||(nDXLevel!=0&&nDXLevel!=90&&nDXLevel!=95))return false;
-    return dxSupport_.GetRecommendedConfigurationInfo(adapterCaps_[nAdapter],nDXLevel,configuration);
+	memset( &info, 0, sizeof( info ) );
+	if ( nAdapter >= 0 && nAdapter < m_AdapterInfo.Count() )
+		info = m_AdapterInfo[nAdapter];
 }
-int CShaderDeviceMgrDX12::GetModeCount(int adapter) const
+
+bool CShaderDeviceMgrDX12::GetRecommendedConfigurationInfo( int nAdapter, int nDXLevel, KeyValues *pConfiguration )
 {
-    const int resolved = adapter >= 0 ? adapter : (currentAdapter_ >= 0 ? currentAdapter_ : 0);
-    return resolved >= 0 && resolved < static_cast<int>(adapterModes_.size()) ? static_cast<int>(adapterModes_[resolved].size()) : 0;
+	if ( nAdapter < 0 || nAdapter >= m_AdapterCaps.Count() || !pConfiguration || ( nDXLevel != 0 && nDXLevel != 90 && nDXLevel != 95 ) )
+		return false;
+	return m_DxSupport.GetRecommendedConfigurationInfo( m_AdapterCaps[nAdapter], nDXLevel, pConfiguration );
 }
-void CShaderDeviceMgrDX12::GetModeInfo(ShaderDisplayMode_t *info, int adapter, int mode) const
+
+int CShaderDeviceMgrDX12::GetModeCount( int nAdapter ) const
 {
-    if (!info) return;
-    *info = ShaderDisplayMode_t();
-    const int resolved = adapter >= 0 ? adapter : (currentAdapter_ >= 0 ? currentAdapter_ : 0);
-    if (mode >= 0 && resolved >= 0 && resolved < static_cast<int>(adapterModes_.size()) && mode < static_cast<int>(adapterModes_[resolved].size()))
-        *info = adapterModes_[resolved][mode];
+	const int nResolved = nAdapter >= 0 ? nAdapter : ( m_nCurrentAdapter >= 0 ? m_nCurrentAdapter : 0 );
+	return nResolved < m_AdapterModes.Count() ? m_AdapterModes[nResolved].Count() : 0;
 }
-void CShaderDeviceMgrDX12::GetCurrentModeInfo(ShaderDisplayMode_t *info, int adapter) const
+
+void CShaderDeviceMgrDX12::GetModeInfo( ShaderDisplayMode_t *pInfo, int nAdapter, int nMode ) const
 {
-    if (!info) return;
-    *info = ShaderDisplayMode_t();
-    if (adapter < 0 || adapter >= static_cast<int>(adapters_.size())) return;
-    Microsoft::WRL::ComPtr<IDXGIOutput> output;
-    DXGI_OUTPUT_DESC desc{};
-    if (FAILED(adapters_[adapter]->EnumOutputs(0, &output)) || FAILED(output->GetDesc(&desc))) return;
-    DEVMODEW mode{}; mode.dmSize = sizeof(mode);
-    if (!EnumDisplaySettingsW(desc.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) return;
-    info->m_nWidth = mode.dmPelsWidth; info->m_nHeight = mode.dmPelsHeight;
-            info->m_Format = IMAGE_FORMAT_UNKNOWN;
-    info->m_nRefreshRateNumerator = mode.dmDisplayFrequency; info->m_nRefreshRateDenominator = 1;
+	if ( !pInfo )
+		return;
+	*pInfo = ShaderDisplayMode_t();
+	const int nResolved = nAdapter >= 0 ? nAdapter : ( m_nCurrentAdapter >= 0 ? m_nCurrentAdapter : 0 );
+	if ( nMode >= 0 && nResolved < m_AdapterModes.Count() && nMode < m_AdapterModes[nResolved].Count() )
+		*pInfo = m_AdapterModes[nResolved][nMode];
 }
-bool CShaderDeviceMgrDX12::SetAdapter(int nAdapter,int) {if(nAdapter<0||nAdapter>=(int)adapters_.size())return false;currentAdapter_=nAdapter;return true;}
-CreateInterfaceFn CShaderDeviceMgrDX12::SetMode(void *hWnd,int nAdapter,const ShaderDeviceInfo_t &mode)
+
+void CShaderDeviceMgrDX12::GetCurrentModeInfo( ShaderDisplayMode_t *pInfo, int nAdapter ) const
 {
-    if (!SetAdapter(nAdapter, 0)) return nullptr;
-    auto caps = adapterCaps_[nAdapter];
-    const int level = mode.m_nDXLevel ? mode.m_nDXLevel : caps.recommended;
-    if ((level != 90 && level != 95) || level > caps.max) return nullptr;
-    if (g_pShaderAPIDX12) g_pShaderAPIDX12->ShutdownDeviceResources();
-    if (!device_.Initialize(hWnd, nAdapter, mode, adapters_[nAdapter].Get())) return nullptr;
-    dxSupport_.ReadHardwareCaps(caps, level);
-    MaterialAdapterInfo_t info{};
-    GetAdapterInfo(nAdapter, info);
-    if (g_pHardwareConfigDX12)
-    {
-        g_pHardwareConfigDX12->SetAdapter(info, caps.memory, mode.m_nAASamples > 1, mode.m_nAASamples);
-        g_pHardwareConfigDX12->SetDXSupportLevels(caps.recommended, caps.max);
-        g_pHardwareConfigDX12->SetDXLevel(level);
-        g_pHardwareConfigDX12->SetSupportCaps(caps.fastClipping, caps.centroidHack, caps.disableShaderOptimizations);
-    }
-    if (!g_pShaderAPIDX12 || !g_pShaderAPIDX12->InitializeDeviceResources(&device_))
-    {
-        if (g_pShaderAPIDX12) g_pShaderAPIDX12->ShutdownDeviceResources();
-        device_.ShutdownDevice();
-        return nullptr;
-    }
-    Msg("ShaderAPIDX12: native D3D12 initialized on %s, %dx%d, material DX level %d, %u samples\n", info.m_pDriverName, device_.SceneWidth(), device_.SceneHeight(), level, device_.SceneSampleCount());
-    return Sys_GetFactoryThis();
+	if ( !pInfo )
+		return;
+	*pInfo = ShaderDisplayMode_t();
+	if ( nAdapter < 0 || nAdapter >= m_pAdapters.Count() )
+		return;
+	Microsoft::WRL::ComPtr<IDXGIOutput> output;
+	DXGI_OUTPUT_DESC desc{};
+	if ( FAILED( m_pAdapters[nAdapter]->EnumOutputs( 0, &output ) ) || FAILED( output->GetDesc( &desc ) ) )
+		return;
+	DEVMODEW mode{};
+	mode.dmSize = sizeof( mode );
+	if ( !EnumDisplaySettingsW( desc.DeviceName, ENUM_CURRENT_SETTINGS, &mode ) )
+		return;
+	pInfo->m_nWidth = mode.dmPelsWidth;
+	pInfo->m_nHeight = mode.dmPelsHeight;
+	pInfo->m_Format = IMAGE_FORMAT_UNKNOWN;
+	pInfo->m_nRefreshRateNumerator = mode.dmDisplayFrequency;
+	pInfo->m_nRefreshRateDenominator = 1;
 }
-void CShaderDeviceMgrDX12::AddModeChangeCallback(ShaderModeChangeCallbackFunc_t func) {if(func&&std::find(callbacks_.begin(),callbacks_.end(),func)==callbacks_.end())callbacks_.push_back(func);}
-void CShaderDeviceMgrDX12::RemoveModeChangeCallback(ShaderModeChangeCallbackFunc_t func) {callbacks_.erase(std::remove(callbacks_.begin(),callbacks_.end(),func),callbacks_.end());}
-void CShaderDeviceMgrDX12::NotifyModeChange(){for(auto callback:callbacks_)if(callback)callback();}
+
+bool CShaderDeviceMgrDX12::SetAdapter( int nAdapter, int )
+{
+	if ( nAdapter < 0 || nAdapter >= m_pAdapters.Count() )
+		return false;
+	m_nCurrentAdapter = nAdapter;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Creates the device on nAdapter and initializes the shader API's device resources
+//-----------------------------------------------------------------------------
+CreateInterfaceFn CShaderDeviceMgrDX12::SetMode( void *hWnd, int nAdapter, const ShaderDeviceInfo_t &mode )
+{
+	if ( !SetAdapter( nAdapter, 0 ) )
+		return nullptr;
+	DXSupportCapsDX12 caps = m_AdapterCaps[nAdapter];
+	const int nLevel = mode.m_nDXLevel ? mode.m_nDXLevel : caps.recommended;
+	if ( ( nLevel != 90 && nLevel != 95 ) || nLevel > caps.max )
+		return nullptr;
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->ShutdownDeviceResources();
+	if ( !m_Device.Initialize( hWnd, nAdapter, mode, m_pAdapters[nAdapter] ) )
+		return nullptr;
+	m_DxSupport.ReadHardwareCaps( caps, nLevel );
+	MaterialAdapterInfo_t info{};
+	GetAdapterInfo( nAdapter, info );
+	if ( g_pHardwareConfigDX12 )
+	{
+		g_pHardwareConfigDX12->SetAdapter( info, caps.memory, mode.m_nAASamples > 1 );
+		g_pHardwareConfigDX12->SetDXSupportLevels( caps.recommended, caps.max );
+		g_pHardwareConfigDX12->SetDXLevel( nLevel );
+		g_pHardwareConfigDX12->SetSupportCaps( caps.fastClipping, caps.centroidHack, caps.disableShaderOptimizations );
+	}
+	if ( !g_pShaderAPIDX12 || !g_pShaderAPIDX12->InitializeDeviceResources( &m_Device ) )
+	{
+		if ( g_pShaderAPIDX12 )
+			g_pShaderAPIDX12->ShutdownDeviceResources();
+		m_Device.ShutdownDevice();
+		return nullptr;
+	}
+	Msg( "ShaderAPIDX12: native D3D12 initialized on %s, %dx%d, material DX level %d, %u samples\n", info.m_pDriverName, m_Device.SceneWidth(), m_Device.SceneHeight(), nLevel, m_Device.SceneSampleCount() );
+	return Sys_GetFactoryThis();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Mode-change listeners (unique, non-null)
+//-----------------------------------------------------------------------------
+void CShaderDeviceMgrDX12::AddModeChangeCallback( ShaderModeChangeCallbackFunc_t func )
+{
+	if ( func && m_Callbacks.Find( func ) == m_Callbacks.InvalidIndex() )
+		m_Callbacks.AddToTail( func );
+}
+
+void CShaderDeviceMgrDX12::RemoveModeChangeCallback( ShaderModeChangeCallbackFunc_t func )
+{
+	m_Callbacks.FindAndRemove( func );
+}
+
+void CShaderDeviceMgrDX12::NotifyModeChange()
+{
+	for ( int i = 0; i < m_Callbacks.Count(); ++i )
+		m_Callbacks[i]();
+}
 
 } // namespace shaderapidx12

@@ -1,8 +1,47 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: Effective depth/blend/alpha state derived from a shadow snapshot plus overrides.
+//
+//=============================================================================//
+
 #include "shader_state_dx12.h"
+
 namespace shaderapidx12
 {
-void CShaderStateDX12::Reset(){state_=EffectiveStateDX12{};}
-void CShaderStateDX12::OverrideDepth(bool enabled,bool write){state_.depthEnable=enabled;state_.depthWrite=write;}
-void CShaderStateDX12::ApplyShadow(const CShaderShadowDX12 &shadow){state_.depthEnable=shadow.DepthTest();state_.depthWrite=shadow.DepthWrites();state_.blendEnable=shadow.Blending();state_.alphaTest=shadow.AlphaTest();}
-void CShaderStateDX12::OverrideColorWrite(bool enabled,bool write){if(enabled)state_.colorWrite=write;}
+//-----------------------------------------------------------------------------
+// Purpose: Restores the default effective state
+//-----------------------------------------------------------------------------
+void CShaderStateDX12::Reset()
+{
+	m_State = EffectiveStateDX12{};
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Dynamic depth test/write override
+//-----------------------------------------------------------------------------
+void CShaderStateDX12::OverrideDepth( bool bEnabled, bool bWrite )
+{
+	m_State.depthEnable = bEnabled;
+	m_State.depthWrite = bWrite;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Takes depth/blend/alpha-test state from a shadow snapshot
+//-----------------------------------------------------------------------------
+void CShaderStateDX12::ApplyShadow( const CShaderShadowDX12 &shadow )
+{
+	m_State.depthEnable = shadow.DepthTest();
+	m_State.depthWrite = shadow.DepthWrites();
+	m_State.blendEnable = shadow.Blending();
+	m_State.alphaTest = shadow.AlphaTest();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Dynamic color-write override; ignored unless enabled
+//-----------------------------------------------------------------------------
+void CShaderStateDX12::OverrideColorWrite( bool bEnabled, bool bWrite )
+{
+	if ( bEnabled )
+		m_State.colorWrite = bWrite;
+}
 } // namespace shaderapidx12

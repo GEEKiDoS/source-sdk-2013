@@ -1,5 +1,10 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
-// CPU profile selection adapted from shaderdevicebase.cpp; no legacy device ABI.
+//
+// Purpose: dxsupport.cfg profile selection, adapted from shaderdevicebase.cpp;
+//			no legacy device ABI.
+//
+//=============================================================================//
+
 #include "dxsupport_dx12.h"
 #include "filesystem.h"
 #include "tier1/KeyValues.h"
@@ -9,257 +14,407 @@
 #include "tier0/platform.h"
 #include "tier0/dbg.h"
 #include <windows.h>
-#include <algorithm>
-#include <cstdlib>
-#include <climits>
-#include <vector>
-#include <cctype>
+#include <stdlib.h>
+#include <limits.h>
 
 namespace shaderapidx12
 {
 namespace
 {
-// KeyValues::LoadFromBuffer reports syntax errors but still returns true.
-// Validate the key/value and brace structure before allowing partial profiles.
-bool LoadProfile(KeyValues *values, IFileSystem *fs, const char *name, const char *path)
+//-----------------------------------------------------------------------------
+// Purpose: Loads a KeyValues profile after validating its structure.
+//			KeyValues::LoadFromBuffer reports syntax errors but still returns true,
+//			so validate the key/value and brace structure before allowing partial profiles.
+//-----------------------------------------------------------------------------
+bool LoadProfile( KeyValues *pValues, IFileSystem *pFileSystem, const char *pszName, const char *pszPath )
 {
-    FileHandle_t file = fs->Open(name, "rb", path);
-    if (file == FILESYSTEM_INVALID_HANDLE) return false;
-    const unsigned length = fs->Size(file);
-    if (length > static_cast<unsigned>(INT_MAX - 1)) { fs->Close(file); return false; }
-    CUtlBuffer data(0, static_cast<int>(length + 1), CUtlBuffer::TEXT_BUFFER);
-    const int count = fs->Read(data.Base(), static_cast<int>(length), file);
-    fs->Close(file);
-    if (count != static_cast<int>(length)) return false;
-    data.SeekPut(CUtlBuffer::SEEK_HEAD, count);
-    const char *text = static_cast<const char *>(data.Base());
-    const size_t size = length;
-    std::vector<bool> expectsValue(1, false);
-    bool sawRoot = false;
-    for (size_t i = 0; i < size; )
-    {
-        unsigned char c = static_cast<unsigned char>(text[i]);
-        if (std::isspace(c)) { ++i; continue; }
-        if (c == '/' && i + 1 < size && text[i + 1] == '/')
-        {
-            while (i < size && text[i] != '\n') ++i;
-            continue;
-        }
-        if (c == '{')
-        {
-            if (!expectsValue.back() || expectsValue.size() >= 128) return false;
-            expectsValue.back() = false;
-            expectsValue.push_back(false); sawRoot = true; ++i; continue;
-        }
-        if (c == '}')
-        {
-            if (expectsValue.size() == 1 || expectsValue.back()) return false;
-            expectsValue.pop_back(); ++i; continue;
-        }
-        if (c == '[')
-        {
-            while (i < size && text[i] != ']') ++i;
-            if (i == size) return false;
-            ++i; continue;
-        }
-        if (c == '"')
-        {
-            ++i;
-            while (i < size && text[i] != '"') ++i;
-            if (i == size) return false;
-            ++i;
-        }
-        else
-        {
-            const size_t start = i;
-            while (i < size && !std::isspace(static_cast<unsigned char>(text[i])) && text[i] != '{' && text[i] != '}') ++i;
-            if (i == start || !c) return false;
-        }
-        expectsValue.back() = !expectsValue.back();
-    }
-    if (!sawRoot || expectsValue.size() != 1 || expectsValue.back()) return false;
-    return values->LoadFromBuffer(name, data, fs, path);
+	FileHandle_t hFile = pFileSystem->Open( pszName, "rb", pszPath );
+	if ( hFile == FILESYSTEM_INVALID_HANDLE )
+		return false;
+	const unsigned nLength = pFileSystem->Size( hFile );
+	if ( nLength > static_cast<unsigned>( INT_MAX - 1 ) )
+	{
+		pFileSystem->Close( hFile );
+		return false;
+	}
+	CUtlBuffer data( 0, static_cast<int>( nLength + 1 ), CUtlBuffer::TEXT_BUFFER );
+	const int nRead = pFileSystem->Read( data.Base(), static_cast<int>( nLength ), hFile );
+	pFileSystem->Close( hFile );
+	if ( nRead != static_cast<int>( nLength ) )
+		return false;
+	data.SeekPut( CUtlBuffer::SEEK_HEAD, nRead );
+	const char *pszText = static_cast<const char *>( data.Base() );
+	const size_t nSize = nLength;
+
+	// One entry per open brace; an entry is true while a key is waiting for its value.
+	const int kMaxDepth = 128;
+	bool bExpectsValue[kMaxDepth];
+	int nDepth = 1;
+	bExpectsValue[0] = false;
+	bool bSawRoot = false;
+	for ( size_t i = 0; i < nSize; )
+	{
+		const char c = pszText[i];
+		if ( V_isspace( c ) )
+		{
+			++i;
+			continue;
+		}
+		if ( c == '/' && i + 1 < nSize && pszText[i + 1] == '/' )
+		{
+			while ( i < nSize && pszText[i] != '\n' )
+				++i;
+			continue;
+		}
+		if ( c == '{' )
+		{
+			if ( !bExpectsValue[nDepth - 1] || nDepth >= kMaxDepth )
+				return false;
+			bExpectsValue[nDepth - 1] = false;
+			bExpectsValue[nDepth++] = false;
+			bSawRoot = true;
+			++i;
+			continue;
+		}
+		if ( c == '}' )
+		{
+			if ( nDepth == 1 || bExpectsValue[nDepth - 1] )
+				return false;
+			--nDepth;
+			++i;
+			continue;
+		}
+		if ( c == '[' )
+		{
+			while ( i < nSize && pszText[i] != ']' )
+				++i;
+			if ( i == nSize )
+				return false;
+			++i;
+			continue;
+		}
+		if ( c == '"' )
+		{
+			++i;
+			while ( i < nSize && pszText[i] != '"' )
+				++i;
+			if ( i == nSize )
+				return false;
+			++i;
+		}
+		else
+		{
+			const size_t nStart = i;
+			while ( i < nSize && !V_isspace( pszText[i] ) && pszText[i] != '{' && pszText[i] != '}' )
+				++i;
+			if ( i == nStart || !c )
+				return false;
+		}
+		bExpectsValue[nDepth - 1] = !bExpectsValue[nDepth - 1];
+	}
+	if ( !bSawRoot || nDepth != 1 || bExpectsValue[0] )
+		return false;
+	return pValues->LoadFromBuffer( pszName, data, pFileSystem, pszPath );
 }
-int Hex(KeyValues *group, const char *key)
+
+//-----------------------------------------------------------------------------
+// Purpose: Parses a hexadecimal key; returns -1 when missing or malformed
+//-----------------------------------------------------------------------------
+int Hex( KeyValues *pGroup, const char *pszKey )
 {
-    const char *text = group->GetString(key, nullptr);
-    if (!text) return -1;
-    char *end = nullptr;
-    long value = strtol(text, &end, 16);
-    return end != text && !*end && value >= 0 && value <= INT_MAX ? static_cast<int>(value) : -1;
+	const char *pszText = pGroup->GetString( pszKey, nullptr );
+	if ( !pszText )
+		return -1;
+	char *pszEnd = nullptr;
+	long nValue = strtol( pszText, &pszEnd, 16 );
+	return pszEnd != pszText && !*pszEnd && nValue >= 0 && nValue <= INT_MAX ? static_cast<int>( nValue ) : -1;
 }
-void AddKey(KeyValues *dest, KeyValues *src)
+
+//-----------------------------------------------------------------------------
+// Purpose: Copies one typed value key into pDest
+//-----------------------------------------------------------------------------
+void AddKey( KeyValues *pDest, KeyValues *pSrc )
 {
-    switch (src->GetDataType())
-    {
-    case KeyValues::TYPE_STRING: dest->SetString(src->GetName(), src->GetString()); break;
-    case KeyValues::TYPE_INT: dest->SetInt(src->GetName(), src->GetInt()); break;
-    case KeyValues::TYPE_FLOAT: dest->SetFloat(src->GetName(), src->GetFloat()); break;
-    case KeyValues::TYPE_PTR: dest->SetPtr(src->GetName(), src->GetPtr()); break;
-    case KeyValues::TYPE_WSTRING: dest->SetWString(src->GetName(), src->GetWString()); break;
-    case KeyValues::TYPE_COLOR: dest->SetColor(src->GetName(), src->GetColor()); break;
-    case KeyValues::TYPE_UINT64: dest->SetUint64(src->GetName(), src->GetUint64()); break;
-    default: break;
-    }
+	switch ( pSrc->GetDataType() )
+	{
+	case KeyValues::TYPE_STRING:
+		pDest->SetString( pSrc->GetName(), pSrc->GetString() );
+		break;
+	case KeyValues::TYPE_INT:
+		pDest->SetInt( pSrc->GetName(), pSrc->GetInt() );
+		break;
+	case KeyValues::TYPE_FLOAT:
+		pDest->SetFloat( pSrc->GetName(), pSrc->GetFloat() );
+		break;
+	case KeyValues::TYPE_PTR:
+		pDest->SetPtr( pSrc->GetName(), pSrc->GetPtr() );
+		break;
+	case KeyValues::TYPE_WSTRING:
+		pDest->SetWString( pSrc->GetName(), pSrc->GetWString() );
+		break;
+	case KeyValues::TYPE_COLOR:
+		pDest->SetColor( pSrc->GetName(), pSrc->GetColor() );
+		break;
+	case KeyValues::TYPE_UINT64:
+		pDest->SetUint64( pSrc->GetName(), pSrc->GetUint64() );
+		break;
+	default:
+		break;
+	}
 }
-void OverrideValues(KeyValues *dest, KeyValues *src)
+
+//-----------------------------------------------------------------------------
+// Purpose: Recursively overrides values of pDest with those of pSrc
+//-----------------------------------------------------------------------------
+void OverrideValues( KeyValues *pDest, KeyValues *pSrc )
 {
-    for (KeyValues *value = src->GetFirstValue(); value; value = value->GetNextValue()) AddKey(dest, value);
-    for (KeyValues *dir = src->GetFirstTrueSubKey(); dir; dir = dir->GetNextTrueSubKey())
-    {
-        KeyValues *match = dest->FindKey(dir->GetName());
-        if (match && match->GetDataType() == KeyValues::TYPE_NONE) OverrideValues(match, dir);
-    }
+	for ( KeyValues *pValue = pSrc->GetFirstValue(); pValue; pValue = pValue->GetNextValue() )
+		AddKey( pDest, pValue );
+	for ( KeyValues *pDir = pSrc->GetFirstTrueSubKey(); pDir; pDir = pDir->GetNextTrueSubKey() )
+	{
+		KeyValues *pMatch = pDest->FindKey( pDir->GetName() );
+		if ( pMatch && pMatch->GetDataType() == KeyValues::TYPE_NONE )
+			OverrideValues( pMatch, pDir );
+	}
 }
-void MergeOverrides(KeyValues *dest, KeyValues *src)
+
+//-----------------------------------------------------------------------------
+// Purpose: Applies dxsupport_override.cfg groups to the matching dxsupport.cfg groups
+//-----------------------------------------------------------------------------
+void MergeOverrides( KeyValues *pDest, KeyValues *pSrc )
 {
-    for (KeyValues *overrideGroup = src->GetFirstTrueSubKey(); overrideGroup; overrideGroup = overrideGroup->GetNextTrueSubKey())
-    {
-        const char *name = overrideGroup->GetString("name", nullptr);
-        const int vendor = Hex(overrideGroup, "VendorID");
-        const int lo = Hex(overrideGroup, "MinDeviceID"), hi = Hex(overrideGroup, "MaxDeviceID");
-        for (KeyValues *group = dest->GetFirstTrueSubKey(); group; group = group->GetNextTrueSubKey())
-        {
-            if (name && Q_stricmp(name, group->GetString("name", ""))) continue;
-            if (vendor >= 0 && vendor != Hex(group, "VendorID")) continue;
-            if (lo >= 0 && hi >= 0 && (Hex(group, "MinDeviceID") < lo || Hex(group, "MaxDeviceID") < 0 || Hex(group, "MaxDeviceID") > hi)) continue;
-            OverrideValues(group, overrideGroup);
-            break;
-        }
-    }
+	for ( KeyValues *pOverrideGroup = pSrc->GetFirstTrueSubKey(); pOverrideGroup; pOverrideGroup = pOverrideGroup->GetNextTrueSubKey() )
+	{
+		const char *pszName = pOverrideGroup->GetString( "name", nullptr );
+		const int nVendor = Hex( pOverrideGroup, "VendorID" );
+		const int nMinDevice = Hex( pOverrideGroup, "MinDeviceID" );
+		const int nMaxDevice = Hex( pOverrideGroup, "MaxDeviceID" );
+		for ( KeyValues *pGroup = pDest->GetFirstTrueSubKey(); pGroup; pGroup = pGroup->GetNextTrueSubKey() )
+		{
+			if ( pszName && Q_stricmp( pszName, pGroup->GetString( "name", "" ) ) )
+				continue;
+			if ( nVendor >= 0 && nVendor != Hex( pGroup, "VendorID" ) )
+				continue;
+			if ( nMinDevice >= 0 && nMaxDevice >= 0 && ( Hex( pGroup, "MinDeviceID" ) < nMinDevice || Hex( pGroup, "MaxDeviceID" ) < 0 || Hex( pGroup, "MaxDeviceID" ) > nMaxDevice ) )
+				continue;
+			OverrideValues( pGroup, pOverrideGroup );
+			break;
+		}
+	}
 }
-KeyValues *FindDXLevel(KeyValues *root, int level, int vendor = -1)
+
+//-----------------------------------------------------------------------------
+// Purpose: Finds the DX level group, optionally restricted to one vendor
+//-----------------------------------------------------------------------------
+KeyValues *FindDXLevel( KeyValues *pRoot, int nLevel, int nVendor = -1 )
 {
-    for (KeyValues *group = root->GetFirstTrueSubKey(); group; group = group->GetNextTrueSubKey())
-        if (group->GetInt("name", 0) == level && (vendor < 0 || Hex(group, "VendorID") == vendor)) return group;
-    return nullptr;
+	for ( KeyValues *pGroup = pRoot->GetFirstTrueSubKey(); pGroup; pGroup = pGroup->GetNextTrueSubKey() )
+		if ( pGroup->GetInt( "name", 0 ) == nLevel && ( nVendor < 0 || Hex( pGroup, "VendorID" ) == nVendor ) )
+			return pGroup;
+	return nullptr;
 }
-KeyValues *FindCard(KeyValues *root, unsigned vendor, unsigned device)
+
+//-----------------------------------------------------------------------------
+// Purpose: Finds the card group whose vendor/device range contains the adapter
+//-----------------------------------------------------------------------------
+KeyValues *FindCard( KeyValues *pRoot, unsigned nVendor, unsigned nDevice )
 {
-    for (KeyValues *group = root->GetFirstTrueSubKey(); group; group = group->GetNextTrueSubKey())
-    {
-        const int lo = Hex(group, "MinDeviceID"), hi = Hex(group, "MaxDeviceID");
-        if (Hex(group, "VendorID") == static_cast<int>(vendor) && lo >= 0 && hi >= lo && device >= static_cast<unsigned>(lo) && device <= static_cast<unsigned>(hi)) return group;
-    }
-    return nullptr;
+	for ( KeyValues *pGroup = pRoot->GetFirstTrueSubKey(); pGroup; pGroup = pGroup->GetNextTrueSubKey() )
+	{
+		const int nMinDevice = Hex( pGroup, "MinDeviceID" );
+		const int nMaxDevice = Hex( pGroup, "MaxDeviceID" );
+		if ( Hex( pGroup, "VendorID" ) == static_cast<int>( nVendor ) && nMinDevice >= 0 && nMaxDevice >= nMinDevice && nDevice >= static_cast<unsigned>( nMinDevice ) && nDevice <= static_cast<unsigned>( nMaxDevice ) )
+			return pGroup;
+	}
+	return nullptr;
 }
-KeyValues *FindRange(KeyValues *root, const char *minKey, const char *maxKey, uint64_t value, const char *name = nullptr)
+
+//-----------------------------------------------------------------------------
+// Purpose: Finds the group whose [min, max) key range contains nValue
+//-----------------------------------------------------------------------------
+KeyValues *FindRange( KeyValues *pRoot, const char *pszMinKey, const char *pszMaxKey, uint64_t nValue, const char *pszName = nullptr )
 {
-    for (KeyValues *group = root->GetFirstTrueSubKey(); group; group = group->GetNextTrueSubKey())
-    {
-        if (name && !Q_stristr(group->GetString("name", ""), name)) continue;
-        const int lo = group->GetInt(minKey, -1), hi = group->GetInt(maxKey, -1);
-        if (lo >= 0 && hi >= 0 && value >= static_cast<uint64_t>(lo) && value < static_cast<uint64_t>(hi)) return group;
-    }
-    return nullptr;
+	for ( KeyValues *pGroup = pRoot->GetFirstTrueSubKey(); pGroup; pGroup = pGroup->GetNextTrueSubKey() )
+	{
+		if ( pszName && !Q_stristr( pGroup->GetString( "name", "" ), pszName ) )
+			continue;
+		const int nMin = pGroup->GetInt( pszMinKey, -1 );
+		const int nMax = pGroup->GetInt( pszMaxKey, -1 );
+		if ( nMin >= 0 && nMax >= 0 && nValue >= static_cast<uint64_t>( nMin ) && nValue < static_cast<uint64_t>( nMax ) )
+			return pGroup;
+	}
+	return nullptr;
 }
-template<typename Apply>
-void ApplyGPUProfiles(KeyValues *root, int level, unsigned vendor, unsigned device, Apply apply)
+
+//-----------------------------------------------------------------------------
+// Purpose: Calls apply for the DX level profile, the card profile and, for
+//			catch-all cards, the vendor-specific DX level profile
+//-----------------------------------------------------------------------------
+template <typename Apply>
+void ApplyGPUProfiles( KeyValues *pRoot, int nLevel, unsigned nVendor, unsigned nDevice, Apply apply )
 {
-    apply(FindDXLevel(root, level));
-    KeyValues *card = FindCard(root, vendor, device);
-    apply(card);
-    // A precise card profile supersedes the vendor/level profile. A catch-all does not.
-    if (card && Hex(card, "MinDeviceID") == 0 && Hex(card, "MaxDeviceID") == 0xffff)
-        apply(FindDXLevel(root, level, static_cast<int>(vendor)));
+	apply( FindDXLevel( pRoot, nLevel ) );
+	KeyValues *pCard = FindCard( pRoot, nVendor, nDevice );
+	apply( pCard );
+	// A precise card profile supersedes the vendor/level profile. A catch-all does not.
+	if ( pCard && Hex( pCard, "MinDeviceID" ) == 0 && Hex( pCard, "MaxDeviceID" ) == 0xffff )
+		apply( FindDXLevel( pRoot, nLevel, static_cast<int>( nVendor ) ) );
 }
-void Dump(KeyValues *values)
+
+//-----------------------------------------------------------------------------
+// Purpose: Prints a KeyValues tree for -debugdxsupport
+//-----------------------------------------------------------------------------
+void Dump( KeyValues *pValues )
 {
-    CUtlBuffer text;
-    values->RecursiveSaveToFile(text, 0);
-    Warning("%s\n", static_cast<const char *>(text.Base()));
+	CUtlBuffer text;
+	pValues->RecursiveSaveToFile( text, 0 );
+	Warning( "%s\n", static_cast<const char *>( text.Base() ) );
 }
-void LoadConfig(KeyValues *group, KeyValues *dest)
+
+//-----------------------------------------------------------------------------
+// Purpose: Copies every key of pGroup into pDest
+//-----------------------------------------------------------------------------
+void LoadConfig( KeyValues *pGroup, KeyValues *pDest )
 {
-    if (!group) return;
-    for (KeyValues *value = group->GetFirstSubKey(); value; value = value->GetNextKey()) AddKey(dest, value);
+	if ( !pGroup )
+		return;
+	for ( KeyValues *pValue = pGroup->GetFirstSubKey(); pValue; pValue = pValue->GetNextKey() )
+		AddKey( pDest, pValue );
 }
+} // namespace
+
+//-----------------------------------------------------------------------------
+// Destructor
+//-----------------------------------------------------------------------------
+CDXSupportDX12::~CDXSupportDX12()
+{
+	Clear();
 }
-CDXSupportDX12::~CDXSupportDX12() { Clear(); }
+
+//-----------------------------------------------------------------------------
+// Purpose: Releases the loaded configuration
+//-----------------------------------------------------------------------------
 void CDXSupportDX12::Clear()
 {
-    if (config_) config_->deleteThis();
-    config_ = nullptr;
+	if ( m_pConfig )
+		m_pConfig->deleteThis();
+	m_pConfig = nullptr;
 }
-bool CDXSupportDX12::Load(IFileSystem *filesystem)
+
+//-----------------------------------------------------------------------------
+// Purpose: Loads dxsupport.cfg and merges dxsupport_override.cfg into it
+//-----------------------------------------------------------------------------
+bool CDXSupportDX12::Load( IFileSystem *pFileSystem )
 {
-    Clear();
-    if (CommandLine()->CheckParm("-ignoredxsupportcfg")) return true;
-    if (!filesystem) return false;
-    if (!filesystem->FileExists("dxsupport.cfg", "EXECUTABLE_PATH")) return true;
-    KeyValues *base = new KeyValues("dxsupport");
-    if (!LoadProfile(base, filesystem, "dxsupport.cfg", "EXECUTABLE_PATH"))
-    {
-        Warning("shaderapidx12: malformed dxsupport.cfg; retaining hardware capabilities\n");
-        base->deleteThis();
-        return false;
-    }
-    if (filesystem->FileExists("dxsupport_override.cfg", "GAME"))
-    {
-        KeyValues *overrides = new KeyValues("dxsupport_override");
-        if (!LoadProfile(overrides, filesystem, "dxsupport_override.cfg", "GAME"))
-        {
-            Warning("shaderapidx12: malformed dxsupport_override.cfg; discarding configuration overrides\n");
-            overrides->deleteThis();
-            base->deleteThis();
-            return false;
-        }
-        MergeOverrides(base, overrides);
-        overrides->deleteThis();
-    }
-    config_ = base;
-    if (CommandLine()->CheckParm("-debugdxsupport")) Dump(config_);
-    return true;
+	Clear();
+	if ( CommandLine()->CheckParm( "-ignoredxsupportcfg" ) )
+		return true;
+	if ( !pFileSystem->FileExists( "dxsupport.cfg", "EXECUTABLE_PATH" ) )
+		return true;
+	KeyValues *pBase = new KeyValues( "dxsupport" );
+	if ( !LoadProfile( pBase, pFileSystem, "dxsupport.cfg", "EXECUTABLE_PATH" ) )
+	{
+		Warning( "shaderapidx12: malformed dxsupport.cfg; retaining hardware capabilities\n" );
+		pBase->deleteThis();
+		return false;
+	}
+	if ( pFileSystem->FileExists( "dxsupport_override.cfg", "GAME" ) )
+	{
+		KeyValues *pOverrides = new KeyValues( "dxsupport_override" );
+		if ( !LoadProfile( pOverrides, pFileSystem, "dxsupport_override.cfg", "GAME" ) )
+		{
+			Warning( "shaderapidx12: malformed dxsupport_override.cfg; discarding configuration overrides\n" );
+			pOverrides->deleteThis();
+			pBase->deleteThis();
+			return false;
+		}
+		MergeOverrides( pBase, pOverrides );
+		pOverrides->deleteThis();
+	}
+	m_pConfig = pBase;
+	if ( CommandLine()->CheckParm( "-debugdxsupport" ) )
+		Dump( m_pConfig );
+	return true;
 }
-void CDXSupportDX12::ReadDXSupportLevels(DXSupportCapsDX12 &caps) const
+
+//-----------------------------------------------------------------------------
+// Purpose: Applies the card profile's DXLevel/MaxDXLevel to the adapter caps
+//-----------------------------------------------------------------------------
+void CDXSupportDX12::ReadDXSupportLevels( DXSupportCapsDX12 &caps ) const
 {
-    if (!config_) return;
-    KeyValues *card = FindCard(config_, caps.vendor, caps.device);
-    if (!card) return;
-    const int maxLevel = card->GetInt("MaxDXLevel", 0);
-    const int preferred = card->GetInt("DXLevel", 0);
-    if (maxLevel) caps.max = std::min(caps.max, maxLevel);
-    caps.recommended = std::min(caps.max, preferred ? preferred : caps.max);
+	if ( !m_pConfig )
+		return;
+	KeyValues *pCard = FindCard( m_pConfig, caps.vendor, caps.device );
+	if ( !pCard )
+		return;
+	const int nMaxLevel = pCard->GetInt( "MaxDXLevel", 0 );
+	const int nPreferred = pCard->GetInt( "DXLevel", 0 );
+	if ( nMaxLevel )
+		caps.max = Min( caps.max, nMaxLevel );
+	caps.recommended = Min( caps.max, nPreferred ? nPreferred : caps.max );
 }
-void CDXSupportDX12::ReadHardwareCaps(DXSupportCapsDX12 &caps, int dxLevel) const
+
+//-----------------------------------------------------------------------------
+// Purpose: Applies the per-GPU capability overrides for nDXLevel
+//-----------------------------------------------------------------------------
+void CDXSupportDX12::ReadHardwareCaps( DXSupportCapsDX12 &caps, int nDXLevel ) const
 {
-    if (config_) ApplyGPUProfiles(config_, dxLevel, caps.vendor, caps.device, [&](KeyValues *group)
-    {
-        if (!group) return;
-        caps.fastClipping = group->GetInt("NoUserClipPlanes", caps.fastClipping ? 1 : 0) != 0;
-        caps.centroidHack = group->GetInt("CentroidHack", caps.centroidHack ? 1 : 0) != 0;
-        caps.disableShaderOptimizations = group->GetInt("DisableShaderOptimizations", caps.disableShaderOptimizations ? 1 : 0) != 0;
-    });
-    if (CommandLine()->CheckParm("-nouserclip")) caps.fastClipping = true;
+	if ( m_pConfig )
+		ApplyGPUProfiles( m_pConfig, nDXLevel, caps.vendor, caps.device, [&]( KeyValues *pGroup )
+		    {
+			    if ( !pGroup )
+				    return;
+			    caps.fastClipping = pGroup->GetInt( "NoUserClipPlanes", caps.fastClipping ? 1 : 0 ) != 0;
+			    caps.centroidHack = pGroup->GetInt( "CentroidHack", caps.centroidHack ? 1 : 0 ) != 0;
+			    caps.disableShaderOptimizations = pGroup->GetInt( "DisableShaderOptimizations", caps.disableShaderOptimizations ? 1 : 0 ) != 0;
+		    } );
+	if ( CommandLine()->CheckParm( "-nouserclip" ) )
+		caps.fastClipping = true;
 }
-bool CDXSupportDX12::GetRecommendedConfigurationInfo(const DXSupportCapsDX12 &caps, int level, KeyValues *configuration) const
+
+//-----------------------------------------------------------------------------
+// Purpose: Builds the recommended convar configuration for the adapter in caps
+//-----------------------------------------------------------------------------
+bool CDXSupportDX12::GetRecommendedConfigurationInfo( const DXSupportCapsDX12 &caps, int nDXLevel, KeyValues *pConfiguration ) const
 {
-    return GetRecommendedConfigurationInfo(caps, level, caps.vendor, caps.device, configuration);
+	return GetRecommendedConfigurationInfo( caps, nDXLevel, caps.vendor, caps.device, pConfiguration );
 }
-bool CDXSupportDX12::GetRecommendedConfigurationInfo(const DXSupportCapsDX12 &caps, int level, unsigned vendor, unsigned device, KeyValues *configuration) const
+
+//-----------------------------------------------------------------------------
+// Purpose: Builds the recommended convar configuration for an explicit vendor/device
+//-----------------------------------------------------------------------------
+bool CDXSupportDX12::GetRecommendedConfigurationInfo( const DXSupportCapsDX12 &caps, int nDXLevel, unsigned nVendor, unsigned nDevice, KeyValues *pConfiguration ) const
 {
-    if (!configuration) return false;
-    if (!level) level = caps.recommended;
-    // This backend implements the current 90/95 material paths, not legacy fixed-function levels.
-    if (level < 90 || level > caps.max || level > 95) return false;
-    level = level < 95 ? 90 : 95;
-    if (!config_) return true;
-    ApplyGPUProfiles(config_, level, vendor, device, [&](KeyValues *group) { LoadConfig(group, configuration); });
-    const CPUInformation &cpu = *GetCPUInformation();
-    const uint64_t mhz = static_cast<uint64_t>(cpu.m_Speed / 1000000);
-    LoadConfig(FindRange(config_, "min megahertz", "max megahertz", mhz, Q_stristr(cpu.m_szProcessorID, "amd") ? "AMD" : "Intel"), configuration);
-    MEMORYSTATUSEX memory{};
-    memory.dwLength = sizeof(memory);
-    if (GlobalMemoryStatusEx(&memory)) LoadConfig(FindRange(config_, "min megabytes", "max megabytes", memory.ullTotalPhys / (1024ull * 1024)), configuration);
-    const uint64_t videoMB = caps.memory / (1024ull * 1024);
-    KeyValues *video = FindRange(config_, "min megatexels", "max megatexels", videoMB);
-    if (video && caps.memory && (level == caps.max || videoMB < 100))
-    {
-        KeyValues *picmip = video->FindKey("ConVar.mat_picmip");
-        if (picmip) configuration->SetInt("ConVar.mat_picmip", std::max(picmip->GetInt(), configuration->GetInt("ConVar.mat_picmip", 0)));
-    }
-    configuration->SetInt("ConVar.mat_dxlevel", level);
-    if (CommandLine()->CheckParm("-debugdxsupport")) Dump(configuration);
-    return true;
+	if ( !nDXLevel )
+		nDXLevel = caps.recommended;
+	// This backend implements the current 90/95 material paths, not legacy fixed-function levels.
+	if ( nDXLevel < 90 || nDXLevel > caps.max || nDXLevel > 95 )
+		return false;
+	nDXLevel = nDXLevel < 95 ? 90 : 95;
+	if ( !m_pConfig )
+		return true;
+	ApplyGPUProfiles( m_pConfig, nDXLevel, nVendor, nDevice, [&]( KeyValues *pGroup )
+	    {
+		    LoadConfig( pGroup, pConfiguration );
+	    } );
+	const CPUInformation &cpu = *GetCPUInformation();
+	const uint64_t nMHz = static_cast<uint64_t>( cpu.m_Speed / 1000000 );
+	LoadConfig( FindRange( m_pConfig, "min megahertz", "max megahertz", nMHz, Q_stristr( cpu.m_szProcessorID, "amd" ) ? "AMD" : "Intel" ), pConfiguration );
+	MEMORYSTATUSEX memory{};
+	memory.dwLength = sizeof( memory );
+	if ( GlobalMemoryStatusEx( &memory ) )
+		LoadConfig( FindRange( m_pConfig, "min megabytes", "max megabytes", memory.ullTotalPhys / ( 1024ull * 1024 ) ), pConfiguration );
+	const uint64_t nVideoMB = caps.memory / ( 1024ull * 1024 );
+	KeyValues *pVideo = FindRange( m_pConfig, "min megatexels", "max megatexels", nVideoMB );
+	if ( pVideo && caps.memory && ( nDXLevel == caps.max || nVideoMB < 100 ) )
+	{
+		KeyValues *pPicmip = pVideo->FindKey( "ConVar.mat_picmip" );
+		if ( pPicmip )
+			pConfiguration->SetInt( "ConVar.mat_picmip", Max( pPicmip->GetInt(), pConfiguration->GetInt( "ConVar.mat_picmip", 0 ) ) );
+	}
+	pConfiguration->SetInt( "ConVar.mat_dxlevel", nDXLevel );
+	if ( CommandLine()->CheckParm( "-debugdxsupport" ) )
+		Dump( pConfiguration );
+	return true;
 }
 } // namespace shaderapidx12

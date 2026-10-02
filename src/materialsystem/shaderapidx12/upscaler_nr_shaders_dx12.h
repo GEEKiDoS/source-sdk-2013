@@ -1,6 +1,13 @@
-#pragma once
-// Compute shaders for the DLSS-NR layer chain and the typed depth clone, compiled at runtime with D3DCompile (cs_5_0).
+//========= Copyright Valve Corporation, All rights reserved. ============//
 //
+// Purpose: Compute shaders for the DLSS-NR layer chain and the typed depth clone, compiled at runtime with
+//          D3DCompile (cs_5_0).
+//
+//=============================================================================//
+#ifndef UPSCALER_NR_SHADERS_DX12_H
+#define UPSCALER_NR_SHADERS_DX12_H
+#pragma once
+
 // CSMain mode 0 encodes a layer's linear scRGB input into the sRGB display-referred proxy the model is trained on;
 // mode 1 composes the model's answer back onto that layer's input. The proxy curves (soft knee, Neutwo, hybrid) and
 // the white-point normalisation follow OptiScaler_DLSSNR (https://github.com/Dagherbou/OptiScaler_DLSSNR,
@@ -30,17 +37,18 @@ namespace shaderapidx12
 {
 struct NrConstantsDX12
 {
-    uint32_t mode; // 0 encode, 1 resolve
-    float whitePoint;
-    uint32_t width, height;
-    float transferStrength, colourStrength;
-    uint32_t debugView;
-    float maxRatio;
-    uint32_t reversibleMode, applyModel, compareMode;
-    float compareSplit, compareZoom;
-    uint32_t compareSwap;
+	uint32_t mode; // 0 encode, 1 resolve
+	float whitePoint;
+	uint32_t width, height;
+	float transferStrength, colourStrength;
+	uint32_t debugView;
+	float maxRatio;
+	uint32_t reversibleMode, applyModel, compareMode;
+	float compareSplit, compareZoom;
+	uint32_t compareSwap;
 };
-static_assert(sizeof(NrConstantsDX12) == 14 * 4, "root constants must match the HLSL cbuffer");
+
+static_assert( sizeof( NrConstantsDX12 ) == 14 * 4, "root constants must match the HLSL cbuffer" );
 
 static const char kNrShaderSourceDX12[] = R"HLSL(
 cbuffer Params : register(b0)
@@ -281,3 +289,5 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 }
 )HLSL";
 } // namespace shaderapidx12
+
+#endif // UPSCALER_NR_SHADERS_DX12_H

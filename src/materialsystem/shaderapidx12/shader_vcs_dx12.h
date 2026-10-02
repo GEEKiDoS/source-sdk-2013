@@ -1,100 +1,130 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
-// CPU-only, bounded reader for Source VCS shader files. No renderer objects.
+//
+// Purpose: CPU-only, bounded reader for Source VCS shader files. No renderer objects.
+//
+//=============================================================================//
 #ifndef SHADER_VCS_DX12_H
 #define SHADER_VCS_DX12_H
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
 #include "tier1/utlmap.h"
-#include <string>
-#include <vector>
+#include "tier1/utlstring.h"
+#include "tier1/utlvector.h"
 
 class IFileSystem;
 
 namespace shaderapidx12
 {
 
-enum class VcsStage { Vertex, Pixel };
+enum class VcsStage
+{
+	Vertex,
+	Pixel
+};
 
 // LegacyShaderName() result for a native-only logical: it has no shaders/fxc record to fall back to.
 inline constexpr const char *kNativeOnlyMarker = "-";
 
 struct VcsPayload
 {
-    // Owned by ShaderVcsFile; valid until the file is reopened or destroyed.
-    std::vector<uint8_t> tokens;
+	// Owned by ShaderVcsFile; valid until the file is reopened or destroyed.
+	CUtlVector<uint8> tokens;
 };
 
 class ShaderVcsFile
 {
 public:
-    ShaderVcsFile();
-    ~ShaderVcsFile();
+	ShaderVcsFile();
+	~ShaderVcsFile();
 
-    ShaderVcsFile(const ShaderVcsFile &) = delete;
-    ShaderVcsFile &operator=(const ShaderVcsFile &) = delete;
+	ShaderVcsFile( const ShaderVcsFile & ) = delete;
+	ShaderVcsFile &operator=( const ShaderVcsFile & ) = delete;
 
-    // The first existing GAME path is authoritative; an invalid file is an error,
-    // not a reason to search a different shader in fxc. Native-only map markers
-    // fail closed when their native record is missing.
-    bool Open(IFileSystem &filesystem, const char *name, VcsStage stage, std::string &error);
-    // Legacy DX9 logical for a native name, kNativeOnlyMarker for a native-only logical, else name.
-    static std::string LegacyShaderName(IFileSystem &filesystem, const char *name, VcsStage stage);
+	// The first existing GAME path is authoritative; an invalid file is an error,
+	// not a reason to search a different shader in fxc. Native-only map markers
+	// fail closed when their native record is missing.
+	bool Open( IFileSystem &filesystem, const char *pszName, VcsStage stage, CUtlString &error );
+	// Legacy DX9 logical for a native name, kNativeOnlyMarker for a native-only logical, else name.
+	static CUtlString LegacyShaderName( IFileSystem &filesystem, const char *pszName, VcsStage stage );
 
-    // Also usable for deterministic byte-for-byte fixtures without a filesystem.
-    bool OpenBytes(const uint8_t *bytes, size_t length, VcsStage stage,
-                   const char *label, std::string &error);
+	// Also usable for deterministic byte-for-byte fixtures without a filesystem.
+	bool OpenBytes( const uint8_t *pBytes, size_t nLength, VcsStage stage,
+	    const char *pszLabel, CUtlString &error );
 
-    // staticIndex is the already-multiplied Source static combo index.
-    // Decodes once per staticIndex. Skipped dynamics are nullptr, never combo zero.
-    bool LoadStaticCombo(uint32_t staticIndex, std::string &error);
-    const VcsPayload *DynamicPayload(uint32_t staticIndex, uint32_t dynamicIndex) const;
-    // Enumerates present canonical records and aliases without assuming combo zero exists.
-    bool StaticComboIndex(size_t ordinal, uint32_t &index) const;
+	// nStaticIndex is the already-multiplied Source static combo index.
+	// Decodes once per nStaticIndex. Skipped dynamics are nullptr, never combo zero.
+	bool LoadStaticCombo( uint32_t nStaticIndex, CUtlString &error );
+	const VcsPayload *DynamicPayload( uint32_t nStaticIndex, uint32_t nDynamicIndex ) const;
+	// Enumerates present canonical records and aliases without assuming combo zero exists.
+	bool StaticComboIndex( size_t nOrdinal, uint32_t &nIndex ) const;
 
-    uint32_t Version() const { return version_; }
-    uint32_t DynamicComboCount() const { return dynamicCount_; }
-    uint32_t Flags() const { return flags_; }
-    uint32_t CentroidMask() const { return centroidMask_; }
-    uint32_t SourceCRC() const { return sourceCRC_; }
-    const std::string &Path() const { return path_; }
+	uint32_t Version() const { return m_nVersion; }
+
+	uint32_t DynamicComboCount() const { return m_nDynamicCount; }
+
+	uint32_t Flags() const { return m_nFlags; }
+
+	uint32_t CentroidMask() const { return m_nCentroidMask; }
+
+	uint32_t SourceCRC() const { return m_nSourceCRC; }
+
+	const char *Path() const { return m_Path.Get(); }
 
 private:
-    struct StaticRecord { uint32_t id, offset; };
-    struct AliasRecord { uint32_t id, source; };
-    struct StaticCombos
-    {
-        // CUtlMap nodes may relocate as it grows; payload objects stay heap-owned
-        // so DynamicPayload references remain valid until reopen/destruction.
-        CUtlMap<uint32_t, VcsPayload *, uint32_t> dynamics;
-        StaticCombos() : dynamics(DefLessFunc(uint32_t)) {}
-        StaticCombos(const StaticCombos &) = delete;
-        StaticCombos &operator=(const StaticCombos &) = delete;
-        ~StaticCombos() { dynamics.PurgeAndDeleteElements(); }
-    };
+	struct StaticRecord
+	{
+		uint32_t m_nId;
+		uint32_t m_nOffset;
+	};
 
-    bool DecodeV4(uint32_t staticIndex, StaticCombos &combos, std::string &error) const;
-    bool DecodeBlocks(uint32_t staticIndex, uint32_t recordID, size_t start,
-                      size_t end, StaticCombos &combos, std::string &error) const;
-    bool ParseBytes(const uint8_t *bytes, size_t length, VcsStage stage,
-                    const char *label, std::string &error);
-    bool ValidateTokens(const uint8_t *data, size_t size, std::string &error) const;
-    bool Fail(const std::string &message, std::string &error) const;
+	struct AliasRecord
+	{
+		uint32_t m_nId;
+		uint32_t m_nSource;
+	};
 
-    std::vector<uint8_t> file_;
-    std::vector<uint8_t> reference_;
-    std::vector<StaticRecord> records_;
-    std::vector<AliasRecord> aliases_;
-    // Heap ownership keeps pointers stable when CUtlMap grows or rebalances.
-    CUtlMap<uint32_t, StaticCombos *, uint32_t> cache_;
-    CUtlMap<uint32_t, const StaticCombos *, uint32_t> loadedStatics_;
-    std::string path_;
-    VcsStage stage_ = VcsStage::Vertex;
-    uint32_t version_ = 0, totalCount_ = 0, dynamicCount_ = 0;
-    uint32_t flags_ = 0, centroidMask_ = 0, sourceCRC_ = 0;
-    size_t payloadStart_ = 0, headerBytes_ = 28;
+	struct StaticCombos
+	{
+		// CUtlMap nodes may relocate as it grows; payload objects stay heap-owned
+		// so DynamicPayload references remain valid until reopen/destruction.
+		CUtlMap<uint32_t, VcsPayload *, uint32_t> m_Dynamics;
+
+		StaticCombos()
+		    : m_Dynamics( DefLessFunc( uint32_t ) ) {}
+
+		StaticCombos( const StaticCombos & ) = delete;
+		StaticCombos &operator=( const StaticCombos & ) = delete;
+
+		~StaticCombos() { m_Dynamics.PurgeAndDeleteElements(); }
+	};
+
+	bool DecodeV4( uint32_t nStaticIndex, StaticCombos &combos, CUtlString &error ) const;
+	bool DecodeBlocks( uint32_t nStaticIndex, uint32_t nRecordID, size_t nStart,
+	    size_t nEnd, StaticCombos &combos, CUtlString &error ) const;
+	bool ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage stage,
+	    const char *pszLabel, CUtlString &error );
+	bool ValidateTokens( const uint8_t *pData, size_t nSize, CUtlString &error ) const;
+	bool Fail( const char *pszMessage, CUtlString &error ) const;
+
+	CUtlVector<uint8> m_File;
+	CUtlVector<uint8> m_Reference;
+	CUtlVector<StaticRecord> m_Records;
+	CUtlVector<AliasRecord> m_Aliases;
+	// Heap ownership keeps pointers stable when CUtlMap grows or rebalances.
+	CUtlMap<uint32_t, StaticCombos *, uint32_t> m_Cache;
+	CUtlMap<uint32_t, const StaticCombos *, uint32_t> m_LoadedStatics;
+	CUtlString m_Path;
+	VcsStage m_Stage = VcsStage::Vertex;
+	uint32_t m_nVersion = 0;
+	uint32_t m_nTotalCount = 0;
+	uint32_t m_nDynamicCount = 0;
+	uint32_t m_nFlags = 0;
+	uint32_t m_nCentroidMask = 0;
+	uint32_t m_nSourceCRC = 0;
+	size_t m_nPayloadStart = 0;
+	size_t m_nHeaderBytes = 28;
 };
 
 } // namespace shaderapidx12
-#endif
+
+#endif // SHADER_VCS_DX12_H

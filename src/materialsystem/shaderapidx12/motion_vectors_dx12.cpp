@@ -1,12 +1,17 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: DX12 motion vector pass: private motion shaders, the scene-sized
+//			motion target, camera reprojection and per-object history
+//
+//=============================================================================//
+
 #include "shaderapi_dx12.h"
 #include "materialsystem/ishadersystem_declarations.h"
 #include "renderparm.h"
 #include "tier0/dbg.h"
 #include "tier0/icommandline.h"
-#include <algorithm>
-#include <cstring>
-#include <string>
-#include <initializer_list>
+#include "tier1/strtools.h"
+#include "tier1/utlstring.h"
 
 namespace shaderapidx12
 {
@@ -131,258 +136,559 @@ float4 main(float4 pos:SV_Position):SV_Target { float d = depthTex.Load(int3(pos
  return float4((ndc - prev.xy) * float2(0.5, -0.5), 0, 1); }
 )HLSL";
 
-bool ValidateMotionNative(const ShaderRecordDX12 *record, bool pixel)
+//-----------------------------------------------------------------------------
+// Purpose: Verifies that a motion shader's reflected cbuffers match the engine layouts
+//-----------------------------------------------------------------------------
+bool ValidateMotionNative( const ShaderRecordDX12 *pRecord, bool bPixel )
 {
-    if (!record || record->legacyBytecode.size()) return false;
-    for (const auto &binding : record->nativeCBuffers)
-    {
-        const dx12native::EngineCBufferLayoutDX12 *layout = nullptr;
-        for (const auto &candidate : dx12native::kEngineCBufferLayouts)
-            if (binding.name == candidate.name) { layout = &candidate; break; }
-        if (!layout || layout->stage != (pixel ? dx12native::kStagePixel : dx12native::kStageVertex) || layout->shaderRegister != binding.shaderRegister || layout->byteSize != binding.byteSize || layout->memberCount != binding.members.size()) return false;
-        for (uint32_t m = 0; m < layout->memberCount; ++m)
-            if (binding.members[m].name != layout->members[m].name || binding.members[m].offset != layout->members[m].offset || binding.members[m].byteSize != layout->members[m].size) return false;
-    }
-    return true;
+	if ( pRecord->legacyBytecode.Count() )
+		return false;
+	for ( int i = 0; i < pRecord->nativeCBuffers.Count(); ++i )
+	{
+		const ShaderRecordDX12::NativeCBufferBindingDX12 &binding = pRecord->nativeCBuffers[i];
+		const dx12native::EngineCBufferLayoutDX12 *pLayout = nullptr;
+		for ( int j = 0; j < ARRAYSIZE( dx12native::kEngineCBufferLayouts ); ++j )
+			if ( binding.name == dx12native::kEngineCBufferLayouts[j].name )
+			{
+				pLayout = &dx12native::kEngineCBufferLayouts[j];
+				break;
+			}
+		if ( !pLayout || pLayout->stage != ( bPixel ? dx12native::kStagePixel : dx12native::kStageVertex ) || pLayout->shaderRegister != binding.shaderRegister || pLayout->byteSize != binding.byteSize || pLayout->memberCount != static_cast<uint32_t>( binding.members.Count() ) )
+			return false;
+		for ( uint32_t m = 0; m < pLayout->memberCount; ++m )
+			if ( binding.members[m].name != pLayout->members[m].name || binding.members[m].offset != pLayout->members[m].offset || binding.members[m].byteSize != pLayout->members[m].size )
+				return false;
+	}
+	return true;
 }
 
-uint64_t MotionHash(std::initializer_list<uint64_t> values)
+//-----------------------------------------------------------------------------
+// Purpose: FNV-style hash of a list of 64-bit values; keys the per-object history
+//-----------------------------------------------------------------------------
+uint64 MotionHash( const uint64 *pValues, int nCount )
 {
-    uint64_t hash = 1469598103934665603ull;
-    for (uint64_t value : values)
-    {
-        hash ^= value;
-        hash *= 1099511628211ull;
-    }
-    return hash;
+	uint64 nHash = 1469598103934665603ull;
+	for ( int i = 0; i < nCount; ++i )
+	{
+		nHash ^= pValues[i];
+		nHash *= 1099511628211ull;
+	}
+	return nHash;
 }
 
 bool MotionLoggingEnabled()
 {
-    static const bool enabled = CommandLine() && CommandLine()->FindParm("-dx12motionlog") != 0;
-    return enabled;
+	static const bool s_bEnabled = CommandLine()->FindParm( "-dx12motionlog" ) != 0;
+	return s_bEnabled;
 }
 
-}
+} // namespace
 
-ShaderRecordDX12 *CShaderAPIDX12::MotionVertexShader(VertexFormat_t format)
+//-----------------------------------------------------------------------------
+// Purpose: Selects the motion vertex shader matching the vertex compression
+//-----------------------------------------------------------------------------
+ShaderRecordDX12 *CShaderAPIDX12::MotionVertexShader( VertexFormat_t vertexFormat )
 {
-    return motionVS_[(format & VERTEX_FORMAT_COMPRESSED) ? 1 : 0];
+	return m_MotionVS[( vertexFormat & VERTEX_FORMAT_COMPRESSED ) ? 1 : 0];
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: Lazily compiles the motion shaders and (re)creates the motion target
+//			to match the scene color buffer; updates INT_RENDERPARM_DX12_MOTION_STATUS
+//-----------------------------------------------------------------------------
 bool CShaderAPIDX12::EnsureMotionResources()
 {
-    if (motionUnavailable_) return false;
-    if (!device_ || !device_->NativeDevice() || !device_->SceneColor() || !device_->SceneDepth()) return false;
-    if (!motionVS_[0])
-    {
-        for (int i = 0; i < 2; ++i)
-        {
-            const std::string source = std::string("#define COMPRESSED_VERTS ") + (i ? "1\n" : "0\n") + kMotionEngineVS + kMotionVS;
-            motionVS_[i] = CompileNativeShaderRecordDX12(device_, source, false, "vs_5_1");
-            if (!motionVS_[i] || !ReflectNativeCBuffersDX12(motionVS_[i]) || !ValidateMotionNative(motionVS_[i], false))
-            {
-                Warning("ShaderAPIDX12: motion shaders unavailable\n");
-                for (auto *&record : motionVS_) { delete record; record = nullptr; }
-                motionUnavailable_ = true; renderingInts_[INT_RENDERPARM_DX12_MOTION_STATUS] = -1; return false;
-            }
-        }
-        motionPS_ = CompileNativeShaderRecordDX12(device_, std::string(kMotionEnginePS) + kMotionPS, true, "ps_5_1");
-        if (!motionPS_ || !ReflectNativeCBuffersDX12(motionPS_) || !ValidateMotionNative(motionPS_, true))
-        {
-            Warning("ShaderAPIDX12: motion shaders unavailable\n");
-            for (auto *&record : motionVS_) { delete record; record = nullptr; }
-            delete motionPS_; motionPS_ = nullptr;
-            motionUnavailable_ = true; renderingInts_[INT_RENDERPARM_DX12_MOTION_STATUS] = -1; return false;
-        }
-    }
-    const D3D12_RESOURCE_DESC scene = device_->SceneColor()->GetDesc();
-    if (motionTarget_ && scene.Width == motionTargetWidth_ && scene.Height == motionTargetHeight_ && scene.SampleDesc.Count == motionTargetSamples_ && scene.SampleDesc.Quality == motionTargetQuality_)
-    {
-        renderingInts_[INT_RENDERPARM_DX12_MOTION_STATUS] = 1; return true;
-    }
-    if (!device_->SupportsMSAAFormat(DXGI_FORMAT_R16G16B16A16_FLOAT, scene.SampleDesc.Count, scene.SampleDesc.Quality))
-    {
-        if (!(motionWarned_ & 32)) { motionWarned_ |= 32; Warning("ShaderAPIDX12: motion pass unavailable at %ux MSAA quality %u\n", scene.SampleDesc.Count, scene.SampleDesc.Quality); }
-        motionTarget_.Reset(); motionTargetSamples_ = 0; renderingInts_[INT_RENDERPARM_DX12_MOTION_STATUS] = -2; return false;
-    }
-    device_->DrainRecording();
-    if (motionTarget_) device_->RetainResource(motionTarget_.Get());
-    D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; desc.Width = scene.Width; desc.Height = scene.Height; desc.DepthOrArraySize = 1; desc.MipLevels = 1; desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; desc.SampleDesc = scene.SampleDesc; desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN; desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    D3D12_CLEAR_VALUE clear{}; clear.Format = desc.Format; clear.Color[0] = 0; clear.Color[1] = 0; clear.Color[2] = 0; clear.Color[3] = 1;
-    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-    if (FAILED(device_->NativeDevice()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS(&resource)))) return false;
-    if (!motionRtvHeap_)
-    {
-        D3D12_DESCRIPTOR_HEAP_DESC heapDesc{}; heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; heapDesc.NumDescriptors = 1;
-        if (FAILED(device_->NativeDevice()->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&motionRtvHeap_)))) return false;
-        motionRtv_ = motionRtvHeap_->GetCPUDescriptorHandleForHeapStart();
-    }
-    D3D12_RENDER_TARGET_VIEW_DESC rtv{}; rtv.Format = desc.Format; rtv.ViewDimension = desc.SampleDesc.Count > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
-    device_->NativeDevice()->CreateRenderTargetView(resource.Get(), &rtv, motionRtv_);
-    motionTarget_ = std::move(resource); motionTargetWidth_ = static_cast<UINT>(scene.Width); motionTargetHeight_ = scene.Height; motionTargetSamples_ = scene.SampleDesc.Count; motionTargetQuality_ = scene.SampleDesc.Quality; motionTargetState_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    if (motionReprojectSamples_ != scene.SampleDesc.Count) { motionReprojectPso_.Reset(); motionReprojectSamples_ = 0; }
-    renderingInts_[INT_RENDERPARM_DX12_MOTION_STATUS] = 1; return true;
-}
-void CShaderAPIDX12::TransitionMotionTarget(D3D12_RESOURCE_STATES desired)
-{
-    if (!motionTarget_ || motionTargetState_ == desired) return;
-    D3D12_RESOURCE_BARRIER barrier{};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = motionTarget_.Get();
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = motionTargetState_;
-    barrier.Transition.StateAfter = desired;
-    device_->CommandList()->ResourceBarrier(1, &barrier);
-    motionTargetState_ = desired;
+	if ( m_bMotionUnavailable )
+		return false;
+	if ( !m_pDevice->NativeDevice() || !m_pDevice->SceneColor() || !m_pDevice->SceneDepth() )
+		return false;
+	if ( !m_MotionVS[0] )
+	{
+		for ( int i = 0; i < 2; ++i )
+		{
+			CUtlString source( i ? "#define COMPRESSED_VERTS 1\n" : "#define COMPRESSED_VERTS 0\n" );
+			source += kMotionEngineVS;
+			source += kMotionVS;
+			m_MotionVS[i] = CompileNativeShaderRecordDX12( m_pDevice, source.Get(), false, "vs_5_1" );
+			if ( !m_MotionVS[i] || !ReflectNativeCBuffersDX12( m_MotionVS[i] ) || !ValidateMotionNative( m_MotionVS[i], false ) )
+			{
+				Warning( "ShaderAPIDX12: motion shaders unavailable\n" );
+				for ( int j = 0; j < ARRAYSIZE( m_MotionVS ); ++j )
+				{
+					delete m_MotionVS[j];
+					m_MotionVS[j] = nullptr;
+				}
+				m_bMotionUnavailable = true;
+				m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = -1;
+				return false;
+			}
+		}
+		CUtlString source( kMotionEnginePS );
+		source += kMotionPS;
+		m_pMotionPS = CompileNativeShaderRecordDX12( m_pDevice, source.Get(), true, "ps_5_1" );
+		if ( !m_pMotionPS || !ReflectNativeCBuffersDX12( m_pMotionPS ) || !ValidateMotionNative( m_pMotionPS, true ) )
+		{
+			Warning( "ShaderAPIDX12: motion shaders unavailable\n" );
+			for ( int j = 0; j < ARRAYSIZE( m_MotionVS ); ++j )
+			{
+				delete m_MotionVS[j];
+				m_MotionVS[j] = nullptr;
+			}
+			delete m_pMotionPS;
+			m_pMotionPS = nullptr;
+			m_bMotionUnavailable = true;
+			m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = -1;
+			return false;
+		}
+	}
+	const D3D12_RESOURCE_DESC scene = m_pDevice->SceneColor()->GetDesc();
+	if ( m_pMotionTarget && scene.Width == m_nMotionTargetWidth && scene.Height == m_nMotionTargetHeight && scene.SampleDesc.Count == m_nMotionTargetSamples && scene.SampleDesc.Quality == m_nMotionTargetQuality )
+	{
+		m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = 1;
+		return true;
+	}
+	if ( !m_pDevice->SupportsMSAAFormat( DXGI_FORMAT_R16G16B16A16_FLOAT, scene.SampleDesc.Count, scene.SampleDesc.Quality ) )
+	{
+		if ( !( m_nMotionWarned & 32 ) )
+		{
+			m_nMotionWarned |= 32;
+			Warning( "ShaderAPIDX12: motion pass unavailable at %ux MSAA quality %u\n", scene.SampleDesc.Count, scene.SampleDesc.Quality );
+		}
+		m_pMotionTarget.Reset();
+		m_nMotionTargetSamples = 0;
+		m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = -2;
+		return false;
+	}
+	m_pDevice->DrainRecording();
+	if ( m_pMotionTarget )
+		m_pDevice->RetainResource( m_pMotionTarget.Get() );
+	D3D12_HEAP_PROPERTIES heap{};
+	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = scene.Width;
+	desc.Height = scene.Height;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	desc.SampleDesc = scene.SampleDesc;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	D3D12_CLEAR_VALUE clear{};
+	clear.Format = desc.Format;
+	clear.Color[0] = 0;
+	clear.Color[1] = 0;
+	clear.Color[2] = 0;
+	clear.Color[3] = 1;
+	Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
+	if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS( &pResource ) ) ) )
+		return false;
+	if ( !m_pMotionRtvHeap )
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+		heapDesc.NumDescriptors = 1;
+		if ( FAILED( m_pDevice->NativeDevice()->CreateDescriptorHeap( &heapDesc, IID_PPV_ARGS( &m_pMotionRtvHeap ) ) ) )
+			return false;
+		m_MotionRtv = m_pMotionRtvHeap->GetCPUDescriptorHandleForHeapStart();
+	}
+	D3D12_RENDER_TARGET_VIEW_DESC rtv{};
+	rtv.Format = desc.Format;
+	rtv.ViewDimension = desc.SampleDesc.Count > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
+	m_pDevice->NativeDevice()->CreateRenderTargetView( pResource.Get(), &rtv, m_MotionRtv );
+	m_pMotionTarget = std::move( pResource );
+	m_nMotionTargetWidth = static_cast<UINT>( scene.Width );
+	m_nMotionTargetHeight = scene.Height;
+	m_nMotionTargetSamples = scene.SampleDesc.Count;
+	m_nMotionTargetQuality = scene.SampleDesc.Quality;
+	m_MotionTargetState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	if ( m_nMotionReprojectSamples != scene.SampleDesc.Count )
+	{
+		m_pMotionReprojectPso.Reset();
+		m_nMotionReprojectSamples = 0;
+	}
+	m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = 1;
+	return true;
 }
 
-bool CShaderAPIDX12::PrepareMotionBinding(RenderTargetBindingDX12 &binding)
+//-----------------------------------------------------------------------------
+// Purpose: Records a barrier moving the motion target to the desired state
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::TransitionMotionTarget( D3D12_RESOURCE_STATES desiredState )
 {
-    binding = {};
-    if (!motionTarget_ || !device_ || !device_->SceneDepth() || !device_->CommandList()) return false;
-    binding.colors[0] = motionTarget_.Get(); binding.rtvs[0] = motionRtv_; binding.colorFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT; binding.colorCount = 1; binding.color = binding.colors[0]; binding.rtv = binding.rtvs[0]; binding.colorFormat = binding.colorFormats[0]; binding.depth = device_->SceneDepth(); binding.dsv = device_->SceneReadOnlyDSV(); binding.depthFormat = device_->SceneDepthFormat(); binding.width = motionTargetWidth_; binding.height = motionTargetHeight_; binding.sampleCount = motionTargetSamples_; binding.sampleQuality = motionTargetQuality_;
-    TransitionMotionTarget(D3D12_RESOURCE_STATE_RENDER_TARGET); device_->TransitionSceneDepth(D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE); return true;
+	if ( !m_pMotionTarget || m_MotionTargetState == desiredState )
+		return;
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = m_pMotionTarget.Get();
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = m_MotionTargetState;
+	barrier.Transition.StateAfter = desiredState;
+	m_pDevice->CommandList()->ResourceBarrier( 1, &barrier );
+	m_MotionTargetState = desiredState;
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: Builds the render target binding used while the motion pass is active
+//-----------------------------------------------------------------------------
+bool CShaderAPIDX12::PrepareMotionBinding( RenderTargetBindingDX12 &binding )
+{
+	binding = {};
+	if ( !m_pMotionTarget || !m_pDevice || !m_pDevice->SceneDepth() || !m_pDevice->CommandList() )
+		return false;
+	binding.colors[0] = m_pMotionTarget.Get();
+	binding.rtvs[0] = m_MotionRtv;
+	binding.colorFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	binding.colorCount = 1;
+	binding.color = binding.colors[0];
+	binding.rtv = binding.rtvs[0];
+	binding.colorFormat = binding.colorFormats[0];
+	binding.depth = m_pDevice->SceneDepth();
+	binding.dsv = m_pDevice->SceneReadOnlyDSV();
+	binding.depthFormat = m_pDevice->SceneDepthFormat();
+	binding.width = m_nMotionTargetWidth;
+	binding.height = m_nMotionTargetHeight;
+	binding.sampleCount = m_nMotionTargetSamples;
+	binding.sampleQuality = m_nMotionTargetQuality;
+	TransitionMotionTarget( D3D12_RESOURCE_STATE_RENDER_TARGET );
+	m_pDevice->TransitionSceneDepth( D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Seeds the motion target with camera-only motion reconstructed from
+//			scene depth and the previous view-projection matrix
+//-----------------------------------------------------------------------------
 void CShaderAPIDX12::DrawMotionReprojection()
 {
-    if (!motionTarget_ || !device_ || !device_->CommandList() || !device_->SceneDepth()) return;
-    auto *native = device_->NativeDevice(); auto *list = device_->CommandList();
-    if (!motionReprojectRoot_)
-    {
-        D3D12_DESCRIPTOR_RANGE range{}; range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; range.NumDescriptors = 1; range.BaseShaderRegister = 0;
-        D3D12_ROOT_PARAMETER params[2]{}; params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; params[0].DescriptorTable.NumDescriptorRanges = 1; params[0].DescriptorTable.pDescriptorRanges = &range; params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL; params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; params[1].Constants.Num32BitValues = 20; params[1].Constants.ShaderRegister = 0; params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        D3D12_ROOT_SIGNATURE_DESC desc{}; desc.NumParameters = 2; desc.pParameters = params;
-        Microsoft::WRL::ComPtr<ID3DBlob> blob, error; if (FAILED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error)) || FAILED(native->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&motionReprojectRoot_)))) return;
-    }
-    const UINT samples = motionTargetSamples_;
-    if (!motionReprojectPso_)
-    {
-        ShaderRecordDX12 *vs = CompileNativeShaderRecordDX12(device_, kMotionReprojectVS, false, "vs_5_1"); ShaderRecordDX12 *ps = CompileNativeShaderRecordDX12(device_, std::string("#define MOTION_MSAA ") + (samples > 1 ? "1\n" : "0\n") + kMotionReprojectPS, true, "ps_5_1");
-        if (!vs || !ps) { delete vs; delete ps; return; }
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{}; desc.pRootSignature = motionReprojectRoot_.Get(); desc.VS = vs->Bytecode(); desc.PS = ps->Bytecode(); desc.SampleMask = UINT_MAX; desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; desc.NumRenderTargets = 1; desc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT; desc.SampleDesc.Count = samples; desc.SampleDesc.Quality = motionTargetQuality_; desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID; desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; desc.RasterizerState.DepthClipEnable = TRUE; desc.RasterizerState.MultisampleEnable = samples > 1; desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL; desc.DepthStencilState.DepthEnable = FALSE; desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-        if (FAILED(native->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&motionReprojectPso_)))) { delete vs; delete ps; return; }
-        delete vs; delete ps; motionReprojectSamples_ = samples;
-    }
-    DescriptorRangeDX12 srv = pipeline_.AllocateTransientResources(1, device_->NextFenceValue()); if (!srv.cpu.ptr) return;
-    D3D12_SHADER_RESOURCE_VIEW_DESC view{}; view.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS; view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; view.ViewDimension = samples > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D; if (samples == 1) view.Texture2D.MipLevels = 1; native->CreateShaderResourceView(device_->SceneDepth(), &view, srv.cpu);
-    device_->TransitionSceneDepth(D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE); TransitionMotionTarget(D3D12_RESOURCE_STATE_RENDER_TARGET);
-    VMatrix curVP = matrices_[MATERIAL_PROJECTION] * matrices_[MATERIAL_VIEW], inv, prevVP; if (!MatrixInverseGeneral(curVP, inv)) return; if (motionPrevViewProjValid_[motionPassSlot_]) std::memcpy(prevVP.Base(), motionPrevViewProj_[motionPassSlot_].data(), sizeof(float) * 16); else prevVP = curVP; VMatrix clipToPrev = prevVP * inv;
-    float constants[20]{}; std::memcpy(constants, clipToPrev.Base(), sizeof(float) * 16); float width = static_cast<float>(motionTargetWidth_), height = static_cast<float>(motionTargetHeight_), left = 0, top = 0; if (viewportCount_ > 0) { width = static_cast<float>(viewports_[0].m_nWidth); height = static_cast<float>(viewports_[0].m_nHeight); left = static_cast<float>(viewports_[0].m_nTopLeftX); top = static_cast<float>(viewports_[0].m_nTopLeftY); } constants[16] = width > 0 ? 1.f / width : 0; constants[17] = height > 0 ? 1.f / height : 0; constants[18] = left; constants[19] = top;
-    D3D12_VIEWPORT viewport{left, top, width, height, 0, 1}; D3D12_RECT scissor{static_cast<LONG>(left), static_cast<LONG>(top), static_cast<LONG>(left + width), static_cast<LONG>(top + height)}; ID3D12DescriptorHeap *heap = pipeline_.ResourceDescriptorHeap(); list->SetDescriptorHeaps(1, &heap); list->RSSetViewports(1, &viewport); list->RSSetScissorRects(1, &scissor); list->OMSetRenderTargets(1, &motionRtv_, FALSE, nullptr); list->SetGraphicsRootSignature(motionReprojectRoot_.Get()); list->SetGraphicsRootDescriptorTable(0, srv.gpu); list->SetGraphicsRoot32BitConstants(1, 20, constants, 0); list->SetPipelineState(motionReprojectPso_.Get()); list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); list->DrawInstanced(3, 1, 0, 0); pipeline_.InvalidateGraphicsBindings();
+	if ( !m_pDevice->SceneDepth() )
+		return;
+	ID3D12Device *pNative = m_pDevice->NativeDevice();
+	CCommandRecorderDX12 *pList = m_pDevice->CommandList();
+	if ( !m_pMotionReprojectRoot )
+	{
+		D3D12_DESCRIPTOR_RANGE range{};
+		range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		range.NumDescriptors = 1;
+		range.BaseShaderRegister = 0;
+		D3D12_ROOT_PARAMETER params[2]{};
+		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		params[0].DescriptorTable.NumDescriptorRanges = 1;
+		params[0].DescriptorTable.pDescriptorRanges = &range;
+		params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+		params[1].Constants.Num32BitValues = 20;
+		params[1].Constants.ShaderRegister = 0;
+		params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		D3D12_ROOT_SIGNATURE_DESC desc{};
+		desc.NumParameters = 2;
+		desc.pParameters = params;
+		Microsoft::WRL::ComPtr<ID3DBlob> blob, error;
+		if ( FAILED( D3D12SerializeRootSignature( &desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error ) ) || FAILED( pNative->CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &m_pMotionReprojectRoot ) ) ) )
+			return;
+	}
+	const UINT nSamples = m_nMotionTargetSamples;
+	if ( !m_pMotionReprojectPso )
+	{
+		ShaderRecordDX12 *pVS = CompileNativeShaderRecordDX12( m_pDevice, kMotionReprojectVS, false, "vs_5_1" );
+		CUtlString psSource( nSamples > 1 ? "#define MOTION_MSAA 1\n" : "#define MOTION_MSAA 0\n" );
+		psSource += kMotionReprojectPS;
+		ShaderRecordDX12 *pPS = CompileNativeShaderRecordDX12( m_pDevice, psSource.Get(), true, "ps_5_1" );
+		if ( !pVS || !pPS )
+		{
+			delete pVS;
+			delete pPS;
+			return;
+		}
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+		desc.pRootSignature = m_pMotionReprojectRoot.Get();
+		desc.VS = pVS->Bytecode();
+		desc.PS = pPS->Bytecode();
+		desc.SampleMask = UINT_MAX;
+		desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		desc.NumRenderTargets = 1;
+		desc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		desc.SampleDesc.Count = nSamples;
+		desc.SampleDesc.Quality = m_nMotionTargetQuality;
+		desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		desc.RasterizerState.DepthClipEnable = TRUE;
+		desc.RasterizerState.MultisampleEnable = nSamples > 1;
+		desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		desc.DepthStencilState.DepthEnable = FALSE;
+		desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+		desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+		if ( FAILED( pNative->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &m_pMotionReprojectPso ) ) ) )
+		{
+			delete pVS;
+			delete pPS;
+			return;
+		}
+		delete pVS;
+		delete pPS;
+		m_nMotionReprojectSamples = nSamples;
+	}
+	DescriptorRangeDX12 srv = m_Pipeline.AllocateTransientResources( 1, m_pDevice->NextFenceValue() );
+	if ( !srv.cpu.ptr )
+		return;
+	D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+	view.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+	view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	view.ViewDimension = nSamples > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
+	if ( nSamples == 1 )
+		view.Texture2D.MipLevels = 1;
+	pNative->CreateShaderResourceView( m_pDevice->SceneDepth(), &view, srv.cpu );
+	m_pDevice->TransitionSceneDepth( D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+	TransitionMotionTarget( D3D12_RESOURCE_STATE_RENDER_TARGET );
+	VMatrix curVP = m_Matrices[MATERIAL_PROJECTION] * m_Matrices[MATERIAL_VIEW], inv, prevVP;
+	if ( !MatrixInverseGeneral( curVP, inv ) )
+		return;
+	if ( m_MotionPrevViewProjValid[m_nMotionPassSlot] )
+		memcpy( prevVP.Base(), m_MotionPrevViewProj[m_nMotionPassSlot], sizeof( float ) * 16 );
+	else
+		prevVP = curVP;
+	VMatrix clipToPrev = prevVP * inv;
+	float constants[20]{};
+	memcpy( constants, clipToPrev.Base(), sizeof( float ) * 16 );
+	float flWidth = static_cast<float>( m_nMotionTargetWidth );
+	float flHeight = static_cast<float>( m_nMotionTargetHeight );
+	float flLeft = 0;
+	float flTop = 0;
+	if ( m_nViewportCount > 0 )
+	{
+		flWidth = static_cast<float>( m_Viewports[0].m_nWidth );
+		flHeight = static_cast<float>( m_Viewports[0].m_nHeight );
+		flLeft = static_cast<float>( m_Viewports[0].m_nTopLeftX );
+		flTop = static_cast<float>( m_Viewports[0].m_nTopLeftY );
+	}
+	constants[16] = flWidth > 0 ? 1.f / flWidth : 0;
+	constants[17] = flHeight > 0 ? 1.f / flHeight : 0;
+	constants[18] = flLeft;
+	constants[19] = flTop;
+	D3D12_VIEWPORT viewport{ flLeft, flTop, flWidth, flHeight, 0, 1 };
+	D3D12_RECT scissor{ static_cast<LONG>( flLeft ), static_cast<LONG>( flTop ), static_cast<LONG>( flLeft + flWidth ), static_cast<LONG>( flTop + flHeight ) };
+	ID3D12DescriptorHeap *pHeap = m_Pipeline.ResourceDescriptorHeap();
+	pList->SetDescriptorHeaps( 1, &pHeap );
+	pList->RSSetViewports( 1, &viewport );
+	pList->RSSetScissorRects( 1, &scissor );
+	pList->OMSetRenderTargets( 1, &m_MotionRtv, FALSE, nullptr );
+	pList->SetGraphicsRootSignature( m_pMotionReprojectRoot.Get() );
+	pList->SetGraphicsRootDescriptorTable( 0, srv.gpu );
+	pList->SetGraphicsRoot32BitConstants( 1, 20, constants, 0 );
+	pList->SetPipelineState( m_pMotionReprojectPso.Get() );
+	pList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	pList->DrawInstanced( 3, 1, 0, 0 );
+	m_Pipeline.InvalidateGraphicsBindings();
 }
 
-void CShaderAPIDX12::SetMotionPass(int mode)
+//-----------------------------------------------------------------------------
+// Purpose: INT_RENDERPARM_DX12_MOTION_PASS handler: begins, appends to or ends
+//			a motion pass, suppressing it when its preconditions are not met
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::SetMotionPass( int nMode )
 {
-    const bool canRecord = device_ && device_->IsRecordingOwner() && device_->CommandList();
-    if ( mode == DX12_MOTION_PASS_END )
-    {
-        if ( motionPassState_ == MotionPassStateDX12::None )
-            return;
-        if ( canRecord )
-        {
-            if ( motionPassState_ == MotionPassStateDX12::Active )
-            {
-                FlushBufferedPrimitives();
-                ResolveMotionTarget();
-            }
-            else
-            {
-                MarkMotionTargetStale();
-                ++motionSuppressedPasses_;
-            }
-        }
-        if (MotionLoggingEnabled() && frameCounter_ - motionLogFrame_ >= 120)
-        {
-            motionLogFrame_ = frameCounter_;
-            Msg("ShaderAPIDX12 motion: draws %u objects %u suppressed %u\n", motionPassDraws_, motionPassObjects_, motionSuppressedPasses_);
-        }
-        motionPassState_ = MotionPassStateDX12::None;
-        motionResolveTarget_ = 0;
-        return;
-    }
-    if (motionPassState_ != MotionPassStateDX12::None) SetMotionPass(DX12_MOTION_PASS_END);
-    auto fail = [&](unsigned bit, const char *why) { if (!(motionWarned_ & bit)) { motionWarned_ |= static_cast<uint8_t>(bit); Warning("ShaderAPIDX12: motion pass suppressed: %s\n", why); } motionPassState_ = MotionPassStateDX12::Suppressed; };
-    if (!canRecord) { fail(1, "off the recording thread"); return; }
-    if (mode == DX12_MOTION_PASS_APPEND_MAIN && motionMainFrame_ != frameCounter_) { if (!(motionWarned_ & 2)) { motionWarned_ |= 2; Warning("ShaderAPIDX12: motion append without a main pass; promoting to begin\n"); } mode = DX12_MOTION_PASS_BEGIN_MAIN; }
-    if (mode == DX12_MOTION_PASS_BEGIN_VIEWMODEL && motionMainFrame_ != frameCounter_) { fail(4, "viewmodel pass without a main pass this frame"); return; }
-    if (!EnsureMotionResources()) { fail(8, "private resources unavailable"); return; }
-    TextureRecord *record = FindTexture(renderTargets_[0]); if (!record || !(record->flags & TEXTURE_CREATE_RENDERTARGET) || record->format != IMAGE_FORMAT_RGBA16161616F || record->width != static_cast<int>(motionTargetWidth_) || record->height != static_cast<int>(motionTargetHeight_)) { fail(16, "render target 0 is not a scene-sized RGBA16F render target"); return; }
-    FlushBufferedPrimitives(); CommitTransforms(); motionPassSlot_ = mode == DX12_MOTION_PASS_BEGIN_VIEWMODEL ? 1 : 0;
-    if (mode == DX12_MOTION_PASS_BEGIN_MAIN || mode == DX12_MOTION_PASS_BEGIN_VIEWMODEL) { motionPrevViewProj_[motionPassSlot_] = motionCurViewProj_[motionPassSlot_]; motionPrevViewProjValid_[motionPassSlot_] = motionCurViewProjValid_[motionPassSlot_]; std::memcpy(motionCurViewProj_[motionPassSlot_].data(), vsFloat_[VERTEX_SHADER_VIEWPROJ].data(), sizeof(float) * 16); motionCurViewProjValid_[motionPassSlot_] = true; }
-    if (mode == DX12_MOTION_PASS_BEGIN_MAIN) { motionMainFrame_ = frameCounter_; motionHistoryCurrent_ ^= 1; motionHistory_[motionHistoryCurrent_].Clear(); motionPassDraws_ = motionPassObjects_ = 0; TransitionMotionTarget(D3D12_RESOURCE_STATE_RENDER_TARGET); const float clear[4] = {0, 0, 0, 1}; device_->CommandList()->ClearRenderTargetView(motionRtv_, clear, 0, nullptr); DrawMotionReprojection(); }
-    motionResolveTarget_ = renderTargets_[0]; motionPassState_ = MotionPassStateDX12::Active; motionLastObjectKey_ = INT_MIN; motionObjectOrdinal_ = 0;
+	const bool bCanRecord = m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList();
+	if ( nMode == DX12_MOTION_PASS_END )
+	{
+		if ( m_MotionPassState == MotionPassStateDX12::None )
+			return;
+		if ( bCanRecord )
+		{
+			if ( m_MotionPassState == MotionPassStateDX12::Active )
+			{
+				FlushBufferedPrimitives();
+				ResolveMotionTarget();
+			}
+			else
+			{
+				MarkMotionTargetStale();
+				++m_nMotionSuppressedPasses;
+			}
+		}
+		if ( MotionLoggingEnabled() && m_nFrameCounter - m_nMotionLogFrame >= 120 )
+		{
+			m_nMotionLogFrame = m_nFrameCounter;
+			Msg( "ShaderAPIDX12 motion: draws %u objects %u suppressed %u\n", m_nMotionPassDraws, m_nMotionPassObjects, m_nMotionSuppressedPasses );
+		}
+		m_MotionPassState = MotionPassStateDX12::None;
+		m_hMotionResolveTarget = 0;
+		return;
+	}
+	if ( m_MotionPassState != MotionPassStateDX12::None )
+		SetMotionPass( DX12_MOTION_PASS_END );
+	auto fail = [&]( unsigned nBit, const char *pszWhy )
+	{
+		if ( !( m_nMotionWarned & nBit ) )
+		{
+			m_nMotionWarned |= static_cast<uint8_t>( nBit );
+			Warning( "ShaderAPIDX12: motion pass suppressed: %s\n", pszWhy );
+		}
+		m_MotionPassState = MotionPassStateDX12::Suppressed;
+	};
+	if ( !bCanRecord )
+	{
+		fail( 1, "off the recording thread" );
+		return;
+	}
+	if ( nMode == DX12_MOTION_PASS_APPEND_MAIN && m_nMotionMainFrame != m_nFrameCounter )
+	{
+		if ( !( m_nMotionWarned & 2 ) )
+		{
+			m_nMotionWarned |= 2;
+			Warning( "ShaderAPIDX12: motion append without a main pass; promoting to begin\n" );
+		}
+		nMode = DX12_MOTION_PASS_BEGIN_MAIN;
+	}
+	if ( nMode == DX12_MOTION_PASS_BEGIN_VIEWMODEL && m_nMotionMainFrame != m_nFrameCounter )
+	{
+		fail( 4, "viewmodel pass without a main pass this frame" );
+		return;
+	}
+	if ( !EnsureMotionResources() )
+	{
+		fail( 8, "private resources unavailable" );
+		return;
+	}
+	TextureRecord *pRecord = FindTexture( m_RenderTargets[0] );
+	if ( !pRecord || !( pRecord->flags & TEXTURE_CREATE_RENDERTARGET ) || pRecord->format != IMAGE_FORMAT_RGBA16161616F || pRecord->width != static_cast<int>( m_nMotionTargetWidth ) || pRecord->height != static_cast<int>( m_nMotionTargetHeight ) )
+	{
+		fail( 16, "render target 0 is not a scene-sized RGBA16F render target" );
+		return;
+	}
+	FlushBufferedPrimitives();
+	CommitTransforms();
+	m_nMotionPassSlot = nMode == DX12_MOTION_PASS_BEGIN_VIEWMODEL ? 1 : 0;
+	if ( nMode == DX12_MOTION_PASS_BEGIN_MAIN || nMode == DX12_MOTION_PASS_BEGIN_VIEWMODEL )
+	{
+		memcpy( m_MotionPrevViewProj[m_nMotionPassSlot], m_MotionCurViewProj[m_nMotionPassSlot], sizeof( m_MotionPrevViewProj[m_nMotionPassSlot] ) );
+		m_MotionPrevViewProjValid[m_nMotionPassSlot] = m_MotionCurViewProjValid[m_nMotionPassSlot];
+		memcpy( m_MotionCurViewProj[m_nMotionPassSlot], m_VsFloat[VERTEX_SHADER_VIEWPROJ], sizeof( float ) * 16 );
+		m_MotionCurViewProjValid[m_nMotionPassSlot] = true;
+	}
+	if ( nMode == DX12_MOTION_PASS_BEGIN_MAIN )
+	{
+		m_nMotionMainFrame = m_nFrameCounter;
+		m_nMotionHistoryCurrent ^= 1;
+		m_MotionHistory[m_nMotionHistoryCurrent].Clear();
+		m_nMotionPassDraws = m_nMotionPassObjects = 0;
+		TransitionMotionTarget( D3D12_RESOURCE_STATE_RENDER_TARGET );
+		const float flClear[4] = { 0, 0, 0, 1 };
+		m_pDevice->CommandList()->ClearRenderTargetView( m_MotionRtv, flClear, 0, nullptr );
+		DrawMotionReprojection();
+	}
+	m_hMotionResolveTarget = m_RenderTargets[0];
+	m_MotionPassState = MotionPassStateDX12::Active;
+	m_nMotionLastObjectKey = INT_MIN;
+	m_nMotionObjectOrdinal = 0;
 }
 
-void CShaderAPIDX12::FillMotionBlock(const VertexBindingDX12 &vb, CIndexBufferDX12 *ib, size_t indexOffset, int firstIndex, int indexCount)
+//-----------------------------------------------------------------------------
+// Purpose: Fills the DX12MotionVS block for the next draw, looking up the
+//			object's previous-frame bone rows in the motion history
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::FillMotionBlock( const VertexBindingDX12 &vertexBinding, CIndexBufferDX12 *pIndexBuffer, size_t nIndexOffset, int nFirstIndex, int nIndexCount )
 {
-    const int n = std::clamp(motionBoneRows_, 1, NUM_MODEL_TRANSFORMS);
-    const char *shaderName = activeSnapshot_.vertexShaderName.c_str();
-    const bool texTransform = activeSnapshot_.alphaTest &&
-        (std::strncmp(shaderName, "vertexlit_and_unlit_generic", 27) == 0 ||
-         std::strncmp(shaderName, "lightmappedgeneric", 18) == 0);
-    motionBlock_.cMotionParams[0] = boneCount_ > 0 ? 1.f : 0.f;
-    motionBlock_.cMotionParams[1] = texTransform ? 1.f : 0.f;
-    motionBlock_.cMotionParams[2] = motionBlock_.cMotionParams[3] = 0;
-    if (texTransform)
-    {
-        std::memcpy(motionBlock_.cBaseTexTransform[0], vsFloat_[VERTEX_SHADER_SHADER_SPECIFIC_CONST_0].data(), sizeof(float) * 4);
-        std::memcpy(motionBlock_.cBaseTexTransform[1], vsFloat_[VERTEX_SHADER_SHADER_SPECIFIC_CONST_1].data(), sizeof(float) * 4);
-    }
-    else
-    {
-        std::memset(motionBlock_.cBaseTexTransform, 0, sizeof(motionBlock_.cBaseTexTransform));
-    }
+	const int nRows = Clamp( m_nMotionBoneRows, 1, NUM_MODEL_TRANSFORMS );
+	const char *pszShaderName = m_ActiveSnapshot.vertexShaderName.c_str();
+	const bool bTexTransform = m_ActiveSnapshot.alphaTest &&
+	    ( V_strncmp( pszShaderName, "vertexlit_and_unlit_generic", 27 ) == 0 ||
+	        V_strncmp( pszShaderName, "lightmappedgeneric", 18 ) == 0 );
+	m_MotionBlock.cMotionParams[0] = m_nBoneCount > 0 ? 1.f : 0.f;
+	m_MotionBlock.cMotionParams[1] = bTexTransform ? 1.f : 0.f;
+	m_MotionBlock.cMotionParams[2] = m_MotionBlock.cMotionParams[3] = 0;
+	if ( bTexTransform )
+	{
+		memcpy( m_MotionBlock.cBaseTexTransform[0], m_VsFloat[VERTEX_SHADER_SHADER_SPECIFIC_CONST_0], sizeof( float ) * 4 );
+		memcpy( m_MotionBlock.cBaseTexTransform[1], m_VsFloat[VERTEX_SHADER_SHADER_SPECIFIC_CONST_1], sizeof( float ) * 4 );
+	}
+	else
+	{
+		memset( m_MotionBlock.cBaseTexTransform, 0, sizeof( m_MotionBlock.cBaseTexTransform ) );
+	}
 
-    const auto &previous = motionPrevViewProjValid_[motionPassSlot_] ? motionPrevViewProj_[motionPassSlot_] : motionCurViewProj_[motionPassSlot_];
-    std::memcpy(motionBlock_.cPrevViewProj, previous.data(), sizeof(float) * 16);
-    const float *current = vsFloat_[VERTEX_SHADER_MODEL].data();
-    std::memset(motionBlock_.cPrevModel, 0, sizeof(motionBlock_.cPrevModel));
+	const float *pPrevious = m_MotionPrevViewProjValid[m_nMotionPassSlot] ? m_MotionPrevViewProj[m_nMotionPassSlot] : m_MotionCurViewProj[m_nMotionPassSlot];
+	memcpy( m_MotionBlock.cPrevViewProj, pPrevious, sizeof( float ) * 16 );
+	const float *pCurrent = m_VsFloat[VERTEX_SHADER_MODEL];
+	memset( m_MotionBlock.cPrevModel, 0, sizeof( m_MotionBlock.cPrevModel ) );
 
-    if (motionObjectKey_ == 0)
-    {
-        std::memcpy(motionBlock_.cPrevModel, current, sizeof(float) * n * 12);
-    }
-    else
-    {
-        if (motionObjectKey_ != motionLastObjectKey_)
-        {
-            motionLastObjectKey_ = motionObjectKey_;
-            motionObjectOrdinal_ = 0;
-            ++motionPassObjects_;
-        }
-        const uint64_t materialVS = boundVS_ == VERTEX_SHADER_HANDLE_INVALID ? 0 : reinterpret_cast<ShaderRecordDX12 *>(boundVS_)->identity;
-        const uint64_t key = ib && !ib->IsDynamic()
-            ? MotionHash({static_cast<uint32_t>(motionObjectKey_), reinterpret_cast<uintptr_t>(ib), indexOffset, static_cast<uint32_t>(firstIndex), static_cast<uint32_t>(indexCount)})
-            : MotionHash({static_cast<uint32_t>(motionObjectKey_), materialVS, vb.vertexCount, static_cast<uint32_t>(indexCount), motionObjectOrdinal_++});
+	if ( m_nMotionObjectKey == 0 )
+	{
+		memcpy( m_MotionBlock.cPrevModel, pCurrent, sizeof( float ) * nRows * 12 );
+	}
+	else
+	{
+		if ( m_nMotionObjectKey != m_nMotionLastObjectKey )
+		{
+			m_nMotionLastObjectKey = m_nMotionObjectKey;
+			m_nMotionObjectOrdinal = 0;
+			++m_nMotionPassObjects;
+		}
+		const uint64_t nMaterialVS = m_hBoundVS == VERTEX_SHADER_HANDLE_INVALID ? 0 : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS )->identity;
+		uint64 nKey;
+		if ( pIndexBuffer && !pIndexBuffer->IsDynamic() )
+		{
+			const uint64 values[] = { static_cast<uint32_t>( m_nMotionObjectKey ), reinterpret_cast<uintptr_t>( pIndexBuffer ), nIndexOffset, static_cast<uint32_t>( nFirstIndex ), static_cast<uint32_t>( nIndexCount ) };
+			nKey = MotionHash( values, ARRAYSIZE( values ) );
+		}
+		else
+		{
+			const uint64 values[] = { static_cast<uint32_t>( m_nMotionObjectKey ), nMaterialVS, vertexBinding.vertexCount, static_cast<uint32_t>( nIndexCount ), m_nMotionObjectOrdinal++ };
+			nKey = MotionHash( values, ARRAYSIZE( values ) );
+		}
 
-        auto &write = motionHistory_[motionHistoryCurrent_];
-        const auto &read = motionHistory_[motionHistoryCurrent_ ^ 1];
-        const auto found = read.entries.Find(key);
-        const bool hit = found != read.entries.InvalidHandle() &&
-            read.entries[found].materialVS == materialVS &&
-            read.entries[found].count == static_cast<uint32_t>(n) &&
-            read.entries[found].offset + read.entries[found].count * 12 <= static_cast<uint32_t>(read.rows.Count());
-        std::memcpy(motionBlock_.cPrevModel, hit ? read.rows.Base() + read.entries[found].offset : current, sizeof(float) * n * 12);
-        if (write.entries.Find(key) == write.entries.InvalidHandle())
-        {
-            const MotionHistoryEntryDX12 entry{static_cast<uint32_t>(write.rows.Count()), static_cast<uint32_t>(n), materialVS};
-            write.rows.AddMultipleToTail(n * 12, current);
-            write.entries.Insert(key, entry);
-        }
-    }
-    ++motionBlockVersion_;
-    ++motionPassDraws_;
+		MotionHistoryTableDX12 &write = m_MotionHistory[m_nMotionHistoryCurrent];
+		const MotionHistoryTableDX12 &read = m_MotionHistory[m_nMotionHistoryCurrent ^ 1];
+		const UtlHashHandle_t hFound = read.entries.Find( nKey );
+		const bool bHit = hFound != read.entries.InvalidHandle() &&
+		    read.entries[hFound].materialVS == nMaterialVS &&
+		    read.entries[hFound].count == static_cast<uint32_t>( nRows ) &&
+		    read.entries[hFound].offset + read.entries[hFound].count * 12 <= static_cast<uint32_t>( read.rows.Count() );
+		memcpy( m_MotionBlock.cPrevModel, bHit ? read.rows.Base() + read.entries[hFound].offset : pCurrent, sizeof( float ) * nRows * 12 );
+		if ( write.entries.Find( nKey ) == write.entries.InvalidHandle() )
+		{
+			const MotionHistoryEntryDX12 entry{ static_cast<uint32_t>( write.rows.Count() ), static_cast<uint32_t>( nRows ), nMaterialVS };
+			write.rows.AddMultipleToTail( nRows * 12, pCurrent );
+			write.entries.Insert( nKey, entry );
+		}
+	}
+	++m_nMotionBlockVersion;
+	++m_nMotionPassDraws;
 }
 
-
+//-----------------------------------------------------------------------------
+// Purpose: Releases every motion resource and resets the pass state
+//-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReleaseMotionResources()
 {
-    for (auto *&record : motionVS_) { if (record) RetireShaderPipelines(record); delete record; record = nullptr; }
-    if (motionPS_) { RetireShaderPipelines(motionPS_); delete motionPS_; motionPS_ = nullptr; }
-    motionReprojectRoot_.Reset(); motionReprojectPso_.Reset(); motionReprojectSamples_ = 0; motionRtvHeap_.Reset(); motionTarget_.Reset(); motionPassState_ = MotionPassStateDX12::None; motionUnavailable_ = false; motionMainFrame_ = ~0ull; motionWarned_ = 0; motionResolveTarget_ = 0; motionTargetSamples_ = 0; renderingInts_[INT_RENDERPARM_DX12_MOTION_STATUS] = 0; motionHistory_[0].Clear(); motionHistory_[1].Clear(); motionPrevViewProjValid_ = {}; motionCurViewProjValid_ = {};
+	for ( int i = 0; i < ARRAYSIZE( m_MotionVS ); ++i )
+	{
+		if ( m_MotionVS[i] )
+			RetireShaderPipelines( m_MotionVS[i] );
+		delete m_MotionVS[i];
+		m_MotionVS[i] = nullptr;
+	}
+	if ( m_pMotionPS )
+	{
+		RetireShaderPipelines( m_pMotionPS );
+		delete m_pMotionPS;
+		m_pMotionPS = nullptr;
+	}
+	m_pMotionReprojectRoot.Reset();
+	m_pMotionReprojectPso.Reset();
+	m_nMotionReprojectSamples = 0;
+	m_pMotionRtvHeap.Reset();
+	m_pMotionTarget.Reset();
+	m_MotionPassState = MotionPassStateDX12::None;
+	m_bMotionUnavailable = false;
+	m_nMotionMainFrame = ~0ull;
+	m_nMotionWarned = 0;
+	m_hMotionResolveTarget = 0;
+	m_nMotionTargetSamples = 0;
+	m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = 0;
+	m_MotionHistory[0].Clear();
+	m_MotionHistory[1].Clear();
+	memset( m_MotionPrevViewProjValid, 0, sizeof( m_MotionPrevViewProjValid ) );
+	memset( m_MotionCurViewProjValid, 0, sizeof( m_MotionCurViewProjValid ) );
 }
 
 } // namespace shaderapidx12

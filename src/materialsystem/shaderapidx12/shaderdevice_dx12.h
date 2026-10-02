@@ -1,5 +1,12 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: Native D3D12 shader device, submission worker and device manager.
+//
+//=============================================================================//
+
+#ifndef SHADERDEVICE_DX12_H
+#define SHADERDEVICE_DX12_H
 #pragma once
-#include <intrin.h>
 
 #include "shaderapi/IShaderDevice.h"
 #include "materialsystem/imesh.h"
@@ -8,17 +15,17 @@
 #include "materialsystem/shaderapidx12/dxsupport_dx12.h"
 #include "materialsystem/shaderapidx12/shader_translate_dx12.h"
 #include "materialsystem/shaderapidx12/command_recorder_dx12.h"
+#include "mathlib/vector.h"
+#include "mathlib/vector4d.h"
+#include "tier0/threadtools.h"
+#include "tier1/utlstring.h"
+#include "tier1/utlvector.h"
+#include <intrin.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
-#include <vector>
-#include <string>
-#include <array>
-#include <memory>
-#include <atomic>
-#include <cstdint>
-#include "tier1/utlvector.h"
-#include "tier0/threadtools.h"
+#include <stdint.h>
+
 class IShaderUtil;
 class IFileSystem;
 
@@ -27,318 +34,462 @@ namespace shaderapidx12
 
 struct ShaderRecordDX12
 {
-    uint64_t identity=0;
-    // Hot per-draw constant layout for the active variant (see DrawBuffers); invalidated with the variant.
-    std::array<uint32_t,3> constantCounts{};
-    uint64_t constantLayoutVariant=0;
-    uint32_t inlineConstantMask=0;
-    bool constantLayoutValid=false;
-    std::vector<unsigned char> legacyBytecode;
-    std::vector<unsigned char> bytecode;
-    bool stagePixel=false;
-    // SM2 centroid declarations live in the VCS header, not the bytecode's DCL tokens.
-    uint32_t centroidTexcoordMask=0;
-    ShaderTranslationResultDX12 translated;
-    bool stageGeometry=false;
-    uint64_t activeVariantKey=0;
-    bool activeVariantValid=false, inputSignatureReady=false;
-    std::vector<ShaderInputElementDX12> inputSignature;
-    std::array<uint32_t,3> nativeConstantRegisters{};
-    // Native records: reflected cbuffers (engine or bridge-written material blocks) and their combined ABI hash.
-    struct NativeCBufferMemberDX12 { std::string name; uint32_t offset=0, byteSize=0; };
-    struct NativeCBufferBindingDX12 { std::string name; uint32_t shaderRegister=0, registerSpace=0, byteSize=0; uint64_t layoutHash=0; std::vector<NativeCBufferMemberDX12> members; };
-    std::vector<NativeCBufferBindingDX12> nativeCBuffers;
-    uint64_t nativeAbiHash=0;
-    bool nativeReflectionReady=false;
-    // Hash of translated.outputLinkage for the active variant; cleared whenever the linkage or variant changes.
-    uint64_t linkageHash=0,linkageHashVariant=0;
-    bool linkageHashValid=false;
-    struct DerivedConstants {
-        std::array<uint64_t,3> versions{};
-        CUtlVector<std::array<float,4>> floats;
-        CUtlVector<std::array<int,4>> integers;
-        CUtlVector<uint32_t> booleans;
+	uint64_t identity = 0;
+	// Hot per-draw constant layout for the active variant (see DrawBuffers); invalidated with the variant.
+	uint32_t constantCounts[3] = {};
+	uint64_t constantLayoutVariant = 0;
+	uint32_t inlineConstantMask = 0;
+	bool constantLayoutValid = false;
+	CUtlVector<unsigned char> legacyBytecode;
+	CUtlVector<unsigned char> bytecode;
+	bool stagePixel = false;
+	// SM2 centroid declarations live in the VCS header, not the bytecode's DCL tokens.
+	uint32_t centroidTexcoordMask = 0;
+	ShaderTranslationResultDX12 translated;
+	bool stageGeometry = false;
+	uint64_t activeVariantKey = 0;
+	bool activeVariantValid = false, inputSignatureReady = false;
+	CUtlVector<ShaderInputElementDX12> inputSignature;
+	uint32_t nativeConstantRegisters[3] = {};
 
-        DerivedConstants() = default;
-        DerivedConstants(const DerivedConstants &) = delete;
-        DerivedConstants &operator=(const DerivedConstants &) = delete;
-        DerivedConstants(DerivedConstants &&other) noexcept { Swap(other); }
-        DerivedConstants &operator=(DerivedConstants &&other) noexcept { Swap(other); return *this; }
+	// Native records: reflected cbuffers (engine or bridge-written material blocks) and their combined ABI hash.
+	struct NativeCBufferMemberDX12
+	{
+		CUtlString name;
+		uint32_t offset = 0, byteSize = 0;
+	};
 
-        void Swap(DerivedConstants &other) noexcept {
-            if (this == &other) return;
-            versions.swap(other.versions);
-            floats.Swap(other.floats);
-            integers.Swap(other.integers);
-            booleans.Swap(other.booleans);
-        }
-    } derived;
-    struct Variant {
-        uint64_t key=0;
-        ShaderTranslationResultDX12 result;
-        std::vector<ShaderInputElementDX12> inputSignature;
-        bool inputSignatureReady=false;
-        DerivedConstants derived;
-    };
-    CUtlBlockVector<Variant> variants;
-    // Generated raster-stage variants share this vertex shader's retirement identity.
-    struct GeometryVariant {
-        uint64_t vertexVariant=0;
-        uint32_t rasterKey=0;
-        ShaderTranslationResultDX12 result;
-    };
-    CUtlBlockVector<GeometryVariant> geometryVariants;
-    D3D12_SHADER_BYTECODE Bytecode() const {
-        const auto &code=legacyBytecode.empty()?bytecode:translated.bytecode;
-        return {code.data(),code.size()};
-    }
+	struct NativeCBufferBindingDX12
+	{
+		CUtlString name;
+		uint32_t shaderRegister = 0, registerSpace = 0, byteSize = 0;
+		uint64_t layoutHash = 0;
+		CCopyableUtlVector<NativeCBufferMemberDX12> members;
+	};
+
+	CUtlVector<NativeCBufferBindingDX12> nativeCBuffers;
+	uint64_t nativeAbiHash = 0;
+	bool nativeReflectionReady = false;
+	// Hash of translated.outputLinkage for the active variant; cleared whenever the linkage or variant changes.
+	uint64_t linkageHash = 0, linkageHashVariant = 0;
+	bool linkageHashValid = false;
+
+	struct DerivedConstants
+	{
+		uint64_t versions[3] = {};
+		CUtlVector<Vector4D> floats;
+		CUtlVector<IntVector4D> integers;
+		CUtlVector<uint32_t> booleans;
+
+		DerivedConstants() = default;
+		DerivedConstants( const DerivedConstants & ) = delete;
+		DerivedConstants &operator=( const DerivedConstants & ) = delete;
+
+		DerivedConstants( DerivedConstants &&other ) noexcept { Swap( other ); }
+
+		DerivedConstants &operator=( DerivedConstants &&other ) noexcept
+		{
+			Swap( other );
+			return *this;
+		}
+
+		void Swap( DerivedConstants &other ) noexcept
+		{
+			if ( this == &other )
+				return;
+			for ( int i = 0; i < ARRAYSIZE( versions ); ++i )
+				V_swap( versions[i], other.versions[i] );
+			floats.Swap( other.floats );
+			integers.Swap( other.integers );
+			booleans.Swap( other.booleans );
+		}
+	} derived;
+
+	struct Variant
+	{
+		uint64_t key = 0;
+		ShaderTranslationResultDX12 result;
+		CUtlVector<ShaderInputElementDX12> inputSignature;
+		bool inputSignatureReady = false;
+		DerivedConstants derived;
+	};
+
+	CUtlBlockVector<Variant> variants;
+
+	// Generated raster-stage variants share this vertex shader's retirement identity.
+	struct GeometryVariant
+	{
+		uint64_t vertexVariant = 0;
+		uint32_t rasterKey = 0;
+		ShaderTranslationResultDX12 result;
+	};
+
+	CUtlBlockVector<GeometryVariant> geometryVariants;
+
+	D3D12_SHADER_BYTECODE Bytecode() const
+	{
+		const CUtlVector<unsigned char> &code = legacyBytecode.IsEmpty() ? bytecode : translated.bytecode;
+		return { code.Base(), static_cast<SIZE_T>( code.Count() ) };
+	}
 };
 
 class CShaderDeviceDX12 final : public IShaderDevice
 {
 public:
-    CShaderDeviceDX12();
-    ~CShaderDeviceDX12();
-    bool Initialize(void *hwnd, int adapter, const ShaderDeviceInfo_t &info, IDXGIAdapter1 *selectedAdapter);
-    void ShutdownDevice();
-    bool IsInitialized() const { return !failed_ && device_ != nullptr && queue_ != nullptr; }
-    ID3D12Device *NativeDevice() const { return device_.Get(); }
-    // Drains queued submissions so direct queue operations keep submission order.
-    ID3D12CommandQueue *Queue() { DrainSubmissions(); return queue_.Get(); }
-    void FlushSubmissions();
-    bool ConsumeGpuTime(double &averageMs,uint32_t &frames);
-    // Replays every recorded command before returning; required before rewriting or freeing CPU RTV/DSV descriptors
-    // that recorded OMSetRenderTargets/Clear*View calls still name.
-    void DrainRecording() { recorder_.Flush(); DrainSubmissions(); }
-    // Waits until the worker has issued every queued operation (header-inline so callers outside the DLL can use it).
-    void DrainSubmissions() { const uint32_t head=submitHead_.load(std::memory_order_relaxed); while(submitTail_.load(std::memory_order_acquire)!=head)submitDoneEvent_.Wait(); }
-    uint64_t Submit(bool wait);
-    uint64_t SubmitFrameSync();
-    bool WaitForFence(uint64_t value);
-    // Owner-thread GPU-idle boundary: replays every recorded command (external callbacks included), executes the
-    // current list and waits for its fence. DrainRecording alone only replays on the CPU.
-    bool SubmitAndWaitForGpu();
-    // Blocks until the worker retires one more queued operation; returns false when nothing is queued.
-    bool WaitForSubmissionProgress() { if(submitTail_.load(std::memory_order_acquire)==submitHead_.load(std::memory_order_relaxed))return false; submitDoneEvent_.Wait(); return true; }
-    // -dx12debug/-dx12gpuvalidation: forwards stored corruption/error messages as "ShaderAPIDX12 debug layer" warnings.
-    void ReportDebugMessages();
-    // Commands are recorded and replayed onto the native list on the submission worker.
-    CCommandRecorderDX12 *CommandList() { return !failed_ && recording_ && IsRecordingOwner() ? &recorder_ : nullptr; }
-    ID3D12Resource *CurrentBackBuffer() const;
-    uint32_t CurrentBackBufferIndex() const;
-    D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferRTV() const;
-    ID3D12Resource *SceneColor() const;
-    D3D12_CPU_DESCRIPTOR_HANDLE SceneRTV(bool srgb = false) const;
-    ID3D12Resource *SceneDepth() const;
-    D3D12_CPU_DESCRIPTOR_HANDLE SceneDSV() const;
-    D3D12_CPU_DESCRIPTOR_HANDLE SceneReadOnlyDSV() const;
-    // Scene colour, swap chain and full-frame targets are linear scRGB FP16; FLOAT has no sRGB view, so both
-    // SceneRTV(true) and SceneRTV(false) name identical FLOAT RTVs.
-    static constexpr ImageFormat kSceneImageFormat = IMAGE_FORMAT_RGBA16161616F;
-    DXGI_FORMAT SceneColorFormat(bool = false) const { return DXGI_FORMAT_R16G16B16A16_FLOAT; }
-    DXGI_FORMAT SceneDepthFormat() const { return DXGI_FORMAT_D24_UNORM_S8_UINT; }
-    int SceneSampleQuality() const { return sampleQuality_; }
-    int SceneSampleCount() const { return sampleCount_; }
-    int SceneWidth() const { return width_; }
-    int SceneHeight() const { return height_; }
-    void TransitionSceneColor(D3D12_RESOURCE_STATES state);
-    void TransitionSceneDepth(D3D12_RESOURCE_STATES state);
-    D3D12_RESOURCE_STATES SceneColorState() const { return currentView_ ? currentView_->sceneColorState : D3D12_RESOURCE_STATE_RENDER_TARGET; }
-    D3D12_RESOURCE_STATES SceneDepthState() const { return currentView_ ? currentView_->sceneDepthState : D3D12_RESOURCE_STATE_DEPTH_WRITE; }
-    // Records the states an external command leaves the scene resources in (it issued its own barriers).
-    void SetSceneStatesAfterExternal(D3D12_RESOURCE_STATES color, D3D12_RESOURCE_STATES depth) { if (currentView_) { currentView_->sceneColorState = color; currentView_->sceneDepthState = depth; } }
-    void RetainResource(ID3D12Resource *resource);
-    // Workers enqueue handles only; the recording owner drains at public API boundaries.
-    void QueueTextureDeletion(uintptr_t handle);
-    void TakeTextureDeletionRequests(CUtlVector<uintptr_t> &handles);
-    // Relaxed hint; a request queued concurrently is taken by the next check.
-    bool HasTextureDeletionRequests() const { return pendingTextureDeletionCount_.load(std::memory_order_relaxed) != 0; }
-    bool SupportsMSAA(int count, int quality = 0) const;
-    bool SupportsMSAAFormat(DXGI_FORMAT format, int count, int quality) const;
-    bool ChangeMode(const ShaderDeviceInfo_t &info);
-    // x64 TEB ClientId.UniqueThread (what GetCurrentThreadId returns), read inline on the per-draw path.
-    bool IsRecordingOwner() const { return ownerThread_ == static_cast<DWORD>(__readgsdword(0x48)); }
-    bool AcquireRecordingOwnership();
-    void ReleaseRecordingOwnership();
-    SignDxbcFnDX12 Signer() const { return signer_; }
-    uint64_t NextFenceValue() const { return fenceValue_ + 1; }
-    uint64_t CompletedFenceValue() const { return fence_ ? fence_->GetCompletedValue() : 0; }
-    uint64_t NextSubmissionFence() const { return NextFenceValue(); }
-    uint64_t CompletedFence() const { return CompletedFenceValue(); }
-    void ReleaseResources() override;
-    void ReacquireResources() override;
-    ImageFormat GetBackBufferFormat() const override { return kSceneImageFormat; }
-    void GetBackBufferDimensions(int &width, int &height) const override { width = width_; height = height_; }
-    int GetCurrentAdapter() const override { return adapterIndex_; }
-    bool IsUsingGraphics() const override { return IsInitialized(); }
-    void SpewDriverInfo() const override;
-    int StencilBufferBits() const override { return 8; }
-    bool IsAAEnabled() const override { return sampleCount_ > 1; }
-    void Present() override;
-    void GetWindowSize(int &width, int &height) const override;
-    void SetHardwareGammaRamp(float fGamma,float fGammaTVRangeMin,float fGammaTVRangeMax,float fGammaTVExponent,bool bTVEnabled) override;
-    bool AddView(void *hwnd) override;
-    void RemoveView(void *hwnd) override;
-    void SetView(void *hwnd) override;
-    IShaderBuffer *CompileShader(const char *pProgram,size_t nBufLen,const char *pShaderVersion) override;
-    VertexShaderHandle_t CreateVertexShader(IShaderBuffer *pShaderBuffer) override;
-    void DestroyVertexShader(VertexShaderHandle_t hShader) override;
-    GeometryShaderHandle_t CreateGeometryShader(IShaderBuffer *pShaderBuffer) override;
-    void DestroyGeometryShader(GeometryShaderHandle_t hShader) override;
-    PixelShaderHandle_t CreatePixelShader(IShaderBuffer *pShaderBuffer) override;
-    void DestroyPixelShader(PixelShaderHandle_t hShader) override;
-    IMesh *CreateStaticMesh(VertexFormat_t vertexFormat,const char *pTextureBudgetGroup,IMaterial *pMaterial = nullptr) override;
-    void DestroyStaticMesh(IMesh *mesh) override;
-    IVertexBuffer *CreateVertexBuffer(ShaderBufferType_t type,VertexFormat_t fmt,int nVertexCount,const char *pBudgetGroup) override;
-    void DestroyVertexBuffer(IVertexBuffer *buffer) override;
-    IIndexBuffer *CreateIndexBuffer(ShaderBufferType_t type,MaterialIndexFormat_t fmt,int nIndexCount,const char *pBudgetGroup) override;
-    void DestroyIndexBuffer(IIndexBuffer *buffer) override;
-    IVertexBuffer *GetDynamicVertexBuffer(int nStreamID,VertexFormat_t vertexFormat,bool bBuffered = true) override;
-    IIndexBuffer *GetDynamicIndexBuffer(MaterialIndexFormat_t fmt,bool bBuffered = true) override;
-    void EnableNonInteractiveMode(MaterialNonInteractiveMode_t mode,ShaderNonInteractiveInfo_t *pInfo = nullptr) override;
-    void RefreshFrontBufferNonInteractive() override;
-    void HandleThreadEvent(uint32 threadEvent) override;
-    char *GetDisplayDeviceName() override;
+	CShaderDeviceDX12();
+	~CShaderDeviceDX12();
+	bool Initialize( void *hWnd, int nAdapter, const ShaderDeviceInfo_t &info, IDXGIAdapter1 *pSelectedAdapter );
+	void ShutdownDevice();
+
+	bool IsInitialized() const { return !m_bFailed && m_pDevice != nullptr && m_pQueue != nullptr; }
+
+	ID3D12Device *NativeDevice() const { return m_pDevice.Get(); }
+
+	// Drains queued submissions so direct queue operations keep submission order.
+	ID3D12CommandQueue *Queue()
+	{
+		DrainSubmissions();
+		return m_pQueue.Get();
+	}
+
+	void FlushSubmissions();
+	bool ConsumeGpuTime( double &flAverageMs, uint32_t &nFrames );
+
+	// Replays every recorded command before returning; required before rewriting or freeing CPU RTV/DSV descriptors
+	// that recorded OMSetRenderTargets/Clear*View calls still name.
+	void DrainRecording()
+	{
+		m_Recorder.Flush();
+		DrainSubmissions();
+	}
+
+	// Waits until the worker has issued every queued operation (header-inline so callers outside the DLL can use it).
+	void DrainSubmissions()
+	{
+		const uint32_t nHead = m_nSubmitHead;
+		while ( m_nSubmitTail != nHead )
+			m_SubmitDoneEvent.Wait();
+	}
+
+	uint64_t Submit( bool bWait );
+	uint64_t SubmitFrameSync();
+	bool WaitForFence( uint64_t nValue );
+	// Owner-thread GPU-idle boundary: replays every recorded command (external callbacks included), executes the
+	// current list and waits for its fence. DrainRecording alone only replays on the CPU.
+	bool SubmitAndWaitForGpu();
+
+	// Blocks until the worker retires one more queued operation; returns false when nothing is queued.
+	bool WaitForSubmissionProgress()
+	{
+		if ( m_nSubmitTail == m_nSubmitHead )
+			return false;
+		m_SubmitDoneEvent.Wait();
+		return true;
+	}
+
+	// -dx12debug/-dx12gpuvalidation: forwards stored corruption/error messages as "ShaderAPIDX12 debug layer" warnings.
+	void ReportDebugMessages();
+
+	// Commands are recorded and replayed onto the native list on the submission worker.
+	CCommandRecorderDX12 *CommandList() { return !m_bFailed && m_bRecording && IsRecordingOwner() ? &m_Recorder : nullptr; }
+
+	ID3D12Resource *CurrentBackBuffer() const;
+	uint32_t CurrentBackBufferIndex() const;
+	D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferRTV() const;
+	ID3D12Resource *SceneColor() const;
+	D3D12_CPU_DESCRIPTOR_HANDLE SceneRTV( bool bSRGB = false ) const;
+	ID3D12Resource *SceneDepth() const;
+	D3D12_CPU_DESCRIPTOR_HANDLE SceneDSV() const;
+	D3D12_CPU_DESCRIPTOR_HANDLE SceneReadOnlyDSV() const;
+	// Scene colour, swap chain and full-frame targets are linear scRGB FP16; FLOAT has no sRGB view, so both
+	// SceneRTV(true) and SceneRTV(false) name identical FLOAT RTVs.
+	static constexpr ImageFormat kSceneImageFormat = IMAGE_FORMAT_RGBA16161616F;
+
+	DXGI_FORMAT SceneColorFormat( bool = false ) const { return DXGI_FORMAT_R16G16B16A16_FLOAT; }
+
+	DXGI_FORMAT SceneDepthFormat() const { return DXGI_FORMAT_D24_UNORM_S8_UINT; }
+
+	int SceneSampleQuality() const { return m_nSampleQuality; }
+
+	int SceneSampleCount() const { return m_nSampleCount; }
+
+	int SceneWidth() const { return m_nWidth; }
+
+	int SceneHeight() const { return m_nHeight; }
+
+	void TransitionSceneColor( D3D12_RESOURCE_STATES state );
+	void TransitionSceneDepth( D3D12_RESOURCE_STATES state );
+
+	D3D12_RESOURCE_STATES SceneColorState() const { return m_pCurrentView ? m_pCurrentView->sceneColorState : D3D12_RESOURCE_STATE_RENDER_TARGET; }
+
+	D3D12_RESOURCE_STATES SceneDepthState() const { return m_pCurrentView ? m_pCurrentView->sceneDepthState : D3D12_RESOURCE_STATE_DEPTH_WRITE; }
+
+	// Records the states an external command leaves the scene resources in (it issued its own barriers).
+	void SetSceneStatesAfterExternal( D3D12_RESOURCE_STATES color, D3D12_RESOURCE_STATES depth )
+	{
+		if ( m_pCurrentView )
+		{
+			m_pCurrentView->sceneColorState = color;
+			m_pCurrentView->sceneDepthState = depth;
+		}
+	}
+
+	void RetainResource( ID3D12Resource *pResource );
+	// Workers enqueue handles only; the recording owner drains at public API boundaries.
+	void QueueTextureDeletion( uintptr_t hTexture );
+	void TakeTextureDeletionRequests( CUtlVector<uintptr_t> &handles );
+
+	// Relaxed hint; a request queued concurrently is taken by the next check.
+	bool HasTextureDeletionRequests() const { return m_nPendingTextureDeletionCount != 0; }
+
+	bool SupportsMSAA( int nCount, int nQuality = 0 ) const;
+	bool SupportsMSAAFormat( DXGI_FORMAT format, int nCount, int nQuality ) const;
+	bool ChangeMode( const ShaderDeviceInfo_t &info );
+
+	// x64 TEB ClientId.UniqueThread (what GetCurrentThreadId returns), read inline on the per-draw path.
+	bool IsRecordingOwner() const { return m_nOwnerThread == static_cast<unsigned>( __readgsdword( 0x48 ) ); }
+
+	bool AcquireRecordingOwnership();
+	void ReleaseRecordingOwnership();
+
+	SignDxbcFnDX12 Signer() const { return m_pfnSigner; }
+
+	uint64_t NextFenceValue() const { return m_nFenceValue + 1; }
+
+	uint64_t CompletedFenceValue() const { return m_pFence ? m_pFence->GetCompletedValue() : 0; }
+
+	void ReleaseResources() override;
+	void ReacquireResources() override;
+
+	ImageFormat GetBackBufferFormat() const override { return kSceneImageFormat; }
+
+	void GetBackBufferDimensions( int &nWidth, int &nHeight ) const override
+	{
+		nWidth = m_nWidth;
+		nHeight = m_nHeight;
+	}
+
+	int GetCurrentAdapter() const override { return m_nAdapterIndex; }
+
+	bool IsUsingGraphics() const override { return IsInitialized(); }
+
+	void SpewDriverInfo() const override;
+
+	int StencilBufferBits() const override { return 8; }
+
+	bool IsAAEnabled() const override { return m_nSampleCount > 1; }
+
+	void Present() override;
+	void GetWindowSize( int &nWidth, int &nHeight ) const override;
+	void SetHardwareGammaRamp( float fGamma, float fGammaTVRangeMin, float fGammaTVRangeMax, float fGammaTVExponent, bool bTVEnabled ) override;
+	bool AddView( void *hWnd ) override;
+	void RemoveView( void *hWnd ) override;
+	void SetView( void *hWnd ) override;
+	IShaderBuffer *CompileShader( const char *pProgram, size_t nBufLen, const char *pShaderVersion ) override;
+	VertexShaderHandle_t CreateVertexShader( IShaderBuffer *pShaderBuffer ) override;
+	void DestroyVertexShader( VertexShaderHandle_t hShader ) override;
+	GeometryShaderHandle_t CreateGeometryShader( IShaderBuffer *pShaderBuffer ) override;
+	void DestroyGeometryShader( GeometryShaderHandle_t hShader ) override;
+	PixelShaderHandle_t CreatePixelShader( IShaderBuffer *pShaderBuffer ) override;
+	void DestroyPixelShader( PixelShaderHandle_t hShader ) override;
+	IMesh *CreateStaticMesh( VertexFormat_t vertexFormat, const char *pTextureBudgetGroup, IMaterial *pMaterial = nullptr ) override;
+	void DestroyStaticMesh( IMesh *pMesh ) override;
+	IVertexBuffer *CreateVertexBuffer( ShaderBufferType_t type, VertexFormat_t fmt, int nVertexCount, const char *pBudgetGroup ) override;
+	void DestroyVertexBuffer( IVertexBuffer *pBuffer ) override;
+	IIndexBuffer *CreateIndexBuffer( ShaderBufferType_t type, MaterialIndexFormat_t fmt, int nIndexCount, const char *pBudgetGroup ) override;
+	void DestroyIndexBuffer( IIndexBuffer *pBuffer ) override;
+	IVertexBuffer *GetDynamicVertexBuffer( int nStreamID, VertexFormat_t vertexFormat, bool bBuffered = true ) override;
+	IIndexBuffer *GetDynamicIndexBuffer( MaterialIndexFormat_t fmt, bool bBuffered = true ) override;
+	void EnableNonInteractiveMode( MaterialNonInteractiveMode_t mode, ShaderNonInteractiveInfo_t *pInfo = nullptr ) override;
+	void RefreshFrontBufferNonInteractive() override;
+	void HandleThreadEvent( uint32 threadEvent ) override;
+	char *GetDisplayDeviceName() override;
 
 private:
-    struct View {
-        HWND hwnd = nullptr;
-        Microsoft::WRL::ComPtr<IDXGISwapChain3> swap;
-        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap, sceneRTVHeap, sceneDSVHeap;
-        // Heap starts cached at creation; SceneRTV/SceneDSV run per draw.
-        D3D12_CPU_DESCRIPTOR_HANDLE sceneRTVStart{}, sceneDSVStart{};
-        CUtlVector<ID3D12Resource *> backBuffers;
-        Microsoft::WRL::ComPtr<ID3D12Resource> sceneColor, sceneDepth;
-        D3D12_RESOURCE_STATES sceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        D3D12_RESOURCE_STATES sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-        int width = 0, height = 0;
-        uint64_t lastFence = 0;
-        bool suspended = false, occluded = false;
-        ~View() { ReleaseBackBuffers(); }
-        void ReleaseBackBuffers() {
-            for (auto *buffer : backBuffers) if (buffer) buffer->Release();
-            backBuffers.RemoveAll();
-        }
-    };
-    // -dx12stats GPU frame timing: begin/end timestamps per presented frame, read back once its fence completes.
-    static constexpr uint32_t kTimestampSlots=32;
-    bool GpuTimingBeforeSubmit();
-    void GpuTimingAfterSubmit();
-    Microsoft::WRL::ComPtr<ID3D12QueryHeap> timestampHeap_;
-    Microsoft::WRL::ComPtr<ID3D12Resource> timestampReadback_;
-    const uint64_t *timestampData_=nullptr;
-    std::array<uint64_t,kTimestampSlots> timestampFences_{};
-    uint32_t timestampSlot_=0;
-    bool timestampBegun_=false;
-    uint64_t timestampFrequency_=0;
-    double gpuTimeSumMs_=0.0;
-    uint32_t gpuTimePresented_=0;
-    // Submission worker: Close/ExecuteCommandLists/Signal and Present run there in FIFO order. The recording
-    // owner calls FlushSubmissions before any other queue or swap-chain access.
-    struct SubmitOpDX12 { enum Kind { Execute, Present, Replay, Reset } kind=Execute; ID3D12GraphicsCommandList *list=nullptr; ID3D12CommandAllocator *allocator=nullptr; uint64_t value=0; IDXGISwapChain3 *swap=nullptr; View *view=nullptr; UINT interval=0,flags=0; unsigned char *chunk=nullptr; size_t chunkBytes=0; };
-    HRESULT RunSubmission(const SubmitOpDX12 &op);
-    unsigned char *AcquireCommandChunk();
-    void FlushCommandChunk(unsigned char *chunk,size_t bytes);
-    void ReleaseCommandChunks();
-    static constexpr int kMaxCommandChunks=32;
-    CCommandRecorderDX12 recorder_;
-    CThreadFastMutex chunkMutex_;
-    CUtlVector<unsigned char *> freeChunks_,allChunks_;
-    static uintp SubmitThreadMain(void *param);
-    void StartSubmitThread();
-    void StopSubmitThread();
-    void EnqueueSubmission(const SubmitOpDX12 &op);
-    ThreadHandle_t submitThread_=nullptr;
-    CThreadEvent submitWorkEvent_,submitDoneEvent_;
-    std::atomic<bool> submitExit_{false};
-    std::atomic<uint32_t> submitHead_{0},submitTail_{0};
-    std::atomic<HRESULT> submitError_{S_OK};
-    std::array<SubmitOpDX12,16> submitOps_{};
-    bool CreateView(View &view, HWND hwnd, int width, int height);
-    bool ResizeView(View &view, int width, int height);
-    bool CreateViewTargets(View &view);
-    bool CreateFrameObjects();
-    bool BeginRecording();
-    void FailDevice(const char *operation, HRESULT hr);
-    bool CheckDevice(const char *operation, HRESULT hr);
-    void ReleaseViews();
-    View *CurrentView() const;
-    Microsoft::WRL::ComPtr<ID3D12Device> device_;
-    Microsoft::WRL::ComPtr<IDXGIFactory6> factory_;
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue_;
-    Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue_;
-    struct FrameContext { Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator; Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list; uint64_t fence=0; CUtlVector<ID3D12Resource *> retained; };
-    std::array<FrameContext,3> frames_{};
-    uint32_t frameIndex_=0;
-    bool recording_=false, failed_=false;
-    bool changingMode_=false;
-    std::atomic<DWORD> ownerThread_{0};
-    CThreadFastMutex textureDeletionMutex_;
-    CUtlVector<uintptr_t> pendingTextureDeletions_;
-    std::atomic<int> pendingTextureDeletionCount_{0};
-    Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
-    CUtlVector<View *> views_;
-    std::array<std::unique_ptr<CVertexBufferDX12>, 64> dynamicVertices_;
-    std::array<std::unique_ptr<CIndexBufferDX12>, 4> dynamicIndices_;
-    View *currentView_ = nullptr;
-    HANDLE fenceEvent_ = nullptr;
-    uint64_t fenceValue_ = 0, frameSyncFence_ = 0;
-    HMODULE signerModule_ = nullptr;
-    SignDxbcFnDX12 signer_ = nullptr;
-    UINT rtvStride_ = 0;
-    UINT dsvStride_ = 0;
-    int adapterIndex_ = -1;
-    int width_ = 0, height_ = 0;
-    int sampleCount_ = 1, sampleQuality_ = 0;
-    int backBufferCount_ = 2;
-    void *window_ = nullptr;
-    std::array<char, 128> displayDeviceName_{};
-    float gamma_ = 2.2f, gammaMin_ = 0.0f, gammaMax_ = 255.0f, gammaExponent_ = 2.2f;
-    bool gammaTV_ = false;
-    bool waitForVsync_ = true, windowed_ = true;
-    bool allowTearing_ = false;
+	struct View
+	{
+		HWND hwnd = nullptr;
+		Microsoft::WRL::ComPtr<IDXGISwapChain3> swap;
+		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap, sceneRTVHeap, sceneDSVHeap;
+		// Heap starts cached at creation; SceneRTV/SceneDSV run per draw.
+		D3D12_CPU_DESCRIPTOR_HANDLE sceneRTVStart{}, sceneDSVStart{};
+		CUtlVector<ID3D12Resource *> backBuffers;
+		Microsoft::WRL::ComPtr<ID3D12Resource> sceneColor, sceneDepth;
+		D3D12_RESOURCE_STATES sceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		D3D12_RESOURCE_STATES sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		int width = 0, height = 0;
+		uint64_t lastFence = 0;
+		bool suspended = false, occluded = false;
+
+		~View() { ReleaseBackBuffers(); }
+
+		void ReleaseBackBuffers()
+		{
+			for ( ID3D12Resource *pBuffer : backBuffers )
+				if ( pBuffer )
+					pBuffer->Release();
+			backBuffers.RemoveAll();
+		}
+	};
+
+	// -dx12stats GPU frame timing: begin/end timestamps per presented frame, read back once its fence completes.
+	static constexpr uint32_t kTimestampSlots = 32;
+	bool GpuTimingBeforeSubmit();
+	void GpuTimingAfterSubmit();
+	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pTimestampHeap;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pTimestampReadback;
+	const uint64_t *m_pTimestampData = nullptr;
+	uint64_t m_TimestampFences[kTimestampSlots] = {};
+	uint32_t m_nTimestampSlot = 0;
+	bool m_bTimestampBegun = false;
+	uint64_t m_nTimestampFrequency = 0;
+	double m_flGpuTimeSumMs = 0.0;
+	uint32_t m_nGpuTimePresented = 0;
+
+	// Submission worker: Close/ExecuteCommandLists/Signal and Present run there in FIFO order. The recording
+	// owner calls FlushSubmissions before any other queue or swap-chain access.
+	struct SubmitOpDX12
+	{
+		enum Kind
+		{
+			Execute,
+			Present,
+			Replay,
+			Reset
+		} kind = Execute;
+
+		ID3D12GraphicsCommandList *list = nullptr;
+		ID3D12CommandAllocator *allocator = nullptr;
+		uint64_t value = 0;
+		IDXGISwapChain3 *swap = nullptr;
+		View *view = nullptr;
+		UINT interval = 0, flags = 0;
+		unsigned char *chunk = nullptr;
+		size_t chunkBytes = 0;
+	};
+
+	HRESULT RunSubmission( const SubmitOpDX12 &op );
+	unsigned char *AcquireCommandChunk();
+	void FlushCommandChunk( unsigned char *pChunk, size_t nBytes );
+	static unsigned char *AcquireRecorderChunk( void *pContext );
+	static void FlushRecorderChunk( void *pContext, unsigned char *pChunk, size_t nBytes );
+	void ReleaseCommandChunks();
+	static constexpr int kMaxCommandChunks = 32;
+	CCommandRecorderDX12 m_Recorder;
+	CThreadFastMutex m_ChunkMutex;
+	CUtlVector<unsigned char *> m_FreeChunks, m_AllChunks;
+	static uintp SubmitThreadMain( void *pParam );
+	void StartSubmitThread();
+	void StopSubmitThread();
+	void EnqueueSubmission( const SubmitOpDX12 &op );
+	ThreadHandle_t m_hSubmitThread = nullptr;
+	CThreadEvent m_SubmitWorkEvent, m_SubmitDoneEvent;
+	CInterlockedInt m_bSubmitExit;
+	CInterlockedUInt m_nSubmitHead, m_nSubmitTail;
+	CInterlockedInt m_nSubmitError; // HRESULT of the first failed queued operation
+	SubmitOpDX12 m_SubmitOps[16];
+	bool CreateView( View &view, HWND hWnd, int nWidth, int nHeight );
+	bool ResizeView( View &view, int nWidth, int nHeight );
+	bool CreateViewTargets( View &view );
+	bool CreateFrameObjects();
+	bool BeginRecording();
+	void FailDevice( const char *pszOperation, HRESULT hr );
+	bool CheckDevice( const char *pszOperation, HRESULT hr );
+	void ReleaseViews();
+	Microsoft::WRL::ComPtr<ID3D12Device> m_pDevice;
+	Microsoft::WRL::ComPtr<IDXGIFactory6> m_pFactory;
+	Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pQueue;
+	Microsoft::WRL::ComPtr<ID3D12InfoQueue> m_pInfoQueue;
+
+	struct FrameContext
+	{
+		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+		uint64_t fence = 0;
+		CUtlVector<ID3D12Resource *> retained;
+	};
+
+	FrameContext m_Frames[3];
+	uint32_t m_nFrameIndex = 0;
+	bool m_bRecording = false, m_bFailed = false;
+	bool m_bChangingMode = false;
+	CInterlockedUInt m_nOwnerThread; // thread id
+	CThreadFastMutex m_TextureDeletionMutex;
+	CUtlVector<uintptr_t> m_PendingTextureDeletions;
+	CInterlockedInt m_nPendingTextureDeletionCount;
+	Microsoft::WRL::ComPtr<ID3D12Fence> m_pFence;
+	CUtlVector<View *> m_Views;
+	// Owned; created on first use and deleted in the destructor.
+	CVertexBufferDX12 *m_pDynamicVertices[64] = {};
+	CIndexBufferDX12 *m_pDynamicIndices[4] = {};
+	View *m_pCurrentView = nullptr;
+	HANDLE m_hFenceEvent = nullptr;
+	uint64_t m_nFenceValue = 0, m_nFrameSyncFence = 0;
+	HMODULE m_hSignerModule = nullptr;
+	SignDxbcFnDX12 m_pfnSigner = nullptr;
+	UINT m_nRtvStride = 0;
+	UINT m_nDsvStride = 0;
+	int m_nAdapterIndex = -1;
+	int m_nWidth = 0, m_nHeight = 0;
+	int m_nSampleCount = 1, m_nSampleQuality = 0;
+	int m_nBackBufferCount = 2;
+	void *m_pWindow = nullptr;
+	char m_szDisplayDeviceName[128] = {};
+	float m_flGamma = 2.2f, m_flGammaMin = 0.0f, m_flGammaMax = 255.0f, m_flGammaExponent = 2.2f;
+	bool m_bGammaTV = false;
+	bool m_bWaitForVsync = true, m_bWindowed = true;
+	bool m_bAllowTearing = false;
 };
 
 class CShaderDeviceMgrDX12 final : public IShaderDeviceMgr
 {
 public:
-    CShaderDeviceMgrDX12();
-    ~CShaderDeviceMgrDX12();
-    bool Connect(CreateInterfaceFn factory) override;
-    void Disconnect() override;
-    void *QueryInterface(const char *name) override;
-    InitReturnVal_t Init() override;
-    void Shutdown() override;
-    int GetAdapterCount() const override { return static_cast<int>(adapters_.size()); }
-    void GetAdapterInfo(int nAdapter, MaterialAdapterInfo_t &info) const override;
-    bool GetRecommendedConfigurationInfo(int nAdapter,int nDXLevel,KeyValues *pConfiguration) override;
-    int GetModeCount(int nAdapter) const override;
-    void GetModeInfo(ShaderDisplayMode_t *pInfo,int nAdapter,int nMode) const override;
-    void GetCurrentModeInfo(ShaderDisplayMode_t *pInfo,int nAdapter) const override;
-    bool SetAdapter(int nAdapter,int nFlags) override;
-    CreateInterfaceFn SetMode(void *hWnd,int nAdapter,const ShaderDeviceInfo_t &mode) override;
-    void AddModeChangeCallback(ShaderModeChangeCallbackFunc_t func) override;
-    void RemoveModeChangeCallback(ShaderModeChangeCallbackFunc_t func) override;
-    void NotifyModeChange();
-    CShaderDeviceDX12 *Device() { return &device_; }
-    const std::vector<Microsoft::WRL::ComPtr<IDXGIAdapter1>> &Adapters() const { return adapters_; }
-    IShaderUtil *HostShaderUtil() const { return shaderUtil_; }
-    IFileSystem *HostFileSystem() const { return filesystem_; }
+	CShaderDeviceMgrDX12();
+	~CShaderDeviceMgrDX12();
+	bool Connect( CreateInterfaceFn factory ) override;
+	void Disconnect() override;
+	void *QueryInterface( const char *pszName ) override;
+	InitReturnVal_t Init() override;
+	void Shutdown() override;
+
+	int GetAdapterCount() const override { return m_pAdapters.Count(); }
+
+	void GetAdapterInfo( int nAdapter, MaterialAdapterInfo_t &info ) const override;
+	bool GetRecommendedConfigurationInfo( int nAdapter, int nDXLevel, KeyValues *pConfiguration ) override;
+	int GetModeCount( int nAdapter ) const override;
+	void GetModeInfo( ShaderDisplayMode_t *pInfo, int nAdapter, int nMode ) const override;
+	void GetCurrentModeInfo( ShaderDisplayMode_t *pInfo, int nAdapter ) const override;
+	bool SetAdapter( int nAdapter, int nFlags ) override;
+	CreateInterfaceFn SetMode( void *hWnd, int nAdapter, const ShaderDeviceInfo_t &mode ) override;
+	void AddModeChangeCallback( ShaderModeChangeCallbackFunc_t func ) override;
+	void RemoveModeChangeCallback( ShaderModeChangeCallbackFunc_t func ) override;
+	void NotifyModeChange();
+
+	CShaderDeviceDX12 *Device() { return &m_Device; }
+
+	const CUtlVector<IDXGIAdapter1 *> &Adapters() const { return m_pAdapters; }
+
+	IShaderUtil *HostShaderUtil() const { return m_pShaderUtil; }
+
+	IFileSystem *HostFileSystem() const { return m_pFilesystem; }
+
 private:
-    std::vector<Microsoft::WRL::ComPtr<IDXGIAdapter1>> adapters_;
-    std::vector<MaterialAdapterInfo_t> adapterInfo_;
-    std::vector<DXSupportCapsDX12> adapterCaps_;
-    std::vector<std::vector<ShaderDisplayMode_t>> adapterModes_;
-    std::vector<ShaderModeChangeCallbackFunc_t> callbacks_;
-    CDXSupportDX12 dxSupport_;
-    CShaderDeviceDX12 device_;
-    CreateInterfaceFn hostFactory_ = nullptr;
-    IFileSystem *filesystem_ = nullptr;
-    IShaderUtil *shaderUtil_ = nullptr;
-    int currentAdapter_ = -1;
+	CUtlVector<IDXGIAdapter1 *> m_pAdapters; // each holds one reference, released by ReleaseAdapters
+	CUtlVector<MaterialAdapterInfo_t> m_AdapterInfo;
+	CUtlVector<DXSupportCapsDX12> m_AdapterCaps;
+	CUtlVector<CUtlVector<ShaderDisplayMode_t>> m_AdapterModes;
+	CUtlVector<ShaderModeChangeCallbackFunc_t> m_Callbacks;
+	CDXSupportDX12 m_DxSupport;
+	CShaderDeviceDX12 m_Device;
+	CreateInterfaceFn m_pfnHostFactory = nullptr;
+	IFileSystem *m_pFilesystem = nullptr;
+	IShaderUtil *m_pShaderUtil = nullptr;
+	int m_nCurrentAdapter = -1;
 };
 
 extern CShaderDeviceMgrDX12 *g_pShaderDeviceMgrDX12;
 extern CShaderDeviceDX12 *g_pShaderDeviceDX12;
 
 } // namespace shaderapidx12
+
+#endif // SHADERDEVICE_DX12_H

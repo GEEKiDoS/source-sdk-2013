@@ -1,9 +1,16 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: Selection-mode hit records for the DX12 shader API.
+//
+//=============================================================================//
+
+#ifndef MESH_DX12_H
+#define MESH_DX12_H
 #pragma once
+
 #include "resources_dx12.h"
 #include "mathlib/vmatrix.h"
 #include "tier1/utlvector.h"
-#include <limits>
 
 namespace shaderapidx12
 {
@@ -12,28 +19,33 @@ namespace shaderapidx12
 class CSelectionStateDX12
 {
 public:
-    void SetBuffer(unsigned int *buffer, int words);
-    int SetMode(bool enabled);
-    bool Enabled() const { return enabled_; }
-    void ClearNames();
-    void LoadName(unsigned int name);
-    void PushName(unsigned int name);
-    void PopName();
-    void Record(float minimum, float maximum);
-    void Flush();
+	void SetBuffer( unsigned int *pBuffer, int nWords );
+	int SetMode( bool bEnabled );
+
+	bool Enabled() const { return m_bEnabled; }
+
+	void ClearNames();
+	void LoadName( unsigned int nName );
+	void PushName( unsigned int nName );
+	void PopName();
+	void Record( float flMinimum, float flMaximum );
+	void Flush();
+
 private:
-    unsigned int *buffer_ = nullptr;
-    size_t capacity_ = 0, used_ = 0;
-    CUtlVector<unsigned int> names_;
-    int hits_ = 0;
-    bool enabled_ = false, overflow_ = false;
-    float minimum_ = std::numeric_limits<float>::max(), maximum_ = 0.f;
+	unsigned int *m_pBuffer = nullptr;
+	size_t m_nCapacity = 0, m_nUsed = 0;
+	CUtlVector<unsigned int> m_Names;
+	int m_nHits = 0;
+	bool m_bEnabled = false, m_bOverflow = false;
+	float m_flMinimum = FLT_MAX, m_flMaximum = 0.f;
 };
 
 // Like the reference temp-mesh path, selection tests CPU positions rather than
 // vertex-shader deformation. Homogeneous clipping also handles negative w.
-void TestSelectionDX12(const CVertexBufferDX12 &vertices, const CIndexBufferDX12 &indices,
-                       MaterialPrimitiveType_t primitive, int firstIndex, int indexCount,
-                       const VMatrix &modelToClip, bool cull, bool frontCounterClockwise,
-                       CSelectionStateDX12 &selection, size_t vertexOffset = 0, size_t indexOffset = 0);
-}
+void TestSelectionDX12( const CVertexBufferDX12 &vertices, const CIndexBufferDX12 &indices,
+    MaterialPrimitiveType_t primitive, int nFirstIndex, int nIndexCount,
+    const VMatrix &modelToClip, bool bCull, bool bFrontCounterClockwise,
+    CSelectionStateDX12 &selection, size_t nVertexOffset = 0, size_t nIndexOffset = 0 );
+} // namespace shaderapidx12
+
+#endif // MESH_DX12_H
