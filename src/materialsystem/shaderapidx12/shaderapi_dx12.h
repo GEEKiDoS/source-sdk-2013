@@ -128,7 +128,7 @@ protected:
 //-----------------------------------------------------------------------------
 // Purpose: The DX12 shader API: IShaderAPI, IDebugTextureInfo and IShaderAPIDX12 on top of the native device
 //-----------------------------------------------------------------------------
-class CShaderAPIDX12 final : public CShaderDynamicDX12, public IShaderAPI, public IDebugTextureInfo, public IShaderAPIDX12
+class CShaderAPIDX12 final : public CShaderDynamicDX12, public IShaderAPI, public IDebugTextureInfo, public IShaderAPIDX12, public IShaderAPIDX12Compute
 {
 public:
 	CShaderAPIDX12();
@@ -428,11 +428,18 @@ public:
 	void RetireShaderPipelines( ShaderRecordDX12 *pRecord );
 	void ResetNativeState();
 	ShaderRecordDX12 *ResolveNamedShader( const char *pszName, bool bPixel, int nStaticIndex, int nDynamicIndex );
-	bool PrepareSampledTexture( ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource = nullptr, bool bComparison = false );
+	ShaderRecordDX12 *ResolveComputeShader( const char *pszName, int nStaticIndex, int nDynamicIndex );
+	bool PrepareSampledTexture( ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource = nullptr, bool bComparison = false, int nFirstMip = -1, int nMipCount = 0 );
 	bool PrepareRenderTargets( RenderTargetBindingDX12 &binding, bool bEncodeSRGB = true );
 	void ReleaseTextureDeviceResources();
+	enum class BlitEncodeDX12 : uint8_t { None, Gamma, HdrScale };
 	// Presentation encode of the scene into a scene-sized FP16 or R8G8B8A8_UNORM texture (textures_dx12.cpp).
 	bool EncodeSceneTo( ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState );
+	float PresentOutputScale() const;
+	bool EnsureComputeRootSignature();
+	struct TextureRecord;
+	bool PromoteRenderTarget( TextureRecord &texture, bool bUav, int nMipLevels );
+	void ResizeTextureStaging( TextureRecord &texture, int nMipLevels );
 
 	int StencilReference() const { return m_nStencilRef; }
 	// Frame generation hooks for the device's Present (see shaderdevice_dx12.cpp).
@@ -447,7 +454,7 @@ public:
 
 	StencilComparisonFunction_t StencilCompare() const { return m_StencilCompare; }
 
-	friend bool PrepareSampledTextureDX12( CShaderAPIDX12 &, ShaderAPITextureHandle_t, bool, ID3D12Resource **, D3D12_SHADER_RESOURCE_VIEW_DESC &, D3D12_SAMPLER_DESC &, D3D12_CPU_DESCRIPTOR_HANDLE *, bool );
+	friend bool PrepareSampledTextureDX12( CShaderAPIDX12 &, ShaderAPITextureHandle_t, bool, ID3D12Resource **, D3D12_SHADER_RESOURCE_VIEW_DESC &, D3D12_SAMPLER_DESC &, D3D12_CPU_DESCRIPTOR_HANDLE *, bool, int, int );
 	friend bool PrepareRenderTargetsDX12( CShaderAPIDX12 &, RenderTargetBindingDX12 &, bool );
 
 	struct TextureRecord
@@ -462,6 +469,7 @@ public:
 		CUtlString name;
 		CUtlVector<unsigned char> pixels;
 		Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+		bool uavCapable = false; // created with ALLOW_UNORDERED_ACCESS (render targets promoted by compute)
 
 		struct ResourceCopy
 		{
@@ -652,7 +660,7 @@ private:
 	void ConsumeFrameGenReplays( bool bWait );
 	void ReleaseFrameGenResources();
 
-	// IShaderAPIDX12
+	// IShaderAPIDX12 and IShaderAPIDX12Compute
 	void SetFrameGeneration( int nMode, int nMultiplier, bool bHudless ) override;
 	void SetReflexMode( int nMode ) override;
 	void SetFrameRateLimit( float flFps ) override;
@@ -661,6 +669,11 @@ private:
 	int FramesShown() override { return m_nFramesShown; }
 	int ReflexStatus() override { return m_nReflexStatus; }
 	const char *LastError() override { return m_szFrameGenError; }
+	void SetHdrOutput( bool bEnable, float flUiNits ) override;
+	int HdrDisplayStatus() override;
+	bool HdrOutputCapable() override;
+	bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) override;
+	int SceneSampleCount() override;
 	void SampleUpscalerJitter();
 
 	// Jitter goes only into eligible perspective scene draws (or the motion pass) before this frame's dispatch.
@@ -797,7 +810,7 @@ private:
 		DXGI_FORMAT color = DXGI_FORMAT_UNKNOWN;
 		UINT samples = 1;
 		UINT quality = 0;
-		bool gamma = false;
+		BlitEncodeDX12 encode = BlitEncodeDX12::None;
 		Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
 	};
 
@@ -813,7 +826,7 @@ private:
 	CUtlVector<ResolveTextureRecord *> m_ResolveTextures;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pBlitRoot;
 	CUtlVector<BlitPassDX12> m_BlitPasses;
-	bool BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients = nullptr );
+	bool BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients = nullptr, BlitEncodeDX12 encode = BlitEncodeDX12::None );
 	void CopyTextureRegionDX12( ShaderAPITextureHandle_t hSource, ShaderAPITextureHandle_t hDestination, Rect_t *pSourceRect, Rect_t *pDestinationRect );
 	struct OcclusionQueryDX12;
 	CUtlVector<OcclusionQueryDX12 *> m_OcclusionQueries;
@@ -995,6 +1008,16 @@ private:
 	UpscalerReplayResultDX12 m_UpscalerReplay[kUpscalerReplaySlots]{};
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pUpscalerOutput;
 	D3D12_RESOURCE_STATES m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pComputeRoot;
+	struct ComputePipelineDX12
+	{
+		CUtlString name;
+		int staticIndex = 0, dynamicIndex = 0;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+		uint32_t constantBytes = 0;
+	};
+	CUtlVector<ComputePipelineDX12> m_ComputePipelines;
+	CUtlVector<ShaderRecordDX12 *> m_ComputeShaderRecords;
 	// DLSS-NR: the failed key suppresses per-frame re-creation until the tuning, layer count or output changes.
 	bool m_bUpscalerNrHistoryGap = true, m_bUpscalerNrFailed = false, m_bUpscalerNrUnavailableLogged = false;
 	DlssNrTuningDX12 m_UpscalerNrFailedTuning{};
@@ -1021,6 +1044,8 @@ private:
 	CInterlockedInt m_nReflexRequest;
 	CInterlockedInt m_nFpsLimitBits;            // float bits of the last SetFrameRateLimit
 	int m_nReflexApplied = -1;
+	CInterlockedInt m_nHdrOutputEnabled;
+	CInterlockedInt m_nHdrOutputUiNitsBits;     // float bits of the last SetHdrOutput UI nits
 	float m_flFrameGenFpsLimit = 0.f;
 	CInterlockedInt m_nFrameGenStatus;
 	CInterlockedInt m_nFramesShown;

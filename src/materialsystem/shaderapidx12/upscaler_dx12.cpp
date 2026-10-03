@@ -2332,12 +2332,27 @@ void CShaderAPIDX12::DispatchFrameGen( int nFlags )
 		d.hudless = frameGen.HudlessTexture();
 		d.hudlessValid = true;
 	}
+	// DLSS-G tags the motion vectors in RENDER_TARGET for the whole present, and every provider hands them back
+	// in that state; a sampling pass (motion blur, post) may have left them in a shader-read state.
 	const int nFaces = ( pMotion->flags & TEXTURE_CREATE_CUBEMAP ) ? 6 : 1, nSub = pMotion->currentCopy * nFaces * pMotion->mipLevels;
+	if ( pMotion->subresourceStates[nSub] != D3D12_RESOURCE_STATE_RENDER_TARGET )
+	{
+		D3D12_RESOURCE_BARRIER barrier{};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = pMotion->resource.Get();
+		barrier.Transition.Subresource = nSub;
+		barrier.Transition.StateBefore = pMotion->subresourceStates[nSub];
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		pList->ResourceBarrier( 1, &barrier );
+		pMotion->subresourceStates[nSub] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		pMotion->sampledStateValid = false;
+		++m_nTextureStateEpoch;
+	}
 	const float *pCamera = m_RenderingFloats;
 	d.depth = m_pDevice->SceneDepth();
 	d.depthBefore = m_pDevice->SceneDepthState();
 	d.motion = pMotion->resource.Get();
-	d.motionBefore = pMotion->subresourceStates[nSub];
+	d.motionBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	d.width = nWidth;
 	d.height = nHeight;
 	d.frameId = m_nFrameGenFrameIdFrame == m_nFrameCounter ? m_nFrameGenFrameId : m_pDevice->NextPresentId();
@@ -2395,12 +2410,6 @@ void CShaderAPIDX12::DispatchFrameGen( int nFlags )
 	for ( size_t i = 0; i < ARRAYSIZE( pRetained ); ++i )
 		m_pDevice->RetainResource( pRetained[i] );
 	m_pDevice->SetSceneStatesAfterExternal( m_pDevice->SceneColorState(), D3D12_RESOURCE_STATE_DEPTH_WRITE );
-	if ( pMotion->subresourceStates[nSub] != D3D12_RESOURCE_STATE_RENDER_TARGET )
-	{
-		pMotion->subresourceStates[nSub] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		pMotion->sampledStateValid = false;
-		++m_nTextureStateEpoch;
-	}
 	m_nFrameGenQueuedFrame = m_nFrameCounter;
 	m_nFrameGenLatchedFrameId = d.frameId;
 	m_flFrameGenLastDispatchTime = flNow;

@@ -3551,6 +3551,11 @@ void CShaderAPIDX12::ShutdownDeviceResources()
 	for ( OcclusionQueryDX12 *query : m_OcclusionQueries )
 		delete query;
 	m_OcclusionQueries.RemoveAll();
+	m_pComputeRoot.Reset();
+	m_ComputePipelines.RemoveAll();
+	for ( ShaderRecordDX12 *pRecord : m_ComputeShaderRecords )
+		delete pRecord;
+	m_ComputeShaderRecords.RemoveAll();
 	m_Pipeline.Shutdown();
 	for ( CMeshDX12 *mesh : m_DynamicMeshes )
 	{
@@ -4532,7 +4537,7 @@ void CShaderAPIDX12::SetFullScreenTextureHandle( ShaderAPITextureHandle_t h )
 }
 
 //-----------------------------------------------------------------------------
-// Rendering parameters; DX12 status parameters are read-only and the DX12 control parameters dispatch
+// Rendering parameters; DX12 status parameters are read-only
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetIntRenderingParameter( int parm_number, int value )
 {
@@ -4934,4 +4939,41 @@ bool CShaderAPIDX12::GetSceneFogRadial()
 	return m_bFogRadial;
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: HDR display output (IShaderAPIDX12); plain stores read at Present
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::SetHdrOutput( bool bEnable, float flUiNits )
+{
+	const float flClamped = flUiNits > 0.f && flUiNits < 100000.f ? flUiNits : 1.f;
+	int nBits;
+	memcpy( &nBits, &flClamped, sizeof( nBits ) );
+	m_nHdrOutputUiNitsBits = nBits;
+	m_nHdrOutputEnabled = bEnable ? 1 : 0;
+}
+
+int CShaderAPIDX12::HdrDisplayStatus()
+{
+	return m_pDevice ? m_pDevice->HdrDisplayStatus() : 0;
+}
+
+bool CShaderAPIDX12::HdrOutputCapable()
+{
+	return m_pDevice && m_pDevice->PresentFormatIsFp16();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Present-time scale of the FP16 scRGB swap chain: UI nits / 80 while HDR output is on
+//-----------------------------------------------------------------------------
+float CShaderAPIDX12::PresentOutputScale() const
+{
+	int nBits = m_nHdrOutputUiNitsBits;
+	float flUiNits = 1.f;
+	memcpy( &flUiNits, &nBits, sizeof( flUiNits ) );
+	return m_nHdrOutputEnabled && m_pDevice && m_pDevice->PresentFormatIsFp16() ? MAX( flUiNits, 1.f ) / 80.f : 1.f;
+}
+
+int CShaderAPIDX12::SceneSampleCount()
+{
+	return m_pDevice ? m_pDevice->SceneSampleCount() : 1;
+}
 } // namespace shaderapidx12

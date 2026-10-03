@@ -206,13 +206,14 @@ ShaderVcsFile::~ShaderVcsFile()
 //-----------------------------------------------------------------------------
 bool ShaderVcsFile::Fail( const char *pszMessage, CUtlString &error ) const
 {
-	error = m_Path + " (" + ( m_Stage == VcsStage::Vertex ? "VS" : "PS" ) + "): " + pszMessage;
+	const char *pszStage = m_Stage == VcsStage::Vertex ? "VS" : m_Stage == VcsStage::Pixel ? "PS" : "CS";
+	error = m_Path + " (" + pszStage + "): " + pszMessage;
 	return false;
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: Parsed once per process from GAME shaders/native_dx12_legacy_names.txt:
-//          "<native> <vs|ps> <legacy>" per line, or "<native> <vs|ps>" for a
+//          "<native> <vs|ps|cs> <legacy>" per line, or "<native> <vs|ps|cs>" for a
 //          native-only logical, which maps to kNativeOnlyMarker (no shaders/fxc fallback).
 //-----------------------------------------------------------------------------
 CUtlString ShaderVcsFile::LegacyShaderName( IFileSystem &filesystem, const char *pszName, VcsStage stage )
@@ -261,7 +262,7 @@ CUtlString ShaderVcsFile::LegacyShaderName( IFileSystem &filesystem, const char 
 			}
 		}
 	}
-	CUtlString key( stage == VcsStage::Vertex ? "vs:" : "ps:" );
+	CUtlString key( stage == VcsStage::Vertex ? "vs:" : stage == VcsStage::Pixel ? "ps:" : "cs:" );
 	key += pszName;
 	V_strlower( key.GetForModify() );
 	const int nFound = FindLegacyName( s_Names, key.Get() );
@@ -269,8 +270,8 @@ CUtlString ShaderVcsFile::LegacyShaderName( IFileSystem &filesystem, const char 
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Opens shaders/<vsh|psh>/<name>.vcs, falling back to the legacy
-//          shaders/fxc logical unless the name is native-only.
+// Purpose: Opens shaders/<vsh|psh|csh>/<name>.vcs, falling back to the legacy
+//          shaders/fxc logical for vertex/pixel names unless the name is native-only.
 //-----------------------------------------------------------------------------
 bool ShaderVcsFile::Open( IFileSystem &filesystem, const char *pszName, VcsStage stage, CUtlString &error )
 {
@@ -281,11 +282,12 @@ bool ShaderVcsFile::Open( IFileSystem &filesystem, const char *pszName, VcsStage
 		m_Stage = stage;
 		return Fail( "invalid shader name", error );
 	}
+	const bool bCompute = stage == VcsStage::Compute;
 	const CUtlString filename = CUtlString( "shaders/" ) +
-	    ( stage == VcsStage::Vertex ? "vsh/" : "psh/" ) + pszName + ".vcs";
+	    ( stage == VcsStage::Vertex ? "vsh/" : stage == VcsStage::Pixel ? "psh/" : "csh/" ) + pszName + ".vcs";
 	// A native logical whose native record is absent normally resolves to its legacy DX9 logical.
-	// A two-column native-only marker deliberately has no shaders/fxc fallback.
-	const CUtlString legacyName = LegacyShaderName( filesystem, pszName, stage );
+	// Compute logicals are always native-only and never fall back to shaders/fxc.
+	const CUtlString legacyName = bCompute ? CUtlString( kNativeOnlyMarker ) : LegacyShaderName( filesystem, pszName, stage );
 	const bool bNativeOnly = !V_strcmp( legacyName.Get(), kNativeOnlyMarker );
 	const CUtlString fallback = CUtlString( "shaders/fxc/" ) + legacyName + ".vcs";
 	FileHandle_t hFile = filesystem.Open( filename.Get(), "rb", "GAME" );
@@ -537,13 +539,14 @@ bool ShaderVcsFile::ValidateTokens( const uint8_t *pData, size_t nSize, CUtlStri
 				return Fail( "truncated or misaligned DXBC chunk", error );
 			if ( !memcmp( pData + nOffset, "SHDR", 4 ) || !memcmp( pData + nOffset, "SHEX", 4 ) )
 			{
-				// SM4+ version token: program type in bits 16-31 (0 = pixel, 1 = vertex),
+				// SM4+ version token: program type in bits 16-31 (0 = pixel, 1 = vertex, 5 = compute),
 				// major in bits 4-7, minor in bits 0-3; the second token is the length in DWORDs.
 				uint32_t nWords = 0;
+				const uint32_t expectedType = m_Stage == VcsStage::Vertex ? 1u : m_Stage == VcsStage::Pixel ? 0u : 5u;
 				if ( bProgram || nLength < 8 || ( nLength & 3 ) ||
 				    !U32( pData, nSize, nOffset + 8, nToken ) || !U32( pData, nSize, nOffset + 12, nWords ) ||
 				    nWords < 2 || nWords > nLength / 4 ||
-				    ( nToken >> 16 ) != ( m_Stage == VcsStage::Vertex ? 1u : 0u ) ||
+				    ( nToken >> 16 ) != expectedType ||
 				    ( ( nToken >> 4 ) & 0xfu ) != 5u || ( nToken & 0xfu ) > 1u )
 					return Fail( "invalid or wrong-stage DXBC shader program", error );
 				bProgram = true;
@@ -562,9 +565,10 @@ bool ShaderVcsFile::ValidateTokens( const uint8_t *pData, size_t nSize, CUtlStri
 	const bool bSupported = m_Stage == VcsStage::Vertex ? ( ( nProfile >> 16 ) == 0xfffeu &&
 	                                                          ( ( nMajor == 1 && nMinor == 1 ) || ( nMajor == 2 && nMinor == 0 ) ||
 	                                                              ( nMajor == 3 && nMinor == 0 ) ) ) :
-	                                                      ( ( nProfile >> 16 ) == 0xffffu &&
+	                         m_Stage == VcsStage::Pixel ? ( ( nProfile >> 16 ) == 0xffffu &&
 	                                                          ( ( nMajor == 1 && nMinor >= 1 && nMinor <= 4 ) ||
-	                                                              ( nMajor == 2 && nMinor <= 1 ) || ( nMajor == 3 && nMinor == 0 ) ) );
+	                                                              ( nMajor == 2 && nMinor <= 1 ) || ( nMajor == 3 && nMinor == 0 ) ) ) :
+	                         false;
 	if ( !bSupported )
 		return Fail( "unsupported stage/profile in shader tokens", error );
 	return true;

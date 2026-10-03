@@ -46,7 +46,7 @@ if ($Native) {
         $outputs = @()
         foreach ($manifest in (Get-ChildItem (Join-Path $rootPath 'manifests') -Filter '*.txt' | Sort-Object Name)) {
             foreach ($line in (Get-Content $manifest.FullName)) {
-                if ($line -notmatch '^\s*([^#\s]\S*)\s+(vs|ps)\s+(\w+)\s+(20b|20|30|native)(?:\s+(\S+))?\s*$') { continue }
+                if ($line -notmatch '^\s*([^#\s]\S*)\s+(vs|ps|cs)\s+(\w+)\s+(20b|20|30|native)(?:\s+(\S+))?\s*$') { continue }
                 $source,$stageName,$logical,$profile = $Matches[1],$Matches[2],$Matches[3],$Matches[4]
                 $legacySource = if ($profile -eq 'native') { $null } elseif ($Matches[5] -and $Matches[5] -ne '-') { $Matches[5] } else { "$logical.fxc" }
                 $outputs += [pscustomobject]@{Source=$source;Stage=$stageName;Logical=$logical;Legacy=$legacySource;Profile=$profile}
@@ -63,7 +63,7 @@ if ($Native) {
             Get-ChildItem $compileRoot -File | Where-Object { !$hlslFiles.ContainsKey($_.Name) } | Remove-Item -Force
             foreach ($name in $hlslFiles.Keys) { Copy-Item $hlslFiles[$name] (Join-Path $compileRoot $name) -Force }
             $stem = [IO.Path]::GetFileNameWithoutExtension($item.Source)
-            $compiledBase = [regex]::Replace($stem, '_(vs|ps)(2x|20b|20|30|40|41|50|51|xx)$', '') + "_$($item.Stage)51"
+            $compiledBase = [regex]::Replace($stem, '_(vs|ps|cs)(2x|20b|20|30|40|41|50|51|xx)$', '') + "_$($item.Stage)51"
             Push-Location $compileRoot
             try {
                 & $compiler -ver 51 -shaderpath $compileRoot $item.Source

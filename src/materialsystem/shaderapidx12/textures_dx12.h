@@ -39,7 +39,7 @@ DXGI_FORMAT ImageFormatToDXGI12( ImageFormat format, int nFlags = 0, bool bDepth
 ImageFormat DXGI12ToImageFormat( DXGI_FORMAT format );
 
 // Native texture entry points are implemented separately from the API state machine.
-bool PrepareSampledTextureDX12( CShaderAPIDX12 &api, ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource, bool bComparison );
+bool PrepareSampledTextureDX12( CShaderAPIDX12 &, ShaderAPITextureHandle_t, bool, ID3D12Resource **, D3D12_SHADER_RESOURCE_VIEW_DESC &, D3D12_SAMPLER_DESC &, D3D12_CPU_DESCRIPTOR_HANDLE *, bool, int, int );
 bool PrepareRenderTargetsDX12( CShaderAPIDX12 &api, RenderTargetBindingDX12 &binding, bool bEncodeSRGB );
 } // namespace shaderapidx12
 

@@ -213,6 +213,8 @@ public:
 	// Swap-chain format: FP16 scRGB, or R8G8B8A8_UNORM while a frame generator that rejects FP16 owns the chain.
 	// Scene colour, GetBackBufferFormat() and every render target stay FP16; only the final encode changes.
 	DXGI_FORMAT PresentFormat() const { return m_PresentFormat; }
+	bool PresentFormatIsFp16() const { return m_nPresentFormat == static_cast<int>( DXGI_FORMAT_R16G16B16A16_FLOAT ); }
+	int HdrDisplayStatus() const { return m_nHdrDisplayStatus; }
 
 	// Windowed gamma/TV-range coefficients for the presentation encode; false when the scene is shown unchanged.
 	bool PresentGammaCoefficients( float ( &flOut )[4] ) const
@@ -443,6 +445,7 @@ private:
 	CInterlockedInt m_nSubmitError; // HRESULT of the first failed queued operation
 	SubmitOpDX12 m_SubmitOps[16];
 	bool CreateView( View &view, HWND hWnd, int nWidth, int nHeight );
+	void QueryDisplayHdr( View &view );
 	bool ResizeView( View &view, int nWidth, int nHeight );
 	bool CreateViewTargets( View &view );
 	bool CreateFrameObjects();
@@ -499,6 +502,8 @@ private:
 	bool m_bWaitForVsync = true, m_bWindowed = true;
 	bool m_bAllowTearing = false;
 	DXGI_FORMAT m_PresentFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	CInterlockedInt m_nPresentFormat = static_cast<int>( DXGI_FORMAT_R16G16B16A16_FLOAT );
+	CInterlockedInt m_nHdrDisplayStatus;
 	// Frame generation (F5): pending kind switch applied at Present's tail, present ids/serials for the providers.
 	CFrameGenDX12 m_FrameGen;
 

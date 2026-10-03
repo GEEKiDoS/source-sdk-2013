@@ -688,6 +688,24 @@ bool CShaderDeviceDX12::CreateViewTargets( View &view )
 }
 
 //-----------------------------------------------------------------------------
+void CShaderDeviceDX12::QueryDisplayHdr( View &view )
+{
+	m_nHdrDisplayStatus = 0;
+	if ( !view.swap )
+		return;
+	Microsoft::WRL::ComPtr<IDXGIOutput> output;
+	Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
+	if ( FAILED( view.swap->GetContainingOutput( &output ) ) || FAILED( output.As( &output6 ) ) )
+		return;
+	DXGI_OUTPUT_DESC1 desc{};
+	if ( FAILED( output6->GetDesc1( &desc ) ) )
+		return;
+	const bool bHdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+	const int nits = clamp( static_cast<int>( desc.MaxLuminance + 0.5f ), 80, 10000 );
+	m_nHdrDisplayStatus = ( bHdr ? SHADERAPIDX12_HDR_DISPLAY_HDR : SHADERAPIDX12_HDR_DISPLAY_SDR ) | ( nits << 8 );
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Creates the swap chain and targets of a view; a zero-sized view stays suspended
 //-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeight )
@@ -749,7 +767,10 @@ bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeig
 	}
 	if ( !m_bWindowed && !CheckDevice( "SetFullscreenState", view.swap->SetFullscreenState( TRUE, nullptr ) ) )
 		return false;
-	return CreateViewTargets( view );
+	const bool bTargetsCreated = CreateViewTargets( view );
+	if ( bTargetsCreated )
+		QueryDisplayHdr( view );
+	return bTargetsCreated;
 }
 
 //-----------------------------------------------------------------------------
@@ -797,6 +818,7 @@ bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight )
 		return false;
 	if ( !CreateViewTargets( view ) )
 		return false;
+	QueryDisplayHdr( view );
 	if ( !m_FrameGen.AfterResize( nWidth, nHeight ) )
 		Warning( "ShaderAPIDX12: frame generation could not follow the resize to %dx%d: %s\n", nWidth, nHeight, m_FrameGen.LastError() );
 	return true;
@@ -905,6 +927,7 @@ bool CShaderDeviceDX12::SelectFrameGen( FrameGenKindDX12 kind, uint32_t nMultipl
 	if ( pQueue != m_pQueue.Get() )
 		m_pQueue.Attach( pQueue ); // the provider created it with one reference for us
 	m_PresentFormat = m_FrameGen.PresentFormat();
+	m_nPresentFormat = static_cast<int>( m_PresentFormat );
 	return bOk;
 }
 
@@ -1543,6 +1566,7 @@ void CShaderDeviceDX12::ShutdownDevice()
 	m_pQueue.Reset();
 	m_FrameGen.Shutdown();
 	m_PresentFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	m_nPresentFormat = static_cast<int>( m_PresentFormat );
 	m_nLastPresentId = 0;
 	m_nPresentSerial = 0;
 	m_bSelectFailed = false;
@@ -1811,10 +1835,19 @@ void CShaderDeviceDX12::Present()
 		if ( bFrameGenActive )
 			TransitionSceneDepth( D3D12_RESOURCE_STATE_DEPTH_WRITE );
 	}
+	// Display HDR toggles arrive without a window message, so the output's colour space is polled every 60 presents.
+	static uint32_t s_nHdrQueryFrame = 0;
+	if ( ++s_nHdrQueryFrame >= 60 )
+	{
+		s_nHdrQueryFrame = 0;
+		QueryDisplayHdr( view );
+	}
 	float flGamma[4];
-	// The scene is drawn into the back buffer whenever it needs a gamma ramp or an 8-bit (sRGB) encode; otherwise it
-	// is resolved or copied. MSAA never meets an 8-bit chain: frame generation (the only 8-bit user) rejects MSAA.
-	const bool bEncode = PresentGammaCoefficients( flGamma ) || m_PresentFormat != SceneColorFormat();
+	// The scene is drawn into the back buffer whenever it needs a gamma ramp, the HDR output scale or an 8-bit (sRGB)
+	// encode; otherwise it is resolved or copied. MSAA never meets an 8-bit chain: frame generation (the only 8-bit
+	// user) rejects MSAA.
+	const float flPresentScale = g_pShaderAPIDX12 ? g_pShaderAPIDX12->PresentOutputScale() : 1.f;
+	const bool bEncode = PresentGammaCoefficients( flGamma ) || flPresentScale != 1.f || m_PresentFormat != SceneColorFormat();
 	ID3D12Resource *pBack = CurrentBackBuffer();
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

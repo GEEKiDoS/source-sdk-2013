@@ -1,7 +1,7 @@
 #include "shader_vcs_dx12.h"
 #include "native_engine_cbuffers_dx12.h"
 #include <d3dcompiler.h>
-#include <d3d11shader.h>
+#include <d3d12shader.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <cctype>
@@ -39,7 +39,7 @@ struct Block {
     std::string canonical;
 };
 struct Shader {
-    // logical: native name (<base>_vs51|_ps51). legacyName: the DX9 logical of the same shader (<base>_vs20, ps20b,
+    // logical: native name (<base>_vs51|_ps51|_cs51). legacyName: the DX9 logical of the same shader (<base>_vs20, ps20b,
     // ...), i.e. the combo-ABI reference and the shaders/fxc record name. Native-only logicals (profile "native")
     // have neither legacySource nor legacyName.
     std::string source, legacySource, stage, logical, profile, generatedBase, inc, legacyInc, legacyName;
@@ -78,7 +78,7 @@ std::string stripSpace(std::string s) {
 }
 std::string baseName(const std::string &source, const std::string &stage, const std::string &profile) {
     auto base = fs::path(source).stem().string();
-    const std::regex suffix("_(vs|ps)(2x|xx|20b|20|30|40|41|50|51)$", std::regex::icase);
+    const std::regex suffix("_(vs|ps|cs)(2x|xx|20b|20|30|40|41|50|51)$", std::regex::icase);
     return std::regex_replace(base, suffix, "") + "_" + stage + profile;
 }
 std::string tokenRename(const std::string &input, const std::string &from, const std::string &to) {
@@ -111,14 +111,14 @@ std::vector<std::string> skips(const std::string &text) {
     }
     return out;
 }
-void hashType(ID3D11ShaderReflectionType *type, const D3D11_SHADER_TYPE_DESC &t, std::string &out) {
+void hashType(ID3D12ShaderReflectionType *type, const D3D12_SHADER_TYPE_DESC &t, std::string &out) {
     out += std::to_string(static_cast<int>(t.Class)) + "," + std::to_string(static_cast<int>(t.Type)) + "," +
            std::to_string(t.Rows) + "," + std::to_string(t.Columns) + "," + std::to_string(t.Elements);
     if (t.Class == D3D_SVC_STRUCT) {
         out += "{";
         for (unsigned j = 0; j < t.Members; ++j) {
             auto *sub = type->GetMemberTypeByIndex(j);
-            D3D11_SHADER_TYPE_DESC td{};
+            D3D12_SHADER_TYPE_DESC td{};
             if (!sub || FAILED(sub->GetDesc(&td))) throw std::runtime_error("Failed to reflect struct member");
             out += std::string(type->GetMemberTypeName(j)) + ":";
             hashType(sub, td, out);
@@ -126,7 +126,7 @@ void hashType(ID3D11ShaderReflectionType *type, const D3D11_SHADER_TYPE_DESC &t,
             // exposes no per-member size, so use the next member's offset or struct size.
             unsigned end = 0;
             if (j + 1 < t.Members) {
-                D3D11_SHADER_TYPE_DESC next{};
+                D3D12_SHADER_TYPE_DESC next{};
                 if (FAILED(type->GetMemberTypeByIndex(j + 1)->GetDesc(&next))) throw std::runtime_error("Bad struct reflection");
                 end = next.Offset;
             } else end = t.Elements ? td.Offset + t.Elements : td.Offset;
@@ -135,14 +135,14 @@ void hashType(ID3D11ShaderReflectionType *type, const D3D11_SHADER_TYPE_DESC &t,
         out += "}";
     }
 }
-Block reflectBlock(ID3D11ShaderReflection *reflection, ID3D11ShaderReflectionConstantBuffer *buffer,
-                   const D3D11_SHADER_BUFFER_DESC &bd, const D3D11_SHADER_INPUT_BIND_DESC &binding, unsigned stage) {
+Block reflectBlock(ID3D12ShaderReflection *reflection, ID3D12ShaderReflectionConstantBuffer *buffer,
+                   const D3D12_SHADER_BUFFER_DESC &bd, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned stage) {
     Block b; b.name = bd.Name; b.size = bd.Size; b.stage = stage; b.reg = binding.BindPoint; b.space = 1;
     b.canonical = b.name + "|" + std::to_string(b.size) + ";";
     for (unsigned i = 0; i < bd.Variables; ++i) {
         auto *var = buffer->GetVariableByIndex(i);
-        D3D11_SHADER_VARIABLE_DESC vd{};
-        D3D11_SHADER_TYPE_DESC td{};
+        D3D12_SHADER_VARIABLE_DESC vd{};
+        D3D12_SHADER_TYPE_DESC td{};
         if (FAILED(var->GetDesc(&vd)) || FAILED(var->GetType()->GetDesc(&td))) throw std::runtime_error("Bad variable reflection: " + b.name);
         Member m; m.name = vd.Name; m.offset = vd.StartOffset; m.size = vd.Size;
         m.typeName = td.Name ? td.Name : ""; m.type = td.Type; m.kind = td.Class;
@@ -324,7 +324,7 @@ std::string describe(const Shader &shader) {
             s << "    member=" << m.name << " type=" << m.type << " class=" << m.kind << " offset=" << m.offset
               << " size=" << m.size << " elements=" << m.elements << " arrayStride=" << m.stride
               << " legacy=" << m.annotation << "\n";
-        if (!b.engine) {
+        if (!b.engine && shader.stage != "cs") {
             // Exact legacy map entries (same values as the generated C++ LegacyMap()); consumed by the parity harness.
             for (const auto &m : b.members) if (m.mapped) {
                 const auto &e = m.legacy;
@@ -365,7 +365,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
     std::vector<fs::path> manifests;
     for (const auto &entry : fs::directory_iterator(root / "manifests")) if (entry.path().extension() == ".txt") manifests.push_back(entry.path());
     std::sort(manifests.begin(), manifests.end());
-    const std::regex manifest(R"(^\s*(\S+\.fxc)\s+(vs|ps)\s+(\w+)\s+(20b|20|30|native)(?:\s+(\S+))?\s*$)");
+    const std::regex manifest(R"(^\s*(\S+\.fxc)\s+(vs|ps|cs)\s+(\w+)\s+(20b|20|30|native)(?:\s+(\S+))?\s*$)");
     for (const auto &file : manifests) {
         std::istringstream text(readText(file)); std::string line;
         while (std::getline(text, line)) {
@@ -379,6 +379,8 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
             shader.legacySource = m[5].matched && m[5].str() != "-" ? m[5].str() : "";
             if (shader.profile == "native" && !shader.legacySource.empty())
                 throw std::runtime_error("Native-only manifest line has a legacy source: " + line);
+            if (shader.stage == "cs" && shader.profile != "native")
+                throw std::runtime_error("Compute shaders must be native-only: " + line);
             const auto mapIt = nativeMap.find(shader.logical + "|" + shader.stage + "|" + shader.source);
             if (mapIt == nativeMap.end()) throw std::runtime_error("No compiled artifacts for manifest line: " + line);
             shader.generatedBase = mapIt->second.first; shader.artifactRoot = mapIt->second.second;
@@ -427,7 +429,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         sh.vcs = nativeVcs;
         const auto bytes = readBytes(nativeVcs);
         ShaderVcsFile vcs; CUtlString error;
-        const auto stage = sh.stage == "vs" ? VcsStage::Vertex : VcsStage::Pixel;
+        const auto stage = sh.stage == "vs" ? VcsStage::Vertex : sh.stage == "ps" ? VcsStage::Pixel : VcsStage::Compute;
         if (!vcs.OpenBytes(bytes.data(), bytes.size(), stage, nativeVcs.string().c_str(), error)) throw std::runtime_error(error.Get());
         if (vcs.Version() != 6) throw std::runtime_error("Native compiler did not emit VCS v6: " + sh.logical);
         sh.dynamicCount = vcs.DynamicComboCount();
@@ -442,24 +444,48 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                 if (!payload) continue;
                 ++sh.present;
                 sh.presentCombos.insert(uint64_t(index) * sh.dynamicCount + dynamic);
-                ComPtr<ID3D11ShaderReflection> reflection;
+                ComPtr<ID3D12ShaderReflection> reflection;
                 HRESULT hr = D3DReflect(payload->tokens.Base(), payload->tokens.Count(), IID_PPV_ARGS(&reflection));
                 if (FAILED(hr)) throw std::runtime_error("D3DReflect rejected DXBC: " + sh.logical);
-                D3D11_SHADER_DESC desc{};
-                if (FAILED(reflection->GetDesc(&desc)) || static_cast<unsigned>(D3D11_SHVER_GET_TYPE(desc.Version)) !=
-                    static_cast<unsigned>(stage == VcsStage::Vertex ? D3D11_SHVER_VERTEX_SHADER : D3D11_SHVER_PIXEL_SHADER))
-                     throw std::runtime_error("DXBC stage mismatch: " + sh.logical);
+                D3D12_SHADER_DESC desc{};
+                const unsigned expectedStage = stage == VcsStage::Vertex ? D3D12_SHVER_VERTEX_SHADER :
+                                               stage == VcsStage::Pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_COMPUTE_SHADER;
+                if (FAILED(reflection->GetDesc(&desc)) || static_cast<unsigned>(D3D12_SHVER_GET_TYPE(desc.Version)) != expectedStage)
+                    throw std::runtime_error("DXBC stage mismatch: " + sh.logical);
+                if (stage == VcsStage::Compute) {
+                    for (unsigned resource = 0; resource < desc.BoundResources; ++resource) {
+                        D3D12_SHADER_INPUT_BIND_DESC binding{};
+                        if (FAILED(reflection->GetResourceBindingDesc(resource, &binding)))
+                            throw std::runtime_error("Cannot reflect resource binding: " + sh.logical);
+                        if (binding.Type == D3D_SIT_CBUFFER) {
+                            if (binding.Space != 1 || binding.BindPoint != 0 || binding.BindCount != 1)
+                                throw std::runtime_error("Compute cbuffer must be b0 space1: " + sh.logical);
+                        } else {
+                            if (binding.Space != 0)
+                                throw std::runtime_error("Compute resource must use space0: " + sh.logical);
+                            const unsigned maxSlots = binding.Type == D3D_SIT_SAMPLER ? 2u : 8u;
+                            if (binding.BindPoint >= maxSlots || !binding.BindCount || binding.BindCount > maxSlots - binding.BindPoint)
+                                throw std::runtime_error("Compute resource exceeds root signature slot range: " + sh.logical);
+                        }
+                    }
+                }
                 for (unsigned i = 0; i < desc.ConstantBuffers; ++i) {
                     auto *buffer = reflection->GetConstantBufferByIndex(i);
-                    D3D11_SHADER_BUFFER_DESC bd{};
+                    D3D12_SHADER_BUFFER_DESC bd{};
                     if (FAILED(buffer->GetDesc(&bd))) throw std::runtime_error("Cannot reflect cbuffer");
-                    D3D11_SHADER_INPUT_BIND_DESC binding{};
+                    D3D12_SHADER_INPUT_BIND_DESC binding{};
                     if (FAILED(reflection->GetResourceBindingDescByName(bd.Name, &binding)))
                         throw std::runtime_error("Cannot bind reflected cbuffer " + std::string(bd.Name));
-                    auto b = reflectBlock(reflection.Get(), buffer, bd, binding, stage == VcsStage::Vertex ? 0 : 1);
+                    const unsigned blockStage = stage == VcsStage::Vertex ? 0u : stage == VcsStage::Pixel ? 1u : 2u;
+                    auto b = reflectBlock(reflection.Get(), buffer, bd, binding, blockStage);
+                    if (stage == VcsStage::Compute && (binding.Space != 1 || binding.BindPoint != 0 || bd.Size > 256))
+                        throw std::runtime_error("Compute cbuffer violates b0 space1/256-byte contract: " + sh.logical);
                     const auto declared = spaces.find(b.name);
-                    b.space = declared == spaces.end() ? 0u : declared->second;
-                    annotate(b, tags);
+                    if (declared != spaces.end() && declared->second != binding.Space)
+                        throw std::runtime_error("Reflected cbuffer register space disagrees with source: " + b.name);
+                    b.space = binding.Space;
+                    if (stage != VcsStage::Compute)
+                        annotate(b, tags);
                     const auto existing = sh.blocks.find(b.name);
                     if (existing != sh.blocks.end() && (existing->second.canonical != b.canonical || existing->second.reg != b.reg || existing->second.space != b.space))
                         throw std::runtime_error("Cbuffer differs between combos: " + sh.logical + "." + b.name);
@@ -483,13 +509,19 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                         throw std::runtime_error("Legacy runtime skip mismatch: " + sh.logical);
             }
         }
-        for (const auto &[name, block] : sh.blocks) {
-            auto found = shared.find(name);
-            if (found != shared.end() && (found->second.canonical != block.canonical || found->second.reg != block.reg || found->second.space != block.space || found->second.stage != block.stage))
-                throw std::runtime_error("Shared cbuffer layout mismatch: " + name);
-            shared[name] = block;
+        if (sh.stage != "cs") {
+            for (const auto &[name, block] : sh.blocks) {
+                auto found = shared.find(name);
+                if (found != shared.end() && (found->second.canonical != block.canonical || found->second.reg != block.reg || found->second.space != block.space || found->second.stage != block.stage))
+                    throw std::runtime_error("Shared cbuffer layout mismatch: " + name);
+                shared[name] = block;
+            }
         }
-        {
+        std::string inc = tokenRename(sh.inc, sh.generatedBase, sh.logical);
+        if (sh.stage == "cs") {
+            // Compute constants are copied raw by IShaderAPIDX12Compute; retain only the combo index classes.
+            output["inc/" + sh.logical + ".inc"] = inc;
+        } else {
             // <logical>_Block names the shader's material block type. Constructing <logical>_Dynamic_Index (every
             // dynamic-state selection path does) selects it, so BaseVSShaderDX12 builds and writes exactly that block
             // from its staged legacy-register values at Draw().
@@ -499,7 +531,6 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                 if (!block.empty()) throw std::runtime_error("More than one material block in " + sh.logical);
                 block = name;
             }
-            std::string inc = tokenRename(sh.inc, sh.generatedBase, sh.logical);
             const std::string anchor = "#include \"shaderlib/cshader.h\"\n";
             const auto at = inc.find(anchor);
             if (at == std::string::npos) throw std::runtime_error("Unexpected include layout: " + sh.logical);
@@ -518,7 +549,8 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         const auto detail = describe(sh);
         output["meta/" + sh.logical + ".txt"] = detail;
         report << detail;
-        publish.emplace_back(nativeVcs, game / "shaders" / (sh.stage == "vs" ? "vsh" : "psh") / (sh.logical + ".vcs"));
+        const char *directory = sh.stage == "vs" ? "vsh" : sh.stage == "ps" ? "psh" : "csh";
+        publish.emplace_back(nativeVcs, game / "shaders" / directory / (sh.logical + ".vcs"));
     }
     for (const auto &[name, b] : shared) output["cbuffers/" + name + ".h"] = header(b);
     {

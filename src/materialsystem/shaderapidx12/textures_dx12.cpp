@@ -844,6 +844,8 @@ bool CShaderAPIDX12::AllocateNativeTexture( TextureRecord &texture )
 	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 	if ( texture.flags & TEXTURE_CREATE_RENDERTARGET )
 		desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	if ( texture.uavCapable )
+		desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 	if ( bDepth )
 		desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 	D3D12_CLEAR_VALUE clear{};
@@ -996,6 +998,24 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	const ShaderAPITextureHandle_t hTexture = pRecord->id;
 	m_Textures.Insert( hTexture, pRecord );
 	return hTexture;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Gives a single-copy 2D texture a new mip count with clean staging; native resources are not touched
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::ResizeTextureStaging( TextureRecord &texture, int nMipLevels )
+{
+	texture.mipLevels = nMipLevels;
+	texture.bytesPerCopy = 0;
+	for ( int nMip = 0; nMip < nMipLevels; ++nMip )
+		texture.bytesPerCopy += MipBytes( MAX( 1, texture.width >> nMip ), MAX( 1, texture.height >> nMip ), 1, texture.format );
+	texture.pixels.SetCount( static_cast<int>( texture.bytesPerCopy ) );
+	texture.dirtySubresources.SetCount( nMipLevels );
+	texture.dirtySubresources.FillWithValue( 0 );
+	texture.initializedSubresources.SetCount( nMipLevels );
+	texture.initializedSubresources.FillWithValue( 0 );
+	texture.gpuAuthoritativeSubresources.SetCount( nMipLevels );
+	texture.gpuAuthoritativeSubresources.FillWithValue( 0 );
 }
 
 //-----------------------------------------------------------------------------
@@ -1467,9 +1487,9 @@ ITexture *CShaderAPIDX12::GetRenderTargetEx( int index )
 	return m_pShaderUtil ? m_pShaderUtil->GetRenderTargetEx( index ) : nullptr;
 }
 
-bool CShaderAPIDX12::PrepareSampledTexture( ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource, bool bComparison )
+bool CShaderAPIDX12::PrepareSampledTexture( ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource, bool bComparison, int nFirstMip, int nMipCount )
 {
-	return PrepareSampledTextureDX12( *this, hTexture, bSRGB, ppResource, srv, sampler, pSource, bComparison );
+	return PrepareSampledTextureDX12( *this, hTexture, bSRGB, ppResource, srv, sampler, pSource, bComparison, nFirstMip, nMipCount );
 }
 
 bool CShaderAPIDX12::PrepareRenderTargets( RenderTargetBindingDX12 &binding, bool bEncodeSRGB )
@@ -1481,7 +1501,7 @@ bool CShaderAPIDX12::PrepareRenderTargets( RenderTargetBindingDX12 &binding, boo
 // Purpose: Makes a texture shader-readable (pending uploads, state transitions) and returns
 //          its resource, SRV description/descriptor and sampler. Handles <= 0 sample the null view.
 //-----------------------------------------------------------------------------
-bool PrepareSampledTextureDX12( CShaderAPIDX12 &api, ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource, bool bComparison )
+bool PrepareSampledTextureDX12( CShaderAPIDX12 &api, ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource, bool bComparison, int nFirstMip, int nMipCount )
 {
 	if ( hTexture <= 0 )
 	{
@@ -1550,32 +1570,44 @@ bool PrepareSampledTextureDX12( CShaderAPIDX12 &api, ShaderAPITextureHandle_t hT
 	}
 	*ppResource = t.resource.Get();
 	const int nFaces = Faces( t ), nCount = nFaces * t.mipLevels;
-	if ( !t.sampledStateValid )
+	const bool bLimitedRange = nFirstMip >= 0;
+	const int nFirst = bLimitedRange ? nFirstMip : 0;
+	const int nRequested = bLimitedRange && nMipCount > 0 ? nMipCount : t.mipLevels - nFirst;
+	if ( nFirst < 0 || nFirst >= t.mipLevels || nRequested <= 0 || nFirst + nRequested > t.mipLevels )
 	{
-		for ( int nSub = 0; nSub < nCount; ++nSub )
+		*ppResource = nullptr;
+		return false;
+	}
+	if ( bLimitedRange || !t.sampledStateValid )
+	{
+		for ( int nFace = 0; nFace < nFaces; ++nFace )
 		{
-			const int nMip = nSub % t.mipLevels, nFace = nSub / t.mipLevels, nStateIndex = t.currentCopy * nCount + nSub;
-			if ( t.dirtySubresources[nStateIndex] )
+			for ( int nMip = nFirst; nMip < nFirst + nRequested; ++nMip )
 			{
-				const size_t nBytes = MipBytes( MAX( 1, t.width >> nMip ), MAX( 1, t.height >> nMip ), nFaces == 1 ? MAX( 1, t.depth >> nMip ) : 1, t.format );
-				if ( !CreateUpload( api.m_pDevice->NativeDevice(), api.m_pDevice->CommandList(), t.resource.Get(), t.pixels.Base() + SubresourceOffset( t, nFace, nMip ), nBytes, nSub, t.subresourceStates[nStateIndex], api.m_pDevice ) )
-					return false;
-				t.dirtySubresources[nStateIndex] = 0;
-			}
-			const D3D12_RESOURCE_STATES sampledState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-			if ( t.subresourceStates[nStateIndex] != sampledState )
-			{
-				D3D12_RESOURCE_BARRIER barrier{};
-				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				barrier.Transition.pResource = t.resource.Get();
-				barrier.Transition.StateBefore = t.subresourceStates[nStateIndex];
-				barrier.Transition.StateAfter = sampledState;
-				barrier.Transition.Subresource = nSub;
-				api.m_pDevice->CommandList()->ResourceBarrier( 1, &barrier );
-				t.subresourceStates[nStateIndex] = sampledState;
+				const int nSub = nFace * t.mipLevels + nMip;
+				const int nStateIndex = t.currentCopy * nCount + nSub;
+				if ( t.dirtySubresources[nStateIndex] )
+				{
+					const size_t nBytes = MipBytes( MAX( 1, t.width >> nMip ), MAX( 1, t.height >> nMip ), nFaces == 1 ? MAX( 1, t.depth >> nMip ) : 1, t.format );
+					if ( !CreateUpload( api.m_pDevice->NativeDevice(), api.m_pDevice->CommandList(), t.resource.Get(), t.pixels.Base() + SubresourceOffset( t, nFace, nMip ), nBytes, nSub, t.subresourceStates[nStateIndex], api.m_pDevice ) )
+						return false;
+					t.dirtySubresources[nStateIndex] = 0;
+				}
+				const D3D12_RESOURCE_STATES sampledState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+				if ( t.subresourceStates[nStateIndex] != sampledState )
+				{
+					D3D12_RESOURCE_BARRIER barrier{};
+					barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+					barrier.Transition.pResource = t.resource.Get();
+					barrier.Transition.StateBefore = t.subresourceStates[nStateIndex];
+					barrier.Transition.StateAfter = sampledState;
+					barrier.Transition.Subresource = nSub;
+					api.m_pDevice->CommandList()->ResourceBarrier( 1, &barrier );
+					t.subresourceStates[nStateIndex] = sampledState;
+				}
 			}
 		}
-		t.sampledStateValid = true;
+		t.sampledStateValid = !bLimitedRange;
 		// Uploads above are the only dirty-state change on this path.
 		t.gpuDirty = HasDirtySubresource( t );
 	}
@@ -2103,7 +2135,7 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 			return;
 		}
 		const Rect_t region{ 0, 0, dstRect->width, dstRect->height };
-		const bool bBlitted = BlitTexture( pSource, *pState, bScene, sourceFormat, pTemporary.Get(), temporaryState, false, bEncodeSRGB ? IMAGE_FORMAT_BGRA8888 : sourceFormat, *srcRect, region, false, bEncodeSRGB );
+		const bool bBlitted = BlitTexture( pSource, *pState, bScene, sourceFormat, pTemporary.Get(), temporaryState, false, bEncodeSRGB ? IMAGE_FORMAT_BGRA8888 : sourceFormat, *srcRect, region, false, bEncodeSRGB, nullptr );
 		if ( bScene )
 			m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
 		if ( !bBlitted )
@@ -2254,7 +2286,7 @@ void CShaderAPIDX12::UnlockRect( ShaderAPITextureHandle_t h, int )
 //          and sizes match, otherwise a filtered draw (optionally resolving MSAA first and
 //          applying the present gamma ramp)
 //-----------------------------------------------------------------------------
-bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients )
+bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients, BlitEncodeDX12 encode )
 {
 	if ( !m_pDevice || !m_pDevice->CommandList() || !pSource || !pDestination || pSource == pDestination || sourceRect.width <= 0 || sourceRect.height <= 0 || destinationRect.width <= 0 || destinationRect.height <= 0 )
 		return false;
@@ -2302,7 +2334,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		bSourceIsScene = false;
 	}
 	const bool bSameSize = sourceRect.width == destinationRect.width && sourceRect.height == destinationRect.height;
-	if ( !pGammaCoefficients && bSameSize && pSource->GetDesc().Format == destinationDesc.Format && destinationDesc.SampleDesc.Count == 1 && bSourceSRGB == bDestinationSRGB )
+	if ( encode == BlitEncodeDX12::None && bSameSize && pSource->GetDesc().Format == destinationDesc.Format && destinationDesc.SampleDesc.Count == 1 && bSourceSRGB == bDestinationSRGB )
 	{
 		transition( pSource, *pActiveSourceState, bSourceIsScene, D3D12_RESOURCE_STATE_COPY_SOURCE, true );
 		transition( pDestination, destinationState, bDestinationIsScene, D3D12_RESOURCE_STATE_COPY_DEST, false );
@@ -2408,7 +2440,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 	for ( int i = 0; i < m_BlitPasses.Count(); ++i )
 	{
 		const BlitPassDX12 &pass = m_BlitPasses[i];
-		if ( pass.color == renderFormat && pass.samples == nSamples && pass.quality == nQuality && pass.gamma == ( pGammaCoefficients != nullptr ) )
+		if ( pass.color == renderFormat && pass.samples == nSamples && pass.quality == nQuality && pass.encode == encode )
 		{
 			pPSO = pass.pipeline.Get();
 			break;
@@ -2417,9 +2449,10 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 	if ( !pPSO )
 	{
 		static const char vsSource[] = "float4 main(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p*float2(2,-2)+float2(-1,1),0,1); }";
-		static const char psSource[] = "Texture2D image:register(t0); SamplerState sampleState:register(s0); cbuffer Region:register(b0){float4 uv;\n#ifdef PRESENT_GAMMA\nfloat4 gamma;\n#endif\n} float4 main(float4 pos:SV_Position):SV_Target {float4 color=image.SampleLevel(sampleState, pos.xy*uv.xy+uv.zw,0);\n#ifdef PRESENT_GAMMA\ncolor.rgb=pow(saturate(color.rgb),gamma.xxx); color.rgb=pow(saturate(color.rgb),gamma.yyy); color.rgb=saturate(color.rgb*gamma.z+gamma.w);\n#endif\nreturn color;}";
+		static const char psSource[] = "Texture2D image:register(t0); SamplerState sampleState:register(s0); cbuffer Region:register(b0){float4 uv;\n#if defined(PRESENT_GAMMA)||defined(PRESENT_HDR_SCALE)\nfloat4 gamma;\n#endif\n} float4 main(float4 pos:SV_Position):SV_Target {float4 color=image.SampleLevel(sampleState, pos.xy*uv.xy+uv.zw,0);\n#ifdef PRESENT_GAMMA\ncolor.rgb=pow(saturate(color.rgb),gamma.xxx); color.rgb=pow(saturate(color.rgb),gamma.yyy); color.rgb=saturate(color.rgb*gamma.z+gamma.w);\n#endif\n#ifdef PRESENT_HDR_SCALE\ncolor.rgb*=gamma.x;\n#endif\nreturn color;}";
 		Microsoft::WRL::ComPtr<ID3DBlob> pVS, pPS, pError;
-		const D3D_SHADER_MACRO defines[] = { { "PRESENT_GAMMA", "1" }, { nullptr, nullptr } };
+		const D3D_SHADER_MACRO gammaDefines[] = { { "PRESENT_GAMMA", "1" }, { nullptr, nullptr } };
+		const D3D_SHADER_MACRO hdrDefines[] = { { "PRESENT_HDR_SCALE", "1" }, { nullptr, nullptr } };
 		HRESULT hr = D3DCompile( vsSource, sizeof( vsSource ) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pVS, &pError );
 		if ( FAILED( hr ) )
 		{
@@ -2427,7 +2460,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 			return false;
 		}
 		pError.Reset();
-		hr = D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, pGammaCoefficients ? defines : nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pPS, &pError );
+		hr = D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, encode == BlitEncodeDX12::Gamma ? gammaDefines : encode == BlitEncodeDX12::HdrScale ? hdrDefines : nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pPS, &pError );
 		if ( FAILED( hr ) )
 		{
 			Warning( "ShaderAPIDX12: native blit PS compile failed (0x%08x): %s\n", static_cast<unsigned>( hr ), pError ? static_cast<const char *>( pError->GetBufferPointer() ) : "unknown" );
@@ -2468,11 +2501,11 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		pass.color = renderFormat;
 		pass.samples = nSamples;
 		pass.quality = nQuality;
-		pass.gamma = pGammaCoefficients != nullptr;
+		pass.encode = encode;
 		hr = pNative->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pass.pipeline ) );
 		if ( FAILED( hr ) )
 		{
-			Warning( "ShaderAPIDX12: native blit PSO failed (0x%08x), format %u samples %u gamma %d\n", static_cast<unsigned>( hr ), static_cast<unsigned>( renderFormat ), nSamples, pass.gamma ? 1 : 0 );
+			Warning( "ShaderAPIDX12: native blit PSO failed (0x%08x), format %u samples %u encode %d\n", static_cast<unsigned>( hr ), static_cast<unsigned>( renderFormat ), nSamples, static_cast<int>( pass.encode ) );
 			return false;
 		}
 		pPSO = pass.pipeline.Get();
@@ -2504,7 +2537,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 	pList->SetGraphicsRootDescriptorTable( 0, srvRange.gpu );
 	pList->SetGraphicsRootDescriptorTable( 1, m_Pipeline.LinearClampSampler() );
 	pList->SetGraphicsRoot32BitConstants( 2, 4, flUV, 0 );
-	if ( pGammaCoefficients )
+	if ( encode != BlitEncodeDX12::None && pGammaCoefficients )
 		pList->SetGraphicsRoot32BitConstants( 2, 4, pGammaCoefficients, 4 );
 	pList->SetPipelineState( pPSO );
 	pList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -2542,10 +2575,14 @@ bool CShaderAPIDX12::EncodeSceneTo( ID3D12Resource *pDestination, D3D12_RESOURCE
 		return false;
 	float flGamma[4];
 	const float *pGamma = m_pDevice->PresentGammaCoefficients( flGamma ) ? flGamma : nullptr;
+	const float flScale = PresentOutputScale();
+	float flScaleCoefficients[4] = { flScale, 0.f, 0.f, 0.f };
+	const BlitEncodeDX12 encode = flScale != 1.f ? BlitEncodeDX12::HdrScale : pGamma ? BlitEncodeDX12::Gamma : BlitEncodeDX12::None;
+	const float *pEncodeCoefficients = flScale != 1.f ? flScaleCoefficients : pGamma;
 	const ImageFormat destinationFormat = bEightBit ? IMAGE_FORMAT_RGBA8888 : CShaderDeviceDX12::kSceneImageFormat;
 	D3D12_RESOURCE_STATES sceneState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	const Rect_t area{ 0, 0, static_cast<int>( destinationDesc.Width ), static_cast<int>( destinationDesc.Height ) };
-	const bool bResult = BlitTexture( m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, pDestination, destinationState, false, destinationFormat, area, area, false, bEightBit, pGamma );
+	const bool bResult = BlitTexture( m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, pDestination, destinationState, false, destinationFormat, area, area, false, bEightBit, pEncodeCoefficients, encode );
 	m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
 	return bResult;
 }

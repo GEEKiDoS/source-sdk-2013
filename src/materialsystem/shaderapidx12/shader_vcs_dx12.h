@@ -19,7 +19,8 @@ namespace shaderapidx12
 enum class VcsStage
 {
 	Vertex,
-	Pixel
+	Pixel,
+	Compute
 };
 
 // LegacyShaderName() result for a native-only logical: it has no shaders/fxc record to fall back to.

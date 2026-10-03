@@ -1,15 +1,14 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: Extension interface of shaderapidx12.dll for features the stock IShaderAPI has no words for: frame
-//          generation (DLSS-G / FSR FG / XeSS-FG), NVIDIA Reflex and the latency markers they need.
+//          generation (DLSS-G / FSR FG / XeSS-FG), NVIDIA Reflex, HDR output and generic compute dispatch.
 //
 //          Obtained from the renderer's factory: Sys_GetFactory( "shaderapidx12" )( SHADERAPIDX12_INTERFACE_VERSION, NULL ).
 //          A renderer without it returns NULL; callers must treat that as "features unavailable".
 //
 //          Settings are plain stores: thread-safe, callable from cvar callbacks, taken over by the renderer at its
 //          next frame boundary. Status queries are readable from any thread. Per-frame work that must stay ordered
-//          with the draw stream (the eligible view, frame id and dispatch) still goes through the render context
-//          (INT_RENDERPARM_DX12_FRAMEGEN_* in renderparm.h).
+//          with the draw stream (the eligible view, frame id and dispatch) still goes through the render context.
 //
 //===========================================================================//
 #ifndef ISHADERAPIDX12_H
@@ -19,8 +18,54 @@
 #endif
 
 #include "tier1/interface.h"
+#include "shaderapi/ishaderapi.h"
 
-#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_001"
+#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_002"
+
+enum ShaderAPIDX12HdrDisplayType_t
+{
+	SHADERAPIDX12_HDR_DISPLAY_UNKNOWN = 0,
+	SHADERAPIDX12_HDR_DISPLAY_SDR = 1,
+	SHADERAPIDX12_HDR_DISPLAY_HDR = 2,
+};
+
+#define SHADERAPIDX12_HDR_DISPLAY_TYPE( status ) ( ( status ) & 0xff )
+#define SHADERAPIDX12_HDR_DISPLAY_MAX_NITS( status ) ( ( ( status ) >> 8 ) & 0xffff )
+
+enum ShaderAPIDX12ComputeResourceKind_t
+{
+	SHADERAPIDX12_COMPUTE_RESOURCE_NONE = 0,
+	SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE,
+	SHADERAPIDX12_COMPUTE_RESOURCE_STANDARD_TEXTURE,
+	SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH,
+};
+
+struct ShaderAPIDX12ComputeResource_t
+{
+	int m_nKind;
+	ShaderAPITextureHandle_t m_hTexture;
+	int m_nStandardTexture;
+	int m_nMip;
+	int m_nMipCount;
+};
+
+#define SHADERAPIDX12_COMPUTE_MAX_SRVS      8
+#define SHADERAPIDX12_COMPUTE_MAX_UAVS      8
+#define SHADERAPIDX12_COMPUTE_MAX_CONSTANTS 256
+
+struct ShaderAPIDX12ComputeDispatch_t
+{
+	const char *m_pShaderName;
+	int m_nStaticIndex;
+	int m_nDynamicIndex;
+	ShaderAPIDX12ComputeResource_t m_Srv[SHADERAPIDX12_COMPUTE_MAX_SRVS];
+	ShaderAPIDX12ComputeResource_t m_Uav[SHADERAPIDX12_COMPUTE_MAX_UAVS];
+	const void *m_pConstants;
+	int m_nConstantBytes;
+	int m_nGroupsX, m_nGroupsY, m_nGroupsZ;
+};
+
+#define SHADERAPIDX12_COMPUTE_INTERFACE_VERSION "ShaderAPIDX12Compute_001"
 
 // SetFrameGeneration modes.
 enum ShaderAPIDX12FrameGenMode_t
@@ -98,6 +143,19 @@ public:
 	virtual int ReflexStatus() = 0;
 	// Why the last SetReflexMode / frame-generation request did not take; "" when it did.
 	virtual const char *LastError() = 0;
+	// HDR display output. Present() applies flUiNits / 80 to an FP16 scRGB swap chain when enabled.
+	virtual void SetHdrOutput( bool bEnable, float flUiNits ) = 0;
+	// Bits 0-7: display type; bits 8-23: display MaxLuminance in nits.
+	virtual int HdrDisplayStatus() = 0;
+	// True when the swap chain is FP16 scRGB.
+	virtual bool HdrOutputCapable() = 0;
+};
+
+abstract_class IShaderAPIDX12Compute
+{
+public:
+	virtual bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) = 0;
+	virtual int SceneSampleCount() = 0;
 };
 
 #endif // ISHADERAPIDX12_H

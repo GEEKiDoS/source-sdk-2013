@@ -72,13 +72,15 @@ static bool ReflectNative( const VcsPayload &payload, VcsStage stage, CUtlString
 		return false;
 	}
 	const UINT nType = D3D12_SHVER_GET_TYPE( desc.Version );
-	if ( nType != static_cast<UINT>( stage == VcsStage::Vertex ? D3D12_SHVER_VERTEX_SHADER : D3D12_SHVER_PIXEL_SHADER ) )
+	const UINT expectedType = stage == VcsStage::Vertex ? D3D12_SHVER_VERTEX_SHADER :
+	                          stage == VcsStage::Pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_COMPUTE_SHADER;
+	if ( nType != expectedType )
 	{
 		error = "DXBC stage does not match the VCS stage";
 		return false;
 	}
 	CUtlVector<ShaderInputElementDX12> inputs;
-	if ( !ReadShaderInputSignatureDX12( payload.tokens.Base(), payload.tokens.Count(), inputs ) )
+	if ( stage == VcsStage::Vertex && !ReadShaderInputSignatureDX12( payload.tokens.Base(), payload.tokens.Count(), inputs ) )
 	{
 		error = "input signature reflection failed";
 		return false;
@@ -91,8 +93,35 @@ static bool ReflectNative( const VcsPayload &payload, VcsStage stage, CUtlString
 			error = "resource binding reflection failed";
 			return false;
 		}
+		if ( stage == VcsStage::Compute )
+		{
+			if ( binding.Type == D3D_SIT_CBUFFER && binding.Space != 1 )
+			{
+				error = "compute cbuffer is outside space 1";
+				return false;
+			}
+			if ( binding.Type != D3D_SIT_CBUFFER )
+			{
+				if ( binding.Space != 0 )
+				{
+					error = "compute SRV/UAV/sampler is outside space 0";
+					return false;
+				}
+				const UINT nMaxSlots = binding.Type == D3D_SIT_SAMPLER ? 2u : 8u;
+				if ( binding.BindPoint >= nMaxSlots || !binding.BindCount || binding.BindCount > nMaxSlots - binding.BindPoint )
+				{
+					error = "compute resource exceeds root-signature slot range";
+					return false;
+				}
+			}
+		}
 		if ( binding.Type != D3D_SIT_CBUFFER || binding.Space != 1 )
 			continue;
+		if ( stage == VcsStage::Compute && ( binding.BindPoint != 0 || binding.BindCount != 1 ) )
+		{
+			error = "compute cbuffer is not a single b0 space 1 binding";
+			return false;
+		}
 		ID3D12ShaderReflectionConstantBuffer *pBuffer = reflection->GetConstantBufferByName( binding.Name );
 		D3D12_SHADER_BUFFER_DESC bufferDesc{};
 		if ( !pBuffer || FAILED( pBuffer->GetDesc( &bufferDesc ) ) )
@@ -108,11 +137,12 @@ static bool ReflectNative( const VcsPayload &payload, VcsStage stage, CUtlString
 				return false;
 			}
 		}
-		const unsigned nFirst = stage == VcsStage::Vertex ? 2u : 1u;
+		const unsigned nFirst = stage == VcsStage::Vertex ? 2u : stage == VcsStage::Pixel ? 1u : 0u;
 		bool bEngine = false;
 		for ( const dx12native::EngineCBufferLayoutDX12 &layout : dx12native::kEngineCBufferLayouts )
 			bEngine |= !V_strcmp( layout.name, binding.Name );
-		if ( !bEngine && ( binding.BindPoint < nFirst || binding.BindPoint > 7 || ( bufferDesc.Size & 15 ) || bufferDesc.Size > 65536 ) )
+		const unsigned nMaxBytes = stage == VcsStage::Compute ? 256u : 65536u;
+		if ( !bEngine && ( binding.BindPoint < nFirst || binding.BindPoint > 7 || ( bufferDesc.Size & 15 ) || bufferDesc.Size > nMaxBytes ) )
 		{
 			error = CUtlString( "material cbuffer outside the space-1 slot contract: " ) + binding.Name;
 			return false;
@@ -137,7 +167,7 @@ static PrecacheCounts ValidateFile( IFileSystem &filesystem, const char *pszName
 		return counts;
 	}
 	++counts.m_nFiles;
-	const char *pszStage = stage == VcsStage::Vertex ? "vs" : "ps";
+	const char *pszStage = stage == VcsStage::Vertex ? "vs" : stage == VcsStage::Pixel ? "ps" : "cs";
 	uint32_t nStaticIndex = 0;
 	bool bFoundStatic = nOnlyStatic < 0;
 	for ( size_t nOrdinal = 0; file.StaticComboIndex( nOrdinal, nStaticIndex ); ++nOrdinal )
@@ -190,7 +220,7 @@ static PrecacheCounts ValidateFile( IFileSystem &filesystem, const char *pszName
 
 //-----------------------------------------------------------------------------
 // Purpose: Logical names from the published native manifest mapping (generated/meta equivalent at
-//          runtime): every file present under shaders/vsh and shaders/psh.
+//          runtime): every file present under shaders/vsh, shaders/psh, and shaders/csh.
 //-----------------------------------------------------------------------------
 static void ForEachPublished( IFileSystem &filesystem, const char *pszPattern, VcsStage stage, PrecacheCounts &total )
 {
@@ -253,17 +283,25 @@ void CShaderAPIDX12::ProcessShaderPrecacheRequests()
 		{
 			ForEachPublished( *pFileSystem, "shaders/vsh/*.vcs", VcsStage::Vertex, total );
 			ForEachPublished( *pFileSystem, "shaders/psh/*.vcs", VcsStage::Pixel, total );
+			ForEachPublished( *pFileSystem, "shaders/csh/*.vcs", VcsStage::Compute, total );
 		}
 		else
 		{
-			// A logical name identifies a stage by its _vs/_ps token; resolve both stages when ambiguous.
+			// A logical name identifies a stage by its _vs/_ps/_cs token; resolve both graphics stages when ambiguous.
 			const char *pszName = request.name.String();
 			const bool bVertex = V_strstr( pszName, "_vs" ) != nullptr;
 			const bool bPixel = V_strstr( pszName, "_ps" ) != nullptr;
-			if ( bVertex || !bPixel )
-				total.Add( ValidateFile( *pFileSystem, pszName, VcsStage::Vertex, request.staticIndex, request.dynamicIndex ) );
-			if ( bPixel || !bVertex )
-				total.Add( ValidateFile( *pFileSystem, pszName, VcsStage::Pixel, request.staticIndex, request.dynamicIndex ) );
+			if ( V_strstr( pszName, "_cs" ) )
+			{
+				total.Add( ValidateFile( *pFileSystem, pszName, VcsStage::Compute, request.staticIndex, request.dynamicIndex ) );
+			}
+			else
+			{
+				if ( bVertex || !bPixel )
+					total.Add( ValidateFile( *pFileSystem, pszName, VcsStage::Vertex, request.staticIndex, request.dynamicIndex ) );
+				if ( bPixel || !bVertex )
+					total.Add( ValidateFile( *pFileSystem, pszName, VcsStage::Pixel, request.staticIndex, request.dynamicIndex ) );
+			}
 		}
 		Msg( "shader_precache %s: files=%u statics=%u combos=%u skipped=%u native=%u legacy=%u failures=%u (validation only; PSOs are created per draw state)\n",
 		    request.name.String(), total.m_nFiles, total.m_nStatics, total.m_nCombos, total.m_nSkipped, total.m_nNative, total.m_nLegacy, total.m_nFailures );
