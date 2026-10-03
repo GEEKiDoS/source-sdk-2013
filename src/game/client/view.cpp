@@ -40,6 +40,7 @@
 #include "toolframework_client.h"
 #include "tier0/icommandline.h"
 #include "ienginevgui.h"
+#include "postprocess_dx12.h"
 #include <vgui_controls/Controls.h>
 #include <vgui/ISurface.h>
 #include "ScreenSpaceEffects.h"
@@ -1047,6 +1048,7 @@ void CViewRender::Render( vrect_t *rect )
 	Assert(s_DbgSetupOrigin == m_View.origin);
 	Assert(s_DbgSetupAngles == m_View.angles);
 
+	PostProcessDX12_SubmitFrameConfig();
 	VPROF_BUDGET( "CViewRender::Render", "CViewRender::Render" );
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 

@@ -1,0 +1,22 @@
+// Native SM5.1 scene-depth to view-depth conversion for GTAO bilateral upsampling.
+// STATIC: "MSAA" "0..1"
+#include "gtao_common.hlsli"
+#if MSAA
+Texture2DMS<float> gSceneDepth : register( t0, space0 );
+#else
+Texture2D<float> gSceneDepth : register( t0, space0 );
+#endif
+RWTexture2D<float> gViewDepth : register( u0, space0 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= gViewportSize.x || id.y >= gViewportSize.y ) return;
+	int2 p = gSceneOrigin + int2( id.xy );
+#if MSAA
+	float depth = gSceneDepth.Load( p, 0 );
+#else
+	float depth = gSceneDepth.Load( int3( p, 0 ) );
+#endif
+	gViewDepth[id.xy] = clamp( ViewDepth( depth ), 0.0, 65504.0 );
+}

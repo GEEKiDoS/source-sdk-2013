@@ -1,0 +1,103 @@
+// Native SM5.1 XeGTAO main horizon integration pass.
+#include "gtao_common.hlsli"
+Texture2D<float> gDepthMips : register( t0, space0 );
+RWTexture2D<unorm float> gAoOut : register( u0, space0 );
+RWTexture2D<unorm float> gEdgesOut : register( u1, space0 );
+SamplerState gPointClamp : register( s0, space0 );
+
+float LoadDepth0( int2 p )
+{
+	p = clamp( p, int2( 0, 0 ), gViewportSize - 1 );
+	return gDepthMips.Load( int3( p, 0 ) );
+}
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 dispatchID : SV_DispatchThreadID )
+{
+	uint2 pix = dispatchID.xy;
+	if ( pix.x >= gViewportSize.x || pix.y >= gViewportSize.y ) return;
+	float centerZ = LoadDepth0( int2( pix ) );
+	float leftZ = LoadDepth0( int2( pix ) + int2( -1, 0 ) );
+	float rightZ = LoadDepth0( int2( pix ) + int2( 1, 0 ) );
+	float topZ = LoadDepth0( int2( pix ) + int2( 0, -1 ) );
+	float bottomZ = LoadDepth0( int2( pix ) + int2( 0, 1 ) );
+	float4 edges = CalculateEdges( centerZ, leftZ, rightZ, topZ, bottomZ );
+	gEdgesOut[pix] = PackEdges( edges );
+	if ( centerZ >= 65503.0 )
+	{
+		gEdgesOut[pix] = PackEdges( 1.0.xxxx );
+		gAoOut[pix] = 1.0 / 1.5;
+		return;
+	}
+	centerZ *= 0.99920;
+	float2 uv = ( float2( pix ) + 0.5 ) * gViewportPixelSize;
+	float3 center = ViewPosition( uv, centerZ );
+	float3 left = ViewPosition( uv + float2( -1, 0 ) * gViewportPixelSize, leftZ );
+	float3 right = ViewPosition( uv + float2( 1, 0 ) * gViewportPixelSize, rightZ );
+	float3 top = ViewPosition( uv + float2( 0, -1 ) * gViewportPixelSize, topZ );
+	float3 bottom = ViewPosition( uv + float2( 0, 1 ) * gViewportPixelSize, bottomZ );
+	float3 normal = CalculateNormal( edges, center, left, right, top, bottom );
+	float3 viewVec = normalize( -center );
+	float effectRadius = gEffectRadius * gRadiusMultiplier;
+	float falloffRange = max( gEffectFalloffRange * effectRadius, 1e-4 );
+	float falloffFrom = effectRadius * ( 1.0 - gEffectFalloffRange );
+	float falloffMul = -1.0 / falloffRange;
+	float falloffAdd = falloffFrom / falloffRange + 1.0;
+	float screenRadius = effectRadius / max( abs( centerZ * gNdcToViewMulXPixelSize.x ), 1e-4 );
+	float visibility = saturate( ( 10.0 - screenRadius ) / 100.0 ) * 0.5;
+	float2 noise = SpatioTemporalNoise( pix, gNoiseIndex );
+	float minS = 1.3 / max( screenRadius, 1e-4 );
+	[loop]
+	for ( int slice = 0; slice < gSliceCount; ++slice )
+	{
+		float sliceK = ( slice + noise.x ) / max( (float)gSliceCount, 1.0 );
+		float phi = sliceK * XE_GTAO_PI;
+		float2 omega = float2( cos( phi ), -sin( phi ) ) * screenRadius;
+		float3 direction = float3( cos( phi ), sin( phi ), 0 );
+		float3 ortho = direction - dot( direction, viewVec ) * viewVec;
+		float3 axis = normalize( cross( ortho, viewVec ) );
+		float3 projected = normal - axis * dot( normal, axis );
+		float signNorm = sign( dot( ortho, projected ) );
+		float projectedLength = max( length( projected ), 1e-4 );
+		float cosNorm = saturate( dot( projected, viewVec ) / projectedLength );
+		float n = signNorm * FastACos( cosNorm );
+		float low0 = cos( n + XE_GTAO_PI_HALF );
+		float low1 = cos( n - XE_GTAO_PI_HALF );
+		float horizon0 = low0, horizon1 = low1;
+		[loop]
+		for ( int step = 0; step < gStepsPerSlice; ++step )
+		{
+			float stepNoise = frac( noise.y + ( slice + step * gStepsPerSlice ) * 0.6180339887498948482 );
+			float s = pow( ( step + stepNoise ) / max( (float)gStepsPerSlice, 1.0 ), gSampleDistributionPower ) + minS;
+			float2 sampleOffsetPixels = s * omega;
+			float sampleOffsetLength = length( sampleOffsetPixels );
+			float2 offset = round( sampleOffsetPixels ) * gViewportPixelSize;
+			float mip = clamp( log2( max( sampleOffsetLength, 1e-4 ) ) - gDepthMIPSamplingOffset, 0.0, 4.0 );
+			float2 sampleUv0 = uv + offset;
+			float2 sampleUv1 = uv - offset;
+			float z0 = gDepthMips.SampleLevel( gPointClamp, sampleUv0, mip );
+			float z1 = gDepthMips.SampleLevel( gPointClamp, sampleUv1, mip );
+			float3 delta0 = ViewPosition( sampleUv0, z0 ) - center;
+			float3 delta1 = ViewPosition( sampleUv1, z1 ) - center;
+			float dist0 = max( length( delta0 ), 1e-4 );
+			float dist1 = max( length( delta1 ), 1e-4 );
+			float weight0 = saturate( length( float3( delta0.xy, delta0.z * ( 1.0 + gThinOccluderCompensation ) ) ) * falloffMul + falloffAdd );
+			float weight1 = saturate( length( float3( delta1.xy, delta1.z * ( 1.0 + gThinOccluderCompensation ) ) ) * falloffMul + falloffAdd );
+			float shc0 = dot( delta0 / dist0, viewVec );
+			float shc1 = dot( delta1 / dist1, viewVec );
+			shc0 = lerp( low0, shc0, weight0 );
+			shc1 = lerp( low1, shc1, weight1 );
+			horizon0 = max( horizon0, shc0 );
+			horizon1 = max( horizon1, shc1 );
+		}
+		float h0 = -FastACos( horizon1 );
+		float h1 = FastACos( horizon0 );
+		float iarc0 = ( cosNorm + 2.0 * h0 * sin( n ) - cos( 2.0 * h0 - n ) ) / 4.0;
+		float iarc1 = ( cosNorm + 2.0 * h1 * sin( n ) - cos( 2.0 * h1 - n ) ) / 4.0;
+		projectedLength = lerp( projectedLength, 1.0, 0.05 );
+		visibility += projectedLength * ( iarc0 + iarc1 );
+	}
+	visibility = pow( visibility / max( (float)gSliceCount, 1.0 ), gFinalValuePower );
+	visibility = max( visibility, 0.03 );
+	gAoOut[pix] = saturate( visibility / 1.5 );
+}

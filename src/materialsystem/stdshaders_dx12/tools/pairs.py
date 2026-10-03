@@ -132,8 +132,20 @@ EFFECTS = [
 
 NATIVE_ONLY = [
     native_only('postfx', 'motion_blur_mv_ps51.fxc', 'ps', 'motion_blur_mv_ps51'),
+    native_only('gtao', 'gtao_prefilter_cs51.fxc', 'cs', 'gtao_prefilter_cs51'),
+    native_only('gtao', 'gtao_viewdepth_cs51.fxc', 'cs', 'gtao_viewdepth_cs51'),
+    native_only('gtao', 'gtao_main_cs51.fxc', 'cs', 'gtao_main_cs51'),
+    native_only('gtao', 'gtao_denoise_cs51.fxc', 'cs', 'gtao_denoise_cs51'),
+    native_only('gtao', 'gtao_apply_ps51.fxc', 'ps', 'gtao_apply_ps51'),
+    native_only('postfx', 'postfx_downsample_cs51.fxc', 'cs', 'postfx_downsample_cs51'),
+    native_only('postfx', 'postfx_upsample_cs51.fxc', 'cs', 'postfx_upsample_cs51'),
+    native_only('postfx', 'postfx_flare_cs51.fxc', 'cs', 'postfx_flare_cs51'),
+    native_only('postfx', 'postfx_kawase_down_cs51.fxc', 'cs', 'postfx_kawase_down_cs51'),
+    native_only('postfx', 'postfx_kawase_up_cs51.fxc', 'cs', 'postfx_kawase_up_cs51'),
+    native_only('postfx', 'postfx_glare_cs51.fxc', 'cs', 'postfx_glare_cs51'),
+    native_only('postfx', 'postfx_composite_ps51.fxc', 'ps', 'postfx_composite_ps51'),
+    native_only('postfx', 'postfx_rcas_ps51.fxc', 'ps', 'postfx_rcas_ps51'),
 ]
-
 ALL = SCREENSPACE + POSTFX + VERTEXLIT + WORLD_MISC + SPRITES + WATER + EYES + LIGHTMAPPED + MORPH + EFFECTS
 
 # Logical shaders the SDK ships only as compiled VCS (no .fxc source): legacy records via passthrough.

@@ -1,0 +1,63 @@
+// Native SM5.1 lens flare glare (Froyok's custom lens flare). His version emits, for every bright 2x2 block of a
+// quarter-resolution buffer, three thin quads rotated 90, 30 and 150 degrees (plus up to 30 degrees following the
+// screen x) whose length grows with luminance / divider. Compute has no geometry shader, so this pass gathers the
+// same star instead: every output texel walks the three lines through itself, rotated by its own screen x, and adds
+// each source texel whose quad reaches it. gSrc is the eighth-resolution step of the thresholded flare input (one
+// texel per 2x2 output block), gDst the quarter-resolution glare. p0 = glare intensity, p1 = luminance divider.
+#include "postfx_common.hlsli"
+
+static const int kMaxSteps = 48;
+static const float kAngle30 = 0.523599;
+static const float kAngle90 = 1.570796;
+static const float kAngle150 = 2.617994;
+
+// Stands in for his 64x8 line mask: fades to the tips and darkens the centre, where the quads overlap the bloom.
+float LineMask( float a )
+{
+	return ( 1.0 - a ) * ( 1.0 - a ) * lerp( 0.2, 1.0, smoothstep( 0.0, 0.3, a ) );
+}
+
+// Contribution of the source texel at uv to an output texel t source texels away along its quad.
+float3 Glare( float2 uv, float t, float maxLength )
+{
+	float3 c = gSrc.SampleLevel( gLinearClamp, uv, 0 ).rgb;
+	float luminance = dot( c, 1.0 );
+	float screenMask = ( 1.0 - saturate( length( uv - 0.5 ) * 2.0 ) ) * 0.6 + 0.4;
+	float halfLength = saturate( luminance / p1 ) * screenMask * maxLength;
+	bool bReaches = luminance > 0.1 && t <= halfLength;
+	return bReaches ? c * LineMask( t / max( halfLength, 1e-4 ) ) : 0;
+}
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= dstWidth || id.y >= dstHeight )
+		return;
+	float2 uv = DstUv( id.xy );
+	float2 srcSize = float2( srcWidth, srcHeight );
+
+	// A full-length quad reaches half the screen height from its texel.
+	float maxLength = srcSize.y * 0.5;
+	int steps = min( (int)ceil( maxLength ), kMaxSteps );
+	float stepLength = maxLength / steps;
+	// Each quad is two source texels wide and the points are one source texel apart, so every source texel of path
+	// stands for two overlapping quads.
+	float stepWeight = stepLength * 2.0;
+
+	float angleOffset = ( uv.x * 2.0 - 1.0 ) * kAngle30;
+	float3 glare = 0;
+	[unroll]
+	for ( int quad = 0; quad < 3; ++quad )
+	{
+		float angle = angleOffset + ( quad == 0 ? kAngle90 : quad == 1 ? kAngle30 : kAngle150 );
+		float2 direction = float2( cos( angle ), -sin( angle ) ) / srcSize;
+		glare += Glare( uv, 0, maxLength ) * stepWeight;
+		[loop]
+		for ( int i = 1; i <= steps; ++i )
+		{
+			float t = i * stepLength;
+			glare += ( Glare( uv + direction * t, t, maxLength ) + Glare( uv - direction * t, t, maxLength ) ) * stepWeight;
+		}
+	}
+	gDst[id.xy] = float4( glare * p0, 1 );
+}

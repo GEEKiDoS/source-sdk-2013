@@ -36,10 +36,16 @@ $Project "stdshader_dx12"
         $File "cpp\sfm_downsample.cpp"
         $File "cpp\sfm_integercombine.cpp"
         $File "cpp\vr_distort_hud.cpp"
+        $File "cpp\DX12_GTAO.cpp"
+        $File "cpp\DX12_GTAOApply.cpp"
+        $File "cpp\DX12_PostFX.cpp"
+        $File "cpp\DX12_PostFXComposite.cpp"
+        $File "cpp\DX12_PostFXRcas.cpp"
         $File "cpp\vr_distort_texture.cpp"
     }
     $Folder "Header Files"
     {
         $File "cpp\aftershock_helper.h"
+        $File "cpp\dx12_compute_material_common.h"
     }
 }

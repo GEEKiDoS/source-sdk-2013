@@ -613,6 +613,116 @@ logical=teeth_flashlight_ps51 stage=ps source=teeth_flashlight_ps51.fxc legacy=t
     legacyEntry=128,16,1,0,0,0,28
     legacyEntry=144,16,1,0,0,0,31
     bridge=WriteNativeCBuffer(api, block)
+logical=gtao_prefilter_cs51 stage=cs source=gtao_prefilter_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+    member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
+    member=gCameraTanHalfFOV type=3 class=1 offset=24 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMul type=3 class=1 offset=32 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewAdd type=3 class=1 offset=40 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMulXPixelSize type=3 class=1 offset=48 size=8 elements=0 arrayStride=0 legacy=
+    member=gEffectRadius type=3 class=0 offset=56 size=4 elements=0 arrayStride=0 legacy=
+    member=gEffectFalloffRange type=3 class=0 offset=60 size=4 elements=0 arrayStride=0 legacy=
+    member=gRadiusMultiplier type=3 class=0 offset=64 size=4 elements=0 arrayStride=0 legacy=
+    member=gFinalValuePower type=3 class=0 offset=68 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseBlurBeta type=3 class=0 offset=72 size=4 elements=0 arrayStride=0 legacy=
+    member=gSampleDistributionPower type=3 class=0 offset=76 size=4 elements=0 arrayStride=0 legacy=
+    member=gThinOccluderCompensation type=3 class=0 offset=80 size=4 elements=0 arrayStride=0 legacy=
+    member=gDepthMIPSamplingOffset type=3 class=0 offset=84 size=4 elements=0 arrayStride=0 legacy=
+    member=gNoiseIndex type=2 class=0 offset=88 size=4 elements=0 arrayStride=0 legacy=
+    member=gSliceCount type=2 class=0 offset=92 size=4 elements=0 arrayStride=0 legacy=
+    member=gStepsPerSlice type=2 class=0 offset=96 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
+    member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+logical=gtao_viewdepth_cs51 stage=cs source=gtao_viewdepth_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+    member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
+    member=gCameraTanHalfFOV type=3 class=1 offset=24 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMul type=3 class=1 offset=32 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewAdd type=3 class=1 offset=40 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMulXPixelSize type=3 class=1 offset=48 size=8 elements=0 arrayStride=0 legacy=
+    member=gEffectRadius type=3 class=0 offset=56 size=4 elements=0 arrayStride=0 legacy=
+    member=gEffectFalloffRange type=3 class=0 offset=60 size=4 elements=0 arrayStride=0 legacy=
+    member=gRadiusMultiplier type=3 class=0 offset=64 size=4 elements=0 arrayStride=0 legacy=
+    member=gFinalValuePower type=3 class=0 offset=68 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseBlurBeta type=3 class=0 offset=72 size=4 elements=0 arrayStride=0 legacy=
+    member=gSampleDistributionPower type=3 class=0 offset=76 size=4 elements=0 arrayStride=0 legacy=
+    member=gThinOccluderCompensation type=3 class=0 offset=80 size=4 elements=0 arrayStride=0 legacy=
+    member=gDepthMIPSamplingOffset type=3 class=0 offset=84 size=4 elements=0 arrayStride=0 legacy=
+    member=gNoiseIndex type=2 class=0 offset=88 size=4 elements=0 arrayStride=0 legacy=
+    member=gSliceCount type=2 class=0 offset=92 size=4 elements=0 arrayStride=0 legacy=
+    member=gStepsPerSlice type=2 class=0 offset=96 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
+    member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+logical=gtao_main_cs51 stage=cs source=gtao_main_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+    member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
+    member=gCameraTanHalfFOV type=3 class=1 offset=24 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMul type=3 class=1 offset=32 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewAdd type=3 class=1 offset=40 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMulXPixelSize type=3 class=1 offset=48 size=8 elements=0 arrayStride=0 legacy=
+    member=gEffectRadius type=3 class=0 offset=56 size=4 elements=0 arrayStride=0 legacy=
+    member=gEffectFalloffRange type=3 class=0 offset=60 size=4 elements=0 arrayStride=0 legacy=
+    member=gRadiusMultiplier type=3 class=0 offset=64 size=4 elements=0 arrayStride=0 legacy=
+    member=gFinalValuePower type=3 class=0 offset=68 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseBlurBeta type=3 class=0 offset=72 size=4 elements=0 arrayStride=0 legacy=
+    member=gSampleDistributionPower type=3 class=0 offset=76 size=4 elements=0 arrayStride=0 legacy=
+    member=gThinOccluderCompensation type=3 class=0 offset=80 size=4 elements=0 arrayStride=0 legacy=
+    member=gDepthMIPSamplingOffset type=3 class=0 offset=84 size=4 elements=0 arrayStride=0 legacy=
+    member=gNoiseIndex type=2 class=0 offset=88 size=4 elements=0 arrayStride=0 legacy=
+    member=gSliceCount type=2 class=0 offset=92 size=4 elements=0 arrayStride=0 legacy=
+    member=gStepsPerSlice type=2 class=0 offset=96 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
+    member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+logical=gtao_denoise_cs51 stage=cs source=gtao_denoise_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+    member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
+    member=gCameraTanHalfFOV type=3 class=1 offset=24 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMul type=3 class=1 offset=32 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewAdd type=3 class=1 offset=40 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMulXPixelSize type=3 class=1 offset=48 size=8 elements=0 arrayStride=0 legacy=
+    member=gEffectRadius type=3 class=0 offset=56 size=4 elements=0 arrayStride=0 legacy=
+    member=gEffectFalloffRange type=3 class=0 offset=60 size=4 elements=0 arrayStride=0 legacy=
+    member=gRadiusMultiplier type=3 class=0 offset=64 size=4 elements=0 arrayStride=0 legacy=
+    member=gFinalValuePower type=3 class=0 offset=68 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseBlurBeta type=3 class=0 offset=72 size=4 elements=0 arrayStride=0 legacy=
+    member=gSampleDistributionPower type=3 class=0 offset=76 size=4 elements=0 arrayStride=0 legacy=
+    member=gThinOccluderCompensation type=3 class=0 offset=80 size=4 elements=0 arrayStride=0 legacy=
+    member=gDepthMIPSamplingOffset type=3 class=0 offset=84 size=4 elements=0 arrayStride=0 legacy=
+    member=gNoiseIndex type=2 class=0 offset=88 size=4 elements=0 arrayStride=0 legacy=
+    member=gSliceCount type=2 class=0 offset=92 size=4 elements=0 arrayStride=0 legacy=
+    member=gStepsPerSlice type=2 class=0 offset=96 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
+    member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+logical=gtao_apply_ps51 stage=ps source=gtao_apply_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=GtaoApply space=1 register=b1 size=48 layoutHash=0xab954e3331bba1c0 material
+    member=gApplyOriginFullSize type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=gApplyAoSizeUnpack type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=gApplyOptions type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,16,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    bridge=WriteNativeCBuffer(api, block)
 logical=lightmappedgeneric_flashlight_vs51 stage=vs source=lightmappedgeneric_flashlight_vs51.fxc legacy=lightmappedgeneric_flashlight_vs20.fxc legacyName=lightmappedgeneric_flashlight_vs20 profile=20b static=16 dynamic=2 present=32
   cbuffer=DX12VSBones space=1 register=b1 size=2544 layoutHash=0x4b955c265c5cfd5f engine
     member=cModel type=3 class=3 offset=0 size=2544 elements=53 arrayStride=48 legacy=none
@@ -1711,6 +1821,102 @@ logical=motion_blur_mv_ps51 stage=ps source=motion_blur_mv_ps51.fxc legacy=- leg
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
   cbuffer=motion_blur_mv space=1 register=b1 size=16 layoutHash=0xd583d9db54197c56 material
     member=g_vMotionBlurInternal type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    legacyEntry=0,16,1,0,0,0,0
+    bridge=WriteNativeCBuffer(api, block)
+logical=postfx_downsample_cs51 stage=cs source=postfx_downsample_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
+    member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
+    member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
+    member=dstWidth type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=dstHeight type=19 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=texelX type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=texelY type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=p0 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=p1 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
+logical=postfx_upsample_cs51 stage=cs source=postfx_upsample_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
+    member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
+    member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
+    member=dstWidth type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=dstHeight type=19 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=texelX type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=texelY type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=p0 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=p1 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
+logical=postfx_flare_cs51 stage=cs source=postfx_flare_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
+    member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
+    member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
+    member=dstWidth type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=dstHeight type=19 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=texelX type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=texelY type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=p0 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=p1 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
+logical=postfx_kawase_down_cs51 stage=cs source=postfx_kawase_down_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
+    member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
+    member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
+    member=dstWidth type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=dstHeight type=19 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=texelX type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=texelY type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=p0 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=p1 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
+logical=postfx_kawase_up_cs51 stage=cs source=postfx_kawase_up_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
+    member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
+    member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
+    member=dstWidth type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=dstHeight type=19 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=texelX type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=texelY type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=p0 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=p1 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
+logical=postfx_glare_cs51 stage=cs source=postfx_glare_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
+    member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
+    member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
+    member=dstWidth type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=dstHeight type=19 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=texelX type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=texelY type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=p0 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=p1 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
+logical=postfx_composite_ps51 stage=ps source=postfx_composite_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=PostComposite space=1 register=b1 size=80 layoutHash=0xa55f5b6adbd800ac material
+    member=gSceneBloomFlare type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=gDirtPeak type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=gOutput type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=gLutWeights type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=gLutWeight4 type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,16,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,4
+    bridge=WriteNativeCBuffer(api, block)
+logical=postfx_rcas_ps51 stage=ps source=postfx_rcas_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=RcasParams space=1 register=b1 size=16 layoutHash=0xa818f69c348ba76b material
+    member=gRcasParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     legacyEntry=0,16,1,0,0,0,0
     bridge=WriteNativeCBuffer(api, block)
 logical=writez_vs51 stage=vs source=writez_vs51.fxc legacy=writez_vs20.fxc legacyName=writez_vs20 profile=20b static=1 dynamic=4 present=4

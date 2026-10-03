@@ -22,6 +22,7 @@
 #include "proxyentity.h"
 
 #include "motionvectors_dx12.h"
+#include "postprocess_dx12.h"
 //-----------------------------------------------------------------------------
 // Globals
 //-----------------------------------------------------------------------------
@@ -2334,8 +2335,17 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 										  g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights() &&
 										  mat_colorcorrection.GetInt();
 			bool  bSplitScreenHDR		= mat_show_ab_hdr.GetInt();
-			pRenderContext->EnableColorCorrection( bPerformColCorrect );
-			if ( bPerformBloom || bPerformSoftwareAA || bPerformColCorrect )
+			const bool bPostProcessDX12 = PostProcessDX12_Active();
+			if ( bPostProcessDX12 )
+			{
+				pRenderContext->SetRenderTarget( NULL );
+				PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, bPerformColCorrect );
+			}
+			else
+			{
+				pRenderContext->EnableColorCorrection( bPerformColCorrect );
+			}
+			if ( !bPostProcessDX12 && ( bPerformBloom || bPerformSoftwareAA || bPerformColCorrect ) )
 			{
 				tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "ColorCorrection" );
 
@@ -2582,7 +2592,11 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 			
 			PostProcessingPass* selectedHDR;
 			
-			if ( flBloomScale > 0.0 )
+			if ( PostProcessDX12_Active() )
+			{
+				selectedHDR = HDRFinal_Float_NoBloom;
+			}
+			else if ( flBloomScale > 0.0 )
 			{
 				selectedHDR = HDRFinal_Float;
 			}
@@ -2616,6 +2630,12 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 			}
 
 			pRenderContext->SetRenderTarget(NULL);
+			if ( PostProcessDX12_Active() )
+			{
+				static ConVarRef mat_colorcorrection( "mat_colorcorrection" );
+				PostProcessDX12_Render( pRenderContext, 0, 0, dest_width, dest_height, flBloomScale,
+					g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights() && mat_colorcorrection.GetInt() );
+			}
 			if ( mat_show_histogram.GetInt() && (engine->GetDXSupportLevel()>=90))
 				g_HDR_HistogramSystem.DisplayHistogram();
 			if ( mat_dynamic_tonemapping.GetInt() )

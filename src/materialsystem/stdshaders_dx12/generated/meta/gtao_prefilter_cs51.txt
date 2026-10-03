@@ -1,0 +1,23 @@
+logical=gtao_prefilter_cs51 stage=cs source=gtao_prefilter_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+    member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
+    member=gCameraTanHalfFOV type=3 class=1 offset=24 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMul type=3 class=1 offset=32 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewAdd type=3 class=1 offset=40 size=8 elements=0 arrayStride=0 legacy=
+    member=gNdcToViewMulXPixelSize type=3 class=1 offset=48 size=8 elements=0 arrayStride=0 legacy=
+    member=gEffectRadius type=3 class=0 offset=56 size=4 elements=0 arrayStride=0 legacy=
+    member=gEffectFalloffRange type=3 class=0 offset=60 size=4 elements=0 arrayStride=0 legacy=
+    member=gRadiusMultiplier type=3 class=0 offset=64 size=4 elements=0 arrayStride=0 legacy=
+    member=gFinalValuePower type=3 class=0 offset=68 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseBlurBeta type=3 class=0 offset=72 size=4 elements=0 arrayStride=0 legacy=
+    member=gSampleDistributionPower type=3 class=0 offset=76 size=4 elements=0 arrayStride=0 legacy=
+    member=gThinOccluderCompensation type=3 class=0 offset=80 size=4 elements=0 arrayStride=0 legacy=
+    member=gDepthMIPSamplingOffset type=3 class=0 offset=84 size=4 elements=0 arrayStride=0 legacy=
+    member=gNoiseIndex type=2 class=0 offset=88 size=4 elements=0 arrayStride=0 legacy=
+    member=gSliceCount type=2 class=0 offset=92 size=4 elements=0 arrayStride=0 legacy=
+    member=gStepsPerSlice type=2 class=0 offset=96 size=4 elements=0 arrayStride=0 legacy=
+    member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
+    member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
+    member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=

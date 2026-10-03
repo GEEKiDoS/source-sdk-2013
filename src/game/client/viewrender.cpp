@@ -16,6 +16,7 @@
 #include "viewrender.h"
 #include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
+#include "gtao_dx12.h"
 #include "framegen_dx12.h"
 #include "iclientmode.h"
 #include "voice_status.h"
@@ -5670,6 +5671,13 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		DrawOpaqueRenderables( DepthMode );
 		if ( bMotionVectors )
 			DrawMotionVectors( motionEntries );
+		// GTAO over the complete opaque scene, before any translucency; the client latches repeats within a frame.
+		if ( viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() && GTAODX12_Enabled() )
+		{
+			CMatRenderContextPtr pGtaoContext( materials );
+			PIXEVENT( pGtaoContext, "GTAO" );
+			GTAODX12_Dispatch( pGtaoContext );
+		}
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles

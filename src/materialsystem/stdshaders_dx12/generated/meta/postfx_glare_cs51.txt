@@ -1,0 +1,10 @@
+logical=postfx_glare_cs51 stage=cs source=postfx_glare_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
+    member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
+    member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
+    member=dstWidth type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=dstHeight type=19 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=texelX type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=texelY type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=p0 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=p1 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=

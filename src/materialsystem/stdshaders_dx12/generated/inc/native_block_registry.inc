@@ -42,6 +42,7 @@
 #include "flesh_interior_blended_pass_vs20.h"
 #include "floatcombine_autoexpose_ps2x.h"
 #include "floatcombine_ps2x.h"
+#include "GtaoApply.h"
 #include "hsl_filmgrain_pass1_ps2x.h"
 #include "IntroScreenSpaceEffect_ps2x.h"
 #include "lightmappedgeneric_decal_ps2x.h"
@@ -66,6 +67,8 @@
 #include "portal_refract_vs20.h"
 #include "portal_vs20.h"
 #include "portalstaticoverlay_ps2x.h"
+#include "PostComposite.h"
+#include "RcasParams.h"
 #include "pyro_vision_ps2x.h"
 #include "pyro_vision_vs20.h"
 #include "refract_ps2x.h"
@@ -182,6 +185,7 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "floatcombine_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::floatcombine_ps2x > },
 	{ "floattoscreen_notonemap_ps51", dx12native::kStagePixel, nullptr },
 	{ "floattoscreen_ps51", dx12native::kStagePixel, nullptr },
+	{ "gtao_apply_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::GtaoApply > },
 	{ "hdrcombineto16bit_ps51", dx12native::kStagePixel, nullptr },
 	{ "hdrcombineto16bit_vs51", dx12native::kStageVertex, nullptr },
 	{ "hdrselectrange_ps51", dx12native::kStagePixel, nullptr },
@@ -217,6 +221,8 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "portal_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::portal_vs20 > },
 	{ "portalstaticoverlay_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::portalstaticoverlay_ps2x > },
 	{ "portalstaticoverlay_vs51", dx12native::kStageVertex, nullptr },
+	{ "postfx_composite_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PostComposite > },
+	{ "postfx_rcas_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::RcasParams > },
 	{ "pyro_vision_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_ps2x > },
 	{ "pyro_vision_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_vs20 > },
 	{ "refract_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::refract_ps2x > },

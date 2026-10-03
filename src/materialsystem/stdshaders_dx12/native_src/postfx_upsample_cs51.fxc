@@ -1,0 +1,27 @@
+// Native SM5.1 bloom upsample-combine (Froyok): a 3x3 tent of the previous, smaller level (gSrc2) blended over the
+// current downsample level (gSrc) by p0, the bloom radius. The lerp keeps every level normalised.
+#include "postfx_common.hlsli"
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= dstWidth || id.y >= dstHeight )
+		return;
+	float2 uv = DstUv( id.xy );
+	float2 previousSize;
+	gSrc2.GetDimensions( previousSize.x, previousSize.y );
+	float2 previousTexel = 1.0 / previousSize;
+	float3 previous = 0;
+	[unroll]
+	for ( int y = -1; y <= 1; ++y )
+	{
+		[unroll]
+		for ( int x = -1; x <= 1; ++x )
+		{
+			float weight = ( 2 - abs( x ) ) * ( 2 - abs( y ) ) / 16.0;
+			previous += weight * gSrc2.SampleLevel( gLinearClamp, uv + float2( x, y ) * previousTexel, 0 ).rgb;
+		}
+	}
+	float3 current = gSrc.SampleLevel( gLinearClamp, uv, 0 ).rgb;
+	gDst[id.xy] = float4( lerp( current, previous, p0 ), 1 );
+}

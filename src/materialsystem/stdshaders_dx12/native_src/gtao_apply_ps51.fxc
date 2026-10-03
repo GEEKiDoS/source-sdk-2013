@@ -1,0 +1,72 @@
+// Native SM5.1 GTAO bilateral upsample/apply pixel shader.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#ifdef HDRTYPE
+#undef HDRTYPE
+#endif
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+cbuffer GtaoApply : register( b1, space1 )
+{
+	float4 gApplyOriginFullSize; // @legacy ps:c0
+	float4 gApplyAoSizeUnpack; // @legacy ps:c1
+	float4 gApplyOptions; // @legacy ps:c2
+};
+#define gSceneOrigin int2( gApplyOriginFullSize.xy )
+#define gFullSize int2( gApplyOriginFullSize.zw )
+#define gAoSize int2( gApplyAoSizeUnpack.xy )
+#define gDepthTolerance gApplyAoSizeUnpack.z
+#define gFullRes gApplyOptions.x
+#define gRestorePackedScale gApplyOptions.y
+Texture2D<float> gAo : register( t0 );
+Texture2D<float> gViewDepth : register( t1 );
+Texture2D<float> gAoDepth : register( t2 );
+
+struct PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 vUv0 : TEXCOORD0;
+};
+
+float4 main( PS_INPUT input ) : SV_Target0
+{
+	int2 full = clamp( int2( input.projPos.xy ) - gSceneOrigin, int2( 0, 0 ), gFullSize - 1 );
+	// At full resolution depth mip 0 is the scene's view depth; the view-depth pass only runs below it.
+	float sceneDepth = gFullRes != 0 ? gAoDepth.Load( int3( full, 0 ) ) : gViewDepth.Load( int3( full, 0 ) );
+	if ( sceneDepth >= 65503.0 )
+	{
+		return DX12FinishPixel( FinalOutput( 1.0.xxxx, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+	}
+	float ao;
+	if ( gFullRes != 0 )
+	{
+		ao = gAo.Load( int3( full, 0 ) );
+	}
+	else
+	{
+		float2 loc = ( float2( full ) + 0.5 ) * ( float2( gAoSize ) / float2( gFullSize ) ) - 0.5;
+		int2 base = int2( floor( loc ) );
+		float2 f = frac( loc );
+		float sum = 0.0;
+		float weightSum = 0.0;
+		[unroll]
+		for ( int y = 0; y < 2; ++y )
+		{
+			for ( int x = 0; x < 2; ++x )
+			{
+				int2 tap = clamp( base + int2( x, y ), int2( 0, 0 ), gAoSize - 1 );
+				float bilerp = ( x == 0 ? 1.0 - f.x : f.x ) * ( y == 0 ? 1.0 - f.y : f.y );
+				float tapDepth = gAoDepth.Load( int3( tap, 0 ) );
+				float depthWeight = saturate( 1.0 - abs( tapDepth - sceneDepth ) / max( sceneDepth * gDepthTolerance, 1e-4 ) ) + 1e-4;
+				float weight = bilerp * depthWeight;
+				sum += gAo.Load( int3( tap, 0 ) ) * weight;
+				weightSum += weight;
+			}
+		}
+		ao = sum / max( weightSum, 1e-4 );
+	}
+	if ( gRestorePackedScale != 0 ) ao *= 1.5;
+	ao = saturate( ao );
+	return DX12FinishPixel( FinalOutput( ao.xxxx, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

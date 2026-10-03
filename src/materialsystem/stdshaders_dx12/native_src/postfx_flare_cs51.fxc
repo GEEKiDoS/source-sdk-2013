@@ -1,0 +1,71 @@
+// Native SM5.1 lens flare ghosts and halo (Froyok's custom lens flare, with ghosts, their chromatic shift and the
+// halo merged into one pass as his bloom article suggests). gSrc is the thresholded, blurred quarter-resolution flare
+// input read through a black border, so bright image content drives the flare.
+#include "postfx_common.hlsli"
+
+static const float kGhostChromaShift = 0.015;
+static const float3 kGhostColors[8] =
+{
+	float3( 1.0, 0.8, 0.4 ), float3( 1.0, 1.0, 0.6 ), float3( 0.8, 0.8, 1.0 ), float3( 0.5, 1.0, 0.4 ),
+	float3( 0.5, 0.8, 1.0 ), float3( 0.9, 1.0, 0.8 ), float3( 1.0, 0.8, 0.4 ), float3( 0.9, 0.7, 0.7 )
+};
+static const float kGhostScales[8] = { -1.5, 2.5, -5.0, 10.0, 0.7, -0.4, -0.2, -0.1 };
+static const float kHaloWidth = 0.6;
+static const float kHaloMask = 0.5;
+static const float kHaloCompression = 0.65;
+static const float kHaloChromaShift = 0.015;
+
+// Unreal's DiscMask: 1 at the screen centre falling to 0 at radius 1 of the [-1, 1] screen position.
+float DiscMask( float2 screenPos )
+{
+	float x = saturate( 1.0 - dot( screenPos, screenPos ) );
+	return x * x;
+}
+
+// Red and blue are scaled away from and towards the screen centre, then everything moves by offset.
+float3 SampleChroma( float2 uv, float shift, float2 offset, float2 size )
+{
+	float2 uvR = ( uv - 0.5 ) * ( 1.0 + shift ) + 0.5 + offset;
+	float2 uvB = ( uv - 0.5 ) * ( 1.0 - shift ) + 0.5 + offset;
+	return float3( SampleBorder( gSrc, uvR, size ).r, SampleBorder( gSrc, uv + offset, size ).g, SampleBorder( gSrc, uvB, size ).b );
+}
+
+float2 FisheyeUv( float2 uv, float compression )
+{
+	float2 negPos = 2.0 * uv - 1.0;
+	float radius = length( negPos );
+	float scale = compression * atan( 1.0 / compression );
+	float radiusDirection = compression * tan( radius * scale / compression );
+	return ( negPos * ( radiusDirection / max( radius, 1e-6 ) ) + 1.0 ) * 0.5;
+}
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= dstWidth || id.y >= dstHeight )
+		return;
+	float2 uv = DstUv( id.xy );
+	float2 size = float2( srcWidth, srcHeight );
+	float2 screenPos = uv * 2.0 - 1.0;
+
+	// Ghosts: the image mirrored and scaled about the centre, bright in the middle and faded at the rim.
+	float3 ghosts = 0;
+	[unroll]
+	for ( int i = 0; i < 8; ++i )
+	{
+		float2 ghostUv = ( uv - 0.5 ) * kGhostScales[i];
+		float distanceMask = 1.0 - length( ghostUv );
+		float mask = smoothstep( 0.5, 0.9, distanceMask ) * ( smoothstep( 0.75, 1.0, distanceMask ) * 0.95 + 0.05 );
+		ghosts += SampleChroma( ghostUv + 0.5, kGhostChromaShift, 0, size ) * kGhostColors[i] * mask;
+	}
+	ghosts *= DiscMask( screenPos * 0.9 );
+
+	// Halo: the image pushed outwards through a fisheye, kept only towards the screen edges.
+	float2 toCenter = 0.5 - uv;
+	float2 haloVector = toCenter * rsqrt( max( dot( toCenter, toCenter ), 1e-8 ) ) * kHaloWidth;
+	float haloMask = smoothstep( kHaloMask, 1.0, saturate( length( toCenter ) * 2.0 ) );
+	float borderMask = DiscMask( screenPos ) * DiscMask( screenPos * 0.8 ) * 0.95 + 0.05;
+	float3 halo = SampleChroma( FisheyeUv( uv, kHaloCompression ), kHaloChromaShift, haloVector, size ) * borderMask * haloMask;
+
+	gDst[id.xy] = float4( ghosts + halo, 1 );
+}
