@@ -15,6 +15,7 @@
 #include "materialsystem/shaderapidx12/dxsupport_dx12.h"
 #include "materialsystem/shaderapidx12/shader_translate_dx12.h"
 #include "materialsystem/shaderapidx12/command_recorder_dx12.h"
+#include "materialsystem/shaderapidx12/framegen_dx12.h"
 #include "mathlib/vector.h"
 #include "mathlib/vector4d.h"
 #include "tier0/threadtools.h"
@@ -209,6 +210,56 @@ public:
 
 	DXGI_FORMAT SceneDepthFormat() const { return DXGI_FORMAT_D24_UNORM_S8_UINT; }
 
+	// Swap-chain format: FP16 scRGB, or R8G8B8A8_UNORM while a frame generator that rejects FP16 owns the chain.
+	// Scene colour, GetBackBufferFormat() and every render target stay FP16; only the final encode changes.
+	DXGI_FORMAT PresentFormat() const { return m_PresentFormat; }
+
+	// Windowed gamma/TV-range coefficients for the presentation encode; false when the scene is shown unchanged.
+	bool PresentGammaCoefficients( float ( &flOut )[4] ) const
+	{
+		if ( !m_bWindowed || ( !m_bGammaTV && m_flGamma == 2.2f ) )
+			return false;
+		flOut[0] = m_flGamma / 2.2f;
+		flOut[1] = m_bGammaTV ? 2.2f / m_flGammaExponent : 1.f;
+		flOut[2] = m_bGammaTV ? ( m_flGammaMax - m_flGammaMin ) / 255.f : 1.f;
+		flOut[3] = m_bGammaTV ? m_flGammaMin / 255.f : 0.f;
+		return true;
+	}
+
+	// Frame generation (framegen_dx12.h). The shader API requests a kind; the device applies it at the tail of the
+	// next Present (the recorder is empty there) by recreating every view's swap chain through the provider.
+	CFrameGenDX12 &FrameGen() { return m_FrameGen; }
+
+	IDXGIFactory6 *Factory() const { return m_pFactory.Get(); }
+
+	bool IsWindowed() const { return m_bWindowed; }
+
+	void RequestFrameGenSelect( FrameGenKindDX12 kind, uint32_t nMultiplier, bool bHudless )
+	{
+		m_PendingSelect = { kind, nMultiplier, bHudless, true };
+	}
+
+	bool FrameGenSelectPending() const { return m_PendingSelect.valid; }
+
+	// Applies a pending request now (recording owner; brings the GPU idle itself). Called from Present's tail
+	// and from the shader API's device-resource release.
+	void ApplyFrameGenSelect();
+
+	bool TakeFrameGenSelectFailure()
+	{
+		const bool bFailed = m_bSelectFailed;
+		m_bSelectFailed = false;
+		return bFailed;
+	}
+
+	// Reflex/XeLL frame limiter (fps_max); recording owner.
+	void SetFrameGenFpsLimit( float flFps );
+
+	// Id of the next present without a client frame id, and the serial the next Present will carry.
+	uint32_t NextPresentId() const { return m_nLastPresentId + 1; }
+
+	uint64_t NextPresentSerial() const { return m_nPresentSerial + 1; }
+
 	int SceneSampleQuality() const { return m_nSampleQuality; }
 
 	int SceneSampleCount() const { return m_nSampleCount; }
@@ -366,6 +417,9 @@ private:
 		UINT interval = 0, flags = 0;
 		unsigned char *chunk = nullptr;
 		size_t chunkBytes = 0;
+		// Present only: frame id for the provider's present markers, and whether this present interpolates.
+		uint32_t frameId = 0;
+		bool framegenActive = false;
 	};
 
 	HRESULT RunSubmission( const SubmitOpDX12 &op );
@@ -396,6 +450,11 @@ private:
 	void FailDevice( const char *pszOperation, HRESULT hr );
 	bool CheckDevice( const char *pszOperation, HRESULT hr );
 	void ReleaseViews();
+	// Releases every view's targets and provider chain and creates them again (mode/kind changes; GPU idle).
+	bool RecreateViews();
+	// Switches the frame-generation kind on the provider, adopting its queue and present format (GPU idle, no
+	// swap chain alive). Returns the provider's result.
+	bool SelectFrameGen( FrameGenKindDX12 kind, uint32_t nMultiplier, bool bHudless );
 	Microsoft::WRL::ComPtr<ID3D12Device> m_pDevice;
 	Microsoft::WRL::ComPtr<IDXGIFactory6> m_pFactory;
 	Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pQueue;
@@ -439,6 +498,21 @@ private:
 	bool m_bGammaTV = false;
 	bool m_bWaitForVsync = true, m_bWindowed = true;
 	bool m_bAllowTearing = false;
+	DXGI_FORMAT m_PresentFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	// Frame generation (F5): pending kind switch applied at Present's tail, present ids/serials for the providers.
+	CFrameGenDX12 m_FrameGen;
+
+	struct PendingSelectDX12
+	{
+		FrameGenKindDX12 kind = FrameGenKindDX12::None;
+		uint32_t multiplier = 2;
+		bool hudless = true;
+		bool valid = false;
+	} m_PendingSelect;
+
+	bool m_bSelectFailed = false;
+	uint32_t m_nLastPresentId = 0;
+	uint64_t m_nPresentSerial = 0;
 };
 
 class CShaderDeviceMgrDX12 final : public IShaderDeviceMgr

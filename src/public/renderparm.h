@@ -94,7 +94,14 @@ enum RenderParamInt_t
 	INT_RENDERPARM_DX12_NR_STATUS,        // backend-owned: 0 off, N > 0 layers active, -1 unavailable, -2 creation failed,
 	                                      // -3 no temporal AA dispatch this frame, -6 replay error.
 
-	MAX_INT_RENDER_PARMS = 20
+	// DX12 frame generation, the per-frame part that must stay ordered with the draw stream (shaderapidx12 only; other
+	// backends store and ignore). Settings, status and latency markers go through IShaderAPIDX12 (shaderapi/ishaderapidx12.h).
+	INT_RENDERPARM_DX12_FRAMEGEN_VIEW,      // 1: this RenderView is the eligible main view (sent before its first 3D draw);
+	                                        // a frame without it presents in pass-through, the provider stays selected.
+	INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH,  // bit 0 run, bit 1 reset; sent once per main view after the last post-processing pass, before the HUD.
+	INT_RENDERPARM_DX12_FRAMEGEN_FRAME,     // client frame id (28 bits, the one the latency markers use) for the frame being rendered; queued before DISPATCH.
+
+	MAX_INT_RENDER_PARMS = 23
 };
 
 // for INT_RENDERPARM_BACK_BUFFER_INDEX
@@ -106,6 +113,8 @@ enum RenderParamInt_t
 #define DX12_MOTION_PASS_BEGIN_VIEWMODEL 3
 #define DX12_UPSCALE_DISPATCH_RUN   1
 #define DX12_UPSCALE_DISPATCH_RESET 2
+#define DX12_FRAMEGEN_DISPATCH_RUN   1
+#define DX12_FRAMEGEN_DISPATCH_RESET 2
 // INT_RENDERPARM_DX12_NR_CONFIG bit fields.
 #define DX12_NR_MAX_LAYERS                8
 #define DX12_NR_CONFIG_LAYERS_SHIFT       0	// 4 bits, 0..DX12_NR_MAX_LAYERS

@@ -9,6 +9,7 @@
 #include "shaderapi_dx12.h"
 #include "shaderdevice_dx12.h"
 #include "upscaler_nr_shaders_dx12.h"
+#include "provider_module_dx12.h"
 #include "materialsystem/imaterialsystem.h"
 #include "renderparm.h"
 #include "tier0/dbg.h"
@@ -55,76 +56,6 @@ constexpr D3D12_RESOURCE_STATES kNpsr = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RE
 constexpr D3D12_RESOURCE_STATES kUav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 // Descriptor block per compute pass: t0..t3 then u0..u1.
 constexpr uint32_t kPassDescriptors = 6;
-
-//-----------------------------------------------------------------------------
-// Purpose: Resolves one provider export; false when the module lacks it
-//-----------------------------------------------------------------------------
-template <class Fn>
-bool ResolveExport( HMODULE hModule, const char *pszName, Fn &fn )
-{
-	fn = reinterpret_cast<Fn>( GetProcAddress( hModule, pszName ) );
-	return fn != nullptr;
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Joins a directory (with trailing separator) and a file name; false when the result does not fit
-//-----------------------------------------------------------------------------
-bool BuildPath( wchar_t ( &szPath )[MAX_PATH], const wchar_t *pszDir, const wchar_t *pszName )
-{
-	return V_snwprintf( szPath, MAX_PATH, L"%ls%ls", pszDir, pszName ) < MAX_PATH;
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Appends a backslash to a non-empty directory that lacks a trailing separator, if it fits
-//-----------------------------------------------------------------------------
-void AppendSeparator( wchar_t *pszDir, int nDirSize )
-{
-	const int nLength = V_wcslen( pszDir );
-	if ( nLength && nLength + 1 < nDirSize && pszDir[nLength - 1] != L'\\' && pszDir[nLength - 1] != L'/' )
-	{
-		pszDir[nLength] = L'\\';
-		pszDir[nLength + 1] = 0;
-	}
-}
-
-bool FileExists( const wchar_t *pszDir, const wchar_t *pszName )
-{
-	wchar_t szPath[MAX_PATH];
-	return BuildPath( szPath, pszDir, pszName ) && GetFileAttributesW( szPath ) != INVALID_FILE_ATTRIBUTES;
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Loads `pszDir\pszName` by full path; nullptr when the file is missing or fails to load
-//-----------------------------------------------------------------------------
-HMODULE LoadProviderModule( const wchar_t *pszDir, const wchar_t *pszName )
-{
-	wchar_t szPath[MAX_PATH];
-	if ( !BuildPath( szPath, pszDir, pszName ) || GetFileAttributesW( szPath ) == INVALID_FILE_ATTRIBUTES )
-		return nullptr;
-	return LoadLibraryExW( szPath, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH );
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Writes the file version of `pszDir\pszName` as "a.b.c.d", or "unknown version"
-//-----------------------------------------------------------------------------
-void FileVersion( const wchar_t *pszDir, const wchar_t *pszName, char *pszVersion, int nVersionSize )
-{
-	V_strncpy( pszVersion, "unknown version", nVersionSize );
-	wchar_t szPath[MAX_PATH];
-	if ( !BuildPath( szPath, pszDir, pszName ) )
-		return;
-	DWORD hHandle = 0;
-	const DWORD nSize = GetFileVersionInfoSizeW( szPath, &hHandle );
-	if ( !nSize )
-		return;
-	CUtlVector<unsigned char> data;
-	data.SetCount( static_cast<int>( nSize ) );
-	VS_FIXEDFILEINFO *pInfo = nullptr;
-	UINT nLength = 0;
-	if ( !GetFileVersionInfoW( szPath, 0, nSize, data.Base() ) || !VerQueryValueW( data.Base(), L"\\", reinterpret_cast<void **>( &pInfo ), &nLength ) || !pInfo )
-		return;
-	V_snprintf( pszVersion, nVersionSize, "%u.%u.%u.%u", HIWORD( pInfo->dwFileVersionMS ), LOWORD( pInfo->dwFileVersionMS ), HIWORD( pInfo->dwFileVersionLS ), LOWORD( pInfo->dwFileVersionLS ) );
-}
 
 //-----------------------------------------------------------------------------
 // Purpose: Radical inverse of `nIndex` in `nBase` (one Halton sequence coordinate)
@@ -2033,6 +1964,9 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		m_nUpscalerNrLastReversible = compose.reversibleMode;
 		nNrStatus = static_cast<int>( nNrLayers );
 	}
+	// The frame generator de-jitters with the same offset after this zeroing.
+	m_UpscalerFrameJitter[0] = m_UpscalerJitter[0];
+	m_UpscalerFrameJitter[1] = m_UpscalerJitter[1];
 	m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 	nStatus = 1 | ( static_cast<int>( m_UpscalerKind ) << 8 );
 }
@@ -2096,6 +2030,418 @@ void CShaderAPIDX12::ReleaseUpscalerResources()
 	m_hMotionResolvedHandle = 0;
 	m_nMotionResolvedFrame = ~0ull;
 	m_RenderingInts[INT_RENDERPARM_DX12_UPSCALE_STATUS] = m_RenderingInts[INT_RENDERPARM_DX12_NR_STATUS] = 0;
+}
+
+//-----------------------------------------------------------------------------
+// Frame generation (contract F1-F10 of the frame-generation plan). The device owns CFrameGenDX12 and applies kind
+// switches at the tail of Present; the shader API resolves the request, gates the per-frame dispatch and
+// publishes the IShaderAPIDX12 status.
+//-----------------------------------------------------------------------------
+bool CShaderAPIDX12::ProjectionIsInverted() const
+{
+	float flNear = 0.f, flFar = 0.f, flFov = 0.f;
+	bool bInverted = false;
+	return ProjectionDepthRange( m_Matrices[MATERIAL_PROJECTION], flNear, flFar, bInverted, flFov ) && bInverted;
+}
+
+namespace
+{
+// Row-major, row-vector layout (the transpose of a column-vector VMatrix), as Streamline and XeFG take it.
+void TransposeTo( const VMatrix &m, float ( &out )[16] )
+{
+	for ( int row = 0; row < 4; ++row )
+		for ( int col = 0; col < 4; ++col )
+			out[row * 4 + col] = m[col][row];
+}
+} // namespace
+
+//-----------------------------------------------------------------------------
+// IShaderAPIDX12: the client thread only stores requests; BeginFrame applies them on the recording thread
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::SetFrameGeneration( int nMode, int nMultiplier, bool bHudless )
+{
+	if ( nMode < 0 || nMode > 4 )
+		nMode = 0;
+	m_nFrameGenSettingsRequest = nMode | ( Clamp( nMultiplier, 2, 4 ) << 8 ) | ( bHudless ? 1 << 16 : 0 );
+}
+
+void CShaderAPIDX12::SetReflexMode( int nMode )
+{
+	m_nReflexRequest = Clamp( nMode, 0, 2 );
+}
+
+void CShaderAPIDX12::SetFrameRateLimit( float flFps )
+{
+	const float flLimit = flFps > 0.f && flFps < 100000.f ? flFps : 0.f;
+	int nBits;
+	memcpy( &nBits, &flLimit, sizeof( nBits ) );
+	m_nFpsLimitBits = nBits;
+}
+
+void CShaderAPIDX12::LatencyMarker( int nMarker, unsigned int nFrameId )
+{
+	// Straight from the client's simulation thread (F6): never touches recording-thread state.
+	if ( m_pDevice && nMarker >= SHADERAPIDX12_MARKER_SIMULATION_START && nMarker <= SHADERAPIDX12_MARKER_RENDER_SUBMIT_END )
+		m_pDevice->FrameGen().Marker( static_cast<uint32_t>( nMarker ), nFrameId & 0x0FFFFFFFu );
+}
+
+void CShaderAPIDX12::ApplyFrameGenSettings()
+{
+	const int nSettings = m_nFrameGenSettingsRequest;
+	SetFrameGenMode( nSettings & 0xff, ( nSettings >> 8 ) & 0xff, ( nSettings & ( 1 << 16 ) ) != 0 );
+	SetReflexRequest( m_nReflexRequest );
+	const int nBits = m_nFpsLimitBits;
+	float flLimit;
+	memcpy( &flLimit, &nBits, sizeof( flLimit ) );
+	if ( flLimit != m_flFrameGenFpsLimit )
+	{
+		m_flFrameGenFpsLimit = flLimit;
+		m_pDevice->SetFrameGenFpsLimit( flLimit );
+	}
+}
+
+// The eligible main view of this frame (INT_RENDERPARM_DX12_FRAMEGEN_VIEW, before its first 3D draw).
+void CShaderAPIDX12::SetFrameGenView( int nEligible )
+{
+	if ( nEligible && ( m_nFrameGenRequest & 0xff ) )
+		m_nFrameGenFrameToken = m_nFrameCounter;
+}
+
+// Loads the provider object once per device (modules beside the renderer, adapter probes).
+void CShaderAPIDX12::EnsureFrameGenInitialized()
+{
+	CFrameGenDX12 &frameGen = m_pDevice->FrameGen();
+	if ( frameGen.Initialized() )
+		return;
+	MaterialAdapterInfo_t adapter{};
+	if ( g_pShaderDeviceMgrDX12 )
+		g_pShaderDeviceMgrDX12->GetAdapterInfo( m_pDevice->GetCurrentAdapter(), adapter );
+	wchar_t szModuleDir[MAX_PATH] = {};
+	HMODULE hSelf = nullptr;
+	GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>( &UpscalerKindNameDX12 ), &hSelf );
+	if ( hSelf && GetModuleFileNameW( hSelf, szModuleDir, MAX_PATH ) )
+	{
+		if ( wchar_t *pszSlash = wcsrchr( szModuleDir, L'\\' ) )
+			pszSlash[1] = 0;
+	}
+	frameGen.Initialize( m_pDevice->NativeDevice(), m_pDevice->Factory(), adapter, szModuleDir, CommandLine() && CommandLine()->CheckParm( "-dx12framegenlog" ) );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Standalone Reflex request; re-applied after a failure only when the mode changes
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::SetReflexRequest( int nMode )
+{
+	if ( nMode == m_nReflexApplied )
+		return;
+	m_nReflexApplied = nMode;
+	if ( nMode )
+		EnsureFrameGenInitialized();
+	CFrameGenDX12 &frameGen = m_pDevice->FrameGen();
+	const int nStatus = frameGen.Initialized() ? frameGen.SetReflexMode( nMode ) : 0;
+	m_nReflexStatus = nStatus;
+	if ( nStatus < 0 )
+	{
+		V_strncpy( m_szFrameGenError, frameGen.LastError(), sizeof( m_szFrameGenError ) );
+		Warning( "ShaderAPIDX12 reflex: mode %d unavailable: %s\n", nMode, frameGen.LastError() );
+	}
+	else if ( nMode )
+		Msg( "ShaderAPIDX12 reflex: %s\n", nMode == 2 ? "low latency + boost" : "low latency" );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Frame-generation settings (mode, multiplier, hudless), evaluated every BeginFrame
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::SetFrameGenMode( int nMode, int nMultiplier, bool bHudless )
+{
+	CInterlockedInt &nStatus = m_nFrameGenStatus;
+	const int nRequest = nMode | ( nMultiplier << 8 ) | ( bHudless ? 1 << 16 : 0 );
+	if ( nRequest != m_nFrameGenRequest )
+	{
+		m_nFrameGenRequest = nRequest;
+		m_bFrameGenSelectFailed = false;
+		m_bFrameGenWarned = false;
+		m_bFrameGenHistoryGap = true;
+	}
+	if ( nMode )
+		EnsureFrameGenInitialized();
+	CFrameGenDX12 &frameGen = m_pDevice->FrameGen();
+	FrameGenKindDX12 kind = nMode ? frameGen.Resolve( nMode ) : FrameGenKindDX12::None;
+	if ( kind != FrameGenKindDX12::None && !m_pDevice->IsWindowed() )
+	{
+		if ( !m_bFrameGenWarned )
+		{
+			m_bFrameGenWarned = true;
+			Warning( "ShaderAPIDX12 framegen: mode %d needs a windowed or borderless display mode; exclusive fullscreen runs without frame generation\n", nMode );
+		}
+		nStatus = -4;
+		kind = FrameGenKindDX12::None;
+	}
+	else if ( kind != FrameGenKindDX12::None && m_pDevice->SceneSampleCount() > 1 )
+	{
+		// No provider chain for an MSAA scene (the dispatch would reject every frame anyway); the native FP16 chain stays.
+		nStatus = -3;
+		kind = FrameGenKindDX12::None;
+	}
+	else if ( nMode && kind == FrameGenKindDX12::None )
+	{
+		if ( !m_bFrameGenWarned )
+		{
+			m_bFrameGenWarned = true;
+			Warning( "ShaderAPIDX12 framegen: mode %d has no available provider on this adapter (dlssg: %s; fsr: %s; xefg: %s)\n", nMode, frameGen.UnavailableReason( FrameGenKindDX12::DLSSG ),
+			    frameGen.UnavailableReason( FrameGenKindDX12::FSR ), frameGen.UnavailableReason( FrameGenKindDX12::XeFG ) );
+		}
+		nStatus = -1;
+	}
+	if ( m_bFrameGenSelectFailed || m_pDevice->FrameGenSelectPending() )
+		return;
+	const bool bKindChange = kind != frameGen.Kind();
+	const bool bOptionChange = kind != FrameGenKindDX12::None && ( static_cast<uint32_t>( nMultiplier ) != frameGen.Multiplier() || bHudless != frameGen.Hudless() );
+	if ( bKindChange || bOptionChange )
+	{
+		// Applied at the tail of this frame's Present (F5); until then no dispatch is recorded.
+		m_pDevice->RequestFrameGenSelect( kind, static_cast<uint32_t>( nMultiplier ), bHudless );
+		m_bFrameGenHistoryGap = true;
+		if ( kind != FrameGenKindDX12::None )
+		{
+			Msg( "ShaderAPIDX12 framegen: mode %d selects %s (x%d%s)\n", nMode, FrameGenKindNameDX12( kind ), nMultiplier, bHudless ? ", hudless" : "" );
+			nStatus = 0;
+		}
+		else if ( nStatus > 0 )
+			nStatus = 0;
+	}
+	else if ( !nMode )
+		nStatus = 0;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Folds replayed dispatch results into the status, in serial order (see ConsumeUpscalerReplays)
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::ConsumeFrameGenReplays( bool bWait )
+{
+	while ( m_nFrameGenConsumedSerial < m_nFrameGenPendingSerial )
+	{
+		const uint64_t nSerial = m_nFrameGenConsumedSerial + 1;
+		FrameGenReplayResultDX12 &slot = m_FrameGenReplay[nSerial % kFrameGenReplaySlots];
+		if ( slot.serial() != nSerial )
+		{
+			if ( !bWait )
+				return;
+			if ( m_pDevice && m_pDevice->WaitForSubmissionProgress() )
+				continue;
+			if ( slot.serial() != nSerial )
+			{
+				m_nFrameGenConsumedSerial = nSerial;
+				m_bFrameGenHistoryGap = true;
+				m_nFrameGenStatus = -6;
+				Warning( "ShaderAPIDX12 framegen: dispatch %llu never replayed; history reset\n", static_cast<unsigned long long>( nSerial ) );
+				continue;
+			}
+		}
+		m_nFrameGenConsumedSerial = nSerial;
+		const uint32_t nCode = slot.code();
+		if ( !nCode )
+			continue;
+		m_bFrameGenHistoryGap = true;
+		m_nFrameGenStatus = -6;
+		Warning( "ShaderAPIDX12 framegen: %s replay failed for frame %llu (code 0x%x); history reset\n", FrameGenKindNameDX12( m_FrameGenKind ), static_cast<unsigned long long>( slot.frame() ), nCode );
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Validates this frame's inputs and records the provider's per-frame work (hudless encode + one
+//          ExternalCommand); Present then runs the interpolation for this frame
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::DispatchFrameGen( int nFlags )
+{
+	if ( !( nFlags & DX12_FRAMEGEN_DISPATCH_RUN ) )
+		return;
+	CInterlockedInt &nStatus = m_nFrameGenStatus;
+	const auto reject = [&]( int nCode, const char *pszWhy )
+	{
+		if ( nStatus != nCode )
+			Warning( "ShaderAPIDX12 framegen: dispatch rejected (%d): %s\n", nCode, pszWhy );
+		nStatus = nCode;
+		m_bFrameGenHistoryGap = true;
+	};
+	if ( m_nFrameGenFrameToken != m_nFrameCounter )
+		return reject( -4, "no eligible main view was begun this frame" );
+	if ( !m_pDevice || m_pDevice->SceneSampleCount() > 1 )
+		return reject( -3, "MSAA is active" );
+	if ( !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() || m_RenderTargets[0] != SHADER_RENDERTARGET_BACKBUFFER || !m_pDevice->SceneColor() || !m_pDevice->SceneDepth() )
+		return reject( -4, "render target 0 is not the scene or the caller does not own recording" );
+	if ( !m_pDevice->IsWindowed() )
+		return reject( -4, "exclusive fullscreen" );
+	const UINT nWidth = static_cast<UINT>( m_pDevice->SceneWidth() ), nHeight = static_cast<UINT>( m_pDevice->SceneHeight() );
+	TextureRecord *pMotion = m_nMotionResolvedFrame == m_nFrameCounter ? FindTexture( m_hMotionResolvedHandle ) : nullptr;
+	if ( !pMotion || !( pMotion->flags & TEXTURE_CREATE_RENDERTARGET ) || pMotion->format != IMAGE_FORMAT_RGBA16161616F || pMotion->width != static_cast<int>( nWidth ) ||
+	    pMotion->height != static_cast<int>( nHeight ) || !EnsureTextureResident( *pMotion ) || !pMotion->resource )
+		return reject( -5, "no scene-sized motion-vector resolve this frame" );
+	if ( m_pDevice->FrameGenSelectPending() )
+	{
+		nStatus = 0; // the switch applies at this frame's Present; the first dispatch follows next frame
+		return;
+	}
+	if ( m_FrameGenKind == FrameGenKindDX12::None )
+		return reject( m_bFrameGenSelectFailed ? -2 : -1, m_bFrameGenSelectFailed ? "provider creation failed" : "no provider for the selected mode" );
+	if ( m_nFrameGenQueuedFrame == m_nFrameCounter )
+		return; // one dispatch per frame
+	CFrameGenDX12 &frameGen = m_pDevice->FrameGen();
+	// Camera of the main pass (captured at DX12_MOTION_PASS_BEGIN_MAIN, the pass the motion resolve came from).
+	VMatrix view, proj;
+	memcpy( view.Base(), m_MotionMainView, sizeof( m_MotionMainView ) );
+	memcpy( proj.Base(), m_MotionMainProj, sizeof( m_MotionMainProj ) );
+	// Depth range/FOV come from the projection; the client's camera floats take precedence below and cover
+	// projections the derivation rejects.
+	float flDerivedNear = 0.f, flDerivedFar = 0.f, flDerivedFov = 0.f;
+	bool bInverted = false;
+	ProjectionDepthRange( proj, flDerivedNear, flDerivedFar, bInverted, flDerivedFov );
+	if ( frameGen.NeedsContext( nWidth, nHeight, bInverted ) )
+	{
+		// Context (re)creation needs no recorded callback in flight that could still name the old one.
+		if ( !WaitUpscalerGpuIdle() || !frameGen.EnsureContext( nWidth, nHeight, bInverted ) )
+			return reject( -2, frameGen.LastError() );
+	}
+	FlushBufferedPrimitives();
+	CommitTransforms();
+	CCommandRecorderDX12 *pList = m_pDevice->CommandList();
+	if ( !pList )
+		return reject( -4, "recording ended during context preparation" );
+	while ( m_nFrameGenPendingSerial + 1 - m_nFrameGenConsumedSerial > kFrameGenReplaySlots )
+		ConsumeFrameGenReplays( true );
+	// Every provider reads depth in DEPTH_WRITE (the tagged/transitioned state) from here to the present.
+	m_pDevice->TransitionSceneDepth( D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	FrameGenDispatchDX12 d;
+	if ( frameGen.Hudless() )
+	{
+		if ( !frameGen.EnsureHudless( nWidth, nHeight ) )
+			return reject( -2, frameGen.LastError() );
+		D3D12_RESOURCE_STATES hudlessState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		if ( !EncodeSceneTo( frameGen.HudlessTexture(), hudlessState ) )
+			return reject( -2, "hudless encode failed" );
+		if ( hudlessState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE )
+		{
+			D3D12_RESOURCE_BARRIER barrier{};
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource = frameGen.HudlessTexture();
+			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barrier.Transition.StateBefore = hudlessState;
+			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			pList->ResourceBarrier( 1, &barrier );
+		}
+		d.hudless = frameGen.HudlessTexture();
+		d.hudlessValid = true;
+	}
+	const int nFaces = ( pMotion->flags & TEXTURE_CREATE_CUBEMAP ) ? 6 : 1, nSub = pMotion->currentCopy * nFaces * pMotion->mipLevels;
+	const float *pCamera = m_RenderingFloats;
+	d.depth = m_pDevice->SceneDepth();
+	d.depthBefore = m_pDevice->SceneDepthState();
+	d.motion = pMotion->resource.Get();
+	d.motionBefore = pMotion->subresourceStates[nSub];
+	d.width = nWidth;
+	d.height = nHeight;
+	d.frameId = m_nFrameGenFrameIdFrame == m_nFrameCounter ? m_nFrameGenFrameId : m_pDevice->NextPresentId();
+	d.presentSerial = m_pDevice->NextPresentSerial();
+	d.jitter[0] = m_UpscalerFrameJitter[0];
+	d.jitter[1] = m_UpscalerFrameJitter[1];
+	// _rt_MotionVectors.xy = current - previous in UV; providers take previous - current in pixels.
+	d.motionScale[0] = -static_cast<float>( nWidth );
+	d.motionScale[1] = -static_cast<float>( nHeight );
+	const double flNow = Plat_FloatTime();
+	d.frameTimeMs = m_flFrameGenLastDispatchTime > 0.0 ? static_cast<float>( Clamp( ( flNow - m_flFrameGenLastDispatchTime ) * 1000.0, 1.0, 100.0 ) ) : 16.6667f;
+	d.reset = ( nFlags & DX12_FRAMEGEN_DISPATCH_RESET ) != 0 || m_bFrameGenHistoryGap || !m_MotionPrevViewProjValid[0];
+	FrameGenCameraDX12 &camera = d.camera;
+	camera.nearPlane = pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_NEAR] > 0.f ? pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_NEAR] : flDerivedNear;
+	camera.farPlane = pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FAR] > 0.f ? pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FAR] : flDerivedFar;
+	camera.fovY = pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FOV_Y] > 0.f ? pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FOV_Y] : flDerivedFov;
+	camera.aspect = static_cast<float>( nWidth ) / static_cast<float>( nHeight );
+	camera.inverted = bInverted;
+	if ( !( camera.nearPlane > 0.f ) || !( camera.farPlane > camera.nearPlane ) || !( camera.fovY > 0.f ) )
+		return reject( -4, "the main pass has no perspective projection and no camera parameters were sent" );
+	VMatrix cameraToWorld, invProj, curVP, invCurVP, prevVP, invPrevVP;
+	if ( !MatrixInverseGeneral( view, cameraToWorld ) || !MatrixInverseGeneral( proj, invProj ) )
+		return reject( -4, "the main pass view/projection is singular" );
+	curVP = proj * view;
+	if ( m_MotionPrevViewProjValid[0] )
+		memcpy( prevVP.Base(), m_MotionPrevViewProj[0], sizeof( float ) * 16 );
+	else
+		prevVP = curVP;
+	if ( !MatrixInverseGeneral( curVP, invCurVP ) || !MatrixInverseGeneral( prevVP, invPrevVP ) )
+		return reject( -4, "the main pass view-projection is singular" );
+	TransposeTo( view, camera.view );
+	TransposeTo( proj, camera.proj );
+	TransposeTo( proj, camera.viewToClip );
+	TransposeTo( invProj, camera.clipToView );
+	TransposeTo( prevVP * invCurVP, camera.clipToPrevClip );
+	TransposeTo( curVP * invPrevVP, camera.prevClipToClip );
+	// Source view space: +x right, +y up, -z forward (MatrixBuildPerspectiveX sets m[3][2] = -1).
+	for ( int i = 0; i < 3; ++i )
+	{
+		camera.pos[i] = cameraToWorld[i][3];
+		camera.right[i] = cameraToWorld[i][0];
+		camera.up[i] = cameraToWorld[i][1];
+		camera.fwd[i] = -cameraToWorld[i][2];
+	}
+	const uint64_t nSerial = m_nFrameGenPendingSerial + 1;
+	d.frame = m_nFrameCounter;
+	d.serial = nSerial;
+	d.result = &m_FrameGenReplay[nSerial % kFrameGenReplaySlots];
+	if ( !frameGen.RecordDispatch( *pList, d ) )
+		return reject( -2, frameGen.LastError()[0] ? frameGen.LastError() : "provider rejected the frame" );
+	m_nFrameGenPendingSerial = nSerial;
+	pList->Flush();
+	m_Pipeline.InvalidateGraphicsBindings();
+	ID3D12Resource *const pRetained[] = { d.depth, d.motion, d.hudless };
+	for ( size_t i = 0; i < ARRAYSIZE( pRetained ); ++i )
+		m_pDevice->RetainResource( pRetained[i] );
+	m_pDevice->SetSceneStatesAfterExternal( m_pDevice->SceneColorState(), D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	if ( pMotion->subresourceStates[nSub] != D3D12_RESOURCE_STATE_RENDER_TARGET )
+	{
+		pMotion->subresourceStates[nSub] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		pMotion->sampledStateValid = false;
+		++m_nTextureStateEpoch;
+	}
+	m_nFrameGenQueuedFrame = m_nFrameCounter;
+	m_nFrameGenLatchedFrameId = d.frameId;
+	m_flFrameGenLastDispatchTime = flNow;
+	m_bFrameGenHistoryGap = false;
+	nStatus = 1 | ( static_cast<int>( m_FrameGenKind ) << 8 ) | ( static_cast<int>( frameGen.Generated() ) << 16 );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Restores the native swap chain and resets every frame-generation field (device-resource release)
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::ReleaseFrameGenResources()
+{
+	if ( m_pDevice && m_pDevice->IsRecordingOwner() && ( m_pDevice->FrameGen().Kind() != FrameGenKindDX12::None || m_pDevice->FrameGenSelectPending() ) )
+	{
+		m_pDevice->RequestFrameGenSelect( FrameGenKindDX12::None, 2, false );
+		m_pDevice->ApplyFrameGenSelect(); // contains its own GPU-idle boundary
+	}
+	if ( m_nFrameGenPendingSerial != m_nFrameGenConsumedSerial )
+	{
+		WaitUpscalerGpuIdle();
+		ConsumeFrameGenReplays( false );
+	}
+	m_nFrameGenRequest = 0;
+	m_FrameGenKind = FrameGenKindDX12::None;
+	m_bFrameGenSelectFailed = m_bFrameGenWarned = false;
+	m_bFrameGenHistoryGap = true;
+	m_nFrameGenFrameToken = m_nFrameGenQueuedFrame = m_nFrameGenFrameIdFrame = ~0ull;
+	m_nFrameGenFrameId = m_nFrameGenLatchedFrameId = 0;
+	m_flFrameGenLastDispatchTime = 0.0;
+	m_nFrameGenPendingSerial = m_nFrameGenConsumedSerial = 0;
+	m_flFrameGenFpsLimit = 0.f;
+	for ( FrameGenReplayResultDX12 &slot : m_FrameGenReplay )
+	{
+		slot.serial = 0;
+		slot.code = 0;
+		slot.frame = ~0ull;
+	}
+	m_nFrameGenStatus = 0;
+	m_nFramesShown = 1;
+	m_nReflexStatus = 0;
+	m_nReflexApplied = -1; // re-applied once the device is back
 }
 
 } // namespace shaderapidx12

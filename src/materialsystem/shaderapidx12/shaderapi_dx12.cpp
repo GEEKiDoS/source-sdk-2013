@@ -4057,8 +4057,34 @@ void CShaderAPIDX12::BeginFrame()
 	m_bFrameActive = true;
 	++m_nFrameCounter;
 	ConsumeUpscalerReplays( false );
+	ConsumeFrameGenReplays( false );
+	m_UpscalerFrameJitter[0] = m_UpscalerFrameJitter[1] = 0.f;
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
+	{
 		ReleaseIdleUpscaler();
+		// Frame generation: sync the device's kind (switches apply at the previous Present's tail), publish the
+		// presented count and any provider runtime error, then take over the IShaderAPIDX12 requests.
+		CFrameGenDX12 &frameGen = m_pDevice->FrameGen();
+		m_FrameGenKind = frameGen.Kind();
+		if ( m_pDevice->TakeFrameGenSelectFailure() )
+		{
+			m_bFrameGenSelectFailed = true;
+			m_nFrameGenFailedWidth = m_pDevice->SceneWidth();
+			m_nFrameGenFailedHeight = m_pDevice->SceneHeight();
+			m_nFrameGenStatus = -2;
+			V_strncpy( m_szFrameGenError, frameGen.LastError(), sizeof( m_szFrameGenError ) );
+			Warning( "ShaderAPIDX12 framegen: provider selection failed: %s\n", frameGen.LastError() );
+		}
+		else if ( m_bFrameGenSelectFailed && ( m_nFrameGenFailedWidth != m_pDevice->SceneWidth() || m_nFrameGenFailedHeight != m_pDevice->SceneHeight() ) )
+			m_bFrameGenSelectFailed = false; // a size change retries the creation
+		m_nFramesShown = m_FrameGenKind != FrameGenKindDX12::None ? static_cast<int>( frameGen.TakePresentedCount() ) : 1;
+		if ( frameGen.RuntimeStatus() < 0 && m_nFrameGenStatus > 0 )
+		{
+			m_nFrameGenStatus = -6;
+			m_bFrameGenHistoryGap = true;
+		}
+		ApplyFrameGenSettings();
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -4522,6 +4548,15 @@ void CShaderAPIDX12::SetIntRenderingParameter( int parm_number, int value )
 		SetUpscalerMode( value );
 	else if ( parm_number == INT_RENDERPARM_DX12_UPSCALE_DISPATCH )
 		DispatchUpscaler( value );
+	else if ( parm_number == INT_RENDERPARM_DX12_FRAMEGEN_VIEW )
+		SetFrameGenView( value );
+	else if ( parm_number == INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH )
+		DispatchFrameGen( value );
+	else if ( parm_number == INT_RENDERPARM_DX12_FRAMEGEN_FRAME )
+	{
+		m_nFrameGenFrameId = static_cast<uint32_t>( value ) & 0x0FFFFFFFu;
+		m_nFrameGenFrameIdFrame = m_nFrameCounter;
+	}
 }
 
 void CShaderAPIDX12::SetVectorRenderingParameter( int parm_number, Vector const &value )

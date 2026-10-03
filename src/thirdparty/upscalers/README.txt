@@ -1,5 +1,5 @@
-Upscaler runtimes for shaderapidx12 (DLAA, FSR, XeSS, DLSS-NR)
-==============================================================
+Upscaler and frame generation runtimes for shaderapidx12 (DLAA, FSR, XeSS, DLSS-NR, DLSS-G, FSR FG, XeSS-FG)
+==========================================================================================================
 
 The repository contains only the headers and licenses; shaderapidx12 builds against them without any runtime present.
 The runtime DLLs are not included. The renderer loads each one with LoadLibrary when an upscaler is first enabled; a
@@ -51,6 +51,45 @@ but have not been tested.
 
 The DLSS repository's main branch currently ships a newer nvngx_dlss.dll than the 310.8.0.0 tested here.
 
+Frame generation (r_framegen)
+-----------------------------
+Same rules: headers in the repository, DLLs git-ignored, loaded on first use, a missing provider is skipped by
+r_framegen 1 (auto) and reported as status -1 when forced. Frame generation needs a windowed or borderless mode.
+
+  Provider                Files                                         Folder
+  ----------------------  --------------------------------------------  ------------------------
+  DLSS-G                  sl.interposer.dll, sl.common.dll,             streamline/redist/
+                          sl.dlss_g.dll, sl.reflex.dll, sl.pcl.dll,
+                          nvngx_dlssg.dll
+  FSR frame generation    amd_fidelityfx_loader_dx12.dll                fidelityfx2/redist/
+                          amd_fidelityfx_framegeneration_dx12.dll
+  XeSS-FG                 libxess_fg.dll, libxell.dll                   xess/redist/
+
+DLSS-G
+  NVIDIA Streamline SDK: https://github.com/NVIDIAGameWorks/Streamline/tree/main/bin/x64 (sl.*.dll) and
+  nvngx_dlssg.dll from the same folder. Production sl.interposer.dll only: the renderer verifies its NVIDIA signature
+  before loading (bypass with -dx12slunsigned for development builds). Requires an RTX 40 series or newer and
+  hardware-accelerated GPU scheduling.
+
+FSR frame generation
+  AMD FidelityFX SDK v2.3.0 signedbin (same link as above), file amd_fidelityfx_framegeneration_dx12.dll next to the
+  loader. Runs on any DX12 GPU; always one generated frame.
+
+XeSS-FG
+  Intel XeSS SDK 3.0.2 (same link as above), files bin/libxess_fg.dll and bin/libxell.dll. One generated frame on
+  non-Intel GPUs.
+
+  sl.interposer.dll                        2.13.0.0    27b2190057994c0b287c2c5716953bf1586f6499ac12fbbb2092b9aaf8396570
+  sl.common.dll                            2.13.0.0    a4b2b5acbe49fbc6d44dd432cac19cd53218f698b2539dc7ed0fb268c72cfc8d
+  sl.dlss_g.dll                            2.13.0.0    b8b5effd7debdb750abd216de43385fb653261712bc315d85eba68811fb3ee02
+  sl.reflex.dll                            2.13.0.0    ecf12973cdcec2ffced2ea77b1c7e45f4d387e7c864ddb5531b66a6f947effb3
+  sl.pcl.dll                               2.13.0.0    12aa4e76c28a27c735e4ecb3072f44d09428acb107b70ac38e4bd48ddb05f88d
+  nvngx_dlssg.dll                          310.8.0.0   5d5cbf14d2727d47f93fd10bf77bd91708ae122482a6f86fd564971641ebd47b
+  amd_fidelityfx_framegeneration_dx12.dll  4.0.1.2740  02297beedd285e822d3a64f314cf00faf378dcec0edc47ff0c4dd71b3a8c2f18
+  libxess_fg.dll                           1.3.1.78    ec5e0c65e075570c6ede72618bb666d0be0c2e10b2ea9762c0fe8cb8e375ab27
+  libxell.dll                              1.3.2.10    d2030dcd694fda8f2ec7e044b13e6db8f0b56d4ba9113a5efad334e3f3ded8c7
+
 Licenses
 --------
-Each provider folder carries its license: xess/LICENSE.txt, fidelityfx2/LICENSE.md, ngx/LICENSE.txt, dlssnr/LICENSE.txt.
+Each provider folder carries its license: xess/LICENSE.txt, fidelityfx2/LICENSE.md, ngx/LICENSE.txt, dlssnr/LICENSE.txt,
+streamline/LICENSE.txt.

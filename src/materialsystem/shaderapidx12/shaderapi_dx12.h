@@ -11,6 +11,7 @@
 #include "materialsystem/shaderapidx12/native_cbuffer_dx12.h"
 #include "materialsystem/shaderapidx12/native_engine_cbuffers_dx12.h"
 #include "shaderapi/ishaderapi.h"
+#include "shaderapi/ishaderapidx12.h"
 #include "materialsystem/idebugtextureinfo.h"
 #include "shaderapi/ishadershadow.h"
 #include "mathlib/lightdesc.h"
@@ -125,9 +126,9 @@ protected:
 };
 
 //-----------------------------------------------------------------------------
-// Purpose: The DX12 shader API: IShaderAPI and IDebugTextureInfo on top of the native device
+// Purpose: The DX12 shader API: IShaderAPI, IDebugTextureInfo and IShaderAPIDX12 on top of the native device
 //-----------------------------------------------------------------------------
-class CShaderAPIDX12 final : public CShaderDynamicDX12, public IShaderAPI, public IDebugTextureInfo
+class CShaderAPIDX12 final : public CShaderDynamicDX12, public IShaderAPI, public IDebugTextureInfo, public IShaderAPIDX12
 {
 public:
 	CShaderAPIDX12();
@@ -430,9 +431,17 @@ public:
 	bool PrepareSampledTexture( ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource = nullptr, bool bComparison = false );
 	bool PrepareRenderTargets( RenderTargetBindingDX12 &binding, bool bEncodeSRGB = true );
 	void ReleaseTextureDeviceResources();
-	bool PresentGamma( ID3D12Resource *pBackBuffer, float flGamma, float flTVMin, float flTVMax, float flTVExponent, bool bTVEnabled );
+	// Presentation encode of the scene into a scene-sized FP16 or R8G8B8A8_UNORM texture (textures_dx12.cpp).
+	bool EncodeSceneTo( ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState );
 
 	int StencilReference() const { return m_nStencilRef; }
+	// Frame generation hooks for the device's Present (see shaderdevice_dx12.cpp).
+	bool FrameGenDispatchedThisFrame() const { return m_nFrameGenQueuedFrame == m_nFrameCounter; }
+
+	uint32_t FrameGenFrameId() const { return m_nFrameGenLatchedFrameId; }
+
+	// Depth convention of the current perspective projection (false when it is not a perspective matrix).
+	bool ProjectionIsInverted() const;
 
 	uint8_t StencilReadMask() const { return m_nStencilReadMask; }
 
@@ -632,6 +641,26 @@ private:
 	void ReleaseIdleUpscaler();
 	bool WaitUpscalerGpuIdle();
 	void ReleaseUpscalerResources();
+	// Frame generation (upscaler_dx12.cpp); contract F1-F10 of the frame-generation plan. The provider object is
+	// owned by the device; the shader API gates the per-frame dispatch and publishes status.
+	void ApplyFrameGenSettings(); // BeginFrame: takes over the IShaderAPIDX12 requests on the recording thread
+	void SetFrameGenMode( int nMode, int nMultiplier, bool bHudless );
+	void SetFrameGenView( int nEligible );
+	void SetReflexRequest( int nMode );
+	void EnsureFrameGenInitialized();
+	void DispatchFrameGen( int nFlags );
+	void ConsumeFrameGenReplays( bool bWait );
+	void ReleaseFrameGenResources();
+
+	// IShaderAPIDX12
+	void SetFrameGeneration( int nMode, int nMultiplier, bool bHudless ) override;
+	void SetReflexMode( int nMode ) override;
+	void SetFrameRateLimit( float flFps ) override;
+	void LatencyMarker( int nMarker, unsigned int nFrameId ) override;
+	int FrameGenerationStatus() override { return m_nFrameGenStatus; }
+	int FramesShown() override { return m_nFramesShown; }
+	int ReflexStatus() override { return m_nReflexStatus; }
+	const char *LastError() override { return m_szFrameGenError; }
 	void SampleUpscalerJitter();
 
 	// Jitter goes only into eligible perspective scene draws (or the motion pass) before this frame's dispatch.
@@ -939,6 +968,8 @@ private:
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pMotionReprojectPso;
 	UINT m_nMotionReprojectSamples = 0;
 	float m_MotionCurViewProj[2][16]{}, m_MotionPrevViewProj[2][16]{};
+	// Main-pass view/projection (VMatrix layout) captured at DX12_MOTION_PASS_BEGIN_MAIN for the frame generator's camera.
+	float m_MotionMainView[16]{}, m_MotionMainProj[16]{};
 	bool m_MotionCurViewProjValid[2]{}, m_MotionPrevViewProjValid[2]{};
 	dx12native::DX12MotionVS m_MotionBlock{};
 	uint64_t m_nMotionBlockVersion = 0;
@@ -973,6 +1004,28 @@ private:
 	ShaderAPITextureHandle_t m_hMotionResolvedHandle = 0;
 	uint64_t m_nMotionResolvedFrame = ~0ull;
 	static constexpr int kMotionDepthBias = 0;
+	// Frame generation. Every field is owned by the recording thread; replay results arrive through m_FrameGenReplay.
+	static constexpr uint64_t kFrameGenReplaySlots = 4;
+	int m_nFrameGenRequest = 0; // last (mode | multiplier << 8 | hudless) request
+	FrameGenKindDX12 m_FrameGenKind = FrameGenKindDX12::None; // device kind as of this BeginFrame
+	bool m_bFrameGenSelectFailed = false, m_bFrameGenWarned = false, m_bFrameGenHistoryGap = true;
+	uint64_t m_nFrameGenFrameToken = ~0ull, m_nFrameGenQueuedFrame = ~0ull, m_nFrameGenFrameIdFrame = ~0ull;
+	uint32_t m_nFrameGenFrameId = 0, m_nFrameGenLatchedFrameId = 0;
+	int m_nFrameGenFailedWidth = 0, m_nFrameGenFailedHeight = 0;
+	double m_flFrameGenLastDispatchTime = 0.0;
+	uint64_t m_nFrameGenPendingSerial = 0, m_nFrameGenConsumedSerial = 0;
+	FrameGenReplayResultDX12 m_FrameGenReplay[kFrameGenReplaySlots]{};
+	float m_UpscalerFrameJitter[2]{}; // this frame's upscaler jitter, kept after DispatchUpscaler zeroes m_UpscalerJitter
+	// IShaderAPIDX12 settings/status shared with the client thread: requests are stores, applied at BeginFrame.
+	CInterlockedInt m_nFrameGenSettingsRequest; // mode | multiplier << 8 | hudless << 16
+	CInterlockedInt m_nReflexRequest;
+	CInterlockedInt m_nFpsLimitBits;            // float bits of the last SetFrameRateLimit
+	int m_nReflexApplied = -1;
+	float m_flFrameGenFpsLimit = 0.f;
+	CInterlockedInt m_nFrameGenStatus;
+	CInterlockedInt m_nFramesShown;
+	CInterlockedInt m_nReflexStatus;
+	char m_szFrameGenError[256] = {};
 	uint32_t m_nFrameDrawCount = 0;
 	uint32_t m_nFrameFlushCount = 0;
 	uint32_t m_nFrameSyncCount = 0;

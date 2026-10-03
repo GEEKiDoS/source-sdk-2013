@@ -12,7 +12,7 @@ $Configuration
     }
     $Compiler
     {
-        $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\thirdparty\tracy\public;$SRCDIR\thirdparty\upscalers\xess\inc;$SRCDIR\thirdparty\upscalers\fidelityfx2\include;$SRCDIR\thirdparty\upscalers\ngx\include"
+        $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\thirdparty\tracy\public;$SRCDIR\thirdparty\upscalers\xess\inc;$SRCDIR\thirdparty\upscalers\fidelityfx2\include;$SRCDIR\thirdparty\upscalers\ngx\include;$SRCDIR\thirdparty\upscalers\streamline\include"
         $AdditionalOptions "$BASE /std:c++17"
         $EnableC++Exceptions "Yes (/EHsc)"
         $Create/UsePrecompiledHeader "Not Using Precompiled Headers"
@@ -30,7 +30,7 @@ $Configuration
         $CommandLine "$BASE" "\n" \
             "copy /y $QUOTE$SRCDIR\thirdparty\dx12_shaderconv\dxbcsigner\dxbcSigner.dll$QUOTE $QUOTE$OUTBINDIR$QUOTE" "\n" \
             "if errorlevel 1 exit /b 1" "\n" \
-            "for %%D in (xess fidelityfx2 ngx dlssnr) do for %%F in ($QUOTE$SRCDIR\thirdparty\upscalers\%%D\redist\*.dll$QUOTE) do (" "\n" \
+            "for %%D in (xess fidelityfx2 ngx dlssnr streamline) do for %%F in ($QUOTE$SRCDIR\thirdparty\upscalers\%%D\redist\*.dll$QUOTE) do (" "\n" \
             "    copy /y $QUOTE%%F$QUOTE $QUOTE$OUTBINDIR$QUOTE" "\n" \
             "    if errorlevel 1 exit /b 1" "\n" \
             ")" "\n"
@@ -57,6 +57,8 @@ $Project "shaderapidx12"
         $File "shader_precache_dx12.cpp"
         $File "motion_vectors_dx12.cpp"
         $File "upscaler_dx12.cpp"
+        $File "framegen_dx12.cpp"
+        $File "framegen_sl_dx12.cpp"
         $File "mesh_dx12.cpp"
         $File "vertex_layout_dx12.cpp"
         $File "vballoctracker_dx12.cpp"
@@ -83,6 +85,8 @@ $Project "shaderapidx12"
         $File "vballoctracker_dx12.h"
         $File "motion_vectors_dx12.h"
         $File "upscaler_dx12.h"
+        $File "framegen_dx12.h"
+        $File "provider_module_dx12.h"
         $File "upscaler_nr_shaders_dx12.h"
     }
     $Folder "Link Libraries"

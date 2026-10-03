@@ -20,6 +20,7 @@
 #include "steam/steam_api.h"
 #include "tier0/cpumonitoring.h"
 #include "util_shared.h"
+#include "framegen_dx12.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -129,7 +130,7 @@ void CFPSPanel::ComputeSize( void )
 		y += XBOX_MINBORDERSAFE * tall;
 	}
 	SetPos( x, y );
-	SetSize( FPS_PANEL_WIDTH, 4 * vgui::surface()->GetFontTall( m_hFont ) + 8 );
+	SetSize( FPS_PANEL_WIDTH, 5 * vgui::surface()->GetFontTall( m_hFont ) + 8 );
 }
 
 void CFPSPanel::ApplySchemeSettings(vgui::IScheme *pScheme)
@@ -299,6 +300,14 @@ void CFPSPanel::Paint()
 				g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2, ucColor[0], ucColor[1], ucColor[2], 255, "%3i fps on %s", nFps, pszMapName );
 			}
 
+			// Frame generation: the host rate above is what the game renders; this line is what the display receives.
+			if ( const char *pszFrameGen = FrameGenDX12_ActiveName() )
+			{
+				const float flShown = FrameGenDX12_ShownPerFrame();
+				g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * ( vgui::surface()->GetFontTall( m_hFont ) + 2 ), ucColor[0], ucColor[1], ucColor[2], 255,
+					"%3i fps shown (%s x%.1f)", static_cast<int>( nFps * flShown ), pszFrameGen, flShown );
+				i++;
+			}
 			const CPUFrequencyResults frequency = GetCPUFrequencyResults();
 			double currentTime = Plat_FloatTime();
 			const double displayTime = 5.0f; // Display frequency results for this long.

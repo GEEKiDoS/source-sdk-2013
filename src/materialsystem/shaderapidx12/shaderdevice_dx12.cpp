@@ -705,15 +705,17 @@ bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeig
 	DXGI_SWAP_CHAIN_DESC1 desc{};
 	desc.Width = nWidth;
 	desc.Height = nHeight;
-	desc.Format = SceneColorFormat();
+	desc.Format = m_PresentFormat;
 	desc.BufferCount = m_nBackBufferCount;
 	desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 	desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 	desc.SampleDesc.Count = 1;
 	if ( m_bAllowTearing )
 		desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+	// DLSS-G: the chain comes from the Streamline proxy factory so its Present is intercepted.
+	IDXGIFactory6 *pFactory = m_FrameGen.SwapChainFactory() ? m_FrameGen.SwapChainFactory() : m_pFactory.Get();
 	Microsoft::WRL::ComPtr<IDXGISwapChain1> swap;
-	HRESULT hr = m_pFactory->CreateSwapChainForHwnd( m_pQueue.Get(), hWnd, &desc, nullptr, nullptr, &swap );
+	HRESULT hr = pFactory->CreateSwapChainForHwnd( m_pQueue.Get(), hWnd, &desc, nullptr, nullptr, &swap );
 	if ( FAILED( hr ) )
 	{
 		Warning( "ShaderAPIDX12: CreateSwapChainForHwnd failed (0x%08x)\n", static_cast<unsigned>( hr ) );
@@ -721,17 +723,30 @@ bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeig
 	}
 	if ( FAILED( swap.As( &view.swap ) ) )
 		return false;
+	swap.Reset();
 	// scRGB: linear Rec.709 primaries, values may exceed 1. Unsupported colour spaces keep the FP16 swap chain.
-	UINT nColorSpaceSupport = 0;
-	if ( SUCCEEDED( view.swap->CheckColorSpaceSupport( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &nColorSpaceSupport ) ) && ( nColorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT ) )
+	// An 8-bit chain is plain sRGB and takes no explicit colour space.
+	if ( m_PresentFormat == DXGI_FORMAT_R16G16B16A16_FLOAT )
 	{
-		const HRESULT hrColorSpace = view.swap->SetColorSpace1( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 );
-		if ( FAILED( hrColorSpace ) )
-			Warning( "ShaderAPIDX12: SetColorSpace1(scRGB) failed (0x%08x); presenting FP16 without an explicit colour space\n", static_cast<unsigned>( hrColorSpace ) );
+		UINT nColorSpaceSupport = 0;
+		if ( SUCCEEDED( view.swap->CheckColorSpaceSupport( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &nColorSpaceSupport ) ) && ( nColorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT ) )
+		{
+			const HRESULT hrColorSpace = view.swap->SetColorSpace1( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 );
+			if ( FAILED( hrColorSpace ) )
+				Warning( "ShaderAPIDX12: SetColorSpace1(scRGB) failed (0x%08x); presenting FP16 without an explicit colour space\n", static_cast<unsigned>( hrColorSpace ) );
+		}
+		else
+			Warning( "ShaderAPIDX12: scRGB swap-chain colour space unsupported; presenting FP16 without an explicit colour space\n" );
 	}
-	else
-		Warning( "ShaderAPIDX12: scRGB swap-chain colour space unsupported; presenting FP16 without an explicit colour space\n" );
 	m_pFactory->MakeWindowAssociation( hWnd, DXGI_MWA_NO_ALT_ENTER );
+	// The provider takes the chain over while it is the only reference and before any back buffer is acquired
+	// (FSR replaces it with its frame-interpolation chain, XeFG with its proxy). Frame generation never runs in
+	// exclusive fullscreen (ChangeMode drops it first), so the fullscreen transition only ever sees a native chain.
+	if ( m_FrameGen.Kind() != FrameGenKindDX12::None && !m_FrameGen.AdoptSwapChain( view.swap, m_pQueue.Get(), g_pShaderAPIDX12 && g_pShaderAPIDX12->ProjectionIsInverted() ) )
+	{
+		Warning( "ShaderAPIDX12: frame generation could not adopt the swap chain: %s\n", m_FrameGen.LastError() );
+		return false;
+	}
 	if ( !m_bWindowed && !CheckDevice( "SetFullscreenState", view.swap->SetFullscreenState( TRUE, nullptr ) ) )
 		return false;
 	return CreateViewTargets( view );
@@ -776,10 +791,15 @@ bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight )
 	DXGI_SWAP_CHAIN_DESC1 old{};
 	if ( FAILED( view.swap->GetDesc1( &old ) ) )
 		return false;
-	HRESULT hr = view.swap->ResizeBuffers( m_nBackBufferCount, nWidth, nHeight, SceneColorFormat(), old.Flags );
+	m_FrameGen.BeforeResize( view.swap.Get() );
+	HRESULT hr = view.swap->ResizeBuffers( m_nBackBufferCount, nWidth, nHeight, m_PresentFormat, old.Flags );
 	if ( !CheckDevice( "ResizeBuffers", hr ) )
 		return false;
-	return CreateViewTargets( view );
+	if ( !CreateViewTargets( view ) )
+		return false;
+	if ( !m_FrameGen.AfterResize( nWidth, nHeight ) )
+		Warning( "ShaderAPIDX12: frame generation could not follow the resize to %dx%d: %s\n", nWidth, nHeight, m_FrameGen.LastError() );
+	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -797,7 +817,8 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		GetClientRect( m_pCurrentView->hwnd, &newRect );
 	const int nNewWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : newRect.right - newRect.left;
 	const int nNewHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : newRect.bottom - newRect.top;
-	const bool bChangesResources = info.m_bWindowed != m_bWindowed || MAX( 1, info.m_nAASamples ) != m_nSampleCount || info.m_nAAQuality != m_nSampleQuality || clamp( info.m_nBackBufferCount, 1, 2 ) + 1 != m_nBackBufferCount || ( m_pCurrentView && ( nNewWidth != m_pCurrentView->width || nNewHeight != m_pCurrentView->height ) );
+	const bool bDropFrameGen = !info.m_bWindowed && m_FrameGen.Kind() != FrameGenKindDX12::None;
+	const bool bChangesResources = bDropFrameGen || info.m_bWindowed != m_bWindowed || MAX( 1, info.m_nAASamples ) != m_nSampleCount || info.m_nAAQuality != m_nSampleQuality || clamp( info.m_nBackBufferCount, 1, 2 ) + 1 != m_nBackBufferCount || ( m_pCurrentView && ( nNewWidth != m_pCurrentView->width || nNewHeight != m_pCurrentView->height ) );
 	m_bChangingMode = true;
 
 	struct ChangeScope
@@ -814,6 +835,15 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 	for ( View *pView : m_Views )
 		if ( !WaitForFence( pView->lastFence ) )
 			return false;
+	// Frame generation is windowed/borderless only: leave it (natively re-created chains) before going fullscreen.
+	// A pending request from this frame is dropped with it; the shader API re-requests when windowed again.
+	if ( bDropFrameGen )
+	{
+		m_PendingSelect.valid = false;
+		SelectFrameGen( FrameGenKindDX12::None, 2, false );
+		if ( !RecreateViews() )
+			return false;
+	}
 	const bool bFullscreen = !info.m_bWindowed;
 	for ( View *pView : m_Views )
 		if ( pView->swap && m_bWindowed != info.m_bWindowed && !CheckDevice( "SetFullscreenState", pView->swap->SetFullscreenState( bFullscreen, nullptr ) ) )
@@ -827,18 +857,8 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		m_nSampleCount = nSamples;
 		m_nSampleQuality = nQuality;
 		m_nBackBufferCount = nBuffers;
-		for ( View *pView : m_Views )
-		{
-			pView->sceneColor.Reset();
-			pView->sceneDepth.Reset();
-			pView->ReleaseBackBuffers();
-			pView->rtvHeap.Reset();
-			pView->sceneRTVHeap.Reset();
-			pView->sceneDSVHeap.Reset();
-			pView->swap.Reset();
-			if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
-				return false;
-		}
+		if ( !RecreateViews() )
+			return false;
 	}
 	if ( m_pCurrentView )
 	{
@@ -852,6 +872,127 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		m_nHeight = m_pCurrentView->height;
 	}
 	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Releases every view's targets and provider chain and creates them again (GPU idle)
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::RecreateViews()
+{
+	for ( View *pView : m_Views )
+	{
+		pView->sceneColor.Reset();
+		pView->sceneDepth.Reset();
+		pView->ReleaseBackBuffers();
+		pView->rtvHeap.Reset();
+		pView->sceneRTVHeap.Reset();
+		pView->sceneDSVHeap.Reset();
+		m_FrameGen.ReleaseSwapChain( pView->swap );
+	}
+	for ( View *pView : m_Views )
+		if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
+			return false;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Switches the provider kind; DLSS-G swaps the presenting queue for a Streamline proxy queue (and back)
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::SelectFrameGen( FrameGenKindDX12 kind, uint32_t nMultiplier, bool bHudless )
+{
+	ID3D12CommandQueue *pQueue = m_pQueue.Get();
+	const bool bOk = m_FrameGen.Select( kind, nMultiplier, bHudless, pQueue );
+	if ( pQueue != m_pQueue.Get() )
+		m_pQueue.Attach( pQueue ); // the provider created it with one reference for us
+	m_PresentFormat = m_FrameGen.PresentFormat();
+	return bOk;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Applies the pending kind switch (F5): worker drained, GPU idle, chains released, provider selected,
+//          chains created again through the provider. Failure falls back to the native chain (status -2).
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::ApplyFrameGenSelect()
+{
+	if ( !m_PendingSelect.valid || !IsRecordingOwner() || m_bFailed )
+		return;
+	const PendingSelectDX12 request = m_PendingSelect;
+	m_PendingSelect.valid = false;
+	FlushSubmissions();
+	if ( m_bRecording && !Submit( true ) )
+	{
+		m_bSelectFailed = true;
+		return;
+	}
+	for ( View *pView : m_Views )
+		if ( !WaitForFence( pView->lastFence ) )
+			return;
+	if ( !m_bChangingMode && g_pShaderDeviceDX12 == this && g_pShaderDeviceMgrDX12 )
+	{
+		m_bChangingMode = true;
+		g_pShaderDeviceMgrDX12->NotifyModeChange();
+		m_bChangingMode = false;
+	}
+	for ( View *pView : m_Views )
+	{
+		pView->sceneColor.Reset();
+		pView->sceneDepth.Reset();
+		pView->ReleaseBackBuffers();
+		pView->rtvHeap.Reset();
+		pView->sceneRTVHeap.Reset();
+		pView->sceneDSVHeap.Reset();
+		m_FrameGen.ReleaseSwapChain( pView->swap );
+	}
+	bool bOk = SelectFrameGen( request.kind, request.multiplier, request.hudless );
+	bool bViews = true;
+	for ( View *pView : m_Views )
+		if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
+		{
+			bViews = false;
+			break;
+		}
+	if ( bOk && !bViews )
+	{
+		// Adoption failed: back to the native chain so the frame keeps presenting.
+		bOk = false;
+		for ( View *pView : m_Views )
+		{
+			pView->ReleaseBackBuffers();
+			pView->rtvHeap.Reset();
+			pView->sceneRTVHeap.Reset();
+			pView->sceneDSVHeap.Reset();
+			pView->sceneColor.Reset();
+			pView->sceneDepth.Reset();
+			m_FrameGen.ReleaseSwapChain( pView->swap );
+		}
+		SelectFrameGen( FrameGenKindDX12::None, 2, false );
+		bViews = true;
+		for ( View *pView : m_Views )
+			if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
+				bViews = false;
+	}
+	if ( !bViews )
+	{
+		FailDevice( "frame generation swap chain", E_FAIL );
+		return;
+	}
+	m_bSelectFailed = !bOk && request.kind != FrameGenKindDX12::None;
+	if ( m_pCurrentView )
+	{
+		m_nWidth = m_pCurrentView->width;
+		m_nHeight = m_pCurrentView->height;
+	}
+}
+
+void CShaderDeviceDX12::SetFrameGenFpsLimit( float flFps )
+{
+	if ( !IsRecordingOwner() )
+		return;
+	FlushSubmissions();
+	// XeLL's sleep mode must change with the GPU idle; Reflex tolerates a live queue.
+	if ( m_FrameGen.Kind() == FrameGenKindDX12::XeFG && !SubmitAndWaitForGpu() )
+		return;
+	m_FrameGen.SetFpsLimit( flFps );
 }
 
 //-----------------------------------------------------------------------------
@@ -1189,6 +1330,8 @@ void CShaderDeviceDX12::ReleaseViews()
 	{
 		if ( pView->swap && !m_bWindowed )
 			pView->swap->SetFullscreenState( FALSE, nullptr );
+		pView->ReleaseBackBuffers();
+		m_FrameGen.ReleaseSwapChain( pView->swap );
 	}
 	m_Views.PurgeAndDeleteElements();
 	m_pCurrentView = nullptr;
@@ -1232,7 +1375,9 @@ HRESULT CShaderDeviceDX12::RunSubmission( const SubmitOpDX12 &op )
 	case SubmitOpDX12::Present:
 	{
 		ZoneNamedN( nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE );
+		m_FrameGen.BeforePresent( op.frameId, op.framegenActive );
 		hr = op.swap->Present( op.interval, op.flags );
+		m_FrameGen.AfterPresent( op.frameId );
 		if ( hr == DXGI_STATUS_OCCLUDED )
 		{
 			op.view->occluded = true;
@@ -1392,6 +1537,15 @@ void CShaderDeviceDX12::ShutdownDevice()
 	if ( m_nFenceValue && !m_bFailed )
 		WaitForFence( m_nFenceValue );
 	ReleaseViews();
+	// The provider outlives its chains (released above) but not the queue it may have created: drop the queue,
+	// then the provider (Streamline/FFX/XeFG contexts), before the remaining device objects.
+	m_PendingSelect.valid = false;
+	m_pQueue.Reset();
+	m_FrameGen.Shutdown();
+	m_PresentFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	m_nLastPresentId = 0;
+	m_nPresentSerial = 0;
+	m_bSelectFailed = false;
 	for ( int i = 0; i < ARRAYSIZE( m_pDynamicVertices ); ++i )
 		if ( m_pDynamicVertices[i] )
 			m_pDynamicVertices[i]->NativeResourceRef().Reset();
@@ -1477,7 +1631,7 @@ void CShaderDeviceDX12::ReleaseResources()
 		pView->sceneDSVHeap.Reset();
 		if ( pView->swap && !m_bWindowed )
 			pView->swap->SetFullscreenState( FALSE, nullptr );
-		pView->swap.Reset();
+		m_FrameGen.ReleaseSwapChain( pView->swap );
 	}
 }
 
@@ -1624,6 +1778,7 @@ void CShaderDeviceDX12::Present()
 	{
 		view.suspended = true;
 		Submit( false );
+		ApplyFrameGenSelect();
 		return;
 	}
 	if ( !ResizeView( view, nWidth, nHeight ) )
@@ -1638,26 +1793,42 @@ void CShaderDeviceDX12::Present()
 		if ( hrTest == DXGI_STATUS_OCCLUDED )
 		{
 			Submit( false );
+			ApplyFrameGenSelect();
 			return;
 		}
 		if ( !CheckDevice( "occlusion test", hrTest ) )
 			return;
 		view.occluded = false;
 	}
-	const bool bCorrectGamma = m_bWindowed && ( m_bGammaTV || m_flGamma != 2.2f );
+	// Frame generation (F10): the provider's per-present calls run here with the worker drained. A frame without a
+	// dispatch presents in pass-through. Every provider reads scene depth in DEPTH_WRITE at present time.
+	const bool bFrameGenActive = m_FrameGen.Kind() != FrameGenKindDX12::None && g_pShaderAPIDX12 && g_pShaderAPIDX12->FrameGenDispatchedThisFrame();
+	const uint32_t nFrameId = bFrameGenActive ? g_pShaderAPIDX12->FrameGenFrameId() : m_nLastPresentId + 1;
+	++m_nPresentSerial;
+	if ( m_FrameGen.Kind() != FrameGenKindDX12::None )
+	{
+		m_FrameGen.PrepareFrame( bFrameGenActive, nFrameId, m_nPresentSerial, view.width, view.height, view.swap.Get() );
+		if ( bFrameGenActive )
+			TransitionSceneDepth( D3D12_RESOURCE_STATE_DEPTH_WRITE );
+	}
+	float flGamma[4];
+	// The scene is drawn into the back buffer whenever it needs a gamma ramp or an 8-bit (sRGB) encode; otherwise it
+	// is resolved or copied. MSAA never meets an 8-bit chain: frame generation (the only 8-bit user) rejects MSAA.
+	const bool bEncode = PresentGammaCoefficients( flGamma ) || m_PresentFormat != SceneColorFormat();
 	ID3D12Resource *pBack = CurrentBackBuffer();
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	barrier.Transition.pResource = pBack;
 	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-	barrier.Transition.StateAfter = bCorrectGamma ? D3D12_RESOURCE_STATE_RENDER_TARGET : ( m_nSampleCount > 1 ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_COPY_DEST );
+	barrier.Transition.StateAfter = bEncode ? D3D12_RESOURCE_STATE_RENDER_TARGET : ( m_nSampleCount > 1 ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_COPY_DEST );
 	m_Recorder.ResourceBarrier( 1, &barrier );
-	if ( bCorrectGamma )
+	if ( bEncode )
 	{
-		if ( !g_pShaderAPIDX12 || !g_pShaderAPIDX12->PresentGamma( pBack, m_flGamma, m_flGammaMin, m_flGammaMax, m_flGammaExponent, m_bGammaTV ) )
+		D3D12_RESOURCE_STATES backState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		if ( !g_pShaderAPIDX12 || !g_pShaderAPIDX12->EncodeSceneTo( pBack, backState ) || backState != D3D12_RESOURCE_STATE_RENDER_TARGET )
 		{
-			FailDevice( "windowed gamma presentation", E_FAIL );
+			FailDevice( "presentation encode", E_FAIL );
 			return;
 		}
 	}
@@ -1689,6 +1860,8 @@ void CShaderDeviceDX12::Present()
 		op.view = &view;
 		op.interval = nInterval;
 		op.flags = nFlags;
+		op.frameId = nFrameId;
+		op.framegenActive = bFrameGenActive;
 		EnqueueSubmission( op );
 	}
 	else
@@ -1696,15 +1869,18 @@ void CShaderDeviceDX12::Present()
 		HRESULT hr;
 		{
 			ZoneNamedN( nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE );
+			m_FrameGen.BeforePresent( nFrameId, bFrameGenActive );
 			hr = view.swap->Present( nInterval, nFlags );
+			m_FrameGen.AfterPresent( nFrameId );
 		}
 		if ( hr == DXGI_STATUS_OCCLUDED )
-		{
 			view.occluded = true;
-			return;
-		}
-		CheckDevice( "Present", hr );
+		else
+			CheckDevice( "Present", hr );
 	}
+	m_nLastPresentId = nFrameId;
+	// A kind switch requested this frame applies here: the frame's image is consumed and the recorder is empty (F5).
+	ApplyFrameGenSelect();
 #ifdef TRACY_ENABLE
 	if ( TracyIsStarted )
 	{

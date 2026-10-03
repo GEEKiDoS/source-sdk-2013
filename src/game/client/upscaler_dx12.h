@@ -24,5 +24,7 @@ void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTempo
 void UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup &view, bool bReset );
 // Backend status (INT_RENDERPARM_DX12_UPSCALE_STATUS); 0 when not on DX12.
 int UpscalerDX12_Status();
+// Turns mat_antialias off (temporal AA and frame generation both need a single-sample scene); shared with framegen_dx12.cpp.
+void UpscalerDX12_ReconcileMSAA();
 
 #endif // UPSCALER_DX12_H

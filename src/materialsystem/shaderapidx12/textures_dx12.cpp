@@ -258,6 +258,11 @@ DXGI_FORMAT SRVFormat( DXGI_FORMAT format, bool bSRGB, bool bDepth )
 		return bSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
 	case DXGI_FORMAT_B8G8R8A8_TYPELESS:
 		return bSRGB ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM;
+	// Non-typeless 8-bit formats only reach here for the SDR swap chain and the frame generator's hudless copy.
+	case DXGI_FORMAT_R8G8B8A8_UNORM:
+		return bSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : format;
+	case DXGI_FORMAT_B8G8R8A8_UNORM:
+		return bSRGB ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : format;
 	case DXGI_FORMAT_BC1_TYPELESS:
 		return bSRGB ? DXGI_FORMAT_BC1_UNORM_SRGB : DXGI_FORMAT_BC1_UNORM;
 	case DXGI_FORMAT_BC2_TYPELESS:
@@ -687,6 +692,9 @@ void CShaderAPIDX12::MarkMotionTargetStale()
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReleaseTextureDeviceResources()
 {
+	// Frame generation first: it restores the native swap chain behind its own idle boundary and must not outlive
+	// the motion target it tags.
+	ReleaseFrameGenResources();
 	ReleaseUpscalerResources();
 	ReleaseMotionResources();
 	for ( int i = 0; i < ARRAYSIZE( m_PreparedTextureSlots ); ++i )
@@ -2519,20 +2527,25 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Windowed gamma/TV-range presentation: blits the scene into the back buffer through
-//          the gamma ramp
+// Purpose: Presentation encode: draws (or copies) the scene into `pDestination`, a scene-sized single-sample
+//          FP16 or R8G8B8A8_UNORM texture. 8-bit destinations get the hardware sRGB encode through an
+//          _SRGB render-target view; the windowed gamma/TV-range ramp is folded in when the device has one.
+//          `destinationState` is updated to the state the destination is left in.
 //-----------------------------------------------------------------------------
-bool CShaderAPIDX12::PresentGamma( ID3D12Resource *pBackBuffer, float flGamma, float flTVMin, float flTVMax, float flTVExponent, bool bTVEnabled )
+bool CShaderAPIDX12::EncodeSceneTo( ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState )
 {
-	if ( !m_pDevice || !m_pDevice->CommandList() || !m_pDevice->SceneColor() || !pBackBuffer || !IsFinite( flGamma ) || !IsFinite( flTVMin ) || !IsFinite( flTVMax ) || ( bTVEnabled && ( !IsFinite( flTVExponent ) || flTVExponent <= 0.f ) ) )
+	if ( !m_pDevice || !m_pDevice->CommandList() || !m_pDevice->SceneColor() || !pDestination )
 		return false;
-	const D3D12_RESOURCE_DESC sceneDesc = m_pDevice->SceneColor()->GetDesc(), backDesc = pBackBuffer->GetDesc();
-	if ( sceneDesc.Width != backDesc.Width || sceneDesc.Height != backDesc.Height || backDesc.SampleDesc.Count != 1 || backDesc.Format != m_pDevice->SceneColorFormat() )
+	const D3D12_RESOURCE_DESC sceneDesc = m_pDevice->SceneColor()->GetDesc(), destinationDesc = pDestination->GetDesc();
+	const bool bEightBit = destinationDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM;
+	if ( sceneDesc.Width != destinationDesc.Width || sceneDesc.Height != destinationDesc.Height || destinationDesc.SampleDesc.Count != 1 || ( !bEightBit && destinationDesc.Format != m_pDevice->SceneColorFormat() ) )
 		return false;
-	const float flCorrection[4] = { flGamma / 2.2f, bTVEnabled ? 2.2f / flTVExponent : 1.f, bTVEnabled ? ( flTVMax - flTVMin ) / 255.f : 1.f, bTVEnabled ? flTVMin / 255.f : 0.f };
-	D3D12_RESOURCE_STATES sceneState = D3D12_RESOURCE_STATE_RENDER_TARGET, backState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-	Rect_t area{ 0, 0, static_cast<int>( backDesc.Width ), static_cast<int>( backDesc.Height ) };
-	const bool bResult = BlitTexture( m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, pBackBuffer, backState, false, CShaderDeviceDX12::kSceneImageFormat, area, area, false, false, flCorrection );
+	float flGamma[4];
+	const float *pGamma = m_pDevice->PresentGammaCoefficients( flGamma ) ? flGamma : nullptr;
+	const ImageFormat destinationFormat = bEightBit ? IMAGE_FORMAT_RGBA8888 : CShaderDeviceDX12::kSceneImageFormat;
+	D3D12_RESOURCE_STATES sceneState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	const Rect_t area{ 0, 0, static_cast<int>( destinationDesc.Width ), static_cast<int>( destinationDesc.Height ) };
+	const bool bResult = BlitTexture( m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, pDestination, destinationState, false, destinationFormat, area, area, false, bEightBit, pGamma );
 	m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
 	return bResult;
 }

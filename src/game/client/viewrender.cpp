@@ -16,6 +16,7 @@
 #include "viewrender.h"
 #include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
+#include "framegen_dx12.h"
 #include "iclientmode.h"
 #include "voice_status.h"
 #include "glow_overlay.h"
@@ -2136,6 +2137,13 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			!building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping && saveRenderTarget == NULL &&
 			!g_pIntroData && !engine->IsDrawingLoadingImage();
 		UpscalerDX12_BeginFrame( pRenderContext, bMainTemporalViewEligible, viewRender );
+		// Frame generation: the same main-view gate, minus paused/menu/background-map frames, which keep the provider
+		// selected but present in pass-through (the interpolators must not see static or UI-only frames).
+		const bool bFrameGenEligible = FrameGenDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO &&
+			!building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping && saveRenderTarget == NULL &&
+			!g_pIntroData && !engine->IsDrawingLoadingImage() && !engine->IsPaused() && !engine->IsLevelMainMenuBackground() &&
+			!enginevgui->IsGameUIVisible();
+		FrameGenDX12_BeginFrame( pRenderContext, bFrameGenEligible );
 		pRenderContext.SafeRelease();
 
 		// clear happens here probably
@@ -2276,6 +2284,15 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		}
 
 		PerformScreenSpaceEffects( 0, 0, viewRender.width, viewRender.height );
+
+		// Frame generation reads the finished 3D image from the back buffer: this is the last point before the HUD
+		// and VGUI draw over it (Push2DView below). The reset follows the motion-vector history like the upscaler.
+		if ( bFrameGenEligible )
+		{
+			pRenderContext.GetFrom( materials );
+			FrameGenDX12_Dispatch( pRenderContext, viewRender, !MotionVectorsDX12_FrameValid( NULL ) );
+			pRenderContext.SafeRelease();
+		}
 
 		if ( g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_INTEGER )
 		{

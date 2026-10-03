@@ -28,14 +28,14 @@ static Vector s_vecLastOrigin( 0, 0, 0 );
 static bool s_bHaveLastOrigin = false;
 static int s_nLastWidth = 0, s_nLastHeight = 0, s_nLastStatus = 0, s_nLastNrStatus = 0;
 
-static void ReconcileMSAA()
+void UpscalerDX12_ReconcileMSAA()
 {
 	// Looked up per call: a ConVarRef cached before the engine registers mat_antialias stays invalid.
 	ConVarRef mat_antialias( "mat_antialias", true );
 	if ( mat_antialias.IsValid() && mat_antialias.GetInt() != 0 )
 	{
 		mat_antialias.SetValue( 0 );
-		Msg( "r_upscaler: temporal AA replaces MSAA; mat_antialias set to 0\n" );
+		Msg( "r_upscaler: temporal AA / frame generation replaces MSAA; mat_antialias set to 0\n" );
 	}
 }
 
@@ -44,7 +44,7 @@ static void OnUpscalerChanged( IConVar *pVar, const char *pOldValue, float flOld
 	s_bResetPending = true;
 	ConVarRef var( pVar );
 	if ( s_bDX12 && var.GetInt() != 0 )
-		ReconcileMSAA();
+		UpscalerDX12_ReconcileMSAA();
 }
 
 ConVar r_upscaler( "r_upscaler", "1", FCVAR_ARCHIVE,
@@ -121,7 +121,7 @@ void UpscalerDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig )
 	CreateInterfaceFn f = Sys_GetFactory( "shaderapidx12" );
 	s_pShaderAPI = f ? static_cast< IShaderAPI * >( f( SHADERAPI_INTERFACE_VERSION, nullptr ) ) : nullptr;
 	if ( r_upscaler.GetInt() != 0 )
-		ReconcileMSAA();
+		UpscalerDX12_ReconcileMSAA();
 }
 
 void UpscalerDX12_Shutdown()

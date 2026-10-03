@@ -10,6 +10,7 @@
 #include "rendertexture.h"
 #include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
+#include "framegen_dx12.h"
 #if defined( REPLAY_ENABLED )
 #include "replay/replay_screenshot.h"
 #endif
@@ -57,6 +58,7 @@ void CTFRenderTargets::InitClientRenderTargets( IMaterialSystem* pMaterialSystem
 
 	MotionVectorsDX12_CreateRenderTarget( pMaterialSystem, pHardwareConfig );
 	UpscalerDX12_Init( pHardwareConfig );
+	FrameGenDX12_Init( pHardwareConfig );
 }
 
 //-----------------------------------------------------------------------------
@@ -66,6 +68,7 @@ void CTFRenderTargets::InitClientRenderTargets( IMaterialSystem* pMaterialSystem
 void CTFRenderTargets::ShutdownClientRenderTargets()
 {
 	BaseClass::ShutdownClientRenderTargets();
+	FrameGenDX12_Shutdown();
 	UpscalerDX12_Shutdown();
 	MotionVectorsDX12_ShutdownRenderTarget();
 

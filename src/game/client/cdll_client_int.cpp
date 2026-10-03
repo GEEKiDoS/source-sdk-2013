@@ -173,6 +173,8 @@ extern vgui::IInputInternal *g_InputInternal;
 #include "sixense/in_sixense.h"
 #endif
 
+#include "framegen_dx12.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -2279,6 +2281,8 @@ void OnRenderEnd()
 void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 {
 	g_CurFrameStage = curStage;
+	// Reflex/XeLL latency markers for DX12 frame generation (time-critical, straight to the shader API).
+	FrameGenDX12_FrameStage( curStage );
 
 	switch( curStage )
 	{

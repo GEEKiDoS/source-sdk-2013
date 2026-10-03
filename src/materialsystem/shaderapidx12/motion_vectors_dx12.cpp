@@ -567,6 +567,9 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 	}
 	if ( nMode == DX12_MOTION_PASS_BEGIN_MAIN )
 	{
+		// The frame generator's camera: this pass is always inside the main 3D view.
+		memcpy( m_MotionMainView, m_Matrices[MATERIAL_VIEW].Base(), sizeof( m_MotionMainView ) );
+		memcpy( m_MotionMainProj, m_Matrices[MATERIAL_PROJECTION].Base(), sizeof( m_MotionMainProj ) );
 		m_nMotionMainFrame = m_nFrameCounter;
 		m_nMotionHistoryCurrent ^= 1;
 		m_MotionHistory[m_nMotionHistoryCurrent].Clear();
