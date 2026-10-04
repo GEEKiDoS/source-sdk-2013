@@ -1,0 +1,58 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+#include "restir_lights.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// utils/vrad/lightmap.cpp:1985-1993: bump channels share light visibility and
+// source radiance but evaluate their own cosine. One owner for all four sums.
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	uint faceIndex;
+	uint sampleIndex;
+	uint slot;
+	ResolveReservoir( index, faceIndex, sampleIndex, slot );
+	ReSTIRGpuFace face = faces[faceIndex];
+	ReSTIRGpuSample sampleRecord = samples[sampleIndex];
+	vec3 origin = ShadingOrigin( face, sampleRecord );
+	ReSTIRReservoir reservoir = reservoirsNext[index];
+	bool visible = ( reservoir.flags & RESTIR_RES_VALID ) != 0u;
+	if ( visible && ( reservoir.flags & RESTIR_RES_VISIBLE ) == 0u )
+		visible = ReservoirVisibility( reservoir, origin );
+	vec3 direction = SafeNormal( reservoir.samplePos.xyz - origin );
+	for ( int channel = 0; channel < face.numChannels; ++channel )
+	{
+		vec3 normal = sampleRecord.normal.xyz;
+		if ( channel == 1 )
+			normal = sampleRecord.bump0.xyz;
+		else if ( channel == 2 )
+			normal = sampleRecord.bump1.xyz;
+		else if ( channel == 3 )
+			normal = sampleRecord.bump2.xyz;
+		vec3 contribution = visible ? reservoir.W * reservoir.radiance.rgb * max( dot( normal, direction ), 0.0 ) : vec3( 0.0 );
+		// utils/vrad/lightmap.cpp:1825-1830: ambient bump normalization corrects
+		// the overlap of base and bump hemispheres, possibleHitCount[i]/[0].
+		if ( channel != 0 && reservoir.light != RESTIR_NO_HIT && lights[reservoir.light].type == EMIT_SKYAMBIENT )
+		{
+			float overlap = 1.0 - acos( clamp( dot( sampleRecord.normal.xyz, normal ), -1.0, 1.0 ) ) / RESTIR_PI;
+			contribution /= max( overlap, 1.0e-8 );
+		}
+		// Bounce light is fed back from the running mean of earlier iterations, so the first half of
+		// the iterations only deepens the bounce chain (iteration 0 is direct-only). The final mean
+		// restarts at the half-way point, where every estimate covers the same converged integrand.
+		uint firstAveraged = max( 1u, pc.totalIterations / 2u );
+		if ( pc.iteration == firstAveraged )
+			accumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] = vec4( contribution, 1.0 );
+		else
+			accumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] += vec4( contribution, 1.0 );
+	}
+}

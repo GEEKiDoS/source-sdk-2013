@@ -1,0 +1,123 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+#include "restir_vulkan_internal.h"
+#include <float.h>
+
+void CReSTIRVulkanDevice::Impl::WriteReservoirDescriptors()
+{
+	VkDescriptorBufferInfo info[3] = {};
+	VkWriteDescriptorSet writes[3] = {};
+	for ( unsigned int i = 0; i < 3; ++i )
+	{
+		info[i].buffer = buffers[reservoirBindings[i]].handle;
+		info[i].range = buffers[reservoirBindings[i]].size;
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = descriptorSet;
+		writes[i].dstBinding = RESTIR_BIND_RESERVOIRS_PREV + i;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[i].pBufferInfo = &info[i];
+	}
+	vkUpdateDescriptorSets( device, 3, writes, 0, NULL );
+}
+
+bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLightmapResult &result )
+{
+	Impl &gpu = *m_pImpl;
+	if ( !gpu.scene || !gpu.pipelineLayout )
+		gpu.Fail( "BakeLightmaps requires UploadScene" );
+	gpu.finalUploaded = false;
+	gpu.push.seed = options.seed;
+	gpu.push.candidates = options.candidates;
+	gpu.push.spatialRadius = options.spatialRadius;
+	gpu.push.maxBounces = options.maxBounces;
+	gpu.push.totalIterations = options.iterations;
+	gpu.timings.candidateMs = gpu.timings.reuseMs = gpu.timings.reconstructionMs = gpu.timings.compactionMs = 0;
+	gpu.ResetQueries();
+	VkCommandBuffer command = gpu.BeginCommands();
+	gpu.Dispatch( command, RESTIR_PIPE_INIT, gpu.push.numReservoirs, 0 );
+	gpu.Dispatch( command, RESTIR_PIPE_INIT, gpu.push.numLuxels, 1 );
+	gpu.Dispatch( command, RESTIR_PIPE_INIT, gpu.scene->numOutputValues, 2 );
+	gpu.Barrier( command );
+	gpu.Submit( command );
+	for ( int iteration = 0; iteration < options.iterations; ++iteration )
+	{
+		gpu.push.iteration = iteration;
+		gpu.push.flags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | ( iteration + 1 == options.iterations ? RESTIR_PC_FINAL_ITERATION : 0 );
+		command = gpu.BeginCommands();
+		unsigned int candidateStart = gpu.Timestamp( command );
+		// pc.pass carries the dfaceToFace offset inside RESTIR_BIND_FACE_NEIGHBORS (restir_lightmap.glsl SceneFaceForHit).
+		gpu.Dispatch( command, RESTIR_PIPE_CANDIDATES, gpu.push.numReservoirs, gpu.scene->faceNeighbors.Count() );
+		gpu.Barrier( command );
+		unsigned int candidateEnd = gpu.Timestamp( command );
+		unsigned int reuseStart = gpu.Timestamp( command );
+		if ( iteration )
+		{
+			gpu.Dispatch( command, RESTIR_PIPE_TEMPORAL, gpu.push.numReservoirs );
+			gpu.Barrier( command );
+		}
+		gpu.Dispatch( command, RESTIR_PIPE_SPATIAL, gpu.push.numReservoirs );
+		gpu.Barrier( command );
+		unsigned int reuseEnd = gpu.Timestamp( command );
+		gpu.Dispatch( command, RESTIR_PIPE_ACCUMULATE, gpu.push.numReservoirs );
+		gpu.Barrier( command );
+		gpu.Submit( command );
+		// Descriptor sets cannot be updated while a submitted command buffer uses them.
+		// This is the sole per-iteration wait; no reservoir or accumulation readback.
+		gpu.Wait();
+		gpu.timings.candidateMs += gpu.TimestampMs( candidateStart, candidateEnd );
+		gpu.timings.reuseMs += gpu.TimestampMs( reuseStart, reuseEnd );
+		if ( iteration + 1 < options.iterations )
+		{
+			unsigned int previous = gpu.reservoirBindings[0];
+			gpu.reservoirBindings[0] = gpu.reservoirBindings[2];
+			gpu.reservoirBindings[2] = previous;
+			gpu.WriteReservoirDescriptors();
+			gpu.ResetQueries();
+		}
+	}
+	gpu.ResetQueries();
+	command = gpu.BeginCommands();
+	unsigned int reconstructStart = gpu.Timestamp( command );
+	gpu.Dispatch( command, RESTIR_PIPE_RECONSTRUCT, gpu.scene->numOutputValues );
+	gpu.Barrier( command );
+	unsigned int reconstructEnd = gpu.Timestamp( command );
+	gpu.Submit( command );
+	gpu.Wait();
+	gpu.timings.reconstructionMs = gpu.TimestampMs( reconstructStart, reconstructEnd );
+	// The fixed pass table compacts directly during reconstruction; this counter
+	// measures the GPU transfer of its compact radiance and validity arrays.
+	result.radiance.SetCount( gpu.scene->numOutputValues );
+	result.luxelValid.SetCount( gpu.scene->luxels.Count() );
+	CUtlVector<float> values;
+	unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / ( sizeof( float ) * 4 ) );
+	// Output boundary only: no coring, patch threshold or finite-positive clipping in transport.
+	for ( unsigned int first = 0; first < (unsigned int)result.radiance.Count(); )
+	{
+		unsigned int count = MIN( capacity, (unsigned int)result.radiance.Count() - first );
+		values.SetCount( count * 4 );
+		gpu.Download( RESTIR_BIND_OUTPUT, values.Base(), (VkDeviceSize)count * sizeof( float ) * 4, (VkDeviceSize)first * sizeof( float ) * 4, &gpu.timings.compactionMs );
+		for ( unsigned int i = 0; i < count; ++i )
+		{
+			for ( int channel = 0; channel < 3; ++channel )
+			{
+				float value = values[i * 4 + channel];
+				result.radiance[first + i][channel] = _finite( value ) && value >= 0 ? value : 0;
+			}
+		}
+		first += count;
+	}
+	values.Purge();
+	CUtlVector<unsigned int> valid;
+	capacity = (unsigned int)( RESTIR_STAGING_BYTES / sizeof( unsigned int ) );
+	for ( unsigned int first = 0; first < (unsigned int)result.luxelValid.Count(); )
+	{
+		unsigned int count = MIN( capacity, (unsigned int)result.luxelValid.Count() - first );
+		valid.SetCount( count );
+		gpu.Download( RESTIR_BIND_LUXEL_VALID, valid.Base(), (VkDeviceSize)count * sizeof( unsigned int ), (VkDeviceSize)first * sizeof( unsigned int ), &gpu.timings.compactionMs );
+		for ( unsigned int i = 0; i < count; ++i )
+			result.luxelValid[first + i] = (unsigned char)MIN( valid[i], 255u );
+		first += count;
+	}
+	gpu.Wait();
+	return true;
+}

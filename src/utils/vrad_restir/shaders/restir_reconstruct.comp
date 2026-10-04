@@ -1,0 +1,157 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+vec3 SampleValue( ReSTIRGpuFace face, uint sampleIndex, uint slot, uint channel )
+{
+	vec4 value = accumulation[ReservoirIndex( face, sampleIndex, slot ) * RESTIR_MAX_CHANNELS + channel];
+	return value.w > 0.0 ? value.rgb / value.w : vec3( 0.0 );
+}
+
+// utils/vrad/radial.cpp:70-153 AddDirectToRadial. RADIALDIST=1.42 in
+// radial.h:22-25 is historical: this direct filter uses clipped cell overlap
+// with a +/-1 square and area/max(abs(ds),abs(dt),0.1), NOT a circular kernel.
+float BrushWeight( ReSTIRGpuFace destination, ReSTIRGpuFace source, ReSTIRGpuSample sampleRecord, vec2 coord )
+{
+	vec2 mins = sampleRecord.lmCoord.zw;
+	vec2 maxs = sampleRecord.lmMaxs.xy;
+	if ( destination.dface != source.dface )
+	{
+		// utils/vrad/radial.cpp:462-470 transforms neighbour cell bounds.
+		mins = WorldToLuxelSpace( destination, LuxelSpaceToWorld( source, mins ) );
+		maxs = WorldToLuxelSpace( destination, LuxelSpaceToWorld( source, maxs ) );
+	}
+	ivec2 lower = ivec2( mins );
+	ivec2 upper = ivec2( maxs + vec2( 0.9999 ) ) + ivec2( 1 );
+	if ( any( lessThan( ivec2( coord ), lower ) ) || any( greaterThanEqual( ivec2( coord ), upper ) ) )
+		return 0.0;
+	vec2 low = max( mins - coord, vec2( -1.0 ) );
+	vec2 high = min( maxs - coord, vec2( 1.0 ) );
+	float area = ( high.x - low.x ) * ( high.y - low.y );
+	if ( area <= RESTIR_EQUAL_EPSILON )
+		return 0.0;
+	vec2 distanceToSample = abs( WorldToLuxelSpace( destination, sampleRecord.position.xyz ) - coord );
+	return area / max( max( distanceToSample.x, distanceToSample.y ), 0.1 );
+}
+
+// utils/vrad/radial.cpp:157-235 AddBouncedToRadial: circular RADIALDIST kernel scaled by the
+// patch extent in luxels. VRAD only ever feeds this kernel patch windings (BuildPatchRadial),
+// and its patches are chopped to maxchop = 4 luxel widths (vrad.cpp:53, :813-815); samples
+// stand in for patches here, so a sample's cell is widened to the maxchop extent any patch
+// containing that cell would have (capped at the source face size).
+const float RESTIR_MAXCHOP = 4.0;
+float BounceWeight( ReSTIRGpuFace destination, ReSTIRGpuFace source, ReSTIRGpuSample sampleRecord, vec2 coord )
+{
+	vec2 extent = min( vec2( RESTIR_MAXCHOP ), vec2( source.luxelW, source.luxelH ) );
+	if ( destination.dface != source.dface )
+	{
+		// Express the source patch extent in destination luxels (radial.cpp:462-468).
+		vec2 origin = WorldToLuxelSpace( destination, LuxelSpaceToWorld( source, vec2( 0.0 ) ) );
+		vec2 along = WorldToLuxelSpace( destination, LuxelSpaceToWorld( source, extent ) ) - origin;
+		extent = abs( along );
+	}
+	extent = max( extent, vec2( 1.0 ) );
+	vec2 center = WorldToLuxelSpace( destination, sampleRecord.position.xyz );
+	ivec2 lower = ivec2( center - extent * RESTIR_RADIALDIST );
+	ivec2 upper = ivec2( center + extent * RESTIR_RADIALDIST + vec2( 1.0 ) );
+	if ( any( lessThan( ivec2( coord ), lower ) ) || any( greaterThanEqual( ivec2( coord ), upper ) ) )
+		return 0.0;
+	vec2 d = ( center - coord ) / extent;
+	return max( RESTIR_RADIALDIST2 - dot( d, d ), 0.0 );
+}
+
+// utils/vrad/vraddisps.cpp:855-905 AddSampleLightToRadial: normals cutoff
+// 0.15, squared WORLD radius, linear-in-squared-distance influence.
+float DisplacementWeight( ReSTIRGpuFace face, ReSTIRGpuLuxel luxel, ReSTIRGpuSample sampleRecord, bool neighborBumped )
+{
+	float angle = dot( sampleRecord.normal.xyz, luxel.normal.xyz );
+	if ( angle < 0.15 || face.reflectivity.w <= 0.0 )
+		return 0.0;
+	vec3 offset = sampleRecord.position.xyz - luxel.position.xyz;
+	float influence = max( 0.0, 1.0 - dot( offset, offset ) / face.reflectivity.w ) * angle;
+	if ( face.numChannels > 1 && !neighborBumped )
+		influence *= 0.05;
+	return influence;
+}
+
+// utils/vrad/radial.cpp:391-475 BuildLuxelRadial and :483-540 SampleRadial;
+// vraddisps.cpp:910-1027 IsNeighbor/RadialLuxelAddSamples. Enumerating the
+// neighbour records directly replaces CPU voxel hashing without changing the
+// set of contributing samples or order within a face.
+//
+// Brush luxels no direct cell reaches (sliver faces, cells clipped away by the
+// ON_EPSILON/16 row cut, T-junction neighbours) are VRAD's bRed2Black path
+// (radial.cpp:522-526 + :770-787): direct 0 plus the patch bounce radial. There
+// is no separate bounce accumulation here, so the same samples are re-weighted
+// with the bounce kernel instead; luxelValid = 2 marks these so the host keeps
+// them out of the face median like VRAD's baseSampleOk == false.
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	uint faceIndex;
+	uint slot;
+	uint channel;
+	uint luxelIndex;
+	ResolveOutput( index, faceIndex, slot, channel, luxelIndex );
+	ReSTIRGpuFace face = faces[faceIndex];
+	ReSTIRGpuLuxel luxel = luxels[uint( face.firstLuxel ) + luxelIndex];
+	vec2 coord = vec2( luxelIndex % uint( face.luxelW ), luxelIndex / uint( face.luxelW ) );
+	bool displacement = ( face.flags & RESTIR_FACE_DISP ) != 0;
+	vec3 sum = vec3( 0.0 );
+	float weightSum = 0.0;
+	for ( int neighbor = -1; neighbor < face.numNeighbors; ++neighbor )
+	{
+		int sourceIndex = neighbor < 0 ? int( faceIndex ) : faceNeighbors[face.firstNeighbor + neighbor];
+		ReSTIRGpuFace source = faces[sourceIndex];
+		int sourceSlot = FindStyle( source, face.styles[slot] );
+		if ( sourceSlot < 0 )
+			continue;
+		bool neighborBumped = source.numChannels > 1;
+		uint sourceChannel = neighborBumped ? channel : 0u;
+		float bumpScale = !displacement && channel > 0u && !neighborBumped ? 0.5773502691896258 : 1.0;
+		for ( int sampleOffset = 0; sampleOffset < source.numSamples; ++sampleOffset )
+		{
+			uint sampleIndex = uint( source.firstSample + sampleOffset );
+			ReSTIRGpuSample sampleRecord = samples[sampleIndex];
+			float weight = displacement ? DisplacementWeight( face, luxel, sampleRecord, neighborBumped ) : BrushWeight( face, source, sampleRecord, coord );
+			sum += SampleValue( source, sampleIndex, uint( sourceSlot ), sourceChannel ) * weight * bumpScale;
+			weightSum += weight;
+		}
+	}
+	uint validity = weightSum > ( displacement ? 0.0 : RESTIR_WEIGHT_EPS ) ? 1u : 0u;
+	if ( validity == 0u && !displacement )
+	{
+		sum = vec3( 0.0 );
+		weightSum = 0.0;
+		for ( int neighbor = -1; neighbor < face.numNeighbors; ++neighbor )
+		{
+			int sourceIndex = neighbor < 0 ? int( faceIndex ) : faceNeighbors[face.firstNeighbor + neighbor];
+			ReSTIRGpuFace source = faces[sourceIndex];
+			int sourceSlot = FindStyle( source, face.styles[slot] );
+			if ( sourceSlot < 0 || ( source.flags & RESTIR_FACE_DISP ) != 0 )
+				continue;
+			bool neighborBumped = source.numChannels > 1;
+			uint sourceChannel = neighborBumped ? channel : 0u;
+			float bumpScale = channel > 0u && !neighborBumped ? 0.5773502691896258 : 1.0;
+			for ( int sampleOffset = 0; sampleOffset < source.numSamples; ++sampleOffset )
+			{
+				uint sampleIndex = uint( source.firstSample + sampleOffset );
+				float weight = BounceWeight( face, source, samples[sampleIndex], coord );
+				sum += SampleValue( source, sampleIndex, uint( sourceSlot ), sourceChannel ) * weight * bumpScale;
+				weightSum += weight;
+			}
+		}
+		validity = weightSum > 0.0 ? 2u : 0u;
+	}
+	outputRadiance[index] = vec4( validity != 0u ? FiniteRadiance( sum / weightSum ) : vec3( 0.0 ), 0.0 );
+	if ( slot == 0u && channel == 0u )
+		luxelValid[uint( face.firstLuxel ) + luxelIndex] = validity;
+}

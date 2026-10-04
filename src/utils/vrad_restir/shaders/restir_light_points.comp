@@ -1,0 +1,117 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+#include "restir_lights.glsl"
+#include "restir_lightmap.glsl"
+layout( std430, set = 0, binding = 15 ) readonly buffer ServiceIn { ReSTIRGpuPointQuery queries[]; };
+layout( std430, set = 0, binding = 16 ) buffer ServiceOut { ReSTIRGpuPointResult results[]; };
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// utils/vrad/lightmap.cpp:1745-1831. Exact finite-sample normalization for
+// -extrasky-free sky ambient: visible cosine sum / all eligible cosine sum.
+// vradstaticprops.cpp:1173-1196: the vertex is pushed 4 units towards the light (sky ambient: along
+// the normal) before tracing so a vertex on the prop's own surface does not shadow itself.
+vec3 PointSkyAmbient( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitId )
+{
+	float visibleCosines = 0.0;
+	float allCosines = 0.0;
+	bool ignoreNormals = ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u;
+	vec3 origin = query.position.xyz + 4.0 * query.normal.xyz;
+	for ( uint sampleIndex = 0u; sampleIndex < RESTIR_NUM_ANORMS; ++sampleIndex )
+	{
+		vec3 direction = -DirectionalSample( sampleIndex );
+		float cosine = ignoreNormals ? 0.7 / 2.0 : dot( query.normal.xyz, direction );
+		if ( cosine <= RESTIR_EQUAL_EPSILON )
+			continue;
+		allCosines += cosine;
+		if ( LightVisibility( lightIndex, origin, origin + direction * 100000.0, skipHitId ) )
+			visibleCosines += cosine;
+	}
+	return allCosines > 0.0 ? lights[lightIndex].intensity.rgb * visibleCosines / allCosines : vec3( 0.0 );
+}
+
+// utils/vrad/lightmap.cpp:1673-1742,1835-1995,2003-2035 GatherSampleLightSSE.
+// Surface emitters use 16 stratified full-range area samples (I3); analytic
+// lights are exhaustive, not randomly selected. No styles are folded into 0.
+vec3 PointDirectLight( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitId, uint seed )
+{
+	ReSTIRGpuLight light = lights[lightIndex];
+	if ( light.type == EMIT_SKYAMBIENT )
+		return PointSkyAmbient( lightIndex, query, skipHitId );
+	bool ignoreNormals = ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u;
+	// vradstaticprops.cpp:1179-1189: push 4 units towards the light (sun: along -normal).
+	vec3 fudge = light.type == EMIT_SKYLIGHT ? SafeNormal( -light.normal.xyz ) : SafeNormal( light.origin.xyz - query.position.xyz );
+	vec3 origin = query.position.xyz + 4.0 * fudge;
+	uint count = light.type == EMIT_SURFACE ? 16u : ( light.type == EMIT_SKYLIGHT && light.sunSpreadAngle > 0.0 ? 30u : 1u );
+	vec3 sum = vec3( 0.0 );
+	for ( uint sampleIndex = 0u; sampleIndex < count; ++sampleIndex )
+	{
+		vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( count ), CandidateDimension( seed, sampleIndex, 1u ), CandidateDimension( seed, sampleIndex, 2u ) );
+		ReSTIRReservoir candidate;
+		if ( !SampleLight( lightIndex, origin, query.normal.xyz, uniformValue, candidate ) || candidate.sourcePdf <= 0.0 )
+			continue;
+		if ( !LightVisibility( lightIndex, origin, candidate.samplePos.xyz, skipHitId ) )
+			continue;
+		vec3 direction = SafeNormal( candidate.samplePos.xyz - origin );
+		// VRAD evaluates the sun cosine at the central direction, while rays
+		// sample its spread only for the visibility fraction.
+		if ( light.type == EMIT_SKYLIGHT )
+			direction = SafeNormal( -light.normal.xyz );	// VRAD normal = travel direction (lightmap.cpp:1686)
+		float cosine = ignoreNormals ? 0.7 / 2.0 : max( dot( query.normal.xyz, direction ), 0.0 );
+		sum += candidate.radiance.rgb * cosine / candidate.sourcePdf;
+	}
+	return sum / float( count );
+}
+
+// utils/vrad/vraddetailprops.cpp:622-652 detail full-sphere gather; static
+// prop default delegates the exact 40-Halton semantics at :658-750.
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	ReSTIRGpuPointQuery query = queries[index];
+	uint skipHitId = ( query.flags & RESTIR_POINT_NO_SELF_SHADOW ) != 0u ? query.skipHitId : RESTIR_NO_HIT;
+	// Point services have no face/sample key: seed from query position and
+	// normal bits plus pc.seed and light index, never dispatch index.
+	uint key = Hash( pc.seed ^ floatBitsToUint( query.position.x ) );
+	key = Hash( key ^ floatBitsToUint( query.position.y ) );
+	key = Hash( key ^ floatBitsToUint( query.position.z ) );
+	key = Hash( key ^ floatBitsToUint( query.normal.x ) );
+	key = Hash( key ^ floatBitsToUint( query.normal.y ) );
+	key = Hash( key ^ floatBitsToUint( query.normal.z ) );
+	for ( uint slot = 0u; slot < pc.numStyles; ++slot )
+		results[index * pc.numStyles + slot] = ReSTIRGpuPointResult( vec4( 0.0 ), vec4( 0.0 ) );
+	for ( uint lightIndex = 0u; lightIndex < pc.numLights; ++lightIndex )
+	{
+		uint slot = uint( lights[lightIndex].styleSlot );
+		results[index * pc.numStyles + slot].direct.rgb += PointDirectLight( lightIndex, query, skipHitId, Hash( key ^ lightIndex ) );
+	}
+	if ( ( query.flags & RESTIR_POINT_DETAIL_GATHER ) != 0u )
+	{
+		for ( uint sampleIndex = 0u; sampleIndex < RESTIR_NUM_ANORMS; ++sampleIndex )
+		{
+			vec3 direction = anorms[sampleIndex].xyz;
+			HitInfo hit;
+			if ( !TraceGatherRay( query.position.xyz, direction, RESTIR_DIST_EPSILON, RESTIR_AMBIENT_LENGTH, hit ) )
+				continue;
+			for ( uint slot = 0u; slot < pc.numStyles; ++slot )
+				results[index * pc.numStyles + slot].indirect.rgb += RayAmbientColor( hit, query.position.xyz, direction, sceneStyles[slot] ) * ( 255.0 / float( RESTIR_NUM_ANORMS ) );
+		}
+	}
+	else
+	{
+		results[index * pc.numStyles].indirect.rgb = StaticPropIndirect( query.position.xyz, query.normal.xyz, ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u );
+	}
+	for ( uint slot = 0u; slot < pc.numStyles; ++slot )
+	{
+		results[index * pc.numStyles + slot].direct.rgb = FiniteRadiance( results[index * pc.numStyles + slot].direct.rgb );
+		results[index * pc.numStyles + slot].indirect.rgb = FiniteRadiance( results[index * pc.numStyles + slot].indirect.rgb );
+	}
+}

@@ -1,0 +1,93 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+#include "restir_lights.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// One candidate per sample draw from a sampled domain, with a deterministic mixture probability
+// so RIS estimates the SUM of the domains (they are disjoint):
+//   sun          1 candidate   (style matches, pc.skyLight >= 0)
+//   sky ambient  1 candidate   (style matches, pc.skyAmbientLight >= 0)
+//   local lights pc.candidates (point/spot/surface lights of the style, uniform light choice)
+//   path         1 candidate   (slot 0, iteration > 0, pc.maxBounces > 0)
+// VRAD evaluates sun and sky ambient for EVERY sample (lightmap.cpp:1673-1831); folding them
+// into the uniform local-light pick would give them a 1/N chance per candidate and starve
+// weakly lit samples of their only real contribution.
+void AddDirectCandidate( inout ReSTIRReservoir result, uint lightIndex, vec3 origin, vec3 normal, uint key, uint candidateIndex, float domainShare, inout uint rng )
+{
+	ReSTIRReservoir candidate = EmptyReservoir();
+	vec3 uniformValue = vec3( CandidateDimension( key, candidateIndex, 1u ), CandidateDimension( key, candidateIndex, 2u ), CandidateDimension( key, candidateIndex, 3u ) );
+	SampleLight( lightIndex, origin, normal, uniformValue, candidate );
+	// Plan 4.2: visibility is part of candidate generation. An occluded candidate gets
+	// target weight 0 so RIS never selects it; a visible one skips the re-trace in accumulate.
+	if ( candidate.radiance.w > 0.0 )
+	{
+		if ( LightVisibility( lightIndex, origin, candidate.samplePos.xyz, RESTIR_NO_HIT ) )
+			candidate.flags |= RESTIR_RES_VISIBLE;
+		else
+			candidate.radiance.w = 0.0;
+	}
+	candidate.sourcePdf *= domainShare;
+	float weight = candidate.sourcePdf > 0.0 ? candidate.radiance.w / candidate.sourcePdf : 0.0;
+	ReservoirUpdate( result, candidate, weight, 1.0, rng );
+}
+
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	uint faceIndex;
+	uint sampleIndex;
+	uint slot;
+	ResolveReservoir( index, faceIndex, sampleIndex, slot );
+	ReSTIRGpuFace face = faces[faceIndex];
+	ReSTIRGpuSample sampleRecord = samples[sampleIndex];
+	vec3 origin = ShadingOrigin( face, sampleRecord );
+	vec3 normal = sampleRecord.normal.xyz;
+	int style = face.styles[slot];
+	uint key = SampleSeed( faceIndex, sampleIndex - uint( face.firstSample ), slot, 0u );
+	uint rng = Hash( key ^ 0xA511E9B3u );
+	ReSTIRReservoir result = EmptyReservoir();
+
+	bool hasSun = pc.skyLight >= 0 && lights[pc.skyLight].style == style;
+	bool hasSkyAmbient = pc.skyAmbientLight >= 0 && lights[pc.skyAmbientLight].style == style;
+	uint localCount = EligibleLocalLightCount( style );
+	// Bounce light is gathered from the irradiance already resolved on the hit face (progressive
+	// radiosity), so it exists from iteration 1 on; iteration 0 only bootstraps direct light.
+	bool generatePath = slot == 0u && pc.maxBounces > 0u && pc.iteration > 0u;
+	uint localCandidates = localCount != 0u ? pc.candidates : 0u;
+	float totalCandidates = float( localCandidates ) + ( hasSun ? 1.0 : 0.0 ) + ( hasSkyAmbient ? 1.0 : 0.0 ) + ( generatePath ? 1.0 : 0.0 );
+	if ( totalCandidates <= 0.0 )
+	{
+		reservoirsCur[index] = result;
+		return;
+	}
+	uint candidateIndex = 0u;
+	if ( hasSun )
+		AddDirectCandidate( result, uint( pc.skyLight ), origin, normal, key, candidateIndex++, 1.0 / totalCandidates, rng );
+	if ( hasSkyAmbient )
+		AddDirectCandidate( result, uint( pc.skyAmbientLight ), origin, normal, key, candidateIndex++, 1.0 / totalCandidates, rng );
+	for ( uint local = 0u; local < localCandidates; ++local, ++candidateIndex )
+	{
+		uint ordinal = min( uint( CandidateDimension( key, candidateIndex, 0u ) * float( localCount ) ), localCount - 1u );
+		uint lightIndex = SelectEligibleLocalLight( style, ordinal );
+		AddDirectCandidate( result, lightIndex, origin, normal, key, candidateIndex, float( localCandidates ) / ( float( localCount ) * totalCandidates ), rng );
+	}
+	if ( generatePath )
+	{
+		uint pathRng = SampleSeed( faceIndex, sampleIndex - uint( face.firstSample ), slot, 0x50415448u );
+		ReSTIRReservoir path = GeneratePathCandidate( origin, normal, pathRng );
+		path.sourcePdf /= totalCandidates;
+		float weight = path.sourcePdf > 0.0 ? path.radiance.w / path.sourcePdf : 0.0;
+		ReservoirUpdate( result, path, weight, 1.0, rng );
+	}
+	ReservoirNormalize( result );
+	reservoirsCur[index] = result;
+}

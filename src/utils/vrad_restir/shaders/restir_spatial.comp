@@ -1,0 +1,134 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+#include "restir_lights.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// Sample index of the neighbour cell `ordinal` of the receiver, or -1.
+int NeighborSample( ReSTIRGpuFace face, ReSTIRGpuSample receiver, uint ordinal )
+{
+	if ( ( face.flags & RESTIR_FACE_DISP ) != 0 )
+	{
+		uint index = uint( face.firstSample ) + ordinal;
+		if ( length( samples[index].position.xyz - receiver.position.xyz ) > sqrt( face.reflectivity.w ) )
+			return -1;
+		return int( index );
+	}
+	int diameter = int( pc.spatialRadius ) * 2 + 1;
+	int s = receiver.s + int( ordinal % uint( diameter ) ) - int( pc.spatialRadius );
+	int t = receiver.t + int( ordinal / uint( diameter ) ) - int( pc.spatialRadius );
+	if ( s < 0 || t < 0 || s >= face.luxelW || t >= face.luxelH )
+		return -1;
+	return cellSamples[face.firstLuxel + s + t * face.luxelW];
+}
+
+// Geometric compatibility only (plan 4.4): same face, normal within 25 degrees, close enough.
+// Independent of what the neighbour's reservoir currently holds, so that empty neighbour
+// reservoirs still count towards the normalization (their M candidates could have produced y).
+bool CompatibleNeighbor( ReSTIRGpuFace face, ReSTIRGpuSample receiver, uint receiverIndex, int neighborIndex )
+{
+	if ( neighborIndex < 0 || uint( neighborIndex ) == receiverIndex )
+		return false;
+	ReSTIRGpuSample neighbor = samples[neighborIndex];
+	if ( dot( receiver.normal.xyz, neighbor.normal.xyz ) < 0.906 )
+		return false;
+	float distanceLimit = ( face.flags & RESTIR_FACE_DISP ) != 0 ? sqrt( face.reflectivity.w ) : 2.0 * max( length( face.luxelToWorld0.xyz ), length( face.luxelToWorld1.xyz ) );
+	return length( receiver.position.xyz - neighbor.position.xyz ) <= distanceLimit;
+}
+
+// Target function of sample y at receiver q, including visibility: p_hat_q(y).
+float TargetAt( ReSTIRReservoir y, ReSTIRGpuFace face, ReSTIRGpuSample q, out ReSTIRReservoir reevaluated )
+{
+	vec3 origin = ShadingOrigin( face, q );
+	reevaluated = Reevaluate( y, origin, q.normal.xyz );
+	if ( reevaluated.radiance.w <= 0.0 )
+		return 0.0;
+	if ( !ReservoirVisibility( reevaluated, origin ) )
+		return 0.0;
+	reevaluated.flags |= RESTIR_RES_VISIBLE;
+	return reevaluated.radiance.w;
+}
+
+// Bitterli et al. 2020 Algorithm 6 (unbiased spatial reuse with visibility):
+//   wSum = sum_q  p_hat_r(y_q) * W_q * M_q        over compatible q (own included)
+//   y    ~ wSum
+//   Z    = sum_q  M_q [ p_hat_q(y) > 0 ]           over compatible q (own included), empty reservoirs included
+//   W    = wSum / ( Z * p_hat_r(y) )
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	uint faceIndex;
+	uint sampleIndex;
+	uint slot;
+	ResolveReservoir( index, faceIndex, sampleIndex, slot );
+	ReSTIRGpuFace face = faces[faceIndex];
+	ReSTIRGpuSample receiver = samples[sampleIndex];
+	uint rng = SampleSeed( faceIndex, sampleIndex - uint( face.firstSample ), slot, 0x53504154u );
+	uint diameter = pc.spatialRadius * 2u + 1u;
+	uint neighborCount = ( face.flags & RESTIR_FACE_DISP ) != 0 ? uint( face.numSamples ) : diameter * diameter;
+
+	ReSTIRReservoir result = EmptyReservoir();
+	ReSTIRReservoir candidate;
+
+	// Own reservoir: its sample was generated here, so p_hat_r(y_r) is its stored target
+	// (candidate generation already folded visibility into it).
+	ReSTIRReservoir own = reservoirsCur[index];
+	float ownWeight = 0.0;
+	if ( ( own.flags & RESTIR_RES_VALID ) != 0u )
+	{
+		float target = TargetAt( own, face, receiver, candidate );
+		ownWeight = target * own.W * own.M;
+	}
+	else
+	{
+		candidate = own;
+	}
+	ReservoirUpdate( result, candidate, ownWeight, own.M, rng );
+
+	for ( uint ordinal = 0u; ordinal < neighborCount; ++ordinal )
+	{
+		int neighborIndex = NeighborSample( face, receiver, ordinal );
+		if ( !CompatibleNeighbor( face, receiver, sampleIndex, neighborIndex ) )
+			continue;
+		ReSTIRReservoir source = reservoirsCur[ReservoirIndex( face, uint( neighborIndex ), slot )];
+		float weight = 0.0;
+		candidate = source;
+		if ( ( source.flags & RESTIR_RES_VALID ) != 0u )
+		{
+			float target = TargetAt( source, face, receiver, candidate );
+			weight = target * source.W * source.M;
+		}
+		// Empty or occluded neighbour samples add no weight but their M still counts.
+		ReservoirUpdate( result, candidate, weight, source.M, rng );
+	}
+
+	if ( ( result.flags & RESTIR_RES_VALID ) == 0u || result.radiance.w <= 0.0 )
+	{
+		result.W = 0.0;
+		reservoirsNext[index] = result;
+		return;
+	}
+
+	// Z: every compatible source (own included) at which the selected sample is valid.
+	float z = own.M;
+	for ( uint ordinal = 0u; ordinal < neighborCount; ++ordinal )
+	{
+		int neighborIndex = NeighborSample( face, receiver, ordinal );
+		if ( !CompatibleNeighbor( face, receiver, sampleIndex, neighborIndex ) )
+			continue;
+		ReSTIRGpuSample neighbor = samples[neighborIndex];
+		ReSTIRReservoir atNeighbor;
+		if ( TargetAt( result, face, neighbor, atNeighbor ) > 0.0 )
+			z += reservoirsCur[ReservoirIndex( face, uint( neighborIndex ), slot )].M;
+	}
+	result.W = z > 0.0 ? result.wSum / ( z * result.radiance.w ) : 0.0;
+	reservoirsNext[index] = result;
+}

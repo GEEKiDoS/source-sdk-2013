@@ -143,6 +143,8 @@ x86/
 [Aa][Rr][Mm]64/
 bld/
 [Bb]in/
+# Vendored Vulkan SDK subset (src/thirdparty/vulkan_sdk/README.txt); negation must follow [Bb]in/.
+!/src/thirdparty/vulkan_sdk/Bin/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/

@@ -1,0 +1,38 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+uint ExpandBits( uint value )
+{
+	value = ( value * 0x00010001u ) & 0xFF0000FFu;
+	value = ( value * 0x00000101u ) & 0x0F00F00Fu;
+	value = ( value * 0x00000011u ) & 0xC30C30C3u;
+	return ( value * 0x00000005u ) & 0x49249249u;
+}
+
+// Karras 2012 LBVH: quantize centroid to ten bits per world-space axis.
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	uint code = 0xFFFFFFFFu;
+	uint triangleIndex = 0xFFFFFFFFu;
+	if ( index < pc.numTriangles )
+	{
+		ReSTIRGpuTriangle triangle = triangles[index];
+		vec3 triangleCenter = ( triangle.v0.xyz + triangle.v1.xyz + triangle.v2.xyz ) / 3.0;
+		vec3 extent = max( pc.worldMaxs.xyz - pc.worldMins.xyz, vec3( 1.0e-10 ) );
+		uvec3 coord = uvec3( clamp( ( triangleCenter - pc.worldMins.xyz ) / extent * 1024.0, vec3( 0.0 ), vec3( 1023.0 ) ) );
+		code = ( ExpandBits( coord.x ) << 2u ) | ( ExpandBits( coord.y ) << 1u ) | ExpandBits( coord.z );
+		triangleIndex = index;
+	}
+	bvhScratch[index * 2u] = code;
+	bvhScratch[index * 2u + 1u] = triangleIndex;
+}

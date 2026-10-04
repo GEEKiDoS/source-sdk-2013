@@ -1,0 +1,99 @@
+//-----------------------------------------------------------------------------
+//	VRAD_RESTIR.VPC
+//
+//	Project Script
+//-----------------------------------------------------------------------------
+
+$Macro SRCDIR "..\.."
+$Macro OUTBINNAME "vrad_restir_dll"
+$Macro OUTBINDIR "$SRCDIR\..\game\bin"
+$Include "$SRCDIR\vpc_scripts\source_dll_base.vpc"
+
+$Configuration
+{
+	$Compiler
+	{
+		$AdditionalIncludeDirectories "$BASE;$SRCDIR\utils\common;$SRCDIR\utils\vrad_restir;$SRCDIR\thirdparty\vulkan_sdk\Include"
+		$PreprocessorDefinitions "$BASE;PROTECTED_THINGS_DISABLE;VRAD_RESTIR"
+	}
+	$Linker
+	{
+		$AdditionalDependencies "$BASE ws2_32.lib $SRCDIR\thirdparty\vulkan_sdk\Lib\vulkan-1.lib"
+	}
+	$PostBuildEvent
+	{
+		$CommandLine "$BASE" "if not exist $QUOTE$OUTBINDIR\vrad_restir_shaders$QUOTE mkdir $QUOTE$OUTBINDIR\vrad_restir_shaders$QUOTE" "\n" \
+			"copy /y $QUOTE$(ProjectDir)shaders\*.spv$QUOTE $QUOTE$OUTBINDIR\vrad_restir_shaders$QUOTE" "\n"
+	}
+}
+
+$Project "VRAD ReSTIR (DLL)"
+{
+	$Folder "Source Files"
+	{
+		$File "vrad_restir.cpp"
+		$File "restir_scene.cpp"
+		$File "restir_scene_lights.cpp"
+		$File "restir_scene_samples.cpp"
+		$File "restir_lightmap_rescale.cpp"
+		$File "restir_vulkan.cpp"
+		$File "restir_vulkan_scene.cpp"
+		$File "restir_vulkan_bake.cpp"
+		$File "restir_vulkan_services.cpp"
+		$File "restir_denoiser.cpp"
+		$File "restir_staticprops.cpp"
+		$File "prop_lighting.cpp"
+		$File "ambient_cube.cpp"
+		$File "bsp_output.cpp"
+
+		$Folder "Common Files"
+		{
+			$File "$SRCDIR\utils\common\bsplib.cpp"
+			$File "$SRCDIR\utils\common\cmdlib.cpp"
+			$File "$SRCDIR\utils\common\scriplib.cpp"
+			$File "$SRCDIR\utils\common\polylib.cpp"
+			$File "$SRCDIR\utils\common\threads.cpp"
+			$File "$SRCDIR\utils\common\map_shared.cpp"
+			$File "$SRCDIR\utils\common\tools_minidump.cpp"
+			$File "$SRCDIR\public\builddisp.cpp"
+			$File "$SRCDIR\public\disp_common.cpp"
+			$File "$SRCDIR\public\disp_powerinfo.cpp"
+			$File "$SRCDIR\public\DispColl_Common.cpp"
+			$File "$SRCDIR\public\lumpfiles.cpp"
+			$File "$SRCDIR\public\zip_utils.cpp"
+			$File "$SRCDIR\public\filesystem_helpers.cpp"
+			$File "$SRCDIR\public\loadcmdline.cpp"
+			$File "$SRCDIR\public\filesystem_init.cpp"
+			$File "$SRCDIR\utils\common\filesystem_tools.cpp"
+			$File "$SRCDIR\public\ChunkFile.cpp"
+			$File "$SRCDIR\public\BSPTreeData.cpp"
+			$File "$SRCDIR\public\CollisionUtils.cpp"
+			$File "$SRCDIR\utils\common\physdll.cpp"
+			$File "$SRCDIR\utils\common\pacifier.cpp"
+		}
+	}
+	$Folder "Header Files"
+	{
+		$File "vrad_restir.h"
+		$File "restir_types.h"
+		$File "restir_scene.h"
+		$File "restir_scene_internal.h"
+		$File "restir_vulkan.h"
+		$File "restir_vulkan_internal.h"
+		$File "restir_gpu_layout.h"
+		$File "restir_denoiser.h"
+		$File "restir_staticprops.h"
+		$File "restir_lightmap_rescale.h"
+		$File "prop_lighting.h"
+		$File "ambient_cube.h"
+		$File "bsp_output.h"
+	}
+	$Folder "Link Libraries"
+	{
+		$Lib bitmap
+		$Lib mathlib
+		$Lib tier2
+		$Lib vtf
+		$Lib "$LIBCOMMON/lzma"
+	}
+}

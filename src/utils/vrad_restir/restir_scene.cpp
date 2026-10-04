@@ -1,0 +1,910 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// ReSTIR scene geometry and material extraction.
+//
+// Geometry follows the VRAD trace anchors in trace.cpp:492-653.  The scene
+// builder owns only immutable host records; all lighting is evaluated later by
+// the Vulkan backend.
+
+#include "restir_scene_internal.h"
+#include "vrad_restir.h"
+#include "restir_staticprops.h"
+#include "bsplib.h"
+#include "cmdlib.h"
+#include "filesystem_tools.h"
+#include "filesystem.h"
+#include "vtf/vtf.h"
+#include "bitmap/imageformat.h"
+#include "tier1/KeyValues.h"
+#include <float.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifndef SMOOTHING_GROUP_HARD_EDGE
+#define SMOOTHING_GROUP_HARD_EDGE 0xff000000
+#endif
+
+static CUtlDict<int, unsigned short> s_MaterialNames;
+static CUtlDict<int, unsigned short> s_CoverageTextureNames;
+static CUtlVector<unsigned char> s_MaterialCoverageLoaded;
+static CUtlVector<entity_t *> s_ModelEntities;
+
+// utils/vrad/vradstaticprops.cpp:649-684, 859-872 — RGBA8888 alpha extraction.
+static bool LoadCoverageVTF( const char *pBaseTexture, ReSTIRCoverageTexture &coverage )
+{
+	if ( !pBaseTexture || !pBaseTexture[0] || !g_pFileSystem )
+		return false;
+
+	char path[1024];
+	Q_snprintf( path, sizeof( path ), "materials/%s.vtf", pBaseTexture );
+	Q_FixSlashes( path, CORRECT_PATH_SEPARATOR );
+
+	FileHandle_t file = g_pFileSystem->Open( path, "rb" );
+	if ( !file )
+		return false;
+
+	const int size = g_pFileSystem->Size( file );
+	CUtlBuffer buffer( 0, size, 0 );
+	buffer.EnsureCapacity( size );
+	const int bytesRead = g_pFileSystem->Read( buffer.Base(), size, file );
+	g_pFileSystem->Close( file );
+	if ( bytesRead <= 0 )
+		return false;
+
+	buffer.SeekPut( CUtlBuffer::SEEK_HEAD, bytesRead );
+	buffer.SeekGet( CUtlBuffer::SEEK_HEAD, 0 );
+	IVTFTexture *texture = CreateVTFTexture();
+	if ( !texture )
+		return false;
+	if ( !texture->Unserialize( buffer ) )
+	{
+		DestroyVTFTexture( texture );
+		return false;
+	}
+
+	coverage.width = texture->Width();
+	coverage.height = texture->Height();
+	if ( coverage.width <= 0 || coverage.height <= 0 )
+	{
+		DestroyVTFTexture( texture );
+		return false;
+	}
+
+	CUtlVector<unsigned char> rgba;
+	rgba.SetCount( ImageLoader::GetMemRequired( coverage.width, coverage.height, 1,
+		IMAGE_FORMAT_RGBA8888, false ) );
+	const unsigned char *pixels = texture->ImageData( 0, 0, 0, 0, 0, 0 );
+	if ( !ImageLoader::ConvertImageFormat( pixels, texture->Format(), rgba.Base(),
+		IMAGE_FORMAT_RGBA8888, coverage.width, coverage.height, 0, 0 ) )
+	{
+		DestroyVTFTexture( texture );
+		return false;
+	}
+	coverage.texels.SetCount( coverage.width * coverage.height );
+	for ( int i = 0; i < coverage.texels.Count(); ++i )
+		coverage.texels[i] = rgba[i * 4 + 3];
+
+	DestroyVTFTexture( texture );
+	return true;
+}
+
+// utils/vrad/vradstaticprops.cpp:688-740 (FindOrLoadIfValid) — cached base-texture coverage.
+static int LoadCoverageTexture( ReSTIRScene &scene, const char *pMaterialName, const char *pBaseTexture )
+{
+	if ( !pBaseTexture || !pBaseTexture[0] )
+		return -1;
+	const unsigned short cached = s_CoverageTextureNames.Find( pBaseTexture );
+	if ( cached != s_CoverageTextureNames.InvalidIndex() )
+		return s_CoverageTextureNames[cached];
+
+	const int coverageIndex = scene.coverageTextures.AddToTail();
+	ReSTIRCoverageTexture &coverage = scene.coverageTextures[coverageIndex];
+	if ( !LoadCoverageVTF( pBaseTexture, coverage ) )
+	{
+		scene.coverageTextures.Remove( coverageIndex );
+		s_CoverageTextureNames.Insert( pBaseTexture, -1 );
+		Warning( "ReSTIR: couldn't load alpha texture for material %s\n", pMaterialName );
+		return -1;
+	}
+	s_CoverageTextureNames.Insert( pBaseTexture, coverageIndex );
+	return coverageIndex;
+}
+
+// utils/vrad/vradstaticprops.cpp:700-737 — VRAD never initializes the material system; it parses the
+// VMT with KeyValues and loads $basetexture when $translucent or $alphatest is present.
+static int LoadAlphaTestedCoverage( ReSTIRScene &scene, const char *pMaterialName )
+{
+	if ( !g_pFullFileSystem )
+		return -1;
+	char vmtPath[MAX_PATH];
+	Q_snprintf( vmtPath, sizeof( vmtPath ), "materials/%s.vmt", pMaterialName );
+	Q_FixSlashes( vmtPath, CORRECT_PATH_SEPARATOR );
+
+	int coverageIndex = -1;
+	KeyValues *pVMT = new KeyValues( "vmt" );
+	CUtlBuffer buf( 0, 0, CUtlBuffer::TEXT_BUFFER );
+	if ( g_pFullFileSystem->ReadFile( vmtPath, NULL, buf ) && pVMT->LoadFromBuffer( vmtPath, buf ) )
+	{
+		if ( pVMT->FindKey( "$translucent" ) || pVMT->FindKey( "$alphatest" ) )
+		{
+			KeyValues *pBaseTexture = pVMT->FindKey( "$basetexture" );
+			if ( pBaseTexture )
+				coverageIndex = LoadCoverageTexture( scene, pMaterialName, pBaseTexture->GetString() );
+		}
+	}
+	pVMT->deleteThis();
+	return coverageIndex;
+}
+
+// utils/vrad/vradstaticprops.cpp:688-740 — material registry shared with props.
+int ReSTIR_GetOrAddMaterial( ReSTIRScene &scene, const char *pMaterialName,
+	const Vector &reflectivity, bool textureShadows, bool *pOutAlphaTested )
+{
+	const char *name = pMaterialName ? pMaterialName : "";
+	const unsigned short cached = s_MaterialNames.Find( name );
+	int materialIndex;
+	if ( cached != s_MaterialNames.InvalidIndex() )
+	{
+		materialIndex = s_MaterialNames[cached];
+	}
+	else
+	{
+		ReSTIRGpuMaterial material;
+		memset( &material, 0, sizeof( material ) );
+		ReSTIR_SceneSet4( material.reflectivity, reflectivity );
+		material.coverageTexture = -1;
+		materialIndex = scene.materials.AddToTail( material );
+		s_MaterialNames.Insert( name, materialIndex );
+		s_MaterialCoverageLoaded.AddToTail( false );
+	}
+	if ( textureShadows && !s_MaterialCoverageLoaded[materialIndex] )
+	{
+		s_MaterialCoverageLoaded[materialIndex] = true;
+		if ( name[0] )
+			scene.materials[materialIndex].coverageTexture = LoadAlphaTestedCoverage( scene, name );
+	}
+	if ( pOutAlphaTested )
+		*pOutAlphaTested = scene.materials[materialIndex].coverageTexture >= 0;
+	return materialIndex;
+}
+
+// utils/vrad/vrad.cpp:2223-2236 — selected HDR/LDR face array.
+int ReSTIR_SceneFaceCount()
+{
+	return g_pFaces == dfaces_hdr ? numfaces_hdr : numfaces;
+}
+
+// utils/vrad/lightmap.cpp:123-139 — EdgeVertex.
+int ReSTIR_SceneFaceVertex( const dface_t *pFace, int edge )
+{
+	if ( edge < 0 )
+		edge += pFace->numedges;
+	if ( edge >= pFace->numedges )
+		edge %= pFace->numedges;
+	const int surfedge = dsurfedges[pFace->firstedge + edge];
+	return surfedge < 0 ? dedges[-surfedge].v[1] : dedges[surfedge].v[0];
+}
+
+
+// utils/vrad/vrad.cpp:1811-1856 — face_entity assignment, indexed once per model.
+entity_t *ReSTIR_SceneEntityForModel( int model )
+{
+	return model >= 0 && model < s_ModelEntities.Count() ? s_ModelEntities[model] : NULL;
+}
+
+// utils/vrad/vrad.cpp:703-717 — model entity origin copied to face_offset.
+void ReSTIR_SceneFaceOrigin( int model, Vector &origin )
+{
+	origin.Init();
+	entity_t *entity = ReSTIR_SceneEntityForModel( model );
+	if ( entity )
+		GetVectorForKey( entity, "origin", origin );
+}
+
+const char *ReSTIR_SceneFaceMaterial( const dface_t *pFace )
+{
+	if ( pFace->texinfo < 0 || pFace->texinfo >= texinfo.Count() )
+		return "";
+	const texinfo_t &info = texinfo[pFace->texinfo];
+	if ( info.texdata < 0 || info.texdata >= numtexdata )
+		return "";
+	return TexDataStringTable_GetString( dtexdata[info.texdata].nameStringTableID );
+}
+
+// utils/common/polylib.cpp:171-190 — WindingBounds without a temporary winding.
+void ReSTIR_SceneFaceBounds( const dface_t *pFace, const Vector &origin, Vector &mins, Vector &maxs )
+{
+	ClearBounds( mins, maxs );
+	for ( int edge = 0; edge < pFace->numedges; ++edge )
+		AddPointToBounds( dvertexes[ReSTIR_SceneFaceVertex( pFace, edge )].point + origin, mins, maxs );
+}
+
+// utils/common/polylib.cpp:154-166 — WindingArea triangle fan.
+float ReSTIR_SceneFaceArea( const dface_t *pFace, const Vector &origin )
+{
+	if ( pFace->numedges < 3 )
+		return 0.0f;
+
+	const Vector p0 = dvertexes[ReSTIR_SceneFaceVertex( pFace, 0 )].point + origin;
+	float area = 0.0f;
+	for ( int edge = 2; edge < pFace->numedges; ++edge )
+	{
+		const Vector p1 = dvertexes[ReSTIR_SceneFaceVertex( pFace, edge - 1 )].point + origin;
+		const Vector p2 = dvertexes[ReSTIR_SceneFaceVertex( pFace, edge )].point + origin;
+		area += 0.5f * VectorLength( CrossProduct( p1 - p0, p2 - p0 ) );
+	}
+	return area;
+}
+
+// utils/common/polylib.cpp:197-209; utils/vrad/vrad.cpp:619-620 — WindingCenter.
+Vector ReSTIR_SceneFaceCentroid( const dface_t *pFace, const Vector &origin )
+{
+	Vector centroid( 0, 0, 0 );
+	if ( pFace->numedges <= 0 )
+		return centroid;
+	for ( int edge = 0; edge < pFace->numedges; ++edge )
+		centroid += dvertexes[ReSTIR_SceneFaceVertex( pFace, edge )].point + origin;
+	centroid *= 1.0f / pFace->numedges;
+	return centroid;
+}
+
+// utils/vrad/lightmap.cpp:205, 2125 — BSP face plane, not winding cross product.
+Vector ReSTIR_SceneFaceNormal( const dface_t *pFace, const Vector &origin )
+{
+	(void)origin;
+	return dplanes[pFace->planenum].normal;
+}
+
+void ReSTIR_SceneSet4( float out[4], const Vector &value, float w )
+{
+	out[0] = value.x;
+	out[1] = value.y;
+	out[2] = value.z;
+	out[3] = w;
+}
+
+Vector ReSTIR_SceneV4( const float value[4] )
+{
+	return Vector( value[0], value[1], value[2] );
+}
+
+float ReSTIR_SceneSafeLength( const Vector &value )
+{
+	const float length = VectorLength( value );
+	return length > 1.0e-20f ? length : 1.0f;
+}
+
+void ReSTIR_ScenePointUV( const texinfo_t &texinfoValue, const dtexdata_t &texdata,
+	const Vector &point, float &u, float &v )
+{
+	const Vector s( texinfoValue.textureVecsTexelsPerWorldUnits[0][0],
+		texinfoValue.textureVecsTexelsPerWorldUnits[0][1],
+		texinfoValue.textureVecsTexelsPerWorldUnits[0][2] );
+	const Vector t( texinfoValue.textureVecsTexelsPerWorldUnits[1][0],
+		texinfoValue.textureVecsTexelsPerWorldUnits[1][1],
+		texinfoValue.textureVecsTexelsPerWorldUnits[1][2] );
+	u = ( DotProduct( point, s ) + texinfoValue.textureVecsTexelsPerWorldUnits[0][3] ) /
+		( texdata.width > 0 ? texdata.width : 1 );
+	v = ( DotProduct( point, t ) + texinfoValue.textureVecsTexelsPerWorldUnits[1][3] ) /
+		( texdata.height > 0 ? texdata.height : 1 );
+}
+
+void ReSTIR_SceneAddTriangle( ReSTIRScene &scene, const Vector &v0, const Vector &v1, const Vector &v2,
+	int material, unsigned int hitId, unsigned int flags, int face, const float uv[6],
+	bool forceWinding, const Vector &planeNormal )
+{
+	Vector a = v0;
+	Vector b = v1;
+	Vector c = v2;
+	const bool swapped = forceWinding && DotProduct( CrossProduct( b - a, c - a ), planeNormal ) < 0.0f;
+	if ( swapped )
+	{
+		Vector temp = b;
+		b = c;
+		c = temp;
+	}
+
+	ReSTIRGpuTriangle triangle;
+	memset( &triangle, 0, sizeof( triangle ) );
+	ReSTIR_SceneSet4( triangle.v0, a, uv ? uv[0] : 0.0f );
+	ReSTIR_SceneSet4( triangle.v1, b, uv ? uv[1] : 0.0f );
+	ReSTIR_SceneSet4( triangle.v2, c, uv ? uv[swapped ? 4 : 2] : 0.0f );
+	triangle.uv[0] = uv ? uv[swapped ? 5 : 3] : 0.0f;
+	triangle.uv[1] = uv ? uv[swapped ? 2 : 4] : 0.0f;
+	triangle.uv[2] = uv ? uv[swapped ? 3 : 5] : 0.0f;
+	triangle.hitId = hitId;
+	triangle.material = material;
+	triangle.flags = flags;
+	triangle.face = face;
+	scene.triangles.AddToTail( triangle );
+}
+
+void ReSTIR_SceneAddWindingTriangles( ReSTIRScene &scene, winding_t *pWinding, int texinfoIndex,
+	int material, unsigned int hitId, unsigned int flags, int face, const VMatrix &transform,
+	bool forceWinding, const Vector &planeNormal )
+{
+	if ( !pWinding || pWinding->numpoints < 3 )
+		return;
+
+	const texinfo_t &info = texinfo[texinfoIndex];
+	const dtexdata_t &texdata = dtexdata[info.texdata];
+	for ( int point = 2; point < pWinding->numpoints; ++point )
+	{
+		const Vector local[3] = { pWinding->p[0], pWinding->p[point - 1], pWinding->p[point] };
+		Vector world[3];
+		float uv[6];
+		for ( int corner = 0; corner < 3; ++corner )
+		{
+			world[corner] = transform.VMul4x3( local[corner] );
+			float u, v;
+			ReSTIR_ScenePointUV( info, texdata, local[corner], u, v );
+			uv[corner * 2 + 0] = u;
+			uv[corner * 2 + 1] = v;
+		}
+		ReSTIR_SceneAddTriangle( scene, world[0], world[1], world[2], material,
+			hitId, flags, face, uv, forceWinding, planeNormal );
+	}
+}
+
+
+// utils/vrad/radial.cpp:27-35 — LuxelSpaceToWorld (s/t supplied in absolute luxels).
+Vector ReSTIR_SceneLuxelToWorld( const Vector &luxelOrigin, const Vector luxelToWorld[2], float s, float t )
+{
+	return luxelOrigin + luxelToWorld[0] * s + luxelToWorld[1] * t;
+}
+
+// utils/vrad/trace.cpp:435-472 — PointLeafnum_r then leaf cluster.
+int ReSTIR_SceneClusterFromPoint( const Vector &point )
+{
+	if ( numnodes <= 0 )
+		return -1;
+	int node = 0;
+	while ( node >= 0 )
+	{
+		const dnode_t &current = dnodes[node];
+		const dplane_t &plane = dplanes[current.planenum];
+		const float distance = plane.type < 3 ? point[plane.type] - plane.dist : DotProduct( plane.normal, point ) - plane.dist;
+		node = current.children[distance < 0.0f ? 1 : 0];
+	}
+	const int leaf = -1 - node;
+	return leaf >= 0 && leaf < numleafs ? dleafs[leaf].cluster : -1;
+}
+
+// utils/vrad/vraddisps.cpp:349-421 — DispBuilderInit.
+static void InitDisplacement( int faceIndex, CCoreDispInfo &disp )
+{
+	const dface_t &face = g_pFaces[faceIndex];
+	const ddispinfo_t &dispInfo = g_dispinfo[face.dispinfo];
+	CCoreDispSurface *surface = disp.GetSurface();
+	surface->SetPointCount( 4 );
+	surface->SetHandle( faceIndex );
+	surface->SetContents( dispInfo.contents );
+	for ( int corner = 0; corner < 4; ++corner )
+		surface->SetPoint( corner, dvertexes[ReSTIR_SceneFaceVertex( &face, corner )].point );
+	Vector normal;
+	surface->GetNormal( normal );
+	for ( int corner = 0; corner < 4; ++corner )
+		surface->SetPointNormal( corner, normal );
+	surface->SetPointStart( dispInfo.startPosition );
+	surface->FindSurfPointStartIndex();
+	surface->AdjustSurfPointData();
+
+	const texinfo_t &info = texinfo[face.texinfo];
+	const Vector u( info.lightmapVecsLuxelsPerWorldUnits[0][0],
+		info.lightmapVecsLuxelsPerWorldUnits[0][1], info.lightmapVecsLuxelsPerWorldUnits[0][2] );
+	const Vector v( info.lightmapVecsLuxelsPerWorldUnits[1][0],
+		info.lightmapVecsLuxelsPerWorldUnits[1][1], info.lightmapVecsLuxelsPerWorldUnits[1][2] );
+	const int luxelsPerWorldUnit = static_cast<int>( 1.0f / VectorLength( u ) );
+	surface->CalcLuxelCoords( luxelsPerWorldUnit, false, u, v );
+	disp.SetNeighborData( dispInfo.m_EdgeNeighbors, dispInfo.m_CornerNeighbors );
+	disp.InitDispInfo( dispInfo.power, dispInfo.minTess, dispInfo.smoothingAngle,
+		&g_DispVerts[dispInfo.m_iDispVertStart], &g_DispTris[dispInfo.m_iDispTriStart] );
+}
+
+// utils/vrad/disp_vrad.cpp:21-46 — corner lookup, including the 0.1-world-unit match.
+static int FindDisplacementCorner( CCoreDispInfo *disp, const Vector &point )
+{
+	int closest = 0;
+	float distance = 1.0e24f;
+	for ( int corner = 0; corner < 4; ++corner )
+	{
+		const int vertex = disp->VertIndexToInt( disp->GetCornerPointIndex( corner ) );
+		const float candidate = disp->GetVert( vertex ).DistTo( point );
+		if ( candidate < distance )
+		{
+			closest = corner;
+			distance = candidate;
+		}
+	}
+	return distance <= 0.1f ? closest : -1;
+}
+
+// utils/vrad/disp_vrad.cpp:49-78 — corner neighbors then both edge sub-neighbors.
+static int GetDisplacementNeighbors( const CCoreDispInfo *disp, int (&neighbors)[512] )
+{
+	int count = 0;
+	for ( int corner = 0; corner < 4; ++corner )
+	{
+		const CDispCornerNeighbors *list = disp->GetCornerNeighbors( corner );
+		for ( int index = 0; index < list->m_nNeighbors; ++index )
+		{
+			if ( count < ARRAYSIZE( neighbors ) )
+				neighbors[count++] = list->m_Neighbors[index];
+		}
+	}
+	for ( int edge = 0; edge < 4; ++edge )
+	{
+		const CDispNeighbor *list = disp->GetEdgeNeighbor( edge );
+		for ( int sub = 0; sub < 2; ++sub )
+		{
+			if ( list->m_SubNeighbors[sub].IsValid() && count < ARRAYSIZE( neighbors ) )
+				neighbors[count++] = list->m_SubNeighbors[sub].GetNeighborIndex();
+		}
+	}
+	return count;
+}
+
+// utils/vrad/disp_vrad.cpp:156-204 — blend T-junction midpoint and both corners.
+static void BlendDisplacementTJunctions( CCoreDispInfo **list, int count )
+{
+	for ( int index = 0; index < count; ++index )
+	{
+		CCoreDispInfo *disp = list[index];
+		for ( int edge = 0; edge < 4; ++edge )
+		{
+			CDispNeighbor *neighbors = disp->GetEdgeNeighbor( edge );
+			const CVertIndex midpoint = disp->GetEdgeMidPoint( edge );
+			const int vertex = disp->VertIndexToInt( midpoint );
+			if ( !neighbors->m_SubNeighbors[0].IsValid() || !neighbors->m_SubNeighbors[1].IsValid() )
+				continue;
+			CCoreDispInfo *first = list[neighbors->m_SubNeighbors[0].GetNeighborIndex()];
+			CCoreDispInfo *second = list[neighbors->m_SubNeighbors[1].GetNeighborIndex()];
+			const int firstCorner = FindDisplacementCorner( first, disp->GetVert( vertex ) );
+			const int secondCorner = FindDisplacementCorner( second, disp->GetVert( vertex ) );
+			if ( firstCorner == -1 || secondCorner == -1 )
+				continue;
+			const CVertIndex firstVertex = first->GetCornerPointIndex( firstCorner );
+			const CVertIndex secondVertex = second->GetCornerPointIndex( secondCorner );
+			Vector normal = disp->GetNormal( vertex ) + first->GetNormal( firstVertex ) +
+				second->GetNormal( secondVertex );
+			VectorNormalize( normal );
+			disp->SetNormal( vertex, normal );
+			first->SetNormal( firstVertex, normal );
+			second->SetNormal( secondVertex, normal );
+		}
+	}
+}
+
+// utils/vrad/disp_vrad.cpp:81-153 — merge coincident corner normals in encounter order.
+static void BlendDisplacementCorners( CCoreDispInfo **list, int count )
+{
+	CUtlVector<int> cornerVertices;
+	for ( int index = 0; index < count; ++index )
+	{
+		CCoreDispInfo *disp = list[index];
+		int neighbors[512];
+		const int neighborCount = GetDisplacementNeighbors( disp, neighbors );
+		cornerVertices.SetCount( neighborCount );
+		for ( int corner = 0; corner < 4; ++corner )
+		{
+			const int vertex = disp->VertIndexToInt( disp->GetCornerPointIndex( corner ) );
+			const Vector &point = disp->GetVert( vertex );
+			Vector normal = disp->GetNormal( vertex );
+			for ( int neighbor = 0; neighbor < neighborCount; ++neighbor )
+			{
+				CCoreDispInfo *other = list[neighbors[neighbor]];
+				const int otherCorner = FindDisplacementCorner( other, point );
+				if ( otherCorner == -1 )
+				{
+					cornerVertices[neighbor] = -1;
+					continue;
+				}
+				const int otherVertex = other->VertIndexToInt( other->GetCornerPointIndex( otherCorner ) );
+				cornerVertices[neighbor] = otherVertex;
+				normal += other->GetNormal( otherVertex );
+			}
+			VectorNormalize( normal );
+			disp->SetNormal( vertex, normal );
+			for ( int neighbor = 0; neighbor < neighborCount; ++neighbor )
+			{
+				if ( cornerVertices[neighbor] != -1 )
+					list[neighbors[neighbor]]->SetNormal( cornerVertices[neighbor], normal );
+			}
+		}
+	}
+}
+
+// utils/vrad/disp_vrad.cpp:207-276 — shared and in-between edge normal interpolation.
+static void BlendDisplacementEdges( CCoreDispInfo **list, int count )
+{
+	for ( int index = 0; index < count; ++index )
+	{
+		CCoreDispInfo *disp = list[index];
+		for ( int edge = 0; edge < 4; ++edge )
+		{
+			CDispNeighbor *neighbors = disp->GetEdgeNeighbor( edge );
+			for ( int sub = 0; sub < 2; ++sub )
+			{
+				CDispSubNeighbor *neighbor = &neighbors->m_SubNeighbors[sub];
+				if ( !neighbor->IsValid() )
+					continue;
+				CCoreDispInfo *other = list[neighbor->GetNeighborIndex()];
+				const int edgeDimension = g_EdgeDims[edge];
+				CDispSubEdgeIterator iterator;
+				iterator.Start( disp, edge, sub, true );
+				iterator.Next();
+				CVertIndex previous = iterator.GetVertIndex();
+				while ( iterator.Next() )
+				{
+					if ( !iterator.IsLastVert() )
+					{
+						Vector normal = disp->GetNormal( iterator.GetVertIndex() ) +
+							other->GetNormal( iterator.GetNBVertIndex() );
+						VectorNormalize( normal );
+						disp->SetNormal( iterator.GetVertIndex(), normal );
+						other->SetNormal( iterator.GetNBVertIndex(), normal );
+					}
+					const int start = previous[!edgeDimension];
+					const int end = iterator.GetVertIndex()[!edgeDimension];
+					for ( int between = start + 1; between < end; ++between )
+					{
+						const float fraction = RemapVal( between, start, end, 0, 1 );
+						Vector normal;
+						VectorLerp( disp->GetNormal( previous ), disp->GetNormal( iterator.GetVertIndex() ),
+							fraction, normal );
+						VectorNormalize( normal );
+						CVertIndex vertex;
+						vertex[edgeDimension] = iterator.GetVertIndex()[edgeDimension];
+						vertex[!edgeDimension] = between;
+						disp->SetNormal( vertex, normal );
+					}
+					previous = iterator.GetVertIndex();
+				}
+			}
+		}
+	}
+}
+
+// utils/vrad/vraddisps.cpp:426-469 — build all surfaces before edge smoothing.
+static bool BuildDisplacements( ReSTIRSceneBuildContext &context )
+{
+	context.displacements.SetCount( g_dispinfo.Count() );
+	for ( int index = 0; index < context.displacements.Count(); ++index )
+	{
+		context.displacements[index] = new CCoreDispInfo;
+		context.displacements[index]->SetListIndex( index );
+	}
+	for ( int index = 0; index < context.displacements.Count(); ++index )
+		context.displacements[index]->SetDispUtilsHelperInfo( context.displacements.Base(),
+			context.displacements.Count() );
+	for ( int faceIndex = 0; faceIndex < context.faceCount; ++faceIndex )
+	{
+		const dface_t &face = g_pFaces[faceIndex];
+		if ( face.dispinfo >= 0 && face.dispinfo < context.displacements.Count() )
+			InitDisplacement( faceIndex, *context.displacements[face.dispinfo] );
+	}
+	for ( int index = 0; index < context.displacements.Count(); ++index )
+	{
+		if ( !context.displacements[index]->Create() )
+		{
+			Warning( "ReSTIR: failed to build displacement %d\n", index );
+			return false;
+		}
+	}
+	// utils/vrad/disp_vrad.cpp:317-329 — smoothing pass order is significant.
+	BlendDisplacementTJunctions( context.displacements.Base(), context.displacements.Count() );
+	BlendDisplacementCorners( context.displacements.Base(), context.displacements.Count() );
+	BlendDisplacementEdges( context.displacements.Base(), context.displacements.Count() );
+	return true;
+}
+
+// utils/vrad/trace.cpp:535-559 — leaf brush union, with an indexed membership set.
+static void CollectBrushes_r( int node, CUtlVector<int> &brushes, CUtlVector<unsigned char> &seen )
+{
+	if ( node < 0 )
+	{
+		const int leaf = -1 - node;
+		for ( int i = 0; i < dleafs[leaf].numleafbrushes; ++i )
+		{
+			const int brush = dleafbrushes[dleafs[leaf].firstleafbrush + i];
+			if ( !seen[brush] )
+			{
+				seen[brush] = true;
+				brushes.AddToTail( brush );
+			}
+		}
+		return;
+	}
+	CollectBrushes_r( dnodes[node].children[0], brushes, seen );
+	CollectBrushes_r( dnodes[node].children[1], brushes, seen );
+}
+
+// VRAD trace.cpp:492-532 and 595-653, including per-side alpha coverage.
+static void AddBrushModelGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
+	int model, const VMatrix &transform )
+{
+	if ( model < 0 || model >= nummodels )
+		return;
+
+	CUtlVector<int> brushes;
+	CUtlVector<unsigned char> seen;
+	seen.SetCount( numbrushes );
+	memset( seen.Base(), 0, seen.Count() );
+	CollectBrushes_r( dmodels[model].headnode, brushes, seen );
+	for ( int brushIndex = 0; brushIndex < brushes.Count(); ++brushIndex )
+	{
+		const dbrush_t &brush = dbrushes[brushes[brushIndex]];
+		if ( !( brush.contents & MASK_OPAQUE ) )
+			continue;
+
+		for ( int sideIndex = 0; sideIndex < brush.numsides; ++sideIndex )
+		{
+			const dbrushside_t &side = dbrushsides[brush.firstside + sideIndex];
+			if ( side.texinfo < 0 || side.texinfo >= texinfo.Count() || side.dispinfo != 0 )
+				continue;
+			const texinfo_t &info = texinfo[side.texinfo];
+			if ( info.texdata < 0 || info.texdata >= numtexdata )
+				continue;
+			if ( info.flags & SURF_SKY )
+				continue;
+
+			winding_t *winding = BaseWindingForPlane( dplanes[side.planenum].normal, dplanes[side.planenum].dist );
+			for ( int otherIndex = 0; otherIndex < brush.numsides && winding; ++otherIndex )
+			{
+				if ( otherIndex == sideIndex )
+					continue;
+				const dbrushside_t &other = dbrushsides[brush.firstside + otherIndex];
+				if ( other.bevel )
+					continue;
+				ChopWindingInPlace( &winding, dplanes[other.planenum ^ 1].normal,
+					dplanes[other.planenum ^ 1].dist, 0.0f );
+			}
+			if ( !winding )
+				continue;
+
+			const dtexdata_t &texdata = dtexdata[info.texdata];
+			const char *materialName = TexDataStringTable_GetString( texdata.nameStringTableID );
+			bool alphaTested = false;
+			const int material = ReSTIR_GetOrAddMaterial( scene, materialName, texdata.reflectivity,
+				context.options->textureShadows, &alphaTested );
+			ReSTIR_SceneAddWindingTriangles( scene, winding, side.texinfo, material,
+				RESTIR_TRACE_ID_OPAQUE, RESTIR_TRI_SHADOW | ( alphaTested ? RESTIR_TRI_NONOPAQUE : 0 ),
+				-1, transform, false, vec3_origin );
+			FreeWinding( winding );
+		}
+	}
+}
+
+// utils/vrad/trace.cpp:612-652 — world-face gather triangles; other faces emit only.
+static void AddFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene, int faceIndex )
+{
+	const dface_t &face = g_pFaces[faceIndex];
+	if ( face.texinfo < 0 || face.numedges < 3 )
+		return;
+	const texinfo_t &info = texinfo[face.texinfo];
+	const dtexdata_t &texdata = dtexdata[info.texdata];
+	bool alphaTested = false;
+	const int material = ReSTIR_GetOrAddMaterial( scene, ReSTIR_SceneFaceMaterial( &face ),
+		texdata.reflectivity, context.options->textureShadows, &alphaTested );
+	winding_t *winding = AllocWinding( face.numedges );
+	winding->numpoints = face.numedges;
+	for ( int edge = 0; edge < face.numedges; ++edge )
+		winding->p[edge] = dvertexes[ReSTIR_SceneFaceVertex( &face, edge )].point;
+	context.faceTriFirst[faceIndex] = scene.triangles.Count();
+	VMatrix identity;
+	identity.SetupMatrixOrgAngles( context.faceOrigins[faceIndex], QAngle( 0, 0, 0 ) );
+	const unsigned int flags = context.faceModels[faceIndex] == 0 && !( info.flags & SURF_NOLIGHT ) ?
+		RESTIR_TRI_WORLDFACE : 0;
+	ReSTIR_SceneAddWindingTriangles( scene, winding, face.texinfo, material,
+		RESTIR_TRACE_ID_OPAQUE, flags | ( alphaTested ? RESTIR_TRI_NONOPAQUE : 0 ),
+		faceIndex, identity, true, dplanes[face.planenum].normal );
+	context.faceTriCount[faceIndex] = scene.triangles.Count() - context.faceTriFirst[faceIndex];
+	FreeWinding( winding );
+}
+
+// utils/vrad/trace.cpp:612-652 — sky dface triangle fan and TRACE_ID_SKY.
+static void AddSkyFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene, int faceIndex )
+{
+	const dface_t &face = g_pFaces[faceIndex];
+	if ( face.texinfo < 0 || face.numedges < 3 )
+		return;
+	const texinfo_t &info = texinfo[face.texinfo];
+	const dtexdata_t &texdata = dtexdata[info.texdata];
+	bool alphaTested = false;
+	const int material = ReSTIR_GetOrAddMaterial( scene, ReSTIR_SceneFaceMaterial( &face ),
+		texdata.reflectivity, context.options->textureShadows, &alphaTested );
+	winding_t *winding = AllocWinding( face.numedges );
+	winding->numpoints = face.numedges;
+	for ( int edge = 0; edge < face.numedges; ++edge )
+		winding->p[edge] = dvertexes[ReSTIR_SceneFaceVertex( &face, edge )].point;
+	VMatrix identity;
+	identity.Identity();
+	context.faceTriFirst[faceIndex] = scene.triangles.Count();
+	ReSTIR_SceneAddWindingTriangles( scene, winding, face.texinfo, material,
+		RESTIR_TRACE_ID_SKY, RESTIR_TRI_SHADOW | RESTIR_TRI_SKY | RESTIR_TRI_WORLDFACE |
+			( alphaTested ? RESTIR_TRI_NONOPAQUE : 0 ), faceIndex, identity, true,
+		ReSTIR_SceneFaceNormal( &face, vec3_origin ) );
+	context.faceTriCount[faceIndex] = scene.triangles.Count() - context.faceTriFirst[faceIndex];
+	FreeWinding( winding );
+}
+
+// utils/vrad/vrad_dispcoll.cpp:1064-1080 — indexed displacement ray geometry.
+static void AddDisplacementGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene, int faceIndex )
+{
+	const dface_t &face = g_pFaces[faceIndex];
+	const texinfo_t &info = texinfo[face.texinfo];
+	const dtexdata_t &texdata = dtexdata[info.texdata];
+	CCoreDispInfo &displacement = *context.displacements[face.dispinfo];
+	const int material = ReSTIR_GetOrAddMaterial( scene, ReSTIR_SceneFaceMaterial( &face ),
+		texdata.reflectivity, false, NULL );
+	// Displacement UVs serve lightmap lookup; VRAD displacement shadows are opaque.
+	unsigned int flags = 0;
+	if ( g_dispinfo[face.dispinfo].contents & MASK_OPAQUE )
+		flags |= RESTIR_TRI_SHADOW;
+	if ( !( info.flags & SURF_NOLIGHT ) )
+		flags |= RESTIR_TRI_WORLDFACE;
+	context.faceTriFirst[faceIndex] = scene.triangles.Count();
+	const float inverseWidth = 1.0f / ( displacement.GetWidth() - 1 );
+	const float inverseHeight = 1.0f / ( displacement.GetHeight() - 1 );
+	for ( int tri = 0; tri < displacement.GetTriCount(); ++tri )
+	{
+		unsigned short indices[3];
+		displacement.GetTriIndices( tri, indices[0], indices[2], indices[1] );
+		float uv[6];
+		for ( int corner = 0; corner < 3; ++corner )
+		{
+			uv[corner * 2] = ( indices[corner] % displacement.GetWidth() ) * inverseWidth;
+			uv[corner * 2 + 1] = ( indices[corner] / displacement.GetWidth() ) * inverseHeight;
+		}
+		// CCoreDisp triangles are clockwise; reverse vertices and their UVs together.
+		ReSTIR_SceneAddTriangle( scene, displacement.GetVert( indices[0] ),
+			displacement.GetVert( indices[1] ), displacement.GetVert( indices[2] ),
+			material, RESTIR_TRACE_ID_OPAQUE, flags, faceIndex, uv, false, vec3_origin );
+	}
+	context.faceTriCount[faceIndex] = scene.triangles.Count() - context.faceTriFirst[faceIndex];
+}
+
+// utils/vrad/trace.cpp:578-653 — brush-entity shadow casters and world geometry.
+bool ReSTIR_SceneBuildGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene )
+{
+	// trace.cpp:492-532, 536-593 — world brushes first, then marked bmodels.
+	VMatrix identity;
+	identity.Identity();
+	AddBrushModelGeometry( context, scene, 0, identity );
+	for ( int entityIndex = 0; entityIndex < num_entities; ++entityIndex )
+	{
+		entity_t &entity = entities[entityIndex];
+		if ( IntForKey( &entity, "vrad_brush_cast_shadows" ) == 0 )
+			continue;
+		const char *modelName = ValueForKey( &entity, "model" );
+		if ( Q_strlen( modelName ) <= 1 )
+			continue;
+		const int model = atoi( modelName + 1 );
+		if ( model <= 0 || model >= nummodels )
+			continue;
+		Vector origin;
+		QAngle angles;
+		GetVectorForKey( &entity, "origin", origin );
+		GetAnglesForKey( &entity, "angles", angles );
+		VMatrix transform;
+		transform.SetupMatrixOrgAngles( origin, angles );
+		AddBrushModelGeometry( context, scene, model, transform );
+	}
+
+	for ( int faceIndex = 0; faceIndex < context.faceCount; ++faceIndex )
+	{
+		const dface_t &face = g_pFaces[faceIndex];
+		if ( face.texinfo < 0 || face.dispinfo >= 0 )
+			continue;
+		if ( context.faceModels[faceIndex] == 0 && ( texinfo[face.texinfo].flags & SURF_SKY ) )
+			AddSkyFaceGeometry( context, scene, faceIndex );
+		else
+			AddFaceGeometry( context, scene, faceIndex );
+	}
+	for ( int faceIndex = 0; faceIndex < context.faceCount; ++faceIndex )
+	{
+		if ( g_pFaces[faceIndex].dispinfo >= 0 )
+			AddDisplacementGeometry( context, scene, faceIndex );
+	}
+
+	if ( !g_ReSTIRStaticPropMgr.AppendTriangles( scene, context.options->textureShadows ) )
+		return false;
+
+	if ( scene.triangles.Count() > 0 )
+	{
+		Vector mins( FLT_MAX, FLT_MAX, FLT_MAX );
+		Vector maxs( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+		for ( int i = 0; i < scene.triangles.Count(); ++i )
+		{
+			AddPointToBounds( ReSTIR_SceneV4( scene.triangles[i].v0 ), mins, maxs );
+			AddPointToBounds( ReSTIR_SceneV4( scene.triangles[i].v1 ), mins, maxs );
+			AddPointToBounds( ReSTIR_SceneV4( scene.triangles[i].v2 ), mins, maxs );
+		}
+		scene.worldMins = mins;
+		scene.worldMaxs = maxs;
+	}
+	return true;
+}
+
+// utils/vrad/vrad.cpp:667-736,2223-2279 — model/face records and geometry ordering.
+bool CReSTIRSceneBuilder::Build( const ReSTIROptions &options, ReSTIRScene &scene )
+{
+	scene = ReSTIRScene();
+	s_MaterialNames.RemoveAll();
+	s_CoverageTextureNames.RemoveAll();
+	s_MaterialCoverageLoaded.RemoveAll();
+	s_ModelEntities.SetCount( nummodels );
+	for ( int model = 0; model < nummodels; ++model )
+		s_ModelEntities[model] = num_entities > 0 ? &entities[0] : NULL;
+	for ( int entityIndex = num_entities - 1; entityIndex >= 0; --entityIndex )
+	{
+		const char *name = ValueForKey( &entities[entityIndex], "model" );
+		if ( name[0] != '*' )
+			continue;
+		const int model = atoi( name + 1 );
+		if ( model < 0 || model >= nummodels )
+			continue;
+		char expected[32];
+		Q_snprintf( expected, sizeof( expected ), "*%d", model );
+		if ( !strcmp( name, expected ) )
+			s_ModelEntities[model] = &entities[entityIndex];
+	}
+	for ( int i = 0; i < g_NonShadowCastingMaterialStrings.Count(); ++i )
+		free( const_cast<char *>( g_NonShadowCastingMaterialStrings[i] ) );
+	g_NonShadowCastingMaterialStrings.RemoveAll();
+
+	ReSTIR_ScenePrepareLightFiles( options );
+	ReSTIRSceneBuildContext context;
+	context.options = &options;
+	context.faceCount = ReSTIR_SceneFaceCount();
+	context.faceTriFirst.SetCount( context.faceCount );
+	context.faceTriCount.SetCount( context.faceCount );
+	context.faceOrigins.SetCount( context.faceCount );
+	context.faceModels.SetCount( context.faceCount );
+	context.faceNormals.SetCount( context.faceCount );
+	context.faceClusters.SetCount( context.faceCount );
+	context.faceClusterLists.SetCount( context.faceCount );
+	for ( int model = 0; model < nummodels; ++model )
+	{
+		Vector origin;
+		ReSTIR_SceneFaceOrigin( model, origin );
+		const dmodel_t &brushModel = dmodels[model];
+		for ( int faceIndex = brushModel.firstface;
+			faceIndex < brushModel.firstface + brushModel.numfaces; ++faceIndex )
+		{
+			context.faceModels[faceIndex] = model;
+			context.faceOrigins[faceIndex] = origin;
+		}
+	}
+	for ( int faceIndex = 0; faceIndex < context.faceCount; ++faceIndex )
+	{
+		context.faceTriFirst[faceIndex] = -1;
+		context.faceTriCount[faceIndex] = 0;
+		context.faceNormals[faceIndex] = ReSTIR_SceneFaceNormal( &g_pFaces[faceIndex], context.faceOrigins[faceIndex] );
+		context.faceClusters[faceIndex] = ReSTIR_SceneClusterFromPoint( ReSTIR_SceneFaceCentroid( &g_pFaces[faceIndex], context.faceOrigins[faceIndex] ) );
+		context.faceClusterLists[faceIndex] = new CUtlVector<int>;
+	}
+	for ( int leaf = 0; leaf < numleafs; ++leaf )
+	{
+		const int cluster = dleafs[leaf].cluster;
+		for ( int i = 0; i < dleafs[leaf].numleaffaces; ++i )
+		{
+			const int faceIndex = dleaffaces[dleafs[leaf].firstleafface + i];
+			if ( faceIndex < 0 || faceIndex >= context.faceCount )
+				continue;
+			if ( context.faceClusterLists[faceIndex]->Find( cluster ) < 0 )
+				context.faceClusterLists[faceIndex]->AddToTail( cluster );
+		}
+	}
+
+	if ( !BuildDisplacements( context ) )
+		return false;
+	if ( !ReSTIR_SceneBuildGeometry( context, scene ) )
+		return false;
+	ReSTIR_SceneBuildFaceNeighbors( context, scene );
+	if ( !ReSTIR_SceneSaveVertexNormals( context ) )
+		return false;
+	if ( !ReSTIR_SceneBuildLights( context, scene ) )
+		return false;
+	return ReSTIR_SceneBuildSamples( context, scene );
+}

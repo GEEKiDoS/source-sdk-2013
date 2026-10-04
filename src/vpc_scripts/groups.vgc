@@ -51,6 +51,16 @@ $Group "dx12_smoke"
 	"shaderapidx12_smoke"
 }
 
+// tier0/tier2/vstdlib/bitmap/vtf are prebuilt libraries in this SDK (no project scripts); only
+// the buildable dependencies are listed so generation stays warning-free.
+$Group "vrad_restir"
+{
+	"vrad_restir_dll"
+	"vrad_restir_launcher"
+	"tier1"
+	"mathlib"
+}
+
 $Group "everything"
 {
 	"captioncompiler"
@@ -78,6 +88,8 @@ $Group "everything"
 	"vice"
 	"vrad_dll"
 	"vrad_launcher"
+	"vrad_restir_dll"
+	"vrad_restir_launcher"
 	"vtf2tga"
 	"vtfdiff"
 	"vvis_dll"

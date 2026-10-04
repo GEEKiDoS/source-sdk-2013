@@ -1,0 +1,23 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+layout( std430, set = 0, binding = 15 ) readonly buffer ServiceIn { ReSTIRGpuRay rays[]; };
+layout( std430, set = 0, binding = 16 ) buffer ServiceOut { ReSTIRGpuHit hits[]; };
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	ReSTIRGpuRay ray = rays[index];
+	HitInfo hit;
+	TraceRay( ray.origin.xyz, ray.direction.xyz, ray.origin.w, ray.direction.w, pc.rayMask, RESTIR_NO_HIT, hit );
+	hits[index] = ReSTIRGpuHit( hit.t, hit.hitId, hit.triangle, hit.face, vec4( hit.normal, 0.0 ) );
+}

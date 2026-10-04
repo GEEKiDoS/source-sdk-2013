@@ -1,0 +1,37 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+bool PairLess( uvec2 first, uvec2 second )
+{
+	return first.x < second.x || ( first.x == second.x && first.y < second.y );
+}
+
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	// Approved ABI-preserving encoding: pass=j, iteration=log2(k). Packing
+	// k<<16|j truncated networks at 65536 triangles and is intentionally gone.
+	uint k = 1u << pc.iteration;
+	uint partner = index ^ pc.pass;
+	if ( partner <= index )
+		return;
+	uvec2 first = uvec2( bvhScratch[2u * index], bvhScratch[2u * index + 1u] );
+	uvec2 second = uvec2( bvhScratch[2u * partner], bvhScratch[2u * partner + 1u] );
+	bool ascending = ( index & k ) == 0u;
+	if ( ascending ? PairLess( second, first ) : PairLess( first, second ) )
+	{
+		bvhScratch[2u * index] = second.x;
+		bvhScratch[2u * index + 1u] = second.y;
+		bvhScratch[2u * partner] = first.x;
+		bvhScratch[2u * partner + 1u] = first.y;
+	}
+}

@@ -47,6 +47,16 @@ $Project "shaderapidx12_smoke"
 	"utils\shaderapidx12_smoke\shaderapidx12_smoke.vpc" [$WIN64]
 }
 
+$Project "vrad_restir_dll"
+{
+	"utils\vrad_restir\vrad_restir.vpc" [$WIN64]
+}
+
+$Project "vrad_restir_launcher"
+{
+	"utils\vrad_restir\vrad_restir_launcher.vpc" [$WIN64]
+}
+
 $Project "client"
 {
 	"game\client\client_tf.vpc"			[$TF]
