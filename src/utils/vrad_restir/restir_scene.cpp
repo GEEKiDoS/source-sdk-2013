@@ -168,7 +168,10 @@ static int LoadAlbedoTexture( ReSTIRScene &scene, const char *pMaterialName, con
 }
 
 // utils/vrad/vradstaticprops.cpp:700-737 — VRAD never initializes the material system; it parses the
-// VMT with KeyValues. Returns the $basetexture (empty when absent) and whether the material is alpha-tested.
+// VMT with KeyValues. Returns the $basetexture (empty when absent) and whether the material is
+// alpha-tested. VBSP's cubemap pass rewrites world materials into per-map "patch" VMTs
+// ("include" base + "replace"/"insert" blocks, materialsystem CMaterial::LoadVMTFile); those are
+// followed so the base material's keys are seen, as the engine does.
 static bool ReadMaterialVMT( const char *pMaterialName, char *pBaseTexture, int baseTextureSize, bool &alphaTested )
 {
 	pBaseTexture[0] = 0;
@@ -180,17 +183,49 @@ static bool ReadMaterialVMT( const char *pMaterialName, char *pBaseTexture, int 
 	Q_FixSlashes( vmtPath, CORRECT_PATH_SEPARATOR );
 
 	bool loaded = false;
-	KeyValues *pVMT = new KeyValues( "vmt" );
-	CUtlBuffer buf( 0, 0, CUtlBuffer::TEXT_BUFFER );
-	if ( g_pFullFileSystem->ReadFile( vmtPath, NULL, buf ) && pVMT->LoadFromBuffer( vmtPath, buf ) )
+	// Patch chains are short (one level in practice); bound them anyway.
+	for ( int depth = 0; depth < 4; ++depth )
 	{
+		KeyValues *pVMT = new KeyValues( "vmt" );
+		CUtlBuffer buf( 0, 0, CUtlBuffer::TEXT_BUFFER );
+		if ( !g_pFullFileSystem->ReadFile( vmtPath, NULL, buf ) || !pVMT->LoadFromBuffer( vmtPath, buf ) )
+		{
+			pVMT->deleteThis();
+			break;
+		}
 		loaded = true;
-		alphaTested = pVMT->FindKey( "$translucent" ) != NULL || pVMT->FindKey( "$alphatest" ) != NULL;
-		KeyValues *pKey = pVMT->FindKey( "$basetexture" );
-		if ( pKey )
-			Q_strncpy( pBaseTexture, pKey->GetString(), baseTextureSize );
+		if ( Q_stricmp( pVMT->GetName(), "patch" ) == 0 )
+		{
+			const char *pInclude = pVMT->GetString( "include", "" );
+			// Keys overridden by the patch win over the included file's.
+			for ( int block = 0; block < 2; ++block )
+			{
+				KeyValues *pBlock = pVMT->FindKey( block == 0 ? "replace" : "insert" );
+				if ( !pBlock )
+					continue;
+				if ( pBlock->FindKey( "$translucent" ) || pBlock->FindKey( "$alphatest" ) )
+					alphaTested = true;
+				if ( !pBaseTexture[0] && pBlock->FindKey( "$basetexture" ) )
+					Q_strncpy( pBaseTexture, pBlock->GetString( "$basetexture" ), baseTextureSize );
+			}
+			Q_strncpy( vmtPath, pInclude, sizeof( vmtPath ) );
+			Q_FixSlashes( vmtPath, CORRECT_PATH_SEPARATOR );
+			pVMT->deleteThis();
+			if ( !vmtPath[0] )
+				break;
+			continue;
+		}
+		if ( pVMT->FindKey( "$translucent" ) || pVMT->FindKey( "$alphatest" ) )
+			alphaTested = true;
+		if ( !pBaseTexture[0] )
+		{
+			KeyValues *pKey = pVMT->FindKey( "$basetexture" );
+			if ( pKey )
+				Q_strncpy( pBaseTexture, pKey->GetString(), baseTextureSize );
+		}
+		pVMT->deleteThis();
+		break;
 	}
-	pVMT->deleteThis();
 	return loaded;
 }
 
@@ -919,7 +954,10 @@ bool CReSTIRSceneBuilder::Build( const ReSTIROptions &options, ReSTIRScene &scen
 	scene = ReSTIRScene();
 	s_MaterialNames.RemoveAll();
 	s_CoverageTextureNames.RemoveAll();
+	s_AlbedoTextureNames.RemoveAll();
 	s_MaterialCoverageLoaded.RemoveAll();
+	s_MaterialAlbedoLoaded.RemoveAll();
+	s_AlbedoInverseAverage.RemoveAll();
 	s_ModelEntities.SetCount( nummodels );
 	for ( int model = 0; model < nummodels; ++model )
 		s_ModelEntities[model] = num_entities > 0 ? &entities[0] : NULL;
