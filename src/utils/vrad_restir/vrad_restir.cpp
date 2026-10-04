@@ -219,6 +219,11 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			options.staticPropLighting = true;
 			continue;
 		}
+		if ( IsOption( pArg, "-restir_notexturealbedo" ) )
+		{
+			options.textureAlbedo = false;
+			continue;
+		}
 		if ( IsOption( pArg, "-restir_texturealbedo" ) )
 		{
 			options.textureAlbedo = true;

@@ -71,8 +71,8 @@ struct ReSTIROptions
 	CUtlString	lightsFile;				// -lights <file>, empty = none
 	float		lightmapScale;			// -restir_lightmapscale (1.0): multiplier on luxel size for brush faces, (0,1];
 										// 0.5 = twice the luxel density per axis; faces are re-split to the 32-luxel limit
-	bool		textureAlbedo;			// -restir_texturealbedo: bounce light picks up the base texture's per-texel colour
-										// (normalized to the material's reflectivity) instead of VRAD's one colour per material
+	bool		textureAlbedo;			// default on: bounce light picks up the base texture's per-texel colour (normalized
+										// to the material's reflectivity); -restir_notexturealbedo restores VRAD's one colour per material
 
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
 	// an explicit -restir_* value always wins over the preset, whatever the argument order.
@@ -95,7 +95,7 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( false ), preset( RESTIR_PRESET_DEFAULT ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
