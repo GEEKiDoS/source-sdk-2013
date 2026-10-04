@@ -3,8 +3,10 @@
 
 #include "restir_scene_internal.h"
 #include "vrad_restir.h"
+#include "restir_vulkan.h"
 #include "bsplib.h"
 #include "cmdlib.h"
+#include "coordsize.h"
 #include "mathlib/bumpvects.h"
 #include <math.h>
 #include <string.h>
@@ -396,9 +398,110 @@ static bool ClusterVisible( int cluster, const byte *pvs )
 	return cluster < 0 || ( pvs[cluster >> 3] & ( 1 << ( cluster & 7 ) ) ) != 0;
 }
 
-// utils/vrad/lightmap.cpp:2495-2527 — PVS eligibility before style allocation.
-// The host preassigns plane-facing slots; actual cosine/falloff/visibility remain on the GPU.
-static bool LightAffectsFace( const ReSTIRSceneBuildContext &context,
+// GPU StandardLightRadiance (shaders/restir_lights.glsl) times the receiver cosine, without
+// visibility: zero outside the radius, past a hard fade, outside a spot's outer cone, or when
+// every normal faces away. Mirrors VRAD's fxdot test (lightmap.cpp:2512-2527) minus the shadow ray.
+static bool PointLightReaches( const ReSTIRGpuLight &light, const Vector &origin,
+	const Vector *normals, int normalCount )
+{
+	const Vector offset = ReSTIR_SceneV4( light.origin ) - origin;
+	const float distanceSquared = offset.LengthSqr();
+	if ( distanceSquared <= 0.0f )
+	{
+		return false;
+	}
+	const float distance = sqrtf( distanceSquared );
+	if ( light.origin[3] > 0.0f && distance > light.origin[3] )
+	{
+		return false;
+	}
+	if ( light.fade[1] > light.fade[0] && distance > light.fade[1] )
+	{
+		return false;
+	}
+	const Vector direction = offset / distance;
+	if ( light.type == emit_spotlight && -DotProduct( direction, ReSTIR_SceneV4( light.normal ) ) <= light.fade[3] )
+	{
+		return false;
+	}
+	const float evaluationDistance = MIN( MAX( distance, 1.0f ), light.fade[2] );
+	const float denominator = light.attenuation[0] + evaluationDistance * light.attenuation[1] +
+		evaluationDistance * evaluationDistance * light.attenuation[2];
+	if ( !( denominator > 0.0f ) )
+	{
+		return false;
+	}
+	for ( int i = 0; i < normalCount; ++i )
+	{
+		if ( DotProduct( normals[i], direction ) > 0.0f )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// Points of `face` an unshadowed point/spot/quake light reaches: every sample (and, on
+// displacements, every luxel) at the GPU's direct-lighting origin. Appends one shadow ray per
+// point to `pRays` (LightVisibility in shaders/restir_lights.glsl); with NULL, stops at the first.
+static int FaceLightReachRays( const ReSTIRScene &scene, const ReSTIRGpuFace &face,
+	const ReSTIRGpuLight &light, CUtlVector<ReSTIRGpuRay> *pRays )
+{
+	const Vector faceNormal = ReSTIR_SceneV4( face.faceNormal );
+	const Vector lightOrigin = ReSTIR_SceneV4( light.origin );
+	const bool bumped = ( face.flags & RESTIR_FACE_BUMPED ) != 0;
+	const bool disp = ( face.flags & RESTIR_FACE_DISP ) != 0;
+	const int numSamples = face.numSamples;
+	const int numPoints = numSamples + ( disp ? face.luxelW * face.luxelH : 0 );
+	int reached = 0;
+	Vector normals[NUM_BUMP_VECTS + 1];
+	for ( int k = 0; k < numPoints; ++k )
+	{
+		Vector origin;
+		int normalCount = 1;
+		if ( k < numSamples )
+		{
+			const ReSTIRGpuSample &sample = scene.samples[face.firstSample + k];
+			origin = ReSTIR_SceneV4( sample.position ) + faceNormal;
+			normals[0] = ReSTIR_SceneV4( sample.normal );
+			if ( bumped )
+			{
+				for ( int b = 0; b < NUM_BUMP_VECTS; ++b )
+				{
+					normals[normalCount++] = ReSTIR_SceneV4( sample.bump[b] );
+				}
+			}
+		}
+		else
+		{
+			const ReSTIRGpuLuxel &luxel = scene.luxels[face.firstLuxel + k - numSamples];
+			origin = ReSTIR_SceneV4( luxel.position ) + faceNormal;
+			normals[0] = ReSTIR_SceneV4( luxel.normal );
+		}
+		if ( !PointLightReaches( light, origin, normals, normalCount ) )
+		{
+			continue;
+		}
+		++reached;
+		if ( !pRays )
+		{
+			break;
+		}
+		Vector direction = lightOrigin - origin;
+		const float distance = VectorNormalize( direction );
+		const float epsilon = (float)DIST_EPSILON;	// shaders/restir_common.glsl RESTIR_DIST_EPSILON
+		ReSTIRGpuRay &ray = pRays->Element( pRays->AddToTail() );
+		ReSTIR_SceneSet4( ray.origin, origin, epsilon );
+		ReSTIR_SceneSet4( ray.direction, direction, MAX( epsilon, distance - epsilon ) );
+	}
+	return reached;
+}
+
+// utils/vrad/lightmap.cpp:2495-2527 — a style slot is allocated only for a light that reaches
+// some sample. PVS uses every cluster the face touches; point/spot/quake lights are then tested
+// per sample (and per luxel on displacements, whose border reconstruction reads luxels) at the
+// GPU's direct-lighting origin. Surface and sky emitters keep the plane-side test.
+static bool LightAffectsFace( const ReSTIRSceneBuildContext &context, const ReSTIRScene &scene,
 	const ReSTIRGpuFace &face, const ReSTIRGpuLight &light, const byte *pvs )
 {
 	bool visible = false;
@@ -426,12 +529,15 @@ static bool LightAffectsFace( const ReSTIRSceneBuildContext &context,
 	{
 		return true;
 	}
-	const dface_t &dface = g_pFaces[face.dface];
-	const Vector normal = ReSTIR_SceneV4( face.faceNormal );
-	const Vector lightOrigin = ReSTIR_SceneV4( light.origin );
-	const float faceDistance = dplanes[dface.planenum].dist +
-		DotProduct( context.faceOrigins[face.dface], normal );
-	return DotProduct( normal, lightOrigin ) - faceDistance > 0.0f;
+	const Vector faceNormal = ReSTIR_SceneV4( face.faceNormal );
+	if ( light.type == emit_surface )
+	{
+		const dface_t &dface = g_pFaces[face.dface];
+		const float faceDistance = dplanes[dface.planenum].dist +
+			DotProduct( context.faceOrigins[face.dface], faceNormal );
+		return DotProduct( faceNormal, ReSTIR_SceneV4( light.origin ) ) - faceDistance > 0.0f;
+	}
+	return FaceLightReachRays( scene, face, light, NULL ) > 0;
 }
 
 // utils/vrad/lightmap.cpp:2467-2481 — bump bases derived from the smoothed normal.
@@ -794,9 +900,8 @@ static float DispSampleRadiusSquared( const texinfo_t &info )
 	return radius * radius;
 }
 
-// utils/vrad/lightmap.cpp:2408-2431,2529-2541 — encounter order and one overflow warning.
-static void AssignFaceStyles( ReSTIRSceneBuildContext &context, const ReSTIRScene &scene,
-	const ReSTIRSceneLightVis &vis, ReSTIRGpuFace &face )
+// utils/vrad/lightmap.cpp:2408-2431 — slots in encounter order; false when a style did not fit.
+static bool AllocateFaceStyles( const ReSTIRScene &scene, const int *lightIndices, int count, ReSTIRGpuFace &face )
 {
 	face.numStyles = 1;
 	face.styles[0] = 0;
@@ -804,41 +909,61 @@ static void AssignFaceStyles( ReSTIRSceneBuildContext &context, const ReSTIRScen
 	{
 		face.styles[i] = 255;
 	}
-	bool warned = false;
-	for ( int lightIndex = 0; lightIndex < scene.lights.Count(); ++lightIndex )
+	bool fits = true;
+	for ( int i = 0; i < count; ++i )
 	{
-		const ReSTIRGpuLight &light = scene.lights[lightIndex];
-		const byte *pvs = vis.lightPVS.Base() + lightIndex * vis.bytes;
-		if ( light.style == 0 || !LightAffectsFace( context, face, light, pvs ) )
-		{
-			continue;
-		}
-		bool duplicate = false;
+		const int style = scene.lights[lightIndices[i]].style;
+		bool present = false;
 		for ( int slot = 0; slot < face.numStyles; ++slot )
 		{
-			if ( face.styles[slot] == light.style )
-			{
-				duplicate = true;
-				break;
-			}
+			present |= face.styles[slot] == style;
 		}
-		if ( duplicate )
+		if ( present )
 		{
 			continue;
 		}
 		if ( face.numStyles >= MAXLIGHTMAPS )
 		{
-			if ( !warned )
-			{
-				const ReSTIRGpuLuxel &luxel = scene.luxels[face.firstLuxel];
-				const Vector point = ReSTIR_SceneV4( luxel.position );
-				Warning( "Too many light styles on a face at (%f, %f, %f)\n", point.x, point.y, point.z );
-				warned = true;
-			}
+			fits = false;
 			continue;
 		}
-		face.styles[face.numStyles++] = light.style;
+		face.styles[face.numStyles++] = style;
 	}
+	return fits;
+}
+
+// utils/vrad/lightmap.cpp:2529-2541 — one overflow warning per face.
+static void WarnFaceStyleOverflow( const ReSTIRScene &scene, const ReSTIRGpuFace &face )
+{
+	const Vector point = ReSTIR_SceneV4( scene.luxels[face.firstLuxel].position );
+	Warning( "Too many light styles on a face at (%f, %f, %f)\n", point.x, point.y, point.z );
+}
+
+// Without shadow rays the candidate set is a superset of VRAD's. When it does not fit, the face
+// keeps MAXLIGHTMAPS provisional slots (an upper bound for the output layout) and is resolved by
+// ReSTIR_ResolveFaceStyles once the scene is on the GPU.
+static void AssignFaceStyles( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
+	const ReSTIRSceneLightVis &vis, int faceIndex, ReSTIRGpuFace &face )
+{
+	const int first = scene.styleCandidateLights.Count();
+	for ( int lightIndex = 0; lightIndex < scene.lights.Count(); ++lightIndex )
+	{
+		const ReSTIRGpuLight &light = scene.lights[lightIndex];
+		const byte *pvs = vis.lightPVS.Base() + lightIndex * vis.bytes;
+		if ( light.style != 0 && LightAffectsFace( context, scene, face, light, pvs ) )
+		{
+			scene.styleCandidateLights.AddToTail( lightIndex );
+		}
+	}
+	const int count = scene.styleCandidateLights.Count() - first;
+	if ( AllocateFaceStyles( scene, scene.styleCandidateLights.Base() + first, count, face ) )
+	{
+		scene.styleCandidateLights.SetCountNonDestructively( first );
+		return;
+	}
+	scene.styleOverflowFaces.AddToTail( faceIndex );
+	scene.styleCandidateFirst.AddToTail( first );
+	scene.styleCandidateCount.AddToTail( count );
 }
 
 // utils/vrad/lightmap.cpp:2484-2485 — sample clusters use the stored, not illumination-pushed point.
@@ -967,7 +1092,7 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 		{
 			CacheDisplacementFaceClusters( context, scene, face );
 		}
-		AssignFaceStyles( context, scene, vis, face );
+		AssignFaceStyles( context, scene, vis, faceIndex, face );
 		face.firstOutput = scene.numOutputValues;
 		scene.numOutputValues += face.numStyles * face.numChannels * face.luxelW * face.luxelH;
 		entity_t *entity = ReSTIR_SceneEntityForModel( context.faceModels[dfaceIndex] );
@@ -998,4 +1123,68 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 		face.numNeighbors = scene.faceNeighbors.Count() - face.firstNeighbor;
 	}
 	return true;
+}
+
+// utils/vrad/lightmap.cpp:2512-2541 — overflowing faces keep only the candidates whose shadow
+// ray reaches the light from at least one point, in light order; a real overflow warns like VRAD.
+// Slots only shrink, so the output layout sized from the provisional styles stays valid.
+bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
+{
+	if ( !scene.styleOverflowFaces.Count() )
+	{
+		return true;
+	}
+	// Per candidate: [rayFirst, +rayCount) shadow rays; rayCount < 0 = emitter kept without rays.
+	const int numCandidates = scene.styleCandidateLights.Count();
+	CUtlVector<ReSTIRGpuRay> rays;
+	CUtlVector<int> rayFirst, rayCount;
+	rayFirst.SetCount( numCandidates );
+	rayCount.SetCount( numCandidates );
+	for ( int o = 0; o < scene.styleOverflowFaces.Count(); ++o )
+	{
+		const ReSTIRGpuFace &face = scene.faces[scene.styleOverflowFaces[o]];
+		for ( int c = scene.styleCandidateFirst[o]; c < scene.styleCandidateFirst[o] + scene.styleCandidateCount[o]; ++c )
+		{
+			const ReSTIRGpuLight &light = scene.lights[scene.styleCandidateLights[c]];
+			rayFirst[c] = rays.Count();
+			rayCount[c] = ( light.type == emit_surface || light.type == emit_skylight || light.type == emit_skyambient ) ?
+				-1 : FaceLightReachRays( scene, face, light, &rays );
+		}
+	}
+	CUtlVector<ReSTIRGpuHit> hits;
+	if ( rays.Count() && !device.TraceRays( rays, RESTIR_RAY_MASK_SHADOW, hits ) )
+	{
+		return false;
+	}
+	int warnings = 0;
+	CUtlVector<int> visible;
+	for ( int o = 0; o < scene.styleOverflowFaces.Count(); ++o )
+	{
+		ReSTIRGpuFace &face = scene.faces[scene.styleOverflowFaces[o]];
+		visible.RemoveAll();
+		for ( int c = scene.styleCandidateFirst[o]; c < scene.styleCandidateFirst[o] + scene.styleCandidateCount[o]; ++c )
+		{
+			bool reaches = rayCount[c] < 0;
+			for ( int r = rayFirst[c]; r < rayFirst[c] + rayCount[c] && !reaches; ++r )
+			{
+				reaches = hits[r].triangle < 0;
+			}
+			if ( reaches )
+			{
+				visible.AddToTail( scene.styleCandidateLights[c] );
+			}
+		}
+		if ( !AllocateFaceStyles( scene, visible.Base(), visible.Count(), face ) )
+		{
+			WarnFaceStyleOverflow( scene, face );
+			++warnings;
+		}
+	}
+	Msg( "VRAD ReSTIR: %d faces reached by more than %d light styles; %d still overflow after shadow rays\n",
+		scene.styleOverflowFaces.Count(), MAXLIGHTMAPS, warnings );
+	scene.styleOverflowFaces.Purge();
+	scene.styleCandidateFirst.Purge();
+	scene.styleCandidateCount.Purge();
+	scene.styleCandidateLights.Purge();
+	return device.UpdateFaceStyles( scene );
 }

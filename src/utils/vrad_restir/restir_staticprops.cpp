@@ -417,6 +417,136 @@ bool CReSTIRStaticPropMgr::AppendTriangles( ReSTIRScene &scene, bool textureShad
 	return true;
 }
 
+struct ReSTIRPropEmitter
+{
+	ReSTIRMaterialEmission emission;
+	CUtlVector<ReSTIRGpuEmitterTriangle> triangles;
+};
+
+static void AppendPropEmitterTriangle( CUtlVector<ReSTIRGpuEmitterTriangle> &triangles,
+	const Vector positions[3], const Vector2D uv[3] )
+{
+	ReSTIRGpuEmitterTriangle triangle;
+	for ( int axis = 0; axis < 3; ++axis )
+	{
+		triangle.v0[axis] = positions[0][axis];
+		triangle.v1[axis] = positions[1][axis];
+		triangle.v2[axis] = positions[2][axis];
+	}
+	triangle.v0[3] = uv[0].x;
+	triangle.v1[3] = uv[0].y;
+	triangle.v2[3] = uv[1].x;
+	triangle.uv[0] = uv[1].y;
+	triangle.uv[1] = uv[2].x;
+	triangle.uv[2] = uv[2].y;
+	triangle.uv[3] = 0.0f;
+	triangles.AddToTail( triangle );
+}
+
+bool CReSTIRStaticPropMgr::AppendEmitters( ReSTIRScene &scene, const ReSTIROptions &options )
+{
+	// Geometry traversal mirrors vradstaticprops.cpp:1819-2017, but NO_SHADOW and the
+	// non-shadow-casting material list govern visibility only, never surface emission.
+	for ( int pi = 0; pi < m_Props.Count(); ++pi )
+	{
+		const Prop &p = *m_Props[pi];
+		Model &m = *m_Models[p.lump.m_PropType];
+		OptimizedModel::FileHeader_t *vh = (OptimizedModel::FileHeader_t *)m.vtx.Base();
+		if ( !m.header || !vh )
+			continue;
+		matrix3x4_t xform;
+		AngleMatrix( p.lump.m_Angles, p.lump.m_Origin, xform );
+		const int skin = m.header->numskinfamilies > 0 ?
+			clamp( (int)p.lump.m_Skin, 0, m.header->numskinfamilies - 1 ) : 0;
+		CUtlDict<int, int> materialGroups;
+		CUtlVector<ReSTIRPropEmitter *> emitters;
+		for ( int body = 0; body < m.header->numbodyparts; ++body )
+		{
+			mstudiobodyparts_t *bp = m.header->pBodypart( body );
+			OptimizedModel::BodyPartHeader_t *vbp = vh->pBodyPart( body );
+			for ( int mid = 0; mid < bp->nummodels; ++mid )
+			{
+				mstudiomodel_t *sm = bp->pModel( mid );
+				OptimizedModel::ModelLODHeader_t *lod = vbp->pModel( mid )->pLOD( 0 );
+				for ( int meshId = 0; meshId < sm->nummeshes; ++meshId )
+				{
+					mstudiomesh_t *mesh = sm->pMesh( meshId );
+					// studio.h skinref table maps each mesh material through the selected skin family.
+					const int textureIndex = m.header->numskinfamilies > 0 ?
+						*m.header->pSkinref( skin * m.header->numskinref + mesh->material ) : mesh->material;
+					char materialName[MAX_PATH];
+					ResolvePropMaterialName( m.header, textureIndex, materialName, sizeof( materialName ) );
+					ReSTIRMaterialEmission emission;
+					if ( !ReSTIR_GetMaterialEmission( scene, options, materialName, emission ) )
+						continue;
+					const mstudio_meshvertexdata_t *vd = mesh->GetVertexData( (void *)&m );
+					if ( !vd )
+						continue;
+					int groupIndex = materialGroups.Find( materialName );
+					if ( groupIndex == materialGroups.InvalidIndex() )
+					{
+						ReSTIRPropEmitter *emitter = new ReSTIRPropEmitter;
+						emitter->emission = emission;
+						groupIndex = materialGroups.Insert( materialName, emitters.AddToTail( emitter ) );
+					}
+					ReSTIRPropEmitter &emitter = *emitters[materialGroups[groupIndex]];
+					OptimizedModel::MeshHeader_t *vm = lod->pMesh( meshId );
+					for ( int group = 0; group < vm->numStripGroups; ++group )
+					{
+						OptimizedModel::StripGroupHeader_t *sg = vm->pStripGroup( group );
+						for ( int si = 0; si < sg->numStrips; ++si )
+						{
+							OptimizedModel::StripHeader_t *strip = sg->pStrip( si );
+							if ( !( strip->flags & OptimizedModel::STRIP_IS_TRILIST ) )
+							{
+								emitters.PurgeAndDeleteElements();
+								return false;
+							}
+							for ( int k = 0; k < strip->numIndices; k += 3 )
+							{
+								Vector positions[3], normalSum( 0, 0, 0 );
+								Vector2D uv[3];
+								for ( int corner = 0; corner < 3; ++corner )
+								{
+									const int at = strip->indexOffset + k + corner;
+									const int vertex = sg->pVertex( *sg->pIndex( at ) )->origMeshVertID;
+									VectorTransform( *vd->Position( vertex ), xform, positions[corner] );
+									Vector normal;
+									VectorRotate( *vd->Normal( vertex ), xform, normal );
+									normalSum += normal;
+									uv[corner] = *vd->Texcoord( vertex );
+								}
+								Vector geometricNormal;
+								CrossProduct( positions[1] - positions[0], positions[2] - positions[0], geometricNormal );
+								if ( DotProduct( geometricNormal, normalSum ) < 0.0f )
+								{
+									V_swap( positions[1], positions[2] );
+									V_swap( uv[1], uv[2] );
+								}
+								AppendPropEmitterTriangle( emitter.triangles, positions, uv );
+								if ( emitter.emission.twoSided )
+								{
+									V_swap( positions[1], positions[2] );
+									V_swap( uv[1], uv[2] );
+									AppendPropEmitterTriangle( emitter.triangles, positions, uv );
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		for ( int i = 0; i < emitters.Count(); ++i )
+		{
+			const ReSTIRPropEmitter &emitter = *emitters[i];
+			ReSTIR_AddSurfaceEmitter( scene, emitter.triangles.Base(), emitter.triangles.Count(),
+				emitter.emission.intensity, emitter.emission.texture, RESTIR_LIGHT_MATERIAL );
+		}
+		emitters.PurgeAndDeleteElements();
+	}
+	return true;
+}
+
 static bool Bary( const Vector2D &p, const Vector2D &a, const Vector2D &b, const Vector2D &c, Vector &v )
 {
 	float d = ( b.y - c.y ) * ( a.x - c.x ) + ( c.x - b.x ) * ( a.y - c.y );

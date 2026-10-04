@@ -1,7 +1,7 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
-// Direct lights are rebuilt from texlights and entities, never the input lump.
-// The temporary subdivision records exist only to export VRAD leaf emitters;
-// GPU surface lights sample the corresponding face's triangle range directly.
+// Direct lights are rebuilt from texlights, entities and emissive materials, never the input
+// lump. The temporary subdivision records exist only to export VRAD leaf emitters; GPU surface
+// lights sample a separate front-facing emitter triangle stream (ReSTIRScene::emitterTriangles).
 
 #include "restir_scene_internal.h"
 #include "vrad_restir.h"
@@ -318,7 +318,136 @@ static ReSTIRGpuLight AllocLight( const Vector &origin )
 	memset( &light, 0, sizeof( light ) );
 	ReSTIR_SceneSet4( light.origin, origin );
 	light.firstTri = -1;
+	light.emissionTexture = -1;
 	return light;
+}
+
+struct ReSTIREmitterWeight
+{
+	int triangle;
+	double area;
+	double power;
+};
+
+static float EmitterTriangleArea( const ReSTIRGpuEmitterTriangle &triangle, Vector &areaNormal )
+{
+	CrossProduct( ReSTIR_SceneV4( triangle.v1 ) - ReSTIR_SceneV4( triangle.v0 ),
+		ReSTIR_SceneV4( triangle.v2 ) - ReSTIR_SceneV4( triangle.v0 ), areaNormal );
+	areaNormal *= 0.5f;
+	return areaNormal.Length();
+}
+
+int ReSTIR_AddSurfaceEmitter( ReSTIRScene &scene, const ReSTIRGpuEmitterTriangle *pTriangles, int count,
+	const Vector &intensity, int texture, int lightFlags )
+{
+	CUtlVector<ReSTIREmitterWeight> weights;
+	weights.EnsureCapacity( count );
+	double totalArea = 0.0, totalPower = 0.0;
+	Vector centroid( 0, 0, 0 ), normal( 0, 0, 0 );
+	for ( int i = 0; i < count; ++i )
+	{
+		const ReSTIRGpuEmitterTriangle &triangle = pTriangles[i];
+		Vector areaNormal;
+		const float area = EmitterTriangleArea( triangle, areaNormal );
+		if ( area <= 0.0f )
+		{
+			continue;
+		}
+		const float uv[6] = { triangle.v0[3], triangle.v1[3], triangle.v2[3],
+			triangle.uv[0], triangle.uv[1], triangle.uv[2] };
+		const Vector mean = ReSTIR_EmissionTriangleMean( scene, texture, uv );
+		ReSTIREmitterWeight weight;
+		weight.triangle = i;
+		weight.area = area;
+		weight.power = area * ( 0.2126 * intensity.x * mean.x +
+			0.7152 * intensity.y * mean.y + 0.0722 * intensity.z * mean.z );
+		weights.AddToTail( weight );
+		totalArea += weight.area;
+		totalPower += weight.power;
+		centroid += ( ReSTIR_SceneV4( triangle.v0 ) + ReSTIR_SceneV4( triangle.v1 ) +
+			ReSTIR_SceneV4( triangle.v2 ) ) * ( area / 3.0f );
+		normal += areaNormal;
+	}
+	if ( totalArea <= 0.0 || totalPower <= 0.0 )
+	{
+		return -1;
+	}
+	centroid *= (float)( 1.0 / totalArea );
+	VectorNormalize( normal );
+	ReSTIRGpuLight light = AllocLight( centroid );
+	light.type = emit_surface;
+	light.firstTri = scene.emitterTriangles.Count();
+	light.numTris = weights.Count();
+	light.emissionTexture = texture;
+	light.lightFlags = lightFlags;
+	ReSTIR_SceneSet4( light.normal, normal );
+	ReSTIR_SceneSet4( light.intensity, intensity, (float)totalPower );
+	scene.emitterTriangles.EnsureCapacity( light.firstTri + light.numTris );
+	double cumulative = 0.0;
+	float radiusSquared = 0.0f;
+	for ( int i = 0; i < weights.Count(); ++i )
+	{
+		const ReSTIREmitterWeight &weight = weights[i];
+		ReSTIRGpuEmitterTriangle triangle = pTriangles[weight.triangle];
+		cumulative += 0.9 * weight.power / totalPower + 0.1 * weight.area / totalArea;
+		triangle.uv[3] = i == weights.Count() - 1 ? 1.0f : (float)cumulative;
+		scene.emitterTriangles.AddToTail( triangle );
+		radiusSquared = MAX( radiusSquared, ( ReSTIR_SceneV4( triangle.v0 ) - centroid ).LengthSqr() );
+		radiusSquared = MAX( radiusSquared, ( ReSTIR_SceneV4( triangle.v1 ) - centroid ).LengthSqr() );
+		radiusSquared = MAX( radiusSquared, ( ReSTIR_SceneV4( triangle.v2 ) - centroid ).LengthSqr() );
+	}
+	light.attenuation[0] = sqrtf( radiusSquared );
+	return scene.lights.AddToTail( light );
+}
+
+static ReSTIRGpuEmitterTriangle CopyEmitterTriangle( const ReSTIRGpuTriangle &source )
+{
+	ReSTIRGpuEmitterTriangle triangle;
+	memcpy( triangle.v0, source.v0, sizeof( triangle.v0 ) );
+	memcpy( triangle.v1, source.v1, sizeof( triangle.v1 ) );
+	memcpy( triangle.v2, source.v2, sizeof( triangle.v2 ) );
+	memcpy( triangle.uv, source.uv, sizeof( triangle.uv ) );
+	triangle.uv[3] = 0.0f;
+	return triangle;
+}
+
+static void ReverseEmitterTriangle( ReSTIRGpuEmitterTriangle &triangle )
+{
+	for ( int axis = 0; axis < 3; ++axis )
+	{
+		V_swap( triangle.v1[axis], triangle.v2[axis] );
+	}
+	V_swap( triangle.v2[3], triangle.uv[1] );
+	V_swap( triangle.uv[0], triangle.uv[2] );
+}
+
+// utils/vrad/lightmap.cpp:1557-1582 — keep the texlight's VRAD intensity and patch origin;
+// only its GPU sampling geometry moves out of the visibility triangle stream.
+static void AppendTexlightTriangles( const ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
+	int face, ReSTIRGpuLight &light )
+{
+	light.firstTri = scene.emitterTriangles.Count();
+	double totalArea = 0.0;
+	for ( int i = 0; i < context.faceTriCount[face]; ++i )
+	{
+		ReSTIRGpuEmitterTriangle triangle = CopyEmitterTriangle( scene.triangles[context.faceTriFirst[face] + i] );
+		Vector areaNormal;
+		triangle.uv[3] = EmitterTriangleArea( triangle, areaNormal );
+		if ( triangle.uv[3] <= 0.0f )
+		{
+			continue;
+		}
+		totalArea += triangle.uv[3];
+		scene.emitterTriangles.AddToTail( triangle );
+	}
+	light.numTris = scene.emitterTriangles.Count() - light.firstTri;
+	double cumulative = 0.0;
+	for ( int i = 0; i < light.numTris; ++i )
+	{
+		ReSTIRGpuEmitterTriangle &triangle = scene.emitterTriangles[light.firstTri + i];
+		cumulative += triangle.uv[3] / totalArea;
+		triangle.uv[3] = i == light.numTris - 1 ? 1.0f : (float)cumulative;
+	}
 }
 
 // utils/vrad/lightmap.cpp:1124-1169.
@@ -979,7 +1108,7 @@ static int ClusterForPatch( const ReSTIRSurfacePatch &patch )
 }
 
 // utils/vrad/lightmap.cpp:1557-1582. One GPU face emitter; one exported leaf light.
-static bool BuildSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIRScene &scene )
+static bool BuildSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIRScene &scene, CUtlVector<bool> &texlightFaces )
 {
 	CUtlVector<ReSTIRSurfacePatch> patches;
 	for ( int model = 0; model < nummodels; ++model )
@@ -1009,14 +1138,14 @@ static bool BuildSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 		int face = patch.face;
 		ReSTIRGpuLight light = AllocLight( patch.origin );
 		light.type = emit_surface;
-		light.firstTri = context.faceTriFirst[face];
-		light.numTris = context.faceTriCount[face];
+		AppendTexlightTriangles( context, scene, face, light );
 		ReSTIR_SceneSet4( light.normal, patch.normal );
 		Vector intensity;
 		VectorScale( patch.baseLight, s_flLightScale * patch.scale[0] * patch.scale[1] / patch.baseArea, intensity );
 		VectorScale( intensity, s_flDirectScale, intensity );
 		ReSTIR_SceneSet4( light.intensity, intensity );
 		patch.gpuLight = scene.lights.AddToTail( light );
+		texlightFaces[face] = true;
 	}
 	for ( int i = 0; i < rootCount; ++i )
 	{
@@ -1063,6 +1192,105 @@ static bool BuildSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 		FreeWinding( patches[i].winding );
 	}
 	return success;
+}
+
+// Brush geometry mirrors AddFaceGeometry (restir_scene.cpp:801-825), and displacement
+// winding mirrors utils/vrad/vrad_dispcoll.cpp:1064-1080. Emission always uses material UVs,
+// not the displacement-grid UVs used by the visibility and lightmap gather geometry.
+static bool BuildMaterialSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
+	const CUtlVector<bool> &texlightFaces )
+{
+	int brushEmitters = 0, dispEmitters = 0;
+	CUtlVector<ReSTIRGpuEmitterTriangle> triangles;
+	for ( int model = 0; model < nummodels; ++model )
+	{
+		for ( int i = 0; i < dmodels[model].numfaces; ++i )
+		{
+			const int faceIndex = dmodels[model].firstface + i;
+			const dface_t &face = g_pFaces[faceIndex];
+			if ( face.texinfo < 0 || texlightFaces[faceIndex] )
+			{
+				continue;
+			}
+			const texinfo_t &info = texinfo[face.texinfo];
+			if ( info.flags & ( SURF_NODRAW | SURF_SKY | SURF_SKY2D | SURF_SKIP | SURF_HINT | SURF_TRIGGER ) )
+			{
+				continue;
+			}
+			ReSTIRMaterialEmission emission;
+			if ( !ReSTIR_GetMaterialEmission( scene, *context.options, ReSTIR_SceneFaceMaterial( &face ), emission ) )
+			{
+				continue;
+			}
+			triangles.RemoveAll();
+			if ( face.dispinfo == -1 )
+			{
+				triangles.EnsureCapacity( context.faceTriCount[faceIndex] * ( emission.twoSided ? 2 : 1 ) );
+				for ( int tri = 0; tri < context.faceTriCount[faceIndex]; ++tri )
+				{
+					triangles.AddToTail( CopyEmitterTriangle( scene.triangles[context.faceTriFirst[faceIndex] + tri] ) );
+				}
+			}
+			else
+			{
+				CCoreDispInfo &displacement = *context.displacements[face.dispinfo];
+				const dtexdata_t &data = dtexdata[info.texdata];
+				triangles.EnsureCapacity( displacement.GetTriCount() * ( emission.twoSided ? 2 : 1 ) );
+				for ( int tri = 0; tri < displacement.GetTriCount(); ++tri )
+				{
+					unsigned short indices[3];
+					displacement.GetTriIndices( tri, indices[0], indices[2], indices[1] );
+					ReSTIRGpuEmitterTriangle triangle;
+					ReSTIR_SceneSet4( triangle.v0, displacement.GetVert( indices[0] ) );
+					ReSTIR_SceneSet4( triangle.v1, displacement.GetVert( indices[1] ) );
+					ReSTIR_SceneSet4( triangle.v2, displacement.GetVert( indices[2] ) );
+					float uv[6];
+					for ( int corner = 0; corner < 3; ++corner )
+					{
+						Vector flat;
+						displacement.GetFlatVert( indices[corner], flat );
+						ReSTIR_ScenePointUV( info, data, flat, uv[corner * 2], uv[corner * 2 + 1] );
+					}
+					triangle.v0[3] = uv[0];
+					triangle.v1[3] = uv[1];
+					triangle.v2[3] = uv[2];
+					triangle.uv[0] = uv[3];
+					triangle.uv[1] = uv[4];
+					triangle.uv[2] = uv[5];
+					triangle.uv[3] = 0.0f;
+					triangles.AddToTail( triangle );
+				}
+			}
+			if ( emission.twoSided )
+			{
+				const int frontCount = triangles.Count();
+				for ( int tri = 0; tri < frontCount; ++tri )
+				{
+					ReSTIRGpuEmitterTriangle reversed = triangles[tri];
+					ReverseEmitterTriangle( reversed );
+					triangles.AddToTail( reversed );
+				}
+			}
+			if ( ReSTIR_AddSurfaceEmitter( scene, triangles.Base(), triangles.Count(),
+				emission.intensity, emission.texture, RESTIR_LIGHT_MATERIAL ) >= 0 )
+			{
+				if ( face.dispinfo == -1 )
+					++brushEmitters;
+				else
+					++dispEmitters;
+			}
+		}
+	}
+	const int beforeProps = scene.lights.Count();
+	if ( !g_ReSTIRStaticPropMgr.AppendEmitters( scene, *context.options ) )
+	{
+		return false;
+	}
+	const int propEmitters = scene.lights.Count() - beforeProps;
+	Msg( "%d material emitters (%d brush, %d displacement, %d static prop), %d emitter triangles\n",
+		brushEmitters + dispEmitters + propEmitters, brushEmitters, dispEmitters, propEmitters,
+		scene.emitterTriangles.Count() );
+	return true;
 }
 
 // utils/vrad/lightmap.cpp:1465-1473 — distinguish absent from empty keys.
@@ -1224,11 +1452,21 @@ bool ReSTIR_SceneBuildLights( ReSTIRSceneBuildContext &context, ReSTIRScene &sce
 	{
 		return false;
 	}
-	if ( !BuildSurfaceLights( context, scene ) || !BuildEntityLights( scene ) )
+	CUtlVector<bool> texlightFaces;
+	texlightFaces.SetCount( context.faceCount );
+	for ( int i = 0; i < texlightFaces.Count(); ++i )
+	{
+		texlightFaces[i] = false;
+	}
+	if ( !BuildSurfaceLights( context, scene, texlightFaces ) || !BuildEntityLights( scene ) )
 	{
 		return false;
 	}
 	FinishActiveLightOrder( scene );
+	if ( !BuildMaterialSurfaceLights( context, scene, texlightFaces ) )
+	{
+		return false;
+	}
 	scene.sceneStyles.RemoveAll();
 	scene.sceneStyles.AddToTail( 0 );
 	for ( int i = 0; i < scene.lights.Count(); ++i )
@@ -1249,5 +1487,24 @@ bool ReSTIR_SceneBuildLights( ReSTIRSceneBuildContext &context, ReSTIRScene &sce
 	{
 		scene.lights[i].styleSlot = scene.sceneStyles.Find( scene.lights[i].style );
 	}
+	// Header offsets and light indices share one buffer (restir_types.h styleLights contract).
+	// Iterate lights in ascending order within each style; sky has separate sampling paths.
+	scene.styleLights.RemoveAll();
+	const int numStyles = scene.sceneStyles.Count();
+	scene.styleLights.SetCount( numStyles + 1 );
+	scene.styleLights.EnsureCapacity( numStyles + 1 + scene.lights.Count() );
+	for ( int slot = 0; slot < numStyles; ++slot )
+	{
+		scene.styleLights[slot] = scene.styleLights.Count();
+		for ( int i = 0; i < scene.lights.Count(); ++i )
+		{
+			const ReSTIRGpuLight &light = scene.lights[i];
+			if ( light.styleSlot == slot && light.type != emit_skylight && light.type != emit_skyambient )
+			{
+				scene.styleLights.AddToTail( i );
+			}
+		}
+	}
+	scene.styleLights[numStyles] = scene.styleLights.Count();
 	return true;
 }

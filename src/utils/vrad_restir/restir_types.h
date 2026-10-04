@@ -52,6 +52,11 @@
 #define RESTIR_POINT_IGNORE_NORMALS  0x1  // ambient gather over the full sphere (STATIC_PROP_IGNORE_NORMALS)
 #define RESTIR_POINT_NO_SELF_SHADOW  0x2  // skip triangles whose hitId == skipHitId for direct visibility
 #define RESTIR_POINT_DETAIL_GATHER   0x4  // `indirect` uses the detail-prop full-sphere semantics (see ReSTIRGpuPointQuery)
+#define RESTIR_POINT_EMITTERS_ONLY   0x8  // `direct` sums only RESTIR_LIGHT_MATERIAL lights; `indirect` is not gathered (0)
+
+// Light flags (ReSTIRGpuLight::lightFlags)
+#define RESTIR_LIGHT_MATERIAL        0x1  // emit_surface built from an emissive material (UnlitGeneric / $selfillum):
+                                          // style 0, not exported to LUMP_WORLDLIGHTS, folded into leaf ambient cubes
 
 //-----------------------------------------------------------------------------
 // Options (parsed by vrad_restir.cpp, read-only everywhere else)
@@ -73,6 +78,8 @@ struct ReSTIROptions
 										// 0.5 = twice the luxel density per axis; faces are re-split to the 32-luxel limit
 	bool		textureAlbedo;			// default on: bounce light picks up the base texture's per-texel colour (normalized
 										// to the material's reflectivity); -restir_notexturealbedo restores VRAD's one colour per material
+	float		emissiveScale;			// -restir_emissivescale (1.0): multiplier on material emission (UnlitGeneric, $selfillum);
+										// 0 disables material emitters
 
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
 	// an explicit -restir_* value always wins over the preset, whatever the argument order.
@@ -95,7 +102,7 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), preset( RESTIR_PRESET_DEFAULT ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
@@ -135,8 +142,9 @@ struct ReSTIRGpuMaterial				// 48 bytes
 };
 
 // Textures sampled on the GPU. channels == 1: R8 coverage for an alpha-tested
-// material (-TextureShadows), texel >= 128 is opaque. channels == 4: RGBA8 base
-// texture, gamma space, for per-texel bounce albedo (-restir_texturealbedo).
+// material (-TextureShadows), texel >= 128 is opaque. channels == 4: RGBA8 gamma-space
+// colour: the base texture for per-texel bounce albedo, or the emission of an emissive
+// material (rgb = (linear emission factor)^(1/2.2), see ReSTIRGpuLight::emissionTexture).
 // Row-major, origin top-left, no mips, repeat addressing.
 struct ReSTIRSceneTexture
 {
@@ -150,14 +158,22 @@ struct ReSTIRSceneTexture
 // GPU lights. One entry per VRAD directlight_t equivalent. Semantics follow
 // utils/vrad/lightmap.cpp GatherSampleLight per emittype_t.
 //
-// emit_surface (texlight faces, I3): the emitter is the triangle range
-// [firstTri, firstTri+numTris) of ReSTIRScene::triangles. `intensity` is the
-// emission per unit world area: VRAD's patch intensity
-// (baselight * lightscale * scale[0]*scale[1] / basearea * DIRECT_SCALE)
-// divided by the patch area, so a point sampled uniformly on a triangle of
-// area A with pdf 1/A contributes
-//     intensity * max(dot(n_light, -w), 0) * max(dot(n_recv, w), 0) / d^2 * A
+// emit_surface (texlight faces, I3, and emissive materials): the emitter is the range
+// [firstTri, firstTri+numTris) of ReSTIRScene::emitterTriangles. Every emitter triangle is
+// stored front-facing (emission leaves along normalize(cross(v1-v0, v2-v0))) and carries
+// the inclusive cumulative selection probability of its range in uv.w (last == 1).
+// A point x on triangle i is sampled with pdf (cdf_i - cdf_{i-1}) / area_i (cdf_{-1} = 0; area sampling inside the triangle).
+// `intensity.rgb` is the emission per unit world area; for texlights VRAD's patch intensity
+// (baselight * lightscale * scale[0]*scale[1] / basearea * DIRECT_SCALE). With
+// emissionTexture >= 0 it is multiplied per texel by pow(texel.rgb, 2.2) at the triangle UV of x.
+// A sample contributes
+//     E(x) * max(dot(n_tri, -w), 0) * max(dot(n_recv, w), 0) / d^2 / pdf(x)
 // which reproduces VRAD's per-patch (dot * dot2 / dist^2 * intensity) sum.
+// `origin.xyz` is the emitter centroid (origin.w stays 0: no radius cutoff), `normal.xyz` the
+// area-weighted mean normal (host-side only), `intensity.w` the emitted power bound
+// sum_i(area_i * mean luminance of E over triangle i) and `attenuation.x` the bounding-sphere
+// radius around origin; RESTIR_LIGHT_MATERIAL lights use the last two to skip negligible
+// emitters in exhaustive point lighting. Other attenuation/fade fields are zero.
 //
 // emit_point / emit_spotlight / emit_quakelight: `origin`, `intensity`,
 // attenuation and cone fields exactly as dworldlight_t (VRAD scale, before the
@@ -174,17 +190,26 @@ struct ReSTIRSceneTexture
 struct ReSTIRGpuLight					// 112 bytes
 {
 	float		origin[4];				// xyz, w = radius (0 = unlimited)
-	float		intensity[4];			// rgb, w unused
+	float		intensity[4];			// rgb, w = emit_surface power bound (see above)
 	float		normal[4];				// xyz, w = stopdot (cos inner cone)
-	float		attenuation[4];			// constant, linear, quadratic, exponent
+	float		attenuation[4];			// constant, linear, quadratic, exponent; emit_surface: x = bounding radius
 	float		fade[4];				// startFade, endFade, capDist, stopdot2 (cos outer cone)
 	int			type;					// emittype_t
 	int			style;					// light style (0 = none)
-	int			firstTri;				// emit_surface only
+	int			firstTri;				// emit_surface only: ReSTIRScene::emitterTriangles
 	int			numTris;				// emit_surface only
 	float		sunSpreadAngle;			// emit_skylight only, degrees
 	int			styleSlot;				// index into ReSTIRScene::sceneStyles (0 == style 0)
-	int			pad[2];
+	int			emissionTexture;		// emit_surface: index into ReSTIRScene::textures (RGBA8 gamma), -1 = uniform intensity
+	int			lightFlags;				// RESTIR_LIGHT_*
+};
+
+struct ReSTIRGpuEmitterTriangle		// 64 bytes. Front-facing emitter triangle (see ReSTIRGpuLight emit_surface)
+{
+	float		v0[4];					// xyz = position, w = uv0.x
+	float		v1[4];					// xyz = position, w = uv0.y
+	float		v2[4];					// xyz = position, w = uv1.x
+	float		uv[4];					// uv1.y, uv2.x, uv2.y, w = inclusive cumulative selection probability in the light's range
 };
 
 //-----------------------------------------------------------------------------
@@ -270,8 +295,13 @@ struct ReSTIRScene
 
 	// Lights
 	CUtlVector<ReSTIRGpuLight>			lights;			// GPU evaluation set
+	CUtlVector<ReSTIRGpuEmitterTriangle> emitterTriangles; // emit_surface geometry, referenced by lights[].firstTri/numTris
+	CUtlVector<int>						styleLights;	// per scene style slot s, the local (non-sky) lights of that style:
+														// indices [styleLights[s], styleLights[s+1]) of this same array hold
+														// light indices; the first sceneStyles.Count()+1 entries are offsets
 	CUtlVector<dworldlight_t>			exportLights;	// LUMP_WORLDLIGHTS entries (I2/I3/I13), flags = 0; same order as `lights` for
 														// point/spot/sky lights; surface emitters expand to one entry per fixed-chop patch.
+														// RESTIR_LIGHT_MATERIAL lights are never exported (they follow every exported light).
 	CUtlVector<int>						exportLightToGpuLight; // parallel to exportLights: index into `lights` (ambient-cube flagging)
 	CUtlVector<int>						sceneStyles;	// distinct light styles present, sceneStyles[0] == 0 always
 	int									skyAmbientLight;// index into `lights` of the emit_skyambient entry, -1 if none
@@ -284,6 +314,15 @@ struct ReSTIRScene
 	CUtlVector<ReSTIRGpuLuxel>			luxels;
 	CUtlVector<int>						faceNeighbors;
 	int									numOutputValues;// total radiance entries (sum over faces of numStyles*numChannels*numLuxels)
+
+	// Faces reached (PVS + unshadowed falloff/cone/cosine) by more light styles than fit in
+	// MAXLIGHTMAPS. VRAD allocates a slot only for a light that actually lights a sample, shadow
+	// ray included (lightmap.cpp:2512-2541), so these keep MAXLIGHTMAPS provisional slots until
+	// ReSTIR_ResolveFaceStyles traces the candidates after UploadScene.
+	CUtlVector<int>						styleOverflowFaces;		// index into `faces`
+	CUtlVector<int>						styleCandidateFirst;	// parallel: first entry in styleCandidateLights
+	CUtlVector<int>						styleCandidateCount;	// parallel: entry count
+	CUtlVector<int>						styleCandidateLights;	// light indices in VRAD encounter (light) order
 
 	// Per-face encode-time data (host only)
 	CUtlVector<Vector>					faceMinLight;	// per `faces` entry: _minlight (radial.cpp:676)

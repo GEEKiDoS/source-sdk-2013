@@ -308,6 +308,17 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 				return false;
 			continue;
 		}
+		if ( IsOption( pArg, "-restir_emissivescale" ) )
+		{
+			if ( i + 1 >= argc )
+			{
+				Warning( "Error: expected a value after '%s'\n", pArg );
+				return false;
+			}
+			if ( !ParseFloatValue( pArg, argv[++i], 0.0f, 1000.0f, options.emissiveScale ) )
+				return false;
+			continue;
+		}
 		if ( IsOption( pArg, "-restir_probe" ) )
 		{
 			// Diagnostic: evaluate LightPoints at a world point/normal after the bake and print it.
@@ -469,9 +480,9 @@ static void RunProbe( const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 	for ( int i = 0; i < scene.lights.Count(); ++i )
 	{
 		const ReSTIRGpuLight &l = scene.lights[i];
-		Msg( "  light %3d %-10s style %d intensity (%.2f %.2f %.2f) origin (%.0f %.0f %.0f) normal (%.3f %.3f %.3f) tris %d attn (%.3g %.3g %.3g) radius %.0f\n",
+		Msg( "  light %3d %-10s style %d intensity (%.2f %.2f %.2f) origin (%.0f %.0f %.0f) normal (%.3f %.3f %.3f) tris %d emissionTexture %d flags 0x%x attn (%.3g %.3g %.3g) radius %.0f\n",
 			i, l.type >= 0 && l.type <= 5 ? s_pTypeNames[l.type] : "?", l.style, l.intensity[0], l.intensity[1], l.intensity[2],
-			l.origin[0], l.origin[1], l.origin[2], l.normal[0], l.normal[1], l.normal[2], l.numTris,
+			l.origin[0], l.origin[1], l.origin[2], l.normal[0], l.normal[1], l.normal[2], l.numTris, l.emissionTexture, (unsigned int)l.lightFlags,
 			l.attenuation[0], l.attenuation[1], l.attenuation[2], l.origin[3] );
 	}
 	CUtlVector<ReSTIRGpuPointQuery> queries;
@@ -622,6 +633,12 @@ int CVRadRestirDLL::main( int argc, char **argv )
 	{
 		int coverageCount = 0;
 		int albedoCount = 0;
+		int materialEmitterCount = 0;
+		for ( int i = 0; i < scene.lights.Count(); ++i )
+		{
+			if ( scene.lights[i].lightFlags & RESTIR_LIGHT_MATERIAL )
+				++materialEmitterCount;
+		}
 		for ( int i = 0; i < scene.textures.Count(); ++i )
 		{
 			if ( scene.textures[i].channels == 4 )
@@ -629,13 +646,14 @@ int CVRadRestirDLL::main( int argc, char **argv )
 			else
 				++coverageCount;
 		}
-		Msg( "VRAD ReSTIR: %d triangles, %d materials (%d alpha, %d albedo textures), %d lights (%d exported), %d lit faces, %d samples, %d luxels\n",
+		Msg( "VRAD ReSTIR: %d triangles, %d materials (%d alpha, %d albedo textures), %d lights (%d exported, %d material emitters), %d emitter triangles, %d lit faces, %d samples, %d luxels\n",
 			scene.triangles.Count(), scene.materials.Count(), coverageCount, albedoCount, scene.lights.Count(), scene.exportLights.Count(),
-			scene.faces.Count(), scene.samples.Count(), scene.luxels.Count() );
+			materialEmitterCount, scene.emitterTriangles.Count(), scene.faces.Count(), scene.samples.Count(), scene.luxels.Count() );
 	}
 	m_flProgress = 0.25f;
 	RESTIR_STAGE( "initializing Vulkan", device.Init( g_ReSTIROptions ) );
 	RESTIR_STAGE( "uploading scene", device.UploadScene( scene ) );
+	RESTIR_STAGE( "resolving light styles", ReSTIR_ResolveFaceStyles( scene, device ) );
 	m_flProgress = 0.40f;
 	RESTIR_STAGE( "baking lightmaps", device.BakeLightmaps( g_ReSTIROptions, result ) );
 	m_flProgress = 0.65f;

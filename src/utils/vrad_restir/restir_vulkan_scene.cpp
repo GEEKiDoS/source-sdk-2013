@@ -236,6 +236,36 @@ void CReSTIRVulkanDevice::Impl::UploadTextures()
 	}
 }
 
+// Device face copy with firstReservoir assigned; returns the reservoir count.
+static uint64_t AssignReservoirs( const CReSTIRVulkanDevice::Impl &gpu, const ReSTIRScene &scene, CUtlVector<ReSTIRGpuFace> &faces )
+{
+	faces.CopyArray( scene.faces.Base(), scene.faces.Count() );
+	uint64_t reservoirCount = 0;
+	FOR_EACH_VEC( faces, i )
+	{
+		faces[i].firstReservoir = (int)reservoirCount;
+		reservoirCount += (uint64_t)faces[i].numSamples * faces[i].numStyles;
+		if ( reservoirCount > INT_MAX )
+			gpu.Fail( "reservoir indexing exceeds signed 32-bit range" );
+	}
+	return reservoirCount;
+}
+
+bool CReSTIRVulkanDevice::UpdateFaceStyles( const ReSTIRScene &scene )
+{
+	Impl &gpu = *m_pImpl;
+	if ( gpu.scene != &scene )
+		gpu.Fail( "UpdateFaceStyles requires the uploaded scene" );
+	CUtlVector<ReSTIRGpuFace> faces;
+	const uint64_t reservoirCount = AssignReservoirs( gpu, scene, faces );
+	if ( reservoirCount > gpu.push.numReservoirs )
+		gpu.Fail( "face style update grew the reservoir count" );
+	gpu.push.numReservoirs = (unsigned int)reservoirCount;
+	gpu.Upload( RESTIR_BIND_FACES, faces.Base(), (VkDeviceSize)faces.Count() * sizeof( ReSTIRGpuFace ) );
+	gpu.Wait();
+	return true;
+}
+
 bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 {
 	Impl &gpu = *m_pImpl;
@@ -257,15 +287,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		gpu.push.worldMaxs[axis] = scene.worldMaxs[axis];
 	}
 	CUtlVector<ReSTIRGpuFace> faces;
-	faces.CopyArray( scene.faces.Base(), scene.faces.Count() );
-	uint64_t reservoirCount = 0;
-	FOR_EACH_VEC( faces, i )
-	{
-		faces[i].firstReservoir = (int)reservoirCount;
-		reservoirCount += (uint64_t)faces[i].numSamples * faces[i].numStyles;
-		if ( reservoirCount > INT_MAX )
-			gpu.Fail( "reservoir indexing exceeds signed 32-bit range" );
-	}
+	const uint64_t reservoirCount = AssignReservoirs( gpu, scene, faces );
 	gpu.push.numReservoirs = (unsigned int)reservoirCount;
 	while ( gpu.paddedTriangles < gpu.push.numTriangles )
 	{
@@ -296,7 +318,9 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		gpu.hardware ? 16 : (VkDeviceSize)gpu.paddedTriangles * 2 * sizeof( unsigned int ) * 2,
 		NUMVERTEXNORMALS * sizeof( float ) * 4,
 		16,
-		(VkDeviceSize)scene.sceneStyles.Count() * sizeof( int )
+		(VkDeviceSize)scene.sceneStyles.Count() * sizeof( int ),
+		(VkDeviceSize)scene.emitterTriangles.Count() * sizeof( ReSTIRGpuEmitterTriangle ),
+		(VkDeviceSize)scene.styleLights.Count() * sizeof( int )
 	};
 	for ( int binding = 0; binding < RESTIR_BIND_COVERAGE; ++binding )
 	{
@@ -364,6 +388,8 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	}
 	gpu.Upload( RESTIR_BIND_ANORMS, normals, sizeof( normals ) );
 	gpu.Upload( RESTIR_BIND_SCENE_STYLES, scene.sceneStyles.Base(), sizes[RESTIR_BIND_SCENE_STYLES] );
+	gpu.Upload( RESTIR_BIND_EMITTER_TRIS, scene.emitterTriangles.Base(), sizes[RESTIR_BIND_EMITTER_TRIS] );
+	gpu.Upload( RESTIR_BIND_STYLE_LIGHTS, scene.styleLights.Base(), sizes[RESTIR_BIND_STYLE_LIGHTS] );
 	gpu.UploadTextures();
 	if ( gpu.hardware )
 	{

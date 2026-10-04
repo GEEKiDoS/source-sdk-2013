@@ -697,6 +697,54 @@ bool ReSTIR_ComputeLeafAmbientLighting( const ReSTIROptions &options, const ReST
 		}
 	}
 
+	bool hasMaterialEmitters = false;
+	for ( int light = 0; light < scene.lights.Count(); ++light )
+	{
+		if ( scene.lights[light].lightFlags & RESTIR_LIGHT_MATERIAL )
+		{
+			hasMaterialEmitters = true;
+			break;
+		}
+	}
+	if ( hasMaterialEmitters && queries.Count() > 0 )
+	{
+		// The engine lights models from LUMP_WORLDLIGHTS only; material emitters
+		// exist only in the bake. Fold their direct light into the six cube sides,
+		// like VRAD's DWL_FLAGS_INAMBIENTCUBE surface lights
+		// (utils/vrad/leaf_ambient_lighting.cpp:177-198). LightPoints returns VRAD light
+		// units; cube sides use the exported 1/255 scale (dworldlight_t::intensity, RayAmbientColor).
+		CUtlVector<ReSTIRGpuPointQuery> emitterQueries;
+		emitterQueries.SetCount( queries.Count() * 6 );
+		for ( int q = 0; q < queries.Count(); ++q )
+		{
+			for ( int side = 0; side < 6; ++side )
+			{
+				ReSTIRGpuPointQuery &query = emitterQueries[q * 6 + side];
+				memset( &query, 0, sizeof( query ) );
+				for ( int axis = 0; axis < 3; ++axis )
+				{
+					query.position[axis] = queries[q].position[axis];
+					query.normal[axis] = s_BoxDirections[side][axis];
+				}
+				query.flags = RESTIR_POINT_EMITTERS_ONLY;
+			}
+		}
+		CUtlVector<ReSTIRGpuPointResult> emitterResults;
+		if ( !device.LightPoints( emitterQueries, emitterResults ) || emitterResults.Count() != emitterQueries.Count() * numStyles )
+		{
+			Warning( "VRAD ReSTIR: ambient material-emitter direct lighting failed.\n" );
+			return false;
+		}
+		for ( int q = 0; q < queries.Count(); ++q )
+		{
+			for ( int side = 0; side < 6; ++side )
+			{
+				const ReSTIRGpuPointResult &result = emitterResults[( q * 6 + side ) * numStyles + 0];
+				cubes[q].side[side] += Vector( result.direct[0], result.direct[1], result.direct[2] ) * ( 1.0f / 255.0f );
+			}
+		}
+	}
+
 	CUtlVector< CUtlVector<AmbientSample> > leafSamples;
 	leafSamples.SetCount( numleafs );
 	for ( int candidateIndex = 0; candidateIndex < candidates.Count(); ++candidateIndex )

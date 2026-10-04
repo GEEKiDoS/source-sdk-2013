@@ -32,8 +32,16 @@ static CUtlVector<unsigned char> s_MaterialAlbedoLoaded;
 static CUtlVector<Vector> s_AlbedoInverseAverage;			// per scene.textures index (albedo entries only)
 static CUtlVector<entity_t *> s_ModelEntities;
 
+struct ReSTIRCachedMaterialEmission
+{
+	ReSTIRMaterialEmission	emission;
+	bool					emissive;
+};
+static CUtlDict<ReSTIRCachedMaterialEmission, unsigned short> s_MaterialEmissions;
+
 // utils/vrad/vradstaticprops.cpp:649-684, 859-872 — top mip of a VTF decoded to RGBA8888.
-static bool LoadVTFRGBA( const char *pBaseTexture, int &width, int &height, CUtlVector<unsigned char> &rgba )
+static bool LoadVTFRGBA( const char *pBaseTexture, int &width, int &height,
+	CUtlVector<unsigned char> &rgba, unsigned int &flags )
 {
 	if ( !pBaseTexture || !pBaseTexture[0] || !g_pFileSystem )
 		return false;
@@ -67,6 +75,7 @@ static bool LoadVTFRGBA( const char *pBaseTexture, int &width, int &height, CUtl
 
 	width = texture->Width();
 	height = texture->Height();
+	flags = texture->Flags();
 	if ( width <= 0 || height <= 0 )
 	{
 		DestroyVTFTexture( texture );
@@ -84,7 +93,8 @@ static bool LoadVTFRGBA( const char *pBaseTexture, int &width, int &height, CUtl
 static bool LoadCoverageVTF( const char *pBaseTexture, ReSTIRSceneTexture &coverage )
 {
 	CUtlVector<unsigned char> rgba;
-	if ( !LoadVTFRGBA( pBaseTexture, coverage.width, coverage.height, rgba ) )
+	unsigned int flags;
+	if ( !LoadVTFRGBA( pBaseTexture, coverage.width, coverage.height, rgba, flags ) )
 		return false;
 	coverage.channels = 1;
 	coverage.texels.SetCount( coverage.width * coverage.height );
@@ -99,7 +109,8 @@ static bool LoadCoverageVTF( const char *pBaseTexture, ReSTIRSceneTexture &cover
 static bool LoadAlbedoVTF( const char *pBaseTexture, ReSTIRSceneTexture &albedo, Vector &inverseAverage )
 {
 	CUtlVector<unsigned char> rgba;
-	if ( !LoadVTFRGBA( pBaseTexture, albedo.width, albedo.height, rgba ) )
+	unsigned int flags;
+	if ( !LoadVTFRGBA( pBaseTexture, albedo.width, albedo.height, rgba, flags ) )
 		return false;
 	albedo.channels = 4;
 	albedo.texels.Swap( rgba );
@@ -167,15 +178,61 @@ static int LoadAlbedoTexture( ReSTIRScene &scene, const char *pMaterialName, con
 	return textureIndex;
 }
 
-// utils/vrad/vradstaticprops.cpp:700-737 — VRAD never initializes the material system; it parses the
-// VMT with KeyValues. Returns the $basetexture (empty when absent) and whether the material is
-// alpha-tested. VBSP's cubemap pass rewrites world materials into per-map "patch" VMTs
-// ("include" base + "replace"/"insert" blocks, materialsystem CMaterial::LoadVMTFile); those are
-// followed so the base material's keys are seen, as the engine does.
-static bool ReadMaterialVMT( const char *pMaterialName, char *pBaseTexture, int baseTextureSize, bool &alphaTested )
+enum ReSTIRMaterialKey
 {
-	pBaseTexture[0] = 0;
-	alphaTested = false;
+	RESTIR_MAT_BASETEXTURE,
+	RESTIR_MAT_TRANSLUCENT,
+	RESTIR_MAT_ALPHATEST,
+	RESTIR_MAT_ADDITIVE,
+	RESTIR_MAT_ALPHATESTREFERENCE,
+	RESTIR_MAT_COLOR,
+	RESTIR_MAT_COLOR2,
+	RESTIR_MAT_SELFILLUM,
+	RESTIR_MAT_SELFILLUMTINT,
+	RESTIR_MAT_SELFILLUMMASK,
+	RESTIR_MAT_NOCULL,
+	RESTIR_MAT_HDRCOLORSCALE,
+	RESTIR_MAT_KEY_COUNT
+};
+
+static const char *s_MaterialEmissionKeys[RESTIR_MAT_KEY_COUNT] =
+{
+	"$basetexture", "$translucent", "$alphatest", "$additive", "$alphatestreference",
+	"$color", "$color2", "$selfillum", "$selfillumtint", "$selfillummask", "$nocull", "$hdrcolorscale"
+};
+
+struct ReSTIRParsedMaterial
+{
+	char	shader[MAX_PATH];
+	char	values[RESTIR_MAT_KEY_COUNT][MAX_PATH];
+	unsigned int keys;
+	// Coverage retains VRAD's presence-only alpha test and first non-empty base texture,
+	// even when a patch explicitly sets a transparency key to zero.
+	char	coverageBaseTexture[MAX_PATH];
+	bool	coverageAlphaTested;
+};
+
+static void ReadMaterialVMTKeys( KeyValues *pBlock, ReSTIRParsedMaterial &material )
+{
+	if ( pBlock->FindKey( "$translucent" ) || pBlock->FindKey( "$alphatest" ) )
+		material.coverageAlphaTested = true;
+	if ( !material.coverageBaseTexture[0] && pBlock->FindKey( "$basetexture" ) )
+		Q_strncpy( material.coverageBaseTexture, pBlock->GetString( "$basetexture" ), sizeof( material.coverageBaseTexture ) );
+	for ( int key = 0; key < RESTIR_MAT_KEY_COUNT; ++key )
+	{
+		if ( ( material.keys & ( 1u << key ) ) || !pBlock->FindKey( s_MaterialEmissionKeys[key] ) )
+			continue;
+		Q_strncpy( material.values[key], pBlock->GetString( s_MaterialEmissionKeys[key] ), sizeof( material.values[key] ) );
+		material.keys |= 1u << key;
+	}
+}
+
+// utils/vrad/vradstaticprops.cpp:700-737 — no material system is initialized; use KeyValues.
+// VBSP cubemaps produce patch VMTs. Walk outer overrides before their includes, so the
+// outermost replace/insert value wins and the final non-patch root supplies the shader.
+static bool ReadParsedMaterialVMT( const char *pMaterialName, ReSTIRParsedMaterial &material )
+{
+	memset( &material, 0, sizeof( material ) );
 	if ( !g_pFullFileSystem )
 		return false;
 	char vmtPath[MAX_PATH];
@@ -183,7 +240,6 @@ static bool ReadMaterialVMT( const char *pMaterialName, char *pBaseTexture, int 
 	Q_FixSlashes( vmtPath, CORRECT_PATH_SEPARATOR );
 
 	bool loaded = false;
-	// Patch chains are short (one level in practice); bound them anyway.
 	for ( int depth = 0; depth < 4; ++depth )
 	{
 		KeyValues *pVMT = new KeyValues( "vmt" );
@@ -196,37 +252,236 @@ static bool ReadMaterialVMT( const char *pMaterialName, char *pBaseTexture, int 
 		loaded = true;
 		if ( Q_stricmp( pVMT->GetName(), "patch" ) == 0 )
 		{
-			const char *pInclude = pVMT->GetString( "include", "" );
-			// Keys overridden by the patch win over the included file's.
 			for ( int block = 0; block < 2; ++block )
 			{
 				KeyValues *pBlock = pVMT->FindKey( block == 0 ? "replace" : "insert" );
-				if ( !pBlock )
-					continue;
-				if ( pBlock->FindKey( "$translucent" ) || pBlock->FindKey( "$alphatest" ) )
-					alphaTested = true;
-				if ( !pBaseTexture[0] && pBlock->FindKey( "$basetexture" ) )
-					Q_strncpy( pBaseTexture, pBlock->GetString( "$basetexture" ), baseTextureSize );
+				if ( pBlock )
+					ReadMaterialVMTKeys( pBlock, material );
 			}
-			Q_strncpy( vmtPath, pInclude, sizeof( vmtPath ) );
+			Q_strncpy( vmtPath, pVMT->GetString( "include", "" ), sizeof( vmtPath ) );
 			Q_FixSlashes( vmtPath, CORRECT_PATH_SEPARATOR );
 			pVMT->deleteThis();
 			if ( !vmtPath[0] )
 				break;
 			continue;
 		}
-		if ( pVMT->FindKey( "$translucent" ) || pVMT->FindKey( "$alphatest" ) )
-			alphaTested = true;
-		if ( !pBaseTexture[0] )
-		{
-			KeyValues *pKey = pVMT->FindKey( "$basetexture" );
-			if ( pKey )
-				Q_strncpy( pBaseTexture, pKey->GetString(), baseTextureSize );
-		}
+		Q_strncpy( material.shader, pVMT->GetName(), sizeof( material.shader ) );
+		ReadMaterialVMTKeys( pVMT, material );
 		pVMT->deleteThis();
 		break;
 	}
 	return loaded;
+}
+
+static bool ReadMaterialVMT( const char *pMaterialName, char *pBaseTexture, int baseTextureSize, bool &alphaTested )
+{
+	ReSTIRParsedMaterial material;
+	const bool loaded = ReadParsedMaterialVMT( pMaterialName, material );
+	Q_strncpy( pBaseTexture, material.coverageBaseTexture, baseTextureSize );
+	alphaTested = material.coverageAlphaTested;
+	return loaded;
+}
+
+static float MaterialFloat( const ReSTIRParsedMaterial &material, ReSTIRMaterialKey key, float defaultValue )
+{
+	return material.keys & ( 1u << key ) ? (float)atof( material.values[key] ) : defaultValue;
+}
+
+static Vector MaterialColor( const ReSTIRParsedMaterial &material, ReSTIRMaterialKey key )
+{
+	Vector color( 1.0f, 1.0f, 1.0f );
+	if ( !( material.keys & ( 1u << key ) ) )
+		return color;
+	const char *pValue = material.values[key];
+	while ( *pValue == ' ' || *pValue == '\t' )
+		++pValue;
+	const bool byteColor = *pValue == '{';
+	const bool vectorColor = byteColor || *pValue == '[';
+	if ( vectorColor )
+		++pValue;
+	char *pEnd;
+	for ( int channel = 0; channel < ( vectorColor ? 3 : 1 ); ++channel )
+	{
+		const float value = (float)strtod( pValue, &pEnd );
+		if ( pEnd == pValue )
+			return Vector( 1.0f, 1.0f, 1.0f );
+		color[channel] = byteColor ? value / 255.0f : value;
+		pValue = pEnd;
+	}
+	if ( !vectorColor )
+		color.y = color.z = color.x;
+	return color;
+}
+
+// materialsystem/BaseVSShader.cpp:652-672 — overbright colour components stay linear.
+static Vector LinearMaterialColor( const Vector &color )
+{
+	Vector linear;
+	for ( int channel = 0; channel < 3; ++channel )
+		linear[channel] = color[channel] <= 1.0f ? GammaToLinear( color[channel] ) : color[channel];
+	return linear;
+}
+
+bool ReSTIR_GetMaterialEmission( ReSTIRScene &scene, const ReSTIROptions &options, const char *pMaterialName,
+	ReSTIRMaterialEmission &emission )
+{
+	emission.intensity.Init();
+	emission.texture = -1;
+	emission.twoSided = false;
+	if ( options.emissiveScale <= 0.0f )
+		return false;
+	const char *name = pMaterialName ? pMaterialName : "";
+	const unsigned short found = s_MaterialEmissions.Find( name );
+	if ( found != s_MaterialEmissions.InvalidIndex() )
+	{
+		emission = s_MaterialEmissions[found].emission;
+		return s_MaterialEmissions[found].emissive;
+	}
+	ReSTIRCachedMaterialEmission cached;
+	cached.emission = emission;
+	cached.emissive = false;
+	const unsigned short cacheIndex = s_MaterialEmissions.Insert( name, cached );
+	if ( !name[0] || !Q_strnicmp( name, "tools/", 6 ) || !Q_strnicmp( name, "tools\\", 6 ) )
+		return false;
+
+	ReSTIRParsedMaterial material;
+	if ( !ReadParsedMaterialVMT( name, material ) || !material.shader[0] )
+		return false;
+	const bool unlit = Q_stricmp( material.shader, "UnlitGeneric" ) == 0;
+	if ( !unlit && MaterialFloat( material, RESTIR_MAT_SELFILLUM, 0.0f ) == 0.0f )
+		return false;
+	const char *baseTexture = material.values[RESTIR_MAT_BASETEXTURE];
+	if ( !Q_strnicmp( baseTexture, "_rt_", 4 ) )
+		return false;
+
+	Vector color = LinearMaterialColor( MaterialColor( material, RESTIR_MAT_COLOR ) );
+	Vector color2 = LinearMaterialColor( MaterialColor( material, RESTIR_MAT_COLOR2 ) );
+	Vector modulation( color.x * color2.x, color.y * color2.y, color.z * color2.z );
+	if ( unlit )
+	{
+		if ( options.hdr )
+			modulation *= MaterialFloat( material, RESTIR_MAT_HDRCOLORSCALE, 1.0f );
+	}
+	else
+	{
+		// materialsystem/stdshaders/vertexlitgeneric_dx9_helper.cpp:1214 — tint is already linear.
+		const Vector tint = MaterialColor( material, RESTIR_MAT_SELFILLUMTINT );
+		modulation.x *= tint.x;
+		modulation.y *= tint.y;
+		modulation.z *= tint.z;
+	}
+	if ( modulation.x <= 0.0f && modulation.y <= 0.0f && modulation.z <= 0.0f )
+		return false;
+
+	int width = 1, height = 1;
+	unsigned int baseFlags = 0;
+	CUtlVector<unsigned char> base;
+	if ( material.keys & ( 1u << RESTIR_MAT_BASETEXTURE ) )
+	{
+		if ( !LoadVTFRGBA( baseTexture, width, height, base, baseFlags ) )
+		{
+			Warning( "ReSTIR: couldn't load emissive base texture for material %s\n", name );
+			return false;
+		}
+	}
+	const char *maskTexture = material.values[RESTIR_MAT_SELFILLUMMASK];
+	// materialsystem/stdshaders/vertexlitgeneric_dx9_helper.cpp:289-300 — no alpha means no SELFILLUM.
+	if ( !unlit && !maskTexture[0] && !( baseFlags & ( TEXTUREFLAGS_ONEBITALPHA | TEXTUREFLAGS_EIGHTBITALPHA ) ) )
+		return false;
+	int maskWidth = 1, maskHeight = 1;
+	unsigned int maskFlags = 0;
+	CUtlVector<unsigned char> mask;
+	const bool hasMask = !unlit && maskTexture[0] &&
+		LoadVTFRGBA( maskTexture, maskWidth, maskHeight, mask, maskFlags );
+	// Without a base texture, retain the mask's spatial detail instead of reducing it to one texel.
+	if ( base.Count() == 0 && hasMask )
+	{
+		width = maskWidth;
+		height = maskHeight;
+	}
+	const bool translucent = MaterialFloat( material, RESTIR_MAT_TRANSLUCENT, 0.0f ) != 0.0f;
+	const bool additive = MaterialFloat( material, RESTIR_MAT_ADDITIVE, 0.0f ) != 0.0f;
+	const bool alphaTest = MaterialFloat( material, RESTIR_MAT_ALPHATEST, 0.0f ) != 0.0f;
+	float alphaReference = MaterialFloat( material, RESTIR_MAT_ALPHATESTREFERENCE, 0.5f );
+	if ( alphaReference <= 0.0f )
+		alphaReference = 0.5f;
+
+	CUtlVector<unsigned char> texels;
+	texels.SetCount( width * height * 4 );
+	bool uniformWhite = true;
+	bool emitting = false;
+	// materialsystem/stdshaders/vertexlit_and_unlit_generic_ps2x.fxc:365-445 — selfillum RGB mask
+	// stays linear; base RGB follows VBSP's 2.2 curve. Unlit transparency scales displayed colour.
+	for ( int y = 0; y < height; ++y )
+	{
+		for ( int x = 0; x < width; ++x )
+		{
+			const int offset = ( y * width + x ) * 4;
+			const float alpha = base.Count() ? base[offset + 3] / 255.0f : 1.0f;
+			float alphaFactor = unlit ? ( translucent && !additive ? alpha : 1.0f ) : alpha;
+			if ( unlit && alphaTest && alpha < alphaReference )
+				alphaFactor = 0.0f;
+			int maskOffset = 0;
+			if ( hasMask )
+			{
+				const int maskX = MIN( (int)( ( x + 0.5 ) * maskWidth / width ), maskWidth - 1 );
+				const int maskY = MIN( (int)( ( y + 0.5 ) * maskHeight / height ), maskHeight - 1 );
+				maskOffset = ( maskY * maskWidth + maskX ) * 4;
+			}
+			for ( int channel = 0; channel < 3; ++channel )
+			{
+				const float baseLinear = base.Count() ? powf( base[offset + channel] / 255.0f, 2.2f ) : 1.0f;
+				const float factor = baseLinear * ( hasMask ? mask[maskOffset + channel] / 255.0f : alphaFactor );
+				uniformWhite = uniformWhite && factor == 1.0f;
+				texels[offset + channel] = (unsigned char)( 255.0f * powf( factor, 1.0f / 2.2f ) + 0.5f );
+				emitting = emitting || ( texels[offset + channel] != 0 && modulation[channel] > 0.0f );
+			}
+			texels[offset + 3] = 255;
+		}
+	}
+	if ( !emitting )
+		return false;
+	emission.intensity = modulation * ( options.emissiveScale * 255.0f / (float)M_PI );
+	emission.twoSided = MaterialFloat( material, RESTIR_MAT_NOCULL, 0.0f ) != 0.0f;
+	if ( !uniformWhite )
+	{
+		emission.texture = scene.textures.AddToTail();
+		ReSTIRSceneTexture &texture = scene.textures[emission.texture];
+		texture.width = width;
+		texture.height = height;
+		texture.channels = 4;
+		texture.texels.Swap( texels );
+	}
+	s_MaterialEmissions[cacheIndex].emission = emission;
+	s_MaterialEmissions[cacheIndex].emissive = true;
+	return true;
+}
+
+Vector ReSTIR_EmissionTriangleMean( const ReSTIRScene &scene, int texture, const float uv[6] )
+{
+	if ( texture < 0 )
+		return Vector( 1.0f, 1.0f, 1.0f );
+	const ReSTIRSceneTexture &image = scene.textures[texture];
+	Vector mean( 0.0f, 0.0f, 0.0f );
+	// 8x8 fixed strata in a square, mapped uniformly onto the triangle by the square-root warp.
+	for ( int y = 0; y < 8; ++y )
+	{
+		for ( int x = 0; x < 8; ++x )
+		{
+			const float root = sqrtf( ( x + 0.5f ) / 8.0f );
+			const float b0 = 1.0f - root;
+			const float b1 = root * ( 1.0f - ( y + 0.5f ) / 8.0f );
+			const float b2 = 1.0f - b0 - b1;
+			const float u = b0 * uv[0] + b1 * uv[2] + b2 * uv[4];
+			const float v = b0 * uv[1] + b1 * uv[3] + b2 * uv[5];
+			const int tx = MIN( (int)( ( u - floorf( u ) ) * image.width ), image.width - 1 );
+			const int ty = MIN( (int)( ( v - floorf( v ) ) * image.height ), image.height - 1 );
+			const int offset = ( ty * image.width + tx ) * image.channels;
+			for ( int channel = 0; channel < 3; ++channel )
+				mean[channel] += powf( image.texels[offset + channel] / 255.0f, 2.2f );
+		}
+	}
+	return mean * ( 1.0f / 64.0f );
 }
 
 // utils/vrad/vradstaticprops.cpp:688-740 — material registry shared with props.
@@ -958,6 +1213,7 @@ bool CReSTIRSceneBuilder::Build( const ReSTIROptions &options, ReSTIRScene &scen
 	s_MaterialCoverageLoaded.RemoveAll();
 	s_MaterialAlbedoLoaded.RemoveAll();
 	s_AlbedoInverseAverage.RemoveAll();
+	s_MaterialEmissions.RemoveAll();
 	s_ModelEntities.SetCount( nummodels );
 	for ( int model = 0; model < nummodels; ++model )
 		s_ModelEntities[model] = num_entities > 0 ? &entities[0] : NULL;

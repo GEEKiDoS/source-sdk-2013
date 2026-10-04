@@ -52,6 +52,7 @@ The default options are:
 | `-restir_denoiser_device default\|cpu\|gpu` | `default` | OIDN device preference. |
 | `-restir_probe x y z nx ny nz` | off | Diagnostic: after the bake, print the GPU light table and the direct/indirect light arriving at the given world point and normal per style. |
 | `-restir_lightmapscale F` | `1.0` | Multiplier on brush-face luxel size, `0.0625..1.0`; `0.5` doubles density per axis. See "Lightmap density" below. |
+| `-restir_emissivescale F` | `1.0` | Material-emission multiplier, `0..1000`; `0` disables material emitters without affecting `.rad` texlights. |
 | `-restir_notexturealbedo` | albedo on | Disable per-texel bounce albedo. By default bounce light picks up each material's `$basetexture` per texel instead of VRAD's single reflectivity per material: the texture is linearized (2.2) and scaled so its average equals the material's reflectivity, so total bounced energy matches VRAD and only its spatial distribution changes (a dark stripe on a wall bounces less than its light neighbour). Applies to lightmap bounces, leaf ambient cubes and static/detail prop gathers; materials whose base texture cannot be loaded use their reflectivity. `-restir_texturealbedo` is accepted as the explicit default. |
 | `-StaticPropLighting` | off | Bake static-prop vertex and texel lighting. |
 | `-TextureShadows` | off | Evaluate alpha-tested material coverage for shadows. |
@@ -83,6 +84,16 @@ vrad_restir.exe -both -StaticPropLighting -TextureShadows -game <path to gameinf
 The result remains an ordinary Source BSP. The selected mode's face lightmaps, face style/offset arrays, worldlights, per-leaf ambient index/lighting lumps, static-prop pak entries (`sp_N.vhv` / `sp_hdr_N.vhv`), and detail-prop game lump are written using the existing Source contracts. LDR and HDR data coexist after `-both`; a single-mode pass does not replace the opposite mode's lighting data. Output is staged as `<map>.bsp.restir.tmp` and validated before the original BSP is replaced.
 
 Invalid luxels follow VRAD's defaults: a face with no samples at all is written as `(255,0,0)`; a brush luxel that no sample cell reaches is reconstructed from the surrounding samples with VRAD's bounce-radial kernel and excluded from the face average; a luxel nothing reaches is black (`bRed2Black`). Displacement luxels without coverage are black.
+
+Switchable light styles follow VRAD's rule: a face gets a style slot (at most `MAXLIGHTMAPS` = 4, style 0 included) only for a styled light that actually reaches one of its samples, in light order. The scene build tests PVS, radius, hard fade, spot cone and cosine; faces that still have more than four candidate styles are settled after the scene upload with GPU shadow rays (`resolving light styles`). `Too many light styles on a face` is printed only when more than four styles still reach the face unoccluded, which is the case where VRAD drops styles too.
+
+## Emissive materials
+
+Every `UnlitGeneric` material emits light. Other shaders emit when `$selfillum` is enabled, using base-texture alpha or `$selfillummask` as the emission mask; without a separate mask, the VTF must advertise an alpha channel. Emission uses the `$basetexture` colour per texel, linearized with gamma 2.2, rather than a material-average colour. Tool materials and render-target base textures are excluded.
+
+`UnlitGeneric` emission honours `$color`, `$color2`, `$hdrcolorscale` in HDR, `$alphatest` coverage and non-additive `$translucent` alpha. Self-illumination uses linear `$selfillumtint` and the mask's stored RGB values without gamma conversion; it ignores `$translucent`, `$alphatest` and `$hdrcolorscale`, matching the shader's self-illumination path. `$nocull` makes either type emit from both sides.
+
+A displayed linear colour D emits D*255/pi radiance per unit area in VRAD light units, multiplied by `-restir_emissivescale`. Emitters cover world and brush-entity faces, displacements and all static props, including no-shadow props, with the prop's skin applied. Material emitters are not exported to `LUMP_WORLDLIGHTS`; their light is baked into face lightmaps, static/detail prop lighting and leaf ambient cubes.
 
 ## Lightmap density
 

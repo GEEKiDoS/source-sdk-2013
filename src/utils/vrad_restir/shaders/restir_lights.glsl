@@ -3,22 +3,52 @@
 #define RESTIR_LIGHTS_GLSL
 #include "restir_lightmap.glsl"
 
-float TriangleArea( ReSTIRGpuTriangle triangle )
+float TriangleArea( ReSTIRGpuEmitterTriangle triangle )
 {
 	return 0.5 * length( cross( triangle.v1.xyz - triangle.v0.xyz, triangle.v2.xyz - triangle.v0.xyz ) );
 }
 
-float EmitterArea( ReSTIRGpuLight light )
+// Reservoir reuse stores a world-space point, not UVs. Recover its barycentrics
+// on the original emitter triangle so texture emission is unchanged at a new receiver.
+vec2 EmitterBarycentrics( ReSTIRGpuEmitterTriangle triangle, vec3 source )
 {
-	float area = 0.0;
-	for ( int primitive = 0; primitive < light.numTris; ++primitive )
-		area += TriangleArea( triangles[light.firstTri + primitive] );
-	return area;
+	vec3 edge1 = triangle.v1.xyz - triangle.v0.xyz;
+	vec3 edge2 = triangle.v2.xyz - triangle.v0.xyz;
+	vec3 offset = source - triangle.v0.xyz;
+	vec3 areaNormal = cross( edge1, edge2 );
+	return vec2( dot( cross( offset, edge2 ), areaNormal ), dot( cross( edge1, offset ), areaNormal ) ) / dot( areaNormal, areaNormal );
+}
+
+// utils/vrad/lightmap.cpp:1909-1929: one-sided surface emission, inverse-square
+// falloff. Texture emission and the winding normal belong to this triangle,
+// including curved displacements and prop meshes, not the light's mean normal.
+vec3 SurfaceLightRadiance( ReSTIRGpuLight light, ReSTIRGpuEmitterTriangle triangle, vec3 origin, vec3 source, vec2 barycentrics )
+{
+	vec3 offset = source - origin;
+	float distanceSquared = dot( offset, offset );
+	if ( distanceSquared <= 0.0 )
+		return vec3( 0.0 );
+	vec3 normal = normalize( cross( triangle.v1.xyz - triangle.v0.xyz, triangle.v2.xyz - triangle.v0.xyz ) );
+	float falloff = max( -dot( offset * inversesqrt( distanceSquared ), normal ), 0.0 ) / distanceSquared;
+	if ( falloff <= 0.0 )
+		return vec3( 0.0 );
+	vec3 emission = light.intensity.rgb;
+	if ( light.emissionTexture >= 0 )
+	{
+		vec2 uv0 = vec2( triangle.v0.w, triangle.v1.w );
+		vec2 uv1 = vec2( triangle.v2.w, triangle.uv.x );
+		vec2 uv = uv0 * ( 1.0 - barycentrics.x - barycentrics.y ) + uv1 * barycentrics.x + triangle.uv.yz * barycentrics.y;
+		ivec2 size = textureSize( sceneTextures[nonuniformEXT( light.emissionTexture )], 0 );
+		ivec2 texel = ivec2( floor( fract( uv ) * vec2( size ) ) );
+		emission *= pow( texelFetch( sceneTextures[nonuniformEXT( light.emissionTexture )], texel, 0 ).rgb, vec3( 2.2 ) );
+	}
+	return emission * falloff;
 }
 
 // utils/vrad/lightmap.cpp:1835-1977 GatherSampleStandardLightSSE. The fade is
 // quintic (not GLSL smoothstep); capped falloff uses max(distance,1). Surface
-// intensity is per area per restir_types.h:128-135; area enters through PDF.
+// lights use SurfaceLightRadiance: their radius cutoff and fade fields are zero
+// (restir_types.h emit_surface contract), and their bounding radius is not attenuation.
 vec3 StandardLightRadiance( ReSTIRGpuLight light, vec3 origin, vec3 source )
 {
 	vec3 offset = source - origin;
@@ -34,29 +64,21 @@ vec3 StandardLightRadiance( ReSTIRGpuLight light, vec3 origin, vec3 source )
 	vec3 direction = offset / distanceToLight;
 	float distanceClamped = max( distanceToLight, 1.0 );
 	float evaluationDistance = min( distanceClamped, light.fade.z );
-	float falloff;
-	if ( light.type == EMIT_SURFACE )
+	float denominator = light.attenuation.x + evaluationDistance * light.attenuation.y + evaluationDistance * evaluationDistance * light.attenuation.z;
+	float falloff = denominator > 0.0 ? 1.0 / denominator : 0.0;
+	if ( light.type == EMIT_SPOTLIGHT )
 	{
-		falloff = max( -dot( direction, light.normal.xyz ), 0.0 ) / distanceSquared;
-	}
-	else
-	{
-		float denominator = light.attenuation.x + evaluationDistance * light.attenuation.y + evaluationDistance * evaluationDistance * light.attenuation.z;
-		falloff = denominator > 0.0 ? 1.0 / denominator : 0.0;
-		if ( light.type == EMIT_SPOTLIGHT )
+		float coneDot = -dot( direction, light.normal.xyz );
+		if ( coneDot <= light.fade.w )
+			return vec3( 0.0 );
+		float cone = 1.0;
+		if ( coneDot <= light.normal.w )
 		{
-			float coneDot = -dot( direction, light.normal.xyz );
-			if ( coneDot <= light.fade.w )
-				return vec3( 0.0 );
-			float cone = 1.0;
-			if ( coneDot <= light.normal.w )
-			{
-				cone = clamp( ( coneDot - light.fade.w ) / ( light.normal.w - light.fade.w ), 0.0, 1.0 );
-				if ( light.attenuation.w != 0.0 && light.attenuation.w != 1.0 )
-					cone = pow( cone, light.attenuation.w );
-			}
-			falloff *= coneDot * cone;
+			cone = clamp( ( coneDot - light.fade.w ) / ( light.normal.w - light.fade.w ), 0.0, 1.0 );
+			if ( light.attenuation.w != 0.0 && light.attenuation.w != 1.0 )
+				cone = pow( cone, light.attenuation.w );
 		}
+		falloff *= coneDot * cone;
 	}
 	if ( hardFade )
 	{
@@ -70,9 +92,15 @@ vec3 StandardLightRadiance( ReSTIRGpuLight light, vec3 origin, vec3 source )
 // hit to be SKY. Ambient divides visible cosine sum by all hemisphere cosine
 // sum, not by the number of rays: the continuum kernel is intensity / pi.
 // Sampling this kernel with a cosine PDF gives intensity for unobstructed sky.
-vec3 EvaluateLight( uint lightIndex, vec3 origin, vec3 source )
+vec3 EvaluateLight( uint lightIndex, vec3 origin, vec3 source, uint emitterTri )
 {
 	ReSTIRGpuLight light = lights[lightIndex];
+	if ( light.type == EMIT_SURFACE )
+	{
+		ReSTIRGpuEmitterTriangle triangle = emitterTriangles[emitterTri];
+		vec2 barycentrics = light.emissionTexture >= 0 ? EmitterBarycentrics( triangle, source ) : vec2( 0.0 );
+		return SurfaceLightRadiance( light, triangle, origin, source, barycentrics );
+	}
 	if ( light.type == EMIT_SKYLIGHT )
 		return light.intensity.rgb;
 	if ( light.type == EMIT_SKYAMBIENT )
@@ -80,7 +108,7 @@ vec3 EvaluateLight( uint lightIndex, vec3 origin, vec3 source )
 	return StandardLightRadiance( light, origin, source );
 }
 
-bool LightVisibility( uint lightIndex, vec3 origin, vec3 source, uint skipHitId )
+bool LightVisibility( uint lightIndex, vec3 origin, vec3 source, uint emitterTri, uint skipHitId )
 {
 	ReSTIRGpuLight light = lights[lightIndex];
 	vec3 offset = source - origin;
@@ -96,7 +124,9 @@ bool LightVisibility( uint lightIndex, vec3 origin, vec3 source, uint skipHitId 
 	// utils/vrad/lightmap.cpp:1909-1912 moves the source off the emitter.
 	if ( light.type == EMIT_SURFACE )
 	{
-		offset += light.normal.xyz * RESTIR_DIST_EPSILON;
+		ReSTIRGpuEmitterTriangle triangle = emitterTriangles[emitterTri];
+		vec3 normal = normalize( cross( triangle.v1.xyz - triangle.v0.xyz, triangle.v2.xyz - triangle.v0.xyz ) );
+		offset += normal * RESTIR_DIST_EPSILON;
 		distanceToLight = length( offset );
 		direction = offset / distanceToLight;
 	}
@@ -111,27 +141,38 @@ bool SampleLight( uint lightIndex, vec3 origin, vec3 normal, vec3 uniformValue, 
 	candidate.flags = RESTIR_RES_VALID;
 	candidate.sourcePdf = 1.0;
 	vec3 source = light.origin.xyz;
+	vec2 emitterBarycentrics = vec2( 0.0 );
 	if ( light.type == EMIT_SURFACE )
 	{
-		float area = EmitterArea( light );
-		if ( area <= 0.0 )
+		if ( light.numTris <= 0 )
 			return false;
-		float targetArea = uniformValue.x * area;
-		int selected = light.firstTri + light.numTris - 1;
-		for ( int primitive = 0; primitive < light.numTris; ++primitive )
+		// Inclusive, power-weighted CDF in emitterTriangles: first cdf > u.x.
+		// Binary search replaces the per-sample scan over all emitter geometry.
+		int first = light.firstTri;
+		int end = first + light.numTris;
+		int low = first;
+		int high = end;
+		while ( low < high )
 		{
-			float primitiveArea = TriangleArea( triangles[light.firstTri + primitive] );
-			if ( targetArea < primitiveArea )
-			{
-				selected = light.firstTri + primitive;
-				break;
-			}
-			targetArea -= primitiveArea;
+			int middle = low + ( high - low ) / 2;
+			if ( emitterTriangles[middle].uv.w > uniformValue.x )
+				high = middle;
+			else
+				low = middle + 1;
 		}
-		ReSTIRGpuTriangle triangle = triangles[selected];
+		int selected = min( low, end - 1 );
+		ReSTIRGpuEmitterTriangle triangle = emitterTriangles[selected];
+		float area = TriangleArea( triangle );
+		float previousCdf = selected > first ? emitterTriangles[selected - 1].uv.w : 0.0;
+		float probability = triangle.uv.w - previousCdf;
+		if ( area <= 0.0 || probability <= 0.0 )
+			return false;
 		float root = sqrt( uniformValue.y );
-		source = triangle.v0.xyz * ( 1.0 - root ) + triangle.v1.xyz * ( root * ( 1.0 - uniformValue.z ) ) + triangle.v2.xyz * root * uniformValue.z;
-		candidate.sourcePdf = 1.0 / area;
+		emitterBarycentrics = vec2( root * ( 1.0 - uniformValue.z ), root * uniformValue.z );
+		source = triangle.v0.xyz * ( 1.0 - root ) + triangle.v1.xyz * emitterBarycentrics.x + triangle.v2.xyz * emitterBarycentrics.y;
+		candidate.emitterTri = uint( selected );
+		candidate.sourcePdf = probability / area;
+		candidate.radiance.rgb = SurfaceLightRadiance( light, triangle, origin, source, emitterBarycentrics );
 	}
 	else if ( light.type == EMIT_SKYAMBIENT )
 	{
@@ -156,46 +197,13 @@ bool SampleLight( uint lightIndex, vec3 origin, vec3 normal, vec3 uniformValue, 
 		source = origin + direction * 100000.0;
 	}
 	candidate.samplePos = vec4( source, 0.0 );
-	candidate.radiance.rgb = EvaluateLight( lightIndex, origin, source );
+	if ( light.type != EMIT_SURFACE )
+		candidate.radiance.rgb = EvaluateLight( lightIndex, origin, source, candidate.emitterTri );
 	if ( light.type == EMIT_SKYLIGHT )
 		candidate.radiance.rgb *= candidate.sourcePdf;
 	vec3 direction = SafeNormal( source - origin );
 	candidate.radiance.w = Luminance( candidate.radiance.rgb ) * max( dot( normal, direction ), 0.0 );
 	return true;
-}
-
-bool IsSkyLight( uint lightIndex )
-{
-	int type = lights[lightIndex].type;
-	return type == EMIT_SKYLIGHT || type == EMIT_SKYAMBIENT;
-}
-
-// Local (non-sky) lights of a style; the sun and sky ambient are their own candidate domains
-// (restir_candidates.comp) because they cover every receiver and VRAD evaluates them for every
-// sample (lightmap.cpp:1673-1831), so they must not compete with N point lights for a slot.
-uint EligibleLocalLightCount( int style )
-{
-	uint count = 0u;
-	for ( uint lightIndex = 0u; lightIndex < pc.numLights; ++lightIndex )
-	{
-		if ( lights[lightIndex].style == style && !IsSkyLight( lightIndex ) )
-			++count;
-	}
-	return count;
-}
-
-uint SelectEligibleLocalLight( int style, uint ordinal )
-{
-	for ( uint lightIndex = 0u; lightIndex < pc.numLights; ++lightIndex )
-	{
-		if ( lights[lightIndex].style == style && !IsSkyLight( lightIndex ) )
-		{
-			if ( ordinal == 0u )
-				return lightIndex;
-			--ordinal;
-		}
-	}
-	return RESTIR_NO_HIT;
 }
 
 ReSTIRReservoir Reevaluate( ReSTIRReservoir source, vec3 origin, vec3 normal )
@@ -207,7 +215,7 @@ ReSTIRReservoir Reevaluate( ReSTIRReservoir source, vec3 origin, vec3 normal )
 		float angularScale = 1.0;
 		if ( lights[source.light].type == EMIT_SKYLIGHT && lights[source.light].sunSpreadAngle > 0.0 )
 			angularScale = 1.0 / ( 2.0 * RESTIR_PI * ( 1.0 - cos( radians( lights[source.light].sunSpreadAngle ) ) ) );
-		source.radiance.rgb = EvaluateLight( source.light, origin, source.samplePos.xyz ) * angularScale;
+		source.radiance.rgb = EvaluateLight( source.light, origin, source.samplePos.xyz, source.emitterTri ) * angularScale;
 	}
 	source.radiance.w = Luminance( source.radiance.rgb ) * max( dot( normal, SafeNormal( source.samplePos.xyz - origin ) ), 0.0 );
 	source.flags &= ~RESTIR_RES_VISIBLE;
@@ -217,7 +225,7 @@ ReSTIRReservoir Reevaluate( ReSTIRReservoir source, vec3 origin, vec3 normal )
 bool ReservoirVisibility( ReSTIRReservoir reservoir, vec3 origin )
 {
 	if ( ( reservoir.flags & RESTIR_RES_PATH ) == 0u )
-		return LightVisibility( reservoir.light, origin, reservoir.samplePos.xyz, RESTIR_NO_HIT );
+		return LightVisibility( reservoir.light, origin, reservoir.samplePos.xyz, reservoir.emitterTri, RESTIR_NO_HIT );
 	vec3 offset = reservoir.samplePos.xyz - origin;
 	float distanceToVertex = length( offset );
 	return TraceVisibility( origin, SafeNormal( offset ), RESTIR_DIST_EPSILON, max( RESTIR_DIST_EPSILON, distanceToVertex - RESTIR_DIST_EPSILON ), RESTIR_RAY_MASK_SHADOW, RESTIR_NO_HIT );

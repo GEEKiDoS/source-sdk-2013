@@ -28,7 +28,7 @@ void AddDirectCandidate( inout ReSTIRReservoir result, uint lightIndex, vec3 ori
 	// target weight 0 so RIS never selects it; a visible one skips the re-trace in accumulate.
 	if ( candidate.radiance.w > 0.0 )
 	{
-		if ( LightVisibility( lightIndex, origin, candidate.samplePos.xyz, RESTIR_NO_HIT ) )
+		if ( LightVisibility( lightIndex, origin, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )
 			candidate.flags |= RESTIR_RES_VISIBLE;
 		else
 			candidate.radiance.w = 0.0;
@@ -58,7 +58,13 @@ void main()
 
 	bool hasSun = pc.skyLight >= 0 && lights[pc.skyLight].style == style;
 	bool hasSkyAmbient = pc.skyAmbientLight >= 0 && lights[pc.skyAmbientLight].style == style;
-	uint localCount = EligibleLocalLightCount( style );
+	// Non-sky lights of each style are indexed by the host. Sun and sky ambient
+	// retain their own candidate domains (VRAD lightmap.cpp:1673-1831).
+	uint sceneSlot = 0u;
+	while ( sceneSlot < pc.numStyles && sceneStyles[sceneSlot] != style )
+		++sceneSlot;
+	uint localFirst = sceneSlot < pc.numStyles ? uint( styleLights[sceneSlot] ) : 0u;
+	uint localCount = sceneSlot < pc.numStyles ? uint( styleLights[sceneSlot + 1u] ) - localFirst : 0u;
 	// Bounce light is gathered from the irradiance already resolved on the hit face (progressive
 	// radiosity), so it exists from iteration 1 on; iteration 0 only bootstraps direct light.
 	bool generatePath = slot == 0u && pc.maxBounces > 0u && pc.iteration > 0u;
@@ -77,7 +83,7 @@ void main()
 	for ( uint local = 0u; local < localCandidates; ++local, ++candidateIndex )
 	{
 		uint ordinal = min( uint( CandidateDimension( key, candidateIndex, 0u ) * float( localCount ) ), localCount - 1u );
-		uint lightIndex = SelectEligibleLocalLight( style, ordinal );
+		uint lightIndex = uint( styleLights[localFirst + ordinal] );
 		AddDirectCandidate( result, lightIndex, origin, normal, key, candidateIndex, float( localCandidates ) / ( float( localCount ) * totalCandidates ), rng );
 	}
 	if ( generatePath )

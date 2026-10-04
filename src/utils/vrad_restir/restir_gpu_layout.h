@@ -44,9 +44,11 @@
 #define RESTIR_BIND_ANORMS           20  // vec4[162] g_anorms (mathlib/anorms.h), w = 0
 #define RESTIR_BIND_HW_PRIM_MAP      21  // uint[]: hardware instanceCustomIndex + primitiveID -> scene triangle index (hardware-rt)
 #define RESTIR_BIND_SCENE_STYLES     22  // int[numStyles]
-#define RESTIR_BIND_COVERAGE         23  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture
-#define RESTIR_BIND_TLAS             24  // accelerationStructureEXT (hardware-rt only)
-#define RESTIR_BIND_COUNT            25
+#define RESTIR_BIND_EMITTER_TRIS     23  // ReSTIRGpuEmitterTriangle[] (ReSTIRScene::emitterTriangles)
+#define RESTIR_BIND_STYLE_LIGHTS     24  // int[] (ReSTIRScene::styleLights): numStyles+1 offsets, then local light indices per style
+#define RESTIR_BIND_COVERAGE         25  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
+#define RESTIR_BIND_TLAS             26  // accelerationStructureEXT (hardware-rt only)
+#define RESTIR_BIND_COUNT            27
 
 #define RESTIR_MAX_CHANNELS          4   // NUM_BUMP_VECTS + 1; accumulation always reserves 4 per reservoir
 #define RESTIR_WORKGROUP_SIZE        64
@@ -70,7 +72,7 @@ struct ReSTIRReservoir						// 64 bytes
 	unsigned int light;					// light index for direct samples, 0xFFFFFFFF for path samples
 	unsigned int flags;					// RESTIR_RES_*
 	unsigned int hitClass;				// hitId class of the path vertex (indirect) or 0
-	unsigned int pad;
+	unsigned int emitterTri;			// direct emit_surface sample: index into ReSTIRScene::emitterTriangles of samplePos; else unused
 };
 #define RESTIR_RES_VALID        0x1
 #define RESTIR_RES_PATH         0x2   // indirect (slot 0 only)

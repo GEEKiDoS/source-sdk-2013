@@ -33,6 +33,10 @@
 #define RESTIR_POINT_IGNORE_NORMALS  0x1u
 #define RESTIR_POINT_NO_SELF_SHADOW  0x2u
 #define RESTIR_POINT_DETAIL_GATHER   0x4u
+#define RESTIR_POINT_EMITTERS_ONLY   0x8u
+
+// Light flags
+#define RESTIR_LIGHT_MATERIAL        0x1
 
 // emittype_t
 #define EMIT_SURFACE     0
@@ -79,17 +83,26 @@ struct ReSTIRGpuMaterial				// 48 bytes
 struct ReSTIRGpuLight					// 112 bytes
 {
 	vec4 origin;						// xyz, w radius (0 = unlimited)
-	vec4 intensity;						// rgb
+	vec4 intensity;						// rgb; EMIT_SURFACE: per-area emission, w = power bound
 	vec4 normal;						// xyz, w stopdot
-	vec4 attenuation;					// constant, linear, quadratic, exponent
+	vec4 attenuation;					// constant, linear, quadratic, exponent; EMIT_SURFACE: x = bounding radius
 	vec4 fade;							// startFade, endFade, capDist, stopdot2
 	int  type;							// EMIT_*
 	int  style;
-	int  firstTri;						// EMIT_SURFACE
+	int  firstTri;						// EMIT_SURFACE: emitterTriangles range
 	int  numTris;
 	float sunSpreadAngle;				// EMIT_SKYLIGHT, degrees
 	int  styleSlot;
-	ivec2 pad;
+	int  emissionTexture;				// EMIT_SURFACE: sceneTextures index (RGBA8 gamma), -1 uniform
+	int  lightFlags;					// RESTIR_LIGHT_*
+};
+
+struct ReSTIRGpuEmitterTriangle			// 64 bytes, front-facing
+{
+	vec4 v0;							// xyz position, w uv0.x
+	vec4 v1;							// xyz position, w uv0.y
+	vec4 v2;							// xyz position, w uv1.x
+	vec4 uv;							// uv1.y, uv2.x, uv2.y, w inclusive CDF in the light's range
 };
 
 struct ReSTIRGpuFace					// 192 bytes
@@ -186,7 +199,7 @@ struct ReSTIRReservoir					// 64 bytes
 	uint light;
 	uint flags;
 	uint hitClass;
-	uint pad;
+	uint emitterTri;					// direct EMIT_SURFACE: emitterTriangles index of samplePos
 };
 
 struct ReSTIRBvhNode					// 48 bytes
@@ -254,9 +267,11 @@ layout( std430, set = 0, binding = 19 ) buffer BvhScratchBuf             { uint 
 layout( std430, set = 0, binding = 20 ) readonly buffer AnormsBuf        { vec4 anorms[]; };
 layout( std430, set = 0, binding = 21 ) readonly buffer HwPrimMapBuf     { uint hwPrimMap[]; };
 layout( std430, set = 0, binding = 22 ) readonly buffer SceneStylesBuf   { int sceneStyles[]; };
-layout( set = 0, binding = 23 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage and RGBA8 albedo
+layout( std430, set = 0, binding = 23 ) readonly buffer EmitterTrisBuf   { ReSTIRGpuEmitterTriangle emitterTriangles[]; };
+layout( std430, set = 0, binding = 24 ) readonly buffer StyleLightsBuf   { int styleLights[]; };	// numStyles+1 offsets, then light indices
+layout( set = 0, binding = 25 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
 #if RESTIR_HW_RAYQUERY
-layout( set = 0, binding = 24 ) uniform accelerationStructureEXT tlas;
+layout( set = 0, binding = 26 ) uniform accelerationStructureEXT tlas;
 #endif
 
 #endif // RESTIR_LAYOUT_GLSL

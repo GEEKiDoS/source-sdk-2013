@@ -22,6 +22,7 @@ public:
 	void Shutdown();
 	int Count() const;
 	bool AppendTriangles( ReSTIRScene &scene, bool textureShadows );
+	bool AppendEmitters( ReSTIRScene &scene, const ReSTIROptions &options );
 	// Loaded model peer data. mstudiomodel_t::CacheVertexData receives a pointer to this struct
 	// (passed as GetVertexData's pModelData) because studiohdr_t::SetVertexBase is a no-op on
 	// PLATFORM_64BITS for models without a studiohdr2_t.

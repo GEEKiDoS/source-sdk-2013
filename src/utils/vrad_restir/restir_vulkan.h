@@ -16,6 +16,8 @@ public:
 	void Shutdown();
 	const ReSTIRDeviceInfo &GetDeviceInfo() const;
 	bool UploadScene( const ReSTIRScene &scene );
+	// Re-uploads faces after ReSTIR_ResolveFaceStyles; styles may only shrink.
+	bool UpdateFaceStyles( const ReSTIRScene &scene );
 	bool BakeLightmaps( const ReSTIROptions &options, ReSTIRLightmapResult &result );
 	bool UploadFinalLightmap( const ReSTIRLightmapResult &result );
 	bool TraceRays( const CUtlVector<ReSTIRGpuRay> &rays, unsigned int triangleMask, CUtlVector<ReSTIRGpuHit> &hits );

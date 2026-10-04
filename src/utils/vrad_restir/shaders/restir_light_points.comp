@@ -30,18 +30,27 @@ vec3 PointSkyAmbient( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitId
 		if ( cosine <= RESTIR_EQUAL_EPSILON )
 			continue;
 		allCosines += cosine;
-		if ( LightVisibility( lightIndex, origin, origin + direction * 100000.0, skipHitId ) )
+		if ( LightVisibility( lightIndex, origin, origin + direction * 100000.0, RESTIR_NO_HIT, skipHitId ) )
 			visibleCosines += cosine;
 	}
 	return allCosines > 0.0 ? lights[lightIndex].intensity.rgb * visibleCosines / allCosines : vec3( 0.0 );
 }
 
 // utils/vrad/lightmap.cpp:1673-1742,1835-1995,2003-2035 GatherSampleLightSSE.
-// Surface emitters use 16 stratified full-range area samples (I3); analytic
-// lights are exhaustive, not randomly selected. No styles are folded into 0.
+// Surface emitters use 16 stratified full-range CDF samples; analytic lights
+// are exhaustive, not randomly selected. No styles are folded into 0.
 vec3 PointDirectLight( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitId, uint seed )
 {
 	ReSTIRGpuLight light = lights[lightIndex];
+	if ( ( light.lightFlags & RESTIR_LIGHT_MATERIAL ) != 0 )
+	{
+		// Cull negligible material emitters for exhaustive point lighting. The
+		// power bound divided by closest bounding-sphere distance squared is
+		// in VRAD light units; retain contributions at or above 0.01.
+		float distanceBound = max( length( query.position.xyz - light.origin.xyz ) - light.attenuation.x, 1.0 );
+		if ( light.intensity.w / ( distanceBound * distanceBound ) < 0.01 )
+			return vec3( 0.0 );
+	}
 	if ( light.type == EMIT_SKYAMBIENT )
 		return PointSkyAmbient( lightIndex, query, skipHitId );
 	bool ignoreNormals = ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u;
@@ -56,7 +65,7 @@ vec3 PointDirectLight( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitI
 		ReSTIRReservoir candidate;
 		if ( !SampleLight( lightIndex, origin, query.normal.xyz, uniformValue, candidate ) || candidate.sourcePdf <= 0.0 )
 			continue;
-		if ( !LightVisibility( lightIndex, origin, candidate.samplePos.xyz, skipHitId ) )
+		if ( !LightVisibility( lightIndex, origin, candidate.samplePos.xyz, candidate.emitterTri, skipHitId ) )
 			continue;
 		vec3 direction = SafeNormal( candidate.samplePos.xyz - origin );
 		// VRAD evaluates the sun cosine at the central direction, while rays
@@ -78,6 +87,7 @@ void main()
 		return;
 	ReSTIRGpuPointQuery query = queries[index];
 	uint skipHitId = ( query.flags & RESTIR_POINT_NO_SELF_SHADOW ) != 0u ? query.skipHitId : RESTIR_NO_HIT;
+	bool emittersOnly = ( query.flags & RESTIR_POINT_EMITTERS_ONLY ) != 0u;
 	// Point services have no face/sample key: seed from query position and
 	// normal bits plus pc.seed and light index, never dispatch index.
 	uint key = Hash( pc.seed ^ floatBitsToUint( query.position.x ) );
@@ -90,10 +100,12 @@ void main()
 		results[index * pc.numStyles + slot] = ReSTIRGpuPointResult( vec4( 0.0 ), vec4( 0.0 ) );
 	for ( uint lightIndex = 0u; lightIndex < pc.numLights; ++lightIndex )
 	{
+		if ( emittersOnly && ( lights[lightIndex].lightFlags & RESTIR_LIGHT_MATERIAL ) == 0 )
+			continue;
 		uint slot = uint( lights[lightIndex].styleSlot );
 		results[index * pc.numStyles + slot].direct.rgb += PointDirectLight( lightIndex, query, skipHitId, Hash( key ^ lightIndex ) );
 	}
-	if ( ( query.flags & RESTIR_POINT_DETAIL_GATHER ) != 0u )
+	if ( !emittersOnly && ( query.flags & RESTIR_POINT_DETAIL_GATHER ) != 0u )
 	{
 		for ( uint sampleIndex = 0u; sampleIndex < RESTIR_NUM_ANORMS; ++sampleIndex )
 		{
@@ -105,7 +117,7 @@ void main()
 				results[index * pc.numStyles + slot].indirect.rgb += RayAmbientColor( hit, query.position.xyz, direction, sceneStyles[slot] ) * ( 255.0 / float( RESTIR_NUM_ANORMS ) );
 		}
 	}
-	else
+	else if ( !emittersOnly )
 	{
 		results[index * pc.numStyles].indirect.rgb = StaticPropIndirect( query.position.xyz, query.normal.xyz, ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u );
 	}

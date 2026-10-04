@@ -179,7 +179,7 @@ int FindStyle( ReSTIRGpuFace face, int style )
 
 ReSTIRReservoir EmptyReservoir()
 {
-	return ReSTIRReservoir( vec4( 0.0 ), vec4( 0.0 ), 0.0, 0.0, 0.0, 0.0, RESTIR_NO_HIT, 0u, 0u, 0u );
+	return ReSTIRReservoir( vec4( 0.0 ), vec4( 0.0 ), 0.0, 0.0, 0.0, 0.0, RESTIR_NO_HIT, 0u, 0u, RESTIR_NO_HIT );
 }
 
 // Bitterli et al. 2020, weighted reservoir sampling; no floating-point atomics.

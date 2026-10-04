@@ -367,7 +367,7 @@ void CReSTIRVulkanDevice::Impl::CreateDescriptorsAndPipelines()
 	}
 	bindings[RESTIR_BIND_COVERAGE].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[RESTIR_BIND_COVERAGE].descriptorCount = textureCount;
-	// Fixed per-scene count: VARIABLE_DESCRIPTOR_COUNT cannot precede binding 24 (TLAS).
+	// Fixed per-scene count: VARIABLE_DESCRIPTOR_COUNT cannot precede RESTIR_BIND_TLAS.
 	bindingFlags[RESTIR_BIND_COVERAGE] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 	if ( hardware )
 		bindings[RESTIR_BIND_TLAS].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
