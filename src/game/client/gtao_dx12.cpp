@@ -126,7 +126,8 @@ static void SetGtaoConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, i
 	SetVector4( pMaterial, "$depthscale", depthScale );
 }
 
-static void SetGtaoApplyConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, int fullWidth, int fullHeight, bool bRestoreScale, int originX, int originY )
+static void SetGtaoApplyConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, int fullWidth, int fullHeight, bool bRestoreScale, int originX, int originY,
+	const VMatrix &view, const VMatrix &projection )
 {
 	const float sceneOrigin[4] = { static_cast<float>( originX ), static_cast<float>( originY ), 0.f, 0.f };
 	const float fullSize[4] = { static_cast<float>( fullWidth ), static_cast<float>( fullHeight ), 0.f, 0.f };
@@ -136,6 +137,31 @@ static void SetGtaoApplyConstants( IMaterial *pMaterial, int aoWidth, int aoHeig
 	SetVector4( pMaterial, "$aosize", aoSize );
 	SetInt( pMaterial, "$fullres", aoWidth == fullWidth && aoHeight == fullHeight );
 	SetInt( pMaterial, "$restorescale", bRestoreScale );
+
+	// Scene fog reconstruction. GTAO view depth d is -z_view, so the materials' projPos.z is P23 - P22 * d, and
+	// clip = C * ( ndc.xy * d, d, 1 ) with clip.w = -P32 * d; world = inverse( P * V ) * C (homogeneous).
+	const float clipZ[4] = { projection[2][3], -projection[2][2], 0.f, 0.f };
+	SetVector4( pMaterial, "$fogclipz", clipZ );
+	VMatrix inverseView;
+	if ( MatrixInverseGeneral( view, inverseView ) )
+	{
+		const Vector eye = inverseView.GetTranslation();
+		const float fogEye[4] = { eye.x, eye.y, eye.z, 0.f };
+		SetVector4( pMaterial, "$fogeye", fogEye );
+	}
+	VMatrix inverseViewProjection;
+	if ( MatrixInverseGeneral( projection * view, inverseViewProjection ) )
+	{
+		const float w = -projection[3][2];
+		const VMatrix depthToClip( w, 0.f, 0.f, 0.f,
+			0.f, w, 0.f, 0.f,
+			0.f, 0.f, -projection[2][2], projection[2][3],
+			0.f, 0.f, w, 0.f );
+		const VMatrix toWorld = inverseViewProjection * depthToClip;
+		static const char *const kRows[4] = { "$fogworld0", "$fogworld1", "$fogworld2", "$fogworld3" };
+		for ( int i = 0; i < 4; ++i )
+			SetVector4( pMaterial, kRows[i], toWorld[i] );
+	}
 }
 
 // Compute materials dispatch from their dynamic state and skip the raster draw; the rectangle only drives the pass.
@@ -229,8 +255,9 @@ void GTAODX12_Dispatch( IMatRenderContext *pRenderContext )
 	pRenderContext->GetViewport( viewportX, viewportY, fullWidth, fullHeight );
 	if ( fullWidth <= 0 || fullHeight <= 0 )
 		return;
-	VMatrix projection;
+	VMatrix projection, view;
 	pRenderContext->GetMatrix( MATERIAL_PROJECTION, &projection );
+	pRenderContext->GetMatrix( MATERIAL_VIEW, &view );
 	const float projectionDepth = projection[3][2];
 	if ( projection[3][3] != 0.f || projectionDepth == 0.f || projection[0][0] == 0.f || projection[1][1] == 0.f )
 		return;
@@ -267,7 +294,7 @@ void GTAODX12_Dispatch( IMatRenderContext *pRenderContext )
 	SetGtaoConstants( s_Main.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY );
 	for ( int i = 0; i < denoisePasses; ++i )
 		SetGtaoConstants( s_Denoise[i].m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, i + 1 == denoisePasses, viewportX, viewportY );
-	SetGtaoApplyConstants( pApply, aoWidth, aoHeight, fullWidth, fullHeight, denoisePasses == 0, viewportX, viewportY );
+	SetGtaoApplyConstants( pApply, aoWidth, aoHeight, fullWidth, fullHeight, denoisePasses == 0, viewportX, viewportY, view, projection );
 
 	DrawCompute( pRenderContext, s_Prefilter.m_pMaterial );
 	if ( scale < 1.f )

@@ -715,13 +715,25 @@ logical=gtao_apply_ps51 stage=ps source=gtao_apply_ps51.fxc legacy=- legacyName=
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=GtaoApply space=1 register=b1 size=48 layoutHash=0xab954e3331bba1c0 material
+  cbuffer=GtaoApply space=1 register=b1 size=144 layoutHash=0x571a3a57979e2f5c material
     member=gApplyOriginFullSize type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=gApplyAoSizeUnpack type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=gApplyOptions type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=gApplyFogEye type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=gApplyFogClipZ type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=gApplyFogWorld0 type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c5
+    member=gApplyFogWorld1 type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c6
+    member=gApplyFogWorld2 type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=gApplyFogWorld3 type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=ps:c8
     legacyEntry=0,16,1,0,0,0,0
     legacyEntry=16,16,1,0,0,0,1
     legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,4
+    legacyEntry=80,16,1,0,0,0,5
+    legacyEntry=96,16,1,0,0,0,6
+    legacyEntry=112,16,1,0,0,0,7
+    legacyEntry=128,16,1,0,0,0,8
     bridge=WriteNativeCBuffer(api, block)
 logical=lightmappedgeneric_flashlight_vs51 stage=vs source=lightmappedgeneric_flashlight_vs51.fxc legacy=lightmappedgeneric_flashlight_vs20.fxc legacyName=lightmappedgeneric_flashlight_vs20 profile=20b static=16 dynamic=2 present=32
   cbuffer=DX12VSBones space=1 register=b1 size=2544 layoutHash=0x4b955c265c5cfd5f engine

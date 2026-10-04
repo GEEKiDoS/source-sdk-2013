@@ -1,4 +1,6 @@
-// Native SM5.1 GTAO bilateral upsample/apply pixel shader.
+// Native SM5.1 GTAO bilateral upsample/apply pixel shader. The scene is already fogged per material
+// ( lerp( lit, fogColor, fog ) ), so only the lit part is occluded: out = scene * ao + fogColor * fog * ( 1 - ao ),
+// written as src = fogColor * fog * ( 1 - ao ), alpha = ao and blended ONE, SRC_ALPHA.
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 #ifdef HDRTYPE
@@ -12,6 +14,12 @@ cbuffer GtaoApply : register( b1, space1 )
 	float4 gApplyOriginFullSize; // @legacy ps:c0
 	float4 gApplyAoSizeUnpack; // @legacy ps:c1
 	float4 gApplyOptions; // @legacy ps:c2
+	float4 gApplyFogEye; // @legacy ps:c3
+	float4 gApplyFogClipZ; // @legacy ps:c4
+	float4 gApplyFogWorld0; // @legacy ps:c5
+	float4 gApplyFogWorld1; // @legacy ps:c6
+	float4 gApplyFogWorld2; // @legacy ps:c7
+	float4 gApplyFogWorld3; // @legacy ps:c8
 };
 #define gSceneOrigin int2( gApplyOriginFullSize.xy )
 #define gFullSize int2( gApplyOriginFullSize.zw )
@@ -19,6 +27,9 @@ cbuffer GtaoApply : register( b1, space1 )
 #define gDepthTolerance gApplyAoSizeUnpack.z
 #define gFullRes gApplyOptions.x
 #define gRestorePackedScale gApplyOptions.y
+#define gDebugView gApplyOptions.z
+#define gPixelFogType int( gApplyOptions.w )
+#define gEyePos gApplyFogEye.xyz
 Texture2D<float> gAo : register( t0 );
 Texture2D<float> gViewDepth : register( t1 );
 Texture2D<float> gAoDepth : register( t2 );
@@ -29,6 +40,33 @@ struct PS_INPUT
 	float2 vUv0 : TEXCOORD0;
 };
 
+// Fog amount and colour the opaque materials blended into this pixel. Clip z is what the material vertex shaders
+// pass as projPos.z; world position is gApplyFogWorld * float4( ndc.xy * depth, depth, 1 ) (homogeneous).
+float SceneFog( int2 full, float viewDepth, out float3 fogColor )
+{
+	float clipZ = gApplyFogClipZ.x + gApplyFogClipZ.y * viewDepth;
+	if ( cRasterFogColor.w != 0.0 )
+	{
+		// Vertex fog: RangeFog's unfogged weight max( 1 - density, ( end - z ) / ( end - start ) ).
+		fogColor = cRasterFogColor.rgb;
+		return 1.0 - saturate( max( 1.0 - saturate( cRasterFogParams.w ), ( cRasterFogParams.y - clipZ ) * cRasterFogParams.z ) );
+	}
+	fogColor = cLinearFogColor.rgb;
+	if ( gPixelFogType == PIXEL_FOG_TYPE_RANGE )
+	{
+		float range = CalcRangeFog( clipZ, cPixelFogParams.x, cPixelFogParams.z, cPixelFogParams.w );
+		return range * range;
+	}
+	float2 ndc = ( float2( full ) + 0.5 ) / float2( gFullSize ) * float2( 2.0, -2.0 ) + float2( -1.0, 1.0 );
+	float4 p = float4( ndc * viewDepth, viewDepth, 1.0 );
+	float4 world = float4( dot( gApplyFogWorld0, p ), dot( gApplyFogWorld1, p ), dot( gApplyFogWorld2, p ), dot( gApplyFogWorld3, p ) );
+	float3 worldPos = world.xyz / world.w;
+	if ( gPixelFogType == PIXEL_FOG_TYPE_HEIGHT )
+		return saturate( CalcWaterFogAlpha( cPixelFogParams.y, gEyePos.z, worldPos.z, clipZ, cPixelFogParams.w ) );
+	float radial = saturate( CalcRadialFog_NonFixedFunction( worldPos, gEyePos, cPixelFogParams.z, cPixelFogParams.x, cPixelFogParams.w ) );
+	return radial * radial;
+}
+
 float4 main( PS_INPUT input ) : SV_Target0
 {
 	int2 full = clamp( int2( input.projPos.xy ) - gSceneOrigin, int2( 0, 0 ), gFullSize - 1 );
@@ -36,7 +74,8 @@ float4 main( PS_INPUT input ) : SV_Target0
 	float sceneDepth = gFullRes != 0 ? gAoDepth.Load( int3( full, 0 ) ) : gViewDepth.Load( int3( full, 0 ) );
 	if ( sceneDepth >= 65503.0 )
 	{
-		return DX12FinishPixel( FinalOutput( 1.0.xxxx, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+		const float4 unoccluded = gDebugView != 0 ? 1.0.xxxx : float4( 0.0, 0.0, 0.0, 1.0 );
+		return DX12FinishPixel( FinalOutput( unoccluded, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 1.0f );
 	}
 	float ao;
 	if ( gFullRes != 0 )
@@ -68,5 +107,10 @@ float4 main( PS_INPUT input ) : SV_Target0
 	}
 	if ( gRestorePackedScale != 0 ) ao *= 1.5;
 	ao = saturate( ao );
-	return DX12FinishPixel( FinalOutput( ao.xxxx, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+	if ( gDebugView != 0 )
+		return DX12FinishPixel( FinalOutput( ao.xxxx, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 1.0f );
+	float3 fogColor;
+	float fog = SceneFog( full, sceneDepth, fogColor );
+	// Vertex fog 1 = unfogged: the pass declares fog only to receive the scene's fog constants.
+	return DX12FinishPixel( FinalOutput( float4( fogColor * ( fog * ( 1.0 - ao ) ), ao ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 1.0f );
 }
