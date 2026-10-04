@@ -92,12 +92,6 @@ CTranslator::AnalyzeVS( const void* pSrcBytes,
 #endif
 
     VSInputDecls  inputDecls(MAX_VS_INPUT_REGS);
-    // VS 1.x can obtain its input registers solely from the external declaration.
-    // Unlike VS 2/3 bytecode, it need not contain DCL instructions.
-    if (dwVersion < D3DVS_VERSION(2, 0) && pReferenceInputDecls)
-    {
-        inputDecls = *pReferenceInputDecls;
-    }
     VSOutputDecls outputDecls;
     InputRegs     inputRegs;
     OutputRegs    outputRegs;
@@ -531,6 +525,15 @@ CTranslator::AnalyzeVS( const void* pSrcBytes,
         {
             outputRegs.O[i] = INVALID_INDEX;
         }
+    }
+
+    // VS 1.x can obtain its input registers solely from the external declaration.
+    // Unlike VS 2/3 bytecode, it need not contain DCL instructions; when it does, the
+    // DCL registers are the ones its instructions read, so the declaration must not
+    // add a second register for the same usage.
+    if (dwVersion < D3DVS_VERSION(2, 0) && pReferenceInputDecls && 0 == inputDecls.GetSize())
+    {
+        inputDecls = *pReferenceInputDecls;
     }
 
     for (UINT i = 0, n = inputDecls.GetSize(); i < n; ++i)

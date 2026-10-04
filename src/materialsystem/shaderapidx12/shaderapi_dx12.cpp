@@ -3794,9 +3794,15 @@ IMesh *CShaderAPIDX12::GetDynamicMeshEx( IMaterial *material, VertexFormat_t req
 		if ( skinBoneCount > 0 )
 			format |= VERTEX_BONEWEIGHT( 2 ) | VERTEX_BONE_INDEX;
 	}
+	// A material whose shader snapshotted no pass reports vertex format 0
+	// (e.g. debug/debugtranslucentsinglecolor). The queued material system calls
+	// through the returned mesh without a null check, so fall back to a position-only
+	// layout; absent builder fields go to dummy storage and the material draws nothing.
+	if ( !vertexOverride && !VertexFormatSizeDX12( format ) )
+		format |= VERTEX_POSITION;
 	if ( !VertexFormatSizeDX12( format ) )
 	{
-		Warning( "ShaderAPIDX12: dynamic mesh requires a valid material or explicit vertex format\n" );
+		Warning( "ShaderAPIDX12: dynamic mesh vertex override has no vertex layout\n" );
 		return nullptr;
 	}
 	m_nBoneCount = skinBoneCount;
