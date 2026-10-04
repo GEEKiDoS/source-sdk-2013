@@ -66,12 +66,14 @@ struct ReSTIRGpuTriangle				// 80 bytes
 	int  face;
 };
 
-struct ReSTIRGpuMaterial				// 32 bytes
+struct ReSTIRGpuMaterial				// 48 bytes
 {
 	vec4 reflectivity;					// w unused
+	vec4 albedoScale;					// reflectivity / mean linear albedo of albedoTexture; 0 when none
 	int  coverageTexture;				// -1 opaque
-	int  flags;
-	ivec2 pad;
+	int  albedoTexture;					// -1: bounce uses reflectivity only
+	int  textureWidth;					// brush texture UV = texel coord / size
+	int  textureHeight;
 };
 
 struct ReSTIRGpuLight					// 112 bytes
@@ -252,7 +254,7 @@ layout( std430, set = 0, binding = 19 ) buffer BvhScratchBuf             { uint 
 layout( std430, set = 0, binding = 20 ) readonly buffer AnormsBuf        { vec4 anorms[]; };
 layout( std430, set = 0, binding = 21 ) readonly buffer HwPrimMapBuf     { uint hwPrimMap[]; };
 layout( std430, set = 0, binding = 22 ) readonly buffer SceneStylesBuf   { int sceneStyles[]; };
-layout( set = 0, binding = 23 ) uniform sampler2D coverageTextures[];
+layout( set = 0, binding = 23 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage and RGBA8 albedo
 #if RESTIR_HW_RAYQUERY
 layout( set = 0, binding = 24 ) uniform accelerationStructureEXT tlas;
 #endif

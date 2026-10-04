@@ -16,5 +16,7 @@ public:
 // true only when material alpha can affect visibility under textureShadows.
 int ReSTIR_GetOrAddMaterial( ReSTIRScene &scene, const char *pMaterialName,
 	const Vector &reflectivity, bool textureShadows, bool *pOutAlphaTested );
+// Enables per-texel bounce albedo on an already registered lit material (-restir_texturealbedo).
+void ReSTIR_LoadMaterialAlbedo( ReSTIRScene &scene, int materialIndex, const char *pMaterialName, int textureWidth, int textureHeight );
 
 #endif // RESTIR_SCENE_H

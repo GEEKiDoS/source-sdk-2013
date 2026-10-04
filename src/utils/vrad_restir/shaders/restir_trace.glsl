@@ -31,9 +31,9 @@ bool TriangleAccepts( uint triangleIndex, vec2 barycentrics, vec3 direction, uin
 			vec2 uv1 = vec2( triangle.v2.w, triangle.uv.x );
 			vec2 uv2 = triangle.uv.yz;
 			vec2 uv = uv0 * ( 1.0 - barycentrics.x - barycentrics.y ) + uv1 * barycentrics.x + uv2 * barycentrics.y;
-			ivec2 size = textureSize( coverageTextures[nonuniformEXT( textureIndex )], 0 );
+			ivec2 size = textureSize( sceneTextures[nonuniformEXT( textureIndex )], 0 );
 			ivec2 texel = ivec2( floor( fract( uv ) * vec2( size ) ) );
-			if ( texelFetch( coverageTextures[nonuniformEXT( textureIndex )], texel, 0 ).r < 0.5 )
+			if ( texelFetch( sceneTextures[nonuniformEXT( textureIndex )], texel, 0 ).r < 0.5 )
 				return false;
 		}
 	}

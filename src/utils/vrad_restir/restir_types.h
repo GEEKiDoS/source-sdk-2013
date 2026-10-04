@@ -71,6 +71,8 @@ struct ReSTIROptions
 	CUtlString	lightsFile;				// -lights <file>, empty = none
 	float		lightmapScale;			// -restir_lightmapscale (1.0): multiplier on luxel size for brush faces, (0,1];
 										// 0.5 = twice the luxel density per axis; faces are re-split to the 32-luxel limit
+	bool		textureAlbedo;			// -restir_texturealbedo: bounce light picks up the base texture's per-texel colour
+										// (normalized to the material's reflectivity) instead of VRAD's one colour per material
 
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
 	// an explicit -restir_* value always wins over the preset, whatever the argument order.
@@ -93,7 +95,7 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), preset( RESTIR_PRESET_DEFAULT ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( false ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
@@ -120,20 +122,27 @@ struct ReSTIRGpuTriangle				// 80 bytes
 	int			face;					// dface index for world faces / displacement faces, -1 otherwise
 };
 
-struct ReSTIRGpuMaterial				// 32 bytes
+struct ReSTIRGpuMaterial				// 48 bytes
 {
-	float		reflectivity[4];		// dtexdata_t::reflectivity (or prop material average), w unused
-	int			coverageTexture;		// index into ReSTIRScene::coverageTextures, -1 = opaque
-	int			flags;					// reserved, 0
-	int			pad[2];
+	float		reflectivity[4];		// xyz = dtexdata_t::reflectivity (or prop material average), w unused
+	float		albedoScale[4];			// xyz = reflectivity / mean linear albedo of albedoTexture, so that
+										// albedoScale * linear(albedo(uv)) averages to reflectivity over the texture;
+										// w unused. Zero when albedoTexture < 0.
+	int			coverageTexture;		// index into ReSTIRScene::textures (R8), -1 = opaque
+	int			albedoTexture;			// index into ReSTIRScene::textures (RGBA8, gamma space), -1 = use reflectivity
+	int			textureWidth;			// dtexdata_t width/height: brush texture UV = texel coord / size
+	int			textureHeight;
 };
 
-// One R8 coverage texture per alpha-tested material (-TextureShadows). Texel
-// value >= 128 is opaque. Row-major, origin top-left, no mips.
-struct ReSTIRCoverageTexture
+// Textures sampled on the GPU. channels == 1: R8 coverage for an alpha-tested
+// material (-TextureShadows), texel >= 128 is opaque. channels == 4: RGBA8 base
+// texture, gamma space, for per-texel bounce albedo (-restir_texturealbedo).
+// Row-major, origin top-left, no mips, repeat addressing.
+struct ReSTIRSceneTexture
 {
 	int							width;
 	int							height;
+	int							channels;
 	CUtlVector<unsigned char>	texels;
 };
 
@@ -205,9 +214,10 @@ struct ReSTIRGpuFace					// 192 bytes
 	float		reflectivity[4];		// xyz = dtexdata_t::reflectivity; w = RESTIR_FACE_DISP only: VRAD displacement
 										// radial radius squared (vraddisps.cpp BuildLuxelRadial: min(2.2*sqrt(2)/luxelsPerUnit,512)^2),
 										// the reconstruction gathers disp samples by WORLD distance <= sqrt(w); 0 for brush faces
-	float		textureS[4];			// texinfo textureVecsTexelsPerWorldUnits[0].xyz: bump basis (VRAD GetBumpNormals,
-										// lightmap.cpp:2473); NOT the lightmap vectors (those are luxelToWorld/worldToLuxel)
-	float		textureT[4];			// texinfo textureVecsTexelsPerWorldUnits[1].xyz
+	float		textureS[4];			// texinfo textureVecsTexelsPerWorldUnits[0]: xyz bump basis (VRAD GetBumpNormals,
+										// lightmap.cpp:2473), NOT the lightmap vectors (those are luxelToWorld/worldToLuxel);
+										// w = texel offset [3], so texture u = (dot(p, xyz) + w) / material.textureWidth
+	float		textureT[4];			// texinfo textureVecsTexelsPerWorldUnits[1], same layout
 	int			lmMins[2];				// dface_t::m_LightmapTextureMinsInLuxels
 	int			luxelW, luxelH;			// m_LightmapTextureSizeInLuxels + 1
 	int			firstSample, numSamples;
@@ -255,7 +265,7 @@ struct ReSTIRScene
 	// Geometry
 	CUtlVector<ReSTIRGpuTriangle>		triangles;
 	CUtlVector<ReSTIRGpuMaterial>		materials;
-	CUtlVector<ReSTIRCoverageTexture>	coverageTextures;
+	CUtlVector<ReSTIRSceneTexture>		textures;
 	Vector								worldMins, worldMaxs;
 
 	// Lights

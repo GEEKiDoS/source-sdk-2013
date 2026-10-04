@@ -52,6 +52,7 @@ The default options are:
 | `-restir_denoiser_device default\|cpu\|gpu` | `default` | OIDN device preference. |
 | `-restir_probe x y z nx ny nz` | off | Diagnostic: after the bake, print the GPU light table and the direct/indirect light arriving at the given world point and normal per style. |
 | `-restir_lightmapscale F` | `1.0` | Multiplier on brush-face luxel size, `0.0625..1.0`; `0.5` doubles density per axis. See "Lightmap density" below. |
+| `-restir_texturealbedo` | off | Bounce light picks up each material's `$basetexture` per texel instead of VRAD's single reflectivity per material. The texture is linearized (2.2) and scaled so its average equals the material's reflectivity, so total bounced energy matches VRAD; only its spatial distribution changes (e.g. a dark stripe on a wall bounces less light than its light neighbour). Applies to lightmap bounces, leaf ambient cubes and static/detail prop gathers. Materials whose base texture cannot be loaded fall back to their reflectivity. |
 | `-StaticPropLighting` | off | Bake static-prop vertex and texel lighting. |
 | `-TextureShadows` | off | Evaluate alpha-tested material coverage for shadows. |
 | `-smooth N` | `45` degrees | Phong smoothing threshold. |

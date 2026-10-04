@@ -219,6 +219,11 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			options.staticPropLighting = true;
 			continue;
 		}
+		if ( IsOption( pArg, "-restir_texturealbedo" ) )
+		{
+			options.textureAlbedo = true;
+			continue;
+		}
 		if ( IsOption( pArg, "-TextureShadows" ) || IsOption( pArg, "-textureshadows" ) )
 		{
 			options.textureShadows = true;
@@ -609,9 +614,20 @@ int CVRadRestirDLL::main( int argc, char **argv )
 	m_flProgress = 0.10f;
 	RESTIR_STAGE( "rescaling lightmaps", ReSTIR_RescaleLightmaps( g_ReSTIROptions ) );
 	RESTIR_STAGE( "building scene", sceneBuilder.Build( g_ReSTIROptions, scene ) );
-	Msg( "VRAD ReSTIR: %d triangles, %d materials, %d lights (%d exported), %d lit faces, %d samples, %d luxels\n",
-		scene.triangles.Count(), scene.materials.Count(), scene.lights.Count(), scene.exportLights.Count(),
-		scene.faces.Count(), scene.samples.Count(), scene.luxels.Count() );
+	{
+		int coverageCount = 0;
+		int albedoCount = 0;
+		for ( int i = 0; i < scene.textures.Count(); ++i )
+		{
+			if ( scene.textures[i].channels == 4 )
+				++albedoCount;
+			else
+				++coverageCount;
+		}
+		Msg( "VRAD ReSTIR: %d triangles, %d materials (%d alpha, %d albedo textures), %d lights (%d exported), %d lit faces, %d samples, %d luxels\n",
+			scene.triangles.Count(), scene.materials.Count(), coverageCount, albedoCount, scene.lights.Count(), scene.exportLights.Count(),
+			scene.faces.Count(), scene.samples.Count(), scene.luxels.Count() );
+	}
 	m_flProgress = 0.25f;
 	RESTIR_STAGE( "initializing Vulkan", device.Init( g_ReSTIROptions ) );
 	RESTIR_STAGE( "uploading scene", device.UploadScene( scene ) );

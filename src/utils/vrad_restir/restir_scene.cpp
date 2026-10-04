@@ -26,11 +26,14 @@
 
 static CUtlDict<int, unsigned short> s_MaterialNames;
 static CUtlDict<int, unsigned short> s_CoverageTextureNames;
+static CUtlDict<int, unsigned short> s_AlbedoTextureNames;
 static CUtlVector<unsigned char> s_MaterialCoverageLoaded;
+static CUtlVector<unsigned char> s_MaterialAlbedoLoaded;
+static CUtlVector<Vector> s_AlbedoInverseAverage;			// per scene.textures index (albedo entries only)
 static CUtlVector<entity_t *> s_ModelEntities;
 
-// utils/vrad/vradstaticprops.cpp:649-684, 859-872 — RGBA8888 alpha extraction.
-static bool LoadCoverageVTF( const char *pBaseTexture, ReSTIRCoverageTexture &coverage )
+// utils/vrad/vradstaticprops.cpp:649-684, 859-872 — top mip of a VTF decoded to RGBA8888.
+static bool LoadVTFRGBA( const char *pBaseTexture, int &width, int &height, CUtlVector<unsigned char> &rgba )
 {
 	if ( !pBaseTexture || !pBaseTexture[0] || !g_pFileSystem )
 		return false;
@@ -62,29 +65,56 @@ static bool LoadCoverageVTF( const char *pBaseTexture, ReSTIRCoverageTexture &co
 		return false;
 	}
 
-	coverage.width = texture->Width();
-	coverage.height = texture->Height();
-	if ( coverage.width <= 0 || coverage.height <= 0 )
+	width = texture->Width();
+	height = texture->Height();
+	if ( width <= 0 || height <= 0 )
 	{
 		DestroyVTFTexture( texture );
 		return false;
 	}
 
-	CUtlVector<unsigned char> rgba;
-	rgba.SetCount( ImageLoader::GetMemRequired( coverage.width, coverage.height, 1,
-		IMAGE_FORMAT_RGBA8888, false ) );
+	rgba.SetCount( ImageLoader::GetMemRequired( width, height, 1, IMAGE_FORMAT_RGBA8888, false ) );
 	const unsigned char *pixels = texture->ImageData( 0, 0, 0, 0, 0, 0 );
-	if ( !ImageLoader::ConvertImageFormat( pixels, texture->Format(), rgba.Base(),
-		IMAGE_FORMAT_RGBA8888, coverage.width, coverage.height, 0, 0 ) )
-	{
-		DestroyVTFTexture( texture );
+	const bool converted = ImageLoader::ConvertImageFormat( pixels, texture->Format(), rgba.Base(),
+		IMAGE_FORMAT_RGBA8888, width, height, 0, 0 );
+	DestroyVTFTexture( texture );
+	return converted;
+}
+
+static bool LoadCoverageVTF( const char *pBaseTexture, ReSTIRSceneTexture &coverage )
+{
+	CUtlVector<unsigned char> rgba;
+	if ( !LoadVTFRGBA( pBaseTexture, coverage.width, coverage.height, rgba ) )
 		return false;
-	}
+	coverage.channels = 1;
 	coverage.texels.SetCount( coverage.width * coverage.height );
 	for ( int i = 0; i < coverage.texels.Count(); ++i )
 		coverage.texels[i] = rgba[i * 4 + 3];
+	return true;
+}
 
-	DestroyVTFTexture( texture );
+// Per-texel albedo for bounce light. The texture is kept in gamma space (the GPU
+// linearizes with the same 2.2 curve VBSP uses for reflectivity); `inverseAverage`
+// is 1 / mean linear RGB so the material's reflectivity still sets the average.
+static bool LoadAlbedoVTF( const char *pBaseTexture, ReSTIRSceneTexture &albedo, Vector &inverseAverage )
+{
+	CUtlVector<unsigned char> rgba;
+	if ( !LoadVTFRGBA( pBaseTexture, albedo.width, albedo.height, rgba ) )
+		return false;
+	albedo.channels = 4;
+	albedo.texels.Swap( rgba );
+	double sum[3] = { 0.0, 0.0, 0.0 };
+	const int texelCount = albedo.width * albedo.height;
+	for ( int i = 0; i < texelCount; ++i )
+	{
+		for ( int c = 0; c < 3; ++c )
+			sum[c] += pow( albedo.texels[i * 4 + c] / 255.0, 2.2 );
+	}
+	for ( int c = 0; c < 3; ++c )
+	{
+		const double average = sum[c] / texelCount;
+		inverseAverage[c] = average > 1.0e-4 ? (float)( 1.0 / average ) : 0.0f;
+	}
 	return true;
 }
 
@@ -97,43 +127,71 @@ static int LoadCoverageTexture( ReSTIRScene &scene, const char *pMaterialName, c
 	if ( cached != s_CoverageTextureNames.InvalidIndex() )
 		return s_CoverageTextureNames[cached];
 
-	const int coverageIndex = scene.coverageTextures.AddToTail();
-	ReSTIRCoverageTexture &coverage = scene.coverageTextures[coverageIndex];
-	if ( !LoadCoverageVTF( pBaseTexture, coverage ) )
+	const int textureIndex = scene.textures.AddToTail();
+	if ( !LoadCoverageVTF( pBaseTexture, scene.textures[textureIndex] ) )
 	{
-		scene.coverageTextures.Remove( coverageIndex );
+		scene.textures.Remove( textureIndex );
 		s_CoverageTextureNames.Insert( pBaseTexture, -1 );
 		Warning( "ReSTIR: couldn't load alpha texture for material %s\n", pMaterialName );
 		return -1;
 	}
-	s_CoverageTextureNames.Insert( pBaseTexture, coverageIndex );
-	return coverageIndex;
+	s_CoverageTextureNames.Insert( pBaseTexture, textureIndex );
+	return textureIndex;
+}
+
+static int LoadAlbedoTexture( ReSTIRScene &scene, const char *pMaterialName, const char *pBaseTexture, Vector &inverseAverage )
+{
+	inverseAverage.Init();
+	if ( !pBaseTexture || !pBaseTexture[0] )
+		return -1;
+	const unsigned short cached = s_AlbedoTextureNames.Find( pBaseTexture );
+	if ( cached != s_AlbedoTextureNames.InvalidIndex() )
+	{
+		const int textureIndex = s_AlbedoTextureNames[cached];
+		if ( textureIndex >= 0 )
+			inverseAverage = s_AlbedoInverseAverage[textureIndex];
+		return textureIndex;
+	}
+
+	const int textureIndex = scene.textures.AddToTail();
+	if ( !LoadAlbedoVTF( pBaseTexture, scene.textures[textureIndex], inverseAverage ) )
+	{
+		scene.textures.Remove( textureIndex );
+		s_AlbedoTextureNames.Insert( pBaseTexture, -1 );
+		Warning( "ReSTIR: couldn't load base texture for material %s; using its reflectivity\n", pMaterialName );
+		return -1;
+	}
+	s_AlbedoTextureNames.Insert( pBaseTexture, textureIndex );
+	s_AlbedoInverseAverage.EnsureCount( textureIndex + 1 );
+	s_AlbedoInverseAverage[textureIndex] = inverseAverage;
+	return textureIndex;
 }
 
 // utils/vrad/vradstaticprops.cpp:700-737 — VRAD never initializes the material system; it parses the
-// VMT with KeyValues and loads $basetexture when $translucent or $alphatest is present.
-static int LoadAlphaTestedCoverage( ReSTIRScene &scene, const char *pMaterialName )
+// VMT with KeyValues. Returns the $basetexture (empty when absent) and whether the material is alpha-tested.
+static bool ReadMaterialVMT( const char *pMaterialName, char *pBaseTexture, int baseTextureSize, bool &alphaTested )
 {
+	pBaseTexture[0] = 0;
+	alphaTested = false;
 	if ( !g_pFullFileSystem )
-		return -1;
+		return false;
 	char vmtPath[MAX_PATH];
 	Q_snprintf( vmtPath, sizeof( vmtPath ), "materials/%s.vmt", pMaterialName );
 	Q_FixSlashes( vmtPath, CORRECT_PATH_SEPARATOR );
 
-	int coverageIndex = -1;
+	bool loaded = false;
 	KeyValues *pVMT = new KeyValues( "vmt" );
 	CUtlBuffer buf( 0, 0, CUtlBuffer::TEXT_BUFFER );
 	if ( g_pFullFileSystem->ReadFile( vmtPath, NULL, buf ) && pVMT->LoadFromBuffer( vmtPath, buf ) )
 	{
-		if ( pVMT->FindKey( "$translucent" ) || pVMT->FindKey( "$alphatest" ) )
-		{
-			KeyValues *pBaseTexture = pVMT->FindKey( "$basetexture" );
-			if ( pBaseTexture )
-				coverageIndex = LoadCoverageTexture( scene, pMaterialName, pBaseTexture->GetString() );
-		}
+		loaded = true;
+		alphaTested = pVMT->FindKey( "$translucent" ) != NULL || pVMT->FindKey( "$alphatest" ) != NULL;
+		KeyValues *pKey = pVMT->FindKey( "$basetexture" );
+		if ( pKey )
+			Q_strncpy( pBaseTexture, pKey->GetString(), baseTextureSize );
 	}
 	pVMT->deleteThis();
-	return coverageIndex;
+	return loaded;
 }
 
 // utils/vrad/vradstaticprops.cpp:688-740 — material registry shared with props.
@@ -153,19 +211,48 @@ int ReSTIR_GetOrAddMaterial( ReSTIRScene &scene, const char *pMaterialName,
 		memset( &material, 0, sizeof( material ) );
 		ReSTIR_SceneSet4( material.reflectivity, reflectivity );
 		material.coverageTexture = -1;
+		material.albedoTexture = -1;
 		materialIndex = scene.materials.AddToTail( material );
 		s_MaterialNames.Insert( name, materialIndex );
 		s_MaterialCoverageLoaded.AddToTail( false );
+		s_MaterialAlbedoLoaded.AddToTail( false );
 	}
 	if ( textureShadows && !s_MaterialCoverageLoaded[materialIndex] )
 	{
 		s_MaterialCoverageLoaded[materialIndex] = true;
-		if ( name[0] )
-			scene.materials[materialIndex].coverageTexture = LoadAlphaTestedCoverage( scene, name );
+		char baseTexture[MAX_PATH];
+		bool alphaTested = false;
+		if ( name[0] && ReadMaterialVMT( name, baseTexture, sizeof( baseTexture ), alphaTested ) && alphaTested )
+			scene.materials[materialIndex].coverageTexture = LoadCoverageTexture( scene, name, baseTexture );
 	}
 	if ( pOutAlphaTested )
 		*pOutAlphaTested = scene.materials[materialIndex].coverageTexture >= 0;
 	return materialIndex;
+}
+
+// Per-texel bounce albedo for a lit brush/displacement material (-restir_texturealbedo).
+// Loads $basetexture once per material and records the texdata size the brush
+// texture axes are expressed in. Materials without a loadable base texture keep
+// their single reflectivity (albedoTexture == -1).
+void ReSTIR_LoadMaterialAlbedo( ReSTIRScene &scene, int materialIndex, const char *pMaterialName, int textureWidth, int textureHeight )
+{
+	ReSTIRGpuMaterial &material = scene.materials[materialIndex];
+	material.textureWidth = MAX( textureWidth, 1 );
+	material.textureHeight = MAX( textureHeight, 1 );
+	if ( s_MaterialAlbedoLoaded[materialIndex] )
+		return;
+	s_MaterialAlbedoLoaded[materialIndex] = true;
+	char baseTexture[MAX_PATH];
+	bool alphaTested = false;
+	if ( !pMaterialName || !pMaterialName[0] || !ReadMaterialVMT( pMaterialName, baseTexture, sizeof( baseTexture ), alphaTested ) )
+		return;
+	Vector inverseAverage;
+	material.albedoTexture = LoadAlbedoTexture( scene, pMaterialName, baseTexture, inverseAverage );
+	if ( material.albedoTexture < 0 )
+		return;
+	const Vector reflectivity = ReSTIR_SceneV4( material.reflectivity );
+	ReSTIR_SceneSet4( material.albedoScale, Vector( reflectivity.x * inverseAverage.x,
+		reflectivity.y * inverseAverage.y, reflectivity.z * inverseAverage.z ) );
 }
 
 // utils/vrad/vrad.cpp:2223-2236 — selected HDR/LDR face array.

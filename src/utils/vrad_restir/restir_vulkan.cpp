@@ -33,7 +33,7 @@ CReSTIRVulkanDevice::Impl::Impl()
 	memoryBudget( false ), hardware( false ), finalUploaded( false ), commandPool( VK_NULL_HANDLE ),
 	timeline( VK_NULL_HANDLE ), submittedValue( 0 ), queryPool( VK_NULL_HANDLE ), queryCursor( 0 ),
 	setLayout( VK_NULL_HANDLE ), descriptorPool( VK_NULL_HANDLE ), descriptorSet( VK_NULL_HANDLE ),
-	pipelineLayout( VK_NULL_HANDLE ), coverageSampler( VK_NULL_HANDLE ), instanceBuffer( -1 ), scratchBuffer( -1 ),
+	pipelineLayout( VK_NULL_HANDLE ), textureSampler( VK_NULL_HANDLE ), instanceBuffer( -1 ), scratchBuffer( -1 ),
 	scratchAlignment( 256 ), paddedTriangles( 1 ), scene( NULL ), createAcceleration( NULL ),
 	destroyAcceleration( NULL ), getAccelerationSizes( NULL ), getAccelerationAddress( NULL ), cmdBuildAcceleration( NULL )
 {
@@ -412,7 +412,7 @@ void CReSTIRVulkanDevice::Impl::CreateDescriptorsAndPipelines()
 	imageInfo.SetCount( textureCount );
 	FOR_EACH_VEC( imageInfo, i )
 	{
-		imageInfo[i].sampler = coverageSampler;
+		imageInfo[i].sampler = textureSampler;
 		imageInfo[i].imageView = images[i].view;
 		imageInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
@@ -689,8 +689,8 @@ void CReSTIRVulkanDevice::Impl::Release()
 				vkDestroyImageView( gpu.device, gpu.images[i].view, NULL );
 			vkDestroyImage( gpu.device, gpu.images[i].handle, NULL );
 		}
-		if ( gpu.coverageSampler )
-			vkDestroySampler( gpu.device, gpu.coverageSampler, NULL );
+		if ( gpu.textureSampler )
+			vkDestroySampler( gpu.device, gpu.textureSampler, NULL );
 		FOR_EACH_VEC( gpu.buffers, i )
 			vkDestroyBuffer( gpu.device, gpu.buffers[i].handle, NULL );
 		if ( gpu.mappedStaging )

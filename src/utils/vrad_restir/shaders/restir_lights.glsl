@@ -235,7 +235,7 @@ vec3 PreviousIrradianceAtHit( HitInfo hit, vec3 position, out vec3 reflectivity 
 	if ( faceIndex < 0 )
 		return vec3( 0.0 );
 	ReSTIRGpuFace face = faces[faceIndex];
-	reflectivity = face.reflectivity.rgb;
+	reflectivity = HitAlbedo( face, hit, position );
 	ivec2 coord = clamp( ivec2( LightmapCoord( face, hit, position ) ), ivec2( 0 ), ivec2( face.luxelW - 1, face.luxelH - 1 ) );
 	int sampleIndex = cellSamples[face.firstLuxel + coord.x + coord.y * face.luxelW];
 	if ( sampleIndex < 0 )

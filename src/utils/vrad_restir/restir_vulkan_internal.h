@@ -49,7 +49,9 @@ struct ReSTIRImage
 	VkDeviceSize offset;
 	unsigned int width;
 	unsigned int height;
-	ReSTIRImage() : handle( VK_NULL_HANDLE ), view( VK_NULL_HANDLE ), offset( 0 ), width( 0 ), height( 0 )
+	unsigned int channels;		// 1 = R8 coverage, 4 = RGBA8 albedo (ReSTIRSceneTexture::channels)
+	VkFormat Format() const { return channels == 4 ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8_UNORM; }
+	ReSTIRImage() : handle( VK_NULL_HANDLE ), view( VK_NULL_HANDLE ), offset( 0 ), width( 0 ), height( 0 ), channels( 1 )
 	{
 		memset( &requirements, 0, sizeof( requirements ) );
 	}
@@ -101,7 +103,7 @@ struct CReSTIRVulkanDevice::Impl
 	VkDescriptorSet descriptorSet;
 	VkPipelineLayout pipelineLayout;
 	VkPipeline pipelines[RESTIR_PIPE_COUNT];
-	VkSampler coverageSampler;
+	VkSampler textureSampler;
 	CUtlVector<ReSTIRBuffer> buffers;
 	CUtlVector<ReSTIRImage> images;
 	CUtlVector<ReSTIRAcceleration> blas;
@@ -141,7 +143,7 @@ struct CReSTIRVulkanDevice::Impl
 	void Dispatch( VkCommandBuffer command, ReSTIRPipeline pipeline, unsigned int count, unsigned int pass = 0 );
 	void Upload( int buffer, const void *data, VkDeviceSize bytes, VkDeviceSize offset = 0 );
 	void Download( int buffer, void *data, VkDeviceSize bytes, VkDeviceSize offset = 0, double *pTransferMs = NULL );
-	void UploadCoverage();
+	void UploadTextures();
 	void PlanAcceleration();
 	void BuildAcceleration();
 	void RunService( ReSTIRPipeline pipeline, const void *input, unsigned int inputStride, void *output, unsigned int outputStride, unsigned int count, unsigned int styles, unsigned int mask );

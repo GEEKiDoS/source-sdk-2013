@@ -921,6 +921,11 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 		face.dface = dfaceIndex;
 		face.material = ReSTIR_GetOrAddMaterial( scene, ReSTIR_SceneFaceMaterial( &dface ),
 			dtexdata[info.texdata].reflectivity, context.options->textureShadows, NULL );
+		if ( context.options->textureAlbedo )
+		{
+			ReSTIR_LoadMaterialAlbedo( scene, face.material, ReSTIR_SceneFaceMaterial( &dface ),
+				dtexdata[info.texdata].width, dtexdata[info.texdata].height );
+		}
 		face.lmMins[0] = dface.m_LightmapTextureMinsInLuxels[0];
 		face.lmMins[1] = dface.m_LightmapTextureMinsInLuxels[1];
 		face.luxelW = dface.m_LightmapTextureSizeInLuxels[0] + 1;
@@ -939,10 +944,13 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 			face.reflectivity[3] = DispSampleRadiusSquared( info );
 		}
 		// utils/vrad/lightmap.cpp:2473-2475,3047-3049 — bump bases use texture axes, not luxel axes.
+		// w carries the texel offset so the GPU can rebuild the brush texture UV at a hit.
 		ReSTIR_SceneSet4( face.textureS, Vector( info.textureVecsTexelsPerWorldUnits[0][0],
-			info.textureVecsTexelsPerWorldUnits[0][1], info.textureVecsTexelsPerWorldUnits[0][2] ) );
+			info.textureVecsTexelsPerWorldUnits[0][1], info.textureVecsTexelsPerWorldUnits[0][2] ),
+			info.textureVecsTexelsPerWorldUnits[0][3] );
 		ReSTIR_SceneSet4( face.textureT, Vector( info.textureVecsTexelsPerWorldUnits[1][0],
-			info.textureVecsTexelsPerWorldUnits[1][1], info.textureVecsTexelsPerWorldUnits[1][2] ) );
+			info.textureVecsTexelsPerWorldUnits[1][1], info.textureVecsTexelsPerWorldUnits[1][2] ),
+			info.textureVecsTexelsPerWorldUnits[1][3] );
 
 		const int faceIndex = scene.faces.Count();
 		BuildFaceLuxels( context, scene, face, disp );

@@ -171,31 +171,32 @@ void CReSTIRVulkanDevice::Impl::BuildAcceleration()
 	hardwareVertices.Purge();
 }
 
-void CReSTIRVulkanDevice::Impl::UploadCoverage()
+void CReSTIRVulkanDevice::Impl::UploadTextures()
 {
 	VkSamplerCreateInfo sampler = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 	sampler.magFilter = sampler.minFilter = VK_FILTER_NEAREST;
 	sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 	sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	Check( vkCreateSampler( device, &sampler, NULL, &coverageSampler ), "vkCreateSampler" );
+	Check( vkCreateSampler( device, &sampler, NULL, &textureSampler ), "vkCreateSampler" );
 	FOR_EACH_VEC( images, i )
 	{
 		ReSTIRImage &image = images[i];
 		VkImageViewCreateInfo view = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
 		view.image = image.handle;
 		view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		view.format = VK_FORMAT_R8_UNORM;
+		view.format = image.Format();
 		view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		view.subresourceRange.levelCount = view.subresourceRange.layerCount = 1;
 		Check( vkCreateImageView( device, &view, NULL, &image.view ), "vkCreateImageView" );
 		unsigned char opaqueTexel = 255;
-		const unsigned char *texels = scene->coverageTextures.Count() ? scene->coverageTextures[i].texels.Base() : &opaqueTexel;
-		unsigned int rowsPerChunk = (unsigned int)( RESTIR_STAGING_BYTES / image.width );
+		const unsigned char *texels = scene->textures.Count() ? scene->textures[i].texels.Base() : &opaqueTexel;
+		const VkDeviceSize rowBytes = (VkDeviceSize)image.width * image.channels;
+		unsigned int rowsPerChunk = (unsigned int)( RESTIR_STAGING_BYTES / rowBytes );
 		for ( unsigned int firstRow = 0; firstRow < image.height; )
 		{
 			Wait();
 			unsigned int rows = MIN( image.height - firstRow, rowsPerChunk );
-			memcpy( mappedStaging, texels + (VkDeviceSize)firstRow * image.width, (size_t)rows * image.width );
+			memcpy( mappedStaging, texels + (VkDeviceSize)firstRow * rowBytes, (size_t)( rows * rowBytes ) );
 			if ( !stagingCoherent )
 			{
 				VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
@@ -304,19 +305,21 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		bool sceneHeap = binding <= RESTIR_BIND_CELL_SAMPLES || binding == RESTIR_BIND_FINAL_LIGHTMAP || binding >= RESTIR_BIND_ANORMS;
 		gpu.AddBuffer( sizes[binding], sceneHeap );
 	}
-	int imageCount = MAX( 1, scene.coverageTextures.Count() );
+	int imageCount = MAX( 1, scene.textures.Count() );
 	if ( (unsigned int)imageCount > gpu.properties.limits.maxPerStageDescriptorSamplers || (unsigned int)imageCount > gpu.properties.limits.maxDescriptorSetSampledImages )
-		gpu.Fail( "coverage texture count exceeds GPU descriptor limits" );
+		gpu.Fail( "scene texture count exceeds GPU descriptor limits" );
 	for ( int i = 0; i < imageCount; ++i )
 	{
 		ReSTIRImage image;
-		image.width = scene.coverageTextures.Count() ? scene.coverageTextures[i].width : 1;
-		image.height = scene.coverageTextures.Count() ? scene.coverageTextures[i].height : 1;
-		if ( !image.width || !image.height || image.width > gpu.properties.limits.maxImageDimension2D || image.height > gpu.properties.limits.maxImageDimension2D || ( scene.coverageTextures.Count() && (VkDeviceSize)scene.coverageTextures[i].texels.Count() != (VkDeviceSize)image.width * image.height ) )
-			gpu.Fail( "invalid coverage texture dimensions or texel count" );
+		image.width = scene.textures.Count() ? scene.textures[i].width : 1;
+		image.height = scene.textures.Count() ? scene.textures[i].height : 1;
+		image.channels = scene.textures.Count() ? scene.textures[i].channels : 1;
+		if ( !image.width || !image.height || ( image.channels != 1 && image.channels != 4 ) || image.width > gpu.properties.limits.maxImageDimension2D || image.height > gpu.properties.limits.maxImageDimension2D ||
+			( scene.textures.Count() && (VkDeviceSize)scene.textures[i].texels.Count() != (VkDeviceSize)image.width * image.height * image.channels ) )
+			gpu.Fail( "invalid scene texture dimensions or texel count" );
 		VkImageCreateInfo create = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 		create.imageType = VK_IMAGE_TYPE_2D;
-		create.format = VK_FORMAT_R8_UNORM;
+		create.format = image.Format();
 		create.extent.width = image.width;
 		create.extent.height = image.height;
 		create.extent.depth = 1;
@@ -361,7 +364,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	}
 	gpu.Upload( RESTIR_BIND_ANORMS, normals, sizeof( normals ) );
 	gpu.Upload( RESTIR_BIND_SCENE_STYLES, scene.sceneStyles.Base(), sizes[RESTIR_BIND_SCENE_STYLES] );
-	gpu.UploadCoverage();
+	gpu.UploadTextures();
 	if ( gpu.hardware )
 	{
 		gpu.Upload( RESTIR_BIND_HW_PRIM_MAP, gpu.hardwarePrimitiveMap.Base(), (VkDeviceSize)gpu.hardwarePrimitiveMap.Count() * sizeof( unsigned int ) );

@@ -21,6 +21,36 @@ vec2 LightmapCoord( ReSTIRGpuFace face, HitInfo hit, vec3 position )
 	return uv * vec2( face.luxelW - 1, face.luxelH - 1 );
 }
 
+// Albedo of a lightmapped face at a hit (-restir_texturealbedo): the base texture texel at the
+// brush texture UV (texinfo axes, restir_types.h ReSTIRGpuFace::textureS/T) or, for displacements,
+// the displacement UV already stored on the triangle, linearized with VBSP's 2.2 curve and
+// normalized so the texture average equals the material reflectivity. Without an albedo
+// texture this is exactly VRAD's per-material reflectivity.
+vec3 HitAlbedo( ReSTIRGpuFace face, HitInfo hit, vec3 position )
+{
+	ReSTIRGpuMaterial material = materials[face.material];
+	if ( material.albedoTexture < 0 )
+		return face.reflectivity.rgb;
+	vec2 uv;
+	if ( ( face.flags & RESTIR_FACE_DISP ) != 0 )
+	{
+		ReSTIRGpuTriangle triangle = triangles[hit.triangle];
+		vec2 uv0 = vec2( triangle.v0.w, triangle.v1.w );
+		vec2 uv1 = vec2( triangle.v2.w, triangle.uv.x );
+		vec2 uv2 = triangle.uv.yz;
+		uv = uv0 * ( 1.0 - hit.barycentrics.x - hit.barycentrics.y ) + uv1 * hit.barycentrics.x + uv2 * hit.barycentrics.y;
+	}
+	else
+	{
+		uv = vec2( dot( position, face.textureS.xyz ) + face.textureS.w, dot( position, face.textureT.xyz ) + face.textureT.w ) /
+			vec2( material.textureWidth, material.textureHeight );
+	}
+	ivec2 size = textureSize( sceneTextures[nonuniformEXT( material.albedoTexture )], 0 );
+	ivec2 texel = ivec2( floor( fract( uv ) * vec2( size ) ) );
+	vec3 gamma = texelFetch( sceneTextures[nonuniformEXT( material.albedoTexture )], texel, 0 ).rgb;
+	return min( pow( gamma, vec3( 2.2 ) ) * material.albedoScale.rgb, vec3( 0.99 ) );
+}
+
 // utils/vrad/vraddetailprops.cpp:266-295. Approved deviation: compute the
 // arithmetic mean of valid finalLightmap luxels rather than the encoded median
 // prefix; this reads the FINAL denoised floats, never pre-bake accumulation.
@@ -72,7 +102,7 @@ vec3 RayAmbientColor( HitInfo hit, vec3 origin, vec3 direction, int style )
 	if ( !valid )
 		averageWeight = 1.0;
 	vec3 color = averageWeight > 0.0 ? mix( pointColor, FaceAverage( face, uint( slot ) ), averageWeight ) : pointColor;
-	return color * face.reflectivity.rgb / 255.0;
+	return color * HitAlbedo( face, hit, position ) / 255.0;
 }
 
 // utils/vrad/vraddetailprops.cpp:658-750 ComputeIndirectLightingAtPoint.
@@ -104,7 +134,7 @@ vec3 StaticPropIndirect( vec3 origin, vec3 normal, bool ignoreNormals )
 		if ( !valid )
 			color = FaceAverage( face, uint( slot ) );
 		float falloff = 1.0 / ( 1.0 + ( hit.t / 128.0 ) * ( hit.t / 128.0 ) );
-		sum += color * face.reflectivity.rgb * falloff;
+		sum += color * HitAlbedo( face, hit, origin + direction * hit.t ) * falloff;
 	}
 	return totalDot > 0.0 ? sum / totalDot : vec3( 0.0 );
 }
