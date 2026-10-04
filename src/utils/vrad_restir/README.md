@@ -62,13 +62,21 @@ Legacy VRAD switches used by existing compile configurations are accepted and re
 
 Measured on `ep2_outland_09` (RTX 4070 SUPER, 920k luxels, one mode, no prop lighting): `-fast` 9 s, default 14 s, `-final` 34 s. Per-face HDR ratio against VRAD's bake: median 0.99 / 1.01 / 1.01 and 10th percentile 0.71 / 0.83 / 0.88 respectively; the 10th percentile tracks the dim, indirect-only faces that need more samples to converge.
 
-Example, from `game\bin\x64`:
+The simplest way to run it is `game\vrad_restir.bat`, which needs nothing copied into the SDK Base folders: it puts the SDK Base 2013 Multiplayer `bin\x64` runtime on `PATH` for the call, writes a tool-readable `gameinfo.txt` under `%TEMP%\vrad_restir_game` from the configured content roots, and forwards every other argument. A bare map name resolves under `mod_episodic\maps`:
+
+```bat
+game\vrad_restir.bat -both -StaticPropLighting -TextureShadows -final ep2_outland_09
+```
+
+Content roots default to the local Steam library; override with `SDK_MP`, `SDK_SP` and `HL2_DIR` environment variables (or edit the defaults at the top of the script).
+
+Running the executable directly from `game\bin\x64`:
 
 ```bat
 vrad_restir.exe -both -StaticPropLighting -TextureShadows -game <path to gameinfo dir> <path>\ep2_outland_09.bsp
 ```
 
-`gameinfo.txt` must be a tool-readable one: the engine-only `|appid_NNN|` search-path mounts are not resolved by the tool file system, so list the content directories and `.vpk` files explicitly (quote paths containing spaces).
+`gameinfo.txt` must be a tool-readable one: the engine-only `|appid_NNN|` search-path mounts are not resolved by the tool file system, so list the content directories and `.vpk` files explicitly (quote paths containing spaces). `tier0.dll`, `vstdlib.dll` and `filesystem_stdio.dll` must be beside the executable or on `PATH`.
 
 ## BSP output
 
