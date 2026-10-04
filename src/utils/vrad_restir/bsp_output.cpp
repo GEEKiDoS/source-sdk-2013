@@ -211,6 +211,10 @@ namespace
 		return ( face.m_LightmapTextureSizeInLuxels[0] + 1 ) * ( face.m_LightmapTextureSizeInLuxels[1] + 1 );
 	}
 
+	// A style slot is kept only when some luxel of it survives ColorRGBExp32 encoding.
+	// Pre-assigned slots (PVS-eligible lights that never reach the face) must drop
+	// out as in VRAD; an exact-zero test would keep every slot after OIDN, whose
+	// output is never exactly zero, and overflow MAX_MAP_LIGHTING.
 	static bool HasRadiance( const ReSTIRLightmapResult &result, const ReSTIRGpuFace &face, int slot )
 	{
 		int numLuxels = face.luxelW * face.luxelH;
@@ -218,11 +222,13 @@ namespace
 		if ( first < 0 || first + face.numChannels * numLuxels > result.radiance.Count() )
 			return false;
 		for ( int channel = 0; channel < face.numChannels; ++channel )
-			{
+		{
 			for ( int luxel = 0; luxel < numLuxels; ++luxel )
 			{
 				const Vector &v = result.radiance[first + channel * numLuxels + luxel];
-				if ( v.x != 0.0f || v.y != 0.0f || v.z != 0.0f )
+				ColorRGBExp32 encoded;
+				VectorToColorRGBExp32( v, encoded );
+				if ( encoded.r || encoded.g || encoded.b )
 					return true;
 			}
 		}

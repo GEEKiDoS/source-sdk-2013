@@ -578,6 +578,25 @@ static void BuildPageImages( const ReSTIRScene &scene, const ReSTIRLightmapResul
 	}
 }
 
+// A face slot with no light anywhere (a pre-assigned style the light never reached) must
+// stay black: faces share a page, and the denoiser inpaints a black region from lit
+// neighbours. Checked on the raw page input so filled/gutter pixels do not count.
+static bool FaceSlotHasInput( const ReSTIRLightmapResult &source, const ReSTIRGpuFace &face, int styleSlot, int channel )
+{
+	const int numLuxels = face.luxelW * face.luxelH;
+	const int first = face.firstOutput + ( styleSlot * face.numChannels + channel ) * numLuxels;
+	for ( int luxel = 0; luxel < numLuxels; ++luxel )
+	{
+		const int outputIndex = first + luxel;
+		if ( outputIndex < 0 || outputIndex >= source.radiance.Count() )
+			continue;
+		const Vector &v = source.radiance[outputIndex];
+		if ( v.x != 0.0f || v.y != 0.0f || v.z != 0.0f )
+			return true;
+	}
+	return false;
+}
+
 static void ScatterPage( const ReSTIRScene &scene, const ReSTIRLightmapResult &pageSource, ReSTIRLightmapResult &result,
 	const PackedPage &packed, const CUtlVector<FacePlacement> &placements, int styleSlot, int channel, const PageImages &page )
 {
@@ -586,6 +605,8 @@ static void ScatterPage( const ReSTIRScene &scene, const ReSTIRLightmapResult &p
 		const int faceIndex = packed.faces[listIndex];
 		const ReSTIRGpuFace &face = scene.faces[faceIndex];
 		if ( styleSlot < 0 || styleSlot >= face.numStyles || channel < 0 || channel >= face.numChannels )
+			continue;
+		if ( !FaceSlotHasInput( pageSource, face, styleSlot, channel ) )
 			continue;
 		const FacePlacement &placement = placements[faceIndex];
 		const int numLuxels = face.luxelW * face.luxelH;
