@@ -80,7 +80,7 @@ static bool IsIgnoredOption( const char *pArg )
 {
 	static const char *const s_pIgnored[] =
 	{
-		"-final", "-fast", "-extra", "-noextra", "-low", "-fastambient", "-nodetaillight",
+		"-extra", "-noextra", "-low", "-fastambient", "-nodetaillight",
 		"-nossprops", "-StaticPropNormals", "-OnlyStaticProps", "-centersamples", "-verbose", "-v",
 		"-novconfig", "-StopOnExit", "-steam", "-allowdebug", "-FullMinidumps", "-insert_search_path",
 		"-debugextra", "-rederrors", "-dump", "-dumpnormals", "-dumptrace", "-LargeDispSampleRadius",
@@ -115,11 +115,59 @@ static bool ConsumeIgnoredValue( int argc, char **argv, int &i, const char *pOpt
 	return true;
 }
 
+// Preset values are measured on ep2_outland_09 (RTX 4070 SUPER, 920k luxels, per mode):
+//   fast    32 it / 4 cand / 2 bounces:  ~9 s, p10 face ratio vs VRAD 0.71 (previews, iteration)
+//   default 128 it / 8 cand / 4 bounces: ~14 s, p10 0.83
+//   final   512 it / 16 cand / 6 bounces: ~34 s, p10 0.88, lowest residual noise before denoising
+// Only knobs the user did not set explicitly are touched.
+struct ReSTIRExplicitOptions
+{
+	bool iterations;
+	bool candidates;
+	bool maxBounces;
+	bool denoiserQuality;
+	ReSTIRExplicitOptions() : iterations( false ), candidates( false ), maxBounces( false ), denoiserQuality( false ) {}
+};
+
+static void ApplyPreset( ReSTIROptions &options, const ReSTIRExplicitOptions &explicitOptions )
+{
+	int iterations = options.iterations;
+	int candidates = options.candidates;
+	int maxBounces = options.maxBounces;
+	ReSTIRDenoiserQuality quality = options.denoiserQuality;
+	switch ( options.preset )
+	{
+	case RESTIR_PRESET_FAST:
+		iterations = 32;
+		candidates = 4;
+		maxBounces = 2;
+		quality = RESTIR_DENOISER_QUALITY_FAST;
+		break;
+	case RESTIR_PRESET_FINAL:
+		iterations = 512;
+		candidates = 16;
+		maxBounces = 6;
+		quality = RESTIR_DENOISER_QUALITY_HIGH;
+		break;
+	default:
+		return;
+	}
+	if ( !explicitOptions.iterations )
+		options.iterations = iterations;
+	if ( !explicitOptions.candidates )
+		options.candidates = candidates;
+	if ( !explicitOptions.maxBounces )
+		options.maxBounces = maxBounces;
+	if ( !explicitOptions.denoiserQuality )
+		options.denoiserQuality = quality;
+}
+
 // Ported command-line coverage from utils/vrad/vrad.cpp:2380-2795; unlike
 // legacy VRAD, unknown option tokens are hard errors rather than map names.
 static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 {
 	options = ReSTIROptions();
+	ReSTIRExplicitOptions explicitOptions;
 	int mapArg = -1;
 	bool loggedIgnored = false;
 	bool explicitMode = false;
@@ -153,6 +201,17 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			// direct DLL invocation deterministic by treating it as the LDR pass.
 			options.hdr = false;
 			explicitMode = true;
+			continue;
+		}
+		if ( IsOption( pArg, "-fast" ) || IsOption( pArg, "-final" ) )
+		{
+			ReSTIRPreset preset = IsOption( pArg, "-fast" ) ? RESTIR_PRESET_FAST : RESTIR_PRESET_FINAL;
+			if ( options.preset != RESTIR_PRESET_DEFAULT && options.preset != preset )
+			{
+				Warning( "Error: -fast and -final are mutually exclusive\n" );
+				return false;
+			}
+			options.preset = preset;
 			continue;
 		}
 		if ( IsOption( pArg, "-StaticPropLighting" ) )
@@ -215,10 +274,10 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			else { minValue = 0; maxValue = 255; }
 			if ( !ParseIntValue( pArg, argv[++i], minValue, maxValue, value ) )
 				return false;
-			if ( IsOption( pArg, "-restir_iterations" ) ) options.iterations = value;
-			else if ( IsOption( pArg, "-restir_candidates" ) ) options.candidates = value;
+			if ( IsOption( pArg, "-restir_iterations" ) ) { options.iterations = value; explicitOptions.iterations = true; }
+			else if ( IsOption( pArg, "-restir_candidates" ) ) { options.candidates = value; explicitOptions.candidates = true; }
 			else if ( IsOption( pArg, "-restir_spatial_radius" ) ) options.spatialRadius = value;
-			else if ( IsOption( pArg, "-restir_maxbounces" ) ) options.maxBounces = value;
+			else if ( IsOption( pArg, "-restir_maxbounces" ) ) { options.maxBounces = value; explicitOptions.maxBounces = true; }
 			else if ( IsOption( pArg, "-restir_seed" ) ) options.seed = value;
 			else options.gpuIndex = value;
 			continue;
@@ -279,6 +338,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			else if ( !Q_stricmp( pValue, "balanced" ) ) options.denoiserQuality = RESTIR_DENOISER_QUALITY_BALANCED;
 			else if ( !Q_stricmp( pValue, "high" ) ) options.denoiserQuality = RESTIR_DENOISER_QUALITY_HIGH;
 			else { Warning( "Error: invalid denoiser quality '%s'\n", pValue ); return false; }
+			explicitOptions.denoiserQuality = true;
 			continue;
 		}
 		if ( IsOption( pArg, "-restir_denoiser_device" ) )
@@ -382,6 +442,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 	}
 	if ( !explicitMode )
 		options.hdr = false;
+	ApplyPreset( options, explicitOptions );
 
 	char mapPath[MAX_PATH];
 	Q_strncpy( mapPath, argv[mapArg], sizeof( mapPath ) );
@@ -596,9 +657,10 @@ cleanup:
 		const ReSTIRDeviceInfo &info = device.GetDeviceInfo();
 		const char *pBackend = info.backend == RESTIR_BACKEND_HARDWARE_RT ? "hardware-rt" : "compute-bvh";
 		const char *pDenoiser = g_ReSTIROptions.denoiser == RESTIR_DENOISER_NONE ? "disabled" : denoiser.GetModeString();
-		Msg( "VRAD ReSTIR: gpu=%s backend=%s luxels=%d ambient-samples=%d iterations=%d denoiser=%s elapsed=%.3f s\n",
+		const char *pPreset = g_ReSTIROptions.preset == RESTIR_PRESET_FAST ? "fast" : ( g_ReSTIROptions.preset == RESTIR_PRESET_FINAL ? "final" : "default" );
+		Msg( "VRAD ReSTIR: gpu=%s backend=%s luxels=%d ambient-samples=%d preset=%s iterations=%d candidates=%d bounces=%d denoiser=%s elapsed=%.3f s\n",
 			info.deviceName.String(), pBackend, scene.luxels.Count(), g_pLeafAmbientLighting ? g_pLeafAmbientLighting->Count() : 0,
-			g_ReSTIROptions.iterations, pDenoiser, Plat_FloatTime() - startTime );
+			pPreset, g_ReSTIROptions.iterations, g_ReSTIROptions.candidates, g_ReSTIROptions.maxBounces, pDenoiser, Plat_FloatTime() - startTime );
 	}
 	else
 	{

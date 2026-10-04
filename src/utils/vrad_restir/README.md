@@ -39,6 +39,7 @@ The default options are:
 | Option | Default | Meaning |
 |---|---:|---|
 | `-ldr`, `-hdr`, `-both` | `-ldr` | Select the output lighting mode; `-both` is handled as two launcher passes. |
+| `-fast`, `-final` | neither | Quality presets, mutually exclusive. `-fast`: 32 iterations, 4 candidates, 2 bounces, fast denoiser. `-final`: 512 iterations, 16 candidates, 6 bounces, high denoiser. Any explicit `-restir_iterations`, `-restir_candidates`, `-restir_maxbounces` or `-restir_denoiser_quality` overrides the preset regardless of argument order. |
 | `-restir_iterations N` | `128` | ReSTIR iterations; `1..65535`. Bounce light is fed back from the irradiance of earlier iterations, so this also bounds the effective bounce depth; the final estimate averages the second half of the iterations. |
 | `-restir_candidates N` | `8` | Local-light (point/spot/surface) candidates per sample per iteration; `1..4096`. The sun, sky ambient, and the bounce path are one candidate each on top of this. |
 | `-restir_spatial_radius N` | `2` | Spatial reuse radius in luxel cells; `0..128`. |
@@ -56,7 +57,9 @@ The default options are:
 | `-smooth N` | `45` degrees | Phong smoothing threshold. |
 | `-lights FILE` | none | Additional `.rad` light file. |
 
-Legacy VRAD switches used by existing compile configurations are accepted and reported as ignored when they do not affect this baker. Unknown switches are errors. `-StaticPropPolys` is accepted as a no-op because ReSTIR always uses polygon-precision static-prop geometry.
+Legacy VRAD switches used by existing compile configurations are accepted and reported as ignored when they do not affect this baker (`-fast` and `-final` are honoured as presets instead). Unknown switches are errors. `-StaticPropPolys` is accepted as a no-op because ReSTIR always uses polygon-precision static-prop geometry.
+
+Measured on `ep2_outland_09` (RTX 4070 SUPER, 920k luxels, one mode, no prop lighting): `-fast` 9 s, default 14 s, `-final` 34 s. Per-face HDR ratio against VRAD's bake: median 0.99 / 1.01 / 1.01 and 10th percentile 0.71 / 0.83 / 0.88 respectively; the 10th percentile tracks the dim, indirect-only faces that need more samples to converge.
 
 Example, from `game\bin\x64`:
 

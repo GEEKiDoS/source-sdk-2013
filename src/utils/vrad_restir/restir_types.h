@@ -59,6 +59,7 @@
 enum ReSTIRDenoiserMode   { RESTIR_DENOISER_OIDN = 0, RESTIR_DENOISER_NONE };
 enum ReSTIRDenoiserQuality{ RESTIR_DENOISER_QUALITY_FAST = 0, RESTIR_DENOISER_QUALITY_BALANCED, RESTIR_DENOISER_QUALITY_HIGH };
 enum ReSTIRDenoiserDevice { RESTIR_DENOISER_DEVICE_DEFAULT = 0, RESTIR_DENOISER_DEVICE_CPU, RESTIR_DENOISER_DEVICE_GPU };
+enum ReSTIRPreset         { RESTIR_PRESET_DEFAULT = 0, RESTIR_PRESET_FAST, RESTIR_PRESET_FINAL };
 
 struct ReSTIROptions
 {
@@ -71,12 +72,15 @@ struct ReSTIROptions
 	float		lightmapScale;			// -restir_lightmapscale (1.0): multiplier on luxel size for brush faces, (0,1];
 										// 0.5 = twice the luxel density per axis; faces are re-split to the 32-luxel limit
 
-	int			iterations;				// -restir_iterations (128): ReSTIR iterations; bounce light is fed back from the
-										// previous iterations' irradiance, so this also bounds the effective bounce depth
-	int			candidates;				// -restir_candidates (8) local-light candidates per sample per iteration;
-										// the sun, sky ambient and the bounce path are one candidate each on top
+	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
+	// an explicit -restir_* value always wins over the preset, whatever the argument order.
+	ReSTIRPreset preset;				// -fast / -final (default)
+	int			iterations;				// -restir_iterations (128; fast 32, final 512): ReSTIR iterations; bounce light is
+										// fed back from previous iterations' irradiance, so this also bounds bounce depth
+	int			candidates;				// -restir_candidates (8; fast 4, final 16) local-light candidates per sample per
+										// iteration; the sun, sky ambient and the bounce path are one candidate each on top
 	int			spatialRadius;			// -restir_spatial_radius (2), in luxel cells
-	int			maxBounces;				// -restir_maxbounces (4): 0 disables indirect light entirely
+	int			maxBounces;				// -restir_maxbounces (4; fast 2, final 6): 0 disables indirect light entirely
 	int			seed;					// -restir_seed (1)
 	int			gpuIndex;				// -restir_gpu, -1 = first discrete GPU
 	bool		forceComputeBvh;		// -restir_force_compute_bvh
@@ -84,13 +88,14 @@ struct ReSTIROptions
 	float		probe[6];
 
 	ReSTIRDenoiserMode		denoiser;			// -restir_denoiser (oidn)
-	ReSTIRDenoiserQuality	denoiserQuality;	// -restir_denoiser_quality (balanced)
+	ReSTIRDenoiserQuality	denoiserQuality;	// -restir_denoiser_quality (balanced; fast fast, final high)
 	ReSTIRDenoiserDevice	denoiserDevice;		// -restir_denoiser_device (default)
 
 	ReSTIROptions()
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), iterations( 128 ), candidates( 8 ), spatialRadius( 2 ),
-		  maxBounces( 4 ), seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), preset( RESTIR_PRESET_DEFAULT ),
+		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
+		  seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
 		  denoiserDevice( RESTIR_DENOISER_DEVICE_DEFAULT ) {}
 };
