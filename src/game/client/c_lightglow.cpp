@@ -201,6 +201,15 @@ void C_LightGlow::OnDataChanged( DataUpdateType_t updateType )
 //-----------------------------------------------------------------------------
 void C_LightGlow::ClientThink( void )
 {
+	// Keep the legacy light flare out of the DX12 scene; other overlays still draw.
+	const char *pShaderDLL = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShaderDLLName() : NULL;
+	if ( pShaderDLL && !V_stricmp( pShaderDLL, "stdshader_dx12" ) )
+	{
+		m_Glow.Deactivate();
+		SetNextClientThink( CLIENT_THINK_NEVER );
+		return;
+	}
+
 	Vector mins = GetAbsOrigin();
 	if ( engine->IsBoxVisible( mins, mins ) )
 	{

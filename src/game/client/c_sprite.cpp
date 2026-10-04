@@ -15,6 +15,7 @@
 #include "tier0/vprof.h"
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialvar.h"
+#include "materialsystem/itexture.h"
 #include "view_shared.h"
 #include "viewrender.h"
 #include "tier1/KeyValues.h"
@@ -63,6 +64,25 @@ void DrawSpriteModel( IClientEntity *baseentity, CEngineSprite *psprite, const V
 	material = psprite->GetMaterial( (RenderMode_t)rendermode, frame );
 	if ( !material )
 		return;
+
+	const char *pShaderDLL = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShaderDLLName() : NULL;
+	if ( pShaderDLL && !V_stricmp( pShaderDLL, "stdshader_dx12" ) )
+	{
+		// Match the texture, not the procedural material's render-mode suffix.
+		static unsigned int nBaseTextureCache = 0;
+		IMaterialVar *pBaseTexture = material->FindVarFast( "$basetexture", &nBaseTextureCache );
+		if ( pBaseTexture && pBaseTexture->GetType() == MATERIAL_VAR_TYPE_TEXTURE )
+		{
+			ITexture *pTexture = pBaseTexture->GetTextureValue();
+			const char *pTextureName = pTexture ? pTexture->GetName() : NULL;
+			if ( pTextureName && ( !V_stricmp( pTextureName, "sprites/light_glow01" ) ||
+				!V_stricmp( pTextureName, "sprites/light_glow02" ) ||
+				!V_stricmp( pTextureName, "sprites/light_glow03" ) ) )
+			{
+				return;
+			}
+		}
+	}
 
 	CMatRenderContextPtr pRenderContext( materials );
 	

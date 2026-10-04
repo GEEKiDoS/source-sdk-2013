@@ -50,6 +50,8 @@ devtools\bin\buildshaders_dx12.bat -game ..\game\mod_episodic
 ```
 Without it every DX12 draw fails and the screen stays black. Launch with `game\mod_episodic_win64.exe`, or `game\start_ep2.bat` (extra arguments such as `-dx9` or `+map ep2_outland_01` are passed through).
 
+DX12 suppresses legacy `env_lightglow` overlays and sprite draws whose `$basetexture` is `sprites/light_glow01`, `sprites/light_glow02`, or `sprites/light_glow03` (including the additive/no-depth material variants). Other sprite textures and sun overlays remain enabled. `-dx9` retains the original glow rendering.
+
 ### DX12 Unicode title DLL (Windows x64)
 
 The `unicode` project builds a source-compatible replacement for the installed x64 `unicode.dll`. It exports the same `CreateInterface` factory and `VENGINEUNICODE001` methods; unless `-dx9` (or `-gl`/`-vulkan`/`-noshaderapi`) is passed, an x64 launch changes an incoming `Direct3D 9` window-title substring to `Direct3D 12`. Do not overwrite the Steam SDK installation. Generate and build the isolated project from `src`:
