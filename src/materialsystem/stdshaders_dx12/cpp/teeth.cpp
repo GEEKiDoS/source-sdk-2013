@@ -7,6 +7,7 @@
 //=============================================================================//
 
 #include "BaseVSShaderDX12.h"
+#include "lightmappedgeneric_dx9_helper.h"
 #include "cpp_shader_constant_register_map.h"
 
 
@@ -67,7 +68,7 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 		}
 	}
 
-	void DrawUsingVertexShader( IMaterialVar** params, IShaderDynamicAPI *pShaderAPI, IShaderShadow* pShaderShadow, VertexCompressionType_t vertexCompression )
+	void DrawUsingVertexShader( IMaterialVar** params, IShaderDynamicAPI *pShaderAPI, IShaderShadow* pShaderShadow, VertexCompressionType_t vertexCompression, bool bShadowmapReceiver )
 	{
 		bool hasBump = params[BUMPMAP]->IsTexture();
 
@@ -103,10 +104,10 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 
 					DECLARE_STATIC_VERTEX_SHADER( teeth_bump_vs51 );
 					SET_STATIC_VERTEX_SHADER_COMBO( INTRO, params[INTRO]->GetIntValue() ? 1 : 0 );
-					SET_STATIC_VERTEX_SHADER( teeth_bump_vs51 );
+					DX12_SET_STATIC_VERTEX_SHADER( teeth_bump_vs51, teeth_bump_shadowmap_vs51 );
 
 					DECLARE_STATIC_PIXEL_SHADER( teeth_bump_ps51 );
-					SET_STATIC_PIXEL_SHADER( teeth_bump_ps51 );
+					DX12_SET_STATIC_PIXEL_SHADER( teeth_bump_ps51, teeth_bump_shadowmap_ps51 );
 				}
 			}
 			else
@@ -117,10 +118,10 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 
 					DECLARE_STATIC_VERTEX_SHADER( teeth_vs51 );
 					SET_STATIC_VERTEX_SHADER_COMBO( INTRO, params[INTRO]->GetIntValue() ? 1 : 0 );
-					SET_STATIC_VERTEX_SHADER( teeth_vs51 );
+					DX12_SET_STATIC_VERTEX_SHADER( teeth_vs51, teeth_shadowmap_vs51 );
 
 					DECLARE_STATIC_PIXEL_SHADER( teeth_ps51 );
-					SET_STATIC_PIXEL_SHADER( teeth_ps51 );
+					DX12_SET_STATIC_PIXEL_SHADER( teeth_ps51, teeth_shadowmap_ps51 );
 				}
 			}
 
@@ -169,7 +170,7 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 					SET_DYNAMIC_VERTEX_SHADER_COMBO( STATIC_LIGHT,  lightState.m_bStaticLightVertex  ? 1 : 0 );
 					SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING,  pShaderAPI->IsHWMorphingEnabled() );
 					SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-					SET_DYNAMIC_VERTEX_SHADER( teeth_bump_vs51 );
+					DX12_SET_DYNAMIC_VERTEX_SHADER( teeth_bump_vs51, teeth_bump_shadowmap_vs51 );
 
 					Vector4D vSpecExponent;
 					vSpecExponent[3] = params[PHONGEXPONENT]->GetFloatValue();
@@ -180,7 +181,7 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 					SET_DYNAMIC_PIXEL_SHADER_COMBO( NUM_LIGHTS,  lightState.m_nNumLights );
 					SET_DYNAMIC_PIXEL_SHADER_COMBO( AMBIENT_LIGHT, lightState.m_bAmbientLight ? 1 : 0 );
 					SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITE_DEPTH_TO_DESTALPHA, bFullyOpaque && pShaderAPI->ShouldWriteDepthToDestAlpha() );
-					SET_DYNAMIC_PIXEL_SHADER( teeth_bump_ps51 );
+					DX12_SET_DYNAMIC_PIXEL_SHADER( teeth_bump_ps51, teeth_bump_shadowmap_ps51 );
 				}
 			}
 			else
@@ -198,12 +199,12 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 					SET_DYNAMIC_VERTEX_SHADER_COMBO( STATIC_LIGHT,  lightState.m_bStaticLightVertex  ? 1 : 0 );
 					SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING,  pShaderAPI->IsHWMorphingEnabled() );
 					SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-					SET_DYNAMIC_VERTEX_SHADER( teeth_vs51 );
+					DX12_SET_DYNAMIC_VERTEX_SHADER( teeth_vs51, teeth_shadowmap_vs51 );
 
 					DECLARE_DYNAMIC_PIXEL_SHADER( teeth_ps51 );
 					SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
 					SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITE_DEPTH_TO_DESTALPHA, bFullyOpaque && pShaderAPI->ShouldWriteDepthToDestAlpha() );
-					SET_DYNAMIC_PIXEL_SHADER( teeth_ps51 );
+					DX12_SET_DYNAMIC_PIXEL_SHADER( teeth_ps51, teeth_shadowmap_ps51 );
 				}
 			}
 
@@ -363,6 +364,9 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "Teeth", bShadowmapReceiver ) )
+			return;
 		SHADOW_STATE
 		{
 			SET_FLAGS2( MATERIAL_VAR2_LIGHTING_VERTEX_LIT );
@@ -370,7 +374,7 @@ BEGIN_VS_SHADER( Teeth_DX9, "Help for Teeth_DX9" )
 		bool hasFlashlight = UsingFlashlight( params );
 		if ( !hasFlashlight || ( IsX360() || r_flashlight_version2.GetInt() ) )
 		{
-			DrawUsingVertexShader( params, pShaderAPI, pShaderShadow, vertexCompression );
+			DrawUsingVertexShader( params, pShaderAPI, pShaderShadow, vertexCompression, bShadowmapReceiver );
 			SHADOW_STATE
 			{
 				SetInitialShadowState();

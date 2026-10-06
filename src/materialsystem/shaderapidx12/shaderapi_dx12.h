@@ -454,12 +454,39 @@ public:
 
 	StencilComparisonFunction_t StencilCompare() const { return m_StencilCompare; }
 
+#if defined( SHADERAPI_DX12_SMOKE )
+	// Smoke host only: observes resource-heap rollover for the shadowmaps descriptor-cache checks.
+	uint64_t SmokeResourceHeapGeneration() const { return m_Pipeline.ResourceHeapGeneration(); }
+	// Resolve through the ordinary draw path, then observe the selected original-key entry.
+	bool SmokeInspectComboFold( bool pixel, ComboFoldProjectionDX12 &projection ) const
+	{
+		const auto *combo = m_BoundNamedCombos[pixel ? 1 : 0];
+		if ( !combo || !combo->folded || !combo->Record() ) return false;
+		projection = combo->projection;
+		return true;
+	}
+	// Substitute only the test program, preserving the logical's payload and engine-ring upload.
+	bool SmokeBindComboFoldProbe( PixelShaderHandle_t probe )
+	{
+		if ( !m_BoundNamedCombos[1] || !m_BoundNamedCombos[1]->folded ) return false;
+		m_hBoundPS = probe;
+		m_bBoundPixelShaderIsNamed = true;
+		m_bNamedPixelShaderDirty = false;
+		return true;
+	}
+#endif
+
 	friend bool PrepareSampledTextureDX12( CShaderAPIDX12 &, ShaderAPITextureHandle_t, bool, ID3D12Resource **, D3D12_SHADER_RESOURCE_VIEW_DESC &, D3D12_SAMPLER_DESC &, D3D12_CPU_DESCRIPTOR_HANDLE *, bool, int, int );
 	friend bool PrepareRenderTargetsDX12( CShaderAPIDX12 &, RenderTargetBindingDX12 &, bool );
+	friend class CLightingDX12;
+	friend class CHighresLightmapsDX12;
 
 	struct TextureRecord
 	{
 		ShaderAPITextureHandle_t id = 0;
+		uint64 allocationSerial = 0;
+		uint32 highresPage = 0xffffffffu;
+		uint64 highresLayoutGeneration = 0;
 		int width = 0, height = 0, depth = 1, mipLevels = 1, copies = 1;
 		int currentCopy = 0;
 		bool switchNeeded = false;
@@ -679,7 +706,7 @@ private:
 	// Jitter goes only into eligible perspective scene draws (or the motion pass) before this frame's dispatch.
 	bool UpscalerJitterActive( bool bMotionActive ) const
 	{
-		return m_bUpscalerViewEligible && m_nUpscalerFrameToken == m_nFrameCounter && m_nUpscalerQueuedFrame != m_nFrameCounter &&
+		return m_pDevice && !m_pDevice->Lighting().ShadowPassActive() && m_bUpscalerViewEligible && m_nUpscalerFrameToken == m_nFrameCounter && m_nUpscalerQueuedFrame != m_nFrameCounter &&
 		    ( m_UpscalerJitter[0] != 0.f || m_UpscalerJitter[1] != 0.f ) && ( bMotionActive || m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER ) &&
 		    m_Matrices[MATERIAL_PROJECTION][3][3] == 0.f && m_Matrices[MATERIAL_PROJECTION][3][2] != 0.f && m_pDevice && m_pDevice->SceneSampleCount() == 1;
 	}
@@ -783,6 +810,8 @@ private:
 
 	CThreadFastMutex m_StateMutex;
 	CPipelineCacheDX12 m_Pipeline;
+	D3D12_VIEWPORT m_PrivateShadowViewport{};
+	D3D12_RECT m_PrivateShadowScissor{};
 
 	struct ClearPassDX12
 	{
@@ -862,6 +891,7 @@ private:
 
 	CUtlVector<RetiredTextureViewsDX12> m_RetiredTextureViews;
 	ShaderAPITextureHandle_t m_hNextTexture = 16;
+	uint64 m_nNextTextureAllocationSerial = 1;
 	ShaderAPITextureHandle_t m_hModifiedTexture = 0;
 	ShaderAPITextureHandle_t m_BoundTextures[16]{};
 	ShaderAPITextureHandle_t m_VertexTextures[4]{};
@@ -871,7 +901,27 @@ private:
 	ShaderRasterState_t m_RasterState{};
 	bool m_bRasterOverride = false;
 	CUtlHashtable<CUtlString, ShaderVcsFile *, StringHashFunctor, StringEqualFunctor, const char *> m_NamedShaderFiles;
-	CUtlHashtable<NamedShaderKey, ShaderRecordDX12 *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> m_NamedShaderCombos;
+	struct NamedShaderRecordDX12
+	{
+		NamedShaderKey key;
+		ShaderRecordDX12 *record;
+		unsigned references = 0;
+		NamedShaderRecordDX12( NamedShaderKeyView view, ShaderRecordDX12 *value ) : key( view ), record( value ) {}
+	};
+	struct NamedShaderComboDX12
+	{
+		NamedShaderRecordDX12 *owner = nullptr;
+		ComboFoldProjectionDX12 projection{};
+		uint64_t version = 0;
+		bool folded = false;
+		ShaderRecordDX12 *Record() const { return owner ? owner->record : nullptr; }
+	};
+	// Original keys own payloads; projected keys own the shared native records.
+	CUtlHashtable<NamedShaderKey, NamedShaderComboDX12 *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> m_NamedShaderCombos;
+	CUtlHashtable<NamedShaderKey, NamedShaderRecordDX12 *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> m_NamedShaderRecords;
+	NamedShaderComboDX12 *m_BoundNamedCombos[2]{};
+	bool m_bHighresNamedRoute = false;
+	uint64_t m_nComboFoldVersion = 0;
 
 	struct FixedShaderKey
 	{
@@ -879,6 +929,7 @@ private:
 		VertexFormat_t format;
 		bool pixel;
 		uint32_t textureTypes;
+		uint32_t highresSamplerMask;
 		uint64_t linkage;
 
 		bool operator<( const FixedShaderKey &other ) const
@@ -891,6 +942,8 @@ private:
 				return pixel < other.pixel;
 			if ( textureTypes != other.textureTypes )
 				return textureTypes < other.textureTypes;
+			if ( highresSamplerMask != other.highresSamplerMask )
+				return highresSamplerMask < other.highresSamplerMask;
 			return linkage < other.linkage;
 		}
 	};
@@ -1068,6 +1121,7 @@ private:
 		int dynamicIndex = 0;
 		uint64_t epoch = 0;
 		ShaderRecordDX12 *record = nullptr;
+		NamedShaderComboDX12 *combo = nullptr;
 		UtlHashHandle_t reference = 0;
 		uint64_t referenceEpoch = 0;
 	};

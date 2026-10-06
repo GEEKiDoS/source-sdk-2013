@@ -19,6 +19,8 @@ static CHardwareConfigDX12 s_HardwareConfig;
 static CShaderAPIDX12 s_ShaderAPI;
 static CShaderShadowDX12 s_ShaderShadow;
 static CVBAllocTrackerDX12 s_VBTracker;
+static CLightingDX12 &s_Lighting = s_Device.Lighting();
+static CHighresLightmapsDX12 &s_Highres = s_Device.Highres();
 
 } // namespace shaderapidx12
 
@@ -34,6 +36,8 @@ EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CVBAllocTrackerDX12, IVBAllocTracker, VB_ALLO
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CShaderAPIDX12, IDebugTextureInfo, DEBUG_TEXTURE_INFO_VERSION, s_ShaderAPI );
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CShaderAPIDX12, IShaderAPIDX12, SHADERAPIDX12_INTERFACE_VERSION, s_ShaderAPI );
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CShaderAPIDX12, IShaderAPIDX12Compute, SHADERAPIDX12_COMPUTE_INTERFACE_VERSION, s_ShaderAPI );
+EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CLightingDX12, IShaderAPIDX12Lighting, SHADERAPIDX12_LIGHTING_INTERFACE_VERSION, s_Lighting );
+EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CHighresLightmapsDX12, IShaderAPIDX12HighresLightmaps, SHADERAPIDX12_HIGHRES_INTERFACE_VERSION, s_Highres );
 
 namespace shaderapidx12
 {

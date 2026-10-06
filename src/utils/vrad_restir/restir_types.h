@@ -14,10 +14,12 @@
 #include "mathlib/mathlib.h"
 #include "mathlib/vector.h"
 #include "mathlib/vector2d.h"
+#include "mathlib/vector4d.h"
 #include "mathlib/bumpvects.h"
 #include "tier1/utlvector.h"
 #include "tier1/utlstring.h"
 #include "bspfile.h"
+#include "shadowmap_bsp.h"
 
 //-----------------------------------------------------------------------------
 // Hit classification (identical bit layout to utils/vrad/vrad.h:300-302 so the
@@ -42,11 +44,13 @@
                                     // MASK_OPAQUE brush-side windings, vrad_brush_cast_shadows entities, sky faces,
                                     // displacements, static props). World dfaces are NOT occluders (they duplicate
                                     // brush sides); they carry only RESTIR_TRI_WORLDFACE.
+#define RESTIR_TRI_STATIC_SUN  0x20 // immutable occluder for the baked sun cap; excludes every brush entity
 
 // Ray masks: a triangle is considered when (triangle.flags & mask) != 0.
 #define RESTIR_RAY_MASK_ALL        0xFFFFFFFFu
 #define RESTIR_RAY_MASK_SHADOW     RESTIR_TRI_SHADOW     // lighting, visibility, TestLine-equivalent probes
 #define RESTIR_RAY_MASK_WORLDFACE  RESTIR_TRI_WORLDFACE  // lightmap gather (front faces only)
+#define RESTIR_RAY_MASK_STATIC_SUN RESTIR_TRI_STATIC_SUN
 
 // Point-query flags (ReSTIRGpuPointQuery::flags)
 #define RESTIR_POINT_IGNORE_NORMALS  0x1  // ambient gather over the full sphere (STATIC_PROP_IGNORE_NORMALS)
@@ -57,6 +61,10 @@
 // Light flags (ReSTIRGpuLight::lightFlags)
 #define RESTIR_LIGHT_MATERIAL        0x1  // emit_surface built from an emissive material (UnlitGeneric / $selfillum):
                                           // style 0, not exported to LUMP_WORLDLIGHTS, folded into leaf ambient cubes
+#define RESTIR_LIGHT_RUNTIME_DIRECT  0x2  // selected for runtime shadow maps (options.shadowMaps + entity _shadowmap): the
+                                          // light is REMOVED from the written worldlights lump and carried in the 'rshd'
+                                          // sidecar; receiver lightmap/VHV/texel/detail outputs omit its direct term; every
+                                          // bounce keeps it
 
 //-----------------------------------------------------------------------------
 // Options (parsed by vrad_restir.cpp, read-only everywhere else)
@@ -69,6 +77,7 @@ enum ReSTIRPreset         { RESTIR_PRESET_DEFAULT = 0, RESTIR_PRESET_FAST, RESTI
 struct ReSTIROptions
 {
 	CUtlString	mapPath;				// full path, ".bsp" appended
+	CUtlString	transactionPath;		// internal paired-bake work BSP; mapPath stays the authored identity
 	bool		hdr;					// this pass bakes HDR lumps (false = LDR)
 	bool		staticPropLighting;		// -StaticPropLighting
 	bool		textureShadows;			// -TextureShadows
@@ -80,6 +89,9 @@ struct ReSTIROptions
 										// to the material's reflectivity); -restir_notexturealbedo restores VRAD's one colour per material
 	float		emissiveScale;			// -restir_emissivescale (1.0): multiplier on material emission (UnlitGeneric, $selfillum);
 										// 0 disables material emitters
+	bool		shadowMaps;				// -restir_shadowmaps: selected runtime direct + independently dense linear lightmaps
+										// Implies both modes, staticPropLighting and textureShadows; .hlight + rshd v4
+	int			highresDensity;			// -restir_hlight_density, independent intervals; shadowmap conversion only
 
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
 	// an explicit -restir_* value always wins over the preset, whatever the argument order.
@@ -102,7 +114,7 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), preset( RESTIR_PRESET_DEFAULT ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
@@ -187,7 +199,7 @@ struct ReSTIRSceneTexture
 // emit_skyambient: `intensity` is the sky ambient radiance seen by rays that
 // reach a RESTIR_TRI_SKY triangle; sampled as a hemispherical light.
 //-----------------------------------------------------------------------------
-struct ReSTIRGpuLight					// 112 bytes
+struct ReSTIRGpuLight					// 128 bytes
 {
 	float		origin[4];				// xyz, w = radius (0 = unlimited)
 	float		intensity[4];			// rgb, w = emit_surface power bound (see above)
@@ -198,11 +210,15 @@ struct ReSTIRGpuLight					// 112 bytes
 	int			style;					// light style (0 = none)
 	int			firstTri;				// emit_surface only: ReSTIRScene::emitterTriangles
 	int			numTris;				// emit_surface only
-	float		sunSpreadAngle;			// emit_skylight only, degrees
+	float		sunSpreadAngle;			// emit_skylight only, degrees (transport value; the shadow resolver never rewrites it)
 	int			styleSlot;				// index into ReSTIRScene::sceneStyles (0 == style 0)
 	int			emissionTexture;		// emit_surface: index into ReSTIRScene::textures (RGBA8 gamma), -1 = uniform intensity
 	int			lightFlags;				// RESTIR_LIGHT_*
+	int			sourceEntity;			// index of the originating entity in the entity lump (ShadowMapLightDisk::sourceEntity), -1 none.
+										// Set before insertion into ReSTIRScene::lights; whole records travel through FinishActiveLightOrder
+	int			pad[3];
 };
+COMPILE_TIME_ASSERT( sizeof( ReSTIRGpuLight ) == 128 );
 
 struct ReSTIRGpuEmitterTriangle		// 64 bytes. Front-facing emitter triangle (see ReSTIRGpuLight emit_surface)
 {
@@ -312,6 +328,9 @@ struct ReSTIRScene
 	CUtlVector<int>						dfaceToFace;	// numfaces entries, -1 for faces without lightmaps
 	CUtlVector<ReSTIRGpuSample>			samples;
 	CUtlVector<ReSTIRGpuLuxel>			luxels;
+	CUtlVector<Vector4D>				sunVisibilityOrigins; // selected runtime sun only; one per geometric luxel, indexed
+														// firstLuxel+s+t*luxelW. xyz is the final ray origin, w=1 valid / 0 blocked.
+														// Own-face brush clamp + face-normal push; disp keeps its geometry push.
 	CUtlVector<int>						faceNeighbors;
 	int									numOutputValues;// total radiance entries (sum over faces of numStyles*numChannels*numLuxels)
 
@@ -327,7 +346,17 @@ struct ReSTIRScene
 	// Per-face encode-time data (host only)
 	CUtlVector<Vector>					faceMinLight;	// per `faces` entry: _minlight (radial.cpp:676)
 
-	ReSTIRScene() : worldMins( 0, 0, 0 ), worldMaxs( 0, 0, 0 ), skyAmbientLight( -1 ), skyLight( -1 ), numOutputValues( 0 ) {}
+	// Runtime shadow-map conversion (options.shadowMaps; public/hlight_bsp.h manifest v4). Resolved once by the scene
+	// builder after FinishActiveLightOrder, before any GPU dispatch; the GPU transport records are not rewritten.
+	float								shadowSunAngularRadius;	// degrees; last authored light_environment SunSpreadAngle, else 0.27
+	CUtlVector<ShadowMapLightDisk>		shadowLights;	// final selected list for the sidecar: the selected sun FIRST (if any), then locals in
+														// exportLights order; `light` is the complete exportLights record (flags = 0),
+														// resolved shadowSourceRadius / shadowSunAngularRadius, sourceEntity provenance.
+														// BakeStorage removes these lights from the written worldlights lump by identity
+														// (exportLightToGpuLight -> RESTIR_LIGHT_RUNTIME_DIRECT), never by record compare.
+
+	ReSTIRScene() : worldMins( 0, 0, 0 ), worldMaxs( 0, 0, 0 ), skyAmbientLight( -1 ), skyLight( -1 ), numOutputValues( 0 ),
+		shadowSunAngularRadius( SHADOWMAP_DEFAULT_SUN_ANGULAR_RADIUS ) {}
 };
 
 //-----------------------------------------------------------------------------
@@ -335,10 +364,17 @@ struct ReSTIRScene
 //-----------------------------------------------------------------------------
 struct ReSTIRLightmapResult
 {
-	CUtlVector<Vector>			radiance;		// ReSTIRScene::numOutputValues entries, linear RGB (VRAD light scale), indexed per ReSTIRGpuFace
+	CUtlVector<Vector>			radiance;		// ReSTIRScene::numOutputValues entries, linear RGB (VRAD light scale), indexed per ReSTIRGpuFace.
+												// Receiver RGB: with a shadow-map split it omits selected (RESTIR_LIGHT_RUNTIME_DIRECT)
+												// non-PATH direct; otherwise identical to the full transport. EncodeLightmaps writes this.
+	CUtlVector<Vector>			sourceRadiance;	// full-transport RGB (same indexing) when the split is active, else EMPTY: UploadFinalLightmap
+												// consumes sourceRadiance when non-empty, otherwise `radiance`. Bounce gathers read full transport.
 	CUtlVector<unsigned char>	luxelValid;		// ReSTIRScene::luxels.Count() entries; 0 = no sample reaches the luxel (SampleRadial false,
 												// VRAD bRed2Black black), 1 = direct cell coverage, 2 = brush luxel covered only by the
 												// AddBouncedToRadial kernel fallback (excluded from the face median like baseSampleOk == false)
+	CUtlVector<float>			sunVisibility;	// EMPTY without a selected runtime sun, else one finite [0,1] scalar per
+												// geometric luxel (firstLuxel+s+t*luxelW). Closest-sky ray fraction only:
+												// independent of RGB, cosine, intensity, styles, bumps and denoising.
 };
 
 //-----------------------------------------------------------------------------

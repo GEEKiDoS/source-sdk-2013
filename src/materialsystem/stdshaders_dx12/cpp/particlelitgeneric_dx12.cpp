@@ -10,6 +10,7 @@
 
 #include "BaseVSShaderDX12.h"
 #include "particlelitgeneric_dx9_helper.h"
+#include "lightmappedgeneric_dx9_helper.h"
 
 BEGIN_VS_SHADER( ParticleLitGeneric_DX9, 
 				"Help for ParticleLitGeneric_DX9" )
@@ -41,13 +42,19 @@ BEGIN_VS_SHADER( ParticleLitGeneric_DX9,
 
 	SHADER_FALLBACK
 	{	
+		IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
+		if ( lighting && lighting->ReceiverFeatureGeneration() != 0 )
+		{
+			// The DX8 fallback has no native lighting ABI; never admit it on stripped maps.
+			lighting->RejectUnsupportedLitShader( "ParticleLitGeneric_DX8" );
+			return 0;
+		}
 		
 
 		
 
 		return "ParticleLitGeneric_DX8";
 
-		return 0;
 	}
 
 	SHADER_INIT
@@ -59,6 +66,13 @@ BEGIN_VS_SHADER( ParticleLitGeneric_DX9,
 
 	SHADER_DRAW
 	{
+		IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
+		if ( lighting && lighting->ReceiverFeatureGeneration() != 0 )
+		{
+			lighting->RejectUnsupportedLitShader( "ParticleLitGeneric_DX9" );
+			Draw( false );
+			return;
+		}
 		ParticleLitGeneric_DX9_Vars_t vars;
 		SetupVars( vars );
 //		DrawParticleLitGeneric_DX9( this, params, pShaderAPI, pShaderShadow, vars );

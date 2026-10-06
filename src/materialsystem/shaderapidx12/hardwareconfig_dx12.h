@@ -11,6 +11,7 @@
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "materialsystem/imaterialsystem.h"
 #include "bitmap/imageformat.h"
+#include "dxsupport_dx12.h"
 
 namespace shaderapidx12
 {
@@ -25,10 +26,10 @@ class CHardwareConfigDX12 final : public IHardwareConfigInternal
 {
 public:
 	CHardwareConfigDX12();
-	void SetDXSupportLevels( int nRecommended, int nMaximum );
 	void SetAdapter( const MaterialAdapterInfo_t &adapter, uint64_t nDedicatedVideoMemory, bool bAaEnabled );
 	void SetSupportCaps( bool bFastClipping, bool bCentroidHack, bool bDisableShaderOptimizations );
-	void SetDXLevel( int nLevel );
+	void SetResourceBindingTier( int tier ) { m_nResourceBindingTier = tier; }
+	int ResourceBindingTier() const { return m_nResourceBindingTier; }
 
 	bool DisableShaderOptimizations() const { return m_bDisableShaderOptimizations; }
 
@@ -100,7 +101,7 @@ public:
 
 	bool UseFastClipping() const override { return m_bFastClipping; }
 
-	int GetDXSupportLevel() const override { return m_nDxLevel; }
+	int GetDXSupportLevel() const override { return kSourceDXLevel; }
 
 	const char *GetShaderDLLName() const override { return "stdshader_dx12"; }
 
@@ -124,7 +125,7 @@ public:
 
 	bool PreferReducedFillrate() const override { return false; }
 
-	int GetMaxDXSupportLevel() const override { return m_nMaxDXLevel; }
+	int GetMaxDXSupportLevel() const override { return kSourceDXLevel; }
 
 	bool SpecifiesFogColorInLinearSpace() const override { return true; }
 
@@ -191,16 +192,15 @@ public:
 private:
 	MaterialAdapterInfo_t m_Adapter{};
 	uint64_t m_nDedicatedVideoMemory = 0;
-	int m_nDxLevel = 95;
 	bool m_bAaEnabled = false;
 	bool m_bHdrEnabled = false;
 	HDRType_t m_HdrType = HDR_TYPE_INTEGER;
 	bool m_bStreamOffsetOverride = false;
 	bool m_bStreamOffsetSupport = true;
-	int m_nMaxDXLevel = 95;
 	bool m_bFastClipping = false;
 	bool m_bCentroidHack = false;
 	bool m_bDisableShaderOptimizations = false;
+	int m_nResourceBindingTier = 0;
 };
 
 extern CHardwareConfigDX12 *g_pHardwareConfigDX12;

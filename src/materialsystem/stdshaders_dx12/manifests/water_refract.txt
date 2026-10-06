@@ -21,3 +21,11 @@ water_ps51.fxc ps water_ps51 20b water_ps2x.fxc
 watercheap_vs51.fxc vs watercheap_vs51 20b WaterCheap_vs20.fxc
 watercheap_ps51.fxc ps watercheap_ps51 20b WaterCheap_ps2x.fxc
 # pair watercheap_vs51 watercheap_ps51 @fog=c3 @fog=c8
+shatteredglass_highres_vs51.fxc vs shatteredglass_highres_vs51 native -
+# noparity shatteredglass_highres_vs51 - highres-feature-variant
+shatteredglass_highres_ps51.fxc ps shatteredglass_highres_ps51 native -
+# noparity shatteredglass_highres_ps51 - highres-feature-variant
+water_highres_vs51.fxc vs water_highres_vs51 native -
+# noparity water_highres_vs51 - highres-feature-variant
+water_highres_ps51.fxc ps water_highres_ps51 native -
+# noparity water_highres_ps51 - highres-feature-variant

@@ -8,6 +8,7 @@
 //===========================================================================//
 
 #include "BaseVSShaderDX12.h"
+#include "lightmappedgeneric_dx9_helper.h"
 #include "shaderapi/commandbuffer.h"
 #include "mathlib/vmatrix.h"
 #include "mathlib/bumpvects.h"
@@ -132,6 +133,12 @@ void DX12SelectNativeBlockByName( const char *name, uint32_t stage )
 		return;
 	}
 	DX12SelectNativeBlockWriter( stage, nullptr );
+	if ( name && V_stristr( name, "_shadowmap_" ) )
+	{
+		// A feature logical is native-only. Never fall through to legacy registers.
+		DX12RejectUnsupportedLitShader( name );
+		return;
+	}
 	( stage == dx12native::kStageVertex ? g_DX12Constants.vsPassthrough : g_DX12Constants.psPassthrough ) = true;
 }
 
@@ -279,6 +286,16 @@ void CBaseVSShaderDX12::Draw( bool bMakeActualDrawCall )
 	}
 	else if ( bMakeActualDrawCall && s_pShaderAPI )
 	{
+		IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
+		const int lightingFlags = MATERIAL_VAR2_LIGHTING_VERTEX_LIT | MATERIAL_VAR2_LIGHTING_LIGHTMAP | MATERIAL_VAR2_LIGHTING_BUMPED_LIGHTMAP;
+		if ( !DX12HighresMap() && lighting && lighting->ReceiverFeatureGeneration() != 0 && !DX12ShadowmapFullbright() &&
+			( s_ppParams[FLAGS2]->GetIntValue() & lightingFlags ) != 0 &&
+			!g_DX12Constants.shadowmapPassAdmitted && !UsingFlashlight( s_ppParams ) )
+		{
+			Warning( "DX12 shadowmaps: lit shader %s drew without selecting its receiver variant (flags2=0x%x)\n", GetName(), s_ppParams[FLAGS2]->GetIntValue() );
+			lighting->RejectUnsupportedLitShader( GetName() );
+			bMakeActualDrawCall = false;
+		}
 		DX12FlushNativeBlocks( s_pShaderAPI );
 	}
 	else
@@ -287,6 +304,17 @@ void CBaseVSShaderDX12::Draw( bool bMakeActualDrawCall )
 		DX12SelectNativeBlockWriter( dx12native::kStagePixel, nullptr );
 	}
 	CBaseShader::Draw( bMakeActualDrawCall );
+}
+
+void CBaseVSShaderDX12::DrawElements( IMaterialVar **params, int nModulationFlags, IShaderShadow *pShaderShadow, IShaderDynamicAPI *pShaderAPI,
+	VertexCompressionType_t vertexCompression, CBasePerMaterialContextData **pContext )
+{
+	// One admission per DrawElements: the primary pass selects the receiver variant; secondary passes of the
+	// same material (DrawEqualDepthToDestAlpha, ...) must not be mistaken for an unadmitted lit draw, and an
+	// earlier material cannot admit a later one.
+	g_DX12Constants.shadowmapPassAdmitted = false;
+	CBaseShader::DrawElements( params, nModulationFlags, pShaderShadow, pShaderAPI, vertexCompression, pContext );
+	g_DX12Constants.shadowmapPassAdmitted = false;
 }
 
 static ConVar mat_fullbright( "mat_fullbright","0", FCVAR_CHEAT );

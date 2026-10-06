@@ -207,6 +207,7 @@ static void DrawUsingVertexShader( CBaseVSShaderDX12 *pShader, IMaterialVar** pa
 								  IShaderDynamicAPI *pShaderAPI, IShaderShadow* pShaderShadow,
 								  Eyes_DX8_DX9_Vars_t &info, VertexCompressionType_t vertexCompression )
 {
+		const bool bShadowmapReceiver = info.m_bShadowmapReceiver;
 	SHADOW_STATE
 	{
 		pShaderShadow->EnableTexture( SHADER_SAMPLER0, true );	// Base
@@ -229,10 +230,10 @@ static void DrawUsingVertexShader( CBaseVSShaderDX12 *pShader, IMaterialVar** pa
 				DECLARE_STATIC_VERTEX_SHADER( eyes_vs51 );
 				SET_STATIC_VERTEX_SHADER_COMBO( HALFLAMBERT, IS_FLAG_SET( MATERIAL_VAR_HALFLAMBERT ) );
 				SET_STATIC_VERTEX_SHADER_COMBO( INTRO, params[info.m_nIntro]->GetIntValue() ? 1 : 0 );
-				SET_STATIC_VERTEX_SHADER( eyes_vs51 );
+				DX12_SET_STATIC_VERTEX_SHADER( eyes_vs51, eyes_shadowmap_vs51 );
 
 				DECLARE_STATIC_PIXEL_SHADER( eyes_ps51 );
-				SET_STATIC_PIXEL_SHADER( eyes_ps51 );
+				DX12_SET_STATIC_PIXEL_SHADER( eyes_ps51, eyes_shadowmap_ps51 );
 			}
 			// On DX9, get the gamma read and write correct
 			pShaderShadow->EnableSRGBRead( SHADER_SAMPLER0, true );			// Base
@@ -269,7 +270,7 @@ static void DrawUsingVertexShader( CBaseVSShaderDX12 *pShader, IMaterialVar** pa
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( STATIC_LIGHT,  lightState.m_bStaticLightVertex  ? 1 : 0 );
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() );
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-				SET_DYNAMIC_VERTEX_SHADER( eyes_vs51 );
+				DX12_SET_DYNAMIC_VERTEX_SHADER( eyes_vs51, eyes_shadowmap_vs51 );
 			}
 
 			// Get luminance of ambient cube and saturate it
@@ -297,7 +298,7 @@ static void DrawUsingVertexShader( CBaseVSShaderDX12 *pShader, IMaterialVar** pa
 				DECLARE_DYNAMIC_PIXEL_SHADER( eyes_ps51 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITE_DEPTH_TO_DESTALPHA, pShaderAPI->ShouldWriteDepthToDestAlpha() );
-				SET_DYNAMIC_PIXEL_SHADER( eyes_ps51 );
+				DX12_SET_DYNAMIC_PIXEL_SHADER( eyes_ps51, eyes_shadowmap_ps51 );
 			}
 
 			Assert( info.m_nIntro != -1 );

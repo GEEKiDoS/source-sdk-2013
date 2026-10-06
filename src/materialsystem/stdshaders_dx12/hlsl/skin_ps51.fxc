@@ -1,63 +1,53 @@
 // Native SM5.1 rewrite of materialsystem/stdshaders/skin_ps20b.fxc for logical skin_ps30 (legacy profile ps30);
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
 #define DX12_LEGACY_PS30 1
+#define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
-//======= Copyright � 1996-2007, Valve Corporation, All rights reserved. ======
-// STATIC: "CONVERT_TO_SRGB"			"0..0"
-// STATIC: "CUBEMAP"					"0..1"
-// STATIC: "SELFILLUM"					"0..1"
-// STATIC: "SELFILLUMFRESNEL"			"0..1"
-// STATIC: "FLASHLIGHT"					"0..1"
-// STATIC: "LIGHTWARPTEXTURE"			"0..1"
-// STATIC: "PHONGWARPTEXTURE"			"0..1"
-// STATIC: "WRINKLEMAP"					"0..1"
-// STATIC: "DETAIL_BLEND_MODE"          "0..6"
-// STATIC: "DETAILTEXTURE"				"0..1"
-// STATIC: "RIMLIGHT"					"0..1"
-// STATIC: "FLASHLIGHTDEPTHFILTERMODE"	"0..2"
-// STATIC: "FASTPATH_NOBUMP"            "0..1"
-// STATIC: "BLENDTINTBYBASEALPHA"       "0..1"
+//======= Copyright Valve Corporation, All rights reserved. ======
+// STATIC: "CONVERT_TO_SRGB"             "0..0"
+// STATIC: "FLASHLIGHT"                  "0..1"
+// FOLD: "CUBEMAP" "0..1" STATIC slot=0
+// FOLD: "SELFILLUM" "0..1" STATIC slot=1
+// FOLD: "SELFILLUMFRESNEL" "0..1" STATIC slot=2
+// FOLD: "LIGHTWARPTEXTURE" "0..1" STATIC slot=3
+// FOLD: "PHONGWARPTEXTURE" "0..1" STATIC slot=4
+// FOLD: "WRINKLEMAP" "0..1" STATIC slot=5
+// FOLD: "DETAIL_BLEND_MODE" "0..6" STATIC slot=6
+// FOLD: "DETAILTEXTURE" "0..1" STATIC slot=7
+// FOLD: "RIMLIGHT" "0..1" STATIC slot=8
+// FOLD: "FLASHLIGHTDEPTHFILTERMODE" "0..2" STATIC slot=9
+// FOLD: "FASTPATH_NOBUMP" "0..1" STATIC slot=10
+// FOLD: "BLENDTINTBYBASEALPHA" "0..1" STATIC slot=11
+// FOLD: "WRITEWATERFOGTODESTALPHA" "0..1" DYNAMIC slot=12
+// FOLD: "PIXELFOGTYPE" "0..2" DYNAMIC slot=13
+// FOLD: "NUM_LIGHTS" "0..4" DYNAMIC slot=14
+// FOLD: "WRITE_DEPTH_TO_DESTALPHA" "0..1" DYNAMIC slot=15
+// FOLD: "FLASHLIGHTSHADOWS" "0..1" DYNAMIC slot=16
+// FOLD: "PHONG_USE_EXPONENT_FACTOR" "0..1" DYNAMIC slot=17
 
-// DYNAMIC: "WRITEWATERFOGTODESTALPHA"  "0..1"
-// DYNAMIC: "PIXELFOGTYPE"				"0..2"
-// DYNAMIC: "NUM_LIGHTS"				"0..4"
-// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"	"0..1"
-// DYNAMIC: "FLASHLIGHTSHADOWS"			"0..1"
-// DYNAMIC: "PHONG_USE_EXPONENT_FACTOR"	"0..1"
+#define CUBEMAP ( cComboFold[0].x )
+#define SELFILLUM ( cComboFold[0].y )
+#define SELFILLUMFRESNEL ( cComboFold[0].z )
+#define LIGHTWARPTEXTURE ( cComboFold[0].w )
+#define PHONGWARPTEXTURE ( cComboFold[1].x )
+#define WRINKLEMAP ( cComboFold[1].y )
+#define DETAIL_BLEND_MODE ( cComboFold[1].z )
+#define DETAILTEXTURE ( cComboFold[1].w )
+#define RIMLIGHT ( cComboFold[2].x )
+#define FLASHLIGHTDEPTHFILTERMODE ( cComboFold[2].y )
+#define FASTPATH_NOBUMP ( cComboFold[2].z )
+#define BLENDTINTBYBASEALPHA ( cComboFold[2].w )
+#define WRITEWATERFOGTODESTALPHA ( cComboFold[3].x )
+#define PIXELFOGTYPE ( cComboFold[3].y )
+#define NUM_LIGHTS ( cComboFold[3].z )
+#define WRITE_DEPTH_TO_DESTALPHA ( cComboFold[3].w )
+#define FLASHLIGHTSHADOWS ( cComboFold[4].x )
+#define PHONG_USE_EXPONENT_FACTOR ( cComboFold[4].y )
 
 
-// SKIP: ($PIXELFOGTYPE == 0) && ($WRITEWATERFOGTODESTALPHA != 0)
-
-// blend mode doesn't matter if we only have one texture
-// SKIP: (! $DETAILTEXTURE) && ( $DETAIL_BLEND_MODE != 0 )
-
-// We don't care about flashlight depth unless the flashlight is on
-// SKIP: ( $FLASHLIGHT == 0 ) && ( $FLASHLIGHTSHADOWS == 1 )
-
-// Flashlight shadow filter mode is irrelevant if there is no flashlight
-// SKIP: ( $FLASHLIGHT == 0 ) && ( $FLASHLIGHTDEPTHFILTERMODE != 0 )
-
-// Only need self illum fresnel when self illum enabled
-// SKIP: ( $SELFILLUM == 0 ) && ( $SELFILLUMFRESNEL == 1 )
-// SKIP: ( $FLASHLIGHT == 1 ) && ( $SELFILLUMFRESNEL == 1 )
-// SKIP: ( $FLASHLIGHT == 1 ) && ( $SELFILLUM == 1 )
-
-// BlendTintByBaseAlpha and self illum and are opposing meanings for alpha channel
-// SKIP: ( $BLENDTINTBYBASEALPHA ) && ( $SELFILLUM )
-
-// fastpath means:
-// no bumpmap
-// basealphaenvmapmask (not inverted)
-// no spec expmap
-// no spectint
-// no specwarp
-// no rimlight
-// no selfillum
-// no detail
-// no BlendTintByBaseAlpha
-
-// SKIP: $FASTPATH_NOBUMP && ( $RIMLIGHT || $DETAILTEXTURE || $PHONGWARPTEXTURE || $SELFILLUM || $BLENDTINTBYBASEALPHA )
-
+// PC ps20b/ps30 ranges are identical. CONVERT_TO_SRGB remains a fixed
+// compile-time combo because common_ps_fxc.h selects a sampler declaration.
+// Legacy SKIPs depend on folded values and are intentionally absent.
 
 #include "common_flashlight_fxc.h"
 #include "shader_constant_register_map.h"
@@ -82,20 +72,14 @@ cbuffer skin_ps20b : register( b1, space1 )
 };
 #define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
 
-#if ( SELFILLUMFRESNEL == 1 )
-
-#endif
-
 
 #if FLASHLIGHT
 
 #endif
 
 
-// TODO: give this a better name.  For now, I don't want to touch shader_constant_register_map.h since I don't want to trigger a recompile of everything...
-
 #define g_FlashlightPos					g_FlashlightPos_RimBoost.xyz
-#define	g_fRimBoost						g_FlashlightPos_RimBoost.w
+#define g_fRimBoost						g_FlashlightPos_RimBoost.w
 #define g_FresnelRanges					g_FresnelSpecParams.xyz
 #define g_SpecularBoost					g_FresnelSpecParams.w
 #define g_SpecularTint					g_SpecularRimParams.xyz
@@ -107,21 +91,20 @@ cbuffer skin_ps20b : register( b1, space1 )
 #define g_fTintReplacementControl		g_ShaderControls.z
 #define g_fInvertPhongMask				g_ShaderControls.w
 
-
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );	// Base map, selfillum in alpha
 static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D SpecularWarpSampler_Texture : register( t1 );
-SamplerState SpecularWarpSampler_Sampler : register( s1 );	// Specular warp sampler (for iridescence etc)
+SamplerState SpecularWarpSampler_Sampler : register( s1 );	// Specular warp sampler
 static const DX12Sampler2D SpecularWarpSampler = { SpecularWarpSampler_Texture, SpecularWarpSampler_Sampler };
 Texture2D DiffuseWarpSampler_Texture : register( t2 );
-SamplerState DiffuseWarpSampler_Sampler : register( s2 );	// Lighting warp sampler (1D texture for diffuse lighting modification)
+SamplerState DiffuseWarpSampler_Sampler : register( s2 );	// Diffuse lighting warp sampler
 static const DX12Sampler1D DiffuseWarpSampler = { DiffuseWarpSampler_Texture, DiffuseWarpSampler_Sampler };
 Texture2D NormalMapSampler_Texture : register( t3 );
 SamplerState NormalMapSampler_Sampler : register( s3 );	// Normal map, specular mask in alpha
 static const DX12Sampler2D NormalMapSampler = { NormalMapSampler_Texture, NormalMapSampler_Sampler };
 Texture2D ShadowDepthSampler_Texture : register( t4 );
-SamplerComparisonState ShadowDepthSampler_Sampler : register( s4 );	// Flashlight shadow depth map sampler
+SamplerComparisonState ShadowDepthSampler_Sampler : register( s4 );	// Flashlight shadow depth map
 static const DX12ShadowSampler ShadowDepthSampler = { ShadowDepthSampler_Texture, ShadowDepthSampler_Sampler };
 Texture2D NormalizeRandRotSampler_Texture : register( t5 );
 SamplerState NormalizeRandRotSampler_Sampler : register( s5 );	// Normalization / RandomRotation samplers
@@ -137,8 +120,6 @@ static const DX12Sampler2D SpecExponentSampler = { SpecExponentSampler_Texture, 
 TextureCube EnvmapSampler_Texture : register( t8 );
 SamplerState EnvmapSampler_Sampler : register( s8 );	// Cubic environment map
 static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
-
-#if WRINKLEMAP
 Texture2D WrinkleSampler_Texture : register( t9 );
 SamplerState WrinkleSampler_Sampler : register( s9 );	// Compression base
 static const DX12Sampler2D WrinkleSampler = { WrinkleSampler_Texture, WrinkleSampler_Sampler };
@@ -146,31 +127,25 @@ Texture2D StretchSampler_Texture : register( t10 );
 SamplerState StretchSampler_Sampler : register( s10 );	// Expansion base
 static const DX12Sampler2D StretchSampler = { StretchSampler_Texture, StretchSampler_Sampler };
 Texture2D NormalWrinkleSampler_Texture : register( t11 );
-SamplerState NormalWrinkleSampler_Sampler : register( s11 );	// Compression base
+SamplerState NormalWrinkleSampler_Sampler : register( s11 );	// Compression normal
 static const DX12Sampler2D NormalWrinkleSampler = { NormalWrinkleSampler_Texture, NormalWrinkleSampler_Sampler };
 Texture2D NormalStretchSampler_Texture : register( t12 );
-SamplerState NormalStretchSampler_Sampler : register( s12 );	// Expansion base
+SamplerState NormalStretchSampler_Sampler : register( s12 );	// Expansion normal
 static const DX12Sampler2D NormalStretchSampler = { NormalStretchSampler_Texture, NormalStretchSampler_Sampler };
-#endif
-
-#if DETAILTEXTURE
 Texture2D DetailSampler_Texture : register( t13 );
-SamplerState DetailSampler_Sampler : register( s13 );	// detail texture
+SamplerState DetailSampler_Sampler : register( s13 );	// Detail texture
 static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
-#endif
-
 Texture2D SelfIllumMaskSampler_Texture : register( t14 );
-SamplerState SelfIllumMaskSampler_Sampler : register( s14 );	// selfillummask
+SamplerState SelfIllumMaskSampler_Sampler : register( s14 );	// Selfillum mask
 static const DX12Sampler2D SelfIllumMaskSampler = { SelfIllumMaskSampler_Texture, SelfIllumMaskSampler_Sampler };
 
 struct PS_INPUT
 {
-	float4 baseTexCoordDetailTexCoord; // xy=base zw=detail
-	float3 lightAtten; // Scalar light attenuation factors for FOUR lights
+	float4 baseTexCoordDetailTexCoord;
+	float3 lightAtten;
 	float3 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ;
 	float3x3 tangentSpaceTranspose;
-	//	     second row;
-	//	     third row;
+	// second and third rows use TEXCOORD4 and TEXCOORD5.
 	float4 worldPos_atten3;
 	float4 projPos_fWrinkleWeight;
 };
@@ -205,77 +180,88 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 {
 	PS_INPUT i = DX12ConvertInput( dx12In );
-	bool bWrinkleMap = WRINKLEMAP ? true : false;
-	bool bDoDiffuseWarp = LIGHTWARPTEXTURE ? true : false;
-	bool bDoSpecularWarp = PHONGWARPTEXTURE ? true : false;
-	bool bDoAmbientOcclusion = false;
-	bool bFlashlight = (FLASHLIGHT!=0) ? true : false;
-	bool bSelfIllum = SELFILLUM ? true : false;
-	bool bDoRimLighting = RIMLIGHT ? true : false;
-	bool bCubemap = CUBEMAP ? true : false;
-	bool bBlendTintByBaseAlpha = BLENDTINTBYBASEALPHA ? true : false;
+	bool bWrinkleMap = WRINKLEMAP != 0;
+	bool bDoDiffuseWarp = LIGHTWARPTEXTURE != 0;
+	bool bDoSpecularWarp = PHONGWARPTEXTURE != 0;
+	bool bFlashlight = FLASHLIGHT != 0;
+	bool bSelfIllum = SELFILLUM != 0;
+	bool bSelfIllumFresnel = SELFILLUMFRESNEL != 0;
+	bool bDoRimLighting = RIMLIGHT != 0;
+	bool bCubemap = CUBEMAP != 0;
+	bool bBlendTintByBaseAlpha = BLENDTINTBYBASEALPHA != 0;
+	bool bDetailTexture = DETAILTEXTURE != 0;
+	bool bFastPathNoBump = FASTPATH_NOBUMP != 0;
+	bool bPhongUseExponentFactor = PHONG_USE_EXPONENT_FACTOR != 0;
+	bool bFlashlightShadows = FLASHLIGHTSHADOWS != 0;
+	int nFlashlightDepthFilterMode = FLASHLIGHTDEPTHFILTERMODE;
+	int nDetailBlendMode = DETAIL_BLEND_MODE;
 	int nNumLights = NUM_LIGHTS;
+	int nPixelFogType = PIXELFOGTYPE;
 
 	// Unpacking for convenience
 	float fWrinkleWeight = i.projPos_fWrinkleWeight.w;
 	float3 vProjPos = i.projPos_fWrinkleWeight.xyz;
 	float3 vWorldPos = i.worldPos_atten3.xyz;
-	float  atten3 = i.worldPos_atten3.w;
-
+	float atten3 = i.worldPos_atten3.w;
 	float4 vLightAtten = float4( i.lightAtten, atten3 );
 
-#if WRINKLEMAP
-	float flWrinkleAmount = saturate( -fWrinkleWeight );					// One of these two is zero
-	float flStretchAmount = saturate(  fWrinkleWeight );					// while the other is in the 0..1 range
-
-	float flTextureAmount = 1.0f - flWrinkleAmount - flStretchAmount;		// These should sum to one
-#endif
+	// Shared by the base and normal wrinkle blends, so keep these in main scope.
+	float flWrinkleAmount = 0.0f;
+	float flStretchAmount = 0.0f;
+	float flTextureAmount = 1.0f;
+	if ( bWrinkleMap )
+	{
+		flWrinkleAmount = saturate( -fWrinkleWeight );
+		flStretchAmount = saturate( fWrinkleWeight );
+		flTextureAmount = 1.0f - flWrinkleAmount - flStretchAmount;
+	}
 
 	float4 baseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoordDetailTexCoord.xy );
-#if WRINKLEMAP
-	float4 wrinkleColor = WrinkleSampler.tex.Sample( WrinkleSampler.smp, i.baseTexCoordDetailTexCoord.xy );
-	float4 stretchColor = StretchSampler.tex.Sample( StretchSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+	if ( bWrinkleMap )
+	{
+		float4 wrinkleColor = WrinkleSampler.tex.Sample( WrinkleSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+		float4 stretchColor = StretchSampler.tex.Sample( StretchSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+		// Apply wrinkle blend to only RGB. Alpha comes from the base texture.
+		baseColor.rgb = flTextureAmount * baseColor + flWrinkleAmount * wrinkleColor + flStretchAmount * stretchColor;
+	}
 
-	// Apply wrinkle blend to only RGB.  Alpha comes from the base texture
-	baseColor.rgb = flTextureAmount * baseColor + flWrinkleAmount * wrinkleColor +  flStretchAmount * stretchColor;
-#endif
+	// Also consumed by the post-lighting detail blend.
+	float4 detailColor = 0;
+	if ( bDetailTexture )
+	{
+		detailColor = DetailSampler.tex.Sample( DetailSampler.smp, i.baseTexCoordDetailTexCoord.zw );
+		baseColor = TextureCombine( baseColor, detailColor, nDetailBlendMode, g_SelfIllumTint_and_DetailBlendFactor.w );
+	}
 
-#if DETAILTEXTURE
-	float4 detailColor = DetailSampler.tex.Sample( DetailSampler.smp, i.baseTexCoordDetailTexCoord.zw );
-	baseColor = TextureCombine( baseColor, detailColor, DETAIL_BLEND_MODE, g_SelfIllumTint_and_DetailBlendFactor.w );
-#endif
-
-	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.xyz, vWorldPos.xyz, vProjPos.z );
-
-	float3 vEyeDir = normalize(i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz);
-	float3 vRimAmbientCubeColor = PixelShaderAmbientLight(vEyeDir, cAmbientCube);
+	float fogFactor = CalcPixelFogFactor( nPixelFogType, g_FogParams, g_EyePos_SpecExponent.xyz, vWorldPos.xyz, vProjPos.z );
+	float3 vEyeDir = normalize( i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz );
+	float3 vRimAmbientCubeColor = PixelShaderAmbientLight( vEyeDir, cAmbientCube );
 
 	float3 worldSpaceNormal, tangentSpaceNormal;
 	float fSpecMask = 1.0f;
 	float4 normalTexel = NormalMapSampler.tex.Sample( NormalMapSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+	if ( bWrinkleMap )
+	{
+		float4 wrinkleNormal = NormalWrinkleSampler.tex.Sample( NormalWrinkleSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+		float4 stretchNormal = NormalStretchSampler.tex.Sample( NormalStretchSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+		normalTexel = flTextureAmount * normalTexel + flWrinkleAmount * wrinkleNormal + flStretchAmount * stretchNormal;
+	}
 
-#if WRINKLEMAP
-	float4 wrinkleNormal = NormalWrinkleSampler.tex.Sample( NormalWrinkleSampler.smp, i.baseTexCoordDetailTexCoord.xy );
-	float4 stretchNormal = NormalStretchSampler.tex.Sample( NormalStretchSampler.smp, i.baseTexCoordDetailTexCoord.xy );
-	normalTexel = flTextureAmount * normalTexel + flWrinkleAmount * wrinkleNormal + flStretchAmount * stretchNormal;
-#endif
+	if ( !bFastPathNoBump )
+	{
+		tangentSpaceNormal = lerp( 2.0f * normalTexel.xyz - 1.0f, float3( 0, 0, 1 ), g_fBaseMapAlphaPhongMask );
+		fSpecMask = lerp( normalTexel.a, baseColor.a, g_fBaseMapAlphaPhongMask );
+	}
+	else
+	{
+		tangentSpaceNormal = float3( 0, 0, 1 );
+		fSpecMask = baseColor.a;
+	}
 
-#if (FASTPATH_NOBUMP == 0 )
-	tangentSpaceNormal = lerp( 2.0f * normalTexel.xyz - 1.0f, float3(0, 0, 1), g_fBaseMapAlphaPhongMask );
-	fSpecMask = lerp( normalTexel.a, baseColor.a, g_fBaseMapAlphaPhongMask );
-#else
-	tangentSpaceNormal = float3(0, 0, 1);
-	fSpecMask = baseColor.a;
-#endif
-
-	// We need a normal if we're doing any lighting
 	worldSpaceNormal = normalize( mul( i.tangentSpaceTranspose, tangentSpaceNormal ) );
-
 	float fFresnelRanges = Fresnel( worldSpaceNormal, vEyeDir, g_FresnelRanges );
 	float fRimFresnel = Fresnel4( worldSpaceNormal, vEyeDir );
-
-	// Break down reflect so that we can share dot(worldSpaceNormal,vEyeDir) with fresnel terms
-	float3 vReflect = 2 * worldSpaceNormal * dot(worldSpaceNormal, vEyeDir) - vEyeDir;
+	float3 vReflect = 2 * worldSpaceNormal * dot( worldSpaceNormal, vEyeDir ) - vEyeDir;
 
 	float3 diffuseLighting = float3( 1.0f, 1.0f, 1.0f );
 	float3 envMapColor = float3( 0.0f, 0.0f, 0.0f );
@@ -287,60 +273,57 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 
 		if( bCubemap )
 		{
-			// Mask is either normal map alpha or base map alpha
-#if ( SELFILLUMFRESNEL == 1 ) // This is to match the 2.0 version of vertexlitgeneric
-			float fEnvMapMask = lerp( baseColor.a, g_fInvertPhongMask, g_EnvmapTint_ShadowTweaks.w );
-#else
-			float fEnvMapMask = lerp( baseColor.a, fSpecMask, g_EnvmapTint_ShadowTweaks.w );
-#endif
+			float fEnvMapMask;
+			if ( bSelfIllumFresnel )
+			{
+				// Match the 2.0 version of vertexlitgeneric.
+				fEnvMapMask = lerp( baseColor.a, g_fInvertPhongMask, g_EnvmapTint_ShadowTweaks.w );
+			}
+			else
+			{
+				fEnvMapMask = lerp( baseColor.a, fSpecMask, g_EnvmapTint_ShadowTweaks.w );
+			}
 
 			envMapColor = (ENV_MAP_SCALE *
-							lerp(1, fFresnelRanges, g_EnvMapFresnel.x) *
-							lerp(fEnvMapMask, 1-fEnvMapMask, g_fInvertPhongMask)) *
-							EnvmapSampler.tex.Sample( EnvmapSampler.smp, vReflect ) *
-							g_EnvmapTint_ShadowTweaks.xyz;
+				lerp( 1, fFresnelRanges, g_EnvMapFresnel.x ) *
+				lerp( fEnvMapMask, 1 - fEnvMapMask, g_fInvertPhongMask )) *
+				EnvmapSampler.tex.Sample( EnvmapSampler.smp, vReflect ) * g_EnvmapTint_ShadowTweaks.xyz;
 		}
 	}
-	
+
 	float3 specularLighting = float3( 0.0f, 0.0f, 0.0f );
 	float3 rimLighting = float3( 0.0f, 0.0f, 0.0f );
-
 	float3 vSpecularTint = 1;
 	float fRimMask = 0;
 	float fSpecExp = 1;
 
-#if ( FASTPATH_NOBUMP == 0 )
-	float4 vSpecExpMap = SpecExponentSampler.tex.Sample( SpecExponentSampler.smp, i.baseTexCoordDetailTexCoord.xy );
-	
-	if ( !bFlashlight )
+	if ( !bFastPathNoBump )
 	{
-		fRimMask = lerp( 1.0f, vSpecExpMap.a, g_RimMaskControl );						// Select rim mask
+		float4 vSpecExpMap = SpecExponentSampler.tex.Sample( SpecExponentSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+		if ( !bFlashlight )
+		{
+			fRimMask = lerp( 1.0f, vSpecExpMap.a, g_RimMaskControl );
+		}
+
+		if ( bPhongUseExponentFactor )
+		{
+			fSpecExp = 1.0f + g_EyePos_SpecExponent.w * vSpecExpMap.r;
+		}
+		else
+		{
+			fSpecExp = (g_EyePos_SpecExponent.w >= 0.0) ? g_EyePos_SpecExponent.w : (1.0f + 149.0f * vSpecExpMap.r);
+		}
+
+		// If constant tint is negative, tint with albedo, based upon scalar tint map.
+		vSpecularTint = lerp( float3( 1.0f, 1.0f, 1.0f ), baseColor.rgb, vSpecExpMap.g );
+		vSpecularTint = (g_SpecularTint.r >= 0.0) ? g_SpecularTint.rgb : vSpecularTint;
+	}
+	else
+	{
+		fSpecExp = max( g_EyePos_SpecExponent.w, 0 );
 	}
 
-	// If the exponent passed in as a constant is zero, use the value from the map as the exponent
-#if defined( _X360 )
-	[flatten]
-#endif
-	
-#if ( PHONG_USE_EXPONENT_FACTOR )
-	fSpecExp = ( 1.0f + g_EyePos_SpecExponent.w * vSpecExpMap.r );
-#else
-	fSpecExp = (g_EyePos_SpecExponent.w >= 0.0) ? g_EyePos_SpecExponent.w : (1.0f + 149.0f * vSpecExpMap.r);
-#endif
-
-	// If constant tint is negative, tint with albedo, based upon scalar tint map
-#if defined( _X360 )
-	[flatten]
-#endif
-	vSpecularTint = lerp( float3(1.0f, 1.0f, 1.0f), baseColor.rgb, vSpecExpMap.g );
-	vSpecularTint = (g_SpecularTint.r >= 0.0) ? g_SpecularTint.rgb : vSpecularTint;
-		
-#else
-	fSpecExp = max(g_EyePos_SpecExponent.w, 0);
-#endif
-
 	float3 albedo = baseColor.rgb;
-
 	if ( !bFlashlight )
 	{
 		// Summation of specular from all local lights besides the flashlight
@@ -356,81 +339,75 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	{
 		#if FLASHLIGHT
 			float4 flashlightSpacePosition = mul( float4( vWorldPos, 1.0f ), g_FlashlightWorldToTexture );
-
-			DoSpecularFlashlight( g_FlashlightPos, vWorldPos, flashlightSpacePosition, worldSpaceNormal, g_FlashlightAttenuationFactors.xyz, g_FlashlightAttenuationFactors.w, FlashlightSampler, ShadowDepthSampler, NormalizeRandRotSampler, FLASHLIGHTDEPTHFILTERMODE, FLASHLIGHTSHADOWS, true, vProjPos.xy / vProjPos.z, fSpecExp, vEyeDir, bDoSpecularWarp, SpecularWarpSampler, fFresnelRanges, g_EnvmapTint_ShadowTweaks, // These two values are output
+			DoSpecularFlashlight( g_FlashlightPos, vWorldPos, flashlightSpacePosition, worldSpaceNormal, g_FlashlightAttenuationFactors.xyz, g_FlashlightAttenuationFactors.w, FlashlightSampler, ShadowDepthSampler, NormalizeRandRotSampler, nFlashlightDepthFilterMode, bFlashlightShadows, true, vProjPos.xy / vProjPos.z, fSpecExp, vEyeDir, bDoSpecularWarp, SpecularWarpSampler, fFresnelRanges, g_EnvmapTint_ShadowTweaks, // These two values are output
 				diffuseLighting, specularLighting, cFlashlightColor, cFlashlightScreenScale );
 		#endif
 	}
 
-	// If we didn't already apply Fresnel to specular warp, modulate the specular
+	// If we didn't already apply Fresnel to specular warp, modulate the specular.
 	if ( !bDoSpecularWarp )
 		fSpecMask *= fFresnelRanges;
-
-	// Modulate with spec mask, boost and tint
 	specularLighting *= fSpecMask * g_SpecularBoost;
 
-	if (bBlendTintByBaseAlpha)
+	if ( bBlendTintByBaseAlpha )
 	{
 		float3 tintedColor = albedo * g_DiffuseModulation.rgb;
-		tintedColor = lerp(tintedColor, g_DiffuseModulation.rgb, g_fTintReplacementControl);
-		albedo = lerp(albedo, tintedColor, baseColor.a);
+		tintedColor = lerp( tintedColor, g_DiffuseModulation.rgb, g_fTintReplacementControl );
+		albedo = lerp( albedo, tintedColor, baseColor.a );
 	}
 	else
 	{
 		albedo = albedo * g_DiffuseModulation.rgb;
 	}
 
-
 	float3 diffuseComponent = albedo * diffuseLighting;
 	if ( bSelfIllum && !bFlashlight )
 	{
-#if ( SELFILLUMFRESNEL == 1 ) // To free up the constant register...see top of file
-		// This will apply a Fresnel term based on the vertex normal (not the per-pixel normal!) to help fake and internal glow look
-		float3 vVertexNormal = normalize( float3( i.tangentSpaceTranspose[0].z, i.tangentSpaceTranspose[1].z, i.tangentSpaceTranspose[2].z ) );
-		float flSelfIllumFresnel = ( pow( saturate( dot( vVertexNormal.xyz, vEyeDir.xyz ) ), g_SelfIllumScaleBiasExpBrightness.z ) * g_SelfIllumScaleBiasExpBrightness.x ) + g_SelfIllumScaleBiasExpBrightness.y;
-		diffuseComponent = lerp( diffuseComponent, g_SelfIllumTint_and_DetailBlendFactor.rgb * albedo * g_SelfIllumScaleBiasExpBrightness.w, baseColor.a * saturate( flSelfIllumFresnel ) );
-#else
-		float3 vSelfIllumMask = SelfIllumMaskSampler.tex.Sample( SelfIllumMaskSampler.smp, i.baseTexCoordDetailTexCoord.xy );
-		vSelfIllumMask = lerp( baseColor.aaa, vSelfIllumMask, g_SelfIllumMaskControl );
-		diffuseComponent = lerp( diffuseComponent, g_SelfIllumTint_and_DetailBlendFactor.rgb * albedo, vSelfIllumMask );
-#endif
-
+		if ( bSelfIllumFresnel )
+		{
+			// Use the vertex normal to fake an internal glow.
+			float3 vVertexNormal = normalize( float3( i.tangentSpaceTranspose[0].z, i.tangentSpaceTranspose[1].z, i.tangentSpaceTranspose[2].z ) );
+			float flSelfIllumFresnel = (pow( saturate( dot( vVertexNormal.xyz, vEyeDir.xyz ) ), g_SelfIllumScaleBiasExpBrightness.z ) * g_SelfIllumScaleBiasExpBrightness.x) + g_SelfIllumScaleBiasExpBrightness.y;
+			diffuseComponent = lerp( diffuseComponent, g_SelfIllumTint_and_DetailBlendFactor.rgb * albedo * g_SelfIllumScaleBiasExpBrightness.w, baseColor.a * saturate( flSelfIllumFresnel ) );
+		}
+		else
+		{
+			float3 vSelfIllumMask = SelfIllumMaskSampler.tex.Sample( SelfIllumMaskSampler.smp, i.baseTexCoordDetailTexCoord.xy );
+			vSelfIllumMask = lerp( baseColor.aaa, vSelfIllumMask, g_SelfIllumMaskControl );
+			diffuseComponent = lerp( diffuseComponent, g_SelfIllumTint_and_DetailBlendFactor.rgb * albedo, vSelfIllumMask );
+		}
 		diffuseComponent = max( 0.0f, diffuseComponent );
 	}
 
-#if DETAILTEXTURE
-	diffuseComponent = TextureCombinePostLighting( diffuseComponent, detailColor, 
-		DETAIL_BLEND_MODE, g_SelfIllumTint_and_DetailBlendFactor.w );
-#endif
+	if ( bDetailTexture )
+	{
+		diffuseComponent = TextureCombinePostLighting( diffuseComponent, detailColor,
+			nDetailBlendMode, g_SelfIllumTint_and_DetailBlendFactor.w );
+	}
 
 	if ( bDoRimLighting && !bFlashlight )
 	{
-		float fRimMultiply = fRimMask * fRimFresnel; // both unit range: [0, 1]
-		
-		// Add in rim light modulated with tint, mask and traditional Fresnel (not using Fresnel ranges)
+		float fRimMultiply = fRimMask * fRimFresnel;
 		rimLighting *= fRimMultiply;
-
-		// Fold rim lighting into specular term by using the max so that we don't really add light twice...
 		specularLighting = max( specularLighting, rimLighting );
-
-		// Add in view-ray lookup from ambient cube
-		specularLighting += (vRimAmbientCubeColor * g_fRimBoost) * saturate(fRimMultiply * worldSpaceNormal.z);
+		specularLighting += (vRimAmbientCubeColor * g_fRimBoost) * saturate( fRimMultiply * worldSpaceNormal.z );
 	}
 
-	float3 result = specularLighting*vSpecularTint + envMapColor + diffuseComponent;
-
-#if WRITEWATERFOGTODESTALPHA && ( PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT )
-	float alpha = fogFactor;
-#else
-	float alpha = g_DiffuseModulation.a;
-	if ( !bSelfIllum && !bBlendTintByBaseAlpha )
+	float3 result = specularLighting * vSpecularTint + envMapColor + diffuseComponent;
+	float alpha;
+	if ( WRITEWATERFOGTODESTALPHA != 0 && nPixelFogType == PIXEL_FOG_TYPE_HEIGHT )
 	{
-		alpha = lerp( baseColor.a * alpha, alpha, g_fBaseMapAlphaPhongMask );
+		alpha = fogFactor;
 	}
-#endif
+	else
+	{
+		alpha = g_DiffuseModulation.a;
+		if ( !bSelfIllum && !bBlendTintByBaseAlpha )
+		{
+			alpha = lerp( baseColor.a * alpha, alpha, g_fBaseMapAlphaPhongMask );
+		}
+	}
 
-	bool bWriteDepthToAlpha = ( WRITE_DEPTH_TO_DESTALPHA != 0 ) && ( WRITEWATERFOGTODESTALPHA == 0 );
-
-	//FIXME: need to take dowaterfog into consideration
-	return DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, vProjPos.z ), dx12In.fog );
+	bool bWriteDepthToAlpha = (WRITE_DEPTH_TO_DESTALPHA != 0) && (WRITEWATERFOGTODESTALPHA == 0);
+	return DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, nPixelFogType, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, vProjPos.z ), dx12In.fog );
 }

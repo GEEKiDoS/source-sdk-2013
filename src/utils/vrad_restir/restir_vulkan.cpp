@@ -8,7 +8,8 @@ static const char *s_pPipelineNames[RESTIR_PIPE_COUNT] =
 {
 	"bvh_morton", "bvh_sort", "bvh_hierarchy", "bvh_refit", "restir_init",
 	"restir_candidates", "restir_temporal", "restir_spatial", "restir_accumulate",
-	"restir_reconstruct", "restir_trace_rays", "restir_gather_ambient", "restir_light_points"
+	"restir_reconstruct", "restir_trace_rays", "restir_gather_ambient", "restir_light_points",
+	"restir_sun_visibility"
 };
 
 static bool HasExtension( const CUtlVector<VkExtensionProperties> &extensions, const char *name )
@@ -355,6 +356,8 @@ static void ShaderModuleAnchor() {}
 void CReSTIRVulkanDevice::Impl::CreateDescriptorsAndPipelines()
 {
 	unsigned int textureCount = MAX( 1, images.Count() );
+	COMPILE_TIME_ASSERT( RESTIR_BIND_TLAS == RESTIR_BIND_COVERAGE + 1 );
+	COMPILE_TIME_ASSERT( RESTIR_BIND_COUNT == RESTIR_BIND_TLAS + 1 );
 	VkDescriptorSetLayoutBinding bindings[RESTIR_BIND_COUNT] = {};
 	VkDescriptorBindingFlags bindingFlags[RESTIR_BIND_COUNT] = {};
 	unsigned int bindingCount = hardware ? RESTIR_BIND_COUNT : RESTIR_BIND_COUNT - 1;
@@ -436,6 +439,7 @@ void CReSTIRVulkanDevice::Impl::CreateDescriptorsAndPipelines()
 	}
 	vkUpdateDescriptorSets( device, bindingCount, writes, 0, NULL );
 	VkPushConstantRange range = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ReSTIRPushConstants ) };
+	COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 128 );
 	VkPipelineLayoutCreateInfo pipelineInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	pipelineInfo.setLayoutCount = 1;
 	pipelineInfo.pSetLayouts = &setLayout;

@@ -1,0 +1,183 @@
+#define DX12_HIGHRES_LIGHTMAPS 1
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/lightmappedreflective_vs20.fxc for logical lightmappedreflective_vs20 (legacy profile vs20);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs20 set.
+#define DX12_LEGACY_VS20 1
+#include "dx12_preamble.h"
+// STATIC: "BASETEXTURE"				"0..1"
+
+#include "common_vs_fxc.h"
+
+
+cbuffer lightmappedreflective_vs20 : register( b2, space1 )
+{
+	float4 cBumpTexCoordTransform[2]; // @legacy vs:c49
+	float4 cBaseTextureTransform[2]; // @legacy vs:c51
+};
+
+
+struct VS_INPUT
+{
+	float4 vPos;
+	float4 vNormal;
+	float4 vBaseTexCoord;
+	float2 vLightmapTexCoord;
+	float2 vLightmapTexCoordOffset;
+	float3 vTangentS;
+	float3 vTangentT;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	uint4 vNormal : NORMAL;
+#else
+	float4 vNormal : NORMAL;
+#endif
+	float4 vBaseTexCoord : TEXCOORD0;
+	float2 vLightmapTexCoord : TEXCOORD1;
+	float2 vLightmapTexCoordOffset : TEXCOORD2;
+#if COMPRESSED_VERTS
+	uint4 vTangentS : TANGENT;
+#else
+	float3 vTangentS : TANGENT;
+#endif
+	float3 vTangentT : BINORMAL0;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+#if COMPRESSED_VERTS
+	l.vNormal = (float4)i.vNormal;
+#else
+	l.vNormal = i.vNormal;
+#endif
+	l.vBaseTexCoord = i.vBaseTexCoord;
+	l.vLightmapTexCoord = i.vLightmapTexCoord;
+	l.vLightmapTexCoordOffset = i.vLightmapTexCoordOffset;
+#if COMPRESSED_VERTS
+	l.vTangentS = ( (float4)i.vTangentS ).xyz;
+#else
+	l.vTangentS = i.vTangentS;
+#endif
+	l.vTangentT = i.vTangentT;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 vProjPos_POSITION : SV_Position; 	
+	float vFog : FOG;
+	float4 vBumpTexCoordXY_vTexCoordXY : TEXCOORD0;
+	float3 vTangentEyeVect : TEXCOORD1;
+	float4 vReflectXY_vRefractYX : TEXCOORD2;
+	float W : TEXCOORD3;
+	float4 vProjPos : TEXCOORD4;
+	float screenCoord : TEXCOORD5;
+#if BASETEXTURE
+	centroid  HALF4 lightmapTexCoord1And2 : TEXCOORD6;
+	centroid  HALF4 lightmapTexCoord3 : TEXCOORD7;
+#endif
+	float4 fogFactorW : COLOR1;
+	float3 worldPos : TEXCOORD8;
+	float3 worldNormal : TEXCOORD9;
+	float2 shadowResponse : TEXCOORD10;
+	float3 shadowTangentS : TEXCOORD11;
+	float3 shadowTangentT : TEXCOORD12;
+	centroid float2 shadowBaseLightmapUV : TEXCOORD13;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.vProjPos_POSITION );
+	o.vProjPos_POSITION = DX12Position( o.vProjPos_POSITION );
+#if BASETEXTURE
+#endif
+	o.fogFactorW = saturate( o.fogFactorW );	// vs_2_0 oD# clamp (vsconv.cpp:1033-1035)
+	return o;
+}
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+
+	float3 vObjNormal;
+	DecompressVertex_Normal( v.vNormal, vObjNormal );
+
+	// Projected position
+	float4 vProjPos = mul( v.vPos, cModelViewProj );
+	o.vProjPos = o.vProjPos_POSITION = vProjPos;
+
+	// Project tangent basis
+	float2 vProjTangentS = mul( v.vTangentS, cViewProj );
+	float2 vProjTangentT = mul( v.vTangentT, cViewProj );
+
+	// Map projected position to the reflection texture
+	float2 vReflectPos;
+	vReflectPos.x = -vProjPos.x;
+	vReflectPos.y = -vProjPos.y; // invert Y
+	vReflectPos = (vReflectPos + vProjPos.w) * 0.5f;
+
+	// Map projected position to the refraction texture
+	float2 vRefractPos;
+	vRefractPos.x = vProjPos.x;
+	vRefractPos.y = -vProjPos.y; // invert Y
+	vRefractPos = (vRefractPos + vProjPos.w) * 0.5f;
+
+	// Reflection transform
+	o.vReflectXY_vRefractYX = float4( vReflectPos.x, vReflectPos.y, vRefractPos.y, vRefractPos.x );
+	o.W = vProjPos.w;
+	
+	o.screenCoord = vProjPos.x;
+
+	// Compute fog based on the position
+	float3 vWorldPos = mul( v.vPos, cModel[0] );
+	o.fogFactorW = o.vFog = CalcFog( vWorldPos, vProjPos, FOGTYPE_RANGE );
+
+	// Eye vector
+	float3 vWorldEyeVect = cEyePos - vWorldPos;
+	// Transform to the tangent space
+	o.vTangentEyeVect.x = dot( vWorldEyeVect, v.vTangentS );
+	o.vTangentEyeVect.y = dot( vWorldEyeVect, v.vTangentT );
+	o.vTangentEyeVect.z = dot( vWorldEyeVect, vObjNormal );
+
+	// Tranform bump coordinates
+	o.vBumpTexCoordXY_vTexCoordXY.x = dot( v.vBaseTexCoord, cBumpTexCoordTransform[0] );
+	o.vBumpTexCoordXY_vTexCoordXY.y = dot( v.vBaseTexCoord, cBumpTexCoordTransform[1] );
+
+#if BASETEXTURE
+	o.vBumpTexCoordXY_vTexCoordXY.z = dot( v.vBaseTexCoord, cBaseTextureTransform[0] );
+	o.vBumpTexCoordXY_vTexCoordXY.w = dot( v.vBaseTexCoord, cBaseTextureTransform[1] );
+
+	o.lightmapTexCoord1And2.xy = v.vLightmapTexCoord + v.vLightmapTexCoordOffset;
+
+	float2 lightmapTexCoord2 = o.lightmapTexCoord1And2.xy + v.vLightmapTexCoordOffset;
+	float2 lightmapTexCoord3 = lightmapTexCoord2 + v.vLightmapTexCoordOffset;
+
+	// reversed component order
+	o.lightmapTexCoord1And2.w = lightmapTexCoord2.x;
+	o.lightmapTexCoord1And2.z = lightmapTexCoord2.y;
+
+	o.lightmapTexCoord3.xy = lightmapTexCoord3;
+#else
+	o.vBumpTexCoordXY_vTexCoordXY.z = 0.0f;
+	o.vBumpTexCoordXY_vTexCoordXY.w = 0.0f;
+#endif
+
+	float3 shadowWorldNormal = mul( vObjNormal, (float3x3)cModel[0] );
+	o.worldPos = vWorldPos;
+	o.worldNormal = normalize( shadowWorldNormal );
+	o.shadowResponse = float2( 0, 1.0f );
+	o.shadowTangentS = normalize( mul( v.vTangentS, (float3x3)cModel[0] ) );
+	o.shadowTangentT = normalize( mul( v.vTangentT, (float3x3)cModel[0] ) );
+	o.shadowBaseLightmapUV = v.vLightmapTexCoord.xy;
+	return DX12FinishVertex( o );
+}
+
+

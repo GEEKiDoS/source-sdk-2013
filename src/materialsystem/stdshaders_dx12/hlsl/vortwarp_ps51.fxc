@@ -1,26 +1,36 @@
 // Native SM5.1 rewrite of materialsystem/stdshaders/vortwarp_ps2x.fxc for logical vortwarp_ps30 (legacy profile ps30);
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
 #define DX12_LEGACY_PS30 1
+#define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
-//======= Copyright © 1996-2006, Valve Corporation, All rights reserved. ======
+//======= Copyright Â© 1996-2006, Valve Corporation, All rights reserved. ======
 
-// STATIC: "CONVERT_TO_SRGB"			"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
-// STATIC: "BASETEXTURE"				"0..1"
-// STATIC: "CUBEMAP"					"0..1"
-// STATIC: "DIFFUSELIGHTING"			"0..1"
-// STATIC: "NORMALMAPALPHAENVMAPMASK"	"0..1"
-// STATIC: "HALFLAMBERT"				"0..1"
-// STATIC: "FLASHLIGHT"					"0..1"
-// STATIC: "TRANSLUCENT"				"0..1"
+// STATIC: "CONVERT_TO_SRGB" "0..1"
+// STATIC: "FLASHLIGHT" "0..1"
+// FOLD: "BASETEXTURE" "0..1" STATIC slot=0
+// FOLD: "CUBEMAP" "0..1" STATIC slot=1
+// FOLD: "DIFFUSELIGHTING" "0..1" STATIC slot=2
+// FOLD: "NORMALMAPALPHAENVMAPMASK" "0..1" STATIC slot=3
+// FOLD: "HALFLAMBERT" "0..1" STATIC slot=4
+// FOLD: "TRANSLUCENT" "0..1" STATIC slot=5
+// FOLD: "WRITEWATERFOGTODESTALPHA" "0..1" DYNAMIC slot=6
+// FOLD: "PIXELFOGTYPE" "0..1" DYNAMIC slot=7
+// FOLD: "WARPINGIN" "0..1" DYNAMIC slot=8
+// FOLD: "AMBIENT_LIGHT" "0..1" DYNAMIC slot=9
+// FOLD: "NUM_LIGHTS" "0..4" DYNAMIC slot=10
 
-// DYNAMIC: "WRITEWATERFOGTODESTALPHA"  "0..1"
-// DYNAMIC: "PIXELFOGTYPE"				"0..1"
-// DYNAMIC: "WARPINGIN"					"0..1"
-// DYNAMIC: "AMBIENT_LIGHT"				"0..1"
-// DYNAMIC: "NUM_LIGHTS"				"0..4"
+#define BASETEXTURE ( cComboFold[0].x )
+#define CUBEMAP ( cComboFold[0].y )
+#define DIFFUSELIGHTING ( cComboFold[0].z )
+#define NORMALMAPALPHAENVMAPMASK ( cComboFold[0].w )
+#define HALFLAMBERT ( cComboFold[1].x )
+#define TRANSLUCENT ( cComboFold[1].y )
+#define WRITEWATERFOGTODESTALPHA ( cComboFold[1].z )
+#define PIXELFOGTYPE ( cComboFold[1].w )
+#define WARPINGIN ( cComboFold[2].x )
+#define AMBIENT_LIGHT ( cComboFold[2].y )
+#define NUM_LIGHTS ( cComboFold[2].z )
 
-// We don't use other lights when doing the flashlight, so just skip that
-// SKIP: ( $FLASHLIGHT != 0 ) && ( $NUM_LIGHTS > 0 )
 
 #include "common_flashlight_fxc.h"
 #include "common_vertexlitgeneric_dx9.h"
@@ -143,7 +153,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	HALF4 baseColor = HALF4( 1.0f, 1.0f, 1.0f, 1.0f );
 	if( bBaseTexture )
 		baseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
-	
+
 	float specularFactor = 1.0f;
 	HALF4 normalTexel = BumpmapSampler.tex.Sample( BumpmapSampler.smp, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
 	HALF3 tangentSpaceNormal = 2.0f * normalTexel - 1.0f;
@@ -177,7 +187,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 			alpha *= specularFactor;
 		}
 	}
-	
+
 #if FLASHLIGHT
 	if( bFlashlight )
 	{
@@ -187,12 +197,12 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 		diffuseLighting = DoFlashlight( g_FlashlightPos, i.worldPos_projPosZ.xyz, flashlightSpacePosition, worldSpaceNormal, g_FlashlightAttenuationFactors.xyz, g_FlashlightAttenuationFactors.w, FlashlightSampler, EnvmapMaskSampler, EnvmapMaskSampler, 0, false, false, float2(0, 0), true, cFlashlightColor, cFlashlightScreenScale );
 	}
 #endif
-	
+
 	diffuseLighting *= g_DiffuseModulation.rgb;
 	alpha *= g_DiffuseModulation.a;
-	
+
 	HALF3 diffuseComponent = albedo * diffuseLighting;
-	
+
 	HALF4 flowmapSample = FlowMapSampler.tex.Sample( FlowMapSampler.smp, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
 #if !FLASHLIGHT
 	flowmapSample.xy += float2( .11, .124 ) * g_Time.xx;
@@ -230,21 +240,18 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	HALF3 result = diffuseComponent + specularLighting;
 
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
-#if WRITEWATERFOGTODESTALPHA && (PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT)
-	alpha = fogFactor;
-#endif
-
+	if( WRITEWATERFOGTODESTALPHA && (PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT) )
+	{
+		alpha = fogFactor;
+	}
 
 //	result.xyz = float3( 1.0f, 1.0f, 1.0f );
-#if TRANSLUCENT==0
-#	if WARPINGIN
-	alpha = 0.0f; // write alpha where the vortigaunt is so that we can selectivly draw pixels when refracting
-	#else
-	alpha = 1.0f; // write alpha where the vortigaunt is so that we can selectivly draw pixels when refracting
-#	endif
-#endif
+	if( TRANSLUCENT == 0 )
+	{
+		// Write alpha where the vortigaunt is so we can selectively draw refracting pixels.
+		alpha = WARPINGIN ? 0.0f : 1.0f;
+	}
 
 	//FIXME: need to take dowaterfog into consideration
 	return DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
 }
-

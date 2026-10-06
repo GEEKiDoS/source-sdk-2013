@@ -8,9 +8,11 @@
 #include "shaderdevice_dx12.h"
 #include "shaderapi/ishaderutil.h"
 #include "tier0/dbg.h"
+#include <atomic>
 
 namespace shaderapidx12
 {
+static std::atomic<uint64_t> s_NextGeometryIdentity{ 1 };
 
 //-----------------------------------------------------------------------------
 // Purpose: Grows the byte storage geometrically and zero-fills the new tail
@@ -64,6 +66,7 @@ CShaderBufferDX12::CShaderBufferDX12( const void *pData, size_t nSize )
 CVertexBufferDX12::CVertexBufferDX12( VertexFormat_t format, int nCount, bool bDynamic )
     : m_Format( format ), m_nVertexCount( MAX( 0, nCount ) ), m_bDynamic( bDynamic )
 {
+	m_nIdentity = s_NextGeometryIdentity.fetch_add( 1 );
 	m_Layout = ComputeVertexLayoutDX12( format );
 	m_nStride = m_Layout.valid ? m_Layout.stride : 0;
 	if ( !m_bDynamic && m_nStride && m_nVertexCount > 0 &&
@@ -214,6 +217,7 @@ void CVertexBufferDX12::ValidateData( int nVertexCount, const VertexDesc_t &desc
 CIndexBufferDX12::CIndexBufferDX12( MaterialIndexFormat_t format, int nCount, bool bDynamic )
     : m_Format( format ), m_nIndexCount( MAX( 0, nCount ) ), m_bDynamic( bDynamic )
 {
+	m_nIdentity = s_NextGeometryIdentity.fetch_add( 1 );
 	m_nIndexSize = format == MATERIAL_INDEX_FORMAT_32BIT ? 4u : 2u;
 	if ( !m_bDynamic && !ResizeBytes( m_Bytes, m_nByteSize, static_cast<size_t>( m_nIndexSize ) * static_cast<size_t>( m_nIndexCount ) ) )
 		m_nIndexCount = 0;

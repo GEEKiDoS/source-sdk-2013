@@ -1,4 +1,6 @@
-logical=lightmappedgeneric_ps51 stage=ps source=lightmappedgeneric_ps51.fxc legacy=lightmappedgeneric_ps2x.fxc legacyName=lightmappedgeneric_ps20b profile=20b static=7372 dynamic=288 present=582848
+logical=lightmappedgeneric_ps51 stage=ps source=lightmappedgeneric_ps51.fxc legacy=lightmappedgeneric_ps2x.fxc legacyName=lightmappedgeneric_ps20b profile=20b static=2 dynamic=3 present=6
+  cbuffer=DX12ComboFoldPS space=1 register=b2 size=256 layoutHash=0x0059821a164b1e6f engine
+    member=cComboFold type=19 class=1 offset=0 size=256 elements=16 arrayStride=16 legacy=none
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
@@ -8,39 +10,27 @@ logical=lightmappedgeneric_ps51 stage=ps source=lightmappedgeneric_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=lightmappedgeneric_ps2x space=1 register=b1 size=320 layoutHash=0x25ed3cf66ad20db8 material
+  cbuffer=lightmappedgeneric_ps2x space=1 register=b1 size=176 layoutHash=0xd7b0c2ede7ae646e material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
-    member=g_OutlineParams type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c2
-    member=g_EnvmapContrast_c2 type=3 class=1 offset=32 size=12 elements=0 arrayStride=0 legacy=ps:c2
-    member=g_OutlineColor type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
-    member=g_EnvmapSaturation_c3 type=3 class=1 offset=64 size=12 elements=0 arrayStride=0 legacy=ps:c3
-    member=g_EdgeSoftnessParms type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c4
-    member=g_FresnelReflectionReg type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c4
-    member=g_SelfIllumTint_c7 type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_OutlineParams type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_EnvmapSaturation type=3 class=1 offset=48 size=12 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_OutlineColor type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_FresnelReflectionReg type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_EdgeSoftnessParms type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_SelfIllumTint type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_DetailTint_and_BlendFactor type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=ps:c8
     member=g_EyePos type=3 class=1 offset=144 size=12 elements=0 arrayStride=0 legacy=ps:c10
     member=g_TintValuesAndLightmapScale type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=ps:c12
-    member=g_FlashlightAttenuationFactors type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=ps:c13
-    member=g_FlashlightPos type=3 class=1 offset=192 size=12 elements=0 arrayStride=0 legacy=ps:c14
-    member=g_FlashlightWorldToTexture type=3 class=3 offset=208 size=64 elements=0 arrayStride=0 legacy=ps:c15
-    member=g_ShadowTweaks type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=ps:c19
-    member=cFlashlightColor type=3 class=1 offset=288 size=16 elements=0 arrayStride=0 legacy=ps:c28
-    member=cFlashlightScreenScale type=3 class=1 offset=304 size=16 elements=0 arrayStride=0 legacy=ps:c31
     legacyEntry=0,16,1,0,0,0,0
-    legacyEntry=16,16,1,0,0,0,2
-    legacyEntry=32,12,1,0,0,0,2
-    legacyEntry=48,16,1,0,0,0,3
-    legacyEntry=64,12,1,0,0,0,3
+    legacyEntry=16,12,1,0,0,0,2
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,12,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,3
     legacyEntry=80,16,1,0,0,0,4
     legacyEntry=96,16,1,0,0,0,4
     legacyEntry=112,16,1,0,0,0,7
     legacyEntry=128,16,1,0,0,0,8
     legacyEntry=144,12,1,0,0,0,10
     legacyEntry=160,16,1,0,0,0,12
-    legacyEntry=176,16,1,0,0,0,13
-    legacyEntry=192,12,1,0,0,0,14
-    legacyEntry=208,16,4,16,0,0,15
-    legacyEntry=272,16,1,0,0,0,19
-    legacyEntry=288,16,1,0,0,0,28
-    legacyEntry=304,16,1,0,0,0,31
     bridge=WriteNativeCBuffer(api, block)

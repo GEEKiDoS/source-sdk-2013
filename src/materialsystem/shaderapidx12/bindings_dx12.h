@@ -33,13 +33,15 @@ public:
 
 	bool Initialize( ID3D12Device *pDevice, D3D12_DESCRIPTOR_HEAP_TYPE type, uint32_t nCapacity, bool bShaderVisible );
 	void Shutdown();
+	// Ensures a contiguous transient run fits without consuming descriptors; may switch heaps.
+	bool EnsureCapacity( uint32_t nCount, uint64_t nRetireFence );
 	DescriptorRangeDX12 Allocate( uint32_t nCount, uint64_t nRetireFence );
 	DescriptorRangeDX12 AllocatePersistent( uint32_t nCount, uint64_t nLastUseFence );
 	void Reclaim( uint64_t nCompletedFence );
 
 	ID3D12DescriptorHeap *Heap() const { return m_pHeap.Get(); }
 
-	// Changes whenever Allocate switches to a fresh heap.
+	// Changes whenever EnsureCapacity or Allocate switches to a fresh heap.
 	uint64_t Generation() const { return m_nGeneration; }
 
 private:
@@ -81,6 +83,7 @@ public:
 	DescriptorRangeDX12 AllocateDescriptors( uint32_t nCount, uint64_t nRetireFence ) { return m_Resources.Allocate( nCount, nRetireFence ); }
 
 	CDescriptorAllocatorDX12 &ResourceHeap() { return m_Resources; }
+	const CDescriptorAllocatorDX12 &ResourceHeap() const { return m_Resources; }
 
 	CDescriptorAllocatorDX12 &SamplerHeap() { return m_Samplers; }
 

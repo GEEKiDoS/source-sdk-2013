@@ -174,6 +174,7 @@ extern vgui::IInputInternal *g_InputInternal;
 #endif
 
 #include "framegen_dx12.h"
+#include "shadowmaps_dx12.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -1055,6 +1056,10 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 
 	g_pClientMode->Init();
 
+	// Runtime shadow maps (SHADOW_MAPS_PLAN.md step 8): resolve the DX12 lighting interface before any map can load.
+	// A missing interface only disables feature-map admission.
+	ShadowMapsDX12_Init();
+
 	if ( !IGameSystem::InitAllSystems() )
 		return false;
 
@@ -1244,6 +1249,9 @@ void CHLClient::Shutdown( void )
 	UncacheAllMaterials();
 
 	IGameSystem::ShutdownAllSystems();
+
+	// Runtime shadow maps: drain and release backend state before this DLL unloads.
+	ShadowMapsDX12_Shutdown();
 	
 	gHUD.Shutdown();
 	VGui_Shutdown();
@@ -1641,6 +1649,18 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	tempents->LevelInit();
 	ResetToneMapping(1.0);
 
+	// Validate the rshd-v4 manifest and require exact native high-resolution
+	// admission before client systems initialize. Rejected enhanced maps disconnect;
+	// ordinary maps retain their original lighting and rendering mode.
+	{
+		char szShadowError[256] = {};
+		if ( !ShadowMapsDX12_LevelInitPreEntity( pMapName, szShadowError, sizeof( szShadowError ) ) )
+		{
+			Warning( "%s\n", szShadowError );
+			engine->ClientCmd_Unrestricted( "disconnect\n" );
+		}
+	}
+
 	IGameSystem::LevelInitPreEntityAllSystems(pMapName);
 
 #ifdef USES_ECON_ITEMS
@@ -1726,6 +1746,9 @@ void CHLClient::LevelShutdown( void )
 		return;
 
 	g_bLevelInitialized = false;
+	// Disable admission and drain native material/client views while entities and
+	// the leaf system still exist. Keep this bracket through all level teardown.
+	ShadowMapsDX12_BeginClientLevelShutdown();
 
 	// Disable abs recomputations when everything is shutting down
 	CBaseEntity::EnableAbsRecomputations( false );
@@ -1756,6 +1779,7 @@ void CHLClient::LevelShutdown( void )
 	IGameSystem::LevelShutdownPostEntityAllSystems();
 
 	view->LevelShutdown();
+	ShadowMapsDX12_LevelShutdown();
 	beams->ClearBeams();
 	ParticleMgr()->RemoveAllEffects();
 	
@@ -1786,6 +1810,7 @@ void CHLClient::LevelShutdown( void )
 	CReplayRagdollRecorder::Instance().Shutdown();
 	CReplayRagdollCache::Instance().Shutdown();
 #endif
+	ShadowMapsDX12_EndClientLevelShutdown();
 }
 
 
@@ -2351,6 +2376,7 @@ void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 		break;
 	case FRAME_START:
 		{
+			ShadowMapsDX12_OnDeviceReset();
 			// Mark the frame as open for client fx additions
 			SetFXCreationAllowed( true );
 			SetBeamCreationAllowed( true );

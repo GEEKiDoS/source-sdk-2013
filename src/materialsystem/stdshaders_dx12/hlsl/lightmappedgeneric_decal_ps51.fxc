@@ -1,3 +1,4 @@
+// HIGHLIGHT_SAMPLERS: 14
 // Native SM5.1 rewrite of materialsystem/stdshaders/lightmappedgeneric_decal_ps2x.fxc for logical lightmappedgeneric_decal_ps20b (legacy profile ps20b);
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
 #define DX12_LEGACY_PS20B 1

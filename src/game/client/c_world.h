@@ -56,6 +56,7 @@ public:
 	float	m_flMinPropScreenSpaceWidth;
 	float	m_flMaxPropScreenSpaceWidth;
 	bool	m_bColdWorld;
+	bool	m_bShadowMapTransmitReady;
 
 private:
 	void	RegisterSharedActivities( void );

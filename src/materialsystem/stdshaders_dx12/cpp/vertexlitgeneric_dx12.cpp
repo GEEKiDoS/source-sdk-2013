@@ -496,6 +496,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 			SetupVarsWeaponSheenPass( info );
 			if ( ( pShaderShadow != NULL ) || ( bDrawStandardPass && ShouldDrawMaterialSheen( params, info ) ) )
 			{
+				g_DX12Constants.shadowmapPassAdmitted = true; // Refraction/environment sheen, not stripped diffuse.
 				DrawWeaponSheenPass( this, params, pShaderAPI, pShaderShadow, info, vertexCompression );
 			}
 			else
@@ -513,6 +514,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 			{
 				CloakBlendedPassVars_t info;
 				SetupVarsCloakBlendedPass( info );
+				g_DX12Constants.shadowmapPassAdmitted = true; // Refraction-only auxiliary pass.
 				DrawCloakBlendedPass( this, params, pShaderAPI, pShaderShadow, info, vertexCompression );
 			}
 			else // We're not snapshotting and we don't need to draw this frame
@@ -530,6 +532,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 			{
 				EmissiveScrollBlendedPassVars_t info;
 				SetupVarsEmissiveScrollBlendedPass( info );
+				g_DX12Constants.shadowmapPassAdmitted = true; // Emissive-only auxiliary pass.
 				DrawEmissiveScrollBlendedPass( this, params, pShaderAPI, pShaderShadow, info, vertexCompression );
 			}
 			else // We're not snapshotting and we don't need to draw this frame

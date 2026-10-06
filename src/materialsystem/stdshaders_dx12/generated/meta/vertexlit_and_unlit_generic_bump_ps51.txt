@@ -1,4 +1,6 @@
-logical=vertexlit_and_unlit_generic_bump_ps51 stage=ps source=vertexlit_and_unlit_generic_bump_ps51.fxc legacy=vertexlit_and_unlit_generic_bump_ps2x.fxc legacyName=vertexlit_and_unlit_generic_bump_ps30 profile=30 static=632 dynamic=60 present=15504
+logical=vertexlit_and_unlit_generic_bump_ps51 stage=ps source=vertexlit_and_unlit_generic_bump_ps51.fxc legacy=vertexlit_and_unlit_generic_bump_ps2x.fxc legacyName=vertexlit_and_unlit_generic_bump_ps30 profile=30 static=2 dynamic=1 present=2
+  cbuffer=DX12ComboFoldPS space=1 register=b2 size=256 layoutHash=0x0059821a164b1e6f engine
+    member=cComboFold type=19 class=1 offset=0 size=256 elements=16 arrayStride=16 legacy=none
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none

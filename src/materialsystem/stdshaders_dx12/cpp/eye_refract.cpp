@@ -193,6 +193,9 @@ BEGIN_VS_SHADER( EyeRefract_dx9, "Help for Eyes" )
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "EyeRefract", bShadowmapReceiver ) )
+			return;
 		// Skip the standard rendering if cloak pass is fully opaque
 		bool bDrawStandardEye = true;
 		if ( params[CLOAKPASSENABLED]->GetIntValue() && ( pShaderShadow == NULL ) ) // && not snapshotting
@@ -210,6 +213,7 @@ BEGIN_VS_SHADER( EyeRefract_dx9, "Help for Eyes" )
 		{
 			Eye_Refract_Vars_t info;
 			SetupVarsEyeRefract( info );
+			info.m_bShadowmapReceiver = bShadowmapReceiver;
 			Draw_Eyes_Refract( this, params, pShaderAPI, pShaderShadow, info, vertexCompression );
 		}
 		else
@@ -226,6 +230,7 @@ BEGIN_VS_SHADER( EyeRefract_dx9, "Help for Eyes" )
 			{
 				CloakBlendedPassVars_t info;
 				SetupVarsCloakBlendedPass( info );
+				g_DX12Constants.shadowmapPassAdmitted = true; // Refraction-only auxiliary pass.
 				DrawCloakBlendedPass( this, params, pShaderAPI, pShaderShadow, info, vertexCompression );
 			}
 			else // We're not snapshotting and we don't need to draw this frame
@@ -243,6 +248,7 @@ BEGIN_VS_SHADER( EyeRefract_dx9, "Help for Eyes" )
 			{
 				EmissiveScrollBlendedPassVars_t info;
 				SetupVarsEmissiveScrollBlendedPass( info );
+				g_DX12Constants.shadowmapPassAdmitted = true; // Emissive-only auxiliary pass.
 				DrawEmissiveScrollBlendedPass( this, params, pShaderAPI, pShaderShadow, info, vertexCompression );
 			}
 			else // We're not snapshotting and we don't need to draw this frame

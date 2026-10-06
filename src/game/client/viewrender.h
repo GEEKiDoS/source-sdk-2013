@@ -15,6 +15,9 @@
 #include "iviewrender.h"
 #include "view_shared.h"
 #include "replay/ireplayscreenshotsystem.h"
+#include "clientleafsystem.h"
+#include "detailobjectsystem.h"
+#include "shaderapi/ishaderapidx12lighting.h"
 
 
 //-----------------------------------------------------------------------------
@@ -32,6 +35,34 @@ struct ClientWorldListInfo_t;
 class C_BaseEntity;
 struct WriteReplayScreenshotParams_t;
 class CReplayScreenshotTaker;
+
+// Client-owned private-depth scene views. The list is gathered once per receiver,
+// independently of the camera lists, then classified against each expanded face.
+struct ShadowMapSceneCaster_t
+{
+	IClientRenderable *renderable;
+	Vector mins, maxs;
+	bool staticProp;
+	bool immutable;
+};
+
+struct ShadowMapDepthScene_t
+{
+	CViewSetup lightView, receiverView;
+	ShadowCasterVolume_t volume;
+	ShadowMapDetailOrientation_t detail;
+	const CUtlVector<ShadowMapSceneCaster_t> *casters;
+	const CUtlVector<int> *candidateIndices;
+	int candidateFirst, candidateCount;
+	IShaderAPIDX12Lighting *lighting;
+	DX12ShadowTarget_t target;
+	int x, y, size;
+	bool clear, drawWorld, drawStatic, drawDynamic, drawDetail;
+};
+
+void ViewRender_DrawShadowMapScene( const ShadowMapDepthScene_t &scene );
+// Release map-scoped world-list scratch without waiting for engine/backend leases.
+void ViewRender_ClearShadowMapScenes();
 
 #ifdef HL2_EPISODIC
 	class CStunEffect;
@@ -193,6 +224,7 @@ public:
 	virtual ~CRendering3dView() { ReleaseLists(); }
 
 	void Setup( const CViewSetup &setup );
+	ViewCustomVisibility_t *GetCustomVisibility() const { return m_pCustomVisibility; }
 
 	// What are we currently rendering? Returns a combination of DF_ flags.
 	virtual int		GetDrawFlags();

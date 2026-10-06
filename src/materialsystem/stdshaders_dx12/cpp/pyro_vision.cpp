@@ -9,6 +9,7 @@
 
 #include "BaseVSShaderDX12.h"
 #include "commandbuilder.h"
+#include "lightmappedgeneric_dx9_helper.h"
 
 #include "pyro_vision_ps51.inc"
 #include "pyro_vision_vs51.inc"
@@ -390,7 +391,7 @@ BEGIN_VS_SHADER( pyro_vision, "Help for pyro vision" )
 						// set up shader modulation color
 						vParms[ 0 ] = vParms[ 1 ] = vParms[ 2] = vParms[ 3 ] = 1.0f;
 						ComputeModulationColor( vParms.Base() );
-						float flLScale = pShaderAPI->GetLightMapScaleFactor();
+						float flLScale = !bVertexLit && DX12HighresMap() ? 1.0f : pShaderAPI->GetLightMapScaleFactor();
 						vParms[ 0 ] *= flLScale;
 						vParms[ 1 ] *= flLScale;
 						vParms[ 2 ] *= flLScale;
@@ -403,7 +404,7 @@ BEGIN_VS_SHADER( pyro_vision, "Help for pyro vision" )
 						// set up shader modulation color
 						vParms[ 0 ] = vParms[ 1 ] = vParms[ 2] = vParms[ 3 ] = 1.0f;
 						ComputeModulationColor( vParms.Base() );
-						float flLScale = pShaderAPI->GetLightMapScaleFactor();
+						float flLScale = !bVertexLit && DX12HighresMap() ? 1.0f : pShaderAPI->GetLightMapScaleFactor();
 						vParms[ 0 ] *= flLScale;
 						vParms[ 1 ] *= flLScale;
 						vParms[ 2 ] *= flLScale;
@@ -535,6 +536,7 @@ BEGIN_VS_SHADER( pyro_vision, "Help for pyro vision" )
 			else
 			{
 				nFormat |= VERTEX_POSITION;
+				if ( DX12HighresMap() ) nFormat |= VERTEX_TANGENT_S | VERTEX_TANGENT_T;
 				pShaderShadow->VertexShaderVertexFormat( nFormat, 2, 0, 0 );
 			}
 

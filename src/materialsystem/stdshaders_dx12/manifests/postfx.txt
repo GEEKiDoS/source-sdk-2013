@@ -70,6 +70,10 @@ vr_distort_hud_ps51.fxc ps vr_distort_hud_ps51 30 vr_distort_hud_ps2x.fxc
 vr_distort_texture_vs51.fxc vs vr_distort_texture_vs51 30 vr_distort_texture_vs20.fxc
 vr_distort_texture_ps51.fxc ps vr_distort_texture_ps51 30 vr_distort_texture_ps2x.fxc
 # pair vr_distort_texture_vs51 vr_distort_texture_ps51
+pyro_vision_highres_vs51.fxc vs pyro_vision_highres_vs51 native -
+# noparity pyro_vision_highres_vs51 - highres-feature-variant
+pyro_vision_highres_ps51.fxc ps pyro_vision_highres_ps51 native -
+# noparity pyro_vision_highres_ps51 - highres-feature-variant
 motion_blur_mv_ps51.fxc ps motion_blur_mv_ps51 native -
 # noparity motion_blur_mv_ps51 - native-only
 postfx_downsample_cs51.fxc cs postfx_downsample_cs51 native -

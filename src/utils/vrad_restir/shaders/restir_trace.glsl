@@ -111,19 +111,53 @@ bool IntersectBounds( vec3 origin, vec3 direction, vec3 boundsMin, vec3 boundsMa
 bool IntersectTriangle( uint index, vec3 origin, vec3 direction, float tMin, float tMax, out float t, out vec2 barycentrics )
 {
 	ReSTIRGpuTriangle triangle = triangles[index];
-	vec3 edge1 = triangle.v1.xyz - triangle.v0.xyz;
-	vec3 edge2 = triangle.v2.xyz - triangle.v0.xyz;
-	vec3 p = cross( direction, edge2 );
-	float determinant = dot( edge1, p );
-	if ( abs( determinant ) < 1.0e-12 )
+	// Ray-space shear makes every shared edge use the same two projected
+	// vertices. Moller-Trumbore's independently rounded dot products can reject
+	// BOTH same-sky triangles at a fan diagonal during sun reservoir reuse.
+	// Keep the edge products noncontracted: reversing an edge must negate the
+	// exact same result, not introduce a different fused multiply-add rounding.
+	vec3 absoluteDirection = abs( direction );
+	int kz = absoluteDirection.x > absoluteDirection.y ? 0 : 1;
+	if ( absoluteDirection.z > absoluteDirection[kz] )
+		kz = 2;
+	if ( direction[kz] == 0.0 )
 		return false;
-	vec3 offset = origin - triangle.v0.xyz;
-	float u = dot( offset, p ) / determinant;
-	vec3 q = cross( offset, edge1 );
-	float v = dot( direction, q ) / determinant;
-	t = dot( edge2, q ) / determinant;
-	barycentrics = vec2( u, v );
-	return u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t >= tMin && t <= tMax;
+	int kx = ( kz + 1 ) % 3;
+	int ky = ( kx + 1 ) % 3;
+	if ( direction[kz] < 0.0 )
+	{
+		int temporary = kx;
+		kx = ky;
+		ky = temporary;
+	}
+	float shearX = direction[kx] / direction[kz];
+	float shearY = direction[ky] / direction[kz];
+	float scaleZ = 1.0 / direction[kz];
+	vec3 a = triangle.v0.xyz - origin;
+	vec3 b = triangle.v1.xyz - origin;
+	vec3 c = triangle.v2.xyz - origin;
+	precise float ax = a[kx] - shearX * a[kz];
+	precise float ay = a[ky] - shearY * a[kz];
+	precise float bx = b[kx] - shearX * b[kz];
+	precise float by = b[ky] - shearY * b[kz];
+	precise float cx = c[kx] - shearX * c[kz];
+	precise float cy = c[ky] - shearY * c[kz];
+	precise float weightA = cx * by - cy * bx;
+	precise float weightB = ax * cy - ay * cx;
+	precise float weightC = bx * ay - by * ax;
+	if ( ( weightA < 0.0 || weightB < 0.0 || weightC < 0.0 ) &&
+		( weightA > 0.0 || weightB > 0.0 || weightC > 0.0 ) )
+		return false;
+	precise float determinant = weightA + weightB + weightC;
+	if ( determinant == 0.0 )
+		return false;
+	precise float az = scaleZ * a[kz];
+	precise float bz = scaleZ * b[kz];
+	precise float cz = scaleZ * c[kz];
+	precise float scaledT = weightA * az + weightB * bz + weightC * cz;
+	t = scaledT / determinant;
+	barycentrics = vec2( weightB, weightC ) / determinant;
+	return t >= tMin && t <= tMax;
 }
 
 bool TraceRayInternal( vec3 origin, vec3 direction, float tMin, float tMax, uint mask, uint skipHitId, bool anyHit, bool frontFaceOnly, out HitInfo hit )

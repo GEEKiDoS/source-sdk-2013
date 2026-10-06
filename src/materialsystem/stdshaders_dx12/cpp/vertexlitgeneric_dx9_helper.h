@@ -11,6 +11,7 @@
 #define VERTEXLITGENERIC_DX9_HELPER_H
 
 #include <string.h>
+#include "lightmappedgeneric_dx9_helper.h"
 
 
 //-----------------------------------------------------------------------------

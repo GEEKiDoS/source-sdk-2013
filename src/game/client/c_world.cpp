@@ -15,6 +15,7 @@
 #include "eventlist.h"
 // NVNT haptic include for notification of world precache
 #include "haptics/haptic_utils.h"
+#include "shadowmaps_dx12.h"
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -59,11 +60,13 @@ BEGIN_RECV_TABLE( C_World, DT_World )
 	RecvPropFloat(RECVINFO(m_flMinPropScreenSpaceWidth)),
 	RecvPropString(RECVINFO(m_iszDetailSpriteMaterial)),
 	RecvPropInt(RECVINFO(m_bColdWorld)),
+	RecvPropBool(RECVINFO(m_bShadowMapTransmitReady)),
 END_RECV_TABLE()
 
 
 C_World::C_World( void )
 {
+	m_bShadowMapTransmitReady = false;
 }
 
 C_World::~C_World( void )
@@ -73,6 +76,8 @@ C_World::~C_World( void )
 bool C_World::Init( int entnum, int iSerialNum )
 {
 	m_flWaveHeight = 0.0f;
+	m_bShadowMapTransmitReady = false;
+	ShadowMapsDX12_SetServerTransmitReady( false );
 	ActivityList_Init();
 	EventList_Init();
 
@@ -81,6 +86,8 @@ bool C_World::Init( int entnum, int iSerialNum )
 
 void C_World::Release()
 {
+	m_bShadowMapTransmitReady = false;
+	ShadowMapsDX12_SetServerTransmitReady( false );
 	ActivityList_Free();
 	Term();
 }
@@ -93,6 +100,7 @@ void C_World::PreDataUpdate( DataUpdateType_t updateType )
 void C_World::OnDataChanged( DataUpdateType_t updateType )
 {
 	BaseClass::OnDataChanged( updateType );
+	ShadowMapsDX12_SetServerTransmitReady( m_bShadowMapTransmitReady );
 
 	// Always force reset to normal mode upon receipt of world in new map
 	if ( updateType == DATA_UPDATE_CREATED )

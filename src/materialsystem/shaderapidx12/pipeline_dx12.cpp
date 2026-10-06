@@ -6,6 +6,7 @@
 
 #include "pipeline_dx12.h"
 #include "shaderapi/ishadershadow.h"
+#include "shaderapi/ishaderapidx12lighting.h"
 #include "tier0/dbg.h"
 #include "tracy_dx12.h"
 #include <utility>
@@ -15,7 +16,7 @@ namespace shaderapidx12
 
 //-----------------------------------------------------------------------------
 // Purpose: Creates descriptor heaps, the null SRV, the linear-clamp sampler, the
-//          zero constant buffer and the shared root signature
+//          zero constant buffer and ordinary/lighting root signatures
 //-----------------------------------------------------------------------------
 bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 {
@@ -81,7 +82,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 		m_nZeroConstantAddress = m_pZeroConstants->GetGPUVirtualAddress();
 	}
 	// Ranges: SRV t0-15, sampler s0-15, native CBV b0-b7 in register space 1.
-	D3D12_DESCRIPTOR_RANGE ranges[3]{};
+	D3D12_DESCRIPTOR_RANGE ranges[6]{};
 	ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	ranges[0].NumDescriptors = 16;
 	ranges[0].BaseShaderRegister = 0;
@@ -93,7 +94,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	ranges[2].BaseShaderRegister = 0;
 	ranges[2].RegisterSpace = 1;
 	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables.
-	D3D12_ROOT_PARAMETER params[kRootParameterCount]{};
+	D3D12_ROOT_PARAMETER params[kHighresRootParameterCount]{};
 	for ( int i = 0; i < 4; ++i )
 	{
 		params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -140,8 +141,88 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	}
 	hr = m_pDevice->CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &m_pRoot ) );
 	if ( FAILED( hr ) )
+	{
 		Warning( "ShaderAPIDX12: root signature creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
-	return SUCCEEDED( hr );
+		return false;
+	}
+
+	D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+	if ( FAILED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) ) || options.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 )
+		return true; // Ordinary rendering does not require the lighting signature.
+	// Lighting ABI 3 adds the space-2 view table/CBV and singleton packed visibility table.
+	ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	ranges[3].NumDescriptors = DX12_LIGHTING_VIEW_TABLE_COUNT;
+	ranges[3].BaseShaderRegister = DX12_LIGHTING_T_LOCAL_ATLAS_FIRST;
+	ranges[3].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	params[kRootLightingView].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[kRootLightingView].DescriptorTable.NumDescriptorRanges = 1;
+	params[kRootLightingView].DescriptorTable.pDescriptorRanges = &ranges[3];
+	params[kRootLightingView].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootLightingViewConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[kRootLightingViewConstants].Descriptor.ShaderRegister = DX12_LIGHTING_B_VIEW;
+	params[kRootLightingViewConstants].Descriptor.RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	params[kRootLightingViewConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	ranges[4].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	ranges[4].NumDescriptors = 1;
+	ranges[4].BaseShaderRegister = DX12_LIGHTING_T_SUN_VISIBILITY;
+	ranges[4].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	params[kRootLightingVisibility].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[kRootLightingVisibility].DescriptorTable = { 1, &ranges[4] };
+	params[kRootLightingVisibility].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	D3D12_STATIC_SAMPLER_DESC lightingSamplers[2]{};
+	lightingSamplers[0].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+	lightingSamplers[0].AddressU = lightingSamplers[0].AddressV = lightingSamplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	lightingSamplers[0].MaxAnisotropy = 1;
+	lightingSamplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+	lightingSamplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+	lightingSamplers[0].ShaderRegister = DX12_LIGHTING_S_COMPARISON;
+	lightingSamplers[0].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	lightingSamplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	desc.NumParameters = kLightingRootParameterCount;
+	desc.NumStaticSamplers = 1;
+	desc.pStaticSamplers = lightingSamplers;
+	blob.Reset();
+	error.Reset();
+	hr = D3D12SerializeRootSignature( &desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error );
+	if ( FAILED( hr ) )
+	{
+		Warning( "ShaderAPIDX12: lighting root signature serialization failed 0x%08x: %s\n", static_cast<unsigned>( hr ), error ? static_cast<const char *>( error->GetBufferPointer() ) : "unknown" );
+		return true; // ValidateMap rejects lighting while the ordinary signature remains usable.
+	}
+	hr = m_pDevice->CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &m_pLightingRoot ) );
+	if ( FAILED( hr ) )
+		Warning( "ShaderAPIDX12: lighting root signature creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
+	if ( !m_pLightingRoot )
+		return true;
+	ranges[5].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	ranges[5].NumDescriptors = 8;
+	ranges[5].RegisterSpace = 3;
+	params[kRootHighresTable].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[kRootHighresTable].DescriptorTable = { 1, &ranges[5] };
+	params[kRootHighresTable].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootHighresConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[kRootHighresConstants].Descriptor.RegisterSpace = 3;
+	params[kRootHighresConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootHighresFailure].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+	params[kRootHighresFailure].Descriptor.RegisterSpace = 3;
+	params[kRootHighresFailure].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	lightingSamplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	lightingSamplers[1].AddressU = lightingSamplers[1].AddressV = lightingSamplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	lightingSamplers[1].MaxAnisotropy = 1;
+	lightingSamplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+	lightingSamplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+	lightingSamplers[1].RegisterSpace = 3;
+	lightingSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	desc.NumParameters = kHighresRootParameterCount;
+	desc.NumStaticSamplers = 2;
+	blob.Reset();
+	error.Reset();
+	hr = D3D12SerializeRootSignature( &desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error );
+	if ( SUCCEEDED( hr ) )
+		hr = m_pDevice->CreateRootSignature( 0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS( &m_pHighresRoot ) );
+	if ( FAILED( hr ) )
+		Warning( "ShaderAPIDX12: highres root signature creation failed 0x%08x: %s\n", static_cast<unsigned>( hr ), error ? static_cast<const char *>( error->GetBufferPointer() ) : "unknown" );
+	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -164,6 +245,9 @@ void CPipelineCacheDX12::Shutdown()
 	m_nZeroConstantAddress = 0;
 	m_Bindings.Shutdown();
 	m_pRoot.Reset();
+	m_pLightingRoot.Reset();
+	m_pHighresRoot.Reset();
+	m_pBoundRoot = nullptr;
 	m_pDevice = nullptr;
 	m_NullSrv = {};
 	m_LinearClampSampler = {};
@@ -203,7 +287,7 @@ void CPipelineCacheDX12::ReleaseResourceDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE 
 //-----------------------------------------------------------------------------
 bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride )
 {
-	if ( !pData || !nBytes || nAllocationBytes < nBytes || !nAlignment || ( nAlignment & ( nAlignment - 1 ) ) )
+	if ( !pData || !nBytes || nAllocationBytes < nBytes || !nAlignment )
 		return false;
 	if ( nSwapCount && ( !pSwapOffsets || !nVertexStride || nBytes % nVertexStride ) )
 		return false;
@@ -217,9 +301,18 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 	// Try the page that served the previous allocation before scanning; pages fill front to back.
 	const auto fits = [&]( UploadPage &page )
 	{
-		const size_t start = ( page.used + nAlignment - 1 ) & ~( nAlignment - 1 );
-		if ( start <= page.capacity && page.capacity - start >= nAllocationBytes )
+		// Structured records may have a non-power-of-two stride; ordinary uploads keep bitmask alignment.
+		size_t padding;
+		if ( nAlignment & ( nAlignment - 1 ) )
 		{
+			const size_t remainder = page.used % nAlignment;
+			padding = remainder ? nAlignment - remainder : 0;
+		}
+		else
+			padding = -page.used & ( nAlignment - 1 );
+		if ( page.used <= page.capacity && padding <= page.capacity - page.used && page.capacity - page.used - padding >= nAllocationBytes )
+		{
+			const size_t start = page.used + padding;
 			chosen = &page;
 			offset = start;
 			return true;
@@ -297,7 +390,41 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 //-----------------------------------------------------------------------------
 bool CPipelineCacheDX12::UploadTransient( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride )
 {
+	if ( nAlignment & ( nAlignment - 1 ) )
+		return false;
 	return AllocateUploadLocked( pData, nBytes, nAllocationBytes, nAlignment, nRetireFence, nGpuAddress, nullptr, nullptr, pSwapOffsets, nSwapCount, nVertexStride );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Uploads structured data with an element-aligned resource offset
+//-----------------------------------------------------------------------------
+bool CPipelineCacheDX12::UploadStructured( const void *pData, size_t nBytes, uint32_t nStride, uint64_t nRetireFence, ID3D12Resource **ppResource, uint64_t *pOffset )
+{
+	if ( !ppResource || !pOffset )
+		return false;
+	*ppResource = nullptr;
+	*pOffset = 0;
+	if ( !nStride || nBytes % nStride )
+		return false;
+	D3D12_GPU_VIRTUAL_ADDRESS gpu = 0;
+	size_t offset = 0;
+	if ( !AllocateUploadLocked( pData, nBytes, nBytes, nStride, nRetireFence, gpu, ppResource, &offset, nullptr, 0, 0 ) )
+		return false;
+	*pOffset = static_cast<uint64_t>( offset );
+	m_bReclaimDirty = true;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Keeps an external draw resource alive until its recording completes
+//-----------------------------------------------------------------------------
+void CPipelineCacheDX12::RetainExternalResource( ID3D12Resource *pResource, uint64_t nRetireFence )
+{
+	if ( pResource )
+	{
+		RetainGeometryLocked( pResource, nRetireFence );
+		m_bReclaimDirty = true;
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -443,13 +570,11 @@ DescriptorRangeDX12 CPipelineCacheDX12::PrepareSamplerTable( const D3D12_SAMPLER
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Root signature, viewport and scissor, filtered per recording fence
+// Purpose: Viewport and scissor, filtered per recording fence
 //-----------------------------------------------------------------------------
 void CPipelineCacheDX12::BindDrawState( CCommandRecorderDX12 *pList, const D3D12_VIEWPORT &viewport, const D3D12_RECT &scissor, uint64_t nRetireFence )
 {
 	const bool reset = !m_bDrawStateValid || m_nDrawStateFence != nRetireFence;
-	if ( reset )
-		pList->SetGraphicsRootSignature( m_pRoot.Get() );
 	if ( reset || memcmp( &m_BoundViewport, &viewport, sizeof( viewport ) ) )
 	{
 		pList->RSSetViewports( 1, &viewport );
@@ -474,6 +599,22 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		return false;
 	const DescriptorRangeDX12 &samplerTable = input.samplerTable;
 	if ( samplerTable.count != 32 || !m_nZeroConstantAddress )
+		return false;
+	// Reserve every ordinary draw table before consulting generation-keyed caches. A later SRV
+	// allocation must not roll the heap after either stage has captured its native CBV table.
+	const uint32_t descriptorCount = 32u + ( input.nativeStage[0] ? 8u : 0u ) + ( input.nativeStage[1] ? 8u : 0u );
+	if ( !ReserveResourceDescriptors( descriptorCount, input.retireFence ) )
+		return false;
+	if ( input.lightingAbi && ( !m_pLightingRoot || input.lightingViewTable.count != DX12_LIGHTING_VIEW_TABLE_COUNT ||
+	     !input.lightingViewTable.gpu.ptr || !input.lightingViewConstants ||
+	     input.lightingViewTable.generation != ResourceHeapGeneration() ||
+	     ( ( input.lightingVisibilityRequired || input.lightingVisibilityTable.count ) &&
+	       ( input.lightingVisibilityTable.count != 1 || !input.lightingVisibilityTable.gpu.ptr ||
+	         input.lightingVisibilityTable.generation != ResourceHeapGeneration() ) ) ) )
+		return false;
+	if ( input.highresAbi && ( !m_pHighresRoot || input.highresTable.count != 8 ||
+	     !input.highresTable.gpu.ptr || input.highresTable.generation != ResourceHeapGeneration() ||
+	     !input.highresConstants || !input.highresFailure ) )
 		return false;
 	const SIZE_T resourceStride = m_nResourceStride;
 	const SIZE_T samplerStride = m_nSamplerStride;
@@ -715,8 +856,22 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			}
 		}
 	}
+	// The lighting view table precedes ordinary draw tables; a missing reservation must not bind a stale handle.
+	if ( input.lightingAbi && ( input.lightingViewTable.generation != ResourceHeapGeneration() ||
+	     ( input.lightingVisibilityTable.count && input.lightingVisibilityTable.generation != ResourceHeapGeneration() ) ) )
+		return false;
+	if ( input.highresAbi && input.highresTable.generation != ResourceHeapGeneration() )
+		return false;
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 RootTables", DX12_DRAW_ZONES_ACTIVE );
+		ID3D12RootSignature *root = input.highresAbi ? m_pHighresRoot.Get() : input.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
+		if ( !m_bGraphicsBindingsValid || m_nGraphicsBindingsFence != input.retireFence || m_pBoundRoot != root )
+		{
+			pList->SetGraphicsRootSignature( root );
+			m_pBoundRoot = root;
+			// SetGraphicsRootSignature invalidates every root argument, including ordinary ones.
+			m_bGraphicsBindingsValid = false;
+		}
 		ID3D12DescriptorHeap *resourceHeap = m_Bindings.ResourceHeap().Heap(), *samplerHeap = m_Bindings.SamplerHeap().Heap();
 		if ( !m_bGraphicsBindingsValid || m_nGraphicsBindingsFence != input.retireFence || m_pBoundResourceHeap != resourceHeap || m_pBoundSamplerHeap != samplerHeap )
 		{
@@ -788,6 +943,48 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			for ( UINT slot = 0; slot < 4; ++slot )
 				if ( m_BoundRootConstants[kRootGeometryConstants + slot - kRootVertexConstants] != constantAddresses[slot] )
 					m_bGeometryConstantsCurrent = false;
+		if ( input.lightingAbi )
+		{
+			if ( !m_bGraphicsBindingsValid || m_BoundLightingViewTable.ptr != input.lightingViewTable.gpu.ptr )
+			{
+				++m_Stats.rootTableSets;
+				pList->SetGraphicsRootDescriptorTable( kRootLightingView, input.lightingViewTable.gpu );
+				m_BoundLightingViewTable = input.lightingViewTable.gpu;
+			}
+			if ( input.lightingVisibilityTable.count &&
+			     ( !m_bGraphicsBindingsValid || m_BoundLightingVisibilityTable.ptr != input.lightingVisibilityTable.gpu.ptr ) )
+			{
+				++m_Stats.rootTableSets;
+				pList->SetGraphicsRootDescriptorTable( kRootLightingVisibility, input.lightingVisibilityTable.gpu );
+				m_BoundLightingVisibilityTable = input.lightingVisibilityTable.gpu;
+			}
+			if ( !m_bGraphicsBindingsValid || m_nBoundLightingViewConstants != input.lightingViewConstants )
+			{
+				++m_Stats.rootCbvSets;
+				pList->SetGraphicsRootConstantBufferView( kRootLightingViewConstants, input.lightingViewConstants );
+				m_nBoundLightingViewConstants = input.lightingViewConstants;
+			}
+		}
+		if ( input.highresAbi )
+		{
+			if ( !m_bGraphicsBindingsValid || m_BoundHighresTable.ptr != input.highresTable.gpu.ptr )
+			{
+				++m_Stats.rootTableSets;
+				pList->SetGraphicsRootDescriptorTable( kRootHighresTable, input.highresTable.gpu );
+				m_BoundHighresTable = input.highresTable.gpu;
+			}
+			if ( !m_bGraphicsBindingsValid || m_nBoundHighresConstants != input.highresConstants )
+			{
+				++m_Stats.rootCbvSets;
+				pList->SetGraphicsRootConstantBufferView( kRootHighresConstants, input.highresConstants );
+				m_nBoundHighresConstants = input.highresConstants;
+			}
+			if ( !m_bGraphicsBindingsValid || m_nBoundHighresFailure != input.highresFailure )
+			{
+				pList->SetGraphicsRootUnorderedAccessView( kRootHighresFailure, input.highresFailure );
+				m_nBoundHighresFailure = input.highresFailure;
+			}
+		}
 		m_bGraphicsBindingsValid = true;
 		m_nGraphicsBindingsFence = input.retireFence;
 		return true;
@@ -945,7 +1142,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 			return entry.pso.Get();
 		}
 	}
-	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster;
+	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull );
 	const unsigned hint = Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & static_cast<unsigned>( ARRAYSIZE( m_PipelineHints ) - 1 );
 	if ( m_PipelineHints[hint] )
 	{
@@ -974,7 +1171,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	}
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 PSOCreateMiss", DX12_ZONES_ACTIVE );
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
-	desc.pRootSignature = m_pRoot.Get();
+	desc.pRootSignature = key.highresAbi ? m_pHighresRoot.Get() : key.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
 	desc.VS = vs;
 	desc.PS = ps;
 	desc.GS = gs;

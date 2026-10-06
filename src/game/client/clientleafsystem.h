@@ -127,6 +127,27 @@ public:
 #define CLSUBSYSTEM_DETAILOBJECTS 0
 #define N_CLSUBSYSTEMS 1
 
+//-----------------------------------------------------------------------------
+// Shadow caster enumeration (runtime shadow maps). Independent of camera PVS,
+// areaportals, occlusion, fades, the stale translucent m_RenderLeaf and the
+// 4096-entry render groups: every registered renderable whose current world
+// AABB intersects the volume (and passes its planes) is reported exactly once,
+// including still-dirty and unlinked (outside-BSP) registrations.
+//-----------------------------------------------------------------------------
+struct ShadowCasterVolume_t
+{
+	Vector	m_vecMins, m_vecMaxs;	// world AABB of the (guard-expanded) caster frustum / cube
+	VPlane	m_Planes[6];			// inward-facing; a box fully outside any plane is rejected
+	int		m_nPlaneCount;			// 0..6 (0 = AABB only)
+};
+
+abstract_class IShadowCasterSink
+{
+public:
+	// isStaticProp: a CStaticProp registered by the engine (draw through the 512-entry static-prop depth batches)
+	virtual void Add( IClientRenderable *pRenderable, bool isStaticProp ) = 0;
+};
+
 
 
 //-----------------------------------------------------------------------------
@@ -199,6 +220,16 @@ public:
 
 	// Use alternate translucent sorting algorithm (draw translucent objects in the furthest leaf they lie in)
 	virtual void EnableAlternateSorting( ClientRenderHandle_t handle, bool bEnable ) = 0;
+
+	// Runtime shadow maps: enumerate every eligible caster intersecting the volume (see ShadowCasterVolume_t).
+	// Call after the ordinary registration flush of the frame; dirty/unlinked registrations are merged in.
+	// Eligibility: opaque or two-pass/alpha-tested geometry that supports depth drawing (ShadowCastType()
+	// alone is not the criterion), honoring authored nodraw/no-shadow; fully alpha-blended-only renderables
+	// are not reported. Detail props and view models are never reported here.
+	virtual void EnumerateShadowCasters( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink ) = 0;
+	// Debug reference (r_shadowmap_report / acceptance only): brute-force test of EVERY registration's current world
+	// AABB against the volume with the same eligibility rules, bypassing the leaf walk. Not for per-frame use.
+	virtual void EnumerateShadowCastersExhaustive( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink ) = 0;
 };
 
 

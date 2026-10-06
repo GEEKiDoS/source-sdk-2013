@@ -1,0 +1,182 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Runtime-uniform material combinations; flashlight remains structural.
+// FOLD: "CUBEMAP" "0..1" STATIC
+// FOLD: "DIFFUSELIGHTING" "0..1" STATIC
+// FOLD: "LIGHTWARPTEXTURE" "0..1" STATIC
+// FOLD: "SELFILLUM" "0..1" STATIC
+// FOLD: "SELFILLUMFRESNEL" "0..1" STATIC
+// FOLD: "NORMALMAPALPHAENVMAPMASK" "0..1" STATIC
+// FOLD: "HALFLAMBERT" "0..1" STATIC
+// STATIC: "FLASHLIGHT" "0..1"
+// FOLD: "DETAILTEXTURE" "0..1" STATIC
+// FOLD: "DETAIL_BLEND_MODE" "0..6" STATIC
+// FOLD: "FLASHLIGHTDEPTHFILTERMODE" "0..2" STATIC
+// FOLD: "BLENDTINTBYBASEALPHA" "0..1" STATIC
+// FOLD: "PIXELFOGTYPE" "0..2" DYNAMIC
+// FOLD: "NUM_LIGHTS" "0..4" DYNAMIC
+// FOLD: "AMBIENT_LIGHT" "0..1" DYNAMIC
+// FOLD: "FLASHLIGHTSHADOWS" "0..1" DYNAMIC
+
+#include "common_flashlight_fxc.h"
+#include "common_vertexlitgeneric_dx9.h"
+
+const float4 g_EnvmapTint_TintReplaceFactor		: register( c0 );
+const float4 g_DiffuseModulation				: register( c1 );
+const float4 g_EnvmapContrast_ShadowTweaks		: register( c2 );
+const float3 g_EnvmapSaturation					: register( c3 );
+const float4 g_SelfIllumTint_and_BlendFactor	: register( c4 );
+#define g_SelfIllumTint (g_SelfIllumTint_and_BlendFactor.rgb)
+#define g_DetailBlendFactor (g_SelfIllumTint_and_BlendFactor.w)
+const float3 cAmbientCube[6]				: register( c5 );
+const float4 g_SelfIllumScaleBiasExpBrightness	: register( c11 );
+const float4 g_ShaderControls				: register( c12 );
+#define g_fPixelFogType					g_ShaderControls.x
+#define g_fWriteDepthToAlpha			g_ShaderControls.y
+#define g_fWriteWaterFogToDestAlpha		g_ShaderControls.z
+PixelShaderLightInfo cLightInfo[3]			: register( c13 );
+const float3 g_EyePos						: register( c20 );
+const float4 g_FogParams					: register( c21 );
+const float4 g_FlashlightAttenuationFactors	: register( c22 );
+const float3 g_FlashlightPos				: register( c23 );
+const float4x4 g_FlashlightWorldToTexture	: register( c24 );
+
+sampler BaseTextureSampler					: register( s0 );
+sampler EnvmapSampler						: register( s1 );
+sampler DetailSampler						: register( s2 );
+sampler BumpmapSampler						: register( s3 );
+sampler EnvmapMaskSampler					: register( s4 );
+sampler NormalizeSampler					: register( s5 );
+sampler RandRotSampler						: register( s6 );
+sampler FlashlightSampler					: register( s7 );
+sampler ShadowDepthSampler					: register( s8 );
+sampler DiffuseWarpSampler					: register( s9 );
+
+struct PS_INPUT
+{
+	float4 baseTexCoord2_tangentSpaceVertToEyeVectorXY			: TEXCOORD0;
+	float3 lightAtten											: TEXCOORD1;
+	float4 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ	: TEXCOORD2;
+	float3 vWorldNormal											: TEXCOORD3;
+	float4 vWorldTangent										: TEXCOORD4;
+	float4 vProjPos												: TEXCOORD5;
+	float4 worldPos_projPosZ									: TEXCOORD6;
+	float3 detailTexCoord_atten3								: TEXCOORD7;
+	float4 fogFactorW											: COLOR1;
+};
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	bool bCubemap = CUBEMAP != 0;
+	bool bDiffuseLighting = DIFFUSELIGHTING != 0;
+	bool bDoDiffuseWarp = LIGHTWARPTEXTURE != 0;
+	bool bSelfIllum = SELFILLUM != 0;
+	bool bSelfIllumFresnel = SELFILLUMFRESNEL != 0;
+	bool bNormalMapAlphaEnvmapMask = NORMALMAPALPHAENVMAPMASK != 0;
+	bool bHalfLambert = HALFLAMBERT != 0;
+	bool bFlashlight = FLASHLIGHT != 0;
+	bool bAmbientLight = AMBIENT_LIGHT != 0;
+	bool bDetailTexture = DETAILTEXTURE != 0;
+	bool bBlendTintByBaseAlpha = BLENDTINTBYBASEALPHA != 0;
+	int nNumLights = NUM_LIGHTS;
+
+	float3 vWorldBinormal = cross( i.vWorldNormal.xyz, i.vWorldTangent.xyz ) * i.vWorldTangent.w;
+	float4 vLightAtten = float4( i.lightAtten, i.detailTexCoord_atten3.z );
+	float4 baseColor = tex2D( BaseTextureSampler, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
+	if ( bDetailTexture )
+	{
+		float4 detailColor = tex2D( DetailSampler, i.detailTexCoord_atten3.xy );
+		baseColor = TextureCombine( baseColor, detailColor, DETAIL_BLEND_MODE, g_DetailBlendFactor );
+	}
+
+	float specularFactor = 1.0f;
+	float4 normalTexel = tex2D( BumpmapSampler, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
+	float3 tangentSpaceNormal = normalTexel * 2.0f - 1.0f;
+	if ( bNormalMapAlphaEnvmapMask )
+		specularFactor = normalTexel.a;
+
+	float3 diffuseLighting = float3( 1.0f, 1.0f, 1.0f );
+	float3 worldSpaceNormal = float3( 0.0f, 0.0f, 1.0f );
+	if ( bDiffuseLighting || bFlashlight || bCubemap || bSelfIllumFresnel )
+	{
+		worldSpaceNormal = Vec3TangentToWorld( tangentSpaceNormal, i.vWorldNormal, i.vWorldTangent, vWorldBinormal );
+		worldSpaceNormal = normalize( worldSpaceNormal );
+	}
+	if ( bDiffuseLighting )
+	{
+		diffuseLighting = PixelShaderDoLighting( i.worldPos_projPosZ.xyz, worldSpaceNormal,
+				float3( 0.0f, 0.0f, 0.0f ), false, bAmbientLight, vLightAtten,
+				cAmbientCube, NormalizeSampler, nNumLights, cLightInfo, bHalfLambert,
+				false, 1.0f, bDoDiffuseWarp, DiffuseWarpSampler );
+	}
+
+	float3 albedo = baseColor;
+	if ( bBlendTintByBaseAlpha )
+	{
+		float3 tintedColor = albedo * g_DiffuseModulation.rgb;
+		tintedColor = lerp( tintedColor, g_DiffuseModulation.rgb, g_EnvmapTint_TintReplaceFactor.w );
+		albedo = lerp( albedo, tintedColor, baseColor.a );
+	}
+	else
+		albedo = albedo * g_DiffuseModulation.rgb;
+
+	float alpha = g_DiffuseModulation.a;
+	if ( !bSelfIllum && !bBlendTintByBaseAlpha )
+		alpha *= baseColor.a;
+
+#if FLASHLIGHT
+	if( bFlashlight )
+	{
+		int nShadowSampleLevel = FLASHLIGHTDEPTHFILTERMODE;
+		bool bDoShadows = FLASHLIGHTSHADOWS != 0;
+		float2 vProjPos = float2( 0, 0 );
+		if ( bDoShadows )
+			vProjPos = i.vProjPos.xy / i.vProjPos.w;
+		float4 flashlightSpacePosition = mul( float4( i.worldPos_projPosZ.xyz, 1.0f ), g_FlashlightWorldToTexture );
+		float3 flashlightColor = DoFlashlight( g_FlashlightPos, i.worldPos_projPosZ.xyz, flashlightSpacePosition,
+			worldSpaceNormal, g_FlashlightAttenuationFactors.xyz,
+			g_FlashlightAttenuationFactors.w, FlashlightSampler, ShadowDepthSampler,
+			RandRotSampler, nShadowSampleLevel, bDoShadows, false, vProjPos, false, g_EnvmapContrast_ShadowTweaks );
+		diffuseLighting = flashlightColor;
+	}
+#endif
+
+	float3 diffuseComponent = albedo * diffuseLighting;
+#if !FLASHLIGHT
+	if ( bSelfIllum )
+	{
+		if ( bSelfIllumFresnel )
+		{
+			float3 vVertexNormal = normalize( i.vWorldNormal.xyz );
+			float flSelfIllumFresnel = ( pow( saturate( dot( vVertexNormal.xyz, normalize( i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz ) ) ), g_SelfIllumScaleBiasExpBrightness.z ) * g_SelfIllumScaleBiasExpBrightness.x ) + g_SelfIllumScaleBiasExpBrightness.y;
+			float3 selfIllumComponent = g_SelfIllumTint * albedo * g_SelfIllumScaleBiasExpBrightness.w;
+			diffuseComponent = lerp( diffuseComponent, selfIllumComponent, baseColor.a * saturate( flSelfIllumFresnel ) );
+		}
+		else
+		{
+			float3 selfIllumComponent = g_SelfIllumTint * albedo;
+			diffuseComponent = lerp( diffuseComponent, selfIllumComponent, baseColor.a );
+		}
+	}
+#endif
+
+	float3 specularLighting = float3( 0.0f, 0.0f, 0.0f );
+#if !FLASHLIGHT
+	if( bCubemap )
+	{
+		float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz );
+		specularLighting = ENV_MAP_SCALE * texCUBE( EnvmapSampler, reflectVect );
+		specularLighting *= specularFactor;
+		specularLighting *= g_EnvmapTint_TintReplaceFactor.rgb;
+		float3 specularLightingSquared = specularLighting * specularLighting;
+		specularLighting = lerp( specularLighting, specularLightingSquared, g_EnvmapContrast_ShadowTweaks );
+		float3 greyScale = dot( specularLighting, float3( 0.299f, 0.587f, 0.114f ) );
+		specularLighting = lerp( greyScale, specularLighting, g_EnvmapSaturation );
+	}
+#endif
+
+	float3 result = diffuseComponent + specularLighting;
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
+	if ( PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT )
+		alpha = lerp( alpha, fogFactor, g_fWriteWaterFogToDestAlpha );
+	return FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.worldPos_projPosZ.w );
+}

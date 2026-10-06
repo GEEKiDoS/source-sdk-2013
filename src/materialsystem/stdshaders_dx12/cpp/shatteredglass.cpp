@@ -153,7 +153,7 @@ BEGIN_VS_SHADER( ShatteredGlass,
 			pShaderShadow->EnableSRGBWrite( true );
 
 			// Base texture
-			unsigned int flags = VERTEX_POSITION;
+			unsigned int flags = VERTEX_POSITION | VERTEX_NORMAL;
 			pShaderShadow->EnableTexture( SHADER_SAMPLER0, true );
 			pShaderShadow->EnableSRGBRead( SHADER_SAMPLER0, true );
 
@@ -175,7 +175,6 @@ BEGIN_VS_SHADER( ShatteredGlass,
 			// Envmap
 			if ( bHasEnvmap )
 			{
-				flags |= VERTEX_NORMAL;
 				pShaderShadow->EnableTexture( SHADER_SAMPLER2, true );
 				if( g_pHardwareConfig->GetHDRType() == HDR_TYPE_NONE )
 				{

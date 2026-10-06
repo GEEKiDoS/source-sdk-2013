@@ -23,6 +23,37 @@ enum class VcsStage
 	Compute
 };
 
+struct ComboFoldDimensionDX12
+{
+	CUtlString name;
+	int32_t minimum = 0, maximum = 0;
+	int slot = -1; // -1: retained native radix; otherwise runtime uint slot.
+};
+
+struct ComboFoldTableDX12
+{
+	CUtlString name;
+	VcsStage stage = VcsStage::Pixel;
+	uint32_t originalStaticCount = 1, originalDynamicCount = 1;
+	uint32_t nativeStaticCount = 1, nativeDynamicCount = 1;
+	CUtlVector<ComboFoldDimensionDX12> statics, dynamics;
+};
+
+struct ComboFoldProjectionDX12
+{
+	uint32_t staticIndex = 0, dynamicIndex = 0;
+	uint32_t payload[64]{};
+};
+
+// Pure mixed-radix projection. Input static index is already multiplied by originalDynamicCount.
+bool ProjectComboFoldDX12( const ComboFoldTableDX12 &table, int64_t staticIndex,
+	int64_t dynamicIndex, ComboFoldProjectionDX12 &projection );
+
+// Parser shared by the process-lifetime GAME loader and CPU-only smoke fixtures.
+// Tables are heap-owned to keep returned pointers stable; caller owns the vector's contents.
+bool ParseComboFoldTextDX12( const char *text, CUtlVector<ComboFoldTableDX12 *> &tables, CUtlString &error );
+const ComboFoldTableDX12 *FindComboFoldTableDX12( IFileSystem &filesystem, const char *name, VcsStage stage );
+
 // LegacyShaderName() result for a native-only logical: it has no shaders/fxc record to fall back to.
 inline constexpr const char *kNativeOnlyMarker = "-";
 
@@ -62,12 +93,17 @@ public:
 	uint32_t Version() const { return m_nVersion; }
 
 	uint32_t DynamicComboCount() const { return m_nDynamicCount; }
+	uint32_t TotalComboCount() const { return m_nTotalCount; }
 
 	uint32_t Flags() const { return m_nFlags; }
 
 	uint32_t CentroidMask() const { return m_nCentroidMask; }
 
 	uint32_t SourceCRC() const { return m_nSourceCRC; }
+	uint32_t LightmapSamplerMask() const { return m_nLightmapSamplerMask; }
+	bool HighresAbi() const { return m_bHighresAbi; }
+	bool SamplerRolesReady() const { return m_bSamplerRolesReady; }
+	bool NativeCasterTwin() const { return m_bNativeCasterTwin; }
 
 	const char *Path() const { return m_Path.Get(); }
 
@@ -122,6 +158,9 @@ private:
 	uint32_t m_nFlags = 0;
 	uint32_t m_nCentroidMask = 0;
 	uint32_t m_nSourceCRC = 0;
+	uint32_t m_nLightmapSamplerMask = 0;
+	bool m_bHighresAbi = false, m_bSamplerRolesReady = false;
+	bool m_bNativeCasterTwin = false;
 	size_t m_nPayloadStart = 0;
 	size_t m_nHeaderBytes = 28;
 };

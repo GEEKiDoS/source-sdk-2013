@@ -1,43 +1,43 @@
+// HIGHLIGHT_SAMPLERS: 2
 // Native SM5.1 rewrite of materialsystem/stdshaders/worldtwotextureblend_ps2x.fxc for logical worldtwotextureblend_ps20b (legacy profile ps20b);
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
 #define DX12_LEGACY_PS20B 1
+#define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
-//====== Copyright � 1996-2007, Valve Corporation, All rights reserved. =======//
+//====== Copyright © 1996-2007, Valve Corporation, All rights reserved. =======//
 //
-// Purpose: 
+// Purpose:
 //
 // $NoKeywords: $
 //
 //=============================================================================//
-// STATIC: "CONVERT_TO_SRGB"				"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
-// STATIC: "DETAILTEXTURE"					"0..1"
-// STATIC: "BUMPMAP"						"0..1"
-// STATIC: "VERTEXCOLOR"					"0..1"
-// STATIC: "SELFILLUM"						"0..1"
-// STATIC: "DIFFUSEBUMPMAP"					"0..1"
-// STATIC: "DETAIL_ALPHA_MASK_BASE_TEXTURE"	"0..1"
-// STATIC: "FLASHLIGHT"						"0..1"
-// STATIC: "SEAMLESS"						"0..1"
-// STATIC: "FLASHLIGHTDEPTHFILTERMODE"		"0..2"
+// STATIC: "CONVERT_TO_SRGB" "0..1"
+// FOLD: "DETAILTEXTURE" "0..1" STATIC slot=0
+// FOLD: "BUMPMAP" "0..1" STATIC slot=1
+// FOLD: "VERTEXCOLOR" "0..1" STATIC slot=2
+// FOLD: "SELFILLUM" "0..1" STATIC slot=3
+// FOLD: "DIFFUSEBUMPMAP" "0..1" STATIC slot=4
+// FOLD: "DETAIL_ALPHA_MASK_BASE_TEXTURE" "0..1" STATIC slot=5
+// FOLD: "FLASHLIGHT" "0..1" STATIC slot=6
+// STATIC: "SEAMLESS" "0..1"
+// FOLD: "FLASHLIGHTDEPTHFILTERMODE" "0..2" STATIC slot=7
+// FOLD: "WRITEWATERFOGTODESTALPHA" "0..1" DYNAMIC slot=8
+// FOLD: "PIXELFOGTYPE" "0..1" DYNAMIC slot=9
+// FOLD: "WRITE_DEPTH_TO_DESTALPHA" "0..1" DYNAMIC slot=10
+// FOLD: "FLASHLIGHTSHADOWS" "0..1" DYNAMIC slot=11
 
-// DYNAMIC: "WRITEWATERFOGTODESTALPHA"		"0..1"
-// DYNAMIC: "PIXELFOGTYPE"					"0..1"
-// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"		"0..1"
-// DYNAMIC: "FLASHLIGHTSHADOWS"				"0..1"
-
-//	SKIP: $DETAILTEXTURE && ( $BUMPMAP && !$DETAIL_ALPHA_MASK_BASE_TEXTURE )
-//  SKIP: !$BUMPMAP && $DIFFUSEBUMPMAP
-//	SKIP: $VERTEXCOLOR && $BUMPMAP
-//  SKIP: FLASHLIGHT && $SELFILLUM
-//  SKIP: FLASHLIGHT && $DETAIL_ALPHA_MASK_BASE_TEXTURE
-//  SKIP: FLASHLIGHT && ($BUMPMAP || $DIFFUSEBUMPMAP)
-
-// We don't care about flashlight depth unless the flashlight is on
-// SKIP: ( $FLASHLIGHT == 0 ) && ( $FLASHLIGHTSHADOWS == 1 )
-
-#if defined( DX12_LEGACY_PS20 )
-#	define WRITE_DEPTH_TO_DESTALPHA 0
-#endif
+#define DETAILTEXTURE ( cComboFold[0].x )
+#define BUMPMAP ( cComboFold[0].y )
+#define VERTEXCOLOR ( cComboFold[0].z )
+#define SELFILLUM ( cComboFold[0].w )
+#define DIFFUSEBUMPMAP ( cComboFold[1].x )
+#define DETAIL_ALPHA_MASK_BASE_TEXTURE ( cComboFold[1].y )
+#define FLASHLIGHT ( cComboFold[1].z )
+#define FLASHLIGHTDEPTHFILTERMODE ( cComboFold[1].w )
+#define WRITEWATERFOGTODESTALPHA ( cComboFold[2].x )
+#define PIXELFOGTYPE ( cComboFold[2].y )
+#define WRITE_DEPTH_TO_DESTALPHA ( cComboFold[2].z )
+#define FLASHLIGHTSHADOWS ( cComboFold[2].w )
 
 
 #define HDRTYPE HDR_TYPE_NONE
@@ -85,8 +85,8 @@ static const DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, Normal
 struct PS_INPUT
 {
 	HALF2 baseTexCoord;
-	HALF4 detailOrBumpTexCoord;	
-	HALF4 lightmapTexCoord1And2;	// CENTROID: TEXCOORD2	
+	HALF4 detailOrBumpTexCoord;
+	HALF4 lightmapTexCoord1And2;	// CENTROID: TEXCOORD2
 	HALF2 lightmapTexCoord3;	// CENTROID: TEXCOORD3
 	HALF4 worldPos_projPosZ;
 	HALF3x3 tangentSpaceTranspose;
@@ -168,7 +168,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 		HALF2 bumpCoord3;
 		ComputeBumpedLightmapCoordinates( i.lightmapTexCoord1And2, i.lightmapTexCoord3.xy,
 			bumpCoord1, bumpCoord2, bumpCoord3 );
-		
+
 		HALF4 lightmapSample1 = LightmapSampler.tex.Sample( LightmapSampler.smp, bumpCoord1 );
 		lightmapColor1 = lightmapSample1.rgb;
 		lightmapColor2 = LightmapSampler.tex.Sample( LightmapSampler.smp, bumpCoord2 );
@@ -202,7 +202,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	{
 		baseColor.rgb = lerp( baseColor, detailColor, detailColor.a );
 	}
-	
+
 	HALF3 normal = HALF3( 0.0f, 0.0f, 1.0f );
 	if( bBumpmap )
 	{
@@ -233,9 +233,12 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 		int nShadowSampleLevel = 0;
 		bool bDoShadows = false;
 // On ps_2_b, we can do shadow mapping
-#if ( FLASHLIGHTSHADOWS && (defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30) ) )
-		nShadowSampleLevel = FLASHLIGHTDEPTHFILTERMODE;
-		bDoShadows = true;
+#if defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+		if( FLASHLIGHTSHADOWS )
+		{
+			nShadowSampleLevel = FLASHLIGHTDEPTHFILTERMODE;
+			bDoShadows = true;
+		}
 #endif
 		float4 flashlightSpacePosition = mul( float4( i.worldPos_projPosZ.xyz, 1.0f ), g_FlashlightWorldToTexture );
 
@@ -277,10 +280,10 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
 
-#if WRITEWATERFOGTODESTALPHA && (PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT)
-	alpha = fogFactor;
-#endif
+	if( WRITEWATERFOGTODESTALPHA && (PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT) )
+	{
+		alpha = fogFactor;
+	}
 
 	return DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, (WRITE_DEPTH_TO_DESTALPHA != 0), i.worldPos_projPosZ.w ), dx12In.fog );
 }
-

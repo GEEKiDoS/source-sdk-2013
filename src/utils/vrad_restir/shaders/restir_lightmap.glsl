@@ -51,24 +51,11 @@ vec3 HitAlbedo( ReSTIRGpuFace face, HitInfo hit, vec3 position )
 	return min( pow( gamma, vec3( 2.2 ) ) * material.albedoScale.rgb, vec3( 0.99 ) );
 }
 
-// utils/vrad/vraddetailprops.cpp:266-295. Approved deviation: compute the
-// arithmetic mean of valid finalLightmap luxels rather than the encoded median
-// prefix; this reads the FINAL denoised floats, never pre-bake accumulation.
-vec3 FaceAverage( ReSTIRGpuFace face, uint slot )
+// Same arithmetic mean of valid final base-plane luxels, cached once per face/style
+// by UploadFinalLightmap. In particular, use full transport, not receiver-only RGB.
+vec3 FaceAverage( int faceIndex, uint slot )
 {
-	int count = face.luxelW * face.luxelH;
-	int first = face.firstOutput + int( slot ) * face.numChannels * count;
-	vec3 sum = vec3( 0.0 );
-	uint validCount = 0u;
-	for ( int luxel = 0; luxel < count; ++luxel )
-	{
-		if ( luxelValid[face.firstLuxel + luxel] != 0u )
-		{
-			sum += finalLightmap[first + luxel].rgb;
-			++validCount;
-		}
-	}
-	return validCount != 0u ? sum / float( validCount ) : vec3( 0.0 );
+	return finalLightmap[uint( faceIndex ) * RESTIR_MAXLIGHTMAPS + slot].rgb;
 }
 
 // utils/vrad/vraddetailprops.cpp:317-351, point sample (truncate, clamp), base
@@ -78,7 +65,7 @@ vec3 LightmapPointSample( ReSTIRGpuFace face, uint slot, HitInfo hit, vec3 posit
 	ivec2 coord = clamp( ivec2( LightmapCoord( face, hit, position ) ), ivec2( 0 ), ivec2( face.luxelW - 1, face.luxelH - 1 ) );
 	int luxel = coord.x + coord.y * face.luxelW;
 	valid = luxelValid[face.firstLuxel + luxel] != 0u;
-	return finalLightmap[face.firstOutput + int( slot ) * face.numChannels * face.luxelW * face.luxelH + luxel].rgb;
+	return finalLightmap[pc.numFaces * RESTIR_MAXLIGHTMAPS + uint( face.firstOutput ) + slot * uint( face.numChannels * face.luxelW * face.luxelH ) + uint( luxel )].rgb;
 }
 
 // utils/vrad/vraddetailprops.cpp:239-295,579-617 CalcRayAmbientLighting.
@@ -101,7 +88,7 @@ vec3 RayAmbientColor( HitInfo hit, vec3 origin, vec3 direction, int style )
 	vec3 pointColor = LightmapPointSample( face, uint( slot ), hit, position, valid );
 	if ( !valid )
 		averageWeight = 1.0;
-	vec3 color = averageWeight > 0.0 ? mix( pointColor, FaceAverage( face, uint( slot ) ), averageWeight ) : pointColor;
+	vec3 color = averageWeight > 0.0 ? mix( pointColor, FaceAverage( faceIndex, uint( slot ) ), averageWeight ) : pointColor;
 	return color * HitAlbedo( face, hit, position ) / 255.0;
 }
 
@@ -132,7 +119,7 @@ vec3 StaticPropIndirect( vec3 origin, vec3 normal, bool ignoreNormals )
 		bool valid;
 		vec3 color = LightmapPointSample( face, uint( slot ), hit, origin + direction * hit.t, valid );
 		if ( !valid )
-			color = FaceAverage( face, uint( slot ) );
+			color = FaceAverage( faceIndex, uint( slot ) );
 		float falloff = 1.0 / ( 1.0 + ( hit.t / 128.0 ) * ( hit.t / 128.0 ) );
 		sum += color * HitAlbedo( face, hit, origin + direction * hit.t ) * falloff;
 	}

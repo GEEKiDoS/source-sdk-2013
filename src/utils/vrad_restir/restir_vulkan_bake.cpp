@@ -20,12 +20,63 @@ void CReSTIRVulkanDevice::Impl::WriteReservoirDescriptors()
 	vkUpdateDescriptorSets( device, 3, writes, 0, NULL );
 }
 
+static void DownloadRadiance( CReSTIRVulkanDevice::Impl &gpu, int binding, CUtlVector<Vector> &radiance )
+{
+	radiance.SetCount( gpu.scene->numOutputValues );
+	CUtlVector<float> values;
+	const unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / ( sizeof( float ) * 4 ) );
+	for ( unsigned int first = 0; first < (unsigned int)radiance.Count(); )
+	{
+		unsigned int count = MIN( capacity, (unsigned int)radiance.Count() - first );
+		values.SetCount( count * 4 );
+		gpu.Download( binding, values.Base(), (VkDeviceSize)count * sizeof( float ) * 4,
+			(VkDeviceSize)first * sizeof( float ) * 4, &gpu.timings.compactionMs );
+		for ( unsigned int i = 0; i < count; ++i )
+		{
+			for ( int channel = 0; channel < 3; ++channel )
+			{
+				float value = values[i * 4 + channel];
+				radiance[first + i][channel] = _finite( value ) && value >= 0 ? value : 0;
+			}
+		}
+		first += count;
+	}
+}
+
+static bool DownloadSunVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<float> &visibility )
+{
+	visibility.SetCount( gpu.scene->luxels.Count() );
+	const unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / sizeof( float ) );
+	for ( unsigned int first = 0; first < (unsigned int)visibility.Count(); )
+	{
+		const unsigned int count = MIN( capacity, (unsigned int)visibility.Count() - first );
+		gpu.Download( RESTIR_BIND_SUN_VISIBILITY, visibility.Base() + first, (VkDeviceSize)count * sizeof( float ),
+			(VkDeviceSize)first * sizeof( float ), &gpu.timings.compactionMs );
+		for ( unsigned int i = 0; i < count; ++i )
+		{
+			const float value = visibility[first + i];
+			if ( !_finite( value ) || value < 0.0f || value > 1.0f )
+			{
+				visibility.RemoveAll();
+				gpu.Fail( "sun visibility readback contains a nonfinite or out-of-range scalar" );
+				return false;
+			}
+		}
+		first += count;
+	}
+	return true;
+}
+
 bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLightmapResult &result )
 {
 	Impl &gpu = *m_pImpl;
+	result.sunVisibility.RemoveAll();
 	if ( !gpu.scene || !gpu.pipelineLayout )
 		gpu.Fail( "BakeLightmaps requires UploadScene" );
 	gpu.finalUploaded = false;
+	const bool shadowSplit = gpu.options.shadowMaps && gpu.scene->shadowLights.Count() != 0;
+	const bool selectedSun = gpu.HasSelectedSun();
+	result.sourceRadiance.RemoveAll();
 	gpu.push.seed = options.seed;
 	gpu.push.candidates = options.candidates;
 	gpu.push.spatialRadius = options.spatialRadius;
@@ -34,10 +85,28 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	gpu.timings.candidateMs = gpu.timings.reuseMs = gpu.timings.reconstructionMs = gpu.timings.compactionMs = 0;
 	gpu.ResetQueries();
 	VkCommandBuffer command = gpu.BeginCommands();
+	// Reset even the ordinary-bake dummy so reused devices cannot retain a previous scalar result.
+	vkCmdFillBuffer( command, gpu.buffers[RESTIR_BIND_SUN_VISIBILITY].handle, 0, VK_WHOLE_SIZE, 0 );
+	if ( shadowSplit )
+	{
+		for ( int binding = RESTIR_BIND_RECEIVER_ACCUMULATION; binding <= RESTIR_BIND_RECEIVER_OUTPUT; ++binding )
+			vkCmdFillBuffer( command, gpu.buffers[binding].handle, 0, VK_WHOLE_SIZE, 0 );
+	}
+	VkMemoryBarrier clearBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+	clearBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	clearBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	vkCmdPipelineBarrier( command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 1, &clearBarrier, 0, NULL, 0, NULL );
 	gpu.Dispatch( command, RESTIR_PIPE_INIT, gpu.push.numReservoirs, 0 );
 	gpu.Dispatch( command, RESTIR_PIPE_INIT, gpu.push.numLuxels, 1 );
 	gpu.Dispatch( command, RESTIR_PIPE_INIT, gpu.scene->numOutputValues, 2 );
 	gpu.Barrier( command );
+	// Independent static-world scalar: one selected-sun pass, never weighted by transport iterations.
+	if ( selectedSun )
+	{
+		gpu.Dispatch( command, RESTIR_PIPE_SUN_VISIBILITY, gpu.push.numLuxels );
+		gpu.Barrier( command );
+	}
 	gpu.Submit( command );
 	for ( int iteration = 0; iteration < options.iterations; ++iteration )
 	{
@@ -86,29 +155,15 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	gpu.timings.reconstructionMs = gpu.TimestampMs( reconstructStart, reconstructEnd );
 	// The fixed pass table compacts directly during reconstruction; this counter
 	// measures the GPU transfer of its compact radiance and validity arrays.
-	result.radiance.SetCount( gpu.scene->numOutputValues );
+	// Output boundary only: no clipping or receiver subtraction in full transport.
+	DownloadRadiance( gpu, shadowSplit ? RESTIR_BIND_RECEIVER_OUTPUT : RESTIR_BIND_OUTPUT, result.radiance );
+	if ( shadowSplit )
+		DownloadRadiance( gpu, RESTIR_BIND_OUTPUT, result.sourceRadiance );
+	if ( selectedSun && !DownloadSunVisibility( gpu, result.sunVisibility ) )
+		return false;
 	result.luxelValid.SetCount( gpu.scene->luxels.Count() );
-	CUtlVector<float> values;
-	unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / ( sizeof( float ) * 4 ) );
-	// Output boundary only: no coring, patch threshold or finite-positive clipping in transport.
-	for ( unsigned int first = 0; first < (unsigned int)result.radiance.Count(); )
-	{
-		unsigned int count = MIN( capacity, (unsigned int)result.radiance.Count() - first );
-		values.SetCount( count * 4 );
-		gpu.Download( RESTIR_BIND_OUTPUT, values.Base(), (VkDeviceSize)count * sizeof( float ) * 4, (VkDeviceSize)first * sizeof( float ) * 4, &gpu.timings.compactionMs );
-		for ( unsigned int i = 0; i < count; ++i )
-		{
-			for ( int channel = 0; channel < 3; ++channel )
-			{
-				float value = values[i * 4 + channel];
-				result.radiance[first + i][channel] = _finite( value ) && value >= 0 ? value : 0;
-			}
-		}
-		first += count;
-	}
-	values.Purge();
 	CUtlVector<unsigned int> valid;
-	capacity = (unsigned int)( RESTIR_STAGING_BYTES / sizeof( unsigned int ) );
+	unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / sizeof( unsigned int ) );
 	for ( unsigned int first = 0; first < (unsigned int)result.luxelValid.Count(); )
 	{
 		unsigned int count = MIN( capacity, (unsigned int)result.luxelValid.Count() - first );

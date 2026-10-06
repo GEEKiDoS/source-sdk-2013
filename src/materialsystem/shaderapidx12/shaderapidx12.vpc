@@ -21,7 +21,7 @@ $Configuration
     }
     $Linker
     {
-        $AdditionalDependencies "$BASE d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib version.lib"
+        $AdditionalDependencies "$BASE d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib version.lib bcrypt.lib"
     }
     // Runtime DLLs the renderer loads beside itself. dxbcSigner.dll is required and in the tree; the upscaler
     // runtimes are supplied locally (thirdparty\upscalers\README.txt) and copied only when present.
@@ -56,6 +56,10 @@ $Project "shaderapidx12"
         $File "shader_vcs_dx12.cpp"
         $File "shader_precache_dx12.cpp"
         $File "motion_vectors_dx12.cpp"
+        $File "lighting_dx12.cpp"
+        $File "highres_lightmaps_dx12.cpp"
+        $File "hlight_engine_bridge.cpp"
+        $File "$SRCDIR\public\zip_utils.cpp"
         $File "upscaler_dx12.cpp"
         $File "compute_dx12.cpp"
         $File "framegen_dx12.cpp"
@@ -63,6 +67,49 @@ $Project "shaderapidx12"
         $File "mesh_dx12.cpp"
         $File "vertex_layout_dx12.cpp"
         $File "vballoctracker_dx12.cpp"
+    }
+    $Folder "Native Entry Hooks"
+    {
+        $File "$SRCDIR\thirdparty\minhook\src\hook.c"
+        {
+            $Configuration
+            {
+                $Compiler
+                {
+                    $AdditionalOptions "/std:c17"
+                }
+            }
+        }
+        $File "$SRCDIR\thirdparty\minhook\src\buffer.c"
+        {
+            $Configuration
+            {
+                $Compiler
+                {
+                    $AdditionalOptions "/std:c17"
+                }
+            }
+        }
+        $File "$SRCDIR\thirdparty\minhook\src\trampoline.c"
+        {
+            $Configuration
+            {
+                $Compiler
+                {
+                    $AdditionalOptions "/std:c17"
+                }
+            }
+        }
+        $File "$SRCDIR\thirdparty\minhook\src\hde\hde64.c"
+        {
+            $Configuration
+            {
+                $Compiler
+                {
+                    $AdditionalOptions "/std:c17"
+                }
+            }
+        }
     }
     $Folder "Header Files"
     {
@@ -85,6 +132,12 @@ $Project "shaderapidx12"
         $File "vertex_layout_dx12.h"
         $File "vballoctracker_dx12.h"
         $File "motion_vectors_dx12.h"
+        $File "lighting_dx12.h"
+        $File "highres_lightmaps_dx12.h"
+        $File "hlight_engine_bridge.h"
+        $File "$SRCDIR\public\hlight_bsp.h"
+        $File "$SRCDIR\public\shaderapi\ishaderapidx12highres.h"
+        $File "$SRCDIR\public\shaderapi\ishaderapidx12lighting.h"
         $File "upscaler_dx12.h"
         $File "framegen_dx12.h"
         $File "provider_module_dx12.h"

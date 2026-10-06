@@ -161,6 +161,10 @@ public:
 
 	const char *LastError() const { return m_LastError.Get(); }
 
+	// Drops feature contexts/tagged resources after all adopted chains are released and the GPU is idle.
+	// Keeps provider/queue support alive until the owning device drops its queue and calls Shutdown.
+	void ReleaseFeatures();
+
 	// Destroys every provider object; every adopted chain was released and the GPU is idle.
 	void Shutdown();
 

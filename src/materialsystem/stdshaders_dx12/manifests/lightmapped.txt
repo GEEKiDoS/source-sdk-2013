@@ -13,9 +13,41 @@ lightmappedgeneric_vs51.fxc vs lightmappedgeneric_vs51 20b lightmappedgeneric_vs
 decalbasetimeslightmapalphablendselfillum2_ps51.fxc ps decalbasetimeslightmapalphablendselfillum2_ps51 20b decalbasetimeslightmapalphablendselfillum2_ps2x.fxc
 # pair lightmappedgeneric_vs51 decalbasetimeslightmapalphablendselfillum2_ps51 FLASHLIGHT=0 LIGHTING_PREVIEW=0 RELIEF_MAPPING=0 SEAMLESS=0 TANGENTSPACE=0 @fog=c12
 lightmappedgeneric_ps51.fxc ps lightmappedgeneric_ps51 20b lightmappedgeneric_ps2x.fxc
-# pair lightmappedgeneric_vs51 lightmappedgeneric_ps51 =BUMPMASK =DIFFUSEBUMPMAP =SEAMLESS @fog=c11
+# pair lightmappedgeneric_vs51 lightmappedgeneric_ps51 =SEAMLESS @fog=c11
 lightmappedreflective_vs51.fxc vs lightmappedreflective_vs51 20b lightmappedreflective_vs20.fxc
 lightmappedreflective_ps51.fxc ps lightmappedreflective_ps51 20b lightmappedreflective_ps2x.fxc
 # pair lightmappedreflective_vs51 lightmappedreflective_ps51 =BASETEXTURE @fog=c8
 worldtwotextureblend_ps51.fxc ps worldtwotextureblend_ps51 20b worldtwotextureblend_ps2x.fxc
-# pair lightmappedgeneric_vs51 worldtwotextureblend_ps51 RELIEF_MAPPING=0 =BUMPMAP =DIFFUSEBUMPMAP =SEAMLESS =VERTEXCOLOR @fog=c11
+# pair lightmappedgeneric_vs51 worldtwotextureblend_ps51 RELIEF_MAPPING=0 =SEAMLESS @fog=c11
+lightmappedgeneric_decal_shadowmap_vs51.fxc vs lightmappedgeneric_decal_shadowmap_vs51 native -
+# noparity lightmappedgeneric_decal_shadowmap_vs51 - shadowmap-feature-variant
+lightmappedgeneric_decal_shadowmap_ps51.fxc ps lightmappedgeneric_decal_shadowmap_ps51 native -
+# noparity lightmappedgeneric_decal_shadowmap_ps51 - shadowmap-feature-variant
+lightmappedgeneric_shadowmap_vs51.fxc vs lightmappedgeneric_shadowmap_vs51 native -
+# noparity lightmappedgeneric_shadowmap_vs51 - shadowmap-feature-variant
+lightmappedgeneric_shadowmap_ps51.fxc ps lightmappedgeneric_shadowmap_ps51 native -
+# noparity lightmappedgeneric_shadowmap_ps51 - shadowmap-feature-variant
+lightmappedreflective_shadowmap_vs51.fxc vs lightmappedreflective_shadowmap_vs51 native -
+# noparity lightmappedreflective_shadowmap_vs51 - shadowmap-feature-variant
+lightmappedreflective_shadowmap_ps51.fxc ps lightmappedreflective_shadowmap_ps51 native -
+# noparity lightmappedreflective_shadowmap_ps51 - shadowmap-feature-variant
+worldtwotextureblend_shadowmap_ps51.fxc ps worldtwotextureblend_shadowmap_ps51 native -
+# noparity worldtwotextureblend_shadowmap_ps51 - shadowmap-feature-variant
+lightmappedgeneric_decal_highres_vs51.fxc vs lightmappedgeneric_decal_highres_vs51 native -
+# noparity lightmappedgeneric_decal_highres_vs51 - highres-feature-variant
+lightmappedgeneric_decal_highres_ps51.fxc ps lightmappedgeneric_decal_highres_ps51 native -
+# noparity lightmappedgeneric_decal_highres_ps51 - highres-feature-variant
+lightmappedgeneric_highres_vs51.fxc vs lightmappedgeneric_highres_vs51 native -
+# noparity lightmappedgeneric_highres_vs51 - highres-feature-variant
+lightmappedgeneric_highres_ps51.fxc ps lightmappedgeneric_highres_ps51 native -
+# noparity lightmappedgeneric_highres_ps51 - highres-feature-variant
+lightmappedreflective_highres_vs51.fxc vs lightmappedreflective_highres_vs51 native -
+# noparity lightmappedreflective_highres_vs51 - highres-feature-variant
+lightmappedreflective_highres_ps51.fxc ps lightmappedreflective_highres_ps51 native -
+# noparity lightmappedreflective_highres_ps51 - highres-feature-variant
+worldtwotextureblend_highres_ps51.fxc ps worldtwotextureblend_highres_ps51 native -
+# noparity worldtwotextureblend_highres_ps51 - highres-feature-variant
+worldvertextransition_editor_highres_vs51.fxc vs worldvertextransition_editor_highres_vs51 native -
+# noparity worldvertextransition_editor_highres_vs51 - native-only
+worldvertextransition_editor_highres_ps51.fxc ps worldvertextransition_editor_highres_ps51 native -
+# noparity worldvertextransition_editor_highres_ps51 - native-only

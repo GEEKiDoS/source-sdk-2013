@@ -13,6 +13,12 @@
 #endif
 #include "dx12_engine_cbuffers.h"
 #include "dx12_raster_emulation.h"
+#if defined(DX12_SHADOWMAPS) && defined(DX12_STAGE_PIXEL)
+#include "shadowmap_lighting.hlsli"
+#endif
+#if defined(DX12_HIGHRES_LIGHTMAPS) && defined(DX12_STAGE_PIXEL)
+#include "highres_lightmaps.hlsli"
+#endif
 // Typed texture/sampler pairs replacing DX9 `sampler` objects; t<n>/s<n> keep the legacy sampler index.
 struct DX12Sampler2D { Texture2D tex; SamplerState smp; };
 struct DX12SamplerCube { TextureCube tex; SamplerState smp; };

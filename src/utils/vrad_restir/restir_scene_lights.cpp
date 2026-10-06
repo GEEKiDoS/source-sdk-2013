@@ -9,6 +9,8 @@
 #include "map_utils.h"
 #include "cmdlib.h"
 #include "filesystem_tools.h"
+#include <ctype.h>
+#include <errno.h>
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -319,6 +321,7 @@ static ReSTIRGpuLight AllocLight( const Vector &origin )
 	ReSTIR_SceneSet4( light.origin, origin );
 	light.firstTri = -1;
 	light.emissionTexture = -1;
+	light.sourceEntity = -1;
 	return light;
 }
 
@@ -1306,13 +1309,69 @@ static const char *ValueForKeyOrNull( entity_t *pEntity, const char *pKey )
 	return NULL;
 }
 
+static bool ParseShadowEmitterSize( const char *text, float defaultValue, bool sun, float &value )
+{
+	if ( !text )
+	{
+		value = defaultValue;
+		return true;
+	}
+	char *end = NULL;
+	errno = 0;
+	double parsed = strtod( text, &end );
+	const bool converted = end != text;
+	while ( end && isspace( (unsigned char)*end ) )
+		++end;
+	if ( !converted || !end || *end || errno == ERANGE || !_finite( parsed ) || parsed < 0.0 ||
+		parsed > FLT_MAX || ( sun && ( parsed >= SHADOWMAP_MAX_SUN_ANGULAR_RADIUS ||
+			(float)parsed >= SHADOWMAP_MAX_SUN_ANGULAR_RADIUS ) ) )
+	{
+		Warning( "Shadowmaps: invalid shadow emitter size\n" );
+		return false;
+	}
+	value = (float)parsed;
+	return true;
+}
+
+static bool SelectShadowLight( entity_t *entity, int entityIndex, bool shadowMaps, ReSTIRGpuLight &light )
+{
+	light.sourceEntity = entityIndex;
+	if ( !shadowMaps )
+		return true;
+	bool selected = light.type == emit_skylight || light.type == emit_spotlight;
+	const char *text = ValueForKeyOrNull( entity, "_shadowmap" );
+	if ( text )
+	{
+		while ( isspace( (unsigned char)*text ) )
+			++text;
+		if ( *text )
+		{
+			char digit = *text++;
+			while ( isspace( (unsigned char)*text ) )
+				++text;
+			if ( ( digit != '0' && digit != '1' ) || *text )
+			{
+				Warning( "Shadowmaps: invalid _shadowmap value\n" );
+				return false;
+			}
+			selected = digit == '1';
+		}
+	}
+	if ( selected )
+		light.lightFlags |= RESTIR_LIGHT_RUNTIME_DIRECT;
+	return true;
+}
+
 // utils/vrad/lightmap.cpp:1475-1520. Ambient has calloc defaults, not sun fields.
-static bool ParseLightEnvironment( entity_t *pEntity, ReSTIRScene &scene, float &sunSpreadAngle )
+static bool ParseLightEnvironment( entity_t *pEntity, int entityIndex, bool shadowMaps, ReSTIRScene &scene, float &sunSpreadAngle )
 {
 	Vector origin;
 	GetVectorForKey( pEntity, "origin", origin );
 	ReSTIRGpuLight light = AllocLight( origin );
 	ParseLightGeneric( pEntity, light );
+	light.type = emit_skylight;
+	if ( !SelectShadowLight( pEntity, entityIndex, shadowMaps, light ) )
+		return false;
 	const char *angle = ValueForKeyOrNull( pEntity, "SunSpreadAngle" );
 	if ( angle )
 	{
@@ -1357,9 +1416,11 @@ static bool ParseLightEnvironment( entity_t *pEntity, ReSTIRScene &scene, float 
 }
 
 // utils/vrad/lightmap.cpp:1587-1618 — class names are case sensitive.
-static bool BuildEntityLights( ReSTIRScene &scene )
+static bool BuildEntityLights( const ReSTIROptions &options, ReSTIRScene &scene )
 {
 	float sunSpreadAngle = 0.0f;
+	scene.shadowSunAngularRadius = 0.27f;
+	const char *shadowSunAngle = NULL;
 	for ( int i = 0; i < num_entities; ++i )
 	{
 		entity_t *pEntity = &entities[i];
@@ -1370,7 +1431,15 @@ static bool BuildEntityLights( ReSTIRScene &scene )
 		}
 		if ( !strcmp( name, "light_environment" ) )
 		{
-			if ( !ParseLightEnvironment( pEntity, scene, sunSpreadAngle ) )
+			const char *authoredAngle = ValueForKeyOrNull( pEntity, "SunSpreadAngle" );
+			if ( options.shadowMaps && authoredAngle )
+			{
+				float checkedAngle;
+				if ( !ParseShadowEmitterSize( authoredAngle, 0.27f, true, checkedAngle ) )
+					return false;
+				shadowSunAngle = authoredAngle;
+			}
+			if ( !ParseLightEnvironment( pEntity, i, options.shadowMaps, scene, sunSpreadAngle ) )
 			{
 				return false;
 			}
@@ -1392,12 +1461,16 @@ static bool BuildEntityLights( ReSTIRScene &scene )
 			qprintf( "unsupported light entity: \"%s\"\n", name );
 			continue;
 		}
+		if ( !SelectShadowLight( pEntity, i, options.shadowMaps, light ) )
+			return false;
 		int index = scene.lights.AddToTail( light );
 		if ( !ExportLight( scene, light, index, ReSTIR_SceneClusterFromPoint( origin ) ) )
 		{
 			return false;
 		}
 	}
+	if ( options.shadowMaps && !ParseShadowEmitterSize( shadowSunAngle, 0.27f, true, scene.shadowSunAngularRadius ) )
+		return false;
 	return true;
 }
 
@@ -1445,6 +1518,41 @@ static void FinishActiveLightOrder( ReSTIRScene &scene )
 	}
 }
 
+static bool ResolveShadowLights( const ReSTIROptions &options, ReSTIRScene &scene )
+{
+	scene.shadowLights.RemoveAll();
+	if ( !options.shadowMaps )
+		return true;
+	for ( int exportIndex = 0; exportIndex < scene.exportLights.Count(); ++exportIndex )
+	{
+		const ReSTIRGpuLight &light = scene.lights[scene.exportLightToGpuLight[exportIndex]];
+		if ( ( light.lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) == 0 )
+			continue;
+		ShadowMapLightDisk record;
+		memset( &record, 0, sizeof( record ) );
+		record.light = scene.exportLights[exportIndex];
+		record.sourceEntity = light.sourceEntity;
+		if ( light.type == emit_skylight )
+		{
+			record.shadowSunAngularRadius = scene.shadowSunAngularRadius;
+		}
+		else
+		{
+			record.startFade = light.fade[0];
+			record.endFade = light.fade[1];
+			record.capDist = light.fade[2];
+			if ( !ParseShadowEmitterSize( ValueForKeyOrNull( &entities[light.sourceEntity], "_shadow_radius" ),
+				4.0f, false, record.shadowSourceRadius ) )
+				return false;
+		}
+		if ( light.type == emit_skylight )
+			scene.shadowLights.InsertBefore( 0, record );
+		else
+			scene.shadowLights.AddToTail( record );
+	}
+	return true;
+}
+
 // utils/vrad/lightmap.cpp:1541-1658; sceneStyles is the shared GPU indexing contract.
 bool ReSTIR_SceneBuildLights( ReSTIRSceneBuildContext &context, ReSTIRScene &scene )
 {
@@ -1458,11 +1566,13 @@ bool ReSTIR_SceneBuildLights( ReSTIRSceneBuildContext &context, ReSTIRScene &sce
 	{
 		texlightFaces[i] = false;
 	}
-	if ( !BuildSurfaceLights( context, scene, texlightFaces ) || !BuildEntityLights( scene ) )
+	if ( !BuildSurfaceLights( context, scene, texlightFaces ) || !BuildEntityLights( *context.options, scene ) )
 	{
 		return false;
 	}
 	FinishActiveLightOrder( scene );
+	if ( !ResolveShadowLights( *context.options, scene ) )
+		return false;
 	if ( !BuildMaterialSurfaceLights( context, scene, texlightFaces ) )
 	{
 		return false;

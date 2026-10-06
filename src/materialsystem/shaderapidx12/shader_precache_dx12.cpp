@@ -52,12 +52,204 @@ static bool IsDxbc( const VcsPayload &payload )
 	return payload.tokens.Count() >= 4 && !memcmp( payload.tokens.Base(), "DXBC", 4 );
 }
 
+static bool ValidateLightingStructuredType( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding )
+{
+	auto *buffer = reflection->GetConstantBufferByName( binding.Name );
+	D3D12_SHADER_BUFFER_DESC bd{};
+	if ( !buffer || FAILED( buffer->GetDesc( &bd ) ) || bd.Type != D3D_CT_RESOURCE_BIND_INFO || bd.Variables != 1 )
+		return false;
+	auto *element = buffer->GetVariableByIndex( 0 );
+	auto *elementType = element ? element->GetType() : nullptr;
+	D3D12_SHADER_TYPE_DESC type{};
+	if ( !elementType || FAILED( elementType->GetDesc( &type ) ) || type.Elements )
+		return false;
+	if ( binding.BindPoint == DX12_LIGHTING_T_LIGHTS )
+	{
+		const UINT memberCount = sizeof( dx12native::kRuntimeShadowLightGpuMembers ) /
+		                         sizeof( *dx12native::kRuntimeShadowLightGpuMembers );
+		if ( type.Class != D3D_SVC_STRUCT || !type.Name ||
+		     V_strcmp( type.Name, "RuntimeShadowLightGpu" ) || type.Members != memberCount )
+			return false;
+		// Match the authored layout, including row-major matrices and both six-face arrays.
+		for ( UINT member = 0; member < memberCount; ++member )
+		{
+			const auto &expected = dx12native::kRuntimeShadowLightGpuMembers[member];
+			const char *name = elementType->GetMemberTypeName( member );
+			auto *memberType = elementType->GetMemberTypeByIndex( member );
+			D3D12_SHADER_TYPE_DESC memberDesc{};
+			if ( !name || V_strcmp( name, expected.name ) || !memberType ||
+			     FAILED( memberType->GetDesc( &memberDesc ) ) || memberDesc.Offset != expected.offset ||
+			     memberDesc.Class != expected.valueClass || memberDesc.Type != expected.scalarType ||
+			     memberDesc.Rows != expected.rows || memberDesc.Columns != expected.columns ||
+			     memberDesc.Elements != expected.elements )
+				return false;
+		}
+		return true;
+	}
+	const UINT columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 : 1;
+	return type.Type == D3D_SVT_UINT && type.Rows == 1 && type.Columns == columns &&
+	       type.Class == ( columns == 2 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR );
+}
+
+// Optimized shaders retain only the resources they use. The view block is the ABI marker;
+// every retained binding must match, but unused textures/samplers may disappear.
+bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility )
+{
+	if ( lightingAbi )
+		*lightingAbi = false;
+	if ( sunVisibility ) *sunVisibility = false;
+	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
+	D3D12_SHADER_DESC desc{};
+	if ( !bytecode.pShaderBytecode || !bytecode.BytecodeLength ||
+	     FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ||
+	     FAILED( reflection->GetDesc( &desc ) ) )
+	{
+		error = "lighting shader reflection failed";
+		return false;
+	}
+	if ( !ValidateHighresShaderResourcesDX12( reflection.Get(), desc, pixelStage, nullptr, error ) )
+		return false;
+	bool marker = false, space2 = false;
+	unsigned seen = 0;
+	for ( UINT i = 0; i < desc.BoundResources; ++i )
+	{
+		D3D12_SHADER_INPUT_BIND_DESC binding{};
+		if ( FAILED( reflection->GetResourceBindingDesc( i, &binding ) ) || !binding.Name )
+		{
+			error = "lighting resource binding reflection failed";
+			return false;
+		}
+		const dx12native::EngineCBufferLayoutDX12 *layout = nullptr;
+		for ( const auto &candidate : dx12native::kLightingCBufferLayouts )
+			if ( candidate.shaderRegister == DX12_LIGHTING_B_VIEW &&
+			     !V_strcmp( candidate.name, "DX12LightingViewConstantsV1" ) &&
+			     !V_strcmp( binding.Name, candidate.name ) )
+				layout = &candidate;
+		if ( binding.Space != DX12_LIGHTING_REGISTER_SPACE && !layout )
+			continue;
+		space2 = true;
+		unsigned slot = 0;
+		bool valid = pixelStage && D3D12_SHVER_GET_TYPE( desc.Version ) == D3D12_SHVER_PIXEL_SHADER &&
+		             binding.Space == DX12_LIGHTING_REGISTER_SPACE;
+		if ( layout )
+		{
+			slot = layout->shaderRegister;
+			auto *buffer = reflection->GetConstantBufferByName( binding.Name );
+			D3D12_SHADER_BUFFER_DESC bd{};
+			valid = valid && layout->stage == dx12native::kStagePixel && binding.Type == D3D_SIT_CBUFFER &&
+			        binding.BindPoint == layout->shaderRegister && binding.BindCount == 1 &&
+			        buffer && SUCCEEDED( buffer->GetDesc( &bd ) ) && bd.Type == D3D_CT_CBUFFER &&
+			        bd.Name && !V_strcmp( bd.Name, layout->name ) &&
+			        bd.Size == layout->byteSize && bd.Variables == layout->memberCount;
+			if ( valid )
+			{
+				for ( UINT member = 0; member < layout->memberCount; ++member )
+				{
+					const auto &expected = layout->members[member];
+					D3D12_SHADER_VARIABLE_DESC vd{};
+					auto *variable = buffer->GetVariableByIndex( member );
+					if ( !variable || FAILED( variable->GetDesc( &vd ) ) || !vd.Name ||
+					     V_strcmp( vd.Name, expected.name ) || vd.StartOffset != expected.offset || vd.Size != expected.size )
+					{
+						valid = false;
+						break;
+					}
+				}
+			}
+			marker = true;
+		}
+		else if ( binding.Type == D3D_SIT_SAMPLER )
+		{
+			const bool comparison = ( binding.uFlags & D3D_SIF_COMPARISON_SAMPLER ) != 0;
+			const bool shadow = comparison && binding.BindPoint == DX12_LIGHTING_S_COMPARISON && !V_strcmp( binding.Name, "g_ShadowCmpSampler" );
+			valid = valid && binding.BindCount == 1 && shadow;
+			slot = 8;
+		}
+		else
+		{
+			struct Resource
+			{
+				const char *name;
+				UINT reg, count, stride;
+			};
+			static const Resource resources[] = {
+				{ "g_ShadowLocalAtlas", DX12_LIGHTING_T_LOCAL_ATLAS_FIRST, DX12_SHADOW_MAX_LOCAL_PAGES, 0 },
+				{ "g_ShadowCascadeAtlas", DX12_LIGHTING_T_CASCADE_ATLAS, 1, 0 },
+				{ "g_ShadowStaticSun", DX12_LIGHTING_T_STATIC_SUN, 1, 0 },
+				{ "g_ShadowLights", DX12_LIGHTING_T_LIGHTS, 1, sizeof( RuntimeShadowLightGpu ) },
+				{ "g_ShadowTileRanges", DX12_LIGHTING_T_TILE_RANGES, 1, 8 },
+				{ "g_ShadowTileIndices", DX12_LIGHTING_T_TILE_INDICES, 1, 4 },
+				{ "g_ShadowSunVisibility", DX12_LIGHTING_T_SUN_VISIBILITY, 1, 0 },
+			};
+			const Resource *resource = nullptr;
+			for ( unsigned r = 0; r < sizeof( resources ) / sizeof( *resources ); ++r )
+			{
+				if ( !V_strcmp( binding.Name, resources[r].name ) )
+				{
+					resource = &resources[r];
+					slot = 1 + r;
+					break;
+				}
+			}
+			valid = valid && resource && binding.BindPoint == resource->reg && binding.BindCount == resource->count;
+			if ( valid && resource->stride )
+				valid = binding.Type == D3D_SIT_STRUCTURED && binding.Dimension == D3D_SRV_DIMENSION_BUFFER &&
+				        binding.NumSamples == resource->stride && ValidateLightingStructuredType( reflection.Get(), binding );
+			else if ( valid )
+				valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == D3D_SRV_DIMENSION_TEXTURE2D &&
+				        binding.ReturnType == ( resource->reg == DX12_LIGHTING_T_SUN_VISIBILITY ? D3D_RETURN_TYPE_UINT : D3D_RETURN_TYPE_FLOAT ) &&
+				        !( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS );
+		}
+		if ( !valid || ( seen & ( 1u << slot ) ) )
+		{
+			error = CUtlString( "lighting ABI 3 binding/layout mismatch: " ) + binding.Name;
+			return false;
+		}
+		seen |= 1u << slot;
+	}
+	if ( space2 && !marker )
+	{
+		error = "space-2 resources require DX12LightingViewConstantsV1";
+		return false;
+	}
+	if ( sunVisibility ) *sunVisibility = ( seen & ( 1u << 7 ) ) != 0;
+	if ( lightingAbi )
+		*lightingAbi = marker;
+	return true;
+}
+
+static bool ValidateDepthRestoreConstants( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding,
+                                          const char *logical, VcsStage stage )
+{
+	const bool restore = ( stage == VcsStage::Vertex && !V_strcmp( logical, "shadow_depth_restore_vs51" ) ) ||
+	                     ( stage == VcsStage::Pixel && !V_strcmp( logical, "shadow_depth_restore_ps51" ) );
+	if ( !restore || binding.Type != D3D_SIT_CBUFFER || binding.Space != 0 || binding.BindPoint != 0 ||
+	     binding.BindCount != 1 || V_strcmp( binding.Name, "ShadowDepthRestoreConstants" ) )
+		return false;
+	auto *buffer = reflection->GetConstantBufferByName( binding.Name );
+	D3D12_SHADER_BUFFER_DESC bd{};
+	if ( !buffer || FAILED( buffer->GetDesc( &bd ) ) || bd.Type != D3D_CT_CBUFFER || bd.Size != 64 || bd.Variables != 4 )
+		return false;
+	static const char *const names[] = { "srcRect", "dstRect", "srcSize", "dstSize" };
+	for ( UINT i = 0; i < 4; ++i )
+	{
+		auto *variable = buffer->GetVariableByIndex( i );
+		D3D12_SHADER_VARIABLE_DESC vd{};
+		D3D12_SHADER_TYPE_DESC td{};
+		if ( !variable || FAILED( variable->GetDesc( &vd ) ) || !vd.Name || V_strcmp( vd.Name, names[i] ) ||
+		     vd.StartOffset != i * 16 || vd.Size != 16 || FAILED( variable->GetType()->GetDesc( &td ) ) ||
+		     td.Class != D3D_SVC_VECTOR || td.Type != D3D_SVT_UINT || td.Rows != 1 || td.Columns != 4 || td.Elements )
+			return false;
+	}
+	return true;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Reflects a native payload's space-1 cbuffers against the backend engine layouts; material
 //          blocks are reported by name/register/size (their layout hash is checked at draw time against
 //          the bridge write).
 //-----------------------------------------------------------------------------
-static bool ReflectNative( const VcsPayload &payload, VcsStage stage, CUtlString &error )
+static bool ReflectNative( const VcsPayload &payload, VcsStage stage, const char *logical, CUtlString &error )
 {
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	if ( FAILED( D3DReflect( payload.tokens.Base(), payload.tokens.Count(), IID_PPV_ARGS( &reflection ) ) ) )
@@ -85,6 +277,9 @@ static bool ReflectNative( const VcsPayload &payload, VcsStage stage, CUtlString
 		error = "input signature reflection failed";
 		return false;
 	}
+	D3D12_SHADER_BYTECODE bytecode{ payload.tokens.Base(), static_cast<SIZE_T>( payload.tokens.Count() ) };
+	if ( !ValidateLightingShaderDX12( bytecode, stage == VcsStage::Pixel, nullptr, error ) )
+		return false;
 	for ( UINT i = 0; i < desc.BoundResources; ++i )
 	{
 		D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -114,6 +309,12 @@ static bool ReflectNative( const VcsPayload &payload, VcsStage stage, CUtlString
 					return false;
 				}
 			}
+		}
+		if ( binding.Type == D3D_SIT_CBUFFER && binding.Space == 0 &&
+		     !ValidateDepthRestoreConstants( reflection.Get(), binding, logical, stage ) )
+		{
+			error = CUtlString( "space-0 cbuffer outside depth-restore contract: " ) + binding.Name;
+			return false;
 		}
 		if ( binding.Type != D3D_SIT_CBUFFER || binding.Space != 1 )
 			continue;
@@ -201,7 +402,7 @@ static PrecacheCounts ValidateFile( IFileSystem &filesystem, const char *pszName
 				continue;
 			}
 			++counts.m_nNative;
-			if ( !ReflectNative( *pPayload, stage, error ) )
+			if ( !ReflectNative( *pPayload, stage, pszName, error ) )
 			{
 				++counts.m_nFailures;
 				Warning( "shader_precache: %s %s static %u dynamic %u: %s\n", pszStage, pszName, nStaticIndex, nDynamic, error.Get() );

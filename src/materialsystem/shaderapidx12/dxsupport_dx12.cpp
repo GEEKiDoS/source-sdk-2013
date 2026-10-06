@@ -338,23 +338,6 @@ bool CDXSupportDX12::Load( IFileSystem *pFileSystem )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Applies the card profile's DXLevel/MaxDXLevel to the adapter caps
-//-----------------------------------------------------------------------------
-void CDXSupportDX12::ReadDXSupportLevels( DXSupportCapsDX12 &caps ) const
-{
-	if ( !m_pConfig )
-		return;
-	KeyValues *pCard = FindCard( m_pConfig, caps.vendor, caps.device );
-	if ( !pCard )
-		return;
-	const int nMaxLevel = pCard->GetInt( "MaxDXLevel", 0 );
-	const int nPreferred = pCard->GetInt( "DXLevel", 0 );
-	if ( nMaxLevel )
-		caps.max = Min( caps.max, nMaxLevel );
-	caps.recommended = Min( caps.max, nPreferred ? nPreferred : caps.max );
-}
-
-//-----------------------------------------------------------------------------
 // Purpose: Applies the per-GPU capability overrides for nDXLevel
 //-----------------------------------------------------------------------------
 void CDXSupportDX12::ReadHardwareCaps( DXSupportCapsDX12 &caps, int nDXLevel ) const
@@ -385,12 +368,10 @@ bool CDXSupportDX12::GetRecommendedConfigurationInfo( const DXSupportCapsDX12 &c
 //-----------------------------------------------------------------------------
 bool CDXSupportDX12::GetRecommendedConfigurationInfo( const DXSupportCapsDX12 &caps, int nDXLevel, unsigned nVendor, unsigned nDevice, KeyValues *pConfiguration ) const
 {
-	if ( !nDXLevel )
-		nDXLevel = caps.recommended;
-	// This backend implements the current 90/95 material paths, not legacy fixed-function levels.
-	if ( nDXLevel < 90 || nDXLevel > caps.max || nDXLevel > 95 )
-		return false;
-	nDXLevel = nDXLevel < 95 ? 90 : 95;
+	// Old card profiles cannot downgrade the native renderer's material tier.
+	nDXLevel = kSourceDXLevel;
+	pConfiguration->SetInt( "ConVar.mat_dxlevel", nDXLevel );
+	pConfiguration->SetInt( "ConVar.mat_hdr_level", 2 );
 	if ( !m_pConfig )
 		return true;
 	ApplyGPUProfiles( m_pConfig, nDXLevel, nVendor, nDevice, [&]( KeyValues *pGroup )
@@ -406,13 +387,14 @@ bool CDXSupportDX12::GetRecommendedConfigurationInfo( const DXSupportCapsDX12 &c
 		LoadConfig( FindRange( m_pConfig, "min megabytes", "max megabytes", memory.ullTotalPhys / ( 1024ull * 1024 ) ), pConfiguration );
 	const uint64_t nVideoMB = caps.memory / ( 1024ull * 1024 );
 	KeyValues *pVideo = FindRange( m_pConfig, "min megatexels", "max megatexels", nVideoMB );
-	if ( pVideo && caps.memory && ( nDXLevel == caps.max || nVideoMB < 100 ) )
+	if ( pVideo && caps.memory )
 	{
 		KeyValues *pPicmip = pVideo->FindKey( "ConVar.mat_picmip" );
 		if ( pPicmip )
 			pConfiguration->SetInt( "ConVar.mat_picmip", Max( pPicmip->GetInt(), pConfiguration->GetInt( "ConVar.mat_picmip", 0 ) ) );
 	}
 	pConfiguration->SetInt( "ConVar.mat_dxlevel", nDXLevel );
+	pConfiguration->SetInt( "ConVar.mat_hdr_level", 2 );
 	if ( CommandLine()->CheckParm( "-debugdxsupport" ) )
 		Dump( pConfiguration );
 	return true;

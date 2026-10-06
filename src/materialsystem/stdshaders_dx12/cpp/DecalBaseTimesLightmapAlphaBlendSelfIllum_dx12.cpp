@@ -7,6 +7,7 @@
 //===========================================================================//
 
 #include "BaseVSShaderDX12.h"
+#include "lightmappedgeneric_dx9_helper.h"
 #include "mathlib/bumpvects.h"
 #include "cpp_shader_constant_register_map.h"
 
@@ -52,7 +53,7 @@ BEGIN_VS_SHADER( DecalBaseTimesLightmapAlphaBlendSelfIllum_DX9, "" )
 		LoadTexture( SELFILLUMTEXTURE );
 	}
 
-	void DrawDecal( IMaterialVar **params, IShaderDynamicAPI *pShaderAPI, IShaderShadow *pShaderShadow )
+	void DrawDecal( IMaterialVar **params, IShaderDynamicAPI *pShaderAPI, IShaderShadow *pShaderShadow, bool bShadowmapReceiver )
 	{
 		if( IsSnapshotting() )
 		{
@@ -75,14 +76,14 @@ BEGIN_VS_SHADER( DecalBaseTimesLightmapAlphaBlendSelfIllum_DX9, "" )
 			pShaderShadow->EnableSRGBRead( SHADER_SAMPLER3, g_pHardwareConfig->GetHDRType() == HDR_TYPE_NONE );
 
 			int pTexCoords[3] = { 2, 2, 1 };
-			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION | VERTEX_COLOR, 3, pTexCoords, 0 );
+			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION | VERTEX_COLOR | ( bShadowmapReceiver ? VERTEX_NORMAL | VERTEX_TANGENT_S | VERTEX_TANGENT_T : 0 ), 3, pTexCoords, 0 );
 
 			DECLARE_STATIC_VERTEX_SHADER( lightmappedgeneric_decal_vs51 );
-			SET_STATIC_VERTEX_SHADER( lightmappedgeneric_decal_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( lightmappedgeneric_decal_vs51, lightmappedgeneric_decal_shadowmap_vs51 );
 
 			{
 				DECLARE_STATIC_PIXEL_SHADER( lightmappedgeneric_decal_ps51 );
-				SET_STATIC_PIXEL_SHADER( lightmappedgeneric_decal_ps51 );
+				DX12_SET_STATIC_PIXEL_SHADER( lightmappedgeneric_decal_ps51, lightmappedgeneric_decal_shadowmap_ps51 );
 			}
 
 			FogToFogColor();
@@ -108,7 +109,7 @@ BEGIN_VS_SHADER( DecalBaseTimesLightmapAlphaBlendSelfIllum_DX9, "" )
 
 			DECLARE_DYNAMIC_VERTEX_SHADER( lightmappedgeneric_decal_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
-			SET_DYNAMIC_VERTEX_SHADER( lightmappedgeneric_decal_vs51 );
+			DX12_SET_DYNAMIC_VERTEX_SHADER( lightmappedgeneric_decal_vs51, lightmappedgeneric_decal_shadowmap_vs51 );
 
 			pShaderAPI->SetPixelShaderFogParams( PSREG_FOG_PARAMS );			
 
@@ -120,7 +121,7 @@ BEGIN_VS_SHADER( DecalBaseTimesLightmapAlphaBlendSelfIllum_DX9, "" )
 			{
 				DECLARE_DYNAMIC_PIXEL_SHADER( lightmappedgeneric_decal_ps51 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-				SET_DYNAMIC_PIXEL_SHADER( lightmappedgeneric_decal_ps51 );
+				DX12_SET_DYNAMIC_PIXEL_SHADER( lightmappedgeneric_decal_ps51, lightmappedgeneric_decal_shadowmap_ps51 );
 			}
 		}
 		Draw();
@@ -181,12 +182,13 @@ BEGIN_VS_SHADER( DecalBaseTimesLightmapAlphaBlendSelfIllum_DX9, "" )
 				DECLARE_DYNAMIC_PIXEL_SHADER( decalbasetimeslightmapalphablendselfillum2_ps51 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo() );
 				SET_DYNAMIC_PIXEL_SHADER( decalbasetimeslightmapalphablendselfillum2_ps51 );
+				g_DX12Constants.shadowmapPassAdmitted = true; // Selfillum replay, not a second lit receiver.
 			}
 		}
 		Draw();
 	}
 
-	void DrawPass( IMaterialVar** params, IShaderDynamicAPI *pShaderAPI, IShaderShadow* pShaderShadow, bool bUsingFlashlight )
+	void DrawPass( IMaterialVar** params, IShaderDynamicAPI *pShaderAPI, IShaderShadow* pShaderShadow, bool bUsingFlashlight, bool bShadowmapReceiver )
 	{
 		if( bUsingFlashlight )
 		{
@@ -210,22 +212,25 @@ BEGIN_VS_SHADER( DecalBaseTimesLightmapAlphaBlendSelfIllum_DX9, "" )
 		}
 		else
 		{
-			DrawDecal( params, pShaderAPI, pShaderShadow );
+			DrawDecal( params, pShaderAPI, pShaderShadow, bShadowmapReceiver );
 		}
 	}
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "DecalBaseTimesLightmapAlphaBlendSelfIllum", bShadowmapReceiver ) )
+			return;
 		bool bUsingFlashlight = UsingFlashlight( params );
 		if ( bUsingFlashlight && ( IsX360() || r_flashlight_version2.GetInt() ) )
 		{
-			DrawPass( params, pShaderAPI, pShaderShadow, false );
+			DrawPass( params, pShaderAPI, pShaderShadow, false, bShadowmapReceiver );
 			if ( pShaderShadow )
 			{
 				SetInitialShadowState( );
 			}
 		}
-		DrawPass(  params, pShaderAPI, pShaderShadow, bUsingFlashlight );
+		DrawPass( params, pShaderAPI, pShaderShadow, bUsingFlashlight, bShadowmapReceiver );
 	}
 
 END_SHADER

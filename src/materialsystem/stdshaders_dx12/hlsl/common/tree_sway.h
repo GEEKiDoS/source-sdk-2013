@@ -39,7 +39,11 @@ float4 DX12TreeSwaySines( float slowTime, float fastScale )
     return DX12TreeSinePhase( phase );
 }
 
-#if ( TREESWAY )
+#ifndef TREESWAY
+#define TREESWAY 0
+#endif
+
+#if defined( g_flTime )
 	float3 DX12TreeSine( float3 angle ) { return DX12TreeSine( float4( angle, 0 ) ).xyz; }
 	float3 ComputeTreeSway( float3 vPositionOS, float flTime )
 	{
@@ -66,12 +70,12 @@ float4 DX12TreeSwaySines( float slowTime, float fastScale )
 		// Used to turn off branch sway and scrumble below the minimum sway height
 		float flHeightThreshold = step( 0, vPositionOS.z - g_flHeight * g_flStartHeight );
 
-		#if ( TREESWAY == 2 )
+		if ( TREESWAY == 2 )
 		{
 			// Works better for hanging vines
 			flHeightThreshold = step( vPositionOS.z - g_flHeight * g_flStartHeight, 0 );
 		}
-		#endif
+
 
 		#ifdef _X360
 			// Scale branch motion based on how orthogonal they are
@@ -88,12 +92,12 @@ float4 DX12TreeSwaySines( float slowTime, float fastScale )
 
 		float flSwayScaleTrunk = g_flSwayIntensity * pow( flSwayScaleHeight, g_flSwayFalloffCurve );
 		float flSwayScaleBranches = g_flSwayIntensity * flOrthoBranchScale * flSwayScaleRadius * flHeightThreshold;
-		#if ( TREESWAY == 2 )
+		if ( TREESWAY == 2 )
 		{
 			// Looks stupid on vines
 			flSwayScaleBranches = 0.0;
 		}
-		#endif
+
 		float flWindTimeOffset = dot( vModelRoot.xyz, float3( 1, 1, 1 ) ) * g_flWindOffsetScale;
 		float flSlowSwayTime = ( flTime + flWindTimeOffset ) * g_flSwaySpeed;
 
@@ -112,11 +116,11 @@ float4 DX12TreeSwaySines( float slowTime, float fastScale )
 		vPositionOffset.xyz += vWindDirAndIntensityOS *  flSwayScaleBranches * ( vABunchOfSines.y + 0.4 );
 
 		float3 vScrumbleScale = flScrumbleScale.xxx;
-		#if ( TREESWAY == 2 )
+		if ( TREESWAY == 2 )
 		{
 			vScrumbleScale *= float3( 0.5, 0.5, 1.0 );
 		}
-		#endif
+
 
 		vPositionOffset.xyz += flWindIntensity * ( vScrumbleScale.xyz * DX12TreeSine( g_flScrumbleSpeed * flTime.xxx + vScrumblePosOS.yzx + flWindTimeOffset.xxx ) );
 

@@ -45,6 +45,7 @@ public:
 		SetGraphicsRootSignature,
 		SetGraphicsRootDescriptorTable,
 		SetGraphicsRootConstantBufferView,
+		SetGraphicsRootUnorderedAccessView,
 		SetGraphicsRoot32BitConstants,
 		SetPipelineState,
 		SetDescriptorHeaps,
@@ -140,6 +141,13 @@ public:
 	void SetGraphicsRootConstantBufferView( UINT index, D3D12_GPU_VIRTUAL_ADDRESS address )
 	{
 		unsigned char *p = Begin( Op::SetGraphicsRootConstantBufferView, 4 + sizeof( address ) );
+		Put( p, index );
+		Put( p, address );
+	}
+
+	void SetGraphicsRootUnorderedAccessView( UINT index, D3D12_GPU_VIRTUAL_ADDRESS address )
+	{
+		unsigned char *p = Begin( Op::SetGraphicsRootUnorderedAccessView, 4 + sizeof( address ) );
 		Put( p, index );
 		Put( p, address );
 	}

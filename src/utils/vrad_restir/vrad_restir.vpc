@@ -14,7 +14,7 @@ $Configuration
 	$Compiler
 	{
 		$AdditionalIncludeDirectories "$BASE;$SRCDIR\utils\common;$SRCDIR\utils\vrad_restir;$SRCDIR\thirdparty\vulkan_sdk\Include"
-		$PreprocessorDefinitions "$BASE;PROTECTED_THINGS_DISABLE;VRAD_RESTIR"
+		$PreprocessorDefinitions "$BASE;PROTECTED_THINGS_DISABLE;VRAD_RESTIR;ZIP_SUPPORT_LZMA_ENCODE"
 	}
 	$Linker
 	{
@@ -45,6 +45,7 @@ $Project "VRAD ReSTIR (DLL)"
 		$File "prop_lighting.cpp"
 		$File "ambient_cube.cpp"
 		$File "bsp_output.cpp"
+		$File "hlight_output.cpp"
 
 		$Folder "Common Files"
 		{
@@ -87,6 +88,8 @@ $Project "VRAD ReSTIR (DLL)"
 		$File "prop_lighting.h"
 		$File "ambient_cube.h"
 		$File "bsp_output.h"
+		$File "hlight_output.h"
+		$File "$SRCDIR\public\hlight_bsp.h"
 	}
 	$Folder "Link Libraries"
 	{

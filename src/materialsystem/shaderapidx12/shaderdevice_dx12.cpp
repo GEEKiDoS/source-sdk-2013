@@ -168,6 +168,9 @@ bool CShaderDeviceDX12::Initialize( void *hWnd, int nAdapter, const ShaderDevice
 		ShutdownDevice();
 		return false;
 	}
+	D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+	const int bindingTier = SUCCEEDED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) ) ? int( options.ResourceBindingTier ) : 0;
+	if ( g_pHardwareConfigDX12 ) g_pHardwareConfigDX12->SetResourceBindingTier( bindingTier );
 	if ( ( bDebug || bGpuValidation ) && SUCCEEDED( m_pDevice.As( &m_pInfoQueue ) ) )
 		m_pInfoQueue->SetMuteDebugOutput( FALSE );
 	if ( !LoadDxbcSigner( m_hSignerModule, m_pfnSigner ) )
@@ -950,12 +953,10 @@ void CShaderDeviceDX12::ApplyFrameGenSelect()
 	for ( View *pView : m_Views )
 		if ( !WaitForFence( pView->lastFence ) )
 			return;
-	if ( !m_bChangingMode && g_pShaderDeviceDX12 == this && g_pShaderDeviceMgrDX12 )
-	{
-		m_bChangingMode = true;
-		g_pShaderDeviceMgrDX12->NotifyModeChange();
-		m_bChangingMode = false;
-	}
+	// A provider switch only replaces our private presentation resources; it
+	// does not change the window's display mode. The engine's mode callback
+	// mutates the HWND and deadlocks here when Present runs on the material
+	// worker while the window thread waits for that worker to finish.
 	for ( View *pView : m_Views )
 	{
 		pView->sceneColor.Reset();
@@ -1101,6 +1102,15 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			get( index );
 			get( address );
 			list->SetGraphicsRootConstantBufferView( index, address );
+			break;
+		}
+		case Op::SetGraphicsRootUnorderedAccessView:
+		{
+			UINT index;
+			D3D12_GPU_VIRTUAL_ADDRESS address;
+			get( index );
+			get( address );
+			list->SetGraphicsRootUnorderedAccessView( index, address );
 			break;
 		}
 		case Op::SetGraphicsRoot32BitConstants:
@@ -1559,6 +1569,9 @@ void CShaderDeviceDX12::ShutdownDevice()
 		Submit( true );
 	if ( m_nFenceValue && !m_bFailed )
 		WaitForFence( m_nFenceValue );
+	m_Highres.ReleaseDevice();
+	m_Lighting.Shutdown();
+	if ( g_pHardwareConfigDX12 ) g_pHardwareConfigDX12->SetResourceBindingTier( 0 );
 	ReleaseViews();
 	// The provider outlives its chains (released above) but not the queue it may have created: drop the queue,
 	// then the provider (Streamline/FFX/XeFG contexts), before the remaining device objects.
@@ -1793,6 +1806,12 @@ void CShaderDeviceDX12::Present()
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 Present", DX12_ZONES_ACTIVE );
 	if ( !IsRecordingOwner() || !m_pCurrentView || !CommandList() )
 		return;
+	m_Lighting.Reclaim();
+	if ( m_Lighting.PresentationBlocked() )
+	{
+		Submit( false );
+		return;
+	}
 	FlushSubmissions();
 	View &view = *m_pCurrentView;
 	RECT rect{};
@@ -2128,6 +2147,16 @@ static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool 
 		pRecord->bytecode.CopyArray( pBits, nBytes );
 	else
 		pRecord->legacyBytecode.CopyArray( pBits, nBytes );
+	if ( pRecord->legacyBytecode.IsEmpty() )
+	{
+		CUtlString error;
+		if ( !ValidateLightingShaderDX12( pRecord->Bytecode(), bPixel, &pRecord->lightingAbi, error, &pRecord->sunVisibilityAbi ) )
+		{
+			Warning( "Shadowmaps: required native shader unavailable: %s\n", error.Get() );
+			delete pRecord;
+			return nullptr;
+		}
+	}
 	return pRecord;
 }
 
@@ -2332,6 +2361,25 @@ CShaderDeviceMgrDX12::~CShaderDeviceMgrDX12()
 	Shutdown();
 }
 
+// Keep native HDR selection enabled before any map load. Source still chooses
+// LDR automatically when the map has no HDR lighting; this does not force HDR
+// resources onto an LDR-only map or enable HDR display output.
+static void EnforceNativeLightingTier( IConVar *variable, const char *, float )
+{
+	if ( !V_strcmp( variable->GetName(), "mat_hdr_level" ) )
+	{
+		ConVarRef hdrLevel( variable );
+		if ( hdrLevel.GetInt() < 2 )
+			hdrLevel.SetValue( 2 );
+	}
+	else if ( !V_strcmp( variable->GetName(), "mat_dxlevel" ) )
+	{
+		ConVarRef dxLevel( variable );
+		if ( dxLevel.GetInt() != kSourceDXLevel )
+			dxLevel.SetValue( kSourceDXLevel );
+	}
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Resolves the host filesystem/shader utility and connects tier1/tier2
 //-----------------------------------------------------------------------------
@@ -2355,7 +2403,16 @@ bool CShaderDeviceMgrDX12::Connect( CreateInterfaceFn factory )
 	// Registers this module's development commands (shader_precache) with the host cvar system. FCVAR_CHEAT gates
 	// them behind sv_cheats; FCVAR_DEVELOPMENTONLY would make retail engines reject them outright (cmd.cpp:1036).
 	if ( g_pCVar )
+	{
 		ConVar_Register( FCVAR_CHEAT );
+		g_pCVar->InstallGlobalChangeCallback( EnforceNativeLightingTier );
+		ConVarRef hdrLevel( "mat_hdr_level", true );
+		if ( hdrLevel.IsValid() && hdrLevel.GetInt() < 2 )
+			hdrLevel.SetValue( 2 );
+		ConVarRef dxLevel( "mat_dxlevel", true );
+		if ( dxLevel.IsValid() && dxLevel.GetInt() != kSourceDXLevel )
+			dxLevel.SetValue( kSourceDXLevel );
+	}
 	MathLib_Init( 2.2f, 2.2f, 0.0f, 2 );
 	m_DxSupport.Load( m_pFilesystem ); // Malformed profiles log and leave hardware-derived caps intact.
 	return true;
@@ -2371,7 +2428,10 @@ void CShaderDeviceMgrDX12::Disconnect()
 	if ( m_pfnHostFactory )
 	{
 		if ( g_pCVar )
+		{
+			g_pCVar->RemoveGlobalChangeCallback( EnforceNativeLightingTier );
 			ConVar_Unregister();
+		}
 		DisconnectTier2Libraries();
 		DisconnectTier1Libraries();
 	}
@@ -2427,9 +2487,8 @@ InitReturnVal_t CShaderDeviceMgrDX12::Init()
 		caps.vendor = desc.VendorId;
 		caps.device = desc.DeviceId;
 		caps.memory = desc.DedicatedVideoMemory;
-		m_DxSupport.ReadDXSupportLevels( caps );
-		info.m_nDXSupportLevel = caps.recommended;
-		info.m_nMaxDXSupportLevel = caps.max;
+		info.m_nDXSupportLevel = kSourceDXLevel;
+		info.m_nMaxDXSupportLevel = kSourceDXLevel;
 		m_AdapterInfo.AddToTail( info );
 		m_AdapterCaps.AddToTail( caps );
 	}
@@ -2455,9 +2514,8 @@ InitReturnVal_t CShaderDeviceMgrDX12::Init()
 					caps.vendor = desc.VendorId;
 					caps.device = desc.DeviceId;
 					caps.memory = desc.DedicatedVideoMemory;
-					m_DxSupport.ReadDXSupportLevels( caps );
-					info.m_nDXSupportLevel = caps.recommended;
-					info.m_nMaxDXSupportLevel = caps.max;
+					info.m_nDXSupportLevel = kSourceDXLevel;
+					info.m_nMaxDXSupportLevel = kSourceDXLevel;
 					m_AdapterInfo.AddToTail( info );
 					m_AdapterCaps.AddToTail( caps );
 				}
@@ -2578,6 +2636,9 @@ InitReturnVal_t CShaderDeviceMgrDX12::Init()
 //-----------------------------------------------------------------------------
 void CShaderDeviceMgrDX12::Shutdown()
 {
+	// Final app-system/module shutdown, unlike SetMode's device-only reset.
+	// Remove callbacks/detours while the sink and old recording resources still exist.
+	m_Device.Highres().Shutdown();
 	if ( g_pShaderAPIDX12 )
 		g_pShaderAPIDX12->ShutdownDeviceResources();
 	m_Device.ShutdownDevice();
@@ -2606,7 +2667,7 @@ void CShaderDeviceMgrDX12::GetAdapterInfo( int nAdapter, MaterialAdapterInfo_t &
 
 bool CShaderDeviceMgrDX12::GetRecommendedConfigurationInfo( int nAdapter, int nDXLevel, KeyValues *pConfiguration )
 {
-	if ( nAdapter < 0 || nAdapter >= m_AdapterCaps.Count() || !pConfiguration || ( nDXLevel != 0 && nDXLevel != 90 && nDXLevel != 95 ) )
+	if ( nAdapter < 0 || nAdapter >= m_AdapterCaps.Count() || !pConfiguration )
 		return false;
 	return m_DxSupport.GetRecommendedConfigurationInfo( m_AdapterCaps[nAdapter], nDXLevel, pConfiguration );
 }
@@ -2665,21 +2726,18 @@ CreateInterfaceFn CShaderDeviceMgrDX12::SetMode( void *hWnd, int nAdapter, const
 	if ( !SetAdapter( nAdapter, 0 ) )
 		return nullptr;
 	DXSupportCapsDX12 caps = m_AdapterCaps[nAdapter];
-	const int nLevel = mode.m_nDXLevel ? mode.m_nDXLevel : caps.recommended;
-	if ( ( nLevel != 90 && nLevel != 95 ) || nLevel > caps.max )
-		return nullptr;
+	ShaderDeviceInfo_t nativeMode = mode;
+	nativeMode.m_nDXLevel = kSourceDXLevel;
 	if ( g_pShaderAPIDX12 )
 		g_pShaderAPIDX12->ShutdownDeviceResources();
-	if ( !m_Device.Initialize( hWnd, nAdapter, mode, m_pAdapters[nAdapter] ) )
+	if ( !m_Device.Initialize( hWnd, nAdapter, nativeMode, m_pAdapters[nAdapter] ) )
 		return nullptr;
-	m_DxSupport.ReadHardwareCaps( caps, nLevel );
+	m_DxSupport.ReadHardwareCaps( caps, kSourceDXLevel );
 	MaterialAdapterInfo_t info{};
 	GetAdapterInfo( nAdapter, info );
 	if ( g_pHardwareConfigDX12 )
 	{
 		g_pHardwareConfigDX12->SetAdapter( info, caps.memory, mode.m_nAASamples > 1 );
-		g_pHardwareConfigDX12->SetDXSupportLevels( caps.recommended, caps.max );
-		g_pHardwareConfigDX12->SetDXLevel( nLevel );
 		g_pHardwareConfigDX12->SetSupportCaps( caps.fastClipping, caps.centroidHack, caps.disableShaderOptimizations );
 	}
 	if ( !g_pShaderAPIDX12 || !g_pShaderAPIDX12->InitializeDeviceResources( &m_Device ) )
@@ -2689,7 +2747,8 @@ CreateInterfaceFn CShaderDeviceMgrDX12::SetMode( void *hWnd, int nAdapter, const
 		m_Device.ShutdownDevice();
 		return nullptr;
 	}
-	Msg( "ShaderAPIDX12: native D3D12 initialized on %s, %dx%d, material DX level %d, %u samples\n", info.m_pDriverName, m_Device.SceneWidth(), m_Device.SceneHeight(), nLevel, m_Device.SceneSampleCount() );
+	m_Device.Highres().Initialize( &m_Device, g_pShaderAPIDX12 );
+	Msg( "ShaderAPIDX12: native D3D12 initialized on %s, %dx%d, material DX level %d, %u samples\n", info.m_pDriverName, m_Device.SceneWidth(), m_Device.SceneHeight(), kSourceDXLevel, m_Device.SceneSampleCount() );
 	return Sys_GetFactoryThis();
 }
 

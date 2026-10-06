@@ -102,6 +102,8 @@ void main()
 	{
 		if ( emittersOnly && ( lights[lightIndex].lightFlags & RESTIR_LIGHT_MATERIAL ) == 0 )
 			continue;
+		if ( ( lights[lightIndex].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0 )
+			continue;	// Only returned receiver direct: RayAmbientColor / StaticPropIndirect stay full-source.
 		uint slot = uint( lights[lightIndex].styleSlot );
 		results[index * pc.numStyles + slot].direct.rgb += PointDirectLight( lightIndex, query, skipHitId, Hash( key ^ lightIndex ) );
 	}

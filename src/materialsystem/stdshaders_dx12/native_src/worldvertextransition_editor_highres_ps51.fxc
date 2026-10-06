@@ -1,0 +1,45 @@
+// HIGHLIGHT_SAMPLERS: 4
+// Enhanced-only replacement of WorldVertexTransition_Editor.psh.
+#define DX12_HIGHRES_LIGHTMAPS 1
+#define DX12_SHADOWMAPS 1
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+// DYNAMIC: "PIXELFOGTYPE" "0..2"
+#include "common_ps_fxc.h"
+Texture2D<float4> EditorBase0 : register(t0);
+Texture2D<float4> EditorBase1 : register(t1);
+Texture2D<float4> EditorNativeLightmap : register(t2);
+SamplerState EditorSampler0 : register(s0);
+SamplerState EditorSampler1 : register(s1);
+SamplerState EditorSampler2 : register(s2);
+cbuffer WorldVertexTransitionEditorNormalization : register(b1, space1)
+{
+    float4 cEditorOverbright; // @legacy ps:c0
+};
+struct PS_INPUT
+{
+    float4 position : SV_Position;
+    float4 color : COLOR0;
+    float2 uv0 : TEXCOORD0;
+    float2 uv1 : TEXCOORD1;
+    centroid float2 baseLightmapUV : TEXCOORD2;
+    float4 worldPositionZ : TEXCOORD3;
+    float3 worldNormal : TEXCOORD4;
+    float fog : FOG;
+};
+float4 main(PS_INPUT i) : SV_Target0
+{
+    float3 normal = normalize(i.worldNormal);
+    ShadowMapReceiver receiver = ShadowMap_BeginReceiver(i.worldPositionZ.xyz, normal, i.position.xy);
+    HlightReceiver highres = HighresLightmap_Begin(i.baseLightmapUV);
+    receiver.bakedSunVisibility = highres.sun;
+    ShadowMapDirect direct = ShadowMap_GatherDirect(receiver, ShadowMap_ShadeLambert(normal));
+    float4 nativeSample = EditorNativeLightmap.Sample(EditorSampler2, i.baseLightmapUV);
+    float4 lightmap = HighresLightmap_Plane(highres, 0, nativeSample);
+    if (cHlightRoute.x == 0) lightmap.rgb *= 2 * cEditorOverbright.rgb;
+    lightmap.rgb += direct.diffuse * highres.valid;
+    float4 base = lerp(EditorBase1.Sample(EditorSampler1, i.uv1), EditorBase0.Sample(EditorSampler0, i.uv0), i.color.a);
+    float4 result = base * lightmap;
+    float fogFactor = CalcPixelFogFactor(PIXELFOGTYPE, cPixelFogParams, cEyePosition.xyz, i.worldPositionZ.xyz, i.worldPositionZ.w);
+    return HighresLightmap_Finish(DX12FinishPixel(FinalOutput(result, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR), i.fog));
+}

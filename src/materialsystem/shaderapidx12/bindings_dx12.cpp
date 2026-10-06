@@ -48,14 +48,12 @@ void CDescriptorAllocatorDX12::Shutdown()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Linear transient allocation retired with nRetireFence; switches to a
-//          fresh heap when the current one cannot fit the request
+// Purpose: Ensures a contiguous transient run fits without allocating it
 //-----------------------------------------------------------------------------
-DescriptorRangeDX12 CDescriptorAllocatorDX12::Allocate( uint32_t nCount, uint64_t nRetireFence )
+bool CDescriptorAllocatorDX12::EnsureCapacity( uint32_t nCount, uint64_t nRetireFence )
 {
-	DescriptorRangeDX12 out{};
-	if ( !nCount || nCount > m_nCapacity )
-		return out;
+	if ( !nCount || nCount > m_nCapacity || !m_pHeap )
+		return false;
 	if ( !m_nUsed )
 		m_nHead = 0;
 	if ( nCount > m_nCapacity - m_nHead )
@@ -73,7 +71,7 @@ DescriptorRangeDX12 CDescriptorAllocatorDX12::Allocate( uint32_t nCount, uint64_
 			desc.NumDescriptors = m_nCapacity;
 			desc.Flags = m_bShaderVisible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 			if ( FAILED( m_pDevice->CreateDescriptorHeap( &desc, IID_PPV_ARGS( &pNext ) ) ) )
-				return out;
+				return false;
 		}
 		RetiredHeap &retiredHeap = m_RetiredHeaps[m_RetiredHeaps.AddToTail()];
 		retiredHeap.heap.Swap( m_pHeap );
@@ -85,6 +83,19 @@ DescriptorRangeDX12 CDescriptorAllocatorDX12::Allocate( uint32_t nCount, uint64_
 		m_nHeapFence = 0;
 		++m_nGeneration;
 	}
+	m_nHeapFence = MAX( nRetireFence, m_nHeapFence );
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Linear transient allocation retired with nRetireFence; switches to a
+//          fresh heap when the current one cannot fit the request
+//-----------------------------------------------------------------------------
+DescriptorRangeDX12 CDescriptorAllocatorDX12::Allocate( uint32_t nCount, uint64_t nRetireFence )
+{
+	DescriptorRangeDX12 out{};
+	if ( !EnsureCapacity( nCount, nRetireFence ) )
+		return out;
 	out.index = m_nHead;
 	out.count = nCount;
 	out.generation = m_nGeneration;

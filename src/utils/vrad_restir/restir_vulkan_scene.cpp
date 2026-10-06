@@ -266,6 +266,13 @@ bool CReSTIRVulkanDevice::UpdateFaceStyles( const ReSTIRScene &scene )
 	return true;
 }
 
+bool CReSTIRVulkanDevice::Impl::HasSelectedSun() const
+{
+	return scene && options.shadowMaps && scene->skyLight >= 0 && scene->skyLight < scene->lights.Count() &&
+		scene->lights[scene->skyLight].type == emit_skylight &&
+		( scene->lights[scene->skyLight].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0;
+}
+
 bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 {
 	Impl &gpu = *m_pImpl;
@@ -281,6 +288,12 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.push.skyLight = scene.skyLight;
 	gpu.push.skyAmbientLight = scene.skyAmbientLight;
 	gpu.push.flags = gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0;
+	const bool selectedSun = gpu.HasSelectedSun();
+	if ( selectedSun && scene.sunVisibilityOrigins.Count() != scene.luxels.Count() )
+		gpu.Fail( "selected sun visibility origins must match the geometric luxel count" );
+	memset( gpu.push.shadowSun, 0, sizeof( gpu.push.shadowSun ) );
+	if ( selectedSun )
+		gpu.push.shadowSun[0] = DEG2RAD( scene.shadowSunAngularRadius );
 	for ( int axis = 0; axis < 3; ++axis )
 	{
 		gpu.push.worldMins[axis] = scene.worldMins[axis];
@@ -295,6 +308,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 			gpu.Fail( "triangle sort count exceeds 32-bit range" );
 		gpu.paddedTriangles <<= 1;
 	}
+	const bool shadowSplit = gpu.options.shadowMaps && scene.shadowLights.Count() != 0;
 	VkDeviceSize sizes[RESTIR_BIND_COVERAGE] =
 	{
 		(VkDeviceSize)scene.triangles.Count() * sizeof( ReSTIRGpuTriangle ),
@@ -311,7 +325,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4,
 		(VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4,
 		(VkDeviceSize)scene.luxels.Count() * sizeof( unsigned int ),
-		(VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4,
+		( (VkDeviceSize)scene.numOutputValues + (VkDeviceSize)faces.Count() * MAXLIGHTMAPS ) * sizeof( float ) * 4,
 		RESTIR_STAGING_BYTES, RESTIR_STAGING_BYTES,
 		gpu.hardware || !scene.triangles.Count() ? 16 : ( (VkDeviceSize)scene.triangles.Count() * 2 - 1 ) * sizeof( ReSTIRBvhNode ),
 		gpu.hardware ? 16 : (VkDeviceSize)scene.triangles.Count() * sizeof( unsigned int ),
@@ -320,8 +334,13 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		16,
 		(VkDeviceSize)scene.sceneStyles.Count() * sizeof( int ),
 		(VkDeviceSize)scene.emitterTriangles.Count() * sizeof( ReSTIRGpuEmitterTriangle ),
-		(VkDeviceSize)scene.styleLights.Count() * sizeof( int )
+		(VkDeviceSize)scene.styleLights.Count() * sizeof( int ),
+		shadowSplit ? reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4 : 16,
+		shadowSplit ? (VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4 : 16,
+		selectedSun ? (VkDeviceSize)scene.luxels.Count() * sizeof( Vector4D ) : 16,
+		selectedSun ? (VkDeviceSize)scene.luxels.Count() * sizeof( float ) : 16
 	};
+	COMPILE_TIME_ASSERT( sizeof( Vector4D ) == 16 );
 	for ( int binding = 0; binding < RESTIR_BIND_COVERAGE; ++binding )
 	{
 		if ( sizes[binding] > gpu.properties.limits.maxStorageBufferRange )
@@ -364,6 +383,13 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.Upload( RESTIR_BIND_FACES, faces.Base(), sizes[RESTIR_BIND_FACES] );
 	gpu.Upload( RESTIR_BIND_SAMPLES, scene.samples.Base(), sizes[RESTIR_BIND_SAMPLES] );
 	gpu.Upload( RESTIR_BIND_LUXELS, scene.luxels.Base(), sizes[RESTIR_BIND_LUXELS] );
+	if ( selectedSun )
+		gpu.Upload( RESTIR_BIND_SUN_ORIGINS, scene.sunVisibilityOrigins.Base(), sizes[RESTIR_BIND_SUN_ORIGINS] );
+	else
+	{
+		const float dummyOrigins[4] = {};
+		gpu.Upload( RESTIR_BIND_SUN_ORIGINS, dummyOrigins, sizeof( dummyOrigins ) );
+	}
 	gpu.Upload( RESTIR_BIND_FACE_NEIGHBORS, scene.faceNeighbors.Base(), (VkDeviceSize)scene.faceNeighbors.Count() * sizeof( int ) );
 	gpu.Upload( RESTIR_BIND_FACE_NEIGHBORS, scene.dfaceToFace.Base(), (VkDeviceSize)scene.dfaceToFace.Count() * sizeof( int ), (VkDeviceSize)scene.faceNeighbors.Count() * sizeof( int ) );
 	CUtlVector<int> cellSamples;

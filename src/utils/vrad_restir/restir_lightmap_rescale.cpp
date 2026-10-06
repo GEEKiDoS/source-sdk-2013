@@ -14,6 +14,7 @@
 //=============================================================================//
 #include "stdafx.h"
 #include "restir_lightmap_rescale.h"
+#include "bsp_output.h"
 #include "vrad_restir.h"
 #include "bsplib.h"
 #include "polylib.h"
@@ -290,6 +291,8 @@ static const char *const s_pScaleKey = "_restir_lightmapscale";
 
 bool ReSTIR_RescaleLightmaps( const ReSTIROptions &options )
 {
+	if ( !ReSTIR_PrepareShadowMapStorage( options ) )
+		return false;
 	float scale = options.lightmapScale;
 	if ( scale >= 1.0f )
 	{
@@ -539,6 +542,8 @@ bool ReSTIR_RescaleLightmaps( const ReSTIROptions &options )
 		}
 		Msg( "VRAD ReSTIR: lightmap scale %.3f: about %lld of %d light data bytes per mode\n", options.lightmapScale, (long long)bytes, MAX_MAP_LIGHTING );
 	}
+	if ( rescaled > 0 && !ReSTIR_InvalidateShadowMapTopology( options ) )
+		goto fail;
 
 	// 6. Write the new face arrays. Both modes share geometry, and the other mode's
 	//    lighting was laid out for the old extents, so it is invalidated (the

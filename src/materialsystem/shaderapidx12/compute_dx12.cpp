@@ -319,6 +319,8 @@ bool CShaderAPIDX12::PromoteRenderTarget( TextureRecord &texture, bool bUav, int
 //-----------------------------------------------------------------------------
 bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 {
+	if ( m_pDevice && m_pDevice->Lighting().ShadowPassActive() )
+		return false;
 	const char *name = dispatch.m_pShaderName;
 	if ( !name || !*name || dispatch.m_nConstantBytes < 0 || dispatch.m_nConstantBytes > SHADERAPIDX12_COMPUTE_MAX_CONSTANTS || ( dispatch.m_nConstantBytes && !dispatch.m_pConstants ) || dispatch.m_nGroupsX <= 0 || dispatch.m_nGroupsY <= 0 || dispatch.m_nGroupsZ <= 0 )
 	{

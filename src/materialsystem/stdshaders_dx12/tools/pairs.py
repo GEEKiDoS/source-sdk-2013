@@ -64,12 +64,12 @@ VL = 'vertexlit_and_unlit_generic'
 VERTEXLIT = [
     pair('vertexlit', VL + '_vs30', 'decalmodulate_ps30', ['DecalModulate_dx9.cpp']),
     pair('vertexlit', 'unlittwotexture_vs20', 'monitorscreen_ps20b', ['MonitorScreen_dx9.cpp']),
-    pair('vertexlit', 'treeleaf_vs20', 'treeleaf_ps20b', ['TreeLeaf.cpp']),
-    pair('vertexlit', 'cable_vs20', 'cable_ps20b', ['cable_dx9.cpp']),
+    pair('vertexlit', 'treeleaf_vs20', 'treeleaf_ps20b', ['TreeLeaf.cpp'], shadowmaps=True),
+    pair('vertexlit', 'cable_vs20', 'cable_ps20b', ['cable_dx9.cpp'], shadowmaps=True),
     pair('vertexlit', 'unlitgeneric_vs20', 'modulate_ps20b', ['modulate_dx9.cpp']),
     pair('vertexlit', 'unlittwotexture_vs20', 'unlittwotexture_ps20b', ['unlittwotexture_dx9.cpp']),
-    pair('vertexlit', VL + '_bump_vs30', VL + '_bump_ps30', ['vertexlitgeneric_dx9_helper.cpp']),
-    pair('vertexlit', VL + '_vs30', VL + '_ps30', ['vertexlitgeneric_dx9_helper.cpp']),
+    pair('vertexlit', VL + '_bump_vs30', VL + '_bump_ps30', ['vertexlitgeneric_dx9_helper.cpp'], shadowmaps=True),
+    pair('vertexlit', VL + '_vs30', VL + '_ps30', ['vertexlitgeneric_dx9_helper.cpp'], shadowmaps=True),
     pair('vertexlit', 'windowimposter_vs20', 'windowimposter_ps20b', ['windowimposter_dx90.cpp']),
 ]
 WORLD_MISC = [
@@ -79,7 +79,7 @@ WORLD_MISC = [
     pair('world_misc', 'sky_vs20', 'sky_ps20b', ['sky_dx9.cpp', 'sky_hdr_dx9.cpp']),
     pair('world_misc', 'sky_vs20', 'sky_hdr_compressed_ps20b', ['sky_hdr_dx9.cpp']),
     pair('world_misc', 'sky_vs20', 'sky_hdr_compressed_rgbs_ps20b', ['sky_hdr_dx9.cpp']),
-    pair('world_misc', 'vortwarp_vs30', 'vortwarp_ps30', ['vortwarp_dx9.cpp']),
+    pair('world_misc', 'vortwarp_vs30', 'vortwarp_ps30', ['vortwarp_dx9.cpp'], shadowmaps=True),
     pair('world_misc', 'warp_vs30', 'warp_ps30', ['warp.cpp']),
 ]
 SPRITES = [
@@ -100,24 +100,24 @@ WATER = [
     pair('water_refract', 'watercheap_vs20', 'watercheap_ps20b', ['water.cpp']),
 ]
 EYES = [
-    pair('eyes_teeth_skin', 'eye_refract_vs30', 'eye_refract_ps30', ['eye_refract_helper.cpp']),
+    pair('eyes_teeth_skin', 'eye_refract_vs30', 'eye_refract_ps30', ['eye_refract_helper.cpp'], shadowmaps=True),
     pair('eyes_teeth_skin', 'eyeglint_vs20', 'eyeglint_ps20b', ['eyeglint_dx9.cpp']),
     pair('eyes_teeth_skin', 'eyes_flashlight_vs30', 'eyes_flashlight_ps30', ['eyes_dx8_dx9_helper.cpp']),
-    pair('eyes_teeth_skin', 'eyes_vs30', 'eyes_ps30', ['eyes_dx8_dx9_helper.cpp']),
-    pair('eyes_teeth_skin', 'skin_vs30', 'skin_ps30', ['skin_dx9_helper.cpp']),
-    pair('eyes_teeth_skin', 'teeth_bump_vs30', 'teeth_bump_ps30', ['teeth.cpp']),
-    pair('eyes_teeth_skin', 'teeth_vs30', 'teeth_ps30', ['teeth.cpp']),
+    pair('eyes_teeth_skin', 'eyes_vs30', 'eyes_ps30', ['eyes_dx8_dx9_helper.cpp'], shadowmaps=True),
+    pair('eyes_teeth_skin', 'skin_vs30', 'skin_ps30', ['skin_dx9_helper.cpp'], shadowmaps=True),
+    pair('eyes_teeth_skin', 'teeth_bump_vs30', 'teeth_bump_ps30', ['teeth.cpp'], shadowmaps=True),
+    pair('eyes_teeth_skin', 'teeth_vs30', 'teeth_ps30', ['teeth.cpp'], shadowmaps=True),
     pair('eyes_teeth_skin', 'teeth_flashlight_vs30', 'teeth_flashlight_ps30', ['teeth.cpp']),
 ]
 LMG = 'lightmappedgeneric'
 LIGHTMAPPED = [
     pair('lightmapped', LMG + '_flashlight_vs20', 'flashlight_ps20b', ['BaseVSShader.cpp']),
     pair('lightmapped', 'depthtodestalpha_vs20', 'depthtodestalpha_ps20b', ['BaseVSShader.cpp']),
-    pair('lightmapped', LMG + '_decal_vs20', LMG + '_decal_ps20b', ['DecalBaseTimesLightmapAlphaBlendSelfIllum_dx9.cpp']),
+    pair('lightmapped', LMG + '_decal_vs20', LMG + '_decal_ps20b', ['DecalBaseTimesLightmapAlphaBlendSelfIllum_dx9.cpp'], shadowmaps=True),
     pair('lightmapped', LMG + '_vs20', 'decalbasetimeslightmapalphablendselfillum2_ps20b', ['DecalBaseTimesLightmapAlphaBlendSelfIllum_dx9.cpp']),
-    pair('lightmapped', LMG + '_vs20', LMG + '_ps20b', ['lightmappedgeneric_dx9_helper.cpp']),
-    pair('lightmapped', 'lightmappedreflective_vs20', 'lightmappedreflective_ps20b', ['lightmappedreflective.cpp']),
-    pair('lightmapped', LMG + '_vs20', 'worldtwotextureblend_ps20b', ['worldtwotextureblend.cpp']),
+    pair('lightmapped', LMG + '_vs20', LMG + '_ps20b', ['lightmappedgeneric_dx9_helper.cpp'], shadowmaps=True),
+    pair('lightmapped', 'lightmappedreflective_vs20', 'lightmappedreflective_ps20b', ['lightmappedreflective.cpp'], shadowmaps=True),
+    pair('lightmapped', LMG + '_vs20', 'worldtwotextureblend_ps20b', ['worldtwotextureblend.cpp'], shadowmaps=True),
 ]
 MORPH = [
     pair('morph_debug', 'debugmorphaccumulator_vs30', 'debugmorphaccumulator_ps30', ['debugmorphaccumulator_dx9.cpp']),
@@ -145,6 +145,13 @@ NATIVE_ONLY = [
     native_only('postfx', 'postfx_glare_cs51.fxc', 'cs', 'postfx_glare_cs51'),
     native_only('postfx', 'postfx_composite_ps51.fxc', 'ps', 'postfx_composite_ps51'),
     native_only('postfx', 'postfx_rcas_ps51.fxc', 'ps', 'postfx_rcas_ps51'),
+    native_only('shadowmaps', 'shadow_depth_restore_vs51.fxc', 'vs', 'shadow_depth_restore_vs51'),
+    native_only('shadowmaps', 'shadow_depth_restore_ps51.fxc', 'ps', 'shadow_depth_restore_ps51'),
+    native_only('shadowmaps', 'dx12_detailshadowlit_vs51.fxc', 'vs', 'dx12_detailshadowlit_vs51'),
+    native_only('shadowmaps', 'dx12_detailshadowlit_ps51.fxc', 'ps', 'dx12_detailshadowlit_ps51'),
+    native_only('shadowmaps', 'dx12_detailshadowlit_depth_ps51.fxc', 'ps', 'dx12_detailshadowlit_depth_ps51'),
+    native_only('lightmapped', 'worldvertextransition_editor_highres_vs51.fxc', 'vs', 'worldvertextransition_editor_highres_vs51'),
+    native_only('lightmapped', 'worldvertextransition_editor_highres_ps51.fxc', 'ps', 'worldvertextransition_editor_highres_ps51'),
 ]
 ALL = SCREENSPACE + POSTFX + VERTEXLIT + WORLD_MISC + SPRITES + WATER + EYES + LIGHTMAPPED + MORPH + EFFECTS
 

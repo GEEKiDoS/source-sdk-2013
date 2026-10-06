@@ -1045,7 +1045,8 @@ static void AddBrushModelGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene
 			const int material = ReSTIR_GetOrAddMaterial( scene, materialName, texdata.reflectivity,
 				context.options->textureShadows, &alphaTested );
 			ReSTIR_SceneAddWindingTriangles( scene, winding, side.texinfo, material,
-				RESTIR_TRACE_ID_OPAQUE, RESTIR_TRI_SHADOW | ( alphaTested ? RESTIR_TRI_NONOPAQUE : 0 ),
+				RESTIR_TRACE_ID_OPAQUE, RESTIR_TRI_SHADOW | ( model == 0 ? RESTIR_TRI_STATIC_SUN : 0 ) |
+					( alphaTested ? RESTIR_TRI_NONOPAQUE : 0 ),
 				-1, transform, false, vec3_origin );
 			FreeWinding( winding );
 		}
@@ -1069,7 +1070,10 @@ static void AddFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 		winding->p[edge] = dvertexes[ReSTIR_SceneFaceVertex( &face, edge )].point;
 	context.faceTriFirst[faceIndex] = scene.triangles.Count();
 	VMatrix identity;
-	identity.SetupMatrixOrgAngles( context.faceOrigins[faceIndex], QAngle( 0, 0, 0 ) );
+	// This is translation only. Approximate sin/cos at zero subtly scales the
+	// winding, breaking exact correspondence with the engine's BSP vertices.
+	identity.Identity();
+	identity.SetTranslation( context.faceOrigins[faceIndex] );
 	const unsigned int flags = context.faceModels[faceIndex] == 0 && !( info.flags & SURF_NOLIGHT ) ?
 		RESTIR_TRI_WORLDFACE : 0;
 	ReSTIR_SceneAddWindingTriangles( scene, winding, face.texinfo, material,
@@ -1098,7 +1102,7 @@ static void AddSkyFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 	identity.Identity();
 	context.faceTriFirst[faceIndex] = scene.triangles.Count();
 	ReSTIR_SceneAddWindingTriangles( scene, winding, face.texinfo, material,
-		RESTIR_TRACE_ID_SKY, RESTIR_TRI_SHADOW | RESTIR_TRI_SKY | RESTIR_TRI_WORLDFACE |
+		RESTIR_TRACE_ID_SKY, RESTIR_TRI_SHADOW | RESTIR_TRI_STATIC_SUN | RESTIR_TRI_SKY | RESTIR_TRI_WORLDFACE |
 			( alphaTested ? RESTIR_TRI_NONOPAQUE : 0 ), faceIndex, identity, true,
 		ReSTIR_SceneFaceNormal( &face, vec3_origin ) );
 	context.faceTriCount[faceIndex] = scene.triangles.Count() - context.faceTriFirst[faceIndex];
@@ -1117,7 +1121,7 @@ static void AddDisplacementGeometry( ReSTIRSceneBuildContext &context, ReSTIRSce
 	// Displacement UVs serve lightmap lookup; VRAD displacement shadows are opaque.
 	unsigned int flags = 0;
 	if ( g_dispinfo[face.dispinfo].contents & MASK_OPAQUE )
-		flags |= RESTIR_TRI_SHADOW;
+		flags |= RESTIR_TRI_SHADOW | ( context.faceModels[faceIndex] == 0 ? RESTIR_TRI_STATIC_SUN : 0 );
 	if ( !( info.flags & SURF_NOLIGHT ) )
 		flags |= RESTIR_TRI_WORLDFACE;
 	context.faceTriFirst[faceIndex] = scene.triangles.Count();

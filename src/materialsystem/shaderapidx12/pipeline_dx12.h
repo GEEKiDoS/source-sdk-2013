@@ -33,8 +33,9 @@ struct PipelineKeyDX12
 	uint32_t stencilFunction = 8, stencilFail = 1, stencilDepthFail = 1, stencilPass = 1;
 	uint8_t stencilReadMask = 0xff, stencilWriteMask = 0xff;
 	bool separateAlpha = false, depthTest = true, depthWrite = true, culling = true, colorWrites = true, alphaWrites = true, alphaToCoverage = false, stencil = false;
+	bool lightingAbi = false, highresAbi = false;
 
-	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias; }
+	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi; }
 };
 
 // Owned by the recording thread, like the command list it fills: every entry point runs on the current
@@ -47,9 +48,14 @@ public:
 	void BindDrawState( CCommandRecorderDX12 *pList, const D3D12_VIEWPORT &viewport, const D3D12_RECT &scissor, uint64_t nRetireFence );
 
 	D3D12_CPU_DESCRIPTOR_HANDLE NullShaderResourceView() const { return m_NullSrv; }
+	bool LightingRootAvailable() const { return m_pLightingRoot.Get() != nullptr; }
+	bool HighresRootAvailable() const { return m_pHighresRoot.Get() != nullptr; }
 
 	void Reclaim( uint64_t nCompletedFence );
 	bool UploadTransient( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, const uint32_t *pSwapOffsets = nullptr, size_t nSwapCount = 0, size_t nVertexStride = 0 );
+	// Borrowed upload resource, retained through nRetireFence; offset is a multiple of nStride.
+	bool UploadStructured( const void *pData, size_t nBytes, uint32_t nStride, uint64_t nRetireFence, ID3D12Resource **ppResource, uint64_t *pOffset );
+	void RetainExternalResource( ID3D12Resource *pResource, uint64_t nRetireFence );
 	bool EnsureGeometryBuffer( CCommandRecorderDX12 *pList, CVertexBufferDX12 &buffer, size_t nUsedBytes, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, const uint32_t *pSwapOffsets = nullptr, size_t nSwapCount = 0, size_t nVertexStride = 0 );
 	bool EnsureIndexBuffer( CCommandRecorderDX12 *pList, CIndexBufferDX12 &buffer, size_t nUsedBytes, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress );
 
@@ -78,6 +84,14 @@ public:
 		D3D12_SAMPLER_DESC samplerDescs[32] = {};
 		uint16_t samplerIds[32] = {};
 		DescriptorRangeDX12 samplerTable{};
+		bool lightingAbi = false;
+		bool lightingVisibilityRequired = true;
+		DescriptorRangeDX12 lightingViewTable{};
+		DescriptorRangeDX12 lightingVisibilityTable{};
+		D3D12_GPU_VIRTUAL_ADDRESS lightingViewConstants = 0;
+		bool highresAbi = false;
+		DescriptorRangeDX12 highresTable{};
+		D3D12_GPU_VIRTUAL_ADDRESS highresConstants = 0, highresFailure = 0;
 		uint64_t retireFence = 0;
 		// Whether the draw samples vertex textures / runs a geometry stage; unused root parameters may stay stale.
 		bool vertexTextures = true, geometryStage = true;
@@ -119,14 +133,15 @@ public:
 	void InvalidateGraphicsBindings()
 	{
 		m_bGraphicsBindingsValid = false;
+		m_pBoundRoot = nullptr;
 		m_bDrawStateValid = false;
 		m_pBoundPipeline = nullptr;
 		m_bBoundTargetsValid = false;
 		m_bIaValid = false;
 	}
 
-	// Input-assembler state filtered per recording fence. Slots above count keep earlier bindings, as before.
-	void BindInputAssembler( CCommandRecorderDX12 *pList, const D3D12_VERTEX_BUFFER_VIEW *pViews, UINT nCount, const D3D12_VERTEX_BUFFER_VIEW *pZero, D3D12_PRIMITIVE_TOPOLOGY topology, uint64_t nRetireFence )
+	// Engine slots 0-15 and backend-reserved slots 16-17 are cached independently per recording fence.
+	void BindInputAssembler( CCommandRecorderDX12 *pList, const D3D12_VERTEX_BUFFER_VIEW *pViews, UINT nCount, const D3D12_VERTEX_BUFFER_VIEW *pZero, const D3D12_VERTEX_BUFFER_VIEW *pSunCoordinates, D3D12_PRIMITIVE_TOPOLOGY topology, uint64_t nRetireFence )
 	{
 		const bool reset = !m_bIaValid || m_nIaFence != nRetireFence;
 		if ( reset || m_nBoundVertexCount != nCount || memcmp( m_BoundVertexViews, pViews, sizeof( D3D12_VERTEX_BUFFER_VIEW ) * nCount ) )
@@ -136,14 +151,14 @@ public:
 			memcpy( m_BoundVertexViews, pViews, sizeof( D3D12_VERTEX_BUFFER_VIEW ) * nCount );
 			m_nBoundVertexCount = nCount;
 		}
-		if ( pZero && ( reset || !m_bBoundZeroValid || memcmp( &m_BoundZeroView, pZero, sizeof( *pZero ) ) ) )
-		{
-			pList->IASetVertexBuffers( 16, 1, pZero );
-			m_BoundZeroView = *pZero;
-			m_bBoundZeroValid = true;
-		}
-		if ( reset )
-			m_bBoundZeroValid = pZero != nullptr;
+		const D3D12_VERTEX_BUFFER_VIEW reserved[2] = { pZero ? *pZero : D3D12_VERTEX_BUFFER_VIEW{}, pSunCoordinates ? *pSunCoordinates : D3D12_VERTEX_BUFFER_VIEW{} };
+		for ( UINT i = 0; i < ARRAYSIZE( reserved ); ++i )
+			if ( reset || memcmp( &m_BoundVertexViews[16 + i], &reserved[i], sizeof( reserved[i] ) ) )
+			{
+				// Explicitly clear an unused reserved slot; engine-prefix gaps never overwrite either cache entry.
+				pList->IASetVertexBuffers( 16 + i, 1, &reserved[i] );
+				m_BoundVertexViews[16 + i] = reserved[i];
+			}
 		if ( reset || m_BoundTopology != topology )
 		{
 			pList->IASetPrimitiveTopology( topology );
@@ -192,6 +207,9 @@ public:
 
 	// Shader-visible transient descriptors retired with the recording fence, plus a persistent linear-clamp sampler.
 	DescriptorRangeDX12 AllocateTransientResources( uint32_t nCount, uint64_t nRetireFence ) { return m_Bindings.AllocateDescriptors( nCount, nRetireFence ); }
+	// Call before building related tables; subsequent allocations totaling nCount cannot roll over.
+	bool ReserveResourceDescriptors( uint32_t nCount, uint64_t nRetireFence ) { return m_Bindings.ResourceHeap().EnsureCapacity( nCount, nRetireFence ); }
+	uint64_t ResourceHeapGeneration() const { return m_Bindings.ResourceHeap().Generation(); }
 
 	D3D12_GPU_DESCRIPTOR_HANDLE LinearClampSampler() const { return m_LinearClampSampler; }
 
@@ -251,6 +269,8 @@ private:
 	static constexpr size_t kConstantBufferMaxBytes = 65536;
 	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables.
 	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootParameterCount = 20;
+	static constexpr UINT kRootLightingView = 20, kRootLightingViewConstants = 21, kRootLightingVisibility = 22, kLightingRootParameterCount = 23;
+	static constexpr UINT kRootHighresTable = 23, kRootHighresConstants = 24, kRootHighresFailure = 25, kHighresRootParameterCount = 26;
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride );
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
 	CBindingCacheDX12 m_Bindings;
@@ -290,6 +310,11 @@ private:
 	LastConstantSlot m_RecentConstants[10][kRecentConstants];
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundRootTables[4] = {};
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundNativeTables[2] = {};
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingViewTable{};
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingVisibilityTable{};
+	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundLightingViewConstants = 0;
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundHighresTable{};
+	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundHighresConstants = 0, m_nBoundHighresFailure = 0;
 	LastConstantSlot m_LastNativeSlots[16];
 
 	struct NativeTableCache
@@ -303,6 +328,7 @@ private:
 	NativeTableCache m_NativeTableCache[2];
 	D3D12_GPU_VIRTUAL_ADDRESS m_BoundRootConstants[kRootNativeVertex - kRootVertexConstants] = {};
 	ID3D12DescriptorHeap *m_pBoundResourceHeap = nullptr, *m_pBoundSamplerHeap = nullptr;
+	ID3D12RootSignature *m_pBoundRoot = nullptr;
 	uint64_t m_nGraphicsBindingsFence = 0;
 	bool m_bGraphicsBindingsValid = false;
 	D3D12_VIEWPORT m_BoundViewport{};
@@ -323,13 +349,12 @@ private:
 	D3D12_GPU_DESCRIPTOR_HANDLE m_LinearClampSampler{};
 	StatsDX12 m_Stats{};
 	uint64_t m_nPipelineEpoch = 1;
-	D3D12_VERTEX_BUFFER_VIEW m_BoundVertexViews[16] = {};
-	D3D12_VERTEX_BUFFER_VIEW m_BoundZeroView{};
+	D3D12_VERTEX_BUFFER_VIEW m_BoundVertexViews[18] = {};
 	D3D12_INDEX_BUFFER_VIEW m_BoundIndexView{};
 	D3D12_PRIMITIVE_TOPOLOGY m_BoundTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT m_nBoundVertexCount = 0;
 	uint64_t m_nIaFence = 0;
-	bool m_bIaValid = false, m_bBoundZeroValid = false, m_bBoundIndexValid = false;
+	bool m_bIaValid = false, m_bBoundIndexValid = false;
 	uint64_t m_nLastReclaimedFence = 0;
 	// Invalidates per-buffer retention marks when m_GeometryInFlight is purged.
 	uint64_t m_nRetainEpoch = 1;
@@ -340,7 +365,7 @@ private:
 	D3D12_GPU_VIRTUAL_ADDRESS m_nZeroConstantAddress = 0;
 	D3D12_SHADER_RESOURCE_VIEW_DESC m_NullSrvDesc{};
 	SIZE_T m_nResourceStride = 0, m_nSamplerStride = 0;
-	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pRoot;
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pRoot, m_pLightingRoot, m_pHighresRoot;
 	CUtlVector<Entry> m_Entries;
 	int m_nLastPipelineIndex = -1;
 	// Index plus one; a collision only falls back to the complete-key search.

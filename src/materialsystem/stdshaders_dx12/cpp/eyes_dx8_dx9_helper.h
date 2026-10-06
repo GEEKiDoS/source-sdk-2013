@@ -13,6 +13,7 @@
 #endif
 
 #include <string.h>
+#include "lightmappedgeneric_dx9_helper.h"
 
 
 //-----------------------------------------------------------------------------
@@ -29,7 +30,8 @@ class IShaderShadow;
 //-----------------------------------------------------------------------------
 struct Eyes_DX8_DX9_Vars_t
 {
-	Eyes_DX8_DX9_Vars_t() { memset( this, 0xFF, sizeof(Eyes_DX8_DX9_Vars_t) ); }
+	Eyes_DX8_DX9_Vars_t() { memset( this, 0xFF, sizeof(Eyes_DX8_DX9_Vars_t) ); m_bShadowmapReceiver = false; }
+	bool m_bShadowmapReceiver;
 
 	int m_nBaseTexture;
 	int m_nFrame;

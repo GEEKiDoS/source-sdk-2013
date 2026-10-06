@@ -12,6 +12,7 @@
 #include "materialsystem/hardwaretexels.h"
 #include "bitmap/imageformat.h"
 #include "tier1/utldict.h"
+#include "bsp_output.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -306,7 +307,7 @@ static void FillTriangle( ReSTIRGpuTriangle &t, const Vector &p0, const Vector &
 	t.uv[3] = 0;
 	t.hitId = RESTIR_TRACE_ID_STATICPROP | (unsigned int)prop;
 	t.material = mat;
-	t.flags = RESTIR_TRI_STATICPROP | RESTIR_TRI_SHADOW | ( alpha ? RESTIR_TRI_NONOPAQUE : 0 );
+	t.flags = RESTIR_TRI_STATICPROP | RESTIR_TRI_SHADOW | RESTIR_TRI_STATIC_SUN | ( alpha ? RESTIR_TRI_NONOPAQUE : 0 );
 	t.face = -1;
 }
 
@@ -1043,7 +1044,8 @@ bool CReSTIRStaticPropMgr::SerializeLighting()
 					}
 				}
 				d = AlignData( d, (unsigned char *)b.Base() );
-				AddBufferToPak( GetPakFile(), name, b.Base(), (int)( d - (unsigned char *)b.Base() ), false );
+				if ( !ReSTIR_StageReceiverPakFile( name, b.Base(), (int)( d - (unsigned char *)b.Base() ) ) )
+					return false;
 				++vertexFiles;
 			}
 		}
@@ -1078,7 +1080,8 @@ bool CReSTIRStaticPropMgr::SerializeLighting()
 					d += p.meshes[j]->texels.Count();
 				}
 				d = AlignData( d, (unsigned char *)b.Base() );
-				AddBufferToPak( GetPakFile(), name, b.Base(), (int)( d - (unsigned char *)b.Base() ), false );
+				if ( !ReSTIR_StageReceiverPakFile( name, b.Base(), (int)( d - (unsigned char *)b.Base() ) ) )
+					return false;
 				++texelFiles;
 			}
 		}

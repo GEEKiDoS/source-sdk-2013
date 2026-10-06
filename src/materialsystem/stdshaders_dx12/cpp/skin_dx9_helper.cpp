@@ -9,6 +9,7 @@
 //===========================================================================//
 #include "BaseVSShaderDX12.h"
 #include "skin_dx9_helper.h"
+#include "lightmappedgeneric_dx9_helper.h"
 #include "convar.h"
 #include "cpp_shader_constant_register_map.h"
 
@@ -207,6 +208,7 @@ class CSkin_DX9_Context : public CBasePerMaterialContextData
 {
 public:
 	bool m_bFastPath;
+	DX12ShadowmapSnapshot m_ShadowmapSnapshot;
 
 };
 
@@ -270,6 +272,10 @@ void DrawSkin_DX9_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** params, I
 		pContextData = new CSkin_DX9_Context;
 		*pContextDataPtr = pContextData;
 	}
+	bool bShadowmapReceiver = false;
+	if ( !pContextData->m_ShadowmapSnapshot.Select( pShaderShadow != NULL, "VertexLitGeneric/skin", bShadowmapReceiver ) )
+		return;
+	bShadowmapReceiver = bShadowmapReceiver && !bHasFlashlight;
 
 	if( pShader->IsSnapshotting() )
 	{
@@ -428,6 +434,8 @@ void DrawSkin_DX9_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** params, I
 		// This shader supports compressed vertices, so OR in that flag:
 		flags |= VERTEX_FORMAT_COMPRESSED;
 
+		if ( bShadowmapReceiver )
+			flags |= VERTEX_NORMAL;
 		pShaderShadow->VertexShaderVertexFormat( flags, nTexCoordCount, pTexCoordDim, userDataSize );
 
 
@@ -437,7 +445,7 @@ void DrawSkin_DX9_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** params, I
 
 			DECLARE_STATIC_VERTEX_SHADER( skin_vs51 );
 			SET_STATIC_VERTEX_SHADER_COMBO( DECAL, bIsDecal );
-			SET_STATIC_VERTEX_SHADER( skin_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( skin_vs51, skin_shadowmap_vs51 );
 
 			DECLARE_STATIC_PIXEL_SHADER( skin_ps51 );
 			SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHT, bHasFlashlight );
@@ -454,7 +462,7 @@ void DrawSkin_DX9_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** params, I
 			SET_STATIC_PIXEL_SHADER_COMBO( CONVERT_TO_SRGB, 0 );
 			SET_STATIC_PIXEL_SHADER_COMBO( FASTPATH_NOBUMP, pContextData->m_bFastPath );
 			SET_STATIC_PIXEL_SHADER_COMBO( BLENDTINTBYBASEALPHA, bBlendTintByBaseAlpha );
-			SET_STATIC_PIXEL_SHADER( skin_ps51 );
+			DX12_SET_STATIC_PIXEL_SHADER( skin_ps51, skin_shadowmap_ps51 );
 		}
 
 		if( bHasFlashlight )
@@ -619,19 +627,20 @@ void DrawSkin_DX9_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** params, I
 			DECLARE_DYNAMIC_VERTEX_SHADER( skin_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, fogIndex );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( SKINNING, numBones > 0 );
-			SET_DYNAMIC_VERTEX_SHADER_COMBO( LIGHTING_PREVIEW, pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING)!=0);
+			// Converted maps do not support Hammer/editor fixed-lighting preview; it is never active in-game.
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( LIGHTING_PREVIEW, !bShadowmapReceiver && pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING)!=0);
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-			SET_DYNAMIC_VERTEX_SHADER( skin_vs51 );
+			DX12_SET_DYNAMIC_VERTEX_SHADER( skin_vs51, skin_shadowmap_vs51 );
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( skin_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( NUM_LIGHTS,  lightState.m_nNumLights );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITEWATERFOGTODESTALPHA, bWriteWaterFogToAlpha );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITE_DEPTH_TO_DESTALPHA, bWriteDepthToAlpha );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-			SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bFlashlightShadows );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bShadowmapReceiver ? false : bFlashlightShadows );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PHONG_USE_EXPONENT_FACTOR, bHasPhongExponentFactor );
-			SET_DYNAMIC_PIXEL_SHADER( skin_ps51 );
+			DX12_SET_DYNAMIC_PIXEL_SHADER( skin_ps51, skin_shadowmap_ps51 );
 
 			bool bUnusedTexCoords[3] = { false, false, !pShaderAPI->IsHWMorphingEnabled() || !bIsDecal };
 			pShaderAPI->MarkUnusedVertexFields( 0, 3, bUnusedTexCoords );

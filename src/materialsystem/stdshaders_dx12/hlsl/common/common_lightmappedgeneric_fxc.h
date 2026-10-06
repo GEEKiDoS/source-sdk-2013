@@ -197,36 +197,38 @@ float3 LightMapSample( DX12Sampler2D LightmapSampler, float2 vTexCoord )
 {
 #	if ( !defined( _X360 ) || !defined( USE_32BIT_LIGHTMAPS_ON_360 ) )
 	{
-#if BICUBIC_LIGHTMAP
-		float flLightmapPageWidth = 1024;
-		float flLightmapPageHeight = 512;
+		if ( BICUBIC_LIGHTMAP )
+		{
+			float flLightmapPageWidth = 1024;
+			float flLightmapPageHeight = 512;
 
-		const float2 vTextureSize = float2( flLightmapPageWidth, flLightmapPageHeight );
-		const float2 vTexelSize = float2( 1.0f, 1.0f ) / vTextureSize;
+			const float2 vTextureSize = float2( flLightmapPageWidth, flLightmapPageHeight );
+			const float2 vTexelSize = float2( 1.0f, 1.0f ) / vTextureSize;
 
-		vTexCoord.xy = vTexCoord.xy * vTextureSize + float2( 0.5f, 0.5f );
+			vTexCoord.xy = vTexCoord.xy * vTextureSize + float2( 0.5f, 0.5f );
 
-		float2 iuv = floor( vTexCoord.xy );
-		float2 fuv = frac( vTexCoord.xy );
+			float2 iuv = floor( vTexCoord.xy );
+			float2 fuv = frac( vTexCoord.xy );
 
-		float g0x = g0( fuv.x );
-		float g1x = g1( fuv.x );
-		float h0x = h0( fuv.x );
-		float h1x = h1( fuv.x );
-		float h0y = h0( fuv.y );
-		float h1y = h1( fuv.y );
+			float g0x = g0( fuv.x );
+			float g1x = g1( fuv.x );
+			float h0x = h0( fuv.x );
+			float h1x = h1( fuv.x );
+			float h0y = h0( fuv.y );
+			float h1y = h1( fuv.y );
 
-		float2 p0 = ( float2( iuv.x + h0x, iuv.y + h0y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
-		float2 p1 = ( float2( iuv.x + h1x, iuv.y + h0y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
-		float2 p2 = ( float2( iuv.x + h0x, iuv.y + h1y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
-		float2 p3 = ( float2( iuv.x + h1x, iuv.y + h1y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
+			float2 p0 = ( float2( iuv.x + h0x, iuv.y + h0y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
+			float2 p1 = ( float2( iuv.x + h1x, iuv.y + h0y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
+			float2 p2 = ( float2( iuv.x + h0x, iuv.y + h1y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
+			float2 p3 = ( float2( iuv.x + h1x, iuv.y + h1y ) - float2( 0.5f, 0.5f ) ) * vTexelSize;
 
-		float3 sample = 
-			( g0( fuv.y ) * ( g0x * LightmapSampler.tex.Sample( LightmapSampler.smp, p0 ) + g1x * LightmapSampler.tex.Sample( LightmapSampler.smp, p1 ) ) ) +
-			( g1( fuv.y ) * ( g0x * LightmapSampler.tex.Sample( LightmapSampler.smp, p2 ) + g1x * LightmapSampler.tex.Sample( LightmapSampler.smp, p3 ) ) );
-#else
+			float3 sample =
+				( g0( fuv.y ) * ( g0x * LightmapSampler.tex.Sample( LightmapSampler.smp, p0 ) + g1x * LightmapSampler.tex.Sample( LightmapSampler.smp, p1 ) ) ) +
+				( g1( fuv.y ) * ( g0x * LightmapSampler.tex.Sample( LightmapSampler.smp, p2 ) + g1x * LightmapSampler.tex.Sample( LightmapSampler.smp, p3 ) ) );
+			return sample;
+		}
+
 		float3 sample = LightmapSampler.tex.Sample( LightmapSampler.smp, vTexCoord );
-#endif
 
 		return sample;
 	}

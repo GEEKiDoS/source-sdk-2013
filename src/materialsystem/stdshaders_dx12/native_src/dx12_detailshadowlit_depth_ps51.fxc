@@ -1,0 +1,25 @@
+// Authored sprite cutout, shared with the lit material's raster alpha state.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+Texture2D g_DetailTexture : register( t0 );
+SamplerState g_DetailSampler : register( s0 );
+cbuffer DetailShadowDepthMaterial : register( b1, space1 )
+{
+	float4 g_DetailSpriteTint; // @legacy ps:c0
+};
+struct PS_INPUT
+{
+	float4 position : SV_Position;
+	float4 color : COLOR0;
+	float2 uv : TEXCOORD0;
+	float4 lightingOrigin : TEXCOORD1;
+	float4 lightingNormal : TEXCOORD2;
+	float4 worldPositionZ : TEXCOORD3;
+	float fog : FOG;
+};
+float4 main( PS_INPUT i ) : SV_Target0
+{
+	float alpha = g_DetailTexture.Sample( g_DetailSampler, i.uv ).a * g_DetailSpriteTint.a;
+	DX12AlphaTest( alpha );
+	return float4( 0, 0, 0, alpha );
+}

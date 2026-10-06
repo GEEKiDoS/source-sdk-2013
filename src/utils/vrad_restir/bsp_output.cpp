@@ -1,7 +1,7 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: Encode ReSTIR lightmaps and export the ordinary Source BSP
-//          lighting/worldlight data.
+// Purpose: Encode ordinary ReSTIR lighting and mode-owned shadow receivers,
+//          staging rshd and pak payloads in the atomic BSP replacement.
 //
 //=============================================================================//
 
@@ -15,6 +15,9 @@
 #include "tier1/utlbuffer.h"
 #include "vtf/vtf.h"
 #include "bitmap/imageformat.h"
+#include "gamebspfile.h"
+#include "shadowmap_bsp.h"
+#include "hlight_output.h"
 
 #include <windows.h>
 #include <limits.h>
@@ -364,8 +367,40 @@ namespace
 	}
 }
 
+namespace
+{
+	struct HighresColorContext
+	{
+		const ReSTIRScene *scene;
+		const ReSTIRLightmapResult *result;
+		CMacroTextureState *macro;
+	};
+	static Vector HighresColor(void *opaque, int faceIndex, int luxel, int plane, const Vector &input)
+	{
+		HighresColorContext &context = *static_cast<HighresColorContext *>(opaque);
+		const ReSTIRScene &scene = *context.scene;
+		const ReSTIRGpuFace &face = scene.faces[faceIndex];
+		const int global = face.firstLuxel + luxel;
+		const int validity = face.numSamples > 0 ? context.result->luxelValid[global] : 0;
+		Vector rgb = validity ? input : Vector(0,0,0);
+		for (int c = 0; c < 3; ++c) rgb[c] = MAX(rgb[c],scene.faceMinLight[faceIndex][c]);
+		if (plane == 0 && validity == 1)
+		{
+			const float *p = scene.luxels[global].position;
+			context.macro->Apply(face.dface,Vector(p[0],p[1],p[2]),rgb);
+		}
+		return rgb;
+	}
+	static bool ShadowStorageError()
+	{
+		Warning("ReSTIR: inconsistent selected-light export metadata\n");
+		return false;
+	}
+}
+
 bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReSTIRScene &scene, const ReSTIRLightmapResult &result )
 {
+	// The independently sampled float output is captured before native style pruning.
 	if ( !g_pFaces || !pdlightdata || !pNumworldlights || !dworldlights )
 	{
 		Warning( "ReSTIR: BSP lighting globals are not initialized\n" );
@@ -384,6 +419,9 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 
 	CMacroTextureState macroTextures;
 	macroTextures.Init( options.mapPath.String(), scene, SelectedFaceCount() );
+	HighresColorContext highres = { &scene, &result, &macroTextures };
+	if (!ReSTIR_CaptureHighres(options,scene,result,HighresColor,&highres))
+		return false;
 
 	CUtlVector<int> activeStyleCounts;
 	activeStyleCounts.SetCount( scene.faces.Count() );
@@ -401,19 +439,21 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			return false;
 		}
 		const ReSTIRGpuFace &sceneFace = scene.faces[sceneFaceIndex];
-		if ( sceneFace.dface != dfaceIndex || sceneFace.numStyles <= 0 || sceneFace.numStyles > MAXLIGHTMAPS || sceneFace.numChannels <= 0 )
+		if ( sceneFace.dface != dfaceIndex || sceneFace.numStyles <= 0 || sceneFace.numStyles > MAXLIGHTMAPS ||
+			( sceneFace.numChannels != 1 && sceneFace.numChannels != 4 ) )
 		{
 			Warning( "ReSTIR: scene face %d has an invalid style/channel contract\n", sceneFaceIndex );
 			return false;
 		}
 
 		// Ported from utils/vrad/lightmap.cpp:3366-3422.
-		int luxels = sceneFace.luxelW * sceneFace.luxelH;
-		if ( luxels <= 0 )
+		const int64 luxelCount = (int64)sceneFace.luxelW * sceneFace.luxelH;
+		if ( sceneFace.luxelW <= 0 || sceneFace.luxelH <= 0 || luxelCount <= 0 || luxelCount > MAX_MAP_LIGHTING )
 		{
 			Warning( "ReSTIR: scene face %d has invalid luxel dimensions\n", sceneFaceIndex );
 			return false;
 		}
+		const int luxels = (int)luxelCount;
 		int64 outputValues = (int64)sceneFace.numStyles * sceneFace.numChannels * luxels;
 		if ( sceneFace.firstOutput < 0 || outputValues > INT_MAX || (int64)sceneFace.firstOutput + outputValues > result.radiance.Count() )
 		{
@@ -433,7 +473,7 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 				++active;
 		}
 		activeStyleCounts[sceneFaceIndex] = active;
-		totalBytes += (int64)active * 4 + (int64)active * sceneFace.numChannels * luxels * 4;
+		totalBytes += (int64)active * 4 + (int64)active * sceneFace.numChannels * LuxelCount(g_pFaces[dfaceIndex]) * 4;
 		if ( totalBytes > MAX_MAP_LIGHTING )
 		{
 			Warning( "ReSTIR: encoded light data exceeds MAX_MAP_LIGHTING\n" );
@@ -450,7 +490,7 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			continue;
 		const ReSTIRGpuFace &sceneFace = scene.faces[sceneFaceIndex];
 		int active = activeStyleCounts[sceneFaceIndex];
-		int luxels = sceneFace.luxelW * sceneFace.luxelH;
+		int luxels = LuxelCount(g_pFaces[dfaceIndex]);
 		g_pFaces[dfaceIndex].lightofs = writeOffset + active * 4;
 		writeOffset += active * 4 + active * sceneFace.numChannels * luxels * 4;
 		int outStyle = 0;
@@ -474,7 +514,10 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			return false;
 		const dface_t &face = g_pFaces[sceneFace.dface];
 		int active = activeStyleCounts[sceneFaceIndex];
-		int luxels = sceneFace.luxelW * sceneFace.luxelH;
+		int luxels = LuxelCount(face);
+		const int highLuxels = sceneFace.luxelW * sceneFace.luxelH;
+		const int density = options.shadowMaps ? options.highresDensity : 1;
+		const int nativeWidth = face.m_LightmapTextureSizeInLuxels[0] + 1;
 		int channels = sceneFace.numChannels;
 		Vector minLight( 0, 0, 0 );
 		if ( sceneFaceIndex < scene.faceMinLight.Count() )
@@ -506,7 +549,8 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			{
 				for ( int luxel = 0; luxel < luxels; ++luxel )
 				{
-					int sourceIndex = sceneFace.firstOutput + ( sourceSlot * channels + channel ) * luxels + luxel;
+					const int highLuxel = (luxel / nativeWidth) * density * sceneFace.luxelW + (luxel % nativeWidth) * density;
+					int sourceIndex = sceneFace.firstOutput + ( sourceSlot * channels + channel ) * highLuxels + highLuxel;
 					int destIndex = face.lightofs + ( outStyle * channels + channel ) * luxels * 4 + luxel * 4;
 					if ( sourceIndex < 0 || sourceIndex >= result.radiance.Count() || destIndex < 0 || destIndex + 4 > pdlightdata->Count() )
 					{
@@ -515,7 +559,7 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 					}
 
 					ColorRGBExp32 &encoded = *(ColorRGBExp32 *)( pdlightdata->Base() + destIndex );
-					int globalLuxel = sceneFace.firstLuxel + luxel;
+					int globalLuxel = sceneFace.firstLuxel + highLuxel;
 					int validity = 0;
 					if ( sceneFace.numSamples > 0 && globalLuxel >= 0 && globalLuxel < result.luxelValid.Count() && globalLuxel < scene.luxels.Count() )
 						validity = result.luxelValid[globalLuxel];
@@ -579,18 +623,33 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 		Error( "too many lights %d / %d\n", scene.exportLights.Count(), MAX_MAP_WORLDLIGHTS );
 		return false;
 	}
-	*pNumworldlights = scene.exportLights.Count();
-	for ( int i = 0; i < *pNumworldlights; ++i )
+	if ( scene.exportLightToGpuLight.Count() != scene.exportLights.Count() )
+		return ShadowStorageError();
+	int retained = 0, selected = 0;
+	for ( int i = 0; i < scene.exportLights.Count(); ++i )
 	{
-		dworldlights[i] = scene.exportLights[i];
-		dworldlights[i].flags = 0;
+		const int gpu = scene.exportLightToGpuLight[i];
+		if ( gpu < 0 || gpu >= scene.lights.Count() )
+			return ShadowStorageError();
+		if ( options.shadowMaps && ( scene.lights[gpu].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) )
+		{
+			++selected;
+			continue;
+		}
+		// No marker flags or engine hook: selected analytic lights exist only
+		// in rshd; every unselected worldlight keeps its ordinary fields.
+		dworldlights[retained++] = scene.exportLights[i];
 	}
-	return true;
+	if ( selected != ReSTIR_SelectedLightCount() )
+		return ShadowStorageError();
+	*pNumworldlights = retained;
+	return ReSTIR_FinishSelectedLighting(options,selected);
 }
 
 bool CReSTIRBSPOutput::Validate( const ReSTIROptions &options )
 {
-	(void)options;
+	if ( !ReSTIR_WriteShadowMapSidecar( options ) )
+		return false;
 	if ( !pdlightdata || !g_pFaces || !pNumworldlights || !dworldlights )
 	{
 		Warning( "ReSTIR: cannot validate uninitialized BSP output globals\n" );
@@ -636,7 +695,7 @@ bool CReSTIRBSPOutput::Write( const ReSTIROptions &options )
 	if ( !Validate( options ) )
 		return false;
 
-	const char *sourcePath = options.mapPath.String();
+	const char *sourcePath = options.transactionPath.Length() ? options.transactionPath.String() : options.mapPath.String();
 	if ( !sourcePath || !sourcePath[0] )
 	{
 		Warning( "ReSTIR: no BSP path was supplied\n" );

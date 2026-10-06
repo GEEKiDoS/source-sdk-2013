@@ -9,6 +9,7 @@
 //===========================================================================//
 
 #include "BaseVSShaderDX12.h"
+#include "lightmappedgeneric_dx9_helper.h"
 
 #include "convar.h"
 
@@ -149,8 +150,9 @@ END_SHADER_PARAMS
 	}
 
 	void DrawPass( IMaterialVar** params, IShaderDynamicAPI *pShaderAPI,
-		IShaderShadow* pShaderShadow, bool hasFlashlight, VertexCompressionType_t vertexCompression )
+		IShaderShadow* pShaderShadow, bool hasFlashlight, VertexCompressionType_t vertexCompression, bool receiver )
 	{
+		const bool bShadowmapReceiver = receiver && !hasFlashlight;
 		bool hasBump = params[BUMPMAP]->IsTexture();
 		bool hasDiffuseBumpmap = hasBump && (params[NODIFFUSEBUMPLIGHTING]->GetIntValue() == 0);
 		bool hasBaseTexture = params[BASETEXTURE]->IsTexture();
@@ -226,6 +228,8 @@ END_SHADER_PARAMS
 				numTexCoords = 3;
 			}
 
+			if ( bShadowmapReceiver )
+				flags |= VERTEX_NORMAL | VERTEX_TANGENT_S | VERTEX_TANGENT_T;
 			pShaderShadow->VertexShaderVertexFormat( flags, numTexCoords, 0, 0 );
 
 			// Pre-cache pixel shaders
@@ -236,14 +240,14 @@ END_SHADER_PARAMS
 			DECLARE_STATIC_VERTEX_SHADER( lightmappedgeneric_vs51 );
 			SET_STATIC_VERTEX_SHADER_COMBO( ENVMAP_MASK,  false );
 			SET_STATIC_VERTEX_SHADER_COMBO( BUMPMASK,  false );
-			SET_STATIC_VERTEX_SHADER_COMBO( TANGENTSPACE,  hasFlashlight );
+			SET_STATIC_VERTEX_SHADER_COMBO( TANGENTSPACE,  hasFlashlight || bShadowmapReceiver );
 			SET_STATIC_VERTEX_SHADER_COMBO( BUMPMAP,  hasBump );
 			SET_STATIC_VERTEX_SHADER_COMBO( DIFFUSEBUMPMAP,  hasDiffuseBumpmap );
 			SET_STATIC_VERTEX_SHADER_COMBO( VERTEXCOLOR,  hasVertexColor );
 			SET_STATIC_VERTEX_SHADER_COMBO( VERTEXALPHATEXBLENDFACTOR, false );
 			SET_STATIC_VERTEX_SHADER_COMBO( RELIEF_MAPPING, 0 ); //( bumpmap_variant == 2 )?1:0);
 			SET_STATIC_VERTEX_SHADER_COMBO( SEAMLESS, bSeamlessMapping ); //( bumpmap_variant == 2 )?1:0);
-			SET_STATIC_VERTEX_SHADER( lightmappedgeneric_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( lightmappedgeneric_vs51, lightmappedgeneric_shadowmap_vs51 );
 
 			{
 				DECLARE_STATIC_PIXEL_SHADER( worldtwotextureblend_ps51 );
@@ -256,7 +260,7 @@ END_SHADER_PARAMS
 				SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHT,  hasFlashlight );
 				SET_STATIC_PIXEL_SHADER_COMBO( SEAMLESS,  bSeamlessMapping );
 				SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHTDEPTHFILTERMODE, nShadowFilterMode );
-				SET_STATIC_PIXEL_SHADER( worldtwotextureblend_ps51 );
+				DX12_SET_STATIC_PIXEL_SHADER( worldtwotextureblend_ps51, worldtwotextureblend_shadowmap_ps51 );
 			}
 
 			// HACK HACK HACK - enable alpha writes all the time so that we have them for
@@ -288,6 +292,12 @@ END_SHADER_PARAMS
 			//			if( hasLightmap )
 			{
 				pShaderAPI->BindStandardTexture( SHADER_SAMPLER1, TEXTURE_LIGHTMAP );
+			}
+			if ( bShadowmapReceiver )
+			{
+				// Material/vertex modulation is already applied to albedo in this logical.
+				const float directTint[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+				DX12SetPixelShaderConstant( 223, directTint );
 			}
 
 			bool bFlashlightShadows = false;
@@ -360,9 +370,10 @@ END_SHADER_PARAMS
 			DECLARE_DYNAMIC_VERTEX_SHADER( lightmappedgeneric_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG,  fogType == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( FASTPATH,  bVertexShaderFastPath );
+			// Converted maps do not support Hammer/editor fixed-lighting preview; it is never active in-game.
 			SET_DYNAMIC_VERTEX_SHADER_COMBO(
-				LIGHTING_PREVIEW, pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING)!=0);
-			SET_DYNAMIC_VERTEX_SHADER( lightmappedgeneric_vs51 );
+				LIGHTING_PREVIEW, !bShadowmapReceiver && pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING)!=0);
+			DX12_SET_DYNAMIC_VERTEX_SHADER( lightmappedgeneric_vs51, lightmappedgeneric_shadowmap_vs51 );
 
 			bool bWriteDepthToAlpha;
 			bool bWriteWaterFogToAlpha;
@@ -388,8 +399,8 @@ END_SHADER_PARAMS
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITE_DEPTH_TO_DESTALPHA, bWriteDepthToAlpha );
 				// The shipped shader has only none/height fog (16 dynamics), not the newer radial-fog combo.
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo() );
-				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bFlashlightShadows );
-				SET_DYNAMIC_PIXEL_SHADER( worldtwotextureblend_ps51 );
+				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bShadowmapReceiver ? false : bFlashlightShadows );
+				DX12_SET_DYNAMIC_PIXEL_SHADER( worldtwotextureblend_ps51, worldtwotextureblend_shadowmap_ps51 );
 			}
 
 
@@ -444,16 +455,19 @@ END_SHADER_PARAMS
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "WorldTwoTextureBlend", bShadowmapReceiver ) )
+			return;
 		bool bHasFlashlight = UsingFlashlight( params );
 		if ( bHasFlashlight && ( IsX360() || r_flashlight_version2.GetInt() ) )
 		{
-			DrawPass( params, pShaderAPI, pShaderShadow, false, vertexCompression );
+			DrawPass( params, pShaderAPI, pShaderShadow, false, vertexCompression, bShadowmapReceiver );
 			SHADOW_STATE
 			{
 				SetInitialShadowState( );
 			}
 		}
-		DrawPass( params, pShaderAPI, pShaderShadow, bHasFlashlight, vertexCompression );
+		DrawPass( params, pShaderAPI, pShaderShadow, bHasFlashlight, vertexCompression, bShadowmapReceiver );
 	}
 
 END_SHADER

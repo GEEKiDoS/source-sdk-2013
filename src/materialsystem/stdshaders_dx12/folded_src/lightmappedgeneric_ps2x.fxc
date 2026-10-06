@@ -1,0 +1,402 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// STATIC: "RELIEF_MAPPING" "0..0"
+// STATIC: "SEAMLESS" "0..1"
+// STATIC: "NORMAL_DECODE_MODE" "0..0"
+// STATIC: "NORMALMASK_DECODE_MODE" "0..0"
+// DYNAMIC: "LIGHTING_PREVIEW" "0..2"
+// FOLD: "MASKEDBLENDING" "0..1" STATIC
+// FOLD: "BASETEXTURE2" "0..1" STATIC
+// FOLD: "DETAILTEXTURE" "0..1" STATIC
+// FOLD: "BUMPMAP" "0..2" STATIC
+// FOLD: "BUMPMAP2" "0..1" STATIC
+// FOLD: "CUBEMAP" "0..1" STATIC
+// FOLD: "ENVMAPMASK" "0..1" STATIC
+// FOLD: "BASEALPHAENVMAPMASK" "0..1" STATIC
+// FOLD: "SELFILLUM" "0..1" STATIC
+// FOLD: "NORMALMAPALPHAENVMAPMASK" "0..1" STATIC
+// FOLD: "DIFFUSEBUMPMAP" "0..1" STATIC
+// FOLD: "BASETEXTURENOENVMAP" "0..1" STATIC
+// FOLD: "BASETEXTURE2NOENVMAP" "0..1" STATIC
+// FOLD: "WARPLIGHTING" "0..1" STATIC
+// FOLD: "FANCY_BLENDING" "0..1" STATIC
+// FOLD: "OUTLINE" "0..1" STATIC
+// FOLD: "SOFTEDGES" "0..1" STATIC
+// FOLD: "BUMPMASK" "0..1" STATIC
+// FOLD: "DETAIL_BLEND_MODE" "0..11" STATIC
+// FOLD: "FASTPATHENVMAPCONTRAST" "0..1" DYNAMIC
+// FOLD: "FASTPATH" "0..1" DYNAMIC
+// FOLD: "WRITEWATERFOGTODESTALPHA" "0..1" DYNAMIC
+// FOLD: "PIXELFOGTYPE" "0..2" DYNAMIC
+// FOLD: "WRITE_DEPTH_TO_DESTALPHA" "0..1" DYNAMIC
+// FOLD: "BICUBIC_LIGHTMAP" "0..1" DYNAMIC
+// SKIP: $SEAMLESS && $RELIEF_MAPPING
+
+// PC ps20b implementation of lightmappedgeneric_ps2_3_x.h. Interface selectors
+// stay compile-time; all material and fast-path selectors are uniform values.
+#define USE_32BIT_LIGHTMAPS_ON_360
+#include "common_ps_fxc.h"
+#include "common_lightmappedgeneric_fxc.h"
+
+#if SEAMLESS
+#define USE_FAST_PATH 1
+#else
+#define USE_FAST_PATH FASTPATH
+#endif
+
+const HALF4 g_EnvmapTint : register( c0 );
+const HALF3 g_EnvmapContrast : register( c2 );
+const HALF3 g_EnvmapSaturation : register( c3 );
+const HALF4 g_FresnelReflectionReg : register( c4 );
+const HALF4 g_SelfIllumTint : register( c7 );
+const float4 g_OutlineParams : register( c2 );
+#define OUTLINE_MIN_VALUE0 g_OutlineParams.x
+#define OUTLINE_MIN_VALUE1 g_OutlineParams.y
+#define OUTLINE_MAX_VALUE0 g_OutlineParams.z
+#define OUTLINE_MAX_VALUE1 g_OutlineParams.w
+const float4 g_OutlineColor : register( c3 );
+#define OUTLINE_COLOR g_OutlineColor
+const float4 g_EdgeSoftnessParms : register( c4 );
+#define SOFT_MASK_MIN g_EdgeSoftnessParms.x
+#define SOFT_MASK_MAX g_EdgeSoftnessParms.y
+const float4 g_DetailTint_and_BlendFactor : register( c8 );
+#define g_DetailTint (g_DetailTint_and_BlendFactor.rgb)
+#define g_DetailBlendFactor (g_DetailTint_and_BlendFactor.w)
+const HALF3 g_EyePos : register( c10 );
+const HALF4 g_FogParams : register( c11 );
+const float4 g_TintValuesAndLightmapScale : register( c12 );
+#define g_flAlpha2 g_TintValuesAndLightmapScale.w
+
+sampler BaseTextureSampler : register( s0 );
+sampler LightmapSampler : register( s1 );
+sampler EnvmapSampler : register( s2 );
+sampler BlendModulationSampler : register( s3 );
+sampler BumpmapSampler : register( s4 );
+// Bumpmap2 and the environment mask are both 2D textures at the same register.
+sampler BumpmapSampler2 : register( s5 );
+sampler WarpLightingSampler : register( s6 );
+sampler BaseTextureSampler2 : register( s7 );
+sampler BumpMaskSampler : register( s8 );
+sampler AlphaMapSampler : register( s9 );
+sampler AlphaMapSampler2 : register( s10 );
+sampler AlphaMaskSampler : register( s11 );
+sampler DetailSampler : register( s12 );
+
+struct PS_INPUT
+{
+#if SEAMLESS
+	float3 SeamlessTexCoord : TEXCOORD0;
+	float4 detailOrBumpAndEnvmapMaskTexCoord : TEXCOORD1;
+#else
+	HALF2 baseTexCoord : TEXCOORD0;
+#if ( RELIEF_MAPPING == 0 )
+	HALF4 detailOrBumpAndEnvmapMaskTexCoord : TEXCOORD1;
+#endif
+#endif
+// CENTROID: TEXCOORD2
+	HALF4 lightmapTexCoord1And2 : TEXCOORD2;
+// CENTROID: TEXCOORD3
+	HALF4 lightmapTexCoord3 : TEXCOORD3;
+	HALF4 worldPos_projPosZ : TEXCOORD4;
+	HALF3x3 tangentSpaceTranspose : TEXCOORD5;
+	HALF4 vertexColor : COLOR;
+	float4 vertexBlendX_fogFactorW : COLOR1;
+};
+
+#if LIGHTING_PREVIEW == 2
+LPREVIEW_PS_OUT main( PS_INPUT i ) : COLOR
+#else
+HALF4 main( PS_INPUT i ) : COLOR
+#endif
+{
+	bool bBaseTexture2 = BASETEXTURE2 != 0;
+	bool bDetailTexture = DETAILTEXTURE != 0;
+	bool bBumpmap = BUMPMAP != 0;
+	bool bDiffuseBumpmap = DIFFUSEBUMPMAP != 0;
+	bool bCubemap = CUBEMAP != 0;
+	bool bEnvmapMask = ENVMAPMASK != 0;
+	bool bBaseAlphaEnvmapMask = BASEALPHAENVMAPMASK != 0;
+	bool bSelfIllum = SELFILLUM != 0;
+	bool bNormalMapAlphaEnvmapMask = NORMALMAPALPHAENVMAPMASK != 0;
+	bool bBaseTextureNoEnvmap = BASETEXTURENOENVMAP != 0;
+	bool bBaseTexture2NoEnvmap = BASETEXTURE2NOENVMAP != 0;
+	HALF3 envmapContrast = USE_FAST_PATH ? HALF3( FASTPATHENVMAPCONTRAST, FASTPATHENVMAPCONTRAST, FASTPATHENVMAPCONTRAST ) : g_EnvmapContrast;
+	HALF3 envmapSaturation = USE_FAST_PATH ? HALF3( 1.0f, 1.0f, 1.0f ) : g_EnvmapSaturation;
+	HALF fresnelReflection = USE_FAST_PATH ? 1.0f : g_FresnelReflectionReg.a;
+	HALF oneMinusFresnelReflection = USE_FAST_PATH ? 0.0f : g_FresnelReflectionReg.b;
+	HALF4 selfIllumTint = USE_FAST_PATH ? HALF4( 1.0f, 1.0f, 1.0f, 1.0f ) : g_SelfIllumTint;
+
+	float4 baseColor = 0.0f;
+	float4 baseColor2 = 0.0f;
+	float4 vNormal = float4( 0, 0, 1, 1 );
+	float3 baseTexCoords = float3( 0, 0, 0 );
+#if SEAMLESS
+	baseTexCoords = i.SeamlessTexCoord.xyz;
+#else
+	baseTexCoords.xy = i.baseTexCoord.xy;
+#endif
+	GetBaseTextureAndNormal( BaseTextureSampler, BaseTextureSampler2, BumpmapSampler, bBaseTexture2, bBumpmap || bNormalMapAlphaEnvmapMask,
+		baseTexCoords, i.vertexColor.rgb, baseColor, baseColor2, vNormal );
+	if ( BUMPMAP == 1 )
+	{
+		vNormal.xyz = vNormal.xyz * 2.0f - 1.0f;
+	}
+
+	HALF3 lightmapColor1 = HALF3( 1.0f, 1.0f, 1.0f );
+	HALF3 lightmapColor2 = HALF3( 1.0f, 1.0f, 1.0f );
+	HALF3 lightmapColor3 = HALF3( 1.0f, 1.0f, 1.0f );
+#if LIGHTING_PREVIEW == 0
+	if( bBumpmap && bDiffuseBumpmap )
+	{
+		HALF2 bumpCoord1;
+		HALF2 bumpCoord2;
+		HALF2 bumpCoord3;
+		ComputeBumpedLightmapCoordinates( i.lightmapTexCoord1And2, i.lightmapTexCoord3.xy,
+			bumpCoord1, bumpCoord2, bumpCoord3 );
+		lightmapColor1 = LightMapSample( LightmapSampler, bumpCoord1 );
+		lightmapColor2 = LightMapSample( LightmapSampler, bumpCoord2 );
+		lightmapColor3 = LightMapSample( LightmapSampler, bumpCoord3 );
+	}
+	else
+	{
+		HALF2 bumpCoord1 = ComputeLightmapCoordinates( i.lightmapTexCoord1And2, i.lightmapTexCoord3.xy );
+		lightmapColor1 = LightMapSample( LightmapSampler, bumpCoord1 );
+	}
+#endif
+
+#if RELIEF_MAPPING
+	HALF2 detailTexCoord = baseTexCoords.xy;
+	HALF2 bumpmapTexCoord = baseTexCoords.xy;
+	HALF2 bumpmap2TexCoord = baseTexCoords.xy;
+	HALF2 envmapMaskTexCoord = baseTexCoords.xy;
+#else
+	HALF2 detailTexCoord = 0.0f;
+	HALF2 bumpmapTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.xy;
+	HALF2 bumpmap2TexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.wz;
+	HALF2 envmapMaskTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.wz;
+	if ( DETAILTEXTURE == 1 )
+	{
+		detailTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.xy;
+		bumpmapTexCoord = baseTexCoords.xy;
+	}
+#endif
+
+	HALF4 detailColor = HALF4( 1.0f, 1.0f, 1.0f, 1.0f );
+	if ( DETAILTEXTURE )
+	{
+		detailColor = float4( g_DetailTint, 1.0f ) * tex2D( DetailSampler, detailTexCoord );
+	}
+	if ( OUTLINE || SOFTEDGES )
+	{
+		float distAlphaMask = baseColor.a;
+		if ( OUTLINE )
+		{
+			if ( ( distAlphaMask >= OUTLINE_MIN_VALUE0 ) && ( distAlphaMask <= OUTLINE_MAX_VALUE1 ) )
+			{
+				float oFactor = 1.0f;
+				if ( distAlphaMask <= OUTLINE_MIN_VALUE1 )
+				{
+					oFactor = smoothstep( OUTLINE_MIN_VALUE0, OUTLINE_MIN_VALUE1, distAlphaMask );
+				}
+				else
+				{
+					oFactor = smoothstep( OUTLINE_MAX_VALUE1, OUTLINE_MAX_VALUE0, distAlphaMask );
+				}
+				baseColor = lerp( baseColor, OUTLINE_COLOR, oFactor );
+			}
+		}
+		if ( SOFTEDGES )
+		{
+			baseColor.a *= smoothstep( SOFT_MASK_MAX, SOFT_MASK_MIN, distAlphaMask );
+		}
+		else
+		{
+			baseColor.a *= distAlphaMask >= 0.5f;
+		}
+	}
+#if LIGHTING_PREVIEW == 2
+	baseColor.xyz = GammaToLinear( baseColor.xyz );
+#endif
+	float blendedAlpha = baseColor.a;
+	float blendfactor = MASKEDBLENDING ? 0.5f : i.vertexBlendX_fogFactorW.r;
+	if( bBaseTexture2 )
+	{
+		if ( ( SELFILLUM == 0 ) && ( PIXELFOGTYPE != PIXEL_FOG_TYPE_HEIGHT ) && FANCY_BLENDING )
+		{
+			float4 modt = tex2D( BlendModulationSampler, i.lightmapTexCoord3.zw );
+			if ( MASKEDBLENDING )
+			{
+				blendfactor = modt.g;
+			}
+			else
+			{
+				float minb = saturate( modt.g - modt.r );
+				float maxb = saturate( modt.g + modt.r );
+				blendfactor = smoothstep( minb, maxb, blendfactor );
+			}
+		}
+		baseColor.rgb = lerp( baseColor.rgb, baseColor2.rgb, blendfactor );
+		blendedAlpha = lerp( baseColor.a, baseColor2.a, blendfactor );
+	}
+
+	HALF3 specularFactor = 1.0f;
+	float4 vNormalMask = float4( 0, 0, 1, 1 );
+	if( bBumpmap )
+	{
+		if( bBaseTextureNoEnvmap )
+		{
+			vNormal.a = 0.0f;
+		}
+		if ( BUMPMAP2 == 1 )
+		{
+			HALF2 b2TexCoord = BUMPMASK ? bumpmap2TexCoord : bumpmapTexCoord;
+			HALF4 vNormal2;
+			if ( BUMPMAP == 2 )
+			{
+				vNormal2 = tex2D( BumpmapSampler2, b2TexCoord );
+			}
+			else
+			{
+				vNormal2 = DecompressNormal( BumpmapSampler2, b2TexCoord, NORMAL_DECODE_MODE, AlphaMapSampler2 );
+			}
+			if( bBaseTexture2NoEnvmap )
+			{
+				vNormal2.a = 0.0f;
+			}
+			if ( BUMPMASK == 1 )
+			{
+				float3 vNormal1 = DecompressNormal( BumpmapSampler, i.detailOrBumpAndEnvmapMaskTexCoord.xy, NORMALMASK_DECODE_MODE, AlphaMapSampler );
+				vNormal.xyz = normalize( vNormal1.xyz + vNormal2.xyz );
+				vNormalMask = DecompressNormal( BumpMaskSampler, baseTexCoords.xy, NORMALMASK_DECODE_MODE, AlphaMaskSampler );
+				vNormal.xyz = lerp( vNormalMask.xyz, vNormal.xyz, vNormalMask.a );
+				specularFactor = vNormalMask.a;
+			}
+			else if ( FANCY_BLENDING && bNormalMapAlphaEnvmapMask )
+			{
+				vNormal = lerp( vNormal, vNormal2, blendfactor );
+			}
+			else
+			{
+				vNormal.xyz = lerp( vNormal.xyz, vNormal2.xyz, blendfactor );
+			}
+		}
+		if( bNormalMapAlphaEnvmapMask )
+		{
+			specularFactor *= vNormal.a;
+		}
+	}
+	else if ( bNormalMapAlphaEnvmapMask )
+	{
+		specularFactor *= vNormal.a;
+	}
+	if ( BUMPMAP2 == 0 && bEnvmapMask )
+	{
+		specularFactor *= tex2D( BumpmapSampler2, envmapMaskTexCoord ).xyz;
+	}
+	if( bBaseAlphaEnvmapMask )
+	{
+		specularFactor *= 1.0f - blendedAlpha;
+	}
+	float4 albedo = baseColor;
+	float alpha = 1.0f;
+	if( !bBaseAlphaEnvmapMask && !bSelfIllum )
+	{
+		alpha *= baseColor.a;
+	}
+	if( bDetailTexture )
+	{
+		albedo = TextureCombine( albedo, detailColor, DETAIL_BLEND_MODE, g_DetailBlendFactor );
+	}
+#if ( SEAMLESS == 0 )
+	albedo.xyz *= i.vertexColor;
+#endif
+	alpha *= i.vertexColor.a * g_flAlpha2;
+
+	HALF3 diffuseLighting;
+	if( bBumpmap && bDiffuseBumpmap )
+	{
+		if ( BUMPMAP == 2 )
+		{
+			diffuseLighting = vNormal.x * lightmapColor1 +
+				vNormal.y * lightmapColor2 + vNormal.z * lightmapColor3;
+			diffuseLighting *= g_TintValuesAndLightmapScale.rgb;
+			vNormal.xyz = normalize( bumpBasis[0] * vNormal.x + bumpBasis[1] * vNormal.y + bumpBasis[2] * vNormal.z );
+		}
+		else
+		{
+			float3 dp;
+			dp.x = saturate( dot( vNormal, bumpBasis[0] ) );
+			dp.y = saturate( dot( vNormal, bumpBasis[1] ) );
+			dp.z = saturate( dot( vNormal, bumpBasis[2] ) );
+			dp *= dp;
+			if ( DETAIL_BLEND_MODE == TCOMBINE_SSBUMP_BUMP )
+			{
+				dp *= 2 * detailColor;
+			}
+			diffuseLighting = dp.x * lightmapColor1 + dp.y * lightmapColor2 + dp.z * lightmapColor3;
+			float sum = dot( dp, float3( 1.0f, 1.0f, 1.0f ) );
+			diffuseLighting *= g_TintValuesAndLightmapScale.rgb / sum;
+		}
+	}
+	else
+	{
+		diffuseLighting = lightmapColor1 * g_TintValuesAndLightmapScale.rgb;
+	}
+#if ( SEAMLESS == 0 )
+	if ( WARPLIGHTING )
+	{
+		float len = 0.5f * length( diffuseLighting );
+		diffuseLighting *= 2.0f * tex2D( WarpLightingSampler, float2( len, 0 ) );
+	}
+#endif
+	float3 worldSpaceNormal = mul( vNormal, i.tangentSpaceTranspose );
+	float3 diffuseComponent = albedo.xyz * diffuseLighting;
+	if( bSelfIllum )
+	{
+		float3 selfIllumComponent = selfIllumTint.rgb * albedo.xyz;
+		diffuseComponent = lerp( diffuseComponent, selfIllumComponent, baseColor.a );
+	}
+	HALF3 specularLighting = HALF3( 0.0f, 0.0f, 0.0f );
+	if( bCubemap )
+	{
+		float3 worldVertToEyeVector = g_EyePos - i.worldPos_projPosZ.xyz;
+		float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, worldVertToEyeVector );
+		half3 eyeVect = normalize( worldVertToEyeVector );
+		HALF fresnel = 1.0f - dot( worldSpaceNormal, eyeVect );
+		fresnel = pow( fresnel, 5.0f );
+		fresnel = fresnel * oneMinusFresnelReflection + fresnelReflection;
+		specularLighting = ENV_MAP_SCALE * texCUBE( EnvmapSampler, reflectVect );
+		specularLighting *= specularFactor;
+		specularLighting *= g_EnvmapTint;
+		if ( FANCY_BLENDING == 0 )
+		{
+			HALF3 specularLightingSquared = specularLighting * specularLighting;
+			specularLighting = lerp( specularLighting, specularLightingSquared, envmapContrast );
+			HALF3 greyScale = dot( specularLighting, HALF3( 0.299f, 0.587f, 0.114f ) );
+			specularLighting = lerp( greyScale, specularLighting, envmapSaturation );
+		}
+		specularLighting *= fresnel;
+	}
+	HALF3 result = diffuseComponent + specularLighting;
+#if LIGHTING_PREVIEW
+	worldSpaceNormal = mul( vNormal, i.tangentSpaceTranspose );
+#if LIGHTING_PREVIEW == 1
+	float dotprod = 0.7f + 0.25f * dot( worldSpaceNormal, normalize( float3( 1, 2, -.5f ) ) );
+	return FinalOutput( HALF4( dotprod * albedo.xyz, alpha ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE );
+#else
+	LPREVIEW_PS_OUT ret;
+	ret.color = float4( albedo.xyz, alpha );
+	ret.normal = float4( worldSpaceNormal, alpha );
+	ret.position = float4( i.worldPos_projPosZ.xyz, alpha );
+	ret.flags = float4( 1, 1, 1, alpha );
+	return FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE );
+#endif
+#else
+	bool bWriteDepthToAlpha = ( WRITE_DEPTH_TO_DESTALPHA != 0 ) && ( WRITEWATERFOGTODESTALPHA == 0 );
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
+	if ( WRITEWATERFOGTODESTALPHA && ( PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT ) )
+	{
+		alpha = fogFactor;
+	}
+	return FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, i.worldPos_projPosZ.w );
+#endif
+}

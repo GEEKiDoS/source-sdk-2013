@@ -9,7 +9,11 @@
 
 #include "worldvertextransition_dx8_helper.h"
 #include "BaseVSShaderDX12.h"
+#include "cpp_shader_constant_register_map.h"
 #include "WorldVertexTransition.inc"
+#include "lightmappedgeneric_dx9_helper.h"
+#include "worldvertextransition_editor_highres_vs51.inc"
+#include "worldvertextransition_editor_highres_ps51.inc"
 
 
 
@@ -37,6 +41,7 @@ void InitWorldVertexTransitionEditor_DX8( CBaseVSShaderDX12 *pShader, IMaterialV
 
 void DrawWorldVertexTransitionEditor_DX8( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShaderDynamicAPI *pShaderAPI, IShaderShadow* pShaderShadow, WorldVertexTransitionEditor_DX8_Vars_t &info )
 {
+	const bool highres = DX12HighresMap();
 	SHADOW_STATE
 	{
 		// This is the dx8 worldcraft version (non-bumped always.. too bad)
@@ -45,17 +50,28 @@ void DrawWorldVertexTransitionEditor_DX8( CBaseVSShaderDX12 *pShader, IMaterialV
 		pShaderShadow->EnableTexture( SHADER_SAMPLER2, true );
 
 		int fmt = VERTEX_POSITION | VERTEX_COLOR;
+		if ( highres ) fmt |= VERTEX_NORMAL;
 		pShaderShadow->VertexShaderVertexFormat( fmt, 2, 0, 0 );
 
-		worldvertextransition_Static_Index vshIndex;
-		pShaderShadow->SetVertexShader( "WorldVertexTransition", vshIndex.GetIndex() );
-		pShaderShadow->SetPixelShader( "WorldVertexTransition_Editor" );
+		if ( highres )
+		{
+			DECLARE_STATIC_VERTEX_SHADER( worldvertextransition_editor_highres_vs51 );
+			SET_STATIC_VERTEX_SHADER( worldvertextransition_editor_highres_vs51 );
+			DECLARE_STATIC_PIXEL_SHADER( worldvertextransition_editor_highres_ps51 );
+			SET_STATIC_PIXEL_SHADER( worldvertextransition_editor_highres_ps51 );
+		}
+		else
+		{
+			worldvertextransition_Static_Index vshIndex;
+			pShaderShadow->SetVertexShader( "WorldVertexTransition", vshIndex.GetIndex() );
+			pShaderShadow->SetPixelShader( "WorldVertexTransition_Editor" );
+		}
 	
 		pShader->FogToFogColor();
 	}
 	DYNAMIC_STATE
 	{
-		DX12SelectNativeBlockByName( "WorldVertexTransition_Editor", dx12native::kStagePixel );
+		DX12SelectNativeBlockByName( highres ? "worldvertextransition_editor_highres_ps51" : "WorldVertexTransition_Editor", dx12native::kStagePixel );
 		pShader->BindTexture( SHADER_SAMPLER0, info.m_nBaseTextureVar, info.m_nBaseTextureFrameVar );
 		pShader->BindTexture( SHADER_SAMPLER1, info.m_nBaseTexture2Var, info.m_nBaseTexture2FrameVar );
 
@@ -75,9 +91,22 @@ void DrawWorldVertexTransitionEditor_DX8( CBaseVSShaderDX12 *pShader, IMaterialV
 		pShader->SetVertexShaderTextureTransform( nTextureTransformConst,  info.m_nBaseTextureTransformVar  );
 		pShader->SetVertexShaderTextureTransform( nTextureTransformConst2, info.m_nBaseTexture2TransformVar );
 
-		worldvertextransition_Dynamic_Index vshIndex;
-		vshIndex.SetDOWATERFOG( pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
-		pShaderAPI->SetVertexShaderIndex( vshIndex.GetIndex() );
+		if ( highres )
+		{
+			DECLARE_DYNAMIC_VERTEX_SHADER( worldvertextransition_editor_highres_vs51 );
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
+			SET_DYNAMIC_VERTEX_SHADER( worldvertextransition_editor_highres_vs51 );
+			DECLARE_DYNAMIC_PIXEL_SHADER( worldvertextransition_editor_highres_ps51 );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo() );
+			SET_DYNAMIC_PIXEL_SHADER( worldvertextransition_editor_highres_ps51 );
+			pShaderAPI->SetPixelShaderFogParams( PSREG_FOG_PARAMS );
+		}
+		else
+		{
+			worldvertextransition_Dynamic_Index vshIndex;
+			vshIndex.SetDOWATERFOG( pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
+			pShaderAPI->SetVertexShaderIndex( vshIndex.GetIndex() );
+		}
 	}
 	pShader->Draw();
 }

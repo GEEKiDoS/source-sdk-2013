@@ -1,0 +1,25 @@
+// Native SM5.1 depth-only raster restore. Shared VS/PS b0 space0 layout:
+// ShadowDepthRestoreConstants, 64 bytes:
+//   offset  0: uint4 srcRect (source x,y,width,height)
+//   offset 16: uint4 dstRect (destination x,y,width,height)
+//   offset 32: uint4 srcSize (source full target width,height,0,0)
+//   offset 48: uint4 dstSize (DESTINATION full target width,height,0,0)
+// Backend sets a whole-destination viewport, dstRect scissor, ALWAYS/write
+// normal [0,1] depth, no color attachments. Source/destination must not alias.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+cbuffer ShadowDepthRestoreConstants : register(b0)
+{
+	uint4 srcRect;
+	uint4 dstRect;
+	uint4 srcSize;
+	uint4 dstSize;
+};
+Texture2D<float> g_Src : register(t0);
+float main( float4 position : SV_Position ) : SV_Depth
+{
+	// Integer SV_Position truncation identifies the destination texel; no filter,
+	// normalized UV or half-texel shift. Equal-sized rects copy depth bit-exactly.
+	int2 sourcePixel = int2( srcRect.xy ) + int2( position.xy ) - int2( dstRect.xy );
+	return g_Src.Load( int3( sourcePixel, 0 ) );
+}

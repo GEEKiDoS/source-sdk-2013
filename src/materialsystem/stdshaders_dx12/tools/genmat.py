@@ -49,13 +49,17 @@ def source_for(logical):
 
 NO_PARITY = {}   # (vs, ps) -> reason the nativeparity comparison cannot run for the pair
 LAYOUT_FROM = {}  # vs logical -> legacy source whose VS_OUTPUT it adopts
+SHADOWMAP_PAIRS = set()  # feature generation is a separate pass; ordinary conversion is untouched
 
 
-def pair(slice_, vs, ps, cpps, no_parity=None, layout_from=None):
+def pair(slice_, vs, ps, cpps, no_parity=None, layout_from=None, shadowmaps=False):
     """PAIRS entry from logical names alone (sources and profiles derived)."""
     vsrc, vprof = source_for(vs)
     if no_parity: NO_PARITY[(vs, ps)] = no_parity
     if layout_from: LAYOUT_FROM[vs] = source_for(layout_from)[0]
+    if shadowmaps:
+        if not ps: raise ValueError('shadow-map receiver pair needs a pixel shader')
+        SHADOWMAP_PAIRS.add((vs, ps))
     if ps:
         psrc, pprof = source_for(ps)
         return (slice_, vsrc, vprof, vs, psrc, pprof, ps, cpps)
@@ -93,6 +97,13 @@ def native_name(logical):
     m = re.fullmatch(r'(\w+?)_(vs|ps)(20b|20|30|2x|xx)', logical, re.I)
     if not m: raise RuntimeError('logical without a shader-model suffix: ' + logical)
     return f'{m.group(1)}_{m.group(2).lower()}51'
+
+def shadowmap_logical(logical):
+    """Keep the legacy profile suffix internally; native_name maps it to the feature SM5.1 name."""
+    m = re.fullmatch(r'(.+)_(vs20|vs30|ps20|ps20b|ps30)', logical)
+    if not m: raise RuntimeError('invalid shadow-map legacy logical: ' + logical)
+    return f'{m.group(1)}_shadowmap_{m.group(2)}'
+
 
 
 def equal_combos(vs_logical, ps_logical, cpps):
@@ -193,6 +204,64 @@ def run(only_slices=None):
                 manifests.setdefault(slice_, []).append(f'# pair {native_name(vlog)} {native_name(plog) if plog else "-"}' + ''.join(f' {k}={v}' for k, v in sorted(fixed.get((vlog, plog), {}).items())) + ''.join(f' ={k}' for k in equal) + engine_state)
         except Exception as e:
             errors.append(f'{slice_} {vlog}/{plog}: {e}')
+    # Never mutate an ordinary result/interpolator: feature variants independently translate the SAME source
+    # with the SAME resolved flatten/fixed/centroid tables. Combo directives and @legacy annotations survive.
+    feature_vs = {}
+    for slice_, vsrc, vprof, vlog, psrc, pprof, plog, cpps in entries:
+        if (vlog, plog) not in _gm.SHADOWMAP_PAIRS: continue
+        try:
+            fv, fp = shadowmap_logical(vlog), shadowmap_logical(plog)
+            if fv not in feature_vs:
+                text, interp, _ = gs.convert(vsrc, vprof, vlog, centroid=sorted(centroid.get(vlog, ())),
+                    flatten=frozenset(flatten.get(vlog, ())), output_struct_from=LAYOUT_FROM.get(vlog), shadowmaps=True)
+                feature_vs[fv] = (text, interp)
+                generated[fv] = text
+                manifests.setdefault(slice_, []).extend([
+                    f'{native_name(fv)}.fxc vs {native_name(fv)} native -',
+                    f'# noparity {native_name(fv)} - shadowmap-feature-variant'])
+            cpp_texts = [open(os.path.join(LEGACY, c), encoding='latin-1').read() for c in cpps]
+            text, _, _ = gs.convert(psrc, pprof, plog, interp=feature_vs[fv][1],
+                engine_regs=gs.engine_regs_from_cpp(cpp_texts), fixed=fixed.get((vlog, plog)), shadowmaps=True)
+            if fp in generated and generated[fp] != text:
+                raise RuntimeError(f'{fp} differs between its vertex pairings')
+            if fp not in generated:
+                generated[fp] = text
+                manifests.setdefault(slice_, []).extend([
+                    f'{native_name(fp)}.fxc ps {native_name(fp)} native -',
+                    f'# noparity {native_name(fp)} - shadowmap-feature-variant'])
+        except Exception as e:
+            errors.append(f'{slice_} shadowmap {vlog}/{plog}: {e}')
+    # Every actual BSP-lightmap consumer has an explicit RGB join. Do not reuse the old
+    # shadow receiver whitelist: water, glass and world pyro consume native lightmaps too.
+    import genhighres
+    highres_vs = {}
+    for slice_, vsrc, vprof, vlog, psrc, pprof, plog, cpps in entries:
+        if plog not in genhighres.SAMPLER_ROLES: continue
+        try:
+            fv = shadowmap_logical(vlog).replace('_shadowmap_', '_highres_')
+            fp = shadowmap_logical(plog).replace('_shadowmap_', '_highres_')
+            if fv not in highres_vs:
+                text, interp, _ = gs.convert(vsrc, vprof, vlog, centroid=sorted(centroid.get(vlog, ())),
+                    flatten=frozenset(flatten.get(vlog, ())), output_struct_from=LAYOUT_FROM.get(vlog), highres=True)
+                highres_vs[fv] = (text, interp)
+                generated[fv] = text
+                manifests.setdefault(slice_, []).extend([
+                    f'{native_name(fv)}.fxc vs {native_name(fv)} native -',
+                    f'# noparity {native_name(fv)} - highres-feature-variant'])
+            cpp_texts = [open(os.path.join(LEGACY, c), encoding='latin-1').read() for c in cpps]
+            text, _, _ = gs.convert(psrc, pprof, plog, interp=highres_vs[fv][1],
+                engine_regs=gs.engine_regs_from_cpp(cpp_texts), fixed=fixed.get((vlog, plog)), highres=True)
+            if fp in generated and generated[fp] != text:
+                raise RuntimeError(f'{fp} differs between its vertex pairings')
+            if fp not in generated:
+                generated[fp] = text
+                manifests.setdefault(slice_, []).extend([
+                    f'{native_name(fp)}.fxc ps {native_name(fp)} native -',
+                    f'# noparity {native_name(fp)} - highres-feature-variant'])
+        except Exception as e:
+            errors.append(f'{slice_} highres {vlog}/{plog}: {e}')
+    # Fail before publication/deletion: a missing receiver rule must not leave a partial shader pack.
+    if errors: raise RuntimeError('\n'.join(errors))
     for slice_, source, stage, logical in native_entries:
         native_path = os.path.join(ROOT, 'native_src', source)
         if not os.path.isfile(native_path):

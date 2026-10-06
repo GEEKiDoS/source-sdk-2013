@@ -18,7 +18,12 @@ public:
 	bool UploadScene( const ReSTIRScene &scene );
 	// Re-uploads faces after ReSTIR_ResolveFaceStyles; styles may only shrink.
 	bool UpdateFaceStyles( const ReSTIRScene &scene );
+	// With selected shadow-map lights, bake full transport plus receiver RGB in the same iterations;
+	// only receiver non-PATH direct is stripped. Ordinary results leave sourceRadiance empty.
+	// Selected suns also produce independent geometric-luxel visibility, including zero-intensity suns.
+	// Ordinary/no-selected-sun bakes clear sunVisibility; RGB denoising and source upload do not alter it.
 	bool BakeLightmaps( const ReSTIROptions &options, ReSTIRLightmapResult &result );
+	// Bounce/probe/prop gathers always read sourceRadiance when present, otherwise the ordinary radiance.
 	bool UploadFinalLightmap( const ReSTIRLightmapResult &result );
 	bool TraceRays( const CUtlVector<ReSTIRGpuRay> &rays, unsigned int triangleMask, CUtlVector<ReSTIRGpuHit> &hits );
 	bool GatherAmbient( const CUtlVector<ReSTIRGpuAmbientQuery> &queries, CUtlVector<ReSTIRGpuAmbientResult> &results );

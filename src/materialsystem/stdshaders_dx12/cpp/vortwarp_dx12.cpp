@@ -34,8 +34,9 @@ struct VortWarp_DX9_Vars_t : public VertexLitGeneric_DX9_Vars_t
 // Draws the shader
 //-----------------------------------------------------------------------------
 void DrawVortWarp_DX9( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShaderDynamicAPI *pShaderAPI,
-	IShaderShadow* pShaderShadow, bool bVertexLitGeneric, bool hasFlashlight, VortWarp_DX9_Vars_t &info, VertexCompressionType_t vertexCompression )
+	IShaderShadow* pShaderShadow, bool bVertexLitGeneric, bool hasFlashlight, VortWarp_DX9_Vars_t &info, VertexCompressionType_t vertexCompression, bool receiver )
 {
+	const bool bShadowmapReceiver = receiver && !hasFlashlight && !params[info.m_nUnlit]->GetIntValue();
 	bool hasBaseTexture = params[info.m_nBaseTexture]->IsTexture();
 	bool hasBump = (info.m_nBumpmap != -1) && params[info.m_nBumpmap]->IsTexture();
 	bool hasDetailTexture = !hasBump && params[info.m_nDetail]->IsTexture();
@@ -178,6 +179,8 @@ void DrawVortWarp_DX9( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShade
 		// This shader supports compressed vertices, so OR in that flag:
 		flags |= VERTEX_FORMAT_COMPRESSED;
 
+		if ( bShadowmapReceiver )
+			flags |= VERTEX_NORMAL;
 		pShaderShadow->VertexShaderVertexFormat( flags, nTexCoordCount, NULL, userDataSize );
 
 		Assert( hasBump );
@@ -188,7 +191,7 @@ void DrawVortWarp_DX9( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShade
 
 			DECLARE_STATIC_VERTEX_SHADER( vortwarp_vs51 );
 			SET_STATIC_VERTEX_SHADER_COMBO( HALFLAMBERT,  bHalfLambert);
-			SET_STATIC_VERTEX_SHADER( vortwarp_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( vortwarp_vs51, vortwarp_shadowmap_vs51 );
 
 			DECLARE_STATIC_PIXEL_SHADER( vortwarp_ps51 );
 			SET_STATIC_PIXEL_SHADER_COMBO( BASETEXTURE,  hasBaseTexture );
@@ -198,7 +201,7 @@ void DrawVortWarp_DX9( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShade
 			SET_STATIC_PIXEL_SHADER_COMBO( HALFLAMBERT,  bHalfLambert);
 			SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHT,  hasFlashlight );
 			SET_STATIC_PIXEL_SHADER_COMBO( TRANSLUCENT, blendType == BT_BLEND );
-			SET_STATIC_PIXEL_SHADER( vortwarp_ps51 );
+			DX12_SET_STATIC_PIXEL_SHADER( vortwarp_ps51, vortwarp_shadowmap_ps51 );
 		}
 
 		if( hasFlashlight )
@@ -288,7 +291,7 @@ void DrawVortWarp_DX9( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShade
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( SKINNING, numBones > 0 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-			SET_DYNAMIC_VERTEX_SHADER( vortwarp_vs51 );
+			DX12_SET_DYNAMIC_VERTEX_SHADER( vortwarp_vs51, vortwarp_shadowmap_vs51 );
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( vortwarp_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( NUM_LIGHTS, lightState.m_nNumLights );
@@ -300,7 +303,7 @@ void DrawVortWarp_DX9( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShade
 			//		float selfIllumTint = params[info.m_nSelfIllumTint]->GetFloatValue();
 			//		DevMsg( 1, "warpParam: %f %f\n", warpParam, selfIllumTint );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( WARPINGIN, warpParam > 0.0f && warpParam < 1.0f );
-			SET_DYNAMIC_PIXEL_SHADER( vortwarp_ps51 );
+			DX12_SET_DYNAMIC_PIXEL_SHADER( vortwarp_ps51, vortwarp_shadowmap_ps51 );
 		}
 
 		pShader->SetVertexShaderTextureTransform( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0, info.m_nBaseTextureTransform );
@@ -534,6 +537,9 @@ BEGIN_VS_SHADER( VortWarp_DX9,
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "VortWarp", bShadowmapReceiver ) )
+			return;
 		VortWarp_DX9_Vars_t vars;
 		SetupVars( vars );
 		// UGH!!!  FIXME!!!!!  Should fix VertexlitGeneric_dx9_helper so that you
@@ -541,12 +547,12 @@ BEGIN_VS_SHADER( VortWarp_DX9,
 		bool bHasFlashlight = UsingFlashlight( params );
 		if ( bHasFlashlight && ( IsX360() || r_flashlight_version2.GetInt() ) )
 		{
-			DrawVortWarp_DX9( this, params, pShaderAPI, pShaderShadow, true, false, vars, vertexCompression );
+			DrawVortWarp_DX9( this, params, pShaderAPI, pShaderShadow, true, false, vars, vertexCompression, bShadowmapReceiver );
 			SHADOW_STATE
 			{
 				SetInitialShadowState();
 			}
 		}
-		DrawVortWarp_DX9( this, params, pShaderAPI, pShaderShadow, true, bHasFlashlight, vars, vertexCompression );
+		DrawVortWarp_DX9( this, params, pShaderAPI, pShaderShadow, true, bHasFlashlight, vars, vertexCompression, bShadowmapReceiver );
 	}
 END_SHADER

@@ -11,6 +11,8 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <d3d11shader.h>
+#include "../stdshaders_dx12/generated/inc/highres_lightmaps_hlsl.inc"
+#include "../stdshaders_dx12/generated/inc/shadowmap_lighting_hlsl.inc"
 
 namespace shaderapidx12
 {
@@ -39,11 +41,13 @@ void InputStruct( CUtlBuffer &buf, VertexFormat_t format )
 //-----------------------------------------------------------------------------
 // Purpose: Emits the VS output struct (all texcoords, two clip-distance registers)
 //-----------------------------------------------------------------------------
-void OutputStruct( CUtlBuffer &buf )
+void OutputStruct( CUtlBuffer &buf, bool highres )
 {
 	buf.PutString( "struct VSOut { float4 pos:SV_POSITION; float4 color:COLOR0; float4 spec:COLOR1;\n" );
 	for ( int i = 0; i < VERTEX_MAX_TEXTURE_COORDINATES; ++i )
 		buf.Printf( "float4 tc%d:TEXCOORD%d;\n", i, i );
+	if ( highres )
+		buf.PutString( "float4 tc13:TEXCOORD13;float4 tc14:TEXCOORD14;float4 tc15:TEXCOORD15;\n" );
 	buf.PutString( "float4 clip0:SV_ClipDistance0; float2 clip1:SV_ClipDistance1;};\n" );
 }
 
@@ -74,7 +78,7 @@ void VertexSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state )
 {
 	buf.PutString( "cbuffer VSFloat:register(b0){float4 vc[256];}\ncbuffer VSTexture:register(b1){float4 tc[40];}\ncbuffer VSBools:register(b2){uint4 vb[4];}\ncbuffer VSClip:register(b3){float4 clipViewport;float4 clipPoint;float4 clipPlanes[6];float4 clipOffset;float4 clipScale;}\n" );
 	InputStruct( buf, state.format );
-	OutputStruct( buf );
+	OutputStruct( buf, state.highresSamplerMask != 0 );
 	buf.PutString( "float4x4 M(uint n){return float4x4(vc[n],vc[n+1],vc[n+2],vc[n+3]);}\nVSOut main(VSIn v){VSOut o=(VSOut)0; float4 p=float4(v.pos.xyz,1);\n" );
 	const bool bCompressed = ( state.format & VERTEX_FORMAT_COMPRESSED ) != 0;
 	if ( state.format & VERTEX_NORMAL )
@@ -143,6 +147,14 @@ void VertexSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state )
 			    nFlags, i, i * 4, i * 4 + 1, i * 4 + 2, i * 4 + 3, i, nFlags, nFlags, i, nFlags, i, i, i );
 		}
 	}
+	if ( state.highresSamplerMask && TexCoordSize( 1, state.format ) )
+		buf.PutString( "o.tc15=v.tc1;\n" ); // Original BASE UV before transforms/bumped offsets.
+	if ( state.highresSamplerMask )
+	{
+		buf.Printf( "o.tc13=float4(%s,1);\n", bSkinned ? "p.xyz" : "mul(float4x4(vc[58],vc[59],vc[60],float4(0,0,0,1)),p).xyz" );
+		if ( state.format & VERTEX_NORMAL )
+			buf.Printf( "o.tc14=float4(normalize(%s),0);\n", bSkinned ? "bn" : "mul((float3x3)M(58),normal)" );
+	}
 	// Generated shaders keep their exact clip position (no D3D9 half-pixel offset); clipViewport.zw carries only the
 	// native-AA jitter delta that translated and native shaders receive through clipViewport.xy.
 	buf.PutString( "o.pos.xy=mad(clipViewport.zw,o.pos.ww,o.pos.xy);\nreturn o;}\n" );
@@ -179,10 +191,26 @@ const char *ArgExpr( int nStage, ShaderTexArg_t arg, char ( &szExpr )[32] )
 	}
 }
 
+// Reuse the authored texture operation for its linear selected-light contribution;
+// native alpha is shared, so lighting never changes blend/alpha operands.
+const char *CombinedArgExpr( int nStage, ShaderTexArg_t arg, char ( &expr )[128] )
+{
+	if ( arg == SHADER_TEXARG_TEXTURE )
+	{
+		V_snprintf( expr, sizeof( expr ), "float4(sampled%d.rgb+sampledDirect%d,sampled%d.a)", nStage, nStage, nStage );
+		return expr;
+	}
+	if ( arg == SHADER_TEXARG_PREVIOUSSTAGE )
+		return "float4(prev.rgb+fixedDirectRGB,prev.a)";
+	char ordinary[32];
+	V_strncpy( expr, ArgExpr( nStage, arg, ordinary ), sizeof( expr ) );
+	return expr;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Emits the HLSL expression for a texture-stage operation
 //-----------------------------------------------------------------------------
-void ApplyOp( CUtlBuffer &buf, ShaderTexOp_t op, const char *pszA, const char *pszB, int nStage )
+void ApplyOp( CUtlBuffer &buf, ShaderTexOp_t op, const char *pszA, const char *pszB, int nStage, bool combined = false )
 {
 	switch ( op )
 	{
@@ -229,7 +257,7 @@ void ApplyOp( CUtlBuffer &buf, ShaderTexOp_t op, const char *pszA, const char *p
 		buf.Printf( "dot((%s).rgb*2-1,(%s).rgb*2-1).xxxx", pszA, pszB );
 		break;
 	default:
-		buf.PutString( "prev" );
+		buf.PutString( combined ? "float4(prev.rgb+fixedDirectRGB,prev.a)" : "prev" );
 		break;
 	}
 }
@@ -255,6 +283,11 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 				bHasTexcoord[link.usageIndex] = true;
 		}
 	}
+	if ( state.highresSamplerMask )
+	{
+		buf.PutString( kHighresLightmapsHlsl );
+		buf.PutString( kShadowmapLightingHlsl );
+	}
 	buf.PutString( "cbuffer PSFloat:register(b0){float4 pc[30];}\n" );
 	buf.PutString( "struct PSIn{float4 pos:SV_POSITION;" );
 	if ( bHasColor[0] )
@@ -264,6 +297,8 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 	for ( int i = 0; i < 16; ++i )
 		if ( bHasTexcoord[i] )
 			buf.Printf( "float4 tc%d:TEXCOORD%d;", i, i );
+	if ( state.highresSamplerMask )
+		buf.PutString( "bool front:SV_IsFrontFace;" );
 	buf.PutString( "};\n" );
 	for ( int i = 0; i < 16; ++i )
 	{
@@ -275,6 +310,13 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 	}
 	buf.Printf( "float4 main(PSIn i):SV_TARGET{float4 vertexColor=%s;float4 specularColor=%s;float4 prev=vertexColor;\n",
 	    bHasColor[0] ? "i.color" : "float4(1,1,1,1)", bHasColor[1] ? "i.spec" : "float4(0,0,0,1)" );
+	if ( state.highresSamplerMask )
+		buf.PutString( "HlightReceiver hlr=HighresLightmap_Begin(i.tc15.xy);"
+			"float3 highresNormal=dot(i.tc14.xyz,i.tc14.xyz)>1e-12?normalize(i.tc14.xyz):normalize(cross(ddx(i.tc13.xyz),ddy(i.tc13.xyz)))*(i.front?1:-1);"
+			"ShadowMapReceiver smr=ShadowMap_BeginReceiver(i.tc13.xyz,highresNormal,i.pos.xy);"
+			"smr.bakedSunVisibility=hlr.sun;"
+			"ShadowMapDirect fixedDirect=ShadowMap_GatherDirect(smr,ShadowMap_ShadeLambert(highresNormal));"
+			"float3 fixedDirectRGB=0;\n" );
 	if ( state.constantColor )
 		buf.PutString( "prev.rgb*=pc[0].rgb;\n" );
 	if ( state.alphaPipe )
@@ -298,17 +340,34 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 			else
 				buf.Printf( "float4 uv%d=float4(0,0,0,1);\n", nStage );
 			buf.Printf( "float4 sampled%d=texture%d.Sample(samp%d,uv%d%s);\n", nStage, nStage, nStage, nStage, state.textureTypes[nStage] == 1 ? ".xy" : ".xyz" );
+			if ( state.highresSamplerMask & ( 1u << nStage ) )
+				buf.Printf( "sampled%d=HighresLightmap_Plane(hlr,0,sampled%d);\n", nStage, nStage );
 		}
 		else
 			buf.Printf( "float4 sampled%d=float4(1,1,1,1);\n", nStage );
+		if ( state.highresSamplerMask )
+			buf.Printf( "float3 sampledDirect%d=%s;\n", nStage, ( state.highresSamplerMask & ( 1u << nStage ) ) ?
+				"fixedDirect.diffuse*hlr.valid" : "float3(0,0,0)" );
 		if ( state.customPipe )
 		{
 			char szArg1[32], szArg2[32];
 			if ( state.colorOp[nStage] != SHADER_TEXOP_DISABLE )
 			{
-				buf.PutString( "prev.rgb=(" );
-				ApplyOp( buf, state.colorOp[nStage], ArgExpr( nStage, state.colorArg1[nStage], szArg1 ), ArgExpr( nStage, state.colorArg2[nStage], szArg2 ), nStage );
-				buf.PutString( ").rgb;\n" );
+				if ( state.highresSamplerMask )
+				{
+					char combinedArg1[128], combinedArg2[128];
+					buf.Printf( "float3 nativeStage%d=(", nStage );
+					ApplyOp( buf, state.colorOp[nStage], ArgExpr( nStage, state.colorArg1[nStage], szArg1 ), ArgExpr( nStage, state.colorArg2[nStage], szArg2 ), nStage );
+					buf.PutString( ").rgb;\nfixedDirectRGB=(" );
+					ApplyOp( buf, state.colorOp[nStage], CombinedArgExpr( nStage, state.colorArg1[nStage], combinedArg1 ), CombinedArgExpr( nStage, state.colorArg2[nStage], combinedArg2 ), nStage, true );
+					buf.Printf( ").rgb-nativeStage%d;prev.rgb=nativeStage%d;\n", nStage, nStage );
+				}
+				else
+				{
+					buf.PutString( "prev.rgb=(" );
+					ApplyOp( buf, state.colorOp[nStage], ArgExpr( nStage, state.colorArg1[nStage], szArg1 ), ArgExpr( nStage, state.colorArg2[nStage], szArg2 ), nStage );
+					buf.PutString( ").rgb;\n" );
+				}
 			}
 			if ( state.alphaOp[nStage] != SHADER_TEXOP_DISABLE )
 			{
@@ -320,11 +379,17 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 		else if ( state.textureEnabled[nStage] )
 		{
 			const float flOverbright = state.overbright[nStage] < 2.f ? 1.f : ( state.overbright[nStage] < 4.f ? 2.f : 4.f );
-			buf.Printf( "prev.rgb*=sampled%d.rgb*%g;\n", nStage, flOverbright );
+			if ( state.highresSamplerMask )
+			{
+				buf.Printf( "fixedDirectRGB=fixedDirectRGB*sampled%d.rgb+(prev.rgb+fixedDirectRGB)*sampledDirect%d;\n", nStage, nStage );
+				buf.Printf( "prev.rgb*=sampled%d.rgb*(cHlightRoute.x!=0?1:%g);\n", nStage, flOverbright );
+			}
+			else
+				buf.Printf( "prev.rgb*=sampled%d.rgb*%g;\n", nStage, flOverbright );
 			if ( !state.alphaPipe || state.textureAlpha[nStage] )
 				buf.Printf( "prev.a*=sampled%d.a;\n", nStage );
 		}
-		buf.PutString( "prev=saturate(prev);\n" );
+		buf.PutString( state.highresSamplerMask ? "if(cHlightRoute.x!=0)prev.a=saturate(prev.a);else prev=saturate(prev);\n" : "prev=saturate(prev);\n" );
 	}
 	if ( state.alphaTest )
 	{
@@ -356,11 +421,13 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 			break;
 		}
 	}
+	if ( state.highresSamplerMask )
+		buf.PutString( "prev.rgb+=fixedDirectRGB;\n" );
 	if ( state.specular )
 		buf.PutString( "prev.rgb+=specularColor.rgb;\n" );
 	if ( state.fogMode != SHADER_FOGMODE_DISABLED )
 		buf.PutString( "float ndcDepth=i.pos.z;float eyeDepth=abs((pc[2].y-ndcDepth*pc[2].w)/max(abs(ndcDepth*pc[2].z-pc[2].x),1e-6));float fogFactor=max(1-pc[28].w,saturate((pc[28].y-eyeDepth)*pc[28].z));prev.rgb=lerp(pc[29].rgb,prev.rgb,fogFactor);\n" );
-	buf.PutString( "return saturate(prev);}\n" );
+	buf.PutString( state.highresSamplerMask ? "return HighresLightmap_Finish(cHlightRoute.x!=0?prev:saturate(prev));}\n" : "return saturate(prev);}\n" );
 }
 } // anonymous namespace
 
@@ -422,6 +489,14 @@ ShaderRecordDX12 *CreateFixedFunctionShaderDX12( CShaderDeviceDX12 *pDevice, con
 		PixelSource( buf, state, pLinkedInputs );
 	else
 		VertexSource( buf, state );
-	return CompileNativeShaderRecordDX12( pDevice, buf.String(), bPixel, bPixel ? "ps_5_0" : "vs_5_0" );
+	ShaderRecordDX12 *record = CompileNativeShaderRecordDX12( pDevice, buf.String(), bPixel, bPixel ? "ps_5_0" : "vs_5_0" );
+	if ( record )
+	{
+		record->lightmapSamplerMask = bPixel ? state.highresSamplerMask : 0;
+		record->highresAbi = bPixel && state.highresSamplerMask != 0;
+		record->lightingAbi = bPixel && state.highresSamplerMask != 0;
+		record->samplerRolesReady = true;
+	}
+	return record;
 }
 } // namespace shaderapidx12

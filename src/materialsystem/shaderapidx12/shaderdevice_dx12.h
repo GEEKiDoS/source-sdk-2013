@@ -16,6 +16,8 @@
 #include "materialsystem/shaderapidx12/shader_translate_dx12.h"
 #include "materialsystem/shaderapidx12/command_recorder_dx12.h"
 #include "materialsystem/shaderapidx12/framegen_dx12.h"
+#include "materialsystem/shaderapidx12/lighting_dx12.h"
+#include "materialsystem/shaderapidx12/highres_lightmaps_dx12.h"
 #include "mathlib/vector.h"
 #include "mathlib/vector4d.h"
 #include "tier0/threadtools.h"
@@ -71,6 +73,9 @@ struct ShaderRecordDX12
 	CUtlVector<NativeCBufferBindingDX12> nativeCBuffers;
 	uint64_t nativeAbiHash = 0;
 	bool nativeReflectionReady = false;
+	bool lightingAbi = false, sunVisibilityAbi = false;
+	uint32_t lightmapSamplerMask = 0, nativeSamplerMask = 0;
+	bool highresAbi = false, samplerRolesReady = false, nativeCasterTwin = false;
 	// Hash of translated.outputLinkage for the active variant; cleared whenever the linkage or variant changes.
 	uint64_t linkageHash = 0, linkageHashVariant = 0;
 	bool linkageHashValid = false;
@@ -145,6 +150,8 @@ public:
 	bool IsInitialized() const { return !m_bFailed && m_pDevice != nullptr && m_pQueue != nullptr; }
 
 	ID3D12Device *NativeDevice() const { return m_pDevice.Get(); }
+	CLightingDX12 &Lighting() { return m_Lighting; }
+	CHighresLightmapsDX12 &Highres() { return m_Highres; }
 
 	// Drains queued submissions so direct queue operations keep submission order.
 	ID3D12CommandQueue *Queue()
@@ -506,6 +513,8 @@ private:
 	CInterlockedInt m_nHdrDisplayStatus;
 	// Frame generation (F5): pending kind switch applied at Present's tail, present ids/serials for the providers.
 	CFrameGenDX12 m_FrameGen;
+	CLightingDX12 m_Lighting;
+	CHighresLightmapsDX12 m_Highres;
 
 	struct PendingSelectDX12
 	{

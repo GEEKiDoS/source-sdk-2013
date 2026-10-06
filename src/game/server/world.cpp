@@ -31,6 +31,7 @@
 #include "engine/IStaticPropMgr.h"
 #include "particle_parse.h"
 #include "globalstate.h"
+#include "shadowmap_transmit.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -407,6 +408,7 @@ IMPLEMENT_SERVERCLASS_ST(CWorld, DT_WORLD)
 	SendPropFloat	(SENDINFO(m_flMinPropScreenSpaceWidth), 0, SPROP_NOSCALE ),
 	SendPropStringT (SENDINFO(m_iszDetailSpriteMaterial) ),
 	SendPropInt		(SENDINFO(m_bColdWorld), 1, SPROP_UNSIGNED ),
+	SendPropBool	(SENDINFO(m_bShadowMapTransmitReady) ),
 END_SEND_TABLE()
 
 //
@@ -467,6 +469,13 @@ CWorld::CWorld( )
 	SetMoveType( MOVETYPE_NONE );
 
 	m_bColdWorld = false;
+	m_bShadowMapTransmitReady = false;
+}
+
+void CWorld::RefreshShadowMapTransmitReady()
+{
+	// Capability is derived from this map's verified server data, not saved.
+	m_bShadowMapTransmitReady = ShadowMapTransmit_Ready();
 }
 
 CWorld::~CWorld( )
@@ -518,6 +527,7 @@ void CWorld::RegisterSharedEvents( void )
 
 void CWorld::Spawn( void )
 {
+	m_bShadowMapTransmitReady = false;
 	SetLocalOrigin( vec3_origin );
 	SetLocalAngles( vec3_angle );
 	// NOTE:  SHOULD NEVER BE ANYTHING OTHER THAN 1!!!

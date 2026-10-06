@@ -78,8 +78,12 @@ BEGIN_VS_SHADER( Eyes_dx9, "Help for Eyes" )
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "Eyes", bShadowmapReceiver ) )
+			return;
 		Eyes_DX8_DX9_Vars_t info;
 		SetupVars( info );
+		info.m_bShadowmapReceiver = bShadowmapReceiver;
 		DrawEyes_DX8_DX9( this, params, pShaderAPI, pShaderShadow, info, vertexCompression );
 	}
 END_SHADER

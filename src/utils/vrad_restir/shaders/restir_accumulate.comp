@@ -28,6 +28,9 @@ void main()
 	bool visible = ( reservoir.flags & RESTIR_RES_VALID ) != 0u;
 	if ( visible && ( reservoir.flags & RESTIR_RES_VISIBLE ) == 0u )
 		visible = ReservoirVisibility( reservoir, origin );
+	// A PATH may refer to a selected light at its bounce vertex; it is retained transport.
+	bool receiverDirect = ( reservoir.flags & RESTIR_RES_PATH ) == 0u &&
+		reservoir.light != RESTIR_NO_HIT && ( lights[reservoir.light].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0;
 	vec3 direction = SafeNormal( reservoir.samplePos.xyz - origin );
 	for ( int channel = 0; channel < face.numChannels; ++channel )
 	{
@@ -54,5 +57,13 @@ void main()
 			accumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] = vec4( contribution, 1.0 );
 		else
 			accumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] += vec4( contribution, 1.0 );
+		if ( receiverAccumulation.length() > 1 )
+		{
+			vec3 receiverContribution = receiverDirect ? vec3( 0.0 ) : contribution;
+			if ( pc.iteration == firstAveraged )
+				receiverAccumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] = vec4( receiverContribution, 1.0 );
+			else
+				receiverAccumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] += vec4( receiverContribution, 1.0 );
+		}
 	}
 }

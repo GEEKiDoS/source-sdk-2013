@@ -53,6 +53,9 @@ struct DX12ConstantStaging
 	bool vsPassthrough, psPassthrough;
 	uint32_t vsFloatDirty[kVSFloat / 32], psFloatDirty[kPSFloat / 32];
 	uint32_t vsIntDirty, psIntDirty, vsBoolDirty, psBoolDirty;
+	// Set only by an admitted receiver or an explicitly non-lighting auxiliary pass;
+	// consumed/reset at Draw so an earlier pass cannot admit an unknown later one.
+	bool shadowmapPassAdmitted;
 };
 extern DX12ConstantStaging g_DX12Constants;
 
@@ -170,6 +173,10 @@ class CBaseVSShaderDX12 : public CBaseShader
 public:
 	// Hides CBaseShader::Draw: a real dynamic draw first writes the selected native blocks.
 	void Draw( bool bMakeActualDrawCall = true );
+	// Receiver admission is scoped to one DrawElements: a lit material's secondary passes
+	// (DrawEqualDepthToDestAlpha, ...) inherit the primary pass's admission.
+	void DrawElements( IMaterialVar **params, int nModulationFlags, IShaderShadow *pShaderShadow, IShaderDynamicAPI *pShaderAPI,
+		VertexCompressionType_t vertexCompression, CBasePerMaterialContextData **pContext ) override;
 
 	// Loads bump lightmap coordinates into the pixel shader
 	void LoadBumpLightmapCoordinateAxes_PixelShader( int pixelReg );

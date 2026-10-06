@@ -25,6 +25,7 @@ enum ReSTIRPipeline
 	RESTIR_PIPE_TRACE,
 	RESTIR_PIPE_AMBIENT,
 	RESTIR_PIPE_POINTS,
+	RESTIR_PIPE_SUN_VISIBILITY,
 	RESTIR_PIPE_COUNT
 };
 
@@ -146,6 +147,7 @@ struct CReSTIRVulkanDevice::Impl
 	void UploadTextures();
 	void PlanAcceleration();
 	void BuildAcceleration();
+	bool HasSelectedSun() const;
 	void RunService( ReSTIRPipeline pipeline, const void *input, unsigned int inputStride, void *output, unsigned int outputStride, unsigned int count, unsigned int styles, unsigned int mask );
 	unsigned int Timestamp( VkCommandBuffer command );
 	double TimestampMs( unsigned int first, unsigned int last );

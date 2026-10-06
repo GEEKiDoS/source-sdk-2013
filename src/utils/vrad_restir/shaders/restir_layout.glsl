@@ -21,9 +21,11 @@
 #define RESTIR_TRI_WORLDFACE   0x4u
 #define RESTIR_TRI_STATICPROP  0x8u
 #define RESTIR_TRI_SHADOW      0x10u
+#define RESTIR_TRI_STATIC_SUN  0x20u
 #define RESTIR_RAY_MASK_ALL        0xFFFFFFFFu
 #define RESTIR_RAY_MASK_SHADOW     RESTIR_TRI_SHADOW
 #define RESTIR_RAY_MASK_WORLDFACE  RESTIR_TRI_WORLDFACE
+#define RESTIR_RAY_MASK_STATIC_SUN RESTIR_TRI_STATIC_SUN
 
 // Face flags
 #define RESTIR_FACE_BUMPED  0x1
@@ -37,6 +39,7 @@
 
 // Light flags
 #define RESTIR_LIGHT_MATERIAL        0x1
+#define RESTIR_LIGHT_RUNTIME_DIRECT  0x2	// selected for runtime shadow maps: excluded from receiver direct only
 
 // emittype_t
 #define EMIT_SURFACE     0
@@ -80,7 +83,7 @@ struct ReSTIRGpuMaterial				// 48 bytes
 	int  textureHeight;
 };
 
-struct ReSTIRGpuLight					// 112 bytes
+struct ReSTIRGpuLight					// 128 bytes
 {
 	vec4 origin;						// xyz, w radius (0 = unlimited)
 	vec4 intensity;						// rgb; EMIT_SURFACE: per-area emission, w = power bound
@@ -91,10 +94,14 @@ struct ReSTIRGpuLight					// 112 bytes
 	int  style;
 	int  firstTri;						// EMIT_SURFACE: emitterTriangles range
 	int  numTris;
-	float sunSpreadAngle;				// EMIT_SKYLIGHT, degrees
+	float sunSpreadAngle;				// EMIT_SKYLIGHT, degrees (transport; unchanged by the shadow-only resolver)
 	int  styleSlot;
 	int  emissionTexture;				// EMIT_SURFACE: sceneTextures index (RGBA8 gamma), -1 uniform
 	int  lightFlags;					// RESTIR_LIGHT_*
+	int  sourceEntity;					// BSP entity index provenance, -1 none (surface/material emitters)
+	int  pad0;							// scalars: an ivec3 would be 16-byte aligned and grow the std430 stride to 144
+	int  pad1;
+	int  pad2;
 };
 
 struct ReSTIRGpuEmitterTriangle			// 64 bytes, front-facing
@@ -213,7 +220,7 @@ struct ReSTIRBvhNode					// 48 bytes
 };
 
 //-----------------------------------------------------------------------------
-// Push constants (112 bytes)
+// Push constants (128 bytes)
 //-----------------------------------------------------------------------------
 layout( push_constant ) uniform ReSTIRPush
 {
@@ -239,6 +246,7 @@ layout( push_constant ) uniform ReSTIRPush
 	uint numReservoirs;
 	vec4 worldMins;
 	vec4 worldMaxs;
+	vec4 shadowSun;						// x: resolved shadow angular radius in radians; yzw = 0 (not transport spread)
 } pc;
 
 //-----------------------------------------------------------------------------
@@ -258,6 +266,8 @@ layout( std430, set = 0, binding = 10 ) buffer ReservoirsNextBuf         { ReSTI
 layout( std430, set = 0, binding = 11 ) buffer AccumulationBuf           { vec4 accumulation[]; };
 layout( std430, set = 0, binding = 12 ) buffer OutputBuf                 { vec4 outputRadiance[]; };
 layout( std430, set = 0, binding = 13 ) buffer LuxelValidBuf             { uint luxelValid[]; };
+// Final-lightmap prefix: numFaces * RESTIR_MAXLIGHTMAPS cached valid-base means,
+// followed by the full style/bump output array in its original order.
 layout( std430, set = 0, binding = 14 ) readonly buffer FinalLightmapBuf { vec4 finalLightmap[]; };
 // Bindings 15/16 (service in/out) are declared by each service pass with its typed element
 // (ReSTIRGpuRay/ReSTIRGpuHit, ReSTIRGpuAmbientQuery/Result, ReSTIRGpuPointQuery/Result), std430, same set.
@@ -269,9 +279,13 @@ layout( std430, set = 0, binding = 21 ) readonly buffer HwPrimMapBuf     { uint 
 layout( std430, set = 0, binding = 22 ) readonly buffer SceneStylesBuf   { int sceneStyles[]; };
 layout( std430, set = 0, binding = 23 ) readonly buffer EmitterTrisBuf   { ReSTIRGpuEmitterTriangle emitterTriangles[]; };
 layout( std430, set = 0, binding = 24 ) readonly buffer StyleLightsBuf   { int styleLights[]; };	// numStyles+1 offsets, then light indices
-layout( set = 0, binding = 25 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
+layout( std430, set = 0, binding = 25 ) buffer ReceiverAccumulationBuf   { vec4 receiverAccumulation[]; };	// as accumulation, minus flagged non-PATH direct
+layout( std430, set = 0, binding = 26 ) buffer ReceiverOutputBuf         { vec4 receiverRadiance[]; };		// as outputRadiance, receiver RGB
+layout( std430, set = 0, binding = 27 ) readonly buffer SunOriginsBuf   { vec4 sunVisibilityOrigins[]; };
+layout( std430, set = 0, binding = 28 ) buffer SunVisibilityBuf          { float sunVisibility[]; };
+layout( set = 0, binding = 29 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
 #if RESTIR_HW_RAYQUERY
-layout( set = 0, binding = 26 ) uniform accelerationStructureEXT tlas;
+layout( set = 0, binding = 30 ) uniform accelerationStructureEXT tlas;
 #endif
 
 #endif // RESTIR_LAYOUT_GLSL

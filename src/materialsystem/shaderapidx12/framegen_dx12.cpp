@@ -1643,40 +1643,52 @@ void CFrameGenDX12::SetFpsLimit( float flFps )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Destroys every provider object (adopted chains released, GPU idle)
+// Purpose: Releases tagged resources before the shader API destroys its input textures
+//-----------------------------------------------------------------------------
+void CFrameGenDX12::ReleaseFeatures()
+{
+	AUTO_LOCK( m_MarkerMutex );
+	DestroyFfxContexts();
+	if ( m_pFfxSwapChainContext )
+	{
+		m_pFfx->destroyContext( &m_pFfxSwapChainContext, nullptr );
+		m_pFfxSwapChainContext = nullptr;
+	}
+	ReleaseXefg();
+	if ( m_bSlInitialized )
+	{
+		if ( m_bDlssgOptionsValid && m_bDlssgOn )
+			DlssgSetOptions( false, m_nDlssgWidth, m_nDlssgHeight );
+		m_Kind = FrameGenKindDX12::None;
+		ApplyReflex();
+		if ( m_bDlssgLoaded )
+		{
+			m_pSl->freeResources( sl::kFeatureDLSS_G, sl::ViewportHandle( 0u ) );
+			m_pSl->setFeatureLoaded( sl::kFeatureDLSS_G, false );
+			m_bDlssgLoaded = false;
+		}
+	}
+	m_Kind = FrameGenKindDX12::None;
+	m_pHudless.Reset();
+	m_bDlssgOptionsValid = m_bDlssgOn = false;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Destroys every provider object (adopted chains and owning queue released, GPU idle)
 //-----------------------------------------------------------------------------
 void CFrameGenDX12::Shutdown()
 {
+	ReleaseFeatures();
 	{
 		AUTO_LOCK( m_MarkerMutex );
-		DestroyFfxContexts();
-		if ( m_pFfxSwapChainContext )
-		{
-			m_pFfx->destroyContext( &m_pFfxSwapChainContext, nullptr );
-			m_pFfxSwapChainContext = nullptr;
-		}
-		ReleaseXefg();
 		if ( m_bSlInitialized )
 		{
-			if ( m_bDlssgOptionsValid && m_bDlssgOn )
-				DlssgSetOptions( false, m_nDlssgWidth, m_nDlssgHeight );
-			m_Kind = FrameGenKindDX12::None;
-			ApplyReflex();
-			if ( m_bDlssgLoaded )
-			{
-				m_pSl->freeResources( sl::kFeatureDLSS_G, sl::ViewportHandle( 0u ) );
-				m_pSl->setFeatureLoaded( sl::kFeatureDLSS_G, false );
-				m_bDlssgLoaded = false;
-			}
 			m_pSlFactory.Reset();
 			m_pSlDevice.Reset();
 			m_pSl->shutdown();
 			m_bSlInitialized = false;
 		}
-		m_Kind = FrameGenKindDX12::None;
-		m_pHudless.Reset();
 	}
-	m_bDlssgOptionsValid = m_bDlssgOn = false;
 	m_bQueueIsProxy = false;
 	if ( m_pXefg )
 	{

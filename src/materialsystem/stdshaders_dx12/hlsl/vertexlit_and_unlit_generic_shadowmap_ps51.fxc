@@ -1,0 +1,530 @@
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/vertexlit_and_unlit_generic_ps2x.fxc for logical vertexlit_and_unlit_generic_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#define DX12_COMBO_FOLD 1
+#include "dx12_preamble.h"
+// Feature receivers are lit, non-flashlight, non-preview passes only.
+// SKIP: $FLASHLIGHT
+// SKIP: $LIGHTING_PREVIEW != 0
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Runtime-uniform material combinations; structural combinations remain static.
+// FOLD: "DETAILTEXTURE" "0..1" STATIC slot=0
+// FOLD: "CUBEMAP" "0..1" STATIC slot=1
+// FOLD: "DIFFUSELIGHTING" "0..1" STATIC slot=2
+// FOLD: "ENVMAPMASK" "0..1" STATIC slot=3
+// FOLD: "BASEALPHAENVMAPMASK" "0..1" STATIC slot=4
+// FOLD: "SELFILLUM" "0..1" STATIC slot=5
+// FOLD: "VERTEXCOLOR" "0..1" STATIC slot=6
+// STATIC: "FLASHLIGHT" "0..1"
+// FOLD: "SELFILLUM_ENVMAPMASK_ALPHA" "0..1" STATIC slot=7
+// FOLD: "DETAIL_BLEND_MODE" "0..9" STATIC slot=8
+// STATIC: "SEAMLESS_BASE" "0..1"
+// STATIC: "SEAMLESS_DETAIL" "0..1"
+// FOLD: "DISTANCEALPHA" "0..1" STATIC slot=9
+// FOLD: "DISTANCEALPHAFROMDETAIL" "0..1" STATIC slot=10
+// FOLD: "SOFT_MASK" "0..1" STATIC slot=11
+// FOLD: "OUTLINE" "0..1" STATIC slot=12
+// FOLD: "OUTER_GLOW" "0..1" STATIC slot=13
+// FOLD: "FLASHLIGHTDEPTHFILTERMODE" "0..2" STATIC slot=14
+// FOLD: "DEPTHBLEND" "0..1" STATIC slot=15
+// FOLD: "BLENDTINTBYBASEALPHA" "0..1" STATIC slot=16
+// STATIC: "CUBEMAP_SPHERE_LEGACY" "0..1"
+// DYNAMIC: "LIGHTING_PREVIEW" "0..2"
+// FOLD: "PIXELFOGTYPE" "0..2" DYNAMIC slot=17
+// FOLD: "FLASHLIGHTSHADOWS" "0..1" DYNAMIC slot=18
+// FOLD: "STATIC_LIGHT_LIGHTMAP" "0..1" DYNAMIC slot=19
+// FOLD: "DEBUG_LUXELS" "0..1" DYNAMIC slot=20
+
+#define DETAILTEXTURE ( cComboFold[0].x )
+#define CUBEMAP ( cComboFold[0].y )
+#define DIFFUSELIGHTING ( cComboFold[0].z )
+#define ENVMAPMASK ( cComboFold[0].w )
+#define BASEALPHAENVMAPMASK ( cComboFold[1].x )
+#define SELFILLUM ( cComboFold[1].y )
+#define VERTEXCOLOR ( cComboFold[1].z )
+#define SELFILLUM_ENVMAPMASK_ALPHA ( cComboFold[1].w )
+#define DETAIL_BLEND_MODE ( cComboFold[2].x )
+#define DISTANCEALPHA ( cComboFold[2].y )
+#define DISTANCEALPHAFROMDETAIL ( cComboFold[2].z )
+#define SOFT_MASK ( cComboFold[2].w )
+#define OUTLINE ( cComboFold[3].x )
+#define OUTER_GLOW ( cComboFold[3].y )
+#define FLASHLIGHTDEPTHFILTERMODE ( cComboFold[3].z )
+#define DEPTHBLEND ( cComboFold[3].w )
+#define BLENDTINTBYBASEALPHA ( cComboFold[4].x )
+#define PIXELFOGTYPE ( cComboFold[4].y )
+#define FLASHLIGHTSHADOWS ( cComboFold[4].z )
+#define STATIC_LIGHT_LIGHTMAP ( cComboFold[4].w )
+#define DEBUG_LUXELS ( cComboFold[5].x )
+
+
+#include "common_flashlight_fxc.h"
+#include "common_vertexlitgeneric_dx9.h"
+
+
+cbuffer vertexlit_and_unlit_generic_ps2x : register( b1, space1 )
+{
+	float4 g_EnvmapTint_TintReplaceFactor; // @legacy ps:c0
+	float4 g_DiffuseModulation; // @legacy ps:c1
+	float4 g_EnvmapContrast_ShadowTweaks; // @legacy ps:c2
+	float4 g_EnvmapSaturation_SelfIllumMask; // @legacy ps:c3
+	float4 g_SelfIllumTint_and_BlendFactor; // @legacy ps:c4
+	float4 g_GlowParameters; // @legacy ps:c5
+	float4 g_GlowColor; // @legacy ps:c6
+	float4 g_DistanceAlphaParams; // @legacy ps:c7
+	float4 g_OutlineColor; // @legacy ps:c8
+	float4 g_OutlineParams; // @legacy ps:c9
+	float3 g_DetailTint; // @legacy ps:c10
+	float4 g_LuxelScale; // @legacy ps:c11
+	float4 g_ShaderControls; // @legacy ps:c12
+	float4 g_DepthFeatheringConstants; // @legacy ps:c13
+	float4 g_EyePos; // @legacy ps:c20
+	float4 g_FlashlightAttenuationFactors; // @legacy ps:c22
+	HALF3 g_FlashlightPos; // @legacy ps:c23
+	float4x4 g_FlashlightWorldToTexture; // @legacy ps:c24
+	float4 cFlashlightColor; // @legacy ps:c28
+	float4 cFlashlightScreenScale; // @legacy ps:c31
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+#define g_SelfIllumTint				g_SelfIllumTint_and_BlendFactor.xyz
+#define g_DetailBlendFactor			g_SelfIllumTint_and_BlendFactor.w
+#define g_EnvmapSaturation			g_EnvmapSaturation_SelfIllumMask.xyz
+#define g_SelfIllumMaskControl		g_EnvmapSaturation_SelfIllumMask.w
+
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D EnvmapSampler_Texture : register( t1 );
+SamplerState EnvmapSampler_Sampler : register( s1 );
+static const DX12Sampler2D EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+TextureCube EnvmapSampler_TextureCUBE : register( t1 );
+static const DX12SamplerCube EnvmapSampler_CUBE = { EnvmapSampler_TextureCUBE, EnvmapSampler_Sampler };
+Texture2D DetailSampler_Texture : register( t2 );
+SamplerState DetailSampler_Sampler : register( s2 );
+static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+Texture2D EnvmapMaskSampler_Texture : register( t4 );
+SamplerState EnvmapMaskSampler_Sampler : register( s4 );
+static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
+Texture2D RandRotSampler_Texture : register( t6 );
+SamplerState RandRotSampler_Sampler : register( s6 );
+static const DX12Sampler2D RandRotSampler = { RandRotSampler_Texture, RandRotSampler_Sampler };
+Texture2D FlashlightSampler_Texture : register( t7 );
+SamplerState FlashlightSampler_Sampler : register( s7 );
+static const DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
+Texture2D ShadowDepthSampler_Texture : register( t8 );
+SamplerComparisonState ShadowDepthSampler_Sampler : register( s8 );
+static const DX12ShadowSampler ShadowDepthSampler = { ShadowDepthSampler_Texture, ShadowDepthSampler_Sampler };
+Texture2D DepthSampler_Texture : register( t10 );
+SamplerState DepthSampler_Sampler : register( s10 );
+static const DX12Sampler2D DepthSampler = { DepthSampler_Texture, DepthSampler_Sampler };
+Texture2D SelfIllumMaskSampler_Texture : register( t11 );
+SamplerState SelfIllumMaskSampler_Sampler : register( s11 );
+static const DX12Sampler2D SelfIllumMaskSampler = { SelfIllumMaskSampler_Texture, SelfIllumMaskSampler_Sampler };
+Texture2D LightMapSampler_Texture : register( t12 );
+SamplerState LightMapSampler_Sampler : register( s12 );
+static const DX12Sampler2D LightMapSampler = { LightMapSampler_Texture, LightMapSampler_Sampler };
+
+struct PS_INPUT
+{
+#if SEAMLESS_BASE
+	HALF3 baseTexCoord;
+#else
+	HALF2 baseTexCoord;
+#endif
+#if SEAMLESS_DETAIL
+	HALF3 detailTexCoord;
+#else
+	HALF2 detailTexCoord;
+#endif
+	float4 color;
+	float3 worldVertToEyeVector;
+	float3 worldSpaceNormal;
+	float4 projPos;
+	float4 worldPos_projPosZ;
+	float4 fogFactorW;
+#if SEAMLESS_BASE || SEAMLESS_DETAIL
+	float3 SeamlessWeights;
+#endif
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 svPos : SV_Position;
+	float fog : FOG;
+#if SEAMLESS_BASE
+	HALF3 SeamlessTexCoord : TEXCOORD0;
+#else
+	HALF2 baseTexCoord : TEXCOORD0;
+#endif
+#if SEAMLESS_DETAIL
+	HALF3 SeamlessDetailTexCoord : TEXCOORD1;
+#else
+	HALF2 detailTexCoord : TEXCOORD1;
+#endif
+	float4 color : TEXCOORD2;
+	float3 worldVertToEyeVector : TEXCOORD3;
+	float3 worldSpaceNormal : TEXCOORD4;
+	float4 vProjPos : TEXCOORD6;
+	float4 worldPos_ProjPosZ : TEXCOORD7;
+	float4 fogFactorW : COLOR1;
+#if SEAMLESS_DETAIL || SEAMLESS_BASE
+	float3 SeamlessWeights : COLOR0;
+#endif
+	float3 worldPos : TEXCOORD5;
+	float3 worldNormal : TEXCOORD8;
+	float2 shadowResponse : TEXCOORD9;
+};
+LPREVIEW_PS_OUT ShadowMap_Debug( ShadowMapReceiver r, ShadowMapDirect d, LPREVIEW_PS_OUT o )
+{
+	o.color = ShadowMap_Debug( r, d, o.color );
+	return o;
+}
+
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+#if SEAMLESS_BASE
+#if ( ( SEAMLESS_BASE ) )
+	l.baseTexCoord = dx12In.SeamlessTexCoord;
+#endif
+#if ( !( SEAMLESS_BASE ) )
+	l.baseTexCoord.xy = dx12In.baseTexCoord;
+#endif
+#else
+#if ( ( SEAMLESS_BASE ) )
+	l.baseTexCoord = ( dx12In.SeamlessTexCoord ).xy;
+#endif
+#if ( !( SEAMLESS_BASE ) )
+	l.baseTexCoord = dx12In.baseTexCoord;
+#endif
+#endif
+#if SEAMLESS_DETAIL
+#if ( ( SEAMLESS_DETAIL ) )
+	l.detailTexCoord = dx12In.SeamlessDetailTexCoord;
+#endif
+#if ( !( SEAMLESS_DETAIL ) )
+	l.detailTexCoord.xy = dx12In.detailTexCoord;
+#endif
+#else
+#if ( ( SEAMLESS_DETAIL ) )
+	l.detailTexCoord = ( dx12In.SeamlessDetailTexCoord ).xy;
+#endif
+#if ( !( SEAMLESS_DETAIL ) )
+	l.detailTexCoord = dx12In.detailTexCoord;
+#endif
+#endif
+	l.color = dx12In.color;
+	l.worldVertToEyeVector = dx12In.worldVertToEyeVector;
+	l.worldSpaceNormal = dx12In.worldSpaceNormal;
+	l.projPos = dx12In.vProjPos;
+	l.worldPos_projPosZ = dx12In.worldPos_ProjPosZ;
+	l.fogFactorW = dx12In.fogFactorW;
+#if SEAMLESS_BASE || SEAMLESS_DETAIL
+#if ( ( SEAMLESS_DETAIL || SEAMLESS_BASE ) )
+	l.SeamlessWeights = dx12In.SeamlessWeights;
+#endif
+#endif
+	return l;
+}
+
+
+#define GLOW_UV_OFFSET g_GlowParameters.xy
+#define OUTER_GLOW_MIN_DVALUE g_GlowParameters.z
+#define OUTER_GLOW_MAX_DVALUE g_GlowParameters.w
+#define OUTER_GLOW_COLOR g_GlowColor
+#define g_fPixelFogType					g_ShaderControls.x
+#define g_fWriteDepthToAlpha			g_ShaderControls.y
+#define g_fWriteWaterFogToDestAlpha		g_ShaderControls.z
+#define g_fVertexAlpha					g_ShaderControls.w
+
+
+#define SOFT_MASK_MAX g_DistanceAlphaParams.x
+#define SOFT_MASK_MIN g_DistanceAlphaParams.y
+
+#define OUTLINE_COLOR g_OutlineColor
+
+#define OUTLINE_MIN_VALUE0 g_OutlineParams.x
+#define OUTLINE_MAX_VALUE1 g_OutlineParams.y
+#define OUTLINE_MAX_VALUE0 g_OutlineParams.z
+#define OUTLINE_MIN_VALUE1 g_OutlineParams.w
+
+
+// Calculate unified fog.
+float CalcPixelFogFactorConst( float fPixelFogType, const float4 fogParams, const float flEyePosZ, const float flWorldPosZ, const float flProjPosZ )
+{
+	float flDepthBelowWater = fPixelFogType*fogParams.y - flWorldPosZ;
+	float flDepthBelowEye = fPixelFogType*flEyePosZ - flWorldPosZ;
+	float frac = (flDepthBelowEye == 0) ? 1 : saturate(flDepthBelowWater/flDepthBelowEye);
+	return saturate( min(fogParams.z, flProjPosZ * fogParams.w * frac - fogParams.x) );
+}
+
+float3 BlendPixelFogConst( const float3 vShaderColor, float pixelFogFactor, const float3 vFogColor, float fPixelFogType )
+{
+	pixelFogFactor = lerp( pixelFogFactor*pixelFogFactor, pixelFogFactor, fPixelFogType );
+	return lerp( vShaderColor.rgb, vFogColor.rgb, pixelFogFactor );
+}
+
+float4 FinalOutputConst( const float4 vShaderColor, float pixelFogFactor, float fPixelFogType, const int iTONEMAP_SCALE_TYPE, float fWriteDepthToDestAlpha, const float flProjZ )
+{
+	float4 result = vShaderColor;
+	if( iTONEMAP_SCALE_TYPE == TONEMAP_SCALE_LINEAR )
+		result.rgb *= LINEAR_LIGHT_SCALE;
+	else if( iTONEMAP_SCALE_TYPE == TONEMAP_SCALE_GAMMA )
+		result.rgb *= GAMMA_LIGHT_SCALE;
+	result.a = lerp( result.a, DepthToDestAlpha( flProjZ ), fWriteDepthToDestAlpha );
+	result.rgb = BlendPixelFogConst( result.rgb, pixelFogFactor, g_LinearFogColor.rgb, fPixelFogType );
+	result.rgb = SRGBOutput( result.rgb );
+	return result;
+}
+
+#if LIGHTING_PREVIEW == 2
+LPREVIEW_PS_OUT main( DX12_PS_INPUT dx12In )
+#else
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+#endif
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+#if !FLASHLIGHT
+	ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.svPos.xy );
+	ShadowMapDirect smd = ShadowMap_NoDirect();
+	ShadowMapShading sms = ShadowMap_ShadeLambert( dx12In.worldNormal );
+#endif
+
+	bool bDetailTexture = DETAILTEXTURE != 0;
+	bool bCubemap = CUBEMAP != 0;
+	bool bDiffuseLighting = DIFFUSELIGHTING != 0;
+	bool bEnvmapMask = ENVMAPMASK != 0;
+	bool bBaseAlphaEnvmapMask = BASEALPHAENVMAPMASK != 0;
+	bool bSelfIllum = SELFILLUM != 0;
+	bool bVertexColor = VERTEXCOLOR != 0;
+	bool bFlashlight = FLASHLIGHT != 0;
+	bool bBlendTintByBaseAlpha = BLENDTINTBYBASEALPHA != 0;
+
+	HALF4 baseColor = HALF4( 1.0f, 1.0f, 1.0f, 1.0f );
+#if SEAMLESS_BASE
+	baseColor =
+		i.SeamlessWeights.x * BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord.yz )+
+		i.SeamlessWeights.y * BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord.zx )+
+		i.SeamlessWeights.z * BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord.xy );
+#else
+	baseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord.xy );
+#endif
+
+	float distAlphaMask = baseColor.a;
+	float4 detailColor = float4( 1, 1, 1, 1 );
+	if ( bDetailTexture )
+	{
+#if SEAMLESS_DETAIL
+		detailColor =
+			i.SeamlessWeights.x * DetailSampler.tex.Sample( DetailSampler.smp, i.detailTexCoord.yz )+
+			i.SeamlessWeights.y * DetailSampler.tex.Sample( DetailSampler.smp, i.detailTexCoord.zx )+
+			i.SeamlessWeights.z * DetailSampler.tex.Sample( DetailSampler.smp, i.detailTexCoord.xy );
+#else
+		detailColor = DetailSampler.tex.Sample( DetailSampler.smp, i.detailTexCoord.xy );
+#endif
+		detailColor.rgb *= g_DetailTint;
+		if ( DISTANCEALPHA && DISTANCEALPHAFROMDETAIL )
+		{
+			distAlphaMask = detailColor.a;
+			detailColor.a = 1.0;
+		}
+		baseColor = TextureCombine( baseColor, detailColor, DETAIL_BLEND_MODE, g_DetailBlendFactor );
+	}
+
+	if ( DISTANCEALPHA )
+	{
+		if ( OUTLINE )
+		{
+			float4 oFactors = smoothstep( g_OutlineParams.xyzw, g_OutlineParams.wzyx, distAlphaMask );
+			baseColor = lerp( baseColor, g_OutlineColor, oFactors.x * oFactors.y );
+		}
+		float mskUsed;
+		if ( SOFT_MASK )
+		{
+			mskUsed = smoothstep( SOFT_MASK_MIN, SOFT_MASK_MAX, distAlphaMask );
+			baseColor.a *= mskUsed;
+		}
+		else
+		{
+			mskUsed = distAlphaMask >= 0.5;
+			if ( bDetailTexture )
+				baseColor.a *= mskUsed;
+			else
+				baseColor.a = mskUsed;
+		}
+		if ( OUTER_GLOW )
+		{
+			float4 glowTexel;
+			if ( DISTANCEALPHAFROMDETAIL )
+				glowTexel = DetailSampler.tex.Sample( DetailSampler.smp, i.detailTexCoord.xy+GLOW_UV_OFFSET );
+			else
+				glowTexel = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord.xy+GLOW_UV_OFFSET );
+			float4 glowc = OUTER_GLOW_COLOR*smoothstep( OUTER_GLOW_MIN_DVALUE, OUTER_GLOW_MAX_DVALUE, glowTexel.a );
+			baseColor = lerp( glowc, baseColor, mskUsed );
+		}
+	}
+
+	float3 specularFactor = 1.0f;
+	float4 envmapMaskTexel = float4( 1, 1, 1, 1 );
+	if( bEnvmapMask )
+	{
+		envmapMaskTexel = EnvmapMaskSampler.tex.Sample( EnvmapMaskSampler.smp, i.baseTexCoord.xy );
+		specularFactor *= envmapMaskTexel.xyz;
+	}
+	if( bBaseAlphaEnvmapMask )
+		specularFactor *= 1.0 - baseColor.a;
+
+	float3 diffuseLighting = float3( 1.0f, 1.0f, 1.0f );
+	if( bDiffuseLighting || bVertexColor )
+		diffuseLighting = i.color.rgb;
+	if ( STATIC_LIGHT_LIGHTMAP )
+	{
+		float2 lightmapTexCoords = i.baseTexCoord.xy;
+		if ( DEBUG_LUXELS )
+			lightmapTexCoords.xy *= g_LuxelScale.xy;
+		float3 f3LightmapColor = GammaToLinear( 2.0f * LightMapSampler.tex.Sample( LightMapSampler.smp, lightmapTexCoords ).rgb );
+		diffuseLighting = f3LightmapColor;
+	}
+
+#if !FLASHLIGHT
+	if ( DIFFUSELIGHTING )
+	{
+		smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( dx12In.worldNormal, dx12In.shadowResponse.x != 0 ) );
+	diffuseLighting += smd.diffuse;
+	}
+#endif
+	float3 albedo = baseColor;
+
+	if ( bBlendTintByBaseAlpha )
+	{
+		float3 tintedColor = albedo * g_DiffuseModulation.rgb;
+		tintedColor = lerp( tintedColor, g_DiffuseModulation.rgb, g_EnvmapTint_TintReplaceFactor.w );
+		albedo = lerp( albedo, tintedColor, baseColor.a );
+	}
+	else
+		albedo = albedo * g_DiffuseModulation.rgb;
+
+	float alpha = g_DiffuseModulation.a;
+	if ( !bBaseAlphaEnvmapMask && !bSelfIllum && !bBlendTintByBaseAlpha )
+		alpha *= baseColor.a;
+
+	if( bFlashlight )
+	{
+		int nShadowSampleLevel = FLASHLIGHTDEPTHFILTERMODE;
+		bool bDoShadows = FLASHLIGHTSHADOWS != 0;
+		float4 flashlightSpacePosition = mul( float4( i.worldPos_projPosZ.xyz, 1.0f ), g_FlashlightWorldToTexture );
+		float3 flashlightColor = DoFlashlight( g_FlashlightPos, i.worldPos_projPosZ.xyz, flashlightSpacePosition, i.worldSpaceNormal, g_FlashlightAttenuationFactors.xyz, g_FlashlightAttenuationFactors.w, FlashlightSampler, ShadowDepthSampler, RandRotSampler, nShadowSampleLevel, bDoShadows, false, i.projPos.xy / i.projPos.w, false, cFlashlightColor, cFlashlightScreenScale, g_EnvmapContrast_ShadowTweaks, true );
+		diffuseLighting = flashlightColor;
+	}
+
+	if( bVertexColor && bDiffuseLighting )
+		albedo *= i.color.rgb;
+	alpha = lerp( alpha, alpha * i.color.a, g_fVertexAlpha );
+	float3 diffuseComponent = albedo * diffuseLighting;
+	if ( bDetailTexture )
+		diffuseComponent = TextureCombinePostLighting( diffuseComponent, detailColor, DETAIL_BLEND_MODE, g_DetailBlendFactor );
+
+	HALF3 specularLighting = HALF3( 0.0f, 0.0f, 0.0f );
+#if !FLASHLIGHT
+	if ( SELFILLUM_ENVMAPMASK_ALPHA )
+	{
+		HALF3 selfIllumComponent = g_SelfIllumTint * albedo;
+		half Adj_Alpha = 8*envmapMaskTexel.a;
+		diffuseComponent = ( max( 0, 1-Adj_Alpha ) * diffuseComponent ) + Adj_Alpha * selfIllumComponent;
+	}
+	else if ( bSelfIllum )
+	{
+		float3 vSelfIllumMask = SelfIllumMaskSampler.tex.Sample( SelfIllumMaskSampler.smp, i.baseTexCoord.xy );
+		vSelfIllumMask = lerp( baseColor.aaa, vSelfIllumMask, g_SelfIllumMaskControl );
+		diffuseComponent = lerp( diffuseComponent, g_SelfIllumTint * albedo, vSelfIllumMask );
+	}
+	if( bCubemap )
+	{
+#if CUBEMAP_SPHERE_LEGACY
+		HALF3 reflectVect = normalize( CalcReflectionVectorUnnormalized( i.worldSpaceNormal, i.worldVertToEyeVector.xyz ) );
+		specularLighting = 0.5 * EnvmapSampler.tex.Sample( EnvmapSampler.smp, float2( reflectVect.x, reflectVect.y ) ) * g_DiffuseModulation.rgb * diffuseLighting;
+#else
+		HALF3 reflectVect = CalcReflectionVectorUnnormalized( i.worldSpaceNormal, i.worldVertToEyeVector.xyz );
+		specularLighting = ENV_MAP_SCALE * EnvmapSampler_CUBE.tex.Sample( EnvmapSampler_CUBE.smp, reflectVect );
+		specularLighting *= specularFactor;
+		specularLighting *= g_EnvmapTint_TintReplaceFactor.rgb;
+		HALF3 specularLightingSquared = specularLighting * specularLighting;
+		specularLighting = lerp( specularLighting, specularLightingSquared, g_EnvmapContrast_ShadowTweaks );
+		HALF3 greyScale = dot( specularLighting, HALF3( 0.299f, 0.587f, 0.114f ) );
+		specularLighting = lerp( greyScale, specularLighting, g_EnvmapSaturation );
+#endif
+	}
+#endif
+
+	HALF3 result = diffuseComponent + specularLighting;
+#if LIGHTING_PREVIEW
+# if LIGHTING_PREVIEW == 1
+	float dotprod = 0.7+0.25*dot( i.worldSpaceNormal, normalize( float3( 1, 2, -.5 ) ) );
+	
+#if !FLASHLIGHT
+	{
+	if ( DIFFUSELIGHTING )
+	{
+	float4 dx12Lit0_0 = DX12FinishPixel( FinalOutput( float4( dotprod*albedo.xyz, alpha ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+	return ShadowMap_Debug( smr, smd, dx12Lit0_0 );
+	}
+	return DX12FinishPixel( FinalOutput( float4( dotprod*albedo.xyz, alpha ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+	}
+#else
+	return DX12FinishPixel( FinalOutput( float4( dotprod*albedo.xyz, alpha ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+#endif
+
+# else
+	LPREVIEW_PS_OUT ret;
+	ret.flags = float4( 1, 1, 1, 1 );
+	ret.color = float4( albedo.xyz, alpha );
+	ret.normal = float4( i.worldSpaceNormal, alpha );
+	ret.position = float4( i.worldPos_projPosZ.xyz, alpha );
+	
+#if !FLASHLIGHT
+	{
+	if ( DIFFUSELIGHTING )
+	{
+	LPREVIEW_PS_OUT dx12Lit0_1 = DX12FinishPixel( FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
+	return ShadowMap_Debug( smr, smd, dx12Lit0_1 );
+	}
+	return DX12FinishPixel( FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
+	}
+#else
+	return DX12FinishPixel( FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
+#endif
+
+# endif
+#else
+	if ( DEPTHBLEND )
+	{
+		float2 vScreenPos;
+		vScreenPos.x = i.projPos.x;
+		vScreenPos.y = -i.projPos.y;
+		vScreenPos = (vScreenPos + i.projPos.w) * 0.5f;
+		alpha *= DepthFeathering( DepthSampler, vScreenPos / i.projPos.w, i.projPos.w - i.projPos.z, i.projPos.w, g_DepthFeatheringConstants );
+	}
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.xyz, i.worldPos_projPosZ.xyz, i.projPos.z );
+	if ( PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT )
+		alpha = lerp( alpha, fogFactor, g_fWriteWaterFogToDestAlpha );
+	
+#if !FLASHLIGHT
+	{
+	if ( DIFFUSELIGHTING )
+	{
+	float4 dx12Lit0_2 = DX12FinishPixel( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.projPos.z ), dx12In.fog );
+	return ShadowMap_Debug( smr, smd, dx12Lit0_2 );
+	}
+	return DX12FinishPixel( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.projPos.z ), dx12In.fog );
+	}
+#else
+	return DX12FinishPixel( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.projPos.z ), dx12In.fog );
+#endif
+
+#endif
+}

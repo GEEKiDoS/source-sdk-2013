@@ -20,6 +20,7 @@ struct FixedFunctionStateDX12
 	VertexFormat_t format = 0;
 	unsigned drawFlags = SHADER_DRAW_POSITION;
 	int texCoordCount = 0;
+	uint32_t highresSamplerMask = 0;
 	bool textureEnabled[16] = {}, texgen[16] = {}, textureAlpha[16] = {};
 	uint8_t textureTypes[16] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 	float overbright[16] = {};

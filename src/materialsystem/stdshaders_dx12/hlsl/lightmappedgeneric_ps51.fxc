@@ -1,102 +1,46 @@
+// HIGHLIGHT_SAMPLERS: 2
 // Native SM5.1 rewrite of materialsystem/stdshaders/lightmappedgeneric_ps2x.fxc for logical lightmappedgeneric_ps20b (legacy profile ps20b);
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
 #define DX12_LEGACY_PS20B 1
+#define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
-// STATIC: "MASKEDBLENDING"				"0..1"
-// STATIC: "BASETEXTURE2"				"0..1"
-// STATIC: "DETAILTEXTURE"				"0..1"
-// STATIC: "BUMPMAP"					"0..2"
-// STATIC: "BUMPMAP2"					"0..1"
-// STATIC: "CUBEMAP"					"0..1"
-// STATIC: "ENVMAPMASK"					"0..1"
-// STATIC: "BASEALPHAENVMAPMASK"		"0..1"
-// STATIC: "SELFILLUM"					"0..1"
-// STATIC: "NORMALMAPALPHAENVMAPMASK"	"0..1"
-// STATIC: "DIFFUSEBUMPMAP"				"0..1"
-// STATIC: "BASETEXTURENOENVMAP"		"0..1"
-// STATIC: "BASETEXTURE2NOENVMAP"		"0..1"
-// STATIC: "WARPLIGHTING"				"0..1"
-// STATIC: "FANCY_BLENDING"				"0..1"
-// STATIC: "RELIEF_MAPPING"				"0..0"
-// STATIC: "SEAMLESS"					"0..1"
-// STATIC: "OUTLINE"                    "0..1"
-// STATIC: "SOFTEDGES"                  "0..1"
-// STATIC: "BUMPMASK"                   "0..1"
-// STATIC: "NORMAL_DECODE_MODE"			"0..0"
-// STATIC: "NORMALMASK_DECODE_MODE"		"0..0"
-// STATIC: "DETAIL_BLEND_MODE"			"0..11"
-
-// DYNAMIC: "FASTPATHENVMAPCONTRAST"	"0..1"
-// DYNAMIC: "FASTPATH"					"0..1"
-// DYNAMIC: "WRITEWATERFOGTODESTALPHA"	"0..1"
-// DYNAMIC: "PIXELFOGTYPE"				"0..2"
-// DYNAMIC: "LIGHTING_PREVIEW"			"0..2"
-// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"	"0..1"
-// DYNAMIC: "BICUBIC_LIGHTMAP"           "0..1"
-
-//  SKIP: $SEAMLESS && $RELIEF_MAPPING
-
-//	SKIP: (! $DETAILTEXTURE) && ( $DETAIL_BLEND_MODE != 0 )
-
-//  SKIP: $SEAMLESS && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: $BASETEXTURE2 && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: $BUMPMAP2 && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: $SELFILLUM && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: $MASKEDBLENDING && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: $FANCY_BLENDING && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: $LIGHTING_PREVIEW && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: ($FASTPATH == 0) && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: ($DETAILTEXTURE && $BUMPMAP) && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: ($WARPLIGHTING) && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: ($BUMPMAP) && ( $OUTLINE || $SOFTEDGES)
-//  SKIP: ($DETAIL_BLEND_MODE == 2 ) || ($DETAIL_BLEND_MODE == 3 ) || ($DETAIL_BLEND_MODE == 4 )
-//  SKIP: ($DETAIL_BLEND_MODE == 5 ) || ($DETAIL_BLEND_MODE == 6 ) || ($DETAIL_BLEND_MODE == 7 )
-//  SKIP: ($DETAIL_BLEND_MODE == 8 ) || ($DETAIL_BLEND_MODE == 9 )
-//  SKIP ($DETAIL_BLEND_MODE == 10 ) && ($BUMPMAP == 0 )
-//  SKIP ($DETAIL_BLEND_MODE == 11 ) && ($BUMPMAP != 0 )
-
-// ---- inlined lightmappedgeneric_ps2_3_x.h ----
 //========= Copyright Valve Corporation, All rights reserved. ============//
-//  SKIP: $BUMPMAP2 && $WARPLIGHTING
-//  SKIP: $WARPLIGHTING && $DETAILTEXTURE
-//	SKIP: $ENVMAPMASK && $BUMPMAP
-//	SKIP: $NORMALMAPALPHAENVMAPMASK && $BASEALPHAENVMAPMASK
-//	SKIP: $NORMALMAPALPHAENVMAPMASK && $ENVMAPMASK
-//	SKIP: $BASEALPHAENVMAPMASK && $ENVMAPMASK
-//	SKIP: $BASEALPHAENVMAPMASK && $SELFILLUM
-//  SKIP: !$FASTPATH && $FASTPATHENVMAPCONTRAST
-//  SKIP: !$FASTPATH && $FASTPATHENVMAPTINT
-//  SKIP: !$BUMPMAP && $DIFFUSEBUMPMAP
-//	SKIP: !$BUMPMAP && $BUMPMAP2
-//	SKIP: $ENVMAPMASK && $BUMPMAP2
-//	SKIP: $BASETEXTURENOENVMAP && ( !$BASETEXTURE2 || !$CUBEMAP )
-//	SKIP: $BASETEXTURE2NOENVMAP && ( !$BASETEXTURE2 || !$CUBEMAP )
-//	SKIP: $BASEALPHAENVMAPMASK && $BUMPMAP
-//  SKIP: $PARALLAXMAP && $DETAILTEXTURE
-//  SKIP: $SEAMLESS && $RELIEF_MAPPING
-//  SKIP: $SEAMLESS && $DETAILTEXTURE
-//  SKIP: $SEAMLESS && $MASKEDBLENDING
-//  SKIP: $BUMPMASK && ( $SEAMLESS || $DETAILTEXTURE || $SELFILLUM || $BASETEXTURENOENVMAP || $BASETEXTURE2 )
-//	SKIP: !$BUMPMAP && ($NORMAL_DECODE_MODE == 1)
-//	SKIP: !$BUMPMAP && ($NORMAL_DECODE_MODE == 2)
-//	SKIP: !$BUMPMAP && ($NORMALMASK_DECODE_MODE == 1)
-//	SKIP: !$BUMPMAP && ($NORMALMASK_DECODE_MODE == 2)
-//  NOSKIP: $FANCY_BLENDING && (!$FASTPATH)
+// STATIC: "RELIEF_MAPPING" "0..0"
+// STATIC: "SEAMLESS" "0..1"
+// STATIC: "NORMAL_DECODE_MODE" "0..0"
+// STATIC: "NORMALMASK_DECODE_MODE" "0..0"
+// DYNAMIC: "LIGHTING_PREVIEW" "0..2"
+// FOLD: "MASKEDBLENDING" "0..1" STATIC slot=0
+// FOLD: "BASETEXTURE2" "0..1" STATIC slot=1
+// FOLD: "DETAILTEXTURE" "0..1" STATIC slot=2
+// FOLD: "BUMPMAP" "0..2" STATIC slot=3
+// FOLD: "BUMPMAP2" "0..1" STATIC slot=4
+// FOLD: "CUBEMAP" "0..1" STATIC slot=5
+// FOLD: "ENVMAPMASK" "0..1" STATIC slot=6
+// FOLD: "BASEALPHAENVMAPMASK" "0..1" STATIC slot=7
+// FOLD: "SELFILLUM" "0..1" STATIC slot=8
+// FOLD: "NORMALMAPALPHAENVMAPMASK" "0..1" STATIC slot=9
+// FOLD: "DIFFUSEBUMPMAP" "0..1" STATIC slot=10
+// FOLD: "BASETEXTURENOENVMAP" "0..1" STATIC slot=11
+// FOLD: "BASETEXTURE2NOENVMAP" "0..1" STATIC slot=12
+// FOLD: "WARPLIGHTING" "0..1" STATIC slot=13
+// FOLD: "FANCY_BLENDING" "0..1" STATIC slot=14
+// FOLD: "OUTLINE" "0..1" STATIC slot=15
+// FOLD: "SOFTEDGES" "0..1" STATIC slot=16
+// FOLD: "BUMPMASK" "0..1" STATIC slot=17
+// FOLD: "DETAIL_BLEND_MODE" "0..11" STATIC slot=18
+// FOLD: "FASTPATHENVMAPCONTRAST" "0..1" DYNAMIC slot=19
+// FOLD: "FASTPATH" "0..1" DYNAMIC slot=20
+// FOLD: "WRITEWATERFOGTODESTALPHA" "0..1" DYNAMIC slot=21
+// FOLD: "PIXELFOGTYPE" "0..2" DYNAMIC slot=22
+// FOLD: "WRITE_DEPTH_TO_DESTALPHA" "0..1" DYNAMIC slot=23
+// FOLD: "BICUBIC_LIGHTMAP" "0..1" DYNAMIC slot=24
+// SKIP: $SEAMLESS && $RELIEF_MAPPING
 
-// 360 compiler fails on some combo in this family.  Content doesn't use blendmode 10 anyway
-//  SKIP: $FASTPATH && $PIXELFOGTYPE && $BASETEXTURE2 && $DETAILTEXTURE && $CUBEMAP && ($DETAIL_BLEND_MODE == 10 ) [XBOX]
-
-// debug :
-// NOSKIP: $DETAILTEXTURE
-// NOSKIP: $CUBEMAP
-// NOSKIP: $ENVMAPMASK
-// NOSKIP: $BASEALPHAENVMAPMASK
-// NOSKIP: $SELFILLUM
-
-#define USE_32BIT_LIGHTMAPS_ON_360 //uncomment to use 32bit lightmaps, be sure to keep this in sync with the same #define in materialsystem/cmatlightmaps.cpp
-
+// PC ps20b implementation of lightmappedgeneric_ps2_3_x.h. Interface selectors
+// stay compile-time; all material and fast-path selectors are uniform values.
+#define USE_32BIT_LIGHTMAPS_ON_360
 #include "common_ps_fxc.h"
-#include "common_flashlight_fxc.h"
 #include "common_lightmappedgeneric_fxc.h"
 
 #if SEAMLESS
@@ -109,70 +53,35 @@
 cbuffer lightmappedgeneric_ps2x : register( b1, space1 )
 {
 	HALF4 g_EnvmapTint; // @legacy ps:c0
+	HALF3 g_EnvmapContrast; // @legacy ps:c2
 	float4 g_OutlineParams; // @legacy ps:c2
-	HALF3 g_EnvmapContrast_c2; // @legacy ps:c2
+	HALF3 g_EnvmapSaturation; // @legacy ps:c3
 	float4 g_OutlineColor; // @legacy ps:c3
-	HALF3 g_EnvmapSaturation_c3; // @legacy ps:c3
-	float4 g_EdgeSoftnessParms; // @legacy ps:c4
 	HALF4 g_FresnelReflectionReg; // @legacy ps:c4
-	HALF4 g_SelfIllumTint_c7; // @legacy ps:c7
+	float4 g_EdgeSoftnessParms; // @legacy ps:c4
+	HALF4 g_SelfIllumTint; // @legacy ps:c7
 	float4 g_DetailTint_and_BlendFactor; // @legacy ps:c8
 	HALF3 g_EyePos; // @legacy ps:c10
 	float4 g_TintValuesAndLightmapScale; // @legacy ps:c12
-	float4 g_FlashlightAttenuationFactors; // @legacy ps:c13
-	float3 g_FlashlightPos; // @legacy ps:c14
-	float4x4 g_FlashlightWorldToTexture; // @legacy ps:c15
-	float4 g_ShadowTweaks; // @legacy ps:c19
-	float4 cFlashlightColor; // @legacy ps:c28
-	float4 cFlashlightScreenScale; // @legacy ps:c31
 };
 #define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
 
-
-#if USE_FAST_PATH == 1
-
-#	if FASTPATHENVMAPCONTRAST == 0
-static const HALF3 g_EnvmapContrast = { 0.0f, 0.0f, 0.0f };
-#	else
-static const HALF3 g_EnvmapContrast = { 1.0f, 1.0f, 1.0f };
-#	endif
-static const HALF3 g_EnvmapSaturation = { 1.0f, 1.0f, 1.0f };
-static const HALF g_FresnelReflection = 1.0f;
-static const HALF g_OneMinusFresnelReflection = 0.0f;
-static const HALF4 g_SelfIllumTint = { 1.0f, 1.0f, 1.0f, 1.0f };
-#   if OUTLINE
 
 #define OUTLINE_MIN_VALUE0 g_OutlineParams.x
 #define OUTLINE_MIN_VALUE1 g_OutlineParams.y
 #define OUTLINE_MAX_VALUE0 g_OutlineParams.z
 #define OUTLINE_MAX_VALUE1 g_OutlineParams.w
 
-
 #define OUTLINE_COLOR g_OutlineColor
-
-#   endif
-#   if SOFTEDGES
 
 #define SOFT_MASK_MIN g_EdgeSoftnessParms.x
 #define SOFT_MASK_MAX g_EdgeSoftnessParms.y
-#   endif
-#else
-
-#define g_EnvmapContrast g_EnvmapContrast_c2
-#define g_EnvmapSaturation g_EnvmapSaturation_c3
-
-#define g_FresnelReflection g_FresnelReflectionReg.a
-#define g_OneMinusFresnelReflection g_FresnelReflectionReg.b
-#define g_SelfIllumTint g_SelfIllumTint_c7
-#endif
-
 
 #define g_DetailTint (g_DetailTint_and_BlendFactor.rgb)
 #define g_DetailBlendFactor (g_DetailTint_and_BlendFactor.w)
 
 
 #define g_flAlpha2 g_TintValuesAndLightmapScale.w
-
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
@@ -183,89 +92,45 @@ static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, Lightmap
 TextureCube EnvmapSampler_Texture : register( t2 );
 SamplerState EnvmapSampler_Sampler : register( s2 );
 static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
-#if FANCY_BLENDING
 Texture2D BlendModulationSampler_Texture : register( t3 );
 SamplerState BlendModulationSampler_Sampler : register( s3 );
 static const DX12Sampler2D BlendModulationSampler = { BlendModulationSampler_Texture, BlendModulationSampler_Sampler };
-#endif
-
-#if DETAILTEXTURE
-Texture2D DetailSampler_Texture : register( t12 );
-SamplerState DetailSampler_Sampler : register( s12 );
-static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
-#endif
-
 Texture2D BumpmapSampler_Texture : register( t4 );
 SamplerState BumpmapSampler_Sampler : register( s4 );
 static const DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
-#if NORMAL_DECODE_MODE == NORM_DECODE_ATI2N_ALPHA
-Texture2D AlphaMapSampler_Texture : register( t9 );
-SamplerState AlphaMapSampler_Sampler : register( s9 );	// alpha
-static const DX12Sampler2D AlphaMapSampler = { AlphaMapSampler_Texture, AlphaMapSampler_Sampler };
-#else
-#define AlphaMapSampler		BumpmapSampler
-#endif
-
-#if BUMPMAP2 == 1
+// Bumpmap2 and the environment mask are both 2D textures at the same register.
 Texture2D BumpmapSampler2_Texture : register( t5 );
 SamplerState BumpmapSampler2_Sampler : register( s5 );
 static const DX12Sampler2D BumpmapSampler2 = { BumpmapSampler2_Texture, BumpmapSampler2_Sampler };
-#if NORMAL_DECODE_MODE == NORM_DECODE_ATI2N_ALPHA
-Texture2D AlphaMapSampler2_Texture : register( t10 );
-SamplerState AlphaMapSampler2_Sampler : register( s10 );	// alpha
-static const DX12Sampler2D AlphaMapSampler2 = { AlphaMapSampler2_Texture, AlphaMapSampler2_Sampler };
-#else
-#define AlphaMapSampler2		BumpmapSampler2
-#endif
-#else
-Texture2D EnvmapMaskSampler_Texture : register( t5 );
-SamplerState EnvmapMaskSampler_Sampler : register( s5 );
-static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
-#endif
-
-
-#if WARPLIGHTING
 Texture2D WarpLightingSampler_Texture : register( t6 );
 SamplerState WarpLightingSampler_Sampler : register( s6 );
 static const DX12Sampler2D WarpLightingSampler = { WarpLightingSampler_Texture, WarpLightingSampler_Sampler };
-#endif
 Texture2D BaseTextureSampler2_Texture : register( t7 );
 SamplerState BaseTextureSampler2_Sampler : register( s7 );
 static const DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
-
-#if BUMPMASK == 1
 Texture2D BumpMaskSampler_Texture : register( t8 );
 SamplerState BumpMaskSampler_Sampler : register( s8 );
 static const DX12Sampler2D BumpMaskSampler = { BumpMaskSampler_Texture, BumpMaskSampler_Sampler };
-#if NORMALMASK_DECODE_MODE == NORM_DECODE_ATI2N_ALPHA
+Texture2D AlphaMapSampler_Texture : register( t9 );
+SamplerState AlphaMapSampler_Sampler : register( s9 );
+static const DX12Sampler2D AlphaMapSampler = { AlphaMapSampler_Texture, AlphaMapSampler_Sampler };
+Texture2D AlphaMapSampler2_Texture : register( t10 );
+SamplerState AlphaMapSampler2_Sampler : register( s10 );
+static const DX12Sampler2D AlphaMapSampler2 = { AlphaMapSampler2_Texture, AlphaMapSampler2_Sampler };
 Texture2D AlphaMaskSampler_Texture : register( t11 );
-SamplerState AlphaMaskSampler_Sampler : register( s11 );	// alpha
+SamplerState AlphaMaskSampler_Sampler : register( s11 );
 static const DX12Sampler2D AlphaMaskSampler = { AlphaMaskSampler_Texture, AlphaMaskSampler_Sampler };
-#else
-#define AlphaMaskSampler		BumpMaskSampler
-#endif
-#endif
-
-#if defined( _X360 ) && FLASHLIGHT
-Texture2D FlashlightSampler_Texture : register( t13 );
-SamplerState FlashlightSampler_Sampler : register( s13 );
-static const DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
-Texture2D ShadowDepthSampler_Texture : register( t14 );
-SamplerComparisonState ShadowDepthSampler_Sampler : register( s14 );
-static const DX12ShadowSampler ShadowDepthSampler = { ShadowDepthSampler_Texture, ShadowDepthSampler_Sampler };
-Texture2D RandRotSampler_Texture : register( t15 );
-SamplerState RandRotSampler_Sampler : register( s15 );
-static const DX12Sampler2D RandRotSampler = { RandRotSampler_Texture, RandRotSampler_Sampler };
-#endif
+Texture2D DetailSampler_Texture : register( t12 );
+SamplerState DetailSampler_Sampler : register( s12 );
+static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
 
 struct PS_INPUT
 {
 #if SEAMLESS
-	float3 SeamlessTexCoord;            // zy xz
-	float4 detailOrBumpAndEnvmapMaskTexCoord;   // envmap mask
+	float3 SeamlessTexCoord;
+	float4 detailOrBumpAndEnvmapMaskTexCoord;
 #else
 	HALF2 baseTexCoord;
-	// detail textures and bumpmaps are mutually exclusive so that we have enough texcoords.
 #if ( RELIEF_MAPPING == 0 )
 	HALF4 detailOrBumpAndEnvmapMaskTexCoord;
 #endif
@@ -273,19 +138,38 @@ struct PS_INPUT
 // CENTROID: TEXCOORD2
 	HALF4 lightmapTexCoord1And2;
 // CENTROID: TEXCOORD3
+
+#define MASKEDBLENDING ( cComboFold[0].x )
+#define BASETEXTURE2 ( cComboFold[0].y )
+#define DETAILTEXTURE ( cComboFold[0].z )
+#define BUMPMAP ( cComboFold[0].w )
+#define BUMPMAP2 ( cComboFold[1].x )
+#define CUBEMAP ( cComboFold[1].y )
+#define ENVMAPMASK ( cComboFold[1].z )
+#define BASEALPHAENVMAPMASK ( cComboFold[1].w )
+#define SELFILLUM ( cComboFold[2].x )
+#define NORMALMAPALPHAENVMAPMASK ( cComboFold[2].y )
+#define DIFFUSEBUMPMAP ( cComboFold[2].z )
+#define BASETEXTURENOENVMAP ( cComboFold[2].w )
+#define BASETEXTURE2NOENVMAP ( cComboFold[3].x )
+#define WARPLIGHTING ( cComboFold[3].y )
+#define FANCY_BLENDING ( cComboFold[3].z )
+#define OUTLINE ( cComboFold[3].w )
+#define SOFTEDGES ( cComboFold[4].x )
+#define BUMPMASK ( cComboFold[4].y )
+#define DETAIL_BLEND_MODE ( cComboFold[4].z )
+#define FASTPATHENVMAPCONTRAST ( cComboFold[4].w )
+#define FASTPATH ( cComboFold[5].x )
+#define WRITEWATERFOGTODESTALPHA ( cComboFold[5].y )
+#define PIXELFOGTYPE ( cComboFold[5].z )
+#define WRITE_DEPTH_TO_DESTALPHA ( cComboFold[5].w )
+#define BICUBIC_LIGHTMAP ( cComboFold[6].x )
+
 	HALF4 lightmapTexCoord3;
 	HALF4 worldPos_projPosZ;
 	HALF3x3 tangentSpaceTranspose;
-	// tangentSpaceTranspose		: TEXCOORD6
-	// tangentSpaceTranspose		: TEXCOORD7
 	HALF4 vertexColor;
 	float4 vertexBlendX_fogFactorW;
-
-	// Extra iterators on 360, used in flashlight combo
-#if defined( _X360 ) && FLASHLIGHT
-	float4 flashlightSpacePos;
-	float4 vProjPos;
-#endif
 };
 // Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
 // link register-for-register.
@@ -350,19 +234,36 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 #endif
 #endif
 	l.lightmapTexCoord1And2 = dx12In.lightmapTexCoord1And2;
+#define MASKEDBLENDING ( cComboFold[0].x )
+#define BASETEXTURE2 ( cComboFold[0].y )
+#define DETAILTEXTURE ( cComboFold[0].z )
+#define BUMPMAP ( cComboFold[0].w )
+#define BUMPMAP2 ( cComboFold[1].x )
+#define CUBEMAP ( cComboFold[1].y )
+#define ENVMAPMASK ( cComboFold[1].z )
+#define BASEALPHAENVMAPMASK ( cComboFold[1].w )
+#define SELFILLUM ( cComboFold[2].x )
+#define NORMALMAPALPHAENVMAPMASK ( cComboFold[2].y )
+#define DIFFUSEBUMPMAP ( cComboFold[2].z )
+#define BASETEXTURENOENVMAP ( cComboFold[2].w )
+#define BASETEXTURE2NOENVMAP ( cComboFold[3].x )
+#define WARPLIGHTING ( cComboFold[3].y )
+#define FANCY_BLENDING ( cComboFold[3].z )
+#define OUTLINE ( cComboFold[3].w )
+#define SOFTEDGES ( cComboFold[4].x )
+#define BUMPMASK ( cComboFold[4].y )
+#define DETAIL_BLEND_MODE ( cComboFold[4].z )
+#define FASTPATHENVMAPCONTRAST ( cComboFold[4].w )
+#define FASTPATH ( cComboFold[5].x )
+#define WRITEWATERFOGTODESTALPHA ( cComboFold[5].y )
+#define PIXELFOGTYPE ( cComboFold[5].z )
+#define WRITE_DEPTH_TO_DESTALPHA ( cComboFold[5].w )
+#define BICUBIC_LIGHTMAP ( cComboFold[6].x )
 	l.lightmapTexCoord3 = dx12In.lightmapTexCoord3;
 	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
 	l.tangentSpaceTranspose = dx12In.tangentSpaceTranspose;
 	l.vertexColor = dx12In.vertexColor;
 	l.vertexBlendX_fogFactorW = dx12In.vertexBlendX_fogFactorW;
-#if defined( _X360 ) && FLASHLIGHT
-#if ( ( defined( _X360 ) ) )
-	l.flashlightSpacePos = dx12In.flashlightSpacePos;
-#endif
-#if ( ( defined( _X360 ) ) )
-	l.vProjPos = dx12In.vProjPos;
-#endif
-#endif
 	return l;
 }
 
@@ -374,35 +275,38 @@ HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 #endif
 {
 	PS_INPUT i = DX12ConvertInput( dx12In );
-	bool bBaseTexture2 = BASETEXTURE2 ? true : false;
-	bool bDetailTexture = DETAILTEXTURE ? true : false;
-	bool bBumpmap = BUMPMAP ? true : false;
-	bool bDiffuseBumpmap = DIFFUSEBUMPMAP ? true : false;
-	bool bCubemap = CUBEMAP ? true : false;
-	bool bEnvmapMask = ENVMAPMASK ? true : false;
-	bool bBaseAlphaEnvmapMask = BASEALPHAENVMAPMASK ? true : false;
-	bool bSelfIllum = SELFILLUM ? true : false;
-	bool bNormalMapAlphaEnvmapMask = NORMALMAPALPHAENVMAPMASK ? true : false;
-	bool bBaseTextureNoEnvmap = BASETEXTURENOENVMAP ? true : false;
-	bool bBaseTexture2NoEnvmap = BASETEXTURE2NOENVMAP ? true : false;
+	bool bBaseTexture2 = BASETEXTURE2 != 0;
+	bool bDetailTexture = DETAILTEXTURE != 0;
+	bool bBumpmap = BUMPMAP != 0;
+	bool bDiffuseBumpmap = DIFFUSEBUMPMAP != 0;
+	bool bCubemap = CUBEMAP != 0;
+	bool bEnvmapMask = ENVMAPMASK != 0;
+	bool bBaseAlphaEnvmapMask = BASEALPHAENVMAPMASK != 0;
+	bool bSelfIllum = SELFILLUM != 0;
+	bool bNormalMapAlphaEnvmapMask = NORMALMAPALPHAENVMAPMASK != 0;
+	bool bBaseTextureNoEnvmap = BASETEXTURENOENVMAP != 0;
+	bool bBaseTexture2NoEnvmap = BASETEXTURE2NOENVMAP != 0;
+	HALF3 envmapContrast = USE_FAST_PATH ? HALF3( FASTPATHENVMAPCONTRAST, FASTPATHENVMAPCONTRAST, FASTPATHENVMAPCONTRAST ) : g_EnvmapContrast;
+	HALF3 envmapSaturation = USE_FAST_PATH ? HALF3( 1.0f, 1.0f, 1.0f ) : g_EnvmapSaturation;
+	HALF fresnelReflection = USE_FAST_PATH ? 1.0f : g_FresnelReflectionReg.a;
+	HALF oneMinusFresnelReflection = USE_FAST_PATH ? 0.0f : g_FresnelReflectionReg.b;
+	HALF4 selfIllumTint = USE_FAST_PATH ? HALF4( 1.0f, 1.0f, 1.0f, 1.0f ) : g_SelfIllumTint;
 
 	float4 baseColor = 0.0f;
 	float4 baseColor2 = 0.0f;
-	float4 vNormal = float4(0, 0, 1, 1);
-	float3 baseTexCoords = float3(0,0,0);
-
+	float4 vNormal = float4( 0, 0, 1, 1 );
+	float3 baseTexCoords = float3( 0, 0, 0 );
 #if SEAMLESS
 	baseTexCoords = i.SeamlessTexCoord.xyz;
 #else
 	baseTexCoords.xy = i.baseTexCoord.xy;
 #endif
-
-	GetBaseTextureAndNormal( BaseTextureSampler, BaseTextureSampler2, BumpmapSampler, bBaseTexture2, bBumpmap || bNormalMapAlphaEnvmapMask, 
+	GetBaseTextureAndNormal( BaseTextureSampler, BaseTextureSampler2, BumpmapSampler, bBaseTexture2, bBumpmap || bNormalMapAlphaEnvmapMask,
 		baseTexCoords, i.vertexColor.rgb, baseColor, baseColor2, vNormal );
-
-#if BUMPMAP == 1	// not ssbump
-	vNormal.xyz = vNormal.xyz * 2.0f - 1.0f;					// make signed if we're not ssbump
-#endif
+	if ( BUMPMAP == 1 )
+	{
+		vNormal.xyz = vNormal.xyz * 2.0f - 1.0f;
+	}
 
 	HALF3 lightmapColor1 = HALF3( 1.0f, 1.0f, 1.0f );
 	HALF3 lightmapColor2 = HALF3( 1.0f, 1.0f, 1.0f );
@@ -415,7 +319,6 @@ HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 		HALF2 bumpCoord3;
 		ComputeBumpedLightmapCoordinates( i.lightmapTexCoord1And2, i.lightmapTexCoord3.xy,
 			bumpCoord1, bumpCoord2, bumpCoord3 );
-		
 		lightmapColor1 = LightMapSample( LightmapSampler, bumpCoord1 );
 		lightmapColor2 = LightMapSample( LightmapSampler, bumpCoord2 );
 		lightmapColor3 = LightMapSample( LightmapSampler, bumpCoord3 );
@@ -428,152 +331,121 @@ HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 #endif
 
 #if RELIEF_MAPPING
-	// in the parallax case, all texcoords must be the same in order to free
-    // up an iterator for the tangent space view vector
-	HALF2 detailTexCoord = i.baseTexCoord.xy;
-	HALF2 bumpmapTexCoord = i.baseTexCoord.xy;
-	HALF2 envmapMaskTexCoord = i.baseTexCoord.xy;
+	HALF2 detailTexCoord = baseTexCoords.xy;
+	HALF2 bumpmapTexCoord = baseTexCoords.xy;
+	HALF2 bumpmap2TexCoord = baseTexCoords.xy;
+	HALF2 envmapMaskTexCoord = baseTexCoords.xy;
 #else
-
-	#if ( DETAILTEXTURE == 1 )
-		HALF2 detailTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.xy;
-		HALF2 bumpmapTexCoord = i.baseTexCoord.xy;
-	#elif ( BUMPMASK == 1 )
-		HALF2 detailTexCoord = 0.0f;
-		HALF2 bumpmapTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.xy;
-		HALF2 bumpmap2TexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.wz;
-	#else
-		HALF2 detailTexCoord = 0.0f;
-		HALF2 bumpmapTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.xy;
-	#endif
-
+	HALF2 detailTexCoord = 0.0f;
+	HALF2 bumpmapTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.xy;
+	HALF2 bumpmap2TexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.wz;
 	HALF2 envmapMaskTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.wz;
-#endif // !RELIEF_MAPPING
+	if ( DETAILTEXTURE == 1 )
+	{
+		detailTexCoord = i.detailOrBumpAndEnvmapMaskTexCoord.xy;
+		bumpmapTexCoord = baseTexCoords.xy;
+	}
+#endif
 
 	HALF4 detailColor = HALF4( 1.0f, 1.0f, 1.0f, 1.0f );
-#if DETAILTEXTURE
-
-#if DX12_LEGACY_PS20
-	detailColor = DetailSampler.tex.Sample( DetailSampler.smp, detailTexCoord );
-#else
-	detailColor = float4( g_DetailTint, 1.0f ) * DetailSampler.tex.Sample( DetailSampler.smp, detailTexCoord );
-#endif
-
-#endif
-
-#if ( OUTLINE || SOFTEDGES )
-	float distAlphaMask = baseColor.a;
-
-#   if OUTLINE
-	if ( ( distAlphaMask >= OUTLINE_MIN_VALUE0 ) &&
-		 ( distAlphaMask <= OUTLINE_MAX_VALUE1 ) )
+	if ( DETAILTEXTURE )
 	{
-		float oFactor=1.0;
-		if ( distAlphaMask <= OUTLINE_MIN_VALUE1 )
+		detailColor = float4( g_DetailTint, 1.0f ) * DetailSampler.tex.Sample( DetailSampler.smp, detailTexCoord );
+	}
+	if ( OUTLINE || SOFTEDGES )
+	{
+		float distAlphaMask = baseColor.a;
+		if ( OUTLINE )
 		{
-			oFactor=smoothstep( OUTLINE_MIN_VALUE0, OUTLINE_MIN_VALUE1, distAlphaMask );
+			if ( ( distAlphaMask >= OUTLINE_MIN_VALUE0 ) && ( distAlphaMask <= OUTLINE_MAX_VALUE1 ) )
+			{
+				float oFactor = 1.0f;
+				if ( distAlphaMask <= OUTLINE_MIN_VALUE1 )
+				{
+					oFactor = smoothstep( OUTLINE_MIN_VALUE0, OUTLINE_MIN_VALUE1, distAlphaMask );
+				}
+				else
+				{
+					oFactor = smoothstep( OUTLINE_MAX_VALUE1, OUTLINE_MAX_VALUE0, distAlphaMask );
+				}
+				baseColor = lerp( baseColor, OUTLINE_COLOR, oFactor );
+			}
+		}
+		if ( SOFTEDGES )
+		{
+			baseColor.a *= smoothstep( SOFT_MASK_MAX, SOFT_MASK_MIN, distAlphaMask );
 		}
 		else
 		{
-			oFactor=smoothstep( OUTLINE_MAX_VALUE1, OUTLINE_MAX_VALUE0, distAlphaMask );
+			baseColor.a *= distAlphaMask >= 0.5f;
 		}
-		baseColor = lerp( baseColor, OUTLINE_COLOR, oFactor );
 	}
-#   endif
-#   if SOFTEDGES
-	baseColor.a *= smoothstep( SOFT_MASK_MAX, SOFT_MASK_MIN, distAlphaMask );
-#   else
-	baseColor.a *= distAlphaMask >= 0.5;
-#   endif
-#endif
-
-
 #if LIGHTING_PREVIEW == 2
-	baseColor.xyz=GammaToLinear(baseColor.xyz);
+	baseColor.xyz = GammaToLinear( baseColor.xyz );
 #endif
-
 	float blendedAlpha = baseColor.a;
-
-#if MASKEDBLENDING
-	float blendfactor=0.5;
-#else
-	float blendfactor=i.vertexBlendX_fogFactorW.r;
-#endif
-
+	float blendfactor = MASKEDBLENDING ? 0.5f : i.vertexBlendX_fogFactorW.r;
 	if( bBaseTexture2 )
 	{
-#if (SELFILLUM == 0) && (PIXELFOGTYPE != PIXEL_FOG_TYPE_HEIGHT) && (FANCY_BLENDING)
-		float4 modt=BlendModulationSampler.tex.Sample( BlendModulationSampler.smp, i.lightmapTexCoord3.zw );
-#if MASKEDBLENDING
-		// FXC is unable to optimize this, despite blendfactor=0.5 above
-		//float minb=modt.g-modt.r;
-		//float maxb=modt.g+modt.r;
-		//blendfactor=smoothstep(minb,maxb,blendfactor);
-		blendfactor=modt.g;
-#else
-		float minb=saturate(modt.g-modt.r);
-		float maxb=saturate(modt.g+modt.r);
-		blendfactor=smoothstep(minb,maxb,blendfactor);
-#endif
-#endif
-		baseColor.rgb = lerp( baseColor, baseColor2.rgb, blendfactor );
+		if ( ( SELFILLUM == 0 ) && ( PIXELFOGTYPE != PIXEL_FOG_TYPE_HEIGHT ) && FANCY_BLENDING )
+		{
+			float4 modt = BlendModulationSampler.tex.Sample( BlendModulationSampler.smp, i.lightmapTexCoord3.zw );
+			if ( MASKEDBLENDING )
+			{
+				blendfactor = modt.g;
+			}
+			else
+			{
+				float minb = saturate( modt.g - modt.r );
+				float maxb = saturate( modt.g + modt.r );
+				blendfactor = smoothstep( minb, maxb, blendfactor );
+			}
+		}
+		baseColor.rgb = lerp( baseColor.rgb, baseColor2.rgb, blendfactor );
 		blendedAlpha = lerp( baseColor.a, baseColor2.a, blendfactor );
 	}
 
 	HALF3 specularFactor = 1.0f;
-	float4 vNormalMask = float4(0, 0, 1, 1);
+	float4 vNormalMask = float4( 0, 0, 1, 1 );
 	if( bBumpmap )
 	{
 		if( bBaseTextureNoEnvmap )
 		{
 			vNormal.a = 0.0f;
 		}
-
-#if ( BUMPMAP2 == 1 )
+		if ( BUMPMAP2 == 1 )
 		{
-	#if ( BUMPMASK == 1 )
-			HALF2 b2TexCoord = bumpmap2TexCoord;
-	#else
-			HALF2 b2TexCoord = bumpmapTexCoord;
-	#endif
-
+			HALF2 b2TexCoord = BUMPMASK ? bumpmap2TexCoord : bumpmapTexCoord;
 			HALF4 vNormal2;
 			if ( BUMPMAP == 2 )
+			{
 				vNormal2 = BumpmapSampler2.tex.Sample( BumpmapSampler2.smp, b2TexCoord );
+			}
 			else
-				vNormal2 = DecompressNormal( BumpmapSampler2, b2TexCoord, NORMAL_DECODE_MODE, AlphaMapSampler2 );		// Bump 2 coords
-
+			{
+				vNormal2 = DecompressNormal( BumpmapSampler2, b2TexCoord, NORMAL_DECODE_MODE, AlphaMapSampler2 );
+			}
 			if( bBaseTexture2NoEnvmap )
 			{
 				vNormal2.a = 0.0f;
 			}
-
-	#if ( BUMPMASK == 1 )
-			float3 vNormal1 = DecompressNormal( BumpmapSampler, i.detailOrBumpAndEnvmapMaskTexCoord.xy, NORMALMASK_DECODE_MODE, AlphaMapSampler );
-
-			vNormal.xyz = normalize( vNormal1.xyz + vNormal2.xyz );
-
-			// Third normal map...same coords as base
-			vNormalMask = DecompressNormal( BumpMaskSampler, i.baseTexCoord.xy, NORMALMASK_DECODE_MODE, AlphaMaskSampler );
-
-			vNormal.xyz = lerp( vNormalMask.xyz, vNormal.xyz, vNormalMask.a );		// Mask out normals from vNormal
-			specularFactor = vNormalMask.a;
-	#else // BUMPMASK == 0
-			if ( FANCY_BLENDING && bNormalMapAlphaEnvmapMask )
+			if ( BUMPMASK == 1 )
 			{
-				vNormal = lerp( vNormal, vNormal2, blendfactor);
+				float3 vNormal1 = DecompressNormal( BumpmapSampler, i.detailOrBumpAndEnvmapMaskTexCoord.xy, NORMALMASK_DECODE_MODE, AlphaMapSampler );
+				vNormal.xyz = normalize( vNormal1.xyz + vNormal2.xyz );
+				vNormalMask = DecompressNormal( BumpMaskSampler, baseTexCoords.xy, NORMALMASK_DECODE_MODE, AlphaMaskSampler );
+				vNormal.xyz = lerp( vNormalMask.xyz, vNormal.xyz, vNormalMask.a );
+				specularFactor = vNormalMask.a;
+			}
+			else if ( FANCY_BLENDING && bNormalMapAlphaEnvmapMask )
+			{
+				vNormal = lerp( vNormal, vNormal2, blendfactor );
 			}
 			else
 			{
-				vNormal.xyz = lerp( vNormal.xyz, vNormal2.xyz, blendfactor);
+				vNormal.xyz = lerp( vNormal.xyz, vNormal2.xyz, blendfactor );
 			}
-
-	#endif
-
 		}
-
-#endif // BUMPMAP2 == 1
-
 		if( bNormalMapAlphaEnvmapMask )
 		{
 			specularFactor *= vNormal.a;
@@ -583,188 +455,115 @@ HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	{
 		specularFactor *= vNormal.a;
 	}
-
-#if ( BUMPMAP2 == 0 )
-	if( bEnvmapMask )
+	if ( BUMPMAP2 == 0 && bEnvmapMask )
 	{
-		specularFactor *= EnvmapMaskSampler.tex.Sample( EnvmapMaskSampler.smp, envmapMaskTexCoord ).xyz;	
+		specularFactor *= BumpmapSampler2.tex.Sample( BumpmapSampler2.smp, envmapMaskTexCoord ).xyz;
 	}
-#endif
-
 	if( bBaseAlphaEnvmapMask )
 	{
-		specularFactor *= 1.0 - blendedAlpha; // Reversing alpha blows!
+		specularFactor *= 1.0f - blendedAlpha;
 	}
-	float4 albedo = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+	float4 albedo = baseColor;
 	float alpha = 1.0f;
-	albedo *= baseColor;
 	if( !bBaseAlphaEnvmapMask && !bSelfIllum )
 	{
 		alpha *= baseColor.a;
 	}
-
 	if( bDetailTexture )
 	{
 		albedo = TextureCombine( albedo, detailColor, DETAIL_BLEND_MODE, g_DetailBlendFactor );
 	}
-
-	// The vertex color contains the modulation color + vertex color combined
 #if ( SEAMLESS == 0 )
 	albedo.xyz *= i.vertexColor;
 #endif
-	alpha *= i.vertexColor.a * g_flAlpha2; // not sure about this one
-
-	// Save this off for single-pass flashlight, since we'll still need the SSBump vector, not a real normal
-	float3 vSSBumpVector = vNormal.xyz;
+	alpha *= i.vertexColor.a * g_flAlpha2;
 
 	HALF3 diffuseLighting;
 	if( bBumpmap && bDiffuseBumpmap )
 	{
-
-// ssbump
-#if ( BUMPMAP == 2 )
-		diffuseLighting = vNormal.x * lightmapColor1 +
-						  vNormal.y * lightmapColor2 +
-						  vNormal.z * lightmapColor3;
-		diffuseLighting *= g_TintValuesAndLightmapScale.rgb;
-
-		// now, calculate vNormal for reflection purposes. if vNormal isn't needed, hopefully
-		// the compiler will eliminate these calculations
-		vNormal.xyz = normalize( bumpBasis[0]*vNormal.x + bumpBasis[1]*vNormal.y + bumpBasis[2]*vNormal.z);
-#else
-		float3 dp;
-		dp.x = saturate( dot( vNormal, bumpBasis[0] ) );
-		dp.y = saturate( dot( vNormal, bumpBasis[1] ) );
-		dp.z = saturate( dot( vNormal, bumpBasis[2] ) );
-		dp *= dp;
-		
-#if ( DETAIL_BLEND_MODE == TCOMBINE_SSBUMP_BUMP )
-		dp *= 2*detailColor;
-#endif
-		diffuseLighting = dp.x * lightmapColor1 +
-						  dp.y * lightmapColor2 +
-						  dp.z * lightmapColor3;
-		float sum = dot( dp, float3( 1.0f, 1.0f, 1.0f ) );
-		diffuseLighting *= g_TintValuesAndLightmapScale.rgb / sum;
-#endif
+		if ( BUMPMAP == 2 )
+		{
+			diffuseLighting = vNormal.x * lightmapColor1 +
+				vNormal.y * lightmapColor2 + vNormal.z * lightmapColor3;
+			diffuseLighting *= g_TintValuesAndLightmapScale.rgb;
+			vNormal.xyz = normalize( bumpBasis[0] * vNormal.x + bumpBasis[1] * vNormal.y + bumpBasis[2] * vNormal.z );
+		}
+		else
+		{
+			float3 dp;
+			dp.x = saturate( dot( vNormal, bumpBasis[0] ) );
+			dp.y = saturate( dot( vNormal, bumpBasis[1] ) );
+			dp.z = saturate( dot( vNormal, bumpBasis[2] ) );
+			dp *= dp;
+			if ( DETAIL_BLEND_MODE == TCOMBINE_SSBUMP_BUMP )
+			{
+				dp *= 2 * detailColor;
+			}
+			diffuseLighting = dp.x * lightmapColor1 + dp.y * lightmapColor2 + dp.z * lightmapColor3;
+			float sum = dot( dp, float3( 1.0f, 1.0f, 1.0f ) );
+			diffuseLighting *= g_TintValuesAndLightmapScale.rgb / sum;
+		}
 	}
 	else
 	{
 		diffuseLighting = lightmapColor1 * g_TintValuesAndLightmapScale.rgb;
 	}
-
-#if WARPLIGHTING && ( SEAMLESS == 0 )
-	float len=0.5*length(diffuseLighting);
-	// FIXME: 8-bit lookup textures like this need a "nice filtering" VTF option, which converts
-	//        them to 16-bit on load or does filtering in the shader (since most hardware - 360
-	//        included - interpolates 8-bit textures at 8-bit precision, which causes banding)
-	diffuseLighting *= 2.0*WarpLightingSampler.tex.Sample( WarpLightingSampler.smp, float2(len,0) );
+#if ( SEAMLESS == 0 )
+	if ( WARPLIGHTING )
+	{
+		float len = 0.5f * length( diffuseLighting );
+		diffuseLighting *= 2.0f * WarpLightingSampler.tex.Sample( WarpLightingSampler.smp, float2( len, 0 ) );
+	}
 #endif
-
-#if CUBEMAP || LIGHTING_PREVIEW || ( defined( _X360 ) && FLASHLIGHT )
 	float3 worldSpaceNormal = mul( vNormal, i.tangentSpaceTranspose );
-#endif
-
 	float3 diffuseComponent = albedo.xyz * diffuseLighting;
-
-#if defined( _X360 ) && FLASHLIGHT
-
-	// ssbump doesn't pass a normal to the flashlight...it computes shadowing a different way
-#if ( BUMPMAP == 2 )
-	bool bHasNormal = false;
-
-	float3 worldPosToLightVector = g_FlashlightPos - i.worldPos_projPosZ.xyz;
-
-	float3 tangentPosToLightVector;
-	tangentPosToLightVector.x = dot( worldPosToLightVector, i.tangentSpaceTranspose[0] );
-	tangentPosToLightVector.y = dot( worldPosToLightVector, i.tangentSpaceTranspose[1] );
-	tangentPosToLightVector.z = dot( worldPosToLightVector, i.tangentSpaceTranspose[2] );
-
-	tangentPosToLightVector = normalize( tangentPosToLightVector );
-
-	float nDotL = saturate( vSSBumpVector.x*dot( tangentPosToLightVector, bumpBasis[0]) +
-							vSSBumpVector.y*dot( tangentPosToLightVector, bumpBasis[1]) +
-							vSSBumpVector.z*dot( tangentPosToLightVector, bumpBasis[2]) );
-#else
-	bool bHasNormal = true;
-	float nDotL = 1.0f;
-#endif
-
-	float fFlashlight = DoFlashlight( g_FlashlightPos, i.worldPos_projPosZ.xyz, i.flashlightSpacePos, worldSpaceNormal, g_FlashlightAttenuationFactors.xyz, g_FlashlightAttenuationFactors.w, FlashlightSampler, ShadowDepthSampler, RandRotSampler, 0, true, false, i.vProjPos.xy / i.vProjPos.w, false, cFlashlightColor, cFlashlightScreenScale, g_ShadowTweaks, bHasNormal );
-
-	diffuseComponent = albedo.xyz * ( diffuseLighting + ( fFlashlight * nDotL ) );
-#endif
-
 	if( bSelfIllum )
 	{
-		float3 selfIllumComponent = g_SelfIllumTint * albedo.xyz;
+		float3 selfIllumComponent = selfIllumTint.rgb * albedo.xyz;
 		diffuseComponent = lerp( diffuseComponent, selfIllumComponent, baseColor.a );
 	}
-
 	HALF3 specularLighting = HALF3( 0.0f, 0.0f, 0.0f );
-#if CUBEMAP
 	if( bCubemap )
 	{
 		float3 worldVertToEyeVector = g_EyePos - i.worldPos_projPosZ.xyz;
 		float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, worldVertToEyeVector );
-
-		// Calc Fresnel factor
-		half3 eyeVect = normalize(worldVertToEyeVector);
-		HALF fresnel = 1.0 - dot( worldSpaceNormal, eyeVect );
-		fresnel = pow( fresnel, 5.0 );
-		fresnel = fresnel * g_OneMinusFresnelReflection + g_FresnelReflection;
-		
+		half3 eyeVect = normalize( worldVertToEyeVector );
+		HALF fresnel = 1.0f - dot( worldSpaceNormal, eyeVect );
+		fresnel = pow( fresnel, 5.0f );
+		fresnel = fresnel * oneMinusFresnelReflection + fresnelReflection;
 		specularLighting = ENV_MAP_SCALE * EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
 		specularLighting *= specularFactor;
-								   
 		specularLighting *= g_EnvmapTint;
-#if FANCY_BLENDING == 0
-		HALF3 specularLightingSquared = specularLighting * specularLighting;
-		specularLighting = lerp( specularLighting, specularLightingSquared, g_EnvmapContrast );
-		HALF3 greyScale = dot( specularLighting, HALF3( 0.299f, 0.587f, 0.114f ) );
-		specularLighting = lerp( greyScale, specularLighting, g_EnvmapSaturation );
-#endif
+		if ( FANCY_BLENDING == 0 )
+		{
+			HALF3 specularLightingSquared = specularLighting * specularLighting;
+			specularLighting = lerp( specularLighting, specularLightingSquared, envmapContrast );
+			HALF3 greyScale = dot( specularLighting, HALF3( 0.299f, 0.587f, 0.114f ) );
+			specularLighting = lerp( greyScale, specularLighting, envmapSaturation );
+		}
 		specularLighting *= fresnel;
 	}
-#endif
-
 	HALF3 result = diffuseComponent + specularLighting;
-	
 #if LIGHTING_PREVIEW
 	worldSpaceNormal = mul( vNormal, i.tangentSpaceTranspose );
-#	if LIGHTING_PREVIEW == 1
-	float dotprod = 0.7+0.25 * dot( worldSpaceNormal, normalize( float3( 1, 2, -.5 ) ) );
-	return DX12FinishPixel( FinalOutput( HALF4( dotprod*albedo.xyz, alpha ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
-#	else
+#if LIGHTING_PREVIEW == 1
+	float dotprod = 0.7f + 0.25f * dot( worldSpaceNormal, normalize( float3( 1, 2, -.5f ) ) );
+	return DX12FinishPixel( FinalOutput( HALF4( dotprod * albedo.xyz, alpha ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
+#else
 	LPREVIEW_PS_OUT ret;
-	ret.color = float4( albedo.xyz,alpha );
-	ret.normal = float4( worldSpaceNormal,alpha );
+	ret.color = float4( albedo.xyz, alpha );
+	ret.normal = float4( worldSpaceNormal, alpha );
 	ret.position = float4( i.worldPos_projPosZ.xyz, alpha );
 	ret.flags = float4( 1, 1, 1, alpha );
-
-	return DX12FinishPixel( FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );	
-#	endif
-#else // == end LIGHTING_PREVIEW ==
-
-	bool bWriteDepthToAlpha = false;
-
-	// ps_2_b and beyond
-#if !(defined(SHADER_MODEL_PS_1_1) || defined(SHADER_MODEL_PS_1_4) || defined(DX12_LEGACY_PS20))
-	bWriteDepthToAlpha = ( WRITE_DEPTH_TO_DESTALPHA != 0 ) && ( WRITEWATERFOGTODESTALPHA == 0 );
+	return DX12FinishPixel( FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), dx12In.fog );
 #endif
-
+#else
+	bool bWriteDepthToAlpha = ( WRITE_DEPTH_TO_DESTALPHA != 0 ) && ( WRITEWATERFOGTODESTALPHA == 0 );
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
-
-#if WRITEWATERFOGTODESTALPHA && (PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT)
-	alpha = fogFactor;
-#endif
-
+	if ( WRITEWATERFOGTODESTALPHA && ( PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT ) )
+	{
+		alpha = fogFactor;
+	}
 	return DX12FinishPixel( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, i.worldPos_projPosZ.w ), dx12In.fog );
-
 #endif
 }
- 
-
-// ---- end lightmappedgeneric_ps2_3_x.h ----
-
-

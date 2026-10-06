@@ -16,6 +16,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <climits>
+#include <initializer_list>
 
 namespace shaderapidx12
 {
@@ -187,6 +189,185 @@ static int FindLegacyName( const CUtlVector<LegacyNameDX12> &names, const char *
 	return nLow < names.Count() && !V_strcmp( names[nLow].m_Key.Get(), pszKey ) ? nLow : -1;
 }
 
+bool ProjectComboFoldDX12( const ComboFoldTableDX12 &table, int64_t staticIndex,
+	int64_t dynamicIndex, ComboFoldProjectionDX12 &projection )
+{
+	projection = {};
+	if ( !table.originalDynamicCount || !table.nativeDynamicCount ||
+		staticIndex < 0 || dynamicIndex < 0 || staticIndex % table.originalDynamicCount ||
+		uint64_t( staticIndex ) / table.originalDynamicCount >= table.originalStaticCount ||
+		uint64_t( dynamicIndex ) >= table.originalDynamicCount )
+		return false;
+	ComboFoldProjectionDX12 result{};
+	const auto decode = [&]( const CUtlVector<ComboFoldDimensionDX12> &dimensions, uint64_t ordinal,
+		uint32_t originalCount, uint32_t nativeCount, uint32_t &nativeOrdinal ) -> bool
+	{
+		uint64_t originalScale = 1, nativeScale = 1, native = 0;
+		for ( const ComboFoldDimensionDX12 &dimension : dimensions )
+		{
+			const int64_t radixSigned = int64_t( dimension.maximum ) - dimension.minimum + 1;
+			if ( radixSigned <= 0 || uint64_t( radixSigned ) > UINT32_MAX || dimension.slot < -1 || dimension.slot >= 64 )
+				return false;
+			const uint64_t radix = uint64_t( radixSigned ), digit = ordinal % radix;
+			ordinal /= radix;
+			if ( originalScale > UINT32_MAX / radix )
+				return false;
+			originalScale *= radix;
+			if ( dimension.slot >= 0 )
+				result.payload[dimension.slot] = uint32_t( int64_t( dimension.minimum ) + int64_t( digit ) );
+			else
+			{
+				native += digit * nativeScale;
+				if ( nativeScale > UINT32_MAX / radix )
+					return false;
+				nativeScale *= radix;
+			}
+		}
+		if ( ordinal || originalScale != originalCount || nativeScale != nativeCount || native > UINT32_MAX )
+			return false;
+		nativeOrdinal = uint32_t( native );
+		return true;
+	};
+	uint32_t staticOrdinal = 0;
+	if ( !decode( table.statics, uint64_t( staticIndex ) / table.originalDynamicCount,
+			table.originalStaticCount, table.nativeStaticCount, staticOrdinal ) ||
+		!decode( table.dynamics, uint64_t( dynamicIndex ), table.originalDynamicCount,
+			table.nativeDynamicCount, result.dynamicIndex ) ||
+		uint64_t( staticOrdinal ) * table.nativeDynamicCount > UINT32_MAX )
+		return false;
+	result.staticIndex = staticOrdinal * table.nativeDynamicCount;
+	projection = result;
+	return true;
+}
+
+bool ParseComboFoldTextDX12( const char *text, CUtlVector<ComboFoldTableDX12 *> &tables, CUtlString &error )
+{
+	tables.PurgeAndDeleteElements();
+	error = "";
+	ComboFoldTableDX12 *current = nullptr;
+	bool sawDynamic = false;
+	bool slots[64]{};
+	int lineNumber = 0;
+	const auto fail = [&]() -> bool
+	{
+		char message[128];
+		V_snprintf( message, sizeof( message ), "invalid combo fold table at line %d", lineNumber );
+		error = message;
+		tables.PurgeAndDeleteElements();
+		return false;
+	};
+	for ( const char *line = text; line && *line; )
+	{
+		++lineNumber;
+		const char *end = strchr( line, '\n' );
+		if ( !end ) end = line + strlen( line );
+		const size_t length = size_t( end - line );
+		if ( length >= 1024 ) return fail();
+		char buffer[1024];
+		memcpy( buffer, line, length );
+		buffer[length] = 0;
+		if ( char *comment = strchr( buffer, '#' ) ) *comment = 0;
+		char token[256]{}, extra[2]{};
+		if ( sscanf( buffer, "%255s", token ) == 1 )
+		{
+			if ( !V_strcmp( token, "fold" ) )
+			{
+				char name[256], stage[8];
+				unsigned os, od, ns, nd;
+				if ( current || sscanf( buffer, "%255s %255s %7s %u %u %u %u %1s", token, name, stage, &os, &od, &ns, &nd, extra ) != 7 ||
+					( V_strcmp( stage, "vs" ) && V_strcmp( stage, "ps" ) ) || !os || !od || !ns || !nd )
+					return fail();
+				for ( const ComboFoldTableDX12 *table : tables )
+					if ( !V_stricmp( table->name.Get(), name ) && table->stage == ( !V_strcmp( stage, "ps" ) ? VcsStage::Pixel : VcsStage::Vertex ) )
+						return fail();
+				current = new ComboFoldTableDX12;
+				tables.AddToTail( current );
+				current->name = name;
+				current->stage = !V_strcmp( stage, "ps" ) ? VcsStage::Pixel : VcsStage::Vertex;
+				current->originalStaticCount = os; current->originalDynamicCount = od;
+				current->nativeStaticCount = ns; current->nativeDynamicCount = nd;
+				memset( slots, 0, sizeof( slots ) );
+				sawDynamic = false;
+			}
+			else if ( !V_strcmp( token, "end" ) )
+			{
+				ComboFoldProjectionDX12 projection;
+				if ( !current || sscanf( buffer, "%255s %1s", token, extra ) != 1 ||
+					!ProjectComboFoldDX12( *current, 0, 0, projection ) )
+					return fail();
+				bool gap = false, any = false;
+				for ( bool slot : slots )
+				{
+					if ( slot && gap ) return fail();
+					if ( slot ) any = true; else gap = true;
+				}
+				if ( !any ) return fail();
+				current = nullptr;
+			}
+			else
+			{
+				char name[256], destination[80];
+				int minimum, maximum, slot = -1, consumed = 0;
+				const bool dynamic = !V_strcmp( token, "D" );
+				if ( !current || ( !dynamic && V_strcmp( token, "S" ) ) || ( !dynamic && sawDynamic ) ||
+					sscanf( buffer, "%255s %255s %d %d %79s %1s", token, name, &minimum, &maximum, destination, extra ) != 5 || maximum < minimum )
+					return fail();
+				if ( V_strcmp( destination, "native" ) )
+				{
+					if ( sscanf( destination, "slot%d%n", &slot, &consumed ) != 1 || destination[consumed] || slot < 0 || slot >= 64 || slots[slot] )
+						return fail();
+					slots[slot] = true;
+				}
+				for ( const auto *dimensions : { &current->statics, &current->dynamics } )
+					for ( const ComboFoldDimensionDX12 &dimension : *dimensions )
+						if ( dimension.name == name ) return fail();
+				auto &dimensions = dynamic ? current->dynamics : current->statics;
+				ComboFoldDimensionDX12 &dimension = dimensions[dimensions.AddToTail()];
+				dimension.name = name; dimension.minimum = minimum; dimension.maximum = maximum; dimension.slot = slot;
+				sawDynamic |= dynamic;
+			}
+		}
+		line = *end ? end + 1 : end;
+	}
+	if ( current ) return fail();
+	return true;
+}
+
+const ComboFoldTableDX12 *FindComboFoldTableDX12( IFileSystem &filesystem, const char *name, VcsStage stage )
+{
+	static CThreadFastMutex mutex;
+	static bool loaded = false;
+	static CUtlVector<ComboFoldTableDX12 *> tables;
+	AUTO_LOCK( mutex );
+	if ( !loaded )
+	{
+		loaded = true;
+		FileHandle_t file = filesystem.Open( "shaders/native_dx12_combo_fold.txt", "rb", "GAME" );
+		if ( file != FILESYSTEM_INVALID_HANDLE )
+		{
+			const unsigned size = filesystem.Size( file );
+			CUtlVector<char> text;
+			CUtlString error;
+			if ( size > INT_MAX - 1 )
+				error = "combo fold file is too large";
+			else
+			{
+				text.SetCount( int( size ) + 1 );
+				const int read = filesystem.Read( text.Base(), int( size ), file );
+				text[int( size )] = 0;
+				if ( read != int( size ) ) error = "short combo fold file read";
+				else ParseComboFoldTextDX12( text.Base(), tables, error );
+			}
+			filesystem.Close( file );
+			if ( error.Length() ) Warning( "ShaderAPIDX12: %s\n", error.Get() );
+		}
+	}
+	for ( const ComboFoldTableDX12 *table : tables )
+		if ( table->stage == stage && !V_stricmp( table->name.Get(), name ) )
+			return table;
+	return nullptr;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Constructor / destructor
 //-----------------------------------------------------------------------------
@@ -319,6 +500,42 @@ bool ShaderVcsFile::Open( IFileSystem &filesystem, const char *pszName, VcsStage
 	if ( !ParseBytes( bytes.Base(), nSize, stage, selected.Get(), error ) )
 		return false;
 	m_File.Swap( bytes );
+	if ( selected == filename )
+	{
+		const CUtlString rolesPath = CUtlString( "shaders/" ) +
+			( stage == VcsStage::Vertex ? "vsh/" : stage == VcsStage::Pixel ? "psh/" : "csh/" ) + pszName + ".hlight";
+		FileHandle_t roles = filesystem.Open( rolesPath.Get(), "rb", "GAME" );
+		if ( roles != FILESYSTEM_INVALID_HANDLE )
+		{
+			uint8 data[16]{};
+			const bool complete = filesystem.Size( roles ) == sizeof( data ) &&
+				filesystem.Read( data, sizeof( data ), roles ) == sizeof( data );
+			filesystem.Close( roles );
+			uint32_t magic = 0, version = 0, mask = 0, abi = 0;
+			if ( !complete || !U32( data, sizeof( data ), 0, magic ) || !U32( data, sizeof( data ), 4, version ) ||
+				!U32( data, sizeof( data ), 8, mask ) || !U32( data, sizeof( data ), 12, abi ) ||
+				magic != 0x544c484eu || version != 1 || ( mask & ~0xffffu ) || abi > 1 ||
+				( stage != VcsStage::Pixel && mask ) || ( stage == VcsStage::Compute && abi ) )
+				return Fail( "invalid native lightmap sampler-role metadata", error );
+			m_nLightmapSamplerMask = mask;
+			m_bHighresAbi = abi != 0;
+			m_bSamplerRolesReady = true;
+		}
+		else if ( V_strstr( pszName, "_highres_" ) )
+			return Fail( "required native lightmap sampler-role metadata missing", error );
+		const char *highres = V_strstr( pszName, "_highres_" );
+		if ( highres && stage != VcsStage::Compute )
+		{
+			char ordinary[256];
+			const int length = V_snprintf( ordinary, sizeof( ordinary ), "%.*s_%s", int( highres - pszName ), pszName,
+				highres + sizeof( "_highres_" ) - 1 );
+			if ( length > 0 && length < int( sizeof( ordinary ) ) )
+			{
+				const CUtlString twin = CUtlString( "shaders/" ) + ( stage == VcsStage::Vertex ? "vsh/" : "psh/" ) + ordinary + ".vcs";
+				m_bNativeCasterTwin = filesystem.FileExists( twin.Get(), "GAME" );
+			}
+		}
+	}
 	return true;
 }
 
@@ -343,6 +560,9 @@ bool ShaderVcsFile::ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage 
 	m_Path = pszLabel ? pszLabel : "<memory>";
 	m_Stage = stage;
 	m_nVersion = m_nTotalCount = m_nDynamicCount = m_nFlags = m_nCentroidMask = m_nSourceCRC = 0;
+	m_nLightmapSamplerMask = 0;
+	m_bHighresAbi = m_bSamplerRolesReady = false;
+	m_bNativeCasterTwin = false;
 	m_nPayloadStart = 0;
 	m_nHeaderBytes = 28;
 	m_LoadedStatics.Purge();

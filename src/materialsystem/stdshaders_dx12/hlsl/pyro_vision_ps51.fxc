@@ -1,3 +1,4 @@
+// HIGHLIGHT_SAMPLERS: 2
 // Native SM5.1 rewrite of materialsystem/stdshaders/pyro_vision_ps2x.fxc for logical pyro_vision_ps30 (legacy profile ps30);
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
 #define DX12_LEGACY_PS30 1

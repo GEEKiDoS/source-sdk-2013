@@ -40,16 +40,12 @@ struct PS_INPUT
 };
 // Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
 // link register-for-register.
-#define CUBEMAP 0	// value the material always gives the paired vertex shader
-#define FLASHLIGHT 0	// value the material always gives the paired vertex shader
 #define SEAMLESS_BASE 0	// value the material always gives the paired vertex shader
 #define SEAMLESS_DETAIL 0	// value the material always gives the paired vertex shader
 struct DX12_PS_INPUT
 {
 	float4 projPos : SV_Position;
-#if !defined( _X360 )
 	float fog : FOG;
-#endif
 #if SEAMLESS_BASE
 	HALF3 SeamlessTexCoord : TEXCOORD0;
 #else
@@ -61,13 +57,8 @@ struct DX12_PS_INPUT
 	HALF2 detailTexCoord : TEXCOORD1;
 #endif
 	float4 color : TEXCOORD2;
-#if CUBEMAP || _X360
 	float3 worldVertToEyeVector : TEXCOORD3;
-#endif
 	float3 worldSpaceNormal : TEXCOORD4;
-#if defined ( _X360 ) && FLASHLIGHT
-	float4 flashlightSpacePos : TEXCOORD5;
-#endif
 	float4 vProjPos : TEXCOORD6;
 	float4 worldPos_ProjPosZ : TEXCOORD7;
 	float4 fogFactorW : COLOR1;
@@ -88,16 +79,12 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 	l.detailTexCoord = dx12In.detailTexCoord;
 #endif
 	l.color = dx12In.color;
-#if ( ( CUBEMAP || _X360 ) )
 	l.worldVertToEyeVector = dx12In.worldVertToEyeVector;
-#endif
 	l.worldSpaceNormal = dx12In.worldSpaceNormal;
 	l.vProjPos = dx12In.vProjPos;
 #endif
 	return l;
 }
-#undef CUBEMAP
-#undef FLASHLIGHT
 #undef SEAMLESS_BASE
 #undef SEAMLESS_DETAIL
 

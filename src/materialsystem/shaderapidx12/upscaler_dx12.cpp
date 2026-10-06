@@ -2418,14 +2418,14 @@ void CShaderAPIDX12::DispatchFrameGen( int nFlags )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Restores the native swap chain and resets every frame-generation field (device-resource release)
+// Purpose: Releases presentation/features without recreating chains during device-resource teardown
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReleaseFrameGenResources()
 {
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && ( m_pDevice->FrameGen().Kind() != FrameGenKindDX12::None || m_pDevice->FrameGenSelectPending() ) )
 	{
-		m_pDevice->RequestFrameGenSelect( FrameGenKindDX12::None, 2, false );
-		m_pDevice->ApplyFrameGenSelect(); // contains its own GPU-idle boundary
+		m_pDevice->ReleaseResources(); // drains work and releases every adopted chain, without creating a new one
+		m_pDevice->FrameGen().ReleaseFeatures(); // tagged inputs may now be destroyed; queue/provider lifetime remains device-owned
 	}
 	if ( m_nFrameGenPendingSerial != m_nFrameGenConsumedSerial )
 	{

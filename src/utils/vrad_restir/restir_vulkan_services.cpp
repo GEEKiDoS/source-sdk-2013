@@ -75,25 +75,62 @@ bool CReSTIRVulkanDevice::LightPoints( const CUtlVector<ReSTIRGpuPointQuery> &qu
 bool CReSTIRVulkanDevice::UploadFinalLightmap( const ReSTIRLightmapResult &result )
 {
 	Impl &gpu = *m_pImpl;
-	if ( !gpu.scene || result.radiance.Count() != gpu.scene->numOutputValues || result.luxelValid.Count() != gpu.scene->luxels.Count() )
+	const CUtlVector<Vector> &radiance = result.sourceRadiance.Count() ? result.sourceRadiance : result.radiance;
+	if ( !gpu.scene || radiance.Count() != gpu.scene->numOutputValues || result.radiance.Count() != gpu.scene->numOutputValues || result.luxelValid.Count() != gpu.scene->luxels.Count() )
 		gpu.Fail( "final lightmap dimensions do not match the resident scene" );
 	// Convert only one ring-sized page at a time; no second full-size radiance copy.
 	CUtlVector<float> page;
 	unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / ( sizeof( float ) * 4 ) );
-	for ( unsigned int first = 0; first < (unsigned int)result.radiance.Count(); )
+	page.EnsureCapacity( MIN( capacity, MAX( (unsigned int)radiance.Count(), (unsigned int)gpu.scene->faces.Count() * MAXLIGHTMAPS ) ) * 4 );
+	// Ambient/prop rays share one valid-base-luxel mean per face/style. Scanning the
+	// dense face at every ray hit scales quadratically with density and can time out.
+	// Prefix the existing final-lightmap buffer; no additional descriptor is needed.
+	const VkDeviceSize averageBytes = (VkDeviceSize)gpu.scene->faces.Count() * MAXLIGHTMAPS * sizeof( float ) * 4;
+	for ( unsigned int first = 0; first < (unsigned int)gpu.scene->faces.Count(); )
 	{
-		unsigned int count = MIN( capacity, (unsigned int)result.radiance.Count() - first );
+		const unsigned int count = MIN( capacity / MAXLIGHTMAPS, (unsigned int)gpu.scene->faces.Count() - first );
+		page.SetCount( count * MAXLIGHTMAPS * 4 );
+		memset( page.Base(), 0, page.Count() * sizeof( float ) );
+		for ( unsigned int i = 0; i < count; ++i )
+		{
+			const ReSTIRGpuFace &face = gpu.scene->faces[first + i];
+			const int luxels = face.luxelW * face.luxelH;
+			for ( int slot = 0; slot < face.numStyles; ++slot )
+			{
+				float *average = page.Base() + ( i * MAXLIGHTMAPS + slot ) * 4;
+				unsigned int valid = 0;
+				const int output = face.firstOutput + slot * face.numChannels * luxels;
+				for ( int luxel = 0; luxel < luxels; ++luxel )
+				{
+					if ( !result.luxelValid[face.firstLuxel + luxel] ) continue;
+					for ( int c = 0; c < 3; ++c )
+					{
+						const float value = radiance[output + luxel][c];
+						average[c] += _finite( value ) && value >= 0 ? value : 0;
+					}
+					++valid;
+				}
+				if ( valid ) for ( int c = 0; c < 3; ++c ) average[c] /= (float)valid;
+			}
+		}
+		gpu.Upload( RESTIR_BIND_FINAL_LIGHTMAP, page.Base(), (VkDeviceSize)count * MAXLIGHTMAPS * sizeof( float ) * 4,
+			(VkDeviceSize)first * MAXLIGHTMAPS * sizeof( float ) * 4 );
+		first += count;
+	}
+	for ( unsigned int first = 0; first < (unsigned int)radiance.Count(); )
+	{
+		unsigned int count = MIN( capacity, (unsigned int)radiance.Count() - first );
 		page.SetCount( count * 4 );
 		for ( unsigned int i = 0; i < count; ++i )
 		{
 			for ( int c = 0; c < 3; ++c )
 			{
-				float value = result.radiance[first + i][c];
+				float value = radiance[first + i][c];
 				page[i * 4 + c] = _finite( value ) && value >= 0 ? value : 0;
 			}
 			page[i * 4 + 3] = 0;
 		}
-		gpu.Upload( RESTIR_BIND_FINAL_LIGHTMAP, page.Base(), (VkDeviceSize)count * sizeof( float ) * 4, (VkDeviceSize)first * sizeof( float ) * 4 );
+		gpu.Upload( RESTIR_BIND_FINAL_LIGHTMAP, page.Base(), (VkDeviceSize)count * sizeof( float ) * 4, averageBytes + (VkDeviceSize)first * sizeof( float ) * 4 );
 		first += count;
 	}
 	CUtlVector<unsigned int> validPage;

@@ -916,6 +916,19 @@ void CReSTIRDenoiser::Shutdown()
 
 bool CReSTIRDenoiser::Denoise( const ReSTIRScene &scene, ReSTIRLightmapResult &result )
 {
+	if ( !DenoiseRadiance( scene, result ) )
+		return false;
+	if ( result.sourceRadiance.Count() == 0 )
+		return true;
+	// Swap ownership, not image contents: run the same estimator-independent denoiser on full transport.
+	result.radiance.Swap( result.sourceRadiance );
+	const bool success = DenoiseRadiance( scene, result );
+	result.radiance.Swap( result.sourceRadiance );
+	return success;
+}
+
+bool CReSTIRDenoiser::DenoiseRadiance( const ReSTIRScene &scene, ReSTIRLightmapResult &result )
+{
 	const double startTime = Plat_FloatTime();
 	CUtlVector<PackedPage> pages;
 	CUtlVector<FacePlacement> placements;

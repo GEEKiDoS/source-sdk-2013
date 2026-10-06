@@ -558,8 +558,10 @@ bool ReSTIR_ComputeLeafAmbientLighting( const ReSTIROptions &options, const ReST
 		return false;
 	}
 
-	// Port of utils/vrad/leaf_ambient_lighting.cpp:621-642. The worldlight
-	// array was exported by bsp_output in the same order as scene.exportLights.
+	// Port of utils/vrad/leaf_ambient_lighting.cpp:621-642. bsp_output has
+	// removed selected analytic lights; retained worldlights stay in bake order.
+	// Only INAMBIENTCUBE belongs to this reflected/weak-surface gather.
+	// bsp_output finalizes the written worldlight CRC after this update.
 	int nInAmbientCube = 0;
 	int nSurfaceLights = 0;
 	for ( int i = 0; i < *pNumworldlights; ++i )

@@ -7,6 +7,9 @@
 #include "shaderapi_dx12.h"
 #include "shadershadow_dx12.h"
 #include "hardwareconfig_dx12.h"
+#include "lighting_dx12.h"
+#include "highres_lightmaps_dx12.h"
+#include "shadowmap_bsp.h"
 #include "tracy_dx12.h"
 #include "materialsystem/stdshaders/common_hlsl_cpp_consts.h"
 #include "shaderapi/ishaderutil.h"
@@ -96,6 +99,104 @@ static void HashReflectedTypeDX12( ID3D12ShaderReflectionType *pType, const D3D1
 	canonical += "}";
 }
 
+// Native sampler roles are publication metadata; reflection verifies the separate
+// resource ABI rather than inferring a role from sampler/register coincidence.
+static bool ValidateHighresShaderDX12( ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &shader, bool pixelStage, bool &highresAbi )
+{
+	highresAbi = false;
+	unsigned seen = 0;
+	const char *names[8] = { "HlightFaceIds", "HlightFaces", "HlightTiles", "HlightDynamic",
+		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384" };
+	for ( UINT i = 0; i < shader.BoundResources; ++i )
+	{
+		D3D12_SHADER_INPUT_BIND_DESC b{};
+		if ( FAILED( reflection->GetResourceBindingDesc( i, &b ) ) ) return false;
+		if ( b.Space != 3 ) continue;
+		if ( !pixelStage || D3D12_SHVER_GET_TYPE( shader.Version ) != D3D12_SHVER_PIXEL_SHADER || b.BindCount != 1 || !b.Name ) return false;
+		if ( b.Type == D3D_SIT_CBUFFER )
+		{
+			if ( b.BindPoint || V_strcmp( b.Name, "DX12HighresDrawConstants" ) ) return false;
+			auto *buffer = reflection->GetConstantBufferByName( b.Name );
+			D3D12_SHADER_BUFFER_DESC desc{};
+			if ( !buffer || FAILED( buffer->GetDesc( &desc ) ) || desc.Size != 320 || desc.Variables != 3 ) return false;
+			const char *members[3] = { "cHlightRoute", "cHlightModelToWorld", "cHlightStyles" };
+			const UINT offsets[3] = { 0, 16, 64 }, sizes[3] = { 16, 48, 256 }, elements[3] = { 0, 3, 16 };
+			for ( UINT j = 0; j < 3; ++j )
+			{
+				auto *variable = buffer->GetVariableByIndex( j );
+				D3D12_SHADER_VARIABLE_DESC v{};
+				D3D12_SHADER_TYPE_DESC t{};
+				if ( !variable || FAILED( variable->GetDesc( &v ) ) || !variable->GetType() ||
+					FAILED( variable->GetType()->GetDesc( &t ) ) || V_strcmp( v.Name, members[j] ) ||
+					v.StartOffset != offsets[j] || v.Size != sizes[j] || t.Class != D3D_SVC_VECTOR ||
+					t.Type != ( j ? D3D_SVT_FLOAT : D3D_SVT_UINT ) || t.Rows != 1 || t.Columns != 4 || t.Elements != elements[j] )
+					return false;
+			}
+			seen |= 1u << 8;
+		}
+		else if ( b.Type == D3D_SIT_SAMPLER )
+		{
+			if ( b.BindPoint || V_strcmp( b.Name, "HlightLinear" ) || ( b.uFlags & D3D_SIF_COMPARISON_SAMPLER ) ) return false;
+			seen |= 1u << 9;
+		}
+		else if ( b.Type == D3D_SIT_UAV_RWBYTEADDRESS )
+		{
+			if ( b.BindPoint || V_strcmp( b.Name, "HlightFailure" ) || b.Dimension != D3D_SRV_DIMENSION_BUFFER ) return false;
+			seen |= 1u << 10;
+		}
+		else
+		{
+			if ( b.BindPoint >= 8 || V_strcmp( b.Name, names[b.BindPoint] ) ) return false;
+			const UINT slot = b.BindPoint;
+			const bool structured = slot == 1 || slot == 2;
+			if ( b.Type != ( structured ? D3D_SIT_STRUCTURED : D3D_SIT_TEXTURE ) ||
+				b.Dimension != ( structured ? D3D_SRV_DIMENSION_BUFFER : slot < 4 ? D3D_SRV_DIMENSION_TEXTURE2D : D3D_SRV_DIMENSION_TEXTURE2DARRAY ) ||
+				( !structured && b.ReturnType != ( slot == 0 ? D3D_RETURN_TYPE_UINT : D3D_RETURN_TYPE_FLOAT ) ) ) return false;
+			if ( structured )
+			{
+				auto *buffer = reflection->GetConstantBufferByName( b.Name );
+				D3D12_SHADER_BUFFER_DESC bd{};
+				if ( b.NumSamples != ( slot == 1 ? 160u : 32u ) || !buffer ||
+					FAILED( buffer->GetDesc( &bd ) ) || bd.Type != D3D_CT_RESOURCE_BIND_INFO || bd.Variables != 1 ) return false;
+				auto *variable = buffer->GetVariableByIndex( 0 );
+				auto *type = variable ? variable->GetType() : nullptr;
+				D3D12_SHADER_TYPE_DESC td{};
+				const UINT count = slot == 1 ? 5 : 2;
+				const char *faceMembers[5] = { "nativeRect", "dimensionsFlags", "styles", "tiles", "bakedModelToWorld" };
+				const char *tileMembers[2] = { "address", "size" };
+				if ( !type || FAILED( type->GetDesc( &td ) ) || td.Class != D3D_SVC_STRUCT || td.Elements ||
+					td.Members != ( slot == 1 ? 5u : 2u ) ) return false;
+				for ( UINT member = 0; member < count; ++member )
+				{
+					auto *mt = type->GetMemberTypeByIndex( member );
+					D3D12_SHADER_TYPE_DESC md{};
+					const char *name = type->GetMemberTypeName( member );
+					const UINT offset = slot == 1 && member == 4 ? 112u : member * 16u;
+					const UINT elements = slot == 1 && member >= 3 ? ( member == 3 ? 4u : 3u ) : 0u;
+					if ( !name || V_strcmp( name, slot == 1 ? faceMembers[member] : tileMembers[member] ) ||
+						!mt || FAILED( mt->GetDesc( &md ) ) || md.Offset != offset || md.Class != D3D_SVC_VECTOR ||
+						md.Type != ( slot == 1 && member == 4 ? D3D_SVT_FLOAT : D3D_SVT_UINT ) ||
+						md.Rows != 1 || md.Columns != 4 || md.Elements != elements ) return false;
+				}
+			}
+			seen |= 1u << slot;
+		}
+	}
+	highresAbi = seen != 0;
+	return seen == 0 || seen == 0x7ffu;
+}
+
+bool shaderapidx12::ValidateHighresShaderResourcesDX12( ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &shader, bool pixelStage, bool *highresAbi, CUtlString &error )
+{
+	bool present = false;
+	if ( !reflection || !ValidateHighresShaderDX12( reflection, shader, pixelStage, present ) )
+	{
+		error = "highres space-3 shader resource/layout mismatch";
+		return false;
+	}
+	if ( highresAbi ) *highresAbi = present;
+	return true;
+}
 //-----------------------------------------------------------------------------
 // Purpose: Reflects every register-space-1 cbuffer of a native record once: name, binding, size, member
 //          table and the canonical FNV-1a layout hash shared with the packer and generated C++ blocks.
@@ -111,15 +212,30 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	D3D12_SHADER_DESC shader{};
 	if ( FAILED( reflection->GetDesc( &shader ) ) )
 		return false;
+	CUtlString lightingError;
+	if ( !ValidateLightingShaderDX12( bytecode, record->stagePixel, &record->lightingAbi, lightingError, &record->sunVisibilityAbi ) )
+	{
+		Warning( "%s: %s\n", SHADOWMAP_ERR_SHADER_UNAVAILABLE, lightingError.Get() );
+		return false;
+	}
+	bool highresResources = false;
+	if ( !ValidateHighresShaderDX12( reflection.Get(), shader, record->stagePixel, highresResources ) ||
+		( highresResources && ( !record->highresAbi || !record->samplerRolesReady ) ) )
+		return false;
+	if ( record->highresAbi && record->stagePixel && !highresResources )
+		record->lightmapSamplerMask = 0; // Published alpha-only/replay combo, no RGB participation.
 	record->nativeCBuffers.RemoveAll();
 	record->nativeAbiHash = dx12native::kFnvOffset;
+	record->nativeSamplerMask = 0;
 	for ( UINT i = 0; i < shader.BoundResources; ++i )
 	{
 		D3D12_SHADER_INPUT_BIND_DESC binding{};
 		if ( FAILED( reflection->GetResourceBindingDesc( i, &binding ) ) )
 			return false;
-		if ( binding.Type != D3D_SIT_CBUFFER )
-			continue;
+		if ( binding.Space == 0 && binding.Type == D3D_SIT_TEXTURE && binding.BindPoint < 16 && binding.BindCount <= 16 - binding.BindPoint )
+			record->nativeSamplerMask |= ( ( 1u << binding.BindCount ) - 1u ) << binding.BindPoint;
+		if ( binding.Type != D3D_SIT_CBUFFER || binding.Space == 3 )
+			continue; // space3 is the owned draw ABI, not a material constant block.
 		ShaderRecordDX12::NativeCBufferBindingDX12 reflected;
 		reflected.name = binding.Name;
 		reflected.shaderRegister = binding.BindPoint;
@@ -427,6 +543,11 @@ CShaderAPIDX12::~CShaderAPIDX12()
 	{
 		delete m_NamedShaderCombos[entry];
 	}
+	FOR_EACH_HASHTABLE( m_NamedShaderRecords, entry )
+	{
+		delete m_NamedShaderRecords[entry]->record;
+		delete m_NamedShaderRecords[entry];
+	}
 	FOR_EACH_HASHTABLE( m_NamedShaderFiles, entry )
 	{
 		delete m_NamedShaderFiles[entry];
@@ -452,14 +573,37 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 	if ( !m_NamedShaderReferences.IsValidHandle( hReference ) || !NamedShaderEqual()( m_NamedShaderReferences.Key( hReference ), referenceKey ) )
 		hReference = m_NamedShaderReferences.Insert( referenceKey, true );
 	m_NamedShaderReferences[hReference] = true;
-	const int nDynamic = MAX( 0, nDynamicIndex );
-	const NamedShaderKeyView key{ pszName, nStaticIndex, nDynamic, bPixel };
+	const NamedShaderKeyView key{ pszName, nStaticIndex, nDynamicIndex, bPixel };
 	UtlHashHandle_t &hFound = m_NamedComboHints[bPixel ? 1 : 0];
 	if ( !m_NamedShaderCombos.IsValidHandle( hFound ) || !NamedShaderEqual()( m_NamedShaderCombos.Key( hFound ), key ) )
 		hFound = m_NamedShaderCombos.Find( key );
 	if ( hFound != m_NamedShaderCombos.InvalidHandle() )
-		return m_NamedShaderCombos[hFound];
+		return m_NamedShaderCombos[hFound] ? m_NamedShaderCombos[hFound]->Record() : nullptr;
 	hFound = m_NamedShaderCombos.Insert( key, nullptr );
+	const ComboFoldTableDX12 *foldTable = FindComboFoldTableDX12( *g_pShaderDeviceMgrDX12->HostFileSystem(), pszName, bPixel ? VcsStage::Pixel : VcsStage::Vertex );
+	const int nDynamic = foldTable ? nDynamicIndex : MAX( 0, nDynamicIndex );
+	ComboFoldProjectionDX12 projection{};
+	if ( foldTable && !ProjectComboFoldDX12( *foldTable, nStaticIndex, nDynamicIndex, projection ) )
+	{
+		Warning( "ShaderAPIDX12: folded shader %s has invalid static %d / dynamic %d combo\n", pszName, nStaticIndex, nDynamicIndex );
+		return nullptr;
+	}
+	const uint32_t nativeStatic = foldTable ? projection.staticIndex : uint32_t( nStaticIndex );
+	const uint32_t nativeDynamic = foldTable ? projection.dynamicIndex : uint32_t( nDynamic );
+	const NamedShaderKeyView nativeKey{ pszName, int( nativeStatic ), int( nativeDynamic ), bPixel };
+	const auto remember = [&]( NamedShaderRecordDX12 *owner ) -> ShaderRecordDX12 *
+	{
+		NamedShaderComboDX12 *combo = new NamedShaderComboDX12;
+		combo->owner = owner; combo->folded = foldTable != nullptr;
+		combo->projection = projection; combo->version = ++m_nComboFoldVersion;
+		++owner->references;
+		hFound = m_NamedShaderCombos.Find( key );
+		m_NamedShaderCombos[hFound] = combo;
+		return owner->record;
+	};
+	const UtlHashHandle_t existingRecord = m_NamedShaderRecords.Find( nativeKey );
+	if ( existingRecord != m_NamedShaderRecords.InvalidHandle() )
+		return remember( m_NamedShaderRecords[existingRecord] );
 	CUtlString fileKey( bPixel ? "p:" : "v:" );
 	fileKey.Append( pszName );
 	UtlHashHandle_t hShaderFile = m_NamedShaderFiles.Find( fileKey.String() );
@@ -484,18 +628,21 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 	ShaderVcsFile *pFile = m_NamedShaderFiles[hShaderFile];
 	if ( !pFile )
 		return nullptr;
-	if ( nStaticIndex < 0 || static_cast<uint32_t>( nDynamic ) >= pFile->DynamicComboCount() )
+	if ( nStaticIndex < 0 || nativeDynamic >= pFile->DynamicComboCount() ||
+		( foldTable && ( pFile->DynamicComboCount() != foldTable->nativeDynamicCount ||
+			uint64_t( foldTable->nativeStaticCount ) * foldTable->nativeDynamicCount != pFile->TotalComboCount() ||
+			nativeStatic >= pFile->TotalComboCount() ) ) )
 	{
 		Warning( "ShaderAPIDX12: shader %s has invalid static %d / dynamic %d combo\n", pszName, nStaticIndex, nDynamic );
 		return nullptr;
 	}
 	CUtlString error;
-	if ( !pFile->LoadStaticCombo( static_cast<uint32_t>( nStaticIndex ), error ) )
+	if ( !pFile->LoadStaticCombo( nativeStatic, error ) )
 	{
 		Warning( "ShaderAPIDX12: shader %s combo decode failed: %s\n", pszName, error.Get() );
 		return nullptr;
 	}
-	const VcsPayload *pPayload = pFile->DynamicPayload( static_cast<uint32_t>( nStaticIndex ), static_cast<uint32_t>( nDynamic ) );
+	const VcsPayload *pPayload = pFile->DynamicPayload( nativeStatic, nativeDynamic );
 	if ( !pPayload )
 	{
 		Warning( "ShaderAPIDX12: shader %s missing static %d / dynamic %d combo\n", pszName, nStaticIndex, nDynamic );
@@ -524,10 +671,29 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 		Warning( "ShaderAPIDX12: failed to create %s shader %s combo %d/%d\n", bPixel ? "pixel" : "vertex", pszName, nStaticIndex, nDynamic );
 		return nullptr;
 	}
+	if ( ( !V_strcmp( pszName, "shadow_depth_restore_vs51" ) || !V_strcmp( pszName, "shadow_depth_restore_ps51" ) ) &&
+		( !pRecord->legacyBytecode.IsEmpty() || !ValidateShadowDepthRestoreShaderDX12( pRecord->Bytecode(), bPixel ) ) )
+	{
+		if ( bPixel ) m_pDevice->DestroyPixelShader( reinterpret_cast<PixelShaderHandle_t>( pRecord ) );
+		else m_pDevice->DestroyVertexShader( reinterpret_cast<VertexShaderHandle_t>( pRecord ) );
+		m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+		return nullptr;
+	}
 	pRecord->centroidTexcoordMask = pFile->CentroidMask();
-	hFound = m_NamedShaderCombos.Find( key );
-	m_NamedShaderCombos[hFound] = pRecord;
-	return pRecord;
+	pRecord->lightmapSamplerMask = pFile->LightmapSamplerMask();
+	pRecord->highresAbi = pFile->HighresAbi();
+	pRecord->samplerRolesReady = pFile->SamplerRolesReady();
+	pRecord->nativeCasterTwin = pFile->NativeCasterTwin();
+	if ( !pRecord->legacyBytecode.IsEmpty() && ( pRecord->highresAbi || pRecord->lightmapSamplerMask ) )
+	{
+		if ( bPixel ) m_pDevice->DestroyPixelShader( reinterpret_cast<PixelShaderHandle_t>( pRecord ) );
+		else m_pDevice->DestroyVertexShader( reinterpret_cast<VertexShaderHandle_t>( pRecord ) );
+		return nullptr;
+	}
+	pRecord->nativeReflectionReady = false;
+	NamedShaderRecordDX12 *owner = new NamedShaderRecordDX12( nativeKey, pRecord );
+	m_NamedShaderRecords.Insert( nativeKey, owner );
+	return remember( owner );
 }
 
 //-----------------------------------------------------------------------------
@@ -535,14 +701,91 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 //-----------------------------------------------------------------------------
 ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDynamicIndex )
 {
+	m_BoundNamedCombos[bPixel ? 1 : 0] = nullptr;
 	const char *pszName = ( bPixel ? m_ActiveSnapshot.pixelShaderName : m_ActiveSnapshot.vertexShaderName ).c_str();
 	const int nStaticIndex = bPixel ? m_ActiveSnapshot.staticPixelIndex : m_ActiveSnapshot.staticVertexIndex;
+	if ( m_pDevice && m_pDevice->Highres().EnhancedMap() && !m_pDevice->Lighting().ShadowPassActive() )
+	{
+		ShaderRecordDX12 *record = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
+		const ShaderRecordDX12 *pixel = bPixel ? record : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS );
+		const bool needsHighres = pixel && ( pixel->lightmapSamplerMask || pixel->highresAbi );
+		if ( needsHighres && record && !record->highresAbi )
+		{
+			const char *marker = V_strstr( pszName, "_shadowmap_" );
+			const char *stage = marker ? marker + sizeof( "_shadowmap_" ) - 1 : V_strrchr( pszName, '_' );
+			char name[256];
+			const int length = marker ? V_snprintf( name, sizeof( name ), "%.*s_highres_%s", int( marker - pszName ), pszName, stage ) :
+				stage ? V_snprintf( name, sizeof( name ), "%.*s_highres%s", int( stage - pszName ), pszName, stage ) : -1;
+			record = length > 0 && length < int( sizeof( name ) ) ? ResolveNamedShader( name, bPixel, nStaticIndex, nDynamicIndex ) : nullptr;
+			if ( !record || !record->highresAbi || !record->legacyBytecode.IsEmpty() )
+			{
+				m_pDevice->Highres().OnNativeFailure( "required native highres shader variant unavailable" );
+				return nullptr;
+			}
+		}
+		if ( record ) m_BoundNamedCombos[bPixel ? 1 : 0] = m_NamedShaderCombos[m_NamedComboHints[bPixel ? 1 : 0]];
+		return record;
+	}
+	if ( m_pDevice && m_pDevice->Lighting().ShadowPassActive() )
+	{
+		if ( bPixel && !m_ActiveSnapshot.alphaTest )
+			return nullptr; // Opaque casters never need a receiver/cutout pixel shader.
+		const char *marker = V_strstr( pszName, "_shadowmap_" );
+		size_t markerLength = sizeof( "_shadowmap_" ) - 1;
+		if ( !marker )
+		{
+			marker = V_strstr( pszName, "_highres_" );
+			markerLength = sizeof( "_highres_" ) - 1;
+			if ( marker )
+			{
+				ShaderRecordDX12 *native = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
+				if ( !native || !native->legacyBytecode.IsEmpty() )
+				{
+					m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+					return nullptr;
+				}
+				if ( !native->nativeCasterTwin )
+				{
+					// Enhanced-only opaque editor VS is already resource-free and has
+					// the real model/clip transforms; do not invent an ordinary twin.
+					if ( bPixel || native->lightingAbi )
+					{
+						m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+						return nullptr;
+					}
+					m_BoundNamedCombos[0] = m_NamedShaderCombos[m_NamedComboHints[0]];
+					return native;
+				}
+			}
+		}
+		if ( marker )
+		{
+			// Retain the real native ordinary cutout stage, with identical combo indices.
+			char ordinaryName[256];
+			const int length = V_snprintf( ordinaryName, sizeof( ordinaryName ), "%.*s_%s",
+				int( marker - pszName ), pszName, marker + markerLength );
+			ShaderRecordDX12 *record = length > 0 && length < int( sizeof( ordinaryName ) ) ?
+				ResolveNamedShader( ordinaryName, bPixel, nStaticIndex, nDynamicIndex ) : nullptr;
+			if ( record ) m_BoundNamedCombos[bPixel ? 1 : 0] = m_NamedShaderCombos[m_NamedComboHints[bPixel ? 1 : 0]];
+			if ( !record || !record->legacyBytecode.IsEmpty() || record->lightingAbi || record->highresAbi )
+			{
+				m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+				return nullptr;
+			}
+			return record;
+		}
+	}
 	if ( m_hActiveSnapshotId < 0 )
-		return ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
+	{
+		ShaderRecordDX12 *record = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
+		if ( record ) m_BoundNamedCombos[bPixel ? 1 : 0] = m_NamedShaderCombos[m_NamedComboHints[bPixel ? 1 : 0]];
+		return record;
+	}
 	NamedResolveEntryDX12( &cache )[1024] = m_NamedResolveCache[bPixel ? 1 : 0];
 	NamedResolveEntryDX12 &entry = cache[Mix32HashFunctor()( static_cast<uint32_t>( m_hActiveSnapshotId ) * 0x9E3779B1u ^ static_cast<uint32_t>( nDynamicIndex ) ) & ( ARRAYSIZE( cache ) - 1 )];
 	if ( entry.record && entry.epoch == m_nNamedResolveEpoch && entry.snapshot == m_hActiveSnapshotId && entry.dynamicIndex == nDynamicIndex )
 	{
+		m_BoundNamedCombos[bPixel ? 1 : 0] = entry.combo;
 		if ( entry.referenceEpoch == m_nNamedReferenceEpoch )
 			return entry.record;
 		// Reference marks were cleared: re-mark through the remembered handle (hints can move on rehash, so verify the key).
@@ -556,7 +799,9 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 	}
 	ShaderRecordDX12 *pRecord = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
 	// Failures are not cached: they may depend on device or filesystem availability.
-	entry = { m_hActiveSnapshotId, nDynamicIndex, m_nNamedResolveEpoch, pRecord, m_NamedReferenceHints[bPixel ? 1 : 0], m_nNamedReferenceEpoch };
+	NamedShaderComboDX12 *combo = pRecord ? m_NamedShaderCombos[m_NamedComboHints[bPixel ? 1 : 0]] : nullptr;
+	m_BoundNamedCombos[bPixel ? 1 : 0] = combo;
+	entry = { m_hActiveSnapshotId, nDynamicIndex, m_nNamedResolveEpoch, pRecord, combo, m_NamedReferenceHints[bPixel ? 1 : 0], m_nNamedReferenceEpoch };
 	return pRecord;
 }
 
@@ -672,7 +917,19 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 DrawBuffers", DX12_DRAW_ZONES_ACTIVE );
 	if ( !m_pDevice || m_bDisallowAccess || !m_pDevice->CommandList() || !m_pDevice->NativeDevice() || !bindings[0].buffer || firstIndex < 0 || indexCount <= 0 )
 		return;
-	if ( m_MotionPassState == MotionPassStateDX12::Suppressed )
+	const bool shadowPass = m_pDevice->Lighting().ShadowPassActive();
+	const bool opaqueCaster = shadowPass && !m_ActiveSnapshot.alphaTest;
+	const bool highresMap = m_pDevice->Highres().EnhancedMap();
+	if ( highresMap && m_pDevice->Highres().Rejected() )
+		return;
+	if ( m_bHighresNamedRoute != highresMap )
+	{
+		m_bHighresNamedRoute = highresMap;
+		m_bNamedVertexShaderDirty = !m_ActiveSnapshot.vertexShaderName.empty();
+		m_bNamedPixelShaderDirty = !m_ActiveSnapshot.pixelShaderName.empty();
+		++m_nPipelineMemoEpoch;
+	}
+	if ( !shadowPass && ( m_MotionPassState == MotionPassStateDX12::Suppressed || m_pDevice->Lighting().PresentationBlocked() ) )
 		return;
 	++m_nFrameDrawCount;
 	++m_DrawStats.draws;
@@ -706,6 +963,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		CommitFogState();
 		CommitVertexLighting();
 	}
+	if ( m_bNamedPixelShaderDirty )
+	{
+		ShaderRecordDX12 *record = ResolveActiveNamedShader( true, m_nPixelShaderIndex );
+		m_hBoundPS = reinterpret_cast<PixelShaderHandle_t>( record );
+		m_bBoundPixelShaderIsNamed = record != nullptr;
+		m_bNamedPixelShaderDirty = false;
+		if ( highresMap && !m_ActiveSnapshot.vertexShaderName.empty() )
+			m_bNamedVertexShaderDirty = true;
+	}
 	if ( m_bNamedVertexShaderDirty )
 	{
 		ShaderRecordDX12 *record = ResolveActiveNamedShader( false, m_nVertexShaderIndex );
@@ -713,15 +979,23 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		m_bBoundVertexShaderIsNamed = record != nullptr;
 		m_bNamedVertexShaderDirty = false;
 	}
-	if ( m_bNamedPixelShaderDirty )
+	if ( highresMap && !shadowPass &&
+		( ( !m_hBoundVS && !m_ActiveSnapshot.vertexShaderName.empty() ) ||
+		  ( !m_hBoundPS && !m_ActiveSnapshot.pixelShaderName.empty() ) ) )
 	{
-		ShaderRecordDX12 *record = ResolveActiveNamedShader( true, m_nPixelShaderIndex );
-		m_hBoundPS = reinterpret_cast<PixelShaderHandle_t>( record );
-		m_bBoundPixelShaderIsNamed = record != nullptr;
-		m_bNamedPixelShaderDirty = false;
+		m_pDevice->Highres().OnNativeFailure( "required native highres named shader unavailable" );
+		return;
+	}
+	if ( !shadowPass &&
+		( ( !m_hBoundVS && V_strstr( m_ActiveSnapshot.vertexShaderName.c_str(), "_shadowmap_" ) ) ||
+		  ( !m_hBoundPS && V_strstr( m_ActiveSnapshot.pixelShaderName.c_str(), "_shadowmap_" ) ) ) )
+	{
+		if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "native highres material shader unavailable" );
+		else m_pDevice->Lighting().RejectUnsupportedLitShader( m_ActiveSnapshot.pixelShaderName.c_str() );
+		return;
 	}
 	VertexFormat_t format = bindings[0].format;
-	const bool motionActive = MotionPassActive();
+	const bool motionActive = !shadowPass && MotionPassActive();
 	VertexLayoutDX12 explicitLayout;
 	// Mesh layouts depend only on (format, stream flags); a small direct-mapped cache covers alternating formats.
 	// The stream-2 declaration follows the flex mesh's own format (28-byte position/wrinkle/normal from GetFlexMesh).
@@ -789,19 +1063,118 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	if ( !sourceLayout.valid )
 		return;
 	ShaderRecordDX12 *vsRecord = motionActive ? MotionVertexShader( format ) : ( m_hBoundVS == VERTEX_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS ) );
-	ShaderRecordDX12 *psRecord = motionActive ? m_pMotionPS : ( m_hBoundPS == PIXEL_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS ) );
-	// Until legacy analysis exists, retain the complete binding path. Native/fixed-function
-	// shaders and explicit geometry shaders also retain it; their resource use is not in this metadata.
+	ShaderRecordDX12 *psRecord = opaqueCaster ? nullptr : motionActive ? m_pMotionPS : ( m_hBoundPS == PIXEL_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS ) );
+	if ( ( vsRecord && !ReflectNativeCBuffersDX12( vsRecord ) ) || ( psRecord && !ReflectNativeCBuffersDX12( psRecord ) ) )
+	{
+		if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres native shader reflection failed" );
+		return;
+	}
 	const auto samplerMask = [&]( const ShaderRecordDX12 *record, uint32_t all )
 	{
-		return m_hBoundGS == GEOMETRY_SHADER_HANDLE_INVALID && record && !record->legacyBytecode.IsEmpty() && record->activeVariantValid ? record->translated.usedSamplerMask & all : all;
+		if ( m_hBoundGS != GEOMETRY_SHADER_HANDLE_INVALID || !record ) return all;
+		if ( record->legacyBytecode.IsEmpty() ) return record->nativeSamplerMask & all;
+		return record->activeVariantValid ? record->translated.usedSamplerMask & all : all;
 	};
-	const uint32_t pixelSamplers = samplerMask( psRecord, 0xffff ), vertexSamplers = samplerMask( vsRecord, 0xf );
+	const uint32_t pixelSamplers = opaqueCaster ? 0u : samplerMask( psRecord, 0xffff ), vertexSamplers = samplerMask( vsRecord, 0xf );
 	const uint32_t sampledMask = pixelSamplers | ( vertexSamplers << 16 );
+	// Folded native variants retain reflection entries for disabled material samplers.
+	// A stale page binding on such a slot is not a lightmap read by this draw.
+	if ( highresMap && !shadowPass && !motionActive && psRecord && !psRecord->samplerRolesReady )
+		for ( unsigned sampler = 0; sampler < 16; ++sampler )
+			if ( ( pixelSamplers & ( 1u << sampler ) ) && m_ActiveSnapshot.fixed.textureEnabled[sampler] )
+			{
+				const TextureRecord *texture = FindTexture( m_BoundTextures[sampler] );
+				if ( texture && texture->highresPage != 0xffffffffu )
+				{
+					char reason[256];
+					V_snprintf( reason, sizeof(reason), "native lightmap shader %s sampler %u lacks explicit sampler-role metadata",
+						m_ActiveSnapshot.pixelShaderName.c_str(), sampler );
+					m_pDevice->Highres().OnNativeFailure( reason );
+					return;
+				}
+			}
 	if ( m_nPreparedSamplerMask != sampledMask )
 	{
 		m_PreparedSamplerTable.count = 0;
 		m_nPreparedSamplerMask = sampledMask;
+	}
+	// Resolve the scalar companion before ordinary texture-set reuse. CPU data is read
+	// through const spans, with the same semantic streams and physical addressing as IA.
+	SunReceiverCoordinatesDX12 sunCoordinates{};
+	if ( !highresMap )
+	{
+	SunReceiverDrawDX12 sunDraw;
+	sunDraw.indices = indices;
+	sunDraw.layout = &sourceLayout;
+	sunDraw.pixelShader = !shadowPass && psRecord && psRecord->lightingAbi ? psRecord : nullptr;
+	sunDraw.vertexLogical = m_ActiveSnapshot.vertexShaderName.c_str();
+	sunDraw.pixelLogical = m_ActiveSnapshot.pixelShaderName.c_str();
+	sunDraw.indexOffset = indexOffset;
+	sunDraw.primitive = primitive;
+	sunDraw.firstIndex = firstIndex;
+	sunDraw.indexCount = indexCount;
+	for ( unsigned slot = 0; slot < ARRAYSIZE( bindings ); ++slot )
+	{
+		sunDraw.streams[slot].buffer = bindings[slot].buffer;
+		sunDraw.streams[slot].byteOffset = bindings[slot].byteOffset;
+		sunDraw.streams[slot].firstVertex = bindings[slot].firstVertex;
+		sunDraw.streams[slot].vertexCount = bindings[slot].vertexCount;
+		sunDraw.streams[slot].repetitions = bindings[slot].repetitions;
+	}
+	if ( !m_pDevice->Lighting().ResolveSunReceiverDraw( sunDraw, sunCoordinates ) )
+		return;
+	}
+	const bool sunCoordinateInput = sunCoordinates.count != 0;
+	size_t sunCoordinateBytes = 0;
+	if ( sunCoordinateInput )
+	{
+		// Upload a prefix indexed by the original IB values, never by a rebased firstVertex.
+		const auto rejectCoordinates = [&]()
+		{
+			m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+		};
+		if ( !sunCoordinates.values || sunCoordinates.count > UINT_MAX / ( 2 * sizeof( float ) ) )
+		{
+			rejectCoordinates();
+			return;
+		}
+		sunCoordinateBytes = size_t( sunCoordinates.count ) * 2 * sizeof( float );
+		if ( indexed )
+		{
+			const CIndexBufferDX12 &sourceIndices = *indices;
+			const auto data = sourceIndices.Data();
+			const uint32_t indexSize = sourceIndices.IndexSize();
+			if ( ( indexSize != 2 && indexSize != 4 ) || indexOffset > data.size() ||
+			     uint64_t( firstIndex ) + uint32_t( indexCount ) > ( data.size() - indexOffset ) / indexSize )
+			{
+				rejectCoordinates();
+				return;
+			}
+			const unsigned char *source = data.data() + indexOffset + size_t( firstIndex ) * indexSize;
+			const uint64_t vertexEnd = uint64_t( bindings[0].firstVertex ) + bindings[0].vertexCount;
+			for ( int i = 0; i < indexCount; ++i, source += indexSize )
+			{
+				uint32_t vertex = 0;
+				if ( indexSize == 2 )
+				{
+					uint16_t value;
+					memcpy( &value, source, sizeof( value ) );
+					vertex = value;
+				}
+				else
+					memcpy( &vertex, source, sizeof( vertex ) );
+				if ( vertex >= sunCoordinates.count || vertex < bindings[0].firstVertex || vertex >= vertexEnd )
+				{
+					rejectCoordinates();
+					return;
+				}
+			}
+		}
+		else if ( uint32_t( firstIndex ) < bindings[0].firstVertex || uint64_t( firstIndex ) + uint32_t( indexCount ) > sunCoordinates.count )
+		{
+			rejectCoordinates();
+			return;
+		}
 	}
 	// Persistent binding input: only slots sampled by the previous draw but not this one need resetting.
 	CPipelineCacheDX12::BindingInputDX12 &bindingInput = m_DrawBindingInput;
@@ -916,13 +1289,21 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	if ( bindingInput.samplerTable.count != 32 )
 	{
+		// Sampler exhaustion is fence pressure, not a permanent lighting failure. The
+		// active view/pass and resolved carrier are CPU-owned across Submit; their
+		// descriptors, uploads and target bindings are prepared below for the new fence.
 		if ( !m_pDevice->Submit( true ) )
 			return;
+		m_Pipeline.InvalidateGraphicsBindings();
+		textureSetReused = false;
+		bindingInput.texturesUnchanged = false;
 		m_Pipeline.Reclaim( m_pDevice->CompletedFenceValue() );
 		prepareTextures();
 		bindingInput.samplerTable = m_Pipeline.PrepareSamplerTable( bindingInput.samplerDescs, bindingInput.samplerIds, m_pDevice->NextFenceValue() );
 		if ( bindingInput.samplerTable.count != 32 )
 		{
+			if ( shadowPass || m_pDevice->Lighting().ReceiverFeatureGeneration() )
+				m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 			Warning( "ShaderAPIDX12: sampler descriptors unavailable after completion\n" );
 			return;
 		}
@@ -951,7 +1332,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	RenderTargetBindingDX12 target; // PrepareRenderTargets assigns it before any use
 	{
 		ZoneNamedN( drawTargets, "DX12 DrawTargets", DX12_DRAW_ZONES_ACTIVE );
-		if ( !( motionActive ? PrepareMotionBinding( target ) : PrepareRenderTargets( target ) ) || ( !target.colorCount && !target.depth ) )
+		if ( !( shadowPass ? m_pDevice->Lighting().PrepareShadowDraw( target, m_PrivateShadowViewport, m_PrivateShadowScissor ) : motionActive ? PrepareMotionBinding( target ) : PrepareRenderTargets( target ) ) || ( !target.colorCount && !target.depth ) )
 		{
 			static unsigned invalidTarget = 0;
 			if ( invalidTarget++ < 6 )
@@ -978,6 +1359,11 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		scissor.top = MAX( 0L, static_cast<LONG>( m_FastIntParams[1] ) );
 		scissor.right = MAX( scissor.left, MIN( static_cast<LONG>( target.width ), static_cast<LONG>( m_FastIntParams[2] ) ) );
 		scissor.bottom = MAX( scissor.top, MIN( static_cast<LONG>( target.height ), static_cast<LONG>( m_FastIntParams[3] ) ) );
+	}
+	if ( shadowPass )
+	{
+		viewport = m_PrivateShadowViewport;
+		scissor = m_PrivateShadowScissor;
 	}
 	m_Pipeline.BindDrawState( list, viewport, scissor, retireFence );
 	float drawClipPlanes[6][4];
@@ -1018,7 +1404,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	// Pipeline-state memo: a mesh draw whose pipeline inputs equal the previous successful mesh draw in
 	// this recording reuses its shader records, translated variants, input layout and PSO. The slow path
 	// clears the memo before it can switch any record's active variant and stores it only on success.
-	const uint8_t meshStreamFlags = static_cast<uint8_t>( meshStreams ? ( ( bindings[1].buffer ? 1 : 0 ) | ( bindings[2].buffer ? 2 : 0 ) | ( flexWrinkle ? 4 : 0 ) ) : 0 );
+	// Bit 3 distinguishes the SUN-only IA override in both pipeline memos and input-layout caches.
+	const uint8_t meshStreamFlags = static_cast<uint8_t>( ( meshStreams ? ( ( bindings[1].buffer ? 1 : 0 ) | ( bindings[2].buffer ? 2 : 0 ) | ( flexWrinkle ? 4 : 0 ) ) : 0 ) | ( sunCoordinateInput ? 8 : 0 ) );
 	// Texture dimensions (not identities) are the only texture inputs of pipeline selection.
 	ShaderRasterStateDX12 raster{};
 	uint32_t textureTypesPacked = 0;
@@ -1066,7 +1453,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		signature.instanceCount = bindings[0].repetitions;
 		signature.primitive = static_cast<uint32_t>( primitive );
 		signature.streamFlags = meshStreamFlags;
-		signature.motionPass = motionActive ? 1 : 0;
+		signature.motionPass = ( motionActive ? 1u : 0u ) | ( highresMap ? 2u : 0u );
 		signature.clipMask = drawClipMask;
 		memcpy( signature.colorFormats, target.colorFormats, sizeof( signature.colorFormats ) );
 		signature.depthFormat = target.depthFormat;
@@ -1106,7 +1493,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			signature.depthDecal = config.m_DepthBias_Decal;
 			signature.depthNormal = config.m_DepthBias_Normal;
 		}
-		memoSlot = &m_PipelineMemos[Mix32HashFunctor()( static_cast<uint32_t>( signature.snapshot ) * 0x9E3779B1u ^ static_cast<uint32_t>( signature.vs >> 4 ) ^ static_cast<uint32_t>( signature.ps >> 4 ) * 31u ^ static_cast<uint32_t>( signature.textureTypes ) ^ static_cast<uint32_t>( signature.format ) ) & ( ARRAYSIZE( m_PipelineMemos ) - 1 )];
+		memoSlot = &m_PipelineMemos[Mix32HashFunctor()( static_cast<uint32_t>( signature.snapshot ) * 0x9E3779B1u ^ static_cast<uint32_t>( signature.vs >> 4 ) ^ static_cast<uint32_t>( signature.ps >> 4 ) * 31u ^ static_cast<uint32_t>( signature.textureTypes ) ^ static_cast<uint32_t>( signature.format ) ^ ( uint32_t( signature.streamFlags ) << 24 ) ) & ( ARRAYSIZE( m_PipelineMemos ) - 1 )];
 		// Records may have switched translated variant since the entry was stored; require the stored ones.
 		// A shader alternating between translated variants (e.g. fog or clip state) still hits: the stored
 		// variants are reactivated, which is exactly what the slow path's EnsureTranslated would do.
@@ -1137,9 +1524,34 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		raster.comparisonPixelSamplers = m_ActiveSnapshot.comparisonSamplerMask;
 		raster.fillMode = m_bRasterOverride ? ( m_RasterState.m_FillMode == SHADER_FILL_WIREFRAME ? 2 : 3 ) : ( m_ActiveSnapshot.polyFront == SHADER_POLYMODE_POINT ? 1 : ( m_ActiveSnapshot.polyFront == SHADER_POLYMODE_LINE ? 2 : 3 ) );
 		raster.primitiveType = primitive == MATERIAL_POINTS ? 1 : ( primitive == MATERIAL_LINES ? 2 : ( primitive == MATERIAL_LINE_STRIP ? 3 : ( primitive == MATERIAL_TRIANGLE_STRIP ? 5 : 4 ) ) );
-		depthOnly = !motionActive && target.depth && !( m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites ) && !( m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites ) && !m_ActiveSnapshot.alphaTest;
+		depthOnly = !motionActive && target.depth && ( shadowPass || ( !( m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites ) && !( m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites ) ) ) && !m_ActiveSnapshot.alphaTest;
+		if ( depthOnly )
+			psRecord = nullptr;
 		generatedVS = !vsRecord;
 		generatedPS = !psRecord && !depthOnly;
+		uint32_t fixedHighresMask = 0;
+		if ( highresMap && !shadowPass && !motionActive && generatedPS )
+		{
+			const FixedFunctionStateDX12 &fixed = m_ActiveSnapshot.fixed;
+			const unsigned count = fixed.customPipe ? unsigned( clamp( fixed.texCoordCount, 0, 16 ) ) : 16u;
+			for ( unsigned stage = 0; stage < count; ++stage )
+			{
+				const bool rgb = !fixed.customPipe || ( fixed.colorOp[stage] != SHADER_TEXOP_DISABLE &&
+					( fixed.colorArg1[stage] == SHADER_TEXARG_TEXTURE || fixed.colorArg2[stage] == SHADER_TEXARG_TEXTURE ) );
+				if ( !fixed.textureEnabled[stage] || !rgb ) continue;
+				if ( stage < 4 && ( fixed.drawFlags & ( SHADER_DRAW_LIGHTMAP_TEXCOORD0 << stage ) ) )
+					fixedHighresMask |= 1u << stage;
+				else
+				{
+					const TextureRecord *texture = FindTexture( m_BoundTextures[stage] );
+					if ( texture && texture->highresPage != 0xffffffffu )
+					{
+						m_pDevice->Highres().OnNativeFailure( "fixed lightmap RGB stage lacks an explicit lightmap coordinate role" );
+						return;
+					}
+				}
+			}
+		}
 		auto fixedShader = [&]( bool pixel ) -> ShaderRecordDX12 *
 		{
 			uint32_t textureTypes = 0;
@@ -1160,17 +1572,19 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				linkage ^= static_cast<uint64_t>( m_ShadeMode );
 				linkage *= 1099511628211ull;
 			}
-			const FixedShaderKey key{ m_hActiveSnapshotId, format, pixel, textureTypes, pixel ? linkage : 0 };
+			const FixedShaderKey key{ m_hActiveSnapshotId, format, pixel, textureTypes, fixedHighresMask, pixel ? linkage : 0 };
 			const uint32_t found = m_FixedShaders.Find( key );
 			if ( found != m_FixedShaders.InvalidIndex() )
 				return m_FixedShaders[found];
 			FixedFunctionStateDX12 state = m_ActiveSnapshot.fixed;
+			state.highresSamplerMask = fixedHighresMask;
 			state.format = format;
 			state.flatShade = m_ShadeMode == SHADER_FLAT;
 			memcpy( state.textureTypes, raster.textureTypes, sizeof( state.textureTypes ) );
 			ShaderRecordDX12 *pRecord = CreateFixedFunctionShaderDX12( m_pDevice, state, pixel, vsRecord ? &vsRecord->translated.outputLinkage : nullptr );
 			if ( !pRecord )
 			{
+				if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "fixed highres shader compilation failed" );
 				Warning( "ShaderAPIDX12: unable to compile generated %s shader\n", pixel ? "pixel" : "vertex" );
 				return nullptr;
 			}
@@ -1181,7 +1595,10 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		{
 			vsRecord = fixedShader( false );
 			if ( !vsRecord )
+			{
+				if ( sunCoordinateInput ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 				return;
+			}
 		}
 		const bool needsTranslationKey = ( vsRecord && !vsRecord->legacyBytecode.IsEmpty() ) || ( psRecord && !psRecord->legacyBytecode.IsEmpty() );
 		uint64_t translationStateKey = 0;
@@ -1202,9 +1619,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			}
 		}
 		if ( !EnsureTranslated( vsRecord, false, sourceLayout, nullptr, 0, 0, raster, translationStateKey, m_pDevice->Signer() ) )
+		{
+			if ( sunCoordinateInput ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
+		}
 		if ( !ReflectRecordInputsDX12( vsRecord ) )
+		{
+			if ( sunCoordinateInput || m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
+		}
 		if ( m_hBoundGS != GEOMETRY_SHADER_HANDLE_INVALID )
 		{
 			const ShaderRecordDX12 *geometry = reinterpret_cast<ShaderRecordDX12 *>( m_hBoundGS );
@@ -1275,7 +1698,11 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				return;
 		}
 		if ( !ReflectRecordInputsDX12( psRecord ) )
+		{
+			if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres participating shader reflection failed" );
+			else if ( m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
+		}
 		// A native record's space-1 cbuffers must be engine blocks with the backend layout or material blocks
 		// written through the bridge with the same layout hash; anything else rejects the draw before PSO creation.
 		auto validateNative = [&]( ShaderRecordDX12 *record, bool pixel ) -> bool
@@ -1299,6 +1726,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 					}
 				if ( engine )
 				{
+					if ( binding.name == "DX12ComboFoldPS" || binding.name == "DX12ComboFoldVS" )
+					{
+						const NamedShaderComboDX12 *combo = m_BoundNamedCombos[pixel ? 1 : 0];
+						if ( !combo || !combo->folded || !( pixel ? m_bBoundPixelShaderIsNamed : m_bBoundVertexShaderIsNamed ) )
+						{
+							Warning( "ShaderAPIDX12: shader %s reflects a fold cbuffer without an original combo payload\n", logical );
+							return false;
+						}
+					}
 					bool matches = engine->stage == ( pixel ? dx12native::kStagePixel : dx12native::kStageVertex ) && engine->shaderRegister == binding.shaderRegister && engine->byteSize == binding.byteSize && engine->memberCount == static_cast<uint32_t>( binding.members.Count() );
 					for ( uint32_t m = 0; matches && m < engine->memberCount; ++m )
 						matches = binding.members[m].name == engine->members[m].name && binding.members[m].offset == engine->members[m].offset && binding.members[m].byteSize == engine->members[m].size;
@@ -1323,7 +1759,32 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			return true;
 		};
 		if ( !validateNative( vsRecord, false ) || !validateNative( psRecord, true ) )
+		{
+			if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres native material constant ABI mismatch" );
+			else if ( m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
+		}
+	}
+	if ( sunCoordinateInput )
+	{
+		// A stale shader must not silently ignore the proven coordinates, including on memo hits.
+		unsigned carrierInputs = 0;
+		bool compatible = vsRecord && vsRecord->inputSignatureReady && vsRecord->inputSignature.Count() <= MAX_VERTEX_INPUTS_DX12;
+		if ( compatible )
+			for ( const ShaderInputElementDX12 &input : vsRecord->inputSignature )
+				if ( !V_stricmp( input.semantic.Get(), "SUNVISIBILITY" ) && input.semanticIndex == 0 )
+				{
+					++carrierInputs;
+					compatible = compatible && input.format == DXGI_FORMAT_R32G32B32A32_FLOAT;
+				}
+		for ( uint32_t i = 0; i < sourceLayout.inputCount; ++i )
+			if ( !V_stricmp( sourceLayout.inputs[i].semantic, "SUNVISIBILITY" ) && sourceLayout.inputs[i].semanticIndex == 0 )
+				compatible = false; // This semantic is owned exclusively by the backend, not engine streams.
+		if ( !compatible || carrierInputs != 1 )
+		{
+			m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+			return;
+		}
 	}
 	const auto constants = [&]( ShaderRecordDX12 *record, bool pixel, bool generated ) -> bool
 	{
@@ -1679,6 +2140,20 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				bindingInput.nativeVersions[9 + slot] = m_NativePSBlocks[slot].version;
 			}
 	}
+	// Payload identity is per original key, not per projected shader record. The existing
+	// engine upload ring reuses these bytes until the entry or submission fence changes.
+	for ( unsigned stage = 0; stage < 2; ++stage )
+	{
+		const NamedShaderComboDX12 *combo = m_BoundNamedCombos[stage];
+		const bool named = stage ? m_bBoundPixelShaderIsNamed : m_bBoundVertexShaderIsNamed;
+		if ( motionActive || !named || !combo || !combo->folded || !( stage ? nativePS : nativeVS ) )
+			continue;
+		const unsigned slot = stage ? 10 : 3;
+		bindingInput.nativeData[slot] = combo->projection.payload;
+		bindingInput.nativeSizes[slot] = sizeof( dx12native::DX12ComboFold );
+		// Separate from material-block versions at the same b-register.
+		bindingInput.nativeVersions[slot] = ( uint64_t( 1 ) << 63 ) | combo->version;
+	}
 	bindingInput.constantData[3] = &m_PreviousVertexExtension;
 	bindingInput.constantSizes[3] = sizeof( m_PreviousVertexExtension );
 	bindingInput.constantData[7] = &m_PreviousPixelExtension;
@@ -1692,10 +2167,31 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		bindingInput.constantVersions[6 + bank] = m_ExtensionVersions[bank];
 	bindingInput.vertexTextures = vertexSamplers != 0;
 	bindingInput.geometryStage = geometryStage;
+	bindingInput.lightingVisibilityRequired = !highresMap;
+	if ( highresMap && !shadowPass && psRecord && psRecord->sunVisibilityAbi )
+	{
+		m_pDevice->Highres().OnNativeFailure( "new highres receiver shader retains the abandoned sun carrier" );
+		return;
+	}
+	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && psRecord && psRecord->lightingAbi, bindingInput ) )
+		return;
+	bindingInput.highresAbi = !shadowPass && psRecord && psRecord->highresAbi && psRecord->lightmapSamplerMask != 0;
+	bindingInput.highresTable = {};
+	bindingInput.highresConstants = bindingInput.highresFailure = 0;
+	if ( bindingInput.highresAbi &&
+		!m_pDevice->Highres().PrepareDraw( psRecord->lightmapSamplerMask, m_Matrices[MATERIAL_MODEL].Base(), bindingInput ) )
+	{
+		Warning( "Highres draw rejected: vertex=%s pixel=%s samplerMask=0x%x shadow=%u motion=%u\n",
+			m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.pixelShaderName.c_str(),
+			psRecord->lightmapSamplerMask, unsigned(shadowPass), unsigned(motionActive) );
+		return;
+	}
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 PrepareBindings", DX12_DRAW_ZONES_ACTIVE );
 		if ( !m_Pipeline.PrepareBindings( list, bindingInput ) )
 		{
+			if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres draw descriptor allocation failed" );
+			else if ( shadowPass || bindingInput.lightingAbi ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 			Warning( "ShaderAPIDX12: binding descriptors unavailable\n" );
 			return;
 		}
@@ -1713,7 +2209,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	{
 		ZoneNamedN( pipelineSetup, "DX12 PipelineSetup", DX12_DRAW_ZONES_ACTIVE );
 		ShaderRecordDX12 *vs = vsRecord;
-		ShaderRecordDX12 *ps = psRecord;
+		ShaderRecordDX12 *ps = depthOnly ? nullptr : psRecord;
 		D3D12_INPUT_ELEMENT_DESC elements[MAX_VERTEX_INPUTS_DX12];
 		if ( vs->inputSignature.Count() > static_cast<int>( ARRAYSIZE( elements ) ) )
 			return;
@@ -1760,7 +2256,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				const unsigned int field = required.semantic == "POSITION" ? VERTEX_POSITION : ( required.semantic == "NORMAL" ? VERTEX_NORMAL : ( required.semantic == "COLOR" ? ( required.semanticIndex == 0 ? VERTEX_COLOR : VERTEX_SPECULAR ) : ( required.semantic == "BLENDINDICES" ? VERTEX_BONE_INDEX : 0 ) ) );
 				if ( ( field & m_nUnusedVertexFields ) || ( required.semantic == "TEXCOORD" && required.semanticIndex < ARRAYSIZE( m_UnusedTextureCoordinates ) && m_UnusedTextureCoordinates[required.semanticIndex] ) )
 					provided = nullptr;
-				if ( provided )
+				if ( !V_stricmp( required.semantic.Get(), "SUNVISIBILITY" ) && required.semanticIndex == 0 )
+				{
+					// float2 IA conversion supplies z=0,w=1; the zero float4 fallback supplies w=0.
+					element.Format = sunCoordinateInput ? DXGI_FORMAT_R32G32_FLOAT : required.format;
+					element.InputSlot = sunCoordinateInput ? 17 : 16;
+					element.AlignedByteOffset = 0;
+					zeroInput = zeroInput || !sunCoordinateInput;
+				}
+				else if ( provided )
 				{
 					element.Format = provided->format;
 					element.InputSlot = provided->inputSlot;
@@ -1804,6 +2308,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		}
 		D3D12_INPUT_LAYOUT_DESC input{ inputElements, inputCount };
 		PipelineKeyDX12 key{};
+		key.lightingAbi = bindingInput.lightingAbi;
+		key.highresAbi = bindingInput.highresAbi;
 		key.vs = vs->identity;
 		key.ps = ps ? ps->identity : 0;
 		key.vsVariant = vs->activeVariantKey;
@@ -1830,7 +2336,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		key.depthTest = m_bOverrideDepthEnable ? m_bOverrideDepthValue : m_ActiveSnapshot.depthTest;
 		key.depthWrite = m_ActiveSnapshot.depthWrite;
 		key.depthFunction = m_bForceDepthEquals ? SHADER_DEPTHFUNC_EQUAL : m_ActiveSnapshot.depthFunction;
-		const bool reverseDepth = m_pShaderUtil && m_pShaderUtil->GetConfig().bReverseDepth;
+		const bool reverseDepth = !shadowPass && m_pShaderUtil && m_pShaderUtil->GetConfig().bReverseDepth;
 		if ( reverseDepth )
 		{
 			switch ( key.depthFunction )
@@ -1855,24 +2361,48 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		key.frontCounterClockwise = m_CullMode == MATERIAL_CULLMODE_CW;
 		key.wireframe = raster.fillMode == 2;
 		key.scissor = m_bRasterOverride && m_RasterState.m_bScissorEnable;
-		static const MaterialSystem_Config_t defaultConfig;
-		const MaterialSystem_Config_t &config = m_pShaderUtil ? m_pShaderUtil->GetConfig() : defaultConfig;
-		const PolygonOffsetMode_t offset = m_ActiveSnapshot.polygonOffset != SHADER_POLYOFFSET_DISABLE ? m_ActiveSnapshot.polygonOffset : ( m_bRasterOverride && m_RasterState.m_bDepthBias ? SHADER_POLYOFFSET_DECAL : SHADER_POLYOFFSET_DISABLE );
-		const float slope = offset == SHADER_POLYOFFSET_SHADOW_BIAS ? m_FastFloatParams[0] : ( offset == SHADER_POLYOFFSET_DECAL ? config.m_SlopeScaleDepthBias_Decal : config.m_SlopeScaleDepthBias_Normal );
-		const float depth = offset == SHADER_POLYOFFSET_SHADOW_BIAS ? m_FastFloatParams[1] : ( offset == SHADER_POLYOFFSET_DECAL ? config.m_DepthBias_Decal : config.m_DepthBias_Normal );
-		const float direction = reverseDepth ? -1.f : 1.f;
-		// DX9 (ApplyZBias) feeds decal/normal biases as the reciprocal of the configured values but passes the
-		// shadow-map factors through unchanged. D3D12's integer depth bias is in units of 1/2^24 for a 24-bit depth buffer.
-		const bool shadowBias = offset == SHADER_POLYOFFSET_SHADOW_BIAS;
-		const float slopeFactor = slope != 0.f ? ( shadowBias ? slope : 1.f / slope ) : 0.f;
-		const float depthFactor = depth != 0.f ? ( shadowBias ? depth : 1.f / depth ) : 0.f;
-		key.slopeScaledDepthBias = direction * slopeFactor;
-		key.depthBiasValue = static_cast<int>( clamp( roundf( direction * 16777216.f * depthFactor ), -16777216.f, 16777216.f ) );
+		if ( !shadowPass )
+		{
+			static const MaterialSystem_Config_t defaultConfig;
+			const MaterialSystem_Config_t &config = m_pShaderUtil ? m_pShaderUtil->GetConfig() : defaultConfig;
+			const PolygonOffsetMode_t offset = m_ActiveSnapshot.polygonOffset != SHADER_POLYOFFSET_DISABLE ? m_ActiveSnapshot.polygonOffset : ( m_bRasterOverride && m_RasterState.m_bDepthBias ? SHADER_POLYOFFSET_DECAL : SHADER_POLYOFFSET_DISABLE );
+			const float slope = offset == SHADER_POLYOFFSET_SHADOW_BIAS ? m_FastFloatParams[0] : ( offset == SHADER_POLYOFFSET_DECAL ? config.m_SlopeScaleDepthBias_Decal : config.m_SlopeScaleDepthBias_Normal );
+			const float depth = offset == SHADER_POLYOFFSET_SHADOW_BIAS ? m_FastFloatParams[1] : ( offset == SHADER_POLYOFFSET_DECAL ? config.m_DepthBias_Decal : config.m_DepthBias_Normal );
+			const float direction = reverseDepth ? -1.f : 1.f;
+			// Ordinary D24 depth retains DX9's reciprocal decal/normal bias convention.
+			const bool shadowBias = offset == SHADER_POLYOFFSET_SHADOW_BIAS;
+			const float slopeFactor = slope != 0.f ? ( shadowBias ? slope : 1.f / slope ) : 0.f;
+			const float depthFactor = depth != 0.f ? ( shadowBias ? depth : 1.f / depth ) : 0.f;
+			key.slopeScaledDepthBias = direction * slopeFactor;
+			key.depthBiasValue = static_cast<int>( clamp( roundf( direction * 16777216.f * depthFactor ), -16777216.f, 16777216.f ) );
+		}
+		if ( shadowPass )
+		{
+			// Double-sided: world brushes expose only player-visible faces (NODRAW tops on roofs/ledges), so the
+			// light often sees nothing but back faces. Culling them lets the sun leak into covered interiors.
+			key.culling = false;
+			key.colorCount = 0;
+			key.color = DXGI_FORMAT_UNKNOWN;
+			memset( key.colorFormats, 0, sizeof( key.colorFormats ) );
+			key.depth = DXGI_FORMAT_D32_FLOAT;
+			key.samples = 1;
+			key.sampleQuality = 0;
+			key.depthTest = key.depthWrite = true;
+			key.depthFunction = SHADER_DEPTHFUNC_NEAREROREQUAL;
+			key.depthBiasValue = DX12_SHADOW_RASTER_DEPTH_BIAS;
+			key.slopeScaledDepthBias = DX12_SHADOW_RASTER_SLOPE_BIAS;
+		}
 		key.colorWrites = m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites;
 		key.alphaWrites = m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites;
 		key.alphaToCoverage = m_bAlphaToCoverage || m_ActiveSnapshot.alphaToCoverage;
 		key.stencil = m_bStencilEnabled || m_ActiveSnapshot.stencil;
 		key.raster = ( key.alphaToCoverage ? 1 : 0 ) | ( key.stencil ? 2 : 0 ) | ( m_ActiveSnapshot.alphaTest ? 4 : 0 );
+		if ( shadowPass )
+		{
+			key.colorWrites = key.alphaWrites = key.alphaToCoverage = key.stencil = false;
+			key.blend = 0;
+			key.raster = m_ActiveSnapshot.alphaTest ? 4 : 0;
+		}
 		if ( m_bStencilEnabled )
 		{
 			key.stencilFunction = m_StencilCompare;
@@ -1939,6 +2469,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	if ( !pipelineBound )
 	{
+		if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres draw pipeline unavailable" );
+		else if ( shadowPass || bindingInput.lightingAbi ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 		static unsigned invalidShaders = 0;
 		if ( invalidShaders++ < 10 )
 			Warning( "ShaderAPIDX12: shaders unavailable vs=%p ps=%p materialVS=%s materialPS=%s\n", reinterpret_cast<void *>( m_hBoundVS ), reinterpret_cast<void *>( m_hBoundPS ), m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.pixelShaderName.c_str() );
@@ -1946,8 +2478,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 GeometryUploads", DX12_DRAW_ZONES_ACTIVE );
-		// Only views [0,vertexViewCount) and the zero stream are read; unused slots below the count are zeroed.
-		D3D12_VERTEX_BUFFER_VIEW vertexViews[17];
+		// Engine-prefix gaps are zeroed independently of the two reserved backend streams.
+		D3D12_VERTEX_BUFFER_VIEW vertexViews[18];
 		UINT vertexViewCount = 0;
 		for ( unsigned slot = 0; slot < ARRAYSIZE( bindings ); ++slot )
 			if ( bindings[slot].buffer )
@@ -1977,13 +2509,26 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			static constexpr uint32_t zero[4]{};
 			D3D12_GPU_VIRTUAL_ADDRESS address = 0;
 			if ( !m_Pipeline.UploadTransient( zero, sizeof( zero ), sizeof( zero ), 16, retireFence, address ) )
+			{
+				if ( sunCoordinateInput ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 				return;
+			}
 			vertexViews[16] = { address, sizeof( zero ), 0 };
+		}
+		if ( sunCoordinateInput )
+		{
+			D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+			if ( !m_Pipeline.UploadTransient( sunCoordinates.values, sunCoordinateBytes, sunCoordinateBytes, 16, retireFence, address ) )
+			{
+				m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
+				return;
+			}
+			vertexViews[17] = { address, static_cast<UINT>( sunCoordinateBytes ), 2 * sizeof( float ) };
 		}
 		{
 			ZoneNamedN( ___tracy_scoped_zone, "DX12 VertexBindings", DX12_DRAW_ZONES_ACTIVE );
-			// The input layout reads only supplied streams and the optional zero stream.
-			m_Pipeline.BindInputAssembler( list, vertexViews, vertexViewCount, zeroInput ? &vertexViews[16] : nullptr, iaTopology, retireFence );
+			// Reserved slots are bound separately so a slot-17 override cannot erase a slot-16 fallback.
+			m_Pipeline.BindInputAssembler( list, vertexViews, vertexViewCount, zeroInput ? &vertexViews[16] : nullptr, sunCoordinateInput ? &vertexViews[17] : nullptr, iaTopology, retireFence );
 		}
 	}
 	{
@@ -2546,6 +3091,7 @@ void CShaderAPIDX12::ResetNativeState()
 	m_hBoundVS = VERTEX_SHADER_HANDLE_INVALID;
 	m_hBoundGS = GEOMETRY_SHADER_HANDLE_INVALID;
 	m_hBoundPS = PIXEL_SHADER_HANDLE_INVALID;
+	m_BoundNamedCombos[0] = m_BoundNamedCombos[1] = nullptr;
 	m_hActiveSnapshotId = static_cast<StateSnapshot_t>( -1 );
 	m_bForceDepthEquals = m_bOverrideDepthEnable = false;
 	m_bOverrideDepthValue = true;
@@ -3547,6 +4093,7 @@ void CShaderAPIDX12::ShutdownDeviceResources()
 	ProcessPendingTextureDeletes();
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 		m_pDevice->Submit( true );
+	if ( m_pDevice ) m_pDevice->Lighting().Shutdown();
 	ReleaseTextureDeviceResources();
 	for ( OcclusionQueryDX12 *query : m_OcclusionQueries )
 		delete query;
@@ -3591,6 +4138,7 @@ bool CShaderAPIDX12::InitializeDeviceResources( CShaderDeviceDX12 *pDevice )
 		ShutdownDeviceResources();
 		return false;
 	}
+	pDevice->Lighting().Initialize( pDevice, this );
 	SetShaderPrecacheAccepting( true );
 	return true;
 }
@@ -3605,6 +4153,7 @@ void CShaderAPIDX12::BindVertexShader( VertexShaderHandle_t shader )
 	m_hBoundVS = shader;
 	m_bNamedVertexShaderDirty = false;
 	m_bBoundVertexShaderIsNamed = false;
+	m_BoundNamedCombos[0] = nullptr;
 }
 
 void CShaderAPIDX12::BindGeometryShader( GeometryShaderHandle_t hGeometryShader )
@@ -3617,6 +4166,7 @@ void CShaderAPIDX12::BindPixelShader( PixelShaderHandle_t shader )
 	m_hBoundPS = shader;
 	m_bNamedPixelShaderDirty = false;
 	m_bBoundPixelShaderIsNamed = false;
+	m_BoundNamedCombos[1] = nullptr;
 }
 
 void CShaderAPIDX12::SetRasterState( const ShaderRasterState_t &state )
@@ -3920,6 +4470,7 @@ void CShaderAPIDX12::BeginPass( StateSnapshot_t snapshot )
 	{
 		m_hBoundVS = VERTEX_SHADER_HANDLE_INVALID;
 		m_bBoundVertexShaderIsNamed = m_bNamedVertexShaderDirty = false;
+		m_BoundNamedCombos[0] = nullptr;
 	}
 	else
 		m_bNamedVertexShaderDirty |= !m_bBoundVertexShaderIsNamed;
@@ -3927,6 +4478,7 @@ void CShaderAPIDX12::BeginPass( StateSnapshot_t snapshot )
 	{
 		m_hBoundPS = PIXEL_SHADER_HANDLE_INVALID;
 		m_bBoundPixelShaderIsNamed = m_bNamedPixelShaderDirty = false;
+		m_BoundNamedCombos[1] = nullptr;
 	}
 	else
 		m_bNamedPixelShaderDirty |= !m_bBoundPixelShaderIsNamed;
@@ -4456,11 +5008,21 @@ void CShaderAPIDX12::PurgeUnusedVertexAndPixelShaders()
 			it = m_NamedShaderCombos.NextHandle( it );
 			continue;
 		}
-		ShaderRecordDX12 *record = m_NamedShaderCombos[it];
-		const bool vertexBound = record && reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS ) == record;
-		const bool pixelBound = record && reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS ) == record;
-		RetireShaderPipelines( record );
-		delete record;
+		NamedShaderComboDX12 *combo = m_NamedShaderCombos[it];
+		ShaderRecordDX12 *record = combo ? combo->Record() : nullptr;
+		const bool vertexBound = combo && m_BoundNamedCombos[0] == combo;
+		const bool pixelBound = combo && m_BoundNamedCombos[1] == combo;
+		if ( combo && --combo->owner->references == 0 )
+		{
+			NamedShaderRecordDX12 *owner = combo->owner;
+			RetireShaderPipelines( record );
+			m_NamedShaderRecords.Remove( owner->key );
+			delete record;
+			delete owner;
+		}
+		if ( vertexBound ) m_BoundNamedCombos[0] = nullptr;
+		if ( pixelBound ) m_BoundNamedCombos[1] = nullptr;
+		delete combo;
 		it = m_NamedShaderCombos.RemoveAndAdvance( it );
 		if ( vertexBound )
 			m_bNamedVertexShaderDirty = !m_ActiveSnapshot.vertexShaderName.empty();
@@ -4547,6 +5109,12 @@ void CShaderAPIDX12::SetFullScreenTextureHandle( ShaderAPITextureHandle_t h )
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetIntRenderingParameter( int parm_number, int value )
 {
+	if ( m_pDevice && m_pDevice->Lighting().ShadowPassActive() &&
+		( parm_number == INT_RENDERPARM_DX12_MOTION_PASS || parm_number == INT_RENDERPARM_DX12_MOTION_OBJECT ||
+		  parm_number == INT_RENDERPARM_DX12_UPSCALE_MODE || parm_number == INT_RENDERPARM_DX12_UPSCALE_DISPATCH ||
+		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_VIEW || parm_number == INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH ||
+		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_FRAME ) )
+		return;
 	if ( parm_number == INT_RENDERPARM_DX12_MOTION_STATUS || parm_number == INT_RENDERPARM_DX12_UPSCALE_STATUS || parm_number == INT_RENDERPARM_DX12_NR_STATUS )
 		return;
 	if ( parm_number >= 0 && parm_number < (int)ARRAYSIZE( m_RenderingInts ) )

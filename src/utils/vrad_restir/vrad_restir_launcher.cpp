@@ -31,51 +31,32 @@ int main( int argc, char *argv[] )
 	const char *pDLLName = "vrad_restir_dll.dll";
 	CommandLine()->CreateCmdLine( argc, argv );
 
-	// Retain the original launcher contract: -both is replaced in-place for
-	// pass 0 and pass 1, and each pass loads/unloads the DLL independently.
-	int both_arg = 0;
-	for ( int arg = 1; arg < argc; ++arg )
+	// The DLL owns both-mode execution: it can also discover converted inputs after loading the BSP.
+	CSysModule *pModule = Sys_LoadModule( pDLLName );
+	if ( !pModule )
 	{
-		if ( Q_stricmp( argv[arg], "-both" ) == 0 )
-			both_arg = arg;
+		printf( "vrad_restir_launcher error: can't load %s\n%s", pDLLName, GetLastErrorString() );
+		return 1;
 	}
 
-	int returnValue = 0;
-	for ( int mode = 0; mode < 2; ++mode )
+	CreateInterfaceFn fn = Sys_GetFactory( pModule );
+	if ( !fn )
 	{
-		if ( mode && !both_arg )
-			continue;
-
-		CSysModule *pModule = Sys_LoadModule( pDLLName );
-		if ( !pModule )
-		{
-			printf( "vrad_restir_launcher error: can't load %s\n%s", pDLLName, GetLastErrorString() );
-			return 1;
-		}
-
-		CreateInterfaceFn fn = Sys_GetFactory( pModule );
-		if ( !fn )
-		{
-			printf( "vrad_restir_launcher error: can't get factory from %s\n", pDLLName );
-			Sys_UnloadModule( pModule );
-			return 2;
-		}
-
-		int retCode = 0;
-		IVRadDLL *pDLL = (IVRadDLL *)fn( VRAD_INTERFACE_VERSION, &retCode );
-		if ( !pDLL )
-		{
-			printf( "vrad_restir_launcher error: can't get IVRadDLL interface from %s\n", pDLLName );
-			Sys_UnloadModule( pModule );
-			return 3;
-		}
-
-		// argv strings are contiguous; "-both" is exactly 5 characters, so write only
-		// that many (vrad_launcher.cpp:138 strcpy of a 4-character token is also safe).
-		if ( both_arg )
-			Q_strncpy( argv[both_arg], mode ? "-hdr" : "-ldr", 6 );
-		returnValue = pDLL->main( argc, argv );
+		printf( "vrad_restir_launcher error: can't get factory from %s\n", pDLLName );
 		Sys_UnloadModule( pModule );
+		return 2;
 	}
+
+	int retCode = 0;
+	IVRadDLL *pDLL = (IVRadDLL *)fn( VRAD_INTERFACE_VERSION, &retCode );
+	if ( !pDLL )
+	{
+		printf( "vrad_restir_launcher error: can't get IVRadDLL interface from %s\n", pDLLName );
+		Sys_UnloadModule( pModule );
+		return 3;
+	}
+
+	const int returnValue = pDLL->main( argc, argv );
+	Sys_UnloadModule( pModule );
 	return returnValue;
 }

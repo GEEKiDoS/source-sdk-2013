@@ -49,6 +49,7 @@ public:
 
 	void SetDisplayTitle( bool display );
 	void SetStartDark( bool startdark );
+	void RefreshShadowMapTransmitReady();
 
 	bool IsColdWorld( void );
 
@@ -69,6 +70,7 @@ private:
 	// start flags
 	CNetworkVar( bool, m_bStartDark );
 	CNetworkVar( bool, m_bColdWorld );
+	CNetworkVar( bool, m_bShadowMapTransmitReady );
 	bool m_bDisplayTitle;
 };
 

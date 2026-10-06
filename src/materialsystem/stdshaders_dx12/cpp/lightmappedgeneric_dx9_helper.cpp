@@ -12,6 +12,8 @@
 #include "BaseVSShaderDX12.h"
 #include "commandbuilder.h"
 #include "convar.h"
+#include "tier1/interface.h"
+#include "shaderapi/ishaderapidx12highres.h"
 #include "lightmappedgeneric_vs51.inc"
 #include "lightmappedgeneric_ps51.inc"
 
@@ -26,6 +28,85 @@ ConVar r_lightmap_bicubic( "r_lightmap_bicubic", "0", FCVAR_NONE, "Enable bi-cub
 
 extern ConVar r_flashlight_version2;
 
+IShaderAPIDX12Lighting *DX12ShadowmapLighting()
+{
+	// Function-local static initialization is synchronized and shared across this DLL.
+	static IShaderAPIDX12Lighting *lighting = []() -> IShaderAPIDX12Lighting *
+	{
+		CreateInterfaceFn factory = Sys_GetFactory( "shaderapidx12" );
+		return factory ? static_cast<IShaderAPIDX12Lighting *>( factory( SHADERAPIDX12_LIGHTING_INTERFACE_VERSION, NULL ) ) : NULL;
+	}();
+	return lighting;
+}
+bool DX12HighresMap( uint64 *nativeGeneration )
+{
+	static IShaderAPIDX12HighresLightmaps *highres = []() -> IShaderAPIDX12HighresLightmaps *
+	{
+		CreateInterfaceFn factory = Sys_GetFactory( "shaderapidx12" );
+		return factory ? static_cast<IShaderAPIDX12HighresLightmaps *>( factory( SHADERAPIDX12_HIGHRES_INTERFACE_VERSION, NULL ) ) : NULL;
+	}();
+	DX12HighresMapStatus status = {};
+	if ( highres ) highres->GetStatus( status, NULL, 0 );
+	if ( nativeGeneration ) *nativeGeneration = status.nativeMapGeneration;
+	return status.state == DX12_HIGHRES_PENDING || status.state == DX12_HIGHRES_READY || status.state == DX12_HIGHRES_REJECTED;
+}
+
+void DX12RejectUnsupportedLitShader( const char *shaderName )
+{
+	IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
+	if ( lighting )
+		lighting->RejectUnsupportedLitShader( shaderName );
+}
+
+bool DX12ShadowmapFullbright()
+{
+	static ConVarRef fullbright( "mat_fullbright" );
+	return fullbright.IsValid() && fullbright.GetInt() == 1;
+}
+
+bool DX12ShadowmapSnapshot::Select( bool snapshot, const char *shaderName, bool &feature )
+{
+	// The material system snapshots with a throwaway context and creates the per-material context on the
+	// first dynamic draw, so this object never sees the snapshot pass. The decision is therefore a pure
+	// function of the receiver generation: the client refreshes every snapshot whenever the generation
+	// changes (preserving material vars on resource readmission); the first dynamic draw observes that generation.
+	// mat_fullbright is deliberately not part of the decision (it would diverge from the frozen snapshot).
+	IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
+	const uint32 generation = lighting ? lighting->ReceiverFeatureGeneration() : 0;
+	uint64 nativeGeneration = 0;
+	const bool receiverEnabled = DX12HighresMap( &nativeGeneration ) || generation != 0;
+	if ( snapshot || !m_bCaptured )
+	{
+		m_nGeneration = generation;
+		m_nNativeGeneration = nativeGeneration;
+		m_bCaptured = true;
+		m_bReceiverEnabled = receiverEnabled;
+	}
+	feature = m_bReceiverEnabled;
+	if ( !snapshot && ( m_nGeneration != generation || m_nNativeGeneration != nativeGeneration ) )
+	{
+		// Generation changed under queued draws without a snapshot refresh: never change declarations here.
+		Warning( "DX12ShadowmapSnapshot: %s drew with a stale snapshot (generation %u, now %u)\n", shaderName, m_nGeneration, generation );
+		DX12RejectUnsupportedLitShader( shaderName );
+		return false;
+	}
+	return true;
+}
+
+class CShadowmapReceiverContext : public CBasePerMaterialContextData
+{
+public:
+	DX12ShadowmapSnapshot m_Snapshot;
+};
+
+bool DX12ShadowmapReceiverSnapshot( CBasePerMaterialContextData **context, IShaderShadow *shadow,
+	const char *shaderName, bool &feature )
+{
+	if ( !*context )
+		*context = new CShadowmapReceiverContext;
+	return static_cast<CShadowmapReceiverContext *>( *context )->m_Snapshot.Select( shadow != NULL, shaderName, feature );
+}
+
 class CLightmappedGeneric_DX9_Context : public CBasePerMaterialContextData
 {
 public:
@@ -37,6 +118,7 @@ public:
 	bool m_bPixelShaderForceFastPathBecauseOutline;
 	bool m_bFullyOpaque;
 	bool m_bFullyOpaqueWithoutAlphaTest;
+	DX12ShadowmapSnapshot m_ShadowmapSnapshot;
 
 	void ResetStaticCmds( void )
 	{
@@ -277,6 +359,9 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 								 )
 {
 	CLightmappedGeneric_DX9_Context *pContextData = reinterpret_cast< CLightmappedGeneric_DX9_Context *> ( *pContextDataPtr );
+	bool bShadowmapReceiver = false;
+	if ( pContextData && !pContextData->m_ShadowmapSnapshot.Select( pShaderShadow != NULL, "LightmappedGeneric", bShadowmapReceiver ) )
+		return;
 	if ( pShaderShadow || ( ! pContextData ) || pContextData->m_bMaterialVarsChanged  || hasFlashlight )
 	{
 		bool hasBaseTexture = params[info.m_nBaseTexture]->IsTexture();
@@ -291,8 +376,11 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 		{
 			pContextData = new CLightmappedGeneric_DX9_Context;
 			*pContextDataPtr = pContextData;
+			if ( !pContextData->m_ShadowmapSnapshot.Select( pShaderShadow != NULL, "LightmappedGeneric", bShadowmapReceiver ) )
+				return;
 		}
 
+		bShadowmapReceiver = bShadowmapReceiver && !hasFlashlight;
 		bool hasBump = params[info.m_nBumpmap]->IsTexture();
 		bool hasSSBump = hasBump && (info.m_nSelfShadowedBumpFlag != -1) &&	( params[info.m_nSelfShadowedBumpFlag]->GetIntValue() );
 		bool hasBaseTexture2 = hasBaseTexture && params[info.m_nBaseTexture2]->IsTexture();
@@ -439,7 +527,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 					pShaderShadow->EnableSRGBRead( SHADER_SAMPLER1, false );
 				}
 
-				if( hasEnvmap || ( IsX360() && hasFlashlight ) )
+				if( hasEnvmap || bShadowmapReceiver || ( IsX360() && hasFlashlight ) )
 				{
 					if( hasEnvmap )
 					{
@@ -517,7 +605,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 
 				DECLARE_STATIC_VERTEX_SHADER( lightmappedgeneric_vs51 );
 				SET_STATIC_VERTEX_SHADER_COMBO( ENVMAP_MASK,  hasEnvmapMask );
-				SET_STATIC_VERTEX_SHADER_COMBO( TANGENTSPACE,  params[info.m_nEnvmap]->IsTexture() );
+				SET_STATIC_VERTEX_SHADER_COMBO( TANGENTSPACE,  params[info.m_nEnvmap]->IsTexture() || bShadowmapReceiver );
 				SET_STATIC_VERTEX_SHADER_COMBO( BUMPMAP,  hasBump );
 				SET_STATIC_VERTEX_SHADER_COMBO( DIFFUSEBUMPMAP, hasDiffuseBumpmap );
 				SET_STATIC_VERTEX_SHADER_COMBO( VERTEXCOLOR, IS_FLAG_SET( MATERIAL_VAR_VERTEXCOLOR ) );
@@ -527,7 +615,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 				bool bReliefMapping = false; //( bumpmap_variant == 2 ) && ( ! bSeamlessMapping );
 				SET_STATIC_VERTEX_SHADER_COMBO( RELIEF_MAPPING, false );//bReliefMapping );
 				SET_STATIC_VERTEX_SHADER_COMBO( SEAMLESS, bSeamlessMapping );
-				SET_STATIC_VERTEX_SHADER( lightmappedgeneric_vs51 );
+				DX12_SET_STATIC_VERTEX_SHADER( lightmappedgeneric_vs51, lightmappedgeneric_shadowmap_vs51 );
 
 				{
 					DECLARE_STATIC_PIXEL_SHADER( lightmappedgeneric_ps51 );
@@ -554,7 +642,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 					SET_STATIC_PIXEL_SHADER_COMBO( DETAIL_BLEND_MODE, nDetailBlendMode );
 					SET_STATIC_PIXEL_SHADER_COMBO( NORMAL_DECODE_MODE, (int)  NORMAL_DECODE_NONE );
 					SET_STATIC_PIXEL_SHADER_COMBO( NORMALMASK_DECODE_MODE, (int) NORMAL_DECODE_NONE );
-					SET_STATIC_PIXEL_SHADER( lightmappedgeneric_ps51 );
+					DX12_SET_STATIC_PIXEL_SHADER( lightmappedgeneric_ps51, lightmappedgeneric_shadowmap_ps51 );
 				}
 				// HACK HACK HACK - enable alpha writes all the time so that we have them for
 				// underwater stuff and writing depth to dest alpha
@@ -628,6 +716,8 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 			// set up shader modulation color
 			float color[4] = { 1.0, 1.0, 1.0, 1.0 };
 			pShader->ComputeModulationColor( color );
+			if ( bShadowmapReceiver )
+				pContextData->m_SemiStaticCmdsOut.SetPixelShaderConstant( 223, color );
 			float flLScale = pShaderAPI->GetLightMapScaleFactor();
 			color[0] *= flLScale;
 			color[1] *= flLScale;
@@ -825,7 +915,8 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 		{
 			DynamicCmdsOut.BindTexture( pShader, SHADER_SAMPLER2, info.m_nEnvmap, info.m_nEnvmapFrame );
 		}
-		int nFixedLightingMode = pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_ENABLE_FIXED_LIGHTING );
+		// Converted maps do not support Hammer/editor fixed-lighting preview; it is never active in-game.
+		int nFixedLightingMode = bShadowmapReceiver ? 0 : pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_ENABLE_FIXED_LIGHTING );
 
 		bool bVertexShaderFastPath = pContextData->m_bVertexShaderFastPath;
 
@@ -845,7 +936,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 			LIGHTING_PREVIEW, 
 			(nFixedLightingMode)?1:0
 			);
-		SET_DYNAMIC_VERTEX_SHADER_CMD( DynamicCmdsOut, lightmappedgeneric_vs51 );
+		DX12_SET_DYNAMIC_VERTEX_SHADER_CMD( DynamicCmdsOut, lightmappedgeneric_vs51, lightmappedgeneric_shadowmap_vs51 );
 
 		bool bPixelShaderFastPath = pContextData->m_bPixelShaderFastPath;
 		if( nFixedLightingMode !=0 )
@@ -880,7 +971,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShaderDX12 *pShader, IMaterialVa
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( LIGHTING_PREVIEW, nFixedLightingMode );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( BICUBIC_LIGHTMAP, r_lightmap_bicubic.GetBool() ? 1 : 0 );
 			
-			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, lightmappedgeneric_ps51 );
+			DX12_SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, lightmappedgeneric_ps51, lightmappedgeneric_shadowmap_ps51 );
 		}
 
 		

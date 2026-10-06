@@ -22,8 +22,12 @@
 #include <errno.h>
 #include <float.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <windows.h>
 
 ReSTIROptions g_ReSTIROptions;
+static CUtlString s_ShadowMapDiagnosticsPath;
+static bool s_BakeBothModes = false;
 dface_t *g_pFaces = NULL;
 
 static CVRadRestirDLL g_VRadRestirDLL;
@@ -167,6 +171,8 @@ static void ApplyPreset( ReSTIROptions &options, const ReSTIRExplicitOptions &ex
 static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 {
 	options = ReSTIROptions();
+	s_ShadowMapDiagnosticsPath = "";
+	s_BakeBothModes = false;
 	ReSTIRExplicitOptions explicitOptions;
 	int mapArg = -1;
 	bool loggedIgnored = false;
@@ -197,8 +203,8 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 		}
 		if ( IsOption( pArg, "-both" ) )
 		{
-			// The launcher replaces this token with -ldr/-hdr for each pass. Keep
-			// direct DLL invocation deterministic by treating it as the LDR pass.
+			// Mode orchestration belongs to the DLL, including converted-input rebakes.
+			s_BakeBothModes = true;
 			options.hdr = false;
 			explicitMode = true;
 			continue;
@@ -212,6 +218,27 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 				return false;
 			}
 			options.preset = preset;
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_shadowmap_diagnostics" ) )
+		{
+			if ( i + 1 >= argc || !argv[i + 1] || !argv[i + 1][0] || argv[i + 1][0] == '-' )
+			{
+				Warning( "Error: expected a filepath after '-restir_shadowmap_diagnostics'\n" );
+				return false;
+			}
+			s_ShadowMapDiagnosticsPath = argv[++i];
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_hlight_density" ) )
+		{
+			if ( i + 1 >= argc || !ParseIntValue( pArg, argv[++i], 1, 16382, options.highresDensity ) )
+				return false;
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_shadowmaps" ) )
+		{
+			options.shadowMaps = true;
 			continue;
 		}
 		if ( IsOption( pArg, "-StaticPropLighting" ) )
@@ -464,12 +491,96 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 	if ( !explicitMode )
 		options.hdr = false;
 	ApplyPreset( options, explicitOptions );
+	if ( options.shadowMaps )
+	{
+		options.staticPropLighting = true;
+		options.textureShadows = true;
+		s_BakeBothModes = true;
+		Msg( "Shadowmaps: implies -both\n" );
+		Msg( "Shadowmaps: implies -StaticPropLighting=true\n" );
+		Msg( "Shadowmaps: implies -TextureShadows=true\n" );
+		if ( options.lightmapScale != 1.0f )
+		{
+			Warning( "Hlight: -restir_shadowmaps retains the native BSP grid; use -restir_hlight_density, not -restir_lightmapscale\n" );
+			return false;
+		}
+		Msg( "Hlight: independent interval density=%d; native BSP grid unchanged\n", options.highresDensity );
+	}
 
 	char mapPath[MAX_PATH];
 	Q_strncpy( mapPath, argv[mapArg], sizeof( mapPath ) );
 	Q_DefaultExtension( mapPath, ".bsp", sizeof( mapPath ) );
 	options.mapPath = mapPath;
 	return true;
+}
+
+// Per-pass pre-denoise evidence: <path>.ldr.json / <path>.hdr.json; ordinary RGB is also the full source.
+static bool WriteShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLightmapResult &result )
+{
+	if ( !s_ShadowMapDiagnosticsPath.Length() )
+		return true;
+	CUtlString diagnosticPath( s_ShadowMapDiagnosticsPath.String() );
+	diagnosticPath += g_ReSTIROptions.hdr ? ".hdr.json" : ".ldr.json";
+	FILE *file = fopen( diagnosticPath.String(), "wb" );
+	if ( !file )
+	{
+		Warning( "Shadowmaps: cannot write diagnostics %s\n", diagnosticPath.String() );
+		return false;
+	}
+	const int sunLightIndex = scene.shadowLights.Count() && scene.shadowLights[0].light.type == emit_skylight ? 0 : -1;
+	fprintf( file, "{\"mode\":\"%s\",\"split\":%s,\"sunLightIndex\":%d,\"shadowSunAngularRadius\":%.9g,\"selectedLightCount\":%d",
+		g_ReSTIROptions.hdr ? "hdr" : "ldr", result.sourceRadiance.Count() ? "true" : "false",
+		sunLightIndex, scene.shadowSunAngularRadius, scene.shadowLights.Count() );
+	fprintf(file,",\"hlightDensity\":%d,\"sampleCellCount\":%d,\"highGridCount\":%d,\"assetRGBScale\":%.9g",
+		g_ReSTIROptions.shadowMaps ? g_ReSTIROptions.highresDensity : 1,scene.samples.Count(),scene.luxels.Count(),1.0/255.0);
+	const CUtlVector<Vector> &source = result.sourceRadiance.Count() ? result.sourceRadiance : result.radiance;
+	for ( int image = 0; image < 2; ++image )
+	{
+		const CUtlVector<Vector> &values = image == 0 ? source : result.radiance;
+		fprintf( file, ",\"%s\":[", image == 0 ? "sourceRadiance" : "receiverRadiance" );
+		for ( int i = 0; i < values.Count(); ++i )
+			fprintf( file, "%s[%.9g,%.9g,%.9g]", i ? "," : "", values[i].x, values[i].y, values[i].z );
+		fprintf( file, "]" );
+	}
+	fprintf( file, ",\"luxelValid\":[" );
+	for ( int i = 0; i < result.luxelValid.Count(); ++i )
+		fprintf( file, "%s%u", i ? "," : "", (unsigned int)result.luxelValid[i] );
+	fprintf( file, "],\"faces\":[" );
+	for ( int i = 0; i < scene.faces.Count(); ++i )
+	{
+		const ReSTIRGpuFace &face = scene.faces[i];
+		const dface_t &native = g_pFaces[face.dface];
+		fprintf( file, "%s{\"dface\":%d,\"firstOutput\":%d,\"firstLuxel\":%d,\"luxelW\":%d,\"luxelH\":%d,\"nativeW\":%d,\"nativeH\":%d,\"firstSample\":%d,\"numSamples\":%d,\"numChannels\":%d,\"numStyles\":%d,\"flags\":%d,\"styles\":[",
+			i ? "," : "", face.dface, face.firstOutput, face.firstLuxel, face.luxelW, face.luxelH,
+			native.m_LightmapTextureSizeInLuxels[0]+1,native.m_LightmapTextureSizeInLuxels[1]+1,
+			face.firstSample,face.numSamples,face.numChannels, face.numStyles, face.flags );
+		for ( int slot = 0; slot < face.numStyles; ++slot )
+			fprintf( file, "%s%d", slot ? "," : "", face.styles[slot] );
+		fprintf( file, "]}" );
+	}
+	fprintf( file, "],\"luxelPositions\":[" );
+	for ( int i = 0; i < scene.luxels.Count(); ++i )
+	{
+		const float *position = scene.luxels[i].position;
+		fprintf( file, "%s[%.9g,%.9g,%.9g]", i ? "," : "", position[0], position[1], position[2] );
+	}
+	fprintf(file,"],\"sunVisibility\":[");
+	for (int i = 0; i < result.sunVisibility.Count(); ++i)
+		fprintf(file,"%s%.9g",i ? "," : "",result.sunVisibility[i]);
+	fprintf(file,"],\"sampleCells\":[");
+	for (int i = 0; i < scene.samples.Count(); ++i)
+	{
+		const ReSTIRGpuSample &s = scene.samples[i];
+		fprintf(file,"%s{\"face\":%d,\"s\":%d,\"t\":%d,\"position\":[%.9g,%.9g,%.9g],\"worldArea\":%.9g,\"coord\":[%.9g,%.9g],\"mins\":[%.9g,%.9g],\"maxs\":[%.9g,%.9g]}",
+			i ? "," : "",s.face,s.s,s.t,s.position[0],s.position[1],s.position[2],s.position[3],
+			s.lmCoord[0],s.lmCoord[1],s.lmCoord[2],s.lmCoord[3],s.lmMaxs[0],s.lmMaxs[1]);
+	}
+	fprintf( file, "]}\n" );
+	const bool written = ferror( file ) == 0;
+	const bool closed = fclose( file ) == 0;
+	if ( !written || !closed )
+		Warning( "Shadowmaps: cannot write diagnostics %s\n", diagnosticPath.String() );
+	return written && closed;
 }
 
 // -restir_probe diagnostic: GPU direct/indirect at one point, plus the light table the GPU sees.
@@ -546,8 +657,9 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 		m_bFileSystemInitialized = true;
 	}
 
-	Msg( "Loading %s\n", options.mapPath.String() );
-	LoadBSPFile( options.mapPath.String() );
+	const char *bspPath = options.transactionPath.Length() ? options.transactionPath.String() : options.mapPath.String();
+	Msg( "Loading %s\n", bspPath );
+	LoadBSPFile( bspPath );
 	ParseEntities();
 	SetHDRMode( options.hdr );
 	VRadRestirDetailProps_SetHDRMode( options.hdr );
@@ -555,15 +667,15 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 
 	if ( g_pFullFileSystem )
 	{
-		g_pFullFileSystem->AddSearchPath( options.mapPath.String(), "GAME", PATH_ADD_TO_HEAD );
-		g_pFullFileSystem->AddSearchPath( options.mapPath.String(), "MOD", PATH_ADD_TO_HEAD );
+		g_pFullFileSystem->AddSearchPath( bspPath, "GAME", PATH_ADD_TO_HEAD );
+		g_pFullFileSystem->AddSearchPath( bspPath, "MOD", PATH_ADD_TO_HEAD );
 		char searchPaths[4096];
 		g_pFullFileSystem->GetSearchPath( "GAME", true, searchPaths, sizeof( searchPaths ) );
 		Msg( "GAME search paths: %s\n", searchPaths );
 	}
 
 	// VRAD never initializes the material system (VMTs are parsed with KeyValues, vradstaticprops.cpp:700);
-	// doing so here would break the launcher's -both reload with "Cannot set the shader API twice!".
+	// doing so here would break the -both BSP reload with "Cannot set the shader API twice!".
 	m_bBSPLoaded = true;
 	return true;
 }
@@ -608,6 +720,75 @@ int CVRadRestirDLL::main( int argc, char **argv )
 		m_bFileSystemInitialized = false;
 		return 1;
 	}
+	if ( !g_ReSTIROptions.shadowMaps &&
+		g_GameLumps.GetGameLumpHandle( GAMELUMP_RESTIR_SHADOWMAPS ) != g_GameLumps.InvalidGameLump() )
+	{
+		s_BakeBothModes = true;
+		g_ReSTIROptions.staticPropLighting = true;
+		Msg( "Shadowmaps: converted BSP rebaked in both modes\n" );
+		Msg( "Shadowmaps: converted BSP rebake implies -StaticPropLighting=true\n" );
+	}
+	if ( s_BakeBothModes )
+	{
+		// Neither completed mode is published if its paired bake fails. Keep
+		// the original basename for macro/asset identity, and reload only this
+		// owned sibling BSP between passes.
+		char workPath[MAX_PATH * 2];
+		V_snprintf(workPath,sizeof(workPath),"%s.restir-paired.%lu.bsp",
+			g_ReSTIROptions.mapPath.String(),(unsigned long)GetCurrentProcessId());
+		if (!CopyFileA(g_ReSTIROptions.mapPath.String(),workPath,TRUE))
+		{
+			Warning("Hlight: cannot create paired-bake transaction (Windows error %lu)\n",(unsigned long)GetLastError());
+			UnloadSelectedBSP(); CmdLib_Cleanup(); m_bFileSystemInitialized = false;
+			DeleteCmdLine(argc,argv); return 1;
+		}
+		g_ReSTIROptions.transactionPath = workPath;
+		g_ReSTIROptions.hdr = false;
+	}
+	SetHDRMode( g_ReSTIROptions.hdr );
+	VRadRestirDetailProps_SetHDRMode( g_ReSTIROptions.hdr );
+	SelectFaceArrayForMode( g_ReSTIROptions.hdr );
+	int exitCode = 0;
+	for ( int pass = 0; pass < ( s_BakeBothModes ? 2 : 1 ); ++pass )
+	{
+		if ( pass )
+		{
+			g_ReSTIROptions.hdr = true;
+			if ( !LoadSelectedBSP( g_ReSTIROptions ) )
+			{
+				exitCode = 1;
+				break;
+			}
+		}
+		Msg( "VRAD ReSTIR: baking %s mode\n", g_ReSTIROptions.hdr ? "HDR" : "LDR" );
+		exitCode = BakeSelectedMode();
+		if ( exitCode )
+			break;
+	}
+	UnloadSelectedBSP();
+	CmdLib_Cleanup();
+	m_bFileSystemInitialized = false;
+	if (g_ReSTIROptions.transactionPath.Length())
+	{
+		if (!exitCode && !MoveFileExA(g_ReSTIROptions.transactionPath.String(),
+			g_ReSTIROptions.mapPath.String(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+		{
+			Warning("Hlight: paired-bake atomic publication failed (Windows error %lu)\n",(unsigned long)GetLastError());
+			exitCode = 1;
+		}
+		if (exitCode) DeleteFileA(g_ReSTIROptions.transactionPath.String());
+		g_ReSTIROptions.transactionPath = "";
+	}
+	if ( exitCode )
+		m_bBakeComplete = false;
+	DeleteCmdLine( argc, argv );
+	return exitCode;
+}
+
+int CVRadRestirDLL::BakeSelectedMode()
+{
+	m_bBakeComplete = false;
+	m_flProgress = 0.0f;
 
 	const double startTime = Plat_FloatTime();
 	CReSTIRSceneBuilder sceneBuilder;
@@ -649,6 +830,11 @@ int CVRadRestirDLL::main( int argc, char **argv )
 		Msg( "VRAD ReSTIR: %d triangles, %d materials (%d alpha, %d albedo textures), %d lights (%d exported, %d material emitters), %d emitter triangles, %d lit faces, %d samples, %d luxels\n",
 			scene.triangles.Count(), scene.materials.Count(), coverageCount, albedoCount, scene.lights.Count(), scene.exportLights.Count(),
 			materialEmitterCount, scene.emitterTriangles.Count(), scene.faces.Count(), scene.samples.Count(), scene.luxels.Count() );
+		if ( g_ReSTIROptions.shadowMaps )
+		{
+			const int sunLightIndex = scene.shadowLights.Count() && scene.shadowLights[0].light.type == emit_skylight ? 0 : -1;
+			Msg( "Shadowmaps: selected lights=%d sun light=%d\n", scene.shadowLights.Count(), sunLightIndex );
+		}
 	}
 	m_flProgress = 0.25f;
 	RESTIR_STAGE( "initializing Vulkan", device.Init( g_ReSTIROptions ) );
@@ -656,6 +842,7 @@ int CVRadRestirDLL::main( int argc, char **argv )
 	RESTIR_STAGE( "resolving light styles", ReSTIR_ResolveFaceStyles( scene, device ) );
 	m_flProgress = 0.40f;
 	RESTIR_STAGE( "baking lightmaps", device.BakeLightmaps( g_ReSTIROptions, result ) );
+	RESTIR_STAGE( "writing shadowmap diagnostics", WriteShadowMapDiagnostics( scene, result ) );
 	m_flProgress = 0.65f;
 
 	if ( g_ReSTIROptions.denoiser == RESTIR_DENOISER_NONE )
@@ -703,13 +890,14 @@ cleanup:
 	}
 	else
 	{
-		Warning( "VRAD ReSTIR: FAILED while %s; %s was not modified.\n", pFailedStage ? pFailedStage : "starting", g_ReSTIROptions.mapPath.String() );
+		Warning( "VRAD ReSTIR: FAILED while %s; %s lighting mode was not written to %s.\n",
+			pFailedStage ? pFailedStage : "starting", g_ReSTIROptions.hdr ? "HDR" : "LDR", g_ReSTIROptions.mapPath.String() );
 	}
 	denoiser.Shutdown();
 	device.Shutdown();
 	UnloadSelectedBSP();
-	DeleteCmdLine( argc, argv );
-	CmdLib_Cleanup();
+	// Reopen the BSP's pak mount for the next mode without running process cleanup callbacks twice.
+	CmdLib_TermFileSystem();
 	m_bFileSystemInitialized = false;
 	return success ? 0 : 1;
 }

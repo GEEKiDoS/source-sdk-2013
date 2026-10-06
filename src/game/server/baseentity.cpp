@@ -4130,7 +4130,9 @@ void CBaseEntity::SetTransmit( CCheckTransmitInfo *pInfo, bool bAlways )
 		}
 	}
 
-	// Force our aiment and move parent to be sent.
+	// Force our aiment and move parent to be sent. Shadow-map overrides use
+	// this same recursion only after validating the whole recipient-private
+	// network-parent chain; do not bypass it by setting edict bits directly.
 	if ( pNetworkParent )
 	{
 		CBaseEntity *pMoveParent = pNetworkParent->GetBaseEntity();

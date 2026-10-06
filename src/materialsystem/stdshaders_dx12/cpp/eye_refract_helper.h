@@ -9,6 +9,7 @@
 #endif
 
 #include <string.h>
+#include "lightmappedgeneric_dx9_helper.h"
 
 //-----------------------------------------------------------------------------
 // Forward declarations
@@ -23,7 +24,8 @@ class IShaderShadow;
 //-----------------------------------------------------------------------------
 struct Eye_Refract_Vars_t
 {
-	Eye_Refract_Vars_t() { memset( this, 0xFF, sizeof(Eye_Refract_Vars_t) ); }
+	Eye_Refract_Vars_t() { memset( this, 0xFF, sizeof(Eye_Refract_Vars_t) ); m_bShadowmapReceiver = false; }
+	bool m_bShadowmapReceiver;
 
 	int m_nFrame;
 	int m_nIris;

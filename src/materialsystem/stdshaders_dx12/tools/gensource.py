@@ -2,6 +2,7 @@
 
 Pipeline (see sm5 contract):
   1. combo directives resolved for the logical profile (profile qualifiers removed, other profiles dropped);
+     folded_src overrides legacy input, with FOLD combos supplied by the engine's uniform cbuffer;
   2. material includes (non-common) inlined;
   3. register-bound constants hoisted into ONE space-1 material cbuffer named after the legacy source
      (VS b2 / PS b1), every member annotated `// @legacy <stage>:<reg>`;
@@ -28,6 +29,7 @@ import hlslport as hp
 import gencommon as gc
 
 SRC = gc.SRC
+FOLDED_SRC = os.path.join(_DX12, 'folded_src')
 COMMON_INCLUDES = {c.lower() for c in gc.COMMONS}
 PROFILES = {'vs20': ('vs', 'DX12_LEGACY_VS20', 'vs20'), 'vs30': ('vs', 'DX12_LEGACY_VS30', 'vs30'),
             'ps20': ('ps', 'DX12_LEGACY_PS20', 'ps20'), 'ps20b': ('ps', 'DX12_LEGACY_PS20B', 'ps20b'),
@@ -46,7 +48,7 @@ def common_state():
 
 # ---------------------------------------------------------------------------------------------------------------
 # 1. combo directives
-DIRECTIVE = re.compile(r'^(\s*//\s*(STATIC|DYNAMIC|SKIP|CENTROID)\s*:)(.*)$', re.I)
+DIRECTIVE = re.compile(r'^(\s*//\s*(STATIC|DYNAMIC|SKIP|CENTROID|FOLD)\s*:)(.*)$', re.I)
 
 
 def select_directives(text, profile):
@@ -62,6 +64,108 @@ def select_directives(text, profile):
         if prof and profile not in prof: continue
         body = re.sub(r'\[\s*(?:' + '|'.join(PROFILE_TAGS) + r'|PC)\s*\]', '', body, flags=re.I)
         lines.append((m.group(1) + body).rstrip())
+    return '\n'.join(lines)
+
+
+def source_text(source):
+    """Prefer the authored folded dialect; legacy_reference remains the original legacy ABI source."""
+    path = os.path.join(FOLDED_SRC, source)
+    if os.path.isfile(path):
+        return path, open(path, encoding='latin-1').read().replace('\r\n', '\n')
+    return os.path.join(SRC, source), legacy_reference(source)
+
+
+def fold_directives(text, path, profile):
+    """Validate every FOLD declaration, then assign STATIC-before-DYNAMIC slots for the selected profile."""
+    folds = []
+    for line_number, line in enumerate(text.split('\n'), 1):
+        m = DIRECTIVE.match(line)
+        if not m or m.group(2).upper() != 'FOLD': continue
+        body = re.sub(r'\[\s*(?:' + '|'.join(PROFILE_TAGS) + r'|PC|XBOX)\s*\]', '', m.group(3), flags=re.I)
+        entry = re.fullmatch(r'\s*"([A-Za-z_]\w*)"\s+"(\d+)\.\.(\d+)"\s+(STATIC|DYNAMIC)\s*', body, re.I)
+        if not entry:
+            raise RuntimeError(f'{path}:{line_number}: malformed FOLD; expected "NAME" "min..max" STATIC|DYNAMIC')
+        name, low, high, kind = entry.groups()
+        if int(low) > int(high):
+            raise RuntimeError(f'{path}:{line_number}: descending FOLD range for {name}')
+        if select_directives(line, profile):
+            folds.append((name, int(low), int(high), kind.upper(), line_number))
+    folds = [entry for kind in ('STATIC', 'DYNAMIC') for entry in folds if entry[3] == kind]
+    names = set()
+    for slot, (name, low, high, kind, line_number) in enumerate(folds):
+        if slot >= 64: raise RuntimeError(f'{path}:{line_number}: FOLD exceeds the 64-slot cbuffer')
+        if name in names: raise RuntimeError(f'{path}:{line_number}: duplicate FOLD {name}')
+        names.add(name)
+    return folds
+
+
+def validate_fold_uses(text, path, names, check_skips=True):
+    """Reject macro-time folded values; #ifndef NAME defaults remain valid for other includers."""
+    if not names: return
+    name_pattern = r'\b(?:' + '|'.join(re.escape(name) for name in sorted(names)) + r')\b'
+    # Preserve offsets/newlines for diagnostics, and join escaped preprocessor lines without changing length.
+    code = hp.comment_mask(text)
+    code = re.sub(r'"(?:\\.|[^"\\])*"', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), code)
+    code = re.sub(r'\\\r?\n', lambda m: ' ' * len(m.group(0)), code)
+    for m in re.finditer(r'^[ \t]*#[ \t]*(?:if|ifdef|elif)\b[^\n]*', code, re.M):
+        use = re.search(name_pattern, m.group(0))
+        if use:
+            line_number = text.count('\n', 0, m.start() + use.start()) + 1
+            raise RuntimeError(f'{path}:{line_number}: folded combo {use.group(0)} used in preprocessor conditional')
+    for m in re.finditer(r'\bdefined\s*(?:\(\s*)?(' + name_pattern + r')', code):
+        line_number = text.count('\n', 0, m.start()) + 1
+        raise RuntimeError(f'{path}:{line_number}: defined() tests folded combo {m.group(1)}')
+    # Shared-header comments are not source-level ShaderCompile2 combo directives.
+    if not check_skips: return
+    for line_number, line in enumerate(text.split('\n'), 1):
+        m = DIRECTIVE.match(line)
+        if m and m.group(2).upper() == 'SKIP':
+            use = re.search(name_pattern, m.group(3))
+            if use: raise RuntimeError(f'{path}:{line_number}: SKIP references folded combo {use.group(0)}')
+
+
+def validate_fold_includes(text, path, names, seen=None, check_skips=True):
+    """Validate the actual native common headers, plus every non-common legacy include before inlining."""
+    seen = set() if seen is None else seen
+    key = os.path.normcase(os.path.abspath(path))
+    if key in seen: return
+    seen.add(key)
+    validate_fold_uses(text, path, names, check_skips)
+    for m in re.finditer(r'^[ \t]*#[ \t]*include\s+"([^"]+)"', hp.comment_mask(text), re.M):
+        name = m.group(1)
+        if name.lower().endswith('.inc'): continue
+        common = next((c for c in _common_cache['out'] if c.lower() == name.lower()), None)
+        if common:
+            body = _common_cache['out'][common]
+            include_path = os.path.join(gc.DST, common)
+        else:
+            candidates = [os.path.join(SRC, name), os.path.join(gc.DST, name),
+                          os.path.join(_DX12, 'native_src', name)]
+            include_path = next((candidate for candidate in candidates if os.path.isfile(candidate)), candidates[0])
+            if not os.path.isfile(include_path):
+                line_number = text.count('\n', 0, m.start()) + 1
+                raise RuntimeError(f'{path}:{line_number}: missing folded-source include {name}')
+            body = open(include_path, encoding='latin-1').read().replace('\r\n', '\n')
+        validate_fold_includes(body, include_path, names, seen, check_skips and common is None)
+
+
+def emit_fold_directives(text, folds):
+    """Keep only real combo directives and append the runtime macros immediately after their directive block."""
+    slots = {entry[0]: slot for slot, entry in enumerate(folds)}
+    entries = {entry[0]: entry for entry in folds}
+    lines, last_directive = [], None
+    for line in text.split('\n'):
+        m = DIRECTIVE.match(line)
+        if m:
+            if m.group(2).upper() == 'FOLD':
+                name = re.search(r'"([A-Za-z_]\w*)"', m.group(3)).group(1)
+                _, low, high, kind, _ = entries[name]
+                line = f'// FOLD: "{name}" "{low}..{high}" {kind} slot={slots[name]}'
+            last_directive = len(lines)
+        lines.append(line)
+    defines = [f'#define {name} ( cComboFold[{slot // 4}].{"xyzw"[slot % 4]} )'
+               for slot, (name, low, high, kind, line_number) in enumerate(folds)]
+    lines[last_directive + 1:last_directive + 1] = [''] + defines + ['']
     return '\n'.join(lines)
 
 
@@ -685,7 +789,7 @@ def pixel_entry(text, profile, interp, fixed=None):
 # ---------------------------------------------------------------------------------------------------------------
 def centroid_semantics(source, profile):
     """TEXCOORDn named by `// CENTROID:` directives of a legacy source (material includes inlined)."""
-    text = open(os.path.join(SRC, source), encoding='latin-1').read().replace('\r\n', '\n')
+    _, text = source_text(source)
     text = inline_includes(select_directives(text, PROFILES[profile][2]))
     return {m.group(1) for m in re.finditer(r'^\s*//\s*CENTROID\s*:\s*"?(\w+)"?', text, re.M | re.I)}
 
@@ -779,23 +883,375 @@ def engine_regs_from_cpp(cpp_texts):
     return regs
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Feature-only receiver transformations. These run on a second source translation, never on ordinary text.
+# The whitelist describes lit passes, NOT similarly named flashlight/selfillum/refraction replay passes.
+SHADOW_LIGHTMAPPED = {
+    'lightmappedgeneric_ps20b', 'worldtwotextureblend_ps20b',
+    'lightmappedreflective_ps20b', 'lightmappedgeneric_decal_ps20b',
+}
+# Original VS INPUT (not interpolated bumped PS coordinates): every member below is TEXCOORD1.xy.
+# LMG/WTB use bound lightmap sampler 1; reflective BASETEXTURE uses sampler 3; decal binds
+# TEXTURE_LIGHTMAP_BUMPED at sampler 1 (its three color samples use samplers 1/2/3).
+SHADOW_BASE_LIGHTMAP_INPUT = {
+    'lightmappedgeneric_vs20': 'vLightmapTexCoord',
+    'lightmappedreflective_vs20': 'vLightmapTexCoord',
+    'lightmappedgeneric_decal_vs20': 'vTexCoord1',
+}
+SHADOW_MODELS = {
+    'vertexlit_and_unlit_generic_ps30', 'vertexlit_and_unlit_generic_bump_ps30',
+    'skin_ps30', 'eyes_ps30', 'eye_refract_ps30', 'teeth_ps30', 'teeth_bump_ps30',
+    'treeleaf_ps20b', 'cable_ps20b', 'vortwarp_ps30',
+}
+
+
+def shadow_feature_skips(text, logical):
+    """Prune unavailable receiver passes without changing combo ranges, order or index arithmetic."""
+    declared = set(re.findall(r'^\s*//\s*(?:STATIC|DYNAMIC)\s*:\s*"(\w+)"', text, re.M | re.I))
+    rules = [
+        ('FLASHLIGHT', '$FLASHLIGHT'),
+        ('FLASHLIGHTSHADOWS', '$FLASHLIGHTSHADOWS'),
+        ('FLASHLIGHTDEPTHFILTERMODE', '$FLASHLIGHTDEPTHFILTERMODE != 0'),
+        ('LIGHTING_PREVIEW', '$LIGHTING_PREVIEW != 0'),
+    ]
+    if re.fullmatch(r'vertexlit_and_unlit_generic(?:_bump)?_(?:vs|ps)\d+', logical):
+        rules.append(('DIFFUSELIGHTING', '!$DIFFUSELIGHTING'))
+    skips = [f'// SKIP: {expression}' for combo, expression in rules if combo in declared]
+    return ('// Feature receivers are lit, non-flashlight, non-preview passes only.\n' +
+            '\n'.join(skips) + '\n' + text) if skips else text
+
+
+def shadow_replace(text, old, new):
+    """A documented join must exist exactly once; legacy source drift is a generation error."""
+    if text.count(old) != 1:
+        raise RuntimeError('shadow-map join does not apply exactly once: ' + old)
+    return text.replace(old, new)
+
+
+def shadow_after(text, anchor, code):
+    return shadow_replace(text, anchor, anchor + '\n\t// Selected direct: decoded linear units, before albedo/output.\n' + code)
+
+
+def shadow_vertex(text, logical, highres=False):
+    """Append unconditional feature varyings in unused slots (matrices reserve all of their rows).
+
+    Writes occur at the final return, after skin/morph/INTRO/tree-leaf positioning. World-space position and
+    the original unbumped normal are never reconstructed from raster depth or the normal-map sample.
+    A response varying carries VS-only HALFLAMBERT and teeth mouth darkening without adding combos.
+    """
+    sources = {
+        'lightmappedgeneric_vs20': ('worldPos', 'worldNormal'),
+        'lightmappedgeneric_decal_vs20': ('worldPos', 'shadowWorldNormal'),
+        'lightmappedreflective_vs20': ('vWorldPos', 'shadowWorldNormal'),
+        'vertexlit_and_unlit_generic_vs30': ('worldPos', 'worldNormal'),
+        'vertexlit_and_unlit_generic_bump_vs30': ('worldPos', 'worldNormal'),
+        'skin_vs30': ('worldPos', 'worldNormal'),
+        'eyes_vs30': ('worldPos', 'worldNormal'),
+        'eye_refract_vs30': ('vWorldPosition', 'vWorldNormal'),
+        'teeth_vs30': ('worldPos', 'worldNormal'),
+        'teeth_bump_vs30': ('worldPos', 'worldNormal'),
+        'treeleaf_vs20': ('worldPos', 'worldNormal'),
+        'cable_vs20': ('worldPos', 'shadowWorldNormal'),
+        'vortwarp_vs30': ('worldPos', 'worldNormal'),
+    }
+    if logical not in sources: raise RuntimeError('unknown shadow-map vertex logical: ' + logical)
+    pos, normal = sources[logical]
+    tangent = logical in {'lightmappedgeneric_vs20', 'lightmappedgeneric_decal_vs20',
+                          'lightmappedreflective_vs20', 'cable_vs20'}
+    if logical == 'vertexlit_and_unlit_generic_vs30':
+        # Selected runtime light can be the ONLY light: legacy STATIC/DYNAMIC_LIGHT both zero is not unlit.
+        text = shadow_replace(text,
+            'if ( bDoLighting || FLASHLIGHT || SEAMLESS_BASE || SEAMLESS_DETAIL || LIGHTING_PREVIEW || g_bDecalOffset || CUBEMAP )',
+            'if ( true ) // Feature receivers always carry a valid normal, even with no baked/legacy lights.')
+    if logical == 'lightmappedgeneric_decal_vs20':
+        st = find_struct(text, 'VS_INPUT')
+        text = text[:st[2]] + ('\tfloat4 vNormal : NORMAL;\n\tfloat3 vTangentS : TANGENT;\n'
+                               '\tfloat3 vTangentT : BINORMAL;\n') + text[st[2]:]
+    base_lightmap_input = SHADOW_BASE_LIGHTMAP_INPUT.get(logical)
+    if base_lightmap_input and not highres:
+        st = find_struct(text, 'VS_INPUT')
+        if not st: raise RuntimeError('shadow-map vertex shader lacks VS_INPUT')
+        # Unconditional, unique input: vertex_entry copies all four components into the legacy
+        # wrapper. The zero fallback stream has w=0; an R32G32_FLOAT carrier stream supplies w=1.
+        for line in text[st[1]:st[2]].split('\n'):
+            member = MEMBER.match(line)
+            if member and (norm_sem(member.group(6)) == 'SUNVISIBILITY0' or member.group(4) == 'vShadowCarrierUV'):
+                raise RuntimeError('shadow-map carrier input aliases an existing vertex member: ' + logical)
+        text = text[:st[2]] + '\n\tfloat4 vShadowCarrierUV : SUNVISIBILITY0;\n' + text[st[2]:]
+    st = find_struct(text, 'VS_OUTPUT')
+    if not st: raise RuntimeError('shadow-map vertex shader lacks VS_OUTPUT')
+    used = set()
+    # vertex_entry preserves conditional declarations, including _X360-only members; reserve their
+    # semantics too so no feature varying aliases any member of the mirrored union.
+    for line in text[st[1]:st[2]].split('\n'):
+        member = MEMBER.match(line)
+        if not member: continue
+        typ, sem = member.group(3), member.group(6)
+        m = re.fullmatch(r'TEXCOORD(\d+)', sem, re.I)
+        if not m: continue
+        rows = int(typ[-1]) if re.search(r'\dx\d$', typ) else 1
+        used.update(range(int(m.group(1)), int(m.group(1)) + rows))
+    declarations = []
+    def add(typ, name, interpolation=''):
+        slot = next((n for n in range(32) if n not in used), None)
+        if slot is None: raise RuntimeError('shadow-map receiver exhausts TEXCOORD semantics')
+        used.add(slot)
+        declarations.append(f'\t{interpolation}{typ} {name} : TEXCOORD{slot};')
+    add('float3', 'worldPos')
+    add('float3', 'worldNormal')
+    add('float2', 'shadowResponse')
+    if tangent:
+        add('float3', 'shadowTangentS')
+        add('float3', 'shadowTangentT')
+    if base_lightmap_input:
+        # Preserve the base atlas block; only sun visibility may use the proven carrier override.
+        add('float2', 'shadowBaseLightmapUV', 'centroid ' if highres else '')
+    text = text[:st[2]] + '\n' + '\n'.join(declarations) + '\n' + text[st[2]:]
+    hs, bs, be = main_defs(text)[0]
+    in_name = param_parts(hs[0][1][0])[2]
+    before = ''
+    if logical in {'lightmappedgeneric_decal_vs20', 'lightmappedreflective_vs20'}:
+        if logical.endswith('decal_vs20'):
+            before = (f'float3 shadowObjectNormal;\n\tDecompressVertex_Normal( {in_name}.vNormal, shadowObjectNormal );\n'
+                      '\tfloat3 shadowWorldNormal = mul( shadowObjectNormal, (float3x3)cModel[0] );\n\t')
+        else:
+            before = 'float3 shadowWorldNormal = mul( vObjNormal, (float3x3)cModel[0] );\n\t'
+    elif logical == 'cable_vs20':
+        before = f'float3 shadowWorldNormal = mul( r, (float3x3)cModel[0] );\n\t'
+    half = 'HALFLAMBERT' if re.search(r'//\s*(?:STATIC|FOLD)\s*:\s*"HALFLAMBERT"', text) else '0'
+    dark = 'fIllumFactor * saturate( dot( worldNormal, vForward ) )' if logical == 'teeth_vs30' else '1.0f'
+    assignments = before + f'o.worldPos = {pos};\n\to.worldNormal = normalize( {normal} );\n\to.shadowResponse = float2( {half}, {dark} );\n\t'
+    if tangent:
+        assignments += (f'o.shadowTangentS = normalize( mul( {in_name}.vTangentS, (float3x3)cModel[0] ) );\n\t'
+                        f'o.shadowTangentT = normalize( mul( {in_name}.vTangentT, (float3x3)cModel[0] ) );\n\t')
+    if base_lightmap_input:
+        assignments += (f'o.shadowBaseLightmapUV = {in_name}.{base_lightmap_input}.xy;\n\t' if highres else
+                        f'o.shadowBaseLightmapUV = {in_name}.vShadowCarrierUV.w != 0 ? '
+                        f'{in_name}.vShadowCarrierUV.xy : {in_name}.{base_lightmap_input}.xy;\n\t')
+    body = text[bs + 1:be]
+    returns = list(re.finditer(r'\breturn\s+o\s*;', mask(body)))
+    if len(returns) != 1:
+        raise RuntimeError('shadow-map vertex shader must return its final o exactly once')
+    r = returns[0]
+    body = body[:r.start()] + assignments + 'return o;' + body[r.end():]
+    return text[:bs + 1] + body + text[be:]
+
+
+def shadow_guard(logical):
+    if logical in {'vertexlit_and_unlit_generic_ps30', 'vertexlit_and_unlit_generic_bump_ps30', 'vortwarp_ps30'}:
+        return 'DIFFUSELIGHTING && !FLASHLIGHT'
+    if logical in {'skin_ps30', 'eye_refract_ps30'}: return '!FLASHLIGHT'
+    if logical == 'worldtwotextureblend_ps20b': return '!FLASHLIGHT'
+    if logical == 'lightmappedreflective_ps20b': return 'BASETEXTURE'
+    return '1'
+
+
+def shadow_conditions(logical, folded_names):
+    """Keep interface combos at macro time; evaluate folded receiver eligibility uniformly at runtime."""
+    guard = shadow_guard(logical)
+    if not folded_names: return guard, None
+    retained, runtime = [], []
+    for clause in guard.split('&&'):
+        clause = clause.strip()
+        target = runtime if set(re.findall(r'\b[A-Za-z_]\w*\b', clause)) & folded_names else retained
+        target.append(clause)
+    return ' && '.join(retained) or '1', ' && '.join(runtime) or None
+
+
+def shadow_pixel_joins(text, logical, folded_names=frozenset()):
+    """Radiometric joins, keyed by the legacy logical. Keep the existing tint/albedo/selfillum/fog ordering.
+
+    LMG: SSBump uses vNormal.xyz before reflection-normal reconstruction; conventional bump uses its dp/sum
+    (including detail-SSBump weights); plain uses unbumped vertex normal. WTB uses its unsquared dot/sum.
+    Reflective uses squared dp/sum only in BASETEXTURE, not reflection/refraction-only combos.
+    Decal uses the existing three (N dot basis)^2 constants, before decal texture/modulation/vertex color.
+    Models: join diffuseLighting before albedo, eyes/teeth before base modulation, eye-refract before AO,
+    tree leaves before FinalOutput. Specular joins precede existing mask/boost/tint/fresnel application.
+    """
+    if logical not in SHADOW_LIGHTMAPPED | SHADOW_MODELS:
+        raise RuntimeError('unknown lit shadow-map pixel logical: ' + logical)
+    basis = ['mul( bumpBasis[%d], float3x3( dx12In.shadowTangentS, dx12In.shadowTangentT, dx12In.worldNormal ) )' % n for n in range(3)]
+    def bumped(weights):
+        return 'smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeBumped( ' + ', '.join(basis + [weights]) + ' ) );'
+    # Branch-selected shading + ONE gather: BUMPMAP/DIFFUSEBUMPMAP are folded (runtime), so a gather per
+    # branch would inline the kernel per branch (LMG twin measured 210 KB DXBC vs 15 KB ordinary).
+    def shade_bumped(weights):
+        return 'sms = ShadowMap_ShadeBumped( ' + ', '.join(basis + [weights]) + ' );'
+    shade_plain = 'sms = ShadowMap_ShadeLambert( dx12In.worldNormal );'
+    gather = 'smd = ShadowMap_GatherDirect( smr, sms );'
+    plain = 'smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeLambert( dx12In.worldNormal ) );'
+    guard, runtime_guard = shadow_conditions(logical, folded_names)
+    def guarded(code):
+        if runtime_guard: code = 'if ( ' + runtime_guard + ' )\n\t{\n\t\t' + code + '\n\t}'
+        return '#if ' + guard + '\n\t' + code + '\n#endif'
+    def join(anchor, code):
+        nonlocal text
+        text = shadow_after(text, anchor, guarded(code))
+    def declare_tint():
+        # Declared after the last #include: hoist_constants places the material cbuffer at the first
+        # register declaration, which must stay below common_fxc.h (HALF* typedefs) like every other member.
+        nonlocal text
+        incs = list(re.finditer(r'^[ \t]*#\s*include\s+"[^"]+"[^\n]*\n', text, re.M))
+        pos = incs[-1].end() if incs else 0
+        text = text[:pos] + 'const float3 g_ShadowDirectTint : register( c223 );\n' + text[pos:]
+    if logical == 'lightmappedgeneric_ps20b':
+        # c223 is staged once per draw, not recovered by a per-pixel division of the baked scale.
+        declare_tint()
+        text = shadow_after(text, 'diffuseLighting *= g_TintValuesAndLightmapScale.rgb;', '\t' + shade_bumped('vNormal.xyz'))
+        text = shadow_after(text, 'diffuseLighting *= g_TintValuesAndLightmapScale.rgb / sum;', '\t' + shade_bumped('dp / sum'))
+        text = shadow_after(text, 'diffuseLighting = lightmapColor1 * g_TintValuesAndLightmapScale.rgb;', '\t' + shade_plain)
+        join('diffuseLighting = lightmapColor1 * g_TintValuesAndLightmapScale.rgb;\n\t// Selected direct: decoded linear units, before albedo/output.\n\t' + shade_plain + '\n\t}',
+             gather + '\n\tdiffuseLighting += smd.diffuse * g_ShadowDirectTint;')
+    elif logical == 'worldtwotextureblend_ps20b':
+        declare_tint()
+        # Carry the shader's existing weights out of the branch; do not repeat normal/basis dot products.
+        text = shadow_replace(text, 'HALF3 diffuseLighting;', 'HALF3 diffuseLighting;\n\tfloat3 shadowWeights = 0;')
+        text = shadow_after(text, 'float sum = dot1 + dot2 + dot3;',
+                            '\tshadowWeights = float3( dot1, dot2, dot3 ) / sum;')
+        join('diffuseLighting *= g_OverbrightFactor;',
+             'if( bBumpmap && bDiffuseBumpmap )\n\t{\n\t\t' + shade_bumped('shadowWeights') + '\n\t}\n'
+             '\telse\n\t{\n\t\t' + shade_plain + '\n\t}\n'
+             '\t' + gather + '\n\tdiffuseLighting += smd.diffuse * g_ShadowDirectTint;')
+    elif logical == 'lightmappedreflective_ps20b':
+        join('diffuseLighting *= LIGHT_MAP_SCALE / sum;', bumped('dp / sum') + '\n\tdiffuseLighting += smd.diffuse;')
+    elif logical == 'lightmappedgeneric_decal_ps20b':
+        join('resultColor = (tex2D( LightMap2Sampler, i.vTexCoord3 ) * g_LightMap2Color) + resultColor;',
+             bumped('float3( g_LightMap0Color.x, g_LightMap1Color.x, g_LightMap2Color.x )') + '\n\tresultColor.rgb += smd.diffuse;')
+    elif logical == 'vertexlit_and_unlit_generic_ps30':
+        # STATIC_LIGHT_LIGHTMAP overrides the baked sum, so join AFTER that override.
+        text = shadow_replace(text, '\n\tfloat3 albedo = baseColor;',
+            '\n' + guarded('smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( dx12In.worldNormal, dx12In.shadowResponse.x != 0 ) );\n'
+            '\tdiffuseLighting += smd.diffuse;') + '\n\tfloat3 albedo = baseColor;')
+    elif logical == 'vertexlit_and_unlit_generic_bump_ps30':
+        join('false, 1.0f, bDoDiffuseWarp, DiffuseWarpSampler );',
+             'smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( worldSpaceNormal, bHalfLambert ) );\n'
+             '\tdiffuseLighting += smd.diffuse;')
+    elif logical == 'skin_ps30':
+        # Diffuse is not consumed before the specular join, where the final exponent is available.
+        join('// Outputs\n\t\t\tspecularLighting, rimLighting );',
+             'smd = ShadowMap_GatherDirect( smr, ShadowMap_WithSpecular( ShadowMap_ShadeHalfLambert( worldSpaceNormal, true ), vEyeDir, fSpecExp ) );\n'
+             '\tdiffuseLighting += smd.diffuse;\n'
+             '\tspecularLighting += smd.specular * ( bDoSpecularWarp ? fFresnelRanges : 1.0f );')
+    elif logical == 'eyes_ps30':
+        text = shadow_replace(text, 'result.rgb *= i.vertAtten;',
+            'smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( dx12In.worldNormal, dx12In.shadowResponse.x != 0 ) );\n'
+            '\tresult.rgb *= i.vertAtten + smd.diffuse;')
+    elif logical == 'teeth_ps30':
+        text = shadow_replace(text, 'result.xyz = baseSample.xyz * i.vertAtten;',
+            plain + '\n\tresult.xyz = baseSample.xyz * ( i.vertAtten + smd.diffuse * dx12In.shadowResponse.y );')
+    elif logical == 'teeth_bump_ps30':
+        join('specularLighting, vDummy );',
+             'smd = ShadowMap_GatherDirect( smr, ShadowMap_WithSpecular( ShadowMap_ShadeHalfLambert( worldSpaceNormal, true ), normalize( worldVertToEyeVector ), fSpecExp ) );\n'
+             '\tdiffuseLighting += smd.diffuse;\n\tspecularLighting += smd.specular;')
+    elif logical == 'eye_refract_ps30':
+        # View direction and cornea normal already exist here; keep direct diffuse ahead of AO.
+        text = shadow_replace(text, 'i.cVertexLight.rgb *= cAmbientOcclColor.rgb;',
+            guarded('smd = ShadowMap_GatherDirect( smr, ShadowMap_WithSpecular( ShadowMap_ShadeHalfLambert( vCorneaWorldNormal, dx12In.shadowResponse.x != 0 ), -vWorldViewVector.xyz, 128.0f ) );\n'
+            '\ti.cVertexLight.rgb += smd.diffuse;') + '\n\ti.cVertexLight.rgb *= cAmbientOcclColor.rgb;')
+        join('// Combine terms //', 'cSpecularHighlights += smd.specular;')
+    elif logical == 'treeleaf_ps20b':
+        # Only the feature return gains diffuse (in shadow_pixel_entry); preserve its #else expression.
+        join('float4 baseTex = tex2D( BaseTextureSampler, i.texCoord0 );',
+             'smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( dx12In.worldNormal, dx12In.shadowResponse.x != 0 ) );')
+    elif logical == 'cable_ps20b':
+        text = shadow_replace(text, 'resultColor.xyz = lightDirDotNormalMap * ( textureColor.rgb * i.directionalLightColor.rgb );',
+            'smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( normalize( mul( vNormalMapDir, float3x3( dx12In.shadowTangentS, dx12In.shadowTangentT, dx12In.worldNormal ) ) ), true ) );\n'
+            '\tresultColor.xyz = textureColor.rgb * ( lightDirDotNormalMap * i.directionalLightColor.rgb + smd.diffuse );')
+    elif logical == 'vortwarp_ps30':
+        join('false, 0, false, NormalizeSampler );',
+             'smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( worldSpaceNormal, bHalfLambert ) );\n'
+             '\tdiffuseLighting += smd.diffuse;')
+    return text
+
+
+def shadow_pixel_entry(text, logical, folded_names=frozenset()):
+    """Begin once after input conversion, before any divergent branch; wrap only main's final color returns."""
+    st = find_struct(text, 'DX12_PS_INPUT')
+    pos = next((n for _, _, n, _, sem, _ in struct_members(text[st[1]:st[2]]) if norm_sem(sem) == 'SV_POSITION'), None)
+    if not pos: raise RuntimeError('shadow-map pixel input lacks SV_Position')
+    # Rename the mirrored POSITION member on the PS side only; semantic/order/type stay identical.
+    text = re.sub(r'\bdx12In\.' + re.escape(pos) + r'\b', 'dx12In.svPos', text)
+    text = text[:st[1]] + re.sub(r'\b' + re.escape(pos) + r'(\s*:\s*SV_Position)', r'svPos\1', text[st[1]:st[2]]) + text[st[2]:]
+    guard, runtime_guard = shadow_conditions(logical, folded_names)
+    receiver = 'ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.svPos.xy )'
+    if logical in SHADOW_LIGHTMAPPED:
+        st = find_struct(text, 'DX12_PS_INPUT')
+        if not any(n == 'shadowBaseLightmapUV' for _, _, n, _, _, _ in struct_members(text[st[1]:st[2]])):
+            raise RuntimeError('lightmapped shadow-map input lacks base lightmap UV: ' + logical)
+        receiver = ('ShadowMap_BeginLightmappedReceiver( dx12In.worldPos, dx12In.worldNormal, '
+                    'dx12In.svPos.xy, dx12In.shadowBaseLightmapUV )')
+    for k in reversed(range(len(main_defs(text)))):
+        hs, bs, be = main_defs(text)[k]
+        # Input conversion precedes receiver derivatives, before any divergent branch.
+        body = text[bs + 1:be]
+        conv = re.search(r'\b(\w+)\s+(\w+)\s*=\s*DX12ConvertInput\s*\([^;]+;', body)
+        if not conv: raise RuntimeError('shadow-map pixel main lacks input conversion')
+        begin = ('\n#if ' + guard + '\n'
+                 '\tShadowMapReceiver smr = ' + receiver + ';\n'
+                 '\tShadowMapDirect smd = ShadowMap_NoDirect();\n'
+                 '\tShadowMapShading sms = ShadowMap_ShadeLambert( dx12In.worldNormal );\n#endif\n')
+        body = body[:conv.end()] + begin + body[conv.end():]
+        text = text[:bs + 1] + body + text[be:]
+        hs, bs, be = main_defs(text)[k]
+        # Guard off means a genuine UnlitGeneric/flashlight/refraction-only compile has no helper references.
+        body = text[bs + 1:be]
+        original_returns = list(re.finditer(r'\breturn\b[^;]+;', mask(body)))
+        preview_locals = set(re.findall(r'\bLPREVIEW_PS_OUT\s+(\w+)\s*(?:;|=)', mask(body)))
+        for site, orig in reversed(list(enumerate(original_returns))):
+            original = body[orig.start():orig.end()]
+            expr = original[len('return'):-1].strip()
+            if logical == 'treeleaf_ps20b':
+                expr = shadow_replace(expr, 'baseTex * float4( i.color, 1 )', 'baseTex * float4( i.color + smd.diffuse, 1 )')
+            arg = re.search(r'\bFinalOutput\s*\(\s*(\w+)\s*,', expr)
+            typ = 'LPREVIEW_PS_OUT' if arg and arg.group(1) in preview_locals else 'float4'
+            temp = f'dx12Lit{k}_{site}'
+            # FXC cannot bind lighting-cbuffer reads when Debug's argument nests the raster/output helpers.
+            # Materialize the finished result first. A block preserves single-statement conditional returns.
+            wrapped = '{\n\t' + typ + ' ' + temp + ' = ' + expr + ';\n\treturn ShadowMap_Debug( smr, smd, ' + temp + ' );\n\t}'
+            if runtime_guard:
+                wrapped = '{\n\tif ( ' + runtime_guard + ' )\n\t' + wrapped + '\n\t' + original + '\n\t}'
+            body = body[:orig.start()] + ('\n#if ' + guard + '\n\t' + wrapped +
+                   '\n#else\n\t' + original + '\n#endif\n') + body[orig.end():]
+        text = text[:bs + 1] + body + text[be:]
+    if 'LPREVIEW_PS_OUT' in text:
+        # Preserve all MRT preview fields, diagnostic color affects target 0 only.
+        st = find_struct(text, 'DX12_PS_INPUT')
+        overload = ('\nLPREVIEW_PS_OUT ShadowMap_Debug( ShadowMapReceiver r, ShadowMapDirect d, LPREVIEW_PS_OUT o )\n'
+                    '{\n\to.color = ShadowMap_Debug( r, d, o.color );\n\treturn o;\n}\n')
+        text = text[:st[3]] + overload + text[st[3]:]
+    return text
+
+
 def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None, flatten=frozenset(), fixed=None,
-            output_struct_from=None):
+            output_struct_from=None, shadowmaps=False, highres=False):
     stage, define, tag = PROFILES[profile]
     known, need = common_state()
-    text = legacy_reference(source)
+    source_path, text = source_text(source)
+    folds = fold_directives(text, source_path, tag)
+    folded_names = {entry[0] for entry in folds}
+    if folds: validate_fold_includes(text, source_path, folded_names)
     for old, new in PATCHES.get(source, []):
         if text.count(old) != 1: raise RuntimeError(f'patch for {source} does not apply exactly once: {old[:40]}')
         text = text.replace(old, new)
     text = select_directives(text, tag)
+    if folds: text = emit_fold_directives(text, folds)
     centroid = list(centroid) or [m.group(1).strip().strip('"') for m in re.finditer(r'^\s*//\s*CENTROID\s*:\s*"?(\w+)"?', text, re.M | re.I)]
+    if highres:
+        import genhighres
+        text = genhighres.prepare(text, logical, stage)
     text = inline_includes(text)
     if output_struct_from:
         # Several vertex shaders feeding one pixel shader must emit one output layout: this vertex shader adopts the
         # other's VS_OUTPUT declaration (its own members are a subset; the rest stay zero).
-        other = inline_includes(select_directives(open(os.path.join(SRC, output_struct_from), encoding='latin-1').read().replace('\r\n', '\n'), tag))
+        _, other_text = source_text(output_struct_from)
+        other = inline_includes(select_directives(other_text, tag))
         a, b = find_struct(text, 'VS_OUTPUT'), find_struct(other, 'VS_OUTPUT')
         text = text[:a[0]] + other[b[0]:b[3]] + text[a[3]:]
+    if highres:
+        text = genhighres.transform(text, logical, stage, folded_names)
+    elif shadowmaps:
+        text = shadow_feature_skips(text, logical)
+        text = shadow_vertex(text, logical) if stage == 'vs' else shadow_pixel_joins(text, logical, folded_names)
     commons = [open(os.path.join(SRC, c), encoding='latin-1').read() for c in gc.COMMONS]
     defs = define_map(commons + [text])
     text = gc.rename_shader_models(text)
@@ -807,6 +1263,9 @@ def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None
         via = any(re.search(r'\b' + fn + r'\s*\(', text) and any(x[2] == g for x in ex) for fn, ex in need.items())
         if direct or via: extra.append((g, (typ, reg)))
     cbname = os.path.splitext(os.path.basename(source))[0]
+    # Twins that add a receiver-only member (g_ShadowDirectTint) are a different layout; the packer's
+    # shared-cbuffer check is keyed by block name, and the C++ writer is selected per logical anyway.
+    if 'g_ShadowDirectTint : register( c223 )' in text: cbname += '_shadowmap'
     text, members = hoist_constants(text, stage, cbname, defs, extra, engine_regs if stage == 'ps' else None)
     text = hp.convert(text, known)
     text = gc.insert_params(text, need)
@@ -815,9 +1274,20 @@ def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None
     else:
         if interp is None: raise RuntimeError('pixel conversion needs the paired vertex interpolators')
         text = pixel_entry(text, tag, interp, fixed)
+        if shadowmaps: text = shadow_pixel_entry(text, logical, folded_names)
+        if highres: text = genhighres.pixel_entry(text, logical, folded_names)
         interp_out = None
     head = (f'// Native SM5.1 rewrite of materialsystem/stdshaders/{source} for logical {logical} (legacy profile {tag});\n'
             f'// generated mechanically by gensource.py, then reviewed. Combo directives are the {tag} set.\n'
             f'#define {define} 1\n#include "dx12_preamble.h"\n')
+    if folds:
+        head = head.replace('#include "dx12_preamble.h"', '#define DX12_COMBO_FOLD 1\n#include "dx12_preamble.h"')
+    if shadowmaps: head = '#define DX12_SHADOWMAPS 1\n' + head
+    if highres: head = '#define DX12_HIGHRES_LIGHTMAPS 1\n#define DX12_SHADOWMAPS 1\n' + head
+    if stage == 'ps':
+        import genhighres
+        role = genhighres.SAMPLER_ROLES.get(logical, 0)
+        if role: head = f'// HIGHLIGHT_SAMPLERS: {role}\n' + head
     text = re.sub(r'\n{4,}', '\n\n\n', text)
+    if folds: validate_fold_uses(text, source_path + ' (generated)', folded_names)
     return head + text, interp_out, members

@@ -1,0 +1,290 @@
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/vortwarp_ps2x.fxc for logical vortwarp_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#define DX12_COMBO_FOLD 1
+#include "dx12_preamble.h"
+// Feature receivers are lit, non-flashlight, non-preview passes only.
+// SKIP: $FLASHLIGHT
+//======= Copyright © 1996-2006, Valve Corporation, All rights reserved. ======
+
+// STATIC: "CONVERT_TO_SRGB" "0..1"
+// STATIC: "FLASHLIGHT" "0..1"
+// FOLD: "BASETEXTURE" "0..1" STATIC slot=0
+// FOLD: "CUBEMAP" "0..1" STATIC slot=1
+// FOLD: "DIFFUSELIGHTING" "0..1" STATIC slot=2
+// FOLD: "NORMALMAPALPHAENVMAPMASK" "0..1" STATIC slot=3
+// FOLD: "HALFLAMBERT" "0..1" STATIC slot=4
+// FOLD: "TRANSLUCENT" "0..1" STATIC slot=5
+// FOLD: "WRITEWATERFOGTODESTALPHA" "0..1" DYNAMIC slot=6
+// FOLD: "PIXELFOGTYPE" "0..1" DYNAMIC slot=7
+// FOLD: "WARPINGIN" "0..1" DYNAMIC slot=8
+// FOLD: "AMBIENT_LIGHT" "0..1" DYNAMIC slot=9
+// FOLD: "NUM_LIGHTS" "0..4" DYNAMIC slot=10
+
+#define BASETEXTURE ( cComboFold[0].x )
+#define CUBEMAP ( cComboFold[0].y )
+#define DIFFUSELIGHTING ( cComboFold[0].z )
+#define NORMALMAPALPHAENVMAPMASK ( cComboFold[0].w )
+#define HALFLAMBERT ( cComboFold[1].x )
+#define TRANSLUCENT ( cComboFold[1].y )
+#define WRITEWATERFOGTODESTALPHA ( cComboFold[1].z )
+#define PIXELFOGTYPE ( cComboFold[1].w )
+#define WARPINGIN ( cComboFold[2].x )
+#define AMBIENT_LIGHT ( cComboFold[2].y )
+#define NUM_LIGHTS ( cComboFold[2].z )
+
+
+#include "common_flashlight_fxc.h"
+#include "common_vertexlitgeneric_dx9.h"
+
+
+cbuffer vortwarp_ps2x : register( b1, space1 )
+{
+	HALF4 g_EnvmapTint; // @legacy ps:c0
+	HALF4 g_DiffuseModulation; // @legacy ps:c1
+	HALF3 g_EnvmapContrast; // @legacy ps:c2
+	HALF3 g_EnvmapSaturation; // @legacy ps:c3
+	HALF4 g_SelfIllumTint; // @legacy ps:c4
+	HALF3 g_EyePos; // @legacy ps:c20
+	float4 g_FlashlightAttenuationFactors; // @legacy ps:c22
+	float g_Time; // @legacy ps:c22
+	HALF3 g_FlashlightPos; // @legacy ps:c23
+	float4x4 g_FlashlightWorldToTexture; // @legacy ps:c24
+	float4 cFlashlightColor; // @legacy ps:c28
+	float4 cFlashlightScreenScale; // @legacy ps:c31
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+#if !FLASHLIGHT
+
+
+#endif
+
+
+// 2 registers each - 6 register total
+
+
+#if FLASHLIGHT
+
+
+#else
+
+#endif
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+TextureCube EnvmapSampler_Texture : register( t1 );
+SamplerState EnvmapSampler_Sampler : register( s1 );
+static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+Texture2D FlowMapSampler_Texture : register( t2 );
+SamplerState FlowMapSampler_Sampler : register( s2 );
+static const DX12Sampler2D FlowMapSampler = { FlowMapSampler_Texture, FlowMapSampler_Sampler };
+Texture2D BumpmapSampler_Texture : register( t3 );
+SamplerState BumpmapSampler_Sampler : register( s3 );
+static const DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
+Texture2D EnvmapMaskSampler_Texture : register( t4 );
+SamplerState EnvmapMaskSampler_Sampler : register( s4 );
+static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
+TextureCube NormalizeSampler_Texture : register( t5 );
+SamplerState NormalizeSampler_Sampler : register( s5 );
+static const DX12SamplerCube NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+Texture2D NormalizeSampler_Texture1D : register( t5 );
+static const DX12Sampler1D NormalizeSampler_1D = { NormalizeSampler_Texture1D, NormalizeSampler_Sampler };
+Texture2D SelfIllumMapSampler_Texture : register( t6 );
+SamplerState SelfIllumMapSampler_Sampler : register( s6 );
+static const DX12Sampler2D SelfIllumMapSampler = { SelfIllumMapSampler_Texture, SelfIllumMapSampler_Sampler };
+Texture2D FlashlightSampler_Texture : register( t7 );
+SamplerState FlashlightSampler_Sampler : register( s7 );
+static const DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
+
+struct PS_INPUT
+{
+	HALF4 baseTexCoord2_tangentSpaceVertToEyeVectorXY;
+
+	// bump mapping and a separate envmap mask texture are mutually exclusive.
+	float4 lightAtten;
+	float4 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ;
+	float3x3 tangentSpaceTranspose;
+	//	     second row;
+	//	     third row;
+	float4 worldPos_projPosZ;
+	float4 fogFactorW;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 svPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	HALF4 baseTexCoord2_tangentSpaceVertToEyeVectorXY : TEXCOORD0;
+	float4 lightAtten : TEXCOORD1;
+	float4 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ : TEXCOORD2;
+	float3x3 tangentSpaceTranspose : TEXCOORD3;
+	float4 worldPos_projPosZ : TEXCOORD6;
+	float4 fogFactorW : COLOR1;
+	float3 worldPos : TEXCOORD7;
+	float3 worldNormal : TEXCOORD8;
+	float2 shadowResponse : TEXCOORD9;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.baseTexCoord2_tangentSpaceVertToEyeVectorXY = dx12In.baseTexCoord2_tangentSpaceVertToEyeVectorXY;
+	l.lightAtten = dx12In.lightAtten;
+	l.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ = dx12In.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ;
+	l.tangentSpaceTranspose = dx12In.tangentSpaceTranspose;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.fogFactorW = dx12In.fogFactorW;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+#if !FLASHLIGHT
+	ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.svPos.xy );
+	ShadowMapDirect smd = ShadowMap_NoDirect();
+	ShadowMapShading sms = ShadowMap_ShadeLambert( dx12In.worldNormal );
+#endif
+
+	bool bBaseTexture = BASETEXTURE ? true : false;
+	bool bCubemap = CUBEMAP ? true : false;
+	bool bDiffuseLighting = DIFFUSELIGHTING ? true : false;
+	bool bNormalMapAlphaEnvmapMask = NORMALMAPALPHAENVMAPMASK ? true : false;
+	bool bHalfLambert = HALFLAMBERT ? true : false;
+	bool bFlashlight = (FLASHLIGHT!=0) ? true : false;
+	bool bAmbientLight = AMBIENT_LIGHT ? true : false;
+	int nNumLights = NUM_LIGHTS;
+
+	HALF4 baseColor = HALF4( 1.0f, 1.0f, 1.0f, 1.0f );
+	if( bBaseTexture )
+		baseColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
+
+	float specularFactor = 1.0f;
+	HALF4 normalTexel = BumpmapSampler.tex.Sample( BumpmapSampler.smp, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
+	HALF3 tangentSpaceNormal = 2.0f * normalTexel - 1.0f;
+
+	if( bNormalMapAlphaEnvmapMask )
+		specularFactor = normalTexel.a;
+
+	HALF3 diffuseLighting = HALF3( 1.0f, 1.0f, 1.0f );
+	if( bDiffuseLighting )
+	{
+		float3 worldSpaceNormal = mul( i.tangentSpaceTranspose, tangentSpaceNormal );
+		worldSpaceNormal = NormalizeWithCubemap( NormalizeSampler, worldSpaceNormal );
+		diffuseLighting = PixelShaderDoLighting(i.worldPos_projPosZ.xyz,worldSpaceNormal,float3( 0.0f, 0.0f, 0.0f ),false,bAmbientLight,i.lightAtten,cAmbientCube,NormalizeSampler,nNumLights,cLightInfo,bHalfLambert,false,0,false, NormalizeSampler_1D );
+	// Selected direct: decoded linear units, before albedo/output.
+#if !FLASHLIGHT
+	if ( DIFFUSELIGHTING )
+	{
+		smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeHalfLambert( worldSpaceNormal, bHalfLambert ) );
+	diffuseLighting += smd.diffuse;
+	}
+#endif
+	}
+
+	HALF3 albedo = HALF3( 1.0f, 1.0f, 1.0f );
+	HALF alpha = 1.0f;
+	if( bBaseTexture )
+	{
+		albedo *= baseColor;
+		alpha *= baseColor.a;
+	}
+
+	// If we only have specularity, assume that we want a black diffuse component, and
+	// get alpha from the envmapmask
+	if( !bBaseTexture && bCubemap )
+	{
+		diffuseLighting = HALF3( 0.0f, 0.0f, 0.0f );
+		if( bNormalMapAlphaEnvmapMask )
+		{
+			alpha *= specularFactor;
+		}
+	}
+
+#if FLASHLIGHT
+	if( bFlashlight )
+	{
+		float3 worldSpaceNormal = mul( i.tangentSpaceTranspose, tangentSpaceNormal );
+		float4 flashlightSpacePosition = mul( float4( i.worldPos_projPosZ.xyz, 1.0f ), g_FlashlightWorldToTexture );
+
+		diffuseLighting = DoFlashlight( g_FlashlightPos, i.worldPos_projPosZ.xyz, flashlightSpacePosition, worldSpaceNormal, g_FlashlightAttenuationFactors.xyz, g_FlashlightAttenuationFactors.w, FlashlightSampler, EnvmapMaskSampler, EnvmapMaskSampler, 0, false, false, float2(0, 0), true, cFlashlightColor, cFlashlightScreenScale );
+	}
+#endif
+
+	diffuseLighting *= g_DiffuseModulation.rgb;
+	alpha *= g_DiffuseModulation.a;
+
+	HALF3 diffuseComponent = albedo * diffuseLighting;
+
+	HALF4 flowmapSample = FlowMapSampler.tex.Sample( FlowMapSampler.smp, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
+#if !FLASHLIGHT
+	flowmapSample.xy += float2( .11, .124 ) * g_Time.xx;
+#endif
+	HALF4 selfIllumSample = SelfIllumMapSampler.tex.Sample( SelfIllumMapSampler.smp, flowmapSample.xy );
+
+//	float thing = ( 0.5f * ( cos( g_Time * 3 ) + 1.0f ) );
+//	diffuseComponent.xyz += albedo * 10.0f * pow( selfIllumSample.xyz, thing );
+	diffuseComponent.xyz += albedo * g_SelfIllumTint.xyz * selfIllumSample.xyz;
+
+	HALF3 specularLighting = HALF3( 0.0f, 0.0f, 0.0f );
+#if !FLASHLIGHT
+	if( bCubemap )
+	{
+		// If we've *only* specified a cubemap, blow off the diffuse component
+		if ( !bBaseTexture && !bDiffuseLighting && !bFlashlight )
+		{
+			diffuseComponent = HALF3( 0.0f, 0.0f, 0.0f );
+		}
+
+		HALF3 worldSpaceNormal = mul( i.tangentSpaceTranspose, tangentSpaceNormal );
+
+		HALF3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz );
+
+		specularLighting = ENV_MAP_SCALE * EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+		specularLighting *= specularFactor;
+		specularLighting *= g_EnvmapTint;
+		HALF3 specularLightingSquared = specularLighting * specularLighting;
+		specularLighting = lerp( specularLighting, specularLightingSquared, g_EnvmapContrast );
+		HALF3 greyScale = dot( specularLighting, HALF3( 0.299f, 0.587f, 0.114f ) );
+		specularLighting = lerp( greyScale, specularLighting, g_EnvmapSaturation );
+	}
+#endif
+
+	HALF3 result = diffuseComponent + specularLighting;
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	if( WRITEWATERFOGTODESTALPHA && (PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT) )
+	{
+		alpha = fogFactor;
+	}
+
+//	result.xyz = float3( 1.0f, 1.0f, 1.0f );
+	if( TRANSLUCENT == 0 )
+	{
+		// Write alpha where the vortigaunt is so we can selectively draw refracting pixels.
+		alpha = WARPINGIN ? 0.0f : 1.0f;
+	}
+
+	//FIXME: need to take dowaterfog into consideration
+	
+#if !FLASHLIGHT
+	{
+	if ( DIFFUSELIGHTING )
+	{
+	float4 dx12Lit0_0 = DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+	return ShadowMap_Debug( smr, smd, dx12Lit0_0 );
+	}
+	return DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+	}
+#else
+	return DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+#endif
+
+}

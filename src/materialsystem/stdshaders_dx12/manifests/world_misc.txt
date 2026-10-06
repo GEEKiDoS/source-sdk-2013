@@ -18,7 +18,11 @@ sky_hdr_compressed_rgbs_ps51.fxc ps sky_hdr_compressed_rgbs_ps51 20b sky_hdr_com
 # pair sky_vs51 sky_hdr_compressed_rgbs_ps51
 vortwarp_vs51.fxc vs vortwarp_vs51 30 vortwarp_vs20.fxc
 vortwarp_ps51.fxc ps vortwarp_ps51 30 vortwarp_ps2x.fxc
-# pair vortwarp_vs51 vortwarp_ps51 =HALFLAMBERT @lights=c13 @fog=c21 @ambient=c5
+# pair vortwarp_vs51 vortwarp_ps51 @lights=c13 @fog=c21 @ambient=c5
 warp_vs51.fxc vs warp_vs51 30 warp_vs20.fxc
 warp_ps51.fxc ps warp_ps51 30 warp_ps2x.fxc
 # pair warp_vs51 warp_ps51
+vortwarp_shadowmap_vs51.fxc vs vortwarp_shadowmap_vs51 native -
+# noparity vortwarp_shadowmap_vs51 - shadowmap-feature-variant
+vortwarp_shadowmap_ps51.fxc ps vortwarp_shadowmap_ps51 native -
+# noparity vortwarp_shadowmap_ps51 - shadowmap-feature-variant

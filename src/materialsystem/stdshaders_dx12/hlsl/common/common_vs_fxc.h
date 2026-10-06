@@ -405,71 +405,106 @@ bool ApplyMorph( float4 vPosFlex, float3 vNormalFlex,
 #endif // defined( DX12_LEGACY_VS20 ) || defined( DX12_LEGACY_VS30 )
 
 
+// Non-folded callers retain compile-time constants; folded callers pass uniforms.
+#ifndef MORPHING
+#define MORPHING 0
+#endif
+#ifndef DECAL
+#define DECAL 0
+#endif
+
 #ifdef DX12_LEGACY_VS30
+
+bool ApplyMorph( bool bMorphing, bool bDecal, DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect, 
+				const float flVertexID, const float3 vMorphTexCoord,
+				inout float3 vPosition )
+{
+if ( bMorphing )
+{
+if ( !bDecal )
+{
+	// Flexes coming in from a separate stream
+	float4 vPosDelta = SampleMorphDelta( morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, 0 );
+	vPosition	+= vPosDelta.xyz;
+}
+else
+{
+	float4 t = float4( vMorphTexCoord.x, vMorphTexCoord.y, 0.0f, 0.0f );
+	float3 vPosDelta = morphSampler.tex.SampleLevel( morphSampler.smp, ( t ).xy, ( t ).w );
+	vPosition	+= vPosDelta.xyz * vMorphTexCoord.z;
+}
+
+	return true;
+
+}
+else
+{
+	return false;
+}
+}
 
 bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect, 
 				const float flVertexID, const float3 vMorphTexCoord,
 				inout float3 vPosition )
 {
-#if MORPHING
-
-#if !DECAL
-	// Flexes coming in from a separate stream
-	float4 vPosDelta = SampleMorphDelta( morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, 0 );
-	vPosition	+= vPosDelta.xyz;
-#else
-	float4 t = float4( vMorphTexCoord.x, vMorphTexCoord.y, 0.0f, 0.0f );
-	float3 vPosDelta = morphSampler.tex.SampleLevel( morphSampler.smp, ( t ).xy, ( t ).w );
-	vPosition	+= vPosDelta.xyz * vMorphTexCoord.z;
-#endif // DECAL
-
-	return true;
-
-#else // !MORPHING
-	return false;
-#endif
+	return ApplyMorph( MORPHING != 0, DECAL != 0, morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, vMorphTexCoord, vPosition );
 }
  
-bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect, 
+bool ApplyMorph( bool bMorphing, bool bDecal, DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect, 
 				const float flVertexID, const float3 vMorphTexCoord, 
 				inout float3 vPosition, inout float3 vNormal )
 {
-#if MORPHING
-
-#if !DECAL
+if ( bMorphing )
+{
+if ( !bDecal )
+{
 	float4 vPosDelta, vNormalDelta;
 	SampleMorphDelta2( morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, vPosDelta, vNormalDelta );
 	vPosition	+= vPosDelta.xyz;
 	vNormal		+= vNormalDelta.xyz;
-#else
+}
+else
+{
 	float4 t = float4( vMorphTexCoord.x, vMorphTexCoord.y, 0.0f, 0.0f );
 	float3 vPosDelta = morphSampler.tex.SampleLevel( morphSampler.smp, ( t ).xy, ( t ).w );
 	t.x += 1.0f / vMorphTargetTextureDim.x;
 	float3 vNormalDelta = morphSampler.tex.SampleLevel( morphSampler.smp, ( t ).xy, ( t ).w );
 	vPosition	+= vPosDelta.xyz * vMorphTexCoord.z;
 	vNormal		+= vNormalDelta.xyz * vMorphTexCoord.z;
-#endif // DECAL
+}
 
 	return true;
 
-#else // !MORPHING
+}
+else
+{
 	return false;
-#endif
+}
 }
 
 bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect, 
 				const float flVertexID, const float3 vMorphTexCoord, 
+				inout float3 vPosition, inout float3 vNormal )
+{
+	return ApplyMorph( MORPHING != 0, DECAL != 0, morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, vMorphTexCoord, vPosition, vNormal );
+}
+
+bool ApplyMorph( bool bMorphing, bool bDecal, DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect, 
+				const float flVertexID, const float3 vMorphTexCoord, 
 				inout float3 vPosition, inout float3 vNormal, inout float3 vTangent )
 {
-#if MORPHING
-
-#if !DECAL
+if ( bMorphing )
+{
+if ( !bDecal )
+{
 	float4 vPosDelta, vNormalDelta;
 	SampleMorphDelta2( morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, vPosDelta, vNormalDelta );
 	vPosition	+= vPosDelta.xyz;
 	vNormal		+= vNormalDelta.xyz;
 	vTangent	+= vNormalDelta.xyz;
-#else
+}
+else
+{
 	float4 t = float4( vMorphTexCoord.x, vMorphTexCoord.y, 0.0f, 0.0f );
 	float3 vPosDelta = morphSampler.tex.SampleLevel( morphSampler.smp, ( t ).xy, ( t ).w );
 	t.x += 1.0f / vMorphTargetTextureDim.x;
@@ -477,30 +512,42 @@ bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim
 	vPosition	+= vPosDelta.xyz * vMorphTexCoord.z;
 	vNormal		+= vNormalDelta.xyz * vMorphTexCoord.z;
 	vTangent	+= vNormalDelta.xyz * vMorphTexCoord.z;
-#endif // DECAL
+}
 
 	return true;
 
-#else // MORPHING
+}
+else
+{
 
 	return false;
-#endif
+}
 }
 
-bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect,
+bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect, 
+				const float flVertexID, const float3 vMorphTexCoord, 
+				inout float3 vPosition, inout float3 vNormal, inout float3 vTangent )
+{
+	return ApplyMorph( MORPHING != 0, DECAL != 0, morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, vMorphTexCoord, vPosition, vNormal, vTangent );
+}
+
+bool ApplyMorph( bool bMorphing, bool bDecal, DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect,
 	const float flVertexID, const float3 vMorphTexCoord,
 	inout float3 vPosition, inout float3 vNormal, inout float3 vTangent, out float flWrinkle )
 {
-#if MORPHING
-
-#if !DECAL
+if ( bMorphing )
+{
+if ( !bDecal )
+{
 	float4 vPosDelta, vNormalDelta;
 	SampleMorphDelta2( morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, vPosDelta, vNormalDelta );
 	vPosition	+= vPosDelta.xyz;
 	vNormal		+= vNormalDelta.xyz;
 	vTangent	+= vNormalDelta.xyz;
 	flWrinkle = vPosDelta.w;
-#else
+}
+else
+{
 	float4 t = float4( vMorphTexCoord.x, vMorphTexCoord.y, 0.0f, 0.0f );
 	float4 vPosDelta = morphSampler.tex.SampleLevel( morphSampler.smp, ( t ).xy, ( t ).w );
 	t.x += 1.0f / vMorphTargetTextureDim.x;
@@ -510,16 +557,25 @@ bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim
 	vNormal		+= vNormalDelta.xyz * vMorphTexCoord.z;
 	vTangent	+= vNormalDelta.xyz * vMorphTexCoord.z;
 	flWrinkle	= vPosDelta.w * vMorphTexCoord.z;
-#endif // DECAL
+}
 
 	return true;
 
-#else // MORPHING
+}
+else
+{
 
 	flWrinkle = 0.0f;
 	return false;
 
-#endif
+}
+}
+
+bool ApplyMorph( DX12Sampler2D morphSampler, const float3 vMorphTargetTextureDim, const float4 vMorphSubrect,
+	const float flVertexID, const float3 vMorphTexCoord,
+	inout float3 vPosition, inout float3 vNormal, inout float3 vTangent, out float flWrinkle )
+{
+	return ApplyMorph( MORPHING != 0, DECAL != 0, morphSampler, vMorphTargetTextureDim, vMorphSubrect, flVertexID, vMorphTexCoord, vPosition, vNormal, vTangent, flWrinkle );
 }
 
 #endif   // DX12_LEGACY_VS30

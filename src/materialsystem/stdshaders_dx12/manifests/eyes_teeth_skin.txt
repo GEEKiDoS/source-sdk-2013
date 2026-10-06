@@ -24,3 +24,23 @@ teeth_ps51.fxc ps teeth_ps51 30 teeth_ps2x.fxc
 teeth_flashlight_vs51.fxc vs teeth_flashlight_vs51 30 teeth_flashlight_vs20.fxc
 teeth_flashlight_ps51.fxc ps teeth_flashlight_ps51 30 teeth_flashlight_ps2x.fxc
 # pair teeth_flashlight_vs51 teeth_flashlight_ps51 @fog=c12 @lights=c20 @ambient=c4
+eye_refract_shadowmap_vs51.fxc vs eye_refract_shadowmap_vs51 native -
+# noparity eye_refract_shadowmap_vs51 - shadowmap-feature-variant
+eye_refract_shadowmap_ps51.fxc ps eye_refract_shadowmap_ps51 native -
+# noparity eye_refract_shadowmap_ps51 - shadowmap-feature-variant
+eyes_shadowmap_vs51.fxc vs eyes_shadowmap_vs51 native -
+# noparity eyes_shadowmap_vs51 - shadowmap-feature-variant
+eyes_shadowmap_ps51.fxc ps eyes_shadowmap_ps51 native -
+# noparity eyes_shadowmap_ps51 - shadowmap-feature-variant
+skin_shadowmap_vs51.fxc vs skin_shadowmap_vs51 native -
+# noparity skin_shadowmap_vs51 - shadowmap-feature-variant
+skin_shadowmap_ps51.fxc ps skin_shadowmap_ps51 native -
+# noparity skin_shadowmap_ps51 - shadowmap-feature-variant
+teeth_bump_shadowmap_vs51.fxc vs teeth_bump_shadowmap_vs51 native -
+# noparity teeth_bump_shadowmap_vs51 - shadowmap-feature-variant
+teeth_bump_shadowmap_ps51.fxc ps teeth_bump_shadowmap_ps51 native -
+# noparity teeth_bump_shadowmap_ps51 - shadowmap-feature-variant
+teeth_shadowmap_vs51.fxc vs teeth_shadowmap_vs51 native -
+# noparity teeth_shadowmap_vs51 - shadowmap-feature-variant
+teeth_shadowmap_ps51.fxc ps teeth_shadowmap_ps51 native -
+# noparity teeth_shadowmap_ps51 - shadowmap-feature-variant

@@ -9,6 +9,7 @@
 //=============================================================================//
 
 #include "BaseVSShaderDX12.h"
+#include "lightmappedgeneric_dx9_helper.h"
 
 #include "treeleaf_ps51.inc"
 #include "treeleaf_vs51.inc"
@@ -41,6 +42,9 @@ BEGIN_VS_SHADER_FLAGS( TreeLeaf, "Help for TreeLeaf", SHADER_NOT_EDITABLE )
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "TreeLeaf", bShadowmapReceiver ) )
+			return;
 		SHADOW_STATE
 		{
 			pShaderShadow->EnableTexture( SHADER_SAMPLER0, true );
@@ -55,11 +59,11 @@ BEGIN_VS_SHADER_FLAGS( TreeLeaf, "Help for TreeLeaf", SHADER_NOT_EDITABLE )
 			DECLARE_STATIC_VERTEX_SHADER( treeleaf_vs51 );
 			SET_STATIC_VERTEX_SHADER_COMBO( HALFLAMBERT, true );
 			SET_STATIC_VERTEX_SHADER_COMBO( USE_STATIC_CONTROL_FLOW, true );
-			SET_STATIC_VERTEX_SHADER( treeleaf_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( treeleaf_vs51, treeleaf_shadowmap_vs51 );
 
 			{
 				DECLARE_STATIC_PIXEL_SHADER( treeleaf_ps51 );
-				SET_STATIC_PIXEL_SHADER( treeleaf_ps51 );
+				DX12_SET_STATIC_PIXEL_SHADER( treeleaf_ps51, treeleaf_shadowmap_ps51 );
 			}
 
 			// we are writing linear values from this shader.
@@ -83,10 +87,10 @@ BEGIN_VS_SHADER_FLAGS( TreeLeaf, "Help for TreeLeaf", SHADER_NOT_EDITABLE )
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DYNAMIC_LIGHT, lightState.HasDynamicLight() );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( STATIC_LIGHT, lightState.m_bStaticLightVertex ? 1 : 0 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( NUM_LIGHTS, 0 );
-			SET_DYNAMIC_VERTEX_SHADER( treeleaf_vs51 );
+			DX12_SET_DYNAMIC_VERTEX_SHADER( treeleaf_vs51, treeleaf_shadowmap_vs51 );
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( treeleaf_ps51 );
-			SET_DYNAMIC_PIXEL_SHADER( treeleaf_ps51 );
+			DX12_SET_DYNAMIC_PIXEL_SHADER( treeleaf_ps51, treeleaf_shadowmap_ps51 );
 		}
 		Draw( );
 	}

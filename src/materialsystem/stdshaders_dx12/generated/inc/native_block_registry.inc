@@ -25,6 +25,8 @@
 #include "depthwrite_vs20.h"
 #include "Downsample_nohdr_ps2x.h"
 #include "Downsample_vs20.h"
+#include "DetailShadowDepthMaterial.h"
+#include "DetailShadowLitMaterial.h"
 #include "emissive_scroll_blended_pass_ps2x.h"
 #include "emissive_scroll_blended_pass_vs20.h"
 #include "Engine_Post_ps2x.h"
@@ -48,8 +50,9 @@
 #include "lightmappedgeneric_decal_ps2x.h"
 #include "lightmappedgeneric_decal_vs20.h"
 #include "lightmappedgeneric_flashlight_vs20.h"
-#include "lightmappedgeneric_ps2x.h"
+#include "lightmappedgeneric_ps2x_shadowmap.h"
 #include "lightmappedgeneric_vs20.h"
+#include "lightmappedgeneric_ps2x.h"
 #include "lightmappedreflective_ps2x.h"
 #include "lightmappedreflective_vs20.h"
 #include "lpreview1_ps2x.h"
@@ -117,7 +120,10 @@
 #include "weapon_sheen_pass_vs20.h"
 #include "windowimposter_ps2x.h"
 #include "windowimposter_vs20.h"
+#include "worldtwotextureblend_ps2x_shadowmap.h"
 #include "worldtwotextureblend_ps2x.h"
+#include "WorldVertexTransitionEditorNormalization.h"
+#include "WorldVertexTransitionEditorMaterial.h"
 static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "accumbuff4sample_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::AccumBuff4Sample_ps2x > },
 	{ "accumbuff5sample_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::accumbuff5sample_ps2x > },
@@ -133,6 +139,8 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "bufferclearobeystencil_ps51", dx12native::kStagePixel, nullptr },
 	{ "bufferclearobeystencil_vs51", dx12native::kStageVertex, nullptr },
 	{ "cable_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::cable_ps2x > },
+	{ "cable_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::cable_ps2x > },
+	{ "cable_shadowmap_vs51", dx12native::kStageVertex, nullptr },
 	{ "cable_vs51", dx12native::kStageVertex, nullptr },
 	{ "cloak_blended_pass_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::cloak_blended_pass_ps2x > },
 	{ "cloak_blended_pass_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::cloak_blended_pass_vs20 > },
@@ -164,16 +172,23 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "downsample_nohdr_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::Downsample_nohdr_ps2x > },
 	{ "downsample_ps51", dx12native::kStagePixel, nullptr },
 	{ "downsample_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::Downsample_vs20 > },
+	{ "dx12_detailshadowlit_depth_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::DetailShadowDepthMaterial > },
+	{ "dx12_detailshadowlit_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::DetailShadowLitMaterial > },
+	{ "dx12_detailshadowlit_vs51", dx12native::kStageVertex, nullptr },
 	{ "emissive_scroll_blended_pass_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::emissive_scroll_blended_pass_ps2x > },
 	{ "emissive_scroll_blended_pass_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::emissive_scroll_blended_pass_vs20 > },
 	{ "engine_post_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::Engine_Post_ps2x > },
 	{ "eye_refract_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::eye_refract_ps2x > },
+	{ "eye_refract_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::eye_refract_ps2x > },
+	{ "eye_refract_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::eye_refract_vs20 > },
 	{ "eye_refract_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::eye_refract_vs20 > },
 	{ "eyeglint_ps51", dx12native::kStagePixel, nullptr },
 	{ "eyeglint_vs51", dx12native::kStageVertex, nullptr },
 	{ "eyes_flashlight_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::eyes_flashlight_ps2x > },
 	{ "eyes_flashlight_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::eyes_flashlight_vs20 > },
 	{ "eyes_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::eyes_ps2x > },
+	{ "eyes_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::eyes_ps2x > },
+	{ "eyes_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::Eyes_vs20 > },
 	{ "eyes_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::Eyes_vs20 > },
 	{ "filmdust_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::filmdust_ps20 > },
 	{ "filmgrain_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::filmgrain_ps20 > },
@@ -194,12 +209,24 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "hsl_filmgrain_pass2_ps51", dx12native::kStagePixel, nullptr },
 	{ "hsv_ps51", dx12native::kStagePixel, nullptr },
 	{ "introscreenspaceeffect_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::IntroScreenSpaceEffect_ps2x > },
+	{ "lightmappedgeneric_decal_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_ps2x > },
+	{ "lightmappedgeneric_decal_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_vs20 > },
 	{ "lightmappedgeneric_decal_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_ps2x > },
+	{ "lightmappedgeneric_decal_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_ps2x > },
+	{ "lightmappedgeneric_decal_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_vs20 > },
 	{ "lightmappedgeneric_decal_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_vs20 > },
 	{ "lightmappedgeneric_flashlight_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_flashlight_vs20 > },
+	{ "lightmappedgeneric_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_ps2x_shadowmap > },
+	{ "lightmappedgeneric_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_vs20 > },
 	{ "lightmappedgeneric_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_ps2x > },
+	{ "lightmappedgeneric_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_ps2x_shadowmap > },
+	{ "lightmappedgeneric_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_vs20 > },
 	{ "lightmappedgeneric_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_vs20 > },
+	{ "lightmappedreflective_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedreflective_ps2x > },
+	{ "lightmappedreflective_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedreflective_vs20 > },
 	{ "lightmappedreflective_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedreflective_ps2x > },
+	{ "lightmappedreflective_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedreflective_ps2x > },
+	{ "lightmappedreflective_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedreflective_vs20 > },
 	{ "lightmappedreflective_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedreflective_vs20 > },
 	{ "lpreview1_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lpreview1_ps2x > },
 	{ "lpreview_output_ps51", dx12native::kStagePixel, nullptr },
@@ -223,6 +250,8 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "portalstaticoverlay_vs51", dx12native::kStageVertex, nullptr },
 	{ "postfx_composite_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PostComposite > },
 	{ "postfx_rcas_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::RcasParams > },
+	{ "pyro_vision_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_ps2x > },
+	{ "pyro_vision_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_vs20 > },
 	{ "pyro_vision_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_ps2x > },
 	{ "pyro_vision_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_vs20 > },
 	{ "refract_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::refract_ps2x > },
@@ -237,16 +266,22 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "screenspaceeffect_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::screenspaceeffect_vs20 > },
 	{ "sfm_combine_vs51", dx12native::kStageVertex, nullptr },
 	{ "sfm_integercombine_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::sfm_integercombine_ps2x > },
+	{ "shadow_depth_restore_ps51", dx12native::kStagePixel, nullptr },
+	{ "shadow_depth_restore_vs51", dx12native::kStageVertex, nullptr },
 	{ "shadow_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::shadow_ps2x > },
 	{ "shadow_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::shadow_vs20 > },
 	{ "shadowbuildtexture_ps51", dx12native::kStagePixel, nullptr },
 	{ "shadowmodel_ps51", dx12native::kStagePixel, nullptr },
 	{ "shadowmodel_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::shadowmodel_vs20 > },
+	{ "shatteredglass_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::ShatteredGlass_ps2x > },
+	{ "shatteredglass_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::ShatteredGlass_vs20 > },
 	{ "shatteredglass_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::ShatteredGlass_ps2x > },
 	{ "shatteredglass_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::ShatteredGlass_vs20 > },
 	{ "showz_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::showz_ps2x > },
 	{ "showz_vs51", dx12native::kStageVertex, nullptr },
 	{ "skin_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::skin_ps20b > },
+	{ "skin_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::skin_ps20b > },
+	{ "skin_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::skin_vs20 > },
 	{ "skin_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::skin_vs20 > },
 	{ "sky_hdr_compressed_ps51", dx12native::kStagePixel, nullptr },
 	{ "sky_hdr_compressed_rgbs_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::sky_hdr_compressed_rgbs_ps2x > },
@@ -258,23 +293,35 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "spritecard_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::spritecard_ps2x > },
 	{ "spritecard_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::spritecard_vsxx > },
 	{ "teeth_bump_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::teeth_bump_ps2x > },
+	{ "teeth_bump_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::teeth_bump_ps2x > },
+	{ "teeth_bump_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::teeth_bump_vs20 > },
 	{ "teeth_bump_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::teeth_bump_vs20 > },
 	{ "teeth_flashlight_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::teeth_flashlight_ps2x > },
 	{ "teeth_flashlight_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::teeth_flashlight_vs20 > },
 	{ "teeth_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::teeth_ps2x > },
+	{ "teeth_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::teeth_ps2x > },
+	{ "teeth_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::teeth_vs20 > },
 	{ "teeth_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::teeth_vs20 > },
 	{ "treeleaf_ps51", dx12native::kStagePixel, nullptr },
+	{ "treeleaf_shadowmap_ps51", dx12native::kStagePixel, nullptr },
+	{ "treeleaf_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::TreeLeaf_vs20 > },
 	{ "treeleaf_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::TreeLeaf_vs20 > },
 	{ "unlitgeneric_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::unlitgeneric_vs20 > },
 	{ "unlittwotexture_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::unlittwotexture_ps2x > },
 	{ "unlittwotexture_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::unlittwotexture_vs20 > },
 	{ "vertexlit_and_unlit_generic_bump_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_bump_ps2x > },
+	{ "vertexlit_and_unlit_generic_bump_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_bump_ps2x > },
+	{ "vertexlit_and_unlit_generic_bump_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_bump_vs20 > },
 	{ "vertexlit_and_unlit_generic_bump_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_bump_vs20 > },
 	{ "vertexlit_and_unlit_generic_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_ps2x > },
+	{ "vertexlit_and_unlit_generic_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_ps2x > },
+	{ "vertexlit_and_unlit_generic_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_vs20 > },
 	{ "vertexlit_and_unlit_generic_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::vertexlit_and_unlit_generic_vs20 > },
 	{ "volume_clouds_ps51", dx12native::kStagePixel, nullptr },
 	{ "volume_clouds_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::volume_clouds_vs20 > },
 	{ "vortwarp_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::vortwarp_ps2x > },
+	{ "vortwarp_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::vortwarp_ps2x > },
+	{ "vortwarp_shadowmap_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::vortwarp_vs20 > },
 	{ "vortwarp_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::vortwarp_vs20 > },
 	{ "vr_distort_hud_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::vr_distort_hud_ps2x > },
 	{ "vr_distort_hud_vs51", dx12native::kStageVertex, nullptr },
@@ -282,6 +329,8 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "vr_distort_texture_vs51", dx12native::kStageVertex, nullptr },
 	{ "warp_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::warp_ps2x > },
 	{ "warp_vs51", dx12native::kStageVertex, nullptr },
+	{ "water_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::water_ps2x > },
+	{ "water_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::Water_vs20 > },
 	{ "water_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::water_ps2x > },
 	{ "water_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::Water_vs20 > },
 	{ "watercheap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::WaterCheap_ps2x > },
@@ -290,6 +339,10 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "weapon_sheen_pass_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::weapon_sheen_pass_vs20 > },
 	{ "windowimposter_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::windowimposter_ps2x > },
 	{ "windowimposter_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::windowimposter_vs20 > },
+	{ "worldtwotextureblend_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::worldtwotextureblend_ps2x_shadowmap > },
 	{ "worldtwotextureblend_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::worldtwotextureblend_ps2x > },
+	{ "worldtwotextureblend_shadowmap_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::worldtwotextureblend_ps2x_shadowmap > },
+	{ "worldvertextransition_editor_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::WorldVertexTransitionEditorNormalization > },
+	{ "worldvertextransition_editor_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::WorldVertexTransitionEditorMaterial > },
 	{ "writez_vs51", dx12native::kStageVertex, nullptr },
 };

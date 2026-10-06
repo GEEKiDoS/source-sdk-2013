@@ -12,12 +12,15 @@
 #include "materialsystem/shaderapidx12/vertex_layout_dx12.h"
 #include "shaderapi/IShaderDevice.h"
 #include "tier1/utlmemory.h"
+#include "tier1/utlstring.h"
 #include <d3d12.h>
+#include <d3d12shader.h>
 #include <wrl/client.h>
 #include <cstdint>
 
 namespace shaderapidx12
 {
+bool ValidateHighresShaderResourcesDX12( ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &shader, bool pixelStage, bool *highresAbi, CUtlString &error );
 
 template <typename T>
 struct ByteSpanDX12
@@ -112,6 +115,7 @@ public:
 	Microsoft::WRL::ComPtr<ID3D12Resource> &NativeResourceRef() { return m_pResource; }
 
 	uint64_t ContentVersion() const { return m_nContentVersion; }
+	uint64_t Identity() const { return m_nIdentity; }
 
 	uint64_t NativeResourceVersion() const { return m_nNativeResourceVersion; }
 
@@ -167,6 +171,7 @@ protected:
 	size_t m_nByteSize = 0;
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pResource;
 	uint64_t m_nContentVersion = 1, m_nNativeResourceVersion = 0;
+	uint64_t m_nIdentity = 0;
 	size_t m_nNativeResourceBytes = 0;
 	ID3D12Device *m_pNativeDevice = nullptr;
 	ID3D12Resource *m_pRetainedResource = nullptr;
@@ -220,6 +225,7 @@ public:
 	Microsoft::WRL::ComPtr<ID3D12Resource> &NativeResourceRef() { return m_pResource; }
 
 	uint64_t ContentVersion() const { return m_nContentVersion; }
+	uint64_t Identity() const { return m_nIdentity; }
 
 	uint64_t NativeResourceVersion() const { return m_nNativeResourceVersion; }
 
@@ -268,6 +274,7 @@ private:
 	size_t m_nByteSize = 0;
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pResource;
 	uint64_t m_nContentVersion = 1, m_nNativeResourceVersion = 0;
+	uint64_t m_nIdentity = 0;
 	size_t m_nNativeResourceBytes = 0;
 	ID3D12Device *m_pNativeDevice = nullptr;
 	ID3D12Resource *m_pRetainedResource = nullptr;

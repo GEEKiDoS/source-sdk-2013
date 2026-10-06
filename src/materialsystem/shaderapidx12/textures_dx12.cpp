@@ -7,6 +7,8 @@
 #include "pixelwriter.h"
 #include "materialsystem/shaderapidx12/shaderapi_dx12.h"
 #include "materialsystem/shaderapidx12/shaderdevice_dx12.h"
+#include "lighting_dx12.h"
+#include "highres_lightmaps_dx12.h"
 #include "shaderapi/ishaderutil.h"
 #include "tier0/dbg.h"
 #include "tier1/keyvalues.h"
@@ -485,6 +487,9 @@ void CShaderAPIDX12::AdvanceTextureCopy( TextureRecord &texture )
 {
 	if ( !texture.switchNeeded || texture.copies <= 1 )
 		return;
+	if ( m_pDevice ) m_pDevice->Highres().ForgetTexture( texture.id, texture.allocationSerial );
+	texture.highresPage = 0xffffffffu;
+	texture.highresLayoutGeneration = 0;
 	texture.currentCopy = ( texture.currentCopy + 1 ) % texture.copies;
 	texture.sampledStateValid = false;
 	++m_nTextureStateEpoch;
@@ -692,8 +697,8 @@ void CShaderAPIDX12::MarkMotionTargetStale()
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReleaseTextureDeviceResources()
 {
-	// Frame generation first: it restores the native swap chain behind its own idle boundary and must not outlive
-	// the motion target it tags.
+	// Drain presentation and release feature contexts before destroying their tagged inputs.
+	// Provider/queue support remains device-owned until ShutdownDevice.
 	ReleaseFrameGenResources();
 	ReleaseUpscalerResources();
 	ReleaseMotionResources();
@@ -719,6 +724,10 @@ void CShaderAPIDX12::ReleaseTextureDeviceResources()
 	FOR_EACH_HASHTABLE( m_Textures, entry )
 	{
 		TextureRecord &texture = *m_Textures[entry];
+		if ( m_pDevice ) m_pDevice->Highres().ForgetTexture( texture.id, texture.allocationSerial );
+		texture.highresPage = 0xffffffffu;
+		texture.highresLayoutGeneration = 0;
+		texture.allocationSerial = 0;
 		for ( int sub = 0; sub < texture.dirtySubresources.Count(); ++sub )
 		{
 			if ( texture.gpuAuthoritativeSubresources[sub] )
@@ -863,6 +872,12 @@ bool CShaderAPIDX12::AllocateNativeTexture( TextureRecord &texture )
 	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 	const D3D12_RESOURCE_STATES initial = bDepth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : ( texture.flags & TEXTURE_CREATE_RENDERTARGET ) ? D3D12_RESOURCE_STATE_RENDER_TARGET :
 	                                                                                                                                    D3D12_RESOURCE_STATE_COPY_DEST;
+	// Invalidate before releasing any member of the owned allocation set. Restore and
+	// render-target promotion both come through this allocation boundary.
+	m_pDevice->Highres().ForgetTexture( texture.id, texture.allocationSerial );
+	texture.highresPage = 0xffffffffu;
+	texture.highresLayoutGeneration = 0;
+	texture.allocationSerial = m_nNextTextureAllocationSerial++;
 	// Recorded OMSetRenderTargets/Clear*View calls read these CPU descriptors at replay; retire them by fence.
 	if ( texture.rtvHeap || texture.dsvHeap )
 	{
@@ -1050,6 +1065,10 @@ void CShaderAPIDX12::DeleteTexture( ShaderAPITextureHandle_t handle )
 	TextureRecord *pRecord = FindTexture( handle );
 	if ( pRecord == nullptr )
 		return;
+	if ( m_pDevice ) m_pDevice->Highres().ForgetTexture( handle, pRecord->allocationSerial );
+	pRecord->highresPage = 0xffffffffu;
+	pRecord->highresLayoutGeneration = 0;
+	if ( m_pDevice ) m_pDevice->Lighting().ForgetSunReceiverTexture( handle );
 	for ( int i = 0; i < ARRAYSIZE( m_TextureTypeHandles ); ++i )
 	{
 		if ( m_TextureTypeHandles[i] == handle )

@@ -8,6 +8,7 @@
 //===========================================================================//
 
 #include "BaseVSShaderDX12.h"
+#include "lightmappedgeneric_dx9_helper.h"
 #include "mathlib/vmatrix.h"
 #include "common_hlsl_cpp_consts.h" // hack hack hack!
 
@@ -94,7 +95,7 @@ BEGIN_VS_SHADER( LightmappedReflective_DX90, "Help for Lightmapped Reflective" )
 	}
 
 	inline void DrawReflectionRefraction( IMaterialVar **params, IShaderShadow* pShaderShadow,
-		IShaderDynamicAPI* pShaderAPI, bool bReflection, bool bRefraction ) 
+		IShaderDynamicAPI* pShaderAPI, bool bReflection, bool bRefraction, bool bShadowmapReceiver )
 	{
 		BlendType_t nBlendType = EvaluateBlendRequirements( BASETEXTURE, true );
 		bool bFullyOpaque = (nBlendType != BT_BLENDADD) && (nBlendType != BT_BLEND) && !IS_FLAG_SET(MATERIAL_VAR_ALPHATEST); //dest alpha is free for special use
@@ -158,7 +159,7 @@ BEGIN_VS_SHADER( LightmappedReflective_DX90, "Help for Lightmapped Reflective" )
 
 			DECLARE_STATIC_VERTEX_SHADER( lightmappedreflective_vs51 );
 			SET_STATIC_VERTEX_SHADER_COMBO( BASETEXTURE, params[BASETEXTURE]->IsTexture() );
-			SET_STATIC_VERTEX_SHADER( lightmappedreflective_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( lightmappedreflective_vs51, lightmappedreflective_shadowmap_vs51 );
 
 			// "REFLECT" "0..1"
 			// "REFRACT" "0..1"
@@ -169,7 +170,7 @@ BEGIN_VS_SHADER( LightmappedReflective_DX90, "Help for Lightmapped Reflective" )
 				SET_STATIC_PIXEL_SHADER_COMBO( REFRACT,  bRefraction );
 				SET_STATIC_PIXEL_SHADER_COMBO( BASETEXTURE, params[BASETEXTURE]->IsTexture() );
 				SET_STATIC_PIXEL_SHADER_COMBO( ENVMAPMASK, params[ENVMAPMASK]->IsTexture() && params[BASETEXTURE]->IsTexture() );
-				SET_STATIC_PIXEL_SHADER( lightmappedreflective_ps51 );
+				DX12_SET_STATIC_PIXEL_SHADER( lightmappedreflective_ps51, lightmappedreflective_shadowmap_ps51 );
 			}
 
 			FogToFogColor();
@@ -237,13 +238,13 @@ BEGIN_VS_SHADER( LightmappedReflective_DX90, "Help for Lightmapped Reflective" )
 			pShaderAPI->SetPixelShaderFogParams( 8 );
 
 			DECLARE_DYNAMIC_VERTEX_SHADER( lightmappedreflective_vs51 );
-			SET_DYNAMIC_VERTEX_SHADER( lightmappedreflective_vs51 );
+			DX12_SET_DYNAMIC_VERTEX_SHADER( lightmappedreflective_vs51, lightmappedreflective_shadowmap_vs51 );
 			
 			{
 				DECLARE_DYNAMIC_PIXEL_SHADER( lightmappedreflective_ps51 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITE_DEPTH_TO_DESTALPHA, bFullyOpaque && pShaderAPI->ShouldWriteDepthToDestAlpha() );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo() );
-				SET_DYNAMIC_PIXEL_SHADER( lightmappedreflective_ps51 );
+				DX12_SET_DYNAMIC_PIXEL_SHADER( lightmappedreflective_ps51, lightmappedreflective_shadowmap_ps51 );
 			}
 		}
 		Draw();
@@ -251,13 +252,17 @@ BEGIN_VS_SHADER( LightmappedReflective_DX90, "Help for Lightmapped Reflective" )
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "LightmappedReflective", bShadowmapReceiver ) )
+			return;
+		bShadowmapReceiver = bShadowmapReceiver && params[BASETEXTURE]->IsTexture();
 		bool bRefraction = params[REFRACTTEXTURE]->IsTexture();
 		bool bReflection = params[REFLECTTEXTURE]->IsTexture();
 		bool bDrewSomething = false;
 		if ( bReflection || bRefraction )
 		{
 			bDrewSomething = true;
-			DrawReflectionRefraction( params, pShaderShadow, pShaderAPI, bReflection, bRefraction );
+			DrawReflectionRefraction( params, pShaderShadow, pShaderAPI, bReflection, bRefraction, bShadowmapReceiver );
 		}
 
 		if( !bDrewSomething )

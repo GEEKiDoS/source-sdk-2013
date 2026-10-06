@@ -14,7 +14,7 @@ if not exist "%SPIRVVAL%" (
 	exit /b 1
 )
 set /a MODULES=0
-for %%S in (bvh_morton bvh_sort bvh_hierarchy bvh_refit restir_init restir_candidates restir_temporal restir_spatial restir_accumulate restir_reconstruct restir_trace_rays restir_gather_ambient restir_light_points) do (
+for %%S in (bvh_morton bvh_sort bvh_hierarchy bvh_refit restir_init restir_candidates restir_temporal restir_spatial restir_accumulate restir_reconstruct restir_sun_visibility restir_trace_rays restir_gather_ambient restir_light_points) do (
 	call :Compile %%S hw 1
 	if errorlevel 1 goto Failed
 	call :Compile %%S sw 0

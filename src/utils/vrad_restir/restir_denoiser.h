@@ -21,6 +21,7 @@ public:
 	const char *GetModeString() const;
 
 private:
+	bool DenoiseRadiance( const ReSTIRScene &scene, ReSTIRLightmapResult &result );
 	void *m_pModule;
 	void *m_pApi;
 	void *m_pDevice;

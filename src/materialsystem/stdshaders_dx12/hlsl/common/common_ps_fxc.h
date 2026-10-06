@@ -303,10 +303,7 @@ float3 BlendPixelFog( const float3 vShaderColor, float pixelFogFactor, const flo
 	{
 		return lerp( vShaderColor.rgb, vFogColor.rgb, saturate( pixelFogFactor ) );
 	}
-	else if( iPIXELFOGTYPE == PIXEL_FOG_TYPE_NONE )
-	{
-		return vShaderColor;
-	}
+	return vShaderColor; // PIXEL_FOG_TYPE_NONE and any folded uniform fog type
 }
 
 

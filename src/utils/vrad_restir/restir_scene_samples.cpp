@@ -10,6 +10,8 @@
 #include "mathlib/bumpvects.h"
 #include <math.h>
 #include <string.h>
+#include <float.h>
+#include <limits.h>
 
 #ifndef SMOOTHING_GROUP_HARD_EDGE
 #define SMOOTHING_GROUP_HARD_EDGE 0xff000000
@@ -575,6 +577,46 @@ static void AddSample( ReSTIRScene &scene, int faceIndex,
 	scene.samples.AddToTail( sample );
 }
 
+// Planar BSP windings can contain retraced edges, and clipping can make a
+// concave cell. Absolute triangle-fan areas count those signed cancellations
+// as extra surface. Accumulate signed XY moments in double precision instead;
+// reversing the winding changes both signs, not its area or balance point.
+static double PlanarSampleAreaAndBalancePoint( const winding_t *winding, Vector *balance )
+{
+	if ( balance )
+	{
+		balance->Init();
+	}
+	if ( winding->numpoints < 3 )
+	{
+		return 0.0f;
+	}
+	const Vector &origin = winding->p[0];
+	double twiceArea = 0.0;
+	double momentX = 0.0;
+	double momentY = 0.0;
+	for ( int point = 2; point < winding->numpoints; ++point )
+	{
+		const double ax = (double)winding->p[point - 1].x - origin.x;
+		const double ay = (double)winding->p[point - 1].y - origin.y;
+		const double bx = (double)winding->p[point].x - origin.x;
+		const double by = (double)winding->p[point].y - origin.y;
+		const double cross = ax * by - ay * bx;
+		twiceArea += cross;
+		if ( balance )
+		{
+			momentX += cross * ( ax + bx );
+			momentY += cross * ( ay + by );
+		}
+	}
+	if ( balance && twiceArea != 0.0 )
+	{
+		balance->x = (float)( origin.x + momentX / ( 3.0 * twiceArea ) );
+		balance->y = (float)( origin.y + momentY / ( 3.0 * twiceArea ) );
+	}
+	return fabs( twiceArea ) * 0.5;
+}
+
 // utils/vrad/lightmap.cpp:650-806 — BuildFacesamples; radial.cpp:27-35 — unpushed positions.
 static void BuildRegularFaceSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
 	int faceIndex, ReSTIRGpuFace &face )
@@ -596,15 +638,24 @@ static void BuildRegularFaceSamples( ReSTIRSceneBuildContext &context, ReSTIRSce
 		remaining->p[edge].Init( DotProduct( point - luxelOrigin, worldToLuxel[0] ) - face.lmMins[0],
 			DotProduct( point - luxelOrigin, worldToLuxel[1] ) - face.lmMins[1], 0.0f );
 	}
+	if ( PlanarSampleAreaAndBalancePoint( remaining, NULL ) == 0.0 )
+	{
+		// A collinear or completely retraced winding has no receiver surface.
+		// Do not turn clipping roundoff into positive-area cells on such a face.
+		FreeWinding( remaining );
+		return;
+	}
 	const float worldAreaPerLuxel = 1.0 /
 		( sqrt( DotProduct( worldToLuxel[0], worldToLuxel[0] ) ) *
 		sqrt( DotProduct( worldToLuxel[1], worldToLuxel[1] ) ) );
+	// Cells meet at the exact luxel plane; an epsilon band must not retain
+	// off-plane vertices in both independent receiver cells.
 	for ( int t = 0; t < face.luxelH && remaining; ++t )
 	{
 		winding_t *row = NULL;
 		winding_t *nextRow = NULL;
 		ClipWindingEpsilon( remaining, Vector( 0, 1, 0 ), (float)t + 1.0f,
-			ON_EPSILON / 16.0f, &nextRow, &row );
+			0.0f, &nextRow, &row );
 		FreeWinding( remaining );
 		remaining = nextRow;
 		for ( int s = 0; s < face.luxelW && row; ++s )
@@ -612,7 +663,7 @@ static void BuildRegularFaceSamples( ReSTIRSceneBuildContext &context, ReSTIRSce
 			winding_t *nextCell = NULL;
 			winding_t *cell = NULL;
 			ClipWindingEpsilon( row, Vector( 1, 0, 0 ), (float)s + 1.0f,
-				ON_EPSILON / 16.0f, &nextCell, &cell );
+				0.0f, &nextCell, &cell );
 			FreeWinding( row );
 			row = nextCell;
 			if ( !cell )
@@ -620,7 +671,12 @@ static void BuildRegularFaceSamples( ReSTIRSceneBuildContext &context, ReSTIRSce
 				continue;
 			}
 			Vector balance, mins, maxs;
-			const float area = WindingAreaAndBalancePoint( cell, balance );
+			const float area = (float)PlanarSampleAreaAndBalancePoint( cell, &balance );
+			if ( area == 0.0f )
+			{
+				FreeWinding( cell );
+				continue;
+			}
 			WindingBounds( cell, mins, maxs );
 			const Vector samplePosition = ReSTIR_SceneLuxelToWorld( luxelOrigin, luxelToWorld,
 				balance.x + face.lmMins[0], balance.y + face.lmMins[1] );
@@ -653,7 +709,7 @@ static void BuildRegularFaceSamples( ReSTIRSceneBuildContext &context, ReSTIRSce
 
 // utils/vrad/vrad_dispcoll.cpp:214-264 — DispUVToSurf_TriTLToBR.
 static void DispUVToSurfTriTLToBR( const CCoreDispInfo &disp, Vector &point, float push,
-	float u, float v, int snapU, int snapV, int width, int height )
+	float u, float v, int snapU, int snapV, int width, int height, bool *pValid )
 {
 	int nextU = snapU + 1;
 	int nextV = snapV + 1;
@@ -687,12 +743,14 @@ static void DispUVToSurfTriTLToBR( const CCoreDispInfo &disp, Vector &point, flo
 		Vector normal = CrossProduct( edgeU, edgeV );
 		VectorNormalize( normal );
 		point += normal * push;
+		if ( pValid )
+			*pValid = normal.IsValid() && normal.LengthSqr() > 0.0f;
 	}
 }
 
 // utils/vrad/vrad_dispcoll.cpp:269-319 — DispUVToSurf_TriBLToTR.
 static void DispUVToSurfTriBLToTR( const CCoreDispInfo &disp, Vector &point, float push,
-	float u, float v, int snapU, int snapV, int width, int height )
+	float u, float v, int snapU, int snapV, int width, int height, bool *pValid )
 {
 	int nextU = snapU + 1;
 	int nextV = snapV + 1;
@@ -726,12 +784,17 @@ static void DispUVToSurfTriBLToTR( const CCoreDispInfo &disp, Vector &point, flo
 		Vector normal = CrossProduct( edgeV, edgeU );
 		VectorNormalize( normal );
 		point += normal * push;
+		if ( pValid )
+			*pValid = normal.IsValid() && normal.LengthSqr() > 0.0f;
 	}
 }
 
 // utils/vrad/vrad_dispcoll.cpp:178-209 — DispUVToSurfPoint.
-static void DispUVToSurfPoint( const CCoreDispInfo &disp, const Vector2D &uv, Vector &point, float push )
+static void DispUVToSurfPoint( const CCoreDispInfo &disp, const Vector2D &uv, Vector &point, float push,
+	bool *pValid = NULL )
 {
+	if ( pValid )
+		*pValid = false;
 	if ( uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f )
 	{
 		return;
@@ -745,11 +808,11 @@ static void DispUVToSurfPoint( const CCoreDispInfo &disp, const Vector2D &uv, Ve
 	const bool odd = ( ( snapV * width + snapU ) % 2 == 1 );
 	if ( odd )
 	{
-		DispUVToSurfTriTLToBR( disp, point, push, u, v, snapU, snapV, width, height );
+		DispUVToSurfTriTLToBR( disp, point, push, u, v, snapU, snapV, width, height, pValid );
 	}
 	else
 	{
-		DispUVToSurfTriBLToTR( disp, point, push, u, v, snapU, snapV, width, height );
+		DispUVToSurfTriBLToTR( disp, point, push, u, v, snapU, snapV, width, height, pValid );
 	}
 }
 
@@ -841,6 +904,96 @@ static void BuildDisplacementSamples( const CCoreDispInfo &disp, ReSTIRScene &sc
 	FreeWinding( winding );
 }
 
+// BSP brush faces are convex. Classify in their own world-space winding, then
+// project exterior grid points onto the closest edge of THAT face (not a
+// neighboring transport sample). Winding sign is independent of face orientation.
+static bool BuildSunFacePolygon( const ReSTIRSceneBuildContext &context, const ReSTIRGpuFace &face,
+	CUtlVector<Vector> &polygon, float &windingSign )
+{
+	const dface_t &dface = g_pFaces[face.dface];
+	if ( dface.numedges < 3 )
+		return false;
+	polygon.SetCount( dface.numedges );
+	for ( int edge = 0; edge < dface.numedges; ++edge )
+	{
+		polygon[edge] = dvertexes[ReSTIR_SceneFaceVertex( &dface, edge )].point + context.faceOrigins[face.dface];
+		if ( !polygon[edge].IsValid() )
+			return false;
+	}
+	Vector areaNormal( 0, 0, 0 );
+	for ( int edge = 1; edge + 1 < polygon.Count(); ++edge )
+		areaNormal += CrossProduct( polygon[edge] - polygon[0], polygon[edge + 1] - polygon[0] );
+	const float signedArea = DotProduct( areaNormal, ReSTIR_SceneV4( face.faceNormal ) );
+	if ( !IsFinite( signedArea ) || signedArea == 0.0f )
+		return false;
+	windingSign = signedArea > 0.0f ? 1.0f : -1.0f;
+	return true;
+}
+
+static bool ClampSunPointToFace( const CUtlVector<Vector> &polygon, float windingSign,
+	const Vector &normal, const Vector &point, Vector &receiver )
+{
+	if ( !point.IsValid() )
+		return false;
+	receiver = point - normal * ( DotProduct( point - polygon[0], normal ) / normal.LengthSqr() );
+	if ( !receiver.IsValid() )
+		return false;
+	bool inside = true;
+	for ( int edgeIndex = 0; edgeIndex < polygon.Count(); ++edgeIndex )
+	{
+		const Vector &start = polygon[edgeIndex];
+		const Vector edge = polygon[( edgeIndex + 1 ) % polygon.Count()] - start;
+		if ( edge.LengthSqr() > 0.0f && windingSign * DotProduct( CrossProduct( edge, receiver - start ), normal ) <= 0.0f )
+		{
+			inside = false;
+			break;
+		}
+	}
+	if ( inside )
+		return true;
+	bool haveClosest = false;
+	float closestDistance = 0.0f;
+	Vector closest;
+	for ( int edgeIndex = 0; edgeIndex < polygon.Count(); ++edgeIndex )
+	{
+		const Vector &start = polygon[edgeIndex];
+		const Vector edge = polygon[( edgeIndex + 1 ) % polygon.Count()] - start;
+		const float lengthSquared = edge.LengthSqr();
+		if ( lengthSquared <= 0.0f )
+			continue;
+		const float fraction = MAX( 0.0f, MIN( 1.0f, DotProduct( receiver - start, edge ) / lengthSquared ) );
+		const Vector candidate = start + edge * fraction;
+		const float distance = ( candidate - receiver ).LengthSqr();
+		if ( !haveClosest || distance < closestDistance )
+		{
+			closest = candidate;
+			closestDistance = distance;
+			haveClosest = true;
+		}
+	}
+	if ( !haveClosest )
+		return false;
+	// Approach boundary luxels from their own face's interior. Exact shared
+	// edges have backend-dependent triangle ownership, even for a central ray.
+	// The displacement is roundoff-sized relative to this polygon, not a
+	// world-space leak bias, and leaves transport sample positions unchanged.
+	Vector centroid( 0, 0, 0 );
+	for ( int vertex = 0; vertex < polygon.Count(); ++vertex )
+		centroid += polygon[vertex];
+	centroid /= polygon.Count();
+	receiver = closest + ( centroid - closest ) * ( 32.0f * FLT_EPSILON );
+	if ( !receiver.IsValid() )
+		return false;
+	for ( int edgeIndex = 0; edgeIndex < polygon.Count(); ++edgeIndex )
+	{
+		const Vector &start = polygon[edgeIndex];
+		const Vector edge = polygon[( edgeIndex + 1 ) % polygon.Count()] - start;
+		if ( edge.LengthSqr() > 0.0f && windingSign * DotProduct( CrossProduct( edge, receiver - start ), normal ) <= 0.0f )
+			return false;
+	}
+	return true;
+}
+
 // utils/vrad/lightmap.cpp:847-868; vraddisps.cpp:1670-1704 — BuildFaceLuxels/BuildDispLuxels.
 static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
 	ReSTIRGpuFace &face, const CCoreDispInfo *disp )
@@ -851,23 +1004,43 @@ static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 	Vector luxelOrigin, worldToLuxel[2], luxelToWorld[2];
 	ReSTIR_SceneCalcFaceVectors( &dface, context.faceOrigins[face.dface], normal,
 		luxelOrigin, worldToLuxel, luxelToWorld );
+	// Only the internal sampling domain changes. The selected dface/grid and
+	// texinfo remain byte-for-byte native; reconstruction uses these forward vectors.
+	const int density = context.options->shadowMaps ? context.options->highresDensity : 1;
+	for ( int axis = 0; axis < 2; ++axis )
+	{
+		worldToLuxel[axis] *= density;
+		luxelToWorld[axis] /= density;
+	}
 	ReSTIR_SceneSet4( face.luxelOrigin, luxelOrigin );
 	for ( int axis = 0; axis < 2; ++axis )
 	{
 		ReSTIR_SceneSet4( face.worldToLuxel[axis], worldToLuxel[axis] );
 		ReSTIR_SceneSet4( face.luxelToWorld[axis], luxelToWorld[axis] );
 	}
-	const float stepU = disp ? 1.0f / static_cast<float>( face.luxelW - 1 ) : 0.0f;
-	const float stepV = disp ? 1.0f / static_cast<float>( face.luxelH - 1 ) : 0.0f;
+	const bool hasSun = context.options->shadowMaps && scene.skyLight >= 0 && scene.skyLight < scene.lights.Count() &&
+		scene.lights[scene.skyLight].type == emit_skylight &&
+		( scene.lights[scene.skyLight].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0;
+	CUtlVector<Vector> sunPolygon;
+	float windingSign = 0.0f;
+	const float determinant = hasSun && !disp ? DotProduct( normal, CrossProduct( worldToLuxel[1], worldToLuxel[0] ) ) : 0.0f;
+	const bool validNormal = hasSun && normal.IsValid() && normal.LengthSqr() > 0.0f;
+	const bool validSunFace = hasSun && validNormal && ( disp ?
+		( face.luxelW >= 1 && face.luxelH >= 1 ) :
+		( IsFinite( determinant ) && fabs( determinant ) >= 1.0e-20 &&
+			BuildSunFacePolygon( context, face, sunPolygon, windingSign ) ) );
+	const float stepU = disp && face.luxelW > 1 ? 1.0f / static_cast<float>( face.luxelW - 1 ) : 0.0f;
+	const float stepV = disp && face.luxelH > 1 ? 1.0f / static_cast<float>( face.luxelH - 1 ) : 0.0f;
 	for ( int t = 0; t < face.luxelH; ++t )
 	{
 		for ( int s = 0; s < face.luxelW; ++s )
 		{
 			Vector point, luxelNormal;
+			bool surfaceValid = true;
 			if ( disp )
 			{
 				const Vector2D uv( s * stepU, t * stepV );
-				DispUVToSurfPoint( *disp, uv, point, 1.0f );
+				DispUVToSurfPoint( *disp, uv, point, 1.0f, hasSun ? &surfaceValid : NULL );
 				DispUVToSurfNormal( *disp, uv, luxelNormal );
 			}
 			else
@@ -881,6 +1054,17 @@ static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 			ReSTIR_SceneSet4( luxel.position, point );
 			ReSTIR_SceneSet4( luxel.normal, luxelNormal );
 			scene.luxels.AddToTail( luxel );
+			if ( hasSun )
+			{
+				Vector receiver = point;
+				const bool valid = validSunFace && surfaceValid && point.IsValid() &&
+					( disp || ClampSunPointToFace( sunPolygon, windingSign, normal, point, receiver ) );
+				// Displacements already carry their geometry push. Only append the
+				// same face-normal offset as ShadingOrigin; never change luxel.position.
+				const Vector origin = receiver + normal;
+				scene.sunVisibilityOrigins.AddToTail( valid && origin.IsValid() ?
+					Vector4D( origin.x, origin.y, origin.z, 1.0f ) : Vector4D( 0, 0, 0, 0 ) );
+			}
 		}
 	}
 }
@@ -999,6 +1183,30 @@ static void CacheDisplacementFaceClusters( ReSTIRSceneBuildContext &context,
 // radial.cpp:676 — entity _minlight; PairEdges:151-325 — complete mapped neighbor lists.
 bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &scene )
 {
+	// Build() resets the entire scene; also make direct sample rebuilds discard
+	// stale receiver origins and all of their geometric/style indexing arrays.
+	scene.sunVisibilityOrigins.RemoveAll();
+	scene.faces.RemoveAll();
+	scene.samples.RemoveAll();
+	scene.luxels.RemoveAll();
+	scene.faceNeighbors.RemoveAll();
+	scene.faceMinLight.RemoveAll();
+	scene.styleOverflowFaces.RemoveAll();
+	scene.styleCandidateFirst.RemoveAll();
+	scene.styleCandidateCount.RemoveAll();
+	scene.styleCandidateLights.RemoveAll();
+	scene.numOutputValues = 0;
+	if (context.options->shadowMaps)
+	{
+		for (int i = 0; i < scene.lights.Count(); ++i)
+		{
+			if (scene.lights[i].style < 0 || scene.lights[i].style >= 64)
+			{
+				Warning("Hlight: light %d authored style %d exceeds the native 64-style domain\n",i,scene.lights[i].style);
+				return false;
+			}
+		}
+	}
 	ReSTIRSceneLightVis vis;
 	if ( !BuildLightVis( scene, vis ) )
 	{
@@ -1051,10 +1259,21 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 			ReSTIR_LoadMaterialAlbedo( scene, face.material, ReSTIR_SceneFaceMaterial( &dface ),
 				dtexdata[info.texdata].width, dtexdata[info.texdata].height );
 		}
-		face.lmMins[0] = dface.m_LightmapTextureMinsInLuxels[0];
-		face.lmMins[1] = dface.m_LightmapTextureMinsInLuxels[1];
-		face.luxelW = dface.m_LightmapTextureSizeInLuxels[0] + 1;
-		face.luxelH = dface.m_LightmapTextureSizeInLuxels[1] + 1;
+		const int density = context.options->shadowMaps ? context.options->highresDensity : 1;
+		for ( int axis = 0; axis < 2; ++axis )
+		{
+			if ( (int64)dface.m_LightmapTextureSizeInLuxels[axis] * density + 3 > 16384 ||
+				(int64)dface.m_LightmapTextureMinsInLuxels[axis] * density < INT_MIN ||
+				(int64)dface.m_LightmapTextureMinsInLuxels[axis] * density > INT_MAX )
+			{
+				Warning( "Hlight: face %d axis %d cannot fit requested density %d (native extent %d)\n",
+					dfaceIndex, axis, density, dface.m_LightmapTextureSizeInLuxels[axis] );
+				return false;
+			}
+			face.lmMins[axis] = dface.m_LightmapTextureMinsInLuxels[axis] * density;
+		}
+		face.luxelW = dface.m_LightmapTextureSizeInLuxels[0] * density + 1;
+		face.luxelH = dface.m_LightmapTextureSizeInLuxels[1] * density + 1;
 		face.flags = dface.dispinfo >= 0 ? RESTIR_FACE_DISP : 0;
 		if ( info.flags & SURF_BUMPLIGHT )
 		{
@@ -1066,7 +1285,7 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 		if ( disp )
 		{
 			// Host/GPU reconstruction contract: squared world-space displacement support.
-			face.reflectivity[3] = DispSampleRadiusSquared( info );
+			face.reflectivity[3] = DispSampleRadiusSquared( info ) / ( (float)density * density );
 		}
 		// utils/vrad/lightmap.cpp:2473-2475,3047-3049 — bump bases use texture axes, not luxel axes.
 		// w carries the texel offset so the GPU can rebuild the brush texture UV at a hit.
@@ -1088,13 +1307,24 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 			BuildRegularFaceSamples( context, scene, faceIndex, face );
 		}
 		face.numSamples = scene.samples.Count() - face.firstSample;
+		if ( face.numSamples == 0 && scene.sunVisibilityOrigins.Count() > 0 )
+		{
+			for ( int luxel = face.firstLuxel; luxel < face.firstLuxel + face.luxelW * face.luxelH; ++luxel )
+				scene.sunVisibilityOrigins[luxel].Init( 0, 0, 0, 0 );
+		}
 		if ( disp )
 		{
 			CacheDisplacementFaceClusters( context, scene, face );
 		}
 		AssignFaceStyles( context, scene, vis, faceIndex, face );
 		face.firstOutput = scene.numOutputValues;
-		scene.numOutputValues += face.numStyles * face.numChannels * face.luxelW * face.luxelH;
+		const int64 outputs = (int64)face.numStyles * face.numChannels * face.luxelW * face.luxelH;
+		if ( outputs > INT_MAX - scene.numOutputValues )
+		{
+			Warning( "Hlight: face %d exceeds signed GPU output indexing at density %d\n", dfaceIndex, density );
+			return false;
+		}
+		scene.numOutputValues += (int)outputs;
 		entity_t *entity = ReSTIR_SceneEntityForModel( context.faceModels[dfaceIndex] );
 		const float minLight = entity ? FloatForKey( entity, "_minlight" ) * 128.0f : 0.0f;
 		scene.faceMinLight.AddToTail( Vector( minLight, minLight, minLight ) );
@@ -1182,6 +1412,11 @@ bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 	}
 	Msg( "VRAD ReSTIR: %d faces reached by more than %d light styles; %d still overflow after shadow rays\n",
 		scene.styleOverflowFaces.Count(), MAXLIGHTMAPS, warnings );
+	if ( warnings && g_ReSTIROptions.shadowMaps )
+	{
+		Warning( "Hlight: refusing to discard authored styles from %d overflowing faces\n", warnings );
+		return false;
+	}
 	scene.styleOverflowFaces.Purge();
 	scene.styleCandidateFirst.Purge();
 	scene.styleCandidateCount.Purge();

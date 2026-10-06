@@ -46,9 +46,14 @@
 #define RESTIR_BIND_SCENE_STYLES     22  // int[numStyles]
 #define RESTIR_BIND_EMITTER_TRIS     23  // ReSTIRGpuEmitterTriangle[] (ReSTIRScene::emitterTriangles)
 #define RESTIR_BIND_STYLE_LIGHTS     24  // int[] (ReSTIRScene::styleLights): numStyles+1 offsets, then local light indices per style
-#define RESTIR_BIND_COVERAGE         25  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
-#define RESTIR_BIND_TLAS             26  // accelerationStructureEXT (hardware-rt only)
-#define RESTIR_BIND_COUNT            27
+#define RESTIR_BIND_RECEIVER_ACCUMULATION 25 // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: as ACCUMULATION minus RESTIR_LIGHT_RUNTIME_DIRECT
+                                         //   non-PATH direct (shadowMaps bakes with selected lights only; else the 16-byte dummy)
+#define RESTIR_BIND_RECEIVER_OUTPUT  26  // vec4[numOutputValues] reconstructed receiver radiance (ReSTIRLightmapResult::radiance when split)
+#define RESTIR_BIND_SUN_ORIGINS      27  // vec4[numLuxels]: final origin xyz, w=1 valid / 0 blocked; selected sun only
+#define RESTIR_BIND_SUN_VISIBILITY   28  // float[numLuxels]: independent closest-sky cone fraction; selected sun only
+#define RESTIR_BIND_COVERAGE         29  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
+#define RESTIR_BIND_TLAS             30  // accelerationStructureEXT (hardware-rt only); MUST stay the last binding
+#define RESTIR_BIND_COUNT            31
 
 #define RESTIR_MAX_CHANNELS          4   // NUM_BUMP_VECTS + 1; accumulation always reserves 4 per reservoir
 #define RESTIR_WORKGROUP_SIZE        64
@@ -92,8 +97,7 @@ struct ReSTIRBvhNode						// 48 bytes
 	unsigned int pad;
 };
 
-//-----------------------------------------------------------------------------
-// Push constants (identical for every pipeline; 112 bytes, under the 128-byte guaranteed minimum)
+// Push constants (identical for every pipeline; 128 bytes, the guaranteed minimum)
 struct ReSTIRPushConstants
 {
 	unsigned int pass;					// pass-specific sub-id (e.g. sort bit, refit level)
@@ -118,7 +122,9 @@ struct ReSTIRPushConstants
 	unsigned int numReservoirs;
 	float		worldMins[4];			// scene bounds (morton codes)
 	float		worldMaxs[4];
+	float		shadowSun[4];			// x: resolved shadowSunAngularRadius in radians (not transport spread); yzw = 0
 };
+COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 128 );
 #define RESTIR_PC_FINAL_ITERATION   0x1
 #define RESTIR_PC_HARDWARE_RT       0x2   // informative; shaders are compiled per backend anyway
 

@@ -9,6 +9,8 @@ class CReSTIRSceneBuilder
 {
 public:
 	// Builds the deterministic CPU scene consumed by the Vulkan backend.
+	// shadowMaps resolves entity selection/provenance and full-record shadowLights once (sun first, then locals);
+	// shadow-only emitter sizes never alter sunSpreadAngle or the transport's light sampling.
 	bool Build( const ReSTIROptions &options, ReSTIRScene &scene );
 };
 

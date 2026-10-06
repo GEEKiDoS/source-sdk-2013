@@ -9,6 +9,7 @@
 //===========================================================================//
 
 #include "BaseVSShaderDX12.h"
+#include "lightmappedgeneric_dx9_helper.h"
 
 #include "cable_vs51.inc"
 #include "cable_ps51.inc"
@@ -42,6 +43,9 @@ BEGIN_VS_SHADER( Cable_DX9,
 
 	SHADER_DRAW
 	{
+		bool bShadowmapReceiver = false;
+		if ( !DX12ShadowmapReceiverSnapshot( pContextDataPtr, pShaderShadow, "Cable", bShadowmapReceiver ) )
+			return;
 		BlendType_t nBlendType = EvaluateBlendRequirements( BASETEXTURE, true );
 		bool bFullyOpaque = (nBlendType != BT_BLENDADD) && (nBlendType != BT_BLEND) && !IS_FLAG_SET(MATERIAL_VAR_ALPHATEST); //dest alpha is free for special use
 
@@ -65,15 +69,15 @@ BEGIN_VS_SHADER( Cable_DX9,
 			
 			int tCoordDimensions[] = {2,2};
 			pShaderShadow->VertexShaderVertexFormat( 
-				VERTEX_POSITION | VERTEX_COLOR | VERTEX_TANGENT_S | VERTEX_TANGENT_T, 
+				VERTEX_POSITION | VERTEX_COLOR | VERTEX_TANGENT_S | VERTEX_TANGENT_T | ( bShadowmapReceiver ? VERTEX_NORMAL : 0 ),
 				2, tCoordDimensions, 0 );
 
 			DECLARE_STATIC_VERTEX_SHADER( cable_vs51 );
-			SET_STATIC_VERTEX_SHADER( cable_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( cable_vs51, cable_shadowmap_vs51 );
 
 			{
 				DECLARE_STATIC_PIXEL_SHADER( cable_ps51 );
-				SET_STATIC_PIXEL_SHADER( cable_ps51 );
+				DX12_SET_STATIC_PIXEL_SHADER( cable_ps51, cable_shadowmap_ps51 );
 			}
 
 			// we are writing linear values from this shader.
@@ -109,13 +113,13 @@ BEGIN_VS_SHADER( Cable_DX9,
 
 			DECLARE_DYNAMIC_VERTEX_SHADER( cable_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
-			SET_DYNAMIC_VERTEX_SHADER( cable_vs51 );
+			DX12_SET_DYNAMIC_VERTEX_SHADER( cable_vs51, cable_shadowmap_vs51 );
 
 			{
 				DECLARE_DYNAMIC_PIXEL_SHADER( cable_ps51 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( WRITE_DEPTH_TO_DESTALPHA, bFullyOpaque && pShaderAPI->ShouldWriteDepthToDestAlpha() );
-				SET_DYNAMIC_PIXEL_SHADER( cable_ps51 );
+				DX12_SET_DYNAMIC_PIXEL_SHADER( cable_ps51, cable_shadowmap_ps51 );
 			}
 		}
 		Draw();

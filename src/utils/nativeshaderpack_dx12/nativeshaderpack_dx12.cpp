@@ -7,9 +7,11 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <iostream>
 #include <map>
 #include <regex>
@@ -38,6 +40,17 @@ struct Block {
     std::vector<Member> members;
     std::string canonical;
 };
+struct Combo {
+	std::string name;
+	uint32_t minimum = 0, maximum = 0;
+	bool dynamic = false;
+	int slot = -1; // Retained combos have no payload slot.
+};
+struct ComboFold {
+	std::vector<Combo> original;
+	uint32_t originalStatic = 1, originalDynamic = 1, nativeStatic = 1, nativeDynamic = 1;
+	bool enabled = false;
+};
 struct Shader {
     // logical: native name (<base>_vs51|_ps51|_cs51). legacyName: the DX9 logical of the same shader (<base>_vs20, ps20b,
     // ...), i.e. the combo-ABI reference and the shaders/fxc record name. Native-only logicals (profile "native")
@@ -48,6 +61,8 @@ struct Shader {
     unsigned dynamicCount = 0, staticCount = 0, present = 0;
     std::set<uint64_t> presentCombos;
     std::map<std::string, Block> blocks;
+	ComboFold fold;
+	uint32_t lightmapSamplerMask = 0, highresAbi = 0;
 };
 std::string readText(const fs::path &p) {
     std::ifstream f(p, std::ios::binary);
@@ -71,6 +86,21 @@ std::string trim(std::string s) {
 std::string hex(uint64_t n) {
     std::ostringstream s; s << "0x" << std::hex << std::setw(16) << std::setfill('0') << n;
     return s.str();
+}
+std::string embedHlsl(const char *name, const std::string &text) {
+    // Numeric initializers avoid MSVC's individual/concatenated string limits.
+    // The consumer still gets one zero-terminated, read-only array with no assembly.
+    std::ostringstream out;
+    out << "static const char " << name << "[] = {\n";
+    size_t column = 0;
+    for (unsigned char byte : text) {
+        if (byte < 128) out << unsigned(byte);
+        else out << "char(" << unsigned(byte) << ")";
+        out << ',';
+        if (++column == 32) { out << '\n'; column = 0; }
+    }
+    out << "0};\n";
+    return out.str();
 }
 std::string stripSpace(std::string s) {
     s.erase(std::remove_if(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c); }), s.end());
@@ -111,6 +141,190 @@ std::vector<std::string> skips(const std::string &text) {
     }
     return out;
 }
+// ShaderCompile2 visits quoted includes in source order, independent of HLSL
+// preprocessor conditions. Its first declared combo is the least-significant radix.
+bool selectedComboDirective(const std::string &line, const std::string &stage, const std::string &version) {
+	if (line.find("[XBOX]") != std::string::npos) return false;
+	static const std::regex qualifier(R"(\[([vpgdhc]s)(\d+\w?)\])");
+	bool qualified = false, matched = false;
+	for (std::sregex_iterator i(line.begin(), line.end(), qualifier), end; i != end; ++i) {
+		if ((*i)[1].str() != stage) return false;
+		qualified = true;
+		matched = matched || (*i)[2].str() == version;
+	}
+	return !qualified || matched;
+}
+Combo comboDeclaration(const std::smatch &m, bool folded) {
+	Combo c;
+	c.name = m[2].str();
+	const auto minimum = std::stoull(m[3].str()), maximum = std::stoull(m[4].str());
+	if (minimum > maximum || maximum > INT32_MAX)
+		throw std::runtime_error("Invalid combo range: " + c.name);
+	c.minimum = static_cast<uint32_t>(minimum);
+	c.maximum = static_cast<uint32_t>(maximum);
+	c.dynamic = folded ? m[5].str() == "DYNAMIC" : m[1].str() == "DYNAMIC";
+	if (folded) {
+		if (minimum == maximum) throw std::runtime_error("Fixed-value combo must remain retained: " + c.name);
+		const auto slot = std::stoull(m[6].str());
+		if (slot >= 64) throw std::runtime_error("Fold slot exceeds 63: " + c.name);
+		c.slot = static_cast<int>(slot);
+	}
+	return c;
+}
+const std::regex &comboDirectivePattern() {
+	static const std::regex pattern(R"combo(^\s*//\s*(STATIC|DYNAMIC)\s*:\s*"([^"]+)"\s+"(\d+)\.\.(\d+)".*$)combo");
+	return pattern;
+}
+void originalCombos(const fs::path &file, const fs::path &includeRoot, const std::string &stage, const std::string &version,
+                    std::vector<Combo> &out, std::set<fs::path> &active) {
+	const auto canonical = fs::weakly_canonical(file);
+	if (!active.insert(canonical).second) throw std::runtime_error("Recursive shader include: " + file.string());
+	static const std::regex include(R"inc(#\s*include\s*"([^"]+)")inc");
+	static const std::regex inlineComment(R"(/\*.*?\*/)");
+	std::istringstream lines(readText(file));
+	std::string line;
+	while (std::getline(lines, line)) {
+		if (!line.empty() && line.back() == '\r') line.pop_back(); // legacy sources are CRLF; '.' never matches '\r'
+		line = std::regex_replace(line, inlineComment, "");
+		std::smatch m;
+		if (line.rfind("//", 0) != 0 && std::regex_search(line, m, include)) {
+			auto included = file.parent_path() / m[1].str();
+			if (!fs::exists(included)) included = includeRoot / m[1].str();
+			originalCombos(included, includeRoot, stage, version, out, active);
+		} else if (std::regex_match(line, m, comboDirectivePattern()) && selectedComboDirective(line, stage, version)) {
+			out.push_back(comboDeclaration(m, false));
+		}
+	}
+	active.erase(canonical);
+}
+uint32_t comboCount(const std::vector<Combo> &combos, bool dynamic, bool retainedOnly) {
+	uint64_t count = 1;
+	for (const auto &c : combos) {
+		if (c.dynamic != dynamic || (retainedOnly && c.slot >= 0)) continue;
+		const uint64_t radix = uint64_t(c.maximum) - c.minimum + 1;
+		if (count > (std::numeric_limits<uint32_t>::max)() / radix)
+			throw std::runtime_error("Combo count overflows uint32: " + c.name);
+		count *= radix;
+	}
+	return static_cast<uint32_t>(count);
+}
+std::string foldDescription(const Shader &sh) {
+	if (!sh.fold.enabled) return {};
+	std::ostringstream out;
+	out << "fold " << sh.logical << ' ' << sh.stage << ' ' << sh.fold.originalStatic << ' '
+	    << sh.fold.originalDynamic << ' ' << sh.fold.nativeStatic << ' ' << sh.fold.nativeDynamic << '\n';
+	for (bool dynamic : {false, true}) {
+		for (const auto &c : sh.fold.original) {
+			if (c.dynamic != dynamic) continue;
+			out << (dynamic ? "D " : "S ") << c.name << ' ' << c.minimum << ' ' << c.maximum << ' ';
+			if (c.slot < 0) out << "native";
+			else out << "slot" << c.slot;
+			out << '\n';
+		}
+	}
+	out << "end\n";
+	return out.str();
+}
+std::string ordinaryLogical(const std::string &logical) {
+	return tokenRename(tokenRename(logical, "_shadowmap_", "_"), "_highres_", "_");
+}
+void loadComboFolds(const fs::path &root, std::vector<Shader> &shaders) {
+	static const std::regex foldPrefix(R"(^\s*//\s*FOLD\s*:)");
+	static const std::regex foldLine(R"combo(^\s*//\s*(FOLD)\s*:\s*"([^"]+)"\s+"(\d+)\.\.(\d+)"\s+(STATIC|DYNAMIC)\s+slot=(\d+)\s*$)combo");
+	static const std::regex skipLine(R"(^\s*//\s*SKIP\s*:\s*(.*)$)");
+	static const std::regex skipIdentifier(R"(\$?([A-Za-z_]\w*))");
+	for (auto &sh : shaders) {
+		const auto native = root / "hlsl" / sh.source;
+		// Hand-authored native-only shaders live outside hlsl and cannot fold a legacy ABI.
+		if (!fs::exists(native)) continue;
+		std::vector<Combo> declared, folded;
+		std::vector<std::string> skipExpressions;
+		std::istringstream lines(readText(native));
+		std::string line;
+		while (std::getline(lines, line)) {
+			if (!line.empty() && line.back() == '\r') line.pop_back();
+			std::smatch m;
+			if (std::regex_search(line, foldPrefix)) {
+				if (!std::regex_match(line, m, foldLine))
+					throw std::runtime_error("Malformed FOLD directive in " + sh.logical + ": " + line);
+				folded.push_back(comboDeclaration(m, true));
+			} else if (std::regex_match(line, m, comboDirectivePattern()) && selectedComboDirective(line, sh.stage, "51")) {
+				declared.push_back(comboDeclaration(m, false));
+			} else if (std::regex_match(line, m, skipLine)) {
+				skipExpressions.push_back(m[1].str());
+			}
+		}
+		if (folded.empty()) continue;
+		const Shader *reference = &sh;
+		if (sh.profile == "native") {
+			const auto ordinary = ordinaryLogical(sh.logical);
+			const auto found = std::find_if(shaders.begin(), shaders.end(), [&](const Shader &s) { return s.logical == ordinary; });
+			if (ordinary == sh.logical || found == shaders.end() || found->profile == "native" || found->stage != sh.stage)
+				throw std::runtime_error("Folded feature shader has no ordinary legacy reference: " + sh.logical);
+			reference = &*found;
+		}
+		if (reference->legacySource.empty()) throw std::runtime_error("Folded shader has no legacy source: " + sh.logical);
+		auto source = root / "legacy_reference" / reference->legacySource;
+		if (!fs::exists(source)) source = root.parent_path() / "stdshaders" / reference->legacySource;
+		// Reference overrides only replace the main file; quoted includes stay in stdshaders.
+		std::set<fs::path> active;
+		const auto version = reference->profile == "30" ? "30" : sh.stage == "vs" ? "20" : reference->profile == "20" ? "20" : "20b";
+		originalCombos(source, root.parent_path() / "stdshaders", sh.stage, version, sh.fold.original, active);
+		std::map<std::string, Combo> nativeByName;
+		for (const auto &c : declared)
+			if (!nativeByName.emplace(c.name, c).second) throw std::runtime_error("Duplicate retained combo in " + sh.logical + ": " + c.name);
+		unsigned nextSlot = 0;
+		for (bool dynamic : {false, true}) {
+			for (const auto &c : folded) {
+				if (c.dynamic != dynamic) continue;
+				if (c.slot != static_cast<int>(nextSlot++))
+					throw std::runtime_error("FOLD slots must be dense STATIC then DYNAMIC order: " + sh.logical + "." + c.name);
+				if (!nativeByName.emplace(c.name, c).second) throw std::runtime_error("Duplicate folded combo in " + sh.logical + ": " + c.name);
+			}
+		}
+		std::set<std::string> originals;
+		for (auto &c : sh.fold.original) {
+			const auto found = nativeByName.find(c.name);
+			if (!originals.insert(c.name).second || found == nativeByName.end() || found->second.dynamic != c.dynamic ||
+			    found->second.minimum != c.minimum || found->second.maximum != c.maximum)
+				throw std::runtime_error("Fold combo ABI mismatch: " + sh.logical + "." + c.name);
+			c.slot = found->second.slot;
+		}
+		if (originals.size() != nativeByName.size()) throw std::runtime_error("Extra native combo in " + sh.logical);
+		for (const auto &expression : skipExpressions) {
+			for (std::sregex_iterator i(expression.begin(), expression.end(), skipIdentifier), end; i != end; ++i) {
+				const auto name = (*i)[1].str();
+				const auto found = nativeByName.find(name);
+				if ((found != nativeByName.end() && found->second.slot >= 0) ||
+				    (found == nativeByName.end() && (*i)[0].str().front() == '$'))
+					throw std::runtime_error("SKIP references a non-retained combo: " + sh.logical + "." + name);
+			}
+		}
+		for (bool dynamic : {false, true}) {
+			size_t at = 0;
+			for (const auto &c : sh.fold.original) {
+				if (c.dynamic != dynamic || c.slot >= 0) continue;
+				while (at < declared.size() && declared[at].dynamic != dynamic) ++at;
+				if (at == declared.size() || declared[at++].name != c.name)
+					throw std::runtime_error("Retained combo order mismatch: " + sh.logical);
+			}
+		}
+		sh.fold.originalStatic = comboCount(sh.fold.original, false, false);
+		sh.fold.originalDynamic = comboCount(sh.fold.original, true, false);
+		sh.fold.nativeStatic = comboCount(sh.fold.original, false, true);
+		sh.fold.nativeDynamic = comboCount(sh.fold.original, true, true);
+		sh.fold.enabled = true;
+	}
+	for (const auto &sh : shaders) {
+		const auto ordinary = ordinaryLogical(sh.logical);
+		if (ordinary == sh.logical) continue;
+		const auto found = std::find_if(shaders.begin(), shaders.end(), [&](const Shader &s) { return s.logical == ordinary; });
+		if (found == shaders.end()) continue;
+		if (sh.fold.enabled != found->fold.enabled ||
+		    (sh.fold.enabled && tokenRename(foldDescription(sh), sh.logical, ordinary) != foldDescription(*found)))
+			throw std::runtime_error("Ordinary/shadowmap fold table mismatch: " + sh.logical);
+	}
+}
 void hashType(ID3D12ShaderReflectionType *type, const D3D12_SHADER_TYPE_DESC &t, std::string &out) {
     out += std::to_string(static_cast<int>(t.Class)) + "," + std::to_string(static_cast<int>(t.Type)) + "," +
            std::to_string(t.Rows) + "," + std::to_string(t.Columns) + "," + std::to_string(t.Elements);
@@ -137,7 +351,7 @@ void hashType(ID3D12ShaderReflectionType *type, const D3D12_SHADER_TYPE_DESC &t,
 }
 Block reflectBlock(ID3D12ShaderReflection *reflection, ID3D12ShaderReflectionConstantBuffer *buffer,
                    const D3D12_SHADER_BUFFER_DESC &bd, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned stage) {
-    Block b; b.name = bd.Name; b.size = bd.Size; b.stage = stage; b.reg = binding.BindPoint; b.space = 1;
+    Block b; b.name = bd.Name; b.size = bd.Size; b.stage = stage; b.reg = binding.BindPoint; b.space = binding.Space;
     b.canonical = b.name + "|" + std::to_string(b.size) + ";";
     for (unsigned i = 0; i < bd.Variables; ++i) {
         auto *var = buffer->GetVariableByIndex(i);
@@ -197,6 +411,163 @@ bool engineBlock(const std::string &name) {
     for (const auto &layout : dx12native::kEngineCBufferLayouts) if (name == layout.name) return true;
     return false;
 }
+const dx12native::EngineCBufferLayoutDX12 *lightingLayout(const std::string &name) {
+    for (const auto &layout : dx12native::kLightingCBufferLayouts)
+        if (layout.shaderRegister == DX12_LIGHTING_B_VIEW && !strcmp(layout.name, "DX12LightingViewConstantsV1") &&
+            name == layout.name) return &layout;
+    return nullptr;
+}
+void validateLightingBlock(const Block &b) {
+    const auto *layout = lightingLayout(b.name);
+    if (!layout || b.stage != layout->stage || b.reg != layout->shaderRegister ||
+        b.space != DX12_LIGHTING_REGISTER_SPACE || b.size != layout->byteSize || b.members.size() != layout->memberCount)
+        throw std::runtime_error("Lighting ABI 3 cbuffer mismatch: " + b.name);
+    for (size_t i = 0; i < b.members.size(); ++i) {
+        const auto &m = b.members[i];
+        const auto &expected = layout->members[i];
+        if (m.name != expected.name || m.offset != expected.offset || m.size != expected.size)
+            throw std::runtime_error("Lighting ABI 3 member mismatch: " + b.name + "." + m.name);
+    }
+}
+bool lightingStructuredType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
+    auto *buffer = reflection->GetConstantBufferByName(binding.Name);
+    D3D12_SHADER_BUFFER_DESC bd{};
+    if (!buffer || FAILED(buffer->GetDesc(&bd)) || bd.Type != D3D_CT_RESOURCE_BIND_INFO || bd.Variables != 1) return false;
+    auto *element = buffer->GetVariableByIndex(0);
+    auto *elementType = element ? element->GetType() : nullptr;
+    D3D12_SHADER_TYPE_DESC type{};
+    if (!elementType || FAILED(elementType->GetDesc(&type)) || type.Elements) return false;
+    if (binding.BindPoint == DX12_LIGHTING_T_LIGHTS) {
+        constexpr unsigned memberCount = sizeof(dx12native::kRuntimeShadowLightGpuMembers) /
+                                         sizeof(dx12native::kRuntimeShadowLightGpuMembers[0]);
+        if (type.Class != D3D_SVC_STRUCT || !type.Name || strcmp(type.Name, "RuntimeShadowLightGpu") ||
+            type.Members != memberCount) return false;
+        for (unsigned i = 0; i < memberCount; ++i) {
+            const auto &expected = dx12native::kRuntimeShadowLightGpuMembers[i];
+            const char *name = elementType->GetMemberTypeName(i);
+            auto *memberType = elementType->GetMemberTypeByIndex(i);
+            D3D12_SHADER_TYPE_DESC member{};
+            if (!name || strcmp(name, expected.name) || !memberType || FAILED(memberType->GetDesc(&member)) ||
+                member.Offset != expected.offset || member.Class != expected.valueClass ||
+                member.Type != expected.scalarType || member.Rows != expected.rows ||
+                member.Columns != expected.columns || member.Elements != expected.elements) return false;
+        }
+        return true;
+    }
+    const unsigned columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 : 1;
+    return type.Type == D3D_SVT_UINT && type.Rows == 1 && type.Columns == columns &&
+           type.Class == (columns == 2 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR);
+}
+void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
+    struct Resource { const char *name; unsigned reg, count, stride; };
+    static const Resource resources[] = {
+        {"g_ShadowLocalAtlas", DX12_LIGHTING_T_LOCAL_ATLAS_FIRST, DX12_SHADOW_MAX_LOCAL_PAGES, 0},
+        {"g_ShadowCascadeAtlas", DX12_LIGHTING_T_CASCADE_ATLAS, 1, 0},
+        {"g_ShadowStaticSun", DX12_LIGHTING_T_STATIC_SUN, 1, 0},
+        {"g_ShadowLights", DX12_LIGHTING_T_LIGHTS, 1, sizeof(RuntimeShadowLightGpu)},
+        {"g_ShadowTileRanges", DX12_LIGHTING_T_TILE_RANGES, 1, 8},
+        {"g_ShadowTileIndices", DX12_LIGHTING_T_TILE_INDICES, 1, 4},
+        {"g_ShadowSunVisibility", DX12_LIGHTING_T_SUN_VISIBILITY, 1, 0},
+    };
+    bool marker = false, space2 = false;
+    unsigned seen = 0;
+    // Reflection contains only retained resources. The view block marks the ABI;
+    // unused textures/samplers may disappear, but every retained binding must match.
+    for (unsigned i = 0; i < desc.BoundResources; ++i) {
+        D3D12_SHADER_INPUT_BIND_DESC binding{};
+        if (FAILED(reflection->GetResourceBindingDesc(i, &binding)) || !binding.Name)
+            throw std::runtime_error("Cannot reflect lighting resource binding");
+        const auto *layout = lightingLayout(binding.Name);
+        if (binding.Space != DX12_LIGHTING_REGISTER_SPACE && !layout) continue;
+        space2 = true;
+        unsigned slot = 0;
+        bool valid = stage == VcsStage::Pixel && binding.Space == DX12_LIGHTING_REGISTER_SPACE;
+        if (layout) {
+            slot = layout->shaderRegister;
+            valid = valid && binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == layout->shaderRegister && binding.BindCount == 1;
+            auto *buffer = reflection->GetConstantBufferByName(binding.Name);
+            D3D12_SHADER_BUFFER_DESC bd{};
+            valid = valid && buffer && SUCCEEDED(buffer->GetDesc(&bd)) && bd.Type == D3D_CT_CBUFFER && bd.Name;
+            if (valid) validateLightingBlock(reflectBlock(reflection, buffer, bd, binding, dx12native::kStagePixel));
+            marker = true;
+        } else if (binding.Type == D3D_SIT_SAMPLER) {
+            const bool comparison = (binding.uFlags & D3D_SIF_COMPARISON_SAMPLER) != 0;
+            const bool shadow = comparison && binding.BindPoint == DX12_LIGHTING_S_COMPARISON && !strcmp(binding.Name, "g_ShadowCmpSampler");
+            valid = valid && binding.BindCount == 1 && shadow;
+            slot = 8;
+        } else {
+            const Resource *resource = nullptr;
+            for (unsigned r = 0; r < sizeof(resources) / sizeof(*resources); ++r)
+                if (!strcmp(binding.Name, resources[r].name)) { resource = &resources[r]; slot = 1 + r; break; }
+            valid = valid && resource && binding.BindPoint == resource->reg && binding.BindCount == resource->count;
+            if (valid && resource->stride)
+                valid = binding.Type == D3D_SIT_STRUCTURED && binding.Dimension == D3D_SRV_DIMENSION_BUFFER &&
+                        binding.NumSamples == resource->stride && lightingStructuredType(reflection, binding);
+            else if (valid)
+                valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == D3D_SRV_DIMENSION_TEXTURE2D &&
+                        binding.ReturnType == (resource->reg == DX12_LIGHTING_T_SUN_VISIBILITY ? D3D_RETURN_TYPE_UINT : D3D_RETURN_TYPE_FLOAT) &&
+                        !(binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS);
+        }
+        if (!valid || (seen & (1u << slot))) throw std::runtime_error("Lighting ABI 3 binding mismatch: " + std::string(binding.Name));
+        seen |= 1u << slot;
+    }
+    if (space2 && !marker) throw std::runtime_error("Space-2 resources require DX12LightingViewConstantsV1");
+    const bool carrier = logical == "lightmappedgeneric_shadowmap_ps51" || logical == "worldtwotextureblend_shadowmap_ps51" ||
+                         logical == "lightmappedreflective_shadowmap_ps51" || logical == "lightmappedgeneric_decal_shadowmap_ps51";
+    if (marker && carrier && !(seen & (1u << 7)))
+        throw std::runtime_error("Lighting ABI 3 receiver requires packed uint t1029: " + logical);
+}
+void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const Shader &shader) {
+	static const char *const names[] = {"HlightFaceIds", "HlightFaces", "HlightTiles", "HlightDynamic",
+		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384"};
+	unsigned seen = 0;
+	for (unsigned i = 0; i < desc.BoundResources; ++i) {
+		D3D12_SHADER_INPUT_BIND_DESC b{};
+		if (FAILED(reflection->GetResourceBindingDesc(i, &b))) throw std::runtime_error("Highres binding reflection failed");
+		if (b.Space != 3) continue;
+		bool valid = stage == VcsStage::Pixel && shader.highresAbi && b.BindCount == 1;
+		unsigned slot = 0;
+		if (b.Type == D3D_SIT_CBUFFER) {
+			slot = 8;
+			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "DX12HighresDrawConstants");
+		} else if (b.Type == D3D_SIT_SAMPLER) {
+			slot = 9;
+			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "HlightLinear") && !(b.uFlags & D3D_SIF_COMPARISON_SAMPLER);
+		} else if (b.Type == D3D_SIT_UAV_RWBYTEADDRESS) {
+			slot = 10;
+			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "HlightFailure");
+		} else {
+			slot = b.BindPoint;
+			valid = valid && slot < 8 && !strcmp(b.Name, names[slot]);
+			if (valid && (slot == 1 || slot == 2))
+				valid = b.Type == D3D_SIT_STRUCTURED && b.Dimension == D3D_SRV_DIMENSION_BUFFER &&
+					b.NumSamples == (slot == 1 ? 160u : 32u);
+			else if (valid)
+				valid = b.Type == D3D_SIT_TEXTURE &&
+					b.Dimension == (slot < 4 ? D3D_SRV_DIMENSION_TEXTURE2D : D3D_SRV_DIMENSION_TEXTURE2DARRAY) &&
+					b.ReturnType == (slot == 0 ? D3D_RETURN_TYPE_UINT : D3D_RETURN_TYPE_FLOAT);
+		}
+		if (!valid || (seen & (1u << slot))) throw std::runtime_error("Highres resource contract mismatch: " + std::string(b.Name));
+		seen |= 1u << slot;
+	}
+	if (seen && seen != 0x7ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
+}
+void validateDepthRestoreBlock(const Block &b, const Shader &shader, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
+    const bool restore = shader.profile == "native" &&
+        ((shader.stage == "vs" && shader.logical == "shadow_depth_restore_vs51") ||
+         (shader.stage == "ps" && shader.logical == "shadow_depth_restore_ps51"));
+    if (!restore || b.name != "ShadowDepthRestoreConstants" || b.space != 0 || b.reg != 0 ||
+        binding.Type != D3D_SIT_CBUFFER || binding.BindCount != 1 || b.size != 64 || b.members.size() != 4)
+        throw std::runtime_error("Space-0 cbuffer outside depth-restore contract: " + shader.logical + "." + b.name);
+    static const char *const names[] = {"srcRect", "dstRect", "srcSize", "dstSize"};
+    for (unsigned i = 0; i < 4; ++i) {
+        const auto &m = b.members[i];
+        if (m.name != names[i] || m.offset != i * 16 || m.size != 16 || m.kind != D3D_SVC_VECTOR ||
+            m.type != D3D_SVT_UINT || m.rows != 1 || m.cols != 4 || m.elements)
+            throw std::runtime_error("Depth-restore member mismatch: " + m.name);
+    }
+}
+
 // Match the declaration on the same line as its @legacy annotation.  Includes
 // are searched as well because material blocks are shared across shaders.
 std::map<std::string, std::string> annotations(const fs::path &hlsl) {
@@ -223,6 +594,24 @@ std::map<std::string, std::string> annotations(const fs::path &hlsl) {
     return result;
 }
 void annotate(Block &b, const std::map<std::string, std::string> &tags) {
+	if (b.name == "DX12HighresDrawConstants") {
+		if (b.stage != dx12native::kStagePixel || b.space != 3 || b.reg != 0 ||
+		    b.size != sizeof(dx12native::DX12HighresDrawConstants) || b.members.size() != 3)
+			throw std::runtime_error("Highres draw cbuffer mismatch");
+		for (size_t i = 0; i < 3; ++i) {
+			const auto &expected = dx12native::kDX12HighresDrawConstantsMembers[i];
+			const auto &member = b.members[i];
+			if (member.name != expected.name || member.offset != expected.offset || member.size != expected.size)
+				throw std::runtime_error("Highres draw member mismatch: " + member.name);
+		}
+		b.engine = true;
+		return;
+	}
+    if (lightingLayout(b.name) || b.space == DX12_LIGHTING_REGISTER_SPACE) {
+        validateLightingBlock(b);
+        b.engine = true;
+        return;
+    }
     b.engine = engineBlock(b.name);
     if (b.engine) validateEngine(b);
     if (b.space != 1) throw std::runtime_error("Space-0 cbuffer rejected: " + b.name);
@@ -272,7 +661,9 @@ std::string header(const Block &b) {
         std::ostringstream e;
         e << "#pragma once\n#include \"native_engine_cbuffers_dx12.h\"\nnamespace dx12cb {\n"
           << "// Engine-owned: the backend fills this block from native state; materials never write it.\n"
-          << "using " << b.name << " = dx12native::" << b.name << ";\n} // namespace dx12cb\n";
+          << "using " << b.name << " = dx12native::"
+          << ((b.name == "DX12ComboFoldPS" || b.name == "DX12ComboFoldVS") ? "DX12ComboFold" : b.name)
+          << ";\n} // namespace dx12cb\n";
         return e.str();
     }
     s << "struct alignas(16) " << b.name << " {\n";
@@ -389,6 +780,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         }
     }
     if (shaders.empty()) throw std::runtime_error("No shaders in manifests");
+	loadComboFolds(root, shaders);
     // Native-only hand-authored sources live outside generated hlsl/ but participate in the same
     // cbuffer-space and @legacy annotation validation.
     auto tags = annotations(root / "hlsl");
@@ -403,14 +795,42 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         if (spaces.count(name) && spaces.at(name) != space) throw std::runtime_error("Conflicting cbuffer register spaces: " + name);
         spaces[name] = space;
     }
-    for (const auto &[name, space] : spaces) if (space != 1) throw std::runtime_error("Space-0 cbuffer rejected: " + name);
+    for (const auto &[name, space] : spaces) {
+        const auto *lighting = lightingLayout(name);
+        if (name == "DX12HighresDrawConstants" ? space != 3 :
+            lighting ? space != DX12_LIGHTING_REGISTER_SPACE :
+            name == "ShadowDepthRestoreConstants" ? space != 0 : space != 1)
+            throw std::runtime_error("Cbuffer outside its declared register-space contract: " + name);
+    }
     std::map<std::string, Block> shared;
     std::map<std::string, std::string> output;
+	output["inc/highres_lightmaps_hlsl.inc"] = embedHlsl("kHighresLightmapsHlsl",
+		readText(root / "native_src" / "highres_lightmaps.hlsli"));
+	// Fixed-function shaders are compiled without an include handler. Embed the same
+	// authored selected-direct kernel and the space2-only constant/type declarations.
+	const std::string engineHlsl = readText(root / "hlsl" / "common" / "dx12_engine_cbuffers.h");
+	const size_t lightingStart = engineHlsl.find("#if defined(DX12_SHADOWMAPS)");
+	const size_t outerEnd = engineHlsl.rfind("#endif");
+	if (lightingStart == std::string::npos || outerEnd <= lightingStart)
+		throw std::runtime_error("Cannot locate standalone space2 lighting mirror");
+	output["inc/shadowmap_lighting_hlsl.inc"] = embedHlsl("kShadowmapLightingHlsl",
+		std::string("#define DX12_SHADOWMAPS 1\n") + engineHlsl.substr(lightingStart, outerEnd - lightingStart) +
+		readText(root / "native_src" / "shadowmap_lighting.hlsli"));
     std::vector<std::pair<fs::path, fs::path>> publish;
     std::ostringstream report;
     struct RegistryEntry { std::string logical, stage, block; };
     std::vector<RegistryEntry> registry;
     for (auto &sh : shaders) {
+		const fs::path authored = fs::exists(root / "hlsl" / sh.source) ? root / "hlsl" / sh.source : root / "native_src" / sh.source;
+		const std::string authoredText = readText(authored);
+		std::smatch samplerRoles;
+		if (std::regex_search(authoredText, samplerRoles, std::regex(R"(//\s*HIGHLIGHT_SAMPLERS:\s*(\d+))")))
+			sh.lightmapSamplerMask = uint32_t(std::stoul(samplerRoles[1].str()));
+		sh.highresAbi = sh.logical.find("_highres_") != std::string::npos ? 1u : 0u;
+		if (sh.stage != "ps" && sh.lightmapSamplerMask)
+			throw std::runtime_error("Lightmap roles declared outside pixel stage: " + sh.logical);
+		if (sh.lightmapSamplerMask & ~0xffffu)
+			throw std::runtime_error("Lightmap sampler mask exceeds native samplers: " + sh.logical);
         const fs::path nativeInc = sh.artifactRoot / "include" / (sh.generatedBase + ".inc");
         const bool nativeOnly = sh.profile == "native";
         if (nativeOnly) {
@@ -421,9 +841,15 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
             sh.legacyName = sh.profile == "20" ? baseName(sh.legacySource, sh.stage, "20") : legacyBase;
             const fs::path legacyInc = staging / "legacy" / sh.profile / "include" / (legacyBase + ".inc");
             if (!fs::exists(legacyInc)) throw std::runtime_error("Missing legacy combo include: " + legacyInc.string());
-            sh.inc = readText(nativeInc); sh.legacyInc = readText(legacyInc);
-            if (comboABI(sh.inc, sh.generatedBase) != comboABI(sh.legacyInc, legacyBase) || skips(sh.inc) != skips(sh.legacyInc))
-                throw std::runtime_error("Combo ABI mismatch: " + sh.logical + " vs " + sh.legacySource + " (" + sh.profile + ")");
+			sh.legacyInc = readText(legacyInc);
+			if (sh.fold.enabled) {
+				// C++ keeps the full, pre-fold combo ABI; only the compiled VCS is reduced.
+				sh.inc = tokenRename(sh.legacyInc, legacyBase, sh.generatedBase);
+			} else {
+				sh.inc = readText(nativeInc);
+				if (comboABI(sh.inc, sh.generatedBase) != comboABI(sh.legacyInc, legacyBase) || skips(sh.inc) != skips(sh.legacyInc))
+					throw std::runtime_error("Combo ABI mismatch: " + sh.logical + " vs " + sh.legacySource + " (" + sh.profile + ")");
+			}
         }
         const fs::path nativeVcs = sh.artifactRoot / "shaders" / "fxc" / (sh.generatedBase + ".vcs");
         sh.vcs = nativeVcs;
@@ -434,6 +860,9 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         if (vcs.Version() != 6) throw std::runtime_error("Native compiler did not emit VCS v6: " + sh.logical);
         sh.dynamicCount = vcs.DynamicComboCount();
         const unsigned total = static_cast<unsigned>(*reinterpret_cast<const uint32_t *>(bytes.data() + 4));
+		if (sh.fold.enabled && (sh.dynamicCount != sh.fold.nativeDynamic ||
+		    uint64_t(total) != uint64_t(sh.fold.nativeStatic) * sh.fold.nativeDynamic))
+			throw std::runtime_error("Folded VCS combo count mismatch: " + sh.logical);
         std::vector<unsigned> staticIndices;
         for (size_t ordinal = 0;; ++ordinal) { unsigned index = 0; if (!vcs.StaticComboIndex(ordinal, index)) break; staticIndices.push_back(index); }
         sh.staticCount = static_cast<unsigned>(staticIndices.size());
@@ -452,6 +881,8 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                                                stage == VcsStage::Pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_COMPUTE_SHADER;
                 if (FAILED(reflection->GetDesc(&desc)) || static_cast<unsigned>(D3D12_SHVER_GET_TYPE(desc.Version)) != expectedStage)
                     throw std::runtime_error("DXBC stage mismatch: " + sh.logical);
+                validateLightingResources(reflection.Get(), desc, stage, sh.logical);
+				validateHighresResources(reflection.Get(), desc, stage, sh);
                 if (stage == VcsStage::Compute) {
                     for (unsigned resource = 0; resource < desc.BoundResources; ++resource) {
                         D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -469,34 +900,56 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                         }
                     }
                 }
+				bool reflectedFold = false;
                 for (unsigned i = 0; i < desc.ConstantBuffers; ++i) {
                     auto *buffer = reflection->GetConstantBufferByIndex(i);
                     D3D12_SHADER_BUFFER_DESC bd{};
                     if (FAILED(buffer->GetDesc(&bd))) throw std::runtime_error("Cannot reflect cbuffer");
+                    // Structured-buffer element types are reflected as RESOURCE_BIND_INFO, not cbuffers.
+                    if (bd.Type == D3D_CT_RESOURCE_BIND_INFO) continue;
+                    if (bd.Type != D3D_CT_CBUFFER) throw std::runtime_error("Unsupported constant-buffer type: " + std::string(bd.Name));
                     D3D12_SHADER_INPUT_BIND_DESC binding{};
                     if (FAILED(reflection->GetResourceBindingDescByName(bd.Name, &binding)))
                         throw std::runtime_error("Cannot bind reflected cbuffer " + std::string(bd.Name));
                     const unsigned blockStage = stage == VcsStage::Vertex ? 0u : stage == VcsStage::Pixel ? 1u : 2u;
                     auto b = reflectBlock(reflection.Get(), buffer, bd, binding, blockStage);
+					if (b.name == "DX12ComboFoldPS" || b.name == "DX12ComboFoldVS") {
+						const auto expected = sh.stage == "ps" ? "DX12ComboFoldPS" : "DX12ComboFoldVS";
+						if (!sh.fold.enabled || sh.stage == "cs" || b.name != expected || binding.BindCount != 1)
+							throw std::runtime_error("Unexpected combo-fold cbuffer: " + sh.logical + "." + b.name);
+						validateEngine(b);
+						if (b.members.size() != 1) throw std::runtime_error("Combo-fold member count mismatch: " + sh.logical);
+						const auto &m = b.members.front();
+						if (m.name != "cComboFold" || m.type != D3D_SVT_UINT || m.kind != D3D_SVC_VECTOR ||
+						    m.rows != 1 || m.cols != 4 || m.elements != 16 || m.offset != 0 || m.size != 256 || m.stride != 16)
+							throw std::runtime_error("Combo-fold uint4[16] member mismatch: " + sh.logical);
+						reflectedFold = true;
+					}
                     if (stage == VcsStage::Compute && (binding.Space != 1 || binding.BindPoint != 0 || bd.Size > 256))
                         throw std::runtime_error("Compute cbuffer violates b0 space1/256-byte contract: " + sh.logical);
                     const auto declared = spaces.find(b.name);
                     if (declared != spaces.end() && declared->second != binding.Space)
                         throw std::runtime_error("Reflected cbuffer register space disagrees with source: " + b.name);
                     b.space = binding.Space;
-                    if (stage != VcsStage::Compute)
+                    if (binding.Space == 0) {
+                        validateDepthRestoreBlock(b, sh, binding);
+                        b.engine = true;
+                    } else if (stage != VcsStage::Compute) {
                         annotate(b, tags);
+                    }
                     const auto existing = sh.blocks.find(b.name);
                     if (existing != sh.blocks.end() && (existing->second.canonical != b.canonical || existing->second.reg != b.reg || existing->second.space != b.space))
                         throw std::runtime_error("Cbuffer differs between combos: " + sh.logical + "." + b.name);
                     sh.blocks[b.name] = std::move(b);
                 }
+				if (sh.fold.enabled && !reflectedFold)
+					throw std::runtime_error("Folded shader does not reflect its combo-fold cbuffer: " + sh.logical);
             }
         }
         if (!sh.present) throw std::runtime_error("No present DXBC payloads: " + sh.logical);
         // Native-only logicals have no legacy runtime record or combo-ABI comparison.
         const fs::path legacyVcs = game / "shaders" / "fxc" / (sh.legacyName + ".vcs");
-        if (!nativeOnly && fs::exists(legacyVcs)) {
+        if (!nativeOnly && !sh.fold.enabled && fs::exists(legacyVcs)) {
             const auto old = readBytes(legacyVcs);
             ShaderVcsFile legacy; if (!legacy.OpenBytes(old.data(), old.size(), stage, legacyVcs.string().c_str(), error)) throw std::runtime_error(error.Get());
             if (legacy.DynamicComboCount() != sh.dynamicCount || *reinterpret_cast<const uint32_t *>(old.data() + 4) != total)
@@ -511,6 +964,8 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         }
         if (sh.stage != "cs") {
             for (const auto &[name, block] : sh.blocks) {
+                // Backend-owned space-2 and restore blocks never become material writers/aliases.
+                if (block.space != 1) continue;
                 auto found = shared.find(name);
                 if (found != shared.end() && (found->second.canonical != block.canonical || found->second.reg != block.reg || found->second.space != block.space || found->second.stage != block.stage))
                     throw std::runtime_error("Shared cbuffer layout mismatch: " + name);
@@ -551,6 +1006,12 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         report << detail;
         const char *directory = sh.stage == "vs" ? "vsh" : sh.stage == "ps" ? "psh" : "csh";
         publish.emplace_back(nativeVcs, game / "shaders" / directory / (sh.logical + ".vcs"));
+		if (sh.lightmapSamplerMask || sh.highresAbi) {
+			const uint32_t metadata[4] = {0x544c484eu, 1u, sh.lightmapSamplerMask, sh.highresAbi};
+			const fs::path sidecar = sh.artifactRoot / "hlight" / (sh.logical + ".hlight");
+			writeText(sidecar, std::string(reinterpret_cast<const char *>(metadata), sizeof(metadata)));
+			publish.emplace_back(sidecar, game / "shaders" / directory / (sh.logical + ".hlight"));
+		}
     }
     for (const auto &[name, b] : shared) output["cbuffers/" + name + ".h"] = header(b);
     {
@@ -633,6 +1094,11 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
     const fs::path legacyNamesPath = game / "shaders" / "native_dx12_legacy_names.txt";
     writeText(legacyNamesPath, legacyNames.str());
     ownedList << fs::relative(legacyNamesPath, game).generic_string() << '\n';
+	std::ostringstream comboFolds;
+	for (const auto &sh : shaders) comboFolds << foldDescription(sh);
+	const fs::path comboFoldsPath = game / "shaders" / "native_dx12_combo_fold.txt";
+	writeText(comboFoldsPath, comboFolds.str());
+	ownedList << fs::relative(comboFoldsPath, game).generic_string() << '\n';
     writeText(owned, ownedList.str());
     std::cout << "validated " << shaders.size() << " shaders, " << shared.size() << " cbuffers; generated " << generated.string() << '\n';
 }

@@ -44,7 +44,7 @@ compiled directly and are not copied into generated trees. Legacy-backed lines a
 with `-dynamic` (using `legacy_reference/` overrides where present), then `nativeshaderpack_dx12` validates DXBC,
 VCS v6, cbuffer reflection/space-1 rules, and combo ABI only where a legacy reference exists. It owns `shaders/vsh|psh|csh`
 entries listed in `shaders/native_dx12_published.txt` and writes `shaders/native_dx12_legacy_names.txt`; nothing is
-written under `shaders/fxc`. A cold build of all 170 logicals takes about 35 minutes on 32 threads. Then rebuild
+written under `shaders/fxc`. Build cost depends on the manifest set, folded combo counts and compiler-cache state. Then rebuild
 `stdshader_dx12` (it includes `generated/`).
 
 ## Runtime contract
@@ -63,6 +63,71 @@ written under `shaders/fxc`. A cold build of all 170 logicals takes about 35 min
   thread; it never writes VCS files.
 - Legacy VCS centroid masks are carried into deferred translation. SM2 shaders declare centroid TEXCOORDs in
   the VCS header rather than bytecode DCLs; dropping that mask makes MSAA edge inputs differ from native shaders.
+
+## Explicit high-resolution BSP replacement
+
+`tools/genhighres.py` catalogs actual RGB lightmap consumers: LightmappedGeneric/WorldVertexTransition,
+WorldTwoTextureBlend, LightmappedReflective, the bumped decal pass, Water's base-texture pass,
+ShatteredGlass, and PyroVision's world-lightmapped effects. `genmat.py` independently emits their
+`*_highres_vs51`/`*_highres_ps51` twins alongside ordinary and old `*_shadowmap_*` shaders.
+The decal self-illumination second pass samples only its base texture; cheap water/refraction-only passes
+do not consume BSP irradiance. WorldVertexAlpha's DX9 draw is unreachable through its DX8 fallback;
+DX8 fixed-function consumers are backend paths. The actual WorldVertexTransition editor assembly pass
+uses authored `worldvertextransition_editor_highres_*` native replacements on enhanced maps, retaining its
+texture transforms, two-material vertex-alpha blend and original sampled lightmap alpha.
+
+The original base UV is carried before bump shifts, with no inverse-coordinate carrier input.
+`native_src/highres_lightmaps.hlsli` translates the integer owner atlas into explicit face/style/plane tiles,
+adds captured native dynamic planes, and preserves native sampled alpha. Material lighting retains its
+existing bump/SSBump weights, two-material blend, tint and fog/output ordering; selected direct lighting
+is gathered once and only selected sunlight is capped by the designated style-0/base alpha.
+Brush sun capping requires an explicit baked model pose equal to the draw transform.
+An unknown owner or malformed shader-side address sets `HlightFailure` (`u0 space3`); it is not a
+white/unmasked fallback.
+A known neutral `route.enabled=0` preserves native RGB/alpha, native normalization and the selected-direct
+gather; an invalid owner with `route.enabled=1` contributes neither baked RGB nor selected direct while
+the real GPU failure is reported. Neutral metadata-only maps are not mistaken for malformed owners.
+
+The packer publishes `<logical>.hlight` beside each participating VCS: four little-endian uint32 words
+`{0x544c484e, 1, lightmapSamplerMask, highresAbi}`. Ordinary/old variants carry original sampler roles;
+highres vertex variants carry mask zero and ABI one. Roles include reflective/water sampler 3 and decal
+samplers 1/2/3. The backend selects matching highres variants from this metadata, not material names.
+The packer also emits `generated/inc/highres_lightmaps_hlsl.inc` and `shadowmap_lighting_hlsl.inc` for
+backend-owned fixed-function compilation without an include handler.
+Lighting interface `_004` copies explicit native generation/route and all 64 view-consistent lightstyles;
+the separate highres draw cbuffer is 320 bytes (`route`, three model rows, sixteen packed style rows).
+After generator changes run `gencommon.py`, `genmat.py`, rebuild/publish with the updated native packer,
+then rebuild both backend and material DLL against the regenerated includes.
+
+### Baking an enhanced map
+
+After VBSP/VVIS, run from `src` (PowerShell), using a game directory that resolves the map's assets:
+
+```powershell
+& ..\game\bin\x64\vrad_restir.exe `
+  -game ..\game\mod_episodic `
+  -restir_shadowmaps -restir_hlight_density 4 `
+  -final -restir_iterations 128 -restir_seed 1 -restir_denoiser none `
+  "F:\path\to\map.bsp"
+```
+
+The versioned `.hlight` asset is embedded in the BSP pak; deploy the BSP, not a separately named loose file.
+The native BSP lightmap grid stays unchanged (`-restir_lightmapscale 1`, the default).
+Density 1 uses native-resolution sampling; density 2 and 4 independently bake approximately 4 and 16 times
+as many surface sample locations, respectively. Density changes neither iteration count nor bounce count.
+`-restir_shadowmaps` currently forces paired LDR/HDR baking and enables static-prop lighting/texture shadows,
+even with `-hdr`. Runtime HDR-first selection does not yet eliminate that second bake.
+
+Without a preset, quality is 128 iterations, 8 local-light candidates, 4 maximum bounces and balanced OIDN.
+Bare `-final` selects 512 iterations, 16 candidates, 6 bounces and high-quality OIDN.
+The command above explicitly overrides final iterations to 128 and disables denoising; explicit options
+win regardless of argument order. `-fast` selects 32 iterations, 4 candidates, 2 bounces and fast OIDN.
+
+The renderer reports Source material tier **110**, distinct from its D3D12 API and minimum device feature
+level 11_0. It enforces `mat_dxlevel=110` and `mat_hdr_level>=2`: HDR-capable maps use HDR lighting,
+while genuine LDR-only maps retain the engine's LDR fallback. HDR monitor output is a separate setting.
+Legacy enhanced manifest v3 maps require a rebake; the abandoned inverse-addressing path is not a fallback.
+
 
 ## Native-only shaders
 

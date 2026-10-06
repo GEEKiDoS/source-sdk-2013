@@ -142,7 +142,7 @@ bool ReSTIR_ComputeStaticPropLighting( const ReSTIROptions &options, const ReSTI
 {
 	if ( !options.staticPropLighting )
 	{
-		g_LevelFlags &= ~( LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR | LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR );
+		g_LevelFlags &= ~( g_bHDR ? LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR : LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR );
 		return true;
 	}
 	for ( int i = 0; i < g_ReSTIRStaticPropMgr.m_Props.Count(); ++i )

@@ -93,6 +93,7 @@ void Init_Eyes_Refract( CBaseVSShaderDX12 *pShader, IMaterialVar** params, Eye_R
 void Draw_Eyes_Refract_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** params, IShaderDynamicAPI *pShaderAPI,
 	IShaderShadow* pShaderShadow, bool bDrawFlashlightAdditivePass, Eye_Refract_Vars_t &info, VertexCompressionType_t vertexCompression )
 {
+	const bool bShadowmapReceiver = info.m_bShadowmapReceiver && !bDrawFlashlightAdditivePass;
 	bool bDiffuseWarp = IS_PARAM_DEFINED( info.m_nDiffuseWarpTexture );
 	bool bIntro = IS_PARAM_DEFINED( info.m_nIntro ) ? ( params[info.m_nIntro]->GetIntValue() ? true : false ) : false;
 
@@ -137,7 +138,7 @@ void Draw_Eyes_Refract_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** para
 			SET_STATIC_VERTEX_SHADER_COMBO( INTRO, bIntro ? 1 : 0 );
 			SET_STATIC_VERTEX_SHADER_COMBO( FLASHLIGHT, bDrawFlashlightAdditivePass ? 1 : 0 );
 			SET_STATIC_VERTEX_SHADER_COMBO( LIGHTWARPTEXTURE, bDiffuseWarp ? 1 : 0 );
-			SET_STATIC_VERTEX_SHADER( eye_refract_vs51 );
+			DX12_SET_STATIC_VERTEX_SHADER( eye_refract_vs51, eye_refract_shadowmap_vs51 );
 
 			bool bSphereTexKillCombo = IS_PARAM_DEFINED( info.m_nSphereTexKillCombo ) ? ( params[info.m_nSphereTexKillCombo]->GetIntValue() ? true : false ) : ( kDefaultSphereTexKillCombo ? true : false );
 			bool bRayTraceSphere = IS_PARAM_DEFINED( info.m_nRaytraceSphere ) ? ( params[info.m_nRaytraceSphere]->GetIntValue() ? true : false ) : ( kDefaultRaytraceSphere ? true : false );
@@ -148,7 +149,7 @@ void Draw_Eyes_Refract_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** para
 			SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHT, bDrawFlashlightAdditivePass ? 1 : 0 );
 			SET_STATIC_PIXEL_SHADER_COMBO( LIGHTWARPTEXTURE, bDiffuseWarp ? 1 : 0 );
 			SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHTDEPTHFILTERMODE, nShadowFilterMode );
-			SET_STATIC_PIXEL_SHADER( eye_refract_ps51 );
+			DX12_SET_STATIC_PIXEL_SHADER( eye_refract_ps51, eye_refract_shadowmap_ps51 );
 
 			if ( bDrawFlashlightAdditivePass == true )
 			{
@@ -236,7 +237,7 @@ void Draw_Eyes_Refract_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** para
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( NUM_LIGHTS, lightState.m_nNumLights );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-			SET_DYNAMIC_VERTEX_SHADER( eye_refract_vs51 );
+			DX12_SET_DYNAMIC_VERTEX_SHADER( eye_refract_vs51, eye_refract_shadowmap_vs51 );
 		}
 
 		// Get luminance of ambient cube and saturate it
@@ -287,9 +288,9 @@ void Draw_Eyes_Refract_Internal( CBaseVSShaderDX12 *pShader, IMaterialVar** para
 		{
 			DECLARE_DYNAMIC_PIXEL_SHADER( eye_refract_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( NUM_LIGHTS, lightState.m_nNumLights );
-			SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bFlashlightShadows );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bShadowmapReceiver ? false : bFlashlightShadows );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-			SET_DYNAMIC_PIXEL_SHADER( eye_refract_ps51 );
+			DX12_SET_DYNAMIC_PIXEL_SHADER( eye_refract_ps51, eye_refract_shadowmap_ps51 );
 		}
 
 		pShaderAPI->SetPixelShaderFogParams( PSREG_FOG_PARAMS );

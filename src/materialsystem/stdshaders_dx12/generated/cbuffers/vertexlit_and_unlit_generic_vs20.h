@@ -15,9 +15,8 @@ struct alignas(16) vertexlit_and_unlit_generic_vs20 {
     float g_vMiscParams2[4]{};
     float g_vMiscParams1[4]{};
     float cDetailTexCoordTransform[2][4]{};
-    float g_FlashlightWorldToTexture[4][4]{};
-    static constexpr uint32_t kStage = 0, kRegister = 2, kSize = 240;
-    static constexpr uint64_t kLayoutHash = 0x03fd5df1c7445f47ull;
+    static constexpr uint32_t kStage = 0, kRegister = 2, kSize = 176;
+    static constexpr uint64_t kLayoutHash = 0xead1971f3798c19cull;
     static const dx12native::NativeCBufferLegacyMapDX12 &LegacyMap() {
         static const dx12native::NativeCBufferLegacyEntryDX12 entries[] = {
             {0, 12, 1, 0, 0, 0, 14},
@@ -29,9 +28,8 @@ struct alignas(16) vertexlit_and_unlit_generic_vs20 {
             {112, 16, 1, 0, 0, 0, 50},
             {128, 16, 1, 0, 0, 0, 51},
             {144, 16, 2, 16, 0, 0, 52},
-            {176, 16, 4, 16, 0, 0, 54},
         };
-        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 10, entries };
+        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 9, entries };
         return map;
     }
 };
@@ -44,6 +42,5 @@ static_assert(offsetof(vertexlit_and_unlit_generic_vs20, cSeamlessScale) == 96, 
 static_assert(offsetof(vertexlit_and_unlit_generic_vs20, g_vMiscParams2) == 112, "HLSL member offset");
 static_assert(offsetof(vertexlit_and_unlit_generic_vs20, g_vMiscParams1) == 128, "HLSL member offset");
 static_assert(offsetof(vertexlit_and_unlit_generic_vs20, cDetailTexCoordTransform) == 144, "HLSL member offset");
-static_assert(offsetof(vertexlit_and_unlit_generic_vs20, g_FlashlightWorldToTexture) == 176, "HLSL member offset");
-static_assert(sizeof(vertexlit_and_unlit_generic_vs20) == 240, "HLSL cbuffer size");
+static_assert(sizeof(vertexlit_and_unlit_generic_vs20) == 176, "HLSL cbuffer size");
 } // namespace dx12cb

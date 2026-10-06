@@ -1,0 +1,38 @@
+#define DX12_SHADOWMAPS 1
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#include "shadowmap_lighting.hlsli"
+// STATIC: "HDRTYPE" "0..2"
+// DYNAMIC: "PIXELFOGTYPE" "0..2"
+#include "common_ps_fxc.h"
+
+Texture2D g_DetailTexture : register( t0 );
+SamplerState g_DetailSampler : register( s0 );
+cbuffer DetailShadowLitMaterial : register( b1, space1 )
+{
+	float4 g_DetailSpriteTint; // @legacy ps:c0
+};
+struct PS_INPUT
+{
+	float4 position : SV_Position;
+	float4 color : COLOR0;
+	float2 uv : TEXCOORD0;
+	float4 lightingOrigin : TEXCOORD1;
+	float4 lightingNormal : TEXCOORD2;
+	float4 worldPositionZ : TEXCOORD3;
+	float fog : FOG;
+};
+float4 main( PS_INPUT i ) : SV_Target0
+{
+	// Full-sphere RESTIR_POINT_DETAIL_GATHER irradiance: no card-facing
+	// cosine, no lightmap packing scale and no alpha/visibility product.
+	float3 direct = ShadowMap_DetailDirect( i.lightingOrigin.xyz, i.lightingNormal.xyz, i.position.xy );
+	float4 base = g_DetailTexture.Sample( g_DetailSampler, i.uv );
+	float3 retained = GammaToLinear( i.color.rgb );
+	float3 albedo = GammaToLinear( base.rgb * g_DetailSpriteTint.rgb );
+	float4 lit = float4( LinearToGamma( max( ( retained + direct ) * albedo, 0.0f ) ),
+		base.a * i.color.a * g_DetailSpriteTint.a );
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, cEyePosition.xyz,
+		i.worldPositionZ.xyz, i.worldPositionZ.w );
+	return DX12FinishPixel( FinalOutput( lit, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_GAMMA ), i.fog );
+}

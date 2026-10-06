@@ -347,6 +347,7 @@ class CVertexLitGeneric_DX9_Context : public CBasePerMaterialContextData
 {
 public:
 	CCommandBufferBuilder< CFixedCommandStorageBuffer< 800 > > m_SemiStaticCmdsOut;
+	DX12ShadowmapSnapshot m_ShadowmapSnapshot;
 
 };
 
@@ -364,6 +365,16 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 
 {
 	CVertexLitGeneric_DX9_Context *pContextData = reinterpret_cast< CVertexLitGeneric_DX9_Context *> ( *pContextDataPtr );
+	if ( !pContextData )
+	{
+		++g_nSnapShots;
+		pContextData = new CVertexLitGeneric_DX9_Context;
+		*pContextDataPtr = pContextData;
+	}
+	bool bShadowmapReceiver = false;
+	if ( bVertexLitGeneric && !pContextData->m_ShadowmapSnapshot.Select( pShaderShadow != NULL, "VertexLitGeneric", bShadowmapReceiver ) )
+		return;
+	bShadowmapReceiver = bShadowmapReceiver && !bHasFlashlight;
 
 /*^*/ // 	printf("\t\t>DrawVertexLitGeneric_DX9_Internal\n");
 
@@ -635,6 +646,8 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 
 			// This shader supports compressed vertices, so OR in that flag:
 			flags |= VERTEX_FORMAT_COMPRESSED;
+			if ( bShadowmapReceiver )
+				flags |= VERTEX_NORMAL;
 /*^*/ // 		printf("\t\t[%1d] VERTEX_FORMAT_COMPRESSED\n",(flags&VERTEX_FORMAT_COMPRESSED)!=0);
 
 /*^*/ // 		printf("\t\t      -> CShaderShadowDX8::VertexShaderVertexFormat( flags=%08x, texcount=%d )\n",flags,nTexCoordCount);
@@ -652,7 +665,7 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 					SET_STATIC_VERTEX_SHADER_COMBO( HALFLAMBERT,  bHalfLambert);
 					SET_STATIC_VERTEX_SHADER_COMBO( USE_WITH_2B,  true );
 					SET_STATIC_VERTEX_SHADER_COMBO( DECAL, bIsDecal );
-					SET_STATIC_VERTEX_SHADER( vertexlit_and_unlit_generic_bump_vs51 );
+					DX12_SET_STATIC_VERTEX_SHADER( vertexlit_and_unlit_generic_bump_vs51, vertexlit_and_unlit_generic_bump_shadowmap_vs51 );
 
 					DECLARE_STATIC_PIXEL_SHADER( vertexlit_and_unlit_generic_bump_ps51 );
 					SET_STATIC_PIXEL_SHADER_COMBO( CUBEMAP,  bHasEnvmap );
@@ -667,7 +680,7 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 					SET_STATIC_PIXEL_SHADER_COMBO( DETAIL_BLEND_MODE, nDetailBlendMode );
 					SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHTDEPTHFILTERMODE, nShadowFilterMode );
 					SET_STATIC_PIXEL_SHADER_COMBO( BLENDTINTBYBASEALPHA, bBlendTintByBaseAlpha );
-					SET_STATIC_PIXEL_SHADER( vertexlit_and_unlit_generic_bump_ps51 );
+					DX12_SET_STATIC_PIXEL_SHADER( vertexlit_and_unlit_generic_bump_ps51, vertexlit_and_unlit_generic_bump_shadowmap_ps51 );
 				}
 			}
 			else // !(bHasBump || bHasDiffuseWarp)
@@ -703,7 +716,7 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 					SET_STATIC_VERTEX_SHADER_COMBO( DECAL, bIsDecal );
 					SET_STATIC_VERTEX_SHADER_COMBO( DONT_GAMMA_CONVERT_VERTEX_COLOR, bSRGBWrite ? 0 : 1 );
 					SET_STATIC_VERTEX_SHADER_COMBO( TREESWAY, bTreeSway ? nTreeSwayMode : 0 );
-					SET_STATIC_VERTEX_SHADER( vertexlit_and_unlit_generic_vs51 );
+					DX12_SET_STATIC_VERTEX_SHADER( vertexlit_and_unlit_generic_vs51, vertexlit_and_unlit_generic_shadowmap_vs51 );
 
 					DECLARE_STATIC_PIXEL_SHADER( vertexlit_and_unlit_generic_ps51 );
 					SET_STATIC_PIXEL_SHADER_COMBO( SELFILLUM_ENVMAPMASK_ALPHA, ( hasSelfIllumInEnvMapMask && ( bHasEnvmapMask ) ) );
@@ -727,7 +740,7 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 					SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHTDEPTHFILTERMODE, nShadowFilterMode );
 					SET_STATIC_PIXEL_SHADER_COMBO( DEPTHBLEND, bDoDepthBlend );
 					SET_STATIC_PIXEL_SHADER_COMBO( BLENDTINTBYBASEALPHA, bBlendTintByBaseAlpha );
-					SET_STATIC_PIXEL_SHADER( vertexlit_and_unlit_generic_ps51 );
+					DX12_SET_STATIC_PIXEL_SHADER( vertexlit_and_unlit_generic_ps51, vertexlit_and_unlit_generic_shadowmap_ps51 );
 				}
 			}
 
@@ -748,12 +761,6 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 		if ( pShaderAPI && ( (! pContextData ) || ( pContextData->m_bMaterialVarsChanged ) ) )
 		{
 /*^*/ // 		printf("\t\t[3] pShaderAPI && ( (! pContextData ) || ( pContextData->m_bMaterialVarsChanged ) )  TRUE \n");
-			if ( ! pContextData )								// make sure allocated
-			{
-				++g_nSnapShots;
-				pContextData = new CVertexLitGeneric_DX9_Context;
-				*pContextDataPtr = pContextData;
-			}
 			pContextData->m_SemiStaticCmdsOut.Reset();
 			pContextData->m_SemiStaticCmdsOut.SetPixelShaderFogParams( 21 );
 			if ( bHasBaseTexture )
@@ -1140,14 +1147,14 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( SKINNING,  numBones > 0 );
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() && !bTreeSway );
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-				SET_DYNAMIC_VERTEX_SHADER( vertexlit_and_unlit_generic_bump_vs51 );
+				DX12_SET_DYNAMIC_VERTEX_SHADER( vertexlit_and_unlit_generic_bump_vs51, vertexlit_and_unlit_generic_bump_shadowmap_vs51 );
 
 				DECLARE_DYNAMIC_PIXEL_SHADER( vertexlit_and_unlit_generic_bump_ps51 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( NUM_LIGHTS, lightState.m_nNumLights );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( AMBIENT_LIGHT, lightState.m_bAmbientLight ? 1 : 0 );
-				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bFlashlightShadows );
+				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bShadowmapReceiver ? false : bFlashlightShadows );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-				SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, vertexlit_and_unlit_generic_bump_ps51 );
+				DX12_SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, vertexlit_and_unlit_generic_bump_ps51, vertexlit_and_unlit_generic_bump_shadowmap_ps51 );
 
 				bool bUnusedTexCoords[3] = { false, false, !pShaderAPI->IsHWMorphingEnabled() || !bIsDecal };
 				pShaderAPI->MarkUnusedVertexFields( 0, 3, bUnusedTexCoords );
@@ -1171,20 +1178,21 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShaderDX12 *pShader, IMate
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( STATIC_LIGHT_LIGHTMAP,  lightState.m_bStaticLightTexel  ? 1 : 0 );
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG,  fogIndex );
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( SKINNING,  numBones > 0 );
-				SET_DYNAMIC_VERTEX_SHADER_COMBO( LIGHTING_PREVIEW, 
-					pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING)!=0);
+				// Converted maps do not support Hammer/editor fixed-lighting preview; it is never active in-game.
+				SET_DYNAMIC_VERTEX_SHADER_COMBO( LIGHTING_PREVIEW,
+					!bShadowmapReceiver && pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING)!=0);
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() && !bTreeSway );
 				SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
-				SET_DYNAMIC_VERTEX_SHADER_CMD( DynamicCmdsOut, vertexlit_and_unlit_generic_vs51 );
+				DX12_SET_DYNAMIC_VERTEX_SHADER_CMD( DynamicCmdsOut, vertexlit_and_unlit_generic_vs51, vertexlit_and_unlit_generic_shadowmap_vs51 );
 
 				DECLARE_DYNAMIC_PIXEL_SHADER( vertexlit_and_unlit_generic_ps51 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bFlashlightShadows );
+				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLASHLIGHTSHADOWS, bShadowmapReceiver ? false : bFlashlightShadows );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( STATIC_LIGHT_LIGHTMAP,  lightState.m_bStaticLightTexel  ? 1 : 0 );
 				SET_DYNAMIC_PIXEL_SHADER_COMBO( DEBUG_LUXELS, bHasMatLuxel ? 1 : 0 );
-				SET_DYNAMIC_PIXEL_SHADER_COMBO(	LIGHTING_PREVIEW,
-					pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING) );
-				SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, vertexlit_and_unlit_generic_ps51 );
+				SET_DYNAMIC_PIXEL_SHADER_COMBO( LIGHTING_PREVIEW,
+					bShadowmapReceiver ? 0 : pShaderAPI->GetIntRenderingParameter(INT_RENDERPARM_ENABLE_FIXED_LIGHTING) );
+				DX12_SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, vertexlit_and_unlit_generic_ps51, vertexlit_and_unlit_generic_shadowmap_ps51 );
 
 				bool bUnusedTexCoords[3] = { false, false, !pShaderAPI->IsHWMorphingEnabled() || !bIsDecal };
 				pShaderAPI->MarkUnusedVertexFields( 0, 3, bUnusedTexCoords );

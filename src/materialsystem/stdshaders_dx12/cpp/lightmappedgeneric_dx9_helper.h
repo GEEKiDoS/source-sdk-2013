@@ -13,6 +13,52 @@
 #include <string.h>
 #include "BaseVSShaderDX12.h"
 
+#include "shaderapi/ishaderapidx12lighting.h"
+
+// One resolver in the native material DLL, shared by every participating receiver.
+IShaderAPIDX12Lighting *DX12ShadowmapLighting();
+void DX12RejectUnsupportedLitShader( const char *shaderName );
+bool DX12ShadowmapFullbright();
+bool DX12HighresMap( uint64 *nativeGeneration = NULL );
+
+class DX12ShadowmapSnapshot
+{
+public:
+	DX12ShadowmapSnapshot() : m_nGeneration( 0 ), m_nNativeGeneration( 0 ), m_bCaptured( false ), m_bReceiverEnabled( false ) {}
+	bool Select( bool snapshot, const char *shaderName, bool &feature );
+private:
+	uint32 m_nGeneration;
+	uint64 m_nNativeGeneration;
+	bool m_bCaptured;
+	bool m_bReceiverEnabled;
+};
+
+bool DX12ShadowmapReceiverSnapshot( CBasePerMaterialContextData **context, IShaderShadow *shadow,
+	const char *shaderName, bool &feature );
+
+// Combo tables are identical. Keep the ordinary index classes, but select the feature
+// logical and its generated material-block writer (LMG/WTB add the direct tint).
+#define DX12_SET_STATIC_VERTEX_SHADER( ordinary, feature ) \
+	SET_STATIC_VERTEX_SHADER( ordinary ); \
+	if ( bShadowmapReceiver ) pShaderShadow->SetVertexShader( #feature, _vshIndex.GetIndex() )
+#define DX12_SET_STATIC_PIXEL_SHADER( ordinary, feature ) \
+	SET_STATIC_PIXEL_SHADER( ordinary ); \
+	if ( bShadowmapReceiver ) pShaderShadow->SetPixelShader( #feature, _pshIndex.GetIndex() )
+#define DX12_SET_DYNAMIC_VERTEX_SHADER( ordinary, feature ) \
+	SET_DYNAMIC_VERTEX_SHADER( ordinary ); \
+	if ( bShadowmapReceiver ) DX12SelectNativeBlockByName( #feature, dx12native::kStageVertex )
+#define DX12_SET_DYNAMIC_PIXEL_SHADER( ordinary, feature ) \
+	SET_DYNAMIC_PIXEL_SHADER( ordinary ); \
+	if ( bShadowmapReceiver ) DX12SelectNativeBlockByName( #feature, dx12native::kStagePixel ); \
+	g_DX12Constants.shadowmapPassAdmitted = true
+#define DX12_SET_DYNAMIC_VERTEX_SHADER_CMD( stream, ordinary, feature ) \
+	SET_DYNAMIC_VERTEX_SHADER_CMD( stream, ordinary ); \
+	if ( bShadowmapReceiver ) DX12SelectNativeBlockByName( #feature, dx12native::kStageVertex )
+#define DX12_SET_DYNAMIC_PIXEL_SHADER_CMD( stream, ordinary, feature ) \
+	SET_DYNAMIC_PIXEL_SHADER_CMD( stream, ordinary ); \
+	if ( bShadowmapReceiver ) DX12SelectNativeBlockByName( #feature, dx12native::kStagePixel ); \
+	g_DX12Constants.shadowmapPassAdmitted = true
+
 
 //-----------------------------------------------------------------------------
 // Forward declarations
