@@ -24,8 +24,10 @@ class CFuncBrush : public CBaseEntity
 {
 public:
 	DECLARE_CLASS( CFuncBrush, CBaseEntity );
+	CFuncBrush() : m_bVradBrushCastShadows( false ), m_bShadowCasterPolicyApplied( false ) {}
 
 	virtual void Spawn( void );
+	virtual void Activate( void );
 	bool CreateVPhysics( void );
 
 	virtual int	ObjectCaps( void ) { return HasSpawnFlags(SF_IGNORE_PLAYERUSE) ? BaseClass::ObjectCaps() : BaseClass::ObjectCaps() | FCAP_IMPULSE_USE; }
@@ -51,6 +53,8 @@ public:
 	BrushSolidities_e m_iSolidity;
 	int m_iDisabled;
 	bool m_bSolidBsp;
+	bool m_bVradBrushCastShadows;
+	bool m_bShadowCasterPolicyApplied;
 	string_t m_iszExcludedClass;
 	bool m_bInvertExclusion;
 

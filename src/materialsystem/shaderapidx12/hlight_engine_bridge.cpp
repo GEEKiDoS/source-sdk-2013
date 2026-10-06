@@ -23,6 +23,7 @@ constexpr uintptr_t kWorldBrush = 0x752638, kLoadingBrush = 0x69FDA0;
 constexpr uintptr_t kMapName = 0x69F310, kSortInfo = 0x69E530, kSortCount = 0x6984C8;
 constexpr uintptr_t kModelLoader = 0x470748, kOverlayManager = 0x470FC0;
 constexpr uintptr_t kNativeBspHeader = 0x69EDF0, kNativeLumpOverrides = 0x69F420;
+constexpr uintptr_t kNativeQueueReplay = 0x2AAE0;
 constexpr uintptr_t kScratch[4] = { 0x598280, 0x5D8280, 0x618280, 0x658280 };
 constexpr uint32 kMaxLuxels = 16384;
 constexpr uint32 kNativeBump = 8, kNativeDisplacement = 0x800;
@@ -33,6 +34,7 @@ struct Hook
     uintptr_t rva;
     const char *bytes;
     void *detour;
+    bool material = false;
     void *original = nullptr;
     bool created = false;
 };
@@ -45,6 +47,7 @@ bool PlanarHook(void *, void *, const float *, float, float);
 void BumpedHook(void *, void *, const float *, float, float, const float *, const float *);
 void DisplacementHook(void *, void *, uint32);
 void *LumpHook(void *, uint32);
+void QueuedMeshLockHook(void *, int, int, MeshDesc_t &);
 Hook g_Hooks[] = {
     {0x101850, "405355565741544155415641574881ec98010000488b0de5626a00bb07000000", reinterpret_cast<void *>(&FaceLoadHook)},
     {0xD9030, "4883ec28488d0db5422b00ff15cff92700488d0dc8422b00ff1532f82700660f", reinterpret_cast<void *>(&LevelInitHook)},
@@ -54,7 +57,8 @@ Hook g_Hooks[] = {
     {0xCEA80, "4881eca8000000f30f10413c0f57e40f2ec44c8bd10f29bc24800000000f28fb", reinterpret_cast<void *>(&PlanarHook)},
     {0xCF130, "488bc4f30f11582053555657415441564881ecb80000004c8b0dea3468004c8d", reinterpret_cast<void *>(&BumpedHook)},
     {0xC30B0, "40555741574883ec204883b9f001000000418bf84c8bfa488be9747348897424", reinterpret_cast<void *>(&DisplacementHook)},
-    {0xFC790, "405356415641574883ec384863f2488bd983fe3f761441b83f000000488d0d65", reinterpret_cast<void *>(&LumpHook)}
+    {0xFC790, "405356415641574883ec384863f2488bd983fe3f761441b83f000000488d0d65", reinterpret_cast<void *>(&LumpHook)},
+    {0x2CC70, "48895c240848896c24104889742418574883ec2033ed8bc248396970498bd941", reinterpret_cast<void *>(&QueuedMeshLockHook), true}
 };
 
 template<class T> T Load(uintptr_t address)
@@ -185,6 +189,74 @@ struct State
     std::atomic<bool> capture{false};
     std::atomic_flag buildBusy = ATOMIC_FLAG_INIT;
 } g;
+
+uintptr_t HookTarget(const Hook &hook)
+{
+    return (hook.material ? g.materialModule : g.engine) + hook.rva;
+}
+
+uint64 QueuedAllocationSize(uintptr_t arena, uint64 bytes)
+{
+    const uint32 alignment = Load<uint32>(arena + 0x24);
+    return bytes ? (bytes + alignment - 1) & ~uint64(alignment - 1) : alignment;
+}
+
+uintptr_t QueuedCommitEnd(uintptr_t arena)
+{
+    // CommitTo rounds absolute addresses to 128-KiB steps, but VirtualAlloc
+    // reservations need only be 64-KiB aligned. The final half-step can therefore
+    // be reserved yet uncommittable; admitting it still triggers native failure.
+    const uint32 commitSize = Load<uint32>(arena + 0x28);
+    return Load<uintptr_t>(arena + 0x10) & ~uintptr_t(commitSize - 1);
+}
+
+void QueuedMeshLockHook(void *mesh, int vertices, int indices, MeshDesc_t &desc)
+{
+    using Original = void (*)(void *, int, int, MeshDesc_t &);
+    auto original = reinterpret_cast<Original>(g_Hooks[9].original);
+    if (g.capture.load(std::memory_order_acquire))
+    {
+        const uintptr_t queuedMesh = reinterpret_cast<uintptr_t>(mesh);
+        const uintptr_t owner = Load<uintptr_t>(queuedMesh + 0x28);
+        const uintptr_t vertexArena = owner + 0x348, indexArena = owner + 0x378;
+        const uint64 vertexBytes = vertices > 0 ?
+            QueuedAllocationSize(vertexArena, uint64(vertices) * Load<uint16>(queuedMesh + 0x68)) : 0;
+        const uint64 indexBytes = indices > 0 && Load<int>(queuedMesh + 0x6C) != MATERIAL_POINTS ?
+            QueuedAllocationSize(indexArena, uint64(indices) * sizeof(uint16)) : 0;
+        const uintptr_t vertexEnd = QueuedCommitEnd(vertexArena);
+        const uintptr_t indexEnd = QueuedCommitEnd(indexArena);
+        const bool pressure = vertexBytes > vertexEnd - Load<uintptr_t>(vertexArena) ||
+            indexBytes > indexEnd - Load<uintptr_t>(indexArena);
+        // One queued mesh owns both arenas. A new lock is the boundary before
+        // either allocation: all earlier detached builds/draws can be consumed.
+        // Never recycle a partial mesh or hide an individually oversized request.
+        if (pressure && vertexBytes <= vertexEnd - Load<uintptr_t>(vertexArena + 0x18) &&
+            indexBytes <= indexEnd - Load<uintptr_t>(indexArena + 0x18) &&
+            !Load<uintptr_t>(queuedMesh + 0x50) && !Load<uintptr_t>(queuedMesh + 0x58) &&
+            ThreadInMainThread())
+        {
+            CMatRenderContextPtr context(g.materials);
+            if (context == reinterpret_cast<IMatRenderContext *>(owner) && context->GetCallQueue())
+            {
+                // Like native synchronous ReadPixels, close the queued hardware
+                // render scope before replay. Preserve ALL caller nesting: leaving
+                // a BeginRender unmatched would strand its mutex on this thread.
+                const int renderDepth = Load<int>(owner + 0x320);
+                for (int i = 0; i < renderDepth; ++i) context->EndRender();
+                // Lock waits for the previous CPU render job and selects the
+                // hardware context. CallQueued(false) preserves context state and
+                // render data, releasing only consumed calls and geometry arenas.
+                // Unlock restores this same queue; no GPU wait or mode change.
+                const MaterialLock_t lock = g.materials->Lock();
+                reinterpret_cast<void (*)(void *, bool)>(g.materialModule + kNativeQueueReplay)(
+                    reinterpret_cast<void *>(owner), false);
+                g.materials->Unlock(lock);
+                for (int i = 0; i < renderDepth; ++i) context->BeginRender();
+            }
+        }
+    }
+    original(mesh, vertices, indices, desc);
+}
 
 void Failure(const char *reason)
 {
@@ -895,12 +967,12 @@ void RemoveHooks()
 {
     bool queued = true;
     for (const auto &hook : g_Hooks)
-        if (hook.created) queued = (MH_QueueDisableHook(reinterpret_cast<void *>(g.engine + hook.rva)) == MH_OK) && queued;
+        if (hook.created) queued = (MH_QueueDisableHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK) && queued;
     if (!queued || MH_ApplyQueued() != MH_OK)
         Error("High-resolution lightmaps: cannot safely disable native entry hooks\n");
     for (auto &hook : g_Hooks)
     {
-        if (hook.created && MH_RemoveHook(reinterpret_cast<void *>(g.engine + hook.rva)) != MH_OK)
+        if (hook.created && MH_RemoveHook(reinterpret_cast<void *>(HookTarget(hook))) != MH_OK)
             Error("High-resolution lightmaps: cannot release disabled native entry hook\n");
         hook.created = false; hook.original = nullptr;
     }
@@ -924,8 +996,10 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
     { V_strncpy(g.compatibility, "High-resolution lightmaps: unsupported engine/material-system build", sizeof(g.compatibility)); return false; }
     g.engine = reinterpret_cast<uintptr_t>(engine); g.materialModule = reinterpret_cast<uintptr_t>(material);
     for (const auto &hook : g_Hooks)
-        if (!EntryMatches(g.engine + hook.rva, hook.bytes))
+        if (!EntryMatches(HookTarget(hook), hook.bytes))
         { V_strncpy(g.compatibility, "High-resolution lightmaps: native entry signature differs from the supported profile", sizeof(g.compatibility)); return false; }
+    if (!EntryMatches(g.materialModule + kNativeQueueReplay, "405356415641574883ec38488b0586fe0c004c8db17803000033db48897c2468"))
+    { V_strncpy(g.compatibility, "High-resolution lightmaps: native queue replay signature differs from the supported profile", sizeof(g.compatibility)); return false; }
     const uintptr_t currentBrush = Load<uintptr_t>(g.engine + kWorldBrush);
     const bool lateAttach = Readable(currentBrush, 256) && Load<int>(currentBrush + 216) != 0;
     const MH_STATUS init = MH_Initialize();
@@ -934,12 +1008,12 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
     g.ownsMinHook = init == MH_OK; g.materials = materials; g.sink = sink;
     for (auto &hook : g_Hooks)
     {
-        if (MH_CreateHook(reinterpret_cast<void *>(g.engine + hook.rva), hook.detour, &hook.original) != MH_OK)
+        if (MH_CreateHook(reinterpret_cast<void *>(HookTarget(hook)), hook.detour, &hook.original) != MH_OK)
         { RemoveHooks(); V_strncpy(g.compatibility, "High-resolution lightmaps: entry-hook creation failed", sizeof(g.compatibility)); return false; }
         hook.created = true;
     }
     bool queued = true;
-    for (const auto &hook : g_Hooks) queued = (MH_QueueEnableHook(reinterpret_cast<void *>(g.engine + hook.rva)) == MH_OK) && queued;
+    for (const auto &hook : g_Hooks) queued = (MH_QueueEnableHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK) && queued;
     if (!queued || MH_ApplyQueued() != MH_OK)
     { RemoveHooks(); V_strncpy(g.compatibility, "High-resolution lightmaps: atomic entry-hook activation failed", sizeof(g.compatibility)); return false; }
     g.supported = true; g.compatibility[0] = 0;

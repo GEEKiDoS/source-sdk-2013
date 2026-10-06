@@ -22,6 +22,7 @@
 
 ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade receiver distance", true, 128, true, 32768 );
 ConVar r_shadowmap_filter( "r_shadowmap_filter", "0", FCVAR_ARCHIVE, "0: four-tap PCF, 1: bounded contact-hardening PCSS", true, 0, true, 1 );
+ConVar r_shadowmap_spot_near( "r_shadowmap_spot_near", "4", FCVAR_ARCHIVE, "Spotlight shadow-camera near distance in Source units (including six-face spots); does not change illumination", true, 0.1f, true, 64.0f );
 ConVar r_shadowmap_autoexec( "r_shadowmap_autoexec", "", FCVAR_CHEAT, "Acceptance automation: cfg exec'd once per map after the first completed main receiver view" );
 ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 blockers, 6 radius; debug builds also check projection math" );
 
@@ -46,7 +47,7 @@ struct ShadowCache_t
 };
 struct LocalLight_t
 {
-	LocalLight_t() : projectionFar(0), faceCount(0), relevant(false)
+	LocalLight_t() : projectionNear(0), projectionFar(0), faceCount(0), relevant(false)
 	{
 		projection.Identity(); memset(faceVolumes,0,sizeof(faceVolumes));
 		for ( int i=0;i<6;++i ) { page[i]=-1; slot[i]=-1; }
@@ -56,7 +57,7 @@ struct LocalLight_t
 	ShadowMapInfluenceVolume_t influence;
 	VMatrix projection;
 	ShadowCasterVolume_t faceVolumes[6];
-	float projectionFar;
+	float projectionNear, projectionFar; // Shadow-camera cache key, independent of the conservative influence near.
 	int faceCount, page[6], slot[6];
 	ShadowCache_t cache[6];
 	bool relevant;
@@ -318,7 +319,7 @@ Vector Unproject( const VMatrix &inverse, float x, float y, float z )
 		(inverse[1][0]*x+inverse[1][1]*y+inverse[1][2]*z+inverse[1][3])/w,
 		(inverse[2][0]*x+inverse[2][1]*y+inverse[2][2]*z+inverse[2][3])/w );
 }
-bool ExtractVolume( const VMatrix &clip, ShadowCasterVolume_t &volume )
+bool ExtractVolume( const VMatrix &clip, ShadowCasterVolume_t &volume, const VMatrix *clipToWorld = NULL )
 {
 	volume.m_nPlaneCount = 6;
 	for ( int p=0;p<6;++p )
@@ -335,11 +336,16 @@ bool ExtractVolume( const VMatrix &clip, ShadowCasterVolume_t &volume )
 		volume.m_Planes[p].m_Normal=n; volume.m_Planes[p].m_Dist=-row[3]/length;
 		if ( !volume.m_Planes[p].m_Normal.IsValid() || !ShadowMap_IsFiniteFloat(volume.m_Planes[p].m_Dist) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA);
 	}
-	VMatrix inverse; if ( !MatrixInverseGeneral(clip,inverse) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA);
+	VMatrix inverse;
+	if ( !clipToWorld )
+	{
+		if ( !MatrixInverseGeneral(clip,inverse) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA);
+		clipToWorld = &inverse;
+	}
 	volume.m_vecMins.Init(FLT_MAX,FLT_MAX,FLT_MAX); volume.m_vecMaxs.Init(-FLT_MAX,-FLT_MAX,-FLT_MAX);
 	for ( int i=0;i<8;++i )
 	{
-		Vector v=Unproject(inverse,i&1?1:-1,i&2?1:-1,i&4?1:0);
+		Vector v=Unproject(*clipToWorld,i&1?1:-1,i&2?1:-1,i&4?1:0);
 		if ( !v.IsValid() ) return Fail(SHADOWMAP_ERR_INVALID_METADATA);
 		AddBounds(volume.m_vecMins,volume.m_vecMaxs,v,v);
 	}
@@ -393,6 +399,9 @@ public:
 	{
 		active=true; ReleaseLeases();
 		memset(&packet,0,sizeof(packet)); memset(&stats,0,sizeof(stats));
+		// Freeze one finite setting for every spotlight face in this receiver packet.
+		spotShadowNear=r_shadowmap_spot_near.GetFloat();
+		spotShadowNear=ShadowMap_IsFiniteFloat(spotShadowNear) ? clamp(spotShadowNear,0.1f,64.0f) : 4.0f;
 		lights.RemoveAll(); targets.RemoveAll(); ranges.RemoveAll(); indices.RemoveAll(); rects.RemoveAll(); casters.RemoveAll(); volumes.RemoveAll(); relevant.RemoveAll();
 		casterRanges.RemoveAll(); casterIndices.RemoveAll(); drawCandidateFirst=-1; drawCandidateCount=0;
 	}
@@ -403,6 +412,7 @@ public:
 	ShadowMapDetailOrientation_t detail;
 	bool hasDetails;
 	Vector detailMins,detailMaxs;
+	float spotShadowNear;
 	DX12LightingViewPacket packet;
 	ShadowStats_t stats;
 	CUtlVector<RuntimeShadowLightGpu> lights;
@@ -762,10 +772,19 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	gpu.attenuationRadius=light.attenuationRadius; gpu.innerConeCos=light.innerConeCos; gpu.outerConeCos=light.outerConeCos;
 	gpu.constantAttn=light.constantAttn; gpu.linearAttn=light.linearAttn; gpu.quadraticAttn=light.quadraticAttn; gpu.exponent=light.exponent;
 	gpu.fadeStart=light.startFade; gpu.fadeEnd=light.endFade; gpu.capDist=light.capDist; gpu.shadowSourceRadius=light.shadowSourceRadius;
-	gpu.shadowNear=local.influence.zNear; gpu.shadowFar=local.influence.zFar;
+	gpu.shadowFar=local.influence.zFar;
+	if ( !ShadowMap_IsFiniteFloat(gpu.shadowFar) || gpu.shadowFar<=local.influence.zNear )
+		return Fail(SHADOWMAP_ERR_INVALID_METADATA);
+	// Camera coverage only: CSR, receiver relevance and server transmission keep
+	// the shared .1-unit influence near. Points retain their original cube near.
+	// Tiny finite-radius spots retain .1; otherwise cap at half far so n < f.
+	gpu.shadowNear=local.world.type==emit_spotlight ? MIN(data.spotShadowNear,MAX(local.influence.zNear,gpu.shadowFar*0.5f)) : local.influence.zNear;
 	gpu.tanRenderedHalfFov=local.influence.tanRenderedHalfFov;
+	if ( !ShadowMap_IsFiniteFloat(gpu.shadowNear) || gpu.shadowNear<=0 || gpu.shadowNear>=gpu.shadowFar ||
+		!ShadowMap_IsFiniteFloat(gpu.tanRenderedHalfFov) || gpu.tanRenderedHalfFov<=0 )
+		return Fail(SHADOWMAP_ERR_INVALID_METADATA);
 	gpu.planeToTexel=512/(2*gpu.tanRenderedHalfFov);
-	bool projectionChanged=local.projectionFar!=gpu.shadowFar;
+	bool projectionChanged=local.projectionNear!=gpu.shadowNear || local.projectionFar!=gpu.shadowFar;
 	AddReportVolume(data,(int)light.lightId,CasterVolume(local.influence));
 	for ( int f=0;f<local.faceCount;++f )
 	{
@@ -803,7 +822,7 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 		if ( dynamic && !RenderDepth(data,page.work,x,y,512,setup,volume,false,false,false,true,false) ) return false;
 		cache.hadDynamic=dynamic; cache.dirty=false;
 	}
-	local.projectionFar=gpu.shadowFar; return true;
+	local.projectionNear=gpu.shadowNear; local.projectionFar=gpu.shadowFar; return true;
 }
 
 void ReceiverCorners( const CViewSetup &setup, const VMatrix &clip, const Vector &forward, float nearDepth, float farDepth, Vector corners[8] )
@@ -833,7 +852,7 @@ bool SunBoxOverlapsSquare( const ShadowMapSceneCaster_t &caster, const Vector &c
 
 void SunProjection( const Vector &boundsMins, const Vector &boundsMaxs, const Vector &snapped, float nominalRadius,
 	const Vector &travel, const Vector &basisX, const Vector &basisY, int S, int U,
-	VMatrix &clip, CViewSetup &setup, float depth[4] )
+	VMatrix &clip, VMatrix &clipToWorld, CViewSetup &setup, float depth[4] )
 {
 	float units=2*nominalRadius/U;
 	float minimum=FLT_MAX, maximum=-FLT_MAX;
@@ -844,6 +863,16 @@ void SunProjection( const Vector &boundsMins, const Vector &boundsMaxs, const Ve
 	VMatrix view,projection;
 	ShadowMapScene_BuildViewMatrix(origin,travel,basisY,view);
 	ShadowMapScene_BuildOrtho(rendered,rendered,depth[0],depth[1],projection); MatrixMultiply(projection,view,clip);
+	// Invert the known orthographic camera analytically. The general inverse's
+	// absolute 1e-5 pivot cutoff rejects valid wide cutscene cascades.
+	view.InverseTR( clipToWorld );
+	for ( int row = 0; row < 3; ++row )
+	{
+		clipToWorld[row][3] += clipToWorld[row][2] * depth[0];
+		clipToWorld[row][0] *= rendered;
+		clipToWorld[row][1] *= rendered;
+		clipToWorld[row][2] *= depth[1] - depth[0];
+	}
 	SetupLightView(setup,origin,travel,basisY,projection,depth[0],depth[1],S,true,rendered,1);
 }
 bool CreateSunTarget( DX12ShadowTarget_t &target, const char *name )
@@ -881,11 +910,11 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	}
 	// Include half-texel snapping slack in the nominal square itself.
 	radius+=2*radius/DX12_SHADOW_STATIC_SUN_USEFUL;
-	VMatrix staticClip; CViewSetup staticView;
-	SunProjection(staticMins,staticMaxs,SnapSunCenter(center,radius,basisX,basisY,4060),radius,travel,basisX,basisY,4096,4060,staticClip,staticView,constants.cShadowDepthRecords[4]);
+	VMatrix staticClip, staticClipToWorld; CViewSetup staticView;
+	SunProjection(staticMins,staticMaxs,SnapSunCenter(center,radius,basisX,basisY,4060),radius,travel,basisX,basisY,4096,4060,staticClip,staticClipToWorld,staticView,constants.cShadowDepthRecords[4]);
 	CopyMatrix(staticClip,constants.cStaticSunWorldToClip);
 	constants.cStaticSunRect[2]=4096;
-	ShadowCasterVolume_t staticVolume; if ( !ExtractVolume(staticClip,staticVolume) ) return false;
+	ShadowCasterVolume_t staticVolume; if ( !ExtractVolume(staticClip,staticVolume,&staticClipToWorld) ) return false;
 	AddReportVolume(data,-5,staticVolume);
 	if ( !CreateSunTarget(data.staticSun,"shadow_static_sun") ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 	uint32 staticDetailGeneration=data.hasDetails ? data.detail.m_nGeneration : 0;
@@ -921,12 +950,12 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 			if ( !caster.immutable && SunBoxOverlapsSquare(caster,snapped,halfExtent,basisX,basisY) ) AddBounds(depthMins,depthMaxs,caster.mins,caster.maxs);
 		}
 		for ( int c=0;c<8;++c ) AddBounds(depthMins,depthMaxs,corners[c],corners[c]);
-		VMatrix clip; CViewSetup lightView;
-		SunProjection(depthMins,depthMaxs,snapped,sphereRadius,travel,basisX,basisY,2048,2012,clip,lightView,constants.cShadowDepthRecords[i]);
+		VMatrix clip, clipToWorld; CViewSetup lightView;
+		SunProjection(depthMins,depthMaxs,snapped,sphereRadius,travel,basisX,basisY,2048,2012,clip,clipToWorld,lightView,constants.cShadowDepthRecords[i]);
 		CopyMatrix(clip,constants.cSunWorldToClip[i]);
 		int x=(i&1)*2048,y=(i/2)*2048;
 		constants.cCascadeRects[i][0]=x; constants.cCascadeRects[i][1]=y; constants.cCascadeRects[i][2]=2048;
-		if ( !ExtractVolume(clip,data.cascadeVolumes[i]) ) return false;
+		if ( !ExtractVolume(clip,data.cascadeVolumes[i],&clipToWorld) ) return false;
 		AddReportVolume(data,-1-i,data.cascadeVolumes[i]);
 		ShadowCache_t &cache=data.cascades[i];
 		bool hasDetail=data.hasDetails && BoxInVolume(data.cascadeVolumes[i],data.detailMins,data.detailMaxs);
@@ -1315,6 +1344,7 @@ void ShadowMapsDX12_OnDeviceReset()
 }
 bool ShadowMapsDX12_Active() { return !g_DeviceResetPending && g_Admitted && !g_Error[0] && g_State.runtimeActive; }
 const char *ShadowMapsDX12_LastError() { PollCompletedViews(); return g_Error; }
+void ShadowMapsDX12_RejectMap( const char *reason ) { Fail(reason); }
 bool ShadowMapsDX12_CanDrawReceiverViews()
 {
 	return !g_ClientLevelShutdown && !g_DeviceResetPending && !ShadowMapsDX12_LastError()[0];

@@ -58,11 +58,15 @@
 			// These folders otherwise only add localization, captions, fonts and chapter cfgs.
 			game				|appid_220|ep2
 			game				|appid_220|episodic
+			game				|appid_290930|hl2
 
 			// We search VPK files before ordinary folders, because most files will be found in
 			// VPK and we can avoid making thousands of file system calls to attempt to open files
 			// in folders where they don't exist.  (Searching a VPK is much faster than making an operating
 			// system call.)
+			// Counter-Strike: Source content for de_dust2 acceptance (appid 240).
+			game				|appid_240|cstrike/cstrike_pak.vpk
+			game				|appid_240|cstrike
 			game+mod			|appid_243730|ep2/ep2_pak.vpk
 			game+mod			|appid_243730|episodic/ep1_pak.vpk
 
@@ -75,6 +79,10 @@
 			game				|appid_243730|hl2/hl2_sound_vo_english.vpk
 			game				|appid_243730|hl2/hl2_sound_misc.vpk
 			game				|appid_243730|hl2/hl2_misc.vpk
+
+			// Update maps use additional VMTs (including *_nocubbed patch includes).
+			// Keep its archive below the SDK content so engine-matched shaders retain priority.
+			game				|appid_290930|hl2/hl2_pak.vpk
 
 			platform			|appid_243750|platform/platform_misc.vpk
 

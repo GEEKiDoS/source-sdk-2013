@@ -325,7 +325,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4,
 		(VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4,
 		(VkDeviceSize)scene.luxels.Count() * sizeof( unsigned int ),
-		( (VkDeviceSize)scene.numOutputValues + (VkDeviceSize)faces.Count() * MAXLIGHTMAPS ) * sizeof( float ) * 4,
+		( (VkDeviceSize)scene.numOutputValues + (VkDeviceSize)faces.Count() * RESTIR_MAX_FACE_STYLES ) * sizeof( float ) * 4,
 		RESTIR_STAGING_BYTES, RESTIR_STAGING_BYTES,
 		gpu.hardware || !scene.triangles.Count() ? 16 : ( (VkDeviceSize)scene.triangles.Count() * 2 - 1 ) * sizeof( ReSTIRBvhNode ),
 		gpu.hardware ? 16 : (VkDeviceSize)scene.triangles.Count() * sizeof( unsigned int ),

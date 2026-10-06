@@ -29,6 +29,9 @@
 // ConVars (defined in shadowmaps_dx12.cpp)
 extern ConVar r_csm_distance;			// archived, default 4096, clamped [128, 32768]
 extern ConVar r_shadowmap_filter;		// archived, default 0, clamped [0,1]: 0 PCF, 1 PCSS; snapshotted per view packet
+extern ConVar r_shadowmap_spot_near;	// archived, default 4 Source units, clamped [.1,64]; snapshotted per receiver view
+										// spot shadow cameras only (including six-face spots), never influence/attenuation;
+										// effective near = min(setting,max(.1,far/2)); changes rebuild projection and static depth
 extern ConVar r_shadowmap_debug;		// cheat, default 0: 0 normal, 1 cascade, 2 visibility, 3 local page/face, 4 caster bounds, 5/6 PCSS diagnostics
 extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation; ';'-separated cfg list, item i exec'd on the
 										// (i+1)*60th playable main view of each map (no loading plaques/menu backgrounds; independent of `wait`)
@@ -109,6 +112,9 @@ void ShadowMapsDX12_OnDeviceReset();
 bool ShadowMapsDX12_Active();
 // Latched admission/runtime error (empty when none).
 const char *ShadowMapsDX12_LastError();
+// Client-system validation after shadow admission (CHLClient admits before LevelInitPreEntityAllSystems).
+// Latches the existing map failure, rejects receiver drawing and requests disconnect.
+void ShadowMapsDX12_RejectMap( const char *reason );
 // False during the shutdown bracket, an incomplete resource restore, or after a runtime error; ordinary
 // views otherwise remain drawable even though they do not create lighting packets.
 bool ShadowMapsDX12_CanDrawReceiverViews();

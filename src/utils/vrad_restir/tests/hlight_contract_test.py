@@ -76,19 +76,23 @@ def manifest(bsp):
         require(offset == cursor and lights >= 0 and sun in (-1, 0) and (sun < 0 or lights > 0), 'canonical selected-light range/sun')
         cursor += lights*116
         require(cursor <= len(raw), 'selected-light span')
+        selected_styles = set()
         for li in range(lights):
             at = offset+li*116
             w = unpack('<9f3i7f3i', raw, at)
             source, angle, radius, start, end, cap, zero = unpack('<i5fI', raw, at+88)
             require(all(math.isfinite(x) for x in (*w[:9], *w[12:19], angle, radius, start, end, cap)), 'nonfinite selected light')
             require(all(x >= 0 for x in w[3:6]) and 0 <= w[11] < 64 and not w[19] and source >= -1 and not zero, 'selected light intensity/style/flags/provenance')
+            selected_styles.add(w[11])
             require(all(x >= 0 for x in w[14:19]) and all(-1 <= x <= 1 for x in w[12:14]), 'selected light attenuation/cone range')
             if li == sun:
                 require(w[10] == 3 and 0 <= angle < 90 and radius == start == end == cap == 0, 'selected sun record')
             else:
                 require(w[10] in (1, 2) and radius >= 0 and angle == 0 and start >= 0 and cap > 0, 'selected local record')
         modes.append(dict(face=f, lighting=lighting, lighting_bytes=count, face_crc=face_crc,
-                          lighting_crc=lighting_crc, sun=sun, lights=lights, asset=asset))
+                          lighting_crc=lighting_crc, sun=sun, lights=lights, asset=asset,
+                          selected_styles=selected_styles,
+                          receiver_styles={0} | {w['style'] for w in bsp.worldlights(mi)}))
     require(cursor == len(raw), 'trailing manifest bytes')
     return path, modes
 
@@ -184,8 +188,10 @@ def asset(bsp, path, manifests, density):
                         require(data[at:at+8] == data[pixel_at+(cy*side+cx)*8:pixel_at+(cy*side+cx)*8+8], 'replicated LOD0 gutter')
             next_tile += num
         require(next_tile == tiles, 'all tiles belong to a canonical page')
+        mm = manifests[0 if lighting == 8 else 1]
         modes.append(dict(face=face, lighting=lighting, face_crc=face_crc, lighting_crc=lighting_crc,
-                          lighting_bytes=lighting_bytes, faces=fs, native=ns, tiles=ts, pages=ps, models=model_records))
+                          lighting_bytes=lighting_bytes, faces=fs, native=ns, tiles=ts, pages=ps, models=model_records,
+                          selected_styles=mm['selected_styles'], receiver_styles=mm['receiver_styles']))
     require(cursor == len(data), 'trailing asset bytes')
     require(sorted(m['asset'] for m in manifests) == list(range(len(modes))), 'manifest/asset bijection')
     for mm in manifests:
@@ -242,7 +248,7 @@ def unchanged(before, after, asset_path):
         require(after.pak.get(path) == raw, f'unrelated BSP ZIP member changed: {path}')
 
 
-def diagnostics(base, control, modes, data, density, raw_radiance):
+def diagnostics(base, control, modes, data, density, raw_radiance, require_source_overflow=False):
     cells = 0
     for mode in modes:
         suffix = '.ldr.json' if mode['lighting'] == 8 else '.hdr.json'
@@ -254,6 +260,8 @@ def diagnostics(base, control, modes, data, density, raw_radiance):
         if c:
             require(c['hlightDensity'] == 1 and d['sampleCellCount'] > c['sampleCellCount'], 'no actual independent sample-cell increase')
             old = {f['dface']: f for f in c['faces']}
+        overflow_faces = 0
+        retained_source_styles = set()
         for scene_index, f in enumerate(d['faces']):
             require(f['luxelW'] == (f['nativeW']-1)*density+1 and f['luxelH'] == (f['nativeH']-1)*density+1, 'diagnostic endpoint density')
             samples = d['sampleCells'][f['firstSample']:f['firstSample']+f['numSamples']]
@@ -273,8 +281,21 @@ def diagnostics(base, control, modes, data, density, raw_radiance):
                     old_area = sum(s['worldArea'] for s in old_samples)
                     require(abs(area-old_area) <= max(area, old_area)*0.002+1e-5, 'subdivision did not conserve clipped planar world area')
             disk = mode['faces'][f['dface']]
-            require(tuple(f['styles']) == disk[10:10+disk[9]] and f['numChannels'] == (4 if disk[8] & 1 else 1), 'authored style/bump data dropped before serialization')
-            for style in range(f['numStyles']):
+            receiver_slots = [(slot, style) for slot, style in enumerate(f['styles']) if style in mode['receiver_styles']]
+            require(tuple(style for slot, style in receiver_slots) == disk[10:10+disk[9]] and
+                    f['numChannels'] == (4 if disk[8] & 1 else 1), 'receiver style/bump data dropped before serialization')
+            for slot, style in enumerate(f['styles']):
+                if style in mode['receiver_styles']:
+                    continue
+                require(style in mode['selected_styles'], 'omitted source style has no runtime direct light')
+                first = f['firstOutput']+slot*f['numChannels']*f['luxelW']*f['luxelH']
+                end = first+f['numChannels']*f['luxelW']*f['luxelH']
+                require(all(not any(rgb) for rgb in d['receiverRadiance'][first:end]),
+                        'runtime-only style removed nonzero receiver transport')
+                if any(any(rgb) for rgb in d['sourceRadiance'][first:end]):
+                    retained_source_styles.add(style)
+            overflow_faces += f['numStyles'] > 4 and disk[9] <= 4
+            for style, (source_slot, _) in enumerate(receiver_slots):
                 for plane in range(f['numChannels']):
                     for y in range(f['luxelH']):
                         for x in range(f['luxelW']):
@@ -284,11 +305,14 @@ def diagnostics(base, control, modes, data, density, raw_radiance):
                                 expected = f32(d['sunVisibility'][f['firstLuxel']+local])
                                 require(high[3] == struct.unpack('<e', struct.pack('<e', expected))[0], 'independent designated sun alpha changed')
                             if raw_radiance:
-                                at = f['firstOutput']+(style*f['numChannels']+plane)*f['luxelW']*f['luxelH']+local
+                                at = f['firstOutput']+(source_slot*f['numChannels']+plane)*f['luxelW']*f['luxelH']+local
                                 value = d['receiverRadiance'][at] if d['luxelValid'][f['firstLuxel']+local] else (0, 0, 0)
                                 expected = tuple(struct.unpack('<e', struct.pack('<e', f32(f32(v)*f32(1/255))))[0] for v in value)
                                 require(high[:3] == expected, 'authored dense HDR RGB/style/bump output changed')
             cells += len(samples)
+        if require_source_overflow:
+            require(overflow_faces > 0 and retained_source_styles == mode['selected_styles']-mode['receiver_styles'],
+                    'source overflow regression did not retain every runtime-only style as nonzero full transport')
     return cells
 
 
@@ -303,6 +327,8 @@ def main():
     parser.add_argument('--require-bump', action='store_true')
     parser.add_argument('--require-displacement', action='store_true')
     parser.add_argument('--require-styles', action='store_true', help='require retained nonzero authored style slots')
+    parser.add_argument('--require-source-overflow', action='store_true',
+                        help='require >4 source styles with <=4 receiver styles and nonzero retained runtime-only transport')
     parser.add_argument('--require-zero-lights', action='store_true', help='require actual RGB-only enhanced modes')
     parser.add_argument('--require-sun', action='store_true')
     args = parser.parse_args()
@@ -323,7 +349,8 @@ def main():
             require(all(m['sun'] == 0 for m in mm), 'designated selected sun was not exercised in both modes')
         unchanged(BSP(args.before), bsp, path)
         comparisons = coarse_endpoints(bsp, data, modes, args.density)
-        cells = diagnostics(args.diagnostics, args.control_diagnostics, modes, data, args.density, args.raw_radiance)
+        cells = diagnostics(args.diagnostics, args.control_diagnostics, modes, data, args.density, args.raw_radiance,
+                            args.require_source_overflow)
         print(f'PASS hlight density={args.density} modes={len(modes)} real-cells={cells} coarse-RGB-comparisons={comparisons} asset-bytes={len(data)} path={path}')
         return 0
     except (AssertionError, OSError, ValueError, KeyError, IndexError, struct.error) as error:

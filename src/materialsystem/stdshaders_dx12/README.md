@@ -63,6 +63,20 @@ written under `shaders/fxc`. Build cost depends on the manifest set, folded comb
   thread; it never writes VCS files.
 - Legacy VCS centroid masks are carried into deferred translation. SM2 shaders declare centroid TEXCOORDs in
   the VCS header rather than bytecode DCLs; dropping that mask makes MSAA edge inputs differ from native shaders.
+- Feature detail sprites (`DX12_DetailShadowLit`) gamma-decode retained vertex illumination once, add runtime
+  direct in linear units, then multiply by sRGB-decoded albedo and gamma-to-linear material tint. The lit pass
+  uses `TONEMAP_SCALE_LINEAR` and standard sRGB output state; it must not gamma-encode RGB before the linear
+  HDR target. Alpha/cutout and shadow-depth behavior are unchanged. The grass-color correction was verified
+  on `d1_trainstation_02` in HDR with exit 0 (`_trainstation_grassfix_verification.json`); LDR was not exercised,
+  and the screenshot comparison is not a raw-radiance measurement.
+- Content mounts must cover the map's VMT dependencies independently of shader publication. Half-Life 2: Update
+  maps require `|appid_290930|hl2/hl2_pak.vpk`, not only the loose `hl2` folder. The episodic runtime mounts
+  this archive after the SDK VPKs, retaining engine-matched shader priority. Missing Update-only `*_nocubbed`
+  includes leave unresolved `patch` materials; registering a shader named `patch` is not a remedy.
+  Verified on `d1_trainstation_01` after fast-forwarding the intro and returning to normal speed: stationary
+  closed/open door captures show opaque metal and transparent windows, with failed includes and unknown
+  `patch` errors reduced from 16 each to zero. Evidence: `_train_door_stationary_{before,after}_runtime.log`
+  and `screenshots/train_door_stationary_{before,after}*.jpg`; both runs exited 0.
 
 ## Explicit high-resolution BSP replacement
 

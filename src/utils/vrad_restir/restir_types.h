@@ -245,8 +245,11 @@ struct ReSTIRGpuEmitterTriangle		// 64 bytes. Front-facing emitter triangle (see
 #define RESTIR_FACE_BUMPED  0x1		// SURF_BUMPLIGHT: numChannels == NUM_BUMP_VECTS+1
 #define RESTIR_FACE_DISP    0x2		// displacement face
 #define RESTIR_FACE_SKY     0x4		// not lit (kept for completeness; such faces are never in `faces`)
+// Full-source transport retains selected runtime-only styles for ambient/detail gathers.
+// Native and high-resolution receiver outputs still have MAXLIGHTMAPS slots.
+#define RESTIR_MAX_FACE_STYLES 64
 
-struct ReSTIRGpuFace					// 192 bytes
+struct ReSTIRGpuFace					// 464 bytes; mirrored by restir_layout.glsl
 {
 	float		luxelOrigin[4];
 	float		luxelToWorld[2][4];
@@ -265,13 +268,14 @@ struct ReSTIRGpuFace					// 192 bytes
 	int			firstLuxel, firstOutput;
 	int			firstNeighbor, numNeighbors;
 	int			numChannels;			// 1 or NUM_BUMP_VECTS+1
-	int			numStyles;				// active slots, 1..MAXLIGHTMAPS
-	int			styles[MAXLIGHTMAPS];	// style id per slot, 255 = unused; slot 0 is always style 0
+	int			numStyles;				// full-source slots; enhanced up to RESTIR_MAX_FACE_STYLES, ordinary up to MAXLIGHTMAPS
+	int			styles[RESTIR_MAX_FACE_STYLES]; // style id per slot, 255 = unused; slot 0 is always style 0
 	int			dface;					// index into g_pFaces (selected mode's face array)
 	int			material;				// index into ReSTIRScene::materials
 	int			flags;					// RESTIR_FACE_*
 	int			firstReservoir;			// backend-private, scene builder leaves 0
 };
+COMPILE_TIME_ASSERT( sizeof( ReSTIRGpuFace ) == 464 );
 
 struct ReSTIRGpuSample					// 112 bytes. One VRAD sample_t (BuildFacesamples / BuildDispSamples)
 {
@@ -322,6 +326,7 @@ struct ReSTIRScene
 	CUtlVector<int>						sceneStyles;	// distinct light styles present, sceneStyles[0] == 0 always
 	int									skyAmbientLight;// index into `lights` of the emit_skyambient entry, -1 if none
 	int									skyLight;		// index into `lights` of the emit_skylight entry, -1 if none
+	uint64								receiverStyleMask; // enhanced receiver styles: 0 plus styles with any nonselected light
 
 	// Lightmapped faces
 	CUtlVector<ReSTIRGpuFace>			faces;
@@ -334,10 +339,9 @@ struct ReSTIRScene
 	CUtlVector<int>						faceNeighbors;
 	int									numOutputValues;// total radiance entries (sum over faces of numStyles*numChannels*numLuxels)
 
-	// Faces reached (PVS + unshadowed falloff/cone/cosine) by more light styles than fit in
-	// MAXLIGHTMAPS. VRAD allocates a slot only for a light that actually lights a sample, shadow
-	// ray included (lightmap.cpp:2512-2541), so these keep MAXLIGHTMAPS provisional slots until
-	// ReSTIR_ResolveFaceStyles traces the candidates after UploadScene.
+	// Faces reached by more than MAXLIGHTMAPS unshadowed source styles need GPU
+	// visibility resolution. Enhanced faces retain every source candidate provisionally;
+	// ordinary faces retain four. Resolution only shrinks the allocated output layout.
 	CUtlVector<int>						styleOverflowFaces;		// index into `faces`
 	CUtlVector<int>						styleCandidateFirst;	// parallel: first entry in styleCandidateLights
 	CUtlVector<int>						styleCandidateCount;	// parallel: entry count
@@ -355,8 +359,16 @@ struct ReSTIRScene
 														// BakeStorage removes these lights from the written worldlights lump by identity
 														// (exportLightToGpuLight -> RESTIR_LIGHT_RUNTIME_DIRECT), never by record compare.
 
-	ReSTIRScene() : worldMins( 0, 0, 0 ), worldMaxs( 0, 0, 0 ), skyAmbientLight( -1 ), skyLight( -1 ), numOutputValues( 0 ),
-		shadowSunAngularRadius( SHADOWMAP_DEFAULT_SUN_ANGULAR_RADIUS ) {}
+	bool IsReceiverStyle( int style ) const
+	{
+		// Ordinary bakes permit the full legacy style-id domain; enhanced ids are
+		// validated before scene construction. Never shift by an unchecked id.
+		return style <= 0 || style >= RESTIR_MAX_FACE_STYLES ||
+			( receiverStyleMask & ( uint64( 1 ) << style ) ) != 0;
+	}
+
+	ReSTIRScene() : worldMins( 0, 0, 0 ), worldMaxs( 0, 0, 0 ), skyAmbientLight( -1 ), skyLight( -1 ),
+		receiverStyleMask( ~uint64( 0 ) ), numOutputValues( 0 ), shadowSunAngularRadius( SHADOWMAP_DEFAULT_SUN_ANGULAR_RADIUS ) {}
 };
 
 //-----------------------------------------------------------------------------

@@ -81,15 +81,15 @@ bool CReSTIRVulkanDevice::UploadFinalLightmap( const ReSTIRLightmapResult &resul
 	// Convert only one ring-sized page at a time; no second full-size radiance copy.
 	CUtlVector<float> page;
 	unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / ( sizeof( float ) * 4 ) );
-	page.EnsureCapacity( MIN( capacity, MAX( (unsigned int)radiance.Count(), (unsigned int)gpu.scene->faces.Count() * MAXLIGHTMAPS ) ) * 4 );
+	page.EnsureCapacity( MIN( capacity, MAX( (unsigned int)radiance.Count(), (unsigned int)gpu.scene->faces.Count() * RESTIR_MAX_FACE_STYLES ) ) * 4 );
 	// Ambient/prop rays share one valid-base-luxel mean per face/style. Scanning the
 	// dense face at every ray hit scales quadratically with density and can time out.
 	// Prefix the existing final-lightmap buffer; no additional descriptor is needed.
-	const VkDeviceSize averageBytes = (VkDeviceSize)gpu.scene->faces.Count() * MAXLIGHTMAPS * sizeof( float ) * 4;
+	const VkDeviceSize averageBytes = (VkDeviceSize)gpu.scene->faces.Count() * RESTIR_MAX_FACE_STYLES * sizeof( float ) * 4;
 	for ( unsigned int first = 0; first < (unsigned int)gpu.scene->faces.Count(); )
 	{
-		const unsigned int count = MIN( capacity / MAXLIGHTMAPS, (unsigned int)gpu.scene->faces.Count() - first );
-		page.SetCount( count * MAXLIGHTMAPS * 4 );
+		const unsigned int count = MIN( capacity / RESTIR_MAX_FACE_STYLES, (unsigned int)gpu.scene->faces.Count() - first );
+		page.SetCount( count * RESTIR_MAX_FACE_STYLES * 4 );
 		memset( page.Base(), 0, page.Count() * sizeof( float ) );
 		for ( unsigned int i = 0; i < count; ++i )
 		{
@@ -97,7 +97,7 @@ bool CReSTIRVulkanDevice::UploadFinalLightmap( const ReSTIRLightmapResult &resul
 			const int luxels = face.luxelW * face.luxelH;
 			for ( int slot = 0; slot < face.numStyles; ++slot )
 			{
-				float *average = page.Base() + ( i * MAXLIGHTMAPS + slot ) * 4;
+				float *average = page.Base() + ( i * RESTIR_MAX_FACE_STYLES + slot ) * 4;
 				unsigned int valid = 0;
 				const int output = face.firstOutput + slot * face.numChannels * luxels;
 				for ( int luxel = 0; luxel < luxels; ++luxel )
@@ -113,8 +113,8 @@ bool CReSTIRVulkanDevice::UploadFinalLightmap( const ReSTIRLightmapResult &resul
 				if ( valid ) for ( int c = 0; c < 3; ++c ) average[c] /= (float)valid;
 			}
 		}
-		gpu.Upload( RESTIR_BIND_FINAL_LIGHTMAP, page.Base(), (VkDeviceSize)count * MAXLIGHTMAPS * sizeof( float ) * 4,
-			(VkDeviceSize)first * MAXLIGHTMAPS * sizeof( float ) * 4 );
+		gpu.Upload( RESTIR_BIND_FINAL_LIGHTMAP, page.Base(), (VkDeviceSize)count * RESTIR_MAX_FACE_STYLES * sizeof( float ) * 4,
+			(VkDeviceSize)first * RESTIR_MAX_FACE_STYLES * sizeof( float ) * 4 );
 		first += count;
 	}
 	for ( unsigned int first = 0; first < (unsigned int)radiance.Count(); )

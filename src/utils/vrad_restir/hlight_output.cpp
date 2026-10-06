@@ -303,19 +303,29 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
         const int sf = scene.dfaceToFace[i]; if (sf < 0) continue;
         if (sf >= scene.faces.Count()) return Fail("invalid dense dface mapping");
         const ReSTIRGpuFace &f = scene.faces[sf];
-        if (f.dface != i || f.numStyles < 1 || f.numStyles > 4 || f.styles[0] != 0 ||
+        if (f.dface != i || f.numStyles < 1 || f.numStyles > RESTIR_MAX_FACE_STYLES || f.styles[0] != 0 ||
             (f.numChannels != 1 && f.numChannels != 4) || out.highWidth != uint32(f.luxelW) || out.highHeight != uint32(f.luxelH))
             return Fail("dense face style/plane/grid mismatch");
         const int64 luxels = (int64)f.luxelW*f.luxelH;
         if (f.firstOutput < 0 || f.firstLuxel < 0 || (int64)f.firstOutput+luxels*f.numStyles*f.numChannels > result.radiance.Count() ||
             (int64)f.firstLuxel+luxels > result.luxelValid.Count() ||
             (int64)f.firstLuxel+luxels > scene.luxels.Count()) return Fail("dense result range mismatch");
-        out.flags = hlight::kFaceHasLighting | (f.numChannels == 4 ? hlight::kFaceBumped : 0) |
-            (f.flags & RESTIR_FACE_DISP ? hlight::kFaceDisplacement : 0) | (sun ? hlight::kFaceHasSun : 0);
-        out.styleCount = f.numStyles;
+        // Keep every receiver style here, even when native RGBExp output prunes it.
+        // Source-only transport slots must never occupy the four disk style slots.
+        int receiverSlots[MAXLIGHTMAPS], receiverCount = 0;
         for (int s = 0; s < f.numStyles; ++s)
         {
-            out.styles[s] = f.styles[s];
+            if (!scene.IsReceiverStyle(f.styles[s])) continue;
+            if (receiverCount == MAXLIGHTMAPS) return Fail("dense face exceeds four receiver styles");
+            receiverSlots[receiverCount++] = s;
+        }
+        out.flags = hlight::kFaceHasLighting | (f.numChannels == 4 ? hlight::kFaceBumped : 0) |
+            (f.flags & RESTIR_FACE_DISP ? hlight::kFaceDisplacement : 0) | (sun ? hlight::kFaceHasSun : 0);
+        out.styleCount = receiverCount;
+        for (int receiverSlot = 0; receiverSlot < receiverCount; ++receiverSlot)
+        {
+            const int s = receiverSlots[receiverSlot];
+            out.styles[receiverSlot] = f.styles[s];
             for (int p = 0; p < f.numChannels; ++p)
             {
                 const uint32 w = f.luxelW+2, h = f.luxelH+2;
@@ -329,8 +339,8 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
                     const int old = m.pixels.Count(); m.pixels.SetCount(old+(int)pageBytes); memset(m.pixels.Base()+old,0,(size_t)pageBytes);
                     page = m.pages.AddToTail(record); x = y = rowHeight = 0;
                 }
-                hlight::TileDisk tile = {uint32(i),uint32(s),uint32(p),uint32(page),x+1,y+1,uint32(f.luxelW),uint32(f.luxelH)};
-                out.tiles[s*4+p] = m.tiles.AddToTail(tile); ++m.pages[page].tileCount;
+                hlight::TileDisk tile = {uint32(i),uint32(receiverSlot),uint32(p),uint32(page),x+1,y+1,uint32(f.luxelW),uint32(f.luxelH)};
+                out.tiles[receiverSlot*4+p] = m.tiles.AddToTail(tile); ++m.pages[page].tileCount;
                 uint16 *pixels = reinterpret_cast<uint16 *>(m.pixels.Base()+m.pages[page].pixelsOffset);
                 for (uint32 yy = 1; yy < h-1; ++yy)
                 for (uint32 xx = 1; xx < w-1; ++xx)
@@ -339,7 +349,7 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
                     Vector rgb = result.radiance[f.firstOutput+(s*f.numChannels+p)*(int)luxels+local];
                     if (!rgb.IsValid() || rgb.x < 0 || rgb.y < 0 || rgb.z < 0) return Fail("nonfinite/negative dense transport RGB");
                     rgb = color(context,sf,local,p,rgb)/255.0f;
-                    const float alpha = s == 0 && p == 0 ? (sun ? result.sunVisibility[f.firstLuxel+local] : 1.0f) : 0.0f;
+                    const float alpha = receiverSlot == 0 && p == 0 ? (sun ? result.sunVisibility[f.firstLuxel+local] : 1.0f) : 0.0f;
                     uint16 *dest = pixels+(uint64(y+yy)*pageSide+x+xx)*4;
                     if (alpha < 0 || alpha > 1 || !Half(rgb.x,dest[0]) || !Half(rgb.y,dest[1]) || !Half(rgb.z,dest[2]) || !Half(alpha,dest[3]))
                     {

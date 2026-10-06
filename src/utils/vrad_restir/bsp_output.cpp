@@ -214,6 +214,12 @@ namespace
 		return ( face.m_LightmapTextureSizeInLuxels[0] + 1 ) * ( face.m_LightmapTextureSizeInLuxels[1] + 1 );
 	}
 
+	struct NativeFaceStyles
+	{
+		int count;
+		int sourceSlots[MAXLIGHTMAPS];
+	};
+
 	// A style slot is kept only when some luxel of it survives ColorRGBExp32 encoding.
 	// Pre-assigned slots (PVS-eligible lights that never reach the face) must drop
 	// out as in VRAD; an exact-zero test would keep every slot after OIDN, whose
@@ -423,8 +429,8 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 	if (!ReSTIR_CaptureHighres(options,scene,result,HighresColor,&highres))
 		return false;
 
-	CUtlVector<int> activeStyleCounts;
-	activeStyleCounts.SetCount( scene.faces.Count() );
+	CUtlVector<NativeFaceStyles> nativeStyles;
+	nativeStyles.SetCount( scene.faces.Count() );
 	int64 totalBytes = 0;
 	for ( int dfaceIndex = 0; dfaceIndex < SelectedFaceCount(); ++dfaceIndex )
 	{
@@ -439,8 +445,8 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			return false;
 		}
 		const ReSTIRGpuFace &sceneFace = scene.faces[sceneFaceIndex];
-		if ( sceneFace.dface != dfaceIndex || sceneFace.numStyles <= 0 || sceneFace.numStyles > MAXLIGHTMAPS ||
-			( sceneFace.numChannels != 1 && sceneFace.numChannels != 4 ) )
+		if ( sceneFace.dface != dfaceIndex || sceneFace.numStyles <= 0 || sceneFace.numStyles > RESTIR_MAX_FACE_STYLES ||
+			sceneFace.styles[0] != 0 || ( sceneFace.numChannels != 1 && sceneFace.numChannels != 4 ) )
 		{
 			Warning( "ReSTIR: scene face %d has an invalid style/channel contract\n", sceneFaceIndex );
 			return false;
@@ -466,13 +472,30 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			return false;
 		}
 
-		int active = 1;
-		for ( int slot = 1; slot < sceneFace.numStyles; ++slot )
+		// Selected-only styles remain in the transport source, not the receiver.
+		// Enforce the receiver contract before RGBExp pruning can hide overflow.
+		int receiverSlots[MAXLIGHTMAPS];
+		int receiverCount = 0;
+		for ( int slot = 0; slot < sceneFace.numStyles; ++slot )
 		{
-			if ( HasRadiance( result, sceneFace, slot ) )
-				++active;
+			if ( !scene.IsReceiverStyle( sceneFace.styles[slot] ) )
+				continue;
+			if ( receiverCount == MAXLIGHTMAPS )
+			{
+				Warning( "ReSTIR: scene face %d has more than %d receiver styles\n", sceneFaceIndex, MAXLIGHTMAPS );
+				return false;
+			}
+			receiverSlots[receiverCount++] = slot;
 		}
-		activeStyleCounts[sceneFaceIndex] = active;
+		NativeFaceStyles &styles = nativeStyles[sceneFaceIndex];
+		styles.count = 0;
+		for ( int receiverSlot = 0; receiverSlot < receiverCount; ++receiverSlot )
+		{
+			const int sourceSlot = receiverSlots[receiverSlot];
+			if ( sourceSlot == 0 || HasRadiance( result, sceneFace, sourceSlot ) )
+				styles.sourceSlots[styles.count++] = sourceSlot;
+		}
+		const int active = styles.count;
 		totalBytes += (int64)active * 4 + (int64)active * sceneFace.numChannels * LuxelCount(g_pFaces[dfaceIndex]) * 4;
 		if ( totalBytes > MAX_MAP_LIGHTING )
 		{
@@ -489,17 +512,14 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 		if ( sceneFaceIndex < 0 )
 			continue;
 		const ReSTIRGpuFace &sceneFace = scene.faces[sceneFaceIndex];
-		int active = activeStyleCounts[sceneFaceIndex];
+		const NativeFaceStyles &styles = nativeStyles[sceneFaceIndex];
+		int active = styles.count;
 		int luxels = LuxelCount(g_pFaces[dfaceIndex]);
 		g_pFaces[dfaceIndex].lightofs = writeOffset + active * 4;
 		writeOffset += active * 4 + active * sceneFace.numChannels * luxels * 4;
 		int outStyle = 0;
-		g_pFaces[dfaceIndex].styles[outStyle++] = 0;
-		for ( int slot = 1; slot < sceneFace.numStyles; ++slot )
-		{
-			if ( HasRadiance( result, sceneFace, slot ) )
-				g_pFaces[dfaceIndex].styles[outStyle++] = (byte)sceneFace.styles[slot];
-		}
+		for ( ; outStyle < active; ++outStyle )
+			g_pFaces[dfaceIndex].styles[outStyle] = (byte)sceneFace.styles[styles.sourceSlots[outStyle]];
 		while ( outStyle < MAXLIGHTMAPS )
 			g_pFaces[dfaceIndex].styles[outStyle++] = 255;
 	}
@@ -513,7 +533,8 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 		if ( sceneFace.dface < 0 || sceneFace.dface >= SelectedFaceCount() )
 			return false;
 		const dface_t &face = g_pFaces[sceneFace.dface];
-		int active = activeStyleCounts[sceneFaceIndex];
+		const NativeFaceStyles &styles = nativeStyles[sceneFaceIndex];
+		int active = styles.count;
 		int luxels = LuxelCount(face);
 		const int highLuxels = sceneFace.luxelW * sceneFace.luxelH;
 		const int density = options.shadowMaps ? options.highresDensity : 1;
@@ -525,22 +546,7 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 
 		for ( int outStyle = 0; outStyle < active; ++outStyle )
 		{
-			int sourceSlot = -1;
-			int ordinal = 0;
-			for ( int slot = 0; slot < sceneFace.numStyles; ++slot )
-			{
-				if ( slot == 0 || HasRadiance( result, sceneFace, slot ) )
-				{
-					if ( ordinal == outStyle )
-					{
-						sourceSlot = slot;
-						break;
-					}
-					++ordinal;
-				}
-			}
-			if ( sourceSlot < 0 )
-				return false;
+			const int sourceSlot = styles.sourceSlots[outStyle];
 
 			CUtlVector<float> red;
 			CUtlVector<float> green;

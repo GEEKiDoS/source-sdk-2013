@@ -161,6 +161,22 @@ static void RemoveHooks( const void *pLoadLibraryA, bool bLoadLibraryA, const vo
 	if ( bLoadLibraryExW )
 		MH_RemoveHook( const_cast<void *>( pLoadLibraryExW ) );
 }
+
+// Keep the launcher's MinHook instance initialized across installation retries.
+static bool s_bMinHookReady = false;
+
+static bool InitializeMinHook( wchar_t *pError, size_t errorChars )
+{
+	if ( s_bMinHookReady )
+		return true;
+	MH_STATUS status = MH_Initialize();
+	if ( status == MH_ERROR_ALREADY_INITIALIZED )
+		status = MH_OK;
+	s_bMinHookReady = status == MH_OK;
+	if ( !s_bMinHookReady )
+		SetError( pError, errorChars, L"MinHook initialization failed (status %u).", (unsigned int)status );
+	return s_bMinHookReady;
+}
 }
 
 bool InstallShaderApiDx12Redirect( const wchar_t *pRendererDll, wchar_t *pError, size_t errorChars )
@@ -183,12 +199,9 @@ bool InstallShaderApiDx12Redirect( const wchar_t *pRendererDll, wchar_t *pError,
 		return false;
 	}
 
-	MH_STATUS status = MH_Initialize();
-	if ( status != MH_OK )
-	{
-		SetError( pError, errorChars, L"MinHook initialization failed (status %u).", (unsigned int)status );
+	if ( !InitializeMinHook( pError, errorChars ) )
 		return false;
-	}
+	MH_STATUS status = MH_OK;
 
 	HMODULE kernel32 = GetModuleHandleW( L"kernel32.dll" );
 	void *pLoadLibraryA = kernel32 ? reinterpret_cast<void *>( GetProcAddress( kernel32, "LoadLibraryA" ) ) : NULL;
@@ -198,7 +211,6 @@ bool InstallShaderApiDx12Redirect( const wchar_t *pRendererDll, wchar_t *pError,
 	if ( !pLoadLibraryA || !pLoadLibraryW || !pLoadLibraryExA || !pLoadLibraryExW )
 	{
 		SetTextError( pError, errorChars, L"Could not resolve the Kernel32 loader exports." );
-		MH_Uninitialize();
 		return false;
 	}
 
@@ -240,7 +252,6 @@ bool InstallShaderApiDx12Redirect( const wchar_t *pRendererDll, wchar_t *pError,
 		if ( bLoadLibraryExA ) MH_DisableHook( pLoadLibraryExA );
 		if ( bLoadLibraryExW ) MH_DisableHook( pLoadLibraryExW );
 		RemoveHooks( pLoadLibraryA, bLoadLibraryA, pLoadLibraryW, bLoadLibraryW, pLoadLibraryExA, bLoadLibraryExA, pLoadLibraryExW, bLoadLibraryExW );
-		MH_Uninitialize();
 		SetError( pError, errorChars, L"MinHook hook installation failed (status %u).", (unsigned int)status );
 		return false;
 	}

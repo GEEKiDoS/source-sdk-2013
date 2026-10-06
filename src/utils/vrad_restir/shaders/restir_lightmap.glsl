@@ -55,7 +55,7 @@ vec3 HitAlbedo( ReSTIRGpuFace face, HitInfo hit, vec3 position )
 // by UploadFinalLightmap. In particular, use full transport, not receiver-only RGB.
 vec3 FaceAverage( int faceIndex, uint slot )
 {
-	return finalLightmap[uint( faceIndex ) * RESTIR_MAXLIGHTMAPS + slot].rgb;
+	return finalLightmap[uint( faceIndex ) * RESTIR_MAX_FACE_STYLES + slot].rgb;
 }
 
 // utils/vrad/vraddetailprops.cpp:317-351, point sample (truncate, clamp), base
@@ -65,7 +65,7 @@ vec3 LightmapPointSample( ReSTIRGpuFace face, uint slot, HitInfo hit, vec3 posit
 	ivec2 coord = clamp( ivec2( LightmapCoord( face, hit, position ) ), ivec2( 0 ), ivec2( face.luxelW - 1, face.luxelH - 1 ) );
 	int luxel = coord.x + coord.y * face.luxelW;
 	valid = luxelValid[face.firstLuxel + luxel] != 0u;
-	return finalLightmap[pc.numFaces * RESTIR_MAXLIGHTMAPS + uint( face.firstOutput ) + slot * uint( face.numChannels * face.luxelW * face.luxelH ) + uint( luxel )].rgb;
+	return finalLightmap[pc.numFaces * RESTIR_MAX_FACE_STYLES + uint( face.firstOutput ) + slot * uint( face.numChannels * face.luxelW * face.luxelH ) + uint( luxel )].rgb;
 }
 
 // utils/vrad/vraddetailprops.cpp:239-295,579-617 CalcRayAmbientLighting.

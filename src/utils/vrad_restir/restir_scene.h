@@ -15,8 +15,8 @@ public:
 };
 
 class CReSTIRVulkanDevice;
-// After UploadScene: settles faces whose unshadowed light styles exceed MAXLIGHTMAPS with GPU
-// shadow rays (VRAD allocates styles only for lights that reach a sample) and re-uploads faces.
+// After UploadScene: resolves faces with more than MAXLIGHTMAPS source candidates using GPU
+// shadow rays and re-uploads the surviving source slots. Only receiver styles consume the native budget.
 bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device );
 
 // Returns the material index, creating it on first use. pOutAlphaTested is

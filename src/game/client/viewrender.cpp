@@ -5366,6 +5366,11 @@ public:
 		volume.mins = s.volume.m_vecMins; volume.maxs = s.volume.m_vecMaxs;
 		volume.planeCount = s.volume.m_nPlaneCount;
 		memcpy( volume.planes, s.volume.m_Planes, sizeof(volume.planes) );
+		// DrawModel defers ropes and particles into per-view caches. Match the
+		// ordinary opaque pass so successive light views neither accumulate
+		// duplicate entries nor leave their depth geometry undrawn.
+		RopeManager()->ResetRenderCache();
+		g_pParticleSystemMgr->ResetRenderCache();
 		int candidateCount = s.candidateIndices ? s.candidateCount : s.casters->Count();
 		for ( int i = 0; i < candidateCount; ++i )
 		{
@@ -5389,6 +5394,8 @@ public:
 			render->SetColorModulation( white );
 			staticpropmgr->DrawStaticProps( statics, count, DEPTH_MODE_SHADOW, false );
 		}
+		RopeManager()->DrawRenderCache( true );
+		g_pParticleSystemMgr->DrawRenderCache( true );
 		if ( s.drawDetail ) DetailObjectSystem()->DrawShadowCasters( s.volume, s.detail );
 		modelrender->ForcedMaterialOverride( NULL );
 		s.lighting->EndShadowPass();

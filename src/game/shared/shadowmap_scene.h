@@ -37,7 +37,8 @@ inline float ShadowMapScene_RenderedOrthoHalfExtent( float nominalHalfExtent, in
 inline bool ShadowMapScene_IsWideSpot( float stopdot2 )				{ return stopdot2 <= 0.017452406f; }
 inline float ShadowMapScene_NarrowSpotTanHalfFov( float stopdot2 )	{ float c = clamp( stopdot2, 0.017452406f, 1.0f ); return sqrtf( MAX( 0.0f, 1.0f - c * c ) ) / c; } // tan(acos(stopdot2))
 
-// Cube faces: +X,-X,+Y,-Y,+Z,-Z with up vectors +Z,+Z,+Z,+Z,-Y,+Y, nominal 90deg FOV, near DX12_SHADOW_CUBE_NEAR.
+// Cube faces: +X,-X,+Y,-Y,+Z,-Z with up vectors +Z,+Z,+Z,+Z,-Y,+Y, nominal 90deg FOV.
+// Point cameras use DX12_SHADOW_CUBE_NEAR; six-face spotlight cameras may use the client's separate near.
 void ShadowMapScene_CubeFaceBasis( int face, Vector &forward, Vector &up, Vector &right );
 // Major-axis face selection (ties X, then Y, then Z) of a light-relative direction.
 int ShadowMapScene_SelectCubeFace( const Vector &lightToPoint );
@@ -59,10 +60,11 @@ bool ShadowMapScene_CascadeSplits( float n, float f, float splits[DX12_SHADOW_CS
 void ShadowMapScene_SunBasis( const Vector &travel, Vector &basisX, Vector &basisY );
 
 //-----------------------------------------------------------------------------
-// Influence volumes. A local light's volume is the union of its guard-expanded caster frusta (one narrow spot
-// frustum or the six cube faces), bounded by its far plane. `far` for an unbounded light is the distance that
-// encloses the world bounds from the light (never an invented illumination radius). planeCount is 0 for a
-// cube (AABB only: the six faces cover all directions).
+// Conservative influence volumes for illumination lists and client/server caster queries, independent of
+// the client's shadow-camera near setting. The near stays DX12_SHADOW_CUBE_NEAR (.1), including spots.
+// A local volume covers the guard-expanded frusta (one narrow spot or six cube faces), bounded by far.
+// `far` for an unbounded light encloses the world bounds from the light (never an invented illumination
+// radius). planeCount is 0 for a cube (AABB only: the six faces cover all directions).
 //-----------------------------------------------------------------------------
 struct ShadowMapInfluenceVolume_t
 {
@@ -81,6 +83,7 @@ void ShadowMapScene_SunDomain( const Vector &worldMins, const Vector &worldMaxs,
 bool ShadowMapScene_VolumeIntersectsBox( const ShadowMapInfluenceVolume_t &volume, const Vector &mins, const Vector &maxs );
 
 // Per-face view/projection for a cube light or the single narrow-spot face. `faceIndex` 0..5 (cube) or 0.
+// zNear/zFar are shadow-camera coverage, not the shared influence near or an illumination cutoff.
 void ShadowMapScene_LocalFaceMatrices( const dworldlight_t &light, int faceIndex, float zNear, float zFar, int S, int U,
 	VMatrix &worldToView, VMatrix &proj, VMatrix &worldToClip, float &tanRenderedHalfFov );
 

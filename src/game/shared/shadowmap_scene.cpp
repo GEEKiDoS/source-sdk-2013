@@ -99,6 +99,8 @@ void ShadowMapScene_LocalFaceMatrices( const dworldlight_t &light, int face, flo
 
 void ShadowMapScene_LocalInfluence( const dworldlight_t &light, const Vector &worldMins, const Vector &worldMaxs, ShadowMapInfluenceVolume_t &out )
 {
+	// Shared illumination/caster-transmission coverage stays conservative even
+	// when the client raises a spotlight's shadow-camera near plane.
 	out.zNear = DX12_SHADOW_CUBE_NEAR;
 	out.zFar = ShadowMapScene_LocalFar( light, worldMins, worldMaxs );
 	out.cube = light.type == emit_point || ShadowMapScene_IsWideSpot( light.stopdot2 );

@@ -8,6 +8,7 @@
 #include "entityoutput.h"
 #include "ndebugoverlay.h"
 #include "modelentities.h"
+#include "shadowmap_transmit.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -27,6 +28,8 @@ BEGIN_DATADESC( CFuncBrush )
 	DEFINE_KEYFIELD( m_iDisabled, FIELD_INTEGER, "StartDisabled" ),
 	DEFINE_KEYFIELD( m_iSolidity, FIELD_INTEGER, "Solidity" ),
 	DEFINE_KEYFIELD( m_bSolidBsp, FIELD_BOOLEAN, "solidbsp" ),
+	DEFINE_KEYFIELD( m_bVradBrushCastShadows, FIELD_BOOLEAN, "vrad_brush_cast_shadows" ),
+	DEFINE_FIELD( m_bShadowCasterPolicyApplied, FIELD_BOOLEAN ),
 	DEFINE_KEYFIELD( m_iszExcludedClass, FIELD_STRING, "excludednpc" ),
 	DEFINE_KEYFIELD( m_bInvertExclusion, FIELD_BOOLEAN, "invert_exclusion" ),
 
@@ -63,6 +66,21 @@ void CFuncBrush::Spawn( void )
 	if ( m_bSolidBsp )
 	{
 		SetSolid( SOLID_BSP );
+	}
+}
+
+void CFuncBrush::Activate( void )
+{
+	BaseClass::Activate();
+
+	// Map admission follows Spawn and precedes ServerActivate. Apply the authored
+	// compiler policy once, without clearing explicit disableshadows or reapplying
+	// it over a saved/runtime EnableShadow override.
+	if ( ShadowMapTransmit_FeatureMap() && !m_bShadowCasterPolicyApplied )
+	{
+		m_bShadowCasterPolicyApplied = true;
+		if ( !m_bVradBrushCastShadows )
+			AddEffects( EF_NOSHADOW );
 	}
 }
 

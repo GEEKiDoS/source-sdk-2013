@@ -1084,12 +1084,13 @@ static float DispSampleRadiusSquared( const texinfo_t &info )
 	return radius * radius;
 }
 
-// utils/vrad/lightmap.cpp:2408-2431 — slots in encounter order; false when a style did not fit.
-static bool AllocateFaceStyles( const ReSTIRScene &scene, const int *lightIndices, int count, ReSTIRGpuFace &face )
+// Source slots stay in light encounter order; enhanced transport can carry the full style domain.
+static bool AllocateFaceStyles( const ReSTIRScene &scene, const int *lightIndices, int count,
+	int maxStyles, ReSTIRGpuFace &face )
 {
 	face.numStyles = 1;
 	face.styles[0] = 0;
-	for ( int i = 1; i < MAXLIGHTMAPS; ++i )
+	for ( int i = 1; i < RESTIR_MAX_FACE_STYLES; ++i )
 	{
 		face.styles[i] = 255;
 	}
@@ -1106,7 +1107,7 @@ static bool AllocateFaceStyles( const ReSTIRScene &scene, const int *lightIndice
 		{
 			continue;
 		}
-		if ( face.numStyles >= MAXLIGHTMAPS )
+		if ( face.numStyles >= maxStyles )
 		{
 			fits = false;
 			continue;
@@ -1123,9 +1124,8 @@ static void WarnFaceStyleOverflow( const ReSTIRScene &scene, const ReSTIRGpuFace
 	Warning( "Too many light styles on a face at (%f, %f, %f)\n", point.x, point.y, point.z );
 }
 
-// Without shadow rays the candidate set is a superset of VRAD's. When it does not fit, the face
-// keeps MAXLIGHTMAPS provisional slots (an upper bound for the output layout) and is resolved by
-// ReSTIR_ResolveFaceStyles once the scene is on the GPU.
+// More than four source candidates need shadow-ray resolution even when all fit in enhanced
+// transport. Keep the complete provisional source layout; resolution can only shrink it.
 static void AssignFaceStyles( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
 	const ReSTIRSceneLightVis &vis, int faceIndex, ReSTIRGpuFace &face )
 {
@@ -1140,7 +1140,9 @@ static void AssignFaceStyles( ReSTIRSceneBuildContext &context, ReSTIRScene &sce
 		}
 	}
 	const int count = scene.styleCandidateLights.Count() - first;
-	if ( AllocateFaceStyles( scene, scene.styleCandidateLights.Base() + first, count, face ) )
+	const int maxStyles = context.options->shadowMaps ? RESTIR_MAX_FACE_STYLES : MAXLIGHTMAPS;
+	const bool fits = AllocateFaceStyles( scene, scene.styleCandidateLights.Base() + first, count, maxStyles, face );
+	if ( fits && face.numStyles <= MAXLIGHTMAPS )
 	{
 		scene.styleCandidateLights.SetCountNonDestructively( first );
 		return;
@@ -1196,6 +1198,7 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 	scene.styleCandidateCount.RemoveAll();
 	scene.styleCandidateLights.RemoveAll();
 	scene.numOutputValues = 0;
+	scene.receiverStyleMask = ~uint64( 0 );
 	if (context.options->shadowMaps)
 	{
 		for (int i = 0; i < scene.lights.Count(); ++i)
@@ -1204,6 +1207,15 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 			{
 				Warning("Hlight: light %d authored style %d exceeds the native 64-style domain\n",i,scene.lights[i].style);
 				return false;
+			}
+		}
+		scene.receiverStyleMask = uint64( 1 );
+		for ( int i = 0; i < scene.lights.Count(); ++i )
+		{
+			const ReSTIRGpuLight &light = scene.lights[i];
+			if ( !( light.lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) )
+			{
+				scene.receiverStyleMask |= uint64( 1 ) << light.style;
 			}
 		}
 	}
@@ -1404,13 +1416,20 @@ bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 				visible.AddToTail( scene.styleCandidateLights[c] );
 			}
 		}
-		if ( !AllocateFaceStyles( scene, visible.Base(), visible.Count(), face ) )
+		const int maxStyles = g_ReSTIROptions.shadowMaps ? RESTIR_MAX_FACE_STYLES : MAXLIGHTMAPS;
+		const bool fits = AllocateFaceStyles( scene, visible.Base(), visible.Count(), maxStyles, face );
+		int receiverStyles = 0;
+		for ( int slot = 0; slot < face.numStyles; ++slot )
+		{
+			receiverStyles += scene.IsReceiverStyle( face.styles[slot] ) ? 1 : 0;
+		}
+		if ( !fits || receiverStyles > MAXLIGHTMAPS )
 		{
 			WarnFaceStyleOverflow( scene, face );
 			++warnings;
 		}
 	}
-	Msg( "VRAD ReSTIR: %d faces reached by more than %d light styles; %d still overflow after shadow rays\n",
+	Msg( "VRAD ReSTIR: %d faces reached by more than %d source light styles; %d receiver style overflows after shadow rays\n",
 		scene.styleOverflowFaces.Count(), MAXLIGHTMAPS, warnings );
 	if ( warnings && g_ReSTIROptions.shadowMaps )
 	{

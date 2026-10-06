@@ -156,6 +156,7 @@ public:
 	CQueuedRopeMemoryManager( void )
 	{
 		m_nCurrentStack = 0;
+		m_nOverflowBlocksUsed = 0;
 		MEM_ALLOC_CREDIT();
 		m_QueuedRopeMemory[0].Init( 131072, 0, 16384 );
 		m_QueuedRopeMemory[1].Init( 131072, 0, 16384 );
@@ -166,12 +167,12 @@ public:
 		m_QueuedRopeMemory[1].FreeAll( true );
 		for( int i = 0; i != 2; ++i )
 		{
-			for( int j = m_DeleteOnSwitch[i].Count(); --j >= 0; )
+			for( int j = m_OverflowBlocks[i].Count(); --j >= 0; )
 			{
-				free( m_DeleteOnSwitch[i].Element(j) );
+				free( m_OverflowBlocks[i][j].memory );
 			}
 
-			m_DeleteOnSwitch[i].RemoveAll();
+			m_OverflowBlocks[i].RemoveAll();
 		}
 	}
 
@@ -180,11 +181,9 @@ public:
 		m_nCurrentStack = 1 - m_nCurrentStack;
 		m_QueuedRopeMemory[m_nCurrentStack].FreeAll( false );
 
-		for( int i = m_DeleteOnSwitch[m_nCurrentStack].Count(); --i >= 0; )
-		{
-			free( m_DeleteOnSwitch[m_nCurrentStack].Element(i) );
-		}
-		m_DeleteOnSwitch[m_nCurrentStack].RemoveAll();
+		// This half is no longer referenced by queued rendering. Retain its
+		// high-water storage instead of malloc/free for every excess light view.
+		m_nOverflowBlocksUsed = 0;
 	}
 
 	inline void *Alloc( size_t bytes )
@@ -193,17 +192,36 @@ public:
 		void *pReturn = m_QueuedRopeMemory[m_nCurrentStack].Alloc( bytes, false );
 		if( pReturn == NULL )
 		{
-			int iMaxSize = m_QueuedRopeMemory[m_nCurrentStack].GetMaxSize();
-			Warning( "Overflowed rope queued rendering memory stack. Needed %llu, have %d/%d\n", (uint64)bytes, iMaxSize - m_QueuedRopeMemory[m_nCurrentStack].GetUsed(), iMaxSize );
-			pReturn = malloc( bytes );
-			m_DeleteOnSwitch[m_nCurrentStack].AddToTail( pReturn );
+			CUtlVector<OverflowBlock_t> &blocks = m_OverflowBlocks[m_nCurrentStack];
+			const int index = m_nOverflowBlocksUsed++;
+			if ( index == blocks.Count() )
+			{
+				OverflowBlock_t block = { NULL, 0 };
+				blocks.AddToTail( block );
+			}
+			OverflowBlock_t &block = blocks[index];
+			if ( block.capacity < bytes )
+			{
+				free( block.memory );
+				block.memory = malloc( bytes );
+				if ( !block.memory )
+					Error( "Unable to allocate %llu bytes for queued rope rendering\n", (uint64)bytes );
+				block.capacity = bytes;
+			}
+			pReturn = block.memory;
 		}
 		return pReturn;
 	}
 
+	struct OverflowBlock_t
+	{
+		void *memory;
+		size_t capacity;
+	};
 	CMemoryStack	m_QueuedRopeMemory[2];
 	int				m_nCurrentStack;
-	CUtlVector<void *>	m_DeleteOnSwitch[2]; //when we overflow the stack, we do new/delete
+	int				m_nOverflowBlocksUsed;
+	CUtlVector<OverflowBlock_t> m_OverflowBlocks[2];
 };
 
 //=============================================================================

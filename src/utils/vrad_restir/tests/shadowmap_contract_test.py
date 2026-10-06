@@ -876,6 +876,18 @@ def prepare(fixture, toolgame):
         other.set('SunSpreadAngle', '0.53')
         vmf.items.append(('entity', other))
     variant('multi-env-last-wins', sun, multi)
+    def source_styles(vmf, receiver_overflow=False):
+        # Seven source styles, four receivers; style 3 mixes selected/unselected
+        # lights and style 63 exercises the top bit of the receiver style domain.
+        lights = [(1, 0), (2, 0), (3, 0), (3, 1), (32, 1), (34, 1), (63, 1)]
+        if receiver_overflow:
+            lights.append((4, 0))
+        for i, (style, selected) in enumerate(lights):
+            vmf.items.append(('entity', KV([('id', str(930000+i)), ('classname', 'light'),
+                ('origin', '1280 224 128'), ('_light', '255 224 160 250'), ('_quadratic_attn', '1'),
+                ('style', str(style)), ('_shadowmap', str(selected))])))
+    variant('source-style-overflow', lambda e: False, source_styles)
+    variant('receiver-style-overflow', lambda e: False, lambda v: source_styles(v, True))
     def overflow(vmf):
         for i in range(9):
             for j in range(8):

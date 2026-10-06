@@ -25,7 +25,7 @@ BEGIN_VS_SHADER( DX12_DetailShadowLit, "Runtime shadow-map detail lighting" )
 	}
 	SHADER_INIT
 	{
-		LoadTexture( BASETEXTURE );
+		LoadTexture( BASETEXTURE, TEXTUREFLAGS_SRGB );
 	}
 	SHADER_DRAW
 	{
@@ -35,10 +35,10 @@ BEGIN_VS_SHADER( DX12_DetailShadowLit, "Runtime shadow-map detail lighting" )
 			int texcoordSizes[3] = { 2, 4, 4 };
 			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION | VERTEX_COLOR, 3, texcoordSizes, 0 );
 			pShaderShadow->EnableTexture( SHADER_SAMPLER0, true );
-			// Legacy detail RGB and texture inputs are gamma encoded. Decode
-			// explicitly in the feature PS; retain the existing gamma output path.
-			pShaderShadow->EnableSRGBRead( SHADER_SAMPLER0, false );
-			pShaderShadow->EnableSRGBWrite( false );
+			// Decode prelit vertex RGB in the PS. Albedo sampling, lighting and
+			// output follow the ordinary detail material's linear color path.
+			pShaderShadow->EnableSRGBRead( SHADER_SAMPLER0, !depth );
+			pShaderShadow->EnableSRGBWrite( !depth );
 			pShaderShadow->EnableCulling( false );
 			pShaderShadow->EnableAlphaTest( IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) );
 			if ( IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) )
@@ -70,7 +70,7 @@ BEGIN_VS_SHADER( DX12_DetailShadowLit, "Runtime shadow-map detail lighting" )
 		DYNAMIC_STATE
 		{
 			BindTexture( SHADER_SAMPLER0, BASETEXTURE, FRAME );
-			SetPixelShaderConstant( 0, COLOR, ALPHA );
+			SetPixelShaderConstantGammaToLinear( 0, COLOR, ALPHA );
 			DECLARE_DYNAMIC_VERTEX_SHADER( dx12_detailshadowlit_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, !depth && pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
 			SET_DYNAMIC_VERTEX_SHADER( dx12_detailshadowlit_vs51 );

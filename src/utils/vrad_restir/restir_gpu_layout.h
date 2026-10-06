@@ -35,7 +35,8 @@
 #define RESTIR_BIND_ACCUMULATION     11  // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: rgb = running sum, w = contributing iterations
 #define RESTIR_BIND_OUTPUT           12  // vec4[numOutputValues] reconstructed luxel radiance (ReSTIRLightmapResult::radiance order)
 #define RESTIR_BIND_LUXEL_VALID      13  // uint[numLuxels]
-#define RESTIR_BIND_FINAL_LIGHTMAP   14  // vec4[numOutputValues] denoised radiance (UploadFinalLightmap); gathers read this
+#define RESTIR_BIND_FINAL_LIGHTMAP   14  // vec4[numFaces * RESTIR_MAX_FACE_STYLES + numOutputValues]:
+                                         // cached valid-base face/style means, then full-source denoised radiance; gathers read this
 #define RESTIR_BIND_SERVICE_IN       15  // ReSTIRGpuRay[] | ReSTIRGpuAmbientQuery[] | ReSTIRGpuPointQuery[] (per pass)
 #define RESTIR_BIND_SERVICE_OUT      16  // ReSTIRGpuHit[] | ReSTIRGpuAmbientResult[] | ReSTIRGpuPointResult[]
 #define RESTIR_BIND_BVH_NODES        17  // ReSTIRBvhNode[2*numTriangles-1] (compute-bvh)

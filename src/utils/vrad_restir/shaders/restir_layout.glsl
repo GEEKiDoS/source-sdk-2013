@@ -7,7 +7,7 @@
 #define RESTIR_WORKGROUP_SIZE 64
 #define RESTIR_MAX_CHANNELS 4
 #define RESTIR_NUM_ANORMS 162
-#define RESTIR_MAXLIGHTMAPS 4
+#define RESTIR_MAX_FACE_STYLES 64
 #define RESTIR_NUM_BUMP_VECTS 3
 
 // Hit classification (restir_types.h)
@@ -112,7 +112,7 @@ struct ReSTIRGpuEmitterTriangle			// 64 bytes, front-facing
 	vec4 uv;							// uv1.y, uv2.x, uv2.y, w inclusive CDF in the light's range
 };
 
-struct ReSTIRGpuFace					// 192 bytes
+struct ReSTIRGpuFace					// 464 bytes
 {
 	vec4 luxelOrigin;
 	vec4 luxelToWorld0;
@@ -134,7 +134,7 @@ struct ReSTIRGpuFace					// 192 bytes
 	int  numNeighbors;
 	int  numChannels;
 	int  numStyles;
-	ivec4 styles;						// 255 = unused
+	int  styles[RESTIR_MAX_FACE_STYLES];	// full-source slots; 255 = unused
 	int  dface;
 	int  material;
 	int  flags;
@@ -266,7 +266,7 @@ layout( std430, set = 0, binding = 10 ) buffer ReservoirsNextBuf         { ReSTI
 layout( std430, set = 0, binding = 11 ) buffer AccumulationBuf           { vec4 accumulation[]; };
 layout( std430, set = 0, binding = 12 ) buffer OutputBuf                 { vec4 outputRadiance[]; };
 layout( std430, set = 0, binding = 13 ) buffer LuxelValidBuf             { uint luxelValid[]; };
-// Final-lightmap prefix: numFaces * RESTIR_MAXLIGHTMAPS cached valid-base means,
+// Final-lightmap prefix: numFaces * RESTIR_MAX_FACE_STYLES cached valid-base means,
 // followed by the full style/bump output array in its original order.
 layout( std430, set = 0, binding = 14 ) readonly buffer FinalLightmapBuf { vec4 finalLightmap[]; };
 // Bindings 15/16 (service in/out) are declared by each service pass with its typed element

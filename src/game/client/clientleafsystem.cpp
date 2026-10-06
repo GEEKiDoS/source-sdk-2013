@@ -20,6 +20,8 @@
 #include "engine/ivdebugoverlay.h"
 #include "vstdlib/jobthread.h"
 #include "tier1/utllinkedlist.h"
+#include "tier1/utlmap.h"
+#include "gamebspfile.h"
 #include "datacache/imdlcache.h"
 #include "view.h"
 #include "viewrender.h"
@@ -173,6 +175,7 @@ private:
 	void RemoveUnlinkedShadowCaster( ClientRenderHandle_t handle );
 	void UpdateShadowCasterBounds( ClientRenderHandle_t handle );
 	void RecordShadowCasterBounds( ClientRenderHandle_t handle, const Vector &mins, const Vector &maxs );
+	const char *InitShadowStaticPropPolicy();
 	bool IsEligibleShadowCaster( ClientRenderHandle_t handle );
 	void CollectShadowCaster( ClientRenderHandle_t handle, const ShadowCasterVolume_t &volume );
 	bool EnumerateShadowCasterLeaf( int leaf, const ShadowCasterVolume_t &volume );
@@ -350,6 +353,8 @@ private:
 	CUtlVector< ClientRenderHandle_t >	m_UnlinkedShadowCasters;
 	CUtlVector< ClientRenderHandle_t >	m_ShadowCasters[2];	// entities, then contiguous engine static props
 	CUtlVector< IMaterial * >			m_ShadowCasterMaterials;
+	// Authored sprp flags keyed by the engine's stable public collideable identity.
+	CUtlMap< ICollideable *, bool, int >	m_ShadowStaticPropPolicy;
 	uint64								m_ShadowCasterQueryStamp;
 
 	// List of renderables in view model render groups
@@ -475,12 +480,105 @@ void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *pRenderable, Vector &
 //-----------------------------------------------------------------------------
 // constructor, destructor
 //-----------------------------------------------------------------------------
-CClientLeafSystem::CClientLeafSystem() : m_ShadowCasterQueryStamp(0), m_DrawStaticProps(true), m_DrawSmallObjects(true)
+CClientLeafSystem::CClientLeafSystem() : m_ShadowStaticPropPolicy( DefLessFunc( ICollideable * ) ), m_ShadowCasterQueryStamp(0), m_DrawStaticProps(true), m_DrawSmallObjects(true)
 {
 	// Set up the bi-directional lists...
 	m_RenderablesInLeaf.Init( FirstRenderableInLeaf, FirstLeafInRenderable );
 	m_ShadowsInLeaf.Init( FirstShadowInLeaf, FirstLeafInShadow ); 
 	m_ShadowsOnRenderable.Init( FirstShadowOnRenderable, FirstRenderableInShadow );
+}
+
+// sprp arrays are count-prefixed. Check before advancing or multiplying, rather
+// than trusting the engine's deserializer to validate authored caster metadata.
+static bool ReadShadowStaticPropArray( const uint8 *bytes, int size, int &offset, int stride,
+	int &count, const uint8 *&records )
+{
+	if ( offset > size || size - offset < sizeof( int ) )
+		return false;
+	memcpy( &count, bytes + offset, sizeof( count ) );
+	offset += sizeof( count );
+	if ( count < 0 || count > ( size - offset ) / stride )
+		return false;
+	records = bytes + offset;
+	offset += count * stride;
+	return true;
+}
+
+template< class T >
+static void ReadShadowStaticPropRecord( const uint8 *bytes, StaticPropLump_t &prop )
+{
+	T record;
+	memcpy( &record, bytes, sizeof( record ) );
+	prop = record;
+}
+
+const char *CClientLeafSystem::InitShadowStaticPropPolicy()
+{
+	if ( !staticpropmgr )
+		return SHADOWMAP_ERR_INVALID_METADATA ": static-prop manager unavailable for authored caster policy";
+
+	CUtlVector< ICollideable * > props;
+	staticpropmgr->GetAllStaticProps( &props );
+	const int size = engine->GameLumpSize( GAMELUMP_STATIC_PROPS );
+	if ( size == 0 && props.Count() == 0 )
+		return NULL;
+	if ( size <= 0 )
+		return SHADOWMAP_ERR_INVALID_METADATA ": static-prop caster policy missing sprp data";
+
+	const int version = engine->GameLumpVersion( GAMELUMP_STATIC_PROPS );
+	int stride;
+	switch ( version )
+	{
+	case 4: stride = sizeof( StaticPropLumpV4_t ); break;
+	case 5: stride = sizeof( StaticPropLumpV5_t ); break;
+	case 6: stride = sizeof( StaticPropLumpV6_t ); break;
+	// SDK engine promotes v7 to v10; both use this SDK's widened flags layout.
+	case 7:
+	case 10: stride = sizeof( StaticPropLump_t ); break;
+	default:
+		return SHADOWMAP_ERR_INVALID_METADATA ": unsupported sprp version for authored caster policy (supported: 4, 5, 6, 7, 10)";
+	}
+
+	CUtlMemory< uint8 > bytes;
+	bytes.EnsureCapacity( size );
+	if ( !engine->LoadGameLump( GAMELUMP_STATIC_PROPS, bytes.Base(), size ) )
+		return SHADOWMAP_ERR_INVALID_METADATA ": cannot load engine-resolved sprp caster policy";
+
+	int offset = 0, dictCount, leafCount, propCount;
+	const uint8 *records;
+	if ( !ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropDictLump_t ), dictCount, records ) ||
+		!ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropLeafLump_t ), leafCount, records ) ||
+		!ReadShadowStaticPropArray( bytes.Base(), size, offset, stride, propCount, records ) || offset != size )
+		return SHADOWMAP_ERR_INVALID_METADATA ": malformed sprp arrays for authored caster policy";
+	if ( propCount != props.Count() )
+		return SHADOWMAP_ERR_INVALID_METADATA ": sprp caster policy and public static-prop counts differ";
+
+	m_ShadowStaticPropPolicy.EnsureCapacity( propCount );
+	for ( int i = 0; i < propCount; ++i )
+	{
+		StaticPropLump_t prop;
+		const uint8 *record = records + i * stride;
+		switch ( version )
+		{
+		case 4: ReadShadowStaticPropRecord< StaticPropLumpV4_t >( record, prop ); break;
+		case 5: ReadShadowStaticPropRecord< StaticPropLumpV5_t >( record, prop ); break;
+		case 6: ReadShadowStaticPropRecord< StaticPropLumpV6_t >( record, prop ); break;
+		case 7:
+		case 10: ReadShadowStaticPropRecord< StaticPropLump_t >( record, prop ); break;
+		}
+		if ( prop.m_PropType >= dictCount || prop.m_FirstLeaf > leafCount ||
+			prop.m_LeafCount > leafCount - prop.m_FirstLeaf )
+			return SHADOWMAP_ERR_INVALID_METADATA ": malformed sprp record for authored caster policy";
+
+		// Engine GetAllStaticProps enumerates the same disk-indexed vector as
+		// GetStaticPropByIndex. Compare the public interfaces, never addresses
+		// inferred from private object strides, model names or positions.
+		ICollideable *pProp = staticpropmgr->GetStaticPropByIndex( i );
+		if ( !pProp || pProp != props[i] || m_ShadowStaticPropPolicy.Find( pProp ) != m_ShadowStaticPropPolicy.InvalidIndex() )
+			return SHADOWMAP_ERR_INVALID_METADATA ": public static-prop caster identity mismatch";
+		m_ShadowStaticPropPolicy.Insert( pProp, ( prop.m_Flags & STATIC_PROP_NO_SHADOW ) == 0 );
+	}
+	return NULL;
 }
 
 CClientLeafSystem::~CClientLeafSystem()
@@ -507,6 +605,17 @@ void CClientLeafSystem::DrawSmallEntities( bool enable )
 void CClientLeafSystem::LevelInitPreEntity()
 {
 	MEM_ALLOC_CREDIT();
+
+	m_ShadowStaticPropPolicy.Purge();
+	if ( ShadowMapsDX12_MapState().featureMap )
+	{
+		const char *error = InitShadowStaticPropPolicy();
+		if ( error )
+		{
+			m_ShadowStaticPropPolicy.Purge();
+			ShadowMapsDX12_RejectMap( error );
+		}
+	}
 
 	m_Renderables.EnsureCapacity( 1024 );
 	m_RenderablesInLeaf.EnsureCapacity( 1024 );
@@ -565,6 +674,7 @@ void CClientLeafSystem::LevelShutdownPostEntity()
 	m_ShadowCasters[0].Purge();
 	m_ShadowCasters[1].Purge();
 	m_ShadowCasterMaterials.Purge();
+	m_ShadowStaticPropPolicy.Purge();
 	m_ShadowCasterQueryStamp = 0;
 }
 
@@ -1460,6 +1570,19 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 	C_BaseEntity *pEntity = pUnknown ? pUnknown->GetBaseEntity() : NULL;
 	if ( pEntity && pEntity->IsEffectActive( EF_NODRAW | EF_NOSHADOW ) )
 		return false;
+
+	if ( ( flags & RENDER_FLAGS_STATIC_PROP ) && ShadowMapsDX12_MapState().featureMap )
+	{
+		ICollideable *pCollideable = pUnknown ? pUnknown->GetCollideable() : NULL;
+		int policy = m_ShadowStaticPropPolicy.Find( pCollideable );
+		if ( policy == m_ShadowStaticPropPolicy.InvalidIndex() )
+		{
+			ShadowMapsDX12_RejectMap( SHADOWMAP_ERR_INVALID_METADATA ": static-prop caster identity is not in the admitted sprp policy" );
+			return false;
+		}
+		if ( !m_ShadowStaticPropPolicy[policy] )
+			return false;
+	}
 
 	const model_t *pModel = pRenderable->GetModel();
 	int modelType = pModel ? modelinfo->GetModelType( pModel ) : mod_bad;
