@@ -37,6 +37,8 @@
 #define RESTIR_POINT_DETAIL_GATHER   0x4u
 #define RESTIR_POINT_EMITTERS_ONLY   0x8u
 
+#define RESTIR_VISIBILITY_NO_SELF_SHADOW 0x1u
+
 // Light flags
 #define RESTIR_LIGHT_MATERIAL        0x1
 #define RESTIR_LIGHT_RUNTIME_DIRECT  0x2	// selected for runtime shadow maps: excluded from receiver direct only
@@ -195,6 +197,15 @@ struct ReSTIRGpuPointResult				// 32 bytes
 	vec4 indirect;
 };
 
+struct ReSTIRGpuVisibilityQuery			// 32 bytes
+{
+	vec4 position;
+	uint selectedLightIndex;
+	uint skipHitId;
+	uint flags;
+	uint reserved;
+};
+
 struct ReSTIRReservoir					// 64 bytes
 {
 	vec4 samplePos;
@@ -283,9 +294,10 @@ layout( std430, set = 0, binding = 25 ) buffer ReceiverAccumulationBuf   { vec4 
 layout( std430, set = 0, binding = 26 ) buffer ReceiverOutputBuf         { vec4 receiverRadiance[]; };		// as outputRadiance, receiver RGB
 layout( std430, set = 0, binding = 27 ) readonly buffer SunOriginsBuf   { vec4 sunVisibilityOrigins[]; };
 layout( std430, set = 0, binding = 28 ) buffer SunVisibilityBuf          { float sunVisibility[]; };
-layout( set = 0, binding = 29 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
+layout( std430, set = 0, binding = 29 ) readonly buffer SelectedSourcesBuf { vec4 selectedSources[]; }; // canonical origin/radius; sun w=-1
+layout( set = 0, binding = 30 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
 #if RESTIR_HW_RAYQUERY
-layout( set = 0, binding = 30 ) uniform accelerationStructureEXT tlas;
+layout( set = 0, binding = 31 ) uniform accelerationStructureEXT tlas;
 #endif
 
 #endif // RESTIR_LAYOUT_GLSL

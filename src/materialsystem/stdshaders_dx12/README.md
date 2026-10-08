@@ -47,6 +47,8 @@ entries listed in `shaders/native_dx12_published.txt` and writes `shaders/native
 written under `shaders/fxc`. Build cost depends on the manifest set, folded combo counts and compiler-cache state. Then rebuild
 `stdshader_dx12` (it includes `generated/`).
 
+Partial `genmat.py <slice>...` runs retain the first pair-table slice as the unique manifest owner of shared ordinary VS/PS logicals, even when that owner is not regenerated. Other slices keep their parity pair references without redeclaring the shader; this prevents duplicate logicals at publication.
+
 ## Runtime contract
 
 - Material constants keep the DX9 register vocabulary and are staged in the DLL; each selected native block is sent
@@ -90,6 +92,15 @@ DX8 fixed-function consumers are backend paths. The actual WorldVertexTransition
 uses authored `worldvertextransition_editor_highres_*` native replacements on enhanced maps, retaining its
 texture transforms, two-material vertex-alpha blend and original sampled lightmap alpha.
 
+Runtime `.hlight` ZIP readback can exceed 1 GiB while remaining below the file-size limit.
+`CUtlBuffer::PutOverflow` must request the complete pending write (including representable trailing-NUL
+space) in one `CUtlMemory::Grow` operation, not repeatedly call the default one-element increment.
+Above 1 GiB the signed-overflow-safe allocator uses exact requested capacities, so the latter causes
+byte-at-a-time full-buffer reallocations. The CPU-only `shaderapidx12_smoke.exe -case buffers`
+regression exercises real >1-GiB growth, prefix/append/NUL preservation, ordinary growth policies,
+seeking and fixed/growable/readonly external buffers. Rebuild static `tier1` and relink its consumers
+after this implementation changes; shader bytecode and asset formats do not change.
+
 The original base UV is carried before bump shifts, with no inverse-coordinate carrier input.
 `native_src/highres_lightmaps.hlsli` translates the integer owner atlas into explicit face/style/plane tiles,
 adds captured native dynamic planes, and preserves native sampled alpha. Material lighting retains its
@@ -108,10 +119,124 @@ highres vertex variants carry mask zero and ABI one. Roles include reflective/wa
 samplers 1/2/3. The backend selects matching highres variants from this metadata, not material names.
 The packer also emits `generated/inc/highres_lightmaps_hlsl.inc` and `shadowmap_lighting_hlsl.inc` for
 backend-owned fixed-function compilation without an include handler.
-Lighting interface `_004` copies explicit native generation/route and all 64 view-consistent lightstyles;
+Lighting interface `_005` copies explicit native generation/route and all 64 view-consistent lightstyles;
 the separate highres draw cbuffer is 320 bytes (`route`, three model rows, sixteen packed style rows).
 After generator changes run `gencommon.py`, `genmat.py`, rebuild/publish with the updated native packer,
 then rebuild both backend and material DLL against the regenerated includes.
+
+Large SM5.1 programs can exceed Source's nominal 128 KiB compiler block-batching target.
+The shared runtime/publisher VCS reader admits raw, bzip2 and Source-LZMA decoded blocks
+up to a separate hard 16 MiB limit, preserving complete span/header/token validation.
+Bzip2 storage grows only when required; LZMA's declared size is bounded before allocation.
+The `vcs` smoke covers oversized raw/bzip2 DXBC and oversized LZMA-header rejection.
+
+Hybrid local visibility uses lighting shader ABI 6 (shader API interface `_007`) and retains the appended
+16-byte GPU light row (`realtimeWeight`, `visibilityFlags`, canonical manifest `bakedLightIndex`, zero `reserved0`).
+`gencommon.py` owns the engine cbuffer/record source as well as the translated common headers.
+The native world owner join exposes the active mode's zero-based face ordinal and endpoint-normalized `q`;
+only valid lit owners in their exact baked model pose are eligible. Static props additionally require an
+exact prop ordinal/checksum/pose and hardware mesh identity join at the draw boundary. Moved brushes,
+dynamic models, detail and unmatched prop draws have no baked domain and use baked visibility 1.
+Native-only/unlit passes retain their existing no-selected-direct policy.
+
+Read-only map visibility SRVs are model-neutral space2 bindings: `t1030` face
+`uint4 {firstEntry, entryCount, highWidth, highHeight}`, `t1031` sorted disk-form entry
+`uint4 {selectedLightIndex, encoding, payloadByteOffset, sampleCount}`, and `t1032`
+R8 `ByteAddressBuffer` payload. The shader lazily loads the face range and computes endpoint-clamped
+bilinear taps only after the first bounded-skip survivor needs baked visibility. A persistent ascending
+merge cursor visits each encountered entry at most once for all queried canonical manifest indices.
+The highres packet validator requires canonical light order and ascending CSR runs; `BuildLocal` and
+`BuildTiles` already preserve both. Uniform encodings decode directly without reading payload bytes.
+Receivers without baked direct keep the existing full CSR hybrid evaluator: weight 1 skips baked
+lookup, weight 0 never constructs or samples a chart, and diffuse/specular share blended visibility.
+
+Static-prop draws add `b1 space2 DX12StaticPropDrawConstants`: `uint4 cPropDraw`
+`{firstEntry, entryCount, primitiveBase, primitiveCount}` followed by three `float4 cPropModelToWorld`
+rows, `uint4 cPropDirect {RGBByteOffset, angularPlaneStrideBytes, unbakedIDByteOffset, unbakedIDCount}`
+and `float4 cPropStyles` (96 bytes total). Unused style values are zero; a missing direct offset is
+`0xFFFFFFFF`. A zero primitive count explicitly disables this receiver domain. Immutable
+`t1033 g_ShadowVisibilityPropMeshes` holds `uint4 {firstEntry, entryCount, vertexCount, flags}`;
+flag bit 0 identifies a mesh with baked direct planes.
+per-draw `t1034 g_ShadowPropTriangles` holds 64-byte records: `uint4 vertexIndices`
+(three baked vertex IDs plus absolute mesh-directory index), then three actual local `float4 positions`.
+All ten lit model feature PS families carry raster `uint SV_PrimitiveID`: basic/bumped VertexLitGeneric,
+Phong skin, eyes, eye-refract, plain/bumped teeth, treeleaf, cable and vortwarp. The system semantic is
+PS-only and does not alter paired VS interpolators or combo ranges.
+
+`ShadowMap_SetBakedProp` carries the primitive identity without touching SRVs.
+`ShadowMap_BeginBakedLookup` lazily validates the directory range/vertex bounds, transforms the actual
+draw triangle by the model rows and computes barycentrics once per pixel without advancing the entry
+cursor. Direct RGB and R8 lookup share that reconstruction; each dense visibility entry uses exactly
+three scalar R8 reads, while uniform entries decode directly. Degenerate/disabled primitives return
+visibility 1 and do not enter baked-direct evaluation.
+
+`.hlight` v4 prop direct blocks carry RGBA16F linear irradiance already divided by 255, ordered
+style → angular plane (0 Lambert, 1 half-Lambert) → vertex, followed by sorted style-overflow light IDs.
+For valid original-pose prop draws in angular modes 0/1, the shader uses `Load2`/`f16tof32` to interpolate
+three vertex RGB samples per active style and add frozen view style values before material albedo.
+It then visits only the resident tail merged with that mesh's sparse unbaked list: resident baked
+diffuse adds exact runtime radiance/angular × `(Vrt - Vbaked) * weight`; specular uses `Vrt * weight`.
+Overflow entries retain the full hybrid term and are merged once when also resident. Unsupported
+angular modes (including bumped-basis mode 2), dynamic/no-direct props and unknown draws retain the
+full runtime loop with the existing baked/realtime R8 crossfade. World baked-direct behavior is unchanged.
+Only read-only resources are added: alpha/discard, coverage, depth output and early-depth policy are unchanged.
+The publisher and runtime validate the prop cbuffer members, 64-byte structured triangle layout, complete
+prop resource group and primitive system input; stale ABI-5 lit model programs must be republished.
+For `.hlight` v4 world owners with `kFaceHasBakedLocalDirect` (bit 16) and the exact baked pose,
+RGB lightmap planes contain styled local direct diffuse for lights whose styles fit the face palette.
+These pixels read the resident GPU-index tail of `t1028` (`cSunIdentity.zw` is offset/count), not the
+tile CSR, and merge sparse per-face style-overflow exceptions when present. The resident tail contains
+every positive-weight record in ascending GPU-index order; its bounds, exact membership and CSR
+separation are validated before receiver binding. No resource, record, cbuffer or interface ABI changes.
+Resident diffuse adds `radiance * angular * (Vrt - Vbaked) * weight`; specular adds
+`radiance * specularAngular * Vrt * weight`. Baked visibility is required even at weight 1 to subtract
+the pre-existing baked diffuse. The bounded skip scales its unshadowed diffuse/specular bound by
+weight; skipped diffuse delta is zero and skipped specular uses the bounded `Vrt = 1` stand-in.
+Style-overflow lights absent from that face's baked palette retain the full hybrid diffuse/specular
+term `radiance * angular * lerp(Vbaked, Vrt, weight)`, including nonresident lights at weight 0.
+The sparse disk face ranges and canonical light indices are validated with the v3 asset. GPU upload
+appends the canonical uint32 lists after the aligned R8 payload in the existing `t1032` raw buffer,
+without copying the CPU visibility planes. Owner metadata packs count into `dimensionsFlags.z`
+bits 16..31 and raw uint offset into `dimensionsFlags.w` bits 1..31 (bit 0 remains baked-pose-known).
+Empty lists need no additional directory/payload load or canonical-to-GPU search. Nonempty lists
+resolve only the rare fallback IDs into the canonically ordered view light array and merge them with
+the resident tail, evaluating overlap once. Delta-only lights retain the weight-scaled bound; unbaked
+lights use the full-term bound. Debug blocker/radius modes bypass both skips and observe the union.
+Old asset layouts are rejected and require a rebake. Sun and non-baked receiver policy are unchanged.
+Early-depth twins add no new discard, depth or coverage output and preserve the late highres failure report.
+
+### Forced early-depth receiver twins
+
+Highres receiver PS variants additionally have `*_highres_earlydepth_ps51` twins. They preserve all
+combo directives/fold slots, material blocks, lightmap sampler roles and color/alpha calculations.
+Every conditional `main` is annotated `[earlydepthstencil]`; `DX12_EARLY_DEPTH` preprocesses the
+shared `DX12AlphaTest` kill away. Select these twins only with runtime alpha test disabled and
+effective alpha-to-coverage disabled. Fixed-function highres PS compilation must use the same
+compile-time specialization and include it in the shader cache key; a runtime alpha-test branch
+or a PSO-only change is not sufficient.
+
+The generated families are `lightmappedgeneric`, `lightmappedgeneric_decal`, `lightmappedreflective`,
+`worldtwotextureblend`, `water`, `shatteredglass`, and `pyro_vision`. The hand-authored
+`worldvertextransition_editor_highres_earlydepth_ps51.fxc` includes the ordinary editor receiver
+under the same specialization, retaining its original combo ABI.
+
+`genhighres.py` audits the full include closure, retaining all combo-dependent branches and
+excluding any shader with active `clip`, `discard`, `texkill`, depth-output or coverage semantics.
+Current receiver families have no such exclusions: the flashlight helper's four legacy kills are
+inside `_X360`-only branches, absent on PC; raster alpha testing is removed only in the safe twin.
+Depth written into destination **alpha** remains unchanged and is not `SV_Depth`.
+Future unsafe receivers keep their original PS and receive a `# earlydepth-excluded` manifest
+reason, not a safe-twin declaration.
+
+Manifest `# earlydepth <base> <twin>` declarations produce an optional `<base>.earlydepth`
+sidecar containing two little-endian uint32 words `{0x59445245, 1}`. The packer verifies both PS
+records have matching combo indices/folds, sampler metadata and reflected material blocks before
+publication. `ShaderVcsFile::EarlyDepthTwin()` reads this admission bit; absent metadata means
+false, while malformed metadata or a missing declared native twin fails the load. Existing
+`.hlight` metadata is unchanged. Ordinary shaders and twins with alpha testing/A2C retain their
+original execution. Visible malformed/unowned receiver cells still report `HlightFailure`;
+depth/stencil-hidden failure writes intentionally disappear in the early-depth specialization.
+
 
 ### Baking an enhanced map
 
@@ -195,3 +320,17 @@ collides with the depth-alpha bit in its older index arithmetic. Native C++ uses
 only supported none/height fog, keeping the independent depth/shadow bits and all indices within the 16-combo ABI.
 Parity constraints inferred from material C++ are limited to combos actually declared by both generated stages;
 the obsolete VS `FLASHLIGHT` setting must not reject every WorldTwoTextureBlend pair.
+
+## Post-composite producer gates
+
+`DX12_PostFXComposite` exposes integer `$bloomenabled`, `$flareenabled` and `$glareenabled`.
+`SHADER_INIT_PARAMS` explicitly initializes each omitted/undefined gate to 1 via
+`SET_PARAM_INT_IF_NOT_DEFINED`; `SHADER_PARAM` declaration defaults alone are insufficient for
+runtime-created materials. Explicit zero remains zero, while isolated/baseline materials that
+omit the new gates preserve the existing producer path.
+The client may disable producers only under the finite-HDR intermediate contract when their
+terms have zero weight and no corresponding debug output requires them. Disabled textures bind
+standard black. Bloom also sets `gOutput.y` flag 8, bypassing its explicit mip-1 `Load` sequence:
+the one-mip standard-black texture must never be queried at mip 1. Enabled sampling and composite,
+AgX, LUT, noise and output arithmetic are unchanged. Client demand/consumer gates live in
+`game/client/postprocess_dx12.cpp`; the capture owner must verify their pixel and timing behavior.

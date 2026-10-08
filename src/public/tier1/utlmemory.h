@@ -696,6 +696,13 @@ inline int UtlMemory_CalcNewAllocationCount( int nAllocationCount, int nGrowSize
 
 		while (nAllocationCount < nNewSize)
 		{
+			// Doubling past INT_MAX/2 overflows the signed count (negative, then 0) and never terminates;
+			// allocate exactly the requested size instead. Callers already reject nNewSize > INT_MAX.
+			if ( nAllocationCount > INT_MAX / 2 )
+			{
+				nAllocationCount = nNewSize;
+				break;
+			}
 #ifndef _X360
 			nAllocationCount *= 2;
 #else

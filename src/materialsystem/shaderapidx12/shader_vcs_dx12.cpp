@@ -22,6 +22,10 @@
 namespace shaderapidx12
 {
 
+// Source's 128 KiB value is a compiler batching target, not a maximum shader
+// size: ShaderCompile2 emits a larger single-record block for large SM5 DXBC.
+// Keep a separate admission bound for every codec instead of trusting declared sizes.
+static const uint32_t kMaxDecodedShaderBlockBytes = 16u * 1024u * 1024u;
 //-----------------------------------------------------------------------------
 // Purpose: Reads a little-endian uint32 at nOffset. All file integers are LE,
 //          including unaligned records in compressed blocks.
@@ -523,12 +527,39 @@ bool ShaderVcsFile::Open( IFileSystem &filesystem, const char *pszName, VcsStage
 		}
 		else if ( V_strstr( pszName, "_highres_" ) )
 			return Fail( "required native lightmap sampler-role metadata missing", error );
+		const CUtlString earlyPath = CUtlString( "shaders/" ) +
+			( stage == VcsStage::Vertex ? "vsh/" : stage == VcsStage::Pixel ? "psh/" : "csh/" ) + pszName + ".earlydepth";
+		FileHandle_t early = filesystem.Open( earlyPath.Get(), "rb", "GAME" );
+		if ( early != FILESYSTEM_INVALID_HANDLE )
+		{
+			uint8 data[8]{};
+			const bool complete = filesystem.Size( early ) == sizeof( data ) &&
+				filesystem.Read( data, sizeof( data ), early ) == sizeof( data );
+			filesystem.Close( early );
+			uint32_t magic = 0, version = 0;
+			const int nameLength = V_strlen( pszName );
+			if ( !complete || !U32( data, sizeof( data ), 0, magic ) || !U32( data, sizeof( data ), 4, version ) ||
+				magic != 0x59445245u || version != 1 || stage != VcsStage::Pixel || !m_bHighresAbi ||
+				nameLength < 5 || V_strcmp( pszName + nameLength - 5, "_ps51" ) || V_strstr( pszName, "_earlydepth_" ) )
+				return Fail( "invalid native early-depth twin metadata", error );
+			char twinName[256];
+			const int length = V_snprintf( twinName, sizeof( twinName ), "%.*s_earlydepth_ps51", nameLength - 5, pszName );
+			if ( length <= 0 || length >= int( sizeof( twinName ) ) )
+				return Fail( "native early-depth twin name too long", error );
+			const CUtlString twin = CUtlString( "shaders/psh/" ) + twinName + ".vcs";
+			if ( !filesystem.FileExists( twin.Get(), "GAME" ) )
+				return Fail( "declared native early-depth twin missing", error );
+			m_bEarlyDepthTwin = true;
+		}
 		const char *highres = V_strstr( pszName, "_highres_" );
 		if ( highres && stage != VcsStage::Compute )
 		{
 			char ordinary[256];
+			const char *ordinarySuffix = highres + sizeof( "_highres_" ) - 1;
+			if ( !V_strncmp( ordinarySuffix, "earlydepth_", sizeof( "earlydepth_" ) - 1 ) )
+				ordinarySuffix += sizeof( "earlydepth_" ) - 1;
 			const int length = V_snprintf( ordinary, sizeof( ordinary ), "%.*s_%s", int( highres - pszName ), pszName,
-				highres + sizeof( "_highres_" ) - 1 );
+				ordinarySuffix );
 			if ( length > 0 && length < int( sizeof( ordinary ) ) )
 			{
 				const CUtlString twin = CUtlString( "shaders/" ) + ( stage == VcsStage::Vertex ? "vsh/" : "psh/" ) + ordinary + ".vcs";
@@ -563,6 +594,7 @@ bool ShaderVcsFile::ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage 
 	m_nLightmapSamplerMask = 0;
 	m_bHighresAbi = m_bSamplerRolesReady = false;
 	m_bNativeCasterTwin = false;
+	m_bEarlyDepthTwin = false;
 	m_nPayloadStart = 0;
 	m_nHeaderBytes = 28;
 	m_LoadedStatics.Purge();
@@ -863,7 +895,7 @@ bool ShaderVcsFile::DecodeBlocks( uint32_t nStaticIndex, uint32_t nRecordID, siz
 		CUtlVector<uint8> unpacked;
 		if ( nKind == 0x80000000u )
 		{
-			if ( nPackedSize > MAX_SHADER_UNPACKED_BLOCK_SIZE )
+			if ( nPackedSize > kMaxDecodedShaderBlockBytes )
 				return Fail( "raw block exceeds unpacked limit", error );
 			unpacked.CopyArray( m_File.Base() + nCursor, static_cast<int>( nPackedSize ) );
 		}
@@ -877,12 +909,22 @@ bool ShaderVcsFile::DecodeBlocks( uint32_t nStaticIndex, uint32_t nRecordID, siz
 			stream.avail_out = static_cast<unsigned int>( unpacked.Count() );
 			if ( BZ2_bzDecompressInit( &stream, 0, 1 ) != BZ_OK )
 				return Fail( "bzip2 initialization failed", error );
-			const int nStatus = BZ2_bzDecompress( &stream );
+			int nStatus = BZ_OK;
+			for (;;)
+			{
+				nStatus = BZ2_bzDecompress( &stream );
+				if ( nStatus != BZ_OK || stream.avail_out || unpacked.Count() == kMaxDecodedShaderBlockBytes ) break;
+				const unsigned int produced = stream.total_out_lo32;
+				const unsigned int capacity = MIN( unsigned( unpacked.Count() ) * 2u, kMaxDecodedShaderBlockBytes );
+				unpacked.SetCount( capacity );
+				stream.next_out = reinterpret_cast<char *>( unpacked.Base() + produced );
+				stream.avail_out = capacity - produced;
+			}
 			const size_t nUsed = stream.total_in_lo32;
 			const size_t nProduced = stream.total_out_lo32;
 			BZ2_bzDecompressEnd( &stream );
 			if ( nStatus != BZ_STREAM_END || nUsed != nPackedSize || !nProduced ||
-			    nProduced > MAX_SHADER_UNPACKED_BLOCK_SIZE )
+			    nProduced > kMaxDecodedShaderBlockBytes )
 				return Fail( "bzip2 output or input length mismatch", error );
 			unpacked.RemoveMultipleFromTail( unpacked.Count() - static_cast<int>( nProduced ) );
 		}
@@ -896,7 +938,7 @@ bool ShaderVcsFile::DecodeBlocks( uint32_t nStaticIndex, uint32_t nRecordID, siz
 			    !U32( pLzma, nPackedSize, 4, nActual ) || !U32( pLzma, nPackedSize, 8, nCompressed ) ||
 			    !U32( pLzma, nPackedSize, 13, nDict ) || nId != LZMA_ID ||
 			    nCompressed != nPackedSize - 17 || !nCompressed || !nActual ||
-			    nActual > MAX_SHADER_UNPACKED_BLOCK_SIZE || pLzma[12] >= 225 ||
+			    nActual > kMaxDecodedShaderBlockBytes || pLzma[12] >= 225 ||
 			    nDict > 64u * 1024u * 1024u )
 				return Fail( "invalid Source LZMA header or span", error );
 			unpacked.SetCount( static_cast<int>( nActual ) );

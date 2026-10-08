@@ -117,8 +117,14 @@ bool FrameGenDX12_Enabled()
 	return s_pShaderAPIDX12 && r_framegen.GetInt() != 0 && MotionVectorsDX12_RenderTarget() != nullptr;
 }
 
+bool FrameGenDX12_RequiresMotionVectors()
+{
+	return s_bFrameLatched;
+}
+
 void FrameGenDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainViewEligible )
 {
+	s_bFrameLatched = false;
 	if ( !s_pShaderAPIDX12 || !pRenderContext )
 		return;
 	// The provider stays selected across frames; a frame without an eligible view presents in pass-through (pause,
@@ -127,6 +133,11 @@ void FrameGenDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainViewE
 	{
 		s_bResetPending = true;
 		bMainViewEligible = false;
+	}
+	if ( !bMainViewEligible )
+	{
+		// An ineligible view must not preserve provider history across its pass-through frame.
+		s_bResetPending = true;
 	}
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_FRAMEGEN_VIEW, bMainViewEligible ? 1 : 0 );
 	// fps_max is an engine cvar without a client callback: forward it when it changes.

@@ -288,6 +288,8 @@ void CShaderDeviceDX12::FlushRecorderChunk( void *pContext, unsigned char *pChun
 //-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::CreateFrameObjects()
 {
+	static const bool s_bShadowTiming = CommandLine() && CommandLine()->CheckParm( "-dx12stats" ) && CommandLine()->CheckParm( "-dx12shadowstats" );
+	m_bShadowTimingEnabled = s_bShadowTiming;
 	for ( int i = 0; i < ARRAYSIZE( m_Frames ); ++i )
 		if ( FAILED( m_pDevice->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( &m_Frames[i].allocator ) ) ) )
 		{
@@ -318,7 +320,12 @@ bool CShaderDeviceDX12::CreateFrameObjects()
 		return false;
 	}
 	m_hFenceEvent = CreateEventW( nullptr, FALSE, FALSE, nullptr );
-	return m_hFenceEvent != nullptr;
+	if ( !m_hFenceEvent )
+		return false;
+	// The first list is created open; it does not pass through BeginRecording.
+	if ( m_bShadowTimingEnabled && EnsureGpuTiming() )
+		GpuTimingAfterSubmit();
+	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -352,6 +359,8 @@ bool CShaderDeviceDX12::BeginRecording()
 			return false;
 	}
 	m_bRecording = true;
+	if ( m_bShadowTimingEnabled && !m_bGpuTimingStopping && EnsureGpuTiming() )
+		GpuTimingAfterSubmit();
 	return true;
 }
 
@@ -425,7 +434,7 @@ uint64_t CShaderDeviceDX12::Submit( bool bWait )
 	ReportDebugMessages();
 	if ( !BeginRecording() )
 		return 0;
-	if ( bTiming )
+	if ( bTiming && !m_bShadowTimingEnabled && !m_bGpuTimingStopping )
 		GpuTimingAfterSubmit();
 	return nValue;
 }
@@ -488,7 +497,7 @@ bool CShaderDeviceDX12::SubmitAndWaitForGpu()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Blocks until the fence reaches nValue; fails the device on removal or a 5 s timeout
+// Purpose: Issues queued submissions, then waits for nValue; removal or a 5 s GPU timeout fails the device
 //-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::WaitForFence( uint64_t nValue )
 {
@@ -502,6 +511,11 @@ bool CShaderDeviceDX12::WaitForFence( uint64_t nValue )
 	}
 	if ( nInitial >= nValue )
 		return true;
+	// CPU command replay (including GPU-validation instrumentation) must issue
+	// the queue Signal before the GPU fence deadline begins.
+	FlushSubmissions();
+	if ( m_bFailed )
+		return false;
 	if ( !CheckDevice( "fence SetEventOnCompletion", m_pFence->SetEventOnCompletion( nValue, m_hFenceEvent ) ) )
 		return false;
 	while ( m_pFence->GetCompletedValue() < nValue )
@@ -1113,6 +1127,15 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			list->SetGraphicsRootUnorderedAccessView( index, address );
 			break;
 		}
+		case Op::SetGraphicsRootShaderResourceView:
+		{
+			UINT index;
+			D3D12_GPU_VIRTUAL_ADDRESS address;
+			get( index );
+			get( address );
+			list->SetGraphicsRootShaderResourceView( index, address );
+			break;
+		}
 		case Op::SetGraphicsRoot32BitConstants:
 		{
 			UINT index, count, first;
@@ -1564,6 +1587,8 @@ void CShaderDeviceDX12::FlushSubmissions()
 //-----------------------------------------------------------------------------
 void CShaderDeviceDX12::ShutdownDevice()
 {
+	// The final Submit may reset a list, but must not record new queries referencing soon-to-be-released heaps.
+	m_bGpuTimingStopping = true;
 	StopSubmitThread();
 	if ( m_bRecording && IsRecordingOwner() && m_pFence && !m_bFailed )
 		Submit( true );
@@ -1599,7 +1624,30 @@ void CShaderDeviceDX12::ShutdownDevice()
 	m_pTimestampReadback.Reset();
 	m_pTimestampHeap.Reset();
 	m_pTimestampData = nullptr;
+	if ( m_pStagePipelineData )
+		m_pStagePipelineReadback->Unmap( 0, nullptr );
+	m_pStagePipelineReadback.Reset();
+	m_pStagePipelineHeap.Reset();
+	m_pStagePipelineData = nullptr;
 	m_bTimestampBegun = false;
+	m_bTimestampUnavailable = false;
+	m_bGpuTimingStopping = false;
+	m_bShadowTimingEnabled = m_bStageQueriesAvailable = m_bStageTimestampBegun = false;
+	m_nTimestampFrequency = 0;
+	m_nTimestampSlot = m_nStageTimestampSlot = 0;
+	m_GpuStage = GpuOther;
+	m_nGpuStageDepth = m_nGpuStageOverflowDepth = 0;
+	m_GpuReceiverKey = {};
+	m_nGpuReceiverViewOrdinal = m_nGpuReceiverDepth = m_nGpuReceiverOverflowDepth = m_nGpuReceiverSpanDraws = 0;
+	memset( m_TimestampFences, 0, sizeof( m_TimestampFences ) );
+	memset( m_StageTimestampFences, 0, sizeof( m_StageTimestampFences ) );
+	memset( m_flGpuStageSumMs, 0, sizeof( m_flGpuStageSumMs ) );
+	memset( m_nGpuStagePSInvocations, 0, sizeof( m_nGpuStagePSInvocations ) );
+	memset( m_nGpuStageCInvocations, 0, sizeof( m_nGpuStageCInvocations ) );
+	memset( m_nGpuStageCPrimitives, 0, sizeof( m_nGpuStageCPrimitives ) );
+	m_GpuStageStats = {};
+	m_flGpuTimeSumMs = 0.0;
+	m_nGpuTimePresented = 0;
 	m_Recorder.Flush();
 	if ( unsigned char *pChunk = m_Recorder.TakeEmptyChunk() )
 	{
@@ -1710,26 +1758,35 @@ void CShaderDeviceDX12::SpewDriverInfo() const
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: -dx12stats: closes the open timestamp interval and collects completed ones.
-//          Returns true when the next interval may begin after this submit.
+// Purpose: Creates optional fence-owned profiling queries without draining submissions or waiting for the GPU.
 //-----------------------------------------------------------------------------
-bool CShaderDeviceDX12::GpuTimingBeforeSubmit()
+bool CShaderDeviceDX12::EnsureGpuTiming()
 {
 	static const bool s_bEnabled = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
-	if ( !s_bEnabled )
+	if ( !s_bEnabled || m_bTimestampUnavailable )
 		return false;
-	if ( !m_pTimestampHeap )
+	if ( m_pTimestampHeap )
+		return true;
+	if ( FAILED( m_pQueue->GetTimestampFrequency( &m_nTimestampFrequency ) ) || !m_nTimestampFrequency )
 	{
+		m_bTimestampUnavailable = true;
+		return false;
+	}
+	// If the extended allocation fails, retain ordinary total GPU timing and report missing stage samples.
+	for ( uint32_t attempt = 0; attempt < ( m_bShadowTimingEnabled ? 2u : 1u ); ++attempt )
+	{
+		const bool extended = m_bShadowTimingEnabled && attempt == 0;
+		const uint32_t slots = kTimestampSlots + ( extended ? kStageTimestampSlots : 0 );
 		D3D12_QUERY_HEAP_DESC heapDesc{};
 		heapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-		heapDesc.Count = kTimestampSlots * 2;
+		heapDesc.Count = slots * 2;
 		if ( FAILED( m_pDevice->CreateQueryHeap( &heapDesc, IID_PPV_ARGS( &m_pTimestampHeap ) ) ) )
-			return false;
+			continue;
 		D3D12_HEAP_PROPERTIES properties{};
 		properties.Type = D3D12_HEAP_TYPE_READBACK;
 		D3D12_RESOURCE_DESC desc{};
 		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		desc.Width = kTimestampSlots * 2 * sizeof( uint64_t );
+		desc.Width = slots * 2 * sizeof( uint64_t );
 		desc.Height = 1;
 		desc.DepthOrArraySize = 1;
 		desc.MipLevels = 1;
@@ -1738,42 +1795,147 @@ bool CShaderDeviceDX12::GpuTimingBeforeSubmit()
 		if ( FAILED( m_pDevice->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pTimestampReadback ) ) ) )
 		{
 			m_pTimestampHeap.Reset();
-			return false;
+			continue;
 		}
-		void *pMapped = nullptr;
-		if ( FAILED( m_pTimestampReadback->Map( 0, nullptr, &pMapped ) ) )
+		void *mapped = nullptr;
+		if ( FAILED( m_pTimestampReadback->Map( 0, nullptr, &mapped ) ) )
 		{
 			m_pTimestampHeap.Reset();
 			m_pTimestampReadback.Reset();
-			return false;
+			continue;
 		}
-		m_pTimestampData = static_cast<const uint64_t *>( pMapped );
-		FlushSubmissions();
-		if ( FAILED( m_pQueue->GetTimestampFrequency( &m_nTimestampFrequency ) ) || !m_nTimestampFrequency )
-		{
-			m_pTimestampHeap.Reset();
-			return false;
-		}
-		memset( m_TimestampFences, 0, sizeof( m_TimestampFences ) );
-		m_nTimestampSlot = 0;
-		m_bTimestampBegun = false;
+		m_pTimestampData = static_cast<const uint64_t *>( mapped );
+		m_bStageQueriesAvailable = extended;
+		if ( extended )
+			EnsureGpuPipelineStats();
+		return true;
 	}
-	const uint64_t nCompleted = CompletedFenceValue();
-	for ( uint32_t nSlot = 0; nSlot < kTimestampSlots; ++nSlot )
-		if ( m_TimestampFences[nSlot] && m_TimestampFences[nSlot] <= nCompleted )
+	m_bTimestampUnavailable = true;
+	return false;
+}
+
+void CShaderDeviceDX12::EnsureGpuPipelineStats()
+{
+	// A separate allocation failure must not disable either timestamp ring. Each pipeline slot shares the
+	// corresponding exclusive timestamp span's category and fence, so it cannot be reused before GPU completion.
+	D3D12_QUERY_HEAP_DESC heapDesc{};
+	heapDesc.Type = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+	heapDesc.Count = kStageTimestampSlots;
+	if ( FAILED( m_pDevice->CreateQueryHeap( &heapDesc, IID_PPV_ARGS( &m_pStagePipelineHeap ) ) ) )
+		return;
+	D3D12_HEAP_PROPERTIES properties{};
+	properties.Type = D3D12_HEAP_TYPE_READBACK;
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = kStageTimestampSlots * sizeof( D3D12_QUERY_DATA_PIPELINE_STATISTICS );
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	if ( FAILED( m_pDevice->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pStagePipelineReadback ) ) ) )
+	{
+		m_pStagePipelineHeap.Reset();
+		return;
+	}
+	void *mapped = nullptr;
+	if ( FAILED( m_pStagePipelineReadback->Map( 0, nullptr, &mapped ) ) )
+	{
+		m_pStagePipelineReadback.Reset();
+		m_pStagePipelineHeap.Reset();
+		return;
+	}
+	m_pStagePipelineData = static_cast<const D3D12_QUERY_DATA_PIPELINE_STATISTICS *>( mapped );
+}
+
+void CShaderDeviceDX12::CollectGpuTiming()
+{
+	if ( !m_pTimestampData )
+		return;
+	const uint64_t completed = CompletedFenceValue();
+	const double tickMs = 1000.0 / static_cast<double>( m_nTimestampFrequency );
+	for ( uint32_t slot = 0; slot < kTimestampSlots; ++slot )
+		if ( m_TimestampFences[slot] && m_TimestampFences[slot] <= completed )
 		{
-			const uint64_t nBegin = m_pTimestampData[nSlot * 2], nEnd = m_pTimestampData[nSlot * 2 + 1];
-			if ( nEnd > nBegin )
-				m_flGpuTimeSumMs += 1000.0 * static_cast<double>( nEnd - nBegin ) / static_cast<double>( m_nTimestampFrequency );
-			m_TimestampFences[nSlot] = 0;
+			const uint64_t begin = m_pTimestampData[slot * 2], end = m_pTimestampData[slot * 2 + 1];
+			if ( end > begin )
+				m_flGpuTimeSumMs += static_cast<double>( end - begin ) * tickMs;
+			m_TimestampFences[slot] = 0;
 		}
+	if ( !m_bStageQueriesAvailable )
+		return;
+	for ( uint32_t slot = 0; slot < kStageTimestampSlots; ++slot )
+		if ( m_StageTimestampFences[slot] && m_StageTimestampFences[slot] <= completed )
+		{
+			const uint32_t query = ( kTimestampSlots + slot ) * 2;
+			const uint64_t begin = m_pTimestampData[query], end = m_pTimestampData[query + 1];
+			if ( begin && end >= begin )
+			{
+				m_flGpuStageSumMs[m_StageTimestampCategories[slot]] += static_cast<double>( end - begin ) * tickMs;
+				++m_GpuStageStats.completedSpans;
+				const GpuStageDX12 category = m_StageTimestampCategories[slot];
+				if ( category == GpuReceiverRendering || category == GpuOther )
+				{
+					const GpuReceiverKeyDX12 &key = m_StageReceiverKeys[slot];
+					GpuReceiverViewStatsDX12 &receiver = m_GpuStageStats.receiverViews[key.view];
+					// The initial open list predates view creation; do not let that empty 0x0 span hide a real viewport.
+					if ( !receiver.seen || receiver.width <= 0 || receiver.height <= 0 )
+					{
+						receiver.width = key.width;
+						receiver.height = key.height;
+						receiver.seen = true;
+					}
+					else if ( key.width > 0 && key.height > 0 )
+						receiver.mixedViewport |= receiver.width != key.width || receiver.height != key.height;
+					receiver.ms[key.lit ? 1 : 0] += static_cast<double>( end - begin ) * tickMs;
+					receiver.draws[key.lit ? 1 : 0] += m_StageReceiverDraws[slot];
+					if ( m_pStagePipelineData )
+						receiver.psInvocations[key.lit ? 1 : 0] += static_cast<double>( m_pStagePipelineData[slot].PSInvocations );
+				}
+				if ( m_pStagePipelineData )
+				{
+					const D3D12_QUERY_DATA_PIPELINE_STATISTICS &pipeline = m_pStagePipelineData[slot];
+					const GpuStageDX12 stage = m_StageTimestampCategories[slot];
+					m_nGpuStagePSInvocations[stage] += pipeline.PSInvocations;
+					m_nGpuStageCInvocations[stage] += pipeline.CInvocations;
+					m_nGpuStageCPrimitives[stage] += pipeline.CPrimitives;
+					++m_GpuStageStats.pipelineCompletedSpans;
+				}
+			}
+			else
+			{
+				++m_GpuStageStats.invalidSpans;
+				if ( m_pStagePipelineData )
+					++m_GpuStageStats.pipelineInvalidSpans;
+			}
+			m_StageTimestampFences[slot] = 0;
+		}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Ends both timers on this list; neither interval crosses a submission/CPU queue gap.
+//-----------------------------------------------------------------------------
+bool CShaderDeviceDX12::GpuTimingBeforeSubmit()
+{
+	if ( !EnsureGpuTiming() )
+	{
+		if ( m_bShadowTimingEnabled )
+		{
+			++m_GpuStageStats.skippedSpans;
+			++m_GpuStageStats.pipelineSkippedSpans;
+			++m_GpuStageStats.totalSkippedLists;
+		}
+		return false;
+	}
+	CollectGpuTiming();
+	EndGpuStageSpan();
 	if ( m_bTimestampBegun )
 	{
-		const uint32_t nSlot = m_nTimestampSlot;
-		m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, nSlot * 2 + 1 );
-		m_Recorder.ResolveQueryData( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, nSlot * 2, 2, m_pTimestampReadback.Get(), nSlot * 2 * sizeof( uint64_t ) );
-		m_TimestampFences[nSlot] = NextFenceValue();
-		m_nTimestampSlot = ( nSlot + 1 ) % kTimestampSlots;
+		const uint32_t slot = m_nTimestampSlot;
+		m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1 );
+		m_Recorder.ResolveQueryData( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2, 2, m_pTimestampReadback.Get(), slot * 2 * sizeof( uint64_t ) );
+		m_TimestampFences[slot] = NextFenceValue();
+		m_nTimestampSlot = ( slot + 1 ) % kTimestampSlots;
 		m_bTimestampBegun = false;
 	}
 	return m_TimestampFences[m_nTimestampSlot] == 0;
@@ -1781,9 +1943,209 @@ bool CShaderDeviceDX12::GpuTimingBeforeSubmit()
 
 void CShaderDeviceDX12::GpuTimingAfterSubmit()
 {
-	// The next list's first command starts its GPU interval; intervals sum per presented frame.
-	m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, m_nTimestampSlot * 2 );
-	m_bTimestampBegun = true;
+	// These are the next list's first commands. Logical nested scopes survive list submission.
+	if ( !m_TimestampFences[m_nTimestampSlot] )
+	{
+		m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, m_nTimestampSlot * 2 );
+		m_bTimestampBegun = true;
+	}
+	else if ( m_bShadowTimingEnabled )
+		++m_GpuStageStats.totalSkippedLists;
+	BeginGpuStageSpan();
+}
+
+void CShaderDeviceDX12::BeginGpuStageSpan()
+{
+	if ( !m_bShadowTimingEnabled )
+		return;
+	if ( !m_bStageQueriesAvailable || m_StageTimestampFences[m_nStageTimestampSlot] )
+	{
+		++m_GpuStageStats.skippedSpans;
+		++m_GpuStageStats.pipelineSkippedSpans;
+		if ( m_bStageQueriesAvailable )
+		{
+			++m_GpuStageStats.overflowSpans;
+			if ( m_pStagePipelineData )
+				++m_GpuStageStats.pipelineOverflowSpans;
+		}
+		return;
+	}
+	const uint32_t query = ( kTimestampSlots + m_nStageTimestampSlot ) * 2;
+	m_StageTimestampCategories[m_nStageTimestampSlot] = m_GpuStage;
+	m_StageReceiverKeys[m_nStageTimestampSlot] = m_GpuReceiverKey;
+	if ( !m_GpuReceiverKey.view )
+	{
+		m_StageReceiverKeys[m_nStageTimestampSlot].width = m_pCurrentView ? m_pCurrentView->width : m_nWidth;
+		m_StageReceiverKeys[m_nStageTimestampSlot].height = m_pCurrentView ? m_pCurrentView->height : m_nHeight;
+	}
+	m_nGpuReceiverSpanDraws = 0;
+	m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query );
+	if ( m_pStagePipelineData )
+		m_Recorder.BeginQuery( m_pStagePipelineHeap.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, m_nStageTimestampSlot );
+	else
+		++m_GpuStageStats.pipelineSkippedSpans;
+	m_bStageTimestampBegun = true;
+}
+
+void CShaderDeviceDX12::EndGpuStageSpan()
+{
+	if ( !m_bStageTimestampBegun )
+		return;
+	const uint32_t slot = m_nStageTimestampSlot, query = ( kTimestampSlots + slot ) * 2;
+	m_StageReceiverDraws[slot] = m_nGpuReceiverSpanDraws;
+	if ( m_pStagePipelineData )
+	{
+		m_Recorder.EndQuery( m_pStagePipelineHeap.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot );
+		m_Recorder.ResolveQueryData( m_pStagePipelineHeap.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot, 1, m_pStagePipelineReadback.Get(), slot * sizeof( D3D12_QUERY_DATA_PIPELINE_STATISTICS ) );
+	}
+	m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1 );
+	m_Recorder.ResolveQueryData( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2, m_pTimestampReadback.Get(), query * sizeof( uint64_t ) );
+	// Even a scope transition before submission reserves its queries for that list's future fence.
+	m_StageTimestampFences[slot] = NextFenceValue();
+	m_nStageTimestampSlot = ( slot + 1 ) % kStageTimestampSlots;
+	m_bStageTimestampBegun = false;
+}
+
+void CShaderDeviceDX12::ChangeGpuStage( GpuStageDX12 stage )
+{
+	if ( m_GpuStage == stage )
+		return;
+	EndGpuStageSpan();
+	m_GpuStage = stage;
+	BeginGpuStageSpan();
+}
+
+void CShaderDeviceDX12::BeginGpuStage( GpuStageDX12 stage )
+{
+	if ( !m_bShadowTimingEnabled )
+		return;
+	if ( m_nGpuStageOverflowDepth || m_nGpuStageDepth == kGpuStageStackSize )
+	{
+		++m_nGpuStageOverflowDepth;
+		++m_GpuStageStats.scopeErrors;
+		return;
+	}
+	m_GpuStageStack[m_nGpuStageDepth++] = stage;
+	ChangeGpuStage( stage );
+}
+
+void CShaderDeviceDX12::EndGpuStage( GpuStageDX12 stage )
+{
+	if ( !m_bShadowTimingEnabled )
+		return;
+	if ( m_nGpuStageOverflowDepth )
+	{
+		--m_nGpuStageOverflowDepth;
+		return;
+	}
+	if ( !m_nGpuStageDepth || m_GpuStageStack[m_nGpuStageDepth - 1] != stage )
+	{
+		++m_GpuStageStats.scopeErrors;
+		return;
+	}
+	--m_nGpuStageDepth;
+	ChangeGpuStage( m_nGpuStageDepth ? m_GpuStageStack[m_nGpuStageDepth - 1] : GpuOther );
+}
+
+void CShaderDeviceDX12::BeginGpuReceiverView( int width, int height )
+{
+	if ( !m_bShadowTimingEnabled )
+		return;
+	if ( m_nGpuReceiverOverflowDepth || m_nGpuReceiverDepth == kGpuStageStackSize )
+	{
+		++m_nGpuReceiverOverflowDepth;
+		++m_GpuStageStats.receiverScopeErrors;
+		BeginGpuStage( GpuReceiverRendering );
+		return;
+	}
+	EndGpuStageSpan();
+	m_GpuReceiverStack[m_nGpuReceiverDepth++] = m_GpuReceiverKey;
+	if ( m_nGpuReceiverViewOrdinal < kGpuReceiverMaxViews + 1 )
+		++m_nGpuReceiverViewOrdinal;
+	if ( m_nGpuReceiverViewOrdinal > kGpuReceiverMaxViews )
+		++m_GpuStageStats.receiverViewOverflow;
+	m_GpuReceiverKey = {};
+	m_GpuReceiverKey.view = m_nGpuReceiverViewOrdinal;
+	m_GpuReceiverKey.width = width;
+	m_GpuReceiverKey.height = height;
+	const bool sameStage = m_GpuStage == GpuReceiverRendering;
+	BeginGpuStage( GpuReceiverRendering );
+	if ( sameStage )
+		BeginGpuStageSpan();
+}
+
+void CShaderDeviceDX12::EndGpuReceiverView()
+{
+	if ( !m_bShadowTimingEnabled )
+		return;
+	if ( m_nGpuReceiverOverflowDepth )
+	{
+		--m_nGpuReceiverOverflowDepth;
+		EndGpuStage( GpuReceiverRendering );
+		return;
+	}
+	if ( !m_nGpuReceiverDepth )
+	{
+		++m_GpuStageStats.receiverScopeErrors;
+		return;
+	}
+	EndGpuStageSpan();
+	m_GpuReceiverKey = m_GpuReceiverStack[--m_nGpuReceiverDepth];
+	const bool sameStage = m_nGpuStageDepth > 1 && m_GpuStageStack[m_nGpuStageDepth - 2] == GpuReceiverRendering;
+	EndGpuStage( GpuReceiverRendering );
+	if ( sameStage )
+		BeginGpuStageSpan();
+}
+
+void CShaderDeviceDX12::GpuReceiverDraw( bool lit )
+{
+	if ( !m_bShadowTimingEnabled || ( m_GpuStage != GpuReceiverRendering && m_GpuStage != GpuOther ) )
+		return;
+	// Consecutive draws with the same view/class share queries; classify only successfully emitted draws.
+	if ( m_GpuReceiverKey.lit != lit )
+	{
+		EndGpuStageSpan();
+		m_GpuReceiverKey.lit = lit;
+		BeginGpuStageSpan();
+	}
+	if ( m_bStageTimestampBegun )
+		++m_nGpuReceiverSpanDraws;
+	else
+		++m_GpuStageStats.receiverSkippedDraws;
+}
+
+bool CShaderDeviceDX12::ConsumeGpuStageStats( GpuStageStatsDX12 &stats )
+{
+	if ( !m_bShadowTimingEnabled )
+		return false;
+	stats = m_GpuStageStats;
+	stats.available = m_bStageQueriesAvailable;
+	stats.pipelineAvailable = m_pStagePipelineData != nullptr;
+	for ( GpuReceiverViewStatsDX12 &receiver : stats.receiverViews )
+		for ( uint32_t drawClass = 0; drawClass < 2; ++drawClass )
+		{
+			receiver.ms[drawClass] = stats.presentedFrames ? receiver.ms[drawClass] / stats.presentedFrames : 0.0;
+			receiver.psInvocations[drawClass] = stats.presentedFrames ? receiver.psInvocations[drawClass] / stats.presentedFrames : 0.0;
+			receiver.draws[drawClass] = stats.presentedFrames ? receiver.draws[drawClass] / stats.presentedFrames : 0.0;
+		}
+	for ( uint32_t stage = 0; stage < GpuStageCount; ++stage )
+	{
+		stats.msPerPresentedFrame[stage] = stats.presentedFrames ? m_flGpuStageSumMs[stage] / stats.presentedFrames : 0.0;
+		stats.psInvocationsPerPresentedFrame[stage] = stats.presentedFrames ? static_cast<double>( m_nGpuStagePSInvocations[stage] ) / stats.presentedFrames : 0.0;
+		stats.cInvocationsPerPresentedFrame[stage] = stats.presentedFrames ? static_cast<double>( m_nGpuStageCInvocations[stage] ) / stats.presentedFrames : 0.0;
+		stats.cPrimitivesPerPresentedFrame[stage] = stats.presentedFrames ? static_cast<double>( m_nGpuStageCPrimitives[stage] ) / stats.presentedFrames : 0.0;
+	}
+	for ( uint32_t slot = 0; slot < kStageTimestampSlots; ++slot )
+		if ( m_StageTimestampFences[slot] )
+			++stats.pendingSpans;
+	if ( m_bStageTimestampBegun )
+		++stats.pendingSpans;
+	memset( m_flGpuStageSumMs, 0, sizeof( m_flGpuStageSumMs ) );
+	memset( m_nGpuStagePSInvocations, 0, sizeof( m_nGpuStagePSInvocations ) );
+	memset( m_nGpuStageCInvocations, 0, sizeof( m_nGpuStageCInvocations ) );
+	memset( m_nGpuStageCPrimitives, 0, sizeof( m_nGpuStageCPrimitives ) );
+	m_GpuStageStats = {};
+	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -1791,6 +2153,9 @@ void CShaderDeviceDX12::GpuTimingAfterSubmit()
 //-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::ConsumeGpuTime( double &flAverageMs, uint32_t &nFrames )
 {
+	// Optional stage windows collect here too, so a short capture need not wait for another submit.
+	if ( m_bShadowTimingEnabled )
+		CollectGpuTiming();
 	nFrames = m_nGpuTimePresented;
 	flAverageMs = nFrames ? m_flGpuTimeSumMs / nFrames : 0.0;
 	m_flGpuTimeSumMs = 0.0;
@@ -1900,6 +2265,11 @@ void CShaderDeviceDX12::Present()
 	if ( !Submit( false ) )
 		return;
 	++m_nGpuTimePresented;
+	if ( m_bShadowTimingEnabled )
+	{
+		++m_GpuStageStats.presentedFrames;
+		m_nGpuReceiverViewOrdinal = 0;
+	}
 	const UINT nInterval = m_bWaitForVsync ? 1 : 0;
 	const UINT nFlags = !m_bWaitForVsync && m_bAllowTearing && m_bWindowed ? DXGI_PRESENT_ALLOW_TEARING : 0;
 	if ( m_hSubmitThread )
@@ -2150,7 +2520,7 @@ static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool 
 	if ( pRecord->legacyBytecode.IsEmpty() )
 	{
 		CUtlString error;
-		if ( !ValidateLightingShaderDX12( pRecord->Bytecode(), bPixel, &pRecord->lightingAbi, error, &pRecord->sunVisibilityAbi ) )
+		if ( !ValidateLightingShaderDX12( pRecord->Bytecode(), bPixel, &pRecord->lightingAbi, error, &pRecord->sunVisibilityAbi, &pRecord->propVisibilityAbi ) )
 		{
 			Warning( "Shadowmaps: required native shader unavailable: %s\n", error.Get() );
 			delete pRecord;

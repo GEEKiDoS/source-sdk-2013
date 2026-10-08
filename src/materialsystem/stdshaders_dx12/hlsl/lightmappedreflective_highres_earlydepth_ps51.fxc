@@ -1,0 +1,281 @@
+#define DX12_EARLY_DEPTH 1
+// HIGHLIGHT_SAMPLERS: 8
+#define DX12_HIGHRES_LIGHTMAPS 1
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/lightmappedreflective_ps2x.fxc for logical lightmappedreflective_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB"			"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "BASETEXTURE"				"0..1"
+// STATIC: "REFLECT"					"0..1"
+// STATIC: "REFRACT"					"0..1"
+// STATIC: "ENVMAPMASK"					"0..1"
+
+// DYNAMIC: "PIXELFOGTYPE"				"0..1"
+// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"	"0..1"
+
+#if defined( DX12_LEGACY_PS20 )
+#	define WRITE_DEPTH_TO_DESTALPHA 0
+#endif
+
+#include "common_ps_fxc.h"
+
+Texture2D RefractSampler_Texture : register( t0 );
+SamplerState RefractSampler_Sampler : register( s0 );
+static const DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+Texture2D BaseTextureSampler_Texture : register( t1 );
+SamplerState BaseTextureSampler_Sampler : register( s1 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D ReflectSampler_Texture : register( t2 );
+SamplerState ReflectSampler_Sampler : register( s2 );
+static const DX12Sampler2D ReflectSampler = { ReflectSampler_Texture, ReflectSampler_Sampler };
+#if BASETEXTURE
+Texture2D LightmapSampler_Texture : register( t3 );
+SamplerState LightmapSampler_Sampler : register( s3 );
+static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+#endif
+#if ENVMAPMASK
+Texture2D EnvMapMaskSampler_Texture : register( t6 );
+SamplerState EnvMapMaskSampler_Sampler : register( s6 );
+static const DX12Sampler2D EnvMapMaskSampler = { EnvMapMaskSampler_Texture, EnvMapMaskSampler_Sampler };
+#endif
+Texture2D NormalSampler_Texture : register( t4 );
+SamplerState NormalSampler_Sampler : register( s4 );
+static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+
+
+cbuffer lightmappedreflective_ps2x : register( b1, space1 )
+{
+	HALF4 vRefractTint; // @legacy ps:c1
+	float4 g_FresnelConstants; // @legacy ps:c3
+	HALF4 vReflectTint; // @legacy ps:c4
+	float4 g_ReflectRefractScale; // @legacy ps:c5
+};
+#define g_PixelFogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+static const bool g_bReflect = REFLECT ? true : false;
+static const bool g_bRefract = REFRACT ? true : false;
+
+struct PS_INPUT
+{
+	float4 vBumpTexCoordXY_vTexCoordXY;
+	half3 vTangentEyeVect;
+	float4 vReflectXY_vRefractYX;
+	float W;
+	float4 vProjPos;
+	float screenCoord;
+#if BASETEXTURE
+// CENTROID: TEXCOORD6
+	HALF4 lightmapTexCoord1And2;
+// CENTROID: TEXCOORD7
+	HALF4 lightmapTexCoord3;
+#endif
+
+	float4 fogFactorW;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 svPos : SV_Position;
+	float vFog : FOG;
+	float4 vBumpTexCoordXY_vTexCoordXY : TEXCOORD0;
+	float3 vTangentEyeVect : TEXCOORD1;
+	float4 vReflectXY_vRefractYX : TEXCOORD2;
+	float W : TEXCOORD3;
+	float4 vProjPos : TEXCOORD4;
+	float screenCoord : TEXCOORD5;
+#if BASETEXTURE
+	centroid  HALF4 lightmapTexCoord1And2 : TEXCOORD6;
+	centroid  HALF4 lightmapTexCoord3 : TEXCOORD7;
+#endif
+	float4 fogFactorW : COLOR1;
+	float3 worldPos : TEXCOORD8;
+	float3 worldNormal : TEXCOORD9;
+	float2 shadowResponse : TEXCOORD10;
+	float3 shadowTangentS : TEXCOORD11;
+	float3 shadowTangentT : TEXCOORD12;
+	centroid float2 shadowBaseLightmapUV : TEXCOORD13;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vBumpTexCoordXY_vTexCoordXY = dx12In.vBumpTexCoordXY_vTexCoordXY;
+	l.vTangentEyeVect = dx12In.vTangentEyeVect;
+	l.vReflectXY_vRefractYX = dx12In.vReflectXY_vRefractYX;
+	l.W = dx12In.W;
+	l.vProjPos = dx12In.vProjPos;
+	l.screenCoord = dx12In.screenCoord;
+#if BASETEXTURE
+#if ( ( BASETEXTURE ) )
+	l.lightmapTexCoord1And2 = dx12In.lightmapTexCoord1And2;
+#endif
+#if ( ( BASETEXTURE ) )
+	l.lightmapTexCoord3 = dx12In.lightmapTexCoord3;
+#endif
+#endif
+	l.fogFactorW = dx12In.fogFactorW;
+	return l;
+}
+
+
+[earlydepthstencil]
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+#if BASETEXTURE
+	HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );
+ ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.svPos.xy );
+ smr.bakedSunVisibility = hlr.sun;
+ ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
+	ShadowMapDirect smd = ShadowMap_NoDirect();
+	ShadowMapShading sms = ShadowMap_ShadeLambert( dx12In.worldNormal );
+#endif
+
+	// Load normal and expand range
+	HALF4 vNormalSample = NormalSampler.tex.Sample( NormalSampler.smp, i.vBumpTexCoordXY_vTexCoordXY.xy );
+	HALF3 vNormal = normalize( vNormalSample * 2.0 - 1.0 );
+
+	// Perform division by W only once
+	float ooW = 1.0f / i.W;
+
+	float2 unwarpedRefractTexCoord = i.vReflectXY_vRefractYX.wz * ooW;
+
+	float4 reflectRefractScale = g_ReflectRefractScale;
+
+	// Compute coordinates for sampling Reflection
+	float2 vReflectTexCoord;
+	float2 vRefractTexCoord;
+
+	// vectorize the dependent UV calculations (reflect = .xy, refract = .wz)
+#ifdef NV3X
+	float4 vDependentTexCoords = vNormal.xyxy * vNormalSample.a * reflectRefractScale;
+#else
+	float4 vN;
+	vN.xy = vNormal.xy;
+	vN.w = vNormal.x;
+	vN.z = vNormal.y;
+	float4 vDependentTexCoords = vN * vNormalSample.a * reflectRefractScale;
+#endif
+
+	vDependentTexCoords += ( i.vReflectXY_vRefractYX * ooW );
+	vReflectTexCoord = vDependentTexCoords.xy;
+	vRefractTexCoord = vDependentTexCoords.wz;
+
+	// Sample reflection and refraction
+	HALF4 vReflectColor = ReflectSampler.tex.Sample( ReflectSampler.smp, vReflectTexCoord );
+	HALF4 vRefractColor = RefractSampler.tex.Sample( RefractSampler.smp, vRefractTexCoord );
+	vReflectColor *= vReflectTint;
+	vRefractColor *= vRefractTint;
+	
+	half3 vEyeVect;
+	vEyeVect = normalize( i.vTangentEyeVect );
+
+	// Fresnel term
+	HALF fNdotV = saturate( dot( vEyeVect, vNormal ) );
+	HALF fFresnelScalar = g_FresnelConstants.x * pow( 1.0 - fNdotV, g_FresnelConstants.y ) + g_FresnelConstants.z;
+	HALF4 fFresnel = HALF4( fFresnelScalar, fFresnelScalar, fFresnelScalar, fFresnelScalar ); 
+
+#if BASETEXTURE
+	float4 baseSample = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vBumpTexCoordXY_vTexCoordXY.zw );
+	HALF2 bumpCoord1;
+	HALF2 bumpCoord2;
+	HALF2 bumpCoord3;
+	ComputeBumpedLightmapCoordinates( i.lightmapTexCoord1And2, i.lightmapTexCoord3.xy,
+		bumpCoord1, bumpCoord2, bumpCoord3 );
+	
+	HALF4 lightmapSample1 = HighresLightmap_Plane( hlr, 1, LightmapSampler.tex.Sample( LightmapSampler.smp, bumpCoord1 ) );
+	HALF3 lightmapColor1 = lightmapSample1.rgb;
+	HALF3 lightmapColor2 = HighresLightmap_Plane( hlr, 2, LightmapSampler.tex.Sample( LightmapSampler.smp, bumpCoord2 ) );
+	HALF3 lightmapColor3 = HighresLightmap_Plane( hlr, 3, LightmapSampler.tex.Sample( LightmapSampler.smp, bumpCoord3 ) );
+
+	float3 dp;
+	dp.x = saturate( dot( vNormal, bumpBasis[0] ) );
+	dp.y = saturate( dot( vNormal, bumpBasis[1] ) );
+	dp.z = saturate( dot( vNormal, bumpBasis[2] ) );
+	dp *= dp;
+	
+	float3 diffuseLighting = dp.x * lightmapColor1 +
+						dp.y * lightmapColor2 +
+						dp.z * lightmapColor3;
+	float sum = dot( dp, float3( 1.0f, 1.0f, 1.0f ) );
+	diffuseLighting *= (cHlightRoute.x != 0 ? 1.0f : LIGHT_MAP_SCALE) / sum;
+	// Selected direct: decoded linear units, before albedo/output.
+#if BASETEXTURE
+	smd = ShadowMap_GatherDirect( smr, ShadowMap_ShadeBumped( mul( bumpBasis[0], float3x3( dx12In.shadowTangentS, dx12In.shadowTangentT, dx12In.worldNormal ) ), mul( bumpBasis[1], float3x3( dx12In.shadowTangentS, dx12In.shadowTangentT, dx12In.worldNormal ) ), mul( bumpBasis[2], float3x3( dx12In.shadowTangentS, dx12In.shadowTangentT, dx12In.worldNormal ) ), dp / sum ) );
+	diffuseLighting += (smd.diffuse * hlr.valid);
+#endif
+	HALF3 diffuseComponent = baseSample.rgb * diffuseLighting;
+#endif
+
+	float4 flMask;
+#if ENVMAPMASK
+	flMask = EnvMapMaskSampler.tex.Sample( EnvMapMaskSampler.smp, i.vBumpTexCoordXY_vTexCoordXY.zw );
+#else
+	flMask = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+#endif
+	
+	// NOTE: the BASETEXTURE path hasn't been tested (or really written for that matter, just copied from water)
+	// What I think should happen is that the alpha of base texture should be its 'translucency'
+	// which should indicate how much refraction to use.
+	// We should add an envmapmask to deal with how much reflection to use
+	// along with all the focus, etc. features
+	float4 result;
+	float flAlpha = 1.0f;
+	if( g_bReflect && g_bRefract )
+	{
+		result = lerp( vRefractColor, vReflectColor, fFresnel ) * flMask;
+#if BASETEXTURE
+		result += float4( diffuseComponent, 1.0f );
+		flAlpha = baseSample.a;
+#endif
+	}
+	else if( g_bReflect )
+	{
+#if BASETEXTURE
+		result = float4( diffuseComponent, 1.0f ) + vReflectColor * flMask;
+		flAlpha = baseSample.a;
+#else
+		result = vReflectColor;
+#endif
+	}
+	else if( g_bRefract )
+	{
+#if BASETEXTURE
+		result = float4( diffuseComponent, 1.0f ) + vRefractColor * flMask;
+		flAlpha = baseSample.a;
+#else
+		result = vRefractColor;
+#endif
+	}
+	else
+	{
+#if BASETEXTURE
+		result = float4( diffuseComponent, 1.0f );
+		flAlpha = baseSample.a;
+#else
+		result = float4( 0.0f, 0.0f, 0.0f, 0.0f );
+#endif
+	}
+	
+		
+#if ( PIXELFOGTYPE == PIXEL_FOG_TYPE_RANGE )
+	float fogFactor = CalcRangeFog( i.vProjPos.z, g_PixelFogParams.x, g_PixelFogParams.z, g_PixelFogParams.w );
+#else
+	float fogFactor = 0;
+#endif
+	
+	
+#if BASETEXTURE
+	{
+	float4 dx12Lit0_0 = DX12FinishPixel( FinalOutput( float4( result.rgb, flAlpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE, (WRITE_DEPTH_TO_DESTALPHA != 0), i.vProjPos.z ), dx12In.vFog );
+	return HighresLightmap_Finish( ShadowMap_Debug( smr, smd, dx12Lit0_0 ) );
+	}
+#else
+	return HighresLightmap_Finish( DX12FinishPixel( FinalOutput( float4( result.rgb, flAlpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE, (WRITE_DEPTH_TO_DESTALPHA != 0), i.vProjPos.z ), dx12In.vFog ) );
+#endif
+
+}
+

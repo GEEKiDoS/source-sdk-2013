@@ -26,6 +26,7 @@
 #include "tier0/dbg.h"
 #include "tier0/icommandline.h"
 #include <cstdarg>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <climits>
@@ -213,7 +214,7 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	if ( FAILED( reflection->GetDesc( &shader ) ) )
 		return false;
 	CUtlString lightingError;
-	if ( !ValidateLightingShaderDX12( bytecode, record->stagePixel, &record->lightingAbi, lightingError, &record->sunVisibilityAbi ) )
+	if ( !ValidateLightingShaderDX12( bytecode, record->stagePixel, &record->lightingAbi, lightingError, &record->sunVisibilityAbi, &record->propVisibilityAbi ) )
 	{
 		Warning( "%s: %s\n", SHADOWMAP_ERR_SHADER_UNAVAILABLE, lightingError.Get() );
 		return false;
@@ -684,6 +685,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 	pRecord->highresAbi = pFile->HighresAbi();
 	pRecord->samplerRolesReady = pFile->SamplerRolesReady();
 	pRecord->nativeCasterTwin = pFile->NativeCasterTwin();
+	pRecord->nativeEarlyDepthTwin = pFile->EarlyDepthTwin();
 	if ( !pRecord->legacyBytecode.IsEmpty() && ( pRecord->highresAbi || pRecord->lightmapSamplerMask ) )
 	{
 		if ( bPixel ) m_pDevice->DestroyPixelShader( reinterpret_cast<PixelShaderHandle_t>( pRecord ) );
@@ -707,19 +709,37 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 	if ( m_pDevice && m_pDevice->Highres().EnhancedMap() && !m_pDevice->Lighting().ShadowPassActive() )
 	{
 		ShaderRecordDX12 *record = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
+		char highresName[256];
 		const ShaderRecordDX12 *pixel = bPixel ? record : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS );
 		const bool needsHighres = pixel && ( pixel->lightmapSamplerMask || pixel->highresAbi );
 		if ( needsHighres && record && !record->highresAbi )
 		{
 			const char *marker = V_strstr( pszName, "_shadowmap_" );
 			const char *stage = marker ? marker + sizeof( "_shadowmap_" ) - 1 : V_strrchr( pszName, '_' );
-			char name[256];
-			const int length = marker ? V_snprintf( name, sizeof( name ), "%.*s_highres_%s", int( marker - pszName ), pszName, stage ) :
-				stage ? V_snprintf( name, sizeof( name ), "%.*s_highres%s", int( stage - pszName ), pszName, stage ) : -1;
-			record = length > 0 && length < int( sizeof( name ) ) ? ResolveNamedShader( name, bPixel, nStaticIndex, nDynamicIndex ) : nullptr;
+			const int length = marker ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres_%s", int( marker - pszName ), pszName, stage ) :
+				stage ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres%s", int( stage - pszName ), pszName, stage ) : -1;
+			record = length > 0 && length < int( sizeof( highresName ) ) ? ResolveNamedShader( highresName, bPixel, nStaticIndex, nDynamicIndex ) : nullptr;
+			pszName = highresName;
 			if ( !record || !record->highresAbi || !record->legacyBytecode.IsEmpty() )
 			{
 				m_pDevice->Highres().OnNativeFailure( "required native highres shader variant unavailable" );
+				return nullptr;
+			}
+		}
+		if ( bPixel && record && record->nativeEarlyDepthTwin &&
+			CanUseEarlyDepthDX12( m_ActiveSnapshot.alphaTest, m_ActiveSnapshot.alphaToCoverage, m_bAlphaToCoverage ) )
+		{
+			// Metadata admits only audited no-kill/no-depth-output twins. Never force
+			// early depth updates on runtime cutout or alpha-to-coverage draws.
+			const char *stage = V_strrchr( pszName, '_' );
+			char earlyName[256];
+			const int length = stage ? V_snprintf( earlyName, sizeof( earlyName ), "%.*s_earlydepth%s",
+				int( stage - pszName ), pszName, stage ) : -1;
+			record = length > 0 && length < int( sizeof( earlyName ) ) ?
+				ResolveNamedShader( earlyName, true, nStaticIndex, nDynamicIndex ) : nullptr;
+			if ( !record || !record->highresAbi || !record->legacyBytecode.IsEmpty() )
+			{
+				m_pDevice->Highres().OnNativeFailure( "required native early-depth shader variant unavailable" );
 				return nullptr;
 			}
 		}
@@ -872,7 +892,7 @@ void CShaderAPIDX12::DrawMesh( CMeshDX12 *pMesh, int nFirstIndex, int nIndexCoun
 	};
 	if ( !auxiliary( pMesh->ColorMesh(), pMesh->ColorOffset(), 1 ) || !auxiliary( pMesh->FlexMesh(), pMesh->FlexOffset(), 2 ) )
 		return;
-	DrawBuffers( bindings, &pMesh->DrawIndices(), 0, pMesh->PrimitiveType(), nFirstIndex, nIndexCount, true );
+	DrawBuffers( bindings, &pMesh->DrawIndices(), 0, pMesh->PrimitiveType(), nFirstIndex, nIndexCount, true, uint64(reinterpret_cast<uintptr_t>(static_cast<IMesh *>(pMesh))), pMesh );
 }
 
 //-----------------------------------------------------------------------------
@@ -912,7 +932,7 @@ static bool ReflectRecordInputsDX12( ShaderRecordDX12 *pRecord )
 //          constants for the current state and records one draw
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIndexBufferDX12 *indices,
-    size_t indexOffset, MaterialPrimitiveType_t primitive, int firstIndex, int indexCount, bool meshStreams )
+    size_t indexOffset, MaterialPrimitiveType_t primitive, int firstIndex, int indexCount, bool meshStreams, uint64 meshToken, const CMeshDX12 *mesh )
 {
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 DrawBuffers", DX12_DRAW_ZONES_ACTIVE );
 	if ( !m_pDevice || m_bDisallowAccess || !m_pDevice->CommandList() || !m_pDevice->NativeDevice() || !bindings[0].buffer || firstIndex < 0 || indexCount <= 0 )
@@ -928,6 +948,13 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		m_bNamedVertexShaderDirty = !m_ActiveSnapshot.vertexShaderName.empty();
 		m_bNamedPixelShaderDirty = !m_ActiveSnapshot.pixelShaderName.empty();
 		++m_nPipelineMemoEpoch;
+	}
+	const bool earlyDepthNamedRoute = highresMap && !shadowPass &&
+		CanUseEarlyDepthDX12( m_ActiveSnapshot.alphaTest, m_ActiveSnapshot.alphaToCoverage, m_bAlphaToCoverage );
+	if ( m_bEarlyDepthNamedRoute != earlyDepthNamedRoute )
+	{
+		m_bEarlyDepthNamedRoute = earlyDepthNamedRoute;
+		m_bNamedPixelShaderDirty = !m_ActiveSnapshot.pixelShaderName.empty();
 	}
 	if ( !shadowPass && ( m_MotionPassState == MotionPassStateDX12::Suppressed || m_pDevice->Lighting().PresentationBlocked() ) )
 		return;
@@ -1101,8 +1128,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	// Resolve the scalar companion before ordinary texture-set reuse. CPU data is read
 	// through const spans, with the same semantic streams and physical addressing as IA.
 	SunReceiverCoordinatesDX12 sunCoordinates{};
-	if ( !highresMap )
-	{
+	// The same actual CPU geometry descriptor feeds world proof and prop topology.
 	SunReceiverDrawDX12 sunDraw;
 	sunDraw.indices = indices;
 	sunDraw.layout = &sourceLayout;
@@ -1113,6 +1139,16 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	sunDraw.primitive = primitive;
 	sunDraw.firstIndex = firstIndex;
 	sunDraw.indexCount = indexCount;
+	sunDraw.materialToken = uint64(reinterpret_cast<uintptr_t>(m_pBoundMaterial));
+	sunDraw.materialName = m_pBoundMaterial ? m_pBoundMaterial->GetName() : nullptr;
+	sunDraw.pass = uint32(m_hActiveSnapshotId);
+	sunDraw.diagnosticFlags = (m_ActiveSnapshot.translucent ? DX12_PROP_DRAW_TRANSLUCENT : 0u) |
+		(m_ActiveSnapshot.alphaTest ? DX12_PROP_DRAW_ALPHA_TEST : 0u);
+	if ( mesh )
+		sunDraw.diagnosticFlags |= DX12_PROP_DRAW_AUXILIARY_KNOWN |
+			(mesh->ColorMesh() ? DX12_PROP_DRAW_COLOR_PRESENT : 0u) |
+			(mesh->FlexMesh() ? DX12_PROP_DRAW_FLEX_PRESENT : 0u) |
+			(mesh->IsDynamic() ? DX12_PROP_DRAW_DYNAMIC_MESH : 0u);
 	for ( unsigned slot = 0; slot < ARRAYSIZE( bindings ); ++slot )
 	{
 		sunDraw.streams[slot].buffer = bindings[slot].buffer;
@@ -1121,6 +1157,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		sunDraw.streams[slot].vertexCount = bindings[slot].vertexCount;
 		sunDraw.streams[slot].repetitions = bindings[slot].repetitions;
 	}
+	if ( !highresMap )
+	{
 	if ( !m_pDevice->Lighting().ResolveSunReceiverDraw( sunDraw, sunCoordinates ) )
 		return;
 	}
@@ -1572,12 +1610,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				linkage ^= static_cast<uint64_t>( m_ShadeMode );
 				linkage *= 1099511628211ull;
 			}
-			const FixedShaderKey key{ m_hActiveSnapshotId, format, pixel, textureTypes, fixedHighresMask, pixel ? linkage : 0 };
+			const bool earlyDepth = pixel && fixedHighresMask &&
+				CanUseEarlyDepthDX12( m_ActiveSnapshot.fixed.alphaTest, m_ActiveSnapshot.alphaToCoverage, m_bAlphaToCoverage );
+			const FixedShaderKey key{ m_hActiveSnapshotId, format, pixel, textureTypes, fixedHighresMask, pixel ? linkage : 0, earlyDepth };
 			const uint32_t found = m_FixedShaders.Find( key );
 			if ( found != m_FixedShaders.InvalidIndex() )
 				return m_FixedShaders[found];
 			FixedFunctionStateDX12 state = m_ActiveSnapshot.fixed;
 			state.highresSamplerMask = fixedHighresMask;
+			state.earlyDepth = earlyDepth;
 			state.format = format;
 			state.flatShade = m_ShadeMode == SHADER_FLAT;
 			memcpy( state.textureTypes, raster.textureTypes, sizeof( state.textureTypes ) );
@@ -2173,7 +2214,16 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		m_pDevice->Highres().OnNativeFailure( "new highres receiver shader retains the abandoned sun carrier" );
 		return;
 	}
+	if ( !shadowPass && psRecord && psRecord->lightingAbi && !psRecord->propVisibilityAbi &&
+		RequiresStaticPropReceiverShaderDX12( m_ActiveSnapshot.pixelShaderName.c_str() ) )
+	{
+		m_pDevice->Lighting().RejectUnsupportedLitShader( m_ActiveSnapshot.pixelShaderName.c_str() );
+		return;
+	}
 	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && psRecord && psRecord->lightingAbi, bindingInput ) )
+		return;
+	if ( bindingInput.lightingAbi && psRecord && psRecord->propVisibilityAbi &&
+		!m_pDevice->Lighting().PrepareStaticPropDraw( meshToken, sunDraw, m_VsFloat[VERTEX_SHADER_MODEL], bindingInput ) )
 		return;
 	bindingInput.highresAbi = !shadowPass && psRecord && psRecord->highresAbi && psRecord->lightmapSamplerMask != 0;
 	bindingInput.highresTable = {};
@@ -2545,11 +2595,13 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				return;
 			const D3D12_INDEX_BUFFER_VIEW view{ address + indexOffset, static_cast<UINT>( indexBytes - indexOffset ), indices->IndexFormat() == MATERIAL_INDEX_FORMAT_32BIT ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT };
 			m_Pipeline.BindIndexBuffer( list, &view, retireFence );
+			m_pDevice->GpuReceiverDraw( !depthOnly && bindingInput.lightingAbi && bindingInput.lightingViewTable.count != 0 );
 			list->DrawIndexedInstanced( indexCount, instanceCount, firstIndex, 0, 0 );
 		}
 		else
 		{
 			m_Pipeline.BindIndexBuffer( list, nullptr, retireFence );
+			m_pDevice->GpuReceiverDraw( !depthOnly && bindingInput.lightingAbi && bindingInput.lightingViewTable.count != 0 );
 			list->DrawInstanced( indexCount, instanceCount, firstIndex, 0 );
 		}
 	}
@@ -4182,13 +4234,134 @@ void CShaderAPIDX12::ChangeVideoMode( const ShaderDeviceInfo_t &info )
 		Warning( "ShaderAPIDX12: video mode change failed\n" );
 }
 
+// Values, not object bytes, define snapshot identity. Normalize signed zero; retain
+// other float bit patterns so equality is reflexive even for an identical NaN.
+template <typename T> static uint64_t SnapshotFieldDX12( T value )
+{
+	return static_cast<uint64_t>( value );
+}
+
+static uint64_t SnapshotFieldDX12( float value )
+{
+	uint32_t bits = 0;
+	if ( value != 0.f )
+		memcpy( &bits, &value, sizeof( bits ) );
+	return bits;
+}
+
+static uint64_t SnapshotFieldDX12( InternedNameDX12 value )
+{
+	// Interning is case-sensitive and module-lifetime, independent of shader records.
+	return reinterpret_cast<uintptr_t>( value.text );
+}
+
+template <typename Visitor>
+void CShaderAPIDX12::Snapshot::VisitIdentity( const Snapshot &other, Visitor &&visit ) const
+{
+#define SNAPSHOT_FIELD( field ) visit( field, other.field )
+	SNAPSHOT_FIELD( translucent );
+	SNAPSHOT_FIELD( alphaTest );
+	SNAPSHOT_FIELD( depthWrite );
+	SNAPSHOT_FIELD( depthTest );
+	SNAPSHOT_FIELD( shaders );
+	SNAPSHOT_FIELD( colorWrites );
+	SNAPSHOT_FIELD( alphaWrites );
+	SNAPSHOT_FIELD( culling );
+	SNAPSHOT_FIELD( stencil );
+	SNAPSHOT_FIELD( alphaToCoverage );
+	SNAPSHOT_FIELD( separateAlpha );
+	SNAPSHOT_FIELD( srgbWrite );
+	SNAPSHOT_FIELD( fogGammaDisabled );
+	SNAPSHOT_FIELD( fogMode );
+	SNAPSHOT_FIELD( alphaReference );
+	SNAPSHOT_FIELD( alphaFunction );
+	SNAPSHOT_FIELD( blendSource );
+	SNAPSHOT_FIELD( blendDestination );
+	SNAPSHOT_FIELD( blendAlphaSource );
+	SNAPSHOT_FIELD( blendAlphaDestination );
+	SNAPSHOT_FIELD( blendOperation );
+	SNAPSHOT_FIELD( blendAlphaOperation );
+	SNAPSHOT_FIELD( stencilFunction );
+	SNAPSHOT_FIELD( stencilFail );
+	SNAPSHOT_FIELD( stencilDepthFail );
+	SNAPSHOT_FIELD( stencilPass );
+	SNAPSHOT_FIELD( stencilReadMask );
+	SNAPSHOT_FIELD( stencilWriteMask );
+	SNAPSHOT_FIELD( stencilReference );
+	SNAPSHOT_FIELD( depthFunction );
+	SNAPSHOT_FIELD( format );
+	SNAPSHOT_FIELD( usage );
+	SNAPSHOT_FIELD( vertexShaderName );
+	SNAPSHOT_FIELD( pixelShaderName );
+	SNAPSHOT_FIELD( staticVertexIndex );
+	SNAPSHOT_FIELD( staticPixelIndex );
+	SNAPSHOT_FIELD( morph );
+	SNAPSHOT_FIELD( comparisonSamplerMask );
+	SNAPSHOT_FIELD( srgbReadMask );
+	SNAPSHOT_FIELD( polygonOffset );
+	SNAPSHOT_FIELD( polyFront );
+	SNAPSHOT_FIELD( polyBack );
+	SNAPSHOT_FIELD( fixed.format );
+	SNAPSHOT_FIELD( fixed.drawFlags );
+	SNAPSHOT_FIELD( fixed.texCoordCount );
+	SNAPSHOT_FIELD( fixed.highresSamplerMask );
+	SNAPSHOT_FIELD( fixed.customPipe );
+	SNAPSHOT_FIELD( fixed.lighting );
+	SNAPSHOT_FIELD( fixed.specular );
+	SNAPSHOT_FIELD( fixed.vertexBlend );
+	SNAPSHOT_FIELD( fixed.constantColor );
+	SNAPSHOT_FIELD( fixed.alphaPipe );
+	SNAPSHOT_FIELD( fixed.constantAlpha );
+	SNAPSHOT_FIELD( fixed.vertexAlpha );
+	SNAPSHOT_FIELD( fixed.alphaTest );
+	SNAPSHOT_FIELD( fixed.flatShade );
+	SNAPSHOT_FIELD( fixed.alphaFunction );
+	SNAPSHOT_FIELD( fixed.materialSource );
+	SNAPSHOT_FIELD( fixed.fogMode );
+	for ( int stage = 0; stage < 16; ++stage )
+	{
+		SNAPSHOT_FIELD( fixed.textureEnabled[stage] );
+		SNAPSHOT_FIELD( fixed.texgen[stage] );
+		SNAPSHOT_FIELD( fixed.textureAlpha[stage] );
+		SNAPSHOT_FIELD( fixed.textureTypes[stage] );
+		SNAPSHOT_FIELD( fixed.overbright[stage] );
+		SNAPSHOT_FIELD( fixed.texgenParam[stage] );
+		SNAPSHOT_FIELD( fixed.colorOp[stage] );
+		SNAPSHOT_FIELD( fixed.alphaOp[stage] );
+		SNAPSHOT_FIELD( fixed.colorArg1[stage] );
+		SNAPSHOT_FIELD( fixed.colorArg2[stage] );
+		SNAPSHOT_FIELD( fixed.alphaArg1[stage] );
+		SNAPSHOT_FIELD( fixed.alphaArg2[stage] );
+	}
+#undef SNAPSHOT_FIELD
+}
+
+uint64_t CShaderAPIDX12::Snapshot::Fingerprint() const
+{
+	uint64_t hash = 1469598103934665603ull;
+	VisitIdentity( *this, [&]( const auto &value, const auto & )
+	{
+		hash ^= SnapshotFieldDX12( value );
+		hash *= 1099511628211ull;
+	} );
+	return hash;
+}
+
+bool CShaderAPIDX12::Snapshot::Matches( const Snapshot &other ) const
+{
+	bool equal = true;
+	VisitIdentity( other, [&]( const auto &a, const auto &b )
+	{
+		equal = equal && SnapshotFieldDX12( a ) == SnapshotFieldDX12( b );
+	} );
+	return equal;
+}
+
 //-----------------------------------------------------------------------------
-// Purpose: Captures the shadow state (CShaderShadowDX12) into an append-only snapshot
+// Purpose: Captures canonical immutable shadow state; duplicate captures retain their live handle
 //-----------------------------------------------------------------------------
 StateSnapshot_t CShaderAPIDX12::TakeSnapshot()
 {
-	if ( m_Snapshots.Count() >= 32767 )
-		return static_cast<StateSnapshot_t>( -1 );
 	Snapshot snapshot = m_ShadowState;
 	if ( g_pShaderShadowDX12 )
 	{
@@ -4295,8 +4468,24 @@ StateSnapshot_t CShaderAPIDX12::TakeSnapshot()
 		m_NamedShaderReferences[m_NamedShaderReferences.Insert( NamedShaderKeyView{ snapshot.vertexShaderName.c_str(), snapshot.staticVertexIndex, -1, false }, true )] = true;
 	if ( !snapshot.pixelShaderName.empty() )
 		m_NamedShaderReferences[m_NamedShaderReferences.Insert( NamedShaderKeyView{ snapshot.pixelShaderName.c_str(), snapshot.staticPixelIndex, -1, true }, true )] = true;
-	m_Snapshots.AddToTail( snapshot );
-	return static_cast<StateSnapshot_t>( m_Snapshots.Count() - 1 );
+	const SnapshotKey key{ snapshot.Fingerprint(), &snapshot };
+	const UtlHashHandle_t existing = m_SnapshotIndex.Find( key );
+	if ( existing != m_SnapshotIndex.InvalidHandle() )
+		return m_SnapshotIndex[existing];
+	// StateSnapshot_t is a signed short. Never reset live handles on a level change,
+	// and never let exhaustion propagate -1 into material vertex-format/mesh creation.
+	if ( m_Snapshots.Count() >= SHRT_MAX )
+	{
+		Error( "ShaderAPIDX12: exhausted %d unique state snapshots; material handles must be invalidated before ClearSnapshots "
+			"(VS '%s' static %d, PS '%s' static %d, vertex usage 0x%llx)\n",
+			m_Snapshots.Count(), snapshot.vertexShaderName.c_str(), snapshot.staticVertexIndex,
+			snapshot.pixelShaderName.c_str(), snapshot.staticPixelIndex, static_cast<unsigned long long>( snapshot.usage ) );
+		Plat_ExitProcess( EXIT_FAILURE );
+	}
+	const int index = m_Snapshots.AddToTail( snapshot );
+	const StateSnapshot_t id = static_cast<StateSnapshot_t>( index );
+	m_SnapshotIndex.Insert( SnapshotKey{ key.fingerprint, &m_Snapshots[index] }, id );
+	return id;
 }
 
 //-----------------------------------------------------------------------------
@@ -4666,10 +4855,11 @@ void CShaderAPIDX12::EndFrame()
 		TracyPlot( "DX12 forced syncs/frame", static_cast<int64_t>( m_nFrameSyncCount ) );
 	}
 #endif
-	// -dx12stats: per-frame averages of draw-path cache behavior over 1000 frames (diagnostic; counters are plain increments).
+	// -dx12statsframes permits brief captures; ordinary -dx12stats retains its 1000-frame window.
 	{
 		static const bool s_bStatsEnabled = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
-		if ( s_bStatsEnabled && ++m_nDrawStatsFrames >= 1000 )
+		static const uint32_t s_nStatsFrames = static_cast<uint32_t>( MAX( 1, CommandLine() ? CommandLine()->ParmValue( "-dx12statsframes", 1000 ) : 1000 ) );
+		if ( s_bStatsEnabled && ++m_nDrawStatsFrames >= s_nStatsFrames )
 		{
 			const CPipelineCacheDX12::StatsDX12 &p = m_Pipeline.Stats();
 			const double n = static_cast<double>( m_nDrawStatsFrames );
@@ -4679,6 +4869,39 @@ void CShaderAPIDX12::EndFrame()
 			uint32_t gpuFrames = 0;
 			if ( m_pDevice && m_pDevice->ConsumeGpuTime( gpuMs, gpuFrames ) )
 				Msg( "ShaderAPIDX12 GPU frame time: %.3f ms (%u frames)\n", gpuMs, gpuFrames );
+			CShaderDeviceDX12::GpuStageStatsDX12 stages;
+			if ( m_pDevice && m_pDevice->ConsumeGpuStageStats( stages ) )
+			{
+				Msg( "ShaderAPIDX12 GPU stages ms/presented frame: receiverRendering(includes ordinary/baked work) %.3f shadowDepth %.3f depthRectRestores %.3f other %.3f (%u frames)\n",
+				    stages.msPerPresentedFrame[CShaderDeviceDX12::GpuReceiverRendering], stages.msPerPresentedFrame[CShaderDeviceDX12::GpuShadowDepth],
+				    stages.msPerPresentedFrame[CShaderDeviceDX12::GpuDepthRectRestore], stages.msPerPresentedFrame[CShaderDeviceDX12::GpuOther], stages.presentedFrames );
+				Msg( "ShaderAPIDX12 GPU stage samples: available %u completed %llu skipped %llu overflow %llu invalid %llu scopeErrors %llu pending %u totalSkippedLists %llu\n",
+				    stages.available ? 1u : 0u, static_cast<unsigned long long>( stages.completedSpans ), static_cast<unsigned long long>( stages.skippedSpans ),
+				    static_cast<unsigned long long>( stages.overflowSpans ), static_cast<unsigned long long>( stages.invalidSpans ),
+				    static_cast<unsigned long long>( stages.scopeErrors ), stages.pendingSpans, static_cast<unsigned long long>( stages.totalSkippedLists ) );
+				Msg( "ShaderAPIDX12 GPU stage pipeline/presented frame: receiverRendering psInvocations %.1f cInvocations %.1f cPrimitives %.1f shadowDepth psInvocations %.1f cInvocations %.1f cPrimitives %.1f depthRectRestores psInvocations %.1f cInvocations %.1f cPrimitives %.1f other psInvocations %.1f cInvocations %.1f cPrimitives %.1f (%u frames)\n",
+				    stages.psInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuReceiverRendering], stages.cInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuReceiverRendering], stages.cPrimitivesPerPresentedFrame[CShaderDeviceDX12::GpuReceiverRendering],
+				    stages.psInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuShadowDepth], stages.cInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuShadowDepth], stages.cPrimitivesPerPresentedFrame[CShaderDeviceDX12::GpuShadowDepth],
+				    stages.psInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuDepthRectRestore], stages.cInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuDepthRectRestore], stages.cPrimitivesPerPresentedFrame[CShaderDeviceDX12::GpuDepthRectRestore],
+				    stages.psInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuOther], stages.cInvocationsPerPresentedFrame[CShaderDeviceDX12::GpuOther], stages.cPrimitivesPerPresentedFrame[CShaderDeviceDX12::GpuOther], stages.presentedFrames );
+				Msg( "ShaderAPIDX12 GPU stage pipeline samples: available %u completed %llu skipped %llu overflow %llu invalid %llu pending %u\n",
+				    stages.pipelineAvailable ? 1u : 0u, static_cast<unsigned long long>( stages.pipelineCompletedSpans ), static_cast<unsigned long long>( stages.pipelineSkippedSpans ),
+				    static_cast<unsigned long long>( stages.pipelineOverflowSpans ), static_cast<unsigned long long>( stages.pipelineInvalidSpans ), stages.pipelineAvailable ? stages.pendingSpans : 0u );
+				for ( uint32_t view = 0; view < CShaderDeviceDX12::kGpuReceiverViewBuckets; ++view )
+				{
+					const CShaderDeviceDX12::GpuReceiverViewStatsDX12 &receiver = stages.receiverViews[view];
+					if ( !receiver.seen )
+						continue;
+					Msg( "ShaderAPIDX12 receiver view %u %dx%d%s%s: lit ms %.3f ps %.1f draws %.3f | other ms %.3f ps %.1f draws %.3f (%u frames)\n",
+					    view, receiver.width, receiver.height, receiver.mixedViewport ? "(mixed)" : "",
+					    view == 0 ? "(outside)" : view > CShaderDeviceDX12::kGpuReceiverMaxViews ? "(overflow)" : "",
+					    receiver.ms[1], receiver.psInvocations[1], receiver.draws[1],
+					    receiver.ms[0], receiver.psInvocations[0], receiver.draws[0], stages.presentedFrames );
+				}
+				Msg( "ShaderAPIDX12 receiver view samples: viewOverflow %llu scopeErrors %llu skippedDraws %llu (stage skipped/overflow/invalid above)\n",
+				    static_cast<unsigned long long>( stages.receiverViewOverflow ), static_cast<unsigned long long>( stages.receiverScopeErrors ),
+				    static_cast<unsigned long long>( stages.receiverSkippedDraws ) );
+			}
 			m_DrawStats = {};
 			m_Pipeline.ResetStats();
 			m_nDrawStatsFrames = 0;
@@ -4746,6 +4969,7 @@ void CShaderAPIDX12::ClearSnapshots()
 		delete m_FixedShaders[entry];
 	}
 	m_FixedShaders.RemoveAll();
+	m_SnapshotIndex.RemoveAll();
 	m_Snapshots.RemoveAll();
 	m_ActiveSnapshot = Snapshot{};
 	m_hActiveSnapshotId = static_cast<StateSnapshot_t>( -1 );

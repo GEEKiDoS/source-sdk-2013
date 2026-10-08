@@ -295,10 +295,25 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	Rect_t area = { x, y, w, h };
 	pRenderContext->CopyRenderTargetToTextureEx( s_PostScene, 0, &area, &area );
 	const float flExposure = exp2f( mat_postfx_exposure.GetFloat() );
+	const int nDebugView = mat_postfx_debug.GetInt() & 0xf;
+	const float flBloomIntensity = mat_postfx_bloom_intensity.GetFloat() * flBloomScale;
+	const float flFlareIntensity = mat_postfx_lensflare.GetFloat();
+	const float flGlareIntensity = mat_postfx_glare.GetFloat();
+	const bool bDirt = s_LensDirt.IsValid() && mat_postfx_lensdirt.GetFloat() > 0.f;
+	// Native HDR inputs and intermediates must be finite; NaN/Inf is already a rendering bug, not a supported
+	// zero-weight effect. The composite binds neutral black for skipped chains, never stale previous-frame output.
+	// Dirt can raise a zero bloom weight, and debug views replace the composite with their selected term.
+	const bool bComposite = nDebugView < 1 || nDebugView > 4;
+	const bool bBlend = flBloomIntensity != 0.f || bDirt;
+	const bool bBloom = ( bComposite && bBlend ) || nDebugView == 1;
+	const bool bFlare = ( ( bComposite && bBlend ) || nDebugView == 2 ) && flFlareIntensity != 0.f;
+	const bool bGlare = ( ( bComposite && bBlend ) || nDebugView == 3 ) && flFlareIntensity != 0.f && flGlareIntensity != 0.f;
+	const bool bFlareInput = bFlare || bGlare;
+	const int nBloomDownsampleCount = bBloom ? ARRAYSIZE( s_BloomDownsample ) : ( bFlareInput ? 1 : 0 );
 
 	// Bloom (Froyok): no threshold, the whole frame is downsampled into mips 1..8, then each level is upsampled and
 	// lerped over the next larger one by the radius, from mip 8 back to mip 1.
-	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
+	for ( int i = 0; i < nBloomDownsampleCount; ++i )
 	{
 		IMaterial *pMaterial = s_BloomDownsample[i].m_pMaterial;
 		if ( i == 0 )
@@ -307,34 +322,47 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 			SetPostPass( pMaterial, s_BloomDown, i, s_BloomDown, i + 1, 1.f, 0.f );
 		DrawCompute( pRenderContext, pMaterial );
 	}
-	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
+	if ( bBloom )
 	{
-		const int nMip = ARRAYSIZE( s_BloomUpsample ) - i;
-		IMaterial *pMaterial = s_BloomUpsample[i].m_pMaterial;
-		SetPostPass( pMaterial, s_BloomDown, nMip, s_BloomUp, nMip, Clamp( mat_postfx_bloom_radius.GetFloat(), 0.f, 1.f ), 0.f );
-		SetTexture( pMaterial, "$srctexture2", i == 0 ? s_BloomDown : s_BloomUp );
-		SetInt( pMaterial, "$srcmip2", nMip + 1 );
-		DrawCompute( pRenderContext, pMaterial );
+		for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
+		{
+			const int nMip = ARRAYSIZE( s_BloomUpsample ) - i;
+			IMaterial *pMaterial = s_BloomUpsample[i].m_pMaterial;
+			SetPostPass( pMaterial, s_BloomDown, nMip, s_BloomUp, nMip, Clamp( mat_postfx_bloom_radius.GetFloat(), 0.f, 1.f ), 0.f );
+			SetTexture( pMaterial, "$srctexture2", i == 0 ? s_BloomDown : s_BloomUp );
+			SetInt( pMaterial, "$srcmip2", nMip + 1 );
+			DrawCompute( pRenderContext, pMaterial );
+		}
 	}
 
 	// Lens flare (Froyok): the half-resolution bloom level is thresholded into a quarter-resolution input and
 	// stabilised by one dual Kawase step through its mip 1. Ghosts and halo are built from it and softened by another
 	// dual Kawase step; the glare star gathers from the input's eighth-resolution mip 1.
-	SetPostPass( s_FlareThreshold.m_pMaterial, s_BloomDown, 1, s_FlareInput, 0, mat_postfx_lensflare_threshold.GetFloat(),
-		MAX( mat_postfx_lensflare_threshold_range.GetFloat(), 0.01f ) );
-	DrawCompute( pRenderContext, s_FlareThreshold.m_pMaterial );
-	SetPostPass( s_FlareInputBlurDown.m_pMaterial, s_FlareInput, 0, s_FlareInput, 1, 0.f, 0.f );
-	DrawCompute( pRenderContext, s_FlareInputBlurDown.m_pMaterial );
-	SetPostPass( s_FlareInputBlurUp.m_pMaterial, s_FlareInput, 1, s_FlareInput, 0, 0.f, 0.f );
-	DrawCompute( pRenderContext, s_FlareInputBlurUp.m_pMaterial );
-	SetPostPass( s_FlareMaterial.m_pMaterial, s_FlareInput, 0, s_Flare, 0, 0.f, 0.f );
-	DrawCompute( pRenderContext, s_FlareMaterial.m_pMaterial );
-	SetPostPass( s_FlareBlurDown.m_pMaterial, s_Flare, 0, s_Flare, 1, 0.f, 0.f );
-	DrawCompute( pRenderContext, s_FlareBlurDown.m_pMaterial );
-	SetPostPass( s_FlareBlurUp.m_pMaterial, s_Flare, 1, s_Flare, 0, 0.f, 0.f );
-	DrawCompute( pRenderContext, s_FlareBlurUp.m_pMaterial );
-	SetPostPass( s_GlareMaterial.m_pMaterial, s_FlareInput, 1, s_Glare, 0, mat_postfx_glare.GetFloat(), MAX( mat_postfx_glare_divider.GetFloat(), 0.01f ) );
-	DrawCompute( pRenderContext, s_GlareMaterial.m_pMaterial );
+	if ( bFlareInput )
+	{
+		SetPostPass( s_FlareThreshold.m_pMaterial, s_BloomDown, 1, s_FlareInput, 0, mat_postfx_lensflare_threshold.GetFloat(),
+			MAX( mat_postfx_lensflare_threshold_range.GetFloat(), 0.01f ) );
+		DrawCompute( pRenderContext, s_FlareThreshold.m_pMaterial );
+		SetPostPass( s_FlareInputBlurDown.m_pMaterial, s_FlareInput, 0, s_FlareInput, 1, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareInputBlurDown.m_pMaterial );
+	}
+	if ( bFlare )
+	{
+		// Glare reads mip 1 directly; this upsample is only needed by ghosts and halo.
+		SetPostPass( s_FlareInputBlurUp.m_pMaterial, s_FlareInput, 1, s_FlareInput, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareInputBlurUp.m_pMaterial );
+		SetPostPass( s_FlareMaterial.m_pMaterial, s_FlareInput, 0, s_Flare, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareMaterial.m_pMaterial );
+		SetPostPass( s_FlareBlurDown.m_pMaterial, s_Flare, 0, s_Flare, 1, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareBlurDown.m_pMaterial );
+		SetPostPass( s_FlareBlurUp.m_pMaterial, s_Flare, 1, s_Flare, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareBlurUp.m_pMaterial );
+	}
+	if ( bGlare )
+	{
+		SetPostPass( s_GlareMaterial.m_pMaterial, s_FlareInput, 1, s_Glare, 0, flGlareIntensity, MAX( mat_postfx_glare_divider.GetFloat(), 0.01f ) );
+		DrawCompute( pRenderContext, s_GlareMaterial.m_pMaterial );
+	}
 
 	const int nStatus = DisplayStatus();
 	const bool bHdr = mat_hdr_output.GetBool() && SHADERAPIDX12_HDR_DISPLAY_TYPE( nStatus ) == SHADERAPIDX12_HDR_DISPLAY_HDR && s_pShaderAPIDX12->HdrOutputCapable();
@@ -342,8 +370,7 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	const float flUiNits = MAX( mat_hdr_output_ui_nits.GetFloat(), 1.f );
 	const float flPeak = bHdr ? MAX( mat_hdr_output_max_nits.GetFloat(), flWorldNits ) / flWorldNits : 1.f;
 	const float flOutScale = bHdr ? flWorldNits / flUiNits : 1.f;
-	const bool bDirt = s_LensDirt.IsValid() && mat_postfx_lensdirt.GetFloat() > 0.f;
-	const float composite0[4] = { flExposure, mat_postfx_bloom_intensity.GetFloat() * flBloomScale, mat_postfx_lensflare.GetFloat(), 0.f };
+	const float composite0[4] = { flExposure, flBloomIntensity, flFlareIntensity, 0.f };
 	const float composite1[4] = { mat_postfx_lensdirt.GetFloat(), 0.f, 0.f, 0.f };
 	const float output[4] = { static_cast<float>( bHdr ? 1 : 0 ), 0.f, 0.f, 0.f };
 	IMaterial *pComposite = s_CompositeMaterial.m_pMaterial;
@@ -352,10 +379,13 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	SetTexture( pComposite, "$flare", s_Flare );
 	SetTexture( pComposite, "$glare", s_Glare );
 	SetTexture( pComposite, "$dirt", s_LensDirt );
+	SetInt( pComposite, "$bloomenabled", bBloom );
+	SetInt( pComposite, "$flareenabled", bFlare );
+	SetInt( pComposite, "$glareenabled", bGlare );
 	SetInt( pComposite, "$dirtenabled", bDirt );
 	SetFloat( pComposite, "$outscale", flOutScale );
 	SetFloat( pComposite, "$peak", flPeak );
-	SetInt( pComposite, "$debugview", mat_postfx_debug.GetInt() & 0xf );
+	SetInt( pComposite, "$debugview", nDebugView );
 	SetVector4( pComposite, "$params0", composite0 );
 	SetVector4( pComposite, "$params1", composite1 );
 	SetVector4( pComposite, "$output", output );

@@ -1,7 +1,7 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: Read-only map admission and conservative public-caster transmission.
-//          No client DLL or engine hooks are needed by a dedicated server.
+// Purpose: Map admission, narrow enhanced-content compatibility, and
+//          conservative public-caster transmission without client/engine hooks.
 //
 //=============================================================================//
 
@@ -29,6 +29,42 @@ namespace
 	CUtlVector< ShadowMapInfluenceVolume_t > g_Volumes;
 	CUtlVector< uint8 > g_SpatialEligibility;
 	CUtlVector< uint8 > g_CallbackMembership;
+
+	// Vanilla station content disables legacy projected shadows on the visible
+	// train, not just its decorations. Correct only these three authored pieces
+	// after enhanced-map admission; never mutate the BSP/highres native identity.
+	void ApplyStationTrainShadowCompatibility()
+	{
+		if ( !g_bFeatureMap || !g_bReady || Q_stricmp( STRING( gpGlobals->mapname ), "d1_trainstation_01" ) )
+			return;
+		// New-map corrections are saved with the entity. Do not overwrite a
+		// restored DisableShadow input by reapplying authored-content policy.
+		if ( gpGlobals->eLoadType == MapLoad_LoadGame )
+			return;
+		for ( CBaseEntity *pEntity = gEntList.FirstEnt(); pEntity; pEntity = gEntList.NextEnt( pEntity ) )
+		{
+			bool match = false;
+			switch ( pEntity->m_iHammerID )
+			{
+			case 726739:
+				match = pEntity->ClassMatches( "func_tracktrain" ) && pEntity->NameMatches( "intro_train_2" ) &&
+					!Q_stricmp( STRING( pEntity->GetModelName() ), "*28" );
+				break;
+			case 618097:
+				match = pEntity->ClassMatches( "prop_dynamic" ) &&
+					!Q_stricmp( STRING( pEntity->GetModelName() ), "models/props_trainstation/train001.mdl" ) &&
+					!Q_stricmp( STRING( pEntity->m_iParent ), "intro_train_1" );
+				break;
+			case 617249:
+				match = pEntity->ClassMatches( "prop_dynamic" ) &&
+					!Q_stricmp( STRING( pEntity->GetModelName() ), "models/props_trainstation/train003.mdl" ) &&
+					!Q_stricmp( STRING( pEntity->m_iParent ), "intro_train_3" );
+				break;
+			}
+			if ( match )
+				pEntity->RemoveEffects( EF_NOSHADOW );
+		}
+	}
 
 	struct ServerBspReadContext
 	{
@@ -324,8 +360,8 @@ void ShadowMapTransmit_LevelInit()
 	if ( version != hlight::kManifestVersion )
 	{
 		g_pFullFileSystem->Close( context.file );
-		Warning( "%s: unsupported rshd version %u; rebake legacy enhanced maps as manifest v4\n",
-			SHADOWMAP_ERR_INVALID_METADATA, version );
+		Warning( "%s: unsupported rshd version %u; rebake enhanced maps as manifest v%u\n",
+			SHADOWMAP_ERR_INVALID_METADATA, version, (unsigned)hlight::kManifestVersion );
 		return;
 	}
 
@@ -337,7 +373,7 @@ void ShadowMapTransmit_LevelInit()
 	g_pFullFileSystem->Close( context.file );
 	if ( !valid )
 	{
-		Warning( "%s: %s\n", SHADOWMAP_ERR_INVALID_METADATA, error[0] ? error : "rshd v4 data read" );
+		Warning( "%s: %s\n", SHADOWMAP_ERR_INVALID_METADATA, error[0] ? error : "rshd data read" );
 		return;
 	}
 	g_bFeatureMap = view.header->runtimeModeMask != 0;
@@ -406,6 +442,7 @@ void ShadowMapTransmit_LevelInit()
 	memset( g_SpatialEligibility.Base(), 0, g_SpatialEligibility.Count() );
 	memset( g_CallbackMembership.Base(), 0, g_CallbackMembership.Count() );
 	g_bReady = true;
+	ApplyStationTrainShadowCompatibility();
 }
 
 bool ShadowMapTransmit_Ready()

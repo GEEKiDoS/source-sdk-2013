@@ -63,6 +63,7 @@ struct Shader {
     std::map<std::string, Block> blocks;
 	ComboFold fold;
 	uint32_t lightmapSamplerMask = 0, highresAbi = 0;
+	bool earlyDepthTwin = false;
 };
 std::string readText(const fs::path &p) {
     std::ifstream f(p, std::ios::binary);
@@ -226,7 +227,7 @@ std::string foldDescription(const Shader &sh) {
 	return out.str();
 }
 std::string ordinaryLogical(const std::string &logical) {
-	return tokenRename(tokenRename(logical, "_shadowmap_", "_"), "_highres_", "_");
+	return tokenRename(tokenRename(tokenRename(logical, "_earlydepth_", "_"), "_shadowmap_", "_"), "_highres_", "_");
 }
 void loadComboFolds(const fs::path &root, std::vector<Shader> &shaders) {
 	static const std::regex foldPrefix(R"(^\s*//\s*FOLD\s*:)");
@@ -413,20 +414,23 @@ bool engineBlock(const std::string &name) {
 }
 const dx12native::EngineCBufferLayoutDX12 *lightingLayout(const std::string &name) {
     for (const auto &layout : dx12native::kLightingCBufferLayouts)
-        if (layout.shaderRegister == DX12_LIGHTING_B_VIEW && !strcmp(layout.name, "DX12LightingViewConstantsV1") &&
-            name == layout.name) return &layout;
+        if (name == layout.name) return &layout;
     return nullptr;
 }
 void validateLightingBlock(const Block &b) {
     const auto *layout = lightingLayout(b.name);
     if (!layout || b.stage != layout->stage || b.reg != layout->shaderRegister ||
         b.space != DX12_LIGHTING_REGISTER_SPACE || b.size != layout->byteSize || b.members.size() != layout->memberCount)
-        throw std::runtime_error("Lighting ABI 3 cbuffer mismatch: " + b.name);
+        throw std::runtime_error("Lighting ABI 6 cbuffer mismatch: " + b.name);
     for (size_t i = 0; i < b.members.size(); ++i) {
         const auto &m = b.members[i];
         const auto &expected = layout->members[i];
         if (m.name != expected.name || m.offset != expected.offset || m.size != expected.size)
-            throw std::runtime_error("Lighting ABI 3 member mismatch: " + b.name + "." + m.name);
+            throw std::runtime_error("Lighting ABI 6 member mismatch: " + b.name + "." + m.name);
+        if (b.reg == DX12_LIGHTING_B_PROP_DRAW &&
+            (m.kind != D3D_SVC_VECTOR || m.type != (i == 0 || i == 2 ? D3D_SVT_UINT : D3D_SVT_FLOAT) ||
+             m.rows != 1 || m.cols != 4 || m.elements != (i == 1 ? 3u : 0u) || m.stride != (i == 1 ? 16u : 0u)))
+            throw std::runtime_error("Lighting ABI 6 static-prop member shape mismatch: " + b.name + "." + m.name);
     }
 }
 bool lightingStructuredType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
@@ -437,13 +441,17 @@ bool lightingStructuredType(ID3D12ShaderReflection *reflection, const D3D12_SHAD
     auto *elementType = element ? element->GetType() : nullptr;
     D3D12_SHADER_TYPE_DESC type{};
     if (!elementType || FAILED(elementType->GetDesc(&type)) || type.Elements) return false;
-    if (binding.BindPoint == DX12_LIGHTING_T_LIGHTS) {
-        constexpr unsigned memberCount = sizeof(dx12native::kRuntimeShadowLightGpuMembers) /
-                                         sizeof(dx12native::kRuntimeShadowLightGpuMembers[0]);
-        if (type.Class != D3D_SVC_STRUCT || !type.Name || strcmp(type.Name, "RuntimeShadowLightGpu") ||
+    if (binding.BindPoint == DX12_LIGHTING_T_LIGHTS || binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES) {
+        const bool triangles = binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES;
+        const auto *members = triangles ? dx12native::kDX12StaticPropTriangleGpuMembers : dx12native::kRuntimeShadowLightGpuMembers;
+        const unsigned memberCount = triangles ?
+            sizeof(dx12native::kDX12StaticPropTriangleGpuMembers) / sizeof(*dx12native::kDX12StaticPropTriangleGpuMembers) :
+            sizeof(dx12native::kRuntimeShadowLightGpuMembers) / sizeof(*dx12native::kRuntimeShadowLightGpuMembers);
+        if (type.Class != D3D_SVC_STRUCT || !type.Name ||
+            strcmp(type.Name, triangles ? "DX12StaticPropTriangleGpu" : "RuntimeShadowLightGpu") ||
             type.Members != memberCount) return false;
         for (unsigned i = 0; i < memberCount; ++i) {
-            const auto &expected = dx12native::kRuntimeShadowLightGpuMembers[i];
+            const auto &expected = members[i];
             const char *name = elementType->GetMemberTypeName(i);
             auto *memberType = elementType->GetMemberTypeByIndex(i);
             D3D12_SHADER_TYPE_DESC member{};
@@ -454,9 +462,11 @@ bool lightingStructuredType(ID3D12ShaderReflection *reflection, const D3D12_SHAD
         }
         return true;
     }
-    const unsigned columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 : 1;
+    const unsigned columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 :
+        binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_FACES || binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_ENTRIES ||
+        binding.BindPoint == DX12_LIGHTING_T_PROP_MESHES ? 4 : 1;
     return type.Type == D3D_SVT_UINT && type.Rows == 1 && type.Columns == columns &&
-           type.Class == (columns == 2 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR);
+           type.Class == (columns > 1 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR);
 }
 void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
     struct Resource { const char *name; unsigned reg, count, stride; };
@@ -468,6 +478,11 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
         {"g_ShadowTileRanges", DX12_LIGHTING_T_TILE_RANGES, 1, 8},
         {"g_ShadowTileIndices", DX12_LIGHTING_T_TILE_INDICES, 1, 4},
         {"g_ShadowSunVisibility", DX12_LIGHTING_T_SUN_VISIBILITY, 1, 0},
+        {"g_ShadowVisibilityFaces", DX12_LIGHTING_T_VISIBILITY_FACES, 1, 16},
+        {"g_ShadowVisibilityEntries", DX12_LIGHTING_T_VISIBILITY_ENTRIES, 1, 16},
+        {"g_ShadowVisibilityPayload", DX12_LIGHTING_T_VISIBILITY_PAYLOAD, 1, 0},
+        {"g_ShadowVisibilityPropMeshes", DX12_LIGHTING_T_PROP_MESHES, 1, 16},
+        {"g_ShadowPropTriangles", DX12_LIGHTING_T_PROP_TRIANGLES, 1, sizeof(DX12StaticPropTriangleGpu)},
     };
     bool marker = false, space2 = false;
     unsigned seen = 0;
@@ -483,18 +498,18 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
         unsigned slot = 0;
         bool valid = stage == VcsStage::Pixel && binding.Space == DX12_LIGHTING_REGISTER_SPACE;
         if (layout) {
-            slot = layout->shaderRegister;
+            slot = layout->shaderRegister == DX12_LIGHTING_B_VIEW ? 0 : 14;
             valid = valid && binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == layout->shaderRegister && binding.BindCount == 1;
             auto *buffer = reflection->GetConstantBufferByName(binding.Name);
             D3D12_SHADER_BUFFER_DESC bd{};
             valid = valid && buffer && SUCCEEDED(buffer->GetDesc(&bd)) && bd.Type == D3D_CT_CBUFFER && bd.Name;
             if (valid) validateLightingBlock(reflectBlock(reflection, buffer, bd, binding, dx12native::kStagePixel));
-            marker = true;
+            if (layout->shaderRegister == DX12_LIGHTING_B_VIEW) marker = true;
         } else if (binding.Type == D3D_SIT_SAMPLER) {
             const bool comparison = (binding.uFlags & D3D_SIF_COMPARISON_SAMPLER) != 0;
             const bool shadow = comparison && binding.BindPoint == DX12_LIGHTING_S_COMPARISON && !strcmp(binding.Name, "g_ShadowCmpSampler");
             valid = valid && binding.BindCount == 1 && shadow;
-            slot = 8;
+            slot = 13;
         } else {
             const Resource *resource = nullptr;
             for (unsigned r = 0; r < sizeof(resources) / sizeof(*resources); ++r)
@@ -503,19 +518,47 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
             if (valid && resource->stride)
                 valid = binding.Type == D3D_SIT_STRUCTURED && binding.Dimension == D3D_SRV_DIMENSION_BUFFER &&
                         binding.NumSamples == resource->stride && lightingStructuredType(reflection, binding);
+            else if (valid && resource->reg == DX12_LIGHTING_T_VISIBILITY_PAYLOAD)
+                valid = binding.Type == D3D_SIT_BYTEADDRESS && binding.Dimension == D3D_SRV_DIMENSION_BUFFER;
             else if (valid)
                 valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == D3D_SRV_DIMENSION_TEXTURE2D &&
                         binding.ReturnType == (resource->reg == DX12_LIGHTING_T_SUN_VISIBILITY ? D3D_RETURN_TYPE_UINT : D3D_RETURN_TYPE_FLOAT) &&
                         !(binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS);
         }
-        if (!valid || (seen & (1u << slot))) throw std::runtime_error("Lighting ABI 3 binding mismatch: " + std::string(binding.Name));
+        if (!valid || (seen & (1u << slot))) throw std::runtime_error("Lighting ABI 6 binding mismatch: " + std::string(binding.Name));
         seen |= 1u << slot;
     }
     if (space2 && !marker) throw std::runtime_error("Space-2 resources require DX12LightingViewConstantsV1");
+    constexpr unsigned sharedVisibility = (1u << 9) | (1u << 10);
+    constexpr unsigned propVisibility = (1u << 11) | (1u << 12) | (1u << 14);
+    if (((seen & sharedVisibility) && (seen & sharedVisibility) != sharedVisibility) ||
+        ((seen & (1u << 8)) && (seen & sharedVisibility) != sharedVisibility) ||
+        ((seen & propVisibility) && ((seen & propVisibility) != propVisibility || (seen & sharedVisibility) != sharedVisibility)))
+        throw std::runtime_error("Lighting ABI 6 incomplete visibility resource group: " + logical);
+    static const char *const propReceivers[] = {
+        "vertexlit_and_unlit_generic_shadowmap_ps51", "vertexlit_and_unlit_generic_bump_shadowmap_ps51",
+        "skin_shadowmap_ps51", "eyes_shadowmap_ps51", "eye_refract_shadowmap_ps51",
+        "teeth_shadowmap_ps51", "teeth_bump_shadowmap_ps51", "treeleaf_shadowmap_ps51",
+        "cable_shadowmap_ps51", "vortwarp_shadowmap_ps51",
+    };
+    for (const char *receiver : propReceivers)
+        if (marker && logical == receiver && (seen & propVisibility) != propVisibility)
+            throw std::runtime_error("Lighting ABI 6 model receiver requires static-prop visibility: " + logical);
+    if (seen & propVisibility) {
+        bool primitiveId = false;
+        for (unsigned i = 0; i < desc.InputParameters; ++i) {
+            D3D12_SIGNATURE_PARAMETER_DESC input{};
+            if (FAILED(reflection->GetInputParameterDesc(i, &input)))
+                throw std::runtime_error("Cannot reflect static-prop primitive identity: " + logical);
+            if (input.SystemValueType == D3D_NAME_PRIMITIVE_ID && input.ComponentType == D3D_REGISTER_COMPONENT_UINT32 &&
+                input.Mask == 1) primitiveId = true;
+        }
+        if (!primitiveId) throw std::runtime_error("Static-prop visibility requires uint SV_PrimitiveID: " + logical);
+    }
     const bool carrier = logical == "lightmappedgeneric_shadowmap_ps51" || logical == "worldtwotextureblend_shadowmap_ps51" ||
                          logical == "lightmappedreflective_shadowmap_ps51" || logical == "lightmappedgeneric_decal_shadowmap_ps51";
     if (marker && carrier && !(seen & (1u << 7)))
-        throw std::runtime_error("Lighting ABI 3 receiver requires packed uint t1029: " + logical);
+        throw std::runtime_error("Lighting ABI 6 receiver requires packed uint t1029: " + logical);
 }
 void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const Shader &shader) {
 	static const char *const names[] = {"HlightFaceIds", "HlightFaces", "HlightTiles", "HlightDynamic",
@@ -661,7 +704,7 @@ std::string header(const Block &b) {
         std::ostringstream e;
         e << "#pragma once\n#include \"native_engine_cbuffers_dx12.h\"\nnamespace dx12cb {\n"
           << "// Engine-owned: the backend fills this block from native state; materials never write it.\n"
-          << "using " << b.name << " = dx12native::"
+          << "using " << b.name << " = " << (b.name == "DX12StaticPropDrawConstants" ? "::" : "dx12native::")
           << ((b.name == "DX12ComboFoldPS" || b.name == "DX12ComboFoldVS") ? "DX12ComboFold" : b.name)
           << ";\n} // namespace dx12cb\n";
         return e.str();
@@ -738,6 +781,7 @@ std::string legacyIncludeBase(const std::string &legacySource, const std::string
 void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
     std::vector<Shader> shaders;
     std::vector<std::string> fallback;
+	std::map<std::string, std::string> earlyDepthTwins;
     std::set<std::string> names;
     // native-map.txt: source|stage|logical|compiledBase|artifactDir, one per manifest line (per-line compile roots).
     std::map<std::string, std::pair<std::string, fs::path>> nativeMap;
@@ -763,6 +807,17 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
             line = trim(line);
             if (line.empty() || line.rfind("//", 0) == 0) continue;
             if (line.rfind("# legacy ", 0) == 0) { fallback.push_back(line); continue; }
+			if (line.rfind("# earlydepth ", 0) == 0) {
+				std::istringstream fields(line.substr(13));
+				std::string base, twin, extra;
+				if (!(fields >> base >> twin) || (fields >> extra) || base.size() < 5 ||
+				    base.compare(base.size() - 5, 5, "_ps51") || base.find("_highres_") == std::string::npos ||
+				    base.find("_earlydepth_") != std::string::npos ||
+				    twin != base.substr(0, base.size() - 5) + "_earlydepth_ps51" ||
+				    !earlyDepthTwins.emplace(base, twin).second)
+					throw std::runtime_error("Malformed early-depth twin declaration: " + line);
+				continue;
+			}
             if (line[0] == '#') continue;
             std::smatch m;
             if (!std::regex_match(line, m, manifest)) throw std::runtime_error("Malformed manifest line in " + file.string() + ": " + line);
@@ -827,6 +882,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 		if (std::regex_search(authoredText, samplerRoles, std::regex(R"(//\s*HIGHLIGHT_SAMPLERS:\s*(\d+))")))
 			sh.lightmapSamplerMask = uint32_t(std::stoul(samplerRoles[1].str()));
 		sh.highresAbi = sh.logical.find("_highres_") != std::string::npos ? 1u : 0u;
+		sh.earlyDepthTwin = earlyDepthTwins.count(sh.logical) != 0;
 		if (sh.stage != "ps" && sh.lightmapSamplerMask)
 			throw std::runtime_error("Lightmap roles declared outside pixel stage: " + sh.logical);
 		if (sh.lightmapSamplerMask & ~0xffffu)
@@ -1012,7 +1068,37 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 			writeText(sidecar, std::string(reinterpret_cast<const char *>(metadata), sizeof(metadata)));
 			publish.emplace_back(sidecar, game / "shaders" / directory / (sh.logical + ".hlight"));
 		}
+		if (sh.earlyDepthTwin) {
+			const uint32_t metadata[2] = {0x59445245u, 1u};
+			const fs::path sidecar = sh.artifactRoot / "earlydepth" / (sh.logical + ".earlydepth");
+			writeText(sidecar, std::string(reinterpret_cast<const char *>(metadata), sizeof(metadata)));
+			publish.emplace_back(sidecar, game / "shaders" / directory / (sh.logical + ".earlydepth"));
+		}
     }
+	// A declaration grants backend early-depth admission; publish it only with an
+	// output/combo-compatible native twin from this same pack, never a stale GAME file.
+	for (const auto &[baseName, twinName] : earlyDepthTwins) {
+		const auto base = std::find_if(shaders.begin(), shaders.end(), [&](const Shader &s) { return s.logical == baseName; });
+		const auto twin = std::find_if(shaders.begin(), shaders.end(), [&](const Shader &s) { return s.logical == twinName; });
+		if (base == shaders.end() || twin == shaders.end() || base->stage != "ps" || twin->stage != "ps" ||
+		    !base->highresAbi || !twin->highresAbi || base->lightmapSamplerMask != twin->lightmapSamplerMask ||
+		    base->dynamicCount != twin->dynamicCount || base->staticCount != twin->staticCount ||
+		    base->presentCombos != twin->presentCombos || base->fold.enabled != twin->fold.enabled ||
+		    base->fold.originalStatic != twin->fold.originalStatic || base->fold.originalDynamic != twin->fold.originalDynamic ||
+		    base->fold.nativeStatic != twin->fold.nativeStatic || base->fold.nativeDynamic != twin->fold.nativeDynamic ||
+		    base->fold.original.size() != twin->fold.original.size() || base->blocks.size() != twin->blocks.size())
+			throw std::runtime_error("Incompatible early-depth twin: " + baseName);
+		for (size_t i = 0; i < base->fold.original.size(); ++i) {
+			const auto &a = base->fold.original[i], &b = twin->fold.original[i];
+			if (a.name != b.name || a.minimum != b.minimum || a.maximum != b.maximum || a.dynamic != b.dynamic || a.slot != b.slot)
+				throw std::runtime_error("Early-depth combo-fold mismatch: " + baseName);
+		}
+		for (const auto &[name, block] : base->blocks) {
+			const auto found = twin->blocks.find(name);
+			if (found == twin->blocks.end() || block.canonical != found->second.canonical)
+				throw std::runtime_error("Early-depth cbuffer mismatch: " + baseName + ": " + name);
+		}
+	}
     for (const auto &[name, b] : shared) output["cbuffers/" + name + ".h"] = header(b);
     {
         // Name -> block writer table for shaders selected by name (IShaderShadow::Set*Shader(name) +

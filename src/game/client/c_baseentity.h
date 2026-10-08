@@ -1324,6 +1324,11 @@ public:
 
 	// Interpolation says don't draw yet
 	bool							m_bReadyToDraw;
+	bool HasBBoxVisualization() const { return m_fBBoxVisFlags!=0; }
+	uint64 GetShadowDepthRevision() const { return m_nShadowDepthRevision; }
+	bool AdvanceShadowDepthRevision() { return ++m_nShadowDepthRevision!=0; }
+	uint64 GetShadowDepthRegistrationRevision() const { return m_nShadowDepthRegistrationRevision; }
+	void SetShadowDepthRegistrationRevision( uint64 revision ) { m_nShadowDepthRegistrationRevision=revision; }
 
 	// Should we be interpolating?
 	static bool						IsInterpolationEnabled();
@@ -1647,6 +1652,8 @@ private:
 
 	// Bbox visualization
 	unsigned char					m_fBBoxVisFlags;
+	uint64							m_nShadowDepthRevision;
+	uint64							m_nShadowDepthRegistrationRevision;
 
 	// The list that holds OnDataChanged events uses this to make sure we don't get multiple
 	// OnDataChanged calls in the same frame if the client receives multiple packets.

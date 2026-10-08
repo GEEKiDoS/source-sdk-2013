@@ -55,6 +55,8 @@ struct DX12_PS_INPUT
 	float3 worldPos : TEXCOORD2;
 	float3 worldNormal : TEXCOORD3;
 	float2 shadowResponse : TEXCOORD4;
+
+	uint shadowPrimitiveId : SV_PrimitiveID;
 };
 PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 {
@@ -71,6 +73,8 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	PS_INPUT i = DX12ConvertInput( dx12In );
 #if 1
 	ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.svPos.xy );
+	// GatherDirect adds styled prop RGB for Lambert/half-Lambert, then resident deltas.
+	ShadowMap_SetBakedProp( smr, dx12In.shadowPrimitiveId );
 	ShadowMapDirect smd = ShadowMap_NoDirect();
 	ShadowMapShading sms = ShadowMap_ShadeLambert( dx12In.worldNormal );
 #endif

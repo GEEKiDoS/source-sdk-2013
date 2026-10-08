@@ -75,7 +75,8 @@ enum RenderParamInt_t
 
 	// DX12 motion-vector pass (shaderapidx12 only; other backends store and ignore).
 	// PASS: 0 = end pass (resolve into render target 0), 1 = begin main pass (clear, camera reprojection, VP slot 0),
-	//       2 = append to main pass (VP slot 0), 3 = begin viewmodel append pass (VP slot 1).
+	//       2 = append to main pass (VP slot 0), 3 = begin viewmodel append pass (VP slot 1),
+	//       4 = advance empty viewmodel VP history only (no draws/resolve; END is a no-op on success).
 	INT_RENDERPARM_DX12_MOTION_PASS,
 	// Object identity for bone history: CBaseHandle::ToInt() of the renderable; 0 = static (no history).
 	INT_RENDERPARM_DX12_MOTION_OBJECT,
@@ -111,6 +112,7 @@ enum RenderParamInt_t
 #define DX12_MOTION_PASS_BEGIN_MAIN     1
 #define DX12_MOTION_PASS_APPEND_MAIN    2
 #define DX12_MOTION_PASS_BEGIN_VIEWMODEL 3
+#define DX12_MOTION_PASS_HISTORY_VIEWMODEL 4
 #define DX12_UPSCALE_DISPATCH_RUN   1
 #define DX12_UPSCALE_DISPATCH_RESET 2
 #define DX12_FRAMEGEN_DISPATCH_RUN   1

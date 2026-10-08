@@ -4,6 +4,8 @@
 #include "restir_staticprops.h"
 #include "restir_scene.h"
 #include "restir_vulkan.h"
+#include "restir_baked_direct.h"
+#include "restir_byte_buffer.h"
 #include "bsplib.h"
 #include "filesystem.h"
 #include "studio.h"
@@ -16,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
+#include <stdio.h>
 
 #ifndef ALIGN_TO_POW2
 #define ALIGN_TO_POW2( x, y ) ( ( ( x ) + ( y - 1 ) ) & ~( y - 1 ) )
@@ -64,6 +68,12 @@ static Vector QuantizeTexelToLinear( const Vector &color )
 CUtlVector<char const *> g_NonShadowCastingMaterialStrings;
 CReSTIRStaticPropMgr g_ReSTIRStaticPropMgr;
 static CUtlDict<int, unsigned short> s_forcedModels;
+static bool s_propDirectDiagnosticsEnabled = false;
+
+void ReSTIR_EnableStaticPropDirectDiagnostics( bool enabled )
+{
+	s_propDirectDiagnosticsEnabled = enabled;
+}
 
 static bool ReadFile( const char *name, CUtlBuffer &buf )
 {
@@ -84,6 +94,10 @@ void ForceTextureShadowsOnModel( const char *name )
 	CleanModelName( name, clean, sizeof( clean ) );
 	if ( s_forcedModels.Find( clean ) == s_forcedModels.InvalidIndex() )
 		s_forcedModels.Insert( clean, 1 );
+}
+void ReSTIR_ClearForcedTextureShadows()
+{
+	s_forcedModels.RemoveAll();
 }
 bool IsModelTextureShadowsForced( const char *name )
 {
@@ -280,10 +294,126 @@ void CReSTIRStaticPropMgr::Shutdown()
 	}
 	m_Models.RemoveAll();
 	m_Props.PurgeAndDeleteElements();
+	m_Visibility[0].Clear();
+	m_Visibility[1].Clear();
+	m_VisibilityComplete[0] = m_VisibilityComplete[1] = false;
+	m_VisibilitySharedHDR = false;
 }
 int CReSTIRStaticPropMgr::Count() const
 {
 	return m_Props.Count();
+}
+const ReSTIRPropVisibilityData *CReSTIRStaticPropMgr::GetVisibility( bool hdr ) const
+{
+	const int mode = hdr ? 1 : 0;
+	if ( !m_VisibilityComplete[mode] )
+		return NULL;
+	return &m_Visibility[hdr && m_VisibilitySharedHDR ? 0 : mode];
+}
+const ReSTIRPropVisibilityData *ReSTIR_GetStaticPropVisibility( bool hdr )
+{
+	return g_ReSTIRStaticPropMgr.GetVisibility( hdr );
+}
+
+void ReSTIR_LogStaticPropDirectSummary( bool hdr )
+{
+	const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility( hdr );
+	if ( !data ) return;
+	for ( int propIndex = 0; propIndex < g_ReSTIRStaticPropMgr.m_Props.Count(); ++propIndex )
+	{
+		const CReSTIRStaticPropMgr::Prop &prop = *g_ReSTIRStaticPropMgr.m_Props[propIndex];
+		const CReSTIRStaticPropMgr::Model &model = *g_ReSTIRStaticPropMgr.m_Models[prop.lump.m_PropType];
+		const char *reason = !model.header || !model.vtx.Base() ? "missing model geometry" :
+			( prop.lump.m_Flags & STATIC_PROP_NO_PER_VERTEX_LIGHTING ) ? "NO_PER_VERTEX_LIGHTING" :
+			!( prop.lump.m_Flags & STATIC_PROP_NO_PER_TEXEL_LIGHTING ) ? "active pertexel lighting" : NULL;
+		if ( reason )
+			Msg( "VRAD ReSTIR: %s prop %d selected-local direct skipped: %s (full runtime local direct)\n",
+				hdr ? "HDR" : "LDR", propIndex, reason );
+	}
+	Msg( "VRAD ReSTIR: %s prop selected-local direct: %u eligible props, %u hardware meshes, %u fallback local/mesh pairs; skipped %u NO_PER_VERTEX, %u active pertexel, %u missing geometry\n",
+		hdr ? "HDR" : "LDR", data->directEligibleProps, data->directMeshes, data->directFallbackLights,
+		data->directNoVertexProps, data->directPerTexelProps, data->directMissingGeometryProps );
+}
+
+// Independent oracle inputs only: geometry is authored, source IDs are the
+// shared VHV scatter domain, and visibility is the quantized traced R8 plane.
+// Do not emit production direct RGB as the diagnostic's reference radiance.
+bool ReSTIR_WriteStaticPropDirectDiagnostics( const char *path, bool hdr )
+{
+	const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility( hdr );
+	if ( !data || ( data->props.Count() && !data->diagnosticsCaptured ) ||
+		data->diagnosticProps.Count() != data->props.Count() || data->diagnosticMeshes.Count() != data->meshes.Count() )
+	{
+		Warning( "VRAD ReSTIR: %s prop direct diagnostics were not captured\n", hdr ? "HDR" : "LDR" );
+		return false;
+	}
+	FILE *file = fopen( path, "wb" );
+	if ( !file )
+	{
+		Warning( "VRAD ReSTIR: cannot write prop direct diagnostics \"%s\"\n", path );
+		return false;
+	}
+	static const char *reasons[] = { "", "NO_PER_VERTEX_LIGHTING", "pertexel", "missing_geometry" };
+	fprintf( file, "{\"selectedLightCount\":%u,\"props\":[", data->selectedLightCount );
+	for ( int pi = 0; pi < data->props.Count(); ++pi )
+	{
+		const hlight::PropVisibilityDisk &prop = data->props[pi];
+		const ReSTIRPropDirectDiagnosticProp &diagnosticProp = data->diagnosticProps[pi];
+		fprintf( file, "%s{\"prop\":%u,\"flags\":%u,\"skipReason\":\"%s\",\"meshes\":[",
+			pi ? "," : "", prop.staticPropOrdinal, diagnosticProp.flags, reasons[diagnosticProp.skipReason] );
+		for ( uint32 mi = 0; mi < prop.meshCount; ++mi )
+		{
+			const int globalMesh = prop.firstMesh + mi;
+			const hlight::PropMeshVisibilityDisk &mesh = data->meshes[globalMesh];
+			const ReSTIRPropDirectDiagnosticMesh &diagnosticMesh = data->diagnosticMeshes[globalMesh];
+			fprintf( file, "%s{\"mesh\":%u,\"lod\":%u,\"vertexCount\":%u,\"sourceIndices\":[",
+				mi ? "," : "", mesh.meshOrdinal, mesh.lod, mesh.vertexCount );
+			for ( int vi = 0; vi < diagnosticMesh.vertexCount; ++vi )
+				fprintf( file, "%s%u", vi ? "," : "", data->diagnosticVertices[diagnosticMesh.firstVertex + vi].sourceIndex );
+			fprintf( file, "],\"positions\":[" );
+			for ( int vi = 0; vi < diagnosticMesh.vertexCount; ++vi )
+			{
+				const Vector &v = data->diagnosticVertices[diagnosticMesh.firstVertex + vi].position;
+				fprintf( file, "%s[%.9g,%.9g,%.9g]", vi ? "," : "", v.x, v.y, v.z );
+			}
+			fprintf( file, "],\"normals\":[" );
+			for ( int vi = 0; vi < diagnosticMesh.vertexCount; ++vi )
+			{
+				const Vector &v = data->diagnosticVertices[diagnosticMesh.firstVertex + vi].normal;
+				fprintf( file, "%s[%.9g,%.9g,%.9g]", vi ? "," : "", v.x, v.y, v.z );
+			}
+			const hlight::PropDirectDisk *direct = mesh.directPayloadBytes ?
+				reinterpret_cast<const hlight::PropDirectDisk *>( data->payload.Base() + mesh.directPayloadByteOffset ) : NULL;
+			fprintf( file, "],\"styles\":[" );
+			if ( direct )
+				for ( uint32 style = 0; style < direct->styleCount; ++style )
+					fprintf( file, "%s%u", style ? "," : "", direct->styles[style] );
+			fprintf( file, "],\"unbakedLightIndices\":[" );
+			if ( direct )
+			{
+				const uint32 *indices = reinterpret_cast<const uint32 *>( reinterpret_cast<const unsigned char *>( direct + 1 ) + direct->radianceBytes );
+				for ( uint32 li = 0; li < direct->unbakedLightCount; ++li )
+					fprintf( file, "%s%u", li ? "," : "", indices[li] );
+			}
+			fprintf( file, "],\"visibility\":[" );
+			for ( uint32 li = 0; li < mesh.entryCount; ++li )
+			{
+				const hlight::VisibilityEntryDisk &entry = data->entries[mesh.firstEntry + li];
+				fprintf( file, "%s{\"light\":%u,\"r8\":[", li ? "," : "", entry.selectedLightIndex );
+				for ( uint32 vi = 0; vi < mesh.vertexCount; ++vi )
+					fprintf( file, "%s%u", vi ? "," : "", data->payload[entry.payloadByteOffset + vi] );
+				fprintf( file, "]}" );
+			}
+			fprintf( file, "]}" );
+		}
+		fprintf( file, "]}" );
+	}
+	fprintf( file, "]}\n" );
+	const bool okay = !ferror( file );
+	const bool closed = fclose( file ) == 0;
+	if ( !okay || !closed )
+		Warning( "VRAD ReSTIR: failed writing prop direct diagnostics \"%s\"\n", path );
+	return okay && closed;
 }
 
 static void FillTriangle( ReSTIRGpuTriangle &t, const Vector &p0, const Vector &p1, const Vector &p2, const Vector2D &u0, const Vector2D &u1,
@@ -652,19 +782,268 @@ static bool InSolid( const Vector &p )
 	int leaf = PropPointLeafnum( p );
 	return leaf >= 0 && ( dleafs[leaf].contents & CONTENTS_SOLID ) != 0;
 }
-bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
+// FNV-1a-64 of exact authored origin.xyz, angles.xyz, lightingOrigin.xyz,
+// then the zero-extended uint32 prop flags, in little-endian byte order.
+// No struct padding, model-name matching or recovered position enters identity.
+static uint64 PropPoseIdentity( const StaticPropLump_t &prop )
+{
+	uint64 identity = 14695981039346656037ull;
+	const float values[9] = { prop.m_Origin.x, prop.m_Origin.y, prop.m_Origin.z,
+		prop.m_Angles.x, prop.m_Angles.y, prop.m_Angles.z,
+		prop.m_LightingOrigin.x, prop.m_LightingOrigin.y, prop.m_LightingOrigin.z };
+	for ( int i = 0; i < 10; ++i )
+	{
+		uint32 word = (uint32)prop.m_Flags;
+		if ( i < 9 )
+			memcpy( &word, &values[i], sizeof( word ) );
+		for ( int byte = 0; byte < 4; ++byte )
+		{
+			identity ^= ( word >> ( byte * 8 ) ) & 255u;
+			identity *= 1099511628211ull;
+		}
+	}
+	return identity;
+}
+
+// Same checked nearest-even binary16 policy as enhanced world radiance. Native
+// VHV quantization is deliberately not involved in this linear payload.
+static bool PropDirectHalf( float value, uint16 &out )
+{
+	if ( !ShadowMap_IsFiniteFloat( value ) || value < 0.0f || value > 65504.0f )
+		return false;
+	if ( value == 0.0f ) { out = 0; return true; }
+	uint32 bits;
+	memcpy( &bits, &value, sizeof( bits ) );
+	const int exponent = int( ( bits >> 23 ) & 255 ) - 127 + 15;
+	uint32 mantissa = bits & 0x7fffff;
+	if ( exponent <= 0 )
+	{
+		if ( exponent < -10 ) { out = 0; return true; }
+		mantissa |= 0x800000;
+		const int shift = 14 - exponent;
+		const uint32 truncated = mantissa >> shift;
+		const uint32 remainder = mantissa & ( ( 1u << shift ) - 1 );
+		const uint32 midpoint = 1u << ( shift - 1 );
+		out = uint16( truncated + ( remainder > midpoint || ( remainder == midpoint && ( truncated & 1 ) ) ) );
+	}
+	else
+	{
+		uint32 rounded = ( uint32( exponent ) << 10 ) + ( mantissa >> 13 );
+		const uint32 remainder = mantissa & 8191;
+		rounded += remainder > 4096 || ( remainder == 4096 && ( rounded & 1 ) );
+		if ( rounded >= 0x7c00 ) return false;
+		out = uint16( rounded );
+	}
+	return true;
+}
+
+static bool PropDirectRadianceValid( const Vector &value )
+{
+	return value.IsValid() && value.x >= 0.0f && value.y >= 0.0f && value.z >= 0.0f;
+}
+
+static bool AppendPropDirect( ReSTIRPropVisibilityData &visibility, hlight::PropMeshVisibilityDisk &mesh,
+	int propIndex, const ReSTIRScene &scene, const CUtlVector<int> &locals, const CUtlVector<int> &sourceIndices,
+	const CUtlVector<Vector> &positions, const CUtlVector<Vector> &normals, const CUtlVector<unsigned char> &originalVisibility )
+{
+	const int vertices = sourceIndices.Count();
+	const uint64 scratchCount = uint64( vertices ) * hlight::kPropDirectAngularPlanes;
+	const uint64 possibleStyles = MIN( uint64( hlight::kMaxStyles ), uint64( locals.Count() ) + 1 );
+	const uint64 totalCount = scratchCount * possibleStyles;
+	if ( totalCount * sizeof( Vector ) > INT_MAX )
+	{
+		Warning( "VRAD ReSTIR: prop %d mesh %u direct scratch exceeds signed byte capacity\n", propIndex, mesh.meshOrdinal );
+		return false;
+	}
+	CUtlVector<Vector> accumulated, contribution;
+	accumulated.EnsureCapacity( int( totalCount ) );
+	accumulated.SetCount( int( scratchCount ) );
+	if ( locals.Count() )
+	{
+		contribution.EnsureCapacity( int( scratchCount ) );
+		contribution.SetCount( int( scratchCount ) );
+	}
+	for ( int i = 0; i < accumulated.Count(); ++i )
+		accumulated[i].Init();
+	for ( int vi = 0; vi < vertices; ++vi )
+	{
+		const int source = sourceIndices[vi];
+		if ( source < 0 || source >= positions.Count() || source >= normals.Count() ||
+			!positions[source].IsValid() || !normals[source].IsValid() )
+		{
+			Warning( "VRAD ReSTIR: prop %d mesh %u vertex %d has invalid authored direct geometry\n", propIndex, mesh.meshOrdinal, vi );
+			return false;
+		}
+	}
+	hlight::PropDirectDisk direct = {};
+	direct.flags = hlight::kPropMeshHasBakedLocalDirect;
+	direct.styleCount = 1; // Style zero always fits, including no selected locals.
+	direct.styles[0] = 0;
+	for ( uint32 i = 1; i < hlight::kMaxStyles; ++i )
+		direct.styles[i] = 255;
+	direct.vertexCount = vertices;
+	direct.angularPlaneCount = hlight::kPropDirectAngularPlanes;
+	CUtlVector<uint32> unbaked;
+	for ( int li = 0; li < locals.Count(); ++li )
+	{
+		const ShadowMapLightDisk &light = scene.shadowLights[locals[li]];
+		bool contributes = false;
+		for ( int vi = 0; vi < vertices; ++vi )
+		{
+			const int source = sourceIndices[vi];
+			Vector L;
+			// Visibility may have a recovered origin; attenuation and angle must
+			// still evaluate at the unpushed, authored world-space vertex.
+			const Vector radiance = ReSTIR_BakedLocalRadiance( light, positions[source], L ) * ( 1.0f / 255.0f );
+			if ( !PropDirectRadianceValid( radiance ) || !L.IsValid() )
+			{
+				Warning( "VRAD ReSTIR: prop %d mesh %u light %d vertex %d has invalid direct radiance\n",
+					propIndex, mesh.meshOrdinal, locals[li], vi );
+				return false;
+			}
+			const float dot = DotProduct( normals[source], L );
+			if ( !ShadowMap_IsFiniteFloat( dot ) )
+			{
+				Warning( "VRAD ReSTIR: prop %d mesh %u light %d vertex %d has invalid direct angle\n",
+					propIndex, mesh.meshOrdinal, locals[li], vi );
+				return false;
+			}
+			const float lambert = clamp( dot, 0.0f, 1.0f );
+			const float half = clamp( dot * 0.5f + 0.5f, 0.0f, 1.0f );
+			const float bakedV = originalVisibility[li * positions.Count() + source] * ( 1.0f / 255.0f );
+			contribution[vi] = radiance * ( bakedV * lambert );
+			contribution[vertices + vi] = radiance * ( bakedV * half * half );
+			for ( uint32 plane = 0; plane < hlight::kPropDirectAngularPlanes; ++plane )
+			{
+				const Vector &value = contribution[plane * vertices + vi];
+				if ( !PropDirectRadianceValid( value ) || value.x > 65504.0f || value.y > 65504.0f || value.z > 65504.0f )
+				{
+					Warning( "VRAD ReSTIR: prop %d mesh %u light %d vertex %d plane %u direct RGB cannot be represented\n",
+						propIndex, mesh.meshOrdinal, locals[li], vi, plane );
+					return false;
+				}
+				contributes |= value.x > 0.0f || value.y > 0.0f || value.z > 0.0f;
+			}
+		}
+		if ( !contributes )
+			continue;
+		const int style = light.light.style;
+		if ( style < 0 || uint32( style ) >= hlight::kLightstyleCount )
+		{
+			Warning( "VRAD ReSTIR: prop %d mesh %u light %d has invalid direct style %d\n", propIndex, mesh.meshOrdinal, locals[li], style );
+			return false;
+		}
+		uint32 slot = 0;
+		while ( slot < direct.styleCount && direct.styles[slot] != uint32( style ) )
+			++slot;
+		if ( slot == direct.styleCount )
+		{
+			if ( direct.styleCount == hlight::kMaxStyles )
+			{
+				unbaked.AddToTail( uint32( locals[li] ) );
+				continue;
+			}
+			direct.styles[direct.styleCount++] = style;
+			const int oldCount = accumulated.Count();
+			accumulated.SetCount( direct.styleCount * int( scratchCount ) );
+			for ( int i = oldCount; i < accumulated.Count(); ++i )
+				accumulated[i].Init();
+		}
+		for ( int i = 0; i < contribution.Count(); ++i )
+			accumulated[slot * int( scratchCount ) + i] += contribution[i];
+	}
+	direct.radianceBytes = direct.styleCount * direct.angularPlaneCount * direct.vertexCount * 8;
+	direct.unbakedLightCount = unbaked.Count();
+	const uint64 bytes = sizeof( direct ) + uint64( direct.radianceBytes ) + uint64( unbaked.Count() ) * sizeof( uint32 );
+	const uint64 aligned = ( uint64( visibility.payload.Count() ) + 3 ) & ~uint64( 3 );
+	if ( !ReSTIR_EnsureByteCapacity( visibility.payload, aligned + bytes ) )
+	{
+		Warning( "VRAD ReSTIR: prop %d mesh %u direct payload exceeds signed byte capacity\n", propIndex, mesh.meshOrdinal );
+		return false;
+	}
+	const int oldBytes = visibility.payload.Count();
+	visibility.payload.SetCount( int( aligned + bytes ) );
+	memset( visibility.payload.Base() + oldBytes, 0, size_t( aligned - oldBytes ) );
+	memcpy( visibility.payload.Base() + aligned, &direct, sizeof( direct ) );
+	uint16 *pixels = reinterpret_cast<uint16 *>( visibility.payload.Base() + aligned + sizeof( direct ) );
+	for ( uint32 slot = 0; slot < direct.styleCount; ++slot )
+		for ( uint32 plane = 0; plane < direct.angularPlaneCount; ++plane )
+			for ( int vi = 0; vi < vertices; ++vi )
+			{
+				const int index = ( slot * direct.angularPlaneCount + plane ) * vertices + vi;
+				const Vector &rgb = accumulated[index];
+				if ( !PropDirectHalf( rgb.x, pixels[index * 4] ) || !PropDirectHalf( rgb.y, pixels[index * 4 + 1] ) ||
+					!PropDirectHalf( rgb.z, pixels[index * 4 + 2] ) )
+				{
+					Warning( "VRAD ReSTIR: prop %d mesh %u style %u vertex %d plane %u direct RGB (%g,%g,%g) cannot be encoded\n",
+						propIndex, mesh.meshOrdinal, direct.styles[slot], vi, plane, rgb.x, rgb.y, rgb.z );
+					return false;
+				}
+				pixels[index * 4 + 3] = 0;
+			}
+	if ( unbaked.Count() )
+		memcpy( reinterpret_cast<unsigned char *>( pixels ) + direct.radianceBytes, unbaked.Base(), unbaked.Count() * sizeof( uint32 ) );
+	mesh.directPayloadByteOffset = uint32( aligned );
+	mesh.directPayloadBytes = uint32( bytes );
+	++visibility.directMeshes;
+	visibility.directFallbackLights += unbaked.Count();
+	return true;
+}
+
+bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReSTIRScene &scene, CReSTIRVulkanDevice &device, bool rgbLighting, bool enhancedLighting )
 {
 	// Port: vradstaticprops.cpp:1311-1505 and 2285-2450. Point records are
 	// submitted as one fixed batch; style 0 is direct + indirect.
 	Model &model = *m_Models[prop.lump.m_PropType];
 	studiohdr_t *hdr = model.header;
 	OptimizedModel::FileHeader_t *vtx = (OptimizedModel::FileHeader_t *)model.vtx.Base();
+	ReSTIRPropVisibilityData &visibility = m_Visibility[g_bHDR ? 1 : 0];
+	const bool withVertex = rgbLighting && !( prop.lump.m_Flags & STATIC_PROP_NO_PER_VERTEX_LIGHTING );
+	const bool withTexel = rgbLighting && !( prop.lump.m_Flags & STATIC_PROP_NO_PER_TEXEL_LIGHTING );
+	const int directSkipReason = !hdr || !vtx ? 3 :
+		( prop.lump.m_Flags & STATIC_PROP_NO_PER_VERTEX_LIGHTING ) ? 1 : withTexel ? 2 : 0;
+	const bool withDirect = enhancedLighting && directSkipReason == 0;
+	if ( enhancedLighting )
+	{
+		if ( directSkipReason == 1 ) ++visibility.directNoVertexProps;
+		else if ( directSkipReason == 2 ) ++visibility.directPerTexelProps;
+		else if ( directSkipReason == 3 ) ++visibility.directMissingGeometryProps;
+		else ++visibility.directEligibleProps;
+	}
+	if ( s_propDirectDiagnosticsEnabled )
+	{
+		visibility.diagnosticsCaptured = true;
+		ReSTIRPropDirectDiagnosticProp diagnostic = { uint32( prop.lump.m_Flags ), directSkipReason };
+		visibility.diagnosticProps.AddToTail( diagnostic );
+	}
+	CUtlVector<int> localLightIndices;
+	for ( int i = 0; i < scene.shadowLights.Count(); ++i )
+		if ( scene.shadowLights[i].light.type != emit_skylight )
+			localLightIndices.AddToTail( i );
 	if ( !hdr || !vtx )
-		return true;	// model failed to load (warned in UnserializeModelDict); VRAD skips such props too
-	bool withVertex = !( prop.lump.m_Flags & STATIC_PROP_NO_PER_VERTEX_LIGHTING );
-	bool withTexel = !( prop.lump.m_Flags & STATIC_PROP_NO_PER_TEXEL_LIGHTING );
-	if ( !withVertex && !withTexel )
+	{
+		if ( localLightIndices.Count() )
+		{
+			Warning( "VRAD ReSTIR: prop %d has no model geometry for required local visibility\n", propIndex );
+			return false;
+		}
+		hlight::PropVisibilityDisk directory = {};
+		directory.staticPropOrdinal = propIndex;
+		directory.firstMesh = visibility.meshes.Count();
+		directory.poseIdentity = PropPoseIdentity( prop.lump );
+		visibility.props.AddToTail( directory );
 		return true;
+	}
+	if ( !withVertex && !withTexel && !withDirect && !localLightIndices.Count() )
+	{
+		hlight::PropVisibilityDisk directory = {};
+		directory.staticPropOrdinal = propIndex;
+		directory.modelChecksum = hdr->checksum;
+		directory.firstMesh = visibility.meshes.Count();
+		directory.poseIdentity = PropPoseIdentity( prop.lump );
+		visibility.props.AddToTail( directory );
+		return true;
+	}
 	matrix3x4_t matPos, matNormal;
 	AngleMatrix( prop.lump.m_Angles, prop.lump.m_Origin, matPos );
 	AngleMatrix( prop.lump.m_Angles, matNormal );
@@ -673,6 +1052,7 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 	const unsigned int pointFlags =
 		( skip >= 0 ? RESTIR_POINT_NO_SELF_SHADOW : 0 ) | ( ( prop.lump.m_Flags & STATIC_PROP_IGNORE_NORMALS ) ? RESTIR_POINT_IGNORE_NORMALS : 0 );
 	CUtlVector<ReSTIRGpuPointQuery> queries;
+	CUtlVector<ReSTIRGpuVisibilityQuery> visibilityQueries;
 	CUtlVector<int> queryIndex;
 	CUtlVector<Vector> vertexColors;
 	CUtlVector<Vector> vertexPositions;
@@ -680,13 +1060,18 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 	CUtlVector<unsigned char> vertexBad;
 	CUtlVector<int> modelStarts;
 	CUtlVector<int> modelCounts;
-	for ( int body = 0; body < hdr->numbodyparts; ++body )
+	for ( int body = 0; ( withVertex || withDirect || localLightIndices.Count() ) && body < hdr->numbodyparts; ++body )
 	{
 		mstudiobodyparts_t *bp = hdr->pBodypart( body );
 		for ( int mid = 0; mid < bp->nummodels; ++mid )
 		{
 			mstudiomodel_t *sm = bp->pModel( mid );
 			const mstudio_meshvertexdata_t *vd = sm->nummeshes ? sm->pMesh( 0 )->GetVertexData( (void *)&model ) : NULL;
+			if ( ( localLightIndices.Count() || withDirect ) && sm->numvertices && !vd )
+			{
+				Warning( "VRAD ReSTIR: prop %d model has no vertex data for required local visibility\n", propIndex );
+				return false;
+			}
 			modelStarts.AddToTail( vertexPositions.Count() );
 			modelCounts.AddToTail( sm->numvertices );
 			for ( int vi = 0; vi < sm->numvertices; ++vi )
@@ -695,30 +1080,55 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 				if ( vd )
 				{
 					VectorTransform( *vd->Position( vi ), matPos, p );
-					VectorTransform( *vd->Normal( vi ), matNormal, n );
-					VectorNormalize( n );
+					if ( withVertex || withDirect )
+					{
+						VectorTransform( *vd->Normal( vi ), matNormal, n );
+						VectorNormalize( n );
+					}
 				}
-				bool bad = InSolid( p );
+				bool bad = !p.IsValid() || InSolid( p );
 				vertexPositions.AddToTail( p );
-				vertexNormals.AddToTail( n );
+				if ( withVertex || withDirect )
+					vertexNormals.AddToTail( n );
 				vertexBad.AddToTail( bad ? 1 : 0 );
-				ReSTIRGpuPointQuery q;
-				memset( &q, 0, sizeof( q ) );
-				q.position[0] = p.x;
-				q.position[1] = p.y;
-				q.position[2] = p.z;
-				q.normal[0] = n.x;
-				q.normal[1] = n.y;
-				q.normal[2] = n.z;
-				q.flags = pointFlags;
-				q.skipHitId = skip >= 0 ? RESTIR_TRACE_ID_STATICPROP | (unsigned int)skip : 0;
-				queryIndex.AddToTail( bad ? -1 : queries.AddToTail( q ) );
-				vertexColors.AddToTail( vec3_origin );
+				if ( localLightIndices.Count() )
+				{
+					ReSTIRGpuVisibilityQuery vq = {};
+					vq.position[0] = bad ? 0.0f : p.x;
+					vq.position[1] = bad ? 0.0f : p.y;
+					vq.position[2] = bad ? 0.0f : p.z;
+					vq.position[3] = bad ? 0.0f : 1.0f;
+					vq.flags = skip >= 0 ? RESTIR_VISIBILITY_NO_SELF_SHADOW : 0;
+					vq.skipHitId = skip >= 0 ? RESTIR_TRACE_ID_STATICPROP | (unsigned int)skip : 0;
+					visibilityQueries.AddToTail( vq );
+				}
+				if ( withVertex )
+				{
+					int index = -1;
+					if ( !bad )
+					{
+						ReSTIRGpuPointQuery q = {};
+						q.position[0] = p.x;
+						q.position[1] = p.y;
+						q.position[2] = p.z;
+						q.normal[0] = n.x;
+						q.normal[1] = n.y;
+						q.normal[2] = n.z;
+						q.flags = pointFlags;
+						q.skipHitId = skip >= 0 ? RESTIR_TRACE_ID_STATICPROP | (unsigned int)skip : 0;
+						index = queries.AddToTail( q );
+					}
+					queryIndex.AddToTail( index );
+					vertexColors.AddToTail( vec3_origin );
+				}
 			}
 		}
 	}
-	m_nVerticesLit += queries.Count();
-	m_nVerticesInSolid += vertexBad.Count() - queries.Count();
+	if ( withVertex )
+	{
+		m_nVerticesLit += queries.Count();
+		m_nVerticesInSolid += vertexBad.Count() - queries.Count();
+	}
 	CUtlVector<ReSTIRGpuPointResult> results;
 	if ( queries.Count() && !device.LightPoints( queries, results ) )
 		return false;
@@ -760,6 +1170,10 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 						continue;
 					best = vertexPositions[start + bestIndex];
 				}
+				// A solid/invalid lighting origin cannot recover a receiver. Leave
+				// its visibility query at w=0, which is explicitly blocked.
+				if ( !best.IsValid() || InSolid( best ) || !vertexPositions[start + i].IsValid() )
+					continue;
 				Vector mid;
 				int iterations = 20;
 				while ( --iterations > 0 )
@@ -769,6 +1183,16 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 						break;
 					best = mid;
 				}
+				if ( localLightIndices.Count() )
+				{
+					ReSTIRGpuVisibilityQuery &vq = visibilityQueries[start + i];
+					vq.position[0] = best.x;
+					vq.position[1] = best.y;
+					vq.position[2] = best.z;
+					vq.position[3] = 1.0f;
+				}
+				if ( !withVertex )
+					continue;
 				ReSTIRGpuPointQuery q;
 				memset( &q, 0, sizeof( q ) );
 				q.position[0] = best.x;
@@ -777,6 +1201,8 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 				q.normal[0] = vertexNormals[start + i].x;
 				q.normal[1] = vertexNormals[start + i].y;
 				q.normal[2] = vertexNormals[start + i].z;
+				q.flags = pointFlags;
+				q.skipHitId = skip >= 0 ? RESTIR_TRACE_ID_STATICPROP | (unsigned int)skip : 0;
 				badVertexIndices.AddToTail( start + i );
 				badQueries.AddToTail( q );
 			}
@@ -792,6 +1218,38 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 			vertexColors[badVertexIndices[i]] = Vector( r.direct[0] + r.indirect[0], r.direct[1] + r.indirect[1], r.direct[2] + r.indirect[2] );
 		}
 	}
+	// Trace independently of vertex/texel RGB and keep one original-vertex
+	// plane per canonical local. Invalid unrecovered queries stay blocked.
+	CUtlVector<unsigned char> originalVisibility;
+	const uint64 originalSampleCount = (uint64)localLightIndices.Count() * visibilityQueries.Count();
+	if ( !ReSTIR_EnsureByteCapacity( originalVisibility, originalSampleCount ) )
+	{
+		Warning( "VRAD ReSTIR: prop %d original visibility exceeds signed byte capacity\n", propIndex );
+		return false;
+	}
+	originalVisibility.SetCount( (int)originalSampleCount );
+	CUtlVector<float> values;
+	for ( int li = 0; li < localLightIndices.Count(); ++li )
+	{
+		for ( int vi = 0; vi < visibilityQueries.Count(); ++vi )
+			visibilityQueries[vi].selectedLightIndex = localLightIndices[li];
+		if ( visibilityQueries.Count() && !device.ComputeLocalVisibility( visibilityQueries, values ) )
+			return false;
+		if ( values.Count() != visibilityQueries.Count() )
+			return false;
+		for ( int vi = 0; vi < values.Count(); ++vi )
+		{
+			if ( !ShadowMap_IsFiniteFloat( values[vi] ) || values[vi] < 0.0f || values[vi] > 1.0f )
+				return false;
+			originalVisibility[li * visibilityQueries.Count() + vi] =
+				visibilityQueries[vi].position[3] == 0.0f ? 0 : (unsigned char)( values[vi] * 255.0f + 0.5f );
+		}
+	}
+	hlight::PropVisibilityDisk directory = {};
+	directory.staticPropOrdinal = propIndex;
+	directory.modelChecksum = hdr->checksum;
+	directory.firstMesh = visibility.meshes.Count();
+	directory.poseIdentity = PropPoseIdentity( prop.lump );
 	int base = 0;
 	for ( int body = 0; body < hdr->numbodyparts; ++body )
 	{
@@ -810,15 +1268,84 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 					for ( int group = 0; group < mesh->numStripGroups; ++group )
 					{
 						OptimizedModel::StripGroupHeader_t *sg = mesh->pStripGroup( group );
-						MeshLighting *out = new MeshLighting;
-						out->lod = lodNo;
+						MeshLighting *out = withVertex || withTexel ? new MeshLighting : NULL;
+						if ( out )
+							out->lod = lodNo;
+						const int meshVertexOffset = sm->pMesh( meshId )->vertexoffset;
+						CUtlVector<int> sourceIndices;
+						sourceIndices.SetCount( sg->numVerts );
+						CRC32_t orderCRC;
+						CRC32_Init( &orderCRC );
+						for ( int vi = 0; vi < sg->numVerts; ++vi )
+						{
+							const int meshVertex = meshVertexOffset + sg->pVertex( vi )->origMeshVertID;
+							if ( meshVertex < 0 || meshVertex >= sm->numvertices )
+							{
+								delete out;
+								return false;
+							}
+							sourceIndices[vi] = base + meshVertex;
+							// CRC of uint32 flattened original-vertex indices in
+							// the exact serialized hardware/VHV vertex order.
+							const uint32 source = sourceIndices[vi];
+							CRC32_ProcessBuffer( &orderCRC, &source, sizeof( source ) );
+						}
+						CRC32_Final( &orderCRC );
+						hlight::PropMeshVisibilityDisk meshDirectory = {};
+						meshDirectory.meshOrdinal = visibility.meshes.Count() - directory.firstMesh;
+						meshDirectory.lod = lodNo;
+						meshDirectory.vertexCount = sg->numVerts;
+						meshDirectory.firstEntry = visibility.entries.Count();
+						meshDirectory.vertexOrderCRC32 = orderCRC;
+						for ( int li = 0; li < localLightIndices.Count() && sg->numVerts; ++li )
+						{
+							const uint64 aligned = ( (uint64)visibility.payload.Count() + 3u ) & ~3ull;
+							if ( !ReSTIR_EnsureByteCapacity( visibility.payload, aligned + uint64( sg->numVerts ) ) )
+							{
+								delete out;
+								return false;
+							}
+							const int oldBytes = visibility.payload.Count();
+							visibility.payload.SetCount( (int)aligned + sg->numVerts );
+							for ( int pad = oldBytes; pad < (int)aligned; ++pad )
+								visibility.payload[pad] = 0;
+							hlight::VisibilityEntryDisk entry = {};
+							entry.selectedLightIndex = localLightIndices[li];
+							entry.encoding = hlight::kVisibilityDense;
+							entry.payloadByteOffset = (uint32)aligned;
+							entry.sampleCount = sg->numVerts;
+							visibility.entries.AddToTail( entry );
+							for ( int vi = 0; vi < sg->numVerts; ++vi )
+								visibility.payload[(int)aligned + vi] =
+									originalVisibility[li * visibilityQueries.Count() + sourceIndices[vi]];
+							++meshDirectory.entryCount;
+						}
+						if ( withDirect && !AppendPropDirect( visibility, meshDirectory, propIndex, scene, localLightIndices,
+							sourceIndices, vertexPositions, vertexNormals, originalVisibility ) )
+						{
+							delete out;
+							return false;
+						}
+						if ( s_propDirectDiagnosticsEnabled )
+						{
+							ReSTIRPropDirectDiagnosticMesh diagnosticMesh = { visibility.diagnosticVertices.Count(), withDirect ? sg->numVerts : 0 };
+							visibility.diagnosticMeshes.AddToTail( diagnosticMesh );
+							if ( withDirect )
+								for ( int vi = 0; vi < sourceIndices.Count(); ++vi )
+								{
+									const int source = sourceIndices[vi];
+									ReSTIRPropDirectDiagnosticVertex diagnosticVertex = { uint32( source ), vertexPositions[source], vertexNormals[source] };
+									visibility.diagnosticVertices.AddToTail( diagnosticVertex );
+								}
+						}
+						visibility.meshes.AddToTail( meshDirectory );
 						if ( withVertex )
 						{
 							// vradstaticprops.cpp:1260: origMeshVertID is mesh-relative; add the mesh's vertexoffset.
-							const int meshVertexOffset = sm->pMesh( meshId )->vertexoffset;
+							// Share the exact original-vertex mapping with visibility.
 							out->colors.SetCount( sg->numVerts );
 							for ( int vi = 0; vi < sg->numVerts; ++vi )
-								out->colors[vi] = vertexColors[base + meshVertexOffset + sg->pVertex( vi )->origMeshVertID];
+								out->colors[vi] = vertexColors[sourceIndices[vi]];
 						}
 						if ( withTexel )
 						{
@@ -976,13 +1503,16 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 								mipHeight = nextHeight;
 							}
 						}
-						prop.meshes.AddToTail( out );
+						if ( out )
+							prop.meshes.AddToTail( out );
 					}
 				}
 			}
 			base += sm->numvertices;
 		}
 	}
+	directory.meshCount = visibility.meshes.Count() - directory.firstMesh;
+	visibility.props.AddToTail( directory );
 	return true;
 }
 static unsigned char *AlignData( unsigned char *p, unsigned char *base )

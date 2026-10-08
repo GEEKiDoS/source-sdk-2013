@@ -10,6 +10,7 @@
 
 #include "native_cbuffer_dx12.h"
 #include "shaderapi/ishaderapidx12lighting.h"
+#include "shaderapi/dx12staticpropvisibility.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -148,7 +149,7 @@ static constexpr EngineCBufferMemberDX12 kDX12MotionVSMembers[] = {
 // validated by the packer and the runtime against these layouts; the CPU structs live in
 // public/shaderapi/ishaderapidx12lighting.h and the HLSL twins in hlsl/common/dx12_engine_cbuffers.h.
 static_assert( sizeof( DX12LightingViewConstantsV1 ) == 672, "DX12LightingViewConstantsV1 size" );
-static_assert( sizeof( RuntimeShadowLightGpu ) == 592, "RuntimeShadowLightGpu size" );
+static_assert( sizeof( RuntimeShadowLightGpu ) == 608, "RuntimeShadowLightGpu size" );
 static constexpr EngineCBufferMemberDX12 kDX12LightingViewConstantsV1Members[] = {
     DX12_ENGINE_MEMBER( DX12LightingViewConstantsV1, cShadowView0, 0 ),
     DX12_ENGINE_MEMBER( DX12LightingViewConstantsV1, cShadowView1, 16 ),
@@ -167,6 +168,17 @@ static constexpr EngineCBufferMemberDX12 kDX12LightingViewConstantsV1Members[] =
     DX12_ENGINE_MEMBER( DX12LightingViewConstantsV1, cCascadeRects, 576 ),
     DX12_ENGINE_MEMBER( DX12LightingViewConstantsV1, cStaticSunRect, 640 ),
     DX12_ENGINE_MEMBER( DX12LightingViewConstantsV1, cSunIdentity, 656 ),
+};
+static_assert( sizeof( DX12StaticPropDrawConstants ) == 96 && offsetof( DX12StaticPropDrawConstants, modelToWorld ) == 16 &&
+	offsetof( DX12StaticPropDrawConstants, direct ) == 64 && offsetof( DX12StaticPropDrawConstants, styles ) == 80,
+	"DX12StaticPropDrawConstants layout" );
+static_assert( sizeof( DX12StaticPropTriangleGpu ) == 64 && offsetof( DX12StaticPropTriangleGpu, positions ) == 16,
+	"DX12StaticPropTriangleGpu layout" );
+static constexpr EngineCBufferMemberDX12 kDX12StaticPropDrawConstantsMembers[] = {
+	{ "cPropDraw", 0, sizeof( ((DX12StaticPropDrawConstants *)0)->entriesAndTriangles ) },
+	{ "cPropModelToWorld", 16, sizeof( ((DX12StaticPropDrawConstants *)0)->modelToWorld ) },
+	{ "cPropDirect", 64, sizeof( ((DX12StaticPropDrawConstants *)0)->direct ) },
+	{ "cPropStyles", 80, sizeof( ((DX12StaticPropDrawConstants *)0)->styles ) },
 };
 // ABI 4 explicit highres per-draw block, b0 space3. Styles are packed four per HLSL row.
 struct alignas(16) DX12HighresDrawConstants
@@ -194,6 +206,7 @@ static constexpr EngineCBufferLayoutDX12 kEngineCBufferLayouts[] = {
 // Space-2 lighting block (pixel stage). shaderRegister is the register inside DX12_LIGHTING_REGISTER_SPACE.
 static constexpr EngineCBufferLayoutDX12 kLightingCBufferLayouts[] = {
     { "DX12LightingViewConstantsV1", kStagePixel, DX12_LIGHTING_B_VIEW, sizeof( DX12LightingViewConstantsV1 ), sizeof( kDX12LightingViewConstantsV1Members ) / sizeof( *kDX12LightingViewConstantsV1Members ), kDX12LightingViewConstantsV1Members },
+	{ "DX12StaticPropDrawConstants", kStagePixel, DX12_LIGHTING_B_PROP_DRAW, sizeof( DX12StaticPropDrawConstants ), sizeof( kDX12StaticPropDrawConstantsMembers ) / sizeof( *kDX12StaticPropDrawConstantsMembers ), kDX12StaticPropDrawConstantsMembers },
 };
 // RuntimeShadowLightGpu (StructuredBuffer at t1026 space2) member table for reflection validation (packer + runtime).
 // valueClass / scalarType use the D3D_SHADER_VARIABLE_CLASS / D3D_SHADER_VARIABLE_TYPE numeric values
@@ -234,7 +247,16 @@ static constexpr LightingStructuredMemberDX12 kRuntimeShadowLightGpuMembers[] = 
     { "tanRenderedHalfFov", 108, DX12_LSM_SCALAR, DX12_LST_FLOAT, 1, 1, 0 },
     { "worldToClip", 112, DX12_LSM_MATRIX_ROWS, DX12_LST_FLOAT, 4, 4, 6 },
     { "faces", 496, DX12_LSM_VECTOR, DX12_LST_UINT, 1, 4, 6 },
+    { "realtimeWeight", 592, DX12_LSM_SCALAR, DX12_LST_FLOAT, 1, 1, 0 },
+    { "visibilityFlags", 596, DX12_LSM_SCALAR, DX12_LST_UINT, 1, 1, 0 },
+    { "bakedLightIndex", 600, DX12_LSM_SCALAR, DX12_LST_UINT, 1, 1, 0 },
+    { "reserved0", 604, DX12_LSM_SCALAR, DX12_LST_UINT, 1, 1, 0 },
 };
-static_assert( offsetof( RuntimeShadowLightGpu, worldToClip ) == 112 && offsetof( RuntimeShadowLightGpu, faces ) == 496, "RuntimeShadowLightGpu layout" );
+static constexpr LightingStructuredMemberDX12 kDX12StaticPropTriangleGpuMembers[] = {
+	{ "vertexIndices", 0, DX12_LSM_VECTOR, DX12_LST_UINT, 1, 4, 0 },
+	{ "positions", 16, DX12_LSM_VECTOR, DX12_LST_FLOAT, 1, 4, 3 },
+};
+static_assert( offsetof( RuntimeShadowLightGpu, worldToClip ) == 112 && offsetof( RuntimeShadowLightGpu, faces ) == 496 &&
+	offsetof( RuntimeShadowLightGpu, realtimeWeight ) == 592 && offsetof( RuntimeShadowLightGpu, reserved0 ) == 604, "RuntimeShadowLightGpu layout" );
 } // namespace dx12native
 #endif

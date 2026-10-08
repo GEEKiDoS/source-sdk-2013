@@ -182,6 +182,11 @@ private:
 	void ValidateShadowCasters( const ShadowCasterVolume_t &volume );
 	void BeginShadowCasterQuery( const ShadowCasterVolume_t &volume );
 	void EmitShadowCasters( IShadowCasterSink &sink );
+	void InvalidateShadowCasterQuery()
+	{
+		if ( ++m_ShadowCasterGeneration==0 ) ++m_ShadowCasterGeneration;
+		m_CachedShadowCasterFrame=-1;
+	}
 
 	class CShadowCasterLeafEnumerator : public ISpatialLeafEnumerator
 	{
@@ -356,6 +361,14 @@ private:
 	// Authored sprp flags keyed by the engine's stable public collideable identity.
 	CUtlMap< ICollideable *, bool, int >	m_ShadowStaticPropPolicy;
 	uint64								m_ShadowCasterQueryStamp;
+	// Retain every first-visited registration, including ineligible casters.
+	// Reuse only spatial traversal: eligibility, live bounds and sink content
+	// are evaluated again, since materials/opacity need not relink a handle.
+	CUtlVector< ClientRenderHandle_t >	m_ShadowCasterCandidates;
+	uint64								m_ShadowCasterGeneration, m_CachedShadowCasterGeneration;
+	int									m_CachedShadowCasterFrame;
+	ShadowCasterVolume_t				m_CachedShadowCasterVolume;
+	bool								m_bRecordShadowCasterCandidates;
 
 	// List of renderables in view model render groups
 	CUtlVector< ClientRenderHandle_t >	m_ViewModels;
@@ -480,7 +493,9 @@ void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *pRenderable, Vector &
 //-----------------------------------------------------------------------------
 // constructor, destructor
 //-----------------------------------------------------------------------------
-CClientLeafSystem::CClientLeafSystem() : m_ShadowStaticPropPolicy( DefLessFunc( ICollideable * ) ), m_ShadowCasterQueryStamp(0), m_DrawStaticProps(true), m_DrawSmallObjects(true)
+CClientLeafSystem::CClientLeafSystem() : m_ShadowStaticPropPolicy( DefLessFunc( ICollideable * ) ), m_ShadowCasterQueryStamp(0),
+	m_ShadowCasterGeneration(0), m_CachedShadowCasterGeneration(0), m_CachedShadowCasterFrame(-1), m_bRecordShadowCasterCandidates(false),
+	m_DrawStaticProps(true), m_DrawSmallObjects(true)
 {
 	// Set up the bi-directional lists...
 	m_RenderablesInLeaf.Init( FirstRenderableInLeaf, FirstLeafInRenderable );
@@ -577,6 +592,7 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 		if ( !pProp || pProp != props[i] || m_ShadowStaticPropPolicy.Find( pProp ) != m_ShadowStaticPropPolicy.InvalidIndex() )
 			return SHADOWMAP_ERR_INVALID_METADATA ": public static-prop caster identity mismatch";
 		m_ShadowStaticPropPolicy.Insert( pProp, ( prop.m_Flags & STATIC_PROP_NO_SHADOW ) == 0 );
+		ShadowMapsDX12_RegisterStaticPropReceiver( i, pProp, prop );
 	}
 	return NULL;
 }
@@ -625,6 +641,7 @@ void CClientLeafSystem::LevelInitPreEntity()
 	m_UnlinkedShadowCasters.EnsureCapacity( 1024 );
 	m_ShadowCasters[0].EnsureCapacity( 1024 );
 	m_ShadowCasters[1].EnsureCapacity( 1024 );
+	m_ShadowCasterCandidates.EnsureCapacity( 1024 );
 
 	// Add all the leaves we'll need
 	int leafCount = engine->LevelLeafCount();
@@ -676,6 +693,9 @@ void CClientLeafSystem::LevelShutdownPostEntity()
 	m_ShadowCasterMaterials.Purge();
 	m_ShadowStaticPropPolicy.Purge();
 	m_ShadowCasterQueryStamp = 0;
+	m_ShadowCasterCandidates.Purge();
+	InvalidateShadowCasterQuery();
+	m_bRecordShadowCasterCandidates=false;
 }
 
 
@@ -763,6 +783,8 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 {
 	Assert( pRenderable );
 	Assert( pRenderable->RenderHandle() == INVALID_CLIENT_RENDER_HANDLE );
+	InvalidateShadowCasterQuery();
+	ShadowMapsDX12_InvalidateCasterRegistration( pRenderable );
 
 	ClientRenderHandle_t handle = m_Renderables.AddToTail();
 	RenderableInfo_t &info = m_Renderables[handle];
@@ -808,6 +830,7 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 		m_UnlinkedShadowCasters.EnsureCapacity( nCapacity );
 		m_ShadowCasters[0].EnsureCapacity( nCapacity );
 		m_ShadowCasters[1].EnsureCapacity( nCapacity );
+		m_ShadowCasterCandidates.EnsureCapacity( nCapacity );
 	}
 	UpdateUnlinkedShadowCaster( handle );
 }
@@ -855,6 +878,11 @@ void CClientLeafSystem::CreateRenderableHandle( IClientRenderable* pRenderable, 
 void CClientLeafSystem::ChangeRenderableRenderGroup( ClientRenderHandle_t handle, RenderGroup_t group )
 {
 	RenderableInfo_t &info = m_Renderables[handle];
+	if ( info.m_RenderGroup!=(unsigned char)group )
+	{
+		InvalidateShadowCasterQuery();
+		ShadowMapsDX12_InvalidateCasterRegistration( info.m_pRenderable );
+	}
 	info.m_RenderGroup = (unsigned char)group;
 }
 
@@ -901,6 +929,8 @@ void CClientLeafSystem::RemoveRenderable( ClientRenderHandle_t handle )
 	// This can happen upon level shutdown
 	if (!m_Renderables.IsValidIndex(handle))
 		return;
+	InvalidateShadowCasterQuery();
+	ShadowMapsDX12_InvalidateCasterRegistration( m_Renderables[handle].m_pRenderable );
 
 	// Invalidate both the last observed bounds and the current bounds before unlinking.
 	UpdateShadowCasterBounds( handle );
@@ -1288,6 +1318,7 @@ void CClientLeafSystem::EnumerateShadowsInLeaves( int leafCount, LeafIndex_t* pL
 //-----------------------------------------------------------------------------
 void CClientLeafSystem::AddRenderableToLeaf( int leaf, ClientRenderHandle_t renderable )
 {
+	InvalidateShadowCasterQuery();
 #ifdef VALIDATE_CLIENT_LEAF_SYSTEM
 	m_RenderablesInLeaf.ValidateAddElementToBucket( leaf, renderable );
 #endif
@@ -1436,6 +1467,7 @@ void CClientLeafSystem::InsertIntoTree( ClientRenderHandle_t &handle )
 //-----------------------------------------------------------------------------
 void CClientLeafSystem::RemoveFromTree( ClientRenderHandle_t handle )
 {
+	InvalidateShadowCasterQuery();
 	m_RenderablesInLeaf.RemoveElement( handle );
 	UpdateUnlinkedShadowCaster( handle );
 
@@ -1465,6 +1497,7 @@ void CClientLeafSystem::RenderableChanged( ClientRenderHandle_t handle )
 	Assert( m_Renderables.IsValidIndex( handle ) );
 	if ( !m_Renderables.IsValidIndex( handle ) )
 		return;
+	InvalidateShadowCasterQuery();
 
 	if ( (m_Renderables[handle].m_Flags & RENDER_FLAGS_HASCHANGED ) == 0 )
 	{
@@ -1500,6 +1533,7 @@ void CClientLeafSystem::RemoveUnlinkedShadowCaster( ClientRenderHandle_t handle 
 		m_Renderables[tail].m_UnlinkedShadowCasterIndex = index;
 	}
 	info.m_UnlinkedShadowCasterIndex = -1;
+	InvalidateShadowCasterQuery();
 }
 
 void CClientLeafSystem::UpdateUnlinkedShadowCaster( ClientRenderHandle_t handle )
@@ -1512,6 +1546,7 @@ void CClientLeafSystem::UpdateUnlinkedShadowCaster( ClientRenderHandle_t handle 
 	else if ( info.m_UnlinkedShadowCasterIndex < 0 )
 	{
 		info.m_UnlinkedShadowCasterIndex = m_UnlinkedShadowCasters.AddToTail( handle );
+		InvalidateShadowCasterQuery();
 	}
 }
 
@@ -1543,6 +1578,7 @@ void CClientLeafSystem::RecordShadowCasterBounds( ClientRenderHandle_t handle, c
 {
 	if ( !ShadowMapsDX12_Active() )
 		return;
+	InvalidateShadowCasterQuery();
 
 	RenderableInfo_t &info = m_Renderables[handle];
 	Vector oldMins = info.m_bShadowCasterBoundsValid ? info.m_ShadowCasterMins : mins;
@@ -1552,7 +1588,7 @@ void CClientLeafSystem::RecordShadowCasterBounds( ClientRenderHandle_t handle, c
 	info.m_bShadowCasterBoundsValid = true;
 	// Deliberately notify even for identical bounds: animation/alpha changes can
 	// alter a silhouette without altering the root's bounding box.
-	ShadowMapsDX12_OnCasterMoved( oldMins, oldMaxs, mins, maxs );
+	ShadowMapsDX12_OnCasterMoved( info.m_pRenderable, oldMins, oldMaxs, mins, maxs );
 }
 
 bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
@@ -1654,6 +1690,7 @@ void CClientLeafSystem::CollectShadowCaster( ClientRenderHandle_t handle, const 
 	if ( m_Renderables[handle].m_ShadowCasterTestStamp == m_ShadowCasterQueryStamp )
 		return;
 	m_Renderables[handle].m_ShadowCasterTestStamp = m_ShadowCasterQueryStamp;
+	if ( m_bRecordShadowCasterCandidates ) m_ShadowCasterCandidates.AddToTail( handle );
 	if ( !IsEligibleShadowCaster( handle ) )
 		return;
 
@@ -1719,26 +1756,71 @@ void CClientLeafSystem::EnumerateShadowCasters( const ShadowCasterVolume_t &volu
 {
 	VPROF_BUDGET( "EnumerateShadowCasters", VPROF_BUDGETGROUP_SHADOW_DEPTH_TEXTURING );
 
-	BeginShadowCasterQuery( volume );
-	CShadowCasterLeafEnumerator enumerator( *this, volume );
-	engine->GetBSPTreeQuery()->EnumerateLeavesInBox( volume.m_vecMins, volume.m_vecMaxs, &enumerator, 0 );
+	// A stable registration/leaf generation proves the same first-visit order.
+	// Do not cache eligibility or bounds: even unnotified material changes are
+	// observed by CollectShadowCaster and EmitShadowCasters on every receiver.
+	const uint64 generation=m_ShadowCasterGeneration;
+	bool sameVolume=m_CachedShadowCasterFrame==gpGlobals->framecount &&
+		m_CachedShadowCasterGeneration==generation &&
+		m_CachedShadowCasterVolume.m_vecMins==volume.m_vecMins &&
+		m_CachedShadowCasterVolume.m_vecMaxs==volume.m_vecMaxs &&
+		m_CachedShadowCasterVolume.m_nPlaneCount==volume.m_nPlaneCount;
+	for ( int p=0;sameVolume && p<volume.m_nPlaneCount;++p )
+		sameVolume=m_CachedShadowCasterVolume.m_Planes[p].m_Normal==volume.m_Planes[p].m_Normal &&
+			m_CachedShadowCasterVolume.m_Planes[p].m_Dist==volume.m_Planes[p].m_Dist;
+	bool reused=false;
+	if ( sameVolume && !r_shadowmap_validate_casters.GetBool() )
+	{
+		VPROF_BUDGET( "EnumerateShadowCasters.ReuseSpatialQuery", "Shadowmaps" );
+		BeginShadowCasterQuery( volume );
+		for ( int i=0;i<m_ShadowCasterCandidates.Count();++i )
+			CollectShadowCaster( m_ShadowCasterCandidates[i], volume );
+		// Bounds callbacks can register/relink casters while being queried.
+		// Restart normal spatial enumeration if that proof changed mid-query.
+		reused=m_ShadowCasterGeneration==generation;
+	}
+	if ( !reused )
+	{
+		m_ShadowCasterCandidates.RemoveAll();
+		m_bRecordShadowCasterCandidates=true;
+		{
+			VPROF_BUDGET( "EnumerateShadowCasters.BeginQuery", "Shadowmaps" );
+			BeginShadowCasterQuery( volume );
+		}
+		{
+			VPROF_BUDGET( "EnumerateShadowCasters.SpatialQuery", "Shadowmaps" );
+			CShadowCasterLeafEnumerator enumerator( *this, volume );
+			engine->GetBSPTreeQuery()->EnumerateLeavesInBox( volume.m_vecMins, volume.m_vecMaxs, &enumerator, 0 );
+		}
 
-	// Callers flush ordinary registrations before querying, but the ten-iteration
-	// warning and registrations/moves after that flush cannot authorize an omission.
-	for ( int i = 0; i < m_DirtyRenderables.Count(); ++i )
-	{
-		CollectShadowCaster( m_DirtyRenderables[i], volume );
-	}
-	for ( int i = 0; i < m_UnlinkedShadowCasters.Count(); ++i )
-	{
-		CollectShadowCaster( m_UnlinkedShadowCasters[i], volume );
-	}
-	if ( r_shadowmap_validate_casters.GetBool() )
-	{
-		ValidateShadowCasters( volume );
+		// Callers flush ordinary registrations before querying, but the ten-iteration
+		// warning and registrations/moves after that flush cannot authorize an omission.
+		{
+			VPROF_BUDGET( "EnumerateShadowCasters.DirtyAndUnlinked", "Shadowmaps" );
+			for ( int i = 0; i < m_DirtyRenderables.Count(); ++i )
+			{
+				CollectShadowCaster( m_DirtyRenderables[i], volume );
+			}
+			for ( int i = 0; i < m_UnlinkedShadowCasters.Count(); ++i )
+			{
+				CollectShadowCaster( m_UnlinkedShadowCasters[i], volume );
+			}
+		}
+		if ( r_shadowmap_validate_casters.GetBool() )
+		{
+			VPROF_BUDGET( "EnumerateShadowCasters.Validate", "Shadowmaps" );
+			ValidateShadowCasters( volume );
+		}
+		m_bRecordShadowCasterCandidates=false;
+		m_CachedShadowCasterVolume=volume;
+		m_CachedShadowCasterGeneration=generation;
+		m_CachedShadowCasterFrame=gpGlobals->framecount;
 	}
 
-	EmitShadowCasters( sink );
+	{
+		VPROF_BUDGET( "EnumerateShadowCasters.Emit", "Shadowmaps" );
+		EmitShadowCasters( sink );
+	}
 }
 
 void CClientLeafSystem::EnumerateShadowCastersExhaustive( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink )
@@ -1826,6 +1908,11 @@ void CClientLeafSystem::SetRenderGroup( ClientRenderHandle_t handle, RenderGroup
 	{
 		twoPass = true;
 		group = RENDER_GROUP_TRANSLUCENT_ENTITY;
+	}
+	if ( pInfo->m_RenderGroup!=(unsigned char)group || ((pInfo->m_Flags&RENDER_FLAGS_TWOPASS)!=0)!=twoPass )
+	{
+		InvalidateShadowCasterQuery();
+		ShadowMapsDX12_InvalidateCasterRegistration( pInfo->m_pRenderable );
 	}
 
 	if ( twoPass )

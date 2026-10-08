@@ -23,8 +23,8 @@ if ($Native) {
     if (!(Test-Path $destination)) { throw "Destination does not exist: $destination" }
     $destination = (Resolve-Path $destination).Path
     $compiler = Join-Path $PSScriptRoot 'ShaderCompile2.exe'
-    $packer = Join-Path $PSScriptRoot 'nativeshaderpack_dx12.exe'
-    if (!(Test-Path $packer)) { $packer = Join-Path $PSScriptRoot 'x64\nativeshaderpack_dx12.exe' }
+    $packer = Join-Path $PSScriptRoot 'x64\nativeshaderpack_dx12.exe'
+    if (!(Test-Path $packer)) { $packer = Join-Path $PSScriptRoot 'nativeshaderpack_dx12.exe' }
     if (!(Test-Path $packer)) { throw "Missing native shader packer: $packer" }
     # Persistent per-tree staging: compile roots keep their shaders\fxc\*.vcs, so ShaderCompile2's source CRC check
     # skips unchanged shaders on the next run (lightmappedgeneric/vertexlit ps alone take ~40 min from scratch).

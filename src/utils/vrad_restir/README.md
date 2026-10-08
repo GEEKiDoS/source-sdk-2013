@@ -1,6 +1,18 @@
 # VRAD ReSTIR
 
-VRAD ReSTIR is the Win64 Vulkan-compute light baker for Source BSP files. It is a separate tool from the legacy `vrad` implementation and is invoked through `vrad_restir.exe`. The launcher loads the adjacent `vrad_restir_dll.dll`; `-both` performs independent LDR and HDR passes.
+VRAD ReSTIR is the Win64 Vulkan-compute light baker for Source BSP files. It is a separate tool from the legacy `vrad` implementation and is invoked through `vrad_restir.exe`. The launcher loads the adjacent `vrad_restir_dll.dll`; `-both` preserves authored LDR and HDR output.
+
+Paired bakes resolve both effective scenes before GPU transport. Only exact agreement of geometry/occlusion, decoded material textures/emission, lights, styles and receiver sampling domains admits one shared solution. HDR entity scales/overrides, eight-component light values, `$hdrcolorscale` and mode-filtered RAD directives therefore still produce separate solutions whenever they change effective inputs. Equal scenes log `skipping second GPU transport` and reuse the solved full-source/receiver lighting, ambient gather, prop meshes and detail lighting; each mode still uses its own native encoding, VHV names/flags, highres records and CRC identities. Shared PPL/detail payloads retain HDR-final semantics. Both modes remain in the owned paired transaction until success; genuine ordinary `-ldr` remains single-mode.
+
+Behavioral paired-bake acceptance (real baker, isolated fixtures; no shipping BSP writes):
+
+```powershell
+python utils/vrad_restir/tests/paired_bake_test.py --fixture-dir <temporary-fixtures> --tool-game <temporary-tool-game>
+```
+
+This exercises equivalent inputs against separate ordinary mode controls, HDR sentinel/default/zero/scale boundaries, eight-component and mode-filtered RAD emission/occlusion, HDR-scaled materials, highres native identities, and paired failure rollback.
+
+Equivalence is based on resolved lighting, not different key text: for example, two RAD values below the existing texlight admission threshold can legitimately share a solution. An occlusion regression fixture must enable its static props' shadows; `noshadow` cannot change an already non-shadow-casting prop.
 
 ## Prerequisites
 
@@ -87,9 +99,174 @@ Invalid luxels follow VRAD's defaults: a face with no samples at all is written 
 
 Ordinary bakes follow VRAD's switchable-light rule: a face gets at most `MAXLIGHTMAPS` = 4 styles, including style 0. The scene build tests PVS, radius, hard fade, spot cone and cosine; faces with more than four candidate styles are resolved after upload with GPU shadow rays. A remaining ordinary overflow warns and retains the first four styles, as VRAD does.
 
-With `-restir_shadowmaps`, full-source transport instead retains up to 64 styles for ambient/detail gathers. The native BSP and high-resolution receiver asset still have four slots. A nonzero style used exclusively by selected runtime lights is omitted from receiver output, whose direct contribution is already removed, but remains in full-source transport and the runtime light manifest. Style 0 and styles shared with any nonselected light remain receiver styles. This prevents selected spot styles from falsely overflowing `d1_trainstation_01`'s teleport-chamber lightmaps; more than four actual receiver styles still reject the paired bake without replacing the input BSP.
+With `-restir_shadowmaps`, full-source transport retains up to 64 styles for ambient/detail gathers. Native BSP receiver lightmaps retain four slots and omit selected-local direct/styles exclusively used by selected lights. The active `.hlight` v4 world RGB retains v3's selected-local diffuse and Source styles. Receiver styles are admitted first, then nonzero selected-local styles in canonical light-index order; an existing style (including style 0) always fits. If a local cannot fit the four-slot palette, its RGB is not baked on that face; its selected index is recorded for full runtime diffuse/specular with immutable visibility. No light is dropped. Native receiver-style overflow still rejects. Selected sun direct remains runtime-only.
 
-Regression fixtures `source-style-overflow` and `receiver-style-overflow` are emitted by `tests/shadowmap_contract_test.py --prepare-only`. The first exercises seven source styles, four receiver styles, mixed selected/nonselected style 3, and selected-only style 63; the second adds a fifth receiver style and must fail without changing its input. After compiling and independently baking density-one and higher-density copies, run `tests/hlight_contract_test.py` with `--raw-radiance --require-styles --require-source-overflow` and its normal BSP/control/diagnostics arguments. It checks retained full-source energy, zero receiver contribution for omitted styles, compacted RGB/style/bump planes, and unchanged native geometry.
+Regression fixtures `source-style-overflow` and `baked-direct-style-overflow` require successful publication with exact per-face unbaked lists and independently checked RGB exclusion; the latter uses styles 0,32,33,34,35. `receiver-style-overflow` remains a native-style rejection with byte-exact rollback. `baked-direct-styles` fits four selected styles without fallback. `paired_bake_test.py` compares output against independent runtime direct equations, validates per-mode fallback summaries and checks unchanged native/VHV policies against ordinary controls.
+
+### Hybrid local visibility and baked direct (`.hlight` v4 / `rshd` v5)
+
+Every selected local light receives an independent deterministic visibility field,
+including local-only maps without a selected sun. Historical `sunVisibilityOrigins`
+now owns the shared geometric receiver origins for either kind of selected light.
+Local visibility is the fraction of unobstructed finite receiver-to-emitter segments:
+one central ray at `_shadow_radius 0`, otherwise 32 area-stratified samples on a
+receiver-facing disk of the resolved `_shadow_radius`. It excludes radiance, styles,
+cone, attenuation, receiver cosine and transport/denoising. The immutable `STATIC_SUN`
+occluder mask and existing binary alpha coverage are shared with baked sun visibility;
+movable brush entities do not cast permanent local shadows.
+
+The sidecar stores rounded R8 visibility in sorted canonical selected-manifest order
+(including the manifest sun slot in indices, but never a local entry for that slot).
+Each complete face directory contains explicit uniform values or tightly packed dense
+`highWidth*highHeight` planes, without RGB gutters. Uniform elision happens only after
+tracing. A checksum-covered face/light support bitset declares required entries;
+finite-radius distance-to-complete-face-bounds can prove zero support, while unbounded
+lights are never omitted. Cone/fade-only rejection is deliberately not attempted.
+All offsets are bounded and canonical, sections align to 16 bytes and dense payload
+starts align to four bytes. The shared validator rejects incomplete required entries,
+old runtime versions, malformed ordering/counts/padding and manifest/payload CRC mismatch.
+The signed BSP-pak limit (`0x7fffffff`) is checked explicitly; density is never reduced
+silently to make an oversized asset fit.
+
+Static prop visibility is independent of VHV RGB production, including
+`STATIC_PROP_NO_PER_VERTEX_LIGHTING` props. Original/recovered receiver positions are
+traced with `NO_SELF_SHADOWING` also applied to recovered receivers; unrecoverable solid
+receivers are blocked (zero). The exact VHV scatter maps visibility into every LOD and
+strip-group hardware vertex. Prop records retain ordinal, MDL checksum, authored pose
+identity and mesh vertex-order CRC. Pose identity is FNV-1a-64 (offset
+14695981039346656037, prime 1099511628211) over little-endian float32 origin, angles and
+lighting-origin triples followed by zero-extended uint32 prop flags. Vertex-order CRC32
+covers little-endian uint32 flattened original vertex indices in hardware order:
+cumulative original model vertex base + mesh vertexoffset + origMeshVertID.
+
+Only the existing exact whole-scene HDR/LDR equality permits sharing a visibility set;
+unequal modes serialize independent fields. The paired owned-BSP transaction and lossless
+LZMA pak readback remain unchanged. A checked v1/v4 asset is accepted only as a complete
+paired `-restir_shadowmaps` rebake input; none of its old enhanced payload is admitted
+to the hybrid runtime or carried into the new asset. Rebuild **all** HW/SW SPIR-V modules
+after the shared binding changes, not just `restir_local_visibility.comp`.
+
+Version 3 additionally writes selected-local diffuse into high-resolution RGB only,
+using exact runtime attenuation (distance clamped to one, capped denominator), spot
+cone/exponent and quintic distance fade, multiplied by the same decoded R8 visibility.
+Authored Source styles remain separate planes, with no current style modulation baked
+into samples. Plain planes use Lambert; bump planes use the three renderer tangent-space
+axes, preserving the pixel shader's linear weighted-basis response. The surface used
+for radiance is unpushed (including displacement surface positions); visibility retains
+its independent biased/recovered origins. Local addition happens after ordinary
+receiver minlight/macro processing, so those treatments do not alter runtime direct.
+Sun remains runtime-only. Native BSP lightmaps, ambient cubes, VHV and detail policy are
+unchanged. Four highres styles are retained; overflowing selected-local contributions
+use sparse per-face runtime exceptions rather than rejecting the paired publication.
+Every lit world face requires `kFaceHasBakedLocalDirect` (bit 16) and a known baked pose.
+Old v1/v2/v3 assets are runtime-rejected; complete paired rebakes validate their
+identities then discard old enhanced data. Visibility sharing requires whole-scene equality.
+The v3 visibility-set record uses its former reserved tail for two sparse section offsets
+and counts. `UnbakedFaceDisk` is 12 bytes (`faceOrdinal`, `firstLightIndex`, `lightCount`);
+records are strictly face-sorted and partition a contiguous uint32 selected-local index
+array, sorted/unique within each face. Both sections follow the face-support bitmap and
+precede R8 payload, each 16-byte aligned (including canonical empty offsets).
+Existing 128-byte set and 16-byte face-visibility records retain their sizes. The validator
+requires a full four-style lit baked palette, local-only indices with visibility support,
+and styles absent from the owning palette. Shared sets require identical sparse lists.
+The baker logs `Hlight: baked local direct fallback faces=N faceLights=M (LDR/HDR)`.
+V3 was amended before shipping; preliminary no-exception-layout v3 assets must be rebaked.
+
+Version 4 extends selected-local direct to eligible static-prop hardware vertices while
+leaving native VHV/PPL byte encodings unchanged. VHV first converts RGBExp to linear,
+then `LinearToVertexLight` / `ColorClamp` / RGBA8888; `DoLighting` decodes the color through
+`GammaToLinear(staticLightingColor*cOverbright)`. This cannot preserve four separate
+Source styles or the required HDR radiance range, so it is not the direct carrier.
+Instead each hardware mesh's existing 32-byte visibility record replaces two reserved
+words with `directPayloadByteOffset` / `directPayloadBytes` (both zero means full runtime).
+A 4-aligned inline block follows its R8 planes in the same immutable payload:
+`PropDirectDisk` (48 bytes), RGBA16F[style][angularPlane][hardwareVertex], then sorted
+uint32 unbaked selected-local IDs. The header carries flags, a four-slot style palette
+(style 0 first, unused 255), vertex/plane counts, RGB byte count and exception count.
+RGB is unstyled normalized linear diffuse; A is zero. Two angular planes store Lambert
+and squared half-Lambert from authored vertex normals. Geometry/radiance uses authored
+world positions; visibility continues to use its independent recovered ray origins.
+The exact all-LOD/strip-group source-index scatter is shared with visibility/VHV.
+Styles are admitted in canonical selected-light order; overflow stays full runtime per
+mesh and keeps its R8 field. Sun stays runtime-only; props using NO_PER_VERTEX_LIGHTING
+or active per-texel lighting retain full per-pixel locals and are explicitly listed.
+Vertex interpolation and base-normal sampling (rather than a pixel normal map) are
+intentional approximations; finite-radius visibility itself remains the existing R8 field.
+Half quantization has at most 1/2048 relative error for positive normal values and at
+most 2^-25 absolute error in the subnormal range; values above 65504 reject explicitly.
+Spatial/angular interpolation error is scene-dependent, not bounded by those storage errors.
+
+
+Direct frame generation follows renderer `TangentSpaceSurfaceSetup` /
+`TangentSpaceComputeBasis`: texture T anchors the frame and mirrored mappings flip
+only S. This is not VRAD's texture-S-anchored `GetBumpNormals`. Normalize vertex
+tangents exactly as the generated highres VS does, then interpolate normals/axes;
+do not reconstruct or renormalize a per-luxel frame in the pixel-stage equation.
+Displacement frames use full-resolution checkerboard triangles and separately smooth
+tangent S across engine seams without modifying native transport cores. A fixed baked
+field cannot reproduce a changing coarse displacement-LOD triangle's shading-frame
+interpolation: exact receiver-frame matching assumes full-resolution attributes.
+The dedicated `tests/baked_direct_test.py` invokes production CPU radiance/angular
+helpers against an independent analytic oracle; paired fixture tests additionally
+exercise actual RGB encoding, Source-style palettes, HDR/LDR identity and rollback.
+High-resolution byte buffers use bounded unsigned capacity arithmetic; the shared
+`CUtlMemory` allocator also guards the former signed doubling overflow at 1 GiB.
+Final publication preflights all aligned sections and
+reserves the complete file once; size limits and validation remain unchanged.
+The CPU probe covers crossing 1 GiB, the exact signed limit, rejection above it,
+aligned section accounting, and small real-buffer growth/data preservation.
+Pass `--large-byte-growth` to `tests/baked_direct_test.py` for an actual shared
+`CUtlVector<uint8>` growth from 1 GiB to 1.1 GiB; allocation failure reports a skip,
+while successful growth checks capacity and endpoint data. Rebuild static tier1
+(`CUtlBuffer::PutOverflow`) and all dependent runtime/tool binaries after allocator changes.
+
+Producer regressions: `tests/hybrid_visibility_test.py --probe <validator-probe>`
+executes the shared C++ validator on complete/corrupt byte fixtures, while
+`tests/hybrid_visibility_gpu_test.py --probe <GPU-probe> --dll-dir <SDK-bin-x64>`
+executes the production Vulkan service on both hardware-RT and compute-BVH.
+The GPU fixture independently expects open=1, blocked=0 and disk penumbra=0.5;
+it also proves binary alpha 127/128, immutable-only masks, finite ray endpoints,
+no-self hit exclusion and blocked invalid receivers. The mathematical/source-only
+checks remain explicitly labelled separately from these production GPU results.
+
+The active paired runner additionally covers `prop-direct-analytic`,
+`prop-direct-no-per-vertex`, `prop-direct-pertexel` and `prop-direct-zero-selected`.
+Preparation chooses a separate real multi-LOD model for these cases, leaving the
+frozen runner's existing model preference unchanged. Every authored LOD/strip-group
+mesh must agree with VHV/source-index CRC and the authored-geometry diagnostics;
+independent runtime equations reconstruct Lambert/half-Lambert RGB from manifest/R8.
+The five-style fixture requires genuine nonzero overflow and tests incorrect
+exception mutations. Skip fixtures assert compiled flags, per-mode prop-ID logs and
+retained nonzero visibility. Zero-selected props still carry valid zero style-0 blocks.
+Pass `--prop-vhv-baseline-producer` pointing to a preserved pre-v4 executable/DLL
+and its SPV directory, with the executable-derived `bin/x64/filesystem_stdio.dll`
+dependency available. Identical options prove native VHV bytes unchanged; ordinary
+VRAD is not a valid control because its existing selected-light policy differs.
+The analytic case also rebakes that real v3 output through checked v4 import.
+
+Build the GPU probe after the baker in an x64 MSVC developer shell from `src`
+(the probe and copied modules are test-only, not deployed game files):
+
+```bat
+cl /nologo /std:c++17 /EHsc /MT /DCOMPILER_MSVC /DCOMPILER_MSVC64 /DWIN32 /D_WIN32 /DWIN64 /D_WIN64 /DPLATFORM_64BITS ^
+ /Ipublic /Ipublic\tier0 /Ipublic\tier1 /Iutils\vrad_restir /Ithirdparty\vulkan_sdk\Include ^
+ utils\vrad_restir\tests\hybrid_visibility_gpu_probe.cpp ^
+ /Fo:"%TEMP%\hybrid_visibility_gpu_probe.obj" /Fe:"%TEMP%\hybrid_visibility_gpu_probe.exe" ^
+ /link utils\vrad_restir\Release\x64\restir_vulkan.obj utils\vrad_restir\Release\x64\restir_vulkan_scene.obj ^
+ utils\vrad_restir\Release\x64\restir_vulkan_services.obj utils\vrad_restir\Release\x64\restir_vulkan_bake.obj ^
+ /LIBPATH:lib\public\x64 tier1.lib tier0.lib vstdlib.lib mathlib.lib thirdparty\vulkan_sdk\Lib\vulkan-1.lib
+xcopy /I /Y ..\game\bin\x64\vrad_restir_shaders\*.spv "%TEMP%\vrad_restir_shaders\"
+python utils\vrad_restir\tests\hybrid_visibility_gpu_test.py --probe "%TEMP%\hybrid_visibility_gpu_probe.exe" --dll-dir "%SDK_MP%\bin\x64"
+```
+
+Prepared real-map variants include `hybrid-prop-no-per-vertex` and
+`hybrid-prop-no-self`. The former must retain all visibility mesh/LOD blocks even
+when no VHV files are emitted. `hlight_contract_test.visibility_stats` reports
+open/blocked/fractional world and prop receivers once per unique visibility set.
+`paired_bake_test.py` additionally asserts shared versus distinct sets under the
+same whole-scene reuse decision, along with rollback of invalid paired output.
+
+
 
 ## Emissive materials
 

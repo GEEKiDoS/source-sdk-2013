@@ -1519,9 +1519,14 @@ bool CUtlBuffer::PutOverflow( int nSize )
 		m_Memory.ConvertToGrowableMemory( 0 );
 	}
 
-	while( Size() < m_Put - m_nOffset + nSize )
+	const int nRequired = m_Put - m_nOffset + nSize;
+	if ( Size() < nRequired )
 	{
-		m_Memory.Grow();
+		// Request the complete write in one growth operation. Grow() with its default
+		// increment of one degenerates into byte-at-a-time reallocations above 1 GiB.
+		// Keep space for the trailing NUL, as EnsureCapacity does, when representable.
+		const int nCapacity = nRequired < INT_MAX ? nRequired + 1 : nRequired;
+		m_Memory.Grow( nCapacity - Size() );
 	}
 
 	return true;

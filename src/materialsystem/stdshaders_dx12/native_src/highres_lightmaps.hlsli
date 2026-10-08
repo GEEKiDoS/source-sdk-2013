@@ -1,6 +1,8 @@
 // Explicit native-atlas translation; never interprets RGB or reconstructed geometry as identity.
 #ifndef DX12_HIGHRES_LIGHTMAPS_HLSLI
 #define DX12_HIGHRES_LIGHTMAPS_HLSLI
+// Fixed-function embedding includes this source before the shadow evaluator.
+#define DX12_HIGHRES_LIGHTMAPS 1
 struct HlightFaceGpuDX12
 {
     uint4 nativeRect;
@@ -33,6 +35,10 @@ struct HlightReceiver
     float2 nativeUV;
     uint valid;
     uint nativeOnly;
+    uint faceId; // Zero-based ordinal in the active mode's face domain.
+    uint localVisibilityEligible;
+    uint bakedDirectEligible;
+    uint2 unbakedLocalRange; // Raw t1032 byte offset/count, only for baked-direct receivers.
     float sun;
     float3 style0BaseRGB;
 };
@@ -83,6 +89,7 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV)
     HlightFaces.GetDimensions(count, stride);
     if (faceId == 0 || faceId > count) { HighresLightmap_Reject(); return r; }
     r.face = HlightFaces[faceId - 1];
+    r.faceId = faceId - 1;
     // Explicitly unlit BSP faces can still own regular (including bumped)
     // native allocations. Preserve their executed native lighting; they have
     // no baked tiles or selected-direct contribution. Unknown owners still reject.
@@ -96,6 +103,10 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV)
     bool bakedPose = (r.face.dimensionsFlags.w & 1) != 0;
     [unroll] for (uint row = 0; row < 3; ++row)
         bakedPose = bakedPose && all(r.face.bakedModelToWorld[row] == cHlightModelToWorld[row]);
+    r.localVisibilityEligible = bakedPose ? 1 : 0;
+    r.bakedDirectEligible = bakedPose && (r.face.dimensionsFlags.z & 16) != 0 ? 1 : 0;
+    r.unbakedLocalRange = r.bakedDirectEligible != 0 ?
+        uint2((r.face.dimensionsFlags.w >> 1) * 4u, r.face.dimensionsFlags.z >> 16) : uint2(0, 0);
     r.style0BaseRGB = base.rgb;
     r.sun = bakedPose && (r.face.dimensionsFlags.z & 8) != 0 ? saturate(base.a) : 1;
     return r;

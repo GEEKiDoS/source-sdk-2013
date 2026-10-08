@@ -149,14 +149,20 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
 	if ( FAILED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) ) || options.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 )
 		return true; // Ordinary rendering does not require the lighting signature.
-	// Lighting ABI 3 adds the space-2 view table/CBV and singleton packed visibility table.
-	ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-	ranges[3].NumDescriptors = DX12_LIGHTING_VIEW_TABLE_COUNT;
-	ranges[3].BaseShaderRegister = DX12_LIGHTING_T_LOCAL_ATLAS_FIRST;
-	ranges[3].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	// ABI 6 adds per-draw static-prop constants/triangles without coupling model draws to lightmap pages.
+	D3D12_DESCRIPTOR_RANGE lightingRanges[2]{};
+	lightingRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	lightingRanges[0].NumDescriptors = DX12_LIGHTING_VIEW_TABLE_COUNT;
+	lightingRanges[0].BaseShaderRegister = DX12_LIGHTING_T_LOCAL_ATLAS_FIRST;
+	lightingRanges[0].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	lightingRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	lightingRanges[1].NumDescriptors = 4;
+	lightingRanges[1].BaseShaderRegister = DX12_LIGHTING_T_VISIBILITY_FACES;
+	lightingRanges[1].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	lightingRanges[1].OffsetInDescriptorsFromTableStart = DX12_LIGHTING_T_VISIBILITY_FACES;
 	params[kRootLightingView].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-	params[kRootLightingView].DescriptorTable.NumDescriptorRanges = 1;
-	params[kRootLightingView].DescriptorTable.pDescriptorRanges = &ranges[3];
+	params[kRootLightingView].DescriptorTable.NumDescriptorRanges = 2;
+	params[kRootLightingView].DescriptorTable.pDescriptorRanges = lightingRanges;
 	params[kRootLightingView].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	params[kRootLightingViewConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[kRootLightingViewConstants].Descriptor.ShaderRegister = DX12_LIGHTING_B_VIEW;
@@ -169,6 +175,14 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootLightingVisibility].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[kRootLightingVisibility].DescriptorTable = { 1, &ranges[4] };
 	params[kRootLightingVisibility].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootPropDraw].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[kRootPropDraw].Descriptor.ShaderRegister = DX12_LIGHTING_B_PROP_DRAW;
+	params[kRootPropDraw].Descriptor.RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	params[kRootPropDraw].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootPropTriangles].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+	params[kRootPropTriangles].Descriptor.ShaderRegister = DX12_LIGHTING_T_PROP_TRIANGLES;
+	params[kRootPropTriangles].Descriptor.RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	params[kRootPropTriangles].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	D3D12_STATIC_SAMPLER_DESC lightingSamplers[2]{};
 	lightingSamplers[0].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
 	lightingSamplers[0].AddressU = lightingSamplers[0].AddressV = lightingSamplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -605,8 +619,8 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	const uint32_t descriptorCount = 32u + ( input.nativeStage[0] ? 8u : 0u ) + ( input.nativeStage[1] ? 8u : 0u );
 	if ( !ReserveResourceDescriptors( descriptorCount, input.retireFence ) )
 		return false;
-	if ( input.lightingAbi && ( !m_pLightingRoot || input.lightingViewTable.count != DX12_LIGHTING_VIEW_TABLE_COUNT ||
-	     !input.lightingViewTable.gpu.ptr || !input.lightingViewConstants ||
+	if ( input.lightingAbi && ( !m_pLightingRoot || input.lightingViewTable.count != DX12_LIGHTING_RESOURCE_TABLE_COUNT ||
+	     !input.lightingViewTable.gpu.ptr || !input.lightingViewConstants || !input.propDrawConstants || !input.propTriangles ||
 	     input.lightingViewTable.generation != ResourceHeapGeneration() ||
 	     ( ( input.lightingVisibilityRequired || input.lightingVisibilityTable.count ) &&
 	       ( input.lightingVisibilityTable.count != 1 || !input.lightingVisibilityTable.gpu.ptr ||
@@ -963,6 +977,18 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				++m_Stats.rootCbvSets;
 				pList->SetGraphicsRootConstantBufferView( kRootLightingViewConstants, input.lightingViewConstants );
 				m_nBoundLightingViewConstants = input.lightingViewConstants;
+			}
+			if ( !m_bGraphicsBindingsValid || m_BoundPropDraw != input.propDrawConstants )
+			{
+				++m_Stats.rootCbvSets;
+				pList->SetGraphicsRootConstantBufferView( kRootPropDraw, input.propDrawConstants );
+				m_BoundPropDraw = input.propDrawConstants;
+			}
+			if ( !m_bGraphicsBindingsValid || m_BoundPropTriangles != input.propTriangles )
+			{
+				++m_Stats.rootSrvSets;
+				pList->SetGraphicsRootShaderResourceView( kRootPropTriangles, input.propTriangles );
+				m_BoundPropTriangles = input.propTriangles;
 			}
 		}
 		if ( input.highresAbi )

@@ -16,6 +16,91 @@ SAMPLER_ROLES = {
     'pyro_vision_ps30': 2,
 }
 EXTRA_VERTEX = {'water_vs20', 'shatteredglass_vs20', 'pyro_vision_vs30'}
+# Safety is checked across every include, retaining every combo-dependent branch.
+# Console flashlight helpers contain kills, but their _X360 branches are absent on PC.
+EARLY_DEPTH_MACROS = {'_X360': 0, 'DX12_EARLY_DEPTH': 1,
+                      'DX12_STAGE_PIXEL': 1, 'DX12_STAGE_VERTEX': 0}
+EARLY_DEPTH_HAZARD = re.compile(
+    r'\b(?:clip\s*\(|discard\b|texkill\b|SV_Depth\w*\b|SV_Coverage\b)|:\s*DEPTH\b', re.I)
+
+
+def earlydepth_condition(expression):
+    expression = re.sub(r'//.*|/\*.*?\*/', '', expression).strip()
+    expression = re.sub(r'defined\s*(?:\(\s*(\w+)\s*\)|(\w+))',
+                        lambda m: str(EARLY_DEPTH_MACROS.get(m.group(1) or m.group(2), 'UNKNOWN')),
+                        expression)
+    expression = re.sub(r'\b[A-Za-z_]\w*\b',
+                        lambda m: str(EARLY_DEPTH_MACROS.get(m.group(0), 'UNKNOWN')), expression)
+    if 'UNKNOWN' in expression: return None
+    if re.search(r'[^0-9\s()!&|<>=+-]', expression): return None
+    expression = re.sub(r'!(?!=)', ' not ', expression).replace('&&', ' and ').replace('||', ' or ')
+    try: return bool(eval(expression, {'__builtins__': {}}, {}))
+    except (SyntaxError, TypeError): return None
+
+
+def earlydepth_active_lines(text):
+    # Unknown conditions admit both arms; only provably absent branches disappear.
+    stack = []
+    active = True
+    for number, line in enumerate(text.splitlines(), 1):
+        directive = re.match(r'\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)', line)
+        if directive:
+            kind, expression = directive.groups()
+            if kind in {'ifdef', 'ifndef'}:
+                expression = ('!' if kind == 'ifndef' else '') + f'defined({expression.strip()})'
+            if kind in {'if', 'ifdef', 'ifndef'}:
+                condition = earlydepth_condition(expression)
+                stack.append([active, condition is not True])
+                active = active and condition is not False
+            elif kind == 'elif':
+                parent, remaining = stack[-1]
+                condition = earlydepth_condition(expression)
+                active = parent and remaining and condition is not False
+                stack[-1][1] = remaining and condition is not True
+            elif kind == 'else':
+                parent, remaining = stack[-1]
+                active = parent and remaining
+                stack[-1][1] = False
+            else:
+                active = stack.pop()[0]
+            continue
+        if active: yield number, line
+
+
+def earlydepth_hazards(text, label, common, root, seen=None):
+    seen = set() if seen is None else seen
+    if label in seen: return []
+    seen.add(label)
+    hazards = []
+    # Do not use gs.mask's #if-0 folding: an #else arm may still contain a kill.
+    uncommented = gs.hp.comment_mask(text)
+    masked = re.sub(r'"[^"\n]*"', lambda m: ' ' * len(m.group(0)), uncommented).splitlines()
+    for number, line in earlydepth_active_lines(uncommented):
+        hazard = EARLY_DEPTH_HAZARD.search(masked[number - 1])
+        if hazard: hazards.append(f'{label}:{number}: {hazard.group(0)}')
+        include = re.match(r'\s*#\s*include\s*"([^"]+)"', line)
+        if not include: continue
+        name = include.group(1)
+        if name in common:
+            included = common[name]
+        else:
+            candidates = [os.path.join(root, 'native_src', name), os.path.join(root, 'hlsl', 'common', name)]
+            path = next((p for p in candidates if os.path.isfile(p)), None)
+            if path is None: raise RuntimeError(f'early-depth include missing: {label}: {name}')
+            with open(path, encoding='latin-1') as source: included = source.read()
+        hazards += earlydepth_hazards(included, name, common, root, seen)
+    return hazards
+
+
+def earlydepth_pixels(text):
+    # Each conditional signature needs the attribute, including shared-body mains.
+    positions = {text.rfind('\n', 0, header[0].start()) + 1
+                 for headers, _, _ in gs.main_defs(text) for header in headers}
+    for position in sorted(positions, reverse=True):
+        text = text[:position] + '[earlydepthstencil]\n' + text[position:]
+    return '#define DX12_EARLY_DEPTH 1\n' + text
+
+
 
 
 def prepare(text, logical, stage):
@@ -156,7 +241,8 @@ def pixel_entry(text, logical, folded_names):
         for match in reversed(matches):
             code = ('HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );\n'
                     f' ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.{position}.xy );\n'
-                    ' smr.bakedSunVisibility = hlr.sun;')
+                    ' smr.bakedSunVisibility = hlr.sun;\n'
+                    ' ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );')
             text = text[:match.start()] + code + text[match.end():]
         return finish_pixels(text)
     guard = {'water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT', 'shatteredglass_ps20b': '1',
@@ -167,7 +253,8 @@ def pixel_entry(text, logical, folded_names):
         if not conv: raise RuntimeError('missing highres input conversion: ' + logical)
         code = ('\n#if ' + guard + '\n HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );\n'
                 f' ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.{position}.xy );\n'
-                ' hls.bakedSunVisibility = hlr.sun;\n')
+                ' hls.bakedSunVisibility = hlr.sun;\n'
+                ' ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );\n')
         if logical != 'water_ps20b':
             code += ' ShadowMapDirect hld = ShadowMap_GatherDirect( hls, ShadowMap_ShadeLambert( dx12In.highresNormal ) );\n'
         code += '#endif\n'

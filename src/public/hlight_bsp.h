@@ -12,9 +12,9 @@
 namespace hlight
 {
 static const uint32 kMagic = 0x54494c48u; // HLIT, little endian
-static const uint32 kVersion = 1;
+static const uint32 kVersion = 4;
 static const uint32 kEndian = 0x01020304u;
-static const uint32 kManifestVersion = 4; // 'rshd' dictionary version; never the frozen v3 receiver format
+static const uint32 kManifestVersion = 5; // hybrid visibility; older enhanced assets require a rebake
 static const uint32 kMissing = 0xffffffffu;
 static const uint32 kDefaultDensity = 4;
 static const uint32 kDefaultPageSize = 2048;
@@ -28,8 +28,11 @@ static const uint32 kFaceBumped = 1;
 static const uint32 kFaceDisplacement = 2;
 static const uint32 kFaceHasLighting = 4;
 static const uint32 kFaceHasSun = 8;
+static const uint32 kFaceHasBakedLocalDirect = 16;
 static const uint32 kModelBakedPoseKnown = 1;
-
+static const uint32 kVisibilityDense = 256;
+static const uint32 kPropMeshHasBakedLocalDirect = 1;
+static const uint32 kPropDirectAngularPlanes = 2; // Lambert, squared half-Lambert
 // Canonical file order: header, modes, then per mode identities/models/faces/tiles/pages/pixels.
 // Each section starts at the next 16-byte boundary; all padding/reserved bytes are zero.
 // Mode pairs are unique and lexicographically ordered by (faceLump, lightingLump).
@@ -42,7 +45,9 @@ struct FileHeader
     uint64 fileBytes;
     uint32 density, modeCount;
     uint64 modesOffset;
-    uint32 crc32, reserved[5]; // CRC of the complete file with this crc32 word treated as zero
+    uint32 crc32, visibilitySetCount;
+    uint64 visibilitySetsOffset;
+    uint32 reserved[2]; // CRC of complete file with crc32 treated as zero
 };
 struct LumpIdentity
 {
@@ -58,6 +63,7 @@ struct ModeDisk
     uint64 facesOffset, modelsOffset, tilesOffset, pagesOffset, identitiesOffset;
     uint32 tileCount, pageCount, identityCount, reserved;
     uint64 reserved2;
+    uint32 visibilitySetIndex, reserved3[3];
 };
 struct ModelDisk
 {
@@ -86,6 +92,53 @@ struct PageDisk
     uint32 firstTile, tileCount, reserved2[2];
     uint64 pixelsOffset, pixelsBytes; // little-endian, row-major RGBA16F; no row padding
 };
+// Visibility sections follow all RGB mode sections. A set may be shared only after
+// whole-scene paired equality. Canonical light indices include the manifest sun slot.
+struct VisibilitySetDisk
+{
+    uint32 selectedLightCount, selectedLightsCRC32, faceCount, entryCount;
+    uint32 propCount, meshCount;
+    int32 sunLightIndex;
+    uint32 reserved;
+    uint64 facesOffset, entriesOffset, propsOffset, meshesOffset, payloadOffset;
+    uint64 payloadBytes;
+    uint32 payloadCRC32, reserved2;
+    uint64 faceSupportOffset, faceSupportBytes;
+    uint64 unbakedFacesOffset, unbakedLightIndicesOffset;
+    uint32 unbakedFaceCount, unbakedLightIndexCount;
+};
+struct FaceVisibilityDisk
+{
+    uint32 faceOrdinal, firstEntry, entryCount, reserved;
+};
+// Sparse style-overflow exceptions, sorted by faceOrdinal. Light-index ranges
+// partition unbakedLightIndices with strictly increasing selected-local indices.
+struct UnbakedFaceDisk
+{
+    uint32 faceOrdinal, firstLightIndex, lightCount;
+};
+struct VisibilityEntryDisk
+{
+    uint32 selectedLightIndex, encoding, payloadByteOffset, sampleCount;
+};
+struct PropVisibilityDisk
+{
+    uint32 staticPropOrdinal, modelChecksum, firstMesh, meshCount;
+    uint64 poseIdentity, reserved;
+};
+struct PropMeshVisibilityDisk
+{
+    uint32 meshOrdinal, lod, vertexCount, firstEntry, entryCount, vertexOrderCRC32;
+    uint32 directPayloadByteOffset, directPayloadBytes; // both zero: full runtime local lighting
+};
+// Inline visibility-payload block: header, RGBA16F[style][angularPlane][vertex],
+// then sorted uint32 unbaked selected-local indices. RGB is unstyled normalized
+// linear radiance; A is zero. Angular planes use the authored vertex normal.
+struct PropDirectDisk
+{
+    uint32 flags, styleCount, styles[kMaxStyles], vertexCount, angularPlaneCount;
+    uint32 radianceBytes, unbakedLightCount, reserved[2];
+};
 // The small native game-lump manifest retains selected-light transport metadata without
 // shipping or invoking the abandoned receiver geometry/mask representation. assetPath
 // names the exact BSP-pak member, so renaming a BSP does not change its embedded identity.
@@ -108,14 +161,48 @@ struct ManifestDisk
 
 COMPILE_TIME_ASSERT(sizeof(FileHeader) == 64);
 COMPILE_TIME_ASSERT(sizeof(LumpIdentity) == 24);
-COMPILE_TIME_ASSERT(sizeof(ModeDisk) == 112);
+COMPILE_TIME_ASSERT(sizeof(ModeDisk) == 128);
 COMPILE_TIME_ASSERT(sizeof(ModelDisk) == 64);
 COMPILE_TIME_ASSERT(sizeof(FaceDisk) == 128);
 COMPILE_TIME_ASSERT(sizeof(TileDisk) == 32);
 COMPILE_TIME_ASSERT(sizeof(PageDisk) == 48);
+COMPILE_TIME_ASSERT(sizeof(VisibilitySetDisk) == 128);
+COMPILE_TIME_ASSERT(sizeof(FaceVisibilityDisk) == 16);
+COMPILE_TIME_ASSERT(sizeof(UnbakedFaceDisk) == 12);
+COMPILE_TIME_ASSERT(sizeof(VisibilityEntryDisk) == 16);
+COMPILE_TIME_ASSERT(sizeof(PropVisibilityDisk) == 32);
+COMPILE_TIME_ASSERT(sizeof(PropMeshVisibilityDisk) == 32);
+COMPILE_TIME_ASSERT(sizeof(PropDirectDisk) == 48);
 COMPILE_TIME_ASSERT(sizeof(ManifestModeDisk) == 64);
 COMPILE_TIME_ASSERT(sizeof(ManifestDisk) == 400);
 
+struct VisibilityView
+{
+    const VisibilitySetDisk *record;
+    const FaceVisibilityDisk *faces;
+    const VisibilityEntryDisk *entries;
+    const PropVisibilityDisk *props;
+    const PropMeshVisibilityDisk *meshes;
+    const UnbakedFaceDisk *unbakedFaces;
+    const uint32 *unbakedLightIndices;
+    const uint8 *payload, *faceSupport;
+};
+struct PropDirectView
+{
+    const PropDirectDisk *record;
+    const uint16 *pixels;
+    const uint32 *unbakedLightIndices;
+};
+// VisibilityView/mesh must be admitted by ValidateFile before borrowing.
+inline PropDirectView GetPropDirect(const VisibilityView &v, const PropMeshVisibilityDisk &mesh)
+{
+    PropDirectView out = {};
+    if (!mesh.directPayloadBytes) return out;
+    out.record = reinterpret_cast<const PropDirectDisk *>(v.payload+mesh.directPayloadByteOffset);
+    out.pixels = reinterpret_cast<const uint16 *>(out.record+1);
+    out.unbakedLightIndices = reinterpret_cast<const uint32 *>(reinterpret_cast<const uint8 *>(out.pixels)+out.record->radianceBytes);
+    return out;
+}
 struct ModeView
 {
     const ModeDisk *record;
@@ -124,6 +211,7 @@ struct ModeView
     const FaceDisk *faces;
     const TileDisk *tiles;
     const PageDisk *pages;
+    VisibilityView visibility;
 };
 struct FileView
 {
@@ -131,6 +219,7 @@ struct FileView
     uint32 bytes;
     const FileHeader *header;
     ModeView mode[4]; // only explicitly declared face/lighting pairs are supported
+    VisibilityView visibility[4];
 };
 struct ManifestModeView
 {
@@ -188,6 +277,58 @@ inline bool PageSide(uint32 n)
 {
     return n >= kDefaultPageSize && n <= kMaxPageSize && !(n & (n - 1));
 }
+inline bool VisibilityRequired(const VisibilityView &v, uint32 face, uint32 light)
+{
+    const uint64 bit = uint64(face) * v.record->selectedLightCount + light;
+    return (v.faceSupport[bit >> 3] & (1u << (bit & 7))) != 0;
+}
+inline const VisibilityEntryDisk *FindVisibilityEntry(const VisibilityView &v,
+    uint32 first, uint32 count, uint32 selectedLightIndex)
+{
+    uint32 lo = first, hi = first + count;
+    while (lo < hi)
+    {
+        const uint32 mid = lo + (hi - lo) / 2;
+        if (v.entries[mid].selectedLightIndex < selectedLightIndex) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < first + count && v.entries[lo].selectedLightIndex == selectedLightIndex ? &v.entries[lo] : NULL;
+}
+inline float VisibilitySample(const VisibilityView &v, const VisibilityEntryDisk &entry, uint32 sample)
+{
+    return float(entry.encoding == kVisibilityDense ? v.payload[entry.payloadByteOffset + sample] : entry.encoding) / 255.0f;
+}
+inline bool ValidateVisibilityEntries(const VisibilityView &v, uint32 first, uint32 entries,
+    uint64 samples, uint64 &payloadCursor, char *error, int errorBytes)
+{
+    const VisibilitySetDisk &s = *v.record;
+    if (first > s.entryCount || entries > s.entryCount - first)
+        return ValidationError(error,errorBytes,"visibility entry range");
+    for (uint32 i = first; i < first + entries; ++i)
+    {
+        const VisibilityEntryDisk &e = v.entries[i];
+        if (e.selectedLightIndex >= s.selectedLightCount || int32(e.selectedLightIndex) == s.sunLightIndex ||
+            (i > first && e.selectedLightIndex <= v.entries[i-1].selectedLightIndex) ||
+            e.encoding > kVisibilityDense)
+            return ValidationError(error,errorBytes,"visibility light ordering/encoding");
+        if (e.encoding != kVisibilityDense)
+        {
+            if (e.sampleCount || e.payloadByteOffset)
+                return ValidationError(error,errorBytes,"uniform visibility has payload");
+        }
+        else
+        {
+            const uint64 aligned = (payloadCursor + 3) & ~uint64(3);
+            if (!samples || samples > kMaxFileBytes || e.sampleCount != samples ||
+                aligned > s.payloadBytes || e.payloadByteOffset != aligned ||
+                samples > s.payloadBytes - aligned ||
+                !ZeroBytes(v.payload + payloadCursor, aligned - payloadCursor))
+                return ValidationError(error,errorBytes,"dense visibility sample/payload range");
+            payloadCursor = aligned + samples;
+        }
+    }
+    return true;
+}
 inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *error, int errorBytes)
 {
     memset(&out, 0, sizeof(out));
@@ -199,7 +340,8 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
     const FileHeader &h = *reinterpret_cast<const FileHeader *>(base);
     if (h.magic != kMagic || h.version != kVersion || h.headerBytes != sizeof(h) ||
         h.endian != kEndian || h.fileBytes != count || !h.density || h.density > kMaxPageSize ||
-        !h.modeCount || h.modeCount > 4 || !ZeroBytes(h.reserved, sizeof(h.reserved)) ||
+        !h.modeCount || h.modeCount > 4 || !h.visibilitySetCount || h.visibilitySetCount > h.modeCount ||
+        !ZeroBytes(h.reserved, sizeof(h.reserved)) ||
         h.crc32 != FileCRC32(bytes, count))
         return ValidationError(error, errorBytes, "header/version/density/CRC mismatch");
     FileView candidate; memset(&candidate, 0, sizeof(candidate));
@@ -217,6 +359,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
             !m.modelCount || m.modelCount > MAX_MAP_MODELS || m.faceBytes != uint64(m.faceCount) * sizeof(dface_t) ||
             (!m.lightingBytes && m.tileCount) || m.lightingBytes > MAX_MAP_LIGHTING || (m.lightingBytes & 3) ||
             m.identityCount != ARRAYSIZE(geometry) + 2 || m.reserved || m.reserved2 ||
+            m.visibilitySetIndex >= h.visibilitySetCount || !ZeroBytes(m.reserved3,sizeof(m.reserved3)) ||
             (mi && (m.faceLump < modes[mi-1].faceLump ||
                 (m.faceLump == modes[mi-1].faceLump && m.lightingLump <= modes[mi-1].lightingLump))))
             return ValidationError(error, errorBytes, "mode identity/count/order mismatch");
@@ -297,13 +440,15 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
         {
             const FaceDisk &f = v.faces[i];
             while (modelIndex + 1 < m.modelCount && i >= v.models[modelIndex].firstFace + v.models[modelIndex].faceCount) ++modelIndex;
-            if (f.faceOrdinal != i || f.modelIndex != modelIndex || (f.flags & ~15u) ||
+            if (f.faceOrdinal != i || f.modelIndex != modelIndex || (f.flags & ~31u) ||
                 !ZeroBytes(f.reserved,sizeof(f.reserved)) || f.styleCount > kMaxStyles ||
                 uint64(f.nativeExtents[0])*h.density+1 != f.highWidth ||
                 uint64(f.nativeExtents[1])*h.density+1 != f.highHeight ||
                 !f.highWidth || !f.highHeight ||
                 (f.styleCount && (f.highWidth > kMaxPageSize-2 || f.highHeight > kMaxPageSize-2)) ||
                 bool(f.flags & kFaceHasLighting) != bool(f.styleCount) ||
+                bool(f.flags & kFaceHasBakedLocalDirect) != bool(f.styleCount) ||
+                ((f.flags & kFaceHasBakedLocalDirect) && !(v.models[modelIndex].flags & kModelBakedPoseKnown)) ||
                 ((f.flags & kFaceHasSun) && (!f.styleCount || !(v.models[modelIndex].flags & kModelBakedPoseKnown))))
                 return ValidationError(error,errorBytes,"invalid face density/flags/domain");
             for (uint32 s = 0; s < kMaxStyles; ++s)
@@ -402,6 +547,164 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
         if (nextTile != m.tileCount || bool(m.pageCount) != bool(m.tileCount))
             return ValidationError(error,errorBytes,"incomplete tile pages");
     }
+    if (!Section(base,count,cursor,h.visibilitySetsOffset,uint64(h.visibilitySetCount)*sizeof(VisibilitySetDisk)))
+        return ValidationError(error,errorBytes,"visibility set section");
+    const VisibilitySetDisk *sets = reinterpret_cast<const VisibilitySetDisk *>(base+h.visibilitySetsOffset);
+    uint32 setMask = 0;
+    for (uint32 si = 0; si < h.visibilitySetCount; ++si)
+    {
+        const VisibilitySetDisk &s = sets[si]; VisibilityView &v = candidate.visibility[si]; v.record = &s;
+        const ModeView *owner = NULL;
+        for (uint32 mi = 0; mi < h.modeCount; ++mi)
+            if (modes[mi].visibilitySetIndex == si)
+            {
+                if (!owner) owner = &candidate.mode[mi];
+                else if (modes[mi].faceCount != owner->record->faceCount)
+                    return ValidationError(error,errorBytes,"shared visibility face domain mismatch");
+                if (owner != &candidate.mode[mi])
+                    for (uint32 fi = 0; fi < modes[mi].faceCount; ++fi)
+                    {
+                        const FaceDisk &a = owner->faces[fi], &b = candidate.mode[mi].faces[fi];
+                        if (a.highWidth != b.highWidth || a.highHeight != b.highHeight ||
+                            a.styleCount != b.styleCount || memcmp(a.styles,b.styles,sizeof(a.styles)) || a.modelIndex != b.modelIndex ||
+                            memcmp(&owner->models[a.modelIndex],&candidate.mode[mi].models[b.modelIndex],sizeof(ModelDisk)))
+                            return ValidationError(error,errorBytes,"shared visibility receiver domains disagree");
+                    }
+                setMask |= 1u << si;
+            }
+        if (!owner || s.faceCount != owner->record->faceCount || s.selectedLightCount > MAX_MAP_WORLDLIGHTS ||
+            (s.sunLightIndex != -1 && (s.sunLightIndex != 0 || !s.selectedLightCount)) ||
+            s.reserved || s.reserved2 || s.unbakedFaceCount > s.faceCount ||
+            uint64(s.unbakedLightIndexCount) > uint64(s.faceCount)*s.selectedLightCount || s.payloadBytes > kMaxFileBytes ||
+            s.faceSupportBytes != (uint64(s.faceCount)*s.selectedLightCount+7)/8)
+            return ValidationError(error,errorBytes,"visibility identity/domain/count");
+        if (!Section(base,count,cursor,s.facesOffset,uint64(s.faceCount)*sizeof(FaceVisibilityDisk)) ||
+            !Section(base,count,cursor,s.entriesOffset,uint64(s.entryCount)*sizeof(VisibilityEntryDisk)) ||
+            !Section(base,count,cursor,s.propsOffset,uint64(s.propCount)*sizeof(PropVisibilityDisk)) ||
+            !Section(base,count,cursor,s.meshesOffset,uint64(s.meshCount)*sizeof(PropMeshVisibilityDisk)) ||
+            !Section(base,count,cursor,s.faceSupportOffset,s.faceSupportBytes) ||
+            !Section(base,count,cursor,s.unbakedFacesOffset,uint64(s.unbakedFaceCount)*sizeof(UnbakedFaceDisk)) ||
+            !Section(base,count,cursor,s.unbakedLightIndicesOffset,uint64(s.unbakedLightIndexCount)*sizeof(uint32)) ||
+            !Section(base,count,cursor,s.payloadOffset,s.payloadBytes))
+            return ValidationError(error,errorBytes,"visibility section range/order");
+        v.faces = reinterpret_cast<const FaceVisibilityDisk *>(base+s.facesOffset);
+        v.entries = reinterpret_cast<const VisibilityEntryDisk *>(base+s.entriesOffset);
+        v.props = reinterpret_cast<const PropVisibilityDisk *>(base+s.propsOffset);
+        v.meshes = reinterpret_cast<const PropMeshVisibilityDisk *>(base+s.meshesOffset);
+        v.faceSupport = base+s.faceSupportOffset; v.payload = base+s.payloadOffset;
+        v.unbakedFaces = reinterpret_cast<const UnbakedFaceDisk *>(base+s.unbakedFacesOffset);
+        v.unbakedLightIndices = reinterpret_cast<const uint32 *>(base+s.unbakedLightIndicesOffset);
+        uint32 nextUnbaked = 0;
+        for (uint32 uf = 0; uf < s.unbakedFaceCount; ++uf)
+        {
+            const UnbakedFaceDisk &f = v.unbakedFaces[uf];
+            if (f.faceOrdinal >= s.faceCount || (uf && f.faceOrdinal <= v.unbakedFaces[uf-1].faceOrdinal) ||
+                !(owner->faces[f.faceOrdinal].flags & kFaceHasBakedLocalDirect) || owner->faces[f.faceOrdinal].styleCount != kMaxStyles ||
+                f.firstLightIndex != nextUnbaked || !f.lightCount || f.lightCount > s.unbakedLightIndexCount-nextUnbaked)
+                return ValidationError(error,errorBytes,"unbaked face partition");
+            for (uint32 j = 0; j < f.lightCount; ++j)
+            {
+                const uint32 li = v.unbakedLightIndices[nextUnbaked+j];
+                if (li >= s.selectedLightCount || int32(li) == s.sunLightIndex ||
+                    (j && li <= v.unbakedLightIndices[nextUnbaked+j-1]) || !VisibilityRequired(v,f.faceOrdinal,li))
+                    return ValidationError(error,errorBytes,"unbaked selected-local range/order/support");
+            }
+            nextUnbaked += f.lightCount;
+        }
+        if (nextUnbaked != s.unbakedLightIndexCount) return ValidationError(error,errorBytes,"orphan unbaked light indices");
+        if (ShadowMap_CRC32(v.payload,uint32(s.payloadBytes)) != s.payloadCRC32)
+            return ValidationError(error,errorBytes,"visibility payload CRC");
+        const uint64 supportBits = uint64(s.faceCount)*s.selectedLightCount;
+        if ((supportBits & 7) && (v.faceSupport[s.faceSupportBytes-1] & (0xffu << (supportBits & 7))))
+            return ValidationError(error,errorBytes,"visibility support padding");
+        uint32 nextEntry = 0, nextMesh = 0; uint64 payloadCursor = 0;
+        for (uint32 fi = 0; fi < s.faceCount; ++fi)
+        {
+            const FaceVisibilityDisk &f = v.faces[fi];
+            if (f.faceOrdinal != fi || f.firstEntry != nextEntry || f.reserved ||
+                !ValidateVisibilityEntries(v,f.firstEntry,f.entryCount,
+                    uint64(owner->faces[fi].highWidth)*owner->faces[fi].highHeight,payloadCursor,error,errorBytes))
+                return ValidationError(error,errorBytes,"visibility face partition/entries");
+            uint32 required = 0;
+            for (uint32 li = 0; li < s.selectedLightCount; ++li)
+                if (VisibilityRequired(v,fi,li))
+                {
+                    if (int32(li) == s.sunLightIndex || !owner->faces[fi].styleCount ||
+                        !FindVisibilityEntry(v,f.firstEntry,f.entryCount,li))
+                        return ValidationError(error,errorBytes,"incomplete required face visibility");
+                    ++required;
+                }
+            if (required != f.entryCount) return ValidationError(error,errorBytes,"undeclared face visibility");
+            nextEntry += f.entryCount;
+        }
+        for (uint32 pi = 0; pi < s.propCount; ++pi)
+        {
+            const PropVisibilityDisk &p = v.props[pi];
+            if (p.staticPropOrdinal != pi || p.firstMesh != nextMesh || p.reserved ||
+                p.meshCount > s.meshCount-nextMesh)
+                return ValidationError(error,errorBytes,"visibility prop partition");
+            for (uint32 mesh = nextMesh; mesh < nextMesh+p.meshCount; ++mesh)
+            {
+                const PropMeshVisibilityDisk &m = v.meshes[mesh];
+                if (m.meshOrdinal != mesh-nextMesh || !m.vertexCount || m.firstEntry != nextEntry ||
+                    m.entryCount != s.selectedLightCount-uint32(s.sunLightIndex >= 0) ||
+                    (!m.directPayloadBytes && m.directPayloadByteOffset) ||
+                    !ValidateVisibilityEntries(v,m.firstEntry,m.entryCount,m.vertexCount,payloadCursor,error,errorBytes))
+                    return ValidationError(error,errorBytes,"incomplete prop mesh visibility");
+                if (m.directPayloadBytes)
+                {
+                    const uint64 aligned = (payloadCursor+3)&~uint64(3);
+                    if (m.directPayloadByteOffset != aligned || aligned > s.payloadBytes ||
+                        m.directPayloadBytes > s.payloadBytes-aligned || m.directPayloadBytes < sizeof(PropDirectDisk) ||
+                        !ZeroBytes(v.payload+payloadCursor,aligned-payloadCursor))
+                        return ValidationError(error,errorBytes,"prop direct block range/order");
+                    const PropDirectDisk &d = *reinterpret_cast<const PropDirectDisk *>(v.payload+aligned);
+                    if (d.flags != kPropMeshHasBakedLocalDirect || !d.styleCount || d.styleCount > kMaxStyles ||
+                        d.styles[0] || d.vertexCount != m.vertexCount || d.angularPlaneCount != kPropDirectAngularPlanes ||
+                        !ZeroBytes(d.reserved,sizeof(d.reserved)) ||
+                        uint64(d.radianceBytes) != uint64(d.styleCount)*d.angularPlaneCount*m.vertexCount*8 ||
+                        uint64(m.directPayloadBytes) != sizeof(d)+uint64(d.radianceBytes)+uint64(d.unbakedLightCount)*4)
+                        return ValidationError(error,errorBytes,"prop direct identity/planes");
+                    const PropDirectView direct = GetPropDirect(v,m);
+                    for (uint32 style = 0; style < kMaxStyles; ++style)
+                    {
+                        if (style >= d.styleCount)
+                        {
+                            if (d.styles[style] != 255) return ValidationError(error,errorBytes,"prop direct unused style");
+                            continue;
+                        }
+                        if (d.styles[style] >= kLightstyleCount) return ValidationError(error,errorBytes,"prop direct style range");
+                        for (uint32 previous = 0; previous < style; ++previous)
+                            if (d.styles[previous] == d.styles[style]) return ValidationError(error,errorBytes,"prop direct duplicate style");
+                    }
+                    for (uint32 value = 0; value < d.radianceBytes/2; value += 4)
+                    {
+                        for (uint32 c = 0; c < 3; ++c)
+                            if ((direct.pixels[value+c]&0x8000) || (direct.pixels[value+c]&0x7c00) == 0x7c00)
+                                return ValidationError(error,errorBytes,"prop direct nonfinite/negative RGB");
+                        if (direct.pixels[value+3]) return ValidationError(error,errorBytes,"prop direct reserved alpha");
+                    }
+                    if (d.unbakedLightCount && d.styleCount != kMaxStyles)
+                        return ValidationError(error,errorBytes,"prop direct fallback with free style slot");
+                    for (uint32 j = 0; j < d.unbakedLightCount; ++j)
+                    {
+                        const uint32 li = direct.unbakedLightIndices[j];
+                        if (li >= s.selectedLightCount || int32(li) == s.sunLightIndex ||
+                            (j && li <= direct.unbakedLightIndices[j-1]))
+                            return ValidationError(error,errorBytes,"prop direct unbaked local order/range");
+                    }
+                    payloadCursor = aligned+m.directPayloadBytes;
+                }
+                nextEntry += m.entryCount;
+            }
+            nextMesh += p.meshCount;
+        }
+        if (nextEntry != s.entryCount || nextMesh != s.meshCount || payloadCursor != s.payloadBytes)
+            return ValidationError(error,errorBytes,"orphan visibility entry/mesh/payload");
+    }
+    if (setMask != (1u << h.visibilitySetCount)-1) return ValidationError(error,errorBytes,"unreferenced visibility set");
+    for (uint32 mi = 0; mi < h.modeCount; ++mi)
+        candidate.mode[mi].visibility = candidate.visibility[modes[mi].visibilitySetIndex];
     if (cursor != count) return ValidationError(error,errorBytes,"trailing file bytes");
     out = candidate; return true;
 }
@@ -569,6 +872,10 @@ inline bool ValidateManifestAsset(const FileView &file, const ManifestView &mani
             mm.facesCRC32 != m.facesCRC32 || mm.lightingBytes != m.lightingBytes ||
             mm.lightingCRC32 != m.lightingCRC32)
             return ValidationError(error,errorBytes,"manifest/asset mode identity mismatch");
+        const VisibilitySetDisk &visibility = *v.visibility.record;
+        if (visibility.selectedLightCount != mv.lightCount || visibility.sunLightIndex != mv.sunLightIndex ||
+            visibility.selectedLightsCRC32 != ShadowMap_CRC32(mv.lights,mv.lightCount*sizeof(ShadowMapLightDisk)))
+            return ValidationError(error,errorBytes,"visibility/manifest selected lights mismatch");
         for (uint32 f = 0; f < m.faceCount; ++f)
         {
             const FaceDisk &face = v.faces[f];
@@ -576,6 +883,35 @@ inline bool ValidateManifestAsset(const FileView &file, const ManifestView &mani
                 (v.models[face.modelIndex].flags & kModelBakedPoseKnown);
             if (bool(face.flags & kFaceHasSun) != sun)
                 return ValidationError(error,errorBytes,"designated sun/face eligibility mismatch");
+            if (face.styleCount)
+                for (uint32 li = 0; li < mv.lightCount; ++li)
+                    if (int32(li) != mv.sunLightIndex && mv.lights[li].light.radius == 0 &&
+                        !FindVisibilityEntry(v.visibility,v.visibility.faces[f].firstEntry,v.visibility.faces[f].entryCount,li))
+                        return ValidationError(error,errorBytes,"unbounded local visibility omitted");
+        }
+        for (uint32 uf = 0; uf < visibility.unbakedFaceCount; ++uf)
+        {
+            const UnbakedFaceDisk &exceptions = v.visibility.unbakedFaces[uf];
+            const FaceDisk &face = v.faces[exceptions.faceOrdinal];
+            for (uint32 j = 0; j < exceptions.lightCount; ++j)
+            {
+                const uint32 li = v.visibility.unbakedLightIndices[exceptions.firstLightIndex+j];
+                for (uint32 style = 0; style < face.styleCount; ++style)
+                    if (face.styles[style] == uint32(mv.lights[li].light.style))
+                        return ValidationError(error,errorBytes,"unbaked local style already baked");
+            }
+        }
+        for (uint32 mesh = 0; mesh < visibility.meshCount; ++mesh)
+        {
+            const PropDirectView direct = GetPropDirect(v.visibility,v.visibility.meshes[mesh]);
+            if (!direct.record) continue;
+            for (uint32 j = 0; j < direct.record->unbakedLightCount; ++j)
+            {
+                const uint32 li = direct.unbakedLightIndices[j];
+                for (uint32 style = 0; style < direct.record->styleCount; ++style)
+                    if (direct.record->styles[style] == uint32(mv.lights[li].light.style))
+                        return ValidationError(error,errorBytes,"prop unbaked local style already baked");
+            }
         }
         ++admitted; assetMask |= 1u << mm.assetMode;
     }

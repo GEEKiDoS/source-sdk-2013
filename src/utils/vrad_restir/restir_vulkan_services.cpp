@@ -7,7 +7,7 @@ void CReSTIRVulkanDevice::Impl::RunService( ReSTIRPipeline pipeline, const void 
 {
 	if ( !scene || !pipelineLayout )
 		Fail( "GPU service requires UploadScene" );
-	if ( pipeline != RESTIR_PIPE_TRACE && !finalUploaded )
+	if ( pipeline != RESTIR_PIPE_TRACE && pipeline != RESTIR_PIPE_LOCAL_VISIBILITY && !finalUploaded )
 		Fail( "lightmap gather requires UploadFinalLightmap" );
 	if ( !styles )
 		Fail( "GPU services require at least style 0" );
@@ -25,7 +25,8 @@ void CReSTIRVulkanDevice::Impl::RunService( ReSTIRPipeline pipeline, const void 
 		push.seed = options.seed;
 		VkCommandBuffer command = BeginCommands();
 		unsigned int start = Timestamp( command );
-		Dispatch( command, pipeline, chunk, pipeline == RESTIR_PIPE_TRACE ? 0 : scene->faceNeighbors.Count() );
+		Dispatch( command, pipeline, chunk, pipeline == RESTIR_PIPE_LOCAL_VISIBILITY ? ~0u :
+			( pipeline == RESTIR_PIPE_TRACE ? 0 : scene->faceNeighbors.Count() ) );
 		Barrier( command );
 		unsigned int end = Timestamp( command );
 		Submit( command );
@@ -69,6 +70,31 @@ bool CReSTIRVulkanDevice::LightPoints( const CUtlVector<ReSTIRGpuPointQuery> &qu
 		gpu.Fail( "point result indexing exceeds signed 32-bit range" );
 	results.SetCount( (int)count );
 	gpu.RunService( RESTIR_PIPE_POINTS, queries.Base(), sizeof( ReSTIRGpuPointQuery ), results.Base(), sizeof( ReSTIRGpuPointResult ), queries.Count(), gpu.scene->sceneStyles.Count(), RESTIR_RAY_MASK_SHADOW );
+	return true;
+}
+
+bool CReSTIRVulkanDevice::ComputeLocalVisibility( const CUtlVector<ReSTIRGpuVisibilityQuery> &queries, CUtlVector<float> &visibility )
+{
+	Impl &gpu = *m_pImpl;
+	if ( !gpu.scene )
+		gpu.Fail( "ComputeLocalVisibility requires UploadScene" );
+	for ( int i = 0; i < queries.Count(); ++i )
+	{
+		const ReSTIRGpuVisibilityQuery &query = queries[i];
+		if ( query.selectedLightIndex >= (unsigned int)gpu.scene->shadowLights.Count() ||
+			( gpu.scene->shadowLights[query.selectedLightIndex].light.type != emit_point &&
+				gpu.scene->shadowLights[query.selectedLightIndex].light.type != emit_spotlight ) ||
+			query.reserved != 0 || ( query.flags & ~RESTIR_VISIBILITY_NO_SELF_SHADOW ) != 0 ||
+			( query.position[3] != 0.0f && query.position[3] != 1.0f ) ||
+			!_finite( query.position[0] ) || !_finite( query.position[1] ) || !_finite( query.position[2] ) )
+			gpu.Fail( "local visibility query has an invalid canonical local index, origin, flags or reserved field" );
+	}
+	visibility.SetCount( queries.Count() );
+	gpu.RunService( RESTIR_PIPE_LOCAL_VISIBILITY, queries.Base(), sizeof( ReSTIRGpuVisibilityQuery ),
+		visibility.Base(), sizeof( float ), queries.Count(), 1, RESTIR_RAY_MASK_STATIC_SUN );
+	for ( int i = 0; i < visibility.Count(); ++i )
+		if ( !_finite( visibility[i] ) || visibility[i] < 0.0f || visibility[i] > 1.0f )
+			gpu.Fail( "local visibility readback contains a nonfinite or out-of-range scalar" );
 	return true;
 }
 

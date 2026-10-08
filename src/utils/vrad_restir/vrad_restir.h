@@ -32,7 +32,7 @@ public:
 
 private:
 	bool LoadSelectedBSP( const ReSTIROptions &options );
-	int BakeSelectedMode();
+	int BakeSelectedMode( bool &pairedComplete );
 	void UnloadSelectedBSP();
 	void ClearState();
 	CReSTIRVulkanDevice *m_pInterfaceDevice;

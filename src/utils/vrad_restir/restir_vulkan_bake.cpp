@@ -1,6 +1,7 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #include "restir_vulkan_internal.h"
 #include <float.h>
+#include <limits.h>
 
 void CReSTIRVulkanDevice::Impl::WriteReservoirDescriptors()
 {
@@ -67,10 +68,67 @@ static bool DownloadSunVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<fl
 	return true;
 }
 
+static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<unsigned char> &visibility )
+{
+	int localCount = 0;
+	for ( int light = 0; light < gpu.scene->shadowLights.Count(); ++light )
+		if ( gpu.scene->shadowLights[light].light.type != emit_skylight )
+			++localCount;
+	if ( !gpu.options.shadowMaps || !localCount )
+		return;
+	const uint64_t valueCount = (uint64_t)gpu.scene->shadowLights.Count() * gpu.scene->luxels.Count();
+	if ( valueCount > INT_MAX )
+		gpu.Fail( "canonical local visibility result exceeds signed 32-bit indexing" );
+	visibility.SetCount( (int)valueCount );
+	const double visibilityStart = Plat_FloatTime();
+	uint64_t raysPerLuxel = 0;
+	const unsigned int capacity = (unsigned int)( MIN( gpu.buffers[RESTIR_BIND_SERVICE_OUT].size,
+		RESTIR_STAGING_BYTES ) / sizeof( float ) );
+	if ( !capacity )
+		gpu.Fail( "local visibility result exceeds service ring capacity" );
+	CUtlVector<float> page; page.SetCount( MIN( capacity, (unsigned int)gpu.scene->luxels.Count() ) );
+	for ( int light = 0; light < gpu.scene->shadowLights.Count(); ++light )
+	{
+		unsigned char *plane = visibility.Base() ? visibility.Base() + (size_t)light * gpu.scene->luxels.Count() : NULL;
+		if ( gpu.scene->shadowLights[light].light.type == emit_skylight )
+		{
+			// Preserve the full canonical selected domain: sun is not a local entry.
+			if ( gpu.scene->luxels.Count() )
+				memset( plane, 0, (size_t)gpu.scene->luxels.Count() );
+			continue;
+		}
+		raysPerLuxel += gpu.scene->shadowLights[light].shadowSourceRadius == 0 ? 1 : 32;
+		for ( unsigned int first = 0; first < (unsigned int)gpu.scene->luxels.Count(); )
+		{
+			const unsigned int count = MIN( capacity, (unsigned int)gpu.scene->luxels.Count() - first );
+			// Origins stay resident; only one scalar per query occupies the GPU ring.
+			// Dispatch batching owns push.first; iteration is the outer luxel base.
+			gpu.push.iteration = first;
+			VkCommandBuffer command = gpu.BeginCommands();
+			gpu.Dispatch( command, RESTIR_PIPE_LOCAL_VISIBILITY, count, (unsigned int)light );
+			gpu.Barrier( command );
+			gpu.Submit( command );
+			gpu.Download( RESTIR_BIND_SERVICE_OUT, page.Base(), (VkDeviceSize)count * sizeof( float ),
+				0, &gpu.timings.compactionMs );
+			for ( unsigned int i = 0; i < count; ++i )
+			{
+				if ( !_finite( page[i] ) || page[i] < 0.0f || page[i] > 1.0f )
+					gpu.Fail( "world local visibility readback contains a nonfinite or out-of-range scalar" );
+				plane[first + i] = (unsigned char)floorf( page[i] * 255.0f + 0.5f );
+			}
+			first += count;
+		}
+	}
+	Msg( "Hybrid visibility: world queries=%llu rays<=%llu R8-bytes=%d elapsed=%.3f s\n",
+		(unsigned long long)localCount * gpu.scene->luxels.Count(),
+		(unsigned long long)raysPerLuxel * gpu.scene->luxels.Count(), visibility.Count(), Plat_FloatTime() - visibilityStart );
+}
+
 bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLightmapResult &result )
 {
 	Impl &gpu = *m_pImpl;
 	result.sunVisibility.RemoveAll();
+	result.localVisibility.RemoveAll();
 	if ( !gpu.scene || !gpu.pipelineLayout )
 		gpu.Fail( "BakeLightmaps requires UploadScene" );
 	gpu.finalUploaded = false;
@@ -108,6 +166,9 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 		gpu.Barrier( command );
 	}
 	gpu.Submit( command );
+	// Exactly one local scalar query per canonical local/geometric luxel, outside
+	// transport iterations and independent of selected sun/intensity/style.
+	BakeLocalVisibility( gpu, result.localVisibility );
 	for ( int iteration = 0; iteration < options.iterations; ++iteration )
 	{
 		gpu.push.iteration = iteration;

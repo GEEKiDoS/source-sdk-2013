@@ -133,6 +133,9 @@ public:
 // 4096-entry render groups: every registered renderable whose current world
 // AABB intersects the volume (and passes its planes) is reported exactly once,
 // including still-dirty and unlinked (outside-BSP) registrations.
+// Same-frame identical queries may reuse the ordered spatial candidate visits
+// while registration/leaf/bounds generations match. Current eligibility, bounds
+// and sink classification still run; no material or caster result is frozen.
 //-----------------------------------------------------------------------------
 struct ShadowCasterVolume_t
 {

@@ -139,15 +139,21 @@ bool UpscalerDX12_Enabled()
 	return s_bDX12 && r_upscaler.GetInt() != 0 && MotionVectorsDX12_RenderTarget() != nullptr;
 }
 
+bool UpscalerDX12_RequiresMotionVectors()
+{
+	// NR is dispatched only as part of this latched temporal-AA dispatch.
+	return s_bFrameLatched;
+}
+
 void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTemporalViewEligible, const CViewSetup &view )
 {
+	s_bFrameLatched = false;
 	if ( !s_bDX12 || !pRenderContext )
 		return;
 	if ( !UpscalerDX12_Enabled() )
 	{
 		// Mode 0 disarms the backend for every draw of this view; the target-less case never dispatches.
 		pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_MODE, 0 );
-		s_bFrameLatched = false;
 		s_bLastFrameEligible = false;
 		s_bResetPending = true;
 		return;

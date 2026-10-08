@@ -132,6 +132,13 @@ def run(only_slices=None):
     LAYOUT_FROM, NO_PARITY = _gm.LAYOUT_FROM, _gm.NO_PARITY
     generated, manifests, errors = {}, {}, []
     vs_cache = {}
+    # Shared logicals keep the first pair-table slice as their manifest owner,
+    # including partial regeneration where that slice is not selected.
+    owners = {}
+    for slice_, _, _, vlog, _, _, plog, _ in _pairs.ALL:
+        owners.setdefault(vlog, slice_)
+        if plog:
+            owners.setdefault(plog, slice_)
     entries = [e for e in _pairs.ALL if not only_slices or e[0] in only_slices]
     native_entries = [e for e in getattr(_pairs, 'NATIVE_ONLY', []) if not only_slices or e[0] in only_slices]
     # Vertex output conditionals on macros a paired pixel shader lacks are flattened (union of members, the
@@ -177,7 +184,8 @@ def run(only_slices=None):
                 text, interp, _ = gs.convert(vsrc, vprof, vlog, centroid=sorted(centroid.get(vlog, ())), flatten=frozenset(flatten.get(vlog, ())), output_struct_from=LAYOUT_FROM.get(vlog))
                 vs_cache[vlog] = (text, interp)
                 generated[vlog] = text
-                manifests.setdefault(slice_, []).append(f'{native_name(vlog)}.fxc vs {native_name(vlog)} {MANIFEST_PROFILE[vprof]} {vsrc}')
+                if owners[vlog] == slice_:
+                    manifests.setdefault(slice_, []).append(f'{native_name(vlog)}.fxc vs {native_name(vlog)} {MANIFEST_PROFILE[vprof]} {vsrc}')
             interp = vs_cache[vlog][1]
             if psrc:
                 cpp_texts = [open(os.path.join(LEGACY, c), encoding='latin-1').read() for c in cpps]
@@ -189,7 +197,8 @@ def run(only_slices=None):
                     raise RuntimeError(f'{plog} differs between its vertex pairings')
                 if plog not in generated:
                     generated[plog] = text
-                    manifests.setdefault(slice_, []).append(f'{native_name(plog)}.fxc ps {native_name(plog)} {MANIFEST_PROFILE[pprof]} {psrc}')
+                    if owners[plog] == slice_:
+                        manifests.setdefault(slice_, []).append(f'{native_name(plog)}.fxc ps {native_name(plog)} {MANIFEST_PROFILE[pprof]} {psrc}')
             if (vlog, plog) in NO_PARITY:
                 manifests.setdefault(slice_, []).append(f'# noparity {native_name(vlog)} {native_name(plog) if plog else "-"} {NO_PARITY[(vlog, plog)]}')
             else:
@@ -234,6 +243,8 @@ def run(only_slices=None):
     # Every actual BSP-lightmap consumer has an explicit RGB join. Do not reuse the old
     # shadow receiver whitelist: water, glass and world pyro consume native lightmaps too.
     import genhighres
+    import gencommon
+    earlydepth_common, _, _ = gencommon.translate_all()
     highres_vs = {}
     for slice_, vsrc, vprof, vlog, psrc, pprof, plog, cpps in entries:
         if plog not in genhighres.SAMPLER_ROLES: continue
@@ -258,6 +269,17 @@ def run(only_slices=None):
                 manifests.setdefault(slice_, []).extend([
                     f'{native_name(fp)}.fxc ps {native_name(fp)} native -',
                     f'# noparity {native_name(fp)} - highres-feature-variant'])
+                hazards = genhighres.earlydepth_hazards(text, native_name(fp), earlydepth_common, ROOT)
+                if hazards:
+                    manifests.setdefault(slice_, []).append(
+                        f'# earlydepth-excluded {native_name(fp)} ' + '; '.join(hazards))
+                else:
+                    early = fp.replace('_highres_', '_highres_earlydepth_')
+                    generated[early] = genhighres.earlydepth_pixels(text)
+                    manifests.setdefault(slice_, []).extend([
+                        f'{native_name(early)}.fxc ps {native_name(early)} native -',
+                        f'# noparity {native_name(early)} - highres-earlydepth-feature-variant',
+                        f'# earlydepth {native_name(fp)} {native_name(early)}'])
         except Exception as e:
             errors.append(f'{slice_} highres {vlog}/{plog}: {e}')
     # Fail before publication/deletion: a missing receiver rule must not leave a partial shader pack.
@@ -272,6 +294,24 @@ def run(only_slices=None):
             continue
         manifests.setdefault(slice_, []).append(f'{source} {stage} {logical} native -')
         manifests.setdefault(slice_, []).append(f'# noparity {logical} - native-only')
+        if stage == 'ps' and '_highres_' in logical:
+            with open(native_path, encoding='latin-1') as authored:
+                text = authored.read()
+            hazards = genhighres.earlydepth_hazards(text, logical, earlydepth_common, ROOT)
+            if hazards:
+                manifests.setdefault(slice_, []).append(
+                    f'# earlydepth-excluded {logical} ' + '; '.join(hazards))
+            else:
+                early = logical.replace('_ps51', '_earlydepth_ps51')
+                early_source = early + '.fxc'
+                if not os.path.isfile(os.path.join(ROOT, 'native_src', early_source)):
+                    errors.append(f'{slice_} native-only {early}: missing authored twin')
+                    continue
+                manifests.setdefault(slice_, []).extend([
+                    f'{early_source} ps {early} native -',
+                    f'# noparity {early} - native-only-highres-earlydepth',
+                    f'# earlydepth {logical} {early}'])
+    if errors: raise RuntimeError('\n'.join(errors))
     if not only_slices:
         # the native sources and manifests are generator-owned: drop what the table no longer produces
         for f in os.listdir(os.path.join(ROOT, 'hlsl')):

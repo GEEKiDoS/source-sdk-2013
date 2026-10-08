@@ -2037,6 +2037,7 @@ void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const
 	pList->SetGraphicsRoot32BitConstants( 0, 4, m_ClearColor, 0 );
 	pList->SetPipelineState( pPipeline );
 	pList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_pDevice->GpuReceiverDraw( false );
 	pList->DrawInstanced( 3, 1, 0, 0 );
 	m_Pipeline.InvalidateGraphicsBindings();
 }
@@ -2560,6 +2561,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		pList->SetGraphicsRoot32BitConstants( 2, 4, pGammaCoefficients, 4 );
 	pList->SetPipelineState( pPSO );
 	pList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_pDevice->GpuReceiverDraw( false );
 	pList->DrawInstanced( 3, 1, 0, 0 );
 	m_Pipeline.InvalidateGraphicsBindings();
 	if ( pScratch )

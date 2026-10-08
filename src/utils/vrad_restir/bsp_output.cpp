@@ -32,6 +32,17 @@ extern CUtlVector<dleafambientindex_t> g_LeafAmbientIndexHDR;
 extern CUtlVector<dleafambientlighting_t> g_LeafAmbientLightingLDR;
 extern CUtlVector<dleafambientlighting_t> g_LeafAmbientLightingHDR;
 
+bool ReSTIR_ReusePairedLeafAmbientLighting()
+{
+	if ( !g_bHDR || numworldlightsHDR != numworldlightsLDR )
+		return false;
+	g_LeafAmbientIndexHDR.CopyArray( g_LeafAmbientIndexLDR.Base(), g_LeafAmbientIndexLDR.Count() );
+	g_LeafAmbientLightingHDR.CopyArray( g_LeafAmbientLightingLDR.Base(), g_LeafAmbientLightingLDR.Count() );
+	// ComputeLeafAmbientLighting marks small native lights as INAMBIENTCUBE.
+	// Copy that completed native record, not the pre-gather exportLights.
+	memcpy( dworldlightsHDR, dworldlightsLDR, numworldlightsLDR * sizeof( dworldlight_t ) );
+	return true;
+}
 namespace
 {
 	// Ported from utils/vrad/macro_texture.cpp:17-30. The output module owns

@@ -73,9 +73,10 @@ struct ShaderRecordDX12
 	CUtlVector<NativeCBufferBindingDX12> nativeCBuffers;
 	uint64_t nativeAbiHash = 0;
 	bool nativeReflectionReady = false;
-	bool lightingAbi = false, sunVisibilityAbi = false;
+	bool lightingAbi = false, sunVisibilityAbi = false, propVisibilityAbi = false;
 	uint32_t lightmapSamplerMask = 0, nativeSamplerMask = 0;
 	bool highresAbi = false, samplerRolesReady = false, nativeCasterTwin = false;
+	bool nativeEarlyDepthTwin = false;
 	// Hash of translated.outputLinkage for the active variant; cleared whenever the linkage or variant changes.
 	uint64_t linkageHash = 0, linkageHashVariant = 0;
 	bool linkageHashValid = false;
@@ -162,6 +163,38 @@ public:
 
 	void FlushSubmissions();
 	bool ConsumeGpuTime( double &flAverageMs, uint32_t &nFrames );
+
+	// Exclusive GPU intervals; receiver rendering includes ordinary/baked receiver work, not just shadow kernels.
+	enum GpuStageDX12 : uint32_t { GpuOther, GpuReceiverRendering, GpuShadowDepth, GpuDepthRectRestore, GpuStageCount };
+	// View 0 is outside lighting scopes; 1..64 are BeginView ordinals, 65 is explicit overflow.
+	static constexpr uint32_t kGpuReceiverMaxViews = 64;
+	static constexpr uint32_t kGpuReceiverViewBuckets = kGpuReceiverMaxViews + 2;
+	struct GpuReceiverViewStatsDX12
+	{
+		double ms[2] = {}, psInvocations[2] = {}, draws[2] = {}; // other, lit; per presented frame after consume
+		int width = 0, height = 0;
+		bool seen = false, mixedViewport = false;
+	};
+	struct GpuStageStatsDX12
+	{
+		double msPerPresentedFrame[GpuStageCount] = {};
+		double psInvocationsPerPresentedFrame[GpuStageCount] = {};
+		double cInvocationsPerPresentedFrame[GpuStageCount] = {};
+		double cPrimitivesPerPresentedFrame[GpuStageCount] = {};
+		uint32_t presentedFrames = 0, pendingSpans = 0;
+		uint64_t completedSpans = 0, skippedSpans = 0, overflowSpans = 0, invalidSpans = 0, scopeErrors = 0, totalSkippedLists = 0;
+		uint64_t pipelineCompletedSpans = 0, pipelineSkippedSpans = 0, pipelineOverflowSpans = 0, pipelineInvalidSpans = 0;
+		GpuReceiverViewStatsDX12 receiverViews[kGpuReceiverViewBuckets] = {};
+		uint64_t receiverViewOverflow = 0, receiverScopeErrors = 0, receiverSkippedDraws = 0;
+		bool available = false, pipelineAvailable = false;
+	};
+	void BeginGpuStage( GpuStageDX12 stage );
+	void EndGpuStage( GpuStageDX12 stage );
+	void BeginGpuReceiverView( int width, int height );
+	void EndGpuReceiverView();
+	void GpuReceiverDraw( bool lit );
+	// ConsumeGpuTime collects fence-completed timestamps and pipeline counters; consume this snapshot immediately afterward.
+	bool ConsumeGpuStageStats( GpuStageStatsDX12 &stats );
 
 	// Replays every recorded command before returning; required before rewriting or freeing CPU RTV/DSV descriptors
 	// that recorded OMSetRenderTargets/Clear*View calls still name.
@@ -392,19 +425,52 @@ private:
 		}
 	};
 
-	// -dx12stats GPU frame timing: begin/end timestamps per presented frame, read back once its fence completes.
+	// -dx12stats list spans are fence-owned; -dx12shadowstats adds exclusive stage timestamps and pipeline counters.
 	static constexpr uint32_t kTimestampSlots = 32;
+	static constexpr uint32_t kStageTimestampSlots = 4096;
+	static constexpr uint32_t kGpuStageStackSize = 64;
+	bool EnsureGpuTiming();
+	void EnsureGpuPipelineStats();
+	void CollectGpuTiming();
 	bool GpuTimingBeforeSubmit();
 	void GpuTimingAfterSubmit();
+	void BeginGpuStageSpan();
+	void EndGpuStageSpan();
+	void ChangeGpuStage( GpuStageDX12 stage );
 	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pTimestampHeap;
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pTimestampReadback;
 	const uint64_t *m_pTimestampData = nullptr;
 	uint64_t m_TimestampFences[kTimestampSlots] = {};
 	uint32_t m_nTimestampSlot = 0;
-	bool m_bTimestampBegun = false;
+	bool m_bTimestampBegun = false, m_bTimestampUnavailable = false, m_bGpuTimingStopping = false;
 	uint64_t m_nTimestampFrequency = 0;
 	double m_flGpuTimeSumMs = 0.0;
 	uint32_t m_nGpuTimePresented = 0;
+
+	bool m_bShadowTimingEnabled = false, m_bStageQueriesAvailable = false, m_bStageTimestampBegun = false;
+	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pStagePipelineHeap;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pStagePipelineReadback;
+	const D3D12_QUERY_DATA_PIPELINE_STATISTICS *m_pStagePipelineData = nullptr;
+	struct GpuReceiverKeyDX12
+	{
+		uint32_t view = 0;
+		int width = 0, height = 0;
+		bool lit = false;
+	};
+	GpuReceiverKeyDX12 m_GpuReceiverKey, m_GpuReceiverStack[kGpuStageStackSize] = {};
+	GpuReceiverKeyDX12 m_StageReceiverKeys[kStageTimestampSlots] = {};
+	uint32_t m_nGpuReceiverViewOrdinal = 0, m_nGpuReceiverDepth = 0, m_nGpuReceiverOverflowDepth = 0;
+	uint32_t m_nGpuReceiverSpanDraws = 0, m_StageReceiverDraws[kStageTimestampSlots] = {};
+	uint64_t m_StageTimestampFences[kStageTimestampSlots] = {};
+	GpuStageDX12 m_StageTimestampCategories[kStageTimestampSlots] = {};
+	uint32_t m_nStageTimestampSlot = 0;
+	GpuStageDX12 m_GpuStage = GpuOther, m_GpuStageStack[kGpuStageStackSize] = {};
+	uint32_t m_nGpuStageDepth = 0, m_nGpuStageOverflowDepth = 0;
+	double m_flGpuStageSumMs[GpuStageCount] = {};
+	uint64_t m_nGpuStagePSInvocations[GpuStageCount] = {};
+	uint64_t m_nGpuStageCInvocations[GpuStageCount] = {};
+	uint64_t m_nGpuStageCPrimitives[GpuStageCount] = {};
+	GpuStageStatsDX12 m_GpuStageStats;
 
 	// Submission worker: Close/ExecuteCommandLists/Signal and Present run there in FIFO order. The recording
 	// owner calls FlushSubmissions before any other queue or swap-chain access.

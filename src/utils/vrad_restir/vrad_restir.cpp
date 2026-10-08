@@ -4,12 +4,14 @@
 #include "vrad_restir.h"
 #include "restir_scene.h"
 #include "restir_vulkan.h"
+#include "restir_paired_scene.h"
 #include "restir_denoiser.h"
 #include "restir_staticprops.h"
 #include "ambient_cube.h"
 #include "bsp_output.h"
 #include "prop_lighting.h"
 #include "restir_lightmap_rescale.h"
+#include "hlight_output.h"
 #include "cmdlib.h"
 #include "bsplib.h"
 #include "loadcmdline.h"
@@ -542,6 +544,30 @@ static bool WriteShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLig
 			fprintf( file, "%s[%.9g,%.9g,%.9g]", i ? "," : "", values[i].x, values[i].y, values[i].z );
 		fprintf( file, "]" );
 	}
+	fprintf(file,",\"bakedDirectRadiance\":[");
+	bool firstDirect = true;
+	for (int fi = 0; fi < scene.faces.Count(); ++fi)
+	{
+		const ReSTIRGpuFace &f = scene.faces[fi];
+		int styles[MAXLIGHTMAPS], styleCount = 0;
+		CUtlVector<Vector> direct;
+		if (scene.shadowLights.Count() && !ReSTIR_BakedLocalDirectFace(scene,result,f,styles,styleCount,direct))
+		{
+			fclose(file);
+			return false;
+		}
+		for (int s = 0; s < f.numStyles; ++s)
+		for (int p = 0; p < f.numChannels; ++p)
+		for (int j = 0; j < f.luxelW*f.luxelH; ++j)
+		{
+			int slot = 0;
+			while (slot < styleCount && styles[slot] != f.styles[s]) ++slot;
+			const Vector value = slot < styleCount ? direct[(slot*f.numChannels+p)*f.luxelW*f.luxelH+j] : vec3_origin;
+			fprintf(file,"%s[%.9g,%.9g,%.9g]",firstDirect ? "" : ",",value.x,value.y,value.z);
+			firstDirect = false;
+		}
+	}
+	fprintf(file,"]");
 	fprintf( file, ",\"luxelValid\":[" );
 	for ( int i = 0; i < result.luxelValid.Count(); ++i )
 		fprintf( file, "%s%u", i ? "," : "", (unsigned int)result.luxelValid[i] );
@@ -564,6 +590,29 @@ static bool WriteShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLig
 		const float *position = scene.luxels[i].position;
 		fprintf( file, "%s[%.9g,%.9g,%.9g]", i ? "," : "", position[0], position[1], position[2] );
 	}
+	fprintf(file,"],\"localDirectPositions\":[");
+	for (int i = 0; i < scene.localDirectPositions.Count(); ++i)
+	{
+		const Vector &p = scene.localDirectPositions[i];
+		fprintf(file,"%s[%.9g,%.9g,%.9g]",i ? "," : "",p.x,p.y,p.z);
+	}
+	fprintf(file,"],\"luxelNormals\":[");
+	for (int i = 0; i < scene.localDirectNormals.Count(); ++i)
+	{
+		const Vector &n = scene.localDirectNormals[i];
+		fprintf(file,"%s[%.9g,%.9g,%.9g]",i ? "," : "",n.x,n.y,n.z);
+	}
+	fprintf(file,"],\"luxelBumpNormals\":[");
+	for (int i = 0; i < scene.localDirectNormals.Count(); ++i)
+	{
+		fprintf(file,"%s[",i ? "," : "");
+		for (int p = 0; p < 3; ++p)
+		{
+			const Vector &n = scene.localDirectBumpNormals[3*i+p];
+			fprintf(file,"%s[%.9g,%.9g,%.9g]",p ? "," : "",n.x,n.y,n.z);
+		}
+		fprintf(file,"]");
+	}
 	fprintf(file,"],\"sunVisibility\":[");
 	for (int i = 0; i < result.sunVisibility.Count(); ++i)
 		fprintf(file,"%s%.9g",i ? "," : "",result.sunVisibility[i]);
@@ -581,6 +630,19 @@ static bool WriteShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLig
 	if ( !written || !closed )
 		Warning( "Shadowmaps: cannot write diagnostics %s\n", diagnosticPath.String() );
 	return written && closed;
+}
+static bool WritePairedShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLightmapResult &result, bool reuse )
+{
+	if ( !WriteShadowMapDiagnostics( scene, result ) )
+		return false;
+	if ( !reuse )
+		return true;
+	// Both diagnostic files promise pre-denoise data. Write the admitted
+	// equivalent HDR evidence now, not after the shared denoiser mutates RGB.
+	g_ReSTIROptions.hdr = true;
+	const bool written = WriteShadowMapDiagnostics( scene, result );
+	g_ReSTIROptions.hdr = false;
+	return written;
 }
 
 // -restir_probe diagnostic: GPU direct/indirect at one point, plus the light table the GPU sees.
@@ -635,6 +697,29 @@ static void SelectFaceArrayForMode( bool bHDR )
 	{
 		g_pFaces = dfaces;
 	}
+}
+// Resolve both authored modes before solving either. The same loaded BSP,
+// assets, secondary-query domains and quality options remain alive throughout
+// a reuse pair; only hdr changes. No result is reused across map loads.
+static bool BuildPairedScene( CReSTIRSceneBuilder &builder, ReSTIRScene &scene, bool &reuse )
+{
+	reuse = false;
+	if ( !s_BakeBothModes || g_ReSTIROptions.hdr )
+		return builder.Build( g_ReSTIROptions, scene );
+	ReSTIRScene hdrScene;
+	ReSTIROptions hdrOptions = g_ReSTIROptions;
+	hdrOptions.hdr = true;
+	SetHDRMode( true );
+	SelectFaceArrayForMode( true );
+	const bool hdrBuilt = builder.Build( hdrOptions, hdrScene );
+	SetHDRMode( false );
+	SelectFaceArrayForMode( false );
+	if ( !hdrBuilt || !builder.Build( g_ReSTIROptions, scene ) )
+		return false;
+	reuse = ReSTIR_PairedScenesEqual( scene, hdrScene );
+	Msg( "VRAD ReSTIR: paired effective inputs/sampling domains %s; %s GPU transport solution%s\n",
+		reuse ? "equal" : "different", reuse ? "one" : "two", reuse ? "" : "s" );
+	return true;
 }
 
 CVRadRestirDLL::CVRadRestirDLL()
@@ -761,8 +846,9 @@ int CVRadRestirDLL::main( int argc, char **argv )
 			}
 		}
 		Msg( "VRAD ReSTIR: baking %s mode\n", g_ReSTIROptions.hdr ? "HDR" : "LDR" );
-		exitCode = BakeSelectedMode();
-		if ( exitCode )
+		bool pairedComplete = false;
+		exitCode = BakeSelectedMode( pairedComplete );
+		if ( exitCode || pairedComplete )
 			break;
 	}
 	UnloadSelectedBSP();
@@ -785,9 +871,10 @@ int CVRadRestirDLL::main( int argc, char **argv )
 	return exitCode;
 }
 
-int CVRadRestirDLL::BakeSelectedMode()
+int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 {
 	m_bBakeComplete = false;
+	pairedComplete = false;
 	m_flProgress = 0.0f;
 
 	const double startTime = Plat_FloatTime();
@@ -798,6 +885,7 @@ int CVRadRestirDLL::BakeSelectedMode()
 	ReSTIRLightmapResult result;
 	bool staticPropsInitialized = false;
 	bool success = false;
+	bool reusePaired = false;
 	const char *pFailedStage = NULL;
 
 	// Every stage names itself on failure so a non-zero exit is never silent.
@@ -808,9 +896,10 @@ int CVRadRestirDLL::BakeSelectedMode()
 
 	RESTIR_STAGE( "loading static props", g_ReSTIRStaticPropMgr.Init() );
 	staticPropsInitialized = true;
+	ReSTIR_EnableStaticPropDirectDiagnostics( s_ShadowMapDiagnosticsPath.Length() != 0 );
 	m_flProgress = 0.10f;
 	RESTIR_STAGE( "rescaling lightmaps", ReSTIR_RescaleLightmaps( g_ReSTIROptions ) );
-	RESTIR_STAGE( "building scene", sceneBuilder.Build( g_ReSTIROptions, scene ) );
+	RESTIR_STAGE( "building effective paired scene", BuildPairedScene( sceneBuilder, scene, reusePaired ) );
 	{
 		int coverageCount = 0;
 		int albedoCount = 0;
@@ -842,7 +931,7 @@ int CVRadRestirDLL::BakeSelectedMode()
 	RESTIR_STAGE( "resolving light styles", ReSTIR_ResolveFaceStyles( scene, device ) );
 	m_flProgress = 0.40f;
 	RESTIR_STAGE( "baking lightmaps", device.BakeLightmaps( g_ReSTIROptions, result ) );
-	RESTIR_STAGE( "writing shadowmap diagnostics", WriteShadowMapDiagnostics( scene, result ) );
+	RESTIR_STAGE( "writing shadowmap diagnostics", WritePairedShadowMapDiagnostics( scene, result, reusePaired ) );
 	m_flProgress = 0.65f;
 
 	if ( g_ReSTIROptions.denoiser == RESTIR_DENOISER_NONE )
@@ -866,9 +955,44 @@ int CVRadRestirDLL::BakeSelectedMode()
 		RESTIR_STAGE( "encoding lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
 		RESTIR_STAGE( "computing leaf ambient lighting", ReSTIR_ComputeLeafAmbientLighting( g_ReSTIROptions, scene, device, result ) );
 		RESTIR_STAGE( "computing static prop lighting", ReSTIR_ComputeStaticPropLighting( g_ReSTIROptions, scene, device ) );
+		if ( g_ReSTIROptions.shadowMaps && s_ShadowMapDiagnosticsPath.Length() )
+		{
+			CUtlString path( s_ShadowMapDiagnosticsPath.String() );
+			path += g_ReSTIROptions.hdr ? ".props.hdr.json" : ".props.ldr.json";
+			RESTIR_STAGE( "writing static prop direct diagnostics", ReSTIR_WriteStaticPropDirectDiagnostics( path.String(), g_ReSTIROptions.hdr ) );
+		}
 		RESTIR_STAGE( "computing detail prop lighting", ReSTIR_ComputeDetailPropLighting( g_ReSTIROptions, scene, device ) );
 		RESTIR_STAGE( "validating output", output.Validate( g_ReSTIROptions ) );
 		RESTIR_STAGE( "writing BSP", output.Write( g_ReSTIROptions ) );
+		if ( reusePaired )
+		{
+			// LDR has only reached the owned transaction. Retain the solved
+			// source/receiver/style transport and prop meshes, but encode HDR
+			// afresh so native lump tags, highres records and CRCs are correct.
+			Msg( "VRAD ReSTIR: reusing LDR solved transport and secondary lighting for HDR; skipping second GPU transport\n" );
+			g_ReSTIROptions.hdr = true;
+			SetHDRMode( true );
+			VRadRestirDetailProps_SetHDRMode( true );
+			SelectFaceArrayForMode( true );
+			RESTIR_STAGE( "preparing reused HDR storage", ReSTIR_RescaleLightmaps( g_ReSTIROptions ) );
+			RESTIR_STAGE( "encoding reused HDR lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
+			RESTIR_STAGE( "reusing leaf ambient lighting", ReSTIR_ReusePairedLeafAmbientLighting() );
+			RESTIR_STAGE( "serializing reused HDR static prop lighting", ReSTIR_ReuseStaticPropLighting( g_ReSTIROptions ) );
+			if ( g_ReSTIROptions.shadowMaps && s_ShadowMapDiagnosticsPath.Length() )
+			{
+				CUtlString path( s_ShadowMapDiagnosticsPath.String() );
+				path += ".props.hdr.json";
+				RESTIR_STAGE( "writing reused static prop direct diagnostics", ReSTIR_WriteStaticPropDirectDiagnostics( path.String(), true ) );
+			}
+			RESTIR_STAGE( "serializing reused HDR detail prop lighting", ReSTIR_ReuseDetailPropLighting() );
+			if ( g_ReSTIROptions.shadowMaps )
+			{
+				RESTIR_STAGE( "sharing proven paired visibility", ReSTIR_MarkPairedVisibilityReuse() );
+			}
+			RESTIR_STAGE( "validating reused HDR output", output.Validate( g_ReSTIROptions ) );
+			RESTIR_STAGE( "writing reused HDR BSP", output.Write( g_ReSTIROptions ) );
+			pairedComplete = true;
+		}
 	}
 	#undef RESTIR_STAGE
 	m_flProgress = 1.0f;

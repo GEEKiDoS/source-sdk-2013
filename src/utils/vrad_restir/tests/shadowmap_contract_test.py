@@ -791,6 +791,19 @@ def prepare(fixture, toolgame):
                 model,texel_lighting = name,True
                 break
     require(model, 'no loadable MDL/VVD/DX90.VTX from ep2_outland_09 static-prop dictionary in mounted episode content')
+    # Active prop-direct cases additionally exercise a real multi-LOD model.
+    # Keep the frozen runner's historical model selection unchanged.
+    prop_direct_model, prop_direct_lods = None, 0
+    for name in names:
+        base = name[:-4]
+        mdl, vtx = load(name), load(base + '.dx90.vtx')
+        if not mdl or mdl[:4] != b'IDST' or not vtx or len(vtx) < 24 or not load(base + '.vvd'):
+            continue
+        bounds = unpack('<6f', mdl, 104)
+        lods = unpack('<i', vtx, 20)[0]  # OptimizedModel::FileHeader_t::numLODs
+        if lods > 1 and all(bounds[k+3]-bounds[k] <= 192 for k in range(3)):
+            prop_direct_model, prop_direct_lods = name, lods
+            break
     material = toolgame / 'materials/shadowmap_test'
     material.mkdir(parents=True, exist_ok=True)
     # 186/255 in gamma space is neutral approximately 0.5 linear albedo.
@@ -831,6 +844,74 @@ def prepare(fixture, toolgame):
     variant('sun-only', sun)
     variant('spot-only', spot)
     variant('wide-spot-only', lambda e: e.get('classname') == 'light_spot' and not spot(e))
+    # Hybrid-only real producer fixtures. They are prepared here for callers of
+    # hlight_contract_test; the frozen v3 behavioral runner below is unchanged.
+    def hybrid_props(vmf, no_vertex=False, no_self=False):
+        props = [e for e in vmf.blocks('entity') if e.get('classname') == 'prop_static']
+        require(props, 'hybrid prop visibility fixture requires actual static props')
+        for prop in props:
+            prop.set('disableshadows', '0')
+            prop.set('disablevertexlighting', '1' if no_vertex else '0')
+            prop.set('generatelightmaps', '0')  # No RGB route may substitute for required visibility.
+            prop.set('disableselfshadowing', '1' if no_self else '0')
+    variant('hybrid-prop-no-per-vertex', spot, lambda v: hybrid_props(v, no_vertex=True))
+    variant('hybrid-prop-no-self', spot, lambda v: hybrid_props(v, no_self=True))
+    # v4 RGB semantics: local-only analytic probes isolate the selected direct
+    # term at zero bounces. These are deliberately not frozen-runner scenarios.
+    def baked_direct(vmf, kind='point', styles=(0,)):
+        for index, style in enumerate(styles):
+            light = KV([('id', str(940000+index)), ('classname', 'light'),
+                ('origin', '192 -64 128'), ('_light', '255 192 96 250'),
+                ('_lightHDR', '-1 -1 -1 1'), ('_lightscaleHDR', '1'),
+                ('_constant_attn', '.25'), ('_linear_attn', '.01'),
+                ('_quadratic_attn', '.001'), ('_shadowmap', '1'),
+                ('_shadow_radius', '8'), ('style', str(style))])
+            if kind == 'spot':
+                light.set('classname', 'light_spot')
+                light.set('angles', '90 0 0')
+                light.set('pitch', '-90')
+                light.set('_inner_cone', '25')
+                light.set('_cone', '70')
+                light.set('_exponent', '2')
+                light.set('_distance', '480')
+            elif kind == 'hard-fade':
+                light.set('_fifty_percent_distance', '200')
+                light.set('_zero_percent_distance', '480')
+                light.set('_hardfalloff', '1')
+            vmf.items.append(('entity', light))
+    for kind in ('point', 'spot', 'hard-fade'):
+        variant('baked-direct-' + kind, lambda e: False,
+                lambda v, kind=kind: baked_direct(v, kind))
+    variant('baked-direct-styles', lambda e: False,
+            lambda v: baked_direct(v, styles=(0, 32, 33, 34)))
+    # Real five-style direct must succeed: co-located locals share geometry and
+    # visibility, so a contributing face admits four styles and records exactly
+    # the remaining selected-local index for full runtime fallback.
+    variant('baked-direct-style-overflow', lambda e: False,
+            lambda v: baked_direct(v, styles=(0, 32, 33, 34, 35)))
+    # v4 prop-only analytics: all five selected styles are co-located near an
+    # actual prop, not the world-only floor probe. Frozen runner cases stay unchanged.
+    def prop_direct(vmf, skip='', selected=True):
+        hybrid_props(vmf, no_vertex=skip == 'no-per-vertex', no_self=True)
+        props = [e for e in vmf.blocks('entity') if e.get('classname') == 'prop_static']
+        require(prop_direct_model, 'no loadable compact multi-LOD prop-direct fixture model')
+        for prop in props:
+            prop.set('model', prop_direct_model)
+        if skip == 'pertexel':
+            for prop in props:
+                prop.set('generatelightmaps', '1')
+        if not selected:
+            return
+        origin = [float(x) for x in props[0].get('origin').split()]
+        origin[2] += 96
+        baked_direct(vmf, styles=(0, 32, 33, 34, 35))
+        for light in vmf.blocks('entity'):
+            if light.get('classname') == 'light':
+                light.set('origin', ' '.join(str(x) for x in origin))
+    variant('prop-direct-analytic', lambda e: False, prop_direct)
+    variant('prop-direct-no-per-vertex', lambda e: False, lambda v: prop_direct(v, 'no-per-vertex'))
+    variant('prop-direct-pertexel', lambda e: False, lambda v: prop_direct(v, 'pertexel'))
+    variant('prop-direct-zero-selected', lambda e: False, lambda v: prop_direct(v, selected=False))
     for name, value in (('sun-spread-0p27', '0.27'), ('sun-spread-0', '0'), ('sun-spread-invalid', 'nan'), ('sun-spread-invalid-infinity', 'inf'), ('sun-spread-invalid-negative', '-0.1'), ('sun-spread-invalid-upper', '90'), ('sun-zero-intensity', '0')):
         variant(name, sun, lambda v, key=('_light' if name == 'sun-zero-intensity' else 'SunSpreadAngle'), value=value: set_lights(v, key, '255 255 255 0' if key == '_light' else value))
     def sun_probe(vmf, radius=8, zero=False):
@@ -877,8 +958,9 @@ def prepare(fixture, toolgame):
         vmf.items.append(('entity', other))
     variant('multi-env-last-wins', sun, multi)
     def source_styles(vmf, receiver_overflow=False):
-        # Seven source styles, four receivers; style 3 mixes selected/unselected
-        # lights and style 63 exercises the top bit of the receiver style domain.
+        # Seven source styles including implicit style 0, four native receiver
+        # styles. Style 3 mixes selected/unselected direct; 32/34/63 must remain
+        # unbaked wherever all four receiver slots are occupied, with visibility.
         lights = [(1, 0), (2, 0), (3, 0), (3, 1), (32, 1), (34, 1), (63, 1)]
         if receiver_overflow:
             lights.append((4, 0))
@@ -887,6 +969,8 @@ def prepare(fixture, toolgame):
                 ('origin', '1280 224 128'), ('_light', '255 224 160 250'), ('_quadratic_attn', '1'),
                 ('style', str(style)), ('_shadowmap', str(selected))])))
     variant('source-style-overflow', lambda e: False, source_styles)
+    # Adding unselected style 4 exceeds the native receiver transport limit:
+    # unlike selected-local overflow, this must still reject and roll back.
     variant('receiver-style-overflow', lambda e: False, lambda v: source_styles(v, True))
     def overflow(vmf):
         for i in range(9):
@@ -900,6 +984,7 @@ def prepare(fixture, toolgame):
     (fixture / 'renderables-4097.json').write_text(json.dumps(marker, indent=2))
     config = dict(schema=1, sdkBin=str(apps['243750'] / 'bin/x64'), model=model,
                   texelLighting=texel_lighting,
+                  propDirectModel=prop_direct_model, propDirectLods=prop_direct_lods,
                   fixtureDir=str(fixture.resolve()), toolGame=str(toolgame.resolve()))
     (fixture / 'fixture-preparation.json').write_text(json.dumps(config, indent=2))
     return config

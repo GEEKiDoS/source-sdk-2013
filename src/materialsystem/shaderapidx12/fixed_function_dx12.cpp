@@ -308,6 +308,8 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 		                                                                                                       "Texture2D";
 		buf.Printf( "%s texture%d:register(t%d); SamplerState samp%d:register(s%d);\n", pszTextureType, i, i, i, i );
 	}
+	if ( state.highresSamplerMask && state.earlyDepth && !state.alphaTest )
+		buf.PutString( "[earlydepthstencil]\n" );
 	buf.Printf( "float4 main(PSIn i):SV_TARGET{float4 vertexColor=%s;float4 specularColor=%s;float4 prev=vertexColor;\n",
 	    bHasColor[0] ? "i.color" : "float4(1,1,1,1)", bHasColor[1] ? "i.spec" : "float4(0,0,0,1)" );
 	if ( state.highresSamplerMask )
@@ -315,6 +317,7 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 			"float3 highresNormal=dot(i.tc14.xyz,i.tc14.xyz)>1e-12?normalize(i.tc14.xyz):normalize(cross(ddx(i.tc13.xyz),ddy(i.tc13.xyz)))*(i.front?1:-1);"
 			"ShadowMapReceiver smr=ShadowMap_BeginReceiver(i.tc13.xyz,highresNormal,i.pos.xy);"
 			"smr.bakedSunVisibility=hlr.sun;"
+			"ShadowMap_SetBakedFace(smr,hlr.faceId,hlr.q,hlr.localVisibilityEligible,hlr.bakedDirectEligible,hlr.unbakedLocalRange);"
 			"ShadowMapDirect fixedDirect=ShadowMap_GatherDirect(smr,ShadowMap_ShadeLambert(highresNormal));"
 			"float3 fixedDirectRGB=0;\n" );
 	if ( state.constantColor )

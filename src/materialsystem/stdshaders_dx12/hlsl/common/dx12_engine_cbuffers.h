@@ -78,12 +78,12 @@ cbuffer DX12PSEngine : register(b0, space1)
     float4 cRasterFogParams; // @legacy none
 };
 
-// Lighting ABI 4 preserves the V1 space2 constants for selected direct-light evaluation.
+// Lighting ABI 6 preserves V1 view constants and adds exact static-prop draw reconstruction.
 // CPU twins/reflection tables: public/shaderapi/ishaderapidx12lighting.h and
 // shaderapidx12/native_engine_cbuffers_dx12.h. Explicit space3 highres draw/styles
 // constants and face/tile mirrors live in native_src/highres_lightmaps.hlsli.
 #if defined(DX12_SHADOWMAPS)
-#define DX12_LIGHTING_SHADER_ABI 4
+#define DX12_LIGHTING_SHADER_ABI 6
 #define DX12_SHADOW_PCSS_MAX_TEXELS 16
 #define DX12_SHADOW_GUARD_TEXELS 18
 #define DX12_SHADOW_PCSS_BLOCKER_SAMPLES 16
@@ -101,6 +101,7 @@ cbuffer DX12PSEngine : register(b0, space1)
 #define DX12_SHADOW_LIGHT_SUN 0
 #define DX12_SHADOW_LIGHT_POINT 1
 #define DX12_SHADOW_LIGHT_SPOT 2
+#define DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE 1
 cbuffer DX12LightingViewConstantsV1 : register(b0, space2)
 {
     uint4 cShadowView0; // mapGeneration, viewGeneration, filterMode, debugMode
@@ -119,9 +120,21 @@ cbuffer DX12LightingViewConstantsV1 : register(b0, space2)
     row_major float4x4 cStaticSunWorldToClip;
     uint4 cCascadeRects[DX12_SHADOW_CSM_CASCADES]; // slotX, slotY, slotSize, 0
     uint4 cStaticSunRect; // 0, 0, 4096, 0
-    uint4 cSunIdentity; // sun lightId (0xFFFFFFFF none), sunStyle, 0, 0
+    uint4 cSunIdentity; // sun lightId (0xFFFFFFFF none), sunStyle, resident GPU-index tail offset/count in t1028
 };
-struct RuntimeShadowLightGpu // 592 bytes, StructuredBuffer at t1026 space2
+cbuffer DX12StaticPropDrawConstants : register(b1, space2)
+{
+    uint4 cPropDraw; // firstEntry, entryCount, primitiveBase, primitiveCount (zero disables prop domain)
+    float4 cPropModelToWorld[3];
+    uint4 cPropDirect; // RGB byte offset (0xFFFFFFFF absent), angular-plane byte stride, unbaked IDs offset/count
+    float4 cPropStyles; // frozen current-view values for the four serialized styles, unused slots zero
+};
+struct DX12StaticPropTriangleGpu // 64 bytes, StructuredBuffer at t1034 space2
+{
+    uint4 vertexIndices; // baked mesh vertex IDs xyz, absolute t1033 mesh directory index w
+    float4 positions[3]; // actual draw-local positions, before modelToWorld
+};
+struct RuntimeShadowLightGpu // 608 bytes, StructuredBuffer at t1026 space2
 {
     uint lightId;
     uint type;
@@ -147,6 +160,10 @@ struct RuntimeShadowLightGpu // 592 bytes, StructuredBuffer at t1026 space2
     float tanRenderedHalfFov;
     row_major float4x4 worldToClip[DX12_SHADOW_MAX_FACES];
     uint4 faces[DX12_SHADOW_MAX_FACES]; // page, slotX, slotY, slotSize
+    float realtimeWeight;
+    uint visibilityFlags;
+    uint bakedLightIndex;
+    uint reserved0;
 };
 #endif
 #endif

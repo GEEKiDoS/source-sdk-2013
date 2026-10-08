@@ -81,6 +81,7 @@
 #include "toolframework_client.h"
 #include "bonetoworldarray.h"
 #include "cmodel.h"
+#include "shadowmaps_dx12.h"
 
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -824,6 +825,7 @@ private:
 	void UpdateStudioShadow( IClientRenderable *pRenderable, ClientShadowHandle_t handle );
 	void UpdateBrushShadow( IClientRenderable *pRenderable, ClientShadowHandle_t handle );
 	void UpdateShadow( ClientShadowHandle_t handle, bool force );
+	void UpdateLegacyShadowSuppression();
 
 	// Gets the entity whose shadow this shadow will render into
 	IClientRenderable *GetParentShadowEntity( ClientShadowHandle_t handle );
@@ -957,6 +959,7 @@ private:
 	bool m_RenderToTextureActive;
 	bool m_bRenderTargetNeedsClear;
 	bool m_bUpdatingDirtyShadows;
+	bool m_bLegacyShadowsSuppressed;
 	bool m_bThreaded;
 	float m_flShadowCastDist;
 	float m_flMinShadowArea;
@@ -1168,6 +1171,7 @@ int CVisibleShadowList::FindShadows( const CViewSetup *pView, int nLeafCount, Le
 CClientShadowMgr::CClientShadowMgr() :
 	m_DirtyShadows( 0, 0, ShadowHandleCompareFunc ),
 	m_RenderToTextureActive( false ),
+	m_bLegacyShadowsSuppressed( false ),
 	m_bDepthTextureActive( false )
 {
 	m_nDepthTextureResolution = r_flashlightdepthres.GetInt();
@@ -1513,6 +1517,7 @@ void CClientShadowMgr::GetShadowColor( unsigned char *r, unsigned char *g, unsig
 void CClientShadowMgr::LevelInitPreEntity()
 {
 	m_bUpdatingDirtyShadows = false;
+	m_bLegacyShadowsSuppressed = false;
 
 	Vector ambientColor;
 	engine->GetAmbientLightColor( ambientColor );
@@ -1883,6 +1888,10 @@ ClientShadowHandle_t CClientShadowMgr::CreateShadow( ClientEntityHandle_t entity
 	flags &= ~SHADOW_FLAGS_PROJECTED_TEXTURE_TYPE_MASK;
 	flags |= SHADOW_FLAGS_SHADOW | SHADOW_FLAGS_TEXTURE_DIRTY;
 	ClientShadowHandle_t shadowHandle = CreateProjectedTexture( entity, flags );
+	if ( shadowHandle != CLIENTSHADOW_INVALID_HANDLE && ShadowMapsDX12_ShadowsEnabled() )
+	{
+		shadowmgr->EnableShadow( m_Shadows[shadowHandle].m_ShadowHandle, false );
+	}
 
 	IClientRenderable *pRenderable = ClientEntityList().GetClientRenderableFromHandle( entity );
 	if ( pRenderable )
@@ -2866,12 +2875,45 @@ bool CClientShadowMgr::ShouldUseParentShadow( IClientRenderable *pRenderable )
 
 
 //-----------------------------------------------------------------------------
-// Before we render any view, make sure all shadows are re-projected vs world
+// Enhanced mapping owns entity shadowing while admitted and enabled.
+// Keep entity-owned handles alive so ordinary rendering can resume without
+// recreating entities. Disabling the engine shadow removes existing world/model
+// receiver projections; skipping texture rendering alone would leave blobs.
+void CClientShadowMgr::UpdateLegacyShadowSuppression()
+{
+	const bool suppressed = ShadowMapsDX12_ShadowsEnabled();
+	if ( suppressed == m_bLegacyShadowsSuppressed )
+		return;
+	m_bLegacyShadowsSuppressed = suppressed;
+
+	for ( ClientShadowHandle_t h = m_Shadows.Head(); h != m_Shadows.InvalidIndex(); h = m_Shadows.Next(h) )
+	{
+		ClientShadow_t &shadow = m_Shadows[h];
+		if ( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT )
+			continue;
+		if ( suppressed )
+		{
+			shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
+		}
+		else
+		{
+			// Force re-projection even for stationary, already-dirty entities.
+			// EnableShadow(true) alone cannot rebuild the removed receiver cache.
+			shadow.m_LastAngles.Init( FLT_MAX, FLT_MAX, FLT_MAX );
+			shadow.m_Flags |= SHADOW_FLAGS_TEXTURE_DIRTY;
+		}
+	}
+	if ( !suppressed )
+		UpdateAllShadows();
+}
+
 //-----------------------------------------------------------------------------
+// Before we render any view, make sure all shadows are re-projected vs world.
 void CClientShadowMgr::PreRender()
 {
 	VPROF_BUDGET( "CClientShadowMgr::PreRender", VPROF_BUDGETGROUP_SHADOW_RENDERING );
 	MDLCACHE_CRITICAL_SECTION();
+	UpdateLegacyShadowSuppression();
 
 	//
 	// -- Shadow Depth Textures -----------------------
@@ -3087,6 +3129,12 @@ void CClientShadowMgr::UpdateShadow( ClientShadowHandle_t handle, bool force )
 	{
 		// Retire the shadow if the entity is gone
 		DestroyShadow( handle );
+		return;
+	}
+	if ( ShadowMapsDX12_ShadowsEnabled() )
+	{
+		shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
+		pRenderable->MarkShadowDirty( false );
 		return;
 	}
 
@@ -3440,6 +3488,10 @@ void CClientShadowMgr::AddShadowToReceiver( ClientShadowHandle_t handle,
 	IClientRenderable* pRenderable, ShadowReceiver_t type )
 {
 	ClientShadow_t &shadow = m_Shadows[handle];
+	// Leaf associations can survive suppression and receivers can move later.
+	// Do not reattach a disabled legacy projection; flashlights remain distinct.
+	if ( !( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT ) && ShadowMapsDX12_ShadowsEnabled() )
+		return;
 
 	// Don't add a shadow cast by an object to itself...
 	IClientRenderable* pSourceRenderable = ClientEntityList().GetClientRenderableFromHandle( shadow.m_Entity );
@@ -4001,6 +4053,16 @@ static void SetupBonesOnBaseAnimating( C_BaseAnimating *&pBaseAnimating )
 void CClientShadowMgr::ComputeShadowTextures( const CViewSetup &viewShadow, int leafCount, LeafIndex_t* pLeafList )
 {
 	VPROF_BUDGET( "CClientShadowMgr::ComputeShadowTextures", VPROF_BUDGETGROUP_SHADOW_RENDERING );
+	const bool wasSuppressed = m_bLegacyShadowsSuppressed;
+	UpdateLegacyShadowSuppression();
+	if ( m_bLegacyShadowsSuppressed )
+		return;
+	if ( wasSuppressed )
+	{
+		// A release/readmission may occur after the game-system PreRender.
+		// Rebuild the invalidated projections before collecting visible textures.
+		PreRender();
+	}
 
 	if ( !m_RenderToTextureActive || (r_shadows.GetInt() == 0) || r_shadows_gamecontrol.GetInt() == 0 )
 		return;

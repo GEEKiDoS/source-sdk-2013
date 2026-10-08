@@ -15,6 +15,12 @@
 
 namespace shaderapidx12
 {
+// The same effective coverage contract gates named and runtime-generated UAV receivers.
+inline bool CanUseEarlyDepthDX12( bool alphaTest, bool snapshotAlphaToCoverage, bool drawAlphaToCoverage )
+{
+	return !alphaTest && !snapshotAlphaToCoverage && !drawAlphaToCoverage;
+}
+
 struct FixedFunctionStateDX12
 {
 	VertexFormat_t format = 0;
@@ -28,7 +34,7 @@ struct FixedFunctionStateDX12
 	ShaderTexOp_t colorOp[16] = {}, alphaOp[16] = {};
 	ShaderTexArg_t colorArg1[16] = {}, colorArg2[16] = {}, alphaArg1[16] = {}, alphaArg2[16] = {};
 	bool customPipe = false, lighting = false, specular = false, vertexBlend = false, constantColor = false, alphaPipe = false, constantAlpha = false, vertexAlpha = false;
-	bool alphaTest = false, flatShade = false;
+	bool alphaTest = false, flatShade = false, earlyDepth = false;
 	ShaderAlphaFunc_t alphaFunction = SHADER_ALPHAFUNC_GEQUAL;
 	ShaderMaterialSource_t materialSource = SHADER_MATERIALSOURCE_MATERIAL;
 	ShaderFogMode_t fogMode = SHADER_FOGMODE_DISABLED;

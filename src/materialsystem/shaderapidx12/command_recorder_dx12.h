@@ -46,6 +46,7 @@ public:
 		SetGraphicsRootDescriptorTable,
 		SetGraphicsRootConstantBufferView,
 		SetGraphicsRootUnorderedAccessView,
+		SetGraphicsRootShaderResourceView,
 		SetGraphicsRoot32BitConstants,
 		SetPipelineState,
 		SetDescriptorHeaps,
@@ -76,6 +77,7 @@ public:
 
 	void Flush()
 	{
+		m_pLastHeader = nullptr;
 		if ( m_pChunk && m_nUsed )
 			m_pfnFlushChunk( m_pChunkContext, m_pChunk, m_nUsed );
 		else if ( m_pChunk )
@@ -148,6 +150,12 @@ public:
 	void SetGraphicsRootUnorderedAccessView( UINT index, D3D12_GPU_VIRTUAL_ADDRESS address )
 	{
 		unsigned char *p = Begin( Op::SetGraphicsRootUnorderedAccessView, 4 + sizeof( address ) );
+		Put( p, index );
+		Put( p, address );
+	}
+	void SetGraphicsRootShaderResourceView( UINT index, D3D12_GPU_VIRTUAL_ADDRESS address )
+	{
+		unsigned char *p = Begin( Op::SetGraphicsRootShaderResourceView, 4 + sizeof( address ) );
 		Put( p, index );
 		Put( p, address );
 	}
@@ -278,6 +286,25 @@ public:
 	void ClearDepthStencilView( D3D12_CPU_DESCRIPTOR_HANDLE dsv, D3D12_CLEAR_FLAGS flags, FLOAT depth, UINT8 stencil, UINT rectCount, const D3D12_RECT *rects )
 	{
 		const UINT stored = rects ? rectCount : 0u;
+		// Identical adjacent clears are idempotent. Every other recorded command
+		// replaces m_pLastHeader, and Flush prevents elision across list boundaries.
+		const size_t payloadBytes = sizeof( dsv ) + 20 + stored * sizeof( D3D12_RECT );
+		const size_t commandBytes = ( sizeof( Header ) + payloadBytes + 7 ) & ~size_t( 7 );
+		if ( m_pLastHeader && m_pLastHeader->op == Op::ClearDepthStencilView && m_pLastHeader->size == commandBytes )
+		{
+			const unsigned char *previous = reinterpret_cast<const unsigned char *>( m_pLastHeader + 1 );
+			auto same = [&]( const auto &value )
+			{
+				const bool equal = memcmp( previous, &value, sizeof( value ) ) == 0;
+				previous += sizeof( value );
+				return equal;
+			};
+			const UINT stencilValue = stencil;
+			if ( same( dsv ) && same( flags ) && same( depth ) && same( stencilValue ) &&
+				same( rectCount ) && same( stored ) &&
+				( !stored || memcmp( previous, rects, stored * sizeof( D3D12_RECT ) ) == 0 ) )
+				return;
+		}
 		unsigned char *p = Begin( Op::ClearDepthStencilView, sizeof( dsv ) + 20 + stored * sizeof( D3D12_RECT ) );
 		Put( p, dsv );
 		Put( p, flags );
@@ -370,6 +397,7 @@ private:
 		pHeader->op = op;
 		pHeader->pad = 0;
 		pHeader->size = static_cast<uint32_t>( total );
+		m_pLastHeader = pHeader;
 		unsigned char *payloadStart = m_pChunk + m_nUsed + sizeof( Header );
 		m_nUsed += total;
 		return payloadStart;
@@ -392,6 +420,7 @@ private:
 
 	unsigned char *m_pChunk = nullptr;
 	unsigned char *m_pReleaseEmpty = nullptr;
+	Header *m_pLastHeader = nullptr;
 	size_t m_nUsed = 0;
 };
 } // namespace shaderapidx12

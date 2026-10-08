@@ -104,6 +104,8 @@ public:
 	bool HighresAbi() const { return m_bHighresAbi; }
 	bool SamplerRolesReady() const { return m_bSamplerRolesReady; }
 	bool NativeCasterTwin() const { return m_bNativeCasterTwin; }
+	// Optional safe PS twin, named by inserting "_earlydepth" before "_ps51".
+	bool EarlyDepthTwin() const { return m_bEarlyDepthTwin; }
 
 	const char *Path() const { return m_Path.Get(); }
 
@@ -161,6 +163,7 @@ private:
 	uint32_t m_nLightmapSamplerMask = 0;
 	bool m_bHighresAbi = false, m_bSamplerRolesReady = false;
 	bool m_bNativeCasterTwin = false;
+	bool m_bEarlyDepthTwin = false;
 	size_t m_nPayloadStart = 0;
 	size_t m_nHeaderBytes = 28;
 };

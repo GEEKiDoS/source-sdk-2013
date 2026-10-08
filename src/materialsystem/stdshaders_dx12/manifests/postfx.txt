@@ -74,6 +74,9 @@ pyro_vision_highres_vs51.fxc vs pyro_vision_highres_vs51 native -
 # noparity pyro_vision_highres_vs51 - highres-feature-variant
 pyro_vision_highres_ps51.fxc ps pyro_vision_highres_ps51 native -
 # noparity pyro_vision_highres_ps51 - highres-feature-variant
+pyro_vision_highres_earlydepth_ps51.fxc ps pyro_vision_highres_earlydepth_ps51 native -
+# noparity pyro_vision_highres_earlydepth_ps51 - highres-earlydepth-feature-variant
+# earlydepth pyro_vision_highres_ps51 pyro_vision_highres_earlydepth_ps51
 motion_blur_mv_ps51.fxc ps motion_blur_mv_ps51 native -
 # noparity motion_blur_mv_ps51 - native-only
 postfx_downsample_cs51.fxc cs postfx_downsample_cs51 native -

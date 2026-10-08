@@ -8,6 +8,7 @@
 #include "c_rope.h"
 #include "beamdraw.h"
 #include "view.h"
+#include "viewrender.h"
 #include "env_wind_shared.h"
 #include "input.h"
 #ifdef TF_CLIENT_DLL
@@ -25,6 +26,7 @@
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "tier1/callqueue.h"
 #include "tier1/memstack.h"
+#include "tier1/smartptr.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -238,6 +240,31 @@ struct RopeSegData_t
 	float		m_flMaxBackWidth;
 };
 
+class CShadowMapRopeReplayScope
+{
+public:
+	explicit CShadowMapRopeReplayScope( CShadowMapRopeFootprint *pRecord )
+		: m_pRecord( pRecord ), m_pFootprint( pRecord ? pRecord->BeginReplay() : NULL )
+	{
+	}
+
+	~CShadowMapRopeReplayScope()
+	{
+		if ( m_pRecord )
+			m_pRecord->EndReplay();
+	}
+
+	ShadowMapDepthFootprint_t *GetFootprint() const { return m_pFootprint; }
+
+private:
+	CShadowMapRopeReplayScope( const CShadowMapRopeReplayScope & );
+	CShadowMapRopeReplayScope &operator=( const CShadowMapRopeReplayScope & );
+
+	// The callback's owning argument outlives this scope and its feedback pointer.
+	CShadowMapRopeFootprint *m_pRecord;
+	ShadowMapDepthFootprint_t *m_pFootprint;
+};
+
 class CRopeManager : public IRopeManager
 {
 public:
@@ -247,7 +274,7 @@ public:
 
 	void ResetRenderCache( void );
 	void AddToRenderCache( C_RopeKeyframe *pRope );
-	void DrawRenderCache( bool bShadowDepth );
+	void DrawRenderCache( bool bShadowDepth, CShadowMapRopeFootprint *footprint = NULL );
 	void OnRenderStart( void )
 	{
 		m_QueuedModeMemory.SwitchStack();
@@ -260,7 +287,7 @@ public:
 private:
 	struct RopeRenderData_t;
 public:
-	void DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData );
+	void DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData, CSmartPtr<CShadowMapRopeFootprint> replayFootprint );
 	
 	void			ResetSegmentCache( int nMaxSegments );
 	RopeSegData_t	*GetNextSegmentFromCache( void );
@@ -272,7 +299,7 @@ public:
 private:
 
 	void RenderNonSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount );
-	void RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid );
+	void RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid, ShadowMapDepthFootprint_t *footprint = NULL );
 
 private:
 
@@ -419,10 +446,12 @@ void CRopeManager::AddToRenderCache( C_RopeKeyframe *pRope )
 	++m_aRenderCache[iRenderCache].m_nCacheCount;
 }
 
-void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData )
+void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData, CSmartPtr<CShadowMapRopeFootprint> replayFootprint )
 {
 	VPROF_BUDGET( "CRopeManager::DrawRenderCache", VPROF_BUDGETGROUP_ROPES );
 	AUTO_LOCK( m_RenderCacheMutex ); //contention cases: Toggling from queued mode on to off. Rope deletion from the cache.
+	CShadowMapRopeReplayScope replayScope( bShadowDepth ? replayFootprint.GetObject() : NULL );
+	ShadowMapDepthFootprint_t *footprint = replayScope.GetFootprint();
 
 	// Check to see if we want to render the ropes.
 	if( !r_drawropes.GetBool() )
@@ -525,7 +554,7 @@ void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_
 		if ( rope_rendersolid.GetInt() )
 		{
 			if ( bShadowDepth )
-				RenderSolidRopes( pRenderContext, m_pDepthWriteMaterial, nVertCount, nIndexCount, bRenderNonSolid );
+				RenderSolidRopes( pRenderContext, m_pDepthWriteMaterial, nVertCount, nIndexCount, bRenderNonSolid, footprint );
 			else
 				RenderSolidRopes( pRenderContext, pRenderCache[iRenderCache].m_pSolidMaterial, nVertCount, nIndexCount, bRenderNonSolid );
 		}
@@ -541,7 +570,7 @@ void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_
 //-----------------------------------------------------------------------------
 // Purpose:
 //-----------------------------------------------------------------------------
-void CRopeManager::DrawRenderCache( bool bShadowDepth )
+void CRopeManager::DrawRenderCache( bool bShadowDepth, CShadowMapRopeFootprint *footprint )
 {
 	int iRenderCacheCount = m_aRenderCache.Count();
 
@@ -638,17 +667,21 @@ void CRopeManager::DrawRenderCache( bool bShadowDepth )
 			}
 		}
 		Assert( ((void *)pVectorWrite == (void *)(((uint8 *)pMemory) + iMemoryNeeded)) && ((void *)pWriteRopeQueuedData == (void *)pVectorDataStart));		
-		pCallQueue->QueueCall( this, &CRopeManager::DrawRenderCache_NonQueued, bShadowDepth, pRenderCachesStart, iRenderCacheCount, vForward, vOrigin, pBuildRopeQueuedDataStart );
+		// CSmartPtr adds a reference for each functor/argument copy; CRefPtr does not.
+		CSmartPtr<CShadowMapRopeFootprint> replayFootprint( bShadowDepth ? footprint : NULL );
+		if ( replayFootprint.IsValid() )
+			replayFootprint->BeginQueued();
+		pCallQueue->QueueCall( this, &CRopeManager::DrawRenderCache_NonQueued, bShadowDepth, pRenderCachesStart, iRenderCacheCount, vForward, vOrigin, pBuildRopeQueuedDataStart, replayFootprint );
 
 		if ( IsHolidayLightMode() )
 		{
 			// With holiday lights we need to also build the ropes non-queued without rendering them
-			DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL );
+			DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL, CSmartPtr<CShadowMapRopeFootprint>() );
 		}
 	}
 	else
 	{
-		DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL );
+		DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL, CSmartPtr<CShadowMapRopeFootprint>( bShadowDepth ? footprint : NULL ) );
 	}
 }
 
@@ -734,7 +767,7 @@ void CRopeManager::RenderNonSolidRopes( IMatRenderContext *pRenderContext, IMate
 //-----------------------------------------------------------------------------
 // Purpose:
 //-----------------------------------------------------------------------------
-void CRopeManager::RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid )
+void CRopeManager::RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid, ShadowMapDepthFootprint_t *footprint )
 {
 	// Render the solid portion of the ropes.
 	CMeshBuilder meshBuilder;
@@ -790,6 +823,33 @@ void CRopeManager::RenderSolidRopes( IMatRenderContext *pRenderContext, IMateria
 			}
 			beamSegment.End();
 			nVerts += ( m_aSegmentCache[iSegmentCache].m_nSegmentCount * 2 );
+		}
+	}
+
+	if ( footprint && !footprint->full && meshBuilder.VertexCount() > 0 )
+	{
+		// Read the actual position stream while the mesh is still locked, after
+		// CBeamSegDraw has emitted every vertex (including its deferred last pair).
+		// This includes Catmull-Rom/barbed overshoot and the actual camera/width
+		// expansion without duplicating beam math or changing the builder cursor.
+		if ( !meshBuilder.m_pPosition || meshBuilder.m_VertexSize_Position < sizeof( float ) * 3 )
+		{
+			footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE | SHADOWMAP_FOOTPRINT_UNKNOWN );
+		}
+		else
+		{
+			const unsigned char *position = reinterpret_cast<const unsigned char *>( meshBuilder.m_pPosition );
+			const int vertexCount = meshBuilder.VertexCount();
+			for ( int vertex = 0; vertex < vertexCount; ++vertex, position += meshBuilder.m_VertexSize_Position )
+			{
+				const float *point = reinterpret_cast<const float *>( position );
+				footprint->AddPoint( Vector( point[0], point[1], point[2] ) );
+				if ( footprint->full )
+				{
+					footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE );
+					break;
+				}
+			}
 		}
 	}
 

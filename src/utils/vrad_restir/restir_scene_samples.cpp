@@ -5,6 +5,7 @@
 #include "vrad_restir.h"
 #include "restir_vulkan.h"
 #include "bsplib.h"
+#include "restir_baked_receivers.h"
 #include "cmdlib.h"
 #include "coordsize.h"
 #include "mathlib/bumpvects.h"
@@ -995,8 +996,8 @@ static bool ClampSunPointToFace( const CUtlVector<Vector> &polygon, float windin
 }
 
 // utils/vrad/lightmap.cpp:847-868; vraddisps.cpp:1670-1704 — BuildFaceLuxels/BuildDispLuxels.
-static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
-	ReSTIRGpuFace &face, const CCoreDispInfo *disp )
+static bool BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
+	ReSTIRGpuFace &face, const CCoreDispInfo *disp, const ReSTIRRendererDispFrames &rendererDisps )
 {
 	const dface_t &dface = g_pFaces[face.dface];
 	face.firstLuxel = scene.luxels.Count();
@@ -1018,19 +1019,24 @@ static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 		ReSTIR_SceneSet4( face.worldToLuxel[axis], worldToLuxel[axis] );
 		ReSTIR_SceneSet4( face.luxelToWorld[axis], luxelToWorld[axis] );
 	}
-	const bool hasSun = context.options->shadowMaps && scene.skyLight >= 0 && scene.skyLight < scene.lights.Count() &&
-		scene.lights[scene.skyLight].type == emit_skylight &&
-		( scene.lights[scene.skyLight].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0;
+	const bool hasVisibility = context.options->shadowMaps && scene.shadowLights.Count() != 0;
 	CUtlVector<Vector> sunPolygon;
 	float windingSign = 0.0f;
-	const float determinant = hasSun && !disp ? DotProduct( normal, CrossProduct( worldToLuxel[1], worldToLuxel[0] ) ) : 0.0f;
-	const bool validNormal = hasSun && normal.IsValid() && normal.LengthSqr() > 0.0f;
-	const bool validSunFace = hasSun && validNormal && ( disp ?
+	const float determinant = hasVisibility && !disp ? DotProduct( normal, CrossProduct( worldToLuxel[1], worldToLuxel[0] ) ) : 0.0f;
+	const bool validNormal = hasVisibility && normal.IsValid() && normal.LengthSqr() > 0.0f;
+	const bool validSunFace = hasVisibility && validNormal && ( disp ?
 		( face.luxelW >= 1 && face.luxelH >= 1 ) :
 		( IsFinite( determinant ) && fabs( determinant ) >= 1.0e-20 &&
 			BuildSunFacePolygon( context, face, sunPolygon, windingSign ) ) );
 	const float stepU = disp && face.luxelW > 1 ? 1.0f / static_cast<float>( face.luxelW - 1 ) : 0.0f;
 	const float stepV = disp && face.luxelH > 1 ? 1.0f / static_cast<float>( face.luxelH - 1 ) : 0.0f;
+	CUtlVector<ReSTIRRendererVertex> rendererVertices;
+	CUtlVector<ReSTIRRendererTriangle> rendererTriangles;
+	if ( context.options->shadowMaps && !disp && !BuildRendererBrushTriangles( context, face, dface, rendererVertices, rendererTriangles ) )
+	{
+		Warning( "Hlight: face %d cannot construct renderer receiver triangles\n", face.dface );
+		return false;
+	}
 	for ( int t = 0; t < face.luxelH; ++t )
 	{
 		for ( int s = 0; s < face.luxelW; ++s )
@@ -1040,7 +1046,7 @@ static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 			if ( disp )
 			{
 				const Vector2D uv( s * stepU, t * stepV );
-				DispUVToSurfPoint( *disp, uv, point, 1.0f, hasSun ? &surfaceValid : NULL );
+				DispUVToSurfPoint( *disp, uv, point, 1.0f, hasVisibility ? &surfaceValid : NULL );
 				DispUVToSurfNormal( *disp, uv, luxelNormal );
 			}
 			else
@@ -1054,7 +1060,51 @@ static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 			ReSTIR_SceneSet4( luxel.position, point );
 			ReSTIR_SceneSet4( luxel.normal, luxelNormal );
 			scene.luxels.AddToTail( luxel );
-			if ( hasSun )
+			if ( context.options->shadowMaps )
+			{
+				ReSTIRRendererVertex triangle[3];
+				float weights[3];
+				if ( disp )
+				{
+					int indices[3];
+					RendererDispVertices( disp->GetPower(), Vector2D( s*stepU, t*stepV ), indices, weights );
+					const ReSTIRRendererDispTangents &tangents = rendererDisps.list[dface.dispinfo];
+					for ( int c = 0; c < 3; ++c )
+					{
+						const int v = indices[c];
+						triangle[c].position = disp->GetVert( v );
+						triangle[c].normal = disp->GetNormal( v );
+						triangle[c].s = tangents.s[v];
+						if ( tangents.touched[v] ) triangle[c].t = CrossProduct( triangle[c].s, triangle[c].normal );
+						else disp->GetTangentT( v, triangle[c].t );
+						ReSTIR_BakedNormalizeTangent( triangle[c].normal );
+						ReSTIR_BakedNormalizeTangent( triangle[c].s );
+						ReSTIR_BakedNormalizeTangent( triangle[c].t );
+					}
+				}
+				else
+				{
+					int selected;
+					if ( !RendererBrushWeights( rendererVertices, rendererTriangles, point, selected, weights ) )
+					{
+						Warning( "Hlight: face %d luxel (%d,%d) has no renderer receiver triangle\n", face.dface, s, t );
+						return false;
+					}
+					for ( int c = 0; c < 3; ++c ) triangle[c] = rendererVertices[rendererTriangles[selected].v[c]];
+				}
+				Vector directPosition, directNormal, bump[3];
+				RendererInterpolateFrame( triangle, weights, directPosition, directNormal, bump );
+				if ( !directPosition.IsValid() || !directNormal.IsValid() ||
+					!bump[0].IsValid() || !bump[1].IsValid() || !bump[2].IsValid() )
+				{
+					Warning( "Hlight: face %d luxel (%d,%d) has invalid renderer receiver frame\n", face.dface, s, t );
+					return false;
+				}
+				scene.localDirectPositions.AddToTail( directPosition );
+				scene.localDirectNormals.AddToTail( directNormal );
+				for ( int p = 0; p < 3; ++p ) scene.localDirectBumpNormals.AddToTail( bump[p] );
+			}
+			if ( hasVisibility )
 			{
 				Vector receiver = point;
 				const bool valid = validSunFace && surfaceValid && point.IsValid() &&
@@ -1067,6 +1117,7 @@ static void BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 			}
 		}
 	}
+	return true;
 }
 
 // utils/vrad/vrad_dispcoll.cpp:84-109 — CalcSampleRadius2AndBox, direct-sample support.
@@ -1188,6 +1239,9 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 	// Build() resets the entire scene; also make direct sample rebuilds discard
 	// stale receiver origins and all of their geometric/style indexing arrays.
 	scene.sunVisibilityOrigins.RemoveAll();
+	scene.localDirectPositions.RemoveAll();
+	scene.localDirectNormals.RemoveAll();
+	scene.localDirectBumpNormals.RemoveAll();
 	scene.faces.RemoveAll();
 	scene.samples.RemoveAll();
 	scene.luxels.RemoveAll();
@@ -1229,6 +1283,8 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 	{
 		scene.dfaceToFace[i] = -1;
 	}
+	ReSTIRRendererDispFrames rendererDisps;
+	if ( context.options->shadowMaps ) BuildRendererDispFrames( context, rendererDisps );
 
 	for ( int dfaceIndex = 0; dfaceIndex < context.faceCount; ++dfaceIndex )
 	{
@@ -1309,7 +1365,7 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 			info.textureVecsTexelsPerWorldUnits[1][3] );
 
 		const int faceIndex = scene.faces.Count();
-		BuildFaceLuxels( context, scene, face, disp );
+		if ( !BuildFaceLuxels( context, scene, face, disp, rendererDisps ) ) return false;
 		if ( disp )
 		{
 			BuildDisplacementSamples( *disp, scene, faceIndex, face );

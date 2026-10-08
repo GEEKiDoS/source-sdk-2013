@@ -27,12 +27,16 @@ struct PS_INPUT
     float3 worldNormal : TEXCOORD4;
     float fog : FOG;
 };
+#if defined(DX12_EARLY_DEPTH)
+[earlydepthstencil]
+#endif
 float4 main(PS_INPUT i) : SV_Target0
 {
     float3 normal = normalize(i.worldNormal);
     ShadowMapReceiver receiver = ShadowMap_BeginReceiver(i.worldPositionZ.xyz, normal, i.position.xy);
     HlightReceiver highres = HighresLightmap_Begin(i.baseLightmapUV);
     receiver.bakedSunVisibility = highres.sun;
+    ShadowMap_SetBakedFace(receiver, highres.faceId, highres.q, highres.localVisibilityEligible, highres.bakedDirectEligible, highres.unbakedLocalRange);
     ShadowMapDirect direct = ShadowMap_GatherDirect(receiver, ShadowMap_ShadeLambert(normal));
     float4 nativeSample = EditorNativeLightmap.Sample(EditorSampler2, i.baseLightmapUV);
     float4 lightmap = HighresLightmap_Plane(highres, 0, nativeSample);

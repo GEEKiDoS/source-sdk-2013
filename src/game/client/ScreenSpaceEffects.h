@@ -32,6 +32,9 @@ public:
 
 	virtual void Enable( bool bEnable ) = 0;
 	virtual bool IsEnabled( ) = 0;
+	// Conservative input dependency for automatic DX12 motion production. IsEnabled
+	// alone is not a dependency: SDK effects can stay enabled while drawing nothing.
+	virtual bool RequiresMotionVectors( ) { return true; }
 };
 
 

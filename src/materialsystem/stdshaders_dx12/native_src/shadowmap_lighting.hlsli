@@ -1,7 +1,7 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #ifndef DX12_SHADOWMAP_LIGHTING_HLSLI
 #define DX12_SHADOWMAP_LIGHTING_HLSLI
-// Included after dx12_engine_cbuffers.h, only in lighting ABI 4 pixel shaders.
+// Included after dx12_engine_cbuffers.h, only in lighting ABI 6 pixel shaders.
 // All projections are normal D3D [0,1]. Matrices already expand the rendered
 // guard: UV -> slotOrigin + UV * slotSize, with NO second guard remapping.
 // Radiance is linear irradiance, already /255 and lightstyled by the view owner.
@@ -14,7 +14,15 @@ StructuredBuffer<RuntimeShadowLightGpu> g_ShadowLights : register(t1026, space2)
 StructuredBuffer<uint2> g_ShadowTileRanges : register(t1027, space2);
 StructuredBuffer<uint> g_ShadowTileIndices : register(t1028, space2);
 Texture2D<uint> g_ShadowSunVisibility : register(t1029, space2);
+// Immutable map-level visibility, independent of RGB pages and model lightmaps.
+StructuredBuffer<uint4> g_ShadowVisibilityFaces : register(t1030, space2);
+StructuredBuffer<uint4> g_ShadowVisibilityEntries : register(t1031, space2);
+ByteAddressBuffer g_ShadowVisibilityPayload : register(t1032, space2);
+StructuredBuffer<uint4> g_ShadowVisibilityPropMeshes : register(t1033, space2);
+StructuredBuffer<DX12StaticPropTriangleGpu> g_ShadowPropTriangles : register(t1034, space2);
 SamplerComparisonState g_ShadowCmpSampler : register(s0, space2);
+// Packet-only policy, deliberately independent of material/snapshot variants.
+static const uint DX12_SHADOW_VIEW_UNSHADOWED = 0x8;
 
 // Equal weights, rotation zero. Sample zero detects even a one-texel blocker.
 // Remaining blocker points: sqrt((k+.5)/15), angle k*2.39996323, k=0..14.
@@ -87,6 +95,11 @@ struct ShadowMapReceiver
 	float2 screenPos;
 	float bakedSunVisibility;
 	uint2 tile;
+	uint bakedFaceId; // 0xFFFFFFFF = no baked domain; directory lookup is lazy.
+	float2 bakedQ;
+	uint bakedLocalDirect; // Valid world highres owner with baked local-direct RGB.
+	uint2 unbakedLocalRange; // Sorted canonical selected-local indices in raw t1032.
+	uint bakedPropPrimitive; // 0xFFFFFFFF = dynamic/moved/unknown; topology lookup is lazy.
 };
 ShadowMapReceiver ShadowMap_BeginReceiver( float3 positionWS, float3 vertexNormalWS, float2 svPositionXY )
 {
@@ -104,7 +117,182 @@ ShadowMapReceiver ShadowMap_BeginReceiver( float3 positionWS, float3 vertexNorma
 	r.screenPos = svPositionXY;
 	r.bakedSunVisibility = 1.0;
 	r.tile = uint2( max( ( svPositionXY - cShadowViewport.xy ) / DX12_SHADOW_TILE_PIXELS, 0.0 ) );
+	r.bakedFaceId = 0xFFFFFFFF;
+	r.bakedQ = 0.0;
+	r.bakedLocalDirect = 0;
+	r.unbakedLocalRange = uint2( 0, 0 );
+	r.bakedPropPrimitive = 0xFFFFFFFF;
 	return r;
+}
+void ShadowMap_SetBakedFace( inout ShadowMapReceiver r, uint faceId, float2 q, uint eligible, uint bakedDirectEligible, uint2 unbakedLocalRange )
+{
+	// Only carry the native owner/pose join. No visibility SRV is touched until
+	// a light survives the radiance bound and actually needs the baked endpoint.
+	r.bakedFaceId = eligible != 0 ? faceId : 0xFFFFFFFF;
+	r.bakedQ = q;
+	r.bakedLocalDirect = eligible != 0 && bakedDirectEligible != 0 ? 1 : 0;
+	r.unbakedLocalRange = r.bakedLocalDirect != 0 ? unbakedLocalRange : uint2( 0, 0 );
+}
+void ShadowMap_SetBakedProp( inout ShadowMapReceiver r, uint primitiveId )
+{
+	// Exact identity/pose is backend-validated. A zero count disables the domain
+	// for every dynamic, moved or unmatched draw without any resource reads.
+	r.bakedPropPrimitive = primitiveId < cPropDraw.w ? primitiveId : 0xFFFFFFFF;
+}
+float3 ShadowMap_PropPositionWS( float4 localPosition )
+{
+	float4 p = float4( localPosition.xyz, 1.0 );
+	return float3( dot( cPropModelToWorld[0], p ), dot( cPropModelToWorld[1], p ), dot( cPropModelToWorld[2], p ) );
+}
+float ShadowMap_VisibilityByte( uint byteOffset )
+{
+	uint packed = g_ShadowVisibilityPayload.Load( byteOffset & ~3u );
+	return float( ( packed >> ( ( byteOffset & 3u ) * 8u ) ) & 255u ) * ( 1.0 / 255.0 );
+}
+struct ShadowMapBakedLookup
+{
+	uint cursor, end;
+	uint4 entry; // Keep the current entry resident across ascending light queries.
+	uint4 samples;
+	float2 fraction;
+	float3 barycentrics;
+	uint valid, entryLoaded, propFlags;
+};
+bool ShadowMap_BeginBakedLookup( ShadowMapReceiver r, inout ShadowMapBakedLookup lookup )
+{
+	[branch] if ( lookup.end == 0xFFFFFFFF )
+	{
+		// Initialize every cached field on every domain path, including rejection.
+		// Direct RGB and R8 lookup share interpolation without advancing the cursor.
+		lookup = (ShadowMapBakedLookup)0;
+		[branch] if ( r.bakedPropPrimitive != 0xFFFFFFFF )
+		{
+			DX12StaticPropTriangleGpu propTriangle = g_ShadowPropTriangles[cPropDraw.z + r.bakedPropPrimitive];
+			uint4 mesh = g_ShadowVisibilityPropMeshes[propTriangle.vertexIndices.w];
+			// Preserve the validated directory join and bound every dense R8 tap.
+			[branch] if ( all( mesh.xy == cPropDraw.xy ) && all( propTriangle.vertexIndices.xyz < mesh.zzz ) )
+			{
+				float3 p0 = ShadowMap_PropPositionWS( propTriangle.positions[0] );
+				float3 e0 = ShadowMap_PropPositionWS( propTriangle.positions[1] ) - p0;
+				float3 e1 = ShadowMap_PropPositionWS( propTriangle.positions[2] ) - p0;
+				float3 normal = cross( e0, e1 );
+				float denominator = dot( normal, normal );
+				// Degenerate primitives never borrow another primitive's vertex IDs.
+				[branch] if ( denominator > max( dot( e0, e0 ) * dot( e1, e1 ) * 1e-12, 1e-30 ) )
+				{
+					float3 offset = r.positionWS - p0;
+					float v = dot( cross( offset, e1 ), normal ) / denominator;
+					float w = dot( cross( e0, offset ), normal ) / denominator;
+					lookup.barycentrics = saturate( float3( 1.0 - v - w, v, w ) );
+					lookup.barycentrics /= dot( lookup.barycentrics, float3( 1.0, 1.0, 1.0 ) );
+					lookup.cursor = cPropDraw.x;
+					lookup.end = cPropDraw.x + cPropDraw.y;
+					lookup.samples = propTriangle.vertexIndices;
+					lookup.propFlags = mesh.w;
+					lookup.valid = 1;
+				}
+			}
+		}
+		else if ( r.bakedFaceId != 0xFFFFFFFF )
+		{
+			uint4 face = g_ShadowVisibilityFaces[r.bakedFaceId];
+			lookup.cursor = face.x;
+			lookup.end = face.x + face.y;
+			uint2 last = face.zw - 1u;
+			float2 pixel = saturate( r.bakedQ ) * float2( last );
+			uint2 p0 = uint2( floor( pixel ) );
+			uint2 p1 = min( p0 + 1u, last );
+			lookup.fraction = pixel - float2( p0 );
+			uint2 rows = uint2( p0.y, p1.y ) * face.z;
+			lookup.samples = uint4( rows.x + p0.x, rows.x + p1.x, rows.y + p0.x, rows.y + p1.x );
+			lookup.valid = 1;
+		}
+	}
+	return lookup.valid != 0;
+}
+float ShadowMap_BakedLocalVisibility( ShadowMapReceiver r, uint selectedLightIndex, inout ShadowMapBakedLookup lookup )
+{
+	float visibility = 1.0;
+	bool valid = ShadowMap_BeginBakedLookup( r, lookup );
+	[branch] if ( valid )
+	{
+		[branch] if ( lookup.entryLoaded == 0 && lookup.cursor < lookup.end )
+		{
+			lookup.entry = g_ShadowVisibilityEntries[lookup.cursor];
+			lookup.entryLoaded = 1;
+		}
+		// Client packets preserve manifest order; tile CSR and the resident tail are ascending.
+		// Skipped lights need not query: each receiver entry is loaded at
+		// most once as the cursor merges the two ordered streams.
+		[loop] while ( lookup.cursor < lookup.end && lookup.entry.x < selectedLightIndex )
+		{
+			++lookup.cursor;
+			if ( lookup.cursor < lookup.end ) lookup.entry = g_ShadowVisibilityEntries[lookup.cursor];
+		}
+		[branch] if ( lookup.cursor < lookup.end && lookup.entry.x == selectedLightIndex )
+		{
+			[branch] if ( lookup.entry.y <= 255u ) visibility = float( lookup.entry.y ) * ( 1.0 / 255.0 );
+			else if ( r.bakedPropPrimitive != 0xFFFFFFFF )
+			{
+				float3 taps = float3(
+					ShadowMap_VisibilityByte( lookup.entry.z + lookup.samples.x ),
+					ShadowMap_VisibilityByte( lookup.entry.z + lookup.samples.y ),
+					ShadowMap_VisibilityByte( lookup.entry.z + lookup.samples.z ) );
+				visibility = dot( taps, lookup.barycentrics );
+			}
+			else
+			{
+				float4 taps = float4(
+					ShadowMap_VisibilityByte( lookup.entry.z + lookup.samples.x ),
+					ShadowMap_VisibilityByte( lookup.entry.z + lookup.samples.y ),
+					ShadowMap_VisibilityByte( lookup.entry.z + lookup.samples.z ),
+					ShadowMap_VisibilityByte( lookup.entry.z + lookup.samples.w ) );
+				visibility = lerp( lerp( taps.x, taps.y, lookup.fraction.x ), lerp( taps.z, taps.w, lookup.fraction.x ), lookup.fraction.y );
+			}
+		}
+	}
+	return visibility;
+}
+float3 ShadowMap_PropDirectVertex( uint byteOffset )
+{
+	uint2 packed = g_ShadowVisibilityPayload.Load2( byteOffset );
+	// Baker stores linear irradiance already /255 in RGBA16F. Alpha is padding.
+	return float3( f16tof32( packed.x & 65535u ), f16tof32( packed.x >> 16u ), f16tof32( packed.y & 65535u ) );
+}
+float3 ShadowMap_BakedPropDirect( uint angularMode, ShadowMapBakedLookup lookup )
+{
+	float3 result = 0.0;
+	uint planeOffset = angularMode == 1 ? cPropDirect.y : 0;
+	[unroll] for ( uint style = 0; style < 4; ++style )
+	{
+		[branch] if ( cPropStyles[style] != 0.0 )
+		{
+			uint base = cPropDirect.x + style * ( 2u * cPropDirect.y ) + planeOffset;
+			float3 rgb = ShadowMap_PropDirectVertex( base + lookup.samples.x * 8u ) * lookup.barycentrics.x +
+				ShadowMap_PropDirectVertex( base + lookup.samples.y * 8u ) * lookup.barycentrics.y +
+				ShadowMap_PropDirectVertex( base + lookup.samples.z * 8u ) * lookup.barycentrics.z;
+			result += rgb * cPropStyles[style];
+		}
+	}
+	return result;
+}
+uint ShadowMap_UnbakedViewIndex( uint selectedLightIndex )
+{
+	// Views are backend-validated in canonical bakedLightIndex order.
+	// This search is reached only on a receiver with a nonempty overflow list.
+	uint first = 0, end = cShadowView1.z;
+	[loop] while ( first < end )
+	{
+		uint middle = first + ( end - first ) / 2u;
+		if ( g_ShadowLights[middle].bakedLightIndex < selectedLightIndex ) first = middle + 1u;
+		else end = middle;
+	}
+	uint result = 0xFFFFFFFF; // Absent from the conservative per-view selection: irrelevant.
+	[branch] if ( first < cShadowView1.z )
+	{
+		if ( g_ShadowLights[first].bakedLightIndex == selectedLightIndex ) result = first;
+	}
+	return result;
 }
 float ShadowMap_BakedSunVisibility( float2 baseLightmapUV )
 {
@@ -195,6 +383,18 @@ bool ShadowMap_SunProjectionValid( row_major float4x4 worldToClip, float4 depth,
 	}
 	return result;
 }
+bool ShadowMap_SunSlotInitialized( uint mapIndex )
+{
+	bool result = false;
+	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )
+	{
+		if ( mapIndex < DX12_SHADOW_CSM_CASCADES )
+			result = ( cShadowView1.w & DX12_SHADOW_VIEW_CSM_VALID ) != 0 && cCascadeRects[mapIndex].z == 2048;
+		else if ( mapIndex == 4 )
+			result = ( cShadowView1.w & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) != 0 && cStaticSunRect.z == 4096;
+	}
+	return result;
+}
 
 struct ShadowMapSunChart
 {
@@ -205,6 +405,7 @@ struct ShadowMapSunChart
 	float3 center;
 	float3 normal;
 	float centerAxial;
+	float planeDenominator;
 	uint mapIndex;
 	bool valid;
 };
@@ -216,17 +417,18 @@ ShadowMapSunChart ShadowMap_MakeSunChart( uint mapIndex, float3 p, float3 normal
 	{
 		c.worldToClip = cSunWorldToClip[mapIndex];
 		c.rect = cCascadeRects[mapIndex];
-		c.valid = ( cShadowView1.w & DX12_SHADOW_VIEW_CSM_VALID ) != 0;
+		c.valid = ShadowMap_SunSlotInitialized( mapIndex );
 	}
 	else
 	{
 		c.worldToClip = cStaticSunWorldToClip;
 		c.rect = cStaticSunRect;
-		c.valid = ( cShadowView1.w & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) != 0;
+		c.valid = ShadowMap_SunSlotInitialized( mapIndex );
 	}
 	c.depth = cShadowDepthRecords[mapIndex];
 	c.valid = c.valid && ShadowMap_SunProjectionValid( c.worldToClip, c.depth, c.rect.z, p, normal );
 	c.normal = normal;
+	c.planeDenominator = dot( c.normal, cSunTravel.xyz );
 	c.center = p + normal * ( 0.5 * c.depth.z );
 	float4 clip = mul( c.worldToClip, float4( c.center, 1.0 ) );
 	c.centerAxial = c.depth.x;
@@ -246,17 +448,17 @@ float3 ShadowMap_SunPoint( ShadowMapSunChart c, float2 offset, bool usePlane )
 	// Texture v points down, whereas the world basis Y / clip Y points up.
 	float3 lateral = ( offset.x * cSunBasisX.xyz - offset.y * cSunBasisY.xyz ) * c.depth.z;
 	float3 q = c.center + lateral;
-	if ( usePlane ) q -= cSunTravel.xyz * ( dot( c.normal, lateral ) / dot( c.normal, cSunTravel.xyz ) );
+	if ( usePlane ) q -= cSunTravel.xyz * ( dot( c.normal, lateral ) / c.planeDenominator );
 	return q;
 }
 bool ShadowMap_SunPreflight( ShadowMapSunChart c, float footprint )
 {
 	bool result = true;
-	float denominator = dot( c.normal, cSunTravel.xyz );
+	float denominator = c.planeDenominator;
 	if ( denominator == 0.0 || abs( denominator ) < 1e-4 * length( cSunTravel.xyz ) ) result = false;
 	if ( result )
 	{
-		[loop] for ( uint i = 0; i < 4; ++i )
+		[unroll] for ( uint i = 0; i < 4; ++i )
 		{
 			float3 q = ShadowMap_SunPoint( c, g_ShadowPCFOffsets[i] * ( 2.0 * footprint ), true );
 			float4 clip = mul( c.worldToClip, float4( q, 1.0 ) );
@@ -269,12 +471,15 @@ bool ShadowMap_SunPreflight( ShadowMapSunChart c, float footprint )
 }
 float ShadowMap_SunCompare( ShadowMapSunChart c, float2 offset, bool usePlane )
 {
-	float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, usePlane ), 1.0 ) );
-	float2 atlasUV = ( float2( c.rect.xy ) + ShadowMap_ClipUV( clip ) * c.rect.z ) / c.atlasSize;
-	float reference = usePlane ? clip.z / clip.w : ( c.centerAxial - c.depth.x ) / ( c.depth.y - c.depth.x );
 	float result = 1.0;
-	if ( c.mapIndex < DX12_SHADOW_CSM_CASCADES ) result = g_ShadowCascadeAtlas.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
-	else result = g_ShadowStaticSun.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
+	if ( c.valid )
+	{
+		float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, usePlane ), 1.0 ) );
+		float2 atlasUV = ( float2( c.rect.xy ) + ShadowMap_ClipUV( clip ) * c.rect.z ) / c.atlasSize;
+		float reference = usePlane ? clip.z / clip.w : ( c.centerAxial - c.depth.x ) / ( c.depth.y - c.depth.x );
+		if ( c.mapIndex < DX12_SHADOW_CSM_CASCADES ) result = g_ShadowCascadeAtlas.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
+		else result = g_ShadowStaticSun.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
+	}
 	return result;
 }
 float ShadowMap_SunPCFChart( ShadowMapSunChart c )
@@ -307,23 +512,30 @@ float SampleSunPCSS( uint mapIndex, float3 positionWS, float3 planeNormalWS, out
 		float blockerDistance = 0.0;
 		uint blockerCount = 0;
 		float2 centerUV = ShadowMap_ClipUV( mul( c.worldToClip, float4( c.center, 1.0 ) ) );
-		[loop] for ( uint i = 0; i < DX12_SHADOW_PCSS_BLOCKER_SAMPLES; ++i )
+		float depthRange = c.depth.y - c.depth.x;
+		// Four blocker taps / two filter taps expose independent fetches without
+		// full-unroll register pressure or oversized Source VCS blocks. Keep order.
+		[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_BLOCKER_SAMPLES; base += 4 )
 		{
-			float2 offset = g_ShadowBlockerDisk[i] * searchRadius;
-			float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, true ), 1.0 ) );
-			int2 texel = clamp( int2( floor( ShadowMap_ClipUV( clip ) * c.rect.z ) ), int2( 0, 0 ), int2( c.rect.z - 1, c.rect.z - 1 ) );
-			int3 address = int3( int2( c.rect.xy ) + texel, 0 );
-			float stored = 1.0;
-			if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) stored = g_ShadowCascadeAtlas.Load( address );
-			else stored = g_ShadowStaticSun.Load( address );
-			// Reference is on the ACTUAL point-loaded texel center, not the Vogel ray.
-			float2 loadedOffset = float2( texel ) + 0.5 - centerUV * c.rect.z;
-			float4 loadedClip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, loadedOffset, true ), 1.0 ) );
-			float reference = loadedClip.z / loadedClip.w;
-			if ( stored < 1.0 && stored < reference )
+			[unroll] for ( uint tap = 0; tap < 4; ++tap )
 			{
-				blockerDistance += c.depth.x + stored * ( c.depth.y - c.depth.x );
-				++blockerCount;
+				uint i = base + tap;
+				float2 offset = g_ShadowBlockerDisk[i] * searchRadius;
+				float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, true ), 1.0 ) );
+				int2 texel = clamp( int2( floor( ShadowMap_ClipUV( clip ) * c.rect.z ) ), int2( 0, 0 ), int2( c.rect.z - 1, c.rect.z - 1 ) );
+				int3 address = int3( int2( c.rect.xy ) + texel, 0 );
+				float stored = 1.0;
+				if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) stored = g_ShadowCascadeAtlas.Load( address );
+				else stored = g_ShadowStaticSun.Load( address );
+				// Reference is on the ACTUAL point-loaded texel center, not the Vogel ray.
+				float2 loadedOffset = float2( texel ) + 0.5 - centerUV * c.rect.z;
+				float4 loadedClip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, loadedOffset, true ), 1.0 ) );
+				float reference = loadedClip.z / loadedClip.w;
+				if ( stored < 1.0 && stored < reference )
+				{
+					blockerDistance += c.depth.x + stored * depthRange;
+					++blockerCount;
+				}
 			}
 		}
 		diagnostics.x = float( blockerCount ) / DX12_SHADOW_PCSS_BLOCKER_SAMPLES;
@@ -333,7 +545,11 @@ float SampleSunPCSS( uint mapIndex, float3 positionWS, float3 planeNormalWS, out
 			float filterRadius = ShadowMap_CappedRadius( cSunRadiance.w, max( 0.0, c.centerAxial - meanBlocker ) / c.depth.z );
 			diagnostics.y = filterRadius / DX12_SHADOW_PCSS_MAX_TEXELS;
 			float visibility = 0.0;
-			[loop] for ( uint j = 0; j < DX12_SHADOW_PCSS_FILTER_SAMPLES; ++j ) visibility += ShadowMap_SunCompare( c, g_ShadowFilterDisk[j] * filterRadius, true );
+			[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_FILTER_SAMPLES; base += 2 )
+			{
+				[unroll] for ( uint tap = 0; tap < 2; ++tap )
+					visibility += ShadowMap_SunCompare( c, g_ShadowFilterDisk[base + tap] * filterRadius, true );
+			}
 			result = visibility / DX12_SHADOW_PCSS_FILTER_SAMPLES;
 		}
 	}
@@ -349,28 +565,46 @@ uint ShadowMap_CubeFace( float3 v )
 	else if ( a.y >= a.z ) result = v.y >= 0.0 ? 2 : 3;
 	return result;
 }
+bool ShadowMap_LocalFaceInitialized( RuntimeShadowLightGpu light, uint face, uint4 rect )
+{
+	return ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 && face < light.faceCount &&
+		rect.w == 512 && rect.x < DX12_SHADOW_MAX_LOCAL_PAGES;
+}
+// Index the structured buffer before loading the matrix. Indexing an array in a
+// copied light makes SM5.1 select between all six matrices inside every PCSS tap.
+float4x4 ShadowMap_LocalMatrix( uint lightIndex, uint face )
+{
+	return g_ShadowLights[lightIndex].worldToClip[face];
+}
 // Recover the physical basis from the exact CPU matrix, including narrow spots.
 // Cube matrices encode +/-X,+/-Y,+/-Z and up +Z,+Z,+Z,+Z,-Y,+Y.
-float3 ShadowMap_LocalRay( RuntimeShadowLightGpu light, uint face, float2 plane )
+float3 ShadowMap_LocalRay( float4x4 worldToClip, float2 plane )
 {
-	float3 forward = normalize( light.worldToClip[face][3].xyz );
-	float3 right = normalize( light.worldToClip[face][0].xyz );
-	float3 up = normalize( light.worldToClip[face][1].xyz );
+	float3 forward = normalize( worldToClip[3].xyz );
+	float3 right = normalize( worldToClip[0].xyz );
+	float3 up = normalize( worldToClip[1].xyz );
 	return forward + right * plane.x + up * plane.y;
 }
 struct ShadowMapLocalChart
 {
 	float3 center;
 	float3 normal;
+	float3 forward;
+	float3 right;
+	float3 up;
 	float2 homePlane;
 	float radial;
 	float planeNumerator;
 	uint homeFace;
+	uint lightIndex;
+	float4x4 homeMatrix;
+	uint4 homeRect;
 	bool valid;
 };
-ShadowMapLocalChart ShadowMap_MakeLocalChart( RuntimeShadowLightGpu light, float3 p, float3 normal )
+ShadowMapLocalChart ShadowMap_MakeLocalChart( uint lightIndex, RuntimeShadowLightGpu light, float3 p, float3 normal )
 {
 	ShadowMapLocalChart c = (ShadowMapLocalChart)0;
+	c.lightIndex = lightIndex;
 	float3 relative = p - light.origin;
 	float radial = length( relative );
 	c.center = p;
@@ -379,7 +613,8 @@ ShadowMapLocalChart ShadowMap_MakeLocalChart( RuntimeShadowLightGpu light, float
 	c.planeNumerator = dot( normal, relative );
 	c.homeFace = 0;
 	c.homePlane = 0.0;
-	c.valid = light.faceCount > 0 && light.shadowFar > light.shadowNear && light.shadowNear > 0.0 && light.planeToTexel > 0.0 && radial > 0.0;
+	// Admission publishes cubes atomically (all six initialized or all zero).
+	c.valid = ShadowMap_LocalFaceInitialized( light, 0, g_ShadowLights[lightIndex].faces[0] ) && light.shadowFar > light.shadowNear && light.shadowNear > 0.0 && light.planeToTexel > 0.0 && radial > 0.0;
 	if ( c.valid )
 	{
 		c.center = p + normal * ( 0.5 * radial / light.planeToTexel );
@@ -388,20 +623,41 @@ ShadowMapLocalChart ShadowMap_MakeLocalChart( RuntimeShadowLightGpu light, float
 		c.normal = normal;
 		c.planeNumerator = dot( normal, relative );
 		c.homeFace = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( relative ) : 0;
-		float4 clip = mul( light.worldToClip[c.homeFace], float4( c.center, 1.0 ) );
+		float4x4 homeMatrix = ShadowMap_LocalMatrix( lightIndex, c.homeFace );
+		c.homeMatrix = homeMatrix;
+		c.homeRect = g_ShadowLights[lightIndex].faces[c.homeFace];
+		float4 clip = mul( homeMatrix, float4( c.center, 1.0 ) );
 		c.valid = clip.w > 0.0 && clip.z >= 0.0 && clip.z <= clip.w && c.radial > 0.0;
 		if ( c.valid )
 		{
 			c.homePlane = clip.xy / clip.w * light.tanRenderedHalfFov;
+			c.forward = normalize( homeMatrix[3].xyz );
+			c.right = normalize( homeMatrix[0].xyz );
+			c.up = normalize( homeMatrix[1].xyz );
 			uint originalFace = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( p - light.origin ) : 0;
-			c.valid = c.valid && ShadowMap_InCore( mul( light.worldToClip[originalFace], float4( p, 1.0 ) ), light.faces[originalFace].w );
+			c.valid = c.valid && ShadowMap_InCore( mul( ShadowMap_LocalMatrix( lightIndex, originalFace ), float4( p, 1.0 ) ), g_ShadowLights[lightIndex].faces[originalFace].w );
 		}
 	}
 	return c;
 }
+// Almost every tap stays on the home face. Retain its exact matrix/rectangle
+// across the loops instead of reloading five structured-buffer vectors per tap.
+// Seam crossings still select the neighbouring face's own camera and rectangle.
+bool ShadowMap_LocalTapFace( RuntimeShadowLightGpu light, ShadowMapLocalChart c, uint face, out float4x4 faceMatrix, out uint4 rect )
+{
+	faceMatrix = c.homeMatrix;
+	rect = c.homeRect;
+	[branch] if ( face != c.homeFace )
+	{
+		faceMatrix = ShadowMap_LocalMatrix( c.lightIndex, face );
+		rect = g_ShadowLights[c.lightIndex].faces[face];
+	}
+	return ShadowMap_LocalFaceInitialized( light, face, rect );
+}
 float3 ShadowMap_LocalOffsetRay( RuntimeShadowLightGpu light, ShadowMapLocalChart c, float2 offset )
 {
-	return ShadowMap_LocalRay( light, c.homeFace, c.homePlane + offset * float2( 1.0, -1.0 ) / light.planeToTexel );
+	float2 plane = c.homePlane + offset * float2( 1.0, -1.0 ) / light.planeToTexel;
+	return c.forward + c.right * plane.x + c.up * plane.y;
 }
 float3 ShadowMap_LocalPoint( RuntimeShadowLightGpu light, ShadowMapLocalChart c, float3 ray, bool usePlane )
 {
@@ -414,7 +670,7 @@ bool ShadowMap_LocalPreflight( RuntimeShadowLightGpu light, ShadowMapLocalChart 
 	float minDenominator = 3.402823466e+38;
 	float maxRayLength = 0.0;
 	float signDenominator = 0.0;
-	[loop] for ( uint i = 0; i < 4; ++i )
+	[unroll] for ( uint i = 0; i < 4; ++i )
 	{
 		float3 ray = ShadowMap_LocalOffsetRay( light, c, g_ShadowPCFOffsets[i] * ( 2.0 * footprint ) );
 		float denominator = dot( c.normal, ray );
@@ -441,11 +697,17 @@ float ShadowMap_LocalCompare( RuntimeShadowLightGpu light, ShadowMapLocalChart c
 {
 	float3 ray = ShadowMap_LocalOffsetRay( light, c, offset );
 	uint face = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( ray ) : 0;
-	float3 q = ShadowMap_LocalPoint( light, c, ray, usePlane );
-	float4 clip = mul( light.worldToClip[face], float4( q, 1.0 ) );
-	uint4 rect = light.faces[face];
-	float2 atlasUV = ( float2( rect.yz ) + ShadowMap_ClipUV( clip ) * rect.w ) / 4096.0;
-	return g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, clip.z / clip.w );
+	float result = 1.0;
+	uint4 rect;
+	float4x4 faceMatrix;
+	if ( c.valid && ShadowMap_LocalTapFace( light, c, face, faceMatrix, rect ) )
+	{
+		float3 q = ShadowMap_LocalPoint( light, c, ray, usePlane );
+		float4 clip = mul( faceMatrix, float4( q, 1.0 ) );
+		float2 atlasUV = ( float2( rect.yz ) + ShadowMap_ClipUV( clip ) * rect.w ) / 4096.0;
+		result = g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, clip.z / clip.w );
+	}
+	return result;
 }
 float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart c )
 {
@@ -462,7 +724,7 @@ float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart 
 float ShadowMap_LocalPCF( uint lightIndex, float3 positionWS, float3 planeNormalWS )
 {
 	RuntimeShadowLightGpu light = g_ShadowLights[lightIndex];
-	return ShadowMap_LocalPCFChart( light, ShadowMap_MakeLocalChart( light, positionWS, planeNormalWS ) );
+	return ShadowMap_LocalPCFChart( light, ShadowMap_MakeLocalChart( lightIndex, light, positionWS, planeNormalWS ) );
 }
 float ShadowMap_LocalPCSSChart( RuntimeShadowLightGpu light, ShadowMapLocalChart c, out float2 diagnostics )
 {
@@ -477,25 +739,34 @@ float ShadowMap_LocalPCSSChart( RuntimeShadowLightGpu light, ShadowMapLocalChart
 		float searchRadius = ShadowMap_CappedRadius( light.shadowSourceRadius, searchRatio );
 		float blockerDistance = 0.0;
 		uint blockerCount = 0;
-		[loop] for ( uint i = 0; i < DX12_SHADOW_PCSS_BLOCKER_SAMPLES; ++i )
+		// Preserve exact tap/accumulation order, batching only loop control.
+		[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_BLOCKER_SAMPLES; base += 4 )
 		{
-			float3 ray = ShadowMap_LocalOffsetRay( light, c, g_ShadowBlockerDisk[i] * searchRadius );
-			uint face = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( ray ) : 0;
-			float3 q = ShadowMap_LocalPoint( light, c, ray, true );
-			float4 clip = mul( light.worldToClip[face], float4( q, 1.0 ) );
-			uint4 rect = light.faces[face];
-			int2 texel = clamp( int2( floor( ShadowMap_ClipUV( clip ) * rect.w ) ), int2( 0, 0 ), int2( rect.w - 1, rect.w - 1 ) );
-			float stored = g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].Load( int3( int2( rect.yz ) + texel, 0 ) );
-			float2 loadedPlane = ( ( float2( texel ) + 0.5 ) / rect.w * float2( 2.0, -2.0 ) + float2( -1.0, 1.0 ) ) * light.tanRenderedHalfFov;
-			float3 loadedRay = ShadowMap_LocalRay( light, face, loadedPlane );
-			float3 loadedPoint = ShadowMap_LocalPoint( light, c, loadedRay, true );
-			float4 loadedClip = mul( light.worldToClip[face], float4( loadedPoint, 1.0 ) );
-			if ( stored < 1.0 && stored < loadedClip.z / loadedClip.w )
+			[unroll] for ( uint tap = 0; tap < 4; ++tap )
 			{
-				// Face-local axial z must be linearized then made radial BEFORE summing.
-				float axial = ShadowMap_PerspectiveDistance( stored, light.shadowNear, light.shadowFar );
-				blockerDistance += axial * sqrt( 1.0 + dot( loadedPlane, loadedPlane ) );
-				++blockerCount;
+				uint i = base + tap;
+				float3 ray = ShadowMap_LocalOffsetRay( light, c, g_ShadowBlockerDisk[i] * searchRadius );
+				uint face = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( ray ) : 0;
+				uint4 rect;
+				float4x4 faceMatrix;
+				if ( !ShadowMap_LocalTapFace( light, c, face, faceMatrix, rect ) ) continue;
+				float3 q = ShadowMap_LocalPoint( light, c, ray, true );
+				float4 clip = mul( faceMatrix, float4( q, 1.0 ) );
+				int2 texel = clamp( int2( floor( ShadowMap_ClipUV( clip ) * rect.w ) ), int2( 0, 0 ), int2( rect.w - 1, rect.w - 1 ) );
+				float stored = g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].Load( int3( int2( rect.yz ) + texel, 0 ) );
+				float2 loadedPlane = ( ( float2( texel ) + 0.5 ) / rect.w * float2( 2.0, -2.0 ) + float2( -1.0, 1.0 ) ) * light.tanRenderedHalfFov;
+				float3 loadedRay;
+				[branch] if ( face == c.homeFace ) loadedRay = c.forward + c.right * loadedPlane.x + c.up * loadedPlane.y;
+				else loadedRay = ShadowMap_LocalRay( faceMatrix, loadedPlane );
+				float3 loadedPoint = ShadowMap_LocalPoint( light, c, loadedRay, true );
+				float4 loadedClip = mul( faceMatrix, float4( loadedPoint, 1.0 ) );
+				if ( stored < 1.0 && stored < loadedClip.z / loadedClip.w )
+				{
+					// Face-local axial z must be linearized then made radial BEFORE summing.
+					float axial = ShadowMap_PerspectiveDistance( stored, light.shadowNear, light.shadowFar );
+					blockerDistance += axial * sqrt( 1.0 + dot( loadedPlane, loadedPlane ) );
+					++blockerCount;
+				}
 			}
 		}
 		diagnostics.x = float( blockerCount ) / DX12_SHADOW_PCSS_BLOCKER_SAMPLES;
@@ -506,7 +777,11 @@ float ShadowMap_LocalPCSSChart( RuntimeShadowLightGpu light, ShadowMapLocalChart
 			float filterRadius = ShadowMap_CappedRadius( light.shadowSourceRadius, filterRatio );
 			diagnostics.y = filterRadius / DX12_SHADOW_PCSS_MAX_TEXELS;
 			float visibility = 0.0;
-			[loop] for ( uint j = 0; j < DX12_SHADOW_PCSS_FILTER_SAMPLES; ++j ) visibility += ShadowMap_LocalCompare( light, c, g_ShadowFilterDisk[j] * filterRadius, true );
+			[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_FILTER_SAMPLES; base += 2 )
+			{
+				[unroll] for ( uint tap = 0; tap < 2; ++tap )
+					visibility += ShadowMap_LocalCompare( light, c, g_ShadowFilterDisk[base + tap] * filterRadius, true );
+			}
 			result = visibility / DX12_SHADOW_PCSS_FILTER_SAMPLES;
 		}
 	}
@@ -516,7 +791,7 @@ float ShadowMap_LocalPCSSChart( RuntimeShadowLightGpu light, ShadowMapLocalChart
 float SampleLocalPCSS( uint lightIndex, float3 positionWS, float3 planeNormalWS, out float2 diagnostics )
 {
 	RuntimeShadowLightGpu light = g_ShadowLights[lightIndex];
-	return ShadowMap_LocalPCSSChart( light, ShadowMap_MakeLocalChart( light, positionWS, planeNormalWS ), diagnostics );
+	return ShadowMap_LocalPCSSChart( light, ShadowMap_MakeLocalChart( lightIndex, light, positionWS, planeNormalWS ), diagnostics );
 }
 
 // Select by camera-forward distance, NEVER Euclidean camera distance.
@@ -531,8 +806,11 @@ uint ShadowMap_Cascade( float distance )
 bool ShadowMap_SunMapValid( uint mapIndex, float3 p, float3 normal )
 {
 	bool result = false;
-	if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) result = ( cShadowView1.w & DX12_SHADOW_VIEW_CSM_VALID ) != 0 && ShadowMap_SunProjectionValid( cSunWorldToClip[mapIndex], cShadowDepthRecords[mapIndex], cCascadeRects[mapIndex].z, p, normal );
-	else result = ( cShadowView1.w & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) != 0 && ShadowMap_SunProjectionValid( cStaticSunWorldToClip, cShadowDepthRecords[4], cStaticSunRect.z, p, normal );
+	if ( ShadowMap_SunSlotInitialized( mapIndex ) )
+	{
+		if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) result = ShadowMap_SunProjectionValid( cSunWorldToClip[mapIndex], cShadowDepthRecords[mapIndex], cCascadeRects[mapIndex].z, p, normal );
+		else result = ShadowMap_SunProjectionValid( cStaticSunWorldToClip, cShadowDepthRecords[4], cStaticSunRect.z, p, normal );
+	}
 	return result;
 }
 // Complete results (visibility, blocker fraction, filter radius) share selection
@@ -725,6 +1003,7 @@ struct ShadowMapDirect
 	uint lowestLocal;
 	float2 sunDiagnostics;
 	float2 localDiagnostics;
+	uint bakedLocalDirect; // Actual eligible world/prop direct route, including angular-mode validation.
 };
 ShadowMapDirect ShadowMap_NoDirect()
 {
@@ -735,6 +1014,7 @@ ShadowMapDirect ShadowMap_NoDirect()
 	d.lowestLocal = 0xFFFFFFFF;
 	d.sunDiagnostics = 0.0;
 	d.localDiagnostics = 0.0;
+	d.bakedLocalDirect = 0;
 	return d;
 }
 ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s )
@@ -744,7 +1024,16 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 	{
 		// Geometric surface backfaces skip the map (silhouette taps can read "lit").
 		// Detail gathers are full-sphere point receivers: their orientation is NOT a sun cosine gate.
-		float3 sunResult = ( s.mode == 4 || dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 ) ? ShadowMap_SunResult( r ) : float3( 0.0, 0.0, 0.0 );
+		float3 sunResult = float3( 0.0, 0.0, 0.0 );
+		// A zero baked cap makes visibility exactly zero. Keep real map evaluation
+		// for blocker/radius debug views, which observe diagnostics even when capped.
+		bool sunDiagnostics = cShadowView0.w == 5 || cShadowView0.w == 6;
+		[branch] if ( ( r.bakedSunVisibility != 0.0 || sunDiagnostics ) &&
+			( s.mode == 4 || dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 ) )
+		{
+			sunResult = float3( 1.0, 0.0, 0.0 );
+			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 ) sunResult = ShadowMap_SunResult( r );
+		}
 		d.sunVisibility = min( saturate( sunResult.x ), r.bakedSunVisibility );
 		d.sunDiagnostics = sunResult.yz;
 		float3 L = -cSunTravel.xyz;
@@ -756,11 +1045,61 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 			if ( specularAngular > 0.0 ) d.specular += cSunRadiance.rgb * specularAngular * d.sunVisibility;
 		}
 	}
-	uint2 range = ShadowMap_TileRange( r );
-	uint lowestId = 0xFFFFFFFF;
-	[loop] for ( uint i = 0; i < range.y; ++i )
+	ShadowMapBakedLookup bakedLookup = (ShadowMapBakedLookup)0;
+	bakedLookup.end = 0xFFFFFFFF; // Validated entry ranges cannot reach this sentinel.
+	bool bakedLocalDirect = r.bakedLocalDirect != 0;
+	uint2 unbakedLocalRange = r.unbakedLocalRange;
+	// Modes 0/1 have exact per-vertex Lambert/half-Lambert planes. Bumped-basis,
+	// detail and other angular modes keep full runtime lighting with baked R8.
+	[branch] if ( r.bakedPropPrimitive != 0xFFFFFFFF && s.mode <= 1 && cPropDirect.x != 0xFFFFFFFF )
 	{
-		uint index = g_ShadowTileIndices[range.x + i];
+		bakedLocalDirect = ShadowMap_BeginBakedLookup( r, bakedLookup ) && ( bakedLookup.propFlags & 1u ) != 0;
+		[branch] if ( bakedLocalDirect )
+		{
+			d.diffuse += ShadowMap_BakedPropDirect( s.mode, bakedLookup );
+			unbakedLocalRange = cPropDirect.zw;
+		}
+	}
+	d.bakedLocalDirect = bakedLocalDirect ? 1 : 0;
+	// Select the short resident tail BEFORE touching the full tile CSR.
+	uint2 range;
+	[branch] if ( bakedLocalDirect ) range = cSunIdentity.zw;
+	else range = ShadowMap_TileRange( r );
+	uint lowestId = 0xFFFFFFFF;
+	uint unbakedCursor = 0;
+	uint nextUnbaked = 0xFFFFFFFF;
+	bool hasUnbaked = bakedLocalDirect && unbakedLocalRange.y != 0;
+	// Empty lists retain the resident-only path: no raw-list loads or searches.
+	[loop] for ( uint i = 0; i < range.y
+		|| ( hasUnbaked && ( unbakedCursor < unbakedLocalRange.y || nextUnbaked != 0xFFFFFFFF ) )
+		; )
+	{
+		uint index;
+		bool unbaked = false;
+		[branch] if ( hasUnbaked )
+		{
+			// Resolve the next present fallback once, retaining it while resident
+			// indices precede it. Gaps in view selection never query visibility.
+			[loop] while ( nextUnbaked == 0xFFFFFFFF && unbakedCursor < unbakedLocalRange.y )
+			{
+				uint canonical = g_ShadowVisibilityPayload.Load( unbakedLocalRange.x + 4u * unbakedCursor );
+				++unbakedCursor;
+				nextUnbaked = ShadowMap_UnbakedViewIndex( canonical );
+			}
+			uint resident = 0xFFFFFFFF;
+			[branch] if ( i < range.y ) resident = g_ShadowTileIndices[range.x + i];
+			index = min( resident, nextUnbaked );
+			if ( index == 0xFFFFFFFF ) break;
+			unbaked = index == nextUnbaked;
+			if ( unbaked ) nextUnbaked = 0xFFFFFFFF;
+			if ( index == resident ) ++i; // Equal members are evaluated once, as full terms.
+		}
+		else
+		{
+			index = g_ShadowTileIndices[range.x + i];
+			++i;
+		}
+		bool bakedDelta = bakedLocalDirect && !unbaked;
 		RuntimeShadowLightGpu light = g_ShadowLights[index];
 		bool lowest = light.lightId < lowestId;
 		if ( lowest )
@@ -776,9 +1115,41 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 		if ( s.specular ) specularAngular = ShadowMap_Angular( 3, L, s.N, 0.0, 0.0, 0.0, s.E, s.exponent );
 		if ( ( angular > 0.0 || specularAngular > 0.0 ) && any( radiance != 0.0 ) )
 		{
-			float2 diagnostics;
-			float visibility = ShadowMap_LocalPCSSChart( light, ShadowMap_MakeLocalChart( light, r.positionWS, r.planeNormalWS ), diagnostics );
-			if ( angular > 0.0 ) d.diffuse += radiance * angular * visibility;
+			float2 diagnostics = 0.0;
+			float visibility = 1.0;
+			float diffuseVisibility = bakedDelta ? 0.0 : 1.0;
+			// Bound diffuse + specular visibility error, scaled by w for baked deltas.
+			// A skipped delta is zero (both endpoints use V=1); specular keeps that
+			// same unshadowed stand-in times w. Diagnostics never skip.
+			float3 contribution = radiance * ( max( angular, 0.0 ) + max( specularAngular, 0.0 ) );
+			if ( bakedDelta ) contribution *= light.realtimeWeight;
+			bool sampleShadow = cSunBasisY.w <= 0.0 ||
+				max( contribution.r, max( contribution.g, contribution.b ) ) > cSunBasisY.w ||
+				cShadowView0.w == 5 || cShadowView0.w == 6;
+			[branch] if ( sampleShadow )
+			{
+				float bakedVisibility = 1.0;
+				// Full hybrid skips baked loads at w=1; baked direct must subtract Vbaked even then.
+				[branch] if ( ( bakedDelta || light.realtimeWeight < 1.0 ) &&
+					( r.bakedFaceId != 0xFFFFFFFF || r.bakedPropPrimitive != 0xFFFFFFFF ) &&
+					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
+					bakedVisibility = ShadowMap_BakedLocalVisibility( r, light.bakedLightIndex, bakedLookup );
+				float realtimeVisibility = bakedVisibility;
+				[branch] if ( light.realtimeWeight > 0.0 )
+					realtimeVisibility = ShadowMap_LocalPCSSChart( light, ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS ), diagnostics );
+				if ( bakedDelta )
+				{
+					diffuseVisibility = ( realtimeVisibility - bakedVisibility ) * light.realtimeWeight;
+					visibility = realtimeVisibility * light.realtimeWeight;
+				}
+				else
+				{
+					visibility = lerp( bakedVisibility, realtimeVisibility, light.realtimeWeight );
+					diffuseVisibility = visibility;
+				}
+			}
+			else if ( bakedDelta ) visibility = light.realtimeWeight;
+			if ( angular > 0.0 ) d.diffuse += radiance * angular * diffuseVisibility;
 			if ( specularAngular > 0.0 ) d.specular += radiance * specularAngular * visibility;
 			if ( lowest ) d.localDiagnostics = diagnostics;
 		}
@@ -807,6 +1178,9 @@ float4 ShadowMap_Debug( ShadowMapReceiver r, ShadowMapDirect d, float4 lit )
 	uint mode = cShadowView0.w;
 	float3 color = lit.rgb;
 	bool hasSun = ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0;
+	// No evaluated union member: retain the empty-resident baked-only convention
+	// without walking CSR. A full-term fallback diagnostic must not be overridden.
+	bool bakedOnly = d.bakedLocalDirect != 0 && cSunIdentity.w == 0 && cShadowView1.z != 0 && d.lowestLocal == 0xFFFFFFFF;
 	if ( mode == 1 )
 	{
 		float distance = dot( r.positionWS - cEyePosition.xyz, cViewForward.xyz );
@@ -818,22 +1192,31 @@ float4 ShadowMap_Debug( ShadowMapReceiver r, ShadowMapDirect d, float4 lit )
 	else if ( mode == 3 )
 	{
 		uint index = d.lowestLocal;
-		color = 0.0;
+		color = bakedOnly ? float3( 0.0, 1.0, 1.0 ) : 0.0;
 		if ( index != 0xFFFFFFFF )
 		{
 			RuntimeShadowLightGpu light = g_ShadowLights[index];
-			uint face = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( r.positionWS - light.origin ) : 0;
-			uint page = light.faces[face].x;
-			color = float3( float( page & 31 ) / 31.0, float( ( page >> 5 ) & 31 ) / 31.0, float( face + 1 ) / 6.0 );
+			[branch] if ( light.realtimeWeight == 0.0 )
+				color = float3( 0.0, 1.0, 1.0 ); // Baked-only: never interpret zero rect as atlas page 0.
+			else
+			{
+				uint face = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( r.positionWS - light.origin ) : 0;
+				uint page = light.faces[face].x;
+				float3 realtimeColor = float3( float( page & 31 ) / 31.0, float( ( page >> 5 ) & 31 ) / 31.0, float( face + 1 ) / 6.0 );
+				color = lerp( float3( 0.0, 1.0, 1.0 ), realtimeColor, light.realtimeWeight );
+			}
 		}
 	}
 	else if ( mode == 5 || mode == 6 )
 	{
-		// Diagnostics are cached by GatherDirect. Without sun, a dark/backfacing
-		// lowest-id local receiver shows zero: the lighting gate skips its samples.
+		// Diagnostics are cached by GatherDirect. Baked direct observes the
+		// lowest-id union member; other receivers observe the lowest-id tile local.
+		// Without sun, a dark/backfacing receiver shows zero (lighting gate skips).
 		float2 diagnostics = hasSun ? d.sunDiagnostics : d.localDiagnostics;
 		float value = mode == 5 ? diagnostics.x : diagnostics.y;
 		color = value.xxx;
+		if ( !hasSun && ( bakedOnly || ( d.lowestLocal != 0xFFFFFFFF && g_ShadowLights[d.lowestLocal].realtimeWeight == 0.0 ) ) )
+			color = float3( 0.0, 1.0, 1.0 ); // No blocker/radius chart exists in baked-only mode.
 	}
 	return float4( color, lit.a );
 }

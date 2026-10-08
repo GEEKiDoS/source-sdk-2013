@@ -289,8 +289,9 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.push.skyAmbientLight = scene.skyAmbientLight;
 	gpu.push.flags = gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0;
 	const bool selectedSun = gpu.HasSelectedSun();
-	if ( selectedSun && scene.sunVisibilityOrigins.Count() != scene.luxels.Count() )
-		gpu.Fail( "selected sun visibility origins must match the geometric luxel count" );
+	const bool selectedVisibility = gpu.options.shadowMaps && scene.shadowLights.Count() != 0;
+	if ( selectedVisibility && scene.sunVisibilityOrigins.Count() != scene.luxels.Count() )
+		gpu.Fail( "selected local/sun visibility origins must match the geometric luxel count" );
 	memset( gpu.push.shadowSun, 0, sizeof( gpu.push.shadowSun ) );
 	if ( selectedSun )
 		gpu.push.shadowSun[0] = DEG2RAD( scene.shadowSunAngularRadius );
@@ -337,8 +338,9 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		(VkDeviceSize)scene.styleLights.Count() * sizeof( int ),
 		shadowSplit ? reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4 : 16,
 		shadowSplit ? (VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4 : 16,
-		selectedSun ? (VkDeviceSize)scene.luxels.Count() * sizeof( Vector4D ) : 16,
-		selectedSun ? (VkDeviceSize)scene.luxels.Count() * sizeof( float ) : 16
+		selectedVisibility ? (VkDeviceSize)scene.luxels.Count() * sizeof( Vector4D ) : 16,
+		selectedSun ? (VkDeviceSize)scene.luxels.Count() * sizeof( float ) : 16,
+		(VkDeviceSize)scene.shadowLights.Count() * sizeof( Vector4D )
 	};
 	COMPILE_TIME_ASSERT( sizeof( Vector4D ) == 16 );
 	for ( int binding = 0; binding < RESTIR_BIND_COVERAGE; ++binding )
@@ -383,12 +385,39 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.Upload( RESTIR_BIND_FACES, faces.Base(), sizes[RESTIR_BIND_FACES] );
 	gpu.Upload( RESTIR_BIND_SAMPLES, scene.samples.Base(), sizes[RESTIR_BIND_SAMPLES] );
 	gpu.Upload( RESTIR_BIND_LUXELS, scene.luxels.Base(), sizes[RESTIR_BIND_LUXELS] );
-	if ( selectedSun )
+	if ( selectedVisibility )
 		gpu.Upload( RESTIR_BIND_SUN_ORIGINS, scene.sunVisibilityOrigins.Base(), sizes[RESTIR_BIND_SUN_ORIGINS] );
 	else
 	{
 		const float dummyOrigins[4] = {};
 		gpu.Upload( RESTIR_BIND_SUN_ORIGINS, dummyOrigins, sizeof( dummyOrigins ) );
+	}
+	// Derive this compact source buffer from the exact canonical manifest, not
+	// transport GPU indices. Paired equality already compares every source byte.
+	CUtlVector<Vector4D> sources;
+	for ( int first = 0; first < scene.shadowLights.Count(); )
+	{
+		const int count = MIN( scene.shadowLights.Count() - first, (int)( RESTIR_STAGING_BYTES / sizeof( Vector4D ) ) );
+		sources.SetCount( count );
+		for ( int i = 0; i < count; ++i )
+		{
+			const ShadowMapLightDisk &selected = scene.shadowLights[first + i];
+			const bool sun = selected.light.type == emit_skylight;
+			if ( !selected.light.origin.IsValid() || ( !sun &&
+				( ( selected.light.type != emit_point && selected.light.type != emit_spotlight ) ||
+					!ShadowMap_IsFiniteFloat( selected.shadowSourceRadius ) || selected.shadowSourceRadius < 0.0f ) ) )
+				gpu.Fail( "selected visibility source has invalid local type, origin or radius" );
+			sources[i].Init( selected.light.origin.x, selected.light.origin.y, selected.light.origin.z,
+				sun ? -1.0f : selected.shadowSourceRadius );
+		}
+		gpu.Upload( RESTIR_BIND_SELECTED_SOURCES, sources.Base(), (VkDeviceSize)count * sizeof( Vector4D ),
+			(VkDeviceSize)first * sizeof( Vector4D ) );
+		first += count;
+	}
+	if ( !scene.shadowLights.Count() )
+	{
+		const float blockedSource[4] = { 0, 0, 0, -1 };
+		gpu.Upload( RESTIR_BIND_SELECTED_SOURCES, blockedSource, sizeof( blockedSource ) );
 	}
 	gpu.Upload( RESTIR_BIND_FACE_NEIGHBORS, scene.faceNeighbors.Base(), (VkDeviceSize)scene.faceNeighbors.Count() * sizeof( int ) );
 	gpu.Upload( RESTIR_BIND_FACE_NEIGHBORS, scene.dfaceToFace.Base(), (VkDeviceSize)scene.dfaceToFace.Count() * sizeof( int ), (VkDeviceSize)scene.faceNeighbors.Count() * sizeof( int ) );

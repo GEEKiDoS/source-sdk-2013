@@ -18,6 +18,7 @@ namespace
 const int kMaxColorCorrectionLookups = 4;
 const int kFlagDirt = 2;
 const int kFlagColorCorrection = 4;
+const int kFlagSkipBloom = 8; // disabled producer: do not Load mip 1 of one-mip standard black
 }
 
 BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
@@ -28,6 +29,9 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( GLARE, SHADER_PARAM_TYPE_TEXTURE, "", "Lens flare glare" )
 		SHADER_PARAM( DIRT, SHADER_PARAM_TYPE_TEXTURE, "", "Lens dirt" )
 		SHADER_PARAM( DIRTENABLED, SHADER_PARAM_TYPE_INTEGER, "0", "Lens dirt enabled" )
+		SHADER_PARAM( BLOOMENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Bloom producer active" )
+		SHADER_PARAM( FLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Flare producer active" )
+		SHADER_PARAM( GLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Glare producer active" )
 		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Scene scale, bloom intensity and flare intensity" )
 		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Lens dirt intensity" )
 		SHADER_PARAM( OUTPUT, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: 1 when writing HDR output" )
@@ -35,6 +39,13 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( PEAK, SHADER_PARAM_TYPE_FLOAT, "1", "AgX peak relative to paper white" )
 		SHADER_PARAM( DEBUGVIEW, SHADER_PARAM_TYPE_INTEGER, "0", "0 off, 1 bloom, 2 flare, 3 glare, 4 dirt" )
 	END_SHADER_PARAMS
+
+	SHADER_INIT_PARAMS()
+	{
+		SET_PARAM_INT_IF_NOT_DEFINED( BLOOMENABLED, 1 );
+		SET_PARAM_INT_IF_NOT_DEFINED( FLAREENABLED, 1 );
+		SET_PARAM_INT_IF_NOT_DEFINED( GLAREENABLED, 1 );
+	}
 
 	SHADER_FALLBACK
 	{
@@ -64,9 +75,12 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		DYNAMIC_STATE
 		{
 			BindTexture( SHADER_SAMPLER0, SCENE, -1 );
-			BindTexture( SHADER_SAMPLER1, BLOOM, -1 );
-			BindTexture( SHADER_SAMPLER2, FLARE, -1 );
-			BindTexture( SHADER_SAMPLER3, GLARE, -1 );
+			if ( params[BLOOMENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER1, BLOOM, -1 );
+			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER1, TEXTURE_BLACK );
+			if ( params[FLAREENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER2, FLARE, -1 );
+			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER2, TEXTURE_BLACK );
+			if ( params[GLAREENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER3, GLARE, -1 );
+			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER3, TEXTURE_BLACK );
 			BindTexture( SHADER_SAMPLER4, DIRT, -1 );
 
 			ShaderColorCorrectionInfo_t info;
@@ -80,6 +94,8 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 				nFlags |= kFlagDirt;
 			if ( nLookups )
 				nFlags |= kFlagColorCorrection;
+			if ( !params[BLOOMENABLED]->GetIntValue() )
+				nFlags |= kFlagSkipBloom;
 			const float dirtPeak[4] = { params[PARAMS1]->GetVecValue()[0], params[PEAK]->GetFloatValue(), 0.0f, 0.0f };
 			const float output[4] = { params[OUTSCALE]->GetFloatValue(), static_cast<float>( nFlags ), static_cast<float>( params[DEBUGVIEW]->GetIntValue() ), static_cast<float>( nLookups ) };
 			const float lutWeights[4] = { info.m_flDefaultWeight, info.m_pLookupWeights[0], info.m_pLookupWeights[1], info.m_pLookupWeights[2] };

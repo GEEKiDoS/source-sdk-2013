@@ -2,6 +2,7 @@
 #include "highres_lightmaps_dx12.h"
 #include "shaderapi_dx12.h"
 #include "shaderdevice_dx12.h"
+#include "staticprop_visibility_dx12.h"
 #include "shaderapi/ishaderutil.h"
 #include "filesystem.h"
 #include "zip_utils.h"
@@ -78,6 +79,8 @@ struct DynamicFace
 struct ViewStyles { uint64 generation, serial; std::array<float,64> values; };
 using DrawConstants = dx12native::DX12HighresDrawConstants;
 COMPILE_TIME_ASSERT(sizeof(DrawConstants) == 320);
+COMPILE_TIME_ASSERT(hlight::kFaceHasBakedLocalDirect == 16); // highres HLSL dimensionsFlags.z mirror
+COMPILE_TIME_ASSERT(hlight::kModelBakedPoseKnown == 1); // dimensionsFlags.w reserves bit 0 for pose
 void Transition(CCommandRecorderDX12 *list, ID3D12Resource *resource, D3D12_RESOURCE_STATES &state, D3D12_RESOURCE_STATES next)
 {
     if (state == next) return;
@@ -156,6 +159,11 @@ struct CHighresLightmapsDX12::Impl
     std::vector<uint32> pageGroup, pageSlice;
     ComPtr<ID3D12Resource> faceBuffer, tileBuffer, failureBuffer;
     D3D12_RESOURCE_STATES faceState = D3D12_RESOURCE_STATE_COPY_DEST, tileState = D3D12_RESOURCE_STATE_COPY_DEST;
+    std::vector<std::array<uint32,4>> visibilityFaces, visibilityMeshes;
+    ComPtr<ID3D12Resource> visibilityBuffers[4];
+    D3D12_RESOURCE_STATES visibilityStates[4] = {D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_DEST};
+    ComPtr<ID3D12DescriptorHeap> visibilityDescriptors;
+    uint64 visibilityRetainedFence = 0;
     D3D12_RESOURCE_STATES failureState = D3D12_RESOURCE_STATE_COPY_DEST;
     bool metadataUploaded = false, failureUsed = false;
     struct Readback { uint64 fence, generation, sourceAddress; ComPtr<ID3D12Resource> resource; };
@@ -185,6 +193,8 @@ struct CHighresLightmapsDX12::Impl
         for (auto &dynamic : dynamics) { dynamic.queued = false; dynamic.nextDirty = kNoPage; }
         for (auto &group : groups) group = {};
         faceBuffer.Reset(); tileBuffer.Reset(); failureBuffer.Reset();
+        visibilityFaces.clear(); visibilityMeshes.clear(); visibilityDescriptors.Reset(); visibilityRetainedFence=0;
+        for (uint32 i=0;i<4;++i) { visibilityBuffers[i].Reset(); visibilityStates[i]=D3D12_RESOURCE_STATE_COPY_DEST; }
         metadataUploaded = failureUsed = false;
         commonRetainedFence = 0;
         faceState = tileState = failureState = D3D12_RESOURCE_STATE_COPY_DEST;
@@ -253,21 +263,51 @@ struct CHighresLightmapsDX12::Impl
         }
         return true;
     }
-    bool UploadBuffer(ID3D12Resource *buffer, D3D12_RESOURCE_STATES &state, const void *data, size_t bytes)
+    bool UploadBuffer(ID3D12Resource *buffer, D3D12_RESOURCE_STATES &state, const void *data, size_t bytes,
+        size_t destinationOffset=0, bool finalize=true)
     {
         if (!bytes) return true;
-        ID3D12Resource *upload = nullptr; uint64 offset = 0; const uint64 fence = device->NextFenceValue();
-        if (!api->m_Pipeline.UploadStructured(data,bytes,16,fence,&upload,&offset)) return false;
+        const uint64 fence = device->NextFenceValue();
         api->m_Pipeline.RetainExternalResource(buffer,fence);
         Transition(device->CommandList(),buffer,state,D3D12_RESOURCE_STATE_COPY_DEST);
-        device->CommandList()->CopyBufferRegion(buffer,0,upload,offset,bytes);
-        Transition(device->CommandList(),buffer,state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE); return true;
+        // Keep dense map payloads out of a single oversized transient upload allocation.
+        for (size_t copied=0;copied<bytes;)
+        {
+            const size_t chunk=std::min<size_t>(bytes-copied,8u*1024u*1024u);
+            ID3D12Resource *upload=nullptr; uint64 offset=0;
+            if (!api->m_Pipeline.UploadStructured(static_cast<const uint8 *>(data)+copied,chunk,1,fence,&upload,&offset)) return false;
+            device->CommandList()->CopyBufferRegion(buffer,destinationOffset+copied,upload,offset,chunk);
+            copied+=chunk;
+        }
+        if (finalize) Transition(device->CommandList(),buffer,state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        return true;
     }
     bool InitializeUploads()
     {
         if (metadataUploaded) return true;
         if (!UploadBuffer(faceBuffer.Get(),faceState,faces.data(),faces.size()*sizeof(faces[0])) ||
             !UploadBuffer(tileBuffer.Get(),tileState,tiles.data(),tiles.size()*sizeof(tiles[0]))) return false;
+        const auto &visibility=mode->visibility;
+        if (!UploadBuffer(visibilityBuffers[0].Get(),visibilityStates[0],visibilityFaces.data(),visibilityFaces.size()*16) ||
+            !UploadBuffer(visibilityBuffers[1].Get(),visibilityStates[1],visibility.entries,size_t(visibility.record->entryCount)*16) ||
+            !UploadBuffer(visibilityBuffers[2].Get(),visibilityStates[2],visibility.payload,size_t(visibility.record->payloadBytes),0,false) ||
+            !UploadBuffer(visibilityBuffers[3].Get(),visibilityStates[3],visibilityMeshes.data(),visibilityMeshes.size()*16)) return false;
+        // Raw loads read whole uints: initialize the last partial word's unused bytes.
+        if (visibility.record->payloadBytes & 3)
+        {
+            uint32 tail=0; const size_t end=size_t(visibility.record->payloadBytes)&~size_t(3);
+            memcpy(&tail,visibility.payload+end,size_t(visibility.record->payloadBytes)-end);
+            ID3D12Resource *upload=nullptr; uint64 offset=0; const uint64 fence=device->NextFenceValue();
+            if (!api->m_Pipeline.UploadStructured(&tail,4,4,fence,&upload,&offset)) return false;
+            Transition(device->CommandList(),visibilityBuffers[2].Get(),visibilityStates[2],D3D12_RESOURCE_STATE_COPY_DEST);
+            device->CommandList()->CopyBufferRegion(visibilityBuffers[2].Get(),end,upload,offset,4);
+        }
+        // Append canonical overflow IDs without copying or repacking the dense R8 CPU payload.
+        const size_t unbakedOffset=size_t((visibility.record->payloadBytes+3)&~uint64(3));
+        if (!UploadBuffer(visibilityBuffers[2].Get(),visibilityStates[2],visibility.unbakedLightIndices,
+            size_t(visibility.record->unbakedLightIndexCount)*sizeof(uint32),unbakedOffset,false)) return false;
+        for (uint32 i=0;i<4;++i)
+            Transition(device->CommandList(),visibilityBuffers[i].Get(),visibilityStates[i],D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (uint32 p=0;p<mode->record->pageCount;++p)
         {
             const auto &record = mode->pages[p]; auto &group = groups[pageGroup[p]];
@@ -380,7 +420,7 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
                 if (!hlight::FindPakAsset(BspFile::Read,&bsp,lumps[LUMP_PAKFILE],orphanAsset) || orphanAsset)
                     s.Fail("Highres lightmaps: unreadable pak directory or orphan high-resolution asset");
             }
-            return false; // Non-v4 maps are not admitted here; the client rejects enhanced legacy manifests.
+            return false; // Old enhanced manifests are rejected; baked local direct requires a rebake.
         }
         s.status.state=DX12_HIGHRES_PENDING;
         s.enhancedRequired=true;
@@ -411,6 +451,8 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         if (!hlight::ValidateManifestAsset(s.file,manifestView,s.error,sizeof(s.error))) { s.status.state=DX12_HIGHRES_REJECTED; return false; }
         s.mode=hlight::FindMode(s.file,s.domain->faceLump,s.domain->lightingLump);
         if (!s.mode || s.mode->record->faceCount!=s.domain->faces.size()) { s.Fail("Highres lightmaps: effective face/lighting domain mismatch"); return false; }
+        if (!s.mode->visibility.record || s.mode->visibility.record->faceCount!=s.domain->faces.size())
+        { s.Fail("Highres lightmaps: required hybrid visibility domain missing"); return false; }
         bool manifestMode=false;
         for (uint32 m=0;m<SHADOWMAP_MODE_COUNT;++m)
         {
@@ -559,6 +601,41 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
         if (!Buffer(device,s.faces.size()*sizeof(s.faces[0]),D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_FLAG_NONE,D3D12_RESOURCE_STATE_COPY_DEST,s.faceBuffer) ||
             !Buffer(device,s.tiles.size()*sizeof(s.tiles[0]),D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_FLAG_NONE,D3D12_RESOURCE_STATE_COPY_DEST,s.tileBuffer) ||
             !Buffer(device,256,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_DEST,s.failureBuffer)) { s.Fail("Highres lightmaps: metadata residency failed"); return; }
+        const auto &visibility=s.mode->visibility;
+        s.visibilityFaces.resize(s.mode->record->faceCount);
+        for (uint32 f=0;f<s.visibilityFaces.size();++f)
+            s.visibilityFaces[f]={{visibility.faces[f].firstEntry,visibility.faces[f].entryCount,s.mode->faces[f].highWidth,s.mode->faces[f].highHeight}};
+        s.visibilityMeshes.resize(visibility.record->meshCount);
+        for (uint32 m=0;m<s.visibilityMeshes.size();++m)
+            s.visibilityMeshes[m]={{visibility.meshes[m].firstEntry,visibility.meshes[m].entryCount,visibility.meshes[m].vertexCount,
+                visibility.meshes[m].directPayloadBytes?hlight::kPropMeshHasBakedLocalDirect:0}};
+        const uint64 unbakedBase=(visibility.record->payloadBytes+3)&~uint64(3);
+        const uint64 rawBytes=unbakedBase+uint64(visibility.record->unbakedLightIndexCount)*sizeof(uint32);
+        if (rawBytes>hlight::kMaxFileBytes) { s.Fail("Highres lightmaps: overflow visibility GPU range too large"); return; }
+        for (uint32 i=0;i<visibility.record->unbakedFaceCount;++i)
+        {
+            const auto &unbaked=visibility.unbakedFaces[i]; auto &gpu=s.faces[unbaked.faceOrdinal];
+            if (unbaked.lightCount>0xffffu) { s.Fail("Highres lightmaps: overflow face GPU count too large"); return; }
+            const uint64 offset=unbakedBase+uint64(unbaked.firstLightIndex)*sizeof(uint32);
+            // Existing owner metadata exposes empty lists without a separate directory fetch.
+            gpu.dimensionsFlags[2]|=unbaked.lightCount<<16;
+            gpu.dimensionsFlags[3]|=uint32(offset/4)<<1;
+        }
+        const uint64 visibilityBytes[4]={uint64(s.visibilityFaces.size())*16,uint64(visibility.record->entryCount)*16,rawBytes,uint64(s.visibilityMeshes.size())*16};
+        if (!Heap(device,s.visibilityDescriptors,4)) { s.Fail("Highres lightmaps: visibility descriptor allocation failed"); return; }
+        for (uint32 i=0;i<4;++i)
+        {
+            if (!Buffer(device,visibilityBytes[i],D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_FLAG_NONE,D3D12_RESOURCE_STATE_COPY_DEST,s.visibilityBuffers[i]))
+            { s.Fail("Highres lightmaps: visibility residency failed"); return; }
+            if (i!=2) BufferView(device,s.visibilityBuffers[i].Get(),uint32(visibilityBytes[i]/16),16,Slot(device,s.visibilityDescriptors.Get(),i));
+            else
+            {
+                D3D12_SHADER_RESOURCE_VIEW_DESC raw{}; raw.Format=DXGI_FORMAT_R32_TYPELESS;
+                raw.ViewDimension=D3D12_SRV_DIMENSION_BUFFER; raw.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                raw.Buffer.NumElements=uint32(std::max<uint64>(1,visibilityBytes[i]/4)); raw.Buffer.Flags=D3D12_BUFFER_SRV_FLAG_RAW;
+                device->CreateShaderResourceView(s.visibilityBuffers[i].Get(),&raw,Slot(device,s.visibilityDescriptors.Get(),i));
+            }
+        }
         s.scratch.resize(scratchBytes);
         const auto committedBytes = [device](ID3D12Resource *resource) -> uint64
         {
@@ -567,6 +644,7 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             return device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
         };
         s.status.gpuBytes=committedBytes(s.faceBuffer.Get())+committedBytes(s.tileBuffer.Get())+committedBytes(s.failureBuffer.Get());
+        for (const auto &buffer:s.visibilityBuffers) s.status.gpuBytes+=committedBytes(buffer.Get());
         for (const auto &page:s.pages) s.status.gpuBytes+=committedBytes(page.ids.resource.Get())+committedBytes(page.dynamic.resource.Get());
         for (const auto &group:s.groups) s.status.gpuBytes+=committedBytes(group.resource.Get());
         for (uint32 p=0;p<s.pages.size();++p)
@@ -700,6 +778,46 @@ void CHighresLightmapsDX12::EndView()
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     if (s.mode && !s.CopyFailure()) s.Fail("Highres lightmaps: GPU validation readback allocation failed");
     if (!s.views.empty()) s.views.pop_back(); else if (s.mode) s.Fail("Highres lightmaps: unbalanced nested view");
+}
+bool CHighresLightmapsDX12::PrepareVisibilityDraw(D3D12_CPU_DESCRIPTOR_HANDLE lightingTable)
+{
+    Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex); s.Poll();
+    if (!s.mode) return !s.enhancedRequired;
+    if (s.status.state!=DX12_HIGHRES_READY || !s.device || !s.api || !s.device->CommandList() ||
+        !s.visibilityDescriptors || !s.InitializeUploads())
+    { s.Fail("Highres lightmaps: immutable hybrid visibility unavailable"); return false; }
+    const uint64 fence=s.device->NextFenceValue();
+    if (s.visibilityRetainedFence!=fence)
+    {
+        for (auto &buffer:s.visibilityBuffers) s.api->m_Pipeline.RetainExternalResource(buffer.Get(),fence);
+        s.visibilityRetainedFence=fence;
+    }
+    lightingTable.ptr+=SIZE_T(DX12_LIGHTING_T_VISIBILITY_FACES)*s.device->NativeDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    s.device->NativeDevice()->CopyDescriptorsSimple(4,lightingTable,s.visibilityDescriptors->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    return true;
+}
+bool CHighresLightmapsDX12::ResolveStaticPropMesh(const DX12StaticPropReceiver &receiver,
+    uint64 meshToken,uint32 directory[4],uint32 &meshIndex)
+{
+    Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (!s.mode || s.status.state!=DX12_HIGHRES_READY || s.views.empty() ||
+        !s.domain || s.views.back().generation!=s.domain->mapGeneration) return false;
+    const auto &visibility=s.mode->visibility;
+    return ResolveStaticPropMeshDX12(receiver,meshToken,visibility.props,visibility.record->propCount,
+        visibility.meshes,visibility.record->meshCount,directory,meshIndex);
+}
+bool CHighresLightmapsDX12::GetStaticPropDirect(uint32 meshIndex,StaticPropDirectMetadataDX12 &metadata)
+{
+    Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    metadata={};
+    if (!s.mode || s.status.state!=DX12_HIGHRES_READY || !s.mode->visibility.record ||
+        meshIndex>=s.mode->visibility.record->meshCount)
+    { s.Fail("Highres lightmaps: static-prop direct mesh domain unavailable"); return false; }
+    const auto &visibility=s.mode->visibility;
+    if (!ReadStaticPropDirectMetadataDX12(visibility,visibility.meshes[meshIndex],
+        metadata.direct,metadata.styles,metadata.styleCount))
+    { s.Fail("Highres lightmaps: invalid admitted static-prop direct metadata"); return false; }
+    return true;
 }
 bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWorld[12],CPipelineCacheDX12::BindingInputDX12 &input)
 {

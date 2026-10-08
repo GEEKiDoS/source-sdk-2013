@@ -28,6 +28,11 @@ logical=vortwarp_shadowmap_ps51 stage=ps source=vortwarp_shadowmap_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=vortwarp_ps2x space=1 register=b1 size=224 layoutHash=0x42805cf75bff8585 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1

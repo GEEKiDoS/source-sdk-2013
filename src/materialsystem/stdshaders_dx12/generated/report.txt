@@ -688,6 +688,11 @@ logical=eye_refract_shadowmap_ps51 stage=ps source=eye_refract_shadowmap_ps51.fx
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=eye_refract_ps2x space=1 register=b1 size=192 layoutHash=0x8b147f7ec4bc365d material
     member=g_vPackedConst0 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_vEyeOrigin type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c1
@@ -783,6 +788,11 @@ logical=eyes_shadowmap_ps51 stage=ps source=eyes_shadowmap_ps51.fxc legacy=- leg
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=eyes_ps2x space=1 register=b1 size=32 layoutHash=0x6f5ae473d95c2915 material
     member=cEyeScalars type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_EyePos_SpecExponent type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c11
@@ -850,6 +860,11 @@ logical=skin_shadowmap_ps51 stage=ps source=skin_shadowmap_ps51.fxc legacy=- leg
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=skin_ps20b space=1 register=b1 size=272 layoutHash=0xff43f7269a0b071d material
     member=g_SelfIllumTint_and_DetailBlendFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -939,6 +954,11 @@ logical=teeth_bump_shadowmap_ps51 stage=ps source=teeth_bump_shadowmap_ps51.fxc 
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=teeth_bump_ps2x space=1 register=b1 size=16 layoutHash=0xf52b7cebdf17e06b material
     member=g_EyePos_SpecExponent type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c11
     legacyEntry=0,16,1,0,0,0,11
@@ -1002,6 +1022,11 @@ logical=teeth_shadowmap_ps51 stage=ps source=teeth_shadowmap_ps51.fxc legacy=- l
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=teeth_ps2x space=1 register=b1 size=16 layoutHash=0x30948ca338f25ff4 material
     member=g_EyePos_SpecExponent type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c11
     legacyEntry=0,16,1,0,0,0,11
@@ -1771,6 +1796,50 @@ logical=lightmappedgeneric_decal_highres_ps51 stage=ps source=lightmappedgeneric
     legacyEntry=48,16,1,0,0,0,3
     legacyEntry=64,16,1,0,0,0,11
     bridge=WriteNativeCBuffer(api, block)
+logical=lightmappedgeneric_decal_highres_earlydepth_ps51 stage=ps source=lightmappedgeneric_decal_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=3 present=6
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=lightmappedgeneric_decal_ps2x space=1 register=b1 size=80 layoutHash=0x84a336ffd3ae2172 material
+    member=g_LightMap0Color type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_LightMap1Color type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_LightMap2Color type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_ModulationColor type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_EyePos_SpecExponent type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c11
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,16,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,11
+    bridge=WriteNativeCBuffer(api, block)
 logical=lightmappedgeneric_highres_vs51 stage=vs source=lightmappedgeneric_highres_vs51.fxc legacy=- legacyName=- profile=native static=144 dynamic=8 present=576
   cbuffer=DX12VSBones space=1 register=b1 size=2544 layoutHash=0x4b955c265c5cfd5f engine
     member=cModel type=3 class=3 offset=0 size=2544 elements=53 arrayStride=48 legacy=none
@@ -1809,6 +1878,66 @@ logical=lightmappedgeneric_highres_vs51 stage=vs source=lightmappedgeneric_highr
     legacyEntry=160,16,4,16,0,0,54
     bridge=WriteNativeCBuffer(api, block)
 logical=lightmappedgeneric_highres_ps51 stage=ps source=lightmappedgeneric_highres_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=3 present=2
+  cbuffer=DX12ComboFoldPS space=1 register=b2 size=256 layoutHash=0x0059821a164b1e6f engine
+    member=cComboFold type=19 class=1 offset=0 size=256 elements=16 arrayStride=16 legacy=none
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=lightmappedgeneric_ps2x_shadowmap space=1 register=b1 size=192 layoutHash=0x4665556fa3ee3d73 material
+    member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_OutlineParams type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_EnvmapSaturation type=3 class=1 offset=48 size=12 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_OutlineColor type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_FresnelReflectionReg type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_EdgeSoftnessParms type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_SelfIllumTint type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=g_DetailTint_and_BlendFactor type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=ps:c8
+    member=g_EyePos type=3 class=1 offset=144 size=12 elements=0 arrayStride=0 legacy=ps:c10
+    member=g_TintValuesAndLightmapScale type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=ps:c12
+    member=g_ShadowDirectTint type=3 class=1 offset=176 size=12 elements=0 arrayStride=0 legacy=ps:c223
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,12,1,0,0,0,2
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,12,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,3
+    legacyEntry=80,16,1,0,0,0,4
+    legacyEntry=96,16,1,0,0,0,4
+    legacyEntry=112,16,1,0,0,0,7
+    legacyEntry=128,16,1,0,0,0,8
+    legacyEntry=144,12,1,0,0,0,10
+    legacyEntry=160,16,1,0,0,0,12
+    legacyEntry=176,12,1,0,0,0,223
+    bridge=WriteNativeCBuffer(api, block)
+logical=lightmappedgeneric_highres_earlydepth_ps51 stage=ps source=lightmappedgeneric_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=3 present=2
   cbuffer=DX12ComboFoldPS space=1 register=b2 size=256 layoutHash=0x0059821a164b1e6f engine
     member=cComboFold type=19 class=1 offset=0 size=256 elements=16 arrayStride=16 legacy=none
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
@@ -1937,7 +2066,101 @@ logical=lightmappedreflective_highres_ps51 stage=ps source=lightmappedreflective
     legacyEntry=32,16,1,0,0,0,4
     legacyEntry=48,16,1,0,0,0,5
     bridge=WriteNativeCBuffer(api, block)
+logical=lightmappedreflective_highres_earlydepth_ps51 stage=ps source=lightmappedreflective_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=32 dynamic=4 present=128
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=lightmappedreflective_ps2x space=1 register=b1 size=64 layoutHash=0x247261cc23f9d1a6 material
+    member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_FresnelConstants type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=vReflectTint type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_ReflectRefractScale type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c5
+    legacyEntry=0,16,1,0,0,0,1
+    legacyEntry=16,16,1,0,0,0,3
+    legacyEntry=32,16,1,0,0,0,4
+    legacyEntry=48,16,1,0,0,0,5
+    bridge=WriteNativeCBuffer(api, block)
 logical=worldtwotextureblend_highres_ps51 stage=ps source=worldtwotextureblend_highres_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=1 present=4
+  cbuffer=DX12ComboFoldPS space=1 register=b2 size=256 layoutHash=0x0059821a164b1e6f engine
+    member=cComboFold type=19 class=1 offset=0 size=256 elements=16 arrayStride=16 legacy=none
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=worldtwotextureblend_ps2x_shadowmap space=1 register=b1 size=176 layoutHash=0x0f10b495c9f44345 material
+    member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
+    member=g_FlashlightPos type=3 class=1 offset=32 size=12 elements=0 arrayStride=0 legacy=ps:c15
+    member=g_FlashlightWorldToTexture type=3 class=3 offset=48 size=64 elements=0 arrayStride=0 legacy=ps:c16
+    member=g_FlashlightAttenuationFactors type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c20
+    member=cFlashlightColor type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=ps:c28
+    member=cFlashlightScreenScale type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=ps:c31
+    member=g_ShadowDirectTint type=3 class=1 offset=160 size=12 elements=0 arrayStride=0 legacy=ps:c223
+    legacyEntry=0,16,1,0,0,0,7
+    legacyEntry=16,12,1,0,0,0,10
+    legacyEntry=32,12,1,0,0,0,15
+    legacyEntry=48,16,4,16,0,0,16
+    legacyEntry=112,16,1,0,0,0,20
+    legacyEntry=128,16,1,0,0,0,28
+    legacyEntry=144,16,1,0,0,0,31
+    legacyEntry=160,12,1,0,0,0,223
+    bridge=WriteNativeCBuffer(api, block)
+logical=worldtwotextureblend_highres_earlydepth_ps51 stage=ps source=worldtwotextureblend_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=1 present=4
   cbuffer=DX12ComboFoldPS space=1 register=b2 size=256 layoutHash=0x0059821a164b1e6f engine
     member=cComboFold type=19 class=1 offset=0 size=256 elements=16 arrayStride=16 legacy=none
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
@@ -2017,6 +2240,42 @@ logical=worldvertextransition_editor_highres_vs51 stage=vs source=worldvertextra
     legacyEntry=32,16,2,16,0,0,2
     bridge=WriteNativeCBuffer(api, block)
 logical=worldvertextransition_editor_highres_ps51 stage=ps source=worldvertextransition_editor_highres_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=3 present=3
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=WorldVertexTransitionEditorNormalization space=1 register=b1 size=16 layoutHash=0x5f6cfca27144e08d material
+    member=cEditorOverbright type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    legacyEntry=0,16,1,0,0,0,0
+    bridge=WriteNativeCBuffer(api, block)
+logical=worldvertextransition_editor_highres_earlydepth_ps51 stage=ps source=worldvertextransition_editor_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=3 present=3
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -2861,6 +3120,60 @@ logical=pyro_vision_highres_vs51 stage=vs source=pyro_vision_highres_vs51.fxc le
     legacyEntry=48,16,1,0,0,0,49
     bridge=WriteNativeCBuffer(api, block)
 logical=pyro_vision_highres_ps51 stage=ps source=pyro_vision_highres_ps51.fxc legacy=- legacyName=- profile=native static=512 dynamic=8 present=4096
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=pyro_vision_ps2x space=1 register=b1 size=160 layoutHash=0xdbbfba74f28626ab material
+    member=g_vPyroParms1 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_vPyroParms2 type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_vPyroParms3 type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_vPyroParms4 type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_vPyroParms5 type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_vPyroParms6 type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=ps:c5
+    member=g_vPyroParms7 type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=ps:c6
+    member=g_vPyroParms8 type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=g_EyePos type=3 class=1 offset=128 size=12 elements=0 arrayStride=0 legacy=ps:c10
+    member=g_vGeneralPyroParms1 type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=ps:c12
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,16,1,0,0,0,1
+    legacyEntry=32,16,1,0,0,0,2
+    legacyEntry=48,16,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,4
+    legacyEntry=80,16,1,0,0,0,5
+    legacyEntry=96,16,1,0,0,0,6
+    legacyEntry=112,16,1,0,0,0,7
+    legacyEntry=128,12,1,0,0,0,10
+    legacyEntry=144,16,1,0,0,0,12
+    bridge=WriteNativeCBuffer(api, block)
+logical=pyro_vision_highres_earlydepth_ps51 stage=ps source=pyro_vision_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=512 dynamic=8 present=4096
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -4347,6 +4660,11 @@ logical=treeleaf_shadowmap_ps51 stage=ps source=treeleaf_shadowmap_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
 logical=cable_shadowmap_vs51 stage=vs source=cable_shadowmap_vs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=2 present=2
   cbuffer=DX12VSBones space=1 register=b1 size=2544 layoutHash=0x4b955c265c5cfd5f engine
     member=cModel type=3 class=3 offset=0 size=2544 elements=53 arrayStride=48 legacy=none
@@ -4396,6 +4714,11 @@ logical=cable_shadowmap_ps51 stage=ps source=cable_shadowmap_ps51.fxc legacy=- l
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=cable_ps2x space=1 register=b1 size=16 layoutHash=0x8864481ff5992367 material
     member=g_EyePos_SpecExponent type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c11
     legacyEntry=0,16,1,0,0,0,11
@@ -4463,6 +4786,11 @@ logical=vertexlit_and_unlit_generic_bump_shadowmap_ps51 stage=ps source=vertexli
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=vertexlit_and_unlit_generic_bump_ps2x space=1 register=b1 size=256 layoutHash=0x4005a7e06e303857 material
     member=g_EnvmapTint_TintReplaceFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -4564,6 +4892,11 @@ logical=vertexlit_and_unlit_generic_shadowmap_ps51 stage=ps source=vertexlit_and
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=vertexlit_and_unlit_generic_ps2x space=1 register=b1 size=368 layoutHash=0x72a66b8d05057c6a material
     member=g_EnvmapTint_TintReplaceFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -5044,6 +5377,54 @@ logical=shatteredglass_highres_ps51 stage=ps source=shatteredglass_highres_ps51.
     legacyEntry=80,12,1,0,0,0,5
     legacyEntry=96,12,1,0,0,0,6
     bridge=WriteNativeCBuffer(api, block)
+logical=shatteredglass_highres_earlydepth_ps51 stage=ps source=shatteredglass_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=96 dynamic=4 present=320
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=ShatteredGlass_ps2x space=1 register=b1 size=112 layoutHash=0x3934fe7066b5827b material
+    member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_DiffuseModulation type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_EnvmapContrast type=3 class=1 offset=32 size=12 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_EnvmapSaturation type=3 class=1 offset=48 size=12 elements=0 arrayStride=0 legacy=ps:c3
+    member=g_FresnelReflection type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_EyePos type=3 class=1 offset=80 size=12 elements=0 arrayStride=0 legacy=ps:c5
+    member=g_OverbrightFactor type=3 class=1 offset=96 size=12 elements=0 arrayStride=0 legacy=ps:c6
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,12,1,0,0,0,1
+    legacyEntry=32,12,1,0,0,0,2
+    legacyEntry=48,12,1,0,0,0,3
+    legacyEntry=64,16,1,0,0,0,4
+    legacyEntry=80,12,1,0,0,0,5
+    legacyEntry=96,12,1,0,0,0,6
+    bridge=WriteNativeCBuffer(api, block)
 logical=water_highres_vs51 stage=vs source=water_highres_vs51.fxc legacy=- legacyName=- profile=native static=3 dynamic=1 present=3
   cbuffer=DX12VSBones space=1 register=b1 size=2544 layoutHash=0x4b955c265c5cfd5f engine
     member=cModel type=3 class=3 offset=0 size=2544 elements=53 arrayStride=48 legacy=none
@@ -5072,6 +5453,52 @@ logical=water_highres_vs51 stage=vs source=water_highres_vs51.fxc legacy=- legac
     legacyEntry=32,16,1,0,0,0,51
     bridge=WriteNativeCBuffer(api, block)
 logical=water_highres_ps51 stage=ps source=water_highres_ps51.fxc legacy=- legacyName=- profile=native static=96 dynamic=6 present=576
+  cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
+    member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cHlightStyles type=3 class=1 offset=64 size=256 elements=16 arrayStride=16 legacy=
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=water_ps2x space=1 register=b1 size=96 layoutHash=0x991ecf0654a35293 material
+    member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
+    member=vReflectTint type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c4
+    member=g_ReflectRefractScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c5
+    member=g_WaterFogColor type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c6
+    member=g_WaterFogParams type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=ps:c7
+    member=g_EyePos type=3 class=1 offset=80 size=12 elements=0 arrayStride=0 legacy=ps:c9
+    legacyEntry=0,16,1,0,0,0,1
+    legacyEntry=16,16,1,0,0,0,4
+    legacyEntry=32,16,1,0,0,0,5
+    legacyEntry=48,16,1,0,0,0,6
+    legacyEntry=64,16,1,0,0,0,7
+    legacyEntry=80,12,1,0,0,0,9
+    bridge=WriteNativeCBuffer(api, block)
+logical=water_highres_earlydepth_ps51 stage=ps source=water_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=96 dynamic=6 present=576
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -5488,6 +5915,11 @@ logical=vortwarp_shadowmap_ps51 stage=ps source=vortwarp_shadowmap_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
+    member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
+    member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=vortwarp_ps2x space=1 register=b1 size=224 layoutHash=0x42805cf75bff8585 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1

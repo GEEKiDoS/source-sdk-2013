@@ -1180,6 +1180,13 @@ def shadow_pixel_entry(text, logical, folded_names=frozenset()):
             raise RuntimeError('lightmapped shadow-map input lacks base lightmap UV: ' + logical)
         receiver = ('ShadowMap_BeginLightmappedReceiver( dx12In.worldPos, dx12In.worldNormal, '
                     'dx12In.svPos.xy, dx12In.shadowBaseLightmapUV )')
+    prop_setup = ''
+    if logical in SHADOW_MODELS:
+        # Raster primitive identity belongs to the PS only, never to the mirrored VS varyings.
+        st = find_struct(text, 'DX12_PS_INPUT')
+        text = text[:st[2]] + '\n\tuint shadowPrimitiveId : SV_PrimitiveID;\n' + text[st[2]:]
+        prop_setup = ('\t// GatherDirect adds styled prop RGB for Lambert/half-Lambert, then resident deltas.\n'
+                      '\tShadowMap_SetBakedProp( smr, dx12In.shadowPrimitiveId );\n')
     for k in reversed(range(len(main_defs(text)))):
         hs, bs, be = main_defs(text)[k]
         # Input conversion precedes receiver derivatives, before any divergent branch.
@@ -1188,6 +1195,7 @@ def shadow_pixel_entry(text, logical, folded_names=frozenset()):
         if not conv: raise RuntimeError('shadow-map pixel main lacks input conversion')
         begin = ('\n#if ' + guard + '\n'
                  '\tShadowMapReceiver smr = ' + receiver + ';\n'
+                 + prop_setup +
                  '\tShadowMapDirect smd = ShadowMap_NoDirect();\n'
                  '\tShadowMapShading sms = ShadowMap_ShadeLambert( dx12In.worldNormal );\n#endif\n')
         body = body[:conv.end()] + begin + body[conv.end():]

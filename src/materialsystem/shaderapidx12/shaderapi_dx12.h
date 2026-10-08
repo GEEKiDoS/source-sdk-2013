@@ -649,7 +649,7 @@ private:
 
 	void DrawBuffers( const VertexBindingDX12 ( &streams )[16], CIndexBufferDX12 *pIndices,
 	    size_t nIndexOffset, MaterialPrimitiveType_t primitiveType, int nFirstIndex, int nIndexCount,
-	    bool bMeshStreams = false );
+	    bool bMeshStreams = false, uint64 meshToken = 0, const CMeshDX12 *mesh = nullptr );
 	void SetMotionPass( int nMode );
 	bool EnsureMotionResources();
 	bool PrepareMotionBinding( RenderTargetBindingDX12 &binding );
@@ -806,6 +806,11 @@ private:
 		FixedFunctionStateDX12 fixed{};
 		PolygonOffsetMode_t polygonOffset = SHADER_POLYOFFSET_DISABLE;
 		ShaderPolyMode_t polyFront = SHADER_POLYMODE_FILL, polyBack = SHADER_POLYMODE_FILL;
+
+		uint64_t Fingerprint() const;
+		bool Matches( const Snapshot &other ) const;
+		// One field list feeds both hash and equality; no padding or draw-time cache state.
+		template <typename Visitor> void VisitIdentity( const Snapshot &other, Visitor &&visit ) const;
 	};
 
 	CThreadFastMutex m_StateMutex;
@@ -895,8 +900,26 @@ private:
 	ShaderAPITextureHandle_t m_hModifiedTexture = 0;
 	ShaderAPITextureHandle_t m_BoundTextures[16]{};
 	ShaderAPITextureHandle_t m_VertexTextures[4]{};
-	// Snapshot strings must not be byte-relocated when this append-only cache grows.
+	// Canonical states are immutable and block addresses survive growth. Only ClearSnapshots
+	// (after the material system invalidates its handles) may discard states and their index.
 	CUtlBlockVector<Snapshot> m_Snapshots;
+	struct SnapshotKey
+	{
+		uint64_t fingerprint;
+		const Snapshot *state;
+	};
+	struct SnapshotHash
+	{
+		unsigned operator()( const SnapshotKey &key ) const { return Mix64HashFunctor()( key.fingerprint ); }
+	};
+	struct SnapshotEqual
+	{
+		bool operator()( const SnapshotKey &a, const SnapshotKey &b ) const
+		{
+			return a.fingerprint == b.fingerprint && a.state->Matches( *b.state );
+		}
+	};
+	CUtlHashtable<SnapshotKey, StateSnapshot_t, SnapshotHash, SnapshotEqual> m_SnapshotIndex;
 	Snapshot m_ShadowState{};
 	ShaderRasterState_t m_RasterState{};
 	bool m_bRasterOverride = false;
@@ -921,6 +944,7 @@ private:
 	CUtlHashtable<NamedShaderKey, NamedShaderRecordDX12 *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> m_NamedShaderRecords;
 	NamedShaderComboDX12 *m_BoundNamedCombos[2]{};
 	bool m_bHighresNamedRoute = false;
+	bool m_bEarlyDepthNamedRoute = false;
 	uint64_t m_nComboFoldVersion = 0;
 
 	struct FixedShaderKey
@@ -931,6 +955,7 @@ private:
 		uint32_t textureTypes;
 		uint32_t highresSamplerMask;
 		uint64_t linkage;
+		bool earlyDepth;
 
 		bool operator<( const FixedShaderKey &other ) const
 		{
@@ -944,6 +969,8 @@ private:
 				return textureTypes < other.textureTypes;
 			if ( highresSamplerMask != other.highresSamplerMask )
 				return highresSamplerMask < other.highresSamplerMask;
+			if ( earlyDepth != other.earlyDepth )
+				return earlyDepth < other.earlyDepth;
 			return linkage < other.linkage;
 		}
 	};

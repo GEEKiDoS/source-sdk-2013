@@ -20,6 +20,8 @@ bool UpscalerDX12_Enabled();
 // Called once per normal RenderView before any 3D draw: submits the selected mode for the eligible main view and
 // mode 0 otherwise, so no later view inherits an armed provider.
 void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTemporalViewEligible, const CViewSetup &view );
+// The existing BeginFrame eligibility latch, before Dispatch consumes it (includes the chained NR layers).
+bool UpscalerDX12_RequiresMotionVectors();
 // Called right after the viewmodels of the latched main view: submits camera parameters and the dispatch.
 void UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup &view, bool bReset );
 // Backend status (INT_RENDERPARM_DX12_UPSCALE_STATUS); 0 when not on DX12.

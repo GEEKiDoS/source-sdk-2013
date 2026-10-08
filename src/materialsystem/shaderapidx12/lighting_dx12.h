@@ -14,8 +14,9 @@ class CShaderAPIDX12;
 class CShaderDeviceDX12;
 struct LightingPacketDX12;
 struct ShaderRecordDX12;
-bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility = nullptr );
+bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility = nullptr, bool *propVisibility = nullptr );
 bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage );
+bool RequiresStaticPropReceiverShaderDX12( const char *logical );
 
 struct SunReceiverStreamDX12
 {
@@ -32,6 +33,9 @@ struct SunReceiverDrawDX12
 	size_t indexOffset = 0;
 	MaterialPrimitiveType_t primitive = MATERIAL_TRIANGLES;
 	int firstIndex = 0, indexCount = 0;
+	uint64 materialToken = 0;
+	const char *materialName = nullptr;
+	uint32 diagnosticFlags = 0, pass = ~0u;
 };
 struct SunReceiverCoordinatesDX12
 {
@@ -60,12 +64,20 @@ public:
 	void CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height ) override;
 	void EndView() override;
 	void UnloadMap( uint32 mapGeneration ) override;
+	void BeginStaticPropReceiver( const DX12StaticPropReceiver &receiver ) override;
+	void EndStaticPropReceiver() override;
+	void RegisterStaticPropReceiver( uint64 renderableToken, const DX12StaticPropReceiver &receiver ) override;
+	void GetStaticPropVisibilityStats( uint32 mapGeneration, DX12StaticPropVisibilityStats &stats ) override;
+	void RegisterModelMeshMetadata( const DX12ModelMeshMetadata &metadata ) override;
+	void GetStaticPropVisibilityDetails( uint32 mapGeneration, IDX12StaticPropVisibilityDetailsSink &sink ) override;
 	void SetReceiverFeatureGeneration( uint32 mapGeneration ) override;
 	uint32 ReceiverFeatureGeneration() override;
 	void RejectUnsupportedLitShader( const char *shaderName ) override;
 	void GetSunVisibilityStats( uint32 mapGeneration, DX12LightingSunVisibilityStats &stats ) override;
 	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );
 	void ForgetSunReceiverTexture( ShaderAPITextureHandle_t texture );
+	bool PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDrawDX12 &draw,
+		const float modelToWorld[12], CPipelineCacheDX12::BindingInputDX12 &input );
 
 	bool ShadowPassActive() const;
 	bool PrepareShadowDraw( RenderTargetBindingDX12 &target, D3D12_VIEWPORT &viewport, D3D12_RECT &scissor );

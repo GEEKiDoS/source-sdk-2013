@@ -163,6 +163,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );
  ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.svPos.xy );
  smr.bakedSunVisibility = hlr.sun;
+ ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
 	ShadowMapDirect smd = ShadowMap_NoDirect();
 	ShadowMapShading sms = ShadowMap_ShadeLambert( dx12In.worldNormal );
 #endif

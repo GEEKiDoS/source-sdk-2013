@@ -63,8 +63,8 @@
                                           // style 0, not exported to LUMP_WORLDLIGHTS, folded into leaf ambient cubes
 #define RESTIR_LIGHT_RUNTIME_DIRECT  0x2  // selected for runtime shadow maps (options.shadowMaps + entity _shadowmap): the
                                           // light is REMOVED from the written worldlights lump and carried in the 'rshd'
-                                          // sidecar; receiver lightmap/VHV/texel/detail outputs omit its direct term; every
-                                          // bounce keeps it
+                                          // sidecar; native lightmap/VHV/texel/detail outputs omit its direct term; every
+                                          // bounce keeps it. Enhanced world RGB adds exact local diffuse with baked V.
 
 //-----------------------------------------------------------------------------
 // Options (parsed by vrad_restir.cpp, read-only everywhere else)
@@ -90,7 +90,7 @@ struct ReSTIROptions
 	float		emissiveScale;			// -restir_emissivescale (1.0): multiplier on material emission (UnlitGeneric, $selfillum);
 										// 0 disables material emitters
 	bool		shadowMaps;				// -restir_shadowmaps: selected runtime direct + independently dense linear lightmaps
-										// Implies both modes, staticPropLighting and textureShadows; .hlight + rshd v4
+										// Implies both modes, staticPropLighting and textureShadows; .hlight v4 + rshd v5
 	int			highresDensity;			// -restir_hlight_density, independent intervals; shadowmap conversion only
 
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
@@ -333,9 +333,12 @@ struct ReSTIRScene
 	CUtlVector<int>						dfaceToFace;	// numfaces entries, -1 for faces without lightmaps
 	CUtlVector<ReSTIRGpuSample>			samples;
 	CUtlVector<ReSTIRGpuLuxel>			luxels;
-	CUtlVector<Vector4D>				sunVisibilityOrigins; // selected runtime sun only; one per geometric luxel, indexed
+	CUtlVector<Vector4D>				sunVisibilityOrigins; // any selected local/sun; historical name retained; one per geometric luxel, indexed
 														// firstLuxel+s+t*luxelW. xyz is the final ray origin, w=1 valid / 0 blocked.
 														// Own-face brush clamp + face-normal push; disp keeps its geometry push.
+	CUtlVector<Vector>				localDirectPositions; // exact unpushed receiver surface, independent of visibility ray bias
+	CUtlVector<Vector>				localDirectNormals; // interpolated normalized renderer vertex normals; no pixel normalization
+	CUtlVector<Vector>				localDirectBumpNormals; // shader bumpBasis world vectors, 3*luxel+bump; interpolated vertex frames
 	CUtlVector<int>						faceNeighbors;
 	int									numOutputValues;// total radiance entries (sum over faces of numStyles*numChannels*numLuxels)
 
@@ -350,7 +353,7 @@ struct ReSTIRScene
 	// Per-face encode-time data (host only)
 	CUtlVector<Vector>					faceMinLight;	// per `faces` entry: _minlight (radial.cpp:676)
 
-	// Runtime shadow-map conversion (options.shadowMaps; public/hlight_bsp.h manifest v4). Resolved once by the scene
+	// Runtime shadow-map conversion (options.shadowMaps; public/hlight_bsp.h manifest v5). Resolved once by the scene
 	// builder after FinishActiveLightOrder, before any GPU dispatch; the GPU transport records are not rewritten.
 	float								shadowSunAngularRadius;	// degrees; last authored light_environment SunSpreadAngle, else 0.27
 	CUtlVector<ShadowMapLightDisk>		shadowLights;	// final selected list for the sidecar: the selected sun FIRST (if any), then locals in
@@ -387,6 +390,9 @@ struct ReSTIRLightmapResult
 	CUtlVector<float>			sunVisibility;	// EMPTY without a selected runtime sun, else one finite [0,1] scalar per
 												// geometric luxel (firstLuxel+s+t*luxelW). Closest-sky ray fraction only:
 												// independent of RGB, cosine, intensity, styles, bumps and denoising.
+	CUtlVector<unsigned char>	localVisibility; // EMPTY without selected locals; otherwise shadowLights.Count()*luxels.Count().
+												// Light-major rounded R8 planes indexed by the exact canonical selected-light index.
+												// Sun plane unused/zero; quantized once on bounded-ring readback, independent of RGB.
 };
 
 //-----------------------------------------------------------------------------
@@ -397,6 +403,17 @@ struct ReSTIRGpuRay						// 32 bytes
 	float		origin[4];				// xyz, w = tMin
 	float		direction[4];			// xyz (need not be normalized), w = tMax (fraction space: hit.t in [0,tMax])
 };
+
+#define RESTIR_VISIBILITY_NO_SELF_SHADOW 0x1u
+struct ReSTIRGpuVisibilityQuery			// 32 bytes; mirrored by restir_layout.glsl
+{
+	float		position[4];			// xyz final/recovered ray origin; w=1 valid, w=0 explicitly blocked
+	unsigned int selectedLightIndex;		// canonical scene.shadowLights index, never GPU/worldlight index; local only
+	unsigned int skipHitId;				// excluded hit class iff RESTIR_VISIBILITY_NO_SELF_SHADOW
+	unsigned int flags;					// RESTIR_VISIBILITY_*; no radiance or receiver-normal terms
+	unsigned int reserved;				// must be zero
+};
+COMPILE_TIME_ASSERT( sizeof( ReSTIRGpuVisibilityQuery ) == 32 );
 
 struct ReSTIRGpuHit						// 32 bytes
 {

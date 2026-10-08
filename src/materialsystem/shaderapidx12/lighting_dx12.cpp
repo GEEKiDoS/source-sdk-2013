@@ -4,6 +4,7 @@
 #include "shaderdevice_dx12.h"
 #include "hardwareconfig_dx12.h"
 #include "shader_vcs_dx12.h"
+#include "staticprop_visibility_dx12.h"
 #include "shadowmap_bsp.h"
 #include "filesystem.h"
 #include "materialsystem/stdshaders/common_hlsl_cpp_consts.h"
@@ -23,13 +24,14 @@
 #include <cfloat>
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace shaderapidx12
 {
 namespace
 {
-enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload };
+enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload, BeginProp, EndProp };
 const char *const kPacketError = "Shadowmaps: invalid lighting packet";
 D3D12_CPU_DESCRIPTOR_HANDLE Offset( D3D12_CPU_DESCRIPTOR_HANDLE handle, UINT index, UINT stride )
 {
@@ -39,6 +41,11 @@ D3D12_CPU_DESCRIPTOR_HANDLE Offset( D3D12_CPU_DESCRIPTOR_HANDLE handle, UINT ind
 bool RectFits( int x, int y, int width, int height, int fullWidth, int fullHeight )
 {
 	return x >= 0 && y >= 0 && width > 0 && height > 0 && width <= fullWidth && height <= fullHeight && x <= fullWidth - width && y <= fullHeight - height;
+}
+template <typename T> bool ShadowValuesZero( const T *values, size_t count )
+{
+	for ( size_t i = 0; i < count; ++i ) if ( values[i] != T( 0 ) ) return false;
+	return true;
 }
 struct ShadowTargetDX12 final : IRefCounted
 {
@@ -1066,9 +1073,28 @@ bool ReceiverElement( const SunReceiverDrawDX12 &draw, const VertexInputDX12 &el
 	}
 	return true;
 }
+bool StaticPropTriangleBuffer( CShaderDeviceDX12 *device, CPipelineCacheDX12 &pipeline, const void *data, size_t bytes,
+	Microsoft::WRL::ComPtr<ID3D12Resource> &resource )
+{
+	D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = bytes; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	if ( FAILED( device->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc,
+		D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ) ) ) ) return false;
+	ID3D12Resource *upload = nullptr; uint64 offset = 0;
+	const uint64 fence = device->NextFenceValue();
+	if ( !pipeline.UploadStructured( data, bytes, sizeof(DX12StaticPropTriangleGpu), fence, &upload, &offset ) )
+	{ resource.Reset(); return false; }
+	device->CommandList()->CopyBufferRegion( resource.Get(), 0, upload, offset, bytes );
+	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+	Transition( device->CommandList(), resource.Get(), state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+	pipeline.RetainExternalResource( resource.Get(), fence );
+	return true;
+}
 bool LightingNullTable( ID3D12Device *device, Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> &table )
 {
-	if ( !CpuHeap( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, DX12_LIGHTING_VIEW_TABLE_COUNT, table ) ) return false;
+	if ( !CpuHeap( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, DX12_LIGHTING_RESOURCE_TABLE_COUNT, table ) ) return false;
 	const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	D3D12_SHADER_RESOURCE_VIEW_DESC texture{};
 	texture.Format = DXGI_FORMAT_R32_FLOAT;
@@ -1085,6 +1111,18 @@ bool LightingNullTable( ID3D12Device *device, Microsoft::WRL::ComPtr<ID3D12Descr
 		buffer.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 		buffer.Buffer.NumElements = 1;
 		buffer.Buffer.StructureByteStride = i == DX12_LIGHTING_T_LIGHTS ? sizeof( RuntimeShadowLightGpu ) : i == DX12_LIGHTING_T_TILE_RANGES ? 8 : 4;
+		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), i, stride ) );
+	}
+	texture.Format = DXGI_FORMAT_R32_UINT;
+	device->CreateShaderResourceView( nullptr, &texture, Offset( table->GetCPUDescriptorHandleForHeapStart(), DX12_LIGHTING_T_SUN_VISIBILITY, stride ) );
+	for ( UINT i = DX12_LIGHTING_T_VISIBILITY_FACES; i <= DX12_LIGHTING_T_PROP_MESHES; ++i )
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC buffer{};
+		buffer.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		buffer.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		buffer.Buffer.NumElements = 1;
+		if ( i == DX12_LIGHTING_T_VISIBILITY_PAYLOAD ) { buffer.Format = DXGI_FORMAT_R32_TYPELESS; buffer.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW; }
+		else buffer.Buffer.StructureByteStride = 16;
 		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), i, stride ) );
 	}
 	return true;
@@ -1105,8 +1143,9 @@ bool NativeLogicalAvailable( IFileSystem &filesystem, const char *name, bool pix
 			const VcsPayload *payload = file.DynamicPayload( index, dynamic );
 			if ( !payload ) continue;
 			if ( payload->tokens.Count() < 4 || memcmp( payload->tokens.Base(), "DXBC", 4 ) ) return false;
-			bool lighting = false, visibility = false;
-			if ( !ValidateLightingShaderDX12( { payload->tokens.Base(), SIZE_T( payload->tokens.Count() ) }, pixel, &lighting, error, &visibility ) ) return false;
+			bool lighting = false, visibility = false, propVisibility = false;
+			if ( !ValidateLightingShaderDX12( { payload->tokens.Base(), SIZE_T( payload->tokens.Count() ) }, pixel, &lighting, error, &visibility, &propVisibility ) ) return false;
+			if ( lighting && RequiresStaticPropReceiverShaderDX12(name) && !propVisibility ) return false;
 			if ( pixel && !V_strcmp( name, "lightmappedgeneric_shadowmap_ps51" ) && !visibility ) return false;
 			if ( ( !V_strcmp( name, "shadow_depth_restore_vs51" ) || !V_strcmp( name, "shadow_depth_restore_ps51" ) ) &&
 				!ValidateShadowDepthRestoreShaderDX12( { payload->tokens.Base(), SIZE_T( payload->tokens.Count() ) }, pixel ) ) return false;
@@ -1166,6 +1205,9 @@ struct LightingPacketDX12 final : IRefCounted
 	bool flag = false, valid = true;
 	DX12LightingMapDesc map{};
 	DX12LightingViewPacket view{};
+	DX12StaticPropReceiver prop{};
+	CUtlVector<DX12StaticPropMeshIdentity> propMeshes;
+	std::string propModelName;
 	CUtlVector<DX12ShadowTarget_t> ids;
 	CUtlVector<RuntimeShadowLightGpu> lights;
 	CUtlVector<uint32> ranges, indices;
@@ -1199,6 +1241,106 @@ struct CLightingDX12::Impl
 	std::map<uint32, DX12LightingSunVisibilityStats> receiverStats;
 	std::map<uint64_t, bool> carrierShaders;
 	std::shared_ptr<ReceiverPageDX12> currentReceiverPage, whiteReceiverPage;
+	CUtlVector<LightingPacketDX12 *> propScopes;
+	struct RegisteredProp
+	{
+		DX12StaticPropReceiver receiver{};
+		std::vector<DX12StaticPropMeshIdentity> meshes;
+		std::string modelName;
+		struct MeshProof { uint32 generation = 0, index = 0, directory[4]{}; bool valid = false; };
+		std::vector<MeshProof> proofs; // Only the recording owner mutates cached asset proofs.
+	};
+	std::map<uint64,std::shared_ptr<RegisteredProp>> registeredProps;
+	std::map<StaticPropInstanceKeyDX12,std::vector<std::shared_ptr<RegisteredProp>>> propInstances;
+	std::map<uint64,uint32> propMeshRegistrationCounts;
+	std::atomic<uint64> propMapped{0}, propUnmatched{0}, propMoved{0}, propAmbiguous{0}, propCacheBuilds{0};
+	struct ModelMetadata
+	{
+		DX12ModelMeshMetadata value{};
+		std::string modelName;
+	};
+	std::map<uint64,std::shared_ptr<ModelMetadata>> modelMeshes;
+	using PropDetailKey = std::array<uint64, 12>;
+	struct PropDetail
+	{
+		DX12StaticPropVisibilityDetail value{};
+		std::shared_ptr<ModelMetadata> metadata;
+		std::string modelName, vertexShader, pixelShader, materialName;
+	};
+	std::map<PropDetailKey, PropDetail> propDetails;
+	uint64 propModelDraws = 0, propAuthoredModelDraws = 0, propRegisteredDraws = 0, propRegisteredFallbackDraws = 0;
+	uint64 propDetailOverflow = 0;
+	std::array<uint64, DX12_PROP_VISIBILITY_REASON_COUNT> propReasons{};
+	void ClearPropDiagnostics()
+	{
+		modelMeshes.clear(); propDetails.clear();
+		propModelDraws = propAuthoredModelDraws = propRegisteredDraws = propRegisteredFallbackDraws = propDetailOverflow = 0;
+		propReasons.fill(0);
+	}
+	void RecordPropDraw(uint64 meshToken, const SunReceiverDrawDX12 &draw,
+		const std::shared_ptr<ModelMetadata> &metadata, const DX12StaticPropReceiver *receiver,
+		const VertexInputDX12 *position, uint32 flags, DX12StaticPropVisibilityReason reason)
+	{
+		const uint32 skin = receiver ? receiver->skin : ~0u;
+		const uint32 slot = position ? position->inputSlot : ~0u;
+		const uint32 format = position ? uint32(position->format) : 0u;
+		const uint32 repetitions = slot < ARRAYSIZE(draw.streams) ? draw.streams[slot].repetitions : 0u;
+		if ( metadata )
+		{
+			flags |= DX12_PROP_DRAW_MODEL_METADATA;
+			if ( metadata->value.staticPropModel ) flags |= DX12_PROP_DRAW_AUTHORED_STATIC_MODEL;
+		}
+		if ( receiver ) flags |= DX12_PROP_DRAW_REGISTERED_RECEIVER;
+		const PropDetailKey key{{meshToken,draw.materialToken,
+			uint64(reinterpret_cast<uintptr_t>(draw.vertexLogical)),uint64(reinterpret_cast<uintptr_t>(draw.pixelLogical)),
+			draw.pass,flags,uint64(reason),skin,(uint64(format)<<32)|slot,uint64(draw.primitive),repetitions,
+			receiver ? receiver->modelChecksum : 0u}};
+		AUTO_LOCK(mutex);
+		++propModelDraws; ++propReasons[reason];
+		if ( flags & DX12_PROP_DRAW_AUTHORED_STATIC_MODEL ) ++propAuthoredModelDraws;
+		if ( receiver )
+		{
+			++propRegisteredDraws;
+			if ( reason != DX12_PROP_VISIBILITY_MAPPED ) ++propRegisteredFallbackDraws;
+		}
+		auto row = propDetails.find(key);
+		if ( row == propDetails.end() )
+		{
+			if ( propDetails.size() == DX12_STATIC_PROP_VISIBILITY_MAX_DETAILS ) { ++propDetailOverflow; return; }
+			PropDetail detail;
+			detail.metadata = metadata;
+			if ( !metadata && receiver && receiver->modelName ) detail.modelName = receiver->modelName;
+			detail.vertexShader = draw.vertexLogical ? draw.vertexLogical : "";
+			detail.pixelShader = draw.pixelLogical ? draw.pixelLogical : "";
+			detail.materialName = draw.materialName ? draw.materialName : "";
+			auto &v = detail.value;
+			v.meshToken = meshToken; v.materialToken = draw.materialToken;
+			v.modelChecksum = metadata ? metadata->value.modelChecksum : receiver ? receiver->modelChecksum : 0u;
+			v.bodyPart = metadata ? metadata->value.bodyPart : ~0u;
+			v.subModel = metadata ? metadata->value.subModel : ~0u;
+			v.lod = metadata ? metadata->value.lod : ~0u;
+			v.studioMesh = metadata ? metadata->value.studioMesh : ~0u;
+			v.stripGroup = metadata ? metadata->value.stripGroup : ~0u;
+			v.skin = skin; v.pass = draw.pass; v.flags = flags; v.reason = reason;
+			v.primitive = uint32(draw.primitive); v.positionSlot = slot; v.positionFormat = format; v.positionRepetitions = repetitions;
+			row = propDetails.emplace(key,std::move(detail)).first;
+		}
+		++row->second.value.draws;
+	}
+	using PropDrawKey = std::array<uint64, 20>;
+	struct PropDraw
+	{
+		Microsoft::WRL::ComPtr<ID3D12Resource> triangles;
+		uint32 count = 0;
+		StaticPropDirectMetadataDX12 direct;
+		uint64 retainedFence = 0, constantsFence = 0;
+		DX12StaticPropDrawConstants constants{};
+		D3D12_GPU_VIRTUAL_ADDRESS constantsAddress = 0;
+	};
+	std::map<PropDrawKey, PropDraw> propDraws;
+	Microsoft::WRL::ComPtr<ID3D12Resource> neutralPropTriangles;
+	uint64 neutralPropFence = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS neutralPropConstants = 0;
 	struct ViewState
 	{
 		LightingPacketDX12 *packet = nullptr;
@@ -1392,6 +1534,9 @@ void CLightingDX12::Initialize( CShaderDeviceDX12 *device, CShaderAPIDX12 *api )
 void CLightingDX12::Shutdown()
 {
 	Impl &s = *m_Impl;
+	for ( auto *scope : s.propScopes ) scope->Release();
+	s.propScopes.RemoveAll(); s.propDraws.clear(); s.neutralPropTriangles.Reset();
+	s.neutralPropFence = 0; s.neutralPropConstants = 0;
 	while ( s.views.Count() )
 	{
 		Impl::ViewState *view = s.views.Tail();
@@ -1404,6 +1549,8 @@ void CLightingDX12::Shutdown()
 	s.restorePso.Reset();
 	s.restoreRoot.Reset();
 	AUTO_LOCK( s.mutex );
+	s.registeredProps.clear(); s.propInstances.clear(); s.propMeshRegistrationCounts.clear();
+	s.ClearPropDiagnostics();
 	for ( ShadowTargetDX12 *target : s.targets ) if ( target ) target->Release();
 	s.targets.RemoveAll();
 	s.statuses.RemoveAll();
@@ -1638,6 +1785,7 @@ LightingPacketDX12 *CLightingDX12::Packet( int operation )
 	packet->flag = false;
 	packet->map = {};
 	packet->view = {};
+	packet->prop = {};
 	memset( packet->values, 0, sizeof( packet->values ) );
 	return packet;
 }
@@ -1649,6 +1797,8 @@ void CLightingDX12::Recycle( LightingPacketDX12 *packet )
 	packet->lights.RemoveAll();
 	packet->ranges.RemoveAll();
 	packet->indices.RemoveAll();
+	packet->propMeshes.RemoveAll();
+	packet->propModelName.clear();
 	AUTO_LOCK( m_Impl->mutex );
 	m_Impl->freePackets.AddToTail( packet );
 }
@@ -1696,6 +1846,12 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	int status = s.statuses.Find( s.Key( map.mapGeneration, 0 ) );
 	if ( status == s.statuses.InvalidIndex() ) status = s.statuses.Insert( s.Key( map.mapGeneration, 0 ) );
 	if ( s.statuses[status].state == DX12_LIGHTING_STATUS_FAILED ) return;
+	if ( s.activeMap.load() != map.mapGeneration )
+	{
+		s.registeredProps.clear(); s.propInstances.clear(); s.propMeshRegistrationCounts.clear();
+		s.ClearPropDiagnostics();
+		s.propMapped = 0; s.propUnmatched = 0; s.propMoved = 0; s.propAmbiguous = 0; s.propCacheBuilds = 0;
+	}
 	if ( !success )
 	{
 		s.statuses[status].state = DX12_LIGHTING_STATUS_FAILED;
@@ -1806,6 +1962,121 @@ void CLightingDX12::CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarge
 	Enqueue( packet );
 }
 void CLightingDX12::EndView() { Enqueue( Packet( EndScope ) ); }
+void CLightingDX12::BeginStaticPropReceiver( const DX12StaticPropReceiver &receiver )
+{
+	LightingPacketDX12 *packet = Packet( BeginProp );
+	packet->prop = receiver;
+	packet->propModelName = receiver.modelName ? receiver.modelName : "";
+	packet->prop.modelName = packet->propModelName.c_str();
+	packet->valid = receiver.meshCount <= 1024u*1024u && ( !receiver.meshCount || receiver.meshes );
+	if ( packet->valid ) packet->propMeshes.CopyArray( receiver.meshes, receiver.meshCount );
+	packet->prop.meshes = packet->propMeshes.Base();
+	Enqueue( packet );
+}
+void CLightingDX12::EndStaticPropReceiver() { Enqueue( Packet( EndProp ) ); }
+void CLightingDX12::RegisterStaticPropReceiver( uint64 renderableToken, const DX12StaticPropReceiver &receiver )
+{
+	if ( !renderableToken ) return;
+	Impl &s = *m_Impl;
+	std::shared_ptr<Impl::RegisteredProp> record;
+	if ( receiver.meshCount && receiver.meshCount <= 1024u*1024u && receiver.meshes )
+	{
+		record = std::make_shared<Impl::RegisteredProp>();
+		record->receiver = receiver;
+		record->modelName = receiver.modelName ? receiver.modelName : "";
+		record->receiver.modelName = record->modelName.c_str();
+		record->meshes.assign( receiver.meshes, receiver.meshes + receiver.meshCount );
+		record->receiver.meshes = record->meshes.data();
+		record->proofs.resize( receiver.meshCount );
+	}
+	AUTO_LOCK( s.mutex );
+	auto old = s.registeredProps.find( renderableToken );
+	if ( old != s.registeredProps.end() )
+	{
+		for ( const auto &mesh : old->second->meshes )
+		{
+			auto count = s.propMeshRegistrationCounts.find(mesh.meshToken);
+			if ( count != s.propMeshRegistrationCounts.end() && !--count->second ) s.propMeshRegistrationCounts.erase(count);
+			StaticPropInstanceKeyDX12 key;
+			if ( !StaticPropInstanceKeyForDrawDX12( mesh.meshToken, old->second->receiver.modelToWorld, key ) ) continue;
+			auto entry = s.propInstances.find( key );
+			if ( entry == s.propInstances.end() ) continue;
+			auto &instances = entry->second;
+			instances.erase( std::remove( instances.begin(), instances.end(), old->second ), instances.end() );
+			if ( instances.empty() ) s.propInstances.erase( entry );
+		}
+		s.registeredProps.erase( old );
+	}
+	if ( !record ) return;
+	s.registeredProps.emplace( renderableToken, record );
+	for ( const auto &mesh : record->meshes )
+	{
+		++s.propMeshRegistrationCounts[mesh.meshToken];
+		StaticPropInstanceKeyDX12 key;
+		if ( StaticPropInstanceKeyForDrawDX12( mesh.meshToken, receiver.modelToWorld, key ) )
+			s.propInstances[key].push_back( record );
+	}
+}
+void CLightingDX12::GetStaticPropVisibilityStats( uint32 generation, DX12StaticPropVisibilityStats &stats )
+{
+	stats = {};
+	Impl &s = *m_Impl; AUTO_LOCK( s.mutex );
+	if ( generation != s.activeMap.load() ) return;
+	stats.mapGeneration = generation; stats.registeredProps = uint32(s.registeredProps.size());
+	stats.mappedDraws = s.propMapped.load(); stats.unmatchedDraws = s.propUnmatched.load();
+	stats.movedDraws = s.propMoved.load(); stats.ambiguousDraws = s.propAmbiguous.load();
+	stats.topologyCacheBuilds = s.propCacheBuilds.load();
+	stats.modelDraws = s.propModelDraws; stats.authoredModelDraws = s.propAuthoredModelDraws;
+	stats.registeredReceiverDraws = s.propRegisteredDraws; stats.registeredReceiverFallbackDraws = s.propRegisteredFallbackDraws;
+	memcpy(stats.reasonCounts,s.propReasons.data(),sizeof(stats.reasonCounts));
+	stats.detailOverflowDraws = s.propDetailOverflow;
+}
+void CLightingDX12::RegisterModelMeshMetadata( const DX12ModelMeshMetadata &metadata )
+{
+	Impl &s = *m_Impl;
+	AUTO_LOCK(s.mutex);
+	if ( !metadata.meshToken )
+	{
+		if ( !metadata.modelName ) { s.modelMeshes.clear(); s.propDetails.clear(); }
+		return;
+	}
+	auto old = s.modelMeshes.find(metadata.meshToken);
+	if ( metadata.modelName && old != s.modelMeshes.end() )
+	{
+		const auto &v = old->second->value;
+		if ( v.modelChecksum == metadata.modelChecksum && v.bodyPart == metadata.bodyPart &&
+			v.subModel == metadata.subModel && v.lod == metadata.lod && v.studioMesh == metadata.studioMesh &&
+			v.stripGroup == metadata.stripGroup && v.staticPropModel == metadata.staticPropModel &&
+			old->second->modelName == metadata.modelName ) return;
+	}
+	for ( auto row = s.propDetails.begin(); row != s.propDetails.end(); )
+		if ( row->first[0] == metadata.meshToken ) row = s.propDetails.erase(row); else ++row;
+	if ( !metadata.modelName ) { if ( old != s.modelMeshes.end() ) s.modelMeshes.erase(old); return; }
+	auto record = std::make_shared<Impl::ModelMetadata>();
+	record->modelName = metadata.modelName; record->value = metadata;
+	record->value.modelName = record->modelName.c_str();
+	s.modelMeshes[metadata.meshToken] = std::move(record);
+}
+void CLightingDX12::GetStaticPropVisibilityDetails( uint32 generation, IDX12StaticPropVisibilityDetailsSink &sink )
+{
+	Impl &s = *m_Impl;
+	std::vector<Impl::PropDetail> snapshot;
+	{
+		AUTO_LOCK(s.mutex);
+		if ( generation != s.activeMap.load() ) return;
+		snapshot.reserve(s.propDetails.size());
+		for ( const auto &row : s.propDetails ) snapshot.push_back(row.second);
+	}
+	// No backend lock crosses an arbitrary caller callback.
+	for ( const auto &row : snapshot )
+	{
+		auto detail = row.value;
+		detail.modelName = row.metadata ? row.metadata->modelName.c_str() : row.modelName.c_str();
+		detail.vertexShader = row.vertexShader.c_str(); detail.pixelShader = row.pixelShader.c_str();
+		detail.materialName = row.materialName.c_str();
+		sink.OnStaticPropVisibilityDetail(detail);
+	}
+}
 void CLightingDX12::UnloadMap( uint32 generation )
 {
 	LightingPacketDX12 *packet = Packet( Unload );
@@ -1824,8 +2095,21 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 	CCommandRecorderDX12 *list = s.device->CommandList();
 	ID3D12Device *device = s.device->NativeDevice();
 	const uint64_t fence = s.device->NextFenceValue();
+	if ( packet->operation == BeginProp )
+	{
+		packet->AddRef(); s.propScopes.AddToTail( packet );
+		return;
+	}
+	if ( packet->operation == EndProp )
+	{
+		if ( !s.propScopes.Count() ) { s.Fail( kPacketError ); return; }
+		s.propScopes.Tail()->Release(); s.propScopes.RemoveMultipleFromTail( 1 );
+		return;
+	}
 	if ( packet->operation == View )
 	{
+		// Profile on material-queue replay, not when the caller merely enqueues the view.
+		s.device->BeginGpuReceiverView( packet->view.viewportWidth, packet->view.viewportHeight );
 		s.currentReceiverPage.reset();
 		Impl::ViewState *scope;
 		if ( s.freeViews.Count() ) { scope = s.freeViews.Tail(); s.freeViews.RemoveMultipleFromTail( 1 ); *scope = {}; }
@@ -1838,31 +2122,64 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		}
 		s.views.AddToTail( scope );
 		const DX12LightingViewPacket &v = packet->view;
+		const bool unshadowed = ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_UNSHADOWED ) != 0;
+		const bool deferred = ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_DEFERRED ) != 0;
 		scope->highresScope = s.highresMap;
 		if ( scope->highresScope ) s.device->Highres().BeginView( v.nativeMapGeneration, v.styles );
 		const char *failure = nullptr;
 		if ( !packet->valid || !v.viewGeneration || v.mapGeneration != s.activeMap || v.viewportWidth <= 0 || v.viewportHeight <= 0 || v.constants.cShadowView0[0] != v.mapGeneration || v.constants.cShadowView0[1] != v.viewGeneration || v.constants.cShadowView1[2] != v.lightCount || v.constants.cShadowView0[2] > DX12_SHADOW_FILTER_PCSS || v.constants.cShadowView0[3] > DX12_SHADOW_DEBUG_PCSS_RADIUS || uint64_t( v.constants.cShadowView1[0] ) * v.constants.cShadowView1[1] != v.tileCount || v.constants.cShadowView1[0] != ( uint32( v.viewportWidth ) + 15 ) / 16 || v.constants.cShadowView1[1] != ( uint32( v.viewportHeight ) + 15 ) / 16 ) failure = kPacketError;
 		if ( !failure && ( v.highresRoute != uint32( s.highresMap ) || v.nativeMapGeneration != s.nativeMapGeneration ) )
 			failure = kPacketError;
+		if ( !failure && unshadowed && ( v.localTargetCount || v.cascadeAtlasTarget || v.staticSunTarget ||
+			( v.constants.cShadowView1[3] & ( DX12_SHADOW_VIEW_CSM_VALID | DX12_SHADOW_VIEW_STATIC_SUN_VALID ) ) ) )
+			failure = kPacketError;
 		if ( !failure && ( ( v.cascadeAtlasTarget && !packet->leases[0] ) || ( v.staticSunTarget && !packet->leases[1] ) ) ) failure = kPacketError;
 		if ( !failure && ( ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_CSM_VALID ) && !v.cascadeAtlasTarget || ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) && !v.staticSunTarget ) ) failure = SHADOWMAP_ERR_RESIDENCY;
+		// The resident tail reuses t1028; ordinary legacy packets may omit it.
+		const uint32 residentOffset = v.constants.cSunIdentity[2], residentCount = v.constants.cSunIdentity[3];
+		const bool residentTail = s.highresMap || residentOffset || residentCount;
+		uint32 csrIndexCount = v.tileIndexCount, residentOrdinal = 0;
+		if ( !failure && residentTail )
+		{
+			if ( residentOffset > v.tileIndexCount || residentCount > v.lightCount ||
+				residentCount != v.tileIndexCount - residentOffset ) failure = kPacketError;
+			else csrIndexCount = residentOffset;
+		}
 		const float *viewFloats = v.constants.cShadowViewport;
 		for ( size_t i = 0; !failure && i < ( offsetof( DX12LightingViewConstantsV1, cCascadeRects ) - offsetof( DX12LightingViewConstantsV1, cShadowViewport ) ) / sizeof( float ); ++i )
 			if ( !ShadowMap_IsFiniteFloat( viewFloats[i] ) ) failure = kPacketError;
-		if ( !failure && ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_CSM_VALID ) )
+		const bool csmValid = ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_CSM_VALID ) != 0;
+		uint32 initializedCascades = 0;
+		if ( !failure && ( csmValid || deferred ) )
 		{
-			for ( uint32 i = 0; i < DX12_SHADOW_CSM_CASCADES; ++i )
+			for ( uint32 i = 0; !failure && i < DX12_SHADOW_CSM_CASCADES; ++i )
 			{
 				const uint32 *rect = v.constants.cCascadeRects[i];
 				const float *depth = v.constants.cShadowDepthRecords[i];
-				if ( rect[2] != DX12_SHADOW_CSM_SLOT_SIZE || rect[3] || !RectFits( rect[0], rect[1], rect[2], rect[2], DX12_SHADOW_CSM_ATLAS_SIZE, DX12_SHADOW_CSM_ATLAS_SIZE ) || depth[1] <= depth[0] || depth[2] <= 0 ) failure = kPacketError;
+				const bool emptyRect = ShadowValuesZero( rect, 4 );
+				const bool emptyDepth = ShadowValuesZero( depth, 4 );
+				const bool emptyMatrix = ShadowValuesZero( v.constants.cSunWorldToClip[i], 16 );
+				if ( deferred && emptyRect && emptyDepth && emptyMatrix ) continue;
+				if ( !csmValid || emptyMatrix || rect[2] != DX12_SHADOW_CSM_SLOT_SIZE || rect[3] ||
+					!RectFits( rect[0], rect[1], rect[2], rect[2], DX12_SHADOW_CSM_ATLAS_SIZE, DX12_SHADOW_CSM_ATLAS_SIZE ) ||
+					depth[1] <= depth[0] || depth[2] <= 0 || depth[3] ) failure = kPacketError;
+				else ++initializedCascades;
 			}
+			if ( !failure && csmValid && !initializedCascades ) failure = kPacketError;
 		}
-		if ( !failure && ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) )
+		const bool staticSunValid = ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) != 0;
+		if ( !failure && ( staticSunValid || deferred ) )
 		{
 			const uint32 *rect = v.constants.cStaticSunRect;
 			const float *depth = v.constants.cShadowDepthRecords[4];
-			if ( rect[0] || rect[1] || rect[2] != DX12_SHADOW_STATIC_SUN_SIZE || rect[3] || depth[1] <= depth[0] || depth[2] <= 0 ) failure = kPacketError;
+			const bool emptyChart = ShadowValuesZero( rect, 4 ) && ShadowValuesZero( depth, 4 ) &&
+				ShadowValuesZero( v.constants.cStaticSunWorldToClip, 16 );
+			if ( staticSunValid )
+			{
+				if ( emptyChart || ShadowValuesZero( v.constants.cStaticSunWorldToClip, 16 ) || rect[0] || rect[1] ||
+					rect[2] != DX12_SHADOW_STATIC_SUN_SIZE || rect[3] || depth[1] <= depth[0] || depth[2] <= 0 || depth[3] ) failure = kPacketError;
+			}
+			else if ( !emptyChart ) failure = kPacketError;
 		}
 		for ( int i = 0; !failure && i < packet->leases.Count(); ++i )
 		{
@@ -1875,6 +2192,10 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		{
 			const RuntimeShadowLightGpu &light = packet->lights[i];
 			if ( light.type != DX12_SHADOW_LIGHT_POINT && light.type != DX12_SHADOW_LIGHT_SPOT || ( light.faceCount != 1 && light.faceCount != 6 ) || light.type == DX12_SHADOW_LIGHT_POINT && light.faceCount != 6 || !ShadowMap_IsFiniteFloat( light.shadowNear ) || !ShadowMap_IsFiniteFloat( light.shadowFar ) || light.shadowNear <= 0 || light.shadowFar <= light.shadowNear ) { failure = kPacketError; break; }
+			if ( !ShadowMap_IsFiniteFloat( light.realtimeWeight ) || light.realtimeWeight < 0 || light.realtimeWeight > 1 ||
+				light.visibilityFlags & ~DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE || light.reserved0 ||
+				( !( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) && light.bakedLightIndex ) ||
+				( unshadowed && light.realtimeWeight != 0 ) ) { failure = kPacketError; break; }
 			const float *lightFloats = light.origin;
 			for ( size_t f = 0; f < ( offsetof( RuntimeShadowLightGpu, faces ) - offsetof( RuntimeShadowLightGpu, origin ) ) / sizeof( float ); ++f )
 				if ( !ShadowMap_IsFiniteFloat( lightFloats[f] ) ) failure = kPacketError;
@@ -1882,18 +2203,55 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			bool owned = false;
 			{
 				AUTO_LOCK( s.mutex );
-				owned = light.lightId < uint32( s.selected.Count() ) && s.selected[light.lightId].type == light.type;
+				owned = light.lightId < uint32( s.selected.Count() ) && s.selected[light.lightId].type == light.type &&
+					( !s.highresMap || ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) ) &&
+					( !( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) ||
+					( light.bakedLightIndex < uint32( s.selected.Count() ) && s.selected[light.bakedLightIndex].lightId == light.lightId &&
+					  s.selected[light.bakedLightIndex].type == light.type ) );
 			}
 			if ( !owned ) { failure = kPacketError; break; }
-			for ( uint32 face = 0; face < light.faceCount; ++face )
+			if ( residentTail && light.realtimeWeight > 0 )
+			{
+				if ( residentOrdinal >= residentCount || packet->indices[residentOffset+residentOrdinal] != uint32( i ) )
+				{ failure = kPacketError; break; }
+				++residentOrdinal;
+			}
+			// The highres pixel kernel merges canonical face entries with the CSR.
+			if ( s.highresMap && i && packet->lights[i-1].bakedLightIndex >= light.bakedLightIndex )
+			{ failure = kPacketError; break; }
+			const bool cold = ShadowValuesZero( &light.faces[0][0], DX12_SHADOW_MAX_FACES * 4 );
+			if ( light.realtimeWeight == 0 )
+			{
+				if ( !cold || !ShadowValuesZero( &light.worldToClip[0][0], DX12_SHADOW_MAX_FACES * 16 ) ) failure = kPacketError;
+				continue;
+			}
+			for ( uint32 face = 0; face < DX12_SHADOW_MAX_FACES; ++face )
 			{
 				const uint32 *rect = light.faces[face];
+				if ( face >= light.faceCount )
+				{
+					if ( !ShadowValuesZero( rect, 4 ) || !ShadowValuesZero( light.worldToClip[face], 16 ) ) { failure = kPacketError; break; }
+					continue;
+				}
+				if ( rect[3] != DX12_SHADOW_LOCAL_SLOT_SIZE || rect[1] % DX12_SHADOW_LOCAL_SLOT_SIZE || rect[2] % DX12_SHADOW_LOCAL_SLOT_SIZE || !RectFits( rect[1], rect[2], rect[3], rect[3], DX12_SHADOW_LOCAL_PAGE_SIZE, DX12_SHADOW_LOCAL_PAGE_SIZE ) ||
+					ShadowValuesZero( light.worldToClip[face], 16 ) ) { failure = kPacketError; break; }
 				if ( rect[0] >= v.localTargetCount || !packet->leases[2 + rect[0]] ) { failure = SHADOWMAP_ERR_RESIDENCY; break; }
-				if ( rect[3] != DX12_SHADOW_LOCAL_SLOT_SIZE || rect[1] % DX12_SHADOW_LOCAL_SLOT_SIZE || rect[2] % DX12_SHADOW_LOCAL_SLOT_SIZE || !RectFits( rect[1], rect[2], rect[3], rect[3], DX12_SHADOW_LOCAL_PAGE_SIZE, DX12_SHADOW_LOCAL_PAGE_SIZE ) ) { failure = kPacketError; break; }
 			}
 		}
+		if ( !failure && residentTail && residentOrdinal != residentCount ) failure = kPacketError;
+		uint32 previousFirst = ~0u, previousCount = ~0u;
 		for ( uint32 i = 0; !failure && i < v.tileCount; ++i )
-			if ( packet->ranges[i * 2] > v.tileIndexCount || packet->ranges[i * 2 + 1] > v.tileIndexCount - packet->ranges[i * 2] ) failure = kPacketError;
+		{
+			const uint32 first = packet->ranges[i * 2], count = packet->ranges[i * 2 + 1];
+			if ( first > csrIndexCount || count > csrIndexCount - first ) { failure = kPacketError; break; }
+			// Shared rectangle-cell ranges often repeat across an entire row.
+			// The immutable packet's same list needs its ascending proof only once;
+			// bounds are still checked independently for every tile above.
+			if ( s.highresMap && ( first != previousFirst || count != previousCount ) )
+				for ( uint32 j = 1; j < count; ++j )
+					if ( packet->indices[first+j-1] >= packet->indices[first+j] ) { failure = kPacketError; break; }
+			previousFirst = first; previousCount = count;
+		}
 		for ( uint32 index : packet->indices ) if ( index >= v.lightCount ) failure = kPacketError;
 		if ( failure ) s.Fail( failure, v.mapGeneration, v.viewGeneration );
 		else
@@ -1925,6 +2283,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			const uint32_t status = s.statuses.Find( s.Key( map, view ) );
 			s.statuses[status].completed = true;
 		}
+		s.device->EndGpuReceiverView();
 		return;
 	}
 	if ( packet->operation == Unload )
@@ -1942,6 +2301,11 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			}
 			if ( s.activeMap == map )
 			{
+				s.propDraws.clear();
+				s.registeredProps.clear(); s.propInstances.clear(); s.propMeshRegistrationCounts.clear();
+				s.ClearPropDiagnostics();
+				for ( auto *scope : s.propScopes ) scope->Release();
+				s.propScopes.RemoveAll();
 				s.activeMap = 0;
 				s.highresMap = false; s.nativeMapGeneration = 0;
 				s.selected.RemoveAll();
@@ -1959,10 +2323,12 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		s.passes.RemoveMultipleFromTail( 1 );
 		s.RestoreBackend( saved );
 		if ( saved.target ) saved.target->Release();
+		s.device->EndGpuStage( CShaderDeviceDX12::GpuShadowDepth );
 		return;
 	}
 	if ( packet->operation == Pass )
 	{
+		s.device->BeginGpuStage( CShaderDeviceDX12::GpuShadowDepth );
 		Impl::PassState saved;
 		memcpy( saved.viewports, s.api->m_Viewports, sizeof( saved.viewports ) );
 		saved.viewportCount = s.api->m_nViewportCount;
@@ -2010,6 +2376,13 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		ShadowTargetDX12 *dst = packet->leases[0], *src = packet->leases[1];
 		if ( !packet->valid || !dst || !src || !RectFits( packet->values[0], packet->values[1], packet->values[4], packet->values[5], dst->width, dst->height ) || !RectFits( packet->values[2], packet->values[3], packet->values[4], packet->values[5], src->width, src->height ) ) { s.Fail( kPacketError ); return; }
 		if ( !s.EnsureRestore() ) { s.Fail( SHADOWMAP_ERR_SHADER_UNAVAILABLE ); return; }
+		// Restore can fail after transitions/uploads; keep its nested stage balanced on every exit.
+		struct RestoreGpuStage
+		{
+			CShaderDeviceDX12 *device;
+			explicit RestoreGpuStage( CShaderDeviceDX12 *p ) : device( p ) { device->BeginGpuStage( CShaderDeviceDX12::GpuDepthRectRestore ); }
+			~RestoreGpuStage() { device->EndGpuStage( CShaderDeviceDX12::GpuDepthRectRestore ); }
+		} restoreStage( s.device );
 		s.Use( src, true ); s.Use( dst, false );
 		const uint32 constants[16] = { uint32( packet->values[2] ), uint32( packet->values[3] ), uint32( packet->values[4] ), uint32( packet->values[5] ), uint32( packet->values[0] ), uint32( packet->values[1] ), uint32( packet->values[4] ), uint32( packet->values[5] ), uint32( src->width ), uint32( src->height ), 0, 0, uint32( dst->width ), uint32( dst->height ), 0, 0 };
 		D3D12_GPU_VIRTUAL_ADDRESS cbv = 0;
@@ -2515,6 +2888,160 @@ bool CLightingDX12::ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, Sun
 	}
 	return true;
 }
+bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDrawDX12 &draw,
+	const float modelToWorld[12], CPipelineCacheDX12::BindingInputDX12 &input )
+{
+	Impl &s = *m_Impl;
+	if ( !input.lightingAbi || !s.highresMap || !s.views.Count() )
+		return true; // PrepareReceiverDraw installed disabled constants and a legal SRV.
+	const VertexInputDX12 *position = nullptr;
+	if ( draw.layout )
+		for ( uint32 i = 0; i < draw.layout->inputCount; ++i )
+			if ( !V_strcmp(draw.layout->inputs[i].semantic,"POSITION") && !draw.layout->inputs[i].semanticIndex )
+				position = &draw.layout->inputs[i];
+	uint32 flags = draw.diagnosticFlags;
+	if ( position && position->inputSlot < ARRAYSIZE(draw.streams) && draw.streams[position->inputSlot].buffer )
+	{
+		flags |= DX12_PROP_DRAW_POSITION_STREAM_KNOWN;
+		if ( draw.streams[position->inputSlot].buffer->IsDynamic() ) flags |= DX12_PROP_DRAW_DYNAMIC_POSITION_STREAM;
+	}
+	std::shared_ptr<Impl::ModelMetadata> metadata;
+	std::shared_ptr<Impl::RegisteredProp> record;
+	const DX12StaticPropReceiver *receiver = s.propScopes.Count() ? &s.propScopes.Tail()->prop : nullptr;
+	StaticPropInstanceKeyDX12 instanceKey;
+	const bool validKey = StaticPropInstanceKeyForDrawDX12(meshToken,modelToWorld,instanceKey);
+	bool meshRegistered = false, ambiguous = false;
+	{
+		AUTO_LOCK(s.mutex);
+		const auto model = s.modelMeshes.find(meshToken);
+		if ( model != s.modelMeshes.end() ) metadata = model->second;
+		if ( !receiver && validKey )
+		{
+			const auto entry = s.propInstances.find(instanceKey);
+			if ( entry != s.propInstances.end() )
+			{
+				record = UniqueStaticPropInstanceDX12(entry->second);
+				ambiguous = !record;
+			}
+		}
+		meshRegistered = s.propMeshRegistrationCounts.find(meshToken) != s.propMeshRegistrationCounts.end();
+	}
+	if ( record ) receiver = &record->receiver;
+	const auto finish = [&](DX12StaticPropVisibilityReason reason, bool accepted = true)
+	{
+		s.RecordPropDraw(meshToken,draw,metadata,receiver,position,flags,reason);
+		return accepted;
+	};
+	if ( !meshToken ) return finish(DX12_PROP_VISIBILITY_MISSING_MESH_TOKEN);
+	if ( input.geometryStage ) return finish(DX12_PROP_VISIBILITY_GEOMETRY_STAGE);
+	uint32 directory[4]{}, meshIndex = 0;
+	if ( s.propScopes.Count() )
+	{
+		const auto *scope = s.propScopes.Tail();
+		if ( !StaticPropPoseMatchesDX12(scope->prop,modelToWorld) )
+		{ ++s.propMoved; return finish(DX12_PROP_VISIBILITY_POSE_MISMATCH); }
+		if ( !scope->valid || !s.device->Highres().ResolveStaticPropMesh(scope->prop,meshToken,directory,meshIndex) )
+		{ ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_IDENTITY_PROOF,!s.device->Highres().Rejected()); }
+	}
+	else
+	{
+		if ( ambiguous ) { ++s.propAmbiguous; return finish(DX12_PROP_VISIBILITY_AMBIGUOUS); }
+		if ( !record )
+		{
+			if ( !validKey || meshRegistered ) ++s.propMoved; else ++s.propUnmatched;
+			if ( !metadata ) return finish(DX12_PROP_VISIBILITY_UNKNOWN_MODEL);
+			if ( !metadata->value.staticPropModel ) return finish(DX12_PROP_VISIBILITY_NON_STATIC_MODEL);
+			// An authored model at an unregistered pose may be a dynamic instance.
+			// It is never counted as a proven static-receiver failure.
+			return finish(!validKey || meshRegistered ? DX12_PROP_VISIBILITY_POSE_MISMATCH : DX12_PROP_VISIBILITY_STATIC_MESH_UNREGISTERED);
+		}
+		if ( !StaticPropPoseMatchesDX12(record->receiver,modelToWorld) )
+		{ ++s.propMoved; return finish(DX12_PROP_VISIBILITY_POSE_MISMATCH); }
+		size_t identity = 0;
+		while ( identity < record->meshes.size() && record->meshes[identity].meshToken != meshToken ) ++identity;
+		if ( identity == record->meshes.size() )
+		{ ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_IDENTITY_PROOF); }
+		auto &proof = record->proofs[identity];
+		if ( proof.generation != s.activeMap.load() )
+		{
+			proof.valid = s.device->Highres().ResolveStaticPropMesh(record->receiver,meshToken,proof.directory,proof.index);
+			proof.generation = s.activeMap.load();
+		}
+		if ( !proof.valid )
+		{ ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_IDENTITY_PROOF,!s.device->Highres().Rejected()); }
+		memcpy(directory,proof.directory,sizeof(directory)); meshIndex = proof.index;
+	}
+	if ( !draw.indices || (draw.primitive != MATERIAL_TRIANGLES && draw.primitive != MATERIAL_TRIANGLE_STRIP) ||
+		draw.firstIndex < 0 || draw.indexCount < 3 )
+	{ ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_UNSUPPORTED_TOPOLOGY); }
+	if ( !position || position->inputSlot >= ARRAYSIZE(draw.streams) ||
+		(position->format != DXGI_FORMAT_R32G32B32_FLOAT && position->format != DXGI_FORMAT_R32G32B32A32_FLOAT) )
+	{ ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_POSITION_LAYOUT); }
+	const auto &stream = draw.streams[position->inputSlot];
+	if ( !stream.buffer ) { ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_MISSING_POSITION_STREAM); }
+	if ( stream.repetitions != 1 ) { ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_INSTANCED_POSITION_STREAM); }
+	if ( stream.buffer->IsDynamic() ) { ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_DYNAMIC_POSITION_STREAM); }
+	const auto &vertices = *stream.buffer;
+	const auto &indices = *draw.indices;
+	Impl::PropDrawKey key{{ s.activeMap.load(), meshIndex, meshToken, vertices.Identity(), vertices.ContentVersion(),
+		indices.Identity(), indices.ContentVersion(), stream.byteOffset, stream.firstVertex, stream.vertexCount,
+		vertices.Stride(), position->byteOffset, uint64(position->format), draw.indexOffset, uint64(draw.firstIndex),
+		uint64(draw.indexCount), uint64(draw.primitive), indices.IndexSize(), position->inputSlot, directory[2] }};
+	auto cached = s.propDraws.find( key );
+	if ( cached == s.propDraws.end() )
+	{
+		// Discard obsolete CPU-content proofs. GPU references outlive erasure through
+		// the pipeline's fence-retained external-resource ownership.
+		for ( auto entry = s.propDraws.begin(); entry != s.propDraws.end(); )
+			if ( ( entry->first[3] == key[3] && entry->first[4] != key[4] ) ||
+				( entry->first[5] == key[5] && entry->first[6] != key[6] ) ) entry = s.propDraws.erase( entry );
+			else ++entry;
+		const auto vb = vertices.Data(), ib = indices.Data();
+		StaticPropTopologyDX12 topology;
+		topology.vertices = vb.data(); topology.vertexBytes = size_t(vertices.WrittenCount()) * vertices.Stride();
+		topology.indices = ib.data(); topology.indexBytes = size_t(indices.WrittenCount()) * indices.IndexSize();
+		topology.vertexOffset = stream.byteOffset; topology.positionOffset = position->byteOffset;
+		topology.stride = vertices.Stride(); topology.vertexCount = stream.vertexCount; topology.firstVertex = stream.firstVertex;
+		topology.indexOffset = draw.indexOffset; topology.indexSize = indices.IndexSize();
+		topology.firstIndex = uint32(draw.firstIndex); topology.indexCount = uint32(draw.indexCount);
+		topology.strip = draw.primitive == MATERIAL_TRIANGLE_STRIP;
+		std::vector<DX12StaticPropTriangleGpu> triangles;
+		if ( !BuildStaticPropTrianglesDX12(topology,directory[2],meshIndex,triangles) )
+		{ ++s.propUnmatched; return finish(DX12_PROP_VISIBILITY_TOPOLOGY_PROOF); }
+		Impl::PropDraw proof;
+		if ( !s.device->Highres().GetStaticPropDirect(meshIndex,proof.direct) )
+			return finish(DX12_PROP_VISIBILITY_DIRECT_METADATA,false);
+		if ( !StaticPropTriangleBuffer( s.device, s.api->m_Pipeline, triangles.data(), triangles.size()*sizeof(triangles[0]), proof.triangles ) )
+		{ s.Fail(SHADOWMAP_ERR_RESIDENCY); return finish(DX12_PROP_VISIBILITY_RESIDENCY_FAILURE,false); }
+		proof.count = uint32(triangles.size());
+		cached = s.propDraws.emplace( key, std::move(proof) ).first;
+		++s.propCacheBuilds;
+	}
+	auto &proof = cached->second;
+	const uint64 fence = s.device->NextFenceValue();
+	DX12StaticPropDrawConstants constants{};
+	constants.entriesAndTriangles[0] = directory[0]; constants.entriesAndTriangles[1] = directory[1];
+	constants.entriesAndTriangles[3] = proof.count;
+	memcpy( constants.modelToWorld, modelToWorld, sizeof(constants.modelToWorld) );
+	memcpy( constants.direct, proof.direct.direct, sizeof(constants.direct) );
+	const auto &view = s.views.Tail()->packet->view;
+	for ( uint32 style = 0; style < proof.direct.styleCount; ++style )
+		constants.styles[style] = view.styles[proof.direct.styles[style]];
+	if ( proof.constantsFence != fence || memcmp( &proof.constants, &constants, sizeof(constants) ) )
+	{
+		if ( !s.api->m_Pipeline.UploadTransient( &constants, sizeof(constants), 256, 256, fence, proof.constantsAddress ) )
+		{ s.Fail(SHADOWMAP_ERR_RESIDENCY); return finish(DX12_PROP_VISIBILITY_RESIDENCY_FAILURE,false); }
+		proof.constants = constants; proof.constantsFence = fence;
+	}
+	if ( proof.retainedFence != fence )
+	{
+		s.api->m_Pipeline.RetainExternalResource( proof.triangles.Get(), fence ); proof.retainedFence = fence;
+	}
+	input.propDrawConstants = proof.constantsAddress;
+	input.propTriangles = proof.triangles->GetGPUVirtualAddress();
+	++s.propMapped;
+	return finish(DX12_PROP_VISIBILITY_MAPPED);
+}
 bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input )
 {
 	Impl &s = *m_Impl;
@@ -2529,16 +3056,33 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 	if ( s.views.Count() && s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
 	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
 	const uint64_t fence = s.device->NextFenceValue();
-	if ( !pipeline.ReserveResourceDescriptors( DX12_LIGHTING_VIEW_TABLE_COUNT + 1 + 8 + 32 + 16, fence ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+	if ( !pipeline.ReserveResourceDescriptors( DX12_LIGHTING_RESOURCE_TABLE_COUNT + 1 + 8 + 32 + 16, fence ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 	const uint64_t heapGeneration = pipeline.ResourceHeapGeneration();
 	ID3D12Device *device = s.device->NativeDevice();
+	if ( !s.neutralPropTriangles )
+	{
+		const DX12StaticPropTriangleGpu zero{};
+		if ( !StaticPropTriangleBuffer( s.device, pipeline, &zero, sizeof(zero), s.neutralPropTriangles ) )
+		{ s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+	}
+	if ( s.neutralPropFence != fence )
+	{
+		DX12StaticPropDrawConstants disabled{};
+		disabled.direct[0] = hlight::kMissing;
+		if ( !pipeline.UploadTransient( &disabled, sizeof(disabled), 256, 256, fence, s.neutralPropConstants ) )
+		{ s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		pipeline.RetainExternalResource( s.neutralPropTriangles.Get(), fence );
+		s.neutralPropFence = fence;
+	}
+	input.propDrawConstants = s.neutralPropConstants;
+	input.propTriangles = s.neutralPropTriangles->GetGPUVirtualAddress();
 	const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	const uint32 counts[3] = { view.lightCount, view.tileCount, view.tileIndexCount };
 	const uint32 sizes[3] = { sizeof( RuntimeShadowLightGpu ), 8, 4 };
 	if ( scope.fence != fence || scope.heap != heapGeneration )
 	{
-		scope.table = pipeline.AllocateTransientResources( DX12_LIGHTING_VIEW_TABLE_COUNT, fence );
-		if ( scope.table.count != DX12_LIGHTING_VIEW_TABLE_COUNT ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		scope.table = pipeline.AllocateTransientResources( DX12_LIGHTING_RESOURCE_TABLE_COUNT, fence );
+		if ( scope.table.count != DX12_LIGHTING_RESOURCE_TABLE_COUNT ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 		if ( scope.fence != fence )
 		{
 			if ( !pipeline.UploadTransient( &view.constants, sizeof( view.constants ), 768, 256, fence, scope.constants ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
@@ -2552,7 +3096,7 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 		}
 		const Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> &nullTable = scope.nullTable;
 		if ( !nullTable ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
-		device->CopyDescriptorsSimple( DX12_LIGHTING_VIEW_TABLE_COUNT, scope.table.cpu, nullTable->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		device->CopyDescriptorsSimple( DX12_LIGHTING_RESOURCE_TABLE_COUNT, scope.table.cpu, nullTable->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 		for ( int i = 0; i < scope.packet->leases.Count(); ++i )
 		{
 			ShadowTargetDX12 *target = scope.packet->leases[i];
@@ -2566,6 +3110,7 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_UNKNOWN; srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; srv.Buffer.FirstElement = scope.structuredOffsets[i] / sizes[i]; srv.Buffer.NumElements = MAX( 1u, counts[i] ); srv.Buffer.StructureByteStride = sizes[i];
 			device->CreateShaderResourceView( scope.structured[i], &srv, Offset( scope.table.cpu, DX12_LIGHTING_T_LIGHTS + i, stride ) );
 		}
+		if ( s.highresMap && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 		scope.fence = fence; scope.heap = heapGeneration;
 	}
 	// Returning to a parent whose depth was used in an intervening pass requires transitions, but not descriptor copies.

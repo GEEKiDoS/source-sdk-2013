@@ -18,6 +18,8 @@
 #include "clientleafsystem.h"
 #include "detailobjectsystem.h"
 #include "shaderapi/ishaderapidx12lighting.h"
+#include "tier1/refcount.h"
+#include <atomic>
 
 
 //-----------------------------------------------------------------------------
@@ -44,6 +46,54 @@ struct ShadowMapSceneCaster_t
 	Vector mins, maxs;
 	bool staticProp;
 	bool immutable;
+	bool rigid; // Current chart's unchanged certified subset, not mere geometric rigidity.
+};
+
+enum ShadowMapDynamicLayer_t
+{
+	SHADOWMAP_DYNAMIC_ALL,
+	SHADOWMAP_DYNAMIC_RIGID,
+	SHADOWMAP_DYNAMIC_OVERLAY
+};
+
+enum ShadowMapDepthFootprintFullReason_t
+{
+	SHADOWMAP_FOOTPRINT_UNKNOWN=1, SHADOWMAP_FOOTPRINT_ROPE=2, SHADOWMAP_FOOTPRINT_CUSTOM_DRAW=4,
+	SHADOWMAP_FOOTPRINT_NONFINITE=8, SHADOWMAP_FOOTPRINT_W_NONPOSITIVE=16,
+	SHADOWMAP_FOOTPRINT_INVALID_BOUNDS=32, SHADOWMAP_FOOTPRINT_QUEUED_ROPE=64
+};
+
+// Synchronous feedback from the actual overlay draw; coordinates are chart-local.
+// An empty rectangle is known to have written no pixels. Unknown geometry is full.
+struct ShadowMapDepthFootprint_t
+{
+	void Reset( const float *clip, int chartSize );
+	void AddPoint( const Vector &worldPoint );
+	void AddBounds( const Vector &worldMins, const Vector &worldMaxs );
+	void SetFull( uint32 reason = SHADOWMAP_FOOTPRINT_UNKNOWN );
+	const float *matrix;
+	int size, x0, y0, x1, y1;
+	bool full;
+	uint32 reasons;
+};
+
+// Replay owns this record, never a caller's stack footprint or mutable cache matrix.
+// CPU geometry stays separate; merge the rope result only after IsComplete acquire.
+class CShadowMapRopeFootprint : public CRefCounted<>
+{
+public:
+	CShadowMapRopeFootprint() : m_Complete(true) {}
+	void Reset( const float *clip, int size );
+	void BeginQueued();
+	ShadowMapDepthFootprint_t *BeginReplay();
+	void EndReplay();
+	bool IsComplete() const;
+	bool CanReset();
+	const ShadowMapDepthFootprint_t &GetFootprint() const { return m_Footprint; }
+private:
+	float m_Matrix[16];
+	ShadowMapDepthFootprint_t m_Footprint;
+	std::atomic<bool> m_Complete;
 };
 
 struct ShadowMapDepthScene_t
@@ -57,7 +107,11 @@ struct ShadowMapDepthScene_t
 	IShaderAPIDX12Lighting *lighting;
 	DX12ShadowTarget_t target;
 	int x, y, size;
-	bool clear, drawWorld, drawStatic, drawDynamic, drawDetail;
+	bool clear, drawWorld, drawStatic, drawDynamic, drawDetail, orientedDetail;
+	ShadowMapDynamicLayer_t dynamicLayer;
+	uint32 *overlayCasterDraws;
+	ShadowMapDepthFootprint_t *overlayFootprint;
+	CShadowMapRopeFootprint *overlayRopeFootprint;
 };
 
 void ViewRender_DrawShadowMapScene( const ShadowMapDepthScene_t &scene );

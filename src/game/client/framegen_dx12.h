@@ -25,6 +25,8 @@ bool FrameGenDX12_Enabled();
 // Called once per normal RenderView before any 3D draw: marks the eligible main view for the renderer, forwards
 // fps_max when it changes, and latches the frame for the dispatch.
 void FrameGenDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainViewEligible );
+// The existing BeginFrame eligibility latch, before Dispatch consumes it.
+bool FrameGenDX12_RequiresMotionVectors();
 // Called after the last post-processing pass of the latched main view, before the HUD: camera floats, frame id
 // and the dispatch.
 void FrameGenDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup &view, bool bReset );

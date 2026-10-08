@@ -22,12 +22,13 @@
 
 struct model_t;
 struct DetailPropLightstylesLump_t;
+struct ShadowMapDepthFootprint_t;
 
 //-----------------------------------------------------------------------------
 // Receiver-view billboard orientation snapshot used by every shadow view of a
 // receiver view (runtime shadow maps). Cards are oriented toward THIS view,
-// never re-oriented per cube face / cascade; the generation participates in
-// depth-cache identity for every light/cascade/static-sun result containing cards.
+// never re-oriented per cube face / cascade. Fixed detail stays in clean depth;
+// only orientation-dependent casters intersecting a volume affect its working depth.
 //-----------------------------------------------------------------------------
 struct ShadowMapDetailOrientation_t
 {
@@ -70,10 +71,13 @@ public:
 	// intersecting detail leaves; NOT the camera distance lists). Detail models go through the model depth
 	// path; sprite cards use the snapshot orientation and the authored cutout alpha test (DX12_DetailShadowLit
 	// shadow-only variant). Called inside an active shadow pass with the depth-write override in place.
-	virtual void DrawShadowCasters( const ShadowCasterVolume_t &volume, const ShadowMapDetailOrientation_t &orientation ) = 0;
+	// Optional synchronous footprint feedback covers the actual submitted shadow geometry.
+	virtual void DrawShadowCasters( const ShadowCasterVolume_t &volume, const ShadowMapDetailOrientation_t &orientation, bool orientationDependent, ShadowMapDepthFootprint_t *footprint ) = 0;
 
 	// World AABB enclosing every detail caster (for the whole-map static sun map); false when none.
 	virtual bool GetShadowCasterBounds( Vector &mins, Vector &maxs ) = 0;
+	// Map-built spatial bounds index; no allocation or full-detail scan per view/light.
+	virtual bool HasShadowCasters( const ShadowCasterVolume_t &volume, bool orientationDependent ) const = 0;
 
 	// Whether the active map renders detail sprites through the feature-only lit material (converted mode).
 	virtual bool UsesShadowLitSprites() const = 0;

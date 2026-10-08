@@ -2274,6 +2274,8 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 
 			if ( hdrType != HDR_TYPE_NONE )
 			{
+				// Native post consumes the already exposed scene; these queries still drive the next frame's
+				// world/fog tonemap scale and the exposure debug views, not just the legacy bloom composite.
 				DoPreBloomTonemapping( pRenderContext, x, y, w, h, flAutoExposureMin, flAutoExposureMax );
 			}
 

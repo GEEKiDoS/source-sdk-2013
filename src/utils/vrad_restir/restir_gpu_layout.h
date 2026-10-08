@@ -37,8 +37,8 @@
 #define RESTIR_BIND_LUXEL_VALID      13  // uint[numLuxels]
 #define RESTIR_BIND_FINAL_LIGHTMAP   14  // vec4[numFaces * RESTIR_MAX_FACE_STYLES + numOutputValues]:
                                          // cached valid-base face/style means, then full-source denoised radiance; gathers read this
-#define RESTIR_BIND_SERVICE_IN       15  // ReSTIRGpuRay[] | ReSTIRGpuAmbientQuery[] | ReSTIRGpuPointQuery[] (per pass)
-#define RESTIR_BIND_SERVICE_OUT      16  // ReSTIRGpuHit[] | ReSTIRGpuAmbientResult[] | ReSTIRGpuPointResult[]
+#define RESTIR_BIND_SERVICE_IN       15  // ReSTIRGpuRay[] | ReSTIRGpuAmbientQuery[] | ReSTIRGpuPointQuery[] | ReSTIRGpuVisibilityQuery[]
+#define RESTIR_BIND_SERVICE_OUT      16  // ReSTIRGpuHit[] | ReSTIRGpuAmbientResult[] | ReSTIRGpuPointResult[] | float visibility[]
 #define RESTIR_BIND_BVH_NODES        17  // ReSTIRBvhNode[2*numTriangles-1] (compute-bvh)
 #define RESTIR_BIND_BVH_PRIMS        18  // uint[numTriangles] triangle index per sorted leaf (compute-bvh)
 #define RESTIR_BIND_BVH_SCRATCH      19  // uint[]: morton codes, sort ping-pong, refit counters (compute-bvh)
@@ -50,11 +50,12 @@
 #define RESTIR_BIND_RECEIVER_ACCUMULATION 25 // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: as ACCUMULATION minus RESTIR_LIGHT_RUNTIME_DIRECT
                                          //   non-PATH direct (shadowMaps bakes with selected lights only; else the 16-byte dummy)
 #define RESTIR_BIND_RECEIVER_OUTPUT  26  // vec4[numOutputValues] reconstructed receiver radiance (ReSTIRLightmapResult::radiance when split)
-#define RESTIR_BIND_SUN_ORIGINS      27  // vec4[numLuxels]: final origin xyz, w=1 valid / 0 blocked; selected sun only
+#define RESTIR_BIND_SUN_ORIGINS      27  // vec4[numLuxels]: final origin xyz, w=1 valid / 0 blocked; any selected local/sun
 #define RESTIR_BIND_SUN_VISIBILITY   28  // float[numLuxels]: independent closest-sky cone fraction; selected sun only
-#define RESTIR_BIND_COVERAGE         29  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
-#define RESTIR_BIND_TLAS             30  // accelerationStructureEXT (hardware-rt only); MUST stay the last binding
-#define RESTIR_BIND_COUNT            31
+#define RESTIR_BIND_SELECTED_SOURCES 29  // vec4[shadowLights.Count()]: canonical selected origin xyz, shadowSourceRadius w; sun w=-1
+#define RESTIR_BIND_COVERAGE         30  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
+#define RESTIR_BIND_TLAS             31  // accelerationStructureEXT (hardware-rt only); MUST stay the last binding
+#define RESTIR_BIND_COUNT            32
 
 #define RESTIR_MAX_CHANNELS          4   // NUM_BUMP_VECTS + 1; accumulation always reserves 4 per reservoir
 #define RESTIR_WORKGROUP_SIZE        64

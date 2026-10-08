@@ -8,7 +8,9 @@
 //
 //          Threading: ValidateMap, PrepareMap, GetStatus, GetSunVisibilityStats,
 //          Create/Retain/DestroyShadowDepthTarget, Set/ReceiverFeatureGeneration
-//          and RejectUnsupportedLitShader are synchronous and thread-safe.
+//          RejectUnsupportedLitShader, RegisterStaticPropReceiver,
+//          RegisterModelMeshMetadata, GetStaticPropVisibilityStats and
+//          GetStaticPropVisibilityDetails are synchronous and thread-safe.
 //          Every queued method is called DIRECTLY by the caller from any
 //          thread at the point of use: the implementation copies every array, acquires
 //          the Retain leases of every named depth target immediately, and then either
@@ -17,10 +19,12 @@
 //          these methods in a second queue (a late replay could not legally acquire
 //          leases of targets destroyed in between). No caller pointer survives the call.
 //
-//          Lighting resource ABI 4 preserves the space2 constant-buffer layout;
-//          explicit native-generation/highres-route state and the 64-style snapshot
-//          are copied through map/view packets. Space3 replacement resources and
-//          DX12HighresDrawConstants are independent of the abandoned sun carrier.
+//          Lighting resource ABI 6 retains the ABI 5 light/view layouts, adds
+//          immutable prop mesh directories at t1033, actual draw triangles at t1034,
+//          and the 96-byte static-prop draw block at b1, all in space2.
+//          Unknown or moved receivers explicitly use visibility 1.
+//          v4 baked-direct world/prop receivers merge the positive-weight resident
+//          t1028 tail (cSunIdentity.zw offset/count) with sparse style overflow.
 //
 //===========================================================================//
 #ifndef ISHADERAPIDX12LIGHTING_H
@@ -32,13 +36,14 @@
 #include "tier0/platform.h"
 #include "tier1/interface.h"
 #include "tier1/refcount.h"
+#include "shaderapi/dx12staticpropvisibility.h"
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_004"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_007"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
 //-----------------------------------------------------------------------------
-#define DX12_LIGHTING_SHADER_ABI				4
+#define DX12_LIGHTING_SHADER_ABI				6
 
 #define DX12_SHADOW_PCSS_MAX_TEXELS				16		// search/filter radius cap, texels
 #define DX12_SHADOW_GUARD_TEXELS				18		// rendered guard on every edge of every slot/face/cascade
@@ -75,10 +80,18 @@
 #define DX12_LIGHTING_T_LIGHTS					1026	// StructuredBuffer<RuntimeShadowLightGpu>
 #define DX12_LIGHTING_T_TILE_RANGES				1027	// StructuredBuffer<uint2> (offset,count)
 #define DX12_LIGHTING_T_TILE_INDICES			1028	// StructuredBuffer<uint>
-#define DX12_LIGHTING_VIEW_TABLE_COUNT			1029	// t0..t1028 in the immutable per-view table
+#define DX12_LIGHTING_VIEW_TABLE_COUNT			1029	// immutable per-view portion, t0..t1028
 #define DX12_LIGHTING_T_SUN_VISIBILITY			1029	// per-draw R32_UINT: allocation identity in high 24 bits, R8 visibility in low 8
+#define DX12_LIGHTING_T_VISIBILITY_FACES		1030	// StructuredBuffer<uint4>: entry range, high width/height
+#define DX12_LIGHTING_T_VISIBILITY_ENTRIES		1031	// StructuredBuffer<uint4>: canonical light, encoding, byte offset, count
+#define DX12_LIGHTING_T_VISIBILITY_PAYLOAD		1032	// ByteAddressBuffer: R8, prop RGBA16F direct/style overflow, world unbaked IDs
+#define DX12_LIGHTING_T_PROP_MESHES				1033	// StructuredBuffer<uint4>: entries/count/vertices/baked-direct flags
+#define DX12_LIGHTING_T_PROP_TRIANGLES			1034	// root StructuredBuffer<DX12StaticPropTriangleGpu>
+#define DX12_LIGHTING_RESOURCE_TABLE_COUNT		1034	// t1034 is a separate per-draw root SRV
+#define DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE	0x1
 #define DX12_LIGHTING_S_COMPARISON				0		// linear, LESS_EQUAL, clamp
 #define DX12_LIGHTING_B_VIEW					0		// DX12LightingViewConstantsV1 (CBV)
+#define DX12_LIGHTING_B_PROP_DRAW				1		// DX12StaticPropDrawConstants
 
 // Filter / debug modes snapshotted into each view packet
 #define DX12_SHADOW_FILTER_PCF					0
@@ -98,13 +111,15 @@
 
 // DX12LightingViewConstantsV1::cShadowView1.w flags
 #define DX12_SHADOW_VIEW_HAS_SUN				0x1
-#define DX12_SHADOW_VIEW_CSM_VALID				0x2		// f > n and cascades rendered
+#define DX12_SHADOW_VIEW_CSM_VALID				0x2		// f > n and at least one initialized cascade (all four unless DEFERRED)
 #define DX12_SHADOW_VIEW_STATIC_SUN_VALID		0x4
+#define DX12_SHADOW_VIEW_UNSHADOWED			0x8		// selected direct active; skip runtime depth sampling (baked world sun cap remains)
+#define DX12_SHADOW_VIEW_DEFERRED				0x10	// budgeted warm-up: missing charts are wholly zero; direct lighting remains active
 
 //-----------------------------------------------------------------------------
 // GPU-visible record layouts retained from ABI 1. Row-major float4x4; HLSL mul(matrix, float4(world,1)).
 //-----------------------------------------------------------------------------
-struct RuntimeShadowLightGpu				// 592 bytes: 7 rows of 16 + 6 * 64 + 6 * 16
+struct RuntimeShadowLightGpu				// 608 bytes: 7 rows + 6 matrices + 6 rects + hybrid visibility row
 {
 	uint32	lightId;					// index into the map's selected light list (ShadowMapLightDisk order of the active mode)
 	uint32	type;						// DX12_SHADOW_LIGHT_*
@@ -119,8 +134,12 @@ struct RuntimeShadowLightGpu				// 592 bytes: 7 rows of 16 + 6 * 64 + 6 * 16
 	float	constantAttn, linearAttn, quadraticAttn, exponent;
 	float	fadeStart, fadeEnd, capDist, shadowSourceRadius;
 	float	shadowNear, shadowFar, planeToTexel, tanRenderedHalfFov;	// planeToTexel = slotSize / (2 * tanRenderedHalfFov)
-	float	worldToClip[DX12_SHADOW_MAX_FACES][16];					// rendered (guard-expanded) projection * view, row-major
+	float	worldToClip[DX12_SHADOW_MAX_FACES][16];					// rendered (guard-expanded) projection * view, row-major; reused with the same cached pixels
 	uint32	faces[DX12_SHADOW_MAX_FACES][4];						// page, slotX, slotY, slotSize; unused faces all zero
+	float	realtimeWeight;				// [0,1]; zero never references an atlas; positive requires complete charts
+	uint32	visibilityFlags;			// DX12_SHADOW_VISIBILITY_*; no unknown bits
+	uint32	bakedLightIndex;			// canonical selected manifest ordinal, valid iff BAKED_AVAILABLE
+	uint32	reserved0;					// zero
 };
 
 struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL twin)
@@ -131,7 +150,7 @@ struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL tw
 	float	cSunRadiance[4];			// rgb linear irradiance * LightStyleValue(sun.style) applied once; w = tan(sunAngularRadius)
 	float	cSunTravel[4];				// xyz light->receiver (receiverToLight = -xyz); w = CSM far distance f
 	float	cSunBasisX[4];				// xyz stable light-space X; w = 0.9*f (static blend start)
-	float	cSunBasisY[4];				// xyz stable light-space Y; w = 0
+	float	cSunBasisY[4];				// xyz stable light-space Y; w = local shadow-sampling radiance bound (0 = exact)
 	float	cEyePosition[4];			// xyz; w = CSM near n
 	float	cViewForward[4];			// xyz; receiverDistance = dot(positionWS - eye, xyz); w = 0
 	float	cCascadeSplits[4];			// s1, s2, s3, s4 (= f)
@@ -141,10 +160,12 @@ struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL tw
 	float	cStaticSunWorldToClip[16];
 	uint32	cCascadeRects[DX12_SHADOW_CSM_CASCADES][4];			// slotX, slotY, slotSize, 0 inside the cascade atlas
 	uint32	cStaticSunRect[4];			// 0, 0, 4096, 0
-	uint32	cSunIdentity[4];			// sun lightId (0xFFFFFFFF none), sunStyle, 0, 0
+	// Under DEFERRED each missing sun chart has zero rect, depth record and matrix.
+	// Validity flags require initialized charts with retained target leases.
+	uint32	cSunIdentity[4];			// sun lightId (0xFFFFFFFF none), sunStyle, resident GPU-index tail offset/count in t1028
 };
 
-COMPILE_TIME_ASSERT( sizeof( RuntimeShadowLightGpu ) == 592 );
+COMPILE_TIME_ASSERT( sizeof( RuntimeShadowLightGpu ) == 608 );
 COMPILE_TIME_ASSERT( sizeof( DX12LightingViewConstantsV1 ) == 672 );
 
 //-----------------------------------------------------------------------------
@@ -186,6 +207,15 @@ struct DX12LightingSunVisibilityStats
 	uint32	pages;
 	uint32	unresolvedDraws;
 };
+// Cumulative actual lit-model draws since admission; snapshots never print per draw.
+struct DX12StaticPropVisibilityStats
+{
+	uint32 mapGeneration, registeredProps;
+	uint64 mappedDraws, unmatchedDraws, movedDraws, ambiguousDraws, topologyCacheBuilds;
+	uint64 modelDraws, authoredModelDraws, registeredReceiverDraws, registeredReceiverFallbackDraws;
+	uint64 reasonCounts[DX12_PROP_VISIBILITY_REASON_COUNT];
+	uint64 detailOverflowDraws;
+};
 
 // Original, undeformed BSP quad in grid order (0,0), (1,0), (1,1), (0,1).
 // Sparse, sorted by receiver-face index. Needed to reproduce Source's
@@ -202,7 +232,7 @@ struct DX12LightingMapDesc
 	uint32	mapGeneration;				// client map load counter; UnloadMap retires it
 	uint32	mode;						// SHADOWMAP_MODE_LDR / HDR
 	uint32	shaderAbi;					// must be DX12_LIGHTING_SHADER_ABI
-	uint32	highresRoute;				// 1: v4 selected-light map, no inverse receiver spans
+	uint32	highresRoute;				// 1: v5 selected-light map with required v3 baked direct/visibility; no inverse receiver spans
 	uint64	nativeMapGeneration;			// exact bridge generation supplied by client admission
 	uint32	selectedLightCount;
 	const DX12LightingSelectedLight *selectedLights;
@@ -234,10 +264,10 @@ struct DX12LightingViewPacket
 	uint32	localTargetCount;
 	const RuntimeShadowLightGpu *lights;	// the view's relevant local lights (tile indices address this array)
 	uint32	lightCount;
-	const uint32 *tileRanges;			// 2 * tileCount entries: offset, count into tileIndices
+	const uint32 *tileRanges;			// 2 * tileCount entries: offset, count into the CSR prefix of tileIndices
 	uint32	tileCount;					// tileCountX * tileCountY
-	const uint32 *tileIndices;
-	uint32	tileIndexCount;
+	const uint32 *tileIndices;			// CSR prefix, then ascending GPU indices for every light with realtimeWeight > 0
+	uint32	tileIndexCount;				// includes resident tail; cSunIdentity.zw describes it (zero/zero allowed on ordinary views)
 };
 
 //-----------------------------------------------------------------------------
@@ -283,6 +313,21 @@ public:
 	virtual void RejectUnsupportedLitShader( const char *shaderName ) = 0;
 	// Synchronous snapshot of actual per-generation receiver mapping; zero for an unknown generation.
 	virtual void GetSunVisibilityStats( uint32 mapGeneration, DX12LightingSunVisibilityStats &stats ) = 0;
+	// Queued exact static-prop scope. Copies the entire mesh array before returning.
+	// No name, position, vertex-color or pooled-color-offset identity inference.
+	virtual void BeginStaticPropReceiver( const DX12StaticPropReceiver &receiver ) = 0;
+	virtual void EndStaticPropReceiver() = 0;
+	// Synchronous copied registration; 0 meshes unregisters the renderable token.
+	// Draw selection uses exact hardware mesh and exact authored rigid matrix,
+	// never material/color streams. Ambiguous coincident instances have no domain.
+	virtual void RegisterStaticPropReceiver( uint64 renderableToken, const DX12StaticPropReceiver &receiver ) = 0;
+	virtual void GetStaticPropVisibilityStats( uint32 mapGeneration, DX12StaticPropVisibilityStats &stats ) = 0;
+	// Synchronous copied model/LOD/mesh labels; never receiver identity.
+	virtual void RegisterModelMeshMetadata( const DX12ModelMeshMetadata &metadata ) = 0;
+	// Synchronous bounded snapshot; labels borrowed during callback only.
+	// Unknown/nonstatic models and unmatched authored-model poses are not proof
+	// of a static-prop failure. REGISTERED_RECEIVER identifies proven scope/pose.
+	virtual void GetStaticPropVisibilityDetails( uint32 mapGeneration, IDX12StaticPropVisibilityDetailsSink &sink ) = 0;
 };
 
 #endif // ISHADERAPIDX12LIGHTING_H

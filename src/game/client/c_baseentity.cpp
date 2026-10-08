@@ -944,6 +944,8 @@ C_BaseEntity::C_BaseEntity() :
 
 	// Assume drawing everything
 	m_bReadyToDraw = true;
+	m_nShadowDepthRevision = 0;
+	m_nShadowDepthRegistrationRevision = 0;
 	m_flProxyRandomValue = 0.0f;
 
 	m_fBBoxVisFlags = 0;

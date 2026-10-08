@@ -25,7 +25,13 @@ shatteredglass_highres_vs51.fxc vs shatteredglass_highres_vs51 native -
 # noparity shatteredglass_highres_vs51 - highres-feature-variant
 shatteredglass_highres_ps51.fxc ps shatteredglass_highres_ps51 native -
 # noparity shatteredglass_highres_ps51 - highres-feature-variant
+shatteredglass_highres_earlydepth_ps51.fxc ps shatteredglass_highres_earlydepth_ps51 native -
+# noparity shatteredglass_highres_earlydepth_ps51 - highres-earlydepth-feature-variant
+# earlydepth shatteredglass_highres_ps51 shatteredglass_highres_earlydepth_ps51
 water_highres_vs51.fxc vs water_highres_vs51 native -
 # noparity water_highres_vs51 - highres-feature-variant
 water_highres_ps51.fxc ps water_highres_ps51 native -
 # noparity water_highres_ps51 - highres-feature-variant
+water_highres_earlydepth_ps51.fxc ps water_highres_earlydepth_ps51 native -
+# noparity water_highres_earlydepth_ps51 - highres-earlydepth-feature-variant
+# earlydepth water_highres_ps51 water_highres_earlydepth_ps51

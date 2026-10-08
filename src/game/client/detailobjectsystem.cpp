@@ -13,6 +13,7 @@
 #include "view.h"
 #include "clientmode.h"
 #include "iviewrender.h"
+#include "viewrender.h"
 #include "bsptreedata.h"
 #include "tier0/vprof.h"
 #include "engine/ivmodelinfo.h"
@@ -23,6 +24,7 @@
 #include "c_world.h"
 #include "tier1/heapsort.h"
 #include "shadowmaps_dx12.h"
+#include "shadowmap_scene.h"
 #include "materialsystem/imaterialvar.h"
 #include "materialsystem/itexture.h"
 #include "tier1/KeyValues.h"
@@ -197,19 +199,19 @@ public:
 	void ComputeAngles( void );
 
 	// Calls the correct rendering func
-	void DrawSprite( CMeshBuilder &meshBuilder, bool bShadowOnly = false );
+	void DrawSprite( CMeshBuilder &meshBuilder, bool bShadowOnly = false, ShadowMapDepthFootprint_t *footprint = NULL );
 	void ShadowTexCoords( CMeshBuilder &meshBuilder ) const;
 
 	// Returns the number of quads the sprite will draw
 	int QuadsToDraw() const;
 
 	// Draw functions for the different types of sprite
-	void DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly );
+	void DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly, ShadowMapDepthFootprint_t *footprint );
 
 
 #ifdef USE_DETAIL_SHAPES
-	void DrawTypeShapeCross( CMeshBuilder &meshBuilder, bool bShadowOnly );
-	void DrawTypeShapeTri( CMeshBuilder &meshBuilder, bool bShadowOnly );
+	void DrawTypeShapeCross( CMeshBuilder &meshBuilder, bool bShadowOnly, ShadowMapDepthFootprint_t *footprint );
+	void DrawTypeShapeTri( CMeshBuilder &meshBuilder, bool bShadowOnly, ShadowMapDepthFootprint_t *footprint );
 
 	// check for players nearby and angle away from them
 	void UpdatePlayerAvoid( void );
@@ -219,10 +221,19 @@ public:
 	void InitShapeCross();
 
 	void DrawSwayingQuad( CMeshBuilder &meshBuilder, Vector vecOrigin, Vector vecSway, Vector2D texul, Vector2D texlr, unsigned char *color,
-		Vector width, Vector height );
+		Vector width, Vector height, ShadowMapDepthFootprint_t *footprint );
 #endif
 
 	int GetType() const { return m_Type; }
+	bool ShadowOrientationDependent() const { return m_Orientation != 0; }
+	void ComputeShadowAngles( const ShadowMapDetailOrientation_t &orientation )
+	{
+		if ( !m_Orientation ) return;
+		Vector direction = orientation.m_vecViewOrigin - m_Origin;
+		if ( m_Orientation == 2 ) direction.z = 0;
+		if ( direction.LengthSqr() < 1.0e-8f ) direction = -orientation.m_vecViewForward;
+		VectorAngles( direction, m_Angles );
+	}
 	unsigned char GetAlpha() const { return m_Alpha; }
 
 	bool IsDetailModelTranslucent();
@@ -430,8 +441,9 @@ public:
 	DetailPropLightstylesLump_t& DetailLighting( int i ) { return m_DetailLighting[i]; }
 	DetailPropSpriteDict_t& DetailSpriteDict( int i ) { return m_DetailSpriteDict[i]; }
 	const ShadowMapDetailOrientation_t &SnapshotShadowOrientation( const Vector &viewOrigin, const Vector &viewForward, const Vector &viewRight, const Vector &viewUp );
-	void DrawShadowCasters( const ShadowCasterVolume_t &volume, const ShadowMapDetailOrientation_t &orientation );
+	void DrawShadowCasters( const ShadowCasterVolume_t &volume, const ShadowMapDetailOrientation_t &orientation, bool orientationDependent, ShadowMapDepthFootprint_t *footprint );
 	bool GetShadowCasterBounds( Vector &mins, Vector &maxs );
+	bool HasShadowCasters( const ShadowCasterVolume_t &volume, bool orientationDependent ) const;
 	bool UsesShadowLitSprites() const;
 	void GetShadowReport( ShadowReport_t &report ) const;
 
@@ -473,15 +485,34 @@ private:
 	void UnserializeModels( CUtlBuffer& buf );
 	void UnserializeModelLighting( CUtlBuffer& buf );
 	void InitShadowSpriteMaterials();
-	void DrawShadowLeaf( int leaf, const ShadowMapDetailOrientation_t &orientation );
+	void DrawShadowLeaf( int leaf, const ShadowMapDetailOrientation_t &orientation, bool orientationDependent, ShadowMapDepthFootprint_t *footprint );
 	void CacheShadowCasterBounds();
+	struct ShadowBoundsNode_t
+	{
+		Vector mins, maxs;
+		int left, right;
+		unsigned char kinds; // bit 0 fixed, bit 1 receiver-oriented
+		ShadowBoundsNode_t() : left(-1), right(-1), kinds(0) {}
+	};
+	struct ShadowBoundsCompare_t
+	{
+		int axis;
+		bool operator()( const ShadowBoundsNode_t &a, const ShadowBoundsNode_t &b ) const
+		{
+			return a.mins[axis] + a.maxs[axis] < b.mins[axis] + b.maxs[axis];
+		}
+	};
+	int BuildShadowBoundsTree( CUtlVector<ShadowBoundsNode_t> &entries, int first, int count );
+	bool QueryShadowBoundsTree( int node, const ShadowMapInfluenceVolume_t &volume, unsigned char kind ) const;
 	struct ShadowLeafEnumerator_t : public ISpatialLeafEnumerator
 	{
 		CDetailObjectSystem *m_pSystem;
 		const ShadowMapDetailOrientation_t *m_pOrientation;
+		bool m_bOrientationDependent;
+		ShadowMapDepthFootprint_t *m_pFootprint;
 		bool EnumerateLeaf( int leaf, intp )
 		{
-			m_pSystem->DrawShadowLeaf( leaf, *m_pOrientation );
+			m_pSystem->DrawShadowLeaf( leaf, *m_pOrientation, m_bOrientationDependent, m_pFootprint );
 			return true;
 		}
 	};
@@ -524,6 +555,7 @@ private:
 	uint32 m_nLastShadowOrientationGeneration;
 	Vector m_ShadowCasterMins, m_ShadowCasterMaxs;
 	bool m_bShadowCasterBounds;
+	CUtlVector<ShadowBoundsNode_t> m_ShadowBoundsTree;
 	ShadowReport_t m_ShadowReport;
 
 	// State stored off for rendering detail sprites in a single leaf
@@ -1055,25 +1087,26 @@ void CDetailModel::ComputeAngles( void )
 //-----------------------------------------------------------------------------
 // Select which rendering func to call
 //-----------------------------------------------------------------------------
-void CDetailModel::DrawSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
+void CDetailModel::DrawSprite( CMeshBuilder &meshBuilder, bool bShadowOnly, ShadowMapDepthFootprint_t *footprint )
 {
 	switch( m_Type )
 	{
 #ifdef USE_DETAIL_SHAPES
 	case DETAIL_PROP_TYPE_SHAPE_CROSS:
-		DrawTypeShapeCross( meshBuilder, bShadowOnly );
+		DrawTypeShapeCross( meshBuilder, bShadowOnly, footprint );
 		break;
 
 	case DETAIL_PROP_TYPE_SHAPE_TRI:
-		DrawTypeShapeTri( meshBuilder, bShadowOnly );
+		DrawTypeShapeTri( meshBuilder, bShadowOnly, footprint );
 		break;
 #endif
 	case DETAIL_PROP_TYPE_SPRITE:
-		DrawTypeSprite( meshBuilder, bShadowOnly );
+		DrawTypeSprite( meshBuilder, bShadowOnly, footprint );
 		break;
 
 	default:
 		Assert(0);
+		if ( footprint ) footprint->SetFull();
 		break;
 	}
 }
@@ -1082,7 +1115,7 @@ void CDetailModel::DrawSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
 //-----------------------------------------------------------------------------
 // Draws the single sprite type
 //-----------------------------------------------------------------------------
-void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
+void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly, ShadowMapDepthFootprint_t *footprint )
 {
 	Assert( m_Type == DETAIL_PROP_TYPE_SPRITE );
 
@@ -1140,8 +1173,10 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
 
 #ifndef USE_DETAIL_SHAPES
 	meshBuilder.Position3fv( vecOrigin.Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin );
 #else
 	meshBuilder.Position3fv( (vecOrigin+vecSway).Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
 #endif
 
 	meshBuilder.Color4ubv( color );
@@ -1151,6 +1186,7 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
 
 	vecOrigin += dy;
 	meshBuilder.Position3fv( vecOrigin.Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin );
 	meshBuilder.Color4ubv( color );
 	meshBuilder.TexCoord2f( 0, texul.x, texlr.y );
 	ShadowTexCoords( meshBuilder );
@@ -1158,6 +1194,7 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
 
 	vecOrigin += dx;
 	meshBuilder.Position3fv( vecOrigin.Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin );
 	meshBuilder.Color4ubv( color );
 	meshBuilder.TexCoord2fv( 0, texlr.Base() );
 	ShadowTexCoords( meshBuilder );
@@ -1166,8 +1203,10 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
 	vecOrigin -= dy;
 #ifndef USE_DETAIL_SHAPES
 	meshBuilder.Position3fv( vecOrigin.Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin );
 #else
 	meshBuilder.Position3fv( (vecOrigin+vecSway).Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
 #endif
 	meshBuilder.Color4ubv( color );
 	meshBuilder.TexCoord2f( 0, texlr.x, texul.y );
@@ -1180,7 +1219,7 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly )
 // two perpendicular sprites
 //-----------------------------------------------------------------------------
 #ifdef USE_DETAIL_SHAPES
-void CDetailModel::DrawTypeShapeCross( CMeshBuilder &meshBuilder, bool bShadowOnly )
+void CDetailModel::DrawTypeShapeCross( CMeshBuilder &meshBuilder, bool bShadowOnly, ShadowMapDepthFootprint_t *footprint )
 {
 	Assert( m_Type == DETAIL_PROP_TYPE_SHAPE_CROSS );
 
@@ -1271,16 +1310,16 @@ void CDetailModel::DrawTypeShapeCross( CMeshBuilder &meshBuilder, bool bShadowOn
 		switch( iBranch )
 		{
 		case 0:		// south
-			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texlr, color, -forward, up );
+			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texlr, color, -forward, up, footprint );
 			break;
 		case 1:		// west
-			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texll, color, -right, up );
+			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texll, color, -right, up, footprint );
 			break;
 		case 2:		// north
-			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texll, color, forward, up );
+			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texll, color, forward, up, footprint );
 			break;
 		case 3:		// east
-			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texlr, color, right, up );
+			DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texumid, texlr, color, right, up, footprint );
 			break;
 		}
 
@@ -1296,7 +1335,7 @@ void CDetailModel::DrawTypeShapeCross( CMeshBuilder &meshBuilder, bool bShadowOn
 // draws a procedural model, tri shape
 //-----------------------------------------------------------------------------
 #ifdef USE_DETAIL_SHAPES
-void CDetailModel::DrawTypeShapeTri( CMeshBuilder &meshBuilder, bool bShadowOnly )
+void CDetailModel::DrawTypeShapeTri( CMeshBuilder &meshBuilder, bool bShadowOnly, ShadowMapDepthFootprint_t *footprint )
 {
 	Assert( m_Type == DETAIL_PROP_TYPE_SHAPE_TRI );
 
@@ -1375,7 +1414,7 @@ void CDetailModel::DrawTypeShapeTri( CMeshBuilder &meshBuilder, bool bShadowOnly
 				vecSwayYaw * sin(gpGlobals->curtime+m_Origin.x+iBranch) * flSwayAmplitude;
 		}
 
-		DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texul, texlr, color, vecWidth, vecHeight );
+		DrawSwayingQuad( meshBuilder, vecOrigin, vecSway, texul, texlr, color, vecWidth, vecHeight, footprint );
 		
 		iDrawn++;
 		iBranch++;
@@ -1459,9 +1498,10 @@ void CDetailModel::UpdatePlayerAvoid( void )
 //-----------------------------------------------------------------------------
 #ifdef USE_DETAIL_SHAPES
 void CDetailModel::DrawSwayingQuad( CMeshBuilder &meshBuilder, Vector vecOrigin, Vector vecSway, Vector2D texul, Vector2D texlr, unsigned char *color,
-								   Vector width, Vector height )
+								   Vector width, Vector height, ShadowMapDepthFootprint_t *footprint )
 {
 	meshBuilder.Position3fv( (vecOrigin + vecSway).Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
 	meshBuilder.TexCoord2fv( 0, texul.Base() );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
@@ -1469,6 +1509,7 @@ void CDetailModel::DrawSwayingQuad( CMeshBuilder &meshBuilder, Vector vecOrigin,
 
 	vecOrigin += height;
 	meshBuilder.Position3fv( vecOrigin.Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin );
 	meshBuilder.TexCoord2f( 0, texul.x, texlr.y );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
@@ -1476,6 +1517,7 @@ void CDetailModel::DrawSwayingQuad( CMeshBuilder &meshBuilder, Vector vecOrigin,
 
 	vecOrigin += width;
 	meshBuilder.Position3fv( vecOrigin.Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin );
 	meshBuilder.TexCoord2fv( 0, texlr.Base() );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
@@ -1483,6 +1525,7 @@ void CDetailModel::DrawSwayingQuad( CMeshBuilder &meshBuilder, Vector vecOrigin,
 
 	vecOrigin -= height;
 	meshBuilder.Position3fv( (vecOrigin + vecSway).Base() );
+	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
 	meshBuilder.TexCoord2f( 0, texlr.x, texul.y );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
@@ -1642,6 +1685,7 @@ void CDetailObjectSystem::LevelShutdownPreEntity()
 	m_DetailShadowDepthMaterial.Shutdown();
 	m_nFastSpriteBlocks = 0;
 	m_bShadowCasterBounds = false;
+	m_ShadowBoundsTree.Purge();
 	memset( &m_ShadowOrientation, 0, sizeof( m_ShadowOrientation ) );
 	m_nShadowOrientationCount = m_nNextShadowOrientation = 0;
 	m_nLastShadowOrientationGeneration = 0;
@@ -2977,6 +3021,7 @@ bool CDetailObjectSystem::UsesShadowLitSprites() const
 
 void CDetailObjectSystem::GetShadowReport( ShadowReport_t &report ) const
 {
+	VPROF_BUDGET( "CDetailObjectSystem::GetShadowReport", "Shadowmaps" );
 	report = m_ShadowReport;
 	report.m_bShadowLitSprites = UsesShadowLitSprites();
 	report.m_nOrientationGeneration = m_ShadowOrientation.m_nGeneration;
@@ -2986,6 +3031,7 @@ void CDetailObjectSystem::GetShadowReport( ShadowReport_t &report ) const
 const ShadowMapDetailOrientation_t &CDetailObjectSystem::SnapshotShadowOrientation(
 	const Vector &origin, const Vector &forward, const Vector &right, const Vector &up )
 {
+	VPROF_BUDGET( "CDetailObjectSystem::SnapshotShadowOrientation", "Shadowmaps" );
 	const float epsilonSquared = 1.0e-8f;
 	// Generation names an immutable receiver tuple, not an active-view switch.
 	// Fixed history avoids allocation and preserves main/monitor identities
@@ -3081,12 +3127,28 @@ static void DetailUnionBounds( const Vector &mins, const Vector &maxs, Vector &o
 void CDetailObjectSystem::CacheShadowCasterBounds()
 {
 	m_bShadowCasterBounds = false;
+	m_ShadowBoundsTree.RemoveAll();
+	CUtlVector<ShadowBoundsNode_t> entries;
+	entries.EnsureCapacity( m_DetailObjects.Count() + m_nFastSpriteBlocks * 4 );
+	IMaterial *source = m_DetailSpriteMaterial;
+	const bool cardsCast = UsesShadowLitSprites() && !( source->IsTranslucent() && !source->IsAlphaTested() );
 	for ( int i = 0; i < m_DetailObjects.Count(); ++i )
 	{
 		CDetailModel &model = m_DetailObjects[i];
+		if ( model.GetType() != DETAIL_PROP_TYPE_MODEL && !cardsCast ) continue;
 		Vector mins, maxs;
 		if ( model.GetType() == DETAIL_PROP_TYPE_MODEL )
-			model.GetRenderBoundsWorldspace( mins, maxs );
+		{
+			if ( model.ShadowOrientationDependent() )
+			{
+				model.GetRenderBounds( mins, maxs );
+				Vector extent( MAX(fabsf(mins.x),fabsf(maxs.x)), MAX(fabsf(mins.y),fabsf(maxs.y)), MAX(fabsf(mins.z),fabsf(maxs.z)) );
+				float radius = extent.Length();
+				extent.Init( radius, radius, radius );
+				mins = model.m_Origin - extent; maxs = model.m_Origin + extent;
+			}
+			else model.GetRenderBoundsWorldspace( mins, maxs );
+		}
 		else
 		{
 			const DetailPropSpriteDict_t &dict = m_DetailSpriteDict[model.m_SpriteInfo.m_nSpriteIndex];
@@ -3100,8 +3162,12 @@ void CDetailObjectSystem::CacheShadowCasterBounds()
 			maxs = model.m_Origin + extent;
 		}
 		DetailUnionBounds( mins, maxs, m_ShadowCasterMins, m_ShadowCasterMaxs, m_bShadowCasterBounds );
+		ShadowBoundsNode_t entry;
+		entry.mins = mins; entry.maxs = maxs;
+		entry.kinds = model.ShadowOrientationDependent() ? 2 : 1;
+		entries.AddToTail( entry );
 	}
-	for ( int i = 0; i < m_nFastSpriteBlocks; ++i )
+	for ( int i = 0; cardsCast && i < m_nFastSpriteBlocks; ++i )
 	{
 		// Padded SIMD lanes replicate the first real card in the block;
 		// their duplicate bounds do not enlarge the union.
@@ -3114,12 +3180,21 @@ void CDetailObjectSystem::CacheShadowCasterBounds()
 			float radius = sqrtf( width * width + height * height );
 			Vector extent( radius, radius, radius );
 			DetailUnionBounds( origin - extent, origin + extent, m_ShadowCasterMins, m_ShadowCasterMaxs, m_bShadowCasterBounds );
+			ShadowBoundsNode_t entry;
+			entry.mins = origin - extent; entry.maxs = origin + extent; entry.kinds = 2;
+			entries.AddToTail( entry );
 		}
+	}
+	if ( entries.Count() )
+	{
+		m_ShadowBoundsTree.EnsureCapacity( entries.Count() * 2 - 1 );
+		BuildShadowBoundsTree( entries, 0, entries.Count() );
 	}
 }
 
 bool CDetailObjectSystem::GetShadowCasterBounds( Vector &mins, Vector &maxs )
 {
+	VPROF_BUDGET( "CDetailObjectSystem::GetShadowCasterBounds", "Shadowmaps" );
 	if ( !m_bShadowCasterBounds )
 		return false;
 	mins = m_ShadowCasterMins;
@@ -3127,16 +3202,62 @@ bool CDetailObjectSystem::GetShadowCasterBounds( Vector &mins, Vector &maxs )
 	return true;
 }
 
-void CDetailObjectSystem::DrawShadowCasters( const ShadowCasterVolume_t &volume, const ShadowMapDetailOrientation_t &orientation )
+int CDetailObjectSystem::BuildShadowBoundsTree( CUtlVector<ShadowBoundsNode_t> &entries, int first, int count )
 {
+	const int index = m_ShadowBoundsTree.AddToTail();
+	ShadowBoundsNode_t &node = m_ShadowBoundsTree[index];
+	node = entries[first];
+	for ( int i = first + 1; i < first + count; ++i )
+	{
+		VectorMin( node.mins, entries[i].mins, node.mins );
+		VectorMax( node.maxs, entries[i].maxs, node.maxs );
+		node.kinds |= entries[i].kinds;
+	}
+	if ( count > 1 )
+	{
+		Vector extent = node.maxs - node.mins;
+		ShadowBoundsCompare_t compare;
+		compare.axis = extent.x > extent.y ? 0 : 1;
+		if ( extent.z > extent[compare.axis] ) compare.axis = 2;
+		const int half = count / 2;
+		std::nth_element( entries.Base() + first, entries.Base() + first + half, entries.Base() + first + count, compare );
+		node.left = BuildShadowBoundsTree( entries, first, half );
+		node.right = BuildShadowBoundsTree( entries, first + half, count - half );
+	}
+	return index;
+}
+
+bool CDetailObjectSystem::QueryShadowBoundsTree( int index, const ShadowMapInfluenceVolume_t &volume, unsigned char kind ) const
+{
+	const ShadowBoundsNode_t &node = m_ShadowBoundsTree[index];
+	if ( !(node.kinds & kind) || !ShadowMapScene_VolumeIntersectsBox( volume, node.mins, node.maxs ) ) return false;
+	return node.left < 0 || QueryShadowBoundsTree( node.left, volume, kind ) || QueryShadowBoundsTree( node.right, volume, kind );
+}
+
+bool CDetailObjectSystem::HasShadowCasters( const ShadowCasterVolume_t &volume, bool orientationDependent ) const
+{
+	VPROF_BUDGET( "CDetailObjectSystem::HasShadowCasters", "Shadowmaps" );
+	if ( !m_ShadowBoundsTree.Count() ) return false;
+	ShadowMapInfluenceVolume_t influence;
+	influence.mins = volume.m_vecMins; influence.maxs = volume.m_vecMaxs;
+	influence.planeCount = volume.m_nPlaneCount;
+	memcpy( influence.planes, volume.m_Planes, sizeof(influence.planes) );
+	return QueryShadowBoundsTree( 0, influence, orientationDependent ? 2 : 1 );
+}
+
+void CDetailObjectSystem::DrawShadowCasters( const ShadowCasterVolume_t &volume, const ShadowMapDetailOrientation_t &orientation, bool orientationDependent, ShadowMapDepthFootprint_t *footprint )
+{
+	VPROF_BUDGET( "CDetailObjectSystem::DrawShadowCasters", "Shadowmaps" );
 	m_ShadowReport.m_nLastDrawModels = m_ShadowReport.m_nLastDrawCards = 0;
 	ShadowLeafEnumerator_t enumerator;
 	enumerator.m_pSystem = this;
 	enumerator.m_pOrientation = &orientation;
+	enumerator.m_bOrientationDependent = orientationDependent;
+	enumerator.m_pFootprint = footprint;
 	engine->GetBSPTreeQuery()->EnumerateLeavesInBox( volume.m_vecMins, volume.m_vecMaxs, &enumerator, 0 );
 }
 
-void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrientation_t &orientation )
+void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrientation_t &orientation, bool orientationDependent, ShadowMapDepthFootprint_t *footprint )
 {
 	int first, count;
 	ClientLeafSystem()->GetDetailObjectsInLeaf( leaf, first, count );
@@ -3144,12 +3265,44 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 	for ( int i = first; i < first + count; ++i )
 	{
 		CDetailModel &model = m_DetailObjects[i];
+		if ( model.ShadowOrientationDependent() != orientationDependent ) continue;
 		if ( model.GetType() == DETAIL_PROP_TYPE_MODEL )
 		{
 			const unsigned char alpha = model.GetAlpha();
+			const QAngle savedAngles = model.m_Angles;
+			model.ComputeShadowAngles( orientation );
 			model.SetAlpha( 255 );
 			model.DrawModel( STUDIO_RENDER | STUDIO_SHADOWDEPTHTEXTURE );
+			if ( footprint )
+			{
+				const model_t *renderModel = model.GetModel();
+				const int modelType = renderModel ? modelinfo->GetModelType( renderModel ) : mod_bad;
+				if ( modelType == mod_studio || modelType == mod_brush )
+				{
+					Vector mins, maxs;
+					model.GetRenderBounds( mins, maxs );
+					if ( !mins.IsValid() || !maxs.IsValid() ||
+						mins.x > maxs.x || mins.y > maxs.y || mins.z > maxs.z )
+					{
+						footprint->SetFull( !mins.IsValid() || !maxs.IsValid() ? SHADOWMAP_FOOTPRINT_NONFINITE : SHADOWMAP_FOOTPRINT_INVALID_BOUNDS );
+					}
+					else
+					{
+						// Use the draw's temporary orientation, not the restored receiver angles.
+						matrix3x4_t modelToWorld;
+						AngleMatrix( model.GetRenderAngles(), model.GetRenderOrigin(), modelToWorld );
+						Vector worldMins, worldMaxs;
+						TransformAABB( modelToWorld, mins, maxs, worldMins, worldMaxs );
+						footprint->AddBounds( worldMins, worldMaxs );
+					}
+				}
+				else
+				{
+					footprint->SetFull( SHADOWMAP_FOOTPRINT_CUSTOM_DRAW );
+				}
+			}
 			model.SetAlpha( alpha );
+			model.m_Angles = savedAngles;
 			++m_ShadowReport.m_nLastDrawModels;
 		}
 		else
@@ -3160,7 +3313,7 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 	if ( !UsesShadowLitSprites() || ( source->IsTranslucent() && !source->IsAlphaTested() ) )
 		return;
 	CFastDetailLeafSpriteList *data = (CFastDetailLeafSpriteList *)ClientLeafSystem()->GetSubSystemDataInLeaf( leaf, CLSUBSYSTEM_DETAILOBJECTS );
-	if ( data )
+	if ( data && orientationDependent )
 		quads += data->m_nNumSprites;
 	if ( !quads )
 		return;
@@ -3180,6 +3333,7 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 	for ( int i = first; i < first + count; ++i )
 	{
 		CDetailModel &model = m_DetailObjects[i];
+		if ( model.ShadowOrientationDependent() != orientationDependent ) continue;
 		if ( model.GetType() == DETAIL_PROP_TYPE_MODEL )
 			continue;
 		const int n = model.QuadsToDraw();
@@ -3194,23 +3348,15 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 		}
 		QAngle savedAngles = model.m_Angles;
 		const unsigned char savedAlpha = model.GetAlpha();
-		if ( model.m_Orientation )
-		{
-			Vector direction = orientation.m_vecViewOrigin - model.m_Origin;
-			if ( model.m_Orientation == 2 )
-				direction.z = 0;
-			if ( direction.LengthSqr() < 1.0e-8f )
-				direction = -orientation.m_vecViewForward;
-			VectorAngles( direction, model.m_Angles );
-		}
+		model.ComputeShadowAngles( orientation );
 		model.SetAlpha( 255 );
-		model.DrawSprite( builder, true );
+		model.DrawSprite( builder, true, footprint );
 		model.m_Angles = savedAngles;
 		model.SetAlpha( savedAlpha );
 		written += n;
 		m_ShadowReport.m_nLastDrawCards += n;
 	}
-	for ( int i = 0; data && i < data->m_nNumSprites; ++i )
+	for ( int i = 0; orientationDependent && data && i < data->m_nNumSprites; ++i )
 	{
 		if ( written == batch )
 		{
@@ -3240,6 +3386,7 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 		for ( int v = 0; v < 4; ++v )
 		{
 			builder.Position3fv( vertices[v].Base() );
+			if ( footprint ) footprint->AddPoint( vertices[v] );
 			builder.Color4ub( 255, 255, 255, 255 );
 			builder.TexCoord2fv( 0, uv[v].Base() );
 			DetailShadowTexCoords( builder, sprite.m_LightingOrigins[sub], sprite.m_LightingNormals[sub] );

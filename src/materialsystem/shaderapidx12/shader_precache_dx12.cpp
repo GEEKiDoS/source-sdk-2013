@@ -63,17 +63,19 @@ static bool ValidateLightingStructuredType( ID3D12ShaderReflection *reflection, 
 	D3D12_SHADER_TYPE_DESC type{};
 	if ( !elementType || FAILED( elementType->GetDesc( &type ) ) || type.Elements )
 		return false;
-	if ( binding.BindPoint == DX12_LIGHTING_T_LIGHTS )
+	if ( binding.BindPoint == DX12_LIGHTING_T_LIGHTS || binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES )
 	{
-		const UINT memberCount = sizeof( dx12native::kRuntimeShadowLightGpuMembers ) /
-		                         sizeof( *dx12native::kRuntimeShadowLightGpuMembers );
+		const bool triangle = binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES;
+		const auto *members = triangle ? dx12native::kDX12StaticPropTriangleGpuMembers : dx12native::kRuntimeShadowLightGpuMembers;
+		const UINT memberCount = triangle ? UINT(sizeof(dx12native::kDX12StaticPropTriangleGpuMembers)/sizeof(*members)) :
+			UINT(sizeof(dx12native::kRuntimeShadowLightGpuMembers)/sizeof(*members));
 		if ( type.Class != D3D_SVC_STRUCT || !type.Name ||
-		     V_strcmp( type.Name, "RuntimeShadowLightGpu" ) || type.Members != memberCount )
+		     V_strcmp( type.Name, triangle ? "DX12StaticPropTriangleGpu" : "RuntimeShadowLightGpu" ) || type.Members != memberCount )
 			return false;
 		// Match the authored layout, including row-major matrices and both six-face arrays.
 		for ( UINT member = 0; member < memberCount; ++member )
 		{
-			const auto &expected = dx12native::kRuntimeShadowLightGpuMembers[member];
+			const auto &expected = members[member];
 			const char *name = elementType->GetMemberTypeName( member );
 			auto *memberType = elementType->GetMemberTypeByIndex( member );
 			D3D12_SHADER_TYPE_DESC memberDesc{};
@@ -86,18 +88,31 @@ static bool ValidateLightingStructuredType( ID3D12ShaderReflection *reflection, 
 		}
 		return true;
 	}
-	const UINT columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 : 1;
+	const UINT columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 :
+		binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_FACES || binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_ENTRIES || binding.BindPoint == DX12_LIGHTING_T_PROP_MESHES ? 4 : 1;
 	return type.Type == D3D_SVT_UINT && type.Rows == 1 && type.Columns == columns &&
-	       type.Class == ( columns == 2 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR );
+	       type.Class == ( columns > 1 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR );
 }
 
+bool RequiresStaticPropReceiverShaderDX12( const char *logical )
+{
+	static const char *const models[] = {
+		"vertexlit_and_unlit_generic_shadowmap_ps51", "vertexlit_and_unlit_generic_bump_shadowmap_ps51",
+		"skin_shadowmap_ps51", "eyes_shadowmap_ps51", "eye_refract_shadowmap_ps51",
+		"teeth_shadowmap_ps51", "teeth_bump_shadowmap_ps51", "treeleaf_shadowmap_ps51",
+		"cable_shadowmap_ps51", "vortwarp_shadowmap_ps51"
+	};
+	for ( const char *model : models ) if ( logical && !V_strcmp(logical,model) ) return true;
+	return false;
+}
 // Optimized shaders retain only the resources they use. The view block is the ABI marker;
 // every retained binding must match, but unused textures/samplers may disappear.
-bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility )
+bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility, bool *propVisibility )
 {
 	if ( lightingAbi )
 		*lightingAbi = false;
 	if ( sunVisibility ) *sunVisibility = false;
+	if ( propVisibility ) *propVisibility = false;
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	D3D12_SHADER_DESC desc{};
 	if ( !bytecode.pShaderBytecode || !bytecode.BytecodeLength ||
@@ -121,9 +136,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		}
 		const dx12native::EngineCBufferLayoutDX12 *layout = nullptr;
 		for ( const auto &candidate : dx12native::kLightingCBufferLayouts )
-			if ( candidate.shaderRegister == DX12_LIGHTING_B_VIEW &&
-			     !V_strcmp( candidate.name, "DX12LightingViewConstantsV1" ) &&
-			     !V_strcmp( binding.Name, candidate.name ) )
+			if ( !V_strcmp( binding.Name, candidate.name ) )
 				layout = &candidate;
 		if ( binding.Space != DX12_LIGHTING_REGISTER_SPACE && !layout )
 			continue;
@@ -133,7 +146,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		             binding.Space == DX12_LIGHTING_REGISTER_SPACE;
 		if ( layout )
 		{
-			slot = layout->shaderRegister;
+			slot = layout->shaderRegister == DX12_LIGHTING_B_VIEW ? 0 : 14;
 			auto *buffer = reflection->GetConstantBufferByName( binding.Name );
 			D3D12_SHADER_BUFFER_DESC bd{};
 			valid = valid && layout->stage == dx12native::kStagePixel && binding.Type == D3D_SIT_CBUFFER &&
@@ -154,16 +167,25 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 						valid = false;
 						break;
 					}
+					if ( layout->shaderRegister == DX12_LIGHTING_B_PROP_DRAW )
+					{
+						D3D12_SHADER_TYPE_DESC type{};
+						auto *shape = variable->GetType();
+						if ( !shape || FAILED(shape->GetDesc(&type)) || type.Class != D3D_SVC_VECTOR ||
+							type.Rows != 1 || type.Columns != 4 || type.Type != (member == 1 || member == 3 ? D3D_SVT_FLOAT : D3D_SVT_UINT) ||
+							type.Elements != (member == 1 ? 3u : 0u) )
+						{ valid = false; break; }
+					}
 				}
 			}
-			marker = true;
+			if ( layout->shaderRegister == DX12_LIGHTING_B_VIEW ) marker = true;
 		}
 		else if ( binding.Type == D3D_SIT_SAMPLER )
 		{
 			const bool comparison = ( binding.uFlags & D3D_SIF_COMPARISON_SAMPLER ) != 0;
 			const bool shadow = comparison && binding.BindPoint == DX12_LIGHTING_S_COMPARISON && !V_strcmp( binding.Name, "g_ShadowCmpSampler" );
 			valid = valid && binding.BindCount == 1 && shadow;
-			slot = 8;
+			slot = 13;
 		}
 		else
 		{
@@ -180,6 +202,11 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 				{ "g_ShadowTileRanges", DX12_LIGHTING_T_TILE_RANGES, 1, 8 },
 				{ "g_ShadowTileIndices", DX12_LIGHTING_T_TILE_INDICES, 1, 4 },
 				{ "g_ShadowSunVisibility", DX12_LIGHTING_T_SUN_VISIBILITY, 1, 0 },
+				{ "g_ShadowVisibilityFaces", DX12_LIGHTING_T_VISIBILITY_FACES, 1, 16 },
+				{ "g_ShadowVisibilityEntries", DX12_LIGHTING_T_VISIBILITY_ENTRIES, 1, 16 },
+				{ "g_ShadowVisibilityPayload", DX12_LIGHTING_T_VISIBILITY_PAYLOAD, 1, 0 },
+				{ "g_ShadowVisibilityPropMeshes", DX12_LIGHTING_T_PROP_MESHES, 1, 16 },
+				{ "g_ShadowPropTriangles", DX12_LIGHTING_T_PROP_TRIANGLES, 1, sizeof(DX12StaticPropTriangleGpu) },
 			};
 			const Resource *resource = nullptr;
 			for ( unsigned r = 0; r < sizeof( resources ) / sizeof( *resources ); ++r )
@@ -195,6 +222,8 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 			if ( valid && resource->stride )
 				valid = binding.Type == D3D_SIT_STRUCTURED && binding.Dimension == D3D_SRV_DIMENSION_BUFFER &&
 				        binding.NumSamples == resource->stride && ValidateLightingStructuredType( reflection.Get(), binding );
+			else if ( valid && resource->reg == DX12_LIGHTING_T_VISIBILITY_PAYLOAD )
+				valid = binding.Type == D3D_SIT_BYTEADDRESS && binding.Dimension == D3D_SRV_DIMENSION_BUFFER;
 			else if ( valid )
 				valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == D3D_SRV_DIMENSION_TEXTURE2D &&
 				        binding.ReturnType == ( resource->reg == DX12_LIGHTING_T_SUN_VISIBILITY ? D3D_RETURN_TYPE_UINT : D3D_RETURN_TYPE_FLOAT ) &&
@@ -202,7 +231,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		}
 		if ( !valid || ( seen & ( 1u << slot ) ) )
 		{
-			error = CUtlString( "lighting ABI 3 binding/layout mismatch: " ) + binding.Name;
+			error = CUtlString( "lighting ABI 6 binding/layout mismatch: " ) + binding.Name;
 			return false;
 		}
 		seen |= 1u << slot;
@@ -212,6 +241,27 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		error = "space-2 resources require DX12LightingViewConstantsV1";
 		return false;
 	}
+	// World requires face/entries/payload; models require mesh/triangle/draw CB plus entries/payload.
+	const unsigned propGroup = (1u<<11)|(1u<<12)|(1u<<14), lookup = (1u<<9)|(1u<<10);
+	if ( ((seen&(1u<<8)) && (seen&lookup)!=lookup) ||
+		((seen&propGroup) && ((seen&propGroup)!=propGroup || (seen&lookup)!=lookup)) )
+	{
+		error = "lighting ABI 6 incomplete visibility resource group";
+		return false;
+	}
+	if ( seen & propGroup )
+	{
+		bool primitiveId = false;
+		for ( UINT i = 0; i < desc.InputParameters; ++i )
+		{
+			D3D12_SIGNATURE_PARAMETER_DESC parameter{};
+			if ( SUCCEEDED(reflection->GetInputParameterDesc(i,&parameter)) &&
+				parameter.SystemValueType == D3D_NAME_PRIMITIVE_ID && parameter.ComponentType == D3D_REGISTER_COMPONENT_UINT32 &&
+				parameter.Mask == 1 ) primitiveId = true;
+		}
+		if ( !primitiveId ) { error = "lighting ABI 6 prop lookup requires uint SV_PrimitiveID"; return false; }
+	}
+	if ( propVisibility ) *propVisibility = (seen&propGroup)==propGroup;
 	if ( sunVisibility ) *sunVisibility = ( seen & ( 1u << 7 ) ) != 0;
 	if ( lightingAbi )
 		*lightingAbi = marker;

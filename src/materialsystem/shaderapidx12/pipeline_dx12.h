@@ -89,6 +89,7 @@ public:
 		DescriptorRangeDX12 lightingViewTable{};
 		DescriptorRangeDX12 lightingVisibilityTable{};
 		D3D12_GPU_VIRTUAL_ADDRESS lightingViewConstants = 0;
+		D3D12_GPU_VIRTUAL_ADDRESS propDrawConstants = 0, propTriangles = 0;
 		bool highresAbi = false;
 		DescriptorRangeDX12 highresTable{};
 		D3D12_GPU_VIRTUAL_ADDRESS highresConstants = 0, highresFailure = 0;
@@ -103,7 +104,7 @@ public:
 
 	struct StatsDX12
 	{
-		uint64_t srvTableHits = 0, srvTableCopies = 0, constantHits = 0, constantUploads = 0, transientConstants = 0, rootCbvSets = 0, rootTableSets = 0;
+		uint64_t srvTableHits = 0, srvTableCopies = 0, constantHits = 0, constantUploads = 0, transientConstants = 0, rootCbvSets = 0, rootTableSets = 0, rootSrvSets = 0;
 	};
 
 	const StatsDX12 &Stats() const { return m_Stats; }
@@ -269,8 +270,8 @@ private:
 	static constexpr size_t kConstantBufferMaxBytes = 65536;
 	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables.
 	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootParameterCount = 20;
-	static constexpr UINT kRootLightingView = 20, kRootLightingViewConstants = 21, kRootLightingVisibility = 22, kLightingRootParameterCount = 23;
-	static constexpr UINT kRootHighresTable = 23, kRootHighresConstants = 24, kRootHighresFailure = 25, kHighresRootParameterCount = 26;
+	static constexpr UINT kRootLightingView = 20, kRootLightingViewConstants = 21, kRootLightingVisibility = 22, kRootPropDraw = 23, kRootPropTriangles = 24, kLightingRootParameterCount = 25;
+	static constexpr UINT kRootHighresTable = 25, kRootHighresConstants = 26, kRootHighresFailure = 27, kHighresRootParameterCount = 28;
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride );
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
 	CBindingCacheDX12 m_Bindings;
@@ -327,6 +328,7 @@ private:
 
 	NativeTableCache m_NativeTableCache[2];
 	D3D12_GPU_VIRTUAL_ADDRESS m_BoundRootConstants[kRootNativeVertex - kRootVertexConstants] = {};
+	D3D12_GPU_VIRTUAL_ADDRESS m_BoundPropDraw = 0, m_BoundPropTriangles = 0;
 	ID3D12DescriptorHeap *m_pBoundResourceHeap = nullptr, *m_pBoundSamplerHeap = nullptr;
 	ID3D12RootSignature *m_pBoundRoot = nullptr;
 	uint64_t m_nGraphicsBindingsFence = 0;

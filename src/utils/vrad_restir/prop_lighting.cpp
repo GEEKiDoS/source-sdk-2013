@@ -140,18 +140,69 @@ static bool WriteSelectedDetailLighting()
 
 bool ReSTIR_ComputeStaticPropLighting( const ReSTIROptions &options, const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 {
-	if ( !options.staticPropLighting )
-	{
-		g_LevelFlags &= ~( g_bHDR ? LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR : LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR );
-		return true;
-	}
+	const int mode = g_bHDR ? 1 : 0;
+	g_ReSTIRStaticPropMgr.m_Visibility[mode].Clear();
+	g_ReSTIRStaticPropMgr.m_Visibility[mode].selectedLightCount = scene.shadowLights.Count();
+	g_ReSTIRStaticPropMgr.m_VisibilityComplete[mode] = false;
+	g_ReSTIRStaticPropMgr.m_VisibilitySharedHDR = false;
+	// Visibility belongs to every static receiver, not to the RGB/VHV option
+	// or NO_PER_VERTEX_LIGHTING. Preserve those controls only for native RGB.
 	for ( int i = 0; i < g_ReSTIRStaticPropMgr.m_Props.Count(); ++i )
-		if ( !g_ReSTIRStaticPropMgr.ComputeLighting( *g_ReSTIRStaticPropMgr.m_Props[i], i, scene, device ) )
+	{
+		CReSTIRStaticPropMgr::Prop &prop = *g_ReSTIRStaticPropMgr.m_Props[i];
+		prop.meshes.PurgeAndDeleteElements();
+		if ( !g_ReSTIRStaticPropMgr.ComputeLighting( prop, i, scene, device, options.staticPropLighting, options.shadowMaps ) )
 			return false;
-	if ( !g_ReSTIRStaticPropMgr.SerializeLighting() )
-		return false;
-	g_LevelFlags |= g_bHDR ? LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR : LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR;
+	}
+	if ( options.staticPropLighting )
+	{
+		if ( !g_ReSTIRStaticPropMgr.SerializeLighting() )
+			return false;
+		g_LevelFlags |= g_bHDR ? LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR : LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR;
+	}
+	else
+		g_LevelFlags &= ~( g_bHDR ? LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR : LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR );
+	g_ReSTIRStaticPropMgr.m_VisibilityComplete[mode] = true;
+	if ( options.shadowMaps ) ReSTIR_LogStaticPropDirectSummary( options.hdr );
 	return true;
+}
+bool ReSTIR_ReuseStaticPropLighting( const ReSTIROptions &options )
+{
+	if ( !options.hdr || !g_ReSTIRStaticPropMgr.m_VisibilityComplete[0] )
+		return false;
+	if ( !options.staticPropLighting )
+		g_LevelFlags &= ~LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR;
+	else
+	{
+		// Serialize the retained full-precision meshes through the normal HDR
+		// VHV filename/flags and shared PPL contract; never copy an identity header.
+		if ( !g_ReSTIRStaticPropMgr.SerializeLighting() )
+			return false;
+		g_LevelFlags |= LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR;
+	}
+	// The caller has proved exact whole-scene paired equality. Retain the
+	// complete original-vertex visibility alongside RGB, with no lossy copy.
+	g_ReSTIRStaticPropMgr.m_VisibilitySharedHDR = true;
+	g_ReSTIRStaticPropMgr.m_VisibilityComplete[1] = true;
+	if ( options.shadowMaps ) ReSTIR_LogStaticPropDirectSummary( options.hdr );
+	return true;
+}
+
+bool ReSTIR_ReuseDetailPropLighting()
+{
+	if ( !g_bHDR )
+		return false;
+	DetailObjectLump_t *props;
+	int count;
+	if ( !UnserializeDetailProps( props, count ) )
+		return false;
+	if ( !count )
+		return true;
+	if ( !ReadOppositeDetailLighting() )
+		return false;
+	s_DetailPropLightStyleLumpHDR.CopyArray( s_DetailPropLightStyleLumpLDR.Base(), s_DetailPropLightStyleLumpLDR.Count() );
+	// The shared dprp lighting/style indices are already the equal HDR result.
+	return WriteSelectedDetailLighting();
 }
 
 bool ReSTIR_ComputeDetailPropLighting( const ReSTIROptions &, const ReSTIRScene &scene, CReSTIRVulkanDevice &device )

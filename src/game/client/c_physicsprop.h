@@ -25,6 +25,10 @@ public:
 
 	virtual bool OnInternalDrawModel( ClientModelRenderInfo_t *pInfo );
 
+	// Depth geometry is standard C_BaseAnimating drawing. Do not reuse while
+	// the sleep transition can still reject a draw during lighting recomputation.
+	bool CanReuseRigidShadowDepth() const { return !m_bAwake && !m_bAwakeLastTime; }
+
 protected:
 	// Networked vars.
 	bool m_bAwake;

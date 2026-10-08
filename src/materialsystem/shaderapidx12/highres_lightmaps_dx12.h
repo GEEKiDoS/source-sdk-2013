@@ -4,6 +4,7 @@
 #pragma once
 #include "hlight_engine_bridge.h"
 #include "shaderapi/ishaderapidx12highres.h"
+#include "shaderapi/dx12staticpropvisibility.h"
 #include "pipeline_dx12.h"
 namespace shaderapidx12
 {
@@ -16,7 +17,7 @@ class CShaderAPIDX12;
 struct HlightFaceGpuDX12
 {
     uint32 nativeRect[4]; // interior x/y, native extent S/T
-    uint32 dimensionsFlags[4]; // high W/H, face flags, model flags
+    uint32 dimensionsFlags[4]; // high W/H; low16 face flags + high16 unbaked count; bit0 pose + (raw byteOffset/4)<<1
     uint32 styles[4];
     uint32 tiles[16];
     float bakedModelToWorld[12];
@@ -28,6 +29,12 @@ struct HlightTileGpuDX12
 };
 COMPILE_TIME_ASSERT(sizeof(HlightFaceGpuDX12) == 160);
 COMPILE_TIME_ASSERT(sizeof(HlightTileGpuDX12) == 32);
+struct StaticPropDirectMetadataDX12
+{
+    uint32 direct[4] = {~0u,0,0,0}; // radiance byte offset, angular-plane stride, unbaked offset/count
+    uint32 styles[4] = {};
+    uint32 styleCount = 0;
+};
 class CHighresLightmapsDX12 final : public IHlightNativeSink, public IShaderAPIDX12HighresLightmaps
 {
 public:
@@ -56,6 +63,12 @@ public:
     // participating in a draw must name the same original native page association.
     bool PrepareDraw(uint32 samplerMask, const float modelToWorld[12],
         CPipelineCacheDX12::BindingInputDX12 &input);
+    // Copies immutable map SRVs into the model-neutral space2 view table, independent
+    // of native lightmap sampler roles. Resources are retained through the recording fence.
+    bool PrepareVisibilityDraw(D3D12_CPU_DESCRIPTOR_HANDLE lightingTable);
+	bool ResolveStaticPropMesh(const DX12StaticPropReceiver &receiver, uint64 meshToken,
+		uint32 directory[4], uint32 &meshIndex);
+    bool GetStaticPropDirect(uint32 meshIndex, StaticPropDirectMetadataDX12 &metadata);
     void BeginView(uint64 nativeGeneration, const float styles[64]);
     void EndView();
 private:

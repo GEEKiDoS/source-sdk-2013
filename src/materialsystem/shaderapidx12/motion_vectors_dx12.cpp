@@ -301,6 +301,14 @@ bool CShaderAPIDX12::EnsureMotionResources()
 	m_nMotionTargetHeight = scene.Height;
 	m_nMotionTargetSamples = scene.SampleDesc.Count;
 	m_nMotionTargetQuality = scene.SampleDesc.Quality;
+	// A recreated target cannot carry camera/object/provider history from its previous shape.
+	m_MotionHistory[0].Clear();
+	m_MotionHistory[1].Clear();
+	memset( m_MotionPrevViewProjValid, 0, sizeof( m_MotionPrevViewProjValid ) );
+	memset( m_MotionCurViewProjValid, 0, sizeof( m_MotionCurViewProjValid ) );
+	m_hMotionResolvedHandle = 0;
+	m_nMotionResolvedFrame = ~0ull;
+	m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = m_bFrameGenHistoryGap = true;
 	m_MotionTargetState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	if ( m_nMotionReprojectSamples != scene.SampleDesc.Count )
 	{
@@ -477,6 +485,7 @@ void CShaderAPIDX12::DrawMotionReprojection()
 	pList->SetGraphicsRoot32BitConstants( 1, 20, constants, 0 );
 	pList->SetPipelineState( m_pMotionReprojectPso.Get() );
 	pList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_pDevice->GpuReceiverDraw( false );
 	pList->DrawInstanced( 3, 1, 0, 0 );
 	m_Pipeline.InvalidateGraphicsBindings();
 }
@@ -524,6 +533,9 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 			Warning( "ShaderAPIDX12: motion pass suppressed: %s\n", pszWhy );
 		}
 		m_MotionPassState = MotionPassStateDX12::Suppressed;
+		// A failed append/viewmodel pass must not advertise its earlier main resolve as current.
+		m_hMotionResolvedHandle = 0;
+		m_nMotionResolvedFrame = ~0ull;
 	};
 	if ( !bCanRecord )
 	{
@@ -539,7 +551,8 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 		}
 		nMode = DX12_MOTION_PASS_BEGIN_MAIN;
 	}
-	if ( nMode == DX12_MOTION_PASS_BEGIN_VIEWMODEL && m_nMotionMainFrame != m_nFrameCounter )
+	const bool bViewModel = nMode == DX12_MOTION_PASS_BEGIN_VIEWMODEL || nMode == DX12_MOTION_PASS_HISTORY_VIEWMODEL;
+	if ( bViewModel && m_nMotionMainFrame != m_nFrameCounter )
 	{
 		fail( 4, "viewmodel pass without a main pass this frame" );
 		return;
@@ -557,13 +570,34 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 	}
 	FlushBufferedPrimitives();
 	CommitTransforms();
-	m_nMotionPassSlot = nMode == DX12_MOTION_PASS_BEGIN_VIEWMODEL ? 1 : 0;
-	if ( nMode == DX12_MOTION_PASS_BEGIN_MAIN || nMode == DX12_MOTION_PASS_BEGIN_VIEWMODEL )
+	m_nMotionPassSlot = bViewModel ? 1 : 0;
+	if ( nMode == DX12_MOTION_PASS_BEGIN_MAIN &&
+		( m_nMotionMainFrame == ~0ull || m_nMotionMainFrame + 1 != m_nFrameCounter ) )
+	{
+		// No-consumer frames deliberately do not advance motion history. Reactivation starts
+		// with current transforms, never a velocity spanning all of the skipped frames.
+		// This table becomes the reader after the swap; the writer is cleared below.
+		m_MotionHistory[m_nMotionHistoryCurrent].Clear();
+		memset( m_MotionCurViewProjValid, 0, sizeof( m_MotionCurViewProjValid ) );
+		memset( m_MotionPrevViewProjValid, 0, sizeof( m_MotionPrevViewProjValid ) );
+		m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = m_bFrameGenHistoryGap = true;
+	}
+	if ( nMode == DX12_MOTION_PASS_BEGIN_MAIN || bViewModel )
 	{
 		memcpy( m_MotionPrevViewProj[m_nMotionPassSlot], m_MotionCurViewProj[m_nMotionPassSlot], sizeof( m_MotionPrevViewProj[m_nMotionPassSlot] ) );
 		m_MotionPrevViewProjValid[m_nMotionPassSlot] = m_MotionCurViewProjValid[m_nMotionPassSlot];
 		memcpy( m_MotionCurViewProj[m_nMotionPassSlot], m_VsFloat[VERTEX_SHADER_VIEWPROJ], sizeof( float ) * 16 );
 		m_MotionCurViewProjValid[m_nMotionPassSlot] = true;
+	}
+	if ( nMode == DX12_MOTION_PASS_HISTORY_VIEWMODEL )
+	{
+		// Empty viewmodels must still advance their camera VP exactly like BEGIN_VIEWMODEL.
+		// Within the supported SDK/installed writer inventory the main resolve is unchanged:
+		// no velocity draw or second copy is needed. Arbitrary target writers are unsupported.
+		// Leave the pass closed so the caller's END is a no-op; failures above still suppress.
+		m_nMotionLastObjectKey = INT_MIN;
+		m_nMotionObjectOrdinal = 0;
+		return;
 	}
 	if ( nMode == DX12_MOTION_PASS_BEGIN_MAIN )
 	{
@@ -574,6 +608,8 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 		m_nMotionHistoryCurrent ^= 1;
 		m_MotionHistory[m_nMotionHistoryCurrent].Clear();
 		m_nMotionPassDraws = m_nMotionPassObjects = 0;
+		m_hMotionResolvedHandle = 0;
+		m_nMotionResolvedFrame = ~0ull;
 		TransitionMotionTarget( D3D12_RESOURCE_STATE_RENDER_TARGET );
 		const float flClear[4] = { 0, 0, 0, 1 };
 		m_pDevice->CommandList()->ClearRenderTargetView( m_MotionRtv, flClear, 0, nullptr );
@@ -684,6 +720,8 @@ void CShaderAPIDX12::ReleaseMotionResources()
 	m_MotionPassState = MotionPassStateDX12::None;
 	m_bMotionUnavailable = false;
 	m_nMotionMainFrame = ~0ull;
+	m_hMotionResolvedHandle = 0;
+	m_nMotionResolvedFrame = ~0ull;
 	m_nMotionWarned = 0;
 	m_hMotionResolveTarget = 0;
 	m_nMotionTargetSamples = 0;
