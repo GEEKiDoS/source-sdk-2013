@@ -43,6 +43,12 @@ The default launch options should be already filled in for the `Release` configu
 
 The client sets `cl_localnetworkbackdoor 0` on x64 because the engine crashes with the singleplayer network backdoor ([#610](https://github.com/ValveSoftware/source-sdk-2013/issues/610)).
 
+**Save compatibility:** 64-bit physics saves now use format 7. Older format-5/6 saves contain truncated pointer identities and, for pointer lists/arrays, missing entries; they cannot be safely recovered. Loading rejects them before restoring entities. Start a map and create a new save with this build; 32-bit saves retain format 5.
+
+The full-width save/restore bridge is certified for the Windows x64 SDK Base 2013 Multiplayer `vphysics.dll` with PE timestamp `0x67b40ef3` and image size `0x15d000`. It uses game-side serialization and the provider's existing object helpers; it does not patch Steam files, executable code, or vtables. An uncertified 64-bit provider visibly refuses saving/loading rather than writing or restoring truncated pointers. Engine updates require recertifying the profile in `src/game/shared/physics_saverestore.cpp`.
+
+DX12 rebinding no longer calls the previous borrowed material during shutdown or level changes. It caches page identity from the live incoming material, advances the selected material on same-page binds, and clears both caches on device reset/shutdown.
+
 The DX12 renderer needs the native shader pack published into the mod once (and after shader changes):
 ```bat
 cd src

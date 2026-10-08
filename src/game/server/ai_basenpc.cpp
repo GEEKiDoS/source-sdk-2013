@@ -10780,12 +10780,47 @@ BEGIN_DATADESC( CAI_BaseNPC )
 
 END_DATADESC()
 
+// Failure strings are process-local pointers. Preserve only enum codes, matching
+// the restore policy for string failures without ever saving their addresses.
+class CAITaskFailureCodeSaveRestoreOps : public CDefSaveRestoreOps
+{
+public:
+	virtual void Save( const SaveRestoreFieldInfo_t &fieldInfo, ISave *pSave )
+	{
+		int code = Normalize( *(AI_TaskFailureCode_t *)fieldInfo.pField );
+		pSave->WriteInt( &code );
+	}
+
+	virtual void Restore( const SaveRestoreFieldInfo_t &fieldInfo, IRestore *pRestore )
+	{
+		*(AI_TaskFailureCode_t *)fieldInfo.pField = Normalize( pRestore->ReadInt() );
+	}
+
+	virtual void MakeEmpty( const SaveRestoreFieldInfo_t &fieldInfo )
+	{
+		*(AI_TaskFailureCode_t *)fieldInfo.pField = NO_TASK_FAILURE;
+	}
+
+	virtual bool IsEmpty( const SaveRestoreFieldInfo_t &fieldInfo )
+	{
+		return *(AI_TaskFailureCode_t *)fieldInfo.pField == NO_TASK_FAILURE;
+	}
+
+private:
+	static int Normalize( AI_TaskFailureCode_t code )
+	{
+		return ( code >= NO_TASK_FAILURE && code < NUM_FAIL_CODES ) ? (int)code : (int)FAIL_NO_TARGET;
+	}
+};
+
+static CAITaskFailureCodeSaveRestoreOps g_AITaskFailureCodeSaveRestoreOps;
+
 BEGIN_SIMPLE_DATADESC( AIScheduleState_t )
 	DEFINE_FIELD( iCurTask,				FIELD_INTEGER ),
 	DEFINE_FIELD( fTaskStatus,			FIELD_INTEGER ),
 	DEFINE_FIELD( timeStarted,			FIELD_TIME ),
 	DEFINE_FIELD( timeCurTaskStarted,	FIELD_TIME ),
-	DEFINE_FIELD( taskFailureCode,		FIELD_INTEGER ),
+	DEFINE_CUSTOM_FIELD( taskFailureCode, &g_AITaskFailureCodeSaveRestoreOps ),
 	DEFINE_FIELD( iTaskInterrupt,		FIELD_INTEGER ),
 	DEFINE_FIELD( bTaskRanAutomovement,	FIELD_BOOLEAN ),
 	DEFINE_FIELD( bTaskUpdatedYaw,		FIELD_BOOLEAN ),
@@ -11162,9 +11197,6 @@ int CAI_BaseNPC::Restore( IRestore &restore )
 								   saveHeader.version < AI_EXTENDED_SAVE_HEADER_RESET_VERSION ||
 								   ( (saveHeader.flags & AIESH_HAD_ENEMY) && !GetEnemy() ) ||
 								   ( (saveHeader.flags & AIESH_HAD_TARGET) && !GetTarget() ) );
-
-	if ( m_ScheduleState.taskFailureCode >= NUM_FAIL_CODES )
-		m_ScheduleState.taskFailureCode = FAIL_NO_TARGET; // must have been a string, gotta punt
 
 	if ( !bDiscardScheduleState )
 	{

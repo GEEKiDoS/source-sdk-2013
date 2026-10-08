@@ -884,8 +884,19 @@ void Game_SetOneWayTransition( void )
 }
 
 static CUtlVector<EHANDLE> g_RestoredEntities;
-// just for debugging, assert that this is the only time this function is called
+// The engine uses this restore interval to gate simulation ticks.
 static bool g_InRestore = false;
+// Keep the whole level rejected even if a later adjacent-file header matches.
+static bool g_RestoreRejected = false;
+
+static void CancelRestoreEntities()
+{
+	g_RestoreRejected = true;
+	g_RestoredEntities.Purge();
+	g_InRestore = false;
+	gEntList.CleanupDeleteList();
+	CBaseEntity::SetAllowPrecache( false );
+}
 
 void AddRestoredEntity( CBaseEntity *pEntity )
 {
@@ -959,6 +970,7 @@ float g_flServerCurTime = 0.0f;
 bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, char const *pOldLevel, char const *pLandmarkName, bool loadGame, bool background )
 {
 	VPROF("CServerGameDLL::LevelInit");
+	g_RestoreRejected = false;
 	ShadowMapTransmit_LevelShutdown();
 	if ( GetWorldEntity() )
 		GetWorldEntity()->RefreshShadowMapTransmitReady();
@@ -1496,6 +1508,11 @@ void CServerGameDLL::CreateNetworkStringTables( void )
 
 CSaveRestoreData *CServerGameDLL::SaveInit( int size )
 {
+	if ( !IsPhysSaveRestoreSupported() )
+	{
+		Warning( "Cannot save: unsupported x64 vphysics serialization profile. No save was written.\n" );
+		return NULL;
+	}
 	return ::SaveInit(size);
 }
 
@@ -1551,6 +1568,14 @@ void CServerGameDLL::Save( CSaveRestoreData *s )
 
 void CServerGameDLL::Restore( CSaveRestoreData *s, bool b)
 {
+	if ( g_RestoreRejected || !IsPhysSaveRestoreCompatible() )
+	{
+		// Do not restore entities whose physics identities cannot be remapped.
+		g_pGameSaveRestoreBlockSet->PostRestore();
+		CancelRestoreEntities();
+		engine->ServerCommand( "showconsole\n" );
+		return;
+	}
 	CRestore restore(s);
 	g_pGameSaveRestoreBlockSet->Restore( &restore, b );
 	g_pGameSaveRestoreBlockSet->PostRestore();
@@ -1581,6 +1606,14 @@ CStandardSendProxies* CServerGameDLL::GetStandardSendProxies()
 
 int	CServerGameDLL::CreateEntityTransitionList( CSaveRestoreData *s, int a)
 {
+	if ( g_RestoreRejected || !IsPhysSaveRestoreCompatible() )
+	{
+		GetPhysSaveRestoreBlockHandler()->PostRestore();
+		GetAISaveRestoreBlockHandler()->PostRestore();
+		CancelRestoreEntities();
+		engine->ServerCommand( "showconsole\n" );
+		return 0;
+	}
 	CRestore restoreHelper( s );
 	// save off file base
 	int base = restoreHelper.GetReadPos();
@@ -2723,6 +2756,14 @@ EXPOSE_SINGLE_INTERFACE_GLOBALVAR(CServerGameClients, IServerGameClients, INTERF
 //-----------------------------------------------------------------------------
 bool CServerGameClients::ClientConnect( edict_t *pEdict, const char *pszName, const char *pszAddress, char *reject, int maxrejectlen )
 {	
+	if ( g_RestoreRejected || ( gpGlobals->eLoadType == MapLoad_LoadGame && !IsPhysSaveRestoreCompatible() ) )
+	{
+		const char *reason = IsPhysSaveRestoreSupported()
+			? "Incompatible physics save data. Create a new save with this build."
+			: "Unsupported physics provider. Saving and loading are unavailable.";
+		Q_strncpy( reject, reason, maxrejectlen );
+		return false;
+	}
 	if ( !g_pGameRules )
 		return false;
 	

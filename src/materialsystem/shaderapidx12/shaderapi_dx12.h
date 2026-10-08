@@ -1037,6 +1037,8 @@ private:
 	CIndexBufferDX12 *m_pBoundIndexBuffer = nullptr;
 	size_t m_nBoundIndexOffset = 0;
 	IMaterial *m_pBoundMaterial = nullptr;
+	// Comparison-only page identity, captured while the incoming borrowed material is live.
+	IMaterial *m_pBoundMaterialPage = nullptr;
 	CMeshDX12 *m_pRenderMesh = nullptr;
 	int m_nRenderFirstIndex = 0, m_nRenderIndexCount = 0;
 	CUtlVector<CMeshDX12 *> m_DynamicMeshes;

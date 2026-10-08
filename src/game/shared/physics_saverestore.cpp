@@ -9,12 +9,16 @@
 
 #include "utlpriorityqueue.h"
 #include "utlmap.h"
+#include "utlvector.h"
 #include "isaverestore.h"
 #include "physics.h"
 #include "physics_saverestore.h"
 #include "saverestoretypes.h"
 #include "gamestringpool.h"
 #include "datacache/imdlcache.h"
+#if defined( _WIN64 )
+#include <windows.h>
+#endif
 
 #if !defined( CLIENT_DLL )
 #include "entitylist.h"
@@ -25,7 +29,282 @@
 
 //-----------------------------------------------------------------------------
 
+// Version 5 truncated the world identity; the intermediate Win64 version 6
+// still used the provider's broken 32-bit pointer ops. Neither is recoverable.
+#ifdef PLATFORM_64BITS
+static short PHYS_SAVE_RESTORE_VERSION = 7;
+#else
 static short PHYS_SAVE_RESTORE_VERSION = 5;
+#endif
+
+class CPhysWorldObjectSaveRestoreOps : public CClassPtrSaveRestoreOps
+{
+public:
+	virtual void Save( const SaveRestoreFieldInfo_t &fieldInfo, ISave *pSave )
+	{
+		pSave->WriteData( (const char *)fieldInfo.pField, sizeof( IPhysicsObject * ) );
+	}
+
+	virtual void Restore( const SaveRestoreFieldInfo_t &fieldInfo, IRestore *pRestore )
+	{
+		pRestore->ReadData( (char *)fieldInfo.pField, sizeof( IPhysicsObject * ), sizeof( IPhysicsObject * ) );
+	}
+};
+
+static CPhysWorldObjectSaveRestoreOps g_PhysWorldObjectSaveRestoreOps;
+
+#if defined( _WIN64 )
+namespace
+{
+typedef CUtlMap<void *, void *> NativePhysicsPointerMap_t;
+typedef UtlRBTreeNode_t<NativePhysicsPointerMap_t::Node_t, unsigned short> NativePhysicsPointerNode_t;
+COMPILE_TIME_ASSERT( sizeof( CUtlVector<void *> ) == 32 );
+COMPILE_TIME_ASSERT( sizeof( NativePhysicsPointerMap_t ) == 40 );
+COMPILE_TIME_ASSERT( sizeof( NativePhysicsPointerNode_t ) == 24 );
+COMPILE_TIME_ASSERT( offsetof( NativePhysicsPointerNode_t, m_Data ) == 8 );
+COMPILE_TIME_ASSERT( offsetof( NativePhysicsPointerMap_t::Node_t, elem ) == 8 );
+
+static const byte *s_pNativePhysicsModule;
+static const uint32 NATIVE_PHYSICS_SCALAR_OPS = 0x11CE10;
+static const uint32 NATIVE_PHYSICS_VECTOR_OPS = 0x11CE18;
+static const uint32 NATIVE_PHYSICS_POINTER_MAP = 0x11CE20;
+static const uint32 NATIVE_PHYSICS_ENVIRONMENT_VTABLE = 0xE4BA8;
+static const uint32 s_NativePhysicsSaveFunctions[] =
+{
+	0x67F0, 0x1D1D0, 0x67F0, 0x20E60, 0xF790, 0xF640, 0x1F6B0, 0x67F0, 0x19380, 0x23480, 0
+};
+static const uint32 s_NativePhysicsRestoreFunctions[] =
+{
+	0x67F0, 0x1D060, 0x67F0, 0x20DD0, 0xF4C0, 0xF140, 0x67F0, 0x67F0, 0x19270, 0x233D0, 0
+};
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_NativePhysicsSaveFunctions ) == PIID_NUM_TYPES );
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_NativePhysicsRestoreFunctions ) == PIID_NUM_TYPES );
+
+struct NativePhysicsBytePin_t
+{
+	uint32 rva;
+	int size;
+	byte bytes[24];
+};
+
+// SDK Base 2013 Multiplayer Win64 vphysics.dll, timestamp 67b40ef3.
+// Pin the pointer strides, allocation, lookup layout and comparator as well as
+// the singleton vtables. No executable memory or installed file is modified.
+static const NativePhysicsBytePin_t s_NativePhysicsPins[] =
+{
+	{ 0x2FF70, 10, { 0x48,0x8B,0x02,0x48,0x39,0x01,0x0F,0x92,0xC0,0xC3 } },
+	{ 0x2F8B0, 16, { 0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x74,0x24,0x18,0x57,0x48,0x83,0xEC,0x20,0x48 } },
+	{ 0x2F8FF, 8, { 0x48,0x8D,0x14,0x98,0x41,0xFF,0x51,0x68 } },
+	{ 0x2F9DA, 4, { 0x48,0xC1,0xE1,0x02 } },
+	{ 0x2FA59, 4, { 0x4C,0x8D,0x34,0xB0 } },
+	{ 0x2FA6B, 21, { 0x0F,0xB7,0x1D,0xC6,0xD3,0x0E,0x00,0x49,0x8B,0x06,0x48,0x89,0x44,0x24,0x20,0x66,0x41,0x3B,0xDC,0x74,0x7F } },
+	{ 0x30500, 17, { 0x40,0x56,0x41,0x54,0x41,0x56,0x48,0x83,0xEC,0x30,0x48,0x8B,0x42,0x10,0x45,0x33,0xE4 } },
+	{ 0x30563, 15, { 0x0F,0xB7,0x1D,0xCE,0xC8,0x0E,0x00,0x48,0x8B,0x06,0x48,0x89,0x44,0x24,0x20 } },
+	{ 0x30603, 7, { 0x48,0x8B,0x44,0xCA,0x10,0xEB,0x03 } },
+	{ 0x30960, 15, { 0x48,0x89,0x5C,0x24,0x10,0x56,0x48,0x83,0xEC,0x20,0x48,0x8B,0x42,0x10,0x49 } },
+	{ 0x3099F, 7, { 0xFF,0x50,0x68,0x48,0x83,0xC3,0x04 } },
+	{ 0x2FA90, 22, { 0x0F,0xB7,0xC3,0x48,0x83,0xC2,0x08,0x48,0x8D,0x0C,0x40,0x48,0x8D,0x3C,0xCD,0x00,0x00,0x00,0x00,0x48,0x03,0xD7 } },
+	{ 0x305FC, 12, { 0x0F,0xB7,0xC3,0x48,0x8D,0x0C,0x40,0x48,0x8B,0x44,0xCA,0x10 } },
+	{ 0x30900, 24, { 0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xEC,0x20,0x48,0x63,0x72,0x10,0x48,0x8B,0xFA,0x83,0xFE,0x0A,0x77,0x3C,0x48,0x8B } },
+	{ 0x3092E, 21, { 0x48,0x8B,0x57,0x08,0x4C,0x8D,0x05,0x17,0xC5,0x0E,0x00,0x48,0x8B,0xCF,0x49,0x8B,0x04,0xF0,0x48,0x8B,0x5C } },
+	{ 0x30390, 24, { 0x48,0x89,0x5C,0x24,0x18,0x48,0x89,0x74,0x24,0x20,0x57,0x48,0x83,0xEC,0x20,0x48,0x63,0x72,0x10,0x48,0x8B,0xDA,0x48,0x8B } },
+	{ 0x303C7, 18, { 0x48,0x8B,0x53,0x08,0x4C,0x8D,0x05,0xDE,0xCA,0x0E,0x00,0x48,0x8B,0xCB,0x41,0xFF,0x14,0xF0 } },
+	{ 0x303E1, 22, { 0x48,0x8B,0x53,0x08,0x48,0x8B,0x4C,0x24,0x38,0x48,0x8B,0x12,0xE8,0x4E,0xF7,0xFF,0xFF,0x83,0xFE,0x01,0x0F,0x85 } },
+	{ 0x303FB, 15, { 0x48,0x8B,0x43,0x08,0x8B,0x77,0x30,0x48,0x89,0x6C,0x24,0x30,0x48,0x8B,0x28 } },
+	{ 0x304C4, 8, { 0x48,0x8B,0x47,0x20,0x48,0x89,0x2C,0xF0 } },
+	{ 0x30120, 24, { 0x41,0x55,0x41,0x57,0x48,0x83,0xEC,0x48,0x33,0xC0,0x4C,0x8B,0xEA,0x44,0x8B,0xF8,0x39,0x02,0x0F,0x8E,0x78,0x01,0x00,0x00 } },
+	{ 0x3015C, 19, { 0x4C,0x8D,0x72,0x10,0x49,0x8B,0x46,0xF8,0x40,0x32,0xF6,0x0F,0xB7,0x1D,0xCA,0xCC,0x0E,0x00,0x41 } },
+	{ 0x30100, 24, { 0x48,0x83,0xEC,0x28,0x48,0x8D,0x0D,0x15,0xCD,0x0E,0x00,0xE8,0xB0,0x01,0x00,0x00,0xE8,0xFB,0xC8,0xFE,0xFF,0x48,0x83,0xC4 } },
+};
+
+static bool NativePhysicsVtableMatches( const byte *pModule, uint32 ops, uint32 vtable, uint32 save, uint32 restore )
+{
+	if ( *(const byte *const *)(pModule + ops) != pModule + vtable )
+		return false;
+	const uint32 functions[] = { save, restore, 0x67F0, 0x6CA0, 0x67F0 };
+	for ( int i = 0; i < ARRAYSIZE( functions ); ++i )
+	{
+		if ( ((const byte *const *)(pModule + vtable))[i] != pModule + functions[i] )
+			return false;
+	}
+	return true;
+}
+
+static bool NativePhysicsTableMatches( const byte *pModule, uint32 table, const uint32 *pFunctions, int count )
+{
+	for ( int i = 0; i < count; ++i )
+	{
+		const byte *pExpected = pFunctions[i] ? pModule + pFunctions[i] : NULL;
+		if ( ((const byte *const *)(pModule + table))[i] != pExpected )
+			return false;
+	}
+	return true;
+}
+
+static bool CertifyNativePhysicsPointerOps()
+{
+	if ( s_pNativePhysicsModule )
+		return true;
+
+	const byte *pModule = (const byte *)GetModuleHandleA( "vphysics.dll" );
+	if ( !pModule )
+		return false;
+	const IMAGE_DOS_HEADER *pDOS = (const IMAGE_DOS_HEADER *)pModule;
+	if ( pDOS->e_magic != IMAGE_DOS_SIGNATURE || pDOS->e_lfanew < (LONG)sizeof( IMAGE_DOS_HEADER ) ||
+		pDOS->e_lfanew > 4096 - (LONG)sizeof( IMAGE_NT_HEADERS64 ) )
+		return false;
+	const IMAGE_NT_HEADERS64 *pNT = (const IMAGE_NT_HEADERS64 *)(pModule + pDOS->e_lfanew);
+	if ( pNT->Signature != IMAGE_NT_SIGNATURE || pNT->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+		pNT->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+		pNT->FileHeader.TimeDateStamp != 0x67B40EF3 || pNT->OptionalHeader.SizeOfImage != 0x15D000 )
+		return false;
+
+	for ( int i = 0; i < ARRAYSIZE( s_NativePhysicsPins ); ++i )
+	{
+		const NativePhysicsBytePin_t &pin = s_NativePhysicsPins[i];
+		if ( memcmp( pModule + pin.rva, pin.bytes, pin.size ) != 0 )
+			return false;
+	}
+	if ( !NativePhysicsVtableMatches( pModule, NATIVE_PHYSICS_SCALAR_OPS, 0xE7710, 0x30960, 0x30500 ) ||
+		!NativePhysicsVtableMatches( pModule, NATIVE_PHYSICS_VECTOR_OPS, 0xE76E8, 0x2F8B0, 0x2F920 ) ||
+		*(const byte *const *)(pModule + NATIVE_PHYSICS_POINTER_MAP) != pModule + 0x2FF70 )
+		return false;
+	const uint32 environmentFunctions[] = { 0x30900, 0x30120, 0x30390, 0x30100 };
+	if ( !NativePhysicsTableMatches( pModule, 0x11CE50, s_NativePhysicsSaveFunctions, PIID_NUM_TYPES ) ||
+		!NativePhysicsTableMatches( pModule, 0x11CEB0, s_NativePhysicsRestoreFunctions, PIID_NUM_TYPES ) ||
+		!NativePhysicsTableMatches( pModule, NATIVE_PHYSICS_ENVIRONMENT_VTABLE + 51 * sizeof( void * ),
+			environmentFunctions, ARRAYSIZE( environmentFunctions ) ) )
+		return false;
+
+	s_pNativePhysicsModule = pModule;
+	return true;
+}
+
+static void *RemapNativePhysicsPointer( void *pOldObject )
+{
+	// The certified provider's lookup is the same CUtlMap layout and unsigned
+	// pointer comparator as this SDK. Find is read-only and uses all 64 bits.
+	NativePhysicsPointerMap_t *pMap = (NativePhysicsPointerMap_t *)(s_pNativePhysicsModule + NATIVE_PHYSICS_POINTER_MAP);
+	unsigned short index = pMap->Find( pOldObject );
+	return index != pMap->InvalidIndex() ? (*pMap)[index] : NULL;
+}
+
+class CNativePhysicsPointerSaveRestoreOps : public CDefSaveRestoreOps
+{
+public:
+	virtual void Save( const SaveRestoreFieldInfo_t &fieldInfo, ISave *pSave )
+	{
+		pSave->WriteData( (const char *)fieldInfo.pField, fieldInfo.pTypeDesc->fieldSize * (int)sizeof( void * ) );
+	}
+
+	virtual void Restore( const SaveRestoreFieldInfo_t &fieldInfo, IRestore *pRestore )
+	{
+		void **ppObjects = (void **)fieldInfo.pField;
+		for ( int i = 0; i < fieldInfo.pTypeDesc->fieldSize; ++i )
+		{
+			void *pOldObject = NULL;
+			pRestore->ReadData( (char *)&pOldObject, sizeof( pOldObject ), sizeof( pOldObject ) );
+			ppObjects[i] = RemapNativePhysicsPointer( pOldObject );
+		}
+	}
+};
+
+class CNativePhysicsPointerVectorSaveRestoreOps : public CDefSaveRestoreOps
+{
+public:
+	virtual void Save( const SaveRestoreFieldInfo_t &fieldInfo, ISave *pSave )
+	{
+		CUtlVector<void *> *pObjects = (CUtlVector<void *> *)fieldInfo.pField;
+		int count = pObjects->Count();
+		pSave->WriteInt( &count );
+		if ( count )
+			pSave->WriteData( (const char *)pObjects->Base(), count * (int)sizeof( void * ) );
+	}
+
+	virtual void Restore( const SaveRestoreFieldInfo_t &fieldInfo, IRestore *pRestore )
+	{
+		CUtlVector<void *> *pObjects = (CUtlVector<void *> *)fieldInfo.pField;
+		int count = pRestore->ReadInt();
+		pObjects->SetCount( count );
+		for ( int i = 0; i < count; ++i )
+		{
+			void *pOldObject = NULL;
+			pRestore->ReadData( (char *)&pOldObject, sizeof( pOldObject ), sizeof( pOldObject ) );
+			(*pObjects)[i] = RemapNativePhysicsPointer( pOldObject );
+		}
+	}
+};
+
+static CNativePhysicsPointerSaveRestoreOps s_NativePhysicsPointerOps;
+static CNativePhysicsPointerVectorSaveRestoreOps s_NativePhysicsPointerVectorOps;
+
+static bool NativePhysicsEnvironmentMatches( IPhysicsEnvironment *pEnvironment )
+{
+	return pEnvironment &&
+		*(const byte *const *)pEnvironment == s_pNativePhysicsModule + NATIVE_PHYSICS_ENVIRONMENT_VTABLE;
+}
+
+static bool SaveNativePhysicsObject( IPhysicsEnvironment *pEnvironment, const physsaveparams_t &params )
+{
+	if ( !NativePhysicsEnvironmentMatches( pEnvironment ) ||
+		(unsigned)params.type >= PIID_NUM_TYPES || !s_NativePhysicsSaveFunctions[params.type] )
+		return false;
+	params.pSave->WriteData( (const char *)&params.pObject, sizeof( params.pObject ) );
+	typedef bool (*SaveFunction_t)( const physsaveparams_t &, void * );
+	SaveFunction_t save = (SaveFunction_t)(s_pNativePhysicsModule + s_NativePhysicsSaveFunctions[params.type]);
+	return save( params, params.pObject );
+}
+
+static bool RestoreNativePhysicsObject( IPhysicsEnvironment *pEnvironment, const physrestoreparams_t &params )
+{
+	if ( !NativePhysicsEnvironmentMatches( pEnvironment ) ||
+		(unsigned)params.type >= PIID_NUM_TYPES || !s_NativePhysicsRestoreFunctions[params.type] )
+		return false;
+
+	void *pOldObject = NULL;
+	params.pRestore->ReadData( (char *)&pOldObject, sizeof( pOldObject ), sizeof( pOldObject ) );
+	typedef bool (*RestoreFunction_t)( const physrestoreparams_t &, void ** );
+	RestoreFunction_t restore = (RestoreFunction_t)(s_pNativePhysicsModule + s_NativePhysicsRestoreFunctions[params.type]);
+	if ( !restore( params, params.ppObject ) )
+		return false;
+
+	NativePhysicsPointerMap_t *pMap = (NativePhysicsPointerMap_t *)(s_pNativePhysicsModule + NATIVE_PHYSICS_POINTER_MAP);
+	pMap->Insert( pOldObject, *params.ppObject );
+	if ( params.type == PIID_IPHYSICSOBJECT )
+	{
+		// Preserve the native environment's restored-object post-processing list.
+		CUtlVector<void *> *pRestoredObjects = (CUtlVector<void *> *)((byte *)pEnvironment + 0x20);
+		pRestoredObjects->AddToTail( *params.ppObject );
+	}
+	return true;
+}
+} // namespace
+#endif
+
+bool IsPhysSaveRestoreSupported()
+{
+#if defined( _WIN64 )
+	return CertifyNativePhysicsPointerOps();
+#elif defined( PLATFORM_64BITS )
+	return false; // No certified provider profile for another 64-bit platform.
+#else
+	return true;
+#endif
+}
+
+ISaveRestoreOps *ResolvePhysSaveRestoreOps( ISaveRestoreOps *pOps )
+{
+#if defined( _WIN64 )
+	if ( s_pNativePhysicsModule )
+	{
+		if ( (const byte *)pOps == s_pNativePhysicsModule + NATIVE_PHYSICS_SCALAR_OPS )
+			return &s_NativePhysicsPointerOps;
+		if ( (const byte *)pOps == s_pNativePhysicsModule + NATIVE_PHYSICS_VECTOR_OPS )
+			return &s_NativePhysicsPointerVectorOps;
+	}
+#endif
+	return pOps;
+}
 
 struct PhysBlockHeader_t
 {
@@ -42,8 +321,8 @@ struct PhysBlockHeader_t
 };
 BEGIN_SIMPLE_DATADESC( PhysBlockHeader_t )
 	DEFINE_FIELD( nSaved,	FIELD_INTEGER ),
-	// NOTE: We want to save the actual address here for remapping, so use an integer
-	DEFINE_FIELD( pWorldObject, FIELD_INTEGER ),	
+	// Opaque old address: an identity key, never an entity or string pointer.
+	DEFINE_CUSTOM_FIELD( pWorldObject, &g_PhysWorldObjectSaveRestoreOps ),
 END_DATADESC()
 
 #if defined(_STATIC_LINKED) && defined(CLIENT_DLL)
@@ -137,17 +416,30 @@ public:
 		return "Physics";
 	}
 
+	bool IsSaveRestoreCompatible() const
+	{
+		return m_fDoLoad;
+	}
+
 	//---------------------------------
 
 	virtual void PreSave( CSaveRestoreData * ) 
 	{
 		m_blockHeader.Clear();
+		m_fSaveSupported = IsPhysSaveRestoreSupported();
+		if ( !m_fSaveSupported )
+		{
+			Warning( "Cannot save game physics: this provider is not certified for full-width save/restore. Saving is unavailable with this provider.\n" );
+		}
 	}
 	
 	//---------------------------------
 
 	virtual void Save( ISave *pSave ) 
 	{
+		if ( !m_fSaveSupported )
+			return;
+
 		m_blockHeader.pWorldObject = g_PhysWorldObject;
 		m_blockHeader.nSaved = m_QueuedSaves.Count();
 
@@ -184,7 +476,8 @@ public:
 
 	virtual void WriteSaveHeaders( ISave *pSave )
 	{
-		pSave->WriteShort( &PHYS_SAVE_RESTORE_VERSION );
+		short version = m_fSaveSupported ? PHYS_SAVE_RESTORE_VERSION : 0;
+		pSave->WriteShort( &version );
 		pSave->WriteAll( &m_blockHeader );
 	}
 	
@@ -199,6 +492,9 @@ public:
 
 	virtual void PreRestore() 
 	{
+		m_fDoLoad = false;
+		m_blockHeader.Clear();
+
 #if !defined( CLIENT_DLL )
 		gEntList.AddListenerEntity( this );
 #endif
@@ -216,9 +512,20 @@ public:
 
 	virtual void ReadRestoreHeaders( IRestore *pRestore )
 	{
-		// No reason why any future version shouldn't try to retain backward compatability. The default here is to not do so.
 		short version = pRestore->ReadShort();
+		if ( !IsPhysSaveRestoreSupported() )
+		{
+			m_fDoLoad = false;
+			Warning( "Cannot load save: this physics provider is not certified for full-width save/restore. Saving and loading are unavailable with this provider.\n" );
+			return;
+		}
 		m_fDoLoad = ( version == PHYS_SAVE_RESTORE_VERSION );
+		if ( !m_fDoLoad )
+		{
+			Warning( "Cannot load save: physics format %d is incompatible with format %d. Create a new save with this build.\n",
+				version, PHYS_SAVE_RESTORE_VERSION );
+			return;
+		}
 
 		pRestore->ReadAll( &m_blockHeader );
 	}
@@ -504,7 +811,11 @@ public:
 			if ( !pObject )
 				return;
 			physsaveparams_t params = { pSave, pObject, type };
+#if defined( _WIN64 )
+			SaveNativePhysicsObject( physenv, params );
+#else
 			physenv->Save( params );
+#endif
 		}
 	}
 	
@@ -515,7 +826,11 @@ public:
 		if ( physenv )
 		{
 			physrestoreparams_t params = { pRestore, ppObject, header.type, header.hEntity.Get(), STRING(header.modelName), pCollide, physenv, physgametrace };
+#if defined( _WIN64 )
+			RestoreNativePhysicsObject( physenv, params );
+#else
 			physenv->Restore( params );
+#endif
 		}
 	}
 #if !defined( CLIENT_DLL )	
@@ -672,6 +987,7 @@ private:
 	CUtlPriorityQueue<QueuedItem_t> 			m_QueuedSaves;
 	CUtlMap<CBaseEntity *, CEntityRestoreSet *>	m_QueuedRestores;
 	bool 										m_fDoLoad;
+	bool 										m_fSaveSupported;
 
 	//---------------------------------
 	
@@ -695,6 +1011,11 @@ IPhysSaveRestoreManager *g_pPhysSaveRestoreManager = &g_PhysSaveRestoreBlockHand
 ISaveRestoreBlockHandler *GetPhysSaveRestoreBlockHandler()
 {
 	return &g_PhysSaveRestoreBlockHandler;
+}
+
+bool IsPhysSaveRestoreCompatible()
+{
+	return g_PhysSaveRestoreBlockHandler.IsSaveRestoreCompatible();
 }
 
 static bool IsValidEntityPointer( void *ptr )

@@ -3163,6 +3163,7 @@ void CShaderAPIDX12::ResetNativeState()
 	memset( m_BoundTextures, 0, sizeof( m_BoundTextures ) );
 	memset( m_VertexTextures, 0, sizeof( m_VertexTextures ) );
 	m_pBoundMaterial = nullptr;
+	m_pBoundMaterialPage = nullptr;
 	for ( VertexBindingDX12 &binding : m_BoundVertexBuffers )
 		binding = VertexBindingDX12{};
 	m_pBoundIndexBuffer = nullptr;
@@ -4142,6 +4143,8 @@ void CShaderAPIDX12::ClearColor4ub( unsigned char r, unsigned char g, unsigned c
 void CShaderAPIDX12::ShutdownDeviceResources()
 {
 	SetShaderPrecacheAccepting( false );
+	m_pBoundMaterial = nullptr;
+	m_pBoundMaterialPage = nullptr;
 	ProcessPendingTextureDeletes();
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 		m_pDevice->Submit( true );
@@ -4495,10 +4498,13 @@ void CShaderAPIDX12::Bind( IMaterial *pMaterial )
 {
 	if ( m_pBoundMaterial == pMaterial )
 		return;
-	if ( m_pBoundMaterial && pMaterial && m_pBoundMaterial->InMaterialPage() && pMaterial->InMaterialPage() && m_pBoundMaterial->GetMaterialPage() == pMaterial->GetMaterialPage() )
-		return;
-	FlushBufferedPrimitives();
+	// The host may have already destroyed the previous borrowed material (including
+	// client-owned wrappers). Never ask it for page state during a subsequent bind.
+	IMaterial *pMaterialPage = pMaterial && pMaterial->InMaterialPage() ? pMaterial->GetMaterialPage() : nullptr;
+	if ( !pMaterialPage || pMaterialPage != m_pBoundMaterialPage )
+		FlushBufferedPrimitives();
 	m_pBoundMaterial = pMaterial;
+	m_pBoundMaterialPage = pMaterialPage;
 }
 
 void CShaderAPIDX12::FlushBufferedPrimitives()
