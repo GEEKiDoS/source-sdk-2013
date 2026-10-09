@@ -101,12 +101,20 @@ class CShadowMapReceiverScope
 public:
 	CShadowMapReceiverScope() : m_bBegun( false ) {}
 	CShadowMapReceiverScope( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind )
-		: m_bBegun( ShadowMapsDX12_BeginReceiverView( setup, kind ) ) {}
+		: m_bBegun( false ) { Begin( setup, kind ); }
 	~CShadowMapReceiverScope() { Finish(); }
 	void Begin( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind )
 	{
 		Finish();
 		m_bBegun = ShadowMapsDX12_BeginReceiverView( setup, kind );
+		if ( m_bBegun )
+		{
+			// PopView restores matrices, but not the engine's cached near/far
+			// distances. The sky cube is sized from that cache, not the matrix.
+			// Refresh receiver metadata without touching its targets or depth range.
+			render->Push3DView( setup, VIEW_NO_DRAW, NULL, NULL );
+			render->PopView( NULL );
+		}
 	}
 	bool CanDraw() const { return ShadowMapsDX12_CanDrawReceiverViews(); }
 	void Finish() { if ( m_bBegun ) { ShadowMapsDX12_EndReceiverView(); m_bBegun = false; } }
@@ -1184,11 +1192,6 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 	float depthmin = 0.0f;
 	float depthmax = 1.0f;
 
-	// HACK HACK:  Munge the depth range to prevent view model from poking into walls, etc.
-	// Force clipped down range
-	if( bUseDepthHack )
-		pRenderContext->DepthRange( 0.0f, 0.1f );
-	
 	if ( bShouldDrawPlayerViewModel || bShouldDrawToolViewModels )
 	{
 
@@ -1231,6 +1234,11 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			hasReceiver = translucentViewModelList[i]->GetIClientUnknown()->GetClientRenderable()->ShouldDraw();
 		if ( hasReceiver )
 			shadowScope.Begin( viewModelSetup, SHADOWMAP_VIEW_VIEWMODEL );
+
+		// Nested shadow views reset the context depth range to 0..1.
+		// Apply the viewmodel override after their depth work has finished.
+		if( bUseDepthHack )
+			pRenderContext->DepthRange( 0.0f, 0.1f );
 
 		if ( shadowScope.CanDraw() )
 		{

@@ -703,6 +703,7 @@ $Project
 		$File	"postprocess_dx12.h"
 		$File	"framegen_dx12.h"
 		$File	"shadowmaps_dx12.h"
+		$File	"shadowmaps_dx12_selection.h"
 		$File	"$SRCDIR\game\shared\shadowmap_scene.h"
 		$File	"$SRCDIR\public\shadowmap_bsp.h"
 		$File	"$SRCDIR\public\shaderapi\ishaderapidx12lighting.h"

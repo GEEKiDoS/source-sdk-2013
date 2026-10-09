@@ -78,6 +78,8 @@ struct ShaderTranslationResultDX12
 	// Legacy sampler declarations are independent of raster/linkage variants.
 	uint32_t usedSamplerMask = 0;
 	uint8_t outputRegistersMask = 0;
+	// VS POSITION1 ownership: original legacy declaration or native reflected signature, independent of bound streams.
+	bool cpuFlexInput = false;
 
 	// Member-wise exchange; variant switching runs per draw and must not build temporaries.
 	void Swap( ShaderTranslationResultDX12 &other )
@@ -93,6 +95,7 @@ struct ShaderTranslationResultDX12
 		V_swap( maxBoolConstants, other.maxBoolConstants );
 		V_swap( usedSamplerMask, other.usedSamplerMask );
 		V_swap( outputRegistersMask, other.outputRegistersMask );
+		V_swap( cpuFlexInput, other.cpuFlexInput );
 	}
 
 	// Frees every container and restores the default-constructed state.
@@ -109,6 +112,7 @@ struct ShaderTranslationResultDX12
 		maxBoolConstants = 0;
 		usedSamplerMask = 0;
 		outputRegistersMask = 0;
+		cpuFlexInput = false;
 	}
 };
 

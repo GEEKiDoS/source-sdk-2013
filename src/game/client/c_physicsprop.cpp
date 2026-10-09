@@ -16,12 +16,15 @@
 #include "c_physicsprop.h"
 #include "tier0/vprof.h"
 #include "ivrenderview.h"
+#include "clientleafsystem.h"
+#include "shadowmaps_dx12.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 IMPLEMENT_CLIENTCLASS_DT(C_PhysicsProp, DT_PhysicsProp, CPhysicsProp)
 	RecvPropBool( RECVINFO( m_bAwake ) ),
+	RecvPropBool( RECVINFO( m_bShadowMapOrdinaryPhysicsProp ) ),
 END_RECV_TABLE()
 
 ConVar r_PhysPropStaticLighting( "r_PhysPropStaticLighting", "1" );
@@ -37,6 +40,25 @@ C_PhysicsProp::C_PhysicsProp( void )
 
 	// default true so static lighting will get recomputed when we go to sleep
 	m_bAwakeLastTime = true;
+	m_bShadowMapOrdinaryPhysicsProp = false;
+	m_bShadowMapOverrideEligibleLast = false;
+}
+
+void C_PhysicsProp::OnDataChanged( DataUpdateType_t type )
+{
+	BaseClass::OnDataChanged( type );
+	bool eligible = CanOverrideShadowMapNoShadow();
+	if ( eligible != m_bShadowMapOverrideEligibleLast )
+	{
+		m_bShadowMapOverrideEligibleLast = eligible;
+		// Render registration can predate the first receive, including save restores.
+		// Identity/solidity/visibility changes also retire cached rigid silhouettes.
+		if ( RenderHandle() != INVALID_CLIENT_RENDER_HANDLE )
+		{
+			ShadowMapsDX12_InvalidateCasterRegistration( this );
+			ClientLeafSystem()->RenderableChanged( RenderHandle() );
+		}
+	}
 }
 
 //-----------------------------------------------------------------------------

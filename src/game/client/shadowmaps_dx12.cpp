@@ -31,12 +31,13 @@
 #include "tier1/utlmap.h"
 #include "shaderapi/dx12staticpropvisibility.h"
 #include "tier0/vprof.h"
+#include "shadowmaps_dx12_selection.h"
 #include "tier0/memdbgon.h"
 
 
 ConVar r_shadowmap_enable( "r_shadowmap_enable", "1", FCVAR_ARCHIVE, "Enable runtime shadow maps; 0 retains selected direct lighting and all baked visibility", true, 0, true, 1 );
-ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Frame-global chart-resident local-light cap; 0 is all realtime, negative/nonfinite values use 4; sun excluded" );
-ConVar r_shadowmap_realtime_fade_seconds( "r_shadowmap_realtime_fade_seconds", "0.5", FCVAR_ARCHIVE, "Real-time seconds per hybrid shadow ramp; 0 switches immediately, negative/nonfinite values use 0.5" );
+ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Main-camera PVS nearest chart-resident local-light cap; 0 has no budget limit within PVS; invalid values use 4; sun excluded" );
+ConVar r_shadowmap_realtime_fade_seconds( "r_shadowmap_realtime_fade_seconds", "0.5", FCVAR_ARCHIVE, "Real-time seconds for a full hybrid handoff: parallel fade-out then fade-in, half each; 0 switches immediately; invalid values use 0.5" );
 ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade receiver distance", true, 128, true, 32768 );
 ConVar r_shadowmap_filter( "r_shadowmap_filter", "0", FCVAR_ARCHIVE, "0: four-tap PCF, 1: bounded contact-hardening PCSS", true, 0, true, 1 );
 ConVar r_shadowmap_skip_radiance( "r_shadowmap_skip_radiance", "0.0009765625", FCVAR_ARCHIVE, "Skip local shadow sampling below this total unshadowed direct RGB contribution; retain all light energy, 0 samples exactly", true, 0.0f, false, 0.0f );
@@ -173,6 +174,7 @@ struct LocalLight_t
 	uint32 bakedLightIndex;
 	float realtimeWeight, score;
 	bool resident, desired; // Frame-global; weight-zero retirement may still own leased slots.
+	CUtlVector<unsigned char> pvsClusters; // Precomputed influence/emitter clusters, never receiver-view dependent.
 };
 struct LocalPage_t
 {
@@ -378,9 +380,10 @@ CUtlVector<SparePage_t> g_PageSpares;
 int g_Sun = -1;
 uint32 g_SelectionFrame=0xffffffffu, g_FramePromotions=0, g_FrameDemotions=0;
 bool g_FrameShadowsEnabled=true;
-int g_DepartingLocal=-1;
+CShadowCameraPvs g_CameraPvs;
+CUtlVector<float> g_FreeSlotSeconds;
 bool g_HaveSelectionView=false;
-CViewSetup g_LastSelectionView;
+Vector g_LastSelectionOrigin;
 CUtlVector<ShadowLightRank_t> g_LightRanks;
 ShadowMapClientMapState g_State;
 uint32 g_MapCounter = 0;
@@ -435,6 +438,7 @@ void ResetMapState()
 	g_State.lights=NULL; g_State.lightCount=0; g_State.sunLightIndex=-1;
 	memset(&g_State.manifest,0,sizeof(g_State.manifest)); g_State.rshdBytes.RemoveAll();
 	g_ReceiverQuads.RemoveAll();
+	g_CameraPvs.Clear(); g_FreeSlotSeconds.Purge();
 	g_State.worldMins.Init(); g_State.worldMaxs.Init();
 }
 
@@ -518,6 +522,39 @@ bool ReadReceiverBspRecord( CShadowBspFile &file, const ShadowMapBspLumpInfo &lu
 		offset<=0xFFFFFFFFu && ReadBspBytes(&file,uint32(offset),uint32(sizeof(T)),&out);
 }
 
+template<class T>
+bool ReadShadowPvsLump( CShadowBspFile &file, const ShadowMapBspLumpInfo &lump, int maximum, CUtlVector<T> &out )
+{
+	if ( lump.uncompressedSize || lump.filelen%sizeof(T) || lump.filelen/sizeof(T)>(uint32)maximum ) return false;
+	out.SetCount(lump.filelen/sizeof(T));
+	return !lump.filelen || ReadBspBytes(&file,lump.fileofs,lump.filelen,out.Base());
+}
+
+bool ReadCameraPvs( CShadowBspFile &file, const ShadowMapBspLumpInfo *lumps )
+{
+	if ( lumps[LUMP_PLANES].version || lumps[LUMP_NODES].version || lumps[LUMP_VISIBILITY].version ||
+		!ReadShadowPvsLump(file,lumps[LUMP_PLANES],MAX_MAP_PLANES,g_CameraPvs.planes) ||
+		!ReadShadowPvsLump(file,lumps[LUMP_NODES],MAX_MAP_NODES,g_CameraPvs.nodes) ||
+		!ReadShadowPvsLump(file,lumps[LUMP_VISIBILITY],MAX_MAP_VISIBILITY,g_CameraPvs.visibility) ) return false;
+	const ShadowMapBspLumpInfo &leaves=lumps[LUMP_LEAFS];
+	if ( leaves.version==0 )
+	{
+		CUtlVector<dleaf_version_0_t> records;
+		if ( !ReadShadowPvsLump(file,leaves,MAX_MAP_LEAFS,records) ) return false;
+		g_CameraPvs.leafClusters.SetCount(records.Count());
+		for ( int i=0;i<records.Count();++i ) g_CameraPvs.leafClusters[i]=records[i].cluster;
+	}
+	else if ( leaves.version==LUMP_LEAFS_VERSION )
+	{
+		CUtlVector<dleaf_t> records;
+		if ( !ReadShadowPvsLump(file,leaves,MAX_MAP_LEAFS,records) ) return false;
+		g_CameraPvs.leafClusters.SetCount(records.Count());
+		for ( int i=0;i<records.Count();++i ) g_CameraPvs.leafClusters[i]=records[i].cluster;
+	}
+	else return false;
+	return g_CameraPvs.Validate();
+}
+
 bool ReadReceiverQuads( CShadowBspFile &file, const ShadowMapBspLumpInfo *lumps, const ShadowMapModeView &mode )
 {
 	for ( uint32 i=0;i<mode.receiverFaceCount;++i )
@@ -596,6 +633,7 @@ bool ReadMapMetadata( const char *mapName, char *error, int errorBytes )
 	const model_t *world=modelIndex>=0 ? modelinfo->GetModel(modelIndex) : NULL;
 	if ( !world || modelinfo->GetModelType(world)!=mod_brush ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
 	modelinfo->GetModelBounds(world,g_State.worldMins,g_State.worldMaxs);
+	if ( !ReadCameraPvs(file,lumps) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA ": malformed camera PVS/tree",error,errorBytes);
 	return true;
 }
 void DestroyTarget( DX12ShadowTarget_t &target )
@@ -750,170 +788,11 @@ public:
 	IDetailObjectSystem::ShadowReport_t detailReport;
 };
 
-// Fixed-size convex domain: the actual main frustum intersected with map bounds.
-// Active-set projections cover face interiors, edge interiors and vertices;
-// clamping a frustum AABB would rank points which are not receivers.
-struct ShadowRankingDomain_t
-{
-	VPlane planes[12];
-	Vector vertices[220]; // C(12,3), including harmless duplicate vertices.
-	int planeCount, vertexCount;
-	bool Contains( const Vector &point ) const
-	{
-		for ( int p=0;p<planeCount;++p )
-			if ( DotProduct(point,planes[p].m_Normal)<planes[p].m_Dist-0.01f ) return false;
-		return point.IsValid();
-	}
-	void Build( const ShadowCasterVolume_t &volume )
-	{
-		planeCount=volume.m_nPlaneCount; vertexCount=0;
-		memcpy(planes,volume.m_Planes,planeCount*sizeof(VPlane));
-		for ( int a=0;a<3;++a ) for ( int side=0;side<2;++side )
-		{
-			VPlane &plane=planes[planeCount++];
-			plane.m_Normal.Init(); plane.m_Normal[a]=side ? -1.0f : 1.0f;
-			plane.m_Dist=side ? -g_State.worldMaxs[a] : g_State.worldMins[a];
-		}
-		for ( int p=0;p<planeCount;++p ) for ( int q=p+1;q<planeCount;++q ) for ( int r=q+1;r<planeCount;++r )
-		{
-			const Vector cross=CrossProduct(planes[q].m_Normal,planes[r].m_Normal);
-			const float determinant=DotProduct(planes[p].m_Normal,cross);
-			if ( fabsf(determinant)<1e-7f ) continue;
-			const Vector point=(cross*planes[p].m_Dist+
-				CrossProduct(planes[r].m_Normal,planes[p].m_Normal)*planes[q].m_Dist+
-				CrossProduct(planes[p].m_Normal,planes[q].m_Normal)*planes[r].m_Dist)/determinant;
-			if ( Contains(point) ) vertices[vertexCount++]=point;
-		}
-	}
-	Vector Nearest( const Vector &origin, float &farthestDistance ) const
-	{
-		Vector nearest=vertices[0]; float best=FLT_MAX, farthest=0;
-		for ( int v=0;v<vertexCount;++v )
-		{
-			const float d=(vertices[v]-origin).LengthSqr();
-			farthest=MAX(farthest,d);
-			if ( d<best ) { best=d; nearest=vertices[v]; }
-		}
-		farthestDistance=sqrtf(farthest);
-		if ( Contains(origin) ) return origin;
-		for ( int p=0;p<planeCount;++p )
-		{
-			const Vector &n=planes[p].m_Normal;
-			const float nn=n.LengthSqr(), d=planes[p].m_Dist-DotProduct(origin,n);
-			Vector point=origin+n*(d/nn);
-			if ( Contains(point) && (point-origin).LengthSqr()<best ) { best=(point-origin).LengthSqr(); nearest=point; }
-			for ( int q=p+1;q<planeCount;++q )
-			{
-				const Vector &m=planes[q].m_Normal;
-				const float mm=m.LengthSqr(), nm=DotProduct(n,m), determinant=nn*mm-nm*nm;
-				if ( determinant<1e-7f ) continue;
-				const float e=planes[q].m_Dist-DotProduct(origin,m);
-				point=origin+n*((d*mm-e*nm)/determinant)+m*((e*nn-d*nm)/determinant);
-				if ( Contains(point) && (point-origin).LengthSqr()<best ) { best=(point-origin).LengthSqr(); nearest=point; }
-			}
-		}
-		return nearest;
-	}
-};
-
 float HybridNonnegativeSetting( const char *text, float fallback )
 {
 	char *end=NULL;
 	const float value=(float)strtod(text,&end);
 	return end!=text && end && !*end && ShadowMap_IsFiniteFloat(value) && value>=0 ? value : fallback;
-}
-
-float LocalMinimumDenominator( const DX12LightingSelectedLight &light, float distance, float farthestDistance )
-{
-	const float lower=light.capDist>0 ? MIN(MAX(distance,1.0f),light.capDist) : MAX(distance,1.0f);
-	float upper=MAX(farthestDistance,1.0f);
-	if ( light.attenuationRadius>0 ) upper=MIN(upper,MAX(light.attenuationRadius,1.0f));
-	if ( light.endFade>light.startFade ) upper=MIN(upper,MAX(light.endFade,1.0f));
-	if ( light.capDist>0 ) upper=MIN(upper,light.capDist);
-	float denominator=light.constantAttn+lower*light.linearAttn+lower*lower*light.quadraticAttn;
-	const float endDenominator=light.constantAttn+upper*light.linearAttn+upper*upper*light.quadraticAttn;
-	denominator=MIN(denominator,endDenominator);
-	if ( light.quadraticAttn>0 )
-	{
-		const float stationary=clamp(-light.linearAttn/(2*light.quadraticAttn),lower,upper);
-		denominator=MIN(denominator,light.constantAttn+stationary*light.linearAttn+stationary*stationary*light.quadraticAttn);
-	}
-	return denominator;
-}
-
-float BestReceiverConeDot( const ShadowRankingDomain_t &domain, const Vector &origin, const Vector &direction )
-{
-	// First test whether the exact central spot ray reaches the clipped domain.
-	float nearDistance=0, farDistance=FLT_MAX;
-	for ( int p=0;p<domain.planeCount;++p )
-	{
-		const VPlane &plane=domain.planes[p];
-		const float slope=DotProduct(direction,plane.m_Normal), offset=plane.m_Dist-DotProduct(origin,plane.m_Normal);
-		if ( fabsf(slope)<1e-7f ) { if ( offset>0 ) { farDistance=-1; break; } }
-		else if ( slope>0 ) nearDistance=MAX(nearDistance,offset/slope);
-		else farDistance=MIN(farDistance,offset/slope);
-	}
-	if ( farDistance>0 && farDistance>=nearDistance ) return 1;
-	float best=-1;
-	// If the ray misses, the angular maximum lies on the convex domain's
-	// silhouette edges. All vertex pairs include those edges; extra chords are
-	// valid receivers too. Optimize cosine analytically along each segment.
-	for ( int v=0;v<domain.vertexCount;++v )
-	{
-		const Vector a=domain.vertices[v]-origin;
-		const float aa=a.LengthSqr(), da=DotProduct(direction,a);
-		if ( aa>0 ) best=MAX(best,da/sqrtf(aa));
-		for ( int w=v+1;w<domain.vertexCount;++w )
-		{
-			const Vector edge=domain.vertices[w]-domain.vertices[v];
-			const float ee=edge.LengthSqr(), ae=DotProduct(a,edge), de=DotProduct(direction,edge);
-			const float divisor=de*ae-da*ee;
-			if ( fabsf(divisor)<1e-12f ) continue;
-			const float t=(da*ae-de*aa)/divisor;
-			if ( t<=0 || t>=1 ) continue;
-			const Vector point=a+edge*t;
-			if ( point.LengthSqr()>0 ) best=MAX(best,DotProduct(direction,point)/point.Length());
-		}
-	}
-	return clamp(best,-1.0f,1.0f);
-}
-
-float LocalContributionScore( const LocalLight_t &local, const ShadowRankingDomain_t &domain )
-{
-	const DX12LightingSelectedLight &light=local.selected;
-	const float radiance=MAX(light.radiance[0],MAX(light.radiance[1],light.radiance[2]))*engine->LightStyleValue(light.style);
-	if ( !(radiance>0) || !domain.vertexCount ) return 0;
-	const Vector origin(light.origin[0],light.origin[1],light.origin[2]);
-	float farthestDistance;
-	const Vector offset=domain.Nearest(origin,farthestDistance)-origin;
-	const float distance=offset.Length();
-	const bool hardFade=light.endFade>light.startFade;
-	if ( (light.attenuationRadius>0 && distance>light.attenuationRadius) || (hardFade && distance>light.endFade) ) return 0;
-	// Estimate the supremum, not the shader's isolated zero at the emitter.
-	// Arbitrarily close receivers use the exact one-unit attenuation limit.
-	const float clampedDistance=MAX(distance,1.0f);
-	const float denominator=LocalMinimumDenominator(light,distance,farthestDistance);
-	float falloff=denominator>0 ? 1.0f/denominator : 0;
-	if ( light.type==DX12_SHADOW_LIGHT_SPOT )
-	{
-		const Vector direction(light.direction[0],light.direction[1],light.direction[2]);
-		const float coneDot=distance<1 ? BestReceiverConeDot(domain,origin,direction) : DotProduct(offset,direction)/distance;
-		if ( coneDot<=light.outerConeCos ) return 0;
-		float cone=1;
-		if ( coneDot<=light.innerConeCos )
-		{
-			cone=clamp((coneDot-light.outerConeCos)/(light.innerConeCos-light.outerConeCos),0.0f,1.0f);
-			if ( light.exponent!=0 && light.exponent!=1 ) cone=powf(cone,light.exponent);
-		}
-		falloff*=coneDot*cone;
-	}
-	if ( hardFade )
-	{
-		const float t=1.0f-clamp((clampedDistance-light.startFade)/(light.endFade-light.startFade),0.0f,1.0f);
-		falloff*=t*t*t*(t*(t*6.0f-15.0f)+10.0f);
-	}
-	const float score=radiance*falloff;
-	return ShadowMap_IsFiniteFloat(score) ? MAX(score,0.0f) : 0;
 }
 
 int LightRankCompare( const ShadowLightRank_t *a, const ShadowLightRank_t *b )
@@ -929,23 +808,17 @@ bool LocalHasSlots( const LocalLight_t &local )
 	return false;
 }
 
-bool HybridCameraCut( const CViewSetup &previous, const CViewSetup &current )
+bool HybridCameraCut( const Vector &previous, const Vector &current )
 {
-	Vector previousForward,currentForward;
-	AngleVectors(previous.angles,&previousForward); AngleVectors(current.angles,&currentForward);
-	return (current.origin-previous.origin).LengthSqr()>=256.0f*256.0f ||
-		DotProduct(previousForward,currentForward)<=0.5f || fabsf(current.fov-previous.fov)>=15.0f ||
-		current.m_bOrtho!=previous.m_bOrtho;
+	// Local residency is position/PVS based: rotation, FOV and projection mode
+	// must not clear hysteresis or restart an in-progress handoff.
+	return (current-previous).LengthSqr()>=256.0f*256.0f;
 }
 
-bool UpdateRealtimeSelection( const CViewSetup &setup )
+void UpdateRealtimeSelection( const CViewSetup &setup )
 {
-	if ( g_SelectionFrame==(uint32)gpGlobals->framecount ) return true;
-	VMatrix worldToView,projection,clip,worldToPixels;
-	render->GetMatricesForView(setup,&worldToView,&projection,&clip,&worldToPixels);
-	ShadowCasterVolume_t volume;
-	if ( !ExtractVolume(clip,volume) ) return false;
-	ShadowRankingDomain_t domain; domain.Build(volume);
+	if ( g_SelectionFrame==(uint32)gpGlobals->framecount ) return;
+	g_CameraPvs.UpdateCamera(setup.origin);
 	g_SelectionFrame=(uint32)gpGlobals->framecount;
 	g_FramePromotions=g_FrameDemotions=0;
 	g_FrameShadowsEnabled=ShadowMapsDX12_ShadowsEnabled();
@@ -954,97 +827,31 @@ bool UpdateRealtimeSelection( const CViewSetup &setup )
 	const int limit=g_FrameShadowsEnabled ? (cap ? MIN(cap,g_Locals.Count()) : g_Locals.Count()) : 0;
 	const float fadeSeconds=HybridNonnegativeSetting(r_shadowmap_realtime_fade_seconds.GetString(),0.5f);
 	const float realDelta=gpGlobals->absoluteframetime;
-	const float step=fadeSeconds>0 ? (ShadowMap_IsFiniteFloat(realDelta) ? MAX(realDelta,0.0f)/fadeSeconds : 0) : 1.0f;
+	const float delta=ShadowMap_IsFiniteFloat(realDelta) ? MAX(realDelta,0.0f) : 0;
 	g_LightRanks.SetCount(g_Locals.Count());
 	for ( int i=0;i<g_Locals.Count();++i )
 	{
 		LocalLight_t &local=g_Locals[i];
-		const bool relevant=local.world.radius<=0 || (BoxInVolume(volume,local.influence.mins,local.influence.maxs) &&
-			ShadowMapScene_VolumeIntersectsBox(local.influence,volume.m_vecMins,volume.m_vecMaxs));
-		const bool occluded=relevant && local.world.radius>0 && !setup.m_bOrtho && engine->IsOccluded(local.influence.mins,local.influence.maxs);
-		local.score=relevant && !occluded ? LocalContributionScore(local,domain) : 0;
+		local.score=ShadowLocalProximityScore(setup.origin,local.world.origin,g_CameraPvs.Eligible(local.pvsClusters),
+			MAX(local.selected.radiance[0],MAX(local.selected.radiance[1],local.selected.radiance[2]))*
+			engine->LightStyleValue(local.selected.style));
 		ShadowLightRank_t &rank=g_LightRanks[i];
 		rank.relevantIndex=i; rank.lightId=local.selected.lightId; rank.score=local.score;
 		rank.weight=local.realtimeWeight; rank.resident=local.resident; rank.desired=false;
-		local.desired=false;
 	}
 	g_LightRanks.Sort(LightRankCompare);
-	const bool instantSelection=!g_HaveSelectionView || HybridCameraCut(g_LastSelectionView,setup);
-	int selected=0;
-	for ( int r=0;!instantSelection && r<g_LightRanks.Count() && selected<limit;++r )
-	{
-		LocalLight_t &local=g_Locals[g_LightRanks[r].relevantIndex];
-		if ( local.resident && (local.score>0 || !cap) ) { local.desired=true; ++selected; }
-	}
-	for ( int r=0;r<g_LightRanks.Count() && selected<limit;++r )
-	{
-		LocalLight_t &local=g_Locals[g_LightRanks[r].relevantIndex];
-		if ( !local.desired && (local.score>0 || !cap) ) { local.desired=true; ++selected; }
-	}
-	for ( int r=0;!instantSelection && r<g_LightRanks.Count();++r )
-	{
-		LocalLight_t &challenger=g_Locals[g_LightRanks[r].relevantIndex];
-		if ( challenger.desired || challenger.score<=0 ) continue;
-		int weakest=-1;
-		for ( int w=g_LightRanks.Count()-1;w>=0;--w )
-			if ( g_Locals[g_LightRanks[w].relevantIndex].desired ) { weakest=g_LightRanks[w].relevantIndex; break; }
-		if ( weakest<0 || !(challenger.score>g_Locals[weakest].score*1.25f) ) break;
-		g_Locals[weakest].desired=false; challenger.desired=true;
-	}
-	// The first real scored view and camera cuts have no temporal relationship
-	// to old pixels. Admit current top-N fully instead of fading stale cameras.
-	if ( instantSelection )
-	{
-		g_DepartingLocal=-1;
-		for ( int i=0;i<g_Locals.Count();++i )
-		{
-			LocalLight_t &local=g_Locals[i];
-			if ( local.resident && !local.desired ) { local.resident=false; ++g_FrameDemotions; }
-			local.realtimeWeight=local.resident ? 1.0f : 0.0f;
-		}
-	}
-	int residents=0;
-	for ( int i=0;i<g_Locals.Count();++i ) if ( g_Locals[i].resident ) ++residents;
-	// A live budget reduction/disable must obey the new cap immediately.
-	// Camera cuts above also switch immediately; replay leases retire separately.
-	for ( int r=g_LightRanks.Count()-1;r>=0 && residents>limit;--r )
-	{
-		LocalLight_t &local=g_Locals[g_LightRanks[r].relevantIndex];
-		if ( !local.resident ) continue;
-		local.resident=false; local.realtimeWeight=0; --residents; ++g_FrameDemotions;
-	}
-	int departing=g_DepartingLocal;
-	if ( departing>=0 && (!g_Locals[departing].resident || g_Locals[departing].desired) ) departing=-1;
-	for ( int r=g_LightRanks.Count()-1;r>=0 && departing<0;--r )
-	{
-		LocalLight_t &local=g_Locals[g_LightRanks[r].relevantIndex];
-		if ( local.resident && !local.desired ) { departing=g_LightRanks[r].relevantIndex; break; }
-	}
-	g_DepartingLocal=departing;
-	for ( int i=0;i<g_Locals.Count();++i )
-	{
-		LocalLight_t &local=g_Locals[i];
-		if ( !local.resident ) continue;
-		local.realtimeWeight=!cap ? 1.0f : i==departing ? MAX(0.0f,local.realtimeWeight-step) : MIN(1.0f,local.realtimeWeight+step);
-		if ( i==departing && local.realtimeWeight==0 ) { local.resident=false; --residents; ++g_FrameDemotions; g_DepartingLocal=-1; }
-	}
+	const bool instantSelection=!g_HaveSelectionView || HybridCameraCut(g_LastSelectionOrigin,setup.origin);
+	const int selected=ShadowHybridChoose(g_Locals,g_LightRanks,limit,instantSelection);
+	ShadowHybridRetire(g_Locals,g_LightRanks,limit,instantSelection,fadeSeconds*0.5f,delta,g_FreeSlotSeconds,g_FrameDemotions);
+	// Detach logical charts before replacement admission; old replay pixels
+	// retain the existing lease/COW lifetime independent of the four-light cap.
 	ReleaseBakedSlots();
-	// Detached logical slots no longer occupy the budget. Leased old work
-	// pixels are protected by ownershipChanged COW, never a whole-page idle wait.
-	int occupied=residents;
-	for ( int r=0;r<g_LightRanks.Count() && occupied<limit;++r )
-	{
-		LocalLight_t &local=g_Locals[g_LightRanks[r].relevantIndex];
-		if ( !local.desired || local.resident ) continue;
-		local.resident=true; local.realtimeWeight=!instantSelection && cap && fadeSeconds>0 ? 0 : 1;
-		++occupied; ++g_FramePromotions;
-	}
+	ShadowHybridPromote(g_Locals,g_LightRanks,instantSelection,fadeSeconds*0.5f,g_FreeSlotSeconds,g_FramePromotions);
 	for ( int i=0;i<g_Locals.Count();++i ) g_Locals[i].shadowRelevant=g_Locals[i].resident;
 	if ( g_HaveSelectionView || (g_FrameShadowsEnabled && selected>0) )
 	{
-		g_LastSelectionView=setup; g_HaveSelectionView=true;
+		g_LastSelectionOrigin=setup.origin; g_HaveSelectionView=true;
 	}
-	return true;
 }
 
 void SelectRealtimeLocals( CShadowViewData &data )
@@ -2547,28 +2354,171 @@ Vector ProjectionUvDepth( const VMatrix &clip, const Vector &point )
 	return Vector(0.5f+0.5f*x/w,0.5f-0.5f*y/w,z/w);
 }
 
+// These checks exercise the same uncapped BSP/RLE and residency algorithms used
+// by the renderer, without engine rendering state or baked/shader radiance.
+void CameraPvsSelectionSelfCheck()
+{
+	unsigned char decoded[4]={};
+	const unsigned char encoded[]={5,0,2,128};
+	Assert(CShadowCameraPvs::DecodeRow(encoded,4,0,decoded,4));
+	Assert(decoded[0]==5 && decoded[1]==0 && decoded[2]==0 && decoded[3]==128);
+	Assert(!CShadowCameraPvs::DecodeRow(encoded,3,0,decoded,4));
+	const unsigned char zeroRun[]={0,0}, oversizedRun[]={0,5};
+	Assert(!CShadowCameraPvs::DecodeRow(zeroRun,2,0,decoded,4));
+	Assert(!CShadowCameraPvs::DecodeRow(oversizedRun,2,0,decoded,4));
+	Assert(!CShadowCameraPvs::DecodeRow(encoded,4,-1,decoded,4));
+	Assert(!CShadowCameraPvs::DecodeRow(encoded,4,4,decoded,4));
+
+	CShadowCameraPvs pvs;
+	pvs.planes.SetCount(2); pvs.nodes.SetCount(2); pvs.leafClusters.SetCount(3);
+	for ( int i=0;i<2;++i ) { pvs.planes[i].normal.Init(1,0,0); pvs.planes[i].dist=i ? -64.0f : 0.0f; pvs.nodes[i].planenum=i; }
+	pvs.nodes[0].children[0]=-1; pvs.nodes[0].children[1]=1;
+	pvs.nodes[1].children[0]=-2; pvs.nodes[1].children[1]=-3;
+	pvs.leafClusters[0]=0; pvs.leafClusters[1]=-1; pvs.leafClusters[2]=1;
+	pvs.visibility.SetCount(22); memset(pvs.visibility.Base(),0,22);
+	const int clusterCount=2, firstRow=20, secondRow=21;
+	memcpy(pvs.visibility.Base(),&clusterCount,4);
+	memcpy(pvs.visibility.Base()+4,&firstRow,4); memcpy(pvs.visibility.Base()+12,&secondRow,4);
+	pvs.visibility[20]=1; pvs.visibility[21]=2;
+	Assert(pvs.Validate());
+	CUtlVector<unsigned char> nearClusters, farClusters, boundaryClusters, emptyClusters, finiteClusters;
+	pvs.BuildLightClusters(Vector(32,0,0),0,vec3_origin,vec3_origin,false,nearClusters);
+	pvs.BuildLightClusters(Vector(-96,0,0),1,vec3_origin,vec3_origin,false,farClusters);
+	pvs.BuildLightClusters(vec3_origin,-1,vec3_origin,vec3_origin,false,boundaryClusters);
+	pvs.BuildLightClusters(Vector(-32,0,0),-1,vec3_origin,vec3_origin,false,emptyClusters);
+	pvs.BuildLightClusters(Vector(-32,0,0),-1,Vector(-96,-8,-8),Vector(-16,8,8),true,finiteClusters);
+	Assert(boundaryClusters[0]==1 && emptyClusters[0]==0 && finiteClusters[0]==2);
+	pvs.UpdateCamera(Vector(32,0,0));
+	Assert(pvs.Eligible(nearClusters) && !pvs.Eligible(farClusters) && pvs.Eligible(boundaryClusters) && pvs.Eligible(emptyClusters));
+	pvs.UpdateCamera(Vector(48,0,0)); // Cached cluster row.
+	Assert(!pvs.Eligible(farClusters));
+	pvs.UpdateCamera(Vector(-96,0,0));
+	Assert(!pvs.Eligible(nearClusters) && pvs.Eligible(farClusters) && pvs.Eligible(finiteClusters));
+	pvs.UpdateCamera(Vector(-8,0,0)); // Solid eye recovers neighboring valid cluster.
+	Assert(pvs.Eligible(nearClusters) && !pvs.Eligible(farClusters));
+	pvs.UpdateCamera(Vector(-32,0,0)); // Fully solid: conservative all-visible.
+	Assert(pvs.Eligible(nearClusters) && pvs.Eligible(farClusters));
+	pvs.UpdateCamera(vec3_origin); // Plane boundary union, not a dropped eye.
+	Assert(pvs.Eligible(boundaryClusters));
+	pvs.nodes[1].children[1]=0; Assert(!pvs.Validate()); // Cycle.
+	pvs.nodes[1].children[1]=INT_MIN; Assert(!pvs.Validate()); // Invalid negative leaf, no signed overflow.
+	pvs.nodes[1].children[1]=-3;
+	pvs.visibility[21]=0; Assert(!pvs.Validate()); // Truncated row.
+	pvs.visibility[21]=2;
+	int badOffset=19; memcpy(pvs.visibility.Base()+4,&badOffset,4); Assert(!pvs.Validate());
+	memcpy(pvs.visibility.Base()+4,&firstRow,4); Assert(pvs.Validate());
+	pvs.visibility.RemoveAll(); Assert(pvs.Validate());
+	pvs.UpdateCamera(Vector(32,0,0)); Assert(pvs.Eligible(farClusters)); // Standard absent vis.
+	pvs.Clear();
+	// A deep valid tree must never recurse or impose a leaf-list cap.
+	pvs.planes.SetCount(1); pvs.planes[0].normal.Init(1,0,0); pvs.planes[0].dist=0;
+	pvs.nodes.SetCount(2048); pvs.leafClusters.SetCount(2); pvs.leafClusters[0]=0; pvs.leafClusters[1]=1;
+	for ( int n=0;n<pvs.nodes.Count();++n )
+	{
+		pvs.nodes[n].planenum=0; pvs.nodes[n].children[0]=-1;
+		pvs.nodes[n].children[1]=n+1<pvs.nodes.Count() ? n+1 : -2;
+	}
+	Assert(pvs.Validate()); // No-vis still validates every tree node.
+	pvs.visibility.SetCount(22); memset(pvs.visibility.Base(),0,22);
+	memcpy(pvs.visibility.Base(),&clusterCount,4);
+	memcpy(pvs.visibility.Base()+4,&firstRow,4); memcpy(pvs.visibility.Base()+12,&secondRow,4);
+	pvs.visibility[20]=1; pvs.visibility[21]=2; Assert(pvs.Validate());
+	pvs.BuildLightClusters(vec3_origin,-1,Vector(-1,-1,-1),Vector(1,1,1),true,finiteClusters);
+	Assert(finiteClusters[0]==3); // Must reach the far leaf, past any 256-leaf/node cap.
+
+	Assert(fabsf(ShadowLocalProximityScore(vec3_origin,Vector(10,0,0),true,1)-0.1f)<0.000001f);
+	Assert(ShadowLocalProximityScore(vec3_origin,vec3_origin,true,1)==1);
+	Assert(ShadowLocalProximityScore(vec3_origin,Vector(1,0,0),false,1)==0);
+	Assert(ShadowLocalProximityScore(vec3_origin,Vector(1,0,0),true,0)==0);
+	struct RegressionLocal { float score, realtimeWeight; bool resident, desired; };
+	CUtlVector<RegressionLocal> locals; locals.SetCount(8);
+	CUtlVector<ShadowLightRank_t> ranks; ranks.SetCount(8);
+	CUtlVector<float> freeSeconds; freeSeconds.EnsureCapacity(8);
+	auto reset=[&]()
+	{
+		for ( int i=0;i<8;++i )
+		{
+			locals[i].score=i<4 ? 1.0f : 0.0f; locals[i].resident=i<4;
+			locals[i].desired=i<4; locals[i].realtimeWeight=i<4 ? 1.0f : 0.0f;
+		}
+	};
+	auto tick=[&](float delta,int cap,float fade,bool instant=false)
+	{
+		for ( int i=0;i<8;++i ) { ranks[i].relevantIndex=i; ranks[i].lightId=i; ranks[i].score=locals[i].score; }
+		ranks.Sort(LightRankCompare);
+		const int limit=cap<0 ? 0 : cap ? cap : locals.Count();
+		ShadowHybridChoose(locals,ranks,limit,instant);
+		uint32 demotions=0,promotions=0;
+		ShadowHybridRetire(locals,ranks,limit,instant,fade*0.5f,delta,freeSeconds,demotions);
+		ShadowHybridPromote(locals,ranks,instant,fade*0.5f,freeSeconds,promotions);
+		int residents=0;
+		for ( int i=0;i<8;++i ) { if ( locals[i].resident ) ++residents; Assert(locals[i].realtimeWeight>=0 && locals[i].realtimeWeight<=1); }
+		Assert(residents<=limit);
+	};
+	reset();
+	CViewSetup nearestBefore,nearestAfter; nearestBefore.origin=nearestAfter.origin=vec3_origin;
+	nearestBefore.angles=vec3_angle; nearestAfter.angles=Vector(75,180,0);
+	for ( int i=0;i<8;++i ) locals[i].score=ShadowLocalProximityScore(nearestBefore.origin,Vector((i+1)*10,0,0),true,1);
+	tick(0,4,0.5f,true);
+	for ( int i=0;i<8;++i ) Assert(locals[i].resident==(i<4));
+	for ( int i=0;i<8;++i ) locals[i].score=ShadowLocalProximityScore(nearestAfter.origin,Vector((i+1)*10,0,0),true,1);
+	tick(0,4,0.5f,HybridCameraCut(nearestBefore.origin,nearestAfter.origin));
+	for ( int i=0;i<8;++i ) Assert(locals[i].resident==(i<4) && locals[i].desired==(i<4));
+	nearestAfter.origin.Init(75,0,0);
+	for ( int i=0;i<8;++i ) locals[i].score=ShadowLocalProximityScore(nearestAfter.origin,Vector((i+1)*10,0,0),true,1);
+	tick(0,4,0.5f,HybridCameraCut(nearestBefore.origin,nearestAfter.origin));
+	for ( int i=0;i<8;++i ) Assert(locals[i].desired==(i>=4)); // Movement, not pitch/yaw, changes priority.
+	reset();
+	locals[4].score=1.24f; tick(0,4,0.5f); Assert(!locals[4].desired); // 25% priority hysteresis.
+	locals[4].score=1.26f; tick(0,4,0.5f); Assert(locals[4].desired && !locals[3].desired);
+	reset();
+	for ( int i=0;i<8;++i ) locals[i].score=i<4 ? 0.0f : 1.0f;
+	tick(0.125f,4,0.5f);
+	for ( int i=0;i<4;++i ) Assert(locals[i].resident && locals[i].realtimeWeight==0.5f);
+	CViewSetup beforeTurn,afterTurn; beforeTurn.origin=afterTurn.origin=vec3_origin;
+	beforeTurn.angles=vec3_angle; afterTurn.angles=Vector(75,180,0);
+	beforeTurn.fov=90; afterTurn.fov=120; beforeTurn.m_bOrtho=false; afterTurn.m_bOrtho=true;
+	tick(0,4,0.5f,HybridCameraCut(beforeTurn.origin,afterTurn.origin));
+	for ( int i=0;i<4;++i ) Assert(locals[i].resident && locals[i].realtimeWeight==0.5f);
+	tick(0.125f,4,0.5f);
+	for ( int i=0;i<8;++i ) Assert(locals[i].resident==(i>=4) && locals[i].realtimeWeight==0);
+	tick(0.125f,4,0.5f);
+	for ( int i=4;i<8;++i ) Assert(locals[i].realtimeWeight==0.5f);
+	tick(0.125f,4,0.5f);
+	for ( int i=4;i<8;++i ) Assert(locals[i].realtimeWeight==1); // Four-light exchange completes in 500ms.
+	reset(); for ( int i=0;i<8;++i ) locals[i].score=i<4 ? 0.0f : 1.0f;
+	tick(0.5f,4,0.5f); // A crossing frame consumes delta once, no extra frame/ramp.
+	for ( int i=0;i<8;++i ) Assert(locals[i].resident==(i>=4) && locals[i].realtimeWeight==(i>=4 ? 1.0f : 0.0f));
+	reset(); for ( int i=0;i<8;++i ) locals[i].score=i<4 ? 0.0f : 1.0f;
+	tick(0.125f,4,0.5f);
+	for ( int i=0;i<8;++i ) locals[i].score=i<4 ? 1.0f : 0.0f;
+	tick(0.0625f,4,0.5f);
+	for ( int i=0;i<4;++i ) Assert(locals[i].resident && locals[i].realtimeWeight==0.75f); // Reversal from current weight.
+	reset(); locals[0].score=0; locals[4].score=1;
+	tick(0,0,0); Assert(!locals[0].resident && locals[4].resident); // Cap zero does not bypass PVS/style eligibility.
+	reset(); tick(0,2,0.5f);
+	Assert(locals[0].resident && locals[1].resident && !locals[2].resident && !locals[3].resident);
+	tick(0,-1,0.5f); for ( int i=0;i<8;++i ) Assert(!locals[i].resident && locals[i].realtimeWeight==0); // Disable.
+	reset(); for ( int i=0;i<8;++i ) locals[i].score=i<4 ? 0.0f : 1.0f;
+	tick(0,4,0); for ( int i=0;i<8;++i ) Assert(locals[i].resident==(i>=4) && locals[i].realtimeWeight==(i>=4 ? 1.0f : 0.0f));
+	reset(); locals[4].score=2; tick(0,4,0.5f,true);
+	Assert(locals[4].resident && locals[4].realtimeWeight==1 && !locals[3].resident); // Positional cut.
+	reset(); locals[0].resident=false; locals[0].realtimeWeight=0;
+	tick(0.125f,4,0.5f); Assert(locals[0].resident && locals[0].realtimeWeight==0.5f); // Cold free slot half-ramp.
+	Msg("Shadowmaps: camera PVS/RLE/proximity/parallel-500ms/reversal/cap/zero-fade assertions completed\n");
+}
+
 void HybridSelectionSelfCheck()
 {
-	const Vector savedMins=g_State.worldMins, savedMaxs=g_State.worldMaxs;
-	g_State.worldMins.Init(0,0,0); g_State.worldMaxs.Init(1,1,1);
-	ShadowCasterVolume_t volume={}; volume.m_nPlaneCount=1;
-	volume.m_Planes[0].m_Normal=Vector(1,1,0); volume.m_Planes[0].m_Dist=1;
-	ShadowRankingDomain_t domain; domain.Build(volume);
-	Assert(domain.vertexCount>0);
-	float farthest;
-	Assert((domain.Nearest(Vector(-1,-1,0.5f),farthest)-Vector(0.5f,0.5f,0.5f)).Length()<0.0001f);
-	Assert((domain.Nearest(Vector(-1,0,2),farthest)-Vector(0,1,1)).Length()<0.0001f);
-	Assert(domain.Nearest(Vector(0.75f,0.75f,0.5f),farthest)==Vector(0.75f,0.75f,0.5f));
-	Assert(fabsf(BestReceiverConeDot(domain,Vector(0.75f,0.75f,0.5f),Vector(1,0,0))-1)<0.0001f);
-	Assert(fabsf(BestReceiverConeDot(domain,Vector(0.5f,0.5f,0.5f),Vector(-0.70710678f,-0.70710678f,0)))<0.0001f);
 	CViewSetup beforeCut,afterCut; beforeCut.origin=afterCut.origin=vec3_origin;
 	beforeCut.angles=afterCut.angles=vec3_angle; beforeCut.fov=afterCut.fov=90;
 	beforeCut.m_bOrtho=afterCut.m_bOrtho=false;
-	Assert(!HybridCameraCut(beforeCut,afterCut));
-	afterCut.origin.x=255; Assert(!HybridCameraCut(beforeCut,afterCut));
-	afterCut.origin.x=256; Assert(HybridCameraCut(beforeCut,afterCut));
-	afterCut.origin=vec3_origin; afterCut.angles.y=61; Assert(HybridCameraCut(beforeCut,afterCut));
-	afterCut.angles=vec3_angle; afterCut.fov=105; Assert(HybridCameraCut(beforeCut,afterCut));
+	Assert(!HybridCameraCut(beforeCut.origin,afterCut.origin));
+	afterCut.origin.x=255; Assert(!HybridCameraCut(beforeCut.origin,afterCut.origin));
+	afterCut.origin.x=256; Assert(HybridCameraCut(beforeCut.origin,afterCut.origin));
+	afterCut.origin=vec3_origin; afterCut.angles.y=180; Assert(!HybridCameraCut(beforeCut.origin,afterCut.origin));
+	afterCut.angles=vec3_angle; afterCut.fov=105; Assert(!HybridCameraCut(beforeCut.origin,afterCut.origin));
+	afterCut.m_bOrtho=true; Assert(!HybridCameraCut(beforeCut.origin,afterCut.origin));
 	// Retire a face from a shared page without checking whole-page idleness or
 	// mutating any target: another resident and leased old pixels must survive.
 	LocalPage_t page; LocalLight_t retiring;
@@ -2578,13 +2528,6 @@ void HybridSelectionSelfCheck()
 	Assert(page.owners[3]==-1 && page.owners[4]==1 && page.ownershipChanged);
 	Assert(page.work==42 && page.clean==43 && page.rigid==44);
 	Assert(retiring.page[0]==-1 && retiring.slot[0]==-1 && !retiring.cache[0].valid && !retiring.cache[0].rigidValid);
-	g_State.worldMins=savedMins; g_State.worldMaxs=savedMaxs;
-	DX12LightingSelectedLight light={}; light.constantAttn=10; light.linearAttn=-4; light.quadraticAttn=1;
-	Assert(fabsf(LocalMinimumDenominator(light,1,4)-6)<0.0001f);
-	light.capDist=1.5f;
-	Assert(fabsf(LocalMinimumDenominator(light,0,4)-6.25f)<0.0001f);
-	light.capDist=0; light.attenuationRadius=1.25f;
-	Assert(fabsf(LocalMinimumDenominator(light,1,4)-6.5625f)<0.0001f);
 	Assert(HybridNonnegativeSetting("0",4)==0);
 	Assert(HybridNonnegativeSetting("-1",4)==4);
 	Assert(HybridNonnegativeSetting("nan",4)==4);
@@ -2592,12 +2535,13 @@ void HybridSelectionSelfCheck()
 	Assert(HybridNonnegativeSetting("4junk",4)==4);
 	ShadowLightRank_t a={}, b={}; a.score=b.score=1; a.lightId=3; b.lightId=4;
 	Assert(LightRankCompare(&a,&b)<0 && LightRankCompare(&b,&a)>0);
-	Msg("Shadowmaps: hybrid clipped-domain/cone/attenuation/settings/tie/camera-cut/retirement assertions completed\n");
+	Msg("Shadowmaps: hybrid settings/tie/positional-cut/retirement assertions completed\n");
 }
 
 void ProjectionSelfCheck()
 {
 	HybridSelectionSelfCheck();
+	CameraPvsSelectionSelfCheck();
 	dworldlight_t light; memset(&light,0,sizeof(light)); light.type=emit_point;
 	const float core=18.0f/512.0f;
 	for ( int face=0;face<6;++face )
@@ -2758,8 +2702,11 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 			local.world=record.light; local.selected=selected; local.bakedLightIndex=i;
 			ShadowMapScene_LocalInfluence(local.world,g_State.worldMins,g_State.worldMaxs,local.influence);
 			local.faceCount=local.influence.cube?6:1;
+			g_CameraPvs.BuildLightClusters(local.world.origin,local.world.cluster,local.influence.mins,local.influence.maxs,
+				local.world.radius>0,local.pvsClusters);
 		}
 	}
+	g_LightRanks.EnsureCapacity(g_Locals.Count()); g_FreeSlotSeconds.EnsureCapacity(g_Locals.Count());
 	if ( !++g_MapCounter ) ++g_MapCounter;
 	g_MapGeneration=g_MapCounter; g_State.mapGeneration=g_MapGeneration;
 	// PrepareMap copies the selected-light span synchronously. Route 1 uses only
@@ -2832,7 +2779,7 @@ void ShadowMapsDX12_LevelShutdown()
 	for ( int i=0;i<g_PageSpares.Count();++i ) DestroyTarget(g_PageSpares[i].target);
 	g_PageSpares.RemoveAll();
 	g_Pages.RemoveAll(); g_Locals.RemoveAll(); g_Selected.RemoveAll(); g_Sun=-1;
-	g_SelectionFrame=0xffffffffu; g_FramePromotions=g_FrameDemotions=0; g_DepartingLocal=-1; g_LightRanks.RemoveAll();
+	g_SelectionFrame=0xffffffffu; g_FramePromotions=g_FrameDemotions=0; g_LightRanks.RemoveAll();
 	g_HaveSelectionView=false;
 	if ( g_LastMain ) { g_LastMain->Release(); g_LastMain=NULL; }
 	memset(&g_LastStats,0,sizeof(g_LastStats));
@@ -2983,10 +2930,7 @@ void ShadowMapsDX12_PrepareMainView( const CViewSetup &setup )
 		g_SelectionFrame==(uint32)gpGlobals->framecount ) return;
 	if ( !PollCompletedViews() ) return;
 	if ( setup.width<=0 || setup.height<=0 ) { Fail(SHADOWMAP_ERR_INVALID_METADATA); return; }
-	VPlane frustum[6];
-	render->Push3DView(setup,0,NULL,frustum);
 	UpdateRealtimeSelection(setup);
-	render->PopView(frustum);
 }
 
 bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind )

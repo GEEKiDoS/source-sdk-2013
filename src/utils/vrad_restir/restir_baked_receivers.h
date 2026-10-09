@@ -205,8 +205,9 @@ static bool BuildRendererBrushTriangles( const ReSTIRSceneBuildContext &context,
 	return triangles.Count() > 0;
 }
 
-// Clamp padding outside the polygon to its closest triangle edge. Interior
-// samples use renderer barycentrics, with no normalization after interpolation.
+// Clamp padding to the closed hull of actual renderer triangles, including
+// nonzero edges of degenerate T-junction primitives. Interior samples use
+// renderer barycentrics, with no normalization after interpolation.
 static bool RendererBrushWeights( const CUtlVector<ReSTIRRendererVertex> &vertices,
 	const CUtlVector<ReSTIRRendererTriangle> &triangles, const Vector &position, int &selected, float weights[3] )
 {
@@ -218,12 +219,14 @@ static bool RendererBrushWeights( const CUtlVector<ReSTIRRendererVertex> &vertic
 		const Vector &a = vertices[tri.v[0]].position;
 		const Vector u = vertices[tri.v[1]].position-a, v = vertices[tri.v[2]].position-a, p = position-a;
 		const float uu = DotProduct(u,u), vv = DotProduct(v,v), uv = DotProduct(u,v), denominator = uu*vv-uv*uv;
-		if ( denominator <= 0.0f ) continue;
-		const float b = ( vv*DotProduct(p,u)-uv*DotProduct(p,v) )/denominator;
-		const float c = ( uu*DotProduct(p,v)-uv*DotProduct(p,u) )/denominator;
-		if ( b >= 0.0f && c >= 0.0f && b+c <= 1.0f )
+		if ( denominator > 0.0f )
 		{
-			selected = i; weights[0] = 1.0f-b-c; weights[1] = b; weights[2] = c; return true;
+			const float b = ( vv*DotProduct(p,u)-uv*DotProduct(p,v) )/denominator;
+			const float c = ( uu*DotProduct(p,v)-uv*DotProduct(p,u) )/denominator;
+			if ( b >= 0.0f && c >= 0.0f && b+c <= 1.0f )
+			{
+				selected = i; weights[0] = 1.0f-b-c; weights[1] = b; weights[2] = c; return true;
+			}
 		}
 		for ( int edge = 0; edge < 3; ++edge )
 		{

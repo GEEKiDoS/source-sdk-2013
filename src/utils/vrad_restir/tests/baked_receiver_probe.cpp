@@ -33,18 +33,34 @@ int main( int argc, char **argv )
 		for (int i=0; i<3; ++i) { if(i) std::cout << ','; PrintVector(bump[i]); }
 		std::cout << "]}\n";
 	}
-	else if ( operation == "brush" )
+	else if ( operation == "brush" || operation == "brushframe" )
 	{
 		int vertexCount, triangleCount; Vector position;
 		if ( !(std::cin >> vertexCount >> triangleCount) || vertexCount < 3 || vertexCount > 256 || triangleCount < 1 || triangleCount > 256 || !ReadVector(position) ) return 2;
 		CUtlVector<ReSTIRRendererVertex> vertices; vertices.SetCount(vertexCount);
 		CUtlVector<ReSTIRRendererTriangle> triangles; triangles.SetCount(triangleCount);
-		for(int i=0; i<vertexCount; ++i) if(!ReadVector(vertices[i].position)) return 2;
+		for(int i=0; i<vertexCount; ++i)
+		{
+			if(!ReadVector(vertices[i].position)) return 2;
+			if(operation == "brushframe" &&
+				(!ReadVector(vertices[i].normal) || !ReadVector(vertices[i].s) || !ReadVector(vertices[i].t))) return 2;
+		}
 		for(int i=0; i<triangleCount; ++i) for(int c=0; c<3; ++c)
 			if(!(std::cin >> triangles[i].v[c]) || triangles[i].v[c]<0 || triangles[i].v[c]>=vertexCount) return 2;
 		int selected; float weights[3];
 		if(!RendererBrushWeights(vertices,triangles,position,selected,weights)) return 3;
-		std::cout << "{\"triangle\":" << selected << ",\"weights\":[" << weights[0] << ',' << weights[1] << ',' << weights[2] << "]}\n";
+		std::cout << "{\"triangle\":" << selected << ",\"weights\":[" << weights[0] << ',' << weights[1] << ',' << weights[2] << "]";
+		if(operation == "brushframe")
+		{
+			ReSTIRRendererVertex receiver[3];
+			for(int c=0; c<3; ++c) receiver[c] = vertices[triangles[selected].v[c]];
+			Vector directPosition, normal, bump[3]; RendererInterpolateFrame(receiver,weights,directPosition,normal,bump);
+			std::cout << ",\"position\":"; PrintVector(directPosition); std::cout << ",\"N\":"; PrintVector(normal);
+			std::cout << ",\"bases\":[";
+			for(int p=0; p<3; ++p) { if(p) std::cout << ','; PrintVector(bump[p]); }
+			std::cout << ']';
+		}
+		std::cout << "}\n";
 	}
 	else if ( operation == "bytecapacity" )
 	{

@@ -27,6 +27,7 @@
 #include "viewrender.h"
 #include "shadowmaps_dx12.h"
 #include "materialsystem/imaterial.h"
+#include "c_physicsprop.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -38,6 +39,10 @@ static ConVar r_PortalTestEnts( "r_PortalTestEnts", "1", FCVAR_CHEAT, "Clip enti
 static ConVar r_portalsopenall( "r_portalsopenall", "0", FCVAR_CHEAT, "Open all portals" );
 static ConVar cl_threaded_client_leaf_system("cl_threaded_client_leaf_system", "0"  );
 static ConVar r_shadowmap_validate_casters( "r_shadowmap_validate_casters", "0", FCVAR_CHEAT, "Compare shadow caster queries with an exhaustive registration/AABB scan." );
+static void ShadowPhysicsPolicyChanged( IConVar *pConVar, const char *pOldString, float flOldValue );
+static ConVar r_shadowmap_force_physics_shadows( "r_shadowmap_force_physics_shadows", "0", FCVAR_ARCHIVE,
+	"Allow solid ordinary physics props to cast native shadowmaps despite authored DisableShadow (does not change entity effects).",
+	ShadowPhysicsPolicyChanged );
 
 
 DEFINE_FIXEDSIZE_ALLOCATOR( CClientRenderablesList, 1, CUtlMemoryPool::GROW_SLOW );
@@ -135,6 +140,7 @@ public:
 	virtual void EnumerateShadowsInLeaves( int leafCount, LeafIndex_t* pLeaves, IClientLeafShadowEnum* pEnum );
 	virtual void EnumerateShadowCasters( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink );
 	virtual void EnumerateShadowCastersExhaustive( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink );
+	void OnShadowPhysicsPolicyChanged();
 
 	// methods of ISpatialLeafEnumerator
 public:
@@ -273,6 +279,7 @@ private:
 		RENDER_FLAGS_STUDIO_MODEL	= 0x08,
 		RENDER_FLAGS_HASCHANGED		= 0x10,
 		RENDER_FLAGS_ALTERNATE_SORTING = 0x20,
+		RENDER_FLAGS_PHYSICS_PROP = 0x40,
 	};
 
 	// All the information associated with a particular handle
@@ -390,6 +397,34 @@ private:
 CClientLeafSystem CClientLeafSystem::s_ClientLeafSystem;
 IClientLeafSystem *g_pClientLeafSystem = &CClientLeafSystem::s_ClientLeafSystem;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CClientLeafSystem, IClientLeafSystem, CLIENTLEAFSYSTEM_INTERFACE_VERSION, CClientLeafSystem::s_ClientLeafSystem );
+
+static void ShadowPhysicsPolicyChanged( IConVar *pConVar, const char *pOldString, float flOldValue )
+{
+	ConVarRef var( pConVar );
+	if ( var.GetBool() == ( atoi( pOldString ) != 0 ) || !g_pClientLeafSystem )
+		return;
+	CClientLeafSystem::s_ClientLeafSystem.OnShadowPhysicsPolicyChanged();
+}
+
+void CClientLeafSystem::OnShadowPhysicsPolicyChanged()
+{
+	InvalidateShadowCasterQuery();
+	if ( !ShadowMapsDX12_Active() )
+		return;
+	for ( ClientRenderHandle_t handle = m_Renderables.Head(); handle != m_Renderables.InvalidIndex(); handle = m_Renderables.Next( handle ) )
+	{
+		if ( !( m_Renderables[handle].m_Flags & RENDER_FLAGS_PHYSICS_PROP ) )
+			continue;
+		IClientRenderable *pRenderable = m_Renderables[handle].m_pRenderable;
+		C_PhysicsProp *pPhysicsProp = static_cast<C_PhysicsProp *>( pRenderable->GetIClientUnknown()->GetBaseEntity() );
+		if ( !pPhysicsProp->CanOverrideShadowMapNoShadow() || !pPhysicsProp->IsEffectActive( EF_NOSHADOW ) )
+			continue;
+		// Invalidate membership and both rigid/overlay depth at the existing bounds,
+		// even when an already-loaded/restored prop has not moved this frame.
+		ShadowMapsDX12_InvalidateCasterRegistration( pRenderable );
+		RenderableChanged( handle );
+	}
+}
 
 void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *pRenderable, Vector &absMin, Vector &absMax );
 
@@ -786,6 +821,16 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 	InvalidateShadowCasterQuery();
 	ShadowMapsDX12_InvalidateCasterRegistration( pRenderable );
 
+	// Cache only network class identity, never the received ordinary-prop bit:
+	// render registration may precede its first network receive/save restoration.
+	IClientUnknown *pUnknown = pRenderable->GetIClientUnknown();
+	C_BaseEntity *pEntity = pUnknown ? pUnknown->GetBaseEntity() : NULL;
+	ClientClass *pClientClass = pEntity ? pEntity->GetClientClass() : NULL;
+	if ( pClientClass && ( FStrEq( pClientClass->GetName(), "CPhysicsProp" ) ||
+		FStrEq( pClientClass->GetName(), "CPhysicsPropMultiplayer" ) ) )
+	{
+		flags |= RENDER_FLAGS_PHYSICS_PROP;
+	}
 	ClientRenderHandle_t handle = m_Renderables.AddToTail();
 	RenderableInfo_t &info = m_Renderables[handle];
 
@@ -1604,7 +1649,12 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 
 	IClientUnknown *pUnknown = pRenderable->GetIClientUnknown();
 	C_BaseEntity *pEntity = pUnknown ? pUnknown->GetBaseEntity() : NULL;
-	if ( pEntity && pEntity->IsEffectActive( EF_NODRAW | EF_NOSHADOW ) )
+	if ( pEntity && pEntity->IsEffectActive( EF_NODRAW ) )
+		return false;
+	if ( pEntity && pEntity->IsEffectActive( EF_NOSHADOW ) &&
+		!( ShadowMapsDX12_Active() && r_shadowmap_force_physics_shadows.GetBool() &&
+		   ( flags & RENDER_FLAGS_PHYSICS_PROP ) &&
+		   static_cast<C_PhysicsProp *>( pEntity )->CanOverrideShadowMapNoShadow() ) )
 		return false;
 
 	if ( ( flags & RENDER_FLAGS_STATIC_PROP ) && ShadowMapsDX12_MapState().featureMap )

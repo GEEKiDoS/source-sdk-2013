@@ -12,6 +12,9 @@ Build from src in an x64 MSVC developer shell (PowerShell):
 Build baked_receiver_probe.cpp with the same flags/libs, /Febaked_receiver_probe.exe.
   python utils/vrad_restir/tests/baked_direct_test.py --probe ./baked_direct_probe.exe `
     --receiver-probe ./baked_receiver_probe.exe
+Focused native triangle-edge receiver regression (no baked_direct_probe needed):
+  python utils/vrad_restir/tests/baked_direct_test.py --receiver-geometry-only `
+    --receiver-probe ./baked_receiver_probe.exe
 
 The probe calls the production inline helper and hlight R8 decoder. Python math
 is an independent analytic oracle; style accumulation is probe harness code,
@@ -219,6 +222,107 @@ def quantization_oracle(row, case):
             raise AssertionError('R8 nearest quantization oracle')
 
 
+def degenerate_receiver_cases(probe, env):
+    # Read-only capture of d1_trainstation_02 face845 in both face lumps:
+    # plane3409=(0,-1,0), dist548, side1; native primitive1708 has no
+    # primverts and these exact local indices. The renderer receives genuinely
+    # degenerate T-junction triangles, not a numerically thin positive-area fan.
+    f32 = lambda value: struct.unpack('<f', struct.pack('<f', value))[0]
+    a = (f32(-1804.21), -548, 148)
+    b = (-1908, -548, f32(148.15387))
+    c = (-1908, -548, 148)
+    d = (a[0], -548, b[2])
+    native_vertices = (a, b, c, b, a, d)
+    native_triangles = ((1, 2, 3), (1, 3, 0), (0, 3, 4), (0, 4, 5))
+    # Native mins=(-120,-12), size=(8,1), S=x/16,T=-z/16-2.25.
+    # The first sample is the actual failed luxel(0,0): (-1920,-548,156).
+    station_points = [(-1920+16*s, -548, 156-16*t) for t in range(2) for s in range(9)]
+    station_points += [a, b, c, d, tuple((a[i]+b[i])*.5 for i in range(3))]
+    station_points += [(-1920+4*s, -548, 156-4*t) for t in range(5) for s in range(33)]
+    fixtures = [
+        ('station845_native_tjunction', native_vertices, native_triangles, station_points, True),
+        ('collinear_closed_hull', ((0, 0, 0), (2, 0, 0), (4, 0, 0)), ((0, 1, 2),),
+         ((1, 3, 0), (-2, 1, 0), (6, -1, 0), (3, 0, 0)), True),
+        ('repeated_vertex_closed_hull', ((0, 0, 0), (4, 0, 0), (4, 0, 0)), ((0, 1, 2),),
+         ((1, 3, 0), (4, 2, 0)), True),
+        ('positive_area_interior_and_padding', ((0, 0, 0), (4, 0, 0), (0, 2, 0)), ((0, 1, 2),),
+         ((1, .5, 0), (0, 0, 0), (5, 0, 0)), True),
+        ('thin_positive_area_interior', ((0, 0, 0), (4, 0, 0), (0, 2**-16, 0)), ((0, 1, 2),),
+         ((1, 2**-18, 0),), True),
+        ('fully_collapsed_rejected', ((1, 2, 3),)*3, ((0, 1, 2),), ((4, 5, 6),), False),
+    ]
+    total = 0
+    for name, corners, triangles, points, resolves in fixtures:
+        for point in points:
+            numbers = [len(corners), len(triangles), *point, *(x for p in corners for x in p),
+                       *(x for tri in triangles for x in tri)]
+            process = subprocess.run([str(probe.resolve()), 'brush'], input=' '.join(map(str, numbers))+'\n',
+                                     text=True, capture_output=True, env=env)
+            if not resolves:
+                if process.returncode != 3:
+                    raise AssertionError(f'{name}: unresolved geometry must reject, exit={process.returncode}')
+                total += 1
+                continue
+            if process.returncode:
+                raise AssertionError(f'{name} point={point}: renderer edge mapping failed, exit={process.returncode}')
+            row = json.loads(process.stdout)
+            selected, weights = row['triangle'], row['weights']
+            if not 0 <= selected < len(triangles) or not all(math.isfinite(w) and 0 <= w <= 1 for w in weights):
+                raise AssertionError(f'{name}: invalid real-triangle selection/weights')
+            close(sum(weights), 1, name+'.weight_sum')
+            tri = triangles[selected]
+            reconstructed = tuple(sum(corners[tri[i]][axis]*weights[i] for i in range(3)) for axis in range(3))
+            if 'positive_area' in name and point == points[0]:
+                # An actual interior must not be mapped to an edge, even on a
+                # genuinely tiny positive-area triangle.
+                expected_point = point
+                if min(weights) <= 0:
+                    raise AssertionError(f'{name}: positive-area interior was clamped to an edge')
+            else:
+                # Independent closest-point oracle on the ORIGINAL indexed
+                # edges; don't assert incidental triangle IDs or tie order.
+                candidates = []
+                for indices in triangles:
+                    for edge in range(3):
+                        start, end = corners[indices[edge]], corners[indices[(edge+1) % 3]]
+                        delta = tuple(end[i]-start[i] for i in range(3))
+                        length = dot(delta, delta)
+                        if not length:
+                            continue
+                        fraction = sat(dot(tuple(point[i]-start[i] for i in range(3)), delta)/length)
+                        candidate = tuple(start[i]+fraction*delta[i] for i in range(3))
+                        candidates.append((dot(tuple(candidate[i]-point[i] for i in range(3)),
+                                               tuple(candidate[i]-point[i] for i in range(3))), candidate))
+                expected_point = min(candidates, key=lambda item: item[0])[1]
+            if any(abs(reconstructed[i]-expected_point[i]) > 3e-4 for i in range(3)):
+                raise AssertionError(f'{name}: not the closest real receiver point: {reconstructed} != {expected_point}')
+
+            # Exercise the production CONSUMER with varying renderer frames,
+            # not just successful geometric lookup. Repeated native vertices
+            # keep the same frame; no normals/bases are normalized per pixel.
+            frames = []
+            for corner in corners:
+                n = unit((.01*corner[0], -1, .01*corner[2]))
+                s, t, _ = frame(dict(N=n, flat=(0, -1, 0), S=(1, 0, 0), T=(0, 0, 1)))
+                frames.append((corner, n, s, t))
+            numbers = [len(corners), len(triangles), *point,
+                       *(x for vertex in frames for vector in vertex for x in vector),
+                       *(x for indices in triangles for x in indices)]
+            process = subprocess.run([str(probe.resolve()), 'brushframe'], input=' '.join(map(str, numbers))+'\n',
+                                     text=True, capture_output=True, env=env, check=True)
+            row = json.loads(process.stdout)
+            indices, ws = triangles[row['triangle']], row['weights']
+            blended = [tuple(sum(ws[i]*frames[indices[i]][field][axis] for i in range(3)) for axis in range(3))
+                       for field in range(4)]
+            position, normal, s, t = blended
+            bases = [tuple(b[0]*s[axis]+b[1]*t[axis]+b[2]*normal[axis] for axis in range(3)) for b in BASIS]
+            close(row, dict(position=position, N=normal, bases=bases), name+'.renderer_frame')
+            total += 1
+    print(json.dumps(dict(receiver_closed_hull_cases=total, native_station845=True,
+                          production_geometry_and_frame=True, passed=True)))
+    return total
+
+
 def receiver_cases(probe, env):
     def run(operation, numbers):
         process = subprocess.run([str(probe.resolve()), operation],
@@ -320,14 +424,21 @@ def receiver_cases(probe, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--probe', type=Path, required=True)
+    parser.add_argument('--probe', type=Path)
     parser.add_argument('--receiver-probe', type=Path, required=True)
+    parser.add_argument('--receiver-geometry-only', action='store_true',
+                        help='focused station845/degenerate native triangle-edge geometry and frame regression')
     parser.add_argument('--dll-dir', type=Path, action='append', default=[])
     parser.add_argument('--large-byte-growth', action='store_true',
                         help='exercise real shared-vector growth past 1 GiB (allocation failure skips)')
     args = parser.parse_args()
+    if not args.receiver_geometry_only and args.probe is None:
+        parser.error('--probe is required unless --receiver-geometry-only is selected')
     env = os.environ.copy()
     env['PATH'] = os.pathsep.join(str(p) for p in [ROOT/'../game/bin/x64', *args.dll_dir])+os.pathsep+env['PATH']
+    if args.receiver_geometry_only:
+        degenerate_receiver_cases(args.receiver_probe, env)
+        return 0
     total = 0
     for case in cases():
         process = subprocess.run([str(args.probe.resolve())], input=serialize(case), text=True,
@@ -339,6 +450,7 @@ def main():
                               writer_exercised=False, quantization='independent IEEE oracle', passed=True)))
         total += 1
     total += receiver_cases(args.receiver_probe, env)
+    total += degenerate_receiver_cases(args.receiver_probe, env)
     if args.large_byte_growth:
         process = subprocess.run([str(args.receiver_probe.resolve()), 'largebytegrowth'], text=True,
                                  capture_output=True, check=True, env=env, timeout=120)

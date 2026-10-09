@@ -32,14 +32,14 @@ struct StaticPropLump_t;
 
 // ConVars (defined in shadowmaps_dx12.cpp)
 extern ConVar r_shadowmap_enable;		// archived, default 1; 0 retains all baked visibility and selected direct/highres lighting
-extern ConVar r_shadowmap_max_realtime_lights; // archived, default 4; 0 = all locals realtime; negative/nonfinite/nonnumeric = 4
+extern ConVar r_shadowmap_max_realtime_lights; // archived, default 4; 0 = no budget limit within camera PVS; invalid = 4
 										// positive fractions truncate with minimum 1; values >= INT_MAX saturate
-										// one frame-global main player camera, frustum intersected with world bounds;
-										// exact styled attenuation/cone/fade rank, stable lightId ties, >25% hysteresis
+										// one frame-global main player position/PVS, independent of angles/FOV;
+										// active styled lights rank by 1/max(emitter distance,1), stable lightId ties, >25% hysteresis
 extern ConVar r_shadowmap_realtime_fade_seconds; // archived, default .5 real seconds; negative/nonfinite/nonnumeric = .5; 0 = immediate
-										// serialized fade-out -> detach ownership/COW leased work -> chart build -> fade-in;
-										// first scored admission and camera cuts use current top-N at weight 1 immediately
-										// cuts: >=256u movement, >=60deg turn, >=15deg FOV change, or orthographic switch
+										// full handoff: all outgoing locals fade together over half, then incoming over half;
+										// free slots ramp in over half (.25s by default); detach/COW preserves the resident cap
+										// first admission and >=256u positional cuts use current top-N at weight 1 immediately
 										// normal reversals ramp from current weight; weights/membership frozen across receivers
 										// live cap reduction/enable0 forces excess weakest weights to zero immediately;
 										// old physical replay/GPU targets retire without blocking logical slot admission
@@ -60,6 +60,7 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // counters.realtimeLights/transitioningLocals count frame-global resident locals; positiveWeightLocals/bakedOnlyLocals
 // count radiance-relevant packet locals. promotions/demotions count frame-global changes. Sun is always excluded.
 // realtimeLightIds contains {"lightId":id,"score":n,"weight":n,"departing":bool}, frozen at that completed view.
+// score is inverse main-camera emitter distance (0 when PVS/style/radiance-ineligible), not receiver contribution.
 // "sunVisibility":{"receiverFaces":n,"mappedFaces":n,"pages":n,"unresolvedDraws":n} (actual current-generation backend
 // snapshot when the report is requested), "casterValidation":[{"light":id,"testedCount":n,"reportedCount":n,
 // "exhaustiveCount":n,"mismatchCount":n,"exceeds4096":bool}]
@@ -167,6 +168,8 @@ void ShadowMapsDX12_Shutdown();
 // backend, and supplies the native generation for ABI6 route 1. An established
 // PENDING restore can initialize selected-light state; actual views require READY.
 // PrepareMap copies selected lights with every inverse receiver span empty.
+// Camera PVS is loaded from standard BSP planes/nodes, leaf v0/v1 and visibility;
+// absent visibility is all-visible, malformed available PVS/tree rejects admission.
 // Selected-light maps also require server transmission readiness before drawing.
 // Failure latches an explicit error; admission glue/runtime rejection disconnects.
 bool ShadowMapsDX12_LevelInitPreEntity( const char *pMapName, char *error, int errorBytes );
@@ -217,9 +220,9 @@ enum ShadowMapReceiverViewKind_t
 	SHADOWMAP_VIEW_VIEWMODEL,
 };
 
-// RenderView calls once before monitors/sky/child receivers. A temporary no-draw main-camera push establishes
-// the engine occlusion context; its complete frustum intersected with map bounds drives all local selection.
-// absolute (nonpaused) frame time advances ramps once; main/overlay/stereo repeats cannot alter this frame.
+// RenderView calls once before monitors/sky/child receivers. Main player position drives cached BSP PVS
+// eligibility and nearest-emitter priority; angles/FOV/projection changes never reset local residency.
+// Absolute (nonpaused) frame time advances ramps once; main/overlay/stereo repeats cannot alter this frame.
 void ShadowMapsDX12_PrepareMainView( const CViewSetup &viewSetup );
 
 // Builds/refreshes caster depth BEFORE receiver world/decal-list construction, uploads the immutable lighting

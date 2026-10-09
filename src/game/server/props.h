@@ -336,9 +336,11 @@ public:
 	~CPhysicsProp();
 	CPhysicsProp( void ) 
 	{
+		m_bShadowMapOrdinaryClass = false;
 	}
 
 	void Spawn( void );
+	virtual void OnRestore();
 	void Precache();
 	bool CreateVPhysics( void );
 	bool OverridePropdata( void );
@@ -371,6 +373,7 @@ public:
 	virtual int OnTakeDamage( const CTakeDamageInfo &info );
 	int DrawDebugTextOverlays(void);
 	bool IsGib();
+	virtual bool IsOrdinaryShadowMapPhysicsProp() { return m_bShadowMapOrdinaryClass && !IsGib(); }
 	DECLARE_DATADESC();
 
 	// Specific interactions
@@ -380,6 +383,10 @@ public:
 	float	GetMassScale( void ) { return m_massScale; }
 
 private:
+	// Derived identity, deliberately not saved: reconstruct after Spawn/OnRestore.
+	void UpdateShadowMapPhysicsClass();
+	bool m_bShadowMapOrdinaryClass;
+
 	// Compute impulse to apply to the enabled entity.
 	void ComputeEnablingImpulse( int index, gamevcollisionevent_t *pEvent );
 

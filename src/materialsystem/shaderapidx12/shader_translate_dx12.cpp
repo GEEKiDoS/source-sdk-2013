@@ -484,6 +484,9 @@ bool CShaderTranslatorDX12::TranslateLegacy( const ShaderTranslationRequestDX12 
 		}
 		else
 		{
+			// ConvertShader replaces inputs with the shader's declarations, including absent stream inputs.
+			// The emitted IA signature below omits those inputs, but c3 must still clear for an unflexed draw.
+			converted.cpuFlexInput = inputs.FindRegisterIndex( D3DDECLUSAGE_POSITION, 1 ) != ShaderConv::VSInputDecls::INVALID_INDEX;
 			CUtlVector<NamedParameter> parameters;
 			for ( size_t i = 0; i < request.vertexInputCount; ++i )
 			{

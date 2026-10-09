@@ -2440,8 +2440,19 @@ BEGIN_DATADESC( CPhysicsProp )
 
 END_DATADESC()
 
+// The client network class is also inherited by weapons, projectiles and gibs.
+// Class identity is rebuilt at Spawn/OnRestore; gib and multiplayer mode remain live.
+static void SendProxy_ShadowMapOrdinaryPhysicsProp( const SendProp *pProp, const void *pStruct,
+	const void *pVarData, DVariant *pOut, int iElement, int objectID )
+{
+	CPhysicsProp *pPhysicsProp = (CPhysicsProp *)pStruct;
+	pOut->m_Int = pPhysicsProp->IsOrdinaryShadowMapPhysicsProp() ? 1 : 0;
+}
+
 IMPLEMENT_SERVERCLASS_ST( CPhysicsProp, DT_PhysicsProp )
 	SendPropBool( SENDINFO( m_bAwake ) ),
+	// Computed one-bit property: no new save field or mutation of authored effects.
+	SendPropInt( "m_bShadowMapOrdinaryPhysicsProp", 0, SIZEOF_IGNORE, 1, SPROP_UNSIGNED, SendProxy_ShadowMapOrdinaryPhysicsProp ),
 END_SEND_TABLE()
 
 // external function to tell if this entity is a gib physics prop
@@ -2466,6 +2477,20 @@ CPhysicsProp::~CPhysicsProp()
 bool CPhysicsProp::IsGib()
 {
 	return (m_spawnflags & SF_PHYSPROP_IS_GIB) ? true : false;
+}
+
+void CPhysicsProp::UpdateShadowMapPhysicsClass()
+{
+	// Stock Spawn normalizes physics_prop and prop_physics_override to prop_physics.
+	const char *pClassname = GetClassname();
+	m_bShadowMapOrdinaryClass = FStrEq( pClassname, "prop_physics" ) ||
+		FStrEq( pClassname, "prop_physics_multiplayer" );
+}
+
+void CPhysicsProp::OnRestore()
+{
+	BaseClass::OnRestore();
+	UpdateShadowMapPhysicsClass();
 }
 
 //-----------------------------------------------------------------------------
@@ -2493,6 +2518,7 @@ void CPhysicsProp::Spawn( )
 	{
 		SetClassname( "prop_physics" );
 	}
+	UpdateShadowMapPhysicsClass();
 
 	if ( HasSpawnFlags( SF_PHYSPROP_DEBRIS ) || HasInteraction( PROPINTER_PHYSGUN_CREATE_FLARE ) )
 	{
@@ -5564,6 +5590,11 @@ class CPhysicsPropMultiplayer : public CPhysicsProp, public IMultiplayerPhysics
 	}
 
 	int		GetPhysicsMode() { return m_iPhysicsMode; }
+
+	virtual bool IsOrdinaryShadowMapPhysicsProp()
+	{
+		return BaseClass::IsOrdinaryShadowMapPhysicsProp() && m_iPhysicsMode == PHYSICS_MULTIPLAYER_SOLID;
+	}
 
 // IMultiplayerPhysics:
 	int		GetMultiplayerPhysicsMode() { return m_iPhysicsMode; }

@@ -921,6 +921,18 @@ static bool ReflectRecordInputsDX12( ShaderRecordDX12 *pRecord )
 	if ( !ReadShaderInputSignatureDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, pRecord->inputSignature,
 	         bNative ? &pRecord->nativeConstantRegisters : nullptr, bNative && !pRecord->stagePixel ? &pRecord->translated.outputLinkage : nullptr ) )
 		return false;
+	if ( bNative && !pRecord->stagePixel && !pRecord->stageGeometry )
+	{
+		// Native linkage metadata already lives in translated; cache flex ownership there too.
+		// Classify once before publishing signature readiness, including private motion/shadow records.
+		pRecord->translated.cpuFlexInput = false;
+		for ( const ShaderInputElementDX12 &input : pRecord->inputSignature )
+			if ( input.semanticIndex == 1 && !V_stricmp( input.semantic.Get(), "POSITION" ) )
+			{
+				pRecord->translated.cpuFlexInput = true;
+				break;
+			}
+	}
 	pRecord->inputSignatureReady = true;
 	pRecord->linkageHashValid = false;
 	pRecord->constantLayoutValid = false;
@@ -1805,6 +1817,17 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			else if ( m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
 		}
+	}
+	// c3 belongs to CPU flex only for a VS consuming POSITION1; postprocess/custom shaders may
+	// legitimately use the same register for material data. Classification is cached at legacy
+	// translation/native reflection and follows the actual selected variant, including memo restores.
+	if ( vsRecord->translated.cpuFlexInput )
+	{
+		// Legacy translated IA signatures omit missing streams; original declaration metadata
+		// above still identifies the flex consumer and clears stale enables on an unflexed draw.
+		// A float3 POSITION1 defaults w to 1 in IA, so only a real wrinkle channel may enable .y.
+		const float flexScale[4] = { meshStreams && bindings[2].buffer ? 1.f : 0.f, meshStreams && flexWrinkle ? 1.f : 0.f, 0.f, 0.f };
+		SetVertexShaderConstant( VERTEX_SHADER_FLEXSCALE, flexScale, 1 );
 	}
 	if ( sunCoordinateInput )
 	{
