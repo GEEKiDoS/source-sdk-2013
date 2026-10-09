@@ -327,7 +327,7 @@ public:
 		}
 	}
 
-	void RetainResource( ID3D12Resource *pResource );
+	void RetainResource( ID3D12Pageable *pResource );
 	// Workers enqueue handles only; the recording owner drains at public API boundaries.
 	void QueueTextureDeletion( uintptr_t hTexture );
 	void TakeTextureDeletionRequests( CUtlVector<uintptr_t> &handles );
@@ -541,7 +541,7 @@ private:
 		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
 		uint64_t fence = 0;
-		CUtlVector<ID3D12Resource *> retained;
+		CUtlVector<ID3D12Pageable *> retained;
 	};
 
 	FrameContext m_Frames[3];

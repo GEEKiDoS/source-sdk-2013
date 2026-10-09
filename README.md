@@ -58,6 +58,16 @@ Without it every DX12 draw fails and the screen stays black. Launch with `game\m
 
 DX12 suppresses legacy `env_lightglow` overlays and sprite draws whose `$basetexture` is `sprites/light_glow01`, `sprites/light_glow02`, or `sprites/light_glow03` (including the additive/no-depth material variants). Other sprite textures and sun overlays remain enabled. `-dx9` retains the original glow rendering.
 
+DX12 occlusion queries retain one logical result across command-list submissions. Submission ends and resolves each active native segment before closing its list, then resumes on the next list; completed segment counts are accumulated with fenced readback reuse. Query destruction and shutdown also balance native intervals and retain their GPU objects. RTX 4090 and WARP regression runs verified exact visible/hidden/reused counts and sampler-descriptor rollover without debug-layer errors. This fixes the reproduced cross-list query violation; the exact native API that failed in the original queued-submission dump was not established.
+
+Streamline SDK logging is off by default, with no SDK callback forwarding into the game console. `-dx12framegenlog` enables verbose plugin-directory file logging without console forwarding. Renderer errors, DLSS-G API diagnostics and NVIDIA signature validation remain enabled. The signed interposer still prints its own unconditional signature-success notices to process stdout; no signed DLL modification or process-wide stdout filter is used.
+
+Optional Counter-Strike: Source content mounts below the required episodic/HL2 content. Keep that precedence: particle initialization reads the first `GAME` particle manifest, so putting CSS first hides Episode Two's Vortigaunt effects. Hand-glow and charge-token callbacks also check for a missing particle definition before assigning its control-point entity; successful effects retain their normal attachment.
+
+Viewmodel sway bounds its facing interpolation factor to `[0, 1]`, preventing long frames from extrapolating the stored facing past the camera without changing normal interpolation.
+
+DX12 shadow-caster notifications do not sample world bounds synchronously. Entity transform setters notify before committing their local values; a following actor's bound query could recompute its viewmodel parent's absolute transform from the old angles and clear the dirty flag. Bounds refresh at the ordinary leaf flush or shadow query instead, with a separate pending bit preserving pose-only silhouette changes and both old/new affected light volumes. Ineligible casters, including viewmodels, are not sampled. An owned `ep2_outland_06` pickup-ready/closed/ready-again and friendly-NPC pistol lower/raise run completed normally: all 2,760 sampled local/absolute rotations matched, and the open gravity gun and lowered pistol were visually verified. Temporary pose/stack instrumentation was removed afterward.
+
 ### DX12 Unicode title DLL (Windows x64)
 
 The `unicode` project builds a source-compatible replacement for the installed x64 `unicode.dll`. It exports the same `CreateInterface` factory and `VENGINEUNICODE001` methods; unless `-dx9` (or `-gl`/`-vulkan`/`-noshaderapi`) is passed, an x64 launch changes an incoming `Direct3D 9` window-title substring to `Direct3D 12`. Do not overwrite the Steam SDK installation. Generate and build the isolated project from `src`:

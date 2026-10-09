@@ -406,6 +406,7 @@ struct ShadowMapSunChart
 	float3 normal;
 	float centerAxial;
 	float planeDenominator;
+	float2 depthGradient;
 	uint mapIndex;
 	bool valid;
 };
@@ -436,6 +437,14 @@ ShadowMapSunChart ShadowMap_MakeSunChart( uint mapIndex, float3 p, float3 normal
 	if ( c.valid )
 	{
 		c.centerAxial += ( clip.z / clip.w ) * ( c.depth.y - c.depth.x );
+		if ( c.planeDenominator != 0.0 && abs( c.planeDenominator ) >= 1e-4 * length( cSunTravel.xyz ) )
+		{
+			float3 dx = cSunBasisX.xyz * c.depth.z;
+			float3 dy = -cSunBasisY.xyz * c.depth.z;
+			dx -= cSunTravel.xyz * ( dot( c.normal, dx ) / c.planeDenominator );
+			dy -= cSunTravel.xyz * ( dot( c.normal, dy ) / c.planeDenominator );
+			c.depthGradient = float2( dot( c.worldToClip[2].xyz, dx ), dot( c.worldToClip[2].xyz, dy ) ) / clip.w;
+		}
 		uint width = 0, height = 0;
 		if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) g_ShadowCascadeAtlas.GetDimensions( width, height );
 		else g_ShadowStaticSun.GetDimensions( width, height );
@@ -469,6 +478,15 @@ bool ShadowMap_SunPreflight( ShadowMapSunChart c, float footprint )
 	}
 	return result;
 }
+// Bilinear PCF compares four physical texel centers. A single reference for
+// all four recreates self-shadowing on sloped receivers despite plane correction.
+float ShadowMap_ComparePlaneTexels( float4 stored, float reference, float2 gradient, float2 fraction )
+{
+	float first = reference - dot( gradient, fraction );
+	float4 references = first + float4( 0.0, gradient.x, gradient.y, gradient.x + gradient.y );
+	float4 visibility = float4( references <= stored );
+	return lerp( lerp( visibility.x, visibility.y, fraction.x ), lerp( visibility.z, visibility.w, fraction.x ), fraction.y );
+}
 float ShadowMap_SunCompare( ShadowMapSunChart c, float2 offset, bool usePlane )
 {
 	float result = 1.0;
@@ -477,7 +495,24 @@ float ShadowMap_SunCompare( ShadowMapSunChart c, float2 offset, bool usePlane )
 		float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, usePlane ), 1.0 ) );
 		float2 atlasUV = ( float2( c.rect.xy ) + ShadowMap_ClipUV( clip ) * c.rect.z ) / c.atlasSize;
 		float reference = usePlane ? clip.z / clip.w : ( c.centerAxial - c.depth.x ) / ( c.depth.y - c.depth.x );
-		if ( c.mapIndex < DX12_SHADOW_CSM_CASCADES ) result = g_ShadowCascadeAtlas.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
+		if ( usePlane )
+		{
+			float2 pixel = ShadowMap_ClipUV( clip ) * c.rect.z - 0.5;
+			int2 first = int2( floor( pixel ) ) + int2( c.rect.xy );
+			float4 stored;
+			if ( c.mapIndex < DX12_SHADOW_CSM_CASCADES )
+				stored = float4( g_ShadowCascadeAtlas.Load( int3( first, 0 ) ),
+					g_ShadowCascadeAtlas.Load( int3( first + int2( 1, 0 ), 0 ) ),
+					g_ShadowCascadeAtlas.Load( int3( first + int2( 0, 1 ), 0 ) ),
+					g_ShadowCascadeAtlas.Load( int3( first + int2( 1, 1 ), 0 ) ) );
+			else
+				stored = float4( g_ShadowStaticSun.Load( int3( first, 0 ) ),
+					g_ShadowStaticSun.Load( int3( first + int2( 1, 0 ), 0 ) ),
+					g_ShadowStaticSun.Load( int3( first + int2( 0, 1 ), 0 ) ),
+					g_ShadowStaticSun.Load( int3( first + int2( 1, 1 ), 0 ) ) );
+			result = ShadowMap_ComparePlaneTexels( stored, reference, c.depthGradient, frac( pixel ) );
+		}
+		else if ( c.mapIndex < DX12_SHADOW_CSM_CASCADES ) result = g_ShadowCascadeAtlas.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
 		else result = g_ShadowStaticSun.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
 	}
 	return result;
@@ -596,6 +631,8 @@ struct ShadowMapLocalChart
 	float radial;
 	float planeNumerator;
 	uint homeFace;
+	float planeDepthScale;
+	float2 homeDepthGradient;
 	uint lightIndex;
 	float4x4 homeMatrix;
 	uint4 homeRect;
@@ -634,6 +671,11 @@ ShadowMapLocalChart ShadowMap_MakeLocalChart( uint lightIndex, RuntimeShadowLigh
 			c.forward = normalize( homeMatrix[3].xyz );
 			c.right = normalize( homeMatrix[0].xyz );
 			c.up = normalize( homeMatrix[1].xyz );
+			if ( c.planeNumerator != 0.0 )
+			{
+				c.planeDepthScale = -light.shadowNear / ( 1.0 - light.shadowNear / light.shadowFar ) / c.planeNumerator / light.planeToTexel;
+				c.homeDepthGradient = c.planeDepthScale * float2( dot( c.normal, c.right ), -dot( c.normal, c.up ) );
+			}
 			uint originalFace = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( p - light.origin ) : 0;
 			c.valid = c.valid && ShadowMap_InCore( mul( ShadowMap_LocalMatrix( lightIndex, originalFace ), float4( p, 1.0 ) ), g_ShadowLights[lightIndex].faces[originalFace].w );
 		}
@@ -705,7 +747,20 @@ float ShadowMap_LocalCompare( RuntimeShadowLightGpu light, ShadowMapLocalChart c
 		float3 q = ShadowMap_LocalPoint( light, c, ray, usePlane );
 		float4 clip = mul( faceMatrix, float4( q, 1.0 ) );
 		float2 atlasUV = ( float2( rect.yz ) + ShadowMap_ClipUV( clip ) * rect.w ) / 4096.0;
-		result = g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, clip.z / clip.w );
+		if ( usePlane )
+		{
+			float2 gradient = c.homeDepthGradient;
+			[branch] if ( face != c.homeFace )
+				gradient = c.planeDepthScale * float2( dot( c.normal, normalize( faceMatrix[0].xyz ) ), -dot( c.normal, normalize( faceMatrix[1].xyz ) ) );
+			float2 pixel = ShadowMap_ClipUV( clip ) * rect.w - 0.5;
+			int2 first = int2( floor( pixel ) ) + int2( rect.yz );
+			float4 stored = float4( g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].Load( int3( first, 0 ) ),
+				g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].Load( int3( first + int2( 1, 0 ), 0 ) ),
+				g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].Load( int3( first + int2( 0, 1 ), 0 ) ),
+				g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].Load( int3( first + int2( 1, 1 ), 0 ) ) );
+			result = ShadowMap_ComparePlaneTexels( stored, clip.z / clip.w, gradient, frac( pixel ) );
+		}
+		else result = g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, clip.z / clip.w );
 	}
 	return result;
 }

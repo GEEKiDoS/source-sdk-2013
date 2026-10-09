@@ -318,6 +318,10 @@ public:
 	void BeginOcclusionQueryDrawing( ShaderAPIOcclusionQuery_t ) override;
 	void EndOcclusionQueryDrawing( ShaderAPIOcclusionQuery_t ) override;
 	int OcclusionQuery_GetNumPixelsRendered( ShaderAPIOcclusionQuery_t hQuery, bool bFlush = false ) override;
+	// Logical intervals survive Submit; every native interval is contained in one command list.
+	void FinishOcclusionQueriesForSubmit();
+	void ResumeOcclusionQueriesAfterSubmit();
+	void StopOcclusionQueriesForShutdown();
 	void SetFlashlightState( const FlashlightState_t &state, const VMatrix &worldToTexture ) override;
 	void ClearVertexAndPixelShaderRefCounts() override;
 	void PurgeUnusedVertexAndPixelShaders() override;
@@ -864,6 +868,11 @@ private:
 	void CopyTextureRegionDX12( ShaderAPITextureHandle_t hSource, ShaderAPITextureHandle_t hDestination, Rect_t *pSourceRect, Rect_t *pDestinationRect );
 	struct OcclusionQueryDX12;
 	CUtlVector<OcclusionQueryDX12 *> m_OcclusionQueries;
+	CUtlVector<OcclusionQueryDX12 *> m_ActiveOcclusionQueries;
+	bool AddOcclusionQuerySegment( OcclusionQueryDX12 *query );
+	bool BeginOcclusionQuerySegment( OcclusionQueryDX12 *query );
+	void EndOcclusionQuerySegment( OcclusionQueryDX12 *query );
+	void CollectOcclusionQuerySegments( OcclusionQueryDX12 *query, uint64_t completed );
 	CUtlHashtable<ShaderAPITextureHandle_t, TextureRecord *> m_Textures;
 
 	// Handles are never reused, so a direct-mapped cache of live records only needs clearing on deletion.

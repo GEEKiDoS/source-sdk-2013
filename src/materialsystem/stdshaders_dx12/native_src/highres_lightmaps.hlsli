@@ -44,13 +44,28 @@ struct HlightReceiver
 };
 // Per-invocation state, not a UAV read. Report after material derivatives have run.
 static uint hlightRejected = 0;
-void HighresLightmap_Reject()
+static uint hlightReason = 0;
+static uint hlightDetail = 0;
+static uint4 hlightLocation = 0; // one-based native page, cell x/y bits, one-based face ID
+static float2 hlightNativeUV = 0;
+void HighresLightmap_Reject(uint reason, uint detail = 0)
 {
+    if (hlightRejected == 0) { hlightReason = reason; hlightDetail = detail; }
     hlightRejected = 1;
 }
 void HighresLightmap_Report()
 {
-    if (hlightRejected != 0) HlightFailure.InterlockedOr(0, 1);
+    if (hlightRejected != 0)
+    {
+        uint previous;
+        HlightFailure.InterlockedCompareExchange(0, 0, 1, previous);
+        if (previous == 0)
+        {
+            // Preserve the first failing invocation, not a mixture of parallel pixels.
+            HlightFailure.Store4(4, uint4(hlightReason, hlightLocation.xyz));
+            HlightFailure.Store4(20, uint4(hlightLocation.w, asuint(hlightNativeUV), hlightDetail));
+        }
+    }
 }
 float4 HighresLightmap_Finish(float4 color)
 {
@@ -61,7 +76,7 @@ float4 HighresLightmap_Tile(uint index, float2 q)
 {
     uint count, stride;
     HlightTiles.GetDimensions(count, stride);
-    if (index >= count) { HighresLightmap_Reject(); return 0; }
+    if (index >= count) { HighresLightmap_Reject(3, index); return 0; }
     HlightTileGpuDX12 tile = HlightTiles[index];
     float2 uv = (tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5) / tile.size.z;
     float3 location = float3(uv, tile.address.y);
@@ -72,7 +87,7 @@ float4 HighresLightmap_Tile(uint index, float2 q)
     case 2: return HlightPages8192.SampleLevel(HlightLinear, location, 0);
     case 3: return HlightPages16384.SampleLevel(HlightLinear, location, 0);
     }
-    HighresLightmap_Reject(); return 0;
+    HighresLightmap_Reject(4, tile.address.x); return 0;
 }
 HlightReceiver HighresLightmap_Begin(float2 baseUV)
 {
@@ -83,11 +98,14 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV)
     r.sun = 0; // Rejected owners cannot appear unoccluded while GPU rejection is in flight.
     precise float2 pixel = baseUV * cHlightRoute.yz;
     int2 owner = int2(floor(pixel));
-    if (any(owner < 0) || any(owner >= int2(cHlightRoute.yz))) { HighresLightmap_Reject(); return r; }
+    hlightNativeUV = baseUV;
+    hlightLocation = uint4(cHlightRoute.w, asuint(owner), 0);
+    if (any(owner < 0) || any(owner >= int2(cHlightRoute.yz))) { HighresLightmap_Reject(1); return r; }
     uint faceId = HlightFaceIds.Load(int3(owner, 0));
+    hlightLocation.w = faceId;
     uint count, stride;
     HlightFaces.GetDimensions(count, stride);
-    if (faceId == 0 || faceId > count) { HighresLightmap_Reject(); return r; }
+    if (faceId == 0 || faceId > count) { HighresLightmap_Reject(2, faceId); return r; }
     r.face = HlightFaces[faceId - 1];
     r.faceId = faceId - 1;
     // Explicitly unlit BSP faces can still own regular (including bumped)
@@ -120,7 +138,7 @@ float3 HighresLightmap_RGB(HlightReceiver r, uint plane)
         uint tile = r.face.tiles[styleSlot][plane];
         if (tile == 0xffffffff) continue;
         uint style = r.face.styles[styleSlot];
-        if (style >= 64) { HighresLightmap_Reject(); continue; }
+        if (style >= 64) { HighresLightmap_Reject(5, style); continue; }
         rgb += (styleSlot == 0 && plane == 0 ? r.style0BaseRGB : HighresLightmap_Tile(tile, r.q).rgb) * cHlightStyles[style / 4][style % 4];
     }
     // Captured actual native dynamic additions use the native padded bumped stride, not highres coordinates.

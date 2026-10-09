@@ -440,11 +440,8 @@ bool verifyEmbeddedSignature(const wchar_t* pathToFile)
         {
             // The secondary signature must be from NVIDIA
             valid &= isSignedByNVIDIA(pathToFile);
-            if (valid)
-            {
-                printf("File '%S' is signed by NVIDIA and the signature was verified.\n", pathToFile);
-            }
-            else
+            // Successful verification is intentionally quiet; retain diagnostics for rejected modules.
+            if (!valid)
             {
                 printf("File '%S' is NOT correctly signed - Streamline will not load unsecured modules\n", pathToFile);
             }

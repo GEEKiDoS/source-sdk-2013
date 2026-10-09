@@ -365,9 +365,9 @@ bool CShaderDeviceDX12::BeginRecording()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Keeps pResource alive until the current recording's fence completes
+// Purpose: Keeps resources and query heaps alive until the current recording's fence completes
 //-----------------------------------------------------------------------------
-void CShaderDeviceDX12::RetainResource( ID3D12Resource *pResource )
+void CShaderDeviceDX12::RetainResource( ID3D12Pageable *pResource )
 {
 	if ( pResource && m_bRecording && IsRecordingOwner() )
 	{
@@ -409,6 +409,10 @@ uint64_t CShaderDeviceDX12::Submit( bool bWait )
 		return 0;
 	}
 	const bool bTiming = GpuTimingBeforeSubmit();
+	// A logical occlusion interval can cross any Submit (including descriptor-pressure waits),
+	// but D3D12 requires each native Begin/End pair to stay on this list before it is closed.
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->FinishOcclusionQueriesForSubmit();
 	FrameContext &frame = m_Frames[m_nFrameIndex];
 	const uint64_t nValue = m_nFenceValue + 1;
 	// Recorded commands replay, then Close/ExecuteCommandLists/Signal run, in FIFO order (inline without a worker).
@@ -436,6 +440,8 @@ uint64_t CShaderDeviceDX12::Submit( bool bWait )
 		return 0;
 	if ( bTiming && !m_bShadowTimingEnabled && !m_bGpuTimingStopping )
 		GpuTimingAfterSubmit();
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->ResumeOcclusionQueriesAfterSubmit();
 	return nValue;
 }
 
@@ -1589,6 +1595,8 @@ void CShaderDeviceDX12::ShutdownDevice()
 {
 	// The final Submit may reset a list, but must not record new queries referencing soon-to-be-released heaps.
 	m_bGpuTimingStopping = true;
+	if ( g_pShaderAPIDX12 )
+		g_pShaderAPIDX12->StopOcclusionQueriesForShutdown();
 	StopSubmitThread();
 	if ( m_bRecording && IsRecordingOwner() && m_pFence && !m_bFailed )
 		Submit( true );

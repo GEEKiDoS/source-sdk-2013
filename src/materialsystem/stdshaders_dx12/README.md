@@ -113,6 +113,34 @@ A known neutral `route.enabled=0` preserves native RGB/alpha, native normalizati
 gather; an invalid owner with `route.enabled=1` contributes neither baked RGB nor selected direct while
 the real GPU failure is reported. Neutral metadata-only maps are not mistaken for malformed owners.
 
+The failure UAV now records nine uint32 words:
+`{flag, reason, page+1, cellX, cellY, face+1, UVbitsX, UVbitsY, detail}`.
+An atomic claim selects one complete failing invocation; other pixels cannot mix their payload into it.
+Reasons distinguish coordinate bounds, owner ID, tile index, page group and lightstyle failures.
+The renderer initializes/copies/maps all 36 bytes, using four-byte upload elements.
+With a debugger attached, the renderer breaks immediately after decoding a current-generation rejection,
+before the fatal error and before unmapping its readback. The mapped nine-word payload, decoded diagnostic
+and renderer state remain available for inspection. Without a debugger, rejection remains fail-closed;
+continuing from the breakpoint executes the existing fatal path.
+The RTX 4090 `highresgpu` fixture verifies concurrent rejection records with GPU validation;
+its shadow resources use the production 4096-square physical atlas, not a normalized one-texel substitute.
+This diagnostic does not itself fix or excuse a traversal ownership failure.
+
+The user-triggered `ep2_outland_06` rejection was captured before continuing: page 6 (1024 by 512),
+UV `(1.0003942251205444, 0.26560115814208984)` addressed cell `(1024, 135)`.
+It failed coordinate bounds before owner lookup; the producing draw and source defect remain unresolved.
+Temporary per-draw attribution and scripted replay code were removed; normal constant caching remains intact.
+Without a debugger, the guarded breakpoint does not create a dump itself. The existing fatal handling may
+produce a Steam dump; retain the matching renderer/client binaries, PDBs, native shader pack and game log.
+
+Receiver-plane shadow filtering compares each of the four physical texel centers against its own
+plane depth, then bilinearly blends visibility. A single reference passed to hardware bilinear
+comparison can self-shadow a diagonal receiver despite having no blocker.
+Sun charts use an orthographic depth gradient; local charts use the perspective plane gradient,
+including remapped cube-face bases. Degenerate-plane fallback and caster bias remain unchanged.
+The production `shadowmaps` smoke on RTX 4090 passed PCF/PCSS diagonal-plane phase coverage:
+unblocked visibility was exactly 1 and real-blocker visibility exactly 0, with no debug-layer errors.
+
 The packer publishes `<logical>.hlight` beside each participating VCS: four little-endian uint32 words
 `{0x544c484e, 1, lightmapSamplerMask, highresAbi}`. Ordinary/old variants carry original sampler roles;
 highres vertex variants carry mask zero and ABI one. Roles include reflective/water sampler 3 and decal

@@ -303,6 +303,7 @@ private:
 		Vector				m_ShadowCasterMins, m_ShadowCasterMaxs;
 		bool				m_bShadowCasterBoundsValid;
 		bool				m_bUpdatingShadowCasterBounds;
+		bool				m_bShadowCasterBoundsDirty;
 	};
 
 	// The leaf contains an index into a list of renderables
@@ -861,6 +862,7 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 	info.m_UnlinkedShadowCasterIndex = -1;
 	info.m_bShadowCasterBoundsValid = false;
 	info.m_bUpdatingShadowCasterBounds = false;
+	info.m_bShadowCasterBoundsDirty = true;
 	if ( IsViewModelRenderGroup( (RenderGroup_t)info.m_RenderGroup ) )
 	{
 		AddToViewModelList( handle );
@@ -913,7 +915,6 @@ void CClientLeafSystem::CreateRenderableHandle( IClientRenderable* pRenderable, 
 	}
 
 	NewRenderable( pRenderable, group, flags );
-	UpdateShadowCasterBounds( pRenderable->RenderHandle() );
 }
 
 
@@ -966,7 +967,6 @@ void CClientLeafSystem::AddRenderable( IClientRenderable* pRenderable, RenderGro
 	NewRenderable( pRenderable, group, flags );
 	ClientRenderHandle_t handle = pRenderable->RenderHandle();
 	m_DirtyRenderables.AddToTail( handle );
-	UpdateShadowCasterBounds( handle );
 }
 
 void CClientLeafSystem::RemoveRenderable( ClientRenderHandle_t handle )
@@ -1501,8 +1501,8 @@ void CClientLeafSystem::InsertIntoTree( ClientRenderHandle_t &handle )
 	if ( ThreadInMainThread() )
 	{
 		UpdateUnlinkedShadowCaster( handle );
-		// Some entity setters mark the handle dirty before committing the transform.
-		// Reconcile at the ordinary flush as well as at the immediate notification.
+		// Entity setters notify before committing their transform. Sample bounds
+		// only at this flush or in the shadow query, never from the notification.
 		UpdateShadowCasterBounds( handle );
 	}
 }
@@ -1557,8 +1557,9 @@ void CClientLeafSystem::RenderableChanged( ClientRenderHandle_t handle )
 	}
 #endif
 	UpdateUnlinkedShadowCaster( handle );
-	// Bounds can change without moving the root (bones, parenting or opacity/pose).
-	UpdateShadowCasterBounds( handle );
+	// Sampling here can clear a parent's dirty absolute transform before its
+	// setter commits the local value. Preserve pose-only changes for the flush.
+	m_Renderables[handle].m_bShadowCasterBoundsDirty = true;
 }
 
 //-----------------------------------------------------------------------------
@@ -1597,8 +1598,11 @@ void CClientLeafSystem::UpdateUnlinkedShadowCaster( ClientRenderHandle_t handle 
 
 void CClientLeafSystem::UpdateShadowCasterBounds( ClientRenderHandle_t handle )
 {
-	// Ordinary maps must not trigger hitbox/bone work from registration notifications.
-	if ( !ShadowMapsDX12_Active() )
+	// Ineligible renderables (including viewmodels) need no caster-bound work.
+	if ( !ShadowMapsDX12_Active() || !IsEligibleShadowCaster( handle ) )
+		return;
+	if ( !m_Renderables[handle].m_bShadowCasterBoundsDirty &&
+		m_Renderables[handle].m_bShadowCasterBoundsValid )
 		return;
 
 	// Following actors can set up their parent's bones while obtaining world bounds.
@@ -1608,6 +1612,8 @@ void CClientLeafSystem::UpdateShadowCasterBounds( ClientRenderHandle_t handle )
 
 	IClientRenderable *pRenderable = m_Renderables[handle].m_pRenderable;
 	m_Renderables[handle].m_bUpdatingShadowCasterBounds = true;
+	// A nested notification must survive this sample for a later refresh.
+	m_Renderables[handle].m_bShadowCasterBoundsDirty = false;
 	Vector newMins, newMaxs;
 	CalcRenderableWorldSpaceAABB( pRenderable, newMins, newMaxs );
 
@@ -1746,12 +1752,16 @@ void CClientLeafSystem::CollectShadowCaster( ClientRenderHandle_t handle, const 
 
 	IClientRenderable *pRenderable = m_Renderables[handle].m_pRenderable;
 	Vector mins, maxs;
+	// Consume this notification once, even if the silhouette changes without
+	// changing bounds. Nested notifications remain pending for the next query.
+	bool boundsDirty = m_Renderables[handle].m_bShadowCasterBoundsDirty;
+	m_Renderables[handle].m_bShadowCasterBoundsDirty = false;
 	// Never use cached registration bounds, m_RenderLeaf or the fast insertion
 	// approximation for this test. Parented actors need their current world bounds.
 	CalcRenderableWorldSpaceAABB( pRenderable, mins, maxs );
 	if ( !m_Renderables.IsValidIndex( handle ) || m_Renderables[handle].m_pRenderable != pRenderable )
 		return;
-	if ( !m_Renderables[handle].m_bShadowCasterBoundsValid ||
+	if ( boundsDirty || !m_Renderables[handle].m_bShadowCasterBoundsValid ||
 		m_Renderables[handle].m_ShadowCasterMins != mins || m_Renderables[handle].m_ShadowCasterMaxs != maxs )
 	{
 		// Include transforms committed after RenderableChanged, even when this query

@@ -435,14 +435,49 @@ static __declspec( noinline ) bool TranslateVariant( ShaderRecordDX12 *record, b
 
 struct CShaderAPIDX12::OcclusionQueryDX12
 {
+	struct Segment
+	{
+		Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+		uint64_t fence = 0;
+		bool inResult = false;
+	};
+
 	Microsoft::WRL::ComPtr<ID3D12QueryHeap> heap;
-	Microsoft::WRL::ComPtr<ID3D12Resource> readback;
-	uint64_t fence = 0;
+	CUtlVector<Segment *> segments;
+	Segment *nativeActive = nullptr;
+	uint64_t lastUseFence = 0, resultFence = 0, pixels = 0;
 	bool active = false, ended = false, error = false, destroyed = false;
+
+	~OcclusionQueryDX12() { segments.PurgeAndDeleteElements(); }
 };
 
 //-----------------------------------------------------------------------------
-// Purpose: Creates a one-slot occlusion query heap with its readback buffer; nullptr on failure
+// Purpose: Allocates another readback slot only when all existing slots are still in flight
+//-----------------------------------------------------------------------------
+bool CShaderAPIDX12::AddOcclusionQuerySegment( OcclusionQueryDX12 *query )
+{
+	OcclusionQueryDX12::Segment *segment = new OcclusionQueryDX12::Segment;
+	D3D12_HEAP_PROPERTIES properties{};
+	properties.Type = D3D12_HEAP_TYPE_READBACK;
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = sizeof( uint64_t );
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &segment->readback ) ) ) )
+	{
+		delete segment;
+		return false;
+	}
+	query->segments.AddToTail( segment );
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Creates a query heap and its first reusable readback slot; nullptr on failure
 //-----------------------------------------------------------------------------
 CShaderAPIDX12::OcclusionQueryDX12 *CShaderAPIDX12::CreateOcclusionQuery()
 {
@@ -457,17 +492,7 @@ CShaderAPIDX12::OcclusionQueryDX12 *CShaderAPIDX12::CreateOcclusionQuery()
 		delete pQuery;
 		return nullptr;
 	}
-	D3D12_HEAP_PROPERTIES properties{};
-	properties.Type = D3D12_HEAP_TYPE_READBACK;
-	D3D12_RESOURCE_DESC desc{};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = sizeof( uint64_t );
-	desc.Height = 1;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.SampleDesc.Count = 1;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &pQuery->readback ) ) ) )
+	if ( !AddOcclusionQuerySegment( pQuery ) )
 	{
 		delete pQuery;
 		return nullptr;
@@ -4169,8 +4194,12 @@ void CShaderAPIDX12::ShutdownDeviceResources()
 	m_pBoundMaterial = nullptr;
 	m_pBoundMaterialPage = nullptr;
 	ProcessPendingTextureDeletes();
+	// Stop logical intervals before the final Submit: it must not resume them on its new list.
+	StopOcclusionQueriesForShutdown();
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 		m_pDevice->Submit( true );
+	// Also drain CPU replay if the device rejected Submit; recorded commands contain raw query pointers.
+	if ( m_pDevice ) m_pDevice->FlushSubmissions();
 	if ( m_pDevice ) m_pDevice->Lighting().Shutdown();
 	ReleaseTextureDeviceResources();
 	for ( OcclusionQueryDX12 *query : m_OcclusionQueries )
@@ -5112,6 +5141,118 @@ void CShaderAPIDX12::SetStandardVertexShaderConstants( float overbright )
 	SetVertexShaderConstant( VERTEX_SHADER_FLEXSCALE, flex, 1 );
 }
 
+// A heap slot may be reused on this one direct queue: each End/Resolve precedes its next Begin
+// in queue order. Readback slots cannot be reused until their fence completed and their result
+// was accumulated (or explicitly abandoned by a new logical Begin).
+void CShaderAPIDX12::CollectOcclusionQuerySegments( OcclusionQueryDX12 *query, uint64_t completed )
+{
+	for ( OcclusionQueryDX12::Segment *segment : query->segments )
+	{
+		if ( segment == query->nativeActive || !segment->fence || completed < segment->fence )
+			continue;
+		if ( segment->inResult && !query->error )
+		{
+			uint64_t value = 0;
+			void *mapped = nullptr;
+			const D3D12_RANGE readRange{ 0, sizeof( value ) };
+			if ( FAILED( segment->readback->Map( 0, &readRange, &mapped ) ) || !mapped )
+				query->error = true;
+			else
+			{
+				memcpy( &value, mapped, sizeof( value ) );
+				const D3D12_RANGE writtenRange{ 0, 0 };
+				segment->readback->Unmap( 0, &writtenRange );
+				// Saturate the public result without overflowing, regardless of the number of splits.
+				query->pixels += value > INT_MAX - query->pixels ? INT_MAX - query->pixels : value;
+			}
+		}
+		segment->inResult = false;
+		segment->fence = 0;
+	}
+}
+
+bool CShaderAPIDX12::BeginOcclusionQuerySegment( OcclusionQueryDX12 *query )
+{
+	Assert( !query->nativeActive );
+	CollectOcclusionQuerySegments( query, m_pDevice->CompletedFenceValue() );
+	if ( query->error )
+		return false;
+	OcclusionQueryDX12::Segment *available = nullptr;
+	for ( OcclusionQueryDX12::Segment *segment : query->segments )
+		if ( !segment->fence )
+		{
+			available = segment;
+			break;
+		}
+	if ( !available )
+	{
+		if ( !AddOcclusionQuerySegment( query ) )
+		{
+			query->error = true;
+			return false;
+		}
+		available = query->segments.Tail();
+	}
+	available->fence = m_pDevice->NextFenceValue();
+	available->inResult = true;
+	query->lastUseFence = available->fence;
+	query->nativeActive = available;
+	// Retain at Begin, not End: destruction/teardown may discard the logical result while
+	// CPU replay or the GPU still references the heap. Both objects outlive this recording.
+	m_pDevice->RetainResource( query->heap.Get() );
+	m_pDevice->RetainResource( available->readback.Get() );
+	m_pDevice->CommandList()->BeginQuery( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0 );
+	return true;
+}
+
+void CShaderAPIDX12::EndOcclusionQuerySegment( OcclusionQueryDX12 *query )
+{
+	if ( !query->nativeActive )
+		return;
+	CCommandRecorderDX12 *list = m_pDevice->CommandList();
+	Assert( list );
+	list->EndQuery( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0 );
+	list->ResolveQueryData( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0, 1, query->nativeActive->readback.Get(), 0 );
+	query->resultFence = query->nativeActive->fence;
+	query->nativeActive = nullptr;
+}
+
+void CShaderAPIDX12::FinishOcclusionQueriesForSubmit()
+{
+	// Only active handles are visited; no query allocation or full handle scan on the draw/idle-submit path.
+	for ( int i = 0; i < m_ActiveOcclusionQueries.Count(); )
+	{
+		OcclusionQueryDX12 *query = m_ActiveOcclusionQueries[i];
+		EndOcclusionQuerySegment( query );
+		if ( query->destroyed )
+		{
+			query->active = false;
+			m_ActiveOcclusionQueries.FastRemove( i );
+		}
+		else
+			++i;
+	}
+}
+
+void CShaderAPIDX12::ResumeOcclusionQueriesAfterSubmit()
+{
+	for ( OcclusionQueryDX12 *query : m_ActiveOcclusionQueries )
+		if ( !query->error )
+			BeginOcclusionQuerySegment( query );
+}
+
+void CShaderAPIDX12::StopOcclusionQueriesForShutdown()
+{
+	for ( OcclusionQueryDX12 *query : m_ActiveOcclusionQueries )
+	{
+		if ( m_pDevice && m_pDevice->CommandList() )
+			EndOcclusionQuerySegment( query );
+		query->active = false;
+		query->error = true;
+	}
+	m_ActiveOcclusionQueries.RemoveAll();
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Creates an occlusion query, first freeing destroyed queries the GPU no longer references
 //-----------------------------------------------------------------------------
@@ -5121,7 +5262,7 @@ ShaderAPIOcclusionQuery_t CShaderAPIDX12::CreateOcclusionQueryObject()
 	for ( int i = 0; i < m_OcclusionQueries.Count(); )
 	{
 		OcclusionQueryDX12 *query = m_OcclusionQueries[i];
-		if ( query->destroyed && ( !query->ended || completed >= query->fence ) )
+		if ( query->destroyed && !query->active && completed >= query->lastUseFence )
 		{
 			delete query;
 			m_OcclusionQueries.Remove( i );
@@ -5148,8 +5289,14 @@ void CShaderAPIDX12::DestroyOcclusionQueryObject( ShaderAPIOcclusionQuery_t hand
 		if ( entry == query )
 		{
 			query->destroyed = true;
-			if ( query->active )
-				query->error = true;
+			if ( query->active && m_pDevice && m_pDevice->CommandList() )
+			{
+				// Even a discarded active query must have a matching native End on this list.
+				EndOcclusionQuerySegment( query );
+				query->active = false;
+				m_ActiveOcclusionQueries.FindAndFastRemove( query );
+			}
+			query->error = true;
 			return;
 		}
 }
@@ -5163,28 +5310,31 @@ void CShaderAPIDX12::BeginOcclusionQueryDrawing( ShaderAPIOcclusionQuery_t handl
 			query->error = true;
 		return;
 	}
-	m_pDevice->CommandList()->BeginQuery( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0 );
-	query->active = true;
+	// A new logical Begin abandons the prior result, not the GPU's references to its slots.
+	for ( OcclusionQueryDX12::Segment *segment : query->segments )
+		segment->inResult = false;
+	query->pixels = query->resultFence = 0;
 	query->ended = false;
 	query->error = false;
+	if ( !BeginOcclusionQuerySegment( query ) )
+		return;
+	query->active = true;
+	m_ActiveOcclusionQueries.AddToTail( query );
 }
 
 void CShaderAPIDX12::EndOcclusionQueryDrawing( ShaderAPIOcclusionQuery_t handle )
 {
 	OcclusionQueryDX12 *query = reinterpret_cast<OcclusionQueryDX12 *>( handle );
-	if ( !query || !query->active || !m_pDevice || !m_pDevice->CommandList() )
+	if ( !query || query->destroyed || !query->active || !m_pDevice || !m_pDevice->CommandList() )
 	{
 		if ( query )
 			query->error = true;
 		return;
 	}
-	CCommandRecorderDX12 *list = m_pDevice->CommandList();
-	list->EndQuery( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0 );
-	list->ResolveQueryData( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0, 1, query->readback.Get(), 0 );
+	EndOcclusionQuerySegment( query );
 	query->active = false;
 	query->ended = true;
-	query->fence = m_pDevice->NextFenceValue();
-	m_pDevice->RetainResource( query->readback.Get() );
+	m_ActiveOcclusionQueries.FindAndFastRemove( query );
 }
 
 //-----------------------------------------------------------------------------
@@ -5194,11 +5344,11 @@ int CShaderAPIDX12::OcclusionQuery_GetNumPixelsRendered( ShaderAPIOcclusionQuery
 {
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 OcclusionQueryResult", DX12_ZONES_ACTIVE );
 	OcclusionQueryDX12 *query = reinterpret_cast<OcclusionQueryDX12 *>( handle );
-	if ( !query || query->destroyed || query->error )
+	if ( !query || query->destroyed || query->error || !m_pDevice || !m_pDevice->IsInitialized() )
 		return OCCLUSION_QUERY_RESULT_ERROR;
 	if ( query->active || !query->ended )
 		return OCCLUSION_QUERY_RESULT_PENDING;
-	if ( m_pDevice->CompletedFenceValue() < query->fence )
+	if ( m_pDevice->CompletedFenceValue() < query->resultFence )
 	{
 		if ( flush )
 		{
@@ -5206,24 +5356,19 @@ int CShaderAPIDX12::OcclusionQuery_GetNumPixelsRendered( ShaderAPIOcclusionQuery
 			if ( m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 			{
 				ProcessPendingTextureDeletes();
-				m_pDevice->Submit( true );
+				if ( !m_pDevice->Submit( true ) )
+				{
+					query->error = true;
+					return OCCLUSION_QUERY_RESULT_ERROR;
+				}
 				m_Pipeline.Reclaim( m_pDevice->CompletedFenceValue() );
 			}
 		}
-		if ( m_pDevice->CompletedFenceValue() < query->fence )
+		if ( m_pDevice->CompletedFenceValue() < query->resultFence )
 			return OCCLUSION_QUERY_RESULT_PENDING;
 	}
-	uint64_t value = 0;
-	void *mapped = nullptr;
-	D3D12_RANGE range{ 0, sizeof( value ) };
-	if ( FAILED( query->readback->Map( 0, &range, &mapped ) ) || !mapped )
-	{
-		query->error = true;
-		return OCCLUSION_QUERY_RESULT_ERROR;
-	}
-	memcpy( &value, mapped, sizeof( value ) );
-	query->readback->Unmap( 0, nullptr );
-	return value > INT_MAX ? INT_MAX : static_cast<int>( value );
+	CollectOcclusionQuerySegments( query, m_pDevice->CompletedFenceValue() );
+	return query->error ? OCCLUSION_QUERY_RESULT_ERROR : static_cast<int>( query->pixels );
 }
 
 void CShaderAPIDX12::SetFlashlightState( const FlashlightState_t &state, const VMatrix &worldToTexture )

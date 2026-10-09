@@ -64,9 +64,6 @@
 			// VPK and we can avoid making thousands of file system calls to attempt to open files
 			// in folders where they don't exist.  (Searching a VPK is much faster than making an operating
 			// system call.)
-			// Counter-Strike: Source content for de_dust2 acceptance (appid 240).
-			game				|appid_240|cstrike/cstrike_pak.vpk
-			game				|appid_240|cstrike
 			game+mod			|appid_243730|ep2/ep2_pak.vpk
 			game+mod			|appid_243730|episodic/ep1_pak.vpk
 
@@ -86,10 +83,16 @@
 
 			platform			|appid_243750|platform/platform_misc.vpk
 
-			// Last, mount in shared episodic and HL2 loose files
+			// Mount shared episodic and HL2 loose files before optional fallback content.
 			game				|appid_243730|ep2
 			game				|appid_243730|episodic
 			game				|appid_243750|hl2
+
+			// Optional Counter-Strike: Source fallback for de_dust2 (appid 240).
+			// Keep below episodic content so it cannot override the episodic particle manifest.
+			game				|appid_240|cstrike/cstrike_pak.vpk
+			game				|appid_240|cstrike
+
 			platform			|appid_243750|platform
 		}
 	}

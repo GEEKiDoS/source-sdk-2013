@@ -6,6 +6,7 @@
 #include "shaderapi/ishaderutil.h"
 #include "filesystem.h"
 #include "zip_utils.h"
+#include "tier0/platform.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/strtools.h"
 #include "tier2/tier2.h"
@@ -22,6 +23,8 @@ namespace
 {
 using Microsoft::WRL::ComPtr;
 const uint32 kNoPage = 0xffffffffu;
+// HLSL reports {flag, reason, page+1, cellX, cellY, face+1, UVbits[2], detail}.
+constexpr uint32 kFailureBytes = 9 * sizeof(uint32);
 struct BspFile
 {
     IFileSystem *fs;
@@ -209,10 +212,27 @@ struct CHighresLightmapsDX12::Impl
         for (size_t i=0; i<readbacks.size();)
         {
             auto &r = readbacks[i]; if (r.fence > completed) { ++i; continue; }
-            uint32 *value = nullptr; D3D12_RANGE read{0,4};
+            uint32 *value = nullptr; D3D12_RANGE read{0,kFailureBytes};
             if (FAILED(r.resource->Map(0,&read,reinterpret_cast<void **>(&value)))) Fail("Highres lightmaps: GPU validation readback failed");
-            else { const uint32 failure = *value; D3D12_RANGE written{0,0}; r.resource->Unmap(0,&written);
-                if (failure && domain && r.generation == domain->mapGeneration) Fail("Highres lightmaps: shader sampled an unowned native lightmap cell"); }
+            else
+            {
+                if (value[0] && domain && r.generation == domain->mapGeneration)
+                {
+                    const char *reasons[] = {"unknown", "coordinate bounds", "owner ID", "tile index", "tile page group", "lightstyle"};
+                    float uv[2]; memcpy(uv,value+6,sizeof(uv));
+                    char reason[512];
+                    V_snprintf(reason,sizeof(reason),
+                        "Highres lightmaps: shader sampled an unowned native lightmap cell "
+                        "(reason=%s page=%u cell=%d,%d face=%u UV=%.9g,%.9g detail=%u)",
+                        value[1]<ARRAYSIZE(reasons)?reasons[value[1]]:reasons[0],value[2],
+                        static_cast<int32>(value[3]),static_cast<int32>(value[4]),value[5],uv[0],uv[1],value[8]);
+                    // Preserve the mapped first-failure payload and diagnostic for inspection.
+                    // Without a debugger, retain the existing fail-closed fatal path.
+                    DebuggerBreakIfDebugging();
+                    Fail(reason);
+                }
+                D3D12_RANGE written{0,0}; r.resource->Unmap(0,&written);
+            }
             readbacks.erase(readbacks.begin()+i);
         }
     }
@@ -229,7 +249,7 @@ struct CHighresLightmapsDX12::Impl
         api->m_Pipeline.RetainExternalResource(r.resource.Get(), fence);
         api->m_Pipeline.RetainExternalResource(failureBuffer.Get(),fence);
         Transition(device->CommandList(),failureBuffer.Get(),failureState,D3D12_RESOURCE_STATE_COPY_SOURCE);
-        device->CommandList()->CopyBufferRegion(r.resource.Get(),0,failureBuffer.Get(),0,4);
+        device->CommandList()->CopyBufferRegion(r.resource.Get(),0,failureBuffer.Get(),0,kFailureBytes);
         Transition(device->CommandList(),failureBuffer.Get(),failureState,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         if (!reuse)
         {
@@ -321,8 +341,8 @@ struct CHighresLightmapsDX12::Impl
             Transition(device->CommandList(),page.ids.resource.Get(),page.ids.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             Transition(device->CommandList(),page.dynamic.resource.Get(),page.dynamic.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
-        uint32 zero[4] = {}; ID3D12Resource *upload = nullptr; uint64 offset = 0; const uint64 fence = device->NextFenceValue();
-        if (!api->m_Pipeline.UploadStructured(zero,sizeof(zero),16,fence,&upload,&offset)) return false;
+        uint32 zero[kFailureBytes/sizeof(uint32)] = {}; ID3D12Resource *upload = nullptr; uint64 offset = 0; const uint64 fence = device->NextFenceValue();
+        if (!api->m_Pipeline.UploadStructured(zero,sizeof(zero),sizeof(uint32),fence,&upload,&offset)) return false;
         api->m_Pipeline.RetainExternalResource(failureBuffer.Get(),fence);
         device->CommandList()->CopyBufferRegion(failureBuffer.Get(),0,upload,offset,sizeof(zero));
         Transition(device->CommandList(),failureBuffer.Get(),failureState,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -880,6 +900,7 @@ bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWo
         memcmp(page.constantsModel,modelToWorld,sizeof(page.constantsModel)))
     {
         DrawConstants constants{}; constants.cHlightRoute[0]=neutral?0:1; constants.cHlightRoute[1]=page.ids.width; constants.cHlightRoute[2]=page.ids.height;
+        constants.cHlightRoute[3]=neutral?0:pageIndex+1;
         memcpy(constants.cHlightModelToWorld,modelToWorld,sizeof(constants.cHlightModelToWorld));
         memcpy(constants.cHlightStyles,s.views.back().values.data(),sizeof(constants.cHlightStyles));
         if (!pipeline.UploadTransient(&constants,sizeof(constants),512,256,fence,page.constantsAddress)) { s.Fail("Highres lightmaps: draw constants residency failed"); return false; }

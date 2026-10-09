@@ -86,19 +86,6 @@ uint32_t ClampFrameId( uint32_t nId )
 	return nId ? nId : 1u;
 }
 
-void SlLog( sl::LogType type, const char *pszMessage )
-{
-	const char *pszText = pszMessage ? pszMessage : "";
-	const int nLength = V_strlen( pszText );
-	const char *pszNewline = nLength && pszText[nLength - 1] == '\n' ? "" : "\n";
-	if ( type == sl::LogType::eError )
-		Warning( "ShaderAPIDX12 framegen: SL error: %s%s", pszText, pszNewline );
-	else if ( type == sl::LogType::eWarn )
-		Warning( "ShaderAPIDX12 framegen: SL: %s%s", pszText, pszNewline );
-	else
-		Msg( "ShaderAPIDX12 framegen: SL: %s%s", pszText, pszNewline );
-}
-
 void DlssgError( const sl::APIError &error )
 {
 	Warning( "ShaderAPIDX12 framegen: DLSS-G API error 0x%08x\n", static_cast<unsigned>( error.hres ) );
@@ -398,11 +385,10 @@ bool CFrameGenDX12::EnsureStreamline()
 	const sl::Feature features[] = { sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL };
 	sl::Preferences pref{};
 	pref.showConsole = false;
-	pref.logLevel = s_bLog || m_bVerbose ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
+	pref.logLevel = s_bLog ? sl::LogLevel::eVerbose : sl::LogLevel::eOff;
 	pref.pathsToPlugins = m_pSl->pluginPaths;
 	pref.numPathsToPlugins = 1;
 	pref.pathToLogsAndData = s_bLog ? m_pSl->pluginPath : nullptr;
-	pref.logMessageCallback = SlLog;
 	pref.flags = static_cast<sl::PreferenceFlags>( static_cast<uint64_t>( sl::PreferenceFlags::eUseManualHooking ) | static_cast<uint64_t>( sl::PreferenceFlags::eDisableCLStateTracking ) |
 	    static_cast<uint64_t>( sl::PreferenceFlags::eUseFrameBasedResourceTagging ) );
 	pref.featuresToLoad = features;
