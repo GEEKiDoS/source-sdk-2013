@@ -153,7 +153,7 @@ static bool ReadLightFile( const char *pFilename )
 		}
 		else if ( sscanf( scan, "forcetextureshadow %1023s", directive ) == 1 )
 		{
-			ForceTextureShadowsOnModel( directive );
+			// Accepted so existing .rad files parse: alpha-tested props always cast their texture shadow.
 		}
 		else
 		{
@@ -262,9 +262,6 @@ static bool s_bLightFilesValid = true;
 void ReSTIR_ScenePrepareLightFiles( const ReSTIROptions &options )
 {
 	s_TexLights.RemoveAll();
-	// RAD mode filters apply to occlusion directives too. Never inherit a
-	// previous scene/mode's forcetextureshadow registrations.
-	ReSTIR_ClearForcedTextureShadows();
 	char levelName[MAX_PATH];
 	Q_FileBase( options.mapPath.String(), levelName, sizeof( levelName ) );
 	s_LevelName = levelName;

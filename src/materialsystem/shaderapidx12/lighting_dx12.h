@@ -14,7 +14,7 @@ class CShaderAPIDX12;
 class CShaderDeviceDX12;
 struct LightingPacketDX12;
 struct ShaderRecordDX12;
-bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility = nullptr, bool *propVisibility = nullptr );
+bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility = nullptr, bool *propVisibility = nullptr, bool *pbrSpots = nullptr, bool *probeAbi = nullptr );
 bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage );
 bool RequiresStaticPropReceiverShaderDX12( const char *logical );
 
@@ -73,6 +73,14 @@ public:
 	void SetReceiverFeatureGeneration( uint32 mapGeneration ) override;
 	uint32 ReceiverFeatureGeneration() override;
 	void RejectUnsupportedLitShader( const char *shaderName ) override;
+	void RequestPbrOverride( bool enabled ) override;
+	bool PbrOverridePending() override;
+	bool CommitPbrOverride() override;
+	bool PbrOverride() override;
+	bool BeginMaterialTransaction() override;
+	void EndMaterialTransaction() override;
+	void SetProjectedLightTextures( const ShaderAPITextureHandle_t *cookies, const ShaderAPITextureHandle_t *depths, int count ) override;
+	void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) override;
 	void GetSunVisibilityStats( uint32 mapGeneration, DX12LightingSunVisibilityStats &stats ) override;
 	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );
 	void ForgetSunReceiverTexture( ShaderAPITextureHandle_t texture );
@@ -82,6 +90,8 @@ public:
 	bool ShadowPassActive() const;
 	bool PrepareShadowDraw( RenderTargetBindingDX12 &target, D3D12_VIEWPORT &viewport, D3D12_RECT &scissor );
 	bool PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input );
+	// Recording owner, before PrepareBindings: the current projected-light descriptor table for a PS that reflects space 5.
+	bool PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input );
 	bool PresentationBlocked();
 	void FailRecording( const char *error );
 	void Reclaim();

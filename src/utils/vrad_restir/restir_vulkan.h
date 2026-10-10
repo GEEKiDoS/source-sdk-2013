@@ -27,6 +27,8 @@ public:
 	bool UploadFinalLightmap( const ReSTIRLightmapResult &result );
 	bool TraceRays( const CUtlVector<ReSTIRGpuRay> &rays, unsigned int triangleMask, CUtlVector<ReSTIRGpuHit> &hits );
 	bool GatherAmbient( const CUtlVector<ReSTIRGpuAmbientQuery> &queries, CUtlVector<ReSTIRGpuAmbientResult> &results );
+	// SH L2 irradiance projection of the final lightmap (style 0) plus material emitters at each position; one result per query.
+	bool ProjectProbes( const CUtlVector<ReSTIRGpuAmbientQuery> &queries, CUtlVector<ReSTIRGpuProbeResult> &results );
 	bool LightPoints( const CUtlVector<ReSTIRGpuPointQuery> &queries, CUtlVector<ReSTIRGpuPointResult> &results );
 	// Immutable finite-segment disk visibility. Requires UploadScene, not UploadFinalLightmap.
 	bool ComputeLocalVisibility( const CUtlVector<ReSTIRGpuVisibilityQuery> &queries, CUtlVector<float> &visibility );

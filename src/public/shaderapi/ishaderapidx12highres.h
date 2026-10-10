@@ -7,7 +7,7 @@
 #include "tier0/platform.h"
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_HIGHRES_INTERFACE_VERSION "ShaderAPIDX12HighresLightmaps_002"
+#define SHADERAPIDX12_HIGHRES_INTERFACE_VERSION "ShaderAPIDX12HighresLightmaps_003"
 
 enum DX12HighresMapState
 {
@@ -24,6 +24,12 @@ struct DX12HighresMapStatus
     uint64 gpuBytes, assetBytes;
     uint32 faceCount, pageCount;
     uint32 faceLump, lightingLump; // actual independently selected native domain, including inactive ordinary modes
+    // Ambient probe grid of the selected mode. probeBrickCount is the validated asset's (0 when the asset is absent or
+    // invalid); probeBytes are the committed GPU bytes (0 until the first PBR probe consumer draws). probeError holds the
+    // missing/invalid reason (empty when a grid is available or the map has no enhanced domain); it never rejects the map.
+    uint32 probeBrickCount;
+    uint64 probeBytes;
+    char probeError[160];
 };
 class IShaderAPIDX12HighresLightmaps
 {

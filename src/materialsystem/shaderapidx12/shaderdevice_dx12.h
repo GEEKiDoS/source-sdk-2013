@@ -74,6 +74,9 @@ struct ShaderRecordDX12
 	uint64_t nativeAbiHash = 0;
 	bool nativeReflectionReady = false;
 	bool lightingAbi = false, sunVisibilityAbi = false, propVisibilityAbi = false;
+	// pbrSpots: PS reflects PBR space 5 (projected lights). gbuffer: PS declares exactly three SV_Targets (scene color + G-buffer normal/spec).
+	// probeAbi: PS reflects the space-4 ambient probe block (only ever beside the lighting view block).
+	bool pbrSpots = false, gbuffer = false, probeAbi = false;
 	uint32_t lightmapSamplerMask = 0, nativeSamplerMask = 0;
 	bool highresAbi = false, samplerRolesReady = false, nativeCasterTwin = false;
 	bool nativeEarlyDepthTwin = false;

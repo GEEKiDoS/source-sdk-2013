@@ -2377,6 +2377,7 @@ void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 	case FRAME_START:
 		{
 			ShadowMapsDX12_OnDeviceReset();
+			ShadowMapsDX12_CommitPbrOverride();
 			// Mark the frame as open for client fx additions
 			SetFXCreationAllowed( true );
 			SetBeamCreationAllowed( true );

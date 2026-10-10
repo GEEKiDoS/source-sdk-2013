@@ -181,6 +181,7 @@ struct ReSTIRGpuHit						// 32 bytes
 
 struct ReSTIRGpuAmbientQuery { vec4 position; };		// 16 bytes
 struct ReSTIRGpuAmbientResult { vec4 box[6]; };			// 96 bytes
+struct ReSTIRGpuProbeResult { vec4 coeff[9]; };			// 144 bytes: SH L2 irradiance e_k, k = 0..8 (hprobe_bsp.h order)
 
 struct ReSTIRGpuPointQuery				// 32 bytes
 {

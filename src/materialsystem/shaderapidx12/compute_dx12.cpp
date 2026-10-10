@@ -19,6 +19,12 @@ constexpr D3D12_RESOURCE_STATES kSceneDepthRead = D3D12_RESOURCE_STATE_DEPTH_REA
 constexpr UINT kComputeDescriptorCount = SHADERAPIDX12_COMPUTE_MAX_SRVS + SHADERAPIDX12_COMPUTE_MAX_UAVS;
 constexpr UINT kMaxComputeBarriers = 32;
 
+// A UAV needs a fully typed, non-sRGB format; 8-bit render targets are created typeless to expose both encodings.
+DXGI_FORMAT UavFormat( DXGI_FORMAT resourceFormat )
+{
+	return resourceFormat == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM : resourceFormat;
+}
+
 struct ComputeReplayPayloadDX12
 {
 	ID3D12RootSignature *root = nullptr;
@@ -33,6 +39,9 @@ struct ComputeReplayPayloadDX12
 	ID3D12Resource *sceneDepth = nullptr;
 	D3D12_RESOURCE_STATES sceneDepthBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	bool restoreSceneDepth = false;
+	// PBR G-buffer targets moved to gbufferRead for this dispatch and restored to gbufferBefore afterwards.
+	ID3D12Resource *gbuffer[2] = {};
+	D3D12_RESOURCE_STATES gbufferBefore[2] = {}, gbufferRead = D3D12_RESOURCE_STATE_COMMON;
 };
 static_assert( std::is_trivially_copyable<ComputeReplayPayloadDX12>::value, "external command payloads are copied bytewise" );
 
@@ -60,6 +69,20 @@ void ComputeReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device *, const
 		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		pList->ResourceBarrier( 1, &barrier );
 	}
+	D3D12_RESOURCE_BARRIER restore[2]{};
+	UINT restoreCount = 0;
+	for ( int i = 0; i < 2; ++i )
+		if ( payload.gbuffer[i] && payload.gbufferBefore[i] != payload.gbufferRead )
+		{
+			D3D12_RESOURCE_BARRIER &barrier = restore[restoreCount++];
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource = payload.gbuffer[i];
+			barrier.Transition.StateBefore = payload.gbufferRead;
+			barrier.Transition.StateAfter = payload.gbufferBefore[i];
+			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		}
+	if ( restoreCount )
+		pList->ResourceBarrier( restoreCount, restore );
 }
 
 void WarnComputeOnce( const char *pszName, const char *pszReason )
@@ -470,6 +493,37 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 			retain( payload.sceneDepth );
 			return true;
 		}
+		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR )
+		{
+			const int target = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ? 1 : 0;
+			ID3D12Resource *native = target ? m_pGBufferSpec.Get() : m_pGBufferNormal.Get();
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.Format = kGBufferFormats[target];
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			if ( ( native ? m_nGBufferSamples : static_cast<UINT>( m_pDevice->SceneSampleCount() ) ) > 1 )
+			{
+				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+			}
+			else
+			{
+				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+				srv.Texture2D.MipLevels = 1;
+			}
+			// Before the first G-buffer pass the slot reads zeros through a null view of the shader's shape.
+			if ( !native )
+				WarnComputeOnce( name, "PBR G-buffer has not been rendered yet; binding a null view" );
+			m_pDevice->NativeDevice()->CreateShaderResourceView( native, &srv, Offset( range.cpu, slot, stride ) );
+			if ( native && !payload.gbuffer[target] )
+			{
+				payload.gbuffer[target] = native;
+				payload.gbufferBefore[target] = m_GBufferState[target];
+				payload.gbufferRead = kGBufferReadState;
+				if ( !AddTransition( payload, native, m_GBufferState[target], kGBufferReadState, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) )
+					return false;
+				retain( native );
+			}
+			return true;
+		}
 		const ShaderAPITextureHandle_t handle = resolveHandle( resource );
 		TextureRecord *record = FindTexture( handle );
 		const int mip = MAX( resource.m_nMip, 0 );
@@ -512,7 +566,7 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 		record->sampledStateValid = false;
 		++m_nTextureStateEpoch;
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-		uav.Format = record->resource->GetDesc().Format;
+		uav.Format = UavFormat( record->resource->GetDesc().Format );
 		uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 		uav.Texture2D.MipSlice = mip;
 		m_pDevice->NativeDevice()->CreateUnorderedAccessView( record->resource.Get(), nullptr, &uav, Offset( range.cpu, SHADERAPIDX12_COMPUTE_MAX_SRVS + slot, stride ) );

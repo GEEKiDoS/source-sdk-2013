@@ -189,6 +189,18 @@ void ShadowMapsDX12_LevelShutdown();
 // Device/resource loss: rebuild complete state or latch the explicit error before another scene.
 void ShadowMapsDX12_OnDeviceReset();
 
+// FRAME_START, after ShadowMapsDX12_OnDeviceReset: applies a pending mat_pbr_override request (stdshader_dx12 cvar callback ->
+// IShaderAPIDX12Lighting::RequestPbrOverride). Inside a native material transaction it commits the mode and re-snapshots every
+// precached material; without the transaction the request stays pending and is retried next frame. Level init commits the
+// request itself right before its own material reload/refresh.
+void ShadowMapsDX12_CommitPbrOverride();
+
+// Projected-light (flashlight / env_projectedtexture) publication for the PBR shaders, used by CClientShadowMgr::PublishProjectedLights.
+// Available only on the DX12 renderer. The packet is queued like a receiver view, after the dx12/pbr_lights material bound the
+// cookie/depth textures; it stays current until the next packet (an empty packet clears it).
+bool ShadowMapsDX12_ProjectedLightsAvailable();
+void ShadowMapsDX12_PublishProjectedLights( const DX12ProjectedLightPacket &packet );
+
 // True while the engine-selected high-resolution mode is admitted.
 bool ShadowMapsDX12_Active();
 // Active enhanced runtime with runtime shadowing enabled; false during shutdown/reset/failure.

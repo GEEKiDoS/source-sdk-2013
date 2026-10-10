@@ -32,7 +32,7 @@ void CReSTIRVulkanDevice::Impl::RunService( ReSTIRPipeline pipeline, const void 
 		Submit( command );
 		Download( RESTIR_BIND_SERVICE_OUT, (unsigned char *)output + (VkDeviceSize)first * outputItemBytes, (VkDeviceSize)chunk * outputItemBytes );
 		double duration = TimestampMs( start, end );
-		if ( pipeline == RESTIR_PIPE_AMBIENT )
+		if ( pipeline == RESTIR_PIPE_AMBIENT || pipeline == RESTIR_PIPE_PROBE_SH )
 			timings.ambientMs += duration;
 		else if ( pipeline == RESTIR_PIPE_POINTS )
 			timings.propMs += duration;
@@ -57,6 +57,16 @@ bool CReSTIRVulkanDevice::GatherAmbient( const CUtlVector<ReSTIRGpuAmbientQuery>
 		gpu.Fail( "ambient result indexing exceeds signed 32-bit range" );
 	results.SetCount( (int)count );
 	gpu.RunService( RESTIR_PIPE_AMBIENT, queries.Base(), sizeof( ReSTIRGpuAmbientQuery ), results.Base(), sizeof( ReSTIRGpuAmbientResult ), queries.Count(), gpu.scene->sceneStyles.Count(), RESTIR_RAY_MASK_WORLDFACE );
+	return true;
+}
+
+bool CReSTIRVulkanDevice::ProjectProbes( const CUtlVector<ReSTIRGpuAmbientQuery> &queries, CUtlVector<ReSTIRGpuProbeResult> &results )
+{
+	Impl &gpu = *m_pImpl;
+	if ( !gpu.scene )
+		gpu.Fail( "ProjectProbes requires UploadScene" );
+	results.SetCount( queries.Count() );
+	gpu.RunService( RESTIR_PIPE_PROBE_SH, queries.Base(), sizeof( ReSTIRGpuAmbientQuery ), results.Base(), sizeof( ReSTIRGpuProbeResult ), queries.Count(), 1, RESTIR_RAY_MASK_WORLDFACE );
 	return true;
 }
 

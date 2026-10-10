@@ -193,6 +193,14 @@ static constexpr EngineCBufferMemberDX12 kDX12HighresDrawConstantsMembers[] = {
 	DX12_ENGINE_MEMBER(DX12HighresDrawConstants, cHlightModelToWorld, 16),
 	DX12_ENGINE_MEMBER(DX12HighresDrawConstants, cHlightStyles, 64),
 };
+// Space-4 ambient probe block (pixel stage, b0): four vectors, float/uint/float/uint.
+static_assert(sizeof(DX12ProbeConstantsV1) == 64, "DX12ProbeConstantsV1 size");
+static constexpr EngineCBufferMemberDX12 kDX12ProbeConstantsV1Members[] = {
+	DX12_ENGINE_MEMBER(DX12ProbeConstantsV1, cProbeOrigin, 0),
+	DX12_ENGINE_MEMBER(DX12ProbeConstantsV1, cProbeBricks, 16),
+	DX12_ENGINE_MEMBER(DX12ProbeConstantsV1, cProbeAtlas, 32),
+	DX12_ENGINE_MEMBER(DX12ProbeConstantsV1, cProbeAtlasBricks, 48),
+};
 #undef DX12_ENGINE_MEMBER
 #undef DX12_ENGINE_MEMBER_SIZED
 static constexpr EngineCBufferLayoutDX12 kEngineCBufferLayouts[] = {
@@ -208,6 +216,10 @@ static constexpr EngineCBufferLayoutDX12 kLightingCBufferLayouts[] = {
     { "DX12LightingViewConstantsV1", kStagePixel, DX12_LIGHTING_B_VIEW, sizeof( DX12LightingViewConstantsV1 ), sizeof( kDX12LightingViewConstantsV1Members ) / sizeof( *kDX12LightingViewConstantsV1Members ), kDX12LightingViewConstantsV1Members },
 	{ "DX12StaticPropDrawConstants", kStagePixel, DX12_LIGHTING_B_PROP_DRAW, sizeof( DX12StaticPropDrawConstants ), sizeof( kDX12StaticPropDrawConstantsMembers ) / sizeof( *kDX12StaticPropDrawConstantsMembers ), kDX12StaticPropDrawConstantsMembers },
 };
+// Space-4 ambient probe block (pixel stage). shaderRegister is the register inside DX12_PROBE_REGISTER_SPACE.
+static constexpr EngineCBufferLayoutDX12 kProbeCBufferLayouts[] = {
+	{ "DX12ProbeConstantsV1", kStagePixel, DX12_PROBE_B_CONSTANTS, sizeof( DX12ProbeConstantsV1 ), sizeof( kDX12ProbeConstantsV1Members ) / sizeof( *kDX12ProbeConstantsV1Members ), kDX12ProbeConstantsV1Members },
+};
 // RuntimeShadowLightGpu (StructuredBuffer at t1026 space2) member table for reflection validation (packer + runtime).
 // valueClass / scalarType use the D3D_SHADER_VARIABLE_CLASS / D3D_SHADER_VARIABLE_TYPE numeric values
 // (D3D_SVC_SCALAR 0, D3D_SVC_VECTOR 1, D3D_SVC_MATRIX_ROWS 2; D3D_SVT_UINT 19, D3D_SVT_FLOAT 3) so this header
@@ -220,6 +232,7 @@ struct LightingStructuredMemberDX12
 #define DX12_LSM_SCALAR		0u
 #define DX12_LSM_VECTOR		1u
 #define DX12_LSM_MATRIX_ROWS	2u
+#define DX12_LST_INT		2u
 #define DX12_LST_FLOAT		3u
 #define DX12_LST_UINT		19u
 static constexpr LightingStructuredMemberDX12 kRuntimeShadowLightGpuMembers[] = {
@@ -255,6 +268,17 @@ static constexpr LightingStructuredMemberDX12 kRuntimeShadowLightGpuMembers[] = 
 static constexpr LightingStructuredMemberDX12 kDX12StaticPropTriangleGpuMembers[] = {
 	{ "vertexIndices", 0, DX12_LSM_VECTOR, DX12_LST_UINT, 1, 4, 0 },
 	{ "positions", 16, DX12_LSM_VECTOR, DX12_LST_FLOAT, 1, 4, 3 },
+};
+// PBRSpotGpu (StructuredBuffer at t0 space5, HLSL type name "PBRSpotGpu"): byte-identical to DX12ProjectedLightDesc.
+static_assert( sizeof( DX12ProjectedLightDesc ) == 128 && offsetof( DX12ProjectedLightDesc, origin ) == 64 &&
+	offsetof( DX12ProjectedLightDesc, color ) == 80 && offsetof( DX12ProjectedLightDesc, linearAttn ) == 96 &&
+	offsetof( DX12ProjectedLightDesc, cookieSlot ) == 112, "DX12ProjectedLightDesc layout" );
+static constexpr LightingStructuredMemberDX12 kPBRSpotGpuMembers[] = {
+	{ "worldToTexture", 0, DX12_LSM_MATRIX_ROWS, DX12_LST_FLOAT, 4, 4, 0 },
+	{ "originFar", 64, DX12_LSM_VECTOR, DX12_LST_FLOAT, 1, 4, 0 },
+	{ "colorConst", 80, DX12_LSM_VECTOR, DX12_LST_FLOAT, 1, 4, 0 },
+	{ "attnShadow", 96, DX12_LSM_VECTOR, DX12_LST_FLOAT, 1, 4, 0 },
+	{ "slotsFlags", 112, DX12_LSM_VECTOR, DX12_LST_INT, 1, 4, 0 },
 };
 static_assert( offsetof( RuntimeShadowLightGpu, worldToClip ) == 112 && offsetof( RuntimeShadowLightGpu, faces ) == 496 &&
 	offsetof( RuntimeShadowLightGpu, realtimeWeight ) == 592 && offsetof( RuntimeShadowLightGpu, reserved0 ) == 604, "RuntimeShadowLightGpu layout" );

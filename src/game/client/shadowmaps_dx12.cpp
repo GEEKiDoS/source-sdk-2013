@@ -43,7 +43,8 @@ ConVar r_shadowmap_filter( "r_shadowmap_filter", "0", FCVAR_ARCHIVE, "0: four-ta
 ConVar r_shadowmap_skip_radiance( "r_shadowmap_skip_radiance", "0.0009765625", FCVAR_ARCHIVE, "Skip local shadow sampling below this total unshadowed direct RGB contribution; retain all light energy, 0 samples exactly", true, 0.0f, false, 0.0f );
 ConVar r_shadowmap_spot_near( "r_shadowmap_spot_near", "4", FCVAR_ARCHIVE, "Spotlight shadow-camera near distance in Source units (including six-face spots); does not change illumination", true, 0.1f, true, 64.0f );
 ConVar r_shadowmap_autoexec( "r_shadowmap_autoexec", "", FCVAR_CHEAT, "Acceptance automation: cfg exec'd once per map after the first completed main receiver view" );
-ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 blockers, 6 radius; debug builds also check projection math" );
+ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 blockers, 6 radius; debug builds also check projection math", true, DX12_SHADOW_DEBUG_NONE, true, DX12_SHADOW_DEBUG_PCSS_RADIUS );
+extern ConVar building_cubemaps;
 
 namespace
 {
@@ -467,6 +468,23 @@ void ResolveLightingInterface()
 	CreateInterfaceFn factory=Sys_GetFactory("shaderapidx12");
 	g_Lighting=factory?static_cast<IShaderAPIDX12Lighting *>(factory(SHADERAPIDX12_LIGHTING_INTERFACE_VERSION,NULL)):NULL;
 	g_Highres=factory?static_cast<IShaderAPIDX12HighresLightmaps *>(factory(SHADERAPIDX12_HIGHRES_INTERFACE_VERSION,NULL)):NULL;
+}
+
+// Re-snapshots every loaded material without touching VMT variables or native geometry (ReloadMaterials would release/restore).
+void RefreshAllPrecachedMaterials()
+{
+	for ( MaterialHandle_t h=materials->FirstMaterial(); h!=materials->InvalidMaterial(); h=materials->NextMaterial(h) )
+	{
+		IMaterial *material=materials->GetMaterial(h);
+		if ( material && material->IsPrecached() ) material->RefreshPreservingMaterialVars();
+	}
+}
+
+// ReloadMaterials re-snapshots every material anyway: commit the requested PBR mode first so a new map needs no FRAME_START refresh.
+void ReloadMaterialsWithPbrOverride()
+{
+	g_Lighting->CommitPbrOverride();
+	materials->ReloadMaterials();
 }
 
 void ShadowMapReleaseFunc()
@@ -894,12 +912,16 @@ CShadowViewData *AcquireView( const CViewSetup &setup, ShadowMapReceiverViewKind
 	uint32 frame=(uint32)gpGlobals->framecount;
 	// Preserve per-camera caches even when several monitor/water views execute
 	// sequentially. Moving cameras reuse a same-kind entry unused in this frame.
+	// buildcubemaps renders every face of every sample inside one client frame and
+	// reads each face back before the next; reuse its completed views so the pool
+	// (each entry owns 4096^2 sun targets) does not grow per face until allocation fails.
+	const bool capture=building_cubemaps.GetBool();
 	for ( int i=0;i<g_ViewPool.Count();++i )
 	{
 		CShadowViewData *data=g_ViewPool[i];
 		if ( !data->Idle() || data->kind!=kind ) continue;
 		if ( SameReceiverGeometry(data->receiver,setup) ) { candidate=data; break; }
-		if ( !candidate && data->lastUsedFrame!=frame ) candidate=data;
+		if ( !candidate && (capture || data->lastUsedFrame!=frame) ) candidate=data;
 	}
 	if ( !candidate ) { candidate=new CShadowViewData; g_ViewPool.AddToTail(candidate); }
 	candidate->lastUsedFrame=frame; candidate->Prepare(); return candidate;
@@ -2643,7 +2665,7 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 	if ( !g_State.featureMap )
 	{
 		if ( g_Lighting ) g_Lighting->SetReceiverFeatureGeneration(0);
-		if ( g_MaterialFeature ) materials->ReloadMaterials();
+		if ( g_MaterialFeature ) ReloadMaterialsWithPbrOverride();
 		g_MaterialFeature=false;
 		return true;
 	}
@@ -2676,7 +2698,7 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 		if ( native.state!=DX12_HIGHRES_ORDINARY )
 			return Fail("Highres lightmaps: client/native rendering mode mismatch",error,bytes);
 		g_Lighting->SetReceiverFeatureGeneration(0);
-		if ( g_MaterialFeature ) materials->ReloadMaterials();
+		if ( g_MaterialFeature ) ReloadMaterialsWithPbrOverride();
 		g_MaterialFeature=false; return true;
 	}
 	if ( (native.state!=DX12_HIGHRES_READY && native.state!=DX12_HIGHRES_PENDING) || !native.nativeMapGeneration )
@@ -2723,13 +2745,10 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 	{
 		// The feature/layout is unchanged. Refresh snapshot contexts, not VMT
 		// variables or native geometry: ReloadMaterials would release/restore again.
-		for ( MaterialHandle_t h=materials->FirstMaterial(); h!=materials->InvalidMaterial(); h=materials->NextMaterial(h) )
-		{
-			IMaterial *material=materials->GetMaterial(h);
-			if ( material && material->IsPrecached() ) material->RefreshPreservingMaterialVars();
-		}
+		g_Lighting->CommitPbrOverride();
+		RefreshAllPrecachedMaterials();
 	}
-	else if ( !g_MaterialFeature ) materials->ReloadMaterials();
+	else if ( !g_MaterialFeature ) ReloadMaterialsWithPbrOverride();
 	g_MaterialFeature=true;
 	g_Lighting->PrepareMap(map);
 	if ( g_Lighting->GetStatus(g_MapGeneration,0,reason,sizeof(reason))!=DX12_LIGHTING_STATUS_READY ) return Fail(reason[0]?reason:SHADOWMAP_ERR_RESIDENCY,error,bytes);
@@ -2836,6 +2855,21 @@ void ShadowMapsDX12_OnDeviceReset()
 	g_Highres->EndClientResourceReadmission();
 	if ( !admitted ) engine->ClientCmd_Unrestricted("disconnect\n");
 }
+// Applies a pending mat_pbr_override request: committed and re-snapshotted at FRAME_START, before any view of the frame exists.
+void ShadowMapsDX12_CommitPbrOverride()
+{
+	if ( !g_Lighting || g_DeviceResetPending || !g_Lighting->PbrOverridePending() ) return;
+	if ( !g_Lighting->BeginMaterialTransaction() )
+	{
+		static bool warned=false;
+		if ( !warned ) { warned=true; Warning("mat_pbr_override: native material transaction unavailable on this engine; the request stays pending\n"); }
+		return;
+	}
+	if ( g_Lighting->CommitPbrOverride() ) RefreshAllPrecachedMaterials();
+	g_Lighting->EndMaterialTransaction();
+}
+bool ShadowMapsDX12_ProjectedLightsAvailable() { return g_Lighting!=NULL; }
+void ShadowMapsDX12_PublishProjectedLights( const DX12ProjectedLightPacket &packet ) { g_Lighting->BeginProjectedLights(packet); }
 bool ShadowMapsDX12_Active() { return !g_DeviceResetPending && g_Admitted && !g_Error[0] && g_State.runtimeActive; }
 
 void ShadowMapsDX12_RegisterStaticPropReceiver( uint32 ordinal, ICollideable *prop, const StaticPropLump_t &authored )
@@ -3393,11 +3427,15 @@ void ShadowStatsCommand()
 	{
 		DX12HighresMapStatus status={}; char error[256]={0};
 		g_Highres->GetStatus(status,error,sizeof(error));
-		Msg("Highres: state=%u density=%u native=%llu layout=%llu faceLump=%u lightingLump=%u faces=%u pages=%u gpuBytes=%llu assetBytes=%llu error=\"%s\"\n",
+		// Probes never gate admission: an unavailable grid names its reason and PBR models use the engine ambient cube.
+		char probes[sizeof(status.probeError)+32]={0};
+		if ( status.probeError[0] ) V_snprintf(probes,sizeof(probes)," probes: unavailable (%s)",status.probeError);
+		else if ( status.probeBrickCount ) V_snprintf(probes,sizeof(probes)," probes: %u bricks, %llu bytes",status.probeBrickCount,static_cast<unsigned long long>(status.probeBytes));
+		Msg("Highres: state=%u density=%u native=%llu layout=%llu faceLump=%u lightingLump=%u faces=%u pages=%u gpuBytes=%llu assetBytes=%llu error=\"%s\"%s\n",
 			unsigned(status.state),status.density,static_cast<unsigned long long>(status.nativeMapGeneration),
 			static_cast<unsigned long long>(status.layoutGeneration),status.faceLump,status.lightingLump,
 			status.faceCount,status.pageCount,static_cast<unsigned long long>(status.gpuBytes),
-			static_cast<unsigned long long>(status.assetBytes),error);
+			static_cast<unsigned long long>(status.assetBytes),error,probes);
 	}
 }
 class CReportCasterSink : public IShadowCasterSink

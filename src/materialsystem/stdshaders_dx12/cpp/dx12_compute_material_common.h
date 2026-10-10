@@ -34,4 +34,22 @@ inline ShaderAPIDX12ComputeResource_t DX12MaterialSceneDepth()
 	return resource;
 }
 
+// World-space shading normals plus the depth they were drawn at (R32G32_UINT, see PBR_Output) and F0 + roughness (R8G8B8A8_UNORM)
+// the PBR pixel shaders write during the opaque scene pass. A pixel is PBR data only while the scene depth equals the stored depth
+// and specular alpha is nonzero (README "PBR G-buffer contract"). Resolved by the backend; null (reads 0) until the first
+// G-buffer pass of the frame and while the PBR override is off.
+inline ShaderAPIDX12ComputeResource_t DX12MaterialPbrNormals()
+{
+	ShaderAPIDX12ComputeResource_t resource = {};
+	resource.m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS;
+	return resource;
+}
+
+inline ShaderAPIDX12ComputeResource_t DX12MaterialPbrSpecular()
+{
+	ShaderAPIDX12ComputeResource_t resource = {};
+	resource.m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR;
+	return resource;
+}
+
 #endif // DX12_COMPUTE_MATERIAL_COMMON_H

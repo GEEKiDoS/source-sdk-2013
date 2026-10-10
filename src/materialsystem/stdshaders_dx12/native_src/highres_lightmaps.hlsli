@@ -89,7 +89,12 @@ float4 HighresLightmap_Tile(uint index, float2 q)
     }
     HighresLightmap_Reject(4, tile.address.x); return 0;
 }
-HlightReceiver HighresLightmap_Begin(float2 baseUV)
+// Ownership is a property of the primitive, not of an interpolated fragment coordinate: vertexUV is the lightmap UV of the
+// primitive's provoking vertex (a nointerpolation varying), always inside the owning face's allocation, and selects the face.
+// baseUV is the interpolated coordinate used only for the position inside that face; it is clamped to the face rectangle, so
+// the numerically meaningless fragments the rasterizer covers on near-degenerate triangles (collinear T-junction fan
+// triangles, surfaces seen exactly edge-on) shade with the face's edge instead of addressing an unrelated or unowned cell.
+HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
 {
     HlightReceiver r = (HlightReceiver)0;
     r.sun = 1;
@@ -97,8 +102,9 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV)
     if (cHlightRoute.x == 0) return r;
     r.sun = 0; // Rejected owners cannot appear unoccluded while GPU rejection is in flight.
     precise float2 pixel = baseUV * cHlightRoute.yz;
-    int2 owner = int2(floor(pixel));
-    hlightNativeUV = baseUV;
+    precise float2 vertexPixel = vertexUV * cHlightRoute.yz;
+    int2 owner = int2(floor(vertexPixel));
+    hlightNativeUV = vertexUV;
     hlightLocation = uint4(cHlightRoute.w, asuint(owner), 0);
     if (any(owner < 0) || any(owner >= int2(cHlightRoute.yz))) { HighresLightmap_Reject(1); return r; }
     uint faceId = HlightFaceIds.Load(int3(owner, 0));

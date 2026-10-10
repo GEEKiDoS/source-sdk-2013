@@ -11,7 +11,9 @@
 #include "bsp_output.h"
 #include "prop_lighting.h"
 #include "restir_lightmap_rescale.h"
+#include "restir_sky_ambient.h"
 #include "hlight_output.h"
+#include "hprobe_bsp.h"
 #include "cmdlib.h"
 #include "bsplib.h"
 #include "loadcmdline.h"
@@ -235,6 +237,18 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 		if ( IsOption( pArg, "-restir_hlight_density" ) )
 		{
 			if ( i + 1 >= argc || !ParseIntValue( pArg, argv[++i], 1, 16382, options.highresDensity ) )
+				return false;
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_ambientgrid" ) )
+		{
+			if ( i + 1 >= argc || !ParseIntValue( pArg, argv[++i], hprobe::kMinSpacing, hprobe::kMaxSpacing, options.ambientGridSpacing ) )
+				return false;
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_ambientgrid_reach" ) )
+		{
+			if ( i + 1 >= argc || !ParseIntValue( pArg, argv[++i], 0, hprobe::kMaxReach, options.ambientGridReach ) )
 				return false;
 			continue;
 		}
@@ -765,11 +779,32 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 	return true;
 }
 
+// ParseEntities pushes onto each entity's existing epair list, so the entities of a finished load must be dropped
+// before the next paired-pass load or UnparseEntities would write every key twice.
+static void FreeEntities()
+{
+	for ( int i = 0; i < num_entities; ++i )
+	{
+		epair_t *pair = entities[i].epairs;
+		while ( pair )
+		{
+			epair_t *next = pair->next;
+			free( pair->key );
+			free( pair->value );
+			free( pair );
+			pair = next;
+		}
+		entities[i].epairs = NULL;
+	}
+	num_entities = 0;
+}
+
 void CVRadRestirDLL::UnloadSelectedBSP()
 {
 	if ( m_bBSPLoaded )
 	{
 		UnloadBSPFile();
+		FreeEntities();
 		m_bBSPLoaded = false;
 		g_pFaces = NULL;
 	}
@@ -954,6 +989,7 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 		CReSTIRBSPOutput output;
 		RESTIR_STAGE( "encoding lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
 		RESTIR_STAGE( "computing leaf ambient lighting", ReSTIR_ComputeLeafAmbientLighting( g_ReSTIROptions, scene, device, result ) );
+		RESTIR_STAGE( "capturing ambient probe grid", ReSTIR_CaptureAmbientProbes( g_ReSTIROptions, scene, device ) );
 		RESTIR_STAGE( "computing static prop lighting", ReSTIR_ComputeStaticPropLighting( g_ReSTIROptions, scene, device ) );
 		if ( g_ReSTIROptions.shadowMaps && s_ShadowMapDiagnosticsPath.Length() )
 		{
@@ -963,6 +999,7 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 		}
 		RESTIR_STAGE( "computing detail prop lighting", ReSTIR_ComputeDetailPropLighting( g_ReSTIROptions, scene, device ) );
 		RESTIR_STAGE( "validating output", output.Validate( g_ReSTIROptions ) );
+		ReSTIR_WriteSkyAmbientMatch( g_ReSTIROptions, scene );
 		RESTIR_STAGE( "writing BSP", output.Write( g_ReSTIROptions ) );
 		if ( reusePaired )
 		{
@@ -977,6 +1014,7 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 			RESTIR_STAGE( "preparing reused HDR storage", ReSTIR_RescaleLightmaps( g_ReSTIROptions ) );
 			RESTIR_STAGE( "encoding reused HDR lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
 			RESTIR_STAGE( "reusing leaf ambient lighting", ReSTIR_ReusePairedLeafAmbientLighting() );
+			RESTIR_STAGE( "reusing ambient probe grid", ReSTIR_ReusePairedAmbientProbes( g_ReSTIROptions ) );
 			RESTIR_STAGE( "serializing reused HDR static prop lighting", ReSTIR_ReuseStaticPropLighting( g_ReSTIROptions ) );
 			if ( g_ReSTIROptions.shadowMaps && s_ShadowMapDiagnosticsPath.Length() )
 			{
@@ -990,6 +1028,7 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 				RESTIR_STAGE( "sharing proven paired visibility", ReSTIR_MarkPairedVisibilityReuse() );
 			}
 			RESTIR_STAGE( "validating reused HDR output", output.Validate( g_ReSTIROptions ) );
+			ReSTIR_WriteSkyAmbientMatch( g_ReSTIROptions, scene );
 			RESTIR_STAGE( "writing reused HDR BSP", output.Write( g_ReSTIROptions ) );
 			pairedComplete = true;
 		}

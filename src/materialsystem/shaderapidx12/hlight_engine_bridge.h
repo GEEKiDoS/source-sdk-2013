@@ -92,6 +92,10 @@ void EndClientLevelShutdown();
 // Resource readmission uses the same drain but retains native domain/atlas/dynamics.
 bool BeginClientResourceReadmission();
 void EndClientResourceReadmission();
+// Material-thread quiescence without a native domain (used to refresh loaded materials on any map). Main thread
+// only; nests with the transactions above. Returns false when the bridge is unsupported or the queue did not drain.
+bool BeginMaterialTransaction();
+void EndMaterialTransaction();
 }
 }
 #endif

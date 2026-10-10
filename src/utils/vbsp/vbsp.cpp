@@ -1418,6 +1418,7 @@ int RunVBSP( int argc, char **argv )
 		WorldVertexTransitionFixup();
 		if( ( g_nDXLevel == 0 ) || ( g_nDXLevel >= 70 ) )
 		{
+			Cubemap_ResolveParallax();
 			Cubemap_FixupBrushSidesMaterials();
 			Cubemap_AttachDefaultCubemapToSpecularSides();
 			Cubemap_AddUnreferencedCubemaps();

@@ -12,9 +12,6 @@ class CReSTIRVulkanDevice;
 
 // Owned here; filled by the scene builder's .rad parser, as in vrad.cpp:231-237.
 extern CUtlVector<char const *> g_NonShadowCastingMaterialStrings;
-void ForceTextureShadowsOnModel( const char *pModelName );
-void ReSTIR_ClearForcedTextureShadows();
-bool IsModelTextureShadowsForced( const char *pModelName );
 bool ReSTIR_LoadStudioModel( const char *pModelName, CUtlBuffer &buffer );
 
 // Optional authored-geometry evidence, retained only for diagnostic requests.
@@ -87,7 +84,6 @@ public:
 	struct Model
 	{
 		CUtlBuffer mdl, vtx, vvd;
-		CUtlString name;
 		studiohdr_t *header;
 		void *vertexBase;
 		Model() : header( NULL ), vertexBase( NULL ) {}

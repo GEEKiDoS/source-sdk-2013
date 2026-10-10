@@ -8,6 +8,7 @@
 #include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
 #include "gtao_dx12.h"
+#include "pbr_debug_dx12.h"
 #include "postprocess_dx12.h"
 #include "framegen_dx12.h"
 
@@ -19,6 +20,8 @@ void CEpisodicRenderTargets::InitClientRenderTargets( IMaterialSystem *pMaterial
 	FrameGenDX12_Init( pHardwareConfig );
 	GTAODX12_Init( pHardwareConfig );
 	GTAODX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
+	PBRDebugDX12_Init( pHardwareConfig );
+	PBRDebugDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 	PostProcessDX12_Init( pHardwareConfig );
 	PostProcessDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 }
@@ -26,6 +29,7 @@ void CEpisodicRenderTargets::InitClientRenderTargets( IMaterialSystem *pMaterial
 void CEpisodicRenderTargets::ShutdownClientRenderTargets()
 {
 	PostProcessDX12_Shutdown();
+	PBRDebugDX12_Shutdown();
 	GTAODX12_Shutdown();
 	FrameGenDX12_Shutdown();
 	UpscalerDX12_Shutdown();

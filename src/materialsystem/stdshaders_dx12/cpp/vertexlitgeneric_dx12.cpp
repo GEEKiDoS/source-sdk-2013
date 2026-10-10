@@ -10,6 +10,7 @@
 
 #include "BaseVSShaderDX12.h"
 #include "vertexlitgeneric_dx9_helper.h"
+#include "pbr_helper.h"
 #include "emissive_scroll_blended_pass_helper.h"
 #include "cloak_blended_pass_helper.h"
 #include "flesh_interior_blended_pass_helper.h"
@@ -157,6 +158,8 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		SHADER_PARAM( TREESWAYSPEEDLERPEND, SHADER_PARAM_TYPE_FLOAT, "6", "" );
 		SHADER_PARAM( TREESWAYSTATIC, SHADER_PARAM_TYPE_BOOL, "0", "" );
 
+		PBR_SHADER_PARAMS
+
 	END_SHADER_PARAMS
 
 	void SetupVars( VertexLitGeneric_DX9_Vars_t& info )
@@ -251,6 +254,26 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		info.m_nTreeSwaySpeedLerpStart = TREESWAYSPEEDLERPSTART;
 		info.m_nTreeSwaySpeedLerpEnd = TREESWAYSPEEDLERPEND;
 		info.m_nTreeSwayStatic = TREESWAYSTATIC;
+	}
+
+	const PBR_Vars_t &PbrVars()
+	{
+		static const PBR_Vars_t s_vars = [this]
+		{
+			VertexLitGeneric_DX9_Vars_t info;
+			SetupVars( info );
+			PBR_Vars_t v;
+			PBR_FillModelVars( v, info );
+			PBR_FILL_EXTRA_VARS( v );
+			return v;
+		}();
+		return s_vars;
+	}
+
+	// PBR_VertexLitGeneric always takes the PBR path.
+	virtual bool UsePbr( IMaterialVar **params )
+	{
+		return DX12PbrOverride() && PBR_LegacySupported( params, PbrVars() );
 	}
 
 	// Cloak Pass
@@ -360,6 +383,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		VertexLitGeneric_DX9_Vars_t vars;
 		SetupVars( vars );
 		InitParamsVertexLitGeneric_DX9( this, params, pMaterialName, true, vars );
+		InitParamsPBRDefaults( params, PbrVars() );
 
 		// Cloak Pass
 		if ( !params[CLOAKPASSENABLED]->IsDefined() )
@@ -426,6 +450,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		VertexLitGeneric_DX9_Vars_t vars;
 		SetupVars( vars );
 		InitVertexLitGeneric_DX9( this, params, true, vars );
+		InitPBR( this, params, PbrVars() );
 
 		// Cloak Pass
 		if ( params[CLOAKPASSENABLED]->GetIntValue() )
@@ -478,9 +503,14 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		// Standard rendering pass
 		if ( bDrawStandardPass )
 		{
-			VertexLitGeneric_DX9_Vars_t vars;
-			SetupVars( vars );
-			DrawVertexLitGeneric_DX9( this, params, pShaderAPI, pShaderShadow, true, vars, vertexCompression, pContextDataPtr );
+			if ( UsePbr( params ) )
+				DrawPBR( this, params, pShaderAPI, pShaderShadow, PbrVars(), vertexCompression, pContextDataPtr );
+			else
+			{
+				VertexLitGeneric_DX9_Vars_t vars;
+				SetupVars( vars );
+				DrawVertexLitGeneric_DX9( this, params, pShaderAPI, pShaderShadow, true, vars, vertexCompression, pContextDataPtr );
+			}
 		}
 		else
 		{
@@ -560,3 +590,13 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		}
 	}
 END_SHADER
+
+// Same parameters, init and auxiliary passes; the standard pass always draws through the PBR shaders.
+BEGIN_INHERITED_SHADER( PBR_VertexLitGeneric, VertexLitGeneric, "VertexLitGeneric through the PBR shaders" )
+	virtual bool UsePbr( IMaterialVar ** )
+	{
+		return true;
+	}
+END_INHERITED_SHADER
+
+DEFINE_FALLBACK_SHADER( PBR_Skin, PBR_VertexLitGeneric )

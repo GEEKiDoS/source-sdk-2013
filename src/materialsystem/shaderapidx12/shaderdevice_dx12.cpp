@@ -2528,7 +2528,7 @@ static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool 
 	if ( pRecord->legacyBytecode.IsEmpty() )
 	{
 		CUtlString error;
-		if ( !ValidateLightingShaderDX12( pRecord->Bytecode(), bPixel, &pRecord->lightingAbi, error, &pRecord->sunVisibilityAbi, &pRecord->propVisibilityAbi ) )
+		if ( !ValidateLightingShaderDX12( pRecord->Bytecode(), bPixel, &pRecord->lightingAbi, error, &pRecord->sunVisibilityAbi, &pRecord->propVisibilityAbi, &pRecord->pbrSpots, &pRecord->probeAbi ) )
 		{
 			Warning( "Shadowmaps: required native shader unavailable: %s\n", error.Get() );
 			delete pRecord;
@@ -2833,6 +2833,9 @@ InitReturnVal_t CShaderDeviceMgrDX12::Init()
 	m_AdapterCaps.RemoveAll();
 	m_AdapterModes.RemoveAll();
 	const bool bAllowWarp = CommandLine() && CommandLine()->CheckParm( "-dx12warp" );
+	// CMaterialSystem::Init reads -forceallmips right after this Init returns; PBR IBL needs the full cubemap mip chain.
+	if ( CommandLine() && !CommandLine()->CheckParm( "-forceallmips" ) )
+		CommandLine()->AppendParm( "-forceallmips", nullptr );
 	Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
 	HRESULT hr = CreateDXGIFactory2( 0, IID_PPV_ARGS( &factory ) );
 	if ( FAILED( hr ) )

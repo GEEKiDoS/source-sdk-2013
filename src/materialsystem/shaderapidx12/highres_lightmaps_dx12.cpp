@@ -6,6 +6,7 @@
 #include "shaderapi/ishaderutil.h"
 #include "filesystem.h"
 #include "zip_utils.h"
+#include "hprobe_bsp.h"
 #include "tier0/platform.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/strtools.h"
@@ -24,7 +25,58 @@ namespace
 using Microsoft::WRL::ComPtr;
 const uint32 kNoPage = 0xffffffffu;
 // HLSL reports {flag, reason, page+1, cellX, cellY, face+1, UVbits[2], detail}.
-constexpr uint32 kFailureBytes = 9 * sizeof(uint32);
+constexpr uint32 kFailureWords = 9;
+constexpr uint32 kFailureBytes = kFailureWords * sizeof(uint32);
+constexpr uint32 kDrawRing = 4096, kDumpDraws = 16, kDumpPairs = 8;
+// One highres receiver draw. The failure UAV names a native page and a command-list window, never a draw: these are the candidates.
+struct DrawNote { const char *vertexShader, *pixelShader; uint64 fence, meshToken; uint32 page, firstIndex, indexCount; };
+// What a minidump of a rejected map needs, as plain data in the breaking frame (the mapped readback memory is not in a dump).
+struct FailureDump
+{
+    uint32 record[kFailureWords]; // {flag, reason, page+1, cellX, cellY, face+1, UVbits[2], detail} exactly as the shader wrote it
+    float uv[2];
+    uint64 fence, windowAfterFence, mapGeneration;
+    uint32 drawCount, pairCount; // draws of the window on the failing page; entries valid in draws[] = min(drawCount, kDumpDraws)
+    char message[512];
+    struct { char vertexShader[48], pixelShader[48]; uint32 draws; } pairs[kDumpPairs]; // distinct shader pairs of those draws
+    struct { char vertexShader[48], pixelShader[48]; uint64 meshToken; uint32 firstIndex, indexCount; } draws[kDumpDraws]; // newest first
+};
+// The single place a rejection breaks. Unconditional, debugger or not: an unhandled breakpoint reaches the process crash
+// handler, which writes the minidump. `dump` holds the decoded record and the failing page's draws between the previous clean
+// readback and the failing one; the break stays live through the volatile read. Continuing runs the existing fatal rejection.
+__declspec(noinline) void BreakOnHighresFailure(const char *message, const uint32 *record, uint64 fence, uint64 windowAfterFence,
+    uint64 mapGeneration, const DrawNote *ring, uint64 ringCount)
+{
+    FailureDump dump = {};
+    memcpy(dump.record, record, sizeof(dump.record)); memcpy(dump.uv, record + 6, sizeof(dump.uv));
+    dump.fence = fence; dump.windowAfterFence = windowAfterFence; dump.mapGeneration = mapGeneration;
+    V_strncpy(dump.message, message, sizeof(dump.message));
+    const char *pairNames[kDumpPairs][2] = {};
+    for (uint64 back = 0; back < kDrawRing && back < ringCount; ++back)
+    {
+        const DrawNote &note = ring[(ringCount - 1 - back) % kDrawRing];
+        if (note.fence <= windowAfterFence || note.fence > fence || note.page + 1 != record[2]) continue;
+        if (dump.drawCount < kDumpDraws)
+        {
+            auto &out = dump.draws[dump.drawCount];
+            V_strncpy(out.vertexShader, note.vertexShader, sizeof(out.vertexShader)); V_strncpy(out.pixelShader, note.pixelShader, sizeof(out.pixelShader));
+            out.meshToken = note.meshToken; out.firstIndex = note.firstIndex; out.indexCount = note.indexCount;
+        }
+        ++dump.drawCount;
+        uint32 pair = 0;
+        while (pair < dump.pairCount && (pairNames[pair][0] != note.vertexShader || pairNames[pair][1] != note.pixelShader)) ++pair;
+        if (pair == dump.pairCount && pair < kDumpPairs)
+        {
+            pairNames[pair][0] = note.vertexShader; pairNames[pair][1] = note.pixelShader; ++dump.pairCount;
+            V_strncpy(dump.pairs[pair].vertexShader, note.vertexShader, sizeof(dump.pairs[pair].vertexShader));
+            V_strncpy(dump.pairs[pair].pixelShader, note.pixelShader, sizeof(dump.pairs[pair].pixelShader));
+        }
+        if (pair < kDumpPairs) ++dump.pairs[pair].draws;
+    }
+    const volatile FailureDump *keep = &dump;
+    DebuggerBreak();
+    (void)keep->drawCount;
+}
 struct BspFile
 {
     IFileSystem *fs;
@@ -136,6 +188,43 @@ void BufferView(ID3D12Device *device, ID3D12Resource *resource, uint32 count, ui
     desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; desc.Buffer.NumElements = std::max(1u,count); desc.Buffer.StructureByteStride = stride;
     device->CreateShaderResourceView(resource, &desc, dst);
 }
+// Dense ambient probes: one-mip 3D textures in the order of the t0..t8 space-4 table (R32_UINT indirection, R11G11B10_FLOAT
+// DC, six RGBA8_SNORM band textures, R8_UNORM validity). The format literals of hprobe_bsp.h are DXGI_FORMAT values.
+COMPILE_TIME_ASSERT(hprobe::kR11G11B10Float == uint32(DXGI_FORMAT_R11G11B10_FLOAT) && hprobe::kRGBA8Snorm == uint32(DXGI_FORMAT_R8G8B8A8_SNORM) &&
+    hprobe::kR8Unorm == uint32(DXGI_FORMAT_R8_UNORM));
+COMPILE_TIME_ASSERT(DX12_PROBE_T_VALIDITY - DX12_PROBE_T_BANDS_FIRST == hprobe::kBands);
+const DXGI_FORMAT kProbeFormats[DX12_PROBE_TABLE_COUNT] = { DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R11G11B10_FLOAT,
+    DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM,
+    DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8_UNORM };
+const uint32 kProbeTexelBytes[DX12_PROBE_TABLE_COUNT] = { 4, 4, 4, 4, 4, 4, 4, 4, 1 };
+struct Texture3D
+{
+    ComPtr<ID3D12Resource> resource;
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+    uint32 width = 0, height = 0, depth = 0;
+};
+bool MakeTexture3D(ID3D12Device *device, Texture3D &out, uint32 width, uint32 height, uint32 depth, DXGI_FORMAT format)
+{
+    D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    desc.Width = width; desc.Height = height; desc.DepthOrArraySize = UINT16(depth); desc.MipLevels = 1;
+    desc.Format = format; desc.SampleDesc.Count = 1;
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&out.resource)))) return false;
+    out.width = width; out.height = height; out.depth = depth; return true;
+}
+// resource == nullptr creates the typed null view the fallback table binds.
+void Texture3DView(ID3D12Device *device, ID3D12Resource *resource, DXGI_FORMAT format, D3D12_CPU_DESCRIPTOR_HANDLE dst)
+{
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{}; desc.Format = format; desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; desc.Texture3D.MipLevels = 1;
+    device->CreateShaderResourceView(resource, &desc, dst);
+}
+uint64 CommittedBytes(ID3D12Device *device, ID3D12Resource *resource)
+{
+    if (!resource) return 0;
+    const auto desc = resource->GetDesc();
+    return device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+}
 }
 struct CHighresLightmapsDX12::Impl
 {
@@ -174,6 +263,24 @@ struct CHighresLightmapsDX12::Impl
     std::vector<uint8> scratch;
     std::vector<ViewStyles> views;
     uint64 nextViewSerial = 1, commonRetainedFence = 0, polledFence = ~uint64(0);
+    // Dense ambient probes (maps/<name>.hprobe beside the .hlight in the pak): the selected mode's CPU asset lives with the
+    // map; the nine textures become resident on the first PBR probe consumer draw and are dropped with the device.
+    CUtlBuffer probeAsset;
+    hprobe::FileView probeFile{};
+    const hprobe::ModeView *probeMode = nullptr;
+    Texture3D probeTextures[DX12_PROBE_TABLE_COUNT];
+    ComPtr<ID3D12DescriptorHeap> probeViews, probeNullViews;
+    bool probeResident = false;
+    DescriptorRangeDX12 probeTable{};
+    uint64 probeTableFence = 0, probeRetainedFence = 0, probeConstantsFence = 0;
+    D3D12_GPU_VIRTUAL_ADDRESS probeConstantsAddress = 0;
+    // Recent highres receiver draws, oldest overwritten first; a rejection is attributed to those of its window (BreakOnHighresFailure).
+    std::array<DrawNote,kDrawRing> draws = {};
+    uint64 drawCount = 0, cleanFence = 0; // cleanFence: the newest readback that carried no failure
+    void NoteDraw(const DrawIdentity &draw, uint64 fence, uint32 page)
+    {
+        draws[drawCount++ % kDrawRing] = {draw.vertexShader, draw.pixelShader, fence, draw.meshToken, page, draw.firstIndex, draw.indexCount};
+    }
     void Fail(const char *reason)
     {
         if (status.state != DX12_HIGHRES_REJECTED) V_strncpy(error, reason && *reason ? reason : "Highres lightmaps: native boundary failed", sizeof(error));
@@ -203,6 +310,15 @@ struct CHighresLightmapsDX12::Impl
         faceState = tileState = failureState = D3D12_RESOURCE_STATE_COPY_DEST;
         status.gpuBytes = 0;
     }
+    void ClearProbeGpu()
+    {
+        for (auto &texture : probeTextures) texture = {};
+        probeViews.Reset(); probeNullViews.Reset(); probeResident = false;
+        probeTable = {}; probeTableFence = probeRetainedFence = probeConstantsFence = 0; probeConstantsAddress = 0;
+        status.probeBytes = 0;
+        if (probeMode) status.probeError[0] = 0; // a validated asset's only runtime failure is residency, retried on the next device
+    }
+    void ClearProbes() { ClearProbeGpu(); probeMode = nullptr; probeFile = {}; probeAsset.Purge(); }
     void Poll()
     {
         if (!device) return;
@@ -226,11 +342,11 @@ struct CHighresLightmapsDX12::Impl
                         "(reason=%s page=%u cell=%d,%d face=%u UV=%.9g,%.9g detail=%u)",
                         value[1]<ARRAYSIZE(reasons)?reasons[value[1]]:reasons[0],value[2],
                         static_cast<int32>(value[3]),static_cast<int32>(value[4]),value[5],uv[0],uv[1],value[8]);
-                    // Preserve the mapped first-failure payload and diagnostic for inspection.
-                    // Without a debugger, retain the existing fail-closed fatal path.
-                    DebuggerBreakIfDebugging();
+                    Warning("%s\n",reason);
+                    BreakOnHighresFailure(reason,value,r.fence,cleanFence,r.generation,draws.data(),drawCount);
                     Fail(reason);
                 }
+                else if (!value[0]) cleanFence = r.fence;
                 D3D12_RANGE written{0,0}; r.resource->Unmap(0,&written);
             }
             readbacks.erase(readbacks.begin()+i);
@@ -301,6 +417,75 @@ struct CHighresLightmapsDX12::Impl
         }
         if (finalize) Transition(device->CommandList(),buffer,state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         return true;
+    }
+    // One-mip 3D upload in slice groups of at most 8 MiB: rows are padded to the 256-byte pitch, a slice is pitch * height.
+    bool Upload3D(Texture3D &texture, DXGI_FORMAT format, uint32 pixelBytes, const uint8 *source)
+    {
+        auto *list = device->CommandList(); const uint64 fence = device->NextFenceValue();
+        const uint32 pitch = (texture.width*pixelBytes+255u)&~255u;
+        const size_t slice = size_t(pitch)*texture.height;
+        const uint32 group = uint32(std::max<size_t>(1, (size_t(8) << 20)/slice));
+        api->m_Pipeline.RetainExternalResource(texture.resource.Get(),fence);
+        Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_COPY_DEST);
+        std::vector<uint8> staging((slice*std::min(group,texture.depth)+511)&~size_t(511));
+        for (uint32 z=0; z<texture.depth; z+=group)
+        {
+            const uint32 slices = std::min(group,texture.depth-z); const size_t bytes = (slice*slices+511)&~size_t(511);
+            memset(staging.data(),0,bytes);
+            for (uint32 d=0; d<slices; ++d) for (uint32 y=0; y<texture.height; ++y)
+                memcpy(staging.data()+d*slice+size_t(y)*pitch,source+(size_t(z+d)*texture.height+y)*texture.width*pixelBytes,size_t(texture.width)*pixelBytes);
+            ID3D12Resource *upload = nullptr; uint64 offset = 0;
+            if (!api->m_Pipeline.UploadStructured(staging.data(),bytes,512,fence,&upload,&offset)) return false;
+            D3D12_TEXTURE_COPY_LOCATION src{}, dst{}; src.pResource = upload; src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src.PlacedFootprint.Offset = offset; src.PlacedFootprint.Footprint = {format,texture.width,texture.height,slices,pitch};
+            dst.pResource = texture.resource.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
+            list->CopyTextureRegion(&dst,0,0,z,&src,nullptr);
+        }
+        Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        return true;
+    }
+    // Reads and validates the optional probe asset paired with the admitted .hlight for the selected mode. Failure only
+    // records the reason in the status: PBR model receivers then bind the engine ambient cube and nothing else changes.
+    void LoadProbes(IZip &zip, const char *hlightPath)
+    {
+        char path[260], reason[sizeof(status.probeError)] = {};
+        if (!hprobe::ProbeAssetPath(hlightPath,path,sizeof(path))) V_strncpy(reason,"the lightmap asset path is not an .hlight",sizeof(reason));
+        else if (!zip.ReadFileFromZip(path,false,probeAsset) || probeAsset.TellPut()<=0) V_snprintf(reason,sizeof(reason),"%s is missing from the BSP pak; rebake with -restir_shadowmaps",path);
+        else if (hprobe::ValidateFile(probeAsset.Base(),uint32(probeAsset.TellPut()),probeFile,reason,sizeof(reason)) &&
+            hprobe::ValidatePair(probeFile,file,reason,sizeof(reason)) &&
+            !(probeMode=hprobe::FindMode(probeFile,domain->faceLump,domain->lightingLump))) V_strncpy(reason,"the asset has no grid for the selected lighting mode",sizeof(reason));
+        if (probeMode) { status.probeBrickCount=probeMode->record->brickCount; return; }
+        probeAsset.Purge(); probeFile={}; V_strncpy(status.probeError,reason,sizeof(status.probeError));
+    }
+    // Creates the nine textures and their CPU descriptors and uploads the selected grid once, on the draw's command list.
+    // A failure latches the reason (cleared with the device) and leaves every probe draw on the fallback table.
+    bool MakeProbesResident()
+    {
+        const hprobe::GridDisk &g = *probeMode->grid; ID3D12Device *d3d = device->NativeDevice();
+        const uint64 texels = hprobe::AtlasTexels(g);
+        const uint8 *sources[DX12_PROBE_TABLE_COUNT] = { reinterpret_cast<const uint8 *>(probeMode->indirection), reinterpret_cast<const uint8 *>(probeMode->dc) };
+        for (uint32 b=0; b<hprobe::kBands; ++b) sources[DX12_PROBE_T_BANDS_FIRST+b] = reinterpret_cast<const uint8 *>(probeMode->bands)+uint64(b)*texels*4;
+        sources[DX12_PROBE_T_VALIDITY] = probeMode->validity;
+        const char *failure = Heap(d3d,probeViews,DX12_PROBE_TABLE_COUNT) ? nullptr : "descriptor allocation failed";
+        for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
+        {
+            // The indirection has the brick extent; every other texture is the padded 5x5x5-per-brick atlas.
+            const bool indirection = i == DX12_PROBE_T_INDIRECTION;
+            uint32 extent[3];
+            for (uint32 axis=0; axis<3; ++axis) extent[axis] = indirection ? g.brickDims[axis] : g.atlasBricks[axis]*hprobe::kBrickProbes;
+            if (!MakeTexture3D(d3d,probeTextures[i],extent[0],extent[1],extent[2],kProbeFormats[i])) failure = "texture allocation failed";
+            else Texture3DView(d3d,probeTextures[i].resource.Get(),kProbeFormats[i],Slot(d3d,probeViews.Get(),i));
+        }
+        for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
+            if (!Upload3D(probeTextures[i],kProbeFormats[i],kProbeTexelBytes[i],sources[i])) failure = "upload failed";
+        if (failure)
+        {
+            ClearProbeGpu(); V_snprintf(status.probeError,sizeof(status.probeError),"GPU residency: %s",failure);
+            Warning("Highres lightmaps: ambient probe grid unavailable (%s); PBR models use the engine ambient cube\n",status.probeError);
+            return false;
+        }
+        for (const auto &texture : probeTextures) status.probeBytes += CommittedBytes(d3d,texture.resource.Get());
+        probeResident = true; return true;
     }
     bool InitializeUploads()
     {
@@ -403,7 +588,7 @@ void CHighresLightmapsDX12::ReleaseDevice()
 {
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     s.Poll(); // Caller has submitted/drained the old GPU device before releasing resources.
-    s.ClearGpu(); s.views.clear(); s.readbacks.clear(); s.polledFence=~uint64(0);
+    s.ClearGpu(); s.ClearProbeGpu(); s.views.clear(); s.readbacks.clear(); s.polledFence=~uint64(0);
     if (s.mode && s.status.state!=DX12_HIGHRES_REJECTED) s.status.state=DX12_HIGHRES_PENDING;
     s.status.layoutGeneration=0; s.status.pageCount=0;
     s.device=nullptr; s.api=nullptr; // Native domains/assets/dynamic spans remain owned through restoration.
@@ -411,7 +596,7 @@ void CHighresLightmapsDX12::ReleaseDevice()
 void CHighresLightmapsDX12::Shutdown()
 {
     HlightEngineBridge::Shutdown(); std::lock_guard<std::recursive_mutex> lock(m_Impl->mutex);
-    m_Impl->ClearGpu(); m_Impl->domain.reset(); m_Impl->atlas.reset(); m_Impl->asset.Purge();
+    m_Impl->ClearGpu(); m_Impl->ClearProbes(); m_Impl->domain.reset(); m_Impl->atlas.reset(); m_Impl->asset.Purge();
     m_Impl->dynamics.clear(); m_Impl->views.clear(); m_Impl->readbacks.clear(); m_Impl->mode=nullptr;
     m_Impl->file={}; m_Impl->status={}; m_Impl->error[0]=0; m_Impl->mapPath[0]=0; m_Impl->device=nullptr; m_Impl->api=nullptr;
     m_Impl->enhancedRequired=false;
@@ -422,7 +607,7 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     try
     {
-        s.ClearGpu(); s.atlas.reset(); s.asset.Purge(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0;
+        s.ClearGpu(); s.ClearProbes(); s.atlas.reset(); s.asset.Purge(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0;
         s.enhancedRequired=false;
         s.domain=std::move(domain);
         if (!s.domain || !s.domain->mapGeneration || !MapPath(s.domain->mapName,s.mapPath)) { s.Fail("Highres lightmaps: invalid native map domain"); return false; }
@@ -529,6 +714,7 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
             if (face.flags&hlight::kFaceHasLighting)
                 s.dynamics[f].rgb.assign(size_t(native.extents[0]+1)*(native.extents[1]+1)*3*((face.flags&hlight::kFaceBumped)?4:1),0.f);
         }
+        s.LoadProbes(*zip,manifestView.header->assetPath);
         s.status.density=s.file.header->density; s.status.assetBytes=s.asset.TellPut(); s.status.faceCount=s.mode->record->faceCount; return true;
     }
     catch (const std::bad_alloc &) { s.Fail("Highres lightmaps: insufficient owned CPU memory"); return false; }
@@ -657,16 +843,10 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             }
         }
         s.scratch.resize(scratchBytes);
-        const auto committedBytes = [device](ID3D12Resource *resource) -> uint64
-        {
-            if (!resource) return 0;
-            const auto desc = resource->GetDesc();
-            return device->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
-        };
-        s.status.gpuBytes=committedBytes(s.faceBuffer.Get())+committedBytes(s.tileBuffer.Get())+committedBytes(s.failureBuffer.Get());
-        for (const auto &buffer:s.visibilityBuffers) s.status.gpuBytes+=committedBytes(buffer.Get());
-        for (const auto &page:s.pages) s.status.gpuBytes+=committedBytes(page.ids.resource.Get())+committedBytes(page.dynamic.resource.Get());
-        for (const auto &group:s.groups) s.status.gpuBytes+=committedBytes(group.resource.Get());
+        s.status.gpuBytes=CommittedBytes(device,s.faceBuffer.Get())+CommittedBytes(device,s.tileBuffer.Get())+CommittedBytes(device,s.failureBuffer.Get());
+        for (const auto &buffer:s.visibilityBuffers) s.status.gpuBytes+=CommittedBytes(device,buffer.Get());
+        for (const auto &page:s.pages) s.status.gpuBytes+=CommittedBytes(device,page.ids.resource.Get())+CommittedBytes(device,page.dynamic.resource.Get());
+        for (const auto &group:s.groups) s.status.gpuBytes+=CommittedBytes(device,group.resource.Get());
         for (uint32 p=0;p<s.pages.size();++p)
         {
             auto &page=s.pages[p]; TextureView(device,page.ids.resource.Get(),DXGI_FORMAT_R32_UINT,false,1,Slot(device,page.descriptors.Get(),0));
@@ -721,7 +901,7 @@ void CHighresLightmapsDX12::OnNativeRetire(uint64 generation)
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     if (!s.domain || generation!=s.domain->mapGeneration) return;
     if (s.device && s.device->CommandList() && !s.CopyFailure()) s.Fail("Highres lightmaps: cannot retire GPU validation");
-    s.ClearGpu(); s.domain.reset(); s.atlas.reset(); s.asset.Purge(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0; s.mapPath[0]=0;
+    s.ClearGpu(); s.ClearProbes(); s.domain.reset(); s.atlas.reset(); s.asset.Purge(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0; s.mapPath[0]=0;
     s.enhancedRequired=false; s.views.clear();
 }
 void CHighresLightmapsDX12::OnNativeResourceRelease(uint64 generation)
@@ -839,7 +1019,7 @@ bool CHighresLightmapsDX12::GetStaticPropDirect(uint32 meshIndex,StaticPropDirec
     { s.Fail("Highres lightmaps: invalid admitted static-prop direct metadata"); return false; }
     return true;
 }
-bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWorld[12],CPipelineCacheDX12::BindingInputDX12 &input)
+bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWorld[12],const DrawIdentity &draw,CPipelineCacheDX12::BindingInputDX12 &input)
 {
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex); s.Poll();
     if (!s.mode || !samplerMask) return true;
@@ -875,6 +1055,7 @@ bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWo
     }
     if ((!neutral && pageIndex==kNoPage) || samplerMask&0xffff0000u || !modelToWorld) { s.Fail("Highres lightmaps: invalid native sampler-role metadata"); return false; }
     auto &page=neutral?s.neutral:s.pages[pageIndex]; auto &pipeline=s.api->m_Pipeline; const uint64 fence=s.device->NextFenceValue();
+    if (!neutral) s.NoteDraw(draw,fence,pageIndex);
     if (!s.InitializeUploads() || (!neutral && !s.UploadDynamics(pageIndex))) { s.Fail("Highres lightmaps: native upload failed"); return false; }
     if (!pipeline.ReserveResourceDescriptors(8+32+16,fence)) { s.Fail("Highres lightmaps: descriptor residency failed"); return false; }
     const uint64 heap=pipeline.ResourceHeapGeneration();
@@ -910,5 +1091,44 @@ bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWo
     input.highresConstants=page.constantsAddress;
     input.highresAbi=true; input.highresTable=page.table;
     input.highresFailure=s.failureBuffer->GetGPUVirtualAddress(); s.failureUsed=true; return true;
+}
+bool CHighresLightmapsDX12::PrepareProbeDraw(CPipelineCacheDX12::BindingInputDX12 &input)
+{
+    Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    auto &pipeline=s.api->m_Pipeline; ID3D12Device *device=s.device->NativeDevice(); const uint64 fence=s.device->NextFenceValue();
+    if (s.probeMode && !s.probeResident && !s.status.probeError[0]) s.MakeProbesResident();
+    const bool grid=s.probeResident;
+    ComPtr<ID3D12DescriptorHeap> &views=grid?s.probeViews:s.probeNullViews;
+    if (!views && Heap(device,views,DX12_PROBE_TABLE_COUNT))
+        for (uint32 i=0;i<DX12_PROBE_TABLE_COUNT;++i) Texture3DView(device,nullptr,kProbeFormats[i],Slot(device,views.Get(),i));
+    if (!views || !pipeline.ReserveResourceDescriptors(DX12_PROBE_TABLE_COUNT+32+16,fence)) return false;
+    const uint64 heap=pipeline.ResourceHeapGeneration();
+    if (s.probeTableFence!=fence || s.probeTable.generation!=heap)
+    {
+        s.probeTable=pipeline.AllocateTransientResources(DX12_PROBE_TABLE_COUNT,fence); if (s.probeTable.count!=DX12_PROBE_TABLE_COUNT) return false;
+        device->CopyDescriptorsSimple(DX12_PROBE_TABLE_COUNT,s.probeTable.cpu,views->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV); s.probeTableFence=fence;
+    }
+    if (grid && s.probeRetainedFence!=fence)
+    {
+        for (const auto &texture : s.probeTextures) pipeline.RetainExternalResource(texture.resource.Get(),fence);
+        s.probeRetainedFence=fence;
+    }
+    if (s.probeConstantsFence!=fence)
+    {
+        DX12ProbeConstantsV1 constants{}; // all zero: cProbeBricks.w = 0 disables the grid
+        if (grid)
+        {
+            const hprobe::GridDisk &g=*s.probeMode->grid;
+            for (uint32 axis=0;axis<3;++axis)
+            {
+                constants.cProbeOrigin[axis]=g.origin[axis]; constants.cProbeBricks[axis]=g.brickDims[axis];
+                constants.cProbeAtlas[axis]=1.f/float(g.atlasBricks[axis]*hprobe::kBrickProbes); constants.cProbeAtlasBricks[axis]=g.atlasBricks[axis];
+            }
+            constants.cProbeOrigin[3]=1.f/g.spacing; constants.cProbeBricks[3]=1; constants.cProbeAtlas[3]=0.25f*g.spacing;
+        }
+        if (!pipeline.UploadTransient(&constants,sizeof(constants),256,256,fence,s.probeConstantsAddress)) return false;
+        s.probeConstantsFence=fence;
+    }
+    input.probeAbi=true; input.probeTable=s.probeTable; input.probeConstants=s.probeConstantsAddress; return true;
 }
 }

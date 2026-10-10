@@ -70,6 +70,7 @@ struct DX12_PS_INPUT
 	float3 shadowTangentS : TEXCOORD8;
 	float3 shadowTangentT : TEXCOORD9;
 	centroid float2 shadowBaseLightmapUV : TEXCOORD10;
+	nointerpolation float2 shadowVertexLightmapUV : TEXCOORD11;
 };
 PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 {
@@ -90,7 +91,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 {
 	PS_INPUT i = DX12ConvertInput( dx12In );
 #if 1
-	HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );
+	HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );
  ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.svPos.xy );
  smr.bakedSunVisibility = hlr.sun;
  ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );

@@ -44,6 +44,9 @@ $Project "stdshader_dx12"
         $File "cpp\shader_dll_verify_dx12.cpp"
         $File "cpp\shaderdll_dx12.cpp"
         $File "cpp\dx12_detailshadowlit.cpp"
+        $File "cpp\pbr_helper.cpp"
+        $File "cpp\pbr_dx12.cpp"
+        $File "cpp\dx12_pbrlights.cpp"
     }
     $Folder "Header Files"
     {
@@ -52,6 +55,7 @@ $Project "stdshader_dx12"
         $File "cpp\commandbuilder.h"
         $File "cpp\common_hlsl_cpp_consts.h"
         $File "cpp\shader_dll_verify_dx12.h"
+        $File "cpp\pbr_helper.h"
         $File "$SRCDIR\public\shaderapi\ishaderapidx12lighting.h"
     }
     $Folder "Link Libraries"

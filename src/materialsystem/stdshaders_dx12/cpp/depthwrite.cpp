@@ -86,6 +86,15 @@ BEGIN_VS_SHADER_FLAGS( DepthWrite, "Help for Depth Write", SHADER_NOT_EDITABLE )
 			// If a material was already marked nocull, don't cull it
 			pShaderShadow->EnableCulling( IS_FLAG_SET(MATERIAL_VAR_ALPHATEST) && !IS_FLAG_SET(MATERIAL_VAR_NOCULL) );
 
+			if ( bAlphaClip )
+			{
+				// The backend keeps the pixel stage of a depth-only or shadow-caster draw only when the snapshot is alpha
+				// tested. ALWAYS makes the fixed-function test (DX12AlphaTest) pass everything, so the pixel shader's own
+				// clip against g_AlphaThreshold stays the only cutout.
+				pShaderShadow->EnableAlphaTest( true );
+				pShaderShadow->AlphaFunc( SHADER_ALPHAFUNC_ALWAYS, 0.0f );
+			}
+
 			{
 				SET_FLAGS2( MATERIAL_VAR2_USES_VERTEXID );
 

@@ -11,6 +11,7 @@
 #include "BaseVSShaderDX12.h"
 #include "convar.h"
 #include "lightmappedgeneric_dx9_helper.h"
+#include "pbr_helper.h"
 
 static LightmappedGeneric_DX9_Vars_t s_info;
 
@@ -75,6 +76,8 @@ BEGIN_VS_SHADER( LightmappedGeneric,
 		SHADER_PARAM( OUTLINESTART1, SHADER_PARAM_TYPE_FLOAT, "0.0", "inner start value for outline")
 		SHADER_PARAM( OUTLINEEND0, SHADER_PARAM_TYPE_FLOAT, "0.0", "inner end value for outline")
 		SHADER_PARAM( OUTLINEEND1, SHADER_PARAM_TYPE_FLOAT, "0.0", "outer end value for outline")
+
+		PBR_SHADER_PARAMS
 END_SHADER_PARAMS
 
 	void SetupVars( LightmappedGeneric_DX9_Vars_t& info )
@@ -138,6 +141,20 @@ END_SHADER_PARAMS
 		info.m_nOutlineEnd1 = OUTLINEEND1;
 	}
 
+	const PBR_Vars_t &PbrVars()
+	{
+		static const PBR_Vars_t s_vars = [this]
+		{
+			LightmappedGeneric_DX9_Vars_t info;
+			SetupVars( info );
+			PBR_Vars_t v;
+			PBR_FillWorldVars( v, info );
+			PBR_FILL_EXTRA_VARS( v );
+			return v;
+		}();
+		return s_vars;
+	}
+
 	SHADER_FALLBACK
 	{
 		
@@ -150,16 +167,30 @@ END_SHADER_PARAMS
 	{
 		SetupVars( s_info );
 		InitParamsLightmappedGeneric_DX9( this, params, pMaterialName, s_info );
+		InitParamsPBRDefaults( params, PbrVars() );
 	}
 
 	SHADER_INIT
 	{
 		SetupVars( s_info );
 		InitLightmappedGeneric_DX9( this, params, s_info );
+		InitPBR( this, params, PbrVars() );
 	}
 
 	SHADER_DRAW
 	{
-		DrawLightmappedGeneric_DX9( this, params, pShaderAPI, pShaderShadow, s_info, pContextDataPtr );
+		const PBR_Vars_t &pbr = PbrVars();
+		if ( DX12PbrOverride() && PBR_LegacySupported( params, pbr ) )
+			DrawPBR( this, params, pShaderAPI, pShaderShadow, pbr, vertexCompression, pContextDataPtr );
+		else
+			DrawLightmappedGeneric_DX9( this, params, pShaderAPI, pShaderShadow, s_info, pContextDataPtr );
 	}
 END_SHADER
+
+// Same parameters and init; always drawn through the PBR shaders.
+BEGIN_INHERITED_SHADER( PBR_LightmappedGeneric, LightmappedGeneric, "LightmappedGeneric through the PBR shaders" )
+	SHADER_DRAW
+	{
+		DrawPBR( this, params, pShaderAPI, pShaderShadow, PbrVars(), vertexCompression, pContextDataPtr );
+	}
+END_INHERITED_SHADER

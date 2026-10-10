@@ -1,0 +1,83 @@
+// Native SM5.1 PBR world (brush) vertex shader. Inputs and lightmap-coordinate math follow
+// hlsl/lightmappedgeneric_vs51.fxc; LAYERED carries the vertex alpha of the WorldVertexTransition blend.
+// The bumped lightmap coordinates are always emitted as (base, per-plane offset); the pixel shader forms plane k
+// as base + k * offset, so one VS serves flat and bumped lightmaps.
+#define DX12_LEGACY_VS20 1
+#include "dx12_preamble.h"
+// STATIC: "LAYERED" "0..1"
+// DYNAMIC: "DOWATERFOG" "0..1"
+#include "common_vs_fxc.h"
+#include "pbr_material.h"
+
+struct DX12_VS_INPUT
+{
+	float3 vPos : POSITION;
+	float4 vNormal : NORMAL;
+	float2 vBaseTexCoord : TEXCOORD0;
+	float2 vLightmapTexCoord : TEXCOORD1;
+	float2 vLightmapTexCoordOffset : TEXCOORD2;
+	float3 vTangentS : TANGENT;
+	float3 vTangentT : BINORMAL;
+	float4 vColor : COLOR0; // $vertexcolor and the LAYERED blend; declared unconditionally like lightmappedgeneric_vs51
+};
+
+struct VS_OUTPUT
+{
+	float4 projPos : SV_Position;
+	float fog : FOG;
+	float4 baseBumpUV : TEXCOORD0;      // xy base, zw bump
+	float4 detailBlendUV : TEXCOORD1;   // xy detail, zw blend modulate
+	centroid float4 lightmapUV : TEXCOORD2; // xy base set, zw per-plane offset
+	float4 worldPos_projPosZ : TEXCOORD3;
+	float3 toEye : TEXCOORD4;
+	float3 tangentS : TEXCOORD5;
+	float3 tangentT : TEXCOORD6;
+	float3 worldNormal : TEXCOORD7;
+#if LAYERED
+	float layerBlend : TEXCOORD8;
+#endif
+	float4 vertexColor : TEXCOORD9; // $vertexcolor scale, identity otherwise
+	float2 rawUV : TEXCOORD10;          // untransformed UV: $envmapmasktransform / $bumptransform2 apply in the pixel shader (no free VS registers)
+	nointerpolation float2 lightmapVertexUV : TEXCOORD11; // provoking vertex: selects the owning highres face
+	DX12ClipDistances dx12Clip; // SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+
+VS_OUTPUT main( const DX12_VS_INPUT v )
+{
+	VS_OUTPUT o = (VS_OUTPUT)0;
+
+	float3 objectNormal;
+	DecompressVertex_Normal( v.vNormal, objectNormal );
+
+	float3 worldPos = mul( float4( v.vPos, 1 ), cModel[0] );
+	float4 projPos = mul( float4( v.vPos, 1 ), cModelViewProj );
+	o.dx12Clip = DX12UserClipDistances( projPos );
+	o.projPos = DX12Position( projPos );
+	projPos.z = dot( float4( v.vPos, 1 ), cModelViewProjZ );
+	o.worldPos_projPosZ = float4( worldPos, projPos.z );
+	o.toEye = cEyePos - worldPos;
+
+	o.worldNormal = mul( objectNormal, (float3x3)cModel[0] );
+	o.tangentS = mul( v.vTangentS, (float3x3)cModel[0] );
+	o.tangentT = mul( v.vTangentT, (float3x3)cModel[0] );
+
+	o.baseBumpUV = float4( PBR_TransformUV( v.vBaseTexCoord, g_BaseTransform ), PBR_TransformUV( v.vBaseTexCoord, g_BumpTransform ) );
+	o.detailBlendUV = float4( PBR_TransformUV( v.vBaseTexCoord, g_DetailTransform ), PBR_TransformUV( v.vBaseTexCoord, g_BlendTransform ) );
+	o.rawUV = v.vBaseTexCoord;
+	o.lightmapUV = float4( v.vLightmapTexCoord, v.vLightmapTexCoordOffset );
+	o.lightmapVertexUV = v.vLightmapTexCoord;
+#if LAYERED
+	o.layerBlend = v.vColor.a;
+#endif
+	// $vertexcolor: the mesh COLOR scales albedo and (unless it carries the layer blend) alpha.
+	o.vertexColor = float4( 1.0, 1.0, 1.0, 1.0 );
+	if ( g_PbrVertexColor.x != 0.0 )
+	{
+		o.vertexColor.rgb = v.vColor.rgb;
+#if !LAYERED
+		o.vertexColor.a = v.vColor.a;
+#endif
+	}
+	o.fog = CalcFog( worldPos, projPos.xyz, DOWATERFOG );
+	return o;
+}

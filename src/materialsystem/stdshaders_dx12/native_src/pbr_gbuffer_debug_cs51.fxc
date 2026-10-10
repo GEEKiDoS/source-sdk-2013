@@ -1,0 +1,47 @@
+// Native SM5.1 PBR G-buffer debug view: world-space normals, F0 or roughness of the opaque PBR scene pass. A pixel shows PBR data
+// only while the scene depth still equals the depth the PBR surface wrote (README "PBR G-buffer contract"); the rest is black.
+// Compute contract: constants in b0 space1, resources in space 0 (README "Compute shaders").
+// STATIC: "MSAA" "0..1"
+#include "pbr_oct.hlsli"
+
+cbuffer PBRGBufferDebug : register( b0, space1 )
+{
+	uint4 g_Params; // x mode (0 normals, 1 F0, 2 roughness), y/z viewport width/height
+};
+#if MSAA
+Texture2DMS<uint2> gNormalDepth : register( t0, space0 );
+Texture2DMS<float4> gSpecular : register( t1, space0 );
+Texture2DMS<float> gSceneDepth : register( t2, space0 );
+#else
+Texture2D<uint2> gNormalDepth : register( t0, space0 );
+Texture2D<float4> gSpecular : register( t1, space0 );
+Texture2D<float> gSceneDepth : register( t2, space0 );
+#endif
+RWTexture2D<float4> gOutput : register( u0, space0 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= g_Params.y || id.y >= g_Params.z ) return;
+	int2 p = int2( id.xy );
+#if MSAA
+	uint2 normalDepth = gNormalDepth.Load( p, 0 );
+	float4 spec = gSpecular.Load( p, 0 );
+	float sceneDepth = gSceneDepth.Load( p, 0 );
+#else
+	uint2 normalDepth = gNormalDepth.Load( int3( p, 0 ) );
+	float4 spec = gSpecular.Load( int3( p, 0 ) );
+	float sceneDepth = gSceneDepth.Load( int3( p, 0 ) );
+#endif
+	// spec.a == 0: nothing PBR drew here (a PBR draw never writes roughness 0). Depth mismatch: a legacy draw covered the PBR
+	// surface afterwards; 2 steps of the 24-bit depth buffer absorb its quantization of the depth the PBR pixel shader wrote.
+	bool valid = spec.a != 0.0 && abs( asfloat( normalDepth.y ) - sceneDepth ) <= 2.0 / 16777215.0;
+	float3 color = 0.0;
+	if ( valid )
+	{
+		if ( g_Params.x == 0 ) color = PBR_UnpackNormal( normalDepth.x ) * 0.5 + 0.5;
+		else if ( g_Params.x == 1 ) color = spec.rgb;
+		else color = spec.a;
+	}
+	gOutput[id.xy] = float4( color, 1.0 );
+}

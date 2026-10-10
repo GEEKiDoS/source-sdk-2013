@@ -142,7 +142,9 @@ BEGIN_VS_SHADER( Sprite_DX9,
 			SET_STATIC_PIXEL_SHADER_COMBO( CONSTANTCOLOR,  ( shaderFlags & SHADER_USE_CONSTANT_COLOR ) ? true : false );
 			SET_STATIC_PIXEL_SHADER_COMBO( HDRTYPE,  g_pHardwareConfig->GetHDRType() );
 			SET_STATIC_PIXEL_SHADER_COMBO( SRGB, bSRGB );
-			SET_STATIC_PIXEL_SHADER_COMBO( SRGB_OUTPUT_ADAPTER, false );
+			// The scene is a linear FP16 target that is gamma-encoded only at presentation: a gamma-writing sprite ($nosrgb,
+			// the default) needs the shader's gamma-to-linear output adapter; sRGB-writing sprites already output linear.
+			SET_STATIC_PIXEL_SHADER_COMBO( SRGB_OUTPUT_ADAPTER, !bSRGB );
 			SET_STATIC_PIXEL_SHADER( sprite_ps51 );
 		}
 

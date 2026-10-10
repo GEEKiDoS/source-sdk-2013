@@ -92,10 +92,11 @@ struct VS_OUTPUT
 #endif
 	float4 fogFactorW : COLOR1;
 	centroid float2 shadowBaseLightmapUV : TEXCOORD8;
-	float3 highresPosition : TEXCOORD9;
-	float3 highresNormal : TEXCOORD10;
-	float3 highresTangentS : TEXCOORD11;
-	float3 highresTangentT : TEXCOORD12;
+	nointerpolation float2 shadowVertexLightmapUV : TEXCOORD9;
+	float3 highresPosition : TEXCOORD10;
+	float3 highresNormal : TEXCOORD11;
+	float3 highresTangentS : TEXCOORD12;
+	float3 highresTangentT : TEXCOORD13;
 	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
 };
 VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
@@ -186,6 +187,7 @@ VS_OUTPUT main( const DX12_VS_INPUT dx12In )
 #endif
 
 	o.shadowBaseLightmapUV = v.vLightmapTexCoord.xy;
+o.shadowVertexLightmapUV = v.vLightmapTexCoord.xy;
 float3 hlightObjectNormal; DecompressVertex_Normal( v.vNormal, hlightObjectNormal );
 o.highresPosition = mul( float4( v.vPos.xyz, 1 ), cModel[0] );
 o.highresNormal = normalize( mul( hlightObjectNormal, (float3x3)cModel[0] ) );

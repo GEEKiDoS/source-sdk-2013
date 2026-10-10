@@ -11,6 +11,7 @@
 #include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
 #include "gtao_dx12.h"
+#include "pbr_debug_dx12.h"
 #include "framegen_dx12.h"
 #include "postprocess_dx12.h"
 #if defined( REPLAY_ENABLED )
@@ -63,6 +64,8 @@ void CTFRenderTargets::InitClientRenderTargets( IMaterialSystem* pMaterialSystem
 	FrameGenDX12_Init( pHardwareConfig );
 	GTAODX12_Init( pHardwareConfig );
 	GTAODX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
+	PBRDebugDX12_Init( pHardwareConfig );
+	PBRDebugDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 	PostProcessDX12_Init( pHardwareConfig );
 	PostProcessDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 }
@@ -75,6 +78,7 @@ void CTFRenderTargets::ShutdownClientRenderTargets()
 {
 	BaseClass::ShutdownClientRenderTargets();
 	PostProcessDX12_Shutdown();
+	PBRDebugDX12_Shutdown();
 	GTAODX12_Shutdown();
 	FrameGenDX12_Shutdown();
 	UpscalerDX12_Shutdown();

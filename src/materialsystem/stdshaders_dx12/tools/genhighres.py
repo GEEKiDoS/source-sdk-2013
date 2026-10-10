@@ -121,11 +121,11 @@ def extra_vertex(text, logical):
             match = re.fullmatch(r'TEXCOORD(\d+)', member.group(6), re.I)
             if match: used.add(int(match.group(1)))
     decl = []
-    for typ, name in [('float2', 'shadowBaseLightmapUV'), ('float3', 'highresPosition'),
+    for typ, name in [('float2', 'shadowBaseLightmapUV'), ('float2', 'shadowVertexLightmapUV'), ('float3', 'highresPosition'),
                       ('float3', 'highresNormal'), ('float3', 'highresTangentS'), ('float3', 'highresTangentT')]:
         slot = next(n for n in range(32) if n not in used)
         used.add(slot)
-        interpolation = 'centroid ' if name == 'shadowBaseLightmapUV' else ''
+        interpolation = {'shadowBaseLightmapUV': 'centroid ', 'shadowVertexLightmapUV': 'nointerpolation '}.get(name, '')
         decl.append(f'\t{interpolation}{typ} {name} : TEXCOORD{slot};')
     text = text[:st[2]] + '\n' + '\n'.join(decl) + '\n' + text[st[2]:]
     for headers, bs, be in reversed(gs.main_defs(text)):
@@ -135,7 +135,7 @@ def extra_vertex(text, logical):
             normal = f'cross( {arg}.vTangentS, {arg}.vTangentT )'
         else:
             normal = 'hlightObjectNormal'
-        code = f'o.shadowBaseLightmapUV = {arg}.vLightmapTexCoord.xy;\n'
+        code = f'o.shadowBaseLightmapUV = {arg}.vLightmapTexCoord.xy;\no.shadowVertexLightmapUV = {arg}.vLightmapTexCoord.xy;\n'
         if logical != 'pyro_vision_vs30':
             code += f'float3 hlightObjectNormal; DecompressVertex_Normal( {arg}.vNormal, hlightObjectNormal );\n'
         code += f'o.highresPosition = mul( {pos}, cModel[0] );\no.highresNormal = normalize( mul( {normal}, (float3x3)cModel[0] ) );\n'
@@ -239,7 +239,7 @@ def pixel_entry(text, logical, folded_names):
         matches = list(pattern.finditer(text))
         if not matches: raise RuntimeError('missing highres receiver entry: ' + logical)
         for match in reversed(matches):
-            code = ('HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );\n'
+            code = ('HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );\n'
                     f' ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.{position}.xy );\n'
                     ' smr.bakedSunVisibility = hlr.sun;\n'
                     ' ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );')
@@ -251,7 +251,7 @@ def pixel_entry(text, logical, folded_names):
         body = text[bs + 1:be]
         conv = re.search(r'\bDX12ConvertInput\s*\([^;]+;', body)
         if not conv: raise RuntimeError('missing highres input conversion: ' + logical)
-        code = ('\n#if ' + guard + '\n HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );\n'
+        code = ('\n#if ' + guard + '\n HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );\n'
                 f' ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.{position}.xy );\n'
                 ' hls.bakedSunVisibility = hlr.sun;\n'
                 ' ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );\n')

@@ -1607,6 +1607,15 @@ ChunkFileResult_t CMapFile::LoadEntityCallback(CChunkFile *pFile, int nParam)
 			return(ChunkFile_Ok);
 		}
 
+		// compile-only like func_viscluster: the brush gives the env_cubemap a parallax box, nothing is emitted to the bsp
+		if ( !strcmp( "parallax_obb", pClassName ) )
+		{
+			Cubemap_AddParallaxObb( mapent, mapbrushes, mapplanes );
+			mapent->epairs = NULL;
+			mapent->numbrushes = 0;
+			return(ChunkFile_Ok);
+		}
+
 		//
 		// func_ladder brushes are moved into the world entity.  We convert the func_ladder to an info_ladder
 		// that holds the ladder's mins and maxs, and leave the entity.  This helps the bots figure out ladders.
@@ -1630,7 +1639,7 @@ ChunkFileResult_t CMapFile::LoadEntityCallback(CChunkFile *pFile, int nParam)
 				const char *pSideListStr = ValueForKey( mapent, "sides" );
 				int size;
 				size = IntForKey( mapent, "cubemapsize" );
-				Cubemap_InsertSample( mapent->origin, size );
+				Cubemap_InsertSample( mapent->origin, size, ValueForKey( mapent, "parallaxobb" ) );
 				Cubemap_SaveBrushSides( pSideListStr );
 			}
 			// clear out this entity

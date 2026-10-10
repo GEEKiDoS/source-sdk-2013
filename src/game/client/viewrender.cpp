@@ -17,6 +17,7 @@
 #include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
 #include "gtao_dx12.h"
+#include "pbr_debug_dx12.h"
 #include "framegen_dx12.h"
 #include "iclientmode.h"
 #include "voice_status.h"
@@ -1506,6 +1507,12 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 	if ( r_flashlightdepthtexture.GetBool() && (viewID == VIEW_MAIN) )
 	{
 		g_pClientShadowMgr->ComputeShadowDepthTextures( viewRender );
+	}
+
+	// PBR shaders evaluate every projected light (flashlight, env_projectedtexture) in their standard pass; other views reuse this packet
+	if ( viewID == VIEW_MAIN )
+	{
+		g_pClientShadowMgr->PublishProjectedLights( viewRender );
 	}
 
 	m_BaseDrawFlags = baseDrawFlags;
@@ -6052,12 +6059,24 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	{
 	if ( m_DrawFlags & DF_DRAW_ENTITITES )
 	{
+		// PBR shaders write their G-buffer (world normal, F0/roughness) beside the scene color in the opaque scene pass of the main view only.
+		const bool bGBuffer = ( viewID == VIEW_MAIN ) && ( m_eStereoEye == STEREO_EYE_MONO ) && !building_cubemaps.GetBool() && PBRDebugDX12_GBufferEnabled();
+		if ( bGBuffer )
+		{
+			CMatRenderContextPtr pGBufferContext( materials );
+			pGBufferContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_BEGIN );
+		}
 		DrawWorld( waterZAdjust );
 		CUtlVector< CClientRenderablesList::CEntry > motionEntries;
 		const bool bMotionVectors = ( viewID == VIEW_MAIN ) && ( m_eStereoEye == STEREO_EYE_MONO ) && MotionVectorsDX12_Enabled() && !building_cubemaps.GetBool();
 		if ( bMotionVectors )
 			CollectMotionVectorRenderables( motionEntries );
 		DrawOpaqueRenderables( DepthMode );
+		if ( bGBuffer )
+		{
+			CMatRenderContextPtr pGBufferContext( materials );
+			pGBufferContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_END );
+		}
 		if ( bMotionVectors )
 			DrawMotionVectors( motionEntries );
 		// GTAO over the complete opaque scene, before any translucency; the client latches repeats within a frame.
@@ -6067,6 +6086,9 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 			PIXEVENT( pGtaoContext, "GTAO" );
 			GTAODX12_Dispatch( pGtaoContext );
 		}
+		// mat_pbr_showgbuffer replaces the opaque scene color with the selected G-buffer channel (after GTAO, so AO does not tint it).
+		if ( bGBuffer )
+			PBRDebugDX12_Dispatch();
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles

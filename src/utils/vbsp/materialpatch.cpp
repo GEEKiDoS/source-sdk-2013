@@ -71,6 +71,8 @@ void CreateMaterialPatchRecursive( KeyValues *pOriginalKeyValues, KeyValues *pPa
 	int i;
 	for( i = 0; i < nKeys; i++ )
 	{
+		if( pInfo[i].m_bInsert )
+			continue;
 		const char *pVal = pOriginalKeyValues->GetString( pInfo[i].m_pKey, NULL );
 		if( !pVal )
 			continue;
@@ -126,6 +128,14 @@ void CreateMaterialPatch( const char *pOriginalMaterialName, const char *pNewMat
 		}
 
 		CreateMaterialPatchRecursive( origkv, section, nKeys, pInfo );
+
+		for ( int i = 0; i < nKeys; ++i )
+		{
+			if ( pInfo[i].m_bInsert )
+			{
+				kv->FindKey( "insert", true )->SetString( pInfo[i].m_pKey, pInfo[i].m_pValue );
+			}
+		}
 		origkv->deleteThis();
 	}
 	else
@@ -349,13 +359,17 @@ static void ExpandPatchFile( KeyValues &keyValues )
 		if( pInsertSection )
 		{
 			InsertKeyValues( *includeKeyValues, *pInsertSection, false );
-			keyValues = *includeKeyValues;
 		}
 
 		KeyValues *pReplaceSection = keyValues.FindKey( "replace" );
 		if( pReplaceSection )
 		{
 			InsertKeyValues( *includeKeyValues, *pReplaceSection, true );
+		}
+
+		// keyValues owns both sections, so it's only overwritten once they have both been applied
+		if( pInsertSection || pReplaceSection )
+		{
 			keyValues = *includeKeyValues;
 		}
 

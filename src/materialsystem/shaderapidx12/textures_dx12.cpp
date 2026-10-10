@@ -702,6 +702,7 @@ void CShaderAPIDX12::ReleaseTextureDeviceResources()
 	ReleaseFrameGenResources();
 	ReleaseUpscalerResources();
 	ReleaseMotionResources();
+	ReleaseGBufferResources();
 	for ( int i = 0; i < ARRAYSIZE( m_PreparedTextureSlots ); ++i )
 		m_PreparedTextureSlots[i].valid = false;
 	m_bTextureSetValid = false;

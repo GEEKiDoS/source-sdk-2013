@@ -80,6 +80,9 @@ enum RenderParamInt_t
 	INT_RENDERPARM_DX12_MOTION_PASS,
 	// Object identity for bone history: CBaseHandle::ToInt() of the renderable; 0 = static (no history).
 	INT_RENDERPARM_DX12_MOTION_OBJECT,
+	// DX12 PBR G-buffer pass (shaderapidx12 only; other backends store and ignore): 1 = begin (clear the private
+	// normal / F0+roughness targets; PBR draws that write three SV_Targets append them), 0 = end (targets become readable).
+	INT_RENDERPARM_DX12_PBR_GBUFFER_PASS,
 	// Backend-written status (read by the client through IShaderAPI, never through a render context):
 	// 0 = not evaluated, 1 = available, -1 = private shaders unavailable (sticky), -2 = unavailable for the current MSAA mode.
 	INT_RENDERPARM_DX12_MOTION_STATUS,
@@ -102,7 +105,7 @@ enum RenderParamInt_t
 	INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH,  // bit 0 run, bit 1 reset; sent once per main view after the last post-processing pass, before the HUD.
 	INT_RENDERPARM_DX12_FRAMEGEN_FRAME,     // client frame id (28 bits, the one the latency markers use) for the frame being rendered; queued before DISPATCH.
 
-	MAX_INT_RENDER_PARMS = 23
+	MAX_INT_RENDER_PARMS = 24
 };
 
 // for INT_RENDERPARM_BACK_BUFFER_INDEX
@@ -113,6 +116,8 @@ enum RenderParamInt_t
 #define DX12_MOTION_PASS_APPEND_MAIN    2
 #define DX12_MOTION_PASS_BEGIN_VIEWMODEL 3
 #define DX12_MOTION_PASS_HISTORY_VIEWMODEL 4
+#define DX12_GBUFFER_PASS_END           0
+#define DX12_GBUFFER_PASS_BEGIN         1
 #define DX12_UPSCALE_DISPATCH_RUN   1
 #define DX12_UPSCALE_DISPATCH_RESET 2
 #define DX12_FRAMEGEN_DISPATCH_RUN   1

@@ -1006,6 +1006,9 @@ def shadow_vertex(text, logical, highres=False):
     if base_lightmap_input:
         # Preserve the base atlas block; only sun visibility may use the proven carrier override.
         add('float2', 'shadowBaseLightmapUV', 'centroid ' if highres else '')
+        if highres:
+            # The provoking vertex's UV selects the owning face (HighresLightmap_Begin); never interpolated.
+            add('float2', 'shadowVertexLightmapUV', 'nointerpolation ')
     text = text[:st[2]] + '\n' + '\n'.join(declarations) + '\n' + text[st[2]:]
     hs, bs, be = main_defs(text)[0]
     in_name = param_parts(hs[0][1][0])[2]
@@ -1025,7 +1028,7 @@ def shadow_vertex(text, logical, highres=False):
         assignments += (f'o.shadowTangentS = normalize( mul( {in_name}.vTangentS, (float3x3)cModel[0] ) );\n\t'
                         f'o.shadowTangentT = normalize( mul( {in_name}.vTangentT, (float3x3)cModel[0] ) );\n\t')
     if base_lightmap_input:
-        assignments += (f'o.shadowBaseLightmapUV = {in_name}.{base_lightmap_input}.xy;\n\t' if highres else
+        assignments += (f'o.shadowBaseLightmapUV = {in_name}.{base_lightmap_input}.xy;\n\to.shadowVertexLightmapUV = {in_name}.{base_lightmap_input}.xy;\n\t' if highres else
                         f'o.shadowBaseLightmapUV = {in_name}.vShadowCarrierUV.w != 0 ? '
                         f'{in_name}.vShadowCarrierUV.xy : {in_name}.{base_lightmap_input}.xy;\n\t')
     body = text[bs + 1:be]

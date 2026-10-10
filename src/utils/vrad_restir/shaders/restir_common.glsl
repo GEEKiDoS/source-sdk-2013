@@ -65,6 +65,14 @@ vec3 FiniteRadiance( vec3 value )
 		isnan( value.z ) || isinf( value.z ) ? 0.0 : max( value.z, 0.0 ) );
 }
 
+// FiniteRadiance without the clamp: SH coefficients of bands above DC are signed.
+vec3 FiniteSigned( vec3 value )
+{
+	return vec3( isnan( value.x ) || isinf( value.x ) ? 0.0 : value.x,
+		isnan( value.y ) || isinf( value.y ) ? 0.0 : value.y,
+		isnan( value.z ) || isinf( value.z ) ? 0.0 : value.z );
+}
+
 vec3 LocalDirection( vec3 normal, vec3 local )
 {
 	vec3 tangent = SafeNormal( cross( abs( normal.z ) < 0.999 ? vec3( 0.0, 0.0, 1.0 ) : vec3( 0.0, 1.0, 0.0 ), normal ) );

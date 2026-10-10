@@ -1,0 +1,39 @@
+//
+// Parallax-corrected cubemaps for the PBR shader set.
+//
+// Load this FGD AFTER the game's base FGD in the Hammer game configuration: it uses the Targetname
+// base class and replaces the base env_cubemap definition (a later definition of a class overrides
+// the earlier one).
+//
+// Authoring: make a box brush, tie it to parallax_obb and give it a name, then put that name in the
+// "Parallax Box" key of the env_cubemap whose capture the box should project. VBSP writes the box and
+// the cubemap origin into the patched materials of every surface that uses that cubemap.
+//
+
+@PointClass base(Targetname) color(0 0 255) iconsprite("editor/env_cubemap.vmt") sidelist(sides) = env_cubemap :
+	"An entity that creates a sample point for the Cubic Environment Map. Optionally box-projects the reflection with a parallax_obb."
+[
+	cubemapsize(choices) : "Cubemap Size" : 0 =
+	[
+		0 : "Default"
+		1 : "1x1"
+		2 : "2x2"
+		3 : "4x4"
+		4 : "8x8"
+		5 : "16x16"
+		6 : "32x32"
+		7 : "64x64"
+		8 : "128x128"
+		9 : "256x256"
+	]
+
+	sides(sidelist) : "Brush faces" : : "Brush faces that will use this specific cubemap. If blank, will be chosen automatically."
+
+	parallaxobb(target_destination) : "Parallax Box" : : "Name of the parallax_obb brush that box-projects this cubemap. If blank, the cubemap is not parallax corrected."
+]
+
+@SolidClass color(0 255 255) = parallax_obb :
+	"Compile-only parallax box for env_cubemap. Must be a single box brush (three pairs of opposite sides, any rotation); it is removed by VBSP."
+[
+	targetname(target_source) : "Name" : : "The name env_cubemap entities use to select this box."
+]

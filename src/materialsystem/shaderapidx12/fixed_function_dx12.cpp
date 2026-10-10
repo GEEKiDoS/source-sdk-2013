@@ -47,7 +47,7 @@ void OutputStruct( CUtlBuffer &buf, bool highres )
 	for ( int i = 0; i < VERTEX_MAX_TEXTURE_COORDINATES; ++i )
 		buf.Printf( "float4 tc%d:TEXCOORD%d;\n", i, i );
 	if ( highres )
-		buf.PutString( "float4 tc13:TEXCOORD13;float4 tc14:TEXCOORD14;float4 tc15:TEXCOORD15;\n" );
+		buf.PutString( "float4 tc12:TEXCOORD12;float4 tc13:TEXCOORD13;float4 tc14:TEXCOORD14;float4 tc15:TEXCOORD15;\n" );
 	buf.PutString( "float4 clip0:SV_ClipDistance0; float2 clip1:SV_ClipDistance1;};\n" );
 }
 
@@ -148,7 +148,7 @@ void VertexSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state )
 		}
 	}
 	if ( state.highresSamplerMask && TexCoordSize( 1, state.format ) )
-		buf.PutString( "o.tc15=v.tc1;\n" ); // Original BASE UV before transforms/bumped offsets.
+		buf.PutString( "o.tc15=v.tc1;o.tc12=v.tc1;\n" ); // Original BASE UV before transforms/bumped offsets; tc12 repeats it for the PS's nointerpolation read.
 	if ( state.highresSamplerMask )
 	{
 		buf.Printf( "o.tc13=float4(%s,1);\n", bSkinned ? "p.xyz" : "mul(float4x4(vc[58],vc[59],vc[60],float4(0,0,0,1)),p).xyz" );
@@ -296,7 +296,7 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 		buf.PutString( "float4 spec:COLOR1;" );
 	for ( int i = 0; i < 16; ++i )
 		if ( bHasTexcoord[i] )
-			buf.Printf( "float4 tc%d:TEXCOORD%d;", i, i );
+			buf.Printf( "%sfloat4 tc%d:TEXCOORD%d;", i == 12 && state.highresSamplerMask ? "nointerpolation " : "", i, i );
 	if ( state.highresSamplerMask )
 		buf.PutString( "bool front:SV_IsFrontFace;" );
 	buf.PutString( "};\n" );
@@ -313,7 +313,7 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 	buf.Printf( "float4 main(PSIn i):SV_TARGET{float4 vertexColor=%s;float4 specularColor=%s;float4 prev=vertexColor;\n",
 	    bHasColor[0] ? "i.color" : "float4(1,1,1,1)", bHasColor[1] ? "i.spec" : "float4(0,0,0,1)" );
 	if ( state.highresSamplerMask )
-		buf.PutString( "HlightReceiver hlr=HighresLightmap_Begin(i.tc15.xy);"
+		buf.PutString( "HlightReceiver hlr=HighresLightmap_Begin(i.tc15.xy,i.tc12.xy);"
 			"float3 highresNormal=dot(i.tc14.xyz,i.tc14.xyz)>1e-12?normalize(i.tc14.xyz):normalize(cross(ddx(i.tc13.xyz),ddy(i.tc13.xyz)))*(i.front?1:-1);"
 			"ShadowMapReceiver smr=ShadowMap_BeginReceiver(i.tc13.xyz,highresNormal,i.pos.xy);"
 			"smr.bakedSunVisibility=hlr.sun;"

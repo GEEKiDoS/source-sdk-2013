@@ -667,6 +667,11 @@ private:
 
 	void ReleaseMotionResources();
 	void TransitionMotionTarget( D3D12_RESOURCE_STATES desiredState );
+	// PBR G-buffer targets (gbuffer_dx12.cpp).
+	void SetGBufferPass( int nMode );
+	bool EnsureGBufferResources();
+	void TransitionGBuffer( D3D12_RESOURCE_STATES desiredState );
+	void ReleaseGBufferResources();
 	// Native-AA upscaler (upscaler_dx12.cpp); contract U1-U4 of the upscaler plan.
 	void SetUpscalerMode( int nMode );
 	void DispatchUpscaler( int nFlags );
@@ -1083,6 +1088,16 @@ private:
 	int m_nMotionHistoryCurrent = 0;
 	uint32_t m_nMotionPassDraws = 0, m_nMotionPassObjects = 0, m_nMotionSuppressedPasses = 0;
 	uint64_t m_nMotionLogFrame = 0;
+	// PBR G-buffer targets (target layout: gbuffer_dx12.cpp). DrawBuffers appends them to PBR draws while m_bGBufferPass is set;
+	// compute reads them in kGBufferReadState.
+	static constexpr DXGI_FORMAT kGBufferFormats[2] = { DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R8G8B8A8_UNORM };
+	static constexpr D3D12_RESOURCE_STATES kGBufferReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGBufferNormal, m_pGBufferSpec;
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_pGBufferRtvHeap;
+	D3D12_CPU_DESCRIPTOR_HANDLE m_GBufferRtv[2]{};
+	D3D12_RESOURCE_STATES m_GBufferState[2] = { D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET };
+	UINT m_nGBufferWidth = 0, m_nGBufferHeight = 0, m_nGBufferSamples = 0, m_nGBufferQuality = 0;
+	bool m_bGBufferPass = false, m_bGBufferWarned = false;
 	// Native-AA upscaler. Every field is owned by the recording thread; replay results arrive through m_UpscalerReplay.
 	static constexpr uint64_t kUpscalerReplaySlots = 4;
 	CUpscalerDX12 m_Upscaler;

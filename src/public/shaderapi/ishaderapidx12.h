@@ -38,6 +38,10 @@ enum ShaderAPIDX12ComputeResourceKind_t
 	SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE,
 	SHADERAPIDX12_COMPUTE_RESOURCE_STANDARD_TEXTURE,
 	SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH,
+	// The PBR G-buffer targets (world-space octahedral normal, F0.rgb + roughness), scene-sized and scene-multisampled
+	// (Texture2DMS when SceneSampleCount() > 1). Before the first G-buffer pass the view is null and Dispatch warns once.
+	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS,
+	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR,
 };
 
 struct ShaderAPIDX12ComputeResource_t

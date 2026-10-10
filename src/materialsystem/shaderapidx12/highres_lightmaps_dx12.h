@@ -59,13 +59,19 @@ public:
     bool EnhancedMap() const;
     bool Rejected() const;
     void ForgetTexture(ShaderAPITextureHandle_t handle, uint64 allocationSerial);
+    // Attribution of one receiver draw for failure reports (only recorded, never interpreted).
+    struct DrawIdentity { const char *vertexShader, *pixelShader; uint64 meshToken; uint32 firstIndex, indexCount; };
     // Role metadata is native-file metadata, never a material-name whitelist. All roles
     // participating in a draw must name the same original native page association.
-    bool PrepareDraw(uint32 samplerMask, const float modelToWorld[12],
+    bool PrepareDraw(uint32 samplerMask, const float modelToWorld[12], const DrawIdentity &draw,
         CPipelineCacheDX12::BindingInputDX12 &input);
     // Copies immutable map SRVs into the model-neutral space2 view table, independent
     // of native lightmap sampler roles. Resources are retained through the recording fence.
     bool PrepareVisibilityDraw(D3D12_CPU_DESCRIPTOR_HANDLE lightingTable);
+    // Binds the space-4 ambient probe pair for a PS that reflects it: the selected mode's grid (made resident on its first
+    // consumer draw) when maps/<name>.hprobe validated, otherwise constants with cProbeBricks.w = 0 and nine null views, so
+    // the shader takes cAmbientCube. A missing or invalid asset never rejects the map; false only when residency fails.
+    bool PrepareProbeDraw(CPipelineCacheDX12::BindingInputDX12 &input);
 	bool ResolveStaticPropMesh(const DX12StaticPropReceiver &receiver, uint64 meshToken,
 		uint32 directory[4], uint32 &meshIndex);
     bool GetStaticPropDirect(uint32 meshIndex, StaticPropDirectMetadataDX12 &metadata);

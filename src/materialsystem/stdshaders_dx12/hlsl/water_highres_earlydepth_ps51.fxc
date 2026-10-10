@@ -355,10 +355,11 @@ struct DX12_PS_INPUT
 #endif
 	float4 fogFactorW : COLOR1;
 	centroid float2 shadowBaseLightmapUV : TEXCOORD8;
-	float3 highresPosition : TEXCOORD9;
-	float3 highresNormal : TEXCOORD10;
-	float3 highresTangentS : TEXCOORD11;
-	float3 highresTangentT : TEXCOORD12;
+	nointerpolation float2 shadowVertexLightmapUV : TEXCOORD9;
+	float3 highresPosition : TEXCOORD10;
+	float3 highresNormal : TEXCOORD11;
+	float3 highresTangentS : TEXCOORD12;
+	float3 highresTangentT : TEXCOORD13;
 };
 PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 {
@@ -398,7 +399,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 {
 	PS_INPUT i = DX12ConvertInput( dx12In );
 #if BASETEXTURE && REFLECT && !REFRACT
- HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV );
+ HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );
  ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.vProjPos_POSITION.xy );
  hls.bakedSunVisibility = hlr.sun;
  ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );

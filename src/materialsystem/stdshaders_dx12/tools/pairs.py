@@ -152,6 +152,13 @@ NATIVE_ONLY = [
     native_only('shadowmaps', 'dx12_detailshadowlit_depth_ps51.fxc', 'ps', 'dx12_detailshadowlit_depth_ps51'),
     native_only('lightmapped', 'worldvertextransition_editor_highres_vs51.fxc', 'vs', 'worldvertextransition_editor_highres_vs51'),
     native_only('lightmapped', 'worldvertextransition_editor_highres_ps51.fxc', 'ps', 'worldvertextransition_editor_highres_ps51'),
+    native_only('pbr', 'pbr_world_vs51.fxc', 'vs', 'pbr_world_vs51'),
+    native_only('pbr', 'pbr_world_ps51.fxc', 'ps', 'pbr_world_ps51'),
+    native_only('pbr', 'pbr_world_highres_vs51.fxc', 'vs', 'pbr_world_highres_vs51'),
+    native_only('pbr', 'pbr_world_highres_ps51.fxc', 'ps', 'pbr_world_highres_ps51'),
+    native_only('pbr', 'pbr_model_vs51.fxc', 'vs', 'pbr_model_vs51'),
+    native_only('pbr', 'pbr_model_ps51.fxc', 'ps', 'pbr_model_ps51'),
+    native_only('pbr', 'pbr_gbuffer_debug_cs51.fxc', 'cs', 'pbr_gbuffer_debug_cs51'),
 ]
 ALL = SCREENSPACE + POSTFX + VERTEXLIT + WORLD_MISC + SPRITES + WATER + EYES + LIGHTMAPPED + MORPH + EFFECTS
 

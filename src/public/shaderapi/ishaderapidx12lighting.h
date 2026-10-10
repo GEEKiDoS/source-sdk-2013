@@ -9,8 +9,10 @@
 //          Threading: ValidateMap, PrepareMap, GetStatus, GetSunVisibilityStats,
 //          Create/Retain/DestroyShadowDepthTarget, Set/ReceiverFeatureGeneration
 //          RejectUnsupportedLitShader, RegisterStaticPropReceiver,
-//          RegisterModelMeshMetadata, GetStaticPropVisibilityStats and
-//          GetStaticPropVisibilityDetails are synchronous and thread-safe.
+//          RegisterModelMeshMetadata, GetStaticPropVisibilityStats,
+//          GetStaticPropVisibilityDetails, RequestPbrOverride, PbrOverridePending,
+//          CommitPbrOverride, PbrOverride and Begin/EndMaterialTransaction (main thread)
+//          are synchronous and thread-safe.
 //          Every queued method is called DIRECTLY by the caller from any
 //          thread at the point of use: the implementation copies every array, acquires
 //          the Retain leases of every named depth target immediately, and then either
@@ -38,7 +40,10 @@
 #include "tier1/refcount.h"
 #include "shaderapi/dx12staticpropvisibility.h"
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_007"
+// Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
+typedef intp ShaderAPITextureHandle_t;
+
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_008"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -92,6 +97,29 @@
 #define DX12_LIGHTING_S_COMPARISON				0		// linear, LESS_EQUAL, clamp
 #define DX12_LIGHTING_B_VIEW					0		// DX12LightingViewConstantsV1 (CBV)
 #define DX12_LIGHTING_B_PROP_DRAW				1		// DX12StaticPropDrawConstants
+
+// PBR projected-light (flashlight / env_projectedtexture) resources: pixel-stage space 5, every root signature.
+// One 17-descriptor table: t0 StructuredBuffer<PBRSpotGpu>, t1..t8 cookie Texture2D<float4>, t9..t16 depth Texture2D<float>.
+// s0 linear clamp, s1 comparison (linear, LESS_EQUAL, clamp) are static samplers of the root signature.
+#define DX12_PBR_MAX_PROJECTED_LIGHTS			8
+#define DX12_PBR_REGISTER_SPACE					5
+#define DX12_PBR_T_LIGHTS						0		// StructuredBuffer<PBRSpotGpu>, stride sizeof( DX12ProjectedLightDesc )
+#define DX12_PBR_T_COOKIE_FIRST					1		// Texture2D<float4> g_ProjectedCookies[8]
+#define DX12_PBR_T_DEPTH_FIRST					9		// Texture2D<float> g_ProjectedDepth[8]
+#define DX12_PBR_TABLE_COUNT					17
+#define DX12_PBR_S_LINEAR						0
+#define DX12_PBR_S_COMPARISON					1
+#define DX12_PBR_LIGHT_WORLD					1		// DX12ProjectedLightDesc::flags: lights world receivers
+#define DX12_PBR_LIGHT_MODELS					2		// DX12ProjectedLightDesc::flags: lights model receivers
+// Ambient probe resources: pixel-stage space 4, lighting and highres root signatures only.
+#define DX12_PROBE_REGISTER_SPACE				4
+#define DX12_PROBE_TABLE_COUNT					9		// t0..t8
+#define DX12_PROBE_T_INDIRECTION				0		// Texture3D<uint>: brick slot or hlight::kMissing
+#define DX12_PROBE_T_DC							1		// Texture3D<float3>: R11G11B10_FLOAT flat irradiance
+#define DX12_PROBE_T_BANDS_FIRST				2		// Texture3D<float4> ProbeBands[6]: RGBA8_SNORM, texture 2c + h = channel c bands 1..4 / 5..8
+#define DX12_PROBE_T_VALIDITY					8		// Texture3D<float>: R8_UNORM
+#define DX12_PROBE_S_LINEAR						0		// static sampler s0 space4: linear, clamp
+#define DX12_PROBE_B_CONSTANTS					0		// DX12ProbeConstantsV1 (root CBV)
 
 // Filter / debug modes snapshotted into each view packet
 #define DX12_SHADOW_FILTER_PCF					0
@@ -165,8 +193,35 @@ struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL tw
 	uint32	cSunIdentity[4];			// sun lightId (0xFFFFFFFF none), sunStyle, resident GPU-index tail offset/count in t1028
 };
 
+struct DX12ProjectedLightDesc			// 128 bytes, byte-identical to HLSL PBRSpotGpu
+{
+	float	worldToTexture[16];			// row-major ClientShadow_t::m_WorldToShadow
+	float	origin[3], farZ;
+	float	color[3], constantAttn;		// color pre-scaled by the client (HDR / sRGB-blend factors applied)
+	float	linearAttn, quadraticAttn, shadowAtten, filterTexels;	// filterTexels = 1 / depth texture width
+	int32	cookieSlot, depthSlot;		// 0..DX12_PBR_MAX_PROJECTED_LIGHTS-1; depthSlot -1 = unshadowed
+	uint32	flags;						// DX12_PBR_LIGHT_*
+	uint32	reserved;
+};
+
+struct DX12ProjectedLightPacket
+{
+	uint32	count;						// 0..DX12_PBR_MAX_PROJECTED_LIGHTS
+	const DX12ProjectedLightDesc *lights;
+};
+
+struct alignas( 16 ) DX12ProbeConstantsV1	// 64 bytes, cbuffer b0 space4, pixel stage (HLSL twin: pbr_probe.hlsli)
+{
+	float	cProbeOrigin[4];			// xyz grid origin; w = 1 / spacing
+	uint32	cProbeBricks[4];			// xyz indirection brick dims; w = 1 enabled (0: every pixel takes the engine ambient cube)
+	float	cProbeAtlas[4];				// xyz 1 / (atlasBricks * 5); w = normal bias = 0.25 * spacing
+	uint32	cProbeAtlasBricks[4];		// xyz atlasBricks; w = 0
+};
+
 COMPILE_TIME_ASSERT( sizeof( RuntimeShadowLightGpu ) == 608 );
 COMPILE_TIME_ASSERT( sizeof( DX12LightingViewConstantsV1 ) == 672 );
+COMPILE_TIME_ASSERT( sizeof( DX12ProjectedLightDesc ) == 128 );
+COMPILE_TIME_ASSERT( sizeof( DX12ProbeConstantsV1 ) == 64 );
 
 //-----------------------------------------------------------------------------
 // Control-plane descriptors
@@ -328,6 +383,23 @@ public:
 	// Unknown/nonstatic models and unmatched authored-model poses are not proof
 	// of a static-prop failure. REGISTERED_RECEIVER identifies proven scope/pose.
 	virtual void GetStaticPropVisibilityDetails( uint32 mapGeneration, IDX12StaticPropVisibilityDetailsSink &sink ) = 0;
+
+	// PBR adapter mode. Requested by the stdshader_dx12 cvar callback; committed by the client at FRAME_START
+	// inside a material transaction, immediately before refreshing loaded materials.
+	virtual void RequestPbrOverride( bool enabled ) = 0;		// relaxed atomic store
+	virtual bool PbrOverridePending() = 0;						// requested != committed
+	virtual bool CommitPbrOverride() = 0;						// committed = requested; returns true when it changed
+	virtual bool PbrOverride() = 0;								// committed value read by material snapshots/draws
+	// Material-thread quiescence for refreshing loaded materials on any map (no native domain needed).
+	virtual bool BeginMaterialTransaction() = 0;				// main thread; nests
+	virtual void EndMaterialTransaction() = 0;
+	// Projected (flashlight / env_projectedtexture) lights for PBR shaders.
+	// Called by the DX12_PBRLights material on the recording owner immediately before BeginProjectedLights.
+	// Slots >= count (and any invalid handle) bind a null view.
+	virtual void SetProjectedLightTextures( const ShaderAPITextureHandle_t *cookies, const ShaderAPITextureHandle_t *depths, int count ) = 0;
+	// Queued like BeginView: copies the records now; the descriptor table is built lazily by the first PBR draw of each
+	// recording batch. The packet stays current until the next one. count 0 is valid.
+	virtual void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) = 0;
 };
 
 #endif // ISHADERAPIDX12LIGHTING_H

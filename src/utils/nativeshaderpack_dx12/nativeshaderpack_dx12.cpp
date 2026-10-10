@@ -433,35 +433,41 @@ void validateLightingBlock(const Block &b) {
             throw std::runtime_error("Lighting ABI 6 static-prop member shape mismatch: " + b.name + "." + m.name);
     }
 }
-bool lightingStructuredType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
+// Element struct of a structured-buffer binding (a single struct, not an array); null when the reflection shape is unexpected.
+ID3D12ShaderReflectionType *structuredElementType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, D3D12_SHADER_TYPE_DESC &type) {
     auto *buffer = reflection->GetConstantBufferByName(binding.Name);
     D3D12_SHADER_BUFFER_DESC bd{};
-    if (!buffer || FAILED(buffer->GetDesc(&bd)) || bd.Type != D3D_CT_RESOURCE_BIND_INFO || bd.Variables != 1) return false;
+    if (!buffer || FAILED(buffer->GetDesc(&bd)) || bd.Type != D3D_CT_RESOURCE_BIND_INFO || bd.Variables != 1) return nullptr;
     auto *element = buffer->GetVariableByIndex(0);
     auto *elementType = element ? element->GetType() : nullptr;
-    D3D12_SHADER_TYPE_DESC type{};
-    if (!elementType || FAILED(elementType->GetDesc(&type)) || type.Elements) return false;
-    if (binding.BindPoint == DX12_LIGHTING_T_LIGHTS || binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES) {
-        const bool triangles = binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES;
-        const auto *members = triangles ? dx12native::kDX12StaticPropTriangleGpuMembers : dx12native::kRuntimeShadowLightGpuMembers;
-        const unsigned memberCount = triangles ?
-            sizeof(dx12native::kDX12StaticPropTriangleGpuMembers) / sizeof(*dx12native::kDX12StaticPropTriangleGpuMembers) :
-            sizeof(dx12native::kRuntimeShadowLightGpuMembers) / sizeof(*dx12native::kRuntimeShadowLightGpuMembers);
-        if (type.Class != D3D_SVC_STRUCT || !type.Name ||
-            strcmp(type.Name, triangles ? "DX12StaticPropTriangleGpu" : "RuntimeShadowLightGpu") ||
-            type.Members != memberCount) return false;
-        for (unsigned i = 0; i < memberCount; ++i) {
-            const auto &expected = members[i];
-            const char *name = elementType->GetMemberTypeName(i);
-            auto *memberType = elementType->GetMemberTypeByIndex(i);
-            D3D12_SHADER_TYPE_DESC member{};
-            if (!name || strcmp(name, expected.name) || !memberType || FAILED(memberType->GetDesc(&member)) ||
-                member.Offset != expected.offset || member.Class != expected.valueClass ||
-                member.Type != expected.scalarType || member.Rows != expected.rows ||
-                member.Columns != expected.columns || member.Elements != expected.elements) return false;
-        }
-        return true;
+    return elementType && SUCCEEDED(elementType->GetDesc(&type)) && !type.Elements ? elementType : nullptr;
+}
+// Matches the authored layout, including row-major matrices and arrays.
+bool matchStructuredMembers(ID3D12ShaderReflectionType *elementType, const D3D12_SHADER_TYPE_DESC &type, const char *typeName,
+                            const dx12native::LightingStructuredMemberDX12 *members, unsigned memberCount) {
+    if (type.Class != D3D_SVC_STRUCT || !type.Name || strcmp(type.Name, typeName) || type.Members != memberCount) return false;
+    for (unsigned i = 0; i < memberCount; ++i) {
+        const auto &expected = members[i];
+        const char *name = elementType->GetMemberTypeName(i);
+        auto *memberType = elementType->GetMemberTypeByIndex(i);
+        D3D12_SHADER_TYPE_DESC member{};
+        if (!name || strcmp(name, expected.name) || !memberType || FAILED(memberType->GetDesc(&member)) ||
+            member.Offset != expected.offset || member.Class != expected.valueClass ||
+            member.Type != expected.scalarType || member.Rows != expected.rows ||
+            member.Columns != expected.columns || member.Elements != expected.elements) return false;
     }
+    return true;
+}
+bool lightingStructuredType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
+    D3D12_SHADER_TYPE_DESC type{};
+    auto *elementType = structuredElementType(reflection, binding, type);
+    if (!elementType) return false;
+    if (binding.BindPoint == DX12_LIGHTING_T_LIGHTS)
+        return matchStructuredMembers(elementType, type, "RuntimeShadowLightGpu", dx12native::kRuntimeShadowLightGpuMembers,
+            sizeof(dx12native::kRuntimeShadowLightGpuMembers) / sizeof(*dx12native::kRuntimeShadowLightGpuMembers));
+    if (binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES)
+        return matchStructuredMembers(elementType, type, "DX12StaticPropTriangleGpu", dx12native::kDX12StaticPropTriangleGpuMembers,
+            sizeof(dx12native::kDX12StaticPropTriangleGpuMembers) / sizeof(*dx12native::kDX12StaticPropTriangleGpuMembers));
     const unsigned columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 :
         binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_FACES || binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_ENTRIES ||
         binding.BindPoint == DX12_LIGHTING_T_PROP_MESHES ? 4 : 1;
@@ -595,6 +601,95 @@ void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SH
 	}
 	if (seen && seen != 0x7ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
 }
+bool pbrSpotGpuType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
+	D3D12_SHADER_TYPE_DESC type{};
+	auto *elementType = structuredElementType(reflection, binding, type);
+	return elementType && matchStructuredMembers(elementType, type, "PBRSpotGpu", dx12native::kPBRSpotGpuMembers,
+		sizeof(dx12native::kPBRSpotGpuMembers) / sizeof(*dx12native::kPBRSpotGpuMembers));
+}
+const dx12native::EngineCBufferLayoutDX12 *probeLayout(const std::string &name) {
+	for (const auto &layout : dx12native::kProbeCBufferLayouts)
+		if (name == layout.name) return &layout;
+	return nullptr;
+}
+// DX12ProbeConstantsV1: b0 space4, four vectors (float4, uint4, float4, uint4).
+void validateProbeBlock(const Block &b) {
+	const auto *layout = probeLayout(b.name);
+	if (!layout || b.stage != layout->stage || b.reg != layout->shaderRegister || b.space != DX12_PROBE_REGISTER_SPACE ||
+	    b.size != layout->byteSize || b.members.size() != layout->memberCount)
+		throw std::runtime_error("Probe ABI cbuffer mismatch: " + b.name);
+	for (size_t i = 0; i < b.members.size(); ++i) {
+		const auto &m = b.members[i];
+		const auto &expected = layout->members[i];
+		if (m.name != expected.name || m.offset != expected.offset || m.size != expected.size || m.kind != D3D_SVC_VECTOR ||
+		    m.type != unsigned(i & 1 ? D3D_SVT_UINT : D3D_SVT_FLOAT) || m.rows != 1 || m.cols != 4 || m.elements)
+			throw std::runtime_error("Probe ABI member mismatch: " + b.name + "." + m.name);
+	}
+}
+// Space 4: the DX12ProbeConstantsV1 block, ProbeIndirection t0 (Texture3D<uint>), ProbeDC t1 (float3), ProbeBands t2..t7
+// (array of six float4), ProbeValidity t8 (float), ProbeLinear s0 (non-comparison). Reflection contains only retained
+// resources, so any subset of the textures may appear, but each binding must match exactly and appear once. seen bit 0 is the block.
+void validateProbeBinding(const D3D12_SHADER_INPUT_BIND_DESC &b, const std::string &logical, unsigned &seen) {
+	struct Texture { const char *name; unsigned reg, count, components; D3D_RESOURCE_RETURN_TYPE returnType; };
+	static const Texture textures[] = {
+		{"ProbeIndirection", DX12_PROBE_T_INDIRECTION, 1, 1, D3D_RETURN_TYPE_UINT},
+		{"ProbeDC", DX12_PROBE_T_DC, 1, 3, D3D_RETURN_TYPE_FLOAT},
+		{"ProbeBands", DX12_PROBE_T_BANDS_FIRST, DX12_PROBE_T_VALIDITY - DX12_PROBE_T_BANDS_FIRST, 4, D3D_RETURN_TYPE_FLOAT},
+		{"ProbeValidity", DX12_PROBE_T_VALIDITY, 1, 1, D3D_RETURN_TYPE_FLOAT},
+	};
+	unsigned bit = 0;
+	bool valid = false;
+	if (b.Type == D3D_SIT_CBUFFER) {
+		const auto *layout = probeLayout(b.Name);
+		bit = 1;
+		valid = layout && b.BindPoint == layout->shaderRegister && b.BindCount == 1;
+	} else if (!strcmp(b.Name, "ProbeLinear")) {
+		bit = 1u << 5;
+		valid = b.Type == D3D_SIT_SAMPLER && b.BindPoint == DX12_PROBE_S_LINEAR && b.BindCount == 1 && !(b.uFlags & D3D_SIF_COMPARISON_SAMPLER);
+	} else {
+		for (unsigned i = 0; i < sizeof(textures) / sizeof(*textures); ++i)
+			if (!strcmp(b.Name, textures[i].name)) {
+				bit = 2u << i;
+				valid = b.Type == D3D_SIT_TEXTURE && b.Dimension == D3D_SRV_DIMENSION_TEXTURE3D && b.ReturnType == textures[i].returnType &&
+					b.BindPoint == textures[i].reg && b.BindCount == textures[i].count &&
+					(b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) == ((textures[i].components - 1) << 2);
+			}
+	}
+	if (!valid || (seen & bit)) throw std::runtime_error("Probe resource contract mismatch: " + logical + "." + b.Name);
+	seen |= bit;
+}
+// Spaces 4 and 5 are backend-owned and pixel-stage only; space-4 bindings go through validateProbeBinding.
+// Space 5: StructuredBuffer<PBRSpotGpu> g_ProjectedLights t0, g_ProjectedCookies[8] t1..t8 (Texture2D<float4>),
+// g_ProjectedDepth[8] t9..t16 (Texture2D<float>), g_CookieSampler s0, g_ProjectedCmpSampler s1 (comparison).
+// Reflection contains only retained resources, so any subset may appear, but every retained binding must match.
+void validateProbePbrResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
+	unsigned probeSeen = 0;
+	for (unsigned i = 0; i < desc.BoundResources; ++i) {
+		D3D12_SHADER_INPUT_BIND_DESC b{};
+		if (FAILED(reflection->GetResourceBindingDesc(i, &b))) throw std::runtime_error("PBR binding reflection failed");
+		if (b.Space != DX12_PROBE_REGISTER_SPACE && b.Space != DX12_PBR_REGISTER_SPACE) continue;
+		if (stage != VcsStage::Pixel)
+			throw std::runtime_error("Space-" + std::to_string(b.Space) + " resource outside pixel stage: " + logical + "." + b.Name);
+		if (b.Space == DX12_PROBE_REGISTER_SPACE) { validateProbeBinding(b, logical, probeSeen); continue; }
+		if (b.Type == D3D_SIT_CBUFFER) throw std::runtime_error("Space-5 cbuffer rejected: " + logical + "." + b.Name);
+		const bool lights = !strcmp(b.Name, "g_ProjectedLights"), cookies = !strcmp(b.Name, "g_ProjectedCookies"),
+			depth = !strcmp(b.Name, "g_ProjectedDepth"), linear = !strcmp(b.Name, "g_CookieSampler"),
+			comparison = !strcmp(b.Name, "g_ProjectedCmpSampler");
+		bool valid = false;
+		if (lights)
+			valid = b.Type == D3D_SIT_STRUCTURED && b.BindPoint == DX12_PBR_T_LIGHTS && b.BindCount == 1 && b.Dimension == D3D_SRV_DIMENSION_BUFFER &&
+				b.NumSamples == sizeof(DX12ProjectedLightDesc) && pbrSpotGpuType(reflection, b);
+		else if (cookies || depth)
+			valid = b.Type == D3D_SIT_TEXTURE && b.BindPoint == unsigned(cookies ? DX12_PBR_T_COOKIE_FIRST : DX12_PBR_T_DEPTH_FIRST) &&
+				b.BindCount == DX12_PBR_MAX_PROJECTED_LIGHTS && b.Dimension == D3D_SRV_DIMENSION_TEXTURE2D && b.ReturnType == D3D_RETURN_TYPE_FLOAT &&
+				(b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) == (cookies ? unsigned(D3D_SIF_TEXTURE_COMPONENTS) : 0u);
+		else if (linear || comparison)
+			valid = b.Type == D3D_SIT_SAMPLER && b.BindPoint == unsigned(comparison ? DX12_PBR_S_COMPARISON : DX12_PBR_S_LINEAR) && b.BindCount == 1 &&
+				((b.uFlags & D3D_SIF_COMPARISON_SAMPLER) != 0) == comparison;
+		if (!valid) throw std::runtime_error("PBR resource contract mismatch: " + logical + "." + b.Name);
+	}
+	if (probeSeen && !(probeSeen & 1)) throw std::runtime_error("Space-4 resources require DX12ProbeConstantsV1: " + logical);
+}
 void validateDepthRestoreBlock(const Block &b, const Shader &shader, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
     const bool restore = shader.profile == "native" &&
         ((shader.stage == "vs" && shader.logical == "shadow_depth_restore_vs51") ||
@@ -652,6 +747,12 @@ void annotate(Block &b, const std::map<std::string, std::string> &tags) {
 	}
     if (lightingLayout(b.name) || b.space == DX12_LIGHTING_REGISTER_SPACE) {
         validateLightingBlock(b);
+        b.engine = true;
+        return;
+    }
+    // Space 4 ambient-probe block (pixel stage): exact layout, backend-owned, never a material or @legacy block.
+    if (probeLayout(b.name) || b.space == DX12_PROBE_REGISTER_SPACE) {
+        validateProbeBlock(b);
         b.engine = true;
         return;
     }
@@ -854,6 +955,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         const auto *lighting = lightingLayout(name);
         if (name == "DX12HighresDrawConstants" ? space != 3 :
             lighting ? space != DX12_LIGHTING_REGISTER_SPACE :
+            probeLayout(name) ? space != DX12_PROBE_REGISTER_SPACE :
             name == "ShadowDepthRestoreConstants" ? space != 0 : space != 1)
             throw std::runtime_error("Cbuffer outside its declared register-space contract: " + name);
     }
@@ -939,6 +1041,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                     throw std::runtime_error("DXBC stage mismatch: " + sh.logical);
                 validateLightingResources(reflection.Get(), desc, stage, sh.logical);
 				validateHighresResources(reflection.Get(), desc, stage, sh);
+				validateProbePbrResources(reflection.Get(), desc, stage, sh.logical);
                 if (stage == VcsStage::Compute) {
                     for (unsigned resource = 0; resource < desc.BoundResources; ++resource) {
                         D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -1020,7 +1123,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         }
         if (sh.stage != "cs") {
             for (const auto &[name, block] : sh.blocks) {
-                // Backend-owned space-2 and restore blocks never become material writers/aliases.
+                // Backend-owned space-2/3/4 and restore blocks never become material writers/aliases or generated headers.
                 if (block.space != 1) continue;
                 auto found = shared.find(name);
                 if (found != shared.end() && (found->second.canonical != block.canonical || found->second.reg != block.reg || found->second.space != block.space || found->second.stage != block.stage))

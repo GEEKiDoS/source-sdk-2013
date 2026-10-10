@@ -501,24 +501,13 @@ static bool BuildLeafCandidates( const ReSTIROptions &options, const ReSTIRScene
 			int rayStart = rayOffsets[p];
 			for ( int side = 0; side < 6; ++side )
 			{
-				const ReSTIRGpuHit &hit = hits[rayStart + side];
-				if ( hit.t == 0.0f )
+				int axis = side % 3;
+				Vector endpoint = candidate.position;
+				endpoint[axis] = ( side < 3 ) ? dleafs[candidate.leaf].mins[axis] : dleafs[candidate.leaf].maxs[axis];
+				if ( ReSTIR_AmbientRayBlocked( scene, hits[rayStart + side], endpoint - candidate.position ) )
 				{
 					valid = false;
 					break;
-				}
-				if ( hit.t >= 0.0f && hit.t != 1.0f && IsDisplacementHit( scene, hit ) )
-				{
-					int axis = side % 3;
-					Vector endpoint = candidate.position;
-					endpoint[axis] = ( side < 3 ) ? dleafs[candidate.leaf].mins[axis] : dleafs[candidate.leaf].maxs[axis];
-					Vector delta = endpoint - candidate.position;
-					Vector normal( hit.normal[0], hit.normal[1], hit.normal[2] );
-					if ( DotProduct( delta, normal ) > 0 )
-					{
-						valid = false;
-						break;
-					}
 				}
 			}
 			if ( valid )
@@ -542,6 +531,40 @@ static bool BuildLeafCandidates( const ReSTIROptions &options, const ReSTIRScene
 	}
 	return true;
 }
+}
+
+// Port of utils/vrad/trace.cpp:435-472 PointLeafnum_r.
+int ReSTIR_PointLeaf( const Vector &point )
+{
+	int node = 0;
+	while ( node >= 0 )
+	{
+		const dnode_t &current = dnodes[node];
+		const dplane_t &plane = dplanes[current.planenum];
+		node = current.children[DotProduct( plane.normal, point ) - plane.dist < 0.0f ? 1 : 0];
+	}
+	return -node - 1;
+}
+
+bool ReSTIR_PointInOpaqueLeafBrush( int leafIndex, const Vector &point )
+{
+	return PointInOpaqueLeafBrush( leafIndex, point );
+}
+
+float ReSTIR_AmbientWorldLightRatio( const dworldlight_t &light, const Vector &position )
+{
+	const Vector delta = light.origin - position;
+	Vector deltaNorm = delta;
+	VectorNormalize( deltaNorm );
+	return AmbientWorldLightDistanceFalloff( &light, delta ) * AmbientWorldLightAngle( &light, light.normal, deltaNorm, deltaNorm );
+}
+
+bool ReSTIR_AmbientRayBlocked( const ReSTIRScene &scene, const ReSTIRGpuHit &hit, const Vector &delta )
+{
+	if ( hit.t == 0.0f )
+		return true;
+	return hit.t >= 0.0f && hit.t != 1.0f && IsDisplacementHit( scene, hit ) &&
+		DotProduct( delta, Vector( hit.normal[0], hit.normal[1], hit.normal[2] ) ) > 0;
 }
 
 bool ReSTIR_ComputeLeafAmbientLighting( const ReSTIROptions &options, const ReSTIRScene &scene, CReSTIRVulkanDevice &device, const ReSTIRLightmapResult &lightmap )
@@ -684,10 +707,9 @@ bool ReSTIR_ComputeLeafAmbientLighting( const ReSTIROptions &options, const ReST
 			const AmbientDirectRay &owner = directOwners[i];
 			const dworldlight_t &light = dworldlights[owner.light];
 			Vector queryPosition( queries[owner.query].position[0], queries[owner.query].position[1], queries[owner.query].position[2] );
-			Vector delta = light.origin - queryPosition;
-			Vector deltaNorm = delta;
+			Vector deltaNorm = light.origin - queryPosition;
 			VectorNormalize( deltaNorm );
-			float ratio = AmbientWorldLightDistanceFalloff( &light, delta ) * AmbientWorldLightAngle( &light, light.normal, deltaNorm, deltaNorm );
+			float ratio = ReSTIR_AmbientWorldLightRatio( light, queryPosition );
 			if ( ratio == 0.0f )
 				continue;
 			for ( int side = 0; side < 6; ++side )

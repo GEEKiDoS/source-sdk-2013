@@ -92,6 +92,8 @@ struct ReSTIROptions
 	bool		shadowMaps;				// -restir_shadowmaps: selected runtime direct + independently dense linear lightmaps
 										// Implies both modes, staticPropLighting and textureShadows; .hlight v4 + rshd v5
 	int			highresDensity;			// -restir_hlight_density, independent intervals; shadowmap conversion only
+	int			ambientGridSpacing;		// -restir_ambientgrid (32): dense ambient probe spacing in units; shadowmap conversion only
+	int			ambientGridReach;		// -restir_ambientgrid_reach (512): probe bricks within this distance of lit geometry, 0 = all
 
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
 	// an explicit -restir_* value always wins over the preset, whatever the argument order.
@@ -114,7 +116,8 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ), preset( RESTIR_PRESET_DEFAULT ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
+		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
@@ -437,6 +440,14 @@ struct ReSTIRGpuAmbientResult			// 96 bytes
 {
 	float		box[6][4];				// g_BoxDirections order (+x,-x,+y,-y,+z,-z)
 };
+
+// Dense SH-L2 ambient probe (hprobe_bsp.h): irradiance coefficients e_k, k = 0..8 in hprobe_bsp.h order, rgb in the engine's
+// linear cube units (a uniform environment gives E == cube side). One result per query (style 0 only).
+struct ReSTIRGpuProbeResult				// 144 bytes
+{
+	float		coeff[9][4];			// w unused
+};
+COMPILE_TIME_ASSERT( sizeof( ReSTIRGpuProbeResult ) == 144 );
 
 // Point lighting for prop vertices/texels. Results per scene style: index = query*numStyles + styleSlot.
 //

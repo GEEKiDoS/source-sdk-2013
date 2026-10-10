@@ -81,8 +81,9 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 		m_pZeroConstants->Unmap( 0, nullptr );
 		m_nZeroConstantAddress = m_pZeroConstants->GetGPUVirtualAddress();
 	}
-	// Ranges: SRV t0-15, sampler s0-15, native CBV b0-b7 in register space 1.
-	D3D12_DESCRIPTOR_RANGE ranges[6]{};
+	// Ranges: SRV t0-15, sampler s0-15, native CBV b0-b7 in register space 1; [4] lighting visibility, [5] highres, [6] PBR
+	// projected lights t0-16 space 5, [7] ambient probes t0-8 space 4.
+	D3D12_DESCRIPTOR_RANGE ranges[8]{};
 	ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	ranges[0].NumDescriptors = 16;
 	ranges[0].BaseShaderRegister = 0;
@@ -93,7 +94,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	ranges[2].NumDescriptors = 8;
 	ranges[2].BaseShaderRegister = 0;
 	ranges[2].RegisterSpace = 1;
-	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables.
+	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR table.
 	D3D12_ROOT_PARAMETER params[kHighresRootParameterCount]{};
 	for ( int i = 0; i < 4; ++i )
 	{
@@ -121,16 +122,41 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 			params[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_GEOMETRY;
 		}
 	}
-	for ( UINT i = kRootNativeVertex; i < kRootParameterCount; ++i )
+	for ( UINT i = kRootNativeVertex; i < kRootPbrSpots; ++i )
 	{
 		params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		params[i].DescriptorTable.NumDescriptorRanges = 1;
 		params[i].DescriptorTable.pDescriptorRanges = &ranges[2];
 		params[i].ShaderVisibility = i == kRootNativeVertex ? D3D12_SHADER_VISIBILITY_VERTEX : D3D12_SHADER_VISIBILITY_PIXEL;
 	}
+	ranges[6].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	ranges[6].NumDescriptors = DX12_PBR_TABLE_COUNT;
+	ranges[6].RegisterSpace = DX12_PBR_REGISTER_SPACE;
+	params[kRootPbrSpots].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[kRootPbrSpots].DescriptorTable = { 1, &ranges[6] };
+	params[kRootPbrSpots].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	// Static samplers accumulate: each signature binds the prefix its parameters need, so its count is the number added so far.
+	D3D12_STATIC_SAMPLER_DESC samplers[5]{};
+	UINT samplerCount = 0;
+	const auto addSampler = [&]( D3D12_FILTER filter, D3D12_COMPARISON_FUNC comparison, UINT shaderRegister, UINT space )
+	{
+		D3D12_STATIC_SAMPLER_DESC &sampler = samplers[samplerCount++];
+		sampler.Filter = filter;
+		sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		sampler.MaxAnisotropy = 1;
+		sampler.ComparisonFunc = comparison;
+		sampler.MaxLOD = D3D12_FLOAT32_MAX;
+		sampler.ShaderRegister = shaderRegister;
+		sampler.RegisterSpace = space;
+		sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	};
+	addSampler( D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_ALWAYS, DX12_PBR_S_LINEAR, DX12_PBR_REGISTER_SPACE );
+	addSampler( D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_LESS_EQUAL, DX12_PBR_S_COMPARISON, DX12_PBR_REGISTER_SPACE );
 	D3D12_ROOT_SIGNATURE_DESC desc{};
 	desc.NumParameters = kRootParameterCount;
 	desc.pParameters = params;
+	desc.NumStaticSamplers = samplerCount;
+	desc.pStaticSamplers = samplers;
 	desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 	Microsoft::WRL::ComPtr<ID3DBlob> blob, error;
 	HRESULT hr = D3D12SerializeRootSignature( &desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error );
@@ -183,18 +209,19 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootPropTriangles].Descriptor.ShaderRegister = DX12_LIGHTING_T_PROP_TRIANGLES;
 	params[kRootPropTriangles].Descriptor.RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
 	params[kRootPropTriangles].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	D3D12_STATIC_SAMPLER_DESC lightingSamplers[2]{};
-	lightingSamplers[0].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
-	lightingSamplers[0].AddressU = lightingSamplers[0].AddressV = lightingSamplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-	lightingSamplers[0].MaxAnisotropy = 1;
-	lightingSamplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-	lightingSamplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-	lightingSamplers[0].ShaderRegister = DX12_LIGHTING_S_COMPARISON;
-	lightingSamplers[0].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
-	lightingSamplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	ranges[7].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	ranges[7].NumDescriptors = DX12_PROBE_TABLE_COUNT;
+	ranges[7].RegisterSpace = DX12_PROBE_REGISTER_SPACE;
+	params[kRootProbeTable].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[kRootProbeTable].DescriptorTable = { 1, &ranges[7] };
+	params[kRootProbeTable].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootProbeConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[kRootProbeConstants].Descriptor.RegisterSpace = DX12_PROBE_REGISTER_SPACE;
+	params[kRootProbeConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	addSampler( D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_LESS_EQUAL, DX12_LIGHTING_S_COMPARISON, DX12_LIGHTING_REGISTER_SPACE );
+	addSampler( D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_ALWAYS, 0, DX12_PROBE_REGISTER_SPACE );
 	desc.NumParameters = kLightingRootParameterCount;
-	desc.NumStaticSamplers = 1;
-	desc.pStaticSamplers = lightingSamplers;
+	desc.NumStaticSamplers = samplerCount;
 	blob.Reset();
 	error.Reset();
 	hr = D3D12SerializeRootSignature( &desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error );
@@ -220,15 +247,9 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootHighresFailure].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
 	params[kRootHighresFailure].Descriptor.RegisterSpace = 3;
 	params[kRootHighresFailure].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	lightingSamplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-	lightingSamplers[1].AddressU = lightingSamplers[1].AddressV = lightingSamplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-	lightingSamplers[1].MaxAnisotropy = 1;
-	lightingSamplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-	lightingSamplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-	lightingSamplers[1].RegisterSpace = 3;
-	lightingSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	addSampler( D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_ALWAYS, 0, 3 );
 	desc.NumParameters = kHighresRootParameterCount;
-	desc.NumStaticSamplers = 2;
+	desc.NumStaticSamplers = samplerCount;
 	blob.Reset();
 	error.Reset();
 	hr = D3D12SerializeRootSignature( &desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error );
@@ -630,6 +651,11 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	     !input.highresTable.gpu.ptr || input.highresTable.generation != ResourceHeapGeneration() ||
 	     !input.highresConstants || !input.highresFailure ) )
 		return false;
+	if ( input.pbrSpotsTable.count && ( input.pbrSpotsTable.count != DX12_PBR_TABLE_COUNT || !input.pbrSpotsTable.gpu.ptr || input.pbrSpotsTable.generation != ResourceHeapGeneration() ) )
+		return false;
+	if ( input.probeAbi && ( !input.lightingAbi || input.probeTable.count != DX12_PROBE_TABLE_COUNT || !input.probeTable.gpu.ptr ||
+	     input.probeTable.generation != ResourceHeapGeneration() || !input.probeConstants ) )
+		return false;
 	const SIZE_T resourceStride = m_nResourceStride;
 	const SIZE_T samplerStride = m_nSamplerStride;
 	// Constant uploads are fence-scoped: an unchanged (version, shader, extent) slot keeps its address, and a
@@ -874,7 +900,8 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	if ( input.lightingAbi && ( input.lightingViewTable.generation != ResourceHeapGeneration() ||
 	     ( input.lightingVisibilityTable.count && input.lightingVisibilityTable.generation != ResourceHeapGeneration() ) ) )
 		return false;
-	if ( input.highresAbi && input.highresTable.generation != ResourceHeapGeneration() )
+	if ( ( input.highresAbi && input.highresTable.generation != ResourceHeapGeneration() ) || ( input.pbrSpotsTable.count && input.pbrSpotsTable.generation != ResourceHeapGeneration() ) ||
+	     ( input.probeAbi && input.probeTable.generation != ResourceHeapGeneration() ) )
 		return false;
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 RootTables", DX12_DRAW_ZONES_ACTIVE );
@@ -892,6 +919,10 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			ID3D12DescriptorHeap *heaps[] = { resourceHeap, samplerHeap };
 			pList->SetDescriptorHeaps( 2, heaps );
 			m_bGraphicsBindingsValid = false;
+			// Draws without space 4/5 skip those binds (also after a root change), so their cached handles must not survive it.
+			m_BoundPbrSpots = {};
+			m_BoundProbeTable = {};
+			m_nBoundProbeConstants = 0;
 			m_pBoundResourceHeap = resourceHeap;
 			m_pBoundSamplerHeap = samplerHeap;
 		}
@@ -930,6 +961,29 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 					bound = nativeTables[stage];
 				}
 			}
+		// Space-5 projected lights exist on every root, so the cache is only meaningful for the root it was bound to.
+		if ( input.pbrSpotsTable.count && ( !m_bGraphicsBindingsValid || m_BoundPbrSpots.ptr != input.pbrSpotsTable.gpu.ptr ) )
+		{
+			++m_Stats.rootTableSets;
+			pList->SetGraphicsRootDescriptorTable( kRootPbrSpots, input.pbrSpotsTable.gpu );
+			m_BoundPbrSpots = input.pbrSpotsTable.gpu;
+		}
+		// Space-4 ambient probes (lighting and highres roots): the nine-descriptor table and its constants travel together.
+		if ( input.probeAbi )
+		{
+			if ( !m_bGraphicsBindingsValid || m_BoundProbeTable.ptr != input.probeTable.gpu.ptr )
+			{
+				++m_Stats.rootTableSets;
+				pList->SetGraphicsRootDescriptorTable( kRootProbeTable, input.probeTable.gpu );
+				m_BoundProbeTable = input.probeTable.gpu;
+			}
+			if ( !m_bGraphicsBindingsValid || m_nBoundProbeConstants != input.probeConstants )
+			{
+				++m_Stats.rootCbvSets;
+				pList->SetGraphicsRootConstantBufferView( kRootProbeConstants, input.probeConstants );
+				m_nBoundProbeConstants = input.probeConstants;
+			}
+		}
 		// Slots 0-3 feed VS b0-b3 (mirrored to GS b0-b3 when a geometry stage runs); slots 4-9 feed PS b0-b5.
 		for ( UINT slot = 0; slot < 10; ++slot )
 		{
@@ -1221,8 +1275,9 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	for ( UINT i = 0; i < key.colorCount && i < 4; ++i )
 	{
 		D3D12_RENDER_TARGET_BLEND_DESC &target = desc.BlendState.RenderTarget[i];
-		target.RenderTargetWriteMask = ( key.colorWrites ? D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE : 0 ) | ( key.alphaWrites ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0 );
-		target.BlendEnable = key.blend != 0;
+		const bool gbufferTarget = key.gbuffer && i > 0;
+		target.RenderTargetWriteMask = gbufferTarget ? D3D12_COLOR_WRITE_ENABLE_ALL : ( key.colorWrites ? D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE : 0 ) | ( key.alphaWrites ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0 );
+		target.BlendEnable = key.blend != 0 && !gbufferTarget;
 		target.SrcBlend = BlendFactorDX12( key.blendSource );
 		target.DestBlend = BlendFactorDX12( key.blendDestination );
 		target.BlendOp = key.blendOperation < 5 ? blendOps[key.blendOperation] : D3D12_BLEND_OP_ADD;

@@ -1,0 +1,4 @@
+// Highres-atlas receiver twin of pbr_world_ps51 (same combo ABI); see pbr_world_ps51.fxc.
+// HIGHLIGHT_SAMPLERS: 8
+#define PBR_WORLD_HIGHRES 1
+#include "pbr_world_ps51.fxc"

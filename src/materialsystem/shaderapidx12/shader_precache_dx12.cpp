@@ -52,46 +52,153 @@ static bool IsDxbc( const VcsPayload &payload )
 	return payload.tokens.Count() >= 4 && !memcmp( payload.tokens.Base(), "DXBC", 4 );
 }
 
-static bool ValidateLightingStructuredType( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding )
+// Element struct of a structured-buffer binding (a single struct, not an array); null when the reflection shape is unexpected.
+static ID3D12ShaderReflectionType *StructuredElementType( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, D3D12_SHADER_TYPE_DESC &type )
 {
 	auto *buffer = reflection->GetConstantBufferByName( binding.Name );
 	D3D12_SHADER_BUFFER_DESC bd{};
 	if ( !buffer || FAILED( buffer->GetDesc( &bd ) ) || bd.Type != D3D_CT_RESOURCE_BIND_INFO || bd.Variables != 1 )
-		return false;
+		return nullptr;
 	auto *element = buffer->GetVariableByIndex( 0 );
 	auto *elementType = element ? element->GetType() : nullptr;
-	D3D12_SHADER_TYPE_DESC type{};
-	if ( !elementType || FAILED( elementType->GetDesc( &type ) ) || type.Elements )
+	return elementType && SUCCEEDED( elementType->GetDesc( &type ) ) && !type.Elements ? elementType : nullptr;
+}
+
+// Matches the authored layout, including row-major matrices and arrays.
+static bool MatchStructuredMembers( ID3D12ShaderReflectionType *elementType, const D3D12_SHADER_TYPE_DESC &type, const char *typeName,
+	const dx12native::LightingStructuredMemberDX12 *members, UINT memberCount )
+{
+	if ( type.Class != D3D_SVC_STRUCT || !type.Name || V_strcmp( type.Name, typeName ) || type.Members != memberCount )
 		return false;
-	if ( binding.BindPoint == DX12_LIGHTING_T_LIGHTS || binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES )
+	for ( UINT member = 0; member < memberCount; ++member )
 	{
-		const bool triangle = binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES;
-		const auto *members = triangle ? dx12native::kDX12StaticPropTriangleGpuMembers : dx12native::kRuntimeShadowLightGpuMembers;
-		const UINT memberCount = triangle ? UINT(sizeof(dx12native::kDX12StaticPropTriangleGpuMembers)/sizeof(*members)) :
-			UINT(sizeof(dx12native::kRuntimeShadowLightGpuMembers)/sizeof(*members));
-		if ( type.Class != D3D_SVC_STRUCT || !type.Name ||
-		     V_strcmp( type.Name, triangle ? "DX12StaticPropTriangleGpu" : "RuntimeShadowLightGpu" ) || type.Members != memberCount )
+		const auto &expected = members[member];
+		const char *name = elementType->GetMemberTypeName( member );
+		auto *memberType = elementType->GetMemberTypeByIndex( member );
+		D3D12_SHADER_TYPE_DESC memberDesc{};
+		if ( !name || V_strcmp( name, expected.name ) || !memberType ||
+		     FAILED( memberType->GetDesc( &memberDesc ) ) || memberDesc.Offset != expected.offset ||
+		     memberDesc.Class != expected.valueClass || memberDesc.Type != expected.scalarType ||
+		     memberDesc.Rows != expected.rows || memberDesc.Columns != expected.columns ||
+		     memberDesc.Elements != expected.elements )
 			return false;
-		// Match the authored layout, including row-major matrices and both six-face arrays.
-		for ( UINT member = 0; member < memberCount; ++member )
-		{
-			const auto &expected = members[member];
-			const char *name = elementType->GetMemberTypeName( member );
-			auto *memberType = elementType->GetMemberTypeByIndex( member );
-			D3D12_SHADER_TYPE_DESC memberDesc{};
-			if ( !name || V_strcmp( name, expected.name ) || !memberType ||
-			     FAILED( memberType->GetDesc( &memberDesc ) ) || memberDesc.Offset != expected.offset ||
-			     memberDesc.Class != expected.valueClass || memberDesc.Type != expected.scalarType ||
-			     memberDesc.Rows != expected.rows || memberDesc.Columns != expected.columns ||
-			     memberDesc.Elements != expected.elements )
-				return false;
-		}
-		return true;
 	}
+	return true;
+}
+
+static bool ValidateLightingStructuredType( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding )
+{
+	D3D12_SHADER_TYPE_DESC type{};
+	auto *elementType = StructuredElementType( reflection, binding, type );
+	if ( !elementType )
+		return false;
+	if ( binding.BindPoint == DX12_LIGHTING_T_LIGHTS )
+		return MatchStructuredMembers( elementType, type, "RuntimeShadowLightGpu", dx12native::kRuntimeShadowLightGpuMembers, UINT( ARRAYSIZE( dx12native::kRuntimeShadowLightGpuMembers ) ) );
+	if ( binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES )
+		return MatchStructuredMembers( elementType, type, "DX12StaticPropTriangleGpu", dx12native::kDX12StaticPropTriangleGpuMembers, UINT( ARRAYSIZE( dx12native::kDX12StaticPropTriangleGpuMembers ) ) );
 	const UINT columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 :
 		binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_FACES || binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_ENTRIES || binding.BindPoint == DX12_LIGHTING_T_PROP_MESHES ? 4 : 1;
 	return type.Type == D3D_SVT_UINT && type.Rows == 1 && type.Columns == columns &&
 	       type.Class == ( columns > 1 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR );
+}
+
+// Space 5 (PBR projected lights, pixel stage): every retained binding must be exactly the declared register, count and
+// type; unused resources may be absent, and no cbuffer exists in this space. pbrSeen collects one bit per resource.
+static bool ValidatePbrSpotBinding( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned &pbrSeen )
+{
+	unsigned bit = 0;
+	bool valid = false;
+	if ( !V_strcmp( binding.Name, "g_ProjectedLights" ) )
+	{
+		bit = 1;
+		D3D12_SHADER_TYPE_DESC type{};
+		auto *elementType = StructuredElementType( reflection, binding, type );
+		valid = binding.Type == D3D_SIT_STRUCTURED && binding.Dimension == D3D_SRV_DIMENSION_BUFFER && binding.BindPoint == DX12_PBR_T_LIGHTS &&
+		        binding.BindCount == 1 && binding.NumSamples == sizeof( DX12ProjectedLightDesc ) && elementType &&
+		        MatchStructuredMembers( elementType, type, "PBRSpotGpu", dx12native::kPBRSpotGpuMembers, UINT( ARRAYSIZE( dx12native::kPBRSpotGpuMembers ) ) );
+	}
+	else if ( !V_strcmp( binding.Name, "g_ProjectedCookies" ) || !V_strcmp( binding.Name, "g_ProjectedDepth" ) )
+	{
+		const bool depth = !V_strcmp( binding.Name, "g_ProjectedDepth" );
+		bit = depth ? 4 : 2;
+		valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == D3D_SRV_DIMENSION_TEXTURE2D && binding.ReturnType == D3D_RETURN_TYPE_FLOAT &&
+		        binding.BindPoint == ( depth ? DX12_PBR_T_DEPTH_FIRST : DX12_PBR_T_COOKIE_FIRST ) && binding.BindCount == DX12_PBR_MAX_PROJECTED_LIGHTS &&
+		        ( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS ) == ( depth ? 0u : UINT( D3D_SIF_TEXTURE_COMPONENTS ) );
+	}
+	else if ( !V_strcmp( binding.Name, "g_CookieSampler" ) || !V_strcmp( binding.Name, "g_ProjectedCmpSampler" ) )
+	{
+		const bool comparison = !V_strcmp( binding.Name, "g_ProjectedCmpSampler" );
+		bit = comparison ? 16 : 8;
+		valid = binding.Type == D3D_SIT_SAMPLER && binding.BindPoint == ( comparison ? DX12_PBR_S_COMPARISON : DX12_PBR_S_LINEAR ) &&
+		        binding.BindCount == 1 && ( ( binding.uFlags & D3D_SIF_COMPARISON_SAMPLER ) != 0 ) == comparison;
+	}
+	if ( !valid || ( pbrSeen & bit ) )
+		return false;
+	pbrSeen |= bit;
+	return true;
+}
+
+// Space 4 (ambient probes, pixel stage): the DX12ProbeConstantsV1 block at b0, ProbeIndirection t0 (Texture3D<uint>), ProbeDC t1
+// (float3), ProbeBands t2..t7 (array of six float4), ProbeValidity t8 (float) and the non-comparison sampler ProbeLinear s0.
+// Unused textures may be absent, but every retained binding must match exactly. probeSeen collects one bit per name; bit 0 is the block.
+static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned &probeSeen )
+{
+	struct Texture
+	{
+		const char *name;
+		UINT reg, count, components;
+		D3D_RESOURCE_RETURN_TYPE returnType;
+	};
+	static const Texture textures[] = {
+		{ "ProbeIndirection", DX12_PROBE_T_INDIRECTION, 1, 1, D3D_RETURN_TYPE_UINT },
+		{ "ProbeDC", DX12_PROBE_T_DC, 1, 3, D3D_RETURN_TYPE_FLOAT },
+		{ "ProbeBands", DX12_PROBE_T_BANDS_FIRST, DX12_PROBE_T_VALIDITY - DX12_PROBE_T_BANDS_FIRST, 4, D3D_RETURN_TYPE_FLOAT },
+		{ "ProbeValidity", DX12_PROBE_T_VALIDITY, 1, 1, D3D_RETURN_TYPE_FLOAT },
+	};
+	unsigned bit = 0;
+	bool valid = false;
+	if ( !V_strcmp( binding.Name, "DX12ProbeConstantsV1" ) )
+	{
+		bit = 1;
+		const dx12native::EngineCBufferLayoutDX12 &layout = dx12native::kProbeCBufferLayouts[0];
+		auto *buffer = reflection->GetConstantBufferByName( binding.Name );
+		D3D12_SHADER_BUFFER_DESC bd{};
+		valid = binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == layout.shaderRegister && binding.BindCount == 1 &&
+		        buffer && SUCCEEDED( buffer->GetDesc( &bd ) ) && bd.Type == D3D_CT_CBUFFER && bd.Size == layout.byteSize && bd.Variables == layout.memberCount;
+		for ( UINT member = 0; valid && member < layout.memberCount; ++member )
+		{
+			// cProbeOrigin and cProbeAtlas are float4, cProbeBricks and cProbeAtlasBricks uint4.
+			D3D12_SHADER_VARIABLE_DESC vd{};
+			D3D12_SHADER_TYPE_DESC type{};
+			auto *variable = buffer->GetVariableByIndex( member );
+			valid = variable && SUCCEEDED( variable->GetDesc( &vd ) ) && vd.Name && !V_strcmp( vd.Name, layout.members[member].name ) &&
+			        vd.StartOffset == layout.members[member].offset && vd.Size == layout.members[member].size &&
+			        variable->GetType() && SUCCEEDED( variable->GetType()->GetDesc( &type ) ) && type.Class == D3D_SVC_VECTOR &&
+			        type.Rows == 1 && type.Columns == 4 && !type.Elements && type.Type == ( member & 1 ? D3D_SVT_UINT : D3D_SVT_FLOAT );
+		}
+	}
+	else if ( !V_strcmp( binding.Name, "ProbeLinear" ) )
+	{
+		bit = 1u << 5;
+		valid = binding.Type == D3D_SIT_SAMPLER && binding.BindPoint == DX12_PROBE_S_LINEAR && binding.BindCount == 1 &&
+		        !( binding.uFlags & D3D_SIF_COMPARISON_SAMPLER );
+	}
+	else
+	{
+		for ( unsigned i = 0; i < ARRAYSIZE( textures ); ++i )
+			if ( !V_strcmp( binding.Name, textures[i].name ) )
+			{
+				bit = 2u << i;
+				valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == D3D_SRV_DIMENSION_TEXTURE3D &&
+				        binding.ReturnType == textures[i].returnType && binding.BindPoint == textures[i].reg &&
+				        binding.BindCount == textures[i].count &&
+				        ( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS ) == ( ( textures[i].components - 1 ) << 2 );
+			}
+	}
+	if ( !valid || ( probeSeen & bit ) )
+		return false;
+	probeSeen |= bit;
+	return true;
 }
 
 bool RequiresStaticPropReceiverShaderDX12( const char *logical )
@@ -107,12 +214,14 @@ bool RequiresStaticPropReceiverShaderDX12( const char *logical )
 }
 // Optimized shaders retain only the resources they use. The view block is the ABI marker;
 // every retained binding must match, but unused textures/samplers may disappear.
-bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility, bool *propVisibility )
+bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility, bool *propVisibility, bool *pbrSpots, bool *probeAbi )
 {
 	if ( lightingAbi )
 		*lightingAbi = false;
 	if ( sunVisibility ) *sunVisibility = false;
 	if ( propVisibility ) *propVisibility = false;
+	if ( pbrSpots ) *pbrSpots = false;
+	if ( probeAbi ) *probeAbi = false;
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	D3D12_SHADER_DESC desc{};
 	if ( !bytecode.pShaderBytecode || !bytecode.BytecodeLength ||
@@ -125,7 +234,8 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 	if ( !ValidateHighresShaderResourcesDX12( reflection.Get(), desc, pixelStage, nullptr, error ) )
 		return false;
 	bool marker = false, space2 = false;
-	unsigned seen = 0;
+	unsigned seen = 0, pbrSeen = 0, probeSeen = 0;
+	const bool pixel = pixelStage && D3D12_SHVER_GET_TYPE( desc.Version ) == D3D12_SHVER_PIXEL_SHADER;
 	for ( UINT i = 0; i < desc.BoundResources; ++i )
 	{
 		D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -133,6 +243,18 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		{
 			error = "lighting resource binding reflection failed";
 			return false;
+		}
+		if ( binding.Space == DX12_PBR_REGISTER_SPACE || binding.Space == DX12_PROBE_REGISTER_SPACE )
+		{
+			// Backend-owned pixel-stage spaces, never material data. Space 4 (ambient probes) exists only beside the
+			// lighting view block and selects the lighting root signature; space 5 alone keeps the ordinary signature.
+			if ( !pixel || !( binding.Space == DX12_PBR_REGISTER_SPACE ? ValidatePbrSpotBinding( reflection.Get(), binding, pbrSeen ) :
+			                                                              ValidateProbeBinding( reflection.Get(), binding, probeSeen ) ) )
+			{
+				error = CUtlString( "PBR/probe resource binding/layout mismatch: " ) + binding.Name;
+				return false;
+			}
+			continue;
 		}
 		const dx12native::EngineCBufferLayoutDX12 *layout = nullptr;
 		for ( const auto &candidate : dx12native::kLightingCBufferLayouts )
@@ -142,8 +264,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 			continue;
 		space2 = true;
 		unsigned slot = 0;
-		bool valid = pixelStage && D3D12_SHVER_GET_TYPE( desc.Version ) == D3D12_SHVER_PIXEL_SHADER &&
-		             binding.Space == DX12_LIGHTING_REGISTER_SPACE;
+		bool valid = pixel && binding.Space == DX12_LIGHTING_REGISTER_SPACE;
 		if ( layout )
 		{
 			slot = layout->shaderRegister == DX12_LIGHTING_B_VIEW ? 0 : 14;
@@ -241,6 +362,12 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		error = "space-2 resources require DX12LightingViewConstantsV1";
 		return false;
 	}
+	// Probe textures and the sampler read the block's enable word; the block alone (a shader that never samples) is legal.
+	if ( probeSeen && ( !( probeSeen & 1 ) || !marker ) )
+	{
+		error = "space-4 resources require DX12ProbeConstantsV1 and DX12LightingViewConstantsV1";
+		return false;
+	}
 	// World requires face/entries/payload; models require mesh/triangle/draw CB plus entries/payload.
 	const unsigned propGroup = (1u<<11)|(1u<<12)|(1u<<14), lookup = (1u<<9)|(1u<<10);
 	if ( ((seen&(1u<<8)) && (seen&lookup)!=lookup) ||
@@ -265,6 +392,10 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 	if ( sunVisibility ) *sunVisibility = ( seen & ( 1u << 7 ) ) != 0;
 	if ( lightingAbi )
 		*lightingAbi = marker;
+	if ( pbrSpots )
+		*pbrSpots = pbrSeen != 0;
+	if ( probeAbi )
+		*probeAbi = probeSeen != 0;
 	return true;
 }
 

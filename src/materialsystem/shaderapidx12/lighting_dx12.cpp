@@ -5,6 +5,7 @@
 #include "hardwareconfig_dx12.h"
 #include "shader_vcs_dx12.h"
 #include "staticprop_visibility_dx12.h"
+#include "hlight_engine_bridge.h"
 #include "shadowmap_bsp.h"
 #include "filesystem.h"
 #include "materialsystem/stdshaders/common_hlsl_cpp_consts.h"
@@ -31,7 +32,7 @@ namespace shaderapidx12
 {
 namespace
 {
-enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload, BeginProp, EndProp };
+enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload, BeginProp, EndProp, Projected };
 const char *const kPacketError = "Shadowmaps: invalid lighting packet";
 D3D12_CPU_DESCRIPTOR_HANDLE Offset( D3D12_CPU_DESCRIPTOR_HANDLE handle, UINT index, UINT stride )
 {
@@ -1211,6 +1212,7 @@ struct LightingPacketDX12 final : IRefCounted
 	CUtlVector<DX12ShadowTarget_t> ids;
 	CUtlVector<RuntimeShadowLightGpu> lights;
 	CUtlVector<uint32> ranges, indices;
+	CUtlVector<DX12ProjectedLightDesc> projected;
 	CUtlVector<ShadowTargetDX12 *> leases;
 	int AddRef() override { return ++references; }
 	int Release() override
@@ -1228,6 +1230,7 @@ struct CLightingDX12::Impl
 	CShaderAPIDX12 *api = nullptr;
 	CThreadFastMutex mutex;
 	std::atomic<uint32> receiverGeneration{ 0 };
+	std::atomic<bool> pbrRequested{ false }, pbrCommitted{ false };
 	CUtlVector<ShadowTargetDX12 *> targets;
 	uint32 nextTargetGeneration = 1;
 	CUtlVector<LightingPacketDX12 *> freePackets;
@@ -1376,6 +1379,18 @@ struct CLightingDX12::Impl
 		bool rasterOverride = false;
 	};
 	CUtlVector<PassState> passes;
+	// PBR projected lights (recording owner only): the current packet, the texture handles its slots name, and the
+	// descriptor table the PBR draws bind. The table is rebuilt once per recording batch / heap generation / texture
+	// state change by the first PBR draw; the record buffer is uploaded once per batch.
+	struct ProjectedLights
+	{
+		uint32 count = 0;
+		DX12ProjectedLightDesc lights[DX12_PBR_MAX_PROJECTED_LIGHTS];
+		ShaderAPITextureHandle_t cookies[DX12_PBR_MAX_PROJECTED_LIGHTS]{}, depths[DX12_PBR_MAX_PROJECTED_LIGHTS]{};
+		ID3D12Resource *buffer = nullptr;
+		uint64_t bufferOffset = 0, bufferFence = 0, fence = 0, textureEpoch = 0;
+		DescriptorRangeDX12 table{};
+	} projected;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> restoreRoot;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> restorePso;
 
@@ -1559,6 +1574,7 @@ void CLightingDX12::Shutdown()
 	s.currentReceiverPage.reset(); s.whiteReceiverPage.reset();
 	s.receiverMaps.clear(); s.receiverStats.clear(); s.carrierShaders.clear();
 	s.neutral = {};
+	s.projected = {};
 	s.activeMap = 0;
 	s.highresMap = false; s.nativeMapGeneration = 0;
 	s.receiverGeneration.store( 0 );
@@ -1676,6 +1692,16 @@ void CLightingDX12::RejectUnsupportedLitShader( const char *name )
 	const uint32 generation = ReceiverFeatureGeneration();
 	if ( generation ) m_Impl->Status( generation, 0, DX12_LIGHTING_STATUS_FAILED, error );
 }
+void CLightingDX12::RequestPbrOverride( bool enabled ) { m_Impl->pbrRequested.store( enabled, std::memory_order_relaxed ); }
+bool CLightingDX12::PbrOverridePending() { return m_Impl->pbrRequested.load( std::memory_order_relaxed ) != m_Impl->pbrCommitted.load( std::memory_order_relaxed ); }
+bool CLightingDX12::CommitPbrOverride()
+{
+	const bool requested = m_Impl->pbrRequested.load( std::memory_order_relaxed );
+	return m_Impl->pbrCommitted.exchange( requested, std::memory_order_relaxed ) != requested;
+}
+bool CLightingDX12::PbrOverride() { return m_Impl->pbrCommitted.load( std::memory_order_relaxed ); }
+bool CLightingDX12::BeginMaterialTransaction() { return HlightEngineBridge::BeginMaterialTransaction(); }
+void CLightingDX12::EndMaterialTransaction() { HlightEngineBridge::EndMaterialTransaction(); }
 
 DX12ShadowTarget_t CLightingDX12::CreateShadowDepthTarget( const char *name, int width, int height )
 {
@@ -1798,6 +1824,7 @@ void CLightingDX12::Recycle( LightingPacketDX12 *packet )
 	packet->ranges.RemoveAll();
 	packet->indices.RemoveAll();
 	packet->propMeshes.RemoveAll();
+	packet->projected.RemoveAll();
 	packet->propModelName.clear();
 	AUTO_LOCK( m_Impl->mutex );
 	m_Impl->freePackets.AddToTail( packet );
@@ -2083,10 +2110,41 @@ void CLightingDX12::UnloadMap( uint32 generation )
 	packet->map.mapGeneration = generation;
 	Enqueue( packet );
 }
+void CLightingDX12::SetProjectedLightTextures( const ShaderAPITextureHandle_t *cookies, const ShaderAPITextureHandle_t *depths, int count )
+{
+	Impl::ProjectedLights &p = m_Impl->projected;
+	const int used = MAX( 0, MIN( count, int( DX12_PBR_MAX_PROJECTED_LIGHTS ) ) );
+	for ( int i = 0; i < DX12_PBR_MAX_PROJECTED_LIGHTS; ++i )
+	{
+		p.cookies[i] = i < used && cookies ? cookies[i] : INVALID_SHADERAPI_TEXTURE_HANDLE;
+		p.depths[i] = i < used && depths ? depths[i] : INVALID_SHADERAPI_TEXTURE_HANDLE;
+	}
+	p.fence = 0;
+}
+void CLightingDX12::BeginProjectedLights( const DX12ProjectedLightPacket &packet )
+{
+	LightingPacketDX12 *queued = Packet( Projected );
+	bool valid = packet.count <= DX12_PBR_MAX_PROJECTED_LIGHTS && ( !packet.count || packet.lights );
+	for ( uint32 i = 0; valid && i < packet.count; ++i )
+		valid = packet.lights[i].cookieSlot >= 0 && packet.lights[i].cookieSlot < DX12_PBR_MAX_PROJECTED_LIGHTS &&
+			packet.lights[i].depthSlot >= -1 && packet.lights[i].depthSlot < DX12_PBR_MAX_PROJECTED_LIGHTS;
+	if ( valid ) queued->projected.CopyArray( packet.lights, int( packet.count ) );
+	else Warning( "ShaderAPIDX12: invalid projected-light packet ignored\n" );
+	Enqueue( queued );
+}
 
 void CLightingDX12::Execute( LightingPacketDX12 *packet )
 {
 	Impl &s = *m_Impl;
+	if ( packet->operation == Projected )
+	{
+		// No GPU work: a new packet only invalidates the draw table and record upload.
+		Impl::ProjectedLights &p = s.projected;
+		p.count = uint32( packet->projected.Count() );
+		if ( p.count ) memcpy( p.lights, packet->projected.Base(), p.count * sizeof( DX12ProjectedLightDesc ) );
+		p.bufferFence = p.fence = 0;
+		return;
+	}
 	if ( !s.device || !s.api || !s.device->CommandList() )
 	{
 		s.Fail( kPacketError, packet->operation == View ? packet->view.mapGeneration : packet->map.mapGeneration, packet->view.viewGeneration );
@@ -3056,7 +3114,7 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 	if ( s.views.Count() && s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
 	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
 	const uint64_t fence = s.device->NextFenceValue();
-	if ( !pipeline.ReserveResourceDescriptors( DX12_LIGHTING_RESOURCE_TABLE_COUNT + 1 + 8 + 32 + 16, fence ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+	if ( !pipeline.ReserveResourceDescriptors( DX12_LIGHTING_RESOURCE_TABLE_COUNT + 1 + 8 + DX12_PBR_TABLE_COUNT + DX12_PROBE_TABLE_COUNT + 32 + 16, fence ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 	const uint64_t heapGeneration = pipeline.ResourceHeapGeneration();
 	ID3D12Device *device = s.device->NativeDevice();
 	if ( !s.neutralPropTriangles )
@@ -3144,6 +3202,64 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 		carrier.tableFence = fence;
 	}
 	input.lightingVisibilityTable = carrier.table;
+	return true;
+}
+bool CLightingDX12::PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input )
+{
+	Impl &s = *m_Impl;
+	Impl::ProjectedLights &p = s.projected;
+	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
+	const uint64_t fence = s.device->NextFenceValue();
+	// The table, a highres table (8) and the ordinary per-draw tables (32 + 16) allocated after it must share one heap generation.
+	if ( !pipeline.ReserveResourceDescriptors( DX12_PBR_TABLE_COUNT + 8 + 32 + 16, fence ) ) return false;
+	if ( p.fence != fence || p.table.generation != pipeline.ResourceHeapGeneration() || p.textureEpoch != s.api->m_nTextureStateEpoch )
+	{
+		if ( p.bufferFence != fence )
+		{
+			p.buffer = nullptr;
+			p.bufferOffset = 0;
+			if ( p.count && !pipeline.UploadStructured( p.lights, p.count * sizeof( DX12ProjectedLightDesc ), sizeof( DX12ProjectedLightDesc ), fence, &p.buffer, &p.bufferOffset ) ) return false;
+			p.bufferFence = fence;
+		}
+		const DescriptorRangeDX12 table = pipeline.AllocateTransientResources( DX12_PBR_TABLE_COUNT, fence );
+		if ( table.count != DX12_PBR_TABLE_COUNT ) return false;
+		ID3D12Device *device = s.device->NativeDevice();
+		const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		// t0: the records; with no light the SRV is a null buffer view of zero elements (GetDimensions reports 0).
+		D3D12_SHADER_RESOURCE_VIEW_DESC records{};
+		records.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		records.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		records.Buffer.FirstElement = p.buffer ? p.bufferOffset / sizeof( DX12ProjectedLightDesc ) : 0;
+		records.Buffer.NumElements = p.count;
+		records.Buffer.StructureByteStride = sizeof( DX12ProjectedLightDesc );
+		device->CreateShaderResourceView( p.buffer, &records, table.cpu );
+		// t1..t8 cookies (sRGB view), t9..t16 depth (typed depth view; the comparison sampler is the root's static s1).
+		// Unused slots, unshadowed lights' depth slots (the material leaves them on a stale or error texture) and handles that cannot be sampled bind the null view.
+		const auto bindTexture = [&]( UINT slot, ShaderAPITextureHandle_t handle, bool srgb, bool comparison )
+		{
+			ID3D12Resource *resource = nullptr;
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			D3D12_SAMPLER_DESC sampler{};
+			D3D12_CPU_DESCRIPTOR_HANDLE source{};
+			if ( s.api->PrepareSampledTexture( handle, srgb, &resource, srv, sampler, &source, comparison ) && source.ptr )
+				pipeline.RetainExternalResource( resource, fence );
+			else
+				source = pipeline.NullShaderResourceView();
+			device->CopyDescriptorsSimple( 1, Offset( table.cpu, slot, stride ), source, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		};
+		uint32 shadowedSlots = 0;
+		for ( uint32 i = 0; i < p.count; ++i )
+			if ( p.lights[i].depthSlot >= 0 ) shadowedSlots |= 1u << p.lights[i].depthSlot;
+		for ( UINT i = 0; i < DX12_PBR_MAX_PROJECTED_LIGHTS; ++i )
+		{
+			bindTexture( DX12_PBR_T_COOKIE_FIRST + i, p.cookies[i], true, false );
+			bindTexture( DX12_PBR_T_DEPTH_FIRST + i, ( shadowedSlots >> i ) & 1 ? p.depths[i] : INVALID_SHADERAPI_TEXTURE_HANDLE, false, true );
+		}
+		p.table = table;
+		p.fence = fence;
+		p.textureEpoch = s.api->m_nTextureStateEpoch;
+	}
+	input.pbrSpotsTable = p.table;
 	return true;
 }
 } // namespace shaderapidx12

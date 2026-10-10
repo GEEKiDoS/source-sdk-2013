@@ -1,0 +1,207 @@
+// Native SM5.1 PBR model pixel shader (studio models and static props): VertexLitGeneric / Skin inputs shaded
+// with the PBR lobes. Composition follows hlsl/vertexlit_and_unlit_generic_bump_shadowmap_ps51.fxc: engine
+// ambient cube, draw-local cLightInfo lights, and under ENHANCED the selected direct gather
+// (ShadowMap_BeginReceiver + ShadowMap_SetBakedProp(SV_PrimitiveID) + PBR_GatherDirect); then the projected
+// spots, the parallax-corrected IBL, emission and fog.
+//
+// TANGENT=1 carries the vertex tangent (normal maps); TANGENT=0 has no tangent stream and no normal map, and
+// takes its anisotropy frame from derivatives. ALPHATEST=0 compiles the engine alpha-test kill away
+// (DX12_EARLY_DEPTH); ALPHATEST=1 keeps it through DX12FinishPixel, driven by the engine alpha-test state.
+#define DX12_NATIVE_PS 1
+#if ENHANCED
+#define DX12_SHADOWMAPS 1
+#endif
+#if !ALPHATEST
+#define DX12_EARLY_DEPTH 1
+#endif
+#include "dx12_preamble.h"
+// STATIC: "TANGENT" "0..1"
+// STATIC: "ENHANCED" "0..1"
+// STATIC: "ALPHATEST" "0..1"
+// DYNAMIC: "PIXELFOGTYPE" "0..2"
+// The TANGENT combo name collides with the TANGENT vertex semantic: capture the value, then release the macro.
+#if TANGENT
+#define PBR_HAS_TANGENT 1
+#else
+#define PBR_HAS_TANGENT 0
+#endif
+#undef TANGENT
+#include "common_ps_fxc.h"
+#include "pbr_lighting.hlsli"
+#if ENHANCED
+#include "pbr_probe.hlsli"
+#endif
+
+Texture2D BaseTexture : register( t0 );
+SamplerState BaseSampler : register( s0 );
+Texture2D BumpTexture : register( t1 );
+SamplerState BumpSampler : register( s1 );
+TextureCube EnvmapTexture : register( t2 );
+SamplerState EnvmapSampler : register( s2 );
+Texture2D DetailTexture : register( t3 );
+SamplerState DetailSampler : register( s3 );
+Texture2D EnvmapMaskTexture : register( t4 );
+SamplerState EnvmapMaskSampler : register( s4 );
+Texture2D MraoTexture : register( t5 );
+SamplerState MraoSampler : register( s5 );
+Texture2D SpecularTexture : register( t6 );
+SamplerState SpecularSampler : register( s6 );
+Texture2D EmissionTexture : register( t7 );
+SamplerState EmissionSampler : register( s7 );
+Texture2D ThicknessTexture : register( t8 );
+SamplerState ThicknessSampler : register( s8 );
+Texture2D PhongExponentTexture : register( t9 );
+SamplerState PhongExponentSampler : register( s9 );
+
+// Exact mirror of the paired vertex output (same types, order and interpolation).
+struct DX12_PS_INPUT
+{
+	float4 svPos : SV_Position;
+	float fog : FOG;
+	float4 baseBumpUV : TEXCOORD0;
+	float2 detailUV : TEXCOORD1;
+	float4 lightAtten : TEXCOORD2;
+	float4 worldPos_projPosZ : TEXCOORD3;
+	float3 toEye : TEXCOORD4;
+	float3 worldNormal : TEXCOORD5;
+#if PBR_HAS_TANGENT
+	float4 worldTangent : TEXCOORD6;
+#else
+	float3 staticLight : TEXCOORD6;
+#endif
+#if ENHANCED
+	uint primitiveId : SV_PrimitiveID;
+#endif
+};
+
+PBR_PSOut main( DX12_PS_INPUT i )
+{
+	float3 P = i.worldPos_projPosZ.xyz;
+#if ENHANCED
+	// Derivatives occur here, before any divergent work. The primitive identity is a pure value carrier.
+	ShadowMapReceiver receiver = ShadowMap_BeginReceiver( P, i.worldNormal, i.svPos.xy );
+	ShadowMap_SetBakedProp( receiver, i.primitiveId );
+#endif
+	float2 baseUV = i.baseBumpUV.xy;
+	uint phongBits = uint( g_Misc.z );
+
+	float4 base = BaseTexture.Sample( BaseSampler, baseUV );
+	if ( g_Flags1.z != 0.0 )
+	{
+		float3 detail = DetailTexture.Sample( DetailSampler, i.detailUV ).rgb * g_PbrDetail.rgb;
+		base.rgb = g_Flags1.w == 0.0 ? base.rgb * lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * detail, g_PbrDetail.w ) : base.rgb + g_PbrDetail.w * detail;
+	}
+
+	float3 vertexNormal = normalize( i.worldNormal );
+	float3 N = vertexNormal;
+	float normalAlpha = 1.0;
+	float3 frameT = float3( 0.0, 0.0, 0.0 );
+#if PBR_HAS_TANGENT
+	float3 tangent = normalize( i.worldTangent.xyz );
+	frameT = tangent;
+	if ( g_Flags0.y != 0.0 )
+	{
+		float4 bumpTexel = BumpTexture.Sample( BumpSampler, i.baseBumpUV.zw );
+		float3 tangentNormal = normalize( bumpTexel.xyz * 2.0 - 1.0 );
+		float3 binormal = cross( vertexNormal, tangent ) * i.worldTangent.w;
+		N = normalize( tangentNormal.x * tangent + tangentNormal.y * binormal + tangentNormal.z * vertexNormal );
+		normalAlpha = bumpTexel.a;
+	}
+#else
+	[branch] if ( g_Options.w != 0.0 )
+		frameT = PBR_DerivativeTangent( vertexNormal, P, baseUV );
+#endif
+	float3 V = normalize( i.toEye );
+
+	// Environment mask with the legacy channel semantics: $envmapmask rgb, 1 - base alpha ($basealphaenvmapmask), normal map alpha.
+	float3 envMask = float3( 1.0, 1.0, 1.0 );
+	if ( g_Flags1.y == 1.0 )
+		envMask = EnvmapMaskTexture.Sample( EnvmapMaskSampler, baseUV ).rgb;
+	else if ( g_Flags1.y == 2.0 )
+		envMask = 1.0 - base.a;
+	else if ( g_Flags1.y == 3.0 )
+		envMask = normalAlpha;
+
+	float3 surface = g_Surface.xyz;
+	if ( g_Flags0.x != 0.0 )
+		surface *= MraoTexture.Sample( MraoSampler, baseUV ).rgb;
+	// Legacy-replacement materials without explicit PBR roughness or Phong take it from the environment mask: a reflection mask is
+	// a gloss map, so roughness = 1 - mask, and the mask no longer scales the reflection itself ($envmaptint does).
+	const bool glossFromMask = g_PbrFlags2.y != 0.0;
+	if ( glossFromMask )
+		surface.y = 1.0 - saturate( dot( envMask, float3( 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0 ) ) );
+	float3 specularF0 = g_SpecularColor.rgb;
+	if ( g_Flags0.z != 0.0 )
+		specularF0 = SpecularTexture.Sample( SpecularSampler, baseUV ).rgb;
+	if ( ( phongBits & 1u ) != 0 )
+	{
+		// Legacy Phong adapter: roughness = (2 / (exponent + 2))^0.25, F0 = specular color * phong mask.
+		if ( ( phongBits & 2u ) != 0 )
+			surface.y = sqrt( sqrt( 2.0 / ( PhongExponentTexture.Sample( PhongExponentSampler, baseUV ).r * 149.0 + 3.0 ) ) );
+		specularF0 *= ( phongBits & 4u ) != 0 ? base.a : normalAlpha;
+	}
+	float thickness = g_Options.z;
+	if ( g_SubsurfaceTint.w != 0.0 && ( g_Options.x > 0.0 || g_Options.y > 0.0 ) )
+		thickness = ThicknessTexture.Sample( ThicknessSampler, baseUV ).r;
+
+	float3 baseColor = base.rgb * g_BaseTint.rgb;
+	PBRSurface s = PBR_MakeSurface( N, V, frameT, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, g_Misc.y != 0.0 ? 1 : 0 );
+
+	// Ambient. ENHANCED decodes the baked probe grid once at the vertex-normal-biased point and evaluates it for N (and -N / the
+	// softened N below); where no probe covers the point, or no grid is bound, the engine ambient cube takes over.
+	// Subsurface softens toward the opposite hemisphere; backlight adds that hemisphere.
+	float3 ambient;
+#if ENHANCED
+	ProbeSH probe;
+	[branch] if ( Probe_Decode( P, vertexNormal, probe ) )
+	{
+		ambient = Probe_Irradiance( probe, N );
+		[branch] if ( s.sss != 0.0 || s.back != 0.0 )
+			ambient = lerp( ambient, Probe_IrradianceSoft( probe, N ) * s.subsurfaceTint, s.sss ) * ( 1.0 - s.back ) +
+				Probe_Irradiance( probe, -N ) * s.backlightTint * s.back;
+	}
+	else
+#endif
+	{
+		ambient = PBR_AmbientCube( N );
+		[branch] if ( s.sss != 0.0 || s.back != 0.0 )
+		{
+			float3 opposite = PBR_AmbientCube( -N );
+			float3 soft = 0.75 * ambient + 0.25 * opposite;
+			ambient = lerp( ambient, soft * s.subsurfaceTint, s.sss ) * ( 1.0 - s.back ) + opposite * s.backlightTint * s.back;
+		}
+	}
+	float3 result = s.diffuseColor * s.ao * ambient;
+#if !PBR_HAS_TANGENT
+	// Static prop vertex lighting (zero unless the VS combo STATIC_LIGHT_VERTEX decoded it): a baked Lambert
+	// irradiance carrier like the ambient term. Legacy adds it to the selected direct unchanged on enhanced maps.
+	result += s.diffuseColor * s.ao * i.staticLight;
+#endif
+	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten );
+
+#if ENHANCED
+	ShadowMapDirect direct = PBR_GatherDirect( receiver, s );
+	result += direct.diffuse + direct.specular;
+#endif
+	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL );
+
+	if ( g_Flags1.x != 0.0 )
+		result += PBR_Environment( EnvmapTexture, EnvmapSampler, s, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask );
+
+	if ( g_Flags0.w == 1.0 )
+		result += baseColor * g_EmissionTint.rgb * base.a;
+	else if ( g_Flags0.w == 2.0 )
+		result += EmissionTexture.Sample( EmissionSampler, baseUV ).rgb * g_EmissionTint.rgb;
+
+	float alpha = g_BaseTint.a;
+	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 && ( phongBits & 4u ) == 0 )
+		alpha *= base.a;
+
+	float3 eyePosition = P + i.toEye;
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
+	float4 color = DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), i.fog );
+#if ENHANCED
+	color = ShadowMap_Debug( receiver, direct, color );
+#endif
+	return PBR_Output( color, s, i.svPos.z );
+}

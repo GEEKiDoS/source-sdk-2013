@@ -1,0 +1,4 @@
+// Output-identical receiver twin; select only without alpha test/effective A2C.
+// HIGHLIGHT_SAMPLERS: 8
+#define DX12_EARLY_DEPTH 1
+#include "pbr_world_highres_ps51.fxc"

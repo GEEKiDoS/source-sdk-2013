@@ -1057,5 +1057,13 @@ void EndClientResourceReadmission()
 {
     EndTransaction();
 }
+bool BeginMaterialTransaction()
+{
+    return g.supported && BeginTransaction();
+}
+void EndMaterialTransaction()
+{
+    EndTransaction();
+}
 }
 }

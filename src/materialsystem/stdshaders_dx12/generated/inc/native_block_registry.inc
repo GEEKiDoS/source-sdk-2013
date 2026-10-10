@@ -65,6 +65,8 @@
 #include "motion_blur_ps2x.h"
 #include "particlesphere_ps2x.h"
 #include "particlesphere_vs20.h"
+#include "PBRMaterialPS.h"
+#include "PBRMaterialVS.h"
 #include "portal_ps2x.h"
 #include "portal_refract_ps2x.h"
 #include "portal_refract_vs20.h"
@@ -245,6 +247,13 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "motion_blur_vs51", dx12native::kStageVertex, nullptr },
 	{ "particlesphere_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::particlesphere_ps2x > },
 	{ "particlesphere_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::particlesphere_vs20 > },
+	{ "pbr_model_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialPS > },
+	{ "pbr_model_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialVS > },
+	{ "pbr_world_highres_earlydepth_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialPS > },
+	{ "pbr_world_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialPS > },
+	{ "pbr_world_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialVS > },
+	{ "pbr_world_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialPS > },
+	{ "pbr_world_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialVS > },
 	{ "portal_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::portal_ps2x > },
 	{ "portal_refract_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::portal_refract_ps2x > },
 	{ "portal_refract_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::portal_refract_vs20 > },

@@ -65,9 +65,11 @@ The default options are:
 | `-restir_probe x y z nx ny nz` | off | Diagnostic: after the bake, print the GPU light table and the direct/indirect light arriving at the given world point and normal per style. |
 | `-restir_lightmapscale F` | `1.0` | Multiplier on brush-face luxel size, `0.0625..1.0`; `0.5` doubles density per axis. See "Lightmap density" below. |
 | `-restir_emissivescale F` | `1.0` | Material-emission multiplier, `0..1000`; `0` disables material emitters without affecting `.rad` texlights. |
+| `-restir_ambientgrid N` | `32` | `-restir_shadowmaps` only: ambient probe spacing in units, `8..512`. See "Dense ambient probes". |
+| `-restir_ambientgrid_reach N` | `512` | `-restir_shadowmaps` only: a probe brick exists within this distance of lit world/static-prop geometry, `0..65536`; `0` allocates every brick. |
 | `-restir_notexturealbedo` | albedo on | Disable per-texel bounce albedo. By default bounce light picks up each material's `$basetexture` per texel instead of VRAD's single reflectivity per material: the texture is linearized (2.2) and scaled so its average equals the material's reflectivity, so total bounced energy matches VRAD and only its spatial distribution changes (a dark stripe on a wall bounces less than its light neighbour). Applies to lightmap bounces, leaf ambient cubes and static/detail prop gathers; materials whose base texture cannot be loaded use their reflectivity. `-restir_texturealbedo` is accepted as the explicit default. |
 | `-StaticPropLighting` | off | Bake static-prop vertex and texel lighting. |
-| `-TextureShadows` | off | Evaluate alpha-tested material coverage for shadows. |
+| `-TextureShadows` | off | Evaluate alpha coverage for shadows. Every static-prop mesh whose material has `$alphatest`/`$translucent` casts its alpha cutout (chain-link fences, foliage); stock VRAD restricts this to models flagged `$casttextureshadows` or listed by `forcetextureshadow`, which this baker accepts and ignores. |
 | `-smooth N` | `45` degrees | Phong smoothing threshold. |
 | `-lights FILE` | none | Additional `.rad` light file. |
 
@@ -206,6 +208,25 @@ Displacement frames use full-resolution checkerboard triangles and separately sm
 tangent S across engine seams without modifying native transport cores. A fixed baked
 field cannot reproduce a changing coarse displacement-LOD triangle's shading-frame
 interpolation: exact receiver-frame matching assumes full-resolution attributes.
+
+Brush receiver padding clamps to the closed hull of the actual native renderer
+triangles. A degenerate T-junction triangle has no interior but can retain finite,
+nonzero edges; those edges remain eligible for the existing nearest-edge clamp.
+Interior barycentrics alone require a positive determinant. The resulting convex
+weights interpolate the original vertex position and shading frame without changing
+native primitive indices, inventing fan triangles, dropping luxels or loosening
+geometry tolerances. Fully collapsed geometry with no usable edge still rejects.
+
+The focused CPU regression is
+`tests/baked_direct_test.py --receiver-geometry-only --receiver-probe <baked_receiver_probe.exe>`;
+the full direct suite includes it. It covers the exact `d1_trainstation_02` face 845
+native primitives and density-1/density-4 grids, collinear and repeated vertices,
+positive/thin-positive interiors, collapsed rejection and actual point/frame interpolation.
+An isolated density-4 station bake additionally completed both LDR/HDR solutions and
+validated paired publication; face 845 retained its 33-by-5 grid in both modes.
+The native VRAD `no samples 845` diagnostic can remain for this zero-area primitive;
+it is distinct from the resolved enhanced receiver-mapping failure.
+
 The dedicated `tests/baked_direct_test.py` invokes production CPU radiance/angular
 helpers against an independent analytic oracle; paired fixture tests additionally
 exercise actual RGB encoding, Source-style palettes, HDR/LDR identity and rollback.
@@ -266,7 +287,39 @@ open/blocked/fractional world and prop receivers once per unique visibility set.
 `paired_bake_test.py` additionally asserts shared versus distinct sets under the
 same whole-scene reuse decision, along with rollback of invalid paired output.
 
+### Dense ambient probes (`.hprobe`)
 
+`-restir_shadowmaps` also writes `maps/<name>.hprobe` beside the `.hlight` pak member: per lighting mode, a sparse
+axis-aligned grid of SH L2 diffuse irradiance probes (`public/hprobe_bsp.h`) for the DX12 PBR model shaders. The
+`.hlight` bytes, the native leaf ambient lumps and every old shader are unchanged. A probe holds the same quantity
+as a leaf ambient cube, `E/pi` in the engine's linear cube units (a uniform environment gives its cube side), with a
+directional basis. It folds in the full-source lightmap gather over 256 uniform sphere directions
+(`restir_probe_sh.comp`, the miss policy of `restir_gather_ambient.comp`), material emitters (the 16-sample scheme of
+`PointDirectLight`) and the `DWL_FLAGS_INAMBIENTCUBE` surface worldlights flagged by the leaf ambient stage.
+
+Storage is 29 bytes per probe: R11G11B10F flat irradiance, six RGBA8_SNORM band textures (`s_k = e_k / DC * 0.25`,
+ratio range +-4) and an R8 validity, all premultiplied by validity so hardware filtering renormalises. Bricks are
+4x4x4 cells (5x5x5 probes, edge probes duplicated) and are allocated sparsely; the file stores the indirection table
+and the padded brick atlas exactly as the runtime uploads them. The grid is capped at 256 MiB of padded atlas plus
+indirection per mode and the bake fails with `raise -restir_ambientgrid or lower -restir_ambientgrid_reach` when it
+would exceed that; nothing is reduced silently. Probes inside solid, inside an opaque leaf brush, or whose axis rays of
+one spacing start inside geometry or reach a displacement back face are invalid; invalid probes get two
+neighbour-mean dilation passes, and negative `l = 2` lobes are shrunk by 0.75/0.5/0.25/0 until the sphere no longer
+undershoots by more than 2% of its peak. The bake prints `Hlight: ambient probe grid: N bricks (...)` and fails
+with `ambient probe encoding/addressing self-check failed` if decoded strided probes disagree with the float
+coefficients.
+
+The `.hprobe` header carries the CRC32 of the exact `.hlight` it was baked with and each mode's face/lighting
+identity, so a stale or foreign grid is rejected. A mode whose existing `.hlight` has no valid paired `.hprobe`
+(maps baked before this stage) is not retained when the asset is rewritten: both modes of a `-restir_shadowmaps`
+bake are replaced anyway, so such an input never fails the bake. The paired HDR reuse branch copies the LDR grid,
+because it reuses the LDR transport, leaf cubes and worldlight flags. Without `-restir_shadowmaps` the `.hprobe`
+member is removed together with the `.hlight`.
+
+`tests/hprobe_contract_test.py <bsp>` parses the member with the header's rules, binds it to the `.hlight` bytes by
+CRC and per-mode identity, requires at least one brick per mode and spot-checks stored texels;
+`--hlight-reference <bsp>` additionally requires the `.hlight` member to be byte-identical to a bake of the same
+input made before this stage. `hlight_contract_test.py` is unchanged.
 
 ## Emissive materials
 
@@ -281,3 +334,17 @@ A displayed linear colour D emits D*255/pi radiance per unit area in VRAD light 
 VBSP fixes lightmap density per brush side (`lightmapscale`, default 16 units per luxel) and splits faces so no brush lightmap exceeds 32 luxels; the engine and VRAD rely on that invariant. `-restir_lightmapscale F` (F < 1) raises the density of an already compiled BSP: every texinfo used by a lit brush face has its luxel vectors scaled by 1/F, face extents are recomputed, and faces that now exceed 32 luxels are split exactly like VBSP's `SubdivideFace` (`utils/vbsp/faces.cpp:1167`). New vertices and edges are welded with VBSP's tolerances, shared split edges are emitted as reversed surfedges, and every face-indexed lump is remapped (models, nodes, leaf faces, face ids, macro texture info, displacement parent faces, overlays, vertex normals). Split faces drop their T-junction primitives; the split edge is exact on both sides. Displacements keep their original density (their sample grid is baked into separate lumps).
 
 Limits: `LUMP_LIGHTING` is capped at 16 MB per mode (`MAX_MAP_LIGHTING`); the stage estimates the light data size from the new extents and refuses scales that would exceed it, printing the shortfall. `ep2_outland_09` reaches the cap at about `0.58` (3.0x luxels). Overlays cannot reference more than 64 faces and are truncated with a warning when a split pushes them over. The applied scale is recorded as `_restir_lightmapscale` on worldspawn so a later pass (including the launcher's second `-both` pass) does not densify twice; coarsening an already densified BSP is refused — recompile with VBSP instead.
+
+## Sky ambient match
+
+Every bake also stores the factor that gives the map's 2D skybox the brightness of its `light_environment` ambient, as worldspawn keys `_skyscale_ldr` / `_skyscale_hdr` (one per baked mode, e.g. `"_skyscale_hdr" "0.911622"`). The DX12 client's `r_sky_ambientmatch` applies it (see `materialsystem/stdshaders_dx12/README.md`); no other tool reads the keys. `restir_sky_ambient.cpp` writes the key for the pass's mode just before the BSP is staged (`UnparseEntities`), replaces an earlier value and removes a stale key when the mode cannot be matched. The entity lump is not part of any `.hlight` identity (`hlight_output.cpp` `GeometryIdentities` hashes planes, texdata, vertexes, texinfo, edges, surfedges, models, the displacement lumps and the texdata string lumps, plus the mode's faces and lighting), so an `-restir_shadowmaps` bake stays admitted: the baked `d1_trainstation_02` copy loads in game with `Highres: state=2 ... error=""`.
+
+**Definition.** The ambient is the scene's `emit_skyambient` intensity (the stock rules the scene builder already applies: `_ambientHDR` in HDR when valid, else `_ambient`, else half the sun; HDR multiplies `_AmbientScaleHDR`; first `light_environment` only; `-lightscale` included) divided by 255, i.e. the engine's linear units — the same value `restir_lightmap.glsl` returns for a ray that escapes to the sky — reduced to Rec.709 luminance. VRAD weights its sky ambient by cosine (`GatherSampleAmbientSkySSE`), so an unoccluded up-facing surface receives exactly that value. The sky it stands for is the uniform dome of the same cosine-weighted integral, so the sky luminance is the cosine-weighted mean over the upper hemisphere, `1/pi * integral(z > 0) Y(sky(w)) * w.z dw` with `Y` the luminance of the colour the sky shader writes, and the stored factor is `ambient / sky`. A single scalar, so the hue is untouched; no clamp is applied.
+
+**Sampling.** The sky is evaluated the way the engine draws it, on a 1024x1024 grid per face (the down face never reaches `z > 0`): `engine/gl_warp.cpp` face layout (`st_to_vec`, `skytexorder`, the 1/512 texcoord clamp and the `t` flip), the face VMT's `$basetexturetransform` (a stock side face is `scale 1 2`, which maps the upper half of the face onto the texture and clamps the rest), the texture's clamp/wrap flags and the sky shader's decoding of `skybox/<skyname>{rt,lf,bk,ft,up,dn}` for the mode: `Sky` shader LDR = `$basetexture` (sRGB) * `$color`; HDR = `$hdrcompressedtexture` (RGBS: rgb * a, linear) * 8 * `$color`, else `$hdrbasetexture` (sRGB) * `$color`. In game, the model reproduced the centre of LDR screenshots of the real sky within 2% for the `ft` view and two `up` views and within 7% for `rt` (face orientation, `t` flip, transform and clamp); the `bk` and `lf` views were partly covered by world geometry and were not used.
+
+**Not matched (a Warning, no key, the bake continues).** `UnlitGeneric` skies (the stock non-`_hdr` skybox VMTs): that shader applies `$color` through `GammaToLinear`, a 256-entry table that returns 1 from 0.95 up, so it cannot carry an exact scale. Also patch VMTs, `$hdrcompressedtexture0` skies (the DX12 shader draws them as a constant), 16-bit/float sky textures, a map without `light_environment`/`skyname`, and a zero ambient or sky luminance (`Msg`, no key). Warnings read `Sky ambient match (hdr): materials/skybox/<name>rt.vmt: <reason>; no _skyscale_hdr written`.
+
+Each baked mode logs `VRAD ReSTIR: sky ambient match (ldr): ambient luminance A, sky luminance S, _skyscale_ldr F`. `d1_trainstation_02` (`skyname sky_day01_01_hdr`, `_ambient 190 201 220 100`): ambient luminance 0.23026 in both modes; sky luminance 0.24910 (LDR) / 0.25259 (HDR); factors 0.924396 / 0.911622. For comparison, a plain texel mean over the six face textures would give 0.640 / 0.631, the solid-angle mean of the upper hemisphere 0.757 / 0.747: the cosine weighting is what ties the factor to the lightmap's ambient. A `-both -fast` bake of a copy with `_ambient 190 201 220 255` gives 2.35721 / 2.32464, and LDR screenshots (`mat_hdr_level` is enforced to >= 2 by the DX12 renderer, so LDR runs on LDR-only maps; HDR lumps zeroed in the copy) measure on/off 2.358 in sRGB-decoded linear luminance.
+
+Paired passes reload the transaction BSP between modes. `ParseEntities` pushes onto each entity's existing epair list, so `UnloadSelectedBSP` now frees the parsed entities; without that, the second pass's `UnparseEntities` wrote every key twice.

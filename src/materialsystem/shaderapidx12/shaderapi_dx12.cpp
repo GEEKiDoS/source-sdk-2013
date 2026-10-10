@@ -214,7 +214,7 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	if ( FAILED( reflection->GetDesc( &shader ) ) )
 		return false;
 	CUtlString lightingError;
-	if ( !ValidateLightingShaderDX12( bytecode, record->stagePixel, &record->lightingAbi, lightingError, &record->sunVisibilityAbi, &record->propVisibilityAbi ) )
+	if ( !ValidateLightingShaderDX12( bytecode, record->stagePixel, &record->lightingAbi, lightingError, &record->sunVisibilityAbi, &record->propVisibilityAbi, &record->pbrSpots, &record->probeAbi ) )
 	{
 		Warning( "%s: %s\n", SHADOWMAP_ERR_SHADER_UNAVAILABLE, lightingError.Get() );
 		return false;
@@ -235,8 +235,9 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 			return false;
 		if ( binding.Space == 0 && binding.Type == D3D_SIT_TEXTURE && binding.BindPoint < 16 && binding.BindCount <= 16 - binding.BindPoint )
 			record->nativeSamplerMask |= ( ( 1u << binding.BindCount ) - 1u ) << binding.BindPoint;
-		if ( binding.Type != D3D_SIT_CBUFFER || binding.Space == 3 )
-			continue; // space3 is the owned draw ABI, not a material constant block.
+		// Spaces 3 (highres), 4 (ambient probes) and 5 (PBR projected lights) are owned draw ABIs, not material constant blocks.
+		if ( binding.Type != D3D_SIT_CBUFFER || binding.Space == 3 || binding.Space == DX12_PROBE_REGISTER_SPACE || binding.Space == DX12_PBR_REGISTER_SPACE )
+			continue;
 		ShaderRecordDX12::NativeCBufferBindingDX12 reflected;
 		reflected.name = binding.Name;
 		reflected.shaderRegister = binding.BindPoint;
@@ -271,6 +272,24 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 		record->nativeAbiHash = dx12native::HashBytes( reflected.name.Get(), reflected.name.Length(), record->nativeAbiHash );
 		record->nativeAbiHash = ( record->nativeAbiHash ^ reflected.layoutHash ) * dx12native::kFnvPrime;
 		record->nativeCBuffers.AddToTail( reflected );
+	}
+	if ( record->stagePixel )
+	{
+		// One SV_Target is the ordinary scene output; exactly three also write the PBR G-buffer (normal, F0 + roughness).
+		UINT targets = 0;
+		for ( UINT i = 0; i < shader.OutputParameters; ++i )
+		{
+			D3D12_SIGNATURE_PARAMETER_DESC output{};
+			if ( FAILED( reflection->GetOutputParameterDesc( i, &output ) ) )
+				return false;
+			targets += output.SystemValueType == D3D_NAME_TARGET;
+		}
+		if ( targets > 1 && targets != 3 )
+		{
+			Warning( "ShaderAPIDX12: native PS declares %u render targets; expected 1 or 3\n", targets );
+			return false;
+		}
+		record->gbuffer = targets == 3;
 	}
 	record->nativeReflectionReady = true;
 	return true;
@@ -1405,6 +1424,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	CCommandRecorderDX12 *list = m_pDevice->CommandList();
 	bool pipelineBound = false;
 	RenderTargetBindingDX12 target; // PrepareRenderTargets assigns it before any use
+	bool gbufferTargets = false;
 	{
 		ZoneNamedN( drawTargets, "DX12 DrawTargets", DX12_DRAW_ZONES_ACTIVE );
 		if ( !( shadowPass ? m_pDevice->Lighting().PrepareShadowDraw( target, m_PrivateShadowViewport, m_PrivateShadowScissor ) : motionActive ? PrepareMotionBinding( target ) : PrepareRenderTargets( target ) ) || ( !target.colorCount && !target.depth ) )
@@ -1413,6 +1433,20 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			if ( invalidTarget++ < 6 )
 				Warning( "ShaderAPIDX12: draw target unavailable colorCount=%u depth=%p\n", target.colorCount, target.depth );
 			return;
+		}
+		// PBR G-buffer: only an opaque main-view draw whose native PS declares three SV_Targets gets the extra targets; every
+		// other draw (and every PSO) keeps its single render target. Legacy draws never write them (see gbuffer_dx12.cpp).
+		if ( m_bGBufferPass && psRecord && psRecord->gbuffer && !shadowPass && !motionActive && target.colorCount == 1 &&
+		     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && !m_ActiveSnapshot.translucent )
+		{
+			target.colors[1] = m_pGBufferNormal.Get();
+			target.colors[2] = m_pGBufferSpec.Get();
+			target.rtvs[1] = m_GBufferRtv[0];
+			target.rtvs[2] = m_GBufferRtv[1];
+			target.colorFormats[1] = kGBufferFormats[0];
+			target.colorFormats[2] = kGBufferFormats[1];
+			target.colorCount = 3;
+			gbufferTargets = true;
 		}
 		m_Pipeline.BindRenderTargets( list, target.colorCount, target.rtvs, target.colors, target.depth ? &target.dsv : nullptr, target.depth, retireFence );
 	}
@@ -2276,12 +2310,28 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	bindingInput.highresAbi = !shadowPass && psRecord && psRecord->highresAbi && psRecord->lightmapSamplerMask != 0;
 	bindingInput.highresTable = {};
 	bindingInput.highresConstants = bindingInput.highresFailure = 0;
+	if ( !psRecord || !psRecord->pbrSpots )
+		bindingInput.pbrSpotsTable.count = 0; // PrepareBindings binds the table only when count is set
+	else if ( !m_pDevice->Lighting().PreparePbrSpots( bindingInput ) )
+	{
+		Warning( "ShaderAPIDX12: projected-light descriptors unavailable\n" );
+		return;
+	}
 	if ( bindingInput.highresAbi &&
-		!m_pDevice->Highres().PrepareDraw( psRecord->lightmapSamplerMask, m_Matrices[MATERIAL_MODEL].Base(), bindingInput ) )
+		!m_pDevice->Highres().PrepareDraw( psRecord->lightmapSamplerMask, m_Matrices[MATERIAL_MODEL].Base(),
+		    { m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.pixelShaderName.c_str(), meshToken, uint32_t( firstIndex ), uint32_t( indexCount ) }, bindingInput ) )
 	{
 		Warning( "Highres draw rejected: vertex=%s pixel=%s samplerMask=0x%x shadow=%u motion=%u\n",
 			m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.pixelShaderName.c_str(),
 			psRecord->lightmapSamplerMask, unsigned(shadowPass), unsigned(motionActive) );
+		return;
+	}
+	// A PS reflecting space 4 always has the lighting ABI (the validator requires the view block beside it). Missing probe data
+	// binds the fallback pair inside PrepareProbeDraw; only residency failure rejects the draw.
+	bindingInput.probeAbi = false;
+	if ( !shadowPass && psRecord && psRecord->probeAbi && !m_pDevice->Highres().PrepareProbeDraw( bindingInput ) )
+	{
+		Warning( "Probe draw rejected: vertex=%s pixel=%s\n", m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.pixelShaderName.c_str() );
 		return;
 	}
 	{
@@ -2408,6 +2458,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		PipelineKeyDX12 key{};
 		key.lightingAbi = bindingInput.lightingAbi;
 		key.highresAbi = bindingInput.highresAbi;
+		key.gbuffer = gbufferTargets;
 		key.vs = vs->identity;
 		key.ps = ps ? ps->identity : 0;
 		key.vsVariant = vs->activeVariantKey;
@@ -5511,7 +5562,7 @@ void CShaderAPIDX12::SetIntRenderingParameter( int parm_number, int value )
 		( parm_number == INT_RENDERPARM_DX12_MOTION_PASS || parm_number == INT_RENDERPARM_DX12_MOTION_OBJECT ||
 		  parm_number == INT_RENDERPARM_DX12_UPSCALE_MODE || parm_number == INT_RENDERPARM_DX12_UPSCALE_DISPATCH ||
 		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_VIEW || parm_number == INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH ||
-		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_FRAME ) )
+		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_FRAME || parm_number == INT_RENDERPARM_DX12_PBR_GBUFFER_PASS ) )
 		return;
 	if ( parm_number == INT_RENDERPARM_DX12_MOTION_STATUS || parm_number == INT_RENDERPARM_DX12_UPSCALE_STATUS || parm_number == INT_RENDERPARM_DX12_NR_STATUS )
 		return;
@@ -5519,6 +5570,8 @@ void CShaderAPIDX12::SetIntRenderingParameter( int parm_number, int value )
 		m_RenderingInts[parm_number] = value;
 	if ( parm_number == INT_RENDERPARM_DX12_MOTION_PASS )
 		SetMotionPass( value );
+	else if ( parm_number == INT_RENDERPARM_DX12_PBR_GBUFFER_PASS )
+		SetGBufferPass( value );
 	else if ( parm_number == INT_RENDERPARM_DX12_MOTION_OBJECT )
 		m_nMotionObjectKey = value;
 	else if ( parm_number == INT_RENDERPARM_DX12_UPSCALE_MODE )

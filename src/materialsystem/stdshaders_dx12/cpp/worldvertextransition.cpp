@@ -13,6 +13,7 @@
 
 #include "worldvertextransition_dx8_helper.h"
 #include "lightmappedgeneric_dx9_helper.h"
+#include "pbr_helper.h"
 
 static LightmappedGeneric_DX9_Vars_t s_info;
 
@@ -63,6 +64,8 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 		SHADER_PARAM( MASKEDBLENDING, SHADER_PARAM_TYPE_INTEGER, "0", "blend using texture with no vertex alpha. For using texture blending on non-displacements" )
 		SHADER_PARAM( SSBUMP, SHADER_PARAM_TYPE_INTEGER, "0", "whether or not to use alternate bumpmap format with height" )
 		SHADER_PARAM( SEAMLESS_SCALE, SHADER_PARAM_TYPE_FLOAT, "0", "Scale factor for 'seamless' texture mapping. 0 means to use ordinary mapping" )
+
+		PBR_SHADER_PARAMS
 	END_SHADER_PARAMS
 
 	void SetupVars( WorldVertexTransitionEditor_DX8_Vars_t& info )
@@ -123,6 +126,20 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 		info.m_nAlphaTestReference = -1;
 	}
 
+	const PBR_Vars_t &PbrVars()
+	{
+		static const PBR_Vars_t s_vars = [this]
+		{
+			LightmappedGeneric_DX9_Vars_t info;
+			SetupVars( info );
+			PBR_Vars_t v;
+			PBR_FillWorldVars( v, info );
+			PBR_FILL_EXTRA_VARS( v );
+			return v;
+		}();
+		return s_vars;
+	}
+
 	SHADER_FALLBACK
 	{
 		
@@ -134,12 +151,14 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 	{
 		SetupVars( s_info );
 		InitParamsLightmappedGeneric_DX9( this, params, pMaterialName, s_info );
+		InitParamsPBRDefaults( params, PbrVars() );
 	}
 
 	SHADER_INIT
 	{
 		SetupVars( s_info );
 		InitLightmappedGeneric_DX9( this, params, s_info );
+		InitPBR( this, params, PbrVars() );
 	}
 
 	SHADER_DRAW
@@ -152,7 +171,18 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 			return;
 		}
 
-		DrawLightmappedGeneric_DX9( this, params, pShaderAPI, pShaderShadow, s_info, pContextDataPtr );
+		const PBR_Vars_t &pbr = PbrVars();
+		if ( DX12PbrOverride() && PBR_LegacySupported( params, pbr ) )
+			DrawPBR( this, params, pShaderAPI, pShaderShadow, pbr, vertexCompression, pContextDataPtr );
+		else
+			DrawLightmappedGeneric_DX9( this, params, pShaderAPI, pShaderShadow, s_info, pContextDataPtr );
 	}
 END_SHADER
 
+// Same parameters and init; always drawn through the PBR shaders (no editor path).
+BEGIN_INHERITED_SHADER( PBR_WorldVertexTransition, WorldVertexTransition_DX9, "WorldVertexTransition through the PBR shaders" )
+	SHADER_DRAW
+	{
+		DrawPBR( this, params, pShaderAPI, pShaderShadow, PbrVars(), vertexCompression, pContextDataPtr );
+	}
+END_INHERITED_SHADER

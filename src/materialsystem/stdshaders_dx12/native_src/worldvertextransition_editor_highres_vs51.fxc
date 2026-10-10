@@ -16,6 +16,7 @@ struct VS_OUTPUT
     float2 uv0 : TEXCOORD0;
     float2 uv1 : TEXCOORD1;
     centroid float2 baseLightmapUV : TEXCOORD2;
+    nointerpolation float2 vertexLightmapUV : TEXCOORD5; // provoking vertex: selects the owning face in HighresLightmap_Begin
     float4 worldPositionZ : TEXCOORD3;
     float3 worldNormal : TEXCOORD4;
     float fog : FOG;
@@ -34,6 +35,7 @@ VS_OUTPUT main(VS_INPUT i)
     o.uv0 = float2(dot(i.uv, cEditorBaseTransform[0]), dot(i.uv, cEditorBaseTransform[1]));
     o.uv1 = float2(dot(i.uv, cEditorBase2Transform[0]), dot(i.uv, cEditorBase2Transform[1]));
     o.baseLightmapUV = i.baseLightmapUV;
+    o.vertexLightmapUV = i.baseLightmapUV;
     o.worldNormal = normalize(mul(i.normal, (float3x3)cModel[0]));
     return o;
 }

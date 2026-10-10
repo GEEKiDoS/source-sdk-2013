@@ -71,6 +71,14 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   HDR target. Alpha/cutout and shadow-depth behavior are unchanged. The grass-color correction was verified
   on `d1_trainstation_02` in HDR with exit 0 (`_trainstation_grassfix_verification.json`); LDR was not exercised,
   and the screenshot comparison is not a raw-radiance measurement.
+- The scene color target is linear FP16 and is gamma-encoded only at presentation, so a draw without sRGB write
+  must still store linear values. `Sprite` writes gamma by default (`$nosrgb`); its pixel shader converts through
+  the static combo `SRGB_OUTPUT_ADAPTER` (the engine's gamma-to-linear step for forced-sRGB framebuffers), which
+  `sprite_dx12.cpp` sets whenever `$nosrgb` is on. Storing the gamma colour as linear lifted every sprite tail into a
+  bright veil and washed out alpha-blended quads, which is why light glows had been suppressed; they are drawn
+  again. The DX9 8-bit framebuffer blended these sprites in gamma space, which a linear target cannot reproduce, so
+  additive glows can be slightly dimmer than `-dx9` over bright backgrounds. sRGB-writing sprites (`$nosrgb 0`,
+  `SpriteCard`, additive `UnlitGeneric`) are unchanged.
 - Content mounts must cover the map's VMT dependencies independently of shader publication. Half-Life 2: Update
   maps require `|appid_290930|hl2/hl2_pak.vpk`, not only the loose `hl2` folder. The episodic runtime mounts
   this archive after the SDK VPKs, retaining engine-matched shader priority. Missing Update-only `*_nocubbed`
@@ -79,6 +87,121 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   closed/open door captures show opaque metal and transparent windows, with failed includes and unknown
   `patch` errors reduced from 16 each to zero. Evidence: `_train_door_stationary_{before,after}_runtime.log`
   and `screenshots/train_door_stationary_{before,after}*.jpg`; both runs exited 0.
+
+### CPU model facial flex
+
+CPU-flex model shaders consume position/normal/tangent deltas through stream 2 and
+`cFlexScale` (`VERTEX_SHADER_FLEXSCALE`, legacy VS register c3). The backend stages
+`.x = 1` only while that draw has a mesh flex stream; `.y = 1` additionally requires
+the real wrinkle channel. A 24-byte position/normal stream has `.y = 0`, preventing
+the input assembler's default position W from becoming a false wrinkle weight.
+The dedicated dynamic flex mesh retains the DX9 28-byte wrinkle layout.
+
+This staging applies only to CPU-flex vertex consumers: native reflection identifies
+`POSITION1`; translated shaders retain the original POSITION1 declaration independently
+of the layout-pruned input signature. Missing-stream draws clear both switches, including
+after a shader/memo transition. Unrelated shaders retain material-authored c3 (for example,
+Compositor's c2/c3 UV matrix). CPU facial flex does not require static-prop baked lighting
+or the hardware-morph accumulation path.
+
+`shaderapidx12_smoke.exe -case flex -nativeroot <src/materialsystem/stdshaders_dx12>`
+exercises rendered native `DX12VSEngine`/production `ApplyMorph` and translated legacy
+shaders: position, normal, tangent and wrinkle channels, byte offsets, dynamic-buffer
+overwrite preservation, flex/unflex/reenable, absent wrinkle and unrelated material c3.
+`-case commands` also runs it. Supply the usual `-game`, `-sdkdir` and runtime DLL PATH;
+`-dx12debug` checks the graphics debug layer.
+
+After changing translation-result metadata, rebuild
+`thirdparty/dx12_shaderconv/dx12_shaderconv_win64.vcxproj` before relinking
+`materialsystem/shaderapidx12/shaderapidx12_win64.vcxproj` (Release, x64).
+The renderer project links the prebuilt `dx12_shaderconv.lib`; a renderer-only build
+with project references disabled does not rebuild that prerequisite. The flex-scale
+fix changes neither published shader bytecode nor baked asset formats.
+
+Live verification also exercised the actual `npc_barney` and `npc_kleiner` in
+`d1_trainstation_01`: a temporary string-loaded choreographed scene held raw
+`jaw_drop` and left/right `lid_closer` controllers with `scene_clientflex 0`.
+Start/restart the hold only after the player reaches each actor's PVS; an
+out-of-PVS actor does not receive the server flex update. The authored Kleiner
+monitor camera position avoids the obstructed test view. Toggling `r_flex` 0/1
+visibly restored the closed/open mouth and eyelid deformation, including reenabling
+Kleiner's mouth. Captures: `_npc_flex_{barney,kleiner}_{on,off,on_repeat}.png`;
+runtime evidence: `_npc_flex_surface_summary.json`. The owned game exited 0
+and its saved configuration was restored. Particle/overlay changes mean these
+screenshots are visual proof, not pixel-exact geometry measurements.
+
+## Enhanced shadow receiver state and caster policy
+
+Local realtime-shadow residency uses the main camera's BSP PVS and nearest
+emitter distance, not the camera's pitch/yaw or a spotlight cone evaluated at
+one estimated receiver point. `r_shadowmap_max_realtime_lights` defaults to four
+locals, excluding the sun; zero removes the budget limit within eligible PVS.
+Stable light IDs break ties and 25% priority hysteresis prevents churn.
+`r_shadowmap_realtime_fade_seconds` defaults to 0.5 seconds for the **complete**
+handoff: all outgoing locals fade concurrently for 0.25 seconds, then incoming
+locals fade in for 0.25 seconds. Turning or changing FOV never restarts a ramp;
+first admission and positional jumps of at least 256 units select immediately.
+Seventy station runtime reports retained the nearby spotlights while turning,
+with no residency failures or caster-query mismatches.
+
+`CShadowMapReceiverScope::Begin` refreshes the engine's cached receiver near/far
+distances after nested shadow work through a balanced non-rendering
+`Push3DView(setup, VIEW_NO_DRAW, NULL, NULL)` / `PopView(NULL)`. The engine's
+ordinary pop restores matrices but leaves these distance caches unchanged;
+`R_DrawSkyBox` sizes its geometry from the cached far distance. This fixes the
+stationary white sky without changing shaders, disabling shadows or resetting
+temporal history. An isolated enhanced `ep2_outland_06` run preserved normal
+clouds while moving, after eight stationary seconds and while moving again,
+with DX12 postprocessing both off and on, DLSS/frame generation retained and
+actual shadow depth renders continuing.
+
+Apply the viewmodel `DepthRange(0,0.1)` **after** receiver preparation, since
+nested shadow views reset that range to `0..1`. The user verified the weapon
+wall-clipping correction; additional viewmodel fixtures were stopped.
+
+Client-local archived `r_shadowmap_force_physics_shadows` defaults to zero.
+At one, native enhanced-map caster queries override authored `EF_NOSHADOW`
+only for ordinary non-gib solid physics props. Hidden/nonsolid entities,
+specialized subclasses, static-prop flags and material/translucency policy
+remain excluded. Effects and save flags never change; live policy/eligibility
+changes invalidate caster registration without requiring movement or respawn.
+The computed ordinary-physics identity adds a `DT_PhysicsProp` bit, requiring
+matching client/server DLLs. The user waived additional board-shadow fixtures;
+no independent visible board-shadow proof is claimed.
+
+Alpha-cutout casters: the engine renders prop/model shadow depth (and the flashlight depth texture) with its
+`DepthWrite` override materials, whose cutout is the pixel shader's `clip` against `$alphatestreference`. The backend
+drops the pixel stage of every depth-only or shadow-caster draw whose snapshot is not alpha tested, so `DepthWrite`
+declares `EnableAlphaTest(true)` with `AlphaFunc(ALWAYS)` when it clips (the emulated fixed-function test then passes
+everything and the shader's threshold stays the only one). Before this, every alpha-tested static prop and model
+(chain-link fences, grates, foliage) was a solid shadow caster: `-dx12shaderlog` listed `depthwrite_vs51` but never
+`depthwrite_ps51` on `d1_trainstation_02`. Brush `$alphatest` casters already carried the flag through their own wrappers.
+
+## Sky ambient match (`r_sky_ambientmatch`)
+
+The `Sky` shaders (`sky_dx12.cpp` for LDR `Sky_DX9`, `sky_hdr_dx12.cpp` for `Sky_HDR_DX9`; compressed HDR multiplies `$color`
+by 8 first) stage `$color` as pixel constant c0 and multiply the decoded sky by it in linear space, so a scalar on `$color`
+scales the sky's luminance without changing its hue. No shader, wrapper or generated source changed. `vrad_restir` bakes the
+factor into worldspawn (`_skyscale_ldr` / `_skyscale_hdr`; `utils/vrad_restir/README.md`, "Sky ambient match") and
+`game/client/sky_ambientmatch_dx12.cpp` applies it. At `LevelInitPostEntity` it reads `skyname` and the key for the current
+mode (`GetHDRType() != HDR_TYPE_NONE` selects `_skyscale_hdr`) from `engine->GetMapEntitiesString()`, holds the six
+`skybox/<skyname>{rt,lf,bk,ft,up,dn}` materials and remembers their authored `$color`. Every frame it writes
+`authored * factor` when `r_sky_ambientmatch` (`FCVAR_ARCHIVE`, default 1) is nonzero and the authored colour when it is 0,
+touching a material only when its colour differs, so the cvar and a full material reload (`mat_reloadallmaterials`, which
+re-reads the VMT) need no hook. `LevelShutdownPostEntity` restores the authored colours and drops the references. The feature
+does nothing when the material shader DLL is not `stdshader_dx12` (`-dx9` is unchanged), when the map has no key (no
+`light_environment`, an `UnlitGeneric` sky, ...), and after one Warning when a face material is missing or has no vector
+`$color`. 3D skybox geometry is not a sky face and is unaffected. The renderer enforces `mat_hdr_level >= 2`, so
+`_skyscale_ldr` applies on LDR-only maps.
+
+Verification (isolated runs of `d1_trainstation_02` copies baked with `vrad_restir`; screenshots of the same sky view with the
+cvar off/on/off, `mat_force_tonemap_scale 1`, camera `setpos -500 -3000 100`, `setang -80 0 0`): the `-restir_shadowmaps` copy
+(HDR, `_skyscale_hdr 0.911622`) measures on/off 0.9094 in sRGB-decoded linear luminance with `mat_postfx_dx12 0`; a plain copy
+with `_ambient` brightness 255 (LDR, `_skyscale_ldr 2.35721`, HDR lumps zeroed so the map runs in LDR) measures 2.3561, and
+the cvar back at 0 returns pixel-identical frames. The legacy HDR post is not exactly linear (the same boosted copy in HDR,
+factor 2.32464, measures 2.455), which is why the LDR run is the exact one. With `-dx9` the cvar changes nothing
+(pixel-identical) and no sky is acquired. The enhanced copy loads with `Highres: state=2`. The runs' temporary maps, cfgs and
+screenshots were deleted and the archived cvars they touched were restored in `config.cfg`.
 
 ## Explicit high-resolution BSP replacement
 
@@ -101,7 +224,16 @@ regression exercises real >1-GiB growth, prefix/append/NUL preservation, ordinar
 seeking and fixed/growable/readonly external buffers. Rebuild static `tier1` and relink its consumers
 after this implementation changes; shader bytecode and asset formats do not change.
 
-The original base UV is carried before bump shifts, with no inverse-coordinate carrier input.
+The original base UV is carried before bump shifts, with no inverse-coordinate carrier input. Every highres vertex
+shader also emits a `nointerpolation` copy of it (`shadowVertexLightmapUV` / `lightmapVertexUV`, the fixed-function
+`tc12`): `HighresLightmap_Begin( baseUV, vertexUV )` looks the owning face up from that provoking-vertex UV, which is
+always inside the face's allocation, and uses the interpolated `baseUV` only for the position inside the face (`q` is
+saturated). Ownership is a property of the primitive, not of a fragment: the rasterizer covers pixel centers of
+near-degenerate triangles (collinear T-junction fan triangles in BSP world meshes, surfaces seen exactly edge-on)
+and extrapolates the UV far outside the triangle, which previously addressed unowned cells and produced the
+"unowned native lightmap cell" rejections (`reason=owner ID`, `face=0`; also the earlier `ep2_outland_06` `coordinate bounds`
+capture whose UV `1.00039` lay past the page edge).
+It is not specific to the PBR shaders. Unknown owners are still rejected, now at the provoking vertex.
 `native_src/highres_lightmaps.hlsli` translates the integer owner atlas into explicit face/style/plane tiles,
 adds captured native dynamic planes, and preserves native sampled alpha. Material lighting retains its
 existing bump/SSBump weights, two-material blend, tint and fog/output ordering; selected direct lighting
@@ -118,20 +250,16 @@ The failure UAV now records nine uint32 words:
 An atomic claim selects one complete failing invocation; other pixels cannot mix their payload into it.
 Reasons distinguish coordinate bounds, owner ID, tile index, page group and lightstyle failures.
 The renderer initializes/copies/maps all 36 bytes, using four-byte upload elements.
-With a debugger attached, the renderer breaks immediately after decoding a current-generation rejection,
-before the fatal error and before unmapping its readback. The mapped nine-word payload, decoded diagnostic
-and renderer state remain available for inspection. Without a debugger, rejection remains fail-closed;
-continuing from the breakpoint executes the existing fatal path.
+The renderer prints the decoded rejection as a Warning and then executes `DebuggerBreak()` unconditionally (debugger or
+not), before the fatal error and before unmapping its readback: without a debugger the unhandled breakpoint reaches the
+process crash handler, which writes the minidump. The breaking frame (`BreakOnHighresFailure`) holds a `FailureDump`
+local with the nine-word record, UV, fence, the previous clean readback fence, map generation, the message, the distinct
+vertex/pixel shader pairs and the newest 16 draws (shader pair, mesh token, first index/count) that the failing page
+received between the previous clean readback and the failing one (recorded per draw in a 4096-entry ring, no
+allocation). The failure UAV names only a page and a command-list window, so these are the candidates, not an exact draw.
+Continuing from the breakpoint executes the existing fail-closed rejection.
 The RTX 4090 `highresgpu` fixture verifies concurrent rejection records with GPU validation;
 its shadow resources use the production 4096-square physical atlas, not a normalized one-texel substitute.
-This diagnostic does not itself fix or excuse a traversal ownership failure.
-
-The user-triggered `ep2_outland_06` rejection was captured before continuing: page 6 (1024 by 512),
-UV `(1.0003942251205444, 0.26560115814208984)` addressed cell `(1024, 135)`.
-It failed coordinate bounds before owner lookup; the producing draw and source defect remain unresolved.
-Temporary per-draw attribution and scripted replay code were removed; normal constant caching remains intact.
-Without a debugger, the guarded breakpoint does not create a dump itself. The existing fatal handling may
-produce a Steam dump; retain the matching renderer/client binaries, PDBs, native shader pack and game log.
 
 Receiver-plane shadow filtering compares each of the four physical texel centers against its own
 plane depth, then bilinearly blends visibility. A single reference passed to hardware bilinear
@@ -322,6 +450,79 @@ Compute includes intentionally contain no graphics native-cbuffer block writer. 
 `b0` bytes directly through `IShaderAPIDX12Compute::Dispatch`, binds SRV/UAV resources to the generic root signature,
 and calls `Draw( false )` for material bookkeeping. The runtime loader opens `VcsStage::Compute`, which reads from
 `shaders/csh/` and rejects non-compute DXBC.
+
+## PBR shader set (`mat_pbr_override`)
+
+Plan and design record: `src/DX12_PBR_SHADER_SET_PLAN.md` (probe phase: `src/AMBIENT_PROBE_GRID_PLAN.md`).
+
+Material shaders (`cpp/pbr_dx12.cpp`, the `PBR_*` adapters at the end of `cpp/lightmappedgeneric_dx12.cpp`,
+`cpp/vertexlitgeneric_dx12.cpp` and `cpp/worldvertextransition.cpp`, shared code `cpp/pbr_helper.*`):
+
+| Shader | Inputs |
+|---|---|
+| `PBR_Metalness` | `$basetexture`, `$bumpmap`/`$normaltexture`, `$mraotexture` (R metalness, G roughness, B AO; `$metalness`/`$roughness`/`$ambientocclusion` multiply it, or are absolute without it), `$emissiontexture`, `$envmap` (write `"$envmap" "env_cubemap"` in the VMT so VBSP patches it), `$envmapmask`, `$detail` |
+| `PBR_Specular` | same, F0 from `$speculartexture` (sRGB) or `$specularcolor` instead of metalness |
+| `PBR_LightmappedGeneric`, `PBR_VertexLitGeneric`, `PBR_WorldVertexTransition`, `PBR_Skin` (fallback to VertexLitGeneric) | the original shader's parameters, always drawn with PBR |
+
+All of them, and the original wrappers, also accept `$subsurface`/`$subsurfacetint`, `$backlight`/`$backlighttint`,
+`$thickness`/`$thicknesstexture`, `$anisotropy`/`$anisotropyrotation` (degrees) and the VBSP parallax keys
+`$envmapparallaxobb1..3`/`$envmaporigin`. Studio models with `PBR_Metalness`/`PBR_Specular` need the usual `$model 1`.
+
+`mat_pbr_override 1` (`FCVAR_ARCHIVE`, in this DLL) routes LightmappedGeneric, VertexLitGeneric and
+WorldVertexTransition through the PBR path at runtime. The request is committed by the client at `FRAME_START` inside a
+material transaction, followed by a preserving refresh of loaded materials; draws read only the committed value. The
+original shaders keep their legacy path when `PBR_LegacySupported` declines: spherical envmaps, `$lightwarptexture`,
+detail blend modes other than 0/1; models with `$lightmap`, decals, tree sway, distance alpha, seamless mapping,
+`$selfillumfresnel`/`$selfillummask`, `$vertexcolor`; world `$seamless_scale`, `$outline`, `$softedges`.
+
+Conversion of legacy inputs: dielectric F0 0.04; roughness from explicit PBR inputs, else the Phong exponent
+(`(2/(exp+2))^0.25`, F0 scaled by the phong mask), else the envmap mask as gloss (roughness = 1 - mask, the mask no
+longer scales the reflection; `$envmaptint` does), else 0.6. Detail blend factor/tint, `$vertexcolor` (world),
+`$nodiffusebumplighting`, `$maskedblending`, `$alpha2`, `$envmapmasktransform`, `$bumptransform2`/`$bumpmask` follow the
+legacy LightmappedGeneric math.
+
+Lighting (all PBR materials alike): GGX with height-correlated Smith visibility, pre-multiplied by pi so units match the
+legacy `albedo * NdotL * C`; Lambert diffuse where the term must match stored baked data (lightmaps, ambient cube,
+probes, the signed baked deltas), Burley for realtime-only lights. Direct specular comes from every light: realtime
+lights use `lerp(Vbaked, Vrt, weight)` visibility, baked-only lights their stored baked visibility. IBL samples the
+cubemap mip `roughness * (mips-1)` (the DX12 renderer adds `-forceallmips` so mip tails exist) with Karis'
+`EnvBRDFApprox`, optionally parallax-corrected by the VBSP box. Lightmaps, the ambient cube and the dense probes are
+diffuse-only carriers multiplied by the diffuse colour once. Flashlight and `env_projectedtexture` (at most 8 per main
+view, nearest first) are cookie spotlights inside the same pass; the engine's additive flashlight pass draws nothing
+for PBR materials.
+
+Native logicals (`tools/pairs.py` slice `pbr`, `manifests/pbr.txt`): `pbr_world_vs51` (4), `pbr_world_ps51` (12), their
+`pbr_world_highres_vs51`/`_ps51`/`_earlydepth_ps51` twins selected by the backend on enhanced maps (4/12/12),
+`pbr_model_vs51` (48), `pbr_model_ps51` (24; `ENHANCED` adds the receiver lighting ABI and dense probes),
+`pbr_gbuffer_debug_cs51` (2). Register space 5 (`t0` 128-byte `PBRSpotGpu` records, `t1..t8` cookies, `t9..t16` depth,
+`s0`/`s1`) is backend-owned; space 4 carries the probe grid. All PBR includes are new files, so legacy payloads are
+unchanged. `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
+parallax; `-case probegpu` the probe decode.
+
+`mat_pbr_showgbuffer 1|2|3` (cheat) shows normals, F0 or roughness of the opaque scene.
+
+### PBR G-buffer contract
+
+While `mat_pbr_override 1` is committed, the opaque main-view scene pass (`INT_RENDERPARM_DX12_PBR_GBUFFER_PASS`
+BEGIN/END around `DrawWorld` + `DrawOpaqueRenderables`) keeps two scene-sized, scene-multisampled targets next to scene
+color; every PBR pixel shader (`PBR_Output`) writes them. Consumers read them through `DX12MaterialPbrNormals()` /
+`DX12MaterialPbrSpecular()` (sample 0 when MSAA) together with `DX12MaterialSceneDepth()`:
+
+| Target | Format | Content |
+|---|---|---|
+| normals | `R32G32_UINT` | x: world-space shading normal, `PBR_PackNormal( N )` (octahedral coordinates as two UNORM16, `pbr_oct.hlsli`); y: `asuint( SV_Position.z )`, the depth the PBR pixel shader wrote |
+| specular | `R8G8B8A8_UNORM` | `F0.rgb`, roughness in alpha |
+
+- **A pixel holds PBR data only while the scene depth equals the stored depth.** Legacy draws never write the targets (an
+  RT bound to a PS that declares no matching output is not written, whatever the blend state — verified on the target
+  hardware), so a legacy surface drawn nearer than a PBR one leaves the PBR normal and F0 in place. A consumer therefore
+  drops a pixel when `abs( asfloat( normals.y ) - sceneDepth ) > 2 / 16777215` (two steps of the 24-bit depth buffer; both
+  depth conventions, sample 0 under MSAA). `pbr_gbuffer_debug_cs51` is the reference consumer.
+- **`specular.a == 0` marks pixels nothing has drawn.** The pass clears both targets to 0, and `PBR_MIN_ROUGHNESS`
+  guarantees a PBR draw never stores roughness 0 (an all-zero normal word is a valid octahedral normal, and depth 0 is the
+  far plane under reversed depth, so neither can mark them). Consumers test it together with the depth comparison.
+- With the override off the pass is skipped and the targets are released: consumers get a null view (reads 0 = no data)
+  and no PSO outside the pass differs. Translucent draws are outside the pass.
 
 ## Verification
 

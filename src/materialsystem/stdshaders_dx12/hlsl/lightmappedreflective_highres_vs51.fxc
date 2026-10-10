@@ -89,6 +89,7 @@ struct VS_OUTPUT
 	float3 shadowTangentS : TEXCOORD11;
 	float3 shadowTangentT : TEXCOORD12;
 	centroid float2 shadowBaseLightmapUV : TEXCOORD13;
+	nointerpolation float2 shadowVertexLightmapUV : TEXCOORD14;
 	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
 };
 VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
@@ -177,6 +178,7 @@ VS_OUTPUT main( const DX12_VS_INPUT dx12In )
 	o.shadowTangentS = normalize( mul( v.vTangentS, (float3x3)cModel[0] ) );
 	o.shadowTangentT = normalize( mul( v.vTangentT, (float3x3)cModel[0] ) );
 	o.shadowBaseLightmapUV = v.vLightmapTexCoord.xy;
+	o.shadowVertexLightmapUV = v.vLightmapTexCoord.xy;
 	return DX12FinishVertex( o );
 }
 

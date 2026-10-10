@@ -1,0 +1,273 @@
+// Native SM5.1 PBR world (brush) pixel shader: LightmappedGeneric / WorldVertexTransition inputs shaded with the
+// PBR lobes. The BSP lightmap is the diffuse irradiance carrier (1 flat plane or the 3 bumped planes, copied
+// from hlsl/lightmappedgeneric_ps51.fxc) and is multiplied by diffuseColor once; it never contributes specular.
+//
+// Compiled three ways from this source, like every lightmap consumer:
+//   pbr_world_ps51          native lightmap, no selected direct (maps without an enhanced bake);
+//   pbr_world_highres_ps51  PBR_WORLD_HIGHRES: on enhanced maps the backend swaps the ordinary logical for this
+//                           twin (this file's HIGHLIGHT_SAMPLERS role + the *_highres_* name). The highres atlas
+//                           replaces the native RGB of owned faces (HighresLightmap_NativeScalePlane), and
+//                           PBR_GatherDirect adds the sun / resident local lights over the baked-face domain
+//                           (signed (Vrt - Vbaked) * weight delta on baked-direct faces, Burley full terms
+//                           elsewhere, specular always). Mirrors hlsl/lightmappedgeneric_highres_ps51.fxc:
+//                           ShadowMap_BeginReceiver + bakedSunVisibility + ShadowMap_SetBakedFace.
+//   pbr_world_highres_earlydepth_ps51  forced-early-depth twin (no discard, [earlydepthstencil]) for draws
+//                           without alpha test; keeps the failure report, see README "Forced early-depth receiver twins".
+//
+// ALPHATEST=0 compiles the engine alpha-test kill away (DX12_EARLY_DEPTH); ALPHATEST=1 keeps it through
+// DX12FinishPixel, driven by the engine alpha-test state (also honours alpha-to-coverage).
+// HIGHLIGHT_SAMPLERS: 8
+#define DX12_NATIVE_PS 1
+#if PBR_WORLD_HIGHRES
+#define DX12_HIGHRES_LIGHTMAPS 1
+#define DX12_SHADOWMAPS 1
+#endif
+#if !ALPHATEST
+#define DX12_EARLY_DEPTH 1
+#endif
+#include "dx12_preamble.h"
+// STATIC: "LAYERED" "0..1"
+// STATIC: "ALPHATEST" "0..1"
+// DYNAMIC: "PIXELFOGTYPE" "0..2"
+#include "common_ps_fxc.h"
+#include "pbr_lighting.hlsli"
+
+Texture2D BaseTexture : register( t0 );
+SamplerState BaseSampler : register( s0 );
+Texture2D BumpTexture : register( t1 );
+SamplerState BumpSampler : register( s1 );
+TextureCube EnvmapTexture : register( t2 );
+SamplerState EnvmapSampler : register( s2 );
+Texture2D LightmapTexture : register( t3 );
+SamplerState LightmapSampler : register( s3 );
+Texture2D DetailTexture : register( t4 );
+SamplerState DetailSampler : register( s4 );
+Texture2D EnvmapMaskTexture : register( t5 );
+SamplerState EnvmapMaskSampler : register( s5 );
+// MRAO, specular, emission and thickness are base-UV data textures read through one sampler: a ps_5_1 may
+// declare at most 16 sampler objects across all register spaces and the highres twin already spends four
+// (HlightLinear, the shadow comparison sampler and the two projected-light samplers).
+Texture2D MraoTexture : register( t6 );
+SamplerState DataSampler : register( s6 );
+Texture2D SpecularTexture : register( t7 );
+Texture2D EmissionTexture : register( t8 );
+Texture2D ThicknessTexture : register( t9 );
+Texture2D Base2Texture : register( t10 );
+SamplerState Base2Sampler : register( s10 );
+Texture2D Bump2Texture : register( t11 );
+SamplerState Bump2Sampler : register( s11 );
+Texture2D BlendModulateTexture : register( t12 );
+SamplerState BlendModulateSampler : register( s12 );
+Texture2D BumpMaskTexture : register( t13 );
+SamplerState BumpMaskSampler : register( s13 );
+
+// Exact mirror of the paired vertex output (same types, order and interpolation).
+struct DX12_PS_INPUT
+{
+	float4 svPos : SV_Position;
+	float fog : FOG;
+	float4 baseBumpUV : TEXCOORD0;
+	float4 detailBlendUV : TEXCOORD1;
+	centroid float4 lightmapUV : TEXCOORD2;
+	float4 worldPos_projPosZ : TEXCOORD3;
+	float3 toEye : TEXCOORD4;
+	float3 tangentS : TEXCOORD5;
+	float3 tangentT : TEXCOORD6;
+	float3 worldNormal : TEXCOORD7;
+#if LAYERED
+	float layerBlend : TEXCOORD8;
+#endif
+	float4 vertexColor : TEXCOORD9;
+	float2 rawUV : TEXCOORD10;
+	nointerpolation float2 lightmapVertexUV : TEXCOORD11;
+};
+
+// One lightmap plane (0 flat, 1..3 bumped) in decoded linear units.
+#if PBR_WORLD_HIGHRES
+#define LIGHTMAP_PLANE( plane, uv ) HighresLightmap_NativeScalePlane( hlr, plane, LightmapTexture.Sample( LightmapSampler, uv ), LIGHT_MAP_SCALE ).rgb
+#else
+#define LIGHTMAP_PLANE( plane, uv ) ( LightmapTexture.Sample( LightmapSampler, uv ).rgb * LIGHT_MAP_SCALE )
+#endif
+
+#if defined( DX12_EARLY_DEPTH )
+[earlydepthstencil]
+#endif
+PBR_PSOut main( DX12_PS_INPUT i )
+{
+	float3 P = i.worldPos_projPosZ.xyz;
+#if PBR_WORLD_HIGHRES
+	// Derivatives occur here, before any divergent work (HighresLightmap_Begin returns early for rejected owners).
+	ShadowMapReceiver receiver = ShadowMap_BeginReceiver( P, i.worldNormal, i.svPos.xy );
+	HlightReceiver hlr = HighresLightmap_Begin( i.lightmapUV.xy, i.lightmapVertexUV );
+	receiver.bakedSunVisibility = hlr.sun;
+	ShadowMap_SetBakedFace( receiver, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
+#endif
+	float2 baseUV = i.baseBumpUV.xy;
+	float2 bumpUV = i.baseBumpUV.zw;
+	bool hasBump = g_Flags0.y != 0.0;
+	bool hasDetail = g_Flags1.z != 0.0;
+	bool flatDiffuse = g_PbrFlags2.x != 0.0; // $nodiffusebumplighting
+
+	float4 base = BaseTexture.Sample( BaseSampler, baseUV );
+	// hlsl/lightmappedgeneric_ps51.fxc reads the first normal map on the base coordinates; $bumptransform places the second one.
+	float4 bumpTexel = float4( 0.5, 0.5, 1.0, 1.0 );
+	if ( hasBump )
+		bumpTexel = BumpTexture.Sample( BumpSampler, baseUV );
+	float opacity = base.a;       // alpha and self illumination follow the first layer
+	float blendedAlpha = base.a;  // $basealphaenvmapmask follows the blended layers
+	float bumpMaskFactor = 1.0;   // $bumpmask alpha scales the reflection
+#if LAYERED
+	// Blend factor of the second layer: the vertex alpha, a constant half with $maskedblending.
+	const bool maskedBlending = g_PbrBlend.x != 0.0;
+	float blend = maskedBlending ? 0.5 : i.layerBlend;
+	if ( g_PbrFlags2.z != 0.0 )
+	{
+		// $blendmodulatetexture refines the blend (not under self illumination or height fog); with $maskedblending its green
+		// channel is the blend itself.
+		if ( g_Misc.w != 0.0 && g_Flags0.w != 1.0 && PIXELFOGTYPE != PIXEL_FOG_TYPE_HEIGHT )
+		{
+			float4 modulate = BlendModulateTexture.Sample( BlendModulateSampler, i.detailBlendUV.zw );
+			blend = maskedBlending ? modulate.g : smoothstep( saturate( modulate.g - modulate.r ), saturate( modulate.g + modulate.r ), blend );
+		}
+		float4 base2 = Base2Texture.Sample( Base2Sampler, baseUV );
+		blendedAlpha = lerp( base.a, base2.a, blend );
+		base.rgb = lerp( base.rgb, base2.rgb, blend );
+	}
+	if ( g_PbrBlend.w != 0.0 )
+	{
+		// $bumpmask: both normal maps, each on its own transform, add; the static mask normal takes over where its alpha falls.
+		float3 normal1 = BumpTexture.Sample( BumpSampler, bumpUV ).xyz * 2.0 - 1.0;
+		float3 normal2 = Bump2Texture.Sample( Bump2Sampler, PBR_TransformUV( i.rawUV, g_PbrMaskTransform ) ).xyz * 2.0 - 1.0;
+		float4 mask = BumpMaskTexture.Sample( BumpMaskSampler, baseUV );
+		bumpTexel.xyz = lerp( mask.xyz * 2.0 - 1.0, normalize( normal1 + normal2 ), mask.a ) * 0.5 + 0.5;
+		bumpMaskFactor = mask.a;
+	}
+	else if ( g_PbrBlend.z != 0.0 )
+	{
+		// The second normal map sits on $bumptransform's coordinates (the base ones under a detail texture). A modulate texture with
+		// $normalmapalphaenvmapmask blends the mask alpha as well.
+		float4 bump2 = Bump2Texture.Sample( Bump2Sampler, hasDetail ? baseUV : bumpUV );
+		bumpTexel = g_Misc.w != 0.0 && g_Flags1.y == 3.0 ? lerp( bumpTexel, bump2, blend ) : float4( lerp( bumpTexel.xyz, bump2.xyz, blend ), bumpTexel.a );
+	}
+#endif
+	// Detail and vertex color follow the LightmappedGeneric shader: TextureCombine with the tinted detail (mod2x lerps toward
+	// 2 * detail by the blend factor, additive adds detail scaled by it), then the vertex color.
+	if ( hasDetail )
+	{
+		float3 detail = DetailTexture.Sample( DetailSampler, i.detailBlendUV.xy ).rgb * g_PbrDetail.rgb;
+		base.rgb = g_Flags1.w == 0.0 ? base.rgb * lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * detail, g_PbrDetail.w ) : base.rgb + g_PbrDetail.w * detail;
+	}
+	base.rgb *= i.vertexColor.rgb;
+
+	// Tangent-space shading normal and the three lightmap-plane weights. An ssbump texel holds the weights
+	// itself; a normal map weights the planes by (saturate(n . basis))^2, normalized.
+	float3 tangentNormal = float3( 0.0, 0.0, 1.0 );
+	float3 planeWeights = float3( 0.0, 0.0, 0.0 );
+	if ( hasBump )
+	{
+		if ( g_Flags0.y == 2.0 )
+		{
+			planeWeights = bumpTexel.xyz;
+			tangentNormal = normalize( bumpBasis[0] * bumpTexel.x + bumpBasis[1] * bumpTexel.y + bumpBasis[2] * bumpTexel.z );
+		}
+		else
+		{
+			tangentNormal = normalize( bumpTexel.xyz * 2.0 - 1.0 );
+			planeWeights = saturate( float3( dot( tangentNormal, bumpBasis[0] ), dot( tangentNormal, bumpBasis[1] ), dot( tangentNormal, bumpBasis[2] ) ) );
+			planeWeights *= planeWeights;
+			planeWeights /= max( planeWeights.x + planeWeights.y + planeWeights.z, 1e-4 );
+		}
+	}
+
+	float2 lightmapUV = i.lightmapUV.xy;
+	float2 planeStep = i.lightmapUV.zw;
+	float3 lightmap;
+	if ( hasBump && !flatDiffuse )
+		lightmap = planeWeights.x * LIGHTMAP_PLANE( 1, lightmapUV + planeStep ) +
+			planeWeights.y * LIGHTMAP_PLANE( 2, lightmapUV + 2.0 * planeStep ) +
+			planeWeights.z * LIGHTMAP_PLANE( 3, lightmapUV + 3.0 * planeStep );
+	else
+		lightmap = LIGHTMAP_PLANE( 0, lightmapUV );
+
+	float3 vertexNormal = normalize( i.worldNormal );
+	float3 N = vertexNormal;
+	if ( hasBump )
+		N = normalize( tangentNormal.x * i.tangentS + tangentNormal.y * i.tangentT + tangentNormal.z * vertexNormal );
+	float3 V = normalize( i.toEye );
+
+	// Environment mask with the legacy channel semantics: $envmapmask rgb on $envmapmasktransform (independent of the base
+	// transform; the sampler is shared with the second normal map, so a material with one has no texture mask), 1 - blended
+	// base alpha ($basealphaenvmapmask), normal map alpha; $bumpmask alpha scales any of them.
+	float3 envMask = float3( 1.0, 1.0, 1.0 );
+	if ( g_Flags1.y == 1.0 )
+	{
+		if ( g_PbrBlend.z == 0.0 )
+			envMask = EnvmapMaskTexture.Sample( EnvmapMaskSampler, PBR_TransformUV( i.rawUV, g_PbrMaskTransform ) ).rgb;
+	}
+	else if ( g_Flags1.y == 2.0 )
+		envMask = 1.0 - blendedAlpha;
+	else if ( g_Flags1.y == 3.0 )
+		envMask = bumpTexel.a;
+	envMask *= bumpMaskFactor;
+
+	float3 surface = g_Surface.xyz;
+	if ( g_Flags0.x != 0.0 )
+		surface *= MraoTexture.Sample( DataSampler, baseUV ).rgb;
+	// Legacy-replacement materials without explicit PBR roughness take it from the environment mask: a reflection mask is a gloss
+	// map, so roughness = 1 - mask, and the mask no longer scales the reflection itself ($envmaptint does).
+	const bool glossFromMask = g_PbrFlags2.y != 0.0;
+	if ( glossFromMask )
+		surface.y = 1.0 - saturate( dot( envMask, float3( 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0 ) ) );
+	float3 specularF0 = g_SpecularColor.rgb;
+	if ( g_Flags0.z != 0.0 )
+		specularF0 = SpecularTexture.Sample( DataSampler, baseUV ).rgb;
+	float thickness = g_Options.z;
+	if ( g_SubsurfaceTint.w != 0.0 && ( g_Options.x > 0.0 || g_Options.y > 0.0 ) )
+		thickness = ThicknessTexture.Sample( DataSampler, baseUV ).r;
+
+	float3 baseColor = base.rgb * g_BaseTint.rgb;
+	PBRSurface s = PBR_MakeSurface( flatDiffuse ? vertexNormal : N, V, i.tangentS, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, 0 );
+	// Reflections, projected lights and the G-buffer use the normal map even when the diffuse is flat.
+	PBRSurface sBump = s;
+	sBump.N = N;
+	sBump.NdotV = max( dot( N, V ), 1e-4 );
+#if PBR_WORLD_HIGHRES
+	// Baked-direct deltas must use the stored reconstruction of the bumped planes (legacy ShadowMap_ShadeBumped).
+	if ( hasBump && !flatDiffuse )
+		PBR_SetBumpedBasis( s, mul( bumpBasis[0], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ),
+			mul( bumpBasis[1], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ),
+			mul( bumpBasis[2], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ), planeWeights );
+#endif
+
+	// Baked lightmap diffuse; backlight reuses the front value (a lightmap holds no back-facing term).
+	float3 result = s.diffuseColor * s.ao * lightmap * ( ( 1.0 - s.back ) + s.backlightTint * s.back );
+#if PBR_WORLD_HIGHRES
+	// Unknown owners and neutral native pages (hlr.valid == 0) receive no selected direct.
+	ShadowMapDirect direct = PBR_GatherDirect( receiver, s );
+	result += ( direct.diffuse + direct.specular ) * float( hlr.valid );
+#endif
+	if ( g_Flags1.x != 0.0 )
+		result += PBR_Environment( EnvmapTexture, EnvmapSampler, sBump, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask );
+	result += PBR_ProjectedSpots( sBump, P, PBR_RECEIVER_WORLD );
+
+	if ( g_Flags0.w == 1.0 )
+		result += baseColor * g_EmissionTint.rgb * opacity;
+	else if ( g_Flags0.w == 2.0 )
+		result += EmissionTexture.Sample( DataSampler, baseUV ).rgb * g_EmissionTint.rgb;
+
+	float alpha = g_BaseTint.a;
+	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 )
+		alpha *= opacity;
+	alpha *= i.vertexColor.a;
+	// hlsl/lightmappedgeneric_ps51.fxc applies the modulation alpha ($alpha) twice, as the vertex color alpha and inside c12.w with
+	// $alpha2 (alpha *= vertexColor.a * g_flAlpha2), so a legacy-replacement material is as transparent as the legacy shader draws it.
+	alpha *= lerp( 1.0, g_BaseTint.a, g_PbrFlags2.w ) * g_PbrBlend.y;
+
+	float3 eyePosition = P + i.toEye;
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
+	float4 color = DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), i.fog );
+#if PBR_WORLD_HIGHRES
+	color = HighresLightmap_Finish( ShadowMap_Debug( receiver, direct, color ) );
+#endif
+	return PBR_Output( color, sBump, i.svPos.z );
+}

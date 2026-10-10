@@ -9,7 +9,7 @@ static const char *s_pPipelineNames[RESTIR_PIPE_COUNT] =
 	"bvh_morton", "bvh_sort", "bvh_hierarchy", "bvh_refit", "restir_init",
 	"restir_candidates", "restir_temporal", "restir_spatial", "restir_accumulate",
 	"restir_reconstruct", "restir_trace_rays", "restir_gather_ambient", "restir_light_points",
-	"restir_sun_visibility", "restir_local_visibility"
+	"restir_sun_visibility", "restir_local_visibility", "restir_probe_sh"
 };
 
 static bool HasExtension( const CUtlVector<VkExtensionProperties> &extensions, const char *name )

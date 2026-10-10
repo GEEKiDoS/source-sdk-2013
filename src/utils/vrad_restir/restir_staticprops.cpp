@@ -15,6 +15,7 @@
 #include "bitmap/imageformat.h"
 #include "tier1/utldict.h"
 #include "bsp_output.h"
+#include "ambient_cube.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -67,7 +68,6 @@ static Vector QuantizeTexelToLinear( const Vector &color )
 
 CUtlVector<char const *> g_NonShadowCastingMaterialStrings;
 CReSTIRStaticPropMgr g_ReSTIRStaticPropMgr;
-static CUtlDict<int, unsigned short> s_forcedModels;
 static bool s_propDirectDiagnosticsEnabled = false;
 
 void ReSTIR_EnableStaticPropDirectDiagnostics( bool enabled )
@@ -78,32 +78,6 @@ void ReSTIR_EnableStaticPropDirectDiagnostics( bool enabled )
 static bool ReadFile( const char *name, CUtlBuffer &buf )
 {
 	return g_pFullFileSystem && g_pFullFileSystem->ReadFile( name, NULL, buf );
-}
-static void CleanModelName( const char *name, char *out, int outLen )
-{
-	if ( !Q_strnicmp( name, "models/", 7 ) )
-		name += 7;
-	Q_strncpy( out, name, outLen );
-	char *dot = strrchr( out, '.' );
-	if ( dot )
-		*dot = 0;
-}
-void ForceTextureShadowsOnModel( const char *name )
-{
-	char clean[1024];
-	CleanModelName( name, clean, sizeof( clean ) );
-	if ( s_forcedModels.Find( clean ) == s_forcedModels.InvalidIndex() )
-		s_forcedModels.Insert( clean, 1 );
-}
-void ReSTIR_ClearForcedTextureShadows()
-{
-	s_forcedModels.RemoveAll();
-}
-bool IsModelTextureShadowsForced( const char *name )
-{
-	char clean[1024];
-	CleanModelName( name, clean, sizeof( clean ) );
-	return s_forcedModels.Find( clean ) != s_forcedModels.InvalidIndex();
 }
 
 bool ReSTIR_LoadStudioModel( const char *name, CUtlBuffer &buf )
@@ -166,7 +140,6 @@ bool CReSTIRStaticPropMgr::LoadModel( Model &m, const char *name )
 	Q_strncpy( cleanName, name, sizeof( cleanName ) );
 	Q_RemoveDotSlashes( cleanName );
 	name = cleanName;
-	m.name = name;
 	if ( !ReSTIR_LoadStudioModel( name, m.mdl ) )
 		return false;
 	m.header = (studiohdr_t *)m.mdl.Base();
@@ -505,17 +478,16 @@ bool CReSTIRStaticPropMgr::AppendTriangles( ReSTIRScene &scene, bool textureShad
 					const mstudio_meshvertexdata_t *vd = mesh->GetVertexData( (void *)&m );
 					if ( !vd )
 						continue;
+					// An alpha-tested material always casts its texture cutout, whatever the model's
+					// CAST_TEXTURE_SHADOWS flag: the runtime shadow depth pass draws the same cutout.
 					bool alpha = false;
-					bool enable =
-						textureShadows && ( ( m.header->flags & STUDIOHDR_FLAGS_CAST_TEXTURE_SHADOWS ) || IsModelTextureShadowsForced( m.name.String() ) );
 					// vradstaticprops.cpp:746-768 (LoadAllTexturesForModel): the VMT lives under one of the
 					// model's $cdmaterials directories; use the first that exists as the material name.
 					char materialName[MAX_PATH];
 					ResolvePropMaterialName( m.header, mesh->material, materialName, sizeof( materialName ) );
 					// Reflectivity 0: VRAD's radiosity only bounces between brush/disp patches; static props
 					// occlude but never re-emit (they are not patches), so GPU paths must die at prop hits.
-					int mat = ReSTIR_GetOrAddMaterial( scene, materialName, Vector( 0, 0, 0 ), enable, &alpha );
-					alpha = enable && alpha;
+					int mat = ReSTIR_GetOrAddMaterial( scene, materialName, Vector( 0, 0, 0 ), textureShadows, &alpha );
 					OptimizedModel::MeshHeader_t *vm = lod->pMesh( meshId );
 					for ( int group = 0; group < vm->numStripGroups; ++group )
 					{
@@ -765,21 +737,10 @@ static int ComputeLinearPos( int x, int y, int width, int height )
 {
 	return Min( Max( 0, y ), height - 1 ) * width + Min( Max( 0, x ), width - 1 );
 }
-static int PropPointLeafnum( const Vector &p )
-{
-	int node = 0;
-	while ( node >= 0 )
-	{
-		const dnode_t &n = dnodes[node];
-		const dplane_t &plane = dplanes[n.planenum];
-		node = n.children[DotProduct( plane.normal, p ) - plane.dist < 0.0f ? 1 : 0];
-	}
-	return -node - 1;
-}
 // Port: vradstaticprops.cpp:1137-1147 (PositionInSolid): CONTENTS_SOLID bit test, not equality.
 static bool InSolid( const Vector &p )
 {
-	int leaf = PropPointLeafnum( p );
+	int leaf = ReSTIR_PointLeaf( p );
 	return leaf >= 0 && ( dleafs[leaf].contents & CONTENTS_SOLID ) != 0;
 }
 // FNV-1a-64 of exact authored origin.xyz, angles.xyz, lightingOrigin.xyz,

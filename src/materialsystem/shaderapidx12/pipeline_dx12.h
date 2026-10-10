@@ -34,8 +34,10 @@ struct PipelineKeyDX12
 	uint8_t stencilReadMask = 0xff, stencilWriteMask = 0xff;
 	bool separateAlpha = false, depthTest = true, depthWrite = true, culling = true, colorWrites = true, alphaWrites = true, alphaToCoverage = false, stencil = false;
 	bool lightingAbi = false, highresAbi = false;
+	// Render targets 1 and 2 are the backend's PBR G-buffer (full write mask, no blending regardless of the material).
+	bool gbuffer = false;
 
-	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi; }
+	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi && gbuffer == o.gbuffer; }
 };
 
 // Owned by the recording thread, like the command list it fills: every entry point runs on the current
@@ -93,6 +95,12 @@ public:
 		bool highresAbi = false;
 		DescriptorRangeDX12 highresTable{};
 		D3D12_GPU_VIRTUAL_ADDRESS highresConstants = 0, highresFailure = 0;
+		// The PS reflects PBR space 5 (ShaderRecordDX12::pbrSpots): the current projected-light table, bound on every root.
+		DescriptorRangeDX12 pbrSpotsTable{};
+		// Space-4 ambient probe ABI inputs (lighting and highres roots; kRootProbeTable / kRootProbeConstants).
+		bool probeAbi = false;
+		DescriptorRangeDX12 probeTable{};
+		D3D12_GPU_VIRTUAL_ADDRESS probeConstants = 0;
 		uint64_t retireFence = 0;
 		// Whether the draw samples vertex textures / runs a geometry stage; unused root parameters may stay stale.
 		bool vertexTextures = true, geometryStage = true;
@@ -268,10 +276,10 @@ private:
 
 	// Largest legal cbuffer; also the read slack kept past every upload page used for root CBVs.
 	static constexpr size_t kConstantBufferMaxBytes = 65536;
-	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables.
-	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootParameterCount = 20;
-	static constexpr UINT kRootLightingView = 20, kRootLightingViewConstants = 21, kRootLightingVisibility = 22, kRootPropDraw = 23, kRootPropTriangles = 24, kLightingRootParameterCount = 25;
-	static constexpr UINT kRootHighresTable = 25, kRootHighresConstants = 26, kRootHighresFailure = 27, kHighresRootParameterCount = 28;
+	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR projected-light table.
+	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootPbrSpots = 20, kRootParameterCount = 21;
+	static constexpr UINT kRootLightingView = 21, kRootLightingViewConstants = 22, kRootLightingVisibility = 23, kRootPropDraw = 24, kRootPropTriangles = 25, kRootProbeTable = 26, kRootProbeConstants = 27, kLightingRootParameterCount = 28;
+	static constexpr UINT kRootHighresTable = 28, kRootHighresConstants = 29, kRootHighresFailure = 30, kHighresRootParameterCount = 31;
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride );
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
 	CBindingCacheDX12 m_Bindings;
@@ -311,6 +319,9 @@ private:
 	LastConstantSlot m_RecentConstants[10][kRecentConstants];
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundRootTables[4] = {};
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundNativeTables[2] = {};
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundPbrSpots{}; // valid for the bound root only; cleared with every root/heap rebind in PrepareBindings
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundProbeTable{}; // like m_BoundPbrSpots: only probe draws bind the space-4 pair
+	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundProbeConstants = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingViewTable{};
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingVisibilityTable{};
 	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundLightingViewConstants = 0;

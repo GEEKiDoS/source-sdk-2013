@@ -5,6 +5,7 @@
 #include "restir_staticprops.h"
 #include "restir_baked_direct.h"
 #include "restir_byte_buffer.h"
+#include "ambient_probes.h"
 #include "vrad_restir.h"
 #include "bsplib.h"
 #include "tier1/utlbuffer.h"
@@ -38,6 +39,7 @@ struct ModeStorage
     CUtlVector<uint32> unbakedLightIndices;
     CUtlVector<byte> visibilityPayload, faceSupport;
     bool visibilityPropsCaptured, visibilityShared;
+    ReSTIRAmbientProbeGrid probes; bool probesCaptured;
     void Clear()
     {
         active = false;
@@ -47,6 +49,7 @@ struct ModeStorage
         visibilityFaces.Purge(); visibilityEntries.Purge(); visibilityProps.Purge(); visibilityMeshes.Purge();
         unbakedFaces.Purge(); unbakedLightIndices.Purge();
         visibilityPayload.Purge(); faceSupport.Purge(); visibilityPropsCaptured = visibilityShared = false;
+        probes.Purge(); probesCaptured = false;
     }
 };
 ModeStorage s_Mode[2];
@@ -58,6 +61,19 @@ int SelectedFaces() { return g_bHDR && numfaces_hdr ? numfaces_hdr : numfaces; }
 bool Fail(const char *why)
 {
     Warning("Hlight: %s (%s mode)\n",why,g_bHDR ? "HDR" : "LDR"); return false;
+}
+// maps/<name>.hprobe: the ambient probe grids paired to the .hlight asset. s_AssetPath is a manifest-validated or
+// generated maps/<name>.hlight, so the suffix swap cannot fail.
+void ProbePath(char (&out)[256])
+{
+    hprobe::ProbeAssetPath(s_AssetPath,out,sizeof(out));
+}
+// The .hlight and its paired .hprobe leave the pak together.
+void RemoveAssets()
+{
+    char probe[256]; ProbePath(probe);
+    RemoveFileFromPak(GetPakFile(),s_AssetPath);
+    RemoveFileFromPak(GetPakFile(),probe);
 }
 void DeleteManifest()
 {
@@ -141,6 +157,69 @@ bool Append(CUtlVector<byte> &out, const void *data, uint64 count, uint64 &offse
     memset(out.Base()+old,0,(size_t)(start-old));
     if (count) memcpy(out.Base()+start,data,(size_t)count);
     offset = start; return true;
+}
+// The grid section is written straight from the vectors: one aligned section, no staging copy of up to 256 MiB.
+bool AppendProbeGrid(CUtlVector<byte> &out, const ReSTIRAmbientProbeGrid &g, uint64 &offset)
+{
+    const uint64 start = (uint64(out.Count())+15)&~uint64(15), bytes = hprobe::GridBytes(g.grid);
+    if (start+bytes > hlight::kMaxFileBytes) return Fail("probe asset exceeds signed BSP-pak buffer limit");
+    if (!ReSTIR_EnsureByteCapacity(out,start+bytes)) return Fail("probe asset byte capacity exceeds signed limit");
+    const int old = out.Count(); out.SetCount((int)(start+bytes));
+    memset(out.Base()+old,0,(size_t)(start-old));
+    byte *at = out.Base()+start;
+    memcpy(at,&g.grid,sizeof(g.grid)); at += sizeof(g.grid);
+    memcpy(at,g.indirection.Base(),g.indirection.Count()*sizeof(uint32)); at += g.indirection.Count()*sizeof(uint32);
+    memcpy(at,g.dc.Base(),g.dc.Count()*sizeof(uint32)); at += g.dc.Count()*sizeof(uint32);
+    memcpy(at,g.bands.Base(),g.bands.Count()); at += g.bands.Count();
+    memcpy(at,g.validity.Base(),g.validity.Count());
+    offset = start; return true;
+}
+// The .hprobe pak member: one grid per hlight mode, bound to that exact .hlight by its CRC and each mode's identity.
+bool BuildProbeAsset(const hlight::FileView &lightmaps, const int modeOrder[2], CUtlVector<byte> &file)
+{
+    const uint32 modeCount = lightmaps.header->modeCount;
+    uint64 fileBytes = sizeof(hprobe::FileHeader);
+    if (!ReSTIR_AddByteSectionSize(fileBytes,uint64(modeCount)*sizeof(hprobe::ModeDisk)))
+        return Fail("probe asset exceeds signed BSP-pak buffer limit");
+    for (uint32 i = 0; i < modeCount; ++i)
+    {
+        const ModeStorage &m = s_Mode[modeOrder[i]];
+        if (!m.probesCaptured) return Fail("mode lacks ambient probe grid; rebake with -restir_shadowmaps");
+        if (!ReSTIR_AddByteSectionSize(fileBytes,hprobe::GridBytes(m.probes.grid)))
+            return Fail("probe asset exceeds signed BSP-pak buffer limit");
+    }
+    hprobe::FileHeader header; memset(&header,0,sizeof(header));
+    header.magic = hprobe::kMagic; header.version = hprobe::kVersion; header.headerBytes = sizeof(header);
+    header.endian = hprobe::kEndian; header.hlightCRC32 = lightmaps.header->crc32; header.modeCount = modeCount;
+    file.EnsureCapacity(int(fileBytes));
+    file.SetCount(sizeof(header)); memset(file.Base(),0,file.Count());
+    hprobe::ModeDisk records[2]; memset(records,0,sizeof(records));
+    if (!Append(file,records,uint64(modeCount)*sizeof(hprobe::ModeDisk),header.modesOffset)) return false;
+    for (uint32 i = 0; i < modeCount; ++i)
+    {
+        const hlight::ModeDisk &identity = *lightmaps.mode[i].record; hprobe::ModeDisk &r = records[i];
+        const ReSTIRAmbientProbeGrid &grid = s_Mode[modeOrder[i]].probes;
+        r.faceLump = identity.faceLump; r.lightingLump = identity.lightingLump;
+        r.facesCRC32 = identity.facesCRC32; r.lightingCRC32 = identity.lightingCRC32;
+        r.lightingBytes = identity.lightingBytes; r.brickCount = grid.grid.brickCount;
+        if (!AppendProbeGrid(file,grid,r.gridOffset)) return false;
+    }
+    memcpy(file.Base()+header.modesOffset,records,modeCount*sizeof(hprobe::ModeDisk));
+    header.fileBytes = file.Count(); memcpy(file.Base(),&header,sizeof(header));
+    reinterpret_cast<hprobe::FileHeader *>(file.Base())->crc32 = hprobe::FileCRC32(file.Base(),file.Count());
+    hprobe::FileView probes; char error[256];
+    if (!hprobe::ValidateFile(file.Base(),file.Count(),probes,error,sizeof(error)) ||
+        !hprobe::ValidatePair(probes,lightmaps,error,sizeof(error))) return Fail(error);
+    return true;
+}
+void CopyProbeGrid(const hprobe::ModeView &v, ReSTIRAmbientProbeGrid &out)
+{
+    const uint64 texels = hprobe::AtlasTexels(*v.grid);
+    out.grid = *v.grid;
+    out.indirection.CopyArray(v.indirection,int(hprobe::IndirectionCount(*v.grid)));
+    out.dc.CopyArray(v.dc,int(texels));
+    out.bands.CopyArray(v.bands,int(texels*hprobe::kBands*4));
+    out.validity.CopyArray(v.validity,int(texels));
 }
 bool AddVisibilityPlane(ModeStorage &m, uint32 light, const byte *values, uint32 count)
 {
@@ -412,6 +491,13 @@ bool LoadAsset(const hlight::ManifestView &manifest, uint32 previousVersion = 0)
         Msg("Hlight: checked v%u input; discarding previous RGB for complete v4 prop-direct rebake\n",previousVersion);
         return true;
     }
+    // The ambient probe grids ride a separate pak member paired to this asset. A mode without a valid paired grid
+    // cannot be carried into a rewritten asset, so it is not retained: the paired rebake replaces it.
+    CUtlBuffer probeAsset; hprobe::FileView probes; char probePath[256]; ProbePath(probePath); error[0] = 0;
+    const bool paired = ReadFileFromPak(GetPakFile(),probePath,false,probeAsset) &&
+        hprobe::ValidateFile(probeAsset.Base(),probeAsset.TellPut(),probes,error,sizeof(error)) &&
+        hprobe::ValidatePair(probes,file,error,sizeof(error));
+    if (!paired) Msg("Hlight: no valid paired ambient probe asset (%s); retained modes are rebaked\n",error[0] ? error : "missing");
     for (int mi = 0; mi < 2; ++mi)
     {
         if (!manifest.mode[mi].runtime) continue;
@@ -436,7 +522,10 @@ bool LoadAsset(const hlight::ManifestView &manifest, uint32 previousVersion = 0)
             if (j == r.identityCount || memcmp(&m.identities[i],&v.identities[j],sizeof(hlight::LumpIdentity)))
                 return Fail("effective geometry identity mismatch");
         }
-        m.identities.RemoveAll(); m.record = r; m.active = true;
+        m.identities.RemoveAll();
+        const hprobe::ModeView *probeMode = paired ? hprobe::FindMode(probes,r.faceLump,r.lightingLump) : NULL;
+        if (!probeMode) continue;
+        m.record = r; m.active = true;
         m.identities.AddMultipleToTail(r.identityCount,v.identities);
         m.models.AddMultipleToTail(r.modelCount,v.models); m.faces.AddMultipleToTail(r.faceCount,v.faces);
         m.tiles.AddMultipleToTail(r.tileCount,v.tiles); m.pages.AddMultipleToTail(r.pageCount,v.pages);
@@ -456,6 +545,7 @@ bool LoadAsset(const hlight::ManifestView &manifest, uint32 previousVersion = 0)
         m.visibilityPayload.AddMultipleToTail(int(m.visibility.payloadBytes),v.visibility.payload);
         m.faceSupport.AddMultipleToTail(int(m.visibility.faceSupportBytes),v.visibility.faceSupport);
         m.visibilityPropsCaptured = true;
+        CopyProbeGrid(*probeMode,m.probes); m.probesCaptured = true;
     }
     return true;
 }
@@ -776,6 +866,21 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
     return true;
 }
 
+bool ReSTIR_CaptureAmbientProbes(const ReSTIROptions &options, const ReSTIRScene &scene, CReSTIRVulkanDevice &device)
+{
+    if (!options.shadowMaps) return true;
+    if (!s_Prepared) return Fail("probe capture without prepared storage");
+    ModeStorage &m = s_Mode[SelectedMode()];
+    if (!ReSTIR_BuildAmbientProbeGrid(options,scene,device,m.probes)) return false;
+    m.probesCaptured = true; return true;
+}
+bool ReSTIR_ReusePairedAmbientProbes(const ReSTIROptions &options)
+{
+    if (!options.shadowMaps) return true;
+    if (!s_Prepared || !s_Mode[0].probesCaptured) return Fail("paired probe reuse lacks the captured LDR grid");
+    s_Mode[1].probes = s_Mode[0].probes; s_Mode[1].probesCaptured = true; return true;
+}
+
 int ReSTIR_SelectedLightCount() { return s_Mode[SelectedMode()].lights.Count(); }
 bool ReSTIR_FinishSelectedLighting(const ReSTIROptions &options, int selected)
 {
@@ -785,7 +890,7 @@ bool ReSTIR_FinishSelectedLighting(const ReSTIROptions &options, int selected)
     if (!options.shadowMaps)
     {
         g_LevelFlags &= ~(ShadowMap_LevelFlagDirect(0)|ShadowMap_LevelFlagDirect(1));
-        if (s_AssetPath[0]) RemoveFileFromPak(GetPakFile(),s_AssetPath);
+        if (s_AssetPath[0]) RemoveAssets();
     }
     return true;
 }
@@ -807,7 +912,7 @@ bool ReSTIR_WriteShadowMapSidecar(const ReSTIROptions &options)
     if (!mask)
     {
         DeleteManifest();
-        if (s_AssetPath[0]) RemoveFileFromPak(GetPakFile(),s_AssetPath);
+        if (s_AssetPath[0]) RemoveAssets();
         s_Finalized = true; return true;
     }
     hlight::FileHeader header; memset(&header,0,sizeof(header));
@@ -956,10 +1061,13 @@ bool ReSTIR_WriteShadowMapSidecar(const ReSTIROptions &options)
     hlight::ManifestView mv;
     if (!hlight::ValidateManifest(bytes.Base(),bytes.Count(),g_LevelFlags,mv,error,sizeof(error))) return Fail(error);
     if (!hlight::ValidateManifestAsset(verified,mv,error,sizeof(error))) return Fail(error);
-    if (!ReSTIR_StageReceiverPakFile(s_AssetPath,file.Base(),file.Count(),true)) return false;
+    CUtlVector<byte> probeFile; char probePath[256]; ProbePath(probePath);
+    if (!BuildProbeAsset(verified,modeOrder,probeFile)) return false;
+    if (!ReSTIR_StageReceiverPakFile(s_AssetPath,file.Base(),file.Count(),true) ||
+        !ReSTIR_StageReceiverPakFile(probePath,probeFile.Base(),probeFile.Count(),true)) return false;
     DeleteManifest(); GameLumpHandle_t h = g_GameLumps.CreateGameLump(GAMELUMP_RESTIR_SHADOWMAPS,bytes.Count(),0,hlight::kManifestVersion);
     if (h == g_GameLumps.InvalidGameLump() || !g_GameLumps.GetGameLump(h)) return Fail("cannot allocate native selected-light manifest");
     memcpy(g_GameLumps.GetGameLump(h),bytes.Base(),bytes.Count()); s_Finalized = true;
-    Msg("Hlight: checked pak asset %s (%d bytes), rshd v5 (%d bytes), explicit mode mask=%u\n",s_AssetPath,file.Count(),bytes.Count(),mask);
+    Msg("Hlight: checked pak asset %s (%d bytes), probes %s (%d bytes), rshd v5 (%d bytes), explicit mode mask=%u\n",s_AssetPath,file.Count(),probePath,probeFile.Count(),bytes.Count(),mask);
     return true;
 }

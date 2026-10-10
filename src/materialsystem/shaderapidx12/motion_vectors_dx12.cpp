@@ -631,7 +631,9 @@ void CShaderAPIDX12::FillMotionBlock( const VertexBindingDX12 &vertexBinding, CI
 	const char *pszShaderName = m_ActiveSnapshot.vertexShaderName.c_str();
 	const bool bTexTransform = m_ActiveSnapshot.alphaTest &&
 	    ( V_strncmp( pszShaderName, "vertexlit_and_unlit_generic", 27 ) == 0 ||
-	        V_strncmp( pszShaderName, "lightmappedgeneric", 18 ) == 0 );
+	        V_strncmp( pszShaderName, "lightmappedgeneric", 18 ) == 0 ||
+	        V_strncmp( pszShaderName, "pbr_world_vs51", 14 ) == 0 ||
+	        V_strncmp( pszShaderName, "pbr_model_vs51", 14 ) == 0 );
 	m_MotionBlock.cMotionParams[0] = m_nBoneCount > 0 ? 1.f : 0.f;
 	m_MotionBlock.cMotionParams[1] = bTexTransform ? 1.f : 0.f;
 	m_MotionBlock.cMotionParams[2] = m_MotionBlock.cMotionParams[3] = 0;

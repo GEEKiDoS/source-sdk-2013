@@ -101,6 +101,9 @@ public:
 
 	virtual void ComputeShadowDepthTextures( const CViewSetup &pView ) = 0;
 
+	// Publishes the main view's projected lights (flashlight, env_projectedtexture) to the DX12 PBR shaders
+	virtual void PublishProjectedLights( const CViewSetup &pView ) = 0;
+
 };
 
 
