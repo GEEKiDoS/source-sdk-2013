@@ -79,6 +79,33 @@ float ShadowMapScene_LocalFar( const dworldlight_t &light, const Vector &mins, c
 	for ( int i = 0; i < 3; ++i ) delta[i] = MAX( fabsf(mins[i]-light.origin[i]), fabsf(maxs[i]-light.origin[i]) );
 	return MAX( delta.Length() + DX12_SHADOW_CUBE_NEAR, DX12_SHADOW_CUBE_NEAR + 0.001f );
 }
+float ShadowMapScene_EffectiveRadius( const dworldlight_t &light, bool hdr )
+{
+	if ( light.radius >= 1.0f ) return light.radius;
+	// LIGHT_MIN_LIGHT_VALUE is 0.03 on VRAD intensity; HDR halves it. Stored intensity is VRAD/255.
+	const float minLight = ( hdr ? 0.015f : 0.03f ) / 255.0f;
+	const float intensity = light.intensity.Length();
+	float radius = 2000.0f;
+	if ( intensity > 0.0f && minLight > 0.0f )
+	{
+		if ( light.quadratic_attn == 0.0f )
+		{
+			if ( light.linear_attn != 0.0f )
+				radius = ( intensity / minLight - light.constant_attn ) / light.linear_attn;
+		}
+		else
+		{
+			const float a = light.quadratic_attn;
+			const float b = light.linear_attn;
+			const float c = light.constant_attn - intensity / minLight;
+			const float discrim = b * b - 4.0f * a * c;
+			if ( discrim >= 0.0f )
+				radius = ( -b + sqrtf( discrim ) ) / ( 2.0f * a );
+		}
+	}
+	if ( !( radius == radius ) || radius < 0.0f || radius > 1.0e6f ) radius = 2000.0f;
+	return radius;
+}
 
 void ShadowMapScene_LocalFaceMatrices( const dworldlight_t &light, int face, float n, float f, int S, int U,
 	VMatrix &view, VMatrix &proj, VMatrix &clip, float &tanRendered )

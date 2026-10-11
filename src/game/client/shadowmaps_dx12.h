@@ -44,6 +44,9 @@ extern ConVar r_shadowmap_realtime_fade_seconds; // archived, default .5 real se
 										// live cap reduction/enable0 forces excess weakest weights to zero immediately;
 										// old physical replay/GPU targets retire without blocking logical slot admission
 extern ConVar r_csm_distance;			// archived, default 4096, clamped [128, 32768]
+extern ConVar r_shadowmap_resolution;	// archived, default 2, clamped [0,3]: 0 low, 1 medium, 2 high, 3 ultra
+										// high is the original 2048 cascade / 512 local / 4096 static sun
+										// applied live at the next main view; recreates atlases and drops cached depth
 extern ConVar r_shadowmap_filter;		// archived, default 0, clamped [0,1]: 0 PCF, 1 PCSS; snapshotted per view packet
 extern ConVar r_shadowmap_spot_near;	// archived, default 4 Source units, clamped [.1,64]; snapshotted per receiver view
 										// spot shadow cameras only (including six-face spots), never influence/attenuation;
@@ -80,11 +83,13 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // counters.footprintRestorePixels counts restored work pixels (full + partial); fullRestores counts full work charts.
 // Clean->rigid initialization and LOCAL page COW are excluded. Unchanged charts erase the previous overlay's
 // projected render-bounds union (+2 texels), then draw every current overlay caster/card; no overlay is throttled.
-// Clean/rigid rebuilds, projection/depth/slot/source/work-target changes (including exact COW), unknown bounds
-// and unproven mesh extents force full restoration. Detail cards and rope meshes report actual emitted vertices.
-// Rope replay owns a pooled, refcounted record and clip matrix; callback-local feedback ends when emission ends.
-// Completed rope bounds merge with CPU caster/card bounds. Still-pending or unproven captures restore fully;
-// no caller stack pointer or cache-matrix pointer survives into the material queue.
+// Clean/rigid rebuilds, projection/depth/slot/source/work-target changes (including exact COW) and unknown
+// geometry force full restoration. Caster bounds, detail cards and rope triangles are clipped to the chart
+// near plane, so a vertex with w<=0 expands only the visible fragment. Detail cards and rope meshes report
+// actual emitted vertices. Rope replay owns a pooled, refcounted record and clip matrix; callback-local
+// feedback ends when emission ends. Completed rope bounds merge with CPU caster/card bounds. A still-pending
+// rope restores the conservative centerline bound published on the main thread before the queue. No caller
+// stack pointer or cache-matrix pointer survives into the material queue.
 // counters.fullRestoreReasons is a nonexclusive object of full-restored chart counts: unknownPrev, rebuild, matrix,
 // depth, slot, target, source, cow, rope, customDraw, nonfinite, wNonPositive, invalidBounds, unknownGeometry,
 // queuedRope, boundsCoverChart. Matrix/depth counts distinguish exact cascade refits from footprint rejection.
@@ -236,11 +241,17 @@ enum ShadowMapReceiverViewKind_t
 // eligibility and nearest-emitter priority; angles/FOV/projection changes never reset local residency.
 // Absolute (nonpaused) frame time advances ramps once; main/overlay/stereo repeats cannot alter this frame.
 void ShadowMapsDX12_PrepareMainView( const CViewSetup &viewSetup );
+struct DeferredLight_t;
+// Replaces the editor-light set consumed by later receiver views this frame. Count 0 clears it.
+void ShadowMapsDX12_SetDynamicLights( const DeferredLight_t *lights, int count );
+
 
 // Builds/refreshes caster depth BEFORE receiver world/decal-list construction, uploads the immutable lighting
 // packet and begins its scope. At r_shadowmap_enable 0 the scope still supplies selected direct/highres lighting.
-// `viewSetup` is the receiver's actual CViewSetup (sky views pass the transformed sky camera; viewmodels their own
-// projection). Returns false for ordinary/shutdown views or an explicit failure;
+// Monitor, reflection, refraction, intro and 3D-sky receivers do the same with runtime depth forced off:
+// highres lightmaps and baked visibility, no sun cascades, local charts or depth copies. The main view and the
+// viewmodel keep runtime shadows. `viewSetup` is the receiver's actual CViewSetup (sky views pass the transformed
+// sky camera; viewmodels their own projection). Returns false for ordinary/shutdown views or an explicit failure;
 // CanDrawReceiverViews distinguishes ordinary rendering from rejected rendering.
 bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &viewSetup, ShadowMapReceiverViewKind_t kind );
 void ShadowMapsDX12_EndReceiverView();

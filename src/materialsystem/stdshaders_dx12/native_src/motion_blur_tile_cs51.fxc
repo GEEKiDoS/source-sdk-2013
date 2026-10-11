@@ -1,0 +1,37 @@
+// 16x16 reduction of _rt_MotionVectors into one max velocity length per tile.
+// Invalid (w < 0.5) pixels contribute nothing. Length is in UV, before the exposure scale.
+cbuffer MotionTile : register( b0, space1 )
+{
+	uint2 gVelocitySize;
+	uint2 gTileCount;
+};
+
+Texture2D<float4> gVelocity : register( t0, space0 );
+RWTexture2D<float> gTileOut : register( u0, space0 );
+
+groupshared float gMaxLen2[256];
+
+[numthreads( 16, 16, 1 )]
+void main( uint3 groupID : SV_GroupID, uint3 groupThread : SV_GroupThreadID )
+{
+	uint2 pix = groupID.xy * 16 + groupThread.xy;
+	float len2 = 0;
+	if ( pix.x < gVelocitySize.x && pix.y < gVelocitySize.y )
+	{
+		float4 velocity = gVelocity.Load( int3( pix, 0 ) );
+		if ( velocity.w >= 0.5 )
+			len2 = dot( velocity.xy, velocity.xy );
+	}
+	uint idx = groupThread.y * 16 + groupThread.x;
+	gMaxLen2[idx] = len2;
+	GroupMemoryBarrierWithGroupSync();
+	[unroll]
+	for ( uint stride = 128; stride > 0; stride >>= 1 )
+	{
+		if ( idx < stride )
+			gMaxLen2[idx] = max( gMaxLen2[idx], gMaxLen2[idx + stride] );
+		GroupMemoryBarrierWithGroupSync();
+	}
+	if ( idx == 0 && groupID.x < gTileCount.x && groupID.y < gTileCount.y )
+		gTileOut[groupID.xy] = sqrt( gMaxLen2[0] );
+}

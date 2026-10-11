@@ -55,7 +55,7 @@
 struct model_t;
 
 
-ConVar cl_detaildist( "cl_detaildist", "1200", 0, "Distance at which detail props are no longer visible" );
+ConVar cl_detaildist( "cl_detaildist", "1200", FCVAR_ARCHIVE, "Distance at which detail props are no longer visible" );
 ConVar cl_detailfade( "cl_detailfade", "400", 0, "Distance across which detail props fade in" );
 #if defined( USE_DETAIL_SHAPES ) 
 ConVar cl_detail_max_sway( "cl_detail_max_sway", "0", FCVAR_ARCHIVE, "Amplitude of the detail prop sway" );
@@ -397,8 +397,9 @@ public:
 	// Init, shutdown
 	bool Init()
 	{
-		m_flDefaultFadeStart = cl_detailfade.GetFloat();
-		m_flDefaultFadeEnd = cl_detaildist.GetFloat();
+		CaptureUserDetail();
+		cl_detaildist.InstallChangeCallback( DetailDistanceChanged );
+		cl_detailfade.InstallChangeCallback( DetailFadeChanged );
 		return true;
 	}
 	void PostInit() {}
@@ -407,6 +408,9 @@ public:
 	// Level init, shutdown
 	void LevelInitPreEntity();
 	void LevelInitPostEntity();
+	void CaptureUserDetail();
+	static void DetailDistanceChanged( IConVar *var, const char *pOldValue, float flOldValue );
+	static void DetailFadeChanged( IConVar *var, const char *pOldValue, float flOldValue );
 	void LevelShutdownPreEntity();
 	void LevelShutdownPostEntity();
 
@@ -569,6 +573,7 @@ private:
 
 	float m_flDefaultFadeStart;
 	float m_flDefaultFadeEnd;
+	bool m_bApplyingDetailCap;
 
 
 	// pre calcs for the current render frame
@@ -1172,11 +1177,13 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly, 
 	}
 
 #ifndef USE_DETAIL_SHAPES
-	meshBuilder.Position3fv( vecOrigin.Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin );
+	Vector quad[4];
+	quad[0] = vecOrigin;
+	meshBuilder.Position3fv( quad[0].Base() );
 #else
-	meshBuilder.Position3fv( (vecOrigin+vecSway).Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
+	Vector quad[4];
+	quad[0] = vecOrigin + vecSway;
+	meshBuilder.Position3fv( quad[0].Base() );
 #endif
 
 	meshBuilder.Color4ubv( color );
@@ -1185,16 +1192,16 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly, 
 	meshBuilder.AdvanceVertex();
 
 	vecOrigin += dy;
-	meshBuilder.Position3fv( vecOrigin.Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin );
+	quad[1] = vecOrigin;
+	meshBuilder.Position3fv( quad[1].Base() );
 	meshBuilder.Color4ubv( color );
 	meshBuilder.TexCoord2f( 0, texul.x, texlr.y );
 	ShadowTexCoords( meshBuilder );
 	meshBuilder.AdvanceVertex();
 
 	vecOrigin += dx;
-	meshBuilder.Position3fv( vecOrigin.Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin );
+	quad[2] = vecOrigin;
+	meshBuilder.Position3fv( quad[2].Base() );
 	meshBuilder.Color4ubv( color );
 	meshBuilder.TexCoord2fv( 0, texlr.Base() );
 	ShadowTexCoords( meshBuilder );
@@ -1202,16 +1209,16 @@ void CDetailModel::DrawTypeSprite( CMeshBuilder &meshBuilder, bool bShadowOnly, 
 
 	vecOrigin -= dy;
 #ifndef USE_DETAIL_SHAPES
-	meshBuilder.Position3fv( vecOrigin.Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin );
+	quad[3] = vecOrigin;
 #else
-	meshBuilder.Position3fv( (vecOrigin+vecSway).Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
+	quad[3] = vecOrigin + vecSway;
 #endif
+	meshBuilder.Position3fv( quad[3].Base() );
 	meshBuilder.Color4ubv( color );
 	meshBuilder.TexCoord2f( 0, texlr.x, texul.y );
 	ShadowTexCoords( meshBuilder );
 	meshBuilder.AdvanceVertex();
+	if ( footprint ) footprint->AddQuad( quad );
 }
 
 //-----------------------------------------------------------------------------
@@ -1500,36 +1507,38 @@ void CDetailModel::UpdatePlayerAvoid( void )
 void CDetailModel::DrawSwayingQuad( CMeshBuilder &meshBuilder, Vector vecOrigin, Vector vecSway, Vector2D texul, Vector2D texlr, unsigned char *color,
 								   Vector width, Vector height, ShadowMapDepthFootprint_t *footprint )
 {
-	meshBuilder.Position3fv( (vecOrigin + vecSway).Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
+	Vector quad[4];
+	quad[0] = vecOrigin + vecSway;
+	meshBuilder.Position3fv( quad[0].Base() );
 	meshBuilder.TexCoord2fv( 0, texul.Base() );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
 	meshBuilder.AdvanceVertex();
 
 	vecOrigin += height;
-	meshBuilder.Position3fv( vecOrigin.Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin );
+	quad[1] = vecOrigin;
+	meshBuilder.Position3fv( quad[1].Base() );
 	meshBuilder.TexCoord2f( 0, texul.x, texlr.y );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
 	meshBuilder.AdvanceVertex();
 
 	vecOrigin += width;
-	meshBuilder.Position3fv( vecOrigin.Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin );
+	quad[2] = vecOrigin;
+	meshBuilder.Position3fv( quad[2].Base() );
 	meshBuilder.TexCoord2fv( 0, texlr.Base() );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
 	meshBuilder.AdvanceVertex();
 
 	vecOrigin -= height;
-	meshBuilder.Position3fv( (vecOrigin + vecSway).Base() );
-	if ( footprint ) footprint->AddPoint( vecOrigin + vecSway );
+	quad[3] = vecOrigin + vecSway;
+	meshBuilder.Position3fv( quad[3].Base() );
 	meshBuilder.TexCoord2f( 0, texlr.x, texul.y );
 	meshBuilder.Color4ubv( color );
 	ShadowTexCoords( meshBuilder );
 	meshBuilder.AdvanceVertex();
+	if ( footprint ) footprint->AddQuad( quad );
 }
 #endif
 
@@ -1548,6 +1557,7 @@ CDetailObjectSystem::CDetailObjectSystem() : m_DetailSpriteDict( 0, 32 ), m_Deta
 	m_nLastShadowOrientationGeneration = 0;
 	m_bShadowCasterBounds = false;
 	memset( &m_ShadowReport, 0, sizeof( m_ShadowReport ) );
+	m_bApplyingDetailCap = false;
 }
 
 void CDetailObjectSystem::FreeSortBuffers( void )
@@ -1660,6 +1670,7 @@ void CDetailObjectSystem::LevelInitPostEntity()
 	m_DetailSpriteMaterial.Init( pDetailSpriteMaterial, TEXTURE_GROUP_OTHER );
 	InitShadowSpriteMaterials();
 
+	m_bApplyingDetailCap = true;
 	if ( GetDetailController() )
 	{
 		cl_detailfade.SetValue( MIN( m_flDefaultFadeStart, GetDetailController()->m_flFadeStartDist ) );
@@ -1667,10 +1678,28 @@ void CDetailObjectSystem::LevelInitPostEntity()
 	}
 	else
 	{
-		// revert to default values if the map doesn't specify
 		cl_detailfade.SetValue( m_flDefaultFadeStart );
 		cl_detaildist.SetValue( m_flDefaultFadeEnd );
 	}
+	m_bApplyingDetailCap = false;
+}
+
+void CDetailObjectSystem::CaptureUserDetail()
+{
+	if ( m_bApplyingDetailCap )
+		return;
+	m_flDefaultFadeStart = cl_detailfade.GetFloat();
+	m_flDefaultFadeEnd = cl_detaildist.GetFloat();
+}
+
+void CDetailObjectSystem::DetailDistanceChanged( IConVar *var, const char *pOldValue, float flOldValue )
+{
+	s_DetailObjectSystem.CaptureUserDetail();
+}
+
+void CDetailObjectSystem::DetailFadeChanged( IConVar *var, const char *pOldValue, float flOldValue )
+{
+	s_DetailObjectSystem.CaptureUserDetail();
 }
 
 void CDetailObjectSystem::LevelShutdownPreEntity()
@@ -2565,6 +2594,9 @@ void CDetailObjectSystem::RenderTranslucentDetailObjects( const Vector &viewOrig
 	if (nLeafCount == 0)
 		return;
 
+	CMatRenderContextPtr pPixContext( materials );
+	PIXEVENT( pPixContext, "Detail props" );
+
 	// We better not have any partially drawn leaf of detail sprites!
 	Assert( m_nSpriteCount == m_nFirstSprite );
 
@@ -2692,6 +2724,7 @@ void CDetailObjectSystem::RenderFastTranslucentDetailObjectsInLeaf( const Vector
 
 
 	CMatRenderContextPtr pRenderContext( materials );
+	PIXEVENT( pRenderContext, "Detail props" );
 	pRenderContext->MatrixMode( MATERIAL_MODEL );
 	pRenderContext->PushMatrix();
 	pRenderContext->LoadIdentity();
@@ -2841,6 +2874,7 @@ void CDetailObjectSystem::RenderTranslucentDetailObjectsInLeaf( const Vector &vi
 		return;
 
 	CMatRenderContextPtr pRenderContext( materials );
+	PIXEVENT( pRenderContext, "Detail props" );
 	pRenderContext->MatrixMode( MATERIAL_MODEL );
 	pRenderContext->PushMatrix();
 	pRenderContext->LoadIdentity();
@@ -3386,12 +3420,12 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 		for ( int v = 0; v < 4; ++v )
 		{
 			builder.Position3fv( vertices[v].Base() );
-			if ( footprint ) footprint->AddPoint( vertices[v] );
 			builder.Color4ub( 255, 255, 255, 255 );
 			builder.TexCoord2fv( 0, uv[v].Base() );
 			DetailShadowTexCoords( builder, sprite.m_LightingOrigins[sub], sprite.m_LightingNormals[sub] );
 			builder.AdvanceVertex();
 		}
+		if ( footprint ) footprint->AddQuad( vertices );
 		++written;
 		++m_ShadowReport.m_nLastDrawCards;
 	}

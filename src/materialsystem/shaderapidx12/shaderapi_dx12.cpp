@@ -986,7 +986,6 @@ static bool ReflectRecordInputsDX12( ShaderRecordDX12 *pRecord )
 //-----------------------------------------------------------------------------
 // Purpose: Validates the stream/index ranges, resolves translation, input layout, PSO, bindings and
 //          constants for the current state and records one draw
-//-----------------------------------------------------------------------------
 void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIndexBufferDX12 *indices,
     size_t indexOffset, MaterialPrimitiveType_t primitive, int firstIndex, int indexCount, bool meshStreams, uint64 meshToken, const CMeshDX12 *mesh )
 {
@@ -1540,6 +1539,10 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	for ( unsigned i = 0; i < 16; ++i )
 		textureTypesPacked |= static_cast<uint32_t>( raster.textureTypes[i] ) << ( 2 * i );
+	const bool gbufferColorWrite = m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites;
+	const bool gbufferAlphaWrite = m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites;
+	const bool gbufferDepthOnly = !motionActive && target.depth && ( shadowPass || ( !gbufferColorWrite && !gbufferAlphaWrite ) ) && !m_ActiveSnapshot.alphaTest;
+	const bool gbufferStencil = m_bGBufferPass && m_ActiveSnapshot.depthWrite && !gbufferDepthOnly && !shadowPass && !motionActive && !m_bStencilEnabled && !m_ActiveSnapshot.stencil;
 	PipelineSignatureDX12 signature;
 	memset( &signature, 0, sizeof( signature ) );
 	const bool memoEligible = meshStreams && m_hActiveSnapshotId >= 0;
@@ -1583,6 +1586,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		signature.stencilPass = m_StencilPassOp;
 		signature.stencilReadMask = m_nStencilReadMask;
 		signature.stencilWriteMask = m_nStencilWriteMask;
+		signature.gbufferPass = gbufferStencil ? 1u : 0u;
 		signature.alphaToCoverage = m_bAlphaToCoverage;
 		signature.colorWriteOverride = m_bColorWriteOverride;
 		signature.colorWriteValue = m_bColorWriteOverrideValue;
@@ -2350,7 +2354,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	if ( memoHit )
 	{
 		++m_DrawStats.memoHits;
-		m_Pipeline.BindPipelineState( list, memoSlot->pso, m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference, retireFence );
+		m_Pipeline.BindPipelineState( list, memoSlot->pso, gbufferStencil ? ( gbufferTargets ? kGBufferStencilBit : 0 ) : ( m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference ), retireFence );
 		pipelineBound = true;
 	}
 	else if ( vsRecord && ( psRecord || depthOnly ) )
@@ -2589,6 +2593,18 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			key.slopeScaledDepthBias = 0.f;
 			key.depthBiasValue = reverseDepth ? -kMotionDepthBias : kMotionDepthBias;
 		}
+		if ( gbufferStencil )
+		{
+			key.gbufferPass = true;
+			key.stencil = true;
+			key.stencilFunction = STENCILCOMPARISONFUNCTION_ALWAYS;
+			key.stencilFail = STENCILOPERATION_KEEP;
+			key.stencilDepthFail = STENCILOPERATION_KEEP;
+			key.stencilPass = STENCILOPERATION_REPLACE;
+			key.stencilReadMask = 0;
+			key.stencilWriteMask = kGBufferStencilBit;
+			key.raster = ( key.alphaToCoverage ? 1 : 0 ) | 2 | ( m_ActiveSnapshot.alphaTest ? 4 : 0 );
+		}
 		ID3D12PipelineState *pso = nullptr;
 		{
 			ZoneNamedN( ___tracy_scoped_zone, "DX12 GetOrCreatePSO", DX12_DRAW_ZONES_ACTIVE );
@@ -2596,7 +2612,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		}
 		if ( pso )
 		{
-			m_Pipeline.BindPipelineState( list, pso, m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference, retireFence );
+			m_Pipeline.BindPipelineState( list, pso, gbufferStencil ? ( gbufferTargets ? kGBufferStencilBit : 0 ) : ( m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference ), retireFence );
 			pipelineBound = true;
 			if ( memoSlot )
 			{
@@ -4974,10 +4990,34 @@ void CShaderAPIDX12::EndFrame()
 			const double n = static_cast<double>( m_nDrawStatsFrames );
 			Msg( "ShaderAPIDX12 stats/frame: draws %.1f memoHits %.1f srvTableHits %.1f srvTableCopies %.1f constHits %.1f constUploads %.1f transientConst %.1f rootCbvSets %.1f rootTableSets %.1f\n",
 			    m_DrawStats.draws / n, m_DrawStats.memoHits / n, p.srvTableHits / n, p.srvTableCopies / n, p.constantHits / n, p.constantUploads / n, p.transientConstants / n, p.rootCbvSets / n, p.rootTableSets / n );
+			CShaderDeviceDX12::GpuEventStatsDX12 gpuEvents;
+			const bool bGpuEvents = m_pDevice && m_pDevice->ConsumeGpuEventStats( gpuEvents );
 			double gpuMs = 0.0;
 			uint32_t gpuFrames = 0;
 			if ( m_pDevice && m_pDevice->ConsumeGpuTime( gpuMs, gpuFrames ) )
 				Msg( "ShaderAPIDX12 GPU frame time: %.3f ms (%u frames)\n", gpuMs, gpuFrames );
+			if ( bGpuEvents )
+			{
+				for ( uint32_t i = 1; i < gpuEvents.count; ++i )
+				{
+					CShaderDeviceDX12::GpuEventStatDX12 item = gpuEvents.events[i];
+					uint32_t j = i;
+					while ( j && gpuEvents.events[j - 1].msPerFrame < item.msPerFrame )
+					{
+						gpuEvents.events[j] = gpuEvents.events[j - 1];
+						--j;
+					}
+					gpuEvents.events[j] = item;
+				}
+				Msg( "ShaderAPIDX12 GPU events covered: %.3f ms/frame (%u frames)\n", gpuEvents.coveredMsPerFrame, gpuEvents.presentedFrames );
+				Msg( "ShaderAPIDX12 GPU event samples: available %u completed %llu skipped %llu overflow %llu invalid %llu scopeErrors %llu pending %u\n",
+					gpuEvents.available ? 1u : 0u,
+					static_cast<unsigned long long>( gpuEvents.completedSpans ), static_cast<unsigned long long>( gpuEvents.skippedSpans ),
+					static_cast<unsigned long long>( gpuEvents.overflowSpans ), static_cast<unsigned long long>( gpuEvents.invalidSpans ),
+					static_cast<unsigned long long>( gpuEvents.scopeErrors ), gpuEvents.pendingSpans );
+				for ( uint32_t i = 0; i < gpuEvents.count; ++i )
+					Msg( "ShaderAPIDX12 GPU event %s: %.3f ms/frame (%.2f/frame)\n", gpuEvents.events[i].name, gpuEvents.events[i].msPerFrame, gpuEvents.events[i].countPerFrame );
+			}
 			CShaderDeviceDX12::GpuStageStatsDX12 stages;
 			if ( m_pDevice && m_pDevice->ConsumeGpuStageStats( stages ) )
 			{
@@ -5713,11 +5753,25 @@ void CShaderAPIDX12::GetFogDistances( float *fStart, float *fEnd, float *fFogZ )
 		*fFogZ = m_flFogZ;
 }
 
-void CShaderAPIDX12::BeginPIXEvent( unsigned long color, const char *szName ) {}
+void CShaderAPIDX12::BeginPIXEvent( unsigned long color, const char *szName )
+{
+	(void)color;
+	if ( m_pDevice )
+		m_pDevice->BeginGpuPIXEvent( szName );
+}
 
-void CShaderAPIDX12::EndPIXEvent() {}
+void CShaderAPIDX12::EndPIXEvent()
+{
+	if ( m_pDevice )
+		m_pDevice->EndGpuPIXEvent();
+}
 
-void CShaderAPIDX12::SetPIXMarker( unsigned long color, const char *szName ) {}
+void CShaderAPIDX12::SetPIXMarker( unsigned long color, const char *szName )
+{
+	(void)color;
+	if ( m_pDevice )
+		m_pDevice->SetGpuPIXMarker( szName );
+}
 
 void CShaderAPIDX12::EnableAlphaToCoverage()
 {

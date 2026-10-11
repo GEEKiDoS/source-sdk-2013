@@ -289,7 +289,9 @@ void CShaderDeviceDX12::FlushRecorderChunk( void *pContext, unsigned char *pChun
 bool CShaderDeviceDX12::CreateFrameObjects()
 {
 	static const bool s_bShadowTiming = CommandLine() && CommandLine()->CheckParm( "-dx12stats" ) && CommandLine()->CheckParm( "-dx12shadowstats" );
+	static const bool s_bGpuEvents = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
 	m_bShadowTimingEnabled = s_bShadowTiming;
+	m_bGpuEventTiming = s_bGpuEvents;
 	for ( int i = 0; i < ARRAYSIZE( m_Frames ); ++i )
 		if ( FAILED( m_pDevice->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( &m_Frames[i].allocator ) ) ) )
 		{
@@ -408,6 +410,7 @@ uint64_t CShaderDeviceDX12::Submit( bool bWait )
 		Warning( "ShaderAPIDX12: Submit rejected (wrong owner or no recording)\n" );
 		return 0;
 	}
+	SuspendGpuPIXEvents();
 	const bool bTiming = GpuTimingBeforeSubmit();
 	// A logical occlusion interval can cross any Submit (including descriptor-pressure waits),
 	// but D3D12 requires each native Begin/End pair to stay on this list before it is closed.
@@ -440,6 +443,7 @@ uint64_t CShaderDeviceDX12::Submit( bool bWait )
 		return 0;
 	if ( bTiming && !m_bShadowTimingEnabled && !m_bGpuTimingStopping )
 		GpuTimingAfterSubmit();
+	ResumeGpuPIXEvents();
 	if ( g_pShaderAPIDX12 )
 		g_pShaderAPIDX12->ResumeOcclusionQueriesAfterSubmit();
 	return nValue;
@@ -1362,6 +1366,21 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			list->ResolveQueryData( heap, type, start, count, dst, destOffset );
 			break;
 		}
+		case Op::BeginEvent:
+		case Op::SetMarker:
+		{
+			UINT n = 0;
+			while ( n < 63 && p[n] )
+				++n;
+			if ( header.op == Op::BeginEvent )
+				list->BeginEvent( 1, p, n + 1 );
+			else
+				list->SetMarker( 1, p, n + 1 );
+			break;
+		}
+		case Op::EndEvent:
+			list->EndEvent();
+			break;
 		case Op::ExternalCommand:
 		{
 			ExternalFnDX12 fn;
@@ -1637,6 +1656,20 @@ void CShaderDeviceDX12::ShutdownDevice()
 	m_pStagePipelineReadback.Reset();
 	m_pStagePipelineHeap.Reset();
 	m_pStagePipelineData = nullptr;
+	if ( m_pGpuEventReadback )
+		m_pGpuEventReadback->Unmap( 0, nullptr );
+	m_pGpuEventReadback.Reset();
+	m_pGpuEventHeap.Reset();
+	m_pGpuEventData = nullptr;
+	m_bGpuEventTiming = m_bGpuEventUnavailable = m_bGpuEventCoverOpen = false;
+	m_nGpuEventSlot = m_nGpuEventCoverSlot = m_nGpuPixDepth = m_nGpuPixOverflow = m_nGpuPixOverflowClosed = 0;
+	m_nGpuEventNames = m_nGpuEventOtherCount = 0;
+	m_flGpuEventCoveredMs = m_flGpuEventOtherMs = 0;
+	m_nGpuEventCompleted = m_nGpuEventSkipped = m_nGpuEventOverflow = m_nGpuEventInvalid = m_nGpuEventScopeErrors = 0;
+	memset( m_GpuEventFences, 0, sizeof( m_GpuEventFences ) );
+	memset( m_GpuEventSlotNames, 0, sizeof( m_GpuEventSlotNames ) );
+	memset( m_GpuEventNames, 0, sizeof( m_GpuEventNames ) );
+	memset( m_GpuPixStack, 0, sizeof( m_GpuPixStack ) );
 	m_bTimestampBegun = false;
 	m_bTimestampUnavailable = false;
 	m_bGpuTimingStopping = false;
@@ -1774,7 +1807,10 @@ bool CShaderDeviceDX12::EnsureGpuTiming()
 	if ( !s_bEnabled || m_bTimestampUnavailable )
 		return false;
 	if ( m_pTimestampHeap )
+	{
+		EnsureGpuEventTiming();
 		return true;
+	}
 	if ( FAILED( m_pQueue->GetTimestampFrequency( &m_nTimestampFrequency ) ) || !m_nTimestampFrequency )
 	{
 		m_bTimestampUnavailable = true;
@@ -1816,6 +1852,7 @@ bool CShaderDeviceDX12::EnsureGpuTiming()
 		m_bStageQueriesAvailable = extended;
 		if ( extended )
 			EnsureGpuPipelineStats();
+		EnsureGpuEventTiming();
 		return true;
 	}
 	m_bTimestampUnavailable = true;
@@ -1858,6 +1895,7 @@ void CShaderDeviceDX12::EnsureGpuPipelineStats()
 
 void CShaderDeviceDX12::CollectGpuTiming()
 {
+	CollectGpuEvents();
 	if ( !m_pTimestampData )
 		return;
 	const uint64_t completed = CompletedFenceValue();
@@ -2154,6 +2192,272 @@ bool CShaderDeviceDX12::ConsumeGpuStageStats( GpuStageStatsDX12 &stats )
 	memset( m_nGpuStageCPrimitives, 0, sizeof( m_nGpuStageCPrimitives ) );
 	m_GpuStageStats = {};
 	return true;
+}
+
+void CShaderDeviceDX12::EnsureGpuEventTiming()
+{
+	if ( !m_bGpuEventTiming || m_pGpuEventHeap || m_bGpuEventUnavailable || !m_nTimestampFrequency )
+		return;
+	D3D12_QUERY_HEAP_DESC heapDesc{};
+	heapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+	heapDesc.Count = kGpuEventSlots * 2;
+	if ( FAILED( m_pDevice->CreateQueryHeap( &heapDesc, IID_PPV_ARGS( &m_pGpuEventHeap ) ) ) )
+	{
+		m_bGpuEventUnavailable = true;
+		return;
+	}
+	D3D12_HEAP_PROPERTIES properties{};
+	properties.Type = D3D12_HEAP_TYPE_READBACK;
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = kGpuEventSlots * 2 * sizeof( uint64_t );
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	if ( FAILED( m_pDevice->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pGpuEventReadback ) ) ) )
+	{
+		m_pGpuEventHeap.Reset();
+		m_bGpuEventUnavailable = true;
+		return;
+	}
+	void *mapped = nullptr;
+	if ( FAILED( m_pGpuEventReadback->Map( 0, nullptr, &mapped ) ) )
+	{
+		m_pGpuEventReadback.Reset();
+		m_pGpuEventHeap.Reset();
+		m_bGpuEventUnavailable = true;
+		return;
+	}
+	m_pGpuEventData = static_cast<const uint64_t *>( mapped );
+}
+
+void CShaderDeviceDX12::CollectGpuEvents()
+{
+	if ( !m_pGpuEventData || !m_nTimestampFrequency )
+		return;
+	const uint64_t completed = CompletedFenceValue();
+	const double tickMs = 1000.0 / static_cast<double>( m_nTimestampFrequency );
+	for ( uint32_t slot = 0; slot < kGpuEventSlots; ++slot )
+	{
+		if ( !m_GpuEventFences[slot] || m_GpuEventFences[slot] > completed )
+			continue;
+		const uint64_t begin = m_pGpuEventData[slot * 2], end = m_pGpuEventData[slot * 2 + 1];
+		const uint32_t nameId = m_GpuEventSlotNames[slot];
+		if ( begin && end >= begin )
+		{
+			const double ms = static_cast<double>( end - begin ) * tickMs;
+			if ( nameId == kGpuEventCover )
+				m_flGpuEventCoveredMs += ms;
+			else if ( nameId < m_nGpuEventNames )
+				m_GpuEventNames[nameId].sumMs += ms;
+			else
+				m_flGpuEventOtherMs += ms;
+			++m_nGpuEventCompleted;
+		}
+		else
+			++m_nGpuEventInvalid;
+		m_GpuEventFences[slot] = 0;
+	}
+}
+
+bool CShaderDeviceDX12::BeginGpuEventSpan( uint32_t nameId, uint32_t &slot )
+{
+	if ( m_bGpuTimingStopping || !m_pGpuEventData || m_GpuEventFences[m_nGpuEventSlot] )
+	{
+		if ( m_pGpuEventData && !m_bGpuTimingStopping )
+		{
+			++m_nGpuEventSkipped;
+			++m_nGpuEventOverflow;
+		}
+		return false;
+	}
+	slot = m_nGpuEventSlot;
+	m_nGpuEventSlot = ( slot + 1 ) % kGpuEventSlots;
+	m_GpuEventSlotNames[slot] = nameId;
+	m_Recorder.EndQuery( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 );
+	return true;
+}
+
+void CShaderDeviceDX12::EndGpuEventSpan( uint32_t slot )
+{
+	const uint32_t query = slot * 2;
+	m_Recorder.EndQuery( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1 );
+	m_Recorder.ResolveQueryData( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2, m_pGpuEventReadback.Get(), static_cast<UINT64>( query ) * sizeof( uint64_t ) );
+	m_GpuEventFences[slot] = NextFenceValue();
+}
+
+uint32_t CShaderDeviceDX12::InternGpuEventName( const char *name )
+{
+	for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+		if ( !V_strcmp( m_GpuEventNames[i].name, name ) )
+			return i;
+	if ( m_nGpuEventNames == kGpuEventNames )
+		return kGpuEventNames;
+	const uint32_t id = m_nGpuEventNames++;
+	V_strncpy( m_GpuEventNames[id].name, name, sizeof( m_GpuEventNames[id].name ) );
+	return id;
+}
+
+void CShaderDeviceDX12::SuspendGpuPIXEvents()
+{
+	if ( !m_bRecording )
+		return;
+	while ( m_nGpuPixOverflowClosed < m_nGpuPixOverflow )
+	{
+		m_Recorder.EndEvent();
+		++m_nGpuPixOverflowClosed;
+	}
+	for ( int i = static_cast<int>( m_nGpuPixDepth ) - 1; i >= 0; --i )
+	{
+		if ( m_GpuPixStack[i].timing )
+		{
+			EndGpuEventSpan( m_GpuPixStack[i].slot );
+			m_GpuPixStack[i].timing = false;
+		}
+		m_Recorder.EndEvent();
+	}
+	if ( m_bGpuEventCoverOpen )
+	{
+		EndGpuEventSpan( m_nGpuEventCoverSlot );
+		m_bGpuEventCoverOpen = false;
+	}
+}
+
+void CShaderDeviceDX12::ResumeGpuPIXEvents()
+{
+	if ( m_bGpuTimingStopping || !m_bRecording || !m_nGpuPixDepth )
+		return;
+	if ( m_bGpuEventTiming && m_pGpuEventData )
+		m_bGpuEventCoverOpen = BeginGpuEventSpan( kGpuEventCover, m_nGpuEventCoverSlot );
+	for ( uint32_t i = 0; i < m_nGpuPixDepth; ++i )
+	{
+		m_Recorder.BeginEvent( m_GpuPixStack[i].name );
+		m_GpuPixStack[i].timing = m_bGpuEventTiming && m_pGpuEventData && BeginGpuEventSpan( m_GpuPixStack[i].nameId, m_GpuPixStack[i].slot );
+	}
+}
+
+void CShaderDeviceDX12::BeginGpuPIXEvent( const char *szName )
+{
+	if ( !szName || !szName[0] || !m_bRecording || !IsRecordingOwner() || m_bFailed )
+		return;
+	char name[64];
+	V_strncpy( name, szName, sizeof( name ) );
+	if ( !name[0] )
+		return;
+	if ( m_nGpuPixOverflow || m_nGpuPixDepth == kGpuEventStack )
+	{
+		if ( !m_nGpuPixOverflow )
+			++m_nGpuEventScopeErrors;
+		++m_nGpuPixOverflow;
+		m_Recorder.BeginEvent( name );
+		return;
+	}
+	if ( m_bGpuEventTiming )
+		EnsureGpuTiming();
+	uint32_t nameId = kGpuEventNames;
+	if ( m_bGpuEventTiming && m_pGpuEventData )
+	{
+		nameId = InternGpuEventName( name );
+		if ( nameId < kGpuEventNames )
+			++m_GpuEventNames[nameId].count;
+		else
+			++m_nGpuEventOtherCount;
+		if ( !m_nGpuPixDepth )
+			m_bGpuEventCoverOpen = BeginGpuEventSpan( kGpuEventCover, m_nGpuEventCoverSlot );
+	}
+	m_Recorder.BeginEvent( name );
+	GpuPixScopeDX12 &scope = m_GpuPixStack[m_nGpuPixDepth++];
+	V_strncpy( scope.name, name, sizeof( scope.name ) );
+	scope.nameId = nameId;
+	scope.timing = m_bGpuEventTiming && m_pGpuEventData && BeginGpuEventSpan( nameId, scope.slot );
+}
+
+void CShaderDeviceDX12::EndGpuPIXEvent()
+{
+	if ( !m_bRecording || !IsRecordingOwner() || m_bFailed )
+		return;
+	if ( m_nGpuPixOverflow )
+	{
+		--m_nGpuPixOverflow;
+		if ( m_nGpuPixOverflowClosed )
+			--m_nGpuPixOverflowClosed;
+		else
+			m_Recorder.EndEvent();
+		return;
+	}
+	if ( !m_nGpuPixDepth )
+	{
+		++m_nGpuEventScopeErrors;
+		return;
+	}
+	GpuPixScopeDX12 &scope = m_GpuPixStack[--m_nGpuPixDepth];
+	if ( scope.timing )
+		EndGpuEventSpan( scope.slot );
+	m_Recorder.EndEvent();
+	if ( !m_nGpuPixDepth && m_bGpuEventCoverOpen )
+	{
+		EndGpuEventSpan( m_nGpuEventCoverSlot );
+		m_bGpuEventCoverOpen = false;
+	}
+}
+
+void CShaderDeviceDX12::SetGpuPIXMarker( const char *szName )
+{
+	if ( !szName || !szName[0] || !m_bRecording || !IsRecordingOwner() || m_bFailed )
+		return;
+	m_Recorder.SetMarker( szName );
+}
+
+bool CShaderDeviceDX12::ConsumeGpuEventStats( GpuEventStatsDX12 &stats )
+{
+	if ( !m_bGpuEventTiming )
+		return false;
+	CollectGpuEvents();
+	stats = {};
+	stats.available = m_pGpuEventData != nullptr;
+	stats.presentedFrames = m_nGpuTimePresented;
+	stats.completedSpans = m_nGpuEventCompleted;
+	stats.skippedSpans = m_nGpuEventSkipped;
+	stats.overflowSpans = m_nGpuEventOverflow;
+	stats.invalidSpans = m_nGpuEventInvalid;
+	stats.scopeErrors = m_nGpuEventScopeErrors;
+	const double frames = stats.presentedFrames;
+	stats.coveredMsPerFrame = frames ? m_flGpuEventCoveredMs / frames : 0.0;
+	for ( uint32_t i = 0; i < m_nGpuEventNames && stats.count < ARRAYSIZE( stats.events ); ++i )
+	{
+		if ( !m_GpuEventNames[i].count && m_GpuEventNames[i].sumMs == 0.0 )
+			continue;
+		GpuEventStatDX12 &out = stats.events[stats.count++];
+		V_strncpy( out.name, m_GpuEventNames[i].name, sizeof( out.name ) );
+		out.msPerFrame = frames ? m_GpuEventNames[i].sumMs / frames : 0.0;
+		out.countPerFrame = frames ? m_GpuEventNames[i].count / frames : 0.0;
+	}
+	if ( ( m_nGpuEventOtherCount || m_flGpuEventOtherMs != 0.0 ) && stats.count < ARRAYSIZE( stats.events ) )
+	{
+		GpuEventStatDX12 &out = stats.events[stats.count++];
+		V_strncpy( out.name, "(other)", sizeof( out.name ) );
+		out.msPerFrame = frames ? m_flGpuEventOtherMs / frames : 0.0;
+		out.countPerFrame = frames ? m_nGpuEventOtherCount / frames : 0.0;
+	}
+	for ( uint32_t slot = 0; slot < kGpuEventSlots; ++slot )
+		if ( m_GpuEventFences[slot] )
+			++stats.pendingSpans;
+	for ( uint32_t i = 0; i < m_nGpuPixDepth; ++i )
+		if ( m_GpuPixStack[i].timing )
+			++stats.pendingSpans;
+	if ( m_bGpuEventCoverOpen )
+		++stats.pendingSpans;
+	for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+	{
+		m_GpuEventNames[i].sumMs = 0;
+		m_GpuEventNames[i].count = 0;
+	}
+	m_flGpuEventCoveredMs = m_flGpuEventOtherMs = 0;
+	m_nGpuEventOtherCount = 0;
+	m_nGpuEventCompleted = m_nGpuEventSkipped = m_nGpuEventOverflow = m_nGpuEventInvalid = m_nGpuEventScopeErrors = 0;
+	return stats.presentedFrames != 0;
 }
 
 //-----------------------------------------------------------------------------

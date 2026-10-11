@@ -77,6 +77,10 @@ struct ShadowMapInfluenceVolume_t
 };
 
 float ShadowMapScene_LocalFar( const dworldlight_t &light, const Vector &worldMins, const Vector &worldMaxs );
+// Engine ComputeLightRadius (gl_drawlights.cpp). radius >= 1 is kept. radius < 1 is solved from
+// attenuation so intensity*falloff equals 0.03 (0.015 in HDR) in VRAD units. Disk intensity is already
+// /255, so the cutoff on the shader's radiance is that value over 255, under 1/255 of output.
+float ShadowMapScene_EffectiveRadius( const dworldlight_t &light, bool hdr );
 void ShadowMapScene_LocalInfluence( const dworldlight_t &light, const Vector &worldMins, const Vector &worldMaxs, ShadowMapInfluenceVolume_t &out );
 // Map-wide selected-sun domain: the whole world AABB (every public entity inside it is sun-eligible).
 void ShadowMapScene_SunDomain( const Vector &worldMins, const Vector &worldMaxs, ShadowMapInfluenceVolume_t &out );

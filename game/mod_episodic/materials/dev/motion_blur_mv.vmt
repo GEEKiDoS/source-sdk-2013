@@ -2,6 +2,7 @@
 {
     "$basetexture" "_rt_FullFrameFB"
     "$velocitytexture" "_rt_MotionVectors"
+    "$tiletexture" "_rt_MotionBlurTiles"
     "$ignorez" "1"
     "$no_fullbright" "1"
     "$nofog" "1"

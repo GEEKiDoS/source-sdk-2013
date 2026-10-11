@@ -14,6 +14,7 @@
 #include "iclientmode.h"
 #include "prediction.h"
 #include "viewrender.h"
+#include "deferred/deferred_light_editor.h"
 #include "c_te_legacytempents.h"
 #include "cl_mat_stub.h"
 #include "tier0/vprof.h"
@@ -70,6 +71,7 @@ bool ToolFramework_SetupEngineMicrophone( Vector &origin, QAngle &angles );
 
 
 extern ConVar default_fov;
+extern ConVar building_cubemaps;
 extern bool g_bRenderingScreenshot;
 
 #if !defined( _X360 )
@@ -760,6 +762,21 @@ void CViewRender::SetUpViews()
 		m_ViewRight = m_View;
 		m_ViewLeft.m_eStereoEye = STEREO_EYE_LEFT;
 		m_ViewRight.m_eStereoEye = STEREO_EYE_RIGHT;
+	}
+
+	if ( GetLightingEditor()->IsEditorActive() && !building_cubemaps.GetBool() )
+	{
+		GetLightingEditor()->GetEditorView( viewEye.origin, viewEye.angles );
+		ViewModelOrigin = viewEye.origin;
+		ViewModelAngles = viewEye.angles;
+		m_ViewLeft = m_View;
+		m_ViewRight = m_View;
+		m_ViewLeft.m_eStereoEye = STEREO_EYE_LEFT;
+		m_ViewRight.m_eStereoEye = STEREO_EYE_RIGHT;
+	}
+	else if ( !building_cubemaps.GetBool() )
+	{
+		GetLightingEditor()->SetEditorView( viewEye.origin, viewEye.angles );
 	}
 
 	if ( bCalcViewModelView )

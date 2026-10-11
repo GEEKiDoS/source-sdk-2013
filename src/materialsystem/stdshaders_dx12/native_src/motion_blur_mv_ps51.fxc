@@ -3,6 +3,7 @@
 #include "dx12_preamble.h"
 
 // DYNAMIC: "QUALITY" "0..3"
+// DYNAMIC: "TILE" "0..1"
 
 #ifdef HDRTYPE
 #undef HDRTYPE
@@ -15,6 +16,9 @@ Texture2D g_tSceneSampler_Texture : register( t0 );
 SamplerState g_tSceneSampler_Sampler : register( s0 );
 Texture2D g_tVelocitySampler_Texture : register( t1 );
 SamplerState g_tVelocitySampler_Sampler : register( s1 );
+#if TILE
+Texture2D<float> g_tTileMax : register( t2 );
+#endif
 
 cbuffer motion_blur_mv : register( b1, space1 )
 {
@@ -65,6 +69,27 @@ float4 main( PS_INPUT i ) : SV_Target0
 	{
 		return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
 	}
+
+#if TILE
+	// g_vMotionBlurInternal.zw is the dilated tile grid. A neighbourhood whose longest blur
+	// stays under half a pixel copies the centre; the gather cannot move a sample further.
+	float2 tileCount = g_vMotionBlurInternal.zw;
+	if ( tileCount.x > 0.0f )
+	{
+		uint velocityWidth, velocityHeight;
+		g_tVelocitySampler_Texture.GetDimensions( velocityWidth, velocityHeight );
+		int2 pixel = int2( floor( saturate( uv ) * float2( velocityWidth, velocityHeight ) ) );
+		int2 tile = clamp( pixel >> 4, int2( 0, 0 ), int2( tileCount ) - 1 );
+		float neighborhood = g_tTileMax.Load( int3( tile, 0 ) );
+		float maxBlurLengthTile = max( g_vMotionBlurInternal.y, 0.0f );
+		float reachable = min( neighborhood * blurMultiplier, maxBlurLengthTile );
+		float skipLimit = 0.5f / max( (float)max( velocityWidth, velocityHeight ), 1.0f );
+		if ( reachable < skipLimit )
+		{
+			return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+		}
+	}
+#endif
 
 	float4 centerVelocity = LoadVelocityPointClamp( uv );
 	if ( centerVelocity.w < 0.5f )

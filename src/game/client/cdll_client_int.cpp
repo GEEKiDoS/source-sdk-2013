@@ -1191,6 +1191,13 @@ void CHLClient::PostInit()
 	}
 #endif
 
+	ConVar *pBicubic = g_pCVar->FindVar( "r_lightmap_bicubic" );
+	if ( pBicubic )
+		pBicubic->AddFlags( FCVAR_ARCHIVE );
+	ConVar *pFpsMax = g_pCVar->FindVar( "fps_max" );
+	if ( pFpsMax )
+		pFpsMax->AddFlags( FCVAR_ARCHIVE );
+
 	if ( !r_lightmap_bicubic_set.GetBool() && materials )
 	{
 		MaterialAdapterInfo_t info{};
@@ -1200,6 +1207,8 @@ void CHLClient::PostInit()
 		r_lightmap_bicubic.SetValue( info.m_nMaxDXSupportLevel >= 95 || ( info.m_nMaxDXSupportLevel >= 90 && IsLinux() ) );
 		r_lightmap_bicubic_set.SetValue( true );
 	}
+
+	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_%language%.txt" );
 
 #if defined( PLATFORM_64BITS ) && defined( HL2_CLIENT_DLL ) && !defined( HL2MP )
 	// The x64 Source SDK Base 2013 Multiplayer engine crashes in the server's send proxies

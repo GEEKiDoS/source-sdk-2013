@@ -114,6 +114,7 @@ BEGIN_VS_SHADER( DX12_PBRGBufferDebug, "PBR G-buffer debug view (compute)" )
 			dispatch.m_Srv[0] = DX12MaterialPbrNormals();
 			dispatch.m_Srv[1] = DX12MaterialPbrSpecular();
 			dispatch.m_Srv[2] = DX12MaterialSceneDepth();
+			dispatch.m_Srv[3] = DX12MaterialSceneStencil();
 			dispatch.m_Uav[0] = DX12MaterialTexture( GetShaderAPITextureBindHandle( OUTPUT, -1 ) );
 			dispatch.m_pConstants = constants;
 			dispatch.m_nConstantBytes = sizeof( constants );

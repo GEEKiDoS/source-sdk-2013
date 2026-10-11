@@ -64,12 +64,16 @@ enum ShadowMapDepthFootprintFullReason_t
 };
 
 // Synchronous feedback from the actual overlay draw; coordinates are chart-local.
-// An empty rectangle is known to have written no pixels. Unknown geometry is full.
+// An empty rectangle wrote no pixels. A vertex behind the light is clipped to the
+// near plane with its triangle or bounds; it does not expand the whole chart.
+// Unknown geometry is full.
 struct ShadowMapDepthFootprint_t
 {
 	void Reset( const float *clip, int chartSize );
 	void AddPoint( const Vector &worldPoint );
 	void AddBounds( const Vector &worldMins, const Vector &worldMaxs );
+	void AddTriangle( const Vector &a, const Vector &b, const Vector &c );
+	void AddQuad( const Vector v[4] );
 	void SetFull( uint32 reason = SHADOWMAP_FOOTPRINT_UNKNOWN );
 	const float *matrix;
 	int size, x0, y0, x1, y1;
@@ -78,22 +82,30 @@ struct ShadowMapDepthFootprint_t
 };
 
 // Replay owns this record, never a caller's stack footprint or mutable cache matrix.
-// CPU geometry stays separate; merge the rope result only after IsComplete acquire.
+// CPU geometry stays separate; merge the precise rope result only after IsComplete.
+// AddConservativeBounds is main-thread only, before the queue, and stays readable
+// while the replay is still pending.
 class CShadowMapRopeFootprint : public CRefCounted<>
 {
 public:
-	CShadowMapRopeFootprint() : m_Complete(true) {}
+	CShadowMapRopeFootprint() : m_Complete(true), m_HasConservative(false) {}
 	void Reset( const float *clip, int size );
 	void BeginQueued();
 	ShadowMapDepthFootprint_t *BeginReplay();
 	void EndReplay();
 	bool IsComplete() const;
 	bool CanReset();
+	void AddConservativeBounds( const Vector &mins, const Vector &maxs );
+	bool CopyConservative( int &x0, int &y0, int &x1, int &y1, bool &full, uint32 &reasons ) const;
 	const ShadowMapDepthFootprint_t &GetFootprint() const { return m_Footprint; }
 private:
 	float m_Matrix[16];
 	ShadowMapDepthFootprint_t m_Footprint;
 	std::atomic<bool> m_Complete;
+	std::atomic<bool> m_HasConservative;
+	int m_ConservativeX0, m_ConservativeY0, m_ConservativeX1, m_ConservativeY1;
+	bool m_ConservativeFull;
+	uint32 m_ConservativeReasons;
 };
 
 struct ShadowMapDepthScene_t

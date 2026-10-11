@@ -257,22 +257,20 @@ float3 PBR_Environment( TextureCube cube, SamplerState smp, PBRSurface s, float3
 	return radiance * ENV_MAP_SCALE * g_ReflectionTint.rgb * mask * s.ao * PBR_EnvBRDF( s.F0, s.roughness, s.NdotV );
 }
 
-// Scene colour plus the G-buffer: x = world-space shading normal (PBR_PackNormal), y = asuint( SV_Position.z ) of the
-// pixel (the depth this surface wrote), then F0.rgb + roughness. The extra targets are discarded by the pipeline outside
-// the G-buffer pass. A legacy draw nearer than this surface leaves the targets untouched, so consumers keep a pixel only
-// while the scene depth still equals y; roughness is clamped to PBR_MIN_ROUGHNESS, so spec.a == 0 never comes from a PBR
-// draw and marks pixels nothing has drawn.
+// Scene colour plus the G-buffer: world-space shading normal (PBR_PackNormal, octahedral [0,1]) and F0.rgb +
+// roughness. The extra targets are discarded by the pipeline outside the G-buffer pass. Validity is stencil bit
+// 0x80, forced on every depth-writing draw in the pass (a PBR writer sets it, anything else clears it).
 struct PBR_PSOut
 {
 	float4 color : SV_Target0;
-	uint2 normalDepth : SV_Target1;
+	float2 normal : SV_Target1;
 	float4 spec : SV_Target2;
 };
-PBR_PSOut PBR_Output( float4 color, PBRSurface s, float depth )
+PBR_PSOut PBR_Output( float4 color, PBRSurface s )
 {
 	PBR_PSOut o;
 	o.color = color;
-	o.normalDepth = uint2( PBR_PackNormal( s.N ), asuint( depth ) );
+	o.normal = PBR_PackNormal( s.N );
 	o.spec = float4( s.F0, s.roughness );
 	return o;
 }

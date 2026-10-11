@@ -128,6 +128,7 @@ cbuffer DX12PSEngine : register(b0, space1)
 #define DX12_SHADOW_LIGHT_POINT 1
 #define DX12_SHADOW_LIGHT_SPOT 2
 #define DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE 1
+#define DX12_SHADOW_VISIBILITY_UNSHADOWED 2
 cbuffer DX12LightingViewConstantsV1 : register(b0, space2)
 {
     uint4 cShadowView0; // mapGeneration, viewGeneration, filterMode, debugMode

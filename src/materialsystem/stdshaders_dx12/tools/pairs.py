@@ -132,6 +132,8 @@ EFFECTS = [
 
 NATIVE_ONLY = [
     native_only('postfx', 'motion_blur_mv_ps51.fxc', 'ps', 'motion_blur_mv_ps51'),
+    native_only('postfx', 'motion_blur_tile_cs51.fxc', 'cs', 'motion_blur_tile_cs51'),
+    native_only('postfx', 'motion_blur_tile_dilate_cs51.fxc', 'cs', 'motion_blur_tile_dilate_cs51'),
     native_only('gtao', 'gtao_prefilter_cs51.fxc', 'cs', 'gtao_prefilter_cs51'),
     native_only('gtao', 'gtao_viewdepth_cs51.fxc', 'cs', 'gtao_viewdepth_cs51'),
     native_only('gtao', 'gtao_main_cs51.fxc', 'cs', 'gtao_main_cs51'),

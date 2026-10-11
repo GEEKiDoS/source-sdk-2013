@@ -1,13 +1,12 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: Private PBR G-buffer, scene-sized and scene-multisampled: render target 1 = world-space octahedral normal (16:16 in x)
-//          plus the depth the surface was drawn at (asuint( SV_Position.z ) in y), R32G32_UINT; render target 2 = F0.rgb +
-//          roughness, R8G8B8A8_UNORM. INT_RENDERPARM_DX12_PBR_GBUFFER_PASS brackets the opaque scene pass of a frame whose PBR
-//          override is committed on. DrawBuffers appends the targets to every native PS that declares three SV_Targets.
-//          A legacy draw does not write them (an RT bound without a matching PS output is not written, whatever the blend
-//          state), so a pixel holds PBR data only while the scene depth still equals the stored depth: consumers compare it
-//          with the scene depth (README "PBR G-buffer contract"). Both targets clear to 0 at the start of the pass, and a
-//          PBR draw never writes roughness 0 (PBR_MIN_ROUGHNESS), so specular alpha 0 marks pixels nothing has drawn.
+// Purpose: Private PBR G-buffer, scene-sized and scene-multisampled, main view only.
+//          Render target 1 = world-space octahedral shading normal, R16G16_UNORM.
+//          Render target 2 = F0.rgb + roughness, R8G8B8A8_UNORM.
+//          Validity is stencil bit 0x80 of the scene depth: every depth-writing draw in the pass sets it
+//          for a PBR writer and clears it otherwise. Consumers read that plane, sample 0.
+//          INT_RENDERPARM_DX12_PBR_GBUFFER_PASS brackets the opaque pass. BEGIN does not clear.
+//          DrawBuffers appends the targets to every native PS that declares three SV_Targets.
 //          Lifecycle mirrors the private motion target (motion_vectors_dx12.cpp).
 //
 //=============================================================================//
@@ -54,7 +53,7 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 			return false;
 	}
 	const UINT rtvStride = pNative->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
-	// The pass clears both targets to 0 ("no PBR data"); the optimized clear value matches.
+	// Optimized clear value is 0. The pass does not clear; stencil bit 0x80 is the validity mark.
 	Microsoft::WRL::ComPtr<ID3D12Resource> resources[2];
 	D3D12_HEAP_PROPERTIES heap{};
 	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -115,9 +114,8 @@ void CShaderAPIDX12::TransitionGBuffer( D3D12_RESOURCE_STATES desiredState )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: INT_RENDERPARM_DX12_PBR_GBUFFER_PASS handler. BEGIN clears the targets and routes them to PBR draws;
-//			END leaves them shader-readable. While the committed PBR override is off there are no producers: BEGIN
-//			releases the targets instead (consumers read the null "no data" view) and no draw gets extra targets.
+// Purpose: INT_RENDERPARM_DX12_PBR_GBUFFER_PASS handler. BEGIN makes the targets renderable;
+//			END leaves them shader-readable. Validity is the stencil bit, so BEGIN clears nothing.
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetGBufferPass( int nMode )
 {
@@ -133,23 +131,9 @@ void CShaderAPIDX12::SetGBufferPass( int nMode )
 		return;
 	}
 	FlushBufferedPrimitives();
-	m_bGBufferPass = false;
-	if ( !m_pDevice->Lighting().PbrOverride() )
-	{
-		if ( m_pGBufferNormal )
-		{
-			m_pDevice->RetainResource( m_pGBufferNormal.Get() );
-			m_pDevice->RetainResource( m_pGBufferSpec.Get() );
-			ReleaseGBufferResources();
-		}
-		return;
-	}
 	if ( !EnsureGBufferResources() )
 		return;
 	TransitionGBuffer( D3D12_RESOURCE_STATE_RENDER_TARGET );
-	const float noData[4] = {};
-	m_pDevice->CommandList()->ClearRenderTargetView( m_GBufferRtv[0], noData, 0, nullptr );
-	m_pDevice->CommandList()->ClearRenderTargetView( m_GBufferRtv[1], noData, 0, nullptr );
 	m_bGBufferPass = true;
 }
 

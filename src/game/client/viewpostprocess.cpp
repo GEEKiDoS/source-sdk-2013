@@ -412,6 +412,45 @@ public:
 	void IssueQuery( int frm_num );
 };
 
+// One sampleable copy of the bound HDR frame per frame. Motion blur and the histogram both need it;
+// whichever runs first copies, the other reuses that texture.
+static int s_nBoundFrameCopyFrame = -1;
+static ITexture *AcquireBoundFrameCopy( IMatRenderContext *pRenderContext, int x, int y, int w, int h )
+{
+	if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT )
+		return NULL;
+	ITexture *pScene = GetFullFrameFrameBufferTexture( 0 );
+	ITexture *pCopy = GetFullFrameFrameBufferTexture( 1 );
+	ITexture *pCurrent = pRenderContext->GetRenderTarget();
+	if ( !pScene || !pCopy || !pCurrent || pCopy->IsError() || pCopy == pCurrent )
+		return NULL;
+	if ( pCopy->GetImageFormat() != pScene->GetImageFormat()
+		|| pCopy->GetActualWidth() != pScene->GetActualWidth()
+		|| pCopy->GetActualHeight() != pScene->GetActualHeight() )
+		return NULL;
+	if ( s_nBoundFrameCopyFrame != gpGlobals->framecount )
+	{
+		UpdateScreenEffectTexture( 1, x, y, w, h, true );
+		pRenderContext->SetFrameBufferCopyTexture( pCopy, 0 );
+		s_nBoundFrameCopyFrame = gpGlobals->framecount;
+	}
+	return pCopy;
+}
+
+static void RetargetBaseTexture( IMaterial *pMaterial, ITexture *pTexture, IMaterialVar *&pBase, ITexture *&pSaved )
+{
+	pBase = NULL;
+	pSaved = NULL;
+	if ( !pMaterial || !pTexture )
+		return;
+	bool bFound = false;
+	pBase = pMaterial->FindVar( "$basetexture", &bFound, false );
+	if ( !pBase )
+		return;
+	pSaved = pBase->GetTextureValue();
+	pBase->SetTextureValue( pTexture );
+}
+
 void CHistogram_entry_t::IssueQuery( int frm_num )
 {
 	CMatRenderContextPtr pRenderContext( materials );
@@ -488,6 +527,9 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	scry_min += skip_edgey;
 	scrx_max -= skip_edgex;
 	scry_max -= skip_edgey;
+	IMaterialVar *pBase = NULL;
+	ITexture *pSavedBase = NULL;
+	RetargetBaseTexture( test_mat, AcquireBoundFrameCopy( pRenderContext, xl, yl, dest_width, dest_height ), pBase, pSavedBase );
 	pRenderContext->DrawScreenSpaceRectangle( test_mat,
 											  scrx_min, scry_min,
 											  1 + scrx_max - scrx_min,
@@ -520,6 +562,8 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 		pRenderContext->SetStencilEnable( false );
 	}
 	pRenderContext->EndOcclusionQueryDrawing( m_occ_handle );
+	if ( pBase && pSavedBase )
+		pBase->SetTextureValue( pSavedBase );
 	if ( m_state == HESTATE_INITIAL )
 		m_state = HESTATE_FIRST_QUERY_IN_FLIGHT;
 	else
@@ -1609,7 +1653,8 @@ static void DoPreBloomTonemapping( IMatRenderContext *pRenderContext, int nX, in
 		if ( s_bScreenEffectTextureIsUpdated == false )
 		{
 			// FIXME: nX/nY/nWidth/nHeight are used here, but the equivalent parameters are ignored in Generate8BitBloomTexture
-			UpdateScreenEffectTexture( 0, nX, nY, nWidth, nHeight, true );
+			if ( !AcquireBoundFrameCopy( pRenderContext, nX, nY, nWidth, nHeight ) )
+				UpdateScreenEffectTexture( 0, nX, nY, nWidth, nHeight, true );
 			s_bScreenEffectTextureIsUpdated = true;
 		}
 
@@ -2579,11 +2624,23 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 				//				Warning("avg_lum=%f\n",g_HDR_HistogramSystem.GetTargetTonemapScalar());
 				if ( mat_dynamic_tonemapping.GetInt() )
 				{
-					float avg_lum = MAX( 0.0001, g_HDR_HistogramSystem.GetTargetTonemapScalar() );
-					float scalevalue = MAX( flAutoExposureMin,
-										 MIN( flAutoExposureMax, 0.18 / avg_lum ));
-					pRenderContext->SetGoalToneMappingScale( scalevalue );
-					mat_hdr_tonemapscale.SetValue( scalevalue );
+					// Algorithm 1 returns the exposure scale itself (histogram adjustment times the current scale),
+					// which is what the integer path applies. 0.18/x and 0.023/x are for algorithm 0's
+					// 0.005/luminance return; on algorithm 1 they clamp to mat_autoexposure_min every frame.
+					if ( mat_tonemap_algorithm.GetInt() == 1 )
+					{
+						float flTargetScalar = g_HDR_HistogramSystem.GetTargetTonemapScalar();
+						float scalevalue = MAX( flAutoExposureMin, MIN( flAutoExposureMax, flTargetScalar ) );
+						scalevalue = MAX( 0.001f, scalevalue );
+						SetToneMapScale( pRenderContext, scalevalue, flAutoExposureMin, flAutoExposureMax );
+					}
+					else
+					{
+						float avg_lum = MAX( 0.0001f, g_HDR_HistogramSystem.GetTargetTonemapScalar() );
+						float scalevalue = MAX( flAutoExposureMin, MIN( flAutoExposureMax, 0.18f / avg_lum ) );
+						pRenderContext->SetGoalToneMappingScale( scalevalue );
+						mat_hdr_tonemapscale.SetValue( scalevalue );
+					}
 				}
 			}
 			
@@ -2640,11 +2697,10 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 			}
 			if ( mat_show_histogram.GetInt() && (engine->GetDXSupportLevel()>=90))
 				g_HDR_HistogramSystem.DisplayHistogram();
-			if ( mat_dynamic_tonemapping.GetInt() )
+			if ( mat_dynamic_tonemapping.GetInt() && mat_tonemap_algorithm.GetInt() != 1 )
 			{
-				float avg_lum = MAX( 0.0001, g_HDR_HistogramSystem.GetTargetTonemapScalar() );
-				float scalevalue = MAX( flAutoExposureMin,
-									 MIN( flAutoExposureMax, 0.023 / avg_lum ));
+				float avg_lum = MAX( 0.0001f, g_HDR_HistogramSystem.GetTargetTonemapScalar() );
+				float scalevalue = MAX( flAutoExposureMin, MIN( flAutoExposureMax, 0.023f / avg_lum ) );
 				SetToneMapScale( pRenderContext, scalevalue, flAutoExposureMin, flAutoExposureMax );
 			}
 			pRenderContext->SetRenderTarget( NULL );
@@ -2723,7 +2779,6 @@ ConVar mat_motion_blur_rotation_intensity( "mat_motion_blur_rotation_intensity",
 ConVar mat_motion_blur_strength( "mat_motion_blur_strength", "1.0" );
 ConVar mat_motion_blur_shutter_time( "mat_motion_blur_shutter_time", "0.016667", FCVAR_ARCHIVE, "DX12 velocity motion blur exposure time in seconds.", true, 0.0f, false, 0.0f );
 
-// Composites a motion blur material over the frame; the material proxy supplies g_vMotionBlurValues.
 static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, int h )
 {
 	CMatRenderContextPtr pRenderContext( materials );
@@ -2733,12 +2788,23 @@ static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, 
 	int dest_width, dest_height, nDummy;
 	pRenderContext->GetViewport( nDummy, nDummy, dest_width, dest_height );
 
+	IMaterial *pMatMotionBlur = materials->FindMaterial( pMaterialName, TEXTURE_GROUP_OTHER, true );
+	IMaterialVar *pBase = NULL;
+	ITexture *pSavedBase = NULL;
+	// Non-float HDR copies the backbuffer into _rt_FullFrameFB. Float HDR renders into that
+	// texture, so sample the other full-frame buffer (shared with the histogram this frame).
 	if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT )
 	{
-		UpdateScreenEffectTexture( 0, x, y, w, h, true ); // Do we need to check if we already did this?
+		UpdateScreenEffectTexture( 0, x, y, w, h, true );
+	}
+	else if ( ITexture *pCopy = AcquireBoundFrameCopy( pRenderContext, x, y, w, h ) )
+	{
+		pSrc = pCopy;
+		nSrcWidth = pCopy->GetActualWidth();
+		nSrcHeight = pCopy->GetActualHeight();
+		RetargetBaseTexture( pMatMotionBlur, pCopy, pBase, pSavedBase );
 	}
 
-	IMaterial *pMatMotionBlur = materials->FindMaterial( pMaterialName, TEXTURE_GROUP_OTHER, true );
 	if ( pMatMotionBlur != NULL )
 	{
 		pRenderContext->DrawScreenSpaceRectangle(
@@ -2752,6 +2818,8 @@ static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, 
 			DumpTGAofRenderTarget( dest_width, dest_height, "MotionBlur" );
 		}
 	}
+	if ( pBase && pSavedBase )
+		pBase->SetTextureValue( pSavedBase );
 }
 
 void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, int h )
@@ -2781,6 +2849,33 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 		g_vMotionBlurValues[1] = flMaxBlurLength;
 		g_vMotionBlurValues[2] = 0.0f;
 		g_vMotionBlurValues[3] = 0.0f;
+		// Yaw and pitch shift every pixel, least at the screen centre. Once that centre shift
+		// is several times the gather-skip threshold the tile pass would only report "all hot".
+		static QAngle s_angLast( 0, 0, 0 );
+		static bool s_bHaveLast = false;
+		bool bWholeScreenHot = false;
+		if ( s_bHaveLast && flMotionBlurScale != 0.0f )
+		{
+			const float flFov = Max( viewBlur.fov, 1.0f );
+			const float flYaw = fabsf( AngleDiff( viewBlur.angles[YAW], s_angLast[YAW] ) );
+			const float flPitch = fabsf( AngleDiff( viewBlur.angles[PITCH], s_angLast[PITCH] ) );
+			const float flCenterDeg = FastSqrt( flYaw * flYaw + flPitch * flPitch );
+			const float flCenterUv = ( flCenterDeg / flFov ) * flMotionBlurScale;
+			const float flSkipUv = 0.5f / Max( Max( w, h ), 1 );
+			bWholeScreenHot = flCenterUv > flSkipUv * 4.0f;
+		}
+		s_angLast = viewBlur.angles;
+		s_bHaveLast = true;
+		if ( flMotionBlurScale != 0.0f && !bWholeScreenHot )
+		{
+			CMatRenderContextPtr pRenderContext( materials );
+			int nTileX = 0, nTileY = 0;
+			if ( MotionVectorsDX12_BuildBlurTiles( pRenderContext, flMaxBlurLength, nTileX, nTileY ) )
+			{
+				g_vMotionBlurValues[2] = static_cast<float>( nTileX );
+				g_vMotionBlurValues[3] = static_cast<float>( nTileY );
+			}
+		}
 		// Keep the legacy path's timing coherent if the blur mode switches at runtime.
 		s_flLastTimeUpdate = gpGlobals->realtime;
 

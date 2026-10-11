@@ -34,10 +34,9 @@ inline ShaderAPIDX12ComputeResource_t DX12MaterialSceneDepth()
 	return resource;
 }
 
-// World-space shading normals plus the depth they were drawn at (R32G32_UINT, see PBR_Output) and F0 + roughness (R8G8B8A8_UNORM)
-// the PBR pixel shaders write during the opaque scene pass. A pixel is PBR data only while the scene depth equals the stored depth
-// and specular alpha is nonzero (README "PBR G-buffer contract"). Resolved by the backend; null (reads 0) until the first
-// G-buffer pass of the frame and while the PBR override is off.
+// World-space shading normal (R16G16_UNORM octahedral [0,1], see PBR_Output) and F0 + roughness (R8G8B8A8_UNORM)
+// the PBR pixel shaders write during the opaque main-view pass. A pixel is PBR data only while stencil bit 0x80 is
+// set (README "PBR G-buffer contract"). Resolved by the backend; null (reads 0) until the first G-buffer pass of the frame.
 inline ShaderAPIDX12ComputeResource_t DX12MaterialPbrNormals()
 {
 	ShaderAPIDX12ComputeResource_t resource = {};
@@ -49,6 +48,15 @@ inline ShaderAPIDX12ComputeResource_t DX12MaterialPbrSpecular()
 {
 	ShaderAPIDX12ComputeResource_t resource = {};
 	resource.m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR;
+	return resource;
+}
+
+// Stencil plane of the scene depth (X24_TYPELESS_G8_UINT, plane 1). Texture2D<uint2> / Texture2DMS<uint2>, value in .y.
+// Bit 0x80 is set on the nearest depth-writing PBR surface of the main-view G-buffer pass.
+inline ShaderAPIDX12ComputeResource_t DX12MaterialSceneStencil()
+{
+	ShaderAPIDX12ComputeResource_t resource = {};
+	resource.m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL;
 	return resource;
 }
 

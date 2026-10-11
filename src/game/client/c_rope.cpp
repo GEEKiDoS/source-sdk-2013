@@ -300,6 +300,7 @@ private:
 
 	void RenderNonSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount );
 	void RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid, ShadowMapDepthFootprint_t *footprint = NULL );
+	void ProjectQueuedRopeBounds( CShadowMapRopeFootprint *record, C_RopeKeyframe *pRope );
 
 private:
 
@@ -644,6 +645,8 @@ void CRopeManager::DrawRenderCache( bool bShadowDepth, CShadowMapRopeFootprint *
 
 				pWriteCache->m_aCache[pWriteCache->m_nCacheCount] = pRope;
 				++pWriteCache->m_nCacheCount;
+				if ( footprint )
+					ProjectQueuedRopeBounds( footprint, pRope );
 
 				int iNodes = pRope->m_RopePhysics.NumNodes();
 
@@ -840,16 +843,21 @@ void CRopeManager::RenderSolidRopes( IMatRenderContext *pRenderContext, IMateria
 		{
 			const unsigned char *position = reinterpret_cast<const unsigned char *>( meshBuilder.m_pPosition );
 			const int vertexCount = meshBuilder.VertexCount();
-			for ( int vertex = 0; vertex < vertexCount; ++vertex, position += meshBuilder.m_VertexSize_Position )
+			const int stride = meshBuilder.m_VertexSize_Position;
+			// Beam vertices are a strip (two per sample), indexed as triangles. Clip every
+			// strip edge so a sample behind the light only expands the visible fragment.
+			Vector *verts = (Vector *)stackalloc( vertexCount * sizeof( Vector ) );
+			for ( int vertex = 0; vertex < vertexCount; ++vertex )
 			{
-				const float *point = reinterpret_cast<const float *>( position );
-				footprint->AddPoint( Vector( point[0], point[1], point[2] ) );
-				if ( footprint->full )
-				{
-					footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE );
-					break;
-				}
+				const float *point = reinterpret_cast<const float *>( position + vertex * stride );
+				verts[vertex].Init( point[0], point[1], point[2] );
 			}
+			for ( int vertex = 0; vertex + 1 < vertexCount && !footprint->full; ++vertex )
+				footprint->AddTriangle( verts[vertex], verts[vertex], verts[vertex + 1] );
+			for ( int vertex = 0; vertex + 2 < vertexCount && !footprint->full; ++vertex )
+				footprint->AddTriangle( verts[vertex], verts[vertex + 1], verts[vertex + 2] );
+			if ( footprint->full )
+				footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE );
 		}
 	}
 
@@ -1749,6 +1757,59 @@ inline void Catmull_Rom_Eval( const catmull_t &spline, const Vector &t, Vector &
 	Assert(spline.t2.IsValid());
 	Assert(spline.t3.IsValid());
 	output = spline.c + (t.x * spline.t) + (t.y*spline.t2) + (t.z * spline.t3);
+}
+void CRopeManager::ProjectQueuedRopeBounds( CShadowMapRopeFootprint *record, C_RopeKeyframe *pRope )
+{
+	const int nodeCount = pRope->m_RopePhysics.NumNodes();
+	if ( nodeCount <= 0 )
+		return;
+	int nSubdivs = 0;
+	Vector *subdivs = pRope->GetRopeSubdivVectors( &nSubdivs );
+	// The ribbon sits half a width off the centerline, and a far rope can be widened
+	// to a few pixels. The pad covers that plus segment joins; the samples cover the spline.
+	const float pad = MAX( pRope->m_Width, 1.0f ) + 32.0f;
+	Vector mins( FLT_MAX, FLT_MAX, FLT_MAX ), maxs( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+	const int last = nodeCount - 1;
+	int prev = 0;
+	for ( int i = 0; i < nodeCount; ++i )
+	{
+		const Vector &node = pRope->m_RopePhysics.GetNode( i )->m_vPredicted;
+		if ( !node.IsValid() )
+		{
+			Vector invalid;
+			invalid.Invalidate();
+			record->AddConservativeBounds( invalid, invalid );
+			return;
+		}
+		VectorMin( mins, node, mins );
+		VectorMax( maxs, node, maxs );
+		if ( i < last && nSubdivs > 0 )
+		{
+			const int next = MIN( i + 1, last );
+			const int next2 = MIN( i + 2, last );
+			catmull_t spline;
+			Catmull_Rom_Spline_Matrix( pRope->m_RopePhysics.GetNode( prev )->m_vPredicted, node,
+				pRope->m_RopePhysics.GetNode( next )->m_vPredicted,
+				pRope->m_RopePhysics.GetNode( next2 )->m_vPredicted, spline );
+			for ( int s = 0; s < nSubdivs; ++s )
+			{
+				Vector pos;
+				Catmull_Rom_Eval( spline, subdivs[s], pos );
+				if ( !pos.IsValid() )
+				{
+					Vector invalid;
+					invalid.Invalidate();
+					record->AddConservativeBounds( invalid, invalid );
+					return;
+				}
+				VectorMin( mins, pos, mins );
+				VectorMax( maxs, pos, maxs );
+			}
+			prev = i;
+		}
+	}
+	const Vector padv( pad, pad, pad );
+	record->AddConservativeBounds( mins - padv, maxs + padv );
 }
 
 

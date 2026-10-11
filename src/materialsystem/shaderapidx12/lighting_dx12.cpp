@@ -2208,6 +2208,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			if ( !ShadowMap_IsFiniteFloat( viewFloats[i] ) ) failure = kPacketError;
 		const bool csmValid = ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_CSM_VALID ) != 0;
 		uint32 initializedCascades = 0;
+		uint32 csmSlot = 0;
 		if ( !failure && ( csmValid || deferred ) )
 		{
 			for ( uint32 i = 0; !failure && i < DX12_SHADOW_CSM_CASCADES; ++i )
@@ -2218,14 +2219,18 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 				const bool emptyDepth = ShadowValuesZero( depth, 4 );
 				const bool emptyMatrix = ShadowValuesZero( v.constants.cSunWorldToClip[i], 16 );
 				if ( deferred && emptyRect && emptyDepth && emptyMatrix ) continue;
-				if ( !csmValid || emptyMatrix || rect[2] != DX12_SHADOW_CSM_SLOT_SIZE || rect[3] ||
-					!RectFits( rect[0], rect[1], rect[2], rect[2], DX12_SHADOW_CSM_ATLAS_SIZE, DX12_SHADOW_CSM_ATLAS_SIZE ) ||
+				if ( !csmSlot ) csmSlot = rect[2];
+				const uint32 atlas = csmSlot * 2;
+				if ( !csmValid || !csmSlot || emptyMatrix || rect[2] != csmSlot || rect[3] ||
+					( rect[0] != 0 && rect[0] != csmSlot ) || ( rect[1] != 0 && rect[1] != csmSlot ) ||
+					!RectFits( rect[0], rect[1], rect[2], rect[2], atlas, atlas ) ||
 					depth[1] <= depth[0] || depth[2] <= 0 || depth[3] ) failure = kPacketError;
 				else ++initializedCascades;
 			}
 			if ( !failure && csmValid && !initializedCascades ) failure = kPacketError;
 		}
 		const bool staticSunValid = ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) != 0;
+		uint32 staticSize = 0;
 		if ( !failure && ( staticSunValid || deferred ) )
 		{
 			const uint32 *rect = v.constants.cStaticSunRect;
@@ -2234,26 +2239,33 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 				ShadowValuesZero( v.constants.cStaticSunWorldToClip, 16 );
 			if ( staticSunValid )
 			{
+				staticSize = rect[2];
 				if ( emptyChart || ShadowValuesZero( v.constants.cStaticSunWorldToClip, 16 ) || rect[0] || rect[1] ||
-					rect[2] != DX12_SHADOW_STATIC_SUN_SIZE || rect[3] || depth[1] <= depth[0] || depth[2] <= 0 || depth[3] ) failure = kPacketError;
+					!staticSize || rect[3] || depth[1] <= depth[0] || depth[2] <= 0 || depth[3] ) failure = kPacketError;
 			}
 			else if ( !emptyChart ) failure = kPacketError;
 		}
+		uint32 localSlot = 0;
+		for ( int i = 0; !failure && !localSlot && i < packet->lights.Count(); ++i )
+			for ( uint32 face = 0; face < DX12_SHADOW_MAX_FACES; ++face )
+				if ( packet->lights[i].faces[face][3] ) { localSlot = packet->lights[i].faces[face][3]; break; }
 		for ( int i = 0; !failure && i < packet->leases.Count(); ++i )
 		{
 			ShadowTargetDX12 *target = packet->leases[i];
 			if ( !target ) { if ( i >= 2 && packet->ids[i - 2] ) failure = kPacketError; continue; }
-			const int required = i == 0 ? DX12_SHADOW_CSM_ATLAS_SIZE : i == 1 ? DX12_SHADOW_STATIC_SUN_SIZE : DX12_SHADOW_LOCAL_PAGE_SIZE;
-			if ( target->width != required || target->height != required ) failure = kPacketError;
+			const int required = i == 0 ? int( csmSlot * 2 ) : i == 1 ? int( staticSize ) : DX12_SHADOW_LOCAL_PAGE_SIZE;
+			if ( !required || target->width != required || target->height != required ) failure = kPacketError;
 		}
 		for ( int i = 0; !failure && i < packet->lights.Count(); ++i )
 		{
 			const RuntimeShadowLightGpu &light = packet->lights[i];
+			const bool lightUnshadowed = ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) != 0;
+			const bool bakedAvailable = ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
 			if ( light.type != DX12_SHADOW_LIGHT_POINT && light.type != DX12_SHADOW_LIGHT_SPOT || ( light.faceCount != 1 && light.faceCount != 6 ) || light.type == DX12_SHADOW_LIGHT_POINT && light.faceCount != 6 || !ShadowMap_IsFiniteFloat( light.shadowNear ) || !ShadowMap_IsFiniteFloat( light.shadowFar ) || light.shadowNear <= 0 || light.shadowFar <= light.shadowNear ) { failure = kPacketError; break; }
 			if ( !ShadowMap_IsFiniteFloat( light.realtimeWeight ) || light.realtimeWeight < 0 || light.realtimeWeight > 1 ||
-				light.visibilityFlags & ~DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE || light.reserved0 ||
-				( !( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) && light.bakedLightIndex ) ||
-				( unshadowed && light.realtimeWeight != 0 ) ) { failure = kPacketError; break; }
+				light.visibilityFlags & ~( DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE | DX12_SHADOW_VISIBILITY_UNSHADOWED ) || light.reserved0 ||
+				( !bakedAvailable && light.bakedLightIndex && light.bakedLightIndex != 0xffffffffu ) ||
+				( unshadowed && light.realtimeWeight != 0 && !lightUnshadowed ) ) { failure = kPacketError; break; }
 			const float *lightFloats = light.origin;
 			for ( size_t f = 0; f < ( offsetof( RuntimeShadowLightGpu, faces ) - offsetof( RuntimeShadowLightGpu, origin ) ) / sizeof( float ); ++f )
 				if ( !ShadowMap_IsFiniteFloat( lightFloats[f] ) ) failure = kPacketError;
@@ -2261,11 +2273,11 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			bool owned = false;
 			{
 				AUTO_LOCK( s.mutex );
-				owned = light.lightId < uint32( s.selected.Count() ) && s.selected[light.lightId].type == light.type &&
-					( !s.highresMap || ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) ) &&
-					( !( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) ||
+				owned = !bakedAvailable || ( light.lightId < uint32( s.selected.Count() ) && s.selected[light.lightId].type == light.type &&
+					( !s.highresMap || bakedAvailable ) &&
+					( !bakedAvailable ||
 					( light.bakedLightIndex < uint32( s.selected.Count() ) && s.selected[light.bakedLightIndex].lightId == light.lightId &&
-					  s.selected[light.bakedLightIndex].type == light.type ) );
+					  s.selected[light.bakedLightIndex].type == light.type ) ) );
 			}
 			if ( !owned ) { failure = kPacketError; break; }
 			if ( residentTail && light.realtimeWeight > 0 )
@@ -2275,10 +2287,10 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 				++residentOrdinal;
 			}
 			// The highres pixel kernel merges canonical face entries with the CSR.
-			if ( s.highresMap && i && packet->lights[i-1].bakedLightIndex >= light.bakedLightIndex )
+			if ( s.highresMap && bakedAvailable && i && packet->lights[i-1].bakedLightIndex >= light.bakedLightIndex )
 			{ failure = kPacketError; break; }
 			const bool cold = ShadowValuesZero( &light.faces[0][0], DX12_SHADOW_MAX_FACES * 4 );
-			if ( light.realtimeWeight == 0 )
+			if ( light.realtimeWeight == 0 || lightUnshadowed )
 			{
 				if ( !cold || !ShadowValuesZero( &light.worldToClip[0][0], DX12_SHADOW_MAX_FACES * 16 ) ) failure = kPacketError;
 				continue;
@@ -2291,7 +2303,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 					if ( !ShadowValuesZero( rect, 4 ) || !ShadowValuesZero( light.worldToClip[face], 16 ) ) { failure = kPacketError; break; }
 					continue;
 				}
-				if ( rect[3] != DX12_SHADOW_LOCAL_SLOT_SIZE || rect[1] % DX12_SHADOW_LOCAL_SLOT_SIZE || rect[2] % DX12_SHADOW_LOCAL_SLOT_SIZE || !RectFits( rect[1], rect[2], rect[3], rect[3], DX12_SHADOW_LOCAL_PAGE_SIZE, DX12_SHADOW_LOCAL_PAGE_SIZE ) ||
+				if ( !localSlot || rect[3] != localSlot || rect[1] % localSlot || rect[2] % localSlot || !RectFits( rect[1], rect[2], rect[3], rect[3], DX12_SHADOW_LOCAL_PAGE_SIZE, DX12_SHADOW_LOCAL_PAGE_SIZE ) ||
 					ShadowValuesZero( light.worldToClip[face], 16 ) ) { failure = kPacketError; break; }
 				if ( rect[0] >= v.localTargetCount || !packet->leases[2 + rect[0]] ) { failure = SHADOWMAP_ERR_RESIDENCY; break; }
 			}

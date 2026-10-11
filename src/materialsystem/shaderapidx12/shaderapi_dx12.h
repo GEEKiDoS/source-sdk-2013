@@ -615,6 +615,7 @@ public:
 		ShaderRasterState_t rasterState;
 		uint32_t rasterOverride, shadeMode, fogMode, pixelFog, cullMode;
 		uint32_t stencilEnabled, stencilCompare, stencilFail, stencilDepthFail, stencilPass, stencilReadMask, stencilWriteMask;
+		uint32_t gbufferPass;
 		uint32_t alphaToCoverage, colorWriteOverride, colorWriteValue, alphaWriteOverride, alphaWriteValue, overrideDepthEnable, overrideDepthValue, forceDepthEquals, reverseDepth;
 		float shadowSlope, shadowDepth, slopeDecal, slopeNormal, depthDecal, depthNormal;
 	};
@@ -1089,8 +1090,9 @@ private:
 	uint32_t m_nMotionPassDraws = 0, m_nMotionPassObjects = 0, m_nMotionSuppressedPasses = 0;
 	uint64_t m_nMotionLogFrame = 0;
 	// PBR G-buffer targets (target layout: gbuffer_dx12.cpp). DrawBuffers appends them to PBR draws while m_bGBufferPass is set;
-	// compute reads them in kGBufferReadState.
-	static constexpr DXGI_FORMAT kGBufferFormats[2] = { DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R8G8B8A8_UNORM };
+	// validity is stencil bit kGBufferStencilBit. Compute reads the targets in kGBufferReadState.
+	static constexpr uint8_t kGBufferStencilBit = 0x80;
+	static constexpr DXGI_FORMAT kGBufferFormats[2] = { DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM };
 	static constexpr D3D12_RESOURCE_STATES kGBufferReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGBufferNormal, m_pGBufferSpec;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_pGBufferRtvHeap;

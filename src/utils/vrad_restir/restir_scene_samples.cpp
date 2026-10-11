@@ -905,9 +905,8 @@ static void BuildDisplacementSamples( const CCoreDispInfo &disp, ReSTIRScene &sc
 	FreeWinding( winding );
 }
 
-// BSP brush faces are convex. Classify in their own world-space winding, then
-// project exterior grid points onto the closest edge of THAT face (not a
-// neighboring transport sample). Winding sign is independent of face orientation.
+// BSP brush faces are convex. Classify grid points in their own world-space
+// winding; winding sign is independent of face orientation.
 static bool BuildSunFacePolygon( const ReSTIRSceneBuildContext &context, const ReSTIRGpuFace &face,
 	CUtlVector<Vector> &polygon, float &windingSign )
 {
@@ -931,58 +930,14 @@ static bool BuildSunFacePolygon( const ReSTIRSceneBuildContext &context, const R
 	return true;
 }
 
-static bool ClampSunPointToFace( const CUtlVector<Vector> &polygon, float windingSign,
+// Strictly interior grid points only. Points on or beyond an edge are resolved
+// from the face's sample cells once those exist (ResolveExteriorVisibilityOrigins).
+static bool SunPointInsideFace( const CUtlVector<Vector> &polygon, float windingSign,
 	const Vector &normal, const Vector &point, Vector &receiver )
 {
 	if ( !point.IsValid() )
 		return false;
 	receiver = point - normal * ( DotProduct( point - polygon[0], normal ) / normal.LengthSqr() );
-	if ( !receiver.IsValid() )
-		return false;
-	bool inside = true;
-	for ( int edgeIndex = 0; edgeIndex < polygon.Count(); ++edgeIndex )
-	{
-		const Vector &start = polygon[edgeIndex];
-		const Vector edge = polygon[( edgeIndex + 1 ) % polygon.Count()] - start;
-		if ( edge.LengthSqr() > 0.0f && windingSign * DotProduct( CrossProduct( edge, receiver - start ), normal ) <= 0.0f )
-		{
-			inside = false;
-			break;
-		}
-	}
-	if ( inside )
-		return true;
-	bool haveClosest = false;
-	float closestDistance = 0.0f;
-	Vector closest;
-	for ( int edgeIndex = 0; edgeIndex < polygon.Count(); ++edgeIndex )
-	{
-		const Vector &start = polygon[edgeIndex];
-		const Vector edge = polygon[( edgeIndex + 1 ) % polygon.Count()] - start;
-		const float lengthSquared = edge.LengthSqr();
-		if ( lengthSquared <= 0.0f )
-			continue;
-		const float fraction = MAX( 0.0f, MIN( 1.0f, DotProduct( receiver - start, edge ) / lengthSquared ) );
-		const Vector candidate = start + edge * fraction;
-		const float distance = ( candidate - receiver ).LengthSqr();
-		if ( !haveClosest || distance < closestDistance )
-		{
-			closest = candidate;
-			closestDistance = distance;
-			haveClosest = true;
-		}
-	}
-	if ( !haveClosest )
-		return false;
-	// Approach boundary luxels from their own face's interior. Exact shared
-	// edges have backend-dependent triangle ownership, even for a central ray.
-	// The displacement is roundoff-sized relative to this polygon, not a
-	// world-space leak bias, and leaves transport sample positions unchanged.
-	Vector centroid( 0, 0, 0 );
-	for ( int vertex = 0; vertex < polygon.Count(); ++vertex )
-		centroid += polygon[vertex];
-	centroid /= polygon.Count();
-	receiver = closest + ( centroid - closest ) * ( 32.0f * FLT_EPSILON );
 	if ( !receiver.IsValid() )
 		return false;
 	for ( int edgeIndex = 0; edgeIndex < polygon.Count(); ++edgeIndex )
@@ -993,6 +948,44 @@ static bool ClampSunPointToFace( const CUtlVector<Vector> &polygon, float windin
 			return false;
 	}
 	return true;
+}
+
+// utils/vrad/radial.cpp — a luxel outside its face takes its light from the
+// in-face sample cells around it. Its visibility origin is the nearest clipped
+// cell's balance point: strictly inside the face, so it never sits on a shared
+// edge or on a neighbouring plane, where the face-normal push plus the trace
+// tMin would let cone rays leak through or self-hit. A VBSP split can leave a
+// thin face whose grid points all fall outside it except the middle column.
+static void ResolveExteriorVisibilityOrigins( ReSTIRScene &scene, const ReSTIRGpuFace &face )
+{
+	if ( face.numSamples == 0 )
+		return;
+	const Vector normal = ReSTIR_SceneV4( face.faceNormal );
+	for ( int t = 0; t < face.luxelH; ++t )
+	{
+		for ( int s = 0; s < face.luxelW; ++s )
+		{
+			Vector4D &origin = scene.sunVisibilityOrigins[face.firstLuxel + t * face.luxelW + s];
+			if ( origin.w == 1.0f )
+				continue;
+			int nearest = face.firstSample;
+			float nearestDistance = FLT_MAX;
+			for ( int i = face.firstSample; i < face.firstSample + face.numSamples; ++i )
+			{
+				const ReSTIRGpuSample &sample = scene.samples[i];
+				const float ds = sample.lmCoord[0] - s;
+				const float dt = sample.lmCoord[1] - t;
+				const float distance = ds * ds + dt * dt;
+				if ( distance < nearestDistance )
+				{
+					nearest = i;
+					nearestDistance = distance;
+				}
+			}
+			const Vector receiver = ReSTIR_SceneV4( scene.samples[nearest].position ) + normal;
+			origin.Init( receiver.x, receiver.y, receiver.z, 1.0f );
+		}
+	}
 }
 
 // utils/vrad/lightmap.cpp:847-868; vraddisps.cpp:1670-1704 — BuildFaceLuxels/BuildDispLuxels.
@@ -1108,7 +1101,7 @@ static bool BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 			{
 				Vector receiver = point;
 				const bool valid = validSunFace && surfaceValid && point.IsValid() &&
-					( disp || ClampSunPointToFace( sunPolygon, windingSign, normal, point, receiver ) );
+					( disp || SunPointInsideFace( sunPolygon, windingSign, normal, point, receiver ) );
 				// Displacements already carry their geometry push. Only append the
 				// same face-normal offset as ShadingOrigin; never change luxel.position.
 				const Vector origin = receiver + normal;
@@ -1375,10 +1368,17 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 			BuildRegularFaceSamples( context, scene, faceIndex, face );
 		}
 		face.numSamples = scene.samples.Count() - face.firstSample;
-		if ( face.numSamples == 0 && scene.sunVisibilityOrigins.Count() > 0 )
+		if ( scene.sunVisibilityOrigins.Count() > 0 )
 		{
-			for ( int luxel = face.firstLuxel; luxel < face.firstLuxel + face.luxelW * face.luxelH; ++luxel )
-				scene.sunVisibilityOrigins[luxel].Init( 0, 0, 0, 0 );
+			if ( face.numSamples == 0 )
+			{
+				for ( int luxel = face.firstLuxel; luxel < face.firstLuxel + face.luxelW * face.luxelH; ++luxel )
+					scene.sunVisibilityOrigins[luxel].Init( 0, 0, 0, 0 );
+			}
+			else if ( !disp )
+			{
+				ResolveExteriorVisibilityOrigins( scene, face );
+			}
 		}
 		if ( disp )
 		{

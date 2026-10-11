@@ -306,14 +306,13 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 			index = g_ShadowTileIndices[range.x + i];
 			++i;
 		}
-		bool bakedDelta = bakedLocalDirect && !unbaked;
 		RuntimeShadowLightGpu light = g_ShadowLights[index];
+		bool bakedDelta = bakedLocalDirect && !unbaked && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
 		bool lowest = light.lightId < lowestId;
 		if ( lowest )
 		{
 			lowestId = light.lightId;
 			d.lowestLocal = index;
-			d.localDiagnostics = 0.0;
 		}
 		float3 L;
 		float3 radiance = ShadowMap_StandardLightRadiance( light, r.positionWS, L );
@@ -325,16 +324,14 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 		float3 specular = PBR_Specular( s, L );
 		if ( PBR_Max3( abs( basis ) ) > 0.0 || PBR_Max3( extra ) > 0.0 || PBR_Max3( specular ) > 0.0 )
 		{
-			float2 diagnostics = 0.0;
 			float visibility = 1.0;
 			float diffuseVisibility = bakedDelta ? 0.0 : 1.0;
 			float specularVisibility = 1.0;
 			// Bound diffuse + specular visibility error: diffuse deltas scale with w, specular does not. A skipped delta
-			// is zero (both endpoints use V=1); skipped specular keeps the unshadowed stand-in. Diagnostics never skip.
+			// is zero (both endpoints use V=1); skipped specular keeps the unshadowed stand-in.
 			float3 contribution = radiance * ( ( PBR_Max3( basis ) + PBR_Max3( extra ) ) * ( bakedDelta ? light.realtimeWeight : 1.0 ) + PBR_Max3( specular ) );
 			bool sampleShadow = cSunBasisY.w <= 0.0 ||
-				max( contribution.r, max( contribution.g, contribution.b ) ) > cSunBasisY.w ||
-				cShadowView0.w == 5 || cShadowView0.w == 6;
+				max( contribution.r, max( contribution.g, contribution.b ) ) > cSunBasisY.w;
 			[branch] if ( sampleShadow )
 			{
 				float bakedVisibility = 1.0;
@@ -344,8 +341,9 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
 					bakedVisibility = PBR_BakedVisibility( r, bakedLookup, light.bakedLightIndex );
 				float realtimeVisibility = bakedVisibility;
-				[branch] if ( light.realtimeWeight > 0.0 )
-					realtimeVisibility = ShadowMap_LocalPCSSChart( light, ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS ), diagnostics );
+				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only.
+				[branch] if ( light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 )
+					realtimeVisibility = ShadowMap_LocalPCFChart( light, ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS ) );
 				specularVisibility = lerp( bakedVisibility, realtimeVisibility, light.realtimeWeight );
 				if ( bakedDelta )
 				{
@@ -361,7 +359,6 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 			else if ( bakedDelta ) visibility = light.realtimeWeight;
 			d.diffuse += radiance * ( basis * diffuseVisibility + extra * visibility );
 			d.specular += radiance * specular * specularVisibility;
-			if ( lowest ) d.localDiagnostics = diagnostics;
 		}
 	}
 	// Baked-only specular (see above): only the receiver's live entries are visited.

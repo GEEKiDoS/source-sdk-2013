@@ -10,6 +10,7 @@
 
 #include "cbase.h"
 #include "clientmode_shared.h"
+#include "deferred/deferred_light_editor.h"
 #include "iinput.h"
 #include "view_shared.h"
 #include "iviewrender.h"
@@ -421,6 +422,9 @@ bool ClientModeShared::CreateMove( float flInputSampleTime, CUserCmd *cmd )
 	// Let the player override the view.
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 	if(!pPlayer)
+		return true;
+
+	if ( GetLightingEditor()->SuppressPlayerInput( cmd ) )
 		return true;
 
 	// Let the player at it

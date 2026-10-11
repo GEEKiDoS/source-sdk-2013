@@ -1,4 +1,4 @@
-logical=motion_blur_mv_ps51 stage=ps source=motion_blur_mv_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=4 present=4
+logical=motion_blur_mv_ps51 stage=ps source=motion_blur_mv_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=8 present=8
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none

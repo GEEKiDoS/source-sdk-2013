@@ -199,6 +199,28 @@ public:
 	// ConsumeGpuTime collects fence-completed timestamps and pipeline counters; consume this snapshot immediately afterward.
 	bool ConsumeGpuStageStats( GpuStageStatsDX12 &stats );
 
+	// Inclusive named ranges. D3D12 events are recorded whenever a list is open; timestamps only for -dx12stats.
+	struct GpuEventStatDX12
+	{
+		char name[64] = {};
+		double msPerFrame = 0;
+		double countPerFrame = 0;
+	};
+	struct GpuEventStatsDX12
+	{
+		GpuEventStatDX12 events[48] = {};
+		uint32_t count = 0;
+		double coveredMsPerFrame = 0;
+		uint32_t presentedFrames = 0;
+		uint64_t completedSpans = 0, skippedSpans = 0, overflowSpans = 0, invalidSpans = 0, scopeErrors = 0;
+		uint32_t pendingSpans = 0;
+		bool available = false;
+	};
+	void BeginGpuPIXEvent( const char *szName );
+	void EndGpuPIXEvent();
+	void SetGpuPIXMarker( const char *szName );
+	bool ConsumeGpuEventStats( GpuEventStatsDX12 &stats );
+
 	// Replays every recorded command before returning; required before rewriting or freeing CPU RTV/DSV descriptors
 	// that recorded OMSetRenderTargets/Clear*View calls still name.
 	void DrainRecording()
@@ -440,6 +462,13 @@ private:
 	void BeginGpuStageSpan();
 	void EndGpuStageSpan();
 	void ChangeGpuStage( GpuStageDX12 stage );
+	void EnsureGpuEventTiming();
+	void CollectGpuEvents();
+	bool BeginGpuEventSpan( uint32_t nameId, uint32_t &slot );
+	void EndGpuEventSpan( uint32_t slot );
+	uint32_t InternGpuEventName( const char *name );
+	void SuspendGpuPIXEvents();
+	void ResumeGpuPIXEvents();
 	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pTimestampHeap;
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pTimestampReadback;
 	const uint64_t *m_pTimestampData = nullptr;
@@ -474,6 +503,39 @@ private:
 	uint64_t m_nGpuStageCInvocations[GpuStageCount] = {};
 	uint64_t m_nGpuStageCPrimitives[GpuStageCount] = {};
 	GpuStageStatsDX12 m_GpuStageStats;
+
+	// Named PIX ranges. The stack survives a submit; each open range is closed on the old list and reopened on the next.
+	static constexpr uint32_t kGpuEventSlots = 4096;
+	static constexpr uint32_t kGpuEventStack = 64;
+	static constexpr uint32_t kGpuEventNames = 48;
+	static constexpr uint32_t kGpuEventCover = 0xffffffffu;
+	struct GpuPixScopeDX12
+	{
+		char name[64] = {};
+		uint32_t nameId = 0;
+		uint32_t slot = 0;
+		bool timing = false;
+	};
+	struct GpuEventAccumDX12
+	{
+		char name[64] = {};
+		double sumMs = 0;
+		uint32_t count = 0;
+	};
+	bool m_bGpuEventTiming = false, m_bGpuEventUnavailable = false, m_bGpuEventCoverOpen = false;
+	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pGpuEventHeap;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGpuEventReadback;
+	const uint64_t *m_pGpuEventData = nullptr;
+	uint64_t m_GpuEventFences[kGpuEventSlots] = {};
+	uint32_t m_GpuEventSlotNames[kGpuEventSlots] = {};
+	uint32_t m_nGpuEventSlot = 0, m_nGpuEventCoverSlot = 0;
+	uint32_t m_nGpuPixDepth = 0, m_nGpuPixOverflow = 0, m_nGpuPixOverflowClosed = 0;
+	GpuPixScopeDX12 m_GpuPixStack[kGpuEventStack] = {};
+	GpuEventAccumDX12 m_GpuEventNames[kGpuEventNames] = {};
+	uint32_t m_nGpuEventNames = 0;
+	double m_flGpuEventCoveredMs = 0, m_flGpuEventOtherMs = 0;
+	uint32_t m_nGpuEventOtherCount = 0;
+	uint64_t m_nGpuEventCompleted = 0, m_nGpuEventSkipped = 0, m_nGpuEventOverflow = 0, m_nGpuEventInvalid = 0, m_nGpuEventScopeErrors = 0;
 
 	// Submission worker: Close/ExecuteCommandLists/Signal and Present run there in FIFO order. The recording
 	// owner calls FlushSubmissions before any other queue or swap-chain access.

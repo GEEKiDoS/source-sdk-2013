@@ -72,12 +72,69 @@ float4 HighresLightmap_Finish(float4 color)
     HighresLightmap_Report();
     return color;
 }
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+// Cubic B-spline (Sigg & Hadwiger): the 4x4 neighbourhood folded into four bilinear taps.
+// f in [0,1). weight is the two pair sums; offset is each tap's position relative to floor(pixel - 0.5).
+void HighresLightmap_BSpline(float f, out float2 weight, out float2 offset)
+{
+    float4 n = float4(1.0, 2.0, 3.0, 4.0) - f;
+    float4 s = n * n * n;
+    float x = s.x;
+    float y = s.y - 4.0 * s.x;
+    float z = s.z - 4.0 * s.y + 6.0 * s.x;
+    float w = 6.0 - x - y - z;
+    float4 c = float4(x, y, z, w) * (1.0 / 6.0);
+    weight = float2(c.x + c.y, c.z + c.w);
+    offset = float2(c.y / weight.x - 1.0, 1.0 + c.w / weight.y);
+}
+float4 HighresLightmap_Page(uint kind, float slice, float2 uv)
+{
+    float3 location = float3(uv, slice);
+    float4 result = 0;
+    switch (kind)
+    {
+    case 0: result = HlightPages2048.SampleLevel(HlightLinear, location, 0); break;
+    case 1: result = HlightPages4096.SampleLevel(HlightLinear, location, 0); break;
+    case 2: result = HlightPages8192.SampleLevel(HlightLinear, location, 0); break;
+    case 3: result = HlightPages16384.SampleLevel(HlightLinear, location, 0); break;
+    default: HighresLightmap_Reject(4, kind); break;
+    }
+    return result;
+}
+// Taps are clamped to the tile's texel centers, so the bilinear footprint cannot leave the tile.
+float4 HighresLightmap_Bicubic(HlightTileGpuDX12 tile, float2 pixel)
+{
+    float2 tex = pixel - 0.5;
+    float2 base = floor(tex);
+    float2 weightX, weightY, offsetX, offsetY;
+    HighresLightmap_BSpline(frac(tex.x), weightX, offsetX);
+    HighresLightmap_BSpline(frac(tex.y), weightY, offsetY);
+    float2 lo = tile.address.zw + 0.5;
+    float2 hi = tile.address.zw + tile.size.xy - 0.5;
+    float2 tap0 = clamp(base + float2(offsetX.x, offsetY.x) + 0.5, lo, hi);
+    float2 tap1 = clamp(base + float2(offsetX.y, offsetY.y) + 0.5, lo, hi);
+    float invPage = 1.0 / tile.size.z;
+    uint kind = tile.address.x;
+    float slice = tile.address.y;
+    float4 c00 = HighresLightmap_Page(kind, slice, tap0 * invPage);
+    float4 c10 = HighresLightmap_Page(kind, slice, float2(tap1.x, tap0.y) * invPage);
+    float4 c01 = HighresLightmap_Page(kind, slice, float2(tap0.x, tap1.y) * invPage);
+    float4 c11 = HighresLightmap_Page(kind, slice, tap1 * invPage);
+    float sx = weightX.x / (weightX.x + weightX.y);
+    float sy = weightY.x / (weightY.x + weightY.y);
+    return lerp(lerp(c11, c01, sx), lerp(c10, c00, sx), sy);
+}
+#endif
 float4 HighresLightmap_Tile(uint index, float2 q)
 {
     uint count, stride;
     HlightTiles.GetDimensions(count, stride);
     if (index >= count) { HighresLightmap_Reject(3, index); return 0; }
     HlightTileGpuDX12 tile = HlightTiles[index];
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+    float2 pixel = tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5;
+    return HighresLightmap_Bicubic(tile, pixel);
+#else
     float2 uv = (tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5) / tile.size.z;
     float3 location = float3(uv, tile.address.y);
     switch(tile.address.x)
@@ -88,6 +145,7 @@ float4 HighresLightmap_Tile(uint index, float2 q)
     case 3: return HlightPages16384.SampleLevel(HlightLinear, location, 0);
     }
     HighresLightmap_Reject(4, tile.address.x); return 0;
+#endif
 }
 // Ownership is a property of the primitive, not of an interpolated fragment coordinate: vertexUV is the lightmap UV of the
 // primitive's provoking vertex (a nointerpolation varying), always inside the owning face's allocation, and selects the face.

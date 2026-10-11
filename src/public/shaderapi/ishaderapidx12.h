@@ -38,10 +38,12 @@ enum ShaderAPIDX12ComputeResourceKind_t
 	SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE,
 	SHADERAPIDX12_COMPUTE_RESOURCE_STANDARD_TEXTURE,
 	SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH,
-	// The PBR G-buffer targets (world-space octahedral normal, F0.rgb + roughness), scene-sized and scene-multisampled
-	// (Texture2DMS when SceneSampleCount() > 1). Before the first G-buffer pass the view is null and Dispatch warns once.
+	// The PBR G-buffer targets (R16G16_UNORM octahedral normal, R8G8B8A8_UNORM F0.rgb + roughness), scene-sized and
+	// scene-multisampled (Texture2DMS when SceneSampleCount() > 1). Before the first G-buffer pass the view is null.
 	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS,
 	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR,
+	// Stencil plane of the scene depth (X24_TYPELESS_G8_UINT, plane 1). Texture2D<uint2> or Texture2DMS<uint2>, value in .y.
+	SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL,
 };
 
 struct ShaderAPIDX12ComputeResource_t

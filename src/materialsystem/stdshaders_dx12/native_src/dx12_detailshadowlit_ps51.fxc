@@ -24,14 +24,14 @@ struct PS_INPUT
 };
 float4 main( PS_INPUT i ) : SV_Target0
 {
-	// Full-sphere RESTIR_POINT_DETAIL_GATHER irradiance: no card-facing
-	// cosine, no lightmap packing scale and no alpha/visibility product.
-	float3 direct = ShadowMap_DetailDirect( i.lightingOrigin.xyz, i.lightingNormal.xyz, i.position.xy );
 	float4 base = g_DetailTexture.Sample( g_DetailSampler, i.uv );
+	float alpha = base.a * i.color.a * g_DetailSpriteTint.a;
+	// Cut-out texels are killed before the light gather (DX12FinishPixel repeats the same test on the unchanged alpha).
+	DX12AlphaTest( alpha );
+	float3 direct = ShadowMap_DetailDirect( i.lightingOrigin.xyz, i.lightingNormal.xyz, i.position.xy );
 	float3 retained = GammaToLinear( i.color.rgb );
 	float3 albedo = base.rgb * g_DetailSpriteTint.rgb;
-	float4 lit = float4( max( ( retained + direct ) * albedo, 0.0f ),
-		base.a * i.color.a * g_DetailSpriteTint.a );
+	float4 lit = float4( max( ( retained + direct ) * albedo, 0.0f ), alpha );
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, cEyePosition.xyz,
 		i.worldPositionZ.xyz, i.worldPositionZ.w );
 	return DX12FinishPixel( FinalOutput( lit, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), i.fog );

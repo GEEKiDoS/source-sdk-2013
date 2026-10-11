@@ -147,6 +147,18 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	float3 baseColor = base.rgb * g_BaseTint.rgb;
 	PBRSurface s = PBR_MakeSurface( N, V, frameT, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, g_Misc.y != 0.0 ? 1 : 0 );
 
+	float alpha = g_BaseTint.a;
+	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 && ( phongBits & 4u ) == 0 )
+		alpha *= base.a;
+	float3 emission = 0.0;
+	if ( g_Flags0.w == 1.0 )
+		emission = baseColor * g_EmissionTint.rgb * base.a;
+	else if ( g_Flags0.w == 2.0 )
+		emission = EmissionTexture.Sample( EmissionSampler, baseUV ).rgb * g_EmissionTint.rgb;
+	// Alpha-tested fragments that fail are killed before the light loops (DX12FinishPixel repeats the same test on the
+	// unchanged alpha). Every implicit-derivative sample happens above this line.
+	DX12AlphaTest( alpha );
+
 	// Ambient. ENHANCED decodes the baked probe grid once at the vertex-normal-biased point and evaluates it for N (and -N / the
 	// softened N below); where no probe covers the point, or no grid is bound, the engine ambient cube takes over.
 	// Subsurface softens toward the opposite hemisphere; backlight adds that hemisphere.
@@ -173,29 +185,18 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	float3 result = s.diffuseColor * s.ao * ambient;
 #if !PBR_HAS_TANGENT
-	// Static prop vertex lighting (zero unless the VS combo STATIC_LIGHT_VERTEX decoded it): a baked Lambert
-	// irradiance carrier like the ambient term. Legacy adds it to the selected direct unchanged on enhanced maps.
 	result += s.diffuseColor * s.ao * i.staticLight;
 #endif
 	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten );
-
 #if ENHANCED
 	ShadowMapDirect direct = PBR_GatherDirect( receiver, s );
 	result += direct.diffuse + direct.specular;
 #endif
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL );
-
 	if ( g_Flags1.x != 0.0 )
 		result += PBR_Environment( EnvmapTexture, EnvmapSampler, s, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask );
 
-	if ( g_Flags0.w == 1.0 )
-		result += baseColor * g_EmissionTint.rgb * base.a;
-	else if ( g_Flags0.w == 2.0 )
-		result += EmissionTexture.Sample( EmissionSampler, baseUV ).rgb * g_EmissionTint.rgb;
-
-	float alpha = g_BaseTint.a;
-	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 && ( phongBits & 4u ) == 0 )
-		alpha *= base.a;
+	result += emission;
 
 	float3 eyePosition = P + i.toEye;
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
@@ -203,5 +204,5 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if ENHANCED
 	color = ShadowMap_Debug( receiver, direct, color );
 #endif
-	return PBR_Output( color, s, i.svPos.z );
+	return PBR_Output( color, s );
 }

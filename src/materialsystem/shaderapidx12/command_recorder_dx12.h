@@ -67,6 +67,9 @@ public:
 		ResolveQueryData,
 		CopyDescriptorTable,
 		ExternalCommand,
+		BeginEvent,
+		EndEvent,
+		SetMarker,
 	};
 	static constexpr size_t kChunkBytes = 256 * 1024;
 
@@ -365,6 +368,11 @@ public:
 			memcpy( p, payload, bytes );
 	}
 
+	void BeginEvent( const char *name ) { WriteEvent( Op::BeginEvent, name ); }
+	void EndEvent() { Begin( Op::EndEvent, 0 ); }
+	void SetMarker( const char *name ) { WriteEvent( Op::SetMarker, name ); }
+
+
 	template <class T>
 	void ExternalCommand( ExternalFnDX12 fn, const T &payload )
 	{
@@ -401,6 +409,15 @@ private:
 		unsigned char *payloadStart = m_pChunk + m_nUsed + sizeof( Header );
 		m_nUsed += total;
 		return payloadStart;
+	}
+
+	void WriteEvent( Op op, const char *name )
+	{
+		char text[64]{};
+		if ( name )
+			for ( size_t i = 0; name[i] && i < 63; ++i )
+				text[i] = name[i];
+		memcpy( Begin( op, 64 ), text, 64 );
 	}
 
 	template <class T>

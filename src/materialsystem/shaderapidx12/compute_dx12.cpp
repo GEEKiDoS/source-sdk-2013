@@ -468,29 +468,35 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 	{
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_NONE )
 			return true;
-		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH )
+		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL )
 		{
 			if ( !m_pDevice->SceneDepth() )
 				return false;
+			const bool stencil = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL;
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
 			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-			srv.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+			srv.Format = stencil ? DXGI_FORMAT_X24_TYPELESS_G8_UINT : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
 			if ( m_pDevice->SceneSampleCount() > 1 )
 			{
+				// TEXTURE2DMS has no PlaneSlice; X24_TYPELESS_G8_UINT selects the stencil plane.
 				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
 			}
 			else
 			{
 				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 				srv.Texture2D.MipLevels = 1;
+				srv.Texture2D.PlaneSlice = stencil ? 1u : 0u;
 			}
 			m_pDevice->NativeDevice()->CreateShaderResourceView( m_pDevice->SceneDepth(), &srv, Offset( range.cpu, slot, stride ) );
-			payload.sceneDepth = m_pDevice->SceneDepth();
-			payload.sceneDepthBefore = m_pDevice->SceneDepthState();
-			payload.restoreSceneDepth = true;
-			if ( payload.sceneDepthBefore != kSceneDepthRead && !AddTransition( payload, payload.sceneDepth, payload.sceneDepthBefore, kSceneDepthRead, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) )
-				return false;
-			retain( payload.sceneDepth );
+			if ( !payload.restoreSceneDepth )
+			{
+				payload.sceneDepth = m_pDevice->SceneDepth();
+				payload.sceneDepthBefore = m_pDevice->SceneDepthState();
+				payload.restoreSceneDepth = true;
+				if ( payload.sceneDepthBefore != kSceneDepthRead && !AddTransition( payload, payload.sceneDepth, payload.sceneDepthBefore, kSceneDepthRead, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) )
+					return false;
+				retain( payload.sceneDepth );
+			}
 			return true;
 		}
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR )

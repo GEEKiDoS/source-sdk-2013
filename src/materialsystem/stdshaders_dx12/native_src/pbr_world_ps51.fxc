@@ -21,6 +21,7 @@
 #if PBR_WORLD_HIGHRES
 #define DX12_HIGHRES_LIGHTMAPS 1
 #define DX12_SHADOWMAPS 1
+#define HIGHRES_LIGHTMAP_BICUBIC 1
 #endif
 #if !ALPHATEST
 #define DX12_EARLY_DEPTH 1
@@ -239,6 +240,22 @@ PBR_PSOut main( DX12_PS_INPUT i )
 			mul( bumpBasis[2], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ), planeWeights );
 #endif
 
+	float alpha = g_BaseTint.a;
+	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 )
+		alpha *= opacity;
+	alpha *= i.vertexColor.a;
+	// hlsl/lightmappedgeneric_ps51.fxc applies the modulation alpha ($alpha) twice, as the vertex color alpha and inside c12.w with
+	// $alpha2 (alpha *= vertexColor.a * g_flAlpha2), so a legacy-replacement material is as transparent as the legacy shader draws it.
+	alpha *= lerp( 1.0, g_BaseTint.a, g_PbrFlags2.w ) * g_PbrBlend.y;
+	float3 emission = 0.0;
+	if ( g_Flags0.w == 1.0 )
+		emission = baseColor * g_EmissionTint.rgb * opacity;
+	else if ( g_Flags0.w == 2.0 )
+		emission = EmissionTexture.Sample( DataSampler, baseUV ).rgb * g_EmissionTint.rgb;
+	// Alpha-tested fragments that fail are killed before the light loops (DX12FinishPixel repeats the same test on the
+	// unchanged alpha). Every implicit-derivative sample happens above this line.
+	DX12AlphaTest( alpha );
+
 	// Baked lightmap diffuse; backlight reuses the front value (a lightmap holds no back-facing term).
 	float3 result = s.diffuseColor * s.ao * lightmap * ( ( 1.0 - s.back ) + s.backlightTint * s.back );
 #if PBR_WORLD_HIGHRES
@@ -250,18 +267,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		result += PBR_Environment( EnvmapTexture, EnvmapSampler, sBump, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask );
 	result += PBR_ProjectedSpots( sBump, P, PBR_RECEIVER_WORLD );
 
-	if ( g_Flags0.w == 1.0 )
-		result += baseColor * g_EmissionTint.rgb * opacity;
-	else if ( g_Flags0.w == 2.0 )
-		result += EmissionTexture.Sample( DataSampler, baseUV ).rgb * g_EmissionTint.rgb;
-
-	float alpha = g_BaseTint.a;
-	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 )
-		alpha *= opacity;
-	alpha *= i.vertexColor.a;
-	// hlsl/lightmappedgeneric_ps51.fxc applies the modulation alpha ($alpha) twice, as the vertex color alpha and inside c12.w with
-	// $alpha2 (alpha *= vertexColor.a * g_flAlpha2), so a legacy-replacement material is as transparent as the legacy shader draws it.
-	alpha *= lerp( 1.0, g_BaseTint.a, g_PbrFlags2.w ) * g_PbrBlend.y;
+	result += emission;
 
 	float3 eyePosition = P + i.toEye;
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
@@ -269,5 +275,5 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if PBR_WORLD_HIGHRES
 	color = HighresLightmap_Finish( ShadowMap_Debug( receiver, direct, color ) );
 #endif
-	return PBR_Output( color, sBump, i.svPos.z );
+	return PBR_Output( color, sBump );
 }

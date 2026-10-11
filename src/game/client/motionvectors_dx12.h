@@ -13,6 +13,7 @@ class IMaterialSystem;
 class IMaterialSystemHardwareConfig;
 class ITexture;
 class IClientRenderable;
+class IMatRenderContext;
 
 void MotionVectorsDX12_CreateRenderTarget( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig );
 void MotionVectorsDX12_ShutdownRenderTarget();
@@ -30,5 +31,8 @@ void MotionVectorsDX12_RecordMainPassBegin();
 bool MotionVectorsDX12_FrameValid( float *pDeltaSeconds );
 ITexture *MotionVectorsDX12_RenderTarget();
 int MotionVectorsDX12_ObjectKey( IClientRenderable *pRenderable );
+// Dilated 16x16 maxima of the velocity buffer. Counts stay 0 when the targets are unavailable,
+// and the blur then runs its full gather.
+bool MotionVectorsDX12_BuildBlurTiles( IMatRenderContext *pRenderContext, float flMaxBlurLength, int &nTileCountX, int &nTileCountY );
 
 #endif // MOTIONVECTORS_DX12_H

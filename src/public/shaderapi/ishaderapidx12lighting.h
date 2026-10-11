@@ -94,6 +94,7 @@ typedef intp ShaderAPITextureHandle_t;
 #define DX12_LIGHTING_T_PROP_TRIANGLES			1034	// root StructuredBuffer<DX12StaticPropTriangleGpu>
 #define DX12_LIGHTING_RESOURCE_TABLE_COUNT		1034	// t1034 is a separate per-draw root SRV
 #define DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE	0x1
+#define DX12_SHADOW_VISIBILITY_UNSHADOWED		0x2	// positive weight, zero face rects: no atlas sample
 #define DX12_LIGHTING_S_COMPARISON				0		// linear, LESS_EQUAL, clamp
 #define DX12_LIGHTING_B_VIEW					0		// DX12LightingViewConstantsV1 (CBV)
 #define DX12_LIGHTING_B_PROP_DRAW				1		// DX12StaticPropDrawConstants
@@ -152,7 +153,7 @@ struct RuntimeShadowLightGpu				// 608 bytes: 7 rows + 6 matrices + 6 rects + hy
 	uint32	lightId;					// index into the map's selected light list (ShadowMapLightDisk order of the active mode)
 	uint32	type;						// DX12_SHADOW_LIGHT_*
 	uint32	style;						// original style id (diagnostic; radiance already carries LightStyleValue once)
-	uint32	faceCount;					// 1 or 6
+	uint32	faceCount;					// 1 or 6 (point is 6); UNSHADOWED keeps the count and zeroes the rects
 	float	origin[3];
 	float	attenuationRadius;			// dworldlight_t::radius (0 = unbounded)
 	float	travelDirection[3];			// light -> receiver (spot axis); unused for point
@@ -164,9 +165,9 @@ struct RuntimeShadowLightGpu				// 608 bytes: 7 rows + 6 matrices + 6 rects + hy
 	float	shadowNear, shadowFar, planeToTexel, tanRenderedHalfFov;	// planeToTexel = slotSize / (2 * tanRenderedHalfFov)
 	float	worldToClip[DX12_SHADOW_MAX_FACES][16];					// rendered (guard-expanded) projection * view, row-major; reused with the same cached pixels
 	uint32	faces[DX12_SHADOW_MAX_FACES][4];						// page, slotX, slotY, slotSize; unused faces all zero
-	float	realtimeWeight;				// [0,1]; zero never references an atlas; positive requires complete charts
+	float	realtimeWeight;				// [0,1]; zero never references an atlas; positive requires complete charts unless UNSHADOWED
 	uint32	visibilityFlags;			// DX12_SHADOW_VISIBILITY_*; no unknown bits
-	uint32	bakedLightIndex;			// canonical selected manifest ordinal, valid iff BAKED_AVAILABLE
+	uint32	bakedLightIndex;			// manifest ordinal iff BAKED_AVAILABLE; otherwise 0 or 0xFFFFFFFF
 	uint32	reserved0;					// zero
 };
 

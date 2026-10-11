@@ -305,6 +305,12 @@ The highres packet validator requires canonical light order and ascending CSR ru
 `BuildTiles` already preserve both. Uniform encodings decode directly without reading payload bytes.
 Receivers without baked direct keep the existing full CSR hybrid evaluator: weight 1 skips baked
 lookup, weight 0 never constructs or samples a chart, and diffuse/specular share blended visibility.
+Editor lights are unbaked dynamic entries in the same per-view list (`realtimeWeight` 1, no
+`DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE`, `DX12_SHADOW_VISIBILITY_UNSHADOWED` when the light has no shadow chart).
+Both gathers (`PBR_GatherDirect`, `ShadowMap_GatherDirect`) treat a light as a baked delta only when `BAKED_AVAILABLE`
+is set, and sample the realtime PCSS chart only when the weight is positive and `UNSHADOWED` is clear. An editor light
+is therefore a full term on every receiver, PBR and legacy (`bakedVisibility` 1, `realtimeVisibility` the chart or 1).
+The baked-only specular tail still walks receiver entries only.
 
 Static-prop draws add `b1 space2 DX12StaticPropDrawConstants`: `uint4 cPropDraw`
 `{firstEntry, entryCount, primitiveBase, primitiveCount}` followed by three `float4 cPropModelToWorld`
@@ -491,6 +497,14 @@ diffuse-only carriers multiplied by the diffuse colour once. Flashlight and `env
 view, nearest first) are cookie spotlights inside the same pass; the engine's additive flashlight pass draws nothing
 for PBR materials.
 
+Lightmap filtering: the PBR world highres twins (`pbr_world_highres_ps51`, `_earlydepth_ps51`) define
+`HIGHRES_LIGHTMAP_BICUBIC`, so every `.hlight` tile read in `HighresLightmap_Tile` is a cubic B-spline built from four
+bilinear taps, each clamped to the tile's texel-centre rectangle (no bleeding from neighbouring tiles). Captured native
+dynamic additions (`HlightDynamic`) stay bilinear, and legacy highres shaders are unchanged. The native lightmap path
+(ordinary maps, native-only faces) stays bilinear: native face allocations are `(extents+1)²` with no gutter
+(`engine/gl_matsysiface.cpp`), so a ±1.5-texel footprint would read neighbouring faces. Cost per pixel: 4 taps for a flat
+single-style face, 12 tile taps (+3 dynamic) for a bumped one, +4 per plane for each extra style.
+
 Native logicals (`tools/pairs.py` slice `pbr`, `manifests/pbr.txt`): `pbr_world_vs51` (4), `pbr_world_ps51` (12), their
 `pbr_world_highres_vs51`/`_ps51`/`_earlydepth_ps51` twins selected by the backend on enhanced maps (4/12/12),
 `pbr_model_vs51` (48), `pbr_model_ps51` (24; `ENHANCED` adds the receiver lighting ABI and dense probes),
@@ -503,26 +517,25 @@ parallax; `-case probegpu` the probe decode.
 
 ### PBR G-buffer contract
 
-While `mat_pbr_override 1` is committed, the opaque main-view scene pass (`INT_RENDERPARM_DX12_PBR_GBUFFER_PASS`
-BEGIN/END around `DrawWorld` + `DrawOpaqueRenderables`) keeps two scene-sized, scene-multisampled targets next to scene
-color; every PBR pixel shader (`PBR_Output`) writes them. Consumers read them through `DX12MaterialPbrNormals()` /
-`DX12MaterialPbrSpecular()` (sample 0 when MSAA) together with `DX12MaterialSceneDepth()`:
+The opaque main view (`VIEW_MAIN`, mono, not cubemap capture; `INT_RENDERPARM_DX12_PBR_GBUFFER_PASS` BEGIN/END around
+`DrawWorld` + `DrawOpaqueRenderables`) keeps two scene-sized, scene-multisampled targets next to scene color. Viewmodel,
+3D sky, water, monitors and cubemap capture do not. Every PBR pixel shader (`PBR_Output`) writes the targets. Consumers
+read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, and validity through
+`DX12MaterialSceneStencil()`:
 
 | Target | Format | Content |
 |---|---|---|
-| normals | `R32G32_UINT` | x: world-space shading normal, `PBR_PackNormal( N )` (octahedral coordinates as two UNORM16, `pbr_oct.hlsli`); y: `asuint( SV_Position.z )`, the depth the PBR pixel shader wrote |
+| normals | `R16G16_UNORM` | world-space shading normal, `PBR_PackNormal( N )` (octahedral coordinates in [0,1], `pbr_oct.hlsli`) |
 | specular | `R8G8B8A8_UNORM` | `F0.rgb`, roughness in alpha |
+| stencil | scene `D24S8`, bit `0x80` | set on a PBR depth write, cleared by any other depth-writing draw in the pass |
 
-- **A pixel holds PBR data only while the scene depth equals the stored depth.** Legacy draws never write the targets (an
-  RT bound to a PS that declares no matching output is not written, whatever the blend state — verified on the target
-  hardware), so a legacy surface drawn nearer than a PBR one leaves the PBR normal and F0 in place. A consumer therefore
-  drops a pixel when `abs( asfloat( normals.y ) - sceneDepth ) > 2 / 16777215` (two steps of the 24-bit depth buffer; both
-  depth conventions, sample 0 under MSAA). `pbr_gbuffer_debug_cs51` is the reference consumer.
-- **`specular.a == 0` marks pixels nothing has drawn.** The pass clears both targets to 0, and `PBR_MIN_ROUGHNESS`
-  guarantees a PBR draw never stores roughness 0 (an all-zero normal word is a valid octahedral normal, and depth 0 is the
-  far plane under reversed depth, so neither can mark them). Consumers test it together with the depth comparison.
-- With the override off the pass is skipped and the targets are released: consumers get a null view (reads 0 = no data)
-  and no PSO outside the pass differs. Translucent draws are outside the pass.
+- **A pixel holds PBR data only while stencil bit `0x80` is set.** The backend forces that bit on every depth-writing draw
+  inside the pass. Consumers read the stencil plane (`X24_TYPELESS_G8_UINT`, plane 1) as `Texture2D<uint2>` /
+  `Texture2DMS<uint2>` and test `.y & 0x80`, sample 0 under MSAA. A legacy draw does not write the colour targets, so a
+  nearer legacy surface used to leave stale PBR data; it now clears the bit. Blended draws do not write depth and leave
+  it. `pbr_gbuffer_debug_cs51` is the reference consumer.
+- The pass does not clear the colour targets, and `specular.a == 0` is not a validity test.
+- Translucent draws are outside the pass. Outside the main view the targets are not attached.
 
 ## Verification
 

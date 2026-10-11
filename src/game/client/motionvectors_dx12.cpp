@@ -12,6 +12,9 @@
 #include "igamesystem.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
+#include "materialsystem/imaterial.h"
+#include "materialsystem/imaterialvar.h"
+#include "materialsystem/itexture.h"
 #include "rendertexture.h"
 #include "shaderapi/ishaderapi.h"
 #include "iclientrenderable.h"
@@ -22,6 +25,11 @@ ConVar r_motionvectors( "r_motionvectors", "1", FCVAR_ARCHIVE,
 	"DX12 motion vectors: 0 off, 1 automatic for SDK/installed consumers, 2 force for unsupported custom map/VGUI readers" );
 
 static CTextureReference s_MotionVectorTexture;
+static CTextureReference s_TileRaw;
+static CTextureReference s_TileDilated;
+static IMaterial *s_pTileReduce = nullptr;
+static IMaterial *s_pTileDilate = nullptr;
+static bool s_bTilesReady = false;
 static bool s_bDX12 = false;
 static IShaderAPI *s_pShaderAPI = nullptr;
 static int s_nMotionVectorFrame = -1;
@@ -73,11 +81,43 @@ void MotionVectorsDX12_CreateRenderTarget( IMaterialSystem *pMaterialSystem, IMa
 		"_rt_MotionVectors", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE,
 		TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+	s_TileRaw.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2(
+		"_rt_MotionBlurTileRaw", 512, 512, RT_SIZE_LITERAL,
+		IMAGE_FORMAT_R32F, MATERIAL_RT_DEPTH_NONE,
+		TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+	s_TileDilated.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2(
+		"_rt_MotionBlurTiles", 512, 512, RT_SIZE_LITERAL,
+		IMAGE_FORMAT_R32F, MATERIAL_RT_DEPTH_NONE,
+		TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+	if ( !s_pTileReduce )
+	{
+		KeyValues *pReduce = new KeyValues( "DX12_MotionBlurTile" );
+		pReduce->SetInt( "$pass", 0 );
+		s_pTileReduce = pMaterialSystem->CreateMaterial( "dx12/motion_blur_tile_reduce", pReduce );
+		KeyValues *pDilate = new KeyValues( "DX12_MotionBlurTile" );
+		pDilate->SetInt( "$pass", 1 );
+		s_pTileDilate = pMaterialSystem->CreateMaterial( "dx12/motion_blur_tile_dilate", pDilate );
+	}
+	s_bTilesReady = s_TileRaw.IsValid() && s_TileDilated.IsValid() &&
+		s_pTileReduce && !s_pTileReduce->IsErrorMaterial() && s_pTileDilate && !s_pTileDilate->IsErrorMaterial();
 }
 
 void MotionVectorsDX12_ShutdownRenderTarget()
 {
 	s_MotionVectorTexture.Shutdown();
+	s_TileRaw.Shutdown();
+	s_TileDilated.Shutdown();
+	if ( s_pTileReduce )
+	{
+		s_pTileReduce->DecrementReferenceCount();
+		s_pTileReduce = nullptr;
+	}
+	if ( s_pTileDilate )
+	{
+		s_pTileDilate->DecrementReferenceCount();
+		s_pTileDilate = nullptr;
+	}
+	s_bTilesReady = false;
 	s_bDX12 = false;
 	s_pShaderAPI = nullptr;
 	s_nConsumerFrame = s_nPreviousMainPassFrame = -1;
@@ -86,6 +126,57 @@ void MotionVectorsDX12_ShutdownRenderTarget()
 	s_flPreviousMainPassTime = -1.0;
 	s_flCurrentMainPassDelta = 0.0f;
 }
+
+static void SetTileTexture( IMaterial *pMaterial, const char *pName, ITexture *pTexture )
+{
+	bool bFound = false;
+	if ( IMaterialVar *pVar = pMaterial->FindVar( pName, &bFound, false ) )
+		pVar->SetTextureValue( pTexture );
+}
+
+static void SetTileVec( IMaterial *pMaterial, const char *pName, const float *pValue )
+{
+	bool bFound = false;
+	if ( IMaterialVar *pVar = pMaterial->FindVar( pName, &bFound, false ) )
+		pVar->SetVecValue( pValue, 4 );
+}
+
+static void SetTileFloat( IMaterial *pMaterial, const char *pName, float flValue )
+{
+	bool bFound = false;
+	if ( IMaterialVar *pVar = pMaterial->FindVar( pName, &bFound, false ) )
+		pVar->SetFloatValue( flValue );
+}
+
+bool MotionVectorsDX12_BuildBlurTiles( IMatRenderContext *pRenderContext, float flMaxBlurLength, int &nTileCountX, int &nTileCountY )
+{
+	nTileCountX = nTileCountY = 0;
+	if ( !s_bTilesReady || !pRenderContext || !s_MotionVectorTexture.IsValid() )
+		return false;
+	const int nVelW = s_MotionVectorTexture->GetActualWidth();
+	const int nVelH = s_MotionVectorTexture->GetActualHeight();
+	if ( nVelW <= 0 || nVelH <= 0 )
+		return false;
+	const int nTileX = ( nVelW + 15 ) / 16;
+	const int nTileY = ( nVelH + 15 ) / 16;
+	if ( nTileX > 512 || nTileY > 512 )
+		return false;
+	const float flSearch = MAX( 0.5f * flMaxBlurLength, 3.f / MIN( nVelW, nVelH ) );
+	const float flSizes[4] = { static_cast<float>( nVelW ), static_cast<float>( nVelH ), static_cast<float>( nTileX ), static_cast<float>( nTileY ) };
+	SetTileTexture( s_pTileReduce, "$velocity", s_MotionVectorTexture );
+	SetTileTexture( s_pTileReduce, "$tileout", s_TileRaw );
+	SetTileVec( s_pTileReduce, "$sizes", flSizes );
+	SetTileTexture( s_pTileDilate, "$tilein", s_TileRaw );
+	SetTileTexture( s_pTileDilate, "$tileout", s_TileDilated );
+	SetTileVec( s_pTileDilate, "$sizes", flSizes );
+	SetTileFloat( s_pTileDilate, "$radius", flSearch );
+	pRenderContext->DrawScreenSpaceRectangle( s_pTileReduce, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
+	pRenderContext->DrawScreenSpaceRectangle( s_pTileDilate, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
+	nTileCountX = nTileX;
+	nTileCountY = nTileY;
+	return true;
+}
+
 
 
 static bool HasCustomMotionVectorReader()

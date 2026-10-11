@@ -8,7 +8,9 @@ param (
     [Parameter(ParameterSetName='Native')][string]$Root,
     [Parameter(ParameterSetName='Native')][string]$LegacyRoot,
     [Parameter(ParameterSetName='Native')][string]$Game,
-    [Parameter(ParameterSetName='Native')][string]$Stage
+    [Parameter(ParameterSetName='Native')][string]$Stage,
+    # Comma-separated logicals to compile; every other logical republishes its existing staged artifacts unchanged.
+    [Parameter(ParameterSetName='Native')][string]$Only
 )
 
 if ($Native) {
@@ -52,6 +54,13 @@ if ($Native) {
                 $outputs += [pscustomobject]@{Source=$source;Stage=$stageName;Logical=$logical;Legacy=$legacySource;Profile=$profile}
             }
         }
+        $selected = @{}
+        if ($Only) {
+            foreach ($name in ($Only -split ',')) {
+                if (!($outputs | Where-Object Logical -eq $name)) { throw "Unknown logical in -Only: $name" }
+                $selected[$name] = $true
+            }
+        }
         # Each manifest line compiles in its own root so several logical outputs of one base never collide.
         $nativeMap = @()
         $nativeIndex = 0
@@ -64,11 +73,13 @@ if ($Native) {
             foreach ($name in $hlslFiles.Keys) { Copy-Item $hlslFiles[$name] (Join-Path $compileRoot $name) -Force }
             $stem = [IO.Path]::GetFileNameWithoutExtension($item.Source)
             $compiledBase = [regex]::Replace($stem, '_(vs|ps|cs)(2x|20b|20|30|40|41|50|51|xx)$', '') + "_$($item.Stage)51"
-            Push-Location $compileRoot
-            try {
-                & $compiler -ver 51 -shaderpath $compileRoot $item.Source
-                if ($LASTEXITCODE -ne 0) { throw "Native compile failed: $($item.Source) ($LASTEXITCODE)" }
-            } finally { Pop-Location }
+            if (!$Only -or $selected.ContainsKey($item.Logical)) {
+                Push-Location $compileRoot
+                try {
+                    & $compiler -ver 51 -shaderpath $compileRoot $item.Source
+                    if ($LASTEXITCODE -ne 0) { throw "Native compile failed: $($item.Source) ($LASTEXITCODE)" }
+                } finally { Pop-Location }
+            }
             if (!(Test-Path (Join-Path $compileRoot "include\$compiledBase.inc")) -or !(Test-Path (Join-Path $compileRoot "shaders\fxc\$compiledBase.vcs"))) {
                 throw "Native compiler did not produce expected artifacts for $($item.Source): $compiledBase"
             }
@@ -81,7 +92,7 @@ if ($Native) {
         Set-Content "$staging\native-map.txt" $nativeMap
         # Legacy combo ABI references: DX9 sources, with generated shipped-contract overrides where necessary.
         # Native-only logicals intentionally have no legacy compile or fallback reference.
-        foreach ($item in ($outputs | Where-Object { $_.Profile -ne 'native' } | Sort-Object Legacy,Profile -Unique)) {
+        foreach ($item in ($outputs | Where-Object { $_.Profile -ne 'native' -and (!$Only -or $selected.ContainsKey($_.Logical)) } | Sort-Object Legacy,Profile -Unique)) {
             $original = Join-Path $legacyPath $item.Legacy
             $reference = Join-Path (Join-Path $rootPath 'legacy_reference') $item.Legacy
             if (Test-Path $reference) { $original = $reference }

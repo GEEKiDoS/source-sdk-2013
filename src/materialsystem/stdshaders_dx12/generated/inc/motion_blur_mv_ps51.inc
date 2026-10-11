@@ -31,8 +31,10 @@ public:
 class motion_blur_mv_ps51_Dynamic_Index
 {
 	unsigned int m_nQUALITY : 3;
+	unsigned int m_nTILE : 2;
 #ifdef _DEBUG
 	bool m_bQUALITY : 1;
+	bool m_bTILE : 1;
 #endif	// _DEBUG
 public:
 	void SetQUALITY( int i )
@@ -44,21 +46,32 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetTILE( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nTILE = i;
+#ifdef _DEBUG
+		m_bTILE = true;
+#endif	// _DEBUG
+	}
+
 	motion_blur_mv_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< motion_blur_mv_ps51_Block >( dx12native::kStagePixel );
 		m_nQUALITY = 0;
+		m_nTILE = 0;
 #ifdef _DEBUG
 		m_bQUALITY = false;
+		m_bTILE = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bQUALITY );
-		return ( 1 * m_nQUALITY ) + 0;
+		Assert( m_bQUALITY && m_bTILE );
+		return ( 1 * m_nQUALITY ) + ( 4 * m_nTILE ) + 0;
 	}
 };
 
-#define shaderDynamicTest_motion_blur_mv_ps51 psh_forgot_to_set_dynamic_QUALITY
+#define shaderDynamicTest_motion_blur_mv_ps51 psh_forgot_to_set_dynamic_QUALITY + psh_forgot_to_set_dynamic_TILE
 

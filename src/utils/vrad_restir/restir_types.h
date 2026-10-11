@@ -338,7 +338,8 @@ struct ReSTIRScene
 	CUtlVector<ReSTIRGpuLuxel>			luxels;
 	CUtlVector<Vector4D>				sunVisibilityOrigins; // any selected local/sun; historical name retained; one per geometric luxel, indexed
 														// firstLuxel+s+t*luxelW. xyz is the final ray origin, w=1 valid / 0 blocked.
-														// Own-face brush clamp + face-normal push; disp keeps its geometry push.
+														// Brush: interior grid point, else nearest in-face sample cell balance point;
+														// + face-normal push. Disp keeps its geometry push.
 	CUtlVector<Vector>				localDirectPositions; // exact unpushed receiver surface, independent of visibility ray bias
 	CUtlVector<Vector>				localDirectNormals; // interpolated normalized renderer vertex normals; no pixel normalization
 	CUtlVector<Vector>				localDirectBumpNormals; // shader bumpBasis world vectors, 3*luxel+bump; interpolated vertex frames

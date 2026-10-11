@@ -80,8 +80,9 @@ enum RenderParamInt_t
 	INT_RENDERPARM_DX12_MOTION_PASS,
 	// Object identity for bone history: CBaseHandle::ToInt() of the renderable; 0 = static (no history).
 	INT_RENDERPARM_DX12_MOTION_OBJECT,
-	// DX12 PBR G-buffer pass (shaderapidx12 only; other backends store and ignore): 1 = begin (clear the private
-	// normal / F0+roughness targets; PBR draws that write three SV_Targets append them), 0 = end (targets become readable).
+	// DX12 PBR G-buffer pass (shaderapidx12 only; other backends store and ignore): 1 = begin (PBR draws that write
+	// three SV_Targets append the normal / F0+roughness targets; no clear — validity is stencil bit 0x80), 0 = end
+	// (targets become readable).
 	INT_RENDERPARM_DX12_PBR_GBUFFER_PASS,
 	// Backend-written status (read by the client through IShaderAPI, never through a render context):
 	// 0 = not evaluated, 1 = available, -1 = private shaders unavailable (sticky), -2 = unavailable for the current MSAA mode.

@@ -5091,19 +5091,31 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 	BuildRenderableRenderLists( iSkyBoxViewID );
 	render->EndUpdateLightmaps();
 
-	g_pClientShadowMgr->ComputeShadowTextures( (*this), m_pWorldListInfo->m_LeafCount, m_pWorldListInfo->m_pLeafList );
+	{
+		CMatRenderContextPtr pSkyPass( materials );
+		PIXEVENT( pSkyPass, "Sky legacy shadows" );
+		g_pClientShadowMgr->ComputeShadowTextures( (*this), m_pWorldListInfo->m_LeafCount, m_pWorldListInfo->m_pLeafList );
+	}
 
 	// The lighting packet is already active; no caster traversal may follow the sky receiver list build.
 	if ( shadowScope.CanDraw() )
 	{
-	DrawWorld( 0.0f );
-
-	// Iterate over all leaves and render objects in those leaves
-	DrawOpaqueRenderables( DEPTH_MODE_NORMAL );
-
-	// Iterate over all leaves and render objects in those leaves
-	DrawTranslucentRenderables( true, false );
-	DrawNoZBufferTranslucentRenderables();
+		{
+			CMatRenderContextPtr pSkyPass( materials );
+			PIXEVENT( pSkyPass, "Sky world" );
+			DrawWorld( 0.0f );
+		}
+		{
+			CMatRenderContextPtr pSkyPass( materials );
+			PIXEVENT( pSkyPass, "Sky props" );
+			DrawOpaqueRenderables( DEPTH_MODE_NORMAL );
+		}
+		{
+			CMatRenderContextPtr pSkyPass( materials );
+			PIXEVENT( pSkyPass, "Sky translucent" );
+			DrawTranslucentRenderables( true, false );
+			DrawNoZBufferTranslucentRenderables();
+		}
 	}
 	shadowScope.Finish();
 
@@ -5169,6 +5181,8 @@ bool CSkyboxView::Setup( const CViewSetup &viewRender, int *pClearFlags, SkyboxV
 void CSkyboxView::Draw()
 {
 	VPROF_BUDGET( "CViewRender::Draw3dSkyboxworld", "3D Skybox" );
+	CMatRenderContextPtr pRenderContext( materials );
+	PIXEVENT( pRenderContext, "3D skybox" );
 
 	ITexture *pRTColor = NULL;
 	ITexture *pRTDepth = NULL;
@@ -5348,6 +5362,7 @@ void CShadowMapRopeFootprint::Reset( const float *clip, int size )
 {
 	memcpy(m_Matrix,clip,sizeof(m_Matrix));
 	m_Footprint.Reset(m_Matrix,size);
+	m_HasConservative.store(false,std::memory_order_release);
 	m_Complete.store(true,std::memory_order_release);
 }
 void CShadowMapRopeFootprint::BeginQueued()
@@ -5374,6 +5389,27 @@ bool CShadowMapRopeFootprint::CanReset()
 	const int references=AddRef(); Release();
 	return references==2;
 }
+void CShadowMapRopeFootprint::AddConservativeBounds( const Vector &mins, const Vector &maxs )
+{
+	ShadowMapDepthFootprint_t clip;
+	clip.Reset(m_Matrix,m_Footprint.size);
+	if ( m_HasConservative.load(std::memory_order_relaxed) )
+	{
+		clip.x0=m_ConservativeX0; clip.y0=m_ConservativeY0; clip.x1=m_ConservativeX1; clip.y1=m_ConservativeY1;
+		clip.full=m_ConservativeFull; clip.reasons=m_ConservativeReasons;
+	}
+	clip.AddBounds(mins,maxs);
+	m_ConservativeX0=clip.x0; m_ConservativeY0=clip.y0; m_ConservativeX1=clip.x1; m_ConservativeY1=clip.y1;
+	m_ConservativeFull=clip.full; m_ConservativeReasons=clip.reasons;
+	m_HasConservative.store(true,std::memory_order_release);
+}
+bool CShadowMapRopeFootprint::CopyConservative( int &x0, int &y0, int &x1, int &y1, bool &full, uint32 &reasons ) const
+{
+	if ( !m_HasConservative.load(std::memory_order_acquire) ) return false;
+	x0=m_ConservativeX0; y0=m_ConservativeY0; x1=m_ConservativeX1; y1=m_ConservativeY1;
+	full=m_ConservativeFull; reasons=m_ConservativeReasons;
+	return true;
+}
 
 void ShadowMapDepthFootprint_t::Reset( const float *clip, int chartSize )
 {
@@ -5383,32 +5419,82 @@ void ShadowMapDepthFootprint_t::SetFull( uint32 reason )
 {
 	full=true; reasons|=reason; x0=y0=0; x1=y1=size;
 }
+static bool FootprintHomogeneous( const float *matrix, const Vector &point, float out[4] )
+{
+	if ( !point.IsValid() ) return false;
+	out[0]=matrix[0]*point.x+matrix[1]*point.y+matrix[2]*point.z+matrix[3];
+	out[1]=matrix[4]*point.x+matrix[5]*point.y+matrix[6]*point.z+matrix[7];
+	out[2]=matrix[8]*point.x+matrix[9]*point.y+matrix[10]*point.z+matrix[11];
+	out[3]=matrix[12]*point.x+matrix[13]*point.y+matrix[14]*point.z+matrix[15];
+	return ShadowMap_IsFiniteFloat(out[0]) && ShadowMap_IsFiniteFloat(out[1]) &&
+		ShadowMap_IsFiniteFloat(out[2]) && ShadowMap_IsFiniteFloat(out[3]);
+}
+static void IncludeClipPoint( ShadowMapDepthFootprint_t &footprint, float cx, float cy, float w )
+{
+	if ( footprint.full ) return;
+	const float px=(cx/w*0.5f+0.5f)*footprint.size, py=(0.5f-cy/w*0.5f)*footprint.size;
+	if ( !ShadowMap_IsFiniteFloat(px) || !ShadowMap_IsFiniteFloat(py) ) { footprint.SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
+	footprint.x0=MIN(footprint.x0,int(floorf(clamp(px-2.0f,0.0f,float(footprint.size)))));
+	footprint.y0=MIN(footprint.y0,int(floorf(clamp(py-2.0f,0.0f,float(footprint.size)))));
+	footprint.x1=MAX(footprint.x1,int(ceilf(clamp(px+2.0f,0.0f,float(footprint.size)))));
+	footprint.y1=MAX(footprint.y1,int(ceilf(clamp(py+2.0f,0.0f,float(footprint.size)))));
+}
+// Points with w at or below this are behind the light's near plane and are not projected.
+static const float kFootprintNearW=1.0e-4f;
+static void IncludeClippedSegment( ShadowMapDepthFootprint_t &footprint, const float a[4], const float b[4] )
+{
+	if ( footprint.full ) return;
+	const bool frontA=a[3]>kFootprintNearW, frontB=b[3]>kFootprintNearW;
+	if ( frontA && frontB )
+	{
+		IncludeClipPoint(footprint,a[0],a[1],a[3]);
+		IncludeClipPoint(footprint,b[0],b[1],b[3]);
+		return;
+	}
+	if ( !frontA && !frontB ) return;
+	const float t=(kFootprintNearW-a[3])/(b[3]-a[3]);
+	float c[4];
+	for ( int i=0;i<4;++i ) c[i]=a[i]+(b[i]-a[i])*t;
+	IncludeClipPoint(footprint,c[0],c[1],kFootprintNearW);
+	if ( frontA ) IncludeClipPoint(footprint,a[0],a[1],a[3]);
+	else IncludeClipPoint(footprint,b[0],b[1],b[3]);
+}
 void ShadowMapDepthFootprint_t::AddPoint( const Vector &point )
 {
 	if ( full ) return;
-	if ( !point.IsValid() ) { SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
-	const float cx=matrix[0]*point.x+matrix[1]*point.y+matrix[2]*point.z+matrix[3];
-	const float cy=matrix[4]*point.x+matrix[5]*point.y+matrix[6]*point.z+matrix[7];
-	const float cz=matrix[8]*point.x+matrix[9]*point.y+matrix[10]*point.z+matrix[11];
-	const float w=matrix[12]*point.x+matrix[13]*point.y+matrix[14]*point.z+matrix[15];
-	if ( !ShadowMap_IsFiniteFloat(cx) || !ShadowMap_IsFiniteFloat(cy) || !ShadowMap_IsFiniteFloat(cz) ||
-		!ShadowMap_IsFiniteFloat(w) ) { SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
-	if ( w<=0 ) { SetFull(SHADOWMAP_FOOTPRINT_W_NONPOSITIVE); return; }
-	const float px=(cx/w*0.5f+0.5f)*size, py=(0.5f-cy/w*0.5f)*size;
-	if ( !ShadowMap_IsFiniteFloat(px) || !ShadowMap_IsFiniteFloat(py) ) { SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
-	// Clamp before integer conversion, including extreme near-plane projections.
-	x0=MIN(x0,int(floorf(clamp(px-2.0f,0.0f,float(size)))));
-	y0=MIN(y0,int(floorf(clamp(py-2.0f,0.0f,float(size)))));
-	x1=MAX(x1,int(ceilf(clamp(px+2.0f,0.0f,float(size)))));
-	y1=MAX(y1,int(ceilf(clamp(py+2.0f,0.0f,float(size)))));
+	float c[4];
+	if ( !FootprintHomogeneous(matrix,point,c) ) { SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
+	// A lone vertex has no edge to clip. Callers with connectivity use AddTriangle/AddBounds.
+	if ( c[3]<=0 ) { SetFull(SHADOWMAP_FOOTPRINT_W_NONPOSITIVE); return; }
+	IncludeClipPoint(*this,c[0],c[1],c[3]);
 }
 void ShadowMapDepthFootprint_t::AddBounds( const Vector &mins, const Vector &maxs )
 {
 	if ( full ) return;
 	if ( !mins.IsValid() || !maxs.IsValid() ) { SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
 	if ( mins.x>maxs.x || mins.y>maxs.y || mins.z>maxs.z ) { SetFull(SHADOWMAP_FOOTPRINT_INVALID_BOUNDS); return; }
-	for ( int c=0;c<8 && !full;++c )
-		AddPoint(Vector(c&1 ? maxs.x : mins.x,c&2 ? maxs.y : mins.y,c&4 ? maxs.z : mins.z));
+	float corner[8][4];
+	for ( int i=0;i<8;++i )
+		if ( !FootprintHomogeneous(matrix,Vector(i&1?maxs.x:mins.x,i&2?maxs.y:mins.y,i&4?maxs.z:mins.z),corner[i]) )
+		{ SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
+	static const int edges[12][2]={{0,1},{0,2},{0,4},{1,3},{1,5},{2,3},{2,6},{3,7},{4,5},{4,6},{5,7},{6,7}};
+	for ( int e=0;e<12 && !full;++e )
+		IncludeClippedSegment(*this,corner[edges[e][0]],corner[edges[e][1]]);
+}
+void ShadowMapDepthFootprint_t::AddTriangle( const Vector &a, const Vector &b, const Vector &c )
+{
+	if ( full ) return;
+	float ca[4],cb[4],cc[4];
+	if ( !FootprintHomogeneous(matrix,a,ca) || !FootprintHomogeneous(matrix,b,cb) || !FootprintHomogeneous(matrix,c,cc) )
+	{ SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
+	IncludeClippedSegment(*this,ca,cb);
+	IncludeClippedSegment(*this,cb,cc);
+	IncludeClippedSegment(*this,cc,ca);
+}
+void ShadowMapDepthFootprint_t::AddQuad( const Vector v[4] )
+{
+	AddTriangle(v[0],v[1],v[2]);
+	AddTriangle(v[0],v[2],v[3]);
 }
 static void AddShadowOverlayCasterBounds( ShadowMapDepthFootprint_t &footprint, const ShadowMapSceneCaster_t &caster )
 {
@@ -6000,6 +6086,7 @@ void CBaseWorldView::DrawMotionVectors( const CUtlVector< CClientRenderablesList
 	s_nLastFrame = gpGlobals->framecount;
 
 	CMatRenderContextPtr pRenderContext( materials );
+	PIXEVENT( pRenderContext, "Motion vectors" );
 	pRenderContext->PushRenderTargetAndViewport( pRT, x, y, width, height );
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_PASS, bFirstThisFrame ? DX12_MOTION_PASS_BEGIN_MAIN : DX12_MOTION_PASS_APPEND_MAIN );
 	if ( bFirstThisFrame )
@@ -6066,12 +6153,26 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 			CMatRenderContextPtr pGBufferContext( materials );
 			pGBufferContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_BEGIN );
 		}
-		DrawWorld( waterZAdjust );
+		if ( viewID == VIEW_MAIN )
+		{
+			CMatRenderContextPtr pPass( materials );
+			PIXEVENT( pPass, "Opaque world" );
+			DrawWorld( waterZAdjust );
+		}
+		else
+			DrawWorld( waterZAdjust );
 		CUtlVector< CClientRenderablesList::CEntry > motionEntries;
 		const bool bMotionVectors = ( viewID == VIEW_MAIN ) && ( m_eStereoEye == STEREO_EYE_MONO ) && MotionVectorsDX12_Enabled() && !building_cubemaps.GetBool();
 		if ( bMotionVectors )
 			CollectMotionVectorRenderables( motionEntries );
-		DrawOpaqueRenderables( DepthMode );
+		if ( viewID == VIEW_MAIN )
+		{
+			CMatRenderContextPtr pPass( materials );
+			PIXEVENT( pPass, "Opaque renderables" );
+			DrawOpaqueRenderables( DepthMode );
+		}
+		else
+			DrawOpaqueRenderables( DepthMode );
 		if ( bGBuffer )
 		{
 			CMatRenderContextPtr pGBufferContext( materials );
@@ -6098,12 +6199,29 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 			DrawDepthOfField();
 		}
 #endif
-		DrawTranslucentRenderables( false, false );
-		DrawNoZBufferTranslucentRenderables();
+		if ( viewID == VIEW_MAIN )
+		{
+			CMatRenderContextPtr pPass( materials );
+			PIXEVENT( pPass, "Translucent" );
+			DrawTranslucentRenderables( false, false );
+			DrawNoZBufferTranslucentRenderables();
+		}
+		else
+		{
+			DrawTranslucentRenderables( false, false );
+			DrawNoZBufferTranslucentRenderables();
+		}
 	}
 	else
 	{
-		DrawWorld( waterZAdjust );
+		if ( viewID == VIEW_MAIN )
+		{
+			CMatRenderContextPtr pPass( materials );
+			PIXEVENT( pPass, "Opaque world" );
+			DrawWorld( waterZAdjust );
+		}
+		else
+			DrawWorld( waterZAdjust );
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles
@@ -6114,7 +6232,14 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		}
 #endif
 		// Draw translucent world brushes only, no entities
-		DrawTranslucentWorldInLeaves( false );
+		if ( viewID == VIEW_MAIN )
+		{
+			CMatRenderContextPtr pPass( materials );
+			PIXEVENT( pPass, "Translucent" );
+			DrawTranslucentWorldInLeaves( false );
+		}
+		else
+			DrawTranslucentWorldInLeaves( false );
 	}
 	}
 
@@ -6560,6 +6685,8 @@ void CAboveWaterView::CReflectionView::Setup( bool bReflectEntities )
 //-----------------------------------------------------------------------------
 void CAboveWaterView::CReflectionView::Draw()
 {
+	CMatRenderContextPtr pRenderContext( materials );
+	PIXEVENT( pRenderContext, "Water reflection" );
 #ifdef PORTAL
 	g_pPortalRender->WaterRenderingHandler_PreReflection();
 #endif
@@ -6588,7 +6715,6 @@ void CAboveWaterView::CReflectionView::Draw()
 	SetupCurrentView( origin, angles, ( view_id_t )nSaveViewID );
 
 	// This is here for multithreading
-	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->Flush();
 }
 
@@ -6613,6 +6739,8 @@ void CAboveWaterView::CRefractionView::Setup()
 //-----------------------------------------------------------------------------
 void CAboveWaterView::CRefractionView::Draw()
 {
+	CMatRenderContextPtr pRenderContext( materials );
+	PIXEVENT( pRenderContext, "Water refraction" );
 #ifdef PORTAL
 	g_pPortalRender->WaterRenderingHandler_PreRefraction();
 #endif
@@ -6636,7 +6764,6 @@ void CAboveWaterView::CRefractionView::Draw()
 	SetupCurrentView( origin, angles, ( view_id_t )nSaveViewID );
 
 	// This is here for multithreading
-	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->ClearColor4ub( 0, 0, 0, 255 );
 	pRenderContext->Flush();
 }
@@ -6788,6 +6915,7 @@ void CUnderWaterView::CRefractionView::Setup()
 void CUnderWaterView::CRefractionView::Draw()
 {
 	CMatRenderContextPtr pRenderContext( materials );
+	PIXEVENT( pRenderContext, "Water refraction" );
 	SetFogVolumeState( GetOuter()->m_fogInfo, true );
 	unsigned char ucFogColor[3];
 	pRenderContext->GetFogColor( ucFogColor );

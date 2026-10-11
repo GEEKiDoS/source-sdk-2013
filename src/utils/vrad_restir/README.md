@@ -115,7 +115,12 @@ one central ray at `_shadow_radius 0`, otherwise 32 area-stratified samples on a
 receiver-facing disk of the resolved `_shadow_radius`. It excludes radiance, styles,
 cone, attenuation, receiver cosine and transport/denoising. The immutable `STATIC_SUN`
 occluder mask and existing binary alpha coverage are shared with baked sun visibility;
-movable brush entities do not cast permanent local shadows.
+movable brush entities do not cast permanent local shadows. A brush receiver origin
+is the luxel grid point when it lies strictly inside its face, otherwise the nearest
+in-face sample cell balance point (VRAD's radial rule for luxels outside the face),
+pushed one unit along the face normal; the grid of a thin VBSP split can lie entirely
+outside the face except for its middle column, and a point clamped onto a shared edge
+would sit on the neighbouring plane. No luxel is blocked for being outside its face.
 
 The sidecar stores rounded R8 visibility in sorted canonical selected-manifest order
 (including the manifest sun slot in indices, but never a local entry for that slot).
