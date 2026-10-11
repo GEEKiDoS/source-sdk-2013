@@ -546,11 +546,7 @@ float SampleSunPCSS( uint mapIndex, float3 positionWS, float3 planeNormalWS, out
 		float searchRadius = ShadowMap_CappedRadius( cSunRadiance.w, max( 0.0, c.centerAxial - c.depth.x ) / c.depth.z );
 		float blockerDistance = 0.0;
 		uint blockerCount = 0;
-		// Orthographic sun on the receiver plane: a texel offset moves the chart pixel by that offset and the plane depth by
-		// depthGradient . offset, so no tap needs a reprojection.
-		float4 centerClip = mul( c.worldToClip, float4( c.center, 1.0 ) );
-		float2 centerPixel = ShadowMap_ClipUV( centerClip ) * c.rect.z;
-		float centerDepth = centerClip.z / centerClip.w;
+		float2 centerUV = ShadowMap_ClipUV( mul( c.worldToClip, float4( c.center, 1.0 ) ) );
 		float depthRange = c.depth.y - c.depth.x;
 		// Four blocker taps / two filter taps expose independent fetches without
 		// full-unroll register pressure or oversized Source VCS blocks. Keep order.
@@ -558,13 +554,18 @@ float SampleSunPCSS( uint mapIndex, float3 positionWS, float3 planeNormalWS, out
 		{
 			[unroll] for ( uint tap = 0; tap < 4; ++tap )
 			{
-				int2 texel = clamp( int2( floor( centerPixel + g_ShadowBlockerDisk[base + tap] * searchRadius ) ), int2( 0, 0 ), int2( c.rect.z - 1, c.rect.z - 1 ) );
+				uint i = base + tap;
+				float2 offset = g_ShadowBlockerDisk[i] * searchRadius;
+				float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, true ), 1.0 ) );
+				int2 texel = clamp( int2( floor( ShadowMap_ClipUV( clip ) * c.rect.z ) ), int2( 0, 0 ), int2( c.rect.z - 1, c.rect.z - 1 ) );
 				int3 address = int3( int2( c.rect.xy ) + texel, 0 );
 				float stored = 1.0;
 				if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) stored = g_ShadowCascadeAtlas.Load( address );
 				else stored = g_ShadowStaticSun.Load( address );
 				// Reference is on the ACTUAL point-loaded texel center, not the Vogel ray.
-				float reference = centerDepth + dot( c.depthGradient, float2( texel ) + 0.5 - centerPixel );
+				float2 loadedOffset = float2( texel ) + 0.5 - centerUV * c.rect.z;
+				float4 loadedClip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, loadedOffset, true ), 1.0 ) );
+				float reference = loadedClip.z / loadedClip.w;
 				if ( stored < 1.0 && stored < reference )
 				{
 					blockerDistance += c.depth.x + stored * depthRange;
@@ -578,27 +579,13 @@ float SampleSunPCSS( uint mapIndex, float3 positionWS, float3 planeNormalWS, out
 			float meanBlocker = blockerDistance / float( blockerCount );
 			float filterRadius = ShadowMap_CappedRadius( cSunRadiance.w, max( 0.0, c.centerAxial - meanBlocker ) / c.depth.z );
 			diagnostics.y = filterRadius / DX12_SHADOW_PCSS_MAX_TEXELS;
-			// Umbra: every blocker tap occluded and the filter disc inside the searched disc, so the filter result is ~0.
-			[branch] if ( blockerCount == DX12_SHADOW_PCSS_BLOCKER_SAMPLES && filterRadius <= searchRadius ) result = 0.0;
-			else
+			float visibility = 0.0;
+			[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_FILTER_SAMPLES; base += 2 )
 			{
-				// Every other filter-disk sample as a hardware bilinear comparison. One reference per tap: the plane depth
-				// at the tap less half a texel of slope, so a sloped receiver does not shadow itself across the 2x2 footprint.
-				float slopeBias = 0.5 * ( abs( c.depthGradient.x ) + abs( c.depthGradient.y ) );
-				float visibility = 0.0;
-				[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_FILTER_SAMPLES; base += 4 )
-				{
-					[unroll] for ( uint tap = 0; tap < 4; tap += 2 )
-					{
-						float2 offset = g_ShadowFilterDisk[base + tap] * filterRadius;
-						float2 atlasUV = ( float2( c.rect.xy ) + centerPixel + offset ) / c.atlasSize;
-						float reference = centerDepth + dot( c.depthGradient, offset ) - slopeBias;
-						if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) visibility += g_ShadowCascadeAtlas.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
-						else visibility += g_ShadowStaticSun.SampleCmpLevelZero( g_ShadowCmpSampler, atlasUV, reference );
-					}
-				}
-				result = visibility / ( DX12_SHADOW_PCSS_FILTER_SAMPLES / 2 );
+				[unroll] for ( uint tap = 0; tap < 2; ++tap )
+					visibility += ShadowMap_SunCompare( c, g_ShadowFilterDisk[base + tap] * filterRadius, true );
 			}
+			result = visibility / DX12_SHADOW_PCSS_FILTER_SAMPLES;
 		}
 	}
 	else if ( c.valid ) result = ShadowMap_SunPCFChart( c );
