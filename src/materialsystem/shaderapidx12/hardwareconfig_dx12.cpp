@@ -5,7 +5,6 @@
 //=============================================================================//
 
 #include "hardwareconfig_dx12.h"
-#include "tier1/convar.h"
 #include "tier1/strtools.h"
 #include <climits>
 
@@ -35,9 +34,6 @@ void CHardwareConfigDX12::SetAdapter( const MaterialAdapterInfo_t &adapter, uint
 	m_bAaEnabled = bAaEnabled;
 	m_Adapter.m_nDXSupportLevel = kSourceDXLevel;
 	m_Adapter.m_nMaxDXSupportLevel = kSourceDXLevel;
-	// Source selects float HDR only for the explicit mat_hdr_level 3 mode.
-	ConVarRef hdrLevel( "mat_hdr_level", true );
-	m_HdrType = hdrLevel.IsValid() && hdrLevel.GetInt() == 3 ? HDR_TYPE_FLOAT : HDR_TYPE_INTEGER;
 }
 
 //-----------------------------------------------------------------------------

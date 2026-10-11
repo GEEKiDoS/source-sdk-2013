@@ -96,11 +96,10 @@ void DX12SetIntegerPixelShaderConstant( int reg, const int *data, int count, boo
 void DX12SetBooleanVertexShaderConstant( int reg, const int *data, int count, bool ) { StageBools( g_DX12Constants.vsBool, &g_DX12Constants.vsBoolDirty, reg, data, count ); }
 void DX12SetBooleanPixelShaderConstant( int reg, const int *data, int count, bool ) { StageBools( g_DX12Constants.psBool, &g_DX12Constants.psBoolDirty, reg, data, count ); }
 // Same value as IShaderDynamicAPI::SetDepthFeatheringPixelShaderConstant (shaderapidx8.cpp:5225-5253, PC path):
-// x = dest-alpha depth range / scale, the range being 8192 for float HDR and 192 otherwise.
+// x = dest-alpha depth range / scale. The native renderer has no float HDR, so the range is always 192.
 void DX12SetDepthFeatheringPixelShaderConstant( int reg, float depthBlendScale )
 {
-	const float range = g_pHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT ? 8192.0f : 192.0f;
-	const float values[4] = { range / depthBlendScale, 0.0f, 0.0f, 0.0f };
+	const float values[4] = { 192.0f / depthBlendScale, 0.0f, 0.0f, 0.0f };
 	DX12SetPixelShaderConstant( reg, values, 1 );
 }
 

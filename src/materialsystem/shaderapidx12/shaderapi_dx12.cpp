@@ -3530,7 +3530,7 @@ void CShaderAPIDX12::CommitFogState()
 				c = 128.f / 255.f;
 		}
 		const bool correctGamma = !m_ActiveSnapshot.fogGammaDisabled && passFog != SHADER_FOGMODE_BLACK && passFog != SHADER_FOGMODE_WHITE;
-		SetFloat4DX12( m_FogPixelColor, 0.f, 0.f, 0.f, 1.f / ( hdr == HDR_TYPE_FLOAT ? 8192.f : 192.f ) );
+		SetFloat4DX12( m_FogPixelColor, 0.f, 0.f, 0.f, 1.f / 192.f );
 		for ( int i = 0; i < 3; ++i )
 		{
 			float fixed = color[i];
@@ -3769,7 +3769,7 @@ const Vector &CShaderAPIDX12::GetToneMappingScaleLinear( void ) const
 float CShaderAPIDX12::GetLightMapScaleFactor() const
 {
 	const HDRType_t hdr = g_pHardwareConfigDX12 ? g_pHardwareConfigDX12->GetHDRType() : HDR_TYPE_NONE;
-	return hdr == HDR_TYPE_FLOAT ? 1.f : ( hdr == HDR_TYPE_INTEGER ? MAX_HDR_OVERBRIGHT : GammaToLinearFullRange( 2.f ) );
+	return hdr == HDR_TYPE_INTEGER ? MAX_HDR_OVERBRIGHT : GammaToLinearFullRange( 2.f );
 }
 
 //-----------------------------------------------------------------------------
@@ -4225,12 +4225,11 @@ void CShaderAPIDX12::SetPSNearAndFarZ( int reg )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: shaderapidx8.cpp:5225-5253 (PC): x = dest-alpha depth range / scale (8192 float HDR, else 192), yzw = 0.
+// Purpose: shaderapidx8.cpp:5225-5253 (PC): x = dest-alpha depth range / scale (192 outside float HDR), yzw = 0.
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetDepthFeatheringPixelShaderConstant( int reg, float scale )
 {
-	const HDRType_t hdr = g_pHardwareConfigDX12 ? g_pHardwareConfigDX12->GetHDRType() : HDR_TYPE_NONE;
-	const float values[4] = { ( hdr == HDR_TYPE_FLOAT ? 8192.f : 192.f ) / scale, 0.f, 0.f, 0.f };
+	const float values[4] = { 192.f / scale, 0.f, 0.f, 0.f };
 	SetPixelShaderConstant( reg, values, 1 );
 }
 

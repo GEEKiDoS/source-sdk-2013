@@ -3043,15 +3043,16 @@ CShaderDeviceMgrDX12::~CShaderDeviceMgrDX12()
 	Shutdown();
 }
 
-// Keep native HDR selection enabled before any map load. Source still chooses
-// LDR automatically when the map has no HDR lighting; this does not force HDR
-// resources onto an LDR-only map or enable HDR display output.
+// Pin the native lighting tier before any map load. mat_hdr_level is a registry-persisted video convar, so a value set
+// once (console, command line, test cfg) is restored on every launch. The renderer implements integer HDR only:
+// 3 would select Source's float HDR pipeline (wrong colour, no upscaler). Source still chooses LDR automatically
+// when the map has no HDR lighting; this does not force HDR resources onto an LDR-only map or enable HDR display output.
 static void EnforceNativeLightingTier( IConVar *variable, const char *, float )
 {
 	if ( !V_strcmp( variable->GetName(), "mat_hdr_level" ) )
 	{
 		ConVarRef hdrLevel( variable );
-		if ( hdrLevel.GetInt() < 2 )
+		if ( hdrLevel.GetInt() != 2 )
 			hdrLevel.SetValue( 2 );
 	}
 	else if ( !V_strcmp( variable->GetName(), "mat_dxlevel" ) )
@@ -3089,7 +3090,7 @@ bool CShaderDeviceMgrDX12::Connect( CreateInterfaceFn factory )
 		ConVar_Register( FCVAR_CHEAT );
 		g_pCVar->InstallGlobalChangeCallback( EnforceNativeLightingTier );
 		ConVarRef hdrLevel( "mat_hdr_level", true );
-		if ( hdrLevel.IsValid() && hdrLevel.GetInt() < 2 )
+		if ( hdrLevel.IsValid() && hdrLevel.GetInt() != 2 )
 			hdrLevel.SetValue( 2 );
 		ConVarRef dxLevel( "mat_dxlevel", true );
 		if ( dxLevel.IsValid() && dxLevel.GetInt() != kSourceDXLevel )

@@ -191,7 +191,7 @@ touching a material only when its colour differs, so the cvar and a full materia
 re-reads the VMT) need no hook. `LevelShutdownPostEntity` restores the authored colours and drops the references. The feature
 does nothing when the material shader DLL is not `stdshader_dx12` (`-dx9` is unchanged), when the map has no key (no
 `light_environment`, an `UnlitGeneric` sky, ...), and after one Warning when a face material is missing or has no vector
-`$color`. 3D skybox geometry is not a sky face and is unaffected. The renderer enforces `mat_hdr_level >= 2`, so
+`$color`. 3D skybox geometry is not a sky face and is unaffected. The renderer pins `mat_hdr_level` to 2, so
 `_skyscale_ldr` applies on LDR-only maps.
 
 Verification (isolated runs of `d1_trainstation_02` copies baked with `vrad_restir`; screenshots of the same sky view with the
@@ -425,8 +425,10 @@ The command above explicitly overrides final iterations to 128 and disables deno
 win regardless of argument order. `-fast` selects 32 iterations, 4 candidates, 2 bounces and fast OIDN.
 
 The renderer reports Source material tier **110**, distinct from its D3D12 API and minimum device feature
-level 11_0. It enforces `mat_dxlevel=110` and `mat_hdr_level>=2`: HDR-capable maps use HDR lighting,
-while genuine LDR-only maps retain the engine's LDR fallback. HDR monitor output is a separate setting.
+level 11_0. It pins `mat_dxlevel=110` and `mat_hdr_level=2` (integer HDR; Source's float HDR mode 3 is not
+implemented, and the engine persists `mat_hdr_level` in the registry, so any other value is reset on load and on
+every change): HDR-capable maps use HDR lighting, while genuine LDR-only maps retain the engine's LDR fallback.
+HDR monitor output is a separate setting.
 Legacy enhanced manifest v3 maps require a rebake; the abandoned inverse-addressing path is not a fallback.
 
 

@@ -145,9 +145,10 @@ public:
 
 	int MaxTextureDepth() const override { return 2048; }
 
-	HDRType_t GetHDRType() const override { return m_bHdrEnabled && GetDXSupportLevel() >= 90 ? m_HdrType : HDR_TYPE_NONE; }
+	// Integer HDR only: shaderdevice_dx12.cpp pins mat_hdr_level to 2, so Source's float HDR mode is never selected.
+	HDRType_t GetHDRType() const override { return m_bHdrEnabled && GetDXSupportLevel() >= 90 ? HDR_TYPE_INTEGER : HDR_TYPE_NONE; }
 
-	HDRType_t GetHardwareHDRType() const override { return m_HdrType; }
+	HDRType_t GetHardwareHDRType() const override { return HDR_TYPE_INTEGER; }
 
 	bool SupportsPixelShaders_2_b() const override { return true; }
 
@@ -177,7 +178,7 @@ public:
 
 	bool ActuallySupportsPixelShaders_2_b() const override { return true; }
 
-	bool SupportsHDRMode( HDRType_t nHDRMode ) const override { return nHDRMode == HDR_TYPE_NONE || nHDRMode == HDR_TYPE_INTEGER || nHDRMode == HDR_TYPE_FLOAT; }
+	bool SupportsHDRMode( HDRType_t nHDRMode ) const override { return nHDRMode == HDR_TYPE_NONE || nHDRMode == HDR_TYPE_INTEGER; }
 
 	bool GetHDREnabled() const override { return m_bHdrEnabled; }
 
@@ -194,7 +195,6 @@ private:
 	uint64_t m_nDedicatedVideoMemory = 0;
 	bool m_bAaEnabled = false;
 	bool m_bHdrEnabled = false;
-	HDRType_t m_HdrType = HDR_TYPE_INTEGER;
 	bool m_bStreamOffsetOverride = false;
 	bool m_bStreamOffsetSupport = true;
 	bool m_bFastClipping = false;
