@@ -692,7 +692,8 @@ void validateProbePbrResources(ID3D12ShaderReflection *reflection, const D3D12_S
 }
 // Space 6 is backend-owned and pixel-stage only: cbuffer DX12ScreenSpaceView b0 (208 bytes) and DX12Volumetric b1
 // (64 bytes), byte-identical to ishaderapidx12screenspace.h, plus the four depth planes g_ScreenContactDepth t0
-// (Texture2D<float>), g_ScreenContactDepthMS t1 (Texture2DMS<float>), g_ScreenSceneDepth t2, g_ScreenSceneDepthMS t3.
+// (Texture2D<float>), g_ScreenContactDepthMS t1 (Texture2DMS<float>), g_ScreenSceneDepth t2, g_ScreenSceneDepthMS t3,
+// and the sun shadow-chart sky clip: DX12ShadowSkyClip b2 (16 bytes, ishaderapidx12lighting.h) with g_ShadowSkyClip t4.
 // Reflection contains only retained resources, so any subset may appear, but every retained binding must match and
 // nothing else may live in the space.
 constexpr unsigned kScreenSpaceRegisterSpace = 6;
@@ -705,9 +706,14 @@ const ScreenSpaceMember kScreenSpaceViewMembers[] = {
 const ScreenSpaceMember kVolumetricMembers[] = {
 	{"cVolumeMedium", 0, 16}, {"cVolumeSunMedium", 16, 16}, {"cVolumeControl", 32, 16}, {"cVolumeOutputScale", 48, 16},
 };
+// Sun shadow-chart sky clip (native_src/shadow_sky_clip.hlsli): b2 block and the t4 sky entry depth plane.
+const ScreenSpaceMember kShadowSkyClipMembers[] = {
+	{"cShadowSkyClip", 0, 16},
+};
 const ScreenSpaceLayout kScreenSpaceLayouts[] = {
 	{"DX12ScreenSpaceView", 0, 208, 7, kScreenSpaceViewMembers},
 	{"DX12Volumetric", 1, 64, 4, kVolumetricMembers},
+	{"DX12ShadowSkyClip", 2, 16, 1, kShadowSkyClipMembers},
 };
 const ScreenSpaceLayout *screenSpaceLayout(const std::string &name) {
 	for (const auto &layout : kScreenSpaceLayouts)
@@ -727,7 +733,7 @@ void validateScreenSpaceBlock(const Block &b) {
 	}
 }
 void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
-	static const char *const depthNames[4] = {"g_ScreenContactDepth", "g_ScreenContactDepthMS", "g_ScreenSceneDepth", "g_ScreenSceneDepthMS"};
+	static const char *const depthNames[5] = {"g_ScreenContactDepth", "g_ScreenContactDepthMS", "g_ScreenSceneDepth", "g_ScreenSceneDepthMS", "g_ShadowSkyClip"};
 	unsigned seen = 0;
 	for (unsigned i = 0; i < desc.BoundResources; ++i) {
 		D3D12_SHADER_INPUT_BIND_DESC b{};
@@ -744,8 +750,8 @@ void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D1
 			D3D12_SHADER_BUFFER_DESC bd{};
 			valid = valid && buffer && SUCCEEDED(buffer->GetDesc(&bd)) && bd.Type == D3D_CT_CBUFFER && bd.Name;
 			if (valid) validateScreenSpaceBlock(reflectBlock(reflection, buffer, bd, b, dx12native::kStagePixel));
-			slot = valid ? 4 + layout->shaderRegister : 0;
-		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 4 && !strcmp(b.Name, depthNames[b.BindPoint])) {
+			slot = valid ? 5 + layout->shaderRegister : 0;
+		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 5 && !strcmp(b.Name, depthNames[b.BindPoint])) {
 			const bool multisampled = (b.BindPoint & 1) != 0;
 			valid = valid && b.ReturnType == D3D_RETURN_TYPE_FLOAT && !(b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) &&
 				b.Dimension == (multisampled ? D3D_SRV_DIMENSION_TEXTURE2DMS : D3D_SRV_DIMENSION_TEXTURE2D);
@@ -1193,8 +1199,8 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 							throw std::runtime_error("Combo-fold uint4[16] member mismatch: " + sh.logical);
 						reflectedFold = true;
 					}
-                    if (stage == VcsStage::Compute && (binding.Space != 1 || binding.BindPoint != 0 || bd.Size > 256))
-                        throw std::runtime_error("Compute cbuffer violates b0 space1/256-byte contract: " + sh.logical);
+                    if (stage == VcsStage::Compute && (binding.Space != 1 || binding.BindPoint != 0 || bd.Size > 512))
+                        throw std::runtime_error("Compute cbuffer violates b0 space1/512-byte contract: " + sh.logical);
                     const auto declared = spaces.find(b.name);
                     if (declared != spaces.end() && declared->second != binding.Space)
                         throw std::runtime_error("Reflected cbuffer register space disagrees with source: " + b.name);

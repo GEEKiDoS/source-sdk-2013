@@ -21,11 +21,14 @@ namespace shaderapidx12
 {
 // Register space 6: backend-owned screen-space inputs (ishaderapidx12screenspace.h, native_src/screenspace_view.hlsli).
 // t0 Texture2D<float> / t1 Texture2DMS<float> private contact depth, t2 / t3 final scene depth; b0 DX12ScreenSpaceView (208 B),
-// b1 DX12Volumetric (64 B). No sampler.
+// b1 DX12Volumetric (64 B). The sun shadow-chart sky clip (ishaderapidx12lighting.h, native_src/shadow_sky_clip.hlsli)
+// adds t4 Texture2D<float> sky entry depth and b2 DX12ShadowSkyClip (16 B). No sampler.
 constexpr UINT DX12_SCREENSPACE_REGISTER_SPACE = 6;
-constexpr UINT DX12_SCREENSPACE_TABLE_COUNT = 4;
+constexpr UINT DX12_SCREENSPACE_TABLE_COUNT = 5;
+constexpr UINT DX12_SCREENSPACE_T_SHADOW_SKY_CLIP = 4;
 constexpr UINT DX12_SCREENSPACE_B_VIEW = 0;
 constexpr UINT DX12_SCREENSPACE_B_VOLUMETRIC = 1;
+constexpr UINT DX12_SCREENSPACE_B_SHADOW_SKY_CLIP = 2;
 
 struct PipelineKeyDX12
 {
@@ -115,9 +118,10 @@ public:
 		D3D12_GPU_VIRTUAL_ADDRESS probeConstants = 0;
 		// Space-6 screen-space inputs, bound on every root. Zero range / zero address = backend-owned neutral
 		// (typed-null table, zero-filled constants).
-		DescriptorRangeDX12 screenSpaceTable{};            // 4 descriptors: t0 Texture2D<float>, t1 Texture2DMS<float>, t2 Texture2D<float>, t3 Texture2DMS<float>
+		DescriptorRangeDX12 screenSpaceTable{};            // 5 descriptors: t0 Texture2D<float>, t1 Texture2DMS<float>, t2 Texture2D<float>, t3 Texture2DMS<float>, t4 Texture2D<float>
 		D3D12_GPU_VIRTUAL_ADDRESS screenSpaceView = 0;     // b0 space6, DX12ScreenSpaceViewConstants
 		D3D12_GPU_VIRTUAL_ADDRESS volumetricConstants = 0; // b1 space6, DX12VolumetricConstants
+		D3D12_GPU_VIRTUAL_ADDRESS shadowSkyClipConstants = 0; // b2 space6, DX12ShadowSkyClipConstants
 		// VS space-7 root SRV of batched shadow-caster instance rows; 0 = draw is not instanced (parameter left stale,
 		// the shader never declares it).
 		D3D12_GPU_VIRTUAL_ADDRESS instanceTransforms = 0;
@@ -130,7 +134,7 @@ public:
 
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
 
-	// Typed null view matching the space-6 declaration of slot t0..t3 (Texture2D<float> even slots, Texture2DMS<float> odd).
+	// Typed null view matching the space-6 declaration of slot t0..t4 (Texture2D<float> even slots, Texture2DMS<float> odd).
 	static D3D12_SHADER_RESOURCE_VIEW_DESC ScreenSpaceNullSrvDesc( UINT nSlot )
 	{
 		D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
@@ -309,11 +313,11 @@ private:
 	// Largest legal cbuffer; also the read slack kept past every upload page used for root CBVs.
 	static constexpr size_t kConstantBufferMaxBytes = 65536;
 	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR projected-light table;
-	// 21 PS space-6 screen-space table, 22/23 PS space-6 b0/b1 root CBVs; 24 VS space-7 instance-row root SRV.
+	// 21 PS space-6 screen-space table, 22/23/24 PS space-6 b0/b1/b2 root CBVs; 25 VS space-7 instance-row root SRV.
 	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootPbrSpots = 20;
-	static constexpr UINT kRootScreenSpaceTable = 21, kRootScreenSpaceView = 22, kRootVolumetricConstants = 23, kRootInstanceTransforms = 24, kRootParameterCount = 25;
-	static constexpr UINT kRootLightingView = 25, kRootLightingViewConstants = 26, kRootLightingVisibility = 27, kRootPropDraw = 28, kRootPropTriangles = 29, kRootProbeTable = 30, kRootProbeConstants = 31, kLightingRootParameterCount = 32;
-	static constexpr UINT kRootHighresTable = 32, kRootHighresConstants = 33, kRootHighresFailure = 34, kHighresRootParameterCount = 35;
+	static constexpr UINT kRootScreenSpaceTable = 21, kRootScreenSpaceView = 22, kRootVolumetricConstants = 23, kRootShadowSkyClipConstants = 24, kRootInstanceTransforms = 25, kRootParameterCount = 26;
+	static constexpr UINT kRootLightingView = 26, kRootLightingViewConstants = 27, kRootLightingVisibility = 28, kRootPropDraw = 29, kRootPropTriangles = 30, kRootProbeTable = 31, kRootProbeConstants = 32, kLightingRootParameterCount = 33;
+	static constexpr UINT kRootHighresTable = 33, kRootHighresConstants = 34, kRootHighresFailure = 35, kHighresRootParameterCount = 36;
 	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
 	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride );
@@ -359,7 +363,7 @@ private:
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundProbeTable{}; // like m_BoundPbrSpots: only probe draws bind the space-4 pair
 	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundProbeConstants = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundScreenSpaceTable{}; // like m_BoundPbrSpots: space 6 exists on every root
-	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundScreenSpaceView = 0, m_nBoundVolumetricConstants = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundScreenSpaceView = 0, m_nBoundVolumetricConstants = 0, m_nBoundShadowSkyClipConstants = 0;
 	DescriptorRangeDX12 m_ScreenSpaceNullTable{};
 	uint64_t m_nScreenSpaceNullTableFence = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingViewTable{};

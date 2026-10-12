@@ -105,6 +105,8 @@ ssr_reduce_color_cs51.fxc cs ssr_reduce_color_cs51 native -
 # noparity ssr_reduce_color_cs51 - native-only
 ssr_trace_cs51.fxc cs ssr_trace_cs51 native -
 # noparity ssr_trace_cs51 - native-only
+ssr_resolve_cs51.fxc cs ssr_resolve_cs51 native -
+# noparity ssr_resolve_cs51 - native-only
 ssr_composite_cs51.fxc cs ssr_composite_cs51 native -
 # noparity ssr_composite_cs51 - native-only
 volumetric_vs51.fxc vs volumetric_vs51 native -

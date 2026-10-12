@@ -753,6 +753,7 @@ private:
 	bool HdrOutputCapable() override;
 	bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) override;
 	int SceneSampleCount() override;
+	void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked ) override;
 	void SampleUpscalerJitter();
 
 	// IShaderAPIDX12ScreenSpace (screenspace_dx12.cpp): ordered markers; each queues an immutable pooled packet that
@@ -819,8 +820,9 @@ private:
 	void ReplayDispatchSSR();
 	void ReleaseSSRResources();
 	// Backend-owned scratch render targets (ordinary texture records, UAV-promoted at creation, fence-retained on
-	// recreation/deletion). Scene/depth/delta are viewport-sized, trace and traceDistance are profile-sized; none alias
-	// the live scene.
+	// recreation/deletion). Scene, depth, resolve, history and delta are viewport-sized, trace and ray are
+	// profile-sized; none alias the live scene. depth/history/historyAux ( O, history length ) ping-pong: [current] is written this
+	// frame, [current ^ 1] holds the previous SSR frame's.
 	struct SSRTextureDX12
 	{
 		ShaderAPITextureHandle_t handle = 0;
@@ -828,8 +830,19 @@ private:
 	};
 	struct SSRResourcesDX12
 	{
-		SSRTextureDX12 scene, depth, trace, traceDistance, delta;
-		bool warned = false;
+		SSRTextureDX12 scene, trace, ray, resolve, resolveAux, delta;
+		SSRTextureDX12 depth[2], history[2], historyAux[2];
+		int current = 0;
+		// The previous successful SSR frame: its camera (gSSRWorldToClip), scene rectangle and frame counter.
+		float prevWorldToClip[16]{};
+		Rect_t prevRect{};
+		uint64_t prevFrame = ~0ull;
+		// SetAmbientOcclusionTerm: the frame's AO term, used to occlude reflected hits when aoFrame is the current frame.
+		ShaderAPITextureHandle_t aoTerm = 0;
+		int aoWidth = 0, aoHeight = 0;
+		bool aoPacked = false;
+		uint64_t aoFrame = ~0ull;
+		bool warned = false, msaaWarned = false;
 	} m_SSR;
 	bool EnsureSSRTexture( SSRTextureDX12 &texture, int nWidth, int nHeight, ImageFormat format, bool bFullMips, const char *pszName );
 	bool RunSSRPasses( const Rect_t &sceneRect );

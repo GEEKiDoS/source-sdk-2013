@@ -94,7 +94,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	ranges[2].NumDescriptors = 8;
 	ranges[2].BaseShaderRegister = 0;
 	ranges[2].RegisterSpace = 1;
-	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR table; 21-23 PS space-6 table and CBVs; 24 VS space-7 instance-row root SRV.
+	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR table; 21-24 PS space-6 table and CBVs; 25 VS space-7 instance-row root SRV.
 	D3D12_ROOT_PARAMETER params[kHighresRootParameterCount]{};
 	for ( int i = 0; i < 4; ++i )
 	{
@@ -150,6 +150,10 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootVolumetricConstants].Descriptor.ShaderRegister = DX12_SCREENSPACE_B_VOLUMETRIC;
 	params[kRootVolumetricConstants].Descriptor.RegisterSpace = DX12_SCREENSPACE_REGISTER_SPACE;
 	params[kRootVolumetricConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootShadowSkyClipConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[kRootShadowSkyClipConstants].Descriptor.ShaderRegister = DX12_SCREENSPACE_B_SHADOW_SKY_CLIP;
+	params[kRootShadowSkyClipConstants].Descriptor.RegisterSpace = DX12_SCREENSPACE_REGISTER_SPACE;
+	params[kRootShadowSkyClipConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	params[kRootInstanceTransforms].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 	params[kRootInstanceTransforms].Descriptor.ShaderRegister = DX12_INSTANCE_T_MODEL_ROWS;
 	params[kRootInstanceTransforms].Descriptor.RegisterSpace = DX12_INSTANCE_REGISTER_SPACE;
@@ -1018,6 +1022,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			const D3D12_GPU_DESCRIPTOR_HANDLE screenTable = input.screenSpaceTable.count ? input.screenSpaceTable.gpu : m_ScreenSpaceNullTable.gpu;
 			const D3D12_GPU_VIRTUAL_ADDRESS screenView = input.screenSpaceView ? input.screenSpaceView : m_nZeroConstantAddress;
 			const D3D12_GPU_VIRTUAL_ADDRESS volumetric = input.volumetricConstants ? input.volumetricConstants : m_nZeroConstantAddress;
+			const D3D12_GPU_VIRTUAL_ADDRESS skyClip = input.shadowSkyClipConstants ? input.shadowSkyClipConstants : m_nZeroConstantAddress;
 			if ( !m_bGraphicsBindingsValid || m_BoundScreenSpaceTable.ptr != screenTable.ptr )
 			{
 				++m_Stats.rootTableSets;
@@ -1035,6 +1040,12 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				++m_Stats.rootCbvSets;
 				pList->SetGraphicsRootConstantBufferView( kRootVolumetricConstants, volumetric );
 				m_nBoundVolumetricConstants = volumetric;
+			}
+			if ( !m_bGraphicsBindingsValid || m_nBoundShadowSkyClipConstants != skyClip )
+			{
+				++m_Stats.rootCbvSets;
+				pList->SetGraphicsRootConstantBufferView( kRootShadowSkyClipConstants, skyClip );
+				m_nBoundShadowSkyClipConstants = skyClip;
 			}
 		}
 		if ( input.instanceTransforms && ( !m_bGraphicsBindingsValid || m_BoundInstanceTransforms != input.instanceTransforms ) )

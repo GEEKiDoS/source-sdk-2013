@@ -3,6 +3,7 @@ cbuffer PostConstants : register( b0, space1 )
 {
 	uint srcWidth, srcHeight, dstWidth, dstHeight;
 	float texelX, texelY, p0, p1;
+	float p2, pad0, pad1, pad2;
 };
 
 Texture2D<float4> gSrc : register( t0, space0 );

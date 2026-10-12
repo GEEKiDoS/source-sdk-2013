@@ -1,6 +1,7 @@
 // Authored sprite cutout, shared with the lit material's raster alpha state.
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
+#include "shadow_sky_clip.hlsli"
 Texture2D g_DetailTexture : register( t0 );
 SamplerState g_DetailSampler : register( s0 );
 cbuffer DetailShadowDepthMaterial : register( b1, space1 )
@@ -19,6 +20,7 @@ struct PS_INPUT
 };
 float4 main( PS_INPUT i ) : SV_Target0
 {
+	ShadowSkyClip_Discard( i.position );
 	float alpha = g_DetailTexture.Sample( g_DetailSampler, i.uv ).a * g_DetailSpriteTint.a;
 	DX12AlphaTest( alpha );
 	return float4( 0, 0, 0, alpha );

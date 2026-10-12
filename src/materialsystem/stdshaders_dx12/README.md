@@ -201,6 +201,20 @@ immediately as before; depth-only output is order independent. `-dx12stats` appe
 cvar to 0 stops emitting the markers (the unbatched path). Both paths write identical depth, so the toggle does not
 invalidate cached charts; it applies to every depth scene rendered afterwards (cascades re-render as the view moves).
 
+Sun sky clip (`r_shadowmap_sky_clip`, `FCVAR_ARCHIVE` default 1): the sky is the sun's emitter, as in the vrad_restir
+bake, so nothing on the sun side of a sky face may cast. At admission the client reads the model-0 `SURF_SKY` faces
+(plane normal as stored, `dface_t::side` does not flip it) and tags each with its sealed region (areas joined through
+areaportals). Every sun chart (static sun and cascades; local charts pass no clip) hands `BeginShadowPass` a
+`DX12ShadowSkyClip`: the entry faces (`dot( normal, sunTravel ) > 0`) of the receiver's region, already in the chart's
+clip space. The backend rasterizes them with `shadow_sky_depth_vs51` (no pixel stage, `GREATER`, cleared to 0) into the
+shared sky target, keeping per texel the entry sky nearest the ground. Caster draws in such a pass discard fragments on
+the sun side of it (`native_src/shadow_sky_clip.hlsli`, bias 2 world units): opaque depth-only casters run
+`shadow_sky_clip_ps51` instead of no pixel stage, and `depthwrite_ps51` / `dx12_detailshadowlit_depth_ps51` call the
+same `ShadowSkyClip_Discard` (space 6 `t4` + `b2`). Brush `$alphatest` casters using their own pixel shader are not
+clipped. A receiver on the sun side of a deeper entry sky in its own column (a roof above a window's sky brush) keeps
+only the baked cap for casters above that sky. The extra pixel stage costs about 0.4 ms per frame while sun charts
+re-render (`d1_trainstation_02`, RTX 4090); cached charts cost nothing.
+
 ## Sky ambient match (`r_sky_ambientmatch`)
 
 The `Sky` shaders (`sky_dx12.cpp` for LDR `Sky_DX9`, `sky_hdr_dx12.cpp` for `Sky_HDR_DX9`; compressed HDR multiplies `$color`
@@ -512,7 +526,7 @@ gtao_main_cs51.fxc cs gtao_main_cs51 native -
 `process_shaders.ps1 -Native` compiles this with `ShaderCompile2 -ver 51`, which derives the `cs_5_1` profile,
 emits the VCS v6 combo table and a normal `<logical>_Static_Index` / `<logical>_Dynamic_Index` include, and passes
 both artifacts to `nativeshaderpack_dx12`. The packer validates a compute DXBC program, requires `b0 space1` for
-the constants cbuffer and `t*`, `u*`, `s*` resources in space 0, then publishes
+the constants cbuffer (at most 512 bytes, `SHADERAPIDX12_COMPUTE_MAX_CONSTANTS`) and `t*`, `u*`, `s*` resources in space 0, then publishes
 `<game>/shaders/csh/<logical>.vcs` and records it in `native_dx12_published.txt`.
 
 Compute includes intentionally contain no graphics native-cbuffer block writer. Material C++ passes the reflected
@@ -593,7 +607,7 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
 | stencil | scene `D24S8`, bit `0x80` | set on a PBR depth write, cleared by any other depth-writing draw in the pass |
 | environment (SSR brackets only) | `R16G16B16A16_FLOAT` | `E.rgb`, the cubemap term in final scene units; alpha `D`, the specular-luminance-weighted light distance of the direct specular (sun 60000, 0 when it is zero) |
 | response (SSR brackets only) | `R16G16B16A16_FLOAT` | `K.rgb`, what a sampled scene radiance is multiplied by to replace `E`; alpha 1 for a fresh eligible writer |
-| direct specular (SSR brackets only) | `R16G16B16A16_FLOAT` | `S.rgb`, the direct GGX specular (sun, shadowmap locals, projected spots, draw-local lights) in final scene units; `ssr_composite_cs51` subtracts `confidence * o * S` where `o` is the soft `[hitDistance < D]` |
+| direct specular (SSR brackets only) | `R16G16B16A16_FLOAT` | `S.rgb`, the direct GGX specular (sun, shadowmap locals, projected spots, draw-local lights) in final scene units; `ssr_composite_cs51` subtracts `O * S`, `O` the confidence-weighted soft `[hitDistance < D]` |
 
 - **A pixel holds PBR data only while stencil bit `0x80` is set.** The backend forces that bit on every depth-writing draw
   inside the pass. Consumers read the stencil plane (`X24_TYPELESS_G8_UINT`, plane 1) as `Texture2D<uint2>` /
@@ -602,6 +616,26 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
   it. `pbr_gbuffer_debug_cs51` is the reference consumer.
 - The pass does not clear the colour targets, and `specular.a == 0` is not a validity test.
 - Translucent draws are outside the pass. Outside the main view the targets are not attached.
+
+### Screen-space reflections
+
+`shaderapidx12/screenspace_ssr_dx12.cpp` runs stochastic SSR on single-sample scenes (MSAA scenes skip it) over the
+receivers above, every roughness included; misses and low-confidence pixels keep the cubemap term `E`.
+
+| Pass | Size | Output |
+|---|---|---|
+| `ssr_depth_cs51` | viewport | positive view depth; ping-ponged so the composite validates history against the previous frame |
+| `ssr_reduce_color_cs51` | mip chain | mean-colour mips of the scene copy |
+| `ssr_trace_cs51` | profile (half/full) | one GGX visible-normal sample (Heitz 2018) per texel from the pixel of its 2x2 group that rotates each frame; radiance + confidence, and the ray `( hit, +pdf )` / `( direction, -pdf )`. The colour mip is the sample's filtered-importance cone; the hit radiance is multiplied by the frame's GTAO term at the hit (`SetAmbientOcclusionTerm`), because the scene copy precedes the GTAO apply |
+| `ssr_resolve_cs51` | viewport | ray reuse over the own texel plus 4/6/8 Vogel-disk neighbours (radius `1 + 3 sqrt( roughness )` texels), weighted `lobe_receiver( L ) / pdf`, firefly weight `1 / ( 1 + luminance )`; `C = ( confidence * radiance, confidence )` and `( O, mean hit distance )` |
+| `ssr_composite_cs51` | viewport | temporal filter: history reprojected through motion vectors (or the previous camera) for rough lobes and the reflected virtual point for glossy ones, depth-validated, clipped toward the mean of the resolve's 3x3 neighbourhood at trace spacing (mean +- 1..2 sigma, wider when rough); current weight `1 / n` with a per-pixel history length `n` capped at 8 (glossy) .. 32 (rough) frames; writes the next history `C`, `( O, n )` and `delta = C.rgb * K - C.a * E - O * S` |
+
+History is dropped after a skipped/failed frame, a viewport change or a recreated target. The noise sequence advances
+with the frame counter so the temporal upscaler integrates what the SSR history leaves.
+
+GTAO is split around SSR: its term is computed after the motion vectors and before `DispatchSSR` (the main and final
+denoise passes publish it through `IShaderAPIDX12Compute::SetAmbientOcclusionTerm`), and applied after SSR's
+correction, so receivers and reflected hits both carry AO.
 
 ## Verification
 
@@ -646,7 +680,7 @@ AgX, LUT, noise and output arithmetic are unchanged. Client demand/consumer gate
 ## Layered bloom (MagicBloom on the compute pyramid)
 
 `postfx_downsample_cs51` `THRESHOLD 2` builds the first bloom level from the exposed scene with MagicBloom's soft
-threshold per tap, `c * clamp( luma601( c ) - t, 0, 10 )` with `t = mat_postfx_bloom_threshold` (default 1.25; MagicBloom uses 1), and writes the plain exposed level to `u1` for the lens
+threshold per tap, `c * clamp( luma601( c ) - t, 0, b )` with `t = mat_postfx_bloom_threshold` (default 1.25; MagicBloom uses 1) and the extraction boost cap `b = mat_postfx_bloom_boost` (default 0.015; MagicBloom uses 10, passed as `p2`), and writes the plain exposed level to `u1` for the lens
 flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead of lerping: `up[last] = down[last]`,
 `up[n] = down[n] + tent3x3( up[n + 1] )`, so bloom mip 1 holds every layer; a dropped fine mip (lower
 `mat_postfx_bloom_quality`) passes `p0 = 0` and only carries the sum up. The client divides

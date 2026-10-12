@@ -8,6 +8,8 @@ logical=depthwrite_ps51 stage=ps source=depthwrite_ps51.fxc legacy=depthwrite_ps
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ShadowSkyClip space=6 register=b2 size=16 layoutHash=0x34d5d3e384e91402 engine
+    member=cShadowSkyClip type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=depthwrite_ps2x space=1 register=b1 size=16 layoutHash=0x4c44ef8e30256492 material
     member=g_AlphaThreshold type=3 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=ps:c0
     member=g_vNearFarPlanes type=3 class=1 offset=4 size=8 elements=0 arrayStride=0 legacy=ps:c1

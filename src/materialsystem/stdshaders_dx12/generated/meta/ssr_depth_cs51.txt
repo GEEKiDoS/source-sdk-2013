@@ -1,12 +1,16 @@
-logical=ssr_depth_cs51 stage=cs source=ssr_depth_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
-  cbuffer=DX12SSR space=1 register=b0 size=256 layoutHash=0xadc478528ab58c0b material
+logical=ssr_depth_cs51 stage=cs source=ssr_depth_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=DX12SSR space=1 register=b0 size=368 layoutHash=0xcd43a658cf1e3143 material
     member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
-    member=gSSREye type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
-    member=gSSRForward type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
-    member=gSSRViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
-    member=gSSRSizes type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
-    member=gSSRTrace type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
-    member=gSSRControl type=19 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
-    member=gSSRMip type=19 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=gSSRLimits type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRPrevWorldToClip type=3 class=2 offset=128 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSREye type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRForward type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRViewport type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRSizes type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRTrace type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRControl type=19 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRMip type=19 class=1 offset=288 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRLimits type=3 class=1 offset=304 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRTemporal type=3 class=1 offset=320 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRResolve type=19 class=1 offset=336 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRAmbient type=3 class=1 offset=352 size=16 elements=0 arrayStride=0 legacy=

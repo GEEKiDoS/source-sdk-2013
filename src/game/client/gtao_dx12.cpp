@@ -30,7 +30,9 @@ struct GtaoMaterial_t
 static bool s_bDX12 = false;
 static bool s_bRenderTargetsReady = false;
 static bool s_bMaterialsReady = false;
-static int s_nDispatchedFrame = -1;
+static int s_nComputedFrame = -1;
+static int s_nAppliedFrame = -1;
+static int s_nApplyWidth = 0, s_nApplyHeight = 0;
 static GtaoMaterial_t s_Prefilter;
 static GtaoMaterial_t s_ViewDepth;
 static GtaoMaterial_t s_Main;
@@ -185,7 +187,7 @@ void GTAODX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig )
 	const char *shaderDLL = pHardwareConfig ? pHardwareConfig->GetShaderDLLName() : nullptr;
 	s_bDX12 = shaderDLL && !V_stricmp( shaderDLL, "stdshader_dx12" );
 	s_bMaterialsReady = false;
-	s_nDispatchedFrame = -1;
+	s_nComputedFrame = s_nAppliedFrame = -1;
 }
 
 void GTAODX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig )
@@ -238,7 +240,7 @@ void GTAODX12_Shutdown()
 	s_bMaterialsReady = false;
 	s_bRenderTargetsReady = false;
 	s_bDX12 = false;
-	s_nDispatchedFrame = -1;
+	s_nComputedFrame = s_nAppliedFrame = -1;
 }
 
 bool GTAODX12_Enabled()
@@ -246,9 +248,11 @@ bool GTAODX12_Enabled()
 	return s_bDX12 && r_gtao.GetBool() && s_bRenderTargetsReady && s_bMaterialsReady;
 }
 
-void GTAODX12_Dispatch( IMatRenderContext *pRenderContext )
+// The AO term is computed from depth alone, so it runs as soon as the opaque depth is complete: before the SSR
+// marker, which occludes reflected hits with it. The apply darkens the scene after SSR added its correction.
+void GTAODX12_Compute( IMatRenderContext *pRenderContext )
 {
-	if ( !GTAODX12_Enabled() || s_nDispatchedFrame == gpGlobals->framecount )
+	if ( !GTAODX12_Enabled() || s_nComputedFrame == gpGlobals->framecount )
 		return;
 
 	int viewportX, viewportY, fullWidth, fullHeight;
@@ -302,8 +306,18 @@ void GTAODX12_Dispatch( IMatRenderContext *pRenderContext )
 	DrawCompute( pRenderContext, s_Main.m_pMaterial );
 	for ( int i = 0; i < denoisePasses; ++i )
 		DrawCompute( pRenderContext, s_Denoise[i].m_pMaterial );
-	pRenderContext->DrawScreenSpaceRectangle( pApply, 0, 0, fullWidth, fullHeight, 0, 0, fullWidth - 1, fullHeight - 1, fullWidth, fullHeight );
-	s_nDispatchedFrame = gpGlobals->framecount;
+	s_nApplyWidth = fullWidth;
+	s_nApplyHeight = fullHeight;
+	s_nComputedFrame = gpGlobals->framecount;
+}
+
+void GTAODX12_Apply( IMatRenderContext *pRenderContext )
+{
+	if ( !GTAODX12_Enabled() || s_nComputedFrame != gpGlobals->framecount || s_nAppliedFrame == gpGlobals->framecount )
+		return;
+	IMaterial *pApply = r_gtao_debug.GetBool() ? s_ApplyDebug.m_pMaterial : s_Apply.m_pMaterial;
+	pRenderContext->DrawScreenSpaceRectangle( pApply, 0, 0, s_nApplyWidth, s_nApplyHeight, 0, 0, s_nApplyWidth - 1, s_nApplyHeight - 1, s_nApplyWidth, s_nApplyHeight );
+	s_nAppliedFrame = gpGlobals->framecount;
 }
 
 int GTAODX12_Status()

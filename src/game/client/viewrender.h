@@ -124,6 +124,7 @@ struct ShadowMapDepthScene_t
 	uint32 *overlayCasterDraws;
 	ShadowMapDepthFootprint_t *overlayFootprint;
 	CShadowMapRopeFootprint *overlayRopeFootprint;
+	const DX12ShadowSkyClip *skyClip; // sun charts: BeginShadowPass sky clip, NULL for local charts
 };
 
 void ViewRender_DrawShadowMapScene( const ShadowMapDepthScene_t &scene );

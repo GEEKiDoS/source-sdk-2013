@@ -2373,10 +2373,16 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	// block (and, with contacts, the private depth copy); every other draw (shadow, motion, the replay itself, off-scene
 	// targets, brackets with neither effect) keeps the neutral bindings.
 	bindingInput.screenSpaceTable = {};
-	bindingInput.screenSpaceView = bindingInput.volumetricConstants = 0;
+	bindingInput.screenSpaceView = bindingInput.volumetricConstants = bindingInput.shadowSkyClipConstants = 0;
 	if ( !shadowPass && !motionActive && !contactReplay && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ) &&
 	     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER && !PrepareScreenSpaceBinding( bindingInput ) )
 		return;
+	// Sky-clipped sun chart passes bind their sky map / constants (t4, b2 space 6) to every caster draw.
+	if ( shadowPass && !m_pDevice->Lighting().PrepareShadowSkyClipDraw( bindingInput ) )
+	{
+		m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
+		return;
+	}
 	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && psRecord && psRecord->lightingAbi, bindingInput ) )
 		return;
 	if ( bindingInput.lightingAbi && psRecord && psRecord->propVisibilityAbi &&
@@ -2433,7 +2439,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	{
 		ZoneNamedN( pipelineSetup, "DX12 PipelineSetup", DX12_DRAW_ZONES_ACTIVE );
 		ShaderRecordDX12 *vs = vsRecord;
-		ShaderRecordDX12 *ps = depthOnly ? nullptr : psRecord;
+		// Opaque casters have no material pixel stage; a sky-clipped sun pass runs shadow_sky_clip_ps51 instead.
+		ShaderRecordDX12 *ps = depthOnly ? m_pDevice->Lighting().ShadowSkyClipPixelShader() : psRecord;
 		D3D12_INPUT_ELEMENT_DESC elements[MAX_VERTEX_INPUTS_DX12];
 		if ( vs->inputSignature.Count() > static_cast<int>( ARRAYSIZE( elements ) ) )
 			return;

@@ -1233,6 +1233,25 @@ def shadow_pixel_entry(text, logical, folded_names=frozenset()):
     return text
 
 
+# Alpha-tested shadow casters keep their own pixel stage inside shadow-depth passes (opaque casters run the
+# backend-bound native shadow_sky_clip_ps51 instead), so these logicals call the sun sky clip themselves
+# (native_src/shadow_sky_clip.hlsli) right after input conversion, before the authored alpha clip.
+SKY_CLIP_CASTERS = {'depthwrite_ps30'}
+
+
+def caster_sky_clip(text):
+    st = find_struct(text, 'DX12_PS_INPUT')
+    pos = next((n for _, _, n, _, sem, _ in struct_members(text[st[1]:st[2]]) if norm_sem(sem) == 'SV_POSITION'), None)
+    if not pos: raise RuntimeError('shadow caster pixel input lacks SV_Position')
+    for hs, bs, be in reversed(main_defs(text)):
+        body = text[bs + 1:be]
+        conv = re.search(r'\b(\w+)\s+(\w+)\s*=\s*DX12ConvertInput\s*\([^;]+;', body)
+        if not conv: raise RuntimeError('shadow caster pixel main lacks input conversion')
+        body = body[:conv.end()] + f'\n\tShadowSkyClip_Discard( dx12In.{pos} );' + body[conv.end():]
+        text = text[:bs + 1] + body + text[be:]
+    return text
+
+
 def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None, flatten=frozenset(), fixed=None,
             output_struct_from=None, shadowmaps=False, highres=False):
     stage, define, tag = PROFILES[profile]
@@ -1287,6 +1306,7 @@ def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None
         text = pixel_entry(text, tag, interp, fixed)
         if shadowmaps: text = shadow_pixel_entry(text, logical, folded_names)
         if highres: text = genhighres.pixel_entry(text, logical, folded_names)
+        if logical in SKY_CLIP_CASTERS: text = caster_sky_clip(text)
         interp_out = None
     head = (f'// Native SM5.1 rewrite of materialsystem/stdshaders/{source} for logical {logical} (legacy profile {tag});\n'
             f'// generated mechanically by gensource.py, then reviewed. Combo directives are the {tag} set.\n'
@@ -1295,6 +1315,7 @@ def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None
         head = head.replace('#include "dx12_preamble.h"', '#define DX12_COMBO_FOLD 1\n#include "dx12_preamble.h"')
     if shadowmaps: head = '#define DX12_SHADOWMAPS 1\n' + head
     if highres: head = '#define DX12_HIGHRES_LIGHTMAPS 1\n#define DX12_SHADOWMAPS 1\n' + head
+    if logical in SKY_CLIP_CASTERS: head += '#include "shadow_sky_clip.hlsli"\n'
     if stage == 'ps':
         import genhighres
         role = genhighres.SAMPLER_ROLES.get(logical, 0)

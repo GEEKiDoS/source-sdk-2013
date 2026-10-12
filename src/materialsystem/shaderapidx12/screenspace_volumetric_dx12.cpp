@@ -173,7 +173,7 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 			return false;
 		for ( UINT slot = 0; slot < DX12_SCREENSPACE_TABLE_COUNT; ++slot )
 		{
-			const bool bScene = slot >= 2 && ( ( slot & 1 ) != 0 ) == bMSAA;
+			const bool bScene = slot >= 2 && slot < DX12_SCREENSPACE_T_SHADOW_SKY_CLIP && ( ( slot & 1 ) != 0 ) == bMSAA;
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv = CPipelineCacheDX12::ScreenSpaceNullSrvDesc( slot );
 			if ( bScene )
 				srv.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;

@@ -202,8 +202,9 @@ static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D1
 }
 
 // Space 6 (screen-space effects, pixel stage): cbuffer DX12ScreenSpaceView b0 (208 B, 7 members), cbuffer DX12Volumetric b1
-// (64 B, 4 members), g_ScreenContactDepth t0 / g_ScreenSceneDepth t2 (Texture2D<float>) and g_ScreenContactDepthMS t1 /
-// g_ScreenSceneDepthMS t3 (Texture2DMS<float>). Unknown space-6 resources are rejected. screenSeen collects one bit per name.
+// (64 B, 4 members), cbuffer DX12ShadowSkyClip b2 (16 B, 1 member), g_ScreenContactDepth t0 / g_ScreenSceneDepth t2 /
+// g_ShadowSkyClip t4 (Texture2D<float>) and g_ScreenContactDepthMS t1 / g_ScreenSceneDepthMS t3 (Texture2DMS<float>).
+// Unknown space-6 resources are rejected. screenSeen collects one bit per name.
 static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned &screenSeen )
 {
 	struct Block
@@ -220,6 +221,9 @@ static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, cons
 		{ "DX12Volumetric", DX12_SCREENSPACE_B_VOLUMETRIC, 64, 4,
 		  { "cVolumeMedium", "cVolumeSunMedium", "cVolumeControl", "cVolumeOutputScale" },
 		  { 16, 16, 16, 16 } },
+		{ "DX12ShadowSkyClip", DX12_SCREENSPACE_B_SHADOW_SKY_CLIP, 16, 1,
+		  { "cShadowSkyClip" },
+		  { 16 } },
 	};
 	struct Texture
 	{
@@ -232,6 +236,7 @@ static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, cons
 		{ "g_ScreenContactDepthMS", 1, D3D_SRV_DIMENSION_TEXTURE2DMS },
 		{ "g_ScreenSceneDepth", 2, D3D_SRV_DIMENSION_TEXTURE2D },
 		{ "g_ScreenSceneDepthMS", 3, D3D_SRV_DIMENSION_TEXTURE2DMS },
+		{ "g_ShadowSkyClip", DX12_SCREENSPACE_T_SHADOW_SKY_CLIP, D3D_SRV_DIMENSION_TEXTURE2D },
 	};
 	unsigned bit = 0;
 	bool valid = false;
@@ -258,7 +263,7 @@ static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, cons
 		const Texture &texture = textures[i];
 		if ( V_strcmp( binding.Name, texture.name ) )
 			continue;
-		bit = 4u << i;
+		bit = 8u << i;
 		valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == texture.dimension && binding.ReturnType == D3D_RETURN_TYPE_FLOAT &&
 		        binding.BindPoint == texture.reg && binding.BindCount == 1 && !( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS );
 	}

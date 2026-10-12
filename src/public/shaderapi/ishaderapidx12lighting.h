@@ -43,7 +43,7 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_009"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_010"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -61,6 +61,17 @@ typedef intp ShaderAPITextureHandle_t;
 #define DX12_INSTANCE_REGISTER_SPACE			7
 #define DX12_INSTANCE_T_MODEL_ROWS				0
 #define DX12_INSTANCE_ROW_STRIDE				16
+
+// Sun shadow-chart sky clip: pixel-stage space 6 beside the screen-space inputs (native_src/shadow_sky_clip.hlsli,
+// ishaderapidx12screenspace.h). t4 Texture2D<float> sky entry depth, b2 cbuffer DX12ShadowSkyClip (byte-identical twin
+// below). Backend-filled per sky-clipped pass; every other draw sees zero constants and a typed-null texture.
+struct alignas( 16 ) DX12ShadowSkyClipConstants	// 16 bytes
+{
+	float	rectOrigin[2];			// chart rect origin in target texels (the sky map is chart-local, origin 0,0)
+	float	depthBias;				// chart depth units ([0,1] over cShadowDepthRecords near..far)
+	float	enabled;				// 1 while a sky map is bound, else 0
+};
+static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipConstants must match HLSL DX12ShadowSkyClip" );
 
 #define DX12_SHADOW_LOCAL_PAGE_SIZE				4096	// one local page, texels per side
 #define DX12_SHADOW_LOCAL_SLOT_SIZE				512		// S for locals
@@ -240,6 +251,18 @@ COMPILE_TIME_ASSERT( sizeof( DX12ProbeConstantsV1 ) == 64 );
 typedef uint64 DX12ShadowTarget_t;		// private generation/index id; 0 invalid; never an engine texture
 #define DX12_SHADOW_TARGET_INVALID		( (DX12ShadowTarget_t)0 )
 
+// Sky clip of one sun chart pass (BeginShadowPass). clipPositions holds vertexCount float4 clip-space positions
+// (3 per triangle, the receiver region's sky ENTRY faces transformed by the chart's light world-to-clip matrix);
+// the backend rasterizes them into target (which must be at least the pass rect's size) keeping the MAX depth, then
+// binds it for every caster draw of the pass. The arrays are copied by the call.
+struct DX12ShadowSkyClip
+{
+	DX12ShadowTarget_t target;
+	const float *clipPositions;
+	uint32	vertexCount;
+	float	depthBias;				// chart depth units
+};
+
 enum DX12LightingStatus
 {
 	DX12_LIGHTING_STATUS_PENDING = 0,
@@ -360,7 +383,9 @@ public:
 	// Synchronous. Prevents new leases; storage retires only after every lease and GPU use completed.
 	virtual void DestroyShadowDepthTarget( DX12ShadowTarget_t target ) = 0;
 	// Queued. Saves backend state, binds zero color targets + the private DSV, sets viewport/scissor to the rect, clears only it when asked.
-	virtual void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear ) = 0;
+	// skyClip (sun charts only) rasterizes the sky entry depth into its target first and discards every caster fragment of the
+	// pass on the sun side of it (shadow_sky_clip.hlsli); NULL leaves caster depth unclipped (local charts).
+	virtual void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear, const DX12ShadowSkyClip *skyClip ) = 0;
 	virtual void EndShadowPass() = 0;
 	// Queued; only inside Begin/EndShadowPass. Between the markers the backend defers every opaque rigid depthwrite
 	// caster draw (see CShaderAPIDX12::DrawBuffers eligibility) and emits them as instanced draws at

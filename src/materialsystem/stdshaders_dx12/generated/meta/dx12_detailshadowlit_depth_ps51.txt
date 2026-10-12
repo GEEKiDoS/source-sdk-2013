@@ -8,6 +8,8 @@ logical=dx12_detailshadowlit_depth_ps51 stage=ps source=dx12_detailshadowlit_dep
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ShadowSkyClip space=6 register=b2 size=16 layoutHash=0x34d5d3e384e91402 engine
+    member=cShadowSkyClip type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DetailShadowDepthMaterial space=1 register=b1 size=16 layoutHash=0x06bb641aecb4714c material
     member=g_DetailSpriteTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     legacyEntry=0,16,1,0,0,0,0

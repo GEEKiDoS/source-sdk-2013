@@ -64,7 +64,8 @@ struct ShaderAPIDX12ComputeResource_t
 
 #define SHADERAPIDX12_COMPUTE_MAX_SRVS      16
 #define SHADERAPIDX12_COMPUTE_MAX_UAVS      8
-#define SHADERAPIDX12_COMPUTE_MAX_CONSTANTS 256
+// Must match the nativeshaderpack_dx12 compute cbuffer contract; raising it does not change the dispatch layout.
+#define SHADERAPIDX12_COMPUTE_MAX_CONSTANTS 512
 
 struct ShaderAPIDX12ComputeDispatch_t
 {
@@ -79,7 +80,8 @@ struct ShaderAPIDX12ComputeDispatch_t
 };
 
 // _002: SHADERAPIDX12_COMPUTE_MAX_SRVS 8 -> 16 (ShaderAPIDX12ComputeDispatch_t layout), PBR_SSR_SPECULAR resource.
-#define SHADERAPIDX12_COMPUTE_INTERFACE_VERSION "ShaderAPIDX12Compute_002"
+// _003: SetAmbientOcclusionTerm.
+#define SHADERAPIDX12_COMPUTE_INTERFACE_VERSION "ShaderAPIDX12Compute_003"
 
 // SetFrameGeneration modes.
 enum ShaderAPIDX12FrameGenMode_t
@@ -170,6 +172,10 @@ abstract_class IShaderAPIDX12Compute
 public:
 	virtual bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) = 0;
 	virtual int SceneSampleCount() = 0;
+	// The main view's ambient-occlusion term for this frame, in call order with Dispatch: viewport-local texels
+	// [0, nWidth) x [0, nHeight) of hTerm cover the scene viewport; bPacked when the stored value is ao / 1.5 (the
+	// GTAO main pass without a denoise pass). SSR darkens reflected hits with it; the last call of a frame wins.
+	virtual void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked ) = 0;
 };
 
 #endif // ISHADERAPIDX12_H

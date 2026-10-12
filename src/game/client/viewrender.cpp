@@ -5578,7 +5578,7 @@ public:
 		context->FogMode( MATERIAL_FOG_NONE );
 		{
 			VPROF_BUDGET( "CFeatureShadowDepthView::Draw.BeginShadowPass", "Shadowmaps" );
-			s.lighting->BeginShadowPass( s.target, s.x, s.y, s.size, s.size, s.clear );
+			s.lighting->BeginShadowPass( s.target, s.x, s.y, s.size, s.size, s.clear, s.skyClip );
 		}
 		MDLCACHE_CRITICAL_SECTION();
 		if ( s.drawWorld )
@@ -6214,18 +6214,26 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		}
 		if ( bMotionVectors )
 			DrawMotionVectors( motionEntries );
+		// GTAO over the complete opaque scene, before any translucency; the client latches repeats within a frame. The
+		// AO term is computed before SSR, which occludes its reflected hits with it, and applied after SSR's correction.
+		const bool bGtao = viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() && GTAODX12_Enabled();
+		if ( bGtao )
+		{
+			CMatRenderContextPtr pGtaoContext( materials );
+			PIXEVENT( pGtaoContext, "GTAO compute" );
+			GTAODX12_Compute( pGtaoContext );
+		}
 		if ( pScreenSpace )
 		{
 			if ( bSSR )
 				pScreenSpace->DispatchSSR();
 			pScreenSpace->EndView();
 		}
-		// GTAO over the complete opaque scene, before any translucency; the client latches repeats within a frame.
-		if ( viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() && GTAODX12_Enabled() )
+		if ( bGtao )
 		{
 			CMatRenderContextPtr pGtaoContext( materials );
-			PIXEVENT( pGtaoContext, "GTAO" );
-			GTAODX12_Dispatch( pGtaoContext );
+			PIXEVENT( pGtaoContext, "GTAO apply" );
+			GTAODX12_Apply( pGtaoContext );
 		}
 		// mat_pbr_showgbuffer replaces the opaque scene color with the selected G-buffer channel (after GTAO, so AO does not tint it).
 		if ( bGBuffer )

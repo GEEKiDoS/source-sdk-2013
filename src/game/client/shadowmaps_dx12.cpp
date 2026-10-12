@@ -52,6 +52,7 @@ ConVar r_shadowmap_spot_near( "r_shadowmap_spot_near", "4", FCVAR_ARCHIVE, "Spot
 ConVar r_shadowmap_autoexec( "r_shadowmap_autoexec", "", FCVAR_CHEAT, "Acceptance automation: cfg exec'd once per map after the first completed main receiver view" );
 ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 sun PCSS blockers, 6 sun PCSS radius; debug builds also check projection math", true, DX12_SHADOW_DEBUG_NONE, true, DX12_SHADOW_DEBUG_PCSS_RADIUS );
 ConVar r_shadowmap_instancing( "r_shadowmap_instancing", "1", FCVAR_ARCHIVE, "Batch rigid opaque static-prop shadow casters into instanced draws (identical depth); 0 draws every caster separately for A/B comparison", true, 0, true, 1 );
+ConVar r_shadowmap_sky_clip( "r_shadowmap_sky_clip", "1", FCVAR_ARCHIVE, "Clip sun shadow casters that lie on the sun side of the nearest sky entry (the sky is the sun's emitter, as baked); 0 keeps every caster for A/B comparison", true, 0, true, 1 );
 ConVar r_shadowmap_dither( "r_shadowmap_dither", "1", FCVAR_ARCHIVE, "Rotate the sun PCF/PCSS, local PCF and projected-light PCF tap patterns per pixel: 0 fixed patterns, 1 dithered (animated in the main view under a temporal upscaler)", true, 0, true, 1 );
 ConVar r_editor_lights_max_shadowed( "r_editor_lights_max_shadowed", "8", FCVAR_ARCHIVE, "Nearest editor lights that receive shadow maps; the rest are unshadowed" );
 extern ConVar building_cubemaps;
@@ -141,7 +142,7 @@ struct ShadowCache_t
 {
 	ShadowCache_t() : staticGeneration(0), detailGeneration(0), slotGeneration(0), hadDynamic(false), dirty(true),
 		valid(false), pending(false), pendingClean(false), pendingReady(false), pendingDynamic(false), pendingBillboards(false),
-		pendingStaticGeneration(0), pendingDetailGeneration(0), pendingSlotGeneration(0),
+		pendingStaticGeneration(0), pendingDetailGeneration(0), pendingSlotGeneration(0), skyRegion(-1), pendingSkyRegion(-1),
 		notifications(0), pendingNotifications(0), committedNotifications(0), committedFrame(-1),
 		workTarget(0), pendingWorkTarget(0), hadBillboards(false),
 		registrationGeneration(0), pendingRegistrationGeneration(0), pendingContentGeneration(0), reusableContent(false),
@@ -157,6 +158,7 @@ struct ShadowCache_t
 	float matrix[16], depth[4];
 	bool hadDynamic, dirty, valid, pending, pendingClean, pendingReady, pendingDynamic, pendingBillboards;
 	uint32 pendingStaticGeneration, pendingDetailGeneration, pendingSlotGeneration;
+	int skyRegion, pendingSkyRegion; // Sun charts: sealed region whose sky entry clipped the casters (-1 all entry faces).
 	float pendingMatrix[16], pendingDepth[4];
 	CViewSetup view, pendingView;
 	ShadowCasterVolume_t pendingVolume;
@@ -432,6 +434,33 @@ int g_Sun = -1;
 uint32 g_SelectionFrame=0xffffffffu, g_FramePromotions=0, g_FrameDemotions=0;
 bool g_FrameShadowsEnabled=true;
 CShadowCameraPvs g_CameraPvs;
+// Sun sky clip (shadow_sky_clip.hlsli): the map's sky faces, read once at admission, keyed by sealed region
+// (areas joined through their area portals) so a 3D-skybox room's sky never clips the main map. The entry
+// subset (faces the sun ray crosses INTO playable space) is selected for the admitted sun travel.
+struct SunSkyLeaf_t { short area; unsigned short firstFace, faceCount; bool solid; };
+struct SunSkyFace_t { Vector normal; int firstVertex, vertexCount, region; };
+struct SunSkyMesh_t
+{
+	SunSkyMesh_t() : travelValid(false) {}
+	CUtlVector<SunSkyLeaf_t> leaves;
+	CUtlVector<int> areaRegions;		// union-find root per area; area 0 is void
+	CUtlVector<SunSkyFace_t> faces;		// model-0 SURF_SKY faces, polygon order
+	CUtlVector<Vector> vertices;
+	CUtlVector<int> entryFaces;			// faces with dot(normal, travel) > 0
+	Vector travel;
+	bool travelValid;
+	void Clear() { leaves.Purge(); areaRegions.Purge(); faces.Purge(); vertices.Purge(); entryFaces.Purge(); travelValid=false; }
+	int Region( int area ) const
+	{
+		if ( area<=0 || area>=areaRegions.Count() ) return -1;
+		while ( areaRegions[area]!=area ) area=areaRegions[area];
+		return area;
+	}
+};
+SunSkyMesh_t g_SunSky;
+DX12ShadowTarget_t g_SunSkyTarget = 0;
+const float kSunSkyClipBiasUnits = 2.0f; // world units a caster may sit on the sun side of its sky entry before it is clipped
+const int kSunSkyClipOff = -2;			// sunSkyRegion while r_shadowmap_sky_clip is 0 (-1 = unknown region, every entry face)
 CUtlVector<float> g_FreeSlotSeconds;
 bool g_HaveSelectionView=false;
 Vector g_LastSelectionOrigin;
@@ -489,7 +518,7 @@ void ResetMapState()
 	g_State.lights=NULL; g_State.lightCount=0; g_State.sunLightIndex=-1; g_LightEntities.RemoveAll();
 	memset(&g_State.manifest,0,sizeof(g_State.manifest)); g_State.rshdBytes.RemoveAll();
 	g_ReceiverQuads.RemoveAll();
-	g_CameraPvs.Clear(); g_FreeSlotSeconds.Purge();
+	g_CameraPvs.Clear(); g_SunSky.Clear(); g_FreeSlotSeconds.Purge();
 	g_State.worldMins.Init(); g_State.worldMaxs.Init();
 }
 
@@ -591,6 +620,18 @@ bool ReadShadowPvsLump( CShadowBspFile &file, const ShadowMapBspLumpInfo &lump, 
 	return !lump.filelen || ReadBspBytes(&file,lump.fileofs,lump.filelen,out.Base());
 }
 
+template<class T>
+void UnpackLeaves( const CUtlVector<T> &records )
+{
+	g_CameraPvs.leafClusters.SetCount(records.Count()); g_SunSky.leaves.SetCount(records.Count());
+	for ( int i=0;i<records.Count();++i )
+	{
+		g_CameraPvs.leafClusters[i]=records[i].cluster;
+		SunSkyLeaf_t &leaf=g_SunSky.leaves[i];
+		leaf.area=records[i].area; leaf.firstFace=records[i].firstleafface; leaf.faceCount=records[i].numleaffaces;
+		leaf.solid=(records[i].contents&CONTENTS_SOLID)!=0;
+	}
+}
 bool ReadCameraPvs( CShadowBspFile &file, const ShadowMapBspLumpInfo *lumps )
 {
 	if ( lumps[LUMP_PLANES].version || lumps[LUMP_NODES].version || lumps[LUMP_VISIBILITY].version ||
@@ -602,18 +643,106 @@ bool ReadCameraPvs( CShadowBspFile &file, const ShadowMapBspLumpInfo *lumps )
 	{
 		CUtlVector<dleaf_version_0_t> records;
 		if ( !ReadShadowPvsLump(file,leaves,MAX_MAP_LEAFS,records) ) return false;
-		g_CameraPvs.leafClusters.SetCount(records.Count());
-		for ( int i=0;i<records.Count();++i ) g_CameraPvs.leafClusters[i]=records[i].cluster;
+		UnpackLeaves(records);
 	}
 	else if ( leaves.version==LUMP_LEAFS_VERSION )
 	{
 		CUtlVector<dleaf_t> records;
 		if ( !ReadShadowPvsLump(file,leaves,MAX_MAP_LEAFS,records) ) return false;
-		g_CameraPvs.leafClusters.SetCount(records.Count());
-		for ( int i=0;i<records.Count();++i ) g_CameraPvs.leafClusters[i]=records[i].cluster;
+		UnpackLeaves(records);
 	}
 	else return false;
 	return g_CameraPvs.Validate();
+}
+
+// After ReadCameraPvs. Every model-0 SURF_SKY face as a polygon with its front normal (vbsp stores the face's own
+// plane, already oriented toward the empty side; dface_t::side only records the node side) and the sealed region of
+// the non-solid leaves that reference it (-1: none). Malformed references fail admission like the PVS.
+bool ReadSunSkyFaces( CShadowBspFile &file, const ShadowMapBspLumpInfo *lumps )
+{
+	CUtlVector<dmodel_t> models; CUtlVector<dface_t> faces; CUtlVector<texinfo_t> texinfos;
+	CUtlVector<int> surfedges; CUtlVector<dedge_t> edges; CUtlVector<dvertex_t> vertexes;
+	CUtlVector<unsigned short> leafFaces; CUtlVector<darea_t> areas; CUtlVector<dareaportal_t> portals;
+	if ( lumps[LUMP_MODELS].version || lumps[LUMP_FACES].version>1 || lumps[LUMP_TEXINFO].version || lumps[LUMP_SURFEDGES].version ||
+		lumps[LUMP_EDGES].version || lumps[LUMP_VERTEXES].version || lumps[LUMP_LEAFFACES].version || lumps[LUMP_AREAS].version || lumps[LUMP_AREAPORTALS].version ||
+		!ReadShadowPvsLump(file,lumps[LUMP_MODELS],MAX_MAP_MODELS,models) || !models.Count() ||
+		!ReadShadowPvsLump(file,lumps[LUMP_FACES],MAX_MAP_FACES,faces) || !ReadShadowPvsLump(file,lumps[LUMP_TEXINFO],MAX_MAP_TEXINFO,texinfos) ||
+		!ReadShadowPvsLump(file,lumps[LUMP_SURFEDGES],MAX_MAP_SURFEDGES,surfedges) || !ReadShadowPvsLump(file,lumps[LUMP_EDGES],MAX_MAP_EDGES,edges) ||
+		!ReadShadowPvsLump(file,lumps[LUMP_VERTEXES],MAX_MAP_VERTS,vertexes) || !ReadShadowPvsLump(file,lumps[LUMP_LEAFFACES],MAX_MAP_LEAFFACES,leafFaces) ||
+		!ReadShadowPvsLump(file,lumps[LUMP_AREAS],MAX_MAP_AREAS,areas) || !ReadShadowPvsLump(file,lumps[LUMP_AREAPORTALS],MAX_MAP_AREAPORTALS,portals) ) return false;
+	const dmodel_t &world=models[0];
+	if ( world.firstface<0 || world.numfaces<0 || world.firstface>faces.Count()-world.numfaces ) return false;
+	CUtlVector<int> skyIndex; skyIndex.SetCount(faces.Count());
+	for ( int i=0;i<faces.Count();++i ) skyIndex[i]=-1;
+	for ( int f=world.firstface;f<world.firstface+world.numfaces;++f )
+	{
+		const dface_t &face=faces[f];
+		if ( face.texinfo<0 || face.texinfo>=texinfos.Count() || !(texinfos[face.texinfo].flags&SURF_SKY) ) continue;
+		if ( face.planenum>=g_CameraPvs.planes.Count() || face.numedges<3 || face.firstedge<0 || face.firstedge>surfedges.Count()-face.numedges ) return false;
+		SunSkyFace_t sky;
+		sky.normal=g_CameraPvs.planes[face.planenum].normal;
+		sky.firstVertex=g_SunSky.vertices.Count(); sky.vertexCount=face.numedges; sky.region=-1;
+		for ( int e=0;e<face.numedges;++e )
+		{
+			const int surfedge=surfedges[face.firstedge+e];
+			if ( surfedge==INT_MIN ) return false;
+			const int edgeIndex=surfedge<0?-surfedge:surfedge;
+			if ( edgeIndex>=edges.Count() ) return false;
+			const unsigned short v=edges[edgeIndex].v[surfedge<0?1:0];
+			if ( v>=vertexes.Count() ) return false;
+			g_SunSky.vertices.AddToTail(vertexes[v].point);
+		}
+		skyIndex[f]=g_SunSky.faces.AddToTail(sky);
+	}
+	g_SunSky.areaRegions.SetCount(areas.Count());
+	for ( int a=0;a<areas.Count();++a ) g_SunSky.areaRegions[a]=a;
+	for ( int a=1;a<areas.Count();++a )
+	{
+		const darea_t &area=areas[a];
+		if ( area.numareaportals<0 || area.firstareaportal<0 || area.firstareaportal>portals.Count()-area.numareaportals ) return false;
+		for ( int p=area.firstareaportal;p<area.firstareaportal+area.numareaportals;++p )
+		{
+			const int other=portals[p].otherarea;
+			if ( other<=0 || other>=areas.Count() ) continue;
+			const int rootA=g_SunSky.Region(a), rootB=g_SunSky.Region(other);
+			if ( rootA!=rootB ) g_SunSky.areaRegions[rootB]=rootA;
+		}
+	}
+	for ( int l=0;l<g_SunSky.leaves.Count();++l )
+	{
+		const SunSkyLeaf_t &leaf=g_SunSky.leaves[l];
+		if ( leaf.solid || leaf.area<=0 ) continue;
+		if ( leaf.firstFace>leafFaces.Count()-leaf.faceCount ) return false;
+		for ( int k=leaf.firstFace;k<leaf.firstFace+leaf.faceCount;++k )
+		{
+			if ( leafFaces[k]>=faces.Count() ) return false;
+			const int sky=skyIndex[leafFaces[k]];
+			if ( sky>=0 && g_SunSky.faces[sky].region<0 ) g_SunSky.faces[sky].region=g_SunSky.Region(leaf.area);
+		}
+	}
+	return true;
+}
+
+void SelectSunSkyEntryFaces( const Vector &travel )
+{
+	if ( g_SunSky.travelValid && g_SunSky.travel==travel ) return;
+	g_SunSky.travel=travel; g_SunSky.travelValid=true; g_SunSky.entryFaces.RemoveAll();
+	for ( int f=0;f<g_SunSky.faces.Count();++f )
+		if ( DotProduct(g_SunSky.faces[f].normal,travel)>0 ) g_SunSky.entryFaces.AddToTail(f);
+}
+
+// Sealed region of the leaf containing a point through the camera PVS tree; -1 in solid, void or without areas.
+int SunSkyRegionForPoint( const Vector &point )
+{
+	if ( !g_CameraPvs.nodes.Count() || !point.IsValid() ) return -1;
+	int node=0;
+	while ( node>=0 )
+	{
+		const dplane_t &plane=g_CameraPvs.planes[g_CameraPvs.nodes[node].planenum];
+		node=g_CameraPvs.nodes[node].children[DotProduct(point,plane.normal)-plane.dist>=0 ? 0 : 1];
+	}
+	const SunSkyLeaf_t &leaf=g_SunSky.leaves[-1-node];
+	return leaf.solid ? -1 : g_SunSky.Region(leaf.area);
 }
 
 bool ReadReceiverQuads( CShadowBspFile &file, const ShadowMapBspLumpInfo *lumps, const ShadowMapModeView &mode )
@@ -695,6 +824,7 @@ bool ReadMapMetadata( const char *mapName, char *error, int errorBytes )
 	if ( !world || modelinfo->GetModelType(world)!=mod_brush ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
 	modelinfo->GetModelBounds(world,g_State.worldMins,g_State.worldMaxs);
 	if ( !ReadCameraPvs(file,lumps) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA ": malformed camera PVS/tree",error,errorBytes);
+	if ( !ReadSunSkyFaces(file,lumps) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA ": malformed sky faces/areas",error,errorBytes);
 	return true;
 }
 void DestroyTarget( DX12ShadowTarget_t &target )
@@ -779,7 +909,7 @@ bool BoxInVolume( const ShadowCasterVolume_t &volume, const Vector &mins, const 
 class CShadowViewData : public CRefCounted<>
 {
 public:
-	CShadowViewData() : active(false), lastUsedFrame(0xffffffffu), hasDetails(false), shadowsEnabled(true), drawCandidateFirst(-1), drawCandidateCount(0), cascadeClean(0), cascadeWork(0), cascadeRigid(0), staticSunClean(0), staticSun(0)
+	CShadowViewData() : active(false), lastUsedFrame(0xffffffffu), hasDetails(false), shadowsEnabled(true), drawCandidateFirst(-1), drawCandidateCount(0), cascadeClean(0), cascadeWork(0), cascadeRigid(0), staticSunClean(0), staticSun(0), sunSkyRegion(-1)
 	{ memset(&packet,0,sizeof(packet)); }
 	~CShadowViewData()
 	{
@@ -851,6 +981,8 @@ public:
 	ShadowCasterVolume_t cascadeVolumes[4];
 	ShadowCache_t staticSunCache;
 	IDetailObjectSystem::ShadowReport_t detailReport;
+	int sunSkyRegion;				// Receiver's sealed region for the sun sky clip (BuildSun).
+	CUtlVector<float> sunSkyClip;	// Current sun chart's sky entry triangles in light clip space (RenderChart scratch).
 };
 
 float HybridNonnegativeSetting( const char *text, float fallback )
@@ -1458,6 +1590,7 @@ bool ShadowResolutionTargetsIdle()
 		if ( !TargetIdle(data.cascadeClean) || !TargetIdle(data.cascadeWork) || !TargetIdle(data.cascadeRigid) ||
 			!TargetIdle(data.staticSun) || !TargetIdle(data.staticSunClean) ) return false;
 	}
+	if ( !TargetIdle(g_SunSkyTarget) ) return false;
 	return true;
 }
 void ApplyShadowResolution()
@@ -1475,6 +1608,7 @@ void ApplyShadowResolution()
 		data.staticSunCache=ShadowCache_t();
 		for ( int c=0;c<4;++c ) { data.cascades[c]=ShadowCache_t(); data.cascadeFits[c].valid=false; }
 	}
+	DestroyTarget(g_SunSkyTarget);
 	g_ShadowResLevel=level; g_ShadowRes=kShadowResolution[level];
 	ShadowMapsDX12_InvalidateStatic();
 }
@@ -1755,10 +1889,45 @@ void AddReportVolume( CShadowViewData &data, int id, const ShadowCasterVolume_t 
 	VPROF_BUDGET( "ShadowMapsDX12::AddReportVolume", "Shadowmaps" );
 	ShadowVolumeReport_t report; report.light=id; report.volume=volume; data.volumes.AddToTail(report);
 }
+bool CreateSunTarget( DX12ShadowTarget_t &target, const char *name, int size )
+{
+	if ( !target ) target=g_Lighting->CreateShadowDepthTarget(name,size,size);
+	return target!=0;
+}
+// Sun charts: the chart's sky entry triangles in light clip space (data.sunSkyClip) and the chart depth bias the
+// backend clips casters with; empty when the receiver region has no entry sky under this chart.
+bool BuildSunSkyClip( CShadowViewData &data, const ShadowCache_t &cache, DX12ShadowSkyClip &skyClip )
+{
+	VPROF_BUDGET( "ShadowMapsDX12::BuildSunSkyClip", "Shadowmaps" );
+	data.sunSkyClip.RemoveAll();
+	if ( data.sunSkyRegion==kSunSkyClipOff ) return false;
+	VMatrix clip; memcpy(&clip[0][0],cache.pendingMatrix,sizeof(cache.pendingMatrix));
+	for ( int e=0;e<g_SunSky.entryFaces.Count();++e )
+	{
+		const SunSkyFace_t &face=g_SunSky.faces[g_SunSky.entryFaces[e]];
+		if ( data.sunSkyRegion>=0 && face.region!=data.sunSkyRegion ) continue;
+		const Vector *polygon=&g_SunSky.vertices[face.firstVertex];
+		for ( int v=1;v+1<face.vertexCount;++v )
+		{
+			const Vector *corners[3]={ polygon, polygon+v, polygon+v+1 };
+			for ( int c=0;c<3;++c )
+			{
+				Vector4D position; Vector4DMultiplyPosition(clip,*corners[c],position);
+				const int first=data.sunSkyClip.AddMultipleToTail(4);
+				data.sunSkyClip[first]=position.x; data.sunSkyClip[first+1]=position.y; data.sunSkyClip[first+2]=position.z; data.sunSkyClip[first+3]=position.w;
+			}
+		}
+	}
+	if ( !data.sunSkyClip.Count() ) return false;
+	if ( !CreateSunTarget(g_SunSkyTarget,"shadow_sun_sky_clip",MAX(g_ShadowRes.csm,g_ShadowRes.sun)) || !data.Lease(g_SunSkyTarget) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+	skyClip.target=g_SunSkyTarget; skyClip.clipPositions=data.sunSkyClip.Base(); skyClip.vertexCount=data.sunSkyClip.Count()/4;
+	skyClip.depthBias=kSunSkyClipBiasUnits/(cache.pendingDepth[1]-cache.pendingDepth[0]);
+	return true;
+}
 bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y, int size,
 	const CViewSetup &lightView, const ShadowCasterVolume_t &volume, bool clear, bool world, bool immutable, bool dynamic, bool detail,
 	bool orientedDetail = false, ShadowMapDynamicLayer_t dynamicLayer = SHADOWMAP_DYNAMIC_ALL,
-	ShadowMapDepthFootprint_t *footprint = NULL, CShadowMapRopeFootprint *ropeFootprint = NULL )
+	ShadowMapDepthFootprint_t *footprint = NULL, CShadowMapRopeFootprint *ropeFootprint = NULL, const DX12ShadowSkyClip *skyClip = NULL )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::RenderDepth", "Shadowmaps" );
 	if ( !data.Lease(target) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
@@ -1776,6 +1945,7 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 	if ( dynamicLayer==SHADOWMAP_DYNAMIC_RIGID ) scene.overlayCasterDraws=NULL;
 	scene.overlayFootprint=footprint;
 	scene.overlayRopeFootprint=ropeFootprint;
+	scene.skyClip=skyClip;
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::RenderDepth.DrawScene", "Shadowmaps" );
 		ViewRender_DrawShadowMapScene(scene);
@@ -1912,13 +2082,17 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	VPROF_BUDGET( "ShadowMapsDX12::RenderChart", "Shadowmaps" );
 	if ( !cache.pending || cache.pendingReady ) return true;
 	bool baseRebuilt=!cache.pendingClean;
+	// Every caster pass of a sun chart (clean, rigid, overlay) is clipped by the same sky map.
+	DX12ShadowSkyClip skyClip, *sunSkyClip=NULL;
+	if ( chartLight<0 && BuildSunSkyClip(data,cache,skyClip) ) sunSkyClip=&skyClip;
+	if ( g_Error[0] ) return false;
 	// Required work is synchronous; no throttling or deferred visible updates.
 	if ( !cache.pendingClean )
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::RenderChart.CleanDepth", "Shadowmaps" );
 		cache.rigidValid=false;
 		if ( !RenderDepth(data,clean,x,y,size,cache.pendingView,cache.pendingVolume,true,true,true,false,
-			DetailObjectSystem()->HasShadowCasters(cache.pendingVolume,false)) ) return false;
+			DetailObjectSystem()->HasShadowCasters(cache.pendingVolume,false),false,SHADOWMAP_DYNAMIC_ALL,NULL,NULL,sunSkyClip) ) return false;
 		cache.pendingClean=true;
 	}
 	DX12ShadowTarget_t source=clean;
@@ -1950,7 +2124,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 			CopyDepthRect(data,rigidTarget,clean,x,y,size);
 			if ( g_Error[0] ) return false;
 			if ( cache.pendingRigidCasters && !RenderDepth(data,rigidTarget,x,y,size,cache.pendingView,cache.pendingVolume,
-				false,false,false,true,false,false,SHADOWMAP_DYNAMIC_RIGID) ) return false;
+				false,false,false,true,false,false,SHADOWMAP_DYNAMIC_RIGID,NULL,NULL,sunSkyClip) ) return false;
 			++data.stats.rigidLayerRebuilds;
 			++g_FrameRigidLayerRebuilds;
 			RecordRigidEvent(data,chartLight,chartFace,0,change);
@@ -2039,7 +2213,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::RenderChart.OverlayDepth", "Shadowmaps" );
 		if ( !RenderDepth(data,work,x,y,size,cache.pendingView,cache.pendingVolume,false,false,false,
-			overlayDynamic,cache.pendingBillboards,true,overlayLayer,&footprint,cache.pendingRopeFootprint.GetObject()) ) return false;
+			overlayDynamic,cache.pendingBillboards,true,overlayLayer,&footprint,cache.pendingRopeFootprint.GetObject(),sunSkyClip) ) return false;
 	}
 	if ( g_Error[0] ) return false;
 	cache.pendingFootprint.x0=footprint.x0; cache.pendingFootprint.y0=footprint.y0;
@@ -2056,7 +2230,7 @@ void CommitChart( CShadowViewData &data, ShadowCache_t &cache, int chartLight = 
 	Assert(cache.pending && cache.pendingReady);
 	memcpy(cache.matrix,cache.pendingMatrix,sizeof(cache.matrix)); memcpy(cache.depth,cache.pendingDepth,sizeof(cache.depth));
 	cache.view=cache.pendingView;
-	cache.staticGeneration=cache.pendingStaticGeneration; cache.slotGeneration=cache.pendingSlotGeneration;
+	cache.staticGeneration=cache.pendingStaticGeneration; cache.slotGeneration=cache.pendingSlotGeneration; cache.skyRegion=cache.pendingSkyRegion;
 	cache.hadDynamic=cache.pendingDynamic; cache.detailGeneration=cache.pendingDetailGeneration;
 	cache.dirty=cache.pendingNotifications!=cache.notifications;
 	cache.committedNotifications=cache.pendingNotifications;
@@ -2297,11 +2471,6 @@ void SunProjection( const Vector &boundsMins, const Vector &boundsMaxs, const Ve
 	}
 	SetupLightView(setup,origin,travel,basisY,projection,depth[0],depth[1],S,true,rendered,1);
 }
-bool CreateSunTarget( DX12ShadowTarget_t &target, const char *name, int size )
-{
-	if ( !target ) target=g_Lighting->CreateShadowDepthTarget(name,size,size);
-	return target!=0;
-}
 bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector &forward )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::BuildSun", "Shadowmaps" );
@@ -2318,6 +2487,8 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	CopyVector3(travel,constants.cSunTravel); CopyVector3(basisX,constants.cSunBasisX); CopyVector3(basisY,constants.cSunBasisY);
 	constants.cSunIdentity[0]=sun.lightId; constants.cSunIdentity[1]=sun.style;
 	if ( !data.shadowsEnabled ) return true;
+	SelectSunSkyEntryFaces(travel);
+	data.sunSkyRegion=r_shadowmap_sky_clip.GetBool() ? SunSkyRegionForPoint(data.receiver.origin) : kSunSkyClipOff;
 	Vector staticMins=map.worldMins,staticMaxs=map.worldMaxs;
 	for ( int i=0;i<data.casters.Count();++i )
 	{
@@ -2342,11 +2513,14 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	ShadowCache_t &staticCache=data.staticSunCache;
 	bool staticBillboards=DetailObjectSystem()->HasShadowCasters(staticVolume,true);
 	uint32 staticDetailGeneration=staticBillboards ? data.detail.m_nGeneration : 0;
-	bool staticRebuild=!staticCache.valid || staticCache.staticGeneration!=g_StaticGeneration || memcmp(staticCache.matrix,staticMatrix,sizeof(staticMatrix));
+	bool staticRebuild=!staticCache.valid || staticCache.staticGeneration!=g_StaticGeneration || staticCache.skyRegion!=data.sunSkyRegion || memcmp(staticCache.matrix,staticMatrix,sizeof(staticMatrix));
 	if ( !CreateSunTarget(data.staticSun,"shadow_static_sun",g_ShadowRes.sun) || !CreateSunTarget(data.staticSunClean,"shadow_static_sun_clean",g_ShadowRes.sun) )
 		return Fail(SHADOWMAP_ERR_RESIDENCY);
 	if ( staticRebuild || staticCache.detailGeneration!=staticDetailGeneration )
+	{
 		StartChart(staticCache,staticMatrix,staticDepth,staticView,staticVolume,staticRebuild,false,staticBillboards,staticDetailGeneration,0);
+		staticCache.pendingSkyRegion=data.sunSkyRegion;
+	}
 	{
 		CMatRenderContextPtr pRenderContext( materials );
 		PIXEVENT( pRenderContext, "Static sun" );
@@ -2450,7 +2624,7 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		CollectLocalFaceCasters(data,volume);
 		bool billboards=DetailObjectSystem()->HasShadowCasters(volume,true), dynamic=data.localFaceCasters.Count()!=0;
 		uint32 detailGeneration=billboards ? data.detail.m_nGeneration : 0;
-		bool rebuild=!cache.valid || cache.staticGeneration!=g_StaticGeneration ||
+		bool rebuild=!cache.valid || cache.staticGeneration!=g_StaticGeneration || cache.skyRegion!=data.sunSkyRegion ||
 			memcmp(cache.matrix,matrix,sizeof(matrix)) || memcmp(cache.depth,depth,sizeof(depth));
 		if ( !rebuild && ReuseCommittedChart(data,cache,data.cascadeWork,0,billboards,detailGeneration) )
 		{
@@ -2459,6 +2633,7 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		else
 		{
 			StartChart(cache,matrix,depth,lightView,volume,rebuild,dynamic,billboards,detailGeneration,0);
+			cache.pendingSkyRegion=data.sunSkyRegion;
 			CaptureChartContent(data,cache,data.cascadeWork);
 		}
 		{
@@ -3241,6 +3416,7 @@ void ShadowMapsDX12_LevelShutdown()
 	if ( g_Lighting ) g_Lighting->SetReceiverFeatureGeneration(0);
 	for ( int p=0;p<g_Pages.Count();++p ) { DestroyTarget(g_Pages[p].work); DestroyTarget(g_Pages[p].clean); DestroyTarget(g_Pages[p].rigid); }
 	for ( int i=0;i<g_PageSpares.Count();++i ) DestroyTarget(g_PageSpares[i].target);
+	DestroyTarget(g_SunSkyTarget);
 	g_PageSpares.RemoveAll();
 	g_Pages.RemoveAll(); g_Locals.RemoveAll(); g_Dynamic.RemoveAll(); g_Selected.RemoveAll(); g_Sun=-1; g_VolumeScope=false;
 	g_SelectionFrame=0xffffffffu; g_FramePromotions=g_FrameDemotions=0; g_LightRanks.RemoveAll();

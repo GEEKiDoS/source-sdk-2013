@@ -1,70 +1,161 @@
-// Native SM5.1 SSR composite: reconstructs each full-resolution receiver's hit from the 3x3 trace neighborhood
-// (geometry-matched neighbors only, exp( -0.5 d^2 ) weights in trace pixels, confidence-weighted radiance and
-// occlusion, geometry-weighted confidence that counts valid misses) and writes the signed scene correction
-// delta = confidence * ( hitRGB * K - E ) - confidence * o * S, alpha 0 (u0, viewport-local RGBA16F), where o is the
-// confidence-weighted reconstruction of 1 - smoothstep( 0.9 D, D, hitDistance ): a confident hit closer than the
-// receiver's direct-specular light distance D removes that direct specular S, whose reflected occluder radiance
-// hitRGB * K already replaces it. Zero weight -> zero delta.
-// Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
-// Inputs: t0 trace, t1 view depth, t2 normal, t3 specular, t4 stencil, t5 E + D, t6 K, t7 native scene depth,
-// t8 direct specular S, t9 trace hit distance.
-// STATIC: "MSAA" "0..1"
+// Native SM5.1 SSR composite: temporal filter of the resolve and the scene correction, per full-resolution receiver.
+// Everything is confidence-premultiplied: C = ( confidence * radiance, confidence ), O = confidence * o.
+// With history (gSSRTemporal.x), the previous accumulation is fetched at two reprojections and blended by roughness:
+// the receiver's own surface (motion vectors when gSSRResolve.y, else the previous camera) for rough lobes, and the
+// reflected virtual image ( P + view direction * mean hit distance, previous camera) for glossy ones. The surface
+// reprojection is validated against the previous view depth.
+// The history is clipped toward the mean of the current resolve's 3x3 neighbourhood, sampled at the trace spacing so
+// it spans independent rays, inside mean +- gamma * sigma (YCoCg colour, confidence and O; gamma 1 glossy -> 2
+// rough). Each pixel carries its history length n (frames); the blend weight of the current resolve is 1 / n, n capped
+// at 8 frames for glossy lobes and gSSRTemporal.y frames for rough ones, so a stable pixel averages that many frames
+// and a disoccluded one restarts from the current resolve.
+// Writes u0 delta = C.rgb * K - C.a * E - O * S (alpha 0; zero for an invalid receiver), u1 C and u2 ( O, n ) (the
+// next frame's history).
+// No static combos (index 0).
+// Inputs: t0 resolve C, t1 resolve aux ( O, mean hit distance ), t2 normal, t3 specular, t4 stencil, t5 E + D,
+// t6 response K, t7 native scene depth, t8 direct specular S, t9 history C, t10 history ( O, n ), t11 previous view
+// depth, t12 motion vectors (scene-sized, current - previous UV); s1 linear clamp.
 #define SSR_RESPONSE_REGISTER t6
 #define SSR_SCENE_DEPTH_REGISTER t7
+#define SSR_ENVIRONMENT_REGISTER t5
+#define SSR_SPECULAR_REGISTER t8
 #define SSR_HAS_ENVIRONMENT 1
 #include "ssr_common.hlsli"
-Texture2D<float4> gTrace : register( t0, space0 );
-Texture2D<float> gViewDepth : register( t1, space0 );
-Texture2D<float> gTraceDistance : register( t9, space0 );
+Texture2D<float4> gResolve : register( t0, space0 );
+Texture2D<float4> gResolveAux : register( t1, space0 );
+Texture2D<float4> gHistory : register( t9, space0 );
+Texture2D<float4> gHistoryAux : register( t10, space0 );
+Texture2D<float> gPrevViewDepth : register( t11, space0 );
+Texture2D<float4> gMotion : register( t12, space0 );
+SamplerState gLinearClamp : register( s1, space0 );
 RWTexture2D<float4> gDeltaOut : register( u0, space0 );
+RWTexture2D<float4> gHistoryOut : register( u1, space0 );
+RWTexture2D<float4> gHistoryAuxOut : register( u2, space0 );
+
+static const float SSR_GLOSSY_HISTORY = 8.0;
+
+float3 SSR_ToYCoCg( float3 c )
+{
+	return float3( dot( c, float3( 0.25, 0.5, 0.25 ) ), dot( c, float3( 0.5, 0.0, -0.5 ) ), dot( c, float3( -0.25, 0.5, -0.25 ) ) );
+}
+float3 SSR_FromYCoCg( float3 c )
+{
+	return float3( c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z );
+}
+
+// Clips v toward the box centre along the line to it (keeps hue, unlike a per-channel clamp).
+float4 SSR_ClipToBox( float4 v, float4 center, float4 extent )
+{
+	float4 d = v - center;
+	float4 unit = abs( d ) / max( extent, 1e-5 );
+	float m = max( max( unit.x, unit.y ), max( unit.z, unit.w ) );
+	return m > 1.0 ? center + d / m : v;
+}
+
+// Continuous previous-frame local pixel of a world position (false behind the previous camera).
+bool SSR_PrevLocal( float3 P, out float2 local, out float prevViewDepth )
+{
+	float4 clip = mul( gSSRPrevWorldToClip, float4( P, 1.0 ) );
+	prevViewDepth = clip.w;
+	local = clip.w > 0.0 ? SSR_ClipToLocal( clip ) : -1.0;
+	return clip.w > 0.0;
+}
+
+bool SSR_InsideViewport( float2 local )
+{
+	return all( local >= 0.0 ) && all( local < gSSRViewport.zw );
+}
 
 [numthreads( 8, 8, 1 )]
 void main( uint3 id : SV_DispatchThreadID )
 {
 	if ( id.x >= uint( gSSRViewport.z ) || id.y >= uint( gSSRViewport.w ) ) return;
 	int2 local = int2( id.xy );
+	float4 color = 0.0;
+	float occlusion = 0.0, historyLength = 1.0;
 	float3 delta = 0.0;
-	// Clear pixels have no receiver: skip the per-sample reconstruction.
-	[branch] if ( gViewDepth.Load( int3( local, 0 ) ) < SSR_DEPTH_FAR )
+	SSRReceiver r = SSR_LoadReceiver( local );
+	[branch] if ( r.valid )
 	{
-		SSRReceiver r = SSR_LoadReceiver( local );
-		[branch] if ( r.valid )
+		float4 current = gResolve.Load( int3( local, 0 ) );
+		float2 currentAux = gResolveAux.Load( int3( local, 0 ) ).xy;
+		color = current;
+		occlusion = currentAux.x;
+		[branch] if ( gSSRTemporal.x != 0.0 )
 		{
-			int2 group = SSR_TraceGroup();
-			int2 traceSize = int2( gSSRSizes.zw );
-			int2 center = int2( id.xy / uint2( group ) );
-			float depthTolerance = max( gSSRTrace.y, 0.01 * r.viewDepth );
-			float3 radianceSum = 0.0;
-			float occlusionSum = 0.0, confidenceSum = 0.0, weightSum = 0.0;
-			[unroll] for ( int y = -1; y <= 1; ++y )
+			// Surface reprojection, validated by the previous view depth (static: expected depth through the previous
+			// camera; moving: close to the current depth).
+			float2 prevSurface;
+			float expectedDepth;
+			bool surfaceValid = SSR_PrevLocal( r.P, prevSurface, expectedDepth );
+			if ( gSSRResolve.y != 0u )
 			{
-				[unroll] for ( int x = -1; x <= 1; ++x )
-				{
-					int2 texel = center + int2( x, y );
-					if ( any( texel < 0 ) || any( texel >= traceSize ) ) continue;
-					SSRReceiver n = SSR_SelectReceiver( texel );
-					if ( !n.valid || abs( n.viewDepth - r.viewDepth ) > depthTolerance ||
-					     dot( n.N, r.N ) < SSR_COHERENT_NORMAL || abs( n.roughness - r.roughness ) > SSR_COHERENT_ROUGHNESS )
-						continue;
-					float2 d = float2( n.localPixel - local ) / float2( group );
-					float weight = exp( -0.5 * dot( d, d ) );
-					float4 trace = gTrace.Load( int3( texel, 0 ) );
-					float hitDistance = gTraceDistance.Load( int3( texel, 0 ) );
-					radianceSum += weight * trace.a * trace.rgb;
-					// Soft [hitDistance < D]; a receiver without direct specular (D = 0, S = 0) is never occluded.
-					occlusionSum += weight * trace.a * ( hitDistance < r.D ? 1.0 - smoothstep( 0.9 * r.D, r.D, hitDistance ) : 0.0 );
-					confidenceSum += weight * trace.a;
-					weightSum += weight;
-				}
+				int2 scenePixel = local + int2( gSSRViewport.xy );
+				float2 motion = gMotion.Load( int3( scenePixel, 0 ) ).xy;
+				prevSurface = float2( scenePixel ) + 0.5 - motion * gSSRTemporal.zw - gSSRViewport.xy;
 			}
-			[branch] if ( weightSum > 0.0 && confidenceSum > 0.0 )
+			surfaceValid = surfaceValid && SSR_InsideViewport( prevSurface );
+			[branch] if ( surfaceValid )
 			{
-				float confidence = confidenceSum / weightSum;
-				float3 hitRGB = radianceSum / confidenceSum;
-				float occlusion = occlusionSum / confidenceSum;
-				delta = confidence * ( hitRGB * r.K - r.E ) - confidence * occlusion * r.S;
+				float prevDepth = gPrevViewDepth.Load( int3( int2( prevSurface ), 0 ) );
+				float tolerance = max( gSSRTrace.y, 0.05 * r.viewDepth );
+				surfaceValid = min( abs( prevDepth - expectedDepth ), abs( prevDepth - r.viewDepth ) ) <= tolerance;
+			}
+			[branch] if ( surfaceValid )
+			{
+				float2 viewportSize = gSSRViewport.zw;
+				float4 history = gHistory.SampleLevel( gLinearClamp, prevSurface / viewportSize, 0.0 );
+				float2 historyAux = gHistoryAux.SampleLevel( gLinearClamp, prevSurface / viewportSize, 0.0 ).xy;
+				// Glossy lobes follow the reflected image instead of the surface.
+				float surfaceShare = smoothstep( 0.15, 0.5, r.roughness );
+				float2 prevVirtual;
+				float virtualDepth;
+				[branch] if ( surfaceShare < 1.0 && currentAux.y > 0.0 &&
+				              SSR_PrevLocal( r.P + normalize( r.P - gSSREye.xyz ) * currentAux.y, prevVirtual, virtualDepth ) &&
+				              SSR_InsideViewport( prevVirtual ) )
+				{
+					float4 virtualHistory = gHistory.SampleLevel( gLinearClamp, prevVirtual / viewportSize, 0.0 );
+					float2 virtualAux = gHistoryAux.SampleLevel( gLinearClamp, prevVirtual / viewportSize, 0.0 ).xy;
+					history = lerp( virtualHistory, history, surfaceShare );
+					historyAux = float2( lerp( virtualAux.x, historyAux.x, surfaceShare ), min( virtualAux.y, historyAux.y ) );
+				}
+				// Neighbourhood of the current resolve at the trace spacing: ( Y, Co, Cg, confidence ) and O.
+				int2 stride = SSR_TraceGroup();
+				int2 last = int2( gSSRViewport.zw ) - 1;
+				float4 m1 = 0.0, m2 = 0.0;
+				float o1 = 0.0, o2 = 0.0;
+				[unroll] for ( int y = -1; y <= 1; ++y )
+				{
+					[unroll] for ( int x = -1; x <= 1; ++x )
+					{
+						int3 p = int3( clamp( local + int2( x, y ) * stride, 0, last ), 0 );
+						float4 s = gResolve.Load( p );
+						float o = gResolveAux.Load( p ).x;
+						float4 v = float4( SSR_ToYCoCg( s.rgb ), s.a );
+						m1 += v;
+						m2 += v * v;
+						o1 += o;
+						o2 += o * o;
+					}
+				}
+				float4 mean = m1 / 9.0;
+				float4 sigma = sqrt( max( m2 / 9.0 - mean * mean, 0.0 ) );
+				float occlusionMean = o1 / 9.0;
+				float occlusionSigma = sqrt( max( o2 / 9.0 - occlusionMean * occlusionMean, 0.0 ) );
+				float gamma = lerp( 1.0, 2.0, smoothstep( 0.1, 0.6, r.roughness ) );
+				float4 clipped = SSR_ClipToBox( float4( SSR_ToYCoCg( history.rgb ), history.a ), mean, gamma * sigma );
+				history = float4( max( SSR_FromYCoCg( clipped.xyz ), 0.0 ), saturate( clipped.w ) );
+				float historyOcclusion = clamp( historyAux.x, occlusionMean - gamma * occlusionSigma, occlusionMean + gamma * occlusionSigma );
+				float maxLength = lerp( SSR_GLOSSY_HISTORY, max( gSSRTemporal.y, SSR_GLOSSY_HISTORY ), smoothstep( 0.05, 0.5, r.roughness ) );
+				historyLength = min( historyAux.y + 1.0, maxLength );
+				float blend = 1.0 / historyLength;
+				color = lerp( history, current, blend );
+				occlusion = lerp( historyOcclusion, currentAux.x, blend );
 			}
 		}
+		delta = color.rgb * r.K - color.a * r.E - occlusion * r.S;
 	}
 	gDeltaOut[id.xy] = float4( delta, 0.0 );
+	gHistoryOut[id.xy] = color;
+	gHistoryAuxOut[id.xy] = float4( occlusion, historyLength, 0.0, 0.0 );
 }

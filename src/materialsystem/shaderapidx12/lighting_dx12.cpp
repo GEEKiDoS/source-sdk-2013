@@ -1220,6 +1220,29 @@ bool ValidateInstancedCasterShaderDX12( const D3D12_SHADER_BYTECODE &bytecode )
 	return rows;
 }
 
+// shadow_sky_depth_vs51: one float4 POSITION input, nothing bound. shadow_sky_clip_ps51: only the space-6 sky clip
+// block (b2) and sky map (t4) of shadow_sky_clip.hlsli (ValidateScreenSpaceBinding checked their layouts at load).
+bool ValidateShadowSkyClipShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixel )
+{
+	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
+	if ( FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ) return false;
+	D3D12_SHADER_DESC shader{};
+	if ( FAILED( reflection->GetDesc( &shader ) ) || ( ( shader.Version >> 16 ) & 0xffffu ) != ( pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_VERTEX_SHADER ) ) return false;
+	bool constants = false, sky = false;
+	for ( UINT i = 0; i < shader.BoundResources; ++i )
+	{
+		D3D12_SHADER_INPUT_BIND_DESC binding{};
+		if ( FAILED( reflection->GetResourceBindingDesc( i, &binding ) ) || !pixel || binding.Space != DX12_SCREENSPACE_REGISTER_SPACE || binding.BindCount != 1 ) return false;
+		if ( binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == DX12_SCREENSPACE_B_SHADOW_SKY_CLIP && !V_strcmp( binding.Name, "DX12ShadowSkyClip" ) ) constants = true;
+		else if ( binding.Type == D3D_SIT_TEXTURE && binding.BindPoint == DX12_SCREENSPACE_T_SHADOW_SKY_CLIP && !V_strcmp( binding.Name, "g_ShadowSkyClip" ) ) sky = true;
+		else return false;
+	}
+	if ( pixel ) return constants && sky;
+	if ( shader.InputParameters != 1 ) return false;
+	D3D12_SIGNATURE_PARAMETER_DESC input{};
+	return SUCCEEDED( reflection->GetInputParameterDesc( 0, &input ) ) && !V_strcmp( input.SemanticName, "POSITION" ) && !input.SemanticIndex && input.Mask == 0xf;
+}
+
 // Reusable reference-counted queue packet. Arrays keep capacity when recycled, including per-light pass packets.
 struct LightingPacketDX12 final : IRefCounted
 {
@@ -1236,6 +1259,8 @@ struct LightingPacketDX12 final : IRefCounted
 	CUtlVector<RuntimeShadowLightGpu> lights;
 	CUtlVector<uint32> ranges, indices;
 	CUtlVector<DX12ProjectedLightDesc> projected;
+	CUtlVector<float> skyClipPositions; // Pass: float4 clip positions of the sky entry triangles (leases[1] = sky map)
+	float skyClipBias = 0.f;
 	CUtlVector<ShadowTargetDX12 *> leases;
 	int AddRef() override { return ++references; }
 	int Release() override
@@ -1424,6 +1449,12 @@ struct CLightingDX12::Impl
 		int vertexIndex = -1, pixelIndex = 0;
 		bool namedVertex = false, namedPixel = false;
 		bool rasterOverride = false;
+		// Sun sky clip of this pass (NULL: unclipped). The space-6 table/constants are rebuilt per recording fence / heap generation.
+		ShadowTargetDX12 *skyClip = nullptr;
+		float skyClipBias = 0.f;
+		DescriptorRangeDX12 skyClipTable{};
+		D3D12_GPU_VIRTUAL_ADDRESS skyClipConstants = 0;
+		uint64_t skyClipFence = 0, skyClipHeap = 0;
 	};
 	CUtlVector<PassState> passes;
 	// PBR projected lights (recording owner only): the current packet, the texture handles its slots name, and the
@@ -1440,6 +1471,10 @@ struct CLightingDX12::Impl
 	} projected;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> restoreRoot;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> restorePso;
+	// Sun sky clip: the private sky entry depth raster (VS only, GREATER/write) and the caster pixel stage.
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> skyDepthRoot;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> skyDepthPso;
+	ShaderRecordDX12 *skyClipPs = nullptr;
 
 	uint64_t Key( uint32 map, uint32 view ) const { return ( uint64_t( map ) << 32 ) | view; }
 	void Status( uint32 map, uint32 view, DX12LightingStatus status, const char *error = nullptr )
@@ -1574,6 +1609,45 @@ struct CLightingDX12::Impl
 		pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 		return SUCCEEDED( device->NativeDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( &restorePso ) ) );
 	}
+	// Pass begin. The caster pixel stage is re-resolved like the instanced VS (records may be retired); the raster PSO is built once.
+	bool EnsureSkyClip()
+	{
+		ShaderRecordDX12 *ps = api->ResolveNamedShader( "shadow_sky_clip_ps51", true, 0, 0 );
+		if ( !ps || !ps->legacyBytecode.IsEmpty() || ( ps != skyClipPs && !ValidateShadowSkyClipShaderDX12( ps->Bytecode(), true ) ) ) return false;
+		skyClipPs = ps;
+		if ( skyDepthPso ) return true;
+		ShaderRecordDX12 *vs = api->ResolveNamedShader( "shadow_sky_depth_vs51", false, 0, 0 );
+		if ( !vs || !vs->legacyBytecode.IsEmpty() || !ValidateShadowSkyClipShaderDX12( vs->Bytecode(), false ) ) return false;
+		D3D12_ROOT_SIGNATURE_DESC root{};
+		root.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+		Microsoft::WRL::ComPtr<ID3DBlob> serialized, error;
+		if ( FAILED( D3D12SerializeRootSignature( &root, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &error ) ) || FAILED( device->NativeDevice()->CreateRootSignature( 0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS( &skyDepthRoot ) ) ) ) return false;
+		D3D12_INPUT_ELEMENT_DESC position{ "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 };
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+		pso.pRootSignature = skyDepthRoot.Get();
+		pso.VS = vs->Bytecode();
+		pso.InputLayout = { &position, 1 };
+		pso.SampleMask = UINT_MAX;
+		pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		pso.RasterizerState.DepthClipEnable = TRUE;
+		// Nearest-to-ground entry wins: GREATER over a zero clear. No raster bias; the caster compare carries the bias.
+		pso.DepthStencilState.DepthEnable = TRUE;
+		pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+		pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER;
+		pso.DepthStencilState.StencilReadMask = pso.DepthStencilState.StencilWriteMask = 0xff;
+		pso.DepthStencilState.FrontFace.StencilFunc = pso.DepthStencilState.BackFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+		pso.DepthStencilState.FrontFace.StencilFailOp = pso.DepthStencilState.FrontFace.StencilDepthFailOp = pso.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+		pso.DepthStencilState.BackFace = pso.DepthStencilState.FrontFace;
+		pso.BlendState.RenderTarget[0].SrcBlend = pso.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+		pso.BlendState.RenderTarget[0].DestBlend = pso.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+		pso.BlendState.RenderTarget[0].BlendOp = pso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+		pso.BlendState.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
+		pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+		pso.SampleDesc.Count = 1;
+		pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		return SUCCEEDED( device->NativeDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( &skyDepthPso ) ) );
+	}
 };
 
 CLightingDX12::CLightingDX12() : m_Impl( new Impl ) {}
@@ -1608,10 +1682,17 @@ void CLightingDX12::Shutdown()
 		s.views.RemoveMultipleFromTail( 1 );
 		delete view;
 	}
-	for ( const Impl::PassState &pass : s.passes ) if ( pass.target ) pass.target->Release();
+	for ( const Impl::PassState &pass : s.passes )
+	{
+		if ( pass.target ) pass.target->Release();
+		if ( pass.skyClip ) pass.skyClip->Release();
+	}
 	s.passes.RemoveAll();
 	s.restorePso.Reset();
 	s.restoreRoot.Reset();
+	s.skyDepthPso.Reset();
+	s.skyDepthRoot.Reset();
+	s.skyClipPs = nullptr;
 	AUTO_LOCK( s.mutex );
 	s.registeredProps.clear(); s.propInstances.clear(); s.propMeshRegistrationCounts.clear();
 	s.ClearPropDiagnostics();
@@ -1874,6 +1955,7 @@ void CLightingDX12::Recycle( LightingPacketDX12 *packet )
 	packet->indices.RemoveAll();
 	packet->propMeshes.RemoveAll();
 	packet->projected.RemoveAll();
+	packet->skyClipPositions.RemoveAll();
 	packet->propModelName.clear();
 	AUTO_LOCK( m_Impl->mutex );
 	m_Impl->freePackets.AddToTail( packet );
@@ -2019,12 +2101,19 @@ void CLightingDX12::BeginView( const DX12LightingViewPacket &view )
 	m_Impl->Status( view.mapGeneration, view.viewGeneration, DX12_LIGHTING_STATUS_PENDING );
 	Enqueue( packet );
 }
-void CLightingDX12::BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear )
+void CLightingDX12::BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear, const DX12ShadowSkyClip *skyClip )
 {
 	LightingPacketDX12 *packet = Packet( Pass );
 	packet->leases.AddToTail( static_cast<ShadowTargetDX12 *>( RetainShadowDepthTarget( target ) ) );
 	packet->values[0] = x; packet->values[1] = y; packet->values[2] = width; packet->values[3] = height;
 	packet->flag = clear;
+	if ( skyClip )
+	{
+		packet->leases.AddToTail( static_cast<ShadowTargetDX12 *>( RetainShadowDepthTarget( skyClip->target ) ) );
+		packet->valid = skyClip->vertexCount % 3 == 0 && skyClip->vertexCount <= 1u << 24 && ( !skyClip->vertexCount || skyClip->clipPositions ) && ShadowMap_IsFiniteFloat( skyClip->depthBias );
+		if ( packet->valid ) packet->skyClipPositions.CopyArray( skyClip->clipPositions, int( skyClip->vertexCount ) * 4 );
+		packet->skyClipBias = skyClip->depthBias;
+	}
 	Enqueue( packet );
 }
 void CLightingDX12::EndShadowPass() { Enqueue( Packet( EndPass ) ); }
@@ -2469,6 +2558,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		s.passes.RemoveMultipleFromTail( 1 );
 		s.RestoreBackend( saved );
 		if ( saved.target ) saved.target->Release();
+		if ( saved.skyClip ) saved.skyClip->Release();
 		s.device->EndGpuStage( CShaderDeviceDX12::GpuShadowDepth );
 		return;
 	}
@@ -2511,6 +2601,39 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		s.api->m_bNamedPixelShaderDirty = true;
 		s.api->m_Pipeline.InvalidateGraphicsBindings();
 		if ( !rectValid ) { s.Fail( kPacketError ); return; }
+		if ( packet->leases.Count() > 1 )
+		{
+			// Sun sky clip: the region's sky entry triangles (MAX depth, zero clear) go into the chart-local sky map
+			// before any caster of this pass; PrepareShadowSkyClipDraw binds it to every caster draw.
+			ShadowTargetDX12 *sky = packet->leases[1];
+			const int vertexCount = packet->skyClipPositions.Count() / 4;
+			if ( !packet->valid || !sky || sky->width < packet->values[2] || sky->height < packet->values[3] ) { s.Fail( kPacketError ); return; }
+			if ( vertexCount )
+			{
+				if ( !s.EnsureSkyClip() ) { s.Fail( SHADOWMAP_ERR_SHADER_UNAVAILABLE ); return; }
+				const size_t vertexBytes = size_t( packet->skyClipPositions.Count() ) * sizeof( float );
+				D3D12_GPU_VIRTUAL_ADDRESS vertices = 0;
+				if ( !s.api->m_Pipeline.UploadTransient( packet->skyClipPositions.Base(), vertexBytes, vertexBytes, 16, fence, vertices ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return; }
+				s.Use( sky, false );
+				const D3D12_RECT skyRect{ 0, 0, packet->values[2], packet->values[3] };
+				const D3D12_VIEWPORT skyViewport{ 0, 0, float( packet->values[2] ), float( packet->values[3] ), 0, 1 };
+				list->ClearDepthStencilView( sky->dsv, D3D12_CLEAR_FLAG_DEPTH, 0.f, 0, 1, &skyRect );
+				list->OMSetRenderTargets( 0, nullptr, FALSE, &sky->dsv );
+				list->RSSetViewports( 1, &skyViewport );
+				list->RSSetScissorRects( 1, &skyRect );
+				list->SetGraphicsRootSignature( s.skyDepthRoot.Get() );
+				list->SetPipelineState( s.skyDepthPso.Get() );
+				const D3D12_VERTEX_BUFFER_VIEW vertexView{ vertices, UINT( vertexBytes ), 4 * sizeof( float ) };
+				list->IASetVertexBuffers( 0, 1, &vertexView );
+				list->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+				list->DrawInstanced( vertexCount, 1, 0, 0 );
+				s.Use( sky, true );
+				s.api->m_Pipeline.InvalidateGraphicsBindings();
+				Impl::PassState &pass = s.passes.Tail();
+				pass.skyClip = sky; sky->AddRef();
+				pass.skyClipBias = packet->skyClipBias;
+			}
+		}
 		s.Use( saved.target, false );
 		list->OMSetRenderTargets( 0, nullptr, FALSE, &saved.target->dsv );
 		viewport = { float( saved.rect.left ), float( saved.rect.top ), float( packet->values[2] ), float( packet->values[3] ), 0, 1 };
@@ -2590,6 +2713,48 @@ bool CLightingDX12::PrepareShadowDraw( RenderTargetBindingDX12 &target, D3D12_VI
 	target.depth = pass.target->resource.Get(); target.dsv = pass.target->dsv; target.depthFormat = DXGI_FORMAT_D32_FLOAT; target.width = pass.target->width; target.height = pass.target->height;
 	viewport = { float( pass.rect.left ), float( pass.rect.top ), float( pass.rect.right - pass.rect.left ), float( pass.rect.bottom - pass.rect.top ), 0, 1 };
 	scissor = pass.rect;
+	return true;
+}
+ShaderRecordDX12 *CLightingDX12::ShadowSkyClipPixelShader() const
+{
+	const Impl &s = *m_Impl;
+	return s.passes.Count() && s.passes.Tail().skyClip ? s.skyClipPs : nullptr;
+}
+bool CLightingDX12::PrepareShadowSkyClipDraw( CPipelineCacheDX12::BindingInputDX12 &input )
+{
+	Impl &s = *m_Impl;
+	if ( !s.passes.Count() ) return false;
+	Impl::PassState &pass = s.passes.Tail();
+	if ( !pass.skyClip ) return true;
+	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
+	const uint64_t fence = s.device->NextFenceValue();
+	// The table, a highres table (8), the neutral space-6 table and the ordinary per-draw tables (32 + 16) allocated after it must share one heap generation.
+	if ( !pipeline.ReserveResourceDescriptors( DX12_SCREENSPACE_TABLE_COUNT + 8 + DX12_PBR_TABLE_COUNT + DX12_PROBE_TABLE_COUNT + DX12_SCREENSPACE_TABLE_COUNT + 32 + 16, fence ) ) return false;
+	if ( pass.skyClipFence != fence || pass.skyClipHeap != pipeline.ResourceHeapGeneration() )
+	{
+		ID3D12Device *device = s.device->NativeDevice();
+		const DescriptorRangeDX12 table = pipeline.AllocateTransientResources( DX12_SCREENSPACE_TABLE_COUNT, fence );
+		if ( table.count != DX12_SCREENSPACE_TABLE_COUNT ) return false;
+		const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		for ( UINT slot = 0; slot < DX12_SCREENSPACE_TABLE_COUNT; ++slot )
+		{
+			if ( slot == DX12_SCREENSPACE_T_SHADOW_SKY_CLIP ) device->CopyDescriptorsSimple( 1, Offset( table.cpu, slot, stride ), pass.skyClip->srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+			else
+			{
+				const D3D12_SHADER_RESOURCE_VIEW_DESC srv = CPipelineCacheDX12::ScreenSpaceNullSrvDesc( slot );
+				device->CreateShaderResourceView( nullptr, &srv, Offset( table.cpu, slot, stride ) );
+			}
+		}
+		DX12ShadowSkyClipConstants constants{};
+		constants.rectOrigin[0] = float( pass.rect.left ); constants.rectOrigin[1] = float( pass.rect.top );
+		constants.depthBias = pass.skyClipBias; constants.enabled = 1.f;
+		D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+		if ( !pipeline.UploadTransient( &constants, sizeof( constants ), 256, 256, fence, address ) ) return false;
+		pass.skyClipTable = table; pass.skyClipConstants = address;
+		pass.skyClipFence = fence; pass.skyClipHeap = pipeline.ResourceHeapGeneration();
+	}
+	input.screenSpaceTable = pass.skyClipTable;
+	input.shadowSkyClipConstants = pass.skyClipConstants;
 	return true;
 }
 bool CLightingDX12::PresentationBlocked()

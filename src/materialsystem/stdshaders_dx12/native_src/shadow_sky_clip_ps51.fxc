@@ -1,0 +1,13 @@
+// Native-only pixel stage of every OPAQUE depth-only caster draw inside a sky-clipped sun chart pass
+// (shaderapidx12 CShaderAPIDX12::DrawBuffers binds it where the draw would otherwise run without a pixel
+// shader). It reads only SV_Position, so it links with every caster vertex shader (depthwrite, instanced
+// depthwrite, lightmapped world, cable, spritecard, ...). Alpha-tested casters keep their own pixel shader
+// and call the same ShadowSkyClip_Discard.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#include "shadow_sky_clip.hlsli"
+
+void main( float4 position : SV_Position )
+{
+	ShadowSkyClip_Discard( position );
+}

@@ -1,13 +1,8 @@
 // Native SM5.1 SSR depth pass: native scene depth -> positive camera-forward view depth of the viewport (R32F,
-// viewport-local). Clear pixels become SSR_DEPTH_FAR; under MSAA the closest non-clear sample is kept so occlusion
-// tests see the nearest surface. Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
-// STATIC: "MSAA" "0..1"
+// viewport-local). Clear pixels and points behind the camera become SSR_DEPTH_FAR. The composite reads the previous
+// frame's output to validate reprojected history. No static combos (index 0).
 #include "ssr_common.hlsli"
-#if MSAA
-Texture2DMS<float> gSceneDepth : register( t0, space0 );
-#else
 Texture2D<float> gSceneDepth : register( t0, space0 );
-#endif
 RWTexture2D<float> gViewDepth : register( u0, space0 );
 
 [numthreads( 8, 8, 1 )]
@@ -15,15 +10,12 @@ void main( uint3 id : SV_DispatchThreadID )
 {
 	if ( id.x >= uint( gSSRViewport.z ) || id.y >= uint( gSSRViewport.w ) ) return;
 	int2 local = int2( id.xy );
-	int2 scenePixel = local + int2( gSSRViewport.xy );
-	float nearest = SSR_DEPTH_FAR;
-	const uint sampleCount = SSR_SAMPLE_COUNT;
-	[loop] for ( uint s = 0; s < sampleCount; ++s )
+	float depth = gSceneDepth.Load( int3( local + int2( gSSRViewport.xy ), 0 ) );
+	float viewDepth = SSR_DEPTH_FAR;
+	if ( depth != gSSRLimits.x )
 	{
-		float depth = SSR_LOAD( gSceneDepth, scenePixel, s );
-		if ( depth == gSSRLimits.x ) continue;
-		float viewDepth = SSR_ViewDepth( SSR_LocalToWorld( float2( local ) + 0.5, depth ) );
-		if ( viewDepth > 0.0 ) nearest = min( nearest, viewDepth );
+		float d = SSR_ViewDepth( SSR_LocalToWorld( float2( local ) + 0.5, depth ) );
+		if ( d > 0.0 ) viewDepth = d;
 	}
-	gViewDepth[id.xy] = nearest;
+	gViewDepth[id.xy] = viewDepth;
 }

@@ -193,7 +193,12 @@ BEGIN_VS_SHADER( DX12_GTAO, "DX12 GTAO compute passes" )
 				break;
 			}
 			}
-			pCompute->Dispatch( dispatch );
+			const bool bDispatched = pCompute->Dispatch( dispatch );
+			// SSR occludes its reflected hits with the frame's final term: the main pass's packed output, replaced by
+			// the last denoise pass's unpacked one when denoising runs.
+			const int nPass = params[PASS]->GetIntValue();
+			if ( bDispatched && ( nPass == 2 || ( nPass >= 3 && constants.denoiseFinal != 0 ) ) )
+				pCompute->SetAmbientOcclusionTerm( GetShaderAPITextureBindHandle( AOOUT, -1 ), constants.viewportSize[0], constants.viewportSize[1], nPass == 2 );
 		}
 		Draw( false );
 	}

@@ -131,8 +131,8 @@ static void DrawCompute( IMatRenderContext *pRenderContext, IMaterial *pMaterial
 	pRenderContext->DrawScreenSpaceRectangle( pMaterial, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
 }
 
-// Binds one compute pass: source/destination mips plus the cbuffer sizes and per-pass parameters p0/p1.
-static void SetPostPass( IMaterial *pMaterial, ITexture *pSource, int nSourceMip, ITexture *pDest, int nDestMip, float p0, float p1, int nTexelScale = 1 )
+// Binds one compute pass: source/destination mips plus the cbuffer sizes and per-pass parameters p0/p1/p2.
+static void SetPostPass( IMaterial *pMaterial, ITexture *pSource, int nSourceMip, ITexture *pDest, int nDestMip, float p0, float p1, int nTexelScale = 1, float p2 = 0.f )
 {
 	const int nSrcWidth = MAX( 1, pSource->GetActualWidth() >> nSourceMip );
 	const int nSrcHeight = MAX( 1, pSource->GetActualHeight() >> nSourceMip );
@@ -141,12 +141,14 @@ static void SetPostPass( IMaterial *pMaterial, ITexture *pSource, int nSourceMip
 	const float sizes[4] = { static_cast<float>( nSrcWidth ), static_cast<float>( nSrcHeight ), static_cast<float>( nDstWidth ), static_cast<float>( nDstHeight ) };
 	const float flScale = static_cast<float>( MAX( nTexelScale, 1 ) );
 	const float params0[4] = { flScale / nSrcWidth, flScale / nSrcHeight, p0, p1 };
+	const float params1[4] = { p2, 0.f, 0.f, 0.f };
 	SetTexture( pMaterial, "$srctexture", pSource );
 	SetTexture( pMaterial, "$dsttexture", pDest );
 	SetInt( pMaterial, "$srcmip", nSourceMip );
 	SetInt( pMaterial, "$dstmip", nDestMip );
 	SetVector4( pMaterial, "$sizes", sizes );
 	SetVector4( pMaterial, "$params0", params0 );
+	SetVector4( pMaterial, "$params1", params1 );
 }
 }
 
@@ -154,6 +156,7 @@ static ConVar mat_postfx_dx12( "mat_postfx_dx12", "1", FCVAR_ARCHIVE, "DX12 post
 static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap" );
 static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "100", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (MagicBloom's 100; 0 off, 25..400 useful)" );
 static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
+static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_ARCHIVE, "DX12 post bloom extraction boost: maximum weight (luma - threshold) multiplying an extracted bright pixel (MagicBloom uses 10)", true, 0.f, true, 100.f );
 static ConVar mat_postfx_bloom_quality( "mat_postfx_bloom_quality", "2", FCVAR_ARCHIVE, "DX12 post bloom quality: 0 low (drops the two finest levels), 1 medium (drops the half-resolution level), 2 high (8 levels)", true, 0.f, true, 2.f );
 static ConVar mat_postfx_lensdirt( "mat_postfx_lensdirt", "0.5", FCVAR_ARCHIVE, "DX12 post lens dirt intensity (screens the dirt into the bloom)" );
 static ConVar mat_postfx_lensdirt_enable( "mat_postfx_lensdirt_enable", "1", FCVAR_ARCHIVE, "DX12 post lens dirt: 0 off, 1 on. Intensity stays mat_postfx_lensdirt.", true, 0.f, true, 1.f );
@@ -332,7 +335,8 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	{
 		PIXEVENT( pRenderContext, "Bloom downsample" );
 		IMaterial *pFirst = s_BloomFirst.m_pMaterial;
-		SetPostPass( pFirst, s_PostScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest );
+		SetPostPass( pFirst, s_PostScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest,
+			mat_postfx_bloom_boost.GetFloat() );
 		SetTexture( pFirst, "$dsttexture2", s_BloomUp );
 		SetInt( pFirst, "$dstmip2", nFirstMip );
 		DrawCompute( pRenderContext, pFirst );

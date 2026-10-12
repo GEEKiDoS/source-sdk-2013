@@ -5,7 +5,7 @@
 //          and halo, 4 dual Kawase down, 5 dual Kawase up, 6 glare, 7 bloom first level (soft-thresholded scene to
 //          $dsttexture, the plain exposed scene to $dsttexture2). $srctexture/$srctexture2 are read at $srcmip/$srcmip2
 //          and $dsttexture/$dsttexture2 are written at $dstmip/$dstmip2. $sizes holds the source and destination size,
-//          $params0 the source texel size and the per-pass parameters p0/p1.
+//          $params0 the source texel size and the per-pass parameters p0/p1, $params1.x the per-pass parameter p2.
 //
 //===========================================================================//
 #include "BaseVSShaderDX12.h"
@@ -27,8 +27,9 @@ struct PostConstantsDX12
 {
 	uint32 srcWidth, srcHeight, dstWidth, dstHeight;
 	float texelX, texelY, p0, p1;
+	float p2, pad0, pad1, pad2;
 };
-static_assert( sizeof( PostConstantsDX12 ) == 8 * sizeof( float ), "PostFX cbuffer layout mismatch" );
+static_assert( sizeof( PostConstantsDX12 ) == 12 * sizeof( float ), "PostFX cbuffer layout mismatch" );
 
 const int kPostThreadGroupSize = 8;
 
@@ -56,6 +57,7 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 		SHADER_PARAM( DSTMIP2, SHADER_PARAM_TYPE_INTEGER, "0", "Plain exposed level destination mip" )
 		SHADER_PARAM( SIZES, SHADER_PARAM_TYPE_VEC4, "[1 1 1 1]", "Source and destination dimensions" )
 		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 1 0 0]", "Source texel size and p0/p1" )
+		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: p2" )
 	END_SHADER_PARAMS
 
 	SHADER_FALLBACK
@@ -84,6 +86,7 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 			constants.texelY = pParams0[1];
 			constants.p0 = pParams0[2];
 			constants.p1 = pParams0[3];
+			constants.p2 = params[PARAMS1]->GetVecValue()[0];
 
 			ShaderAPIDX12ComputeDispatch_t dispatch = {};
 			dispatch.m_pConstants = &constants;

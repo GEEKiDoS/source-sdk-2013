@@ -61,7 +61,7 @@ public:
 	DX12ShadowTarget_t CreateShadowDepthTarget( const char *name, int width, int height ) override;
 	IRefCounted *RetainShadowDepthTarget( DX12ShadowTarget_t target ) override;
 	void DestroyShadowDepthTarget( DX12ShadowTarget_t target ) override;
-	void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear ) override;
+	void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear, const DX12ShadowSkyClip *skyClip ) override;
 	void EndShadowPass() override;
 	void BeginShadowCasterBatch() override;
 	void EndShadowCasterBatch() override;
@@ -93,6 +93,10 @@ public:
 
 	bool ShadowPassActive() const;
 	bool PrepareShadowDraw( RenderTargetBindingDX12 &target, D3D12_VIEWPORT &viewport, D3D12_RECT &scissor );
+	// Recording owner, inside a shadow pass. Sky-clipped sun passes: the pixel stage every opaque depth-only caster draw
+	// runs (shadow_sky_clip_ps51) and the space-6 sky map table / constants of the pass; NULL / neutral otherwise.
+	ShaderRecordDX12 *ShadowSkyClipPixelShader() const;
+	bool PrepareShadowSkyClipDraw( CPipelineCacheDX12::BindingInputDX12 &input );
 	bool PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input );
 	// Recording owner, before PrepareBindings: the current projected-light descriptor table for a PS that reflects space 5.
 	bool PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input );

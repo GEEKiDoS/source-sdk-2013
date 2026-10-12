@@ -1,0 +1,92 @@
+// Native SM5.1 SSR resolve: per full-resolution receiver, reuses the rays of its own trace texel and gSSRResolve.x
+// neighbouring trace texels (a Vogel disk rotated per pixel and frame, radius 1 + gSSRTrace.z * sqrt( roughness ) trace
+// texels). Each ray counts with the ratio-estimator weight lobe_receiver( L ) / pdf_tracer, L pointing from this
+// receiver to the ray's hit (or along the missed ray), so neighbours' samples are re-weighted to this receiver's own
+// GGX lobe; rays traced from a surface off the receiver's plane or facing away are skipped. Radiance is averaged with
+// the 1 / ( 1 + luminance ) firefly weight.
+// Outputs (viewport size, RGBA16F): u0 = ( confidence * radiance, confidence ), confidence the weighted hit fraction;
+// u1 = ( confidence * o, mean hit distance, 0, 0 ), o the soft [hitDistance < D] occlusion of the direct specular.
+// Zero for an invalid receiver. No static combos (index 0).
+// Inputs: t0 trace radiance, t1 trace ray, t2 normal, t3 specular, t4 stencil, t5 response (K), t6 native scene depth,
+// t7 E + D, t8 direct specular S.
+#define SSR_RESPONSE_REGISTER t5
+#define SSR_SCENE_DEPTH_REGISTER t6
+#define SSR_ENVIRONMENT_REGISTER t7
+#define SSR_SPECULAR_REGISTER t8
+#define SSR_HAS_ENVIRONMENT 1
+#include "ssr_common.hlsli"
+Texture2D<float4> gTrace : register( t0, space0 );
+Texture2D<float4> gRay : register( t1, space0 );
+RWTexture2D<float4> gResolveOut : register( u0, space0 );
+RWTexture2D<float4> gResolveAuxOut : register( u1, space0 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= uint( gSSRViewport.z ) || id.y >= uint( gSSRViewport.w ) ) return;
+	float4 resolved = 0.0, aux = 0.0;
+	SSRReceiver r = SSR_LoadReceiver( int2( id.xy ) );
+	[branch] if ( r.valid )
+	{
+		float3 V = normalize( gSSREye.xyz - r.P );
+		int2 traceSize = int2( gSSRSizes.zw );
+		int2 center = int2( id.xy / uint2( SSR_TraceGroup() ) );
+		float planeTolerance = max( gSSRTrace.y, 0.01 * r.viewDepth );
+		uint taps = gSSRResolve.x;
+		float radius = 1.0 + gSSRTrace.z * sqrt( saturate( r.roughness ) );
+		float rotation = float( SSR_Hash( ( id.x * 1973u ) ^ ( id.y * 9277u ) ^ ( gSSRControl.w * 26699u ) ) & 0xffffu ) * ( 2.0 * SSR_PI / 65536.0 );
+		float3 radianceSum = 0.0;
+		float radianceWeight = 0.0, confidenceSum = 0.0, weightSum = 0.0, occlusionSum = 0.0, distanceSum = 0.0;
+		[loop] for ( uint i = 0; i <= taps; ++i )
+		{
+			int2 texel = center;
+			if ( i > 0 )
+			{
+				float angle = float( i ) * 2.39996323 + rotation;
+				float distance = 1.0 + ( radius - 1.0 ) * sqrt( float( i - 1 ) / float( taps ) );
+				texel += int2( round( distance * float2( cos( angle ), sin( angle ) ) ) );
+			}
+			if ( any( texel < 0 ) || any( texel >= traceSize ) ) continue;
+			float4 ray = gRay.Load( int3( texel, 0 ) );
+			if ( ray.w == 0.0 ) continue;
+			// The tracing surface must lie on the receiver's plane and face its way.
+			int2 tracer = SSR_TracePixel( texel );
+			int3 tracerScene = int3( tracer + int2( gSSRViewport.xy ), 0 );
+			float3 tracerP = SSR_LocalToWorld( float2( tracer ) + 0.5, gSSRSceneDepth.Load( tracerScene ) );
+			if ( abs( dot( tracerP - r.P, r.N ) ) > planeTolerance ) continue;
+			if ( dot( PBR_UnpackNormal( gSSRNormal.Load( tracerScene ) ), r.N ) < SSR_REUSE_NORMAL ) continue;
+			bool hit = ray.w > 0.0;
+			float3 L = ray.xyz;
+			float hitDistance = 0.0;
+			if ( hit )
+			{
+				float3 toHit = ray.xyz - r.P;
+				hitDistance = length( toHit );
+				L = toHit / max( hitDistance, 1e-4 );
+			}
+			float weight = SSR_LobeWeight( r.N, V, L, r.roughness ) / abs( ray.w );
+			if ( !( weight > 0.0 ) || isinf( weight ) ) continue;
+			weightSum += weight;
+			[branch] if ( hit )
+			{
+				float4 trace = gTrace.Load( int3( texel, 0 ) );
+				float hitWeight = weight * trace.a;
+				float fireflyWeight = hitWeight / ( 1.0 + SSR_Luminance( trace.rgb ) );
+				radianceSum += fireflyWeight * trace.rgb;
+				radianceWeight += fireflyWeight;
+				confidenceSum += hitWeight;
+				// Soft [hitDistance < D]; a receiver without direct specular (D = 0, S = 0) is never occluded.
+				occlusionSum += hitWeight * ( hitDistance < r.D ? 1.0 - smoothstep( 0.9 * r.D, r.D, hitDistance ) : 0.0 );
+				distanceSum += hitWeight * hitDistance;
+			}
+		}
+		[branch] if ( weightSum > 0.0 && confidenceSum > 0.0 && radianceWeight > 0.0 )
+		{
+			float confidence = confidenceSum / weightSum;
+			resolved = float4( confidence * radianceSum / radianceWeight, confidence );
+			aux = float4( occlusionSum / weightSum, distanceSum / confidenceSum, 0.0, 0.0 );
+		}
+	}
+	gResolveOut[id.xy] = resolved;
+	gResolveAuxOut[id.xy] = aux;
+}

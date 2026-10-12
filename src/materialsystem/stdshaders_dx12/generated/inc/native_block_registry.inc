@@ -283,6 +283,8 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "shadow_depth_restore_ps51", dx12native::kStagePixel, nullptr },
 	{ "shadow_depth_restore_vs51", dx12native::kStageVertex, nullptr },
 	{ "shadow_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::shadow_ps2x > },
+	{ "shadow_sky_clip_ps51", dx12native::kStagePixel, nullptr },
+	{ "shadow_sky_depth_vs51", dx12native::kStageVertex, nullptr },
 	{ "shadow_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::shadow_vs20 > },
 	{ "shadowbuildtexture_ps51", dx12native::kStagePixel, nullptr },
 	{ "shadowmodel_ps51", dx12native::kStagePixel, nullptr },
