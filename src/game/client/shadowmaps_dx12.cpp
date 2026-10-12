@@ -33,6 +33,10 @@
 #include "shaderapi/dx12staticpropvisibility.h"
 #include "tier0/vprof.h"
 #include "shadowmaps_dx12_selection.h"
+#include "screenspace_dx12.h"
+#include "shaderapi/ishaderapidx12screenspace.h"
+#include "mapentities_shared.h"
+#include "beam_shared.h"
 #include "tier0/memdbgon.h"
 
 
@@ -180,7 +184,7 @@ struct ShadowCache_t
 struct LocalLight_t
 {
 	LocalLight_t() : projectionNear(0), projectionFar(0), faceCount(0), relevant(false), shadowRelevant(false),
-		bakedLightIndex(0), realtimeWeight(0), score(0), resident(false), desired(false), dynamic(false), castShadow(false)
+		bakedLightIndex(0), realtimeWeight(0), score(0), resident(false), desired(false), dynamic(false), castShadow(false), volumetric(false)
 	{
 		memset(faceVolumes,0,sizeof(faceVolumes));
 		for ( int i=0;i<6;++i ) { page[i]=-1; slot[i]=-1; }
@@ -197,6 +201,8 @@ struct LocalLight_t
 	float realtimeWeight, score;
 	bool resident, desired; // Frame-global; weight-zero retirement may still own leased slots.
 	bool dynamic, castShadow;
+	bool volumetric;				// Editor-light opt-in (DeferredLight_t::volumetric); map lights use g_LightEntities.
+	CHandle<C_Beam> volumeBeam;		// point_spotlight fake beam paired by ShadowMapsDX12_BeginVolumetrics (§9); map light_spot only.
 	CUtlVector<unsigned char> pvsClusters; // Precomputed influence/emitter clusters, never receiver-view dependent.
 };
 struct LocalPage_t
@@ -407,6 +413,16 @@ LocalLight_t &LightByOwner( int owner )
 	return g_Locals[owner];
 }
 
+// §8: BSP entity provenance per g_State.lights record, parsed once at admission from engine->GetMapEntitiesString()
+// through ShadowMapLightDisk::sourceEntity (BSP block index, worldspawn 0; never a network entindex).
+enum MapLightClass_t { MAPLIGHT_UNKNOWN=0, MAPLIGHT_LIGHT, MAPLIGHT_SPOT, MAPLIGHT_ENVIRONMENT };
+struct MapLightEntity_t { MapLightClass_t classname; int volumetric; }; // volumetric: -1 absent, 0 explicit off, 1 explicit on
+CUtlVector<MapLightEntity_t> g_LightEntities;
+// §9: live point_spotlight fake beams (FBEAM_POINT_SPOTLIGHT), registered from C_Beam::OnDataChanged/UpdateOnRemove.
+CUtlVector<CHandle<C_Beam>> g_SpotlightBeams;
+// True between ShadowMapsDX12_BeginVolumetrics/EndVolumetrics (the client's enabled main-volume scope).
+bool g_VolumeScope=false;
+
 CUtlVector<LocalPage_t> g_Pages;
 CUtlVector<SparePage_t> g_PageSpares;
 int g_Sun = -1;
@@ -467,7 +483,7 @@ void ResetMapState()
 	g_State.nativeMapGeneration=0;
 	g_State.selectedMode=SHADOWMAP_MODE_LDR; g_State.error[0]='\0';
 	// Invalidate every borrowed sidecar view before reusing its backing bytes.
-	g_State.lights=NULL; g_State.lightCount=0; g_State.sunLightIndex=-1;
+	g_State.lights=NULL; g_State.lightCount=0; g_State.sunLightIndex=-1; g_LightEntities.RemoveAll();
 	memset(&g_State.manifest,0,sizeof(g_State.manifest)); g_State.rshdBytes.RemoveAll();
 	g_ReceiverQuads.RemoveAll();
 	g_CameraPvs.Clear(); g_FreeSlotSeconds.Purge();
@@ -801,6 +817,7 @@ public:
 		realtimeLocals.RemoveAll(); lightRanks.RemoveAll();
 		lights.RemoveAll(); targets.RemoveAll(); ranges.RemoveAll(); indices.RemoveAll(); rects.RemoveAll(); casters.RemoveAll(); volumes.RemoveAll(); relevant.RemoveAll();
 		casterRanges.RemoveAll(); casterIndices.RemoveAll(); drawCandidateFirst=-1; drawCandidateCount=0;
+		suppressedBeams.RemoveAll();
 	}
 	bool active;
 	ShadowMapReceiverViewKind_t kind;
@@ -830,6 +847,7 @@ public:
 	CUtlVector<uint32> casterRanges;
 	CUtlVector<int> casterIndices;
 	int drawCandidateFirst, drawCandidateCount;
+	CUtlVector<CHandle<C_Beam>> suppressedBeams; // §9 paired beams this main bracket replaces with the volume (empty for other kinds)
 	DX12ShadowTarget_t cascadeClean, cascadeWork, cascadeRigid, staticSunClean, staticSun;
 	ShadowCache_t cascades[4];
 	// Last fitted square of each cascade, kept while it still covers the receiver slice (BuildSun).
@@ -2041,6 +2059,20 @@ void CommitChart( CShadowViewData &data, ShadowCache_t &cache, int chartLight = 
 	}
 }
 
+// §8/§9 opt-in. Map lights: explicit _volumetric 1 on, explicit 0 off; absent light_spot on only while paired with a live
+// point_spotlight beam in this main-volume scope. Editor lights: the Volumetric checkbox. Residency/shadow state is not
+// required: a record published without sampled charts is marched unshadowed by the volume pass. Requires the
+// screen-space-capable backend; the master switch owns g_VolumeScope.
+bool VolumetricLightEnabled( const LocalLight_t &local )
+{
+	if ( !g_VolumeScope || !ScreenSpaceDX12_Available() ) return false;
+	if ( local.dynamic ) return local.volumetric;
+	if ( local.bakedLightIndex>=(uint32)g_LightEntities.Count() ) return false;
+	const MapLightEntity_t &entity=g_LightEntities[local.bakedLightIndex];
+	if ( entity.volumetric>=0 ) return entity.volumetric==1;
+	return entity.classname==MAPLIGHT_SPOT && local.volumeBeam.Get()!=NULL;
+}
+
 bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::BuildLocal", "Shadowmaps" );
@@ -2056,6 +2088,8 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	gpu.visibilityFlags=local.dynamic ? (data.realtimeLocals[relevantIndex] ? 0 : DX12_SHADOW_VISIBILITY_UNSHADOWED) : DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE;
 	if ( !data.shadowsEnabled && gpu.realtimeWeight!=0 ) gpu.visibilityFlags|=DX12_SHADOW_VISIBILITY_UNSHADOWED;
 	gpu.bakedLightIndex=local.dynamic ? 0xffffffffu : local.bakedLightIndex;
+	// §8 opt-in rides every published record (charted or not); older backends receive zero.
+	gpu.reserved0=VolumetricLightEnabled(local) ? DX12_VOLUMETRIC_LIGHT_ENABLED : 0;
 	memcpy(gpu.origin,light.origin,sizeof(gpu.origin)); memcpy(gpu.travelDirection,light.direction,sizeof(gpu.travelDirection));
 	float style=data.packet.styles[light.style];
 	for ( int c=0;c<3;++c ) gpu.radiance[c]=light.radiance[c]*style;
@@ -2847,7 +2881,7 @@ void WriteDynamicLight( LocalLight_t &local, const DeferredLight_t &src )
 	local.selected.innerConeCos=local.world.stopdot; local.selected.outerConeCos=local.world.stopdot2;
 	local.selected.attenuationRadius=src.radius;
 	local.selected.startFade=src.radius*0.8f; local.selected.endFade=src.radius;
-	local.dynamic=true; local.castShadow=src.shadow; local.bakedLightIndex=0xffffffffu; local.realtimeWeight=1;
+	local.dynamic=true; local.castShadow=src.shadow; local.volumetric=src.volumetric; local.bakedLightIndex=0xffffffffu; local.realtimeWeight=1;
 	ShadowMapScene_LocalInfluence( local.world, g_State.worldMins, g_State.worldMaxs, local.influence );
 	local.faceCount=local.influence.cube ? 6 : 1;
 	g_CameraPvs.BuildLightClusters( local.world.origin, -1, local.influence.mins, local.influence.maxs, local.world.radius>0, local.pvsClusters );
@@ -2990,8 +3024,45 @@ void ShadowMapsDX12_Shutdown()
 	}
 	ShadowMapsDX12_LevelShutdown();
 	for ( int i=0;i<g_ViewPool.Count();++i ) g_ViewPool[i]->Release();
-	g_ViewPool.Purge(); g_ViewStack.Purge();
+	g_ViewPool.Purge(); g_ViewStack.Purge(); g_SpotlightBeams.Purge();
 	g_Lighting=NULL; g_Highres=NULL;
+}
+struct MapLightSource_t { int sourceEntity, record; };
+int MapLightSourceCompare( const MapLightSource_t *a, const MapLightSource_t *b ) { return a->sourceEntity-b->sourceEntity; }
+// §8: cache classname and the presence/value of `_volumetric` for every admitted record whose sourceEntity is known.
+// Walks the pristine BSP entity string once, counting blocks exactly like the baker's entity array (worldspawn is 0).
+// Missing/malformed entity data or sourceEntity -1 leaves MAPLIGHT_UNKNOWN / absent: no authored opt-in, no pairing.
+void ParseMapLightEntities()
+{
+	g_LightEntities.SetCount((int)g_State.lightCount);
+	CUtlVector<MapLightSource_t> sources;
+	for ( uint32 i=0;i<g_State.lightCount;++i )
+	{
+		g_LightEntities[i].classname=MAPLIGHT_UNKNOWN; g_LightEntities[i].volumetric=-1;
+		if ( g_State.lights[i].sourceEntity<0 ) continue;
+		MapLightSource_t &source=sources[sources.AddToTail()]; source.sourceEntity=g_State.lights[i].sourceEntity; source.record=(int)i;
+	}
+	if ( !sources.Count() ) return;
+	sources.Sort(MapLightSourceCompare);
+	char token[MAPKEY_MAXLENGTH], value[MAPKEY_MAXLENGTH];
+	const char *data=engine->GetMapEntitiesString();
+	int next=0;
+	for ( int entity=0; data && next<sources.Count(); ++entity )
+	{
+		data=MapEntity_ParseToken(data,token);
+		if ( !data || token[0]!='{' ) break;
+		for ( ; next<sources.Count() && sources[next].sourceEntity==entity; ++next )
+		{
+			MapLightEntity_t &info=g_LightEntities[sources[next].record];
+			if ( !MapEntity_ExtractValue(data,"classname",value) ) continue;
+			if ( !V_stricmp(value,"light") ) info.classname=MAPLIGHT_LIGHT;
+			else if ( !V_stricmp(value,"light_spot") ) info.classname=MAPLIGHT_SPOT;
+			else if ( !V_stricmp(value,"light_environment") ) info.classname=MAPLIGHT_ENVIRONMENT;
+			else continue;
+			if ( MapEntity_ExtractValue(data,"_volumetric",value) ) info.volumetric=atoi(value)!=0 ? 1 : 0;
+		}
+		data=MapEntity_SkipToNextEntity(data,token);
+	}
 }
 bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int bytes )
 {
@@ -3071,6 +3142,7 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 				local.world.radius>0,local.pvsClusters);
 		}
 	}
+	ParseMapLightEntities();
 	g_LightRanks.EnsureCapacity(g_Locals.Count()); g_FreeSlotSeconds.EnsureCapacity(g_Locals.Count());
 	if ( !++g_MapCounter ) ++g_MapCounter;
 	g_MapGeneration=g_MapCounter; g_State.mapGeneration=g_MapGeneration;
@@ -3116,11 +3188,13 @@ void ShadowMapsDX12_BeginClientLevelShutdown()
 	{
 		CShadowViewData *data=g_ViewPool[i];
 		data->active=false;
-		data->casters.RemoveAll(); data->casterRanges.RemoveAll(); data->casterIndices.RemoveAll();
+		data->casters.RemoveAll(); data->casterRanges.RemoveAll(); data->casterIndices.RemoveAll(); data->suppressedBeams.RemoveAll();
 		data->drawCandidateFirst=-1; data->drawCandidateCount=0;
 	}
 	// Release fixture-owned renderables while their leaf/entity owners exist.
 	DestroySpawnedRenderables();
+	// Entities are torn down after this bracket; no beam can rejoin until the next map's OnDataChanged.
+	g_SpotlightBeams.RemoveAll();
 }
 void ShadowMapsDX12_EndClientLevelShutdown()
 {
@@ -3140,7 +3214,7 @@ void ShadowMapsDX12_LevelShutdown()
 	for ( int p=0;p<g_Pages.Count();++p ) { DestroyTarget(g_Pages[p].work); DestroyTarget(g_Pages[p].clean); DestroyTarget(g_Pages[p].rigid); }
 	for ( int i=0;i<g_PageSpares.Count();++i ) DestroyTarget(g_PageSpares[i].target);
 	g_PageSpares.RemoveAll();
-	g_Pages.RemoveAll(); g_Locals.RemoveAll(); g_Dynamic.RemoveAll(); g_Selected.RemoveAll(); g_Sun=-1;
+	g_Pages.RemoveAll(); g_Locals.RemoveAll(); g_Dynamic.RemoveAll(); g_Selected.RemoveAll(); g_Sun=-1; g_VolumeScope=false;
 	g_SelectionFrame=0xffffffffu; g_FramePromotions=g_FrameDemotions=0; g_LightRanks.RemoveAll();
 	g_HaveSelectionView=false;
 	if ( g_LastMain ) { g_LastMain->Release(); g_LastMain=NULL; }
@@ -3304,6 +3378,148 @@ void AutoexecTick( ShadowMapReceiverViewKind_t kind )
 void ShadowMapsDX12_SetDynamicLights( const DeferredLight_t *lights, int count )
 {
 	SetDynamicLightsInternal( lights, count );
+}
+
+//-----------------------------------------------------------------------------
+// §8 sun opt-in / §9 point_spotlight fake-beam pairing and replacement
+//-----------------------------------------------------------------------------
+bool ShadowMapsDX12_VolumetricSunEnabled()
+{
+	return g_Sun>=0 && g_Sun<g_LightEntities.Count() && g_LightEntities[g_Sun].volumetric==1;
+}
+
+static const float kSpotlightPairDistanceSqr=32.0f*32.0f;
+static const float kSpotlightPairMinCos=0.98480775f; // cos(10 degrees)
+
+// Marked, live, drawable beam. ShouldDraw covers NODRAW and the beam's own minimum DX level; DX12 is checked by the caller.
+bool SpotlightBeamCandidate( C_Beam *beam )
+{
+	return beam && (beam->GetBeamFlags() & FBEAM_POINT_SPOTLIGHT) && !beam->IsDormant() && !beam->IsMarkedForDeletion() &&
+		beam->ShouldDraw() && beam->GetBrightness()>0;
+}
+// Live attachment-aware geometry against the admitted light's position/travel direction (fixed policy: 32 units, 10 degrees).
+bool SpotlightBeamMatches( C_Beam *beam, const LocalLight_t &light, float &distanceSqr, float &angleError )
+{
+	const Vector start=beam->GetAbsStartPos();
+	Vector axis=beam->GetAbsEndPos()-start;
+	if ( VectorNormalize(axis)<=0 ) return false;
+	distanceSqr=(start-light.world.origin).LengthSqr();
+	if ( distanceSqr>kSpotlightPairDistanceSqr ) return false;
+	Vector direction(light.selected.direction[0],light.selected.direction[1],light.selected.direction[2]);
+	VectorNormalize(direction);
+	const float cosine=DotProduct(axis,direction);
+	if ( cosine<kSpotlightPairMinCos ) return false;
+	angleError=1.0f-cosine;
+	return true;
+}
+struct SpotlightEdge_t { float distanceSqr, angleError; int beamEntity, lightSource, beam, light; };
+int SpotlightEdgeCompare( const SpotlightEdge_t *a, const SpotlightEdge_t *b )
+{
+	if ( a->distanceSqr!=b->distanceSqr ) return a->distanceSqr<b->distanceSqr ? -1 : 1;
+	if ( a->angleError!=b->angleError ) return a->angleError<b->angleError ? -1 : 1;
+	if ( a->beamEntity!=b->beamEntity ) return a->beamEntity<b->beamEntity ? -1 : 1;
+	return a->lightSource<b->lightSource ? -1 : a->lightSource>b->lightSource ? 1 : 0;
+}
+CUtlVector<SpotlightEdge_t> g_SpotlightEdges;
+CUtlVector<unsigned char> g_SpotlightBeamUsed;
+
+void ClearSpotlightPairs()
+{
+	for ( int l=0;l<g_Locals.Count();++l ) g_Locals[l].volumeBeam.Term();
+}
+// Greedy deterministic one-to-one assignment of live marked beams to selected map light_spot sources whose
+// _volumetric is not explicit 0, independent of residency: a paired light that loses its shadow map restores its
+// beam instead of rematching. Storage is reused after warmup.
+void PairSpotlightBeams()
+{
+	ClearSpotlightPairs();
+	for ( int b=g_SpotlightBeams.Count()-1;b>=0;--b ) if ( !g_SpotlightBeams[b].Get() ) g_SpotlightBeams.FastRemove(b);
+	g_SpotlightEdges.RemoveAll();
+	for ( int b=0;b<g_SpotlightBeams.Count();++b )
+	{
+		C_Beam *beam=g_SpotlightBeams[b];
+		if ( !SpotlightBeamCandidate(beam) ) continue;
+		for ( int l=0;l<g_Locals.Count();++l )
+		{
+			const LocalLight_t &light=g_Locals[l];
+			if ( light.bakedLightIndex>=(uint32)g_LightEntities.Count() ) continue;
+			const MapLightEntity_t &entity=g_LightEntities[light.bakedLightIndex];
+			if ( entity.classname!=MAPLIGHT_SPOT || entity.volumetric==0 ) continue;
+			SpotlightEdge_t edge;
+			if ( !SpotlightBeamMatches(beam,light,edge.distanceSqr,edge.angleError) ) continue;
+			edge.beamEntity=beam->entindex(); edge.lightSource=g_State.lights[light.bakedLightIndex].sourceEntity;
+			edge.beam=b; edge.light=l;
+			g_SpotlightEdges.AddToTail(edge);
+		}
+	}
+	if ( !g_SpotlightEdges.Count() ) return;
+	g_SpotlightEdges.Sort(SpotlightEdgeCompare);
+	g_SpotlightBeamUsed.SetCount(g_SpotlightBeams.Count());
+	memset(g_SpotlightBeamUsed.Base(),0,g_SpotlightBeamUsed.Count());
+	for ( int e=0;e<g_SpotlightEdges.Count();++e )
+	{
+		const SpotlightEdge_t &edge=g_SpotlightEdges[e];
+		if ( g_SpotlightBeamUsed[edge.beam] || g_Locals[edge.light].volumeBeam.Get() ) continue;
+		g_SpotlightBeamUsed[edge.beam]=1; g_Locals[edge.light].volumeBeam=g_SpotlightBeams[edge.beam].Get();
+	}
+}
+// After the CPU packet is built: the paired beams this eligible main bracket replaces. Each needs the opt-in bit on its
+// published record (charted or not: an uncharted light is marched unshadowed), nonzero radiance, and the enabled
+// main-volume scope with nonzero medium density/strength. Anything else leaves the stock beam visible.
+void PublishSuppressedBeams( CShadowViewData &data )
+{
+	data.suppressedBeams.RemoveAll();
+	const DX12VolumetricSettings *settings=g_VolumeScope && data.kind==SHADOWMAP_VIEW_MAIN ? ScreenSpaceDX12_GetVolumetricSettings() : NULL;
+	if ( !settings || !settings->control[2] || settings->medium[0]<=0 || settings->medium[1]<=0 ) return;
+	for ( int i=0;i<data.relevant.Count();++i )
+	{
+		if ( data.relevant[i] & kDynamicOwnerBit ) continue;
+		const LocalLight_t &light=g_Locals[data.relevant[i]];
+		if ( !light.volumeBeam.Get() ) continue;
+		const RuntimeShadowLightGpu &gpu=data.lights[i];
+		if ( !(gpu.reserved0 & DX12_VOLUMETRIC_LIGHT_ENABLED) ) continue;
+		if ( gpu.radiance[0]<=0 && gpu.radiance[1]<=0 && gpu.radiance[2]<=0 ) continue;
+		data.suppressedBeams.AddToTail(light.volumeBeam);
+	}
+}
+
+void ShadowMapsDX12_BeginVolumetrics()
+{
+	g_VolumeScope=true;
+	if ( ShadowMapsDX12_Active() && ScreenSpaceDX12_Available() ) PairSpotlightBeams();
+	else ClearSpotlightPairs();
+}
+void ShadowMapsDX12_EndVolumetrics()
+{
+	g_VolumeScope=false;
+	ClearSpotlightPairs();
+}
+void ShadowMapsDX12_UpdateSpotlightBeam( C_Beam *beam )
+{
+	for ( int b=0;b<g_SpotlightBeams.Count();++b ) if ( g_SpotlightBeams[b].Get()==beam ) return;
+	g_SpotlightBeams.AddToTail(beam);
+}
+void ShadowMapsDX12_RemoveSpotlightBeam( C_Beam *beam )
+{
+	for ( int b=g_SpotlightBeams.Count()-1;b>=0;--b ) if ( g_SpotlightBeams[b].Get()==beam ) g_SpotlightBeams.FastRemove(b);
+}
+// True only while the current receiver bracket is a suppressing main view that listed this beam, and its live geometry
+// still matches its assigned light; pairs never change during drawing.
+bool ShadowMapsDX12_ReplaceSpotlightBeam( C_Beam *beam )
+{
+	if ( !g_VolumeScope || !g_ViewStack.Count() ) return false;
+	const CShadowViewData &data=*g_ViewStack.Tail();
+	if ( data.kind!=SHADOWMAP_VIEW_MAIN ) return false;
+	int b=0;
+	for ( ;b<data.suppressedBeams.Count();++b ) if ( data.suppressedBeams[b].Get()==beam ) break;
+	if ( b==data.suppressedBeams.Count() ) return false;
+	for ( int l=0;l<g_Locals.Count();++l )
+	{
+		if ( g_Locals[l].volumeBeam.Get()!=beam ) continue;
+		float distanceSqr,angleError;
+		return SpotlightBeamCandidate(beam) && SpotlightBeamMatches(beam,g_Locals[l],distanceSqr,angleError);
+	}
+	return false;
 }
 
 void ShadowMapsDX12_PrepareMainView( const CViewSetup &setup )
@@ -3516,6 +3732,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	// Appending may have reallocated; no packet pointer may keep the CSR's old base.
 	data->packet.tileIndices=data->indices.Base(); data->packet.tileIndexCount=data->indices.Count();
 	DetailObjectSystem()->GetShadowReport(data->detailReport);
+	PublishSuppressedBeams(*data);
 	if ( constants.cShadowView0[3]==DX12_SHADOW_DEBUG_CASTER_BOUNDS )
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::DebugCasterBounds", "Shadowmaps" );
@@ -3547,6 +3764,8 @@ void ShadowMapsDX12_EndReceiverView()
 	frame.rigidLayerRebuilds+=data->stats.rigidLayerRebuilds; frame.overlayCasterDraws+=data->stats.overlayCasterDraws;
 	frame.rigidLayerBypasses+=data->stats.rigidLayerBypasses; frame.invalidRigidLayers+=data->stats.invalidRigidLayers;
 	data->active=false;
+	// The parent bracket's own set (empty for non-main kinds) is current again once this view pops.
+	data->suppressedBeams.RemoveAll();
 	data->AddRef(); g_PendingViews.AddToTail(data);
 	PollCompletedViews();
 	if ( g_ViewStack.Count() )

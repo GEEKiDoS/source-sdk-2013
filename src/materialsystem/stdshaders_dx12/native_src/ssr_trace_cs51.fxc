@@ -1,0 +1,181 @@
+// Native SM5.1 SSR trace: one deterministic perspective-correct screen-space DDA per trace texel against the
+// full-resolution view depth, binary-refined at the first front-to-back crossing; output u0 (trace size, RGBA16F)
+// is the sampled scene radiance of the hit (HDR, no clamp) and its confidence, or zero for a miss / invalid receiver;
+// u1 (trace size, R32F) is the accepted hit's world distance from the receiver (0 for a miss), which the composite
+// compares against the receiver's direct-specular light distance D.
+// Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
+// Inputs: t0 view depth (ssr_depth), t1 scene color mips, t2 normal, t3 specular, t4 stencil, t5 response (K),
+// t6 native scene depth; s1 linear clamp.
+// STATIC: "MSAA" "0..1"
+#define SSR_RESPONSE_REGISTER t5
+#define SSR_SCENE_DEPTH_REGISTER t6
+#define SSR_HAS_ENVIRONMENT 0
+#include "ssr_common.hlsli"
+Texture2D<float> gViewDepth : register( t0, space0 );
+Texture2D<float4> gSceneColor : register( t1, space0 );
+SamplerState gLinearClamp : register( s1, space0 );
+RWTexture2D<float4> gTraceOut : register( u0, space0 );
+RWTexture2D<float> gTraceDistanceOut : register( u1, space0 );
+
+// Homogeneous segment c0 -> c1 against w > 0 and the D3D clip volume (|x|,|y| <= w, 0 <= z <= w); every bound is
+// linear in the segment parameter. Returns false for an empty range.
+bool SSR_ClipSegment( float4 c0, float4 c1, out float s0, out float s1 )
+{
+	s0 = 0.0;
+	s1 = 1.0;
+	float4 d = c1 - c0;
+	float a[7] = { c0.w - 1e-4, c0.w - c0.x, c0.w + c0.x, c0.w - c0.y, c0.w + c0.y, c0.z, c0.w - c0.z };
+	float b[7] = { d.w, d.w - d.x, d.w + d.x, d.w - d.y, d.w + d.y, d.z, d.w - d.z };
+	bool inside = true;
+	[unroll] for ( uint i = 0; i < 7; ++i )
+	{
+		if ( b[i] == 0.0 )
+		{
+			if ( a[i] < 0.0 ) inside = false;
+		}
+		else
+		{
+			float s = -a[i] / b[i];
+			if ( b[i] > 0.0 ) s0 = max( s0, s );
+			else s1 = min( s1, s );
+		}
+	}
+	return inside && s0 < s1;
+}
+
+// The screen-linear parameterization of the clipped segment: pixel, 1/w and world/w are linear in u.
+struct SSRRay
+{
+	float2 pixel0, pixel1;        // continuous local pixels of the clipped endpoints
+	float invW0, invW1;
+	float3 worldOverW0, worldOverW1;
+};
+float3 SSR_RayWorld( SSRRay ray, float u )
+{
+	return lerp( ray.worldOverW0, ray.worldOverW1, u ) / lerp( ray.invW0, ray.invW1, u );
+}
+// Ray-minus-scene camera-forward separation at u (negative: in front). Clear pixels read SSR_DEPTH_FAR.
+float SSR_Separation( SSRRay ray, float u, out int2 pixel )
+{
+	pixel = int2( floor( lerp( ray.pixel0, ray.pixel1, u ) ) );
+	return SSR_ViewDepth( SSR_RayWorld( ray, u ) ) - gViewDepth.Load( int3( pixel, 0 ) );
+}
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= uint( gSSRSizes.z ) || id.y >= uint( gSSRSizes.w ) ) return;
+	float4 result = 0.0;
+	float resultDistance = 0.0;
+	SSRReceiver r = SSR_SelectReceiver( int2( id.xy ) );
+	[branch] if ( r.valid )
+	{
+		float3 V = normalize( gSSREye.xyz - r.P );
+		float3 R = reflect( -V, r.N );
+		float3 origin = r.P + gSSRLimits.y * r.N;
+		float3 start = origin + gSSRTrace.w * R;
+		float3 end = origin + gSSRTrace.x * R;
+		float4 c0 = mul( gSSRWorldToClip, float4( start, 1.0 ) );
+		float4 c1 = mul( gSSRWorldToClip, float4( end, 1.0 ) );
+		float s0, s1;
+		[branch] if ( SSR_ClipSegment( c0, c1, s0, s1 ) )
+		{
+			float4 q0 = lerp( c0, c1, s0 ), q1 = lerp( c0, c1, s1 );
+			float3 w0 = lerp( start, end, s0 ), w1 = lerp( start, end, s1 );
+			SSRRay ray;
+			ray.pixel0 = SSR_ClipToLocal( q0 );
+			ray.pixel1 = SSR_ClipToLocal( q1 );
+			ray.invW0 = 1.0 / q0.w;
+			ray.invW1 = 1.0 / q1.w;
+			ray.worldOverW0 = w0 * ray.invW0;
+			ray.worldOverW1 = w1 * ray.invW1;
+			float2 span = abs( ray.pixel1 - ray.pixel0 );
+			float majorSpan = max( span.x, span.y );
+			[branch] if ( majorSpan > 0.0 )
+			{
+				uint steps = max( gSSRControl.x, 1u );
+				float stride = max( 1.0, majorSpan / float( steps ) );
+				uint count = uint( ceil( majorSpan / stride ) );
+				int2 size = int2( gSSRViewport.zw );
+				float previousU = 0.0;
+				float previousSeparation = -SSR_DEPTH_FAR; // the ray leaves its own surface in front of it
+				float hitU = -1.0, hitSeparation = 0.0;
+				int2 hitPixel = int2( 0, 0 );
+				[loop] for ( uint k = 1; k <= count && hitU < 0.0; ++k )
+				{
+					float u = min( float( k ) * stride / majorSpan, 1.0 );
+					int2 pixel;
+					float2 continuous = lerp( ray.pixel0, ray.pixel1, u );
+					pixel = int2( floor( continuous ) );
+					if ( any( pixel < 0 ) || any( pixel >= size ) ) break;
+					if ( all( pixel == r.localPixel ) ) continue;
+					float separation = SSR_ViewDepth( SSR_RayWorld( ray, u ) ) - gViewDepth.Load( int3( pixel, 0 ) );
+					[branch] if ( previousSeparation <= 0.0 && separation > 0.0 )
+					{
+						// Front-to-back crossing: refine the previous/current interval, keeping the behind-side end.
+						float lo = previousU, hi = u;
+						int2 hiPixel = pixel;
+						float hiSeparation = separation;
+						[loop] for ( uint i = 0; i < gSSRControl.y; ++i )
+						{
+							float mid = 0.5 * ( lo + hi );
+							int2 midPixel;
+							float midSeparation = SSR_Separation( ray, mid, midPixel );
+							if ( midSeparation > 0.0 )
+							{
+								hi = mid;
+								hiPixel = midPixel;
+								hiSeparation = midSeparation;
+							}
+							else lo = mid;
+						}
+						if ( hiSeparation >= 0.0 && hiSeparation <= gSSRTrace.y )
+						{
+							hitU = hi;
+							hitSeparation = hiSeparation;
+							hitPixel = hiPixel;
+						}
+					}
+					previousU = u;
+					previousSeparation = separation;
+				}
+				[branch] if ( hitU >= 0.0 )
+				{
+					float3 hitWorld = SSR_RayWorld( ray, hitU );
+					int2 hitScenePixel = hitPixel + int2( gSSRViewport.xy );
+					bool backface = false;
+					// Only a fresh PBR writer validates its stored normal for this bracket; any other hit is depth-only.
+					int sample = SSR_ClosestSample( hitScenePixel );
+					if ( sample >= 0 )
+					{
+						uint stencil = SSR_LOAD( gSSRStencil, hitScenePixel, sample ).y;
+						float4 response = SSR_LOAD( gSSRResponse, hitScenePixel, sample );
+						if ( ( stencil & 0x80u ) != 0 && response.a > 0.0 )
+							backface = dot( PBR_UnpackNormal( SSR_LOAD( gSSRNormal, hitScenePixel, sample ) ), -R ) <= 0.0;
+					}
+					[branch] if ( !backface )
+					{
+						float2 hitContinuous = lerp( ray.pixel0, ray.pixel1, hitU );
+						float2 receiverContinuous = float2( r.localPixel ) + 0.5;
+						float hitDistance = length( hitWorld - r.P );
+						float projectedPixels = length( hitContinuous - receiverContinuous );
+						float lastMip = float( max( gSSRControl.z, 1u ) - 1u );
+						float mip = clamp( r.roughness * r.roughness * log2( max( 1.0, projectedPixels ) ), 0.0, lastMip );
+						float3 color = gSceneColor.SampleLevel( gLinearClamp, hitContinuous / gSSRSizes.xy, mip ).rgb;
+						float confidence = SSR_EdgeFade( receiverContinuous ) * SSR_EdgeFade( hitContinuous ) *
+							( 1.0 - smoothstep( 0.8 * gSSRTrace.x, gSSRTrace.x, hitDistance ) ) *
+							( 1.0 - smoothstep( gSSRTrace.z - 0.1, gSSRTrace.z, r.roughness ) ) *
+							( 1.0 - saturate( hitSeparation / gSSRTrace.y ) );
+						if ( confidence > 0.0 )
+						{
+							result = float4( color, confidence );
+							resultDistance = hitDistance;
+						}
+					}
+				}
+			}
+		}
+	}
+	gTraceOut[id.xy] = result;
+	gTraceDistanceOut[id.xy] = resultDistance;
+}

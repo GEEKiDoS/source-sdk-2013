@@ -1,30 +1,20 @@
 // PBR light loops for the pbr_* native shaders (PBR-only; included after dx12_preamble.h).
-// Projected (flashlight / env_projectedtexture) spots live in the backend-owned register space 5;
+// Projected (flashlight / env_projectedtexture) spots are sampled by projected_lighting.hlsli (register space 5);
 // PBR_GatherDirect exists only when the entry file defined DX12_SHADOWMAPS (model ENHANCED=1, world highres twin).
 #ifndef PBR_LIGHTING_HLSLI
 #define PBR_LIGHTING_HLSLI
 #include "pbr_brdf.hlsli"
+#include "projected_lighting.hlsli"
+#include "screenspace_contact.hlsli"
 
 #define PBR_RECEIVER_WORLD 1
 #define PBR_RECEIVER_MODEL 2
 
-struct PBRSpotGpu // 128 bytes, mirrors DX12ProjectedLightDesc
-{
-	row_major float4x4 worldToTexture; // ClientShadow_t::m_WorldToShadow, shared by cookie and depth
-	float4 originFar;                  // xyz origin, w farZ
-	float4 colorConst;                 // rgb radiance (pre-scaled by the client), w constant attenuation
-	float4 attnShadow;                 // linear, quadratic, shadowAtten, filterTexels (1 / depth width)
-	int4 slotsFlags;                   // cookieSlot, depthSlot (-1 unshadowed), flags (1 world, 2 model), reserved
-};
-StructuredBuffer<PBRSpotGpu> g_ProjectedLights : register( t0, space5 );
-Texture2D<float4> g_ProjectedCookies[8] : register( t1, space5 );
-Texture2D<float> g_ProjectedDepth[8] : register( t9, space5 );
-SamplerState g_CookieSampler : register( s0, space5 );
-SamplerComparisonState g_ProjectedCmpSampler : register( s1, space5 );
-
-// Burley diffuse + GGX for every projected light that lights this receiver class. Attenuation order is the
-// flashlight shader's: saturate(C + Lin/d + Q/d^2) * remap(d, farZ -> 0.6 farZ).
-float3 PBR_ProjectedSpots( PBRSurface s, float3 P, uint receiverFlag )
+// Burley diffuse + GGX for every projected light that lights this receiver class. A shadowed light's comparison
+// visibility is multiplied by the screen-space contact ray (surface normal, stopping short of the light) before the
+// existing shadowAtten blend; cookie, receiver mask and distance attenuation are DX12_ProjectedSample's. Each
+// light's GGX share joins specularSum at its distance (SSR occlusion payload).
+float3 PBR_ProjectedSpots( PBRSurface s, float3 P, uint receiverFlag, inout PBRSpecularSum specularSum )
 {
 	uint count, stride;
 	g_ProjectedLights.GetDimensions( count, stride );
@@ -34,31 +24,16 @@ float3 PBR_ProjectedSpots( PBRSurface s, float3 P, uint receiverFlag )
 		PBRSpotGpu light = g_ProjectedLights[i];
 		if ( ( uint( light.slotsFlags.z ) & receiverFlag ) == 0 )
 			continue;
-		float4 projected = mul( light.worldToTexture, float4( P, 1.0 ) );
-		float2 uv = projected.xy / projected.w;
-		if ( projected.w <= 0.0 || any( uv < 0.0 ) || any( uv > 1.0 ) )
+		float3 L, radiance;
+		float distance, rawVisibility;
+		if ( !DX12_ProjectedSample( light, P, L, distance, radiance, rawVisibility ) )
 			continue;
-		float3 toLight = light.originFar.xyz - P;
-		float distance = length( toLight );
-		float3 L = toLight / max( distance, 1e-4 );
-		float d = max( distance, 1.0 );
-		float attenuation = saturate( light.colorConst.w + light.attnShadow.x / d + light.attnShadow.y / ( d * d ) ) *
-			RemapValClamped( d, light.originFar.w, 0.6 * light.originFar.w, 0.0, 1.0 );
-		float3 radiance = light.colorConst.rgb * attenuation * g_ProjectedCookies[light.slotsFlags.x].SampleLevel( g_CookieSampler, uv, 0 ).rgb;
-		if ( PBR_Max3( radiance ) <= 0.0 )
-			continue;
-		float shadow = 1.0;
-		if ( light.slotsFlags.y >= 0 )
-		{
-			float reference = projected.z / projected.w;
-			float2 offset = 0.5 * light.attnShadow.w;
-			float pcf = g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( -offset.x, -offset.y ), reference ) +
-				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( offset.x, -offset.y ), reference ) +
-				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( -offset.x, offset.y ), reference ) +
-				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( offset.x, offset.y ), reference );
-			shadow = lerp( pcf * 0.25, 1.0, light.attnShadow.z );
-		}
-		result += PBR_Direct( s, L, radiance, shadow, true );
+		[branch] if ( light.slotsFlags.y >= 0 && rawVisibility > 0.0 )
+			rawVisibility *= DX12_ContactVisibility( P, s.N, L, distance - 0.25 );
+		float shadow = lerp( rawVisibility, 1.0, light.attnShadow.z );
+		float3 specular;
+		result += PBR_DirectSplit( s, L, radiance, shadow, true, specular );
+		PBR_AddSpecular( specularSum, specular, distance );
 	}
 	return result;
 }
@@ -73,13 +48,18 @@ float3 PBR_LightPosition( int i )
 {
 	return i == 3 ? float3( cLightInfo[1].pos.w, cLightInfo[2].color.w, cLightInfo[2].pos.w ) : cLightInfo[i].pos.xyz;
 }
-float3 PBR_LocalLights( PBRSurface s, float3 P, int count, float4 lightAtten )
+float3 PBR_LocalLights( PBRSurface s, float3 P, int count, float4 lightAtten, inout PBRSpecularSum specularSum )
 {
 	float3 result = 0.0;
 	[unroll] for ( int i = 0; i < 4; ++i )
 	{
 		if ( i < count )
-			result += PBR_Direct( s, normalize( PBR_LightPosition( i ) - P ), PBR_LightColor( i ) * lightAtten[i], 1.0, true );
+		{
+			float3 toLight = PBR_LightPosition( i ) - P;
+			float3 specular;
+			result += PBR_DirectSplit( s, normalize( toLight ), PBR_LightColor( i ) * lightAtten[i], 1.0, true, specular );
+			PBR_AddSpecular( specularSum, specular, length( toLight ) );
+		}
 	}
 	return result;
 }
@@ -209,7 +189,9 @@ bool PBR_IsUnbakedLight( uint2 range, uint selectedLightIndex )
 //    exactly nothing, and a light without an entry lies beyond its radius of the receiver (the bake keeps an entry for
 //    every light that reaches the receiver). Their stored visibility is exact and cheaper than the radiance bound, so they
 //    never take the r_shadowmap_skip_radiance shortcut. Realtime-weighted and style-overflow lights stay in the loop below.
-ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
+// Every specular term also joins specularSum at its light distance (the sun at PBR_SUN_DISTANCE) for the SSR
+// occlusion payload; d.specular is unchanged by that bookkeeping.
+ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSpecularSum specularSum )
 {
 	ShadowMapDirect d = ShadowMap_NoDirect();
 	ShadowMapBakedLookup bakedLookup = (ShadowMapBakedLookup)0;
@@ -252,7 +234,14 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 		[branch] if ( ( r.bakedSunVisibility != 0.0 || sunDiagnostics ) && dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 )
 		{
 			sunResult = float3( 1.0, 0.0, 0.0 );
-			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 ) sunResult = ShadowMap_SunResult( r );
+			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )
+			{
+				// Runtime visibility only: the contact ray needs a valid runtime chart and precedes the baked cap.
+				bool charted;
+				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted );
+				[branch] if ( charted && sunResult.x > 0.0 )
+					sunResult.x *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, -cSunTravel.xyz, cScreenEyeLength.w );
+			}
 		}
 		d.sunVisibility = min( saturate( sunResult.x ), r.bakedSunVisibility );
 		d.sunDiagnostics = sunResult.yz;
@@ -262,7 +251,9 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 			float3 L = -cSunTravel.xyz;
 			float3 radiance = cSunRadiance.rgb * d.sunVisibility;
 			d.diffuse += radiance * PBR_DiffuseBurley( s, L );
-			d.specular += radiance * PBR_Specular( s, L );
+			float3 specular = radiance * PBR_Specular( s, L );
+			d.specular += specular;
+			PBR_AddSpecular( specularSum, specular, PBR_SUN_DISTANCE );
 		}
 	}
 	[branch] if ( bakedProp )
@@ -341,9 +332,18 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
 					bakedVisibility = PBR_BakedVisibility( r, bakedLookup, light.bakedLightIndex );
 				float realtimeVisibility = bakedVisibility;
-				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only.
+				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
+				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).
 				[branch] if ( light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 )
-					realtimeVisibility = ShadowMap_LocalPCFChart( light, ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS ) );
+				{
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
+					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
+					[branch] if ( chart.valid && realtimeVisibility > 0.0 )
+					{
+						float3 toLight = light.origin - r.positionWS;
+						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, toLight, length( toLight ) - 0.25 );
+					}
+				}
 				specularVisibility = lerp( bakedVisibility, realtimeVisibility, light.realtimeWeight );
 				if ( bakedDelta )
 				{
@@ -358,7 +358,9 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 			}
 			else if ( bakedDelta ) visibility = light.realtimeWeight;
 			d.diffuse += radiance * ( basis * diffuseVisibility + extra * visibility );
-			d.specular += radiance * specular * specularVisibility;
+			float3 lightSpecular = radiance * specular * specularVisibility;
+			d.specular += lightSpecular;
+			PBR_AddSpecular( specularSum, lightSpecular, length( light.origin - r.positionWS ) );
 		}
 	}
 	// Baked-only specular (see above): only the receiver's live entries are visited.
@@ -380,7 +382,11 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s )
 				float3 L;
 				float3 radiance = ShadowMap_StandardLightRadiance( light, r.positionWS, L );
 				[branch] if ( any( radiance != 0.0 ) )
-					d.specular += radiance * PBR_Specular( s, L ) * PBR_EntryVisibility( r, bakedLookup, entry );
+				{
+					float3 lightSpecular = radiance * PBR_Specular( s, L ) * PBR_EntryVisibility( r, bakedLookup, entry );
+					d.specular += lightSpecular;
+					PBR_AddSpecular( specularSum, lightSpecular, length( light.origin - r.positionWS ) );
+				}
 			}
 		}
 	}

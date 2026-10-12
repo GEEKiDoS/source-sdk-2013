@@ -232,7 +232,7 @@ static const RowDef_t g_Rows[] =
 
 	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_BloomQuality", TAB_POST, ROW_COMBO, { "mat_postfx_bloom_quality", NULL, NULL, NULL, NULL }, kQuality3, ARRAYSIZE( kQuality3 ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Bloom", TAB_POST, ROW_SLIDER, { "mat_postfx_bloom_intensity", NULL, NULL, NULL, NULL }, NULL, 0, 0, 1, 0.01f, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_Bloom", TAB_POST, ROW_SLIDER, { "mat_postfx_bloom_intensity", NULL, NULL, NULL, NULL }, NULL, 0, 0, 400, 5, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Dirt", TAB_POST, ROW_CHECK, { "mat_postfx_lensdirt_enable", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Flare", TAB_POST, ROW_SLIDER, { "mat_postfx_lensflare", NULL, NULL, NULL, NULL }, NULL, 0, 0, 2, 0.01f, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Motion", TAB_POST, ROW_CHECK, { "mat_motion_blur_enabled", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },

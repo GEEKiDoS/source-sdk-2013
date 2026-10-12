@@ -174,6 +174,7 @@ public:
 	virtual bool		ShouldDraw();
 	virtual bool		IgnoresZBuffer( void ) const { return true; }
 	virtual void		OnDataChanged( DataUpdateType_t updateType );
+	virtual void		UpdateOnRemove( void );
 
 	virtual bool		OnPredictedEntityRemove( bool isbeingremoved, C_BaseEntity *predicted );
 

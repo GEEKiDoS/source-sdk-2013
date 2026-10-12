@@ -1,10 +1,11 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: DX12 post-processing compute passes (Froyok's custom bloom and lens flare). $pass selects
-//          0 bloom downsample, 1 bloom upsample-combine, 2 lens flare threshold, 3 lens flare ghosts and halo,
-//          4 dual Kawase down, 5 dual Kawase up, 6 glare. $srctexture/$srctexture2 are read at $srcmip/$srcmip2 and
-//          $dsttexture is written at $dstmip. $sizes holds the source and destination size, $params0 the source
-//          texel size and the per-pass parameters p0/p1.
+// Purpose: DX12 post-processing compute passes (MagicBloom's layered bloom on Froyok's pyramid, Froyok's lens flare).
+//          $pass selects 0 bloom downsample, 1 bloom layer sum (upsample), 2 lens flare threshold, 3 lens flare ghosts
+//          and halo, 4 dual Kawase down, 5 dual Kawase up, 6 glare, 7 bloom first level (soft-thresholded scene to
+//          $dsttexture, the plain exposed scene to $dsttexture2). $srctexture/$srctexture2 are read at $srcmip/$srcmip2
+//          and $dsttexture/$dsttexture2 are written at $dstmip/$dstmip2. $sizes holds the source and destination size,
+//          $params0 the source texel size and the per-pass parameters p0/p1.
 //
 //===========================================================================//
 #include "BaseVSShaderDX12.h"
@@ -48,9 +49,11 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 		SHADER_PARAM( SRCTEXTURE, SHADER_PARAM_TYPE_TEXTURE, "", "Source texture" )
 		SHADER_PARAM( SRCTEXTURE2, SHADER_PARAM_TYPE_TEXTURE, "", "Previous bloom level (upsample-combine)" )
 		SHADER_PARAM( DSTTEXTURE, SHADER_PARAM_TYPE_TEXTURE, "", "Destination texture" )
+		SHADER_PARAM( DSTTEXTURE2, SHADER_PARAM_TYPE_TEXTURE, "", "Plain exposed level destination (bloom first level)" )
 		SHADER_PARAM( SRCMIP, SHADER_PARAM_TYPE_INTEGER, "0", "Source mip" )
 		SHADER_PARAM( SRCMIP2, SHADER_PARAM_TYPE_INTEGER, "0", "Previous bloom level mip" )
 		SHADER_PARAM( DSTMIP, SHADER_PARAM_TYPE_INTEGER, "0", "Destination mip" )
+		SHADER_PARAM( DSTMIP2, SHADER_PARAM_TYPE_INTEGER, "0", "Plain exposed level destination mip" )
 		SHADER_PARAM( SIZES, SHADER_PARAM_TYPE_VEC4, "[1 1 1 1]", "Source and destination dimensions" )
 		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 1 0 0]", "Source texel size and p0/p1" )
 	END_SHADER_PARAMS
@@ -95,13 +98,16 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 			{
 			case 0:
 			case 2:
+			case 7:
 			{
 				postfx_downsample_cs51_Static_Index staticIndex;
-				staticIndex.SetTHRESHOLD( nPass == 2 );
+				staticIndex.SetTHRESHOLD( nPass == 2 ? 1 : nPass == 7 ? 2 : 0 );
 				postfx_downsample_cs51_Dynamic_Index dynamicIndex;
 				dispatch.m_pShaderName = "postfx_downsample_cs51";
 				dispatch.m_nStaticIndex = staticIndex.GetIndex();
 				dispatch.m_nDynamicIndex = dynamicIndex.GetIndex();
+				if ( nPass == 7 )
+					dispatch.m_Uav[1] = DX12MaterialTexture( GetShaderAPITextureBindHandle( DSTTEXTURE2, -1 ), params[DSTMIP2]->GetIntValue() );
 				break;
 			}
 			case 1:

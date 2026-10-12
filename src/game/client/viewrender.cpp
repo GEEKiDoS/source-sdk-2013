@@ -18,6 +18,8 @@
 #include "upscaler_dx12.h"
 #include "gtao_dx12.h"
 #include "pbr_debug_dx12.h"
+#include "screenspace_dx12.h"
+#include "shaderapi/ishaderapidx12screenspace.h"
 #include "framegen_dx12.h"
 #include "iclientmode.h"
 #include "voice_status.h"
@@ -1504,7 +1506,8 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 	g_pClientShadowMgr->PreRender();
 
 	// Shadowed flashlights supported on ps_2_b and up...
-	if ( r_flashlightdepthtexture.GetBool() && (viewID == VIEW_MAIN) )
+	const bool bProjectedDepthRenderedThisView = ( viewID == VIEW_MAIN ) && r_flashlightdepthtexture.GetBool();
+	if ( bProjectedDepthRenderedThisView )
 	{
 		g_pClientShadowMgr->ComputeShadowDepthTextures( viewRender );
 	}
@@ -1512,7 +1515,7 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 	// PBR shaders evaluate every projected light (flashlight, env_projectedtexture) in their standard pass; other views reuse this packet
 	if ( viewID == VIEW_MAIN )
 	{
-		g_pClientShadowMgr->PublishProjectedLights( viewRender );
+		g_pClientShadowMgr->PublishProjectedLights( viewRender, bProjectedDepthRenderedThisView );
 	}
 
 	m_BaseDrawFlags = baseDrawFlags;
@@ -1543,7 +1546,9 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 
 	ParticleMgr()->IncrementFrameCode();
 
+	ScreenSpaceDX12_BeginVolumetrics( viewRender );
 	DrawWorldAndEntities( drawSkybox, viewRender, nClearFlags, pCustomVisibility );
+	ScreenSpaceDX12_DrawVolumetrics();
 
 	// Disable fog for the rest of the stuff
 	DisableFog();
@@ -4170,7 +4175,7 @@ static void DrawOpaqueRenderables_DrawBrushModels( CClientRenderablesList::CEntr
 	}
 }
 
-static void DrawOpaqueRenderables_DrawStaticProps( CClientRenderablesList::CEntry *pEntitiesBegin, CClientRenderablesList::CEntry *pEntitiesEnd, ERenderDepthMode DepthMode )
+static void DrawOpaqueRenderables_DrawStaticProps( CClientRenderablesList::CEntry *pEntitiesBegin, CClientRenderablesList::CEntry *pEntitiesEnd, ERenderDepthMode DepthMode, bool bContactDepthReplay = false )
 {
 	if ( pEntitiesEnd == pEntitiesBegin )
 		return;
@@ -4191,7 +4196,7 @@ static void DrawOpaqueRenderables_DrawStaticProps( CClientRenderablesList::CEntr
 		else
 			continue;
 
-		if ( g_pStudioStatsEntity != NULL && g_CurrentViewID == VIEW_MAIN && itEntity->m_pRenderable == g_pStudioStatsEntity )
+		if ( !bContactDepthReplay && g_pStudioStatsEntity != NULL && g_CurrentViewID == VIEW_MAIN && itEntity->m_pRenderable == g_pStudioStatsEntity )
 		{
 			DrawOpaqueRenderable( itEntity->m_pRenderable, false, DepthMode, STUDIO_GENERATE_STATS );
 			continue;
@@ -4212,16 +4217,23 @@ static void DrawOpaqueRenderables_DrawStaticProps( CClientRenderablesList::CEntr
 		staticpropmgr->DrawStaticProps( pStatics, numScheduled, DepthMode, vcollide_wireframe.GetBool() );
 }
 
-static void DrawOpaqueRenderables_Range( CClientRenderablesList::CEntry *pEntitiesBegin, CClientRenderablesList::CEntry *pEntitiesEnd, ERenderDepthMode DepthMode )
+static void DrawOpaqueRenderables_Range( CClientRenderablesList::CEntry *pEntitiesBegin, CClientRenderablesList::CEntry *pEntitiesEnd, ERenderDepthMode DepthMode, bool bSkipNPCs = false )
 {
 	for( CClientRenderablesList::CEntry *itEntity = pEntitiesBegin; itEntity < pEntitiesEnd; ++ itEntity )
 	{
-		if ( itEntity->m_pRenderable )
-			DrawOpaqueRenderable( itEntity->m_pRenderable, ( itEntity->m_TwoPass != 0 ), DepthMode );
+		if ( !itEntity->m_pRenderable )
+			continue;
+		if ( bSkipNPCs )
+		{
+			C_BaseEntity *pEntity = itEntity->m_pRenderable->GetIClientUnknown()->GetBaseEntity();
+			if ( pEntity && pEntity->IsNPC() )
+				continue;
+		}
+		DrawOpaqueRenderable( itEntity->m_pRenderable, ( itEntity->m_TwoPass != 0 ), DepthMode );
 	}
 }
 
-void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
+void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode, bool bContactDepthReplay )
 {
 	VPROF_BUDGET("CViewRender::DrawOpaqueRenderables", "DrawOpaqueRenderables" );
 
@@ -4275,7 +4287,7 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 					CClientRenderablesList::CEntry
 						* const pEntitiesBegin = m_pRenderablesList->m_RenderGroups[ RENDER_GROUP_OPAQUE_STATIC_HUGE + 2 * bucket ],
 						* const pEntitiesEnd = pEntitiesBegin + m_pRenderablesList->m_RenderGroupCounts[ RENDER_GROUP_OPAQUE_STATIC_HUGE + 2 * bucket ];
-					DrawOpaqueRenderables_DrawStaticProps( pEntitiesBegin, pEntitiesEnd, bShadowDepth );
+					DrawOpaqueRenderables_DrawStaticProps( pEntitiesBegin, pEntitiesEnd, DepthMode, bContactDepthReplay );
 				}
 			}
 
@@ -4285,7 +4297,7 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 				CClientRenderablesList::CEntry
 					* const pEntitiesBegin = m_pRenderablesList->m_RenderGroups[ RENDER_GROUP_OPAQUE_ENTITY_HUGE + 2 * bucket ],
 					* const pEntitiesEnd = pEntitiesBegin + m_pRenderablesList->m_RenderGroupCounts[ RENDER_GROUP_OPAQUE_ENTITY_HUGE + 2 * bucket ];
-				DrawOpaqueRenderables_Range( pEntitiesBegin, pEntitiesEnd, bShadowDepth );
+				DrawOpaqueRenderables_Range( pEntitiesBegin, pEntitiesEnd, DepthMode, false );
 			}
 
 			//
@@ -4327,10 +4339,6 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 					C_BaseAnimating *pba = assert_cast<C_BaseAnimating *>( pEntity );
 					arrRenderEntsNpcsFirst[ numNpcs ++ ] = *itEntity;
 					arrBoneSetupNpcsLast[ numOpaqueEnts - numNpcs ] = pba;
-					
-					itEntity->m_pRenderable = NULL;		// We will render NPCs separately
-					itEntity->m_RenderHandle = NULL;
-					
 					continue;
 				}
 				else if ( pEntity->GetBaseAnimating() )
@@ -4393,11 +4401,11 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 		{
 			if ( iBucket > 0 && iBucket <= RENDER_GROUP_CFG_NUM_OPAQUE_ENT_BUCKETS )
 			{
-				DrawOpaqueRenderables_Range( pEnts[iBucket - 1][0], pEnts[iBucket - 1][1], bShadowDepth );
+				DrawOpaqueRenderables_Range( pEnts[iBucket - 1][0], pEnts[iBucket - 1][1], DepthMode, true );
 			}
 			if ( iBucket < 0 && iBucket >= -RENDER_GROUP_CFG_NUM_OPAQUE_ENT_BUCKETS )
 			{
-				DrawOpaqueRenderables_DrawStaticProps( pProps[- 1 - iBucket][0], pProps[- 1 - iBucket][1], bShadowDepth );
+				DrawOpaqueRenderables_DrawStaticProps( pProps[- 1 - iBucket][0], pProps[- 1 - iBucket][1], DepthMode, bContactDepthReplay );
 			}
 		}
 		else
@@ -4411,13 +4419,13 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 			// when needed.
 			//if ( bDrawopaquestaticpropslast )
 			{
-				DrawOpaqueRenderables_Range( pEnts[bucket][0], pEnts[bucket][1], DepthMode );
-				DrawOpaqueRenderables_DrawStaticProps( pProps[bucket][0], pProps[bucket][1], DepthMode );
+				DrawOpaqueRenderables_Range( pEnts[bucket][0], pEnts[bucket][1], DepthMode, true );
+				DrawOpaqueRenderables_DrawStaticProps( pProps[bucket][0], pProps[bucket][1], DepthMode, bContactDepthReplay );
 			}
 			/*else
 			{
-				DrawOpaqueRenderables_DrawStaticProps( pProps[bucket][0], pProps[bucket][1], DepthMode );
-				DrawOpaqueRenderables_Range( pEnts[bucket][0], pEnts[bucket][1], DepthMode );
+				DrawOpaqueRenderables_DrawStaticProps( pProps[bucket][0], pProps[bucket][1], DepthMode, bContactDepthReplay );
+				DrawOpaqueRenderables_Range( pEnts[bucket][0], pEnts[bucket][1], DepthMode, true );
 			}*/
 		}
 
@@ -4427,7 +4435,7 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 	//
 	// Draw NPCs now
 	//
-	DrawOpaqueRenderables_Range( arrRenderEntsNpcsFirst.Base(), arrRenderEntsNpcsFirst.Base() + numNpcs, DepthMode );
+	DrawOpaqueRenderables_Range( arrRenderEntsNpcsFirst.Base(), arrRenderEntsNpcsFirst.Base() + numNpcs, DepthMode, false );
 
 	//
 	// Ropes and particles
@@ -6146,6 +6154,28 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	{
 	if ( m_DrawFlags & DF_DRAW_ENTITITES )
 	{
+		IShaderAPIDX12ScreenSpace *pScreenSpace = nullptr;
+		bool bContacts = false, bSSR = false;
+		if ( viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() &&
+			!g_pIntroData && !( m_DrawFlags & ( DF_RENDER_REFLECTION | DF_RENDER_REFRACTION ) ) )
+		{
+			CMatRenderContextPtr pEffectContext( materials );
+			// Native color is represented by NULL; BeginView replay verifies the actual scene color/depth pair.
+			if ( pEffectContext->GetRenderTarget() == nullptr )
+			{
+				Vector forward;
+				AngleVectors( angles, &forward );
+				pScreenSpace = ScreenSpaceDX12_BeginView( pEffectContext, origin, forward, bContacts, bSSR );
+			}
+		}
+		if ( pScreenSpace && bContacts )
+		{
+			pScreenSpace->BeginContactDepth();
+			DrawWorld( waterZAdjust );
+			DrawOpaqueRenderables( DEPTH_MODE_NORMAL, true );
+			pScreenSpace->EndContactDepth();
+		}
+
 		// PBR shaders write their G-buffer (world normal, F0/roughness) beside the scene color in the opaque scene pass of the main view only.
 		const bool bGBuffer = ( viewID == VIEW_MAIN ) && ( m_eStereoEye == STEREO_EYE_MONO ) && !building_cubemaps.GetBool() && PBRDebugDX12_GBufferEnabled();
 		if ( bGBuffer )
@@ -6180,6 +6210,12 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		}
 		if ( bMotionVectors )
 			DrawMotionVectors( motionEntries );
+		if ( pScreenSpace )
+		{
+			if ( bSSR )
+				pScreenSpace->DispatchSSR();
+			pScreenSpace->EndView();
+		}
 		// GTAO over the complete opaque scene, before any translucency; the client latches repeats within a frame.
 		if ( viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() && GTAODX12_Enabled() )
 		{

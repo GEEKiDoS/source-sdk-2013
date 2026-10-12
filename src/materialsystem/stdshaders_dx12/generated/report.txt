@@ -426,6 +426,14 @@ logical=skin_ps51 stage=ps source=skin_ps51.fxc legacy=skin_ps20b.fxc legacyName
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=skin_ps20b space=1 register=b1 size=272 layoutHash=0xff43f7269a0b071d material
     member=g_SelfIllumTint_and_DetailBlendFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -688,6 +696,14 @@ logical=eye_refract_shadowmap_ps51 stage=ps source=eye_refract_shadowmap_ps51.fx
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -788,6 +804,14 @@ logical=eyes_shadowmap_ps51 stage=ps source=eyes_shadowmap_ps51.fxc legacy=- leg
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -860,6 +884,14 @@ logical=skin_shadowmap_ps51 stage=ps source=skin_shadowmap_ps51.fxc legacy=- leg
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -954,6 +986,14 @@ logical=teeth_bump_shadowmap_ps51 stage=ps source=teeth_bump_shadowmap_ps51.fxc 
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -1022,6 +1062,14 @@ logical=teeth_shadowmap_ps51 stage=ps source=teeth_shadowmap_ps51.fxc legacy=- l
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -1436,6 +1484,14 @@ logical=worldtwotextureblend_ps51 stage=ps source=worldtwotextureblend_ps51.fxc 
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=worldtwotextureblend_ps2x space=1 register=b1 size=160 layoutHash=0x6cdbb2937f89232e material
     member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
@@ -1507,6 +1563,14 @@ logical=lightmappedgeneric_decal_shadowmap_ps51 stage=ps source=lightmappedgener
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_decal_ps2x space=1 register=b1 size=80 layoutHash=0x84a336ffd3ae2172 material
     member=g_LightMap0Color type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_LightMap1Color type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -1586,6 +1650,14 @@ logical=lightmappedgeneric_shadowmap_ps51 stage=ps source=lightmappedgeneric_sha
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_ps2x_shadowmap space=1 register=b1 size=192 layoutHash=0x4665556fa3ee3d73 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
@@ -1667,6 +1739,14 @@ logical=lightmappedreflective_shadowmap_ps51 stage=ps source=lightmappedreflecti
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedreflective_ps2x space=1 register=b1 size=64 layoutHash=0x247261cc23f9d1a6 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_FresnelConstants type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c3
@@ -1707,6 +1787,14 @@ logical=worldtwotextureblend_shadowmap_ps51 stage=ps source=worldtwotextureblend
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=worldtwotextureblend_ps2x_shadowmap space=1 register=b1 size=176 layoutHash=0x0f10b495c9f44345 material
     member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
@@ -1784,6 +1872,14 @@ logical=lightmappedgeneric_decal_highres_ps51 stage=ps source=lightmappedgeneric
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_decal_ps2x space=1 register=b1 size=80 layoutHash=0x84a336ffd3ae2172 material
     member=g_LightMap0Color type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_LightMap1Color type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -1828,6 +1924,14 @@ logical=lightmappedgeneric_decal_highres_earlydepth_ps51 stage=ps source=lightma
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_decal_ps2x space=1 register=b1 size=80 layoutHash=0x84a336ffd3ae2172 material
     member=g_LightMap0Color type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_LightMap1Color type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -1911,6 +2015,14 @@ logical=lightmappedgeneric_highres_ps51 stage=ps source=lightmappedgeneric_highr
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_ps2x_shadowmap space=1 register=b1 size=192 layoutHash=0x4665556fa3ee3d73 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
@@ -1971,6 +2083,14 @@ logical=lightmappedgeneric_highres_earlydepth_ps51 stage=ps source=lightmappedge
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_ps2x_shadowmap space=1 register=b1 size=192 layoutHash=0x4665556fa3ee3d73 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
@@ -2056,6 +2176,14 @@ logical=lightmappedreflective_highres_ps51 stage=ps source=lightmappedreflective
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedreflective_ps2x space=1 register=b1 size=64 layoutHash=0x247261cc23f9d1a6 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_FresnelConstants type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c3
@@ -2098,6 +2226,14 @@ logical=lightmappedreflective_highres_earlydepth_ps51 stage=ps source=lightmappe
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedreflective_ps2x space=1 register=b1 size=64 layoutHash=0x247261cc23f9d1a6 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_FresnelConstants type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c3
@@ -2142,6 +2278,14 @@ logical=worldtwotextureblend_highres_ps51 stage=ps source=worldtwotextureblend_h
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=worldtwotextureblend_ps2x_shadowmap space=1 register=b1 size=176 layoutHash=0x0f10b495c9f44345 material
     member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
@@ -2194,6 +2338,14 @@ logical=worldtwotextureblend_highres_earlydepth_ps51 stage=ps source=worldtwotex
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=worldtwotextureblend_ps2x_shadowmap space=1 register=b1 size=176 layoutHash=0x0f10b495c9f44345 material
     member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
@@ -2271,6 +2423,14 @@ logical=worldvertextransition_editor_highres_ps51 stage=ps source=worldvertextra
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=WorldVertexTransitionEditorNormalization space=1 register=b1 size=16 layoutHash=0x5f6cfca27144e08d material
     member=cEditorOverbright type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     legacyEntry=0,16,1,0,0,0,0
@@ -2307,6 +2467,14 @@ logical=worldvertextransition_editor_highres_earlydepth_ps51 stage=ps source=wor
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=WorldVertexTransitionEditorNormalization space=1 register=b1 size=16 layoutHash=0x5f6cfca27144e08d material
     member=cEditorOverbright type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     legacyEntry=0,16,1,0,0,0,0
@@ -2457,6 +2625,14 @@ logical=pbr_world_ps51 stage=ps source=pbr_world_ps51.fxc legacy=- legacyName=- 
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=PBRMaterialPS space=1 register=b1 size=320 layoutHash=0xe13458959e25d606 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -2566,6 +2742,14 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=PBRMaterialPS space=1 register=b1 size=320 layoutHash=0xe13458959e25d606 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -2638,6 +2822,14 @@ logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earl
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=PBRMaterialPS space=1 register=b1 size=320 layoutHash=0xe13458959e25d606 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -2748,6 +2940,14 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     member=cProbeBricks type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
     member=cProbeAtlas type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
     member=cProbeAtlasBricks type=19 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -3537,6 +3737,14 @@ logical=pyro_vision_highres_ps51 stage=ps source=pyro_vision_highres_ps51.fxc le
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=pyro_vision_ps2x space=1 register=b1 size=160 layoutHash=0xdbbfba74f28626ab material
     member=g_vPyroParms1 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_vPyroParms2 type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -3591,6 +3799,14 @@ logical=pyro_vision_highres_earlydepth_ps51 stage=ps source=pyro_vision_highres_
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=pyro_vision_ps2x space=1 register=b1 size=160 layoutHash=0xdbbfba74f28626ab material
     member=g_vPyroParms1 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_vPyroParms2 type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -3639,7 +3855,7 @@ logical=motion_blur_tile_dilate_cs51 stage=cs source=motion_blur_tile_dilate_cs5
     member=gPad0 type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
     member=gPad1 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
     member=gPad2 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
-logical=postfx_downsample_cs51 stage=cs source=postfx_downsample_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+logical=postfx_downsample_cs51 stage=cs source=postfx_downsample_cs51.fxc legacy=- legacyName=- profile=native static=3 dynamic=1 present=3
   cbuffer=PostConstants space=1 register=b0 size=32 layoutHash=0x1a00c6dc3e4e6d74 material
     member=srcWidth type=19 class=0 offset=0 size=4 elements=0 arrayStride=0 legacy=
     member=srcHeight type=19 class=0 offset=4 size=4 elements=0 arrayStride=0 legacy=
@@ -3735,6 +3951,101 @@ logical=postfx_rcas_ps51 stage=ps source=postfx_rcas_ps51.fxc legacy=- legacyNam
     member=gRcasParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     legacyEntry=0,16,1,0,0,0,0
     bridge=WriteNativeCBuffer(api, block)
+logical=ssr_depth_cs51 stage=cs source=ssr_depth_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=DX12SSR space=1 register=b0 size=256 layoutHash=0xadc478528ab58c0b material
+    member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSREye type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRForward type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRSizes type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRTrace type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRControl type=19 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRMip type=19 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRLimits type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+logical=ssr_reduce_color_cs51 stage=cs source=ssr_reduce_color_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=DX12SSR space=1 register=b0 size=256 layoutHash=0xadc478528ab58c0b material
+    member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSREye type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRForward type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRSizes type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRTrace type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRControl type=19 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRMip type=19 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRLimits type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+logical=ssr_trace_cs51 stage=cs source=ssr_trace_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=DX12SSR space=1 register=b0 size=256 layoutHash=0xadc478528ab58c0b material
+    member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSREye type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRForward type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRSizes type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRTrace type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRControl type=19 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRMip type=19 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRLimits type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+logical=ssr_composite_cs51 stage=cs source=ssr_composite_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=DX12SSR space=1 register=b0 size=256 layoutHash=0xadc478528ab58c0b material
+    member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSREye type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRForward type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRSizes type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRTrace type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRControl type=19 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRMip type=19 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRLimits type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+logical=volumetric_vs51 stage=vs source=volumetric_vs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12Volumetric space=6 register=b1 size=64 layoutHash=0x1cac700feae11476 engine
+    member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeControl type=19 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeOutputScale type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+logical=volumetric_upsample_ps51 stage=ps source=volumetric_upsample_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12Volumetric space=6 register=b1 size=64 layoutHash=0x1cac700feae11476 engine
+    member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeControl type=19 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeOutputScale type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
 logical=writez_vs51 stage=vs source=writez_vs51.fxc legacy=writez_vs20.fxc legacyName=writez_vs20 profile=20b static=1 dynamic=4 present=4
   cbuffer=DX12VSEngine space=1 register=b0 size=880 layoutHash=0x9842d51544efb330 engine
     member=cConstants0 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
@@ -4884,6 +5195,14 @@ logical=vertexlit_and_unlit_generic_bump_ps51 stage=ps source=vertexlit_and_unli
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=vertexlit_and_unlit_generic_bump_ps2x space=1 register=b1 size=256 layoutHash=0x4005a7e06e303857 material
     member=g_EnvmapTint_TintReplaceFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -4924,6 +5243,14 @@ logical=vertexlit_and_unlit_generic_ps51 stage=ps source=vertexlit_and_unlit_gen
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=vertexlit_and_unlit_generic_ps2x space=1 register=b1 size=368 layoutHash=0x72a66b8d05057c6a material
     member=g_EnvmapTint_TintReplaceFactor type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -5058,6 +5385,14 @@ logical=treeleaf_shadowmap_ps51 stage=ps source=treeleaf_shadowmap_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -5112,6 +5447,14 @@ logical=cable_shadowmap_ps51 stage=ps source=cable_shadowmap_ps51.fxc legacy=- l
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -5184,6 +5527,14 @@ logical=vertexlit_and_unlit_generic_bump_shadowmap_ps51 stage=ps source=vertexli
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -5290,6 +5641,14 @@ logical=vertexlit_and_unlit_generic_shadowmap_ps51 stage=ps source=vertexlit_and
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -5759,6 +6118,14 @@ logical=shatteredglass_highres_ps51 stage=ps source=shatteredglass_highres_ps51.
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=ShatteredGlass_ps2x space=1 register=b1 size=112 layoutHash=0x3934fe7066b5827b material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c1
@@ -5807,6 +6174,14 @@ logical=shatteredglass_highres_earlydepth_ps51 stage=ps source=shatteredglass_hi
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=ShatteredGlass_ps2x space=1 register=b1 size=112 layoutHash=0x3934fe7066b5827b material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c1
@@ -5882,6 +6257,14 @@ logical=water_highres_ps51 stage=ps source=water_highres_ps51.fxc legacy=- legac
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=water_ps2x space=1 register=b1 size=96 layoutHash=0x991ecf0654a35293 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=vReflectTint type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c4
@@ -5928,6 +6311,14 @@ logical=water_highres_earlydepth_ps51 stage=ps source=water_highres_earlydepth_p
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=water_ps2x space=1 register=b1 size=96 layoutHash=0x991ecf0654a35293 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=vReflectTint type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c4
@@ -6313,6 +6704,14 @@ logical=vortwarp_shadowmap_ps51 stage=ps source=vortwarp_shadowmap_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=

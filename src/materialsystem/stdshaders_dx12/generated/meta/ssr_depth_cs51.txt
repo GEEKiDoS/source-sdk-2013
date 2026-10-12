@@ -1,0 +1,12 @@
+logical=ssr_depth_cs51 stage=cs source=ssr_depth_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=DX12SSR space=1 register=b0 size=256 layoutHash=0xadc478528ab58c0b material
+    member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=gSSREye type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRForward type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRSizes type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRTrace type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRControl type=19 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRMip type=19 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
+    member=gSSRLimits type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=

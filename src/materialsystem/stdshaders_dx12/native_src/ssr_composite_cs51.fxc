@@ -1,0 +1,70 @@
+// Native SM5.1 SSR composite: reconstructs each full-resolution receiver's hit from the 3x3 trace neighborhood
+// (geometry-matched neighbors only, exp( -0.5 d^2 ) weights in trace pixels, confidence-weighted radiance and
+// occlusion, geometry-weighted confidence that counts valid misses) and writes the signed scene correction
+// delta = confidence * ( hitRGB * K - E ) - confidence * o * S, alpha 0 (u0, viewport-local RGBA16F), where o is the
+// confidence-weighted reconstruction of 1 - smoothstep( 0.9 D, D, hitDistance ): a confident hit closer than the
+// receiver's direct-specular light distance D removes that direct specular S, whose reflected occluder radiance
+// hitRGB * K already replaces it. Zero weight -> zero delta.
+// Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
+// Inputs: t0 trace, t1 view depth, t2 normal, t3 specular, t4 stencil, t5 E + D, t6 K, t7 native scene depth,
+// t8 direct specular S, t9 trace hit distance.
+// STATIC: "MSAA" "0..1"
+#define SSR_RESPONSE_REGISTER t6
+#define SSR_SCENE_DEPTH_REGISTER t7
+#define SSR_HAS_ENVIRONMENT 1
+#include "ssr_common.hlsli"
+Texture2D<float4> gTrace : register( t0, space0 );
+Texture2D<float> gViewDepth : register( t1, space0 );
+Texture2D<float> gTraceDistance : register( t9, space0 );
+RWTexture2D<float4> gDeltaOut : register( u0, space0 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= uint( gSSRViewport.z ) || id.y >= uint( gSSRViewport.w ) ) return;
+	int2 local = int2( id.xy );
+	float3 delta = 0.0;
+	// Clear pixels have no receiver: skip the per-sample reconstruction.
+	[branch] if ( gViewDepth.Load( int3( local, 0 ) ) < SSR_DEPTH_FAR )
+	{
+		SSRReceiver r = SSR_LoadReceiver( local );
+		[branch] if ( r.valid )
+		{
+			int2 group = SSR_TraceGroup();
+			int2 traceSize = int2( gSSRSizes.zw );
+			int2 center = int2( id.xy / uint2( group ) );
+			float depthTolerance = max( gSSRTrace.y, 0.01 * r.viewDepth );
+			float3 radianceSum = 0.0;
+			float occlusionSum = 0.0, confidenceSum = 0.0, weightSum = 0.0;
+			[unroll] for ( int y = -1; y <= 1; ++y )
+			{
+				[unroll] for ( int x = -1; x <= 1; ++x )
+				{
+					int2 texel = center + int2( x, y );
+					if ( any( texel < 0 ) || any( texel >= traceSize ) ) continue;
+					SSRReceiver n = SSR_SelectReceiver( texel );
+					if ( !n.valid || abs( n.viewDepth - r.viewDepth ) > depthTolerance ||
+					     dot( n.N, r.N ) < SSR_COHERENT_NORMAL || abs( n.roughness - r.roughness ) > SSR_COHERENT_ROUGHNESS )
+						continue;
+					float2 d = float2( n.localPixel - local ) / float2( group );
+					float weight = exp( -0.5 * dot( d, d ) );
+					float4 trace = gTrace.Load( int3( texel, 0 ) );
+					float hitDistance = gTraceDistance.Load( int3( texel, 0 ) );
+					radianceSum += weight * trace.a * trace.rgb;
+					// Soft [hitDistance < D]; a receiver without direct specular (D = 0, S = 0) is never occluded.
+					occlusionSum += weight * trace.a * ( hitDistance < r.D ? 1.0 - smoothstep( 0.9 * r.D, r.D, hitDistance ) : 0.0 );
+					confidenceSum += weight * trace.a;
+					weightSum += weight;
+				}
+			}
+			[branch] if ( weightSum > 0.0 && confidenceSum > 0.0 )
+			{
+				float confidence = confidenceSum / weightSum;
+				float3 hitRGB = radianceSum / confidenceSum;
+				float occlusion = occlusionSum / confidenceSum;
+				delta = confidence * ( hitRGB * r.K - r.E ) - confidence * occlusion * r.S;
+			}
+		}
+	}
+	gDeltaOut[id.xy] = float4( delta, 0.0 );
+}

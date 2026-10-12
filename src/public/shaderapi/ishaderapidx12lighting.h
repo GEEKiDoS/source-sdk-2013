@@ -145,6 +145,10 @@ typedef intp ShaderAPITextureHandle_t;
 #define DX12_SHADOW_VIEW_UNSHADOWED			0x8		// selected direct active; skip runtime depth sampling (baked world sun cap remains)
 #define DX12_SHADOW_VIEW_DEFERRED				0x10	// budgeted warm-up: missing charts are wholly zero; direct lighting remains active
 
+// RuntimeShadowLightGpu::reserved0 and DX12ProjectedLightDesc::reserved: the light opted into volumetric
+// in-scattering (ishaderapidx12screenspace.h). Set only when that interface is available; the only known bit.
+#define DX12_VOLUMETRIC_LIGHT_ENABLED			0x1
+
 //-----------------------------------------------------------------------------
 // GPU-visible record layouts retained from ABI 1. Row-major float4x4; HLSL mul(matrix, float4(world,1)).
 //-----------------------------------------------------------------------------
@@ -168,7 +172,7 @@ struct RuntimeShadowLightGpu				// 608 bytes: 7 rows + 6 matrices + 6 rects + hy
 	float	realtimeWeight;				// [0,1]; zero never references an atlas; positive requires complete charts unless UNSHADOWED
 	uint32	visibilityFlags;			// DX12_SHADOW_VISIBILITY_*; no unknown bits
 	uint32	bakedLightIndex;			// manifest ordinal iff BAKED_AVAILABLE; otherwise 0 or 0xFFFFFFFF
-	uint32	reserved0;					// zero
+	uint32	reserved0;					// DX12_VOLUMETRIC_LIGHT_ENABLED or zero; no unknown bits
 };
 
 struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL twin)
@@ -202,7 +206,7 @@ struct DX12ProjectedLightDesc			// 128 bytes, byte-identical to HLSL PBRSpotGpu
 	float	linearAttn, quadraticAttn, shadowAtten, filterTexels;	// filterTexels = 1 / depth texture width
 	int32	cookieSlot, depthSlot;		// 0..DX12_PBR_MAX_PROJECTED_LIGHTS-1; depthSlot -1 = unshadowed
 	uint32	flags;						// DX12_PBR_LIGHT_*
-	uint32	reserved;
+	uint32	reserved;					// DX12_VOLUMETRIC_LIGHT_ENABLED or zero (HLSL PBRSpotGpu::slotsFlags.w); no unknown bits
 };
 
 struct DX12ProjectedLightPacket

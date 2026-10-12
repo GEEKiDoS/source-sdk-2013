@@ -1,9 +1,11 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: DX12 post-processing composite (Froyok's bloom and lens flare mix). Lerps the scene towards bloom plus
-//          lens flare and glare by the bloom intensity raised by the lens dirt, tonemaps with AgX and applies up to
-//          four colour-correction lookups (Engine_Post semantics). $params0 = scene scale, bloom intensity, flare
-//          intensity; $params1.x = dirt intensity, $output.x = HDR output flag.
+// Purpose: DX12 post-processing composite. Adds lens flare and glare to the HDR scene, tonemaps it with AgX, then
+//          screens MagicBloom's layered bloom over it in normalised display space: bloomT = Uncharted2( bloom * bloom
+//          exposure ) with MagicBloom's constants and white 11.2, raised by the lens dirt as screen( bloomT, dirt *
+//          bloomT ), output = peak * screen( AgX / peak, saturate( bloomT ) ). Then up to four colour-correction
+//          lookups (Engine_Post semantics). $params0 = scene scale, bloom exposure already divided by the summed
+//          layer count, lens flare scale; $params1.x = dirt intensity, $output.x = HDR output flag.
 //
 //===========================================================================//
 #include "BaseVSShaderDX12.h"
@@ -32,8 +34,8 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( BLOOMENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Bloom producer active" )
 		SHADER_PARAM( FLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Flare producer active" )
 		SHADER_PARAM( GLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Glare producer active" )
-		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Scene scale, bloom intensity and flare intensity" )
-		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Lens dirt intensity" )
+		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Scene scale, bloom exposure / summed layers and lens flare scale" )
+		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Lens dirt intensity (screened into the bloom)" )
 		SHADER_PARAM( OUTPUT, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: 1 when writing HDR output" )
 		SHADER_PARAM( OUTSCALE, SHADER_PARAM_TYPE_FLOAT, "1", "Output scale (world nits / UI nits in HDR)" )
 		SHADER_PARAM( PEAK, SHADER_PARAM_TYPE_FLOAT, "1", "AgX peak relative to paper white" )

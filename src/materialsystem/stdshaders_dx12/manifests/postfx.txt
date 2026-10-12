@@ -99,3 +99,17 @@ postfx_composite_ps51.fxc ps postfx_composite_ps51 native -
 # noparity postfx_composite_ps51 - native-only
 postfx_rcas_ps51.fxc ps postfx_rcas_ps51 native -
 # noparity postfx_rcas_ps51 - native-only
+ssr_depth_cs51.fxc cs ssr_depth_cs51 native -
+# noparity ssr_depth_cs51 - native-only
+ssr_reduce_color_cs51.fxc cs ssr_reduce_color_cs51 native -
+# noparity ssr_reduce_color_cs51 - native-only
+ssr_trace_cs51.fxc cs ssr_trace_cs51 native -
+# noparity ssr_trace_cs51 - native-only
+ssr_composite_cs51.fxc cs ssr_composite_cs51 native -
+# noparity ssr_composite_cs51 - native-only
+volumetric_vs51.fxc vs volumetric_vs51 native -
+# noparity volumetric_vs51 - native-only
+volumetric_ps51.fxc ps volumetric_ps51 native -
+# noparity volumetric_ps51 - native-only
+volumetric_upsample_ps51.fxc ps volumetric_upsample_ps51 native -
+# noparity volumetric_upsample_ps51 - native-only

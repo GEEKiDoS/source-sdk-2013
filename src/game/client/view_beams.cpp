@@ -21,6 +21,7 @@
 #include "iviewrender.h"
 #include "view_shared.h"
 #include "viewrender.h"
+#include "shadowmaps_dx12.h"
 
 #ifdef PORTAL
 	#include "prop_portal_shared.h"
@@ -2125,6 +2126,11 @@ bool CViewRenderBeams::RecomputeBeamEndpoints( Beam_t *pbeam )
 //-----------------------------------------------------------------------------
 void CViewRenderBeams::DrawBeam( C_Beam* pbeam, ITraceFilter *pEntityBeamTraceFilter )
 {
+	// A point_spotlight fake beam paired with a shadowed volumetric light in the current main bracket is replaced
+	// by the raymarched volume; every other case (off, non-DX12, no chart, other views) draws the stock beam.
+	if ( ( pbeam->GetBeamFlags() & FBEAM_POINT_SPOTLIGHT ) && ShadowMapsDX12_ReplaceSpotlightBeam( pbeam ) )
+		return;
+
 	Beam_t beam;
 
 	// Set up the beam.

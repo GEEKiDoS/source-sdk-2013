@@ -123,6 +123,7 @@ bool CDeferredLightManager::Load()
 		light.outerCone = sub->GetFloat( "outerCone", 45 );
 		light.spot = sub->GetInt( "spot" ) != 0;
 		light.shadow = sub->GetInt( "shadow", 1 ) != 0;
+		light.volumetric = sub->GetInt( "volumetric", 0 ) != 0;
 		V_strncpy( light.cookie, sub->GetString( "cookie", "" ), sizeof( light.cookie ) );
 		light.id = sub->GetInt( "id", 0 );
 		if ( light.id <= 0 || Find( light.id ) )
@@ -155,6 +156,7 @@ bool CDeferredLightManager::Save()
 		sub->SetFloat( "outerCone", light.outerCone );
 		sub->SetInt( "spot", light.spot ? 1 : 0 );
 		sub->SetInt( "shadow", light.shadow ? 1 : 0 );
+		sub->SetInt( "volumetric", light.volumetric ? 1 : 0 );
 		sub->SetString( "cookie", light.cookie );
 		sub->SetInt( "id", light.id );
 	}

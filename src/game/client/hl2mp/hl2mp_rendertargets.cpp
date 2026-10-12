@@ -9,6 +9,7 @@
 #include "upscaler_dx12.h"
 #include "gtao_dx12.h"
 #include "pbr_debug_dx12.h"
+#include "screenspace_dx12.h"
 #include "postprocess_dx12.h"
 #include "framegen_dx12.h"
 
@@ -22,6 +23,7 @@ void CHL2MPRenderTargets::InitClientRenderTargets( IMaterialSystem *pMaterialSys
 	GTAODX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 	PBRDebugDX12_Init( pHardwareConfig );
 	PBRDebugDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
+	ScreenSpaceDX12_Init( pHardwareConfig );
 	PostProcessDX12_Init( pHardwareConfig );
 	PostProcessDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 }
@@ -29,6 +31,7 @@ void CHL2MPRenderTargets::InitClientRenderTargets( IMaterialSystem *pMaterialSys
 void CHL2MPRenderTargets::ShutdownClientRenderTargets()
 {
 	PostProcessDX12_Shutdown();
+	ScreenSpaceDX12_Shutdown();
 	PBRDebugDX12_Shutdown();
 	GTAODX12_Shutdown();
 	FrameGenDX12_Shutdown();

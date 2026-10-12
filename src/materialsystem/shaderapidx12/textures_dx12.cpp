@@ -703,6 +703,9 @@ void CShaderAPIDX12::ReleaseTextureDeviceResources()
 	ReleaseUpscalerResources();
 	ReleaseMotionResources();
 	ReleaseGBufferResources();
+	ReleaseScreenSpaceResources();
+	ReleaseSSRResources();
+	ReleaseVolumetricResources();
 	for ( int i = 0; i < ARRAYSIZE( m_PreparedTextureSlots ); ++i )
 		m_PreparedTextureSlots[i].valid = false;
 	m_bTextureSetValid = false;
@@ -1471,7 +1474,7 @@ void CShaderAPIDX12::SetRenderTarget( ShaderAPITextureHandle_t color, ShaderAPIT
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetRenderTargetEx( int index, ShaderAPITextureHandle_t color, ShaderAPITextureHandle_t depth )
 {
-	if ( index < 0 || index >= static_cast<int>( ARRAYSIZE( m_RenderTargets ) ) )
+	if ( index < 0 || index >= RenderTargetBindingDX12::kMaxEngineRenderTargets )
 		return;
 	if ( index == 0 )
 	{
@@ -1970,7 +1973,8 @@ void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const
 	if ( !pPipeline )
 	{
 		static const char vsSource[] = "float4 main(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p*float2(2,-2)+float2(-1,1),1,1); }";
-		static const char psSource[] = "cbuffer Color:register(b0){float4 color;}\n#if TARGET_COUNT == 0\nvoid main(){}\n#else\nstruct Output{float4 a:SV_Target0;\n#if TARGET_COUNT > 1\nfloat4 b:SV_Target1;\n#endif\n#if TARGET_COUNT > 2\nfloat4 c:SV_Target2;\n#endif\n#if TARGET_COUNT > 3\nfloat4 d:SV_Target3;\n#endif\n}; Output main(){Output o;o.a=color;\n#if TARGET_COUNT > 1\no.b=color;\n#endif\n#if TARGET_COUNT > 2\no.c=color;\n#endif\n#if TARGET_COUNT > 3\no.d=color;\n#endif\nreturn o;}\n#endif\n";
+		// One SV_Target per bound color target, up to RenderTargetBindingDX12::kMaxColorTargets (8).
+		static const char psSource[] = "cbuffer Color:register(b0){float4 color;}\n#if TARGET_COUNT == 0\nvoid main(){}\n#else\nstruct Output{float4 a:SV_Target0;\n#if TARGET_COUNT > 1\nfloat4 b:SV_Target1;\n#endif\n#if TARGET_COUNT > 2\nfloat4 c:SV_Target2;\n#endif\n#if TARGET_COUNT > 3\nfloat4 d:SV_Target3;\n#endif\n#if TARGET_COUNT > 4\nfloat4 e:SV_Target4;\n#endif\n#if TARGET_COUNT > 5\nfloat4 f:SV_Target5;\n#endif\n#if TARGET_COUNT > 6\nfloat4 g:SV_Target6;\n#endif\n#if TARGET_COUNT > 7\nfloat4 h:SV_Target7;\n#endif\n}; Output main(){Output o;o.a=color;\n#if TARGET_COUNT > 1\no.b=color;\n#endif\n#if TARGET_COUNT > 2\no.c=color;\n#endif\n#if TARGET_COUNT > 3\no.d=color;\n#endif\n#if TARGET_COUNT > 4\no.e=color;\n#endif\n#if TARGET_COUNT > 5\no.f=color;\n#endif\n#if TARGET_COUNT > 6\no.g=color;\n#endif\n#if TARGET_COUNT > 7\no.h=color;\n#endif\nreturn o;}\n#endif\n";
 		Microsoft::WRL::ComPtr<ID3DBlob> pVS, pPS, pError;
 		char szColorCount[16];
 		V_snprintf( szColorCount, sizeof( szColorCount ), "%d", target.colorCount );
@@ -2307,7 +2311,7 @@ void CShaderAPIDX12::UnlockRect( ShaderAPITextureHandle_t h, int )
 //          and sizes match, otherwise a filtered draw (optionally resolving MSAA first and
 //          applying the present gamma ramp)
 //-----------------------------------------------------------------------------
-bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients, BlitEncodeDX12 encode )
+bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients, BlitEncodeDX12 encode, bool bAdditive )
 {
 	if ( !m_pDevice || !m_pDevice->CommandList() || !pSource || !pDestination || pSource == pDestination || sourceRect.width <= 0 || sourceRect.height <= 0 || destinationRect.width <= 0 || destinationRect.height <= 0 )
 		return false;
@@ -2355,7 +2359,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		bSourceIsScene = false;
 	}
 	const bool bSameSize = sourceRect.width == destinationRect.width && sourceRect.height == destinationRect.height;
-	if ( encode == BlitEncodeDX12::None && bSameSize && pSource->GetDesc().Format == destinationDesc.Format && destinationDesc.SampleDesc.Count == 1 && bSourceSRGB == bDestinationSRGB )
+	if ( !bAdditive && encode == BlitEncodeDX12::None && bSameSize && pSource->GetDesc().Format == destinationDesc.Format && destinationDesc.SampleDesc.Count == 1 && bSourceSRGB == bDestinationSRGB )
 	{
 		transition( pSource, *pActiveSourceState, bSourceIsScene, D3D12_RESOURCE_STATE_COPY_SOURCE, true );
 		transition( pDestination, destinationState, bDestinationIsScene, D3D12_RESOURCE_STATE_COPY_DEST, false );
@@ -2374,6 +2378,9 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		return false;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pScratch;
 	const bool bDirect = ( destinationDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET ) != 0;
+	// Additive mode blends onto the destination itself; a scratch copy would replace it. Encodes are replacement-only.
+	if ( bAdditive && ( !bDirect || encode != BlitEncodeDX12::None ) )
+		return false;
 	ID3D12Resource *pRenderResource = pDestination;
 	D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
 	if ( !bDirect )
@@ -2461,7 +2468,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 	for ( int i = 0; i < m_BlitPasses.Count(); ++i )
 	{
 		const BlitPassDX12 &pass = m_BlitPasses[i];
-		if ( pass.color == renderFormat && pass.samples == nSamples && pass.quality == nQuality && pass.encode == encode )
+		if ( pass.color == renderFormat && pass.samples == nSamples && pass.quality == nQuality && pass.encode == encode && pass.additive == bAdditive )
 		{
 			pPSO = pass.pipeline.Get();
 			break;
@@ -2501,7 +2508,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 		desc.RasterizerState.DepthClipEnable = TRUE;
 		desc.RasterizerState.MultisampleEnable = nSamples > 1;
-		desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		desc.BlendState.RenderTarget[0].RenderTargetWriteMask = bAdditive ? D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE : D3D12_COLOR_WRITE_ENABLE_ALL;
 		desc.DepthStencilState.DepthEnable = FALSE;
 		desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
 		desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
@@ -2511,8 +2518,9 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
 		desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
 		D3D12_RENDER_TARGET_BLEND_DESC &blend = desc.BlendState.RenderTarget[0];
+		blend.BlendEnable = bAdditive;
 		blend.SrcBlend = D3D12_BLEND_ONE;
-		blend.DestBlend = D3D12_BLEND_ZERO;
+		blend.DestBlend = bAdditive ? D3D12_BLEND_ONE : D3D12_BLEND_ZERO;
 		blend.BlendOp = D3D12_BLEND_OP_ADD;
 		blend.SrcBlendAlpha = D3D12_BLEND_ONE;
 		blend.DestBlendAlpha = D3D12_BLEND_ZERO;
@@ -2523,10 +2531,11 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		pass.samples = nSamples;
 		pass.quality = nQuality;
 		pass.encode = encode;
+		pass.additive = bAdditive;
 		hr = pNative->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pass.pipeline ) );
 		if ( FAILED( hr ) )
 		{
-			Warning( "ShaderAPIDX12: native blit PSO failed (0x%08x), format %u samples %u encode %d\n", static_cast<unsigned>( hr ), static_cast<unsigned>( renderFormat ), nSamples, static_cast<int>( pass.encode ) );
+			Warning( "ShaderAPIDX12: native blit PSO failed (0x%08x), format %u samples %u encode %d additive %d\n", static_cast<unsigned>( hr ), static_cast<unsigned>( renderFormat ), nSamples, static_cast<int>( pass.encode ), pass.additive ? 1 : 0 );
 			return false;
 		}
 		pPSO = pass.pipeline.Get();
@@ -2688,13 +2697,13 @@ void CShaderAPIDX12::CopyTextureRegionDX12( ShaderAPITextureHandle_t hSource, Sh
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::CopyRenderTargetToTextureEx( ShaderAPITextureHandle_t destination, int targetID, Rect_t *sourceRect, Rect_t *destinationRect )
 {
-	if ( targetID >= 0 && targetID < static_cast<int>( ARRAYSIZE( m_RenderTargets ) ) )
+	if ( targetID >= 0 && targetID < RenderTargetBindingDX12::kMaxEngineRenderTargets )
 		CopyTextureRegionDX12( m_RenderTargets[targetID], destination, sourceRect, destinationRect );
 }
 
 void CShaderAPIDX12::CopyTextureToRenderTargetEx( int targetID, ShaderAPITextureHandle_t source, Rect_t *sourceRect, Rect_t *destinationRect )
 {
-	if ( targetID >= 0 && targetID < static_cast<int>( ARRAYSIZE( m_RenderTargets ) ) )
+	if ( targetID >= 0 && targetID < RenderTargetBindingDX12::kMaxEngineRenderTargets )
 		CopyTextureRegionDX12( source, m_RenderTargets[targetID], sourceRect, destinationRect );
 }
 

@@ -103,6 +103,7 @@ cbuffer DX12PSEngine : register(b0, space1)
 #define DX12_SHADOW_LIGHT_SPOT 2
 #define DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE 1
 #define DX12_SHADOW_VISIBILITY_UNSHADOWED 2
+#define DX12_VOLUMETRIC_LIGHT_ENABLED 0x1
 cbuffer DX12LightingViewConstantsV1 : register(b0, space2)
 {
     uint4 cShadowView0; // mapGeneration, viewGeneration, filterMode, debugMode
@@ -164,7 +165,7 @@ struct RuntimeShadowLightGpu // 608 bytes, StructuredBuffer at t1026 space2
     float realtimeWeight;
     uint visibilityFlags;
     uint bakedLightIndex;
-    uint reserved0;
+    uint reserved0; // DX12_VOLUMETRIC_LIGHT_ENABLED or zero
 };
 #endif
 #endif

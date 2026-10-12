@@ -82,6 +82,9 @@ static void ApplyLightField( DeferredLight_t *pLight, EditorLightField_t field, 
 	case EDITORLIGHT_SHADOW:
 		pLight->shadow = value.shadow;
 		break;
+	case EDITORLIGHT_VOLUMETRIC:
+		pLight->volumetric = value.volumetric;
+		break;
 	case EDITORLIGHT_COOKIE:
 		Q_strncpy( pLight->cookie, value.cookie, sizeof( pLight->cookie ) );
 		break;
@@ -112,6 +115,7 @@ CLightingEditor::CLightingEditor()
 	m_AddTemplate.outerCone = 45.0f;
 	m_AddTemplate.spot = false;
 	m_AddTemplate.shadow = true;
+	m_AddTemplate.volumetric = false;
 	m_AddTemplate.cookie[0] = 0;
 	m_AddTemplate.id = 0;
 }

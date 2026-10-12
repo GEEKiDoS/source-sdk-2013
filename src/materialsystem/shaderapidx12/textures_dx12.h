@@ -18,7 +18,9 @@ class CShaderAPIDX12;
 
 struct RenderTargetBindingDX12
 {
-	static constexpr int kMaxColorTargets = 4;
+	// Internal binding capacity (D3D12 maximum); engine MRT slots stay at kMaxEngineRenderTargets, the rest are backend G-buffer attachments.
+	static constexpr int kMaxColorTargets = 8;
+	static constexpr int kMaxEngineRenderTargets = 4;
 	ID3D12Resource *colors[kMaxColorTargets]{};
 	D3D12_CPU_DESCRIPTOR_HANDLE rtvs[kMaxColorTargets]{};
 	DXGI_FORMAT colorFormats[kMaxColorTargets]{};

@@ -824,7 +824,9 @@ bool ShadowMap_SunMapValid( uint mapIndex, float3 p, float3 normal )
 }
 // Complete results (visibility, blocker fraction, filter radius) share selection
 // and blending. Invalid CSM never dilutes the static visibility with white.
-float3 ShadowMap_SunResult( ShadowMapReceiver r )
+// invalidVisibility is the visibility of an entry without a valid chart (surfaces pass 1 and cap with baked
+// data; the volumetric pass passes 0). charted reports whether any entry sampled a valid chart.
+float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility, out bool charted )
 {
 	// Validity case table: F/S are first/second CSM validity, C is coverage,
 	// B is blend, T is static (or float3(1,0,0) when static is invalid).
@@ -880,22 +882,29 @@ float3 ShadowMap_SunResult( ShadowMapReceiver r )
 		}
 	}
 	float3 result = 0.0;
+	charted = false;
 	// Runtime map selection keeps the heavy PCSS kernel instantiated just once.
 	[loop] for ( uint entry = 0; entry < entryCount; ++entry )
 	{
 		float weight = weights[entry];
 		if ( weight <= 0.0 ) continue;
 		uint mapIndex = mapIndices[entry];
-		float3 mapResult = float3( 1.0, 0.0, 0.0 );
+		float3 mapResult = float3( invalidVisibility, 0.0, 0.0 );
 		if ( ShadowMap_SunMapValid( mapIndex, r.positionWS, r.planeNormalWS ) )
 		{
 			float2 diagnostics;
 			float visibility = SampleSunPCSS( mapIndex, r.positionWS, r.planeNormalWS, diagnostics );
 			mapResult = float3( visibility, diagnostics );
+			charted = true;
 		}
 		result += weight * mapResult;
 	}
 	return result;
+}
+float3 ShadowMap_SunResult( ShadowMapReceiver r, float invalidVisibility )
+{
+	bool charted;
+	return ShadowMap_SunResultCharted( r, invalidVisibility, charted );
 }
 
 // Port of restir_lights.glsl StandardLightRadiance / GatherSampleStandardLightSSE.
@@ -1039,7 +1048,15 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 			( s.mode == 4 || dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 ) )
 		{
 			sunResult = float3( 1.0, 0.0, 0.0 );
-			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 ) sunResult = ShadowMap_SunResult( r );
+			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )
+			{
+				// Runtime visibility only: the contact ray needs a valid runtime chart and precedes the baked cap.
+				// Detail point receivers have no surface to trace from (their own cut-out quad is the first blocker).
+				bool charted;
+				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted );
+				[branch] if ( charted && sunResult.x > 0.0 && s.mode != 4 )
+					sunResult.x *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, -cSunTravel.xyz, cScreenEyeLength.w );
+			}
 		}
 		d.sunVisibility = min( saturate( sunResult.x ), r.bakedSunVisibility );
 		d.sunDiagnostics = sunResult.yz;
@@ -1139,9 +1156,18 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
 					bakedVisibility = ShadowMap_BakedLocalVisibility( r, light.bakedLightIndex, bakedLookup );
 				float realtimeVisibility = bakedVisibility;
-				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only.
+				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
+				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).
 				[branch] if ( light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 )
-					realtimeVisibility = ShadowMap_LocalPCFChart( light, ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS ) );
+				{
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
+					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
+					[branch] if ( chart.valid && realtimeVisibility > 0.0 && s.mode != 4 )
+					{
+						float3 toLight = light.origin - r.positionWS;
+						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, toLight, length( toLight ) - 0.25 );
+					}
+				}
 				if ( bakedDelta )
 				{
 					diffuseVisibility = ( realtimeVisibility - bakedVisibility ) * light.realtimeWeight;
@@ -1167,6 +1193,13 @@ float3 ShadowMap_DetailDirect( float3 lightingOriginWS, float3 orientationNormal
 	s.mode = 4;
 	ShadowMapDirect d = ShadowMap_GatherDirect( r, s );
 	return d.diffuse;
+}
+// True for the debug modes in which ShadowMap_Debug replaces the lit color (1 cascades, 2 sun visibility, 3 local
+// chart, 5/6 PCSS diagnostics): such color is not a scene reflection and must not become SSR payload.
+bool ShadowMap_DebugReplacesColor()
+{
+	uint mode = cShadowView0.w;
+	return mode == 1 || mode == 2 || mode == 3 || mode == 5 || mode == 6;
 }
 float3 ShadowMap_DebugCascadeColor( uint cascade )
 {

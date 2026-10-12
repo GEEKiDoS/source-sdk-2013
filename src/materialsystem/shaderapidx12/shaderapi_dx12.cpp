@@ -235,8 +235,9 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 			return false;
 		if ( binding.Space == 0 && binding.Type == D3D_SIT_TEXTURE && binding.BindPoint < 16 && binding.BindCount <= 16 - binding.BindPoint )
 			record->nativeSamplerMask |= ( ( 1u << binding.BindCount ) - 1u ) << binding.BindPoint;
-		// Spaces 3 (highres), 4 (ambient probes) and 5 (PBR projected lights) are owned draw ABIs, not material constant blocks.
-		if ( binding.Type != D3D_SIT_CBUFFER || binding.Space == 3 || binding.Space == DX12_PROBE_REGISTER_SPACE || binding.Space == DX12_PBR_REGISTER_SPACE )
+		// Spaces 3 (highres), 4 (ambient probes), 5 (PBR projected lights) and 6 (screen-space view/volumetric blocks) are
+		// owned draw ABIs, not material constant blocks; ValidateLightingShaderDX12 above admitted only their named layouts.
+		if ( binding.Type != D3D_SIT_CBUFFER || binding.Space == 3 || binding.Space == DX12_PROBE_REGISTER_SPACE || binding.Space == DX12_PBR_REGISTER_SPACE || binding.Space == DX12_SCREENSPACE_REGISTER_SPACE )
 			continue;
 		ShaderRecordDX12::NativeCBufferBindingDX12 reflected;
 		reflected.name = binding.Name;
@@ -275,7 +276,11 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	}
 	if ( record->stagePixel )
 	{
-		// One SV_Target is the ordinary scene output; exactly three also write the PBR G-buffer (normal, F0 + roughness).
+		// One SV_Target is the ordinary scene output; exactly six also write the PBR G-buffer (normal, F0 + roughness,
+		// environment contribution + specular distance, SSR response, direct specular). The last three are attached only
+		// while SSR captures (gbuffer_dx12.cpp).
+		// Exactly two is a backend-owned MRT pass (the half-resolution volumetric march: in-scattering + view depth);
+		// an ordinary draw binding such a shader simply discards the unbound second output.
 		UINT targets = 0;
 		for ( UINT i = 0; i < shader.OutputParameters; ++i )
 		{
@@ -284,12 +289,12 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 				return false;
 			targets += output.SystemValueType == D3D_NAME_TARGET;
 		}
-		if ( targets > 1 && targets != 3 )
+		if ( targets > 1 && targets != 2 && targets != 6 )
 		{
-			Warning( "ShaderAPIDX12: native PS declares %u render targets; expected 1 or 3\n", targets );
+			Warning( "ShaderAPIDX12: native PS declares %u render targets; expected 1, 2 or 6\n", targets );
 			return false;
 		}
-		record->gbuffer = targets == 3;
+		record->gbuffer = targets == 6;
 	}
 	record->nativeReflectionReady = true;
 	return true;
@@ -565,6 +570,10 @@ CShaderAPIDX12::CShaderAPIDX12()
 {
 	for ( VMatrix &m : m_Matrices )
 		m.Identity();
+	// Every slot (engine and backend G-buffer attachments) starts unbound; texture handle 0 would otherwise be a bound target.
+	for ( ShaderAPITextureHandle_t &target : m_RenderTargets )
+		target = SHADER_RENDERTARGET_NONE;
+	m_RenderTargets[0] = SHADER_RENDERTARGET_BACKBUFFER;
 	ResetNativeState();
 	g_pShaderAPIDX12 = this;
 }
@@ -575,6 +584,7 @@ CShaderAPIDX12::CShaderAPIDX12()
 CShaderAPIDX12::~CShaderAPIDX12()
 {
 	ShutdownDeviceResources();
+	PurgeScreenSpacePackets();
 	m_DynamicMeshes.PurgeAndDeleteElements();
 	delete m_pFlexMesh;
 	m_pFlexMesh = nullptr;
@@ -1078,6 +1088,12 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	VertexFormat_t format = bindings[0].format;
 	const bool motionActive = !shadowPass && MotionPassActive();
+	// Contact-depth replay (§3): only the original opaque depth writers reach the private depth. Blended/additive and
+	// non-depth-writing draws never contribute opaque depth; every replay draw is dropped while the private target
+	// is unavailable so nothing is duplicated into the real scene.
+	const bool contactReplay = !shadowPass && !motionActive && m_ScreenSpace.contactReplay;
+	if ( contactReplay && ( !m_ContactDepth.replayDraws || m_ActiveSnapshot.translucent || !m_ActiveSnapshot.depthWrite ) )
+		return;
 	VertexLayoutDX12 explicitLayout;
 	// Mesh layouts depend only on (format, stream flags); a small direct-mapped cache covers alternating formats.
 	// The stream-2 declaration follows the flex mesh's own format (28-byte position/wrinkle/normal from GetFlexMesh).
@@ -1433,18 +1449,35 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				Warning( "ShaderAPIDX12: draw target unavailable colorCount=%u depth=%p\n", target.colorCount, target.depth );
 			return;
 		}
-		// PBR G-buffer: only an opaque main-view draw whose native PS declares three SV_Targets gets the extra targets; every
+		// Contact replay: the scene depth is replaced by the private copy (same shape); RTV0 stays bound only so the
+		// raster/A2C configuration matches the ordinary draw, with every colour write masked off in the PSO.
+		if ( contactReplay )
+		{
+			if ( target.depth != m_pDevice->SceneDepth() || target.colorCount != 1 || !m_ContactDepth.resource ||
+			     target.sampleCount != static_cast<int>( m_ContactDepth.samples ) || target.sampleQuality != static_cast<int>( m_ContactDepth.quality ) ||
+			     target.width != static_cast<int>( m_ContactDepth.width ) || target.height != static_cast<int>( m_ContactDepth.height ) )
+				return;
+			target.depth = m_ContactDepth.resource.Get();
+			target.dsv = m_ContactDepth.dsv;
+			target.depthFormat = m_pDevice->SceneDepthFormat();
+		}
+		// PBR G-buffer: only an opaque main-view draw whose native PS declares six SV_Targets gets the extra targets; every
 		// other draw (and every PSO) keeps its single render target. Legacy draws never write them (see gbuffer_dx12.cpp).
-		if ( m_bGBufferPass && psRecord && psRecord->gbuffer && !shadowPass && !motionActive && target.colorCount == 1 &&
+		// Targets 3/4/5 (environment + specular distance, SSR response, direct specular) attach only while the bracket
+		// captures SSR; the contact-depth replay binds no G-buffer target at all. Unbound PS outputs are discarded.
+		if ( m_bGBufferPass && psRecord && psRecord->gbuffer && !shadowPass && !motionActive && !m_ScreenSpace.contactReplay && target.colorCount == 1 &&
 		     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && !m_ActiveSnapshot.translucent )
 		{
-			target.colors[1] = m_pGBufferNormal.Get();
-			target.colors[2] = m_pGBufferSpec.Get();
-			target.rtvs[1] = m_GBufferRtv[0];
-			target.rtvs[2] = m_GBufferRtv[1];
-			target.colorFormats[1] = kGBufferFormats[0];
-			target.colorFormats[2] = kGBufferFormats[1];
-			target.colorCount = 3;
+			const bool ssrPayload = m_ScreenSpace.ssrCapture && m_pGBufferEnvironment;
+			const int gbufferCount = static_cast<int>( ssrPayload ? kGBufferSsrTargets : kGBufferBaseTargets );
+			ID3D12Resource *const gbufferResources[kGBufferSsrTargets] = { m_pGBufferNormal.Get(), m_pGBufferSpec.Get(), m_pGBufferEnvironment.Get(), m_pGBufferResponse.Get(), m_pGBufferSpecular.Get() };
+			for ( int i = 0; i < gbufferCount; ++i )
+			{
+				target.colors[1 + i] = gbufferResources[i];
+				target.rtvs[1 + i] = m_GBufferRtv[i];
+				target.colorFormats[1 + i] = kGBufferFormats[i];
+			}
+			target.colorCount = 1 + gbufferCount;
 			gbufferTargets = true;
 		}
 		m_Pipeline.BindRenderTargets( list, target.colorCount, target.rtvs, target.colors, target.depth ? &target.dsv : nullptr, target.depth, retireFence );
@@ -1542,7 +1575,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	const bool gbufferColorWrite = m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites;
 	const bool gbufferAlphaWrite = m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites;
 	const bool gbufferDepthOnly = !motionActive && target.depth && ( shadowPass || ( !gbufferColorWrite && !gbufferAlphaWrite ) ) && !m_ActiveSnapshot.alphaTest;
-	const bool gbufferStencil = m_bGBufferPass && m_ActiveSnapshot.depthWrite && !gbufferDepthOnly && !shadowPass && !motionActive && !m_bStencilEnabled && !m_ActiveSnapshot.stencil;
+	const bool gbufferStencil = m_bGBufferPass && m_ActiveSnapshot.depthWrite && !gbufferDepthOnly && !shadowPass && !motionActive && !contactReplay && !m_bStencilEnabled && !m_ActiveSnapshot.stencil;
 	PipelineSignatureDX12 signature;
 	memset( &signature, 0, sizeof( signature ) );
 	const bool memoEligible = meshStreams && m_hActiveSnapshotId >= 0;
@@ -1587,6 +1620,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		signature.stencilReadMask = m_nStencilReadMask;
 		signature.stencilWriteMask = m_nStencilWriteMask;
 		signature.gbufferPass = gbufferStencil ? 1u : 0u;
+		signature.contactReplay = contactReplay ? 1u : 0u;
 		signature.alphaToCoverage = m_bAlphaToCoverage;
 		signature.colorWriteOverride = m_bColorWriteOverride;
 		signature.colorWriteValue = m_bColorWriteOverrideValue;
@@ -2306,6 +2340,14 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		m_pDevice->Lighting().RejectUnsupportedLitShader( m_ActiveSnapshot.pixelShaderName.c_str() );
 		return;
 	}
+	// Space 6: ordinary scene draws of a bracket that reads contacts or captures the SSR payload see the bracket's view
+	// block (and, with contacts, the private depth copy); every other draw (shadow, motion, the replay itself, off-scene
+	// targets, brackets with neither effect) keeps the neutral bindings.
+	bindingInput.screenSpaceTable = {};
+	bindingInput.screenSpaceView = bindingInput.volumetricConstants = 0;
+	if ( !shadowPass && !motionActive && !contactReplay && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ) &&
+	     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER && !PrepareScreenSpaceBinding( bindingInput ) )
+		return;
 	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && psRecord && psRecord->lightingAbi, bindingInput ) )
 		return;
 	if ( bindingInput.lightingAbi && psRecord && psRecord->propVisibilityAbi &&
@@ -2604,6 +2646,16 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			key.stencilReadMask = 0;
 			key.stencilWriteMask = kGBufferStencilBit;
 			key.raster = ( key.alphaToCoverage ? 1 : 0 ) | 2 | ( m_ActiveSnapshot.alphaTest ? 4 : 0 );
+		}
+		if ( contactReplay )
+		{
+			// Evaluated after the depthOnly/null-PS rule above: the replay retains exactly the PS the ordinary draw retains and
+			// only masks its colour output. Private stencil is a copy of the scene's; nothing writes it here.
+			key.contactReplay = true;
+			key.gbuffer = key.gbufferPass = false;
+			key.colorCount = 1;
+			key.colorWrites = key.alphaWrites = false;
+			key.stencilWriteMask = 0;
 		}
 		ID3D12PipelineState *pso = nullptr;
 		{

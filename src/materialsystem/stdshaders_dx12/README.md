@@ -530,6 +530,9 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
 | normals | `R16G16_UNORM` | world-space shading normal, `PBR_PackNormal( N )` (octahedral coordinates in [0,1], `pbr_oct.hlsli`) |
 | specular | `R8G8B8A8_UNORM` | `F0.rgb`, roughness in alpha |
 | stencil | scene `D24S8`, bit `0x80` | set on a PBR depth write, cleared by any other depth-writing draw in the pass |
+| environment (SSR brackets only) | `R16G16B16A16_FLOAT` | `E.rgb`, the cubemap term in final scene units; alpha `D`, the specular-luminance-weighted light distance of the direct specular (sun 60000, 0 when it is zero) |
+| response (SSR brackets only) | `R16G16B16A16_FLOAT` | `K.rgb`, what a sampled scene radiance is multiplied by to replace `E`; alpha 1 for a fresh eligible writer |
+| direct specular (SSR brackets only) | `R16G16B16A16_FLOAT` | `S.rgb`, the direct GGX specular (sun, shadowmap locals, projected spots, draw-local lights) in final scene units; `ssr_composite_cs51` subtracts `confidence * o * S` where `o` is the soft `[hitDistance < D]` |
 
 - **A pixel holds PBR data only while stencil bit `0x80` is set.** The backend forces that bit on every depth-writing draw
   inside the pass. Consumers read the stencil plane (`X24_TYPELESS_G8_UINT`, plane 1) as `Texture2D<uint2>` /
@@ -578,3 +581,16 @@ standard black. Bloom also sets `gOutput.y` flag 8, bypassing its explicit mip-1
 the one-mip standard-black texture must never be queried at mip 1. Enabled sampling and composite,
 AgX, LUT, noise and output arithmetic are unchanged. Client demand/consumer gates live in
 `game/client/postprocess_dx12.cpp`; the capture owner must verify their pixel and timing behavior.
+
+## Layered bloom (MagicBloom on the compute pyramid)
+
+`postfx_downsample_cs51` `THRESHOLD 2` builds the first bloom level from the exposed scene with MagicBloom's soft
+threshold per tap, `c * clamp( luma601( c ) - t, 0, 10 )` with `t = mat_postfx_bloom_threshold` (default 1.25; MagicBloom uses 1), and writes the plain exposed level to `u1` for the lens
+flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead of lerping: `up[last] = down[last]`,
+`up[n] = down[n] + tent3x3( up[n + 1] )`, so bloom mip 1 holds every layer; a dropped fine mip (lower
+`mat_postfx_bloom_quality`) passes `p0 = 0` and only carries the sum up. The client divides
+`mat_postfx_bloom_intensity` (bloom exposure, MagicBloom's 100) by the summed layer count and the composite computes
+`bloomT = Uncharted2( bloom * exposure ) / Uncharted2( 11.2 )` (A 0.15, B 0.5, C 0.1, D 0.2, E 0.02, F 0.3), then
+`bloomT = screen( bloomT, dirt * bloomT )`. Lens flare and glare are added to the HDR scene at
+`mat_postfx_lensflare * 0.1` before AgX; the output is `peak * screen( AgX( scene ) / peak, saturate( bloomT ) )`
+ahead of the LUT, dither and HDR scale. Debug view 1 shows `bloomT`.

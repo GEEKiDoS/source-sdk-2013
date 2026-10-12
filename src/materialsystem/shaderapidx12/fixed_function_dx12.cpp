@@ -492,7 +492,9 @@ ShaderRecordDX12 *CreateFixedFunctionShaderDX12( CShaderDeviceDX12 *pDevice, con
 		PixelSource( buf, state, pLinkedInputs );
 	else
 		VertexSource( buf, state );
-	ShaderRecordDX12 *record = CompileNativeShaderRecordDX12( pDevice, buf.String(), bPixel, bPixel ? "ps_5_0" : "vs_5_0" );
+	// The embedded highres/shadow-map receiver declares register spaces (2, 3, 6): fxc accepts "space" only from SM 5.1.
+	const char *pszProfile = bPixel ? ( state.highresSamplerMask ? "ps_5_1" : "ps_5_0" ) : "vs_5_0";
+	ShaderRecordDX12 *record = CompileNativeShaderRecordDX12( pDevice, buf.String(), bPixel, pszProfile );
 	if ( record )
 	{
 		record->lightmapSamplerMask = bPixel ? state.highresSamplerMask : 0;

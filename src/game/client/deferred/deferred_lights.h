@@ -25,6 +25,7 @@ struct DeferredLight_t
 	float outerCone;	// degrees, half-angle (spot)
 	bool spot;
 	bool shadow;
+	bool volumetric;	// §8 opt-in; volume still requires shadow and actual residency
 	char cookie[64];	// texture name; empty = no cookie (spot only)
 	int id;				// unique per map, assigned by the manager
 };

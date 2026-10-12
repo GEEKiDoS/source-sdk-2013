@@ -1,6 +1,9 @@
-// Native SM5.1 bloom downsample (Froyok, after Jimenez 2014): 13 taps read through a black border, scaled by p0.
-// THRESHOLD is his lens flare DownsampleThreshold instead: the result fades in over luminance p0 .. p0 + p1.
-// STATIC: "THRESHOLD" "0..1"
+// Native SM5.1 bloom downsample (Froyok, after Jimenez 2014): 13 taps read through a black border.
+// THRESHOLD 0 scales the result by p0. THRESHOLD 1 is Froyok's lens flare DownsampleThreshold: the result fades in over
+// luminance p0 .. p0 + p1. THRESHOLD 2 is MagicBloom's first bloom level: every tap is the scene exposed by p0 and kept
+// only above the threshold p1 by its Rec.601 luma, c * clamp( luma - p1, 0, 10 ); the plain exposed level goes to gDst2
+// for the lens flare, so one pass feeds both chains.
+// STATIC: "THRESHOLD" "0..2"
 #include "postfx_common.hlsli"
 
 static const float2 kTaps[13] =
@@ -17,6 +20,11 @@ static const float kWeights[13] =
 	0.5 / 9, 0.5 / 9, 0.5 / 9, 0.5 / 9, 0.5 / 9, 0.5 / 9, 0.5 / 9, 0.5 / 9, 0.5 / 9
 };
 
+#if THRESHOLD == 2
+RWTexture2D<float4> gDst2 : register( u1, space0 );
+static const float3 kLuma601 = float3( 0.299, 0.587, 0.114 );
+#endif
+
 [numthreads( 8, 8, 1 )]
 void main( uint3 id : SV_DispatchThreadID )
 {
@@ -25,6 +33,17 @@ void main( uint3 id : SV_DispatchThreadID )
 	float2 uv = DstUv( id.xy );
 	float2 size = float2( srcWidth, srcHeight );
 	float3 c = 0;
+#if THRESHOLD == 2
+	float3 plain = 0;
+	[unroll]
+	for ( int i = 0; i < 13; ++i )
+	{
+		float3 tap = p0 * SampleBorder( gSrc, uv + kTaps[i] * float2( texelX, texelY ), size );
+		plain += kWeights[i] * tap;
+		c += kWeights[i] * tap * clamp( dot( tap, kLuma601 ) - p1, 0.0, 10.0 );
+	}
+	gDst2[id.xy] = float4( plain, 1 );
+#else
 	[unroll]
 	for ( int i = 0; i < 13; ++i )
 		c += kWeights[i] * SampleBorder( gSrc, uv + kTaps[i] * float2( texelX, texelY ), size );
@@ -32,6 +51,7 @@ void main( uint3 id : SV_DispatchThreadID )
 	c *= saturate( ( dot( c, 1.0 ) - p0 ) / p1 );
 #else
 	c *= p0;
+#endif
 #endif
 	gDst[id.xy] = float4( c, 1 );
 }

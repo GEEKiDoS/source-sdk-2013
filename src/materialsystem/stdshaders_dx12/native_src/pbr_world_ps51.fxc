@@ -258,22 +258,45 @@ PBR_PSOut main( DX12_PS_INPUT i )
 
 	// Baked lightmap diffuse; backlight reuses the front value (a lightmap holds no back-facing term).
 	float3 result = s.diffuseColor * s.ao * lightmap * ( ( 1.0 - s.back ) + s.backlightTint * s.back );
+	PBRSpecularSum specularSum = PBR_NoSpecularSum();
 #if PBR_WORLD_HIGHRES
 	// Unknown owners and neutral native pages (hlr.valid == 0) receive no selected direct.
-	ShadowMapDirect direct = PBR_GatherDirect( receiver, s );
+	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
 	result += ( direct.diffuse + direct.specular ) * float( hlr.valid );
+	if ( hlr.valid == 0 ) specularSum = PBR_NoSpecularSum(); // the gather is the first specular contributor
 #endif
-	if ( g_Flags1.x != 0.0 )
-		result += PBR_Environment( EnvmapTexture, EnvmapSampler, sBump, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask );
-	result += PBR_ProjectedSpots( sBump, P, PBR_RECEIVER_WORLD );
+	// SSR payload: the environment term as it reaches the scene (E) and the response a sampled scene radiance must be
+	// multiplied by to replace it (K), both through this pixel's fog transmission, plus the direct GGX specular (S) in
+	// the same units and its luminance-weighted light distance (D). Only an envmapped material in a capturing bracket
+	// writes it; everything else writes E = K = S = D = valid = 0 and keeps its cubemap and highlights.
+	const bool hasEnvmap = g_Flags1.x != 0.0;
+	float3 environment = 0.0, environmentResponse = 0.0;
+	if ( hasEnvmap )
+	{
+		environment = PBR_Environment( EnvmapTexture, EnvmapSampler, sBump, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask, environmentResponse );
+		result += environment;
+	}
+	result += PBR_ProjectedSpots( sBump, P, PBR_RECEIVER_WORLD, specularSum );
 
 	result += emission;
 
 	float3 eyePosition = P + i.toEye;
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
 	float4 color = DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), i.fog );
+	float reflectionValid = 0.0, specularDistance = 0.0;
+	float3 environmentScene = 0.0, reflectionResponse = 0.0, directSpecular = 0.0;
+	[branch] if ( cScreenControl.w != 0 && hasEnvmap )
+	{
+		float transmission = PBR_FogTransmission( PIXELFOGTYPE, fogFactor, i.fog );
+		environmentScene = environment * ( LINEAR_LIGHT_SCALE * transmission );
+		reflectionResponse = environmentResponse * transmission;
+		reflectionValid = 1.0;
+		directSpecular = specularSum.radiance * ( LINEAR_LIGHT_SCALE * transmission );
+		specularDistance = PBR_SpecularDistance( specularSum );
+	}
 #if PBR_WORLD_HIGHRES
 	color = HighresLightmap_Finish( ShadowMap_Debug( receiver, direct, color ) );
+	if ( ShadowMap_DebugReplacesColor() ) reflectionValid = 0.0;
 #endif
-	return PBR_Output( color, sBump );
+	return PBR_Output( color, sBump, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
 }

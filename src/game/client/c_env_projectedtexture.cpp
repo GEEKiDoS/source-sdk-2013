@@ -48,6 +48,7 @@ private:
 	bool	m_bState;
 	float	m_flLightFOV;
 	bool	m_bEnableShadows;
+	bool	m_bVolumetric;
 	bool	m_bLightOnlyTarget;
 	bool	m_bLightWorld;
 	bool	m_bCameraSpace;
@@ -65,6 +66,7 @@ IMPLEMENT_CLIENTCLASS_DT( C_EnvProjectedTexture, DT_EnvProjectedTexture, CEnvPro
 	RecvPropBool(	 RECVINFO( m_bState )			),
 	RecvPropFloat(	 RECVINFO( m_flLightFOV )		),
 	RecvPropBool(	 RECVINFO( m_bEnableShadows )	),
+	RecvPropBool(	 RECVINFO( m_bVolumetric )		),
 	RecvPropBool(	 RECVINFO( m_bLightOnlyTarget ) ),
 	RecvPropBool(	 RECVINFO( m_bLightWorld )		),
 	RecvPropBool(	 RECVINFO( m_bCameraSpace )		),
@@ -220,6 +222,7 @@ void C_EnvProjectedTexture::UpdateLight( bool bForceUpdate )
 	}
 
 	g_pClientShadowMgr->SetFlashlightLightWorld( m_LightHandle, m_bLightWorld );
+	g_pClientShadowMgr->SetVolumetric( m_LightHandle, m_bVolumetric );
 
 	if ( bForceUpdate == false )
 	{

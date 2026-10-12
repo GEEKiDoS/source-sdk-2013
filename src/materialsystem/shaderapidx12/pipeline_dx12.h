@@ -19,12 +19,21 @@
 
 namespace shaderapidx12
 {
+// Register space 6: backend-owned screen-space inputs (ishaderapidx12screenspace.h, native_src/screenspace_view.hlsli).
+// t0 Texture2D<float> / t1 Texture2DMS<float> private contact depth, t2 / t3 final scene depth; b0 DX12ScreenSpaceView (208 B),
+// b1 DX12Volumetric (64 B). No sampler.
+constexpr UINT DX12_SCREENSPACE_REGISTER_SPACE = 6;
+constexpr UINT DX12_SCREENSPACE_TABLE_COUNT = 4;
+constexpr UINT DX12_SCREENSPACE_B_VIEW = 0;
+constexpr UINT DX12_SCREENSPACE_B_VOLUMETRIC = 1;
+
 struct PipelineKeyDX12
 {
 	uint64_t vs = 0, ps = 0, gs = 0, input = 0, vsVariant = 0, psVariant = 0, gsVariant = 0;
 	DXGI_FORMAT color = DXGI_FORMAT_B8G8R8A8_UNORM, depth = DXGI_FORMAT_D24_UNORM_S8_UINT;
 	uint32_t samples = 1, topology = 3, blend = 0, depthState = 0, raster = 0;
-	DXGI_FORMAT colorFormats[4] = {};
+	// Sized like RenderTargetBindingDX12::kMaxColorTargets; D3D12 allows eight simultaneous render targets.
+	DXGI_FORMAT colorFormats[8] = {};
 	uint32_t colorCount = 1, sampleQuality = 0;
 	bool frontCounterClockwise = false, wireframe = false, scissor = false, depthBias = false;
 	int depthBiasValue = 0;
@@ -34,12 +43,13 @@ struct PipelineKeyDX12
 	uint8_t stencilReadMask = 0xff, stencilWriteMask = 0xff;
 	bool separateAlpha = false, depthTest = true, depthWrite = true, culling = true, colorWrites = true, alphaWrites = true, alphaToCoverage = false, stencil = false;
 	bool lightingAbi = false, highresAbi = false;
-	// Render targets 1 and 2 are the backend's PBR G-buffer (full write mask, no blending regardless of the material).
+	// Render targets 1 and up are the backend's PBR G-buffer (full write mask, no blending regardless of the material).
 	bool gbuffer = false;
 	// Depth-writing draw inside the G-buffer pass: forced stencil, a second PSO from the material's usual one.
 	bool gbufferPass = false;
-
-	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi && gbuffer == o.gbuffer && gbufferPass == o.gbufferPass; }
+	// Contact-depth replay (§3): private DSV, RTV0 kept with zero write masks; an ordinary cached PSO must not match.
+	bool contactReplay = false;
+	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi && gbuffer == o.gbuffer && gbufferPass == o.gbufferPass && contactReplay == o.contactReplay; }
 };
 
 // Owned by the recording thread, like the command list it fills: every entry point runs on the current
@@ -103,6 +113,11 @@ public:
 		bool probeAbi = false;
 		DescriptorRangeDX12 probeTable{};
 		D3D12_GPU_VIRTUAL_ADDRESS probeConstants = 0;
+		// Space-6 screen-space inputs, bound on every root. Zero range / zero address = backend-owned neutral
+		// (typed-null table, zero-filled constants).
+		DescriptorRangeDX12 screenSpaceTable{};            // 4 descriptors: t0 Texture2D<float>, t1 Texture2DMS<float>, t2 Texture2D<float>, t3 Texture2DMS<float>
+		D3D12_GPU_VIRTUAL_ADDRESS screenSpaceView = 0;     // b0 space6, DX12ScreenSpaceViewConstants
+		D3D12_GPU_VIRTUAL_ADDRESS volumetricConstants = 0; // b1 space6, DX12VolumetricConstants
 		uint64_t retireFence = 0;
 		// Whether the draw samples vertex textures / runs a geometry stage; unused root parameters may stay stale.
 		bool vertexTextures = true, geometryStage = true;
@@ -111,6 +126,18 @@ public:
 	};
 
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
+
+	// Typed null view matching the space-6 declaration of slot t0..t3 (Texture2D<float> even slots, Texture2DMS<float> odd).
+	static D3D12_SHADER_RESOURCE_VIEW_DESC ScreenSpaceNullSrvDesc( UINT nSlot )
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+		srv.Format = DXGI_FORMAT_R32_FLOAT;
+		srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srv.ViewDimension = ( nSlot & 1 ) ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
+		if ( !( nSlot & 1 ) )
+			srv.Texture2D.MipLevels = 1;
+		return srv;
+	}
 
 	struct StatsDX12
 	{
@@ -278,10 +305,14 @@ private:
 
 	// Largest legal cbuffer; also the read slack kept past every upload page used for root CBVs.
 	static constexpr size_t kConstantBufferMaxBytes = 65536;
-	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR projected-light table.
-	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootPbrSpots = 20, kRootParameterCount = 21;
-	static constexpr UINT kRootLightingView = 21, kRootLightingViewConstants = 22, kRootLightingVisibility = 23, kRootPropDraw = 24, kRootPropTriangles = 25, kRootProbeTable = 26, kRootProbeConstants = 27, kLightingRootParameterCount = 28;
-	static constexpr UINT kRootHighresTable = 28, kRootHighresConstants = 29, kRootHighresFailure = 30, kHighresRootParameterCount = 31;
+	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR projected-light table;
+	// 21 PS space-6 screen-space table, 22/23 PS space-6 b0/b1 root CBVs.
+	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootPbrSpots = 20;
+	static constexpr UINT kRootScreenSpaceTable = 21, kRootScreenSpaceView = 22, kRootVolumetricConstants = 23, kRootParameterCount = 24;
+	static constexpr UINT kRootLightingView = 24, kRootLightingViewConstants = 25, kRootLightingVisibility = 26, kRootPropDraw = 27, kRootPropTriangles = 28, kRootProbeTable = 29, kRootProbeConstants = 30, kLightingRootParameterCount = 31;
+	static constexpr UINT kRootHighresTable = 31, kRootHighresConstants = 32, kRootHighresFailure = 33, kHighresRootParameterCount = 34;
+	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
+	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride );
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
 	CBindingCacheDX12 m_Bindings;
@@ -324,6 +355,10 @@ private:
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundPbrSpots{}; // valid for the bound root only; cleared with every root/heap rebind in PrepareBindings
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundProbeTable{}; // like m_BoundPbrSpots: only probe draws bind the space-4 pair
 	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundProbeConstants = 0;
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundScreenSpaceTable{}; // like m_BoundPbrSpots: space 6 exists on every root
+	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundScreenSpaceView = 0, m_nBoundVolumetricConstants = 0;
+	DescriptorRangeDX12 m_ScreenSpaceNullTable{};
+	uint64_t m_nScreenSpaceNullTableFence = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingViewTable{};
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingVisibilityTable{};
 	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundLightingViewConstants = 0;

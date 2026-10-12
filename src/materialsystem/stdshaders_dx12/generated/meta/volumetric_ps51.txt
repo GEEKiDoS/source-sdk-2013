@@ -1,0 +1,32 @@
+logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
+    member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowViewport type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunRadiance type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunTravel type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisX type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunBasisY type=3 class=1 offset=96 size=16 elements=0 arrayStride=0 legacy=
+    member=cEyePosition type=3 class=1 offset=112 size=16 elements=0 arrayStride=0 legacy=
+    member=cViewForward type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeSplits type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cCascadeBlend type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cShadowDepthRecords type=3 class=1 offset=176 size=80 elements=5 arrayStride=16 legacy=
+    member=cSunWorldToClip type=3 class=2 offset=256 size=256 elements=4 arrayStride=64 legacy=
+    member=cStaticSunWorldToClip type=3 class=2 offset=512 size=64 elements=0 arrayStride=0 legacy=
+    member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
+    member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
+    member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
+  cbuffer=DX12Volumetric space=6 register=b1 size=64 layoutHash=0x1cac700feae11476 engine
+    member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeControl type=19 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeOutputScale type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=

@@ -26,6 +26,14 @@ logical=teeth_bump_shadowmap_ps51 stage=ps source=teeth_bump_shadowmap_ps51.fxc 
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
+    member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenForwardThickness type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=

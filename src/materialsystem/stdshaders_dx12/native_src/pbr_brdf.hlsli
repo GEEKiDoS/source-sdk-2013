@@ -47,6 +47,39 @@ float PBR_Max3( float3 v )
 {
 	return max( v.x, max( v.y, v.z ) );
 }
+float PBR_Luminance( float3 c )
+{
+	return dot( c, float3( 0.2126, 0.7152, 0.0722 ) );
+}
+
+// Direct GGX specular gathered for the SSR occlusion payload: the radiance sum S and the specular-luminance-weighted
+// mean light distance D = weightedDistance / weight (the sun counts as PBR_SUN_DISTANCE; D is 0 while S is zero).
+static const float PBR_SUN_DISTANCE = 60000.0;
+struct PBRSpecularSum
+{
+	float3 radiance;
+	float weightedDistance;
+	float weight;
+};
+PBRSpecularSum PBR_NoSpecularSum()
+{
+	PBRSpecularSum sum;
+	sum.radiance = 0.0;
+	sum.weightedDistance = 0.0;
+	sum.weight = 0.0;
+	return sum;
+}
+void PBR_AddSpecular( inout PBRSpecularSum sum, float3 specular, float lightDistance )
+{
+	float weight = PBR_Luminance( specular );
+	sum.radiance += specular;
+	sum.weightedDistance += weight * lightDistance;
+	sum.weight += weight;
+}
+float PBR_SpecularDistance( PBRSpecularSum sum )
+{
+	return sum.weight > 0.0 ? sum.weightedDistance / sum.weight : 0.0;
+}
 
 // Tangent from position/UV derivatives for meshes without a vertex tangent. Call only under a uniform branch.
 float3 PBR_DerivativeTangent( float3 N, float3 P, float2 uv )
@@ -215,11 +248,19 @@ float3 PBR_Specular( PBRSurface s, float3 L )
 }
 
 // One light: diffuse + specular. burley is chosen by the calling light loop (realtime-only lights use the
-// Burley lobe, terms that must cancel baked data use Lambert), never by material data.
-float3 PBR_Direct( PBRSurface s, float3 L, float3 radiance, float shadow, bool burley )
+// Burley lobe, terms that must cancel baked data use Lambert), never by material data. specular receives the
+// GGX share of the returned sum (same radiance and shadow) for the SSR occlusion payload.
+float3 PBR_DirectSplit( PBRSurface s, float3 L, float3 radiance, float shadow, bool burley, out float3 specular )
 {
 	float3 diffuse = burley ? PBR_DiffuseBurley( s, L ) : PBR_DiffuseLambert( s, L );
-	return ( diffuse + PBR_Specular( s, L ) ) * radiance * shadow;
+	float3 ggx = PBR_Specular( s, L );
+	specular = ggx * radiance * shadow;
+	return ( diffuse + ggx ) * radiance * shadow;
+}
+float3 PBR_Direct( PBRSurface s, float3 L, float3 radiance, float shadow, bool burley )
+{
+	float3 specular;
+	return PBR_DirectSplit( s, L, radiance, shadow, burley, specular );
 }
 
 // Karis EnvBRDFApprox (mobile): scale/bias of F0 for the split-sum environment term.
@@ -233,9 +274,16 @@ float3 PBR_EnvBRDF( float3 F0, float roughness, float NdotV )
 	return F0 * AB.x + AB.y;
 }
 
+// Split-sum response of the environment term for the effective envmap mask: what a reflected radiance is multiplied
+// by before it reaches the scene (tint, mask, material AO, EnvBRDF). Shared by the cube term and the SSR payload.
+float3 PBR_EnvironmentResponse( PBRSurface s, float3 effectiveMask )
+{
+	return g_ReflectionTint.rgb * effectiveMask * s.ao * PBR_EnvBRDF( s.F0, s.roughness, s.NdotV );
+}
+
 // Parallax-corrected cubemap reflection (box rows map world to the unit cube; g_ReflectionTint.w enables),
-// sampled at roughness * (mips - 1). mask is the envmap mask; ao multiplies the result.
-float3 PBR_Environment( TextureCube cube, SamplerState smp, PBRSurface s, float3 P, float3 mask )
+// sampled at roughness * (mips - 1). mask is the envmap mask; response receives PBR_EnvironmentResponse( s, mask ).
+float3 PBR_Environment( TextureCube cube, SamplerState smp, PBRSurface s, float3 P, float3 mask, out float3 response )
 {
 	float3 R = reflect( -s.V, s.N );
 	[branch] if ( g_ReflectionTint.w > 0.0 )
@@ -254,24 +302,55 @@ float3 PBR_Environment( TextureCube cube, SamplerState smp, PBRSurface s, float3
 	uint width, height, mips;
 	cube.GetDimensions( 0, width, height, mips );
 	float3 radiance = cube.SampleLevel( smp, R, s.roughness * ( mips - 1 ) ).rgb;
-	return radiance * ENV_MAP_SCALE * g_ReflectionTint.rgb * mask * s.ao * PBR_EnvBRDF( s.F0, s.roughness, s.NdotV );
+	response = PBR_EnvironmentResponse( s, mask );
+	return radiance * ENV_MAP_SCALE * response;
 }
 
-// Scene colour plus the G-buffer: world-space shading normal (PBR_PackNormal, octahedral [0,1]) and F0.rgb +
-// roughness. The extra targets are discarded by the pipeline outside the G-buffer pass. Validity is stencil bit
-// 0x80, forced on every depth-writing draw in the pass (a PBR writer sets it, anything else clears it).
+// Fraction of this pixel's own radiance that survives its fog (FinalOutput's BlendPixelFog for pixelFogType, then
+// DX12RasterFog's vertex fog when the raster fog state is enabled). The SSR payload stores E and K through it so a
+// screen-space replacement is fogged exactly like the cube term it replaces. Fog color is not part of it.
+float PBR_FogTransmission( int pixelFogType, float fogFactor, float vertexFog )
+{
+	float transmission = 1.0;
+	if ( pixelFogType == PIXEL_FOG_TYPE_RANGE || pixelFogType == PIXEL_FOG_TYPE_RANGE_RADIAL )
+	{
+		float f = saturate( fogFactor );
+		transmission = 1.0 - f * f;
+	}
+	else if ( pixelFogType == PIXEL_FOG_TYPE_HEIGHT )
+		transmission = 1.0 - saturate( fogFactor );
+	if ( cRasterFogColor.w != 0.0 )
+		transmission *= saturate( vertexFog );
+	return transmission;
+}
+
+// Scene colour plus the G-buffer: world-space shading normal (PBR_PackNormal, octahedral [0,1]), F0.rgb + roughness,
+// and the SSR payload: environmentScene is the environment term as it reached the scene (E, final scene units),
+// reflectionResponse what a sampled scene radiance must be multiplied by to replace it (K); reflectionValid is 1 for
+// a fresh eligible writer. directSpecular is the pixel's direct GGX specular in the same final scene units (S) and
+// specularDistance its specular-luminance-weighted light distance (D, target 3 alpha), so a screen-space hit closer
+// than D along the reflection removes S. Targets 3/4/5 are attached only while the bracket captures SSR; every
+// unbound target is discarded by the pipeline. Validity of normal/F0 is stencil bit 0x80, forced on every
+// depth-writing draw in the pass (a PBR writer sets it, anything else clears it).
 struct PBR_PSOut
 {
 	float4 color : SV_Target0;
 	float2 normal : SV_Target1;
 	float4 spec : SV_Target2;
+	float4 environment : SV_Target3;
+	float4 response : SV_Target4;
+	float4 specular : SV_Target5;
 };
-PBR_PSOut PBR_Output( float4 color, PBRSurface s )
+PBR_PSOut PBR_Output( float4 color, PBRSurface s, float3 environmentScene, float3 reflectionResponse, float reflectionValid,
+	float3 directSpecular, float specularDistance )
 {
 	PBR_PSOut o;
 	o.color = color;
 	o.normal = PBR_PackNormal( s.N );
 	o.spec = float4( s.F0, s.roughness );
+	o.environment = float4( environmentScene, specularDistance );
+	o.response = float4( reflectionResponse, reflectionValid );
+	o.specular = float4( directSpecular, 0.0 );
 	return o;
 }
 

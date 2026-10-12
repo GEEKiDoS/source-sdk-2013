@@ -245,6 +245,25 @@ struct DeferredLight_t;
 // Replaces the editor-light set consumed by later receiver views this frame. Count 0 clears it.
 void ShadowMapsDX12_SetDynamicLights( const DeferredLight_t *lights, int count );
 
+//-----------------------------------------------------------------------------
+// Volumetric lighting (screenspace_dx12.cpp owns the CVARs and the backend scope; this file owns light opt-in).
+//-----------------------------------------------------------------------------
+// Map light_environment `_volumetric 1` (parsed once from the BSP entity string at admission through
+// ShadowMapLightDisk::sourceEntity); false on ordinary maps or when the key is absent/0. CVAR overrides live in ClientView.
+bool ShadowMapsDX12_VolumetricSunEnabled();
+// Bracket the enabled main-volume scope (ScreenSpaceDX12_BeginVolumetrics/DrawVolumetrics). Begin pairs live
+// FBEAM_POINT_SPOTLIGHT beams with selected map light_spot sources (32 units, 10 degrees, deterministic greedy) once per
+// outer main view before residency filtering; receiver views inside the scope publish the light opt-in bit and the beams
+// they replace. End clears pairs/suppression. Outside the scope no light carries the bit and every beam draws normally.
+void ShadowMapsDX12_BeginVolumetrics();
+void ShadowMapsDX12_EndVolumetrics();
+// Live beam registry fed by C_Beam::OnDataChanged (insert when marked, remove when the marker clears) and UpdateOnRemove.
+class C_Beam;
+void ShadowMapsDX12_UpdateSpotlightBeam( C_Beam *beam );
+void ShadowMapsDX12_RemoveSpotlightBeam( C_Beam *beam );
+// CViewRenderBeams::DrawBeam skips the stock beam only while the current receiver bracket is a suppressing main view
+// that listed this beam and its live geometry still matches its assigned light.
+bool ShadowMapsDX12_ReplaceSpotlightBeam( C_Beam *beam );
 
 // Builds/refreshes caster depth BEFORE receiver world/decal-list construction, uploads the immutable lighting
 // packet and begins its scope. At r_shadowmap_enable 0 the scope still supplies selected direct/highres lighting.

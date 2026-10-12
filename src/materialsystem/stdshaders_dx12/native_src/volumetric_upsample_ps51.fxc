@@ -1,0 +1,78 @@
+// Native SM5.1 volumetric upsample / composite (plan §10 half-resolution amendment): full-resolution fullscreen pass
+// that gathers the half-resolution march pair written by volumetric_ps51 and adds in-scattering RGB onto the FP16
+// scene (ONE/ONE, RGB write mask), alpha 0. Ordinary root; space 6 supplies the captured main camera and the scene
+// depth at t2/t3, space 0 the march pair:
+//   t0 Texture2D<float4>  half-res in-scattering (cVolumeOutputScale.x already applied)
+//   t1 Texture2D<float>   half-res positive view depth, VOLUME_DEPTH_FAR for a clear-only footprint
+// Per scene sample (SV_SampleIndex under MSAA, pixel centre otherwise) the sample's own camera-forward distance z is
+// reconstructed (clear -> VOLUME_DEPTH_FAR, matching the march) and the 4x4 half-res texels around its half-res
+// position are blended with weight = exp( -0.5 * d^2 ) (gaussian, sigma 1 texel) * exp( -|z - zh| / ( 0.02 z + 1 ) )
+// (depth similarity). A total weight below 1e-4 falls back to the tap whose depth is closest. This both upsamples and
+// removes the per-texel dither of the march; neighbouring taps never bleed a farther surface's fog onto a nearer
+// sample because their depth weight vanishes.
+// Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
+// STATIC: "MSAA" "0..1"
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#include "screenspace_view.hlsli"
+
+Texture2D<float4> g_VolumeScatter : register( t0 );
+Texture2D<float> g_VolumeDepth : register( t1 );
+
+struct PS_INPUT
+{
+	float4 svPos : SV_Position;
+#if MSAA
+	uint sampleIndex : SV_SampleIndex;
+#endif
+};
+
+static const float VOLUME_DEPTH_FAR = 1e30;   // volumetric_ps51's clear-footprint depth
+static const float VOLUME_WEIGHT_EPSILON = 1e-4;
+
+float4 main( PS_INPUT i ) : SV_Target0
+{
+	int2 pixel = int2( floor( i.svPos.xy ) );
+	int2 origin = int2( cScreenViewport.xy );
+	int2 size = int2( cScreenViewport.zw );
+	if ( cVolumeControl.z == 0 || any( pixel < origin ) || any( pixel >= origin + size ) )
+		return float4( 0.0, 0.0, 0.0, 0.0 );
+#if MSAA
+	float2 scenePixel = float2( pixel ) + 0.5 + GetRenderTargetSamplePosition( int( i.sampleIndex ) );
+	float depth = g_ScreenSceneDepthMS.Load( pixel, int( i.sampleIndex ) );
+#else
+	float2 scenePixel = float2( pixel ) + 0.5;
+	float depth = g_ScreenSceneDepth.Load( int3( pixel, 0 ) );
+#endif
+	float z = depth == cScreenDepth.x ? VOLUME_DEPTH_FAR : Screen_ViewDepth( Screen_PixelToWorld( scenePixel, depth ) );
+	float tolerance = 0.02 * z + 1.0;
+
+	// This pixel centre in continuous half-res texel space and the 4x4 texel block around it (clamped at the edges).
+	float2 halfPos = ( float2( pixel - origin ) + 0.5 ) * 0.5;
+	int2 halfMax = ( size + 1 ) / 2 - 1;
+	int2 first = int2( floor( halfPos - 0.5 ) ) - 1;
+	float3 color = float3( 0.0, 0.0, 0.0 );
+	float weightSum = 0.0;
+	float3 nearestColor = float3( 0.0, 0.0, 0.0 );
+	float nearestDifference = VOLUME_DEPTH_FAR;
+	[unroll] for ( int ty = 0; ty < 4; ++ty )
+	{
+		[unroll] for ( int tx = 0; tx < 4; ++tx )
+		{
+			int2 tap = clamp( first + int2( tx, ty ), int2( 0, 0 ), halfMax );
+			float zh = g_VolumeDepth.Load( int3( tap, 0 ) );
+			float3 scatter = g_VolumeScatter.Load( int3( tap, 0 ) ).rgb;
+			float2 d = halfPos - ( float2( tap ) + 0.5 );
+			float difference = abs( z - zh );
+			float weight = exp( -0.5 * dot( d, d ) ) * exp( -difference / tolerance );
+			color += scatter * weight;
+			weightSum += weight;
+			if ( difference < nearestDifference )
+			{
+				nearestDifference = difference;
+				nearestColor = scatter;
+			}
+		}
+	}
+	return float4( weightSum < VOLUME_WEIGHT_EPSILON ? nearestColor : color / weightSum, 0.0 );
+}

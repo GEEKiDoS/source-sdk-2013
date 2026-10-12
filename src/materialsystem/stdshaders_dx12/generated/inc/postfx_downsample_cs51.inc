@@ -9,7 +9,7 @@ class postfx_downsample_cs51_Static_Index
 public:
 	void SetTHRESHOLD( int i )
 	{
-		Assert( i >= 0 && i <= 1 );
+		Assert( i >= 0 && i <= 2 );
 		m_nTHRESHOLD = i;
 #ifdef _DEBUG
 		m_bTHRESHOLD = true;

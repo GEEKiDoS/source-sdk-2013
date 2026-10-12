@@ -13,6 +13,7 @@ namespace shaderapidx12
 class CShaderAPIDX12;
 class CShaderDeviceDX12;
 struct LightingPacketDX12;
+struct LightingViewStateDX12;
 struct ShaderRecordDX12;
 bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility = nullptr, bool *propVisibility = nullptr, bool *pbrSpots = nullptr, bool *probeAbi = nullptr );
 bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage );
@@ -97,9 +98,18 @@ public:
 	void Reclaim();
 	void Execute( LightingPacketDX12 *packet );
 	void Recycle( LightingPacketDX12 *packet );
+	// Volumetric lighting (recording owner, screenspace_volumetric_dx12.cpp). The main view's lighting state is
+	// captured while its scope is current and stays owned by the volume holder past its EndView until
+	// EndVolumetrics; PrepareVolumetricDraw binds that state (or neutral space 2 when no lighting view existed)
+	// with lightingAbi, without receiver/prop visibility. False: no valid capture, or its packet was rejected.
+	void BeginVolumetrics();
+	void CaptureVolumetricView();
+	bool PrepareVolumetricDraw( CPipelineCacheDX12::BindingInputDX12 &input );
+	void EndVolumetrics();
 private:
 	LightingPacketDX12 *Packet( int operation );
 	void Enqueue( LightingPacketDX12 *packet );
+	bool PrepareViewTables( LightingViewStateDX12 &scope, bool receiverVisibility, CPipelineCacheDX12::BindingInputDX12 &input );
 	struct Impl;
 	Impl *m_Impl;
 };

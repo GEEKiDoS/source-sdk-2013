@@ -101,8 +101,14 @@ public:
 
 	virtual void ComputeShadowDepthTextures( const CViewSetup &pView ) = 0;
 
-	// Publishes the main view's projected lights (flashlight, env_projectedtexture) to the DX12 PBR shaders
-	virtual void PublishProjectedLights( const CViewSetup &pView ) = 0;
+	// Publishes the main view's projected lights (flashlight, env_projectedtexture) to the DX12 PBR shaders.
+	// depthRenderedThisView: the caller's main-view && r_flashlightdepthtexture condition under which it ran
+	// ComputeShadowDepthTextures for this view; false publishes every light without a depth slot or volume bit.
+	virtual void PublishProjectedLights( const CViewSetup &pView, bool depthRenderedThisView ) = 0;
+
+	// Volumetric opt-in (DX12 raymarched volume, §8). Only shadowed projected lights with a current depth texture
+	// take effect; false on handle creation. Ordinary player flashlights stay unselected unless their owner calls this.
+	virtual void SetVolumetric( ClientShadowHandle_t handle, bool enabled ) = 0;
 
 };
 

@@ -322,7 +322,7 @@ protected:
 	void			DrawWorld( float waterZAdjust );
 
 	// Draws all opaque/translucent renderables in leaves that were rendered
-	void			DrawOpaqueRenderables( ERenderDepthMode DepthMode );
+	void			DrawOpaqueRenderables( ERenderDepthMode DepthMode, bool bContactDepthReplay = false );
 	void			DrawTranslucentRenderables( bool bInSkybox, bool bShadowDepth );
 
 	// Renders all translucent entities in the render list

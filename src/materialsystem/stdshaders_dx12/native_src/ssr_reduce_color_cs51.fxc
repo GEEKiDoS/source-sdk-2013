@@ -1,0 +1,30 @@
+// Native SM5.1 SSR color mip reduction: one previous mip of the immutable scene copy (t0, SRV of that mip alone)
+// -> the next mean-color mip (u0). Destination size is max( 1, source >> 1 ); on an odd source axis the last bin
+// also consumes the trailing third source texel so no color is dropped. No static combos (index 0).
+#include "ssr_common.hlsli"
+Texture2D<float4> gSourceMip : register( t0, space0 );
+RWTexture2D<float4> gDestinationMip : register( u0, space0 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	uint2 sourceSize = gSSRMip.zw;
+	uint2 destinationSize = max( sourceSize >> 1, uint2( 1, 1 ) );
+	if ( id.x >= destinationSize.x || id.y >= destinationSize.y ) return;
+	uint2 first = id.xy * 2;
+	uint2 last = min( first + 1, sourceSize - 1 );
+	// Last bin of an odd axis: three texels.
+	if ( id.x == destinationSize.x - 1 ) last.x = sourceSize.x - 1;
+	if ( id.y == destinationSize.y - 1 ) last.y = sourceSize.y - 1;
+	float4 sum = 0.0;
+	float count = 0.0;
+	[loop] for ( uint y = first.y; y <= last.y; ++y )
+	{
+		[loop] for ( uint x = first.x; x <= last.x; ++x )
+		{
+			sum += gSourceMip.Load( int3( int( x ), int( y ), 0 ) );
+			count += 1.0;
+		}
+	}
+	gDestinationMip[id.xy] = sum / count;
+}

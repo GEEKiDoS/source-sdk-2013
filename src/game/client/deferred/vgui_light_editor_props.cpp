@@ -106,6 +106,7 @@ void CVGUILightEditor_Properties::BuildRows()
 
 	m_pSpot = AddCheckRow( "prop_spot", "Spot" );
 	m_pShadow = AddCheckRow( "prop_shadow", "Shadow" );
+	m_pVolumetric = AddCheckRow( "prop_volumetric", "Volumetric" );
 
 	m_pCookie = AddTextRow( "prop_cookie", "Cookie" );
 	m_pLabelCookie = assert_cast< Label * >( FindChildByName( "prop_cookie", true ) );
@@ -123,7 +124,7 @@ void CVGUILightEditor_Properties::LayoutRows()
 {
 	int sw, sh;
 	engine->GetScreenSize( sw, sh );
-	SetSize( 280, 292 );
+	SetSize( 280, 316 );
 	SetPos( sw - 292, 48 );
 
 	Label *pLabels[] = {
@@ -134,6 +135,7 @@ void CVGUILightEditor_Properties::LayoutRows()
 		m_pLabelRadius,
 		m_pLabelInner,
 		m_pLabelOuter,
+		NULL,
 		NULL,
 		NULL,
 		m_pLabelCookie,
@@ -148,6 +150,7 @@ void CVGUILightEditor_Properties::LayoutRows()
 		m_pOuter,
 		m_pSpot,
 		m_pShadow,
+		m_pVolumetric,
 		m_pCookie,
 	};
 
@@ -192,6 +195,7 @@ void CVGUILightEditor_Properties::RefreshFromEditor()
 	m_pCookie->SetText( light.cookie );
 	m_pSpot->SetSelected( light.spot );
 	m_pShadow->SetSelected( light.shadow );
+	m_pVolumetric->SetSelected( light.volumetric );
 
 	m_bRefreshing = false;
 }
@@ -281,5 +285,10 @@ void CVGUILightEditor_Properties::OnCheckButtonChecked( Panel *panel )
 	{
 		value.shadow = pCheck->IsSelected();
 		GetLightingEditor()->CommitField( EDITORLIGHT_SHADOW, value );
+	}
+	else if ( panel == m_pVolumetric )
+	{
+		value.volumetric = pCheck->IsSelected();
+		GetLightingEditor()->CommitField( EDITORLIGHT_VOLUMETRIC, value );
 	}
 }

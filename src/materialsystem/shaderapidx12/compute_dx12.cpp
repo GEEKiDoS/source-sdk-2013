@@ -40,8 +40,9 @@ struct ComputeReplayPayloadDX12
 	D3D12_RESOURCE_STATES sceneDepthBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	bool restoreSceneDepth = false;
 	// PBR G-buffer targets moved to gbufferRead for this dispatch and restored to gbufferBefore afterwards.
-	ID3D12Resource *gbuffer[2] = {};
-	D3D12_RESOURCE_STATES gbufferBefore[2] = {}, gbufferRead = D3D12_RESOURCE_STATE_COMMON;
+	static constexpr UINT kGBufferTargets = 5;
+	ID3D12Resource *gbuffer[kGBufferTargets] = {};
+	D3D12_RESOURCE_STATES gbufferBefore[kGBufferTargets] = {}, gbufferRead = D3D12_RESOURCE_STATE_COMMON;
 };
 static_assert( std::is_trivially_copyable<ComputeReplayPayloadDX12>::value, "external command payloads are copied bytewise" );
 
@@ -69,9 +70,9 @@ void ComputeReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device *, const
 		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		pList->ResourceBarrier( 1, &barrier );
 	}
-	D3D12_RESOURCE_BARRIER restore[2]{};
+	D3D12_RESOURCE_BARRIER restore[ComputeReplayPayloadDX12::kGBufferTargets]{};
 	UINT restoreCount = 0;
-	for ( int i = 0; i < 2; ++i )
+	for ( UINT i = 0; i < ComputeReplayPayloadDX12::kGBufferTargets; ++i )
 		if ( payload.gbuffer[i] && payload.gbufferBefore[i] != payload.gbufferRead )
 		{
 			D3D12_RESOURCE_BARRIER &barrier = restore[restoreCount++];
@@ -194,7 +195,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveComputeShader( const char *pszName, int
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: The one compute root signature: CBV b0 space1, SRV t0..t7, UAV u0..u7, s0 point and s1 linear clamp
+// Purpose: The one compute root signature: CBV b0 space1, SRV t0..t15, UAV u0..u7, s0 point and s1 linear clamp
 //-----------------------------------------------------------------------------
 bool CShaderAPIDX12::EnsureComputeRootSignature()
 {
@@ -499,10 +500,13 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 			}
 			return true;
 		}
-		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR )
+		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ||
+		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE ||
+		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR )
 		{
-			const int target = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ? 1 : 0;
-			ID3D12Resource *native = target ? m_pGBufferSpec.Get() : m_pGBufferNormal.Get();
+			const UINT target = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS ? 0 : resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ? 1 :
+				resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT ? 2 : resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE ? 3 : 4;
+			ID3D12Resource *native = GBufferTarget( target );
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
 			srv.Format = kGBufferFormats[target];
 			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;

@@ -82,6 +82,7 @@
 #include "bonetoworldarray.h"
 #include "cmodel.h"
 #include "shadowmaps_dx12.h"
+#include "screenspace_dx12.h"
 
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -755,7 +756,10 @@ public:
 	void ComputeShadowDepthTextures( const CViewSetup &view );
 
 	// Publishes the view's projected lights (flashlight, env_projectedtexture) to the DX12 PBR shaders
-	void PublishProjectedLights( const CViewSetup &view );
+	void PublishProjectedLights( const CViewSetup &view, bool depthRenderedThisView );
+
+	// Volumetric opt-in for a projected light (§8); takes effect only with shadows and a current depth texture
+	void SetVolumetric( ClientShadowHandle_t handle, bool enabled );
 
 	// Frees shadow depth textures for use in subsequent view/frame
 	void FreeShadowDepthTextures();
@@ -827,6 +831,7 @@ private:
 		int						m_nRenderFrame;
 		EHANDLE					m_hTargetEntity;
 		ITexture				*m_pFlashlightDepth = nullptr;	// shadow depth texture of the current main view (ComputeShadowDepthTextures); null when unshadowed
+		bool					m_bVolumetric = false;			// SetVolumetric opt-in; published as DX12_VOLUMETRIC_LIGHT_ENABLED (unshadowed volume when no depth slot)
 	};
 
 private:
@@ -1839,6 +1844,7 @@ ClientShadowHandle_t CClientShadowMgr::CreateProjectedTexture( ClientEntityHandl
 	shadow.m_ClientLeafShadowHandle = ClientLeafSystem()->AddShadow( h, flags );
 	shadow.m_Flags = flags;
 	shadow.m_nRenderFrame = -1;
+	shadow.m_bVolumetric = false;
 	shadow.m_LastOrigin.Init( FLT_MAX, FLT_MAX, FLT_MAX );
 	shadow.m_LastAngles.Init( FLT_MAX, FLT_MAX, FLT_MAX );
 	Assert( ( ( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT ) == 0 ) != 
@@ -4071,9 +4077,11 @@ void CClientShadowMgr::ComputeShadowDepthTextures( const CViewSetup &viewSetup )
 //-----------------------------------------------------------------------------
 // Publishes the main view's projected lights (flashlight, env_projectedtexture) to the DX12 PBR shaders, which evaluate
 // them as ordinary cookie spotlights in their standard pass. Other views reuse this packet: the transforms are world space
-// and the depth textures are rewritten only by the next main view.
+// and the depth textures are rewritten only by the next main view. A depth slot is published only when depthRenderedThisView:
+// ComputeShadowDepthTextures ran for this view, so m_pFlashlightDepth is never a stale pointer. The volumetric bit does not
+// need a depth slot: the volume pass then marches the light unshadowed.
 //-----------------------------------------------------------------------------
-void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup )
+void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup, bool depthRenderedThisView )
 {
 	if ( !ShadowMapsDX12_ProjectedLightsAvailable() )
 		return;
@@ -4117,13 +4125,16 @@ void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup )
 	const float flColorScale = ( g_pMaterialSystemHardwareConfig->GetHDREnabled() ? 0.25f : 2.0f ) * ( bSRGBBlend ? 2.5f : 1.0f );
 	const float flShadowAttenScale = bSRGBBlend ? 0.1f : 1.0f;
 	const int nModelFlag = r_flashlightmodels.GetBool() ? DX12_PBR_LIGHT_MODELS : 0;
+	// Volume opt-in travels in the reserved word only to the screen-space-capable backend; older backends receive zero.
+	const bool bVolumetricCapable = ScreenSpaceDX12_Available();
 
 	DX12ProjectedLightDesc lights[DX12_PBR_MAX_PROJECTED_LIGHTS];
 	for ( int i = 0; i < nActiveCount; ++i )
 	{
 		const ClientShadow_t &shadow = m_Shadows[ pActiveFlashlights[i] ];
 		const FlashlightState_t &state = shadowmgr->GetFlashlightState( shadow.m_ShadowHandle );
-		ITexture *pDepth = state.m_bEnableShadows ? shadow.m_pFlashlightDepth : NULL;
+		// Depth is only current when this view actually ran ComputeShadowDepthTextures (never last frame's pointer).
+		ITexture *pDepth = ( depthRenderedThisView && state.m_bEnableShadows ) ? shadow.m_pFlashlightDepth : NULL;
 
 		DX12ProjectedLightDesc &light = lights[i];
 		memcpy( light.worldToTexture, shadow.m_WorldToShadow.Base(), sizeof( light.worldToTexture ) );
@@ -4140,7 +4151,7 @@ void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup )
 		light.cookieSlot = i;
 		light.depthSlot = pDepth ? i : -1;
 		light.flags = ( ( shadow.m_Flags & SHADOW_FLAGS_LIGHT_WORLD ) ? DX12_PBR_LIGHT_WORLD : 0 ) | nModelFlag;
-		light.reserved = 0;
+		light.reserved = ( shadow.m_bVolumetric && bVolumetricCapable ) ? DX12_VOLUMETRIC_LIGHT_ENABLED : 0;
 
 		// An unshadowed slot keeps its previous depth texture bound; the shader never samples it (depthSlot -1).
 		pPbrLights->FindVar( s_pPbrCookieVars[i], &bFound, false )->SetTextureValue( state.m_pSpotlightTexture );
@@ -4350,6 +4361,17 @@ void CClientShadowMgr::SetFlashlightLightWorld( ClientShadowHandle_t shadowHandl
 	{
 		shadow.m_Flags &= ~SHADOW_FLAGS_LIGHT_WORLD;
 	}
+}
+
+void CClientShadowMgr::SetVolumetric( ClientShadowHandle_t handle, bool enabled )
+{
+	Assert( m_Shadows.IsValidIndex( handle ) );
+
+	ClientShadow_t &shadow = m_Shadows[ handle ];
+	if( ( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT ) == 0 )
+		return;
+
+	shadow.m_bVolumetric = enabled;
 }
 
 

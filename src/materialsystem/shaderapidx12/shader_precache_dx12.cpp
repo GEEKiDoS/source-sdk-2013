@@ -201,6 +201,73 @@ static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D1
 	return true;
 }
 
+// Space 6 (screen-space effects, pixel stage): cbuffer DX12ScreenSpaceView b0 (208 B, 7 members), cbuffer DX12Volumetric b1
+// (64 B, 4 members), g_ScreenContactDepth t0 / g_ScreenSceneDepth t2 (Texture2D<float>) and g_ScreenContactDepthMS t1 /
+// g_ScreenSceneDepthMS t3 (Texture2DMS<float>). Unknown space-6 resources are rejected. screenSeen collects one bit per name.
+static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned &screenSeen )
+{
+	struct Block
+	{
+		const char *name;
+		UINT reg, size, members;
+		const char *memberNames[7];
+		UINT memberSizes[7];
+	};
+	static const Block blocks[] = {
+		{ "DX12ScreenSpaceView", DX12_SCREENSPACE_B_VIEW, 208, 7,
+		  { "cScreenWorldToClip", "cScreenClipToWorld", "cScreenEyeLength", "cScreenForwardThickness", "cScreenViewport", "cScreenControl", "cScreenDepth" },
+		  { 64, 64, 16, 16, 16, 16, 16 } },
+		{ "DX12Volumetric", DX12_SCREENSPACE_B_VOLUMETRIC, 64, 4,
+		  { "cVolumeMedium", "cVolumeSunMedium", "cVolumeControl", "cVolumeOutputScale" },
+		  { 16, 16, 16, 16 } },
+	};
+	struct Texture
+	{
+		const char *name;
+		UINT reg;
+		D3D_SRV_DIMENSION dimension;
+	};
+	static const Texture textures[] = {
+		{ "g_ScreenContactDepth", 0, D3D_SRV_DIMENSION_TEXTURE2D },
+		{ "g_ScreenContactDepthMS", 1, D3D_SRV_DIMENSION_TEXTURE2DMS },
+		{ "g_ScreenSceneDepth", 2, D3D_SRV_DIMENSION_TEXTURE2D },
+		{ "g_ScreenSceneDepthMS", 3, D3D_SRV_DIMENSION_TEXTURE2DMS },
+	};
+	unsigned bit = 0;
+	bool valid = false;
+	for ( unsigned i = 0; i < ARRAYSIZE( blocks ); ++i )
+	{
+		const Block &block = blocks[i];
+		if ( V_strcmp( binding.Name, block.name ) )
+			continue;
+		bit = 1u << i;
+		auto *buffer = reflection->GetConstantBufferByName( binding.Name );
+		D3D12_SHADER_BUFFER_DESC bd{};
+		valid = binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == block.reg && binding.BindCount == 1 &&
+		        buffer && SUCCEEDED( buffer->GetDesc( &bd ) ) && bd.Type == D3D_CT_CBUFFER && bd.Size == block.size && bd.Variables == block.members;
+		for ( UINT member = 0, offset = 0; valid && member < block.members; offset += block.memberSizes[member], ++member )
+		{
+			auto *variable = buffer->GetVariableByIndex( member );
+			D3D12_SHADER_VARIABLE_DESC vd{};
+			valid = variable && SUCCEEDED( variable->GetDesc( &vd ) ) && vd.Name && !V_strcmp( vd.Name, block.memberNames[member] ) &&
+			        vd.StartOffset == offset && vd.Size == block.memberSizes[member];
+		}
+	}
+	for ( unsigned i = 0; !bit && i < ARRAYSIZE( textures ); ++i )
+	{
+		const Texture &texture = textures[i];
+		if ( V_strcmp( binding.Name, texture.name ) )
+			continue;
+		bit = 4u << i;
+		valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == texture.dimension && binding.ReturnType == D3D_RETURN_TYPE_FLOAT &&
+		        binding.BindPoint == texture.reg && binding.BindCount == 1 && !( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS );
+	}
+	if ( !valid || ( screenSeen & bit ) )
+		return false;
+	screenSeen |= bit;
+	return true;
+}
+
 bool RequiresStaticPropReceiverShaderDX12( const char *logical )
 {
 	static const char *const models[] = {
@@ -234,7 +301,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 	if ( !ValidateHighresShaderResourcesDX12( reflection.Get(), desc, pixelStage, nullptr, error ) )
 		return false;
 	bool marker = false, space2 = false;
-	unsigned seen = 0, pbrSeen = 0, probeSeen = 0;
+	unsigned seen = 0, pbrSeen = 0, probeSeen = 0, screenSeen = 0;
 	const bool pixel = pixelStage && D3D12_SHVER_GET_TYPE( desc.Version ) == D3D12_SHVER_PIXEL_SHADER;
 	for ( UINT i = 0; i < desc.BoundResources; ++i )
 	{
@@ -243,6 +310,17 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		{
 			error = "lighting resource binding reflection failed";
 			return false;
+		}
+		if ( binding.Space == DX12_SCREENSPACE_REGISTER_SPACE )
+		{
+			// Backend-owned screen-space inputs (pixel stage): the view/volume blocks and the four depth planes only.
+			// They never count as material data and never select a root signature by themselves.
+			if ( !pixel || !ValidateScreenSpaceBinding( reflection.Get(), binding, screenSeen ) )
+			{
+				error = CUtlString( "screen-space (space 6) resource binding/layout mismatch: " ) + binding.Name;
+				return false;
+			}
+			continue;
 		}
 		if ( binding.Space == DX12_PBR_REGISTER_SPACE || binding.Space == DX12_PROBE_REGISTER_SPACE )
 		{
@@ -483,7 +561,8 @@ static bool ReflectNative( const VcsPayload &payload, VcsStage stage, const char
 					error = "compute SRV/UAV/sampler is outside space 0";
 					return false;
 				}
-				const UINT nMaxSlots = binding.Type == D3D_SIT_SAMPLER ? 2u : 8u;
+				const bool bSrv = binding.Type == D3D_SIT_TEXTURE || binding.Type == D3D_SIT_TBUFFER || binding.Type == D3D_SIT_STRUCTURED || binding.Type == D3D_SIT_BYTEADDRESS;
+				const UINT nMaxSlots = binding.Type == D3D_SIT_SAMPLER ? 2u : bSrv ? UINT( SHADERAPIDX12_COMPUTE_MAX_SRVS ) : UINT( SHADERAPIDX12_COMPUTE_MAX_UAVS );
 				if ( binding.BindPoint >= nMaxSlots || !binding.BindCount || binding.BindCount > nMaxSlots - binding.BindPoint )
 				{
 					error = "compute resource exceeds root-signature slot range";

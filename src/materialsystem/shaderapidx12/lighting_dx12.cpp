@@ -1224,6 +1224,19 @@ struct LightingPacketDX12 final : IRefCounted
 	void Replay() { owner->Execute( this ); }
 };
 
+// One lighting view scope: its packet reference and the fence-scoped descriptor table built from it.
+struct LightingViewStateDX12
+{
+	LightingPacketDX12 *packet = nullptr;
+	uint64_t fence = 0, heap = 0;
+	DescriptorRangeDX12 table{};
+	D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
+	ID3D12Resource *structured[3]{};
+	uint64_t structuredOffsets[3]{};
+	bool highresScope = false;
+};
+
 struct CLightingDX12::Impl
 {
 	CShaderDeviceDX12 *device = nullptr;
@@ -1344,18 +1357,29 @@ struct CLightingDX12::Impl
 	Microsoft::WRL::ComPtr<ID3D12Resource> neutralPropTriangles;
 	uint64 neutralPropFence = 0;
 	D3D12_GPU_VIRTUAL_ADDRESS neutralPropConstants = 0;
-	struct ViewState
-	{
-		LightingPacketDX12 *packet = nullptr;
-		uint64_t fence = 0, heap = 0;
-		DescriptorRangeDX12 table{};
-		D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
-		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
-		ID3D12Resource *structured[3]{};
-		uint64_t structuredOffsets[3]{};
-		bool highresScope = false;
-	};
+	using ViewState = LightingViewStateDX12;
 	CUtlVector<ViewState *> views, freeViews;
+	// Volumetric handoff (recording owner): the captured main view's state outlives its EndScope until the final
+	// volume draw. `pending` is still on the stack (EndScope transfers it to `held` instead of pooling it); `held`
+	// is detached and owns its packet reference. Neither is ever a pooled pointer.
+	struct VolumetricCapture
+	{
+		bool scope = false, valid = false;
+		ViewState *pending = nullptr, *held = nullptr;
+	} volume;
+	void ReleaseVolumetricView()
+	{
+		volume.pending = nullptr; // its EndScope releases it as usual
+		volume.valid = false;
+		if ( ViewState *held = volume.held )
+		{
+			volume.held = nullptr;
+			held->packet->Release();
+			held->packet = nullptr;
+			held->nullTable.Reset();
+			freeViews.AddToTail( held );
+		}
+	}
 	ViewState neutral;
 	LightingPacketDX12 neutralPacket;
 	struct PassState
@@ -1552,6 +1576,8 @@ void CLightingDX12::Shutdown()
 	for ( auto *scope : s.propScopes ) scope->Release();
 	s.propScopes.RemoveAll(); s.propDraws.clear(); s.neutralPropTriangles.Reset();
 	s.neutralPropFence = 0; s.neutralPropConstants = 0;
+	s.ReleaseVolumetricView();
+	s.volume.scope = false;
 	while ( s.views.Count() )
 	{
 		Impl::ViewState *view = s.views.Tail();
@@ -2127,7 +2153,8 @@ void CLightingDX12::BeginProjectedLights( const DX12ProjectedLightPacket &packet
 	bool valid = packet.count <= DX12_PBR_MAX_PROJECTED_LIGHTS && ( !packet.count || packet.lights );
 	for ( uint32 i = 0; valid && i < packet.count; ++i )
 		valid = packet.lights[i].cookieSlot >= 0 && packet.lights[i].cookieSlot < DX12_PBR_MAX_PROJECTED_LIGHTS &&
-			packet.lights[i].depthSlot >= -1 && packet.lights[i].depthSlot < DX12_PBR_MAX_PROJECTED_LIGHTS;
+			packet.lights[i].depthSlot >= -1 && packet.lights[i].depthSlot < DX12_PBR_MAX_PROJECTED_LIGHTS &&
+			!( packet.lights[i].reserved & ~DX12_VOLUMETRIC_LIGHT_ENABLED );
 	if ( valid ) queued->projected.CopyArray( packet.lights, int( packet.count ) );
 	else Warning( "ShaderAPIDX12: invalid projected-light packet ignored\n" );
 	Enqueue( queued );
@@ -2263,7 +2290,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			const bool bakedAvailable = ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
 			if ( light.type != DX12_SHADOW_LIGHT_POINT && light.type != DX12_SHADOW_LIGHT_SPOT || ( light.faceCount != 1 && light.faceCount != 6 ) || light.type == DX12_SHADOW_LIGHT_POINT && light.faceCount != 6 || !ShadowMap_IsFiniteFloat( light.shadowNear ) || !ShadowMap_IsFiniteFloat( light.shadowFar ) || light.shadowNear <= 0 || light.shadowFar <= light.shadowNear ) { failure = kPacketError; break; }
 			if ( !ShadowMap_IsFiniteFloat( light.realtimeWeight ) || light.realtimeWeight < 0 || light.realtimeWeight > 1 ||
-				light.visibilityFlags & ~( DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE | DX12_SHADOW_VISIBILITY_UNSHADOWED ) || light.reserved0 ||
+				light.visibilityFlags & ~( DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE | DX12_SHADOW_VISIBILITY_UNSHADOWED ) || light.reserved0 & ~DX12_VOLUMETRIC_LIGHT_ENABLED ||
 				( !bakedAvailable && light.bakedLightIndex && light.bakedLightIndex != 0xffffffffu ) ||
 				( unshadowed && light.realtimeWeight != 0 && !lightUnshadowed ) ) { failure = kPacketError; break; }
 			const float *lightFloats = light.origin;
@@ -2342,10 +2369,19 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		const uint32 view = scope->packet->view.viewGeneration;
 		if ( scope->highresScope ) s.device->Highres().EndView();
 		s.views.RemoveMultipleFromTail( 1 );
-		scope->packet->Release();
-		scope->packet = nullptr;
-		scope->nullTable.Reset();
-		s.freeViews.AddToTail( scope );
+		if ( scope == s.volume.pending )
+		{
+			// The volume holder now owns this state and its packet reference until the final volume draw.
+			s.volume.pending = nullptr;
+			s.volume.held = scope;
+		}
+		else
+		{
+			scope->packet->Release();
+			scope->packet = nullptr;
+			scope->nullTable.Reset();
+			s.freeViews.AddToTail( scope );
+		}
 		s.api->m_Pipeline.InvalidateGraphicsBindings();
 		s.Status( map, view, DX12_LIGHTING_STATUS_READY );
 		{
@@ -3112,21 +3148,16 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	++s.propMapped;
 	return finish(DX12_PROP_VISIBILITY_MAPPED);
 }
-bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input )
+// Space-2 tables, view constants and structured buffers of one view state, rebuilt per recording fence / heap
+// generation. receiverVisibility adds the highres receiver-visibility descriptors, which exist only inside that
+// view's highres scope; the volume draw passes false (its state may be drawn after the scope ended).
+bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiverVisibility, CPipelineCacheDX12::BindingInputDX12 &input )
 {
 	Impl &s = *m_Impl;
-	input.lightingAbi = lightingAbi;
-	if ( !lightingAbi ) return true;
-	Impl::ViewState &scope = s.views.Count() ? *s.views.Tail() : s.neutral;
-	if ( !s.views.Count() && !scope.nullTable )
-	{
-		if ( !LightingNullTable( s.device->NativeDevice(), scope.nullTable ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
-	}
 	const DX12LightingViewPacket &view = scope.packet->view;
-	if ( s.views.Count() && s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
 	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
 	const uint64_t fence = s.device->NextFenceValue();
-	if ( !pipeline.ReserveResourceDescriptors( DX12_LIGHTING_RESOURCE_TABLE_COUNT + 1 + 8 + DX12_PBR_TABLE_COUNT + DX12_PROBE_TABLE_COUNT + 32 + 16, fence ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+	if ( !pipeline.ReserveResourceDescriptors( DX12_LIGHTING_RESOURCE_TABLE_COUNT + 1 + 8 + DX12_PBR_TABLE_COUNT + DX12_PROBE_TABLE_COUNT + DX12_SCREENSPACE_TABLE_COUNT + 32 + 16, fence ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 	const uint64_t heapGeneration = pipeline.ResourceHeapGeneration();
 	ID3D12Device *device = s.device->NativeDevice();
 	if ( !s.neutralPropTriangles )
@@ -3180,14 +3211,33 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_UNKNOWN; srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; srv.Buffer.FirstElement = scope.structuredOffsets[i] / sizes[i]; srv.Buffer.NumElements = MAX( 1u, counts[i] ); srv.Buffer.StructureByteStride = sizes[i];
 			device->CreateShaderResourceView( scope.structured[i], &srv, Offset( scope.table.cpu, DX12_LIGHTING_T_LIGHTS + i, stride ) );
 		}
-		if ( s.highresMap && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		if ( receiverVisibility && s.highresMap && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 		scope.fence = fence; scope.heap = heapGeneration;
 	}
 	// Returning to a parent whose depth was used in an intervening pass requires transitions, but not descriptor copies.
 	for ( ShadowTargetDX12 *target : scope.packet->leases ) if ( target && target->state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ) s.Use( target, true );
 	input.lightingViewTable = scope.table;
 	input.lightingViewConstants = scope.constants;
+	return true;
+}
+bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input )
+{
+	Impl &s = *m_Impl;
+	input.lightingAbi = lightingAbi;
+	if ( !lightingAbi ) return true;
+	Impl::ViewState &scope = s.views.Count() ? *s.views.Tail() : s.neutral;
+	if ( !s.views.Count() && !scope.nullTable )
+	{
+		if ( !LightingNullTable( s.device->NativeDevice(), scope.nullTable ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+	}
+	const DX12LightingViewPacket &view = scope.packet->view;
+	if ( s.views.Count() && s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
+	if ( !PrepareViewTables( scope, true, input ) ) return false;
 	if ( s.highresMap ) return !s.device->Highres().Rejected();
+	ID3D12Device *device = s.device->NativeDevice();
+	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
+	const uint64_t fence = s.device->NextFenceValue();
+	const uint64_t heapGeneration = pipeline.ResourceHeapGeneration();
 	if ( !s.currentReceiverPage )
 	{
 		if ( !s.whiteReceiverPage )
@@ -3222,8 +3272,8 @@ bool CLightingDX12::PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input
 	Impl::ProjectedLights &p = s.projected;
 	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
 	const uint64_t fence = s.device->NextFenceValue();
-	// The table, a highres table (8) and the ordinary per-draw tables (32 + 16) allocated after it must share one heap generation.
-	if ( !pipeline.ReserveResourceDescriptors( DX12_PBR_TABLE_COUNT + 8 + 32 + 16, fence ) ) return false;
+	// The table, a highres table (8), the neutral space-6 table (4) and the ordinary per-draw tables (32 + 16) allocated after it must share one heap generation.
+	if ( !pipeline.ReserveResourceDescriptors( DX12_PBR_TABLE_COUNT + 8 + DX12_SCREENSPACE_TABLE_COUNT + 32 + 16, fence ) ) return false;
 	if ( p.fence != fence || p.table.generation != pipeline.ResourceHeapGeneration() || p.textureEpoch != s.api->m_nTextureStateEpoch )
 	{
 		if ( p.bufferFence != fence )
@@ -3273,5 +3323,45 @@ bool CLightingDX12::PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input
 	}
 	input.pbrSpotsTable = p.table;
 	return true;
+}
+// ---- Volumetric lighting handoff (recording owner) ----
+void CLightingDX12::BeginVolumetrics()
+{
+	Impl &s = *m_Impl;
+	s.ReleaseVolumetricView();
+	s.volume.scope = true;
+}
+void CLightingDX12::CaptureVolumetricView()
+{
+	Impl &s = *m_Impl;
+	if ( !s.volume.scope ) return;
+	s.ReleaseVolumetricView();
+	s.volume.valid = true;
+	// No lighting view (no map snapshot / shadow maps off): the volume draws projected lights over neutral space 2.
+	if ( s.views.Count() ) s.volume.pending = s.views.Tail();
+}
+bool CLightingDX12::PrepareVolumetricDraw( CPipelineCacheDX12::BindingInputDX12 &input )
+{
+	Impl &s = *m_Impl;
+	if ( !s.volume.scope || !s.volume.valid || !s.device || !s.api ) return false;
+	input.lightingAbi = true;
+	input.lightingVisibilityRequired = false;
+	input.lightingVisibilityTable = {};
+	Impl::ViewState *captured = s.volume.held ? s.volume.held : s.volume.pending;
+	if ( !captured )
+	{
+		if ( !s.neutral.nullTable && !LightingNullTable( s.device->NativeDevice(), s.neutral.nullTable ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		return PrepareViewTables( s.neutral, false, input );
+	}
+	// A rejected or unloaded packet skips the draw; neutral tables never stand in for it.
+	const DX12LightingViewPacket &view = captured->packet->view;
+	if ( view.mapGeneration != s.activeMap || s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
+	return PrepareViewTables( *captured, false, input );
+}
+void CLightingDX12::EndVolumetrics()
+{
+	Impl &s = *m_Impl;
+	s.ReleaseVolumetricView();
+	s.volume.scope = false;
 }
 } // namespace shaderapidx12

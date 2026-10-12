@@ -690,6 +690,80 @@ void validateProbePbrResources(ID3D12ShaderReflection *reflection, const D3D12_S
 	}
 	if (probeSeen && !(probeSeen & 1)) throw std::runtime_error("Space-4 resources require DX12ProbeConstantsV1: " + logical);
 }
+// Space 6 is backend-owned and pixel-stage only: cbuffer DX12ScreenSpaceView b0 (208 bytes) and DX12Volumetric b1
+// (64 bytes), byte-identical to ishaderapidx12screenspace.h, plus the four depth planes g_ScreenContactDepth t0
+// (Texture2D<float>), g_ScreenContactDepthMS t1 (Texture2DMS<float>), g_ScreenSceneDepth t2, g_ScreenSceneDepthMS t3.
+// Reflection contains only retained resources, so any subset may appear, but every retained binding must match and
+// nothing else may live in the space.
+constexpr unsigned kScreenSpaceRegisterSpace = 6;
+struct ScreenSpaceMember { const char *name; unsigned offset, size; };
+struct ScreenSpaceLayout { const char *name; unsigned shaderRegister, byteSize, memberCount; const ScreenSpaceMember *members; };
+const ScreenSpaceMember kScreenSpaceViewMembers[] = {
+	{"cScreenWorldToClip", 0, 64}, {"cScreenClipToWorld", 64, 64}, {"cScreenEyeLength", 128, 16},
+	{"cScreenForwardThickness", 144, 16}, {"cScreenViewport", 160, 16}, {"cScreenControl", 176, 16}, {"cScreenDepth", 192, 16},
+};
+const ScreenSpaceMember kVolumetricMembers[] = {
+	{"cVolumeMedium", 0, 16}, {"cVolumeSunMedium", 16, 16}, {"cVolumeControl", 32, 16}, {"cVolumeOutputScale", 48, 16},
+};
+const ScreenSpaceLayout kScreenSpaceLayouts[] = {
+	{"DX12ScreenSpaceView", 0, 208, 7, kScreenSpaceViewMembers},
+	{"DX12Volumetric", 1, 64, 4, kVolumetricMembers},
+};
+const ScreenSpaceLayout *screenSpaceLayout(const std::string &name) {
+	for (const auto &layout : kScreenSpaceLayouts)
+		if (name == layout.name) return &layout;
+	return nullptr;
+}
+void validateScreenSpaceBlock(const Block &b) {
+	const auto *layout = screenSpaceLayout(b.name);
+	if (!layout || b.stage != dx12native::kStagePixel || b.reg != layout->shaderRegister || b.space != kScreenSpaceRegisterSpace ||
+	    b.size != layout->byteSize || b.members.size() != layout->memberCount)
+		throw std::runtime_error("Screen-space cbuffer mismatch: " + b.name);
+	for (size_t i = 0; i < b.members.size(); ++i) {
+		const auto &m = b.members[i];
+		const auto &expected = layout->members[i];
+		if (m.name != expected.name || m.offset != expected.offset || m.size != expected.size)
+			throw std::runtime_error("Screen-space member mismatch: " + b.name + "." + m.name);
+	}
+}
+void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
+	static const char *const depthNames[4] = {"g_ScreenContactDepth", "g_ScreenContactDepthMS", "g_ScreenSceneDepth", "g_ScreenSceneDepthMS"};
+	unsigned seen = 0;
+	for (unsigned i = 0; i < desc.BoundResources; ++i) {
+		D3D12_SHADER_INPUT_BIND_DESC b{};
+		if (FAILED(reflection->GetResourceBindingDesc(i, &b)) || !b.Name) throw std::runtime_error("Screen-space binding reflection failed");
+		const auto *layout = screenSpaceLayout(b.Name);
+		if (b.Space != kScreenSpaceRegisterSpace && !layout) continue;
+		if (stage != VcsStage::Pixel)
+			throw std::runtime_error("Space-6 resource outside pixel stage: " + logical + "." + b.Name);
+		bool valid = b.Space == kScreenSpaceRegisterSpace && b.BindCount == 1;
+		unsigned slot = 0;
+		if (b.Type == D3D_SIT_CBUFFER) {
+			valid = valid && layout && b.BindPoint == layout->shaderRegister;
+			auto *buffer = reflection->GetConstantBufferByName(b.Name);
+			D3D12_SHADER_BUFFER_DESC bd{};
+			valid = valid && buffer && SUCCEEDED(buffer->GetDesc(&bd)) && bd.Type == D3D_CT_CBUFFER && bd.Name;
+			if (valid) validateScreenSpaceBlock(reflectBlock(reflection, buffer, bd, b, dx12native::kStagePixel));
+			slot = valid ? 4 + layout->shaderRegister : 0;
+		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 4 && !strcmp(b.Name, depthNames[b.BindPoint])) {
+			const bool multisampled = (b.BindPoint & 1) != 0;
+			valid = valid && b.ReturnType == D3D_RETURN_TYPE_FLOAT && !(b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) &&
+				b.Dimension == (multisampled ? D3D_SRV_DIMENSION_TEXTURE2DMS : D3D_SRV_DIMENSION_TEXTURE2D);
+			slot = b.BindPoint;
+		} else valid = false;
+		if (!valid || (seen & (1u << slot))) throw std::runtime_error("Space-6 resource contract mismatch: " + logical + "." + b.Name);
+		seen |= 1u << slot;
+	}
+}
+// Flattens an authored header for the include-handler-free fixed-function compile: its #include lines are dropped
+// because the embed already carries every header it names, in order.
+std::string stripIncludes(const std::string &text) {
+	std::istringstream lines(text); std::string line, out;
+	while (std::getline(lines, line)) {
+		if (trim(line).rfind("#include", 0) != 0) out += line + '\n';
+	}
+	return out;
+}
 void validateDepthRestoreBlock(const Block &b, const Shader &shader, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
     const bool restore = shader.profile == "native" &&
         ((shader.stage == "vs" && shader.logical == "shadow_depth_restore_vs51") ||
@@ -753,6 +827,12 @@ void annotate(Block &b, const std::map<std::string, std::string> &tags) {
     // Space 4 ambient-probe block (pixel stage): exact layout, backend-owned, never a material or @legacy block.
     if (probeLayout(b.name) || b.space == DX12_PROBE_REGISTER_SPACE) {
         validateProbeBlock(b);
+        b.engine = true;
+        return;
+    }
+    // Space 6 screen-space view / volumetric blocks (pixel stage): exact layout, backend-owned.
+    if (screenSpaceLayout(b.name) || b.space == kScreenSpaceRegisterSpace) {
+        validateScreenSpaceBlock(b);
         b.engine = true;
         return;
     }
@@ -956,6 +1036,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         if (name == "DX12HighresDrawConstants" ? space != 3 :
             lighting ? space != DX12_LIGHTING_REGISTER_SPACE :
             probeLayout(name) ? space != DX12_PROBE_REGISTER_SPACE :
+            screenSpaceLayout(name) ? space != kScreenSpaceRegisterSpace :
             name == "ShadowDepthRestoreConstants" ? space != 0 : space != 1)
             throw std::runtime_error("Cbuffer outside its declared register-space contract: " + name);
     }
@@ -964,14 +1045,21 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 	output["inc/highres_lightmaps_hlsl.inc"] = embedHlsl("kHighresLightmapsHlsl",
 		readText(root / "native_src" / "highres_lightmaps.hlsli"));
 	// Fixed-function shaders are compiled without an include handler. Embed the same
-	// authored selected-direct kernel and the space2-only constant/type declarations.
+	// authored selected-direct kernel and the space2-only constant/type declarations, preceded by the
+	// space-6 screen-space view block and the contact helper it calls (their includes flattened).
+	// The mirror is the DX12_SHADOWMAPS block of the engine header; the header ends it with three #endif
+	// (DX12_SHADOWMAPS, DX12_STAGE_PIXEL, include guard), so the slice stops before the second-to-last one.
 	const std::string engineHlsl = readText(root / "hlsl" / "common" / "dx12_engine_cbuffers.h");
 	const size_t lightingStart = engineHlsl.find("#if defined(DX12_SHADOWMAPS)");
-	const size_t outerEnd = engineHlsl.rfind("#endif");
-	if (lightingStart == std::string::npos || outerEnd <= lightingStart)
+	const size_t guardEnd = engineHlsl.rfind("#endif");
+	const size_t outerEnd = guardEnd == std::string::npos || guardEnd == 0 ? std::string::npos : engineHlsl.rfind("#endif", guardEnd - 1);
+	if (lightingStart == std::string::npos || outerEnd == std::string::npos || outerEnd <= lightingStart)
 		throw std::runtime_error("Cannot locate standalone space2 lighting mirror");
 	output["inc/shadowmap_lighting_hlsl.inc"] = embedHlsl("kShadowmapLightingHlsl",
-		std::string("#define DX12_SHADOWMAPS 1\n") + engineHlsl.substr(lightingStart, outerEnd - lightingStart) +
+		std::string("#define DX12_SHADOWMAPS 1\n") +
+		stripIncludes(readText(root / "native_src" / "screenspace_view.hlsli")) +
+		stripIncludes(readText(root / "native_src" / "screenspace_contact.hlsli")) +
+		engineHlsl.substr(lightingStart, outerEnd - lightingStart) +
 		readText(root / "native_src" / "shadowmap_lighting.hlsli"));
     std::vector<std::pair<fs::path, fs::path>> publish;
     std::ostringstream report;
@@ -1042,6 +1130,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                 validateLightingResources(reflection.Get(), desc, stage, sh.logical);
 				validateHighresResources(reflection.Get(), desc, stage, sh);
 				validateProbePbrResources(reflection.Get(), desc, stage, sh.logical);
+				validateScreenSpaceResources(reflection.Get(), desc, stage, sh.logical);
                 if (stage == VcsStage::Compute) {
                     for (unsigned resource = 0; resource < desc.BoundResources; ++resource) {
                         D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -1053,7 +1142,10 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                         } else {
                             if (binding.Space != 0)
                                 throw std::runtime_error("Compute resource must use space0: " + sh.logical);
-                            const unsigned maxSlots = binding.Type == D3D_SIT_SAMPLER ? 2u : 8u;
+                            // Compute root: 2 static samplers, 8 UAVs, 16 SRVs (SHADERAPIDX12_COMPUTE_MAX_UAVS / _MAX_SRVS).
+                            const bool uav = binding.Type == D3D_SIT_UAV_RWTYPED || binding.Type == D3D_SIT_UAV_RWSTRUCTURED || binding.Type == D3D_SIT_UAV_RWBYTEADDRESS ||
+                                             binding.Type == D3D_SIT_UAV_APPEND_STRUCTURED || binding.Type == D3D_SIT_UAV_CONSUME_STRUCTURED || binding.Type == D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER;
+                            const unsigned maxSlots = binding.Type == D3D_SIT_SAMPLER ? 2u : uav ? 8u : 16u;
                             if (binding.BindPoint >= maxSlots || !binding.BindCount || binding.BindCount > maxSlots - binding.BindPoint)
                                 throw std::runtime_error("Compute resource exceeds root signature slot range: " + sh.logical);
                         }
@@ -1123,7 +1215,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         }
         if (sh.stage != "cs") {
             for (const auto &[name, block] : sh.blocks) {
-                // Backend-owned space-2/3/4 and restore blocks never become material writers/aliases or generated headers.
+                // Backend-owned space-2/3/4/6 and restore blocks never become material writers/aliases or generated headers.
                 if (block.space != 1) continue;
                 auto found = shared.find(name);
                 if (found != shared.end() && (found->second.canonical != block.canonical || found->second.reg != block.reg || found->second.space != block.space || found->second.stage != block.stage))

@@ -37,6 +37,8 @@ public:
 	void InputSetLightOnlyTarget( inputdata_t &inputdata );
 	void InputSetLightWorld( inputdata_t &inputdata );
 	void InputSetEnableShadows( inputdata_t &inputdata );
+	void InputEnableVolumetric( inputdata_t &inputdata );
+	void InputDisableVolumetric( inputdata_t &inputdata );
 //	void InputSetLightColor( inputdata_t &inputdata );
 	void InputSetSpotlightTexture( inputdata_t &inputdata );
 	void InputSetAmbient( inputdata_t &inputdata );
@@ -50,6 +52,7 @@ private:
 	CNetworkVar( bool, m_bState );
 	CNetworkVar( float, m_flLightFOV );
 	CNetworkVar( bool, m_bEnableShadows );
+	CNetworkVar( bool, m_bVolumetric );
 	CNetworkVar( bool, m_bLightOnlyTarget );
 	CNetworkVar( bool, m_bLightWorld );
 	CNetworkVar( bool, m_bCameraSpace );
@@ -69,6 +72,7 @@ BEGIN_DATADESC( CEnvProjectedTexture )
 	DEFINE_FIELD( m_bState, FIELD_BOOLEAN ),
 	DEFINE_KEYFIELD( m_flLightFOV, FIELD_FLOAT, "lightfov" ),
 	DEFINE_KEYFIELD( m_bEnableShadows, FIELD_BOOLEAN, "enableshadows" ),
+	DEFINE_KEYFIELD( m_bVolumetric, FIELD_BOOLEAN, "volumetric" ),
 	DEFINE_KEYFIELD( m_bLightOnlyTarget, FIELD_BOOLEAN, "lightonlytarget" ),
 	DEFINE_KEYFIELD( m_bLightWorld, FIELD_BOOLEAN, "lightworld" ),
 	DEFINE_KEYFIELD( m_bCameraSpace, FIELD_BOOLEAN, "cameraspace" ),
@@ -88,6 +92,8 @@ BEGIN_DATADESC( CEnvProjectedTexture )
 	DEFINE_INPUTFUNC( FIELD_BOOLEAN, "LightOnlyTarget", InputSetLightOnlyTarget ),
 	DEFINE_INPUTFUNC( FIELD_BOOLEAN, "LightWorld", InputSetLightWorld ),
 	DEFINE_INPUTFUNC( FIELD_BOOLEAN, "EnableShadows", InputSetEnableShadows ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "EnableVolumetric", InputEnableVolumetric ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "DisableVolumetric", InputDisableVolumetric ),
 	// this is broken . . need to be able to set color and intensity like light_dynamic
 //	DEFINE_INPUTFUNC( FIELD_COLOR32, "LightColor", InputSetLightColor ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "Ambient", InputSetAmbient ),
@@ -100,6 +106,7 @@ IMPLEMENT_SERVERCLASS_ST( CEnvProjectedTexture, DT_EnvProjectedTexture )
 	SendPropBool( SENDINFO( m_bState ) ),
 	SendPropFloat( SENDINFO( m_flLightFOV ) ),
 	SendPropBool( SENDINFO( m_bEnableShadows ) ),
+	SendPropBool( SENDINFO( m_bVolumetric ) ),
 	SendPropBool( SENDINFO( m_bLightOnlyTarget ) ),
 	SendPropBool( SENDINFO( m_bLightWorld ) ),
 	SendPropBool( SENDINFO( m_bCameraSpace ) ),
@@ -120,6 +127,7 @@ CEnvProjectedTexture::CEnvProjectedTexture( void )
 	m_bState = true;
 	m_flLightFOV = 45.0f;
 	m_bEnableShadows = false;
+	m_bVolumetric = false;
 	m_bLightOnlyTarget = false;
 	m_bLightWorld = true;
 	m_bCameraSpace = false;
@@ -207,6 +215,16 @@ void CEnvProjectedTexture::InputSetLightWorld( inputdata_t &inputdata )
 void CEnvProjectedTexture::InputSetEnableShadows( inputdata_t &inputdata )
 {
 	m_bEnableShadows = inputdata.value.Bool();
+}
+
+void CEnvProjectedTexture::InputEnableVolumetric( inputdata_t &inputdata )
+{
+	m_bVolumetric = true;
+}
+
+void CEnvProjectedTexture::InputDisableVolumetric( inputdata_t &inputdata )
+{
+	m_bVolumetric = false;
 }
 
 //void CEnvProjectedTexture::InputSetLightColor( inputdata_t &inputdata )

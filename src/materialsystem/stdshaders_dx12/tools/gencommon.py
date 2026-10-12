@@ -129,6 +129,7 @@ cbuffer DX12PSEngine : register(b0, space1)
 #define DX12_SHADOW_LIGHT_SPOT 2
 #define DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE 1
 #define DX12_SHADOW_VISIBILITY_UNSHADOWED 2
+#define DX12_VOLUMETRIC_LIGHT_ENABLED 0x1
 cbuffer DX12LightingViewConstantsV1 : register(b0, space2)
 {
     uint4 cShadowView0; // mapGeneration, viewGeneration, filterMode, debugMode
@@ -190,7 +191,7 @@ struct RuntimeShadowLightGpu // 608 bytes, StructuredBuffer at t1026 space2
     float realtimeWeight;
     uint visibilityFlags;
     uint bakedLightIndex;
-    uint reserved0;
+    uint reserved0; // DX12_VOLUMETRIC_LIGHT_ENABLED or zero
 };
 #endif
 #endif
@@ -326,6 +327,7 @@ PREAMBLE = '''
 #include "dx12_engine_cbuffers.h"
 #include "dx12_raster_emulation.h"
 #if defined(DX12_SHADOWMAPS) && defined(DX12_STAGE_PIXEL)
+#include "screenspace_contact.hlsli"
 #include "shadowmap_lighting.hlsli"
 #endif
 #if defined(DX12_HIGHRES_LIGHTMAPS) && defined(DX12_STAGE_PIXEL)
@@ -457,6 +459,27 @@ def colour_depth_overloads(text):
     return ''.join(out)
 
 
+def contact_flashlight(text):
+    """Screen-space contact ray on the legacy flashlight helpers (plan §4): inside bDoShadows the runtime shadow is
+    multiplied by DX12_ContactVisibility before the existing attenuation blend. Applied before colour_depth_overloads so
+    both depth-sampler overloads carry it; the include follows common_ps_fxc.h (pixel stage only)."""
+    include = '#include "common_ps_fxc.h"\n'
+    assert text.count(include) == 1
+    text = text.replace(include, include + '#if defined(DX12_STAGE_PIXEL)\n#include "screenspace_contact.hlsli"\n#endif\n')
+    normals = {'DoFlashlight': '( bHasNormal ? worldNormal : float3( 0.0f, 0.0f, 0.0f ) )', 'DoSpecularFlashlight': 'worldNormal'}
+    blend = '\t\tfloat flAttenuated = lerp( flShadow, 1.0f, vShadowTweaks.y );'
+    out, pos = [], 0
+    for name, params, ps, pe, bs, be in function_bodies(text):
+        if name not in normals: continue
+        body = text[bs:be]
+        assert body.count(blend) == 1, name
+        contact = f'\t\tflShadow *= DX12_ContactVisibility( worldPos, {normals[name]}, flashlightPos - worldPos, dist - 0.25f );\n'
+        out.append(text[pos:bs]); out.append(body.replace(blend, contact + blend)); pos = be
+    assert len(out) == 4, 'flashlight helpers not found'
+    out.append(text[pos:])
+    return ''.join(out)
+
+
 def translate_all(texts=None):
     texts = texts or {c: open(os.path.join(SRC, c), encoding='latin-1').read() for c in COMMONS}
     known = {}
@@ -482,7 +505,7 @@ def translate_all(texts=None):
         t = rename_shader_models(t)
         t = hp.convert(t, known)
         t = insert_params(t, need)
-        if c == 'common_flashlight_fxc.h': t = colour_depth_overloads(t)
+        if c == 'common_flashlight_fxc.h': t = colour_depth_overloads(contact_flashlight(t))
         if c == 'tree_sway.h':
             # Shipped VS30 expands sin to a range-reduced cosine polynomial with MADs.
             # Keep its folded frequencies and allow contraction: precise splits the

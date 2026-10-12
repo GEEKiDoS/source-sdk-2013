@@ -27,7 +27,8 @@ struct PostMaterial_t
 	IMaterial *m_pMaterial = nullptr;
 };
 
-// Froyok's bloom: eight levels, the first at half resolution. Level n lives in mip n + 1 of the bloom targets.
+// MagicBloom's layered bloom on Froyok's pyramid: eight levels, the first at half resolution. Level n lives in mip n + 1
+// of the bloom targets.
 const int kBloomLevels = 8;
 
 static bool s_bDX12 = false;
@@ -41,7 +42,8 @@ static CTextureReference s_Flare;
 static CTextureReference s_Glare;
 static CTextureReference s_Composite;
 static CTextureReference s_LensDirt;
-static PostMaterial_t s_BloomDownsample[kBloomLevels];
+static PostMaterial_t s_BloomFirst;
+static PostMaterial_t s_BloomDownsample[kBloomLevels - 1];
 static PostMaterial_t s_BloomUpsample[kBloomLevels - 1];
 static PostMaterial_t s_FlareThreshold;
 static PostMaterial_t s_FlareInputBlurDown;
@@ -150,10 +152,10 @@ static void SetPostPass( IMaterial *pMaterial, ITexture *pSource, int nSourceMip
 
 static ConVar mat_postfx_dx12( "mat_postfx_dx12", "1", FCVAR_ARCHIVE, "DX12 post stack (HDR bloom, AgX, lens effects, LUT); 0 = legacy engine_post" );
 static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap" );
-static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "0.1", FCVAR_ARCHIVE, "DX12 post bloom: how far the scene is blended towards the bloom (0..1, keep under 0.3)" );
+static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "100", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (MagicBloom's 100; 0 off, 25..400 useful)" );
+static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
 static ConVar mat_postfx_bloom_quality( "mat_postfx_bloom_quality", "2", FCVAR_ARCHIVE, "DX12 post bloom quality: 0 low (drops the two finest levels), 1 medium (drops the half-resolution level), 2 high (8 levels)", true, 0.f, true, 2.f );
-static ConVar mat_postfx_bloom_radius( "mat_postfx_bloom_radius", "0.85", FCVAR_ARCHIVE, "DX12 post bloom radius: blend of each smaller level over the next larger one (0..1)" );
-static ConVar mat_postfx_lensdirt( "mat_postfx_lensdirt", "0.5", FCVAR_ARCHIVE, "DX12 post lens dirt intensity (raises the bloom blend where the dirt is)" );
+static ConVar mat_postfx_lensdirt( "mat_postfx_lensdirt", "0.5", FCVAR_ARCHIVE, "DX12 post lens dirt intensity (screens the dirt into the bloom)" );
 static ConVar mat_postfx_lensdirt_enable( "mat_postfx_lensdirt_enable", "1", FCVAR_ARCHIVE, "DX12 post lens dirt: 0 off, 1 on. Intensity stays mat_postfx_lensdirt.", true, 0.f, true, 1.f );
 static ConVar mat_postfx_lensflare( "mat_postfx_lensflare", "1.0", FCVAR_ARCHIVE, "DX12 post lens flare (ghosts, halo, glare) intensity" );
 static ConVar mat_postfx_lensflare_threshold( "mat_postfx_lensflare_threshold", "1.0", FCVAR_ARCHIVE, "DX12 post lens flare: summed RGB where bright content starts to flare" );
@@ -217,6 +219,7 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	if ( !s_bRenderTargetsReady )
 		return;
 
+	s_BloomFirst.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_bloom_first", 7 );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
 		s_BloomDownsample[i].m_pMaterial = CreatePassMaterial( pMaterialSystem, CFmtStr( "dx12/postfx_downsample_%d", i ), 0 );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
@@ -232,7 +235,8 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	s_RcasMaterial.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/postfx_rcas", "DX12_PostFXRcas" );
 	s_bMaterialsReady = MaterialValid( s_FlareThreshold.m_pMaterial ) && MaterialValid( s_FlareInputBlurDown.m_pMaterial ) && MaterialValid( s_FlareInputBlurUp.m_pMaterial ) &&
 		MaterialValid( s_FlareMaterial.m_pMaterial ) && MaterialValid( s_FlareBlurDown.m_pMaterial ) && MaterialValid( s_FlareBlurUp.m_pMaterial ) &&
-		MaterialValid( s_GlareMaterial.m_pMaterial ) && MaterialValid( s_CompositeMaterial.m_pMaterial ) && MaterialValid( s_RcasMaterial.m_pMaterial );
+		MaterialValid( s_GlareMaterial.m_pMaterial ) && MaterialValid( s_CompositeMaterial.m_pMaterial ) && MaterialValid( s_RcasMaterial.m_pMaterial ) &&
+		MaterialValid( s_BloomFirst.m_pMaterial );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
 		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomDownsample[i].m_pMaterial );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
@@ -241,6 +245,7 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 
 void PostProcessDX12_Shutdown()
 {
+	ReleaseMaterial( s_BloomFirst );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
 		ReleaseMaterial( s_BloomDownsample[i] );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
@@ -302,72 +307,50 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	}
 	const float flExposure = exp2f( mat_postfx_exposure.GetFloat() );
 	const int nDebugView = mat_postfx_debug.GetInt() & 0xf;
-	const float flBloomIntensity = mat_postfx_bloom_intensity.GetFloat() * flBloomScale;
+	const float flBloomExposure = mat_postfx_bloom_intensity.GetFloat() * flBloomScale;
 	const float flFlareIntensity = mat_postfx_lensflare.GetFloat();
 	const float flGlareIntensity = mat_postfx_glare.GetFloat();
-	const bool bDirt = s_LensDirt.IsValid() && mat_postfx_lensdirt_enable.GetBool() && mat_postfx_lensdirt.GetFloat() > 0.f;
 	// Native HDR inputs and intermediates must be finite; NaN/Inf is already a rendering bug, not a supported
 	// zero-weight effect. The composite binds neutral black for skipped chains, never stale previous-frame output.
-	// Dirt can raise a zero bloom weight, and debug views replace the composite with their selected term.
+	// Debug views replace the composite with their selected term. The lens dirt only ever screens into the bloom.
 	const bool bComposite = nDebugView < 1 || nDebugView > 4;
-	const bool bBlend = flBloomIntensity != 0.f || bDirt;
-	const bool bBloom = ( bComposite && bBlend ) || nDebugView == 1;
-	const bool bFlare = ( ( bComposite && bBlend ) || nDebugView == 2 ) && flFlareIntensity != 0.f;
-	const bool bGlare = ( ( bComposite && bBlend ) || nDebugView == 3 ) && flFlareIntensity != 0.f && flGlareIntensity != 0.f;
+	const bool bBloom = ( bComposite && flBloomExposure != 0.f ) || nDebugView == 1;
+	const bool bFlare = ( bComposite || nDebugView == 2 ) && flFlareIntensity != 0.f;
+	const bool bGlare = ( bComposite || nDebugView == 3 ) && flFlareIntensity != 0.f && flGlareIntensity != 0.f;
 	const bool bFlareInput = bFlare || bGlare;
+	const bool bDirt = ( bBloom || nDebugView == 4 ) && s_LensDirt.IsValid() && mat_postfx_lensdirt_enable.GetBool() && mat_postfx_lensdirt.GetFloat() > 0.f;
 
 	// High is the eight-level chain. Medium and low drop the finest downsample (half, then quarter too) and
-	// widen the first 13-tap kernel by the same factor, then fill the missing fine mips from the coarser upsample
-	// so the composite still reads bloom mip 1. Flare keeps reading that mip.
+	// widen the first 13-tap kernel by the same factor, then carry the coarser layer sum up through the missing
+	// fine mips so the composite still reads bloom mip 1 and averages over the levels actually summed.
 	const int nDropFinest = 2 - Clamp( mat_postfx_bloom_quality.GetInt(), 0, 2 );
-	if ( bBloom )
+	const int nFirstMip = 1 + nDropFinest;
+	const int nLayers = kBloomLevels - nDropFinest;
+	// The first level writes the soft-thresholded exposed scene for the bloom and the plain exposed scene for the
+	// lens flare, the latter into the up chain's mip, which the layer sum overwrites only after the flare has read it.
+	if ( bBloom || bFlareInput )
 	{
-		PIXEVENT( pRenderContext, "Bloom" );
-		const float flRadius = Clamp( mat_postfx_bloom_radius.GetFloat(), 0.f, 1.f );
-		for ( int i = nDropFinest; i < ARRAYSIZE( s_BloomDownsample ); ++i )
+		PIXEVENT( pRenderContext, "Bloom downsample" );
+		IMaterial *pFirst = s_BloomFirst.m_pMaterial;
+		SetPostPass( pFirst, s_PostScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest );
+		SetTexture( pFirst, "$dsttexture2", s_BloomUp );
+		SetInt( pFirst, "$dstmip2", nFirstMip );
+		DrawCompute( pRenderContext, pFirst );
+		for ( int nMip = nFirstMip; bBloom && nMip < kBloomLevels; ++nMip )
 		{
-			IMaterial *pMaterial = s_BloomDownsample[i].m_pMaterial;
-			if ( i == nDropFinest )
-				SetPostPass( pMaterial, s_PostScene, 0, s_BloomDown, i + 1, flExposure, 0.f, 1 << nDropFinest );
-			else
-				SetPostPass( pMaterial, s_BloomDown, i, s_BloomDown, i + 1, 1.f, 0.f );
-			DrawCompute( pRenderContext, pMaterial );
-		}
-		for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
-		{
-			const int nMip = ARRAYSIZE( s_BloomUpsample ) - i;
-			IMaterial *pMaterial = s_BloomUpsample[i].m_pMaterial;
-			if ( nMip <= nDropFinest )
-			{
-				SetPostPass( pMaterial, s_BloomUp, nMip + 1, s_BloomUp, nMip, 1.f, 0.f );
-				SetTexture( pMaterial, "$srctexture2", s_BloomUp );
-				SetInt( pMaterial, "$srcmip2", nMip + 1 );
-			}
-			else
-			{
-				SetPostPass( pMaterial, s_BloomDown, nMip, s_BloomUp, nMip, flRadius, 0.f );
-				SetTexture( pMaterial, "$srctexture2", i == 0 ? s_BloomDown : s_BloomUp );
-				SetInt( pMaterial, "$srcmip2", nMip + 1 );
-			}
+			IMaterial *pMaterial = s_BloomDownsample[nMip - 1].m_pMaterial;
+			SetPostPass( pMaterial, s_BloomDown, nMip, s_BloomDown, nMip + 1, 1.f, 0.f );
 			DrawCompute( pRenderContext, pMaterial );
 		}
 	}
 
-	// Lens flare (Froyok): the bloom level is thresholded into the flare input and stabilised by one
+	// Lens flare (Froyok): the plain first bloom level is thresholded into the flare input and stabilised by one
 	// dual Kawase step through its mip 1. Ghosts and halo are built from it and softened by another
 	// dual Kawase step; the glare star gathers from the input's eighth-resolution mip 1.
-	// High reads bloom mip 1. Lower bloom quality never writes that mip, so the flare reads the
-	// coarsest raw downsample that was.
 	if ( bFlareInput )
 	{
 		PIXEVENT( pRenderContext, "Flare" );
-		if ( !bBloom )
-		{
-			IMaterial *pMaterial = s_BloomDownsample[0].m_pMaterial;
-			SetPostPass( pMaterial, s_PostScene, 0, s_BloomDown, 1, flExposure, 0.f );
-			DrawCompute( pRenderContext, pMaterial );
-		}
-		SetPostPass( s_FlareThreshold.m_pMaterial, s_BloomDown, bBloom ? ( 1 + nDropFinest ) : 1, s_FlareInput, 0, mat_postfx_lensflare_threshold.GetFloat(),
+		SetPostPass( s_FlareThreshold.m_pMaterial, s_BloomUp, nFirstMip, s_FlareInput, 0, mat_postfx_lensflare_threshold.GetFloat(),
 			MAX( mat_postfx_lensflare_threshold_range.GetFloat(), 0.01f ) );
 		DrawCompute( pRenderContext, s_FlareThreshold.m_pMaterial );
 		SetPostPass( s_FlareInputBlurDown.m_pMaterial, s_FlareInput, 0, s_FlareInput, 1, 0.f, 0.f );
@@ -391,13 +374,34 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	}
 
 	}
+
+	// MagicBloom's layer sum: up[last] = down[last], up[n] = down[n] + tent( up[n + 1] ), so mip 1 holds all layers.
+	// A dropped fine mip only carries the sum up (p0 = 0); its unread gSrc is the same coarser mip as gSrc2.
+	if ( bBloom )
+	{
+		PIXEVENT( pRenderContext, "Bloom upsample" );
+		for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
+		{
+			const int nMip = ARRAYSIZE( s_BloomUpsample ) - i;
+			IMaterial *pMaterial = s_BloomUpsample[i].m_pMaterial;
+			if ( nMip < nFirstMip )
+				SetPostPass( pMaterial, s_BloomUp, nMip + 1, s_BloomUp, nMip, 0.f, 0.f );
+			else
+				SetPostPass( pMaterial, s_BloomDown, nMip, s_BloomUp, nMip, 1.f, 0.f );
+			SetTexture( pMaterial, "$srctexture2", i == 0 ? s_BloomDown : s_BloomUp );
+			SetInt( pMaterial, "$srcmip2", nMip + 1 );
+			DrawCompute( pRenderContext, pMaterial );
+		}
+	}
 	const int nStatus = DisplayStatus();
 	const bool bHdr = mat_hdr_output.GetBool() && SHADERAPIDX12_HDR_DISPLAY_TYPE( nStatus ) == SHADERAPIDX12_HDR_DISPLAY_HDR && s_pShaderAPIDX12->HdrOutputCapable();
 	const float flWorldNits = MAX( mat_hdr_output_world_nits.GetFloat(), 1.f );
 	const float flUiNits = MAX( mat_hdr_output_ui_nits.GetFloat(), 1.f );
 	const float flPeak = bHdr ? MAX( mat_hdr_output_max_nits.GetFloat(), flWorldNits ) / flWorldNits : 1.f;
 	const float flOutScale = bHdr ? flWorldNits / flUiNits : 1.f;
-	const float composite0[4] = { flExposure, flBloomIntensity, flFlareIntensity, 0.f };
+	// Lens flare and glare are added to the HDR scene at a tenth of their intensity, the bloom weight that used to
+	// scale them. The bloom exposure already carries the division by the summed layer count.
+	const float composite0[4] = { flExposure, flBloomExposure / nLayers, flFlareIntensity * 0.1f, 0.f };
 	const float composite1[4] = { mat_postfx_lensdirt.GetFloat(), 0.f, 0.f, 0.f };
 	const float output[4] = { static_cast<float>( bHdr ? 1 : 0 ), 0.f, 0.f, 0.f };
 	IMaterial *pComposite = s_CompositeMaterial.m_pMaterial;

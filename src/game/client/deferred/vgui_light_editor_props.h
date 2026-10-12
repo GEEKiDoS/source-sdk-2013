@@ -63,5 +63,6 @@ private:
 	vgui::TextEntry *m_pCookie;
 	vgui::CheckButton *m_pSpot;
 	vgui::CheckButton *m_pShadow;
+	vgui::CheckButton *m_pVolumetric;
 };
 #endif

@@ -1,4 +1,5 @@
-// Native SM5.1 HDR composite (Froyok's bloom and lens flare mix), Minimal AgX and four Source 32^3 LUT lookups.
+// Native SM5.1 HDR composite: MagicBloom's layered bloom screened over the Minimal AgX scene, Froyok's lens flare and
+// glare added to the HDR scene, and four Source 32^3 LUT lookups.
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 #ifdef HDRTYPE
@@ -9,6 +10,7 @@
 
 cbuffer PostComposite : register( b1, space1 )
 {
+	// x scene scale, y bloom exposure / summed layers, z lens flare scale
 	float4 gSceneBloomFlare; // @legacy ps:c0
 	float4 gDirtPeak; // @legacy ps:c1
 	float4 gOutput; // @legacy ps:c2
@@ -36,21 +38,38 @@ SamplerState gLut1Sampler : register( s6 );
 SamplerState gLut2Sampler : register( s7 );
 SamplerState gLut3Sampler : register( s8 );
 
-// Minimal AgX (Wrensch) base curve on the brightest channel, scaling the colour by its ratio. Applying it per channel
-// (with the AgX inset/outset matrices) changes saturation and hue with the pixel's brightness, so the colour balance
-// followed the scene content and the auto-exposure. Driven by the maximum channel, no channel can exceed the curve's
-// output and chromaticity depends only on the scene.
-float3 AgX( float3 c, float peak )
+// Minimal AgX (Wrensch). The reference matrices are GLSL column-major mat3 literals, so they are listed here as
+// HLSL rows of the transpose and applied as row-vector products; mul( M, c ) would transpose them and tint grey red.
+// Returns the display-encoded value: the sigmoid is AgX's output in display (sRGB-like) code values, so the caller
+// decodes it with the same transfer the swap chain encodes with (hardware sRGB). Decoding it with a plain 2.4 power
+// instead and letting the hardware apply the piecewise sRGB encode (linear toe of slope 12.92) crushed the shadows:
+// a dark code value of 0.045 left the screen at 2/255 instead of 11/255.
+float3 AgXEncoded( float3 c, float peak )
 {
-	float m = max( c.r, max( c.g, c.b ) );
+	const float3x3 inset = float3x3( 0.842479062253094, 0.0423282422610123, 0.0423756549057051, 0.0784335999999992, 0.878468636469772, 0.0784336, 0.0792237451477643, 0.0791661274605434, 0.879142973793104 );
+	const float3x3 outset = float3x3( 1.19687900512017, -0.0528968517574562, -0.0529716355144438, -0.0980208811401368, 1.15190312990417, -0.0980434501171241, -0.0990297440797205, -0.0989611768448433, 1.15107367264116 );
+	float3 v = log2( max( mul( c, inset ), 1e-10 ) );
 	float minEv = -12.47393;
-	float maxEv = 4.026069 + log2( peak );
-	float x = saturate( ( log2( max( m, 1e-10 ) ) - minEv ) / ( maxEv - minEv ) );
-	float sigmoid = 15.5 * pow( x, 6 ) - 40.14 * pow( x, 5 ) + 31.96 * pow( x, 4 ) - 6.868 * pow( x, 3 ) + 0.4298 * pow( x, 2 ) + 0.1191 * x - 0.00232;
-	return c * ( pow( saturate( sigmoid ), 2.4 ) * peak / max( m, 1e-10 ) );
+	float maxEv = 4.026069 + log2( max( peak, 1e-4 ) );
+	float3 x = saturate( ( v - minEv ) / max( maxEv - minEv, 1e-4 ) );
+	float3 sigmoid = 15.5 * pow( x, 6 ) - 40.14 * pow( x, 5 ) + 31.96 * pow( x, 4 ) - 6.868 * pow( x, 3 ) + 0.4298 * pow( x, 2 ) + 0.1191 * x - 0.00232;
+	return saturate( mul( sigmoid, outset ) );
 }
-float3 LinearToSRGB( float3 c ) { return pow( saturate( c ), 1.0 / 2.2 ); }
-float3 SRGBToLinear( float3 c ) { return pow( saturate( c ), 2.2 ); }
+// The exact piecewise sRGB decode, the inverse of the _SRGB render-target encode the presentation path applies.
+float3 SRGBToLinear( float3 c )
+{
+	c = saturate( c );
+	return lerp( c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ), step( 0.04045, c ) );
+}
+
+// Uncharted 2 filmic curve with MagicBloom's constants; BloomTonemap normalises it so linear white 11.2 maps to 1.
+float3 Uncharted2( float3 x )
+{
+	const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+	return ( x * ( A * x + C * B ) + D * E ) / ( x * ( A * x + B ) + D * F ) - E / F;
+}
+float3 BloomTonemap( float3 c ) { return Uncharted2( c ) / Uncharted2( 11.2.xxx ); }
+float3 Screen( float3 a, float3 b ) { return 1.0 - ( 1.0 - a ) * ( 1.0 - b ); }
 
 // Jimenez's interleaved gradient noise, in [0, 1).
 float InterleavedGradientNoise( float2 pixel )
@@ -87,6 +106,11 @@ float4 main( PS_INPUT input ) : SV_Target0
 	float3 scene = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb * gSceneBloomFlare.x;
 	float3 bloom = 0;
 	[branch] if ( ( flags & 8 ) == 0 ) bloom = SampleMip( gBloom, uv, 1 );
+	// MagicBloom: the layer average (mip 1 holds the layer sum; gSceneBloomFlare.y already divides by the layer count)
+	// is exposed and filmic-tonemapped into display space, and the lens dirt rides on the bloom alone.
+	float3 bloomT = BloomTonemap( max( bloom, 0 ) * gSceneBloomFlare.y );
+	float3 dirt = ( flags & 2 ) != 0 ? gDirt.SampleLevel( gDirtSampler, uv, 0 ).rgb * gDirtPeak.x : 0;
+	bloomT = Screen( bloomT, dirt * bloomT );
 	// The glare buffer is quarter resolution; four diagonal taps one half-resolution texel apart soften its quads.
 	float2 sceneSize;
 	gScene.GetDimensions( sceneSize.x, sceneSize.y );
@@ -99,30 +123,31 @@ float4 main( PS_INPUT input ) : SV_Target0
 	float3 lens = ( flare + glare ) * kFlareTint * gSceneBloomFlare.z;
 	uint debugView = (uint)gOutput.z;
 	uint lutCount = (uint)gOutput.w;
-	float3 dirt = ( flags & 2 ) != 0 ? gDirt.SampleLevel( gDirtSampler, uv, 0 ).rgb * gDirtPeak.x : 0;
-	// Bloom and flares replace the scene by the bloom intensity, raised where the lens dirt catches them.
-	float3 c = lerp( scene, bloom + lens, saturate( gSceneBloomFlare.y + dirt ) );
-	if ( debugView == 1 ) c = bloom;
-	else if ( debugView == 2 ) c = flare * kFlareTint * gSceneBloomFlare.z;
+	// Flare and glare join the HDR scene before its tonemap. The bloom is screened over the tonemapped scene in display
+	// code values (MagicBloom blends after its tonemaps), normalised by the peak so HDR output keeps the same blend.
+	float3 c = scene + lens;
+	if ( debugView == 2 ) c = flare * kFlareTint * gSceneBloomFlare.z;
 	else if ( debugView == 3 ) c = glare * kFlareTint * gSceneBloomFlare.z;
 	else if ( debugView == 4 ) c = dirt;
 	float peak = max( gDirtPeak.y, 1e-4 );
-	float3 d = AgX( max( c, 0 ), peak );
+	float3 e = AgXEncoded( max( c, 0 ), peak );
+	if ( debugView == 1 ) e = saturate( bloomT );
+	else if ( debugView == 0 || debugView > 4 ) e = Screen( e, saturate( bloomT ) );
 	if ( ( flags & 4 ) != 0 && lutCount != 0 )
 	{
-		float3 gamma = LinearToSRGB( d / peak );
-		float3 lutUv = gamma * ( 31.0 / 32.0 ) + ( 0.5 / 32.0 );
-		float3 corrected = gamma * gLutWeights.x;
+		float3 lutUv = e * ( 31.0 / 32.0 ) + ( 0.5 / 32.0 );
+		float3 corrected = e * gLutWeights.x;
 		if ( lutCount > 0 ) corrected += gLut0.SampleLevel( gLut0Sampler, lutUv, 0 ).rgb * gLutWeights.y;
 		if ( lutCount > 1 ) corrected += gLut1.SampleLevel( gLut1Sampler, lutUv, 0 ).rgb * gLutWeights.z;
 		if ( lutCount > 2 ) corrected += gLut2.SampleLevel( gLut2Sampler, lutUv, 0 ).rgb * gLutWeights.w;
 		if ( lutCount > 3 ) corrected += gLut3.SampleLevel( gLut3Sampler, lutUv, 0 ).rgb * gLutWeight4.x;
-		d = SRGBToLinear( corrected ) * peak;
+		e = corrected;
 	}
-	// SDR leaves through an 8-bit swap chain: one code value of noise in sRGB space breaks the smooth bloom and flare
-	// gradients into grain instead of bands. The HDR swap chain is FP16 and needs none.
+	// SDR leaves through an 8-bit swap chain: one code value of noise breaks the smooth bloom and flare gradients into
+	// grain instead of bands. The HDR swap chain is FP16 and needs none.
 	if ( ( flags & 1 ) == 0 )
-		d = SRGBToLinear( LinearToSRGB( d ) + ( InterleavedGradientNoise( input.projPos.xy ) - 0.5 ) / 255.0 );
+		e += ( InterleavedGradientNoise( input.projPos.xy ) - 0.5 ) / 255.0;
+	float3 d = SRGBToLinear( e ) * peak;
 	d *= gOutput.x;
 	return DX12FinishPixel( FinalOutput( float4( d, 1 ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
 }

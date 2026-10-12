@@ -21,6 +21,7 @@
 #include "iclientmode.h"
 #include "viewrender.h"
 #include "view.h"
+#include "shadowmaps_dx12.h"
 
 #ifdef PORTAL
 	#include "c_prop_portal.h"
@@ -1034,6 +1035,18 @@ void CBeam::OnDataChanged( DataUpdateType_t updateType )
 	Vector mins, maxs;
 	ComputeBounds( mins, maxs );
 	SetCollisionBounds( mins, maxs );
+
+	// Point-spotlight fake beams join the DX12 volumetric pairing registry; a cleared marker leaves it.
+	if ( GetBeamFlags() & FBEAM_POINT_SPOTLIGHT )
+		ShadowMapsDX12_UpdateSpotlightBeam( this );
+	else
+		ShadowMapsDX12_RemoveSpotlightBeam( this );
+}
+
+void CBeam::UpdateOnRemove( void )
+{
+	ShadowMapsDX12_RemoveSpotlightBeam( this );
+	BaseClass::UpdateOnRemove();
 }
 
 bool CBeam::IsTransparent( void )

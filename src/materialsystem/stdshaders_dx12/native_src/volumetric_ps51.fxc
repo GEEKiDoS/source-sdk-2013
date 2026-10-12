@@ -1,0 +1,230 @@
+// Native SM5.1 half-resolution raymarched volumetric lighting (plan §10 + amendment): one pass over the completed main
+// scene depth, one texel per 2x2 full-resolution footprint, that marches in-scattering from the lights that opted in
+// (DX12_VOLUMETRIC_LIGHT_ENABLED) and the sun. Lighting root (space 2 shadow tables, space 5 projected lights via
+// PreparePbrSpots), space 6: the captured main camera (contact/SSR control zero, control.y = scene sample count), the
+// volume medium block and the scene depth at t2/t3. MRT, no blending:
+//   SV_Target0 RGBA16F  in-scattering RGB (cVolumeOutputScale.x applied once), alpha 0
+//   SV_Target1 R32F     the texel's representative positive view depth; VOLUME_DEPTH_FAR for a clear-only footprint
+// volumetric_upsample_ps51 gathers this pair per scene sample and adds it onto the scene.
+//
+// Representative depth: every scene depth sample of the 2x2 footprint is reconstructed to its camera-forward distance;
+// the checkerboard parity of the half-res texel picks the nearest ((x + y) even) or farthest (odd) one, so the full-res
+// gather always finds a neighbour close to either side of a depth edge. A clear-only footprint marches each light to
+// its configured ray limit. The eye ray passes through the footprint centre; the march stops at that representative
+// depth (converted to a distance along the ray).
+//
+// Each light segment [a, b] takes N = cVolumeControl.x samples at t = a + ( i + j ) * ( b - a ) / N with the same
+// interleaved-gradient-noise j per texel (Jimenez), offset by 5.588238 * cVolumeControl.w texels so a temporal
+// upscaler sees a rotating pattern; cVolumeControl.w = 0 keeps it static. Incident radiance is the full
+// ShadowMap_StandardLightRadiance (range/fade/cone/lightstyle; never scaled by the realtime weight) times the
+// Henyey-Greenstein phase, density * strength * ds. Shadowing: a chart published for this view (positive realtime
+// weight, not UNSHADOWED, chart.valid) gives lerp( 1, PCF, realtimeWeight ) so the ramp fades the shadow in; a light
+// without one is marched unshadowed (visibility 1). Projected lights without a depth slot and sun samples outside
+// every valid cascade/static chart are unshadowed too.
+// Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
+// STATIC: "MSAA" "0..1"
+#define DX12_SHADOWMAPS 1
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#ifdef HDRTYPE
+#undef HDRTYPE
+#endif
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+#include "projected_lighting.hlsli"
+
+struct PS_INPUT
+{
+	float4 svPos : SV_Position;
+};
+
+struct PS_OUTPUT
+{
+	float4 scatter : SV_Target0;
+	float depth : SV_Target1;
+};
+
+static const float VOLUME_PI = 3.14159265358979323846;
+static const float VOLUME_UNBOUNDED = 3.402823466e+38;
+static const float VOLUME_DEPTH_FAR = 1e30;      // stored view depth of a clear-only footprint (volumetric_upsample_ps51 matches)
+static const float VOLUME_NOISE_FRAME = 5.588238; // texels of IGN offset per noise index
+
+// Henyey-Greenstein phase for anisotropy g and mu = dot( sampleToLight, eyeToSample ).
+float Volume_Phase( float g, float mu )
+{
+	float g2 = g * g;
+	return ( 1.0 - g2 ) / ( 4.0 * VOLUME_PI * pow( max( 1.0 + g2 - 2.0 * g * mu, 1e-4 ), 1.5 ) );
+}
+
+// Interleaved gradient noise (Jimenez 2014) of a texel coordinate, [0, 1).
+float Volume_Noise( float2 p )
+{
+	return frac( 52.9829189 * frac( dot( p, float2( 0.06711056, 0.00583715 ) ) ) );
+}
+
+// Clips the eye segment [a, b] along unit ray D to a sphere; false when the remaining segment is empty.
+bool Volume_SphereSegment( float3 eye, float3 D, float3 center, float radius, inout float a, inout float b )
+{
+	float3 oc = eye - center;
+	float half_b = dot( oc, D );
+	float discriminant = half_b * half_b - ( dot( oc, oc ) - radius * radius );
+	bool hit = discriminant > 0.0;
+	if ( hit )
+	{
+		float root = sqrt( discriminant );
+		a = max( a, -half_b - root );
+		b = min( b, -half_b + root );
+		hit = b > a;
+	}
+	return hit;
+}
+
+// Camera-forward distance of one scene depth sample; accumulates the footprint's nearest/farthest.
+void Volume_GatherDepth( float2 scenePixel, float depth, inout float zMin, inout float zMax, inout bool covered )
+{
+	if ( depth == cScreenDepth.x )
+		return;
+	float z = Screen_ViewDepth( Screen_PixelToWorld( scenePixel, depth ) );
+	zMin = min( zMin, z );
+	zMax = max( zMax, z );
+	covered = true;
+}
+
+PS_OUTPUT main( PS_INPUT i )
+{
+	PS_OUTPUT o;
+	o.scatter = float4( 0.0, 0.0, 0.0, 0.0 );
+	o.depth = VOLUME_DEPTH_FAR;
+	int2 texel = int2( floor( i.svPos.xy ) );
+	int2 origin = int2( cScreenViewport.xy );
+	int2 size = int2( cScreenViewport.zw );
+	int2 base = origin + texel * 2;
+
+	// Representative depth of the 2x2 footprint (an odd viewport edge has a one-pixel-wide last column/row).
+	float zMin = VOLUME_DEPTH_FAR, zMax = 0.0;
+	bool covered = false;
+	[unroll] for ( int dy = 0; dy < 2; ++dy )
+	{
+		[unroll] for ( int dx = 0; dx < 2; ++dx )
+		{
+			int2 pixel = base + int2( dx, dy );
+			if ( any( pixel >= origin + size ) )
+				continue;
+#if MSAA
+			[loop] for ( uint s = 0; s < cScreenControl.y; ++s )
+				Volume_GatherDepth( float2( pixel ) + 0.5 + g_ScreenSceneDepthMS.GetSamplePosition( int( s ) ), g_ScreenSceneDepthMS.Load( pixel, int( s ) ), zMin, zMax, covered );
+#else
+			Volume_GatherDepth( float2( pixel ) + 0.5, g_ScreenSceneDepth.Load( int3( pixel, 0 ) ), zMin, zMax, covered );
+#endif
+		}
+	}
+	float z = covered ? ( ( ( texel.x + texel.y ) & 1 ) ? zMax : zMin ) : VOLUME_DEPTH_FAR;
+	o.depth = z;
+	if ( cVolumeControl.z == 0 )
+		return o;
+
+	// Perspective eye ray through the footprint centre (any in-frustum depth lies on it); the representative depth,
+	// a camera-forward distance, becomes the stop distance along the ray. A clear footprint runs to each light's limit.
+	float2 center = float2( base ) + 1.0;
+	float2 local = ( center - cScreenViewport.xy ) / cScreenViewport.zw;
+	float4 world = mul( cScreenClipToWorld, float4( local.x * 2.0 - 1.0, 1.0 - local.y * 2.0, 0.5, 1.0 ) );
+	if ( world.w <= 0.0 )
+		return o;
+	float3 eye = cScreenEyeLength.xyz;
+	float3 D = normalize( world.xyz / world.w - eye );
+	float cosForward = dot( D, cScreenForwardThickness.xyz );
+	if ( cosForward <= 0.0 )
+		return o;
+	float opaqueDistance = covered ? z / cosForward : VOLUME_UNBOUNDED;
+	uint steps = max( cVolumeControl.x, 1u );
+	float jitter = Volume_Noise( float2( texel ) + VOLUME_NOISE_FRAME * float( cVolumeControl.w ) );
+	float3 delta = float3( 0.0, 0.0, 0.0 );
+
+	// Local map/editor lights of this footprint's tile and the projected lights share the global medium.
+	float localScatter = cVolumeMedium.x * cVolumeMedium.y;
+	float localLimit = min( opaqueDistance, cVolumeMedium.w );
+	[branch] if ( localScatter > 0.0 && localLimit > 0.0 )
+	{
+		ShadowMapReceiver tileReceiver = (ShadowMapReceiver)0;
+		tileReceiver.screenPos = center;
+		tileReceiver.tile = uint2( max( ( center - cShadowViewport.xy ) / DX12_SHADOW_TILE_PIXELS, 0.0 ) );
+		uint2 range = ShadowMap_TileRange( tileReceiver );
+		[loop] for ( uint n = 0; n < range.y; ++n )
+		{
+			uint index = g_ShadowTileIndices[range.x + n];
+			RuntimeShadowLightGpu light = g_ShadowLights[index];
+			if ( ( light.reserved0 & DX12_VOLUMETRIC_LIGHT_ENABLED ) == 0 )
+				continue;
+			// Charts are sampled only when this view published them; otherwise the light is marched unshadowed.
+			bool shadowed = light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0;
+			// Finite influence sphere: attenuation radius and/or hard fade end; an unbounded light uses the whole interval.
+			float radius = light.attenuationRadius > 0.0 ? light.attenuationRadius : 0.0;
+			if ( light.fadeEnd > light.fadeStart ) radius = radius > 0.0 ? min( radius, light.fadeEnd ) : light.fadeEnd;
+			float a = 0.0, b = localLimit;
+			if ( radius > 0.0 && !Volume_SphereSegment( eye, D, light.origin, radius, a, b ) )
+				continue;
+			float ds = ( b - a ) / float( steps );
+			float3 scattered = float3( 0.0, 0.0, 0.0 );
+			[loop] for ( uint k = 0; k < steps; ++k )
+			{
+				float3 P = eye + D * ( a + ( float( k ) + jitter ) * ds );
+				float3 L;
+				float3 radiance = ShadowMap_StandardLightRadiance( light, P, L );
+				if ( !any( radiance != 0.0 ) ) continue;
+				float visibility = 1.0;
+				if ( shadowed )
+				{
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, P, float3( 0.0, 0.0, 0.0 ) );
+					if ( chart.valid )
+						visibility = lerp( 1.0, ShadowMap_LocalPCFChart( light, chart ), light.realtimeWeight );
+				}
+				if ( visibility <= 0.0 ) continue;
+				scattered += radiance * ( visibility * Volume_Phase( cVolumeMedium.z, dot( L, D ) ) );
+			}
+			delta += scattered * ( localScatter * ds );
+		}
+
+		uint count, stride;
+		g_ProjectedLights.GetDimensions( count, stride );
+		[loop] for ( uint p = 0; p < count; ++p )
+		{
+			PBRSpotGpu light = g_ProjectedLights[p];
+			if ( ( uint( light.slotsFlags.w ) & DX12_VOLUMETRIC_LIGHT_ENABLED ) == 0 )
+				continue;
+			float a = 0.0, b = localLimit;
+			if ( !Volume_SphereSegment( eye, D, light.originFar.xyz, light.originFar.w, a, b ) )
+				continue;
+			float ds = ( b - a ) / float( steps );
+			float3 scattered = float3( 0.0, 0.0, 0.0 );
+			[loop] for ( uint k = 0; k < steps; ++k )
+			{
+				float3 P = eye + D * ( a + ( float( k ) + jitter ) * ds );
+				if ( !DX12_ProjectedFrustum( light, P ) ) continue;
+				float3 L, incident;
+				float distance, visibility; // rawVisibility is 1 without a depth slot (DX12_ProjectedSample)
+				if ( !DX12_ProjectedSample( light, P, L, distance, incident, visibility ) || visibility <= 0.0 ) continue;
+				scattered += incident * ( visibility * Volume_Phase( cVolumeMedium.z, dot( L, D ) ) );
+			}
+			delta += scattered * ( localScatter * ds );
+		}
+	}
+
+	// Sun: its own medium and ray limit; samples outside valid current shadow coverage are unshadowed (visibility 1).
+	float sunScatter = cVolumeSunMedium.x * cVolumeSunMedium.y;
+	float sunLimit = min( opaqueDistance, cVolumeSunMedium.w );
+	[branch] if ( cVolumeControl.y != 0 && sunScatter > 0.0 && sunLimit > 0.0 && ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0 )
+	{
+		float ds = sunLimit / float( steps );
+		float phase = Volume_Phase( cVolumeSunMedium.z, dot( normalize( -cSunTravel.xyz ), D ) );
+		float visibilitySum = 0.0;
+		[loop] for ( uint k = 0; k < steps; ++k )
+		{
+			ShadowMapReceiver r = (ShadowMapReceiver)0;
+			r.positionWS = eye + D * ( ( float( k ) + jitter ) * ds );
+			visibilitySum += saturate( ShadowMap_SunResult( r, 1.0 ).x );
+		}
+		delta += cSunRadiance.rgb * ( visibilitySum * phase * sunScatter * ds );
+	}
+	o.scatter = float4( delta * cVolumeOutputScale.x, 0.0 );
+	return o;
+}

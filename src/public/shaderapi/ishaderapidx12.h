@@ -44,6 +44,13 @@ enum ShaderAPIDX12ComputeResourceKind_t
 	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR,
 	// Stencil plane of the scene depth (X24_TYPELESS_G8_UINT, plane 1). Texture2D<uint2> or Texture2DMS<uint2>, value in .y.
 	SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL,
+	// SSR payload G-buffer targets (all R16G16B16A16_FLOAT, scene-sized/multisampled like the PBR targets): environment
+	// contribution E (rgb) with the direct-specular light distance D (alpha), sampled-scene reflection response K
+	// (rgb, alpha 1 for a fresh eligible writer) and direct GGX specular S (rgb, alpha 0).
+	// Null before the first SSR-capturing G-buffer pass.
+	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT,
+	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE,
+	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR,
 };
 
 struct ShaderAPIDX12ComputeResource_t
@@ -55,7 +62,7 @@ struct ShaderAPIDX12ComputeResource_t
 	int m_nMipCount;
 };
 
-#define SHADERAPIDX12_COMPUTE_MAX_SRVS      8
+#define SHADERAPIDX12_COMPUTE_MAX_SRVS      16
 #define SHADERAPIDX12_COMPUTE_MAX_UAVS      8
 #define SHADERAPIDX12_COMPUTE_MAX_CONSTANTS 256
 
@@ -71,7 +78,8 @@ struct ShaderAPIDX12ComputeDispatch_t
 	int m_nGroupsX, m_nGroupsY, m_nGroupsZ;
 };
 
-#define SHADERAPIDX12_COMPUTE_INTERFACE_VERSION "ShaderAPIDX12Compute_001"
+// _002: SHADERAPIDX12_COMPUTE_MAX_SRVS 8 -> 16 (ShaderAPIDX12ComputeDispatch_t layout), PBR_SSR_SPECULAR resource.
+#define SHADERAPIDX12_COMPUTE_INTERFACE_VERSION "ShaderAPIDX12Compute_002"
 
 // SetFrameGeneration modes.
 enum ShaderAPIDX12FrameGenMode_t

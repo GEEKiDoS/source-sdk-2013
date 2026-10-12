@@ -12,6 +12,7 @@
 #include "materialsystem/shaderapidx12/native_engine_cbuffers_dx12.h"
 #include "shaderapi/ishaderapi.h"
 #include "shaderapi/ishaderapidx12.h"
+#include "shaderapi/ishaderapidx12screenspace.h"
 #include "materialsystem/idebugtextureinfo.h"
 #include "shaderapi/ishadershadow.h"
 #include "mathlib/lightdesc.h"
@@ -128,7 +129,7 @@ protected:
 //-----------------------------------------------------------------------------
 // Purpose: The DX12 shader API: IShaderAPI, IDebugTextureInfo and IShaderAPIDX12 on top of the native device
 //-----------------------------------------------------------------------------
-class CShaderAPIDX12 final : public CShaderDynamicDX12, public IShaderAPI, public IDebugTextureInfo, public IShaderAPIDX12, public IShaderAPIDX12Compute
+class CShaderAPIDX12 final : public CShaderDynamicDX12, public IShaderAPI, public IDebugTextureInfo, public IShaderAPIDX12, public IShaderAPIDX12Compute, public IShaderAPIDX12ScreenSpace
 {
 public:
 	CShaderAPIDX12();
@@ -615,7 +616,7 @@ public:
 		ShaderRasterState_t rasterState;
 		uint32_t rasterOverride, shadeMode, fogMode, pixelFog, cullMode;
 		uint32_t stencilEnabled, stencilCompare, stencilFail, stencilDepthFail, stencilPass, stencilReadMask, stencilWriteMask;
-		uint32_t gbufferPass;
+		uint32_t gbufferPass, contactReplay;
 		uint32_t alphaToCoverage, colorWriteOverride, colorWriteValue, alphaWriteOverride, alphaWriteValue, overrideDepthEnable, overrideDepthValue, forceDepthEquals, reverseDepth;
 		float shadowSlope, shadowDepth, slopeDecal, slopeNormal, depthDecal, depthNormal;
 	};
@@ -712,6 +713,113 @@ private:
 	bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) override;
 	int SceneSampleCount() override;
 	void SampleUpscalerJitter();
+
+	// IShaderAPIDX12ScreenSpace (screenspace_dx12.cpp): ordered markers; each queues an immutable pooled packet that
+	// replays the matching Replay* method below on the recording owner.
+	void BeginView( const DX12ScreenSpaceViewDesc &view ) override;
+	void BeginContactDepth() override;
+	void EndContactDepth() override;
+	void DispatchSSR() override;
+	void EndView() override;
+	void BeginVolumetrics( const DX12VolumetricSettings &settings ) override;
+	void DrawVolumetrics() override;
+
+	// ---- Screen-space view + contact depth (screenspace_dx12.cpp), recording owner ----
+	void ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &view );
+	void ReplayBeginContactDepth();
+	void ReplayEndContactDepth();
+	void ReplayScreenSpaceEndView();
+	void ReleaseScreenSpaceResources();
+	// Current opaque bracket, owned by screenspace_dx12.cpp; read by DrawBuffers, SSR and the volume capture.
+	struct ScreenSpaceViewStateDX12
+	{
+		DX12ScreenSpaceViewConstants constants{}; // backend-completed (matrices, sample count, clear depth)
+		DX12SSRSettings ssr{};
+		bool active = false;          // between a valid BeginView replay and its EndView
+		bool contactReplay = false;   // between BeginContactDepth / EndContactDepth: draws write private depth only (or are dropped)
+		bool contactsEnabled = false; // private depth is shader-readable; forward draws bind it with control.x = 1
+		bool ssrCapture = false;      // control.w: fresh PBR writers attach G-buffer targets 3/4/5 in this bracket
+	} m_ScreenSpace;
+	// Ordered-marker packets (screenspace_dx12.cpp): pooled, refcounted, immutable once queued.
+	struct ScreenSpacePacketDX12;
+	struct ScreenSpacePacketPoolDX12
+	{
+		CThreadFastMutex mutex;
+		CUtlVector<ScreenSpacePacketDX12 *> free;
+	} m_ScreenSpacePackets;
+	ScreenSpacePacketDX12 *ScreenSpacePacket( int nOperation );
+	void RecycleScreenSpacePacket( ScreenSpacePacketDX12 *pPacket );
+	void EnqueueScreenSpacePacket( ScreenSpacePacketDX12 *pPacket );
+	void ExecuteScreenSpacePacket( ScreenSpacePacketDX12 *pPacket );
+	void PurgeScreenSpacePackets();
+	// Private contact depth (§3): typeless R24G8 copy of the scene depth at the bracket's scene shape.
+	struct ContactDepthDX12
+	{
+		Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap;
+		D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+		D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		UINT width = 0, height = 0, samples = 0, quality = 0;
+		bool replayDraws = false; // replay draws target the private depth; false drops them until EndContactDepth
+		bool warned = false;
+		bool eventOpen = false;   // "Contact depth" GPU event spans BeginContactDepth..EndContactDepth of an active bracket
+		// Forward-draw bindings of the current bracket: the t0/t1 table and the 208-byte view block are built once per
+		// recording fence (or heap generation / bracket version) and reused by every draw.
+		DescriptorRangeDX12 table{};
+		uint64_t tableFence = 0;
+		D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
+		uint64_t constantsFence = 0, constantsVersion = 0, uploadedVersion = 0;
+	} m_ContactDepth;
+	bool EnsureContactDepthResources();
+	void TransitionContactDepth( D3D12_RESOURCE_STATES desiredState );
+	bool PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInputDX12 &input );
+
+	// ---- SSR (screenspace_ssr_dx12.cpp), recording owner ----
+	void ReplayDispatchSSR();
+	void ReleaseSSRResources();
+	// Backend-owned scratch render targets (ordinary texture records, UAV-promoted at creation, fence-retained on
+	// recreation/deletion). Scene/depth/delta are viewport-sized, trace and traceDistance are profile-sized; none alias
+	// the live scene.
+	struct SSRTextureDX12
+	{
+		ShaderAPITextureHandle_t handle = 0;
+		int width = 0, height = 0, mipLevels = 1;
+	};
+	struct SSRResourcesDX12
+	{
+		SSRTextureDX12 scene, depth, trace, traceDistance, delta;
+		bool warned = false;
+	} m_SSR;
+	bool EnsureSSRTexture( SSRTextureDX12 &texture, int nWidth, int nHeight, ImageFormat format, bool bFullMips, const char *pszName );
+	bool RunSSRPasses( const Rect_t &sceneRect );
+
+	// ---- Volumetric lighting (screenspace_volumetric_dx12.cpp), recording owner ----
+	void ReplayBeginVolumetrics( const DX12VolumetricSettings &settings );
+	void ReplayDrawVolumetrics();
+	// Called by ReplayScreenSpaceBeginView / ReplayScreenSpaceEndView of every bracket; no-ops outside a volume scope.
+	// Begin discards the previous candidate; End captures pCamera (nullptr: this bracket was ineligible/rejected).
+	void VolumetricBracketBegin();
+	void VolumetricBracketEnd( const DX12ScreenSpaceViewConstants *pCamera );
+	void ReleaseVolumetricResources();
+	// Current volume scope: the settings snapshot, the latest eligible main bracket's camera and the half-resolution
+	// (ceil( viewport / 2 )) march targets. The matching lighting state is held by CLightingDX12
+	// (BeginVolumetrics / CaptureVolumetricView / EndVolumetrics).
+	struct VolumetricTargetDX12
+	{
+		ShaderAPITextureHandle_t handle = 0;
+		int width = 0, height = 0;
+	};
+	struct VolumetricStateDX12
+	{
+		DX12VolumetricSettings settings{};
+		DX12ScreenSpaceViewConstants camera{}; // control x/z/w zeroed: no contact reads / SSR capture; y keeps the scene sample count
+		bool scope = false;                    // between ReplayBeginVolumetrics and ReplayDrawVolumetrics
+		bool cameraValid = false;              // the latest main bracket ended with an eligible camera
+		// Ordinary texture records (fence-retained by DeleteTexture): RGBA16F in-scattering and R32F positive view depth.
+		VolumetricTargetDX12 scatter, depth;
+	} m_Volumetric;
+	bool EnsureVolumetricTarget( VolumetricTargetDX12 &target, int nWidth, int nHeight, ImageFormat format, const char *pszName );
+	bool DrawVolumetricPass();
 
 	// Jitter goes only into eligible perspective scene draws (or the motion pass) before this frame's dispatch.
 	bool UpscalerJitterActive( bool bMotionActive ) const
@@ -855,6 +963,7 @@ private:
 		UINT samples = 1;
 		UINT quality = 0;
 		BlitEncodeDX12 encode = BlitEncodeDX12::None;
+		bool additive = false; // RGB ONE/ONE onto the destination, alpha untouched
 		Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
 	};
 
@@ -870,7 +979,9 @@ private:
 	CUtlVector<ResolveTextureRecord *> m_ResolveTextures;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pBlitRoot;
 	CUtlVector<BlitPassDX12> m_BlitPasses;
-	bool BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients = nullptr, BlitEncodeDX12 encode = BlitEncodeDX12::None );
+	// bAdditive adds the (unencoded) source RGB onto a render-target destination instead of replacing it: no copy fast
+	// path, no scratch fallback, alpha and every destination sample's own colour are preserved.
+	bool BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES &sourceState, bool bSourceIsScene, ImageFormat sourceFormat, ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState, bool bDestinationIsScene, ImageFormat destinationFormat, Rect_t sourceRect, Rect_t destinationRect, bool bSourceSRGB, bool bDestinationSRGB, const float *pGammaCoefficients = nullptr, BlitEncodeDX12 encode = BlitEncodeDX12::None, bool bAdditive = false );
 	void CopyTextureRegionDX12( ShaderAPITextureHandle_t hSource, ShaderAPITextureHandle_t hDestination, Rect_t *pSourceRect, Rect_t *pDestinationRect );
 	struct OcclusionQueryDX12;
 	CUtlVector<OcclusionQueryDX12 *> m_OcclusionQueries;
@@ -1008,7 +1119,7 @@ private:
 	bool EffectiveSRGBWrite() const { return m_ActiveSnapshot.srgbWrite && !m_bLinearColorSpaceFramebuffer; }
 
 	ShaderAPITextureHandle_t m_hRenderTarget = SHADER_RENDERTARGET_BACKBUFFER;
-	ShaderAPITextureHandle_t m_RenderTargets[RenderTargetBindingDX12::kMaxColorTargets] = { SHADER_RENDERTARGET_BACKBUFFER, SHADER_RENDERTARGET_NONE, SHADER_RENDERTARGET_NONE, SHADER_RENDERTARGET_NONE };
+	ShaderAPITextureHandle_t m_RenderTargets[RenderTargetBindingDX12::kMaxColorTargets]{}; // constructor: all SHADER_RENDERTARGET_NONE, slot 0 BACKBUFFER
 	ShaderAPITextureHandle_t m_hDepthTarget = SHADER_RENDERTARGET_DEPTHBUFFER;
 	float m_ClearColor[4] = { 0, 0, 0, 1 };
 	int m_nAnisotropy = 1;
@@ -1090,16 +1201,21 @@ private:
 	uint32_t m_nMotionPassDraws = 0, m_nMotionPassObjects = 0, m_nMotionSuppressedPasses = 0;
 	uint64_t m_nMotionLogFrame = 0;
 	// PBR G-buffer targets (target layout: gbuffer_dx12.cpp). DrawBuffers appends them to PBR draws while m_bGBufferPass is set;
-	// validity is stencil bit kGBufferStencilBit. Compute reads the targets in kGBufferReadState.
+	// validity is stencil bit kGBufferStencilBit. Compute reads the targets in kGBufferReadState. Targets 0/1 (normal,
+	// F0 + roughness) always exist with the pass; 2/3/4 (environment contribution E + specular light distance D, SSR
+	// response K, direct specular S) are created lazily for SSR brackets and attached only while m_ScreenSpace.ssrCapture is set.
 	static constexpr uint8_t kGBufferStencilBit = 0x80;
-	static constexpr DXGI_FORMAT kGBufferFormats[2] = { DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM };
+	static constexpr UINT kGBufferBaseTargets = 2, kGBufferSsrTargets = 5;
+	static constexpr DXGI_FORMAT kGBufferFormats[kGBufferSsrTargets] = { DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT };
 	static constexpr D3D12_RESOURCE_STATES kGBufferReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGBufferNormal, m_pGBufferSpec;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGBufferNormal, m_pGBufferSpec, m_pGBufferEnvironment, m_pGBufferResponse, m_pGBufferSpecular;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_pGBufferRtvHeap;
-	D3D12_CPU_DESCRIPTOR_HANDLE m_GBufferRtv[2]{};
-	D3D12_RESOURCE_STATES m_GBufferState[2] = { D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET };
+	D3D12_CPU_DESCRIPTOR_HANDLE m_GBufferRtv[kGBufferSsrTargets]{};
+	D3D12_RESOURCE_STATES m_GBufferState[kGBufferSsrTargets] = { D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET };
 	UINT m_nGBufferWidth = 0, m_nGBufferHeight = 0, m_nGBufferSamples = 0, m_nGBufferQuality = 0;
-	bool m_bGBufferPass = false, m_bGBufferWarned = false;
+	bool m_bGBufferPass = false, m_bGBufferWarned = false, m_bGBufferSsrWarned = false;
+	bool EnsureGBufferSsrResources();
+	ID3D12Resource *GBufferTarget( UINT nTarget ) const;
 	// Native-AA upscaler. Every field is owned by the recording thread; replay results arrive through m_UpscalerReplay.
 	static constexpr uint64_t kUpscalerReplaySlots = 4;
 	CUpscalerDX12 m_Upscaler;

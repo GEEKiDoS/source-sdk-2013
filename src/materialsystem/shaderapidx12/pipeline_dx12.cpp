@@ -82,8 +82,8 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 		m_nZeroConstantAddress = m_pZeroConstants->GetGPUVirtualAddress();
 	}
 	// Ranges: SRV t0-15, sampler s0-15, native CBV b0-b7 in register space 1; [4] lighting visibility, [5] highres, [6] PBR
-	// projected lights t0-16 space 5, [7] ambient probes t0-8 space 4.
-	D3D12_DESCRIPTOR_RANGE ranges[8]{};
+	// projected lights t0-16 space 5, [7] ambient probes t0-8 space 4, [8] screen-space depth t0-3 space 6.
+	D3D12_DESCRIPTOR_RANGE ranges[9]{};
 	ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	ranges[0].NumDescriptors = 16;
 	ranges[0].BaseShaderRegister = 0;
@@ -94,7 +94,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	ranges[2].NumDescriptors = 8;
 	ranges[2].BaseShaderRegister = 0;
 	ranges[2].RegisterSpace = 1;
-	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR table.
+	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR table; 21-23 PS space-6 table and CBVs.
 	D3D12_ROOT_PARAMETER params[kHighresRootParameterCount]{};
 	for ( int i = 0; i < 4; ++i )
 	{
@@ -135,6 +135,21 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootPbrSpots].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[kRootPbrSpots].DescriptorTable = { 1, &ranges[6] };
 	params[kRootPbrSpots].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	// Space 6 exists on every root: ordinary forward draws read private contact depth, the volume pass reads scene depth.
+	ranges[8].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	ranges[8].NumDescriptors = DX12_SCREENSPACE_TABLE_COUNT;
+	ranges[8].RegisterSpace = DX12_SCREENSPACE_REGISTER_SPACE;
+	params[kRootScreenSpaceTable].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[kRootScreenSpaceTable].DescriptorTable = { 1, &ranges[8] };
+	params[kRootScreenSpaceTable].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootScreenSpaceView].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[kRootScreenSpaceView].Descriptor.ShaderRegister = DX12_SCREENSPACE_B_VIEW;
+	params[kRootScreenSpaceView].Descriptor.RegisterSpace = DX12_SCREENSPACE_REGISTER_SPACE;
+	params[kRootScreenSpaceView].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootVolumetricConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[kRootVolumetricConstants].Descriptor.ShaderRegister = DX12_SCREENSPACE_B_VOLUMETRIC;
+	params[kRootVolumetricConstants].Descriptor.RegisterSpace = DX12_SCREENSPACE_REGISTER_SPACE;
+	params[kRootVolumetricConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	// Static samplers accumulate: each signature binds the prefix its parameters need, so its count is the number added so far.
 	D3D12_STATIC_SAMPLER_DESC samplers[5]{};
 	UINT samplerCount = 0;
@@ -283,6 +298,8 @@ void CPipelineCacheDX12::Shutdown()
 	m_pLightingRoot.Reset();
 	m_pHighresRoot.Reset();
 	m_pBoundRoot = nullptr;
+	m_ScreenSpaceNullTable = {};
+	m_nScreenSpaceNullTableFence = 0;
 	m_pDevice = nullptr;
 	m_NullSrv = {};
 	m_LinearClampSampler = {};
@@ -637,8 +654,13 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		return false;
 	// Reserve every ordinary draw table before consulting generation-keyed caches. A later SRV
 	// allocation must not roll the heap after either stage has captured its native CBV table.
-	const uint32_t descriptorCount = 32u + ( input.nativeStage[0] ? 8u : 0u ) + ( input.nativeStage[1] ? 8u : 0u );
+	const bool neutralTable = input.screenSpaceTable.count == 0;
+	const bool neutralTableStale = neutralTable && ( m_nScreenSpaceNullTableFence != input.retireFence || m_ScreenSpaceNullTable.generation != ResourceHeapGeneration() );
+	const uint32_t descriptorCount = 32u + ( input.nativeStage[0] ? 8u : 0u ) + ( input.nativeStage[1] ? 8u : 0u ) + ( neutralTableStale ? DX12_SCREENSPACE_TABLE_COUNT : 0u );
 	if ( !ReserveResourceDescriptors( descriptorCount, input.retireFence ) )
+		return false;
+	if ( neutralTable ? !PrepareScreenSpaceNullTable( input.retireFence ) :
+	     ( input.screenSpaceTable.count != DX12_SCREENSPACE_TABLE_COUNT || !input.screenSpaceTable.gpu.ptr || input.screenSpaceTable.generation != ResourceHeapGeneration() ) )
 		return false;
 	if ( input.lightingAbi && ( !m_pLightingRoot || input.lightingViewTable.count != DX12_LIGHTING_RESOURCE_TABLE_COUNT ||
 	     !input.lightingViewTable.gpu.ptr || !input.lightingViewConstants || !input.propDrawConstants || !input.propTriangles ||
@@ -901,7 +923,8 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	     ( input.lightingVisibilityTable.count && input.lightingVisibilityTable.generation != ResourceHeapGeneration() ) ) )
 		return false;
 	if ( ( input.highresAbi && input.highresTable.generation != ResourceHeapGeneration() ) || ( input.pbrSpotsTable.count && input.pbrSpotsTable.generation != ResourceHeapGeneration() ) ||
-	     ( input.probeAbi && input.probeTable.generation != ResourceHeapGeneration() ) )
+	     ( input.probeAbi && input.probeTable.generation != ResourceHeapGeneration() ) ||
+	     ( neutralTable ? m_ScreenSpaceNullTable.generation : input.screenSpaceTable.generation ) != ResourceHeapGeneration() )
 		return false;
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 RootTables", DX12_DRAW_ZONES_ACTIVE );
@@ -923,6 +946,8 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			m_BoundPbrSpots = {};
 			m_BoundProbeTable = {};
 			m_nBoundProbeConstants = 0;
+			m_BoundScreenSpaceTable = {};
+			m_nBoundScreenSpaceView = m_nBoundVolumetricConstants = 0;
 			m_pBoundResourceHeap = resourceHeap;
 			m_pBoundSamplerHeap = samplerHeap;
 		}
@@ -982,6 +1007,30 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				++m_Stats.rootCbvSets;
 				pList->SetGraphicsRootConstantBufferView( kRootProbeConstants, input.probeConstants );
 				m_nBoundProbeConstants = input.probeConstants;
+			}
+		}
+		// Space-6 screen-space inputs are bound on every root; a zero input means the neutral table / zero constants.
+		{
+			const D3D12_GPU_DESCRIPTOR_HANDLE screenTable = input.screenSpaceTable.count ? input.screenSpaceTable.gpu : m_ScreenSpaceNullTable.gpu;
+			const D3D12_GPU_VIRTUAL_ADDRESS screenView = input.screenSpaceView ? input.screenSpaceView : m_nZeroConstantAddress;
+			const D3D12_GPU_VIRTUAL_ADDRESS volumetric = input.volumetricConstants ? input.volumetricConstants : m_nZeroConstantAddress;
+			if ( !m_bGraphicsBindingsValid || m_BoundScreenSpaceTable.ptr != screenTable.ptr )
+			{
+				++m_Stats.rootTableSets;
+				pList->SetGraphicsRootDescriptorTable( kRootScreenSpaceTable, screenTable );
+				m_BoundScreenSpaceTable = screenTable;
+			}
+			if ( !m_bGraphicsBindingsValid || m_nBoundScreenSpaceView != screenView )
+			{
+				++m_Stats.rootCbvSets;
+				pList->SetGraphicsRootConstantBufferView( kRootScreenSpaceView, screenView );
+				m_nBoundScreenSpaceView = screenView;
+			}
+			if ( !m_bGraphicsBindingsValid || m_nBoundVolumetricConstants != volumetric )
+			{
+				++m_Stats.rootCbvSets;
+				pList->SetGraphicsRootConstantBufferView( kRootVolumetricConstants, volumetric );
+				m_nBoundVolumetricConstants = volumetric;
 			}
 		}
 		// Slots 0-3 feed VS b0-b3 (mirrored to GS b0-b3 when a geometry stage runs); slots 4-9 feed PS b0-b5.
@@ -1069,6 +1118,29 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		m_nGraphicsBindingsFence = input.retireFence;
 		return true;
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Space-6 table of typed nulls (t0 2D, t1 2DMS, t2 2D, t3 2DMS) for draws
+//          without screen-space inputs; one allocation per recording fence
+//-----------------------------------------------------------------------------
+bool CPipelineCacheDX12::PrepareScreenSpaceNullTable( uint64_t nRetireFence )
+{
+	if ( m_nScreenSpaceNullTableFence == nRetireFence && m_ScreenSpaceNullTable.generation == ResourceHeapGeneration() )
+		return true;
+	const DescriptorRangeDX12 table = AllocateTransientResources( DX12_SCREENSPACE_TABLE_COUNT, nRetireFence );
+	if ( table.count != DX12_SCREENSPACE_TABLE_COUNT )
+		return false;
+	for ( UINT slot = 0; slot < DX12_SCREENSPACE_TABLE_COUNT; ++slot )
+	{
+		const D3D12_SHADER_RESOURCE_VIEW_DESC srv = ScreenSpaceNullSrvDesc( slot );
+		D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
+		cpu.ptr += slot * m_nResourceStride;
+		m_pDevice->CreateShaderResourceView( nullptr, &srv, cpu );
+	}
+	m_ScreenSpaceNullTable = table;
+	m_nScreenSpaceNullTableFence = nRetireFence;
+	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -1222,7 +1294,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 			return entry.pso.Get();
 		}
 	}
-	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull );
+	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull ) ^ ( key.contactReplay ? 0x94D049BB133111EBull : 0ull );
 	const unsigned hint = Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & static_cast<unsigned>( ARRAYSIZE( m_PipelineHints ) - 1 );
 	if ( m_PipelineHints[hint] )
 	{
@@ -1258,7 +1330,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.InputLayout = layout;
 	desc.PrimitiveTopologyType = static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>( key.topology );
 	desc.NumRenderTargets = key.colorCount;
-	for ( UINT i = 0; i < key.colorCount && i < 4; ++i )
+	for ( UINT i = 0; i < key.colorCount && i < ARRAYSIZE( key.colorFormats ); ++i )
 		desc.RTVFormats[i] = key.colorFormats[i];
 	desc.DSVFormat = key.depth;
 	desc.SampleDesc.Count = key.samples;
@@ -1272,7 +1344,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.RasterizerState.DepthClipEnable = TRUE;
 	desc.BlendState.AlphaToCoverageEnable = key.alphaToCoverage && key.samples > 1;
 	static constexpr D3D12_BLEND_OP blendOps[] = { D3D12_BLEND_OP_ADD, D3D12_BLEND_OP_SUBTRACT, D3D12_BLEND_OP_REV_SUBTRACT, D3D12_BLEND_OP_MIN, D3D12_BLEND_OP_MAX };
-	for ( UINT i = 0; i < key.colorCount && i < 4; ++i )
+	for ( UINT i = 0; i < key.colorCount && i < ARRAYSIZE( key.colorFormats ); ++i )
 	{
 		D3D12_RENDER_TARGET_BLEND_DESC &target = desc.BlendState.RenderTarget[i];
 		const bool gbufferTarget = key.gbuffer && i > 0;
