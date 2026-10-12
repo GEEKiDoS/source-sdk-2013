@@ -1,4 +1,4 @@
-logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=3 present=12
+logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=12 present=48
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=

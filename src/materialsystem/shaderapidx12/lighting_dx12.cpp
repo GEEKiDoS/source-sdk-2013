@@ -32,7 +32,7 @@ namespace shaderapidx12
 {
 namespace
 {
-enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload, BeginProp, EndProp, Projected };
+enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload, BeginProp, EndProp, Projected, BatchBegin, BatchEnd };
 const char *const kPacketError = "Shadowmaps: invalid lighting packet";
 D3D12_CPU_DESCRIPTOR_HANDLE Offset( D3D12_CPU_DESCRIPTOR_HANDLE handle, UINT index, UINT stride )
 {
@@ -1150,6 +1150,8 @@ bool NativeLogicalAvailable( IFileSystem &filesystem, const char *name, bool pix
 			if ( pixel && !V_strcmp( name, "lightmappedgeneric_shadowmap_ps51" ) && !visibility ) return false;
 			if ( ( !V_strcmp( name, "shadow_depth_restore_vs51" ) || !V_strcmp( name, "shadow_depth_restore_ps51" ) ) &&
 				!ValidateShadowDepthRestoreShaderDX12( { payload->tokens.Base(), SIZE_T( payload->tokens.Count() ) }, pixel ) ) return false;
+			if ( !pixel && !V_strcmp( name, "depthwrite_instanced_vs51" ) &&
+				!ValidateInstancedCasterShaderDX12( { payload->tokens.Base(), SIZE_T( payload->tokens.Count() ) } ) ) return false;
 			// Replay/unlit combos can legally precede the first actual RGB receiver.
 			if ( !feature || !pixel || lighting ) return true;
 		}
@@ -1195,6 +1197,27 @@ bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode
 		else return false;
 	}
 	return constants && source;
+}
+
+bool ValidateInstancedCasterShaderDX12( const D3D12_SHADER_BYTECODE &bytecode )
+{
+	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
+	if ( FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ) return false;
+	D3D12_SHADER_DESC shader{};
+	if ( FAILED( reflection->GetDesc( &shader ) ) || ( ( shader.Version >> 16 ) & 0xffffu ) != D3D12_SHVER_VERTEX_SHADER ) return false;
+	bool rows = false;
+	for ( UINT i = 0; i < shader.BoundResources; ++i )
+	{
+		D3D12_SHADER_INPUT_BIND_DESC binding{};
+		if ( FAILED( reflection->GetResourceBindingDesc( i, &binding ) ) ) return false;
+		// Engine cbuffers are validated against kEngineCBufferLayouts by the record loader; nothing else may be bound.
+		if ( binding.Type == D3D_SIT_CBUFFER ) continue;
+		if ( rows || binding.Type != D3D_SIT_STRUCTURED || binding.Space != DX12_INSTANCE_REGISTER_SPACE || binding.BindPoint != DX12_INSTANCE_T_MODEL_ROWS ||
+			binding.BindCount != 1 || binding.NumSamples != DX12_INSTANCE_ROW_STRIDE || binding.Dimension != D3D_SRV_DIMENSION_BUFFER ||
+			V_strcmp( binding.Name, "g_InstanceModelRows" ) ) return false;
+		rows = true;
+	}
+	return rows;
 }
 
 // Reusable reference-counted queue packet. Arrays keep capacity when recycled, including per-light pass packets.
@@ -2005,6 +2028,8 @@ void CLightingDX12::BeginShadowPass( DX12ShadowTarget_t target, int x, int y, in
 	Enqueue( packet );
 }
 void CLightingDX12::EndShadowPass() { Enqueue( Packet( EndPass ) ); }
+void CLightingDX12::BeginShadowCasterBatch() { Enqueue( Packet( BatchBegin ) ); }
+void CLightingDX12::EndShadowCasterBatch() { Enqueue( Packet( BatchEnd ) ); }
 void CLightingDX12::CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height )
 {
 	LightingPacketDX12 *packet = Packet( Restore );
@@ -2189,6 +2214,19 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 	{
 		if ( !s.propScopes.Count() ) { s.Fail( kPacketError ); return; }
 		s.propScopes.Tail()->Release(); s.propScopes.RemoveMultipleFromTail( 1 );
+		return;
+	}
+	if ( packet->operation == BatchBegin )
+	{
+		if ( !s.passes.Count() ) { s.Fail( kPacketError ); return; }
+		// Instanced VS missing: same policy as EnsureRestore.
+		if ( !s.api->BeginShadowCasterBatch() ) s.Fail( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+		return;
+	}
+	if ( packet->operation == BatchEnd )
+	{
+		if ( !s.passes.Count() ) { s.Fail( kPacketError ); return; }
+		s.api->FlushShadowCasterBatch( true );
 		return;
 	}
 	if ( packet->operation == View )
@@ -2425,6 +2463,8 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 	if ( packet->operation == EndPass )
 	{
 		if ( !s.passes.Count() ) { s.Fail( kPacketError ); return; }
+		// A batch the client left open is emitted into the pass target that is still bound.
+		s.api->FlushShadowCasterBatch( true );
 		const Impl::PassState saved = s.passes.Tail();
 		s.passes.RemoveMultipleFromTail( 1 );
 		s.RestoreBackend( saved );
@@ -2434,6 +2474,8 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 	}
 	if ( packet->operation == Pass )
 	{
+		// A batch left open by a nested pass is emitted into the still-bound outer target.
+		s.api->FlushShadowCasterBatch( true );
 		s.device->BeginGpuStage( CShaderDeviceDX12::GpuShadowDepth );
 		Impl::PassState saved;
 		memcpy( saved.viewports, s.api->m_Viewports, sizeof( saved.viewports ) );

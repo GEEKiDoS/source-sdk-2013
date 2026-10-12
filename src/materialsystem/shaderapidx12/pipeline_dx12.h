@@ -118,6 +118,9 @@ public:
 		DescriptorRangeDX12 screenSpaceTable{};            // 4 descriptors: t0 Texture2D<float>, t1 Texture2DMS<float>, t2 Texture2D<float>, t3 Texture2DMS<float>
 		D3D12_GPU_VIRTUAL_ADDRESS screenSpaceView = 0;     // b0 space6, DX12ScreenSpaceViewConstants
 		D3D12_GPU_VIRTUAL_ADDRESS volumetricConstants = 0; // b1 space6, DX12VolumetricConstants
+		// VS space-7 root SRV of batched shadow-caster instance rows; 0 = draw is not instanced (parameter left stale,
+		// the shader never declares it).
+		D3D12_GPU_VIRTUAL_ADDRESS instanceTransforms = 0;
 		uint64_t retireFence = 0;
 		// Whether the draw samples vertex textures / runs a geometry stage; unused root parameters may stay stale.
 		bool vertexTextures = true, geometryStage = true;
@@ -306,11 +309,11 @@ private:
 	// Largest legal cbuffer; also the read slack kept past every upload page used for root CBVs.
 	static constexpr size_t kConstantBufferMaxBytes = 65536;
 	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR projected-light table;
-	// 21 PS space-6 screen-space table, 22/23 PS space-6 b0/b1 root CBVs.
+	// 21 PS space-6 screen-space table, 22/23 PS space-6 b0/b1 root CBVs; 24 VS space-7 instance-row root SRV.
 	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootPbrSpots = 20;
-	static constexpr UINT kRootScreenSpaceTable = 21, kRootScreenSpaceView = 22, kRootVolumetricConstants = 23, kRootParameterCount = 24;
-	static constexpr UINT kRootLightingView = 24, kRootLightingViewConstants = 25, kRootLightingVisibility = 26, kRootPropDraw = 27, kRootPropTriangles = 28, kRootProbeTable = 29, kRootProbeConstants = 30, kLightingRootParameterCount = 31;
-	static constexpr UINT kRootHighresTable = 31, kRootHighresConstants = 32, kRootHighresFailure = 33, kHighresRootParameterCount = 34;
+	static constexpr UINT kRootScreenSpaceTable = 21, kRootScreenSpaceView = 22, kRootVolumetricConstants = 23, kRootInstanceTransforms = 24, kRootParameterCount = 25;
+	static constexpr UINT kRootLightingView = 25, kRootLightingViewConstants = 26, kRootLightingVisibility = 27, kRootPropDraw = 28, kRootPropTriangles = 29, kRootProbeTable = 30, kRootProbeConstants = 31, kLightingRootParameterCount = 32;
+	static constexpr UINT kRootHighresTable = 32, kRootHighresConstants = 33, kRootHighresFailure = 34, kHighresRootParameterCount = 35;
 	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
 	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride );
@@ -376,7 +379,7 @@ private:
 
 	NativeTableCache m_NativeTableCache[2];
 	D3D12_GPU_VIRTUAL_ADDRESS m_BoundRootConstants[kRootNativeVertex - kRootVertexConstants] = {};
-	D3D12_GPU_VIRTUAL_ADDRESS m_BoundPropDraw = 0, m_BoundPropTriangles = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS m_BoundPropDraw = 0, m_BoundPropTriangles = 0, m_BoundInstanceTransforms = 0;
 	ID3D12DescriptorHeap *m_pBoundResourceHeap = nullptr, *m_pBoundSamplerHeap = nullptr;
 	ID3D12RootSignature *m_pBoundRoot = nullptr;
 	uint64_t m_nGraphicsBindingsFence = 0;

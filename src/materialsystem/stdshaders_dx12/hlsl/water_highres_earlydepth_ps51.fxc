@@ -401,7 +401,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 #if BASETEXTURE && REFLECT && !REFRACT
  HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );
  ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.vProjPos_POSITION.xy );
- hls.bakedSunVisibility = hlr.sun;
+ ShadowMap_SetBakedSun( hls, hlr.sun, hlr.sunDilated );
  ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
 #endif
 

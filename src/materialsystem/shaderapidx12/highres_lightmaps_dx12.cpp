@@ -5,9 +5,12 @@
 #include "staticprop_visibility_dx12.h"
 #include "shaderapi/ishaderutil.h"
 #include "filesystem.h"
+#include "materialsystem/imaterial.h"
+#include "materialsystem/imaterialsystem.h"
 #include "zip_utils.h"
 #include "hprobe_bsp.h"
 #include "tier0/platform.h"
+#include "tier1/lzmaDecoder.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/strtools.h"
 #include "tier2/tier2.h"
@@ -16,6 +19,9 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <system_error>
+#include <thread>
 #include <new>
 
 namespace shaderapidx12
@@ -104,6 +110,134 @@ bool MapPath(const char *map, char path[260])
     if (!V_strnicmp(name, "maps/", 5)) V_snprintf(path, 260, "%s.bsp", name);
     else V_snprintf(path, 260, "maps/%s.bsp", name);
     return true;
+}
+// One central-directory entry. Content identity is (method, CRC, sizes); dataOffset is absolute within the BSP and
+// follows the engine pack-file and CZipFile rule: local header + central-directory name/extra lengths.
+struct PakMember
+{
+    uint32 method = 0, crc32 = 0, compressedBytes = 0, uncompressedBytes = 0, dataOffset = 0;
+    bool found = false;
+    bool operator==(const PakMember &o) const
+    {
+        return found == o.found && method == o.method && crc32 == o.crc32 &&
+            compressedBytes == o.compressedBytes && uncompressedBytes == o.uncompressedBytes;
+    }
+};
+// Finds the manifest-named .hlight and its paired .hprobe with one central-directory read; member payloads are not
+// touched. Names compare case-insensitively like CZipFile/packfile lookups. A repeated name is an ambiguous pak.
+bool LocateAssets(BspFile &bsp, const ShadowMapBspLumpInfo &pak, const char *assetPath, char (&probePath)[260], PakMember (&out)[2])
+{
+    out[0] = out[1] = {};
+    if (!hprobe::ProbeAssetPath(assetPath, probePath, sizeof(probePath))) probePath[0] = 0;
+    ZIP_EndOfCentralDirRecord end{}; bool compatible = true;
+    if (!hlight::LocatePakDirectory(BspFile::Read, &bsp, pak, end, compatible)) return false;
+    std::vector<uint8> directory(end.centralDirectorySize);
+    if (!directory.empty() && !BspFile::Read(&bsp, pak.fileofs + end.startOfCentralDirOffset, end.centralDirectorySize, directory.data())) return false;
+    const char *const names[2] = { assetPath, probePath };
+    const size_t nameBytes[2] = { size_t(V_strlen(assetPath)), size_t(V_strlen(probePath)) };
+    size_t cursor = 0;
+    for (uint32 i = 0; i < end.nCentralDirectoryEntries_Total; ++i)
+    {
+        ZIP_FileHeader entry;
+        if (sizeof(entry) > directory.size() - cursor) return false;
+        memcpy(&entry, directory.data() + cursor, sizeof(entry)); cursor += sizeof(entry);
+        if (entry.signature != PKID(1,2) || entry.diskNumberStart) return false;
+        const size_t span = size_t(entry.fileNameLength) + (compatible ? size_t(entry.extraFieldLength) + entry.fileCommentLength : 0);
+        if (span > directory.size() - cursor) return false;
+        const char *name = reinterpret_cast<const char *>(directory.data() + cursor);
+        for (uint32 n = 0; n < 2; ++n)
+        {
+            if (!nameBytes[n] || nameBytes[n] != entry.fileNameLength || V_strnicmp(name, names[n], int(nameBytes[n]))) continue;
+            if (out[n].found) return false;
+            const uint64 data = uint64(entry.relativeOffsetOfLocalHeader) + sizeof(ZIP_LocalFileHeader) + entry.fileNameLength + entry.extraFieldLength;
+            if (data > pak.filelen || entry.compressedSize > pak.filelen - data) return false;
+            out[n].method = entry.compressionMethod; out[n].crc32 = entry.crc32;
+            out[n].compressedBytes = entry.compressedSize; out[n].uncompressedBytes = entry.uncompressedSize;
+            out[n].dataOffset = uint32(pak.fileofs + data); out[n].found = true;
+        }
+        cursor += span;
+    }
+    return true;
+}
+// Reads a stored or Source-LZMA member straight into its exactly sized owned buffer: no pak copy, no second
+// full-size decode buffer. new[] alignment satisfies the 4-byte view contracts.
+bool ReadPakMember(BspFile &bsp, const PakMember &member, std::unique_ptr<uint8[]> &out)
+{
+    out.reset();
+    if (!member.found || !member.uncompressedBytes || member.uncompressedBytes > hlight::kMaxFileBytes) return false;
+    out.reset(new uint8[member.uncompressedBytes]);
+    if (member.method == IZip::eCompressionType_None)
+        return member.compressedBytes == member.uncompressedBytes && BspFile::Read(&bsp, member.dataOffset, member.compressedBytes, out.get());
+    if (member.method != IZip::eCompressionType_LZMA) return false;
+    std::unique_ptr<uint8[]> packed(new uint8[member.compressedBytes]);
+    if (!BspFile::Read(&bsp, member.dataOffset, member.compressedBytes, packed.get())) return false;
+    CLZMAStream stream; stream.InitZIPHeader(member.compressedBytes, member.uncompressedBytes);
+    unsigned int consumed = 0, written = 0;
+    return stream.Read(packed.get(), member.compressedBytes, out.get(), member.uncompressedBytes, consumed, written) &&
+        consumed == member.compressedBytes && written == member.uncompressedBytes;
+}
+// Immutable once built: the manifest-named .hlight and its optional paired .hprobe, read and validated. Views point
+// into the owned buffers; a map adopts a bundle only when its pak members carry the same content identity.
+struct MapAssets
+{
+    PakMember members[2]; // .hlight, .hprobe (found=false when absent)
+    std::unique_ptr<uint8[]> hlightBytes, probeBytes;
+    hlight::FileView file{};
+    hprobe::FileView probeFile{};
+    bool valid = false, probeValid = false;
+    char error[512] = {}, probeReason[sizeof(DX12HighresMapStatus::probeError)] = {};
+    bool Matches(const PakMember (&m)[2]) const { return members[0] == m[0] && members[1] == m[1]; }
+};
+std::shared_ptr<const MapAssets> BuildAssets(BspFile &bsp, const PakMember (&members)[2], const char *probePath)
+{
+    auto assets = std::make_shared<MapAssets>();
+    assets->members[0] = members[0]; assets->members[1] = members[1];
+    if (!ReadPakMember(bsp, members[0], assets->hlightBytes))
+    {
+        assets->hlightBytes.reset();
+        V_strncpy(assets->error, "Highres lightmaps: manifest-named BSP pak asset missing", sizeof(assets->error));
+        return assets;
+    }
+    if (!hlight::ValidateFile(assets->hlightBytes.get(), members[0].uncompressedBytes, assets->file, assets->error, sizeof(assets->error)))
+    {
+        assets->hlightBytes.reset();
+        return assets;
+    }
+    assets->valid = true;
+    if (!*probePath) V_strncpy(assets->probeReason, "the lightmap asset path is not an .hlight", sizeof(assets->probeReason));
+    else if (!ReadPakMember(bsp, members[1], assets->probeBytes))
+        V_snprintf(assets->probeReason, sizeof(assets->probeReason), "%s is missing from the BSP pak; rebake with -restir_shadowmaps", probePath);
+    else assets->probeValid = hprobe::ValidateFile(assets->probeBytes.get(), members[1].uncompressedBytes, assets->probeFile, assets->probeReason, sizeof(assets->probeReason)) &&
+        hprobe::ValidatePair(assets->probeFile, assets->file, assets->probeReason, sizeof(assets->probeReason));
+    if (!assets->probeValid) { assets->probeBytes.reset(); assets->probeFile = {}; }
+    return assets;
+}
+// Worker body: the same reads and validation OnNativeDomain would run, started at the map's first native lump. Any
+// non-enhanced, unreadable or already-held map yields nothing; OnNativeDomain then decides synchronously as before.
+std::shared_ptr<const MapAssets> PrefetchAssets(IFileSystem *fs, const char *mapPath, std::shared_ptr<const MapAssets> held)
+{
+    try
+    {
+        COM_TimestampedLog("Highres lightmaps: asset prefetch - start");
+        BspFile bsp(fs, mapPath); ShadowMapBspLumpInfo lumps[HEADER_LUMPS]; uint32 offset, bytes, version, flags; bool compressed;
+        if (!ShadowMap_ReadBspDirectory(BspFile::Read, &bsp, lumps, offset, bytes, version, compressed, flags) ||
+            version != hlight::kManifestVersion || !bytes || bytes > hlight::kMaxFileBytes) return nullptr;
+        std::vector<uint8> manifest(bytes);
+        hlight::ManifestView view{}; char error[512];
+        if (!BspFile::Read(&bsp, offset, bytes, manifest.data()) ||
+            !hlight::ValidateManifest(manifest.data(), bytes, flags, view, error, sizeof(error)) ||
+            (!view.mode[SHADOWMAP_MODE_LDR].runtime && !view.mode[SHADOWMAP_MODE_HDR].runtime)) return nullptr;
+        const auto &pak = lumps[LUMP_PAKFILE];
+        PakMember members[2]; char probePath[260];
+        if (pak.uncompressedSize || !pak.filelen || pak.filelen > hlight::kMaxFileBytes ||
+            !LocateAssets(bsp, pak, view.header->assetPath, probePath, members) || !members[0].found ||
+            (held && held->Matches(members))) return nullptr;
+        held.reset();
+        auto assets = BuildAssets(bsp, members, probePath);
+        COM_TimestampedLog("Highres lightmaps: asset prefetch - end");
+        return assets;
+    }
+    catch (const std::bad_alloc &) { return nullptr; }
 }
 struct Texture
 {
@@ -235,11 +369,16 @@ struct CHighresLightmapsDX12::Impl
     char error[512] = {}, mapPath[260] = {};
     std::shared_ptr<const HlightNativeDomain> domain;
     std::shared_ptr<const HlightNativeAtlas> atlas;
-    CUtlBuffer asset;
+    // Validated pak assets of the admitted (or last admitted) map; retained across retire so a reload of identical pak
+    // content skips the decode. prefetch writes prefetched; both are touched by this thread only after JoinPrefetch.
+    std::shared_ptr<const MapAssets> assets, prefetched;
+    std::thread prefetch;
+    void JoinPrefetch() { if (prefetch.joinable()) prefetch.join(); }
     hlight::FileView file{};
     const hlight::ModeView *mode = nullptr;
     bool enhancedRequired = false;
     bool bridgeAttempted = false;
+    bool receiverSnapshots = false; // receiver state the precached materials were last refreshed under
     std::vector<DynamicFace> dynamics;
     std::vector<NativePage> pages;
     NativePage neutral; // Explicit native white/unlit standard textures; never a fabricated face.
@@ -265,7 +404,6 @@ struct CHighresLightmapsDX12::Impl
     uint64 nextViewSerial = 1, commonRetainedFence = 0, polledFence = ~uint64(0);
     // Dense ambient probes (maps/<name>.hprobe beside the .hlight in the pak): the selected mode's CPU asset lives with the
     // map; the nine textures become resident on the first PBR probe consumer draw and are dropped with the device.
-    CUtlBuffer probeAsset;
     hprobe::FileView probeFile{};
     const hprobe::ModeView *probeMode = nullptr;
     Texture3D probeTextures[DX12_PROBE_TABLE_COUNT];
@@ -318,7 +456,7 @@ struct CHighresLightmapsDX12::Impl
         status.probeBytes = 0;
         if (probeMode) status.probeError[0] = 0; // a validated asset's only runtime failure is residency, retried on the next device
     }
-    void ClearProbes() { ClearProbeGpu(); probeMode = nullptr; probeFile = {}; probeAsset.Purge(); }
+    void ClearProbes() { ClearProbeGpu(); probeMode = nullptr; probeFile = {}; }
     void Poll()
     {
         if (!device) return;
@@ -444,18 +582,17 @@ struct CHighresLightmapsDX12::Impl
         Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         return true;
     }
-    // Reads and validates the optional probe asset paired with the admitted .hlight for the selected mode. Failure only
-    // records the reason in the status: PBR model receivers then bind the engine ambient cube and nothing else changes.
-    void LoadProbes(IZip &zip, const char *hlightPath)
+    // Selects the optional probe grid paired with the admitted .hlight for the selected mode. Failure only records the
+    // reason in the status: PBR model receivers then bind the engine ambient cube and nothing else changes.
+    void SelectProbes()
     {
-        char path[260], reason[sizeof(status.probeError)] = {};
-        if (!hprobe::ProbeAssetPath(hlightPath,path,sizeof(path))) V_strncpy(reason,"the lightmap asset path is not an .hlight",sizeof(reason));
-        else if (!zip.ReadFileFromZip(path,false,probeAsset) || probeAsset.TellPut()<=0) V_snprintf(reason,sizeof(reason),"%s is missing from the BSP pak; rebake with -restir_shadowmaps",path);
-        else if (hprobe::ValidateFile(probeAsset.Base(),uint32(probeAsset.TellPut()),probeFile,reason,sizeof(reason)) &&
-            hprobe::ValidatePair(probeFile,file,reason,sizeof(reason)) &&
-            !(probeMode=hprobe::FindMode(probeFile,domain->faceLump,domain->lightingLump))) V_strncpy(reason,"the asset has no grid for the selected lighting mode",sizeof(reason));
-        if (probeMode) { status.probeBrickCount=probeMode->record->brickCount; return; }
-        probeAsset.Purge(); probeFile={}; V_strncpy(status.probeError,reason,sizeof(status.probeError));
+        if (assets->probeValid)
+        {
+            probeFile = assets->probeFile;
+            if ((probeMode = hprobe::FindMode(probeFile,domain->faceLump,domain->lightingLump))) { status.probeBrickCount=probeMode->record->brickCount; return; }
+            probeFile = {};
+        }
+        V_strncpy(status.probeError,assets->probeValid?"the asset has no grid for the selected lighting mode":assets->probeReason,sizeof(status.probeError));
     }
     // Creates the nine textures and their CPU descriptors and uploads the selected grid once, on the draw's command list.
     // A failure latches the reason (cleared with the device) and leaves every probe draw on the fallback table.
@@ -596,18 +733,32 @@ void CHighresLightmapsDX12::ReleaseDevice()
 void CHighresLightmapsDX12::Shutdown()
 {
     HlightEngineBridge::Shutdown(); std::lock_guard<std::recursive_mutex> lock(m_Impl->mutex);
-    m_Impl->ClearGpu(); m_Impl->ClearProbes(); m_Impl->domain.reset(); m_Impl->atlas.reset(); m_Impl->asset.Purge();
+    m_Impl->JoinPrefetch(); m_Impl->prefetched.reset(); m_Impl->assets.reset();
+    m_Impl->ClearGpu(); m_Impl->ClearProbes(); m_Impl->domain.reset(); m_Impl->atlas.reset();
     m_Impl->dynamics.clear(); m_Impl->views.clear(); m_Impl->readbacks.clear(); m_Impl->mode=nullptr;
     m_Impl->file={}; m_Impl->status={}; m_Impl->error[0]=0; m_Impl->mapPath[0]=0; m_Impl->device=nullptr; m_Impl->api=nullptr;
     m_Impl->enhancedRequired=false;
     m_Impl->bridgeAttempted=false;
+}
+void CHighresLightmapsDX12::OnNativeMapLoad(const char *mapName)
+{
+    Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    char path[260];
+    IFileSystem *fs=g_pShaderDeviceMgrDX12?g_pShaderDeviceMgrDX12->HostFileSystem():nullptr;
+    if (!fs || !MapPath(mapName,path)) return;
+    s.JoinPrefetch(); s.prefetched.reset();
+    // Decoding and validating hundreds of MB overlaps the engine's collision/model loading on the main thread.
+    try { s.prefetch=std::thread([&s,fs,held=s.assets,mapPath=std::string(path)]() mutable { s.prefetched=PrefetchAssets(fs,mapPath.c_str(),std::move(held)); }); }
+    catch (const std::system_error &) {} // No worker: OnNativeDomain reads synchronously.
 }
 bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDomain> domain)
 {
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     try
     {
-        s.ClearGpu(); s.ClearProbes(); s.atlas.reset(); s.asset.Purge(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0;
+        // A reload of identical pak content adopts the held bundle; any other outcome releases it.
+        std::shared_ptr<const MapAssets> held=std::move(s.assets);
+        s.ClearGpu(); s.ClearProbes(); s.atlas.reset(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0;
         s.enhancedRequired=false;
         s.domain=std::move(domain);
         if (!s.domain || !s.domain->mapGeneration || !MapPath(s.domain->mapName,s.mapPath)) { s.Fail("Highres lightmaps: invalid native map domain"); return false; }
@@ -645,15 +796,21 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         if (!HlightEngineBridge::Supported()) { s.Fail(HlightEngineBridge::CompatibilityError()); return false; }
         const auto &pak=lumps[LUMP_PAKFILE];
         if (pak.uncompressedSize || !pak.filelen || pak.filelen>hlight::kMaxFileBytes) { s.Fail("Highres lightmaps: invalid BSP pak range"); return false; }
-        std::vector<uint8> pakBytes(pak.filelen);
-        if (!BspFile::Read(&bsp,pak.fileofs,pak.filelen,pakBytes.data())) { s.Fail("Highres lightmaps: cannot read BSP pak"); return false; }
-        std::unique_ptr<IZip,decltype(&IZip::ReleaseZip)> zip(IZip::CreateZip(),&IZip::ReleaseZip);
-        if (!zip) { s.Fail("Highres lightmaps: cannot allocate ZIP reader"); return false; }
-        zip->ParseFromBuffer(pakBytes.data(),int(pakBytes.size()));
-        const bool read=zip->ReadFileFromZip(manifestView.header->assetPath,false,s.asset);
-        if (!read || s.asset.TellPut()<=0 || uint32(s.asset.TellPut())>hlight::kMaxFileBytes) { s.Fail("Highres lightmaps: manifest-named BSP pak asset missing"); return false; }
-        if (!hlight::ValidateFile(s.asset.Base(),uint32(s.asset.TellPut()),s.file,s.error,sizeof(s.error))) { s.status.state=DX12_HIGHRES_REJECTED; return false; }
+        PakMember members[2]; char probePath[260];
+        if (!LocateAssets(bsp,pak,manifestView.header->assetPath,probePath,members)) { s.Fail("Highres lightmaps: unreadable BSP pak directory"); return false; }
+        if (!members[0].found) { s.Fail("Highres lightmaps: manifest-named BSP pak asset missing"); return false; }
+        // The worker started at this load's first native lump normally finished during collision/model loading.
+        COM_TimestampedLog("Highres lightmaps: assets - start");
+        s.JoinPrefetch();
+        std::shared_ptr<const MapAssets> prefetched=std::move(s.prefetched);
+        if (held && held->Matches(members)) s.assets=std::move(held);
+        else if (prefetched && prefetched->Matches(members)) s.assets=std::move(prefetched);
+        else { held.reset(); prefetched.reset(); s.assets=BuildAssets(bsp,members,probePath); }
+        COM_TimestampedLog("Highres lightmaps: assets - end");
+        if (!s.assets->valid) { V_strncpy(s.error,s.assets->error,sizeof(s.error)); s.status.state=DX12_HIGHRES_REJECTED; s.assets.reset(); return false; }
+        s.file=s.assets->file;
         if (!hlight::ValidateManifestAsset(s.file,manifestView,s.error,sizeof(s.error))) { s.status.state=DX12_HIGHRES_REJECTED; return false; }
+        COM_TimestampedLog("Highres lightmaps: native domain - start");
         s.mode=hlight::FindMode(s.file,s.domain->faceLump,s.domain->lightingLump);
         if (!s.mode || s.mode->record->faceCount!=s.domain->faces.size()) { s.Fail("Highres lightmaps: effective face/lighting domain mismatch"); return false; }
         if (!s.mode->visibility.record || s.mode->visibility.record->faceCount!=s.domain->faces.size())
@@ -714,10 +871,35 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
             if (face.flags&hlight::kFaceHasLighting)
                 s.dynamics[f].rgb.assign(size_t(native.extents[0]+1)*(native.extents[1]+1)*3*((face.flags&hlight::kFaceBumped)?4:1),0.f);
         }
-        s.LoadProbes(*zip,manifestView.header->assetPath);
-        s.status.density=s.file.header->density; s.status.assetBytes=s.asset.TellPut(); s.status.faceCount=s.mode->record->faceCount; return true;
+        s.SelectProbes();
+        s.status.density=s.file.header->density; s.status.assetBytes=s.assets->members[0].uncompressedBytes; s.status.faceCount=s.mode->record->faceCount;
+        COM_TimestampedLog("Highres lightmaps: native domain - end");
+        return true;
     }
     catch (const std::bad_alloc &) { s.Fail("Highres lightmaps: insufficient owned CPU memory"); return false; }
+}
+void CHighresLightmapsDX12::OnNativeLevelInit(IMaterialSystem *materials)
+{
+    Impl &s=*m_Impl;
+    {
+        std::lock_guard<std::recursive_mutex> lock(s.mutex);
+        // Same predicate the material DLL snapshots with (DX12ShadowmapSnapshot::Select). The engine cached this load's
+        // materials before the domain existed (ordinary); materials kept from a receiver map carry receiver snapshots.
+        const bool receiver = s.status.state==DX12_HIGHRES_PENDING || s.status.state==DX12_HIGHRES_READY ||
+            s.status.state==DX12_HIGHRES_REJECTED || (s.device && s.device->Lighting().ReceiverFeatureGeneration());
+        if (!materials || !s.device || (!receiver && !s.receiverSnapshots)) return;
+        s.receiverSnapshots = receiver;
+    }
+    // Re-snapshot without reparsing VMTs, before R_LevelInit builds world meshes from the materials' vertex formats.
+    // Snapshots are routed by the committed PBR mode, so commit it first (FRAME_START then has nothing pending).
+    COM_TimestampedLog("Highres lightmaps: material snapshots - start");
+    s.device->Lighting().CommitPbrOverride();
+    for (MaterialHandle_t h=materials->FirstMaterial(); h!=materials->InvalidMaterial(); h=materials->NextMaterial(h))
+    {
+        IMaterial *material=materials->GetMaterial(h);
+        if (material && material->IsPrecached()) material->RefreshPreservingMaterialVars();
+    }
+    COM_TimestampedLog("Highres lightmaps: material snapshots - end");
 }
 void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtlas> atlas)
 {
@@ -727,6 +909,7 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
     {
         if (!atlas || atlas->domain!=s.domain || !atlas->layoutGeneration || atlas->placements.size()!=s.domain->faces.size() || atlas->models.size()!=s.mode->record->modelCount) { s.Fail("Highres lightmaps: incomplete finalized native atlas"); return; }
         if (s.device && s.device->CommandList() && !s.CopyFailure()) { s.Fail("Highres lightmaps: atlas replacement validation retirement failed"); return; }
+        COM_TimestampedLog("Highres lightmaps: native atlas - start");
         s.ClearGpu(); s.atlas=std::move(atlas); s.status.state=DX12_HIGHRES_PENDING;
         ID3D12Device *device=s.device?s.device->NativeDevice():nullptr; if (!device || !s.api) { s.Fail("Highres lightmaps: DX12 device unavailable"); return; }
         // The host does not register every fullbright handle with SetStandardTextureHandle.
@@ -865,6 +1048,7 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
         // Publish only after every validation/allocation/descriptor succeeds.
         for (uint32 p=0;p<s.pages.size();++p) { auto *texture=s.api->FindTexture(s.pages[p].handle); texture->highresPage=p; texture->highresLayoutGeneration=s.atlas->layoutGeneration; }
         s.status.layoutGeneration=s.atlas->layoutGeneration; s.status.pageCount=uint32(s.pages.size()); s.status.state=DX12_HIGHRES_READY;
+        COM_TimestampedLog("Highres lightmaps: native atlas - end");
     }
     catch (const std::bad_alloc &) { s.ClearGpu(); s.Fail("Highres lightmaps: insufficient atlas CPU memory"); }
 }
@@ -901,7 +1085,7 @@ void CHighresLightmapsDX12::OnNativeRetire(uint64 generation)
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     if (!s.domain || generation!=s.domain->mapGeneration) return;
     if (s.device && s.device->CommandList() && !s.CopyFailure()) s.Fail("Highres lightmaps: cannot retire GPU validation");
-    s.ClearGpu(); s.ClearProbes(); s.domain.reset(); s.atlas.reset(); s.asset.Purge(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0; s.mapPath[0]=0;
+    s.ClearGpu(); s.ClearProbes(); s.domain.reset(); s.atlas.reset(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0; s.mapPath[0]=0;
     s.enhancedRequired=false; s.views.clear();
 }
 void CHighresLightmapsDX12::OnNativeResourceRelease(uint64 generation)

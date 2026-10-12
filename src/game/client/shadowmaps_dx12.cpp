@@ -35,6 +35,7 @@
 #include "shadowmaps_dx12_selection.h"
 #include "screenspace_dx12.h"
 #include "shaderapi/ishaderapidx12screenspace.h"
+#include "upscaler_dx12.h"
 #include "mapentities_shared.h"
 #include "beam_shared.h"
 #include "tier0/memdbgon.h"
@@ -50,6 +51,8 @@ ConVar r_shadowmap_skip_radiance( "r_shadowmap_skip_radiance", "0.0009765625", F
 ConVar r_shadowmap_spot_near( "r_shadowmap_spot_near", "4", FCVAR_ARCHIVE, "Spotlight shadow-camera near distance in Source units (including six-face spots); does not change illumination", true, 0.1f, true, 64.0f );
 ConVar r_shadowmap_autoexec( "r_shadowmap_autoexec", "", FCVAR_CHEAT, "Acceptance automation: cfg exec'd once per map after the first completed main receiver view" );
 ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 sun PCSS blockers, 6 sun PCSS radius; debug builds also check projection math", true, DX12_SHADOW_DEBUG_NONE, true, DX12_SHADOW_DEBUG_PCSS_RADIUS );
+ConVar r_shadowmap_instancing( "r_shadowmap_instancing", "1", FCVAR_ARCHIVE, "Batch rigid opaque static-prop shadow casters into instanced draws (identical depth); 0 draws every caster separately for A/B comparison", true, 0, true, 1 );
+ConVar r_shadowmap_dither( "r_shadowmap_dither", "1", FCVAR_ARCHIVE, "Rotate the sun PCF/PCSS, local PCF and projected-light PCF tap patterns per pixel: 0 fixed patterns, 1 dithered (animated in the main view under a temporal upscaler)", true, 0, true, 1 );
 ConVar r_editor_lights_max_shadowed( "r_editor_lights_max_shadowed", "8", FCVAR_ARCHIVE, "Nearest editor lights that receive shadow maps; the rest are unshadowed" );
 extern ConVar building_cubemaps;
 
@@ -395,7 +398,7 @@ bool BuildStaticPropModelVisibility( const model_t *model, const studiohdr_t *hd
 uint32 g_MapGeneration = 0, g_ViewGeneration = 0, g_StaticGeneration = 1;
 uint64 g_CasterRegistrationGeneration = 1;
 uint64 g_CasterContentGeneration = 1;
-bool g_Admitted = false, g_TransmitReady = false, g_MaterialFeature = false;
+bool g_Admitted = false, g_TransmitReady = false;
 bool g_ClientLevelShutdown = false;
 bool g_DeviceCallbacksRegistered = false;
 bool g_DeviceResetPending = false, g_DeviceRestoreComplete = false;
@@ -525,13 +528,6 @@ void RefreshAllPrecachedMaterials()
 		IMaterial *material=materials->GetMaterial(h);
 		if ( material && material->IsPrecached() ) material->RefreshPreservingMaterialVars();
 	}
-}
-
-// ReloadMaterials re-snapshots every material anyway: commit the requested PBR mode first so a new map needs no FRAME_START refresh.
-void ReloadMaterialsWithPbrOverride()
-{
-	g_Lighting->CommitPbrOverride();
-	materials->ReloadMaterials();
 }
 
 void ShadowMapReleaseFunc()
@@ -1774,7 +1770,7 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 	scene.candidateIndices=data.drawCandidateFirst>=0 ? &data.casterIndices : NULL;
 	scene.candidateFirst=data.drawCandidateFirst; scene.candidateCount=data.drawCandidateCount;
 	scene.x=x; scene.y=y; scene.size=size; scene.clear=clear;
-	scene.drawWorld=world; scene.drawStatic=immutable; scene.drawDynamic=dynamic; scene.drawDetail=detail; scene.orientedDetail=orientedDetail;
+	scene.drawWorld=world; scene.drawStatic=immutable; scene.drawDynamic=dynamic; scene.drawDetail=detail; scene.orientedDetail=orientedDetail; scene.instanceCasters=r_shadowmap_instancing.GetBool();
 	scene.dynamicLayer=dynamicLayer;
 	scene.overlayCasterDraws=dynamic ? &data.stats.overlayCasterDraws : NULL;
 	if ( dynamicLayer==SHADOWMAP_DYNAMIC_RIGID ) scene.overlayCasterDraws=NULL;
@@ -3113,8 +3109,6 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 	if ( !g_State.featureMap )
 	{
 		if ( g_Lighting ) g_Lighting->SetReceiverFeatureGeneration(0);
-		if ( g_MaterialFeature ) ReloadMaterialsWithPbrOverride();
-		g_MaterialFeature=false;
 		return true;
 	}
 	if ( !g_Lighting || !g_Highres ) ResolveLightingInterface();
@@ -3146,8 +3140,7 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 		if ( native.state!=DX12_HIGHRES_ORDINARY )
 			return Fail("Highres lightmaps: client/native rendering mode mismatch",error,bytes);
 		g_Lighting->SetReceiverFeatureGeneration(0);
-		if ( g_MaterialFeature ) ReloadMaterialsWithPbrOverride();
-		g_MaterialFeature=false; return true;
+		return true;
 	}
 	if ( (native.state!=DX12_HIGHRES_READY && native.state!=DX12_HIGHRES_PENDING) || !native.nativeMapGeneration )
 		return Fail("Highres lightmaps: required native map generation unavailable",error,bytes);
@@ -3193,15 +3186,13 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 	char reason[256]={0};
 	if ( !g_Lighting->ValidateMap(map,reason,sizeof(reason)) ) return Fail(reason,error,bytes);
 	g_Lighting->SetReceiverFeatureGeneration(g_MapGeneration);
+	// Material snapshots already carry the receiver state: shaderapidx12 refreshed them at R_LevelInit entry, before
+	// world meshes were built. A resource readmission only needs the new generation's snapshot contexts.
 	if ( g_ResourceResetInProgress )
 	{
-		// The feature/layout is unchanged. Refresh snapshot contexts, not VMT
-		// variables or native geometry: ReloadMaterials would release/restore again.
 		g_Lighting->CommitPbrOverride();
 		RefreshAllPrecachedMaterials();
 	}
-	else if ( !g_MaterialFeature ) ReloadMaterialsWithPbrOverride();
-	g_MaterialFeature=true;
 	g_Lighting->PrepareMap(map);
 	if ( g_Lighting->GetStatus(g_MapGeneration,0,reason,sizeof(reason))!=DX12_LIGHTING_STATUS_READY ) return Fail(reason[0]?reason:SHADOWMAP_ERR_RESIDENCY,error,bytes);
 	// Sign-on DT_World can arrive after PreEntity. Check its capability before
@@ -3641,6 +3632,10 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	Vector forward,right,up; AngleVectors(setup.angles,&forward,&right,&up);
 	CopyVector3(setup.origin,constants.cEyePosition); constants.cEyePosition[3]=setup.zNear;
 	CopyVector3(forward,constants.cViewForward);
+	// Shadow filter dither (shadow_dither.hlsli): 0 off, 1 + noise index. The index animates only where a temporal
+	// upscaler accumulates the view, the GTAO/volumetric convention; other views keep a static pattern.
+	const bool temporalDither=( kind==SHADOWMAP_VIEW_MAIN || kind==SHADOWMAP_VIEW_VIEWMODEL ) && UpscalerDX12_Enabled() && UpscalerDX12_Status()>0;
+	constants.cViewForward[3]=r_shadowmap_dither.GetBool() ? 1.0f+( temporalDither ? (float)( gpGlobals->framecount&63 ) : 0.0f ) : 0.0f;
 	// Fixed detail enters clean depth; only intersecting orientation-dependent
 	// detail is overlaid into working depth using this immutable receiver tuple.
 	data->detail=DetailObjectSystem()->SnapshotShadowOrientation(setup.origin,forward,right,up);

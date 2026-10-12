@@ -316,7 +316,7 @@ void PixelSource( CUtlBuffer &buf, const FixedFunctionStateDX12 &state, const CU
 		buf.PutString( "HlightReceiver hlr=HighresLightmap_Begin(i.tc15.xy,i.tc12.xy);"
 			"float3 highresNormal=dot(i.tc14.xyz,i.tc14.xyz)>1e-12?normalize(i.tc14.xyz):normalize(cross(ddx(i.tc13.xyz),ddy(i.tc13.xyz)))*(i.front?1:-1);"
 			"ShadowMapReceiver smr=ShadowMap_BeginReceiver(i.tc13.xyz,highresNormal,i.pos.xy);"
-			"smr.bakedSunVisibility=hlr.sun;"
+			"ShadowMap_SetBakedSun(smr,hlr.sun,hlr.sunDilated);"
 			"ShadowMap_SetBakedFace(smr,hlr.faceId,hlr.q,hlr.localVisibilityEligible,hlr.bakedDirectEligible,hlr.unbakedLocalRange);"
 			"ShadowMapDirect fixedDirect=ShadowMap_GatherDirect(smr,ShadowMap_ShadeLambert(highresNormal));"
 			"float3 fixedDirectRGB=0;\n" );

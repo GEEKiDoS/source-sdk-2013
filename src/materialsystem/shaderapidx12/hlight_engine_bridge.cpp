@@ -169,7 +169,7 @@ struct State
     IMaterialSystem *materials = nullptr;
     IHlightNativeSink *sink = nullptr;
     bool supported = false, callbacks = false, ownsMinHook = false;
-    bool faceScope = false;
+    bool faceScope = false, loadAnnounced = false;
     uint32 selectedFace = hlight::kMissing, selectedLighting = hlight::kMissing;
     char compatibility[256] = "High-resolution lightmaps: native bridge is not initialized";
     char observedMap[260] = {};
@@ -724,6 +724,13 @@ void RecordLump(void *helper, uint32 requested, uintptr_t caller)
         V_strncpy(g.observedMap, name, sizeof(g.observedMap));
         g.identities = {}; g.identityPresent = {};
         g.selectedFace = g.selectedLighting = hlight::kMissing;
+        g.loadAnnounced = false;
+    }
+    if (!g.loadAnnounced)
+    {
+        // Collision loading reaches this first, seconds before the face domain: time to prepare the pak assets.
+        g.loadAnnounced = true;
+        g.sink->OnNativeMapLoad(name);
     }
     const int bytes = Load<int>(p), selected = Load<int>(p + 40), version = Load<int>(p + 8);
     const uintptr_t data = Load<uintptr_t>(p + 24);
@@ -825,6 +832,7 @@ void LevelInitHook()
     if (transaction && !g.domain && (g.pendingDomain || g.lastDomain) &&
         !OwnedWork([&] { return PublishDomain(Load<uintptr_t>(g.engine + kWorldBrush), !g.pendingDomain); }))
         Failure("High-resolution lightmaps: complete native domain publication failed");
+    if (transaction) OwnedWork([&] { g.sink->OnNativeLevelInit(g.materials); return true; });
     reinterpret_cast<void (*)()>(g_Hooks[1].original)();
     if (transaction && g.capture.load(std::memory_order_acquire) && !OwnedWork([&] { return PublishAtlas(true); }))
         Failure("High-resolution lightmaps: initial native atlas or overlay identity is invalid");
@@ -862,6 +870,7 @@ void UnloadHook(void *loader, void *model)
         g.identities = {}; g.identityPresent = {};
         g.observedMap[0] = 0;
         g.selectedFace = g.selectedLighting = hlight::kMissing;
+        g.loadAnnounced = false;
         EndTransaction();
     }
 }

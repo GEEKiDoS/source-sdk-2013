@@ -119,7 +119,7 @@ struct ShadowMapDepthScene_t
 	IShaderAPIDX12Lighting *lighting;
 	DX12ShadowTarget_t target;
 	int x, y, size;
-	bool clear, drawWorld, drawStatic, drawDynamic, drawDetail, orientedDetail;
+	bool clear, drawWorld, drawStatic, drawDynamic, drawDetail, orientedDetail, instanceCasters;
 	ShadowMapDynamicLayer_t dynamicLayer;
 	uint32 *overlayCasterDraws;
 	ShadowMapDepthFootprint_t *overlayFootprint;

@@ -241,7 +241,7 @@ def pixel_entry(text, logical, folded_names):
         for match in reversed(matches):
             code = ('HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );\n'
                     f' ShadowMapReceiver smr = ShadowMap_BeginReceiver( dx12In.worldPos, dx12In.worldNormal, dx12In.{position}.xy );\n'
-                    ' smr.bakedSunVisibility = hlr.sun;\n'
+                    ' ShadowMap_SetBakedSun( smr, hlr.sun, hlr.sunDilated );\n'
                     ' ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );')
             text = text[:match.start()] + code + text[match.end():]
         return finish_pixels(text)
@@ -253,7 +253,7 @@ def pixel_entry(text, logical, folded_names):
         if not conv: raise RuntimeError('missing highres input conversion: ' + logical)
         code = ('\n#if ' + guard + '\n HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );\n'
                 f' ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.{position}.xy );\n'
-                ' hls.bakedSunVisibility = hlr.sun;\n'
+                ' ShadowMap_SetBakedSun( hls, hlr.sun, hlr.sunDilated );\n'
                 ' ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );\n')
         if logical != 'water_ps20b':
             code += ' ShadowMapDirect hld = ShadowMap_GatherDirect( hls, ShadowMap_ShadeLambert( dx12In.highresNormal ) );\n'

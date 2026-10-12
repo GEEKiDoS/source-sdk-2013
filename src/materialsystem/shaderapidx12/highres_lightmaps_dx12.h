@@ -43,7 +43,9 @@ public:
     void Initialize(CShaderDeviceDX12 *device, CShaderAPIDX12 *api);
     void ReleaseDevice(); // GPU-idle reset boundary; retain installed bridge and owned map CPU state.
     void Shutdown();
+    void OnNativeMapLoad(const char *mapName) override;
     bool OnNativeDomain(std::shared_ptr<const HlightNativeDomain> domain) override;
+    void OnNativeLevelInit(IMaterialSystem *materials) override;
     void OnNativeAtlas(std::shared_ptr<const HlightNativeAtlas> atlas) override;
     void OnNativeDynamic(uint64 generation, uint32 face, uint32 mask, uint32 width,
         uint32 height, const float *const rgb[4]) override;

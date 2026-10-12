@@ -35,6 +35,10 @@ static void OnPbrOverrideChanged( IConVar *pVar, const char *, float )
 ConVar mat_pbr_override( "mat_pbr_override", "0", FCVAR_ARCHIVE,
 	"1 = route LightmappedGeneric/VertexLitGeneric/WorldVertexTransition through the PBR adapters", OnPbrOverrideChanged );
 
+// Sun PCSS sample budget of the PBR receivers: the SHADOWQUALITY dynamic combo (native_src/shadow_pcss_disks.hlsli).
+ConVar r_shadowmap_filter_quality( "r_shadowmap_filter_quality", "1", FCVAR_ARCHIVE,
+	"Soft (PCSS) sun shadow sample budget, blocker search / filter taps: 0 low 8/8, 1 medium 8/16, 2 high 16/32, 3 extra 32/64", true, 0, true, 3 );
+
 bool DX12PbrOverride()
 {
 	IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
@@ -782,6 +786,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( pbr_model_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, bEnhanced ? r_shadowmap_filter_quality.GetInt() : 0 );
 			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, pbr_model_ps51 );
 		}
 		else
@@ -792,6 +797,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( pbr_world_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, r_shadowmap_filter_quality.GetInt() );
 			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, pbr_world_ps51 );
 		}
 		DynamicCmdsOut.End();

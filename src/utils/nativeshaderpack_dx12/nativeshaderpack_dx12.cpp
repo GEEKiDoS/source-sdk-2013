@@ -755,6 +755,20 @@ void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D1
 		seen |= 1u << slot;
 	}
 }
+// Space 7 is backend-owned and vertex-stage only: the batched shadow-caster instance rows
+// StructuredBuffer<float4> g_InstanceModelRows t0 (ishaderapidx12lighting.h DX12_INSTANCE_*), bound as a root SRV.
+void validateInstanceResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
+	for (unsigned i = 0; i < desc.BoundResources; ++i) {
+		D3D12_SHADER_INPUT_BIND_DESC b{};
+		if (FAILED(reflection->GetResourceBindingDesc(i, &b)) || !b.Name) throw std::runtime_error("Instance binding reflection failed");
+		if (b.Space != DX12_INSTANCE_REGISTER_SPACE) continue;
+		if (stage != VcsStage::Vertex)
+			throw std::runtime_error("Space-7 resource outside vertex stage: " + logical + "." + b.Name);
+		const bool valid = b.Type == D3D_SIT_STRUCTURED && b.Dimension == D3D_SRV_DIMENSION_BUFFER && b.BindPoint == DX12_INSTANCE_T_MODEL_ROWS &&
+			b.BindCount == 1 && b.NumSamples == DX12_INSTANCE_ROW_STRIDE && !strcmp(b.Name, "g_InstanceModelRows");
+		if (!valid) throw std::runtime_error("Space-7 resource contract mismatch: " + logical + "." + b.Name);
+	}
+}
 // Flattens an authored header for the include-handler-free fixed-function compile: its #include lines are dropped
 // because the embed already carries every header it names, in order.
 std::string stripIncludes(const std::string &text) {
@@ -1060,7 +1074,9 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 		stripIncludes(readText(root / "native_src" / "screenspace_view.hlsli")) +
 		stripIncludes(readText(root / "native_src" / "screenspace_contact.hlsli")) +
 		engineHlsl.substr(lightingStart, outerEnd - lightingStart) +
-		readText(root / "native_src" / "shadowmap_lighting.hlsli"));
+		stripIncludes(readText(root / "native_src" / "shadow_dither.hlsli")) +
+		stripIncludes(readText(root / "native_src" / "shadow_pcss_disks.hlsli")) +
+		stripIncludes(readText(root / "native_src" / "shadowmap_lighting.hlsli")));
     std::vector<std::pair<fs::path, fs::path>> publish;
     std::ostringstream report;
     struct RegistryEntry { std::string logical, stage, block; };
@@ -1131,6 +1147,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 				validateHighresResources(reflection.Get(), desc, stage, sh);
 				validateProbePbrResources(reflection.Get(), desc, stage, sh.logical);
 				validateScreenSpaceResources(reflection.Get(), desc, stage, sh.logical);
+				validateInstanceResources(reflection.Get(), desc, stage, sh.logical);
                 if (stage == VcsStage::Compute) {
                     for (unsigned resource = 0; resource < desc.BoundResources; ++resource) {
                         D3D12_SHADER_INPUT_BIND_DESC binding{};

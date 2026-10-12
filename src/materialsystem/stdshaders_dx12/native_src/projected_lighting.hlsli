@@ -3,6 +3,7 @@
 // Stage-neutral: no BRDF, contact rays or shadow-attenuation blend live here.
 #ifndef PROJECTED_LIGHTING_HLSLI
 #define PROJECTED_LIGHTING_HLSLI
+#include "shadow_dither.hlsli"
 
 struct PBRSpotGpu // 128 bytes, mirrors DX12ProjectedLightDesc
 {
@@ -30,8 +31,8 @@ bool DX12_ProjectedFrustum( PBRSpotGpu light, float3 P )
 
 // Incident radiance of one projected light at P. Attenuation order is the flashlight shader's:
 // saturate( C + Lin / d + Q / d^2 ) * remap( d, farZ -> 0.6 farZ ), times the cookie. rawVisibility is the four-tap
-// comparison PCF of a shadowed light (depthSlot >= 0) and 1 otherwise. Returns false (zero outputs) for a point
-// outside the cookie window or receiving no radiance.
+// comparison PCF (pattern rotated by the receiver's shadow dither) of a shadowed light (depthSlot >= 0) and 1
+// otherwise. Returns false (zero outputs) for a point outside the cookie window or receiving no radiance.
 bool DX12_ProjectedSample( PBRSpotGpu light, float3 P, out float3 L, out float distanceToLight, out float3 incidentRGB, out float rawVisibility )
 {
 	L = float3( 0.0, 0.0, 0.0 );
@@ -59,11 +60,12 @@ bool DX12_ProjectedSample( PBRSpotGpu light, float3 P, out float3 L, out float d
 		if ( lit && light.slotsFlags.y >= 0 )
 		{
 			float reference = projected.z / projected.w;
-			float2 offset = 0.5 * light.attnShadow.w;
-			float pcf = g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( -offset.x, -offset.y ), reference ) +
-				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( offset.x, -offset.y ), reference ) +
-				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( -offset.x, offset.y ), reference ) +
-				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + float2( offset.x, offset.y ), reference );
+			float texel = 0.5 * light.attnShadow.w;
+			float2 a = ShadowDither_Rotate( float2( -texel, -texel ) ), b = ShadowDither_Rotate( float2( texel, -texel ) );
+			float pcf = g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + a, reference ) +
+				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv + b, reference ) +
+				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv - b, reference ) +
+				g_ProjectedDepth[light.slotsFlags.y].SampleCmpLevelZero( g_ProjectedCmpSampler, uv - a, reference );
 			rawVisibility = pcf * 0.25;
 		}
 	}

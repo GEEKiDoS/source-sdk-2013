@@ -94,7 +94,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	ranges[2].NumDescriptors = 8;
 	ranges[2].BaseShaderRegister = 0;
 	ranges[2].RegisterSpace = 1;
-	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR table; 21-23 PS space-6 table and CBVs.
+	// 0-3: PS SRV/sampler and VS SRV/sampler tables; 4-7 VS b0-b3, 8-13 PS b0-b5 and 14-17 GS b0-b3 root CBVs; 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR table; 21-23 PS space-6 table and CBVs; 24 VS space-7 instance-row root SRV.
 	D3D12_ROOT_PARAMETER params[kHighresRootParameterCount]{};
 	for ( int i = 0; i < 4; ++i )
 	{
@@ -150,6 +150,10 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootVolumetricConstants].Descriptor.ShaderRegister = DX12_SCREENSPACE_B_VOLUMETRIC;
 	params[kRootVolumetricConstants].Descriptor.RegisterSpace = DX12_SCREENSPACE_REGISTER_SPACE;
 	params[kRootVolumetricConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootInstanceTransforms].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+	params[kRootInstanceTransforms].Descriptor.ShaderRegister = DX12_INSTANCE_T_MODEL_ROWS;
+	params[kRootInstanceTransforms].Descriptor.RegisterSpace = DX12_INSTANCE_REGISTER_SPACE;
+	params[kRootInstanceTransforms].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 	// Static samplers accumulate: each signature binds the prefix its parameters need, so its count is the number added so far.
 	D3D12_STATIC_SAMPLER_DESC samplers[5]{};
 	UINT samplerCount = 0;
@@ -1032,6 +1036,12 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				pList->SetGraphicsRootConstantBufferView( kRootVolumetricConstants, volumetric );
 				m_nBoundVolumetricConstants = volumetric;
 			}
+		}
+		if ( input.instanceTransforms && ( !m_bGraphicsBindingsValid || m_BoundInstanceTransforms != input.instanceTransforms ) )
+		{
+			++m_Stats.rootSrvSets;
+			pList->SetGraphicsRootShaderResourceView( kRootInstanceTransforms, input.instanceTransforms );
+			m_BoundInstanceTransforms = input.instanceTransforms;
 		}
 		// Slots 0-3 feed VS b0-b3 (mirrored to GS b0-b3 when a geometry stage runs); slots 4-9 feed PS b0-b5.
 		for ( UINT slot = 0; slot < 10; ++slot )

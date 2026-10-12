@@ -169,6 +169,7 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "decalmodulate_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::decalmodulate_ps2x > },
 	{ "depthtodestalpha_ps51", dx12native::kStagePixel, nullptr },
 	{ "depthtodestalpha_vs51", dx12native::kStageVertex, nullptr },
+	{ "depthwrite_instanced_vs51", dx12native::kStageVertex, nullptr },
 	{ "depthwrite_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::depthwrite_ps2x > },
 	{ "depthwrite_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::depthwrite_vs20 > },
 	{ "downsample_nohdr_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::Downsample_nohdr_ps2x > },

@@ -43,7 +43,7 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_008"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_009"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -52,9 +52,15 @@ typedef intp ShaderAPITextureHandle_t;
 
 #define DX12_SHADOW_PCSS_MAX_TEXELS				16		// search/filter radius cap, texels
 #define DX12_SHADOW_GUARD_TEXELS				18		// rendered guard on every edge of every slot/face/cascade
-#define DX12_SHADOW_PCSS_BLOCKER_SAMPLES		16		// fixed blocker-search budget (sample 0 is the center)
-#define DX12_SHADOW_PCSS_FILTER_SAMPLES			32		// fixed comparison budget
+#define DX12_SHADOW_PCSS_BLOCKER_SAMPLES		16		// High blocker-search budget; PBR receivers pick 8..32 by SHADOWQUALITY (shadow_pcss_disks.hlsli)
+#define DX12_SHADOW_PCSS_FILTER_SAMPLES			32		// High comparison budget; PBR receivers pick 8..64 by SHADOWQUALITY
 #define DX12_SHADOW_PCF_TAPS					4		// (-0.5,-0.5),(+0.5,-0.5),(-0.5,+0.5),(+0.5,+0.5)
+
+// Per-instance model rows of batched shadow casters: vertex-stage root SRV t0 space7, StructuredBuffer<float4>,
+// three float4 rows per instance (cModel[0] layout, translation in .w). Only depthwrite_instanced_vs51 declares it.
+#define DX12_INSTANCE_REGISTER_SPACE			7
+#define DX12_INSTANCE_T_MODEL_ROWS				0
+#define DX12_INSTANCE_ROW_STRIDE				16
 
 #define DX12_SHADOW_LOCAL_PAGE_SIZE				4096	// one local page, texels per side
 #define DX12_SHADOW_LOCAL_SLOT_SIZE				512		// S for locals
@@ -185,7 +191,7 @@ struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL tw
 	float	cSunBasisX[4];				// xyz stable light-space X; w = 0.9*f (static blend start)
 	float	cSunBasisY[4];				// xyz stable light-space Y; w = local shadow-sampling radiance bound (0 = exact)
 	float	cEyePosition[4];			// xyz; w = CSM near n
-	float	cViewForward[4];			// xyz; receiverDistance = dot(positionWS - eye, xyz); w = 0
+	float	cViewForward[4];			// xyz; receiverDistance = dot(positionWS - eye, xyz); w = shadow filter dither: 0 off, 1 + noise index (shadow_dither.hlsli)
 	float	cCascadeSplits[4];			// s1, s2, s3, s4 (= f)
 	float	cCascadeBlend[4];			// w1, w2, w3 half blend widths at interior splits; w = 0
 	float	cShadowDepthRecords[DX12_SHADOW_SUN_MAP_COUNT][4];	// near, far, worldUnitsPerTexel, 0 (CSM0..3, static sun 4)
@@ -356,6 +362,12 @@ public:
 	// Queued. Saves backend state, binds zero color targets + the private DSV, sets viewport/scissor to the rect, clears only it when asked.
 	virtual void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear ) = 0;
 	virtual void EndShadowPass() = 0;
+	// Queued; only inside Begin/EndShadowPass. Between the markers the backend defers every opaque rigid depthwrite
+	// caster draw (see CShaderAPIDX12::DrawBuffers eligibility) and emits them as instanced draws at
+	// EndShadowCasterBatch (or when its fixed capacity fills). Non-eligible draws inside the scope record immediately;
+	// depth-only output is order independent. EndShadowPass closes an open batch.
+	virtual void BeginShadowCasterBatch() = 0;
+	virtual void EndShadowCasterBatch() = 0;
 	// Queued. Depth-only fullscreen-triangle raster restore (point-sampled source, SV_Depth, depth test ALWAYS). src != dst.
 	virtual void CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height ) = 0;
 	// Queued. Restores the parent packet (or none).

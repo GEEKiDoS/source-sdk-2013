@@ -156,6 +156,7 @@ NATIVE_ONLY = [
     native_only('postfx', 'volumetric_upsample_ps51.fxc', 'ps', 'volumetric_upsample_ps51'),
     native_only('shadowmaps', 'shadow_depth_restore_vs51.fxc', 'vs', 'shadow_depth_restore_vs51'),
     native_only('shadowmaps', 'shadow_depth_restore_ps51.fxc', 'ps', 'shadow_depth_restore_ps51'),
+    native_only('shadowmaps', 'depthwrite_instanced_vs51.fxc', 'vs', 'depthwrite_instanced_vs51'),
     native_only('shadowmaps', 'dx12_detailshadowlit_vs51.fxc', 'vs', 'dx12_detailshadowlit_vs51'),
     native_only('shadowmaps', 'dx12_detailshadowlit_ps51.fxc', 'ps', 'dx12_detailshadowlit_ps51'),
     native_only('shadowmaps', 'dx12_detailshadowlit_depth_ps51.fxc', 'ps', 'dx12_detailshadowlit_depth_ps51'),

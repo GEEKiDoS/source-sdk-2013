@@ -5617,6 +5617,9 @@ public:
 		// DrawModel defers ropes and particles into per-view caches. Match the
 		// ordinary opaque pass so successive light views neither accumulate
 		// duplicate entries nor leave their depth geometry undrawn.
+		// Rigid opaque depthwrite casters inside the markers are batched into instanced draws by the backend
+		// (r_shadowmap_instancing); ropes/particles and detail casters below use other shaders and stay outside.
+		if ( s.instanceCasters ) s.lighting->BeginShadowCasterBatch();
 		{
 			VPROF_BUDGET( "CFeatureShadowDepthView::Draw.Casters", "Shadowmaps" );
 			RopeManager()->ResetRenderCache();
@@ -5658,6 +5661,7 @@ public:
 				staticpropmgr->DrawStaticProps( statics, count, DEPTH_MODE_SHADOW, false );
 			}
 		}
+		if ( s.instanceCasters ) s.lighting->EndShadowCasterBatch();
 		{
 			VPROF_BUDGET( "CFeatureShadowDepthView::Draw.DeferredCasters", "Shadowmaps" );
 			RopeManager()->DrawRenderCache( true, s.overlayRopeFootprint );

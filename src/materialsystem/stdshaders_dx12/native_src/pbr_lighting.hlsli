@@ -228,22 +228,23 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	{
 		// Geometric surface backfaces skip the map (silhouette taps can read "lit").
 		float3 sunResult = float3( 0.0, 0.0, 0.0 );
-		// A zero baked cap makes visibility exactly zero. Keep real map evaluation
+		float csmWeight = 0.0;
+		// A zero dilated baked bound makes visibility exactly zero under either cap. Keep real map evaluation
 		// for blocker/radius debug views, which observe diagnostics even when capped.
 		bool sunDiagnostics = cShadowView0.w == 5 || cShadowView0.w == 6;
-		[branch] if ( ( r.bakedSunVisibility != 0.0 || sunDiagnostics ) && dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 )
+		[branch] if ( ( r.bakedSunDilated != 0.0 || sunDiagnostics ) && dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 )
 		{
 			sunResult = float3( 1.0, 0.0, 0.0 );
 			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )
 			{
 				// Runtime visibility only: the contact ray needs a valid runtime chart and precedes the baked cap.
 				bool charted;
-				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted );
-				[branch] if ( charted && sunResult.x > 0.0 )
+				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted, csmWeight );
+				[branch] if ( DX12_SUN_CONTACT_SHADOWS && charted && sunResult.x > 0.0 )
 					sunResult.x *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, -cSunTravel.xyz, cScreenEyeLength.w );
 			}
 		}
-		d.sunVisibility = min( saturate( sunResult.x ), r.bakedSunVisibility );
+		d.sunVisibility = min( saturate( sunResult.x ), ShadowMap_SunCap( r, csmWeight ) );
 		d.sunDiagnostics = sunResult.yz;
 		// A fully shadowed sun adds exactly nothing: its lobes are not evaluated.
 		[branch] if ( d.sunVisibility > 0.0 )

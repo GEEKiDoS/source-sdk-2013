@@ -1,0 +1,43 @@
+// Native-only instanced twin of hlsl/depthwrite_vs51.fxc for batched opaque rigid shadow casters
+// (shaderapidx12 CShaderAPIDX12::FlushShadowCasterBatch). Combo directives and index arithmetic are identical to
+// depthwrite_vs51 (static = 8*ONLY_PROJECT_POSITION + 8*COLOR_DEPTH + 16*TREESWAY, dynamic = COMPRESSED_VERTS +
+// 2*SKINNING + 4*MORPHING); the backend requests static 0 and dynamic 0..1 only, every other combo is skipped.
+// cModel[0] is replaced by three per-instance float4 rows (the same three registers DX12VSBones.cModel[0] holds,
+// translation in .w) read through the vertex-stage root SRV t0 space7 (pipeline kRootInstanceTransforms).
+// POSITION is the only input: no skinning, flex, morph, tree sway, texcoord or pixel stage.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+//	STATIC: "ONLY_PROJECT_POSITION"	"0..0"
+//  STATIC: "COLOR_DEPTH"			"0..1"
+//  STATIC: "TREESWAY"				"0..2"
+//	DYNAMIC: "COMPRESSED_VERTS"		"0..1"
+//	DYNAMIC: "SKINNING"				"0..1"
+//  DYNAMIC: "MORPHING"				"0..1"
+//  SKIP: $COLOR_DEPTH || $TREESWAY || $SKINNING || $MORPHING
+#include "common_vs_fxc.h"
+
+StructuredBuffer<float4> g_InstanceModelRows : register( t0, space7 );
+
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+	uint instance : SV_InstanceID;
+};
+struct VS_OUTPUT
+{
+	float4 vProjPos : SV_Position;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; no pixel stage)
+};
+
+VS_OUTPUT main( const DX12_VS_INPUT i )
+{
+	// mul4x3( v, cModel[0] ) == float3( dot( v, reg0 ), dot( v, reg1 ), dot( v, reg2 ) ) (common_fxc.h); the
+	// three registers are exactly rows 3*instance .. 3*instance+2.
+	const uint row = i.instance * 3u;
+	const float3 vWorldPos = float3( dot( i.vPos, g_InstanceModelRows[row] ), dot( i.vPos, g_InstanceModelRows[row + 1u] ), dot( i.vPos, g_InstanceModelRows[row + 2u] ) );
+	VS_OUTPUT o;
+	o.vProjPos = mul( float4( vWorldPos, 1.0f ), cViewProj );
+	o.dx12Clip = DX12UserClipDistances( o.vProjPos );
+	o.vProjPos = DX12Position( o.vProjPos );
+	return o;
+}

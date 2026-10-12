@@ -62,9 +62,15 @@ class IHlightNativeSink
 {
 public:
     virtual ~IHlightNativeSink() = default;
+    // Main thread, once per native map load at its first effective lump, long before the face domain exists. May only
+    // start asynchronous preparation; it never rejects, admits or fails the map.
+    virtual void OnNativeMapLoad(const char *mapName) = 0;
     // Called after face construction, before initial native lightmap builds. Return true
     // only when an enhanced asset needs dynamic capture. An ordinary map returns false.
     virtual bool OnNativeDomain(std::shared_ptr<const HlightNativeDomain> domain) = 0;
+    // Main thread, inside the native transaction after OnNativeDomain and before the original R_LevelInit builds world
+    // meshes from material vertex formats. Materials cached for this load were snapshotted before the domain existed.
+    virtual void OnNativeLevelInit(IMaterialSystem *materials) = 0;
     virtual void OnNativeAtlas(std::shared_ptr<const HlightNativeAtlas> atlas) = 0;
     // planeMask selects actual executed native planes. Each non-null span is packed RGB,
     // width*height triples, valid only during this call. mask==0 publishes whole-face zero.

@@ -1,4 +1,5 @@
 // ALL SKIP STATEMENTS THAT AFFECT THIS SHADER!!!
+// ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
 // defined $HDRTYPE && defined $HDRENABLED && !$HDRTYPE && $HDRENABLED
 // defined $PIXELFOGTYPE && defined $WRITEWATERFOGTODESTALPHA && ( $PIXELFOGTYPE != 1 ) && $WRITEWATERFOGTODESTALPHA
 // defined $LIGHTING_PREVIEW && defined $HDRTYPE && $LIGHTING_PREVIEW && $HDRTYPE != 0
@@ -72,7 +73,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bTANGENT && m_bENHANCED && m_bALPHATEST );
-		return ( 3 * m_nTANGENT ) + ( 6 * m_nENHANCED ) + ( 12 * m_nALPHATEST ) + 0;
+		return ( 12 * m_nTANGENT ) + ( 24 * m_nENHANCED ) + ( 48 * m_nALPHATEST ) + 0;
 	}
 };
 
@@ -82,8 +83,10 @@ public:
 class pbr_model_ps51_Dynamic_Index
 {
 	unsigned int m_nPIXELFOGTYPE : 2;
+	unsigned int m_nSHADOWQUALITY : 3;
 #ifdef _DEBUG
 	bool m_bPIXELFOGTYPE : 1;
+	bool m_bSHADOWQUALITY : 1;
 #endif	// _DEBUG
 public:
 	void SetPIXELFOGTYPE( int i )
@@ -95,21 +98,32 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetSHADOWQUALITY( int i )
+	{
+		Assert( i >= 0 && i <= 3 );
+		m_nSHADOWQUALITY = i;
+#ifdef _DEBUG
+		m_bSHADOWQUALITY = true;
+#endif	// _DEBUG
+	}
+
 	pbr_model_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< pbr_model_ps51_Block >( dx12native::kStagePixel );
 		m_nPIXELFOGTYPE = 0;
+		m_nSHADOWQUALITY = 0;
 #ifdef _DEBUG
 		m_bPIXELFOGTYPE = false;
+		m_bSHADOWQUALITY = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bPIXELFOGTYPE );
-		return ( 1 * m_nPIXELFOGTYPE ) + 0;
+		Assert( m_bPIXELFOGTYPE && m_bSHADOWQUALITY );
+		return ( 1 * m_nPIXELFOGTYPE ) + ( 3 * m_nSHADOWQUALITY ) + 0;
 	}
 };
 
-#define shaderDynamicTest_pbr_model_ps51 psh_forgot_to_set_dynamic_PIXELFOGTYPE
+#define shaderDynamicTest_pbr_model_ps51 psh_forgot_to_set_dynamic_PIXELFOGTYPE + psh_forgot_to_set_dynamic_SHADOWQUALITY
 

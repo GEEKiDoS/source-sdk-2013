@@ -197,8 +197,8 @@ void ShadowMapsDX12_OnDeviceReset();
 
 // FRAME_START, after ShadowMapsDX12_OnDeviceReset: applies a pending mat_pbr_override request (stdshader_dx12 cvar callback ->
 // IShaderAPIDX12Lighting::RequestPbrOverride). Inside a native material transaction it commits the mode and re-snapshots every
-// precached material; without the transaction the request stays pending and is retried next frame. Level init commits the
-// request itself right before its own material reload/refresh.
+// precached material; without the transaction the request stays pending and is retried next frame. Map loads commit the
+// request in shaderapidx12 at R_LevelInit entry, right before the receiver-state material refresh.
 void ShadowMapsDX12_CommitPbrOverride();
 
 // Projected-light (flashlight / env_projectedtexture) publication for the PBR shaders, used by CClientShadowMgr::PublishProjectedLights.

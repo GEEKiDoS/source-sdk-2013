@@ -183,6 +183,24 @@ everything and the shader's threshold stays the only one). Before this, every al
 (chain-link fences, grates, foliage) was a solid shadow caster: `-dx12shaderlog` listed `depthwrite_vs51` but never
 `depthwrite_ps51` on `d1_trainstation_02`. Brush `$alphatest` casters already carried the flag through their own wrappers.
 
+Batched opaque casters: between `IShaderAPIDX12Lighting::BeginShadowCasterBatch` / `EndShadowCasterBatch` (queued
+markers the client emits around the caster block of `CFeatureShadowDepthView::Draw` while `r_shadowmap_instancing`,
+`FCVAR_ARCHIVE` default 1, is on) the backend does not record an opaque, rigid (`SKINNING`/`MORPHING` 0), fill-mode,
+native `depthwrite_vs51` static-mesh draw; it keeps the draw's `cModel[0]` rows keyed by (mesh, index range, snapshot,
+`COMPRESSED_VERTS`) and at the end marker (or when 4096 instances / 512 groups fill, or when a pass ends or nests)
+uploads every group's rows once and re-enters its ordinary draw path per group with the native-only
+`native_src/depthwrite_instanced_vs51.fxc` bound (same combo directives as `depthwrite_vs51`, only static 0 x dynamic
+0..1 compiled) and an instance count. That shader reads the rows through `StructuredBuffer<float4> g_InstanceModelRows :
+register(t0, space7)`, the vertex-stage root SRV `kRootInstanceTransforms` present on all three root signatures
+(`DX12_INSTANCE_*` in `ishaderapidx12lighting.h`); the packer rejects any other space-7 binding and the backend validates
+the shader by name (`ValidateInstancedCasterShaderDX12`), failing the recording with `SHADOWMAP_ERR_SHADER_UNAVAILABLE`
+when the VCS is missing. Alpha-tested, skinned, flexed, tree-sway, dynamic-buffer or translated-fallback casters record
+immediately as before; depth-only output is order independent. `-dx12stats` appends `rootSrvSets`, `shadowDraws`
+(shadow-pass `DrawBuffers` entries excluding emission), `casterInstances` (captured draws) and `casterInstancedDraws`
+(emitted instanced draws): with batching on `draws ≈ draws(off) − casterInstances + casterInstancedDraws`. Setting the
+cvar to 0 stops emitting the markers (the unbatched path). Both paths write identical depth, so the toggle does not
+invalidate cached charts; it applies to every depth scene rendered afterwards (cascades re-render as the view moves).
+
 ## Sky ambient match (`r_sky_ambientmatch`)
 
 The `Sky` shaders (`sky_dx12.cpp` for LDR `Sky_DX9`, `sky_hdr_dx12.cpp` for `Sky_HDR_DX9`; compressed HDR multiplies `$color`
@@ -245,6 +263,43 @@ adds captured native dynamic planes, and preserves native sampled alpha. Materia
 existing bump/SSBump weights, two-material blend, tint and fog/output ordering; selected direct lighting
 is gathered once and only selected sunlight is capped by the designated style-0/base alpha.
 Brush sun capping requires an explicit baked model pose equal to the draw transform.
+The cap has two endpoints, blended by the summed weight `W` of valid CSM entries that were actually sampled
+(`ShadowMap_SunResultCharted`'s `csmWeight`; the static whole-map entry does not count):
+`min( runtime, lerp( bakedSunVisibility, bakedSunDilated, W ) )`. On highres receivers `bakedSunDilated` is
+`HighresLightmap_SunDilated`: the max of four bilinear base-alpha taps at (+-1, +-1) texels, each clamped to the
+tile's own texel centers, folded with the interpolated value. It is continuous (a max of bilinear functions), so the
+bound never steps at texel boundaries; a 2x2-max of raw texels did, and showed as pixelated sun patches wherever the
+cascade is lit slightly beyond the baked edge. Inside valid cascades, which already hold the static casters, the mask
+therefore only vetoes about a texel beyond any lit texel, and PCSS penumbrae and thin runtime occluders are not
+clipped to luxel shape. Legacy lightmap pages pass the scalar twice (exactly the scalar cap). Without a valid
+cascade chart (disabled, deferred/cold, outside range) the interpolated scalar caps exactly as before. Every producer
+sets both values through `ShadowMap_SetBakedSun`; a direct field write would leave `bakedSunDilated` at 1 and drop
+the leak veto inside the cascades.
+Sun PCSS (`SampleSunPCSS`) separates mixed-distance blockers. A single mean blocker depth lets a canopy hundreds of
+units up dominate a post a few units above the ground; its wide kernel washed the post's contact shadow away
+(d1_trainstation_02 bollards under the bare poplar). The blocker search also records the nearest and farthest
+blocker. When their receiver distances differ by more than 6x (fully by 10x) and the classic result is a penumbra,
+blockers split at the geometric-mean distance: the far layer reuses the classic taps (far blockers only, from the
+same loads), the near layer is filtered again with the nearest blocker's kernel, and the visibilities multiply. Umbra,
+full light and single-distance blockers return the classic result unchanged, so the second filter pass (the quality's
+filter-tap count) runs only where both layers meet a penumbra.
+Shadow filter dither (`native_src/shadow_dither.hlsli`, `r_shadowmap_dither`, archived, default 1): `ShadowMap_BeginReceiver`
+rotates the sun PCF/PCSS blocker and filter patterns, the local 4-tap PCF and the projected-light 4-tap PCF per pixel by
+interleaved gradient noise, turning tap-pattern staircases into noise. The view packet's `cViewForward.w` carries the
+control: 0 off (fixed patterns, the smoke fixtures), 1 + n with n = `framecount & 63` in the main/viewmodel views under a
+temporal upscaler and 0 otherwise (the GTAO/volumetric convention). Rotated 4-tap PCF has radius sqrt(0.5) texels, so its
+plane preflight checks a +-0.75 square instead of +-0.5. Measured at the two d1_trainstation_02 spots with PCSS:
++0.06 / +0.12 ms GPU.
+Sun PCSS sample budget: the PBR pixel shaders carry a `SHADOWQUALITY` dynamic combo (0..3) set from
+`r_shadowmap_filter_quality` (stdshader_dx12, archived, default 1) and selecting the Vogel tables of
+`native_src/shadow_pcss_disks.hlsli`: Low 8 blocker / 8 filter taps, Medium 8/16, High 16/32 (the original budget, and what
+every shader without the combo compiles), Extra 32/64. `pbr_model_ps51` skips the combo outside its ENHANCED receiver
+variants. Low and Medium also skip the screen-space contact ray toward the sun (`DX12_SUN_CONTACT_SHADOWS`; local and
+projected contact rays keep running), which cost more than their whole PCSS kernel at the bollards reference spot. The
+graphics options expose it as the Shadows row: Off (`r_shadowmap_enable 0`), Low, Medium, High, Extra.
+Measured at the two d1_trainstation_02 spots (PCSS, dither, DLSS) before the Low/Medium contact skip: Low 2.89 / 4.11,
+Medium 2.84 / 4.03, High 3.11 / 4.35, Extra 3.57 / 5.12, Off 2.30 / 2.89 ms GPU. One bollards run after the skip (same
+machine state, Off 3.31 vs 3.29 ms) measured Low 4.41 and Medium 4.36 ms against Medium 4.55 ms before (about -0.2 ms).
 An unknown owner or malformed shader-side address sets `HlightFailure` (`u0 space3`); it is not a
 white/unmasked fallback.
 A known neutral `route.enabled=0` preserves native RGB/alpha, native normalization and the selected-direct

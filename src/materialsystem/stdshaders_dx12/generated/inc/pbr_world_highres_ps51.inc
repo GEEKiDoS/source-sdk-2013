@@ -59,7 +59,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bLAYERED && m_bALPHATEST );
-		return ( 3 * m_nLAYERED ) + ( 6 * m_nALPHATEST ) + 0;
+		return ( 12 * m_nLAYERED ) + ( 24 * m_nALPHATEST ) + 0;
 	}
 };
 
@@ -69,8 +69,10 @@ public:
 class pbr_world_highres_ps51_Dynamic_Index
 {
 	unsigned int m_nPIXELFOGTYPE : 2;
+	unsigned int m_nSHADOWQUALITY : 3;
 #ifdef _DEBUG
 	bool m_bPIXELFOGTYPE : 1;
+	bool m_bSHADOWQUALITY : 1;
 #endif	// _DEBUG
 public:
 	void SetPIXELFOGTYPE( int i )
@@ -82,21 +84,32 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetSHADOWQUALITY( int i )
+	{
+		Assert( i >= 0 && i <= 3 );
+		m_nSHADOWQUALITY = i;
+#ifdef _DEBUG
+		m_bSHADOWQUALITY = true;
+#endif	// _DEBUG
+	}
+
 	pbr_world_highres_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< pbr_world_highres_ps51_Block >( dx12native::kStagePixel );
 		m_nPIXELFOGTYPE = 0;
+		m_nSHADOWQUALITY = 0;
 #ifdef _DEBUG
 		m_bPIXELFOGTYPE = false;
+		m_bSHADOWQUALITY = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bPIXELFOGTYPE );
-		return ( 1 * m_nPIXELFOGTYPE ) + 0;
+		Assert( m_bPIXELFOGTYPE && m_bSHADOWQUALITY );
+		return ( 1 * m_nPIXELFOGTYPE ) + ( 3 * m_nSHADOWQUALITY ) + 0;
 	}
 };
 
-#define shaderDynamicTest_pbr_world_highres_ps51 psh_forgot_to_set_dynamic_PIXELFOGTYPE
+#define shaderDynamicTest_pbr_world_highres_ps51 psh_forgot_to_set_dynamic_PIXELFOGTYPE + psh_forgot_to_set_dynamic_SHADOWQUALITY
 

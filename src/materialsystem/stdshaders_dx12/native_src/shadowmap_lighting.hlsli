@@ -1,6 +1,8 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #ifndef DX12_SHADOWMAP_LIGHTING_HLSLI
 #define DX12_SHADOWMAP_LIGHTING_HLSLI
+#include "shadow_dither.hlsli"
+#include "shadow_pcss_disks.hlsli"
 // Included after dx12_engine_cbuffers.h, only in lighting ABI 6 pixel shaders.
 // All projections are normal D3D [0,1]. Matrices already expand the rendered
 // guard: UV -> slotOrigin + UV * slotSize, with NO second guard remapping.
@@ -24,63 +26,6 @@ SamplerComparisonState g_ShadowCmpSampler : register(s0, space2);
 // Packet-only policy, deliberately independent of material/snapshot variants.
 static const uint DX12_SHADOW_VIEW_UNSHADOWED = 0x8;
 
-// Equal weights, rotation zero. Sample zero detects even a one-texel blocker.
-// Remaining blocker points: sqrt((k+.5)/15), angle k*2.39996323, k=0..14.
-static const float2 g_ShadowBlockerDisk[DX12_SHADOW_PCSS_BLOCKER_SAMPLES] =
-{
-	float2( 0.0, 0.0 ),
-	float2( 0.1825741858, 0.0000000000 ),
-	float2( -0.2331765131, 0.2136087867 ),
-	float2( 0.0356914029, -0.4066851244 ),
-	float2( 0.2939038917, 0.3833455827 ),
-	float2( -0.5393497885, -0.0954033839 ),
-	float2( 0.5109192039, -0.3250049750 ),
-	float2( -0.1708924757, 0.6357114873 ),
-	float2( -0.3259104815, -0.6275208029 ),
-	float2( 0.7070953834, 0.2582301017 ),
-	float2( -0.7356149235, 0.3036511448 ),
-	float2( 0.3546150035, -0.7577916595 ),
-	float2( 0.2620514635, 0.8354613678 ),
-	float2( -0.7898261595, -0.4577204071 ),
-	float2( 0.9265559948, -0.2037007328 ),
-	float2( -0.5654627029, 0.8043125004 )
-};
-// Filter points: sqrt((k+.5)/32), angle k*2.39996323, k=0..31.
-static const float2 g_ShadowFilterDisk[DX12_SHADOW_PCSS_FILTER_SAMPLES] =
-{
-	float2( 0.1250000000, 0.0000000000 ),
-	float2( -0.1596450451, 0.1462479387 ),
-	float2( 0.0244362331, -0.2784382706 ),
-	float2( 0.2012222391, 0.2624587787 ),
-	float2( -0.3692675569, -0.0653182318 ),
-	float2( 0.3498024663, -0.2225156952 ),
-	float2( -0.1170020798, 0.4352419021 ),
-	float2( -0.2231356530, -0.4296341238 ),
-	float2( 0.4841151148, 0.1767980646 ),
-	float2( -0.5036411090, 0.2078957270 ),
-	float2( 0.2427882958, -0.5188244823 ),
-	float2( 0.1794143722, 0.5720012964 ),
-	float2( -0.5407570051, -0.3133797400 ),
-	float2( 0.6343695239, -0.1394643579 ),
-	float2( -0.3871458473, 0.5506751247 ),
-	float2( -0.0894396521, -0.6901996440 ),
-	float2( 0.5490717551, 0.4627582606 ),
-	float2( -0.7388784715, 0.0305549411 ),
-	float2( 0.5389551278, -0.5363323318 ),
-	float2( -0.0360581900, 0.7797915150 ),
-	float2( -0.5128175286, -0.6145267955 ),
-	float2( 0.8123595928, 0.1093018390 ),
-	float2( -0.6883106434, 0.4789086116 ),
-	float2( 0.1880860626, -0.8360613812 ),
-	float2( 0.4350332607, 0.7591910577 ),
-	float2( -0.8504484085, -0.2713162444 ),
-	float2( 0.8261024038, -0.3816802568 ),
-	float2( -0.3578882080, 0.8551555593 ),
-	float2( -0.3194073275, -0.8880337601 ),
-	float2( 0.8499086319, 0.4466881658 ),
-	float2( -0.9440346483, 0.2488444954 ),
-	float2( 0.5365958153, -0.8345297664 )
-};
 static const float2 g_ShadowPCFOffsets[4] =
 {
 	float2( -0.5, -0.5 ), float2( 0.5, -0.5 ),
@@ -93,7 +38,8 @@ struct ShadowMapReceiver
 	float3 vertexNormalWS;
 	float3 planeNormalWS;
 	float2 screenPos;
-	float bakedSunVisibility;
+	float bakedSunVisibility; // Interpolated baked sun scalar; caps the sun outside CSM coverage.
+	float bakedSunDilated; // Continuous ~1-texel dilation of the baked mask (>= bakedSunVisibility); caps inside CSM coverage.
 	uint2 tile;
 	uint bakedFaceId; // 0xFFFFFFFF = no baked domain; directory lookup is lazy.
 	float2 bakedQ;
@@ -115,7 +61,9 @@ ShadowMapReceiver ShadowMap_BeginReceiver( float3 positionWS, float3 vertexNorma
 	r.planeNormalWS = planeLengthSquared > max( derivativeScale * 1e-12, 1e-30 ) ? normalize( plane ) : r.vertexNormalWS;
 	if ( dot( r.planeNormalWS, r.vertexNormalWS ) < 0.0 ) r.planeNormalWS = -r.planeNormalWS;
 	r.screenPos = svPositionXY;
+	ShadowDither_Begin( svPositionXY, cViewForward.w );
 	r.bakedSunVisibility = 1.0;
+	r.bakedSunDilated = 1.0;
 	r.tile = uint2( max( ( svPositionXY - cShadowViewport.xy ) / DX12_SHADOW_TILE_PIXELS, 0.0 ) );
 	r.bakedFaceId = 0xFFFFFFFF;
 	r.bakedQ = 0.0;
@@ -123,6 +71,14 @@ ShadowMapReceiver ShadowMap_BeginReceiver( float3 positionWS, float3 vertexNorma
 	r.unbakedLocalRange = uint2( 0, 0 );
 	r.bakedPropPrimitive = 0xFFFFFFFF;
 	return r;
+}
+// Every baked sun producer goes through here so the dilated bound never falls below the interpolated value
+// (the bicubic highres filter can exceed nearby bilinear taps). Producers without a dilated value pass the
+// scalar twice, which keeps exactly the scalar cap everywhere.
+void ShadowMap_SetBakedSun( inout ShadowMapReceiver r, float visibility, float dilated )
+{
+	r.bakedSunVisibility = visibility;
+	r.bakedSunDilated = max( dilated, visibility );
 }
 void ShadowMap_SetBakedFace( inout ShadowMapReceiver r, uint faceId, float2 q, uint eligible, uint bakedDirectEligible, uint2 unbakedLocalRange )
 {
@@ -332,7 +288,8 @@ ShadowMapReceiver ShadowMap_BeginLightmappedReceiver( float3 positionWS, float3 
 {
 	ShadowMapReceiver r = ShadowMap_BeginReceiver( positionWS, vertexNormalWS, svPositionXY );
 	// An independent scalar at the BASE block: never decode RGB/alpha or sample a bumped offset.
-	r.bakedSunVisibility = ShadowMap_BakedSunVisibility( baseLightmapUV );
+	float baked = ShadowMap_BakedSunVisibility( baseLightmapUV );
+	ShadowMap_SetBakedSun( r, baked, baked );
 	return r;
 }
 uint2 ShadowMap_TileRange( ShadowMapReceiver r )
@@ -522,9 +479,9 @@ float ShadowMap_SunPCFChart( ShadowMapSunChart c )
 	float result = 1.0;
 	if ( c.valid )
 	{
-		bool usePlane = ShadowMap_SunPreflight( c, 0.5 );
+		bool usePlane = ShadowMap_SunPreflight( c, 0.5 * ShadowDither_PCFPreflightScale() );
 		float visibility = 0.0;
-		[unroll] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_SunCompare( c, g_ShadowPCFOffsets[i], usePlane );
+		[unroll] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_SunCompare( c, ShadowDither_Rotate( g_ShadowPCFOffsets[i] ), usePlane );
 		result = visibility * 0.25;
 	}
 	return result;
@@ -533,6 +490,96 @@ float ShadowMap_SunPCF( uint mapIndex, float3 positionWS, float3 planeNormalWS )
 {
 	return ShadowMap_SunPCFChart( ShadowMap_MakeSunChart( mapIndex, positionWS, planeNormalWS ) );
 }
+// Blocker search over the PCSS disk: summed axial positions plus the nearest / farthest blocker (largest / smallest
+// normalized stored depth).
+struct ShadowMapSunBlockers
+{
+	float sum;
+	uint count;
+	float nearest, farthest;
+};
+ShadowMapSunBlockers ShadowMap_SunBlockers( ShadowMapSunChart c, float searchRadius )
+{
+	ShadowMapSunBlockers b = (ShadowMapSunBlockers)0;
+	b.farthest = 1.0;
+	float2 centerUV = ShadowMap_ClipUV( mul( c.worldToClip, float4( c.center, 1.0 ) ) );
+	float depthRange = c.depth.y - c.depth.x;
+	// Four blocker taps / two filter taps expose independent fetches without
+	// full-unroll register pressure or oversized Source VCS blocks. Keep order.
+	[loop] for ( uint base = 0; base < DX12_SUN_PCSS_BLOCKER_TAPS; base += 4 )
+	{
+		[unroll] for ( uint tap = 0; tap < 4; ++tap )
+		{
+			uint i = base + tap;
+			float2 offset = ShadowDither_Rotate( g_ShadowBlockerDisk[i] ) * searchRadius;
+			float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, true ), 1.0 ) );
+			int2 texel = clamp( int2( floor( ShadowMap_ClipUV( clip ) * c.rect.z ) ), int2( 0, 0 ), int2( c.rect.z - 1, c.rect.z - 1 ) );
+			int3 address = int3( int2( c.rect.xy ) + texel, 0 );
+			float stored = 1.0;
+			if ( c.mapIndex < DX12_SHADOW_CSM_CASCADES ) stored = g_ShadowCascadeAtlas.Load( address );
+			else stored = g_ShadowStaticSun.Load( address );
+			// Reference is on the ACTUAL point-loaded texel center, not the Vogel ray.
+			float2 loadedOffset = float2( texel ) + 0.5 - centerUV * c.rect.z;
+			float4 loadedClip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, loadedOffset, true ), 1.0 ) );
+			float reference = loadedClip.z / loadedClip.w;
+			if ( stored < 1.0 && stored < reference )
+			{
+				b.sum += c.depth.x + stored * depthRange;
+				++b.count;
+				b.nearest = max( b.nearest, stored );
+				b.farthest = min( b.farthest, stored );
+			}
+		}
+	}
+	return b;
+}
+// One plane-corrected bilinear PCSS tap (the same four texels and references as ShadowMap_SunCompare's plane path),
+// evaluated three ways from one set of loads: x every blocker, y only near-layer blockers (stored >= splitStored),
+// z only far-layer blockers.
+float3 ShadowMap_SunCompareLayers( ShadowMapSunChart c, float2 offset, float splitStored )
+{
+	float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, true ), 1.0 ) );
+	float2 pixel = ShadowMap_ClipUV( clip ) * c.rect.z - 0.5;
+	int2 first = int2( floor( pixel ) ) + int2( c.rect.xy );
+	float4 stored;
+	if ( c.mapIndex < DX12_SHADOW_CSM_CASCADES )
+		stored = float4( g_ShadowCascadeAtlas.Load( int3( first, 0 ) ),
+			g_ShadowCascadeAtlas.Load( int3( first + int2( 1, 0 ), 0 ) ),
+			g_ShadowCascadeAtlas.Load( int3( first + int2( 0, 1 ), 0 ) ),
+			g_ShadowCascadeAtlas.Load( int3( first + int2( 1, 1 ), 0 ) ) );
+	else
+		stored = float4( g_ShadowStaticSun.Load( int3( first, 0 ) ),
+			g_ShadowStaticSun.Load( int3( first + int2( 1, 0 ), 0 ) ),
+			g_ShadowStaticSun.Load( int3( first + int2( 0, 1 ), 0 ) ),
+			g_ShadowStaticSun.Load( int3( first + int2( 1, 1 ), 0 ) ) );
+	float2 fraction = frac( pixel );
+	float firstReference = clip.z / clip.w - dot( c.depthGradient, fraction );
+	float4 references = firstReference + float4( 0.0, c.depthGradient.x, c.depthGradient.y, c.depthGradient.x + c.depthGradient.y );
+	float4 lit = float4( references <= stored );
+	float4 nearBlocker = float4( stored >= splitStored );
+	float4 weights = float4( ( 1.0 - fraction.x ) * ( 1.0 - fraction.y ), fraction.x * ( 1.0 - fraction.y ),
+		( 1.0 - fraction.x ) * fraction.y, fraction.x * fraction.y );
+	return float3( dot( lit, weights ), dot( max( lit, 1.0 - nearBlocker ), weights ), dot( max( lit, nearBlocker ), weights ) );
+}
+// One filter pass over the quality's Vogel disk at the given radius: the averaged ShadowMap_SunCompareLayers triple.
+float3 ShadowMap_SunFilter( ShadowMapSunChart c, float filterRadius, float splitStored )
+{
+	float3 visibility = 0.0;
+	[loop] for ( uint base = 0; base < DX12_SUN_PCSS_FILTER_TAPS; base += 2 )
+	{
+		[unroll] for ( uint tap = 0; tap < 2; ++tap )
+			visibility += ShadowMap_SunCompareLayers( c, ShadowDither_Rotate( g_ShadowFilterDisk[base + tap] ) * filterRadius, splitStored );
+	}
+	return visibility / DX12_SUN_PCSS_FILTER_TAPS;
+}
+// Mixed-distance blockers (a post a few units above the ground under a canopy hundreds of units up) break the
+// single mean-blocker estimate: the far layer dominates the mean and its wide kernel washes the near contact shadow
+// away. When the farthest blocker is several times farther than the nearest and the classic result is a penumbra,
+// blockers split at the geometric-mean distance: the far layer keeps the classic kernel (same taps, far blockers
+// only), the near layer is filtered with the nearest blocker's kernel, and the two visibilities multiply. Below the
+// ratio band and in umbra/full light the classic result is returned unchanged; across the band it blends linearly.
+static const float DX12_SUN_PCSS_LAYER_RATIO_START = 6.0;
+static const float DX12_SUN_PCSS_LAYER_RATIO_WIDTH = 4.0;
 float SampleSunPCSS( uint mapIndex, float3 positionWS, float3 planeNormalWS, out float2 diagnostics )
 {
 	float result = 1.0;
@@ -544,48 +591,27 @@ float SampleSunPCSS( uint mapIndex, float3 positionWS, float3 planeNormalWS, out
 	if ( pcss )
 	{
 		float searchRadius = ShadowMap_CappedRadius( cSunRadiance.w, max( 0.0, c.centerAxial - c.depth.x ) / c.depth.z );
-		float blockerDistance = 0.0;
-		uint blockerCount = 0;
-		float2 centerUV = ShadowMap_ClipUV( mul( c.worldToClip, float4( c.center, 1.0 ) ) );
-		float depthRange = c.depth.y - c.depth.x;
-		// Four blocker taps / two filter taps expose independent fetches without
-		// full-unroll register pressure or oversized Source VCS blocks. Keep order.
-		[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_BLOCKER_SAMPLES; base += 4 )
+		ShadowMapSunBlockers b = ShadowMap_SunBlockers( c, searchRadius );
+		diagnostics.x = float( b.count ) / DX12_SUN_PCSS_BLOCKER_TAPS;
+		if ( b.count > 0 )
 		{
-			[unroll] for ( uint tap = 0; tap < 4; ++tap )
-			{
-				uint i = base + tap;
-				float2 offset = g_ShadowBlockerDisk[i] * searchRadius;
-				float4 clip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, offset, true ), 1.0 ) );
-				int2 texel = clamp( int2( floor( ShadowMap_ClipUV( clip ) * c.rect.z ) ), int2( 0, 0 ), int2( c.rect.z - 1, c.rect.z - 1 ) );
-				int3 address = int3( int2( c.rect.xy ) + texel, 0 );
-				float stored = 1.0;
-				if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) stored = g_ShadowCascadeAtlas.Load( address );
-				else stored = g_ShadowStaticSun.Load( address );
-				// Reference is on the ACTUAL point-loaded texel center, not the Vogel ray.
-				float2 loadedOffset = float2( texel ) + 0.5 - centerUV * c.rect.z;
-				float4 loadedClip = mul( c.worldToClip, float4( ShadowMap_SunPoint( c, loadedOffset, true ), 1.0 ) );
-				float reference = loadedClip.z / loadedClip.w;
-				if ( stored < 1.0 && stored < reference )
-				{
-					blockerDistance += c.depth.x + stored * depthRange;
-					++blockerCount;
-				}
-			}
-		}
-		diagnostics.x = float( blockerCount ) / DX12_SHADOW_PCSS_BLOCKER_SAMPLES;
-		if ( blockerCount > 0 )
-		{
-			float meanBlocker = blockerDistance / float( blockerCount );
+			float depthRange = c.depth.y - c.depth.x;
+			float meanBlocker = b.sum / float( b.count );
 			float filterRadius = ShadowMap_CappedRadius( cSunRadiance.w, max( 0.0, c.centerAxial - meanBlocker ) / c.depth.z );
 			diagnostics.y = filterRadius / DX12_SHADOW_PCSS_MAX_TEXELS;
-			float visibility = 0.0;
-			[loop] for ( uint base = 0; base < DX12_SHADOW_PCSS_FILTER_SAMPLES; base += 2 )
+			// One texel of world size floors both distances so a contact blocker cannot make the ratio infinite.
+			float nearestDistance = max( c.centerAxial - ( c.depth.x + b.nearest * depthRange ), c.depth.z );
+			float farthestDistance = max( c.centerAxial - ( c.depth.x + b.farthest * depthRange ), c.depth.z );
+			float layered = saturate( ( farthestDistance / nearestDistance - DX12_SUN_PCSS_LAYER_RATIO_START ) / DX12_SUN_PCSS_LAYER_RATIO_WIDTH );
+			float splitStored = ( c.centerAxial - sqrt( nearestDistance * farthestDistance ) - c.depth.x ) / depthRange;
+			float2 classic = ShadowMap_SunFilter( c, filterRadius, splitStored ).xz; // x every blocker, y far layer only
+			result = classic.x;
+			[branch] if ( layered > 0.0 && classic.x > 1.0 / 255.0 && classic.x < 254.0 / 255.0 )
 			{
-				[unroll] for ( uint tap = 0; tap < 2; ++tap )
-					visibility += ShadowMap_SunCompare( c, g_ShadowFilterDisk[base + tap] * filterRadius, true );
+				float nearRadius = ShadowMap_CappedRadius( cSunRadiance.w, nearestDistance / c.depth.z );
+				float nearVisibility = ShadowMap_SunFilter( c, nearRadius, splitStored ).y;
+				result = lerp( classic.x, nearVisibility * classic.y, layered );
 			}
-			result = visibility / DX12_SHADOW_PCSS_FILTER_SAMPLES;
 		}
 	}
 	else if ( c.valid ) result = ShadowMap_SunPCFChart( c );
@@ -790,9 +816,9 @@ float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart 
 	float result = 1.0;
 	if ( c.valid )
 	{
-		bool usePlane = ShadowMap_LocalPreflight( light, c, 0.5 );
+		bool usePlane = ShadowMap_LocalPreflight( light, c, 0.5 * ShadowDither_PCFPreflightScale() );
 		float visibility = 0.0;
-		[unroll] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_LocalCompare( light, c, g_ShadowPCFOffsets[i], usePlane );
+		[unroll] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_LocalCompare( light, c, ShadowDither_Rotate( g_ShadowPCFOffsets[i] ), usePlane );
 		result = visibility * 0.25;
 	}
 	return result;
@@ -825,8 +851,10 @@ bool ShadowMap_SunMapValid( uint mapIndex, float3 p, float3 normal )
 // Complete results (visibility, blocker fraction, filter radius) share selection
 // and blending. Invalid CSM never dilutes the static visibility with white.
 // invalidVisibility is the visibility of an entry without a valid chart (surfaces pass 1 and cap with baked
-// data; the volumetric pass passes 0). charted reports whether any entry sampled a valid chart.
-float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility, out bool charted )
+// data; the volumetric pass passes 0). charted reports whether any entry sampled a valid chart; csmWeight is
+// the summed weight of valid cascade entries (the static whole-map entry excluded), i.e. how much of the
+// result came from maps fine enough to outrank the dilated baked bound.
+float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility, out bool charted, out float csmWeight )
 {
 	// Validity case table: F/S are first/second CSM validity, C is coverage,
 	// B is blend, T is static (or float3(1,0,0) when static is invalid).
@@ -883,6 +911,7 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 	}
 	float3 result = 0.0;
 	charted = false;
+	csmWeight = 0.0;
 	// Runtime map selection keeps the heavy PCSS kernel instantiated just once.
 	[loop] for ( uint entry = 0; entry < entryCount; ++entry )
 	{
@@ -896,6 +925,7 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 			float visibility = SampleSunPCSS( mapIndex, r.positionWS, r.planeNormalWS, diagnostics );
 			mapResult = float3( visibility, diagnostics );
 			charted = true;
+			if ( mapIndex < DX12_SHADOW_CSM_CASCADES ) csmWeight += weight;
 		}
 		result += weight * mapResult;
 	}
@@ -904,7 +934,15 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 float3 ShadowMap_SunResult( ShadowMapReceiver r, float invalidVisibility )
 {
 	bool charted;
-	return ShadowMap_SunResultCharted( r, invalidVisibility, charted );
+	float csmWeight;
+	return ShadowMap_SunResultCharted( r, invalidVisibility, charted, csmWeight );
+}
+// Inside valid CSM coverage the cascades already hold the static casters, so the baked mask only vetoes beyond
+// about a texel of any lit texel (continuously, so no texel steps); elsewhere the interpolated scalar caps exactly
+// as before.
+float ShadowMap_SunCap( ShadowMapReceiver r, float csmWeight )
+{
+	return lerp( r.bakedSunVisibility, r.bakedSunDilated, saturate( csmWeight ) );
 }
 
 // Port of restir_lights.glsl StandardLightRadiance / GatherSampleStandardLightSSE.
@@ -1041,10 +1079,11 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 		// Geometric surface backfaces skip the map (silhouette taps can read "lit").
 		// Detail gathers are full-sphere point receivers: their orientation is NOT a sun cosine gate.
 		float3 sunResult = float3( 0.0, 0.0, 0.0 );
-		// A zero baked cap makes visibility exactly zero. Keep real map evaluation
+		float csmWeight = 0.0;
+		// A zero dilated baked bound makes visibility exactly zero under either cap. Keep real map evaluation
 		// for blocker/radius debug views, which observe diagnostics even when capped.
 		bool sunDiagnostics = cShadowView0.w == 5 || cShadowView0.w == 6;
-		[branch] if ( ( r.bakedSunVisibility != 0.0 || sunDiagnostics ) &&
+		[branch] if ( ( r.bakedSunDilated != 0.0 || sunDiagnostics ) &&
 			( s.mode == 4 || dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 ) )
 		{
 			sunResult = float3( 1.0, 0.0, 0.0 );
@@ -1053,12 +1092,12 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 				// Runtime visibility only: the contact ray needs a valid runtime chart and precedes the baked cap.
 				// Detail point receivers have no surface to trace from (their own cut-out quad is the first blocker).
 				bool charted;
-				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted );
-				[branch] if ( charted && sunResult.x > 0.0 && s.mode != 4 )
+				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted, csmWeight );
+				[branch] if ( DX12_SUN_CONTACT_SHADOWS && charted && sunResult.x > 0.0 && s.mode != 4 )
 					sunResult.x *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, -cSunTravel.xyz, cScreenEyeLength.w );
 			}
 		}
-		d.sunVisibility = min( saturate( sunResult.x ), r.bakedSunVisibility );
+		d.sunVisibility = min( saturate( sunResult.x ), ShadowMap_SunCap( r, csmWeight ) );
 		d.sunDiagnostics = sunResult.yz;
 		float3 L = -cSunTravel.xyz;
 		float angular = ShadowMap_Angular( s.mode, L, s.N, s.basis1, s.basis2, s.weights, s.E, s.exponent );

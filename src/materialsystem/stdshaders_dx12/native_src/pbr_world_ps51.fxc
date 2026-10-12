@@ -30,6 +30,7 @@
 // STATIC: "LAYERED" "0..1"
 // STATIC: "ALPHATEST" "0..1"
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
+// DYNAMIC: "SHADOWQUALITY" "0..3"
 #include "common_ps_fxc.h"
 #include "pbr_lighting.hlsli"
 
@@ -100,7 +101,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// Derivatives occur here, before any divergent work (HighresLightmap_Begin returns early for rejected owners).
 	ShadowMapReceiver receiver = ShadowMap_BeginReceiver( P, i.worldNormal, i.svPos.xy );
 	HlightReceiver hlr = HighresLightmap_Begin( i.lightmapUV.xy, i.lightmapVertexUV );
-	receiver.bakedSunVisibility = hlr.sun;
+	ShadowMap_SetBakedSun( receiver, hlr.sun, hlr.sunDilated );
 	ShadowMap_SetBakedFace( receiver, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
 #endif
 	float2 baseUV = i.baseBumpUV.xy;

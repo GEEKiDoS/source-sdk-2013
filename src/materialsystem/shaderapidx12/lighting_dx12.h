@@ -17,6 +17,7 @@ struct LightingViewStateDX12;
 struct ShaderRecordDX12;
 bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility = nullptr, bool *propVisibility = nullptr, bool *pbrSpots = nullptr, bool *probeAbi = nullptr );
 bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage );
+bool ValidateInstancedCasterShaderDX12( const D3D12_SHADER_BYTECODE &bytecode );
 bool RequiresStaticPropReceiverShaderDX12( const char *logical );
 
 struct SunReceiverStreamDX12
@@ -62,6 +63,8 @@ public:
 	void DestroyShadowDepthTarget( DX12ShadowTarget_t target ) override;
 	void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear ) override;
 	void EndShadowPass() override;
+	void BeginShadowCasterBatch() override;
+	void EndShadowCasterBatch() override;
 	void CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height ) override;
 	void EndView() override;
 	void UnloadMap( uint32 mapGeneration ) override;

@@ -115,7 +115,7 @@ static const Choice_t kMulticore[] =
 	{ "#GraphicsOptions_Enabled", { -1, 0, 0, 0, 0 } },
 };
 
-static const Choice_t kShadowRes[] =
+static const Choice_t kQuality4[] =
 {
 	{ "#GraphicsOptions_Low", { 0, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_Medium", { 1, 0, 0, 0, 0 } },
@@ -127,6 +127,17 @@ static const Choice_t kShadowFilter[] =
 {
 	{ "#GraphicsOptions_Hard", { 0, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_Soft", { 1, 0, 0, 0, 0 } },
+};
+
+// (r_shadowmap_enable, r_shadowmap_filter_quality); Off disables runtime shadow maps and matches the enable cvar alone
+// (ROWF_OFF_ENABLE_ONLY). The quality selects the soft-shadow (PCSS) sample budget combo of the PBR receivers.
+static const Choice_t kShadowQuality[] =
+{
+	{ "#GraphicsOptions_Off", { 0, 1, 0, 0, 0 } },
+	{ "#GraphicsOptions_Low", { 1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_Medium", { 1, 1, 0, 0, 0 } },
+	{ "#GraphicsOptions_High", { 1, 2, 0, 0, 0 } },
+	{ "#GraphicsOptions_Extra", { 1, 3, 0, 0, 0 } },
 };
 
 static const Choice_t kSunDistance[] =
@@ -222,8 +233,8 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Bicubic", TAB_DISPLAY, ROW_CHECK, { "r_lightmap_bicubic", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Detail", TAB_DISPLAY, ROW_SLIDER, { "cl_detaildist", NULL, NULL, NULL, NULL }, NULL, 0, 0, 4000, 50, NULL, ROWF_NONE },
 
-	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_CHECK, { "r_shadowmap_enable", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_ShadowRes", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_resolution", NULL, NULL, NULL, NULL }, kShadowRes, ARRAYSIZE( kShadowRes ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_enable", "r_shadowmap_filter_quality", NULL, NULL, NULL }, kShadowQuality, ARRAYSIZE( kShadowQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
+	{ "#GraphicsOptions_ShadowRes", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_resolution", NULL, NULL, NULL, NULL }, kQuality4, ARRAYSIZE( kQuality4 ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_ShadowFilter", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_filter", NULL, NULL, NULL, NULL }, kShadowFilter, ARRAYSIZE( kShadowFilter ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_SunDist", TAB_LIGHTING, ROW_COMBO, { "r_csm_distance", NULL, NULL, NULL, NULL }, kSunDistance, ARRAYSIZE( kSunDistance ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_MaxLights", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_max_realtime_lights", NULL, NULL, NULL, NULL }, kRealtimeLights, ARRAYSIZE( kRealtimeLights ), 0, 0, 0, NULL, ROWF_NONE },

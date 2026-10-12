@@ -40,6 +40,7 @@ struct HlightReceiver
     uint bakedDirectEligible;
     uint2 unbakedLocalRange; // Raw t1032 byte offset/count, only for baked-direct receivers.
     float sun;
+    float sunDilated; // Continuous ~1-texel dilation of the baked sun alpha within the same tile (>= sun).
     float3 style0BaseRGB;
 };
 // Per-invocation state, not a UAV read. Report after material derivatives have run.
@@ -72,6 +73,20 @@ float4 HighresLightmap_Finish(float4 color)
     HighresLightmap_Report();
     return color;
 }
+float4 HighresLightmap_Page(uint kind, float slice, float2 uv)
+{
+    float3 location = float3(uv, slice);
+    float4 result = 0;
+    switch (kind)
+    {
+    case 0: result = HlightPages2048.SampleLevel(HlightLinear, location, 0); break;
+    case 1: result = HlightPages4096.SampleLevel(HlightLinear, location, 0); break;
+    case 2: result = HlightPages8192.SampleLevel(HlightLinear, location, 0); break;
+    case 3: result = HlightPages16384.SampleLevel(HlightLinear, location, 0); break;
+    default: HighresLightmap_Reject(4, kind); break;
+    }
+    return result;
+}
 #if defined(HIGHRES_LIGHTMAP_BICUBIC)
 // Cubic B-spline (Sigg & Hadwiger): the 4x4 neighbourhood folded into four bilinear taps.
 // f in [0,1). weight is the two pair sums; offset is each tap's position relative to floor(pixel - 0.5).
@@ -86,20 +101,6 @@ void HighresLightmap_BSpline(float f, out float2 weight, out float2 offset)
     float4 c = float4(x, y, z, w) * (1.0 / 6.0);
     weight = float2(c.x + c.y, c.z + c.w);
     offset = float2(c.y / weight.x - 1.0, 1.0 + c.w / weight.y);
-}
-float4 HighresLightmap_Page(uint kind, float slice, float2 uv)
-{
-    float3 location = float3(uv, slice);
-    float4 result = 0;
-    switch (kind)
-    {
-    case 0: result = HlightPages2048.SampleLevel(HlightLinear, location, 0); break;
-    case 1: result = HlightPages4096.SampleLevel(HlightLinear, location, 0); break;
-    case 2: result = HlightPages8192.SampleLevel(HlightLinear, location, 0); break;
-    case 3: result = HlightPages16384.SampleLevel(HlightLinear, location, 0); break;
-    default: HighresLightmap_Reject(4, kind); break;
-    }
-    return result;
 }
 // Taps are clamped to the tile's texel centers, so the bilinear footprint cannot leave the tile.
 float4 HighresLightmap_Bicubic(HlightTileGpuDX12 tile, float2 pixel)
@@ -147,6 +148,29 @@ float4 HighresLightmap_Tile(uint index, float2 q)
     HighresLightmap_Reject(4, tile.address.x); return 0;
 #endif
 }
+// Baked sun alpha dilated by about one texel: the max of four bilinear taps at (+-1, +-1) texels around
+// HighresLightmap_Tile's sample point, each clamped to the tile's texel centers so no tap reads a neighbouring
+// tile. A max of continuous bilinear functions is continuous, so the bound never steps at texel boundaries.
+static const float HIGHRES_SUN_DILATION_TEXELS = 1.0;
+float HighresLightmap_SunDilated(uint index, float2 q)
+{
+    uint count, stride;
+    HlightTiles.GetDimensions(count, stride);
+    if (index >= count) { HighresLightmap_Reject(3, index); return 0; }
+    HlightTileGpuDX12 tile = HlightTiles[index];
+    float2 pixel = tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5;
+    float2 lo = tile.address.zw + 0.5;
+    float2 hi = tile.address.zw + tile.size.xy - 0.5;
+    float invPage = 1.0 / tile.size.z;
+    uint kind = tile.address.x;
+    float slice = tile.address.y;
+    float h = HIGHRES_SUN_DILATION_TEXELS;
+    float a = HighresLightmap_Page(kind, slice, clamp(pixel + float2(-h, -h), lo, hi) * invPage).a;
+    float b = HighresLightmap_Page(kind, slice, clamp(pixel + float2( h, -h), lo, hi) * invPage).a;
+    float c = HighresLightmap_Page(kind, slice, clamp(pixel + float2(-h,  h), lo, hi) * invPage).a;
+    float d = HighresLightmap_Page(kind, slice, clamp(pixel + float2( h,  h), lo, hi) * invPage).a;
+    return saturate(max(max(a, b), max(c, d)));
+}
 // Ownership is a property of the primitive, not of an interpolated fragment coordinate: vertexUV is the lightmap UV of the
 // primitive's provoking vertex (a nointerpolation varying), always inside the owning face's allocation, and selects the face.
 // baseUV is the interpolated coordinate used only for the position inside that face; it is clamped to the face rectangle, so
@@ -156,9 +180,11 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
 {
     HlightReceiver r = (HlightReceiver)0;
     r.sun = 1;
+    r.sunDilated = 1;
     r.nativeUV = baseUV;
     if (cHlightRoute.x == 0) return r;
     r.sun = 0; // Rejected owners cannot appear unoccluded while GPU rejection is in flight.
+    r.sunDilated = 0;
     precise float2 pixel = baseUV * cHlightRoute.yz;
     precise float2 vertexPixel = vertexUV * cHlightRoute.yz;
     int2 owner = int2(floor(vertexPixel));
@@ -190,7 +216,9 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
     r.unbakedLocalRange = r.bakedDirectEligible != 0 ?
         uint2((r.face.dimensionsFlags.w >> 1) * 4u, r.face.dimensionsFlags.z >> 16) : uint2(0, 0);
     r.style0BaseRGB = base.rgb;
-    r.sun = bakedPose && (r.face.dimensionsFlags.z & 8) != 0 ? saturate(base.a) : 1;
+    bool bakedSun = bakedPose && (r.face.dimensionsFlags.z & 8) != 0;
+    r.sun = bakedSun ? saturate(base.a) : 1;
+    r.sunDilated = bakedSun ? max(HighresLightmap_SunDilated(r.face.tiles[0].x, r.q), r.sun) : 1;
     return r;
 }
 float3 HighresLightmap_RGB(HlightReceiver r, uint plane)

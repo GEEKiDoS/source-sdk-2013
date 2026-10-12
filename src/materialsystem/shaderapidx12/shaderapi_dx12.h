@@ -632,7 +632,7 @@ public:
 
 	struct DrawStatsDX12
 	{
-		uint64_t draws = 0, memoHits = 0;
+		uint64_t draws = 0, memoHits = 0, shadowDraws = 0, casterInstances = 0, casterInstancedDraws = 0;
 	} m_DrawStats;
 
 	uint32_t m_nDrawStatsFrames = 0;
@@ -656,6 +656,47 @@ private:
 	void DrawBuffers( const VertexBindingDX12 ( &streams )[16], CIndexBufferDX12 *pIndices,
 	    size_t nIndexOffset, MaterialPrimitiveType_t primitiveType, int nFirstIndex, int nIndexCount,
 	    bool bMeshStreams = false, uint64 meshToken = 0, const CMeshDX12 *mesh = nullptr );
+
+	// Opaque rigid depthwrite casters deferred between Begin/EndShadowCasterBatch (recording owner only). Eligible
+	// draws are not recorded; FlushShadowCasterBatch emits one instanced draw per (mesh, range, snapshot, VS dynamic
+	// index) group by re-entering DrawBuffers with the group's mesh arguments and the m_CasterEmit override.
+	struct CasterGroupDX12
+	{
+		uint64 meshToken;                     // key: IMesh identity (DrawMesh passes the CMeshDX12 pointer)
+		int firstIndex, indexCount;           // key: index range
+		StateSnapshot_t snapshot;             // key: DepthWrite snapshot id (material/pass state)
+		int vsDynamicIndex;                   // key: COMPRESSED_VERTS bit (0 or 1)
+		const CMeshDX12 *mesh;                // emit arguments (identical to the captured DrawMesh call)
+		CVertexBufferDX12 *vertices;
+		CIndexBufferDX12 *indices;
+		uint32_t byteOffset, firstVertex, vertexCount;
+		VertexFormat_t format;
+		uint32_t first;                       // staging row offset assigned at flush
+		uint16_t head, tail, count;           // singly linked instance list (indices into rows[]/next[])
+	};
+	static constexpr uint32_t kCasterGroups = 512, kCasterGroupSlots = 1024 /* 2x groups, open addressing */, kCasterInstances = 4096;
+	struct CasterBatchDX12
+	{
+		bool active = false;
+		uint32_t groupCount = 0, instanceCount = 0;
+		StateSnapshot_t lastSnapshot = -1;    // DrawBuffers eligibility memo of the snapshot test
+		bool lastSnapshotEligible = false;
+		ShaderRecordDX12 *instancedVS[2] = {}; // depthwrite_instanced_vs51 dynamic index 0/1, resolved at BeginShadowCasterBatch
+		CasterGroupDX12 groups[kCasterGroups];
+		uint16_t slots[kCasterGroupSlots];    // group index + 1, 0 = empty
+		float rows[kCasterInstances][12];     // cModel[0] rows, arrival order
+		uint16_t next[kCasterInstances];
+		float staging[kCasterInstances][12];  // group-contiguous copy for one UploadTransient
+	} m_CasterBatch;
+	struct
+	{
+		bool active = false;
+		UINT instances = 1;
+		D3D12_GPU_VIRTUAL_ADDRESS transforms = 0;
+	} m_CasterEmit;
+	bool BeginShadowCasterBatch();            // resolves instancedVS[0..1]; false when either is missing
+	void CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mesh, const VertexBindingDX12 &stream0, CIndexBufferDX12 *indices, int firstIndex, int indexCount );
+	void FlushShadowCasterBatch( bool close ); // emits every group; close=false keeps the scope open (capacity overflow)
 	void SetMotionPass( int nMode );
 	bool EnsureMotionResources();
 	bool PrepareMotionBinding( RenderTargetBindingDX12 &binding );

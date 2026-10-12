@@ -720,20 +720,19 @@ inline bool ValidWorldLight(const dworldlight_t &w)
         ShadowMap_IsFiniteFloat(w.exponent) && w.exponent >= 0 &&
         ShadowMap_IsFiniteFloat(w.radius) && w.radius >= 0;
 }
-// Inspect only ZIP metadata when a manifest is absent. Never infer the asset
-// name from the BSP basename or inflate/copy the embedded lightmap pages.
-inline bool FindPakAsset(ShadowMapBspReadFn read, void *context,
-    const ShadowMapBspLumpInfo &pak, bool &found)
+// Locates the BSP pak's ZIP central directory from its end record without reading member
+// payloads; end.startOfCentralDirOffset is relative to the pak lump. compatible is false for
+// Source XZP2, which omits central-entry extra fields/comments even when their header lengths
+// are nonzero (matching CZipFile::ParseFromBuffer).
+inline bool LocatePakDirectory(ShadowMapBspReadFn read, void *context, const ShadowMapBspLumpInfo &pak,
+    ZIP_EndOfCentralDirRecord &end, bool &compatible)
 {
-    found = false;
-    if (!pak.filelen) return true;
     if (!read || pak.uncompressedSize || pak.filelen < sizeof(ZIP_EndOfCentralDirRecord) ||
         uint64(pak.fileofs) + pak.filelen > 0xffffffffu) return false;
     uint8 tail[sizeof(ZIP_EndOfCentralDirRecord) + 65535];
     const uint32 tailBytes = MIN(pak.filelen, uint32(sizeof(tail)));
     const uint32 tailOffset = pak.filelen - tailBytes;
     if (!read(context, pak.fileofs + tailOffset, tailBytes, tail)) return false;
-    ZIP_EndOfCentralDirRecord end{};
     int endOffset = -1;
     for (int i = int(tailBytes - sizeof(end)); i >= 0; --i)
     {
@@ -748,10 +747,20 @@ inline bool FindPakAsset(ShadowMapBspReadFn read, void *context,
         end.nCentralDirectoryEntries_ThisDisk != end.nCentralDirectoryEntries_Total ||
         uint64(end.startOfCentralDirOffset) + end.centralDirectorySize > tailOffset + uint32(endOffset))
         return false;
-    // Source XZP2 omits central-entry extra fields/comments even when their
-    // header lengths are nonzero; match CZipFile::ParseFromBuffer.
-    const bool compatible = end.commentLength < 4 ||
+    compatible = end.commentLength < 4 ||
         V_strnicmp(reinterpret_cast<const char *>(tail + endOffset + sizeof(end)), "XZP2", 4) != 0;
+    return true;
+}
+// Inspect only ZIP metadata when a manifest is absent. Never infer the asset
+// name from the BSP basename or inflate/copy the embedded lightmap pages.
+inline bool FindPakAsset(ShadowMapBspReadFn read, void *context,
+    const ShadowMapBspLumpInfo &pak, bool &found)
+{
+    found = false;
+    if (!pak.filelen) return true;
+    ZIP_EndOfCentralDirRecord end{};
+    bool compatible = true;
+    if (!LocatePakDirectory(read, context, pak, end, compatible)) return false;
     uint32 cursor = end.startOfCentralDirOffset;
     const uint32 limit = cursor + end.centralDirectorySize;
     for (uint32 i = 0; i < end.nCentralDirectoryEntries_Total; ++i)
