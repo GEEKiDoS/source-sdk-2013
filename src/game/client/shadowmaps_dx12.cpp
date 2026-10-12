@@ -41,7 +41,7 @@
 
 
 ConVar r_shadowmap_enable( "r_shadowmap_enable", "1", FCVAR_ARCHIVE, "Enable runtime shadow maps; 0 retains selected direct lighting and all baked visibility", true, 0, true, 1 );
-ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Main-camera PVS nearest chart-resident local-light cap; 0 has no budget limit within PVS; invalid values use 4; sun excluded" );
+ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Chart-resident local-light cap: lights in front of the main camera first, then PVS-eligible lights behind it, nearest first within each; 0 has no budget limit; invalid values use 4; sun excluded" );
 ConVar r_shadowmap_realtime_fade_seconds( "r_shadowmap_realtime_fade_seconds", "0.5", FCVAR_ARCHIVE, "Real-time seconds for a full hybrid handoff: parallel fade-out then fade-in, half each; 0 switches immediately; invalid values use 0.5" );
 ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade receiver distance", true, 128, true, 32768 );
 ConVar r_shadowmap_resolution( "r_shadowmap_resolution", "2", FCVAR_ARCHIVE, "Shadow map resolution: 0 low, 1 medium, 2 high, 3 ultra. High matches the original 2048 cascade slot, 512 local slot and 4096 static sun", true, 0, true, 3 );
@@ -879,9 +879,40 @@ bool LocalHasSlots( const LocalLight_t &local )
 
 bool HybridCameraCut( const Vector &previous, const Vector &current )
 {
-	// Local residency is position/PVS based: rotation, FOV and projection mode
-	// must not clear hysteresis or restart an in-progress handoff.
+	// Cuts are positional: rotation, FOV and projection mode must not clear hysteresis or restart an in-progress
+	// handoff, even though a turn changes which lights the camera faces (those fade like any other exchange).
 	return (current-previous).LengthSqr()>=256.0f*256.0f;
+}
+
+// Horizontal degrees added on each side of the main camera's FOV for residency: a light about to enter view is
+// promoted (and its shadow faded in) before it reaches the screen edge during an ordinary turn.
+static const float kSelectionFrustumPadDegrees=15.0f;
+// Score multiplier of a light whose emitter the camera faces. Scores are 1/max(distance,1) <= 1, so any faced light
+// outranks every unfaced one by far more than the 25% hysteresis, while ratios (and hysteresis) within each tier are
+// unchanged: when the budget is exceeded, lights behind the camera are culled first, then by PVS/distance as before.
+static const float kSelectionFacedPriority=1.0e6f;
+
+bool SelectionFrustumVolume( const CViewSetup &setup, ShadowCasterVolume_t &volume )
+{
+	if ( setup.m_bOrtho || !(setup.fov>0) || setup.fov>=179.0f || !(setup.m_flAspectRatio>0) ) return false;
+	CViewSetup padded=setup;
+	padded.fov=MIN(setup.fov+2.0f*kSelectionFrustumPadDegrees,179.0f);
+	VMatrix worldToView,projection,clip,worldToPixels;
+	render->GetMatricesForView(padded,&worldToView,&projection,&clip,&worldToPixels);
+	return ExtractVolume(clip,volume);
+}
+// A light whose finite influence never reaches the padded view frustum cannot shade a visible pixel: never resident.
+bool LocalReachesView( const LocalLight_t &local, const ShadowCasterVolume_t *frustum )
+{
+	if ( !frustum || local.world.radius<=0 ) return true;
+	return BoxInVolume(*frustum,local.influence.mins,local.influence.maxs) &&
+		ShadowMapScene_VolumeIntersectsBox(local.influence,frustum->m_vecMins,frustum->m_vecMaxs);
+}
+// The camera faces the emitter itself (origin inside the padded frustum). Most light influences are large enough to
+// reach the view from anywhere, so this, not the influence test, separates lights in front from lights behind.
+bool LocalEmitterFaced( const LocalLight_t &local, const ShadowCasterVolume_t *frustum )
+{
+	return !frustum || BoxInVolume(*frustum,local.world.origin,local.world.origin);
 }
 
 void UpdateRealtimeSelection( const CViewSetup &setup )
@@ -897,13 +928,19 @@ void UpdateRealtimeSelection( const CViewSetup &setup )
 	const float fadeSeconds=HybridNonnegativeSetting(r_shadowmap_realtime_fade_seconds.GetString(),0.5f);
 	const float realDelta=gpGlobals->absoluteframetime;
 	const float delta=ShadowMap_IsFiniteFloat(realDelta) ? MAX(realDelta,0.0f) : 0;
+	ShadowCasterVolume_t frustumVolume;
+	const ShadowCasterVolume_t *frustum=SelectionFrustumVolume(setup,frustumVolume) ? &frustumVolume : NULL;
 	g_LightRanks.SetCount(g_Locals.Count());
 	for ( int i=0;i<g_Locals.Count();++i )
 	{
 		LocalLight_t &local=g_Locals[i];
-		local.score=ShadowLocalProximityScore(setup.origin,local.world.origin,g_CameraPvs.Eligible(local.pvsClusters),
+		// Lights whose influence misses the view are culled outright; of the rest, the ones behind the camera rank
+		// below every faced light. PVS eligibility and emitter distance order each tier exactly as before.
+		const bool eligible=LocalReachesView(local,frustum) && g_CameraPvs.Eligible(local.pvsClusters);
+		local.score=ShadowLocalProximityScore(setup.origin,local.world.origin,eligible,
 			MAX(local.selected.radiance[0],MAX(local.selected.radiance[1],local.selected.radiance[2]))*
 			engine->LightStyleValue(local.selected.style));
+		if ( LocalEmitterFaced(local,frustum) ) local.score*=kSelectionFacedPriority;
 		ShadowLightRank_t &rank=g_LightRanks[i];
 		rank.relevantIndex=i; rank.lightId=local.selected.lightId; rank.score=local.score;
 		rank.weight=local.realtimeWeight; rank.resident=local.resident; rank.desired=false;

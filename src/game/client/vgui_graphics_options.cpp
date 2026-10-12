@@ -33,7 +33,7 @@ enum
 	TAB_DISPLAY = 0,
 	TAB_LIGHTING,
 	TAB_POST,
-	TAB_UPSCALE,
+	TAB_FRAMEGEN,
 	TAB_COUNT
 };
 
@@ -47,8 +47,7 @@ enum
 enum
 {
 	ROWF_NONE = 0,
-	ROWF_AA = 1,
-	ROWF_GTAO = 2
+	ROWF_OFF_ENABLE_ONLY = 1	// choice 0 matches and writes only the enable cvar, keeping the remembered quality cvars
 };
 
 struct Choice_t
@@ -95,14 +94,6 @@ static const Choice_t kFilter[] =
 	{ "#GraphicsOptions_Aniso4", { 0, 4, 0, 0, 0 } },
 	{ "#GraphicsOptions_Aniso8", { 0, 8, 0, 0, 0 } },
 	{ "#GraphicsOptions_Aniso16", { 0, 16, 0, 0, 0 } },
-};
-
-static const Choice_t kAA[] =
-{
-	{ "#GraphicsOptions_None", { 0, 0, 0, 0, 0 } },
-	{ "#GraphicsOptions_MSAA2", { 2, 0, 0, 0, 0 } },
-	{ "#GraphicsOptions_MSAA4", { 4, 0, 0, 0, 0 } },
-	{ "#GraphicsOptions_MSAA8", { 8, 0, 0, 0, 0 } },
 };
 
 static const Choice_t kWater[] =
@@ -157,7 +148,7 @@ static const Choice_t kRealtimeLights[] =
 	{ "#GraphicsOptions_Unlimited", { 0, 0, 0, 0, 0 } },
 };
 
-// Off matches r_gtao alone. High is the current default (resolution, slices, steps, denoise) = (1, 3, 3, 2).
+// Off matches r_gtao alone (ROWF_OFF_ENABLE_ONLY). High is the current default (resolution, slices, steps, denoise) = (1, 3, 3, 2).
 static const Choice_t kGtao[] =
 {
 	{ "#GraphicsOptions_Off", { 0, 1, 3, 3, 2 } },
@@ -172,6 +163,15 @@ static const Choice_t kQuality3[] =
 	{ "#GraphicsOptions_Low", { 0, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_Medium", { 1, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_High", { 2, 0, 0, 0, 0 } },
+};
+
+// (enable, quality) for r_ssr, r_contactshadows and r_volumetric; Off matches the enable cvar alone (ROWF_OFF_ENABLE_ONLY).
+static const Choice_t kScreenSpaceEffect[] =
+{
+	{ "#GraphicsOptions_Off", { 0, 1, 0, 0, 0 } },
+	{ "#GraphicsOptions_Low", { 1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_Medium", { 1, 1, 0, 0, 0 } },
+	{ "#GraphicsOptions_High", { 1, 2, 0, 0, 0 } },
 };
 
 static const Choice_t kUpscaler[] =
@@ -211,7 +211,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Model", TAB_DISPLAY, ROW_COMBO, { "r_rootlod", NULL, NULL, NULL, NULL }, kModel, ARRAYSIZE( kModel ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Texture", TAB_DISPLAY, ROW_COMBO, { "mat_picmip", NULL, NULL, NULL, NULL }, kTexture, ARRAYSIZE( kTexture ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Filtering", TAB_DISPLAY, ROW_COMBO, { "mat_trilinear", "mat_forceaniso", NULL, NULL, NULL }, kFilter, ARRAYSIZE( kFilter ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_AA", TAB_DISPLAY, ROW_COMBO, { "mat_antialias", "mat_aaquality", NULL, NULL, NULL }, kAA, ARRAYSIZE( kAA ), 0, 0, 0, NULL, ROWF_AA },
+	{ "#GraphicsOptions_AA", TAB_DISPLAY, ROW_COMBO, { "r_upscaler", NULL, NULL, NULL, NULL }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Water", TAB_DISPLAY, ROW_COMBO, { "r_waterforceexpensive", "r_waterforcereflectentities", NULL, NULL, NULL }, kWater, ARRAYSIZE( kWater ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Shader", TAB_DISPLAY, ROW_COMBO, { "mat_reducefillrate", NULL, NULL, NULL, NULL }, kShader, ARRAYSIZE( kShader ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Color", TAB_DISPLAY, ROW_CHECK, { "mat_colorcorrection", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
@@ -228,7 +228,10 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_SunDist", TAB_LIGHTING, ROW_COMBO, { "r_csm_distance", NULL, NULL, NULL, NULL }, kSunDistance, ARRAYSIZE( kSunDistance ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_MaxLights", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_max_realtime_lights", NULL, NULL, NULL, NULL }, kRealtimeLights, ARRAYSIZE( kRealtimeLights ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_EditorLights", TAB_LIGHTING, ROW_SLIDER, { "r_editor_lights_max_shadowed", NULL, NULL, NULL, NULL }, NULL, 0, 0, 32, 1, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_AO", TAB_LIGHTING, ROW_COMBO, { "r_gtao", "r_gtao_resolution", "r_gtao_slices", "r_gtao_steps", "r_gtao_denoise" }, kGtao, ARRAYSIZE( kGtao ), 0, 0, 0, NULL, ROWF_GTAO },
+	{ "#GraphicsOptions_AO", TAB_LIGHTING, ROW_COMBO, { "r_gtao", "r_gtao_resolution", "r_gtao_slices", "r_gtao_steps", "r_gtao_denoise" }, kGtao, ARRAYSIZE( kGtao ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
+	{ "#GraphicsOptions_ContactShadows", TAB_LIGHTING, ROW_COMBO, { "r_contactshadows", "r_contactshadows_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
+	{ "#GraphicsOptions_SSR", TAB_LIGHTING, ROW_COMBO, { "r_ssr", "r_ssr_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
+	{ "#GraphicsOptions_Volumetric", TAB_LIGHTING, ROW_COMBO, { "r_volumetric", "r_volumetric_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
 
 	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_BloomQuality", TAB_POST, ROW_COMBO, { "mat_postfx_bloom_quality", NULL, NULL, NULL, NULL }, kQuality3, ARRAYSIZE( kQuality3 ), 0, 0, 0, NULL, ROWF_NONE },
@@ -242,10 +245,9 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Hdr", TAB_POST, ROW_CHECK, { "mat_hdr_output", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Nits", TAB_POST, ROW_SLIDER, { "mat_hdr_output_max_nits", NULL, NULL, NULL, NULL }, NULL, 0, 0, 2000, 10, "#GraphicsOptions_NitsNote", ROWF_NONE },
 
-	{ "#GraphicsOptions_Upscaler", TAB_UPSCALE, ROW_COMBO, { "r_upscaler", NULL, NULL, NULL, NULL }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Framegen", TAB_UPSCALE, ROW_COMBO, { "r_framegen", NULL, NULL, NULL, NULL }, kFramegen, ARRAYSIZE( kFramegen ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_FramegenRate", TAB_UPSCALE, ROW_COMBO, { "r_framegen_multiplier", NULL, NULL, NULL, NULL }, kMultiplier, ARRAYSIZE( kMultiplier ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Reflex", TAB_UPSCALE, ROW_COMBO, { "r_reflex", NULL, NULL, NULL, NULL }, kReflex, ARRAYSIZE( kReflex ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_Framegen", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen", NULL, NULL, NULL, NULL }, kFramegen, ARRAYSIZE( kFramegen ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_FramegenRate", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen_multiplier", NULL, NULL, NULL, NULL }, kMultiplier, ARRAYSIZE( kMultiplier ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_Reflex", TAB_FRAMEGEN, ROW_COMBO, { "r_reflex", NULL, NULL, NULL, NULL }, kReflex, ARRAYSIZE( kReflex ), 0, 0, 0, NULL, ROWF_NONE },
 };
 
 static int RowCvarCount( const RowDef_t &row )
@@ -365,7 +367,6 @@ private:
 	void UpdateValueLabel( Widget_t &w );
 	int SelectedChoice( const Widget_t &w ) const;
 	float ControlValue( const Widget_t &w, int slot ) const;
-	bool UpscaleFromUI() const;
 	Widget_t *FindWidget( const char *cvar );
 	void ClearModal();
 	void FitAndCenter();
@@ -412,9 +413,9 @@ CGraphicsOptionsDialog::CGraphicsOptionsDialog( VPANEL parent )
 		"#GraphicsOptions_TabDisplay",
 		"#GraphicsOptions_TabLighting",
 		"#GraphicsOptions_TabPost",
-		"#GraphicsOptions_TabUpscale"
+		"#GraphicsOptions_TabFramegen"
 	};
-	static const char *s_Names[TAB_COUNT] = { "DisplayPage", "LightingPage", "PostPage", "UpscalePage" };
+	static const char *s_Names[TAB_COUNT] = { "DisplayPage", "LightingPage", "PostPage", "FramegenPage" };
 	for ( int i = 0; i < TAB_COUNT; ++i )
 	{
 		m_pPages[i] = new CGraphicsOptionsPage( GetPropertySheet(), this, s_Names[i] );
@@ -487,7 +488,7 @@ void CGraphicsOptionsDialog::ApplySchemeSettings( IScheme *pScheme )
 		"#GraphicsOptions_TabDisplay",
 		"#GraphicsOptions_TabLighting",
 		"#GraphicsOptions_TabPost",
-		"#GraphicsOptions_TabUpscale"
+		"#GraphicsOptions_TabFramegen"
 	};
 	int tabW = 84;
 	for ( int i = 0; i < TAB_COUNT; ++i )
@@ -613,21 +614,6 @@ float CGraphicsOptionsDialog::ControlValue( const Widget_t &w, int slot ) const
 	return w.row->choices[choice].v[slot];
 }
 
-bool CGraphicsOptionsDialog::UpscaleFromUI() const
-{
-	for ( int i = 0; i < m_Widgets.Count(); ++i )
-	{
-		const Widget_t &w = m_Widgets[i];
-		if ( !w.row->cvars[0] )
-			continue;
-		if ( Q_stricmp( w.row->cvars[0], "r_upscaler" ) && Q_stricmp( w.row->cvars[0], "r_framegen" ) )
-			continue;
-		if ( ControlValue( w, 0 ) > 0.5f )
-			return true;
-	}
-	return false;
-}
-
 void CGraphicsOptionsDialog::UpdateValueLabel( Widget_t &w )
 {
 	if ( !w.value || !w.slider )
@@ -676,7 +662,7 @@ void CGraphicsOptionsDialog::ReadAll()
 			for ( int choice = 0; choice < row.nChoices; ++choice )
 			{
 				bool ok = true;
-				int compare = ( ( row.flags & ROWF_GTAO ) && choice == 0 ) ? 1 : n;
+				int compare = ( ( row.flags & ROWF_OFF_ENABLE_ONLY ) && choice == 0 ) ? 1 : n;
 				for ( int c = 0; c < compare; ++c )
 				{
 					if ( !Nearly( cur[c], row.choices[choice].v[c] ) )
@@ -721,18 +707,10 @@ void CGraphicsOptionsDialog::ReadAll()
 
 void CGraphicsOptionsDialog::RefreshState()
 {
-	bool up = UpscaleFromUI();
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
 		Widget_t &w = m_Widgets[i];
-		if ( w.row->flags & ROWF_AA )
-		{
-			if ( w.combo )
-				w.combo->SetEnabled( !up );
-			w.note->SetText( up ? "#GraphicsOptions_AABlocked" : "" );
-			w.note->SetVisible( up );
-		}
-		else if ( w.row->note )
+		if ( w.row->note )
 		{
 			w.note->SetText( w.row->note );
 			w.note->SetVisible( true );
@@ -764,41 +742,24 @@ static void AppendSet( char *cmd, int n, const char *name, float value )
 void CGraphicsOptionsDialog::ApplyChanges()
 {
 	char cmd[4096];
-	char aa[256];
 	cmd[0] = 0;
-	aa[0] = 0;
-	bool up = UpscaleFromUI();
 
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
 		Widget_t &w = m_Widgets[i];
 		const RowDef_t &row = *w.row;
 		int n = RowCvarCount( row );
-		if ( ( row.flags & ROWF_AA ) && up )
-		{
-			AppendSet( aa, sizeof( aa ), "mat_antialias", 0 );
-			AppendSet( aa, sizeof( aa ), "mat_aaquality", 0 );
-			continue;
-		}
-		if ( ( row.flags & ROWF_GTAO ) && w.combo && SelectedChoice( w ) == 0 )
+		if ( ( row.flags & ROWF_OFF_ENABLE_ONLY ) && w.combo && SelectedChoice( w ) == 0 )
 			n = 1;
 		for ( int c = 0; c < n; ++c )
 		{
-			const char *name = row.cvars[c];
-			float value = ControlValue( w, c );
-			bool aaCvar = !Q_stricmp( name, "mat_antialias" ) || !Q_stricmp( name, "mat_aaquality" );
-			AppendSet( aaCvar ? aa : cmd, aaCvar ? sizeof( aa ) : sizeof( cmd ), name, value );
+			AppendSet( cmd, sizeof( cmd ), row.cvars[c], ControlValue( w, c ) );
 		}
 	}
 
-	if ( aa[0] )
-	{
-		int len = Q_strlen( cmd );
-		if ( len )
-			Q_snprintf( cmd + len, sizeof( cmd ) - len, "; %s", aa );
-		else
-			Q_snprintf( cmd, sizeof( cmd ), "%s", aa );
-	}
+	// Several DX12 screen-space effects do not support MSAA; antialiasing is the upscaler's native-resolution AA.
+	AppendSet( cmd, sizeof( cmd ), "mat_antialias", 0 );
+	AppendSet( cmd, sizeof( cmd ), "mat_aaquality", 0 );
 
 	if ( !cmd[0] )
 	{
@@ -857,6 +818,9 @@ void CGraphicsOptionsDialog::SetPending( const char *cvar, float value )
 		int match = -1;
 		for ( int choice = 0; choice < w->row->nChoices; ++choice )
 		{
+			// An enable-only Off choice defines no quality values to match.
+			if ( ( w->row->flags & ROWF_OFF_ENABLE_ONLY ) && choice == 0 && slot > 0 )
+				continue;
 			if ( Nearly( w->row->choices[choice].v[slot], value ) )
 			{
 				match = choice;

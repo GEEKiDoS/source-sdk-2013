@@ -132,17 +132,23 @@ screenshots are visual proof, not pixel-exact geometry measurements.
 
 ## Enhanced shadow receiver state and caster policy
 
-Local realtime-shadow residency uses the main camera's BSP PVS and nearest
-emitter distance, not the camera's pitch/yaw or a spotlight cone evaluated at
-one estimated receiver point. `r_shadowmap_max_realtime_lights` defaults to four
-locals, excluding the sun; zero removes the budget limit within eligible PVS.
-Stable light IDs break ties and 25% priority hysteresis prevents churn.
+Local realtime-shadow residency culls locals the main camera is not facing
+first. The main view frustum is padded by 15 degrees of horizontal FOV per side so
+a light about to enter view is promoted before it reaches the screen edge. A
+light whose finite influence volume misses that frustum is never resident. Of
+the rest, lights whose emitter lies inside the padded frustum outrank every
+light behind the camera (most influences reach the view from anywhere, so the
+emitter test is what separates them); within each tier the main camera's BSP
+PVS and nearest emitter distance decide, with no radiance or contribution
+scoring. `r_shadowmap_max_realtime_lights` defaults to four locals, excluding the
+sun; zero removes the budget limit among eligible lights. Stable light IDs break
+ties and 25% priority hysteresis prevents churn within a tier.
 `r_shadowmap_realtime_fade_seconds` defaults to 0.5 seconds for the **complete**
 handoff: all outgoing locals fade concurrently for 0.25 seconds, then incoming
-locals fade in for 0.25 seconds. Turning or changing FOV never restarts a ramp;
-first admission and positional jumps of at least 256 units select immediately.
-Seventy station runtime reports retained the nearby spotlights while turning,
-with no residency failures or caster-query mismatches.
+locals fade in for 0.25 seconds. Turning or changing FOV never restarts a ramp,
+but a turn that moves an emitter into or out of the padded frustum exchanges
+lights through the same fade; first admission and positional jumps of at least
+256 units select immediately.
 
 `CShadowMapReceiverScope::Begin` refreshes the engine's cached receiver near/far
 distances after nested shadow work through a balanced non-rendering

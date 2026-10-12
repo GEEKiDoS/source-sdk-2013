@@ -32,10 +32,11 @@ struct StaticPropLump_t;
 
 // ConVars (defined in shadowmaps_dx12.cpp)
 extern ConVar r_shadowmap_enable;		// archived, default 1; 0 retains all baked visibility and selected direct/highres lighting
-extern ConVar r_shadowmap_max_realtime_lights; // archived, default 4; 0 = no budget limit within camera PVS; invalid = 4
+extern ConVar r_shadowmap_max_realtime_lights; // archived, default 4; 0 = no budget limit among eligible lights; invalid = 4
 										// positive fractions truncate with minimum 1; values >= INT_MAX saturate
-										// one frame-global main player position/PVS, independent of angles/FOV;
-										// active styled lights rank by 1/max(emitter distance,1), stable lightId ties, >25% hysteresis
+										// eligible = influence reaches the main camera frustum padded 15 deg per side, then
+										// main player PVS; emitters inside that frustum outrank all others; each tier ranks styled
+										// lights by 1/max(emitter distance,1), stable lightId ties, >25% hysteresis
 extern ConVar r_shadowmap_realtime_fade_seconds; // archived, default .5 real seconds; negative/nonfinite/nonnumeric = .5; 0 = immediate
 										// full handoff: all outgoing locals fade together over half, then incoming over half;
 										// free slots ramp in over half (.25s by default); detach/COW preserves the resident cap
