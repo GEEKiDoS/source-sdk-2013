@@ -174,12 +174,12 @@ static void DrawCompute( IMatRenderContext *pRenderContext, IMaterial *pMaterial
 }
 
 ConVar r_gtao( "r_gtao", "1", FCVAR_ARCHIVE, "DX12: ground-truth ambient occlusion over the opaque scene (0 off, 1 on)", true, 0, true, 1 );
-ConVar r_gtao_slices( "r_gtao_slices", "3", FCVAR_ARCHIVE, "GTAO slices per pixel (1 fastest, 9 highest quality)", true, 1, true, 9 );
+ConVar r_gtao_slices( "r_gtao_slices", "2", FCVAR_ARCHIVE, "GTAO slices per pixel (1 fastest, 9 highest quality)", true, 1, true, 9 );
 ConVar r_gtao_steps( "r_gtao_steps", "3", FCVAR_ARCHIVE, "GTAO horizon steps per slice side", true, 1, true, 8 );
-ConVar r_gtao_resolution( "r_gtao_resolution", "1", FCVAR_ARCHIVE, "GTAO internal resolution scale per axis; below 1 the term is upsampled depth-aware", true, 0.25f, true, 1.f );
+ConVar r_gtao_resolution( "r_gtao_resolution", "0.5", FCVAR_ARCHIVE, "GTAO internal resolution scale per axis; below 1 the term is upsampled depth-aware", true, 0.25f, true, 1.f );
 ConVar r_gtao_radius( "r_gtao_radius", "24", FCVAR_ARCHIVE, "GTAO effect radius in world units", true, 1.f, true, 1024.f );
 ConVar r_gtao_power( "r_gtao_power", "2.2", FCVAR_ARCHIVE, "GTAO final value power (occlusion contrast)", true, 0.1f, true, 8.f );
-ConVar r_gtao_denoise( "r_gtao_denoise", "2", FCVAR_ARCHIVE, "GTAO spatial denoise passes (with temporal AA the noise pattern also animates so the upscaler accumulates it)", true, 0, true, 3 );
+ConVar r_gtao_denoise( "r_gtao_denoise", "1", FCVAR_ARCHIVE, "GTAO spatial denoise passes (with temporal AA the noise pattern also animates so the upscaler accumulates it)", true, 0, true, 3 );
 ConVar r_gtao_debug( "r_gtao_debug", "0", 0, "GTAO: 1 shows the AO term instead of applying it", true, 0, true, 1 );
 
 void GTAODX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig )

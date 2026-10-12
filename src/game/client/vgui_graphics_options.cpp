@@ -159,7 +159,7 @@ static const Choice_t kRealtimeLights[] =
 	{ "#GraphicsOptions_Unlimited", { 0, 0, 0, 0, 0 } },
 };
 
-// Off matches r_gtao alone (ROWF_OFF_ENABLE_ONLY). High is the current default (resolution, slices, steps, denoise) = (1, 3, 3, 2).
+// Off matches r_gtao alone (ROWF_OFF_ENABLE_ONLY). Medium is the default (resolution, slices, steps, denoise) = (0.5, 2, 3, 1).
 static const Choice_t kGtao[] =
 {
 	{ "#GraphicsOptions_Off", { 0, 1, 3, 3, 2 } },

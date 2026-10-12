@@ -20,22 +20,22 @@
 
 extern ConVar building_cubemaps;
 
-static ConVar r_ssr( "r_ssr", "0", FCVAR_ARCHIVE, "DX12: screen-space reflections on reflective opaque PBR materials", true, 0, true, 1 );
+static ConVar r_ssr( "r_ssr", "1", FCVAR_ARCHIVE, "DX12: screen-space reflections on reflective opaque PBR materials", true, 0, true, 1 );
 static ConVar r_ssr_quality( "r_ssr_quality", "1", FCVAR_ARCHIVE, "SSR quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
-static ConVar r_ssr_max_distance( "r_ssr_max_distance", "512", FCVAR_ARCHIVE, "SSR ray distance in Source units", true, 16.f, true, 2048.f );
+static ConVar r_ssr_max_distance( "r_ssr_max_distance", "1024", FCVAR_ARCHIVE, "SSR ray distance in Source units", true, 16.f, true, 2048.f );
 static ConVar r_ssr_thickness( "r_ssr_thickness", "2", FCVAR_ARCHIVE, "SSR depth thickness in Source units", true, 0.1f, true, 16.f );
 static ConVar r_contactshadows( "r_contactshadows", "0", FCVAR_ARCHIVE, "DX12: screen-space contact shadows for shadowmapped direct lights", true, 0, true, 1 );
 static ConVar r_contactshadows_quality( "r_contactshadows_quality", "1", FCVAR_ARCHIVE, "Contact-shadow quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
 static ConVar r_contactshadows_length( "r_contactshadows_length", "16", FCVAR_ARCHIVE, "Contact-shadow ray distance in Source units", true, 1.f, true, 64.f );
 static ConVar r_contactshadows_thickness( "r_contactshadows_thickness", "1", FCVAR_ARCHIVE, "Contact-shadow depth thickness in Source units", true, 0.1f, true, 8.f );
 
-static ConVar r_volumetric( "r_volumetric", "0", FCVAR_ARCHIVE, "DX12: additive volumetric lighting from opted-in shadowmapped lights", true, 0, true, 1 );
-static ConVar r_volumetric_quality( "r_volumetric_quality", "1", FCVAR_ARCHIVE, "Volumetric quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
+static ConVar r_volumetric( "r_volumetric", "1", FCVAR_ARCHIVE, "DX12: additive volumetric lighting from opted-in shadowmapped lights", true, 0, true, 1 );
+static ConVar r_volumetric_quality( "r_volumetric_quality", "0", FCVAR_ARCHIVE, "Volumetric quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
 static ConVar r_volumetric_density( "r_volumetric_density", "0.00025", FCVAR_ARCHIVE, "Volumetric scattering coefficient in inverse Source units", true, 0.f, true, 0.01f );
 static ConVar r_volumetric_strength( "r_volumetric_strength", "1", FCVAR_ARCHIVE, "Volumetric radiance multiplier", true, 0.f, true, 8.f );
 static ConVar r_volumetric_anisotropy( "r_volumetric_anisotropy", "0.2", FCVAR_ARCHIVE, "Volumetric Henyey-Greenstein phase anisotropy", true, -0.9f, true, 0.9f );
 static ConVar r_volumetric_max_distance( "r_volumetric_max_distance", "2048", FCVAR_ARCHIVE, "Volumetric ray distance in Source units", true, 64.f, true, 8192.f );
-static ConVar r_volumetric_sun_override( "r_volumetric_sun_override", "0", FCVAR_ARCHIVE, "Override the sun's map volumetric opt-in and medium settings", true, 0, true, 1 );
+static ConVar r_volumetric_sun_override( "r_volumetric_sun_override", "0", FCVAR_NONE, "Override the sun's map volumetric opt-in and medium settings", true, 0, true, 1 );
 static ConVar r_volumetric_sun_enable( "r_volumetric_sun_enable", "1", FCVAR_ARCHIVE, "Enable sun volumetrics when sun override is on; valid shadow coverage is still required", true, 0, true, 1 );
 static ConVar r_volumetric_sun_density( "r_volumetric_sun_density", "0.00025", FCVAR_ARCHIVE, "Sun-only volumetric scattering coefficient with sun override on", true, 0.f, true, 0.01f );
 static ConVar r_volumetric_sun_strength( "r_volumetric_sun_strength", "1", FCVAR_ARCHIVE, "Sun-only volumetric radiance multiplier with sun override on", true, 0.f, true, 8.f );

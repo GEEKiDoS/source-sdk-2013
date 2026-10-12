@@ -434,6 +434,14 @@ static void HandleRelaunching()
 
 int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow )
 {
+	// Per-monitor DPI awareness V2 before any window exists, so Windows never bitmap-scales the game window.
+	// Resolved at runtime: the API is Windows 10 1703+, older systems keep the default awareness.
+	typedef BOOL ( WINAPI *SetProcessDpiAwarenessContext_t )( HANDLE );
+	if ( HMODULE hUser32 = GetModuleHandleA( "user32.dll" ) )
+	{
+		if ( SetProcessDpiAwarenessContext_t pSetAwareness = reinterpret_cast< SetProcessDpiAwarenessContext_t >( GetProcAddress( hUser32, "SetProcessDpiAwarenessContext" ) ) )
+			pSetAwareness( reinterpret_cast< HANDLE >( static_cast< INT_PTR >( -4 ) ) ); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+	}
 	HandleRelaunching();
 #if defined( _WIN64 )
 	// Native DX12 is the default renderer. -dx9 (or another explicit legacy backend) keeps the stock shaderapi.

@@ -45,10 +45,10 @@ extern ConVar r_shadowmap_realtime_fade_seconds; // archived, default .5 real se
 										// live cap reduction/enable0 forces excess weakest weights to zero immediately;
 										// old physical replay/GPU targets retire without blocking logical slot admission
 extern ConVar r_csm_distance;			// archived, default 4096, clamped [128, 32768]
-extern ConVar r_shadowmap_resolution;	// archived, default 2, clamped [0,3]: 0 low, 1 medium, 2 high, 3 ultra
+extern ConVar r_shadowmap_resolution;	// archived, default 1, clamped [0,3]: 0 low, 1 medium, 2 high, 3 ultra
 										// high is the original 2048 cascade / 512 local / 4096 static sun
 										// applied live at the next main view; recreates atlases and drops cached depth
-extern ConVar r_shadowmap_filter;		// archived, default 0, clamped [0,1]: 0 PCF, 1 PCSS; snapshotted per view packet
+extern ConVar r_shadowmap_filter;		// archived, default 1, clamped [0,1]: 0 PCF, 1 PCSS; snapshotted per view packet
 extern ConVar r_shadowmap_spot_near;	// archived, default 4 Source units, clamped [.1,64]; snapshotted per receiver view
 										// spot shadow cameras only (including six-face spots), never influence/attenuation;
 										// effective near = min(setting,max(.1,far/2)); changes rebuild projection and static depth

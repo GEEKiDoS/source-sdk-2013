@@ -32,7 +32,7 @@ static void OnPbrOverrideChanged( IConVar *pVar, const char *, float )
 		lighting->RequestPbrOverride( static_cast< ConVar * >( pVar )->GetBool() );
 }
 
-ConVar mat_pbr_override( "mat_pbr_override", "0", FCVAR_ARCHIVE,
+ConVar mat_pbr_override( "mat_pbr_override", "1", FCVAR_ARCHIVE,
 	"1 = route LightmappedGeneric/VertexLitGeneric/WorldVertexTransition through the PBR adapters", OnPbrOverrideChanged );
 
 // Sun PCSS sample budget of the PBR receivers: the SHADOWQUALITY dynamic combo (native_src/shadow_pcss_disks.hlsli).

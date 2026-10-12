@@ -551,8 +551,9 @@ All of them, and the original wrappers, also accept `$subsurface`/`$subsurfaceti
 `$thickness`/`$thicknesstexture`, `$anisotropy`/`$anisotropyrotation` (degrees) and the VBSP parallax keys
 `$envmapparallaxobb1..3`/`$envmaporigin`. Studio models with `PBR_Metalness`/`PBR_Specular` need the usual `$model 1`.
 
-`mat_pbr_override 1` (`FCVAR_ARCHIVE`, in this DLL) routes LightmappedGeneric, VertexLitGeneric and
-WorldVertexTransition through the PBR path at runtime. The request is committed by the client at `FRAME_START` inside a
+`mat_pbr_override 1` (`FCVAR_ARCHIVE`, default 1, in this DLL) routes LightmappedGeneric, VertexLitGeneric and
+WorldVertexTransition through the PBR path at runtime. The backend's committed state starts at the default, so materials
+load with it from the first frame; a changed value is a request committed by the client at `FRAME_START` inside a
 material transaction, followed by a preserving refresh of loaded materials; draws read only the committed value. The
 original shaders keep their legacy path when `PBR_LegacySupported` declines: spherical envmaps, `$lightwarptexture`,
 detail blend modes other than 0/1; models with `$lightmap`, decals, tree sway, distance alpha, seamless mapping,

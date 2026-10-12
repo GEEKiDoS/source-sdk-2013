@@ -25,6 +25,7 @@
 #include "networkstringtable_clientdll.h"
 #include "voice_status.h"
 #include "filesystem.h"
+#include "fmtstr.h"
 #include "c_te_legacytempents.h"
 #include "c_rope.h"
 #include "engine/ishadowmgr.h"
@@ -1705,6 +1706,10 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	g_RagdollLVManager.SetLowViolence( pMapName );
 
 	gHUD.LevelInit();
+
+	// Per-map client settings: cfg/<map name>.cfg, when the mod provides one.
+	if ( pMapName && *pMapName && g_pFullFileSystem->FileExists( CFmtStr( "cfg/%s.cfg", pMapName ), "MOD" ) )
+		engine->ClientCmd_Unrestricted( CFmtStr( "exec %s.cfg\n", pMapName ) );
 
 #if defined( REPLAY_ENABLED )
 	// Initialize replay ragdoll recorder

@@ -24,7 +24,7 @@ ConVar mat_disable_fancy_blending( "mat_disable_fancy_blending", "0" );
 ConVar mat_fullbright( "mat_fullbright","0", FCVAR_CHEAT );
 ConVar my_mat_fullbright( "mat_fullbright","0", FCVAR_CHEAT );
 
-ConVar r_lightmap_bicubic( "r_lightmap_bicubic", "0", FCVAR_ARCHIVE, "Enable bi-cubic (high quality) lightmap sampling." );
+ConVar r_lightmap_bicubic( "r_lightmap_bicubic", "1", FCVAR_ARCHIVE, "Enable bi-cubic (high quality) lightmap sampling." );
 
 extern ConVar r_flashlight_version2;
 

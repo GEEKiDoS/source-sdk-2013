@@ -1291,7 +1291,9 @@ struct CLightingDX12::Impl
 	CShaderAPIDX12 *api = nullptr;
 	CThreadFastMutex mutex;
 	std::atomic<uint32> receiverGeneration{ 0 };
-	std::atomic<bool> pbrRequested{ false }, pbrCommitted{ false };
+	// Starts at mat_pbr_override's default (1, stdshader_dx12) so the first materials load with it; only a changed
+	// value arrives later as a request.
+	std::atomic<bool> pbrRequested{ true }, pbrCommitted{ true };
 	CUtlVector<ShadowTargetDX12 *> targets;
 	uint32 nextTargetGeneration = 1;
 	CUtlVector<LightingPacketDX12 *> freePackets;

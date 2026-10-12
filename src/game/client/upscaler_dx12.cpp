@@ -58,10 +58,10 @@ static ConVar r_dlss_nr_layers( "r_dlss_nr_layers", "0", FCVAR_ARCHIVE,
 	true, 0, true, DX12_NR_MAX_LAYERS );
 static ConVar r_dlss_nr_preset( "r_dlss_nr_preset", "0", FCVAR_ARCHIVE, "DLSS-NR model preset: 0 default, 1-3 model presets", true, 0, true, 3 );
 static ConVar r_dlss_nr_style( "r_dlss_nr_style", "0", FCVAR_ARCHIVE, "DLSS-NR style: 0 standard, 1 natural, 2 cinematic", true, 0, true, 2 );
-static ConVar r_dlss_nr_intensity( "r_dlss_nr_intensity", "1", FCVAR_ARCHIVE, "DLSS-NR model intensity", true, 0, true, 2 );
+static ConVar r_dlss_nr_intensity( "r_dlss_nr_intensity", "0.5", FCVAR_ARCHIVE, "DLSS-NR model intensity", true, 0, true, 2 );
 static ConVar r_dlss_nr_local_structure( "r_dlss_nr_local_structure", "1", FCVAR_ARCHIVE, "DLSS-NR local structure strength", true, 0, true, 2 );
-static ConVar r_dlss_nr_local_tone( "r_dlss_nr_local_tone", "1", FCVAR_ARCHIVE, "DLSS-NR local tone strength", true, 0, true, 2 );
-static ConVar r_dlss_nr_skin_structure( "r_dlss_nr_skin_structure", "-1", FCVAR_ARCHIVE, "DLSS-NR skin structure strength; -1 follows local structure", true, -1, true, 2 );
+static ConVar r_dlss_nr_local_tone( "r_dlss_nr_local_tone", "0.2", FCVAR_ARCHIVE, "DLSS-NR local tone strength", true, 0, true, 2 );
+static ConVar r_dlss_nr_skin_structure( "r_dlss_nr_skin_structure", "0.5", FCVAR_ARCHIVE, "DLSS-NR skin structure strength; -1 follows local structure", true, -1, true, 2 );
 static ConVar r_dlss_nr_auto_mask( "r_dlss_nr_auto_mask", "1", FCVAR_ARCHIVE, "DLSS-NR automatic skin mask", true, 0, true, 1 );
 static ConVar r_dlss_nr_ui_correction( "r_dlss_nr_ui_correction", "1", FCVAR_ARCHIVE, "DLSS-NR UI correction (the model's default; no UI layer is supplied)", true, 0, true, 1 );
 static ConVar r_dlss_nr_white_point( "r_dlss_nr_white_point", "1", FCVAR_ARCHIVE,
