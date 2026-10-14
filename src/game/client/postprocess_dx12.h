@@ -8,6 +8,7 @@ class IMaterialSystemHardwareConfig;
 class IMatRenderContext;
 
 void PostProcessDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig );
+// Main-thread initialization retains all post materials and primes their variable tokens before queued rendering.
 void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig );
 void PostProcessDX12_Shutdown();
 bool PostProcessDX12_Active();

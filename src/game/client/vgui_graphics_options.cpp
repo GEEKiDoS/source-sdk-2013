@@ -22,11 +22,31 @@
 #include "vgui/ILocalize.h"
 #include "vgui/IScheme.h"
 #include "vgui/ISurface.h"
+#include "materialsystem/imaterialsystemhardwareconfig.h"
 #include <math.h>
 
 #include "tier0/memdbgon.h"
 
 using namespace vgui;
+
+static bool s_bDX12Renderer = false;
+static bool s_bShaderDetailNotice = false;
+static ConVar *s_pReduceFillrate = NULL;
+
+static void EnforceDX12ShaderDetail( IConVar *variable, const char *, float )
+{
+	if ( variable != s_pReduceFillrate || !s_pReduceFillrate->GetBool() )
+		return;
+
+	// DX12 never selects reduced-fillrate shaders. Restore the value before the
+	// engine's next config read can request a legacy-only material reload.
+	s_pReduceFillrate->SetValue( 0 );
+	if ( !s_bShaderDetailNotice )
+	{
+		s_bShaderDetailNotice = true;
+		Msg( "DX12: Shader Detail Low is unsupported; keeping mat_reducefillrate 0.\n" );
+	}
+}
 
 enum
 {
@@ -47,7 +67,8 @@ enum
 enum
 {
 	ROWF_NONE = 0,
-	ROWF_OFF_ENABLE_ONLY = 1	// choice 0 matches and writes only the enable cvar, keeping the remembered quality cvars
+	ROWF_OFF_ENABLE_ONLY = 1,	// choice 0 matches and writes only the enable cvar, keeping the remembered quality cvars
+	ROWF_LEGACY_ONLY = 2		// native DX12 has no reduced-fillrate shader quality tier
 };
 
 struct Choice_t
@@ -252,7 +273,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_AA", TAB_DISPLAY, ROW_COMBO, { "r_upscaler", NULL, NULL, NULL, NULL }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_RenderScale", TAB_DISPLAY, ROW_COMBO, { "r_upscaler_scale", NULL, NULL, NULL, NULL }, kRenderScale, ARRAYSIZE( kRenderScale ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Water", TAB_DISPLAY, ROW_COMBO, { "r_waterforceexpensive", "r_waterforcereflectentities", NULL, NULL, NULL }, kWater, ARRAYSIZE( kWater ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Shader", TAB_DISPLAY, ROW_COMBO, { "mat_reducefillrate", NULL, NULL, NULL, NULL }, kShader, ARRAYSIZE( kShader ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_Shader", TAB_DISPLAY, ROW_COMBO, { "mat_reducefillrate", NULL, NULL, NULL, NULL }, kShader, ARRAYSIZE( kShader ), 0, 0, 0, NULL, ROWF_LEGACY_ONLY },
 	{ "#GraphicsOptions_Color", TAB_DISPLAY, ROW_CHECK, { "mat_colorcorrection", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Multicore", TAB_DISPLAY, ROW_COMBO, { "mat_queue_mode", NULL, NULL, NULL, NULL }, kMulticore, ARRAYSIZE( kMulticore ), 0, 0, 0, "#GraphicsOptions_Restart", ROWF_NONE },
 	{ "#GraphicsOptions_VSync", TAB_DISPLAY, ROW_CHECK, { "mat_vsync", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
@@ -479,6 +500,8 @@ void CGraphicsOptionsDialog::BuildRows()
 	for ( int i = 0; i < ARRAYSIZE( g_Rows ); ++i )
 	{
 		const RowDef_t &row = g_Rows[i];
+		if ( s_bDX12Renderer && ( row.flags & ROWF_LEGACY_ONLY ) )
+			continue;
 		CGraphicsOptionsPage *page = m_pPages[row.tab];
 		int index = m_Widgets.AddToTail();
 		Widget_t &w = m_Widgets[index];
@@ -1259,11 +1282,36 @@ class CGraphicsOptionsSystem : public CAutoGameSystem
 {
 public:
 	CGraphicsOptionsSystem() : CAutoGameSystem( "GraphicsOptions" ) {}
+	bool Init()
+	{
+		const char *shaderDLL = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShaderDLLName() : NULL;
+		s_bDX12Renderer = shaderDLL && !Q_stricmp( shaderDLL, "stdshader_dx12" );
+		s_bShaderDetailNotice = false;
+		if ( s_bDX12Renderer )
+		{
+			s_pReduceFillrate = g_pCVar->FindVar( "mat_reducefillrate" );
+			if ( s_pReduceFillrate )
+			{
+				g_pCVar->InstallGlobalChangeCallback( EnforceDX12ShaderDetail );
+				EnforceDX12ShaderDetail( s_pReduceFillrate, NULL, 0.f );
+			}
+		}
+		return true;
+	}
 	void PostInit()
 	{
 		VPANEL parent = enginevgui->GetPanel( PANEL_CLIENTDLL );
 		if ( parent && !s_hHook.Get() )
 			s_hHook = new CGraphicsOptionsHook( parent );
+	}
+	void Shutdown()
+	{
+		if ( s_pReduceFillrate )
+		{
+			g_pCVar->RemoveGlobalChangeCallback( EnforceDX12ShaderDetail );
+			s_pReduceFillrate = NULL;
+		}
+		s_bDX12Renderer = false;
 	}
 };
 static CGraphicsOptionsSystem s_GraphicsOptionsSystem;

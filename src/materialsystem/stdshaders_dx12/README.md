@@ -54,6 +54,18 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
 - Material constants keep the DX9 register vocabulary and are staged in the DLL; each selected native block is sent
   once per draw through the private space-1 cbuffer bridge (`native_cbuffer_dx12.h`). Engine values (matrices, fog,
   ambient cube, lights, bones) come from the backend's engine blocks.
+- Queued client post-processing retains its material references and primes `FindVarFast` tokens on the client
+  thread, before render-owner replay. The engine's `FindVar` symbol search uses shared scratch state under a reader
+  lock; concurrent searches could intermittently return a dummy var even for a valid `screenspace_general_dx9`
+  material. Histogram C0 constants, source retargeting, legacy/native bloom, composite, RCAS and motion-blur tile
+  parameters therefore use pre-primed tokens, which revalidate indices after material reload without re-entering
+  the symbol search. Material proxy initialization is warmed during main-thread precache. The histogram remains
+  the exposure producer; no native replacement bypasses it.
+- DX12 keeps the legacy `mat_reducefillrate` setting at 0. `PreferReducedFillrate()` is always false on this backend,
+  so Shader Detail Low would reload all materials without selecting cheaper shaders or combos. The client restores
+  unsupported nonzero requests immediately, with one console note, before the engine applies a config change; this also
+  protects older configs containing `mat_reducefillrate "1"`. The mod's Advanced dialog omits Shader Detail on DX12,
+  while DX9 retains the original setting. Native feature-quality controls remain available.
 - A legacy-backed native logical whose `shaders/vsh|psh` record is absent resolves to its legacy DX9 record in
   `shaders/fxc` via `native_dx12_legacy_names.txt` and is translated as before.
 - Native-only logicals have no legacy name or fallback. Their native VCS must exist at runtime; if it is missing,

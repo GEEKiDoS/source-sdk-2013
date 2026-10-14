@@ -9,6 +9,7 @@
 #include "fx.h"
 #include "clienteffectprecachesystem.h"
 #include "particles/particles.h"
+#include "viewpostprocess.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -34,6 +35,7 @@ void CClientEffectPrecacheSystem::LevelInitPreEntity( void )
 	//FIXME: Double check this
 	//Finally, force the cache of these materials
 	materials->CacheUsedMaterials();
+	PrepareViewPostProcessMaterials();
 
 	// Now, cache off our material handles
 	FX_CacheMaterialHandles();

@@ -10,6 +10,7 @@
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialvar.h"
+#include "materialsystem/MaterialSystemUtil.h"
 #include "materialsystem/itexture.h"
 #include "shaderapi/ishaderapidx12.h"
 #include "tier1/interface.h"
@@ -22,9 +23,73 @@
 
 namespace
 {
+enum PostPassVar_t
+{
+	POST_SRC_TEXTURE,
+	POST_DST_TEXTURE,
+	POST_SRC_MIP,
+	POST_DST_MIP,
+	POST_SIZES,
+	POST_PARAMS0,
+	POST_PARAMS1,
+	POST_SRC_TEXTURE2,
+	POST_SRC_MIP2,
+	POST_DST_TEXTURE2,
+	POST_DST_MIP2,
+	POST_VAR_COUNT
+};
+
+static const char *const s_PostVarNames[POST_VAR_COUNT] =
+{
+	"$srctexture", "$dsttexture", "$srcmip", "$dstmip", "$sizes", "$params0", "$params1",
+	"$srctexture2", "$srcmip2", "$dsttexture2", "$dstmip2"
+};
+
+enum CompositeVar_t
+{
+	COMPOSITE_SCENE,
+	COMPOSITE_BLOOM,
+	COMPOSITE_FLARE,
+	COMPOSITE_GLARE,
+	COMPOSITE_DIRT,
+	COMPOSITE_BLOOM_ENABLED,
+	COMPOSITE_FLARE_ENABLED,
+	COMPOSITE_GLARE_ENABLED,
+	COMPOSITE_DIRT_ENABLED,
+	COMPOSITE_OUT_SCALE,
+	COMPOSITE_PEAK,
+	COMPOSITE_DEBUG_VIEW,
+	COMPOSITE_PARAMS0,
+	COMPOSITE_PARAMS1,
+	COMPOSITE_OUTPUT,
+	COMPOSITE_VAR_COUNT
+};
+
+static const char *const s_CompositeVarNames[COMPOSITE_VAR_COUNT] =
+{
+	"$scene", "$bloom", "$flare", "$glare", "$dirt", "$bloomenabled", "$flareenabled", "$glareenabled",
+	"$dirtenabled", "$outscale", "$peak", "$debugview", "$params0", "$params1", "$output"
+};
+
+enum RcasVar_t
+{
+	RCAS_BASE_TEXTURE,
+	RCAS_SHARPNESS,
+	RCAS_NORM_SCALE,
+	RCAS_TEXEL_SIZE,
+	RCAS_VAR_COUNT
+};
+
+static const char *const s_RcasVarNames[RCAS_VAR_COUNT] =
+{
+	"$basetexture", "$sharpness", "$normscale", "$texelsize"
+};
+
 struct PostMaterial_t
 {
-	IMaterial *m_pMaterial = nullptr;
+	CMaterialReference m_Material;
+	const char *const *m_pVarNames = nullptr;
+	unsigned int m_nVarTokens[COMPOSITE_VAR_COUNT] = {};
 };
 
 // MagicBloom's layered bloom on Froyok's pyramid: eight levels, the first at half resolution. Level n lives in mip n + 1
@@ -61,63 +126,71 @@ static PostMaterial_t s_CompositeMaterial;
 static PostMaterial_t s_RcasMaterial;
 static IShaderAPIDX12 *s_pShaderAPIDX12 = nullptr;
 
-static IMaterialVar *FindVar( IMaterial *pMaterial, const char *pName )
+static IMaterialVar *GetPostVar( PostMaterial_t &material, int nVar )
 {
-	if ( !pMaterial )
-		return nullptr;
-	bool bFound = false;
-	return pMaterial->FindVar( pName, &bFound, false );
+	Assert( material.m_Material.IsValid() );
+	Assert( nVar >= 0 && nVar < ARRAYSIZE( material.m_nVarTokens ) );
+	Assert( material.m_nVarTokens[nVar] != 0 );
+	// Keep the token, not the IMaterialVar*: FindVarFast revalidates its index after a material reload.
+	IMaterialVar *pVar = material.m_Material->FindVarFast( material.m_pVarNames[nVar], &material.m_nVarTokens[nVar] );
+	AssertMsg1( pVar, "Missing required DX12 post-processing variable %s", material.m_pVarNames[nVar] );
+	return pVar;
 }
 
-static void SetInt( IMaterial *pMaterial, const char *pName, int value )
+static void SetInt( PostMaterial_t &material, int nVar, int value )
 {
-	if ( IMaterialVar *pVar = FindVar( pMaterial, pName ) )
-		pVar->SetIntValue( value );
+	GetPostVar( material, nVar )->SetIntValue( value );
 }
 
-static void SetFloat( IMaterial *pMaterial, const char *pName, float value )
+static void SetFloat( PostMaterial_t &material, int nVar, float value )
 {
-	if ( IMaterialVar *pVar = FindVar( pMaterial, pName ) )
-		pVar->SetFloatValue( value );
+	GetPostVar( material, nVar )->SetFloatValue( value );
 }
 
-static void SetVector4( IMaterial *pMaterial, const char *pName, const float *value )
+static void SetVector4( PostMaterial_t &material, int nVar, const float *value )
 {
-	if ( IMaterialVar *pVar = FindVar( pMaterial, pName ) )
-		pVar->SetVecValue( value, 4 );
+	GetPostVar( material, nVar )->SetVecValue( value, 4 );
 }
 
-static void SetTexture( IMaterial *pMaterial, const char *pName, ITexture *pTexture )
+static void SetTexture( PostMaterial_t &material, int nVar, ITexture *pTexture )
 {
-	if ( IMaterialVar *pVar = FindVar( pMaterial, pName ) )
-		pVar->SetTextureValue( pTexture );
+	GetPostVar( material, nVar )->SetTextureValue( pTexture );
 }
 
-static IMaterial *CreateMaterial( IMaterialSystem *pMaterialSystem, const char *pName, const char *pShader )
+static bool MaterialValid( PostMaterial_t &material )
 {
-	return pMaterialSystem->CreateMaterial( pName, new KeyValues( pShader ) );
+	return material.m_Material.IsValid() && !material.m_Material->IsErrorMaterial();
 }
 
-// Pass selection lives in the VMT key values so it survives material reloads.
-static IMaterial *CreatePassMaterial( IMaterialSystem *pMaterialSystem, const char *pName, int nPass )
+static void CreateMaterial( PostMaterial_t &material, IMaterialSystem *pMaterialSystem, const char *pName,
+	KeyValues *pKeyValues, const char *const *pVarNames, int nVarCount )
 {
-	KeyValues *pKeyValues = new KeyValues( "DX12_PostFX" );
-	pKeyValues->SetInt( "$pass", nPass );
-	return pMaterialSystem->CreateMaterial( pName, pKeyValues );
-}
+	IMaterial *pMaterial = pMaterialSystem->CreateMaterial( pName, pKeyValues );
+	material.m_Material.Init( pMaterial );
+	// CreateMaterial returns one reference; CMaterialReference now owns the retained reference.
+	if ( pMaterial )
+		pMaterial->DecrementReferenceCount();
+	material.m_pVarNames = pVarNames;
+	if ( !MaterialValid( material ) )
+		return;
 
-static void ReleaseMaterial( PostMaterial_t &material )
-{
-	if ( material.m_pMaterial )
+	Assert( nVarCount <= ARRAYSIZE( material.m_nVarTokens ) );
+	// Render-target initialization is main-side. Prime every shader parameter before queuing any pass,
+	// including parameters used only by disabled bloom/lens/sharpen branches.
+	for ( int i = 0; i < nVarCount; ++i )
 	{
-		material.m_pMaterial->DecrementReferenceCount();
-		material.m_pMaterial = nullptr;
+		IMaterialVar *pVar = material.m_Material->FindVarFast( pVarNames[i], &material.m_nVarTokens[i] );
+		AssertMsg1( pVar, "Missing required DX12 post-processing variable %s", pVarNames[i] );
+		(void)pVar;
 	}
 }
 
-static bool MaterialValid( IMaterial *pMaterial )
+// Pass selection lives in the VMT key values so it survives material reloads.
+static void CreatePassMaterial( PostMaterial_t &material, IMaterialSystem *pMaterialSystem, const char *pName, int nPass )
 {
-	return pMaterial && !pMaterial->IsErrorMaterial();
+	KeyValues *pKeyValues = new KeyValues( "DX12_PostFX" );
+	pKeyValues->SetInt( "$pass", nPass );
+	CreateMaterial( material, pMaterialSystem, pName, pKeyValues, s_PostVarNames, ARRAYSIZE( s_PostVarNames ) );
 }
 
 static int DisplayStatus()
@@ -131,13 +204,13 @@ static int DisplayNits( int status )
 }
 
 // Compute materials dispatch from their dynamic state and skip the raster draw; the rectangle only drives the pass.
-static void DrawCompute( IMatRenderContext *pRenderContext, IMaterial *pMaterial )
+static void DrawCompute( IMatRenderContext *pRenderContext, PostMaterial_t &material )
 {
-	pRenderContext->DrawScreenSpaceRectangle( pMaterial, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
+	pRenderContext->DrawScreenSpaceRectangle( material.m_Material, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
 }
 
 // Binds one compute pass: source/destination mips plus the cbuffer sizes and per-pass parameters p0/p1/p2.
-static void SetPostPass( IMaterial *pMaterial, ITexture *pSource, int nSourceMip, ITexture *pDest, int nDestMip, float p0, float p1, int nTexelScale = 1, float p2 = 0.f )
+static void SetPostPass( PostMaterial_t &material, ITexture *pSource, int nSourceMip, ITexture *pDest, int nDestMip, float p0, float p1, int nTexelScale = 1, float p2 = 0.f )
 {
 	const int nSrcWidth = MAX( 1, pSource->GetActualWidth() >> nSourceMip );
 	const int nSrcHeight = MAX( 1, pSource->GetActualHeight() >> nSourceMip );
@@ -147,13 +220,13 @@ static void SetPostPass( IMaterial *pMaterial, ITexture *pSource, int nSourceMip
 	const float flScale = static_cast<float>( MAX( nTexelScale, 1 ) );
 	const float params0[4] = { flScale / nSrcWidth, flScale / nSrcHeight, p0, p1 };
 	const float params1[4] = { p2, 0.f, 0.f, 0.f };
-	SetTexture( pMaterial, "$srctexture", pSource );
-	SetTexture( pMaterial, "$dsttexture", pDest );
-	SetInt( pMaterial, "$srcmip", nSourceMip );
-	SetInt( pMaterial, "$dstmip", nDestMip );
-	SetVector4( pMaterial, "$sizes", sizes );
-	SetVector4( pMaterial, "$params0", params0 );
-	SetVector4( pMaterial, "$params1", params1 );
+	SetTexture( material, POST_SRC_TEXTURE, pSource );
+	SetTexture( material, POST_DST_TEXTURE, pDest );
+	SetInt( material, POST_SRC_MIP, nSourceMip );
+	SetInt( material, POST_DST_MIP, nDestMip );
+	SetVector4( material, POST_SIZES, sizes );
+	SetVector4( material, POST_PARAMS0, params0 );
+	SetVector4( material, POST_PARAMS1, params1 );
 }
 }
 
@@ -229,48 +302,50 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	if ( !s_bRenderTargetsReady )
 		return;
 
-	s_BloomFirst.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_bloom_first", 7 );
+	CreatePassMaterial( s_BloomFirst, pMaterialSystem, "dx12/postfx_bloom_first", 7 );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
-		s_BloomDownsample[i].m_pMaterial = CreatePassMaterial( pMaterialSystem, CFmtStr( "dx12/postfx_downsample_%d", i ), 0 );
+		CreatePassMaterial( s_BloomDownsample[i], pMaterialSystem, CFmtStr( "dx12/postfx_downsample_%d", i ), 0 );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
-		s_BloomUpsample[i].m_pMaterial = CreatePassMaterial( pMaterialSystem, CFmtStr( "dx12/postfx_upsample_%d", i ), 1 );
-	s_FlareThreshold.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare_threshold", 2 );
-	s_FlareInputBlurDown.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare_input_blur_down", 4 );
-	s_FlareInputBlurUp.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare_input_blur_up", 5 );
-	s_FlareMaterial.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare", 3 );
-	s_FlareBlurDown.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare_blur_down", 4 );
-	s_FlareBlurUp.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare_blur_up", 5 );
-	s_GlareMaterial.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_glare", 6 );
-	s_GlareReduce.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_glare_reduce", 8 );
-	s_CompositeMaterial.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/postfx_composite", "DX12_PostFXComposite" );
-	s_RcasMaterial.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/postfx_rcas", "DX12_PostFXRcas" );
-	s_bMaterialsReady = MaterialValid( s_FlareThreshold.m_pMaterial ) && MaterialValid( s_FlareInputBlurDown.m_pMaterial ) && MaterialValid( s_FlareInputBlurUp.m_pMaterial ) &&
-		MaterialValid( s_FlareMaterial.m_pMaterial ) && MaterialValid( s_FlareBlurDown.m_pMaterial ) && MaterialValid( s_FlareBlurUp.m_pMaterial ) &&
-		MaterialValid( s_GlareMaterial.m_pMaterial ) && MaterialValid( s_CompositeMaterial.m_pMaterial ) && MaterialValid( s_RcasMaterial.m_pMaterial ) &&
-		MaterialValid( s_BloomFirst.m_pMaterial ) && MaterialValid( s_GlareReduce.m_pMaterial );
+		CreatePassMaterial( s_BloomUpsample[i], pMaterialSystem, CFmtStr( "dx12/postfx_upsample_%d", i ), 1 );
+	CreatePassMaterial( s_FlareThreshold, pMaterialSystem, "dx12/postfx_flare_threshold", 2 );
+	CreatePassMaterial( s_FlareInputBlurDown, pMaterialSystem, "dx12/postfx_flare_input_blur_down", 4 );
+	CreatePassMaterial( s_FlareInputBlurUp, pMaterialSystem, "dx12/postfx_flare_input_blur_up", 5 );
+	CreatePassMaterial( s_FlareMaterial, pMaterialSystem, "dx12/postfx_flare", 3 );
+	CreatePassMaterial( s_FlareBlurDown, pMaterialSystem, "dx12/postfx_flare_blur_down", 4 );
+	CreatePassMaterial( s_FlareBlurUp, pMaterialSystem, "dx12/postfx_flare_blur_up", 5 );
+	CreatePassMaterial( s_GlareMaterial, pMaterialSystem, "dx12/postfx_glare", 6 );
+	CreatePassMaterial( s_GlareReduce, pMaterialSystem, "dx12/postfx_glare_reduce", 8 );
+	CreateMaterial( s_CompositeMaterial, pMaterialSystem, "dx12/postfx_composite", new KeyValues( "DX12_PostFXComposite" ),
+		s_CompositeVarNames, ARRAYSIZE( s_CompositeVarNames ) );
+	CreateMaterial( s_RcasMaterial, pMaterialSystem, "dx12/postfx_rcas", new KeyValues( "DX12_PostFXRcas" ),
+		s_RcasVarNames, ARRAYSIZE( s_RcasVarNames ) );
+	s_bMaterialsReady = MaterialValid( s_FlareThreshold ) && MaterialValid( s_FlareInputBlurDown ) && MaterialValid( s_FlareInputBlurUp ) &&
+		MaterialValid( s_FlareMaterial ) && MaterialValid( s_FlareBlurDown ) && MaterialValid( s_FlareBlurUp ) &&
+		MaterialValid( s_GlareMaterial ) && MaterialValid( s_CompositeMaterial ) && MaterialValid( s_RcasMaterial ) &&
+		MaterialValid( s_BloomFirst ) && MaterialValid( s_GlareReduce );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
-		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomDownsample[i].m_pMaterial );
+		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomDownsample[i] );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
-		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomUpsample[i].m_pMaterial );
+		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomUpsample[i] );
 }
 
 void PostProcessDX12_Shutdown()
 {
-	ReleaseMaterial( s_BloomFirst );
+	s_BloomFirst.m_Material.Shutdown();
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
-		ReleaseMaterial( s_BloomDownsample[i] );
+		s_BloomDownsample[i].m_Material.Shutdown();
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
-		ReleaseMaterial( s_BloomUpsample[i] );
-	ReleaseMaterial( s_FlareThreshold );
-	ReleaseMaterial( s_FlareInputBlurDown );
-	ReleaseMaterial( s_FlareInputBlurUp );
-	ReleaseMaterial( s_FlareMaterial );
-	ReleaseMaterial( s_FlareBlurDown );
-	ReleaseMaterial( s_FlareBlurUp );
-	ReleaseMaterial( s_GlareMaterial );
-	ReleaseMaterial( s_GlareReduce );
-	ReleaseMaterial( s_CompositeMaterial );
-	ReleaseMaterial( s_RcasMaterial );
+		s_BloomUpsample[i].m_Material.Shutdown();
+	s_FlareThreshold.m_Material.Shutdown();
+	s_FlareInputBlurDown.m_Material.Shutdown();
+	s_FlareInputBlurUp.m_Material.Shutdown();
+	s_FlareMaterial.m_Material.Shutdown();
+	s_FlareBlurDown.m_Material.Shutdown();
+	s_FlareBlurUp.m_Material.Shutdown();
+	s_GlareMaterial.m_Material.Shutdown();
+	s_GlareReduce.m_Material.Shutdown();
+	s_CompositeMaterial.m_Material.Shutdown();
+	s_RcasMaterial.m_Material.Shutdown();
 	s_PostScene.Shutdown();
 	s_BloomDown.Shutdown();
 	s_BloomUp.Shutdown();
@@ -344,17 +419,17 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	if ( bBloom || bFlareInput )
 	{
 		PIXEVENT( pRenderContext, "Bloom downsample" );
-		IMaterial *pFirst = s_BloomFirst.m_pMaterial;
-		SetPostPass( pFirst, s_PostScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest,
+		PostMaterial_t &first = s_BloomFirst;
+		SetPostPass( first, s_PostScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest,
 			mat_postfx_bloom_boost.GetFloat() );
-		SetTexture( pFirst, "$dsttexture2", s_BloomUp );
-		SetInt( pFirst, "$dstmip2", nFirstMip );
-		DrawCompute( pRenderContext, pFirst );
+		SetTexture( first, POST_DST_TEXTURE2, s_BloomUp );
+		SetInt( first, POST_DST_MIP2, nFirstMip );
+		DrawCompute( pRenderContext, first );
 		for ( int nMip = nFirstMip; bBloom && nMip < kBloomLevels; ++nMip )
 		{
-			IMaterial *pMaterial = s_BloomDownsample[nMip - 1].m_pMaterial;
-			SetPostPass( pMaterial, s_BloomDown, nMip, s_BloomDown, nMip + 1, 1.f, 0.f );
-			DrawCompute( pRenderContext, pMaterial );
+			PostMaterial_t &material = s_BloomDownsample[nMip - 1];
+			SetPostPass( material, s_BloomDown, nMip, s_BloomDown, nMip + 1, 1.f, 0.f );
+			DrawCompute( pRenderContext, material );
 		}
 	}
 
@@ -364,35 +439,35 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	if ( bFlareInput )
 	{
 		PIXEVENT( pRenderContext, "Flare" );
-		SetPostPass( s_FlareThreshold.m_pMaterial, s_BloomUp, nFirstMip, s_FlareInput, 0, mat_postfx_lensflare_threshold.GetFloat(),
+		SetPostPass( s_FlareThreshold, s_BloomUp, nFirstMip, s_FlareInput, 0, mat_postfx_lensflare_threshold.GetFloat(),
 			MAX( mat_postfx_lensflare_threshold_range.GetFloat(), 0.01f ) );
-		DrawCompute( pRenderContext, s_FlareThreshold.m_pMaterial );
-		SetPostPass( s_FlareInputBlurDown.m_pMaterial, s_FlareInput, 0, s_FlareInput, 1, 0.f, 0.f );
-		DrawCompute( pRenderContext, s_FlareInputBlurDown.m_pMaterial );
+		DrawCompute( pRenderContext, s_FlareThreshold );
+		SetPostPass( s_FlareInputBlurDown, s_FlareInput, 0, s_FlareInput, 1, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareInputBlurDown );
 	if ( bFlare )
 	{
 		// Glare reads mip 1 directly; this upsample is only needed by ghosts and halo.
-		SetPostPass( s_FlareInputBlurUp.m_pMaterial, s_FlareInput, 1, s_FlareInput, 0, 0.f, 0.f );
-		DrawCompute( pRenderContext, s_FlareInputBlurUp.m_pMaterial );
-		SetPostPass( s_FlareMaterial.m_pMaterial, s_FlareInput, 0, s_Flare, 0, 0.f, 0.f );
-		DrawCompute( pRenderContext, s_FlareMaterial.m_pMaterial );
-		SetPostPass( s_FlareBlurDown.m_pMaterial, s_Flare, 0, s_Flare, 1, 0.f, 0.f );
-		DrawCompute( pRenderContext, s_FlareBlurDown.m_pMaterial );
-		SetPostPass( s_FlareBlurUp.m_pMaterial, s_Flare, 1, s_Flare, 0, 0.f, 0.f );
-		DrawCompute( pRenderContext, s_FlareBlurUp.m_pMaterial );
+		SetPostPass( s_FlareInputBlurUp, s_FlareInput, 1, s_FlareInput, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareInputBlurUp );
+		SetPostPass( s_FlareMaterial, s_FlareInput, 0, s_Flare, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareMaterial );
+		SetPostPass( s_FlareBlurDown, s_Flare, 0, s_Flare, 1, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareBlurDown );
+		SetPostPass( s_FlareBlurUp, s_Flare, 1, s_Flare, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_FlareBlurUp );
 	}
 	if ( bGlare )
 	{
 		// Exact FP16 component maxima bound every filtered input tap. Reducing to
 		// 16x16 then 1x1 is independent of render size and leaves the glare sum intact.
-		SetPostPass( s_GlareReduce.m_pMaterial, s_FlareInput, 1, s_GlareBounds, 0, 0.f, 0.f );
-		DrawCompute( pRenderContext, s_GlareReduce.m_pMaterial );
-		SetPostPass( s_GlareReduce.m_pMaterial, s_GlareBounds, 0, s_GlareBounds, kGlareBoundsMip, 0.f, 0.f );
-		DrawCompute( pRenderContext, s_GlareReduce.m_pMaterial );
-		SetPostPass( s_GlareMaterial.m_pMaterial, s_FlareInput, 1, s_Glare, 0, flGlareIntensity, MAX( mat_postfx_glare_divider.GetFloat(), 0.01f ) );
-		SetTexture( s_GlareMaterial.m_pMaterial, "$srctexture2", s_GlareBounds );
-		SetInt( s_GlareMaterial.m_pMaterial, "$srcmip2", kGlareBoundsMip );
-		DrawCompute( pRenderContext, s_GlareMaterial.m_pMaterial );
+		SetPostPass( s_GlareReduce, s_FlareInput, 1, s_GlareBounds, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_GlareReduce );
+		SetPostPass( s_GlareReduce, s_GlareBounds, 0, s_GlareBounds, kGlareBoundsMip, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_GlareReduce );
+		SetPostPass( s_GlareMaterial, s_FlareInput, 1, s_Glare, 0, flGlareIntensity, MAX( mat_postfx_glare_divider.GetFloat(), 0.01f ) );
+		SetTexture( s_GlareMaterial, POST_SRC_TEXTURE2, s_GlareBounds );
+		SetInt( s_GlareMaterial, POST_SRC_MIP2, kGlareBoundsMip );
+		DrawCompute( pRenderContext, s_GlareMaterial );
 	}
 
 	}
@@ -405,14 +480,14 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 		for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
 		{
 			const int nMip = ARRAYSIZE( s_BloomUpsample ) - i;
-			IMaterial *pMaterial = s_BloomUpsample[i].m_pMaterial;
+			PostMaterial_t &material = s_BloomUpsample[i];
 			if ( nMip < nFirstMip )
-				SetPostPass( pMaterial, s_BloomUp, nMip + 1, s_BloomUp, nMip, 0.f, 0.f );
+				SetPostPass( material, s_BloomUp, nMip + 1, s_BloomUp, nMip, 0.f, 0.f );
 			else
-				SetPostPass( pMaterial, s_BloomDown, nMip, s_BloomUp, nMip, 1.f, 0.f );
-			SetTexture( pMaterial, "$srctexture2", i == 0 ? s_BloomDown : s_BloomUp );
-			SetInt( pMaterial, "$srcmip2", nMip + 1 );
-			DrawCompute( pRenderContext, pMaterial );
+				SetPostPass( material, s_BloomDown, nMip, s_BloomUp, nMip, 1.f, 0.f );
+			SetTexture( material, POST_SRC_TEXTURE2, i == 0 ? s_BloomDown : s_BloomUp );
+			SetInt( material, POST_SRC_MIP2, nMip + 1 );
+			DrawCompute( pRenderContext, material );
 		}
 	}
 	const int nStatus = DisplayStatus();
@@ -426,22 +501,22 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	const float composite0[4] = { flExposure, flBloomExposure / nLayers, flFlareIntensity * 0.1f, 0.f };
 	const float composite1[4] = { mat_postfx_lensdirt.GetFloat(), 0.f, 0.f, 0.f };
 	const float output[4] = { static_cast<float>( bHdr ? 1 : 0 ), 0.f, 0.f, 0.f };
-	IMaterial *pComposite = s_CompositeMaterial.m_pMaterial;
-	SetTexture( pComposite, "$scene", s_PostScene );
-	SetTexture( pComposite, "$bloom", s_BloomUp );
-	SetTexture( pComposite, "$flare", s_Flare );
-	SetTexture( pComposite, "$glare", s_Glare );
-	SetTexture( pComposite, "$dirt", s_LensDirt );
-	SetInt( pComposite, "$bloomenabled", bBloom );
-	SetInt( pComposite, "$flareenabled", bFlare );
-	SetInt( pComposite, "$glareenabled", bGlare );
-	SetInt( pComposite, "$dirtenabled", bDirt );
-	SetFloat( pComposite, "$outscale", flOutScale );
-	SetFloat( pComposite, "$peak", flPeak );
-	SetInt( pComposite, "$debugview", nDebugView );
-	SetVector4( pComposite, "$params0", composite0 );
-	SetVector4( pComposite, "$params1", composite1 );
-	SetVector4( pComposite, "$output", output );
+	PostMaterial_t &composite = s_CompositeMaterial;
+	SetTexture( composite, COMPOSITE_SCENE, s_PostScene );
+	SetTexture( composite, COMPOSITE_BLOOM, s_BloomUp );
+	SetTexture( composite, COMPOSITE_FLARE, s_Flare );
+	SetTexture( composite, COMPOSITE_GLARE, s_Glare );
+	SetTexture( composite, COMPOSITE_DIRT, s_LensDirt );
+	SetInt( composite, COMPOSITE_BLOOM_ENABLED, bBloom );
+	SetInt( composite, COMPOSITE_FLARE_ENABLED, bFlare );
+	SetInt( composite, COMPOSITE_GLARE_ENABLED, bGlare );
+	SetInt( composite, COMPOSITE_DIRT_ENABLED, bDirt );
+	SetFloat( composite, COMPOSITE_OUT_SCALE, flOutScale );
+	SetFloat( composite, COMPOSITE_PEAK, flPeak );
+	SetInt( composite, COMPOSITE_DEBUG_VIEW, nDebugView );
+	SetVector4( composite, COMPOSITE_PARAMS0, composite0 );
+	SetVector4( composite, COMPOSITE_PARAMS1, composite1 );
+	SetVector4( composite, COMPOSITE_OUTPUT, output );
 
 	// RCAS sharpens the temporal upscaler's output, so it only runs on frames the upscaler dispatched.
 	const bool bSharpen = UpscalerDX12_Enabled() && UpscalerDX12_Status() > 0 && mat_postfx_sharpen.GetFloat() > 0.f;
@@ -453,26 +528,26 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 		{
 			PIXEVENT( pRenderContext, "Composite" );
 			pRenderContext->PushRenderTargetAndViewport( s_Composite );
-			pRenderContext->DrawScreenSpaceRectangle( pComposite, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
+			pRenderContext->DrawScreenSpaceRectangle( composite.m_Material, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
 			pRenderContext->PopRenderTargetAndViewport();
 		}
 		const float texelSize[4] = { 1.f / nTextureWidth, 1.f / nTextureHeight, 0.f, 0.f };
-		IMaterial *pRcas = s_RcasMaterial.m_pMaterial;
-		SetTexture( pRcas, "$basetexture", s_Composite );
-		SetFloat( pRcas, "$sharpness", Clamp( mat_postfx_sharpen.GetFloat(), 0.f, 1.f ) );
-		SetFloat( pRcas, "$normscale", flPeak * flOutScale );
-		SetVector4( pRcas, "$texelsize", texelSize );
+		PostMaterial_t &rcas = s_RcasMaterial;
+		SetTexture( rcas, RCAS_BASE_TEXTURE, s_Composite );
+		SetFloat( rcas, RCAS_SHARPNESS, Clamp( mat_postfx_sharpen.GetFloat(), 0.f, 1.f ) );
+		SetFloat( rcas, RCAS_NORM_SCALE, flPeak * flOutScale );
+		SetVector4( rcas, RCAS_TEXEL_SIZE, texelSize );
 		{
 			PIXEVENT( pRenderContext, "Sharpen" );
 			pRenderContext->SetRenderTarget( nullptr );
-			pRenderContext->DrawScreenSpaceRectangle( pRcas, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
+			pRenderContext->DrawScreenSpaceRectangle( rcas.m_Material, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
 		}
 	}
 	else
 	{
 		PIXEVENT( pRenderContext, "Composite" );
 		pRenderContext->SetRenderTarget( nullptr );
-		pRenderContext->DrawScreenSpaceRectangle( pComposite, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
+		pRenderContext->DrawScreenSpaceRectangle( composite.m_Material, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
 	}
 }
 

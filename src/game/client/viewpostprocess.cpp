@@ -7,6 +7,7 @@
 #include "cbase.h"
 
 #include "materialsystem/imaterialsystem.h"
+#include "materialsystem/MaterialSystemUtil.h"
 #include "materialsystem/itexture.h"
 #include "materialsystem/imaterialvar.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
@@ -104,6 +105,72 @@ struct PostProcessingPass {
 	int xsrc_scale,ysrc_scale;								// allows scaling down
 	CMaterialReference m_mat_ref;							// so we don't have to keep searching
 };
+
+enum PostProcessMaterialId
+{
+	PPMAT_LUMINANCE, PPMAT_NO_PIXEL_WRITE, PPMAT_ENGINE_POST, PPMAT_BLOOM_ADD,
+	PPMAT_DOWNSAMPLE_NO_HDR, PPMAT_BLUR_X_NO_HDR, PPMAT_BLUR_Y_NO_HDR,
+	PPMAT_FLOAT_COMBINE, PPMAT_MOTION_BLUR, PPMAT_MOTION_BLUR_MV,
+	PPMAT_PYRO_BORDER, PPMAT_PYRO_VIGNETTE, PPMAT_PYRO_POST, PPMAT_COUNT
+};
+
+enum PostProcessVarId
+{
+	PPVAR_BASE, PPVAR_C0_X, PPVAR_C0_Y, PPVAR_C0_Z, PPVAR_BLOOM_AMOUNT,
+	PPVAR_VELOCITY_REGION, PPVAR_DISABLED, PPVAR_COUNT
+};
+
+struct PostProcessMaterialEntry
+{
+	const char *name;
+	unsigned int varMask;
+	CMaterialReference material;
+	unsigned int tokens[PPVAR_COUNT];
+	bool found[PPVAR_COUNT];
+};
+
+#define PPVAR_BIT( var ) ( 1u << ( var ) )
+static PostProcessMaterialEntry s_PostProcessMaterials[PPMAT_COUNT] =
+{
+	{ "dev/lumcompare", PPVAR_BIT( PPVAR_BASE ) | PPVAR_BIT( PPVAR_C0_X ) | PPVAR_BIT( PPVAR_C0_Y ) | PPVAR_BIT( PPVAR_C0_Z ) },
+	{ "dev/no_pixel_write", 0 },
+	{ "dev/engine_post", 0 },
+	{ "dev/bloomadd", 0 },
+#ifdef CSTRIKE_DLL
+	{ "dev/downsample_non_hdr_cstrike", 0 },
+#else
+	{ "dev/downsample_non_hdr", 0 },
+#endif
+	{ "dev/blurfilterx_nohdr", 0 },
+	{ "dev/blurfiltery_nohdr", PPVAR_BIT( PPVAR_BLOOM_AMOUNT ) },
+	{ "dev/floattoscreen_combine", PPVAR_BIT( PPVAR_BLOOM_AMOUNT ) },
+	{ "dev/motion_blur", PPVAR_BIT( PPVAR_BASE ) },
+	{ "dev/motion_blur_mv", PPVAR_BIT( PPVAR_BASE ) | PPVAR_BIT( PPVAR_VELOCITY_REGION ) },
+#ifdef TF_CLIENT_DLL
+	{ "dev/pyro_vignette_border", 0 },
+	{ "dev/pyro_vignette", 0 },
+	{ "dev/pyro_post", PPVAR_BIT( PPVAR_DISABLED ) },
+#else
+	{ NULL, 0 }, { NULL, 0 }, { NULL, 0 },
+#endif
+};
+#undef PPVAR_BIT
+
+static const char *s_PostProcessVarNames[PPVAR_COUNT] =
+{
+	"$basetexture", "$C0_X", "$C0_Y", "$C0_Z", "$bloomamount", "$velocityregion", "$disabled"
+};
+
+static IMaterial *PostProcessMaterial( PostProcessMaterialId id )
+{
+	return s_PostProcessMaterials[id].material;
+}
+
+static IMaterialVar *PostProcessVar( PostProcessMaterialId material, PostProcessVarId var )
+{
+	PostProcessMaterialEntry &entry = s_PostProcessMaterials[material];
+	return entry.found[var] ? entry.material->FindVarFast( s_PostProcessVarNames[var], &entry.tokens[var] ) : NULL;
+}
 
 #define PPP_PROCESS_PARTIAL_SRC(srcmatname,dest_rt_name,src_tname,scale) \
 {PPP_ALWAYS,0,srcmatname,dest_rt_name,src_tname,1,1,scale,scale}
@@ -223,15 +290,6 @@ void ApplyPostProcessingPasses(PostProcessingPass *pass_list, // table of effect
 			}
 
 			IMaterial *src_mat=pass_list->m_mat_ref;
-			if (! src_mat)
-			{
-				src_mat=materials->FindMaterial(pass_list->material_name,
-					TEXTURE_GROUP_OTHER,true);
-				if (src_mat)
-				{
-					pass_list->m_mat_ref.Init(src_mat);
-				}
-			}
 			if (pass_list->dest_rendering_target)
 			{
 				ITexture *dest_rt=materials->FindTexture(pass_list->dest_rendering_target,
@@ -332,6 +390,45 @@ PostProcessingPass HDRSimulate_NonHDR[] =
 	PPP_PROCESS("dev/copyfullframefb_vanilla",NULL),
 	PPP_END
 };
+
+void PrepareViewPostProcessMaterials()
+{
+	// FindVar's engine symbol table uses a shared search-string scratch slot
+	// under a reader lock. Prime tokens on the client thread; replay must not
+	// enter that lookup concurrently with next-frame material preparation.
+	const char *shaderDLL = g_pMaterialSystemHardwareConfig->GetShaderDLLName();
+	const bool bDX12 = shaderDLL && !V_stricmp( shaderDLL, "stdshader_dx12" );
+	for ( int i = 0; i < PPMAT_COUNT; ++i )
+	{
+		PostProcessMaterialEntry &entry = s_PostProcessMaterials[i];
+		if ( !entry.name || ( i == PPMAT_MOTION_BLUR_MV && !bDX12 ) )
+			continue;
+		if ( !entry.material.IsValid() )
+			entry.material.Init( entry.name, TEXTURE_GROUP_OTHER, true );
+		entry.material->GetMappingWidth(); // Build snapshots/proxies here, not during replay.
+		for ( int var = 0; var < PPVAR_COUNT; ++var )
+		{
+			if ( !( entry.varMask & ( 1u << var ) ) )
+				continue;
+			bool found = false;
+			entry.material->FindVar( s_PostProcessVarNames[var], &found, var != PPVAR_DISABLED );
+			entry.found[var] = found;
+			if ( found )
+				entry.material->FindVarFast( s_PostProcessVarNames[var], &entry.tokens[var] );
+		}
+	}
+
+	PostProcessingPass *lists[] = { HDRFinal_Float, HDRFinal_Float_NoBloom, HDRSimulate_NonHDR };
+	for ( int i = 0; i < ARRAYSIZE( lists ); ++i )
+	{
+		for ( PostProcessingPass *pass = lists[i]; pass->material_name; ++pass )
+		{
+			if ( !pass->m_mat_ref.IsValid() )
+				pass->m_mat_ref.Init( pass->material_name, TEXTURE_GROUP_OTHER, true );
+			pass->m_mat_ref->GetMappingWidth();
+		}
+	}
+}
 
 static void SetRenderTargetAndViewPort(ITexture *rt)
 {
@@ -450,19 +547,19 @@ static ITexture *AcquireBoundFrameCopy( IMatRenderContext *pRenderContext, int x
 	return pCopy;
 }
 
-static void RetargetBaseTexture( IMaterial *pMaterial, ITexture *pTexture, IMaterialVar *&pBase, ITexture *&pSaved )
+static void RetargetBaseTexture( PostProcessMaterialId material, ITexture *pTexture, IMaterialVar *&pBase, ITexture *&pSaved )
 {
 	pBase = NULL;
 	pSaved = NULL;
-	if ( !pMaterial || !pTexture )
+	if ( !pTexture )
 		return;
-	bool bFound = false;
-	pBase = pMaterial->FindVar( "$basetexture", &bFound, false );
+	pBase = PostProcessVar( material, PPVAR_BASE );
 	if ( !pBase )
 		return;
 	pSaved = pBase->GetTextureValue();
 	pBase->SetTextureValue( pTexture );
 }
+
 
 void CHistogram_entry_t::IssueQuery( int frm_num )
 {
@@ -480,11 +577,14 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	float flTestRangeMax = ( m_max_lum == 1.0f ) ? 10000.0f : m_max_lum; // Count all pixels >1.0 as 1.0
 
 	// First, set stencil bits where the colors match
-	IMaterial *test_mat=materials->FindMaterial( "dev/lumcompare", TEXTURE_GROUP_OTHER, true );
-	IMaterialVar *pMinVar = test_mat->FindVar( "$C0_X", NULL );
+	IMaterial *test_mat = PostProcessMaterial( PPMAT_LUMINANCE );
+	IMaterialVar *pMinVar = PostProcessVar( PPMAT_LUMINANCE, PPVAR_C0_X );
+	IMaterialVar *pMaxVar = PostProcessVar( PPMAT_LUMINANCE, PPVAR_C0_Y );
+	if ( !test_mat || !pMinVar || !pMaxVar )
+		return;
 	pMinVar->SetFloatValue( flTestRangeMin );
-	IMaterialVar *pMaxVar = test_mat->FindVar( "$C0_Y", NULL );
 	pMaxVar->SetFloatValue( flTestRangeMax );
+
 	int scrx_min = FLerp( xl, ( xl + dest_width - 1 ), 0, 1, m_minx );
 	int scrx_max = FLerp( xl, ( xl + dest_width - 1 ), 0, 1, m_maxx );
 	int scry_min = FLerp( yl, ( yl + dest_height - 1 ), 0, 1, m_miny );
@@ -512,7 +612,9 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	{
 		tscale = pRenderContext->GetToneMappingScaleLinear().x;
 	}
-	IMaterialVar *use_t_scale = test_mat->FindVar( "$C0_Z", NULL );
+	IMaterialVar *use_t_scale = PostProcessVar( PPMAT_LUMINANCE, PPVAR_C0_Z );
+	if ( !use_t_scale )
+		return;
 	use_t_scale->SetFloatValue( tscale );
 
 	m_npixels = ( 1 + scrx_max - scrx_min ) * ( 1 + scry_max - scry_min );
@@ -542,7 +644,7 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	scry_max -= skip_edgey;
 	IMaterialVar *pBase = NULL;
 	ITexture *pSavedBase = NULL;
-	RetargetBaseTexture( test_mat, AcquireBoundFrameCopy( pRenderContext, xl, yl, dest_width, dest_height ), pBase, pSavedBase );
+	RetargetBaseTexture( PPMAT_LUMINANCE, AcquireBoundFrameCopy( pRenderContext, xl, yl, dest_width, dest_height ), pBase, pSavedBase );
 	pRenderContext->DrawScreenSpaceRectangle( test_mat,
 											  scrx_min, scry_min,
 											  1 + scrx_max - scrx_min,
@@ -564,7 +666,7 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 		pRenderContext->SetStencilFailOperation( STENCILOPERATION_KEEP );
 		pRenderContext->SetStencilZFailOperation( STENCILOPERATION_KEEP );
 		pRenderContext->SetStencilReferenceValue( 1 );
-		IMaterial *stest_mat=materials->FindMaterial( "dev/no_pixel_write", TEXTURE_GROUP_OTHER, true);
+		IMaterial *stest_mat = PostProcessMaterial( PPMAT_NO_PIXEL_WRITE );
 		pRenderContext->DrawScreenSpaceRectangle( stest_mat,
 												  scrx_min, scry_min,
 												  1 + scrx_max - scrx_min,
@@ -1420,13 +1522,13 @@ IMaterial * CEnginePostMaterialProxy::SetupEnginePostMaterial(	const Vector4D & 
 	if ( bPerformSoftwareAA || bPerformColCorrect )
 	{
 		SetupEnginePostMaterialTextureTransform( fullViewportBloomUVs, fullViewportFBUVs, destTexSize );
-		return materials->FindMaterial( "dev/engine_post", TEXTURE_GROUP_OTHER, true);
+		return PostProcessMaterial( PPMAT_ENGINE_POST );
 	}
 	else
 	{
 		// Just use the old bloomadd material (which uses additive blending, unlike engine_post)
 		// NOTE: this path is what gets used for DX8 (which cannot enable AA or col-correction)
-		return materials->FindMaterial( "dev/bloomadd", TEXTURE_GROUP_OTHER, true);
+		return PostProcessMaterial( PPMAT_BLOOM_ADD );
 	}
 }
 
@@ -1589,14 +1691,9 @@ static void Generate8BitBloomTexture( IMatRenderContext *pRenderContext, float f
 	int nSrcHeight = pSrc->GetActualHeight(); //,dest_height;
 
 	// Counter-Strike: Source uses a different downsample algorithm than other games
-	#ifdef CSTRIKE_DLL
-		IMaterial *downsample_mat = materials->FindMaterial( "dev/downsample_non_hdr_cstrike", TEXTURE_GROUP_OTHER, true);
-	#else
-		IMaterial *downsample_mat = materials->FindMaterial( "dev/downsample_non_hdr", TEXTURE_GROUP_OTHER, true);
-	#endif
-
-	IMaterial *xblur_mat = materials->FindMaterial( "dev/blurfilterx_nohdr", TEXTURE_GROUP_OTHER, true );
-	IMaterial *yblur_mat = materials->FindMaterial( "dev/blurfiltery_nohdr", TEXTURE_GROUP_OTHER, true );
+	IMaterial *downsample_mat = PostProcessMaterial( PPMAT_DOWNSAMPLE_NO_HDR );
+	IMaterial *xblur_mat = PostProcessMaterial( PPMAT_BLUR_X_NO_HDR );
+	IMaterial *yblur_mat = PostProcessMaterial( PPMAT_BLUR_Y_NO_HDR );
 	ITexture *dest_rt0 = materials->FindTexture( "_rt_SmallFB0", TEXTURE_GROUP_RENDER_TARGET );
 	ITexture *dest_rt1 = materials->FindTexture( "_rt_SmallFB1", TEXTURE_GROUP_RENDER_TARGET );
 
@@ -1639,7 +1736,7 @@ static void Generate8BitBloomTexture( IMatRenderContext *pRenderContext, float f
 
 	// Gaussian blur y rt1 to rt0
 	SetRenderTargetAndViewPort( dest_rt0 );
-	IMaterialVar *pBloomAmountVar = yblur_mat->FindVar( "$bloomamount", NULL );
+	IMaterialVar *pBloomAmountVar = PostProcessVar( PPMAT_BLUR_Y_NO_HDR, PPVAR_BLOOM_AMOUNT );
 	pBloomAmountVar->SetFloatValue( flBloomScale );
 	pRenderContext->DrawScreenSpaceRectangle(	yblur_mat, 0, 0, nSrcWidth / 4, nSrcHeight / 4,
 												0, 0, nSrcWidth / 4 - 1, nSrcHeight / 4 - 1,
@@ -1930,8 +2027,8 @@ static void DrawPyroVignette( int nDestX, int nDestY, int nWidth, int nHeight,	/
 
 	CMatRenderContextPtr pRenderContext( g_pMaterialSystem );
 
-	IMaterial *pVignetteBorder = materials->FindMaterial( "dev/pyro_vignette_border", TEXTURE_GROUP_OTHER, true );
-	IMaterial *pMaterial = materials->FindMaterial( "dev/pyro_vignette", TEXTURE_GROUP_OTHER, true );
+	IMaterial *pVignetteBorder = PostProcessMaterial( PPMAT_PYRO_BORDER );
+	IMaterial *pMaterial = PostProcessMaterial( PPMAT_PYRO_VIGNETTE );
 	ITexture *pRenderTarget = materials->FindTexture( "_rt_ResolvedFullFrameDepth", TEXTURE_GROUP_RENDER_TARGET );
 
 	pRenderContext->PushRenderTargetAndViewport( pRenderTarget );
@@ -2053,10 +2150,8 @@ static void DrawPyroPost( IMaterial *pMaterial,
 	int nSrcTextureWidth, int nSrcTextureHeight,		// needed for fixup
 	void *pClientRenderable )							// Used to pass to the bind proxies
 {
-	bool			bFound = false;
-	IMaterialVar	*pVar = pMaterial->FindVar( "$disabled", &bFound, false );
-
-	if ( bFound && pVar->GetIntValue() )
+	IMaterialVar *pVar = PostProcessVar( PPMAT_PYRO_POST, PPVAR_DISABLED );
+	if ( pVar && pVar->GetIntValue() )
 	{
 		return;
 	}
@@ -2601,7 +2696,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 							partialViewportPostSrcCorners.z,			partialViewportPostSrcCorners.w, 
 							GetClientWorldEntity()->GetClientRenderable() );
 
-						IMaterial *pPyroVisionPostMaterial = materials->FindMaterial( "dev/pyro_post", TEXTURE_GROUP_OTHER, true);
+						IMaterial *pPyroVisionPostMaterial = PostProcessMaterial( PPMAT_PYRO_POST );
 						DrawPyroPost( pPyroVisionPostMaterial,
                             // TODO: check if offsets should be 0,0 here, as with the combined-pass case
 							partialViewportPostDestRect.x,				partialViewportPostDestRect.y, 
@@ -2657,9 +2752,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 				}
 			}
 			
-			IMaterial *pBloomMaterial;
-			pBloomMaterial = materials->FindMaterial( "dev/floattoscreen_combine", "" );
-			IMaterialVar *pBloomAmountVar = pBloomMaterial->FindVar( "$bloomamount", NULL );
+			IMaterialVar *pBloomAmountVar = PostProcessVar( PPMAT_FLOAT_COMBINE, PPVAR_BLOOM_AMOUNT );
 			pBloomAmountVar->SetFloatValue( flBloomScale );
 			
 			PostProcessingPass* selectedHDR;
@@ -2798,7 +2891,7 @@ ConVar mat_motion_blur_static_skip( "mat_motion_blur_static_skip", "1", FCVAR_CH
 
 // pVelocityRegion (DX12 velocity blur): the valid motion-vector region in texels, {width, height, 0, 0}; it differs from
 // the target under a temporal render scale, where the blur runs on the upscaled frame.
-static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, int h, const float *pVelocityRegion = NULL )
+static void DrawMotionBlurQuad( PostProcessMaterialId material, int x, int y, int w, int h, const float *pVelocityRegion = NULL )
 {
 	CMatRenderContextPtr pRenderContext( materials );
 	ITexture *pSrc = materials->FindTexture( "_rt_FullFrameFB", TEXTURE_GROUP_RENDER_TARGET );
@@ -2807,7 +2900,7 @@ static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, 
 	int dest_width, dest_height, nDummy;
 	pRenderContext->GetViewport( nDummy, nDummy, dest_width, dest_height );
 
-	IMaterial *pMatMotionBlur = materials->FindMaterial( pMaterialName, TEXTURE_GROUP_OTHER, true );
+	IMaterial *pMatMotionBlur = PostProcessMaterial( material );
 	IMaterialVar *pBase = NULL;
 	ITexture *pSavedBase = NULL;
 	// Non-float HDR copies the backbuffer into _rt_FullFrameFB. Float HDR renders into that
@@ -2822,15 +2915,14 @@ static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, 
 		pSrc = pCopy;
 		nSrcWidth = pCopy->GetActualWidth();
 		nSrcHeight = pCopy->GetActualHeight();
-		RetargetBaseTexture( pMatMotionBlur, pCopy, pBase, pSavedBase );
+		RetargetBaseTexture( material, pCopy, pBase, pSavedBase );
 	}
 	pRenderContext->EndPIXEvent();
 
 	if ( pMatMotionBlur != NULL && pVelocityRegion != NULL )
 	{
-		bool bFound = false;
-		IMaterialVar *pRegion = pMatMotionBlur->FindVar( "$velocityregion", &bFound, false );
-		if ( bFound && pRegion )
+		IMaterialVar *pRegion = PostProcessVar( material, PPVAR_VELOCITY_REGION );
+		if ( pRegion )
 			pRegion->SetVecValue( pVelocityRegion, 4 );
 	}
 	if ( pMatMotionBlur != NULL )
@@ -2885,7 +2977,7 @@ static void DrawVelocityMotionBlurDX12( MotionBlurReplayDX12 blur )
 	const float flVelocityRegion[4] = { static_cast<float>( blur.nVelocityWidth ), static_cast<float>( blur.nVelocityHeight ), 0.f, 0.f };
 	const float *pSavedValues = s_pMotionBlurReplayValues;
 	s_pMotionBlurReplayValues = flValues;
-	DrawMotionBlurQuad( "dev/motion_blur_mv", blur.x, blur.y, blur.w, blur.h, flVelocityRegion );
+	DrawMotionBlurQuad( PPMAT_MOTION_BLUR_MV, blur.x, blur.y, blur.w, blur.h, flVelocityRegion );
 	s_pMotionBlurReplayValues = pSavedValues;
 }
 
@@ -3188,5 +3280,5 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 	}
 
 	// Render quad and let the material proxy pick up the g_vMotionBlurValues[4] values just set above.
-	DrawMotionBlurQuad( "dev/motion_blur", x, y, w, h );
+	DrawMotionBlurQuad( PPMAT_MOTION_BLUR, x, y, w, h );
 }
