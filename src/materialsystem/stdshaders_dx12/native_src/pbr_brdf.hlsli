@@ -204,15 +204,6 @@ float3 PBR_DiffuseBurley( PBRSurface s, float3 L )
 	}
 	return result;
 }
-// What the subsurface/backlight options add beyond the stored basis (zero when both are off).
-float3 PBR_DiffuseExtra( PBRSurface s, float3 L )
-{
-	float3 extra = 0.0;
-	[branch] if ( s.sss != 0.0 || s.back != 0.0 )
-		extra = PBR_DiffuseLambert( s, L ) - PBR_DiffuseBasis( s, L );
-	return extra;
-}
-
 // D * Vis * F * N.L, GGX with height-correlated Smith; Burley anisotropic D and Vis when anisotropy != 0.
 float3 PBR_Specular( PBRSurface s, float3 L )
 {
@@ -330,8 +321,9 @@ float PBR_FogTransmission( int pixelFogType, float fogFactor, float vertexFog )
 // a fresh eligible writer. directSpecular is the pixel's direct GGX specular in the same final scene units (S) and
 // specularDistance its specular-luminance-weighted light distance (D, target 3 alpha), so a screen-space hit closer
 // than D along the reflection removes S. Targets 3/4/5 are attached only while the bracket captures SSR; every
-// unbound target is discarded by the pipeline. Validity of normal/F0 is stencil bit 0x80, forced on every
-// depth-writing draw in the pass (a PBR writer sets it, anything else clears it).
+// unbound target is discarded by the pipeline. Non-envmapped writers suppress targets 3/5 but still zero
+// target 4, so stale E/D/S are rejected by response alpha. Validity of normal/F0 is stencil bit 0x80,
+// forced on every depth-writing draw in the pass (a PBR writer sets it, anything else clears it).
 struct PBR_PSOut
 {
 	float4 color : SV_Target0;

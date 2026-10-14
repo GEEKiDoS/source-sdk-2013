@@ -308,6 +308,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 	bool marker = false, space2 = false;
 	unsigned seen = 0, pbrSeen = 0, probeSeen = 0, screenSeen = 0;
 	const bool pixel = pixelStage && D3D12_SHVER_GET_TYPE( desc.Version ) == D3D12_SHVER_PIXEL_SHADER;
+	const bool vertex = !pixelStage && D3D12_SHVER_GET_TYPE( desc.Version ) == D3D12_SHVER_VERTEX_SHADER;
 	for ( UINT i = 0; i < desc.BoundResources; ++i )
 	{
 		D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -347,13 +348,13 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 			continue;
 		space2 = true;
 		unsigned slot = 0;
-		bool valid = pixel && binding.Space == DX12_LIGHTING_REGISTER_SPACE;
+		bool valid = ( pixel || vertex ) && binding.Space == DX12_LIGHTING_REGISTER_SPACE;
 		if ( layout )
 		{
 			slot = layout->shaderRegister == DX12_LIGHTING_B_VIEW ? 0 : 14;
 			auto *buffer = reflection->GetConstantBufferByName( binding.Name );
 			D3D12_SHADER_BUFFER_DESC bd{};
-			valid = valid && layout->stage == dx12native::kStagePixel && binding.Type == D3D_SIT_CBUFFER &&
+			valid = valid && binding.Type == D3D_SIT_CBUFFER &&
 			        binding.BindPoint == layout->shaderRegister && binding.BindCount == 1 &&
 			        buffer && SUCCEEDED( buffer->GetDesc( &bd ) ) && bd.Type == D3D_CT_CBUFFER &&
 			        bd.Name && !V_strcmp( bd.Name, layout->name ) &&

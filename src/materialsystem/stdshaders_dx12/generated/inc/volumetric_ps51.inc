@@ -38,7 +38,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bMSAA );
-		return ( 1 * m_nMSAA ) + 0;
+		return ( 2 * m_nMSAA ) + 0;
 	}
 };
 
@@ -47,17 +47,35 @@ public:
 
 class volumetric_ps51_Dynamic_Index
 {
+	unsigned int m_nQUARTER : 2;
+#ifdef _DEBUG
+	bool m_bQUARTER : 1;
+#endif	// _DEBUG
 public:
+	void SetQUARTER( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nQUARTER = i;
+#ifdef _DEBUG
+		m_bQUARTER = true;
+#endif	// _DEBUG
+	}
+
 	volumetric_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< volumetric_ps51_Block >( dx12native::kStagePixel );
+		m_nQUARTER = 0;
+#ifdef _DEBUG
+		m_bQUARTER = false;
+#endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		return 0;
+		Assert( m_bQUARTER );
+		return ( 1 * m_nQUARTER ) + 0;
 	}
 };
 
-#define shaderDynamicTest_volumetric_ps51 1
+#define shaderDynamicTest_volumetric_ps51 psh_forgot_to_set_dynamic_QUARTER
 

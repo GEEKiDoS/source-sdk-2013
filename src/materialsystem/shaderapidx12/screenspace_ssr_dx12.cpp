@@ -8,12 +8,12 @@
 //            3. ssr_trace_cs51 traces one GGX visible-normal sample per trace texel at the profile size: hit
 //               radiance (occluded by this frame's GTAO term when published) / confidence (DX12_SSRTrace) and the ray
 //               with its pdf (DX12_SSRRay).
-//            4. ssr_resolve_cs51 reuses each full-resolution receiver's neighbouring rays, re-weighted to its own lobe
-//               (DX12_SSRResolve, DX12_SSRResolveAux).
+//            4. ssr_resolve_cs51 reuses each reduced-resolution receiver's neighbouring rays, re-weighted to its own lobe
+//               (DX12_SSRResolve, DX12_SSRResolveAux); the composite performs the edge-aware full-resolution upsample.
 //            5. ssr_composite_cs51 accumulates the resolve over the reprojected history (DX12_SSRHistory[current ^ 1],
 //               validated by DX12_SSRDepth[current ^ 1]; motion vectors when resolved this frame) and writes the
-//               next history and the signed correction C.rgb * K - C.a * E - O * S (DX12_SSRDelta).
-//            6. BlitTexture adds the delta RGB onto the live scene (alpha preserved).
+//               next history plus the signed correction into DX12_SSRScene mip 0.
+//            6. BlitTexture adds that delta RGB onto the live scene (alpha preserved).
 //          Any failure stops before step 6, so the forward scene keeps its cubemap reflections, and drops the
 //          history. Scratch targets are ordinary backend texture records promoted for UAV/mips at (re)creation and
 //          fence-retained by DeleteTexture.
@@ -44,7 +44,7 @@ struct alignas( 16 ) DX12SSRConstants
 	uint32 mip[4];             // gSSRMip              sourceMip, destinationMip, sourceWidth, sourceHeight (reduce pass)
 	float limits[4];           // gSSRLimits           depthClear, normalBias (0.25), edgeFade (8), 0
 	float temporal[4];         // gSSRTemporal         history valid, max history frames (rough lobes), scene width, scene height
-	uint32 resolve[4];         // gSSRResolve          resolve neighbour taps, motion vectors valid, 0, 0
+	uint32 resolve[4];         // gSSRResolve          resolve neighbour taps, motion vectors valid, reduced trace grid, resolution scale float bits
 	float ambient[4];          // gSSRAmbient          AO term uv per local pixel x, y, value scale (1 / 1.5 packed), valid
 };
 static_assert( sizeof( DX12SSRConstants ) == 368, "DX12SSRConstants must match HLSL DX12SSR" );
@@ -162,39 +162,44 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 	const DX12ScreenSpaceViewConstants &view = m_ScreenSpace.constants;
 	const SSRProfileDX12 &profile = kSSRProfiles[MIN( m_ScreenSpace.ssr.quality, 2u )];
 	const int nWidth = sceneRect.width, nHeight = sceneRect.height;
-	const int nTraceWidth = profile.halfResolution ? ( nWidth + 1 ) / 2 : nWidth;
-	const int nTraceHeight = profile.halfResolution ? ( nHeight + 1 ) / 2 : nHeight;
+	const int nProfileWidth = profile.halfResolution ? ( nWidth + 1 ) / 2 : nWidth;
+	const int nProfileHeight = profile.halfResolution ? ( nHeight + 1 ) / 2 : nHeight;
+	const float flResolutionScale = clamp( m_ScreenSpace.ssr.resolutionScale, 0.25f, 1.f );
+	const int nTraceWidth = MAX( 1, static_cast<int>( ceilf( nProfileWidth * flResolutionScale ) ) );
+	const int nTraceHeight = MAX( 1, static_cast<int>( ceilf( nProfileHeight * flResolutionScale ) ) );
+	const int nResolveWidth = MAX( 1, static_cast<int>( ceilf( nWidth * flResolutionScale ) ) );
+	const int nResolveHeight = MAX( 1, static_cast<int>( ceilf( nHeight * flResolutionScale ) ) );
 	const int nCurrent = m_SSR.current, nPrevious = m_SSR.current ^ 1;
-	// A recreated previous depth/history target carries no history.
+	// A recreated previous depth/history/resolve target carries no history.
 	const ShaderAPITextureHandle_t hPrevDepth = m_SSR.depth[nPrevious].handle, hPrevHistory = m_SSR.history[nPrevious].handle,
 		hPrevAux = m_SSR.historyAux[nPrevious].handle;
+	const ShaderAPITextureHandle_t hPrevTrace = m_SSR.trace.handle, hPrevResolve = m_SSR.resolve.handle;
 	if ( !EnsureSSRTexture( m_SSR.scene, nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, true, "DX12_SSRScene" ) ||
 	     !EnsureSSRTexture( m_SSR.depth[0], nWidth, nHeight, IMAGE_FORMAT_R32F, false, "DX12_SSRDepth0" ) ||
 	     !EnsureSSRTexture( m_SSR.depth[1], nWidth, nHeight, IMAGE_FORMAT_R32F, false, "DX12_SSRDepth1" ) ||
 	     !EnsureSSRTexture( m_SSR.trace, nTraceWidth, nTraceHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRTrace" ) ||
 	     !EnsureSSRTexture( m_SSR.ray, nTraceWidth, nTraceHeight, IMAGE_FORMAT_RGBA32323232F, false, "DX12_SSRRay" ) ||
-	     !EnsureSSRTexture( m_SSR.resolve, nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRResolve" ) ||
-	     !EnsureSSRTexture( m_SSR.resolveAux, nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRResolveAux" ) ||
+	     !EnsureSSRTexture( m_SSR.resolve, nResolveWidth, nResolveHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRResolve" ) ||
+	     !EnsureSSRTexture( m_SSR.resolveAux, nResolveWidth, nResolveHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRResolveAux" ) ||
 	     !EnsureSSRTexture( m_SSR.history[0], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistory0" ) ||
 	     !EnsureSSRTexture( m_SSR.history[1], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistory1" ) ||
 	     !EnsureSSRTexture( m_SSR.historyAux[0], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistoryAux0" ) ||
-	     !EnsureSSRTexture( m_SSR.historyAux[1], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistoryAux1" ) ||
-	     !EnsureSSRTexture( m_SSR.delta, nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRDelta" ) )
+	     !EnsureSSRTexture( m_SSR.historyAux[1], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistoryAux1" ) )
 	{
 		if ( !m_SSR.warned )
 		{
 			m_SSR.warned = true;
-			Warning( "ShaderAPIDX12: SSR scratch targets unavailable at %dx%d (trace %dx%d)\n", nWidth, nHeight, nTraceWidth, nTraceHeight );
+			Warning( "ShaderAPIDX12: SSR scratch targets unavailable at %dx%d (trace %dx%d, resolve %dx%d)\n", nWidth, nHeight, nTraceWidth, nTraceHeight, nResolveWidth, nResolveHeight );
 		}
 		return false;
 	}
-	TextureRecord *pScene = FindTexture( m_SSR.scene.handle ), *pDelta = FindTexture( m_SSR.delta.handle );
-	if ( !pScene || !pDelta || !EnsureTextureResident( *pScene ) || !EnsureTextureResident( *pDelta ) )
+	TextureRecord *pScene = FindTexture( m_SSR.scene.handle ), *pDelta = pScene;
+	if ( !pScene || !EnsureTextureResident( *pScene ) )
 		return false;
 	const bool bHistory = m_SSR.prevFrame != ~0ull && m_SSR.prevFrame + 1 == m_nFrameCounter &&
 		m_SSR.prevRect.x == sceneRect.x && m_SSR.prevRect.y == sceneRect.y && m_SSR.prevRect.width == nWidth && m_SSR.prevRect.height == nHeight &&
 		hPrevDepth == m_SSR.depth[nPrevious].handle && hPrevHistory == m_SSR.history[nPrevious].handle &&
-		hPrevAux == m_SSR.historyAux[nPrevious].handle;
+		hPrevAux == m_SSR.historyAux[nPrevious].handle && hPrevTrace == m_SSR.trace.handle && hPrevResolve == m_SSR.resolve.handle;
 	// Motion vectors resolved this frame into a scene-sized texture.
 	const int nSceneWidth = m_pDevice->SceneWidth(), nSceneHeight = m_pDevice->SceneHeight();
 	TextureRecord *pMotion = m_hMotionResolvedHandle && m_nMotionResolvedFrame == m_nFrameCounter ? FindTexture( m_hMotionResolvedHandle ) : nullptr;
@@ -239,6 +244,8 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 	constants.temporal[3] = static_cast<float>( nSceneHeight );
 	constants.resolve[0] = profile.resolveTaps;
 	constants.resolve[1] = bMotion ? 1u : 0u;
+	constants.resolve[2] = flResolutionScale < 1.f ? 1u : 0u;
+	memcpy( &constants.resolve[3], &flResolutionScale, sizeof( flResolutionScale ) );
 	if ( bAmbient )
 	{
 		constants.ambient[0] = static_cast<float>( m_SSR.aoWidth ) / ( static_cast<float>( nWidth ) * static_cast<float>( pAmbient->width ) );
@@ -308,10 +315,10 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 			return false;
 	}
 
-	// 4. Full-resolution ray reuse.
+	// Reduced-resolution ray reuse at r_ssr_resolution < 1; composite reconstructs each full-resolution receiver.
 	{
 		SSRGpuEventDX12 event( m_pDevice, "SSR resolve" );
-		ShaderAPIDX12ComputeDispatch_t resolve = SSRDispatch( "ssr_resolve_cs51", constants, nWidth, nHeight );
+		ShaderAPIDX12ComputeDispatch_t resolve = SSRDispatch( "ssr_resolve_cs51", constants, nResolveWidth, nResolveHeight );
 		resolve.m_Srv[0] = SSRTexture( m_SSR.trace.handle, 0, 1 );
 		resolve.m_Srv[1] = SSRTexture( m_SSR.ray.handle, 0, 1 );
 		resolve.m_Srv[2] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS );
@@ -345,7 +352,9 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 		composite.m_Srv[11] = SSRTexture( m_SSR.depth[nPrevious].handle, 0, 1 );
 		// Without motion vectors the shader never reads t12; any SRV keeps the table complete.
 		composite.m_Srv[12] = SSRTexture( bMotion ? m_hMotionResolvedHandle : m_SSR.resolve.handle, 0, 1 );
-		composite.m_Uav[0] = SSRTexture( m_SSR.delta.handle, 0, 1 );
+		// Trace is the last reader of the immutable scene copy. Its mip 0 can now hold the
+		// identically formatted signed delta; resolve and temporal accumulation do not read it.
+		composite.m_Uav[0] = SSRTexture( m_SSR.scene.handle, 0, 1 );
 		composite.m_Uav[1] = SSRTexture( m_SSR.history[nCurrent].handle, 0, 1 );
 		composite.m_Uav[2] = SSRTexture( m_SSR.historyAux[nCurrent].handle, 0, 1 );
 		if ( !Dispatch( composite ) )
@@ -416,7 +425,7 @@ void CShaderAPIDX12::ReplayDispatchSSR()
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReleaseSSRResources()
 {
-	SSRTextureDX12 *const textures[] = { &m_SSR.scene, &m_SSR.trace, &m_SSR.ray, &m_SSR.resolve, &m_SSR.resolveAux, &m_SSR.delta,
+	SSRTextureDX12 *const textures[] = { &m_SSR.scene, &m_SSR.trace, &m_SSR.ray, &m_SSR.resolve, &m_SSR.resolveAux,
 		&m_SSR.depth[0], &m_SSR.depth[1], &m_SSR.history[0], &m_SSR.history[1], &m_SSR.historyAux[0], &m_SSR.historyAux[1] };
 	for ( SSRTextureDX12 *pTexture : textures )
 	{

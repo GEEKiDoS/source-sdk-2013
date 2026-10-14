@@ -76,13 +76,15 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // "depthWork":{"frame":n,"renders":n} counts actual depth scene calls across all receiver views of that frame.
 // counters.pageCopies counts LOCAL full-page COW in that view; depthWork.pageCopies
 // counts it across all receiver views of that engine frame (sun restores excluded).
-// counters.crossFrameReusedCharts/crossFrameReusedSunCharts count committed LOCAL faces/receiver-owned cascades
+// counters.crossFrameReusedCharts/crossFrameReusedSunCharts count committed LOCAL faces/shared physical sun cascades
 // retained from an earlier frame. counters.uncertifiedCasters counts collected dynamic casters whose depth content
 // cannot be proven rigid; these remain on the required overlay redraw path. Report schema stays 1.
 // counters.rigidLayerRebuilds counts clean+certified-rigid intermediate rebuilds; counters.overlayCasterDraws
 // counts actual dynamic caster submissions to per-frame work overlays (not rigid rebuilds or oriented details).
 // counters.footprintRestorePixels counts restored work pixels (full + partial); fullRestores counts full work charts.
-// Clean->rigid initialization and LOCAL page COW are excluded. Unchanged charts erase the previous overlay's
+// counters.depthCopyPixels includes ALL depth restores (work, rigid initialization, local growth and local/sun COW);
+// depthCopyBytes is read+write traffic at 8 bytes per D32 pixel, before GPU cache/compression effects.
+// Only footprintRestorePixels excludes rigid initialization, local growth and local/sun COW. Unchanged charts erase the previous overlay's
 // projected render-bounds union (+2 texels), then draw every current overlay caster/card; no overlay is throttled.
 // Clean/rigid rebuilds, projection/depth/slot/source/work-target changes (including exact COW) and unknown
 // geometry force full restoration. Caster bounds, detail cards and rope triangles are clipped to the chart
@@ -96,6 +98,7 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // queuedRope, boundsCoverChart. Matrix/depth counts distinguish exact cascade refits from footprint rejection.
 // depthWork.rigidLayerRebuilds and depthWork.views count CPU-submitted work across ALL receiver kinds in
 // depthWork.frame (not just the completed main view). views are aggregated by receiver kind.
+// depthWork.depthCopyPixels/depthCopyBytes aggregate restores across every receiver kind in that engine frame.
 // depthWork.rigidEvents identifies each intermediate rebuild/proof rejection by kind, light and face;
 // action 0=rebuild, 1=direct-overlay bypass, 2=draw-proof rejection. reasonBits/keyFieldBits decode its masks.
 // Sun and every relevant resident local complete required clean/overlay updates before receiver draws; baked-only
@@ -107,15 +110,22 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // whose influence reaches visible receivers. Cubes publish matching depth and all face cameras atomically.
 // Existing same-frame LOCAL reuse retains its once-per-frame state boundary: identical projection/generations,
 // pointer-set/classification, per-face notifications and oriented-detail tuple. Across frames LOCAL faces and
-// receiver-owned sun cascades additionally require exact certified rigid content bytes and physical work identity.
+// physical sun cascades additionally require exact certified rigid content bytes and physical work identity.
 // Standard unparented, unscaled, single-root STUDIOHDR_FLAGS_STATIC_PROP entities and standard brush entities
 // with opaque proxy-free nondeforming materials are eligible; unknown/custom draws, animation, flex, ragdolls,
 // ropes/particles, clip planes, parents, cutout textures and oriented detail overlays redraw on every new frame.
 // Registration/removal/classification generations cannot be acknowledged by equal content keys.
 // Notification/key snapshots preceding collection/draw must still be valid at commit; no update throttling.
-// Depth-draw notifications remain dirty. Sun depth remains receiver-owned, never shared between receiver caches.
-// LOCAL pages and each receiver-owned cascade atlas retain a third 4096-square D32 rigid intermediate
-// (64 MiB payload each). Warm mixed charts restore rigid->work once and draw uncertain/changing casters/details.
+// Depth-draw notifications remain dirty. Main CPU packet pooling no longer duplicates physical sun resources:
+// one shared static sun retains exact projection/sky-region/oriented-detail keys, and one cascade set per
+// shadowed receiver kind tracks the most recently written pixels. Main and viewmodel fits remain private
+// and unchanged; unshadowed receiver kinds allocate no sun targets. Active parent sampling uses work-only
+// COW when a nested update differs; queue ordering and copy/draw leases protect older frame packets.
+// LOCAL pages retain their original logical 4096-square slot capacity but allocate only the power-of-two
+// rectangle containing assigned slots (work, clean, optional rigid and COW), growing by exact depth copies.
+// Static sun allocates clean depth only when orientation-dependent detail needs an overlay. Other static
+// charts render directly to the one work target. Optional D32 rigid intermediates match their atlas dimensions;
+// warm mixed charts restore rigid->work once and draw uncertain/changing casters/details.
 // The rigid subset uses exact membership/content equality, clean/slot identity, each certified entity's
 // globally unique registration stamp, and handle-resolved per-entity notification revision proof.
 // Sequence/cycle/playback/pose/controller/hitbox clocks are excluded: the certified STATIC_PROP SetupBones

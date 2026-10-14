@@ -8,6 +8,7 @@
 #include "shaderapi/ishadershadow.h"
 #include "shaderapi/ishaderapidx12lighting.h"
 #include "tier0/dbg.h"
+#include "tier0/icommandline.h"
 #include "tracy_dx12.h"
 #include <utility>
 
@@ -36,6 +37,24 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	memset( m_SrvTables, 0, sizeof( m_SrvTables ) );
 	memset( m_RecentConstants, 0, sizeof( m_RecentConstants ) );
 	m_nUploadPageHint = 0;
+	// Upload pages carry per-draw constants, dynamic geometry, instance rows and the per-view light records that every
+	// lit pixel reads. Cached (write-back) CPU pages suit cache-coherent UMA only; on a discrete adapter they are snooped
+	// system memory read across PCIe, which a large GPU L2 (Ada: 48 MB) can hide but older parts (Pascal: 2 MB, often
+	// PCIe 3) cannot. The write-combined upload heap is the conventional non-snooped choice there.
+	{
+		D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+		const bool coherentUma = SUCCEEDED( pDevice->CheckFeatureSupport( D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof( architecture ) ) ) &&
+		                         architecture.UMA && architecture.CacheCoherentUMA;
+		m_UploadHeap = {};
+		if ( coherentUma || ( CommandLine() && CommandLine()->CheckParm( "-dx12uploadwb" ) ) )
+		{
+			m_UploadHeap.Type = D3D12_HEAP_TYPE_CUSTOM;
+			m_UploadHeap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
+			m_UploadHeap.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+		}
+		else
+			m_UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+	}
 	m_NullSrvDesc = {};
 	m_NullSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	m_NullSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -71,7 +90,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 		zeroDesc.MipLevels = 1;
 		zeroDesc.SampleDesc.Count = 1;
 		zeroDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		if ( FAILED( m_pDevice->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &zeroDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &m_pZeroConstants ) ) ) )
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &zeroDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &m_pZeroConstants ), "upload pages", "DX12 zero constants" ) ) )
 			return false;
 		void *pMapped = nullptr;
 		D3D12_RANGE read{};
@@ -161,7 +180,8 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	// Static samplers accumulate: each signature binds the prefix its parameters need, so its count is the number added so far.
 	D3D12_STATIC_SAMPLER_DESC samplers[5]{};
 	UINT samplerCount = 0;
-	const auto addSampler = [&]( D3D12_FILTER filter, D3D12_COMPARISON_FUNC comparison, UINT shaderRegister, UINT space )
+	const auto addSampler = [&]( D3D12_FILTER filter, D3D12_COMPARISON_FUNC comparison, UINT shaderRegister, UINT space,
+	                             D3D12_SHADER_VISIBILITY visibility = D3D12_SHADER_VISIBILITY_PIXEL )
 	{
 		D3D12_STATIC_SAMPLER_DESC &sampler = samplers[samplerCount++];
 		sampler.Filter = filter;
@@ -171,7 +191,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 		sampler.MaxLOD = D3D12_FLOAT32_MAX;
 		sampler.ShaderRegister = shaderRegister;
 		sampler.RegisterSpace = space;
-		sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		sampler.ShaderVisibility = visibility;
 	};
 	addSampler( D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_ALWAYS, DX12_PBR_S_LINEAR, DX12_PBR_REGISTER_SPACE );
 	addSampler( D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_LESS_EQUAL, DX12_PBR_S_COMPARISON, DX12_PBR_REGISTER_SPACE );
@@ -212,11 +232,11 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootLightingView].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[kRootLightingView].DescriptorTable.NumDescriptorRanges = 2;
 	params[kRootLightingView].DescriptorTable.pDescriptorRanges = lightingRanges;
-	params[kRootLightingView].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootLightingView].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	params[kRootLightingViewConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[kRootLightingViewConstants].Descriptor.ShaderRegister = DX12_LIGHTING_B_VIEW;
 	params[kRootLightingViewConstants].Descriptor.RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
-	params[kRootLightingViewConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootLightingViewConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	ranges[4].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	ranges[4].NumDescriptors = 1;
 	ranges[4].BaseShaderRegister = DX12_LIGHTING_T_SUN_VISIBILITY;
@@ -241,7 +261,8 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootProbeConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[kRootProbeConstants].Descriptor.RegisterSpace = DX12_PROBE_REGISTER_SPACE;
 	params[kRootProbeConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	addSampler( D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_LESS_EQUAL, DX12_LIGHTING_S_COMPARISON, DX12_LIGHTING_REGISTER_SPACE );
+	addSampler( D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_LESS_EQUAL, DX12_LIGHTING_S_COMPARISON, DX12_LIGHTING_REGISTER_SPACE,
+	            D3D12_SHADER_VISIBILITY_ALL );
 	addSampler( D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_ALWAYS, 0, DX12_PROBE_REGISTER_SPACE );
 	desc.NumParameters = kLightingRootParameterCount;
 	desc.NumStaticSamplers = samplerCount;
@@ -299,6 +320,10 @@ void CPipelineCacheDX12::Shutdown()
 		if ( m_UploadPages[i].mapped )
 			m_UploadPages[i].resource->Unmap( 0, nullptr );
 	m_UploadPages.Purge();
+	m_nUploadPageHint = 0;
+	m_nUploadFrame = 0;
+	m_nLastUploadTrimFrame = ~0ull;
+	m_Stats = {};
 	m_pZeroConstants.Reset();
 	m_nZeroConstantAddress = 0;
 	m_Bindings.Shutdown();
@@ -314,6 +339,29 @@ void CPipelineCacheDX12::Shutdown()
 	m_nResourceStride = m_nSamplerStride = 0;
 	m_nLastReclaimedFence = 0;
 	m_bReclaimDirty = true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Starts upload demand accounting for a renderer frame
+//-----------------------------------------------------------------------------
+void CPipelineCacheDX12::BeginUploadFrame( uint64_t nFrame )
+{
+	m_nUploadFrame = nFrame;
+	m_Stats.uploadFrameAllocations = 0;
+	m_Stats.uploadFrameBytes = 0;
+	m_Stats.uploadFramePagesCreated = 0;
+}
+
+void CPipelineCacheDX12::ResetStats()
+{
+	StatsDX12 stats{};
+	stats.uploadFrameAllocations = m_Stats.uploadFrameAllocations;
+	stats.uploadFrameBytes = m_Stats.uploadFrameBytes;
+	stats.uploadFramePagesCreated = m_Stats.uploadFramePagesCreated;
+	stats.uploadPoolPages = m_Stats.uploadPoolPages;
+	stats.uploadPoolCapacityBytes = m_Stats.uploadPoolCapacityBytes;
+	stats.uploadPoolBufferBytes = m_Stats.uploadPoolBufferBytes;
+	m_Stats = stats;
 }
 
 //-----------------------------------------------------------------------------
@@ -342,7 +390,7 @@ void CPipelineCacheDX12::ReleaseResourceDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE 
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Sub-allocates from fence-retired write-back upload pages, optionally
+// Purpose: Sub-allocates from fence-retired upload pages, optionally
 //          swapping red/blue of vertex colors while copying
 //-----------------------------------------------------------------------------
 bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride )
@@ -354,8 +402,8 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 	for ( size_t i = 0; i < nSwapCount; ++i )
 		if ( pSwapOffsets[i] > nVertexStride || nVertexStride - pSwapOffsets[i] < 4 )
 			return false;
-	// Pages are cached (write-back) system memory, like readback heaps: the per-draw constant/geometry copies and
-	// compare-free rewrites are cheaper than write-combined stores, and the GPU reads them coherently over the bus.
+	// Pages are write-back system memory only on cache-coherent UMA (see Initialize); elsewhere they are the write-combined
+	// upload heap, so this path only ever writes them (no reads, no compares).
 	UploadPage *chosen = nullptr;
 	size_t offset = 0;
 	// Try the page that served the previous allocation before scanning; pages fill front to back.
@@ -391,10 +439,7 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 			}
 	if ( !chosen )
 	{
-		D3D12_HEAP_PROPERTIES heap{};
-		heap.Type = D3D12_HEAP_TYPE_CUSTOM;
-		heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
-		heap.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+		const D3D12_HEAP_PROPERTIES &heap = m_UploadHeap;
 		D3D12_RESOURCE_DESC desc{};
 		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 		desc.Width = MAX( size_t( 4u * 1024u * 1024u ), ( nAllocationBytes + 65535u ) & ~size_t( 65535u ) ) + kConstantBufferMaxBytes;
@@ -404,7 +449,7 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 		desc.SampleDesc.Count = 1;
 		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		UploadPage page{};
-		if ( FAILED( m_pDevice->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &page.resource ) ) ) )
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &page.resource ), "upload pages", "DX12 upload page" ) ) )
 			return false;
 		void *pMapped = nullptr;
 		D3D12_RANGE read{};
@@ -416,6 +461,11 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 		*m_UploadPages.AddToTailGetPtr() = page;
 		chosen = &m_UploadPages.Tail();
 		m_nUploadPageHint = m_UploadPages.Count() - 1;
+		++m_Stats.uploadPagesCreated;
+		++m_Stats.uploadFramePagesCreated;
+		++m_Stats.uploadPoolPages;
+		m_Stats.uploadPoolCapacityBytes += page.capacity;
+		m_Stats.uploadPoolBufferBytes += desc.Width;
 	}
 	memcpy( chosen->mapped + offset, pData, nBytes );
 	if ( nSwapCount )
@@ -435,6 +485,13 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 	}
 	if ( nAllocationBytes > nBytes )
 		memset( chosen->mapped + offset + nBytes, 0, nAllocationBytes - nBytes );
+	const uint64_t nAlignedBytes = static_cast<uint64_t>( offset - chosen->used + nAllocationBytes );
+	++m_Stats.uploadAllocations;
+	++m_Stats.uploadFrameAllocations;
+	m_Stats.uploadBytes += nAlignedBytes;
+	m_Stats.uploadFrameBytes += nAlignedBytes;
+	m_Stats.uploadPeakFrameBytes = MAX( m_Stats.uploadPeakFrameBytes, m_Stats.uploadFrameBytes );
+	chosen->idleSinceFrame = ~0ull;
 	chosen->used = offset + nAllocationBytes;
 	chosen->fence = MAX( nRetireFence, chosen->fence );
 	nGpuAddress = chosen->gpu + offset;
@@ -539,7 +596,7 @@ bool CPipelineCacheDX12::EnsureGeometryBuffer( CCommandRecorderDX12 *pList, CVer
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-	if ( FAILED( m_pDevice->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ), "other", "DX12 static vertex buffer" ) ) )
 		return false;
 	D3D12_GPU_VIRTUAL_ADDRESS uploadGpu = 0;
 	ID3D12Resource *uploadSource = nullptr;
@@ -596,7 +653,7 @@ bool CPipelineCacheDX12::EnsureIndexBuffer( CCommandRecorderDX12 *pList, CIndexB
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-	if ( FAILED( m_pDevice->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ), "other", "DX12 static index buffer" ) ) )
 		return false;
 	D3D12_GPU_VIRTUAL_ADDRESS uploadGpu = 0;
 	ID3D12Resource *uploadSource = nullptr;
@@ -1165,19 +1222,47 @@ bool CPipelineCacheDX12::PrepareScreenSpaceNullTable( uint64_t nRetireFence )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Recycles upload pages, geometry retentions, descriptors and PSOs
-//          whose fences have completed
+// Purpose: Recycles fence-completed allocations and trims idle upload pages;
+//          reclaims completed geometry retentions, descriptors and PSOs
 //-----------------------------------------------------------------------------
 void CPipelineCacheDX12::Reclaim( uint64_t nCompletedFence )
 {
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 PipelineReclaim", DX12_ZONES_ACTIVE );
-	if ( !m_bReclaimDirty && nCompletedFence <= m_nLastReclaimedFence )
+	const bool bReclaim = m_bReclaimDirty || nCompletedFence > m_nLastReclaimedFence;
+	const bool bTrimUploads = m_nLastUploadTrimFrame != m_nUploadFrame;
+	if ( !bReclaim && !bTrimUploads )
 		return;
-	m_Bindings.Reclaim( nCompletedFence );
-	for ( int i = 0; i < m_UploadPages.Count(); ++i )
-		if ( m_UploadPages[i].used && m_UploadPages[i].fence <= nCompletedFence )
-			m_UploadPages[i].used = 0;
+	if ( bReclaim )
+		m_Bindings.Reclaim( nCompletedFence );
+	// Tail-first removal keeps the front-fill pages hot and never moves an active resource.
+	for ( int i = m_UploadPages.Count() - 1; i >= 0; --i )
+	{
+		UploadPage &page = m_UploadPages[i];
+		if ( page.used && page.fence <= nCompletedFence )
+		{
+			page.used = 0;
+			page.idleSinceFrame = m_nUploadFrame;
+		}
+		if ( bTrimUploads && m_UploadPages.Count() > kUploadMinPages && !page.used &&
+		     page.fence <= nCompletedFence && page.idleSinceFrame != ~0ull && m_nUploadFrame >= page.idleSinceFrame &&
+		     m_nUploadFrame - page.idleSinceFrame >= kUploadIdleFrames )
+		{
+			const uint64_t nBufferBytes = static_cast<uint64_t>( page.capacity ) + kConstantBufferMaxBytes;
+			page.resource->Unmap( 0, nullptr );
+			++m_Stats.uploadPagesTrimmed;
+			m_Stats.uploadBufferBytesTrimmed += nBufferBytes;
+			--m_Stats.uploadPoolPages;
+			m_Stats.uploadPoolCapacityBytes -= page.capacity;
+			m_Stats.uploadPoolBufferBytes -= nBufferBytes;
+			m_UploadPages.Remove( i );
+		}
+	}
+	if ( bTrimUploads )
+		m_nLastUploadTrimFrame = m_nUploadFrame;
+	// Removing pages shifts vector indices; always restart front-fill at a valid page.
 	m_nUploadPageHint = 0;
+	if ( !bReclaim )
+		return;
 	for ( UtlHashHandle_t index = m_GeometryInFlight.FirstHandle(); index != m_GeometryInFlight.InvalidHandle(); )
 	{
 		if ( m_GeometryInFlight[index].fence <= nCompletedFence )
@@ -1185,7 +1270,6 @@ void CPipelineCacheDX12::Reclaim( uint64_t nCompletedFence )
 		else
 			index = m_GeometryInFlight.NextHandle( index );
 	}
-	// Retain completed pages for reuse, as with m_UploadPages; Shutdown releases the high-water pool.
 	bool removedPipeline = false;
 	for ( int i = 0; i < m_Entries.Count(); )
 		if ( ( m_Entries[i].destroyed || m_Entries.Count() > 512 ) && m_Entries[i].lastUseFence <= nCompletedFence )
@@ -1315,7 +1399,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 			return entry.pso.Get();
 		}
 	}
-	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull ) ^ ( key.contactReplay ? 0x94D049BB133111EBull : 0ull );
+	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull ) ^ ( key.contactReplay ? 0x94D049BB133111EBull : 0ull ) ^ ( key.nonEnvmapSsrPayload ? 0xD6E8FEB86659FD93ull : 0ull );
 	const unsigned hint = Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & static_cast<unsigned>( ARRAYSIZE( m_PipelineHints ) - 1 );
 	if ( m_PipelineHints[hint] )
 	{
@@ -1365,11 +1449,15 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.RasterizerState.DepthClipEnable = TRUE;
 	desc.BlendState.AlphaToCoverageEnable = key.alphaToCoverage && key.samples > 1;
 	static constexpr D3D12_BLEND_OP blendOps[] = { D3D12_BLEND_OP_ADD, D3D12_BLEND_OP_SUBTRACT, D3D12_BLEND_OP_REV_SUBTRACT, D3D12_BLEND_OP_MIN, D3D12_BLEND_OP_MAX };
+	const bool nonEnvmapSsrPayload = key.gbuffer && key.colorCount == 6 && key.nonEnvmapSsrPayload;
 	for ( UINT i = 0; i < key.colorCount && i < ARRAYSIZE( key.colorFormats ); ++i )
 	{
 		D3D12_RENDER_TARGET_BLEND_DESC &target = desc.BlendState.RenderTarget[i];
 		const bool gbufferTarget = key.gbuffer && i > 0;
 		target.RenderTargetWriteMask = gbufferTarget ? D3D12_COLOR_WRITE_ENABLE_ALL : ( key.colorWrites ? D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE : 0 ) | ( key.alphaWrites ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0 );
+		// Keep RTV4 (K/valid) fully writable: K.a=0 rejects any stale E/S retained in RTV3/5.
+		if ( nonEnvmapSsrPayload && ( i == 3 || i == 5 ) )
+			target.RenderTargetWriteMask = 0;
 		target.BlendEnable = key.blend != 0 && !gbufferTarget;
 		target.SrcBlend = BlendFactorDX12( key.blendSource );
 		target.DestBlend = BlendFactorDX12( key.blendDestination );

@@ -334,7 +334,63 @@ bool CShaderAPIDX12::PromoteRenderTarget( TextureRecord &texture, bool bUav, int
 	if ( barriers.Count() )
 		pList->ResourceBarrier( barriers.Count(), barriers.Base() );
 	texture.sampledStateValid = false;
+	if ( texture.id == m_hMotionSharedTarget )
+	{
+		// The initial drain made the private RTV safe to rewrite. Active motion
+		// must follow promotion now, before any buffered draw or resolve uses it.
+		m_pMotionTarget = texture.resource;
+		m_MotionTargetState = texture.subresourceStates[0];
+		D3D12_RENDER_TARGET_VIEW_DESC view{};
+		view.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+		m_pDevice->NativeDevice()->CreateRenderTargetView( m_pMotionTarget.Get(), &view, m_MotionRtv );
+	}
 	m_Pipeline.InvalidateGraphicsBindings();
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Resizes fully overwritten, single-mip compute scratch targets without copying their old contents.
+//-----------------------------------------------------------------------------
+bool CShaderAPIDX12::DiscardResizeComputeTarget( TextureRecord &texture, int nWidth, int nHeight )
+{
+	if ( nWidth <= 0 || nHeight <= 0 || nWidth > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || nHeight > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		!( texture.flags & TEXTURE_CREATE_RENDERTARGET ) || ( texture.flags & ( TEXTURE_CREATE_DEPTHBUFFER | TEXTURE_CREATE_CUBEMAP ) ) ||
+		texture.copies != 1 || texture.depth != 1 || texture.mipLevels != 1 )
+		return false;
+	if ( texture.width == nWidth && texture.height == nHeight )
+		return EnsureTextureResident( texture );
+
+	m_pDevice->DrainRecording();
+	m_pDevice->RetainResource( texture.resource.Get() );
+	for ( int i = 0; i < ARRAYSIZE( texture.m_SrvSources ); ++i )
+	{
+		m_Pipeline.ReleaseResourceDescriptor( texture.m_SrvSources[i], 0 );
+		texture.m_SrvSources[i] = {};
+		texture.m_pSrvResources[i] = nullptr;
+		texture.m_SrvDescriptors[i] = {};
+	}
+	for ( PreparedTextureSlot &slot : m_PreparedTextureSlots )
+		slot.valid = false;
+	m_bTextureSetValid = false;
+	m_PreparedSamplerTable = {};
+	m_nPreparedSamplerFence = 0;
+	m_Pipeline.InvalidateGraphicsBindings();
+
+	texture.width = nWidth;
+	texture.height = nHeight;
+	ResizeTextureStaging( texture, 1 );
+	texture.uavCapable = true;
+	texture.sampledStateValid = false;
+	texture.gpuDirty = false;
+	if ( !AllocateNativeTexture( texture ) )
+	{
+		// A failed allocation may leave a resource without its views or initialized state.
+		// Keep it nonresident and empty so the normal resident path can recreate it safely.
+		texture.resource.Reset();
+		texture.resources.RemoveAll();
+		return false;
+	}
 	return true;
 }
 
@@ -409,6 +465,48 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 			return resource.m_nStandardTexture >= 0 && resource.m_nStandardTexture < TEXTURE_MAX_STD_TEXTURES ? m_StandardTextures[resource.m_nStandardTexture] : 0;
 		return resource.m_hTexture;
 	};
+	// Only these outputs are fully overwritten and subsequently read with explicit working-region bounds.
+	// AO terms stay nominal-sized: SSR's linear AO sampling can reach their unwritten border texels.
+	const bool bGtaoMain = !V_stricmp( name, "gtao_main_cs51" );
+	const bool bMotionTileRaw = !V_stricmp( name, "motion_blur_tile_cs51" );
+	const bool bMotionTileDilate = !V_stricmp( name, "motion_blur_tile_dilate_cs51" );
+	const char *pszWorkingTarget = nullptr;
+	ImageFormat workingFormat = IMAGE_FORMAT_UNKNOWN;
+	int nWorkingUav = 0, nWorkingWidth = 0, nWorkingHeight = 0;
+	if ( bGtaoMain && dispatch.m_nConstantBytes >= static_cast<int>( 2 * sizeof( int32_t ) ) )
+	{
+		int32_t viewportSize[2];
+		memcpy( viewportSize, dispatch.m_pConstants, sizeof( viewportSize ) );
+		pszWorkingTarget = "_rt_GTAOEdges";
+		workingFormat = IMAGE_FORMAT_I8;
+		nWorkingUav = 1;
+		nWorkingWidth = viewportSize[0];
+		nWorkingHeight = viewportSize[1];
+	}
+	else if ( ( bMotionTileRaw || bMotionTileDilate ) && dispatch.m_nConstantBytes >= static_cast<int>( 4 * sizeof( uint32_t ) ) )
+	{
+		uint32_t tileSizes[4];
+		memcpy( tileSizes, dispatch.m_pConstants, sizeof( tileSizes ) );
+		pszWorkingTarget = bMotionTileRaw ? "_rt_MotionBlurTileRaw" : "_rt_MotionBlurTiles";
+		workingFormat = IMAGE_FORMAT_R32F;
+		// Reject out-of-range dimensions before converting the unsigned tile-count ABI.
+		nWorkingWidth = tileSizes[2] <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ? static_cast<int>( tileSizes[2] ) : 0;
+		nWorkingHeight = tileSizes[3] <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ? static_cast<int>( tileSizes[3] ) : 0;
+	}
+	if ( pszWorkingTarget )
+	{
+		const ShaderAPIDX12ComputeResource_t &resource = dispatch.m_Uav[nWorkingUav];
+		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE && resource.m_nMip == 0 && resource.m_nMipCount <= 1 )
+		{
+			TextureRecord *record = FindTexture( resource.m_hTexture );
+			if ( record && !V_stricmp( record->name.Get(), pszWorkingTarget ) && record->format == workingFormat && record->requestedFormat == workingFormat &&
+				!DiscardResizeComputeTarget( *record, nWorkingWidth, nWorkingHeight ) )
+			{
+				WarnComputeOnce( name, "compute working target could not be resized" );
+				return false;
+			}
+		}
+	}
 	// Render targets gain UAV access and the mips this dispatch addresses before any descriptor refers to them.
 	for ( int i = 0; i < SHADERAPIDX12_COMPUTE_MAX_SRVS + SHADERAPIDX12_COMPUTE_MAX_UAVS; ++i )
 	{

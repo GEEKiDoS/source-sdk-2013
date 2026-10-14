@@ -1,0 +1,3 @@
+// Alpha/A2C coverage-only twin. Keep the original combo ABI and alpha expression; use the color pass VS.
+#define PBR_DEPTH_PREPASS 1
+#include "pbr_world_ps51.fxc"

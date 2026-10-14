@@ -8,11 +8,321 @@
 #include "shaderdevice_dx12.h"
 #include "shaderapi/ishaderutil.h"
 #include "tier0/dbg.h"
+#include <algorithm>
 #include <atomic>
+#include <new>
+#include <windows.h>
 
 namespace shaderapidx12
 {
 static std::atomic<uint64_t> s_NextGeometryIdentity{ 1 };
+
+namespace
+{
+struct ResourceMemoryEntryDX12
+{
+	ID3D12Device *device = nullptr; // identity only; never dereferenced by the registry
+	D3D12_RESOURCE_DESC desc{};
+	D3D12_RESOURCE_ALLOCATION_INFO allocation{};
+	CUtlString category, name;
+	uint64_t identity = 0;
+	bool placed = false;
+};
+
+class CResourceMemorySentinelDX12;
+// Native locks have no destructors: late resource releases during module teardown remain safe.
+static SRWLOCK s_ResourceMemoryMutex = SRWLOCK_INIT;
+static SRWLOCK s_ResourceRegistrationMutex = SRWLOCK_INIT;
+static CResourceMemorySentinelDX12 *s_pResourceMemoryHead = nullptr;
+static uint64_t s_nNextResourceMemoryIdentity = 1; // registration mutex
+static const GUID kResourceMemorySentinelDX12 = { 0x57687b67, 0x7fa9, 0x4b8b, { 0x9b, 0xac, 0x81, 0x35, 0x2f, 0x0d, 0x94, 0xf8 } };
+
+class CResourceMemorySentinelDX12 final : public IUnknown
+{
+public:
+	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID iid, void **out ) override
+	{
+		if ( !out )
+			return E_POINTER;
+		*out = nullptr;
+		if ( iid != __uuidof( IUnknown ) )
+			return E_NOINTERFACE;
+		*out = static_cast<IUnknown *>( this );
+		AddRef();
+		return S_OK;
+	}
+
+	ULONG STDMETHODCALLTYPE AddRef() override { return m_nReferences.fetch_add( 1, std::memory_order_relaxed ) + 1; }
+
+	ULONG STDMETHODCALLTYPE Release() override
+	{
+		const ULONG remaining = m_nReferences.fetch_sub( 1, std::memory_order_acq_rel ) - 1;
+		if ( !remaining )
+			delete this;
+		return remaining;
+	}
+
+	void Register()
+	{
+		AcquireSRWLockExclusive( &s_ResourceMemoryMutex );
+		next = s_pResourceMemoryHead;
+		if ( next )
+			next->previous = this;
+		s_pResourceMemoryHead = this;
+		m_bRegistered = true;
+		ReleaseSRWLockExclusive( &s_ResourceMemoryMutex );
+	}
+
+	ResourceMemoryEntryDX12 entry;
+	CResourceMemorySentinelDX12 *previous = nullptr, *next = nullptr;
+
+private:
+	~CResourceMemorySentinelDX12()
+	{
+		if ( !m_bRegistered )
+			return;
+		AcquireSRWLockExclusive( &s_ResourceMemoryMutex );
+		if ( previous )
+			previous->next = next;
+		else
+			s_pResourceMemoryHead = next;
+		if ( next )
+			next->previous = previous;
+		ReleaseSRWLockExclusive( &s_ResourceMemoryMutex );
+	}
+
+	std::atomic<ULONG> m_nReferences{ 1 };
+	bool m_bRegistered = false;
+};
+
+static bool IsMemoryTextureDX12( const D3D12_RESOURCE_DESC &desc )
+{
+	return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D || desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+}
+
+static const char *MemoryDimensionNameDX12( D3D12_RESOURCE_DIMENSION dimension )
+{
+	switch ( dimension )
+	{
+	case D3D12_RESOURCE_DIMENSION_BUFFER: return "buffer";
+	case D3D12_RESOURCE_DIMENSION_TEXTURE1D: return "texture1D";
+	case D3D12_RESOURCE_DIMENSION_TEXTURE2D: return "texture2D";
+	case D3D12_RESOURCE_DIMENSION_TEXTURE3D: return "texture3D";
+	default: return "unknown";
+	}
+}
+
+static const char *MemoryFormatNameDX12( DXGI_FORMAT format )
+{
+	switch ( format )
+	{
+	case DXGI_FORMAT_UNKNOWN: return "UNKNOWN";
+	case DXGI_FORMAT_R32G32B32A32_FLOAT: return "R32G32B32A32_FLOAT";
+	case DXGI_FORMAT_R32G32B32_FLOAT: return "R32G32B32_FLOAT";
+	case DXGI_FORMAT_R16G16B16A16_FLOAT: return "R16G16B16A16_FLOAT";
+	case DXGI_FORMAT_R16G16B16A16_UNORM: return "R16G16B16A16_UNORM";
+	case DXGI_FORMAT_R32G32_FLOAT: return "R32G32_FLOAT";
+	case DXGI_FORMAT_R10G10B10A2_UNORM: return "R10G10B10A2_UNORM";
+	case DXGI_FORMAT_R11G11B10_FLOAT: return "R11G11B10_FLOAT";
+	case DXGI_FORMAT_R8G8B8A8_TYPELESS: return "R8G8B8A8_TYPELESS";
+	case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+	case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+	case DXGI_FORMAT_R16G16_FLOAT: return "R16G16_FLOAT";
+	case DXGI_FORMAT_R16G16_UNORM: return "R16G16_UNORM";
+	case DXGI_FORMAT_R32_TYPELESS: return "R32_TYPELESS";
+	case DXGI_FORMAT_D32_FLOAT: return "D32_FLOAT";
+	case DXGI_FORMAT_R32_FLOAT: return "R32_FLOAT";
+	case DXGI_FORMAT_R32_UINT: return "R32_UINT";
+	case DXGI_FORMAT_R24G8_TYPELESS: return "R24G8_TYPELESS";
+	case DXGI_FORMAT_D24_UNORM_S8_UINT: return "D24_UNORM_S8_UINT";
+	case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: return "R24_UNORM_X8_TYPELESS";
+	case DXGI_FORMAT_R8G8_UNORM: return "R8G8_UNORM";
+	case DXGI_FORMAT_R16_FLOAT: return "R16_FLOAT";
+	case DXGI_FORMAT_R16_UNORM: return "R16_UNORM";
+	case DXGI_FORMAT_R8_UNORM: return "R8_UNORM";
+	case DXGI_FORMAT_A8_UNORM: return "A8_UNORM";
+	case DXGI_FORMAT_BC1_TYPELESS: return "BC1_TYPELESS";
+	case DXGI_FORMAT_BC1_UNORM: return "BC1_UNORM";
+	case DXGI_FORMAT_BC1_UNORM_SRGB: return "BC1_UNORM_SRGB";
+	case DXGI_FORMAT_BC2_TYPELESS: return "BC2_TYPELESS";
+	case DXGI_FORMAT_BC2_UNORM: return "BC2_UNORM";
+	case DXGI_FORMAT_BC2_UNORM_SRGB: return "BC2_UNORM_SRGB";
+	case DXGI_FORMAT_BC3_TYPELESS: return "BC3_TYPELESS";
+	case DXGI_FORMAT_BC3_UNORM: return "BC3_UNORM";
+	case DXGI_FORMAT_BC3_UNORM_SRGB: return "BC3_UNORM_SRGB";
+	case DXGI_FORMAT_BC4_UNORM: return "BC4_UNORM";
+	case DXGI_FORMAT_BC5_UNORM: return "BC5_UNORM";
+	case DXGI_FORMAT_B5G6R5_UNORM: return "B5G6R5_UNORM";
+	case DXGI_FORMAT_B5G5R5A1_UNORM: return "B5G5R5A1_UNORM";
+	case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+	case DXGI_FORMAT_B8G8R8X8_UNORM: return "B8G8R8X8_UNORM";
+	case DXGI_FORMAT_B8G8R8A8_TYPELESS: return "B8G8R8A8_TYPELESS";
+	case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+	case DXGI_FORMAT_B8G8R8X8_TYPELESS: return "B8G8R8X8_TYPELESS";
+	case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: return "B8G8R8X8_UNORM_SRGB";
+	case DXGI_FORMAT_BC6H_UF16: return "BC6H_UF16";
+	case DXGI_FORMAT_BC7_UNORM: return "BC7_UNORM";
+	case DXGI_FORMAT_BC7_UNORM_SRGB: return "BC7_UNORM_SRGB";
+	default: return "DXGI_FORMAT"; // numeric value is always printed alongside the name
+	}
+}
+} // namespace
+
+void TrackResourceMemoryDX12( ID3D12Device *device, ID3D12Resource *resource, const char *category, const char *name, bool placed )
+{
+	if ( !device || !resource )
+		return;
+	// Serialize attachment separately: SetPrivateDataInterface can release an old sentinel, whose
+	// destructor takes the registry lock. The registry never calls COM methods while locked.
+	AcquireSRWLockExclusive( &s_ResourceRegistrationMutex );
+	IUnknown *existing = nullptr;
+	UINT size = sizeof( existing );
+	if ( SUCCEEDED( resource->GetPrivateData( kResourceMemorySentinelDX12, &size, &existing ) ) && existing )
+	{
+		existing->Release();
+		ReleaseSRWLockExclusive( &s_ResourceRegistrationMutex );
+		return;
+	}
+	CResourceMemorySentinelDX12 *sentinel = new ( std::nothrow ) CResourceMemorySentinelDX12;
+	if ( !sentinel )
+	{
+		ReleaseSRWLockExclusive( &s_ResourceRegistrationMutex );
+		Warning( "ShaderAPIDX12 memory: could not allocate lifetime sentinel\n" );
+		return;
+	}
+	ResourceMemoryEntryDX12 &entry = sentinel->entry;
+	entry.device = device;
+	entry.desc = resource->GetDesc();
+	entry.allocation = device->GetResourceAllocationInfo( 0, 1, &entry.desc );
+	const char *trackedCategory = category && *category ? category : "other";
+	entry.placed = placed;
+	entry.identity = s_nNextResourceMemoryIdentity++;
+	D3D12_HEAP_PROPERTIES heap{};
+	D3D12_HEAP_FLAGS flags{};
+	if ( SUCCEEDED( resource->GetHeapProperties( &heap, &flags ) ) )
+	{
+		if ( heap.Type == D3D12_HEAP_TYPE_UPLOAD )
+			trackedCategory = "upload pages";
+		else if ( heap.Type == D3D12_HEAP_TYPE_READBACK )
+			trackedCategory = "readback";
+	}
+	entry.category = trackedCategory;
+	if ( name && *name )
+		entry.name = name;
+	else
+		entry.name.Format( "unnamed %s #%llu", entry.category.Get(), static_cast<unsigned long long>( entry.identity ) );
+	const HRESULT hr = resource->SetPrivateDataInterface( kResourceMemorySentinelDX12, sentinel );
+	if ( SUCCEEDED( hr ) )
+		sentinel->Register();
+	// Only the resource's private-data reference remains. There is deliberately no resource AddRef.
+	sentinel->Release();
+	ReleaseSRWLockExclusive( &s_ResourceRegistrationMutex );
+	if ( FAILED( hr ) )
+		Warning( "ShaderAPIDX12 memory: attaching lifetime sentinel failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+}
+
+HRESULT CreateCommittedResourceDX12( ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heap, D3D12_HEAP_FLAGS flags, const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE *clear, REFIID iid, void **out, const char *category, const char *name )
+{
+	const HRESULT hr = device->CreateCommittedResource( heap, flags, desc, state, clear, iid, out );
+	if ( SUCCEEDED( hr ) && out && *out )
+	{
+		if ( iid == __uuidof( ID3D12Resource ) )
+			TrackResourceMemoryDX12( device, static_cast<ID3D12Resource *>( *out ), category, name );
+		else
+		{
+			Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+			if ( SUCCEEDED( static_cast<IUnknown *>( *out )->QueryInterface( IID_PPV_ARGS( &resource ) ) ) )
+				TrackResourceMemoryDX12( device, resource.Get(), category, name );
+		}
+	}
+	return hr;
+}
+
+void PrintResourceMemoryReportDX12( ID3D12Device *device )
+{
+	CUtlVector<ResourceMemoryEntryDX12> snapshot;
+	AcquireSRWLockShared( &s_ResourceMemoryMutex );
+	int count = 0;
+	for ( CResourceMemorySentinelDX12 *p = s_pResourceMemoryHead; p; p = p->next )
+		if ( p->entry.device == device )
+			++count;
+	snapshot.EnsureCapacity( count );
+	for ( CResourceMemorySentinelDX12 *p = s_pResourceMemoryHead; p; p = p->next )
+		if ( p->entry.device == device )
+			snapshot.AddToTail( p->entry );
+	ReleaseSRWLockShared( &s_ResourceMemoryMutex );
+	// All strings/descriptions/allocation info are now owned by the snapshot; resources can die
+	// concurrently with printing, and console callbacks never run while the registry is locked.
+	uint64_t committedBytes = 0, placedBytes = 0;
+	unsigned committedCount = 0, placedCount = 0;
+	for ( const ResourceMemoryEntryDX12 &entry : snapshot )
+	{
+		if ( entry.placed )
+		{
+			placedBytes += entry.allocation.SizeInBytes;
+			++placedCount;
+		}
+		else
+		{
+			committedBytes += entry.allocation.SizeInBytes;
+			++committedCount;
+		}
+	}
+	const double mib = 1024.0 * 1024.0;
+	Msg( "ShaderAPIDX12 memory report: live tracked resources (includes fence-retired allocations)\n" );
+	Msg( "  committed: %u resources, %llu bytes (%.3f MiB); placed: %u resources, %llu allocation bytes (%.3f MiB)\n",
+	    committedCount, static_cast<unsigned long long>( committedBytes ), committedBytes / mib,
+	    placedCount, static_cast<unsigned long long>( placedBytes ), placedBytes / mib );
+	Msg( "  Sizes are GetResourceAllocationInfo, not texel estimates. Placed allocation sums can overlap/share heaps and are NOT additive heap usage.\n" );
+	Msg( "  Tracked allocations are not residency: swap chains, driver/descriptor/query storage and external provider allocations may be untracked; use DXGI usage/budget below for the process.\n" );
+	if ( snapshot.Count() )
+		std::sort( snapshot.Base(), snapshot.Base() + snapshot.Count(), []( const ResourceMemoryEntryDX12 &a, const ResourceMemoryEntryDX12 &b )
+		{
+			const int categoryOrder = V_strcmp( a.category.Get(), b.category.Get() );
+			if ( categoryOrder )
+				return categoryOrder < 0;
+			if ( a.allocation.SizeInBytes != b.allocation.SizeInBytes )
+				return a.allocation.SizeInBytes > b.allocation.SizeInBytes;
+			return a.identity < b.identity;
+		} );
+	for ( int first = 0; first < snapshot.Count(); )
+	{
+		int end = first;
+		uint64_t bytes = 0;
+		while ( end < snapshot.Count() && snapshot[end].category == snapshot[first].category )
+			bytes += snapshot[end++].allocation.SizeInBytes;
+		Msg( "  category %s: %d resources, %llu allocation bytes (%.3f MiB)\n", snapshot[first].category.Get(), end - first, static_cast<unsigned long long>( bytes ), bytes / mib );
+		for ( int i = first; i < end; ++i )
+		{
+			const ResourceMemoryEntryDX12 &entry = snapshot[i];
+			const D3D12_RESOURCE_DESC &desc = entry.desc;
+			Msg( "    #%llu \"%s\": %s %llu bytes (%.3f MiB), %s %llux%ux%u, mips %u, samples %u, format %s(%u), alignment %llu\n",
+			    static_cast<unsigned long long>( entry.identity ), entry.name.Get(), entry.placed ? "placed" : "committed",
+			    static_cast<unsigned long long>( entry.allocation.SizeInBytes ), entry.allocation.SizeInBytes / mib,
+			    MemoryDimensionNameDX12( desc.Dimension ), static_cast<unsigned long long>( desc.Width ), desc.Height, static_cast<unsigned>( desc.DepthOrArraySize ),
+			    static_cast<unsigned>( desc.MipLevels ), desc.SampleDesc.Count, MemoryFormatNameDX12( desc.Format ), static_cast<unsigned>( desc.Format ),
+			    static_cast<unsigned long long>( entry.allocation.Alignment ) );
+		}
+		first = end;
+	}
+	if ( snapshot.Count() )
+		std::sort( snapshot.Base(), snapshot.Base() + snapshot.Count(), []( const ResourceMemoryEntryDX12 &a, const ResourceMemoryEntryDX12 &b )
+		{
+			const bool aTexture = IsMemoryTextureDX12( a.desc ), bTexture = IsMemoryTextureDX12( b.desc );
+			return aTexture != bTexture ? aTexture : a.desc.Format < b.desc.Format;
+		} );
+	Msg( "  textures by DXGI format (all categories):\n" );
+	for ( int first = 0; first < snapshot.Count() && IsMemoryTextureDX12( snapshot[first].desc ); )
+	{
+		int end = first;
+		uint64_t bytes = 0;
+		const DXGI_FORMAT format = snapshot[first].desc.Format;
+		while ( end < snapshot.Count() && IsMemoryTextureDX12( snapshot[end].desc ) && snapshot[end].desc.Format == format )
+			bytes += snapshot[end++].allocation.SizeInBytes;
+		Msg( "    %s(%u): %d textures, %llu allocation bytes (%.3f MiB)\n", MemoryFormatNameDX12( format ), static_cast<unsigned>( format ), end - first, static_cast<unsigned long long>( bytes ), bytes / mib );
+		first = end;
+	}
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: Grows the byte storage geometrically and zero-fills the new tail

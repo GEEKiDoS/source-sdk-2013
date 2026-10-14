@@ -21,16 +21,29 @@
 #include "tier0/cpumonitoring.h"
 #include "util_shared.h"
 #include "framegen_dx12.h"
+#include "shaderapi/ishaderapidx12.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-static ConVar cl_showfps( "cl_showfps", "0", FCVAR_ALLOWED_IN_COMPETITIVE, "Draw fps meter at top of screen (1 = fps, 2 = smooth fps)" );
+static ConVar cl_showfps( "cl_showfps", "0", FCVAR_ARCHIVE | FCVAR_ALLOWED_IN_COMPETITIVE,
+	"Draw fps meter at top of screen (1 = fps, 2 = smooth fps, 3 = fps plus GPU pass timings)" );
 static ConVar cl_showpos( "cl_showpos", "0", 0, "Draw current position at top of screen" );
 static ConVar cl_showbattery( "cl_showbattery", "0", 0, "Draw current battery level at top of screen when on battery power" );
 
 extern bool g_bDisplayParticlePerformance;
 int GetParticlePerformance();
+static IShaderAPIDX12 *GetShaderAPIDX12ForFPS()
+{
+	static IShaderAPIDX12 *s_pShaderAPIDX12 = nullptr;
+	if ( !s_pShaderAPIDX12 )
+	{
+		CreateInterfaceFn factory = Sys_GetFactory( "shaderapidx12" );
+		s_pShaderAPIDX12 = factory ? static_cast<IShaderAPIDX12 *>( factory( SHADERAPIDX12_INTERFACE_VERSION, nullptr ) ) : nullptr;
+	}
+	return s_pShaderAPIDX12;
+}
+
 
 
 //-----------------------------------------------------------------------------
@@ -55,9 +68,11 @@ protected:
 
 private:
 	void ComputeSize( void );
+	void UpdateGpuTimingState();
 	void InitAverages()
 	{
 		m_AverageFPS = -1;
+		m_AverageCPUFrameMS = -1;
 		m_lastRealTime = -1;
 		m_high = -1;
 		m_low = -1;
@@ -65,10 +80,12 @@ private:
 
 	vgui::HFont		m_hFont;
 	float			m_AverageFPS;
+	float			m_AverageCPUFrameMS;
 	float			m_lastRealTime;
 	int				m_high;
 	int				m_low;
 	bool			m_bLastDraw;
+	bool			m_bGpuTimingRequested;
 	int				m_BatteryPercent;
 	float			m_lastBatteryPercent;
 };
@@ -91,6 +108,8 @@ CFPSPanel::CFPSPanel( vgui::VPANEL parent ) : BaseClass( NULL, "CFPSPanel" )
 	m_hFont = 0;
 	m_BatteryPercent = -1;
 	m_lastBatteryPercent = -1.0f;
+	m_bGpuTimingRequested = false;
+	InitAverages();
 
 	ComputeSize();
 
@@ -104,6 +123,22 @@ CFPSPanel::CFPSPanel( vgui::VPANEL parent ) : BaseClass( NULL, "CFPSPanel" )
 CFPSPanel::~CFPSPanel( void )
 {
 }
+void CFPSPanel::UpdateGpuTimingState()
+{
+	const bool bEnable = cl_showfps.GetInt() == 3;
+	if ( bEnable == m_bGpuTimingRequested )
+		return;
+	if ( IShaderAPIDX12 *pShaderAPIDX12 = GetShaderAPIDX12ForFPS() )
+	{
+		pShaderAPIDX12->SetGpuTimingEnabled( bEnable );
+		m_bGpuTimingRequested = bEnable;
+	}
+	else if ( !bEnable )
+	{
+		m_bGpuTimingRequested = false;
+	}
+}
+
 
 //-----------------------------------------------------------------------------
 // Purpose: Updates panel to handle the new screen size
@@ -130,7 +165,7 @@ void CFPSPanel::ComputeSize( void )
 		y += XBOX_MINBORDERSAFE * tall;
 	}
 	SetPos( x, y );
-	SetSize( FPS_PANEL_WIDTH, 5 * vgui::surface()->GetFontTall( m_hFont ) + 8 );
+	SetSize( FPS_PANEL_WIDTH, ( cl_showfps.GetInt() == 3 ? 24 : 5 ) * vgui::surface()->GetFontTall( m_hFont ) + 8 );
 }
 
 void CFPSPanel::ApplySchemeSettings(vgui::IScheme *pScheme)
@@ -149,6 +184,8 @@ void CFPSPanel::ApplySchemeSettings(vgui::IScheme *pScheme)
 //-----------------------------------------------------------------------------
 void CFPSPanel::OnTick( void )
 {
+	UpdateGpuTimingState();
+	ComputeSize();
 	bool bVisible = ShouldDraw();
 	if ( IsVisible() != bVisible )
 	{
@@ -162,6 +199,7 @@ void CFPSPanel::OnTick( void )
 //-----------------------------------------------------------------------------
 bool CFPSPanel::ShouldDraw( void )
 {
+	UpdateGpuTimingState();
 	if ( g_bDisplayParticlePerformance )
 		return true;
 	if ( ( !cl_showfps.GetInt() || ( gpGlobals->absoluteframetime <= 0 ) ) &&
@@ -239,9 +277,9 @@ void GetCPUColor( float cpuPercentage, unsigned char ucColor[3] )
 //-----------------------------------------------------------------------------
 void CFPSPanel::Paint() 
 {
+	UpdateGpuTimingState();
 	int i = 0;
 	int x = 2;
-
 	if ( g_bDisplayParticlePerformance )
 	{
 		int nPerf = GetParticlePerformance();
@@ -255,8 +293,9 @@ void CFPSPanel::Paint()
 		}
 	}
 	float realFrameTime = gpGlobals->realtime - m_lastRealTime;
+	const int nShowFpsMode = cl_showfps.GetInt();
 
-	if ( cl_showfps.GetInt() && realFrameTime > 0.0 )
+	if ( nShowFpsMode && realFrameTime > 0.0 )
 	{
 		if ( m_lastRealTime != -1.0f )
 		{
@@ -266,7 +305,7 @@ void CFPSPanel::Paint()
 
 			int nFps = -1;
 			unsigned char ucColor[3];
-			if ( cl_showfps.GetInt() == 2 )
+			if ( nShowFpsMode == 2 )
 			{
 				const float NewWeight  = 0.1f;
 				float NewFrame = 1.0f / realFrameTime;
@@ -308,15 +347,52 @@ void CFPSPanel::Paint()
 					"%3i fps shown (%s x%.1f)", static_cast<int>( nFps * flShown ), pszFrameGen, flShown );
 				i++;
 			}
+			if ( nShowFpsMode == 3 )
+			{
+				const int lineHeight = vgui::surface()->GetFontTall( m_hFont ) + 2;
+				const float cpuFrameMs = realFrameTime * 1000.0f;
+				if ( m_AverageCPUFrameMS < 0.0f )
+					m_AverageCPUFrameMS = cpuFrameMs;
+				else
+					m_AverageCPUFrameMS = m_AverageCPUFrameMS * 0.9f + cpuFrameMs * 0.1f;
+
+				ShaderAPIDX12GpuTiming_t timing{};
+				IShaderAPIDX12 *pShaderAPIDX12 = GetShaderAPIDX12ForFPS();
+				const bool bTiming = pShaderAPIDX12 && pShaderAPIDX12->GetGpuTiming( timing ) && timing.available;
+				if ( bTiming )
+				{
+					g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
+						"GPU total %.2f ms | CPU %.2f ms", timing.gpuFrameMs, m_AverageCPUFrameMS );
+					++i;
+					g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
+						"GPU passes (inclusive; ~0.5s):" );
+					++i;
+					for ( unsigned int event = 0; event < timing.count; ++event )
+					{
+						const int indent = MIN( static_cast<int>( timing.events[event].depth ), 8 ) * 2;
+						g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
+							"%*s%s %.2f ms", indent, "", timing.events[event].name, timing.events[event].ms );
+						++i;
+					}
+				}
+				else
+				{
+					g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
+						"GPU passes (inclusive; ~0.5s): waiting for samples" );
+					++i;
+				}
+			}
+
 			const CPUFrequencyResults frequency = GetCPUFrequencyResults();
 			double currentTime = Plat_FloatTime();
 			const double displayTime = 5.0f; // Display frequency results for this long.
 			if ( frequency.m_GHz > 0 && frequency.m_timeStamp + displayTime > currentTime )
 			{
-				int lineHeight = vgui::surface()->GetFontTall( m_hFont );
+				const int fontTall = vgui::surface()->GetFontTall( m_hFont );
+				const int frequencyY = nShowFpsMode == 3 ? 2 + i * ( fontTall + 2 ) : fontTall + 2;
 				// Optionally print out the CPU frequency monitoring data.
 				GetCPUColor( frequency.m_percentage, ucColor );
-				g_pMatSystemSurface->DrawColoredText( m_hFont, x, lineHeight + 2, ucColor[0], ucColor[1], ucColor[2], 255, "CPU frequency percent: %3.1f%%   Min percent: %3.1f%%", frequency.m_percentage, frequency.m_lowestPercentage );
+				g_pMatSystemSurface->DrawColoredText( m_hFont, x, frequencyY, ucColor[0], ucColor[1], ucColor[2], 255, "CPU frequency percent: %3.1f%%   Min percent: %3.1f%%", frequency.m_percentage, frequency.m_lowestPercentage );
 			}
 		}
 	}

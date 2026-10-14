@@ -1025,7 +1025,7 @@ bool CreateReceiverPage( ID3D12Device *device, ReceiverPageDX12 &page, int width
 	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 	desc.Width = width; desc.Height = height; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
 	desc.Format = DXGI_FORMAT_R32_UINT; desc.SampleDesc.Count = 1;
-	if ( FAILED( device->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &page.resource ) ) ) ||
+	if ( FAILED( CreateCommittedResourceDX12( device, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &page.resource ), "shadow", "shadow receiver page" ) ) ||
 	     !CpuHeap( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, page.srvHeap ) ) return false;
 	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
 	srv.Format = DXGI_FORMAT_R32_UINT; srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -1081,8 +1081,8 @@ bool StaticPropTriangleBuffer( CShaderDeviceDX12 *device, CPipelineCacheDX12 &pi
 	D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 	desc.Width = bytes; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
 	desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if ( FAILED( device->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc,
-		D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ) ) ) ) return false;
+	if ( FAILED( CreateCommittedResourceDX12( device->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc,
+		D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ), "other", "static prop triangle buffer" ) ) ) return false;
 	ID3D12Resource *upload = nullptr; uint64 offset = 0;
 	const uint64 fence = device->NextFenceValue();
 	if ( !pipeline.UploadStructured( data, bytes, sizeof(DX12StaticPropTriangleGpu), fence, &upload, &offset ) )
@@ -1128,7 +1128,7 @@ bool LightingNullTable( ID3D12Device *device, Microsoft::WRL::ComPtr<ID3D12Descr
 	}
 	return true;
 }
-bool NativeLogicalAvailable( IFileSystem &filesystem, const char *name, bool pixel, bool feature )
+bool NativeLogicalAvailable( IFileSystem &filesystem, const char *name, bool pixel, bool lightingReceiver )
 {
 	ShaderVcsFile file;
 	CUtlString error;
@@ -1153,7 +1153,7 @@ bool NativeLogicalAvailable( IFileSystem &filesystem, const char *name, bool pix
 			if ( !pixel && !V_strcmp( name, "depthwrite_instanced_vs51" ) &&
 				!ValidateInstancedCasterShaderDX12( { payload->tokens.Base(), SIZE_T( payload->tokens.Count() ) } ) ) return false;
 			// Replay/unlit combos can legally precede the first actual RGB receiver.
-			if ( !feature || !pixel || lighting ) return true;
+			if ( !lightingReceiver || lighting ) return true;
 		}
 	}
 	return false;
@@ -1522,7 +1522,8 @@ struct CLightingDX12::Impl
 			list->ClearDepthStencilView( target->dsv, D3D12_CLEAR_FLAG_DEPTH, 1.f, 0, 0, nullptr );
 			target->initialized = true;
 		}
-		Transition( list, target->resource.Get(), target->state, sample ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_DEPTH_WRITE );
+		Transition( list, target->resource.Get(), target->state,
+		            sample ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_DEPTH_WRITE );
 	}
 	void RestoreBackend( const PassState &saved )
 	{
@@ -1777,8 +1778,9 @@ bool CLightingDX12::ValidateMap( const DX12LightingMapDesc &map, char *error, in
 			if ( failure ) break;
 			const char *name = required[requiredIndex];
 			const bool pixel = V_strstr( name, "ps51" ) != nullptr;
-			const bool feature = V_strstr( name, "shadowmap" ) != nullptr || V_strstr( name, "highres" ) != nullptr || ( V_strstr( name, "detailshadowlit_ps51" ) != nullptr );
-			if ( !NativeLogicalAvailable( *filesystem, name, pixel, feature ) ) failure = SHADOWMAP_ERR_SHADER_UNAVAILABLE;
+			const bool lightingReceiver = ( pixel && ( V_strstr( name, "shadowmap" ) != nullptr || V_strstr( name, "highres" ) != nullptr ) ) ||
+			                              !V_strcmp( name, "dx12_detailshadowlit_vs51" );
+			if ( !NativeLogicalAvailable( *filesystem, name, pixel, lightingReceiver ) ) failure = SHADOWMAP_ERR_SHADER_UNAVAILABLE;
 		}
 	}
 	if ( error && errorBytes > 0 ) V_strncpy( error, failure ? failure : "", errorBytes );
@@ -1857,7 +1859,7 @@ DX12ShadowTarget_t CLightingDX12::CreateShadowDepthTarget( const char *name, int
 	clear.Format = DXGI_FORMAT_D32_FLOAT;
 	clear.DepthStencil.Depth = 1.f;
 	ID3D12Device *device = s.device->NativeDevice();
-	if ( FAILED( device->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( &target->resource ) ) ) || !CpuHeap( device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, target->dsvHeap ) || !CpuHeap( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, target->srvHeap ) )
+	if ( FAILED( CreateCommittedResourceDX12( device, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( &target->resource ), "shadow", name ) ) || !CpuHeap( device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, target->dsvHeap ) || !CpuHeap( device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, target->srvHeap ) )
 	{
 		delete target;
 		return 0;
@@ -2409,8 +2411,14 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		{
 			ShadowTargetDX12 *target = packet->leases[i];
 			if ( !target ) { if ( i >= 2 && packet->ids[i - 2] ) failure = kPacketError; continue; }
-			const int required = i == 0 ? int( csmSlot * 2 ) : i == 1 ? int( staticSize ) : DX12_SHADOW_LOCAL_PAGE_SIZE;
-			if ( !required || target->width != required || target->height != required ) failure = kPacketError;
+			if ( i < 2 )
+			{
+				const int required = i == 0 ? int( csmSlot * 2 ) : int( staticSize );
+				if ( !required || target->width != required || target->height != required ) failure = kPacketError;
+			}
+			else if ( !localSlot || target->width < int( localSlot ) || target->height < int( localSlot ) ||
+				target->width > DX12_SHADOW_LOCAL_PAGE_SIZE || target->height > DX12_SHADOW_LOCAL_PAGE_SIZE ||
+				( target->width & ( target->width - 1 ) ) || ( target->height & ( target->height - 1 ) ) ) failure = kPacketError;
 		}
 		for ( int i = 0; !failure && i < packet->lights.Count(); ++i )
 		{
@@ -2459,9 +2467,11 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 					if ( !ShadowValuesZero( rect, 4 ) || !ShadowValuesZero( light.worldToClip[face], 16 ) ) { failure = kPacketError; break; }
 					continue;
 				}
-				if ( !localSlot || rect[3] != localSlot || rect[1] % localSlot || rect[2] % localSlot || !RectFits( rect[1], rect[2], rect[3], rect[3], DX12_SHADOW_LOCAL_PAGE_SIZE, DX12_SHADOW_LOCAL_PAGE_SIZE ) ||
+				if ( !localSlot || rect[3] != localSlot || rect[1] % localSlot || rect[2] % localSlot ||
 					ShadowValuesZero( light.worldToClip[face], 16 ) ) { failure = kPacketError; break; }
 				if ( rect[0] >= v.localTargetCount || !packet->leases[2 + rect[0]] ) { failure = SHADOWMAP_ERR_RESIDENCY; break; }
+				const ShadowTargetDX12 *page = packet->leases[2 + rect[0]];
+				if ( !RectFits( rect[1], rect[2], rect[3], rect[3], page->width, page->height ) ) { failure = kPacketError; break; }
 			}
 		}
 		if ( !failure && residentTail && residentOrdinal != residentCount ) failure = kPacketError;
@@ -2714,7 +2724,7 @@ bool CLightingDX12::PrepareShadowDraw( RenderTargetBindingDX12 &target, D3D12_VI
 	target = {};
 	target.depth = pass.target->resource.Get(); target.dsv = pass.target->dsv; target.depthFormat = DXGI_FORMAT_D32_FLOAT; target.width = pass.target->width; target.height = pass.target->height;
 	viewport = { float( pass.rect.left ), float( pass.rect.top ), float( pass.rect.right - pass.rect.left ), float( pass.rect.bottom - pass.rect.top ), 0, 1 };
-	scissor = pass.rect;
+		scissor = pass.rect;
 	return true;
 }
 ShaderRecordDX12 *CLightingDX12::ShadowSkyClipPixelShader() const
@@ -3424,7 +3434,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 		scope.fence = fence; scope.heap = heapGeneration;
 	}
 	// Returning to a parent whose depth was used in an intervening pass requires transitions, but not descriptor copies.
-	for ( ShadowTargetDX12 *target : scope.packet->leases ) if ( target && target->state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ) s.Use( target, true );
+	for ( ShadowTargetDX12 *target : scope.packet->leases )
+		if ( target && target->state != ( D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ) ) s.Use( target, true );
 	input.lightingViewTable = scope.table;
 	input.lightingViewConstants = scope.constants;
 	return true;

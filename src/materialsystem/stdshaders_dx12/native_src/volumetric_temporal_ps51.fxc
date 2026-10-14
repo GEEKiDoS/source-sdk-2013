@@ -1,0 +1,65 @@
+// Provider-independent volumetric history: RGB in-scattering + FP16 view depth.
+// Current inverse/eye/forward and previous world-to-clip use the existing space-6
+// camera ABI; temporal-only depth.yzw/eye.w encode the previous depth projection.
+// The closest scene sample in the footprint supplies motion at silhouettes.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#include "screenspace_view.hlsli"
+
+Texture2D<float4> g_CurrentScatter : register( t0 );
+Texture2D<float> g_CurrentDepth : register( t1 );
+Texture2D<float4> g_Motion : register( t2 );
+Texture2D<float4> g_HistoryScatter : register( t3 );
+SamplerState LinearSampler : register( s0 );
+
+float4 main( float4 position : SV_Position ) : SV_Target0
+{
+	uint width, height;
+	g_CurrentScatter.GetDimensions( width, height );
+	int2 pixel = int2( position.xy );
+	float3 current = g_CurrentScatter.Load( int3( pixel, 0 ) ).rgb;
+	float z = g_CurrentDepth.Load( int3( pixel, 0 ) );
+	// 60000 remains finite in FP16; clear-only footprints use the same sentinel.
+	float storedDepth = min( z, 60000.0 );
+	if ( cVolumeOutputScale.y < 0.5 )
+		return float4( current, storedDepth );
+
+	int footprint = int( cVolumeOutputScale.w );
+	int2 base = int2( cScreenViewport.xy ) + pixel * footprint;
+	int2 end = int2( cScreenViewport.xy + cScreenViewport.zw ) - 1;
+	float2 center = min( float2( base ) + 0.5 * footprint, float2( end ) + 0.5 );
+	float2 local = ( center - cScreenViewport.xy ) / cScreenViewport.zw;
+	float4 rayPoint = mul( cScreenClipToWorld, float4( local * float2( 2, -2 ) + float2( -1, 1 ), 0.5, 1 ) );
+	float3 ray = normalize( rayPoint.xyz / rayPoint.w - cScreenEyeLength.xyz );
+	float3 world = cScreenEyeLength.xyz + ray * ( min( z, 60000.0 ) / max( dot( ray, cScreenForwardThickness.xyz ), 1e-4 ) );
+	float4 previousClip = mul( cScreenWorldToClip, float4( world, 1 ) );
+	float2 previousUV = previousClip.xy / previousClip.w * float2( 0.5, -0.5 ) + 0.5;
+	float expectedDepth = z >= 60000.0 ? 60000.0 : dot( world, cScreenDepth.yzw ) - cScreenEyeLength.w;
+
+	if ( cVolumeOutputScale.z > 0.5 )
+	{
+		float nearest = cScreenDepth.x;
+		int2 motionPixel = min( base + footprint / 2, end );
+		[loop] for ( int dy = 0; dy < footprint; ++dy )
+		{
+			[loop] for ( int dx = 0; dx < footprint; ++dx )
+			{
+				int2 tap = min( base + int2( dx, dy ), end );
+				float d = g_ScreenSceneDepth.Load( int3( tap, 0 ) );
+				if ( d < nearest ) { nearest = d; motionPixel = tap; }
+			}
+		}
+		float2 motion = g_Motion.Load( int3( motionPixel, 0 ) ).xy;
+		previousUV = local - motion;
+	}
+	float2 halfTexel = 0.5 / float2( width, height );
+	if ( previousClip.w <= 0.0 || any( previousUV < halfTexel ) || any( previousUV > 1.0 - halfTexel ) )
+		return float4( current, storedDepth );
+	float4 previous = g_HistoryScatter.SampleLevel( LinearSampler, previousUV, 0 );
+	float tolerance = 0.02 * max( expectedDepth, 0.0 ) + 1.0;
+	float historyWeight = abs( previous.a - expectedDepth ) <= tolerance ? 0.9 : 0.0;
+	// Prefer fresh scattering on a turn; stationary camera jitter is subpixel.
+	float motionPixels = length( ( local - previousUV ) * cScreenViewport.zw );
+	historyWeight *= lerp( 1.0, 0.5, saturate( ( motionPixels - 0.5 ) / 8.0 ) );
+	return float4( lerp( current, previous.rgb, historyWeight ), storedDepth );
+}

@@ -176,6 +176,14 @@ static const Choice_t kQuality3[] =
 	{ "#GraphicsOptions_High", { 2, 0, 0, 0, 0 } },
 };
 
+static const Choice_t kMotionQuality[] =
+{
+	{ "#GraphicsOptions_MotionVeryLow", { -1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_MotionLow", { 0, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_MotionMedium", { 1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_MotionHigh", { 2, 0, 0, 0, 0 } },
+};
+
 // (enable, quality) for r_ssr, r_contactshadows and r_volumetric; Off matches the enable cvar alone (ROWF_OFF_ENABLE_ONLY).
 static const Choice_t kScreenSpaceEffect[] =
 {
@@ -185,6 +193,14 @@ static const Choice_t kScreenSpaceEffect[] =
 	{ "#GraphicsOptions_High", { 1, 2, 0, 0, 0 } },
 };
 
+// Trace resolution relative to the selected SSR quality; sample/refinement budgets and full-resolution history stay unchanged.
+static const Choice_t kSsrResolution[] =
+{
+	{ "#GraphicsOptions_SSRResolutionProfile", { 1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_SSRResolutionHalf", { 0.5f, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_SSRResolutionQuarter", { 0.25f, 0, 0, 0, 0 } },
+};
+
 static const Choice_t kUpscaler[] =
 {
 	{ "#GraphicsOptions_Off", { 0, 0, 0, 0, 0 } },
@@ -192,6 +208,17 @@ static const Choice_t kUpscaler[] =
 	{ "#GraphicsOptions_DLAA", { 2, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_FSRAA", { 3, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_XeSSAA", { 4, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_SMAAT2x", { 5, 0, 0, 0, 0 } },
+};
+
+// Temporal upscaler render scale per axis (r_upscaler_scale); below native the upscaler reconstructs the full resolution.
+static const Choice_t kRenderScale[] =
+{
+	{ "#GraphicsOptions_ScaleNative", { 1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_ScaleUltraQuality", { 0.77f, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_ScaleQuality", { 0.667f, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_ScaleBalanced", { 0.58f, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_ScalePerformance", { 0.5f, 0, 0, 0, 0 } },
 };
 
 static const Choice_t kFramegen[] =
@@ -223,6 +250,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Texture", TAB_DISPLAY, ROW_COMBO, { "mat_picmip", NULL, NULL, NULL, NULL }, kTexture, ARRAYSIZE( kTexture ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Filtering", TAB_DISPLAY, ROW_COMBO, { "mat_trilinear", "mat_forceaniso", NULL, NULL, NULL }, kFilter, ARRAYSIZE( kFilter ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_AA", TAB_DISPLAY, ROW_COMBO, { "r_upscaler", NULL, NULL, NULL, NULL }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_RenderScale", TAB_DISPLAY, ROW_COMBO, { "r_upscaler_scale", NULL, NULL, NULL, NULL }, kRenderScale, ARRAYSIZE( kRenderScale ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Water", TAB_DISPLAY, ROW_COMBO, { "r_waterforceexpensive", "r_waterforcereflectentities", NULL, NULL, NULL }, kWater, ARRAYSIZE( kWater ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Shader", TAB_DISPLAY, ROW_COMBO, { "mat_reducefillrate", NULL, NULL, NULL, NULL }, kShader, ARRAYSIZE( kShader ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Color", TAB_DISPLAY, ROW_CHECK, { "mat_colorcorrection", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
@@ -242,6 +270,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_AO", TAB_LIGHTING, ROW_COMBO, { "r_gtao", "r_gtao_resolution", "r_gtao_slices", "r_gtao_steps", "r_gtao_denoise" }, kGtao, ARRAYSIZE( kGtao ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
 	{ "#GraphicsOptions_ContactShadows", TAB_LIGHTING, ROW_COMBO, { "r_contactshadows", "r_contactshadows_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
 	{ "#GraphicsOptions_SSR", TAB_LIGHTING, ROW_COMBO, { "r_ssr", "r_ssr_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
+	{ "#GraphicsOptions_SSRResolution", TAB_LIGHTING, ROW_COMBO, { "r_ssr_resolution", NULL, NULL, NULL, NULL }, kSsrResolution, ARRAYSIZE( kSsrResolution ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Volumetric", TAB_LIGHTING, ROW_COMBO, { "r_volumetric", "r_volumetric_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
 
 	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
@@ -250,7 +279,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Dirt", TAB_POST, ROW_CHECK, { "mat_postfx_lensdirt_enable", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Flare", TAB_POST, ROW_SLIDER, { "mat_postfx_lensflare", NULL, NULL, NULL, NULL }, NULL, 0, 0, 2, 0.01f, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Motion", TAB_POST, ROW_CHECK, { "mat_motion_blur_enabled", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_MotionQuality", TAB_POST, ROW_COMBO, { "mat_motion_blur_quality", NULL, NULL, NULL, NULL }, kQuality3, ARRAYSIZE( kQuality3 ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_MotionQuality", TAB_POST, ROW_COMBO, { "mat_motion_blur_quality", NULL, NULL, NULL, NULL }, kMotionQuality, ARRAYSIZE( kMotionQuality ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Exposure", TAB_POST, ROW_SLIDER, { "mat_postfx_exposure", NULL, NULL, NULL, NULL }, NULL, 0, -4, 4, 0.1f, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Sharpen", TAB_POST, ROW_SLIDER, { "mat_postfx_sharpen", NULL, NULL, NULL, NULL }, NULL, 0, 0, 1, 0.01f, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Hdr", TAB_POST, ROW_CHECK, { "mat_hdr_output", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },

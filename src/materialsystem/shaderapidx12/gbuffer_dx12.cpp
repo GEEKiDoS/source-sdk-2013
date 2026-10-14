@@ -46,7 +46,7 @@ bool CreateGBufferTarget( ID3D12Device *pNative, const D3D12_RESOURCE_DESC &scen
 	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 	D3D12_CLEAR_VALUE clear{};
 	clear.Format = format;
-	if ( FAILED( pNative->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS( &resource ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( pNative, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS( &resource ), "G-buffer", "DX12 G-buffer" ) ) )
 		return false;
 	D3D12_RENDER_TARGET_VIEW_DESC view{};
 	view.Format = format;

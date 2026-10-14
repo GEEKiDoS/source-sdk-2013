@@ -103,11 +103,14 @@ cbuffer DX12PSEngine : register(b0, space1)
     float4 cRasterFogColor; // @legacy none
     float4 cRasterFogParams; // @legacy none
 };
+#endif
 
 // Lighting ABI 6 preserves V1 view constants and adds exact static-prop draw reconstruction.
 // CPU twins/reflection tables: public/shaderapi/ishaderapidx12lighting.h and
 // shaderapidx12/native_engine_cbuffers_dx12.h. Explicit space3 highres draw/styles
 // constants and face/tile mirrors live in native_src/highres_lightmaps.hlsli.
+// Either stage: the root signature exposes the view block, view table and comparison sampler to the vertex
+// stage too (per-sprite detail lighting, dx12_detailshadowlit_vs51).
 #if defined(DX12_SHADOWMAPS)
 #define DX12_LIGHTING_SHADER_ABI 6
 #define DX12_SHADOW_PCSS_MAX_TEXELS 16
@@ -193,7 +196,6 @@ struct RuntimeShadowLightGpu // 608 bytes, StructuredBuffer at t1026 space2
     uint bakedLightIndex;
     uint reserved0; // DX12_VOLUMETRIC_LIGHT_ENABLED or zero
 };
-#endif
 #endif
 #endif
 '''
@@ -326,7 +328,8 @@ PREAMBLE = '''
 #endif
 #include "dx12_engine_cbuffers.h"
 #include "dx12_raster_emulation.h"
-#if defined(DX12_SHADOWMAPS) && defined(DX12_STAGE_PIXEL)
+#if defined(DX12_SHADOWMAPS)
+// Both stages: the vertex stage reaches no contact ray (space 6 is pixel-only), its declarations are stripped unused.
 #include "screenspace_contact.hlsli"
 #include "shadowmap_lighting.hlsli"
 #endif

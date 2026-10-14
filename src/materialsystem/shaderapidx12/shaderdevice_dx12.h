@@ -9,6 +9,7 @@
 #pragma once
 
 #include "shaderapi/IShaderDevice.h"
+#include "shaderapi/ishaderapidx12.h"
 #include "materialsystem/imesh.h"
 #include "materialsystem/shaderapidx12/resources_dx12.h"
 #include "materialsystem/shaderapidx12/hardwareconfig_dx12.h"
@@ -80,6 +81,8 @@ struct ShaderRecordDX12
 	uint32_t lightmapSamplerMask = 0, nativeSamplerMask = 0;
 	bool highresAbi = false, samplerRolesReady = false, nativeCasterTwin = false;
 	bool nativeEarlyDepthTwin = false;
+	// Native PS declares DCL_GLOBAL_FLAGS forceEarlyDepthStencil; safe for depth-only PS removal.
+	bool forceEarlyDepth = false;
 	// Hash of translated.outputLinkage for the active variant; cleared whenever the linkage or variant changes.
 	uint64_t linkageHash = 0, linkageHashVariant = 0;
 	bool linkageHashValid = false;
@@ -166,6 +169,13 @@ public:
 
 	void FlushSubmissions();
 	bool ConsumeGpuTime( double &flAverageMs, uint32_t &nFrames );
+	// Applies the runtime cl_showfps timing request on the recording owner.
+	void SetGpuTimingEnabled( bool bEnabled );
+	// Copies a completed approximately half-second overlay window without touching -dx12stats accumulators.
+	bool ConsumeGpuTimingOverlay( ShaderAPIDX12GpuTiming_t &stats );
+	// Prints immediately on the recording owner; other threads queue a coalesced request for Present.
+	// Includes the lifetime-tracked allocation snapshot and selected adapter's DXGI process usage/budget.
+	void PrintMemoryReport();
 
 	// Exclusive GPU intervals; receiver rendering includes ordinary/baked receiver work, not just shadow kernels.
 	enum GpuStageDX12 : uint32_t { GpuOther, GpuReceiverRendering, GpuShadowDepth, GpuDepthRectRestore, GpuStageCount };
@@ -205,6 +215,7 @@ public:
 		char name[64] = {};
 		double msPerFrame = 0;
 		double countPerFrame = 0;
+		uint8_t depth = 0;
 	};
 	struct GpuEventStatsDX12
 	{
@@ -389,6 +400,9 @@ public:
 
 	int GetCurrentAdapter() const override { return m_nAdapterIndex; }
 
+	// SHADERAPIDX12_ADAPTER_TIER_* of the device's adapter (ishaderapidx12.h); see ClassifyPerformanceTier.
+	int PerformanceTier() const { return m_nPerformanceTier; }
+
 	bool IsUsingGraphics() const override { return IsInitialized(); }
 
 	void SpewDriverInfo() const override;
@@ -466,7 +480,9 @@ private:
 	void CollectGpuEvents();
 	bool BeginGpuEventSpan( uint32_t nameId, uint32_t &slot );
 	void EndGpuEventSpan( uint32_t slot );
+	void ResolveGpuEventQueriesForSubmit();
 	uint32_t InternGpuEventName( const char *name );
+	void ResetGpuTimingOverlay();
 	void SuspendGpuPIXEvents();
 	void ResumeGpuPIXEvents();
 	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pTimestampHeap;
@@ -477,7 +493,10 @@ private:
 	bool m_bTimestampBegun = false, m_bTimestampUnavailable = false, m_bGpuTimingStopping = false;
 	uint64_t m_nTimestampFrequency = 0;
 	double m_flGpuTimeSumMs = 0.0;
+	double m_flGpuOverlayTimeSumMs = 0.0;
+	double m_flGpuOverlayWindowStart = 0.0;
 	uint32_t m_nGpuTimePresented = 0;
+	uint32_t m_nGpuOverlayTimePresented = 0;
 
 	bool m_bShadowTimingEnabled = false, m_bStageQueriesAvailable = false, m_bStageTimestampBegun = false;
 	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pStagePipelineHeap;
@@ -504,7 +523,8 @@ private:
 	uint64_t m_nGpuStageCPrimitives[GpuStageCount] = {};
 	GpuStageStatsDX12 m_GpuStageStats;
 
-	// Named PIX ranges. The stack survives a submit; each open range is closed on the old list and reopened on the next.
+	// Named PIX ranges. D3D12 events are recorded whenever a list is open; timestamps are enabled by -dx12stats or the
+	// runtime cl_showfps 3 request.
 	static constexpr uint32_t kGpuEventSlots = 4096;
 	static constexpr uint32_t kGpuEventStack = 64;
 	static constexpr uint32_t kGpuEventNames = 48;
@@ -520,15 +540,20 @@ private:
 	{
 		char name[64] = {};
 		double sumMs = 0;
+		double overlaySumMs = 0;
 		uint32_t count = 0;
+		uint32_t overlayCount = 0;
+		uint8_t depth = 0;
 	};
-	bool m_bGpuEventTiming = false, m_bGpuEventUnavailable = false, m_bGpuEventCoverOpen = false;
+	bool m_bGpuEventTiming = false, m_bGpuEventTimingCommandLine = false, m_bGpuEventTimingRuntime = false;
+	bool m_bGpuEventUnavailable = false, m_bGpuEventCoverOpen = false;
 	Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pGpuEventHeap;
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGpuEventReadback;
 	const uint64_t *m_pGpuEventData = nullptr;
 	uint64_t m_GpuEventFences[kGpuEventSlots] = {};
 	uint32_t m_GpuEventSlotNames[kGpuEventSlots] = {};
 	uint32_t m_nGpuEventSlot = 0, m_nGpuEventCoverSlot = 0;
+	uint32_t m_nGpuEventResolveStartSlot = 0, m_nGpuEventResolveCount = 0;
 	uint32_t m_nGpuPixDepth = 0, m_nGpuPixOverflow = 0, m_nGpuPixOverflowClosed = 0;
 	GpuPixScopeDX12 m_GpuPixStack[kGpuEventStack] = {};
 	GpuEventAccumDX12 m_GpuEventNames[kGpuEventNames] = {};
@@ -598,6 +623,7 @@ private:
 	bool SelectFrameGen( FrameGenKindDX12 kind, uint32_t nMultiplier, bool bHudless );
 	Microsoft::WRL::ComPtr<ID3D12Device> m_pDevice;
 	Microsoft::WRL::ComPtr<IDXGIFactory6> m_pFactory;
+	Microsoft::WRL::ComPtr<IDXGIAdapter3> m_pMemoryReportAdapter;
 	Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pQueue;
 	Microsoft::WRL::ComPtr<ID3D12InfoQueue> m_pInfoQueue;
 
@@ -613,6 +639,7 @@ private:
 	uint32_t m_nFrameIndex = 0;
 	bool m_bRecording = false, m_bFailed = false;
 	bool m_bChangingMode = false;
+	bool m_bStatsMemoryReportPrinted = false;
 	CInterlockedUInt m_nOwnerThread; // thread id
 	CThreadFastMutex m_TextureDeletionMutex;
 	CUtlVector<uintptr_t> m_PendingTextureDeletions;
@@ -630,6 +657,7 @@ private:
 	UINT m_nRtvStride = 0;
 	UINT m_nDsvStride = 0;
 	int m_nAdapterIndex = -1;
+	int m_nPerformanceTier = -1; // SHADERAPIDX12_ADAPTER_TIER_UNKNOWN until Initialize
 	int m_nWidth = 0, m_nHeight = 0;
 	int m_nSampleCount = 1, m_nSampleQuality = 0;
 	int m_nBackBufferCount = 2;

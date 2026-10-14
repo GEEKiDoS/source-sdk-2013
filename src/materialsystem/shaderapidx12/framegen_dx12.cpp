@@ -6,6 +6,7 @@
 //
 //=============================================================================//
 #include "framegen_dx12.h"
+#include "resources_dx12.h"
 #include "command_recorder_dx12.h"
 #include "provider_module_dx12.h"
 #include "materialsystem/imaterialsystem.h"
@@ -1256,7 +1257,7 @@ bool CFrameGenDX12::EnsureHudless( uint32_t nWidth, uint32_t nHeight )
 	desc.Format = format;
 	desc.SampleDesc.Count = 1;
 	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-	const HRESULT hr = m_pDevice->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, kNpsr, nullptr, IID_PPV_ARGS( &m_pHudless ) );
+	const HRESULT hr = CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc, kNpsr, nullptr, IID_PPV_ARGS( &m_pHudless ), "upscaler", "DX12 framegen hudless" );
 	if ( FAILED( hr ) )
 	{
 		Fail( "hudless texture creation failed (0x%08x)", static_cast<unsigned>( hr ) );

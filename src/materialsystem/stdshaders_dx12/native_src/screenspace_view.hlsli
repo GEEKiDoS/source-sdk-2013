@@ -20,7 +20,7 @@ cbuffer DX12Volumetric : register( b1, space6 )
 {
 	float4 cVolumeMedium;                    // local/projected: density, strength, HG g, max distance
 	float4 cVolumeSunMedium;                 // sun: density, strength, HG g, max distance
-	uint4 cVolumeControl;                    // steps per light segment, sun enabled, master enabled, noise index (0 static dither)
+	uint4 cVolumeControl;                    // steps per light segment, sun enabled, master enabled, rotating noise frame (framecount & 63)
 	float4 cVolumeOutputScale;               // x LINEAR_LIGHT_SCALE
 };
 

@@ -1,6 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: DX12 native-AA upscaler providers (DLSS/DLAA, FSR, XeSS), the DLSS-NR layer chain and the
+// Purpose: DX12 temporal AA / render-resolution upscalers (DLSS/DLAA, FSR, XeSS, native SMAA T2x), the DLSS-NR layer chain and the
 //          CShaderAPIDX12 integration that selects, dispatches and releases them.
 //
 //=============================================================================//
@@ -9,6 +9,10 @@
 #include "shaderapi_dx12.h"
 #include "shaderdevice_dx12.h"
 #include "upscaler_nr_shaders_dx12.h"
+#include "upscaler_smaa_shaders_dx12.h"
+#include "../../thirdparty/smaa/SMAA_reference.h"
+#include "../../thirdparty/smaa/AreaTex.h"
+#include "../../thirdparty/smaa/SearchTex.h"
 #include "provider_module_dx12.h"
 #include "materialsystem/imaterialsystem.h"
 #include "renderparm.h"
@@ -19,6 +23,7 @@
 #include "tier1/strtools.h"
 #include <d3dcompiler.h>
 #include <type_traits>
+#include <string>
 #include <xess/xess_d3d12.h>
 // FidelityFX SDK v2 (split runtime): amd_fidelityfx_loader_dx12.dll dispatches to amd_fidelityfx_upscaler_dx12.dll.
 #include <upscalers/include/ffx_upscale.h>
@@ -39,9 +44,11 @@ const char *UpscalerKindNameDX12( UpscalerKindDX12 kind )
 	case UpscalerKindDX12::DLSS:
 		return "DLSS/DLAA";
 	case UpscalerKindDX12::FSR:
-		return "FSR native AA";
+		return "FSR";
 	case UpscalerKindDX12::XeSS:
-		return "XeSS AA";
+		return "XeSS";
+	case UpscalerKindDX12::SmaaT2x:
+		return "SMAA T2x";
 	default:
 		return "none";
 	}
@@ -99,7 +106,7 @@ void Transition( ID3D12GraphicsCommandList *pList, ID3D12Resource *pResource, D3
 //-----------------------------------------------------------------------------
 // Purpose: Committed single-mip UAV-capable 2D texture; null on failure
 //-----------------------------------------------------------------------------
-Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture( ID3D12Device *pDevice, uint32_t nWidth, uint32_t nHeight, DXGI_FORMAT format, D3D12_RESOURCE_STATES state )
+Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture( ID3D12Device *pDevice, uint32_t nWidth, uint32_t nHeight, DXGI_FORMAT format, D3D12_RESOURCE_STATES state, const char *pszName )
 {
 	D3D12_HEAP_PROPERTIES heap{};
 	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -114,7 +121,7 @@ Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture( ID3D12Device *pDevice, uin
 	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
-	if ( FAILED( pDevice->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS( &pResource ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS( &pResource ), "upscaler", pszName ) ) )
 		pResource.Reset();
 	return pResource;
 }
@@ -130,6 +137,13 @@ struct UpscalerReplayPayloadDX12
 
 static_assert( std::is_trivially_copyable<UpscalerReplayPayloadDX12>::value, "external command payloads are copied bytewise" );
 
+struct CUpscalerDX12::SmaaState
+{
+	Microsoft::WRL::ComPtr<ID3D12Resource> edges, weights, spatial, history[2], area, search;
+	// Only the replay worker writes these. They also reject a gap before the recording owner consumes its result.
+	uint64_t lastFrame = ~0ull, lastSerial = ~0ull;
+};
+
 struct CUpscalerDX12::XeSSApi
 {
 	decltype( &xessGetVersion ) getVersion = nullptr;
@@ -138,6 +152,7 @@ struct CUpscalerDX12::XeSSApi
 	decltype( &xessD3D12Execute ) execute = nullptr;
 	decltype( &xessDestroyContext ) destroyContext = nullptr;
 	decltype( &xessGetInputResolution ) getInputResolution = nullptr;
+	decltype( &xessGetOptimalInputResolution ) getOptimalInputResolution = nullptr; // optional; required for scaled rendering
 	decltype( &xessSetVelocityScale ) setVelocityScale = nullptr;
 	decltype( &xessSetJitterScale ) setJitterScale = nullptr;      // optional
 	decltype( &xessGetJitterScale ) getJitterScale = nullptr;      // optional
@@ -250,8 +265,7 @@ bool CUpscalerDX12::Initialize( ID3D12Device *pDevice, const MaterialAdapterInfo
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Maps an r_upscaler mode to an available provider
-//-----------------------------------------------------------------------------
+// Purpose: Maps an r_upscaler mode to an available provider or the built-in native SMAA T2x path.
 UpscalerKindDX12 CUpscalerDX12::Resolve( int nMode ) const
 {
 	switch ( nMode )
@@ -272,6 +286,8 @@ UpscalerKindDX12 CUpscalerDX12::Resolve( int nMode ) const
 		return m_Fsr.available ? UpscalerKindDX12::FSR : UpscalerKindDX12::None;
 	case 4:
 		return m_Xess.available ? UpscalerKindDX12::XeSS : UpscalerKindDX12::None;
+	case 5:
+		return UpscalerKindDX12::SmaaT2x;
 	default:
 		return UpscalerKindDX12::None;
 	}
@@ -303,6 +319,7 @@ bool CUpscalerDX12::LoadXeSS( const wchar_t *pszDir )
 	    !ResolveExport( m_Xess.module, "xessSetVelocityScale", pApi->setVelocityScale ) )
 		return fail( "libxess.dll lacks a required D3D12 export" );
 	ResolveExport( m_Xess.module, "xessSetJitterScale", pApi->setJitterScale );
+	ResolveExport( m_Xess.module, "xessGetOptimalInputResolution", pApi->getOptimalInputResolution );
 	ResolveExport( m_Xess.module, "xessGetJitterScale", pApi->getJitterScale );
 	ResolveExport( m_Xess.module, "xessGetIntelXeFXVersion", pApi->getXeFXVersion );
 	ResolveExport( m_Xess.module, "xessSetLoggingCallback", pApi->setLogging );
@@ -695,6 +712,122 @@ bool CUpscalerDX12::EnsureCompute()
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Native SMAA scratch/history plus immutable reference LUTs, uploaded once behind the creation fence
+//-----------------------------------------------------------------------------
+bool CUpscalerDX12::CreateSmaa( const UpscalerFeatureDescDX12 &desc, ID3D12CommandQueue *pQueue )
+{
+	if ( desc.Scaled() || !EnsureCompute() )
+		return false;
+	if ( !m_pSmaaPso[3] )
+	{
+		std::string source;
+		source.reserve( sizeof( kSmaaShaderPrefixDX12 ) + sizeof( kSmaaReferenceSourceDX12 ) + sizeof( kSmaaShaderEntriesDX12 ) );
+		source.append( kSmaaShaderPrefixDX12 ).append( kSmaaReferenceSourceDX12 ).append( kSmaaShaderEntriesDX12 );
+		const char *const entries[] = { "CSEdges", "CSWeights", "CSNeighborhood", "CSTemporal" };
+		for ( uint32_t pass = 0; pass < ARRAYSIZE( entries ); ++pass )
+		{
+			Microsoft::WRL::ComPtr<ID3DBlob> code, error;
+			HRESULT hr = D3DCompile( source.data(), source.size(), "upscaler_smaa", nullptr, nullptr, entries[pass], "cs_5_0",
+			    D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &error );
+			if ( SUCCEEDED( hr ) )
+			{
+				D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+				pso.pRootSignature = m_pComputeRoot.Get();
+				pso.CS = { code->GetBufferPointer(), code->GetBufferSize() };
+				hr = m_pDevice->CreateComputePipelineState( &pso, IID_PPV_ARGS( &m_pSmaaPso[pass] ) );
+			}
+			if ( FAILED( hr ) )
+			{
+				Warning( "ShaderAPIDX12 upscaler: SMAA %s compile/PSO failed (0x%08x): %s\n", entries[pass], static_cast<unsigned>( hr ),
+				    error ? static_cast<const char *>( error->GetBufferPointer() ) : "" );
+				for ( auto &pso : m_pSmaaPso )
+					pso.Reset();
+				return false;
+			}
+		}
+	}
+	SmaaState *state = new SmaaState;
+	state->edges = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R8G8_UNORM, kNpsr, "SMAA T2x edges" );
+	state->weights = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R8G8B8A8_UNORM, kNpsr, "SMAA T2x weights" );
+	state->spatial = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R16G16B16A16_FLOAT, kNpsr, "SMAA T2x neighborhood" );
+	for ( uint32_t i = 0; i < 2; ++i )
+		state->history[i] = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R16G16B16A16_FLOAT, kNpsr,
+		    i ? "SMAA T2x history 1" : "SMAA T2x history 0" );
+	if ( !state->edges || !state->weights || !state->spatial || !state->history[0] || !state->history[1] )
+	{
+		delete state;
+		return false;
+	}
+	ID3D12GraphicsCommandList *list = BeginImmediate();
+	if ( !list )
+	{
+		delete state;
+		return false;
+	}
+	Microsoft::WRL::ComPtr<ID3D12Resource> uploads[2];
+	const auto uploadLut = [&]( Microsoft::WRL::ComPtr<ID3D12Resource> &texture, Microsoft::WRL::ComPtr<ID3D12Resource> &upload,
+	                           uint32_t width, uint32_t height, DXGI_FORMAT format, uint32_t pitch, const unsigned char *bytes, const char *name )
+	{
+		D3D12_HEAP_PROPERTIES heap{};
+		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+		D3D12_RESOURCE_DESC textureDesc{};
+		textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		textureDesc.Width = width;
+		textureDesc.Height = height;
+		textureDesc.DepthOrArraySize = textureDesc.MipLevels = 1;
+		textureDesc.Format = format;
+		textureDesc.SampleDesc.Count = 1;
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &textureDesc,
+		    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &texture ), "upscaler", name ) ) )
+			return false;
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+		UINT64 size = 0;
+		m_pDevice->GetCopyableFootprints( &textureDesc, 0, 1, 0, &footprint, nullptr, nullptr, &size );
+		D3D12_RESOURCE_DESC buffer{};
+		buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		buffer.Width = size;
+		buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
+		buffer.SampleDesc.Count = 1;
+		buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &buffer,
+		    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &upload ), "upscaler", "SMAA T2x LUT upload" ) ) )
+			return false;
+		void *mapped = nullptr;
+		const D3D12_RANGE noRead{};
+		if ( FAILED( upload->Map( 0, &noRead, &mapped ) ) )
+			return false;
+		for ( uint32_t row = 0; row < height; ++row )
+			memcpy( static_cast<unsigned char *>( mapped ) + footprint.Offset + row * footprint.Footprint.RowPitch, bytes + row * pitch, pitch );
+		upload->Unmap( 0, nullptr );
+		D3D12_TEXTURE_COPY_LOCATION dest{}, source{};
+		dest.pResource = texture.Get();
+		dest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		source.pResource = upload.Get();
+		source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		source.PlacedFootprint = footprint;
+		list->CopyTextureRegion( &dest, 0, 0, 0, &source, nullptr );
+		Transition( list, texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kNpsr );
+		return true;
+	};
+	if ( !uploadLut( state->area, uploads[0], AREATEX_WIDTH, AREATEX_HEIGHT, DXGI_FORMAT_R8G8_UNORM, AREATEX_PITCH, areaTexBytes, "SMAA AreaTex" ) ||
+	     !uploadLut( state->search, uploads[1], SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, DXGI_FORMAT_R8_UNORM, SEARCHTEX_PITCH, searchTexBytes, "SMAA SearchTex" ) )
+	{
+		list->Close();
+		delete state;
+		return false;
+	}
+	const bool uploaded = EndImmediate( pQueue ); // uploads remain alive until every copy completes
+	if ( !uploaded )
+	{
+		delete state;
+		return false;
+	}
+	m_pSmaa = state;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: (Re)creates the R32F depth clone at the given size
 //-----------------------------------------------------------------------------
 bool CUpscalerDX12::EnsureDepthClone( uint32_t nWidth, uint32_t nHeight )
@@ -706,7 +839,7 @@ bool CUpscalerDX12::EnsureDepthClone( uint32_t nWidth, uint32_t nHeight )
 			return true;
 		m_pDepthClone.Reset(); // only reached behind the GPU-idle boundary that precedes feature/chain creation
 	}
-	m_pDepthClone = CreateTexture( m_pDevice, nWidth, nHeight, DXGI_FORMAT_R32_FLOAT, kNpsr );
+	m_pDepthClone = CreateTexture( m_pDevice, nWidth, nHeight, DXGI_FORMAT_R32_FLOAT, kNpsr, "DX12 upscaler depth clone" );
 	if ( !m_pDepthClone )
 		Warning( "ShaderAPIDX12 upscaler: depth clone %ux%u creation failed\n", nWidth, nHeight );
 	return m_pDepthClone != nullptr;
@@ -766,7 +899,7 @@ bool CUpscalerDX12::PrepareFeature( const UpscalerFeatureDescDX12 &desc, ID3D12C
 		return m_Feature == desc; // a different feature needs ReleaseFeature behind a GPU-idle boundary first
 	if ( m_State == State::Failed && m_Feature == desc )
 		return false;
-	if ( !m_pDevice || desc.kind == UpscalerKindDX12::None || !desc.width || !desc.height )
+	if ( !m_pDevice || desc.kind == UpscalerKindDX12::None || !desc.width || !desc.height || !desc.renderWidth || !desc.renderHeight || desc.renderWidth > desc.width || desc.renderHeight > desc.height )
 		return false;
 	m_Feature = desc;
 	bool bCreated = false;
@@ -776,13 +909,16 @@ bool CUpscalerDX12::PrepareFeature( const UpscalerFeatureDescDX12 &desc, ID3D12C
 		bCreated = CreateFfx( desc );
 	else if ( desc.kind == UpscalerKindDX12::DLSS )
 		bCreated = CreateDlss( desc, pQueue );
+	else if ( desc.kind == UpscalerKindDX12::SmaaT2x )
+		bCreated = CreateSmaa( desc, pQueue );
 	m_State = bCreated ? State::Ready : State::Failed;
 	const Provider &provider = desc.kind == UpscalerKindDX12::XeSS ? m_Xess : desc.kind == UpscalerKindDX12::FSR ? m_Fsr :
 	                                                                                                               m_Dlss;
 	if ( bCreated )
-		Msg( "ShaderAPIDX12 upscaler: %s ready at %ux%u (%s)\n", UpscalerKindNameDX12( desc.kind ), desc.width, desc.height, provider.version.Get() );
+		Msg( "ShaderAPIDX12 upscaler: %s ready, %ux%u -> %ux%u (%s)\n", UpscalerKindNameDX12( desc.kind ), desc.renderWidth, desc.renderHeight, desc.width, desc.height,
+		    desc.kind == UpscalerKindDX12::SmaaT2x ? "native HDR temporal AA" : provider.version.Get() );
 	else
-		Warning( "ShaderAPIDX12 upscaler: %s feature creation failed at %ux%u\n", UpscalerKindNameDX12( desc.kind ), desc.width, desc.height );
+		Warning( "ShaderAPIDX12 upscaler: %s feature creation failed, %ux%u -> %ux%u\n", UpscalerKindNameDX12( desc.kind ), desc.renderWidth, desc.renderHeight, desc.width, desc.height );
 	return bCreated;
 }
 
@@ -798,7 +934,8 @@ static void FfxLog( uint32_t nType, const wchar_t *pszMessage )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: XeSS AA context at native resolution
+// Purpose: XeSS context: AA at native resolution, otherwise the quality setting whose supported input range holds
+//          the render size (nearest optimal input wins)
 //-----------------------------------------------------------------------------
 bool CUpscalerDX12::CreateXeSS( const UpscalerFeatureDescDX12 &desc )
 {
@@ -819,22 +956,58 @@ bool CUpscalerDX12::CreateXeSS( const UpscalerFeatureDescDX12 &desc )
 	};
 	if ( m_pXessApi->setLogging )
 		m_pXessApi->setLogging( hContext, XESS_LOGGING_LEVEL_WARNING, XeSSLog );
+	const xess_2d_t output{ desc.width, desc.height };
+	xess_quality_settings_t quality = XESS_QUALITY_SETTING_AA;
+	if ( desc.Scaled() )
+	{
+		// The scale factor behind each setting changes between XeSS versions, so the runtime's own input ranges decide.
+		if ( !m_pXessApi->getOptimalInputResolution )
+			return fail( "XeSS render-resolution scaling (libxess.dll lacks xessGetOptimalInputResolution)", 0 );
+		static const xess_quality_settings_t kScaledSettings[] = { XESS_QUALITY_SETTING_ULTRA_QUALITY_PLUS, XESS_QUALITY_SETTING_ULTRA_QUALITY, XESS_QUALITY_SETTING_QUALITY,
+			                                                       XESS_QUALITY_SETTING_BALANCED, XESS_QUALITY_SETTING_PERFORMANCE, XESS_QUALITY_SETTING_ULTRA_PERFORMANCE };
+		uint32_t nBestDistance = ~0u;
+		for ( xess_quality_settings_t setting : kScaledSettings )
+		{
+			xess_2d_t optimal{}, minimum{}, maximum{};
+			if ( m_pXessApi->getOptimalInputResolution( hContext, &output, setting, &optimal, &minimum, &maximum ) != XESS_RESULT_SUCCESS )
+				continue; // a setting this runtime does not know
+			if ( desc.renderWidth < minimum.x || desc.renderWidth > maximum.x || desc.renderHeight < minimum.y || desc.renderHeight > maximum.y )
+				continue;
+			const uint32_t nDistance = ( optimal.x > desc.renderWidth ? optimal.x - desc.renderWidth : desc.renderWidth - optimal.x ) + ( optimal.y > desc.renderHeight ? optimal.y - desc.renderHeight : desc.renderHeight - optimal.y );
+			if ( nDistance < nBestDistance )
+			{
+				nBestDistance = nDistance;
+				quality = setting;
+			}
+		}
+		if ( quality == XESS_QUALITY_SETTING_AA )
+			return fail( "XeSS input range check (no quality setting accepts the render size)", static_cast<int>( desc.renderWidth ) );
+		if ( m_bVerbose )
+			Msg( "ShaderAPIDX12 upscaler: XeSS quality setting %d for %ux%u\n", static_cast<int>( quality ), desc.renderWidth, desc.renderHeight );
+	}
 	xess_d3d12_init_params_t init{};
-	init.outputResolution = { desc.width, desc.height };
-	init.qualitySetting = XESS_QUALITY_SETTING_AA;
-	// Linear scRGB input (no LDR flag), output-resolution jitter-free motion vectors (no JITTERED_MV flag).
-	init.initFlags = XESS_INIT_FLAG_HIGH_RES_MV | XESS_INIT_FLAG_ENABLE_AUTOEXPOSURE | ( desc.depthInverted ? XESS_INIT_FLAG_INVERTED_DEPTH : 0 );
+	init.outputResolution = output;
+	init.qualitySetting = quality;
+	// Linear scRGB input (no LDR flag), jitter-free motion vectors (no JITTERED_MV flag) at output resolution when
+	// native, at render resolution (with the depth clone) when scaled.
+	init.initFlags = ( desc.Scaled() ? 0 : XESS_INIT_FLAG_HIGH_RES_MV ) | XESS_INIT_FLAG_ENABLE_AUTOEXPOSURE | ( desc.depthInverted ? XESS_INIT_FLAG_INVERTED_DEPTH : 0 );
 	result = m_pXessApi->init( hContext, &init );
 	if ( result != XESS_RESULT_SUCCESS )
 		return fail( "xessD3D12Init", result );
-	xess_2d_t output{ desc.width, desc.height }, input{};
-	result = m_pXessApi->getInputResolution( hContext, &output, XESS_QUALITY_SETTING_AA, &input );
-	if ( result != XESS_RESULT_SUCCESS )
-		return fail( "xessGetInputResolution", result );
-	if ( input.x != desc.width || input.y != desc.height )
-		return fail( "XeSS AA native input resolution check", static_cast<int>( input.x ) );
-	// _rt_MotionVectors holds current-minus-previous UV; XeSS wants previous-minus-current pixels.
-	result = m_pXessApi->setVelocityScale( hContext, -static_cast<float>( desc.width ), -static_cast<float>( desc.height ) );
+	if ( !desc.Scaled() )
+	{
+		xess_2d_t input{};
+		result = m_pXessApi->getInputResolution( hContext, &output, XESS_QUALITY_SETTING_AA, &input );
+		if ( result != XESS_RESULT_SUCCESS )
+			return fail( "xessGetInputResolution", result );
+		if ( input.x != desc.width || input.y != desc.height )
+			return fail( "XeSS AA native input resolution check", static_cast<int>( input.x ) );
+	}
+	else if ( !EnsureCompute() || !EnsureDepthClone( desc.width, desc.height ) )
+		return fail( "XeSS depth clone", 0 );
+	// _rt_MotionVectors holds current-minus-previous viewport UV; XeSS wants previous-minus-current pixels of the
+	// motion-vector resolution, which is the render size either way.
+	result = m_pXessApi->setVelocityScale( hContext, -static_cast<float>( desc.renderWidth ), -static_cast<float>( desc.renderHeight ) );
 	if ( result != XESS_RESULT_SUCCESS )
 		return fail( "xessSetVelocityScale", result );
 	if ( m_pXessApi->setJitterScale )
@@ -851,7 +1024,7 @@ bool CUpscalerDX12::CreateXeSS( const UpscalerFeatureDescDX12 &desc )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: FSR native-AA context on the provider chosen in LoadFfx, plus its jitter sequence
+// Purpose: FSR context on the provider chosen in LoadFfx, plus its jitter sequence for the render/output ratio
 //-----------------------------------------------------------------------------
 bool CUpscalerDX12::CreateFfx( const UpscalerFeatureDescDX12 &desc )
 {
@@ -872,7 +1045,8 @@ bool CUpscalerDX12::CreateFfx( const UpscalerFeatureDescDX12 &desc )
 	ffxCreateContextDescUpscale create{};
 	create.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
 	create.header.pNext = &backend.header;
-	create.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
+	// Motion vectors are at display resolution only when native; scaled frames write them over the render viewport.
+	create.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | ( desc.Scaled() ? 0 : FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS ) |
 	    ( desc.depthInverted ? FFX_UPSCALE_ENABLE_DEPTH_INVERTED : 0 ) | ( m_bVerbose ? FFX_UPSCALE_ENABLE_DEBUG_CHECKING : 0 );
 	create.maxRenderSize = { desc.width, desc.height };
 	create.maxUpscaleSize = { desc.width, desc.height };
@@ -890,11 +1064,11 @@ bool CUpscalerDX12::CreateFfx( const UpscalerFeatureDescDX12 &desc )
 	provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
 	if ( m_pFfxApi->query( &context, &provider.header ) == FFX_API_RETURN_OK && provider.versionName )
 		Msg( "ShaderAPIDX12 upscaler: FSR context provider %s\n", provider.versionName );
-	// Native AA: render size == display size; the provider supplies its phase count and offsets.
+	// The provider supplies its phase count (8 at native, more as the ratio grows) and offsets.
 	int32_t nPhases = 0;
 	ffxQueryDescUpscaleGetJitterPhaseCount phaseQuery{};
 	phaseQuery.header.type = FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT;
-	phaseQuery.renderWidth = desc.width;
+	phaseQuery.renderWidth = desc.renderWidth;
 	phaseQuery.displayWidth = desc.width;
 	phaseQuery.pOutPhaseCount = &nPhases;
 	if ( m_pFfxApi->query( &context, &phaseQuery.header ) != FFX_API_RETURN_OK || nPhases <= 0 || nPhases > 1024 )
@@ -928,24 +1102,55 @@ bool CUpscalerDX12::CreateFfx( const UpscalerFeatureDescDX12 &desc )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: DLAA feature, created on the private list and waited for
+// Purpose: DLSS feature (DLAA when native) created on the private list and waited for. The quality value follows
+//          the render/output width ratio: DLAA 1, Quality 2/3, Balanced 0.58, Performance 0.5, Ultra Performance
+//          1/3, split at the midpoints.
 //-----------------------------------------------------------------------------
 bool CUpscalerDX12::CreateDlss( const UpscalerFeatureDescDX12 &desc, ID3D12CommandQueue *pQueue )
 {
 	if ( !m_pNgxApi || !m_pNgxApi->dlssParams || !EnsureCompute() || !EnsureDepthClone( desc.width, desc.height ) )
 		return false;
+	NVSDK_NGX_PerfQuality_Value quality = NVSDK_NGX_PerfQuality_Value_DLAA;
+	const char *pszPresetHint = NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA;
+	if ( desc.Scaled() )
+	{
+		const float flRatio = static_cast<float>( desc.renderWidth ) / static_cast<float>( desc.width );
+		if ( flRatio >= .6235f )
+		{
+			quality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+			pszPresetHint = NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality;
+		}
+		else if ( flRatio >= .54f )
+		{
+			quality = NVSDK_NGX_PerfQuality_Value_Balanced;
+			pszPresetHint = NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced;
+		}
+		else if ( flRatio >= .4167f )
+		{
+			quality = NVSDK_NGX_PerfQuality_Value_MaxPerf;
+			pszPresetHint = NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance;
+		}
+		else
+		{
+			quality = NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+			pszPresetHint = NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance;
+		}
+		if ( m_bVerbose )
+			Msg( "ShaderAPIDX12 upscaler: DLSS quality value %d for ratio %.3f\n", static_cast<int>( quality ), flRatio );
+	}
 	NVSDK_NGX_Parameter *p = m_pNgxApi->dlssParams;
 	p->Set( NVSDK_NGX_Parameter_CreationNodeMask, 1u );
 	p->Set( NVSDK_NGX_Parameter_VisibilityNodeMask, 1u );
-	p->Set( NVSDK_NGX_Parameter_Width, desc.width );
-	p->Set( NVSDK_NGX_Parameter_Height, desc.height );
+	p->Set( NVSDK_NGX_Parameter_Width, desc.renderWidth );
+	p->Set( NVSDK_NGX_Parameter_Height, desc.renderHeight );
 	p->Set( NVSDK_NGX_Parameter_OutWidth, desc.width );
 	p->Set( NVSDK_NGX_Parameter_OutHeight, desc.height );
-	p->Set( NVSDK_NGX_Parameter_PerfQualityValue, static_cast<int>( NVSDK_NGX_PerfQuality_Value_DLAA ) );
-	p->Set( NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, static_cast<unsigned int>( NVSDK_NGX_DLSS_Hint_Render_Preset_Default ) );
+	p->Set( NVSDK_NGX_Parameter_PerfQualityValue, static_cast<int>( quality ) );
+	p->Set( pszPresetHint, static_cast<unsigned int>( NVSDK_NGX_DLSS_Hint_Render_Preset_Default ) );
 	p->Set( NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0 );
-	// Linear scRGB, full-resolution motion vectors without jitter, automatic exposure.
-	const int nFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure | ( desc.depthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0 );
+	// Linear scRGB, jitter-free motion vectors at the render size (display size when native), automatic exposure.
+	const int nFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure | ( desc.depthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0 ) |
+	    ( desc.Scaled() ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0 );
 	p->Set( NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, nFlags );
 	ID3D12GraphicsCommandList *pList = BeginImmediate();
 	if ( !pList )
@@ -972,6 +1177,12 @@ bool CUpscalerDX12::ProviderJitter( uint64_t nIndex, float &flX, float &flY ) co
 {
 	if ( m_State != State::Ready )
 		return false;
+	if ( m_Feature.kind == UpscalerKindDX12::SmaaT2x )
+	{
+		// Alternate raster-space diagonal shifts (Y down); the reference's camera jitter has the opposite sign.
+		flX = flY = ( nIndex & 1u ) ? -.25f : .25f;
+		return true;
+	}
 	if ( m_Feature.kind == UpscalerKindDX12::DLSS )
 	{
 		// DLAA converges better on a longer sequence than the backend's default eight phases.
@@ -1035,11 +1246,11 @@ bool CUpscalerDX12::PrepareNr( const DlssNrTuningDX12 &tuning, uint32_t nLayers,
 	pChain->height = nHeight;
 	pChain->source = pSource;
 	// The model reads an sRGB-encoded display-referred proxy; it is stored in the scene's FP16 format as the fork does.
-	pChain->proxy = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kNpsr );
-	pChain->answer = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav );
-	pChain->out[0] = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav );
+	pChain->proxy = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kNpsr, "DX12 DLSS-NR proxy" );
+	pChain->answer = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav, "DX12 DLSS-NR answer" );
+	pChain->out[0] = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav, "DX12 DLSS-NR output 0" );
 	if ( nLayers > 1 )
-		pChain->out[1] = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav );
+		pChain->out[1] = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav, "DX12 DLSS-NR output 1" );
 	if ( !pChain->proxy || !pChain->answer || !pChain->out[0] || ( nLayers > 1 && !pChain->out[1] ) )
 	{
 		Warning( "ShaderAPIDX12 upscaler: DLSS-NR chain textures %ux%u failed\n", nWidth, nHeight );
@@ -1146,13 +1357,36 @@ void CUpscalerDX12::WriteDescriptors( const UpscalerDispatchDX12 &d ) const
 		uav( index, 5, u1, DXGI_FORMAT_R32_FLOAT );
 	};
 	// Pass 0: scene depth -> typed R32F clone.
-	pass( 0, NeedsDepthClone( d ) ? d.depth : nullptr, DXGI_FORMAT_R24_UNORM_X8_TYPELESS, nullptr, nullptr, nullptr, NeedsDepthClone( d ) ? m_pDepthClone.Get() : nullptr );
+	if ( NeedsDepthClone( d ) )
+		pass( 0, d.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS, nullptr, nullptr, nullptr, m_pDepthClone.Get() );
 	for ( uint32_t layer = 0; layer < d.nrLayers; ++layer )
 	{
 		ID3D12Resource *input = layer ? m_pNrChain->out[( layer - 1 ) & 1].Get() : d.output;
 		ID3D12Resource *output = m_pNrChain->out[layer & 1].Get();
 		pass( 1 + layer * 2, input, color, nullptr, nullptr, m_pNrChain->proxy.Get(), nullptr );                 // encode
 		pass( 2 + layer * 2, m_pNrChain->proxy.Get(), color, m_pNrChain->answer.Get(), input, output, nullptr ); // resolve
+	}
+	if ( m_pSmaa )
+	{
+		const uint32_t base = d.nrLayers ? 1 + 2 * d.nrLayers : 0, write = static_cast<uint32_t>( d.serial & 1u );
+		const auto smaaPass = [&]( uint32_t index, ID3D12Resource *t0, DXGI_FORMAT f0, ID3D12Resource *t1, DXGI_FORMAT f1,
+		                          ID3D12Resource *t2, DXGI_FORMAT f2, ID3D12Resource *t3, DXGI_FORMAT f3,
+		                          ID3D12Resource *u0, DXGI_FORMAT fOut, ID3D12Resource *u1 )
+		{
+			srv( index, 0, t0, f0 );
+			srv( index, 1, t1, f1 );
+			srv( index, 2, t2, f2 );
+			srv( index, 3, t3, f3 );
+			uav( index, 4, u0, fOut );
+			uav( index, 5, u1, color );
+		};
+		smaaPass( base, d.color, color, nullptr, color, nullptr, color, nullptr, color, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, nullptr );
+		smaaPass( base + 1, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, m_pSmaa->area.Get(), DXGI_FORMAT_R8G8_UNORM,
+		    m_pSmaa->search.Get(), DXGI_FORMAT_R8_UNORM, nullptr, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr );
+		smaaPass( base + 2, d.color, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT,
+		    nullptr, color, m_pSmaa->spatial.Get(), color, nullptr );
+		smaaPass( base + 3, m_pSmaa->spatial.Get(), color, m_pSmaa->history[write ^ 1u].Get(), color, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT,
+		    d.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS, d.output, color, m_pSmaa->history[write].Get() );
 	}
 }
 
@@ -1177,7 +1411,7 @@ bool CUpscalerDX12::RecordDispatch( CCommandRecorderDX12 &recorder, const Upscal
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Binds the compute root/pipeline/tables for pass `nPass` and dispatches over the scene
+// Purpose: Binds the compute root/pipeline/tables for pass `nPass` and dispatches over the constants' extent
 //-----------------------------------------------------------------------------
 void CUpscalerDX12::BindCompute( ID3D12GraphicsCommandList *pList, const UpscalerDispatchDX12 &d, ID3D12PipelineState *pPso, uint32_t nPass, const NrConstantsDX12 &constants ) const
 {
@@ -1192,7 +1426,7 @@ void CUpscalerDX12::BindCompute( ID3D12GraphicsCommandList *pList, const Upscale
 	pList->SetComputeRoot32BitConstants( 0, sizeof( constants ) / 4, &constants, 0 );
 	pList->SetComputeRootDescriptorTable( 1, srvs );
 	pList->SetComputeRootDescriptorTable( 2, uavs );
-	pList->Dispatch( ( d.width + 7 ) / 8, ( d.height + 7 ) / 8, 1 );
+	pList->Dispatch( ( constants.width + 7 ) / 8, ( constants.height + 7 ) / 8, 1 );
 }
 
 //-----------------------------------------------------------------------------
@@ -1204,10 +1438,10 @@ void CUpscalerDX12::ReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device 
 	memcpy( &payload, pPayload, sizeof( payload ) );
 	const UpscalerDispatchDX12 &d = payload.dispatch;
 	const CUpscalerDX12 &owner = *payload.owner;
-	// XeSS with high-resolution motion vectors takes no depth; FSR reads it through its R24 SRV mapping; DLSS and
-	// DLSS-NR read the typed clone written from it here.
+	// Native XeSS (high-resolution motion vectors) takes no depth; FSR reads it through its R24 SRV mapping; DLSS,
+	// scaled XeSS and DLSS-NR read the typed clone written from the render region here.
 	const bool bClone = owner.NeedsDepthClone( d );
-	const bool bDepthInput = owner.m_Feature.kind == UpscalerKindDX12::FSR || bClone;
+	const bool bDepthInput = owner.m_Feature.kind == UpscalerKindDX12::FSR || owner.m_Feature.kind == UpscalerKindDX12::SmaaT2x || bClone;
 	const D3D12_RESOURCE_STATES depthDuring = bDepthInput ? kRead : D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	D3D12_RESOURCE_BARRIER barriers[8];
 	UINT nCount = 0;
@@ -1221,8 +1455,8 @@ void CUpscalerDX12::ReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device 
 	if ( bClone )
 	{
 		NrConstantsDX12 constants{};
-		constants.width = d.width;
-		constants.height = d.height;
+		constants.width = d.renderWidth;
+		constants.height = d.renderHeight;
 		owner.BindCompute( pList, d, owner.m_pDepthPso.Get(), 0, constants );
 		Transition( pList, owner.m_pDepthClone.Get(), kUav, kNpsr );
 	}
@@ -1350,12 +1584,66 @@ uint32_t CUpscalerDX12::ExecuteNr( ID3D12GraphicsCommandList *pList, const Upsca
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Reference SMAA 1x at the current T2x subsample, followed by our HDR temporal resolve
+//-----------------------------------------------------------------------------
+uint32_t CUpscalerDX12::ExecuteSmaa( ID3D12GraphicsCommandList *pList, const UpscalerDispatchDX12 &d ) const noexcept
+{
+	if ( !m_pSmaa )
+		return kReplayNoContext;
+	SmaaState &state = *m_pSmaa;
+	SmaaConstantsDX12 constants{};
+	constants.metrics[0] = 1.f / d.width;
+	constants.metrics[1] = 1.f / d.height;
+	constants.metrics[2] = static_cast<float>( d.width );
+	constants.metrics[3] = static_cast<float>( d.height );
+	constants.jitter[0] = d.jitter[0];
+	constants.jitter[1] = d.jitter[1];
+	constants.cameraNear = d.cameraNear;
+	constants.cameraFar = d.cameraFar;
+	constants.reset = d.reset || state.lastFrame == ~0ull || state.lastFrame + 1 != d.frame || state.lastSerial + 1 != d.serial;
+	// Reference demo: negative raster X uses area 1, positive X area 2 (camera jitter is opposite).
+	// An unjittered reset frame uses the SMAA 1x area.
+	constants.subsample = d.jitter[0] > 0.f ? 2u : d.jitter[0] < 0.f ? 1u : 0u;
+	constants.depthInverted = m_Feature.depthInverted;
+	const uint32_t base = d.nrLayers ? 1 + 2 * d.nrLayers : 0, write = static_cast<uint32_t>( d.serial & 1u );
+	ID3D12Resource *const targets[] = { state.edges.Get(), state.weights.Get(), state.spatial.Get() };
+	pList->SetComputeRootSignature( m_pComputeRoot.Get() );
+	ID3D12DescriptorHeap *heap = d.heap;
+	pList->SetDescriptorHeaps( 1, &heap );
+	pList->SetComputeRoot32BitConstants( 0, sizeof( constants ) / 4, &constants, 0 );
+	for ( uint32_t pass = 0; pass < 4; ++pass )
+	{
+		if ( pass < 3 )
+			Transition( pList, targets[pass], kNpsr, kUav );
+		else
+			Transition( pList, state.history[write].Get(), kNpsr, kUav );
+		D3D12_GPU_DESCRIPTOR_HANDLE srvs = d.gpu;
+		srvs.ptr += static_cast<UINT64>( ( base + pass ) * kPassDescriptors ) * m_nDescriptorStride;
+		D3D12_GPU_DESCRIPTOR_HANDLE uavs = srvs;
+		uavs.ptr += static_cast<UINT64>( 4 ) * m_nDescriptorStride;
+		pList->SetPipelineState( m_pSmaaPso[pass].Get() );
+		pList->SetComputeRootDescriptorTable( 1, srvs );
+		pList->SetComputeRootDescriptorTable( 2, uavs );
+		pList->Dispatch( ( d.width + 7 ) / 8, ( d.height + 7 ) / 8, 1 );
+		if ( pass < 3 )
+			Transition( pList, targets[pass], kUav, kNpsr );
+		else
+			Transition( pList, state.history[write].Get(), kUav, kNpsr );
+	}
+	state.lastFrame = d.frame;
+	state.lastSerial = d.serial;
+	return 0;
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Evaluates the active temporal-AA provider; 0 on success, otherwise a folded failure code
 //-----------------------------------------------------------------------------
 uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const UpscalerDispatchDX12 &d ) const noexcept
 {
 	switch ( m_Feature.kind )
 	{
+	case UpscalerKindDX12::SmaaT2x:
+		return ExecuteSmaa( pList, d );
 	case UpscalerKindDX12::XeSS:
 	{
 		if ( !m_pXessContext )
@@ -1363,14 +1651,14 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 		xess_d3d12_execute_params_t params{};
 		params.pColorTexture = d.color;
 		params.pVelocityTexture = d.motion;
-		params.pDepthTexture = nullptr;
+		params.pDepthTexture = m_Feature.Scaled() ? m_pDepthClone.Get() : nullptr;
 		params.pOutputTexture = d.output;
 		params.jitterOffsetX = d.jitter[0];
 		params.jitterOffsetY = d.jitter[1];
 		params.exposureScale = 1.f;
 		params.resetHistory = d.reset ? 1u : 0u;
-		params.inputWidth = d.width;
-		params.inputHeight = d.height;
+		params.inputWidth = d.renderWidth;
+		params.inputHeight = d.renderHeight;
 		const xess_result_t result = m_pXessApi->execute( static_cast<xess_context_handle_t>( m_pXessContext ), pList, &params );
 		return result == XESS_RESULT_SUCCESS ? 0u : 0x20000u | ( static_cast<uint32_t>( -static_cast<int>( result ) ) & 0xffffu );
 	}
@@ -1387,7 +1675,7 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 		dispatch.output = ffxApiGetResourceDX12( d.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS );
 		dispatch.jitterOffset = { d.jitter[0], d.jitter[1] };
 		dispatch.motionVectorScale = { d.motionScale[0], d.motionScale[1] };
-		dispatch.renderSize = { d.width, d.height };
+		dispatch.renderSize = { d.renderWidth, d.renderHeight };
 		dispatch.upscaleSize = { d.width, d.height };
 		dispatch.enableSharpening = false;
 		dispatch.sharpness = 0.f;
@@ -1417,8 +1705,8 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 		p->Set( NVSDK_NGX_Parameter_MV_Scale_X, d.motionScale[0] );
 		p->Set( NVSDK_NGX_Parameter_MV_Scale_Y, d.motionScale[1] );
 		p->Set( NVSDK_NGX_Parameter_Reset, d.reset ? 1 : 0 );
-		p->Set( NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, d.width );
-		p->Set( NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, d.height );
+		p->Set( NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, d.renderWidth );
+		p->Set( NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, d.renderHeight );
 		p->Set( NVSDK_NGX_Parameter_Sharpness, 0.f );
 		p->Set( NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.f );
 		p->Set( NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.f );
@@ -1437,6 +1725,8 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 void CUpscalerDX12::ReleaseFeature()
 {
 	ReleaseNr();
+	delete m_pSmaa;
+	m_pSmaa = nullptr;
 	// Each context is only created after its provider API was loaded, and the APIs outlive every context.
 	if ( m_pXessContext )
 		m_pXessApi->destroyContext( static_cast<xess_context_handle_t>( m_pXessContext ) );
@@ -1502,6 +1792,8 @@ void CUpscalerDX12::Shutdown()
 	m_nImmediateValue = 0;
 	m_pNrPso.Reset();
 	m_pDepthPso.Reset();
+	for ( auto &pso : m_pSmaaPso )
+		pso.Reset();
 	m_pComputeRoot.Reset();
 	m_pDevice = nullptr;
 	m_nVendor = m_nDeviceId = 0;
@@ -1599,9 +1891,6 @@ void CShaderAPIDX12::SampleUpscalerJitter()
 	m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 	// The first frame after enable/reset renders unjittered; jitter starts only once the previous frame's
 	// dispatch replayed successfully, so no unfiltered jittered frame reaches the screen.
-	if ( !m_bUpscalerViewEligible || m_bUpscalerHistoryGap || m_UpscalerKind == UpscalerKindDX12::None || !m_pDevice || m_pDevice->SceneSampleCount() != 1 ||
-	    m_nUpscalerQueuedFrame == m_nFrameCounter || m_nUpscalerLastDispatchFrame == ~0ull || m_nUpscalerLastSuccessFrame != m_nUpscalerLastDispatchFrame )
-		return;
 	const uint64_t nIndex = m_nUpscalerJitterIndex++;
 	float flX = 0.f, flY = 0.f;
 	if ( !m_Upscaler.ProviderJitter( nIndex, flX, flY ) )
@@ -1753,7 +2042,7 @@ bool CShaderAPIDX12::EnsureUpscalerOutput( UINT nWidth, UINT nHeight )
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-	const HRESULT hr = m_pDevice->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS( &m_pUpscalerOutput ) );
+	const HRESULT hr = CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS( &m_pUpscalerOutput ), "upscaler", "DX12 upscaler output" );
 	if ( FAILED( hr ) )
 	{
 		Warning( "ShaderAPIDX12 upscaler: output %ux%u creation failed (0x%08x)\n", nWidth, nHeight, static_cast<unsigned>( hr ) );
@@ -1766,7 +2055,24 @@ bool CShaderAPIDX12::EnsureUpscalerOutput( UINT nWidth, UINT nHeight )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Arms (nMode 1-4) or disarms (0) the upscaler for the view being begun; loads providers on first use
+// Purpose: Changes the global sampler bias only when its value changes. Texture records
+//          re-key their cached sampler descriptor on this epoch, so frames with a stable
+//          provider do not rebuild sampler state.
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::SetUpscalerLodBias( float bias )
+{
+	bias = Clamp( bias, -2.f, 0.f );
+	if ( bias == m_flUpscalerLodBias )
+		return;
+	m_flUpscalerLodBias = bias;
+	++m_nUpscalerLodBiasEpoch;
+	if ( !m_nUpscalerLodBiasEpoch )
+		m_nUpscalerLodBiasEpoch = 1;
+	++m_nTextureStateEpoch;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Arms (nMode 1-5) or disarms (0) the upscaler for the view being begun; loads providers on first use
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetUpscalerMode( int nMode )
 {
@@ -1774,7 +2080,7 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 	m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 	if ( !m_pDevice || !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() )
 		return;
-	if ( nMode < 0 || nMode > 4 )
+	if ( nMode < 0 || nMode > 5 )
 		nMode = 0;
 	// Jitter sampling needs the previous dispatch's result; mode 0 only disarms and never waits on the worker.
 	ConsumeUpscalerReplays( nMode != 0 );
@@ -1786,7 +2092,10 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 	if ( !nMode )
 	{
 		if ( m_nUpscalerEnabledFrame != m_nFrameCounter )
+		{
+			SetUpscalerLodBias( 0.f );
 			m_RenderingInts[INT_RENDERPARM_DX12_UPSCALE_STATUS] = m_RenderingInts[INT_RENDERPARM_DX12_NR_STATUS] = 0;
+		}
 		return;
 	}
 	m_nUpscalerEnabledFrame = m_nFrameCounter;
@@ -1824,6 +2133,7 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 		else
 			Warning( "ShaderAPIDX12 upscaler: mode %d has no available provider on this adapter\n", nMode );
 	}
+	SetUpscalerLodBias( kind == UpscalerKindDX12::None ? 0.f : m_RenderingFloats[FLOAT_RENDERPARM_DX12_UPSCALE_LOD_BIAS] );
 	// The eligible main view was begun this frame; SampleUpscalerJitter and DispatchUpscaler handle a missing provider.
 	m_bUpscalerViewEligible = true;
 	if ( kind == UpscalerKindDX12::None )
@@ -1838,7 +2148,9 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Validates this frame's inputs and records one provider dispatch (plus DLSS-NR layers) over the scene
+// Purpose: Validates this frame's inputs and records one provider dispatch (plus DLSS-NR layers) over the scene.
+//          The render-size floats select the input viewport; a scaled frame whose dispatch is rejected here is
+//          stretched over the scene so the caller's full-resolution passes still see a whole image.
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 {
@@ -1846,7 +2158,17 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		return;
 	int &nStatus = m_RenderingInts[INT_RENDERPARM_DX12_UPSCALE_STATUS];
 	int &nNrStatus = m_RenderingInts[INT_RENDERPARM_DX12_NR_STATUS];
-	// Every rejection records no command bytes and breaks the history; requested DLSS-NR layers report -3.
+	const float *pCamera = m_RenderingFloats;
+	// Render size: the client's viewport at (0, 0) of the scene-sized targets; <= 0 or >= the scene size is native.
+	const UINT nWidth = m_pDevice ? static_cast<UINT>( m_pDevice->SceneWidth() ) : 0u, nHeight = m_pDevice ? static_cast<UINT>( m_pDevice->SceneHeight() ) : 0u;
+	UINT nRenderWidth = nWidth, nRenderHeight = nHeight;
+	if ( nWidth && nHeight && pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_WIDTH] > 0.f && pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_HEIGHT] > 0.f )
+	{
+		nRenderWidth = Clamp( static_cast<UINT>( pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_WIDTH] + .5f ), 1u, nWidth );
+		nRenderHeight = Clamp( static_cast<UINT>( pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_HEIGHT] + .5f ), 1u, nHeight );
+	}
+	const bool bScaled = nRenderWidth < nWidth || nRenderHeight < nHeight;
+	// Every rejection records no provider bytes and breaks the history; requested DLSS-NR layers report -3.
 	const auto reject = [&]( int nCode, const char *pszWhy )
 	{
 		if ( nStatus != nCode )
@@ -1855,6 +2177,8 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = true;
 		m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 		nNrStatus = Field( m_RenderingInts[INT_RENDERPARM_DX12_NR_CONFIG], DX12_NR_CONFIG_LAYERS_SHIFT, 4 ) ? -3 : 0;
+		if ( bScaled )
+			StretchUpscalerInput( nRenderWidth, nRenderHeight, nWidth, nHeight );
 	};
 	if ( !m_bUpscalerViewEligible || m_nUpscalerFrameToken != m_nFrameCounter )
 		return reject( -4, "no eligible main view was begun this frame" );
@@ -1862,19 +2186,20 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		return reject( -3, "MSAA is active" );
 	if ( !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() || m_RenderTargets[0] != SHADER_RENDERTARGET_BACKBUFFER || !m_pDevice->SceneColor() || !m_pDevice->SceneDepth() )
 		return reject( -4, "render target 0 is not the scene or the caller does not own recording" );
-	const UINT nWidth = static_cast<UINT>( m_pDevice->SceneWidth() ), nHeight = static_cast<UINT>( m_pDevice->SceneHeight() );
 	TextureRecord *pMotion = m_nMotionResolvedFrame == m_nFrameCounter ? FindTexture( m_hMotionResolvedHandle ) : nullptr;
 	if ( !pMotion || !( pMotion->flags & TEXTURE_CREATE_RENDERTARGET ) || pMotion->format != IMAGE_FORMAT_RGBA16161616F || pMotion->width != static_cast<int>( nWidth ) ||
 	    pMotion->height != static_cast<int>( nHeight ) || !EnsureTextureResident( *pMotion ) || !pMotion->resource )
 		return reject( -5, "no scene-sized motion-vector resolve this frame" );
 	if ( m_UpscalerKind == UpscalerKindDX12::None )
 		return reject( -1, "no provider for the selected mode" );
+	if ( bScaled && m_UpscalerKind == UpscalerKindDX12::SmaaT2x )
+		return reject( -2, "SMAA T2x requires native resolution" );
 	if ( m_nUpscalerQueuedFrame == m_nFrameCounter )
 		return; // one dispatch per frame
 	float flDerivedNear = 0.f, flDerivedFar = 0.f, flDerivedFov = 0.f;
 	bool bInverted = false;
 	ProjectionDepthRange( m_Matrices[MATERIAL_PROJECTION], flDerivedNear, flDerivedFar, bInverted, flDerivedFov );
-	const UpscalerFeatureDescDX12 desc{ m_UpscalerKind, nWidth, nHeight, bInverted };
+	const UpscalerFeatureDescDX12 desc{ m_UpscalerKind, nWidth, nHeight, nRenderWidth, nRenderHeight, bInverted };
 	if ( m_Upscaler.Feature().kind != UpscalerKindDX12::None && m_Upscaler.Feature() != desc )
 		ReleaseUpscalerFeature();
 	if ( !EnsureUpscalerOutput( nWidth, nHeight ) )
@@ -1882,7 +2207,15 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	if ( !m_Upscaler.PrepareFeature( desc, m_pDevice->Queue() ) )
 		return reject( -2, "provider feature creation failed" );
 	DlssNrComposeDX12 compose;
-	const uint32_t nNrLayers = PrepareUpscalerNr( compose );
+	uint32_t nNrLayers = 0;
+	if ( bScaled )
+	{
+		// DLSS-NR reads scene-sized depth and motion vectors beside the output; a scaled frame has neither.
+		nNrStatus = Field( m_RenderingInts[INT_RENDERPARM_DX12_NR_CONFIG], DX12_NR_CONFIG_LAYERS_SHIFT, 4 ) ? -3 : 0;
+		m_bUpscalerNrHistoryGap = true;
+	}
+	else
+		nNrLayers = PrepareUpscalerNr( compose );
 	FlushBufferedPrimitives();
 	CommitTransforms();
 	CCommandRecorderDX12 *pList = m_pDevice->CommandList();
@@ -1891,7 +2224,6 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	while ( m_nUpscalerPendingSerial + 1 - m_nUpscalerConsumedSerial > kUpscalerReplaySlots )
 		ConsumeUpscalerReplays( true );
 	const int nFaces = ( pMotion->flags & TEXTURE_CREATE_CUBEMAP ) ? 6 : 1, nSub = pMotion->currentCopy * nFaces * pMotion->mipLevels;
-	const float *pCamera = m_RenderingFloats;
 	UpscalerDispatchDX12 d;
 	d.color = m_pDevice->SceneColor();
 	d.colorBefore = m_pDevice->SceneColorState();
@@ -1903,9 +2235,9 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	d.outputBefore = m_UpscalerOutputState;
 	d.jitter[0] = m_UpscalerJitter[0];
 	d.jitter[1] = m_UpscalerJitter[1];
-	// _rt_MotionVectors.xy = current - previous in UV; providers take previous - current in pixels.
-	d.motionScale[0] = -static_cast<float>( nWidth );
-	d.motionScale[1] = -static_cast<float>( nHeight );
+	// _rt_MotionVectors.xy = current - previous in viewport UV; providers take previous - current in render pixels.
+	d.motionScale[0] = -static_cast<float>( nRenderWidth );
+	d.motionScale[1] = -static_cast<float>( nRenderHeight );
 	d.fovY = pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FOV_Y] > 0.f ? pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FOV_Y] : flDerivedFov;
 	d.cameraNear = pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_NEAR] > 0.f ? pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_NEAR] : flDerivedNear;
 	d.cameraFar = pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FAR] > 0.f ? pCamera[FLOAT_RENDERPARM_DX12_UPSCALE_FAR] : flDerivedFar;
@@ -1914,6 +2246,8 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	d.frameTimeMs = m_flUpscalerLastDispatchTime > 0.0 ? static_cast<float>( Clamp( ( flNow - m_flUpscalerLastDispatchTime ) * 1000.0, 1.0, 100.0 ) ) : 16.6667f;
 	d.width = nWidth;
 	d.height = nHeight;
+	d.renderWidth = nRenderWidth;
+	d.renderHeight = nRenderHeight;
 	d.reset = ( nFlags & DX12_UPSCALE_DISPATCH_RESET ) != 0 || m_bUpscalerHistoryGap;
 	d.nrLayers = nNrLayers;
 	d.nr = compose;
@@ -1921,8 +2255,8 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	d.nrReset = d.reset || m_bUpscalerNrHistoryGap || compose.reversibleMode != m_nUpscalerNrLastReversible;
 	if ( m_Upscaler.NeedsDescriptors( d ) )
 	{
-		const DescriptorRangeDX12 range = m_Pipeline.AllocateTransientResources( CUpscalerDX12::DescriptorCount( nNrLayers ), m_pDevice->NextFenceValue() );
-		if ( range.count != CUpscalerDX12::DescriptorCount( nNrLayers ) )
+		const DescriptorRangeDX12 range = m_Pipeline.AllocateTransientResources( m_Upscaler.DescriptorCount( nNrLayers ), m_pDevice->NextFenceValue() );
+		if ( range.count != m_Upscaler.DescriptorCount( nNrLayers ) )
 			return reject( -2, "descriptor allocation failed" );
 		d.heap = m_Pipeline.ResourceDescriptorHeap();
 		d.cpu = range.cpu;
@@ -1937,7 +2271,10 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	d.frame = m_nFrameCounter;
 	d.serial = nSerial;
 	d.result = &m_UpscalerReplay[nSerial % kUpscalerReplaySlots];
-	if ( !m_Upscaler.RecordDispatch( *pList, d ) )
+	BeginPIXEvent( 0, "Temporal AA" );
+	const bool bRecorded = m_Upscaler.RecordDispatch( *pList, d );
+	EndPIXEvent();
+	if ( !bRecorded )
 		return reject( -2, "provider feature not ready" );
 	m_nUpscalerPendingSerial = nSerial;
 	// Flushed now so a later wait for this result only waits for this chunk's replay.
@@ -1972,6 +2309,26 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Record-time fallback for a scaled frame whose dispatch was rejected: stretches the rendered viewport
+//          bilinearly over the whole scene colour. BlitTexture refuses src == dst, so the stretch lands in the
+//          scene-sized upscaler output and is copied back; the scene colour ends in RENDER_TARGET either way.
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::StretchUpscalerInput( UINT nRenderWidth, UINT nRenderHeight, UINT nWidth, UINT nHeight )
+{
+	if ( !m_pDevice || !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() || !m_pDevice->SceneColor() || !EnsureUpscalerOutput( nWidth, nHeight ) )
+		return;
+	FlushBufferedPrimitives();
+	const Rect_t renderRect{ 0, 0, static_cast<int>( nRenderWidth ), static_cast<int>( nRenderHeight ) }, sceneRect{ 0, 0, static_cast<int>( nWidth ), static_cast<int>( nHeight ) };
+	ID3D12Resource *pScene = m_pDevice->SceneColor(), *pScratch = m_pUpscalerOutput.Get();
+	D3D12_RESOURCE_STATES sceneState = m_pDevice->SceneColorState(); // tracked by the device for the scene itself
+	const bool bStretched = BlitTexture( pScene, sceneState, true, CShaderDeviceDX12::kSceneImageFormat, pScratch, m_UpscalerOutputState, false, CShaderDeviceDX12::kSceneImageFormat, renderRect, sceneRect, false, false ) &&
+	    BlitTexture( pScratch, m_UpscalerOutputState, false, CShaderDeviceDX12::kSceneImageFormat, pScene, sceneState, true, CShaderDeviceDX12::kSceneImageFormat, sceneRect, sceneRect, false, false );
+	m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
+	if ( !bStretched )
+		Warning( "ShaderAPIDX12 upscaler: fallback stretch %ux%u -> %ux%u failed\n", nRenderWidth, nRenderHeight, nWidth, nHeight );
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Drops the feature and output after a whole frame without a nonzero mode submission
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReleaseIdleUpscaler()
@@ -1981,6 +2338,7 @@ void CShaderAPIDX12::ReleaseIdleUpscaler()
 	if ( m_nUpscalerEnabledFrame == ~0ull || m_nUpscalerEnabledFrame + 1 >= m_nFrameCounter )
 		return;
 	m_nUpscalerEnabledFrame = ~0ull;
+	SetUpscalerLodBias( 0.f );
 	if ( m_Upscaler.Feature().kind != UpscalerKindDX12::None || m_pUpscalerOutput )
 	{
 		ReleaseUpscalerFeature();
@@ -2010,6 +2368,7 @@ void CShaderAPIDX12::ReleaseUpscalerResources()
 	m_nUpscalerMode = m_nUpscalerSelectedMode = 0;
 	m_UpscalerKind = UpscalerKindDX12::None;
 	m_nUpscalerEnabledFrame = ~0ull;
+	SetUpscalerLodBias( 0.f );
 	m_bUpscalerViewEligible = false;
 	m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = true;
 	m_bUpscalerNrFailed = m_bUpscalerNrUnavailableLogged = false;

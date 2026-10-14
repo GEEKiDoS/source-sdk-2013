@@ -42,6 +42,7 @@
 #include "tier0/icommandline.h"
 #include "ienginevgui.h"
 #include "postprocess_dx12.h"
+#include "upscaler_dx12.h"
 #include <vgui_controls/Controls.h>
 #include <vgui/ISurface.h>
 #include "ScreenSpaceEffects.h"
@@ -1109,7 +1110,9 @@ void CViewRender::Render( vrect_t *rect )
 
 	    ToolFramework_AdjustEngineViewport( vr.x, vr.y, vr.width, vr.height );
 
-	    float flViewportScale = mat_viewportscale.GetFloat();
+	    // The temporal upscaler's render scale shrinks the 3D viewport like mat_viewportscale; RenderView switches back
+	    // to the unscaled viewport once the upscaler has reconstructed the frame.
+	    float flViewportScale = mat_viewportscale.GetFloat() * UpscalerDX12_RenderScale();
 
 		viewEye.m_nUnscaledX = vr.x;
 		viewEye.m_nUnscaledY = vr.y;
@@ -1303,7 +1306,7 @@ CON_COMMAND( spec_pos, "dump position and angles to the console" )
 		vecOrigin.z, angles.x, angles.y );
 }
 
-CON_COMMAND( getpos, "dump position and angles to the console" )
+CON_COMMAND( getpos, "dump position and angles to the console as setpos/setang commands (getpos 2: setpos_exact/setang_exact)" )
 {
 	Vector vecOrigin;
 	QAngle angles;
@@ -1315,6 +1318,12 @@ CON_COMMAND( getpos, "dump position and angles to the console" )
 	{
 		pCommand1 = "setpos_exact";
 		pCommand2 = "setang_exact";
+	}
+	else if ( C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer() )
+	{
+		// setpos places the player origin (feet), not the eye, so print the origin; the printed command then
+		// reproduces this view instead of landing one view offset (64 units standing) higher.
+		vecOrigin = pPlayer->GetAbsOrigin();
 	}
 
 	Warning( "%s %f %f %f;", pCommand1, vecOrigin.x, vecOrigin.y, vecOrigin.z );

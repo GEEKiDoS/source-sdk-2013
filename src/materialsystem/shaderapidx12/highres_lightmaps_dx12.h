@@ -10,25 +10,25 @@ namespace shaderapidx12
 {
 class CShaderDeviceDX12;
 class CShaderAPIDX12;
-// space3: t0 R32_UINT face IDs, t1 faces (160 bytes), t2 tiles (32 bytes),
-// t3 RGBA32F native dynamic page, t4..t7 RGBA16F arrays grouped by 2048/4096/8192/16384.
-// b0: uint4 route (enabled,pageWidth,pageHeight,0), float4 modelToWorld[3],
+// space3: t0 R32_UINT face IDs, t1 faces (132 bytes), t2 tiles (12 bytes),
+// t3 lazily resident RGBA32F native dynamic page, t4..t7 power-of-two cropped RGBA16F arrays.
+// b0: uint4 route (bit0 enabled/bit1 dynamic,pageWidth,pageHeight,page+1), float4 modelToWorld[3],
 // float4 lightstyles[16]; s0 linear-clamp. One immutable table per native page/recording.
 struct HlightFaceGpuDX12
 {
-    uint32 nativeRect[4]; // interior x/y, native extent S/T
-    uint32 dimensionsFlags[4]; // high W/H; low16 face flags + high16 unbaked count; bit0 pose + (raw byteOffset/4)<<1
-    uint32 styles[4];
+    uint32 owner[4]; // packed 16-bit origin S/T, extent S/T; flags/count; pose/overflow offset
+    uint32 styles; // four byte-sized style IDs; 255 terminates
     uint32 tiles[16];
     float bakedModelToWorld[12];
 };
 struct HlightTileGpuDX12
 {
-    uint32 address[4]; // group,arraySlice,interior x/y
-    uint32 size[4]; // high W/H,pageSide,reserved
+    uint32 address; // bits0..1 group, 2..12 slice, 16..19 log2 width, 20..23 log2 height
+    uint32 origin; // 16-bit interior x/y
+    uint32 extent; // 16-bit high W/H
 };
-COMPILE_TIME_ASSERT(sizeof(HlightFaceGpuDX12) == 160);
-COMPILE_TIME_ASSERT(sizeof(HlightTileGpuDX12) == 32);
+COMPILE_TIME_ASSERT(sizeof(HlightFaceGpuDX12) == 132);
+COMPILE_TIME_ASSERT(sizeof(HlightTileGpuDX12) == 12);
 struct StaticPropDirectMetadataDX12
 {
     uint32 direct[4] = {~0u,0,0,0}; // radiance byte offset, angular-plane stride, unbaked offset/count

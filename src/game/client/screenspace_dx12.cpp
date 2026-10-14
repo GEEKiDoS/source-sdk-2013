@@ -22,12 +22,14 @@ extern ConVar building_cubemaps;
 
 static ConVar r_ssr( "r_ssr", "1", FCVAR_ARCHIVE, "DX12: screen-space reflections on reflective opaque PBR materials", true, 0, true, 1 );
 static ConVar r_ssr_quality( "r_ssr_quality", "1", FCVAR_ARCHIVE, "SSR quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
+static ConVar r_ssr_resolution( "r_ssr_resolution", "1", FCVAR_ARCHIVE, "SSR trace resolution per axis relative to the quality profile: 1 unchanged, 0.5 half, 0.25 quarter; ray quality stays unchanged", true, 0.25f, true, 1.f );
 static ConVar r_ssr_max_distance( "r_ssr_max_distance", "1024", FCVAR_ARCHIVE, "SSR ray distance in Source units", true, 16.f, true, 2048.f );
 static ConVar r_ssr_thickness( "r_ssr_thickness", "2", FCVAR_ARCHIVE, "SSR depth thickness in Source units", true, 0.1f, true, 16.f );
 static ConVar r_contactshadows( "r_contactshadows", "0", FCVAR_ARCHIVE, "DX12: screen-space contact shadows for shadowmapped direct lights", true, 0, true, 1 );
 static ConVar r_contactshadows_quality( "r_contactshadows_quality", "1", FCVAR_ARCHIVE, "Contact-shadow quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
 static ConVar r_contactshadows_length( "r_contactshadows_length", "16", FCVAR_ARCHIVE, "Contact-shadow ray distance in Source units", true, 1.f, true, 64.f );
 static ConVar r_contactshadows_thickness( "r_contactshadows_thickness", "1", FCVAR_ARCHIVE, "Contact-shadow depth thickness in Source units", true, 0.1f, true, 8.f );
+static ConVar r_depth_prepass( "r_depth_prepass", "1", FCVAR_ARCHIVE, "DX12: replay normal main-view opaque geometry into depth before shading (same LOD and alpha coverage)", true, 0, true, 1 );
 
 static ConVar r_volumetric( "r_volumetric", "1", FCVAR_ARCHIVE, "DX12: additive volumetric lighting from opted-in shadowmapped lights", true, 0, true, 1 );
 static ConVar r_volumetric_quality( "r_volumetric_quality", "0", FCVAR_ARCHIVE, "Volumetric quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
@@ -78,6 +80,16 @@ bool ScreenSpaceDX12_Available()
 	return s_pScreenSpace != nullptr;
 }
 
+IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_GetAPI()
+{
+	return s_pScreenSpace;
+}
+
+IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_DepthPrepass()
+{
+	return r_depth_prepass.GetBool() ? s_pScreenSpace : nullptr;
+}
+
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRenderContext, const Vector &eye, const Vector &forward, bool &contacts, bool &ssr )
 {
 	contacts = false;
@@ -114,6 +126,7 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 	view.ssr.quality = static_cast<uint32>( r_ssr_quality.GetInt() );
 	view.ssr.maxDistance = r_ssr_max_distance.GetFloat();
 	view.ssr.thickness = r_ssr_thickness.GetFloat();
+	view.ssr.resolutionScale = r_ssr_resolution.GetFloat();
 	// Matrices, sample count and depth clear are filled on ordered backend replay.
 	// Submit zero-sized views too: a rejected latest main bracket must invalidate a volume capture.
 	s_pScreenSpace->BeginView( view );
@@ -154,9 +167,10 @@ void ScreenSpaceDX12_BeginVolumetrics( const CViewSetup &view )
 	settings.control[0] = kVolumetricSteps[r_volumetric_quality.GetInt()];
 	settings.control[1] = bSunEnabled && settings.sunMedium[0] > 0.f && settings.sunMedium[1] > 0.f ? 1u : 0u;
 	settings.control[2] = 1u;
-	// The dither pattern is static unless a temporal upscaler accumulates it (GTAO convention: gtao_dx12.cpp).
-	const bool bTemporal = UpscalerDX12_Enabled() && UpscalerDX12_Status() > 0;
-	settings.control[3] = bTemporal ? static_cast<uint32>( gpGlobals->framecount & 63 ) : 0u;
+	// All volume paths use the same rotating 64-frame IGN sequence. It is
+	// deliberately independent of the selected AA provider so quarter-res
+	// shaft integration is not replaced by a provider-specific pattern.
+	settings.control[3] = static_cast<uint32>( gpGlobals->framecount & 63u );
 	s_VolumetricSettings = settings;
 	s_bVolumetricScope = true;
 	ShadowMapsDX12_BeginVolumetrics();

@@ -39,7 +39,7 @@ class motion_blur_mv_ps51_Dynamic_Index
 public:
 	void SetQUALITY( int i )
 	{
-		Assert( i >= 0 && i <= 3 );
+		Assert( i >= 0 && i <= 4 );
 		m_nQUALITY = i;
 #ifdef _DEBUG
 		m_bQUALITY = true;
@@ -69,7 +69,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bQUALITY && m_bTILE );
-		return ( 1 * m_nQUALITY ) + ( 4 * m_nTILE ) + 0;
+		return ( 1 * m_nQUALITY ) + ( 5 * m_nTILE ) + 0;
 	}
 };
 

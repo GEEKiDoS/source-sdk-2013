@@ -30,6 +30,9 @@ struct PostMaterial_t
 // MagicBloom's layered bloom on Froyok's pyramid: eight levels, the first at half resolution. Level n lives in mip n + 1
 // of the bloom targets.
 const int kBloomLevels = 8;
+// Max reduction writes 16x16 component bounds, then their global maximum to mip 4.
+const int kGlareBoundsSize = 16;
+const int kGlareBoundsMip = 4;
 
 static bool s_bDX12 = false;
 static bool s_bRenderTargetsReady = false;
@@ -40,6 +43,7 @@ static CTextureReference s_BloomUp;
 static CTextureReference s_FlareInput;
 static CTextureReference s_Flare;
 static CTextureReference s_Glare;
+static CTextureReference s_GlareBounds;
 static CTextureReference s_Composite;
 static CTextureReference s_LensDirt;
 static PostMaterial_t s_BloomFirst;
@@ -52,6 +56,7 @@ static PostMaterial_t s_FlareMaterial;
 static PostMaterial_t s_FlareBlurDown;
 static PostMaterial_t s_FlareBlurUp;
 static PostMaterial_t s_GlareMaterial;
+static PostMaterial_t s_GlareReduce;
 static PostMaterial_t s_CompositeMaterial;
 static PostMaterial_t s_RcasMaterial;
 static IShaderAPIDX12 *s_pShaderAPIDX12 = nullptr;
@@ -212,13 +217,15 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
 	s_Glare.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXGlare", 1, 1, RT_SIZE_HDR,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
+	s_GlareBounds.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXGlareBounds", kGlareBoundsSize, kGlareBoundsSize, RT_SIZE_LITERAL,
+		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
 	s_Composite.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXComposite", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
 	s_LensDirt.Init( pMaterialSystem->FindTexture( "effects/lensdirt", TEXTURE_GROUP_OTHER, true ) );
 	if ( s_LensDirt.IsValid() && s_LensDirt->IsError() )
 		s_LensDirt.Shutdown();
 	s_bRenderTargetsReady = s_PostScene.IsValid() && s_BloomDown.IsValid() && s_BloomUp.IsValid() && s_FlareInput.IsValid() && s_Flare.IsValid() && s_Glare.IsValid() &&
-		s_Composite.IsValid();
+		s_GlareBounds.IsValid() && s_Composite.IsValid();
 	if ( !s_bRenderTargetsReady )
 		return;
 
@@ -234,12 +241,13 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	s_FlareBlurDown.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare_blur_down", 4 );
 	s_FlareBlurUp.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_flare_blur_up", 5 );
 	s_GlareMaterial.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_glare", 6 );
+	s_GlareReduce.m_pMaterial = CreatePassMaterial( pMaterialSystem, "dx12/postfx_glare_reduce", 8 );
 	s_CompositeMaterial.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/postfx_composite", "DX12_PostFXComposite" );
 	s_RcasMaterial.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/postfx_rcas", "DX12_PostFXRcas" );
 	s_bMaterialsReady = MaterialValid( s_FlareThreshold.m_pMaterial ) && MaterialValid( s_FlareInputBlurDown.m_pMaterial ) && MaterialValid( s_FlareInputBlurUp.m_pMaterial ) &&
 		MaterialValid( s_FlareMaterial.m_pMaterial ) && MaterialValid( s_FlareBlurDown.m_pMaterial ) && MaterialValid( s_FlareBlurUp.m_pMaterial ) &&
 		MaterialValid( s_GlareMaterial.m_pMaterial ) && MaterialValid( s_CompositeMaterial.m_pMaterial ) && MaterialValid( s_RcasMaterial.m_pMaterial ) &&
-		MaterialValid( s_BloomFirst.m_pMaterial );
+		MaterialValid( s_BloomFirst.m_pMaterial ) && MaterialValid( s_GlareReduce.m_pMaterial );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
 		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomDownsample[i].m_pMaterial );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
@@ -260,6 +268,7 @@ void PostProcessDX12_Shutdown()
 	ReleaseMaterial( s_FlareBlurDown );
 	ReleaseMaterial( s_FlareBlurUp );
 	ReleaseMaterial( s_GlareMaterial );
+	ReleaseMaterial( s_GlareReduce );
 	ReleaseMaterial( s_CompositeMaterial );
 	ReleaseMaterial( s_RcasMaterial );
 	s_PostScene.Shutdown();
@@ -268,6 +277,7 @@ void PostProcessDX12_Shutdown()
 	s_FlareInput.Shutdown();
 	s_Flare.Shutdown();
 	s_Glare.Shutdown();
+	s_GlareBounds.Shutdown();
 	s_Composite.Shutdown();
 	s_LensDirt.Shutdown();
 	s_pShaderAPIDX12 = nullptr;
@@ -373,7 +383,15 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	}
 	if ( bGlare )
 	{
+		// Exact FP16 component maxima bound every filtered input tap. Reducing to
+		// 16x16 then 1x1 is independent of render size and leaves the glare sum intact.
+		SetPostPass( s_GlareReduce.m_pMaterial, s_FlareInput, 1, s_GlareBounds, 0, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_GlareReduce.m_pMaterial );
+		SetPostPass( s_GlareReduce.m_pMaterial, s_GlareBounds, 0, s_GlareBounds, kGlareBoundsMip, 0.f, 0.f );
+		DrawCompute( pRenderContext, s_GlareReduce.m_pMaterial );
 		SetPostPass( s_GlareMaterial.m_pMaterial, s_FlareInput, 1, s_Glare, 0, flGlareIntensity, MAX( mat_postfx_glare_divider.GetFloat(), 0.01f ) );
+		SetTexture( s_GlareMaterial.m_pMaterial, "$srctexture2", s_GlareBounds );
+		SetInt( s_GlareMaterial.m_pMaterial, "$srcmip2", kGlareBoundsMip );
 		DrawCompute( pRenderContext, s_GlareMaterial.m_pMaterial );
 	}
 

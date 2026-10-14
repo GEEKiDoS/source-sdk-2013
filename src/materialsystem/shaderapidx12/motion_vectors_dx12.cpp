@@ -12,6 +12,7 @@
 #include "tier0/icommandline.h"
 #include "tier1/strtools.h"
 #include "tier1/utlstring.h"
+#include <cfloat>
 
 namespace shaderapidx12
 {
@@ -182,6 +183,58 @@ bool MotionLoggingEnabled()
 	return s_bEnabled;
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: Upper bound of the camera reprojection's velocity length in motion-
+//			target UV units for a clipToPrev matrix that should be the identity;
+//			false when the matrix is not finite or the bound is unusable
+//-----------------------------------------------------------------------------
+bool MotionQuietBound( const VMatrix &clipToPrev, float &flBound )
+{
+	// kMotionReprojectPS computes prev = M * (ndc.x, ndc.y, depth, 1) (CPU row-major M times a column vector), divides by
+	// prev.w and stores (ndc - prev.xy) * 0.5 in RGBA16F. With |ndc| <= 1 (plus the rasteriser's rounding) and depth in
+	// [0, 1]: |prev_i - ndc_i| <= sum_j |M_ij - I_ij| plus a deliberately loose pad for the four-term product sum.
+	const double kNdcMax = 1.0 + 8.0 * FLT_EPSILON;
+	double flError[4];
+	for ( int row = 0; row < 4; ++row )
+	{
+		double flDifference = 0, flMagnitude = 0;
+		for ( int col = 0; col < 4; ++col )
+		{
+			const float flEntry = clipToPrev[row][col];
+			if ( !IsFinite( flEntry ) )
+				return false;
+			flDifference += fabs( double( flEntry ) - ( row == col ? 1.0 : 0.0 ) );
+			flMagnitude += fabs( double( flEntry ) );
+		}
+		flError[row] = flDifference * kNdcMax + 32.0 * FLT_EPSILON * ( flMagnitude + 1.0 );
+	}
+	// prev.w = 1 + e_w: |prev.x / prev.w - ndc.x| <= (e_x + |ndc.x| e_w) / (1 - e_w), plus the division's rounding.
+	if ( !( flError[3] < 0.5 ) )
+		return false;
+	const double flDivide = 1.0 / ( 1.0 - flError[3] ), flDividePad = 8.0 * FLT_EPSILON * kNdcMax;
+	const double flX = ( flError[0] + kNdcMax * flError[3] ) * flDivide + flDividePad;
+	const double flY = ( flError[1] + kNdcMax * flError[3] ) * flDivide + flDividePad;
+	// UV = NDC * 0.5 (exact); then the subtraction's rounding, the RGBA16F store (relative 2^-10, subnormal floor 2^-24 per
+	// component), length <= |u| + |v|, and the consumer's float length / tile reduction.
+	const double flUv = 0.5 * ( flX + flY ) * ( 1.0 + 8.0 * FLT_EPSILON ) * ( 1.0 + 1.0 / 1024.0 ) + 2.0 / 16777216.0;
+	flBound = static_cast<float>( flUv * ( 1.0 + 16.0 * FLT_EPSILON ) );
+	return IsFinite( flBound ) && flBound > 0.f;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: True when a motion draw's previous transform block is bit-identical
+//			to its current one and finite, so kMotionVS computes equal clip positions
+//-----------------------------------------------------------------------------
+bool MotionTransformsIdentical( const float *pPrevious, const float *pCurrent, int nCount )
+{
+	if ( memcmp( pPrevious, pCurrent, sizeof( float ) * nCount ) != 0 )
+		return false;
+	for ( int i = 0; i < nCount; ++i )
+		if ( !IsFinite( pCurrent[i] ) )
+			return false;
+	return true;
+}
+
 } // namespace
 
 //-----------------------------------------------------------------------------
@@ -193,10 +246,10 @@ ShaderRecordDX12 *CShaderAPIDX12::MotionVertexShader( VertexFormat_t vertexForma
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Lazily compiles the motion shaders and (re)creates the motion target
-//			to match the scene color buffer; updates INT_RENDERPARM_DX12_MOTION_STATUS
+// Purpose: Lazily compiles the motion shaders and selects a scene-sized motion
+//			target; updates INT_RENDERPARM_DX12_MOTION_STATUS
 //-----------------------------------------------------------------------------
-bool CShaderAPIDX12::EnsureMotionResources()
+bool CShaderAPIDX12::EnsureMotionResources( int nMode )
 {
 	if ( m_bMotionUnavailable )
 		return false;
@@ -242,7 +295,28 @@ bool CShaderAPIDX12::EnsureMotionResources()
 		}
 	}
 	const D3D12_RESOURCE_DESC scene = m_pDevice->SceneColor()->GetDesc();
-	if ( m_pMotionTarget && scene.Width == m_nMotionTargetWidth && scene.Height == m_nMotionTargetHeight && scene.SampleDesc.Count == m_nMotionTargetSamples && scene.SampleDesc.Quality == m_nMotionTargetQuality )
+	TextureRecord *pSharedTarget = nullptr;
+	if ( scene.SampleDesc.Count == 1 )
+	{
+		TextureRecord *pRecord = FindTexture( m_RenderTargets[0] );
+		if ( pRecord && ( pRecord->flags & TEXTURE_CREATE_RENDERTARGET ) &&
+		     !( pRecord->flags & ( TEXTURE_CREATE_DEPTHBUFFER | TEXTURE_CREATE_CUBEMAP ) ) &&
+		     pRecord->format == IMAGE_FORMAT_RGBA16161616F && pRecord->copies == 1 && pRecord->depth == 1 &&
+		     pRecord->width == static_cast<int>( scene.Width ) && pRecord->height == static_cast<int>( scene.Height ) &&
+		     EnsureTextureResident( *pRecord ) && pRecord->resource )
+		{
+			const D3D12_RESOURCE_DESC target = pRecord->resource->GetDesc();
+			if ( target.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && target.Width == scene.Width &&
+			     target.Height == scene.Height && target.DepthOrArraySize == 1 && target.MipLevels == pRecord->mipLevels &&
+			     target.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && target.SampleDesc.Count == 1 &&
+			     target.SampleDesc.Quality == scene.SampleDesc.Quality && ( target.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET ) )
+				pSharedTarget = pRecord;
+		}
+	}
+	const bool bSameShape = m_pMotionTarget && scene.Width == m_nMotionTargetWidth && scene.Height == m_nMotionTargetHeight &&
+		scene.SampleDesc.Count == m_nMotionTargetSamples && scene.SampleDesc.Quality == m_nMotionTargetQuality;
+	const bool bSameTarget = pSharedTarget ? m_pMotionTarget.Get() == pSharedTarget->resource.Get() : m_hMotionSharedTarget == 0;
+	if ( bSameShape && bSameTarget )
 	{
 		m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = 1;
 		return true;
@@ -255,6 +329,7 @@ bool CShaderAPIDX12::EnsureMotionResources()
 			Warning( "ShaderAPIDX12: motion pass unavailable at %ux MSAA quality %u\n", scene.SampleDesc.Count, scene.SampleDesc.Quality );
 		}
 		m_pMotionTarget.Reset();
+		m_hMotionSharedTarget = 0;
 		m_nMotionTargetSamples = 0;
 		m_RenderingInts[INT_RENDERPARM_DX12_MOTION_STATUS] = -2;
 		return false;
@@ -262,27 +337,29 @@ bool CShaderAPIDX12::EnsureMotionResources()
 	m_pDevice->DrainRecording();
 	if ( m_pMotionTarget )
 		m_pDevice->RetainResource( m_pMotionTarget.Get() );
-	D3D12_HEAP_PROPERTIES heap{};
-	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-	D3D12_RESOURCE_DESC desc{};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	desc.Width = scene.Width;
-	desc.Height = scene.Height;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-	desc.SampleDesc = scene.SampleDesc;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-	D3D12_CLEAR_VALUE clear{};
-	clear.Format = desc.Format;
-	clear.Color[0] = 0;
-	clear.Color[1] = 0;
-	clear.Color[2] = 0;
-	clear.Color[3] = 1;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
-	if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS( &pResource ) ) ) )
-		return false;
+	if ( pSharedTarget )
+		pResource = pSharedTarget->resource;
+	else
+	{
+		D3D12_HEAP_PROPERTIES heap{};
+		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+		D3D12_RESOURCE_DESC desc{};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		desc.Width = scene.Width;
+		desc.Height = scene.Height;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		desc.SampleDesc = scene.SampleDesc;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+		D3D12_CLEAR_VALUE clear{};
+		clear.Format = desc.Format;
+		clear.Color[3] = 1;
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS( &pResource ), "motion", "DX12 motion target" ) ) )
+			return false;
+	}
 	if ( !m_pMotionRtvHeap )
 	{
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
@@ -292,24 +369,102 @@ bool CShaderAPIDX12::EnsureMotionResources()
 			return false;
 		m_MotionRtv = m_pMotionRtvHeap->GetCPUDescriptorHandleForHeapStart();
 	}
+	D3D12_RESOURCE_STATES targetState = pSharedTarget ? pSharedTarget->subresourceStates[0] : D3D12_RESOURCE_STATE_RENDER_TARGET;
+	if ( bSameShape && nMode != DX12_MOTION_PASS_BEGIN_MAIN && m_nMotionMainFrame == m_nFrameCounter )
+	{
+		// A retargeted append/viewmodel still inherits the accumulated main motion.
+		// Promotion already copied mip 0 into the previous owner's replacement.
+		TextureRecord *pPreviousRecord = m_hMotionSharedTarget ? FindTexture( m_hMotionSharedTarget ) : nullptr;
+		ID3D12Resource *pPreviousResource = m_pMotionTarget.Get();
+		if ( pPreviousRecord )
+		{
+			if ( !EnsureTextureResident( *pPreviousRecord ) || !pPreviousRecord->resource )
+				return false;
+			pPreviousResource = pPreviousRecord->resource.Get();
+		}
+		if ( pPreviousResource != pResource.Get() )
+		{
+			D3D12_RESOURCE_STATES &sourceState = pPreviousRecord ? pPreviousRecord->subresourceStates[0] : m_MotionTargetState;
+			const D3D12_RESOURCE_STATES restoreSourceState = sourceState;
+			D3D12_RESOURCE_STATES &destinationState = pSharedTarget ? pSharedTarget->subresourceStates[0] : targetState;
+			CCommandRecorderDX12 *pList = m_pDevice->CommandList();
+			D3D12_RESOURCE_BARRIER barriers[2]{};
+			UINT nBarriers = 0;
+			auto transition = [&]( ID3D12Resource *pTarget, D3D12_RESOURCE_STATES &state, D3D12_RESOURCE_STATES desired, TextureRecord *pRecord )
+			{
+				if ( state == desired )
+					return;
+				D3D12_RESOURCE_BARRIER &barrier = barriers[nBarriers++];
+				barrier = {};
+				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				barrier.Transition.pResource = pTarget;
+				barrier.Transition.Subresource = 0;
+				barrier.Transition.StateBefore = state;
+				barrier.Transition.StateAfter = desired;
+				state = desired;
+				if ( pRecord )
+				{
+					pRecord->sampledStateValid = false;
+					++m_nTextureStateEpoch;
+				}
+			};
+			transition( pPreviousResource, sourceState, D3D12_RESOURCE_STATE_COPY_SOURCE, pPreviousRecord );
+			transition( pResource.Get(), destinationState, D3D12_RESOURCE_STATE_COPY_DEST, pSharedTarget );
+			if ( nBarriers )
+				pList->ResourceBarrier( nBarriers, barriers );
+			D3D12_TEXTURE_COPY_LOCATION source{}, destination{};
+			source.pResource = pPreviousResource;
+			source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			destination.pResource = pResource.Get();
+			destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			pList->CopyTextureRegion( &destination, 0, 0, 0, &source, nullptr );
+			m_pDevice->RetainResource( pPreviousResource );
+			m_pDevice->RetainResource( pResource.Get() );
+			nBarriers = 0;
+			transition( pPreviousResource, sourceState, restoreSourceState, pPreviousRecord );
+			transition( pResource.Get(), destinationState, D3D12_RESOURCE_STATE_RENDER_TARGET, pSharedTarget );
+			if ( nBarriers )
+				pList->ResourceBarrier( nBarriers, barriers );
+			targetState = destinationState;
+			if ( pSharedTarget )
+			{
+				pSharedTarget->dirtySubresources[0] = 0;
+				pSharedTarget->initializedSubresources[0] = 0;
+				pSharedTarget->gpuAuthoritativeSubresources[0] = 1;
+				pSharedTarget->gpuDirty = false;
+				for ( unsigned char dirty : pSharedTarget->dirtySubresources )
+				{
+					if ( dirty )
+					{
+						pSharedTarget->gpuDirty = true;
+						break;
+					}
+				}
+			}
+		}
+	}
 	D3D12_RENDER_TARGET_VIEW_DESC rtv{};
-	rtv.Format = desc.Format;
-	rtv.ViewDimension = desc.SampleDesc.Count > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
+	rtv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	rtv.ViewDimension = scene.SampleDesc.Count > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
 	m_pDevice->NativeDevice()->CreateRenderTargetView( pResource.Get(), &rtv, m_MotionRtv );
 	m_pMotionTarget = std::move( pResource );
+	m_hMotionSharedTarget = pSharedTarget ? pSharedTarget->id : 0;
 	m_nMotionTargetWidth = static_cast<UINT>( scene.Width );
 	m_nMotionTargetHeight = scene.Height;
 	m_nMotionTargetSamples = scene.SampleDesc.Count;
 	m_nMotionTargetQuality = scene.SampleDesc.Quality;
-	// A recreated target cannot carry camera/object/provider history from its previous shape.
-	m_MotionHistory[0].Clear();
-	m_MotionHistory[1].Clear();
-	memset( m_MotionPrevViewProjValid, 0, sizeof( m_MotionPrevViewProjValid ) );
-	memset( m_MotionCurViewProjValid, 0, sizeof( m_MotionCurViewProjValid ) );
-	m_hMotionResolvedHandle = 0;
-	m_nMotionResolvedFrame = ~0ull;
-	m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = m_bFrameGenHistoryGap = true;
-	m_MotionTargetState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	if ( !bSameShape )
+	{
+		// Only a shape/sample change breaks history; alias changes preserve it.
+		m_MotionHistory[0].Clear();
+		m_MotionHistory[1].Clear();
+		memset( m_MotionPrevViewProjValid, 0, sizeof( m_MotionPrevViewProjValid ) );
+		memset( m_MotionCurViewProjValid, 0, sizeof( m_MotionCurViewProjValid ) );
+		m_hMotionResolvedHandle = 0;
+		m_nMotionResolvedFrame = ~0ull;
+		m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = m_bFrameGenHistoryGap = true;
+	}
+	m_MotionTargetState = targetState;
 	if ( m_nMotionReprojectSamples != scene.SampleDesc.Count )
 	{
 		m_pMotionReprojectPso.Reset();
@@ -324,16 +479,37 @@ bool CShaderAPIDX12::EnsureMotionResources()
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::TransitionMotionTarget( D3D12_RESOURCE_STATES desiredState )
 {
-	if ( !m_pMotionTarget || m_MotionTargetState == desiredState )
+	if ( !m_pMotionTarget )
+		return;
+	TextureRecord *pSharedTarget = nullptr;
+	if ( m_hMotionSharedTarget )
+	{
+		// The initial clear precedes m_hMotionResolveTarget, and later consumers may
+		// have changed the engine texture's state while another RT is bound.
+		pSharedTarget = FindTexture( m_RenderTargets[0] );
+		if ( !pSharedTarget || pSharedTarget->resource.Get() != m_pMotionTarget.Get() )
+			pSharedTarget = FindTexture( m_hMotionSharedTarget );
+		if ( pSharedTarget && pSharedTarget->resource.Get() == m_pMotionTarget.Get() )
+			m_MotionTargetState = pSharedTarget->subresourceStates[0];
+		else
+			pSharedTarget = nullptr;
+	}
+	if ( m_MotionTargetState == desiredState )
 		return;
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	barrier.Transition.pResource = m_pMotionTarget.Get();
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.Subresource = m_hMotionSharedTarget ? 0 : D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 	barrier.Transition.StateBefore = m_MotionTargetState;
 	barrier.Transition.StateAfter = desiredState;
 	m_pDevice->CommandList()->ResourceBarrier( 1, &barrier );
 	m_MotionTargetState = desiredState;
+	if ( pSharedTarget )
+	{
+		pSharedTarget->subresourceStates[0] = desiredState;
+		pSharedTarget->sampledStateValid = false;
+		++m_nTextureStateEpoch;
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -456,6 +632,8 @@ void CShaderAPIDX12::DrawMotionReprojection()
 	else
 		prevVP = curVP;
 	VMatrix clipToPrev = prevVP * inv;
+	// Stationary candidate: the effective previous VP is the current one, so the only velocity is M's float residual.
+	m_bMotionQuietCandidate = memcmp( prevVP.Base(), curVP.Base(), sizeof( float ) * 16 ) == 0 && MotionQuietBound( clipToPrev, m_flMotionQuietBound );
 	float constants[20]{};
 	memcpy( constants, clipToPrev.Base(), sizeof( float ) * 16 );
 	float flWidth = static_cast<float>( m_nMotionTargetWidth );
@@ -557,9 +735,9 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 		fail( 4, "viewmodel pass without a main pass this frame" );
 		return;
 	}
-	if ( !EnsureMotionResources() )
+	if ( !EnsureMotionResources( nMode ) )
 	{
-		fail( 8, "private resources unavailable" );
+		fail( 8, "motion resources unavailable" );
 		return;
 	}
 	TextureRecord *pRecord = FindTexture( m_RenderTargets[0] );
@@ -610,6 +788,8 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 		m_nMotionPassDraws = m_nMotionPassObjects = 0;
 		m_hMotionResolvedHandle = 0;
 		m_nMotionResolvedFrame = ~0ull;
+		m_bMotionQuietCandidate = false;
+		m_flMotionQuietBound = 0.f;
 		TransitionMotionTarget( D3D12_RESOURCE_STATE_RENDER_TARGET );
 		const float flClear[4] = { 0, 0, 0, 1 };
 		m_pDevice->CommandList()->ClearRenderTargetView( m_MotionRtv, flClear, 0, nullptr );
@@ -692,6 +872,11 @@ void CShaderAPIDX12::FillMotionBlock( const VertexBindingDX12 &vertexBinding, CI
 			write.entries.Insert( nKey, entry );
 		}
 	}
+	// Any draw whose previous VP or model rows differ from the current ones (or are not finite) can emit velocity.
+	if ( m_bMotionQuietCandidate &&
+		( !MotionTransformsIdentical( m_MotionBlock.cPrevViewProj, m_VsFloat[VERTEX_SHADER_VIEWPROJ], 16 ) ||
+		  !MotionTransformsIdentical( &m_MotionBlock.cPrevModel[0][0], pCurrent, nRows * 12 ) ) )
+		m_bMotionQuietCandidate = false;
 	++m_nMotionBlockVersion;
 	++m_nMotionPassDraws;
 }
@@ -719,6 +904,7 @@ void CShaderAPIDX12::ReleaseMotionResources()
 	m_nMotionReprojectSamples = 0;
 	m_pMotionRtvHeap.Reset();
 	m_pMotionTarget.Reset();
+	m_hMotionSharedTarget = 0;
 	m_MotionPassState = MotionPassStateDX12::None;
 	m_bMotionUnavailable = false;
 	m_nMotionMainFrame = ~0ull;

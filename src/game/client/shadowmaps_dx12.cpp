@@ -65,7 +65,7 @@ struct ShadowMapResolution_t
 	int local, localUseful, page, slots;
 	int sun, sunUseful;
 };
-// Page stays 4096. Slot count changes with the menu. Useful texels leave the 18-texel guard.
+// Logical pages stay 4096; physical targets contain only occupied slots and grow without moving charts.
 enum { kShadowPageSlots = 256 };
 static const ShadowMapResolution_t kShadowResolution[4] = {
 	{ 1024, 988, 2048, 256, 220, 4096, 16, 2048, 2012 },
@@ -91,6 +91,7 @@ struct ShadowStats_t
 	uint32 rigidLayerBypasses, invalidRigidLayers;
 	uint32 realtimeLights, positiveWeightLocals, bakedOnlyLocals, transitioningLocals, promotions, demotions;
 	uint64 footprintRestorePixels; // Actual work restores, including full charts; excludes rigid builds/COW.
+	uint64 depthCopyPixels; // All depth restores, including rigid builds and page COW/growth; D32 read+write is 8 bytes/pixel.
 	uint32 fullRestores;
 	ShadowFullRestoreReasons_t fullRestoreReasons;
 };
@@ -158,12 +159,12 @@ struct ShadowCache_t
 	float matrix[16], depth[4];
 	bool hadDynamic, dirty, valid, pending, pendingClean, pendingReady, pendingDynamic, pendingBillboards;
 	uint32 pendingStaticGeneration, pendingDetailGeneration, pendingSlotGeneration;
-	int skyRegion, pendingSkyRegion; // Sun charts: sealed region whose sky entry clipped the casters (-1 all entry faces).
+	int skyRegion, pendingSkyRegion;
 	float pendingMatrix[16], pendingDepth[4];
 	CViewSetup view, pendingView;
 	ShadowCasterVolume_t pendingVolume;
-	// Reuse names one committed chart, never an earlier receiver's pixels.
-	// Sun caches remain receiver-owned, including their physical work target.
+	// Reuse names the last committed chart in this physical target, not a CPU packet's age.
+	// Sun content is shared across pooled main frames; viewmodel cascade projection stays separate.
 	uint64 notifications, pendingNotifications, committedNotifications;
 	int committedFrame;
 	DX12ShadowTarget_t workTarget, pendingWorkTarget;
@@ -212,13 +213,40 @@ struct LocalLight_t
 };
 struct LocalPage_t
 {
-	LocalPage_t() : work(0), clean(0), rigid(0), generation(1), ownershipChanged(false) { for ( int i=0;i<kShadowPageSlots;++i ) owners[i]=-1; }
+	LocalPage_t() : work(0), clean(0), rigid(0), width(0), height(0), requiredWidth(0), requiredHeight(0), generation(1), ownershipChanged(false) { for ( int i=0;i<kShadowPageSlots;++i ) owners[i]=-1; }
 	DX12ShadowTarget_t work, clean, rigid;
+	int width, height, requiredWidth, requiredHeight;
 	int owners[kShadowPageSlots];
 	uint32 generation;
 	bool ownershipChanged; // Detached rects need work COW before reuse if an old packet still leases the page.
 };
 struct SparePage_t { int page; DX12ShadowTarget_t target; };
+struct SunCascadeFit_t
+{
+	bool valid = false;
+	Vector center;
+	float radius = 0;
+	Vector depthMins, depthMaxs;
+};
+struct SunCascadeTargets_t
+{
+	SunCascadeTargets_t() : clean(0), work(0), rigid(0) {}
+	DX12ShadowTarget_t clean, work, rigid;
+	ShadowCache_t caches[4];
+	ShadowCasterVolume_t volumes[4];
+	SunCascadeFit_t fits[4];
+};
+// CPU view packets stay pooled/immutable. Physical sun depth and its LAST-WRITE
+// content proof are shared by main frames, with a separate viewmodel projection.
+SunCascadeTargets_t g_CascadeTargets[2];
+const char *const kCascadeTargetNames[2][3]={
+	{"shadow_cascade_static_main","shadow_cascade_work_main","shadow_cascade_rigid_main"},
+	{"shadow_cascade_static_viewmodel","shadow_cascade_work_viewmodel","shadow_cascade_rigid_viewmodel"}
+};
+DX12ShadowTarget_t g_StaticSunClean=0, g_StaticSunWork=0;
+ShadowCache_t g_StaticSunCache;
+struct SpareSunTarget_t { int size; DX12ShadowTarget_t target; };
+CUtlVector<SpareSunTarget_t> g_SunSpares;
 
 IShaderAPIDX12Lighting *g_Lighting = NULL;
 IShaderAPIDX12HighresLightmaps *g_Highres = NULL;
@@ -470,6 +498,7 @@ uint32 g_MapCounter = 0;
 char g_MapName[MAX_PATH] = "";
 
 uint32 g_DepthFrame = 0xffffffffu, g_FrameDepthRenders = 0;
+uint64 g_FrameDepthCopyPixels = 0;
 // LOCAL atlas COW only, not the four 2048-square sun cascade restores.
 uint32 g_PageCopyFrame = 0xffffffffu, g_FramePageCopies = 0;
 uint32 FramePageCopies() { return g_PageCopyFrame==g_DepthFrame ? g_FramePageCopies : 0; }
@@ -909,12 +938,11 @@ bool BoxInVolume( const ShadowCasterVolume_t &volume, const Vector &mins, const 
 class CShadowViewData : public CRefCounted<>
 {
 public:
-	CShadowViewData() : active(false), lastUsedFrame(0xffffffffu), hasDetails(false), shadowsEnabled(true), drawCandidateFirst(-1), drawCandidateCount(0), cascadeClean(0), cascadeWork(0), cascadeRigid(0), staticSunClean(0), staticSun(0), sunSkyRegion(-1)
+	CShadowViewData() : active(false), lastUsedFrame(0xffffffffu), hasDetails(false), shadowsEnabled(true), drawCandidateFirst(-1), drawCandidateCount(0), sunSkyRegion(-1)
 	{ memset(&packet,0,sizeof(packet)); }
 	~CShadowViewData()
 	{
-		ReleaseLeases(); DestroyTarget(cascadeClean); DestroyTarget(cascadeWork); DestroyTarget(cascadeRigid);
-		DestroyTarget(staticSunClean); DestroyTarget(staticSun);
+		ReleaseLeases();
 	}
 	bool Idle() const { return !active && GetRefCount()==1; }
 	bool Lease( DX12ShadowTarget_t target )
@@ -974,12 +1002,7 @@ public:
 	CUtlVector<int> casterIndices;
 	int drawCandidateFirst, drawCandidateCount;
 	CUtlVector<CHandle<C_Beam>> suppressedBeams; // §9 paired beams this main bracket replaces with the volume (empty for other kinds)
-	DX12ShadowTarget_t cascadeClean, cascadeWork, cascadeRigid, staticSunClean, staticSun;
-	ShadowCache_t cascades[4];
-	// Last fitted square of each cascade, kept while it still covers the receiver slice (BuildSun).
-	struct SunCascadeFit_t { bool valid = false; Vector center; float radius = 0; Vector depthMins, depthMaxs; } cascadeFits[4];
-	ShadowCasterVolume_t cascadeVolumes[4];
-	ShadowCache_t staticSunCache;
+	SunCascadeFit_t cascadeFits[4];
 	IDetailObjectSystem::ShadowReport_t detailReport;
 	int sunSkyRegion;				// Receiver's sealed region for the sun sky clip (BuildSun).
 	CUtlVector<float> sunSkyClip;	// Current sun chart's sky entry triangles in light clip space (RenderChart scratch).
@@ -1129,8 +1152,8 @@ CShadowViewData *AcquireView( const CViewSetup &setup, ShadowMapReceiverViewKind
 	// Preserve per-camera caches even when several monitor/water views execute
 	// sequentially. Moving cameras reuse a same-kind entry unused in this frame.
 	// buildcubemaps renders every face of every sample inside one client frame and
-	// reads each face back before the next; reuse its completed views so the pool
-	// (each entry owns 4096^2 sun targets) does not grow per face until allocation fails.
+	// reads each face back before the next; reuse completed CPU views while the
+	// shared sun targets prevent physical resources growing per face.
 	const bool capture=building_cubemaps.GetBool();
 	for ( int i=0;i<g_ViewPool.Count();++i )
 	{
@@ -1217,14 +1240,17 @@ bool AbortView( CShadowViewData &data )
 	data.active=false;
 	return false;
 }
-void CopyDepthRect( CShadowViewData &data, DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int x, int y, int size )
+void CopyDepthRect( CShadowViewData &data, DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int x, int y, int width, int height = 0 )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::CopyDepthRect", "Shadowmaps" );
 	if ( !data.Lease(dst) || !data.Lease(src) ) { Fail(SHADOWMAP_ERR_RESIDENCY); return; }
 	CMatRenderContextPtr pRenderContext( materials );
 	PIXEVENT( pRenderContext, "Depth restore" );
-	g_Lighting->CopyShadowDepthRect(dst,src,x,y,x,y,size,size);
+	if ( !height ) height=width;
+	g_Lighting->CopyShadowDepthRect(dst,src,x,y,x,y,width,height);
 	++data.stats.depthCopies;
+	data.stats.depthCopyPixels+=uint64(width)*height;
+	g_FrameDepthCopyPixels+=uint64(width)*height;
 }
 
 // Exact bytes, not a hash: no collision can retain an obsolete silhouette.
@@ -1575,6 +1601,7 @@ void EvictPage( int index )
 		page.owners[s]=-1;
 	}
 	DestroyTarget(page.work); DestroyTarget(page.clean); DestroyTarget(page.rigid); ++page.generation;
+	page.width=page.height=page.requiredWidth=page.requiredHeight=0;
 	for ( int i=g_PageSpares.Count()-1;i>=0;--i ) if ( g_PageSpares[i].page==index )
 	{
 		DestroyTarget(g_PageSpares[i].target); g_PageSpares.FastRemove(i);
@@ -1584,14 +1611,28 @@ bool ShadowResolutionTargetsIdle()
 {
 	for ( int p=0;p<g_Pages.Count();++p ) if ( !PageTargetsIdle(p) ) return false;
 	if ( g_ViewStack.Count() ) return false;
-	for ( int v=0;v<g_ViewPool.Count();++v )
+	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v )
 	{
-		CShadowViewData &data=*g_ViewPool[v];
-		if ( !TargetIdle(data.cascadeClean) || !TargetIdle(data.cascadeWork) || !TargetIdle(data.cascadeRigid) ||
-			!TargetIdle(data.staticSun) || !TargetIdle(data.staticSunClean) ) return false;
+		const SunCascadeTargets_t &sun=g_CascadeTargets[v];
+		if ( !TargetIdle(sun.clean) || !TargetIdle(sun.work) || !TargetIdle(sun.rigid) ) return false;
 	}
+	if ( !TargetIdle(g_StaticSunWork) || !TargetIdle(g_StaticSunClean) ) return false;
+	for ( int s=0;s<g_SunSpares.Count();++s ) if ( !TargetIdle(g_SunSpares[s].target) ) return false;
 	if ( !TargetIdle(g_SunSkyTarget) ) return false;
 	return true;
+}
+void ResetSunTargets()
+{
+	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v )
+	{
+		SunCascadeTargets_t &sun=g_CascadeTargets[v];
+		DestroyTarget(sun.clean); DestroyTarget(sun.work); DestroyTarget(sun.rigid);
+		for ( int c=0;c<4;++c ) { sun.caches[c]=ShadowCache_t(); sun.fits[c]=SunCascadeFit_t(); sun.volumes[c]=ShadowCasterVolume_t(); }
+	}
+	DestroyTarget(g_StaticSunClean); DestroyTarget(g_StaticSunWork);
+	g_StaticSunCache=ShadowCache_t();
+	for ( int s=0;s<g_SunSpares.Count();++s ) DestroyTarget(g_SunSpares[s].target);
+	g_SunSpares.RemoveAll();
 }
 void ApplyShadowResolution()
 {
@@ -1600,14 +1641,9 @@ void ApplyShadowResolution()
 	if ( level==g_ShadowResLevel ) return;
 	if ( !ShadowResolutionTargetsIdle() ) return;
 	for ( int p=0;p<g_Pages.Count();++p ) if ( g_Pages[p].work ) EvictPage(p);
+	ResetSunTargets();
 	for ( int v=0;v<g_ViewPool.Count();++v )
-	{
-		CShadowViewData &data=*g_ViewPool[v];
-		DestroyTarget(data.cascadeClean); DestroyTarget(data.cascadeWork); DestroyTarget(data.cascadeRigid);
-		DestroyTarget(data.staticSun); DestroyTarget(data.staticSunClean);
-		data.staticSunCache=ShadowCache_t();
-		for ( int c=0;c<4;++c ) { data.cascades[c]=ShadowCache_t(); data.cascadeFits[c].valid=false; }
-	}
+		for ( int c=0;c<4;++c ) g_ViewPool[v]->cascadeFits[c]=SunCascadeFit_t();
 	DestroyTarget(g_SunSkyTarget);
 	g_ShadowResLevel=level; g_ShadowRes=kShadowResolution[level];
 	ShadowMapsDX12_InvalidateStatic();
@@ -1653,17 +1689,72 @@ void ReleaseBakedSlots()
 		if ( empty && g_Pages[p].work && PageTargetsIdle(p) ) EvictPage(p);
 	}
 }
-bool CreatePage( int index )
+bool CreatePage( CShadowViewData &data, int index )
 {
 	LocalPage_t &page=g_Pages[index];
-	if ( page.work && page.clean ) return true;
-	char name[80]; V_snprintf(name,sizeof(name),"shadow_local_%u_%d_work",g_MapGeneration,index);
-	page.work=g_Lighting->CreateShadowDepthTarget(name,g_ShadowRes.page,g_ShadowRes.page);
-	V_snprintf(name,sizeof(name),"shadow_local_%u_%d_static",g_MapGeneration,index);
-	page.clean=g_Lighting->CreateShadowDepthTarget(name,g_ShadowRes.page,g_ShadowRes.page);
-	page.rigid=0;
-	if ( page.work && page.clean ) return true;
-	DestroyTarget(page.work); DestroyTarget(page.clean); return false;
+	if ( page.work && page.clean && page.width>=page.requiredWidth && page.height>=page.requiredHeight ) return true;
+	int width=MAX(page.width,g_ShadowRes.local), height=MAX(page.height,g_ShadowRes.local);
+	// Allocate after the receiver has assigned every face, so a first-use page
+	// and a growing page each create their final dimensions only once per view.
+	while ( width<page.requiredWidth ) width*=2;
+	while ( height<page.requiredHeight ) height*=2;
+	const DX12ShadowTarget_t previous[3]={page.work,page.clean,page.rigid};
+	DX12ShadowTarget_t next[3]={0,0,0};
+	const char *suffix[3]={"work","static","rigid"};
+	for ( int t=0;t<3;++t )
+	{
+		if ( t==2 && !previous[t] ) continue;
+		char name[80]; V_snprintf(name,sizeof(name),"shadow_local_%u_%d_%s",g_MapGeneration,index,suffix[t]);
+		next[t]=g_Lighting->CreateShadowDepthTarget(name,width,height);
+		if ( !next[t] )
+		{
+			for ( int n=0;n<3;++n ) DestroyTarget(next[n]);
+			return false;
+		}
+	}
+	// Preserve every initialized chart before any receiver uses the new targets.
+	// Backend copy/draw leases keep the old resources valid through their fence,
+	// including a parent view that still samples the old work page.
+	for ( int t=0;t<3;++t ) if ( previous[t] )
+	{
+		CopyDepthRect(data,next[t],previous[t],0,0,page.width,page.height);
+		if ( g_Error[0] )
+		{
+			for ( int n=0;n<3;++n ) DestroyTarget(next[n]);
+			return false;
+		}
+	}
+	if ( previous[0] ) for ( int s=0;s<PageSlotCount();++s ) if ( page.owners[s]>=0 )
+	{
+		LocalLight_t &local=LightByOwner(page.owners[s]);
+		for ( int f=0;f<local.faceCount;++f ) if ( local.page[f]==index && local.slot[f]==s )
+		{
+			ShadowCache_t &cache=local.cache[f];
+			if ( cache.workTarget==previous[0] ) cache.workTarget=next[0];
+			if ( cache.pendingWorkTarget==previous[0] ) cache.pendingWorkTarget=next[0];
+			if ( cache.rigidTarget==previous[2] ) cache.rigidTarget=next[2];
+			if ( cache.pendingRigidTarget==previous[2] ) cache.pendingRigidTarget=next[2];
+			cache.footprintKnown=false; cache.pendingFootprintWorkTarget=0;
+		}
+	}
+	// Spares of the old dimensions cannot be used for later full-page COW.
+	for ( int i=g_PageSpares.Count()-1;i>=0;--i ) if ( g_PageSpares[i].page==index )
+	{
+		DestroyTarget(g_PageSpares[i].target); g_PageSpares.FastRemove(i);
+	}
+	DX12ShadowTarget_t oldWork=page.work, oldClean=page.clean, oldRigid=page.rigid;
+	page.work=next[0]; page.clean=next[1]; page.rigid=next[2];
+	page.width=width; page.height=height; page.ownershipChanged=false;
+	DestroyTarget(oldWork); DestroyTarget(oldClean); DestroyTarget(oldRigid);
+	return true;
+}
+void AssignPageSlot( int index, int slot, int owner, int face )
+{
+	LocalPage_t &page=g_Pages[index];
+	LocalLight_t &light=LightByOwner(owner);
+	page.owners[slot]=owner; light.page[face]=index; light.slot[face]=slot;
+	page.requiredWidth=MAX(page.requiredWidth,(slot%g_ShadowRes.slots+1)*g_ShadowRes.local);
+	page.requiredHeight=MAX(page.requiredHeight,(slot/g_ShadowRes.slots+1)*g_ShadowRes.local);
 }
 bool AllocateSlot( int owner, int face )
 {
@@ -1674,8 +1765,7 @@ bool AllocateSlot( int owner, int face )
 	{
 		for ( int s=0;s<PageSlotCount();++s ) if ( g_Pages[p].owners[s]<0 )
 		{
-			if ( !CreatePage(p) ) break;
-			g_Pages[p].owners[s]=owner; light.page[face]=p; light.slot[face]=s;
+			AssignPageSlot(p,s,owner,face);
 			return true;
 		}
 	}
@@ -1683,19 +1773,18 @@ bool AllocateSlot( int owner, int face )
 	for ( int p=0;p<g_Pages.Count();++p ) if ( PageInactive(g_Pages[p]) && PageTargetsIdle(p) )
 	{
 		EvictPage(p);
-		if ( !CreatePage(p) ) continue;
-		g_Pages[p].owners[0]=owner; light.page[face]=p; light.slot[face]=0; return true;
+		AssignPageSlot(p,0,owner,face); return true;
 	}
 	if ( g_Pages.Count()>=DX12_SHADOW_MAX_LOCAL_PAGES ) return false;
 	int p=g_Pages.AddToTail();
-	if ( !CreatePage(p) ) { g_Pages.Remove(p); return false; }
-	g_Pages[p].owners[0]=owner; light.page[face]=p; light.slot[face]=0; return true;
+	AssignPageSlot(p,0,owner,face); return true;
 }
 bool ParentSamples( DX12ShadowTarget_t target )
 {
 	for ( int v=0;v<g_ViewStack.Count();++v )
 	{
 		const CShadowViewData &parent=*g_ViewStack[v];
+		if ( parent.packet.cascadeAtlasTarget==target || parent.packet.staticSunTarget==target ) return true;
 		for ( int p=0;p<parent.targets.Count();++p ) if ( parent.targets[p]==target ) return true;
 	}
 	return false;
@@ -1716,15 +1805,15 @@ bool WritablePage( CShadowViewData &data, int pageIndex )
 	if ( !next )
 	{
 		char name[80]; V_snprintf(name,sizeof(name),"shadow_local_%u_%d_nested_%u",g_MapGeneration,pageIndex,data.packet.viewGeneration);
-		next=g_Lighting->CreateShadowDepthTarget(name,g_ShadowRes.page,g_ShadowRes.page);
+		next=g_Lighting->CreateShadowDepthTarget(name,page.width,page.height);
 		if ( !next )
 		{
 			for ( int p=0;p<g_Pages.Count();++p ) if ( p!=pageIndex && PageInactive(g_Pages[p]) && PageTargetsIdle(p) ) EvictPage(p);
-			next=g_Lighting->CreateShadowDepthTarget(name,g_ShadowRes.page,g_ShadowRes.page);
+			next=g_Lighting->CreateShadowDepthTarget(name,page.width,page.height);
 		}
 	}
 	if ( !next ) return false;
-	CopyDepthRect(data,next,previous,0,0,g_ShadowRes.page);
+	CopyDepthRect(data,next,previous,0,0,page.width,page.height);
 	if ( g_Error[0] ) { DestroyTarget(next); return false; }
 	++data.stats.pageCopies;
 	if ( g_PageCopyFrame!=(uint32)gpGlobals->framecount )
@@ -1893,6 +1982,34 @@ bool CreateSunTarget( DX12ShadowTarget_t &target, const char *name, int size )
 {
 	if ( !target ) target=g_Lighting->CreateShadowDepthTarget(name,size,size);
 	return target!=0;
+}
+bool WritableSunTarget( CShadowViewData &data, DX12ShadowTarget_t &work, int size, ShadowCache_t *caches, int count )
+{
+	if ( !ParentSamples(work) ) return true;
+	DX12ShadowTarget_t next=0;
+	for ( int i=0;i<g_SunSpares.Count();++i ) if ( g_SunSpares[i].size==size && TargetIdle(g_SunSpares[i].target) )
+	{
+		next=g_SunSpares[i].target; g_SunSpares.FastRemove(i); break;
+	}
+	if ( !next )
+	{
+		char name[80]; V_snprintf(name,sizeof(name),"shadow_sun_nested_%u",data.packet.viewGeneration);
+		next=g_Lighting->CreateShadowDepthTarget(name,size,size);
+	}
+	if ( !next ) return false;
+	const DX12ShadowTarget_t previous=work;
+	CopyDepthRect(data,next,previous,0,0,size);
+	if ( g_Error[0] ) { DestroyTarget(next); return false; }
+	for ( int c=0;c<count;++c )
+	{
+		ShadowCache_t &cache=caches[c];
+		if ( cache.workTarget==previous ) cache.workTarget=next;
+		if ( cache.pendingWorkTarget==previous ) cache.pendingWorkTarget=next;
+		cache.footprintKnown=false; cache.pendingFootprintWorkTarget=0; cache.footprintCowInvalidated=true;
+	}
+	work=next;
+	SpareSunTarget_t spare; spare.size=size; spare.target=previous; g_SunSpares.AddToTail(spare);
+	return true;
 }
 // Sun charts: the chart's sky entry triangles in light clip space (data.sunSkyClip) and the chart depth bias the
 // backend clips casters with; empty when the receiver region has no entry sky under this chart.
@@ -2077,7 +2194,7 @@ CShadowMapRopeFootprint *AcquireRopeFootprint( ShadowCache_t &cache, int size )
 }
 
 bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_t clean, DX12ShadowTarget_t work,
-	int x, int y, int size, DX12ShadowTarget_t *rigid, int rigidSize, const char *rigidName, int chartLight = -5, int chartFace = 0 )
+	int x, int y, int size, DX12ShadowTarget_t *rigid, int rigidWidth, int rigidHeight, const char *rigidName, int chartLight = -5, int chartFace = 0 )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::RenderChart", "Shadowmaps" );
 	if ( !cache.pending || cache.pendingReady ) return true;
@@ -2091,7 +2208,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::RenderChart.CleanDepth", "Shadowmaps" );
 		cache.rigidValid=false;
-		if ( !RenderDepth(data,clean,x,y,size,cache.pendingView,cache.pendingVolume,true,true,true,false,
+		if ( !RenderDepth(data,clean,x,y,size,cache.pendingView,cache.pendingVolume,true,true,true,true,
 			DetailObjectSystem()->HasShadowCasters(cache.pendingVolume,false),false,SHADOWMAP_DYNAMIC_ALL,NULL,NULL,sunSkyClip) ) return false;
 		cache.pendingClean=true;
 	}
@@ -2116,7 +2233,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 			VPROF_BUDGET( "ShadowMapsDX12::RenderChart.RigidDepth", "Shadowmaps" );
 			if ( !rigidTarget )
 			{
-				*rigid=g_Lighting->CreateShadowDepthTarget(rigidName,rigidSize,rigidSize);
+				*rigid=g_Lighting->CreateShadowDepthTarget(rigidName,rigidWidth,rigidHeight);
 				rigidTarget=*rigid;
 				if ( !rigidTarget ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 			}
@@ -2181,7 +2298,8 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	ShadowTileRect_t restore={0,0,size,size};
 	if ( partial ) restore=previous;
 	const int width=restore.x1-restore.x0, height=restore.y1-restore.y0;
-	if ( width>0 && height>0 )
+	Assert(source!=work || (!overlayDynamic && !cache.pendingBillboards));
+	if ( width>0 && height>0 && source!=work )
 	{
 		if ( !data.Lease(work) || !data.Lease(source) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 		{
@@ -2191,6 +2309,8 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 		}
 		++data.stats.depthCopies;
 		data.stats.footprintRestorePixels+=uint64(width)*height;
+		data.stats.depthCopyPixels+=uint64(width)*height;
+		g_FrameDepthCopyPixels+=uint64(width)*height;
 		if ( width==size && height==size )
 		{
 			++data.stats.fullRestores;
@@ -2331,6 +2451,7 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 		ShadowCache_t &cache=local.cache[f];
 		int pageIndex=local.page[f], slot=local.slot[f], x=(slot%g_ShadowRes.slots)*g_ShadowRes.local, y=(slot/g_ShadowRes.slots)*g_ShadowRes.local;
 		LocalPage_t &page=g_Pages[pageIndex];
+		if ( !CreatePage(data,pageIndex) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 		if ( projectionChanged || !cache.valid )
 		{
 			VPROF_BUDGET( "ShadowMapsDX12::BuildLocal.NewProjection", "Shadowmaps" );
@@ -2375,7 +2496,7 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 			CMatRenderContextPtr pRenderContext( materials );
 			PIXEVENT( pRenderContext, "Local chart" );
 			char rigidName[80]; V_snprintf(rigidName,sizeof(rigidName),"shadow_local_%u_%d_rigid",g_MapGeneration,pageIndex);
-			if ( !RenderChart(data,cache,page.clean,page.work,x,y,g_ShadowRes.local,&page.rigid,g_ShadowRes.page,rigidName,gpu.lightId,f) ) return false;
+			if ( !RenderChart(data,cache,page.clean,page.work,x,y,g_ShadowRes.local,&page.rigid,page.width,page.height,rigidName,gpu.lightId,f) ) return false;
 		}
 	}
 	bool pending=false;
@@ -2510,21 +2631,33 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	CopyMatrix(staticClip,staticMatrix);
 	ShadowCasterVolume_t staticVolume; if ( !ExtractVolume(staticClip,staticVolume,&staticClipToWorld) ) return false;
 	AddReportVolume(data,-5,staticVolume);
-	ShadowCache_t &staticCache=data.staticSunCache;
+	ShadowCache_t &staticCache=g_StaticSunCache;
 	bool staticBillboards=DetailObjectSystem()->HasShadowCasters(staticVolume,true);
 	uint32 staticDetailGeneration=staticBillboards ? data.detail.m_nGeneration : 0;
-	bool staticRebuild=!staticCache.valid || staticCache.staticGeneration!=g_StaticGeneration || staticCache.skyRegion!=data.sunSkyRegion || memcmp(staticCache.matrix,staticMatrix,sizeof(staticMatrix));
-	if ( !CreateSunTarget(data.staticSun,"shadow_static_sun",g_ShadowRes.sun) || !CreateSunTarget(data.staticSunClean,"shadow_static_sun_clean",g_ShadowRes.sun) )
+	const bool separateStatic=staticBillboards;
+	bool staticRebuild=!staticCache.valid || staticCache.staticGeneration!=g_StaticGeneration || staticCache.skyRegion!=data.sunSkyRegion ||
+		memcmp(staticCache.matrix,staticMatrix,sizeof(staticMatrix)) || separateStatic!=(g_StaticSunClean!=0);
+	if ( !CreateSunTarget(g_StaticSunWork,"shadow_static_sun",g_ShadowRes.sun) ||
+		(separateStatic && !CreateSunTarget(g_StaticSunClean,"shadow_static_sun_clean",g_ShadowRes.sun)) )
 		return Fail(SHADOWMAP_ERR_RESIDENCY);
-	if ( staticRebuild || staticCache.detailGeneration!=staticDetailGeneration )
+	if ( !separateStatic )
+	{
+		DestroyTarget(g_StaticSunClean);
+		g_StaticSunClean=0;
+	}
+	if ( staticRebuild || staticCache.detailGeneration!=staticDetailGeneration || staticCache.hadBillboards!=staticBillboards ||
+		(staticBillboards && !SameDetailOrientation(staticCache.detail,data.detail)) )
 	{
 		StartChart(staticCache,staticMatrix,staticDepth,staticView,staticVolume,staticRebuild,false,staticBillboards,staticDetailGeneration,0);
 		staticCache.pendingSkyRegion=data.sunSkyRegion;
+		if ( !WritableSunTarget(data,g_StaticSunWork,g_ShadowRes.sun,&staticCache,1) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+		staticCache.pendingWorkTarget=g_StaticSunWork; staticCache.pendingDetail=data.detail;
+		staticCache.pendingContentGeneration=data.casterContentGeneration;
 	}
 	{
 		CMatRenderContextPtr pRenderContext( materials );
 		PIXEVENT( pRenderContext, "Static sun" );
-		if ( !RenderChart(data,staticCache,data.staticSunClean,data.staticSun,0,0,g_ShadowRes.sun,NULL,0,NULL) ) return false;
+		if ( !RenderChart(data,staticCache,g_StaticSunClean ? g_StaticSunClean : g_StaticSunWork, g_StaticSunWork,0,0,g_ShadowRes.sun,NULL,0,0,NULL) ) return false;
 	}
 	if ( staticCache.pending && staticCache.pendingReady )
 	{
@@ -2536,24 +2669,25 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		memcpy(constants.cStaticSunWorldToClip,staticCache.matrix,sizeof(staticCache.matrix));
 		memcpy(constants.cShadowDepthRecords[4],staticCache.depth,sizeof(staticCache.depth));
 		constants.cStaticSunRect[2]=g_ShadowRes.sun;
-		if ( !data.Lease(data.staticSun) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-		data.packet.staticSunTarget=data.staticSun; constants.cShadowView1[3]|=DX12_SHADOW_VIEW_STATIC_SUN_VALID;
+		if ( !data.Lease(g_StaticSunWork) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+		data.packet.staticSunTarget=g_StaticSunWork; constants.cShadowView1[3]|=DX12_SHADOW_VIEW_STATIC_SUN_VALID;
 	}
-	else ++data.stats.initializingCharts;
+	const int cascadeOwner=data.kind==SHADOWMAP_VIEW_VIEWMODEL ? 1 : 0;
+	SunCascadeTargets_t &cascade=g_CascadeTargets[cascadeOwner];
 	float splits[5],blend[3],farDepth=MIN(data.receiver.zFar,r_csm_distance.GetFloat());
 	constants.cSunTravel[3]=farDepth; constants.cSunBasisX[3]=0.9f*farDepth;
 	if ( !ShadowMapScene_CascadeSplits(data.receiver.zNear,farDepth,splits,blend) )
 	{
 		for ( int i=0;i<4;++i )
 		{
-			ShadowCache_t &cache=data.cascades[i];
+			ShadowCache_t &cache=cascade.caches[i];
 			cache.pending=false; cache.staticGeneration=0; cache.dirty=true;
 		}
 		return true;
 	}
 	for ( int i=0;i<4;++i ) constants.cCascadeSplits[i]=splits[i+1];
 	for ( int i=0;i<3;++i ) constants.cCascadeBlend[i]=blend[i];
-	if ( !CreateSunTarget(data.cascadeClean,"shadow_cascade_static",g_ShadowRes.atlas) || !CreateSunTarget(data.cascadeWork,"shadow_cascade_work",g_ShadowRes.atlas) )
+	if ( !CreateSunTarget(cascade.clean,kCascadeTargetNames[cascadeOwner][0],g_ShadowRes.atlas) || !CreateSunTarget(cascade.work,kCascadeTargetNames[cascadeOwner][1],g_ShadowRes.atlas) )
 		return Fail(SHADOWMAP_ERR_RESIDENCY);
 	bool anyCascade=false;
 	for ( int i=0;i<4;++i )
@@ -2586,10 +2720,18 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 			lo=FLT_MAX; hi=-FLT_MAX;
 			for ( int c=0;c<8;++c ) { float d=DotProduct(BoxCorner(mins,maxs,c),travel); lo=MIN(lo,d); hi=MAX(hi,d); }
 		};
-		CShadowViewData::SunCascadeFit_t &fit=data.cascadeFits[i];
-		bool keep=fit.valid && fit.radius<=squareRadius*kSunCascadeMargin &&
-			fabsf(DotProduct(sphereCenter-fit.center,basisX))+sphereRadius<=fit.radius &&
-			fabsf(DotProduct(sphereCenter-fit.center,basisY))+sphereRadius<=fit.radius;
+		SunCascadeFit_t &fit=cascade.fits[i];
+		auto covers=[&]( const SunCascadeFit_t &candidate )
+		{
+			return candidate.valid && candidate.radius<=squareRadius*kSunCascadeMargin &&
+				fabsf(DotProduct(sphereCenter-candidate.center,basisX))+sphereRadius<=candidate.radius &&
+				fabsf(DotProduct(sphereCenter-candidate.center,basisY))+sphereRadius<=candidate.radius;
+		};
+		// AcquireView pins the last completed packet, so consecutive MAIN packets
+		// alternate pooled entries. Prefer the physical cache's fit whenever it
+		// still covers this receiver; otherwise this entry computes a new exact fit.
+		if ( covers(cascade.fits[i]) ) fit=cascade.fits[i];
+		bool keep=covers(fit);
 		Vector snapped,depthMins,depthMaxs;
 		if ( keep )
 		{
@@ -2620,13 +2762,13 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		int x=(i&1)*g_ShadowRes.csm,y=(i/2)*g_ShadowRes.csm;
 		ShadowCasterVolume_t volume; if ( !ExtractVolume(clip,volume,&clipToWorld) ) return false;
 		AddReportVolume(data,-1-i,volume);
-		ShadowCache_t &cache=data.cascades[i];
+		ShadowCache_t &cache=cascade.caches[i];
 		CollectLocalFaceCasters(data,volume);
 		bool billboards=DetailObjectSystem()->HasShadowCasters(volume,true), dynamic=data.localFaceCasters.Count()!=0;
 		uint32 detailGeneration=billboards ? data.detail.m_nGeneration : 0;
 		bool rebuild=!cache.valid || cache.staticGeneration!=g_StaticGeneration || cache.skyRegion!=data.sunSkyRegion ||
 			memcmp(cache.matrix,matrix,sizeof(matrix)) || memcmp(cache.depth,depth,sizeof(depth));
-		if ( !rebuild && ReuseCommittedChart(data,cache,data.cascadeWork,0,billboards,detailGeneration) )
+		if ( !rebuild && ReuseCommittedChart(data,cache,cascade.work,0,billboards,detailGeneration) )
 		{
 			if ( cache.committedFrame!=gpGlobals->framecount ) ++data.stats.crossFrameReusedSunCharts;
 		}
@@ -2634,16 +2776,18 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		{
 			StartChart(cache,matrix,depth,lightView,volume,rebuild,dynamic,billboards,detailGeneration,0);
 			cache.pendingSkyRegion=data.sunSkyRegion;
-			CaptureChartContent(data,cache,data.cascadeWork);
+			if ( !WritableSunTarget(data,cascade.work,g_ShadowRes.atlas,cascade.caches,4) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+			CaptureChartContent(data,cache,cascade.work);
 		}
 		{
 			CMatRenderContextPtr pRenderContext( materials );
 			PIXEVENT( pRenderContext, "Sun cascade" );
-			if ( !RenderChart(data,cache,data.cascadeClean,data.cascadeWork,x,y,g_ShadowRes.csm,&data.cascadeRigid,g_ShadowRes.atlas,"shadow_cascade_rigid",-1-i) ) return false;
+			if ( !RenderChart(data,cache,cascade.clean,cascade.work,x,y,g_ShadowRes.csm,&cascade.rigid,g_ShadowRes.atlas,g_ShadowRes.atlas,kCascadeTargetNames[cascadeOwner][2],-1-i) ) return false;
 		}
 		if ( cache.pending && cache.pendingReady )
 		{
-			data.cascadeVolumes[i]=cache.pendingVolume;
+			cascade.volumes[i]=cache.pendingVolume;
+			cascade.fits[i]=fit;
 			CommitChart(data,cache,-1-i);
 		}
 		if ( cache.pending ) ++data.stats.deferredCharts;
@@ -2658,10 +2802,9 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	}
 	if ( anyCascade )
 	{
-		if ( !data.Lease(data.cascadeWork) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-		data.packet.cascadeAtlasTarget=data.cascadeWork; constants.cShadowView1[3]|=DX12_SHADOW_VIEW_CSM_VALID;
+		if ( !data.Lease(cascade.work) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+		data.packet.cascadeAtlasTarget=cascade.work; constants.cShadowView1[3]|=DX12_SHADOW_VIEW_CSM_VALID;
 	}
-	return true;
 }
 
 ShadowTileRect_t ProjectInfluence( const LocalLight_t &local, const CShadowViewData &data, const VMatrix &clip, const Vector &forward, int tilesX, int tilesY )
@@ -3424,14 +3567,7 @@ void ShadowMapsDX12_LevelShutdown()
 	if ( g_LastMain ) { g_LastMain->Release(); g_LastMain=NULL; }
 	memset(&g_LastStats,0,sizeof(g_LastStats));
 	g_FrameRigidLayerRebuilds=0; memset(g_FrameViewStats,0,sizeof(g_FrameViewStats)); g_FrameRigidEvents.RemoveAll();
-	for ( int i=0;i<g_ViewPool.Count();++i )
-	{
-		CShadowViewData *data=g_ViewPool[i];
-		DestroyTarget(data->cascadeClean); DestroyTarget(data->cascadeWork); DestroyTarget(data->cascadeRigid);
-		DestroyTarget(data->staticSunClean); DestroyTarget(data->staticSun);
-		data->ReleaseLeases(); data->active=false; data->staticSunCache=ShadowCache_t();
-		for ( int c=0;c<4;++c ) data->cascades[c]=ShadowCache_t();
-	}
+	ResetSunTargets();
 	for ( int i=0;i<g_PendingViews.Count();++i ) g_PendingViews[i]->Release();
 	g_PendingViews.RemoveAll(); g_ViewStack.RemoveAll();
 	ViewRender_ClearShadowMapScenes();
@@ -3746,6 +3882,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	{
 		g_DepthFrame=(uint32)gpGlobals->framecount;
 		g_FrameDepthRenders=0;
+		g_FrameDepthCopyPixels=0;
 		g_FrameRigidLayerRebuilds=0; memset(g_FrameViewStats,0,sizeof(g_FrameViewStats)); g_FrameRigidEvents.RemoveAll();
 	}
 	DX12HighresMapStatus native={}; char nativeError[256]={0};
@@ -4023,12 +4160,12 @@ void ShadowMapsDX12_OnCasterMoved( IClientRenderable *renderable, const Vector &
 			}
 		}
 	}
-	for ( int v=0;v<g_ViewPool.Count();++v ) for ( int c=0;c<4;++c )
+	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v ) for ( int c=0;c<4;++c )
 	{
-		CShadowViewData &data=*g_ViewPool[v];
-		ShadowCache_t &cache=data.cascades[c];
-		if ( !cache.valid || cache.pending || BoxInVolume(data.cascadeVolumes[c],oldMins,oldMaxs) ||
-			BoxInVolume(data.cascadeVolumes[c],newMins,newMaxs) )
+		SunCascadeTargets_t &sun=g_CascadeTargets[v];
+		ShadowCache_t &cache=sun.caches[c];
+		if ( !cache.valid || cache.pending || BoxInVolume(sun.volumes[c],oldMins,oldMaxs) ||
+			BoxInVolume(sun.volumes[c],newMins,newMaxs) )
 		{
 			++cache.notifications;
 			if ( !cache.notifications ) cache.committedFrame=-1;
@@ -4060,9 +4197,9 @@ void ShadowMapsDX12_InvalidateCasterRegistration( IClientRenderable *renderable 
 		if ( wrapped ) cache.committedFrame=-1;
 		cache.rigidValid=false; cache.pendingRigidInputsInvalidated=true;
 	}
-	for ( int v=0;v<g_ViewPool.Count();++v ) for ( int c=0;c<4;++c )
+	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v ) for ( int c=0;c<4;++c )
 	{
-		ShadowCache_t &cache=g_ViewPool[v]->cascades[c];
+		ShadowCache_t &cache=g_CascadeTargets[v].caches[c];
 		if ( wrapped ) cache.committedFrame=-1;
 		cache.rigidValid=false; cache.pendingRigidInputsInvalidated=true;
 	}
@@ -4219,6 +4356,7 @@ void PrintStats( const ShadowStats_t &s, const DX12LightingSunVisibilityStats &v
 		g_DepthFrame,g_FrameDepthRenders,FramePageCopies(),s.depthRenders,s.deferredCharts,s.initializingCharts,s.reusedCharts,s.pageCopies,
 		s.crossFrameReusedCharts,s.crossFrameReusedSunCharts,s.uncertifiedCasters,s.rigidLayerRebuilds,s.overlayCasterDraws);
 	Msg("Shadowmaps footprint: footprintRestorePixels=%llu fullRestores=%u (work restores only)\n",s.footprintRestorePixels,s.fullRestores);
+	Msg("Shadowmaps copyTraffic: depthCopyPixels=%llu depthCopyBytes=%llu frameDepthCopyPixels=%llu frameDepthCopyBytes=%llu (D32 read+write, all restores)\n",s.depthCopyPixels,s.depthCopyPixels*8,g_FrameDepthCopyPixels,g_FrameDepthCopyPixels*8);
 	const ShadowFullRestoreReasons_t &r=s.fullRestoreReasons;
 	Msg("Shadowmaps fullRestoreReasons: unknownPrev=%u rebuild=%u matrix=%u depth=%u slot=%u target=%u source=%u cow=%u rope=%u customDraw=%u nonfinite=%u wNonPositive=%u invalidBounds=%u unknownGeometry=%u queuedRope=%u boundsCoverChart=%u\n",
 		r.unknownPrev,r.rebuild,r.matrix,r.depth,r.slot,r.target,r.source,r.cow,r.rope,r.customDraw,r.nonfinite,r.wNonPositive,r.invalidBounds,r.unknownGeometry,r.queuedRope,r.boundsCoverChart);
@@ -4228,6 +4366,22 @@ void PrintStats( const ShadowStats_t &s, const DX12LightingSunVisibilityStats &v
 		const ShadowFrameViewStats_t &v=g_FrameViewStats[k];
 		Msg("Shadowmaps viewDepth: kind=%d views=%u renders=%u rigidLayerRebuilds=%u overlayCasterDraws=%u rigidLayerBypasses=%u invalidRigidLayers=%u\n",
 			k,v.views,v.depthRenders,v.rigidLayerRebuilds,v.overlayCasterDraws,v.rigidLayerBypasses,v.invalidRigidLayers);
+	}
+	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v )
+	{
+		const int kind=v ? SHADOWMAP_VIEW_VIEWMODEL : SHADOWMAP_VIEW_MAIN;
+		int cpuEntries=0;
+		for ( int i=0;i<g_ViewPool.Count();++i ) cpuEntries+=g_ViewPool[i]->kind==kind;
+		const SunCascadeTargets_t &sun=g_CascadeTargets[v];
+		Msg("Shadowmaps sunPool: kind=%d cpuEntries=%d sharedCascadeClean=%llu sharedCascadeWork=%llu sharedCascadeRigid=%llu\n",
+			kind,cpuEntries,sun.clean,sun.work,sun.rigid);
+	}
+	Msg("Shadowmaps staticSun: sharedClean=%llu sharedWork=%llu cowSpares=%d\n",g_StaticSunClean,g_StaticSunWork,g_SunSpares.Count());
+	for ( int p=0;p<g_Pages.Count();++p ) if ( g_Pages[p].work )
+	{
+		int slots=0;
+		for ( int s=0;s<PageSlotCount();++s ) slots+=g_Pages[p].owners[s]>=0;
+		Msg("Shadowmaps localAtlas: page=%d width=%d height=%d occupiedSlots=%d\n",p,g_Pages[p].width,g_Pages[p].height,slots);
 	}
 	for ( int i=0;i<g_FrameRigidEvents.Count();++i )
 	{
@@ -4320,11 +4474,11 @@ private:
 };
 void WriteDepthWorkReport( CUtlBuffer &out )
 {
-	out.Printf("\"depthWork\":{\"frame\":%u,\"renders\":%u,\"pageCopies\":%u,\"rigidLayerRebuilds\":%u,"
+	out.Printf("\"depthWork\":{\"frame\":%u,\"renders\":%u,\"pageCopies\":%u,\"rigidLayerRebuilds\":%u,\"depthCopyPixels\":%llu,\"depthCopyBytes\":%llu,"
 		"\"reasonBits\":{\"noLayer\":1,\"clean\":2,\"projection\":4,\"depth\":8,\"slot\":16,\"target\":32,\"membership\":64,"
 		"\"registration\":128,\"entityKey\":256,\"materialKey\":512,\"drawNotification\":1024,\"proofInvalidated\":2048,\"noCasters\":4096},"
 		"\"keyFieldBits\":{\"transform\":1,\"identity\":4,\"appearance\":8,\"drawSettings\":16},\"views\":[",
-		g_DepthFrame,g_FrameDepthRenders,FramePageCopies(),g_FrameRigidLayerRebuilds);
+		g_DepthFrame,g_FrameDepthRenders,FramePageCopies(),g_FrameRigidLayerRebuilds,g_FrameDepthCopyPixels,g_FrameDepthCopyPixels*8);
 	bool comma=false;
 	for ( int k=0;k<=SHADOWMAP_VIEW_VIEWMODEL;++k ) if ( g_FrameViewStats[k].views )
 	{
@@ -4363,6 +4517,7 @@ void ShadowReportCommand( const CCommand &args )
 		s.crossFrameReusedCharts,s.crossFrameReusedSunCharts,s.uncertifiedCasters,s.rigidLayerRebuilds,s.overlayCasterDraws,
 		s.rigidLayerBypasses,s.invalidRigidLayers,s.realtimeLights,s.positiveWeightLocals,s.bakedOnlyLocals,s.transitioningLocals,s.promotions,s.demotions,
 		s.footprintRestorePixels,s.fullRestores);
+	out.Printf(",\"depthCopyPixels\":%llu,\"depthCopyBytes\":%llu",s.depthCopyPixels,s.depthCopyPixels*8);
 	const ShadowFullRestoreReasons_t &r=s.fullRestoreReasons;
 	out.Printf(",\"fullRestoreReasons\":{\"unknownPrev\":%u,\"rebuild\":%u,\"matrix\":%u,\"depth\":%u,\"slot\":%u,\"target\":%u,\"source\":%u,\"cow\":%u,\"rope\":%u,\"customDraw\":%u,\"nonfinite\":%u,\"wNonPositive\":%u,\"invalidBounds\":%u,\"unknownGeometry\":%u,\"queuedRope\":%u,\"boundsCoverChart\":%u}},",
 		r.unknownPrev,r.rebuild,r.matrix,r.depth,r.slot,r.target,r.source,r.cow,r.rope,r.customDraw,r.nonfinite,r.wNonPositive,r.invalidBounds,r.unknownGeometry,r.queuedRope,r.boundsCoverChart);

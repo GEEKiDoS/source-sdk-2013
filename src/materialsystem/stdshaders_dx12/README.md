@@ -65,6 +65,17 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   thread; it never writes VCS files.
 - Legacy VCS centroid masks are carried into deferred translation. SM2 shaders declare centroid TEXCOORDs in
   the VCS header rather than bytecode DCLs; dropping that mask makes MSAA edge inputs differ from native shaders.
+- Eligible native mono main views shade the 3D sky after opaque geometry and motion vectors, before GTAO/SSR.
+  `ShaderAPIDX12ScreenSpace_003` brackets it with a far-depth LEQUAL stencil mark (`0x40`; PBR validity remains
+  `0x80`). Sky draws retain their own depth/blend/fog but can shade only marked pixels; the end marker restores
+  those pixels to far depth and removes `0x40`. Main contact/SSR bindings stay neutral during the sky draw.
+  Water/fog-volume, reflective-glass, solid-space, stereo, cubemap, intro, Portal and offscreen views retain sky-first ordering.
+  On the RTX 4070S at 1080p, paired `d1_trainstation_02` measurements reduced the sky event from 0.380 to 0.061 ms
+  in the alley and 0.164 to 0.051 ms in the stairwell. Fixed-exposure, frozen-scene screenshots with GTAO/contact
+  shadows enabled matched exactly for the open citadel view; alley/stair residuals were at most 1 code value,
+  also present in unchanged-path repeats. SSR's frame-indexed GGX noise has the same A/A and A/B variance;
+  SSR remains after the completed sky color and restored main depth. Evidence: `_agent_tools/out/sky_1080*`
+  and `sky_exact*` (the latter screenshots predate the harness DPI correction).
 - Feature detail sprites (`DX12_DetailShadowLit`) gamma-decode retained vertex illumination once, add runtime
   direct in linear units, then multiply by sRGB-decoded albedo and gamma-to-linear material tint. The lit pass
   uses `TONEMAP_SCALE_LINEAR` and standard sRGB output state; it must not gamma-encode RGB before the linear
@@ -215,6 +226,17 @@ clipped. A receiver on the sun side of a deeper entry sky in its own column (a r
 only the baked cap for casters above that sky. The extra pixel stage costs about 0.4 ms per frame while sun charts
 re-render (`d1_trainstation_02`, RTX 4090); cached charts cost nothing.
 
+Shadow depth targets are retained by physical owner rather than duplicated for every
+pooled receiver packet. One shared static-sun work target (with a clean companion
+only when oriented detail needs an overlay) and one cascade atlas pair per shadowed
+receiver kind serve the main/viewmodel packet pools; unshadowed monitor, reflection,
+and sky receivers allocate no sun targets. A nested receiver gets a work-only
+copy-on-write target before writing a parent-sampled atlas, with queue ordering and
+resource leases preserving the older packet exactly. Local pages retain their
+4096-texel logical slot contract but allocate a power-of-two physical rectangle
+covering assigned slots and grow by exact D32 depth copies; shader UV/texel
+coordinates remain unchanged.
+
 ## Sky ambient match (`r_sky_ambientmatch`)
 
 The `Sky` shaders (`sky_dx12.cpp` for LDR `Sky_DX9`, `sky_hdr_dx12.cpp` for `Sky_HDR_DX9`; compressed HDR multiplies `$color`
@@ -276,6 +298,14 @@ It is not specific to the PBR shaders. Unknown owners are still rejected, now at
 adds captured native dynamic planes, and preserves native sampled alpha. Material lighting retains its
 existing bump/SSBump weights, two-material blend, tint and fog/output ordering; selected direct lighting
 is gathered once and only selected sunlight is capped by the designated style-0/base alpha.
+Receiver shader scheduling keeps each sun entry's orthographic chart in affine clip space, computed once before
+PCF/PCSS tap loops. Four-tap sun/local preflight and PCF loops reuse one chart/compare body; selected-local PBR
+lighting evaluates only the diffuse lobe required by the baked-direct domain. Continuous highres filter coordinates
+do not carry `precise` (discrete owner/address decisions are unchanged), allowing normal multiply-add contraction.
+The three bumped lightmap-plane filters remain independent: serializing them reduced DXBC size but slowed the
+measured stairwell world pass. At SHADOWQUALITY 1 the final enhanced world/model shaders use 5052/4392 DXBC
+instructions and 87/85 temps, down from 6616/6163 and 138/134. The 1080p d1_trainstation_02 comparison retains the
+same lightmap reconstruction, local shadows and sun penumbrae; these scheduling changes do not alter quality defaults.
 Brush sun capping requires an explicit baked model pose equal to the draw transform.
 The cap has two endpoints, blended by the summed weight `W` of valid CSM entries that were actually sampled
 (`ShadowMap_SunResultCharted`'s `csmWeight`; the static whole-map entry does not count):
@@ -304,6 +334,25 @@ control: 0 off (fixed patterns, the smoke fixtures), 1 + n with n = `framecount 
 temporal upscaler and 0 otherwise (the GTAO/volumetric convention). Rotated 4-tap PCF has radius sqrt(0.5) texels, so its
 plane preflight checks a +-0.75 square instead of +-0.5. Measured at the two d1_trainstation_02 spots with PCSS:
 +0.06 / +0.12 ms GPU.
+`volumetric_ps51` runtime contract (screen-space volumetric march): the low-quality profile (`r_volumetric_quality 0`,
+8 light-segment samples) runs the march at quarter resolution (one texel per 4x4 full-resolution footprint), while
+balanced/high profiles retain the half-resolution march. Every provider receives the same rotating per-step IGN sequence:
+`cVolumeControl.w` is `framecount & 63`, and each step offsets the sequence independently. The temporal pass below
+integrates this dither before compositing, so r0, DLAA, FSR and native SMAA converge to the same shaft instead of
+depending on an AA provider to hide march slices.
+`volumetric_temporal_ps51` resolves the current reduced-resolution RGB scatter and representative depth against ping-pong
+RGBA16F history. It reprojects from the footprint centre using the previous camera transform, prefers the closest scene
+depth/motion sample in the footprint at silhouettes, rejects history when depth differs beyond the upsample tolerance or
+the camera/resolution changes, and blends up to 0.9 history (reduced on motion). When no valid motion texture is available,
+the camera-only reprojection is used. The two quarter-resolution history targets are about 2 MiB total at 1920x1080
+(about 8 MiB for the half-resolution profile), reported under the `volumetric` dx12_memreport category.
+The depth-aware 4x4 composite remains unchanged and preserves the same depth-edge rejection, medium/strength/anisotropy/
+max-distance controls, opted-in local/projected lights, sun cascade/static-chart selection and four-tap sun PCF. The
+quarter path reconstructs its representative camera-forward depth from the selected hardware-depth endpoint before ray
+marching, so wall blocking is preserved; its expected visual difference is modest extra softness. The CPU `SunProjection`
+is orthographic (w = 1), so the five named scalar ray start/step transforms and atlas dimensions are hoisted out of the
+march loop. Projected lights similarly transform the ray start/step once and reuse the interpolated homogeneous coordinates
+for both frustum rejection and `DX12_ProjectedSampleClip`; cookie, attenuation and shadow filtering are unchanged.
 Sun PCSS sample budget: the PBR pixel shaders carry a `SHADOWQUALITY` dynamic combo (0..3) set from
 `r_shadowmap_filter_quality` (stdshader_dx12, archived, default 1) and selecting the Vogel tables of
 `native_src/shadow_pcss_disks.hlsli`: Low 8 blocker / 8 filter taps, Medium 8/16, High 16/32 (the original budget, and what
@@ -475,6 +524,31 @@ original execution. Visible malformed/unowned receiver cells still report `Hligh
 depth/stencil-hidden failure writes intentionally disappear in the early-depth specialization.
 
 
+### Main-view opaque depth prepass
+
+`r_depth_prepass` replays the already-built mono main-view world/renderable lists before opaque color.
+World submission uses ordinary `DrawWorldLists` with the current opaque water-side sort groups,
+but no skybox or water surface. Models and static props use `DEPTH_MODE_NORMAL`, not the studio
+shadow-texture path: color and prepass keep the same LOD, skinning, flex, vertex shader, viewport
+epilogue/jitter, culling and raster bias. The color pass retains its ordinary nearer-or-equal depth
+comparison; the prepass adds no compensating depth bias.
+
+Ordered `IShaderAPIDX12ScreenSpace` markers enable a backend-only draw mode, independent of SSR
+and contact-shadow enable. It admits only opaque depth-tested depth writers, drops decals/overlays
+and non-depth-writing ancillary effects, masks color/G-buffer/stencil writes, and removes the PS
+only for fixed-coverage draws whose native DXBC declares forced early depth. Opaque shaders with
+unaudited discard/texkill or depth/coverage output retain their original PS. Alpha testing, A2C
+and clipping remain authoritative. PBR cutouts
+use `pbr_world_depthprepass_ps51` / `pbr_model_depthprepass_ps51`: wrappers of the original source
+with the same combos and material block, returning immediately after the unchanged alpha test.
+Their RTV0 alpha is preserved for A2C; no receiver lightmap/light/IBL work is evaluated. The
+ordinary color VS is resolved before selecting the coverage PS, so reduced PS metadata cannot
+change the vertex route. Other cutout materials keep their original PS.
+
+Default selection is performance-gated: compare both total GPU time and lit PS invocations with
+`r_depth_prepass 0` / `1` in the same run; saving opaque color time alone does not justify enabling
+the extra geometry pass.
+
 ### Baking an enhanced map
 
 After VBSP/VVIS, run from `src` (PowerShell), using a game directory that resolves the map's assets:
@@ -575,6 +649,33 @@ diffuse-only carriers multiplied by the diffuse colour once. Flashlight and `env
 view, nearest first) are cookie spotlights inside the same pass; the engine's additive flashlight pass draws nothing
 for PBR materials.
 
+High-resolution receiver residency keeps the baked pixels lossless while trimming unused allocation edges. HDR pages are
+uploaded into cropped power-of-two array classes (the 2048/4096/8192/16384 bindings remain ABI names; their dimensions
+come from the selected class). Native R32 owner pages remain full-size because owner lookup uses full native UV dimensions;
+only the HDR payload arrays are cropped. Native RGBA32F dynamic companions are lazy: a shared 1x1 zero page is bound until
+a captured nonzero dynamic plane is published, so maps with no executed dynamic contribution do not reserve companion pages.
+
+The GPU face directory is 132 bytes (`owner`, packed style IDs, four tile indices, and the three baked model rows), down
+from the former 160-byte record. Tile records are packed to three uints (12 bytes), down from 32 bytes; page kind/slice,
+class exponents, origin, and extent are losslessly unpacked in the shader. On `d1_trainstation_02`, this saves
+`6605*28 + 10247*20 = 389880` bytes of immutable metadata before resource alignment. The selected HLight mode has
+four 2048-square 128-MiB RGBA16F payloads; its fourth page uses only a 2048x1024 class, reducing resident HDR payload
+by 16 MiB. Its five native RGBA32F companions (8 MiB each in the untrimmed path) are omitted when no nonzero dynamic
+capture is present. No format precision or receiver filtering coordinates change.
+
+Enhanced receiver traffic: the 608-byte runtime light records retain full float precision. Radius/fade rejection
+reads only the light ID, origin/radius and fade bounds (28 bytes), deferring the remaining header until the light
+passes; baked-only specular similarly checks weight/origin before attenuation and cone data. A local chart reuses
+its home-face matrix and rectangle when the unbiased receiver belongs to that face, rather than fetching that
+same matrix again. Projected lights reject receiver classes using just their flags.
+
+The immutable visibility upload keeps the disk data unchanged but uses the GPU-only entry `.w` lane for a live
+bitmask at the first entry of each receiver-local 32-entry chunk (faces and prop meshes separately). The mask
+contains exactly the entries whose stored visibility is nonzero, including dense payloads; partial chunks have
+no out-of-range bits. PBR baked-only enumeration reads one 4-byte mask instead of 32 scalar visibility loads
+(128 bytes spread over a 512-byte record span); empty receiver lists read no mask. Buffer strides and allocation
+sizes are unchanged. Unknown/neutral highres world owners skip the selected-direct gather outside debug views.
+
 Lightmap filtering: the PBR world highres twins (`pbr_world_highres_ps51`, `_earlydepth_ps51`) define
 `HIGHRES_LIGHTMAP_BICUBIC`, so every `.hlight` tile read in `HighresLightmap_Tile` is a cubic B-spline built from four
 bilinear taps, each clamped to the tile's texel-centre rectangle (no bleeding from neighbouring tiles). Captured native
@@ -623,12 +724,28 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
 `shaderapidx12/screenspace_ssr_dx12.cpp` runs stochastic SSR on single-sample scenes (MSAA scenes skip it) over the
 receivers above, every roughness included; misses and low-confidence pixels keep the cubemap term `E`.
 
+SSR payload writes remain RGBA16F, with no precision reduction. While a bracket captures SSR, non-envmapped
+PBR materials suppress the E+D and direct-specular MRT writes but still write K+valid as zero. Existing response
+alpha rejection makes retained E/D/S behind those pixels unread, including the trace's hit-normal guard.
+This reduces their total scene/G-buffer writes from 40 to 24 bytes per shaded fragment (16 bytes saved);
+envmapped writers retain all six outputs. Outside SSR capture (including `r_ssr 0`) the three payload targets
+are not attached, so the base scene/normal/F0 writes remain 16 bytes per fragment.
+
+`r_ssr_quality 0/1/2` retains the 24/48/96-step quality profiles and their half/half/full trace sizes (default 1).
+Archived `r_ssr_resolution` scales that profile's trace size independently on both axes: 1 is the original output,
+0.5 traces one quarter as many texels, and 0.25 one sixteenth. At balanced quality and 1080p these are
+960x540, 480x270 and 240x135. Ray steps, refinements, roughness/cone filtering, neighbour-ray count and temporal
+history lengths do not change. The resolve and its auxiliary target scale to the full viewport times `r_ssr_resolution`; the
+composite and history remain full resolution. At reduced settings the composite selects among adjacent resolve texels using
+the receiver's full-resolution depth and normal, rejecting discontinuities before applying the temporal filter. The scene
+capture and colour mip chain remain full resolution so the reflected radiance cone and default path stay unchanged.
+
 | Pass | Size | Output |
 |---|---|---|
 | `ssr_depth_cs51` | viewport | positive view depth; ping-ponged so the composite validates history against the previous frame |
 | `ssr_reduce_color_cs51` | mip chain | mean-colour mips of the scene copy |
-| `ssr_trace_cs51` | profile (half/full) | one GGX visible-normal sample (Heitz 2018) per texel from the pixel of its 2x2 group that rotates each frame; radiance + confidence, and the ray `( hit, +pdf )` / `( direction, -pdf )`. The colour mip is the sample's filtered-importance cone; the hit radiance is multiplied by the frame's GTAO term at the hit (`SetAmbientOcclusionTerm`), because the scene copy precedes the GTAO apply |
-| `ssr_resolve_cs51` | viewport | ray reuse over the own texel plus 4/6/8 Vogel-disk neighbours (radius `1 + 3 sqrt( roughness )` texels), weighted `lobe_receiver( L ) / pdf`, firefly weight `1 / ( 1 + luminance )`; `C = ( confidence * radiance, confidence )` and `( O, mean hit distance )` |
+| `ssr_trace_cs51` | profile (half/full) times `r_ssr_resolution` | one GGX visible-normal sample (Heitz 2018) per texel from a pixel rotating through its full-resolution cell each frame (legacy 2x2 rotation at scale 1); radiance + confidence, and the ray `( hit, +pdf )` / `( direction, -pdf )`. The colour mip is the sample's filtered-importance cone; the hit radiance is multiplied by the frame's GTAO term at the hit (`SetAmbientOcclusionTerm`), because the scene copy precedes the GTAO apply |
+| `ssr_resolve_cs51` | full viewport times `r_ssr_resolution` | reduced settings compute one receiver-centred GGX ray reuse result per resolve texel; full-resolution composite selects depth/normal-compatible neighbours; at 1 this is the original viewport dispatch and exact ray reuse |
 | `ssr_composite_cs51` | viewport | temporal filter: history reprojected through motion vectors (or the previous camera) for rough lobes and the reflected virtual point for glossy ones, depth-validated, clipped toward the mean of the resolve's 3x3 neighbourhood at trace spacing (mean +- 1..2 sigma, wider when rough); current weight `1 / n` with a per-pixel history length `n` capped at 8 (glossy) .. 32 (rough) frames; writes the next history `C`, `( O, n )` and `delta = C.rgb * K - C.a * E - O * S` |
 
 History is dropped after a skipped/failed frame, a viewport change or a recreated target. The noise sequence advances
@@ -690,3 +807,100 @@ flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead o
 `bloomT = screen( bloomT, dirt * bloomT )`. Lens flare and glare are added to the HDR scene at
 `mat_postfx_lensflare * 0.1` before AgX; the output is `peak * screen( AgX( scene ) / peak, saturate( bloomT ) )`
 ahead of the LUT, dither and HDR scale. Debug view 1 shows `bloomT`.
+
+## Exact glare reach bound
+
+`DX12_PostFX` pass 8 (`postfx_glare_cs51` `REDUCE 1`) reduces the glare input to
+componentwise RGB maxima in a fixed 16x16 FP16 target, then to its 1x1 mip 4.
+Each group covers a disjoint integer source rectangle, so odd dimensions and
+all edge texels are included. Maxima of FP16 source channels remain exactly
+representable; storing a summed luminance in FP16 instead could round the bound
+down. Glare pass 6 binds that 1x1 maximum at SRV 1. Its RGB sum conservatively
+bounds any bilinear-clamped source sample, and the source screen mask is at most
+one. With a small FP32 rounding guard on the bound only, the gather stops when
+the remaining distances exceed every possible source half-length (or emits zero
+when no sample can exceed the 0.1 luminance threshold). Original tap spacing,
+retained sample/contribution arithmetic and accumulation order are unchanged.
+The two reductions run only when glare is demanded, including `mat_postfx_debug 3`.
+
+## Render scale and adapter tier
+
+`r_upscaler_scale` (default 1 = native; opt-in 0.77 / 0.667 / 0.58 / 0.5, never set by a preset) shrinks the main 3D viewport the way `mat_viewportscale` does
+(`view.cpp`); the temporal upscaler (`r_upscaler` modes 1-4: auto / DLSS / FSR / XeSS) then reconstructs the unscaled frame.
+Mode 5 selects vendor-independent, native-resolution **SMAA T2x**, combining two-phase jitter with an HDR temporal resolve.
+SMAA T2x ignores `r_upscaler_scale` without changing its saved value; the backend rejects scaled SMAA T2x inputs.
+Auto remains provider-only (DLSS / FSR / XeSS), never SMAA T2x.
+`r_upscaler_lod_bias` (archived, default -1) controls material texture sharpness without disabling mipmaps.
+The separate archived `r_upscaler_lod_bias_auto` defaults to 1 so -1 remains an unambiguous explicit value:
+auto 1 uses `log2(renderWidth / displayWidth) - 1` for DLSS/DLAA, FSR and XeSS (-1 at native, -2 at half scale),
+and -0.5 for native SMAA T2x. Auto 0 uses the explicit `r_upscaler_lod_bias` in [-2, 0]; use
+`r_upscaler_lod_bias_auto 0; r_upscaler_lod_bias 0` for the unbiased texture comparison. Temporal AA off always
+adds zero bias. The client submits the effective view bias before the first material draw through
+`FLOAT_RENDERPARM_DX12_UPSCALE_LOD_BIAS`; the backend applies it only after selecting an available temporal provider.
+Only mipmapped world/model material textures receive the additive bias (per-texture `TexLodBias` is retained).
+Render/depth targets, screen-space/post resources, lightmaps and highres lightmap pages, cubemaps/IBL and UI/VGUI
+stay unbiased. The material group guard also protects UI draws that reuse a world texture. Sampler descriptors
+and prepared texture keys are invalidated/re-keyed only when the bias changes; there is no per-frame sampler rebuild.
+
+
+The SMAA path uses the MIT-licensed iryoku/smaa area/search tables and morphological searches (`thirdparty/smaa`),
+perceptual HDR luma edges, YCoCg variance/history clipping, motion/depth rejection and Karis-weighted temporal blending.
+History resets on cuts, missing frames and feature rebuilds; mild sharpening is output-only. Animated screen-space
+dither uses the same positive temporal status as provider AA. `r_upscaler_status` (with `sv_cheats 1`) prints the
+runtime status: SMAA T2x active is 1025 (`1 | (4 << 8)`). The `Temporal AA` GPU event measures the complete AA/copy
+envelope for all modes, including any explicitly enabled DLSS-NR layers.
+
+The client submits the render size as `FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_WIDTH/HEIGHT` with every dispatch; the backend reads
+colour, depth and motion vectors from the top-left render rectangle of the scene-sized targets and writes a scene-sized
+output (a record-time rejection bilinear-stretches the rectangle instead). After the dispatch `CViewRender::RenderView`
+switches to the unscaled viewport, so velocity blur, overlays, post-processing and the HUD run at full resolution;
+`motion_blur_mv_ps51` reads velocities through `$velocityregion` (the 3D render size). DLSS-NR runs only at native scale,
+and frame generation keeps the native render size. A scale whose provider feature fails is dropped (native) until
+`r_upscaler` or `r_upscaler_scale` changes.
+
+`IShaderAPIDX12::AdapterPerformanceTier` classifies the adapter at device creation: integrated/UMA, software, under
+~6 GB, or without mesh shaders or DXR 1.1 (Pascal, Maxwell, GTX 16, RDNA1) is low. On the first level load for a new
+adapter (`r_quality_tier_adapter` records it) a low-tier adapter gets the low preset in `cdll_client_int.cpp`
+(`ApplyAdapterQualityTier`, native resolution: SMAA T2x anti-aliasing (`r_upscaler 5`), quarter-resolution 8-step
+volumetrics stay on, SSR traces at half resolution, low GTAO, PCF sun shadows at low resolution, two realtime local
+lights, low bloom and 4-tap motion blur).
+High-tier adapters keep the defaults. `-dx12adaptertier 0|1` forces the class.
+
+Upload pages (`pipeline_dx12.cpp`) use cached write-back memory only on cache-coherent UMA adapters and the
+write-combined upload heap elsewhere; `-dx12uploadwb` forces the write-back pages for A/B comparisons.
+Idle upload pages are released only after their retirement fence completes and remain idle for 120 renderer frames. The pool retains at least four pages, plus every recent or in-flight page; active pages are
+never relocated or copied. The upload line in `-dx12stats` reports per-window aligned demand, peak frame demand,
+page creations/trims and current pool buffer bytes, so a steady scene should show `newPages 0` after load-time bursts.
+
+
+Per-pass GPU times: launch with `-dx12stats -dx12statsframes 300 -condebug`; every 300 frames the console log lists the
+GPU frame time and each PIX event's ms/frame. For a live compact view, set `cl_showfps 3`: the normal FPS line is followed
+by the latest approximately 0.5-second inclusive GPU pass timings, emitted in tree order (nested passes are indented),
+plus GPU and CPU frame milliseconds. The overlay's timing queries and readbacks stay disabled while `cl_showfps` is below
+3 (apart from explicitly requested `-dx12stats` captures), so mode 0 adds no overlay timing-collection work. Event timestamps
+use one batched resolve per submitted command list; the remaining cost is GPU-dependent. A representative 1080p RTX 4070S
+capture measured about 0.2 ms (6%) of additional GPU time with mode 3.
+
+## Native resource memory
+
+`sv_cheats 1; dx12_memreport` queues one allocation snapshot at the next render-owner Present. Repeated pending
+requests coalesce. The first `-dx12stats` window also includes this report, so the standard GPU statistics log records
+the initialized renderer without continuous memory-report overhead.
+
+The snapshot lists every tracked live renderer-created committed/placed resource, including allocations retained by
+an incomplete fence. It groups counts and bytes by subsystem and textures by DXGI format; sizes come from
+`GetResourceAllocationInfo`, not width-times-height estimates. The selected adapter's DXGI LOCAL and NON_LOCAL
+process usage/budget are separate: allocation totals are not residency, placed-resource ranges can overlap, and swap
+chains, driver storage and external provider allocations are not included in the tracked-resource total.
+
+The memory reductions preserve formats and working pixels:
+
+- Single-sample motion rasterizes directly into its compatible engine RGBA16F target and avoids the extra private
+  allocation and full-target copy. MSAA retains its private multisample target and resolve. Append/viewmodel retargets,
+  UAV promotion and deletion keep their existing accumulated contents and canonical resource states.
+- SSR reuses the captured scene's mip 0 for its signed RGBA16F delta after trace, the final reader of that scene copy.
+  Resolve and temporal accumulation do not read it; the additive composite and the next frame's capture remain unchanged.
+- GTAO edges and motion-blur classification tiles allocate their declared working dimensions and are fully overwritten
+  before any bounded read. GTAO depth and AO term targets retain their original physical sizes: depth mip rounding and
+  SSR's linear AO border samples depend on those sizes.
+

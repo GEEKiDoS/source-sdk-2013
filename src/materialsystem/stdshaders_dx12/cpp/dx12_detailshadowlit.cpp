@@ -7,6 +7,8 @@
 #include "dx12_detailshadowlit_depth_ps51.inc"
 #include "tier0/memdbgon.h"
 
+extern ConVar r_shadowmap_filter_quality;
+
 BEGIN_VS_SHADER( DX12_DetailShadowLit, "Runtime shadow-map detail lighting" )
 	BEGIN_SHADER_PARAMS
 		SHADER_PARAM( ALPHATESTREFERENCE, SHADER_PARAM_TYPE_FLOAT, "0.5", "Authored sprite cutout reference" )
@@ -53,7 +55,9 @@ BEGIN_VS_SHADER( DX12_DetailShadowLit, "Runtime shadow-map detail lighting" )
 					IS_FLAG_SET( MATERIAL_VAR_ADDITIVE ) ? SHADER_BLEND_ONE : SHADER_BLEND_ONE_MINUS_SRC_ALPHA );
 			}
 			FogToFogColor();
+			// The lit vertex stage gathers the runtime direct light once per sprite (SHADOWLIT); the caster stays plain.
 			DECLARE_STATIC_VERTEX_SHADER( dx12_detailshadowlit_vs51 );
+			SET_STATIC_VERTEX_SHADER_COMBO( SHADOWLIT, !depth );
 			SET_STATIC_VERTEX_SHADER( dx12_detailshadowlit_vs51 );
 			if ( depth )
 			{
@@ -73,6 +77,7 @@ BEGIN_VS_SHADER( DX12_DetailShadowLit, "Runtime shadow-map detail lighting" )
 			SetPixelShaderConstantGammaToLinear( 0, COLOR, ALPHA );
 			DECLARE_DYNAMIC_VERTEX_SHADER( dx12_detailshadowlit_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, !depth && pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z );
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( SHADOWQUALITY, depth ? 0 : r_shadowmap_filter_quality.GetInt() );
 			SET_DYNAMIC_VERTEX_SHADER( dx12_detailshadowlit_vs51 );
 			if ( depth )
 			{

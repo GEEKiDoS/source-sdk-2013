@@ -53,6 +53,18 @@ enum RenderParamFloat_t
 	FLOAT_RENDERPARM_DX12_NR_MAX_RATIO,
 	FLOAT_RENDERPARM_DX12_NR_COMPARE_SPLIT,
 	FLOAT_RENDERPARM_DX12_NR_COMPARE_ZOOM,
+	// DX12 temporal upscaler input: the main 3D view's render size in pixels, at the top-left of the scene targets
+	// (submitted before every dispatch). <= 0 or >= the scene size is native-resolution AA.
+	FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_WIDTH,
+	FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_HEIGHT,
+	// Material sampler mip bias requested for the current temporal-AA view. The shader API applies it only to
+	// eligible mipmapped material textures, and only after a provider has been selected.
+	FLOAT_RENDERPARM_DX12_UPSCALE_LOD_BIAS,
+	// Backend-written (shaderapidx12 only, read through IShaderAPI after the frame's main motion pass resolved): conservative
+	// upper bound of the motion target's velocity length in UV units (1 = full target extent) while
+	// INT_RENDERPARM_DX12_MOTION_BLUR_STATIC is 1; it covers the camera reprojection's float residual and the RGBA16F
+	// quantisation. Meaningless (0) otherwise.
+	FLOAT_RENDERPARM_DX12_MOTION_STATIC_BOUND,
 };
 
 enum RenderParamInt_t
@@ -88,10 +100,10 @@ enum RenderParamInt_t
 	// 0 = not evaluated, 1 = available, -1 = private shaders unavailable (sticky), -2 = unavailable for the current MSAA mode.
 	INT_RENDERPARM_DX12_MOTION_STATUS,
 
-	// DX12 native-AA upscaler; other backends store and ignore these values.
-	INT_RENDERPARM_DX12_UPSCALE_MODE,     // 0 off, 1 auto, 2 DLSS/DLAA, 3 FSR native AA, 4 XeSS AA.
+	// DX12 temporal upscaler (native AA or a reduced render size, see FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_*); other backends store and ignore these values.
+	INT_RENDERPARM_DX12_UPSCALE_MODE,     // 0 off, 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x.
 	INT_RENDERPARM_DX12_UPSCALE_DISPATCH, // bit 0 run, bit 1 reset.
-	INT_RENDERPARM_DX12_UPSCALE_STATUS,   // backend-owned: 0 off/unevaluated, 1|(kind<<8) active (DLSS 1, FSR 2, XeSS 3),
+	INT_RENDERPARM_DX12_UPSCALE_STATUS,   // backend-owned: 0 off/unevaluated, 1|(kind<<8) active (DLSS 1, FSR 2, XeSS 3, SMAA T2x 4),
 	                                      // -1 no provider, -2 feature creation failed, -3 MSAA, -4 wrong target/owner,
 	                                      // -5 no motion resolve this frame, -6 provider replay error.
 	// DLSS-NR layers chained after the temporal AA dispatch (layer N+1 is fed layer N's output).
@@ -105,8 +117,16 @@ enum RenderParamInt_t
 	                                        // a frame without it presents in pass-through, the provider stays selected.
 	INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH,  // bit 0 run, bit 1 reset; sent once per main view after the last post-processing pass, before the HUD.
 	INT_RENDERPARM_DX12_FRAMEGEN_FRAME,     // client frame id (28 bits, the one the latency markers use) for the frame being rendered; queued before DISPATCH.
+	// Backend-written (shaderapidx12 only): 1 while this frame's resolved motion target is a stationary candidate, i.e. the
+	// main pass's effective previous and current view-projection are bit-identical and every motion draw's previous
+	// transforms (view-projection and model rows) were bit-identical to its current ones (history misses and static
+	// objects reuse the current transforms). 0 for stale, failed, suppressed or moving frames.
+	INT_RENDERPARM_DX12_MOTION_BLUR_STATIC,
+	// Backend-written (shaderapidx12 only): the backend's current frame counter (31 bits) as seen by the recording owner,
+	// -1 when queried off the recording owner (queued client frames may run ahead of the frame being recorded).
+	INT_RENDERPARM_DX12_FRAME_EPOCH,
 
-	MAX_INT_RENDER_PARMS = 24
+	MAX_INT_RENDER_PARMS = 26
 };
 
 // for INT_RENDERPARM_BACK_BUFFER_INDEX

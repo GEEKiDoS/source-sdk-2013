@@ -1,12 +1,13 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: DX12 native-AA upscaler client trigger. The client decides which RenderView is the temporal main view and
-//          when its history breaks; the backend owns provider selection, jitter and the fail-closed dispatch.
+// Purpose: DX12 temporal upscaler client trigger. The client decides which RenderView is the temporal main view, its
+//          render scale and when its history breaks; the backend owns provider selection, jitter and the fail-closed dispatch.
 //
 //===========================================================================//
 #include "cbase.h"
 #include "upscaler_dx12.h"
 #include "motionvectors_dx12.h"
+#include "framegen_dx12.h"
 #include "igamesystem.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
@@ -14,6 +15,8 @@
 #include "tier1/interface.h"
 #include "renderparm.h"
 #include "view_shared.h"
+
+#include <math.h>
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -27,6 +30,9 @@ static bool s_bFrameLatched = false;
 static Vector s_vecLastOrigin( 0, 0, 0 );
 static bool s_bHaveLastOrigin = false;
 static int s_nLastWidth = 0, s_nLastHeight = 0, s_nLastStatus = 0, s_nLastNrStatus = 0;
+// A scaled dispatch reported no provider / feature creation failure / replay error: render native until the
+// mode or the scale changes (a scaled feature that cannot exist must not be recreated every other frame).
+static bool s_bScaleFailed = false;
 
 void UpscalerDX12_ReconcileMSAA()
 {
@@ -42,14 +48,42 @@ void UpscalerDX12_ReconcileMSAA()
 static void OnUpscalerChanged( IConVar *pVar, const char *pOldValue, float flOldValue )
 {
 	s_bResetPending = true;
+	s_bScaleFailed = false;
 	ConVarRef var( pVar );
 	if ( s_bDX12 && var.GetInt() != 0 )
 		UpscalerDX12_ReconcileMSAA();
 }
 
 ConVar r_upscaler( "r_upscaler", "1", FCVAR_ARCHIVE,
-	"DX12 native-resolution temporal AA: 0 off, 1 auto, 2 DLAA, 3 FSR native AA (FSR 4 on AMD is untested), 4 XeSS AA",
-	true, 0, true, 4, OnUpscalerChanged );
+	"DX12 temporal AA / upscaler: 0 off, 1 auto (DLSS / FSR / XeSS), 2 DLSS, 3 FSR (FSR 4 on AMD is untested), 4 XeSS, 5 SMAA T2x (native only, ignores r_upscaler_scale); r_upscaler_scale sets provider render scale",
+	true, 0, true, 5, OnUpscalerChanged );
+
+static void OnUpscalerScaleChanged( IConVar *pVar, const char *pOldValue, float flOldValue );
+
+static void OnUpscalerLodBiasChanged( IConVar *pVar, const char *pOldValue, float flOldValue )
+{
+	s_bResetPending = true;
+}
+
+ConVar r_upscaler_lod_bias( "r_upscaler_lod_bias", "-1", FCVAR_ARCHIVE,
+	"DX12 temporal texture mip LOD bias: -1 auto when r_upscaler_lod_bias_auto is 1; explicit range -2..0",
+	true, -2.f, true, 0.f, OnUpscalerLodBiasChanged );
+
+ConVar r_upscaler_lod_bias_auto( "r_upscaler_lod_bias_auto", "1", FCVAR_ARCHIVE,
+	"DX12 temporal texture mip LOD bias: 1 uses provider/scale auto (-1 at native, -2 at half scale), 0 honors r_upscaler_lod_bias",
+	true, 0, true, 1, OnUpscalerLodBiasChanged );
+
+static void OnUpscalerScaleChanged( IConVar *pVar, const char *pOldValue, float flOldValue )
+{
+	s_bResetPending = true;
+	s_bScaleFailed = false;
+}
+// Rendering below native resolution is the main lever on older GPUs: every pixel-bound pass (world shading, SSR,
+// GTAO, volumetrics, post) shrinks with the render area. The upscaler reconstructs the unscaled frame.
+ConVar r_upscaler_scale( "r_upscaler_scale", "1", FCVAR_ARCHIVE,
+	"DX12 temporal upscaler render scale per axis: 1 native-resolution AA, 0.77 ultra quality, 0.667 quality, 0.58 balanced, 0.5 performance (needs r_upscaler 1-4; ignored by SMAA T2x)",
+	true, 0.5f, true, 1.f, OnUpscalerScaleChanged );
+
 
 // DLSS-NR (NVIDIA neural rendering, nvngx_dlssnr.dll) runs after the temporal AA, before the HUD. Layers chain: the
 // temporal-AA frame -> NR -> NR output -> NR -> ... -> final image. Model tuning rebuilds every layer's feature.
@@ -145,6 +179,17 @@ bool UpscalerDX12_RequiresMotionVectors()
 	return s_bFrameLatched;
 }
 
+static float UpscalerDX12_ViewLodBias( const CViewSetup &view )
+{
+	if ( !r_upscaler_lod_bias_auto.GetBool() )
+		return r_upscaler_lod_bias.GetFloat();
+	if ( r_upscaler.GetInt() == 5 )
+		return -0.5f;
+	const float flScale = view.x == 0 && view.width > 0 && view.m_nUnscaledWidth > 0
+		? MIN( 1.f, float( view.width ) / float( view.m_nUnscaledWidth ) ) : 1.f;
+	return Clamp( log2f( flScale ) - 1.f, -2.f, 0.f );
+}
+
 void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTemporalViewEligible, const CViewSetup &view )
 {
 	s_bFrameLatched = false;
@@ -153,6 +198,7 @@ void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTempo
 	if ( !UpscalerDX12_Enabled() )
 	{
 		// Mode 0 disarms the backend for every draw of this view; the target-less case never dispatches.
+		pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_LOD_BIAS, 0.f );
 		pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_MODE, 0 );
 		s_bLastFrameEligible = false;
 		s_bResetPending = true;
@@ -163,13 +209,17 @@ void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTempo
 	s_bLastFrameEligible = bMainTemporalViewEligible;
 	s_nLastWidth = view.width; s_nLastHeight = view.height;
 	s_bFrameLatched = bMainTemporalViewEligible;
+	// Submit before the mode arms the provider and before any material draw; the backend changes
+	// sampler cache keys only when this value actually changes.
+	pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_LOD_BIAS,
+		bMainTemporalViewEligible ? UpscalerDX12_ViewLodBias( view ) : 0.f );
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_MODE, bMainTemporalViewEligible ? r_upscaler.GetInt() : 0 );
 }
 
-void UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup &view, bool bReset )
+bool UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup &view, bool bReset )
 {
 	if ( !s_bFrameLatched || !pRenderContext )
-		return;
+		return false;
 	s_bFrameLatched = false;
 
 	// Camera cut / teleport: a large origin step between dispatches breaks the history.
@@ -188,6 +238,10 @@ void UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup 
 	pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_FOV_Y, flFovY );
 	pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_NEAR, view.zNear );
 	pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_FAR, view.zFar );
+	// The backend reads the render size at the top-left of the scene targets; anything else is native AA.
+	const bool bScaled = view.x == 0 && view.y == 0 && ( view.width < view.m_nUnscaledWidth || view.height < view.m_nUnscaledHeight );
+	pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_WIDTH, bScaled ? float( view.width ) : 0.f );
+	pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_HEIGHT, bScaled ? float( view.height ) : 0.f );
 
 	const bool bResetDispatch = bReset || s_bResetPending;
 	SubmitNrConfig( pRenderContext );
@@ -199,13 +253,41 @@ void UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup 
 	if ( nStatus != s_nLastStatus )
 		DevMsg( "r_upscaler: status %d -> %d\n", s_nLastStatus, nStatus );
 	s_nLastStatus = nStatus;
+	// -1 no provider, -2 feature creation failed, -6 provider replay error: this adapter cannot upscale at this scale.
+	if ( bScaled && !s_bScaleFailed && ( nStatus == -1 || nStatus == -2 || nStatus == -6 ) )
+	{
+		s_bScaleFailed = true;
+		Warning( "r_upscaler_scale: the upscaler failed at %dx%d -> %dx%d (status %d); rendering at native resolution\n",
+			view.width, view.height, view.m_nUnscaledWidth, view.m_nUnscaledHeight, nStatus );
+	}
 	const int nNrStatus = s_pShaderAPI ? s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_NR_STATUS ) : 0;
 	if ( nNrStatus != s_nLastNrStatus )
 		DevMsg( "r_dlss_nr: status %d -> %d\n", s_nLastNrStatus, nNrStatus );
 	s_nLastNrStatus = nNrStatus;
+	return bScaled;
+}
+
+float UpscalerDX12_RenderScale()
+{
+	// SMAA T2x is native-only; frame generation also needs scene-sized motion vectors and depth.
+	if ( !UpscalerDX12_Enabled() || r_upscaler.GetInt() == 5 || s_bScaleFailed || FrameGenDX12_Enabled() )
+		return 1.f;
+	const float flScale = r_upscaler_scale.GetFloat();
+	return flScale < 0.995f ? Clamp( flScale, 0.5f, 1.f ) : 1.f;
 }
 
 int UpscalerDX12_Status()
 {
 	return s_pShaderAPI ? s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_STATUS ) : 0;
 }
+
+static void UpscalerDX12_PrintStatus( const CCommand & )
+{
+	const int status = UpscalerDX12_Status();
+	const int kind = status > 0 ? ( status >> 8 ) & 0xff : 0;
+	const char *const names[] = { "none", "DLSS/DLAA", "FSR", "XeSS", "SMAA T2x" };
+	Msg( "r_upscaler: mode %d, render scale %.3f, status %d (%s%s)\n", r_upscaler.GetInt(), UpscalerDX12_RenderScale(), status,
+	    kind >= 0 && kind < ARRAYSIZE( names ) ? names[kind] : "unknown", status > 0 ? " active" : "" );
+}
+static ConCommand r_upscaler_status( "r_upscaler_status", UpscalerDX12_PrintStatus,
+    "Print the requested temporal AA mode, native/render scale and backend runtime status", FCVAR_CHEAT );

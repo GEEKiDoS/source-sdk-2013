@@ -1,4 +1,4 @@
-Upscaler and frame generation runtimes for shaderapidx12 (DLAA, FSR, XeSS, DLSS-NR, DLSS-G, FSR FG, XeSS-FG)
+Upscaler and frame generation runtimes for shaderapidx12 (DLSS/DLAA, FSR, XeSS, DLSS-NR, DLSS-G, FSR FG, XeSS-FG)
 ==========================================================================================================
 
 The repository contains only the headers and licenses; shaderapidx12 builds against them without any runtime present.
@@ -12,10 +12,10 @@ into game/bin/x64. Copying the DLLs straight into game/bin/x64 works as well.
 
   Provider                Files                                         Folder
   ----------------------  --------------------------------------------  ------------------------
-  XeSS AA                 libxess.dll                                   xess/redist/
-  FSR native AA           amd_fidelityfx_loader_dx12.dll                fidelityfx2/redist/
+  XeSS                    libxess.dll                                   xess/redist/
+  FSR                     amd_fidelityfx_loader_dx12.dll                fidelityfx2/redist/
                           amd_fidelityfx_upscaler_dx12.dll              (both are required)
-  DLAA                    nvngx_dlss.dll                                ngx/redist/
+  DLSS (DLAA at native)   nvngx_dlss.dll                                ngx/redist/
   DLSS-NR                 nvngx_dlssnr.dll                              dlssnr/redist/
 
 Where to get them
@@ -30,7 +30,7 @@ FSR
   The loader finds the upscaler DLL by name in its own folder, so keep the two files together. FSR 4 is chosen only
   on AMD GPUs and has not been tested; other GPUs get FSR 3.1.
 
-DLAA
+DLSS / DLAA
   NVIDIA DLSS SDK: https://github.com/NVIDIA/DLSS/tree/main/lib/Windows_x86_64/rel, file nvngx_dlss.dll.
   Also needs an NVIDIA RTX GPU and driver; the driver provides the NGX core (_nvngx.dll).
 

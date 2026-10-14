@@ -12,6 +12,8 @@
 #include "shadowmap_bsp.h"
 #include "tracy_dx12.h"
 #include "materialsystem/stdshaders/common_hlsl_cpp_consts.h"
+#include "texture_group_names.h"
+
 #include "shaderapi/ishaderutil.h"
 #include "shaderapi/commandbuffer.h"
 #include "materialsystem/materialsystem_config.h"
@@ -157,27 +159,34 @@ static bool ValidateHighresShaderDX12( ID3D12ShaderReflection *reflection, const
 			{
 				auto *buffer = reflection->GetConstantBufferByName( b.Name );
 				D3D12_SHADER_BUFFER_DESC bd{};
-				if ( b.NumSamples != ( slot == 1 ? 160u : 32u ) || !buffer ||
+				if ( b.NumSamples != ( slot == 1 ? 132u : 12u ) || !buffer ||
 					FAILED( buffer->GetDesc( &bd ) ) || bd.Type != D3D_CT_RESOURCE_BIND_INFO || bd.Variables != 1 ) return false;
 				auto *variable = buffer->GetVariableByIndex( 0 );
 				auto *type = variable ? variable->GetType() : nullptr;
 				D3D12_SHADER_TYPE_DESC td{};
-				const UINT count = slot == 1 ? 5 : 2;
-				const char *faceMembers[5] = { "nativeRect", "dimensionsFlags", "styles", "tiles", "bakedModelToWorld" };
-				const char *tileMembers[2] = { "address", "size" };
-				if ( !type || FAILED( type->GetDesc( &td ) ) || td.Class != D3D_SVC_STRUCT || td.Elements ||
-					td.Members != ( slot == 1 ? 5u : 2u ) ) return false;
-				for ( UINT member = 0; member < count; ++member )
+				if ( !type || FAILED( type->GetDesc( &td ) ) ) return false;
+				if ( slot == 2 )
 				{
-					auto *mt = type->GetMemberTypeByIndex( member );
-					D3D12_SHADER_TYPE_DESC md{};
-					const char *name = type->GetMemberTypeName( member );
-					const UINT offset = slot == 1 && member == 4 ? 112u : member * 16u;
-					const UINT elements = slot == 1 && member >= 3 ? ( member == 3 ? 4u : 3u ) : 0u;
-					if ( !name || V_strcmp( name, slot == 1 ? faceMembers[member] : tileMembers[member] ) ||
-						!mt || FAILED( mt->GetDesc( &md ) ) || md.Offset != offset || md.Class != D3D_SVC_VECTOR ||
-						md.Type != ( slot == 1 && member == 4 ? D3D_SVT_FLOAT : D3D_SVT_UINT ) ||
-						md.Rows != 1 || md.Columns != 4 || md.Elements != elements ) return false;
+					if ( td.Class != D3D_SVC_VECTOR || td.Type != D3D_SVT_UINT || td.Rows != 1 || td.Columns != 3 || td.Elements ) return false;
+				}
+				else
+				{
+					const char *faceMembers[4] = { "owner", "styles", "tiles", "bakedModelToWorld" };
+					if ( td.Class != D3D_SVC_STRUCT || td.Elements || td.Members != 4 ) return false;
+					for ( UINT member = 0; member < 4; ++member )
+					{
+						auto *mt = type->GetMemberTypeByIndex( member );
+						D3D12_SHADER_TYPE_DESC md{};
+						const char *name = type->GetMemberTypeName( member );
+						const UINT offset = member == 0 ? 0u : member == 1 ? 16u : member == 2 ? 20u : 84u;
+						const UINT elements = member == 2 ? 4u : member == 3 ? 3u : 0u;
+						const bool vector = member != 1;
+						if ( !name || V_strcmp( name, faceMembers[member] ) || !mt ||
+							FAILED( mt->GetDesc( &md ) ) || md.Offset != offset ||
+							md.Class != ( vector ? D3D_SVC_VECTOR : D3D_SVC_SCALAR ) ||
+							md.Type != ( member == 3 ? D3D_SVT_FLOAT : D3D_SVT_UINT ) ||
+							md.Rows != 1 || md.Columns != ( vector ? 4u : 1u ) || md.Elements != elements ) return false;
+					}
 				}
 			}
 			seen |= 1u << slot;
@@ -491,7 +500,7 @@ bool CShaderAPIDX12::AddOcclusionQuerySegment( OcclusionQueryDX12 *query )
 	desc.MipLevels = 1;
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &segment->readback ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &segment->readback ), "readback", "DX12 occlusion query readback" ) ) )
 	{
 		delete segment;
 		return false;
@@ -539,6 +548,25 @@ InternedNameDX12 InternShaderNameDX12( const char *pszName )
 	static CUtlSymbolTableMT s_Table( 0, 64, false );
 	return InternedNameDX12{ s_Table.String( s_Table.AddString( pszName ) ) };
 }
+//-----------------------------------------------------------------------------
+// Purpose: Current material context guard for the resource-wide sampler bias. Material
+//          textures can be shared by VGUI and world/model materials, so allocation
+//          metadata alone is not sufficient to keep UI draws unbiased.
+//-----------------------------------------------------------------------------
+static bool IsUpscalerLodBiasMaterialEligible( const IMaterial *pMaterial )
+{
+	if ( !pMaterial )
+		return false;
+	const char *group = pMaterial->GetTextureGroupName();
+	if ( !group || ( V_stricmp( group, TEXTURE_GROUP_WORLD ) && V_stricmp( group, TEXTURE_GROUP_MODEL ) ) )
+		return false;
+	const char *name = pMaterial->GetName();
+	if ( !name )
+		return false;
+	return V_strnicmp( name, "vgui/", 5 ) && V_strnicmp( name, "hud/", 4 ) && V_strnicmp( name, "sprites/", 8 ) &&
+		V_strnicmp( name, "ui/", 3 ) && V_strnicmp( name, "_rt_", 4 );
+}
+
 
 // The installed x64 material runtime implements these virtuals after the public
 // IMaterial prefix. DrawMesh is slot 71 for both CMaterial and CMaterialSubRect;
@@ -1005,6 +1033,13 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	if ( !m_pDevice || m_bDisallowAccess || !m_pDevice->CommandList() || !m_pDevice->NativeDevice() || !bindings[0].buffer || firstIndex < 0 || indexCount <= 0 )
 		return;
 	const bool shadowPass = m_pDevice->Lighting().ShadowPassActive();
+	const bool depthPrepass = !shadowPass && m_bDepthPrepass;
+	// Normal opaque submission also emits decals/overlays and ancillary model passes. They do not occlude the
+	// color pass; admit only its actual opaque depth writers and leave all original vertex/raster state intact.
+	if ( depthPrepass && ( m_ActiveSnapshot.translucent || !m_ActiveSnapshot.depthTest || !m_ActiveSnapshot.depthWrite ||
+		m_ActiveSnapshot.polygonOffset == SHADER_POLYOFFSET_DECAL ||
+		( m_pBoundMaterial && m_pBoundMaterial->GetMaterialVarFlag( MATERIAL_VAR_DECAL ) ) ) )
+		return;
 	const bool opaqueCaster = shadowPass && !m_ActiveSnapshot.alphaTest;
 	const bool highresMap = m_pDevice->Highres().EnhancedMap();
 	if ( highresMap && m_pDevice->Highres().Rejected() )
@@ -1117,10 +1152,16 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	VertexFormat_t format = bindings[0].format;
 	const bool motionActive = !shadowPass && MotionPassActive();
-	// Contact-depth replay (§3): only the original opaque depth writers reach the private depth. Blended/additive and
+	const bool bDrawLodBiasEligible = m_bUpscalerLodBiasMaterialEligible && !shadowPass && !motionActive;
+	if ( bDrawLodBiasEligible != m_bUpscalerLodBiasDrawEligible )
+	{
+		m_bUpscalerLodBiasDrawEligible = bDrawLodBiasEligible;
+		++m_nTextureStateEpoch;
+	}
 	// non-depth-writing draws never contribute opaque depth; every replay draw is dropped while the private target
 	// is unavailable so nothing is duplicated into the real scene.
 	const bool contactReplay = !shadowPass && !motionActive && m_ScreenSpace.contactReplay;
+	const bool skyboxDraw = m_bSkyboxPass && !shadowPass && !motionActive && !contactReplay;
 	if ( contactReplay && ( !m_ContactDepth.replayDraws || m_ActiveSnapshot.translucent || !m_ActiveSnapshot.depthWrite ) )
 		return;
 	VertexLayoutDX12 explicitLayout;
@@ -1191,6 +1232,24 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		return;
 	ShaderRecordDX12 *vsRecord = motionActive ? MotionVertexShader( format ) : ( m_hBoundVS == VERTEX_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS ) );
 	ShaderRecordDX12 *psRecord = opaqueCaster ? nullptr : motionActive ? m_pMotionPS : ( m_hBoundPS == PIXEL_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS ) );
+	if ( depthPrepass && ( m_ActiveSnapshot.alphaTest || m_ActiveSnapshot.alphaToCoverage || m_bAlphaToCoverage ) )
+	{
+		// Select coverage only AFTER resolving the ordinary VS: pixel metadata must not change its highres
+		// routing or vertex program. These twins compile the exact original alpha expression and combo ABI.
+		const char *logical = m_ActiveSnapshot.pixelShaderName.c_str();
+		const char *coverage = !V_strcmp( logical, "pbr_model_ps51" ) ? "pbr_model_depthprepass_ps51" :
+			( !V_strcmp( logical, "pbr_world_ps51" ) || !V_strcmp( logical, "pbr_world_highres_ps51" ) ) ? "pbr_world_depthprepass_ps51" : nullptr;
+		if ( coverage )
+		{
+			psRecord = ResolveNamedShader( coverage, true, m_ActiveSnapshot.staticPixelIndex, m_nPixelShaderIndex );
+			if ( !psRecord || !psRecord->legacyBytecode.IsEmpty() )
+			{
+				if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "native depth-prepass coverage shader unavailable" );
+				return;
+			}
+			m_BoundNamedCombos[1] = m_NamedShaderCombos[m_NamedComboHints[1]];
+		}
+	}
 	if ( ( vsRecord && !ReflectNativeCBuffersDX12( vsRecord ) ) || ( psRecord && !ReflectNativeCBuffersDX12( psRecord ) ) )
 	{
 		if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres native shader reflection failed" );
@@ -1359,7 +1418,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				return;
 			}
 			TextureRecord *record = cached.valid && cached.record && cached.handle == handle ? cached.record : ( handle > 0 ? FindTexture( handle ) : nullptr );
-			const bool reusable = cached.valid && cached.handle == handle && cached.record == record && cached.srgb == srgb && cached.comparison == comparison && ( !record || ( record->sampledStateValid && record->resource.Get() == cached.resource && record->m_SamplerDescriptorValid[comparison ? 1 : 0] ) );
+			const bool reusable = cached.valid && cached.handle == handle && cached.record == record && cached.srgb == srgb && cached.comparison == comparison &&
+			    cached.epoch == m_nTextureStateEpoch && ( !record || ( record->sampledStateValid && record->resource.Get() == cached.resource ) );
 			if ( !reusable )
 			{
 				ID3D12Resource *resource = nullptr;
@@ -1468,7 +1528,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	CCommandRecorderDX12 *list = m_pDevice->CommandList();
 	bool pipelineBound = false;
 	RenderTargetBindingDX12 target; // PrepareRenderTargets assigns it before any use
-	bool gbufferTargets = false;
+	bool gbufferTargets = false, ssrPayloadTargets = false;
 	{
 		ZoneNamedN( drawTargets, "DX12 DrawTargets", DX12_DRAW_ZONES_ACTIVE );
 		if ( !( shadowPass ? m_pDevice->Lighting().PrepareShadowDraw( target, m_PrivateShadowViewport, m_PrivateShadowScissor ) : motionActive ? PrepareMotionBinding( target ) : PrepareRenderTargets( target ) ) || ( !target.colorCount && !target.depth ) )
@@ -1478,6 +1538,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				Warning( "ShaderAPIDX12: draw target unavailable colorCount=%u depth=%p\n", target.colorCount, target.depth );
 			return;
 		}
+		if ( depthPrepass && ( target.depth != m_pDevice->SceneDepth() || m_RenderTargets[0] != SHADER_RENDERTARGET_BACKBUFFER ) )
+			return;
 		// Contact replay: the scene depth is replaced by the private copy (same shape); RTV0 stays bound only so the
 		// raster/A2C configuration matches the ordinary draw, with every colour write masked off in the PSO.
 		if ( contactReplay )
@@ -1494,7 +1556,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		// other draw (and every PSO) keeps its single render target. Legacy draws never write them (see gbuffer_dx12.cpp).
 		// Targets 3/4/5 (environment + specular distance, SSR response, direct specular) attach only while the bracket
 		// captures SSR; the contact-depth replay binds no G-buffer target at all. Unbound PS outputs are discarded.
-		if ( m_bGBufferPass && psRecord && psRecord->gbuffer && !shadowPass && !motionActive && !m_ScreenSpace.contactReplay && target.colorCount == 1 &&
+		if ( m_bGBufferPass && psRecord && psRecord->gbuffer && !shadowPass && !motionActive && !m_ScreenSpace.contactReplay && !depthPrepass && target.colorCount == 1 &&
 		     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && !m_ActiveSnapshot.translucent )
 		{
 			const bool ssrPayload = m_ScreenSpace.ssrCapture && m_pGBufferEnvironment;
@@ -1508,6 +1570,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			}
 			target.colorCount = 1 + gbufferCount;
 			gbufferTargets = true;
+			ssrPayloadTargets = ssrPayload;
 		}
 		m_Pipeline.BindRenderTargets( list, target.colorCount, target.rtvs, target.colors, target.depth ? &target.dsv : nullptr, target.depth, retireFence );
 	}
@@ -1576,6 +1639,9 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	// clears the memo before it can switch any record's active variant and stores it only on success.
 	// Bit 3 distinguishes the SUN-only IA override in both pipeline memos and input-layout caches.
 	const uint8_t meshStreamFlags = static_cast<uint8_t>( ( meshStreams ? ( ( bindings[1].buffer ? 1 : 0 ) | ( bindings[2].buffer ? 2 : 0 ) | ( flexWrinkle ? 4 : 0 ) ) : 0 ) | ( sunCoordinateInput ? 8 : 0 ) );
+	const bool prepassNullPS = depthPrepass && !m_ActiveSnapshot.alphaTest &&
+		!m_ActiveSnapshot.alphaToCoverage && !m_bAlphaToCoverage && !drawClipMask &&
+		( !psRecord || psRecord->forceEarlyDepth );
 	// Texture dimensions (not identities) are the only texture inputs of pipeline selection.
 	ShaderRasterStateDX12 raster{};
 	uint32_t textureTypesPacked = 0;
@@ -1601,10 +1667,12 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	for ( unsigned i = 0; i < 16; ++i )
 		textureTypesPacked |= static_cast<uint32_t>( raster.textureTypes[i] ) << ( 2 * i );
+	// Only the current PBR writer can attach the SSR payload; its native g_Flags1.x/hasEnvmap mirrors legacy c4.x.
+	const bool nonEnvmapSsrPayload = ssrPayloadTargets && m_PsFloat[4][0] == 0.0f;
 	const bool gbufferColorWrite = m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites;
 	const bool gbufferAlphaWrite = m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites;
-	const bool gbufferDepthOnly = !motionActive && target.depth && ( shadowPass || ( !gbufferColorWrite && !gbufferAlphaWrite ) ) && !m_ActiveSnapshot.alphaTest;
-	const bool gbufferStencil = m_bGBufferPass && m_ActiveSnapshot.depthWrite && !gbufferDepthOnly && !shadowPass && !motionActive && !contactReplay && !m_bStencilEnabled && !m_ActiveSnapshot.stencil;
+	const bool gbufferDepthOnly = !motionActive && target.depth && ( shadowPass || prepassNullPS || ( !gbufferColorWrite && !gbufferAlphaWrite ) ) && !m_ActiveSnapshot.alphaTest;
+	const bool gbufferStencil = m_bGBufferPass && m_ActiveSnapshot.depthWrite && !gbufferDepthOnly && !shadowPass && !motionActive && !contactReplay && !depthPrepass && !skyboxDraw && !m_bStencilEnabled && !m_ActiveSnapshot.stencil;
 	PipelineSignatureDX12 signature;
 	memset( &signature, 0, sizeof( signature ) );
 	const bool memoEligible = meshStreams && m_hActiveSnapshotId >= 0;
@@ -1627,7 +1695,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		signature.instanceCount = bindings[0].repetitions;
 		signature.primitive = static_cast<uint32_t>( primitive );
 		signature.streamFlags = meshStreamFlags;
-		signature.motionPass = ( motionActive ? 1u : 0u ) | ( highresMap ? 2u : 0u );
+		signature.motionPass = ( motionActive ? 1u : 0u ) | ( highresMap ? 2u : 0u ) | ( depthPrepass ? 4u : 0u );
 		signature.clipMask = drawClipMask;
 		memcpy( signature.colorFormats, target.colorFormats, sizeof( signature.colorFormats ) );
 		signature.depthFormat = target.depthFormat;
@@ -1641,15 +1709,17 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		signature.fogMode = m_FogMode;
 		signature.pixelFog = ShouldUsePixelFog();
 		signature.cullMode = m_CullMode;
-		signature.stencilEnabled = m_bStencilEnabled;
-		signature.stencilCompare = m_StencilCompare;
-		signature.stencilFail = m_StencilFailOp;
-		signature.stencilDepthFail = m_StencilDepthFailOp;
-		signature.stencilPass = m_StencilPassOp;
-		signature.stencilReadMask = m_nStencilReadMask;
-		signature.stencilWriteMask = m_nStencilWriteMask;
+		signature.stencilEnabled = skyboxDraw || m_bStencilEnabled;
+		signature.stencilCompare = skyboxDraw ? STENCILCOMPARISONFUNCTION_EQUAL : m_StencilCompare;
+		signature.stencilFail = skyboxDraw ? STENCILOPERATION_KEEP : m_StencilFailOp;
+		signature.stencilDepthFail = skyboxDraw ? STENCILOPERATION_KEEP : m_StencilDepthFailOp;
+		signature.stencilPass = skyboxDraw ? STENCILOPERATION_KEEP : m_StencilPassOp;
+		signature.stencilReadMask = skyboxDraw ? kSkyboxStencilBit : m_nStencilReadMask;
+		signature.stencilWriteMask = skyboxDraw ? 0 : m_nStencilWriteMask;
 		signature.gbufferPass = gbufferStencil ? 1u : 0u;
+		signature.nonEnvmapSsrPayload = nonEnvmapSsrPayload ? 1u : 0u;
 		signature.contactReplay = contactReplay ? 1u : 0u;
+		signature.skyboxDraw = skyboxDraw ? 1u : 0u;
 		signature.alphaToCoverage = m_bAlphaToCoverage;
 		signature.colorWriteOverride = m_bColorWriteOverride;
 		signature.colorWriteValue = m_bColorWriteOverrideValue;
@@ -1700,7 +1770,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		raster.comparisonPixelSamplers = m_ActiveSnapshot.comparisonSamplerMask;
 		raster.fillMode = m_bRasterOverride ? ( m_RasterState.m_FillMode == SHADER_FILL_WIREFRAME ? 2 : 3 ) : ( m_ActiveSnapshot.polyFront == SHADER_POLYMODE_POINT ? 1 : ( m_ActiveSnapshot.polyFront == SHADER_POLYMODE_LINE ? 2 : 3 ) );
 		raster.primitiveType = primitive == MATERIAL_POINTS ? 1 : ( primitive == MATERIAL_LINES ? 2 : ( primitive == MATERIAL_LINE_STRIP ? 3 : ( primitive == MATERIAL_TRIANGLE_STRIP ? 5 : 4 ) ) );
-		depthOnly = !motionActive && target.depth && ( shadowPass || ( !( m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites ) && !( m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites ) ) ) && !m_ActiveSnapshot.alphaTest;
+		depthOnly = !motionActive && target.depth && ( shadowPass || prepassNullPS || ( !( m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites ) && !( m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites ) ) ) && !m_ActiveSnapshot.alphaTest;
 		if ( depthOnly )
 			psRecord = nullptr;
 		generatedVS = !vsRecord;
@@ -2370,11 +2440,11 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		return;
 	}
 	// Space 6: ordinary scene draws of a bracket that reads contacts or captures the SSR payload see the bracket's view
-	// block (and, with contacts, the private depth copy); every other draw (shadow, motion, the replay itself, off-scene
-	// targets, brackets with neither effect) keeps the neutral bindings.
+	// block (and, with contacts, the private depth copy); every other draw (shadow, motion, sky, the replay itself,
+	// off-scene targets, brackets with neither effect) keeps the neutral bindings.
 	bindingInput.screenSpaceTable = {};
 	bindingInput.screenSpaceView = bindingInput.volumetricConstants = bindingInput.shadowSkyClipConstants = 0;
-	if ( !shadowPass && !motionActive && !contactReplay && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ) &&
+	if ( !shadowPass && !motionActive && !contactReplay && !skyboxDraw && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ) &&
 	     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER && !PrepareScreenSpaceBinding( bindingInput ) )
 		return;
 	// Sky-clipped sun chart passes bind their sky map / constants (t4, b2 space 6) to every caster draw.
@@ -2383,7 +2453,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 		return;
 	}
-	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && psRecord && psRecord->lightingAbi, bindingInput ) )
+	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && ( ( psRecord && psRecord->lightingAbi ) || ( vsRecord && vsRecord->lightingAbi ) ), bindingInput ) )
 		return;
 	if ( bindingInput.lightingAbi && psRecord && psRecord->propVisibilityAbi &&
 		!m_pDevice->Lighting().PrepareStaticPropDraw( meshToken, sunDraw, m_VsFloat[VERTEX_SHADER_MODEL], bindingInput ) )
@@ -2429,10 +2499,11 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	const D3D12_PRIMITIVE_TOPOLOGY_TYPE topologyType = primitive == MATERIAL_POINTS ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT : ( primitive == MATERIAL_LINES || primitive == MATERIAL_LINE_STRIP || primitive == MATERIAL_LINE_LOOP ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE );
 	const D3D12_PRIMITIVE_TOPOLOGY iaTopology = primitive == MATERIAL_POINTS ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST : ( primitive == MATERIAL_LINES ? D3D_PRIMITIVE_TOPOLOGY_LINELIST : ( primitive == MATERIAL_LINE_STRIP ? D3D_PRIMITIVE_TOPOLOGY_LINESTRIP : ( primitive == MATERIAL_TRIANGLE_STRIP ? D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ) ) );
 	const UINT instanceCount = bindings[0].repetitions;
+	const int stencilReference = skyboxDraw ? kSkyboxStencilBit : ( gbufferStencil ? ( gbufferTargets ? kGBufferStencilBit : 0 ) : ( m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference ) );
 	if ( memoHit )
 	{
 		++m_DrawStats.memoHits;
-		m_Pipeline.BindPipelineState( list, memoSlot->pso, gbufferStencil ? ( gbufferTargets ? kGBufferStencilBit : 0 ) : ( m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference ), retireFence );
+		m_Pipeline.BindPipelineState( list, memoSlot->pso, stencilReference, retireFence );
 		pipelineBound = true;
 	}
 	else if ( vsRecord && ( psRecord || depthOnly ) )
@@ -2542,6 +2613,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		key.lightingAbi = bindingInput.lightingAbi;
 		key.highresAbi = bindingInput.highresAbi;
 		key.gbuffer = gbufferTargets;
+		key.nonEnvmapSsrPayload = nonEnvmapSsrPayload;
 		key.vs = vs->identity;
 		key.ps = ps ? ps->identity : 0;
 		key.vsVariant = vs->activeVariantKey;
@@ -2627,7 +2699,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		key.colorWrites = m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites;
 		key.alphaWrites = m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites;
 		key.alphaToCoverage = m_bAlphaToCoverage || m_ActiveSnapshot.alphaToCoverage;
-		key.stencil = m_bStencilEnabled || m_ActiveSnapshot.stencil;
+		key.stencil = skyboxDraw || m_bStencilEnabled || m_ActiveSnapshot.stencil;
 		key.raster = ( key.alphaToCoverage ? 1 : 0 ) | ( key.stencil ? 2 : 0 ) | ( m_ActiveSnapshot.alphaTest ? 4 : 0 );
 		if ( shadowPass )
 		{
@@ -2635,7 +2707,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			key.blend = 0;
 			key.raster = m_ActiveSnapshot.alphaTest ? 4 : 0;
 		}
-		if ( m_bStencilEnabled )
+		if ( skyboxDraw )
+		{
+			// Engine/material stencil changes cannot escape the main-view hidden-pixel mask.
+			key.stencilFunction = STENCILCOMPARISONFUNCTION_EQUAL;
+			key.stencilFail = key.stencilDepthFail = key.stencilPass = STENCILOPERATION_KEEP;
+			key.stencilReadMask = kSkyboxStencilBit;
+			key.stencilWriteMask = 0;
+		}
+		else if ( m_bStencilEnabled )
 		{
 			key.stencilFunction = m_StencilCompare;
 			key.stencilFail = m_StencilFailOp;
@@ -2694,6 +2774,14 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			key.colorWrites = key.alphaWrites = false;
 			key.stencilWriteMask = 0;
 		}
+		if ( depthPrepass )
+		{
+			// Fixed-coverage draws retain the exact color VS with no PS. Alpha/A2C/clipped draws retain the
+			// original PS too: its discard/coverage is authoritative, not a substitute depthwrite material.
+			key.gbuffer = key.gbufferPass = false;
+			key.colorWrites = key.alphaWrites = false;
+			key.stencilWriteMask = 0;
+		}
 		ID3D12PipelineState *pso = nullptr;
 		{
 			ZoneNamedN( ___tracy_scoped_zone, "DX12 GetOrCreatePSO", DX12_DRAW_ZONES_ACTIVE );
@@ -2701,7 +2789,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		}
 		if ( pso )
 		{
-			m_Pipeline.BindPipelineState( list, pso, gbufferStencil ? ( gbufferTargets ? kGBufferStencilBit : 0 ) : ( m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference ), retireFence );
+			m_Pipeline.BindPipelineState( list, pso, stencilReference, retireFence );
 			pipelineBound = true;
 			if ( memoSlot )
 			{
@@ -3499,6 +3587,8 @@ void CShaderAPIDX12::ResetNativeState()
 	m_CasterBatch.active = false;
 	m_CasterBatch.groupCount = m_CasterBatch.instanceCount = 0;
 	m_CasterEmit = {};
+	m_bSkyboxPass = false;
+	m_bDepthPrepass = false;
 	m_bForceDepthEquals = m_bOverrideDepthEnable = false;
 	m_bOverrideDepthValue = true;
 	m_ShadeMode = SHADER_SMOOTH;
@@ -4038,6 +4128,8 @@ void CShaderAPIDX12::PerspectiveOffCenterX( double fovx, double aspect, double z
 
 void CShaderAPIDX12::SetFloatRenderingParameter( int parm_number, float value )
 {
+	if ( parm_number == FLOAT_RENDERPARM_DX12_MOTION_STATIC_BOUND )
+		return;
 	if ( parm_number >= 0 && parm_number < (int)ARRAYSIZE( m_RenderingFloats ) )
 		m_RenderingFloats[parm_number] = value;
 }
@@ -4860,6 +4952,13 @@ void CShaderAPIDX12::Bind( IMaterial *pMaterial )
 	IMaterial *pMaterialPage = pMaterial && pMaterial->InMaterialPage() ? pMaterial->GetMaterialPage() : nullptr;
 	if ( !pMaterialPage || pMaterialPage != m_pBoundMaterialPage )
 		FlushBufferedPrimitives();
+	const bool bLodBiasEligible = IsUpscalerLodBiasMaterialEligible( pMaterial );
+	if ( bLodBiasEligible != m_bUpscalerLodBiasMaterialEligible )
+	{
+		m_bUpscalerLodBiasMaterialEligible = bLodBiasEligible;
+		m_bUpscalerLodBiasDrawEligible = bLodBiasEligible;
+		++m_nTextureStateEpoch;
+	}
 	m_pBoundMaterial = pMaterial;
 	m_pBoundMaterialPage = pMaterialPage;
 }
@@ -5163,6 +5262,7 @@ void CShaderAPIDX12::FlushHardware()
 
 void CShaderAPIDX12::BeginFrame()
 {
+	++m_nFrameCounter;
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 BeginFrame", DX12_ZONES_ACTIVE );
 	ProcessPendingTextureDeletes();
 	ProcessShaderPrecacheRequests();
@@ -5170,7 +5270,9 @@ void CShaderAPIDX12::BeginFrame()
 	m_nFrameFlushCount = 0;
 	m_nFrameSyncCount = 0;
 	m_bFrameActive = true;
-	++m_nFrameCounter;
+	if ( m_pDevice )
+		m_pDevice->SetGpuTimingEnabled( m_nGpuTimingEnabled != 0 );
+	m_Pipeline.BeginUploadFrame( m_nFrameCounter );
 	ConsumeUpscalerReplays( false );
 	ConsumeFrameGenReplays( false );
 	m_UpscalerFrameJitter[0] = m_UpscalerFrameJitter[1] = 0.f;
@@ -5229,6 +5331,11 @@ void CShaderAPIDX12::EndFrame()
 			Msg( "ShaderAPIDX12 stats/frame: draws %.1f memoHits %.1f srvTableHits %.1f srvTableCopies %.1f constHits %.1f constUploads %.1f transientConst %.1f rootCbvSets %.1f rootTableSets %.1f rootSrvSets %.1f shadowDraws %.1f casterInstances %.1f casterInstancedDraws %.1f\n",
 			    m_DrawStats.draws / n, m_DrawStats.memoHits / n, p.srvTableHits / n, p.srvTableCopies / n, p.constantHits / n, p.constantUploads / n, p.transientConstants / n, p.rootCbvSets / n, p.rootTableSets / n, p.rootSrvSets / n,
 			    m_DrawStats.shadowDraws / n, m_DrawStats.casterInstances / n, m_DrawStats.casterInstancedDraws / n );
+			Msg( "ShaderAPIDX12 upload pool: pages %llu capacityBytes %llu bufferBytes %llu | window allocations %llu alignedBytes %llu peakFrameAlignedBytes %llu newPages %llu trimmedPages %llu trimmedBufferBytes %llu | newestFrame allocations %llu alignedBytes %llu newPages %llu\n",
+			    static_cast<unsigned long long>( p.uploadPoolPages ), static_cast<unsigned long long>( p.uploadPoolCapacityBytes ), static_cast<unsigned long long>( p.uploadPoolBufferBytes ),
+			    static_cast<unsigned long long>( p.uploadAllocations ), static_cast<unsigned long long>( p.uploadBytes ), static_cast<unsigned long long>( p.uploadPeakFrameBytes ),
+			    static_cast<unsigned long long>( p.uploadPagesCreated ), static_cast<unsigned long long>( p.uploadPagesTrimmed ), static_cast<unsigned long long>( p.uploadBufferBytesTrimmed ),
+			    static_cast<unsigned long long>( p.uploadFrameAllocations ), static_cast<unsigned long long>( p.uploadFrameBytes ), static_cast<unsigned long long>( p.uploadFramePagesCreated ) );
 			CShaderDeviceDX12::GpuEventStatsDX12 gpuEvents;
 			const bool bGpuEvents = m_pDevice && m_pDevice->ConsumeGpuEventStats( gpuEvents );
 			double gpuMs = 0.0;
@@ -5293,6 +5400,15 @@ void CShaderAPIDX12::EndFrame()
 			m_DrawStats = {};
 			m_Pipeline.ResetStats();
 			m_nDrawStatsFrames = 0;
+		}
+	}
+	if ( m_pDevice && m_nGpuTimingEnabled )
+	{
+		ShaderAPIDX12GpuTiming_t timing;
+		if ( m_pDevice->ConsumeGpuTimingOverlay( timing ) )
+		{
+			AUTO_LOCK( m_GpuTimingMutex );
+			m_GpuTimingSnapshot = timing;
 		}
 	}
 	ProcessPendingTextureDeletes();
@@ -5843,7 +5959,8 @@ void CShaderAPIDX12::SetIntRenderingParameter( int parm_number, int value )
 		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_VIEW || parm_number == INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH ||
 		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_FRAME || parm_number == INT_RENDERPARM_DX12_PBR_GBUFFER_PASS ) )
 		return;
-	if ( parm_number == INT_RENDERPARM_DX12_MOTION_STATUS || parm_number == INT_RENDERPARM_DX12_UPSCALE_STATUS || parm_number == INT_RENDERPARM_DX12_NR_STATUS )
+	if ( parm_number == INT_RENDERPARM_DX12_MOTION_STATUS || parm_number == INT_RENDERPARM_DX12_UPSCALE_STATUS || parm_number == INT_RENDERPARM_DX12_NR_STATUS ||
+	     parm_number == INT_RENDERPARM_DX12_MOTION_BLUR_STATIC || parm_number == INT_RENDERPARM_DX12_FRAME_EPOCH )
 		return;
 	if ( parm_number >= 0 && parm_number < (int)ARRAYSIZE( m_RenderingInts ) )
 		m_RenderingInts[parm_number] = value;
@@ -5876,11 +5993,17 @@ void CShaderAPIDX12::SetVectorRenderingParameter( int parm_number, Vector const 
 
 float CShaderAPIDX12::GetFloatRenderingParameter( int parm_number ) const
 {
+	if ( parm_number == FLOAT_RENDERPARM_DX12_MOTION_STATIC_BOUND )
+		return MotionQuiet() ? m_flMotionQuietBound : 0.f;
 	return parm_number >= 0 && parm_number < (int)ARRAYSIZE( m_RenderingFloats ) ? m_RenderingFloats[parm_number] : 0.0f;
 }
 
 int CShaderAPIDX12::GetIntRenderingParameter( int parm_number ) const
 {
+	if ( parm_number == INT_RENDERPARM_DX12_MOTION_BLUR_STATIC )
+		return MotionQuiet() ? 1 : 0;
+	if ( parm_number == INT_RENDERPARM_DX12_FRAME_EPOCH )
+		return m_pDevice && m_pDevice->IsRecordingOwner() ? static_cast<int>( m_nFrameCounter & 0x7FFFFFFFull ) : -1;
 	return parm_number >= 0 && parm_number < (int)ARRAYSIZE( m_RenderingInts ) ? m_RenderingInts[parm_number] : 0;
 }
 
@@ -6277,6 +6400,29 @@ int CShaderAPIDX12::HdrDisplayStatus()
 bool CShaderAPIDX12::HdrOutputCapable()
 {
 	return m_pDevice && m_pDevice->PresentFormatIsFp16();
+}
+
+
+void CShaderAPIDX12::SetGpuTimingEnabled( bool bEnabled )
+{
+	m_nGpuTimingEnabled = bEnabled ? 1 : 0;
+	if ( !bEnabled )
+	{
+		AUTO_LOCK( m_GpuTimingMutex );
+		m_GpuTimingSnapshot = {};
+	}
+}
+
+bool CShaderAPIDX12::GetGpuTiming( ShaderAPIDX12GpuTiming_t &timing )
+{
+	AUTO_LOCK( m_GpuTimingMutex );
+	timing = m_GpuTimingSnapshot;
+	return timing.available;
+}
+
+int CShaderAPIDX12::AdapterPerformanceTier()
+{
+	return m_pDevice ? m_pDevice->PerformanceTier() : SHADERAPIDX12_ADAPTER_TIER_UNKNOWN;
 }
 
 //-----------------------------------------------------------------------------

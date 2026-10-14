@@ -10,7 +10,7 @@
 //                           PBR_GatherDirect adds the sun / resident local lights over the baked-face domain
 //                           (signed (Vrt - Vbaked) * weight delta on baked-direct faces, Burley full terms
 //                           elsewhere, specular always). Mirrors hlsl/lightmappedgeneric_highres_ps51.fxc:
-//                           ShadowMap_BeginReceiver + bakedSunVisibility + ShadowMap_SetBakedFace.
+//                           ShadowMap_BeginReceiverRelative + bakedSunVisibility + ShadowMap_SetBakedFace.
 //   pbr_world_highres_earlydepth_ps51  forced-early-depth twin (no discard, [earlydepthstencil]) for draws
 //                           without alpha test; keeps the failure report, see README "Forced early-depth receiver twins".
 //
@@ -98,8 +98,9 @@ PBR_PSOut main( DX12_PS_INPUT i )
 {
 	float3 P = i.worldPos_projPosZ.xyz;
 #if PBR_WORLD_HIGHRES
-	// Derivatives occur here, before any divergent work (HighresLightmap_Begin returns early for rejected owners).
-	ShadowMapReceiver receiver = ShadowMap_BeginReceiver( P, i.worldNormal, i.svPos.xy );
+	// Derivatives occur here, before any divergent work (HighresLightmap_Begin returns early for rejected owners), on the
+	// camera-relative -toEye (world positions far from the origin are too coarse to differentiate).
+	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( P, -i.toEye, i.worldNormal, i.svPos.xy );
 	HlightReceiver hlr = HighresLightmap_Begin( i.lightmapUV.xy, i.lightmapVertexUV );
 	ShadowMap_SetBakedSun( receiver, hlr.sun, hlr.sunDilated );
 	ShadowMap_SetBakedFace( receiver, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
@@ -183,11 +184,16 @@ PBR_PSOut main( DX12_PS_INPUT i )
 
 	float2 lightmapUV = i.lightmapUV.xy;
 	float2 planeStep = i.lightmapUV.zw;
+	// Keep the bumped-plane fetches independent: a serial plane loop lowers DXBC size but measured slower
+	// on the GPU. The weighted sum retains the stored plane order.
 	float3 lightmap;
 	if ( hasBump && !flatDiffuse )
-		lightmap = planeWeights.x * LIGHTMAP_PLANE( 1, lightmapUV + planeStep ) +
-			planeWeights.y * LIGHTMAP_PLANE( 2, lightmapUV + 2.0 * planeStep ) +
-			planeWeights.z * LIGHTMAP_PLANE( 3, lightmapUV + 3.0 * planeStep );
+	{
+		float3 plane1 = LIGHTMAP_PLANE( 1, lightmapUV + planeStep );
+		float3 plane2 = LIGHTMAP_PLANE( 2, lightmapUV + 2.0 * planeStep );
+		float3 plane3 = LIGHTMAP_PLANE( 3, lightmapUV + 3.0 * planeStep );
+		lightmap = planeWeights.x * plane1 + planeWeights.y * plane2 + planeWeights.z * plane3;
+	}
 	else
 		lightmap = LIGHTMAP_PLANE( 0, lightmapUV );
 
@@ -256,20 +262,29 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// Alpha-tested fragments that fail are killed before the light loops (DX12FinishPixel repeats the same test on the
 	// unchanged alpha). Every implicit-derivative sample happens above this line.
 	DX12AlphaTest( alpha );
+#if PBR_DEPTH_PREPASS
+	// The ordinary vertex program and alpha expression are unchanged. Dead-code elimination removes all
+	// material/lighting work not feeding coverage; RTV0 alpha is retained for alpha-to-coverage.
+	PBR_PSOut coverage = (PBR_PSOut)0;
+	coverage.color.a = alpha;
+	return coverage;
+#else
 
 	// Baked lightmap diffuse; backlight reuses the front value (a lightmap holds no back-facing term).
 	float3 result = s.diffuseColor * s.ao * lightmap * ( ( 1.0 - s.back ) + s.backlightTint * s.back );
 	PBRSpecularSum specularSum = PBR_NoSpecularSum();
 #if PBR_WORLD_HIGHRES
-	// Unknown owners and neutral native pages (hlr.valid == 0) receive no selected direct.
-	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
+	// Unknown/neutral owners add no selected direct. Only debug views need their diagnostic gather.
+	ShadowMapDirect direct = ShadowMap_NoDirect();
+	[branch] if ( hlr.valid != 0 || cShadowView0.w != 0 )
+		direct = PBR_GatherDirect( receiver, s, specularSum );
 	result += ( direct.diffuse + direct.specular ) * float( hlr.valid );
 	if ( hlr.valid == 0 ) specularSum = PBR_NoSpecularSum(); // the gather is the first specular contributor
 #endif
 	// SSR payload: the environment term as it reaches the scene (E) and the response a sampled scene radiance must be
 	// multiplied by to replace it (K), both through this pixel's fog transmission, plus the direct GGX specular (S) in
 	// the same units and its luminance-weighted light distance (D). Only an envmapped material in a capturing bracket
-	// writes it; everything else writes E = K = S = D = valid = 0 and keeps its cubemap and highlights.
+	// supplies it; non-envmapped materials write K/valid zero while the backend masks E/D/S stores.
 	const bool hasEnvmap = g_Flags1.x != 0.0;
 	float3 environment = 0.0, environmentResponse = 0.0;
 	if ( hasEnvmap )
@@ -300,4 +315,5 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( ShadowMap_DebugReplacesColor() ) reflectionValid = 0.0;
 #endif
 	return PBR_Output( color, sBump, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
+#endif
 }

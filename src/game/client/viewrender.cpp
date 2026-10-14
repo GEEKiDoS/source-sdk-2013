@@ -430,7 +430,7 @@ public:
 	  {
 	  }
 
-	bool			Setup( const CViewSetup &view, int *pClearFlags, SkyboxVisibility_t *pSkyboxVisible );
+	bool			Setup( const CViewSetup &view, int *pClearFlags, SkyboxVisibility_t *pSkyboxVisible, bool bDeferred = false );
 	void			Draw();
 
 protected:
@@ -533,6 +533,7 @@ protected:
 	void			DrawDepthOfField();
 	void			CollectMotionVectorRenderables( CUtlVector< CClientRenderablesList::CEntry > &list );
 	void			DrawMotionVectors( const CUtlVector< CClientRenderablesList::CEntry > &list );
+	void			DrawDeferredSkybox( view_id_t viewID );
 };
 
 
@@ -988,6 +989,7 @@ CViewRender::CViewRender()
 	m_flCheapWaterEndDistance = 0.1f;
 	m_BaseDrawFlags = 0;
 	m_pActiveRenderer = NULL;
+	m_pDeferredSkybox = NULL;
 	m_pCurrentlyDrawingEntity = NULL;
 
 	m_szCurrentScriptMaterialName[0] = '\0';
@@ -2147,6 +2149,8 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 	m_UnderWaterOverlayMaterial.Shutdown();					// underwater view will set
 
 	m_CurrentView = viewRender;
+	// Set when the upscaler reconstructed a scaled main view at its unscaled size (no viewport stretch afterwards).
+	bool bTemporalUpscaled = false;
 
 	C_BaseAnimating::AutoAllowBoneAccess boneaccess( true, true );
 	VPROF( "CViewRender::RenderView" );
@@ -2231,19 +2235,37 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			 	  
 		bool bDrew3dSkybox = false;
 		SkyboxVisibility_t nSkyboxVisible = SKYBOX_NOT_VISIBLE;
+		const bool bViewInSolid = enginetrace->GetPointContents( viewRender.origin ) == CONTENTS_SOLID;
 
-		// if the 3d skybox world is drawn, then don't draw the normal skybox
-		CSkyboxView *pSkyView = new CSkyboxView( this );
-		if ( ( bDrew3dSkybox = pSkyView->Setup( viewRender, &nClearFlags, &nSkyboxVisible ) ) != false )
+		// Keep auxiliary/water views on the sky-first path: their refraction/fog scene must already contain the sky.
+		bool bDeferSkybox = ScreenSpaceDX12_Available() && viewRender.m_eStereoEye == STEREO_EYE_MONO &&
+			!building_cubemaps.GetBool() && !g_pIntroData && saveRenderTarget == NULL && !bViewInSolid &&
+			g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT;
+#ifdef PORTAL
+		bDeferSkybox = false; // Portal recursion owns the stencil/depth partition.
+#endif
+		if ( bDeferSkybox )
 		{
-			AddViewToScene( pSkyView );
+			VisibleFogVolumeInfo_t fogInfo;
+			render->GetVisibleFogVolume( viewRender.origin, &fogInfo );
+			cplane_t glassPlane;
+			bDeferSkybox = fogInfo.m_nVisibleFogVolume == -1 && !IsReflectiveGlassInView( viewRender, glassPlane );
 		}
-		SafeRelease( pSkyView );
+		CRendering3dView *pSavedDeferredSkybox = m_pDeferredSkybox;
+		m_pDeferredSkybox = NULL;
+		CRefPtr<CSkyboxView> pSkyView = new CSkyboxView( this );
+		if ( ( bDrew3dSkybox = pSkyView->Setup( viewRender, &nClearFlags, &nSkyboxVisible, bDeferSkybox ) ) != false )
+		{
+			if ( bDeferSkybox )
+				m_pDeferredSkybox = pSkyView;
+			else
+				AddViewToScene( pSkyView );
+		}
 
 		// Force it to clear the framebuffer if they're in solid space.
 		if ( ( nClearFlags & VIEW_CLEAR_COLOR ) == 0 )
 		{
-			if ( enginetrace->GetPointContents( viewRender.origin ) == CONTENTS_SOLID )
+			if ( bViewInSolid )
 			{
 				nClearFlags |= VIEW_CLEAR_COLOR;
 			}
@@ -2258,6 +2280,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		{
 			ViewDrawScene_Intro( viewRender, nClearFlags, *g_pIntroData );
 		}
+		m_pDeferredSkybox = pSavedDeferredSkybox;
 
 		// We can still use the 'current view' stuff set up in ViewDrawScene
 		s_bCanAccessCurrentView = true;
@@ -2294,12 +2317,27 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		// Now actually draw the viewmodel
 		DrawViewModels( viewRender, whatToDraw & RENDERVIEW_DRAWVIEWMODEL );
 
-		// Native AA runs on the complete opaque+viewmodel scene, before velocity blur and every overlay/post pass.
+		// The temporal upscaler runs on the complete opaque+viewmodel scene, before velocity blur and every overlay/post pass.
 		// MotionVectorsDX12_FrameValid only drives the reset: the backend decides -3/-5 itself.
 		if ( bMainTemporalViewEligible )
 		{
 			pRenderContext.GetFrom( materials );
-			UpscalerDX12_Dispatch( pRenderContext, viewRender, !MotionVectorsDX12_FrameValid( NULL ) );
+			bTemporalUpscaled = UpscalerDX12_Dispatch( pRenderContext, viewRender, !MotionVectorsDX12_FrameValid( NULL ) );
+			pRenderContext.SafeRelease();
+		}
+
+		// A scaled main view now holds the full-size reconstruction: velocity blur, overlays, post-processing and frame
+		// generation run on the unscaled viewport. viewRender keeps the 3D render size (the valid motion-vector region).
+		CViewSetup viewPost = viewRender;
+		if ( bTemporalUpscaled )
+		{
+			viewPost.x = viewRender.m_nUnscaledX;
+			viewPost.y = viewRender.m_nUnscaledY;
+			viewPost.width = viewRender.m_nUnscaledWidth;
+			viewPost.height = viewRender.m_nUnscaledHeight;
+			m_CurrentView = viewPost;
+			pRenderContext.GetFrom( materials );
+			pRenderContext->Viewport( viewPost.x, viewPost.y, viewPost.width, viewPost.height );
 			pRenderContext.SafeRelease();
 		}
 
@@ -2308,7 +2346,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			pRenderContext.GetFrom( materials );
 			{
 				PIXEVENT( pRenderContext, "DoImageSpaceMotionBlur" );
-				DoImageSpaceMotionBlur( viewRender, viewRender.x, viewRender.y, viewRender.width, viewRender.height );
+				DoImageSpaceMotionBlur( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height );
 			}
 			pRenderContext.SafeRelease();
 		}
@@ -2328,12 +2366,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		// Overlay screen fade on entire screen
 		IMaterial* pMaterial = blend ? m_ModulateSingleColor : m_TranslucentSingleColor;
 		render->ViewDrawFade( color, pMaterial );
-		PerformScreenOverlay( viewRender.x, viewRender.y, viewRender.width, viewRender.height );
+		PerformScreenOverlay( viewPost.x, viewPost.y, viewPost.width, viewPost.height );
 
 		// Prevent sound stutter if going slow
 		engine->Sound_ExtraUpdate();	
 	
-		if ( !building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping )
+		if ( !building_cubemaps.GetBool() && viewPost.m_bDoBloomAndToneMapping )
 		{
 			pRenderContext.GetFrom( materials );
 			{
@@ -2345,7 +2383,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 				{
 					bFlashlightIsOn = pLocal->IsEffectActive( EF_DIMLIGHT );
 				}
-				DoEnginePostProcessing( viewRender.x, viewRender.y, viewRender.width, viewRender.height, bFlashlightIsOn );
+				DoEnginePostProcessing( viewPost.x, viewPost.y, viewPost.width, viewPost.height, bFlashlightIsOn );
 			}
 			pRenderContext.SafeRelease();
 		}
@@ -2357,17 +2395,17 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "GrabPreColorCorrectedFrame" );
 
 			// Grab the pre-color corrected frame for editing purposes
-			engine->GrabPreColorCorrectedFrame( viewRender.x, viewRender.y, viewRender.width, viewRender.height );
+			engine->GrabPreColorCorrectedFrame( viewPost.x, viewPost.y, viewPost.width, viewPost.height );
 		}
 
-		PerformScreenSpaceEffects( 0, 0, viewRender.width, viewRender.height );
+		PerformScreenSpaceEffects( 0, 0, viewPost.width, viewPost.height );
 
 		// Frame generation reads the finished 3D image from the back buffer: this is the last point before the HUD
 		// and VGUI draw over it (Push2DView below). The reset follows the motion-vector history like the upscaler.
 		if ( bFrameGenEligible )
 		{
 			pRenderContext.GetFrom( materials );
-			FrameGenDX12_Dispatch( pRenderContext, viewRender, !MotionVectorsDX12_FrameValid( NULL ) );
+			FrameGenDX12_Dispatch( pRenderContext, viewPost, !MotionVectorsDX12_FrameValid( NULL ) );
 			pRenderContext.SafeRelease();
 		}
 
@@ -2383,10 +2421,10 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		if ( m_rbTakeFreezeFrame[viewRender.m_eStereoEye ] )
 		{
 			Rect_t rect;
-			rect.x = viewRender.x;
-			rect.y = viewRender.y;
-			rect.width = viewRender.width;
-			rect.height = viewRender.height;
+			rect.x = viewPost.x;
+			rect.y = viewPost.y;
+			rect.width = viewPost.width;
+			rect.height = viewPost.height;
 
 			pRenderContext = materials->GetRenderContext();
 			if ( IsX360() )
@@ -2423,7 +2461,10 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 
 	}
 
-	if ( mat_viewportupscale.GetBool() && mat_viewportscale.GetFloat() < 1.0f ) 
+	// A scaled view the upscaler did not reconstruct (mat_viewportscale, or r_upscaler_scale on an ineligible view) is
+	// stretched back to the unscaled viewport.
+	const bool bViewScaled = viewRender.width != viewRender.m_nUnscaledWidth || viewRender.height != viewRender.m_nUnscaledHeight;
+	if ( !bTemporalUpscaled && bViewScaled && ( UpscalerDX12_RenderScale() < 1.0f || ( mat_viewportupscale.GetBool() && mat_viewportscale.GetFloat() < 1.0f ) ) )
 	{
 		CMatRenderContextPtr pRenderContextUpscale( materials );
 
@@ -5154,7 +5195,7 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 //-----------------------------------------------------------------------------
 // 
 //-----------------------------------------------------------------------------
-bool CSkyboxView::Setup( const CViewSetup &viewRender, int *pClearFlags, SkyboxVisibility_t *pSkyboxVisible )
+bool CSkyboxView::Setup( const CViewSetup &viewRender, int *pClearFlags, SkyboxVisibility_t *pSkyboxVisible, bool bDeferred )
 {
 	BaseClass::Setup( viewRender );
 
@@ -5167,11 +5208,18 @@ bool CSkyboxView::Setup( const CViewSetup &viewRender, int *pClearFlags, SkyboxV
 		return false;
 	}
 
-	// At this point, we've cleared everything we need to clear
-	// The next path will need to clear depth, though.
-	m_ClearFlags = *pClearFlags;
-	*pClearFlags &= ~( VIEW_CLEAR_COLOR | VIEW_CLEAR_DEPTH | VIEW_CLEAR_STENCIL | VIEW_CLEAR_FULL_TARGET );
-	*pClearFlags |= VIEW_CLEAR_DEPTH; // Need to clear depth after rednering the skybox
+	if ( bDeferred )
+	{
+		// Main clear/fog behaviour stays with the main view. The visibility mask admits only depth-clear pixels;
+		// they are already a cleared sky depth surface, so Push3DView must not clear the main depth/stencil.
+		m_ClearFlags = 0;
+	}
+	else
+	{
+		m_ClearFlags = *pClearFlags;
+		*pClearFlags &= ~( VIEW_CLEAR_COLOR | VIEW_CLEAR_DEPTH | VIEW_CLEAR_STENCIL | VIEW_CLEAR_FULL_TARGET );
+		*pClearFlags |= VIEW_CLEAR_DEPTH;
+	}
 
 	m_DrawFlags = DF_RENDER_UNDERWATER | DF_RENDER_ABOVEWATER | DF_RENDER_WATER;
 	if( r_skybox.GetBool() )
@@ -5201,6 +5249,20 @@ void CSkyboxView::Draw()
 	}
 
 	DrawInternal(VIEW_3DSKY, true, pRTColor, pRTDepth );
+}
+
+bool CViewRender::DrawDeferredSkybox()
+{
+	CRendering3dView *pSkybox = m_pDeferredSkybox;
+	if ( !pSkybox )
+		return false;
+	m_pDeferredSkybox = NULL;
+	IShaderAPIDX12ScreenSpace *pScreenSpace = ScreenSpaceDX12_GetAPI();
+	Assert( pScreenSpace );
+	pScreenSpace->BeginSkybox();
+	AddViewToScene( pSkybox );
+	pScreenSpace->EndSkybox();
+	return true;
 }
 
 
@@ -5577,7 +5639,6 @@ public:
 		context->SetHeightClipMode( MATERIAL_HEIGHTCLIPMODE_DISABLE );
 		context->FogMode( MATERIAL_FOG_NONE );
 		{
-			VPROF_BUDGET( "CFeatureShadowDepthView::Draw.BeginShadowPass", "Shadowmaps" );
 			s.lighting->BeginShadowPass( s.target, s.x, s.y, s.size, s.size, s.clear, s.skyClip );
 		}
 		MDLCACHE_CRITICAL_SECTION();
@@ -6116,6 +6177,29 @@ void CBaseWorldView::DrawMotionVectors( const CUtlVector< CClientRenderablesList
 	pRenderContext->PopRenderTargetAndViewport();
 }
 
+void CBaseWorldView::DrawDeferredSkybox( view_id_t viewID )
+{
+	if ( viewID != VIEW_MAIN || !m_pMainView->DrawDeferredSkybox() )
+		return;
+
+	// Matrices and enhanced receiver packets are stacked; engine near/far metadata, client current-view
+	// globals, visibility, detail generations and prop opacity are not. Opaque decals/overlays are already
+	// consumed; main translucent surfaces use the retained world list and build their own decal fragments.
+	render->Push3DView( *this, VIEW_NO_DRAW, NULL, NULL );
+	render->PopView( NULL );
+	SetupCurrentView( origin, angles, viewID );
+	unsigned int visFlags;
+	m_pMainView->SetupVis( *this, visFlags, m_pCustomVisibility );
+	if ( m_DrawFlags & DF_DRAW_ENTITITES )
+	{
+		render->BeginUpdateLightmaps();
+		UpdateRenderablesOpacity();
+		BuildRenderableRenderLists( viewID );
+		render->EndUpdateLightmaps();
+	}
+	EnableWorldFog();
+}
+
 void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float waterZAdjust )
 {
 	int savedViewID = g_CurrentViewID;
@@ -6156,6 +6240,28 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 
 	if ( shadowScope.CanDraw() )
 	{
+	// Use the normal world/model submission, never the flashlight shadow list or shadow-LOD studio path.
+	// The backend changes only pixel coverage/color writes, so vertex transforms, skinning, flex and LOD match.
+	if ( viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() &&
+		!g_pIntroData && !( m_DrawFlags & ( DF_RENDER_REFLECTION | DF_RENDER_REFRACTION ) ) )
+	{
+		IShaderAPIDX12ScreenSpace *pDepthPrepass = ScreenSpaceDX12_DepthPrepass();
+		CMatRenderContextPtr pDepthContext( materials );
+		if ( pDepthPrepass && pDepthContext->GetRenderTarget() == nullptr )
+		{
+			PIXEVENT( pDepthContext, "Opaque depth prepass" );
+			pDepthPrepass->BeginDepthPrepass();
+			if ( r_drawopaqueworld.GetBool() )
+			{
+				const unsigned long flags = BuildEngineDrawWorldListFlags( m_DrawFlags ) &
+					~( DRAWWORLDLISTS_DRAW_SKYBOX | DRAWWORLDLISTS_DRAW_WATERSURFACE );
+				render->DrawWorldLists( m_pWorldRenderList, flags, waterZAdjust );
+			}
+			if ( m_DrawFlags & DF_DRAW_ENTITITES )
+				DrawOpaqueRenderables( DEPTH_MODE_NORMAL, true );
+			pDepthPrepass->EndDepthPrepass();
+		}
+	}
 	if ( m_DrawFlags & DF_DRAW_ENTITITES )
 	{
 		IShaderAPIDX12ScreenSpace *pScreenSpace = nullptr;
@@ -6214,6 +6320,7 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		}
 		if ( bMotionVectors )
 			DrawMotionVectors( motionEntries );
+		DrawDeferredSkybox( viewID );
 		// GTAO over the complete opaque scene, before any translucency; the client latches repeats within a frame. The
 		// AO term is computed before SSR, which occludes its reflected hits with it, and applied after SSR's correction.
 		const bool bGtao = viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() && GTAODX12_Enabled();
@@ -6270,6 +6377,7 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		}
 		else
 			DrawWorld( waterZAdjust );
+		DrawDeferredSkybox( viewID );
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles

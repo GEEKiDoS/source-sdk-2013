@@ -16,7 +16,9 @@ struct PBRSpotGpu // 128 bytes, mirrors DX12ProjectedLightDesc
 StructuredBuffer<PBRSpotGpu> g_ProjectedLights : register( t0, space5 );
 Texture2D<float4> g_ProjectedCookies[8] : register( t1, space5 );
 Texture2D<float> g_ProjectedDepth[8] : register( t9, space5 );
+#if !defined( DX12_PBR_SHADOW_GATHER )
 SamplerState g_CookieSampler : register( s0, space5 );
+#endif
 SamplerComparisonState g_ProjectedCmpSampler : register( s1, space5 );
 
 // True when P lies inside the light's depth frustum (w > 0 and 0 <= z <= w): the volume pass requires it in addition
@@ -29,17 +31,17 @@ bool DX12_ProjectedFrustum( PBRSpotGpu light, float3 P )
 	return w > 0.0 && z >= 0.0 && z <= w;
 }
 
-// Incident radiance of one projected light at P. Attenuation order is the flashlight shader's:
-// saturate( C + Lin / d + Q / d^2 ) * remap( d, farZ -> 0.6 farZ ), times the cookie. rawVisibility is the four-tap
-// comparison PCF (pattern rotated by the receiver's shadow dither) of a shadowed light (depthSlot >= 0) and 1
-// otherwise. Returns false (zero outputs) for a point outside the cookie window or receiving no radiance.
-bool DX12_ProjectedSample( PBRSpotGpu light, float3 P, out float3 L, out float distanceToLight, out float3 incidentRGB, out float rawVisibility )
+// Incident radiance of one projected light at P, given P already projected by light.worldToTexture. Attenuation order
+// is the flashlight shader's: saturate( C + Lin / d + Q / d^2 ) * remap( d, farZ -> 0.6 farZ ), times the cookie.
+// rawVisibility is the four-tap comparison PCF (pattern rotated by the receiver's shadow dither) of a shadowed light
+// (depthSlot >= 0) and 1 otherwise. Returns false (zero outputs) for a point outside the cookie window or receiving no
+// radiance.
+bool DX12_ProjectedSampleClip( PBRSpotGpu light, float3 P, float4 projected, out float3 L, out float distanceToLight, out float3 incidentRGB, out float rawVisibility )
 {
 	L = float3( 0.0, 0.0, 0.0 );
 	distanceToLight = 0.0;
 	incidentRGB = float3( 0.0, 0.0, 0.0 );
 	rawVisibility = 1.0;
-	float4 projected = mul( light.worldToTexture, float4( P, 1.0 ) );
 	bool lit = projected.w > 0.0;
 	float2 uv = float2( 0.0, 0.0 );
 	if ( lit )
@@ -70,6 +72,10 @@ bool DX12_ProjectedSample( PBRSpotGpu light, float3 P, out float3 L, out float d
 		}
 	}
 	return lit;
+}
+bool DX12_ProjectedSample( PBRSpotGpu light, float3 P, out float3 L, out float distanceToLight, out float3 incidentRGB, out float rawVisibility )
+{
+	return DX12_ProjectedSampleClip( light, P, mul( light.worldToTexture, float4( P, 1.0 ) ), L, distanceToLight, incidentRGB, rawVisibility );
 }
 
 #endif // PROJECTED_LIGHTING_HLSLI

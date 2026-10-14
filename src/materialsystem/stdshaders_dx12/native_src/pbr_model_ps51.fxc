@@ -1,7 +1,7 @@
 // Native SM5.1 PBR model pixel shader (studio models and static props): VertexLitGeneric / Skin inputs shaded
 // with the PBR lobes. Composition follows hlsl/vertexlit_and_unlit_generic_bump_shadowmap_ps51.fxc: engine
 // ambient cube, draw-local cLightInfo lights, and under ENHANCED the selected direct gather
-// (ShadowMap_BeginReceiver + ShadowMap_SetBakedProp(SV_PrimitiveID) + PBR_GatherDirect); then the projected
+// (ShadowMap_BeginReceiverRelative + ShadowMap_SetBakedProp(SV_PrimitiveID) + PBR_GatherDirect); then the projected
 // spots, the parallax-corrected IBL, emission and fog.
 //
 // TANGENT=1 carries the vertex tangent (normal maps); TANGENT=0 has no tangent stream and no normal map, and
@@ -81,8 +81,9 @@ PBR_PSOut main( DX12_PS_INPUT i )
 {
 	float3 P = i.worldPos_projPosZ.xyz;
 #if ENHANCED
-	// Derivatives occur here, before any divergent work. The primitive identity is a pure value carrier.
-	ShadowMapReceiver receiver = ShadowMap_BeginReceiver( P, i.worldNormal, i.svPos.xy );
+	// Derivatives occur here, before any divergent work, on the camera-relative -toEye (world positions far from the
+	// origin are too coarse to differentiate). The primitive identity is a pure value carrier.
+	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( P, -i.toEye, i.worldNormal, i.svPos.xy );
 	ShadowMap_SetBakedProp( receiver, i.primitiveId );
 #endif
 	float2 baseUV = i.baseBumpUV.xy;
@@ -112,7 +113,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 #else
 	[branch] if ( g_Options.w != 0.0 )
-		frameT = PBR_DerivativeTangent( vertexNormal, P, baseUV );
+		frameT = PBR_DerivativeTangent( vertexNormal, -i.toEye, baseUV );
 #endif
 	float3 V = normalize( i.toEye );
 
@@ -161,6 +162,12 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// Alpha-tested fragments that fail are killed before the light loops (DX12FinishPixel repeats the same test on the
 	// unchanged alpha). Every implicit-derivative sample happens above this line.
 	DX12AlphaTest( alpha );
+#if PBR_DEPTH_PREPASS
+	// Preserve the ordinary alpha test and A2C alpha without evaluating the receiver light loops.
+	PBR_PSOut coverage = (PBR_PSOut)0;
+	coverage.color.a = alpha;
+	return coverage;
+#else
 
 	// Ambient. ENHANCED decodes the baked probe grid once at the vertex-normal-biased point and evaluates it for N (and -N / the
 	// softened N below); where no probe covers the point, or no grid is bound, the engine ambient cube takes over.
@@ -200,7 +207,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// SSR payload: the environment term as it reaches the scene (E) and the response a sampled scene radiance must be
 	// multiplied by to replace it (K), both through this pixel's fog transmission, plus the direct GGX specular (S) in
 	// the same units and its luminance-weighted light distance (D). Only an envmapped material in a capturing bracket
-	// writes it; everything else writes E = K = S = D = valid = 0 and keeps its cubemap and highlights.
+	// supplies it; non-envmapped materials write K/valid zero while the backend masks E/D/S stores.
 	const bool hasEnvmap = g_Flags1.x != 0.0;
 	float3 environment = 0.0, environmentResponse = 0.0;
 	if ( hasEnvmap )
@@ -230,4 +237,5 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( ShadowMap_DebugReplacesColor() ) reflectionValid = 0.0;
 #endif
 	return PBR_Output( color, s, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
+#endif
 }

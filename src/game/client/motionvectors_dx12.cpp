@@ -148,13 +148,13 @@ static void SetTileFloat( IMaterial *pMaterial, const char *pName, float flValue
 		pVar->SetFloatValue( flValue );
 }
 
-bool MotionVectorsDX12_BuildBlurTiles( IMatRenderContext *pRenderContext, float flMaxBlurLength, int &nTileCountX, int &nTileCountY )
+bool MotionVectorsDX12_BuildBlurTiles( IMatRenderContext *pRenderContext, float flMaxBlurLength, int nRegionWidth, int nRegionHeight, int &nTileCountX, int &nTileCountY )
 {
 	nTileCountX = nTileCountY = 0;
 	if ( !s_bTilesReady || !pRenderContext || !s_MotionVectorTexture.IsValid() )
 		return false;
-	const int nVelW = s_MotionVectorTexture->GetActualWidth();
-	const int nVelH = s_MotionVectorTexture->GetActualHeight();
+	const int nVelW = MIN( nRegionWidth, s_MotionVectorTexture->GetActualWidth() );
+	const int nVelH = MIN( nRegionHeight, s_MotionVectorTexture->GetActualHeight() );
 	if ( nVelW <= 0 || nVelH <= 0 )
 		return false;
 	const int nTileX = ( nVelW + 15 ) / 16;
@@ -170,8 +170,12 @@ bool MotionVectorsDX12_BuildBlurTiles( IMatRenderContext *pRenderContext, float 
 	SetTileTexture( s_pTileDilate, "$tileout", s_TileDilated );
 	SetTileVec( s_pTileDilate, "$sizes", flSizes );
 	SetTileFloat( s_pTileDilate, "$radius", flSearch );
+	pRenderContext->BeginPIXEvent( PIX_VALVE_ORANGE, "Motion blur tile reduce" );
 	pRenderContext->DrawScreenSpaceRectangle( s_pTileReduce, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
+	pRenderContext->EndPIXEvent();
+	pRenderContext->BeginPIXEvent( PIX_VALVE_ORANGE, "Motion blur tile dilate" );
 	pRenderContext->DrawScreenSpaceRectangle( s_pTileDilate, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
+	pRenderContext->EndPIXEvent();
 	nTileCountX = nTileX;
 	nTileCountY = nTileY;
 	return true;
@@ -238,15 +242,46 @@ bool MotionVectorsDX12_FrameValid( float *pDeltaSeconds )
 	return bValid;
 }
 
+bool MotionVectorsDX12_BlurIsStatic( float flBlurScale, float flMaxBlurLength, int nRegionWidth, int nRegionHeight )
+{
+	if ( r_motionvectors.GetInt() >= 2 || !s_pShaderAPI || !s_bTilesReady || !s_MotionVectorTexture.IsValid() ||
+		!IsFinite( flBlurScale ) || !IsFinite( flMaxBlurLength ) ||
+		MotionVectorsDX12_FrameEpoch() < 0 ||
+		s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_BLUR_STATIC ) != 1 )
+		return false;
+	const int nVelW = MIN( nRegionWidth, s_MotionVectorTexture->GetActualWidth() );
+	const int nVelH = MIN( nRegionHeight, s_MotionVectorTexture->GetActualHeight() );
+	if ( nVelW <= 0 || nVelH <= 0 || ( nVelW + 15 ) / 16 > 512 || ( nVelH + 15 ) / 16 > 512 )
+		return false;
+	const float flSearch = MAX( 0.5f * flMaxBlurLength, 3.f / MIN( nVelW, nVelH ) );
+	// Wide dilation returns "always gather", not the actual maximum. Keep one tile of
+	// slack at its eight-tile limit so CPU/GPU arithmetic at the boundary cannot certify it.
+	if ( flSearch * nVelW > 16.f * 6.f || flSearch * nVelH > 16.f * 6.f )
+		return false;
+	const float flBound = s_pShaderAPI->GetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_MOTION_STATIC_BOUND );
+	if ( !IsFinite( flBound ) || flBound < 0.f )
+		return false;
+	const float flReachable = MIN( flBound * fabsf( flBlurScale ), MAX( flMaxBlurLength, 0.f ) );
+	const float flSkipLimit = 0.5f / MAX( nVelW, nVelH );
+	return flReachable < flSkipLimit;
+}
+
+int MotionVectorsDX12_FrameEpoch()
+{
+	return s_bDX12 && s_pShaderAPI ? s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_FRAME_EPOCH ) : -1;
+}
+
 CON_COMMAND_F( r_motionvectors_report, "Report DX12 motion consumer/producer frame latches (diagnostic only)", FCVAR_CHEAT )
 {
 	float flDelta = 0.0f;
 	const bool bValid = MotionVectorsDX12_FrameValid( &flDelta );
-	Msg( "DX12 motion latch: mode %d frame %d consumerFrame %d consumer %d producedFrame %d enabled %d valid %d delta %.6f upscaler %d framegen %d custom %d status %d\n",
+	Msg( "DX12 motion latch: mode %d frame %d consumerFrame %d consumer %d producedFrame %d enabled %d valid %d delta %.6f upscaler %d framegen %d custom %d status %d static %d bound %.9f\n",
 		r_motionvectors.GetInt(), gpGlobals ? gpGlobals->framecount : -1, s_nConsumerFrame, s_bFrameHasConsumer,
 		s_nMotionVectorFrame, MotionVectorsDX12_Enabled(), bValid, flDelta, UpscalerDX12_RequiresMotionVectors(),
 		FrameGenDX12_RequiresMotionVectors(), HasCustomMotionVectorReader(),
-		s_pShaderAPI ? s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_STATUS ) : 0 );
+		s_pShaderAPI ? s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_STATUS ) : 0,
+		s_pShaderAPI ? s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_MOTION_BLUR_STATIC ) : 0,
+		s_pShaderAPI ? s_pShaderAPI->GetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_MOTION_STATIC_BOUND ) : 0.f );
 }
 
 ITexture *MotionVectorsDX12_RenderTarget()

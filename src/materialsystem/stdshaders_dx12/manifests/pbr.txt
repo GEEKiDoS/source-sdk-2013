@@ -15,5 +15,9 @@ pbr_model_vs51.fxc vs pbr_model_vs51 native -
 # noparity pbr_model_vs51 - native-only
 pbr_model_ps51.fxc ps pbr_model_ps51 native -
 # noparity pbr_model_ps51 - native-only
+pbr_world_depthprepass_ps51.fxc ps pbr_world_depthprepass_ps51 native -
+# noparity pbr_world_depthprepass_ps51 - native-only-coverage
+pbr_model_depthprepass_ps51.fxc ps pbr_model_depthprepass_ps51 native -
+# noparity pbr_model_depthprepass_ps51 - native-only-coverage
 pbr_gbuffer_debug_cs51.fxc cs pbr_gbuffer_debug_cs51 native -
 # noparity pbr_gbuffer_debug_cs51 - native-only

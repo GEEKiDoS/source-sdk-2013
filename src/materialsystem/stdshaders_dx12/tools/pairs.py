@@ -154,6 +154,7 @@ NATIVE_ONLY = [
     native_only('postfx', 'ssr_composite_cs51.fxc', 'cs', 'ssr_composite_cs51'),
     native_only('postfx', 'volumetric_vs51.fxc', 'vs', 'volumetric_vs51'),
     native_only('postfx', 'volumetric_ps51.fxc', 'ps', 'volumetric_ps51'),
+    native_only('postfx', 'volumetric_temporal_ps51.fxc', 'ps', 'volumetric_temporal_ps51'),
     native_only('postfx', 'volumetric_upsample_ps51.fxc', 'ps', 'volumetric_upsample_ps51'),
     native_only('shadowmaps', 'shadow_depth_restore_vs51.fxc', 'vs', 'shadow_depth_restore_vs51'),
     native_only('shadowmaps', 'shadow_depth_restore_ps51.fxc', 'ps', 'shadow_depth_restore_ps51'),
@@ -171,6 +172,8 @@ NATIVE_ONLY = [
     native_only('pbr', 'pbr_world_highres_ps51.fxc', 'ps', 'pbr_world_highres_ps51'),
     native_only('pbr', 'pbr_model_vs51.fxc', 'vs', 'pbr_model_vs51'),
     native_only('pbr', 'pbr_model_ps51.fxc', 'ps', 'pbr_model_ps51'),
+    native_only('pbr', 'pbr_world_depthprepass_ps51.fxc', 'ps', 'pbr_world_depthprepass_ps51'),
+    native_only('pbr', 'pbr_model_depthprepass_ps51.fxc', 'ps', 'pbr_model_depthprepass_ps51'),
     native_only('pbr', 'pbr_gbuffer_debug_cs51.fxc', 'cs', 'pbr_gbuffer_debug_cs51'),
 ]
 ALL = SCREENSPACE + POSTFX + VERTEXLIT + WORLD_MISC + SPRITES + WATER + EYES + LIGHTMAPPED + MORPH + EFFECTS

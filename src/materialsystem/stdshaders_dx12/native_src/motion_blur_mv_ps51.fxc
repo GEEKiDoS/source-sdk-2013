@@ -2,7 +2,7 @@
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 
-// DYNAMIC: "QUALITY" "0..3"
+// DYNAMIC: "QUALITY" "0..4"
 // DYNAMIC: "TILE" "0..1"
 
 #ifdef HDRTYPE
@@ -23,6 +23,9 @@ Texture2D<float> g_tTileMax : register( t2 );
 cbuffer motion_blur_mv : register( b1, space1 )
 {
 	float4 g_vMotionBlurInternal; // @legacy ps:c0
+	// xy: the valid velocity region in texels at the top-left of the velocity target (the 3D view's render size; the
+	// blurred frame is the upscaled one under a temporal render scale). Zero means the whole target.
+	float4 g_vVelocityRegion; // @legacy ps:c1
 };
 
 struct PS_INPUT
@@ -31,12 +34,19 @@ struct PS_INPUT
 	float2 vUv0 : TEXCOORD0;
 };
 
-float4 LoadVelocityPointClamp( float2 uv )
+// Frame UV [0, 1] spans the velocity region, whatever the blurred frame's own size.
+float2 VelocityRegionSize()
 {
 	uint width, height;
 	g_tVelocitySampler_Texture.GetDimensions( width, height );
-	int2 pixel = int2( floor( saturate( uv ) * float2( width, height ) ) );
-	pixel = clamp( pixel, int2( 0, 0 ), int2( width, height ) - 1 );
+	return g_vVelocityRegion.x > 0.0f ? min( g_vVelocityRegion.xy, float2( width, height ) ) : float2( width, height );
+}
+
+float4 LoadVelocityPointClamp( float2 uv )
+{
+	float2 region = VelocityRegionSize();
+	int2 pixel = int2( floor( saturate( uv ) * region ) );
+	pixel = clamp( pixel, int2( 0, 0 ), int2( region ) - 1 );
 	return g_tVelocitySampler_Texture.Load( int3( pixel, 0 ) );
 }
 
@@ -76,14 +86,13 @@ float4 main( PS_INPUT i ) : SV_Target0
 	float2 tileCount = g_vMotionBlurInternal.zw;
 	if ( tileCount.x > 0.0f )
 	{
-		uint velocityWidth, velocityHeight;
-		g_tVelocitySampler_Texture.GetDimensions( velocityWidth, velocityHeight );
-		int2 pixel = int2( floor( saturate( uv ) * float2( velocityWidth, velocityHeight ) ) );
+		float2 velocityRegion = VelocityRegionSize();
+		int2 pixel = int2( floor( saturate( uv ) * velocityRegion ) );
 		int2 tile = clamp( pixel >> 4, int2( 0, 0 ), int2( tileCount ) - 1 );
 		float neighborhood = g_tTileMax.Load( int3( tile, 0 ) );
 		float maxBlurLengthTile = max( g_vMotionBlurInternal.y, 0.0f );
 		float reachable = min( neighborhood * blurMultiplier, maxBlurLengthTile );
-		float skipLimit = 0.5f / max( (float)max( velocityWidth, velocityHeight ), 1.0f );
+		float skipLimit = 0.5f / max( max( velocityRegion.x, velocityRegion.y ), 1.0f );
 		if ( reachable < skipLimit )
 		{
 			return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
@@ -107,8 +116,10 @@ float4 main( PS_INPUT i ) : SV_Target0
 	const int kNumSamples = 8;
 #elif QUALITY == 2
 	const int kNumSamples = 12;
-#else
+#elif QUALITY == 3
 	const int kNumSamples = 16;
+#else
+	const int kNumSamples = 4;
 #endif
 
 	// Heuristic neighbour-max dilation: a candidate contributes only when its
@@ -117,9 +128,7 @@ float4 main( PS_INPUT i ) : SV_Target0
 	float2 blurV = centerV;
 	float blurVLength = length( blurV );
 	const float searchRadius = 0.5f * maxBlurLength;
-	uint velocityWidth, velocityHeight;
-	g_tVelocitySampler_Texture.GetDimensions( velocityWidth, velocityHeight );
-	const float2 velocityTexelSize = 1.0f / float2( velocityWidth, velocityHeight );
+	const float2 velocityTexelSize = 1.0f / VelocityRegionSize();
 	const int kInnerSamples = kNumSamples / 2;
 	const float kInnerRadiusMinPixels = 1.0f;
 	const float kInnerRadiusMaxPixels = 3.0f;

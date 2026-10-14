@@ -3,7 +3,8 @@
 // Purpose: DX12 post-processing compute passes (MagicBloom's layered bloom on Froyok's pyramid, Froyok's lens flare).
 //          $pass selects 0 bloom downsample, 1 bloom layer sum (upsample), 2 lens flare threshold, 3 lens flare ghosts
 //          and halo, 4 dual Kawase down, 5 dual Kawase up, 6 glare, 7 bloom first level (soft-thresholded scene to
-//          $dsttexture, the plain exposed scene to $dsttexture2). $srctexture/$srctexture2 are read at $srcmip/$srcmip2
+//          $dsttexture, the plain exposed scene to $dsttexture2), 8 glare component-max reduction.
+//          $srctexture/$srctexture2 are read at $srcmip/$srcmip2 (glare uses source 2 for its 1x1 maximum)
 //          and $dsttexture/$dsttexture2 are written at $dstmip/$dstmip2. $sizes holds the source and destination size,
 //          $params0 the source texel size and the per-pass parameters p0/p1, $params1.x the per-pass parameter p2.
 //
@@ -126,9 +127,25 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 			case 5:
 				SelectShader< postfx_kawase_up_cs51_Static_Index, postfx_kawase_up_cs51_Dynamic_Index >( dispatch, "postfx_kawase_up_cs51" );
 				break;
-			default:
-				SelectShader< postfx_glare_cs51_Static_Index, postfx_glare_cs51_Dynamic_Index >( dispatch, "postfx_glare_cs51" );
+			case 6:
+			case 8:
+			{
+				postfx_glare_cs51_Static_Index staticIndex;
+				staticIndex.SetREDUCE( nPass == 8 ? 1 : 0 );
+				postfx_glare_cs51_Dynamic_Index dynamicIndex;
+				dispatch.m_pShaderName = "postfx_glare_cs51";
+				dispatch.m_nStaticIndex = staticIndex.GetIndex();
+				dispatch.m_nDynamicIndex = dynamicIndex.GetIndex();
+				if ( nPass == 8 )
+				{
+					// One 8x8 group reduces a source rectangle to each destination texel.
+					dispatch.m_nGroupsX = constants.dstWidth;
+					dispatch.m_nGroupsY = constants.dstHeight;
+				}
+				else
+					dispatch.m_Srv[1] = DX12MaterialTexture( GetShaderAPITextureBindHandle( SRCTEXTURE2, -1 ), params[SRCMIP2]->GetIntValue(), 1 );
 				break;
+			}
 			}
 			DX12ComputeAPI()->Dispatch( dispatch );
 		}

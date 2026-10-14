@@ -73,7 +73,7 @@ struct alignas( 16 ) DX12ShadowSkyClipConstants	// 16 bytes
 };
 static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipConstants must match HLSL DX12ShadowSkyClip" );
 
-#define DX12_SHADOW_LOCAL_PAGE_SIZE				4096	// one local page, texels per side
+#define DX12_SHADOW_LOCAL_PAGE_SIZE				4096	// logical local page limit; physical atlases may be cropped
 #define DX12_SHADOW_LOCAL_SLOT_SIZE				512		// S for locals
 #define DX12_SHADOW_LOCAL_SLOT_USEFUL			476		// U = S - 2*18
 #define DX12_SHADOW_LOCAL_SLOTS_PER_ROW			8

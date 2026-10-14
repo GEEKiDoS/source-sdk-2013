@@ -444,6 +444,7 @@ public:
 	bool EnsureComputeRootSignature();
 	struct TextureRecord;
 	bool PromoteRenderTarget( TextureRecord &texture, bool bUav, int nMipLevels );
+	bool DiscardResizeComputeTarget( TextureRecord &texture, int nWidth, int nHeight );
 	void ResizeTextureStaging( TextureRecord &texture, int nMipLevels );
 
 	int StencilReference() const { return m_nStencilRef; }
@@ -512,9 +513,11 @@ public:
 		D3D12_CPU_DESCRIPTOR_HANDLE m_SrvSources[2]{};
 		ID3D12Resource *m_pSrvResources[2]{};
 		D3D12_SHADER_RESOURCE_VIEW_DESC m_SrvDescriptors[2]{};
-		D3D12_SAMPLER_DESC m_SamplerDescriptors[2]{};
-		bool m_SamplerDescriptorValid[2]{};
-		int m_nSamplerDescriptorAnisotropy = -1;
+		D3D12_SAMPLER_DESC m_SamplerDescriptors[2][2]{};
+		bool m_SamplerDescriptorValid[2][2]{};
+		uint64_t m_nSamplerLodBiasEpoch[2][2]{};
+		int m_nSamplerDescriptorAnisotropy[2][2] = { { -1, -1 }, { -1, -1 } };
+		bool lodBiasEligible = false;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap;
 		D3D12_CPU_DESCRIPTOR_HANDLE rtv{}, rtvSRGB{};
@@ -616,7 +619,7 @@ public:
 		ShaderRasterState_t rasterState;
 		uint32_t rasterOverride, shadeMode, fogMode, pixelFog, cullMode;
 		uint32_t stencilEnabled, stencilCompare, stencilFail, stencilDepthFail, stencilPass, stencilReadMask, stencilWriteMask;
-		uint32_t gbufferPass, contactReplay;
+		uint32_t gbufferPass, nonEnvmapSsrPayload, contactReplay, skyboxDraw;
 		uint32_t alphaToCoverage, colorWriteOverride, colorWriteValue, alphaWriteOverride, alphaWriteValue, overrideDepthEnable, overrideDepthValue, forceDepthEquals, reverseDepth;
 		float shadowSlope, shadowDepth, slopeDecal, slopeNormal, depthDecal, depthNormal;
 	};
@@ -698,7 +701,7 @@ private:
 	void CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mesh, const VertexBindingDX12 &stream0, CIndexBufferDX12 *indices, int firstIndex, int indexCount );
 	void FlushShadowCasterBatch( bool close ); // emits every group; close=false keeps the scope open (capacity overflow)
 	void SetMotionPass( int nMode );
-	bool EnsureMotionResources();
+	bool EnsureMotionResources( int nMode );
 	bool PrepareMotionBinding( RenderTargetBindingDX12 &binding );
 	void DrawMotionReprojection();
 	void ResolveMotionTarget();
@@ -707,6 +710,13 @@ private:
 	void MarkMotionTargetStale();
 
 	bool MotionPassActive() const { return m_MotionPassState == MotionPassStateDX12::Active; }
+	// The frame's resolved motion target is a stationary candidate (INT_RENDERPARM_DX12_MOTION_BLUR_STATIC). Only the
+	// recording owner with a closed pass may read it: a queued client frame would otherwise certify the previous frame.
+	bool MotionQuiet() const
+	{
+		return m_bMotionQuietCandidate && m_MotionPassState == MotionPassStateDX12::None && m_pDevice && m_pDevice->IsRecordingOwner() &&
+		    m_hMotionResolvedHandle && m_nMotionResolvedFrame == m_nFrameCounter;
+	}
 
 	void ReleaseMotionResources();
 	void TransitionMotionTarget( D3D12_RESOURCE_STATES desiredState );
@@ -715,9 +725,12 @@ private:
 	bool EnsureGBufferResources();
 	void TransitionGBuffer( D3D12_RESOURCE_STATES desiredState );
 	void ReleaseGBufferResources();
-	// Native-AA upscaler (upscaler_dx12.cpp); contract U1-U4 of the upscaler plan.
+	// Temporal AA / render-resolution upscaler (upscaler_dx12.cpp); contract U1-U4 of the upscaler plan.
 	void SetUpscalerMode( int nMode );
+	void SetUpscalerLodBias( float bias );
 	void DispatchUpscaler( int nFlags );
+	// Scaled frame rejected at record time: stretches scene colour (0, 0, render) over the scene.
+	void StretchUpscalerInput( UINT nRenderWidth, UINT nRenderHeight, UINT nWidth, UINT nHeight );
 	void ConsumeUpscalerReplays( bool bWait );
 	bool EnsureUpscalerOutput( UINT nWidth, UINT nHeight );
 	void ReleaseUpscalerFeature();
@@ -751,6 +764,9 @@ private:
 	void SetHdrOutput( bool bEnable, float flUiNits ) override;
 	int HdrDisplayStatus() override;
 	bool HdrOutputCapable() override;
+	void SetGpuTimingEnabled( bool bEnabled ) override;
+	bool GetGpuTiming( ShaderAPIDX12GpuTiming_t &timing ) override;
+	int AdapterPerformanceTier() override;
 	bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) override;
 	int SceneSampleCount() override;
 	void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked ) override;
@@ -765,6 +781,10 @@ private:
 	void EndView() override;
 	void BeginVolumetrics( const DX12VolumetricSettings &settings ) override;
 	void DrawVolumetrics() override;
+	void BeginDepthPrepass() override;
+	void EndDepthPrepass() override;
+	void BeginSkybox() override;
+	void EndSkybox() override;
 
 	// ---- Screen-space view + contact depth (screenspace_dx12.cpp), recording owner ----
 	void ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &view );
@@ -772,6 +792,11 @@ private:
 	void ReplayEndContactDepth();
 	void ReplayScreenSpaceEndView();
 	void ReleaseScreenSpaceResources();
+	void ReplayDepthPrepass( bool bBegin );
+	bool m_bDepthPrepass = false; // ordered normal-geometry replay into scene depth; independent of SSR/contact enable
+	void ReplaySkybox( bool bBegin );
+	static constexpr uint8_t kSkyboxStencilBit = 0x40;
+	bool m_bSkyboxPass = false; // ordered ordinary-sky draws through main-view far-depth pixels
 	// Current opaque bracket, owned by screenspace_dx12.cpp; read by DrawBuffers, SSR and the volume capture.
 	struct ScreenSpaceViewStateDX12
 	{
@@ -830,7 +855,7 @@ private:
 	};
 	struct SSRResourcesDX12
 	{
-		SSRTextureDX12 scene, trace, ray, resolve, resolveAux, delta;
+		SSRTextureDX12 scene, trace, ray, resolve, resolveAux;
 		SSRTextureDX12 depth[2], history[2], historyAux[2];
 		int current = 0;
 		// The previous successful SSR frame: its camera (gSSRWorldToClip), scene rectangle and frame counter.
@@ -866,11 +891,16 @@ private:
 	struct VolumetricStateDX12
 	{
 		DX12VolumetricSettings settings{};
-		DX12ScreenSpaceViewConstants camera{}; // control x/z/w zeroed: no contact reads / SSR capture; y keeps the scene sample count
+		DX12ScreenSpaceViewConstants camera{}; // control x/z zeroed: no contact reads / SSR capture; y keeps the scene sample count
+		DX12ScreenSpaceViewConstants historyCamera{};
 		bool scope = false;                    // between ReplayBeginVolumetrics and ReplayDrawVolumetrics
 		bool cameraValid = false;              // the latest main bracket ended with an eligible camera
-		// Ordinary texture records (fence-retained by DeleteTexture): RGBA16F in-scattering and R32F positive view depth.
-		VolumetricTargetDX12 scatter, depth;
+		bool historyValid = false;             // a resolved quarter/half-resolution volume is available for reprojection
+		uint64_t historyFrame = 0;
+		uint32_t historyIndex = 0;
+		int historyWidth = 0, historyHeight = 0;
+		// Ordinary texture records (fence-retained by DeleteTexture): RGBA16F in-scattering + depth in alpha, and R32F march depth.
+		VolumetricTargetDX12 scatter, depth, history[2];
 	} m_Volumetric;
 	bool EnsureVolumetricTarget( VolumetricTargetDX12 &target, int nWidth, int nHeight, ImageFormat format, const char *pszName );
 	bool DrawVolumetricPass();
@@ -1004,12 +1034,13 @@ private:
 		D3D12_STENCIL_OP stencilPass = D3D12_STENCIL_OP_KEEP, stencilFail = D3D12_STENCIL_OP_KEEP;
 		bool stencilOnly = false;
 		bool depthWrite = false;
+		bool farDepthTest = false;
 		Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
 	};
 
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pClearRoot;
 	CUtlVector<ClearPassDX12> m_ClearPasses;
-	void DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const D3D12_RECT *pRect = nullptr, bool bStencilOnly = false );
+	void DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const D3D12_RECT *pRect = nullptr, bool bStencilOnly = false, bool farDepthTest = false );
 
 	struct BlitPassDX12
 	{
@@ -1233,6 +1264,7 @@ private:
 	uint8_t m_nMotionWarned = 0;
 	ShaderAPITextureHandle_t m_hMotionResolveTarget = 0;
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pMotionTarget;
+	ShaderAPITextureHandle_t m_hMotionSharedTarget = 0;
 	D3D12_RESOURCE_STATES m_MotionTargetState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_pMotionRtvHeap;
 	D3D12_CPU_DESCRIPTOR_HANDLE m_MotionRtv{};
@@ -1282,6 +1314,9 @@ private:
 	uint64_t m_nUpscalerQueuedFrame = ~0ull, m_nUpscalerLastDispatchFrame = ~0ull, m_nUpscalerLastSuccessFrame = ~0ull;
 	uint64_t m_nUpscalerPendingSerial = 0, m_nUpscalerConsumedSerial = 0, m_nUpscalerJitterIndex = 0;
 	float m_UpscalerJitter[2]{};
+	float m_flUpscalerLodBias = 0.f;
+	uint64_t m_nUpscalerLodBiasEpoch = 1;
+	bool m_bUpscalerLodBiasMaterialEligible = false, m_bUpscalerLodBiasDrawEligible = false;
 	double m_flUpscalerLastDispatchTime = 0.0;
 	UpscalerReplayResultDX12 m_UpscalerReplay[kUpscalerReplaySlots]{};
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pUpscalerOutput;
@@ -1304,6 +1339,12 @@ private:
 	// Set only by a successful ResolveMotionTarget, never by stale marking.
 	ShaderAPITextureHandle_t m_hMotionResolvedHandle = 0;
 	uint64_t m_nMotionResolvedFrame = ~0ull;
+	// Stationary candidate for the frame's motion target (motion_vectors_dx12.cpp): armed by the camera reprojection when its
+	// effective previous and current view-projection are bit-identical, cleared by any motion draw whose previous transforms
+	// differ from its current ones. Only meaningful together with a current m_nMotionResolvedFrame; the bound is the
+	// velocity-length upper bound in motion-target UV units (INT/FLOAT_RENDERPARM_DX12_MOTION_BLUR_STATIC/_STATIC_BOUND).
+	bool m_bMotionQuietCandidate = false;
+	float m_flMotionQuietBound = 0.f;
 	static constexpr int kMotionDepthBias = 0;
 	// Frame generation. Every field is owned by the recording thread; replay results arrive through m_FrameGenReplay.
 	static constexpr uint64_t kFrameGenReplaySlots = 4;
@@ -1321,13 +1362,16 @@ private:
 	CInterlockedInt m_nFrameGenSettingsRequest; // mode | multiplier << 8 | hudless << 16
 	CInterlockedInt m_nReflexRequest;
 	CInterlockedInt m_nFpsLimitBits;            // float bits of the last SetFrameRateLimit
-	int m_nReflexApplied = -1;
-	CInterlockedInt m_nHdrOutputEnabled;
-	CInterlockedInt m_nHdrOutputUiNitsBits;     // float bits of the last SetHdrOutput UI nits
+	CInterlockedInt m_nGpuTimingEnabled;
+	CThreadFastMutex m_GpuTimingMutex;
+	ShaderAPIDX12GpuTiming_t m_GpuTimingSnapshot{};
 	float m_flFrameGenFpsLimit = 0.f;
 	CInterlockedInt m_nFrameGenStatus;
 	CInterlockedInt m_nFramesShown;
 	CInterlockedInt m_nReflexStatus;
+	int m_nReflexApplied = -1;
+	CInterlockedInt m_nHdrOutputUiNitsBits;
+	CInterlockedInt m_nHdrOutputEnabled;
 	char m_szFrameGenError[256] = {};
 	uint32_t m_nFrameDrawCount = 0;
 	uint32_t m_nFrameFlushCount = 0;

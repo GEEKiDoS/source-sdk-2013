@@ -415,6 +415,7 @@ public:
 	static CViewRender *	GetMainView() { return assert_cast<CViewRender *>( view ); }
 
 	void			AddViewToScene( CRendering3dView *pView ) { m_SimpleExecutor.AddView( pView ); }
+	bool			DrawDeferredSkybox();
 protected:
 	// Sets up the view parameters for all views (left, middle and right eyes).
     void            SetUpViews();
@@ -618,6 +619,7 @@ private:
 	Frustum m_Frustum;
 
 	CBase3dView *m_pActiveRenderer;
+	CRendering3dView *m_pDeferredSkybox; // Non-owning; the RenderView stack retains the sky view.
 	CSimpleRenderExecutor m_SimpleExecutor;
 
 	bool			m_rbTakeFreezeFrame[ STEREO_EYE_MAX ];

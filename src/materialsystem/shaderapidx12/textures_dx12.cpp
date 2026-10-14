@@ -14,6 +14,8 @@
 #include "tier1/keyvalues.h"
 #include "tier1/strtools.h"
 #include "vtf/vtf.h"
+#include "texture_group_names.h"
+ 
 #include "tracy_dx12.h"
 #include <d3dcompiler.h>
 #include <climits>
@@ -23,6 +25,36 @@ namespace shaderapidx12
 namespace
 {
 DXGI_FORMAT SRVFormat( DXGI_FORMAT format, bool bSRGB, bool bDepth );
+//-----------------------------------------------------------------------------
+// Purpose: Material texture groups eligible for the temporal-AA mip bias. Keep this
+//          allowlist narrow: Other textures include post/effect/UI resources.
+//-----------------------------------------------------------------------------
+bool IsUpscalerLodBiasEligible( int flags, int mipLevels, const char *name, const char *group )
+{
+	if ( mipLevels <= 1 || ( flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER | TEXTURE_CREATE_CUBEMAP |
+	                                  TEXTURE_CREATE_DYNAMIC | TEXTURE_CREATE_AUTOMIPMAP ) ) )
+		return false;
+	if ( !group || ( V_stricmp( group, TEXTURE_GROUP_WORLD ) && V_stricmp( group, TEXTURE_GROUP_MODEL ) ) )
+		return false;
+	(void)name;
+	return true;
+}
+
+
+// Render-target names retain their subsystem even when they share the texture allocator.
+const char *TextureMemoryCategory( const char *name, bool renderTarget )
+{
+	if ( renderTarget && name && *name )
+	{
+		if ( V_stristr( name, "GTAO" ) ) return "GTAO";
+		if ( V_stristr( name, "SSR" ) ) return "SSR";
+		if ( V_stristr( name, "Motion" ) ) return "motion";
+		if ( V_stristr( name, "Volumetric" ) ) return "volumetric";
+		if ( V_stristr( name, "PostFX" ) ) return "postfx";
+		if ( V_stristr( name, "Upscaler" ) ) return "upscaler";
+	}
+	return renderTarget ? "render textures" : "textures";
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: Vendor depth formats that are allocated as depth-stencil resources
@@ -300,7 +332,7 @@ bool CreateUpload( ID3D12Device *pDevice, CCommandRecorderDX12 *pList, ID3D12Res
 	bufferDesc.SampleDesc.Count = 1;
 	bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pUpload;
-	if ( FAILED( pDevice->CreateCommittedResource( &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &pUpload ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( pDevice, &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &pUpload ), "upload pages", "Texture upload" ) ) )
 		return false;
 	void *pMapped = nullptr;
 	D3D12_RANGE range{};
@@ -596,7 +628,7 @@ CShaderAPIDX12::ResolveTextureRecord *CShaderAPIDX12::AcquireResolveTexture( con
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 BlitResolveAllocation", DX12_ZONES_ACTIVE );
 		D3D12_HEAP_PROPERTIES heap{};
 		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-		hrCreation = m_pDevice->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr, IID_PPV_ARGS( &pResource ) );
+		hrCreation = CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr, IID_PPV_ARGS( &pResource ), "render textures", "MSAA resolve cache" );
 	}
 	if ( FAILED( hrCreation ) )
 		return nullptr;
@@ -611,7 +643,7 @@ CShaderAPIDX12::ResolveTextureRecord *CShaderAPIDX12::AcquireResolveTexture( con
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Copies (or resolves) the motion-vector target into the engine's motion texture
+// Purpose: Finalizes the engine motion texture, copying/resolving a separate target when needed
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ResolveMotionTarget()
 {
@@ -639,7 +671,7 @@ void CShaderAPIDX12::ResolveMotionTarget()
 		TransitionMotionTarget( D3D12_RESOURCE_STATE_RESOLVE_SOURCE );
 		pList->ResolveSubresource( pRecord->resource.Get(), 0, m_pMotionTarget.Get(), 0, DXGI_FORMAT_R16G16B16A16_FLOAT );
 	}
-	else
+	else if ( pRecord->resource.Get() != m_pMotionTarget.Get() )
 	{
 		if ( destinationState != D3D12_RESOURCE_STATE_COPY_DEST )
 		{
@@ -665,6 +697,8 @@ void CShaderAPIDX12::ResolveMotionTarget()
 		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 		pList->ResourceBarrier( 1, &barrier );
 		destinationState = barrier.Transition.StateAfter;
+		pRecord->sampledStateValid = false;
+		++m_nTextureStateEpoch;
 	}
 	pRecord->dirtySubresources[nSub] = 0;
 	pRecord->initializedSubresources[nSub] = 0;
@@ -791,7 +825,7 @@ bool CShaderAPIDX12::RefreshTextureStaging( TextureRecord &texture, int nFace, i
 	buffer.SampleDesc.Count = 1;
 	buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pReadback;
-	if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &pReadback ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &pReadback ), "readback", "Texture readback" ) ) )
 		return false;
 	D3D12_RESOURCE_STATES &state = texture.subresourceStates[nIndex];
 	texture.sampledStateValid = false;
@@ -904,7 +938,7 @@ bool CShaderAPIDX12::AllocateNativeTexture( TextureRecord &texture )
 	for ( int nCopy = 0; nCopy < texture.copies; ++nCopy )
 	{
 		Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
-		if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, initial, ( texture.flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) ? &clear : nullptr, IID_PPV_ARGS( &pResource ) ) ) )
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc, initial, ( texture.flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) ? &clear : nullptr, IID_PPV_ARGS( &pResource ), TextureMemoryCategory( texture.name.Get(), ( texture.flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) != 0 ), texture.name.Get() ) ) )
 			return false;
 		wchar_t wszDebugName[512];
 		if ( !texture.name.IsEmpty() && MultiByteToWideChar( CP_UTF8, 0, texture.name.Get(), -1, wszDebugName, static_cast<int>( ARRAYSIZE( wszDebugName ) ) ) )
@@ -963,7 +997,7 @@ bool CShaderAPIDX12::AllocateNativeTexture( TextureRecord &texture )
 //-----------------------------------------------------------------------------
 // Purpose: Creates a texture: CPU staging copies plus the native resources
 //-----------------------------------------------------------------------------
-ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, int depth, ImageFormat format, int mipLevels, int copies, int flags, const char *debugName, const char * )
+ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, int depth, ImageFormat format, int mipLevels, int copies, int flags, const char *debugName, const char *pTextureGroupName )
 {
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 CreateTexture", DX12_ZONES_ACTIVE );
 	// Source's shadow-depth render targets are allocated through InitRenderTarget with
@@ -988,6 +1022,7 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	pRecord->requestedFormat = format;
 	pRecord->flags = flags;
 	pRecord->name = debugName ? debugName : "";
+	pRecord->lodBiasEligible = IsUpscalerLodBiasEligible( flags, pRecord->mipLevels, debugName, pTextureGroupName );
 	const int nFaces = Faces( *pRecord ), nSubresources = nFaces * pRecord->mipLevels;
 	size_t nTotal = 0;
 	for ( int nFace = 0; nFace < nFaces; ++nFace )
@@ -1069,6 +1104,23 @@ void CShaderAPIDX12::DeleteTexture( ShaderAPITextureHandle_t handle )
 	TextureRecord *pRecord = FindTexture( handle );
 	if ( pRecord == nullptr )
 		return;
+	if ( m_hMotionSharedTarget == handle && m_pMotionTarget && pRecord->resource )
+	{
+		// Keep accumulated motion and its final canonical state after the owner
+		// disappears, including a replacement made by render-target promotion.
+		m_MotionTargetState = pRecord->subresourceStates[0];
+		if ( m_pMotionTarget.Get() != pRecord->resource.Get() && m_pDevice && m_pDevice->NativeDevice() )
+		{
+			m_pDevice->DrainRecording();
+			m_pDevice->RetainResource( m_pMotionTarget.Get() );
+			m_pMotionTarget = pRecord->resource;
+			D3D12_RENDER_TARGET_VIEW_DESC view{};
+			view.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+			view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+			m_pDevice->NativeDevice()->CreateRenderTargetView( m_pMotionTarget.Get(), &view, m_MotionRtv );
+		}
+		// Leave the shared owner handle set: a deleted alias is not a private cache.
+	}
 	if ( m_pDevice ) m_pDevice->Highres().ForgetTexture( handle, pRecord->allocationSerial );
 	pRecord->highresPage = 0xffffffffu;
 	pRecord->highresLayoutGeneration = 0;
@@ -1379,7 +1431,7 @@ void CShaderAPIDX12::TexMinFilter( ShaderTexFilterMode_t mode )
 	if ( pRecord != nullptr )
 	{
 		pRecord->minFilter = static_cast<int>( mode );
-		pRecord->m_SamplerDescriptorValid[0] = pRecord->m_SamplerDescriptorValid[1] = false;
+		pRecord->m_SamplerDescriptorValid[0][0] = pRecord->m_SamplerDescriptorValid[0][1] = pRecord->m_SamplerDescriptorValid[1][0] = pRecord->m_SamplerDescriptorValid[1][1] = false;
 		++m_nTextureStateEpoch;
 	}
 }
@@ -1390,7 +1442,7 @@ void CShaderAPIDX12::TexMagFilter( ShaderTexFilterMode_t mode )
 	if ( pRecord != nullptr )
 	{
 		pRecord->magFilter = static_cast<int>( mode );
-		pRecord->m_SamplerDescriptorValid[0] = pRecord->m_SamplerDescriptorValid[1] = false;
+		pRecord->m_SamplerDescriptorValid[0][0] = pRecord->m_SamplerDescriptorValid[0][1] = pRecord->m_SamplerDescriptorValid[1][0] = pRecord->m_SamplerDescriptorValid[1][1] = false;
 		++m_nTextureStateEpoch;
 	}
 }
@@ -1406,7 +1458,7 @@ void CShaderAPIDX12::TexWrap( ShaderTexCoordComponent_t coord, ShaderTexWrapMode
 		pRecord->wrapV = static_cast<int>( mode );
 	else
 		pRecord->wrapW = static_cast<int>( mode );
-	pRecord->m_SamplerDescriptorValid[0] = pRecord->m_SamplerDescriptorValid[1] = false;
+	pRecord->m_SamplerDescriptorValid[0][0] = pRecord->m_SamplerDescriptorValid[0][1] = pRecord->m_SamplerDescriptorValid[1][0] = pRecord->m_SamplerDescriptorValid[1][1] = false;
 	++m_nTextureStateEpoch;
 }
 
@@ -1416,7 +1468,7 @@ void CShaderAPIDX12::TexLodClamp( int finest )
 	if ( pRecord != nullptr )
 	{
 		pRecord->lodClamp = finest;
-		pRecord->m_SamplerDescriptorValid[0] = pRecord->m_SamplerDescriptorValid[1] = false;
+		pRecord->m_SamplerDescriptorValid[0][0] = pRecord->m_SamplerDescriptorValid[0][1] = pRecord->m_SamplerDescriptorValid[1][0] = pRecord->m_SamplerDescriptorValid[1][1] = false;
 		++m_nTextureStateEpoch;
 	}
 }
@@ -1427,7 +1479,7 @@ void CShaderAPIDX12::TexLodBias( float bias )
 	if ( pRecord != nullptr )
 	{
 		pRecord->lodBias = bias;
-		pRecord->m_SamplerDescriptorValid[0] = pRecord->m_SamplerDescriptorValid[1] = false;
+		pRecord->m_SamplerDescriptorValid[0][0] = pRecord->m_SamplerDescriptorValid[0][1] = pRecord->m_SamplerDescriptorValid[1][0] = pRecord->m_SamplerDescriptorValid[1][1] = false;
 		++m_nTextureStateEpoch;
 	}
 }
@@ -1693,8 +1745,12 @@ bool PrepareSampledTextureDX12( CShaderAPIDX12 &api, ShaderAPITextureHandle_t hT
 	const int nSamplerSlot = bComparison ? 1 : 0;
 	const int nSamplerAnisotropy = Clamp( api.m_nAnisotropy, 1, 16 );
 	const bool bAnisotropic = t.minFilter == SHADER_TEXFILTERMODE_ANISOTROPIC || t.magFilter == SHADER_TEXFILTERMODE_ANISOTROPIC;
-	if ( t.m_SamplerDescriptorValid[nSamplerSlot] && ( !bAnisotropic || t.m_nSamplerDescriptorAnisotropy == nSamplerAnisotropy ) )
-		sampler = t.m_SamplerDescriptors[nSamplerSlot];
+	const int nBiasVariant = t.lodBiasEligible && api.m_bUpscalerLodBiasDrawEligible ? 1 : 0;
+	const bool bSamplerValid = t.m_SamplerDescriptorValid[nSamplerSlot][nBiasVariant] &&
+		( !nBiasVariant || t.m_nSamplerLodBiasEpoch[nSamplerSlot][nBiasVariant] == api.m_nUpscalerLodBiasEpoch ) &&
+		( !bAnisotropic || t.m_nSamplerDescriptorAnisotropy[nSamplerSlot][nBiasVariant] == nSamplerAnisotropy );
+	if ( bSamplerValid )
+		sampler = t.m_SamplerDescriptors[nSamplerSlot][nBiasVariant];
 	else
 	{
 		sampler = {};
@@ -1708,14 +1764,15 @@ bool PrepareSampledTextureDX12( CShaderAPIDX12 &api, ShaderAPITextureHandle_t hT
 		                                                                                                                                   D3D12_TEXTURE_ADDRESS_MODE_WRAP;
 		sampler.AddressW = t.wrapW == SHADER_TEXWRAPMODE_CLAMP ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP : t.wrapW == SHADER_TEXWRAPMODE_BORDER ? D3D12_TEXTURE_ADDRESS_MODE_BORDER :
 		                                                                                                                                   D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-		sampler.MipLODBias = t.lodBias;
+		sampler.MipLODBias = t.lodBias + ( nBiasVariant ? api.m_flUpscalerLodBias : 0.f );
 		sampler.MaxAnisotropy = bAnisotropic ? nSamplerAnisotropy : 1;
 		sampler.ComparisonFunc = bComparison ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_ALWAYS;
 		sampler.MaxLOD = t.minFilter <= SHADER_TEXFILTERMODE_LINEAR ? 0.f : D3D12_FLOAT32_MAX;
 		sampler.MinLOD = MIN( static_cast<float>( MAX( 0, t.lodClamp ) ), sampler.MaxLOD );
-		t.m_SamplerDescriptors[nSamplerSlot] = sampler;
-		t.m_SamplerDescriptorValid[nSamplerSlot] = true;
-		t.m_nSamplerDescriptorAnisotropy = nSamplerAnisotropy;
+		t.m_SamplerDescriptors[nSamplerSlot][nBiasVariant] = sampler;
+		t.m_SamplerDescriptorValid[nSamplerSlot][nBiasVariant] = true;
+		t.m_nSamplerLodBiasEpoch[nSamplerSlot][nBiasVariant] = api.m_nUpscalerLodBiasEpoch;
+		t.m_nSamplerDescriptorAnisotropy[nSamplerSlot][nBiasVariant] = nSamplerAnisotropy;
 	}
 	return true;
 }
@@ -1929,7 +1986,7 @@ static D3D12_STENCIL_OP StencilOperationDX12( StencilOperation_t operation )
 // Purpose: Clears through a full-screen draw so color write masks, the stencil test and
 //          stencil writes apply like the DX9 "obey stencil" clears
 //-----------------------------------------------------------------------------
-void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const D3D12_RECT *pRect, bool bStencilOnly )
+void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const D3D12_RECT *pRect, bool bStencilOnly, bool farDepthTest )
 {
 	if ( !m_pDevice || !m_pDevice->CommandList() || ( !bRGB && !bAlpha && !bDepth && !bStencilOnly ) )
 		return;
@@ -1964,7 +2021,7 @@ void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const
 	for ( int i = 0; i < m_ClearPasses.Count(); ++i )
 	{
 		const ClearPassDX12 &pass = m_ClearPasses[i];
-		if ( !memcmp( pass.colors, target.colorFormats, sizeof( pass.colors ) ) && pass.colorCount == target.colorCount && pass.depth == target.depthFormat && pass.samples == static_cast<UINT>( target.sampleCount ) && pass.quality == static_cast<UINT>( target.sampleQuality ) && pass.mask == nMask && pass.stencilCompare == compare && pass.stencilReadMask == StencilReadMask() && pass.depthWrite == bDepth && pass.stencilOnly == bStencilOnly && pass.stencilWriteMask == nStencilWriteMask && pass.stencilPass == stencilPass && pass.stencilFail == stencilFail )
+		if ( !memcmp( pass.colors, target.colorFormats, sizeof( pass.colors ) ) && pass.colorCount == target.colorCount && pass.depth == target.depthFormat && pass.samples == static_cast<UINT>( target.sampleCount ) && pass.quality == static_cast<UINT>( target.sampleQuality ) && pass.mask == nMask && pass.stencilCompare == compare && pass.stencilReadMask == StencilReadMask() && pass.depthWrite == bDepth && pass.farDepthTest == farDepthTest && pass.stencilOnly == bStencilOnly && pass.stencilWriteMask == nStencilWriteMask && pass.stencilPass == stencilPass && pass.stencilFail == stencilFail )
 		{
 			pPipeline = pass.pipeline.Get();
 			break;
@@ -2001,15 +2058,15 @@ void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const
 		desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 		desc.RasterizerState.DepthClipEnable = TRUE;
 		desc.RasterizerState.MultisampleEnable = target.sampleCount > 1;
-		desc.DepthStencilState.DepthEnable = bDepth;
+		desc.DepthStencilState.DepthEnable = bDepth || farDepthTest;
 		desc.DepthStencilState.DepthWriteMask = bDepth ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-		desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+		desc.DepthStencilState.DepthFunc = farDepthTest ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_ALWAYS;
 		desc.DepthStencilState.StencilEnable = target.depth && target.depthFormat == DXGI_FORMAT_D24_UNORM_S8_UINT && m_bStencilEnabled;
 		desc.DepthStencilState.StencilReadMask = StencilReadMask();
 		desc.DepthStencilState.StencilWriteMask = nStencilWriteMask;
 		desc.DepthStencilState.FrontFace.StencilFunc = compare;
 		desc.DepthStencilState.FrontFace.StencilFailOp = stencilFail;
-		desc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+		desc.DepthStencilState.FrontFace.StencilDepthFailOp = farDepthTest ? D3D12_STENCIL_OP_ZERO : D3D12_STENCIL_OP_KEEP;
 		desc.DepthStencilState.FrontFace.StencilPassOp = stencilPass;
 		desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
 		ClearPassDX12 pass{};
@@ -2023,6 +2080,7 @@ void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const
 		pass.stencilCompare = compare;
 		pass.stencilReadMask = StencilReadMask();
 		pass.depthWrite = bDepth;
+		pass.farDepthTest = farDepthTest;
 		pass.stencilOnly = bStencilOnly;
 		pass.stencilWriteMask = nStencilWriteMask;
 		pass.stencilPass = stencilPass;
@@ -2153,7 +2211,7 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 			desc.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
 		D3D12_HEAP_PROPERTIES heap{};
 		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-		const HRESULT hr = m_pDevice->NativeDevice()->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, temporaryState, nullptr, IID_PPV_ARGS( &pTemporary ) );
+		const HRESULT hr = CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc, temporaryState, nullptr, IID_PPV_ARGS( &pTemporary ), "render textures", "ReadPixels scratch" );
 		if ( FAILED( hr ) )
 		{
 			Warning( "ShaderAPIDX12: ReadPixels temporary render texture creation failed (0x%08x), alignment %llu format %u\n", static_cast<unsigned>( hr ), static_cast<unsigned long long>( desc.Alignment ), static_cast<unsigned>( desc.Format ) );
@@ -2189,7 +2247,7 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 	bd.SampleDesc.Count = 1;
 	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pReadback;
-	if ( FAILED( m_pDevice->NativeDevice()->CreateCommittedResource( &hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &pReadback ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &pReadback ), "readback", "ReadPixels readback" ) ) )
 		return;
 	if ( bScene && !pTemporary )
 		m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_COPY_SOURCE );
@@ -2397,7 +2455,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 		D3D12_HEAP_PROPERTIES heap{};
 		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-		if ( FAILED( pNative->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS( &pScratch ) ) ) )
+		if ( FAILED( CreateCommittedResourceDX12( pNative, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS( &pScratch ), "render textures", "Blit scratch" ) ) )
 			return false;
 		pRenderResource = pScratch.Get();
 		m_pDevice->RetainResource( pRenderResource );

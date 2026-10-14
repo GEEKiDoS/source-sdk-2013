@@ -419,7 +419,7 @@ const dx12native::EngineCBufferLayoutDX12 *lightingLayout(const std::string &nam
 }
 void validateLightingBlock(const Block &b) {
     const auto *layout = lightingLayout(b.name);
-    if (!layout || b.stage != layout->stage || b.reg != layout->shaderRegister ||
+    if (!layout || (b.stage != dx12native::kStagePixel && b.stage != dx12native::kStageVertex) || b.reg != layout->shaderRegister ||
         b.space != DX12_LIGHTING_REGISTER_SPACE || b.size != layout->byteSize || b.members.size() != layout->memberCount)
         throw std::runtime_error("Lighting ABI 6 cbuffer mismatch: " + b.name);
     for (size_t i = 0; i < b.members.size(); ++i) {
@@ -502,14 +502,15 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
         if (binding.Space != DX12_LIGHTING_REGISTER_SPACE && !layout) continue;
         space2 = true;
         unsigned slot = 0;
-        bool valid = stage == VcsStage::Pixel && binding.Space == DX12_LIGHTING_REGISTER_SPACE;
+        bool valid = (stage == VcsStage::Pixel || stage == VcsStage::Vertex) && binding.Space == DX12_LIGHTING_REGISTER_SPACE;
         if (layout) {
             slot = layout->shaderRegister == DX12_LIGHTING_B_VIEW ? 0 : 14;
             valid = valid && binding.Type == D3D_SIT_CBUFFER && binding.BindPoint == layout->shaderRegister && binding.BindCount == 1;
             auto *buffer = reflection->GetConstantBufferByName(binding.Name);
             D3D12_SHADER_BUFFER_DESC bd{};
             valid = valid && buffer && SUCCEEDED(buffer->GetDesc(&bd)) && bd.Type == D3D_CT_CBUFFER && bd.Name;
-            if (valid) validateLightingBlock(reflectBlock(reflection, buffer, bd, binding, dx12native::kStagePixel));
+            if (valid) validateLightingBlock(reflectBlock(reflection, buffer, bd, binding,
+                                                        stage == VcsStage::Vertex ? dx12native::kStageVertex : dx12native::kStagePixel));
             if (layout->shaderRegister == DX12_LIGHTING_B_VIEW) marker = true;
         } else if (binding.Type == D3D_SIT_SAMPLER) {
             const bool comparison = (binding.uFlags & D3D_SIF_COMPARISON_SAMPLER) != 0;
@@ -588,9 +589,12 @@ void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SH
 		} else {
 			slot = b.BindPoint;
 			valid = valid && slot < 8 && !strcmp(b.Name, names[slot]);
-			if (valid && (slot == 1 || slot == 2))
+			if (valid && slot == 1)
 				valid = b.Type == D3D_SIT_STRUCTURED && b.Dimension == D3D_SRV_DIMENSION_BUFFER &&
-					b.NumSamples == (slot == 1 ? 160u : 32u);
+					b.NumSamples == 132u;
+			else if (valid && slot == 2)
+				valid = b.Type == D3D_SIT_STRUCTURED && b.Dimension == D3D_SRV_DIMENSION_BUFFER &&
+					b.NumSamples == 12u;
 			else if (valid)
 				valid = b.Type == D3D_SIT_TEXTURE &&
 					b.Dimension == (slot < 4 ? D3D_SRV_DIMENSION_TEXTURE2D : D3D_SRV_DIMENSION_TEXTURE2DARRAY) &&

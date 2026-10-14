@@ -23,14 +23,15 @@ RWTexture2D<float4> gResolveAuxOut : register( u1, space0 );
 [numthreads( 8, 8, 1 )]
 void main( uint3 id : SV_DispatchThreadID )
 {
-	if ( id.x >= uint( gSSRViewport.z ) || id.y >= uint( gSSRViewport.w ) ) return;
+	int2 resolveSize = SSR_ResolveSize();
+	if ( id.x >= uint( resolveSize.x ) || id.y >= uint( resolveSize.y ) ) return;
 	float4 resolved = 0.0, aux = 0.0;
-	SSRReceiver r = SSR_LoadReceiver( int2( id.xy ) );
+	SSRReceiver r = SSR_LoadReceiver( SSR_ResolvePixel( int2( id.xy ) ) );
 	[branch] if ( r.valid )
 	{
 		float3 V = normalize( gSSREye.xyz - r.P );
 		int2 traceSize = int2( gSSRSizes.zw );
-		int2 center = int2( id.xy / uint2( SSR_TraceGroup() ) );
+		int2 center = SSR_TraceTexel( r.localPixel );
 		float planeTolerance = max( gSSRTrace.y, 0.01 * r.viewDepth );
 		uint taps = gSSRResolve.x;
 		float radius = 1.0 + gSSRTrace.z * sqrt( saturate( r.roughness ) );

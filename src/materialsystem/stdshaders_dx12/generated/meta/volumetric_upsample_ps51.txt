@@ -1,4 +1,4 @@
-logical=volumetric_upsample_ps51 stage=ps source=volumetric_upsample_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+logical=volumetric_upsample_ps51 stage=ps source=volumetric_upsample_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=2 present=4
   cbuffer=DX12ScreenSpaceView space=6 register=b0 size=208 layoutHash=0x17b6f5be1e2147ba engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=

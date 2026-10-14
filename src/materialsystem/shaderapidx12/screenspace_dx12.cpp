@@ -27,7 +27,7 @@ namespace shaderapidx12
 {
 namespace
 {
-enum ScreenSpaceOpDX12 { ScreenSpaceBeginView, ScreenSpaceBeginContactDepth, ScreenSpaceEndContactDepth, ScreenSpaceDispatchSSR, ScreenSpaceEndView, ScreenSpaceBeginVolumetrics, ScreenSpaceDrawVolumetrics };
+enum ScreenSpaceOpDX12 { ScreenSpaceBeginView, ScreenSpaceBeginContactDepth, ScreenSpaceEndContactDepth, ScreenSpaceDispatchSSR, ScreenSpaceEndView, ScreenSpaceBeginVolumetrics, ScreenSpaceDrawVolumetrics, ScreenSpaceBeginDepthPrepass, ScreenSpaceEndDepthPrepass, ScreenSpaceBeginSkybox, ScreenSpaceEndSkybox };
 
 // depth.yzw of DX12ScreenSpaceViewConstants (§2); depth.x is the native clear value: ClearBuffers always clears native
 // depth to 1 (textures_dx12.cpp ClearDepthStencilView), so the clip-space far plane is the only "no geometry" depth.
@@ -128,6 +128,10 @@ void CShaderAPIDX12::ExecuteScreenSpacePacket( ScreenSpacePacketDX12 *pPacket )
 	case ScreenSpaceEndView: ReplayScreenSpaceEndView(); break;
 	case ScreenSpaceBeginVolumetrics: ReplayBeginVolumetrics( pPacket->settings ); break;
 	case ScreenSpaceDrawVolumetrics: ReplayDrawVolumetrics(); break;
+	case ScreenSpaceBeginDepthPrepass: ReplayDepthPrepass( true ); break;
+	case ScreenSpaceEndDepthPrepass: ReplayDepthPrepass( false ); break;
+	case ScreenSpaceBeginSkybox: ReplaySkybox( true ); break;
+	case ScreenSpaceEndSkybox: ReplaySkybox( false ); break;
 	default: break;
 	}
 }
@@ -172,6 +176,73 @@ void CShaderAPIDX12::BeginVolumetrics( const DX12VolumetricSettings &settings )
 void CShaderAPIDX12::DrawVolumetrics()
 {
 	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceDrawVolumetrics ) );
+}
+
+void CShaderAPIDX12::BeginDepthPrepass()
+{
+	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceBeginDepthPrepass ) );
+}
+
+void CShaderAPIDX12::EndDepthPrepass()
+{
+	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceEndDepthPrepass ) );
+}
+
+void CShaderAPIDX12::ReplayDepthPrepass( bool bBegin )
+{
+	// The preceding buffered draws belong to the old pass, including at END.
+	FlushBufferedPrimitives();
+	m_bDepthPrepass = bBegin;
+	// Coverage twins use a different native material block binding; restore ordinary PS metadata on the
+	// first draw of the next pass even when the last material/dynamic index happens to be unchanged.
+	m_bNamedPixelShaderDirty = !m_ActiveSnapshot.pixelShaderName.empty();
+}
+
+void CShaderAPIDX12::BeginSkybox()
+{
+	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceBeginSkybox ) );
+}
+
+void CShaderAPIDX12::EndSkybox()
+{
+	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceEndSkybox ) );
+}
+
+void CShaderAPIDX12::ReplaySkybox( bool bBegin )
+{
+	// Buffered geometry belongs to the preceding pass, including the final sky draws at END.
+	FlushBufferedPrimitives();
+	const bool stencilEnabled = m_bStencilEnabled;
+	const int stencilReference = m_nStencilRef;
+	const uint8_t stencilReadMask = m_nStencilReadMask, stencilWriteMask = m_nStencilWriteMask;
+	const StencilComparisonFunction_t stencilCompare = m_StencilCompare;
+	const StencilOperation_t stencilFail = m_StencilFailOp, stencilDepthFail = m_StencilDepthFailOp, stencilPass = m_StencilPassOp;
+	m_bStencilEnabled = true;
+	m_nStencilRef = kSkyboxStencilBit;
+	m_nStencilReadMask = m_nStencilWriteMask = kSkyboxStencilBit;
+	m_StencilCompare = bBegin ? STENCILCOMPARISONFUNCTION_ALWAYS : STENCILCOMPARISONFUNCTION_EQUAL;
+	m_StencilFailOp = STENCILOPERATION_KEEP;
+	m_StencilDepthFailOp = bBegin ? STENCILOPERATION_ZERO : STENCILOPERATION_KEEP;
+	m_StencilPassOp = bBegin ? STENCILOPERATION_REPLACE : STENCILOPERATION_ZERO;
+	if ( bBegin )
+	{
+		// z=1 passes only clear depth; depth failure explicitly removes any stale sky bit on covered pixels.
+		DrawMaskedClear( false, false, false, nullptr, true, true );
+	}
+	else
+	{
+		// Restore far depth only where sky was admitted, and remove just its reserved stencil bit.
+		DrawMaskedClear( false, false, true, nullptr, true );
+	}
+	m_bStencilEnabled = stencilEnabled;
+	m_nStencilRef = stencilReference;
+	m_nStencilReadMask = stencilReadMask;
+	m_nStencilWriteMask = stencilWriteMask;
+	m_StencilCompare = stencilCompare;
+	m_StencilFailOp = stencilFail;
+	m_StencilDepthFailOp = stencilDepthFail;
+	m_StencilPassOp = stencilPass;
+	m_bSkyboxPass = bBegin;
 }
 
 //-----------------------------------------------------------------------------
@@ -266,7 +337,7 @@ bool CShaderAPIDX12::EnsureContactDepthResources()
 	clear.Format = m_pDevice->SceneDepthFormat();
 	clear.DepthStencil.Depth = kNativeDepthClear;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
-	if ( FAILED( pNative->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( &pResource ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( pNative, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( &pResource ), "shadow", "DX12 contact shadow depth" ) ) )
 	{
 		if ( !contact.warned )
 		{
@@ -465,5 +536,7 @@ void CShaderAPIDX12::ReleaseScreenSpaceResources()
 		m_pDevice->EndGpuPIXEvent();
 	m_ContactDepth = ContactDepthDX12{};
 	m_ScreenSpace = ScreenSpaceViewStateDX12{};
+	m_bDepthPrepass = false;
+	m_bSkyboxPass = false;
 }
 } // namespace shaderapidx12

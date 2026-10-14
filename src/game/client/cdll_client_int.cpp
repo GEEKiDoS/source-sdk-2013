@@ -175,6 +175,7 @@ extern vgui::IInputInternal *g_InputInternal;
 #endif
 
 #include "framegen_dx12.h"
+#include "shaderapi/ishaderapidx12.h"
 #include "shadowmaps_dx12.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -1629,6 +1630,57 @@ void CHLClient::View_Fade( ScreenFade_t *pSF )
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Once per rendering adapter, a low-tier DX12 adapter (ShaderAPIDX12AdapterTier_t) gets cheaper defaults:
+//          SMAA T2x instead of a provider AA, half-resolution SSR, and the low settings of GTAO, shadow maps, bloom and
+//          motion blur. The 3D view stays at native resolution (r_upscaler_scale stays opt-in). A
+//          high-tier adapter keeps the shipped defaults. Runs after config.cfg is loaded (first level init) and only
+//          when the adapter differs from the one recorded in r_quality_tier_adapter, so later user changes stick.
+//-----------------------------------------------------------------------------
+static ConVar r_quality_tier_adapter( "r_quality_tier_adapter", "", FCVAR_ARCHIVE,
+	"Adapter (vendor:device) the automatic DX12 quality tier was last applied for; clear it to apply the tier again" );
+
+static void ApplyAdapterQualityTier()
+{
+	CreateInterfaceFn factory = Sys_GetFactory( "shaderapidx12" );
+	IShaderAPIDX12 *pShaderAPIDX12 = factory ? static_cast<IShaderAPIDX12 *>( factory( SHADERAPIDX12_INTERFACE_VERSION, nullptr ) ) : nullptr;
+	const int nTier = pShaderAPIDX12 ? pShaderAPIDX12->AdapterPerformanceTier() : SHADERAPIDX12_ADAPTER_TIER_UNKNOWN;
+	if ( nTier == SHADERAPIDX12_ADAPTER_TIER_UNKNOWN )
+		return;
+	MaterialAdapterInfo_t adapter;
+	materials->GetDisplayAdapterInfo( materials->GetCurrentAdapter(), adapter );
+	const CFmtStr adapterId( "%04x:%04x", adapter.m_VendorID, adapter.m_DeviceID );
+	if ( !V_stricmp( r_quality_tier_adapter.GetString(), adapterId ) )
+		return;
+	r_quality_tier_adapter.SetValue( adapterId );
+	if ( nTier != SHADERAPIDX12_ADAPTER_TIER_LOW )
+		return;
+	static const char *const s_ppLowTier[][2] =
+	{
+		{ "r_upscaler", "5" },
+		{ "r_ssr", "1" },
+		{ "r_ssr_quality", "1" },
+		{ "r_ssr_resolution", "0.5" },
+		{ "r_gtao_resolution", "0.5" },
+		{ "r_gtao_slices", "1" },
+		{ "r_gtao_steps", "2" },
+		{ "r_gtao_denoise", "1" },
+		{ "r_shadowmap_filter", "0" },
+		{ "r_shadowmap_filter_quality", "0" },
+		{ "r_shadowmap_resolution", "0" },
+		{ "r_shadowmap_max_realtime_lights", "2" },
+		{ "mat_postfx_bloom_quality", "0" },
+		{ "mat_motion_blur_quality", "-1" },
+	};
+	for ( int i = 0; i < ARRAYSIZE( s_ppLowTier ); ++i )
+	{
+		ConVarRef var( s_ppLowTier[i][0], true );
+		if ( var.IsValid() )
+			var.SetValue( s_ppLowTier[i][1] );
+	}
+	Msg( "DX12: low-tier adapter %s (%s): applied the low quality preset (screen-space effects, shadows)\n", adapter.m_pDriverName, adapterId.Get() );
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Per level init
 //-----------------------------------------------------------------------------
 void CHLClient::LevelInitPreEntity( char const* pMapName )
@@ -1639,6 +1691,8 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	if (g_bLevelInitialized)
 		return;
 	g_bLevelInitialized = true;
+
+	ApplyAdapterQualityTier();
 
 	input->LevelInit();
 

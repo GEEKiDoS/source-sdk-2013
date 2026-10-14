@@ -13,7 +13,8 @@
 #endif
 #include "dx12_engine_cbuffers.h"
 #include "dx12_raster_emulation.h"
-#if defined(DX12_SHADOWMAPS) && defined(DX12_STAGE_PIXEL)
+#if defined(DX12_SHADOWMAPS)
+// Both stages: the vertex stage reaches no contact ray (space 6 is pixel-only), its declarations are stripped unused.
 #include "screenspace_contact.hlsli"
 #include "shadowmap_lighting.hlsli"
 #endif

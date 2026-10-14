@@ -66,6 +66,82 @@ bool SSR_InsideViewport( float2 local )
 	return all( local >= 0.0 ) && all( local < gSSRViewport.zw );
 }
 
+void SSR_LoadResolveAtLocal( int2 local, out float4 result, out float2 aux )
+{
+	[branch] if ( SSR_FullResolve() )
+	{
+		result = gResolve.Load( int3( local, 0 ) );
+		aux = gResolveAux.Load( int3( local, 0 ) ).xy;
+		return;
+	}
+	int2 resolveSize = SSR_ResolveSize();
+	float2 coord = ( float2( local ) + 0.5 ) * float2( resolveSize ) / gSSRViewport.zw - 0.5;
+	int2 base = int2( floor( coord ) );
+	float2 fraction = frac( coord );
+	float targetDepth = gSSRSceneDepth.Load( int3( local + int2( gSSRViewport.xy ), 0 ) );
+	float3 targetNormal = PBR_UnpackNormal( gSSRNormal.Load( int3( local + int2( gSSRViewport.xy ), 0 ) ) );
+	float3 targetP = SSR_LocalToWorld( float2( local ) + 0.5, targetDepth );
+	float targetViewDepth = SSR_ViewDepth( targetP );
+	float depthTolerance = max( gSSRTrace.y, 0.05 * targetViewDepth );
+	float bestScore = -1.0, fallbackScore = -1.0;
+	float4 fallback = 0.0;
+	float2 fallbackAux = 0.0;
+	result = 0.0;
+	aux = 0.0;
+	[unroll] for ( int y = 0; y <= 1; ++y )
+	{
+		[unroll] for ( int x = 0; x <= 1; ++x )
+		{
+			int2 p = clamp( base + int2( x, y ), 0, resolveSize - 1 );
+			float bilinear = ( x == 0 ? 1.0 - fraction.x : fraction.x ) * ( y == 0 ? 1.0 - fraction.y : fraction.y );
+			float4 candidate = gResolve.Load( int3( p, 0 ) );
+			float2 candidateAux = gResolveAux.Load( int3( p, 0 ) ).xy;
+			[branch] if ( bilinear > fallbackScore )
+			{
+				fallbackScore = bilinear;
+				fallback = candidate;
+				fallbackAux = candidateAux;
+			}
+			int2 source = SSR_ResolvePixel( p );
+			float sourceDepth = gSSRSceneDepth.Load( int3( source + int2( gSSRViewport.xy ), 0 ) );
+			float3 sourceP = SSR_LocalToWorld( float2( source ) + 0.5, sourceDepth );
+			float sourceViewDepth = SSR_ViewDepth( sourceP );
+			float sourceNormalDot = dot( targetNormal, PBR_UnpackNormal( gSSRNormal.Load( int3( source + int2( gSSRViewport.xy ), 0 ) ) ) );
+			float depthWeight = 1.0 - saturate( abs( sourceViewDepth - targetViewDepth ) / max( depthTolerance, 1e-3 ) );
+			float score = bilinear * saturate( sourceNormalDot ) * depthWeight;
+			[branch] if ( sourceDepth != gSSRLimits.x && sourceNormalDot >= SSR_REUSE_NORMAL && depthWeight > 0.0 && score > bestScore )
+			{
+				bestScore = score;
+				result = candidate;
+				aux = candidateAux;
+			}
+		}
+	}
+	[branch] if ( bestScore < 0.0 )
+	{
+		result = fallback;
+		aux = fallbackAux;
+	}
+}
+
+void SSR_LoadResolveNeighbour( int2 local, int2 offset, out float4 result, out float occlusion )
+{
+	[branch] if ( SSR_FullResolve() )
+	{
+		int2 stride = SSR_TraceGroup();
+		int2 last = int2( gSSRViewport.zw ) - 1;
+		int2 p = clamp( local + offset * stride, 0, last );
+		result = gResolve.Load( int3( p, 0 ) );
+		occlusion = gResolveAux.Load( int3( p, 0 ) ).x;
+		return;
+	}
+	int2 resolveSize = SSR_ResolveSize();
+	int2 center = min( int2( float2( local ) * float2( resolveSize ) / gSSRViewport.zw ), resolveSize - 1 );
+	int2 p = clamp( center + offset, 0, resolveSize - 1 );
+	result = gResolve.Load( int3( p, 0 ) );
+	occlusion = gResolveAux.Load( int3( p, 0 ) ).x;
+}
+
 [numthreads( 8, 8, 1 )]
 void main( uint3 id : SV_DispatchThreadID )
 {
@@ -77,8 +153,9 @@ void main( uint3 id : SV_DispatchThreadID )
 	SSRReceiver r = SSR_LoadReceiver( local );
 	[branch] if ( r.valid )
 	{
-		float4 current = gResolve.Load( int3( local, 0 ) );
-		float2 currentAux = gResolveAux.Load( int3( local, 0 ) ).xy;
+		float4 current;
+		float2 currentAux;
+		SSR_LoadResolveAtLocal( local, current, currentAux );
 		color = current;
 		occlusion = currentAux.x;
 		[branch] if ( gSSRTemporal.x != 0.0 )
@@ -120,17 +197,15 @@ void main( uint3 id : SV_DispatchThreadID )
 					historyAux = float2( lerp( virtualAux.x, historyAux.x, surfaceShare ), min( virtualAux.y, historyAux.y ) );
 				}
 				// Neighbourhood of the current resolve at the trace spacing: ( Y, Co, Cg, confidence ) and O.
-				int2 stride = SSR_TraceGroup();
-				int2 last = int2( gSSRViewport.zw ) - 1;
 				float4 m1 = 0.0, m2 = 0.0;
 				float o1 = 0.0, o2 = 0.0;
 				[unroll] for ( int y = -1; y <= 1; ++y )
 				{
 					[unroll] for ( int x = -1; x <= 1; ++x )
 					{
-						int3 p = int3( clamp( local + int2( x, y ) * stride, 0, last ), 0 );
-						float4 s = gResolve.Load( p );
-						float o = gResolveAux.Load( p ).x;
+						float4 s;
+						float o;
+						SSR_LoadResolveNeighbour( local, int2( x, y ), s, o );
 						float4 v = float4( SSR_ToYCoCg( s.rgb ), s.a );
 						m1 += v;
 						m2 += v * v;

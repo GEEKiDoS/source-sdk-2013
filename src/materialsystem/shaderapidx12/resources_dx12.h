@@ -22,6 +22,13 @@ namespace shaderapidx12
 {
 bool ValidateHighresShaderResourcesDX12( ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &shader, bool pixelStage, bool *highresAbi, CUtlString &error );
 
+// Tracks actual allocation sizes without retaining the resource. Private-data lifetime sentinels unregister
+// on final resource release, including fence-retired resources. Upload/readback heaps override category.
+HRESULT CreateCommittedResourceDX12( ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heap, D3D12_HEAP_FLAGS flags, const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE *clear, REFIID iid, void **out, const char *category, const char *name = nullptr );
+void TrackResourceMemoryDX12( ID3D12Device *device, ID3D12Resource *resource, const char *category, const char *name = nullptr, bool placed = false );
+// Snapshots owned metadata only; never dereferences registered resource pointers.
+void PrintResourceMemoryReportDX12( ID3D12Device *device );
+
 template <typename T>
 struct ByteSpanDX12
 {

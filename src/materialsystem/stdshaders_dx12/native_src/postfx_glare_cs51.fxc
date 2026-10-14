@@ -4,7 +4,44 @@
 // same star instead: every output texel walks the three lines through itself, rotated by its own screen x, and adds
 // each source texel whose quad reaches it. gSrc is the eighth-resolution step of the thresholded flare input (one
 // texel per 2x2 output block), gDst the quarter-resolution glare. p0 = glare intensity, p1 = luminance divider.
+// STATIC: "REDUCE" "0..1"
 #include "postfx_common.hlsli"
+
+#if REDUCE
+// Each group covers one disjoint source rectangle, including the odd-sized edge.
+// Component maxima remain exactly representable in the FP16 bounds target; summing
+// them later also bounds any bilinear sample, unlike storing a rounded FP16 luma.
+groupshared float3 gMaxRgb[64];
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 groupID : SV_GroupID, uint3 groupThread : SV_GroupThreadID )
+{
+	uint2 size = uint2( srcWidth, srcHeight );
+	uint2 dstSize = uint2( dstWidth, dstHeight );
+	uint2 begin = groupID.xy * size / dstSize;
+	uint2 end = ( groupID.xy + 1 ) * size / dstSize;
+	float3 maxRgb = 0;
+	[loop]
+	for ( uint y = begin.y + groupThread.y; y < end.y; y += 8 )
+	{
+		[loop]
+		for ( uint x = begin.x + groupThread.x; x < end.x; x += 8 )
+			maxRgb = max( maxRgb, gSrc.Load( int3( x, y, 0 ) ).rgb );
+	}
+	uint index = groupThread.y * 8 + groupThread.x;
+	gMaxRgb[index] = maxRgb;
+	GroupMemoryBarrierWithGroupSync();
+	[unroll]
+	for ( uint stride = 32; stride > 0; stride >>= 1 )
+	{
+		if ( index < stride )
+			gMaxRgb[index] = max( gMaxRgb[index], gMaxRgb[index + stride] );
+		GroupMemoryBarrierWithGroupSync();
+	}
+	if ( index == 0 )
+		gDst[groupID.xy] = float4( gMaxRgb[0], 1 );
+}
+#else
 
 static const int kMaxSteps = 48;
 static const float kAngle30 = 0.523599;
@@ -38,6 +75,18 @@ void main( uint3 id : SV_DispatchThreadID )
 
 	// A full-length quad reaches half the screen height from its texel.
 	float maxLength = srcSize.y * 0.5;
+	// gSrc2 is the componentwise maximum of the entire source. Clamp filtering
+	// cannot exceed it, and screenMask <= 1, so no source can reach farther than
+	// this conservative length. Pad only the bound for FP32 sampling/arithmetic
+	// rounding; the retained taps, spacing and accumulation order stay unchanged.
+	float upperLuminance = dot( gSrc2.Load( int3( 0, 0, 0 ) ).rgb, 1.0 );
+	upperLuminance += max( 1e-6, upperLuminance * 1e-6 );
+	float maxHalfLength = saturate( upperLuminance / p1 ) * maxLength + maxLength * 1e-6;
+	if ( upperLuminance <= 0.1 )
+	{
+		gDst[id.xy] = float4( 0, 0, 0, 1 );
+		return;
+	}
 	int steps = min( (int)ceil( maxLength ), kMaxSteps );
 	float stepLength = maxLength / steps;
 	// Each quad is two source texels wide and the points are one source texel apart, so every source texel of path
@@ -56,8 +105,11 @@ void main( uint3 id : SV_DispatchThreadID )
 		for ( int i = 1; i <= steps; ++i )
 		{
 			float t = i * stepLength;
+			if ( t > maxHalfLength )
+				break;
 			glare += ( Glare( uv + direction * t, t, maxLength ) + Glare( uv - direction * t, t, maxLength ) ) * stepWeight;
 		}
 	}
 	gDst[id.xy] = float4( glare * p0, 1 );
 }
+#endif

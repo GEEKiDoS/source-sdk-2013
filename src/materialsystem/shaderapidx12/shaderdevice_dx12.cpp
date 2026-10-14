@@ -25,6 +25,7 @@
 #include <d3dcompiler.h>
 #include <d3d12sdklayers.h>
 #include <math.h>
+#include <atomic>
 
 namespace shaderapidx12
 {
@@ -61,6 +62,28 @@ static bool LoadDxbcSigner( HMODULE &hModule, SignDxbcFnDX12 &pfnSigner )
 CShaderDeviceMgrDX12 *g_pShaderDeviceMgrDX12 = nullptr;
 CShaderDeviceDX12 *g_pShaderDeviceDX12 = nullptr;
 CInterlockedInt g_bTracyZonesActiveDX12;
+// Console callbacks only touch atomics, never the device/adapter while the render owner is active.
+static std::atomic<bool> s_bMemoryReportAccepting{ false };
+static std::atomic<bool> s_bMemoryReportRequested{ false };
+
+static void DX12MemoryReportCommand( const CCommand &args )
+{
+	if ( args.ArgC() != 1 )
+	{
+		Msg( "usage: dx12_memreport\n" );
+		return;
+	}
+	if ( !s_bMemoryReportAccepting.load( std::memory_order_acquire ) )
+	{
+		Warning( "dx12_memreport: rejected, the DX12 device is not initialized\n" );
+		return;
+	}
+	s_bMemoryReportRequested.store( true, std::memory_order_release );
+	Msg( "dx12_memreport: queued for the next render-owner Present (pending requests coalesce)\n" );
+}
+
+static ConCommand dx12_memreport( "dx12_memreport", DX12MemoryReportCommand,
+    "Development only: report live DX12 resource allocations and DXGI process usage/budget at the next render-owner Present", FCVAR_CHEAT );
 
 //-----------------------------------------------------------------------------
 // Purpose: Recomputes g_bTracyZonesActiveDX12 (once per presented frame)
@@ -84,6 +107,45 @@ CShaderDeviceDX12::~CShaderDeviceDX12()
 		delete m_pDynamicVertices[i];
 	for ( int i = 0; i < ARRAYSIZE( m_pDynamicIndices ); ++i )
 		delete m_pDynamicIndices[i];
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Reports owned allocation metadata and the selected adapter's process memory usage
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::PrintMemoryReport()
+{
+	if ( !IsRecordingOwner() )
+	{
+		if ( s_bMemoryReportAccepting.load( std::memory_order_acquire ) )
+			s_bMemoryReportRequested.store( true, std::memory_order_release );
+		return;
+	}
+	if ( !IsInitialized() )
+		return;
+	PrintResourceMemoryReportDX12( m_pDevice.Get() );
+	if ( !m_pMemoryReportAdapter )
+	{
+		Msg( "  DXGI process memory: IDXGIAdapter3 unavailable for the selected adapter\n" );
+		return;
+	}
+	const DXGI_MEMORY_SEGMENT_GROUP segments[] = { DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL };
+	const char *const names[] = { "LOCAL", "NON_LOCAL" };
+	const double mib = 1024.0 * 1024.0;
+	for ( int i = 0; i < ARRAYSIZE( segments ); ++i )
+	{
+		DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+		const HRESULT hr = m_pMemoryReportAdapter->QueryVideoMemoryInfo( 0, segments[i], &info );
+		if ( FAILED( hr ) )
+		{
+			Msg( "  DXGI %s process memory: QueryVideoMemoryInfo failed (0x%08x)\n", names[i], static_cast<unsigned>( hr ) );
+			continue;
+		}
+		Msg( "  DXGI %s process memory: usage %llu bytes (%.3f MiB), budget %llu bytes (%.3f MiB), reservation %llu bytes (%.3f MiB), availableForReservation %llu bytes (%.3f MiB)\n",
+		    names[i], static_cast<unsigned long long>( info.CurrentUsage ), info.CurrentUsage / mib,
+		    static_cast<unsigned long long>( info.Budget ), info.Budget / mib,
+		    static_cast<unsigned long long>( info.CurrentReservation ), info.CurrentReservation / mib,
+		    static_cast<unsigned long long>( info.AvailableForReservation ), info.AvailableForReservation / mib );
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -118,6 +180,37 @@ bool CShaderDeviceDX12::CheckDevice( const char *pszOperation, HRESULT hr )
 		return true;
 	FailDevice( pszOperation, hr );
 	return false;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Coarse adapter class for default quality (SHADERAPIDX12_ADAPTER_TIER_*). The enhanced-lighting shaders are
+//          large, latency-bound and register-heavy: GPUs before mesh shaders / DXR 1.1 (Pascal, Maxwell, GTX 16, RDNA1),
+//          integrated (UMA) parts and small-VRAM cards run them several times slower than their raster rating suggests.
+//-----------------------------------------------------------------------------
+static int ClassifyPerformanceTier( ID3D12Device *pDevice, IDXGIAdapter1 *pAdapter )
+{
+	DXGI_ADAPTER_DESC1 desc{};
+	if ( !pDevice || !pAdapter || FAILED( pAdapter->GetDesc1( &desc ) ) || ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) )
+		return SHADERAPIDX12_ADAPTER_TIER_LOW;
+	D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
+	D3D12_FEATURE_DATA_D3D12_OPTIONS7 options7{};
+	const bool bUma = SUCCEEDED( pDevice->CheckFeatureSupport( D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof( architecture ) ) ) && architecture.UMA;
+	const bool bRaytracing11 = SUCCEEDED( pDevice->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof( options5 ) ) ) &&
+	                           options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
+	const bool bMeshShaders = SUCCEEDED( pDevice->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof( options7 ) ) ) &&
+	                          options7.MeshShaderTier >= D3D12_MESH_SHADER_TIER_1;
+	// 6 GB boards report slightly less than 6 GiB of dedicated memory.
+	const uint64_t nDedicatedMB = static_cast<uint64_t>( desc.DedicatedVideoMemory ) >> 20;
+	const bool bMemory = nDedicatedMB >= 5600;
+	int nTier = !bUma && bRaytracing11 && bMeshShaders && bMemory ? SHADERAPIDX12_ADAPTER_TIER_HIGH : SHADERAPIDX12_ADAPTER_TIER_LOW;
+	// -dx12adaptertier 0|1 forces the class (preset testing on another GPU).
+	const int nForced = CommandLine() ? CommandLine()->ParmValue( "-dx12adaptertier", -1 ) : -1;
+	if ( nForced == SHADERAPIDX12_ADAPTER_TIER_LOW || nForced == SHADERAPIDX12_ADAPTER_TIER_HIGH )
+		nTier = nForced;
+	Msg( "ShaderAPIDX12: adapter tier %s%s (UMA %d, DXR 1.1 %d, mesh shaders %d, %llu MB dedicated)\n", nTier == SHADERAPIDX12_ADAPTER_TIER_HIGH ? "high" : "low",
+	    nForced == nTier ? " (forced)" : "", bUma ? 1 : 0, bRaytracing11 ? 1 : 0, bMeshShaders ? 1 : 0, static_cast<unsigned long long>( nDedicatedMB ) );
+	return nTier;
 }
 
 //-----------------------------------------------------------------------------
@@ -168,9 +261,11 @@ bool CShaderDeviceDX12::Initialize( void *hWnd, int nAdapter, const ShaderDevice
 		ShutdownDevice();
 		return false;
 	}
+	pSelectedAdapter->QueryInterface( IID_PPV_ARGS( &m_pMemoryReportAdapter ) );
 	D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
 	const int bindingTier = SUCCEEDED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) ) ? int( options.ResourceBindingTier ) : 0;
 	if ( g_pHardwareConfigDX12 ) g_pHardwareConfigDX12->SetResourceBindingTier( bindingTier );
+	m_nPerformanceTier = ClassifyPerformanceTier( m_pDevice.Get(), pSelectedAdapter );
 	if ( ( bDebug || bGpuValidation ) && SUCCEEDED( m_pDevice.As( &m_pInfoQueue ) ) )
 		m_pInfoQueue->SetMuteDebugOutput( FALSE );
 	if ( !LoadDxbcSigner( m_hSignerModule, m_pfnSigner ) )
@@ -248,6 +343,7 @@ bool CShaderDeviceDX12::Initialize( void *hWnd, int nAdapter, const ShaderDevice
 	m_nWidth = m_pCurrentView->width;
 	m_nHeight = m_pCurrentView->height;
 	g_pShaderDeviceDX12 = this;
+	s_bMemoryReportAccepting.store( true, std::memory_order_release );
 	StartSubmitThread();
 	return true;
 }
@@ -291,7 +387,10 @@ bool CShaderDeviceDX12::CreateFrameObjects()
 	static const bool s_bShadowTiming = CommandLine() && CommandLine()->CheckParm( "-dx12stats" ) && CommandLine()->CheckParm( "-dx12shadowstats" );
 	static const bool s_bGpuEvents = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
 	m_bShadowTimingEnabled = s_bShadowTiming;
-	m_bGpuEventTiming = s_bGpuEvents;
+	m_bGpuEventTimingCommandLine = s_bGpuEvents;
+	m_bGpuEventTiming = m_bGpuEventTimingCommandLine || m_bGpuEventTimingRuntime;
+	if ( m_bGpuEventTiming )
+		ResetGpuTimingOverlay();
 	for ( int i = 0; i < ARRAYSIZE( m_Frames ); ++i )
 		if ( FAILED( m_pDevice->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( &m_Frames[i].allocator ) ) ) )
 		{
@@ -325,7 +424,7 @@ bool CShaderDeviceDX12::CreateFrameObjects()
 	if ( !m_hFenceEvent )
 		return false;
 	// The first list is created open; it does not pass through BeginRecording.
-	if ( m_bShadowTimingEnabled && EnsureGpuTiming() )
+	if ( ( m_bShadowTimingEnabled || m_bGpuEventTiming ) && EnsureGpuTiming() )
 		GpuTimingAfterSubmit();
 	return true;
 }
@@ -361,7 +460,7 @@ bool CShaderDeviceDX12::BeginRecording()
 			return false;
 	}
 	m_bRecording = true;
-	if ( m_bShadowTimingEnabled && !m_bGpuTimingStopping && EnsureGpuTiming() )
+	if ( ( m_bShadowTimingEnabled || m_bGpuEventTiming ) && !m_bGpuTimingStopping && EnsureGpuTiming() )
 		GpuTimingAfterSubmit();
 	return true;
 }
@@ -410,7 +509,6 @@ uint64_t CShaderDeviceDX12::Submit( bool bWait )
 		Warning( "ShaderAPIDX12: Submit rejected (wrong owner or no recording)\n" );
 		return 0;
 	}
-	SuspendGpuPIXEvents();
 	const bool bTiming = GpuTimingBeforeSubmit();
 	// A logical occlusion interval can cross any Submit (including descriptor-pressure waits),
 	// but D3D12 requires each native Begin/End pair to stay on this list before it is closed.
@@ -676,7 +774,7 @@ bool CShaderDeviceDX12::CreateViewTargets( View &view )
 	D3D12_CLEAR_VALUE color{};
 	color.Format = SceneColorFormat();
 	color.Color[3] = 1;
-	HRESULT hr = m_pDevice->CreateCommittedResource( &heapProperties, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_RENDER_TARGET, &color, IID_PPV_ARGS( &view.sceneColor ) );
+	HRESULT hr = CreateCommittedResourceDX12( m_pDevice.Get(), &heapProperties, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_RENDER_TARGET, &color, IID_PPV_ARGS( &view.sceneColor ), "scene targets", "scene color" );
 	if ( FAILED( hr ) )
 	{
 		Warning( "ShaderAPIDX12: Create scene color failed (0x%08x)\n", static_cast<unsigned>( hr ) );
@@ -696,7 +794,7 @@ bool CShaderDeviceDX12::CreateViewTargets( View &view )
 	D3D12_CLEAR_VALUE depth{};
 	depth.Format = SceneDepthFormat();
 	depth.DepthStencil.Depth = 1;
-	hr = m_pDevice->CreateCommittedResource( &heapProperties, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth, IID_PPV_ARGS( &view.sceneDepth ) );
+	hr = CreateCommittedResourceDX12( m_pDevice.Get(), &heapProperties, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth, IID_PPV_ARGS( &view.sceneDepth ), "scene targets", "scene depth" );
 	if ( FAILED( hr ) )
 	{
 		Warning( "ShaderAPIDX12: Create scene depth failed (0x%08x)\n", static_cast<unsigned>( hr ) );
@@ -1612,6 +1710,9 @@ void CShaderDeviceDX12::FlushSubmissions()
 //-----------------------------------------------------------------------------
 void CShaderDeviceDX12::ShutdownDevice()
 {
+	s_bMemoryReportAccepting.store( false, std::memory_order_release );
+	s_bMemoryReportRequested.store( false, std::memory_order_release );
+	m_bStatsMemoryReportPrinted = false;
 	// The final Submit may reset a list, but must not record new queries referencing soon-to-be-released heaps.
 	m_bGpuTimingStopping = true;
 	if ( g_pShaderAPIDX12 )
@@ -1662,8 +1763,9 @@ void CShaderDeviceDX12::ShutdownDevice()
 	m_pGpuEventHeap.Reset();
 	m_pGpuEventData = nullptr;
 	m_bGpuEventTiming = m_bGpuEventUnavailable = m_bGpuEventCoverOpen = false;
-	m_nGpuEventSlot = m_nGpuEventCoverSlot = m_nGpuPixDepth = m_nGpuPixOverflow = m_nGpuPixOverflowClosed = 0;
-	m_nGpuEventNames = m_nGpuEventOtherCount = 0;
+	m_nGpuEventSlot = m_nGpuEventCoverSlot = 0;
+	m_nGpuEventResolveStartSlot = m_nGpuEventResolveCount = 0;
+	m_nGpuPixDepth = m_nGpuPixOverflow = m_nGpuPixOverflowClosed = 0;
 	m_flGpuEventCoveredMs = m_flGpuEventOtherMs = 0;
 	m_nGpuEventCompleted = m_nGpuEventSkipped = m_nGpuEventOverflow = m_nGpuEventInvalid = m_nGpuEventScopeErrors = 0;
 	memset( m_GpuEventFences, 0, sizeof( m_GpuEventFences ) );
@@ -1688,7 +1790,10 @@ void CShaderDeviceDX12::ShutdownDevice()
 	memset( m_nGpuStageCPrimitives, 0, sizeof( m_nGpuStageCPrimitives ) );
 	m_GpuStageStats = {};
 	m_flGpuTimeSumMs = 0.0;
+	m_flGpuOverlayTimeSumMs = 0.0;
+	m_flGpuOverlayWindowStart = 0.0;
 	m_nGpuTimePresented = 0;
+	m_nGpuOverlayTimePresented = 0;
 	m_Recorder.Flush();
 	if ( unsigned char *pChunk = m_Recorder.TakeEmptyChunk() )
 	{
@@ -1711,6 +1816,7 @@ void CShaderDeviceDX12::ShutdownDevice()
 	m_pFence.Reset();
 	m_pQueue.Reset();
 	m_pDevice.Reset();
+	m_pMemoryReportAdapter.Reset();
 	m_pFactory.Reset();
 	if ( m_hSignerModule )
 	{
@@ -1803,8 +1909,7 @@ void CShaderDeviceDX12::SpewDriverInfo() const
 //-----------------------------------------------------------------------------
 bool CShaderDeviceDX12::EnsureGpuTiming()
 {
-	static const bool s_bEnabled = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
-	if ( !s_bEnabled || m_bTimestampUnavailable )
+	if ( ( !m_bShadowTimingEnabled && !m_bGpuEventTiming ) || m_bTimestampUnavailable )
 		return false;
 	if ( m_pTimestampHeap )
 	{
@@ -1836,7 +1941,7 @@ bool CShaderDeviceDX12::EnsureGpuTiming()
 		desc.MipLevels = 1;
 		desc.SampleDesc.Count = 1;
 		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		if ( FAILED( m_pDevice->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pTimestampReadback ) ) ) )
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice.Get(), &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pTimestampReadback ), "readback", "GPU timestamps" ) ) )
 		{
 			m_pTimestampHeap.Reset();
 			continue;
@@ -1878,7 +1983,7 @@ void CShaderDeviceDX12::EnsureGpuPipelineStats()
 	desc.MipLevels = 1;
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if ( FAILED( m_pDevice->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pStagePipelineReadback ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( m_pDevice.Get(), &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pStagePipelineReadback ), "readback", "GPU pipeline statistics" ) ) )
 	{
 		m_pStagePipelineHeap.Reset();
 		return;
@@ -1905,7 +2010,12 @@ void CShaderDeviceDX12::CollectGpuTiming()
 		{
 			const uint64_t begin = m_pTimestampData[slot * 2], end = m_pTimestampData[slot * 2 + 1];
 			if ( end > begin )
-				m_flGpuTimeSumMs += static_cast<double>( end - begin ) * tickMs;
+			{
+				const double ms = static_cast<double>( end - begin ) * tickMs;
+				m_flGpuTimeSumMs += ms;
+				if ( m_bGpuEventTimingRuntime )
+					m_flGpuOverlayTimeSumMs += ms;
+			}
 			m_TimestampFences[slot] = 0;
 		}
 	if ( !m_bStageQueriesAvailable )
@@ -1975,7 +2085,7 @@ bool CShaderDeviceDX12::GpuTimingBeforeSubmit()
 	}
 	CollectGpuTiming();
 	EndGpuStageSpan();
-	if ( m_bTimestampBegun )
+	ResolveGpuEventQueriesForSubmit();
 	{
 		const uint32_t slot = m_nTimestampSlot;
 		m_Recorder.EndQuery( m_pTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1 );
@@ -2216,7 +2326,7 @@ void CShaderDeviceDX12::EnsureGpuEventTiming()
 	desc.MipLevels = 1;
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if ( FAILED( m_pDevice->CreateCommittedResource( &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pGpuEventReadback ) ) ) )
+	if ( FAILED( CreateCommittedResourceDX12( m_pDevice.Get(), &properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pGpuEventReadback ), "readback", "GPU event timestamps" ) ) )
 	{
 		m_pGpuEventHeap.Reset();
 		m_bGpuEventUnavailable = true;
@@ -2251,7 +2361,13 @@ void CShaderDeviceDX12::CollectGpuEvents()
 			if ( nameId == kGpuEventCover )
 				m_flGpuEventCoveredMs += ms;
 			else if ( nameId < m_nGpuEventNames )
+			{
 				m_GpuEventNames[nameId].sumMs += ms;
+				if ( m_bGpuEventTimingRuntime )
+				{
+					m_GpuEventNames[nameId].overlaySumMs += ms;
+				}
+			}
 			else
 				m_flGpuEventOtherMs += ms;
 			++m_nGpuEventCompleted;
@@ -2275,6 +2391,10 @@ bool CShaderDeviceDX12::BeginGpuEventSpan( uint32_t nameId, uint32_t &slot )
 	}
 	slot = m_nGpuEventSlot;
 	m_nGpuEventSlot = ( slot + 1 ) % kGpuEventSlots;
+	if ( !m_nGpuEventResolveCount )
+		m_nGpuEventResolveStartSlot = slot;
+	++m_nGpuEventResolveCount;
+	m_GpuEventFences[slot] = ~uint64_t( 0 );
 	m_GpuEventSlotNames[slot] = nameId;
 	m_Recorder.EndQuery( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 );
 	return true;
@@ -2282,10 +2402,31 @@ bool CShaderDeviceDX12::BeginGpuEventSpan( uint32_t nameId, uint32_t &slot )
 
 void CShaderDeviceDX12::EndGpuEventSpan( uint32_t slot )
 {
-	const uint32_t query = slot * 2;
-	m_Recorder.EndQuery( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1 );
-	m_Recorder.ResolveQueryData( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2, m_pGpuEventReadback.Get(), static_cast<UINT64>( query ) * sizeof( uint64_t ) );
-	m_GpuEventFences[slot] = NextFenceValue();
+	m_Recorder.EndQuery( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1 );
+}
+
+void CShaderDeviceDX12::ResolveGpuEventQueriesForSubmit()
+{
+	if ( !m_nGpuEventResolveCount )
+		return;
+	const uint32_t start = m_nGpuEventResolveStartSlot;
+	const uint32_t count = m_nGpuEventResolveCount;
+	const uint64_t fence = NextFenceValue();
+	const uint32_t first = MIN( count, kGpuEventSlots - start );
+	m_Recorder.ResolveQueryData( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, start * 2, first * 2,
+		m_pGpuEventReadback.Get(), static_cast<UINT64>( start * 2 ) * sizeof( uint64_t ) );
+	for ( uint32_t i = 0; i < first; ++i )
+		m_GpuEventFences[start + i] = fence;
+	if ( first < count )
+	{
+		const uint32_t second = count - first;
+		m_Recorder.ResolveQueryData( m_pGpuEventHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, second * 2,
+			m_pGpuEventReadback.Get(), 0 );
+		for ( uint32_t i = 0; i < second; ++i )
+			m_GpuEventFences[i] = fence;
+	}
+	m_nGpuEventResolveCount = 0;
+	m_nGpuEventResolveStartSlot = m_nGpuEventSlot;
 }
 
 uint32_t CShaderDeviceDX12::InternGpuEventName( const char *name )
@@ -2361,7 +2502,13 @@ void CShaderDeviceDX12::BeginGpuPIXEvent( const char *szName )
 	{
 		nameId = InternGpuEventName( name );
 		if ( nameId < kGpuEventNames )
+		{
+			if ( !m_GpuEventNames[nameId].count && !m_GpuEventNames[nameId].overlayCount )
+				m_GpuEventNames[nameId].depth = static_cast<uint8_t>( m_nGpuPixDepth );
 			++m_GpuEventNames[nameId].count;
+			if ( m_bGpuEventTimingRuntime )
+				++m_GpuEventNames[nameId].overlayCount;
+		}
 		else
 			++m_nGpuEventOtherCount;
 		if ( !m_nGpuPixDepth )
@@ -2410,6 +2557,99 @@ void CShaderDeviceDX12::SetGpuPIXMarker( const char *szName )
 	m_Recorder.SetMarker( szName );
 }
 
+void CShaderDeviceDX12::ResetGpuTimingOverlay()
+{
+	m_flGpuOverlayTimeSumMs = 0.0;
+	m_flGpuOverlayWindowStart = Plat_FloatTime();
+	m_nGpuOverlayTimePresented = 0;
+	for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+	{
+		m_GpuEventNames[i].overlaySumMs = 0.0;
+		m_GpuEventNames[i].overlayCount = 0;
+	}
+}
+
+void CShaderDeviceDX12::SetGpuTimingEnabled( bool bEnabled )
+{
+	if ( bEnabled == m_bGpuEventTimingRuntime )
+		return;
+	m_bGpuEventTimingRuntime = bEnabled;
+	const bool bTiming = m_bGpuEventTimingCommandLine || m_bGpuEventTimingRuntime;
+	if ( bTiming != m_bGpuEventTiming )
+		m_bGpuEventTiming = bTiming;
+	ResetGpuTimingOverlay();
+}
+
+bool CShaderDeviceDX12::ConsumeGpuTimingOverlay( ShaderAPIDX12GpuTiming_t &stats )
+{
+	if ( !m_bGpuEventTimingRuntime || !m_pGpuEventData )
+		return false;
+	CollectGpuTiming();
+	if ( !m_flGpuOverlayWindowStart )
+		ResetGpuTimingOverlay();
+	if ( Plat_FloatTime() - m_flGpuOverlayWindowStart < 0.5 || !m_nGpuOverlayTimePresented )
+		return false;
+	const double frames = static_cast<double>( m_nGpuOverlayTimePresented );
+	stats = {};
+	stats.available = true;
+	stats.gpuFrameMs = static_cast<float>( m_flGpuOverlayTimeSumMs / frames );
+	stats.sampleFrames = m_nGpuOverlayTimePresented;
+	double eventMs[kGpuEventNames] = {};
+	bool selected[kGpuEventNames] = {};
+	bool parent[kGpuEventNames] = {};
+	bool include[kGpuEventNames] = {};
+	for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+		eventMs[i] = m_GpuEventNames[i].overlaySumMs / frames;
+	for ( uint32_t rank = 0; rank < SHADERAPIDX12_GPU_TIMING_MAX_EVENTS; ++rank )
+	{
+		int best = -1;
+		for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+			if ( !selected[i] && eventMs[i] >= 0.01 && ( best < 0 || eventMs[i] > eventMs[best] ) )
+				best = static_cast<int>( i );
+		if ( best < 0 )
+			break;
+		selected[best] = true;
+	}
+	for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+		if ( selected[i] )
+		{
+			int depth = m_GpuEventNames[i].depth;
+			for ( int j = static_cast<int>( i ) - 1; depth > 0 && j >= 0; --j )
+				if ( m_GpuEventNames[j].depth < depth )
+				{
+					parent[j] = true;
+					depth = m_GpuEventNames[j].depth;
+				}
+		}
+	for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+		include[i] = selected[i] || parent[i];
+	for ( ;; )
+	{
+		uint32_t count = 0;
+		for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+			count += include[i] ? 1 : 0;
+		if ( count <= SHADERAPIDX12_GPU_TIMING_MAX_EVENTS )
+			break;
+		int worst = -1;
+		for ( uint32_t i = 0; i < m_nGpuEventNames; ++i )
+			if ( include[i] && selected[i] && !parent[i] && ( worst < 0 || eventMs[i] < eventMs[worst] ) )
+				worst = static_cast<int>( i );
+		if ( worst < 0 )
+			break;
+		include[worst] = selected[worst] = false;
+	}
+	for ( uint32_t i = 0; i < m_nGpuEventNames && stats.count < SHADERAPIDX12_GPU_TIMING_MAX_EVENTS; ++i )
+		if ( include[i] )
+		{
+			ShaderAPIDX12GpuTimingEvent_t &out = stats.events[stats.count++];
+			V_strncpy( out.name, m_GpuEventNames[i].name, sizeof( out.name ) );
+			out.ms = static_cast<float>( eventMs[i] );
+			out.depth = m_GpuEventNames[i].depth;
+		}
+	ResetGpuTimingOverlay();
+	return true;
+}
+
 bool CShaderDeviceDX12::ConsumeGpuEventStats( GpuEventStatsDX12 &stats )
 {
 	if ( !m_bGpuEventTiming )
@@ -2433,6 +2673,7 @@ bool CShaderDeviceDX12::ConsumeGpuEventStats( GpuEventStatsDX12 &stats )
 		V_strncpy( out.name, m_GpuEventNames[i].name, sizeof( out.name ) );
 		out.msPerFrame = frames ? m_GpuEventNames[i].sumMs / frames : 0.0;
 		out.countPerFrame = frames ? m_GpuEventNames[i].count / frames : 0.0;
+		out.depth = m_GpuEventNames[i].depth;
 	}
 	if ( ( m_nGpuEventOtherCount || m_flGpuEventOtherMs != 0.0 ) && stats.count < ARRAYSIZE( stats.events ) )
 	{
@@ -2472,6 +2713,13 @@ bool CShaderDeviceDX12::ConsumeGpuTime( double &flAverageMs, uint32_t &nFrames )
 	flAverageMs = nFrames ? m_flGpuTimeSumMs / nFrames : 0.0;
 	m_flGpuTimeSumMs = 0.0;
 	m_nGpuTimePresented = 0;
+	// EndFrame calls this inside the actual -dx12stats window, including -dx12statsframes overrides.
+	// It still runs when timing queries are unavailable, so the boot memory report is never lost.
+	if ( !m_bStatsMemoryReportPrinted && IsRecordingOwner() && IsInitialized() )
+	{
+		m_bStatsMemoryReportPrinted = true;
+		PrintMemoryReport();
+	}
 	return nFrames != 0;
 }
 
@@ -2483,6 +2731,8 @@ void CShaderDeviceDX12::Present()
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 Present", DX12_ZONES_ACTIVE );
 	if ( !IsRecordingOwner() || !m_pCurrentView || !CommandList() )
 		return;
+	if ( s_bMemoryReportRequested.exchange( false, std::memory_order_acq_rel ) )
+		PrintMemoryReport();
 	m_Lighting.Reclaim();
 	if ( m_Lighting.PresentationBlocked() )
 	{
@@ -2577,6 +2827,8 @@ void CShaderDeviceDX12::Present()
 	if ( !Submit( false ) )
 		return;
 	++m_nGpuTimePresented;
+	if ( m_bGpuEventTimingRuntime )
+		++m_nGpuOverlayTimePresented;
 	if ( m_bShadowTimingEnabled )
 	{
 		++m_GpuStageStats.presentedFrames;
@@ -2813,6 +3065,63 @@ IShaderBuffer *CShaderDeviceDX12::CompileShader( const char *pProgram, size_t nB
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Reads the SM5 DCL_GLOBAL_FLAGS token from a native DXBC program. A
+//          force-early-depth shader has been audited by its source compiler to
+//          preserve coverage before the backend removes its pixel stage.
+//-----------------------------------------------------------------------------
+static bool NativeShaderForcesEarlyDepth( const unsigned char *pBits, size_t nBytes )
+{
+	if ( !pBits || nBytes < 36 || memcmp( pBits, "DXBC", 4 ) )
+		return false;
+	auto u32 = [&]( size_t offset, uint32_t &value )
+	{
+		if ( offset > nBytes - sizeof( uint32_t ) )
+			return false;
+		memcpy( &value, pBits + offset, sizeof( value ) );
+		return true;
+	};
+	uint32_t total = 0, chunks = 0;
+	if ( !u32( 24, total ) || total != nBytes || !u32( 28, chunks ) || !chunks || chunks > 128 ||
+		chunks > ( nBytes - 32 ) / sizeof( uint32_t ) )
+		return false;
+	static constexpr uint32_t kOpcodeMask = 0x000007ffu;
+	static constexpr uint32_t kInstructionLengthMask = 0x7f000000u;
+	static constexpr uint32_t kInstructionLengthShift = 24;
+	static constexpr uint32_t kDclGlobalFlagsOpcode = 106u;
+	static constexpr uint32_t kForceEarlyDepth = 1u << 13;
+	for ( uint32_t chunk = 0; chunk < chunks; ++chunk )
+	{
+		uint32_t offset = 0, bytes = 0;
+		if ( !u32( 32 + chunk * sizeof( uint32_t ), offset ) || offset > nBytes - 8 ||
+			!u32( offset + 4, bytes ) || bytes > nBytes - offset - 8 )
+			return false;
+		if ( memcmp( pBits + offset, "SHDR", 4 ) && memcmp( pBits + offset, "SHEX", 4 ) )
+			continue;
+		if ( bytes < 8 )
+			return false;
+		uint32_t words = 0;
+		if ( !u32( offset + 12, words ) || words < 2 || words > bytes / sizeof( uint32_t ) )
+			return false;
+		const size_t end = offset + 8 + size_t( words ) * sizeof( uint32_t );
+		if ( end > nBytes )
+			return false;
+		for ( size_t cursor = offset + 16; cursor < end; )
+		{
+			uint32_t token = 0;
+			if ( !u32( cursor, token ) )
+				return false;
+			if ( ( token & kOpcodeMask ) == kDclGlobalFlagsOpcode )
+				return ( token & kForceEarlyDepth ) != 0;
+			const uint32_t length = ( token & kInstructionLengthMask ) >> kInstructionLengthShift;
+			if ( !length || size_t( length ) * sizeof( uint32_t ) > end - cursor )
+				return false;
+			cursor += size_t( length ) * sizeof( uint32_t );
+		}
+	}
+	return false;
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Allocates a shader record holding a copy of the DXBC or legacy (VCS) bytecode
 //-----------------------------------------------------------------------------
 static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool bPixel )
@@ -2829,6 +3138,8 @@ static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool 
 		pRecord->bytecode.CopyArray( pBits, nBytes );
 	else
 		pRecord->legacyBytecode.CopyArray( pBits, nBytes );
+	if ( pRecord->legacyBytecode.IsEmpty() )
+		pRecord->forceEarlyDepth = NativeShaderForcesEarlyDepth( pBits, static_cast<size_t>( nBytes ) );
 	if ( pRecord->legacyBytecode.IsEmpty() )
 	{
 		CUtlString error;
@@ -3083,7 +3394,7 @@ bool CShaderDeviceMgrDX12::Connect( CreateInterfaceFn factory )
 	}
 	ConnectTier1Libraries( &factory, 1 );
 	ConnectTier2Libraries( &factory, 1 );
-	// Registers this module's development commands (shader_precache) with the host cvar system. FCVAR_CHEAT gates
+	// Registers this module's development commands (shader_precache, dx12_memreport) with the host cvar system. FCVAR_CHEAT gates
 	// them behind sv_cheats; FCVAR_DEVELOPMENTONLY would make retail engines reject them outright (cmd.cpp:1036).
 	if ( g_pCVar )
 	{

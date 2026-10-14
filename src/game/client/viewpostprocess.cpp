@@ -415,6 +415,19 @@ public:
 // One sampleable copy of the bound HDR frame per frame. Motion blur and the histogram both need it;
 // whichever runs first copies, the other reuses that texture.
 static int s_nBoundFrameCopyFrame = -1;
+static void CopyBoundFrameForEpoch( int x, int y, int w, int h )
+{
+	CMatRenderContextPtr pRenderContext( materials );
+	const int nBackendFrame = MotionVectorsDX12_FrameEpoch();
+	const int nFrame = nBackendFrame >= 0 ? nBackendFrame : gpGlobals->framecount;
+	if ( s_nBoundFrameCopyFrame != nFrame )
+	{
+		UpdateScreenEffectTexture( 1, x, y, w, h, true );
+		pRenderContext->SetFrameBufferCopyTexture( GetFullFrameFrameBufferTexture( 1 ), 0 );
+		s_nBoundFrameCopyFrame = nFrame;
+	}
+}
+
 static ITexture *AcquireBoundFrameCopy( IMatRenderContext *pRenderContext, int x, int y, int w, int h )
 {
 	if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT )
@@ -428,12 +441,12 @@ static ITexture *AcquireBoundFrameCopy( IMatRenderContext *pRenderContext, int x
 		|| pCopy->GetActualWidth() != pScene->GetActualWidth()
 		|| pCopy->GetActualHeight() != pScene->GetActualHeight() )
 		return NULL;
-	if ( s_nBoundFrameCopyFrame != gpGlobals->framecount )
-	{
-		UpdateScreenEffectTexture( 1, x, y, w, h, true );
-		pRenderContext->SetFrameBufferCopyTexture( pCopy, 0 );
-		s_nBoundFrameCopyFrame = gpGlobals->framecount;
-	}
+	// Cache decisions belong to ordered replay too: gpGlobals can already be preparing
+	// the next frame while the render owner executes this frame's motion blur/histogram.
+	if ( ICallQueue *pQueue = pRenderContext->GetCallQueue() )
+		pQueue->QueueCall( CopyBoundFrameForEpoch, x, y, w, h );
+	else
+		CopyBoundFrameForEpoch( x, y, w, h );
 	return pCopy;
 }
 
@@ -2715,6 +2728,9 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 
 // Motion Blur Material Proxy =========================================================================================
 static float g_vMotionBlurValues[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+// Velocity blur can replay after the client starts preparing the next frame. Its proxy
+// reads the captured replay values, never the next frame's client-side legacy values.
+static thread_local const float *s_pMotionBlurReplayValues = NULL;
 class CMotionBlurMaterialProxy : public CEntityMaterialProxy
 {
 public:
@@ -2753,7 +2769,7 @@ void CMotionBlurMaterialProxy::OnBind( C_BaseEntity *pEnt )
 {
 	if ( m_pMaterialParam != NULL )
 	{
-		m_pMaterialParam->SetVecValue( g_vMotionBlurValues, 4 );
+		m_pMaterialParam->SetVecValue( s_pMotionBlurReplayValues ? s_pMotionBlurReplayValues : g_vMotionBlurValues, 4 );
 	}
 }
 
@@ -2778,8 +2794,11 @@ ConVar mat_motion_blur_falling_intensity( "mat_motion_blur_falling_intensity", "
 ConVar mat_motion_blur_rotation_intensity( "mat_motion_blur_rotation_intensity", "1.0" );
 ConVar mat_motion_blur_strength( "mat_motion_blur_strength", "1.0" );
 ConVar mat_motion_blur_shutter_time( "mat_motion_blur_shutter_time", "0.016667", FCVAR_ARCHIVE, "DX12 velocity motion blur exposure time in seconds.", true, 0.0f, false, 0.0f );
+ConVar mat_motion_blur_static_skip( "mat_motion_blur_static_skip", "1", FCVAR_CHEAT, "Skip CPU-certified stationary DX12 velocity blur; 0 retains the reference pass for comparisons." );
 
-static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, int h )
+// pVelocityRegion (DX12 velocity blur): the valid motion-vector region in texels, {width, height, 0, 0}; it differs from
+// the target under a temporal render scale, where the blur runs on the upscaled frame.
+static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, int h, const float *pVelocityRegion = NULL )
 {
 	CMatRenderContextPtr pRenderContext( materials );
 	ITexture *pSrc = materials->FindTexture( "_rt_FullFrameFB", TEXTURE_GROUP_RENDER_TARGET );
@@ -2793,6 +2812,7 @@ static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, 
 	ITexture *pSavedBase = NULL;
 	// Non-float HDR copies the backbuffer into _rt_FullFrameFB. Float HDR renders into that
 	// texture, so sample the other full-frame buffer (shared with the histogram this frame).
+	pRenderContext->BeginPIXEvent( PIX_VALVE_ORANGE, "Motion blur copy" );
 	if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT )
 	{
 		UpdateScreenEffectTexture( 0, x, y, w, h, true );
@@ -2804,9 +2824,18 @@ static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, 
 		nSrcHeight = pCopy->GetActualHeight();
 		RetargetBaseTexture( pMatMotionBlur, pCopy, pBase, pSavedBase );
 	}
+	pRenderContext->EndPIXEvent();
 
+	if ( pMatMotionBlur != NULL && pVelocityRegion != NULL )
+	{
+		bool bFound = false;
+		IMaterialVar *pRegion = pMatMotionBlur->FindVar( "$velocityregion", &bFound, false );
+		if ( bFound && pRegion )
+			pRegion->SetVecValue( pVelocityRegion, 4 );
+	}
 	if ( pMatMotionBlur != NULL )
 	{
+		PIXEVENT( pRenderContext, "Motion blur gather" );
 		pRenderContext->DrawScreenSpaceRectangle(
 			pMatMotionBlur,
 			0, 0, dest_width, dest_height,
@@ -2820,6 +2849,44 @@ static void DrawMotionBlurQuad( const char *pMaterialName, int x, int y, int w, 
 	}
 	if ( pBase && pSavedBase )
 		pBase->SetTextureValue( pSavedBase );
+}
+
+struct MotionBlurReplayDX12
+{
+	int x, y, w, h;
+	int nVelocityWidth, nVelocityHeight;
+	float flScale, flMaxBlurLength;
+	bool bWholeScreenHot, bStaticSkip;
+};
+
+static void DrawVelocityMotionBlurDX12( MotionBlurReplayDX12 blur )
+{
+	CMatRenderContextPtr pRenderContext( materials );
+	if ( ICallQueue *pQueue = pRenderContext->GetCallQueue() )
+	{
+		pQueue->QueueCall( DrawVelocityMotionBlurDX12, blur );
+		return;
+	}
+	// Resolve, copy, tiles and gather must share the current ordered replay frame. A
+	// client-thread query in queued mode would only see the previous frame's producer.
+	if ( blur.bStaticSkip && !blur.bWholeScreenHot &&
+		MotionVectorsDX12_BlurIsStatic( blur.flScale, blur.flMaxBlurLength, blur.nVelocityWidth, blur.nVelocityHeight ) )
+		return;
+	float flValues[4] = { blur.flScale, blur.flMaxBlurLength, 0.f, 0.f };
+	if ( !blur.bWholeScreenHot )
+	{
+		int nTileX = 0, nTileY = 0;
+		if ( MotionVectorsDX12_BuildBlurTiles( pRenderContext, blur.flMaxBlurLength, blur.nVelocityWidth, blur.nVelocityHeight, nTileX, nTileY ) )
+		{
+			flValues[2] = static_cast<float>( nTileX );
+			flValues[3] = static_cast<float>( nTileY );
+		}
+	}
+	const float flVelocityRegion[4] = { static_cast<float>( blur.nVelocityWidth ), static_cast<float>( blur.nVelocityHeight ), 0.f, 0.f };
+	const float *pSavedValues = s_pMotionBlurReplayValues;
+	s_pMotionBlurReplayValues = flValues;
+	DrawMotionBlurQuad( "dev/motion_blur_mv", blur.x, blur.y, blur.w, blur.h, flVelocityRegion );
+	s_pMotionBlurReplayValues = pSavedValues;
 }
 
 void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, int h )
@@ -2845,10 +2912,6 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 		// No blur across hitches (same policy as the legacy path: slower than 15 fps).
 		const float flMotionBlurScale = ( flMotionVectorDelta > 0.0f && flMotionVectorDelta <= ( 1.0f / 15.0f ) ) ?
 			( mat_motion_blur_strength.GetFloat() * mat_motion_blur_shutter_time.GetFloat() / flMotionVectorDelta ) : 0.0f;
-		g_vMotionBlurValues[0] = flMotionBlurScale;
-		g_vMotionBlurValues[1] = flMaxBlurLength;
-		g_vMotionBlurValues[2] = 0.0f;
-		g_vMotionBlurValues[3] = 0.0f;
 		// Yaw and pitch shift every pixel, least at the screen centre. Once that centre shift
 		// is several times the gather-skip threshold the tile pass would only report "all hot".
 		static QAngle s_angLast( 0, 0, 0 );
@@ -2866,20 +2929,13 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 		}
 		s_angLast = viewBlur.angles;
 		s_bHaveLast = true;
-		if ( flMotionBlurScale != 0.0f && !bWholeScreenHot )
-		{
-			CMatRenderContextPtr pRenderContext( materials );
-			int nTileX = 0, nTileY = 0;
-			if ( MotionVectorsDX12_BuildBlurTiles( pRenderContext, flMaxBlurLength, nTileX, nTileY ) )
-			{
-				g_vMotionBlurValues[2] = static_cast<float>( nTileX );
-				g_vMotionBlurValues[3] = static_cast<float>( nTileY );
-			}
-		}
 		// Keep the legacy path's timing coherent if the blur mode switches at runtime.
 		s_flLastTimeUpdate = gpGlobals->realtime;
-
-		DrawMotionBlurQuad( "dev/motion_blur_mv", x, y, w, h );
+		if ( flMotionBlurScale == 0.0f )
+			return;
+		const MotionBlurReplayDX12 blur = { x, y, w, h, viewBlur.width, viewBlur.height,
+			flMotionBlurScale, flMaxBlurLength, bWholeScreenHot, mat_motion_blur_static_skip.GetBool() };
+		DrawVelocityMotionBlurDX12( blur );
 		return;
 	}
 

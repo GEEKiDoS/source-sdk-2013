@@ -46,13 +46,15 @@ struct PipelineKeyDX12
 	uint8_t stencilReadMask = 0xff, stencilWriteMask = 0xff;
 	bool separateAlpha = false, depthTest = true, depthWrite = true, culling = true, colorWrites = true, alphaWrites = true, alphaToCoverage = false, stencil = false;
 	bool lightingAbi = false, highresAbi = false;
-	// Render targets 1 and up are the backend's PBR G-buffer (full write mask, no blending regardless of the material).
+	// Render targets 1 and up are the backend's PBR G-buffer (no blending regardless of the material).
 	bool gbuffer = false;
+	// Non-envmapped SSR capture suppresses E/S writes; response alpha still invalidates those payloads.
+	bool nonEnvmapSsrPayload = false;
 	// Depth-writing draw inside the G-buffer pass: forced stencil, a second PSO from the material's usual one.
 	bool gbufferPass = false;
 	// Contact-depth replay (§3): private DSV, RTV0 kept with zero write masks; an ordinary cached PSO must not match.
 	bool contactReplay = false;
-	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi && gbuffer == o.gbuffer && gbufferPass == o.gbufferPass && contactReplay == o.contactReplay; }
+	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi && gbuffer == o.gbuffer && nonEnvmapSsrPayload == o.nonEnvmapSsrPayload && gbufferPass == o.gbufferPass && contactReplay == o.contactReplay; }
 };
 
 // Owned by the recording thread, like the command list it fills: every entry point runs on the current
@@ -68,6 +70,8 @@ public:
 	bool LightingRootAvailable() const { return m_pLightingRoot.Get() != nullptr; }
 	bool HighresRootAvailable() const { return m_pHighresRoot.Get() != nullptr; }
 
+	// Renderer frame counter, independent of recording/retirement fences.
+	void BeginUploadFrame( uint64_t nFrame );
 	void Reclaim( uint64_t nCompletedFence );
 	bool UploadTransient( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, const uint32_t *pSwapOffsets = nullptr, size_t nSwapCount = 0, size_t nVertexStride = 0 );
 	// Borrowed upload resource, retained through nRetireFence; offset is a multiple of nStride.
@@ -149,6 +153,13 @@ public:
 	struct StatsDX12
 	{
 		uint64_t srvTableHits = 0, srvTableCopies = 0, constantHits = 0, constantUploads = 0, transientConstants = 0, rootCbvSets = 0, rootTableSets = 0, rootSrvSets = 0;
+		// Window counters; aligned demand includes reserved bytes and inter-allocation padding.
+		uint64_t uploadAllocations = 0, uploadBytes = 0, uploadPeakFrameBytes = 0;
+		uint64_t uploadPagesCreated = 0, uploadPagesTrimmed = 0, uploadBufferBytesTrimmed = 0;
+		// Newest frame demand/growth and live pool gauges survive ResetStats.
+		uint64_t uploadFrameAllocations = 0, uploadFrameBytes = 0, uploadFramePagesCreated = 0;
+		// Logical buffer sizes, not device allocation sizes; buffer bytes include root-CBV read slack.
+		uint64_t uploadPoolPages = 0, uploadPoolCapacityBytes = 0, uploadPoolBufferBytes = 0;
 	};
 
 	const StatsDX12 &Stats() const { return m_Stats; }
@@ -172,7 +183,7 @@ public:
 		return true;
 	}
 
-	void ResetStats() { m_Stats = {}; }
+	void ResetStats();
 
 	// Clear/blit passes that bind their own native graphics state must invalidate this draw state.
 	void InvalidateGraphicsBindings()
@@ -301,7 +312,7 @@ private:
 		unsigned char *mapped = nullptr;
 		D3D12_GPU_VIRTUAL_ADDRESS gpu = 0;
 		size_t capacity = 0, used = 0;
-		uint64_t fence = 0;
+		uint64_t fence = 0, idleSinceFrame = ~0ull;
 	};
 
 	struct RetiredResource
@@ -312,6 +323,8 @@ private:
 
 	// Largest legal cbuffer; also the read slack kept past every upload page used for root CBVs.
 	static constexpr size_t kConstantBufferMaxBytes = 65536;
+	static constexpr uint64_t kUploadIdleFrames = 120;
+	static constexpr int kUploadMinPages = 4;
 	// 0-3 SRV/sampler tables, 4-7 VS b0-b3, 8-13 PS b0-b5, 14-17 GS b0-b3 root CBVs (space 0); 18/19 VS/PS space-1 CBV tables; 20 PS space-5 PBR projected-light table;
 	// 21 PS space-6 screen-space table, 22/23/24 PS space-6 b0/b1/b2 root CBVs; 25 VS space-7 instance-row root SRV.
 	static constexpr UINT kRootVertexConstants = 4, kRootPixelConstants = 8, kRootGeometryConstants = 14, kRootNativeVertex = 18, kRootNativePixel = 19, kRootPbrSpots = 20;
@@ -325,6 +338,9 @@ private:
 	CBindingCacheDX12 m_Bindings;
 	CUtlVector<UploadPage> m_UploadPages;
 	int m_nUploadPageHint = 0;
+	uint64_t m_nUploadFrame = 0, m_nLastUploadTrimFrame = ~0ull;
+	// Heap properties for upload pages; chosen per adapter architecture in Initialize.
+	D3D12_HEAP_PROPERTIES m_UploadHeap{};
 	CUtlHashtable<ID3D12Resource *, RetiredResource> m_GeometryInFlight;
 
 	struct RetiredDescriptor

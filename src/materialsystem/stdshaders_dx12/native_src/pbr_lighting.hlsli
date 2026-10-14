@@ -21,9 +21,10 @@ float3 PBR_ProjectedSpots( PBRSurface s, float3 P, uint receiverFlag, inout PBRS
 	float3 result = 0.0;
 	[loop] for ( uint i = 0; i < count; ++i )
 	{
-		PBRSpotGpu light = g_ProjectedLights[i];
-		if ( ( uint( light.slotsFlags.z ) & receiverFlag ) == 0 )
+		// Receiver-class rejection touches only the flags, not the 128-byte spot.
+		[branch] if ( ( uint( g_ProjectedLights[i].slotsFlags.z ) & receiverFlag ) == 0 )
 			continue;
+		PBRSpotGpu light = g_ProjectedLights[i];
 		float3 L, radiance;
 		float distance, rawVisibility;
 		if ( !DX12_ProjectedSample( light, P, L, distance, radiance, rawVisibility ) )
@@ -51,15 +52,14 @@ float3 PBR_LightPosition( int i )
 float3 PBR_LocalLights( PBRSurface s, float3 P, int count, float4 lightAtten, inout PBRSpecularSum specularSum )
 {
 	float3 result = 0.0;
-	[unroll] for ( int i = 0; i < 4; ++i )
+	// A loop: unrolled, the four slots carry four copies of the Burley + GGX lobes for draws that mostly have none.
+	[loop] for ( int i = 0; i < min( count, 4 ); ++i )
 	{
-		if ( i < count )
-		{
-			float3 toLight = PBR_LightPosition( i ) - P;
-			float3 specular;
-			result += PBR_DirectSplit( s, normalize( toLight ), PBR_LightColor( i ) * lightAtten[i], 1.0, true, specular );
-			PBR_AddSpecular( specularSum, specular, length( toLight ) );
-		}
+		float3 toLight = PBR_LightPosition( i ) - P;
+		float attenuation = i == 0 ? lightAtten.x : i == 1 ? lightAtten.y : i == 2 ? lightAtten.z : lightAtten.w;
+		float3 specular;
+		result += PBR_DirectSplit( s, normalize( toLight ), PBR_LightColor( i ) * attenuation, 1.0, true, specular );
+		PBR_AddSpecular( specularSum, specular, length( toLight ) );
 	}
 	return result;
 }
@@ -155,15 +155,12 @@ float PBR_BakedVisibility( ShadowMapReceiver r, inout ShadowMapBakedLookup looku
 }
 
 #define PBR_LIVE_BATCH 32
-// Bit e is set when entry e (of PBR_LIVE_BATCH from first) exists and its stored visibility is not constant zero. The
-// bake blocks nearly every (receiver, light) pair outright, and these entries are read as one batch of independent loads:
-// reads past the receiver's range are masked by count, and out-of-range structured reads return zero.
+// The upload owner stores a live bitmask in .w of the first entry of each receiver-local 32-entry chunk.
+// It is derived from the immutable .y visibility (nonzero), including dense payload entries; disk data is unchanged.
 uint PBR_LiveEntries( uint first, uint count )
 {
-	uint live = 0;
-	[unroll] for ( uint e = 0; e < PBR_LIVE_BATCH; ++e )
-		live |= ( e < count && g_ShadowVisibilityEntries[first + e].y != 0 ) ? 1u << e : 0u;
-	return live;
+	[branch] if ( count == 0 ) return 0;
+	return g_ShadowVisibilityEntries[first].w;
 }
 
 bool PBR_IsUnbakedLight( uint2 range, uint selectedLightIndex )
@@ -226,13 +223,19 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	}
 	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0 )
 	{
-		// Geometric surface backfaces skip the map (silhouette taps can read "lit").
+		// Receivers facing away from the sun skip the map (silhouette taps can read "lit"). The gate must not cut a lobe
+		// that is still lit: squared half-Lambert is 0.25 at the terminator and subsurface/backlight reach past it, so
+		// those receivers always take the map (it self-shadows them) and only a Lambert receiver is gated, on the smooth
+		// vertex normal. A per-triangle plane normal would split a curved mesh's terminator into lit/unlit triangles;
+		// it still drives the map bias.
+		float3 sunL = -cSunTravel.xyz;
+		bool sunWraps = s.angular != 0 || s.sss != 0.0 || s.back != 0.0;
 		float3 sunResult = float3( 0.0, 0.0, 0.0 );
 		float csmWeight = 0.0;
 		// A zero dilated baked bound makes visibility exactly zero under either cap. Keep real map evaluation
 		// for blocker/radius debug views, which observe diagnostics even when capped.
 		bool sunDiagnostics = cShadowView0.w == 5 || cShadowView0.w == 6;
-		[branch] if ( ( r.bakedSunDilated != 0.0 || sunDiagnostics ) && dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 )
+		[branch] if ( ( r.bakedSunDilated != 0.0 || sunDiagnostics ) && ( sunWraps || dot( r.vertexNormalWS, sunL ) > 0.0 ) )
 		{
 			sunResult = float3( 1.0, 0.0, 0.0 );
 			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )
@@ -298,21 +301,36 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			index = g_ShadowTileIndices[range.x + i];
 			++i;
 		}
-		RuntimeShadowLightGpu light = g_ShadowLights[index];
-		bool bakedDelta = bakedLocalDirect && !unbaked && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
-		bool lowest = light.lightId < lowestId;
+		uint lightId = g_ShadowLights[index].lightId;
+		bool lowest = lightId < lowestId;
 		if ( lowest )
 		{
-			lowestId = light.lightId;
+			lowestId = lightId;
 			d.lowestLocal = index;
 		}
+		// The radius/fade test needs only the hot position/range rows; rejected lights never fetch the full header.
+		ShadowMapLightRange lightRange;
+		[branch] if ( !ShadowMap_LightInRange( index, r.positionWS, lightRange ) ) continue;
+		RuntimeShadowLightGpu light = g_ShadowLights[index];
+		light.origin = lightRange.origin;
+		light.attenuationRadius = lightRange.attenuationRadius;
+		light.fadeStart = lightRange.fade.x;
+		light.fadeEnd = lightRange.fade.y;
+		bool bakedDelta = bakedLocalDirect && !unbaked && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
 		float3 L;
-		float3 radiance = ShadowMap_StandardLightRadiance( light, r.positionWS, L );
+		float3 radiance = ShadowMap_StandardLightRadianceInRange( light, lightRange.offset, lightRange.distance, L );
 		[branch] if ( !any( radiance != 0.0 ) )
 			continue;
-		// Light-only lobes: the stored basis and subsurface extras for deltas, the Burley term otherwise.
-		float3 basis = bakedDelta ? PBR_DiffuseBasis( s, L ) : PBR_DiffuseBurley( s, L );
-		float3 extra = bakedDelta ? PBR_DiffuseExtra( s, L ) : float3( 0.0, 0.0, 0.0 );
+		// Light-only lobes: the stored basis and subsurface extras for deltas, the Burley term otherwise. A branch, not a
+		// select: a select evaluates both lobes for every light.
+		float3 basis, extra = float3( 0.0, 0.0, 0.0 );
+		[branch] if ( bakedDelta )
+		{
+			basis = PBR_DiffuseBasis( s, L );
+			[branch] if ( s.sss != 0.0 || s.back != 0.0 )
+				extra = PBR_DiffuseLambert( s, L ) - basis; // what subsurface/backlight add beyond the stored basis
+		}
+		else basis = PBR_DiffuseBurley( s, L );
 		float3 specular = PBR_Specular( s, L );
 		if ( PBR_Max3( abs( basis ) ) > 0.0 || PBR_Max3( extra ) > 0.0 || PBR_Max3( specular ) > 0.0 )
 		{
@@ -341,8 +359,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 					[branch] if ( chart.valid && realtimeVisibility > 0.0 )
 					{
-						float3 toLight = light.origin - r.positionWS;
-						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, toLight, length( toLight ) - 0.25 );
+						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, lightRange.offset, lightRange.distance - 0.25 );
 					}
 				}
 				specularVisibility = lerp( bakedVisibility, realtimeVisibility, light.realtimeWeight );
@@ -361,7 +378,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			d.diffuse += radiance * ( basis * diffuseVisibility + extra * visibility );
 			float3 lightSpecular = radiance * specular * specularVisibility;
 			d.specular += lightSpecular;
-			PBR_AddSpecular( specularSum, lightSpecular, length( light.origin - r.positionWS ) );
+			PBR_AddSpecular( specularSum, lightSpecular, lightRange.distance );
 		}
 	}
 	// Baked-only specular (see above): only the receiver's live entries are visited.
@@ -376,10 +393,14 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				live &= live - 1u;
 				uint index = ShadowMap_UnbakedViewIndex( entry.x );
 				[branch] if ( index == 0xFFFFFFFF ) continue; // Absent from the conservative per-view selection: irrelevant.
-				RuntimeShadowLightGpu light = g_ShadowLights[index];
+				// Reject from the hot fields before loading attenuation/cone/radiance rows.
+				float realtimeWeight = g_ShadowLights[index].realtimeWeight;
+				float3 origin = g_ShadowLights[index].origin;
 				// The resident tail evaluated the realtime-weighted lights, the unbaked stream the style-overflow ones.
-				[branch] if ( light.realtimeWeight != 0.0 || dot( s.N, light.origin - r.positionWS ) <= 0.0 ) continue;
+				[branch] if ( realtimeWeight != 0.0 || dot( s.N, origin - r.positionWS ) <= 0.0 ) continue;
 				[branch] if ( hasUnbaked && PBR_IsUnbakedLight( unbakedLocalRange, entry.x ) ) continue;
+				RuntimeShadowLightGpu light = g_ShadowLights[index];
+				light.origin = origin;
 				float3 L;
 				float3 radiance = ShadowMap_StandardLightRadiance( light, r.positionWS, L );
 				[branch] if ( any( radiance != 0.0 ) )

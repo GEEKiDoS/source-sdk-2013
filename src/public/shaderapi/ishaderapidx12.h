@@ -20,7 +20,36 @@
 #include "tier1/interface.h"
 #include "shaderapi/ishaderapi.h"
 
-#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_002"
+// _004: frame generation, reflex, HDR output, adapter performance tier and runtime GPU timing.
+#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_004"
+
+static constexpr int SHADERAPIDX12_GPU_TIMING_MAX_EVENTS = 16;
+static constexpr int SHADERAPIDX12_GPU_TIMING_NAME_LENGTH = 64;
+
+struct ShaderAPIDX12GpuTimingEvent_t
+{
+	char name[SHADERAPIDX12_GPU_TIMING_NAME_LENGTH];
+	float ms;
+	unsigned char depth;
+	unsigned char reserved[3];
+};
+
+struct ShaderAPIDX12GpuTiming_t
+{
+	ShaderAPIDX12GpuTimingEvent_t events[SHADERAPIDX12_GPU_TIMING_MAX_EVENTS];
+	unsigned int count;
+	float gpuFrameMs;
+	unsigned int sampleFrames;
+	bool available;
+};
+
+// AdapterPerformanceTier(): coarse class of the rendering adapter, used to pick default quality on first run.
+enum ShaderAPIDX12AdapterTier_t
+{
+	SHADERAPIDX12_ADAPTER_TIER_UNKNOWN = -1, // no device yet
+	SHADERAPIDX12_ADAPTER_TIER_LOW = 0,      // integrated/UMA, software, < 6 GB, or no mesh shaders / DXR 1.1 (Pascal, GTX 16, RDNA1)
+	SHADERAPIDX12_ADAPTER_TIER_HIGH = 1,
+};
 
 enum ShaderAPIDX12HdrDisplayType_t
 {
@@ -165,8 +194,14 @@ public:
 	virtual int HdrDisplayStatus() = 0;
 	// True when the swap chain is FP16 scRGB.
 	virtual bool HdrOutputCapable() = 0;
-};
+	// Enables the optional timestamp/readback collection used by cl_showfps 3. When false, no timing queries are recorded.
+	virtual void SetGpuTimingEnabled( bool bEnabled ) = 0;
+	// Copies the latest approximately half-second inclusive PIX-event snapshot. The caller owns the fixed-size output.
+	virtual bool GetGpuTiming( ShaderAPIDX12GpuTiming_t &timing ) = 0;
+	// See ShaderAPIDX12AdapterTier_t.
+	virtual int AdapterPerformanceTier() = 0;
 
+};
 abstract_class IShaderAPIDX12Compute
 {
 public:

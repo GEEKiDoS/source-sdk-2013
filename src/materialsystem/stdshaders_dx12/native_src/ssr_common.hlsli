@@ -29,7 +29,7 @@ cbuffer DX12SSR : register( b0, space1 )
 	uint4 gSSRMip;                          // sourceMip, destinationMip, sourceWidth, sourceHeight (reduce pass)
 	float4 gSSRLimits;                      // depthClear, normalBias, edgeFade (pixels), 0
 	float4 gSSRTemporal;                    // history valid (0/1), max history frames (rough lobes), scene width, scene height
-	uint4 gSSRResolve;                      // resolve neighbour taps, motion vectors valid (0/1), 0, 0
+	uint4 gSSRResolve;                      // resolve neighbour taps, motion vectors valid (0/1), reduced trace grid (0/1), resolution scale float bits
 	float4 gSSRAmbient;                     // AO term uv per local pixel x, y, value scale, valid (0/1) (trace)
 };
 
@@ -78,20 +78,68 @@ float SSR_EdgeFade( float2 localPixel )
 	return saturate( edge / gSSRLimits.z );
 }
 
-// Full-resolution local pixels per trace texel on each axis: 1 at full resolution, 2 at half (ceil( viewport / 2 )).
+// Full-resolution local pixels per trace texel on each axis, also the temporal clipping neighbourhood spacing.
 int2 SSR_TraceGroup()
 {
 	return int2( ceil( gSSRViewport.zw / gSSRSizes.zw ) );
 }
 
-// The full-resolution pixel a trace texel traces this frame: one pixel of its group, rotating over the 2x2 group
-// every frame so the temporal accumulation covers every pixel. Trace and resolve derive the same pixel.
+// The legacy 1x/2x mapping is kept verbatim at resolution scale 1. Reduced grids partition the entire viewport,
+// including odd extents; an ordered 8x8 sequence visits every pixel in the larger cell instead of repeating only
+// its upper-left 2x2. Trace and edge-aware resolve derive exactly the same source pixel.
 static const int2 SSR_TRACE_ORDER[4] = { int2( 0, 0 ), int2( 1, 1 ), int2( 1, 0 ), int2( 0, 1 ) };
 int2 SSR_TracePixel( int2 traceTexel )
 {
+	[branch] if ( gSSRResolve.z == 0u )
+	{
+		int2 group = SSR_TraceGroup();
+		int2 offset = min( SSR_TRACE_ORDER[gSSRControl.w & 3u], group - 1 );
+		return min( traceTexel * group + offset, int2( gSSRViewport.zw ) - 1 );
+	}
+	int2 offset = SSR_TRACE_ORDER[gSSRControl.w & 3u] +
+		2 * SSR_TRACE_ORDER[( gSSRControl.w >> 2u ) & 3u] +
+		4 * SSR_TRACE_ORDER[( gSSRControl.w >> 4u ) & 3u];
 	int2 group = SSR_TraceGroup();
-	int2 offset = min( SSR_TRACE_ORDER[gSSRControl.w & 3u], group - 1 );
-	return min( traceTexel * group + offset, int2( gSSRViewport.zw ) - 1 );
+	// Usual scales at even viewport sizes have power-of-two cells; avoid proportional bounds and integer
+	// remainders in every reused ray. The general partition below still covers fractional scales/odd sizes.
+	[branch] if ( all( group * int2( gSSRSizes.zw ) == int2( gSSRViewport.zw ) ) && all( ( group & ( group - 1 ) ) == 0 ) )
+		return traceTexel * group + ( offset & ( group - 1 ) );
+	int2 first = int2( ceil( float2( traceTexel ) * gSSRViewport.zw / gSSRSizes.zw ) );
+	int2 last = int2( ceil( float2( traceTexel + 1 ) * gSSRViewport.zw / gSSRSizes.zw ) );
+	group = max( last - first, 1 );
+	return min( first + offset % group, int2( gSSRViewport.zw ) - 1 );
+}
+
+int2 SSR_TraceTexel( int2 localPixel )
+{
+	[branch] if ( gSSRResolve.z == 0u )
+		return int2( uint2( localPixel ) / uint2( SSR_TraceGroup() ) );
+	return min( int2( float2( localPixel ) * gSSRSizes.zw / gSSRViewport.zw ), int2( gSSRSizes.zw ) - 1 );
+}
+
+float SSR_ResolutionScale()
+{
+	return clamp( asfloat( gSSRResolve.w ), 0.25, 1.0 );
+}
+
+int2 SSR_ResolveSize()
+{
+	float2 size = gSSRViewport.zw * SSR_ResolutionScale();
+	return max( int2( 1, 1 ), int2( ceil( size ) ) );
+}
+
+bool SSR_FullResolve()
+{
+	return all( SSR_ResolveSize() == int2( gSSRViewport.zw ) );
+}
+
+// Resolve texel center mapped to the full-resolution receiver that supplies its G-buffer data.
+int2 SSR_ResolvePixel( int2 resolveTexel )
+{
+	[branch] if ( SSR_FullResolve() )
+		return resolveTexel;
+	return min( int2( ( float2( resolveTexel ) + 0.5 ) * gSSRViewport.zw / float2( SSR_ResolveSize() ) ),
+		int2( gSSRViewport.zw ) - 1 );
 }
 
 uint SSR_Hash( uint x )

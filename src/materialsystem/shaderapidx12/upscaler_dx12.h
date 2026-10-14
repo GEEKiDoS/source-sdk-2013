@@ -1,10 +1,11 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: Native-resolution temporal anti-aliasing providers (DLAA, FSR native AA, XeSS AA) and the DLSS-NR neural
-//          rendering post-process for the DX12 backend. Every provider export is resolved at runtime through
-//          LoadLibraryExW/GetProcAddress; a missing module or export only makes that provider unavailable. Provider
-//          objects are owned by the recording thread; the worker only runs the recorded dispatch callback, which names
-//          stable objects that stay alive until a GPU-idle boundary.
+// Purpose: Temporal anti-aliasing / upscaling (DLSS, FSR, XeSS, native SMAA T2x) and the DLSS-NR neural
+//          rendering post-process for the DX12 backend. A feature upscales a render-sized viewport of the scene-sized
+//          inputs to the scene size; native AA is the render == scene case. Every provider export is resolved at
+//          runtime through LoadLibraryExW/GetProcAddress; a missing module or export only makes that provider
+//          unavailable. Provider objects are owned by the recording thread; the worker only runs the recorded
+//          dispatch callback, which names stable objects that stay alive until a GPU-idle boundary.
 //
 //=============================================================================//
 #ifndef UPSCALER_DX12_H
@@ -33,7 +34,8 @@ enum class UpscalerKindDX12 : uint8_t
 	None = 0,
 	DLSS = 1,
 	FSR = 2,
-	XeSS = 3
+	XeSS = 3,
+	SmaaT2x = 4
 };
 const char *UpscalerKindNameDX12( UpscalerKindDX12 kind );
 
@@ -46,13 +48,22 @@ struct UpscalerReplayResultDX12
 	CInterlockedIntT<uint64> frame{ ~0ull };
 };
 
+// `width`/`height` is the output (scene) size, `renderWidth`/`renderHeight` the input viewport at (0, 0) of the
+// scene-sized colour, depth and motion-vector textures; equal sizes are native AA. A different render size is a
+// different feature.
 struct UpscalerFeatureDescDX12
 {
 	UpscalerKindDX12 kind = UpscalerKindDX12::None;
 	uint32_t width = 0, height = 0;
+	uint32_t renderWidth = 0, renderHeight = 0;
 	bool depthInverted = false;
 
-	bool operator==( const UpscalerFeatureDescDX12 &o ) const { return kind == o.kind && width == o.width && height == o.height && depthInverted == o.depthInverted; }
+	bool Scaled() const { return renderWidth != width || renderHeight != height; }
+
+	bool operator==( const UpscalerFeatureDescDX12 &o ) const
+	{
+		return kind == o.kind && width == o.width && height == o.height && renderWidth == o.renderWidth && renderHeight == o.renderHeight && depthInverted == o.depthInverted;
+	}
 
 	bool operator!=( const UpscalerFeatureDescDX12 &o ) const { return !( *this == o ); }
 };
@@ -88,9 +99,10 @@ struct UpscalerDispatchDX12
 	ID3D12Resource *color = nullptr, *depth = nullptr, *motion = nullptr, *output = nullptr;
 	D3D12_RESOURCE_STATES colorBefore = D3D12_RESOURCE_STATE_RENDER_TARGET, depthBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	D3D12_RESOURCE_STATES motionBefore = D3D12_RESOURCE_STATE_RENDER_TARGET, outputBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-	float jitter[2] = {}, motionScale[2] = {};
+	float jitter[2] = {}, motionScale[2] = {}; // motionScale: UV -> previous-minus-current render pixels
 	float cameraNear = 0, cameraFar = 0, fovY = 0, frameTimeMs = 0;
-	uint32_t width = 0, height = 0;
+	uint32_t width = 0, height = 0;             // output (scene) size
+	uint32_t renderWidth = 0, renderHeight = 0; // input viewport at (0, 0); the feature's render size
 	uint32_t nrLayers = 0; // DLSS-NR layers chained after the temporal AA; each feeds the next
 	DlssNrComposeDX12 nr;
 	bool reset = false, nrReset = false;
@@ -117,7 +129,7 @@ public:
 
 	bool Initialized() const { return m_pDevice != nullptr; }
 
-	// Mode 1 auto, 2 DLSS/DLAA, 3 FSR native AA, 4 XeSS AA; None when the mode's provider is unavailable.
+	// Mode 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x (always available).
 	UpscalerKindDX12 Resolve( int nMode ) const;
 	// Creates the provider context for `desc` when it differs from the current one. DLSS records its creation on a
 	// private list executed on `pQueue` and waited for, so no recorded frame ever creates and evaluates together.
@@ -148,10 +160,15 @@ public:
 	bool PrepareNr( const DlssNrTuningDX12 &tuning, uint32_t nLayers, ID3D12Resource *pSource, ID3D12CommandQueue *pQueue );
 	void ReleaseNr();
 
-	// The dispatch needs a descriptor block when DLSS or DLSS-NR reads the depth clone.
-	bool NeedsDescriptors( const UpscalerDispatchDX12 &d ) const { return NeedsDepthClone( d ); }
+	// Shader-visible blocks for the depth clone/NR and the native SMAA passes.
+	bool NeedsDescriptors( const UpscalerDispatchDX12 &d ) const { return NeedsDepthClone( d ) || m_Feature.kind == UpscalerKindDX12::SmaaT2x; }
 
-	static uint32_t DescriptorCount( uint32_t nNrLayers ) { return 6u * ( 1u + 2u * nNrLayers ); }
+	uint32_t DescriptorCount( uint32_t nNrLayers ) const
+	{
+		const bool smaa = m_Feature.kind == UpscalerKindDX12::SmaaT2x;
+		// Native SMAA without NR has no depth-clone pass.
+		return 6u * ( 2u * nNrLayers + ( !smaa || nNrLayers ? 1u : 0u ) + ( smaa ? 4u : 0u ) );
+	}
 
 private:
 	enum class State : uint8_t
@@ -165,6 +182,7 @@ private:
 	struct NgxApi;
 	struct NrApi;
 	struct NrChain;
+	struct SmaaState;
 
 	struct Provider
 	{
@@ -180,12 +198,18 @@ private:
 	uint32_t ExecuteNr( ID3D12GraphicsCommandList *pList, const UpscalerDispatchDX12 &d ) const noexcept;
 	ID3D12Resource *NrResult() const;
 	bool EnsureCompute();
+	bool CreateSmaa( const UpscalerFeatureDescDX12 &desc, ID3D12CommandQueue *pQueue );
+	uint32_t ExecuteSmaa( ID3D12GraphicsCommandList *pList, const UpscalerDispatchDX12 &d ) const noexcept;
 	void WriteDescriptors( const UpscalerDispatchDX12 &d ) const;
 	void BindCompute( ID3D12GraphicsCommandList *pList, const UpscalerDispatchDX12 &d, ID3D12PipelineState *pPso, uint32_t nPass, const NrConstantsDX12 &constants ) const;
 	bool LoadFfx( const wchar_t *pszDir );
 
-	// DLSS and DLSS-NR read a typed R24_UNORM_X8 clone of the R24G8_TYPELESS scene depth, refreshed in every replay.
-	bool NeedsDepthClone( const UpscalerDispatchDX12 &d ) const { return m_Feature.kind == UpscalerKindDX12::DLSS || d.nrLayers; }
+	// DLSS, scaled XeSS and DLSS-NR read a typed R32F clone of the R24G8_TYPELESS scene depth, refreshed over the
+	// render region in every replay.
+	bool NeedsDepthClone( const UpscalerDispatchDX12 &d ) const
+	{
+		return m_Feature.kind == UpscalerKindDX12::DLSS || ( m_Feature.kind == UpscalerKindDX12::XeSS && m_Feature.Scaled() ) || d.nrLayers;
+	}
 
 	bool EnsureDepthClone( uint32_t nWidth, uint32_t nHeight );
 	bool LoadXeSS( const wchar_t *pszDir );
@@ -218,6 +242,8 @@ private:
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pDepthClone; // R32_FLOAT, NON_PIXEL_SHADER_RESOURCE between replays
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pComputeRoot;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pNrPso, m_pDepthPso;
+	SmaaState *m_pSmaa = nullptr;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pSmaaPso[4];
 	UINT m_nDescriptorStride = 0;
 	Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_pImmediateAllocator;
 	Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_pImmediateList;

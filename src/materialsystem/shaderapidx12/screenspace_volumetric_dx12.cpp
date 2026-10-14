@@ -1,15 +1,16 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: Raymarched volumetric lighting of one main camera view (plan §10 + half-resolution amendment). Runs on the
-//          recording owner from the ordered BeginVolumetrics / DrawVolumetrics markers:
+// Purpose: Raymarched volumetric lighting of one main camera view. The low quality (8-step) profile uses a quarter-resolution
+//          march; balanced/high profiles retain the half-resolution march. Runs on the recording owner from the ordered
+//          BeginVolumetrics / DrawVolumetrics markers:
 //            BeginVolumetrics  stores the settings snapshot, opens the scope and starts the lighting handoff.
 //            Each opaque bracket's BeginView discards the previous candidate; its EndView captures the completed
 //            native camera (contact/SSR control zeroed) and the current lighting view state (CLightingDX12 keeps it
 //            past its own EndView). The latest eligible main bracket wins; an ineligible one invalidates drawing.
 //            DrawVolumetrics   two fullscreen pixel draws:
-//                              1. volumetric_ps51 on the lighting root marches every half-resolution texel
-//                                 (ceil( viewport / 2 )) over the completed scene depth into the backend-owned
-//                                 RGBA16F in-scattering + R32F view-depth pair (MRT, single-sample, no blending).
+//                              1. volumetric_ps51 on the lighting root marches the selected resolution over the
+//                                 completed scene depth into the backend-owned RGBA16F in-scattering + R32F view-depth
+//                                 pair (MRT, single-sample, no blending).
 //                              2. volumetric_upsample_ps51 on the ordinary root gathers that pair depth-aware per
 //                                 scene sample and adds RGB (ONE/ONE, RGB only) onto the FP16 scene.
 //                              Then the capture is released and the scope ends, whether or not the pass drew.
@@ -22,6 +23,7 @@
 #include "shaderdevice_dx12.h"
 #include "tier0/dbg.h"
 #include <cstring>
+#include <cmath>
 
 namespace shaderapidx12
 {
@@ -34,6 +36,8 @@ void CShaderAPIDX12::ReplayBeginVolumetrics( const DX12VolumetricSettings &setti
 {
 	if ( m_Volumetric.scope && m_pDevice )
 		m_pDevice->Lighting().EndVolumetrics(); // an unterminated scope never draws; release its capture
+	if ( m_Volumetric.historyValid && ( m_Volumetric.historyFrame + 1 != m_nFrameCounter ) )
+		m_Volumetric.historyValid = false;
 	m_Volumetric.settings = settings;
 	m_Volumetric.scope = true;
 	m_Volumetric.cameraValid = false;
@@ -56,6 +60,19 @@ void CShaderAPIDX12::VolumetricBracketEnd( const DX12ScreenSpaceViewConstants *p
 	{
 		m_Volumetric.cameraValid = false;
 		return;
+	}
+	if ( m_Volumetric.historyValid )
+	{
+		float eyeDeltaSquared = 0.0f, forwardDot = 0.0f;
+		for ( int i = 0; i < 3; ++i )
+		{
+			const float delta = pCamera->eyeLength[i] - m_Volumetric.historyCamera.eyeLength[i];
+			eyeDeltaSquared += delta * delta;
+			forwardDot += pCamera->forwardThickness[i] * m_Volumetric.historyCamera.forwardThickness[i];
+		}
+		if ( eyeDeltaSquared > 128.0f * 128.0f || forwardDot < 0.8f ||
+		     memcmp( pCamera->viewport, m_Volumetric.historyCamera.viewport, sizeof( pCamera->viewport ) ) )
+			m_Volumetric.historyValid = false;
 	}
 	m_Volumetric.camera = *pCamera;
 	// No contact reads / SSR capture in the volume passes; control.y stays the scene sample count the march gathers.
@@ -85,7 +102,11 @@ void CShaderAPIDX12::ReleaseVolumetricResources()
 		m_pDevice->Lighting().EndVolumetrics();
 	m_Volumetric.scope = false;
 	m_Volumetric.cameraValid = false;
-	VolumetricTargetDX12 *const targets[] = { &m_Volumetric.scatter, &m_Volumetric.depth };
+	m_Volumetric.historyValid = false;
+	m_Volumetric.historyFrame = 0;
+	m_Volumetric.historyIndex = 0;
+	m_Volumetric.historyWidth = m_Volumetric.historyHeight = 0;
+	VolumetricTargetDX12 *const targets[] = { &m_Volumetric.scatter, &m_Volumetric.depth, &m_Volumetric.history[0], &m_Volumetric.history[1] };
 	for ( VolumetricTargetDX12 *pTarget : targets )
 	{
 		if ( pTarget->handle )
@@ -148,16 +169,38 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	if ( x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > target.width || y + height > target.height )
 		return warn( "the captured viewport does not fit the scene" );
 	const bool bMSAA = target.sampleCount > 1;
+	const bool quarter = m_Volumetric.settings.control[0] <= 8;
 	ShaderRecordDX12 *vs = ResolveNamedShader( "volumetric_vs51", false, 0, 0 );
-	ShaderRecordDX12 *ps = ResolveNamedShader( "volumetric_ps51", true, bMSAA ? 1 : 0, 0 );
-	ShaderRecordDX12 *upsample = ResolveNamedShader( "volumetric_upsample_ps51", true, bMSAA ? 1 : 0, 0 );
-	if ( !vs || !ps || !upsample || !vs->legacyBytecode.IsEmpty() || !ps->legacyBytecode.IsEmpty() || !upsample->legacyBytecode.IsEmpty() || !ps->lightingAbi )
-		return warn( "native volumetric_vs51 / volumetric_ps51 / volumetric_upsample_ps51 unavailable" );
-	const LONG halfWidth = ( width + 1 ) / 2, halfHeight = ( height + 1 ) / 2;
-	if ( !EnsureVolumetricTarget( m_Volumetric.scatter, halfWidth, halfHeight, IMAGE_FORMAT_RGBA16161616F, "DX12_VolumetricScatter" ) ||
-	     !EnsureVolumetricTarget( m_Volumetric.depth, halfWidth, halfHeight, IMAGE_FORMAT_R32F, "DX12_VolumetricDepth" ) )
-		return warn( "half-resolution march targets unavailable" );
+	ShaderRecordDX12 *ps = ResolveNamedShader( "volumetric_ps51", true, bMSAA ? 1 : 0, quarter ? 1 : 0 );
+	ShaderRecordDX12 *temporal = ResolveNamedShader( "volumetric_temporal_ps51", true, 0, 0 );
+	ShaderRecordDX12 *upsample = ResolveNamedShader( "volumetric_upsample_ps51", true, bMSAA ? 1 : 0, quarter ? 1 : 0 );
+	if ( !vs || !ps || !temporal || !upsample || !vs->legacyBytecode.IsEmpty() || !ps->legacyBytecode.IsEmpty() || !temporal->legacyBytecode.IsEmpty() || !upsample->legacyBytecode.IsEmpty() || !ps->lightingAbi )
+		return warn( "native volumetric shader set unavailable" );
+	const LONG footprint = quarter ? 4 : 2;
+	const LONG marchWidth = ( width + footprint - 1 ) / footprint, marchHeight = ( height + footprint - 1 ) / footprint;
+	if ( !EnsureVolumetricTarget( m_Volumetric.scatter, marchWidth, marchHeight, IMAGE_FORMAT_RGBA16161616F, "DX12_VolumetricScatter" ) ||
+	     !EnsureVolumetricTarget( m_Volumetric.depth, marchWidth, marchHeight, IMAGE_FORMAT_R32F, "DX12_VolumetricDepth" ) ||
+	     !EnsureVolumetricTarget( m_Volumetric.history[0], marchWidth, marchHeight, IMAGE_FORMAT_RGBA16161616F, "DX12_VolumetricHistory0" ) ||
+	     !EnsureVolumetricTarget( m_Volumetric.history[1], marchWidth, marchHeight, IMAGE_FORMAT_RGBA16161616F, "DX12_VolumetricHistory1" ) )
+		return warn( "reduced-resolution march/history targets unavailable" );
+	if ( m_Volumetric.historyWidth != marchWidth || m_Volumetric.historyHeight != marchHeight )
+	{
+		m_Volumetric.historyValid = false;
+		m_Volumetric.historyWidth = marchWidth;
+		m_Volumetric.historyHeight = marchHeight;
+	}
+	const uint32_t historyReadIndex = m_Volumetric.historyIndex & 1u, historyWriteIndex = historyReadIndex ^ 1u;
 	TextureRecord *pScatter = FindTexture( m_Volumetric.scatter.handle ), *pDepth = FindTexture( m_Volumetric.depth.handle );
+	TextureRecord *pHistoryRead = FindTexture( m_Volumetric.history[historyReadIndex].handle ), *pHistoryWrite = FindTexture( m_Volumetric.history[historyWriteIndex].handle );
+	if ( !pScatter || !pDepth || !pHistoryRead || !pHistoryWrite )
+		return warn( "reduced-resolution march/history records unavailable" );
+	TextureRecord *pMotion = nullptr;
+	if ( m_hMotionResolvedHandle && m_nMotionResolvedFrame == m_nFrameCounter )
+	{
+		TextureRecord *candidate = FindTexture( m_hMotionResolvedHandle );
+		if ( candidate && candidate->width == target.width && candidate->height == target.height )
+			pMotion = candidate;
+	}
 	const DXGI_FORMAT scatterFormat = ImageFormatToDXGI12( pScatter->format ), depthFormat = ImageFormatToDXGI12( pDepth->format );
 
 	ID3D12Device *pNative = m_pDevice->NativeDevice();
@@ -212,10 +255,26 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	DX12VolumetricConstants volume{};
 	volume.settings = m_Volumetric.settings;
 	volume.outputScale[0] = m_ToneScale.x;
+	volume.outputScale[1] = m_Volumetric.historyValid ? 1.0f : 0.0f;
+	volume.outputScale[2] = pMotion ? 1.0f : 0.0f;
+	volume.outputScale[3] = static_cast<float>( footprint );
 	D3D12_GPU_VIRTUAL_ADDRESS cameraAddress = 0, volumeAddress = 0;
 	if ( !m_Pipeline.UploadTransient( &camera, sizeof( camera ), 256, 256, fence, cameraAddress ) ||
 	     !m_Pipeline.UploadTransient( &volume, sizeof( volume ), 256, 256, fence, volumeAddress ) )
 		return warn( "constant upload failed" );
+	// Temporal uses the same backend-owned camera ABI: current inverse/eye/ray,
+	// but previous world-to-clip for camera-only volume reprojection.
+	DX12ScreenSpaceViewConstants temporalCamera = camera;
+	if ( m_Volumetric.historyValid )
+		memcpy( temporalCamera.worldToClip, m_Volumetric.historyCamera.worldToClip, sizeof( temporalCamera.worldToClip ) );
+	memcpy( temporalCamera.depth + 1, m_Volumetric.historyCamera.forwardThickness, 3 * sizeof( float ) );
+	temporalCamera.eyeLength[3] = 0.0f;
+	for ( int i = 0; i < 3; ++i )
+		temporalCamera.eyeLength[3] += m_Volumetric.historyCamera.eyeLength[i] * m_Volumetric.historyCamera.forwardThickness[i];
+	temporalCamera.control[0] = bMSAA ? 1u : 0u;
+	D3D12_GPU_VIRTUAL_ADDRESS temporalCameraAddress = 0;
+	if ( !m_Pipeline.UploadTransient( &temporalCamera, sizeof( temporalCamera ), 256, 256, fence, temporalCameraAddress ) )
+		return warn( "temporal camera upload failed" );
 
 	// March bindings: space 2 (captured lighting view, no receiver/prop visibility) and space 5 (current projected-light
 	// table, legal even when empty). Lighting reserves every table allocated below within one heap generation.
@@ -257,8 +316,23 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	if ( !marchPso )
 		return warn( "march pipeline state unavailable" );
 
-	// Upsample PSO: created before anything is recorded so a failure leaves the scene untouched.
+	// Temporal PSO: ordinary root, one RGBA16F output at the march resolution.
 	key.lightingAbi = false;
+	key.ps = temporal->identity;
+	key.psVariant = temporal->activeVariantKey;
+	key.color = scatterFormat;
+	key.colorFormats[0] = scatterFormat;
+	key.colorFormats[1] = DXGI_FORMAT_UNKNOWN;
+	key.colorCount = 1;
+	key.samples = 1;
+	key.sampleQuality = 0;
+	key.blend = 0;
+	key.alphaWrites = true;
+	ID3D12PipelineState *temporalPso = m_Pipeline.GetOrCreate( key, vs->Bytecode(), temporal->Bytecode(), D3D12_SHADER_BYTECODE{}, layout, fence );
+	if ( !temporalPso )
+		return warn( "temporal accumulation pipeline state unavailable" );
+
+	// Upsample PSO: created before anything is recorded so a failure leaves the scene untouched.
 	key.ps = upsample->identity;
 	key.psVariant = upsample->activeVariantKey;
 	key.color = target.colorFormat;
@@ -286,8 +360,8 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	bool bBound = m_Pipeline.PrepareBindings( pList, march );
 	if ( bBound )
 	{
-		const D3D12_VIEWPORT viewport{ 0.f, 0.f, static_cast<float>( halfWidth ), static_cast<float>( halfHeight ), 0.f, 1.f };
-		const D3D12_RECT scissor{ 0, 0, halfWidth, halfHeight };
+		const D3D12_VIEWPORT viewport{ 0.f, 0.f, static_cast<float>( marchWidth ), static_cast<float>( marchHeight ), 0.f, 1.f };
+		const D3D12_RECT scissor{ 0, 0, marchWidth, marchHeight };
 		const D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = { pScatter->rtv, pDepth->rtv };
 		ID3D12Resource *const colors[2] = { pScatter->resource.Get(), pDepth->resource.Get() };
 		m_Pipeline.BindDrawState( pList, viewport, scissor, fence );
@@ -298,20 +372,70 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 		pList->DrawInstanced( 3, 1, 0, 0 );
 	}
 	m_pDevice->EndGpuPIXEvent();
+	bool bHistoryResolved = false;
 	if ( bBound )
 	{
-		m_pDevice->BeginGpuPIXEvent( "Volumetric upsample" );
 		transitionRecord( *pScatter, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 		transitionRecord( *pDepth, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		// Ordinary root: the march pair at t0/t1 through the normal SRV table, the scene depth again in space 6. The
-		// reservation covers this table plus the 32-slot table PrepareBindings allocates after it.
+		transitionRecord( *pHistoryRead, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		if ( pMotion )
+			transitionRecord( *pMotion, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		m_pDevice->BeginGpuPIXEvent( "Volumetric temporal" );
+		CPipelineCacheDX12::BindingInputDX12 temporalInput( m_Pipeline.NullShaderResourceView() );
+		bool bTemporalBound = prepareInput( temporalInput ) && m_Pipeline.ReserveResourceDescriptors( DX12_SCREENSPACE_TABLE_COUNT + 32, fence ) && sceneDepthTable( temporalInput.screenSpaceTable );
+		if ( bTemporalBound )
+		{
+			temporalInput.screenSpaceView = temporalCameraAddress;
+			temporalInput.volumetricConstants = volumeAddress;
+			ID3D12Resource *const sources[4] = { pScatter->resource.Get(), pDepth->resource.Get(), pMotion ? pMotion->resource.Get() : nullptr, pHistoryRead->resource.Get() };
+			const DXGI_FORMAT formats[4] = { scatterFormat, depthFormat, DXGI_FORMAT_R16G16B16A16_FLOAT, scatterFormat };
+			for ( int i = 0; i < 4; ++i )
+			{
+				temporalInput.textures[i] = sources[i];
+				temporalInput.srvSources[i] = {};
+				D3D12_SHADER_RESOURCE_VIEW_DESC &srv = temporalInput.srvDescs[i];
+				srv = {};
+				srv.Format = formats[i];
+				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+				srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				srv.Texture2D.MipLevels = 1;
+			}
+			transitionRecord( *pHistoryWrite, D3D12_RESOURCE_STATE_RENDER_TARGET );
+			bTemporalBound = m_Pipeline.PrepareBindings( pList, temporalInput );
+		}
+		if ( bTemporalBound )
+		{
+			const D3D12_VIEWPORT viewport{ 0.f, 0.f, static_cast<float>( marchWidth ), static_cast<float>( marchHeight ), 0.f, 1.f };
+			const D3D12_RECT scissor{ 0, 0, marchWidth, marchHeight };
+			m_Pipeline.BindDrawState( pList, viewport, scissor, fence );
+			ID3D12Resource *historyOutput = pHistoryWrite->resource.Get();
+			m_Pipeline.BindRenderTargets( pList, 1, &pHistoryWrite->rtv, &historyOutput, nullptr, nullptr, fence );
+			m_Pipeline.BindPipelineState( pList, temporalPso, 0, fence );
+			pList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+			m_pDevice->GpuReceiverDraw( false );
+			pList->DrawInstanced( 3, 1, 0, 0 );
+			bHistoryResolved = true;
+			m_Volumetric.historyIndex = historyWriteIndex;
+			m_Volumetric.historyValid = true;
+			m_Volumetric.historyFrame = m_nFrameCounter;
+			m_Volumetric.historyCamera = camera;
+		}
+		m_pDevice->EndGpuPIXEvent();
+		if ( pMotion )
+			transitionRecord( *pMotion, D3D12_RESOURCE_STATE_RENDER_TARGET );
+		if ( bHistoryResolved )
+			transitionRecord( *pHistoryWrite, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+
+		m_pDevice->BeginGpuPIXEvent( "Volumetric upsample" );
+		TextureRecord *pCompositeScatter = bHistoryResolved ? pHistoryWrite : pScatter;
+		transitionRecord( *pCompositeScatter, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 		CPipelineCacheDX12::BindingInputDX12 composite( m_Pipeline.NullShaderResourceView() );
 		bBound = prepareInput( composite ) && m_Pipeline.ReserveResourceDescriptors( DX12_SCREENSPACE_TABLE_COUNT + 32, fence ) && sceneDepthTable( composite.screenSpaceTable );
 		if ( bBound )
 		{
 			composite.screenSpaceView = cameraAddress;
 			composite.volumetricConstants = volumeAddress;
-			ID3D12Resource *const sources[2] = { pScatter->resource.Get(), pDepth->resource.Get() };
+			ID3D12Resource *const sources[2] = { pCompositeScatter->resource.Get(), pDepth->resource.Get() };
 			const DXGI_FORMAT formats[2] = { scatterFormat, depthFormat };
 			for ( int i = 0; i < 2; ++i )
 			{
@@ -342,7 +466,9 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	m_pDevice->EndGpuPIXEvent();
 	m_Pipeline.InvalidateGraphicsBindings();
 	m_pDevice->TransitionSceneDepth( depthBefore );
-	pScatter->sampledStateValid = pDepth->sampledStateValid = false;
+	pScatter->sampledStateValid = pDepth->sampledStateValid = pHistoryRead->sampledStateValid = pHistoryWrite->sampledStateValid = false;
+	if ( pMotion )
+		pMotion->sampledStateValid = false;
 	++m_nTextureStateEpoch;
 	return bBound ? true : warn( "binding descriptors unavailable" );
 }

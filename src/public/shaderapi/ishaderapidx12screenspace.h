@@ -12,7 +12,7 @@
 //
 //          Bracket order inside one opaque main-view pass:
 //            BeginView -> [BeginContactDepth -> replayed depth geometry -> EndContactDepth] -> G-buffer pass ->
-//            motion vectors -> DispatchSSR -> EndView
+//            motion vectors -> [BeginSkybox -> ordinary sky draw -> EndSkybox] -> GTAO compute -> DispatchSSR -> EndView
 //          Once per main camera view, around all of its opaque brackets: BeginVolumetrics ... DrawVolumetrics.
 //
 //===========================================================================//
@@ -24,7 +24,7 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_001"
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_004"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
 struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 208 bytes
@@ -43,7 +43,7 @@ struct DX12SSRSettings				// 16 bytes
 	uint32	quality;				// 0 low, 1 balanced, 2 high
 	float	maxDistance;			// Source units
 	float	thickness;				// Source units
-	uint32	reserved;				// 0
+	float	resolutionScale;		// trace scale per axis relative to the quality profile, [0.25, 1]
 };
 
 struct DX12ScreenSpaceViewDesc
@@ -58,7 +58,7 @@ struct alignas( 16 ) DX12VolumetricSettings
 {
 	float	medium[4];				// local/projected lights: density (scattering coefficient, 1/unit), strength, HG g, maxDistance
 	float	sunMedium[4];			// sun: density, strength, HG g, maxDistance
-	uint32	control[4];				// steps per light segment, sun enabled, master enabled, noise index (0 static dither; framecount & 63 under a temporal upscaler)
+	uint32	control[4];				// steps per light segment, sun enabled, master enabled, rotating noise frame (framecount & 63)
 };
 
 struct alignas( 16 ) DX12VolumetricConstants	// 64 bytes, HLSL cbuffer DX12Volumetric (b1 space6)
@@ -91,6 +91,14 @@ public:
 	virtual void BeginVolumetrics( const DX12VolumetricSettings &settings ) = 0;
 	// After the last bracket of that view: adds in-scattering over the completed scene depth, then ends the scope.
 	virtual void DrawVolumetrics() = 0;
+	// Replays the ordinary main-view opaque draws into scene depth, retaining their VS/LOD/alpha coverage.
+	// Only opaque depth writers are admitted; the backend masks color and removes the PS only when coverage is fixed.
+	virtual void BeginDepthPrepass() = 0;
+	virtual void EndDepthPrepass() = 0;
+	// Renders ordinary sky only through untouched main-view depth pixels, using reserved stencil bit 0x40.
+	// End restores their far depth and removes the mask; main scene depth and stencil bit 0x80 stay intact.
+	virtual void BeginSkybox() = 0;
+	virtual void EndSkybox() = 0;
 };
 
 #endif // ISHADERAPIDX12SCREENSPACE_H

@@ -113,5 +113,7 @@ volumetric_vs51.fxc vs volumetric_vs51 native -
 # noparity volumetric_vs51 - native-only
 volumetric_ps51.fxc ps volumetric_ps51 native -
 # noparity volumetric_ps51 - native-only
+volumetric_temporal_ps51.fxc ps volumetric_temporal_ps51 native -
+# noparity volumetric_temporal_ps51 - native-only
 volumetric_upsample_ps51.fxc ps volumetric_upsample_ps51 native -
 # noparity volumetric_upsample_ps51 - native-only

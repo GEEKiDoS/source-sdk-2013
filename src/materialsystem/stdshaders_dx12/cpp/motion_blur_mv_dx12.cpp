@@ -13,7 +13,7 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar mat_motion_blur_quality( "mat_motion_blur_quality", "2", FCVAR_ARCHIVE, "DX12 velocity motion blur gather: 0 low (8 taps), 1 medium (12), 2 high (16). High is the 1080p gather.", true, 0.f, true, 2.f );
+ConVar mat_motion_blur_quality( "mat_motion_blur_quality", "2", FCVAR_ARCHIVE, "DX12 velocity motion blur gather: -1 very low (4 taps), 0 low (8), 1 medium (12), 2 high (16). Default high, full resolution.", true, -1.f, true, 2.f );
 
 BEGIN_VS_SHADER_FLAGS( MotionBlurMV, "Motion-vector motion blur", SHADER_NOT_EDITABLE )
 	BEGIN_SHADER_PARAMS
@@ -21,6 +21,7 @@ BEGIN_VS_SHADER_FLAGS( MotionBlurMV, "Motion-vector motion blur", SHADER_NOT_EDI
 		SHADER_PARAM( VELOCITYTEXTURE, SHADER_PARAM_TYPE_TEXTURE, "_rt_MotionVectors", "Per-pixel motion vectors" )
 		SHADER_PARAM( TILETEXTURE, SHADER_PARAM_TYPE_TEXTURE, "_rt_MotionBlurTiles", "Dilated per-tile maximum velocity length" )
 		SHADER_PARAM( MOTIONBLURINTERNAL, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Internal motion-vector blur values set by proxy" )
+		SHADER_PARAM( VELOCITYREGION, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Valid velocity region in texels (xy) at the target's top-left; 0 = whole target" )
 	END_SHADER_PARAMS
 
 	SHADER_INIT_PARAMS()
@@ -84,9 +85,11 @@ BEGIN_VS_SHADER_FLAGS( MotionBlurMV, "Motion-vector motion blur", SHADER_NOT_EDI
 
 			const float *pMotionBlur = params[MOTIONBLURINTERNAL]->GetVecValue();
 			DX12SetPixelShaderConstant( 0, pMotionBlur, 1 );
+			DX12SetPixelShaderConstant( 1, params[VELOCITYREGION]->GetVecValue(), 1 );
 
-			// 0..2 → 8/12/16 taps. Default high is the 1080p gather this shader used before the cvar.
-			int quality = Clamp( mat_motion_blur_quality.GetInt(), 0, 2 ) + 1;
+			// Preserve the existing 8/12/16-tap combos; the new -1 tier uses combo 4.
+			const int nQuality = Clamp( mat_motion_blur_quality.GetInt(), -1, 2 );
+			int quality = nQuality < 0 ? 4 : nQuality + 1;
 			if ( pMotionBlur[0] == 0.0f )
 				quality = 0;
 			const int nTiles = ( quality != 0 && pMotionBlur[2] > 0.0f ) ? 1 : 0;

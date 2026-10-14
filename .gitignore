@@ -513,3 +513,6 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Local GPU benchmark/capture harness and its artifacts (machine-specific paths).
+/src/_agent_tools/
