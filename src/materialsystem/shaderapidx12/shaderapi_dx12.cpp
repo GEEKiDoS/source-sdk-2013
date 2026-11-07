@@ -2503,7 +2503,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	if ( memoHit )
 	{
 		++m_DrawStats.memoHits;
-		m_Pipeline.BindPipelineState( list, memoSlot->pso, stencilReference, retireFence );
+		m_Pipeline.BindPipelineState( list, m_Pipeline.UseCachedPipeline( memoSlot->pipelineIndex, retireFence ), stencilReference, retireFence );
 		pipelineBound = true;
 	}
 	else if ( vsRecord && ( psRecord || depthOnly ) )
@@ -2796,7 +2796,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				memoSlot->signature = signature;
 				memoSlot->vs = vsRecord;
 				memoSlot->ps = psRecord;
-				memoSlot->pso = pso;
+				memoSlot->pipelineIndex = m_Pipeline.LastPipelineIndex();
 				memoSlot->vsVariant = vsRecord->activeVariantKey;
 				memoSlot->psVariant = psRecord ? psRecord->activeVariantKey : 0;
 				memoSlot->depthOnly = depthOnly;

@@ -296,6 +296,14 @@ public:
 	void ReleaseResourceDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE descriptor, uint64_t nRetireFence );
 	void NotifyShaderDestroyed( uint64_t nShaderIdentity );
 	ID3D12PipelineState *GetOrCreate( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence );
+	// Memo indices are valid only while PipelineEpoch matches. Reuse is a new GPU use, not just a CPU lookup.
+	int LastPipelineIndex() const { return m_nLastPipelineIndex; }
+	ID3D12PipelineState *UseCachedPipeline( int index, uint64_t nRetireFence )
+	{
+		Entry &entry = m_Entries[index];
+		entry.lastUseFence = nRetireFence;
+		return entry.pso.Get();
+	}
 
 private:
 	struct Entry

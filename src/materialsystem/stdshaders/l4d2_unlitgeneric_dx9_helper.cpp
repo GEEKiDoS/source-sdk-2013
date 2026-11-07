@@ -845,7 +845,7 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 					SET_STATIC_VERTEX_SHADER_COMBO( SEAMLESS_DETAIL, bSeamlessDetail );
 					SET_STATIC_VERTEX_SHADER_COMBO( SEPARATE_DETAIL_UVS, IsBoolSet( info.m_nSeparateDetailUVs, params ) );
 					SET_STATIC_VERTEX_SHADER_COMBO( DECAL, bIsDecal );
-					SET_STATIC_VERTEX_SHADER_COMBO( DONT_GAMMA_CONVERT_VERTEX_COLOR, bSRGBWrite ? 0 : 1 );
+					SET_STATIC_VERTEX_SHADER_COMBO( DONT_GAMMA_CONVERT_VERTEX_COLOR, (!bSRGBWrite) && bHasVertexColor );
 					SET_STATIC_VERTEX_SHADER_COMBO( TREESWAY, bTreeSway ? nTreeSwayMode : 0 );
 					SET_STATIC_VERTEX_SHADER( vertexlit_and_unlit_generic_vs30 );
 

@@ -2,6 +2,7 @@
 // Original source CRC AA426DD5, engine_post_ps20b.vcs static 0/8, dynamics
 // 0..251. See E:/l4d2_work/m4/postprocess_integration.txt for IDs and order.
 // STATIC: "CONVERT_FROM_LINEAR" "0..1" [ps20b]
+// STATIC: "LINEAR_OUTPUT" "0..1" [ps20b]
 // DYNAMIC: "COL_CORRECT_NUM_LOOKUPS" "0..3"
 // DYNAMIC: "NOISE_ENABLE" "0..1" [ps20b]
 // DYNAMIC: "VIGNETTE_ENABLE" "0..1" [ps20b]
@@ -9,9 +10,11 @@
 // DYNAMIC: "BLURRED_VIGNETTE_ENABLE" "0..1" [ps20b]
 // DYNAMIC: "VOMIT_ENABLE" "0..1"
 // SKIP: $BLURRED_VIGNETTE_ENABLE && !$LOCAL_CONTRAST_ENABLE [ps20b]
+// SKIP: $LINEAR_OUTPUT && !$CONVERT_FROM_LINEAR [ps20b]
 
 #ifndef SHADER_MODEL_PS_2_B
 #define CONVERT_FROM_LINEAR 0
+#define LINEAR_OUTPUT 0
 #define NOISE_ENABLE 0
 #define VIGNETTE_ENABLE 0
 #define LOCAL_CONTRAST_ENABLE 0
@@ -47,6 +50,14 @@ float3 RetailLinearToSRGB( float3 color )
 	return float3( color.r <= 0.0031308f ? 12.92f * color.r : high.r,
 		color.g <= 0.0031308f ? 12.92f * color.g : high.g,
 		color.b <= 0.0031308f ? 12.92f * color.b : high.b );
+}
+
+float3 RetailSRGBToLinear( float3 color )
+{
+	float3 high = pow( ( color + 0.055f ) / 1.055f, 2.4f );
+	return float3( color.r <= 0.04045f ? color.r / 12.92f : high.r,
+		color.g <= 0.04045f ? color.g / 12.92f : high.g,
+		color.b <= 0.04045f ? color.b / 12.92f : high.b );
 }
 
 float2 MirrorViewport( float2 uv )
@@ -131,6 +142,7 @@ float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
 	float n0 = tex2D( NoiseSampler, bloomUV * 10.0f + NoiseTime ).g;
 	float n1 = tex2D( NoiseSampler, bloomUV.yx * 20.0f - NoiseTime ).g;
 	float noise = tex2D( NoiseSampler, float2( n0, n1 ) ).g;
+	// Strength is modulated by display luminance: shadows retain more grain than highlights.
 	float luminance = saturate( dot( color, float3( 0.2125f, 0.7154f, 0.0721f ) ) );
 	float shadow = saturate( pow( 1.0f - luminance, 12.0f ) ) * 0.8f + 0.2f;
 	color += ( noise * 0.3f - 0.15f ) * NoiseScale * shadow;
@@ -138,5 +150,10 @@ float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
 	color = ScaleParams.x * -color + color;
 	// Native pre-bloom tonemapping owns exposure. Retail static 0/8 does not
 	// call SDK FinalOutput or apply another tone-map / output sRGB transform.
+#if LINEAR_OUTPUT
+	// Effects above operate in the same display-sRGB domain as DX9. Return to DX12's scRGB framebuffer
+	// without applying another tone curve; adding grain directly in linear space amplifies dark noise.
+	color = RetailSRGBToLinear( color );
+#endif
 	return float4( color, 1.0f );
 }

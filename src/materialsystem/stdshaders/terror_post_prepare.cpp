@@ -88,7 +88,9 @@ BEGIN_VS_SHADER_FLAGS( TerrorPostPrepare, "L4D2 EnginePost render-target prepara
 			if ( bPS2b )
 			{
 				DECLARE_DYNAMIC_PIXEL_SHADER( terror_post_prepare_ps20b );
-				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLOAT_BACK_BUFFER, nPass == 0 && g_pHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT );
+				const bool bLinearFramebuffer = g_pHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT ||
+					!Q_stricmp( g_pHardwareConfig->GetShaderDLLName(), "stdshader_dx12" );
+				SET_DYNAMIC_PIXEL_SHADER_COMBO( FLOAT_BACK_BUFFER, nPass == 0 && bLinearFramebuffer );
 				SET_DYNAMIC_PIXEL_SHADER( terror_post_prepare_ps20b );
 			}
 			else

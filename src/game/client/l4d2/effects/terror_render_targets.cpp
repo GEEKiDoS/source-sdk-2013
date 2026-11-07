@@ -5,6 +5,13 @@
 #include "filesystem.h"
 #include "materialsystem/itexture.h"
 #include "tier0/icommandline.h"
+#include "motionvectors_dx12.h"
+#include "upscaler_dx12.h"
+#include "gtao_dx12.h"
+#include "pbr_debug_dx12.h"
+#include "screenspace_dx12.h"
+#include "postprocess_dx12.h"
+#include "framegen_dx12.h"
 #include "tier0/memdbgon.h"
 
 // C286160/C286180, base C011B70/C011B10. Engine ABI remains IClientRenderTargets.
@@ -47,9 +54,26 @@ public:
 		pEyeGlint->IncrementReferenceCount();
 		// Original shadow-manager InitRenderTargets is absent on target;
 		// the SDK shadow manager retains its own supported target lifecycle.
+		MotionVectorsDX12_CreateRenderTarget( pMaterialSystem, pHardwareConfig );
+		UpscalerDX12_Init( pHardwareConfig );
+		FrameGenDX12_Init( pHardwareConfig );
+		GTAODX12_Init( pHardwareConfig );
+		GTAODX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
+		PBRDebugDX12_Init( pHardwareConfig );
+		PBRDebugDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
+		ScreenSpaceDX12_Init( pHardwareConfig );
+		PostProcessDX12_Init( pHardwareConfig );
+		PostProcessDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 	}
 	virtual void ShutdownClientRenderTargets() OVERRIDE
 	{
+		PostProcessDX12_Shutdown();
+		ScreenSpaceDX12_Shutdown();
+		PBRDebugDX12_Shutdown();
+		GTAODX12_Shutdown();
+		FrameGenDX12_Shutdown();
+		UpscalerDX12_Shutdown();
+		MotionVectorsDX12_ShutdownRenderTarget();
 		m_WaterReflectionTexture.Shutdown();
 		m_WaterRefractionTexture.Shutdown();
 		// Native shadow-manager ShutdownRenderTargets is not a target API.

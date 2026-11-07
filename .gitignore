@@ -518,9 +518,10 @@ FodyWeavers.xsd
 /game/mod_l4d2/gameinfo.txt
 
 # Build/runtime output: the mod launcher is published beside game/bin by launcher_main_mod_l4d2
-# and writes steam_appid.txt into its working directory.
+# and writes steam_appid.txt and platform/config into its working directory.
 /game/mod_l4d2_win64.exe
 /game/steam_appid.txt
+/game/platform/
 
 # DX12 native shader pack published by buildshaders_dx12.bat -game ..\game\mod_l4d2.
 /game/mod_l4d2/shaders/vsh/

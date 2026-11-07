@@ -57,6 +57,16 @@ upscaler, frame-generation and denoiser runtimes (DLSS, FSR, XeSS, Streamline,
 Open Image Denoise) are copied beside the renderer into `game/bin/x64`; they are
 not part of the repository.
 
+L4D2's render-target owner initializes and shuts down the shared DX12 motion,
+upscaler, GTAO, screen-space and post-processing resources. The native DX12
+stack owns tone mapping and bloom; TerrorEnginePost then applies L4D2's remaining
+effects in display-sRGB space and returns linear scRGB to the DX12 framebuffer.
+Film grain retains its strength control and luminance weighting (more in shadows,
+less in highlights), rather than being amplified by adding it directly in linear
+space. Its downsampled local-contrast luminance uses the same display-sRGB domain.
+The renderer's fast pipeline memo renews each reused PSO's retirement fence, so
+cache reclamation cannot release it while recorded or GPU work still references it.
+
 L4D2's **Options > Video > Graphics (DX12)...** opens a native options screen
 with Display, Lighting, Post-processing and Frame generation sections. It uses
 the mounted Video screen's hybrid buttons, flyouts, sliders, fonts and footer;

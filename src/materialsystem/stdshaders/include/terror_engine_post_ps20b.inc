@@ -1,13 +1,16 @@
 // ALL SKIP STATEMENTS THAT AFFECT THIS SHADER!!!
 // $BLURRED_VIGNETTE_ENABLE && !$LOCAL_CONTRAST_ENABLE
+// $LINEAR_OUTPUT && !$CONVERT_FROM_LINEAR
 
 #pragma once
 #include "shaderlib/cshader.h"
 class terror_engine_post_ps20b_Static_Index
 {
 	unsigned int m_nCONVERT_FROM_LINEAR : 2;
+	unsigned int m_nLINEAR_OUTPUT : 2;
 #ifdef _DEBUG
 	bool m_bCONVERT_FROM_LINEAR : 1;
+	bool m_bLINEAR_OUTPUT : 1;
 #endif	// _DEBUG
 public:
 	void SetCONVERT_FROM_LINEAR( int i )
@@ -19,22 +22,34 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetLINEAR_OUTPUT( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nLINEAR_OUTPUT = i;
+#ifdef _DEBUG
+		m_bLINEAR_OUTPUT = true;
+#endif	// _DEBUG
+	}
+
 	terror_engine_post_ps20b_Static_Index(  )
 	{
 		m_nCONVERT_FROM_LINEAR = 0;
+		m_nLINEAR_OUTPUT = 0;
 #ifdef _DEBUG
 		m_bCONVERT_FROM_LINEAR = false;
+		m_bLINEAR_OUTPUT = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bCONVERT_FROM_LINEAR );
-		return ( 128 * m_nCONVERT_FROM_LINEAR ) + 0;
+		Assert( m_bCONVERT_FROM_LINEAR && m_bLINEAR_OUTPUT );
+		AssertMsg( !( m_nLINEAR_OUTPUT && !m_nCONVERT_FROM_LINEAR ), "Invalid combo combination ( LINEAR_OUTPUT && !CONVERT_FROM_LINEAR )" );
+		return ( 128 * m_nCONVERT_FROM_LINEAR ) + ( 256 * m_nLINEAR_OUTPUT ) + 0;
 	}
 };
 
-#define shaderStaticTest_terror_engine_post_ps20b psh_forgot_to_set_static_CONVERT_FROM_LINEAR
+#define shaderStaticTest_terror_engine_post_ps20b psh_forgot_to_set_static_CONVERT_FROM_LINEAR + psh_forgot_to_set_static_LINEAR_OUTPUT
 
 
 class terror_engine_post_ps20b_Dynamic_Index

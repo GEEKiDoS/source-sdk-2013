@@ -628,7 +628,7 @@ public:
 	{
 		PipelineSignatureDX12 signature{};
 		ShaderRecordDX12 *vs = nullptr, *ps = nullptr;
-		ID3D12PipelineState *pso = nullptr;
+		int pipelineIndex = -1;
 		uint64_t vsVariant = 0, psVariant = 0, epoch = 0, psoEpoch = 0;
 		bool depthOnly = false, generatedVS = false, generatedPS = false, zeroInput = false, geometryStage = false;
 	};

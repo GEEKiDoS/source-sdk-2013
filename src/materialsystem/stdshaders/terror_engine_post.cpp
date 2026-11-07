@@ -94,7 +94,9 @@ BEGIN_VS_SHADER_FLAGS( TerrorEnginePost, "L4D2 EnginePost composition", SHADER_N
 	SHADER_DRAW
 	{
 		const bool bPS2b = g_pHardwareConfig->GetDXSupportLevel() >= 92;
-		const bool bConvertFromLinear = g_pHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT;
+		// DX12 keeps even its tone-mapped framebuffer in linear scRGB, independent of the legacy HDR mode.
+		const bool bLinearOutput = !Q_stricmp( g_pHardwareConfig->GetShaderDLLName(), "stdshader_dx12" );
+		const bool bConvertFromLinear = bLinearOutput || g_pHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT;
 		SHADOW_STATE
 		{
 			pShaderShadow->EnableBlending( false );
@@ -111,6 +113,7 @@ BEGIN_VS_SHADER_FLAGS( TerrorEnginePost, "L4D2 EnginePost composition", SHADER_N
 			{
 				DECLARE_STATIC_PIXEL_SHADER( terror_engine_post_ps20b );
 				SET_STATIC_PIXEL_SHADER_COMBO( CONVERT_FROM_LINEAR, bConvertFromLinear );
+				SET_STATIC_PIXEL_SHADER_COMBO( LINEAR_OUTPUT, bLinearOutput );
 				SET_STATIC_PIXEL_SHADER( terror_engine_post_ps20b );
 			}
 			else
