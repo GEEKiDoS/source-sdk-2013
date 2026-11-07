@@ -7,6 +7,16 @@
 #include "cbase.h"
 #include "baseviewmodel_shared.h"
 #include "datacache/imdlcache.h"
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#include "animationlayer.h"
+#include "animation.h"
+#include "l4d2/weapons/terror_weapon.h"
+#include "l4d2/terror_shareddefs.h"
+#endif
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#include "l4d2/weapons/terror_weapon.h"
+#include "l4d2/terror_shareddefs.h"
+#endif
 
 #if defined( CLIENT_DLL )
 #include "iprediction.h"
@@ -32,27 +42,59 @@ extern ConVar in_forceuser;
 
 #define VIEWMODEL_ANIMATION_PARITY_BITS 3
 #define SCREEN_OVERLAY_MATERIAL "vgui/screens/vgui_overlay"
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+static ConVar viewmodel_offset_x( "viewmodel_offset_x", "0.0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar viewmodel_offset_y( "viewmodel_offset_y", "0.0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar viewmodel_offset_z( "viewmodel_offset_z", "0.0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
 CBaseViewModel::CBaseViewModel()
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	: m_nClientViewModelState( -1 )
+#endif
 {
 #if defined( CLIENT_DLL )
-	// NOTE: We do this here because the color is never transmitted for the view model.
+#if defined( L4D2 )
+	m_EntClientFlags |= ENTCLIENTFLAG_ALWAYS_INTERPOLATE;
+	m_nOldAnimationParity = 0;
+	SetRenderWithViewModels( true ); // Native507, Move's SOLE actual root owner.
+	m_iCameraAttachment = -1;
+#else
 	m_nOldAnimationParity = 0;
 	m_EntClientFlags |= ENTCLIENTFLAG_ALWAYS_INTERPOLATE;
 #endif
+#endif
 	SetRenderColor( 255, 255, 255, 255 );
-
-	// View model of this weapon
-	m_sVMName			= NULL_STRING;		
-	// Prefix of the animations that should be used by the player carrying this weapon
-	m_sAnimationPrefix	= NULL_STRING;
-
-	m_nViewModelIndex	= 0;
-
-	m_nAnimationParity	= 0;
+	m_sVMName = NULL_STRING;
+	m_sAnimationPrefix = NULL_STRING;
+	m_nViewModelIndex = 0;
+	m_nAnimationParity = 0;
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+	m_nLayerSequence = 0;
+	m_nLayer = 0;
+	m_flLayerStartTime = 0.0f;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -309,6 +351,57 @@ void CBaseViewModel::RemoveEffects( int nEffects )
 // Purpose: 
 // Input  : *modelname - 
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+void CBaseViewModel::SetWeaponModel( const char *modelName, CBaseCombatWeapon *weapon )
+{
+	m_nSkin = 0; // Native DIRECT1636store; NOT changed-only SetSkin+42570 refresh.
+	if ( m_hWeapon.Get() != weapon )
+		m_hWeapon = weapon;
+	// Resolved-NULL equality deliberately preserves an already-invalid stale
+	// raw handle; do NOT change this to an unconditional assignment/extra reset.
+	SetModel( modelName );
+	MDLCACHE_CRITICAL_SECTION();
+	CStudioHdr *model = GetModelPtr();
+	if ( model && model->IsValid() )
+	{
+		Activity idle = TerrorActivityFromOriginal( TERROR_ORIGINAL_ACT_VM_IDLE );
+		if ( weapon )
+			idle = static_cast< CTerrorWeapon * >( weapon )->TranslateViewModelActivity( idle );
+		// Native0F2E0 is HEAVIEST, not31890 weighted/RNG selection. No Send/Apply,
+		// parity/event cursor/layer/main-cycle/time mutation is added here.
+		SetSequence( ::SelectHeaviestSequence( model, idle ) );
+	}
+}
+#elif defined( L4D2 )
+// S7F8C0. The server owns the received main sequence; layer sends do not
+// initialize it. Select the model's translated idle only on a model change.
+void CBaseViewModel::SetWeaponModel( const char *modelName, CBaseCombatWeapon *weapon )
+{
+	m_nSkin = 0;
+	if ( m_hWeapon.Get() != weapon )
+		m_hWeapon = weapon;
+
+	const string_t model = modelName && modelName[0] ? MAKE_STRING( modelName ) : NULL_STRING;
+	if ( model != m_sVMName )
+	{
+		m_sVMName = model;
+		SetModel( STRING( m_sVMName ) );
+		SpawnControlPanels();
+		const bool showControlPanels = weapon && weapon->ShouldShowControlPanels();
+		SetControlPanelsActive( showControlPanels );
+
+		MDLCACHE_CRITICAL_SECTION();
+		CStudioHdr *studio = GetModelPtr();
+		if ( studio && studio->IsValid() )
+		{
+			Activity idle = TerrorActivityFromOriginal( TERROR_ORIGINAL_ACT_VM_IDLE );
+			if ( weapon )
+				idle = static_cast< CTerrorWeapon * >( weapon )->TranslateViewModelActivity( idle );
+			SetSequence( SelectHeaviestSequence( idle ) );
+		}
+	}
+}
+#else
 void CBaseViewModel::SetWeaponModel( const char *modelname, CBaseCombatWeapon *weapon )
 {
 	m_hWeapon = weapon;
@@ -341,6 +434,8 @@ void CBaseViewModel::SetWeaponModel( const char *modelname, CBaseCombatWeapon *w
 #endif
 }
 
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Output : CBaseCombatWeapon
@@ -356,6 +451,9 @@ CBaseCombatWeapon *CBaseViewModel::GetOwningWeapon( void )
 //-----------------------------------------------------------------------------
 void CBaseViewModel::SendViewModelMatchingSequence( int sequence )
 {
+	#if defined( L4D2 )
+	SendTerrorLayerSequence( sequence );
+	#else
 	// since all we do is send a sequence number down to the client, 
 	// set this here so other weapons code knows which sequence is playing.
 	SetSequence( sequence );
@@ -376,12 +474,49 @@ void CBaseViewModel::SendViewModelMatchingSequence( int sequence )
 	// Restart animation at frame 0
 	SetCycle( 0 );
 	ResetSequenceInfo();
+	#endif
 }
 
 #if defined( CLIENT_DLL )
 #include "ivieweffects.h"
 #endif
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+// C22880, actual BASE/PREDICTED virtual222 (Terror replaces with288F40).
+// Native100A84B0 is a proven3-byte purefalse on the pinned PC module: its dead
+// console autoaim branch is folded, NOT implemented as a guessed runtime gate.
+void CBaseViewModel::CalcViewModelView( CBasePlayer *, const Vector &eyePosition,
+	const QAngle &eyeAngles )
+{
+	QAngle angles = eyeAngles;
+	Vector origin = eyePosition;
+	Vector forward, right, up;
+	AngleVectors( eyeAngles, &forward, &right, &up );
+	const float x = viewmodel_offset_x.GetFloat();
+	const float y = viewmodel_offset_y.GetFloat();
+	const float z = viewmodel_offset_z.GetFloat();
+	const float rightX = right.x * x;
+	const float rightY = right.y * x;
+	const float rightZ = right.z * x;
+	origin.x = ( ( forward.x * y + up.x * z ) + rightX ) + origin.x;
+	origin.y = origin.y + ( ( forward.y * y + up.y * z ) + rightY );
+	origin.z = origin.z + ( ( forward.z * y + up.z * z ) + rightZ );
+	if ( !prediction->InPrediction() )
+	{
+		// Active split-user scope omitted ONLY under Main's real user0 projection.
+		vieweffects->ApplyShake( origin, angles, 0.1f );
+	}
+	SetLocalOrigin( origin );
+	SetLocalAngles( angles );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseViewModel::CalcViewModelView( CBasePlayer *owner, const Vector& eyePosition, const QAngle& eyeAngles )
 {
 	// UNDONE: Calc this on the server?  Disabled for now as it seems unnecessary to have this info on the server
@@ -415,10 +550,12 @@ void CBaseViewModel::CalcViewModelView( CBasePlayer *owner, const Vector& eyePos
 	}
 #endif
 
+#if !defined( L4D2 )
 	if( UseVR() )
 	{
 		g_ClientVirtualReality.OverrideViewModelTransform( vmorigin, vmangles, pWeapon && pWeapon->ShouldUseLargeViewModelVROverride() );
 	}
+#endif
 
 	SetLocalOrigin( vmorigin );
 	SetLocalAngles( vmangles );
@@ -453,6 +590,8 @@ void CBaseViewModel::CalcViewModelView( CBasePlayer *owner, const Vector& eyePos
 
 }
 
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
@@ -460,6 +599,70 @@ float g_fMaxViewModelLag = 1.5f;
 
 ConVar sv_viewmodel_lag_do_angles( "sv_viewmodel_lag_do_angles", "1", FCVAR_CHEAT | FCVAR_REPLICATED );
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+// C223E0, actual BASE virtual221. Predicted's genuine17A4F0 remains RET12;
+// Terror287DA0 tail-calls that Predicted body, not this drift implementation.
+void CBaseViewModel::CalcViewModelLag( Vector &origin, QAngle &angles, QAngle &original )
+{
+	const Vector originalOrigin = origin;
+	const QAngle originalAngles = angles;
+	Vector forward;
+	AngleVectors( angles, &forward );
+	const float frameTime = gpGlobals->frametime;
+	if ( frameTime != 0.0f )
+	{
+		const Vector difference = forward - m_vecLastFacing;
+		float speed = 5.0f;
+		const float distance = sqrtf( ( difference.y * difference.y +
+			difference.z * difference.z ) + difference.x * difference.x );
+		if ( distance > g_fMaxViewModelLag && g_fMaxViewModelLag > 0.0f )
+			speed = ( distance / g_fMaxViewModelLag ) * 5.0f;
+		const float step = frameTime * speed;
+		m_vecLastFacing.x = step * difference.x + m_vecLastFacing.x;
+		m_vecLastFacing.y = difference.y * step + m_vecLastFacing.y;
+		m_vecLastFacing.z = difference.z * step + m_vecLastFacing.z;
+		VectorNormalize( m_vecLastFacing );
+		const float nextY = ( difference.y * -1.0f ) * 5.0f + origin.y;
+		const float nextZ = ( difference.z * -1.0f ) * 5.0f + origin.z;
+		origin.x = ( difference.x * -1.0f ) * 5.0f + origin.x;
+		origin.y = nextY;
+		origin.z = nextZ;
+	}
+	Vector right, up;
+	AngleVectors( original, &forward, &right, &up );
+	float pitch = original.x;
+	if ( pitch > 180.0f )
+		pitch -= 360.0f;
+	else if ( pitch < -180.0f )
+		pitch += 360.0f;
+	if ( g_fMaxViewModelLag == 0.0f )
+	{
+		origin = originalOrigin;
+		angles = originalAngles;
+	}
+	// Native ALWAYS applies the three pitch-origin terms, even after zero-max
+	// restore. No new sv_viewmodel_lag_do_angles policy/extra angle modification.
+	const float forwardScale = pitch * -0.035f;
+	const float initialX = forwardScale * forward.x + origin.x;
+	const float initialY = forwardScale * forward.y + origin.y;
+	const float initialZ = forward.z * forwardScale + origin.z;
+	const float rightScale = pitch * -0.03f;
+	const float upScale = pitch * -0.02f;
+	const float nextX = ( right.x * rightScale + initialX ) + up.x * upScale;
+	const float nextY = ( right.y * rightScale + initialY ) + up.y * upScale;
+	const float nextZ = ( right.z * rightScale + initialZ ) + up.z * upScale;
+	origin.y = nextY;
+	origin.x = nextX;
+	origin.z = nextZ;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseViewModel::CalcViewModelLag( Vector& origin, QAngle& angles, QAngle& original_angles )
 {
 	Vector vOriginalOrigin = origin;
@@ -518,6 +721,8 @@ void CBaseViewModel::CalcViewModelLag( Vector& origin, QAngle& angles, QAngle& o
 	}
 }
 
+#endif
+
 //-----------------------------------------------------------------------------
 // Stub to keep networking consistent for DEM files
 //-----------------------------------------------------------------------------
@@ -530,6 +735,30 @@ void CBaseViewModel::CalcViewModelLag( Vector& origin, QAngle& angles, QAngle& o
 // Purpose: Resets anim cycle when the server changes the weapon on us
 //-----------------------------------------------------------------------------
 #if defined( CLIENT_DLL )
+#if defined( L4D2 )
+// Whole C226D0. The original VM proxy masks EF_NODRAW0x20 before SetEffects;
+// ordinary Root RecvProxy_EffectFlags remains unchanged for other entities/games.
+static void RecvProxy_ViewModelEffects( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	static_cast< CBaseViewModel * >( pStruct )->SetEffects( pData->m_Value.m_Int & ~EF_NODRAW );
+}
+
+// Whole C226F0. Generic real handle decoding FIRST; preserve layer0. This does
+// NOT compare old/new weapons, reset main cycle or write m_flAnimTime.
+static void RecvProxy_Weapon( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	RecvProxy_IntToEHandle( pData, pStruct, pOut );
+	CBaseViewModel *viewModel = static_cast< CBaseViewModel * >( pStruct );
+	if ( viewModel->GetNumAnimOverlays() == 4 )
+	{
+		for ( int i = 1; i < 4; ++i )
+		{
+			viewModel->GetAnimOverlay( i )->SetOrder( 15 );
+			viewModel->GetAnimOverlay( i )->SetSequence( 0 );
+		}
+	}
+}
+#else
 static void RecvProxy_Weapon( const CRecvProxyData *pData, void *pStruct, void *pOut )
 {
 	CBaseViewModel *pViewModel = ((CBaseViewModel*)pStruct);
@@ -547,7 +776,9 @@ static void RecvProxy_Weapon( const CRecvProxyData *pData, void *pStruct, void *
 		pViewModel->m_flAnimTime = gpGlobals->curtime;
 	}
 }
+
 #endif
+#endif // CLIENT_DLL
 
 
 LINK_ENTITY_TO_CLASS( viewmodel, CBaseViewModel );
@@ -556,10 +787,18 @@ IMPLEMENT_NETWORKCLASS_ALIASED( BaseViewModel, DT_BaseViewModel )
 
 BEGIN_NETWORK_TABLE_NOBASE(CBaseViewModel, DT_BaseViewModel)
 #if !defined( CLIENT_DLL )
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nModelIndex ), 12, 0 ),
+#else
 	SendPropModelIndex(SENDINFO(m_nModelIndex)),
+#endif
 	SendPropInt		(SENDINFO(m_nBody), 8),
 	SendPropInt		(SENDINFO(m_nSkin), 10),
 	SendPropInt		(SENDINFO(m_nSequence),	8, SPROP_UNSIGNED),
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nLayerSequence ), 8, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO( m_nLayer ), 2, SPROP_UNSIGNED ),
+#endif
 	SendPropInt		(SENDINFO(m_nViewModelIndex), VIEWMODEL_INDEX_BITS, SPROP_UNSIGNED),
 	SendPropFloat	(SENDINFO(m_flPlaybackRate),	8,	SPROP_ROUNDUP,	-4.0,	12.0f),
 	SendPropInt		(SENDINFO(m_fEffects),		10, SPROP_UNSIGNED),
@@ -570,8 +809,11 @@ BEGIN_NETWORK_TABLE_NOBASE(CBaseViewModel, DT_BaseViewModel)
 	SendPropInt( SENDINFO( m_nNewSequenceParity ), EF_PARITY_BITS, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO( m_nResetEventsParity ), EF_PARITY_BITS, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO( m_nMuzzleFlashParity ), EF_MUZZLEFLASH_BITS, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO( m_flLayerStartTime ), 0, SPROP_NOSCALE ),
+#endif
 
-#if !defined( INVASION_DLL ) && !defined( INVASION_CLIENT_DLL )
+#if !defined( INVASION_DLL ) && !defined( INVASION_CLIENT_DLL ) && !defined( L4D2 )
 	SendPropArray	(SendPropFloat(SENDINFO_ARRAY(m_flPoseParameter),	8, 0, 0.0f, 1.0f), m_flPoseParameter),
 #endif
 #else
@@ -579,9 +821,17 @@ BEGIN_NETWORK_TABLE_NOBASE(CBaseViewModel, DT_BaseViewModel)
 	RecvPropInt		(RECVINFO(m_nSkin)),
 	RecvPropInt		(RECVINFO(m_nBody)),
 	RecvPropInt		(RECVINFO(m_nSequence), 0, RecvProxy_SequenceNum ),
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO( m_nLayerSequence ) ),
+	RecvPropInt( RECVINFO( m_nLayer ) ),
+#endif
 	RecvPropInt		(RECVINFO(m_nViewModelIndex)),
 	RecvPropFloat	(RECVINFO(m_flPlaybackRate)),
-	RecvPropInt		(RECVINFO(m_fEffects), 0, RecvProxy_EffectFlags ),
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO( m_fEffects ), 0, RecvProxy_ViewModelEffects ),
+#else
+	RecvPropInt( RECVINFO(m_fEffects), 0, RecvProxy_EffectFlags ),
+#endif
 	RecvPropInt		(RECVINFO(m_nAnimationParity)),
 	RecvPropEHandle (RECVINFO(m_hWeapon), RecvProxy_Weapon ),
 	RecvPropEHandle (RECVINFO(m_hOwner)),
@@ -589,8 +839,11 @@ BEGIN_NETWORK_TABLE_NOBASE(CBaseViewModel, DT_BaseViewModel)
 	RecvPropInt( RECVINFO( m_nNewSequenceParity )),
 	RecvPropInt( RECVINFO( m_nResetEventsParity )),
 	RecvPropInt( RECVINFO( m_nMuzzleFlashParity )),
+#if defined( L4D2 )
+	RecvPropFloat( RECVINFO( m_flLayerStartTime ) ),
+#endif
 
-#if !defined( INVASION_DLL ) && !defined( INVASION_CLIENT_DLL )
+#if !defined( INVASION_DLL ) && !defined( INVASION_CLIENT_DLL ) && !defined( L4D2 )
 	RecvPropArray(RecvPropFloat(RECVINFO(m_flPoseParameter[0]) ), m_flPoseParameter ),
 #endif
 #endif
@@ -601,16 +854,31 @@ END_NETWORK_TABLE()
 BEGIN_PREDICTION_DATA( CBaseViewModel )
 
 	// Networked
+	#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_nModelIndex, FIELD_SHORT, FTYPEDESC_INSENDTABLE | FTYPEDESC_MODELINDEX | FTYPEDESC_OVERRIDE ),
+	DEFINE_PRED_FIELD( m_nSkin, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_OVERRIDE ),
+	DEFINE_PRED_FIELD( m_nBody, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_OVERRIDE ),
+	#else
 	DEFINE_PRED_FIELD( m_nModelIndex, FIELD_SHORT, FTYPEDESC_INSENDTABLE | FTYPEDESC_MODELINDEX ),
 	DEFINE_PRED_FIELD( m_nSkin, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_nBody, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	#endif
 	DEFINE_PRED_FIELD( m_nSequence, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_nViewModelIndex, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	#if defined( L4D2 )
+	DEFINE_PRED_FIELD_TOL( m_flPlaybackRate, FIELD_FLOAT, FTYPEDESC_INSENDTABLE | FTYPEDESC_OVERRIDE, 0.125f ),
+	#else
 	DEFINE_PRED_FIELD_TOL( m_flPlaybackRate, FIELD_FLOAT, FTYPEDESC_INSENDTABLE, 0.125f ),
+	#endif
 	DEFINE_PRED_FIELD( m_fEffects, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_OVERRIDE ),
 	DEFINE_PRED_FIELD( m_nAnimationParity, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_hWeapon, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_flAnimTime, FIELD_FLOAT, 0 ),
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_nLayerSequence, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_nLayer, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_flLayerStartTime, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
+#endif
 
 	DEFINE_FIELD( m_hOwner, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_flTimeWeaponIdle, FIELD_FLOAT ),

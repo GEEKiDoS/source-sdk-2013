@@ -1190,6 +1190,18 @@ public:
 	// Returns the render bounds
 	void GetBounds( Vector *pMin, Vector *pMax );
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	// Native bounds include child validity; the SDK backend only merges their boxes.
+	void UpdateChildBoundsValidity()
+	{
+		for ( CParticleCollection *pChild = m_Children.m_pHead; pChild; pChild = pChild->m_pNext )
+		{
+			pChild->UpdateChildBoundsValidity();
+			m_bBoundsValid = m_bBoundsValid || pChild->m_bBoundsValid;
+		}
+	}
+#endif
+
 	// Visualize operators (for editing/debugging)
 	void VisualizeOperator( const DmObjectId_t *pOpId = NULL );
 

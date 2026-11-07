@@ -9,6 +9,42 @@
 
 #ifdef CLIENT_DLL
 
+#if defined( L4D2 )
+// CDCCA0: build the death pose, then restore the live sequence/bone state.
+void GetRagdollCurSequenceWithDeathPose( C_BaseAnimating *player, matrix3x4_t *bones, float time, int deathPose, int deathFrame )
+{
+	player->InvalidateBoneCache();
+	Vector oldOrigin = player->GetAbsOrigin();
+	player->Interpolate( time );
+	if ( deathPose == -1 )
+	{
+		player->SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+		player->InvalidateBoneCache();
+		player->SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, time );
+		return;
+	}
+
+	Vector origin = player->GetAbsOrigin();
+	Vector direction = origin - oldOrigin;
+	float distance = VectorNormalize( direction );
+	float cycle = player->GetCycle();
+	int sequence = player->GetSequence();
+	Vector deathOrigin = origin + direction * ( distance * distance * gpGlobals->frametime );
+	// This is SetEffects, not AddEffects: the original discards other effect bits.
+	player->SetEffects( EF_NOINTERP );
+	player->SetSequence( deathPose );
+	player->SetCycle( (float)deathFrame * 0.16666667f );
+	player->SetAbsOrigin( deathOrigin );
+	player->SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+	player->SetAbsOrigin( origin );
+	player->InvalidateBoneCache();
+	player->SetSequence( sequence );
+	player->SetCycle( cycle );
+	player->Interpolate( gpGlobals->curtime );
+	player->SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+	player->m_fEffects &= ~EF_NOINTERP;
+}
+#else
 void GetRagdollCurSequenceWithDeathPose( C_BaseAnimating *entity, matrix3x4_t *curBones, float flTime, int activity, int frame )
 {
 	// blow the cached prev bones
@@ -61,6 +97,7 @@ void GetRagdollCurSequenceWithDeathPose( C_BaseAnimating *entity, matrix3x4_t *c
 		entity->SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, flTime );
 	}
 }
+#endif // L4D2
 
 #else // !CLIENT_DLL
 

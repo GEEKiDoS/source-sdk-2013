@@ -37,6 +37,11 @@ public:
 	CNetworkVar( int, m_nSkin );
 	CNetworkVar( int, m_nFlags );
 	CNetworkVar( int, m_nEffects );
+#if defined( L4D2 )
+	CNetworkVar( int, r );
+	CNetworkVar( int, g );
+	CNetworkVar( int, b );
+#endif
 };
 
 //-----------------------------------------------------------------------------
@@ -53,6 +58,9 @@ CTEPhysicsProp::CTEPhysicsProp( const char *name ) :
 	m_nSkin				= 0;
 	m_nFlags			= 0;
 	m_nEffects			= 0;
+#if defined( L4D2 )
+	r = g = b = 0; // Native S4CB9C0 singleton defaults.
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -103,22 +111,45 @@ void CTEPhysicsProp::Test( const Vector& current_origin, const QAngle& current_a
 }
 
 IMPLEMENT_SERVERCLASS_ST(CTEPhysicsProp, DT_TEPhysicsProp)
+#if defined( L4D2 )
+	SendPropVector( SENDINFO(m_vecOrigin), -1, SPROP_COORD_MP ),
+#else
 	SendPropVector( SENDINFO(m_vecOrigin), -1, SPROP_COORD),
+#endif
 	SendPropAngle( SENDINFO_VECTORELEM(m_angRotation, 0), 13 ),
 	SendPropAngle( SENDINFO_VECTORELEM(m_angRotation, 1), 13 ),
 	SendPropAngle( SENDINFO_VECTORELEM(m_angRotation, 2), 13 ),
+#if defined( L4D2 )
+	SendPropVector( SENDINFO(m_vecVelocity), -1, SPROP_COORD_MP ),
+	SendPropInt( SENDINFO(m_nModelIndex), 12, 0 ),
+	SendPropInt( SENDINFO(m_nSkin), 10, 0 ),
+#else
 	SendPropVector( SENDINFO(m_vecVelocity), -1, SPROP_COORD),
 	SendPropModelIndex( SENDINFO(m_nModelIndex) ),
 	SendPropInt( SENDINFO(m_nSkin), ANIMATION_SKIN_BITS),
+#endif
 	SendPropInt( SENDINFO(m_nFlags), 2, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropInt( SENDINFO(m_nEffects), 10, SPROP_UNSIGNED ),
+#else
 	SendPropInt( SENDINFO(m_nEffects), EF_MAX_BITS, SPROP_UNSIGNED),
+#endif
+#if defined( L4D2 )
+	SendPropInt( SENDINFO(r), 8, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO(g), 8, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO(b), 8, SPROP_UNSIGNED ),
+#endif
 END_SEND_TABLE()
 
 // Singleton to fire TEBreakModel objects
 static CTEPhysicsProp s_TEPhysicsProp( "physicsprop" );
 
 void TE_PhysicsProp( IRecipientFilter& filter, float delay,
-	int modelindex, int skin, const Vector& pos, const QAngle &angles, const Vector& vel, int flags, int effects )
+	int modelindex, int skin, const Vector& pos, const QAngle &angles, const Vector& vel, int flags, int effects
+#if defined( L4D2 )
+	, int r, int g, int b
+#endif
+	)
 {
 	s_TEPhysicsProp.m_vecOrigin		= pos;
 	s_TEPhysicsProp.m_angRotation	= angles;
@@ -127,6 +158,9 @@ void TE_PhysicsProp( IRecipientFilter& filter, float delay,
 	s_TEPhysicsProp.m_nSkin			= skin;
 	s_TEPhysicsProp.m_nFlags		= flags;
 	s_TEPhysicsProp.m_nEffects		= effects;
+#if defined( L4D2 )
+	s_TEPhysicsProp.r = r; s_TEPhysicsProp.g = g; s_TEPhysicsProp.b = b;
+#endif
 
 	// Send it over the wire
 	s_TEPhysicsProp.Create( filter, delay );

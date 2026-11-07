@@ -13,6 +13,9 @@
 #include "tier1/KeyValues.h"
 #include "toolframework_client.h"
 #include "tier0/vprof.h"
+#if defined( L4D2 )
+#include "l4d2/effects/terror_materials.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -139,6 +142,9 @@ void TE_ProjectDecal( IRecipientFilter& filter, float delay,
 
 	if ( tr.hitbox != 0 )
 	{
+#if defined( L4D2 )
+		Terror_PrepareDecalMaterial( index );
+#endif
 		staticpropmgr->AddDecalToStaticProp( *pos, endpos, hitbox - 1, index, false, tr );
 	}
 	else

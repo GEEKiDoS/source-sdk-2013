@@ -10,12 +10,22 @@
 #pragma once
 #endif
 
+#if defined( L4D2 )
+#include "locksounds.h"
+#endif
+
 
 class CBaseButton : public CBaseToggle
 {
 public:
 
 	DECLARE_CLASS( CBaseButton, CBaseToggle );
+#if defined( L4D2 )
+	CBaseButton();
+	DECLARE_SERVERCLASS();
+	virtual CBaseEntity *GetUseRedirectEntity() OVERRIDE;
+	virtual unsigned int PhysicsSolidMaskForEntity() const OVERRIDE;
+#endif
 
 	void Spawn( void );
 	virtual void Precache( void );
@@ -85,6 +95,11 @@ protected:
 	COutputEvent m_OnOut;
 
 	int		m_nState;
+#if defined( L4D2 )
+	string_t m_sGlowEntity;
+	CNetworkHandle( CBaseEntity, m_glowEntity );
+	CNetworkVar( bool, m_usable );
+#endif
 };
 
 
@@ -168,5 +183,38 @@ protected:
 	void UpdateThink( void );
 };
 
+
+#if defined( L4D2 )
+class CButtonTimed : public CBaseButton
+{
+public:
+	DECLARE_CLASS( CButtonTimed, CBaseButton );
+	DECLARE_SERVERCLASS();
+	DECLARE_DATADESC();
+
+	CButtonTimed();
+	virtual void Spawn() OVERRIDE;
+	virtual int ObjectCaps() OVERRIDE;
+	void UseTimed( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
+	void UseThink();
+	virtual void StopPressing();
+	virtual void TimeUp();
+	virtual void Enable();
+	virtual void Disable();
+	void InputEnable( inputdata_t &inputdata );
+	void InputDisable( inputdata_t &inputdata );
+
+protected:
+	CNetworkVar( string_t, m_sUseString );
+	CNetworkVar( string_t, m_sUseSubString );
+	int m_nUseTime;
+	bool m_bAutoDisable;
+	bool m_bInUse;
+	float m_flUseStartTime;
+	float m_flLastUseTime;
+	COutputEvent m_OnUnpressed;
+	COutputEvent m_OnTimeUp;
+};
+#endif
 
 #endif // BUTTONS_H

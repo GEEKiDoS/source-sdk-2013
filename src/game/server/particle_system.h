@@ -49,11 +49,17 @@ protected:
 	CNetworkVar( bool,	m_bActive );
 	CNetworkVar( int,	m_iEffectIndex )
 	CNetworkVar( float,	m_flStartTime );	// Time at which this effect was started.  This is used after restoring an active effect.
+#if defined( L4D2 )
+	CNetworkArray( Vector, m_vServerControlPoints, 4 );
+	CNetworkArray( unsigned char, m_iServerControlPointAssignments, 4 );
+#endif
 
 	string_t			m_iszControlPointNames[kMAXCONTROLPOINTS];
 	CNetworkArray( EHANDLE, m_hControlPointEnts, kMAXCONTROLPOINTS );
 	CNetworkArray( unsigned char, m_iControlPointParents, kMAXCONTROLPOINTS );
+#if !defined( L4D2 )
 	CNetworkVar( bool,	m_bWeatherEffect );
+#endif
 };
 
 #endif // PARTICLE_SYSTEM_H

@@ -1725,6 +1725,7 @@ void C_DustTrail::OnDataChanged(DataUpdateType_t updateType)
 
 
 // FIXME: These all have to be moved out of this old system and into the new to leverage art assets!
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectDusttrail )
 CLIENTEFFECT_MATERIAL( "particle/smokesprites_0001" )
 /*
@@ -1745,6 +1746,7 @@ CLIENTEFFECT_MATERIAL( "particle/smokesprites_0015" )
 CLIENTEFFECT_MATERIAL( "particle/smokesprites_0016" )
 */
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 
 //-----------------------------------------------------------------------------

@@ -45,7 +45,11 @@ using namespace vgui;
 #define HUD_CLASSAUTOKILL_FLAGS		( FCVAR_CLIENTDLL | FCVAR_ARCHIVE )
 #endif // !TF_CLIENT_DLL
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+extern ConVar hud_classautokill;
+#else
 ConVar hud_classautokill( "hud_classautokill", "1", HUD_CLASSAUTOKILL_FLAGS, "Automatically kill player after choosing a new playerclass." );
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Constructor

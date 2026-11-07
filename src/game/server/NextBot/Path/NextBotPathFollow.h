@@ -38,9 +38,11 @@ public:
 
 	virtual bool IsDiscontinuityAhead( INextBot *bot, Path::SegmentType type, float range = -1.0f ) const;	// return true if there is a the given discontinuity ahead in the path within the given range (-1 = entire remaining path)
 
+#if !defined( L4D2 )
 	void SetGoalTolerance( float range );			// set tolerance within at which we're considered to be at our goal
 
 	Path::ResultType GetResult() const { return m_result;  }
+#endif
 
 private:
 	const Path::Segment *m_goal;					// our current goal along the path
@@ -52,12 +54,17 @@ private:
 	//bool IsOnStairs( INextBot *bot ) const;		// return true if bot is standing on a stairway
 	bool m_isOnStairs;
 
+#if !defined( L4D2 )
 	Path::ResultType m_result = NO_PATH;
+#endif
 
 	CountdownTimer m_avoidTimer;					// do avoid check more often if we recently avoided
 
 	CountdownTimer m_waitTimer;						// for waiting for a blocker to move off our path
 	CHandle< CBaseEntity > m_hindrance;
+#if defined( L4D2 )
+	CountdownTimer m_skipTimer;					// S4B64B0: per-path lookahead throttle, retained across Invalidate.
+#endif
 	
 	// debug display data for avoid volumes
 	bool m_didAvoidCheck;
@@ -78,14 +85,18 @@ private:
 	bool LadderUpdate( INextBot *bot );				// move bot along ladder
 	CBaseEntity *FindBlocker( INextBot *bot );		// if entity is returned, it is blocking us from continuing along our path
 
+#if !defined( L4D2 )
 	float m_goalTolerance;
+#endif
 };
 
 
+#if !defined( L4D2 )
 inline void PathFollower::SetGoalTolerance( float range )
 {
 	m_goalTolerance = range;
 }
+#endif
 
 
 inline const Path::Segment *PathFollower::GetCurrentGoal( void ) const

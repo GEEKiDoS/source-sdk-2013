@@ -8,7 +8,7 @@
 #include "NavUI.h"
 #include "filesystem.h"
 #include "tier0/icommandline.h"
-#include "vgui_gamedll_int.h"
+#include "l4d2/nav/vgui_gamedll_int.h"
 #include "ienginevgui.h"
 #include "IGameUIFuncs.h"
 #include "fmtstr.h"
@@ -39,7 +39,11 @@ CNavUIBasePanel *TheNavUI( void )
 
 
 //--------------------------------------------------------------------------------------------------------
+#if defined( L4D2 )
+extern ConVar nav_gui_rebuild; // Sole actual registration in l4d2/terror_nav.cpp.
+#else
 ConVar NavGUIRebuild( "nav_gui_rebuild", "0", FCVAR_CHEAT, "Rebuilds the nav ui windows from scratch every time they're opened" );
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------
@@ -529,7 +533,11 @@ void CNavUIBasePanel::ToggleVisibility( void )
 {
 	m_hidden = !m_hidden;
 
+#if defined( L4D2 )
+	if ( m_hidden && nav_gui_rebuild.GetBool() )
+#else
 	if ( m_hidden && NavGUIRebuild.GetBool() )
+#endif
 	{
 		MarkForDeletion();
 		s_navUIPanel = NULL;
@@ -768,6 +776,7 @@ void CNavUIBasePanel::PlaySound( const char *sound )
 
 //--------------------------------------------------------------------------------------------------------
 // Taken from cl_dll/view.cpp
+#if !defined( L4D2 )
 float ScaleFOVByWidthRatio( float fovDegrees, float ratio )
 {
 	float halfAngleRadians = fovDegrees * ( 0.5f * M_PI / 180.0f );
@@ -776,6 +785,7 @@ float ScaleFOVByWidthRatio( float fovDegrees, float ratio )
 	float retDegrees = ( 180.0f / M_PI ) * atan( t );
 	return retDegrees * 2.0f;
 }
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------
@@ -793,6 +803,29 @@ float ScaleFOVByWidthRatio( float fovDegrees, float ratio )
 // vecPickingRay
 // Adapted from cl_dll/c_vguiscreen.cpp
 //--------------------------------------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+void ScreenToWorld( int mousex, int mousey, float fov,
+	const Vector &vecRenderOrigin, const QAngle &vecRenderAngles, Vector &vecPickingRay )
+{
+	// S388D90: integer half-screen centers; double x87 chains, float distance spill.
+	int wide, tall;
+	vgui::surface()->GetScreenSize( wide, tall );
+	const float centerX = static_cast< float >( wide / 2 );
+	const float dx = static_cast< float >( mousex ) - centerX;
+	const float dy = static_cast< float >( tall / 2 ) - static_cast< float >( mousey );
+	const double half = atan2( tan( double( fov ) * 0.008726646259971648 ) *
+		( double( wide ) / double( tall ) * 0.75 ), 1.0 );
+	const double halfDegrees = half * 57.29577951308232;
+	const float distance = static_cast< float >( double( centerX ) /
+		tan( ( halfDegrees + halfDegrees ) * 3.141592653589793 * 0.002777777777777778 ) );
+	Vector forward, right, up;
+	AngleVectors( vecRenderAngles, &forward, &right, &up );
+	vecPickingRay = forward * distance + right * dx + up * dy;
+	VectorNormalize( vecPickingRay );
+}
+#pragma float_control( pop )
+#else
 void ScreenToWorld( int mousex, int mousey, float fov,
 				   const Vector& vecRenderOrigin,
 				   const QAngle& vecRenderAngles,
@@ -826,6 +859,7 @@ void ScreenToWorld( int mousex, int mousey, float fov,
 	// Convert to unit vector
 	VectorNormalize( vecPickingRay );
 } 
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------
@@ -885,7 +919,9 @@ void NavUICommand( void )
 		s_navUIPanel->ToggleVisibility();
 	}
 }
+#if !defined( L4D2 )
 ConCommand nav_gui( "nav_gui", NavUICommand, "Opens the nav editing GUI", FCVAR_CHEAT );
+#endif // L4D2: sole GapConsoleServer registration delegates via CC_nav_gui.
 
 #endif // SERVER_USES_VGUI
 

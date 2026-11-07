@@ -27,7 +27,7 @@
 #include <algorithm>
 #include "tier0/valve_minmax_on.h"
 
-#if defined(DOD_DLL) || defined(CSTRIKE_DLL)
+#if defined(DOD_DLL) || defined(CSTRIKE_DLL) || defined(L4D2)
 #define USE_DETAIL_SHAPES
 #endif
 
@@ -49,8 +49,20 @@
 struct model_t;
 
 
-ConVar cl_detaildist( "cl_detaildist", "1200", 0, "Distance at which detail props are no longer visible" );
-ConVar cl_detailfade( "cl_detailfade", "400", 0, "Distance across which detail props fade in" );
+ConVar cl_detaildist( "cl_detaildist", "1200", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Distance at which detail props are no longer visible" );
+ConVar cl_detailfade( "cl_detailfade", "400", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Distance across which detail props fade in" );
 #if defined( USE_DETAIL_SHAPES ) 
 ConVar cl_detail_max_sway( "cl_detail_max_sway", "0", FCVAR_ARCHIVE, "Amplitude of the detail prop sway" );
 ConVar cl_detail_avoid_radius( "cl_detail_avoid_radius", "0", FCVAR_ARCHIVE, "radius around detail sprite to avoid players" );
@@ -262,7 +274,13 @@ protected:
 #endif
 };
 
-static ConVar mat_fullbright( "mat_fullbright", "0", FCVAR_CHEAT ); // hook into engine's cvars..
+static ConVar mat_fullbright( "mat_fullbright", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ ); // hook into engine's cvars..
 extern ConVar r_DrawDetailProps;
 
 
@@ -1442,7 +1460,17 @@ CDetailObjectSystem::~CDetailObjectSystem()
 void CDetailObjectSystem::LevelInitPreEntity()
 {
 	// Prepare the translucent detail sprite material; we only have 1!
+#if defined( L4D2 )
+	const char *pDetailMaterial = DETAIL_SPRITE_MATERIAL;
+	C_World *pWorld = GetClientWorldEntity();
+	if ( pWorld && pWorld->GetDetailSpriteMaterial()[0] )
+	{
+		pDetailMaterial = pWorld->GetDetailSpriteMaterial();
+	}
+	m_DetailSpriteMaterial.Init( pDetailMaterial, TEXTURE_GROUP_OTHER );
+#else
 	m_DetailSpriteMaterial.Init( "detail/detailsprites", TEXTURE_GROUP_OTHER );
+#endif
 	m_DetailWireframeMaterial.Init( "debug/debugspritewireframe", TEXTURE_GROUP_OTHER );
 
 	// Version check
@@ -1635,11 +1663,23 @@ void CDetailObjectSystem::UnserializeModelLighting( CUtlBuffer& buf )
 }
 
 
-ConVar cl_detail_multiplier( "cl_detail_multiplier", "1", FCVAR_CHEAT, "extra details to create" );
+ConVar cl_detail_multiplier( "cl_detail_multiplier", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "extra details to create" );
 
 #define SPRITE_MULTIPLIER  ( cl_detail_multiplier.GetInt() )
 
-ConVar cl_fastdetailsprites( "cl_fastdetailsprites", "1", FCVAR_CHEAT, "whether to use new detail sprite system");
+ConVar cl_fastdetailsprites( "cl_fastdetailsprites", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "whether to use new detail sprite system");
 
 static bool DetailObjectIsFastSprite( DetailObjectLump_t const & lump )
 {

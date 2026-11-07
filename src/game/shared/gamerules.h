@@ -29,6 +29,9 @@
 #endif
 
 #include "igamesystem.h"
+#if defined( L4D2 )
+#include "l4d2/mem_zero_on_new.h"
+#endif
 #include "gamerules_register.h"
 
 
@@ -38,7 +41,9 @@ class CBaseCombatCharacter;
 class CBasePlayer;
 class CItem;
 class CAmmoDef;
+#if !defined( L4D2 )
 class CTacticalMissionManager;
+#endif
 
 extern ConVar sk_autoaim_mode;
 
@@ -111,7 +116,12 @@ private:
 };
 
 
-abstract_class CGameRules : public CAutoGameSystemPerFrame
+abstract_class CGameRules
+#if defined( L4D2 )
+	: public CMemZeroOnNew, public CAutoGameSystemPerFrame
+#else
+	: public CAutoGameSystemPerFrame
+#endif
 {
 public:
 	DECLARE_CLASS_GAMEROOT( CGameRules, CAutoGameSystemPerFrame );
@@ -211,8 +221,10 @@ public:
 
 	virtual void GetTaggedConVarList( KeyValues *pCvarTagList ) {}
 
+#if !defined( L4D2 )
 	// NVNT see if the client of the player entered is using a haptic device.
 	virtual void CheckHaptics(CBasePlayer* pPlayer);
+#endif // !L4D2
 
 // CBaseEntity overrides.
 public:
@@ -222,7 +234,11 @@ public:
 	// Called when game rules are destroyed by CWorld
 	virtual void LevelShutdown( void ) { return; };
 
+#if defined( L4D2 )
+	virtual void Precache( void );
+#else
 	virtual void Precache( void ) { return; };
+#endif
 
 	virtual void RefreshSkillData( bool forceUpdate );// fill skill data struct with proper values
 	
@@ -303,7 +319,11 @@ public:
 // Client kills/scoring
 	virtual int IPointsForKill( CBasePlayer *pAttacker, CBasePlayer *pKilled ) = 0;// how many points do I award whoever kills this player?
 	virtual void PlayerKilled( CBasePlayer *pVictim, const CTakeDamageInfo &info ) = 0;// Called each time a player dies
-	virtual void DeathNotice( CBasePlayer *pVictim, const CTakeDamageInfo &info )=  0;// Call this from within a GameRules class to report an obituary.
+#if defined( L4D2 )
+	virtual void DeathNotice( CBaseCombatCharacter *pVictim, const CTakeDamageInfo &info ) = 0;
+#else
+	virtual void DeathNotice( CBasePlayer *pVictim, const CTakeDamageInfo &info ) = 0;
+#endif
 	virtual const char *GetDamageCustomString( const CTakeDamageInfo &info ) { return NULL; }
 
 // Weapon Damage
@@ -402,8 +422,10 @@ public:
 
 	virtual void OnNavMeshLoad( void ) { return; }
 
+#if !defined( L4D2 )
 	// game-specific factories
 	virtual CTacticalMissionManager *TacticalMissionManagerFactory( void );
+#endif
 
 	virtual void ProcessVerboseLogOutput( void ){}
 

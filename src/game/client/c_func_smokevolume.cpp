@@ -8,6 +8,9 @@
 #include "c_smoke_trail.h"
 #include "smoke_fog_overlay.h"
 #include "engine/IEngineTrace.h"
+#if defined( L4D2 )
+#include "view.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -139,6 +142,9 @@ private:
 	float m_RotationSpeed;
 	float m_MovementSpeed;
 	float m_Density;
+#if defined( L4D2 )
+	float m_maxDrawDistance;
+#endif
 	int	  m_spawnflags;
 
 private:
@@ -173,6 +179,9 @@ IMPLEMENT_CLIENTCLASS_DT( C_FuncSmokeVolume, DT_FuncSmokeVolume, CFuncSmokeVolum
 	RecvPropFloat( RECVINFO( m_MovementSpeed ) ),
 	RecvPropFloat( RECVINFO( m_Density ) ),
 	RecvPropInt( RECVINFO( m_spawnflags ) ),
+#if defined( L4D2 )
+	RecvPropFloat( RECVINFO( m_maxDrawDistance ) ),
+#endif
 	RecvPropDataTable( RECVINFO_DT( m_Collision ), 0, &REFERENCE_RECV_TABLE(DT_CollisionProperty) ),
 END_RECV_TABLE()
 
@@ -318,6 +327,9 @@ void C_FuncSmokeVolume::Start( CParticleMgr *pParticleMgr, IPrototypeArgAccess *
 }
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void C_FuncSmokeVolume::Update( float fTimeDelta )
 {
 	// Update our world space bbox if we've moved at all.
@@ -343,6 +355,31 @@ void C_FuncSmokeVolume::Update( float fTimeDelta )
 		m_ParticleEffect.SetBBox( vWorldMins, vWorldMaxs );
 	}
 		
+#if defined( L4D2 )
+	// C7DC00..DCB1: original slot0 always participates. Additional native
+	// split-screen views are absent on target by the standing single-slot rule.
+	const float viewDistance = CollisionProp()->CalcDistanceFromPoint( MainViewOrigin() );
+	float targetDensity = m_Density;
+	if ( m_maxDrawDistance > 0.0f && viewDistance > m_maxDrawDistance )
+		targetDensity = 0.0f;
+	// lerp m_CurrentDensity towards targetDensity at a rate of m_DensityRampSpeed
+	if( m_CurrentDensity < targetDensity )
+	{
+		m_CurrentDensity += m_DensityRampSpeed * fTimeDelta;
+		if( m_CurrentDensity > targetDensity )
+		{
+			m_CurrentDensity = targetDensity;
+		}
+	}
+	else if( m_CurrentDensity > targetDensity )
+	{
+		m_CurrentDensity -= m_DensityRampSpeed * fTimeDelta;
+		if( m_CurrentDensity < targetDensity )
+		{
+			m_CurrentDensity = targetDensity;
+		}
+	}
+#else
 	// lerp m_CurrentDensity towards m_Density at a rate of m_DensityRampSpeed
 	if( m_CurrentDensity < m_Density )
 	{
@@ -360,6 +397,7 @@ void C_FuncSmokeVolume::Update( float fTimeDelta )
 			m_CurrentDensity = m_Density;
 		}
 	}
+#endif
 
 	if( m_CurrentDensity == 0.0f )
 	{
@@ -484,6 +522,9 @@ void C_FuncSmokeVolume::Update( float fTimeDelta )
 		}
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 void C_FuncSmokeVolume::RenderParticles( CParticleRenderIterator *pIterator )

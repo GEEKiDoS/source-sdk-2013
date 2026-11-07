@@ -28,15 +28,41 @@
 #include "steam/isteamutils.h"
 
 
+#if defined( L4D2 )
+#include "l4d2/hud/terror_chat_lines.h"
+#endif
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/hud/terror_client_colors.h"
+#include "steam/steam_api.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 #define CHAT_WIDTH_PERCENTAGE 0.6f
 
 #ifndef _XBOX
-ConVar hud_saytext_time( "hud_saytext_time", "12", 0 );
-ConVar cl_showtextmsg( "cl_showtextmsg", "1", 0, "Enable/disable text messages printing on the screen." );
-ConVar cl_chatfilters( "cl_chatfilters", "63", FCVAR_CLIENTDLL | FCVAR_ARCHIVE, "Stores the chat filter settings " );
+ConVar hud_saytext_time( "hud_saytext_time", "12", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+ );
+ConVar cl_showtextmsg( "cl_showtextmsg", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Enable/disable text messages printing on the screen." );
+ConVar cl_chatfilters( "cl_chatfilters", 
+#if defined( L4D2 )
+	"31"
+#else
+	"63"
+#endif
+, FCVAR_CLIENTDLL | FCVAR_ARCHIVE, "Stores the chat filter settings " );
 ConVar cl_chatfilter_version( "cl_chatfilter_version", "0", FCVAR_CLIENTDLL | FCVAR_ARCHIVE | FCVAR_HIDDEN, "Stores the chat filter version" );
 ConVar cl_mute_all_comms("cl_mute_all_comms", "1", FCVAR_ARCHIVE, "If 1, then all communications from a player will be blocked when that player is muted, including chat messages.");
 ConVar cl_enable_text_chat( "cl_enable_text_chat", "1", FCVAR_ARCHIVE, "Enable text chat in this game" );
@@ -606,7 +632,15 @@ int CBaseHudChat::m_nLineCounter = 1;
 //-----------------------------------------------------------------------------
 CBaseHudChat::CBaseHudChat( const char *pElementName )
 : CHudElement( pElementName ), BaseClass( NULL, "HudChat" )
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+, m_SteamKeyboardDismissed( this, &CBaseHudChat::OnFloatingGamepadTextInputDismissed )
+#endif
 {
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	m_bSteamKeyboardVisible = false;
+	m_nSteamKeyboardFrame = 0;
+	m_nSteamKeyboardCloseFrame = -1;
+#endif
 	vgui::Panel *pParent = g_pClientMode->GetViewport();
 	SetParent( pParent );
 
@@ -648,7 +682,11 @@ CBaseHudChat::CBaseHudChat( const char *pElementName )
 void CBaseHudChat::CreateChatInputLine( void )
 {
 #ifndef _XBOX
+#if defined( L4D2 )
+	m_pChatInput = new CHudChatInputLine( this, "ChatInputLine" );
+#else
 	m_pChatInput = new CBaseHudChatInputLine( this, "ChatInputLine" );
+#endif
 	m_pChatInput->SetVisible( false );
 
 	if ( GetChatHistory() )
@@ -662,7 +700,11 @@ void CBaseHudChat::CreateChatInputLine( void )
 void CBaseHudChat::CreateChatLines( void )
 {
 #ifndef _XBOX
+#if defined( L4D2 )
+	m_ChatLine = new CHudChatLine( this, "ChatLine1" );
+#else
 	m_ChatLine = new CBaseHudChatLine( this, "ChatLine1" );
+#endif
 	m_ChatLine->SetVisible( false );		
 
 #endif
@@ -1383,6 +1425,12 @@ Color CBaseHudChat::GetDefaultTextColor( void )
 }
 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+Color CBaseHudChat::GetClientColor( int clientIndex )
+{
+	return ::GetClientColor( clientIndex );
+}
+#else
 Color CBaseHudChat::GetClientColor( int clientIndex )
 {
 	if ( clientIndex == 0 ) // console msg
@@ -1396,6 +1444,7 @@ Color CBaseHudChat::GetClientColor( int clientIndex )
 
 	return g_ColorYellow;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Parses a line of text for color markup and inserts it via Colorize()
@@ -1826,7 +1875,12 @@ void CBaseHudChat::ChatPrintf( int iPlayerIndex, int iFilter, const char *fmt, .
 		g_pVGuiLocalize->ConvertANSIToUnicode( pmsg, wbuf, bufSize);
 
 		// find the player's name in the unicode string, in case there is no color markup
+#ifdef L4D2
+		// Original client RVA 0x116260 searches the engine name directly for chat coloring.
+		const char *pName = sPlayerInfo.name;
+#else
 		const char *pName = UTIL_GetFilteredPlayerName( iPlayerIndex, sPlayerInfo.name );
+#endif
 
 		if ( pName )
 		{
@@ -1870,3 +1924,8 @@ void CBaseHudChat::FireGameEvent( IGameEvent *event )
 	}
 #endif
 }
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/hud/hud_basechat_console.inc"
+#include "l4d2/hud/hud_basechat_keyboard_console.inc"
+#include "l4d2/hud/hud_basechat_keyboard_console_registrations.inc"
+#endif

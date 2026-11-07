@@ -26,6 +26,7 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( info_hint,			CNodeEnt );	
 LINK_ENTITY_TO_CLASS( info_node,			CNodeEnt );	
 LINK_ENTITY_TO_CLASS( info_node_hint,		CNodeEnt );	
@@ -33,6 +34,7 @@ LINK_ENTITY_TO_CLASS( info_node_air,		CNodeEnt );
 LINK_ENTITY_TO_CLASS( info_node_air_hint,	CNodeEnt );	
 LINK_ENTITY_TO_CLASS( info_node_climb,		CNodeEnt );
 LINK_ENTITY_TO_CLASS( aitesthull, CAI_TestHull );
+#endif
 
 //-----------------------------------------------------------------------------
 // Init static variables

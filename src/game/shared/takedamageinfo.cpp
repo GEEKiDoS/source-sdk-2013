@@ -12,7 +12,15 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar phys_pushscale( "phys_pushscale", "1", FCVAR_REPLICATED );
+ConVar phys_pushscale( "phys_pushscale", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+ );
 
 BEGIN_SIMPLE_DATADESC( CTakeDamageInfo )
 	DEFINE_FIELD( m_vecDamageForce, FIELD_VECTOR ),
@@ -28,7 +36,12 @@ BEGIN_SIMPLE_DATADESC( CTakeDamageInfo )
 	DEFINE_FIELD( m_iDamageCustom, FIELD_INTEGER),
 	DEFINE_FIELD( m_iDamageStats, FIELD_INTEGER),
 	DEFINE_FIELD( m_iAmmoType, FIELD_INTEGER),
-	DEFINE_FIELD( m_iDamagedOtherPlayers, FIELD_INTEGER),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_flRadius, FIELD_FLOAT ),
+	DEFINE_FIELD( m_iDamageVictimIndex, FIELD_INTEGER ),
+#else
+	DEFINE_FIELD( m_iDamagedOtherPlayers, FIELD_INTEGER ),
+#endif
 END_DATADESC()
 
 void CTakeDamageInfo::Init( CBaseEntity *pInflictor, CBaseEntity *pAttacker, CBaseEntity *pWeapon, const Vector &damageForce, const Vector &damagePosition, const Vector &reportedPosition, float flDamage, int bitsDamageType, int iCustomDamage )
@@ -63,6 +76,11 @@ void CTakeDamageInfo::Init( CBaseEntity *pInflictor, CBaseEntity *pAttacker, CBa
 	m_bForceFriendlyFire = false;
 	m_flDamageForForce = 0.f;
 	m_eCritType = CRIT_NONE;
+#if defined( L4D2 )
+	m_vecDamageDirection = vec3_origin;
+	m_flRadius = 0.0f;
+	m_iDamageVictimIndex = 0;
+#endif
 }
 
 CTakeDamageInfo::CTakeDamageInfo()
@@ -228,6 +246,9 @@ void ApplyMultiDamage( void )
 //-----------------------------------------------------------------------------
 // Purpose: Add damage to the existing multidamage, and apply if it won't fit
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void AddMultiDamage( const CTakeDamageInfo &info, CBaseEntity *pEntity )
 {
 	if ( !pEntity )
@@ -244,7 +265,13 @@ void AddMultiDamage( const CTakeDamageInfo &info, CBaseEntity *pEntity )
 	g_MultiDamage.SetDamageForce( g_MultiDamage.GetDamageForce() + info.GetDamageForce() );
 	g_MultiDamage.SetDamagePosition( info.GetDamagePosition() );
 	g_MultiDamage.SetReportedPosition( info.GetReportedPosition() );
+#if defined( L4D2 )
+	g_MultiDamage.SetDamageDirection( info.GetDamageDirection() );
+	// S1E91B0/C1A8160 leave radius/victim ordinal at Init's zero values.
+	g_MultiDamage.SetMaxDamage( MAX( g_MultiDamage.GetMaxDamage(), info.GetMaxDamage() ) );
+#else
 	g_MultiDamage.SetMaxDamage( MAX( g_MultiDamage.GetMaxDamage(), info.GetDamage() ) );
+#endif
 	g_MultiDamage.SetAmmoType( info.GetAmmoType() );
 	g_MultiDamage.SetCritType( info.GetCritType() );
 
@@ -280,6 +307,9 @@ void AddMultiDamage( const CTakeDamageInfo &info, CBaseEntity *pEntity )
 		}
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //============================================================================================================

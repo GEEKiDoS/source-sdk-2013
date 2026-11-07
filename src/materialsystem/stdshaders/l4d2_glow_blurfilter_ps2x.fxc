@@ -1,0 +1,94 @@
+// Native L4D2 blurfilter programs; see evidence/native_outline_manifest.json.
+// STATIC: "KERNEL" "0..4"
+// STATIC: "CLEAR_COLOR" "0..1"
+// STATIC: "APPROX_SRGB_ADAPTER" "0..1" [ps20b]
+// SKIP: $APPROX_SRGB_ADAPTER && ( $CLEAR_COLOR || ( $KERNEL == 0 ) )
+
+sampler2D TexSampler : register( s0 );
+float2 g_vPsTapOffset[3] : register( c0 );
+float3 g_vScaleFactor : register( c3 );
+float2 g_vUvOffsetToNeighborPixel : register( c4 );
+float3 g_vClearColor : register( c5 );
+
+struct PS_INPUT
+{
+	float2 coordTap0 : TEXCOORD0;
+#if KERNEL == 0
+	float2 coordTap1 : TEXCOORD1;
+	float2 coordTap2 : TEXCOORD2;
+	float2 coordTap3 : TEXCOORD3;
+	float2 coordTap1Neg : TEXCOORD4;
+	float2 coordTap2Neg : TEXCOORD5;
+	float2 coordTap3Neg : TEXCOORD6;
+#endif
+};
+
+float4 SampleNativeBlur( float2 uv )
+{
+	float4 sample = tex2D( TexSampler, uv );
+#if KERNEL == 0
+	// Only the legacy 13-tap kernel clamps all four sampled components.
+	sample = saturate( sample );
+#elif APPROX_SRGB_ADAPTER
+	sample.rgb = max( sample.rgb, 0.00001f );
+	sample.rgb *= rsqrt( sample.rgb );
+#endif
+	return sample;
+}
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	float4 color;
+#if KERNEL == 0
+	color = ( SampleNativeBlur( i.coordTap1 ) + SampleNativeBlur( i.coordTap1Neg ) ) * 0.2185f;
+	color += SampleNativeBlur( i.coordTap0 ) * 0.2013f;
+	color += ( SampleNativeBlur( i.coordTap2 ) + SampleNativeBlur( i.coordTap2Neg ) ) * 0.0821f;
+	color += ( SampleNativeBlur( i.coordTap3 ) + SampleNativeBlur( i.coordTap3Neg ) ) * 0.0461f;
+	color += ( SampleNativeBlur( i.coordTap0 + g_vPsTapOffset[0] ) + SampleNativeBlur( i.coordTap0 - g_vPsTapOffset[0] ) ) * 0.0262f;
+	color += ( SampleNativeBlur( i.coordTap0 + g_vPsTapOffset[1] ) + SampleNativeBlur( i.coordTap0 - g_vPsTapOffset[1] ) ) * 0.0162f;
+	color += ( SampleNativeBlur( i.coordTap0 + g_vPsTapOffset[2] ) + SampleNativeBlur( i.coordTap0 - g_vPsTapOffset[2] ) ) * 0.0102f;
+#elif KERNEL == 1
+	color = SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 1.182425f ) * 0.296042f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 3.0f ) * 0.004433f;
+	color += SampleNativeBlur( i.coordTap0 ) * 0.39905f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 1.182425f ) * 0.296042f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 3.0f ) * 0.004433f;
+#elif KERNEL == 2
+	color = SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 1.276878f ) * 0.320561f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 3.096215f ) * 0.019827f;
+	color += SampleNativeBlur( i.coordTap0 ) * 0.319224f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 1.276878f ) * 0.320561f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 3.096215f ) * 0.019827f;
+#elif KERNEL == 3
+	color = SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 3.241796f ) * 0.069185f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 5.142349f ) * 0.004487f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 1.379942f ) * 0.312325f;
+	color += SampleNativeBlur( i.coordTap0 ) * 0.228005f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 1.379942f ) * 0.312325f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 3.241796f ) * 0.069185f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 5.142349f ) * 0.004487f;
+#else
+	color = SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 9.289172f ) * 0.003733f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 11.251852f ) * 0.000534f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 7.329586f ) * 0.018004f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 5.372686f ) * 0.059928f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 3.417910f ) * 0.137740f;
+	color += SampleNativeBlur( i.coordTap0 - g_vUvOffsetToNeighborPixel * 1.464557f ) * 0.218677f;
+	color += SampleNativeBlur( i.coordTap0 ) * 0.122765f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 1.464557f ) * 0.218677f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 3.417910f ) * 0.137740f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 5.372686f ) * 0.059928f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 7.329586f ) * 0.018004f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 9.289172f ) * 0.003733f;
+	color += SampleNativeBlur( i.coordTap0 + g_vUvOffsetToNeighborPixel * 11.251852f ) * 0.000534f;
+#endif
+#if CLEAR_COLOR
+	color.rgb = g_vClearColor;
+#else
+	color.rgb *= g_vScaleFactor;
+#if APPROX_SRGB_ADAPTER
+	color.rgb *= color.rgb;
+#endif
+#endif
+	return color;
+}

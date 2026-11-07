@@ -24,6 +24,9 @@ class CFuncBrush : public CBaseEntity
 {
 public:
 	DECLARE_CLASS( CFuncBrush, CBaseEntity );
+#if defined( L4D2 )
+	DECLARE_SERVERCLASS();
+#endif
 
 	virtual void Spawn( void );
 	bool CreateVPhysics( void );
@@ -32,8 +35,13 @@ public:
 
 	virtual int DrawDebugTextOverlays( void );
 
+#if defined( L4D2 )
+	void TurnOff( void );
+	void TurnOn( void );
+#else
 	virtual void TurnOff( void );
 	virtual void TurnOn( void );
+#endif
 
 	// Input handlers
 	void InputTurnOff( inputdata_t &inputdata );

@@ -26,7 +26,13 @@
 	#include "prop_portal_shared.h"
 #endif
 
-ConVar r_DrawBeams( "r_DrawBeams", "1", FCVAR_CHEAT, "0=Off, 1=Normal, 2=Wireframe" );
+ConVar r_DrawBeams( "r_DrawBeams", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "0=Off, 1=Normal, 2=Wireframe" );
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"

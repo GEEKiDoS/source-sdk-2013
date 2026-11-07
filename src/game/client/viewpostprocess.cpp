@@ -21,6 +21,20 @@
 
 #include "proxyentity.h"
 
+#if defined( L4D2 )
+#include "viewpostprocess.h"
+#include "l4d2/clientmode_terror.h"
+#include "l4d2/ui/terror_client_panels.h"
+#include "l4d2/weapons/c_vomitjar_projectile.h"
+#include "l4d2/effects/c_terror_postprocess_controller.h"
+#include "l4d2/effects/terror_tonemap_state.h"
+#include "l4d2/effects/terror_depth_of_field.h"
+#include "iviewrender.h"
+#include "view_shared.h"
+#include "materialsystem/MaterialSystemUtil.h"
+#include "igamesystem.h"
+#endif
+
 //-----------------------------------------------------------------------------
 // Globals
 //-----------------------------------------------------------------------------
@@ -37,52 +51,463 @@ float g_flCustomBloomScaleMinimum = 0.0f;
 bool g_bFlashlightIsOn = false;
 
 // hdr parameters
+#if defined( L4D2 )
+ConVar mat_bloomscale( "mat_bloomscale", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+ConVar mat_hdr_level( "mat_hdr_level", "2", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 ConVar mat_bloomscale( "mat_bloomscale", "1" );
 ConVar mat_hdr_level( "mat_hdr_level", "2", FCVAR_ARCHIVE );
+#endif
 
-ConVar mat_bloomamount_rate( "mat_bloomamount_rate", "0.05f", FCVAR_CHEAT );
-static ConVar debug_postproc( "mat_debug_postprocessing_effects", "0", FCVAR_NONE, "0 = off, 1 = show post-processing passes in quadrants of the screen, 2 = only apply post-processing to the centre of the screen" );
+ConVar mat_bloomamount_rate( "mat_bloomamount_rate", "0.05f", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar debug_postproc( "mat_debug_postprocessing_effects", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+, "0 = off, 1 = show post-processing passes in quadrants of the screen, 2 = only apply post-processing to the centre of the screen" );
 static ConVar split_postproc( "mat_debug_process_halfscreen", "0", FCVAR_CHEAT );
 static ConVar mat_postprocessing_combine( "mat_postprocessing_combine", "1", FCVAR_NONE, "Combine bloom, software anti-aliasing and color correction into one post-processing pass" );
-static ConVar mat_dynamic_tonemapping( "mat_dynamic_tonemapping", "1", FCVAR_CHEAT );
+static ConVar mat_dynamic_tonemapping( "mat_dynamic_tonemapping", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 static ConVar mat_show_ab_hdr( "mat_show_ab_hdr", "0" );
+#if defined( L4D2 )
+static ConVar mat_tonemapping_occlusion_use_stencil( "mat_tonemapping_occlusion_use_stencil", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 static ConVar mat_tonemapping_occlusion_use_stencil( "mat_tonemapping_occlusion_use_stencil", "0" );
+#endif
 ConVar mat_debug_autoexposure("mat_debug_autoexposure","0", FCVAR_CHEAT);
+#if defined( L4D2 )
+static ConVar mat_autoexposure_max( "mat_autoexposure_max", "8", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar mat_autoexposure_min( "mat_autoexposure_min", "0.1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar mat_show_histogram( "mat_show_histogram", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 static ConVar mat_autoexposure_max( "mat_autoexposure_max", "2" );
 static ConVar mat_autoexposure_min( "mat_autoexposure_min", "0.5" );
 static ConVar mat_show_histogram( "mat_show_histogram", "0" );
+#endif
 ConVar mat_hdr_tonemapscale( "mat_hdr_tonemapscale", "1.0", FCVAR_CHEAT );
-ConVar mat_hdr_uncapexposure( "mat_hdr_uncapexposure", "0", FCVAR_CHEAT );
-ConVar mat_force_bloom("mat_force_bloom","0", FCVAR_CHEAT);
+ConVar mat_hdr_uncapexposure( "mat_hdr_uncapexposure", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar mat_force_bloom("mat_force_bloom","0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+);
+#if defined( L4D2 )
+ConVar mat_disable_bloom( "mat_disable_bloom", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 ConVar mat_disable_bloom("mat_disable_bloom","0");
-ConVar mat_debug_bloom("mat_debug_bloom","0", FCVAR_CHEAT);
+#endif
+ConVar mat_debug_bloom("mat_debug_bloom","0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+);
 
-ConVar mat_accelerate_adjust_exposure_down( "mat_accelerate_adjust_exposure_down", "3.0", FCVAR_CHEAT );
+ConVar mat_accelerate_adjust_exposure_down( "mat_accelerate_adjust_exposure_down", "3.0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+#if defined( L4D2 )
+ConVar mat_hdr_manual_tonemap_rate( "mat_hdr_manual_tonemap_rate", "1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 ConVar mat_hdr_manual_tonemap_rate( "mat_hdr_manual_tonemap_rate", "1.0" );
+#endif
 
 // fudge factor to make non-hdr bloom more closely match hdr bloom. Because of auto-exposure, high
 // bloomscales don't blow out as much in hdr. this factor was derived by comparing images in a
 // reference scene.
+#if defined( L4D2 )
+ConVar mat_non_hdr_bloom_scalefactor( "mat_non_hdr_bloom_scalefactor", ".3", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 ConVar mat_non_hdr_bloom_scalefactor("mat_non_hdr_bloom_scalefactor",".3");
+#endif
 
 // Apply addition scale to the final bloom scale
+#if defined( L4D2 )
+static ConVar mat_bloom_scalefactor_scalar( "mat_bloom_scalefactor_scalar", "1.0", 
+#if defined( L4D2 )
+	0x00080008
+#else
+	0x80000
+#endif
+ );
+#else
 static ConVar mat_bloom_scalefactor_scalar( "mat_bloom_scalefactor_scalar", "1.0" );
+#endif
 
 //ConVar mat_exposure_center_region_x( "mat_exposure_center_region_x","0.75", FCVAR_CHEAT );
 //ConVar mat_exposure_center_region_y( "mat_exposure_center_region_y","0.80", FCVAR_CHEAT );
 //ConVar mat_exposure_center_region_x_flashlight( "mat_exposure_center_region_x_flashlight","0.33", FCVAR_CHEAT );
 //ConVar mat_exposure_center_region_y_flashlight( "mat_exposure_center_region_y_flashlight","0.33", FCVAR_CHEAT );
 
-ConVar mat_exposure_center_region_x( "mat_exposure_center_region_x","0.9", FCVAR_CHEAT );
-ConVar mat_exposure_center_region_y( "mat_exposure_center_region_y","0.85", FCVAR_CHEAT );
+ConVar mat_exposure_center_region_x( "mat_exposure_center_region_x","0.9", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar mat_exposure_center_region_y( "mat_exposure_center_region_y","0.85", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+#if !defined( L4D2 )
 ConVar mat_exposure_center_region_x_flashlight( "mat_exposure_center_region_x_flashlight","0.9", FCVAR_CHEAT );
 ConVar mat_exposure_center_region_y_flashlight( "mat_exposure_center_region_y_flashlight","0.85", FCVAR_CHEAT );
+#endif
 
-ConVar mat_tonemap_algorithm( "mat_tonemap_algorithm", "1", FCVAR_CHEAT, "0 = Original Algorithm 1 = New Algorithm" );
+ConVar mat_tonemap_algorithm( "mat_tonemap_algorithm", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "0 = Original Algorithm 1 = New Algorithm" );
+#if !defined( L4D2 )
 ConVar mat_tonemap_percent_target( "mat_tonemap_percent_target", "60.0", FCVAR_CHEAT );
 ConVar mat_tonemap_percent_bright_pixels( "mat_tonemap_percent_bright_pixels", "2.0", FCVAR_CHEAT );
 ConVar mat_tonemap_min_avglum( "mat_tonemap_min_avglum", "3.0", FCVAR_CHEAT );
-ConVar mat_fullbright( "mat_fullbright", "0", FCVAR_CHEAT );
+#endif
+ConVar mat_fullbright( "mat_fullbright", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+
+#if defined( L4D2 )
+C_TerrorPostProcessController *C_TerrorPostProcessController::s_pMaster=NULL;
+ IMPLEMENT_CLIENTCLASS_DT(C_TerrorPostProcessController,DT_PostProcessController,CPostProcessController)
+  RecvPropFloat(RECVINFO_NAME(m_Values[0],m_fLocalContrastStrength)),
+  RecvPropFloat(RECVINFO_NAME(m_Values[1],m_fLocalContrastEdgeStrength)),
+  RecvPropFloat(RECVINFO_NAME(m_Values[2],m_fVignetteStart)),
+  RecvPropFloat(RECVINFO_NAME(m_Values[3],m_fVignetteEnd)),
+  RecvPropFloat(RECVINFO_NAME(m_Values[4],m_fVignetteBlurStrength)),
+  RecvPropFloat(RECVINFO_NAME(m_Values[5],m_fFadeToBlackStrength)),
+  RecvPropFloat(RECVINFO_NAME(m_Values[6],m_fGrainStrength)),
+  RecvPropFloat(RECVINFO_NAME(m_Values[7],m_fTopVignetteStrength)),
+  RecvPropFloat(RECVINFO(m_fFadeTime)),
+  RecvPropBool(RECVINFO(m_bMaster)),
+ END_RECV_TABLE()
+
+float g_flTerrorTonemapPercentTarget=45.0f;
+ float g_flTerrorTonemapPercentBrightPixels=1.0f;
+ float g_flTerrorTonemapMinAvgLum=3.0f;
+ static CTerrorTonemapState g_TerrorTonemapState;
+ static ConVar mat_force_tonemap_percent_target("mat_force_tonemap_percent_target","-1",
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+,"Override. Old default was 45.");
+ static ConVar mat_force_tonemap_percent_bright_pixels("mat_force_tonemap_percent_bright_pixels","-1",
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+,"Override. Old value was 1.0");
+ static ConVar mat_force_tonemap_min_avglum("mat_force_tonemap_min_avglum","-1",
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+,"Override. Old default was 3.0");
+ static float Terror_TonemapPercentTarget()
+ {
+  float v=mat_force_tonemap_percent_target.GetFloat();
+  return v<0.0f?g_flTerrorTonemapPercentTarget:v;
+ }
+ static float Terror_TonemapPercentBrightPixels()
+ {
+  float v=mat_force_tonemap_percent_bright_pixels.GetFloat();
+  return v<0.0f?g_flTerrorTonemapPercentBrightPixels:v;
+ }
+ static float Terror_TonemapMinAvgLum()
+ {
+  float v=mat_force_tonemap_min_avglum.GetFloat();
+  return v<0.0f?g_flTerrorTonemapMinAvgLum:v;
+ }
+
+static float g_TerrorPostFade[4] = { 0, 0, 0, 0 };
+static int g_TerrorPostFadeType = 0;
+static ConVar mat_grain_enable( "mat_grain_enable", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar mat_vignette_enable( "mat_vignette_enable", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar mat_local_contrast_enable( "mat_local_contrast_enable", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar mat_postprocess_enable( "mat_postprocess_enable", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+
+void Terror_SetEnginePostFade( const byte *rgba, bool modulate )
+{
+	for ( int i = 0; i < 4; ++i ) g_TerrorPostFade[i] = (float)rgba[i] * 0.0039215689f;
+	g_TerrorPostFadeType = rgba[3] > 0 ? ( modulate ? 2 : 1 ) : 0;
+}
+
+class CTerrorPostMaterials : public CAutoGameSystem
+{
+public:
+	CTerrorPostMaterials() : CAutoGameSystem( "TerrorPostMaterials" ) {}
+	IMaterial *GetEnginePost()
+	{
+		if ( !m_Engine.IsValid() )
+		{
+			KeyValues *material = new KeyValues( "TerrorEnginePost" );
+			if ( !material->LoadFromFile( filesystem, "materials/dev/engine_post.vmt", "GAME" ) )
+			{
+				material->deleteThis();
+				// Native C1C9310 uses FindMaterial, including its error material.
+				m_Engine.Init( "dev/engine_post", TEXTURE_GROUP_OTHER );
+				return m_Engine;
+			}
+			material->SetName( "TerrorEnginePost" );
+			m_Engine.Init( "__l4d2/engine_post", material );
+		}
+		return m_Engine;
+	}
+	IMaterial *GetPrepare( int pass )
+	{
+		if ( !m_Prepare[pass].IsValid() )
+		{
+			static const char *names[5] = { "__l4d2/post_downsample", "__l4d2/post_blur_x", "__l4d2/post_blur_y_clear",
+				"__l4d2/post_downsample_hdr", "__l4d2/post_blur_y" };
+			KeyValues *material = new KeyValues( "TerrorPostPrepare" );
+			material->SetString( "$basetexture", ( pass == 0 || pass == 3 ) ? "_rt_FullFrameFB" : pass == 1 ? "_rt_SmallFB0" : "_rt_SmallFB1" );
+			material->SetInt( "$pass", pass );
+			material->SetInt( "$ignorez", 1 );
+			m_Prepare[pass].Init( names[pass], material );
+		}
+		return m_Prepare[pass];
+	}
+	IMaterial *GetFadeBlur()
+	{
+		if ( !m_FadeBlur.IsValid() )
+		{
+			KeyValues *material = new KeyValues( "TerrorFadeBlur" );
+			if ( !material->LoadFromFile( filesystem, "materials/dev/fade_blur.vmt", "GAME" ) )
+			{
+				material->deleteThis();
+				// Preserve the native material-system missing-file diagnostic.
+				m_FadeBlur.Init( "dev/fade_blur", TEXTURE_GROUP_OTHER );
+				return m_FadeBlur;
+			}
+			material->SetName( "TerrorFadeBlur" );
+			m_FadeBlur.Init( "__l4d2/fade_blur", material );
+		}
+		return m_FadeBlur;
+	}
+	IMaterial *GetDOFMaterial( int pass )
+	{
+		if ( !m_DOF[pass].IsValid() )
+		{
+			static const char *paths[3] = { "materials/dev/depth_of_field.vmt", "materials/dev/blurgaussian_3x3.vmt", "materials/dev/clearalpha.vmt" };
+			static const char *shaders[3] = { "DepthOfField", "TerrorDOFBlurGaussian", "TerrorDOFClearAlpha" };
+			static const char *names[3] = { "__l4d2/depth_of_field", "__l4d2/dof_gaussian", "__l4d2/dof_clearalpha" };
+			static const char *originalNames[3] = { "dev/depth_of_field", "dev/blurgaussian_3x3", "dev/clearalpha" };
+			KeyValues *material = new KeyValues( shaders[pass] );
+			if ( !material->LoadFromFile( filesystem, paths[pass], "GAME" ) )
+			{
+				material->deleteThis();
+				m_DOF[pass].Init( originalNames[pass], TEXTURE_GROUP_OTHER );
+				return m_DOF[pass];
+			}
+			material->SetName( shaders[pass] );
+			m_DOF[pass].Init( names[pass], material );
+		}
+		return m_DOF[pass];
+	}
+	IMaterial *GetMotionBlur()
+	{
+		if ( !m_MotionBlur.IsValid() )
+		{
+			KeyValues *material = new KeyValues( "TerrorMotionBlur" );
+			if ( !material->LoadFromFile( filesystem, "materials/dev/motion_blur.vmt", "GAME" ) )
+			{
+				material->deleteThis();
+				m_MotionBlur.Init( "dev/motion_blur", TEXTURE_GROUP_OTHER );
+				return m_MotionBlur;
+			}
+			material->SetName( "TerrorMotionBlur" );
+			m_MotionBlur.Init( "__l4d2/motion_blur", material );
+		}
+		return m_MotionBlur;
+	}
+	virtual void Shutdown() OVERRIDE
+	{
+		m_Engine.Shutdown();
+		m_FadeBlur.Shutdown();
+		m_MotionBlur.Shutdown();
+		for ( int i = 0; i < 5; ++i ) m_Prepare[i].Shutdown();
+		for ( int i = 0; i < 3; ++i ) m_DOF[i].Shutdown();
+	}
+private:
+	CMaterialReference m_Engine, m_Prepare[5], m_FadeBlur, m_MotionBlur;
+	CMaterialReference m_DOF[3];
+};
+static CTerrorPostMaterials g_TerrorPostMaterials;
+
+static void SetRenderTargetAndViewPort(ITexture *rt);
+
+static void Terror_PrepareEnginePost(IMatRenderContext *ctx)
+{
+ ITexture *full=materials->FindTexture("_rt_FullFrameFB",TEXTURE_GROUP_RENDER_TARGET);
+ ITexture *small0=materials->FindTexture("_rt_SmallFB0",TEXTURE_GROUP_RENDER_TARGET);
+ ITexture *small1=materials->FindTexture("_rt_SmallFB1",TEXTURE_GROUP_RENDER_TARGET);
+ const int fw=full->GetActualWidth(), fh=full->GetActualHeight();
+ const int qw=fw/4, qh=fh/4;
+ ctx->PushRenderTargetAndViewport();
+ SetRenderTargetAndViewPort(small0);
+ ctx->DrawScreenSpaceRectangle(g_TerrorPostMaterials.GetPrepare(0),0,0,qw,qh,0,0,fw-2,fh-2,fw,fh);
+ SetRenderTargetAndViewPort(small1);
+ ctx->DrawScreenSpaceRectangle(g_TerrorPostMaterials.GetPrepare(1),0,0,qw,qh,0,0,qw-1,qh-1,qw,qh);
+ SetRenderTargetAndViewPort(small0);
+ ctx->DrawScreenSpaceRectangle(g_TerrorPostMaterials.GetPrepare(2),0,0,qw,qh,0,0,qw-1,qh-1,qw,qh);
+ ctx->PopRenderTargetAndViewport();
+}
+
+static void Terror_PrepareTransitionBlur( IMatRenderContext *context )
+{
+	ITexture *full = materials->FindTexture( "_rt_FullFrameFB", TEXTURE_GROUP_RENDER_TARGET );
+	ITexture *small0 = materials->FindTexture( "_rt_SmallFB0", TEXTURE_GROUP_RENDER_TARGET );
+	ITexture *small1 = materials->FindTexture( "_rt_SmallFB1", TEXTURE_GROUP_RENDER_TARGET );
+	const int width = full->GetActualWidth(), height = full->GetActualHeight();
+	const int qw = width / 4, qh = height / 4;
+	context->PushRenderTargetAndViewport();
+	SetRenderTargetAndViewPort( small0 );
+	context->DrawScreenSpaceRectangle( g_TerrorPostMaterials.GetPrepare( 3 ), 0, 0, qw, qh, 0, 0, width - 2, height - 2, width, height );
+	SetRenderTargetAndViewPort( small1 );
+	context->DrawScreenSpaceRectangle( g_TerrorPostMaterials.GetPrepare( 1 ), 0, 0, qw, qh, 0, 0, qw - 1, qh - 1, qw, qh );
+	SetRenderTargetAndViewPort( small0 );
+	context->DrawScreenSpaceRectangle( g_TerrorPostMaterials.GetPrepare( 4 ), 0, 0, qw, qh, 0, 0, qw - 1, qh - 1, qw, qh );
+	context->PopRenderTargetAndViewport();
+}
+void Terror_RenderTransitionBlur( float alpha, float desaturation )
+{
+	//COMISS/JB: unordered alpha skips, exactly like values below 1e-4.
+	if ( !( alpha >= 0.000099999997f ) ) return;
+	const CViewSetup *setup = view->GetViewSetup();
+	UpdateScreenEffectTexture( 0, setup->x, setup->y, setup->width, setup->height, false );
+	CMatRenderContextPtr context( materials );
+	Terror_PrepareTransitionBlur( context );
+	int x, y, width, height;
+	context->GetViewport( x, y, width, height );
+	int targetWidth, targetHeight;
+	context->GetRenderTargetDimensions( targetWidth, targetHeight );
+	IMaterial *fade = g_TerrorPostMaterials.GetFadeBlur();
+	fade->FindVar( "$c0_x", NULL, false )->SetFloatValue( alpha );
+	fade->FindVar( "$c1_x", NULL, false )->SetFloatValue( desaturation );
+	context->DrawScreenSpaceRectangle( fade, 0, 0, width, height, (float)x, (float)y,
+		(float)( x + width - 1 ), (float)( y + height - 1 ), targetWidth, targetHeight );
+}
+#endif
 
 extern ConVar localplayer_visionflags;
 
@@ -340,6 +765,10 @@ static void SetRenderTargetAndViewPort(ITexture *rt)
 	pRenderContext->Viewport(0,0,rt->GetActualWidth(),rt->GetActualHeight());
 }
 
+#if defined( L4D2 )
+#include "l4d2/effects/terror_depth_of_field.inc"
+#endif
+
 #define FILTER_KERNEL_SLOP 20
 
 // Note carefully about the downsampling: the first downsampling samples from the full rendertarget
@@ -421,9 +850,15 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	int xl, yl, dest_width, dest_height;
 	pRenderContext->GetViewport( xl, yl, dest_width, dest_height );
 
-	// Find min and max gamma-space text range
+#if defined( L4D2 )
+	// Native C1C5FE0 includes the entire dark and bright tails.
+	float flTestRangeMin = ( m_min_lum == 0.0f ) ? -1.0e20f : m_min_lum;
+	float flTestRangeMax = ( m_max_lum == 1.0f ) ? 1.0e20f : m_max_lum;
+#else
+	// Find min and max gamma-space test range
 	float flTestRangeMin = m_min_lum;
 	float flTestRangeMax = ( m_max_lum == 1.0f ) ? 10000.0f : m_max_lum; // Count all pixels >1.0 as 1.0
+#endif
 
 	// First, set stencil bits where the colors match
 	IMaterial *test_mat=materials->FindMaterial( "dev/lumcompare", TEXTURE_GROUP_OTHER, true );
@@ -438,6 +873,7 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 
 	float exposure_width_scale, exposure_height_scale;
 
+#if !defined( L4D2 )
 	// now, shrink region of interest if the flashlight is on
 	if ( g_bFlashlightIsOn )
 	{
@@ -445,6 +881,7 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 		exposure_height_scale = ( 0.5f * ( 1.0f - mat_exposure_center_region_y_flashlight.GetFloat() ) );
 	}
 	else
+#endif
 	{
 		exposure_width_scale = ( 0.5f * ( 1.0f - mat_exposure_center_region_x.GetFloat() ) );
 		exposure_height_scale = ( 0.5f * ( 1.0f - mat_exposure_center_region_y.GetFloat() ) );
@@ -452,12 +889,15 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	int skip_edgex = ( 1 + scrx_max - scrx_min ) * exposure_width_scale;
 	int skip_edgey = ( 1 + scry_max - scry_min ) * exposure_height_scale;
 
-	// now, do luminance compare
+	// The SDK comparison shader needs a scale; native L4D2 compares the
+	// already-exposed scene directly, so retain unity there.
 	float tscale = 1.0;
+#if !defined( L4D2 )
 	if ( g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT )
 	{
 		tscale = pRenderContext->GetToneMappingScaleLinear().x;
 	}
+#endif
 	IMaterialVar *use_t_scale = test_mat->FindVar( "$C0_Z", NULL );
 	use_t_scale->SetFloatValue( tscale );
 
@@ -486,13 +926,21 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	scry_min += skip_edgey;
 	scrx_max -= skip_edgex;
 	scry_max -= skip_edgey;
+	int source_width = dest_width;
+	int source_height = dest_height;
+#if defined( L4D2 )
+	// UVs address the full target; destination coordinates are viewport-local.
+	pRenderContext->GetRenderTargetDimensions( source_width, source_height );
+#else
+	xl = yl = 0;
+#endif
 	pRenderContext->DrawScreenSpaceRectangle( test_mat,
-											  scrx_min, scry_min,
+											  scrx_min - xl, scry_min - yl,
 											  1 + scrx_max - scrx_min,
 											  1 + scry_max - scry_min,
 											  scrx_min, scry_min,
 											  scrx_max, scry_max,
-											  dest_width, dest_height);
+											  source_width, source_height );
 
 	if ( mat_tonemapping_occlusion_use_stencil.GetInt() )
 	{
@@ -514,8 +962,14 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 												  1 + scry_max - scry_min,
 												  scrx_min, scry_min,
 												  scrx_max, scry_max,
-												  dest_width, dest_height);
+												  source_width, source_height );
 		pRenderContext->SetStencilEnable( false );
+#if defined( L4D2 )
+		pRenderContext->SetStencilCompareFunction( STENCILCOMPARISONFUNCTION_ALWAYS );
+		pRenderContext->SetStencilReferenceValue( 0 );
+		pRenderContext->SetStencilTestMask( 0xffffffff );
+		pRenderContext->SetStencilWriteMask( 0xffffffff );
+#endif
 	}
 	pRenderContext->EndOcclusionQueryDrawing( m_occ_handle );
 	if ( m_state == HESTATE_INITIAL )
@@ -677,25 +1131,45 @@ float CLuminanceHistogramSystem::GetTargetTonemapScalar( bool bGetIdealTargetFor
 	{
 		float flPercentLocationOfTarget;
 		if ( bGetIdealTargetForDebugMode == true)
+#if defined( L4D2 )
+			flPercentLocationOfTarget = FindLocationOfPercentBrightPixels( Terror_TonemapPercentBrightPixels() );
+#else
 			flPercentLocationOfTarget = FindLocationOfPercentBrightPixels( mat_tonemap_percent_bright_pixels.GetFloat() ); // Don't pass in the second arg so the scalar doesn't snap to a bin
+#endif
 		else
+#if defined( L4D2 )
+			flPercentLocationOfTarget = FindLocationOfPercentBrightPixels( Terror_TonemapPercentBrightPixels(), Terror_TonemapPercentTarget() );
+#else
 			flPercentLocationOfTarget = FindLocationOfPercentBrightPixels( mat_tonemap_percent_bright_pixels.GetFloat(), mat_tonemap_percent_target.GetFloat() );
+#endif
 		if ( flPercentLocationOfTarget < 0.0f ) // This is the return error code
 		{
+#if defined( L4D2 )
+			flPercentLocationOfTarget = Terror_TonemapPercentTarget() / 100.0f;
+#else
 			flPercentLocationOfTarget = mat_tonemap_percent_target.GetFloat() / 100.0f; // Pretend we're at the target
+#endif
 		}
 
 		// Make sure this is > 0.0f
 		flPercentLocationOfTarget = MAX( 0.0001f, flPercentLocationOfTarget );
 
 		// Compute target scalar
+#if defined( L4D2 )
+		float flTargetScalar = ( Terror_TonemapPercentTarget() / 100.0f ) / flPercentLocationOfTarget;
+#else
 		float flTargetScalar = ( mat_tonemap_percent_target.GetFloat() / 100.0f ) / flPercentLocationOfTarget;
+#endif
 
 		// Compute secondary target scalar
 		float flAverageLuminanceLocation = FindLocationOfPercentBrightPixels( 50.0f );
 		if ( flAverageLuminanceLocation > 0.0f )
 		{
+#if defined( L4D2 )
+			float flTargetScalar2 = ( Terror_TonemapMinAvgLum() / 100.0f ) / flAverageLuminanceLocation;
+#else
 			float flTargetScalar2 = ( mat_tonemap_min_avglum.GetFloat() / 100.0f ) / flAverageLuminanceLocation;
+#endif
 
 			// Only override it if it's trying to brighten the image more than the primary algorithm
 			if ( flTargetScalar2 > flTargetScalar )
@@ -705,8 +1179,12 @@ float CLuminanceHistogramSystem::GetTargetTonemapScalar( bool bGetIdealTargetFor
 		}
 
 		// Apply this against last frames scalar
+#if defined( L4D2 )
+		float flLastScale = g_TerrorTonemapState.GetCurrent();
+#else
 		CMatRenderContextPtr pRenderContext( materials );
 		float flLastScale = pRenderContext->GetToneMappingScaleLinear().x;
+#endif
 		flTargetScalar *= flLastScale;
 
 		flTargetScalar = MAX( 0.001f, flTargetScalar );
@@ -800,7 +1278,11 @@ static void GetExposureRange( float *flAutoExposureMin, float *flAutoExposureMax
 	// Override
 	if ( mat_hdr_uncapexposure.GetInt() )
 	{
+#if defined( L4D2 )
+		*flAutoExposureMax = 100.0f;
+#else
 		*flAutoExposureMax = 20.0f;
+#endif
 		*flAutoExposureMin = 0.0f;
 	}
 
@@ -878,8 +1360,13 @@ void CLuminanceHistogramSystem::UpdateLuminanceRanges( void )
 				e.m_max_lum = float( bucket + 1 ) / float( nNumRanges - 1 );
 
 				// Use a distribution with slightly more bins in the low range
+#if defined( L4D2 )
+				e.m_min_lum = e.m_min_lum > 0.0f ? powf( e.m_min_lum, 2.5f ) : e.m_min_lum;
+				e.m_max_lum = e.m_max_lum > 0.0f ? powf( e.m_max_lum, 2.5f ) : e.m_max_lum;
+#else
 				e.m_min_lum = e.m_min_lum > 0.0f ? powf( e.m_min_lum, 1.5f ) : e.m_min_lum;
 				e.m_max_lum = e.m_max_lum > 0.0f ? powf( e.m_max_lum, 1.5f ) : e.m_max_lum;
+#endif
 			}
 		}
 		else
@@ -946,9 +1433,15 @@ void CLuminanceHistogramSystem::DisplayHistogram( void )
 	{
 		engine->Con_NPrintf( 17, "(All values in linear space)" );
 
+#if defined( L4D2 )
+		engine->Con_NPrintf( 21, "AvgLum @ %4.2f%%  Tonemap min average luminance = %4.2f%%  Using %d pixels of %d pixels on screen (%3d%%)",
+			MAX( 0.0f, FindLocationOfPercentBrightPixels( 50.0f ) ) * 100.0f, Terror_TonemapMinAvgLum(),
+			nTotalValidPixels, ( dest_width * dest_height ), int( float( nTotalValidPixels ) * 100.0f / float( dest_width * dest_height ) ) );
+#else
 		engine->Con_NPrintf( 21, "AvgLum @ %4.2f%%  mat_tonemap_min_avglum = %4.2f%%  Using %d pixels of %d pixels on screen (%3d%%)", 
 			MAX( 0.0f, FindLocationOfPercentBrightPixels( 50.0f ) ) * 100.0f, mat_tonemap_min_avglum.GetFloat(),
 			nTotalValidPixels, ( dest_width * dest_height ), int( float( nTotalValidPixels ) * 100.0f / float( dest_width * dest_height ) ) );
+#endif
 		engine->Con_NPrintf( 23, "BloomScale = %4.2f  mat_hdr_manual_tonemap_rate = %4.2f  mat_accelerate_adjust_exposure_down = %4.2f", 
 			GetCurrentBloomScale(), mat_hdr_manual_tonemap_rate.GetFloat(), mat_accelerate_adjust_exposure_down.GetFloat() );
 	}
@@ -1040,10 +1533,19 @@ void CLuminanceHistogramSystem::DisplayHistogram( void )
 
 	if ( mat_tonemap_algorithm.GetInt() == 1 ) // New algorithm only
 	{
+#if defined( L4D2 )
+		float flYellowTargetPixelStart = ( xpStart + ( float( nTotalGraphPixelsWide ) * Terror_TonemapPercentTarget() / 100.0f ) );
+		float flYellowAveragePixelStart = ( xpStart + ( float( nTotalGraphPixelsWide ) * Terror_TonemapMinAvgLum() / 100.0f ) );
+#else
 		float flYellowTargetPixelStart = ( xpStart + ( float( nTotalGraphPixelsWide ) * mat_tonemap_percent_target.GetFloat() / 100.0f ) );
 		float flYellowAveragePixelStart = ( xpStart + ( float( nTotalGraphPixelsWide ) * mat_tonemap_min_avglum.GetFloat() / 100.0f ) );
+#endif
 
+#if defined( L4D2 )
+		float flTargetPixelStart = ( xpStart + ( float( nTotalGraphPixelsWide ) * FindLocationOfPercentBrightPixels( Terror_TonemapPercentBrightPixels(), Terror_TonemapPercentTarget() ) ) );
+#else
 		float flTargetPixelStart = ( xpStart + ( float( nTotalGraphPixelsWide ) * FindLocationOfPercentBrightPixels( mat_tonemap_percent_bright_pixels.GetFloat(), mat_tonemap_percent_target.GetFloat() ) ) );
+#endif
 		float flAveragePixelStart = ( xpStart + ( float( nTotalGraphPixelsWide ) * FindLocationOfPercentBrightPixels( 50.0f ) ) );
 
 		// Draw target yellow border bar
@@ -1115,23 +1617,80 @@ void CLuminanceHistogramSystem::DisplayHistogram( void )
 
 static CLuminanceHistogramSystem g_HDR_HistogramSystem;
 
+#if !defined( L4D2 )
 static float s_MovingAverageToneMapScale[10] = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 static int s_nInAverage = 0;
+#endif
 
 void ResetToneMapping(float value)
 {
 	CMatRenderContextPtr pRenderContext( materials );
+#if defined( L4D2 )
+	float minimum, maximum;
+	GetExposureRange( &minimum, &maximum );
+	g_TerrorTonemapState.Reset( value, minimum, maximum );
+#else
 	s_nInAverage = 0;
+#endif
 	pRenderContext->ResetToneMappingScale(value);
 }
 
-static ConVar mat_force_tonemap_scale( "mat_force_tonemap_scale", "0.0", FCVAR_CHEAT );
+static ConVar mat_force_tonemap_scale( "mat_force_tonemap_scale", "0.0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+
+#if defined( L4D2 )
+static bool s_bTerrorExposureOverride;
+static float s_flTerrorExposureOverride;
+float Terror_GetCurrentExposure() { return g_TerrorTonemapState.GetCurrent(); } //1C5CC0
+void Terror_SetExposureOverride( bool enabled, float value ) //1C5CD0
+{
+	s_bTerrorExposureOverride = enabled;
+	s_flTerrorExposureOverride = value;
+}
+void Terror_ApplyToneMapping( IMatRenderContext *context )
+{
+	if ( g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_NONE )
+	{
+		context->SetToneMappingScaleLinear( Vector( 1, 1, 1 ) );
+		return;
+	}
+	const float forced = mat_fullbright.GetInt() == 1 ? 1.0f : mat_force_tonemap_scale.GetFloat();
+	if ( forced > 0.0f )
+	{
+		float minimum, maximum; GetExposureRange( &minimum, &maximum );
+		g_TerrorTonemapState.Reset( forced, minimum, maximum );
+	}
+	else if ( s_bTerrorExposureOverride )
+	{
+		float minimum, maximum; GetExposureRange( &minimum, &maximum );
+		//1C738C: compare polarity retains maximum for unordered override.
+		float selected = maximum;
+		if ( s_flTerrorExposureOverride <= maximum ) selected = minimum <= s_flTerrorExposureOverride ? s_flTerrorExposureOverride : minimum;
+		g_TerrorTonemapState.Reset( selected, minimum, maximum );
+	}
+	const float scale = g_TerrorTonemapState.GetCurrent();
+	// Unlike L4D2, the SDK's vector setter only updates the shader API.
+	// Keep the render-context scale in sync for water reflection save/restore.
+	context->ResetToneMappingScale( scale );
+}
+#endif
 
 static void SetToneMapScale(IMatRenderContext *pRenderContext, float newvalue, float minvalue, float maxvalue)
 {
 	Assert( IsFinite( newvalue ) );
 	if( !IsFinite( newvalue ) )
 		return;
+#if defined( L4D2 )
+	g_TerrorTonemapState.Update( newvalue, minvalue, maxvalue, gpGlobals->frametime,
+		mat_tonemap_algorithm.GetInt(), mat_hdr_manual_tonemap_rate.GetFloat(),
+		mat_accelerate_adjust_exposure_down.GetFloat(), mat_force_tonemap_scale.GetFloat() );
+	mat_hdr_tonemapscale.SetValue( g_TerrorTonemapState.GetCurrent() );
+#else
 
 	float flForcedTonemapScale = mat_force_tonemap_scale.GetFloat();
 
@@ -1179,6 +1738,7 @@ static void SetToneMapScale(IMatRenderContext *pRenderContext, float newvalue, f
 		pRenderContext->SetGoalToneMappingScale( avg );
 		mat_hdr_tonemapscale.SetValue( avg );
 	}
+#endif
 }
 
 
@@ -1186,13 +1746,55 @@ static void SetToneMapScale(IMatRenderContext *pRenderContext, float newvalue, f
 // Engine_Post material proxy ============================================================================================
 //=====================================================================================================================
 
-static ConVar mat_software_aa_strength( "mat_software_aa_strength", "-1.0", FCVAR_ARCHIVE, "Software AA - perform a software anti-aliasing post-process (an alternative/supplement to MSAA). This value sets the strength of the effect: (0.0 - off), (1.0 - full)" );
-static ConVar mat_software_aa_quality( "mat_software_aa_quality", "0", FCVAR_ARCHIVE, "Software AA quality mode: (0 - 5-tap filter), (1 - 9-tap filter)" );
-static ConVar mat_software_aa_edge_threshold( "mat_software_aa_edge_threshold", "1.0", FCVAR_ARCHIVE, "Software AA - adjusts the sensitivity of the software AA shader's edge detection (default 1.0 - a lower value will soften more edges, a higher value will soften fewer)" );
-static ConVar mat_software_aa_blur_one_pixel_lines( "mat_software_aa_blur_one_pixel_lines", "0.5", FCVAR_ARCHIVE, "How much software AA should blur one-pixel thick lines: (0.0 - none), (1.0 - lots)" );
-static ConVar mat_software_aa_tap_offset( "mat_software_aa_tap_offset", "1.0", FCVAR_ARCHIVE, "Software AA - adjusts the displacement of the taps used by the software AA shader (default 1.0 - a lower value will make the image sharper, higher will make it blurrier)" );
-static ConVar mat_software_aa_debug( "mat_software_aa_debug", "0", FCVAR_NONE, "Software AA debug mode: (0 - off), (1 - show number of 'unlike' samples: 0->black, 1->red, 2->green, 3->blue), (2 - show anti-alias blend strength), (3 - show averaged 'unlike' colour)" );
-static ConVar mat_software_aa_strength_vgui( "mat_software_aa_strength_vgui", "-1.0", FCVAR_ARCHIVE, "Same as mat_software_aa_strength, but forced to this value when called by the post vgui AA pass." );
+static ConVar mat_software_aa_strength( "mat_software_aa_strength", "-1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Software AA - perform a software anti-aliasing post-process (an alternative/supplement to MSAA). This value sets the strength of the effect: (0.0 - off), (1.0 - full)" );
+static ConVar mat_software_aa_quality( "mat_software_aa_quality", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Software AA quality mode: (0 - 5-tap filter), (1 - 9-tap filter)" );
+static ConVar mat_software_aa_edge_threshold( "mat_software_aa_edge_threshold", "1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Software AA - adjusts the sensitivity of the software AA shader's edge detection (default 1.0 - a lower value will soften more edges, a higher value will soften fewer)" );
+static ConVar mat_software_aa_blur_one_pixel_lines( "mat_software_aa_blur_one_pixel_lines", "0.5", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "How much software AA should blur one-pixel thick lines: (0.0 - none), (1.0 - lots)" );
+static ConVar mat_software_aa_tap_offset( "mat_software_aa_tap_offset", "1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Software AA - adjusts the displacement of the taps used by the software AA shader (default 1.0 - a lower value will make the image sharper, higher will make it blurrier)" );
+static ConVar mat_software_aa_debug( "mat_software_aa_debug", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+, "Software AA debug mode: (0 - off), (1 - show number of 'unlike' samples: 0->black, 1->red, 2->green, 3->blue), (2 - show anti-alias blend strength), (3 - show averaged 'unlike' colour)" );
+static ConVar mat_software_aa_strength_vgui( "mat_software_aa_strength_vgui", "-1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Same as mat_software_aa_strength, but forced to this value when called by the post vgui AA pass." );
 
 class CEnginePostMaterialProxy : public CEntityMaterialProxy
 {
@@ -1212,6 +1814,10 @@ private:
 	IMaterialVar *m_pMaterialParam_ColCorrectNumLookups;
 	IMaterialVar *m_pMaterialParam_ColCorrectDefaultWeight;
 	IMaterialVar *m_pMaterialParam_ColCorrectLookupWeights;
+#if defined( L4D2 )
+	IMaterialVar *m_pTerrorPost[8], *m_pTerrorBlurEnable, *m_pTerrorFadeColor,
+		*m_pTerrorFadeType, *m_pTerrorBloomAmount;
+#endif
 
 public:
 	static IMaterial * SetupEnginePostMaterial( const Vector4D & fullViewportBloomUVs, const Vector4D & fullViewportFBUVs, const Vector2D & destTexSize,
@@ -1241,6 +1847,10 @@ CEnginePostMaterialProxy::CEnginePostMaterialProxy()
 	m_pMaterialParam_ColCorrectNumLookups		= NULL;
 	m_pMaterialParam_ColCorrectDefaultWeight	= NULL;
 	m_pMaterialParam_ColCorrectLookupWeights	= NULL;
+#if defined( L4D2 )
+	for ( int i = 0; i < 8; ++i ) m_pTerrorPost[i] = NULL;
+	m_pTerrorBlurEnable = m_pTerrorFadeColor = m_pTerrorFadeType = m_pTerrorBloomAmount = NULL;
+#endif
 }
 
 CEnginePostMaterialProxy::~CEnginePostMaterialProxy()
@@ -1260,6 +1870,15 @@ bool CEnginePostMaterialProxy::Init( IMaterial *pMaterial, KeyValues *pKeyValues
 	m_pMaterialParam_ColCorrectNumLookups = pMaterial->FindVar( "$colCorrect_NumLookups", &bFoundVar, false );
 	m_pMaterialParam_ColCorrectDefaultWeight = pMaterial->FindVar( "$colCorrect_DefaultWeight", &bFoundVar, false );
 	m_pMaterialParam_ColCorrectLookupWeights = pMaterial->FindVar( "$colCorrect_LookupWeights", &bFoundVar, false );
+#if defined( L4D2 )
+	static const char *names[8] = { "$localContrastScale", "$localContrastEdgeScale", "$localContrastVignetteStart",
+		"$localContrastVignetteEnd", "$blurredVignetteScale", "$fadeToBlackScale", "$noiseScale", "$topVignetteScale" };
+	for ( int i = 0; i < 8; ++i ) m_pTerrorPost[i] = pMaterial->FindVar( names[i], &bFoundVar, false );
+	m_pTerrorBlurEnable = pMaterial->FindVar( "$blurredVignetteEnable", &bFoundVar, false );
+	m_pTerrorFadeColor = pMaterial->FindVar( "$fadeColor", &bFoundVar, false );
+	m_pTerrorFadeType = pMaterial->FindVar( "$fade", &bFoundVar, false );
+	m_pTerrorBloomAmount = pMaterial->FindVar( "$bloomAmount", &bFoundVar, false );
+#endif
 
 	return true;
 }
@@ -1277,6 +1896,15 @@ void CEnginePostMaterialProxy::OnBind( C_BaseEntity *pEnt )
 
 	if ( m_pMaterialParam_BloomEnable )
 		m_pMaterialParam_BloomEnable->SetIntValue( s_PostBloomEnable );
+#if defined( L4D2 )
+	const float *post = static_cast< ClientModeTerrorNormal * >( GetClientModeNormal() )->GetPostProcessValues();
+	for ( int i = 0; i < 8; ++i ) m_pTerrorPost[i]->SetFloatValue( post[i] );
+	m_pTerrorBlurEnable->SetIntValue( post[4] > 0.0f );
+	m_pTerrorFadeColor->SetVecValue( g_TerrorPostFade, 4 );
+	m_pTerrorFadeType->SetIntValue( g_TerrorPostFadeType );
+	m_pTerrorBloomAmount->SetFloatValue( 0.0f );
+	Terror_BindVomitScreenSpaceMaterial( GetMaterial() );
+#endif
 }
 
 IMaterial *CEnginePostMaterialProxy::GetMaterial()
@@ -1351,6 +1979,12 @@ void CEnginePostMaterialProxy::SetupEnginePostMaterialTextureTransform( const Ve
 IMaterial * CEnginePostMaterialProxy::SetupEnginePostMaterial(	const Vector4D & fullViewportBloomUVs, const Vector4D & fullViewportFBUVs, const Vector2D & destTexSize,
 																bool bPerformSoftwareAA, bool bPerformBloom, bool bPerformColCorrect, float flAAStrength )
 {
+#if defined( L4D2 )
+	s_PostBloomEnable = 0; // Native1C57C0 ignores requested bloom enable/amount.
+	SetupEnginePostMaterialAA( bPerformSoftwareAA, flAAStrength );
+	SetupEnginePostMaterialTextureTransform( fullViewportBloomUVs, fullViewportFBUVs, destTexSize );
+	return g_TerrorPostMaterials.GetEnginePost();
+#else
 	// Shouldn't get here if none of the effects are enabled
 	Assert( bPerformSoftwareAA || bPerformBloom || bPerformColCorrect );
 
@@ -1369,6 +2003,7 @@ IMaterial * CEnginePostMaterialProxy::SetupEnginePostMaterial(	const Vector4D & 
 		// NOTE: this path is what gets used for DX8 (which cannot enable AA or col-correction)
 		return materials->FindMaterial( "dev/bloomadd", TEXTURE_GROUP_OTHER, true);
 	}
+#endif
 }
 
 EXPOSE_INTERFACE( CEnginePostMaterialProxy, IMaterialProxy, "engine_post" IMATERIAL_PROXY_INTERFACE_VERSION );
@@ -1468,7 +2103,11 @@ static float GetBloomAmount( void )
 }
 
 // Control for dumping render targets to files for debugging
-static ConVar mat_dump_rts( "mat_dump_rts", "0" );
+static ConVar mat_dump_rts( "mat_dump_rts", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 static int s_nRTIndex = 0;
 bool g_bDumpRenderTargets = false;
 
@@ -1519,6 +2158,7 @@ void DumpTGAofRenderTarget( const int width, const int height, const char *pFile
 
 static bool s_bScreenEffectTextureIsUpdated = false;
 
+#if !defined( L4D2 )
 static void Generate8BitBloomTexture( IMatRenderContext *pRenderContext, float flBloomScale,
 										int x, int y, int w, int h )
 {
@@ -1596,18 +2236,27 @@ static void Generate8BitBloomTexture( IMatRenderContext *pRenderContext, float f
 
 	pRenderContext->PopRenderTargetAndViewport();
 }
+#endif
 
 static void DoPreBloomTonemapping( IMatRenderContext *pRenderContext, int nX, int nY, int nWidth, int nHeight, float flAutoExposureMin, float flAutoExposureMax )
 {
 	// Update HDR histogram before bloom
+#if defined( L4D2 )
+	if ( mat_dynamic_tonemapping.GetInt() )
+#else
 	if ( mat_dynamic_tonemapping.GetInt() || mat_show_histogram.GetInt() )
+#endif
 	{
 		tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 
 		if ( s_bScreenEffectTextureIsUpdated == false )
 		{
 			// FIXME: nX/nY/nWidth/nHeight are used here, but the equivalent parameters are ignored in Generate8BitBloomTexture
+#if defined( L4D2 )
+			UpdateScreenEffectTexture( 0, nX, nY, nWidth, nHeight, false );
+#else
 			UpdateScreenEffectTexture( 0, nX, nY, nWidth, nHeight, true );
+#endif
 			s_bScreenEffectTextureIsUpdated = true;
 		}
 
@@ -1649,10 +2298,17 @@ static void DoPreBloomTonemapping( IMatRenderContext *pRenderContext, int nX, in
 					}
 					else
 					{
+#if defined( L4D2 )
+						engine->Con_NPrintf( 19, "%.2f%% of pixels above %d%% target @ %4.2f%%  Target Scalar = %4.2f  Min/Max( %4.2f, %4.2f )  Final Scalar: %4.2f  Actual: %4.2f",
+							Terror_TonemapPercentBrightPixels(), (int)Terror_TonemapPercentTarget(),
+							( g_HDR_HistogramSystem.FindLocationOfPercentBrightPixels( Terror_TonemapPercentBrightPixels(), Terror_TonemapPercentTarget() ) * 100.0f ),
+							g_HDR_HistogramSystem.GetTargetTonemapScalar( true ), flAutoExposureMin, flAutoExposureMax, mat_hdr_tonemapscale.GetFloat(), pRenderContext->GetToneMappingScaleLinear().x );
+#else
 						engine->Con_NPrintf( 19, "%.2f%% of pixels above %d%% target @ %4.2f%%  Target Scalar = %4.2f  Min/Max( %4.2f, %4.2f )  Final Scalar: %4.2f  Actual: %4.2f",
 											 mat_tonemap_percent_bright_pixels.GetFloat(), mat_tonemap_percent_target.GetInt(),
 											 ( g_HDR_HistogramSystem.FindLocationOfPercentBrightPixels( mat_tonemap_percent_bright_pixels.GetFloat(), mat_tonemap_percent_target.GetFloat() ) * 100.0f ),
 											 g_HDR_HistogramSystem.GetTargetTonemapScalar( true ), flAutoExposureMin, flAutoExposureMax, mat_hdr_tonemapscale.GetFloat(), pRenderContext->GetToneMappingScaleLinear().x );
+#endif
 					}
 				}
 			}
@@ -1662,7 +2318,11 @@ static void DoPreBloomTonemapping( IMatRenderContext *pRenderContext, int nX, in
 
 static void DoPostBloomTonemapping( IMatRenderContext *pRenderContext, int nX, int nY, int nWidth, int nHeight, float flAutoExposureMin, float flAutoExposureMax )
 {
+#if defined( L4D2 )
+	if ( mat_show_histogram.GetInt() && mat_dynamic_tonemapping.GetInt() && ( engine->GetDXSupportLevel() >= 90 ) )
+#else
 	if ( mat_show_histogram.GetInt() && ( engine->GetDXSupportLevel() >= 90 ) )
+#endif
 	{
 		g_HDR_HistogramSystem.DisplayHistogram();
 	}
@@ -2205,16 +2865,77 @@ static void DrawPyroPost( IMaterial *pMaterial,
 }
 
 
-static ConVar r_queued_post_processing( "r_queued_post_processing", "0" );
+static ConVar r_queued_post_processing( "r_queued_post_processing", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 // How much to dice up the screen during post-processing on 360
 // This has really marginal effects, but 4x1 does seem vaguely better for post-processing
+#if defined( L4D2 )
+static ConVar mat_postprocess_x( "mat_postprocess_x", "4", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar mat_postprocess_y( "mat_postprocess_y", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 static ConVar mat_postprocess_x( "mat_postprocess_x", "4" );
 static ConVar mat_postprocess_y( "mat_postprocess_y", "1" );
+#endif
+
+#if defined( L4D2 )
+static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int h,bool postVGui,float bloomScale)
+{
+ static ConVarRef mat_colorcorrection("mat_colorcorrection");
+ const bool cc=!postVGui && g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights() && mat_colorcorrection.GetBool();
+ ctx->EnableColorCorrection(cc);
+ IMaterial *post=g_TerrorPostMaterials.GetEnginePost();
+ const bool local=post->FindVar("$localcontrastenable",NULL,false)->GetIntValue()!=0 && mat_local_contrast_enable.GetBool();
+ const bool vomit=Terror_HasVomitScreenSpaceParticles();
+ if(!s_bScreenEffectTextureIsUpdated)
+ {
+  UpdateScreenEffectTexture(0,x,y,w,h,false);
+  s_bScreenEffectTextureIsUpdated=true;
+ }
+ if((!postVGui && bloomScale>0.0f) || local || vomit)
+ {
+  Terror_PrepareEnginePost(ctx);
+  if(vomit) Terror_RenderVomitScreenSpaceParticles(ctx);
+ }
+ ITexture *src=materials->FindTexture("_rt_FullFrameFB",TEXTURE_GROUP_RENDER_TARGET);
+ ITexture *small=materials->FindTexture("_rt_SmallFB1",TEXTURE_GROUP_RENDER_TARGET);
+ const int fw=src->GetActualWidth(),fh=src->GetActualHeight();
+ Vector4D bloomUV((float)x*.25f,(float)y*.25f-.5f,(float)(x+w)*.25f-1.0f,(float)(y+h)*.25f-1.0f);
+ Vector4D fbUV((float)x,(float)y,(float)(x+w-1),(float)(y+h-1));
+ Vector2D texSize((float)fw,(float)fh);
+ static bool firstFrame=true;
+ if(!firstFrame || !cc)
+ {
+  CEnginePostMaterialProxy::SetupEnginePostMaterial(bloomUV,fbUV,texSize,false,false,cc,0.0f);
+  ctx->DrawScreenSpaceRectangle(post,0,0,w,h,bloomUV.x,bloomUV.y,bloomUV.z,bloomUV.w,
+   small->GetActualWidth(),small->GetActualHeight(),GetClientWorldEntity()->GetClientRenderable(),
+   mat_postprocess_x.GetInt(),mat_postprocess_y.GetInt());
+ }
+ firstFrame=false;
+}
+#endif
 
 void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, bool bPostVGui )
 {
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
+#if defined( L4D2 )
+	if ( IsTransitionStatsPostProcessingSuppressed() ) return;
+#endif
 
 	CMatRenderContextPtr pRenderContext( materials );
 
@@ -2246,6 +2967,9 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 		}
 	}
 
+#if defined( L4D2 )
+	Terror_UpdateTonemapController();
+#endif
 	float flBloomScale = GetBloomAmount();
 
 	HDRType_t hdrType = g_pMaterialSystemHardwareConfig->GetHDRType();
@@ -2257,6 +2981,16 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 	float flAutoExposureMin;
 	float flAutoExposureMax;
 	GetExposureRange( &flAutoExposureMin, &flAutoExposureMax );
+
+#if defined( L4D2 )
+	s_bScreenEffectTextureIsUpdated = false;
+	if ( hdrType != HDR_TYPE_NONE )
+		DoPreBloomTonemapping( pRenderContext, x, y, w, h, flAutoExposureMin, flAutoExposureMax );
+	if ( mat_postprocess_enable.GetBool() )
+		Terror_RenderEnginePost( pRenderContext, x, y, w, h, bPostVGui, flBloomScale );
+	if ( hdrType != HDR_TYPE_NONE )
+		DoPostBloomTonemapping( pRenderContext, x, y, w, h, flAutoExposureMin, flAutoExposureMax );
+#else
 
 	if ( mat_debug_bloom.GetInt() == 1 )
 	{
@@ -2628,6 +3362,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 			break;
 		}
 	}
+#endif
 
 #if defined( _X360 )
 	pRenderContext->PopVertexShaderGPRAllocation();
@@ -2636,6 +3371,9 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 
 // Motion Blur Material Proxy =========================================================================================
 static float g_vMotionBlurValues[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+#if defined( L4D2 )
+static float g_vTerrorMotionBlurViewport[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+#endif
 class CMotionBlurMaterialProxy : public CEntityMaterialProxy
 {
 public:
@@ -2647,11 +3385,17 @@ public:
 
 private:
 	IMaterialVar *m_pMaterialParam;
+#if defined( L4D2 )
+	IMaterialVar *m_pViewportParam;
+#endif
 };
 
 CMotionBlurMaterialProxy::CMotionBlurMaterialProxy()
 {
 	m_pMaterialParam = NULL;
+#if defined( L4D2 )
+	m_pViewportParam = NULL;
+#endif
 }
 
 CMotionBlurMaterialProxy::~CMotionBlurMaterialProxy()
@@ -2667,6 +3411,10 @@ bool CMotionBlurMaterialProxy::Init( IMaterial *pMaterial, KeyValues *pKeyValues
 	if ( bFoundVar == false)
 		return false;
 
+#if defined( L4D2 )
+	m_pViewportParam = pMaterial->FindVar( "$MotionBlurViewportInternal", &bFoundVar, false );
+	if ( !bFoundVar ) return false;
+#endif
 	return true;
 }
 
@@ -2676,6 +3424,9 @@ void CMotionBlurMaterialProxy::OnBind( C_BaseEntity *pEnt )
 	{
 		m_pMaterialParam->SetVecValue( g_vMotionBlurValues, 4 );
 	}
+#if defined( L4D2 )
+	if ( m_pViewportParam ) m_pViewportParam->SetVecValue( g_vTerrorMotionBlurViewport, 4 );
+#endif
 }
 
 IMaterial *CMotionBlurMaterialProxy::GetMaterial()
@@ -2691,14 +3442,41 @@ EXPOSE_INTERFACE( CMotionBlurMaterialProxy, IMaterialProxy, "MotionBlur" IMATERI
 //=====================================================================================================================
 // Image-space Motion Blur ============================================================================================
 //=====================================================================================================================
-ConVar mat_motion_blur_forward_enabled( "mat_motion_blur_forward_enabled", "0" );
-ConVar mat_motion_blur_falling_min( "mat_motion_blur_falling_min", "10.0" );
-ConVar mat_motion_blur_falling_max( "mat_motion_blur_falling_max", "20.0" );
-ConVar mat_motion_blur_falling_intensity( "mat_motion_blur_falling_intensity", "1.0" );
+ConVar mat_motion_blur_forward_enabled( "mat_motion_blur_forward_enabled", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+ConVar mat_motion_blur_falling_min( "mat_motion_blur_falling_min", "10.0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+ConVar mat_motion_blur_falling_max( "mat_motion_blur_falling_max", "20.0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+ConVar mat_motion_blur_falling_intensity( "mat_motion_blur_falling_intensity", "1.0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 //ConVar mat_motion_blur_roll_intensity( "mat_motion_blur_roll_intensity", "1.0" );
-ConVar mat_motion_blur_rotation_intensity( "mat_motion_blur_rotation_intensity", "1.0" );
-ConVar mat_motion_blur_strength( "mat_motion_blur_strength", "1.0" );
+ConVar mat_motion_blur_rotation_intensity( "mat_motion_blur_rotation_intensity", "1.0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+ConVar mat_motion_blur_strength( "mat_motion_blur_strength", "1.0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
+#if defined( L4D2 )
+#include "l4d2/effects/terror_motion_blur.inc"
+#else
 void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, int h )
 {
 #ifdef CSS_PERF_TEST
@@ -2999,3 +3777,4 @@ void DoImageSpaceMotionBlur( const CViewSetup &viewBlur, int x, int y, int w, in
 		}
 	}
 }
+#endif // L4D2

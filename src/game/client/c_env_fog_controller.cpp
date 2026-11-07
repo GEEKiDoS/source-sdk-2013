@@ -19,7 +19,9 @@ BEGIN_NETWORK_TABLE_NOBASE( CFogController, DT_FogController )
 	// fog data
 	RecvPropInt( RECVINFO( m_fog.enable ) ),
 	RecvPropInt( RECVINFO( m_fog.blend ) ),
+#if !defined( L4D2 )
 	RecvPropInt( RECVINFO( m_fog.radial ) ),
+#endif
 	RecvPropVector( RECVINFO( m_fog.dirPrimary ) ),
 	RecvPropInt( RECVINFO( m_fog.colorPrimary ) ),
 	RecvPropInt( RECVINFO( m_fog.colorSecondary ) ),
@@ -32,8 +34,16 @@ BEGIN_NETWORK_TABLE_NOBASE( CFogController, DT_FogController )
 	RecvPropInt( RECVINFO( m_fog.colorSecondaryLerpTo ) ),
 	RecvPropFloat( RECVINFO( m_fog.startLerpTo ) ),
 	RecvPropFloat( RECVINFO( m_fog.endLerpTo ) ),
+#if defined( L4D2 )
+	RecvPropFloat( RECVINFO( m_fog.maxdensityLerpTo ) ),
+#endif
 	RecvPropFloat( RECVINFO( m_fog.lerptime ) ),
 	RecvPropFloat( RECVINFO( m_fog.duration ) ),
+#if defined( L4D2 )
+	RecvPropFloat( RECVINFO( m_fog.HDRColorScale ) ),
+	RecvPropFloat( RECVINFO( m_fog.skyboxFogFactor ) ),
+	RecvPropFloat( RECVINFO( m_fog.skyboxFogFactorLerpTo ) ),
+#endif
 END_NETWORK_TABLE()
 
 //-----------------------------------------------------------------------------
@@ -44,5 +54,8 @@ C_FogController::C_FogController()
 	// Make sure that old maps without fog fields don't get wacked out fog values.
 	m_fog.enable = false;
 	m_fog.maxdensity = 1.0f;
+#if defined( L4D2 )
+	m_fog.HDRColorScale = 1.0f;
+#endif
 	m_fog.radial = false;
 }

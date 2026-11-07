@@ -23,6 +23,7 @@
 #include "tier0/memdbgon.h"
 
 //Precahce the effects
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectImpacts )
 CLIENTEFFECT_MATERIAL( "effects/fleck_cement1" )
 CLIENTEFFECT_MATERIAL( "effects/fleck_cement2" )
@@ -35,6 +36,7 @@ CLIENTEFFECT_MATERIAL( "effects/blood2" )
 CLIENTEFFECT_MATERIAL( "sprites/bloodspray" )
 CLIENTEFFECT_MATERIAL( "particle/particle_noisesphere" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 // Cached handles to commonly used materials
 PMaterialHandle g_Mat_Fleck_Wood[2] = { NULL, NULL };
@@ -47,9 +49,22 @@ PMaterialHandle g_Mat_BloodPuff[2] = { NULL, NULL };
 PMaterialHandle g_Mat_SMG_Muzzleflash[4] = { NULL, NULL, NULL, NULL };
 PMaterialHandle g_Mat_Combine_Muzzleflash[3] = { NULL, NULL, NULL };
 
-static ConVar fx_drawimpactdebris( "fx_drawimpactdebris", "1", FCVAR_DEVELOPMENTONLY, "Draw impact debris effects." );
-static ConVar fx_drawimpactdust( "fx_drawimpactdust", "1", FCVAR_DEVELOPMENTONLY, "Draw impact dust effects." );
+static ConVar fx_drawimpactdebris( "fx_drawimpactdebris", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Draw impact debris effects." );
+static ConVar fx_drawimpactdust( "fx_drawimpactdust", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Draw impact dust effects." );
 
+#ifndef L4D2
 void FX_CacheMaterialHandles( void )
 {
 	g_Mat_Fleck_Wood[0] = ParticleMgr()->GetPMaterial( "effects/fleck_wood1" );
@@ -85,6 +100,8 @@ void FX_CacheMaterialHandles( void )
 #endif
 #endif
 }
+#endif // !L4D2
+
 
 extern PMaterialHandle g_Material_Spark;
 

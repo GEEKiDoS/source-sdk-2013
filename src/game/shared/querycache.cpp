@@ -53,7 +53,13 @@ void QueryCacheKey_t::ComputeHashIndex( void )
 }
 
 
-ConVar	sv_disable_querycache("sv_disable_querycache", "0", FCVAR_CHEAT, "debug - disable trace query cache" );
+ConVar	sv_disable_querycache("sv_disable_querycache", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00006006
+#else
+	FCVAR_CHEAT
+#endif
+, "debug - disable trace query cache" );
 
 static QueryCacheEntry_t *FindOrAllocateCacheEntry( QueryCacheKey_t const &entry )
 {
@@ -287,6 +293,13 @@ void QueryCacheEntry_t::IssueQuery( void )
 	UTIL_TraceLine( m_QueryParams.m_Points[0], m_QueryParams.m_Points[1],
 					m_QueryParams.m_nTraceMask, &filter, &result );
 	m_bResult = ! ( result.DidHit() );
+#if defined( L4D2 )
+	if ( m_QueryParams.m_Type == EQUERY_ENTITY_LOS_CHECK_ALLOW_HIT_TARGET &&
+		result.m_pEnt == m_QueryParams.m_pEntities[1].Get() )
+	{
+		m_bResult = true;
+	}
+#endif
 	m_flLastUpdateTime = gpGlobals->curtime;
 }
 
@@ -321,12 +334,50 @@ bool IsLineOfSightBetweenTwoEntitiesClear( CBaseEntity *pSrcEntity,
 	pNode->m_bUsedSinceUpdated = true;
 	return pNode->m_bResult;
 }
+#if defined( L4D2 )
+bool IsLineOfSightBetweenTwoEntitiesClear( CBaseEntity *pSrcEntity,
+										   EEntityOffsetMode_t nSrcOffsetMode,
+										   CBaseEntity *pDestEntity,
+										   EEntityOffsetMode_t nDestOffsetMode,
+										   CBaseEntity *pSkipEntity,
+										   int nCollisionGroup,
+										   unsigned int nTraceMask,
+										   ShouldHitFunc_t pTraceFilterCallback,
+										   float flMinimumUpdateInterval,
+										   bool includeSkipEntity )
+{
+	QueryCacheKey_t entry;
+	entry.m_Type = EQUERY_ENTITY_LOS_CHECK_ALLOW_HIT_TARGET;
+	entry.m_pEntities[0] = pSrcEntity;
+	entry.m_pEntities[1] = pDestEntity;
+	entry.m_pEntities[2] = pSkipEntity;
+	entry.m_nOffsetMode[0] = nSrcOffsetMode;
+	entry.m_nOffsetMode[1] = nDestOffsetMode;
+	entry.m_nOffsetMode[2] = EOFFSET_MODE_NONE;
+	entry.m_nTraceMask = nTraceMask;
+	entry.m_nNumValidPoints = includeSkipEntity ? 3 : 2;
+	entry.m_nCollisionGroup = nCollisionGroup;
+	entry.m_pTraceFilterFunction = pTraceFilterCallback;
+	entry.m_flMinimumUpdateInterval = flMinimumUpdateInterval;
+	entry.ComputeHashIndex();
+
+	s_nNumCacheQueries++;
+	QueryCacheEntry_t *pNode = FindOrAllocateCacheEntry( entry );
+	pNode->m_bUsedSinceUpdated = true;
+	return pNode->m_bResult;
+}
+#endif
 
 
 #if defined( CLIENT_DLL )
 CON_COMMAND_F( cl_querycache_stats, "Display status of the query cache (client only)", FCVAR_CHEAT )
 #else
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( sv_querycache_stats, "Display status of the query cache (client only)" , 0x00000004)
+#else
 CON_COMMAND( sv_querycache_stats, "Display status of the query cache (client only)" )
+#endif
 #endif
 {
 #ifndef CLIENT_DLL

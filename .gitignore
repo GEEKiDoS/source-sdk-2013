@@ -502,3 +502,52 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Machine-local L4D2 installation paths; keep gameinfo_template.txt tracked.
+/game/mod_l4d2/gameinfo.txt
+
+# Retail startup data is provisioned from the user's install at deployment.
+/game/mod_l4d2/cfg/valve.rc
+/game/mod_l4d2/cfg/config_default.cfg
+/game/mod_l4d2/scripts/kb_def.lst
+
+# Files the game writes into the mod directory at runtime.
+/game/mod_l4d2/ServerConfig.vdf
+/game/mod_l4d2/stats.txt
+/game/mod_l4d2/voice_ban.dt
+/game/mod_l4d2/downloadlists/
+/game/mod_l4d2/cfg/server_blacklist.txt
+/game/mod_l4d2/save/
+/game/mod_l4d2/addons/
+/game/mod_l4d2/addonlist.txt
+/game/mod_l4d2/materials/vgui/logos/ui/
+/game/mod_l4d2/screenshots/
+/game/mod_l4d2/maps/
+/game/mod_l4d2/models/
+/game/mod_l4d2/materials/
+/game/mod_l4d2/sound/
+/game/mod_l4d2/particles/
+/game/mod_l4d2/resource/
+/game/mod_l4d2/media/
+/game/mod_l4d2/expressions/
+/game/mod_l4d2/gfx/
+/game/mod_l4d2/scenes/
+/game/mod_l4d2/**/*.vpk
+/game/mod_l4d2/**/*.exe
+/game/mod_l4d2/**/*.dll
+
+# Local reference trees and reverse-engineering outputs are not distributable.
+/retail/
+/reference/
+/references/
+/extracted/
+/decompiled/
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
+# Shader compiler intermediate output; the published VCS live in game/mod_l4d2/shaders.
+/src/materialsystem/stdshaders/shaders/

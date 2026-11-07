@@ -14,6 +14,9 @@
 
 CBaseMultiplayerPlayer::CBaseMultiplayerPlayer()
 {
+#if defined( L4D2 )
+	m_pExpresser = NULL;
+#endif
 	m_iCurrentConcept = MP_CONCEPT_NONE;
 	m_flLastForcedChangeTeamTime = -1;
 	m_iBalanceScore = 0;
@@ -27,11 +30,21 @@ CBaseMultiplayerPlayer::CBaseMultiplayerPlayer()
 
 CBaseMultiplayerPlayer::~CBaseMultiplayerPlayer()
 {
+#if defined( L4D2 )
+	if ( m_pExpresser )
+	{
+		m_pExpresser->Disconnect( this );
+		delete m_pExpresser;
+		m_pExpresser = NULL;
+	}
+#endif
 	m_pAchievementKV->deleteThis();
 }
 
+#if !defined( L4D2 )
 BEGIN_ENT_SCRIPTDESC( CBaseMultiplayerPlayer, CBasePlayer, "Multiplayer Player" )
 END_SCRIPTDESC();
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -76,6 +89,16 @@ bool CBaseMultiplayerPlayer::SpeakIfAllowed( AIConcept_t concept, const char *mo
 	//if ( IsAllowedToSpeak( concept, bRespondingToPlayer ) )
 	return Speak( concept, modifiers, pszOutResponseChosen, bufsize, filter );
 }
+
+#if defined( L4D2 )
+// S079F70 is the criteria-set overload, not Terror's priority wrapper.
+bool CBaseMultiplayerPlayer::SpeakIfAllowed( AIConcept_t concept, AI_CriteriaSet &criteria, char *pszOutResponseChosen, size_t bufsize, IRecipientFilter *filter )
+{
+	CAI_Expresser *expresser = GetExpresser();
+	expresser->PrepareSpeechCriteria( concept, criteria, NULL );
+	return expresser->SpeakWithCriteria( concept, criteria, pszOutResponseChosen, bufsize, filter );
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -229,7 +252,11 @@ void CBaseMultiplayerPlayer::Spawn( void )
 	BaseClass::Spawn();
 }
 
+#ifdef L4D2
+void CBaseMultiplayerPlayer::AwardAchievement( int iAchievement )
+#else
 void CBaseMultiplayerPlayer::AwardAchievement( int iAchievement, int iCount )
+#endif
 {
 	Assert( iAchievement >= 0 && iAchievement < 0xFFFF );		// must fit in short
 
@@ -237,7 +264,9 @@ void CBaseMultiplayerPlayer::AwardAchievement( int iAchievement, int iCount )
 
 	UserMessageBegin( filter, "AchievementEvent" );
 		WRITE_SHORT( iAchievement );
+#ifndef L4D2
 		WRITE_SHORT( iCount );
+#endif
 	MessageEnd();
 }
 
@@ -294,7 +323,13 @@ void CBaseMultiplayerPlayer::ResetPerLifeCounters( void )
 }
 
 
-ConVar tf_escort_score_rate( "tf_escort_score_rate", "1", FCVAR_CHEAT, "Score for escorting the train, in points per second" );
+ConVar tf_escort_score_rate( "tf_escort_score_rate", "1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Score for escorting the train, in points per second" );
 
 #define ESCORT_SCORE_CONTEXT		"AreaScoreContext"
 #define ESCORT_SCORE_INTERVAL		0.1
@@ -318,6 +353,7 @@ void CBaseMultiplayerPlayer::EscortScoringThink( void )
 			iPoints++;
 		}
 
+#if !defined( L4D2 )
 		if ( iPoints > 0 )
 		{
 			IGameEvent *event = gameeventmanager->CreateEvent( "player_escort_score" );
@@ -328,6 +364,7 @@ void CBaseMultiplayerPlayer::EscortScoringThink( void )
 				gameeventmanager->FireEvent( event, true /* only to server */ );
 			}
 		}
+#endif
 	}
 
 	SetContextThink( &CBaseMultiplayerPlayer::EscortScoringThink, gpGlobals->curtime + ESCORT_SCORE_INTERVAL, ESCORT_SCORE_CONTEXT );	

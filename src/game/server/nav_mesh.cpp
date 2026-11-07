@@ -16,14 +16,17 @@
 #include "fmtstr.h"
 #include "utlbuffer.h"
 #include "tier0/vprof.h"
-#ifdef TERROR
-#include "func_simpleladder.h"
+#if defined( TERROR ) || defined( L4D2 )
+#include "l4d2/entities/func_simpleladder.h"
 #endif
 #include "functorutils.h"
 #include "nav_pathfind.h"
 
 #ifdef TF_DLL
 #include "tf/nav_mesh/tf_nav_area.h"
+#endif
+#if defined( L4D2 )
+#include "l4d2/nav/terror_nav_area.h"
 #endif
 
 #ifdef NEXT_BOT
@@ -52,7 +55,13 @@ ConVar nav_show_player_counts( "nav_show_player_counts", "0", FCVAR_GAMEDLL | FC
 ConVar nav_show_func_nav_avoid( "nav_show_func_nav_avoid", "0", FCVAR_GAMEDLL | FCVAR_CHEAT, "Show areas of designer-placed bot avoidance due to func_nav_avoid entities" );
 ConVar nav_show_func_nav_prefer( "nav_show_func_nav_prefer", "0", FCVAR_GAMEDLL | FCVAR_CHEAT, "Show areas of designer-placed bot preference due to func_nav_prefer entities" );
 ConVar nav_show_func_nav_prerequisite( "nav_show_func_nav_prerequisite", "0", FCVAR_GAMEDLL | FCVAR_CHEAT, "Show areas of designer-placed bot preference due to func_nav_prerequisite entities" );
-ConVar nav_max_vis_delta_list_length( "nav_max_vis_delta_list_length", "64", FCVAR_CHEAT );
+ConVar nav_max_vis_delta_list_length( "nav_max_vis_delta_list_length", "64", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 extern ConVar nav_show_potentially_visible;
 
@@ -60,11 +69,48 @@ extern ConVar nav_show_potentially_visible;
 
 bool FindGroundForNode( Vector *pos, Vector *normal );
 
+#if defined( L4D2 )
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+CBaseEntity *FindNavEntityByClassnameNearest( const char *classname, const Vector &origin, float radius )
+{
+	// S257260 is shared by checkpoint and ladder binding. The global entity
+	// list's nearest query instead tests distance to the entity origin.
+	CBaseEntity *nearest = NULL;
+	float nearestDistanceSquared = 3221225472.0f;
+	CBaseEntity *entity = NULL;
+	while ( ( entity = gEntList.FindEntityByClassnameWithin( entity, classname, origin, radius ) ) != NULL )
+	{
+		if ( !entity->edict() )
+			continue;
+
+		const float distanceSquared = ( entity->WorldSpaceCenter() - origin ).LengthSqr();
+		if ( nearestDistanceSquared > distanceSquared )
+		{
+			nearest = entity;
+			nearestDistanceSquared = distanceSquared;
+		}
+	}
+	return nearest;
+}
+#ifdef _MSC_VER
+#pragma float_control( pop )
+#endif
+#endif
+
 
 //--------------------------------------------------------------------------------------------------------------
 CNavMesh::CNavMesh( void )
 {
 	m_spawnName = NULL;
+#if defined( L4D2 )
+	m_navFileWritable = false; // Native4A6850 clears writable12 and rescue13.
+	m_bRescueVehicleNavUnblocked = false;
+#endif
 	m_gridCellSize = 300.0f;
 	m_editMode = NORMAL;
 	m_bQuitWhenFinished = false;
@@ -78,7 +124,9 @@ CNavMesh::CNavMesh( void )
 //	ListenForGameEvent( "round_start_pre_entity" );
 	ListenForGameEvent( "break_prop" );
 	ListenForGameEvent( "break_breakable" );
+#if !defined( L4D2 )
 	ListenForGameEvent( "teamplay_round_start" );
+#endif
 		
 	Reset();
 }
@@ -94,6 +142,9 @@ CNavMesh::~CNavMesh()
 	{
 		delete [] m_placeName[i];
 	}
+#if defined( L4D2 )
+	delete [] m_placeName;
+#endif
 
 }
 
@@ -240,6 +291,10 @@ void CNavMesh::DestroyNavigationMesh( bool incremental )
 	m_climbableSurface = false;
 	m_markedLadder = NULL;
 	m_selectedLadder = NULL;
+#if defined( L4D2 )
+	m_navFileWritable = false; // Native4A4690: also executes for incremental destruction.
+	m_bRescueVehicleNavUnblocked = false;
+#endif
 
 	if ( !incremental )
 	{
@@ -426,7 +481,11 @@ void CNavMesh::FireGameEvent( IGameEvent *gameEvent )
 		ForAllAreas( collector );
 	}
 
-	if ( FStrEq( gameEvent->GetName(), "round_start" ) || FStrEq( gameEvent->GetName(), "teamplay_round_start" ) )
+	if ( FStrEq( gameEvent->GetName(), "round_start" )
+#if !defined( L4D2 )
+		|| FStrEq( gameEvent->GetName(), "teamplay_round_start" )
+#endif
+		)
 	{
 		OnRoundRestart();
 		
@@ -626,6 +685,10 @@ void CNavMesh::TestAllAreasForBlockedStatus( void )
  */
 void CNavMesh::OnRoundRestart( void )
 {
+#if defined( L4D2 )
+	// Native4A1190: actual elevator binding precedes Terror flow.
+	FOR_EACH_VEC( TheNavAreas, i ) TheNavAreas[i]->ConnectElevators();
+#else
 	m_updateBlockedAreasTimer.Start( 1.0f );
 
 #ifdef NEXT_BOT
@@ -647,6 +710,7 @@ void CNavMesh::OnRoundRestart( void )
 
 		ForAllAreasOverlappingExtent( apply, prereqExtent );
 	}
+#endif
 #endif
 }
 
@@ -827,7 +891,11 @@ CNavArea *CNavMesh::GetNavArea( CBaseEntity *pEntity, int nFlags, float flBeneat
  * Used to find initial area if we start off of the mesh.
  * @todo Make sure area is not on the other side of the wall from goal.
  */
+#if defined( L4D2 )
+CNavArea *CNavMesh::GetNearestNavArea( const Vector &pos, bool anyZ, float maxDist, bool checkLOS, bool checkGround, int team, bool ignoreNavBlockers ) const
+#else
 CNavArea *CNavMesh::GetNearestNavArea( const Vector &pos, bool anyZ, float maxDist, bool checkLOS, bool checkGround, int team ) const
+#endif
 {
 	VPROF_BUDGET( "CNavMesh::GetNearestNavArea", "NextBot" );
 
@@ -922,7 +990,11 @@ CNavArea *CNavMesh::GetNearestNavArea( const Vector &pos, bool anyZ, float maxDi
 						continue;
 
 					// don't consider blocked areas
+#if defined( L4D2 )
+					if ( area->IsBlocked( team, ignoreNavBlockers ) )
+#else
 					if ( area->IsBlocked( team ) )
+#endif
 						continue;
 
 					// mark as visited
@@ -1997,7 +2069,12 @@ static ConCommand nav_select_invalid_areas( "nav_select_invalid_areas", CommandN
 
 
 //--------------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_select_blocked_areas, "Adds all blocked areas to the selected set", 0x00004004 )
+#else
 CON_COMMAND_F( nav_select_blocked_areas, "Adds all blocked areas to the selected set", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -2007,7 +2084,12 @@ CON_COMMAND_F( nav_select_blocked_areas, "Adds all blocked areas to the selected
 
 
 //--------------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_select_obstructed_areas, "Adds all obstructed areas to the selected set", 0x00004004 )
+#else
 CON_COMMAND_F( nav_select_obstructed_areas, "Adds all obstructed areas to the selected set", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -2017,7 +2099,12 @@ CON_COMMAND_F( nav_select_obstructed_areas, "Adds all obstructed areas to the se
 
 
 //--------------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_select_damaging_areas, "Adds all damaging areas to the selected set", 0x00004004 )
+#else
 CON_COMMAND_F( nav_select_damaging_areas, "Adds all damaging areas to the selected set", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -2027,7 +2114,12 @@ CON_COMMAND_F( nav_select_damaging_areas, "Adds all damaging areas to the select
 
 
 //--------------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_select_stairs, "Adds all stairway areas to the selected set", 0x00004004 )
+#else
 CON_COMMAND_F( nav_select_stairs, "Adds all stairway areas to the selected set", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -2742,7 +2834,7 @@ static ConCommand nav_compress_id( "nav_compress_id", CommandNavCompressID, "Re-
 
 
 //--------------------------------------------------------------------------------------------------------------
-#ifdef TERROR
+#if defined( TERROR ) || defined( L4D2 )
 void CommandNavShowLadderBounds( void )
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
@@ -2778,7 +2870,13 @@ void NavEditClearAllAttributes( void )
 	TheNavMesh->ForAllSelectedAreas( clear );
 	TheNavMesh->ClearSelectedSet();
 }
-static ConCommand ClearAllNavAttributes( "wipe_nav_attributes", NavEditClearAllAttributes, "Clear all nav attributes of selected area.", FCVAR_CHEAT );
+static ConCommand ClearAllNavAttributes( "wipe_nav_attributes", NavEditClearAllAttributes, "Clear all nav attributes of selected area.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //--------------------------------------------------------------------------------------------------------
@@ -2901,7 +2999,13 @@ void NavEditClearAttribute( const CCommand &args )
 	
 	Msg( "Unknown attribute '%s'", args[1] );		
 }
-static ConCommand NavClearAttribute( "nav_clear_attribute", NavEditClearAttribute, "Remove given nav attribute from all areas in the selected set.", FCVAR_CHEAT, NavAttributeAutocomplete );
+static ConCommand NavClearAttribute( "nav_clear_attribute", NavEditClearAttribute, "Remove given nav attribute from all areas in the selected set.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, NavAttributeAutocomplete );
 
 
 //--------------------------------------------------------------------------------------------------------
@@ -2925,7 +3029,13 @@ void NavEditMarkAttribute( const CCommand &args )
 
 	Msg( "Unknown attribute '%s'", args[1] );		
 }
-static ConCommand NavMarkAttribute( "nav_mark_attribute", NavEditMarkAttribute, "Set nav attribute for all areas in the selected set.", FCVAR_CHEAT, NavAttributeAutocomplete );
+static ConCommand NavMarkAttribute( "nav_mark_attribute", NavEditMarkAttribute, "Set nav attribute for all areas in the selected set.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, NavAttributeAutocomplete );
 
 
 /* IN PROGRESS:
@@ -3107,27 +3217,38 @@ NavErrorType HidingSpot::PostLoad( void )
 }
 
 BEGIN_SCRIPTDESC_ROOT( CNavMesh, "The nav mesh" )
+#if defined( L4D2 )
+	DEFINE_SCRIPTFUNC_NAMED( UnblockRescueVehicleNav, "UnblockRescueVehicleNav", "Unblock the rescue vehicle nav areas so bots can path through them" )
+#endif
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetNavAreaByID, "GetNavAreaByID", "Arguments: ( areaID ) - get nav area by ID" )
+#if defined( L4D2 )
+	DEFINE_SCRIPTFUNC_NAMED( ScriptGetLadderByID, "GetLadderByID", "Arguments: ( ladderID ) - get nav ladder by ID" )
+#endif
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetNavArea, "GetNavArea", "Arguments: ( origin, flBeneath ) - given a position in the world, return the nav area that is closest to or below that height." )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetNearestNavArea, "GetNearestNavArea", "Arguments: ( origin, maxDist, checkLOS, checkGround ) - given a position in the world, return the nav area that is closest to or below that height." )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetNavAreaCount, "GetNavAreaCount", "return total number of nav areas" )
-	DEFINE_SCRIPTFUNC( GetNavAreasInRadius, "Arguments: ( origin, radius, table ) - fills a passed in table of nav areas within radius" )
-	DEFINE_SCRIPTFUNC( FindNavAreaAlongRay, "Arguments: ( startpos, endpos, ignoreAreaID ) - get nav area from ray" )
-	DEFINE_SCRIPTFUNC( GetAllAreas, "Arguments: ( table ) - fills a passed in table of all nav areas" )
-	DEFINE_SCRIPTFUNC( GetObstructingEntities, "Arguments: ( table ) - fills a passed in table of all obstructing entities" )
-	DEFINE_SCRIPTFUNC( GetAreasWithAttributes, "Arguments: ( bits, table ) - fills a passed in table of all nav areas that have the specified attributes" )
+	DEFINE_SCRIPTFUNC_NAMED( GetNavAreasInRadius, "GetNavAreasInRadius", "Arguments: ( origin, radius, table ) - fills a passed in table of nav areas within radius" )
+	DEFINE_SCRIPTFUNC_NAMED( FindNavAreaAlongRay, "FindNavAreaAlongRay", "Arguments: ( startpos, endpos, ignoreAreaID ) - get nav area from ray" )
+	DEFINE_SCRIPTFUNC_NAMED( GetAllAreas, "GetAllAreas", "Arguments: ( table ) - fills a passed in table of all nav areas" )
+	DEFINE_SCRIPTFUNC_NAMED( GetObstructingEntities, "GetObstructingEntities", "Arguments: ( table ) - fills a passed in table of all obstructing entities" )
+	DEFINE_SCRIPTFUNC_NAMED( GetAreasWithAttributes, "GetAreasWithAttributes", "Arguments: ( bits, table ) - fills a passed in table of all nav areas that have the specified attributes" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptNavAreaBuildPath, "NavAreaBuildPath", "Arguments: ( area, area, goalPos, flMaxPathLength, teamID, ignoreNavBlockers ) - returns true if a path exists" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptNavAreaTravelDistance, "NavAreaTravelDistance", "Arguments: ( area, area, flMaxPathLength ) - compute distance between two areas. Return -1 if can't reach 'endArea' from 'startArea'" )
+#if defined( L4D2 )
+	DEFINE_SCRIPTFUNC_NAMED( GetLadderCount, "GetLadderCount", "return total number of nav ladders" )
+	DEFINE_SCRIPTFUNC_NAMED( GetAllLadders, "GetAllLadders", "Arguments: ( table ) - fills a passed in table of all nav ladders" )
+	DEFINE_SCRIPTFUNC_NAMED( FindLadderAlongRay, "FindLadderAlongRay", "Arguments: ( startpos, endpos, ignoreArea ) - get nav ladder from ray" )
+#endif
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetNavAreasFromBuildPath, "GetNavAreasFromBuildPath", "Arguments: ( table ) - Fills the table with areas from a path. Returns whether a path was found" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptRegisterAvoidanceObstacle, "RegisterAvoidanceObstacle", "Arguments: ( entity ) - registers avoidance obstacle" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptUnregisterAvoidanceObstacle, "UnregisterAvoidanceObstacle", "Arguments: ( entity ) - unregisters avoidance obstacle" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetNavAreasOverlappingEntityExtent, "GetNavAreasOverlappingEntityExtent", "Arguments: ( entity, table ) - fills passed in table with areas overlapping entity's extent" )
-END_SCRIPTDESC();
+END_SCRIPTDESC()
 
 //--------------------------------------------------------------------------------------------------------
 HSCRIPT CNavMesh::ScriptGetNavAreaByID( int areaID )
 {
-#ifdef TF_DLL
+#if defined( TF_DLL ) || defined( L4D2 )
 	CNavArea *area = GetNavAreaByID( areaID );
 	if ( area )
 	{
@@ -3140,7 +3261,7 @@ HSCRIPT CNavMesh::ScriptGetNavAreaByID( int areaID )
 //--------------------------------------------------------------------------------------------------------
 HSCRIPT CNavMesh::ScriptGetNavArea( const Vector &pos, float beneathLimt )
 {
-#ifdef TF_DLL
+#if defined( TF_DLL ) || defined( L4D2 )
 	CNavArea *area = GetNavArea( pos, beneathLimt );
 	if ( area )
 	{
@@ -3153,7 +3274,7 @@ HSCRIPT CNavMesh::ScriptGetNavArea( const Vector &pos, float beneathLimt )
 //--------------------------------------------------------------------------------------------------------
 HSCRIPT CNavMesh::ScriptGetNearestNavArea( const Vector &pos, float maxDist, bool checkLOS, bool checkGround )
 {
-#ifdef TF_DLL
+#if defined( TF_DLL ) || defined( L4D2 )
 	CNavArea *area = GetNearestNavArea( pos, false, maxDist, checkLOS, checkGround );
 	if ( area )
 	{
@@ -3335,6 +3456,27 @@ void CNavMesh::GetAreasWithAttributes( int bits, HSCRIPT hTable )
 	}
 }
 
+#if defined( L4D2 )
+HSCRIPT CNavMesh::ScriptGetLadderByID( int id )
+{
+	return ToHScript( GetLadderByID( id ) );
+}
+void CNavMesh::GetAllLadders( HSCRIPT table )
+{
+	if ( !table ) return;
+	FOR_EACH_VEC( m_ladders, index )
+		if ( m_ladders[index] )
+			g_pScriptVM->SetValue( table, CFmtStr( "ladder%i", index ), ToHScript( m_ladders[index] ) );
+}
+HSCRIPT CNavMesh::FindLadderAlongRay( const Vector &start, const Vector &end, HSCRIPT ignoreArea )
+{
+	CNavArea *area = NULL;
+	CNavLadder *ladder = NULL;
+	if ( TheNavMesh->FindNavAreaOrLadderAlongRay( start, end, &area, &ladder, ToNavArea( ignoreArea ) ) && ladder )
+		return ToHScript( ladder );
+	return NULL;
+}
+#endif
 //--------------------------------------------------------------------------------------------------------------
 /**
  * Given a HidingSpot ID, return the associated HidingSpot
@@ -3355,7 +3497,11 @@ HidingSpot *GetHidingSpotByID( unsigned int id )
 
 //--------------------------------------------------------------------------------------------------------
 // invoked when the area becomes blocked
+#if defined( L4D2 )
+void CNavMesh::OnAreaBlocked( CNavArea *area, bool affectsFlow )
+#else
 void CNavMesh::OnAreaBlocked( CNavArea *area )
+#endif
 {
 	if ( !m_blockedAreas.HasElement( area ) )
 	{
@@ -3366,7 +3512,11 @@ void CNavMesh::OnAreaBlocked( CNavArea *area )
 
 //--------------------------------------------------------------------------------------------------------
 // invoked when the area becomes un-blocked
+#if defined( L4D2 )
+void CNavMesh::OnAreaUnblocked( CNavArea *area, bool affectsFlow )
+#else
 void CNavMesh::OnAreaUnblocked( CNavArea *area )
+#endif
 {
 	m_blockedAreas.FindAndRemove( area );
 }
@@ -3457,9 +3607,20 @@ void CNavMesh::BeginVisibilityComputations( void )
 /**
  * Invoked when custom analysis step is complete
  */
+#if defined( L4D2 )
 void CNavMesh::EndVisibilityComputations( void )
 {
 	g_pNavVisPairHash->RemoveAll();
+}
+
+void CNavMesh::PostCustomAnalysis( void )
+#else
+void CNavMesh::EndVisibilityComputations( void )
+#endif
+{
+#if !defined( L4D2 )
+	g_pNavVisPairHash->RemoveAll();
+#endif
 
 	int avgVisLength = 0;
 	int maxVisLength = 0;

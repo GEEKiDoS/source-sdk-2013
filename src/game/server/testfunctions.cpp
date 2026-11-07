@@ -82,7 +82,19 @@ void Test_RandomPlayerPosition()
 }
 
 
-ConCommand cc_Test_CreateEntity( "Test_CreateEntity", Test_CreateEntity, 0, FCVAR_CHEAT );
-ConCommand cc_Test_RandomPlayerPosition( "Test_RandomPlayerPosition", Test_RandomPlayerPosition, 0, FCVAR_CHEAT );
+ConCommand cc_Test_CreateEntity( "Test_CreateEntity", Test_CreateEntity, 0, 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConCommand cc_Test_RandomPlayerPosition( "Test_RandomPlayerPosition", Test_RandomPlayerPosition, 0, 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 

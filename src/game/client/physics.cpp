@@ -24,12 +24,27 @@
 #include "positionwatcher.h"
 #include "vphysics/constraints.h"
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "tier1/utlvector.h"
+#endif // L4D2
+#if defined( L4D2 )
+#include <emmintrin.h>
+#endif
 #include "tier0/memdbgon.h"
 
 // file system interface
 extern IFileSystem *filesystem;
+#if defined( L4D2 )
+extern ConVar cl_flesh_sound_frequency;
+#endif
 
-ConVar	cl_phys_timescale( "cl_phys_timescale", "1.0", FCVAR_CHEAT, "Sets the scale of time for client-side physics (ragdolls)" );
+ConVar	cl_phys_timescale( "cl_phys_timescale", "1.0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Sets the scale of time for client-side physics (ragdolls)" );
 
 void PrecachePhysicsSounds( void );
 
@@ -358,6 +373,10 @@ public:
 
 private:
 	physicssound::soundlist_t m_impactSounds;
+#if defined( L4D2 )
+	int m_nFleshSurfaceIndex;
+	float m_flLastFleshImpactSoundTime;
+#endif
 };
 
 static CPhysicsSystem g_PhysicsSystem( "CPhysicsSystem" );
@@ -383,6 +402,10 @@ void CPhysicsSystem::LevelInitPreEntity( void )
 {
 	m_impactSounds.RemoveAll();
 	PrecachePhysicsSounds();
+#if defined( L4D2 )
+	m_nFleshSurfaceIndex = physprops->GetSurfaceIndex( "flesh" );
+	m_flLastFleshImpactSoundTime = gpGlobals->curtime;
+#endif
 }
 
 void CPhysicsSystem::LevelInitPostEntity( void )
@@ -418,10 +441,27 @@ void CPhysicsSystem::LevelShutdownPostEntity()
 	g_PhysWorldObject = NULL;
 }
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CPhysicsSystem::AddImpactSound( void *pGameData, IPhysicsObject *pObject, int surfaceProps, int surfacePropsHit, float volume, float speed )
 {
+#if defined( L4D2 )
+	// Native C163870 throttles flesh impacts globally, before coalescing them.
+	if ( surfaceProps == m_nFleshSurfaceIndex )
+	{
+		const float flCurrentTime = gpGlobals->curtime;
+		const float flElapsed = flCurrentTime - m_flLastFleshImpactSoundTime;
+		if ( flElapsed > 0.0f && cl_flesh_sound_frequency.GetFloat() > flElapsed )
+			return;
+		m_flLastFleshImpactSoundTime = flCurrentTime;
+	}
+#endif
 	physicssound::AddImpactSound( m_impactSounds, pGameData, SOUND_FROM_WORLD, CHAN_STATIC, pObject, surfaceProps, surfacePropsHit, volume, speed );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 void CPhysicsSystem::Update( float frametime )
@@ -1035,6 +1075,27 @@ float PhysGetNextSimTime()
 	return physenv->GetSimulationTime() + gpGlobals->frametime * cl_phys_timescale.GetFloat();
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double PhysGetSyncCreateTime()
+{
+	const float nextTime = physenv->GetNextFrameTime();
+	const float simulationTime = physenv->GetSimulationTime();
+	const float timescale = cl_phys_timescale.GetFloat();
+	const float step = timescale * gpGlobals->frametime;
+	const float now = gpGlobals->curtime;
+	const float simTime = step + simulationTime;
+	if ( simTime > nextTime )
+		return ( static_cast< double >( now ) + static_cast< double >( nextTime ) ) -
+			static_cast< double >( simTime );
+	return static_cast< double >( now );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float PhysGetSyncCreateTime()
 {
 	float nextTime = physenv->GetNextFrameTime();
@@ -1049,3 +1110,181 @@ float PhysGetSyncCreateTime()
 	}
 	return gpGlobals->curtime;
 }
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING game/client/physics.cpp. Declare PhysOnDataChanged and
+// PhysUpdateShadow in existing physics.h on L4D2 only. No new TU/engine ABI.
+// Main chose native default VPhysics1. Native Physics2 actor-only queries and
+// branches are omitted explicitly; there is NO invented GetActor/NULL provider.
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+static void BuildNativeShadowTransform( const QAngle &angles, const Vector &origin, matrix3x4_t &matrix )
+{
+	const float yaw = angles.y * 0.017453292f;
+	const float cy = static_cast< float >( cos( static_cast< double >( yaw ) ) );
+	const float sy = static_cast< float >( sin( static_cast< double >( yaw ) ) );
+	const float pitch = angles.x * 0.017453292f;
+	const float cp = static_cast< float >( cos( static_cast< double >( pitch ) ) );
+	const float sp = static_cast< float >( sin( static_cast< double >( pitch ) ) );
+	const float roll = angles.z * 0.017453292f;
+	const float cr = static_cast< float >( cos( static_cast< double >( roll ) ) );
+	const float sr = static_cast< float >( sin( static_cast< double >( roll ) ) );
+	matrix[0][0] = cp * cy;
+	matrix[1][0] = cp * sy;
+	matrix[2][0] = -sp;
+	matrix[0][1] = ( sr * sp ) * cy - cr * sy;
+	matrix[1][1] = ( sr * sp ) * sy + cr * cy;
+	matrix[2][1] = sr * cp;
+	matrix[1][2] = ( cr * sp ) * sy - sr * cy;
+	matrix[0][2] = ( cr * sp ) * cy + sr * sy;
+	matrix[2][2] = cr * cp;
+	matrix[0][3] = origin.x;
+	matrix[1][3] = origin.y;
+	matrix[2][3] = origin.z;
+}
+
+// Native35FDD0 order is (Z*row2 + Y*row1) + X*row0, then translation.
+void L4D2ClientConcatTransforms( const matrix3x4_t &left, const matrix3x4_t &right, matrix3x4_t &out )
+{
+	const __m128 row0 = _mm_loadu_ps( right[0] );
+	const __m128 row1 = _mm_loadu_ps( right[1] );
+	const __m128 row2 = _mm_loadu_ps( right[2] );
+	const __m128 translationMask = _mm_castsi128_ps( _mm_set_epi32( -1, 0, 0, 0 ) );
+	for ( int i = 0; i < 3; ++i )
+	{
+		const __m128 row = _mm_loadu_ps( left[i] );
+		const __m128 zy = _mm_add_ps( _mm_mul_ps( _mm_shuffle_ps( row, row, 170 ), row2 ),
+			_mm_mul_ps( _mm_shuffle_ps( row, row, 85 ), row1 ) );
+		const __m128 xyz = _mm_add_ps( zy, _mm_mul_ps( _mm_shuffle_ps( row, row, 0 ), row0 ) );
+		_mm_storeu_ps( out[i], _mm_add_ps( xyz, _mm_and_ps( row, translationMask ) ) );
+	}
+}
+
+// Native35F600 wide sqrt/atan2, genuine float constants and final float stores.
+static void NativeShadowMatrixAngles( const matrix3x4_t &matrix, QAngle &angles )
+{
+	const double x = matrix[0][0];
+	const double y = matrix[1][0];
+	const double xy = sqrt( y * y + x * x );
+	const double degrees = static_cast< double >( 57.29578f );
+	if ( !( xy > static_cast< double >( 0.001f ) ) )
+	{
+		angles.z = 0.0f;
+		angles.y = static_cast< float >( atan2( -static_cast< double >( matrix[0][1] ), matrix[1][1] ) * degrees );
+		angles.x = static_cast< float >( degrees * atan2( -static_cast< double >( matrix[2][0] ), xy ) );
+	}
+	else
+	{
+		angles.y = static_cast< float >( atan2( y, x ) * degrees );
+		angles.x = static_cast< float >( atan2( -static_cast< double >( matrix[2][0] ), xy ) * degrees );
+		angles.z = static_cast< float >( degrees * atan2( static_cast< double >( matrix[2][1] ), matrix[2][2] ) );
+	}
+}
+
+static void ExtractNativeShadowPose( const matrix3x4_t &matrix, Vector &origin, QAngle &angles )
+{
+	NativeShadowMatrixAngles( matrix, angles );
+	origin.x = matrix[0][3];
+	origin.y = matrix[1][3];
+	origin.z = matrix[2][3];
+}
+
+// Whole native164460 default shadow hierarchy/math responsibility. The passed
+// object argument is genuinely unused natively; root object is freshly read at
+// its final UpdateShadow, while each child's object is read before pose getters.
+void PhysUpdateShadow( C_BaseEntity *entity, IPhysicsObject *object,
+	const Vector &localOrigin, const QAngle &localAngles, float timeOffset )
+{
+	CUtlVector< C_BaseEntity * > children;
+	for ( C_BaseEntity *child = entity->FirstMoveChild(); child; child = child->NextMovePeer() )
+	{
+		IPhysicsObject *childObject = child->VPhysicsGetObject();
+		if ( childObject && childObject->GetShadowController() ) children.AddToTail( child );
+	}
+	if ( children.Count() )
+	{
+		matrix3x4_t entityToParent;
+		BuildNativeShadowTransform( localAngles, localOrigin, entityToParent );
+		for ( int i = 0; i < children.Count(); ++i )
+		{
+			C_BaseEntity *child = children[i];
+			IPhysicsObject *childObject = child->VPhysicsGetObject();
+			const Vector &origin = child->GetLocalOrigin();
+			const QAngle &angles = child->GetLocalAngles();
+			matrix3x4_t childToEntity, childToParent;
+			BuildNativeShadowTransform( angles, origin, childToEntity );
+			L4D2ClientConcatTransforms( entityToParent, childToEntity, childToParent );
+			Vector position;
+			QAngle rotation;
+			ExtractNativeShadowPose( childToParent, position, rotation );
+			childObject->UpdateShadow( position, rotation, false, timeOffset );
+		}
+	}
+	C_BaseEntity *parent = entity->GetMoveParent();
+	if ( !parent )
+	{
+		entity->VPhysicsGetObject()->UpdateShadow( localOrigin, localAngles, false, timeOffset );
+	}
+	else
+	{
+		matrix3x4_t entityToParent, parentToWorld, entityToWorld;
+		BuildNativeShadowTransform( localAngles, localOrigin, entityToParent );
+		MatrixCopy( parent->EntityToWorldTransform(), parentToWorld );
+		if ( !parent->GetMoveParent() )
+		{
+			const Vector &origin = parent->GetLocalOrigin();
+			parentToWorld[0][3] = origin.x;
+			parentToWorld[1][3] = origin.y;
+			parentToWorld[2][3] = origin.z;
+		}
+		L4D2ClientConcatTransforms( parentToWorld, entityToParent, entityToWorld );
+		Vector position;
+		QAngle rotation;
+		ExtractNativeShadowPose( entityToWorld, position, rotation );
+		entity->VPhysicsGetObject()->UpdateShadow( position, rotation, false, timeOffset );
+	}
+}
+
+// Whole native164870 native-default VPhysics1 branch. Environment simulation
+// clock is queried BEFORE next-frame clock, then actual interpolation. Native
+//0800 is a proved solid-policy bit in the already13-bit L4D2 wire domain; no
+// invented named flag or replacement getter is introduced.
+void PhysOnDataChanged( C_BaseEntity *entity, bool created )
+{
+	if ( created && !entity->VPhysicsGetObject() && !entity->IsSolidFlagSet( FSOLID_NOT_SOLID ) )
+	{
+		if ( entity->GetSolid() != SOLID_BSP ) entity->SetSolid( SOLID_VPHYSICS );
+		if ( entity->GetSolidFlags() & 0x0800 ) entity->VPhysicsInitStatic();
+		else entity->VPhysicsInitShadow( false, false, NULL );
+		entity->CollisionRulesChanged();
+	}
+	else
+	{
+		IPhysicsObject *object = entity->VPhysicsGetObject();
+		if ( object && !object->IsStatic() )
+		{
+			const float simulationTime = physenv->GetSimulationTime();
+			const float nextTime = physenv->GetNextFrameTime();
+			const float interpolation = entity->GetInterpolationAmount( LATCH_SIMULATION_VAR );
+			float offset = ( ( entity->GetSimulationTime() + interpolation ) - gpGlobals->curtime ) + simulationTime;
+			offset -= nextTime;
+			if ( offset < 0.0f ) offset = 0.0f;
+			object = entity->VPhysicsGetObject();
+			const QAngle &angles = entity->GetLocalAngles();
+			const Vector &origin = entity->GetLocalOrigin();
+			PhysUpdateShadow( entity, object, origin, angles, offset );
+		}
+	}
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif

@@ -36,6 +36,12 @@ struct levellist_t;
 class IServerNetworkable;
 class IEntityFactory;
 
+#ifdef L4D2
+// Original VEngineServer022+496 and distinct+500 development-tool predicates.
+bool Engine_IsCreatingReslist();
+bool Engine_IsCreatingXboxReslist();
+#endif
+
 #ifdef _WIN32
 	#define SETUP_EXTERNC(mapClassName)\
 		extern "C" _declspec( dllexport ) IServerNetworkable* mapClassName( void );
@@ -69,7 +75,11 @@ T *_CreateEntityTemplate( T *newEnt, const char *className )
 
 #include "tier0/memdbgoff.h"
 
+#if defined( L4D2 )
+CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex, bool bNotify );
+#else
 CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex );
+#endif
 
 // creates an entity by name, and ensure it's correctness
 // does not spawn the entity
@@ -77,7 +87,11 @@ CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex );
 template< class T >
 T *_CreateEntity( T *newClass, const char *className )
 {
+#if defined( L4D2 )
+	T *newEnt = dynamic_cast<T*>( CreateEntityByName(className, -1, true) );
+#else
 	T *newEnt = dynamic_cast<T*>( CreateEntityByName(className, -1) );
+#endif
 	if ( !newEnt )
 	{
 		Warning( "classname %s used to create wrong class type\n", className );
@@ -343,13 +357,22 @@ enum soundlevel_t;
 // Drops an entity onto the floor
 int			UTIL_DropToFloor( CBaseEntity *pEntity, unsigned int mask, CBaseEntity *pIgnore = NULL );
 
+#if defined( L4D2 )
+bool UTIL_IsGroundFlat( float halfExtent, const Vector &origin, float height,
+	unsigned int mask, CBaseEntity *ignore, bool debug );
+#endif
+
 // Returns false if any part of the bottom of the entity is off an edge that is not a staircase.
 bool		UTIL_CheckBottom( CBaseEntity *pEntity, ITraceFilter *pTraceFilter, float flStepSize );
 
 void		UTIL_SetOrigin			( CBaseEntity *entity, const Vector &vecOrigin, bool bFireTriggers = false );
 void		UTIL_EmitAmbientSound	( int entindex, const Vector &vecOrigin, const char *samp, float vol, soundlevel_t soundlevel, int fFlags, int pitch, float soundtime = 0.0f, float *duration = NULL );
 void		UTIL_ParticleEffect		( const Vector &vecOrigin, const Vector &vecDirection, uint32 ulColor, uint32 ulCount );
+#if defined( L4D2 )
+void		UTIL_ScreenShake		( const Vector &center, float amplitude, float frequency, float duration, float radius, ShakeCommand_t eCommand, bool bAirShake=false, const CUtlVector< CBasePlayer * > *ignored=NULL );
+#else
 void		UTIL_ScreenShake		( const Vector &center, float amplitude, float frequency, float duration, float radius, ShakeCommand_t eCommand, bool bAirShake=false );
+#endif
 void		UTIL_ScreenShakeObject	( CBaseEntity *pEnt, const Vector &center, float amplitude, float frequency, float duration, float radius, ShakeCommand_t eCommand, bool bAirShake=false );
 void		UTIL_ViewPunch			( const Vector &center, QAngle angPunch, float radius, bool bInAir );
 void		UTIL_ShowMessage		( const char *pString, CBasePlayer *pPlayer );

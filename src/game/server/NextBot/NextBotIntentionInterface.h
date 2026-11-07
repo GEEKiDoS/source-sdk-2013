@@ -77,22 +77,52 @@ public:
 
 	virtual void Reset( void )  { INextBotComponent::Reset(); }	// reset to initial state
 	virtual void Update( void ) { }								// update internal state
+	#if defined( L4D2 )
+	virtual const char *DebugString( void ) const OVERRIDE; // S39F790, real contained-responder traversal.
+	#endif
 
 	// IContextualQuery propagation --------------------------------
 	virtual QueryResultType			ShouldPickUp( const INextBot *me, CBaseEntity *item ) const;		// if the desired item was available right now, should we pick it up?
 	virtual QueryResultType			ShouldHurry( const INextBot *me ) const;							// are we in a hurry?
 	virtual QueryResultType			ShouldRetreat( const INextBot *me ) const;							// is it time to retreat?
+#if defined( L4D2 )
+	virtual QueryResultType			ShouldAttack( const INextBot *me, CBaseCombatCharacter *them ) const;
+#else
 	virtual QueryResultType			ShouldAttack( const INextBot *me, const CKnownEntity *them ) const;	// should we attack "them"?
+#endif
 	virtual QueryResultType			IsHindrance( const INextBot *me, CBaseEntity *blocker ) const;		// return true if we should wait for 'blocker' that is across our path somewhere up ahead.
 	virtual Vector					SelectTargetPoint( const INextBot *me, const CBaseCombatCharacter *subject ) const;		// given a subject, return the world space position we should aim at
 	virtual QueryResultType			IsPositionAllowed( const INextBot *me, const Vector &pos ) const;	// is the a place we can be?
+#if defined( L4D2 )
+	virtual const Path *GetCurrentPath( const INextBot *me ) const OVERRIDE;
+	virtual CBaseEntity *SelectMoreDangerousThreat( const INextBot *me,
+		const CBaseCombatCharacter *subject, CBaseEntity *threat1, CBaseEntity *threat2 ) const;
+#else
 	virtual const CKnownEntity *	SelectMoreDangerousThreat( const INextBot *me, 
 															   const CBaseCombatCharacter *subject,		// the subject of the danger
 															   const CKnownEntity *threat1, 
 															   const CKnownEntity *threat2 ) const;	// return the more dangerous of the two threats, or NULL if we have no opinion
+#endif
 	// NOTE: As further queries are added, update the Behavior class to propagate them
 };
 
+
+#if defined( L4D2 )
+inline const Path *IIntention::GetCurrentPath( const INextBot *me ) const
+{
+	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
+	{
+		const IContextualQuery *query = dynamic_cast< const IContextualQuery * >( sub );
+		if ( query )
+		{
+			const Path *path = query->GetCurrentPath( me );
+			if ( path )
+				return path;
+		}
+	}
+	return NULL;
+}
+#endif
 
 inline QueryResultType IIntention::ShouldPickUp( const INextBot *me, CBaseEntity *item ) const
 {
@@ -151,7 +181,11 @@ inline QueryResultType IIntention::ShouldRetreat( const INextBot *me ) const
 }
 
 
+#if defined( L4D2 )
+inline QueryResultType IIntention::ShouldAttack( const INextBot *me, CBaseCombatCharacter *them ) const
+#else
 inline QueryResultType IIntention::ShouldAttack( const INextBot *me, const CKnownEntity *them ) const
+#endif
 {
 	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
 	{

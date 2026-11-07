@@ -28,6 +28,15 @@ public:
 	CEntityFlame( void );
 
 	static CEntityFlame	*Create( CBaseEntity *pTarget, bool useHitboxes = true );
+#if defined( L4D2 )
+	static CEntityFlame *Create( CBaseEntity *pTarget, float flLifetime, float flSize, bool useHitboxes );
+	virtual void Spawn() OVERRIDE;
+	void SetAttacker( CBaseEntity *attacker ) { m_hAttacker = attacker; }
+	CBaseEntity *GetAttacker() const { return m_hAttacker.Get(); }
+	void SetDamageCustom( int damageCustom ) { m_nDamageCustom = damageCustom; }
+	void SetCheapEffect( bool cheap ) { m_bCheapEffect = cheap; }
+	bool IsCheapEffect() const { return m_bCheapEffect.Get(); }
+#endif
 
 	void	AttachToEntity( CBaseEntity *pTarget );
 	void	SetLifetime( float lifetime );
@@ -35,7 +44,11 @@ public:
 	void	SetNumHitboxFires( int iNumHitBoxFires );
 	void	SetHitboxFireScale( float flHitboxFireScale );
 
+#if defined( L4D2 )
+	double GetRemainingLife( void );
+#else
 	float	GetRemainingLife( void );
+#endif
 	int		GetNumHitboxFires( void );
 	float	GetHitboxFireScale( void );
 
@@ -48,7 +61,9 @@ public:
 
 protected:
 
+#if !defined( L4D2 )
 	void InputIgnite( inputdata_t &inputdata );
+#endif
 
 	void	FlameThink( void );
 
@@ -60,7 +75,16 @@ protected:
 	CNetworkVar( float, m_flHitboxFireScale );
 
 	CNetworkVar( float, m_flLifetime );
+#if defined( L4D2 )
+	CNetworkVar( bool, m_bCheapEffect );
+	string_t m_iszLoopingSound;
+	EHANDLE m_hAttacker;
+	int m_iDangerSound;
+	float m_flDirectDamagePerSecond;
+	int m_nDamageCustom;
+#else
 	bool	m_bPlayingSound;
+#endif
 };
 
 #endif // ENTITYFLAME_H

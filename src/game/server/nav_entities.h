@@ -111,7 +111,12 @@ public:
 
 	bool operator()( CNavArea *area );	// functor that blocks areas in our extent
 
+#if defined( L4D2 )
+	static int CalculateBlocked( bool *pResultByTeam, const Vector &vecMins, const Vector &vecMaxs );
+	bool AffectsFlow() const { return m_bAffectsFlow; }
+#else
 	static bool CalculateBlocked( bool *pResultByTeam, const Vector &vecMins, const Vector &vecMaxs );
+#endif
 
 private:
 
@@ -123,7 +128,14 @@ private:
 	void UnblockNav( void );
 	bool m_isBlockingNav[MAX_NAV_TEAMS];
 	int m_blockedTeamNumber;
+#if defined( L4D2 )
+	bool m_bAffectsFlow;
+#else
 	bool m_bDisabled;
+#endif
+#if defined( L4D2 )
+protected:
+#endif
 	Vector m_CachedMins, m_CachedMaxs;
 
 };

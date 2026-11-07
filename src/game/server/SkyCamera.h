@@ -30,6 +30,10 @@ public:
 	virtual void Spawn( void );
 	virtual void Activate();
 
+#if defined( L4D2 )
+	void InputActivateSkybox( inputdata_t &inputdata );
+#endif
+
 public:
 	sky3dparams_t	m_skyboxData;
 	bool			m_bUseAngles;

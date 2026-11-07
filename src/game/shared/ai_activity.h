@@ -2364,6 +2364,14 @@ typedef enum
 	ACT_MP_CYOA_PDA_OUTRO,
 
 
+	#if defined( L4D2 )
+	ACT_VM_MELEE,
+	ACT_VM_DEPLOY_LAYER,
+	ACT_VM_PRIMARYATTACK_LAYER,
+	ACT_VM_RELOAD_LAYER,
+	ACT_VM_MELEE_LAYER,
+	#endif
+
 	// this is the end of the global activities, private per-monster activities start here.
 	LAST_SHARED_ACTIVITY,
 } Activity;

@@ -10,10 +10,27 @@
 #include "rumble_shared.h"
 #include "inputsystem/iinputsystem.h"
 
-ConVar cl_rumblescale( "cl_rumblescale", "1.0", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX, "Scale sensitivity of rumble effects (0 to 1.0)" ); 
-ConVar cl_debugrumble( "cl_debugrumble", "0", FCVAR_ARCHIVE, "Turn on rumble debugging spew" );
+ConVar cl_rumblescale( "cl_rumblescale", "1.0", 
+#if defined( L4D2 )
+	0x00088088
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX
+#endif
+, "Scale sensitivity of rumble effects (0 to 1.0)" ); 
+ConVar cl_debugrumble( "cl_debugrumble", "0", 
+#if defined( L4D2 )
+	0x00080008
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Turn on rumble debugging spew" );
 
+#if defined( L4D2 )
+#define MAX_RUMBLE_CHANNELS 6	// C95090: six native channels precede the 47-row table.
+extern "C" float L4D2_RumbleSine( float degrees, float amplitudeScale );
+#else
 #define MAX_RUMBLE_CHANNELS 3	// Max concurrent rumble effects
+#endif
 
 #define NUM_WAVE_SAMPLES 30		// Effects play at 10hz
 
@@ -70,6 +87,9 @@ typedef struct tagWaveGenParams
 
 //---------------------------------------------------------
 //---------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void TerminateWaveform( RumbleWaveform_t *pWaveform, int samples )
 {
 	if( samples <= NUM_WAVE_SAMPLES )
@@ -157,8 +177,43 @@ void GenerateSawtoothEffect( RumbleWaveform_t *pWaveform, const WaveGenParams_t 
 
 //---------------------------------------------------------
 //---------------------------------------------------------
+#if defined( L4D2 )
+static void SetNativeSquareSample( RumbleWaveform_t *waveform, bool left, int sample, float value )
+{
+	// C94640 writes whole half-periods, including samples30/31. Preserve
+	// its real in-object aliases without C++ out-of-array accesses:
+	// left -> right; right -> sample count -> following row's first left.
+	if ( left )
+	{
+		if ( sample < NUM_WAVE_SAMPLES )
+			waveform->amplitude_left[sample] = value;
+		else
+			waveform->amplitude_right[sample - NUM_WAVE_SAMPLES] = value;
+	}
+	else if ( sample < NUM_WAVE_SAMPLES )
+		waveform->amplitude_right[sample] = value;
+	else if ( sample == NUM_WAVE_SAMPLES )
+		V_memcpy( &waveform->numSamples, &value, sizeof( value ) );
+	else
+		waveform[1].amplitude_left[sample - NUM_WAVE_SAMPLES - 1] = value;
+}
+#endif
+
 void GenerateSquareWaveEffect( RumbleWaveform_t *pWaveform, const WaveGenParams_t &params )
 {
+#if defined( L4D2 )
+	// The only callers are C95090's fixed recipes (cycles6,7,12).
+	// Do not clamp the final half-period: row22 aliases are native state.
+	const int steps = static_cast< int >( 30.0f / ( params.cycles * 2.0f ) );
+	int sample = 0;
+	while ( sample < NUM_WAVE_SAMPLES )
+	{
+		for ( int i = 0; i < steps; ++i )
+			SetNativeSquareSample( pWaveform, params.leftChannel, sample++, params.minAmplitude );
+		for ( int i = 0; i < steps; ++i )
+			SetNativeSquareSample( pWaveform, params.leftChannel, sample++, params.maxAmplitude );
+	}
+#else
 	int i = 0;
 	int j;
 
@@ -189,6 +244,7 @@ void GenerateSquareWaveEffect( RumbleWaveform_t *pWaveform, const WaveGenParams_
 			}
 		}
 	}
+#endif
 }
 
 //---------------------------------------------------------
@@ -214,6 +270,27 @@ void GenerateFlatEffect( RumbleWaveform_t *pWaveform, const WaveGenParams_t &par
 //---------------------------------------------------------
 void GenerateSineWaveEffect( RumbleWaveform_t *pWaveform, const WaveGenParams_t &params )
 {
+#if defined( L4D2 )
+	// C949D0 rounds each SSE product, but not the x87 radians/FSIN/scale
+	// chain. The shared x64 numeric owner supplies that exact leaf.
+	float step = params.cycles * 0.5f;
+	step = step * 360.0f;
+	step = step * 0.033333335f;
+	float degrees = step + 180.0f;
+	for ( int i = 0; i < NUM_WAVE_SAMPLES; ++i )
+	{
+		float value = L4D2_RumbleSine( degrees, params.amplitudescale );
+		if ( params.minAmplitude > value )
+			value = params.minAmplitude;
+		if ( value > params.maxAmplitude )
+			value = params.maxAmplitude;
+		if ( params.leftChannel )
+			pWaveform->amplitude_left[i] = value;
+		else
+			pWaveform->amplitude_right[i] = value;
+		degrees = degrees + step;
+	}
+#else
 	float step = (360.0f * (params.cycles * 0.5f) ) / ((float)NUM_WAVE_SAMPLES);
 	float degrees = 180.0f + step; // 180 to start at 0
 
@@ -241,7 +318,11 @@ void GenerateSineWaveEffect( RumbleWaveform_t *pWaveform, const WaveGenParams_t 
 
 		degrees += step;
 	}
+#endif
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 //=========================================================
 //=========================================================
@@ -279,6 +360,9 @@ CRumbleEffects g_RumbleEffects;
 
 //---------------------------------------------------------
 //---------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void CRumbleEffects::Init()
 {
 	SetOutputEnabled( true );
@@ -297,6 +381,194 @@ void CRumbleEffects::Init()
 		m_Waveforms[i].numSamples = NUM_WAVE_SAMPLES;
 	}
 
+#if defined( L4D2 )
+	// C95090, complete recipes in native order. Init does not clear the
+	// unwritten amplitudes in rows0/21/23/24 or the unselected channels.
+	// Row23's first left sample is the real row22 square-wave alias.
+	WaveGenParams_t params( 1, 1.0f, false, 0.0f, 0.15f );
+	GenerateFlatEffect( &m_Waveforms[11], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[1], params );
+	TerminateWaveform( &m_Waveforms[1], 1 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[28], params );
+	TerminateWaveform( &m_Waveforms[28], 1 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.2f );
+	GenerateFlatEffect( &m_Waveforms[3], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.2f );
+	GenerateFlatEffect( &m_Waveforms[3], params );
+	TerminateWaveform( &m_Waveforms[3], 1 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[4], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[4], params );
+	TerminateWaveform( &m_Waveforms[4], 1 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[7], params );
+	EaseInWaveform( &m_Waveforms[7], 5, true );
+	params.Set( 1, 1.0f, false, 0.0f, 0.7f );
+	GenerateFlatEffect( &m_Waveforms[7], params );
+	EaseInWaveform( &m_Waveforms[7], 5, false );
+	TerminateWaveform( &m_Waveforms[7], 7 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[2], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[2], params );
+	TerminateWaveform( &m_Waveforms[2], 2 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.8f );
+	GenerateFlatEffect( &m_Waveforms[5], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.8f );
+	GenerateFlatEffect( &m_Waveforms[5], params );
+	TerminateWaveform( &m_Waveforms[5], 1 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.9f );
+	GenerateFlatEffect( &m_Waveforms[6], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.9f );
+	GenerateFlatEffect( &m_Waveforms[6], params );
+	TerminateWaveform( &m_Waveforms[6], 2 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[8], params );
+	EaseOutWaveform( &m_Waveforms[8], 30, false );
+	TerminateWaveform( &m_Waveforms[8], 6 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.25f );
+	GenerateFlatEffect( &m_Waveforms[20], params );
+	TerminateWaveform( &m_Waveforms[20], 4 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.2f );
+	GenerateFlatEffect( &m_Waveforms[22], params );
+	params.Set( 6, 1.0f, false, 0.0f, 0.25f );
+	GenerateSquareWaveEffect( &m_Waveforms[22], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.25f );
+	GenerateFlatEffect( &m_Waveforms[9], params );
+	EaseOutWaveform( &m_Waveforms[9], 20, false );
+	TerminateWaveform( &m_Waveforms[9], 3 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.4f );
+	GenerateFlatEffect( &m_Waveforms[10], params );
+	params.Set( 12, 1.0f, true, 0.0f, 0.5f );
+	GenerateSawtoothEffect( &m_Waveforms[10], params );
+	params.Set( 1, 1.0f, true, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[12], params );
+	params.Set( 1, 1.0f, false, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[13], params );
+	params.Set( 1, 1.0f, true, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[14], params );
+	params.Set( 1, 1.0f, false, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[14], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[18], params );
+	params.Set( 1, 1.0f, true, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[18], params );
+	TerminateWaveform( &m_Waveforms[18], 3 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[19], params );
+	params.Set( 1, 1.0f, true, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[19], params );
+	TerminateWaveform( &m_Waveforms[19], 2 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[25], params );
+	TerminateWaveform( &m_Waveforms[25], 2 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[26], params );
+	TerminateWaveform( &m_Waveforms[26], 2 );
+	params.Set( 12, 1.0f, true, 0.0f, 1.0f );
+	GenerateSquareWaveEffect( &m_Waveforms[27], params );
+	params.Set( 12, 1.0f, false, 0.0f, 1.0f );
+	GenerateSquareWaveEffect( &m_Waveforms[27], params );
+	TerminateWaveform( &m_Waveforms[27], 6 );
+	params.Set( 1, 1.0f, true, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[17], params );
+	params.Set( 1, 1.0f, false, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[17], params );
+	TerminateWaveform( &m_Waveforms[17], 3 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[16], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[16], params );
+	TerminateWaveform( &m_Waveforms[16], 3 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[15], params );
+	TerminateWaveform( &m_Waveforms[15], 1 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.5f );
+	GenerateSineWaveEffect( &m_Waveforms[29], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.5f );
+	GenerateSineWaveEffect( &m_Waveforms[29], params );
+	m_Waveforms[29].amplitude_right[29] *= 0.0f;
+	m_Waveforms[29].amplitude_left[29] *= 0.0f;
+	params.Set( 1, 1.0f, false, 0.0f, 0.15f );
+	GenerateFlatEffect( &m_Waveforms[30], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.3f );
+	GenerateFlatEffect( &m_Waveforms[31], params );
+	params.Set( 1, 1.0f, true, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[32], params );
+	params.Set( 1, 1.0f, false, 0.0f, 1.0f );
+	GenerateFlatEffect( &m_Waveforms[32], params );
+	TerminateWaveform( &m_Waveforms[32], 3 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[33], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[33], params );
+	TerminateWaveform( &m_Waveforms[33], 3 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.8f );
+	GenerateFlatEffect( &m_Waveforms[34], params );
+	TerminateWaveform( &m_Waveforms[34], 1 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.8f );
+	GenerateFlatEffect( &m_Waveforms[42], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.25f );
+	GenerateFlatEffect( &m_Waveforms[42], params );
+	TerminateWaveform( &m_Waveforms[42], 1 );
+	params.Set( 3, 1.0f, true, 0.0f, 0.25f );
+	GenerateSineWaveEffect( &m_Waveforms[43], params );
+	params.Set( 8, 0.5f, false, 0.0f, 0.25f );
+	GenerateSineWaveEffect( &m_Waveforms[43], params );
+	EaseOutWaveform( &m_Waveforms[43], 30, false );
+	EaseOutWaveform( &m_Waveforms[43], 20, true );
+	params.Set( 2, 1.0f, true, 0.0f, 0.5f );
+	GenerateSineWaveEffect( &m_Waveforms[44], params );
+	params.Set( 8, 0.5f, false, 0.0f, 0.25f );
+	GenerateSineWaveEffect( &m_Waveforms[44], params );
+	EaseOutWaveform( &m_Waveforms[44], 30, false );
+	EaseOutWaveform( &m_Waveforms[44], 10, true );
+	params.Set( 1, 1.0f, true, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[45], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[45], params );
+	TerminateWaveform( &m_Waveforms[45], 3 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.4f );
+	GenerateFlatEffect( &m_Waveforms[46], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.2f );
+	GenerateFlatEffect( &m_Waveforms[46], params );
+	TerminateWaveform( &m_Waveforms[46], 1 );
+	params.Set( 7, 1.0f, true, 0.0f, 1.0f );
+	GenerateSquareWaveEffect( &m_Waveforms[35], params );
+	params.Set( 6, 1.0f, false, 0.0f, 0.1f );
+	GenerateSineWaveEffect( &m_Waveforms[35], params );
+	EaseOutWaveform( &m_Waveforms[35], 30, false );
+	EaseOutWaveform( &m_Waveforms[35], 30, true );
+	params.Set( 1, 1.0f, true, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[36], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.5f );
+	GenerateFlatEffect( &m_Waveforms[36], params );
+	TerminateWaveform( &m_Waveforms[36], 1 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.1f );
+	GenerateFlatEffect( &m_Waveforms[37], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[38], params );
+	params.Set( 1, 1.0f, true, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[38], params );
+	TerminateWaveform( &m_Waveforms[38], 3 );
+	params.Set( 1, 1.0f, true, 0.0f, 0.2f );
+	GenerateFlatEffect( &m_Waveforms[39], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.1f );
+	GenerateFlatEffect( &m_Waveforms[39], params );
+	params.Set( 1, 1.0f, true, 0.0f, 0.7f );
+	GenerateFlatEffect( &m_Waveforms[40], params );
+	params.Set( 1, 1.0f, false, 0.0f, 0.7f );
+	GenerateFlatEffect( &m_Waveforms[40], params );
+	TerminateWaveform( &m_Waveforms[40], 3 );
+	params.Set( 1, 1.0f, false, 0.0f, 0.75f );
+	GenerateFlatEffect( &m_Waveforms[41], params );
+	params.Set( 1, 1.0f, true, 0.0f, 0.55f );
+	GenerateFlatEffect( &m_Waveforms[41], params );
+	TerminateWaveform( &m_Waveforms[41], 1 );
+#else
 	// Jeep Idle
 	WaveGenParams_t params( 1, 1.0f, false, 0.0f, 0.15f );
 	GenerateFlatEffect( &m_Waveforms[RUMBLE_JEEP_ENGINE_LOOP], params );
@@ -420,7 +692,11 @@ void CRumbleEffects::Init()
 	params.Set( 12, 1.0f, false, 0.0f, 1.0f );
 	GenerateSquareWaveEffect( &m_Waveforms[RUMBLE_PORTAL_PLACEMENT_FAILURE], params );
 	TerminateWaveform( &m_Waveforms[RUMBLE_PORTAL_PLACEMENT_FAILURE], 6 );
+#endif
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 //---------------------------------------------------------
 //---------------------------------------------------------
@@ -772,7 +1048,11 @@ void CRumbleEffects::UpdateEffects( float curtime )
 		fRightMotor = 0.0f;
 	}
 
+#if defined( L4D2 )
+	inputsystem->SetRumble( fLeftMotor, fRightMotor, 0 );
+#else
 	inputsystem->SetRumble( fLeftMotor, fRightMotor );
+#endif
 }
 
 //---------------------------------------------------------

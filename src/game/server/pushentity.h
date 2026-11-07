@@ -71,7 +71,11 @@ protected:
 	void	ComputeRotationalPushDirection( CBaseEntity *pBlocker, const RotatingPushMove_t &rotPushMove, Vector *pMove, CBaseEntity *pRoot );
 
 	// Speculatively checks to see if all entities in this list can be pushed
+#if defined( L4D2 )
+	bool SpeculativelyCheckPush( PhysicsPushedInfo_t &info, const Vector &vecAbsPush, bool bRotationalPush, CBaseEntity *root );
+#else
 	bool SpeculativelyCheckPush( PhysicsPushedInfo_t &info, const Vector &vecAbsPush, bool bRotationalPush );
+#endif
 
 	// Speculatively checks to see if all entities in this list can be pushed
 	virtual bool SpeculativelyCheckRotPush( const RotatingPushMove_t &rotPushMove, CBaseEntity *pRoot );

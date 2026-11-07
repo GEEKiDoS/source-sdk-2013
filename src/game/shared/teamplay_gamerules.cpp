@@ -20,7 +20,21 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "teamplay_gamerules_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
+
+#if defined( L4D2 )
+// Same native shared objects, in the already-selected generic Teamplay owner.
+// Effective module flags are constructor inputs, not a shared Create policy.
+#if defined( CLIENT_DLL )
+ConVar mp_capstyle( "mp_capstyle", "1", 0x0000200A, "Sets the style of capture points used. 0 = Fixed players required to cap. 1 = More players cap faster, but longer cap times." );
+ConVar mp_capdeteriorate_time( "mp_capdeteriorate_time", "90.0", 0x0000200A, "Time it takes for a full capture point to deteriorate." );
+#else
+ConVar mp_capstyle( "mp_capstyle", "1", 0x00002006, "Sets the style of capture points used. 0 = Fixed players required to cap. 1 = More players cap faster, but longer cap times." );
+ConVar mp_capdeteriorate_time( "mp_capdeteriorate_time", "90.0", 0x00002006, "Time it takes for a full capture point to deteriorate." );
+#endif
+#endif // L4D2
+
 
 #ifdef GAME_DLL
 static char team_names[MAX_TEAMS][MAX_TEAMNAME_LENGTH];
@@ -53,6 +67,9 @@ CTeamplayRules::CTeamplayRules()
 //-----------------------------------------------------------------------------
 void CTeamplayRules::Precache( void )
 {
+#if defined( L4D2 )
+	BaseClass::Precache(); // S1EC640 -> S0FCB00.
+#endif
 	// Call the Team Manager's precaches
 	for ( int i = 0; i < GetNumberOfTeams(); i++ )
 	{
@@ -289,6 +306,7 @@ void CTeamplayRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 		pPlayer->SetPlayerName( pszName );
 	}
 
+#if !defined( L4D2 )
 	// NVNT see if this user is still or has began using a haptic device
 	const char *pszHH = engine->GetClientConVarValue( pPlayer->entindex(), "hap_HasDevice" );
 	if(pszHH)
@@ -296,12 +314,17 @@ void CTeamplayRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 		int iHH = atoi(pszHH);
 		pPlayer->SetHaptics(iHH!=0);
 	}
+#endif // !L4D2
 }
 
 //=========================================================
 // Deathnotice. 
 //=========================================================
+#if defined( L4D2 )
+void CTeamplayRules::DeathNotice( CBaseCombatCharacter *pVictim, const CTakeDamageInfo &info )
+#else
 void CTeamplayRules::DeathNotice( CBasePlayer *pVictim, const CTakeDamageInfo &info )
+#endif
 {
 	if ( m_DisableDeathMessages )
 		return;
@@ -319,7 +342,11 @@ void CTeamplayRules::DeathNotice( CBasePlayer *pVictim, const CTakeDamageInfo &i
 				if ( event )
 				{
 					event->SetInt("killer", pk->GetUserID() );
-					event->SetInt("victim", pVictim->GetUserID() );
+#if defined( L4D2 )
+					event->SetInt( "victim", engine->GetPlayerUserId( pVictim->edict() ) );
+#else
+					event->SetInt( "victim", pVictim->GetUserID() );
+#endif
 					event->SetInt("priority", 7 );	// HLTV event priority, not transmitted
 					
 					gameeventmanager->FireEvent( event );

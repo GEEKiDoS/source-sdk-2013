@@ -18,9 +18,27 @@
 
 extern ConVar default_fov;
 
-ConVar r_JeepViewBlendTo( "r_JeepViewBlendTo", "1", FCVAR_CHEAT );
-ConVar r_JeepViewBlendToScale( "r_JeepViewBlendToScale", "0.03", FCVAR_CHEAT );
-ConVar r_JeepViewBlendToTime( "r_JeepViewBlendToTime", "1.5", FCVAR_CHEAT );
+ConVar r_JeepViewBlendTo( "r_JeepViewBlendTo", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar r_JeepViewBlendToScale( "r_JeepViewBlendToScale", "0.03", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar r_JeepViewBlendToTime( "r_JeepViewBlendToTime", "1.5", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 #define JEEP_DELTA_LENGTH_MAX	12.0f			// 1 foot
 #define JEEP_FRAMETIME_MIN		1e-6
@@ -54,6 +72,37 @@ C_PropJeep::~C_PropJeep()
 	}
 }
 
+#if defined( L4D2 )
+bool C_PropJeep::Simulate( void )
+{
+	if ( m_bHeadlightIsOn )
+	{
+		if ( !m_pHeadlight )
+		{
+			m_pHeadlight = new CHeadlightEffect;
+			if ( !m_pHeadlight )
+				return true;
+			m_pHeadlight->TurnOn();
+		}
+		const int attachment = LookupAttachment( "headlight" );
+		if ( attachment != -1 )
+		{
+			Vector origin, forward, right, up;
+			QAngle angles;
+			GetAttachment( attachment, origin, angles );
+			AngleVectors( angles, &forward, &right, &up );
+			m_pHeadlight->UpdateLight( origin, forward, right, up, 1000 );
+		}
+	}
+	else if ( m_pHeadlight )
+	{
+		delete m_pHeadlight;
+		m_pHeadlight = NULL;
+	}
+	BaseClass::Simulate();
+	return true;
+}
+#else
 void C_PropJeep::Simulate( void )
 {
 	// The dim light is the flashlight.
@@ -93,6 +142,7 @@ void C_PropJeep::Simulate( void )
 
 	BaseClass::Simulate();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Blend view angles.

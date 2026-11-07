@@ -64,6 +64,10 @@ public:
 	int		m_nHitBox;
 	
 	unsigned char	m_nColor;
+#if defined( L4D2 )
+	// Native internal byte+89. Deliberately NOT part of DT_EffectData.
+	unsigned char	m_nParticleSystemIndex;
+#endif
 
 	// Color customizability
 	bool							m_bCustomColors;
@@ -99,6 +103,9 @@ public:
 		m_nHitBox = 0;
 
 		m_nColor = 0;
+#if defined( L4D2 )
+		m_nParticleSystemIndex = 0;
+#endif
 
 		m_bCustomColors = false;
 		m_CustomColors.m_vecColor1.Init();

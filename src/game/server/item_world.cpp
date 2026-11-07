@@ -125,14 +125,48 @@ CItem::CItem()
 	m_bActivateWhenAtRest = false;
 }
 
+#if defined( L4D2 )
+CItem::~CItem()
+{
+	// S10D950/10DBB0: after the spawner's registry destruction, not an
+	// invented earlier CWeaponSpawn::UpdateOnRemove phase.
+	if ( m_pConstraint )
+	{
+		physenv->DestroyConstraint( m_pConstraint );
+		m_pConstraint = NULL;
+	}
+}
+
+void CItem::Constrain()
+{
+	IPhysicsObject *pObject = VPhysicsGetObject();
+	if ( !g_PhysWorldObject || !pObject )
+		return;
+	constraint_fixedparams_t fixed;
+	fixed.Defaults();
+	fixed.InitWithCurrentObjectState( g_PhysWorldObject, pObject );
+	fixed.constraint.forceLimit = lbs2kg( 10000 );
+	fixed.constraint.torqueLimit = lbs2kg( 10000 );
+	m_pConstraint = physenv->CreateFixedConstraint( g_PhysWorldObject, pObject, NULL, fixed );
+	if ( m_pConstraint ) // Standing minimal skip: failed creation has no SetGameData target.
+		m_pConstraint->SetGameData( this );
+}
+#endif
+
 bool CItem::CreateItemVPhysicsObject( void )
 {
-	// Create the object in the physics system
+#if defined( L4D2 )
+	// S10DDE0: an unresolved configurable spawn deliberately has no model.
+	const int nSolidFlags = GetSolidFlags() | ( m_bActivateWhenAtRest ? 0x1010 : FSOLID_NOT_STANDABLE | FSOLID_TRIGGER );
+	if ( GetModelIndex() == 0 )
+		return true;
+#else
 	int nSolidFlags = GetSolidFlags() | FSOLID_NOT_STANDABLE;
 	if ( !m_bActivateWhenAtRest )
 	{
 		nSolidFlags |= FSOLID_TRIGGER;
 	}
+#endif
 
 	if ( VPhysicsInitNormal( SOLID_VPHYSICS, nSolidFlags, false ) == NULL )
 	{
@@ -156,6 +190,9 @@ bool CItem::CreateItemVPhysicsObject( void )
 //-----------------------------------------------------------------------------
 void CItem::Spawn( void )
 {
+#if defined( L4D2 )
+	SetNetworkQuantizeOriginAndAngles( true ); // Native10E5A0, before admission.
+#endif
 	if ( g_pGameRules->IsAllowedToSpawn( this ) == false )
 	{
 		UTIL_Remove( this );
@@ -175,7 +212,11 @@ void CItem::Spawn( void )
 	// This will make them not collide with the player, but will collide
 	// against other items + weapons
 	SetCollisionGroup( COLLISION_GROUP_WEAPON );
+#if defined( L4D2 )
+	CollisionProp()->UseTriggerBounds( true, 1.0f ); // S10E5A0.
+#else
 	CollisionProp()->UseTriggerBounds( true, ITEM_PICKUP_BOX_BLOAT );
+#endif
 	SetTouch(&CItem::ItemTouch);
 
 	if ( CreateItemVPhysicsObject() == false )
@@ -187,6 +228,9 @@ void CItem::Spawn( void )
 	// Constrained start?
 	if ( HasSpawnFlags( SF_ITEM_START_CONSTRAINED ) )
 	{
+#if defined( L4D2 )
+		Constrain();
+#else
 		//Constrain the weapon in place
 		IPhysicsObject *pReferenceObject, *pAttachedObject;
 
@@ -206,12 +250,16 @@ void CItem::Spawn( void )
 
 			m_pConstraint->SetGameData( (void *) this );
 		}
+#endif
 	}
 #endif //CLIENT_DLL
 
 #if defined( HL2MP ) || defined( TF_DLL )
 	SetThink( &CItem::FallThink );
 	SetNextThink( gpGlobals->curtime + 0.1f );
+#endif
+#if defined( L4D2 )
+	NetworkQuantizeOriginAndAngles(); // Native10E671, successful constraint tail.
 #endif
 }
 
@@ -458,6 +506,9 @@ void CItem::ItemTouch( CBaseEntity *pOther )
 
 	if ( MyTouch( pPlayer ) )
 	{
+#if defined( L4D2 )
+		OnPlayerPickup( pOther, pPlayer );
+#else
 		m_OnPlayerTouch.FireOutput(pOther, this);
 
 #if TF_DLL
@@ -489,12 +540,27 @@ void CItem::ItemTouch( CBaseEntity *pOther )
 			HL2MPRules()->RemoveLevelDesignerPlacedObject( this );
 #endif
 		}
+#endif
 	}
 	else if (gEvilImpulse101)
 	{
 		UTIL_Remove( this );
 	}
 }
+
+#if defined( L4D2 )
+void CItem::OnPlayerPickup( CBaseEntity *other, CBasePlayer *player )
+{
+	m_OnPlayerTouch.FireOutput( player, this );
+	SetTouch( NULL );
+	SetThink( NULL );
+	g_pGameRules->PlayerGotItem( player, this );
+	if ( g_pGameRules->ItemShouldRespawn( this ) == GR_ITEM_RESPAWN_YES )
+		Respawn();
+	else
+		UTIL_Remove( this );
+}
+#endif
 
 CBaseEntity* CItem::Respawn( void )
 {
@@ -548,7 +614,9 @@ void CItem::Precache()
 {
 	BaseClass::Precache();
 
+#if !defined( L4D2 )
 	PrecacheScriptSound( "Item.Materialize" );
+#endif // S10DA70 delegates directly to CBaseAnimating::Precache.
 }
 
 //-----------------------------------------------------------------------------

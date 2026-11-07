@@ -97,6 +97,11 @@ struct GestureSlot_t
 	Activity			m_iActivity;
 	bool				m_bAutoKill;
 	bool				m_bActive;
+#if defined( L4D2 )
+	bool				m_bLooping;
+	float				m_flFadeDuration;
+	float				m_flFadeRemaining;
+#endif
 	CAnimationLayer		*m_pAnimLayer;
 };
 
@@ -187,6 +192,9 @@ public:
 	const QAngle &GetRenderAngles();
 
 	virtual Activity TranslateActivity( Activity actDesired );
+#if defined( L4D2 )
+	virtual Activity UntranslateActivity( Activity activity ) { return activity; }
+#endif
 
 	virtual void SetRunSpeed( float flSpeed ) { m_MovementData.m_flRunSpeed = flSpeed; }
 	virtual void SetWalkSpeed( float flSpeed ) { m_MovementData.m_flWalkSpeed = flSpeed; }
@@ -202,7 +210,11 @@ public:
 
 	// Gestures.
 	void	ResetGestureSlots( void );
+#if defined( L4D2 )
+	void	ResetGestureSlot( int iGestureSlot, float flFadeDuration = 0.0f );
+#else
 	void	ResetGestureSlot( int iGestureSlot );
+#endif
 	void AddVCDSequenceToGestureSlot( int iGestureSlot, int iGestureSequence, float flCycle = 0.0f, bool bAutoKill = true );
 	CAnimationLayer* GetGestureSlotLayer( int iGestureSlot );
 	bool	IsGestureSlotActive( int iGestureSlot );
@@ -237,9 +249,27 @@ protected:
 	CUtlVector<GestureSlot_t>		m_aGestureSlots;
 	bool	InitGestureSlots( void );
 	void	ShutdownGestureSlots( void );
+#if defined( L4D2 )
+public:
+#endif
 	bool	IsGestureSlotPlaying( int iGestureSlot, Activity iGestureActivity );
+#if defined( L4D2 )
+protected:
+#endif
+#if defined( L4D2 )
+	int AddToGestureSlot( int iGestureSlot, Activity iGestureActivity, bool bAutoKill, bool bLooping = false );
+public:
+	virtual void RestartGesture( int iGestureSlot, Activity iGestureActivity, bool bAutoKill = true, bool bLooping = false );
+protected:
+	virtual int SelectGestureSequence( int iGestureSlot, Activity activity, CBasePlayer *pPlayer )
+		{ return pPlayer ? pPlayer->SelectWeightedSequence( activity ) : -1; }
+	// Original native base callbacks are empty; game states publish metadata.
+	virtual void OnGestureStarted( int iGestureSlot, Activity activity, int iSequence ) {}
+	virtual void OnGestureStopped( int iGestureSlot ) {}
+#else
 	void	AddToGestureSlot( int iGestureSlot, Activity iGestureActivity, bool bAutoKill );
 	virtual void RestartGesture( int iGestureSlot, Activity iGestureActivity, bool bAutoKill = true );
+#endif
 	void	ComputeGestureSequence( CStudioHdr *pStudioHdr );
 	void	UpdateGestureLayer( CStudioHdr *pStudioHdr, GestureSlot_t *pGesture );
 	void	DebugGestureInfo( void );
@@ -267,9 +297,17 @@ protected:
 	virtual void		EstimateYaw( void );
 	void				ConvergeYawAngles( float flGoalYaw, float flYawRate, float flDeltaTime, float &flCurrentYaw );
 
+#if defined( L4D2 )
+	virtual double GetCurrentMaxGroundSpeed();
+#else
 	virtual float GetCurrentMaxGroundSpeed();
+#endif
 	virtual void ComputeSequences( CStudioHdr *pStudioHdr );
+#if defined( L4D2 )
+	virtual void ComputeMainSequence();
+#else
 	void ComputeMainSequence();
+#endif
 	void UpdateInterpolators();
 	void ResetGroundSpeed( void );
 	float GetInterpolatedGroundSpeed( void );

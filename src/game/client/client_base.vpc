@@ -181,15 +181,15 @@ $Project
 		$File	"hl2\C_Func_Monitor.cpp"
 		$File	"geiger.cpp"
 		$File	"history_resource.cpp"
-		$File	"hud_weapon.cpp"
+		$File	"hud_weapon.cpp" [!$L4D2]
 		$File	"train.cpp"
-		$File	"$SRCDIR\game\shared\weapon_parse_default.cpp"
+		$File	"$SRCDIR\game\shared\weapon_parse_default.cpp" [!$L4D2]
 		$File	"$SRCDIR\game\shared\achievement_saverestore.cpp"
 		$File	"$SRCDIR\game\shared\achievement_saverestore.h"
 		$File	"$SRCDIR\game\shared\achievementmgr.cpp"
 		$File	"$SRCDIR\game\shared\achievementmgr.h"
 		$File   "$SRCDIR\game\shared\achievements_and_stats_interface.h"
-		$File	"$SRCDIR\game\shared\achievements_hlx.cpp"
+		$File	"$SRCDIR\game\shared\achievements_hlx.cpp" [!$L4D2]
 		$File	"achievement_notification_panel.cpp"
 		$File	"achievement_notification_panel.h"
 		$File	"$SRCDIR\game\shared\activitylist.cpp"
@@ -303,9 +303,9 @@ $Project
 		$File	"classmap.cpp"
 		$File	"client_factorylist.cpp"
 		$File	"client_thinklist.cpp"
-		$File	"client_virtualreality.cpp"
+		$File	"client_virtualreality.cpp" [!$L4D2]
 		$File	"client_virtualreality.h"
-		$File	"clienteffectprecachesystem.cpp"
+		$File	"clienteffectprecachesystem.cpp" [!$L4D2]
 		$File	"cliententitylist.cpp"
 		$File	"clientleafsystem.cpp"
 		$File	"clientmode_shared.cpp"
@@ -452,7 +452,7 @@ $Project
 		$File	"spritemodel.cpp"
 		$File	"$SRCDIR\game\shared\SpriteTrail.cpp"
 		$File	"$SRCDIR\game\shared\studio_shared.cpp"
-		$File	"steamshare.cpp"
+		$File	"steamshare.cpp" [!$L4D2]
 		$File	"studio_stats.cpp"
 		$File	"studio_stats.h"
 		$File	"$SRCDIR\game\shared\takedamageinfo.cpp"
@@ -508,10 +508,10 @@ $Project
 		$File   "vgui_video_player.cpp"
 		$File	"$SRCDIR\game\shared\mp_shareddefs.cpp"
 		$File	"$SRCDIR\game\client\c_vote_controller.h"
-		$File	"$SRCDIR\game\client\c_vote_controller.cpp"
+		$File	"$SRCDIR\game\client\c_vote_controller.cpp" [!$L4D2]
 		//Haptics
-		$File	"$SRCDIR\public\haptics\haptic_msgs.cpp"	[!$X360]
-		$File	"$SRCDIR\public\haptics\haptic_utils.cpp"	[$WINDOWS&&!$X360]
+		$File	"$SRCDIR\public\haptics\haptic_msgs.cpp"	[!$X360&&!$L4D2]
+		$File	"$SRCDIR\public\haptics\haptic_utils.cpp"	[$WINDOWS&&!$X360&&!$L4D2]
 
 		$File	"$SRCDIR\game\shared\secure_command_line.cpp"
 
@@ -556,7 +556,6 @@ $Project
 				"$SRCDIR\public\vgui_controls\vgui_controls.cpp"	\
 				"hud_lcd.cpp"										\
 				"in_mouse.cpp"										\
-				"mumble.cpp"						\
 				"$SRCDIR\public\renamed_recvtable_compat.cpp"		\
 				"rendertexture.cpp"									
 				{
@@ -568,6 +567,17 @@ $Project
 						}
 					}
 				}
+
+		$File "mumble.cpp" [!$L4D2]
+		{
+			$Configuration
+			{
+				$Compiler
+				{
+					$Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+				}
+			}
+		}
 
 		$Folder	"Precompiled Header"
 		{

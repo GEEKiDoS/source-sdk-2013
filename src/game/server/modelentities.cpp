@@ -18,6 +18,14 @@ extern ConVar	showtriggers;
 
 
 LINK_ENTITY_TO_CLASS( func_brush, CFuncBrush );
+#if defined( L4D2 )
+// Native105A8BD0 registers the same CFuncBrush factory, not a new entity type.
+LINK_ENTITY_TO_CLASS( func_block_charge, CFuncBrush );
+#endif
+#if defined( L4D2 )
+IMPLEMENT_SERVERCLASS_ST( CFuncBrush, DT_FuncBrush )
+END_SEND_TABLE()
+#endif
 
 BEGIN_DATADESC( CFuncBrush )
 
@@ -64,6 +72,11 @@ void CFuncBrush::Spawn( void )
 	{
 		SetSolid( SOLID_BSP );
 	}
+#if defined( L4D2 )
+	// Genuine native Root968/51F20/646B0 owner: do not duplicate its kernel.
+	SetNetworkQuantizeOriginAndAngles( true );
+	NetworkQuantizeOriginAndAngles();
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -73,7 +86,11 @@ bool CFuncBrush::CreateVPhysics( void )
 	// NOTE: Don't init this static.  It's pretty common for these to be constrained
 	// and dynamically parented.  Initing shadow avoids having to destroy the physics
 	// object later and lose the constraints.
+#if defined( L4D2 )
+	IPhysicsObject *pPhys = VPhysicsInitStatic();
+#else
 	IPhysicsObject *pPhys = VPhysicsInitShadow(false, false);
+#endif
 	if ( pPhys )
 	{
 		int contents = modelinfo->GetModelContents( GetModelIndex() );
@@ -144,7 +161,11 @@ void CFuncBrush::InputTurnOn( inputdata_t &inputdata )
 //-----------------------------------------------------------------------------
 void CFuncBrush::InputSetExcluded( inputdata_t &inputdata )
 {
+#if defined( L4D2 )
+	m_iszExcludedClass = inputdata.value.FieldType() == FIELD_STRING ? inputdata.value.StringID() : NULL_STRING;
+#else
 	m_iszExcludedClass = inputdata.value.StringID();
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -152,7 +173,11 @@ void CFuncBrush::InputSetExcluded( inputdata_t &inputdata )
 //-----------------------------------------------------------------------------
 void CFuncBrush::InputSetInvert( inputdata_t &inputdata )
 {
+#if defined( L4D2 )
+	m_bInvertExclusion = inputdata.value.FieldType() == FIELD_BOOLEAN ? inputdata.value.Bool() : false;
+#else
 	m_bInvertExclusion = inputdata.value.Bool();
+#endif
 }
 
 
@@ -188,6 +213,10 @@ void CFuncBrush::TurnOn( void )
 	}
 
 	RemoveEffects( EF_NODRAW );
+#if defined( L4D2 )
+	if ( edict() ) edict()->m_fStateFlags |= FL_EDICT_DIRTY_PVS_INFORMATION;
+	DispatchUpdateTransmitState();
+#endif
 }
 
 

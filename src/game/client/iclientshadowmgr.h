@@ -101,6 +101,9 @@ public:
 
 	virtual void ComputeShadowDepthTextures( const CViewSetup &pView ) = 0;
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	virtual void SetShadowFromWorldLightsEnabled( bool enabled ) = 0;
+#endif
 };
 
 

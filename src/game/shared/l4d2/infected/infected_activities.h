@@ -1,0 +1,143 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+#ifndef L4D2_INFECTED_ACTIVITIES_H
+#define L4D2_INFECTED_ACTIVITIES_H
+#ifdef _WIN32
+#pragma once
+#endif
+
+#include "ai_activity.h"
+#include "eventlist.h"
+
+// These IDs are assigned by the native lists, never by retail enum values.
+extern Activity ACT_EXP_IDLE;
+extern Activity ACT_EXP_ANGRY;
+extern Activity ACT_TERROR_IDLE_NEUTRAL;
+extern Activity ACT_TERROR_IDLE_ALERT;
+extern Activity ACT_TERROR_IDLE_INTENSE;
+extern Activity ACT_TERROR_IDLE_ALERT_INJURED_AHEAD;
+extern Activity ACT_TERROR_IDLE_ALERT_AHEAD;
+extern Activity ACT_TERROR_IDLE_ALERT_INJURED_BEHIND;
+extern Activity ACT_TERROR_IDLE_ALERT_BEHIND;
+extern Activity ACT_TERROR_IDLE_ALERT_INJURED_LEFT;
+extern Activity ACT_TERROR_IDLE_ALERT_LEFT;
+extern Activity ACT_TERROR_IDLE_ALERT_INJURED_RIGHT;
+extern Activity ACT_TERROR_IDLE_ALERT_RIGHT;
+extern Activity ACT_TERROR_IDLE_ACQUIRE;
+extern Activity ACT_TERROR_LEAN_FORWARD_IDLE;
+extern Activity ACT_TERROR_LEAN_BACKWARD_IDLE;
+extern Activity ACT_TERROR_LEAN_LEFTWARD_IDLE;
+extern Activity ACT_TERROR_LEAN_RIGHTWARD_IDLE;
+extern Activity ACT_TERROR_FIDGET;
+extern Activity ACT_TERROR_NEUTRAL_TO_ALERT;
+extern Activity ACT_TERROR_ALERT_TO_NEUTRAL;
+extern Activity ACT_TERROR_FACE_LEFT_NEUTRAL;
+extern Activity ACT_TERROR_FACE_LEFT_ALERT;
+extern Activity ACT_TERROR_FACE_LEFT_INTENSE;
+extern Activity ACT_TERROR_FACE_RIGHT_NEUTRAL;
+extern Activity ACT_TERROR_FACE_RIGHT_ALERT;
+extern Activity ACT_TERROR_FACE_RIGHT_INTENSE;
+extern Activity ACT_TERROR_ABOUT_FACE_NEUTRAL;
+extern Activity ACT_TERROR_ABOUT_FACE_ALERT;
+extern Activity ACT_TERROR_ABOUT_FACE_INTENSE;
+extern Activity ACT_TERROR_SHAMBLE;
+extern Activity ACT_TERROR_WALK_NEUTRAL;
+extern Activity ACT_TERROR_WALK_ALERT;
+extern Activity ACT_TERROR_WALK_INTENSE;
+extern Activity ACT_TERROR_RUN_NEUTRAL;
+extern Activity ACT_TERROR_RUN_ALERT;
+extern Activity ACT_TERROR_RUN_INTENSE;
+extern Activity ACT_TERROR_RUN_INTENSE_TO_STAND_ALERT;
+extern Activity ACT_TERROR_CROUCH_IDLE_NEUTRAL;
+extern Activity ACT_TERROR_CROUCH_IDLE_ALERT;
+extern Activity ACT_TERROR_CROUCH_IDLE_INTENSE;
+extern Activity ACT_TERROR_CROUCH_WALK_NEUTRAL;
+extern Activity ACT_TERROR_CROUCH_WALK_ALERT;
+extern Activity ACT_TERROR_CROUCH_WALK_INTENSE;
+extern Activity ACT_TERROR_CROUCH_RUN_NEUTRAL;
+extern Activity ACT_TERROR_CROUCH_RUN_ALERT;
+extern Activity ACT_TERROR_CROUCH_RUN_INTENSE;
+extern Activity ACT_TERROR_CRAWL_RUN;
+extern Activity ACT_TERROR_ATTACK;
+extern Activity ACT_TERROR_ATTACK_CONTINUOUSLY;
+extern Activity ACT_TERROR_ATTACK_LOW;
+extern Activity ACT_TERROR_ATTACK_LOW_CONTINUOUSLY;
+extern Activity ACT_TERROR_ATTACK_DOOR;
+extern Activity ACT_TERROR_ATTACK_DOOR_CONTINUOUSLY;
+extern Activity ACT_TERROR_UNABLE_TO_REACH_TARGET;
+extern Activity ACT_TERROR_REACH_THROUGH_DOOR;
+extern Activity ACT_TERROR_SHOVED_FORWARD;
+extern Activity ACT_TERROR_SHOVED_BACKWARD;
+extern Activity ACT_TERROR_SHOVED_LEFTWARD;
+extern Activity ACT_TERROR_SHOVED_RIGHTWARD;
+extern Activity ACT_TERROR_SHOVED_BACKWARD_INTO_WALL;
+extern Activity ACT_TERROR_SHOVED_FORWARD_INTO_WALL;
+extern Activity ACT_TERROR_SHOVED_LEFTWARD_INTO_WALL;
+extern Activity ACT_TERROR_SHOVED_RIGHTWARD_INTO_WALL;
+extern Activity ACT_TERROR_SHOVED_BACKWARD_FROM_SIT;
+extern Activity ACT_TERROR_SHOVED_RIGHTWARD_FROM_SIT;
+extern Activity ACT_TERROR_SHOVED_LEFTWARD_FROM_SIT;
+extern Activity ACT_TERROR_SIT_IDLE;
+extern Activity ACT_TERROR_SIT_FROM_STAND;
+extern Activity ACT_TERROR_SIT_TO_STAND;
+extern Activity ACT_TERROR_SIT_TO_STAND_ALERT;
+extern Activity ACT_TERROR_SIT_TO_LIE;
+extern Activity ACT_TERROR_LIE_IDLE;
+extern Activity ACT_TERROR_LIE_FROM_STAND;
+extern Activity ACT_TERROR_LIE_TO_STAND;
+extern Activity ACT_TERROR_LIE_TO_STAND_ALERT;
+extern Activity ACT_TERROR_LIE_TO_SIT;
+extern Activity ACT_TERROR_FALL;
+extern Activity ACT_TERROR_JUMP_LANDING;
+extern Activity ACT_TERROR_JUMP_LANDING_HARD;
+extern Activity ACT_TERROR_JUMP_LANDING_NEUTRAL;
+extern Activity ACT_TERROR_JUMP_LANDING_HARD_NEUTRAL;
+extern Activity ACT_TERROR_DIE_FROM_STAND;
+extern Activity ACT_TERROR_DIE_FROM_CROUCH;
+extern Activity ACT_TERROR_DIE_WHILE_RUNNING;
+extern Activity ACT_TERROR_DIE_BACKWARD_FROM_SHOTGUN;
+extern Activity ACT_TERROR_DIE_FORWARD_FROM_SHOTGUN;
+extern Activity ACT_TERROR_DIE_LEFTWARD_FROM_SHOTGUN;
+extern Activity ACT_TERROR_DIE_RIGHTWARD_FROM_SHOTGUN;
+extern Activity ACT_BLUDGEON_DEATH_BACK;
+extern Activity ACT_BLUDGEON_DEATH_FORWARD;
+extern Activity ACT_BLUDGEON_DEATH_LEFT;
+extern Activity ACT_BLUDGEON_DEATH_RIGHT;
+extern Activity ACT_SLICING_DEATH_BACK;
+extern Activity ACT_SLICING_DEATH_FORWARD;
+extern Activity ACT_SLICING_DEATH_LEFT;
+extern Activity ACT_SLICING_DEATH_RIGHT;
+extern Activity ACT_TERROR_HIT_BY_TANKPUNCH;
+extern Activity ACT_TERROR_IDLE_FALL_FROM_TANKPUNCH;
+extern Activity ACT_TERROR_TANKPUNCH_LAND;
+extern Activity ACT_TERROR_HIT_BY_CHARGER;
+extern Activity ACT_TERROR_IDLE_FALL_FROM_CHARGERHIT;
+extern Activity ACT_TERROR_CHARGERHIT_LAND_SLOW;
+extern Activity ACT_TERROR_POUNCED_TO_STAND;
+
+extern Animevent AE_FOOTSTEP_LEFT;
+extern Animevent AE_FOOTSTEP_RIGHT;
+extern Animevent AE_ATTACK_START;
+extern Animevent AE_ATTACK_HIT;
+extern Animevent AE_ATTACK_END;
+extern Animevent AE_OPTIONAL_END;
+extern Animevent AE_HIT_HEAD_FRONT;
+extern Animevent AE_HIT_HEAD_BACK;
+extern Animevent AE_HIT_STOMACH;
+extern Animevent AE_HIT_CHEST;
+extern Animevent AE_HIT_BACK_UPPER;
+extern Animevent AE_HIT_BACK_LOWER;
+extern Animevent AE_HIT_SHOULDER_RIGHT_FRONT;
+extern Animevent AE_HIT_SHOULDER_RIGHT_BACK;
+extern Animevent AE_HIT_SHOULDER_LEFT_FRONT;
+extern Animevent AE_HIT_SHOULDER_LEFT_BACK;
+extern Animevent AE_HIT_LEG_RIGHT_FRONT;
+extern Animevent AE_HIT_LEG_RIGHT_BACK;
+extern Animevent AE_HIT_LEG_LEFT_FRONT;
+extern Animevent AE_HIT_LEG_LEFT_BACK;
+extern Animevent AE_HIT_FRONT;
+extern Animevent AE_HIT_BACK;
+
+void RegisterInfectedActivities();
+void RegisterInfectedAnimationEvents();
+
+#endif // L4D2_INFECTED_ACTIVITIES_H

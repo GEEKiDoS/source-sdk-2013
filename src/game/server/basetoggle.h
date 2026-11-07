@@ -17,6 +17,10 @@ class CBaseToggle : public CBaseEntity
 	DECLARE_CLASS( CBaseToggle, CBaseEntity );
 public:
 	CBaseToggle();
+#if defined( L4D2 )
+	DECLARE_SERVERCLASS();
+	virtual void GetGroundVelocityToApply( Vector &vecGroundVel ) OVERRIDE;
+#endif
 
 	virtual bool		KeyValue( const char *szKeyName, const char *szValue );
 	virtual bool		KeyValue( const char *szKeyName, Vector vec ) { return BaseClass::KeyValue( szKeyName, vec ); };

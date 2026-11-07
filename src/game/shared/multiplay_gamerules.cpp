@@ -36,6 +36,9 @@
 	#include "basemultiplayerplayer.h"
 	#include "team.h"
 	#include "usermessages.h"
+#ifdef L4D2
+	#include "recipientfilter.h"
+#endif
 	#include "tier0/icommandline.h"
 
 #ifdef NEXT_BOT
@@ -63,7 +66,15 @@ REGISTER_GAMERULES_CLASS( CMultiplayRules );
 ConVar mp_chattime(
 		"mp_chattime", 
 		"10", 
-		FCVAR_REPLICATED,
+		
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+,
 		"amount of time players can chat after the game is over",
 		true, 1,
 		true, 120 );
@@ -83,22 +94,56 @@ void MPTimeLimitCallback( IConVar *var, const char *pOldString, float flOldValue
 }
 #endif 
 
-ConVar mp_timelimit( "mp_timelimit", "0", FCVAR_NOTIFY|FCVAR_REPLICATED, "game time per map in minutes"
+ConVar mp_timelimit( "mp_timelimit", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000210A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002106
+#else
+	FCVAR_NOTIFY|FCVAR_REPLICATED
+#endif
+, "game time per map in minutes"
 #ifdef GAME_DLL
 					, MPTimeLimitCallback 
 #endif
 					);
 
-ConVar fraglimit( "mp_fraglimit","0", FCVAR_NOTIFY|FCVAR_REPLICATED, "The number of kills at which the map ends");
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
+ConVar fraglimit( "mp_fraglimit","0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000106
+#else
+	FCVAR_NOTIFY|FCVAR_REPLICATED
+#endif
+, 
+#if defined( L4D2 )
+	""
+#else
+	"The number of kills at which the map ends"
+#endif
+);
+#endif
 
 ConVar mp_show_voice_icons( "mp_show_voice_icons", "1", FCVAR_REPLICATED, "Show overhead player voice icons when players are speaking.\n" );
 
 #ifdef GAME_DLL
 
-ConVar tv_delaymapchange( "tv_delaymapchange", "0", FCVAR_NONE, "Delays map change until broadcast is complete" );
+ConVar tv_delaymapchange( "tv_delaymapchange", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "Delays map change until broadcast is complete" );
 ConVar tv_delaymapchange_protect( "tv_delaymapchange_protect", "1", FCVAR_NONE, "Protect against doing a manual map change if HLTV is broadcasting and has not caught up with a major game event such as round_end" );
 
-ConVar mp_restartgame( "mp_restartgame", "0", FCVAR_GAMEDLL, "If non-zero, game will restart in the specified number of seconds" );
+ConVar mp_restartgame( "mp_restartgame", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	FCVAR_GAMEDLL
+#endif
+, "If non-zero, game will restart in the specified number of seconds" );
 ConVar mp_restartgame_immediate( "mp_restartgame_immediate", "0", FCVAR_GAMEDLL, "If non-zero, game will restart immediately" );
 
 ConVar mp_mapcycle_empty_timeout_seconds( "mp_mapcycle_empty_timeout_seconds", "0", FCVAR_REPLICATED, "If nonzero, server will cycle to the next map if it has been empty on the current map for N seconds");
@@ -129,21 +174,63 @@ ConCommand skip_next_map( "skip_next_map", cc_SkipNextMapInCycle, "Skips the nex
 ConCommand changelevel_next( "changelevel_next", cc_GotoNextMapInCycle, "Immediately changes to the next map in the map rotation for the server." );
 
 #ifndef TF_DLL		// TF overrides the default value of this convar
-ConVar mp_waitingforplayers_time( "mp_waitingforplayers_time", "0", FCVAR_GAMEDLL, "WaitingForPlayers time length in seconds" );
+ConVar mp_waitingforplayers_time( "mp_waitingforplayers_time", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	FCVAR_GAMEDLL
+#endif
+, "WaitingForPlayers time length in seconds" );
 #endif
 
-ConVar mp_waitingforplayers_restart( "mp_waitingforplayers_restart", "0", FCVAR_GAMEDLL, "Set to 1 to start or restart the WaitingForPlayers period." );
-ConVar mp_waitingforplayers_cancel( "mp_waitingforplayers_cancel", "0", FCVAR_GAMEDLL, "Set to 1 to end the WaitingForPlayers period." );
-ConVar mp_clan_readyrestart( "mp_clan_readyrestart", "0", FCVAR_GAMEDLL, "If non-zero, game will restart once someone from each team gives the ready signal" );
-ConVar mp_clan_ready_signal( "mp_clan_ready_signal", "ready", FCVAR_GAMEDLL, "Text that team leader from each team must speak for the match to begin" );
+ConVar mp_waitingforplayers_restart( "mp_waitingforplayers_restart", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	FCVAR_GAMEDLL
+#endif
+, "Set to 1 to start or restart the WaitingForPlayers period." );
+ConVar mp_waitingforplayers_cancel( "mp_waitingforplayers_cancel", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	FCVAR_GAMEDLL
+#endif
+, "Set to 1 to end the WaitingForPlayers period." );
+ConVar mp_clan_readyrestart( "mp_clan_readyrestart", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	FCVAR_GAMEDLL
+#endif
+, "If non-zero, game will restart once someone from each team gives the ready signal" );
+ConVar mp_clan_ready_signal( "mp_clan_ready_signal", "ready", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	FCVAR_GAMEDLL
+#endif
+, "Text that team leader from each team must speak for the match to begin" );
 
 ConVar nextlevel( "nextlevel", 
 				  "", 
-				  FCVAR_GAMEDLL | FCVAR_NOTIFY,
+				  
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000106
+#else
+	FCVAR_GAMEDLL | FCVAR_NOTIFY
+#endif
+,
 #if defined( CSTRIKE_DLL ) || defined( TF_DLL )
 				  "If set to a valid map name, will trigger a changelevel to the specified map at the end of the round" );
 #else
-				  "If set to a valid map name, will change to this map during the next changelevel" );
+				  
+#if defined( L4D2 )
+	"If set to a valid map name, will trigger a changelevel to the specified map at the end of the round"
+#else
+	"If set to a valid map name, will change to this map during the next changelevel"
+#endif
+ );
 #endif // CSTRIKE_DLL || TF_DLL
 					  					  
 #endif
@@ -811,7 +898,11 @@ ConVarRef suitcharger( "sk_suitcharger" );
 	//=========================================================
 	// Deathnotice. 
 	//=========================================================
+#if defined( L4D2 )
+	void CMultiplayRules::DeathNotice( CBaseCombatCharacter *pVictim, const CTakeDamageInfo &info )
+#else
 	void CMultiplayRules::DeathNotice( CBasePlayer *pVictim, const CTakeDamageInfo &info )
+#endif
 	{
 		// Work out what killed the player, and send a message to all clients about it
 		const char *killer_weapon_name = "world";		// by default, the player is killed by the world
@@ -881,7 +972,11 @@ ConVarRef suitcharger( "sk_suitcharger" );
 		IGameEvent * event = gameeventmanager->CreateEvent( "player_death" );
 		if ( event )
 		{
-			event->SetInt("userid", pVictim->GetUserID() );
+#if defined( L4D2 )
+			event->SetInt( "userid", engine->GetPlayerUserId( pVictim->edict() ) );
+#else
+			event->SetInt( "userid", pVictim->GetUserID() );
+#endif
 			event->SetInt("attacker", killer_ID );
 			event->SetInt("customkill", info.GetDamageCustom() );
 			event->SetInt("priority", 7 );	// HLTV event priority, not transmitted
@@ -1669,6 +1764,26 @@ ConVarRef suitcharger( "sk_suitcharger" );
 
 	void CMultiplayRules::ClientCommandKeyValues( edict_t *pEntity, KeyValues *pKeyValues )
 	{
+#ifdef L4D2
+		if ( pKeyValues )
+		{
+			const char *command = pKeyValues->GetName();
+			int achievement = !Q_stricmp( command, "FreeWeekendUserEscaped" ) ? 76 : ( !Q_stricmp( command, "FreeChristmasUserEscaped" ) ? 77 : -1 );
+			if ( achievement >= 0 )
+			{
+				CRecipientFilter recipients; // Native S1B50D0: default UNRELIABLE; do not MakeReliable.
+				for ( int i = 1; i <= gpGlobals->maxClients; ++i )
+				{
+					CBasePlayer *recipient = UTIL_PlayerByIndex( i );
+					if ( recipient && recipient->edict() && recipient->entindex() != 0 && recipient->IsPlayer() && ( (const CBasePlayer *)recipient )->IsConnected() && !recipient->IsBot() ) recipients.AddRecipient( recipient );
+				}
+				UserMessageBegin( recipients, "AchievementEvent" );
+				WRITE_SHORT( achievement );
+				MessageEnd();
+				return;
+			}
+		}
+#endif
 		CBaseMultiplayerPlayer *pPlayer = dynamic_cast< CBaseMultiplayerPlayer * >( CBaseEntity::Instance( pEntity ) );
 
 		if ( !pPlayer )
@@ -1786,7 +1901,7 @@ ConVarRef suitcharger( "sk_suitcharger" );
 
 				pPlayer->NoteSpokeVoiceCommand( szResponse );
 
-#ifdef NEXT_BOT
+#if defined( NEXT_BOT ) && !defined( L4D2 )
 				// let bots react to player's voice commands
 				CUtlVector< INextBot * > botVector;
 				TheNextBots().CollectAllBots( &botVector );
@@ -1865,6 +1980,7 @@ ConVarRef suitcharger( "sk_suitcharger" );
 		}
 	}
 
+#if !defined( L4D2 )
 	void CMultiplayRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 	{
 		// NVNT see if this user is still or has began using a haptic device
@@ -1876,6 +1992,7 @@ ConVarRef suitcharger( "sk_suitcharger" );
 		}
 
 	}
+#endif // !L4D2
 	void CMultiplayRules::GetTaggedConVarList( KeyValues *pCvarTagList )
 	{
 		BaseClass::GetTaggedConVarList( pCvarTagList );
@@ -1887,12 +2004,14 @@ ConVarRef suitcharger( "sk_suitcharger" );
 
 		pCvarTagList->AddSubKey( pGravity );
 
+#if !defined( L4D2 )
 		// sv_alltalk
 		KeyValues *pAllTalk = new KeyValues( "sv_alltalk" );
 		pAllTalk->SetString( "convar", "sv_alltalk" );
 		pAllTalk->SetString( "tag", "alltalk" );
 
 		pCvarTagList->AddSubKey( pAllTalk );
+#endif
 	}
 
 #else

@@ -51,6 +51,14 @@ public:
 	void SetStartDark( bool startdark );
 
 	bool IsColdWorld( void );
+#if defined( L4D2 )
+	int GetTimeOfDay() const { return m_iTimeOfDay; }
+	void SetTimeOfDay( int timeOfDay );
+	int GetStartMusicType() const { return m_iStartMusicType; }
+	const char *GetMusicPostfix() const { return STRING( m_iszMusicPostFix.Get() ); }
+	void SetStartMusicType( int type ) { m_iStartMusicType = type; }
+	void SetMusicPostfix( const char *postfix ) { m_iszMusicPostFix = AllocPooledString( postfix ); }
+#endif
 
 private:
 	DECLARE_DATADESC();
@@ -65,6 +73,11 @@ private:
 	CNetworkVar( float, m_flMinPropScreenSpaceWidth );
 	CNetworkVar( float, m_flMaxPropScreenSpaceWidth );
 	CNetworkVar( string_t, m_iszDetailSpriteMaterial );
+#if defined( L4D2 )
+	CNetworkVar( int, m_iTimeOfDay ); // S1124, deliberately UNSENT in DT_World.
+	CNetworkVar( int, m_iStartMusicType );
+	CNetworkVar( string_t, m_iszMusicPostFix );
+#endif
 
 	// start flags
 	CNetworkVar( bool, m_bStartDark );
@@ -74,6 +87,9 @@ private:
 
 
 CWorld* GetWorldEntity();
+#if defined( L4D2 )
+bool IsMapTimeOfDay( int first, int last );
+#endif
 extern const char *GetDefaultLightstyleString( int styleIndex );
 
 

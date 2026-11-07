@@ -8,6 +8,9 @@
 #include "cbase.h"
 #include "c_baseentity.h"
 #include "soundinfo.h"
+#if defined( L4D2 )
+#include "physics.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -23,6 +26,9 @@ public:
 
 public:
 	virtual void OnDataChanged( DataUpdateType_t updateType );
+#if defined( L4D2 )
+	datamap_t *GetDataDescMap() OVERRIDE { return NULL; } // C7EC50.
+#endif
 	virtual bool GetSoundSpatialization( SpatializationInfo_t& info );
 
 	virtual bool IsBaseTrain( void ) const { return true; }
@@ -45,6 +51,12 @@ END_RECV_TABLE()
 //-----------------------------------------------------------------------------
 // Sound spatialization
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void C_FuncTrackTrain::OnDataChanged( DataUpdateType_t updateType )
 {
 	BaseClass::OnDataChanged( updateType );
@@ -70,10 +82,22 @@ void C_FuncTrackTrain::OnDataChanged( DataUpdateType_t updateType )
 			nIndex1 = 0; nIndex2 = 1;
 		}
 
+#if defined( L4D2 )
+		const double a = vecOBBSize[nIndex1];
+		const double b = vecOBBSize[nIndex2];
+		m_flRadius = static_cast< float >( sqrt( b * b + a * a ) * 0.5f );
+#else
 		m_flRadius = sqrt( vecOBBSize[nIndex1] * vecOBBSize[nIndex1] + vecOBBSize[nIndex2] * vecOBBSize[nIndex2] ) * 0.5f;
+#endif
 		m_flLineLength = vecOBBSize[m_nLongAxis];
 	}
+#if defined( L4D2 )
+	PhysOnDataChanged( this, updateType == DATA_UPDATE_CREATED );
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------

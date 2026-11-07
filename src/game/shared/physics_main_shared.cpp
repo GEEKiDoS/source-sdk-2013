@@ -24,6 +24,7 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "physics_main_shared_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 // memory pool for storing links between entities
@@ -67,9 +68,23 @@ int groundlinksallocated = 0;
 #define DEF_THINK_LIMIT "10"
 #endif
 
-ConVar think_limit( "think_limit", DEF_THINK_LIMIT, FCVAR_REPLICATED, "Maximum think time in milliseconds, warning is printed if this is exceeded." );
+ConVar think_limit( "think_limit", DEF_THINK_LIMIT, 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00082008
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00082004
+#else
+	FCVAR_REPLICATED
+#endif
+, "Maximum think time in milliseconds, warning is printed if this is exceeded." );
 #ifndef CLIENT_DLL
-ConVar debug_touchlinks( "debug_touchlinks", "0", 0, "Spew touch link activity" );
+ConVar debug_touchlinks( "debug_touchlinks", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "Spew touch link activity" );
 #define DebugTouchlinks() debug_touchlinks.GetBool()
 #else
 #define DebugTouchlinks() false
@@ -1304,6 +1319,12 @@ void CBaseEntity::PhysicsAddGravityMove( Vector &move )
 //			overbounce - 
 // Output : int
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1930
+#pragma fp_contract( off )
+#endif
+#endif
 int CBaseEntity::PhysicsClipVelocity( const Vector& in, const Vector& normal, Vector& out, float overbounce )
 {
 	float	backoff;
@@ -1338,6 +1359,10 @@ int CBaseEntity::PhysicsClipVelocity( const Vector& in, const Vector& normal, Ve
 	
 	return blocked;
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose:
@@ -1948,7 +1973,13 @@ struct ThinkSync
 };
 
 #if !defined( CLIENT_DLL )
-static ConVar sv_thinktimecheck( "sv_thinktimecheck", "0", 0, "Check for thinktimes all on same timestamp." );
+static ConVar sv_thinktimecheck( "sv_thinktimecheck", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "Check for thinktimes all on same timestamp." );
 #endif
 
 //-----------------------------------------------------------------------------
@@ -2153,6 +2184,9 @@ void CBaseEntity::SetGroundEntity( CBaseEntity *ground )
 	{
 		RemoveFlag( FL_ONGROUND );
 	}
+#if defined( GAME_DLL ) && defined( L4D2 )
+	OnGroundChanged( oldGround, ground );
+#endif
 }
 
 CBaseEntity *CBaseEntity::GetGroundEntity( void )

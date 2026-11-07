@@ -12,6 +12,9 @@
 #include "cbase.h"
 #include "hltvdirector.h"
 #include "KeyValues.h"
+#if defined( L4D2 )
+#include "l4d2/demo/cs_hltv_director.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -21,9 +24,27 @@
 //////////////////////////////////////////////////////////////////////
 
 
-static ConVar tv_delay( "tv_delay", "30", 0, "SourceTV broadcast delay in seconds", true, 0, true, HLTV_MAX_DELAY );
-static ConVar tv_allow_static_shots( "tv_allow_static_shots", "1", 0, "Auto director uses fixed level cameras for shots" );
-static ConVar tv_allow_camera_man( "tv_allow_camera_man", "1", 0, "Auto director allows spectators to become camera man" );
+static ConVar tv_delay( "tv_delay", "30", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "SourceTV broadcast delay in seconds", true, 0, true, HLTV_MAX_DELAY );
+static ConVar tv_allow_static_shots( "tv_allow_static_shots", "1", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Auto director uses fixed level cameras for shots" );
+static ConVar tv_allow_camera_man( "tv_allow_camera_man", "1", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Auto director allows spectators to become camera man" );
 
 static bool GameEventLessFunc( CHLTVGameEvent const &e1, CHLTVGameEvent const &e2 )
 {
@@ -72,9 +93,13 @@ static float WeightedAngle( Vector vec1, Vector vec2)
 
 #if !defined( CSTRIKE_DLL ) && !defined( DOD_DLL ) && !defined( TF_DLL )// add your mod here if you use your own director
 
-static CHLTVDirector s_HLTVDirector;	// singleton
-
+#if defined( L4D2 )
+static CCSHLTVDirector s_HLTVDirector;
+EXPOSE_SINGLE_INTERFACE_GLOBALVAR(CCSHLTVDirector, IHLTVDirector, INTERFACEVERSION_HLTVDIRECTOR, s_HLTVDirector );
+#else
+static CHLTVDirector s_HLTVDirector;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR(CHLTVDirector, IHLTVDirector, INTERFACEVERSION_HLTVDIRECTOR, s_HLTVDirector );
+#endif
 
 CHLTVDirector* HLTVDirector()
 {

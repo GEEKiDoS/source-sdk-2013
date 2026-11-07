@@ -85,6 +85,9 @@ private:
 	COutputEvent m_OnHeardSound;		// Heard sound.
 
 	char		m_szLastSound[256];
+#if defined( L4D2 )
+	int m_iLastRoutedFrame;
+#endif
 };
 
 #endif // ENVMICROPHONE_H

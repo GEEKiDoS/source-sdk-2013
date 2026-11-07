@@ -22,6 +22,11 @@
 #include "locksounds.h"
 #include "entityoutput.h"
 #include "nav.h"
+#if defined( L4D2 )
+#include "GameEventListener.h"
+#include "l4d2/terror_shareddefs.h"
+#include "util_shared.h"
+#endif
 
 extern ConVar g_debug_doors;
 
@@ -34,6 +39,9 @@ struct opendata_t
 
 
 abstract_class CBasePropDoor : public CDynamicProp
+#if defined( L4D2 )
+	, private CGameEventListener
+#endif
 {
 public:
 
@@ -41,6 +49,19 @@ public:
 	DECLARE_SERVERCLASS();
 
 	CBasePropDoor( void );
+#if defined( L4D2 )
+	virtual bool IsCheckpointDoor() const { return false; }
+	virtual bool HasUnlockSequence() const { return false; }
+	virtual bool ShouldCloseAreaPortals() const { return true; } // Native primary240 S196F20.
+	virtual bool IsUsableByTeam( int team ) const { return !IsCheckpointDoor() || team == TEAM_SURVIVOR; } // S197530.
+	virtual void FireGameEvent( IGameEvent *event ) OVERRIDE;
+	void PlayPoundSound();
+	void SetRequired( bool required );
+	bool IsRequired() const { return m_isRequired; }
+	void SetRescueDoor( bool rescue );
+	bool IsRescueDoor() const { return m_bIsRescueDoor; }
+	virtual bool HandleDoorUse( CBaseEntity *activator, CBaseEntity *caller, int actions ); // S1AB2F0.
+#endif
 
 	void Spawn();
 	void Precache();
@@ -115,7 +136,13 @@ private:
 	virtual void OnDoorOpened() {}
 
 	// Called when the door becomes fully closed.
+#if defined( L4D2 )
+protected:
+	virtual void OnDoorClosed();
+private:
+#else
 	virtual void OnDoorClosed() {}
+#endif
 
 	// Called to tell the door to start opening.
 	virtual void BeginOpening(CBaseEntity *pOpenAwayFrom) = 0;
@@ -136,7 +163,7 @@ private:
 private:
 
 	// Main entry points for the door base behaviors.
-	// Do not make the functions in this block virtual!!
+	// SDK entry points remain nonvirtual; L4D2's native Unlock is declared separately below.
 	// {
 	bool DoorActivate();
 	void DoorOpen( CBaseEntity *pOpenAwayFrom );
@@ -146,11 +173,37 @@ private:
 	void DoorCloseMoveDone();
 	void DoorAutoCloseThink();
 
+#if defined( L4D2 )
+	void DisableAreaPortalThink();
+#endif
+
+#if defined( L4D2 )
+protected:
+	void Lock();
+public:
+	virtual void Unlock( CBaseEntity *activator );
+protected:
+	void SetLockedState( bool locked, bool playSound );
+	void LockWithoutSound() { SetLockedState( true, false ); }
+	void UnlockWithoutSound() { SetLockedState( false, false ); }
+	void ForceClosed() { m_bForceClosed = true; }
+	void UpdateAreaPortals(bool bOpen);
+private:
+#else
 	void Lock();
 	void Unlock();
+#endif
 
+#if defined( L4D2 )
+public:
+#endif
 	void Use(CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value);
+#if defined( L4D2 )
+private:
+	bool ActivateDoorFromUse(); // S1AB240, not the unchanged SDK DoorActivate helper.
+#else
 	void OnUse( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
+#endif
 
 	inline bool WillAutoReturn() { return m_flAutoReturnDelay != -1; }
 
@@ -162,7 +215,9 @@ private:
 	void EndBlocked(void);
 	void OnEndBlocked( void );
 
+#if !defined( L4D2 )
 	void UpdateAreaPortals(bool bOpen);
+#endif
 
 	// Input handlers
 	void InputClose(inputdata_t &inputdata);
@@ -171,6 +226,10 @@ private:
 	void InputOpenAwayFrom(inputdata_t &inputdata);
 	void InputToggle(inputdata_t &inputdata);
 	void InputUnlock(inputdata_t &inputdata);
+#if defined( L4D2 )
+	void InputPlayerOpen( inputdata_t &inputdata );
+	void InputPlayerClose( inputdata_t &inputdata );
+#endif
 
 	void SetDoorBlocker( CBaseEntity *pBlocker );
 
@@ -181,20 +240,40 @@ private:
 
 	int		m_nHardwareType;
 	
-	DoorState_t m_eDoorState;	// Holds whether the door is open, closed, opening, or closing.
+#if defined( L4D2 )
+	CNetworkVar( DoorState_t, m_eDoorState );
+#else
+	DoorState_t m_eDoorState;
+#endif
 
 	locksound_t m_ls;			// The sounds the door plays when being locked, unlocked, etc.
 	EHANDLE		m_hActivator;		
 	
-	bool	m_bLocked;				// True if the door is locked.
+#if defined( L4D2 )
+	CNetworkVar( bool, m_bLocked );
+	CNetworkVar( bool, m_bIsRescueDoor ); // Native5666, no datamap descriptor.
+	bool m_isRequired; // Native5667, no datamap descriptor or constructor store.
+#else
+	bool m_bLocked;
+#endif
 	EHANDLE	m_hBlocker;				// Entity blocking the door currently
 	bool	m_bFirstBlocked;		// Marker for being the first door (in a group) to be blocked (needed for motion control)
 
 	bool m_bForceClosed;			// True if this door must close no matter what.
+#if defined( L4D2 )
+	CountdownTimer m_doorRetryTimer; // Native5668, blocked reversal; no SAVE/wire.
+	int m_nCloseAttempts; // Native5716, constructor0, completed moves clear it.
+	CountdownTimer m_doorReopenTimer; // Native5680, real closed callback; no SAVE/wire.
+#endif
 
 	string_t m_SoundMoving;
 	string_t m_SoundOpen;
 	string_t m_SoundClose;
+#if defined( L4D2 )
+	string_t m_SoundLock;
+	string_t m_SoundUnlock;
+	string_t m_SoundPound; // Model-derived native5712, no keyfield.
+#endif
 
 	// dvs: FIXME: can we remove m_flSpeed from CBaseEntity?
 	//float m_flSpeed;			// Rotation speed when opening or closing in degrees per second.
@@ -203,9 +282,15 @@ private:
 
 	string_t m_SlaveName;
 
+#if defined( L4D2 )
+	CNetworkHandle( CBasePropDoor, m_hMaster );
+#else
 	CHandle< CBasePropDoor > m_hMaster;
+#endif
 
+#if !defined( L4D2 )
 	static void RegisterPrivateActivities();
+#endif
 
 	// Outputs
 	COutputEvent m_OnBlockedClosing;		// Triggered when the door becomes blocked while closing.

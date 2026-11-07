@@ -71,6 +71,9 @@ private:
 	float	m_flSpotlightMaxLength;
 	float	m_flSpotlightCurLength;
 	float	m_flSpotlightGoalWidth;
+#if defined( L4D2 )
+	float m_flHaloScale;
+#endif
 	float	m_flHDRColorScale;
 	int		m_nMinDXLevel;
 
@@ -97,6 +100,9 @@ BEGIN_DATADESC( CPointSpotlight )
 	DEFINE_KEYFIELD( m_flSpotlightMaxLength,FIELD_FLOAT, "SpotlightLength"),
 	DEFINE_KEYFIELD( m_flSpotlightGoalWidth,FIELD_FLOAT, "SpotlightWidth"),
 	DEFINE_KEYFIELD( m_flHDRColorScale, FIELD_FLOAT, "HDRColorScale" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_flHaloScale, FIELD_FLOAT, "HaloScale" ),
+#endif
 	DEFINE_KEYFIELD( m_nMinDXLevel, FIELD_INTEGER, "mindxlevel" ),
 
 	// Inputs
@@ -123,6 +129,9 @@ CPointSpotlight::CPointSpotlight()
 	m_vSpotlightDir.Init();
 #endif
 	m_flHDRColorScale = 1.0f;
+#if defined( L4D2 )
+	m_flHaloScale = 60.0f;
+#endif
 	m_nMinDXLevel = 0;
 	m_bIgnoreSolid = false;
 
@@ -393,7 +402,11 @@ void CPointSpotlight::SpotlightCreate(void)
 	m_hSpotlight->AddSpawnFlags( SF_BEAM_TEMPORARY );
 	m_hSpotlight->SetColor( m_clrRender->r, m_clrRender->g, m_clrRender->b ); 
 	m_hSpotlight->SetHaloTexture(m_nHaloSprite);
+#if defined( L4D2 )
+	m_hSpotlight->SetHaloScale( m_flHaloScale );
+#else
 	m_hSpotlight->SetHaloScale(60);
+#endif
 	m_hSpotlight->SetEndWidth(m_flSpotlightGoalWidth);
 	m_hSpotlight->SetBeamFlags( (FBEAM_SHADEOUT|FBEAM_NOTILE) );
 	m_hSpotlight->SetBrightness( 64 );

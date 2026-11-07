@@ -17,7 +17,13 @@
 #include "tier0/memdbgon.h"
 
 #ifdef CLIENT_DLL
-ConVar cl_showhelp( "cl_showhelp", "1", FCVAR_USERINFO | FCVAR_ARCHIVE, "Set to 0 to not show on-screen help" );
+ConVar cl_showhelp( "cl_showhelp", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00000088
+#else
+	FCVAR_USERINFO | FCVAR_ARCHIVE
+#endif
+, "Set to 0 to not show on-screen help" );
 #endif
 
 //-----------------------------------------------------------------------------
@@ -129,6 +135,7 @@ void CHintSystem::HintMessage( const char *pMessage )
 	m_pHintMessageQueue->AddMessage( pMessage );
 #else
 	// On the client, we just send it straight to the hint hud element
+#if !defined( L4D2 )
 	if ( cl_showhelp.GetBool() )
 	{
 		IGameEvent *event = gameeventmanager->CreateEvent( "player_hintmessage" );
@@ -138,6 +145,7 @@ void CHintSystem::HintMessage( const char *pMessage )
 			gameeventmanager->FireEventClientSide( event );
 		}
 	}
+#endif
 #endif
 }
 
@@ -317,7 +325,15 @@ void HintClear( void )
 	}
 }
 #ifdef CLIENT_DLL
-ConCommand cl_clearhinthistory( "cl_clearhinthistory", HintClear, "Clear memory of client side hints displayed to the player." );
+ConCommand cl_clearhinthistory( "cl_clearhinthistory", HintClear, "Clear memory of client side hints displayed to the player."
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	, 0x00000008
+#endif
+ );
 #else
-ConCommand sv_clearhinthistory( "sv_clearhinthistory", HintClear, "Clear memory of server side hints displayed to the player." );
+ConCommand sv_clearhinthistory( "sv_clearhinthistory", HintClear, "Clear memory of server side hints displayed to the player."
+#if defined( L4D2 ) && defined( GAME_DLL )
+	, 0x00000004
+#endif
+ );
 #endif

@@ -22,6 +22,7 @@ class CBaseEntity;
 //=============================================================================
 namespace NWCEdit
 {
+#if !defined( L4D2 )
 	Vector	AirNodePlacementPosition( void );
 	bool	IsWCVersionValid(void);
 	void	CreateAINode(   CBasePlayer *pPlayer );
@@ -29,6 +30,7 @@ namespace NWCEdit
 	void	CreateAILink(	CBasePlayer *pPlayer );
 	void	DestroyAILink(  CBasePlayer *pPlayer );
 	void	UndoDestroyAINode(void);
+#endif // !L4D2
 	void	RememberEntityPosition( CBaseEntity *pEntity );
 	void	UpdateEntityPosition( CBaseEntity *pEntity );
 };

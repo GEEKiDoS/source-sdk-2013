@@ -59,9 +59,26 @@
 #endif
 
 // NVNT haptics system interface
+#if !defined( L4D2 )
 #include "haptics/ihaptics.h"
+#endif // !L4D2
+#if defined( L4D2 )
+#include "l4d2/effects/terror_flashlight.h"
+#include "cdll_bounded_cvars.h" // Actual ConVar_ServerBounded *cl_predict used by C63730.
+#include "l4d2/player/c_terrorplayer.h"
+#include "l4d2/weapons/c_base_mounted_weapon.h"
+#include "l4d2/entities/c_func_elevator.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include <emmintrin.h>
+#endif
+#if defined( L4D2 )
+#include "l4d2/effects/terror_glow_policy.h"
+#include "cliententitylist.h"
+#include "igameresources.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
 
 // Don't alias here
@@ -74,6 +91,9 @@ int g_nKillCamTarget1 = 0;
 int g_nKillCamTarget2 = 0;
 
 extern ConVar mp_forcecamera; // in gamevars_shared.h
+#if defined( L4D2 )
+extern ConVar r_mapextents;
+#endif
 
 #define FLASHLIGHT_DISTANCE		1000
 #define MAX_VGUI_INPUT_MODE_SPEED 30
@@ -89,15 +109,57 @@ extern ConVar default_fov;
 extern ConVar sensitivity;
 #endif
 
+#if defined( L4D2 )
+// C100634E0 / C100695A0: one native two-slot registry. Only slot zero has
+// a producer in this engine; the absent split-screen producer is not emulated.
+static C_BasePlayer *s_pLocalPlayer[C_BasePlayer::MAX_LOCAL_PLAYER_SLOTS] = { NULL, NULL };
+#else
 static C_BasePlayer *s_pLocalPlayer = NULL;
+#endif
 
-static ConVar	cl_customsounds ( "cl_customsounds", "0", 0, "Enable customized player sound playback" );
-static ConVar	spec_track		( "spec_track", "0", 0, "Tracks an entity in spec mode" );
-static ConVar	cl_smooth		( "cl_smooth", "1", 0, "Smooth view/eye origin after prediction errors" );
+static ConVar	cl_customsounds ( "cl_customsounds", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Enable customized player sound playback" );
+#if defined( L4D2 )
+static ConVar spec_track( "spec_track", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Tracks an entity in spec mode" );
+#else
+static ConVar spec_track( "spec_track", "0", 0, "Tracks an entity in spec mode" );
+#endif
+#if defined( L4D2 )
+static ConVar cl_smooth( "cl_smooth", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Smooth view/eye origin after prediction errors" );
+#else
+static ConVar cl_smooth( "cl_smooth", "1", 0, "Smooth view/eye origin after prediction errors" );
+#endif
 static ConVar	cl_smoothtime	( 
 	"cl_smoothtime", 
 	"0.1", 
-	0, 
+#if defined( L4D2 )
+	
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+,
+#else
+	0,
+#endif
 	"Smooth client's view after prediction error over this many seconds",
 	true, 0.01,	// min/max is 0.01/2.0
 	true, 2.0
@@ -109,22 +171,52 @@ ConVar	spec_freeze_traveltime( "spec_freeze_traveltime", "0.7", FCVAR_CHEAT | FC
 ConVar	spec_freeze_distance_min( "spec_freeze_distance_min", "80", FCVAR_CHEAT, "Minimum random distance from the target to stop when framing them in observer freeze cam." );
 ConVar	spec_freeze_distance_max( "spec_freeze_distance_max", "90", FCVAR_CHEAT, "Maximum random distance from the target to stop when framing them in observer freeze cam." );
 #else
-ConVar	spec_freeze_time( "spec_freeze_time", "4.0", FCVAR_CHEAT | FCVAR_REPLICATED, "Time spend frozen in observer freeze cam." );
-ConVar	spec_freeze_traveltime( "spec_freeze_traveltime", "0.4", FCVAR_CHEAT | FCVAR_REPLICATED, "Time taken to zoom in to frame a target in observer freeze cam.", true, 0.01, false, 0 );
-ConVar	spec_freeze_distance_min( "spec_freeze_distance_min", "96", FCVAR_CHEAT, "Minimum random distance from the target to stop when framing them in observer freeze cam." );
-ConVar	spec_freeze_distance_max( "spec_freeze_distance_max", "200", FCVAR_CHEAT, "Maximum random distance from the target to stop when framing them in observer freeze cam." );
+ConVar	spec_freeze_time( "spec_freeze_time", "4.0", 
+#if defined( L4D2 )
+	0x00006008
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+, "Time spend frozen in observer freeze cam." );
+ConVar	spec_freeze_traveltime( "spec_freeze_traveltime", "0.4", 
+#if defined( L4D2 )
+	0x00006008
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+, "Time taken to zoom in to frame a target in observer freeze cam.", true, 0.01, false, 0 );
+ConVar	spec_freeze_distance_min( "spec_freeze_distance_min", "96", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Minimum random distance from the target to stop when framing them in observer freeze cam." );
+ConVar	spec_freeze_distance_max( "spec_freeze_distance_max", "200", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Maximum random distance from the target to stop when framing them in observer freeze cam." );
 #endif
 
+#if !defined( L4D2 )
 static ConVar	cl_first_person_uses_world_model ( "cl_first_person_uses_world_model", "0", FCVAR_NONE, "Causes the third person model to be drawn instead of the view model" );
+#endif
 
+#if !defined( L4D2 )
 ConVar demo_fov_override( "demo_fov_override", "0", FCVAR_CLIENTDLL | FCVAR_DONTRECORD, "If nonzero, this value will be used to override FOV during demo playback." );
+#endif
 
+#if !defined( L4D2 )
 // This only needs to be approximate - it just controls the distance to the pivot-point of the head ("the neck") of the in-game character, not the player's real-world neck length.
 // Ideally we would find this vector by subtracting the neutral-pose difference between the head bone (the pivot point) and the "eyes" attachment point.
 // However, some characters don't have this attachment point, and finding the neutral pose is a pain.
 // This value is found by hand, and a good value depends more on the in-game models than on actual human shapes.
 ConVar cl_meathook_neck_pivot_ingame_up( "cl_meathook_neck_pivot_ingame_up", "7.0" );
 ConVar cl_meathook_neck_pivot_ingame_fwd( "cl_meathook_neck_pivot_ingame_fwd", "3.0" );
+#endif
 
 static ConVar	cl_clean_textures_on_death( "cl_clean_textures_on_death", "0", FCVAR_DEVELOPMENTONLY,  "If enabled, attempts to purge unused textures every time a freeze cam is shown" );
 
@@ -157,9 +249,15 @@ BEGIN_RECV_TABLE_NOBASE( CPlayerLocalData, DT_Local )
 	RecvPropInt		(RECVINFO(m_bDucked)),
 	RecvPropInt		(RECVINFO(m_bDucking)),
 	RecvPropInt		(RECVINFO(m_bInDuckJump)),
+#if defined( L4D2 )
+	RecvPropInt	(RECVINFO(m_nDuckTimeMsecs)),
+	RecvPropInt	(RECVINFO(m_nDuckJumpTimeMsecs)),
+	RecvPropInt	(RECVINFO(m_nJumpTimeMsecs)),
+#else
 	RecvPropFloat	(RECVINFO(m_flDucktime)),
 	RecvPropFloat	(RECVINFO(m_flDuckJumpTime)),
 	RecvPropFloat	(RECVINFO(m_flJumpTime)),
+#endif
 	RecvPropFloat	(RECVINFO(m_flFallVelocity)),
 
 #if PREDICTION_ERROR_CHECK_LEVEL > 1 
@@ -177,28 +275,44 @@ BEGIN_RECV_TABLE_NOBASE( CPlayerLocalData, DT_Local )
 	RecvPropInt		(RECVINFO(m_bDrawViewmodel)),
 	RecvPropInt		(RECVINFO(m_bWearingSuit)),
 	RecvPropBool	(RECVINFO(m_bPoisoned)),
+#if !defined( L4D2 )
 	RecvPropBool	(RECVINFO(m_bForceLocalPlayerDraw)),
+#endif
 	RecvPropFloat	(RECVINFO(m_flStepSize)),
 	RecvPropInt		(RECVINFO(m_bAllowAutoMovement)),
+#if defined( L4D2 )
+	RecvPropBool( RECVINFO( m_bAutoAimTarget ) ),
+#endif
 
 	// 3d skybox data
 	RecvPropInt(RECVINFO(m_skybox3d.scale)),
 	RecvPropVector(RECVINFO(m_skybox3d.origin)),
 	RecvPropInt(RECVINFO(m_skybox3d.area)),
+#if defined( L4D2 )
+	RecvPropBool( RECVINFO( m_skybox3d.bClip3DSkyBoxNearToWorldFar ) ),
+	RecvPropFloat( RECVINFO( m_skybox3d.flClip3DSkyBoxNearToWorldFarOffset ) ),
+#endif
 
 	// 3d skybox fog data
 	RecvPropInt( RECVINFO( m_skybox3d.fog.enable ) ),
 	RecvPropInt( RECVINFO( m_skybox3d.fog.blend ) ),
+#if !defined( L4D2 )
 	RecvPropInt( RECVINFO( m_skybox3d.fog.radial ) ),
+#endif
 	RecvPropVector( RECVINFO( m_skybox3d.fog.dirPrimary ) ),
 	RecvPropInt( RECVINFO( m_skybox3d.fog.colorPrimary ) ),
 	RecvPropInt( RECVINFO( m_skybox3d.fog.colorSecondary ) ),
 	RecvPropFloat( RECVINFO( m_skybox3d.fog.start ) ),
 	RecvPropFloat( RECVINFO( m_skybox3d.fog.end ) ),
 	RecvPropFloat( RECVINFO( m_skybox3d.fog.maxdensity ) ),
+#if defined( L4D2 )
+	RecvPropFloat( RECVINFO( m_skybox3d.fog.HDRColorScale ) ),
+#endif
 
 	// fog data
+#if !defined( L4D2 )
 	RecvPropEHandle( RECVINFO( m_PlayerFog.m_hCtrl ) ),
+#endif
 
 	// audio data
 	RecvPropVector( RECVINFO( m_audio.localSound[0] ) ),
@@ -213,7 +327,9 @@ BEGIN_RECV_TABLE_NOBASE( CPlayerLocalData, DT_Local )
 	RecvPropInt( RECVINFO( m_audio.localBits ) ),
 	RecvPropInt( RECVINFO( m_audio.entIndex ) ),
 
+#if !defined( L4D2 )
 	RecvPropString( RECVINFO( m_szScriptOverlayMaterial ) ),
+#endif
 END_RECV_TABLE()
 
 // -------------------------------------------------------------------------------- //
@@ -224,9 +340,11 @@ END_RECV_TABLE()
 
 		RecvPropDataTable	( RECVINFO_DT(m_Local),0, &REFERENCE_RECV_TABLE(DT_Local) ),
 
+#if !defined( L4D2 )
 		RecvPropFloat		( RECVINFO(m_vecViewOffset[0]) ),
 		RecvPropFloat		( RECVINFO(m_vecViewOffset[1]) ),
 		RecvPropFloat		( RECVINFO(m_vecViewOffset[2]) ),
+#endif
 		RecvPropFloat		( RECVINFO(m_flFriction) ),
 
 		RecvPropArray3		( RECVINFO_ARRAY(m_iAmmo), RecvPropInt( RECVINFO(m_iAmmo[0])) ),
@@ -236,8 +354,10 @@ END_RECV_TABLE()
 		RecvPropInt			( RECVINFO( m_nTickBase ) ),
 		RecvPropInt			( RECVINFO( m_nNextThinkTick ) ),
 
+#if !defined( L4D2 )
 		RecvPropEHandle		( RECVINFO( m_hLastWeapon ) ),
 		RecvPropEHandle		( RECVINFO( m_hGroundEntity ) ),
+#endif
 
  		RecvPropFloat		( RECVINFO(m_vecVelocity[0]), 0, RecvProxy_LocalVelocityX ),
  		RecvPropFloat		( RECVINFO(m_vecVelocity[1]), 0, RecvProxy_LocalVelocityY ),
@@ -250,11 +370,19 @@ END_RECV_TABLE()
 		RecvPropFloat		( RECVINFO( m_flConstraintRadius )),
 		RecvPropFloat		( RECVINFO( m_flConstraintWidth )),
 		RecvPropFloat		( RECVINFO( m_flConstraintSpeedFactor )),
+#if defined( L4D2 )
+		RecvPropBool		( RECVINFO( m_bConstraintPastRadius ) ),
+#endif
 
 		RecvPropFloat		( RECVINFO( m_flDeathTime )),
 
+#if !defined( L4D2 )
 		RecvPropInt			( RECVINFO( m_nWaterLevel ) ),
+#endif
 		RecvPropFloat		( RECVINFO( m_flLaggedMovementValue )),
+#if defined( L4D2 )
+		RecvPropEHandle( RECVINFO( m_hTonemapController ) ),
+#endif
 
 	END_RECV_TABLE()
 
@@ -277,6 +405,11 @@ END_RECV_TABLE()
 #endif
 
 		RecvPropDataTable(RECVINFO_DT(pl), 0, &REFERENCE_RECV_TABLE(DT_PlayerState), DataTableRecvProxy_StaticDataTable),
+#if defined( L4D2 )
+		RecvPropFloat( RECVINFO( m_vecViewOffset[0] ) ),
+		RecvPropFloat( RECVINFO( m_vecViewOffset[1] ) ),
+		RecvPropFloat( RECVINFO( m_vecViewOffset[2] ) ),
+#endif
 
 		RecvPropInt		(RECVINFO(m_iFOV)),
 		RecvPropInt		(RECVINFO(m_iFOVStart)),
@@ -286,6 +419,12 @@ END_RECV_TABLE()
 
 		RecvPropEHandle( RECVINFO(m_hVehicle) ),
 		RecvPropEHandle( RECVINFO(m_hUseEntity) ),
+#if defined( L4D2 )
+		RecvPropEHandle( RECVINFO( m_hViewEntity ) ),
+		RecvPropEHandle( RECVINFO( m_hGroundEntity ) ),
+		RecvPropEHandle( RECVINFO( m_hLastWeapon ) ),
+		RecvPropEHandle( RECVINFO( m_hElevator ) ),
+#endif
 
 		RecvPropInt		(RECVINFO(m_iHealth)),
 		RecvPropInt		(RECVINFO(m_lifeState)),
@@ -303,6 +442,15 @@ END_RECV_TABLE()
 		
 
 		RecvPropString( RECVINFO(m_szLastPlaceName) ),
+#if defined( L4D2 )
+		RecvPropVector( RECVINFO( m_vecLadderNormal ) ),
+		RecvPropInt( RECVINFO( m_ladderSurfaceProps ) ),
+		RecvPropInt( RECVINFO( m_ubEFNoInterpParity ), 0, RecvProxy_Int32ToInt8 ),
+		RecvPropInt( RECVINFO( m_nWaterLevel ) ),
+		RecvPropEHandle( RECVINFO( m_hPostProcessCtrl ) ),
+		RecvPropEHandle( RECVINFO( m_hColorCorrectionCtrl ) ),
+		RecvPropEHandle( RECVINFO_NAME( m_Local.m_PlayerFog.m_hCtrl, m_PlayerFog.m_hCtrl ) ),
+#endif
 
 #if defined USES_ECON_ITEMS
 		RecvPropUtlVector( RECVINFO_UTLVECTOR( m_hMyWearables ), MAX_WEARABLES_SENT_FROM_SERVER,	RecvPropEHandle(NULL, 0, 0) ),
@@ -326,7 +474,9 @@ BEGIN_PREDICTION_DATA_NO_BASE( CPlayerLocalData )
 	// DEFINE_PRED_TYPEDESCRIPTION( m_fog, fogparams_t ),
 	// DEFINE_PRED_TYPEDESCRIPTION( m_audio, audioparams_t ),
 	DEFINE_FIELD( m_nStepside, FIELD_INTEGER ),
+#if !defined( L4D2 )
 	DEFINE_FIELD( m_bPrevForceLocalPlayerDraw, FIELD_BOOLEAN ),
+#endif
 
 	DEFINE_PRED_FIELD( m_iHideHUD, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 #if PREDICTION_ERROR_CHECK_LEVEL > 1
@@ -339,19 +489,29 @@ BEGIN_PREDICTION_DATA_NO_BASE( CPlayerLocalData )
 	DEFINE_PRED_FIELD( m_bDrawViewmodel, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_bWearingSuit, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_bPoisoned, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
+#if !defined( L4D2 )
 	DEFINE_PRED_FIELD( m_bForceLocalPlayerDraw, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
+#endif
 	DEFINE_PRED_FIELD( m_bAllowAutoMovement, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
 
 	DEFINE_PRED_FIELD( m_bDucked, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_bDucking, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_bInDuckJump, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_nDuckTimeMsecs, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_nDuckJumpTimeMsecs, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_nJumpTimeMsecs, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#else
 	DEFINE_PRED_FIELD( m_flDucktime, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_flDuckJumpTime, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_flJumpTime, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
+#endif
 	DEFINE_PRED_FIELD_TOL( m_flFallVelocity, FIELD_FLOAT, FTYPEDESC_INSENDTABLE, 0.5f ),
 //	DEFINE_PRED_FIELD( m_nOldButtons, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_FIELD( m_nOldButtons, FIELD_INTEGER ),
+#if !defined( L4D2 )
 	DEFINE_FIELD( m_flOldForwardMove, FIELD_FLOAT ),
+#endif
 	DEFINE_PRED_FIELD( m_flStepSize, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
 	DEFINE_FIELD( m_flFOVRate, FIELD_FLOAT ),
 
@@ -359,8 +519,26 @@ END_PREDICTION_DATA()
 
 BEGIN_PREDICTION_DATA( C_BasePlayer )
 
+#if defined( L4D2 )
+#ifndef NO_ENTITY_PREDICTION
+	{ FIELD_EMBEDDED, "m_Local", { (int)_hacky_datamap_offsetof( classNameTypedef, m_Local ), 0 },
+		1, FTYPEDESC_SAVE | FTYPEDESC_KEY, NULL, NULL, NULL, &CPlayerLocalData::m_PredMap },
+#else
+	DEFINE_FIELD_NULL,
+#endif
+#else
 	DEFINE_PRED_TYPEDESCRIPTION( m_Local, CPlayerLocalData ),
+#endif
+#if defined( L4D2 )
+#ifndef NO_ENTITY_PREDICTION
+	{ FIELD_EMBEDDED, "pl", { (int)_hacky_datamap_offsetof( classNameTypedef, pl ), 0 },
+		1, FTYPEDESC_SAVE | FTYPEDESC_KEY, NULL, NULL, NULL, &CPlayerState::m_PredMap },
+#else
+	DEFINE_FIELD_NULL,
+#endif
+#else
 	DEFINE_PRED_TYPEDESCRIPTION( pl, CPlayerState ),
+#endif
 
 	DEFINE_PRED_FIELD( m_iFOV, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_hZoomOwner, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
@@ -369,15 +547,30 @@ BEGIN_PREDICTION_DATA( C_BasePlayer )
 
 	DEFINE_PRED_FIELD( m_hVehicle, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD_TOL( m_flMaxspeed, FIELD_FLOAT, FTYPEDESC_INSENDTABLE, 0.5f ),
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_iHealth, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_OVERRIDE ),
+#else
 	DEFINE_PRED_FIELD( m_iHealth, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_ONLY_ERROR_IF_ABOVE_ZERO_TO_ZERO_OR_BELOW_ETC ),
+#endif
 	DEFINE_PRED_FIELD( m_iBonusProgress, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_iBonusChallenge, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_fOnTarget, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_nNextThinkTick, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_lifeState, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_hElevator, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
+#endif
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_nWaterLevel, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE | FTYPEDESC_OVERRIDE ),
+#else
 	DEFINE_PRED_FIELD( m_nWaterLevel, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
+#endif
 	
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD_TOL( m_vecBaseVelocity, FIELD_VECTOR, FTYPEDESC_INSENDTABLE | FTYPEDESC_OVERRIDE, 0.05f ),
+#else
 	DEFINE_PRED_FIELD_TOL( m_vecBaseVelocity, FIELD_VECTOR, FTYPEDESC_INSENDTABLE, 0.05 ),
+#endif
 
 	DEFINE_FIELD( m_nButtons, FIELD_INTEGER ),
 	DEFINE_FIELD( m_flWaterJumpTime, FIELD_FLOAT ),
@@ -385,6 +578,9 @@ BEGIN_PREDICTION_DATA( C_BasePlayer )
 	DEFINE_FIELD( m_flStepSoundTime, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flSwimSoundTime, FIELD_FLOAT ),
 	DEFINE_FIELD( m_vecLadderNormal, FIELD_VECTOR ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_ladderSurfaceProps, FIELD_INTEGER ),
+#endif
 	DEFINE_FIELD( m_flPhysics, FIELD_INTEGER ),
 	DEFINE_AUTO_ARRAY( m_szAnimExtension, FIELD_CHARACTER ),
 	DEFINE_FIELD( m_afButtonLast, FIELD_INTEGER ),
@@ -401,6 +597,9 @@ BEGIN_PREDICTION_DATA( C_BasePlayer )
 	DEFINE_PRED_FIELD( m_hLastWeapon, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
 
 	DEFINE_PRED_FIELD( m_nTickBase, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_nOldTickBase, FIELD_INTEGER, 0 ),
+#endif
 
 	DEFINE_PRED_FIELD( m_hGroundEntity, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
 
@@ -415,9 +614,25 @@ LINK_ENTITY_TO_CLASS( player, C_BasePlayer );
 // -------------------------------------------------------------------------------- //
 // Functions.
 // -------------------------------------------------------------------------------- //
+#if defined( L4D2 )
+// C67820 is unconditional, unlike the server's locked/equality-gated setter.
+void C_BasePlayer::SetElevator( C_BaseEntity *elevator )
+{
+	m_hElevator = elevator;
+}
+#endif
+
 C_BasePlayer::C_BasePlayer() : m_iv_vecViewOffset( "C_BasePlayer::m_iv_vecViewOffset" )
 {
 	AddVar( &m_vecViewOffset, &m_iv_vecViewOffset, LATCH_SIMULATION_VAR );
+	#if defined( L4D2 )
+	m_afButtonDisabled = 0;
+	m_afButtonForced = 0;
+	m_hElevator = NULL;
+	m_hPostProcessCtrl = NULL;
+	m_hColorCorrectionCtrl = NULL;
+	m_hTonemapController = NULL;
+	#endif
 
 	AddVar( &m_Local.m_vecPunchAngle, &m_Local.m_iv_vecPunchAngle, LATCH_SIMULATION_VAR );
 	AddVar( &m_Local.m_vecPunchAngleVel, &m_Local.m_iv_vecPunchAngleVel, LATCH_SIMULATION_VAR );
@@ -427,7 +642,11 @@ C_BasePlayer::C_BasePlayer() : m_iv_vecViewOffset( "C_BasePlayer::m_iv_vecViewOf
 	m_vecOldViewAngles.Init();
 #endif
 
+#if defined( L4D2 )
+	m_bFlashlightOn[0] = m_bFlashlightOn[1] = false;
+#else
 	m_pFlashlight = NULL;
+#endif
 
 	m_pCurrentVguiScreen = NULL;
 	m_pCurrentCommand = NULL;
@@ -455,8 +674,53 @@ C_BasePlayer::C_BasePlayer() : m_iv_vecViewOffset( "C_BasePlayer::m_iv_vecViewOf
 	m_nForceVisionFilterFlags = 0;
 	m_nLocalPlayerVisionFlags = 0;
 
+#if !defined( L4D2 )
 	ListenForGameEvent( "base_player_teleported" );
+#endif
+#if defined( L4D2 )
+	m_nSplitScreenPlayerSlot = -1;
+	m_bIsLocalPlayer = false;
+	m_bAnimationCulled = false; // Native C6A23D, not allocation-derived.
+#endif
 }
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BasePlayer::UpdateAnimationCulling()
+{
+	if ( m_nAnimationCullFrame == gpGlobals->framecount )
+		return;
+	m_bAnimationCulled = true;
+	C_BasePlayer *local = GetLocalPlayer();
+	if ( local )
+	{
+		if ( local == this || local->IsThirdPersonCameraActive() ||
+			local->GetObserverMode() == OBS_MODE_IN_EYE ||
+			local->GetObserverMode() == OBS_MODE_CHASE )
+		{
+			m_bAnimationCulled = false;
+		}
+		else
+		{
+			Vector forward;
+			AngleVectors( local->EyeAngles(), &forward );
+			const Vector localEye = local->EyePosition();
+			const Vector eye = EyePosition();
+			Vector direction = eye - localEye;
+			const float distance = VectorNormalize( direction );
+			if ( distance < 32.0f ||
+				( ( forward.x * direction.x + forward.y * direction.y ) + forward.z * direction.z ) >= 0.0f )
+				m_bAnimationCulled = false;
+		}
+	}
+	m_nAnimationCullFrame = gpGlobals->framecount;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -464,20 +728,40 @@ C_BasePlayer::C_BasePlayer() : m_iv_vecViewOffset( "C_BasePlayer::m_iv_vecViewOf
 C_BasePlayer::~C_BasePlayer()
 {
 	DeactivateVguiScreen( m_pCurrentVguiScreen.Get() );
+#if defined( L4D2 )
+	for ( int slot = 0; slot < MAX_LOCAL_PLAYER_SLOTS; ++slot )
+	{
+		C_BasePlayer *localPlayer = s_pLocalPlayer[slot];
+		if ( this == localPlayer )
+			s_pLocalPlayer[slot] = NULL;
+		else if ( localPlayer )
+			localPlayer->RemoveFromPlayerSimulationList( this );
+		if ( slot == 0 && m_bFlashlightOn[0] )
+		{
+			ResetTerrorFlashlight();
+			m_bFlashlightOn[0] = false;
+		}
+	}
+#else
 	if ( this == s_pLocalPlayer )
 	{
 		s_pLocalPlayer = NULL;
 	}
+#endif
 
+#if !defined( L4D2 )
 	delete m_pFlashlight;
+#endif
 }
 
+#if !defined( L4D2 )
 static float s_flLocalPlayerSpawnTime = -1.0f;
 
 bool ShouldHaveLocalPlayerPickupTimelineEvents()
 {
 	return gpGlobals->curtime >= s_flLocalPlayerSpawnTime + 1.0f;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -505,8 +789,10 @@ void C_BasePlayer::Spawn( void )
 
 	m_bFiredWeapon = false;
 
+#if !defined( L4D2 )
 	if ( IsLocalPlayer() )
 		s_flLocalPlayerSpawnTime = gpGlobals->curtime;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -538,6 +824,14 @@ bool C_BasePlayer::IsReplay() const
 #endif
 }
 
+#if defined( L4D2 )
+CBaseEntity *C_BasePlayer::GetObserverTarget() const // Whole C63C70.
+{
+	if ( IsLocalPlayer() && engine->IsHLTV() && HLTVCamera() )
+		return HLTVCamera()->GetPrimaryTarget(); // Deliberate second receiver query.
+	return m_hObserverTarget.Get();
+}
+#else
 CBaseEntity	*C_BasePlayer::GetObserverTarget() const	// returns players target or NULL
 {
 #ifndef _XBOX
@@ -568,7 +862,9 @@ CBaseEntity	*C_BasePlayer::GetObserverTarget() const	// returns players target o
 			case OBS_MODE_FIXED:		// view from a fixed camera position
 			case OBS_MODE_IN_EYE:		// follow a player in first person view
 			case OBS_MODE_CHASE:		// follow a player in third person view
+#if !defined( L4D2 )
 			case OBS_MODE_POI:			// PASSTIME point of interest - game objective, big fight, anything interesting
+#endif
 			case OBS_MODE_ROAMING:		// free roaming
 				return m_hObserverTarget;
 				break;
@@ -586,6 +882,7 @@ CBaseEntity	*C_BasePlayer::GetObserverTarget() const	// returns players target o
 		return m_hObserverTarget;
 	}
 }
+#endif
 
 // Called from Recv Proxy, mainly to reset tone map scale
 void C_BasePlayer::SetObserverTarget( EHANDLE hObserverTarget )
@@ -612,15 +909,19 @@ void C_BasePlayer::SetObserverTarget( EHANDLE hObserverTarget )
 		{
 			ResetToneMapping(1.0);
 		}
+#if !defined( L4D2 )
 		// NVNT notify haptics of changed player
 		if ( haptics )
 			haptics->OnPlayerChanged();
+#endif // !L4D2
 
+#if !defined( L4D2 )
 		if ( IsLocalPlayer() )
 		{
 			// On a change of viewing mode or target, we may want to reset both head and torso to point at the new target.
 			g_ClientVirtualReality.AlignTorsoAndViewToWeapon();
 		}
+#endif
 	}
 }
 
@@ -630,15 +931,25 @@ void C_BasePlayer::SetObserverMode ( int iNewMode )
 	if ( m_iObserverMode != iNewMode )
 	{
 		m_iObserverMode = iNewMode;
+#if !defined( L4D2 )
 		if ( IsLocalPlayer() )
 		{
 			// On a change of viewing mode or target, we may want to reset both head and torso to point at the new target.
 			g_ClientVirtualReality.AlignTorsoAndViewToWeapon();
 		}
+#endif
 	}
 }
 
 
+#if defined( L4D2 )
+int C_BasePlayer::GetObserverMode() const // Whole C63CD0, retained FC22.
+{
+	if ( IsLocalPlayer() && engine->IsHLTV() && HLTVCamera() )
+		return HLTVCamera()->GetMode(); // Deliberate second receiver query.
+	return m_iObserverMode;
+}
+#else
 int C_BasePlayer::GetObserverMode() const 
 { 
 #ifndef _XBOX
@@ -663,7 +974,9 @@ int C_BasePlayer::GetObserverMode() const
 		case OBS_MODE_FIXED:		// view from a fixed camera position
 		case OBS_MODE_IN_EYE:		// follow a player in first person view
 		case OBS_MODE_CHASE:		// follow a player in third person view
+#if !defined( L4D2 )
 		case OBS_MODE_POI:			// PASSTIME point of interest - game objective, big fight, anything interesting
+#endif
 		case OBS_MODE_ROAMING:		// free roaming
 			return m_iObserverMode;
 			break;
@@ -680,6 +993,7 @@ int C_BasePlayer::GetObserverMode() const
 
 	return m_iObserverMode; 
 }
+#endif
 
 bool C_BasePlayer::ViewModel_IsTransparent( void )
 {
@@ -736,6 +1050,7 @@ surfacedata_t* C_BasePlayer::GetGroundSurface()
 	return physprops->GetSurfaceData( trace.surface.surfaceProps );
 }
 
+#if !defined( L4D2 )
 void C_BasePlayer::FireGameEvent( IGameEvent *event )
 {
 	if ( FStrEq( event->GetName(), "base_player_teleported" ) )
@@ -750,6 +1065,7 @@ void C_BasePlayer::FireGameEvent( IGameEvent *event )
 	}
 
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // returns the player name
@@ -812,6 +1128,10 @@ void C_BasePlayer::PreDataUpdate( DataUpdateType_t updateType )
 //-----------------------------------------------------------------------------
 void C_BasePlayer::PostDataUpdate( DataUpdateType_t updateType )
 {
+#if defined( L4D2 )
+	UpdateLocalPlayerRegistration( updateType );
+#else
+
 	// This has to occur here as opposed to OnDataChanged so that EHandles to the player created
 	//  on this same frame are not stomped because prediction thinks there
 	//  isn't a local player yet!!!
@@ -827,11 +1147,18 @@ void C_BasePlayer::PostDataUpdate( DataUpdateType_t updateType )
 
 		if ( iLocalPlayerIndex == index )
 		{
+#if defined( L4D2 )
+			Assert( s_pLocalPlayer[0] == NULL );
+			s_pLocalPlayer[0] = this;
+#else
 			Assert( s_pLocalPlayer == NULL );
 			s_pLocalPlayer = this;
+#endif
 
+#if !defined( L4D2 )
 			if ( IsLocalPlayer() )
 				s_flLocalPlayerSpawnTime = gpGlobals->curtime;
+#endif
 
 			// Reset our sound mixed in case we were in a freeze cam when we
 			// changed level, which would cause the snd_soundmixer to be left modified.
@@ -839,6 +1166,8 @@ void C_BasePlayer::PostDataUpdate( DataUpdateType_t updateType )
 			pVar->Revert();
 		}
 	}
+
+#endif
 
 	bool bForceEFNoInterp = IsNoInterpolationFrame();
 
@@ -870,6 +1199,7 @@ void C_BasePlayer::PostDataUpdate( DataUpdateType_t updateType )
 		{
 			SetLocalViewAngles( angles );
 			m_flOldPlayerZ = GetLocalOrigin().z;
+#if !defined( L4D2 )
 			// NVNT the local player has just been created.
 			//   set in the "on_foot" navigation.
 			if ( haptics )
@@ -878,6 +1208,7 @@ void C_BasePlayer::PostDataUpdate( DataUpdateType_t updateType )
 				haptics->SetNavigationClass("on_foot");
 				haptics->ProcessHapticEvent(2,"Movement","BasePlayer");
 			}
+#endif // !L4D2
 		
 		}
 		SetLocalAngles( angles );
@@ -919,11 +1250,13 @@ void C_BasePlayer::PostDataUpdate( DataUpdateType_t updateType )
 		}
 		else if ( m_bWasFreezeFraming && GetObserverMode() != OBS_MODE_FREEZECAM )
 		{
+#if !defined( L4D2 )
 			IGameEvent *pEvent = gameeventmanager->CreateEvent( "hide_freezepanel" );
 			if ( pEvent )
 			{
 				gameeventmanager->FireEventClientSide( pEvent );
 			}
+#endif
 
 			view->FreezeFrame(0);
 
@@ -1255,8 +1588,84 @@ void C_BasePlayer::TeamChange( int iNewTeam )
 //-----------------------------------------------------------------------------
 // Purpose: Creates, destroys, and updates the flashlight effect as needed.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+// Whole native68CE0; keep the actual ALL-player loop and real game-resource
+// local predicate. Do not invent a singleton no-op/constant or second slot map.
+static void TurnOffLocalPlayerFlashlights()
+{
+	for ( int i = 1; i <= gpGlobals->maxClients; ++i )
+	{
+		C_BaseEntity *entity = ClientEntityList().GetBaseEntity( i );
+		if ( entity && entity->IsPlayer() && GameResources()->IsLocalPlayer( i ) )
+			static_cast< C_BasePlayer * >( entity )->TurnOffFlashlight();
+	}
+}
+
 void C_BasePlayer::UpdateFlashlight()
 {
+	C_BasePlayer *selected = this;
+	if ( m_lifeState != LIFE_ALIVE && GetObserverMode() == OBS_MODE_IN_EYE )
+	{
+		C_BaseEntity *target = GetObserverTarget();
+		selected = target && target->IsPlayer() ? static_cast< C_BasePlayer * >( target ) : NULL;
+	}
+	if ( selected ) SetTerrorFlashlightOwner( selected->entindex() );
+	if ( !selected || selected->m_lifeState != LIFE_ALIVE ||
+		!selected->IsEffectActive( EF_DIMLIGHT ) || selected->GetViewEntity() )
+	{
+		TurnOffFlashlight();
+	}
+	else
+	{
+		const char *texture = selected->GetFlashlightTextureName();
+		if ( !m_bFlashlightOn[0] )
+		{
+			TurnOffLocalPlayerFlashlights();
+			float linear, farZ, fov;
+			if ( texture )
+			{
+				linear = selected->GetFlashlightLinearAttenuation();
+				farZ = selected->GetFlashlightFarZ();
+				fov = selected->GetFlashlightFOV();
+			}
+			else linear = farZ = fov = 0.0f;
+			TurnOnTerrorFlashlight( selected->entindex(), texture, fov, farZ, linear );
+			m_bFlashlightOn[0] = true; // Native even when the physical allocation fails.
+		}
+	}
+	if ( selected )
+	{
+		Vector origin, forward, right, up;
+		if ( selected->m_vecFlashlightOrigin == vec3_origin || !selected->m_vecFlashlightOrigin.IsValid() )
+		{
+			EyeVectors( &forward, &right, &up ); // Existing genuine vehicle-aware10020450, on THIS.
+			const Vector &renderOrigin = GetRenderOrigin();
+			const Vector &viewOffset = C_BaseEntity::GetViewOffset();
+			origin.x = renderOrigin.x + viewOffset.x;
+			origin.y = renderOrigin.y + viewOffset.y;
+			origin.z = renderOrigin.z + viewOffset.z;
+		}
+		else
+		{
+			origin = selected->m_vecFlashlightOrigin;
+			forward = selected->m_vecFlashlightForward;
+			right = selected->m_vecFlashlightRight;
+			up = selected->m_vecFlashlightUp;
+		}
+		const char *texture = selected->GetFlashlightTextureName();
+		const float linear = selected->GetFlashlightLinearAttenuation();
+		const float farZ = selected->GetFlashlightFarZ();
+		const bool shadows = selected->CastsFlashlightShadows();
+		const float fov = selected->GetFlashlightFOV();
+		UpdateTerrorFlashlight( origin, forward, right, up, fov, shadows, farZ, linear, texture );
+	}
+}
+#else
+void C_BasePlayer::UpdateFlashlight()
+{
+	#if defined( L4D2 )
+	UpdateTerrorFlashlight( ToTerrorPlayer( this ) );
+	#else
 	// The dim light is the flashlight.
 	if ( IsEffectActive( EF_DIMLIGHT ) )
 	{
@@ -1283,7 +1692,9 @@ void C_BasePlayer::UpdateFlashlight()
 		delete m_pFlashlight;
 		m_pFlashlight = NULL;
 	}
+	#endif
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1305,6 +1716,7 @@ void C_BasePlayer::Flashlight( void )
 //-----------------------------------------------------------------------------
 // Purpose: Engine is asking whether to add this player to the visible entities list
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_BasePlayer::AddEntity( void )
 {
 	// FIXME/UNDONE:  Should the local player say yes to adding itself now 
@@ -1334,6 +1746,7 @@ void C_BasePlayer::AddEntity( void )
 	// Add in lighting effects
 	CreateLightEffects();
 }
+#endif
 
 extern float UTIL_WaterLevel( const Vector &position, float minz, float maxz );
 
@@ -1423,6 +1836,33 @@ void C_BasePlayer::OverrideView( CViewSetup *pSetup )
 {
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// C63A20: remote riders use the elevator's rendered, rather than network, Z.
+const Vector &C_BasePlayer::GetRenderOrigin()
+{
+	m_vecRenderOrigin = BaseClass::GetRenderOrigin();
+	if ( !IsLocalPlayer() && GetGroundEntity() && GetGroundEntity()->IsElevator() )
+	{
+		C_FuncElevator *elevator = static_cast< C_FuncElevator * >( GetGroundEntity() );
+		if ( elevator->IsMoving() )
+		{
+			float speed;
+			const float networkZ = static_cast< float >( elevator->CalcPosition( "GetRenderOrigin",
+				gpGlobals->curtime - elevator->GetCachedInterpolationAmount(), &speed ) );
+			const Vector &renderOrigin = elevator->GetRenderOrigin();
+			m_vecRenderOrigin.z = ( renderOrigin.z - networkZ ) + m_vecRenderOrigin.z;
+		}
+	}
+	return m_vecRenderOrigin;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
 bool C_BasePlayer::ShouldInterpolate()
 {
 	// always interpolate myself
@@ -1437,11 +1877,37 @@ bool C_BasePlayer::ShouldInterpolate()
 }
 
 
+#if defined( L4D2 )
+bool C_BasePlayer::ShouldDraw()
+{
+	return ( this != GetLocalPlayer( 0 )
+		|| ShouldDrawLocalPlayerModel()
+		|| GetObserverMode() == OBS_MODE_DEATHCAM )
+		&& BaseClass::ShouldDraw();
+}
+#else
 bool C_BasePlayer::ShouldDraw()
 {
 	return ShouldDrawThisPlayer() && BaseClass::ShouldDraw();
 }
+#endif
 
+#if defined( L4D2 )
+int C_BasePlayer::DrawModel( int flags )
+{
+	C_BasePlayer *pLocalPlayer = GetLocalPlayer( 0 );
+	if ( pLocalPlayer != this
+		&& pLocalPlayer
+		&& pLocalPlayer->GetObserverTarget() == this
+		&& pLocalPlayer->GetObserverMode() == OBS_MODE_IN_EYE
+		&& !input->CAM_IsThirdPerson()
+		&& !IsThirdPersonCameraActive() )
+	{
+		return 0;
+	}
+	return BaseClass::DrawModel( flags );
+}
+#else
 int C_BasePlayer::DrawModel( int flags )
 {
 #ifndef PORTAL
@@ -1454,6 +1920,7 @@ int C_BasePlayer::DrawModel( int flags )
 #endif
 	return BaseClass::DrawModel( flags );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1484,6 +1951,269 @@ Vector C_BasePlayer::GetChaseCamViewOffset( CBaseEntity *target )
 	return VEC_DEAD_VIEWHEIGHT;
 }
 
+#if defined( L4D2 )
+// Compose these WHOLE L4D2 bodies into existing c_baseplayer.cpp methods;
+// retain each current SDK body only in its #else. No new camera TU/manager.
+// Native slot identities deliberately differ from intuitive SDK method names.
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+extern "C" double L4D2_GlowNormalize( Vector *direction );
+ConVar spec_chasedistance( "spec_chasedistance", "96", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+,
+	"Chase cam's ideal distance from target", true, 16.0f, true, 296.0f );
+// Native client object, same replicated name as the separate server owner.
+static ConVar bot_mimic( "bot_mimic", "0", 
+#if defined( L4D2 )
+	0x00006008
+#else
+	FCVAR_REPLICATED | FCVAR_CHEAT
+#endif
+ );
+
+void C_BasePlayer::OverrideMouseInput( float *, float * ) // C69850 genuine RET8.
+{
+}
+
+void C_BasePlayer::OverrideJoystickInput( float *, float * ) // C69860 genuine RET8.
+{
+}
+
+// C66370 / primary1308. Includes mounted-weapon exclusion and the genuine
+// collision-distance bug: distance uses incoming eyeOrigin, not hit endpos.
+void C_BasePlayer::CalcChaseCamView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov )
+{
+	C_BaseEntity *target = GetObserverTarget();
+	if ( !target )
+	{
+		eyeOrigin = EyePosition();
+		eyeAngles = EyeAngles();
+		return;
+	}
+	if ( !target->GetBaseAnimating() && !target->GetModel() )
+	{
+		CalcInEyeCamView( eyeOrigin, eyeAngles, fov ); // Actual primary1320.
+		return;
+	}
+	Vector origin = target->GetObserverCamOrigin();
+	const Vector offset = GetChaseCamViewOffset( target );
+	origin.x = offset.x + origin.x;
+	origin.y = offset.y + origin.y;
+	origin.z = offset.z + origin.z;
+	QAngle viewAngles;
+	if ( GetObserverMode() == OBS_MODE_IN_EYE )
+		viewAngles = eyeAngles;
+	else if ( IsPlayer() && IsLocalPlayer() )
+		engine->GetViewAngles( viewAngles );
+	else
+		viewAngles = EyeAngles();
+	m_flObserverChaseDistance = gpGlobals->frametime * 48.0f + m_flObserverChaseDistance;
+	float maximum = spec_chasedistance.GetFloat();
+	if ( target->IsBaseTrain() )
+		maximum = maximum * 2.5f;
+	float distance = m_flObserverChaseDistance;
+	if ( distance > maximum )
+		distance = maximum;
+	else if ( 16.0f > distance )
+		distance = 16.0f;
+	m_flObserverChaseDistance = distance;
+	Vector forward;
+	AngleVectors( viewAngles, &forward );
+	L4D2_GlowNormalize( &forward );
+	const float back = -m_flObserverChaseDistance;
+	Vector viewpoint( forward.x * back + origin.x, forward.y * back + origin.y, forward.z * back + origin.z );
+	C_BaseEntity *passEntity;
+	if ( target->IsPlayer() )
+		passEntity = static_cast< C_TerrorPlayer * >( target )->GetMountedWeapon();
+	else
+		passEntity = target;
+	CTraceFilterNoNPCsOrPlayer filter( passEntity, COLLISION_GROUP_NONE );
+	trace_t trace;
+	C_BaseEntity::PushEnableAbsRecomputations( false );
+	UTIL_TraceHull( origin, viewpoint, Vector( -9.0f, -9.0f, -9.0f ), Vector( 9.0f, 9.0f, 9.0f ),
+		0x0200400B, &filter, &trace );
+	C_BaseEntity::PopEnableAbsRecomputations();
+	if ( 1.0f > trace.fraction )
+	{
+		viewpoint = trace.endpos;
+		const float x = origin.x - eyeOrigin.x, y = origin.y - eyeOrigin.y, z = origin.z - eyeOrigin.z;
+		m_flObserverChaseDistance = sqrtf( ( y * y + z * z ) + x * x );
+	}
+	eyeAngles = viewAngles;
+	eyeOrigin = viewpoint;
+	fov = GetFOV();
+}
+
+// C66ED0 / primary1316 / logical DEATHCAM mode1. Preserve the called
+// interpolation even though native subsequently overwrites its angle output.
+void C_BasePlayer::CalcRoamingView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov )
+{
+	const QAngle incoming = eyeAngles;
+	C_BaseEntity *target = NULL;
+	if ( mp_forcecamera.GetInt() == 0 )
+	{
+		target = GetObserverTarget();
+		eyeAngles = EyeAngles();
+	}
+	float interpolation = ( gpGlobals->curtime - m_flDeathTime ) * 0.16666667f;
+	if ( interpolation > 1.0f )
+		interpolation = 1.0f;
+	else if ( 0.0f > interpolation )
+		interpolation = 0.0f;
+	m_flObserverChaseDistance = gpGlobals->frametime * 48.0f + m_flObserverChaseDistance;
+	float distance = m_flObserverChaseDistance;
+	if ( distance > 96.0f )
+		distance = 96.0f;
+	else if ( 16.0f > distance )
+		distance = 16.0f;
+	m_flObserverChaseDistance = distance;
+	const QAngle beforeInterpolation = eyeAngles;
+	Vector origin = EyePosition();
+	IRagdoll *ragdoll = GetRepresentativeRagdoll();
+	if ( ragdoll )
+	{
+		origin = ragdoll->GetRagdollOrigin();
+		origin.z = g_pGameRules->GetViewVectors()->m_vDeadViewHeight.z + origin.z;
+	}
+	if ( target && target->IsPlayer() && target != this )
+	{
+		const Vector targetEye = target->EyePosition();
+		Vector direction( targetEye.x - origin.x, targetEye.y - origin.y, targetEye.z - origin.z );
+		QAngle targetAngles;
+		VectorAngles( direction, targetAngles );
+		InterpolateAngles( beforeInterpolation, targetAngles, eyeAngles, interpolation );
+	}
+	eyeAngles = incoming;
+	Vector forward;
+	AngleVectors( eyeAngles, &forward );
+	L4D2_GlowNormalize( &forward );
+	const float back = -m_flObserverChaseDistance;
+	eyeOrigin.Init( forward.x * back + origin.x, forward.y * back + origin.y, forward.z * back + origin.z );
+	C_BaseEntity::PushEnableAbsRecomputations( false );
+	trace_t trace;
+	CTraceFilterSimple filter( this, COLLISION_GROUP_NONE );
+	UTIL_TraceHull( origin, eyeOrigin, Vector( -9.0f, -9.0f, -9.0f ), Vector( 9.0f, 9.0f, 9.0f ),
+		0x0200400B, &filter, &trace );
+	C_BaseEntity::PopEnableAbsRecomputations();
+	if ( 1.0f > trace.fraction )
+	{
+		eyeOrigin = trace.endpos;
+		const float x = origin.x - trace.endpos.x, y = origin.y - trace.endpos.y, z = origin.z - trace.endpos.z;
+		m_flObserverChaseDistance = sqrtf( ( y * y + z * z ) + x * x );
+	}
+	fov = GetFOV();
+}
+
+// C64150 / primary1320 / logical FIXED and ROAMING modes3/6.
+void C_BasePlayer::CalcInEyeCamView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov )
+{
+	C_BaseEntity *target = GetObserverTarget();
+	if ( !target )
+		target = this;
+	m_flObserverChaseDistance = 0.0f;
+	eyeOrigin = target->EyePosition();
+	eyeAngles = target->EyeAngles();
+	if ( spec_track.GetInt() > 0 )
+	{
+		C_BaseEntity *tracked = ClientEntityList().GetBaseEntity( spec_track.GetInt() );
+		if ( tracked )
+		{
+			const Vector position = tracked->GetAbsOrigin();
+			Vector direction( position.x - eyeOrigin.x, position.y - eyeOrigin.y, ( position.z + 54.0f ) - eyeOrigin.z );
+			QAngle angles;
+			VectorAngles( direction, angles );
+			NormalizeAngles( angles );
+			eyeAngles = angles;
+			engine->SetViewAngles( angles );
+		}
+	}
+	Vector smoothing;
+	GetPredictionErrorSmoothingVector( smoothing );
+	eyeOrigin.x = eyeOrigin.x + smoothing.x;
+	eyeOrigin.y = eyeOrigin.y + smoothing.y;
+	eyeOrigin.z = eyeOrigin.z + smoothing.z;
+	fov = GetFOV();
+}
+
+// C66C20 / primary1312 / logical IN_EYE mode4; Actor014D owns override255AA0.
+void C_BasePlayer::CalcDeathCamView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov )
+{
+	C_BaseEntity *target = GetObserverTarget();
+	if ( !target )
+	{
+		eyeOrigin = EyePosition();
+		eyeAngles = EyeAngles();
+		return;
+	}
+	if ( target->m_lifeState != LIFE_ALIVE )
+	{
+		CalcChaseCamView( eyeOrigin, eyeAngles, fov );
+		return;
+	}
+	fov = GetFOV();
+	m_flObserverChaseDistance = 0.0f;
+	bool applyPunch = true;
+	const int mimic = bot_mimic.GetInt();
+	if ( mimic != 0 && ( mimic == entindex() ||
+		( 0u - static_cast< unsigned int >( bot_mimic.GetInt() ) ) == static_cast< unsigned int >( entindex() ) ) &&
+		target->IsPlayer() && static_cast< C_BasePlayer * >( target )->IsBot() )
+	{
+		engine->GetViewAngles( eyeAngles );
+		applyPunch = false;
+	}
+	else
+		eyeAngles = target->EyeAngles();
+	eyeOrigin = target->GetAbsOrigin();
+	if ( applyPunch )
+	{
+		const QAngle &punch = GetPunchAngle();
+		eyeAngles.x = eyeAngles.x + punch.x;
+		eyeAngles.y = punch.y + eyeAngles.y;
+		eyeAngles.z = punch.z + eyeAngles.z;
+	}
+	if ( engine->IsHLTV() )
+	{
+		if ( target->GetFlags() & FL_DUCKING )
+		{
+			const Vector view = g_pGameRules->GetViewVectors()->m_vDuckView;
+			eyeOrigin.x = eyeOrigin.x + view.x;
+			eyeOrigin.y = view.y + eyeOrigin.y;
+			eyeOrigin.z = view.z + eyeOrigin.z;
+		}
+		else
+		{
+			const Vector view = g_pGameRules->GetViewVectors()->m_vView;
+			eyeOrigin.x = view.x + eyeOrigin.x;
+			eyeOrigin.y = view.y + eyeOrigin.y;
+			eyeOrigin.z = view.z + eyeOrigin.z;
+		}
+	}
+	else
+	{
+		Vector offset = m_vecViewOffset;
+		if ( !target->IsPlayer() )
+			offset = target->GetViewOffset();
+		eyeOrigin.x = eyeOrigin.x + offset.x;
+		eyeOrigin.y = eyeOrigin.y + offset.y;
+		eyeOrigin.z = eyeOrigin.z + offset.z;
+	}
+	engine->SetViewAngles( eyeAngles );
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+#else
 void C_BasePlayer::CalcChaseCamView(Vector& eyeOrigin, QAngle& eyeAngles, float& fov)
 {
 	C_BaseEntity *target = GetObserverTarget();
@@ -1523,12 +2253,14 @@ void C_BasePlayer::CalcChaseCamView(Vector& eyeOrigin, QAngle& eyeAngles, float&
 	else if ( IsLocalPlayer() )
 	{
 		engine->GetViewAngles( viewangles );
+#if !defined( L4D2 )
 		if ( UseVR() )
 		{
 			// Don't let people play with the pitch - they drive it into the ground or into the air and 
 			// it's distracting at best, nauseating at worst (e.g. when it clips through the ground plane).
 			viewangles[PITCH] = 20.0f;
 		}
+#endif
 	}
 	else
 	{
@@ -1608,7 +2340,9 @@ void C_BasePlayer::CalcChaseCamView(Vector& eyeOrigin, QAngle& eyeAngles, float&
 
 	fov = GetFOV();
 }
+#endif
 
+#if !defined( L4D2 )
 void C_BasePlayer::CalcRoamingView(Vector& eyeOrigin, QAngle& eyeAngles, float& fov)
 {
 	C_BaseEntity *target = GetObserverTarget();
@@ -1645,10 +2379,90 @@ void C_BasePlayer::CalcRoamingView(Vector& eyeOrigin, QAngle& eyeAngles, float& 
 
 	fov = GetFOV();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Calculate the view for the player while he's in freeze frame observer mode
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+// Whole C667A0 from the already-recovered canonical native body in this
+// worker's retained transcript. Existing slot1324, logical FREEZECAM mode2.
+// No new capture, field, factory, RNG call, clock, or reset is introduced.
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+void C_BasePlayer::CalcFreezeCamView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov )
+{
+	C_BaseEntity *target = GetObserverTarget();
+	if ( !target )
+	{
+		CalcRoamingView( eyeOrigin, eyeAngles, fov ); // Actual primary1316.
+		return;
+	}
+	const float elapsed = gpGlobals->curtime - m_flFreezeFrameStartTime;
+	float fraction = elapsed / spec_freeze_traveltime.GetFloat();
+	if ( fraction > 1.0f )
+		fraction = 1.0f;
+	else if ( 0.0f > fraction )
+		fraction = 0.0f;
+	const float square = fraction * fraction;
+	const float blend = square * 3.0f - ( square * 2.0f ) * fraction;
+	Vector desired = target->GetObserverCamOrigin();
+	const Vector offset = GetChaseCamViewOffset( target );
+	desired.x = offset.x + desired.x;
+	desired.y = offset.y + desired.y;
+	desired.z = offset.z + desired.z;
+	Vector cameraTarget = desired;
+	if ( target->m_lifeState == LIFE_ALIVE )
+		cameraTarget.z = cameraTarget.z - g_pGameRules->GetViewVectors()->m_vHullMax.z * 0.5f;
+	else
+		cameraTarget.z = g_pGameRules->GetViewVectors()->m_vDeadViewHeight.z + cameraTarget.z;
+	Vector direction( cameraTarget.x - eyeOrigin.x, cameraTarget.y - eyeOrigin.y, 0.0f );
+	L4D2_GlowNormalize( &direction );
+	Vector position( cameraTarget.x - direction.x * m_flFreezeFrameDistance,
+		cameraTarget.y - direction.y * m_flFreezeFrameDistance, cameraTarget.z );
+	position.z = m_flFreezeZOffset + target->EyePosition().z;
+	trace_t trace;
+	C_BaseEntity::PushEnableAbsRecomputations( false );
+	UTIL_TraceHull( cameraTarget, position, Vector( -9.0f, -9.0f, -9.0f ), Vector( 9.0f, 9.0f, 9.0f ),
+		0x0200400B, target, COLLISION_GROUP_NONE, &trace );
+	C_BaseEntity::PopEnableAbsRecomputations();
+	if ( 1.0f > trace.fraction )
+	{
+		position.x = trace.endpos.x;
+		position.y = trace.endpos.y;
+		cameraTarget = desired;
+		position.z = static_cast< float >( trace.endpos.z +
+			fabs( static_cast< double >( desired.z ) - trace.endpos.z ) * 0.85 );
+		C_BaseEntity::PushEnableAbsRecomputations( false );
+		UTIL_TraceHull( cameraTarget, position, Vector( -9.0f, -9.0f, -9.0f ), Vector( 9.0f, 9.0f, 9.0f ),
+			0x0200400B, target, COLLISION_GROUP_NONE, &trace );
+		C_BaseEntity::PopEnableAbsRecomputations();
+		position = trace.endpos;
+	}
+	direction.Init( cameraTarget.x - position.x, cameraTarget.y - position.y, cameraTarget.z - position.z );
+	L4D2_GlowNormalize( &direction );
+	VectorAngles( direction, eyeAngles );
+	eyeOrigin.x = ( position.x - m_vecFreezeFrameStart.x ) * blend + m_vecFreezeFrameStart.x;
+	eyeOrigin.y = ( position.y - m_vecFreezeFrameStart.y ) * blend + m_vecFreezeFrameStart.y;
+	eyeOrigin.z = ( position.z - m_vecFreezeFrameStart.z ) * blend + m_vecFreezeFrameStart.z;
+	if ( elapsed >= spec_freeze_traveltime.GetFloat() && !m_bSentFreezeFrame )
+	{
+		IGameEvent *event = gameeventmanager->CreateEvent( "freezecam_started" );
+		if ( event )
+			gameeventmanager->FireEventClientSide( event );
+		m_bSentFreezeFrame = true;
+		view->FreezeFrame( spec_freeze_time.GetFloat() );
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+#else
 void C_BasePlayer::CalcFreezeCamView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov )
 {
 	C_BaseEntity *pTarget = GetObserverTarget();
@@ -1728,7 +2542,9 @@ void C_BasePlayer::CalcFreezeCamView( Vector& eyeOrigin, QAngle& eyeAngles, floa
 		view->FreezeFrame( spec_freeze_time.GetFloat() );
 	}
 }
+#endif
 
+#if !defined( L4D2 )
 void C_BasePlayer::CalcInEyeCamView(Vector& eyeOrigin, QAngle& eyeAngles, float& fov)
 {
 	C_BaseEntity *target = GetObserverTarget();
@@ -1785,13 +2601,17 @@ void C_BasePlayer::CalcInEyeCamView(Vector& eyeOrigin, QAngle& eyeAngles, float&
 
 	engine->SetViewAngles( eyeAngles );
 }
+#endif
 
+#if !defined( L4D2 )
 float C_BasePlayer::GetDeathCamInterpolationTime()
 {
 	return DEATH_ANIMATION_TIME;
 }
+#endif
 
 
+#if !defined( L4D2 )
 void C_BasePlayer::CalcDeathCamView(Vector& eyeOrigin, QAngle& eyeAngles, float& fov)
 {
 	CBaseEntity	* pKiller = NULL; 
@@ -1846,6 +2666,7 @@ void C_BasePlayer::CalcDeathCamView(Vector& eyeOrigin, QAngle& eyeAngles, float&
 
 	fov = GetFOV();
 }
+#endif
 
 
 
@@ -1861,7 +2682,11 @@ C_BaseCombatWeapon *C_BasePlayer::GetActiveWeaponForSelection( void )
 C_BaseAnimating* C_BasePlayer::GetRenderedWeaponModel()
 {
 	// Attach to either their weapon model or their view model.
+#if defined( L4D2 )
+	if ( ShouldDrawLocalPlayerModel() || !IsLocalPlayer() )
+#else
 	if ( ShouldDrawLocalPlayer() || !IsLocalPlayer() )
+#endif
 	{
 		return GetActiveWeapon();
 	}
@@ -1877,8 +2702,25 @@ C_BaseAnimating* C_BasePlayer::GetRenderedWeaponModel()
 //-----------------------------------------------------------------------------
 C_BasePlayer *C_BasePlayer::GetLocalPlayer( void )
 {
+#if defined( L4D2 )
+	return GetLocalPlayer( 0 );
+#else
 	return s_pLocalPlayer;
+#endif
 }
+#if defined( L4D2 )
+#if defined( L4D2 )
+C_BasePlayer *C_BasePlayer::GetLocalPlayer( int slot )
+{
+	return slot == -1 ? NULL : s_pLocalPlayer[slot];
+}
+#else
+C_BasePlayer *C_BasePlayer::GetLocalPlayer( int slot )
+{
+	return s_pLocalPlayer[slot];
+}
+#endif
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1892,7 +2734,11 @@ void C_BasePlayer::ThirdPersonSwitch( bool bThirdperson )
 	// Update the visibility of anything bone attached to us.
 	if ( IsLocalPlayer() )
 	{
+#if defined( L4D2 )
+		bool bShouldDrawLocalPlayer = ShouldDrawLocalPlayerModel();
+#else
 		bool bShouldDrawLocalPlayer = ShouldDrawLocalPlayer();
+#endif
 		for ( int i=0; i<GetNumBoneAttachments(); ++i )
 		{
 			C_BaseAnimating* pBoneAttachment = GetBoneAttachment( i );
@@ -1946,6 +2792,7 @@ void C_BasePlayer::ThirdPersonSwitch( bool bThirdperson )
 	return false;
 }
 
+#if !defined( L4D2 )
 //-----------------------------------------------------------------------------
 // Purpose: single place to decide whether the local player should draw
 //-----------------------------------------------------------------------------
@@ -1959,8 +2806,24 @@ void C_BasePlayer::ThirdPersonSwitch( bool bThirdperson )
 	static ConVarRef vr_first_person_uses_world_model( "vr_first_person_uses_world_model" );
 	return !LocalPlayerInFirstPersonView() || vr_first_person_uses_world_model.GetBool();
 }
+#endif
 
 
+
+#if defined( L4D2 )
+// C251C30, actual-user0 projection. Sole generic owner, inherited by Terror.
+bool C_BasePlayer::IsCurrentInEyeViewPlayer() const
+{
+	C_BasePlayer *viewPlayer = C_BasePlayer::GetLocalPlayer();
+	if ( viewPlayer && viewPlayer->GetObserverMode() == OBS_MODE_IN_EYE )
+	{
+		C_BaseEntity *target = viewPlayer->GetObserverTarget();
+		if ( target && target->IsPlayer() )
+			viewPlayer = target->IsPlayer() ? static_cast< C_BasePlayer * >( target ) : NULL;
+	}
+	return viewPlayer == this;
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: single place to decide whether the camera is in the first-person position
@@ -1985,6 +2848,7 @@ bool C_BasePlayer::InFirstPersonView()
 	return false;
 }
 
+#if !defined( L4D2 )
 //-----------------------------------------------------------------------------
 // Purpose: single place to decide whether the player is being drawn with the standard model (i.e. not the viewmodel)
 //          NOTE - ShouldDrawLocalPlayer() can be true even if the camera is in the first-person position, e.g. in VR.
@@ -2009,6 +2873,7 @@ bool C_BasePlayer::ShouldDrawThisPlayer()
 	}
 	return false;
 }
+#endif
 
 
 
@@ -2016,10 +2881,17 @@ bool C_BasePlayer::ShouldDrawThisPlayer()
 // Purpose: 
 // Output : Returns true on success, false on failure.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool C_BasePlayer::IsLocalPlayer( void ) const
+{
+	return m_bIsLocalPlayer;
+}
+#else
 bool C_BasePlayer::IsLocalPlayer( void ) const
 {
 	return ( GetLocalPlayer() == this );
 }
+#endif
 
 int	C_BasePlayer::GetUserID( void )
 {
@@ -2081,6 +2953,7 @@ void C_BasePlayer::PostThink( void )
 
 	if ( IsAlive())
 	{
+#if !defined( L4D2 )
 		// Need to do this on the client to avoid prediction errors
 		if ( GetFlags() & FL_DUCKING )
 		{
@@ -2090,6 +2963,7 @@ void C_BasePlayer::PostThink( void )
 		{
 			SetCollisionBounds( VEC_HULL_MIN, VEC_HULL_MAX );
 		}
+#endif // !L4D2: C064550 leaves hull ownership to the actor/movement paths.
 		
 		if ( !CommentaryModeShouldSwallowInput( this ) )
 		{
@@ -2168,6 +3042,22 @@ void C_BasePlayer::GetToolRecordingState( KeyValues *msg )
 //-----------------------------------------------------------------------------
 // Purpose: Simulate the player for this frame
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool C_BasePlayer::Simulate()
+{
+	if ( IsPlayer() && IsLocalPlayer() )
+	{
+		Flashlight();
+		UpdateFogController();
+	}
+	BaseClass::Simulate();
+	if ( IsPlayer() && IsLocalPlayer() )
+		CreateWaterEffects();
+	if ( IsEffectActive( EF_NOINTERP ) || Teleported() )
+		ResetLatched();
+	return true;
+}
+#else
 void C_BasePlayer::Simulate()
 {
 	//Frame updates
@@ -2193,6 +3083,7 @@ void C_BasePlayer::Simulate()
 		ResetLatched();
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2432,6 +3323,72 @@ bool C_BasePlayer::IsUseableEntity( CBaseEntity *pEntity, unsigned int requiredC
 // Purpose: 
 // Output : float
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+extern "C" float L4D2_FOVTransitionFloat( float time, float start, float target );
+
+// BLOCK A. Whole native100674E0, primary1204. Keep FLOAT return contract:
+// spline path676DD explicitly FSTP32, completed path6769C FLD32, ordinary
+// path676E3 FLD32. There is NO wider-return virtual in this bounded family.
+float C_BasePlayer::GetFOV()
+{
+	if ( GetObserverMode() == OBS_MODE_IN_EYE )
+	{
+		C_BaseEntity *entity = GetObserverTarget();
+		if ( entity && entity->IsPlayer() )
+		{
+			C_BasePlayer *target = static_cast< C_BasePlayer * >( entity );
+			if ( target->GetObserverMode() == OBS_MODE_NONE ) return target->GetFOV();
+		}
+	}
+	float fov;
+	IClientVehicle *vehicle = GetVehicle();
+	if ( vehicle )
+	{
+		CacheVehicleView();
+		fov = m_flVehicleViewFOV;
+		if ( fov == 0.0f ) fov = static_cast< float >( GetDefaultFOV() );
+	}
+	else fov = static_cast< float >( GetDefaultFOV() );
+	if ( m_iFOV != 0 ) fov = static_cast< float >( m_iFOV );
+	// Real CPrediction primary1057D7CC+56 ->17AAB0 reads InPrediction byte8.
+	// Main actual-user0 projects native5768 local identity to existing registry.
+	if ( !prediction->InPrediction() && IsPlayer() && IsLocalPlayer() &&
+		fov != static_cast< float >( m_iFOVStart ) )
+	{
+		const float rate = m_Local.m_flFOVRate;
+		if ( rate > 0.0f )
+		{
+			float time = ( gpGlobals->curtime - m_flFOVTime ) / rate;
+			if ( GetPredictable() )
+			{
+				const float interpolationTime = gpGlobals->interpolation_amount * gpGlobals->interval_per_tick;
+				time = static_cast< float >( m_nFinalPredictedTick ) * gpGlobals->interval_per_tick;
+				time = time - m_flFOVTime;
+				time = time + interpolationTime;
+				time = time / m_Local.m_flFOVRate; // Native fresh rate after predictable query.
+			}
+			if ( time >= 1.0f )
+			{
+				m_iFOVStart = _mm_cvttss_si32( _mm_set_ss( fov ) );
+				return fov;
+			}
+			fov = L4D2_FOVTransitionFloat( time, static_cast< float >( m_iFOVStart ), fov );
+		}
+	}
+	return fov;
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif // CLIENT_DLL && L4D2
+#if !defined( L4D2 )
 float C_BasePlayer::GetFOV( void )
 {
 	// Allow users to override the FOV during demo playback
@@ -2503,6 +3460,7 @@ float C_BasePlayer::GetFOV( void )
 
 	return fFOV;
 }
+#endif
 
 void RecvProxy_LocalVelocityX( const CRecvProxyData *pData, void *pStruct, void *pOut )
 {
@@ -2663,6 +3621,31 @@ void C_BasePlayer::NotePredictionError( const Vector &vDelta )
 // offset curtime and setup bones at that time using fake interpolation
 // fake interpolation means we don't have reliable interpolation history (the local player doesn't animate locally)
 // so we just modify cycle and origin directly and use that as a fake guess
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BasePlayer::ForceSetupBonesAtTimeFakeInterpolation( matrix3x4_t *bones, float offset )
+{
+	const float cycle = m_flCycle;
+	const Vector origin = GetLocalOrigin();
+	InvalidateBoneCache();
+	Interpolate( gpGlobals->curtime + offset );
+	m_flCycle = static_cast< float >( fmod(
+		( GetEffectivePlaybackRate() * static_cast< double >( offset ) ) +
+		( static_cast< double >( cycle ) + 10.0 ), 1.0 ) );
+	const Vector &velocity = GetLocalVelocity();
+	const Vector temporaryOrigin( velocity.x * offset + origin.x,
+		velocity.y * offset + origin.y, velocity.z * offset + origin.z );
+	SetLocalOrigin( temporaryOrigin );
+	SetupBones( bones, 128, BONE_USED_BY_ANYTHING, gpGlobals->curtime + offset );
+	m_flCycle = cycle;
+	SetLocalOrigin( origin );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool C_BasePlayer::ForceSetupBonesAtTimeFakeInterpolation( matrix3x4_t *pBonesOut, float curtimeOffset )
 {
 	// we don't have any interpolation data, so fake it
@@ -2684,7 +3667,32 @@ bool C_BasePlayer::ForceSetupBonesAtTimeFakeInterpolation( matrix3x4_t *pBonesOu
 	SetLocalOrigin( origin );
 	return bSuccess;
 }
+#endif
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BasePlayer::GetRagdollInitBoneArrays( matrix3x4_t *delta0, matrix3x4_t *delta1,
+	matrix3x4_t *current, float boneDt )
+{
+	if ( !IsLocalPlayer() )
+	{
+		BaseClass::GetRagdollInitBoneArrays( delta0, delta1, current, boneDt );
+		return;
+	}
+	ForceSetupBonesAtTimeFakeInterpolation( delta0, -boneDt );
+	ForceSetupBonesAtTimeFakeInterpolation( delta1, 0.0f );
+	const float createTime = static_cast< float >( PhysGetSyncCreateTime() );
+	if ( createTime == gpGlobals->curtime )
+		SetupBones( current, 128, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+	else
+		ForceSetupBonesAtTimeFakeInterpolation( current, createTime - gpGlobals->curtime );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool C_BasePlayer::GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt )
 {
 	if ( !IsLocalPlayer() )
@@ -2710,8 +3718,46 @@ bool C_BasePlayer::GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x
 	}
 	return bSuccess;
 }
+#endif
 
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+// Whole native C63730. Real bounded cl_predict API, no replacement provider.
+void C_BasePlayer::GetPredictionErrorSmoothingVector( Vector &offset )
+{
+	if ( engine->IsPlayingDemo() || cl_smooth.GetInt() == 0 ||
+		cl_predict->GetInt() == 0 || engine->IsPaused() )
+	{
+		offset.z = 0.0f;
+		offset.y = 0.0f;
+		offset.x = 0.0f;
+		return;
+	}
+	const float elapsed = gpGlobals->curtime - m_flPredictionErrorTime;
+	const float errorAmount = elapsed / cl_smoothtime.GetFloat();
+	// Native COMISS/JNB: ordered >=1 clears, unordered falls into scaled vector.
+	if ( errorAmount >= 1.0f )
+	{
+		offset.z = 0.0f;
+		offset.y = 0.0f;
+		offset.x = 0.0f;
+		return;
+	}
+	const float scale = 1.0f - errorAmount;
+	const float y = m_vecPredictionError.y * scale;
+	const float z = m_vecPredictionError.z * scale;
+	offset.x = m_vecPredictionError.x * scale;
+	offset.y = y;
+	offset.z = z;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BasePlayer::GetPredictionErrorSmoothingVector( Vector &vOffset )
 {
 #if !defined( NO_ENTITY_PREDICTION )
@@ -2736,6 +3782,8 @@ void C_BasePlayer::GetPredictionErrorSmoothingVector( Vector &vOffset )
 	vOffset.Init();
 #endif
 }
+
+#endif
 
 
 IRagdoll* C_BasePlayer::GetRepresentativeRagdoll() const
@@ -2782,10 +3830,20 @@ void C_BasePlayer::FogControllerChanged( bool bSnap )
 		m_Local.m_PlayerFog.m_OldColor = m_CurrentFog.colorPrimary;
 		m_Local.m_PlayerFog.m_flOldStart = m_CurrentFog.start;
 		m_Local.m_PlayerFog.m_flOldEnd = m_CurrentFog.end;
+#if defined( L4D2 )
+		m_Local.m_PlayerFog.m_flOldMaxDensity = m_CurrentFog.maxdensity;
+		m_Local.m_PlayerFog.m_flOldHDRColorScale = m_CurrentFog.HDRColorScale;
+		m_Local.m_PlayerFog.m_flOldFarZ = m_CurrentFog.farz;
+#endif
 
 		m_Local.m_PlayerFog.m_NewColor = pFogParams->colorPrimary;
 		m_Local.m_PlayerFog.m_flNewStart = pFogParams->start;
 		m_Local.m_PlayerFog.m_flNewEnd = pFogParams->end;
+#if defined( L4D2 )
+		m_Local.m_PlayerFog.m_flNewMaxDensity = pFogParams->maxdensity;
+		m_Local.m_PlayerFog.m_flNewHDRColorScale = pFogParams->HDRColorScale;
+		m_Local.m_PlayerFog.m_flNewFarZ = pFogParams->farz;
+#endif
 
 		m_Local.m_PlayerFog.m_flTransitionTime = bSnap ? -1 : gpGlobals->curtime;
 
@@ -2838,8 +3896,54 @@ void C_BasePlayer::UpdateFogController( void )
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void C_BasePlayer::UpdateFogBlend( void )
 {
+#if defined( L4D2 )
+	if ( m_Local.m_PlayerFog.m_flTransitionTime != -1.0f )
+	{
+		const float flTimeDelta = gpGlobals->curtime - m_Local.m_PlayerFog.m_flTransitionTime;
+		if ( m_CurrentFog.duration > flTimeDelta )
+		{
+			const float flScale = flTimeDelta / m_CurrentFog.duration;
+			const float flOldScale = 1.0f - flScale;
+			m_CurrentFog.colorPrimary.SetR( static_cast< unsigned char >( _mm_cvttss_si32( _mm_set_ss(
+				m_Local.m_PlayerFog.m_OldColor.r * flOldScale + m_Local.m_PlayerFog.m_NewColor.r * flScale ) ) ) );
+			m_CurrentFog.colorPrimary.SetG( static_cast< unsigned char >( _mm_cvttss_si32( _mm_set_ss(
+				m_Local.m_PlayerFog.m_OldColor.g * flOldScale + m_Local.m_PlayerFog.m_NewColor.g * flScale ) ) ) );
+			m_CurrentFog.colorPrimary.SetB( static_cast< unsigned char >( _mm_cvttss_si32( _mm_set_ss(
+				m_Local.m_PlayerFog.m_OldColor.b * flOldScale + m_Local.m_PlayerFog.m_NewColor.b * flScale ) ) ) );
+			m_CurrentFog.start = m_Local.m_PlayerFog.m_flOldStart * flOldScale + m_Local.m_PlayerFog.m_flNewStart * flScale;
+			m_CurrentFog.end = m_Local.m_PlayerFog.m_flOldEnd * flOldScale + m_Local.m_PlayerFog.m_flNewEnd * flScale;
+			m_CurrentFog.maxdensity = m_Local.m_PlayerFog.m_flOldMaxDensity * flOldScale + m_Local.m_PlayerFog.m_flNewMaxDensity * flScale;
+			m_CurrentFog.HDRColorScale = m_Local.m_PlayerFog.m_flOldHDRColorScale * flOldScale + flScale * m_Local.m_PlayerFog.m_flNewHDRColorScale;
+			float flNewFarZ = m_Local.m_PlayerFog.m_flNewFarZ;
+			if ( flNewFarZ <= 0.0f )
+				flNewFarZ = r_mapextents.GetFloat() * 1.7320508f;
+			float flOldFarZ = m_Local.m_PlayerFog.m_flOldFarZ;
+			if ( flOldFarZ <= 0.0f )
+				flOldFarZ = r_mapextents.GetFloat() * 1.7320508f;
+			m_CurrentFog.farz = flOldScale * flOldFarZ + flNewFarZ * flScale;
+		}
+		else
+		{
+			m_CurrentFog.colorPrimary.SetR( m_Local.m_PlayerFog.m_NewColor.r );
+			m_CurrentFog.colorPrimary.SetG( m_Local.m_PlayerFog.m_NewColor.g );
+			m_CurrentFog.colorPrimary.SetB( m_Local.m_PlayerFog.m_NewColor.b );
+			m_CurrentFog.start = m_Local.m_PlayerFog.m_flNewStart;
+			m_CurrentFog.end = m_Local.m_PlayerFog.m_flNewEnd;
+			m_CurrentFog.maxdensity = m_Local.m_PlayerFog.m_flNewMaxDensity;
+			m_CurrentFog.HDRColorScale = m_Local.m_PlayerFog.m_flNewHDRColorScale;
+			m_CurrentFog.farz = m_Local.m_PlayerFog.m_flNewFarZ;
+			m_Local.m_PlayerFog.m_flTransitionTime = -1.0f;
+		}
+	}
+#else
 	// Transition.
 	if ( m_Local.m_PlayerFog.m_flTransitionTime != -1 )
 	{
@@ -2870,7 +3974,11 @@ void C_BasePlayer::UpdateFogBlend( void )
 				
 		}
 	}
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2912,6 +4020,7 @@ void C_BasePlayer::UpdateWearables( void )
 #endif // USES_ECON_ITEMS
 
 
+#if !defined( L4D2 )
 //-----------------------------------------------------------------------------
 // Purpose: In meathook mode, fix the bone transforms to hang the user's own
 //			avatar under the camera.
@@ -3028,6 +4137,7 @@ void C_BasePlayer::BuildFirstPersonMeathookTransformations( CStudioHdr *hdr, Vec
 		MatrixScaleByZero( transformhelmet );
 	}
 }
+#endif
 
 
 
@@ -3069,4 +4179,185 @@ void CC_DumpClientSoundscapeData( const CCommand& args )
 
 	Msg("End dump.\n");
 }
-static ConCommand soundscape_dumpclient("soundscape_dumpclient", CC_DumpClientSoundscapeData, "Dumps the client's soundscape data.\n", FCVAR_CHEAT);
+static ConCommand soundscape_dumpclient("soundscape_dumpclient", CC_DumpClientSoundscapeData, "Dumps the client's soundscape data.\n", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+);
+
+#if defined( L4D2 )
+bool C_BasePlayer::PreRender( int splitUserSlot )
+{
+	if ( IsVisible() && m_bReadyToDraw && g_pClientMode->ShouldDrawLocalPlayer( this ) )
+		return AddEntity();
+	return true;
+}
+#endif
+
+#if defined( L4D2 )
+bool C_BasePlayer::ShouldDrawLocalPlayerModel() const
+{
+	if ( !IsLocalPlayer() )
+		return false;
+	if ( input->CAM_IsThirdPerson() )
+		return true;
+	if ( ToolsEnabled() && ToolFramework_IsThirdPersonCamera() )
+		return true;
+
+	// C251B50: reuse M7's sole actual IN_EYE resolver, not CHASE/item policy.
+	// Native C634E0(-1) resolves the active slot; the only target slot is0.
+	C_BasePlayer *viewPlayer = TerrorGlow_ResolveRenderPlayer(
+		C_BasePlayer::GetLocalPlayer( 0 ) );
+	return viewPlayer && viewPlayer->IsThirdPersonCameraActive();
+}
+#endif
+
+#if defined( L4D2 )
+C_BasePlayer::PlayerViewType_t C_BasePlayer::GetPlayerViewType() const
+{
+	C_BasePlayer *pLocalPlayer = GetLocalPlayer( 0 );
+	if ( !pLocalPlayer )
+		return PLAYER_VIEW_THIRD_PERSON;
+
+	if ( pLocalPlayer->GetObserverMode() == OBS_MODE_NONE )
+	{
+		if ( pLocalPlayer != this )
+			return PLAYER_VIEW_THIRD_PERSON;
+	}
+	else
+	{
+		if ( pLocalPlayer->GetObserverTarget() != this
+			|| pLocalPlayer->GetObserverMode() != OBS_MODE_IN_EYE )
+		{
+			return PLAYER_VIEW_THIRD_PERSON;
+		}
+	}
+
+	if ( input->CAM_IsThirdPerson() )
+		return PLAYER_VIEW_THIRD_PERSON;
+	return IsThirdPersonCameraActive() ? PLAYER_VIEW_THIRD_PERSON : PLAYER_VIEW_FIRST_PERSON;
+}
+#endif
+
+#if defined( L4D2 )
+int C_BasePlayer::GetSplitScreenPlayerSlot() const
+{
+	return m_nSplitScreenPlayerSlot;
+}
+#endif
+
+#if defined( L4D2 )
+void C_BasePlayer::AddSplitScreenPlayer( C_BasePlayer *player )
+{
+	CHandle< C_BasePlayer > handle( player );
+	if ( m_splitScreenPlayers.Find( handle ) == m_splitScreenPlayers.InvalidIndex() )
+		m_splitScreenPlayers.AddToTail( handle );
+}
+#endif
+
+#if defined( L4D2 )
+void C_BasePlayer::CheckForLocalPlayer( int slot )
+{
+	int localIndex = slot != -1 ? engine->GetLocalPlayer() : 0;
+	if ( g_nKillCamMode != 0 )
+		localIndex = g_nKillCamTarget1;
+	if ( localIndex != index )
+		return;
+
+	// Native659E7 writes s_pLocalPlayer[slot] BEFORE all following operations.
+	// Main: ignore ONLY the index−1 write; every index−1 read is NULL/0.
+	// DO NOT map−1 to0 or skip the local-flag/nonzero-slot branch below.
+	if ( slot != -1 )
+		s_pLocalPlayer[slot] = this;
+	m_bIsLocalPlayer = true;
+	if ( slot != 0 )
+	{
+		m_nSplitScreenPlayerSlot = slot;
+		C_BasePlayer *primary = s_pLocalPlayer[0];
+		m_hSplitScreenPlayerOwner = primary;
+		primary = s_pLocalPlayer[0];
+		if ( primary )
+		{
+			primary->AddSplitScreenPlayer( this );
+			OnLocalPlayerCreated();
+			return;
+		}
+	}
+	else
+	{
+		m_nSplitScreenPlayerSlot = 0;
+		m_hSplitScreenPlayerOwner = NULL;
+		ConVar *soundMixer = cvar->FindVar( "snd_soundmixer" );
+		soundMixer->Revert();
+	}
+	OnLocalPlayerCreated();
+}
+#endif
+
+#if defined( L4D2 )
+void C_BasePlayer::UpdateLocalPlayerRegistration( DataUpdateType_t updateType )
+{
+	const int slot = engine->GetLocalPlayer() == index ? 0 : -1;
+	bool slotIsEmpty = false;
+	if ( slot != -1 )
+		slotIsEmpty = s_pLocalPlayer[slot] == NULL;
+	if ( updateType == DATA_UPDATE_CREATED || slotIsEmpty )
+		CheckForLocalPlayer( slot );
+}
+#endif
+
+#if defined( L4D2 )
+void C_BasePlayer::OnLocalPlayerCreated()
+{
+}
+#endif
+
+#if defined( L4D2 )
+C_BasePlayer *C_BasePlayer::GetPredictionOwner()
+{
+	return this;
+}
+#endif
+
+#if defined( L4D2 )
+// BLOCK A. True base1084/1088/1092/1096/1100 native698B0..698F0 defaults;
+// these are proven genuine empty/default base policies, not missing providers.
+const char *C_BasePlayer::GetFlashlightTextureName() { return NULL; }
+float C_BasePlayer::GetFlashlightFOV() { return 0.0f; }
+float C_BasePlayer::GetFlashlightFarZ() { return 0.0f; }
+float C_BasePlayer::GetFlashlightLinearAttenuation() { return 0.0f; }
+bool C_BasePlayer::CastsFlashlightShadows() { return true; }
+
+extern ConVar r_flashlightoffsetforward;
+extern ConVar r_flashlightoffsetup;
+extern ConVar r_flashlightoffsetright;
+
+// Whole nativeEC940, ACTUAL primary1104 (NOT unrelated empty1080).
+void C_BasePlayer::ComputeFlashlightOffset( const Vector &forward, const Vector &right,
+	const Vector &up, Vector &offset )
+{
+	const float offsetForward = r_flashlightoffsetforward.GetFloat();
+	const float offsetUp = r_flashlightoffsetup.GetFloat();
+	const float offsetRight = r_flashlightoffsetright.GetFloat();
+	offset.x = ( up.x * offsetUp + right.x * offsetRight ) + forward.x * offsetForward;
+	offset.y = ( up.y * offsetUp + right.y * offsetRight ) + forward.y * offsetForward;
+	offset.z = ( up.z * offsetUp + right.z * offsetRight ) + forward.z * offsetForward;
+}
+
+// Whole native67B00 under Main actual user0. Two real flags stay in ctor/header.
+void C_BasePlayer::TurnOffFlashlight()
+{
+	if ( m_bFlashlightOn[0] )
+	{
+		TurnOffTerrorFlashlight();
+		m_bFlashlightOn[0] = false;
+	}
+}
+
+// Whole native68E10. This is the ONLY player-side physical driver; the old SDK
+// m_pFlashlight implementation and old partial Terror Simulate update are not
+// selected on L4D2. Main actual0 replaces TLS guards, not the data/call protocol.
+
+#endif

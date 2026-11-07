@@ -13,6 +13,10 @@
 #include "mathlib/mathlib.h"
 #include "globalstate.h"
 
+#if defined( L4D2 )
+extern bool g_bTerrorPressDemo;
+#endif
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -36,6 +40,9 @@ private:
 
 	// fired no matter why the map loaded
 	COutputEvent m_OnMapSpawn;
+#if defined( L4D2 )
+	COutputEvent m_OnDemoMapSpawn;
+#endif
 
 	// fired for specified types of map loads
 	COutputEvent m_OnNewGame;
@@ -57,6 +64,9 @@ BEGIN_DATADESC( CLogicAuto )
 
 	// Outputs
 	DEFINE_OUTPUT(m_OnMapSpawn, "OnMapSpawn"),
+#if defined( L4D2 )
+	DEFINE_OUTPUT( m_OnDemoMapSpawn, "OnDemoMapSpawn" ),
+#endif
 	DEFINE_OUTPUT(m_OnNewGame, "OnNewGame"),
 	DEFINE_OUTPUT(m_OnLoadGame, "OnLoadGame"),
 	DEFINE_OUTPUT(m_OnMapTransition, "OnMapTransition"),
@@ -104,6 +114,10 @@ void CLogicAuto::Think(void)
 		}
 
 		m_OnMapSpawn.FireOutput(NULL, this);
+#if defined( L4D2 )
+		if ( g_bTerrorPressDemo )
+			m_OnDemoMapSpawn.FireOutput( NULL, this );
+#endif
 
 		if ( g_pGameRules->IsMultiplayer() )
 		{

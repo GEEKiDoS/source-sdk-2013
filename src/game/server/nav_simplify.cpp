@@ -89,7 +89,12 @@ static bool ReduceToComponentAreas( CNavArea *area, bool addToSelectedSet )
 
 
 //--------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_chop_selected, "Chops all selected areas into their component 1x1 areas", 0x00004004 )
+#else
 CON_COMMAND_F( nav_chop_selected, "Chops all selected areas into their component 1x1 areas", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() || engine->IsDedicatedServer() )
 		return;
@@ -266,7 +271,12 @@ void CNavMesh::SimplifySelectedAreas( void )
 
 
 //--------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_simplify_selected, "Chops all selected areas into their component 1x1 areas and re-merges them together into larger areas", 0x00004004 )
+#else
 CON_COMMAND_F( nav_simplify_selected, "Chops all selected areas into their component 1x1 areas and re-merges them together into larger areas", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() || engine->IsDedicatedServer() )
 		return;

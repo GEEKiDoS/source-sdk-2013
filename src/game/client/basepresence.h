@@ -45,11 +45,13 @@ protected:
 	HANDLE							m_hSession;
 	CUtlVector< XUSER_PROPERTY >	m_PlayerStats;	
 
+#if !defined( L4D2 )
 	//---------------------------------------------------------
 	// Debug support
 	//---------------------------------------------------------
 	CON_COMMAND_MEMBER_F( CBasePresence, "user_context", DebugUserSetContext, "Set a Rich Presence Context: user_context <context id> <context value>", 0 )
 	CON_COMMAND_MEMBER_F( CBasePresence, "user_property", DebugUserSetProperty, "Set a Rich Presence Property: user_property <property id>", 0 )
+#endif
 };
 
 #endif // BASEPRESENCE_H

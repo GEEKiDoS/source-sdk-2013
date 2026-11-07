@@ -68,9 +68,41 @@ bool IsInFreezeCam( void );
 //-----------------------------------------------------------------------------
 // Purpose: Base Player class
 //-----------------------------------------------------------------------------
-class C_BasePlayer : public C_BaseCombatCharacter, public CGameEventListener
+class C_BasePlayer : public C_BaseCombatCharacter
+#if !defined( L4D2 )
+	, public CGameEventListener
+#endif
 {
 public:
+#if defined( L4D2 )
+	virtual bool PreRender( int splitUserSlot ) OVERRIDE;
+	virtual C_BasePlayer *GetPredictionOwner() OVERRIDE;
+	virtual bool IsThirdPersonCameraActive() const { return false; } // Native69820.
+	virtual const Vector &GetRenderOrigin() OVERRIDE;
+	bool ShouldDrawLocalPlayerModel() const;
+	enum PlayerViewType_t { PLAYER_VIEW_FIRST_PERSON=1, PLAYER_VIEW_THIRD_PERSON=2 };
+	PlayerViewType_t GetPlayerViewType() const;
+	int GetSplitScreenPlayerSlot() const;
+	virtual void OnLocalPlayerCreated(); // Genuine empty native69810.
+	void TurnOffFlashlight();
+	virtual const char *GetFlashlightTextureName();
+	virtual float GetFlashlightFOV();
+	virtual float GetFlashlightFarZ();
+	virtual float GetFlashlightLinearAttenuation();
+	virtual bool CastsFlashlightShadows();
+	virtual void ComputeFlashlightOffset( const Vector &, const Vector &, const Vector &, Vector & );
+private:
+	void AddSplitScreenPlayer( C_BasePlayer *player );
+	void CheckForLocalPlayer( int slot );
+	void UpdateLocalPlayerRegistration( DataUpdateType_t updateType );
+	CUtlVector< CHandle< C_BasePlayer > > m_splitScreenPlayers;
+	int m_nSplitScreenPlayerSlot;
+	CHandle< C_BasePlayer > m_hSplitScreenPlayerOwner;
+	bool m_bIsLocalPlayer;
+	Vector m_vecRenderOrigin; // Native6212, rewritten by each C63A20 query.
+public:
+#endif
+
 	DECLARE_CLASS( C_BasePlayer, C_BaseCombatCharacter );
 	DECLARE_CLIENTCLASS();
 	DECLARE_PREDICTABLE();
@@ -94,7 +126,9 @@ public:
 
 	virtual void	OnRestore();
 
+#if !defined( L4D2 )
 	virtual void	AddEntity( void );
+#endif
 
 	virtual void	MakeTracer( const Vector &vecTracerSrc, const trace_t &tr, int iTracerType );
 
@@ -111,6 +145,10 @@ public:
 	// View model prediction setup
 	virtual void		CalcView( Vector &eyeOrigin, QAngle &eyeAngles, float &zNear, float &zFar, float &fov );
 	virtual void		CalcViewModelView( const Vector& eyeOrigin, const QAngle& eyeAngles);
+#if defined( L4D2 )
+	virtual void OverrideMouseInput( float *x, float *y );
+	virtual void OverrideJoystickInput( float *pitch, float *yaw );
+#endif
 	
 
 	// Handle view smoothing when going up stairs
@@ -133,7 +171,11 @@ public:
 	virtual bool	CreateMove( float flInputSampleTime, CUserCmd *pCmd );
 	virtual void	AvoidPhysicsProps( CUserCmd *pCmd );
 	
+#if defined( L4D2 )
+	virtual void	PlayerUse( C_BaseEntity *preferred = NULL );
+#else
 	virtual void	PlayerUse( void );
+#endif
 	CBaseEntity		*FindUseEntity( void );
 	virtual bool	IsUseableEntity( CBaseEntity *pEntity, unsigned int requiredCaps );
 
@@ -148,6 +190,12 @@ public:
 	virtual int			GetObserverMode() const;
 	void				SetObserverMode ( int iNewMode );
 	virtual CBaseEntity	*GetObserverTarget() const;
+#if defined( L4D2 )
+	C_BaseEntity *GetViewEntity() const { return m_hViewEntity.Get(); }
+	C_BaseEntity *GetTerrorPostProcessController() const { return m_hPostProcessCtrl.Get(); }
+	C_BaseEntity *GetTerrorColorCorrectionController() const { return m_hColorCorrectionCtrl.Get(); }
+	C_BaseEntity *GetTerrorTonemapController() const { return m_hTonemapController.Get(); }
+#endif
 	void			SetObserverTarget( EHANDLE hObserverTarget );
 
 	bool			AudioStateIsUnderwater( Vector vecMainViewOrigin );
@@ -156,7 +204,11 @@ public:
 	bool IsHLTV() const;
 	bool IsReplay() const;
 	void ResetObserverMode();
+#if defined( L4D2 )
+	virtual bool IsBot( void ) const { return false; }
+#else
 	bool IsBot( void ) const { return false; }
+#endif
 
 	// Eye position..
 	virtual Vector		 EyePosition();
@@ -169,7 +221,11 @@ public:
 	virtual IRagdoll* GetRepresentativeRagdoll() const;
 
 	// override the initial bone position for ragdolls
+#if defined( L4D2 )
+	virtual void GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt ) OVERRIDE;
+#else
 	virtual bool GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt ) OVERRIDE;
+#endif
 
 	// Returns eye vectors
 	void			EyeVectors( Vector *pForward, Vector *pRight = NULL, Vector *pUp = NULL );
@@ -201,13 +257,26 @@ public:
 
 	void						SetMaxSpeed( float flMaxSpeed ) { m_flMaxspeed = flMaxSpeed; }
 	float						MaxSpeed() const		{ return m_flMaxspeed; }
+#if defined( L4D2 )
+	int m_afButtonDisabled;
+	int m_afButtonForced;
+	void DisableButtons( int buttons ) { m_afButtonDisabled |= buttons; }
+	void EnableButtons( int buttons ) { m_afButtonDisabled &= ~buttons; }
+	void ForceButtons( int buttons ) { m_afButtonForced |= buttons; }
+	void UnforceButtons( int buttons ) { m_afButtonForced &= ~buttons; }
+#endif
 
 	// Should this object cast shadows?
 	virtual ShadowType_t		ShadowCastType() { return SHADOWS_NONE; }
 
 	virtual bool				ShouldReceiveProjectedTextures( int flags )
 	{
+#if defined( L4D2 )
+		// Native C222300 delegates player reception to the base entity policy.
+		return BaseClass::ShouldReceiveProjectedTextures( flags );
+#else
 		return false;
+#endif
 	}
 
 
@@ -216,18 +285,31 @@ public:
 	// Global/static methods
 	virtual void				ThirdPersonSwitch( bool bThirdperson );
 	static bool					LocalPlayerInFirstPersonView();
+#if !defined( L4D2 )
 	static bool					ShouldDrawLocalPlayer();
+#endif
 	static C_BasePlayer			*GetLocalPlayer( void );
+#if defined( L4D2 )
+	enum { MAX_LOCAL_PLAYER_SLOTS = 2 };
+	static C_BasePlayer			*GetLocalPlayer( int slot );
+#endif
 	int							GetUserID( void );
 	virtual bool				CanSetSoundMixer( void );
 	virtual int					GetVisionFilterFlags( bool bWeaponsCheck = false ) { return 0x00; }
 	bool						HasVisionFilterFlags( int nFlags, bool bWeaponsCheck = false ) { return ( GetVisionFilterFlags( bWeaponsCheck ) & nFlags ) == nFlags; }
 	virtual void				CalculateVisionUsingCurrentFlags( void ) {}
+#if !defined( L4D2 )
 	void						BuildFirstPersonMeathookTransformations( CStudioHdr *hdr, Vector *pos, Quaternion q[], const matrix3x4_t& cameraTransform, int boneMask, CBoneBitList &boneComputed, const char *pchHeadBoneName );
+#endif
 
 	// Specific queries about this player.
 	bool						InFirstPersonView();
+#if defined( L4D2 )
+	bool IsCurrentInEyeViewPlayer() const;
+#endif
+#if !defined( L4D2 )
 	bool						ShouldDrawThisPlayer();
+#endif
 
 	// Called by the view model if its rendering is being overridden.
 	virtual bool				ViewModel_IsTransparent( void );
@@ -242,6 +324,10 @@ public:
 
 	virtual void				PhysicsSimulate( void );
 	virtual unsigned int	PhysicsSolidMaskForEntity( void ) const { return MASK_PLAYERSOLID; }
+#ifdef L4D2
+	virtual unsigned int PlayerSolidMask( bool brushOnly = false ) const
+		{ return brushOnly ? 0x0001400Bu : 0x0201400Bu; }
+#endif
 
 	// Prediction stuff
 	virtual bool				ShouldPredict( void );
@@ -266,20 +352,35 @@ public:
 
 	bool						IsLerpingFOV( void ) const;
 	virtual float				GetFOV( void );	
-	int							GetDefaultFOV( void ) const;
+#if defined( L4D2 )
+	virtual int GetDefaultFOV( void );
+#else
+	int GetDefaultFOV( void ) const;
+#endif
 	virtual bool				IsZoomed( void )	{ return false; }
 	bool						SetFOV( CBaseEntity *pRequester, int FOV, float zoomRate = 0.0f, int iZoomStart = 0 );
 	void						ClearZoomOwner( void );
 
+#if defined( L4D2 )
+	double GetFOVDistanceAdjustFactor();
+#else
 	float						GetFOVDistanceAdjustFactor();
+#endif
 
 	virtual void				ViewPunch( const QAngle &angleOffset );
 	void						ViewPunchReset( float tolerance = 0 );
 
 	void						UpdateButtonState( int nUserCmdButtonMask );
 	int							GetImpulse( void ) const;
+#if defined( L4D2 )
+	void UpdateAnimationCulling(); // C638B0, sole inherited culling owner.
+#endif
 
+#if defined( L4D2 )
+	virtual bool Simulate() OVERRIDE;
+#else
 	virtual void				Simulate();
+#endif
 
 	virtual bool				ShouldInterpolate();
 
@@ -302,6 +403,10 @@ public:
 
 	// Vehicles...
 	IClientVehicle			*GetVehicle();
+#if defined( L4D2 )
+	C_BaseEntity *GetElevator() const { return m_hElevator.Get(); }
+	void SetElevator( C_BaseEntity *elevator );
+#endif
 
 	bool			IsInAVehicle() const	{ return ( NULL != m_hVehicle.Get() ) ? true : false; }
 	virtual void	SetVehicleRole( int nRole );
@@ -323,7 +428,11 @@ public:
 	int CurrentCommandNumber() const;
 	const CUserCmd *GetCurrentUserCommand() const;
 
+#if defined( L4D2 )
+	virtual const QAngle& GetPunchAngle();
+#else
 	const QAngle& GetPunchAngle();
+#endif
 	void SetPunchAngle( const QAngle &angle );
 
 	float					GetWaterJumpTime() const;
@@ -361,10 +470,18 @@ public:
 
 	virtual void ExitLadder() {}
 	surfacedata_t *GetLadderSurface( const Vector &origin );
+#if defined( L4D2 )
+	void IncrementEFNoInterpParity();
+	int GetLadderSurfaceProps() const { return m_ladderSurfaceProps; }
+	void SetLadderSurfaceProps( int surfaceProps ) { m_ladderSurfaceProps = surfaceProps; }
+#endif
 
 	surfacedata_t *GetSurfaceData( void ) { return m_pSurfaceData; }
 
 	void SetLadderNormal( Vector vecLadderNormal ) { m_vecLadderNormal = vecLadderNormal; }
+#ifdef L4D2
+	const Vector &GetLadderNormal() const { return m_vecLadderNormal; }
+#endif
 
 	// Hints
 	virtual CHintSystem		*Hints( void ) { return NULL; }
@@ -401,11 +518,18 @@ public:
 	virtual bool			CanUseFirstPersonCommand( void ){ return true; }
 	
 protected:
+#if defined( L4D2 )
+	bool m_bAnimationCulled; // C4416, explicit native ctorfalse.
+	int m_nAnimationCullFrame; // C4420, no native ctor store.
+#endif
 	fogparams_t				m_CurrentFog;
 	EHANDLE					m_hOldFogController;
 
 public:
 	int m_StuckLast;
+#if defined( L4D2 )
+	EHANDLE m_hLastStuckActor; // Local combat actor; default EHANDLE construction is invalid.
+#endif
 
 	const char* GetScriptOverlayMaterial() const { return m_Local.m_szScriptOverlayMaterial; }
 	
@@ -446,6 +570,9 @@ public:
 	float			m_flConstraintRadius;
 	float			m_flConstraintWidth;
 	float			m_flConstraintSpeedFactor;
+#if defined( L4D2 )
+	bool			m_bConstraintPastRadius;
+#endif
 
 protected:
 
@@ -454,13 +581,23 @@ protected:
 							float& zNear, float& zFar, float& fov );
 	virtual void		CalcObserverView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov );
 	virtual Vector		GetChaseCamViewOffset( CBaseEntity *target );
-	void				CalcChaseCamView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov );
+#if defined( L4D2 )
+	virtual void CalcChaseCamView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov );
+#else
+	void CalcChaseCamView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov );
+#endif
 	virtual void		CalcInEyeCamView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov );
 
+#if !defined( L4D2 )
 	virtual float		GetDeathCamInterpolationTime();
+#endif
 
 	virtual void		CalcDeathCamView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov );
-	void				CalcRoamingView(Vector& eyeOrigin, QAngle& eyeAngles, float& fov);
+#if defined( L4D2 )
+	virtual void CalcRoamingView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov );
+#else
+	void CalcRoamingView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov );
+#endif
 	virtual void		CalcFreezeCamView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov );
 
 	// Check to see if we're in vgui input mode...
@@ -473,8 +610,13 @@ protected:
 	// used by client side player footsteps 
 	surfacedata_t* GetGroundSurface();
 
+#if !defined( L4D2 )
 	virtual void	FireGameEvent( IGameEvent *event );
+#endif
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	friend class CBaseHudWeaponSelection;
+#endif
 protected:
 	// Did we just enter a vehicle this frame?
 	bool			JustEnteredVehicle();
@@ -482,6 +624,12 @@ protected:
 // DATA
 	int				m_iObserverMode;	// if in spectator mode != 0
 	EHANDLE			m_hObserverTarget;	// current observer target
+#if defined( L4D2 )
+	EHANDLE			m_hViewEntity;
+	EHANDLE m_hPostProcessCtrl;
+	EHANDLE m_hColorCorrectionCtrl;
+	EHANDLE m_hTonemapController;
+#endif
 	float			m_flObserverChaseDistance; // last distance to observer target
 	Vector			m_vecFreezeFrameStart;
 	float			m_flFreezeFrameStartTime;	// Time at which we entered freeze frame observer mode
@@ -499,6 +647,9 @@ private:
 
 	// Vehicle stuff.
 	EHANDLE			m_hVehicle;
+#if defined( L4D2 )
+	EHANDLE m_hElevator;
+#endif
 	EHANDLE			m_hOldVehicle;
 	EHANDLE			m_hUseEntity;
 	
@@ -515,6 +666,9 @@ private:
 	int				m_nImpulse;
 
 	float			m_flSwimSoundTime;
+#if defined( L4D2 )
+	int				m_ladderSurfaceProps;
+#endif
 	Vector			m_vecLadderNormal;
 	
 	QAngle			m_vecOldViewAngles;
@@ -523,6 +677,9 @@ private:
 	int				m_flPhysics;
 
 	int				m_nTickBase;
+#if defined( L4D2 )
+	int				m_nOldTickBase;
+#endif
 	int				m_nFinalPredictedTick;
 
 	EHANDLE			m_pCurrentVguiScreen;
@@ -531,10 +688,24 @@ private:
 
 
 	// Player flashlight dynamic light pointers
+#if defined( L4D2 )
+	friend class CFlashlightEffect;
+	bool m_bFlashlightOn[2];
+protected:
+	Vector m_vecFlashlightOrigin;
+	Vector m_vecFlashlightForward;
+	Vector m_vecFlashlightUp;
+	Vector m_vecFlashlightRight;
+private:
+#else
 	CFlashlightEffect *m_pFlashlight;
+#endif
 
 	typedef CHandle<C_BaseCombatWeapon> CBaseCombatWeaponHandle;
 	CNetworkVar( CBaseCombatWeaponHandle, m_hLastWeapon );
+#if defined( L4D2 )
+	byte m_ubEFNoInterpParity;
+#endif
 
 #if !defined( NO_ENTITY_PREDICTION )
 	CUtlVector< CHandle< C_BaseEntity > > m_SimulatedByThisPlayer;
@@ -572,6 +743,9 @@ private:
 	friend class CTFGameMovement;
 	friend class CHL1GameMovement;
 	friend class CCSGameMovement;
+#if defined( L4D2 )
+	friend class CTerrorGameMovement;
+#endif
 	friend class CHL2GameMovement;
 	friend class CDODGameMovement;
 	friend class CPortalGameMovement;
@@ -589,7 +763,11 @@ protected:
 	virtual bool IsDucked( void ) const { return m_Local.m_bDucked; }
 	virtual bool IsDucking( void ) const { return m_Local.m_bDucking; }
 	virtual float GetFallVelocity( void ) { return m_Local.m_flFallVelocity; }
+#if defined( L4D2 )
+	void ForceSetupBonesAtTimeFakeInterpolation( matrix3x4_t *pBonesOut, float curtimeOffset );
+#else
 	bool ForceSetupBonesAtTimeFakeInterpolation( matrix3x4_t *pBonesOut, float curtimeOffset );
+#endif
 
 	float m_flLaggedMovementValue;
 

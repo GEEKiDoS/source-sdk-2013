@@ -18,6 +18,10 @@
 #include "tier0/memdbgon.h"
 
 IMPLEMENT_CLIENTCLASS_DT(C_BreakableProp, DT_BreakableProp, CBreakableProp)
+#if defined( L4D2 )
+	RecvPropBool( RECVINFO( m_noGhostCollision ) ),
+	RecvPropBool( RECVINFO( m_bClientPhysics ) ),
+#endif
 END_RECV_TABLE()
 
 //-----------------------------------------------------------------------------
@@ -27,6 +31,20 @@ C_BreakableProp::C_BreakableProp( void )
 {
 	m_takedamage = DAMAGE_YES;
 }
+
+#if defined( L4D2 )
+void C_BreakableProp::OnDataChanged( DataUpdateType_t type )
+{
+	BaseClass::OnDataChanged( type );
+	if ( m_bClientPhysics ) PhysOnDataChanged( this, type == DATA_UPDATE_CREATED );
+}
+
+unsigned int C_BreakableProp::PhysicsSolidMaskForEntity() const
+{
+	if ( m_noGhostCollision ) return BaseClass::PhysicsSolidMaskForEntity() | 0x0200;
+	return BaseClass::PhysicsSolidMaskForEntity();
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 

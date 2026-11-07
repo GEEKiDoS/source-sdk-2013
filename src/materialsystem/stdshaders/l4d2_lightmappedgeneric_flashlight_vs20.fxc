@@ -1,0 +1,90 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// STATIC: "NORMALMAP" "0..1"
+// STATIC: "WORLDVERTEXTRANSITION" "0..1"
+// STATIC: "SEAMLESS" "0..1"
+// STATIC: "DETAIL" "0..1"
+// STATIC: "PIXELFOG" "0..1"
+// SKIP: $SEAMLESS && $DETAIL
+
+#include "common_vs_fxc.h"
+
+const float3 g_FlashlightOrigin : register( c48 );
+const float4x4 g_FlashlightWorldToTexture : register( c49 );
+const float4 g_BaseTransform[2] : register( c54 );
+const float4 g_NormalOrDetailTransform[2] : register( c56 );
+
+struct VS_INPUT
+{
+	float3 position : POSITION;
+	float4 normal : NORMAL;
+	float2 uv : TEXCOORD0;
+	float4 color : COLOR0;
+	float3 tangentS : TANGENT;
+	float3 tangentT : BINORMAL;
+};
+
+struct VS_OUTPUT
+{
+	float4 position : POSITION;
+	float4 flashlight : TEXCOORD0;
+	float3 base : TEXCOORD1;
+	float3 lightDirection : TEXCOORD2;
+	float3 normal : TEXCOORD3;
+	float2 detail : TEXCOORD4;
+	float4 world : TEXCOORD5;
+	float4 projected : TEXCOORD6;
+	float4 weights : COLOR1;
+};
+
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o = (VS_OUTPUT)0;
+	float4 position = float4( v.position, 1 );
+	o.position = mul( position, cModelViewProj );
+	float3 world = mul( position, cModel[0] );
+	o.world = float4( world, 1 );
+	o.flashlight = mul( float4( world, 1 ), g_FlashlightWorldToTexture );
+	o.projected.xyz = o.position.xyw;
+	float3 normal;
+	DecompressVertex_Normal( v.normal, normal );
+	normal = mul( normal, (float3x3)cModel[0] );
+	float3 light = g_FlashlightOrigin - world;
+#if SEAMLESS
+	o.base = world * g_BaseTransform[0].x;
+	float3 unitNormal = normalize( normal );
+	o.weights.rgb = unitNormal * unitNormal;
+#else
+	o.base.xy = float2( dot( v.uv, g_BaseTransform[0].xy ) + g_BaseTransform[0].w,
+		dot( v.uv, g_BaseTransform[1].xy ) + g_BaseTransform[1].w );
+#endif
+	float2 secondaryUV = float2( dot( v.uv, g_NormalOrDetailTransform[0].xy ) + g_NormalOrDetailTransform[0].w,
+		dot( v.uv, g_NormalOrDetailTransform[1].xy ) + g_NormalOrDetailTransform[1].w );
+#if NORMALMAP
+#if SEAMLESS
+	float3 tangentS = normalize( float3( o.weights.y + o.weights.z, 0, o.weights.x ) );
+	float3 tangentT = normalize( float3( 0, o.weights.z + o.weights.x, o.weights.y ) );
+#else
+	float3 tangentS = mul( v.tangentS, (float3x3)cModel[0] );
+	float3 tangentT = mul( v.tangentT, (float3x3)cModel[0] );
+#endif
+	o.lightDirection = float3( dot( light, tangentS ), dot( light, tangentT ), dot( light, normal ) );
+#if DETAIL
+	o.normal.xy = o.base.xy;
+#else
+	o.normal.xy = secondaryUV;
+#endif
+#else
+	o.lightDirection = light;
+	o.normal = normal;
+#endif
+#if DETAIL
+	o.detail = secondaryUV;
+#endif
+#if WORLDVERTEXTRANSITION
+	o.world.w = v.color.a;
+#endif
+#if !PIXELFOG
+	o.projected.w = min( saturate( 1 - cFogParams.x + length( cEyePos.xy - world.xy ) * cFogParams.w ), 1 - cFogParams.z );
+#endif
+	return o;
+}

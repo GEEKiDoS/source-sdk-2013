@@ -45,6 +45,9 @@ CClientEntityList::CClientEntityList( void ) :
 {
 	m_iMaxUsedServerIndex = -1;
 	m_iMaxServerEnts = 0;
+#if defined( L4D2 )
+	m_nDeferredEntityReleaseDepth = 0;
+#endif
 	Release();
 
 }
@@ -326,6 +329,9 @@ void CClientEntityList::OnAddEntity( IHandleEntity *pEnt, CBaseHandle handle )
 		Assert( dynamic_cast< IClientUnknown* >( pEnt ) );
 		Assert( ((IClientUnknown*)pEnt)->GetClientNetworkable() ); // Server entities should all be networkable.
 		pCache->m_pNetworkable = ((IClientUnknown*)pEnt)->GetClientNetworkable();
+#if defined( L4D2 )
+		pCache->m_nDormancy = 1;
+#endif
 	}
 
 	IClientUnknown *pUnknown = (IClientUnknown*)pEnt;
@@ -508,3 +514,62 @@ C_BaseEntity* C_BaseEntityIterator::Next()
 
 	return NULL;
 }
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING cliententitylist.cpp; migrate the SDK ThinkList queue,
+// never register another deletion owner/TU or retain a L4D2 compatibility shim.
+#if defined( L4D2 )
+#include "cbase.h"
+#include "cliententitylist.h"
+#include "tier0/memdbgon.h"
+#endif // L4D2
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+// Whole C100BB020. Networkability is NOT a native deletion exclusion.
+void CClientEntityList::AddToDeleteList( C_BaseEntity *pEntity )
+{
+	if ( pEntity && !pEntity->IsMarkedForDeletion() )
+	{
+		if ( m_nDeferredEntityReleaseDepth )
+		{
+			m_DeferredEntityReleases.AddToTail( pEntity );
+			pEntity->SetRemovalFlag( true );
+		}
+		else
+		{
+			pEntity->Release();
+		}
+	}
+}
+
+// Whole C100BA3B0: nested signed depth, no invented underflow clamp/reset.
+void CClientEntityList::DeferEntityReleases( bool defer )
+{
+	if ( defer )
+		++m_nDeferredEntityReleaseDepth;
+	else if ( m_nDeferredEntityReleaseDepth-- == 1 )
+		CleanUpDeleteList();
+}
+
+// Whole C100B98F0: cache count BEFORE callbacks; clear flags before Release.
+// No EHANDLE re-resolution, networkable exclusion or added cancellation path.
+void CClientEntityList::CleanUpDeleteList()
+{
+	const int count = m_DeferredEntityReleases.Count();
+	for ( int i = 0; i < count; ++i )
+	{
+		C_BaseEntity *pEntity = m_DeferredEntityReleases[i];
+		if ( pEntity )
+			pEntity->SetRemovalFlag( false );
+		pEntity->Release();
+	}
+	m_DeferredEntityReleases.RemoveAll();
+}
+#endif
+
+#if defined( L4D2 )
+void CClientEntityList::NotifyEntityDormancyChanged( int entityIndex, bool dormant )
+{
+	m_EntityCacheInfo[entityIndex].m_nDormancy = static_cast< unsigned char >( dormant );
+}
+#endif

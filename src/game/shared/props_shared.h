@@ -55,6 +55,9 @@ enum propdata_interactions_t
 	PROPINTER_PHYSGUN_LAUNCH_SPIN_NONE,	// "onlaunch"		"spin_none"
 	PROPINTER_PHYSGUN_LAUNCH_SPIN_Z,	// "onlaunch"		"spin_zaxis"
 	PROPINTER_PHYSGUN_BREAK_EXPLODE,	// "onbreak"		"explode_fire"
+	#ifdef L4D2
+	PROPINTER_PHYSGUN_BREAK_EXPLODE_ICE, // Native7.
+	#endif
 	PROPINTER_PHYSGUN_DAMAGE_NONE,		// "damage"			"none"
 
 	PROPINTER_FIRE_FLAMMABLE,			// "flammable"			"yes"
@@ -68,6 +71,14 @@ enum propdata_interactions_t
 	PROPINTER_WORLD_BLOODSPLAT,			// "onworldimpact", "bloodsplat"
 	
 	PROPINTER_PHYSGUN_NOTIFY_CHILDREN,	// "onfirstimpact" cause attached flechettes to explode
+	#ifdef L4D2
+	PROPINTER_FIRE_MELEE_IMMUNE, // Native16.
+	PROPINTER_GAME_ONLY_BREAKABLE_BY_TANK, // Native17.
+	PROPINTER_GAME_ONLY_BREAKABLE_BY_MOB, // Native18.
+	PROPINTER_BOT_FORBIDDEN_TARGET, // Native19.
+	PROPINTER_GAME_WEAPON_COLLISION, // Native20.
+	PROPINTER_GAME_TANK_PROJECTILE, // Native21.
+	#endif
 
 	// If we get more than 32 of these, we'll need a different system
 
@@ -119,15 +130,29 @@ public:
 	virtual void		SetDmgModBullet( float flDmgMod ) = 0;
 	virtual void		SetDmgModClub( float flDmgMod ) = 0;
 	virtual void		SetDmgModExplosive( float flDmgMod ) = 0;
+#ifdef L4D2
+	virtual void SetDmgModFire( float modifier ) = 0;
+#endif
 	virtual float		GetDmgModBullet( void ) = 0;
 	virtual float		GetDmgModClub( void ) = 0;
 	virtual float		GetDmgModExplosive( void ) = 0;
+#ifdef L4D2
+	virtual float GetDmgModFire() = 0;
+#endif
 
 	// Explosive
 	virtual void		SetExplosiveRadius( float flRadius ) = 0;
 	virtual void		SetExplosiveDamage( float flDamage ) = 0;
 	virtual float		GetExplosiveRadius( void ) = 0;
 	virtual float		GetExplosiveDamage( void ) = 0;
+#ifdef L4D2
+	virtual void SetExplosionType( int type ) = 0;
+	virtual int GetExplosionType() = 0;
+	virtual void SetExplosionDelay( float delay ) = 0;
+	virtual float GetExplosionDelay() = 0;
+	virtual void SetExplosionBuildup( string_t sound ) = 0;
+	virtual string_t GetExplosionBuildup() = 0;
+#endif
 
 	// Physics damage tables
 	virtual void		SetPhysicsDamageTable( string_t iszTableName ) = 0;

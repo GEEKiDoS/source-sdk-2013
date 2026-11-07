@@ -7,6 +7,14 @@
 #include "cbase.h"
 #include "obstacle_pushaway.h"
 #include "props_shared.h"
+#if defined( L4D2 )
+#include "l4d2/terror_physics_math.h"
+#if !defined( CLIENT_DLL )
+extern ConVar sv_doors_push_players;
+#endif
+#endif
+
+#include "obstacle_pushaway_console_server_cvars.inc"
 
 #if defined( CSTRIKE_DLL )
 #define SV_PUSH_CONVAR_FLAGS  (FCVAR_REPLICATED)
@@ -15,16 +23,88 @@
 #endif // CSTRIKE_DLL
 
 //-----------------------------------------------------------------------------------------------------
-ConVar sv_pushaway_force( "sv_pushaway_force", "30000", SV_PUSH_CONVAR_FLAGS, "How hard physics objects are pushed away from the players on the server." );
-ConVar sv_pushaway_min_player_speed( "sv_pushaway_min_player_speed", "75", SV_PUSH_CONVAR_FLAGS, "If a player is moving slower than this, don't push away physics objects (enables ducking behind things)." );
-ConVar sv_pushaway_max_force( "sv_pushaway_max_force", "1000", SV_PUSH_CONVAR_FLAGS, "Maximum amount of force applied to physics objects by players." );
-ConVar sv_pushaway_clientside( "sv_pushaway_clientside", "0", SV_PUSH_CONVAR_FLAGS, "Clientside physics push away (0=off, 1=only localplayer, 1=all players)" );
+ConVar sv_pushaway_force( "sv_pushaway_force", 
+#if defined( L4D2 )
+	"300000"
+#else
+	"30000"
+#endif
+, 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	SV_PUSH_CONVAR_FLAGS
+#endif
+, "How hard physics objects are pushed away from the players on the server." );
+ConVar sv_pushaway_min_player_speed( "sv_pushaway_min_player_speed", "75", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	SV_PUSH_CONVAR_FLAGS
+#endif
+, "If a player is moving slower than this, don't push away physics objects (enables ducking behind things)." );
+ConVar sv_pushaway_max_force( "sv_pushaway_max_force", 
+#if defined( L4D2 )
+	"2000"
+#else
+	"1000"
+#endif
+, 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	SV_PUSH_CONVAR_FLAGS
+#endif
+, "Maximum amount of force applied to physics objects by players." );
+ConVar sv_pushaway_clientside( "sv_pushaway_clientside", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	SV_PUSH_CONVAR_FLAGS
+#endif
+, "Clientside physics push away (0=off, 1=only localplayer, 1=all players)" );
 
-ConVar sv_pushaway_player_force( "sv_pushaway_player_force", "200000", SV_PUSH_CONVAR_FLAGS | FCVAR_CHEAT, "How hard the player is pushed away from physics objects (falls off with inverse square of distance)." );
-ConVar sv_pushaway_max_player_force( "sv_pushaway_max_player_force", "10000", SV_PUSH_CONVAR_FLAGS | FCVAR_CHEAT, "Maximum of how hard the player is pushed away from physics objects." );
+ConVar sv_pushaway_player_force( "sv_pushaway_player_force", "200000", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000600A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00006006
+#else
+	SV_PUSH_CONVAR_FLAGS | FCVAR_CHEAT
+#endif
+, "How hard the player is pushed away from physics objects (falls off with inverse square of distance)." );
+ConVar sv_pushaway_max_player_force( "sv_pushaway_max_player_force", "10000", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000600A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00006006
+#else
+	SV_PUSH_CONVAR_FLAGS | FCVAR_CHEAT
+#endif
+, "Maximum of how hard the player is pushed away from physics objects." );
 
 #ifdef CLIENT_DLL
-ConVar sv_turbophysics( "sv_turbophysics", "0", FCVAR_REPLICATED, "Turns on turbo physics" );
+ConVar sv_turbophysics( "sv_turbophysics", 
+#if defined( L4D2 )
+	"1"
+#else
+	"0"
+#endif
+, 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#else
+	FCVAR_REPLICATED
+#endif
+, "Turns on turbo physics" );
 #else
 extern ConVar sv_turbophysics;
 #endif
@@ -51,6 +131,10 @@ bool IsPushAwayEntity( CBaseEntity *pEnt )
 			{
 				return false;
 			}
+#if defined( L4D2 )
+			if ( !sv_doors_push_players.GetBool() )
+				return false;
+#endif
 		}
 		else if ( FClassnameIs( pEnt, "prop_door_rotating" ) )
 		{
@@ -64,6 +148,10 @@ bool IsPushAwayEntity( CBaseEntity *pEnt )
 			{
 				return false;
 			}
+#if defined( L4D2 )
+			if ( !sv_doors_push_players.GetBool() )
+				return false;
+#endif
 		}
 		else
 #endif // !CLIENT_DLL
@@ -76,6 +164,7 @@ bool IsPushAwayEntity( CBaseEntity *pEnt )
 }
 
 //-----------------------------------------------------------------------------------------------------
+#if !defined( L4D2 )
 bool IsPushableEntity( CBaseEntity *pEnt )
 {
 	if ( pEnt == NULL )
@@ -98,9 +187,10 @@ bool IsPushableEntity( CBaseEntity *pEnt )
 
 	return false;
 }
+#endif
 
 //-----------------------------------------------------------------------------------------------------
-#ifndef CLIENT_DLL
+#if !defined( CLIENT_DLL ) && !defined( L4D2 )
 bool IsBreakableEntity( CBaseEntity *pEnt )
 {
 	if ( pEnt == NULL )
@@ -235,10 +325,16 @@ void AvoidPushawayProps( CBaseCombatCharacter *pPlayer, CUserCmd *pCmd )
 		props[i]->CollisionProp()->CalcNearestPoint( ourCenter, &nearestPropPoint );
 		pPlayer->CollisionProp()->CalcNearestPoint( nearestPropPoint, &nearestPlayerPoint );
 		Vector vPushAway = (nearestPlayerPoint - nearestPropPoint);
+#if defined( L4D2 )
+		const double nativeDistance = TerrorPhysicsNormalize( vPushAway );
+		float flDist = (float)nativeDistance;
+		if ( nativeDistance > 5.0 && !pPlayer->CollisionProp()->IsPointInBounds( nearestPropPoint ) )
+#else
 		float flDist = VectorNormalize( vPushAway );
 
 		const float MaxPushawayDistance = 5.0f;
 		if ( flDist > MaxPushawayDistance && !pPlayer->CollisionProp()->IsPointInBounds( nearestPropPoint ) )
+#endif
 		{
 			continue;
 		}
@@ -247,14 +343,22 @@ void AvoidPushawayProps( CBaseCombatCharacter *pPlayer, CUserCmd *pCmd )
 		if ( vPushAway.IsZero() )
 		{
 			vPushAway = (ourCenter - nearestPropPoint);
+#if defined( L4D2 )
+			flDist = (float)TerrorPhysicsNormalize( vPushAway );
+#else
 			flDist = VectorNormalize( vPushAway );
+#endif
 		}
 
 		// If we're still not pushing, try from our center to the center of the prop
 		if ( vPushAway.IsZero() )
 		{
 			vPushAway = (ourCenter - props[i]->WorldSpaceCenter());
+#if defined( L4D2 )
+			flDist = (float)TerrorPhysicsNormalize( vPushAway );
+#else
 			flDist = VectorNormalize( vPushAway );
+#endif
 		}
 
 		flDist = MAX( flDist, 1 );
@@ -323,8 +427,13 @@ void PerformObstaclePushaway( CBaseCombatCharacter *pPushingEntity )
 			Vector vPushAway = (props[i]->WorldSpaceCenter() - pPushingEntity->WorldSpaceCenter());
 			vPushAway.z = 0;
 			
+#if defined( L4D2 )
+			const double nativeDistance = TerrorPhysicsNormalize( vPushAway );
+			float flDist = nativeDistance > 1.0 ? (float)nativeDistance : 1.0f;
+#else
 			float flDist = VectorNormalize( vPushAway );
 			flDist = MAX( flDist, 1 );
+#endif
 			
 			float flForce = sv_pushaway_force.GetFloat() / flDist;
 			flForce = MIN( flForce, sv_pushaway_max_force.GetFloat() );

@@ -61,6 +61,9 @@
 
 	
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "l4d2/effects/terror_view_frustum.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
 		  
 void ToolFramework_AdjustEngineViewport( int& x, int& y, int& width, int& height );
@@ -83,7 +86,13 @@ extern bool g_bRenderingScreenshot;
 extern ConVar sensitivity;
 #endif
 
-ConVar zoom_sensitivity_ratio( "zoom_sensitivity_ratio", "1.0", FCVAR_ARCHIVE, "Additional mouse sensitivity scale factor applied when FOV is zoomed in." );
+ConVar zoom_sensitivity_ratio( "zoom_sensitivity_ratio", "1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Additional mouse sensitivity scale factor applied when FOV is zoomed in." );
 
 CViewRender g_DefaultViewRender;
 IViewRender *view = NULL;	// set in cldll_client_init.cpp if no mod creates their own
@@ -99,40 +108,114 @@ static Vector g_vecPrevRenderOrigin(0,0,0);	// Last frame's render origin
 static QAngle g_vecPrevRenderAngles(0,0,0); // Last frame's render angles
 static Vector g_vecVForward(0,0,0), g_vecVRight(0,0,0), g_vecVUp(0,0,0);
 static VMatrix g_matCamInverse;
+#if defined( L4D2 )
+// Native C107A2584 module global; never reset on player/round/cvar changes.
+Vector g_vecCameraFollowBoneOrigin( 0.0f, 0.0f, 0.0f );
+static ConVar cl_camera_follow_bone_index( "cl_camera_follow_bone_index", "-2", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+,
+	"Index of the bone to follow.  -2 == disabled.  -1 == root bone.  0+ is bone index." );
+#endif
 
 extern ConVar cl_forwardspeed;
 
-static ConVar v_centermove( "v_centermove", "0.15");
-static ConVar v_centerspeed( "v_centerspeed","500" );
+static ConVar v_centermove( "v_centermove", "0.15"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
+static ConVar v_centerspeed( "v_centerspeed","500"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 #ifdef TF_CLIENT_DLL
 // 54 degrees approximates a 35mm camera - we determined that this makes the viewmodels
 // and motions look the most natural.
 ConVar v_viewmodel_fov( "viewmodel_fov", "54", FCVAR_ARCHIVE, "Sets the field-of-view for the viewmodel.", true, 0.1, true, 179.9, true, 54, true, 70, NULL );
+#elif defined( L4D2 )
+// C506BB0/C0C3A30: registered legacy shared-mode FOV, not Terror's reader.
+ConVar v_viewmodel_fov( "viewmodel_fov", "50", 0x80008, "" );
 #else
 ConVar v_viewmodel_fov( "viewmodel_fov", "54", FCVAR_CHEAT, "Sets the field-of-view for the viewmodel.", true, 0.1, true, 179.9 );
 #endif
-ConVar mat_viewportscale( "mat_viewportscale", "1.0", FCVAR_ARCHIVE, "Scale down the main viewport (to reduce GPU impact on CPU profiling)", true, (1.0f / 640.0f), true, 1.0f );
-ConVar mat_viewportupscale( "mat_viewportupscale", "1", FCVAR_ARCHIVE, "Scale the viewport back up" );
-ConVar cl_leveloverview( "cl_leveloverview", "0", FCVAR_CHEAT );
+ConVar mat_viewportscale( "mat_viewportscale", "1.0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Scale down the main viewport (to reduce GPU impact on CPU profiling)", true, (1.0f / 640.0f), true, 1.0f );
+ConVar mat_viewportupscale( "mat_viewportupscale", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Scale the viewport back up" );
+ConVar cl_leveloverview( "cl_leveloverview", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
-static ConVar r_mapextents( "r_mapextents", "16384", FCVAR_CHEAT, 
+#if !defined( L4D2 )
+static
+#endif
+ConVar r_mapextents( "r_mapextents", "16384", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, 
 						   "Set the max dimension for the map.  This determines the far clipping plane" );
 
 // UNDONE: Delete this or move to the material system?
-ConVar	gl_clear( "gl_clear", "0");
-ConVar	gl_clear_randomcolor( "gl_clear_randomcolor", "0", FCVAR_CHEAT, "Clear the back buffer to random colors every frame. Helps spot open seams in geometry." );
+ConVar	gl_clear( "gl_clear", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
+ConVar	gl_clear_randomcolor( "gl_clear_randomcolor", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Clear the back buffer to random colors every frame. Helps spot open seams in geometry." );
 
-static ConVar r_farz( "r_farz", "-1", FCVAR_CHEAT, "Override the far clipping plane. -1 means to use the value in env_fog_controller." );
-static ConVar cl_demoviewoverride( "cl_demoviewoverride", "0", 0, "Override view during demo playback" );
+static ConVar r_farz( "r_farz", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Override the far clipping plane. -1 means to use the value in env_fog_controller." );
+static ConVar cl_demoviewoverride( "cl_demoviewoverride", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Override view during demo playback" );
 
 
+#if !defined( L4D2 )
 void SoftwareCursorChangedCB( IConVar *pVar, const char *pOldValue, float fOldValue )
 {
 	ConVar *pConVar = (ConVar *)pVar;
 	vgui::surface()->SetSoftwareCursor( pConVar->GetBool() || UseVR() );
 }
 static ConVar cl_software_cursor ( "cl_software_cursor", "0", FCVAR_ARCHIVE, "Switches the game to use a larger software cursor instead of the normal OS cursor", SoftwareCursorChangedCB );
+#endif
 
 
 static Vector s_DemoView;
@@ -278,7 +361,11 @@ static void StartPitchDrift( void )
 	view->StartPitchDrift();
 }
 
-static ConCommand centerview( "centerview", StartPitchDrift );
+static ConCommand centerview( "centerview", StartPitchDrift
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
 
 extern ConVar default_fov;
 
@@ -301,6 +388,9 @@ void CViewRender::Init( void )
 
 	m_TranslucentSingleColor.Init( "debug/debugtranslucentsinglecolor", TEXTURE_GROUP_OTHER );
 	m_ModulateSingleColor.Init( "engine/modulatesinglecolor", TEXTURE_GROUP_OTHER );
+#if defined( L4D2 )
+	m_UnderWaterFogMaterial.Init( "dev/black_cheap", TEXTURE_GROUP_OTHER );
+#endif
 	
 	extern CMaterialReference g_material_WriteZ;
 	g_material_WriteZ.Init( "engine/writez", TEXTURE_GROUP_OTHER );
@@ -353,6 +443,9 @@ void CViewRender::Shutdown( void )
 	m_ModulateSingleColor.Shutdown( );
 	m_ScreenOverlayMaterial.Shutdown();
 	m_UnderWaterOverlayMaterial.Shutdown();
+#if defined( L4D2 )
+	m_UnderWaterFogMaterial.Shutdown();
+#endif
 	beams->ShutdownBeams();
 	tempents->Shutdown();
 }
@@ -477,17 +570,21 @@ void CViewRender::DriftPitch (void)
 
 StereoEye_t		CViewRender::GetFirstEye() const
 {
+#if !defined( L4D2 )
 	if( UseVR() )
 		return STEREO_EYE_LEFT;
 	else
+#endif
 		return STEREO_EYE_MONO;
 }
 
 StereoEye_t		CViewRender::GetLastEye() const
 {
+#if !defined( L4D2 )
 	if( UseVR() )
 		return STEREO_EYE_RIGHT;
 	else
+#endif
 		return STEREO_EYE_MONO;
 }
 
@@ -551,6 +648,9 @@ void CViewRender::OnRenderStart()
 			}
 		}
 	}
+#if defined( L4D2 )
+	UpdateGameViewFrustum( m_View );
+#endif
 }
 
 
@@ -621,6 +721,19 @@ float CViewRender::GetZFar()
 	return farZ;
 }
 
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+// C1BAADB..C1BAB3B. Keep the raw local player's default FOV here; the mode
+// getter independently resolves an IN_EYE target for its class/camera tests.
+static float Terror_CalcViewModelFOV( C_BasePlayer *player, float fov, float &fovOffset )
+{
+	fovOffset = player ? static_cast< float >( player->GetDefaultFOV() ) - fov : 0.0f;
+	const double viewModelFOV = static_cast< double >( g_pClientMode->GetViewModelFOV() ) - fovOffset;
+	// FCOMIP/JBE takes the 5-degree arm on unordered, not just on <= 5.
+	return viewModelFOV > 5.0 ? static_cast< float >( viewModelFOV ) : 5.0f;
+}
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Sets up the view parameters
@@ -687,11 +800,19 @@ void CViewRender::SetUpViews()
 					VectorCopy( ve->GetAbsAngles(), viewEye.angles );
 				}
 			}
+#if defined( L4D2 )
+			// C1BA9A8: custom-view abs-origin/angles copy remains above unchanged.
+			pPlayer->CalcViewModelView( viewEye.origin, viewEye.angles );
+			if ( cl_camera_follow_bone_index.GetInt() >= -1 && input->CAM_IsThirdPerson() )
+				viewEye.origin = g_vecCameraFollowBoneOrigin;
+#endif
 
+#if !defined( L4D2 )
 			// There is a viewmodel.
 			bCalcViewModelView = true;
 			ViewModelOrigin = viewEye.origin;
 			ViewModelAngles = viewEye.angles;
+#endif
 		}
 		else
 		{
@@ -721,13 +842,19 @@ void CViewRender::SetUpViews()
 		}
 	}
 
+#if defined( L4D2 )
+	float flFOVOffset;
+	viewEye.fovViewmodel = Terror_CalcViewModelFOV( pPlayer, viewEye.fov, flFOVOffset );
+#else
 	//Find the offset our current FOV is from the default value
 	float fDefaultFov = default_fov.GetFloat();
 	float flFOVOffset = fDefaultFov - viewEye.fov;
 
 	//Adjust the viewmodel's FOV to move with any FOV offsets on the viewer's end
 	viewEye.fovViewmodel = g_pClientMode->GetViewModelFOV() - flFOVOffset;
+#endif
 
+#if !defined( L4D2 )
 	if ( UseVR() )
 	{
 		// Let the headtracking read the status of the HMD, etc.
@@ -753,6 +880,7 @@ void CViewRender::SetUpViews()
 		g_ClientVirtualReality.OverrideStereoView( &m_View, &m_ViewLeft, &m_ViewRight );
 	}
 	else
+#endif
 	{
 		// left and right stereo views should default to being the same as the mono/middle view
 		m_ViewLeft = m_View;
@@ -1064,7 +1192,9 @@ void CViewRender::Render( vrect_t *rect )
 
 
     // Set for console commands, etc.
+#if !defined( L4D2 )
     render->SetMainView ( m_View.origin, m_View.angles );
+#endif
 
     for( StereoEye_t eEye = GetFirstEye(); eEye <= GetLastEye(); eEye = (StereoEye_t)(eEye+1) )
 	{
@@ -1118,6 +1248,7 @@ void CViewRender::Render( vrect_t *rect )
 			}
 			break;
 
+#if !defined( L4D2 )
 			case STEREO_EYE_RIGHT:
 			case STEREO_EYE_LEFT:
 			{
@@ -1128,6 +1259,7 @@ void CViewRender::Render( vrect_t *rect )
 				viewEye.m_nUnscaledY = viewEye.y;
 			}
 			break;
+#endif
 
             default:
                 Assert ( false );
@@ -1186,11 +1318,15 @@ void CViewRender::Render( vrect_t *rect )
 		    }
 	    }
 
+#if defined( L4D2 )
+		int flags = RENDERVIEW_DRAWHUD;
+#else
 	    int flags = 0;
 		if( eEye == STEREO_EYE_MONO || eEye == STEREO_EYE_LEFT || ( g_ClientVirtualReality.ShouldRenderHUDInWorld() ) )
 		{
 			flags = RENDERVIEW_DRAWHUD;
 		}
+#endif
 	    if ( drawViewModel )
 	    {
 		    flags |= RENDERVIEW_DRAWVIEWMODEL;
@@ -1201,8 +1337,13 @@ void CViewRender::Render( vrect_t *rect )
 			flags |= RENDERVIEW_SUPPRESSMONITORRENDERING;
 		}
 
+#if defined( L4D2 )
+		render->SetMainView( viewEye.origin, viewEye.angles );
+		C_BaseEntity::PreRenderEntities( 0 );
+#endif
 	    RenderView( viewEye, nClearFlags, flags );
 
+#if !defined( L4D2 )
 		if ( UseVR() )
 		{
 			bool bDoUndistort = ! engine->IsTakingScreenshot();
@@ -1225,6 +1366,7 @@ void CViewRender::Render( vrect_t *rect )
 				g_ClientVirtualReality.OverlayHUDQuadWithUndistort( viewEye, bDoUndistort, g_pClientMode->ShouldBlackoutAroundHUD(), bTranslucent );
 			}
 		}
+#endif
     }
 
 
@@ -1241,7 +1383,9 @@ void CViewRender::Render( vrect_t *rect )
 	// Draw all of the UI stuff "fullscreen"
     // (this is not health, ammo, etc. Nor is it pre-game briefing interface stuff - this is the stuff that appears when you hit Esc in-game)
 	// In stereo mode this is rendered inside of RenderView so it goes into the render target
+#if !defined( L4D2 )
 	if( !g_ClientVirtualReality.ShouldRenderHUDInWorld() )
+#endif
 	{
 		CViewSetup view2d;
 		view2d.x				= rect->x;
@@ -1275,7 +1419,12 @@ static void GetPos( const CCommand &args, Vector &vecOrigin, QAngle &angles )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( spec_pos, "dump position and angles to the console" , 0x00000008)
+#else
 CON_COMMAND( spec_pos, "dump position and angles to the console" )
+#endif
 {
 	Vector vecOrigin;
 	QAngle angles;
@@ -1284,7 +1433,12 @@ CON_COMMAND( spec_pos, "dump position and angles to the console" )
 		vecOrigin.z, angles.x, angles.y );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( getpos, "dump position and angles to the console" , 0x00000008)
+#else
 CON_COMMAND( getpos, "dump position and angles to the console" )
+#endif
 {
 	Vector vecOrigin;
 	QAngle angles;

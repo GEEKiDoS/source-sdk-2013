@@ -9,7 +9,11 @@
 #include "CRagdollMagnet.h"
 #include "cplane.h"
 
-ConVar ai_debug_ragdoll_magnets( "ai_debug_ragdoll_magnets", "0");
+ConVar ai_debug_ragdoll_magnets( "ai_debug_ragdoll_magnets", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"

@@ -67,7 +67,11 @@ using namespace vgui;
 
 void hud_autoreloadscript_callback( IConVar *var, const char *pOldValue, float flOldValue );
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar hud_autoreloadscript( "hud_autoreloadscript", "0", 0xa, "Automatically reloads the animation script each time one is ran" );
+#else
 ConVar hud_autoreloadscript("hud_autoreloadscript", "0", FCVAR_NONE, "Automatically reloads the animation script each time one is ran", hud_autoreloadscript_callback);
+#endif
 
 void hud_autoreloadscript_callback( IConVar *var, const char *pOldValue, float flOldValue )
 {
@@ -77,9 +81,17 @@ void hud_autoreloadscript_callback( IConVar *var, const char *pOldValue, float f
 	}
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+static ConVar cl_leveloverviewmarker( "cl_leveloverviewmarker", "0", 0x4008, "" );
+#else
 static ConVar cl_leveloverviewmarker( "cl_leveloverviewmarker", "0", FCVAR_CHEAT );
+#endif
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( showpanel, "Shows a viewport panel <name>", 0x8 )
+#else
 CON_COMMAND( showpanel, "Shows a viewport panel <name>" )
+#endif
 {
 	if ( !gViewPortInterface )
 		return;
@@ -90,7 +102,11 @@ CON_COMMAND( showpanel, "Shows a viewport panel <name>" )
 	 gViewPortInterface->ShowPanel( args[ 1 ], true );
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( hidepanel, "Hides a viewport panel <name>", 0x8 )
+#else
 CON_COMMAND( hidepanel, "Hides a viewport panel <name>" )
+#endif
 {
 	if ( !gViewPortInterface )
 		return;
@@ -236,6 +252,12 @@ void CBaseViewport::OnScreenSizeChanged(int iOldWide, int iOldTall)
 void CBaseViewport::CreateDefaultPanels( void )
 {
 #ifndef _XBOX
+#if defined( L4D2 )
+	if ( !FindPanelByName( PANEL_SCOREBOARD ) ) AddNewPanel( CreatePanelByName( PANEL_SCOREBOARD ), "PANEL_SCOREBOARD" );
+	if ( !FindPanelByName( PANEL_INFO ) ) AddNewPanel( CreatePanelByName( PANEL_INFO ), "PANEL_INFO" );
+	if ( !FindPanelByName( PANEL_SPECGUI ) ) AddNewPanel( CreatePanelByName( PANEL_SPECGUI ), "PANEL_SPECGUI" );
+	if ( !FindPanelByName( PANEL_NAV_PROGRESS ) ) AddNewPanel( CreatePanelByName( PANEL_NAV_PROGRESS ), "PANEL_NAV_PROGRESS" );
+#else
 	AddNewPanel( CreatePanelByName( PANEL_SCOREBOARD ), "PANEL_SCOREBOARD" );
 	AddNewPanel( CreatePanelByName( PANEL_INFO ), "PANEL_INFO" );
 	AddNewPanel( CreatePanelByName( PANEL_SPECGUI ), "PANEL_SPECGUI" );
@@ -243,6 +265,7 @@ void CBaseViewport::CreateDefaultPanels( void )
 	AddNewPanel( CreatePanelByName( PANEL_SPECMENU ), "PANEL_SPECMENU" );
 	AddNewPanel( CreatePanelByName( PANEL_NAV_PROGRESS ), "PANEL_NAV_PROGRESS" );
 #endif // !TF_CLIENT_DLL
+#endif // L4D2
 #endif // !_XBOX
 }
 
@@ -769,3 +792,6 @@ void CBaseViewport::Paint()
 		vgui::surface()->DrawLine( 0, size, size, size );
 	}
 }
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/ui/baseviewport_console.inc"
+#endif

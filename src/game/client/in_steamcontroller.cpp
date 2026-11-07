@@ -29,6 +29,10 @@
 #include "tier1/convar_serverbounded.h"
 #include "cam_thirdperson.h"
 #include "ienginevgui.h"
+#if defined( L4D2 )
+#include "l4d2/ui/terror_radial_menu.h"
+#include "l4d2/ui/cs_textwindow.h"
+#endif
 
 #if defined( _X360 )
 #include "xbox/xbox_win32stubs.h"
@@ -56,16 +60,104 @@ extern ConVar cl_forwardspeed;
 extern ConVar cl_backspeed;
 extern ConVar cl_sidespeed;
 
-static ConVar sc_yaw_sensitivity( "sc_yaw_sensitivity","1.0", FCVAR_ARCHIVE , "SteamController yaw factor." );
-static ConVar sc_yaw_sensitivity_default( "sc_yaw_sensitivity_default","1.0", FCVAR_NONE );
+static ConVar sc_yaw_sensitivity( "sc_yaw_sensitivity","1.0", 
+#if defined( L4D2 )
+	0x00008088
+#else
+	FCVAR_ARCHIVE
+#endif
+ , "SteamController yaw factor." );
+static ConVar sc_yaw_sensitivity_default( "sc_yaw_sensitivity_default","1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+ );
 
-static ConVar sc_pitch_sensitivity( "sc_pitch_sensitivity","0.75", FCVAR_ARCHIVE , "SteamController pitch factor." );
-static ConVar sc_pitch_sensitivity_default( "sc_pitch_sensitivity_default","0.75", FCVAR_NONE );
+static ConVar sc_pitch_sensitivity( "sc_pitch_sensitivity",
+#if defined( L4D2 )
+	"0.9"
+#else
+	"0.75"
+#endif
+, 
+#if defined( L4D2 )
+	0x00008088
+#else
+	FCVAR_ARCHIVE
+#endif
+ , "SteamController pitch factor." );
+static ConVar sc_pitch_sensitivity_default( "sc_pitch_sensitivity_default",
+#if defined( L4D2 )
+	"0.9"
+#else
+	"0.75"
+#endif
+, 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+ );
 
+#if defined( L4D2 )
+extern ConVar sc_mouse_sensitivity;
+extern ConVar cl_inputmode;
+extern ConVar joy_variable_frametime;
+extern ConVar joy_lookspin_default;
+extern ConVar cl_pitchdown;
+extern ConVar cl_pitchup;
+extern bool IN_IsLookSpinPressed();
+extern bool IN_IsResetCameraHeld();
+extern void L4D2ControllerLook( float yaw, float pitch, float frametime, bool platformer,
+	float &yawDelta, float &pitchDelta );
+#else
 ConVar sc_look_sensitivity_scale( "sc_look_sensitivity_scale", "0.125", FCVAR_NONE, "Steam Controller look sensitivity global scale factor." );
+#endif
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CInput::ApplySteamControllerCameraMove( QAngle& viewangles, CUserCmd *cmd, Vector2D vecPosition )
 {
+#if defined( L4D2 )
+	// Whole C135AA0: mouse-like Steam input uses the native sensitivity owner.
+	const bool thirdPerson = CAM_IsThirdPerson() != 0;
+	Vector offset;
+	if ( thirdPerson )
+	{
+		offset = g_ThirdPersonManager.GetCameraOffsetAngles();
+		if ( vecPosition.x != 0.0f )
+		{
+			offset[YAW] -= vecPosition.x;
+			cam_idealyaw.SetValue( offset[YAW] - viewangles[YAW] );
+		}
+	}
+	else
+		viewangles[YAW] -= sc_yaw_sensitivity.GetFloat() * vecPosition.x;
+	if ( thirdPerson && thirdperson_platformer.GetInt() )
+	{
+		if ( vecPosition.y != 0.0f )
+		{
+			offset[PITCH] += vecPosition.y;
+			cam_idealpitch.SetValue( offset[PITCH] - viewangles[PITCH] );
+		}
+	}
+	else
+	{
+		viewangles[PITCH] -= sc_pitch_sensitivity.GetFloat() * vecPosition.y;
+		viewangles[PITCH] = clamp( viewangles[PITCH], -cl_pitchup.GetFloat(), cl_pitchdown.GetFloat() );
+	}
+	if ( thirdPerson )
+		g_ThirdPersonManager.SetCameraOffsetAngles( offset );
+	cmd->mousedx = (int)vecPosition.x;
+	cmd->mousedy = (int)vecPosition.y;
+#else
 	//roll the view angles so roll is 0 (the HL2 assumed state) and mouse adjustments are relative to the screen.
 	//Assuming roll is unchanging, we want mouse left to translate to screen left at all times (same for right, up, and down)	
 
@@ -116,12 +208,26 @@ void CInput::ApplySteamControllerCameraMove( QAngle& viewangles, CUserCmd *cmd, 
 	// NOTE:  Does rounding to int cause any issues?  ywb 1/17/04
 	cmd->mousedx = (int)vecPosition.x;
 	cmd->mousedy = (int)vecPosition.y;
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 #define CONTROLLER_ACTION_FLAGS_NONE 0
 #define CONTROLLER_ACTION_FLAGS_STOPS_TAUNT ( 1 << 0 )
 #define CONTROLLER_ACTION_FLAGS_NEEDS_DEBOUNCE ( 1 << 1 )
 		
+#if defined( L4D2 )
+// The L4D2 table's third field selects a native radial callback, not TF flags.
+enum TerrorSteamRadialCallback
+{
+	TERROR_STEAM_RADIAL_QA = 1,
+	TERROR_STEAM_RADIAL_ORDERS,
+	TERROR_STEAM_RADIAL_ACCEPT,
+	TERROR_STEAM_RADIAL_CANCEL
+};
+#endif
 struct ControllerDigitalActionToCommand
 {
 	const char* action;
@@ -133,6 +239,38 @@ struct ControllerDigitalActionToCommand
 // string that contains spaces (e.g. for "vote option1"), which are not allowed in action names.
 static ControllerDigitalActionToCommand g_ControllerDigitalGameActions[] =
 {
+#if defined( L4D2 )
+	// C135D00/off_106D7500: action names strip '+', commands retain it.
+	{ "attack", "+attack", 0 },
+	{ "attack2", "+attack2", 0 },
+	{ "zoom", "+zoom", 0 },
+	{ "reload", "+reload", 0 },
+	{ "use", "+use", 0 },
+	{ "jump", "+jump", 0 },
+	{ "duck", "+duck", 0 },
+	{ "toggle_duck", "toggle_duck", 0 },
+	{ "speed", "+speed", 0 },
+	{ "changeclass", "changeclass", 0 },
+	{ "togglescores", "togglescores", 0 },
+	{ "flashlight", "impulse 100", 0 },
+	{ "slot1", "slot1", 0 },
+	{ "slot2", "slot2", 0 },
+	{ "slot3", "slot3", 0 },
+	{ "slot4", "slot4", 0 },
+	{ "slot5", "slot5", 0 },
+	{ "lookspin", "+lookspin", 0 },
+	{ "invnext", "invnext", 0 },
+	{ "invprev", "invprev", 0 },
+	{ "lastinv", "lastinv", 0 },
+	{ "voicerecord", "+voicerecord", 0 },
+	{ "radial_orders", "radial_orders", TERROR_STEAM_RADIAL_ORDERS },
+	{ "radial_qa", "radial_qa", TERROR_STEAM_RADIAL_QA },
+	{ "resetcamera", "+resetcamera", 0 },
+	{ "spray", "impulse 201", 0 },
+	{ "radial_accept", "radial_accept", TERROR_STEAM_RADIAL_ACCEPT },
+	{ "radial_cancel", "radial_cancel", TERROR_STEAM_RADIAL_CANCEL },
+	{ "sc_say", "sc_say", 0 },
+#else
 	{ "duck", "+duck", CONTROLLER_ACTION_FLAGS_NONE },
 	{ "attack", "+attack", CONTROLLER_ACTION_FLAGS_NONE },
 	{ "attack2", "+attack2", CONTROLLER_ACTION_FLAGS_NONE },
@@ -169,6 +307,7 @@ static ControllerDigitalActionToCommand g_ControllerDigitalGameActions[] =
 	{ "voice_spy", "voicemenu 1 1", CONTROLLER_ACTION_FLAGS_NEEDS_DEBOUNCE },
 	{ "voice_uberready", "voicemenu 1 7", CONTROLLER_ACTION_FLAGS_NEEDS_DEBOUNCE },
 	{ "voice_help", "voicemenu 2 0", CONTROLLER_ACTION_FLAGS_NEEDS_DEBOUNCE },
+#endif
 };
 
 struct ControllerDigitalActionState {
@@ -182,6 +321,35 @@ static ControllerDigitalActionState g_ControllerDigitalActionState[ARRAYSIZE(g_C
 
 static ControllerAnalogActionHandle_t g_ControllerMoveHandle;
 static ControllerAnalogActionHandle_t g_ControllerCameraHandle;
+#if defined( L4D2 )
+static ControllerAnalogActionHandle_t g_ControllerJoystickCameraHandle;
+static int g_nL4D2SteamControllerCount;
+static ControllerDigitalActionState g_AdditionalControllerDigitalActionState
+	[STEAM_CONTROLLER_MAX_COUNT - 1][ARRAYSIZE( g_ControllerDigitalGameActions )];
+
+static ControllerDigitalActionState &L4D2SteamActionState( int controller, int action )
+{
+	return controller == 0 ? g_ControllerDigitalActionState[action] :
+		g_AdditionalControllerDigitalActionState[controller - 1][action];
+}
+
+static void L4D2SteamRadialAction( int callback, bool pressed )
+{
+	if ( callback == TERROR_STEAM_RADIAL_QA || callback == TERROR_STEAM_RADIAL_ORDERS )
+	{
+		const char *name = callback == TERROR_STEAM_RADIAL_QA ? "QA" : "Orders";
+		if ( pressed )
+			OpenRadialMenu( name );
+		else
+			CloseRadialMenu( name, true );
+	}
+	else if ( pressed )
+	{
+		CloseRadialMenu( "QA", callback == TERROR_STEAM_RADIAL_ACCEPT );
+		CloseRadialMenu( "Orders", callback == TERROR_STEAM_RADIAL_ACCEPT );
+	}
+}
+#endif
 
 bool CInput::InitializeSteamControllerGameActionSets()
 {
@@ -191,6 +359,29 @@ bool CInput::InitializeSteamControllerGameActionSets()
 		return false;
 	}
 
+#if defined( L4D2 )
+	uint64 handles[STEAM_CONTROLLER_MAX_COUNT];
+	const int count = steamcontroller->GetConnectedControllers( handles );
+	g_nL4D2SteamControllerCount = 0;
+	for ( int action = 0; action < ARRAYSIZE( g_ControllerDigitalGameActions ); ++action )
+	{
+		for ( int controller = 0; controller < count; ++controller )
+		{
+			ControllerDigitalActionState &state = L4D2SteamActionState( controller, action );
+			state.handle = steamcontroller->GetDigitalActionHandle( g_ControllerDigitalGameActions[action].action );
+			if ( action == 0 && state.handle == 0 )
+				return false;
+			state.cmd = g_ControllerDigitalGameActions[action].cmd;
+			state.bState = false;
+			state.bAwaitingDebounce = false;
+		}
+	}
+	g_ControllerMoveHandle = steamcontroller->GetAnalogActionHandle( "Move" );
+	g_ControllerCameraHandle = steamcontroller->GetAnalogActionHandle( "Camera" );
+	g_ControllerJoystickCameraHandle = steamcontroller->GetAnalogActionHandle( "JoystickCamera" );
+	g_nL4D2SteamControllerCount = count;
+	return count != 0;
+#else
 	bool bGotHandle = true;
 
 	for ( int i = 0; i < ARRAYSIZE( g_ControllerDigitalGameActions ); ++i )
@@ -214,14 +405,175 @@ bool CInput::InitializeSteamControllerGameActionSets()
 	m_PreferredGameActionSet = GAME_ACTION_SET_MENUCONTROLS;
 
 	return true;
+#endif
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: SteamControllerMove -- main entry point for applying Steam Controller Movements
 // Input  : *cmd - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CInput::SteamControllerMove( float flFrametime, CUserCmd *cmd )
 {
+#if defined( L4D2 )
+	// C135F50: digital actions, movement, reset/spin, mouse camera, then stick camera.
+	if ( ( enginevgui->IsGameUIVisible() || IsTerrorTextWindowInputActive() ) &&
+		!HasTerrorRadialInputOverride() )
+		return;
+	ISteamController *steamcontroller = g_pInputSystem->SteamControllerInterface();
+	if ( !steamcontroller )
+		return;
+	uint64 handles[STEAM_CONTROLLER_MAX_COUNT];
+	const int count = steamcontroller->GetConnectedControllers( handles );
+	if ( count <= 0 )
+		return;
+	if ( count != g_nL4D2SteamControllerCount || !m_bSteamControllerGameActionsInitialized )
+	{
+		m_bSteamControllerGameActionsInitialized = InitializeSteamControllerGameActionSets();
+		if ( !m_bSteamControllerGameActionsInitialized )
+			return;
+	}
+	g_pInputSystem->ActivateSteamControllerActionSet( m_PreferredGameActionSet );
+	QAngle viewangles;
+	engine->GetViewAngles( viewangles );
+	view->StopPitchDrift();
+	float yawDelta = 0.0f;
+	for ( int controller = 0; controller < count; ++controller )
+	{
+		for ( int action = 0; action < ARRAYSIZE( g_ControllerDigitalGameActions ); ++action )
+		{
+			ControllerDigitalActionState &state = L4D2SteamActionState( controller, action );
+			const ControllerDigitalActionData_t data = steamcontroller->GetDigitalActionData( handles[controller], state.handle );
+			if ( data.bState == state.bState )
+				continue;
+			ControllerDigitalActionToCommand &mapping = g_ControllerDigitalGameActions[action];
+			if ( mapping.flags != 0 )
+				L4D2SteamRadialAction( mapping.flags, data.bState );
+			else if ( data.bState || state.cmd[0] == '+' )
+			{
+				char command[128];
+				Q_strncpy( command, state.cmd, sizeof( command ) );
+				if ( !data.bState )
+					command[0] = '-';
+				engine->ClientCmd_Unrestricted( command );
+			}
+			state.bState = data.bState;
+			m_bSteamControllerSeenInput = true;
+		}
+		const ControllerAnalogActionData_t movement = steamcontroller->GetAnalogActionData( handles[controller], g_ControllerMoveHandle );
+		cmd->forwardmove += ( movement.y > 0.0f ? cl_forwardspeed.GetFloat() : cl_backspeed.GetFloat() ) * movement.y;
+		cmd->sidemove += cl_sidespeed.GetFloat() * movement.x;
+		// Native107C97A8 retains digital input but suppresses camera sampling.
+		if ( HasTerrorRadialInputOverride() )
+			continue;
+
+		const bool hasSample = !( m_flRemainingSteamControllerSampleTime <= 0.0f );
+		const float sampleTime = MIN( m_flRemainingSteamControllerSampleTime, flFrametime );
+		m_flRemainingSteamControllerSampleTime -= sampleTime;
+		const bool variableFrameTime = joy_variable_frametime.GetBool();
+		const float frameTime = variableFrameTime ? sampleTime : gpGlobals->frametime;
+		const bool processLookInput = variableFrameTime || sampleTime != gpGlobals->frametime;
+		C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+		if ( m_flRemainingLookSpinTime == 0.0f && IN_IsResetCameraHeld() &&
+			player && player->GetObserverMode() == OBS_MODE_NONE )
+		{
+			m_flRemainingResetCameraTime = joy_lookspin_default.GetFloat() * 0.5f;
+			m_flResetCameraPitchRate = -( viewangles[PITCH] / m_flRemainingResetCameraTime );
+		}
+		if ( m_flRemainingLookSpinTime == 0.0f && IN_IsLookSpinPressed() &&
+			player && player->GetObserverMode() == OBS_MODE_NONE )
+		{
+			m_flRemainingLookSpinTime = joy_lookspin_default.GetFloat();
+			m_flLookSpinYawRate = ( m_flLastJoystickYawDelta < 0.0f ? -180.0f : 180.0f ) / m_flRemainingLookSpinTime;
+		}
+		if ( m_flRemainingResetCameraTime != 0.0f )
+		{
+			float step = frameTime;
+			const float remaining = m_flRemainingResetCameraTime - step;
+			if ( !( remaining <= 0.0f ) )
+				m_flRemainingResetCameraTime = remaining;
+			else
+			{
+				step = m_flRemainingResetCameraTime;
+				m_flRemainingResetCameraTime = 0.0f;
+			}
+			const float delta = m_flResetCameraPitchRate * step;
+			viewangles[PITCH] += delta;
+			cmd->mousedy = (int)delta;
+		}
+		else if ( m_flRemainingLookSpinTime != 0.0f )
+		{
+			float step = frameTime;
+			const float remaining = m_flRemainingLookSpinTime - step;
+			if ( !( remaining <= 0.0f ) )
+				m_flRemainingLookSpinTime = remaining;
+			else
+			{
+				step = m_flRemainingLookSpinTime;
+				m_flRemainingLookSpinTime = 0.0f;
+			}
+			yawDelta = m_flLookSpinYawRate * step;
+			viewangles[YAW] += yawDelta;
+			cmd->mousedx = (int)yawDelta;
+		}
+		else
+		{
+			const ControllerAnalogActionData_t mouse = steamcontroller->GetAnalogActionData( handles[controller], g_ControllerCameraHandle );
+			const Vector2D mouseDelta( mouse.x * sc_mouse_sensitivity.GetFloat(), -mouse.y * sc_mouse_sensitivity.GetFloat() );
+			if ( mouseDelta.LengthSqr() > 0.0f && !m_fCameraInterceptingMouse )
+			{
+				cl_inputmode.SetValue( 2 );
+				const float previousYaw = viewangles[YAW];
+				ApplySteamControllerCameraMove( viewangles, cmd, mouseDelta );
+				yawDelta += viewangles[YAW] - previousYaw;
+			}
+			const ControllerAnalogActionData_t stick = steamcontroller->GetAnalogActionData( handles[controller], g_ControllerJoystickCameraHandle );
+			if ( stick.bActive )
+			{
+				yawDelta = 0.0f;
+				if ( hasSample )
+				{
+					float pitchDelta = 0.0f;
+					if ( CAM_IsThirdPerson() && thirdperson_platformer.GetInt() )
+					{
+						L4D2ControllerLook( stick.x, stick.y, frameTime, true, yawDelta, pitchDelta );
+						Vector offset = g_ThirdPersonManager.GetCameraOffsetAngles();
+						offset[PITCH] += pitchDelta;
+						offset[YAW] += yawDelta;
+						g_ThirdPersonManager.SetCameraOffsetAngles( offset );
+						if ( stick.x != 0.0f || stick.y != 0.0f )
+						{
+							cam_idealpitch.SetValue( offset[PITCH] - viewangles[PITCH] );
+							cam_idealyaw.SetValue( offset[YAW] - viewangles[YAW] );
+						}
+						yawDelta = 0.0f;
+					}
+					else
+					{
+						if ( processLookInput )
+							L4D2ControllerLook( stick.x, stick.y, frameTime, false, yawDelta, pitchDelta );
+						viewangles[YAW] += yawDelta;
+						viewangles[PITCH] += pitchDelta;
+						cmd->mousedx = (int)( cmd->mousedx + yawDelta );
+						cmd->mousedy = (int)( cmd->mousedy + pitchDelta );
+						view->StopPitchDrift();
+						if ( fabs( stick.x ) > 0.5f || fabs( stick.y ) > 0.5f )
+							cl_inputmode.SetValue( 1 );
+						viewangles[PITCH] = clamp( viewangles[PITCH], -cl_pitchup.GetFloat(), cl_pitchdown.GetFloat() );
+					}
+				}
+			}
+		}
+	}
+	if ( yawDelta != 0.0f )
+		m_flLastJoystickYawDelta = yawDelta;
+	engine->SetViewAngles( viewangles );
+#else
 	// Make sure we have an interface
 	auto steamcontroller = g_pInputSystem->SteamControllerInterface();
 	if ( !steamcontroller )
@@ -340,7 +692,11 @@ void CInput::SteamControllerMove( float flFrametime, CUserCmd *cmd )
 	}
 
 	engine->SetViewAngles( viewangles );
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Sets the preferred game action set, and "debounces" controls where
@@ -350,6 +706,7 @@ void CInput::SetPreferredGameActionSet( GameActionSet_t action_set )
 {
 	if ( m_PreferredGameActionSet != action_set )
 	{
+#if !defined( L4D2 )
 		// Debounce. Flag some actions as needing debounce (i.e. must see a "released" state before we'll register another "pressed" input).
 		for ( int i = 0; i < ARRAYSIZE( g_ControllerDigitalActionState ); i++ )
 		{
@@ -358,6 +715,7 @@ void CInput::SetPreferredGameActionSet( GameActionSet_t action_set )
 				g_ControllerDigitalActionState[i].bAwaitingDebounce = true;
 			}
 		}
+#endif
 
 		m_PreferredGameActionSet = action_set;
 		g_pInputSystem->ActivateSteamControllerActionSet( m_PreferredGameActionSet );														  
@@ -404,6 +762,7 @@ bool CInput::IsSteamControllerActive()
 	return m_bSteamControllerSeenInput;
 }
 
+#if !defined( L4D2 )
 //-----------------------------------------------------------------------------
 // Purpose: Console command for launching the Steam Controller binding panel
 //-----------------------------------------------------------------------------
@@ -491,3 +850,4 @@ CON_COMMAND( sc_status, "Show Steam Controller status information" )
 		Warning( "Input system not initialized.\n" );
 	}
 }
+#endif

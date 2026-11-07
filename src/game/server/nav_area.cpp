@@ -24,8 +24,10 @@
 #include "props_shared.h"
 #include "func_breakablesurf.h"
 
+#if defined( TERROR ) || defined( L4D2 )
+#include "l4d2/entities/func_elevator.h"
+#endif
 #ifdef TERROR
-#include "func_elevator.h"
 #include "AmbientLight.h"
 #endif
 
@@ -34,6 +36,11 @@
 #include "functorutils.h"
 #include "team.h"
 #include "nav_entities.h"
+
+#if defined( L4D2 )
+#include "l4d2/nav/terror_nav_area.h"
+#include "world.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -50,19 +57,83 @@ CNavArea *CNavArea::m_openListTail = NULL;
 bool CNavArea::m_isReset = false;
 uint32 CNavArea::s_nCurrVisTestCounter = 0;
 
-ConVar nav_coplanar_slope_limit( "nav_coplanar_slope_limit", "0.99", FCVAR_CHEAT );
-ConVar nav_coplanar_slope_limit_displacement( "nav_coplanar_slope_limit_displacement", "0.7", FCVAR_CHEAT );
-ConVar nav_split_place_on_ground( "nav_split_place_on_ground", "0", FCVAR_CHEAT, "If true, nav areas will be placed flush with the ground when split." );
-ConVar nav_area_bgcolor( "nav_area_bgcolor", "0 0 0 30", FCVAR_CHEAT, "RGBA color to draw as the background color for nav areas while editing." );
-ConVar nav_corner_adjust_adjacent( "nav_corner_adjust_adjacent", "18", FCVAR_CHEAT, "radius used to raise/lower corners in nearby areas when raising/lowering corners." );
-ConVar nav_show_light_intensity( "nav_show_light_intensity", "0", FCVAR_CHEAT );
-ConVar nav_debug_blocked( "nav_debug_blocked", "0", FCVAR_CHEAT );
+ConVar nav_coplanar_slope_limit( "nav_coplanar_slope_limit", "0.99", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar nav_coplanar_slope_limit_displacement( "nav_coplanar_slope_limit_displacement", "0.7", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar nav_split_place_on_ground( "nav_split_place_on_ground", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "If true, nav areas will be placed flush with the ground when split." );
+ConVar nav_area_bgcolor( "nav_area_bgcolor", "0 0 0 30", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "RGBA color to draw as the background color for nav areas while editing." );
+ConVar nav_corner_adjust_adjacent( "nav_corner_adjust_adjacent", "18", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "radius used to raise/lower corners in nearby areas when raising/lowering corners." );
+ConVar nav_show_light_intensity( "nav_show_light_intensity", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar nav_debug_blocked( "nav_debug_blocked", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 ConVar nav_show_contiguous( "nav_show_continguous", "0", FCVAR_CHEAT, "Highlight non-contiguous connections" );
 
 const float DEF_NAV_VIEW_DISTANCE = 1500.0;
+#if defined( L4D2 )
+ConVar nav_max_view_distance( "nav_max_view_distance", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Maximum range for precomputed nav mesh visibility (0 = default 1500 units)" );
+#else
 ConVar nav_max_view_distance( "nav_max_view_distance", "6000", FCVAR_CHEAT, "Maximum range for precomputed nav mesh visibility (0 = default 1500 units)" );
-ConVar nav_update_visibility_on_edit( "nav_update_visibility_on_edit", "0", FCVAR_CHEAT, "If nonzero editing the mesh will incrementally recompue visibility" );
-ConVar nav_potentially_visible_dot_tolerance( "nav_potentially_visible_dot_tolerance", "0.98", FCVAR_CHEAT );
+#endif
+ConVar nav_update_visibility_on_edit( "nav_update_visibility_on_edit", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "If nonzero editing the mesh will incrementally recompue visibility" );
+ConVar nav_potentially_visible_dot_tolerance( "nav_potentially_visible_dot_tolerance", "0.98", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 ConVar nav_show_potentially_visible( "nav_show_potentially_visible", "0", FCVAR_CHEAT, "Show areas that are potentially visible from the current nav area" );
 
 Color s_selectedSetColor( 255, 255, 200, 96 );
@@ -94,8 +165,20 @@ static void SelectedSetColorChaged( IConVar *var, const char *pOldValue, float f
 		(*color)[3] = a;
 	}
 }
-ConVar nav_selected_set_color( "nav_selected_set_color", "255 255 200 96", FCVAR_CHEAT, "Color used to draw the selected set background while editing.", false, 0.0f, false, 0.0f, SelectedSetColorChaged );
-ConVar nav_selected_set_border_color( "nav_selected_set_border_color", "100 100 0 255", FCVAR_CHEAT, "Color used to draw the selected set borders while editing.", false, 0.0f, false, 0.0f, SelectedSetColorChaged );
+ConVar nav_selected_set_color( "nav_selected_set_color", "255 255 200 96", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Color used to draw the selected set background while editing.", false, 0.0f, false, 0.0f, SelectedSetColorChaged );
+ConVar nav_selected_set_border_color( "nav_selected_set_border_color", "100 100 0 255", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Color used to draw the selected set borders while editing.", false, 0.0f, false, 0.0f, SelectedSetColorChaged );
 
 //--------------------------------------------------------------------------------------------------------------
 
@@ -179,6 +262,9 @@ void CNavArea::CompressIDs( void )
  */
 CNavArea::CNavArea( void )
 {
+#if defined( L4D2 )
+	m_usesTerrorAttributes = false;
+#endif
 	m_marker = 0;
 	m_nearNavSearchMarker = 0;
 	m_damagingTickCount = 0;
@@ -298,6 +384,9 @@ void CNavArea::Build( const Vector &corner, const Vector &otherCorner )
 	m_neZ = corner.z;
 	m_swZ = otherCorner.z;
 
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
 	CalcDebugID();
 }
 
@@ -327,6 +416,9 @@ void CNavArea::Build( const Vector &nwCorner, const Vector &neCorner, const Vect
 		m_invDxCorners = m_invDyCorners = 0;
 	}
 
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
 	CalcDebugID();
 }
 
@@ -365,6 +457,9 @@ void CNavArea::Build( CNavNode *nwNode, CNavNode *neNode, CNavNode *seNode, CNav
 	// mark internal nodes as part of this area
 	AssignNodes( this );
 
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
 	CalcDebugID();
 }
 
@@ -562,7 +657,7 @@ void CNavArea::ConnectElevators( void )
 	m_attributeFlags &= ~NAV_MESH_HAS_ELEVATOR;
 	m_elevatorAreas.RemoveAll();
 
-#ifdef TERROR
+#if defined( TERROR ) || defined( L4D2 )
 	// connect elevators
 	CFuncElevator *elevator = NULL;
 	while( ( elevator = (CFuncElevator *)gEntList.FindEntityByClassname( elevator, "func_elevator" ) ) != NULL )
@@ -664,9 +759,13 @@ void CNavArea::ConnectElevators( void )
  */
 void CNavArea::OnServerActivate( void )
 {
+#if !defined( L4D2 )
 	ConnectElevators();
+#endif
 	m_damagingTickCount = 0;
+#if !defined( L4D2 )
 	ClearAllNavCostEntities();
+#endif
 }
 
 
@@ -677,9 +776,13 @@ void CNavArea::OnServerActivate( void )
 void CNavArea::OnRoundRestart( void )
 {
 	// need to redo this here since func_elevators are deleted and recreated at round restart
+#if !defined( L4D2 )
 	ConnectElevators();
+#endif
 	m_damagingTickCount = 0;
+#if !defined( L4D2 )
 	ClearAllNavCostEntities();
+#endif
 }
 
 
@@ -935,6 +1038,10 @@ void CNavArea::FinishMerge( CNavArea *adjArea )
 	{
 		m_invDxCorners = m_invDyCorners = 0;
 	}
+
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
 
 	// reassign the adjacent area's internal nodes to the final area
 	adjArea->AssignNodes( this );
@@ -1398,6 +1505,10 @@ void CNavArea::FinishSplitEdit( CNavArea *newArea, NavDirType ignoreEdge )
 		newArea->m_invDxCorners = newArea->m_invDyCorners = 0;
 	}
 
+#if defined( L4D2 )
+	ToTerrorNavArea( newArea )->UpdateFlowFlatGeometry();
+#endif
+
 	// connect to adjacent areas
 	for( int d=0; d<NUM_DIRECTIONS; ++d )
 	{
@@ -1771,6 +1882,10 @@ bool CNavArea::MergeEdit( CNavArea *adj )
 	else
 		m_swZ = GetZ( m_nwCorner.x, m_seCorner.y );
 
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
+
 	// merge adjacency links - we gain all the connections that adjArea had
 	MergeAdjacentConnections( adj );
 
@@ -2138,6 +2253,33 @@ bool CNavArea::IsCoplanar( const CNavArea *area ) const
  * NOTE: pos->z is not used.
  */
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+double CNavArea::GetZ( float x, float y ) const RESTRICT
+{
+	if ( m_invDxCorners == 0.0f || m_invDyCorners == 0.0f )
+		return m_neZ;
+
+	float u = ( x - m_nwCorner.x ) * m_invDxCorners;
+	float v = ( y - m_nwCorner.y ) * m_invDyCorners;
+	if ( !( u >= 0.0f ) ) u = 0.0f;
+	if ( u - 1.0f >= 0.0f ) u = 1.0f;
+	if ( !( v >= 0.0f ) ) v = 0.0f;
+	if ( v - 1.0f >= 0.0f ) v = 1.0f;
+
+	const float northZ = ( m_neZ - m_nwCorner.z ) * u + m_nwCorner.z;
+	const double southZ = ( (double)m_seCorner.z - (double)m_swZ ) * (double)u + (double)m_swZ;
+	return ( southZ - (double)northZ ) * (double)v + (double)northZ;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CNavArea::GetZ( float x, float y ) const RESTRICT
 {
 	// guard against division by zero due to degenerate areas
@@ -2173,6 +2315,7 @@ float CNavArea::GetZ( float x, float y ) const RESTRICT
 
 	return northZ + v * (southZ - northZ);
 }
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------
@@ -2200,6 +2343,70 @@ void CNavArea::GetClosestPointOnArea( const Vector * RESTRICT pPos, Vector *clos
 /**
  * Return shortest distance squared between point and this area
  */
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+double CNavArea::GetDistanceSquaredToPoint( const Vector &pos ) const
+{
+	// S476C00: outside a single edge, the native result deliberately ignores
+	// Z. At a corner it uses that corner's Z, not bilinear closest-surface Z.
+	if ( m_nwCorner.x > pos.x )
+	{
+		double x = (double)m_nwCorner.x - (double)pos.x;
+		if ( m_nwCorner.y > pos.y )
+		{
+			double y = (double)m_nwCorner.y - (double)pos.y;
+			double z = (double)m_nwCorner.z - (double)pos.z;
+			return ( y * y + x * x ) + z * z;
+		}
+		if ( pos.y > m_seCorner.y )
+		{
+			double y = (double)m_seCorner.y - (double)pos.y;
+			double z = (double)m_swZ - (double)pos.z;
+			return ( x * x + y * y ) + z * z;
+		}
+		return x * x;
+	}
+	if ( pos.x > m_seCorner.x )
+	{
+		if ( m_nwCorner.y > pos.y )
+		{
+			double x = (double)m_seCorner.x - (double)pos.x;
+			double y = (double)m_nwCorner.y - (double)pos.y;
+			double z = (double)m_neZ - (double)pos.z;
+			return ( x * x + y * y ) + z * z;
+		}
+		if ( pos.y > m_seCorner.y )
+		{
+			double x = (double)m_seCorner.x - (double)pos.x;
+			double y = (double)m_seCorner.y - (double)pos.y;
+			double z = (double)m_seCorner.z - (double)pos.z;
+			return ( y * y + x * x ) + z * z;
+		}
+		double x = (double)pos.x - (double)m_seCorner.x;
+		return x * x;
+	}
+	if ( m_nwCorner.y > pos.y )
+	{
+		double y = (double)m_nwCorner.y - (double)pos.y;
+		return y * y;
+	}
+	if ( pos.y > m_seCorner.y )
+	{
+		double y = (double)pos.y - (double)m_seCorner.y;
+		return y * y;
+	}
+	double z = GetZ( pos ) - (double)pos.z;
+	return z * z;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CNavArea::GetDistanceSquaredToPoint( const Vector &pos ) const
 {
 	if (pos.x < m_nwCorner.x)
@@ -2268,6 +2475,7 @@ float CNavArea::GetDistanceSquaredToPoint( const Vector &pos ) const
 		return d * d;
 	}
 }
+#endif
 
 
 
@@ -3602,6 +3810,9 @@ void CNavArea::SetCorner( NavCornerType corner, const Vector& newPosition )
 		m_invDxCorners = m_invDyCorners = 0;
 	}
 
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
 	CalcDebugID();
 }
 
@@ -4182,6 +4393,42 @@ float CNavArea::GetDanger( int teamID )
 /**
  * Returns a 0..1 light intensity for the given point
  */
+#if defined( L4D2 )
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#endif
+// S475FF0. Clamp choices preserve unordered inputs; only the ratios and
+// (1-dX) spill to float before the native wide bilinear calculation.
+double CNavArea::GetLightIntensity( const Vector &pos ) const
+{
+	float x;
+	if ( pos.x > m_seCorner.x )
+		x = m_seCorner.x;
+	else
+	{
+		x = m_nwCorner.x;
+		if ( !( m_nwCorner.x > pos.x ) )
+			x = pos.x;
+	}
+	float y = pos.y;
+	if ( y > m_seCorner.y )
+		y = m_seCorner.y;
+	else if ( m_nwCorner.y > y )
+		y = m_nwCorner.y;
+
+	const float dY = ( y - m_nwCorner.y ) / ( m_seCorner.y - m_nwCorner.y );
+	const float dX = ( x - m_nwCorner.x ) / ( m_seCorner.x - m_nwCorner.x );
+	const float oneMinusX = 1.0f - dX;
+	const double north = static_cast< double >( m_lightIntensity[NORTH_EAST] ) * dX +
+		static_cast< double >( m_lightIntensity[NORTH_WEST] ) * oneMinusX;
+	const double south = static_cast< double >( m_lightIntensity[SOUTH_WEST] ) * oneMinusX +
+		static_cast< double >( m_lightIntensity[SOUTH_EAST] ) * dX;
+	return south * dY + ( 1.0 - static_cast< double >( dY ) ) * north;
+}
+#ifdef _MSC_VER
+#pragma float_control( pop )
+#endif
+#else
 float CNavArea::GetLightIntensity( const Vector &pos ) const
 {
 	Vector testPos;
@@ -4198,13 +4445,18 @@ float CNavArea::GetLightIntensity( const Vector &pos ) const
 
 	return light;
 }
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------
 /**
  * Returns a 0..1 light intensity for the given point
  */
+#if defined( L4D2 )
+double CNavArea::GetLightIntensity( float x, float y ) const
+#else
 float CNavArea::GetLightIntensity( float x, float y ) const
+#endif
 {
 	return GetLightIntensity( Vector( x, y, 0 ) );
 }
@@ -4283,7 +4535,12 @@ bool CNavArea::ComputeLighting( void )
 
 
 //--------------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_update_lighting, "Recomputes lighting values", 0x00004004 )
+#else
 CON_COMMAND_F( nav_update_lighting, "Recomputes lighting values", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -4362,6 +4619,10 @@ void CNavArea::RaiseCorner( NavCornerType corner, int amount, bool raiseAdjacent
 	{
 		m_invDxCorners = m_invDyCorners = 0;
 	}
+
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
 
 	if ( !raiseAdjacentCorners || nav_corner_adjust_adjacent.GetFloat() <= 0.0f )
 	{
@@ -4562,6 +4823,9 @@ void CNavArea::Shift( const Vector &shift )
 	m_seCorner += shift;
 	
 	m_center += shift;
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->UpdateFlowFlatGeometry();
+#endif
 }
 
 
@@ -4648,6 +4912,9 @@ bool CNavArea::IsBlocked( int teamID, bool ignoreNavBlockers ) const
 }
 
 //--------------------------------------------------------------------------------------------------------
+#if defined( L4D2 )
+#include "l4d2/nav/nav_area_blockers.inc"
+#else
 void CNavArea::MarkAsBlocked( int teamID, CBaseEntity *blocker, bool bGenerateEvent )
 {
 	if ( blocker && blocker->ClassMatches( "func_nav_blocker" ) )
@@ -4942,6 +5209,7 @@ void CNavArea::UpdateBlocked( bool force, int teamID )
 		}
 	}
 }
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------
@@ -4992,6 +5260,20 @@ void CNavArea::CheckFloor( CBaseEntity *ignore )
 
 
 //--------------------------------------------------------------------------------------------------------
+#if defined( L4D2 )
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#endif
+static unsigned char TerrorObstacleHeight( float height )
+{
+	// Native4763F0 and47C5B0: real [0,255] saturation plus CEIL, not wrap,
+	// truncation, float storage, nearest integer, or a wrapper-only conversion.
+	// Native COMISS/JB admits unordered; upper JBE saturates it to255.
+	if ( height <= 0.0f ) return 0;
+	if ( !( 255.0f > height ) ) return 255;
+	return static_cast< unsigned char >( ceil( static_cast< double >( height ) ) );
+}
+#endif
 void CNavArea::MarkObstacleToAvoid( float obstructionHeight )
 {
 	if ( m_avoidanceObstacleHeight < obstructionHeight )
@@ -5001,7 +5283,11 @@ void CNavArea::MarkObstacleToAvoid( float obstructionHeight )
 			TheNavMesh->OnAvoidanceObstacleEnteredArea( this );
 		}
 
+#if defined( L4D2 )
+		m_avoidanceObstacleHeight = TerrorObstacleHeight( obstructionHeight );
+#else
 		m_avoidanceObstacleHeight = obstructionHeight;
+#endif
 	}
 }
 
@@ -5048,25 +5334,41 @@ void CNavArea::UpdateAvoidanceObstacles( void )
 		if ( !obstruction->CanObstructNavAreas() )
 			continue;
 
+#if defined( L4D2 )
+		double originalHeight = obstruction->GetNavObstructionHeight();
+		float storedHeight = (float)originalHeight; // Native47C741 FST before comparison.
+		if ( !( (double)obstructionHeight > originalHeight ) ) obstructionHeight = storedHeight;
+#else
 		float propHeight = obstruction->GetNavObstructionHeight();
 
 		obstructionHeight = MAX( obstructionHeight, propHeight );
+#endif
 	}
 
+#if defined( L4D2 )
+	m_avoidanceObstacleHeight = TerrorObstacleHeight( obstructionHeight );
+#else
 	m_avoidanceObstacleHeight = obstructionHeight;
+#endif
 
 	if ( m_avoidanceObstacleHeight == 0.0f )
 	{
 		TheNavMesh->OnAvoidanceObstacleLeftArea( this );
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------
 // Clear set of func_nav_cost entities that affect this area
 void CNavArea::ClearAllNavCostEntities( void )
 {
-	RemoveAttributes( NAV_MESH_FUNC_COST );
+#if defined( L4D2 )
+	if ( !m_usesTerrorAttributes )
+#endif
+		RemoveAttributes( NAV_MESH_FUNC_COST );
 	m_funcNavCostVector.RemoveAll();
 }
 
@@ -5075,7 +5377,10 @@ void CNavArea::ClearAllNavCostEntities( void )
 // Add the given func_nav_cost entity to the cost of this area
 void CNavArea::AddFuncNavCostEntity( CFuncNavCost *cost )
 {
-	SetAttributes( NAV_MESH_FUNC_COST );
+#if defined( L4D2 )
+	if ( !m_usesTerrorAttributes )
+#endif
+		SetAttributes( NAV_MESH_FUNC_COST );
 	m_funcNavCostVector.AddToTail( cost );
 }
 

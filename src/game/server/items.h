@@ -44,6 +44,9 @@ public:
 	DECLARE_CLASS( CItem, CBaseAnimating );
 
 	CItem();
+#if defined( L4D2 )
+	virtual ~CItem() OVERRIDE;
+#endif
 
 	virtual void Spawn( void );
 	virtual void Precache();
@@ -65,13 +68,22 @@ public:
 	virtual void OnPhysGunPickup( CBasePlayer *pPhysGunUser, PhysGunPickup_t reason = PICKED_UP_BY_CANNON );
 	virtual void OnPhysGunDrop( CBasePlayer *pPhysGunUser, PhysGunDrop_t reason );
 
+#if defined( L4D2 )
+	virtual int ObjectCaps() { return BaseClass::ObjectCaps() | FCAP_IMPULSE_USE | FCAP_USE_IN_RADIUS | FCAP_WCEDIT_POSITION; }
+#else
 	virtual int	ObjectCaps() { return BaseClass::ObjectCaps() | FCAP_IMPULSE_USE | FCAP_WCEDIT_POSITION; };
+#endif
 	virtual void Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
 	Vector	GetOriginalSpawnOrigin( void ) { return m_vOriginalSpawnOrigin;	}
 	QAngle	GetOriginalSpawnAngles( void ) { return m_vOriginalSpawnAngles;	}
 	void	SetOriginalSpawnOrigin( const Vector& origin ) { m_vOriginalSpawnOrigin = origin; }
 	void	SetOriginalSpawnAngles( const QAngle& angles ) { m_vOriginalSpawnAngles = angles; }
+#if defined( L4D2 )
+	virtual bool CreateItemVPhysicsObject( void );
+	virtual void OnPlayerPickup( CBaseEntity *other, CBasePlayer *player );
+#else
 	bool	CreateItemVPhysicsObject( void );
+#endif
 	virtual bool	ItemCanBeTouchedByPlayer( CBasePlayer *pPlayer );
 
 #if defined( HL2MP ) || defined( TF_DLL )
@@ -85,6 +97,9 @@ public:
 
 	DECLARE_DATADESC();
 protected:
+#if defined( L4D2 )
+	void Constrain(); // S10DF00, same saved m_pConstraint as the native item.
+#endif
 	virtual void ComeToRest( void );
 	bool		m_bActivateWhenAtRest;
 

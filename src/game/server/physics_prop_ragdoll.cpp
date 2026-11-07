@@ -22,6 +22,7 @@
 #include "hierarchy.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "physics_prop_ragdoll_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 //-----------------------------------------------------------------------------
@@ -373,7 +374,11 @@ void CRagdollProp::OnPhysGunPickup( CBasePlayer *pPhysGunUser, PhysGunPickup_t r
 
 	if ( HasSpawnFlags( SF_RAGDOLLPROP_USE_LRU_RETIREMENT ) )
 	{
+#if defined( L4D2 )
+		s_RagdollLRU.MoveToTopOfLRU( this, RAGDOLL_TYPE_GENERIC );
+#else
 		s_RagdollLRU.MoveToTopOfLRU( this );
+#endif
 	}
 
 	if ( !HasSpawnFlags( SF_PHYSPROP_ENABLE_ON_PHYSCANNON ) )
@@ -404,7 +409,11 @@ void CRagdollProp::OnPhysGunDrop( CBasePlayer *pPhysGunUser, PhysGunDrop_t Reaso
 
 	if ( HasSpawnFlags( SF_RAGDOLLPROP_USE_LRU_RETIREMENT ) )
 	{
+#if defined( L4D2 )
+		s_RagdollLRU.MoveToTopOfLRU( this, RAGDOLL_TYPE_GENERIC );
+#else
 		s_RagdollLRU.MoveToTopOfLRU( this );
+#endif
 	}
 
 	// Make sure it's interactive debris for at most 5 seconds
@@ -1429,7 +1438,11 @@ CBaseEntity *CreateServerRagdoll( CBaseAnimating *pAnimating, int forceBone, con
 	else if ( bUseLRURetirement )
 	{
 		pRagdoll->AddSpawnFlags( SF_RAGDOLLPROP_USE_LRU_RETIREMENT );
+#if defined( L4D2 )
+		s_RagdollLRU.MoveToTopOfLRU( pRagdoll, RAGDOLL_TYPE_GENERIC );
+#else
 		s_RagdollLRU.MoveToTopOfLRU( pRagdoll );
+#endif
 	}
 
 	// Tracker 22598:  If we don't set the OBB mins/maxs to something valid here, then the client will have a zero sized hull

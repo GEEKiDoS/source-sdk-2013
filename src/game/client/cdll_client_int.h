@@ -45,10 +45,18 @@ class IGameEventManager2;
 class IPhysicsGameTrace;
 class CGlobalVarsBase;
 class IClientTools;
+#ifdef L4D2
+class IEngineTool;
+extern IEngineTool *g_pL4D2EngineTool;
+#endif
 class C_BaseAnimating;
 class IColorCorrectionSystem;
 class IInputSystem;
+#if defined( L4D2 )
+class CTerrorSceneFileCache;
+#else
 class ISceneFileCache;
+#endif
 class IXboxSystem;	// Xbox 360 only
 class IMatchmaking;
 class IVideoServices;
@@ -98,7 +106,11 @@ extern IPhysicsGameTrace *physgametrace;
 extern CGlobalVarsBase *gpGlobals;
 extern IClientTools *clienttools;
 extern IInputSystem *inputsystem;
+#if defined( L4D2 )
+extern CTerrorSceneFileCache *scenefilecache;
+#else
 extern ISceneFileCache *scenefilecache;
+#endif
 extern IXboxSystem *xboxsystem;	// Xbox 360 only
 extern IMatchmaking *matchmaking;
 extern IVideoServices *g_pVideo;

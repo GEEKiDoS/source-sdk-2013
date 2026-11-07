@@ -11,7 +11,9 @@
 #pragma once
 #endif
 
+#if !defined( L4D2 )
 #include "baseprojectile.h"
+#endif
 
 #if defined( CLIENT_DLL )
 
@@ -30,13 +32,29 @@
 
 class CTakeDamageInfo;
 
+#if defined( L4D2 )
+#if defined( CLIENT_DLL )
+class CBaseGrenade : public C_BaseCombatCharacter
+#else
+class CBaseGrenade : public CBaseCombatCharacter, public CDefaultPlayerPickupVPhysics
+#endif // CLIENT_DLL
+#else
 #if !defined( CLIENT_DLL )
 class CBaseGrenade : public CBaseProjectile, public CDefaultPlayerPickupVPhysics
 #else
 class CBaseGrenade : public CBaseProjectile
 #endif
+#endif // L4D2
 {
+#if defined( L4D2 )
+#if defined( CLIENT_DLL )
+	DECLARE_CLASS( CBaseGrenade, C_BaseCombatCharacter );
+#else
+	DECLARE_CLASS( CBaseGrenade, CBaseCombatCharacter );
+#endif // CLIENT_DLL
+#else
 	DECLARE_CLASS( CBaseGrenade, CBaseProjectile );
+#endif // L4D2
 public:
 
 	CBaseGrenade(void);

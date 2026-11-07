@@ -7,7 +7,6 @@
 #ifdef SERVER_USES_VGUI
 
 #include <vgui_controls/Menu.h>
-#include <game/client/iviewport.h>
 #include <filesystem.h>
 #include "utlstack.h"
 #include "utlvector.h"

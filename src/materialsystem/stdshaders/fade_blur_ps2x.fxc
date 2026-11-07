@@ -1,0 +1,11 @@
+// Game-owned reconstruction of native fade_blur_ps20/ps20b.
+// Native ps20b CRC BB02DE0B; no static/dynamic combinations.
+sampler2D BaseSampler : register( s0 );
+float4 Fade : register( c0 );
+float4 Desaturate : register( c1 );
+float4 main( float2 uv : TEXCOORD0 ) : COLOR
+{
+	float3 color = tex2D( BaseSampler, uv ).rgb;
+	float luma = dot( color, float3( 0.212500006f, 0.715399981f, 0.0720999986f ) );
+	return float4( lerp( color, luma.xxx, saturate( Desaturate.x ) ), Fade.x );
+}

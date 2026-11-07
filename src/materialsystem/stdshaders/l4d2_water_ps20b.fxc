@@ -1,0 +1,240 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Reconstructed from the native Water/WaterCheap PS2b programs. The SDK
+// flashlight is a separate additive pass; it must not add the base twice.
+// STATIC: "CHEAP" "0..1"
+// STATIC: "BASETEXTURE" "0..1"
+// STATIC: "MULTITEXTURE" "0..1"
+// STATIC: "REFLECT" "0..1"
+// STATIC: "REFRACT" "0..1"
+// STATIC: "ABOVEWATER" "0..1"
+// STATIC: "FLOWMAP" "0..1"
+// STATIC: "FLOW_DEBUG" "0..2"
+// STATIC: "FLASHLIGHT" "0..1"
+// STATIC: "LIGHTMAPWATERFOG" "0..1"
+// STATIC: "NORMAL_DECODE_MODE" "0..1"
+// STATIC: "FRESNEL" "0..1"
+// DYNAMIC: "FLASHLIGHTSHADOWS" "0..1"
+// DYNAMIC: "HDRENABLED" "0..1"
+// SKIP: $CHEAP && ($BASETEXTURE || $REFLECT || $REFRACT || $FLASHLIGHT || $LIGHTMAPWATERFOG || !$ABOVEWATER)
+// SKIP: !$CHEAP && !$FRESNEL
+// SKIP: $BASETEXTURE && ($MULTITEXTURE || $FLOWMAP || $FLASHLIGHT || $LIGHTMAPWATERFOG)
+// SKIP: $MULTITEXTURE && ($FLOWMAP || $FLASHLIGHT || $LIGHTMAPWATERFOG)
+// SKIP: !$FLOWMAP && $FLOW_DEBUG
+// SKIP: !$FLASHLIGHT && $FLASHLIGHTSHADOWS
+// SKIP: !$CHEAP && $HDRENABLED
+// SKIP: $FLASHLIGHT && $FLOW_DEBUG
+
+#include "l4d2_model_flashlight_fxc.h"
+
+#if CHEAP
+samplerCUBE EnvmapSampler : register( s0 );
+samplerCUBE NormalizeSampler : register( s6 );
+#else
+sampler2D RefractSampler : register( s0 );
+sampler2D ReflectSampler : register( s1 );
+sampler2D LightmapSampler : register( s3 );
+#if BASETEXTURE
+sampler2D BaseTextureSampler : register( s4 );
+#endif
+#endif
+sampler NormalSampler : register( s2 );
+#if FLOWMAP
+sampler2D FlowmapSampler : register( s4 );
+sampler2D FlowNoiseSampler : register( s5 );
+#endif
+#if FLASHLIGHT
+sampler FlashlightSampler : register( s6 );
+sampler FlashlightDepthSampler : register( s7 );
+sampler RandomRotationSampler : register( s8 );
+#endif
+
+const float4 g_RefractTint : register( c1 );
+const float4 g_ReflectTint : register( c4 );
+const float4 g_ReflectRefractScale : register( c5 );
+const float4 g_WaterFogColor : register( c6 );
+const float4 g_WaterFogParams : register( c7 );
+const float4 g_Time : register( c8 );
+const float3 g_FlashlightTint : register( c10 );
+const float3 g_EyePos : register( c11 );
+const float4 g_PixelFogParams : register( c12 );
+const float4 g_FlowParams1 : register( c13 );
+const float3 g_FlowParams2 : register( c14 );
+const float4 g_FlashlightAttenuation : register( c15 );
+const float3 g_FlashlightPos : register( c16 );
+const float4 g_ShadowTweaks : register( c21 );
+const float3 g_WorldToViewWater0 : register( c22 );
+const float3 g_WorldToViewWater1 : register( c23 );
+const float4 g_InvViewportTransform : register( c24 );
+
+struct PS_INPUT
+{
+	float2 bump : TEXCOORD0;
+	float3 eye : TEXCOORD1;
+#if CHEAP
+	float3 tangentS : TEXCOORD2;
+	float3 tangentT : TEXCOORD3;
+	float3 normal : TEXCOORD4;
+	float4 extraBump : TEXCOORD5;
+	float3 world : TEXCOORD7;
+#else
+	float4 reflectRefract : TEXCOORD2;
+	float4 projected : TEXCOORD3;
+	float3 world : TEXCOORD4;
+#if FLASHLIGHT
+	float4 flashlight : TEXCOORD5;
+#elif MULTITEXTURE
+	float4 extraBump : TEXCOORD5;
+#elif BASETEXTURE
+	float4 lightmap12 : TEXCOORD5;
+	float2 lightmap3 : TEXCOORD6;
+#endif
+#if LIGHTMAPWATERFOG
+	float2 lightmap : TEXCOORD7;
+#endif
+#endif
+};
+
+float4 WaterNormal( PS_INPUT i )
+{
+#if FLOWMAP
+	float2 worldUV = i.world.xy * float2( 1.0f, -1.0f );
+	float noise = tex2D( FlowNoiseSampler, worldUV * g_FlowParams2.z ).g;
+	float2 flow = tex2D( FlowmapSampler, i.bump * g_FlowParams1.x ).xy * 2.0f - 1.0f;
+	float phase = (g_Time.x * g_FlowParams1.w + noise) / (2.0f * g_FlowParams2.x);
+	float phase0 = frac( phase );
+	float phase1 = frac( phase + 0.5f );
+	float2 uv = worldUV * g_FlowParams1.y;
+	float2 scroll = flow * g_FlowParams2.y;
+	float2 uv0 = uv + floor( phase ) * 0.311f + phase0 * scroll;
+	float2 uv1 = uv + floor( phase + 0.5f ) * 0.311f + 0.5f + phase1 * scroll;
+	float2 normalXY = lerp( tex2D( NormalSampler, uv0 ).xy,
+		tex2D( NormalSampler, uv1 ).xy, abs( 2.0f * phase0 - 1.0f ) ) * 2.0f - 1.0f;
+	float strength = (dot( flow, flow ) + (CHEAP ? 0.05f : 0.1f)) * g_FlowParams1.z;
+	normalXY *= strength;
+	return float4( normalXY, sqrt( saturate( 1.0f - dot( normalXY, normalXY ) ) ), 1.0f );
+#elif MULTITEXTURE
+	float3 normal = tex2D( NormalSampler, i.bump ).rgb + tex2D( NormalSampler, i.extraBump.xy ).rgb;
+#if CHEAP
+	normal = tex2D( NormalSampler, i.extraBump.zw ).rgb + normal;
+#else
+	normal += tex2D( NormalSampler, i.extraBump.zw ).rgb;
+#endif
+	normal.xy = normal.xy * 0.66f - 1.0f;
+#if NORMAL_DECODE_MODE == NORM_DECODE_ATI2N
+	normal.z = sqrt( 1.0f - dot( normal.xy, normal.xy ) );
+#else
+	normal.z = normal.z * 0.66f - 1.0f;
+#endif
+	return float4( normal, 1.0f );
+#else
+	return DecompressNormal( NormalSampler, i.bump, NORMAL_DECODE_MODE );
+#endif
+}
+
+float4 main( PS_INPUT i ) : COLOR
+{
+#if FLOWMAP && FLOW_DEBUG == 1
+	return float4( tex2D( FlowmapSampler, i.bump * g_FlowParams1.x ).rgb, 1.0f );
+#elif FLOWMAP && FLOW_DEBUG == 2
+	float noise = tex2D( FlowNoiseSampler, i.world.xy * float2( 1.0f, -1.0f ) * g_FlowParams2.z ).g;
+	return float4( noise, noise, noise, 1.0f );
+#endif
+	float4 normal = WaterNormal( i );
+	float3 result;
+#if CHEAP
+	float3 worldNormal = normal.x * i.tangentS + normal.y * i.tangentT + normal.z * i.normal;
+	float3 eye = texCUBE( NormalizeSampler, i.eye ).xyz;
+	float ndotv = dot( worldNormal, eye );
+	float3 reflectionVector = 2.0f * ndotv * worldNormal - dot( worldNormal, worldNormal ) * eye;
+	float3 reflection = texCUBE( EnvmapSampler, reflectionVector ).rgb * ENV_MAP_SCALE * g_ReflectTint.rgb;
+	float3 fogColor = g_WaterFogColor.rgb;
+#if HDRENABLED
+	fogColor = pow( fogColor, 2.2f );
+#endif
+#if FRESNEL
+	float fresnel = 1.0f - max( ndotv, 0.0f );
+	float fresnel2 = fresnel * fresnel;
+	fresnel *= fresnel2 * fresnel2;
+#else
+	float fresnel = g_ReflectTint.a;
+#endif
+	result = lerp( fogColor, reflection, fresnel ) * LINEAR_LIGHT_SCALE;
+#else
+	float4 screenUV = i.reflectRefract / i.projected.w;
+	float2 distortion = float2( dot( g_WorldToViewWater0, normal.xyz ), dot( g_WorldToViewWater1, normal.xyz ) ) * normal.a;
+	float depth = 1.0f;
+#if REFRACT && ABOVEWATER
+	float4 unwarped = tex2D( RefractSampler, screenUV.wz * g_InvViewportTransform.xy + g_InvViewportTransform.zw );
+	depth = unwarped.a;
+#endif
+	float4 scales = g_ReflectRefractScale;
+#if REFRACT && !BASETEXTURE
+	scales *= depth;
+#endif
+	float4 warpedUV = screenUV + distortion.xyyx * scales;
+	float tintRamp = 1.0f;
+#if REFRACT
+	float4 refraction = tex2D( RefractSampler, warpedUV.wz * g_InvViewportTransform.xy + g_InvViewportTransform.zw );
+#if ABOVEWATER
+	// Reject distortion across the shore instead of pulling unfogged objects
+	// over the water. The native shader falls back to the unwarped sample.
+	refraction = refraction.a >= 0.05f ? refraction : unwarped;
+	depth = refraction.a;
+	tintRamp = saturate( depth * 3.5f );
+	float3 refractedColor = lerp( refraction.rgb, refraction.rgb * g_RefractTint.rgb, tintRamp );
+	float3 fogColor = g_WaterFogColor.rgb;
+#if LIGHTMAPWATERFOG
+	fogColor *= tex2D( LightmapSampler, i.lightmap ).rgb * LIGHT_MAP_SCALE * LINEAR_LIGHT_SCALE;
+#endif
+	result = lerp( refractedColor, fogColor, depth );
+#else
+	float waterFog = saturate( (i.projected.z - g_WaterFogParams.x) / g_WaterFogParams.y );
+	result = lerp( refraction.rgb, g_WaterFogColor.rgb, waterFog );
+#endif
+#else
+	result = g_WaterFogColor.rgb;
+#endif
+#if REFLECT && !FLASHLIGHT
+	float3 reflection = tex2D( ReflectSampler, warpedUV.xy ).rgb * g_ReflectTint.rgb;
+	float fresnel = 1.0f - saturate( dot( normalize( i.eye ), normal.xyz ) );
+	fresnel *= fresnel;
+	fresnel *= fresnel;
+#if REFRACT
+#if !BASETEXTURE
+	fresnel *= saturate( (depth - 0.05f) * 20.0f );
+#endif
+	reflection *= saturate( depth * 2.0f );
+	result += reflection * fresnel;
+#elif BASETEXTURE && !REFRACT
+	float4 base = tex2D( BaseTextureSampler, i.bump );
+	float3 dp = saturate( float3( dot( normal.xyz, bumpBasis[0] ),
+		dot( normal.xyz, bumpBasis[1] ), dot( normal.xyz, bumpBasis[2] ) ) );
+	dp *= dp;
+	float3 lighting = tex2D( LightmapSampler, i.lightmap12.xy ).rgb * dp.x +
+		tex2D( LightmapSampler, i.lightmap12.wz ).rgb * dp.y + tex2D( LightmapSampler, i.lightmap3 ).rgb * dp.z;
+	result = base.rgb * lighting * (LIGHT_MAP_SCALE / dot( dp, float3( 1, 1, 1 ) )) + reflection * fresnel * base.a;
+#else
+	result = lerp( g_WaterFogColor.rgb, reflection, fresnel );
+#endif
+#endif
+#if FLASHLIGHT
+	float2 screenPos = (i.projected.xy / i.projected.w) * 0.5f + 0.5f;
+	float3 flashlight = DoFlashlight( g_FlashlightPos, i.world, i.flashlight, normal.xyz,
+		g_FlashlightAttenuation.xyz, g_FlashlightAttenuation.w, FlashlightSampler,
+		FlashlightDepthSampler, RandomRotationSampler, 0, FLASHLIGHTSHADOWS != 0,
+		true, screenPos, false, g_ShadowTweaks );
+	flashlight *= i.flashlight.w > 0.0f ? 1.0f : 0.0f;
+	result = flashlight * tintRamp * g_WaterFogColor.rgb * g_FlashlightTint * LINEAR_LIGHT_SCALE;
+#endif
+#endif
+	// SDK SetPixelShaderFogParams stores +start/range; native stores its
+	// negative. Both yield the native horizontal radial, squared fog blend.
+	float fog = min( g_PixelFogParams.z,
+		saturate( length( g_EyePos.xy - i.world.xy ) * g_PixelFogParams.w - g_PixelFogParams.x ) );
+#if FLASHLIGHT
+	result *= 1.0f - fog * fog;
+	return float4( result, 0.0f );
+#else
+	return float4( lerp( result, g_LinearFogColor.rgb, fog * fog ), 1.0f );
+#endif
+}

@@ -47,6 +47,10 @@ class CBeam : public CBaseEntity
 {
 	DECLARE_CLASS( CBeam, CBaseEntity );
 public:
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return 1; }
+#endif
+
 	DECLARE_NETWORKCLASS();
 	DECLARE_PREDICTABLE();
 #if !defined( CLIENT_DLL )
@@ -171,14 +175,20 @@ public:
 public:
 	virtual int			DrawModel( int flags );
 	virtual bool		IsTransparent( void );
+#if !defined( L4D2 )
 	virtual bool		ShouldDraw();
+#endif
 	virtual bool		IgnoresZBuffer( void ) const { return true; }
 	virtual void		OnDataChanged( DataUpdateType_t updateType );
 
 	virtual bool		OnPredictedEntityRemove( bool isbeingremoved, C_BaseEntity *predicted );
 
 	// Add beam to visible entities list?
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	virtual void		AddEntity( void );
+#endif
 	virtual bool		ShouldReceiveProjectedTextures( int flags )
 	{
 		return false;
@@ -316,14 +326,22 @@ inline void CBeam::SetHaloScale( float haloScale )
 
 inline void CBeam::SetWidth( float width )				
 {
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	m_fWidth = width > MAX_BEAM_WIDTH ? MAX_BEAM_WIDTH : width;
+#else
 	Assert( width <= MAX_BEAM_WIDTH );
 	m_fWidth = MIN( MAX_BEAM_WIDTH, width );
+#endif
 }
 
 inline void CBeam::SetEndWidth( float endWidth )		
 { 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	m_fEndWidth = endWidth > MAX_BEAM_WIDTH ? MAX_BEAM_WIDTH : endWidth;
+#else
 	Assert( endWidth <= MAX_BEAM_WIDTH );
 	m_fEndWidth	= MIN( MAX_BEAM_WIDTH, endWidth );
+#endif
 }
 
 inline void CBeam::SetFadeLength( float fadeLength )	

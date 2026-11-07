@@ -1,0 +1,34 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Retail static 0 = lit; static 1 = shadow depth. Both have one dynamic combo.
+// SHADERSRGBREAD360 is a registered material parameter but is always zero on PC.
+// Compiled into game-owned l4d2_splinerope_ps20/ps20b programs.
+// STATIC: "SHADOWDEPTH" "0..1"
+#include "common_ps_fxc.h"
+const float4 g_FogParams : register( c0 );
+const float3 g_EyePos : register( c1 );
+sampler2D BaseTextureSampler : register( s0 );
+sampler2D NormalSampler : register( s1 );
+
+struct PS_INPUT
+{
+	float2 uv : TEXCOORD0;
+	float4 worldPositionAndProjectedZ : TEXCOORD1;
+	float4 color : COLOR0;
+};
+float4 main( const PS_INPUT i ) : COLOR0
+{
+#if SHADOWDEPTH
+	return float4( 0, 0, 0, 1 );
+#else
+	float4 base = tex2D( BaseTextureSampler, i.uv );
+	float normalZ = tex2D( NormalSampler, i.uv ).z;
+	float3 lit = base.rgb * i.color.rgb * (normalZ * normalZ) * cLightScale.x;
+#if defined( SHADER_MODEL_PS_2_B )
+	// Retail fog measures world XY distance, not full XYZ distance or depth.
+	float distanceXY = length( g_EyePos.xy - i.worldPositionAndProjectedZ.xy );
+	float fog = min( saturate( distanceXY * g_FogParams.w + g_FogParams.x ), g_FogParams.z );
+	lit = lerp( lit, g_LinearFogColor.rgb, fog * fog );
+#endif
+	return float4( lit, base.a * i.color.a );
+#endif
+}

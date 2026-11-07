@@ -91,6 +91,9 @@ public:
 
 	// is this event only client side?
 	bool					m_bClientSide; 
+#if defined( L4D2 )
+	EHANDLE					m_hSceneEntity;
+#endif
 
 	void					InitWeight( CBaseFlex *pActor );
 	float					UpdateWeight( CBaseFlex *pActor );

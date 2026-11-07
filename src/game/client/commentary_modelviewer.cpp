@@ -274,4 +274,10 @@ void CommentaryShowModelViewer( const CCommand &args )
 	}
 }
 
-ConCommand commentary_showmodelviewer( "commentary_showmodelviewer", CommentaryShowModelViewer, "Display the commentary model viewer. Usage: commentary_showmodelviewer <model name> <optional attached model name>", FCVAR_NONE );
+ConCommand commentary_showmodelviewer( "commentary_showmodelviewer", CommentaryShowModelViewer, "Display the commentary model viewer. Usage: commentary_showmodelviewer <model name> <optional attached model name>", 
+#if defined( L4D2 )
+	0x00000008
+#else
+	FCVAR_NONE
+#endif
+ );

@@ -29,6 +29,10 @@ struct RopeSegData_t;
 class C_RopeKeyframe : public C_BaseEntity
 {
 public:
+#if defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return 0; }
+#endif
+
 
 	DECLARE_CLASS( C_RopeKeyframe, C_BaseEntity );
 	DECLARE_CLIENTCLASS();

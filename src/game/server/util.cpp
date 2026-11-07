@@ -44,11 +44,26 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "util_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 extern short		g_sModelIndexSmoke;			// (in combatweapon.cpp) holds the index for the smoke cloud
 extern short		g_sModelIndexBloodDrop;		// (in combatweapon.cpp) holds the sprite index for the initial blood
 extern short		g_sModelIndexBloodSpray;	// (in combatweapon.cpp) holds the sprite index for splattered blood
+
+#ifdef L4D2
+bool Engine_IsCreatingReslist()
+{
+	// Main-approved capability gap: SDK has no native+496 reslist-tool query.
+	return false;
+}
+
+bool Engine_IsCreatingXboxReslist()
+{
+	// Distinct native+500 (active && generator byte4); same target tool gap.
+	return false;
+}
+#endif
 
 #ifdef	DEBUG
 void DBG_AssertFunction( bool fExpr, const char *szExpr, const char *szFile, int szLine, const char *szMessage )
@@ -109,13 +124,24 @@ void DumpEntityFactories_f()
 	}
 }
 
-static ConCommand dumpentityfactories( "dumpentityfactories", DumpEntityFactories_f, "Lists all entity factory names.", FCVAR_GAMEDLL );
+static ConCommand dumpentityfactories( "dumpentityfactories", DumpEntityFactories_f, "Lists all entity factory names.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_GAMEDLL
+#endif
+ );
 
 
 //-----------------------------------------------------------------------------
 // 
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( dump_entity_sizes, "Print sizeof(entclass)" , 0x00004004)
+#else
 CON_COMMAND( dump_entity_sizes, "Print sizeof(entclass)" )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -367,6 +393,77 @@ int UTIL_DropToFloor( CBaseEntity *pEntity, unsigned int mask, CBaseEntity *pIgn
 	return 1;
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+// S20A020. Shared by player death, incap blood and the common's footing query.
+// Complete all nine hull traces before inspecting any result.
+bool UTIL_IsGroundFlat( float halfExtent, const Vector &origin, float height,
+	unsigned int mask, CBaseEntity *ignore, bool debug )
+{
+	extern ConVar r_visualizetraces;
+	trace_t traces[9];
+	const float step = ( halfExtent * 2.0f ) * 0.33333334f;
+	float y = -halfExtent;
+	for ( int row = 0; row < 3; ++row )
+	{
+		const float nextY = y + step;
+		float x = -halfExtent;
+		for ( int column = 0; column < 3; ++column )
+		{
+			const float nextX = x + step;
+			const Vector start( origin.x, origin.y, origin.z + height );
+			const Vector end( origin.x, origin.y, origin.z - 100.0f );
+			const Vector mins( x, y, 0.0f );
+			const Vector maxs( nextX, nextY, 10.0f );
+			Ray_t ray;
+			ray.Init( start, end, mins, maxs );
+			ray.m_IsRay = ( (double)ray.m_Extents.x * (double)ray.m_Extents.x +
+				(double)ray.m_Extents.y * (double)ray.m_Extents.y + 25.0 ) < 0.000001;
+			CTraceFilterSimple filter( ignore, COLLISION_GROUP_PLAYER_MOVEMENT );
+			trace_t &trace = traces[row * 3 + column];
+			enginetrace->TraceRay( ray, mask, &filter, &trace );
+			if ( r_visualizetraces.GetBool() )
+				NDebugOverlay::Line( trace.startpos, trace.endpos, 255, 255, 0, true, -1.0f );
+			if ( debug )
+			{
+				const Vector debugStart( origin.x, origin.y, origin.z + height );
+				NDebugOverlay::SweptBox( debugStart, trace.endpos, mins, maxs,
+					vec3_angle, 255, 255, 0, 255, 5.0f );
+			}
+			x = nextX;
+		}
+		y = nextY;
+	}
+	for ( int i = 0; i < ARRAYSIZE( traces ); ++i )
+	{
+		const trace_t &trace = traces[i];
+		if ( trace.startsolid )
+			return false;
+		if ( trace.fraction < 1.0f || trace.allsolid )
+		{
+			if ( 0.89999998f > trace.plane.normal.z )
+				return false;
+			for ( int j = 0; j < ARRAYSIZE( traces ); ++j )
+			{
+				if ( i != j && fabs( (double)trace.endpos.z - (double)traces[j].endpos.z ) > 10.0 )
+					return false;
+			}
+		}
+	}
+	return true;
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
 //-----------------------------------------------------------------------------
 // Returns false if any part of the bottom of the entity is off an edge that
 // is not a staircase.
@@ -605,12 +702,19 @@ CBasePlayer *UTIL_GetListenServerHost( void )
 	// no "local player" if this is a dedicated server or a single player game
 	if (engine->IsDedicatedServer())
 	{
+#if !defined( L4D2 )
 		Assert( !"UTIL_GetListenServerHost" );
+#endif
 		Warning( "UTIL_GetListenServerHost() called from a dedicated server or single-player game.\n" );
 		return NULL;
 	}
 
+#if defined( L4D2 )
+	CBasePlayer *host = UTIL_PlayerByIndex( 1 );
+	return ( host && host->IsPlayer() ) ? host : NULL;
+#else
 	return UTIL_PlayerByIndex( 1 );
+#endif
 }
 
 
@@ -735,8 +839,22 @@ static unsigned short FixedUnsigned16( float value, float scale )
 //-----------------------------------------------------------------------------
 // Compute shake amplitude
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 inline float ComputeShakeAmplitude( const Vector &center, const Vector &shakePt, float amplitude, float radius ) 
 {
+#if defined( L4D2 )
+	// S20C320: radius<=0 and unordered both take the unattenuated branch.
+	if ( !( radius > 0.0f ) )
+		return amplitude;
+	const Vector delta = center - shakePt;
+	const float distance = sqrtf( ( delta.x * delta.x + delta.y * delta.y ) + delta.z * delta.z );
+	return radius >= distance ? ( 1.0f - distance / radius ) * amplitude : -1.0f;
+#else
 	if ( radius <= 0 )
 		return amplitude;
 
@@ -752,6 +870,7 @@ inline float ComputeShakeAmplitude( const Vector &center, const Vector &shakePt,
 	}
 
 	return localAmplitude;
+#endif
 }
 
 
@@ -796,7 +915,11 @@ inline void TransmitShakeEvent( CBasePlayer *pPlayer, float localAmplitude, floa
 //			bAirShake - if this is false, then it will only shake players standing on the ground.
 //-----------------------------------------------------------------------------
 const float MAX_SHAKE_AMPLITUDE = 16.0f;
+#if defined( L4D2 )
+void UTIL_ScreenShake( const Vector &center, float amplitude, float frequency, float duration, float radius, ShakeCommand_t eCommand, bool bAirShake, const CUtlVector< CBasePlayer * > *ignored )
+#else
 void UTIL_ScreenShake( const Vector &center, float amplitude, float frequency, float duration, float radius, ShakeCommand_t eCommand, bool bAirShake )
+#endif
 {
 	int			i;
 	float		localAmplitude;
@@ -816,22 +939,39 @@ void UTIL_ScreenShake( const Vector &center, float amplitude, float frequency, f
 		{
 			continue;
 		}
+#if defined( L4D2 )
+		if ( ignored && ignored->Find( static_cast< CBasePlayer * >( pPlayer ) ) != ignored->InvalidIndex() )
+			continue;
+#endif
 
 		localAmplitude = ComputeShakeAmplitude( center, pPlayer->WorldSpaceCenter(), amplitude, radius );
 
 		// This happens if the player is outside the radius, in which case we should ignore 
 		// all commands
+#if defined( L4D2 )
+		if ( !( localAmplitude >= 0.0f ) )
+#else
 		if (localAmplitude < 0)
+#endif
 			continue;
 
 		TransmitShakeEvent( (CBasePlayer *)pPlayer, localAmplitude, frequency, duration, eCommand );
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
 // Purpose: Shake an object and all players on or near it
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void UTIL_ScreenShakeObject( CBaseEntity *pEnt, const Vector &center, float amplitude, float frequency, float duration, float radius, ShakeCommand_t eCommand, bool bAirShake )
 {
 	int			i;
@@ -850,7 +990,12 @@ void UTIL_ScreenShakeObject( CBaseEntity *pEnt, const Vector &center, float ampl
 		{
 			localAmplitude = amplitude;
 		}
+#if defined( L4D2 )
+		else if ( ( pPlayer->GetFlags() & FL_ONGROUND ) && pPlayer->GetGroundEntity() &&
+			pPlayer->GetGroundEntity()->GetRootMoveParent() == pHighestParent )
+#else
 		else if ((pPlayer->GetFlags() & FL_ONGROUND) && (pPlayer->GetGroundEntity()->GetRootMoveParent() == pHighestParent))
+#endif
 		{
 			// If the player is standing on the object, use maximum amplitude
 			localAmplitude = amplitude;
@@ -863,6 +1008,12 @@ void UTIL_ScreenShakeObject( CBaseEntity *pEnt, const Vector &center, float ampl
 				continue;
 			}
 
+#if defined( L4D2 )
+			// S2091E0 queries the center even for nonpositive/unordered radius.
+			localAmplitude = ComputeShakeAmplitude( center, pPlayer->WorldSpaceCenter(), amplitude, radius );
+			if ( !( localAmplitude >= 0.0f ) )
+				continue;
+#else
 			if ( radius > 0 )
 			{
 				localAmplitude = ComputeShakeAmplitude( center, pPlayer->WorldSpaceCenter(), amplitude, radius );
@@ -877,11 +1028,15 @@ void UTIL_ScreenShakeObject( CBaseEntity *pEnt, const Vector &center, float ampl
 			// in which case we should ignore all commands
 			if (localAmplitude < 0)
 				continue;
+#endif
 		}
 
 		TransmitShakeEvent( (CBasePlayer *)pPlayer, localAmplitude, frequency, duration, eCommand );
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -945,6 +1100,10 @@ void UTIL_ScreenFadeWrite( const ScreenFade_t &fade, CBaseEntity *pEntity )
 {
 	if ( !pEntity || !pEntity->IsNetClient() )
 		return;
+#if defined( L4D2 )
+	if ( static_cast< CBasePlayer * >( pEntity )->IsUserMessageSuppressed( "Fade" ) )
+		return;
+#endif
 
 	CSingleUserRecipientFilter user( (CBasePlayer *)pEntity );
 	user.MakeReliable();
@@ -2221,7 +2380,13 @@ CBaseEntity *UTIL_FindClientInPVS( const Vector &vecBoxMins, const Vector &vecBo
 // Input  : *pEdict - 
 // Output : edict_t*
 //-----------------------------------------------------------------------------
-ConVar sv_strict_notarget( "sv_strict_notarget", "0", 0, "If set, notarget will cause entities to never think they are in the pvs" );
+ConVar sv_strict_notarget( "sv_strict_notarget", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "If set, notarget will cause entities to never think they are in the pvs" );
 
 static edict_t *UTIL_FindClientInPVSGuts(edict_t *pEdict, unsigned char *pvs, unsigned pvssize )
 {
@@ -2999,7 +3164,13 @@ void CC_KDTreeTest( const CCommand &args )
 	vtune( false );
 }
 
-static ConCommand kdtree_test( "kdtree_test", CC_KDTreeTest, "Tests spatial partition for entities queries.", FCVAR_CHEAT );
+static ConCommand kdtree_test( "kdtree_test", CC_KDTreeTest, "Tests spatial partition for entities queries.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 void CC_VoxelTreeView( void )
 {
@@ -3007,7 +3178,13 @@ void CC_VoxelTreeView( void )
 	::partition->RenderAllObjectsInTree( 10.0f );
 }
 
-static ConCommand voxeltree_view( "voxeltree_view", CC_VoxelTreeView, "View entities in the voxel-tree.", FCVAR_CHEAT );
+static ConCommand voxeltree_view( "voxeltree_view", CC_VoxelTreeView, "View entities in the voxel-tree.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 void CC_VoxelTreePlayerView( void )
 {
@@ -3018,7 +3195,13 @@ void CC_VoxelTreePlayerView( void )
 	::partition->RenderObjectsInPlayerLeafs( vecStart - VEC_HULL_MIN_SCALED( pPlayer ), vecStart + VEC_HULL_MAX_SCALED( pPlayer ), 3.0f  );
 }
 
-static ConCommand voxeltree_playerview( "voxeltree_playerview", CC_VoxelTreePlayerView, "View entities in the voxel-tree at the player position.", FCVAR_CHEAT );
+static ConCommand voxeltree_playerview( "voxeltree_playerview", CC_VoxelTreePlayerView, "View entities in the voxel-tree at the player position.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 void CC_VoxelTreeBox( const CCommand &args )
 {
@@ -3072,7 +3255,13 @@ void CC_VoxelTreeBox( const CCommand &args )
 	::partition->RenderObjectsInBox( vecMin, vecMax, flTime );
 }
 
-static ConCommand voxeltree_box( "voxeltree_box", CC_VoxelTreeBox, "View entities in the voxel-tree inside box <Vector(min), Vector(max)>.", FCVAR_CHEAT );
+static ConCommand voxeltree_box( "voxeltree_box", CC_VoxelTreeBox, "View entities in the voxel-tree inside box <Vector(min), Vector(max)>.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 void CC_VoxelTreeSphere( const CCommand &args )
 {
@@ -3129,7 +3318,13 @@ void CC_VoxelTreeSphere( const CCommand &args )
 	::partition->RenderObjectsInSphere( vecCenter, flRadius, flTime );
 }
 
-static ConCommand voxeltree_sphere( "voxeltree_sphere", CC_VoxelTreeSphere, "View entities in the voxel-tree inside sphere <Vector(center), float(radius)>.", FCVAR_CHEAT );
+static ConCommand voxeltree_sphere( "voxeltree_sphere", CC_VoxelTreeSphere, "View entities in the voxel-tree inside sphere <Vector(center), float(radius)>.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 
@@ -3236,7 +3431,13 @@ void CC_CollisionTest( const CCommand &args )
 	}
 #endif
 }
-static ConCommand collision_test("collision_test", CC_CollisionTest, "Tests collision system", FCVAR_CHEAT );
+static ConCommand collision_test("collision_test", CC_CollisionTest, "Tests collision system", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 

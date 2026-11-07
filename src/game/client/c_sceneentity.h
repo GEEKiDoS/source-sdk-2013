@@ -48,6 +48,10 @@ public:
 	virtual void			DispatchEndSpeak( CChoreoScene *scene, C_BaseFlex *actor, CChoreoEvent *event );
 
 	bool IsClientOnly( void ){ return m_bClientOnly; }
+#if defined( L4D2 )
+	bool IsPlayingBack() const { return m_bIsPlayingBack; }
+	CChoreoScene *GetChoreoScene() const { return m_pScene; }
+#endif
 
 private:
 
@@ -60,6 +64,11 @@ private:
 	void					PrefetchAnimBlocks( CChoreoScene *pScene );
 
 	C_BaseFlex				*FindNamedActor( CChoreoActor *pChoreoActor );
+#if defined( L4D2 )
+	C_BaseEntity			*FindNamedEntity( const char *name );
+	virtual void			DispatchStartLookAt( CChoreoScene *scene, C_BaseFlex *actor, C_BaseEntity *target, CChoreoEvent *event );
+	virtual void			DispatchEndLookAt( CChoreoScene *scene, C_BaseFlex *actor, CChoreoEvent *event );
+#endif
 
 	virtual void			DispatchStartFlexAnimation( CChoreoScene *scene, C_BaseFlex *actor, CChoreoEvent *event );
 	virtual void			DispatchEndFlexAnimation( CChoreoScene *scene, C_BaseFlex *actor, CChoreoEvent *event );

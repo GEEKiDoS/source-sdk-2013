@@ -840,8 +840,13 @@ void ConVar::ChangeStringValue( const char *tempVal, float flOldValue )
 		*m_pszString = 0;
 	}
 
+#if defined( L4D2 )
+	// Native S4FCD00/C3D3BA0 delivers string callbacks even for an equal value.
+	// The L4D2 DLLs compile this object locally; stock tier1 keeps its gate.
+#else
 	// If nothing has changed, don't do the callbacks.
 	if (V_strcmp(pszOldValue, m_pszString) != 0)
+#endif
 	{
 		// Invoke any necessary callback function
 		if ( m_fnChangeCallback )

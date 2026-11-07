@@ -15,6 +15,9 @@
 #include "tier0/vprof.h"
 #include "mathlib/ssemath.h"
 #include "nav_area.h"
+#if defined( L4D2 )
+#include "l4d2/nav/terror_nav_search.h"
+#endif
 
 
 
@@ -459,6 +462,7 @@ float NavAreaTravelDistance( CNavArea *startArea, CNavArea *endArea, CostFunctor
  * @todo Use ladder connections
  */
 
+#if !defined( L4D2 )
 // helper function
 inline void AddAreaToOpenList( CNavArea *area, CNavArea *parent, const Vector &startPos, float maxRange )
 {
@@ -495,6 +499,7 @@ inline void AddAreaToOpenList( CNavArea *area, CNavArea *parent, const Vector &s
 		}
 	}
 }
+#endif
 
 
 /****************************************************************
@@ -510,6 +515,10 @@ void SearchSurroundingAreas( CNavArea *startArea, const Vector &startPos, Functo
 	if (startArea == NULL)
 		return;
 
+#if defined( L4D2 )
+	// Native uses the same distance-keyed heap as the Terror-area collectors, including equal-key order.
+	TerrorNavSearch::Search( startArea, startPos, func, maxRange, options, teamID );
+#else
 	CNavArea::MakeNewMarker();
 	CNavArea::ClearSearchLists();
 
@@ -607,6 +616,7 @@ void SearchSurroundingAreas( CNavArea *startArea, const Vector &startPos, Functo
 			}
 		}
 	}
+#endif
 }
 
 

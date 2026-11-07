@@ -44,6 +44,9 @@ const VMatrix &MainWorldToViewMatrix();
 const Vector &MainViewForward();
 const Vector &MainViewRight();
 const Vector &MainViewUp();
+#if defined( L4D2 )
+extern Vector g_vecCameraFollowBoneOrigin;
+#endif
 
 const Vector &CurrentViewOrigin();
 const QAngle &CurrentViewAngles();

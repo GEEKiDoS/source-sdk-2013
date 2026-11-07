@@ -14,6 +14,7 @@
 #include "igamesystem.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "globalstate_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 struct globalentity_t
@@ -226,7 +227,12 @@ int GlobalEntity_GetNumGlobals( void )
 	return gGlobalState.GetNumGlobals();
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(dump_globals, "Dump all global entities/states", 0x00000004)
+#else
 CON_COMMAND(dump_globals, "Dump all global entities/states")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -317,7 +323,12 @@ void ShowServerGameTime()
 	Msg( "Server game time: %f\n", gpGlobals->curtime );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(server_game_time, "Gives the game time in seconds (server's curtime)", 0x00000004)
+#else
 CON_COMMAND(server_game_time, "Gives the game time in seconds (server's curtime)")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;

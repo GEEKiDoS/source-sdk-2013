@@ -1,0 +1,263 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// STATIC: "MASKEDBLENDING" "0..1"
+// STATIC: "BASETEXTURE2" "0..1"
+// STATIC: "BUMPMAP" "0..2"
+// STATIC: "BUMPMAP2" "0..1"
+// STATIC: "CUBEMAP" "0..1"
+// STATIC: "ENVMAPMASK" "0..1"
+// STATIC: "BASEALPHAENVMAPMASK" "0..1"
+// STATIC: "SELFILLUM" "0..1"
+// STATIC: "NORMALMAPALPHAENVMAPMASK" "0..1"
+// STATIC: "DIFFUSEBUMPMAP" "0..1"
+// STATIC: "BASETEXTURENOENVMAP" "0..1"
+// STATIC: "BASETEXTURE2NOENVMAP" "0..1"
+// STATIC: "WARPLIGHTING" "0..1"
+// STATIC: "FANCY_BLENDING" "0..1"
+// STATIC: "SEAMLESS" "0..1"
+// STATIC: "BUMPMASK" "0..1"
+// STATIC: "DETAIL_BLEND_MODE" "0..12"
+// DYNAMIC: "LIGHTING_PREVIEW" "0..3"
+// STATIC: "BLENDTINTBYBASEALPHA" "0..1"
+// STATIC: "PIXELFOG" "0..1"
+// DYNAMIC: "FASTPATH" "0..1"
+// DYNAMIC: "FASTPATHENVMAPCONTRAST" "0..1"
+// DYNAMIC: "WRITEWATERFOGTODESTALPHA" "0..1"
+// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA" "0..1"
+// SKIP: $LIGHTING_PREVIEW == 2
+// SKIP: $DETAIL_BLEND_MODE == 1 || $DETAIL_BLEND_MODE == 4 || $DETAIL_BLEND_MODE == 6 || $DETAIL_BLEND_MODE == 9
+// SKIP: !$BUMPMAP && ($BUMPMAP2 || $DIFFUSEBUMPMAP || $BUMPMASK)
+// SKIP: !$CUBEMAP && ($BASETEXTURENOENVMAP || $BASETEXTURE2NOENVMAP)
+// SKIP: !$BASETEXTURE2 && ($BASETEXTURENOENVMAP || $BASETEXTURE2NOENVMAP)
+// SKIP: $ENVMAPMASK && ($BUMPMAP2 || $BASEALPHAENVMAPMASK || $NORMALMAPALPHAENVMAPMASK)
+// SKIP: $BASEALPHAENVMAPMASK && ($SELFILLUM || $NORMALMAPALPHAENVMAPMASK)
+// SKIP: $BUMPMASK && ($SEAMLESS || $DETAIL_BLEND_MODE != 12 || $SELFILLUM || $BASETEXTURE2)
+// SKIP: $SEAMLESS && ($DETAIL_BLEND_MODE != 12 || $FANCY_BLENDING || $MASKEDBLENDING)
+// SKIP: !$FASTPATH && $FASTPATHENVMAPCONTRAST
+// SKIP: $WRITEWATERFOGTODESTALPHA && $WRITE_DEPTH_TO_DESTALPHA
+
+#include "l4d2_lightmappedgeneric_fxc.h"
+
+const float3 g_EnvmapTint : register( c0 );
+const float g_SsBumpMathFix : register( c1 );
+const float3 g_EnvmapContrast : register( c2 );
+const float3 g_EnvmapSaturation : register( c3 );
+const float4 g_Fresnel : register( c4 );
+const float3 g_SelfIllumTint : register( c7 );
+const float4 g_DetailTintAndBlend : register( c8 );
+const float3 g_EyePos : register( c10 );
+const float4 g_FogParams : register( c11 );
+const float4 g_TintTimesLightmapScale : register( c12 );
+const float g_WaterFogReciprocalRange : register( c22 );
+
+sampler BaseSampler : register( s0 );
+sampler2D LightmapSampler : register( s1 );
+samplerCUBE EnvmapSampler : register( s2 );
+sampler2D BlendSampler : register( s3 );
+sampler BumpSampler : register( s4 );
+sampler Bump2OrEnvMaskSampler : register( s5 );
+sampler2D WarpSampler : register( s6 );
+sampler Base2Sampler : register( s7 );
+sampler2D BumpMaskSampler : register( s8 );
+sampler2D DetailSampler : register( s12 );
+
+struct PS_INPUT
+{
+#if SEAMLESS
+	float4 base : TEXCOORD0;
+#else
+	float3 base : TEXCOORD0;
+#endif
+	float4 detailBumpMask : TEXCOORD1;
+	float4 lightmap12 : TEXCOORD2;
+	float4 lightmap3 : TEXCOORD3;
+	float4 world : TEXCOORD4;
+	float3 tangentX : TEXCOORD5;
+	float3 tangentY : TEXCOORD6;
+	float3 tangentZ : TEXCOORD7;
+	float4 color : COLOR0;
+	float blend : COLOR1;
+};
+
+float4 main( const PS_INPUT i ) : COLOR
+{
+	float4 base = L4D2WorldTexture( BaseSampler, i.base.xyz, i.color.rgb );
+	float blendedAlpha = base.a;
+#if MASKEDBLENDING
+	float blend = 0.5;
+#else
+	float blend = i.blend;
+#endif
+#if BASETEXTURE2
+#if FANCY_BLENDING && !SELFILLUM
+	float4 modulation = tex2D( BlendSampler, i.lightmap3.wz );
+#if MASKEDBLENDING
+	blend = modulation.g;
+#else
+	blend = smoothstep( saturate( modulation.g - modulation.r ), saturate( modulation.g + modulation.r ), blend );
+#endif
+#endif
+	float4 base2 = L4D2WorldTexture( Base2Sampler, i.base.xyz, i.color.rgb );
+	base.rgb = lerp( base.rgb, base2.rgb, blend );
+	blendedAlpha = lerp( base.a, base2.a, blend );
+#endif
+	float4 detail = 1;
+#if DETAIL_BLEND_MODE != 12
+	detail = tex2D( DetailSampler, i.detailBumpMask.xy ) * float4( g_DetailTintAndBlend.rgb, 1 );
+#endif
+	float4 normal = float4( 0, 0, 1, 1 );
+	float3 specularMask = 1;
+#if BUMPMAP || NORMALMAPALPHAENVMAPMASK
+#if SEAMLESS
+	normal = L4D2WorldTexture( BumpSampler, i.base.xyz, i.color.rgb );
+#else
+#if DETAIL_BLEND_MODE != 12
+#if !SELFILLUM && !FANCY_BLENDING
+	float2 bumpUV = i.lightmap3.wz;
+#else
+	float2 bumpUV = i.base.xy;
+#endif
+#else
+	float2 bumpUV = i.detailBumpMask.xy;
+#endif
+	normal = tex2D( BumpSampler, bumpUV );
+#endif
+#if BUMPMAP == 1
+	normal.xyz = normal.xyz * 2 - 1;
+#elif BUMPMAP == 0
+	normal.xyz = float3( 0, 0, 1 );
+#endif
+#if BASETEXTURENOENVMAP
+	normal.a = 0;
+#endif
+#if BUMPMAP2
+#if BUMPMASK
+	float4 normal2 = tex2D( Bump2OrEnvMaskSampler, i.detailBumpMask.wz );
+#else
+#if SEAMLESS
+	float4 normal2 = L4D2WorldTexture( Bump2OrEnvMaskSampler, i.base.xyz, i.color.rgb );
+#else
+	float4 normal2 = tex2D( Bump2OrEnvMaskSampler, bumpUV );
+#endif
+#endif
+#if BUMPMAP == 1
+	normal2.xyz = normal2.xyz * 2 - 1;
+#endif
+#if BASETEXTURE2NOENVMAP
+	normal2.a = 0;
+#endif
+#if BUMPMASK
+	float4 mask = tex2D( BumpMaskSampler, i.base.xy );
+	normal.xyz = lerp( mask.xyz * 2 - 1, normalize( normal.xyz + normal2.xyz ), mask.a );
+	specularMask = mask.a;
+#elif FANCY_BLENDING && NORMALMAPALPHAENVMAPMASK
+	normal = lerp( normal, normal2, blend );
+#else
+	normal.xyz = lerp( normal.xyz, normal2.xyz, blend );
+#endif
+#endif
+#if NORMALMAPALPHAENVMAPMASK
+	specularMask *= normal.a;
+#endif
+#endif
+#if ENVMAPMASK && !BUMPMAP2
+	specularMask *= tex2D( Bump2OrEnvMaskSampler, i.detailBumpMask.wz ).rgb;
+#endif
+#if BASEALPHAENVMAPMASK
+	specularMask *= 1 - blendedAlpha;
+#endif
+	float alpha = i.color.a;
+#if !BASEALPHAENVMAPMASK && !SELFILLUM
+	alpha *= base.a;
+#endif
+	float4 albedo = TextureCombine( base, detail, DETAIL_BLEND_MODE, g_DetailTintAndBlend.a );
+#if !SEAMLESS
+	albedo.rgb *= i.color.rgb;
+#endif
+	float3 lightmap = 1;
+#if LIGHTING_PREVIEW == 0
+	lightmap = tex2D( LightmapSampler, i.lightmap12.xy ).rgb;
+#if BUMPMAP && DIFFUSEBUMPMAP
+	float3 lightmap2 = tex2D( LightmapSampler, i.lightmap12.wz ).rgb;
+	float3 lightmap3 = tex2D( LightmapSampler, i.lightmap3.xy ).rgb;
+#if BUMPMAP == 2
+	float3 weights = normal.xyz;
+#else
+	float3 weights = saturate( float3( dot( normal.xyz, g_L4D2BumpBasis[0] ), dot( normal.xyz, g_L4D2BumpBasis[1] ), dot( normal.xyz, g_L4D2BumpBasis[2] ) ) );
+	weights *= weights;
+#endif
+#if DETAIL_BLEND_MODE == 10
+	weights *= 2 * detail.rgb;
+#endif
+	lightmap = weights.x * lightmap + weights.y * lightmap2 + weights.z * lightmap3;
+#if BUMPMAP == 2
+	lightmap *= g_SsBumpMathFix;
+#else
+	lightmap /= dot( weights, float3( 1, 1, 1 ) );
+#endif
+#endif
+#if BLENDTINTBYBASEALPHA
+	lightmap *= lerp( g_TintTimesLightmapScale.a, g_TintTimesLightmapScale.rgb, base.a );
+#else
+	lightmap *= g_TintTimesLightmapScale.rgb;
+#endif
+#if WARPLIGHTING && !SEAMLESS
+	lightmap *= 2 * tex2D( WarpSampler, float2( 0.5 * length( lightmap ), 0 ) ).rgb;
+#endif
+#endif
+#if BUMPMAP == 2
+	normal.xyz = normal.x * g_L4D2BumpBasis[0] + normal.y * g_L4D2BumpBasis[1] + normal.z * g_L4D2BumpBasis[2];
+#endif
+	float3 worldNormal = float3( dot( normal.xyz, i.tangentX ), dot( normal.xyz, i.tangentY ), dot( normal.xyz, i.tangentZ ) );
+#if LIGHTING_PREVIEW == 1
+	return float4( albedo.rgb * (0.7 + 0.25 * dot( worldNormal, float3( 0.436435789, 0.872871578, -0.218217894 ) )), alpha );
+#elif LIGHTING_PREVIEW == 3
+	return float4( worldNormal, i.world.w );
+#else
+	float3 color = albedo.rgb * lightmap;
+#if SELFILLUM
+#if FASTPATH
+	color = lerp( color, albedo.rgb, base.a );
+#else
+	color = lerp( color, albedo.rgb * g_SelfIllumTint, base.a );
+#endif
+#endif
+	color = TextureCombinePostLighting( color, detail, DETAIL_BLEND_MODE, g_DetailTintAndBlend.a );
+#if CUBEMAP
+	float3 eye = g_EyePos - i.world.xyz;
+	float3 reflection = 2 * worldNormal * dot( worldNormal, eye ) - eye * dot( worldNormal, worldNormal );
+	float3 environment = texCUBE( EnvmapSampler, reflection ).rgb * ENV_MAP_SCALE;
+	environment *= specularMask;
+	environment *= g_EnvmapTint;
+#if !FANCY_BLENDING
+#if FASTPATH
+#if FASTPATHENVMAPCONTRAST
+	environment *= environment;
+#endif
+#else
+	environment = lerp( environment, environment * environment, g_EnvmapContrast );
+	environment = lerp( dot( environment, float3( 0.299, 0.587, 0.114 ) ), environment, g_EnvmapSaturation );
+#endif
+#endif
+#if !FASTPATH
+	float fresnel = 1 - dot( worldNormal, normalize( eye ) );
+	float fresnel2 = fresnel * fresnel;
+	fresnel = fresnel * fresnel2 * fresnel2;
+	environment *= fresnel * g_Fresnel.b + g_Fresnel.a;
+#endif
+	color += environment;
+#endif
+#if PIXELFOG
+	float fog = L4D2WorldFog( g_EyePos, i.world.xyz, g_FogParams );
+#elif SEAMLESS
+	float fog = i.base.w;
+#else
+	float fog = i.base.z;
+#endif
+#if WRITEWATERFOGTODESTALPHA
+	alpha = saturate( (g_FogParams.y - i.world.z - 2) * g_WaterFogReciprocalRange );
+#elif WRITE_DEPTH_TO_DESTALPHA
+	alpha = DepthToDestAlpha( i.world.w );
+#endif
+	return float4( L4D2WorldOutput( color, fog ), alpha );
+#endif
+}

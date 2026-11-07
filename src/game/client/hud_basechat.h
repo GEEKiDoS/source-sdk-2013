@@ -20,6 +20,9 @@
 #include <vgui_controls/Button.h>
 #include <vgui_controls/CheckButton.h>
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "steam/steam_api.h"
+#endif
 class CBaseHudChatInputLine;
 class CBaseHudChatEntry;
 class CHudChatFilterPanel;
@@ -229,6 +232,11 @@ public:
 	};
 
 	CBaseHudChat( const char *pElementName );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	virtual ~CBaseHudChat();
+	void OpenSteamKeyboard();
+	virtual void OnThink();
+#endif
 
 	virtual void	CreateChatInputLine( void );
 	virtual void	CreateChatLines( void );
@@ -328,6 +336,14 @@ private:
 	int				m_iFilterFlags;
 	bool			m_bEnteringVoice;
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void OnFloatingGamepadTextInputDismissed( FloatingGamepadTextInputDismissed_t * );
+	CCallback< CBaseHudChat, FloatingGamepadTextInputDismissed_t > m_SteamKeyboardDismissed;
+	bool m_bSteamKeyboardVisible;
+	int m_nSteamKeyboardFrame;
+	int m_nSteamKeyboardCloseFrame;
+	int m_nSteamKeyboardOldY;
+#endif
 };
 
 class CBaseHudChatEntry : public vgui::TextEntry

@@ -151,7 +151,11 @@ public:
 // Client kills/scoring
 	virtual int IPointsForKill( CBasePlayer *pAttacker, CBasePlayer *pKilled );
 	virtual void PlayerKilled( CBasePlayer *pVictim, const CTakeDamageInfo &info );
+#if defined( L4D2 )
+	virtual void DeathNotice( CBaseCombatCharacter *pVictim, const CTakeDamageInfo &info );
+#else
 	virtual void DeathNotice( CBasePlayer *pVictim, const CTakeDamageInfo &info );
+#endif
 	CBasePlayer *GetDeathScorer( CBaseEntity *pKiller, CBaseEntity *pInflictor );									// old version of method - kept for backward compat
 	virtual CBasePlayer *GetDeathScorer( CBaseEntity *pKiller, CBaseEntity *pInflictor, CBaseEntity *pVictim );		// new version of method
 
@@ -234,8 +238,10 @@ public:
 	virtual void InitCustomResponseRulesDicts()	{}
 	virtual void ShutdownCustomResponseRulesDicts() {}
 
+#if !defined( L4D2 )
 	// NVNT virtual to check for haptic device 
 	virtual void ClientSettingsChanged( CBasePlayer *pPlayer );
+#endif // !L4D2
 	virtual void GetNextLevelName( char *szNextMap, int bufsize, bool bRandom = false );
 
 	static void DetermineMapCycleFilename( char *pszResult, int nSizeResult, bool bForceSpew );

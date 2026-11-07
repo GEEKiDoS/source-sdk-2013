@@ -13,6 +13,9 @@
 
 #include "nav.h"
 
+#if defined( L4D2 )
+#include "vscript_shared.h"
+#endif
 class CNavArea;
 
 //--------------------------------------------------------------------------------------------------------------
@@ -23,6 +26,24 @@ class CNavArea;
 class CNavLadder
 {
 public:
+#if defined( L4D2 )
+	DECLARE_ENT_SCRIPTDESC();
+	HSCRIPT GetScriptInstance();
+	void ClearScriptInstance();
+	int ScriptGetID() const { return GetID(); }
+	void ScriptConnectTo( HSCRIPT area );
+	void ScriptDisconnect( HSCRIPT area );
+	bool ScriptIsConnected( HSCRIPT area, int dir );
+	Vector ScriptGetBottomOrigin() const { return m_bottom; }
+	Vector ScriptGetTopOrigin() const { return m_top; }
+	HSCRIPT ScriptGetBottomArea();
+	HSCRIPT ScriptGetTopArea();
+	HSCRIPT ScriptGetLadderEntity();
+	bool ScriptIsInUse( HSCRIPT ignore ) const;
+	float ScriptGetLength() const { return m_length; }
+	float ScriptGetWidth() const { return m_width; }
+	int ScriptGetDir() const { return GetDir(); }
+#endif
 	CNavLadder( void )
 	{
 		m_topForwardArea = NULL;
@@ -33,6 +54,9 @@ public:
 
 		// set an ID for interactive editing - loads will overwrite this
 		m_id = m_nextID++;
+#if defined( L4D2 )
+		m_hScriptInstance = NULL; // Native80, constructor-only handle initialization.
+#endif
 	}
 
 	~CNavLadder();
@@ -115,7 +139,22 @@ private:
 
 	static unsigned int m_nextID;					///< used to allocate unique IDs
 	unsigned int m_id;								///< unique area ID
+#if defined( L4D2 )
+	HSCRIPT m_hScriptInstance; // ONE lazy script handle on the actual ladder.
+#endif
 };
+#if defined( L4D2 )
+inline HSCRIPT ToHScript( CNavLadder *ladder )
+{
+	return ladder ? ladder->GetScriptInstance() : NULL;
+}
+template <> ScriptClassDesc_t *GetScriptDesc<CNavLadder>( CNavLadder * );
+inline CNavLadder *ToNavLadder( HSCRIPT script )
+{
+	if ( script == NULL || script == INVALID_HSCRIPT ) return NULL;
+	return static_cast< CNavLadder * >( g_pScriptVM->GetInstanceValue( script, GetScriptDescForClass( CNavLadder ) ) );
+}
+#endif
 typedef CUtlVector< CNavLadder * > NavLadderVector;
 
 

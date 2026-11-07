@@ -11,7 +11,9 @@
 #include "tier0/memdbgon.h"
 
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( func_nav_prerequisite, CFuncNavPrerequisite );
+#endif
 
 BEGIN_DATADESC( CFuncNavPrerequisite )
 	DEFINE_KEYFIELD( m_task,			FIELD_INTEGER,	"Task" ),

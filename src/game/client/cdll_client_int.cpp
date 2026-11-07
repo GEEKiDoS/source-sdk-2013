@@ -36,6 +36,13 @@
 #include "detailobjectsystem.h"
 #include "clienteffectprecachesystem.h"
 #include "soundenvelope.h"
+#if defined( L4D2 )
+#include "l4d2/sound/terror_music.h"
+#include "l4d2/effects/terror_fx_shared.h"
+#include "l4d2/effects/terror_materials.h"
+#include "renderparm.h"
+#include "tier1/utldict.h"
+#endif
 #include "c_basetempentity.h"
 #include "materialsystem/imaterialsystemstub.h"
 #include "VGuiMatSurface/IMatSystemSurface.h"
@@ -81,11 +88,19 @@
 #include "con_nprint.h"
 #include "inputsystem/iinputsystem.h"
 #include "appframework/IAppSystemGroup.h"
+#if defined( L4D2 )
+#include "l4d2/content/terror_scene_file_cache.h"
+#else
 #include "scenefilecache/ISceneFileCache.h"
+#endif
 #include "tier2/tier2dm.h"
 #include "tier3/tier3.h"
 #include "ihudlcd.h"
 #include "toolframework_client.h"
+#ifdef L4D2
+#include "toolframework/ienginetool.h"
+#include "l4d2/clientmode_terror.h"
+#endif
 #include "hltvcamera.h"
 #if defined( REPLAY_ENABLED )
 #include "replay/replaycamera.h"
@@ -123,17 +138,26 @@
 #include "renamed_recvtable_compat.h"
 #include "mouthinfo.h"
 #include "sourcevr/isourcevirtualreality.h"
+#if !defined( L4D2 )
 #include "client_virtualreality.h"
 #include "mumble.h"
 #include "steamshare.h"
+#endif
 #include "vgui_controls/BuildGroup.h"
+#if defined( L4D2 )
+#include <vgui/IInputInternal.h>
+#endif
 
 #include "secure_command_line.h"
 
 // NVNT includes
 #include "hud_macros.h"
+#if !defined( L4D2 )
 #include "haptics/ihaptics.h"
+#endif // !L4D2
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 #include "haptics/haptic_msgs.h"
 
 #if defined( TF_CLIENT_DLL )
@@ -173,7 +197,19 @@ extern vgui::IInputInternal *g_InputInternal;
 #include "sixense/in_sixense.h"
 #endif
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "tier1/KeyValues.h"
+#include "tier1/utlbuffer.h"
+#include "util_shared.h"
+#include "viewrender.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "precache_register.h"
+#endif
+#if defined( L4D2 )
+#include "l4d2/content/terror_precache_client.h"
+#endif
 #include "tier0/memdbgon.h"
 
 extern IClientMode *GetClientModeNormal();
@@ -182,6 +218,9 @@ extern IClientMode *GetClientModeNormal();
 IVEngineClient	*engine = NULL;
 IVModelRender *modelrender = NULL;
 IVEfx *effects = NULL;
+#ifdef L4D2
+IEngineTool *g_pL4D2EngineTool = NULL;
+#endif
 IVRenderView *render = NULL;
 IVDebugOverlay *debugoverlay = NULL;
 IMaterialSystemStub *materials_stub = NULL;
@@ -203,7 +242,9 @@ IGameUIFuncs *gameuifuncs = NULL;
 IGameEventManager2 *gameeventmanager = NULL;
 ISoundEmitterSystemBase *soundemitterbase = NULL;
 IInputSystem *inputsystem = NULL;
+#if !defined( L4D2 )
 ISceneFileCache *scenefilecache = NULL;
+#endif
 IXboxSystem *xboxsystem = NULL;	// Xbox 360 only
 IMatchmaking *matchmaking = NULL;
 IUploadGameStats *gamestatsuploader = NULL;
@@ -219,7 +260,9 @@ IEngineClientReplay *g_pEngineClientReplay = NULL;
 IReplaySystem *g_pReplay = NULL;
 #endif
 
+#if !defined( L4D2 )
 IHaptics* haptics = NULL;// NVNT haptics system interface singleton
+#endif // !L4D2
 
 //=============================================================================
 // HPE_BEGIN
@@ -271,6 +314,11 @@ void ProcessCacheUsedMaterials()
 
 // String tables
 INetworkStringTable *g_pStringTableParticleEffectNames = NULL;
+#if defined( L4D2 )
+// The target engine cannot find client-side strings by name. Retain only the
+// actual indices returned by its particle table; the table still owns them.
+static CUtlDict< int > s_TerrorClientParticleIndices( k_eDictCompareTypeCaseInsensitive );
+#endif
 INetworkStringTable *g_StringTableEffectDispatch = NULL;
 INetworkStringTable *g_StringTableVguiScreen = NULL;
 INetworkStringTable *g_pStringTableMaterials = NULL;
@@ -331,7 +379,13 @@ class IMoveHelper;
 
 void DispatchHudText( const char *pszName );
 
-static ConVar s_CV_ShowParticleCounts("showparticlecounts", "0", 0, "Display number of particles drawn per frame");
+static ConVar s_CV_ShowParticleCounts("showparticlecounts", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Display number of particles drawn per frame");
 static ConVar s_cl_team("cl_team", "default", FCVAR_USERINFO|FCVAR_ARCHIVE, "Default team when joining a game");
 static ConVar s_cl_class("cl_class", "default", FCVAR_USERINFO|FCVAR_ARCHIVE, "Default class when joining a game");
 
@@ -450,7 +504,9 @@ public:
 	CClientDLLSharedAppSystems()
 	{
 		AddAppSystem( "soundemittersystem" DLL_EXT_STRING, SOUNDEMITTERSYSTEM_INTERFACE_VERSION );
+#if !defined( L4D2 )
 		AddAppSystem( "scenefilecache" DLL_EXT_STRING, SCENE_FILE_CACHE_INTERFACE_VERSION );
+#endif
 	}
 
 	virtual int	Count()
@@ -506,7 +562,13 @@ static CHLVoiceStatusHelper g_VoiceStatusHelper;
 // Code to display which entities are having their bones setup each frame.
 //-----------------------------------------------------------------------------
 
-ConVar cl_ShowBoneSetupEnts( "cl_ShowBoneSetupEnts", "0", 0, "Show which entities are having their bones setup each frame." );
+ConVar cl_ShowBoneSetupEnts( "cl_ShowBoneSetupEnts", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Show which entities are having their bones setup each frame." );
 
 class CBoneSetupEnt
 {
@@ -805,7 +867,20 @@ const char *GetMaterialNameFromIndex( int nIndex )
 //-----------------------------------------------------------------------------
 void PrecacheParticleSystem( const char *pParticleSystemName )
 {
+#if defined( L4D2 )
+	const int nIndex = g_pStringTableParticleEffectNames->AddString( false, pParticleSystemName );
+	// Client slots 0 and 1 are reserved; real client indices are at most -2.
+	if ( nIndex < -1 )
+	{
+		int nEntry = s_TerrorClientParticleIndices.Find( pParticleSystemName );
+		if ( nEntry == s_TerrorClientParticleIndices.InvalidIndex() )
+			s_TerrorClientParticleIndices.Insert( pParticleSystemName, nIndex );
+		else
+			s_TerrorClientParticleIndices[nEntry] = nIndex;
+	}
+#else
 	g_pStringTableParticleEffectNames->AddString( false, pParticleSystemName );
+#endif
 	g_pParticleSystemMgr->PrecacheParticleSystem( pParticleSystemName );
 }
 
@@ -820,6 +895,11 @@ int GetParticleSystemIndex( const char *pParticleSystemName )
 		int nIndex = g_pStringTableParticleEffectNames->FindStringIndex( pParticleSystemName );
 		if ( nIndex != INVALID_STRING_INDEX )
 			return nIndex;
+#if defined( L4D2 )
+		int nEntry = s_TerrorClientParticleIndices.Find( pParticleSystemName );
+		if ( nEntry != s_TerrorClientParticleIndices.InvalidIndex() )
+			return s_TerrorClientParticleIndices[nEntry];
+#endif
 		DevWarning("Client: Missing precache for particle system \"%s\"!\n", pParticleSystemName );
 	}
 
@@ -864,7 +944,9 @@ extern IGameSystem *ViewportClientSystem();
 
 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 ISourceVirtualReality *g_pSourceVR = NULL;
+#endif
 
 // Purpose: Called when the DLL is first loaded.
 // Input  : engineFactory - 
@@ -886,6 +968,10 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 	ConnectTier1Libraries( &appSystemFactory, 1 );
 	ConnectTier2Libraries( &appSystemFactory, 1 );
 	ConnectTier3Libraries( &appSystemFactory, 1 );
+#ifdef L4D2
+	// Optional genuine tools interface; absence is not a client Init failure.
+	g_pL4D2EngineTool = static_cast< IEngineTool * >( appSystemFactory( VENGINETOOL_INTERFACE_VERSION, NULL ) );
+#endif
 
 	// Client needs to protect from writing files into random locations to avoid becoming a remote-code
 	// execution platform.
@@ -942,8 +1028,13 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 		return false;
 	if ( (inputsystem = (IInputSystem *)appSystemFactory(INPUTSYSTEM_INTERFACE_VERSION, NULL)) == NULL )
 		return false;
+#if defined( L4D2 )
+	if ( !scenefilecache->Init() )
+		return false;
+#else
 	if ( (scenefilecache = (ISceneFileCache *)appSystemFactory( SCENE_FILE_CACHE_INTERFACE_VERSION, NULL )) == NULL )
 		return false;
+#endif
 	if ( IsX360() && (xboxsystem = (IXboxSystem *)appSystemFactory( XBOXSYSTEM_INTERFACE_VERSION, NULL )) == NULL )
 		return false;
 	if ( IsX360() && (matchmaking = (IMatchmaking *)appSystemFactory( VENGINE_MATCHMAKING_VERSION, NULL )) == NULL )
@@ -964,9 +1055,11 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 		return false;
 
 
+#if !defined( L4D2 )
 	// it's ok if this is NULL. That just means the sourcevr.dll wasn't found
 	if ( CommandLine()->CheckParm( "-vr" ) )
 		g_pSourceVR = (ISourceVirtualReality *)appSystemFactory(SOURCE_VIRTUAL_REALITY_INTERFACE_VERSION, NULL);
+#endif
 
 	factorylist_t factories;
 	factories.appSystemFactory = appSystemFactory;
@@ -1020,14 +1113,20 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 	IGameSystem::Add( ClientLeafSystem() );
 	IGameSystem::Add( DetailObjectSystem() );
 	IGameSystem::Add( ViewportClientSystem() );
+#ifdef L4D2
+	IGameSystem::Add( PrecacheRegisterSystem() );
+#else
 	IGameSystem::Add( ClientEffectPrecacheSystem() );
+#endif
 	IGameSystem::Add( g_pClientShadowMgr );
 	IGameSystem::Add( g_pColorCorrectionMgr );	// NOTE: This must happen prior to ClientThinkList (color correction is updated there)
 	IGameSystem::Add( ClientThinkList() );
 	IGameSystem::Add( ClientSoundscapeSystem() );
 	IGameSystem::Add( PerfVisualBenchmark() );
+#if !defined( L4D2 )
 	IGameSystem::Add( MumbleSystem() );
 	IGameSystem::Add( SteamShareSystem() );
+#endif
 
 	#if defined( TF_CLIENT_DLL )
 	IGameSystem::Add( CustomTextureToolCacheGameSystem() );
@@ -1068,7 +1167,7 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 
 	C_BaseTempEntity::PrecacheTempEnts();
 
-	input->Init_All();
+	::input->Init_All();
 
 	VGui_CreateGlobalPanels();
 
@@ -1096,11 +1195,11 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 
 	C_BaseAnimating::InitBoneSetupThreadPool();
 
-#if defined( WIN32 ) && !defined( _X360 )
+#if defined( WIN32 ) && !defined( _X360 ) && !defined( L4D2 )
 	// NVNT connect haptics sytem
 	ConnectHaptics(appSystemFactory);
 #endif
-#ifndef _X360
+#if !defined( _X360 ) && !defined( L4D2 )
 	HookHapticMessages(); // Always hook the messages
 #endif
 
@@ -1166,7 +1265,9 @@ void CHLClient::PostInit()
 	g_pSixenseInput->PostInit();
 #endif
 
+#if !defined( L4D2 )
 	g_ClientVirtualReality.StartupComplete();
+#endif
 
 #ifdef HL1MP_CLIENT_DLL
 	if ( s_cl_load_hl1_content.GetBool() && steamapicontext && steamapicontext->SteamApps() )
@@ -1225,7 +1326,7 @@ void CHLClient::Shutdown( void )
 	g_pClientMode->Disable();
 	g_pClientMode->Shutdown();
 
-	input->Shutdown_All();
+	::input->Shutdown_All();
 	C_BaseTempEntity::ClearDynamicTempEnts();
 	TermSmokeFogOverlay();
 	view->Shutdown();
@@ -1248,13 +1349,17 @@ void CHLClient::Shutdown( void )
 	
 	// This call disconnects the VGui libraries which we rely on later in the shutdown path, so don't do it
 //	DisconnectTier3Libraries( );
+#if defined( L4D2 )
+	scenefilecache->Shutdown();
+	g_pL4D2EngineTool = NULL;
+#endif
 	DisconnectTier2Libraries( );
 	ConVar_Unregister();
 	DisconnectTier1Libraries( );
 
 	gameeventmanager = NULL;
 
-#if defined( WIN32 ) && !defined( _X360 )
+#if defined( WIN32 ) && !defined( _X360 ) && !defined( L4D2 )
 	// NVNT Disconnect haptics system
 	DisconnectHaptics();
 #endif
@@ -1376,7 +1481,7 @@ ClientClass *CHLClient::GetAllClasses( void )
 //-----------------------------------------------------------------------------
 void CHLClient::IN_ActivateMouse( void )
 {
-	input->ActivateMouse();
+	::input->ActivateMouse();
 }
 
 //-----------------------------------------------------------------------------
@@ -1384,7 +1489,7 @@ void CHLClient::IN_ActivateMouse( void )
 //-----------------------------------------------------------------------------
 void CHLClient::IN_DeactivateMouse( void )
 {
-	input->DeactivateMouse();
+	::input->DeactivateMouse();
 }
 
 //-----------------------------------------------------------------------------
@@ -1392,7 +1497,7 @@ void CHLClient::IN_DeactivateMouse( void )
 //-----------------------------------------------------------------------------
 void CHLClient::IN_Accumulate ( void )
 {
-	input->AccumulateMouse();
+	::input->AccumulateMouse();
 }
 
 //-----------------------------------------------------------------------------
@@ -1400,7 +1505,7 @@ void CHLClient::IN_Accumulate ( void )
 //-----------------------------------------------------------------------------
 void CHLClient::IN_ClearStates ( void )
 {
-	input->ClearStates();
+	::input->ClearStates();
 }
 
 //-----------------------------------------------------------------------------
@@ -1409,7 +1514,7 @@ void CHLClient::IN_ClearStates ( void )
 //-----------------------------------------------------------------------------
 bool CHLClient::IN_IsKeyDown( const char *name, bool& isdown )
 {
-	kbutton_t *key = input->FindKey( name );
+	kbutton_t *key = ::input->FindKey( name );
 	if ( !key )
 	{
 		return false;
@@ -1446,7 +1551,7 @@ void CHLClient::IN_OnMouseWheeled( int nDelta )
 //-----------------------------------------------------------------------------
 int CHLClient::IN_KeyEvent( int eventcode, ButtonCode_t keynum, const char *pszCurrentBinding )
 {
-	return input->KeyEvent( eventcode, keynum, pszCurrentBinding );
+	return ::input->KeyEvent( eventcode, keynum, pszCurrentBinding );
 }
 
 void CHLClient::ExtraMouseSample( float frametime, bool active )
@@ -1457,13 +1562,13 @@ void CHLClient::ExtraMouseSample( float frametime, bool active )
 	C_BaseAnimating::AutoAllowBoneAccess boneaccess( true, false ); 
 
 	MDLCACHE_CRITICAL_SECTION();
-	input->ExtraMouseSample( frametime, active );
+	::input->ExtraMouseSample( frametime, active );
 }
 
 void CHLClient::IN_SetSampleTime( float frametime )
 {
-	input->Joystick_SetSampleTime( frametime );
-	input->IN_SetSampleTime( frametime );
+	::input->Joystick_SetSampleTime( frametime );
+	::input->IN_SetSampleTime( frametime );
 
 #ifdef SIXENSE
 	g_pSixenseInput->ResetFrameTime( frametime );
@@ -1484,7 +1589,7 @@ void CHLClient::CreateMove ( int sequence_number, float input_sample_frametime, 
 	C_BaseAnimating::AutoAllowBoneAccess boneaccess( true, false ); 
 
 	MDLCACHE_CRITICAL_SECTION();
-	input->CreateMove( sequence_number, input_sample_frametime, active );
+	::input->CreateMove( sequence_number, input_sample_frametime, active );
 }
 
 //-----------------------------------------------------------------------------
@@ -1495,7 +1600,7 @@ void CHLClient::CreateMove ( int sequence_number, float input_sample_frametime, 
 //-----------------------------------------------------------------------------
 bool CHLClient::WriteUsercmdDeltaToBuffer( bf_write *buf, int from, int to, bool isnewcommand )
 {
-	return input->WriteUsercmdDeltaToBuffer( buf, from, to, isnewcommand );
+	return ::input->WriteUsercmdDeltaToBuffer( buf, from, to, isnewcommand );
 }
 
 //-----------------------------------------------------------------------------
@@ -1506,7 +1611,7 @@ bool CHLClient::WriteUsercmdDeltaToBuffer( bf_write *buf, int from, int to, bool
 //-----------------------------------------------------------------------------
 void CHLClient::EncodeUserCmdToBuffer( bf_write& buf, int slot )
 {
-	input->EncodeUserCmdToBuffer( buf, slot );
+	::input->EncodeUserCmdToBuffer( buf, slot );
 }
 
 //-----------------------------------------------------------------------------
@@ -1517,7 +1622,7 @@ void CHLClient::EncodeUserCmdToBuffer( bf_write& buf, int slot )
 //-----------------------------------------------------------------------------
 void CHLClient::DecodeUserCmdFromBuffer( bf_read& buf, int slot )
 {
-	input->DecodeUserCmdFromBuffer( buf, slot );
+	::input->DecodeUserCmdFromBuffer( buf, slot );
 }
 
 //-----------------------------------------------------------------------------
@@ -1610,8 +1715,11 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	if (g_bLevelInitialized)
 		return;
 	g_bLevelInitialized = true;
+#if defined( L4D2 )
+	TerrorLevelWaterInit( pMapName );
+#endif
 
-	input->LevelInit();
+	::input->LevelInit();
 
 	vieweffects->LevelInit();
 	
@@ -1691,6 +1799,9 @@ void CHLClient::LevelInitPostEntity( )
 //-----------------------------------------------------------------------------
 void CHLClient::ResetStringTablePointers()
 {
+#if defined( L4D2 )
+	s_TerrorClientParticleIndices.RemoveAll();
+#endif
 	g_pStringTableParticleEffectNames = NULL;
 	g_StringTableEffectDispatch = NULL;
 	g_StringTableVguiScreen = NULL;
@@ -1710,6 +1821,9 @@ void CHLClient::ResetStringTablePointers()
 //-----------------------------------------------------------------------------
 void CHLClient::LevelShutdown( void )
 {
+#if defined( L4D2 )
+	TerrorLevelWaterShutdown();
+#endif
 	// HACK: Bogus, but the logic is too complicated in the engine
 	if (!g_bLevelInitialized)
 		return;
@@ -1840,6 +1954,15 @@ void CHLClient::VoiceStatus( int entindex, qboolean bTalking )
 //-----------------------------------------------------------------------------
 // Called when the string table for materials changes
 //-----------------------------------------------------------------------------
+#ifdef L4D2
+// C A90C0. The existing material-cache request/drain is native A8480.
+static void OnEffectStringTableChanged( void *object, INetworkStringTable *stringTable, int stringNumber, const char *newString, void const *newData )
+{
+	PrecacheEffect( newString );
+	RequestCacheUsedMaterials();
+}
+#endif
+
 void OnMaterialStringTableChanged( void *object, INetworkStringTable *stringTable, int stringNumber, const char *newString, void const *newData )
 {
 	// Make sure this puppy is precached
@@ -1908,6 +2031,9 @@ void CHLClient::InstallStringTableCallback( const char *tableName )
 	else if ( !Q_strcasecmp( tableName, "EffectDispatch" ) )
 	{
 		g_StringTableEffectDispatch = networkstringtable->FindTable( tableName );
+#ifdef L4D2
+		g_StringTableEffectDispatch->SetStringChangedCallback( NULL, OnEffectStringTableChanged );
+#endif
 	}
 	else if ( !Q_strcasecmp( tableName, "InfoPanel" ) )
 	{
@@ -1920,7 +2046,14 @@ void CHLClient::InstallStringTableCallback( const char *tableName )
 	}
 	else if ( !Q_strcasecmp( tableName, "ParticleEffectNames" ) )
 	{
+#if defined( L4D2 )
+		INetworkStringTable *pParticleTable = networkstringtable->FindTable( tableName );
+		if ( pParticleTable != g_pStringTableParticleEffectNames )
+			s_TerrorClientParticleIndices.RemoveAll();
+		g_pStringTableParticleEffectNames = pParticleTable;
+#else
 		g_pStringTableParticleEffectNames = networkstringtable->FindTable( tableName );
+#endif
 		networkstringtable->SetAllowClientSideAddString( g_pStringTableParticleEffectNames, true );
 		// When the particle system list changes, we need to know immediately
 		g_pStringTableParticleEffectNames->SetStringChangedCallback( NULL, OnParticleSystemStringTableChanged );
@@ -2004,6 +2137,9 @@ void SimulateEntities()
 	// Service timer events (think functions).
   	ClientThinkList()->PerformThinkFunctions();
 
+#if defined( L4D2 )
+	C_BaseEntity::SimulateEntities();
+#else
 	// TODO: make an ISimulateable interface so C_BaseNetworkables can simulate?
 	{
 		VPROF_("C_BaseEntity::Simulate", 1, VPROF_BUDGETGROUP_CLIENT_SIM, false, BUDGETFLAG_CLIENT);
@@ -2014,6 +2150,10 @@ void SimulateEntities()
 			pEnt->Simulate();
 		}
 	}
+#endif
+#if defined( L4D2 )
+	UpdateMusic();
+#endif
 }
 
 
@@ -2176,7 +2316,7 @@ void OnRenderStart()
 
 	// Make sure the camera simulation happens before OnRenderStart, where it's used.
 	// NOTE: the only thing that happens in CAM_Think is thirdperson related code.
-	input->CAM_Think();
+	::input->CAM_Think();
 
 	// This will place the player + the view models + all parent
 	// entities	at the correct abs position so that their attachment points
@@ -2196,18 +2336,29 @@ void OnRenderStart()
 	// Reset the overlay alpha. Entities can change the state of this in their think functions.
 	g_SmokeFogOverlayAlpha = 0;	
 
+#if defined( L4D2 )
+	g_pColorCorrectionMgr->UpdateColorCorrection();
+#else
 	// This must occur prior to SimulatEntities,
 	// which is where the client thinks for c_colorcorrection + c_colorcorrectionvolumes
 	// update the color correction weights.
 	// FIXME: The place where IGameSystem::Update is called should be in here
 	// so we don't have to explicitly call ResetColorCorrectionWeights + SimulateEntities, etc.
 	g_pColorCorrectionMgr->ResetColorCorrectionWeights();
+#endif
+
+#if defined( L4D2 )
+	C_BaseAnimating::ThreadedBoneSetup();
+	ProcessTerrorClientMessageQueue();
+#endif
 
 	// Simulate all the entities.
 	SimulateEntities();
 	PhysicsSimulate();
 
+#if !defined( L4D2 )
 	C_BaseAnimating::ThreadedBoneSetup();
+#endif
 
 	{
 		VPROF_("Client TempEnts", 0, VPROF_BUDGETGROUP_CLIENT_SIM, false, BUDGETFLAG_CLIENT);
@@ -2261,6 +2412,9 @@ void OnRenderEnd()
 	C_BaseAnimating::PopBoneAccess( "CViewRender::SetUpView->OnRenderEnd" );
 
 	UpdatePVSNotifiers();
+#if defined( L4D2 )
+	ClientEntityList().CleanUpDeleteList();
+#endif
 
 	DisplayBoneSetupEnts();
 }
@@ -2282,6 +2436,15 @@ void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 
 			// Last thing before rendering, run simulation.
 			OnRenderStart();
+#if defined( L4D2 )
+			// Native UpdateGameTime publishes the rendered client clock once per frame.
+			float flShaderTime = gpGlobals->curtime;
+			// The SDK stops at the tick while native rendering clamps to its end.
+			if ( engine->IsPaused() )
+				flShaderTime = (float)( (double)flShaderTime + gpGlobals->interval_per_tick - 0.00001f );
+			CMatRenderContextPtr pRenderContext( materials );
+			pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_L4D2_CURRENT_TIME, flShaderTime );
+#endif
 		}
 		break;
 		
@@ -2297,6 +2460,9 @@ void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 	case FRAME_NET_UPDATE_START:
 		{
 			VPROF( "CHLClient::FrameStageNotify FRAME_NET_UPDATE_START" );
+#if defined( L4D2 )
+			Terror_BeginNetworkMaterialPreparation();
+#endif
 			// disabled all recomputations while we update entities
 			C_BaseEntity::EnableAbsRecomputations( false );
 			C_BaseEntity::SetAbsQueriesValid( false );
@@ -2316,6 +2482,9 @@ void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 			::partition->SuppressLists( PARTITION_ALL_CLIENT_EDICTS, false );
 
 			PREDICTION_ENDTRACKVALUE();
+#if defined( L4D2 )
+			Terror_EndNetworkMaterialPreparation();
+#endif
 		}
 		break;
 	case FRAME_NET_UPDATE_POSTDATAUPDATE_START:
@@ -2672,4 +2841,7 @@ CSteamID GetSteamIDForPlayerIndex( int iPlayerIndex )
 	return CSteamID();
 }
 
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/cdll_client_int_console.inc"
 #endif

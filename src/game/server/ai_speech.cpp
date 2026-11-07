@@ -16,13 +16,27 @@
 #include "AI_Criteria.h"
 #include "isaverestore.h"
 #include "sceneentity.h"
+#if defined( L4D2 )
+#include "l4d2/player/terrorplayer.h"
+#include "entitylist.h"
+#include "l4d2/sound/ai_speechqueue.h"
+#include "l4d2/sound/ai_responsescript.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#include "tier1/utlsymbol.h"
+#include "tier1/utllinkedlist.h"
+#endif
 #include <tier0/memdbgon.h>
 
 #define DEBUG_AISPEECH 1
 #ifdef DEBUG_AISPEECH
-ConVar ai_debug_speech( "ai_debug_speech", "0" );
+ConVar ai_debug_speech( "ai_debug_speech", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 #define DebuggingSpeech() ai_debug_speech.GetBool()
 #else
 inline void SpeechMsg( ... ) {}
@@ -219,6 +233,10 @@ CAI_Expresser::CAI_Expresser( CBaseFlex *pOuter )
 	m_flStopTalkTimeWithoutDelay( 0 ),
 	m_voicePitch( 100 )
 {
+#if defined( L4D2 )
+	if ( GetOuter() )
+		ResponseQueueManager().AddExpresser( this );
+#endif
 #ifdef DEBUG
 	g_nExpressers++;
 #endif
@@ -226,12 +244,26 @@ CAI_Expresser::CAI_Expresser( CBaseFlex *pOuter )
 
 CAI_Expresser::~CAI_Expresser()
 {
+#if defined( L4D2 )
+	ResponseQueueManager().RemoveExpresser( this );
+#endif
 	m_ConceptHistories.Purge();
 
+#if defined( L4D2 )
+	// S028030 resolves the owner once and only enters entity-dependent teardown
+	// while that handle still resolves. Precache players may never have an edict.
+	CBaseFlex *pOuter = GetOuter();
+	CAI_TimedSemaphore *pSemaphore = pOuter ? GetMySpeechSemaphore( pOuter ) : NULL;
+#else
 	CAI_TimedSemaphore *pSemaphore = GetMySpeechSemaphore( GetOuter() );
+#endif
 	if ( pSemaphore )
 	{
+#if defined( L4D2 )
+		if ( pSemaphore->GetOwner() == pOuter )
+#else
 		if ( pSemaphore->GetOwner() == GetOuter() )
+#endif
 			pSemaphore->Release();
 
 #ifdef DEBUG
@@ -274,6 +306,12 @@ static const int LEN_SPECIFIC_SCENE_MODIFIER = strlen( AI_SPECIFIC_SCENE_MODIFIE
 //-----------------------------------------------------------------------------
 bool CAI_Expresser::SpeakFindResponse( AI_Response &outResponse, AIConcept_t concept, const char *modifiers /*= NULL*/ )
 {
+#if defined( L4D2 )
+	AI_CriteriaSet criteria;
+	PrepareSpeechCriteria( concept, criteria, modifiers );
+	GatherDerivedSpeechCriteria( criteria );
+	return FindResponseWithCriteria( outResponse, concept, criteria );
+#else
 	IResponseSystem *rs = GetOuter()->GetResponseSystem();
 	if ( !rs )
 	{
@@ -331,11 +369,11 @@ bool CAI_Expresser::SpeakFindResponse( AI_Response &outResponse, AIConcept_t con
 			if ( found )
 			{
 				const char *szReponse = outResponse.GetResponsePtr();
-				Warning( "RESPONSERULES: %s spoke '%s'. Found response '%s'.\n", pszName, concept, szReponse );
+				Warning( "RESPONSERULES: %s spoke '%s'. Found response '%s'.\n", pszName, static_cast< const char * >( concept ), szReponse );
 			}
 			else
 			{
-				Warning( "RESPONSERULES: %s spoke '%s'. Found no matching response.\n", pszName, concept );
+				Warning( "RESPONSERULES: %s spoke '%s'. Found no matching response.\n", pszName, static_cast< const char * >( concept ) );
 			}
 		}
 	}
@@ -351,22 +389,31 @@ bool CAI_Expresser::SpeakFindResponse( AI_Response &outResponse, AIConcept_t con
 		return false;
 
 	return true;
+#endif
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: Dispatches the result
 // Input  : *response - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool CAI_Expresser::SpeakDispatchResponse( AIConcept_t concept, AI_Response &response, IRecipientFilter *filter, const AI_CriteriaSet *queryCriteria )
+#else
 bool CAI_Expresser::SpeakDispatchResponse( AIConcept_t concept, AI_Response& response, IRecipientFilter *filter /* = NULL */ )
+#endif
 {
 	bool spoke = false;
 	float delay = response.GetDelay();
 	const char *szResponse = response.GetResponsePtr();
 	soundlevel_t soundlevel = response.GetSoundLevel();
 
+#if defined( L4D2 )
+	if ( IsSpeaking() && concept[0] != 0 && response.GetType() != RESPONSE_PRINT )
+#else
 	if ( IsSpeaking() && concept[0] != 0 )
+#endif
 	{
-		DevMsg( "SpeakDispatchResponse:  Entity ( %i/%s ) already speaking, forcing '%s'\n", GetOuter()->entindex(), STRING( GetOuter()->GetEntityName() ), concept );
+		DevMsg( "SpeakDispatchResponse:  Entity ( %i/%s ) already speaking, forcing '%s'\n", GetOuter()->entindex(), STRING( GetOuter()->GetEntityName() ), static_cast< const char * >( concept ) );
 
 		// Tracker 15911:  Can break the game if we stop an imported map placed lcs here, so only
 		//  cancel actor out of instanced scripted scenes.  ywb
@@ -375,11 +422,16 @@ bool CAI_Expresser::SpeakDispatchResponse( AIConcept_t concept, AI_Response& res
 
 		if ( IsRunningScriptedScene( GetOuter() ) )
 		{
-			DevMsg( "SpeakDispatchResponse:  Entity ( %i/%s ) refusing to speak due to scene entity, tossing '%s'\n", GetOuter()->entindex(), STRING( GetOuter()->GetEntityName() ), concept );
+			DevMsg( "SpeakDispatchResponse:  Entity ( %i/%s ) refusing to speak due to scene entity, tossing '%s'\n", GetOuter()->entindex(), STRING( GetOuter()->GetEntityName() ), static_cast< const char * >( concept ) );
 			return false;
 		}
 	}
 
+#if defined( L4D2 )
+	if ( response.GetScriptData().GetFunction() )
+		spoke = CallSpeechScript( response.GetScriptData().GetFunction(), NULL, GetOuter(),
+			queryCriteria ? *queryCriteria : *response.GetCriteria() );
+#endif
 	switch ( response.GetType() )
 	{
 	default:
@@ -421,8 +473,13 @@ bool CAI_Expresser::SpeakDispatchResponse( AIConcept_t concept, AI_Response& res
 			Vector vPrintPos;
 			GetOuter()->CollisionProp()->NormalizedToWorldSpace( Vector(0.5,0.5,1.0f), &vPrintPos );
 			NDebugOverlay::Text( vPrintPos, szResponse, true, 1.5 );
+#if !defined( L4D2 )
 			spoke = true;
+#endif
 		}
+#if defined( L4D2 )
+		spoke = true;
+#endif
 		break;
 	}
 
@@ -499,12 +556,17 @@ float CAI_Expresser::GetResponseDuration( AI_Response& response )
 //-----------------------------------------------------------------------------
 bool CAI_Expresser::Speak( AIConcept_t concept, const char *modifiers /*= NULL*/, char *pszOutResponseChosen /* = NULL*/, size_t bufsize /* = 0 */, IRecipientFilter *filter /* = NULL */ )
 {
+#if defined( L4D2 )
+	AI_CriteriaSet criteria;
+	PrepareSpeechCriteria( concept, criteria, modifiers );
+	return SpeakWithCriteria( concept, criteria, pszOutResponseChosen, bufsize, filter );
+#else
     AI_Response response;
 	bool result = SpeakFindResponse( response, concept, modifiers );
 	if ( !result )
 		return false;
 
-	SpeechMsg( GetOuter(), "%s (%p) spoke %s (%f)\n", STRING(GetOuter()->GetEntityName()), GetOuter(), concept, gpGlobals->curtime );
+	SpeechMsg( GetOuter(), "%s (%p) spoke %s (%f)\n", STRING(GetOuter()->GetEntityName()), GetOuter(), static_cast< const char * >( concept ), gpGlobals->curtime );
 
 	bool spoke = SpeakDispatchResponse( concept, response, filter );
 	if ( pszOutResponseChosen )
@@ -514,6 +576,7 @@ bool CAI_Expresser::Speak( AIConcept_t concept, const char *modifiers /*= NULL*/
 	}
 	
 	return spoke;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -526,7 +589,7 @@ bool CAI_Expresser::SpeakRawScene( const char *pszScene, float delay, AI_Respons
 	{
 		SpeechMsg( GetOuter(), "SpeakRawScene( %s, %f) %f\n", pszScene, delay, sceneLength );
 
-#if defined( HL2_EPISODIC ) || defined( TF_DLL )
+#if defined( HL2_EPISODIC ) || defined( TF_DLL ) || defined( L4D2 )
 		char szInstanceFilename[256];
 		GetOuter()->GenderExpandString( pszScene, szInstanceFilename, sizeof( szInstanceFilename ) );
 		// Only mark ourselves as speaking if the scene has speech
@@ -917,7 +980,7 @@ void CAI_ExpresserHost_NPC_DoModifyOrAppendCriteria( CAI_BaseNPC *pSpeaker, AI_C
 // HPE_BEGIN:
 // [Forrest] Remove npc_speakall from Counter-Strike.
 //=============================================================================
-#ifndef CSTRIKE_DLL
+#if !defined( CSTRIKE_DLL ) && !defined( L4D2 )
 extern CBaseEntity *FindPickerEntity( CBasePlayer *pPlayer );
 CON_COMMAND( npc_speakall, "Force the npc to try and speak all their responses" )
 {
@@ -960,7 +1023,12 @@ CON_COMMAND( npc_speakall, "Force the npc to try and speak all their responses" 
 
 //-----------------------------------------------------------------------------
 
-CMultiplayer_Expresser::CMultiplayer_Expresser( CBaseFlex *pOuter ) : CAI_Expresser( pOuter )
+CMultiplayer_Expresser::CMultiplayer_Expresser( CBaseFlex *pOuter )
+#if defined( L4D2 )
+	: CAI_ExpresserWithFollowup( pOuter )
+#else
+	: CAI_Expresser( pOuter )
+#endif
 {
 	m_bAllowMultipleScenes = false;
 }
@@ -985,3 +1053,83 @@ void CMultiplayer_Expresser::DisallowMultipleScenes()
 {
 	m_bAllowMultipleScenes = false;
 }
+
+#if defined( L4D2 )
+// S297610. The caller snapshots inputdata before resolving its actual expresser.
+void HandleInputSpeakResponseConcept( CBaseEntity *speaker, CAI_Expresser *expresser, const inputdata_t &inputdata )
+{
+	const char *input = inputdata.value.FieldType() == FIELD_STRING ? inputdata.value.String() : NULL;
+	if ( !input || !*input )
+	{
+		const char *receiverName = speaker->GetDebugName();
+		const char *callerName = inputdata.pCaller ? inputdata.pCaller->GetDebugName() : "<<null>>";
+		Warning( "empty SpeakResponse input from %s to %s\n", callerName, receiverName );
+		return;
+	}
+
+	char buffer[512];
+	char modifiers[512];
+	int written = 0;
+	V_strncpy( buffer, input, 510 );
+	buffer[511] = 0;
+	char *parameters = const_cast< char * >( V_strnchr( buffer, ' ', 510 ) );
+	if ( parameters )
+	{
+		*parameters = 0;
+		char *token = strtok( parameters + 1, " " );
+		while ( token )
+		{
+			char *colon = const_cast< char * >( V_strnchr( token, ':', 510 ) );
+			if ( !colon )
+			{
+				Warning( "faulty context k:v pair in entity io %s\n", input );
+				break;
+			}
+			int toWrite = static_cast< int >( colon - token ) + 1;
+			if ( written + toWrite >= 512 )
+			{
+				Warning( "Speak input to %s had overlong parameter %s", speaker->GetDebugName(), input );
+				return;
+			}
+			memcpy( modifiers + written, token, toWrite );
+			written += toWrite;
+			*colon = 0;
+			const char *value = colon + 1;
+			CBaseEntity *entity = gEntList.FindEntityProcedural( value, speaker, inputdata.pActivator, inputdata.pCaller );
+			if ( entity )
+			{
+				CTerrorPlayer *player = dynamic_cast< CTerrorPlayer * >( entity );
+				value = player ? player->GetResponseCharacterName() : STRING( entity->GetEntityName() );
+			}
+			toWrite = static_cast< int >( strlen( value ) );
+			if ( 511 - written < toWrite )
+				toWrite = 511 - written;
+			V_strncpy( modifiers + written, value, toWrite + 1 );
+			written += toWrite;
+			token = strtok( NULL, " " );
+			if ( token && written < 511 )
+				modifiers[written++] = ',';
+		}
+	}
+	modifiers[written] = 0;
+	expresser->Speak( buffer, written > 0 ? modifiers : NULL, NULL, 0, NULL );
+}
+#endif
+
+#if defined( L4D2 )
+void CAI_Expresser::SetOuter( CBaseFlex *outer )
+{
+	ResponseQueueManager().RemoveExpresser( this );
+	m_pOuter = outer;
+	if ( GetOuter() )
+		ResponseQueueManager().AddExpresser( this );
+}
+
+void CAI_Expresser::ReleaseScriptReferences()
+{
+	for ( int i = m_ConceptHistories.First(); i != m_ConceptHistories.InvalidIndex(); i = m_ConceptHistories.Next( i ) )
+		if ( m_ConceptHistories[i].response ) m_ConceptHistories[i].response->GetScriptData().Clear();
+}
+#endif
+
+#include "ai_speech_console_server_callbacks.inc"

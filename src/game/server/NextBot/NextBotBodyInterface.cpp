@@ -9,7 +9,11 @@
 #include "NextBotBodyInterface.h"
 
 
+#if defined( L4D2 )
+void IBody::AimHeadTowards( const Vector &lookAtPos, LookAtPriorityType priority, float duration, INextBotReply *replyWhenAimed, const char *reason, bool requireSettled, float easeInTime )
+#else
 void IBody::AimHeadTowards( const Vector &lookAtPos, LookAtPriorityType priority, float duration, INextBotReply *replyWhenAimed, const char *reason )
+#endif // L4D2
 {
 	if ( replyWhenAimed )
 	{
@@ -17,7 +21,11 @@ void IBody::AimHeadTowards( const Vector &lookAtPos, LookAtPriorityType priority
 	}
 }
 
+#if defined( L4D2 )
+void IBody::AimHeadTowards( CBaseEntity *subject, LookAtPriorityType priority, float duration, INextBotReply *replyWhenAimed, const char *reason, bool requireSettled, float easeInTime )
+#else
 void IBody::AimHeadTowards( CBaseEntity *subject, LookAtPriorityType priority, float duration, INextBotReply *replyWhenAimed, const char *reason )
+#endif // L4D2
 {
 	if ( replyWhenAimed )
 	{

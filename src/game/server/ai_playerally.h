@@ -181,7 +181,7 @@ enum AIConceptFlags_t
 
 struct ConceptInfo_t
 {
-	AIConcept_t			concept;
+	const char *		concept;
 	ConceptCategory_t   category;
 	float				minGlobalCategoryDelay;
 	float				maxGlobalCategoryDelay;

@@ -20,6 +20,9 @@
 #include "world.h"
 #include "functorutils.h"
 #include "team.h"
+#if defined( L4D2 ) && defined( SERVER_USES_VGUI )
+#include "NavUI/NavUI.h" // Real GetNavUIEditVectors declaration for the admitted L4D2 pick override.
+#endif
 #ifdef TERROR
 #include "TerrorShared.h"
 #endif
@@ -30,22 +33,89 @@
 #endif
 
 // NOTE: This has to be the last file included!
+#ifdef L4D2
+#include "precache_register.h"
+#endif
 #include "tier0/memdbgon.h"
 
 
-ConVar nav_show_area_info( "nav_show_area_info", "0.5", FCVAR_CHEAT, "Duration in seconds to show nav area ID and attributes while editing" );
-ConVar nav_snap_to_grid( "nav_snap_to_grid", "0", FCVAR_CHEAT, "Snap to the nav generation grid when creating new nav areas" );
-ConVar nav_create_place_on_ground( "nav_create_place_on_ground", "0", FCVAR_CHEAT, "If true, nav areas will be placed flush with the ground when created by hand." );
-#ifdef DEBUG
-ConVar nav_draw_limit( "nav_draw_limit", "50", FCVAR_CHEAT, "The maximum number of areas to draw in edit mode" );
+ConVar nav_show_area_info( "nav_show_area_info", "0.5", 
+#if defined( L4D2 )
+	0x00004084
 #else
-ConVar nav_draw_limit( "nav_draw_limit", "500", FCVAR_CHEAT, "The maximum number of areas to draw in edit mode" );
+	FCVAR_CHEAT
 #endif
-ConVar nav_solid_props( "nav_solid_props", "0", FCVAR_CHEAT, "Make props solid to nav generation/editing" );
-ConVar nav_create_area_at_feet( "nav_create_area_at_feet", "0", FCVAR_CHEAT, "Anchor nav_begin_area Z to editing player's feet" );
+, 
+#if defined( L4D2 )
+	"Duration in seconds to show nav area ID and attributes while editing. (-1 = never hide)"
+#else
+	"Duration in seconds to show nav area ID and attributes while editing"
+#endif
+ );
+#if defined( L4D2 )
+ConVar nav_flood_select_tolerance( "nav_flood_select_tolerance", "0", 0x00004004, "Allowable z distance of selectable areas from the start area." );
+ConVar nav_max_auto_area_size( "nav_max_auto_area_size", "16384", 0x00004004, "Max size in x/y of any auto-generated nav area" );
+#endif
+ConVar nav_snap_to_grid( "nav_snap_to_grid", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Snap to the nav generation grid when creating new nav areas" );
+ConVar nav_create_place_on_ground( "nav_create_place_on_ground", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "If true, nav areas will be placed flush with the ground when created by hand." );
+#ifdef DEBUG
+ConVar nav_draw_limit( "nav_draw_limit", "50", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "The maximum number of areas to draw in edit mode" );
+#else
+ConVar nav_draw_limit( "nav_draw_limit", "500", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "The maximum number of areas to draw in edit mode" );
+#endif
+ConVar nav_solid_props( "nav_solid_props", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Make props solid to nav generation/editing" );
+ConVar nav_create_area_at_feet( "nav_create_area_at_feet", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Anchor nav_begin_area Z to editing player's feet" );
 
-ConVar nav_drag_selection_volume_zmax_offset( "nav_drag_selection_volume_zmax_offset", "32", FCVAR_REPLICATED, "The offset of the nav drag volume top from center" );
-ConVar nav_drag_selection_volume_zmin_offset( "nav_drag_selection_volume_zmin_offset", "32", FCVAR_REPLICATED, "The offset of the nav drag volume bottom from center" );
+ConVar nav_drag_selection_volume_zmax_offset( "nav_drag_selection_volume_zmax_offset", "32", 
+#if defined( L4D2 )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "The offset of the nav drag volume top from center" );
+ConVar nav_drag_selection_volume_zmin_offset( "nav_drag_selection_volume_zmin_offset", "32", 
+#if defined( L4D2 )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "The offset of the nav drag volume bottom from center" );
 
 extern void GetNavUIEditVectors( Vector *pos, Vector *forward );
 
@@ -170,7 +240,9 @@ void CNavMesh::GetEditVectors( Vector *pos, Vector *forward )
 	*pos = player->EyePosition();
 
 #ifdef SERVER_USES_VGUI
-//	GetNavUIEditVectors( pos, forward );
+#if defined( L4D2 )
+	GetNavUIEditVectors( pos, forward ); // Native481170 ->388EF0.
+#endif
 #endif // SERVER_USES_VGUI
 }
 
@@ -716,7 +788,13 @@ void CNavMesh::UpdateDragSelectionSet( void )
  * Draw navigation areas and edit them
  * @todo Clean the whole edit system up - its structure is legacy from peculiarities in GoldSrc.
  */
-ConVar nav_show_compass( "nav_show_compass", "0", FCVAR_CHEAT );
+ConVar nav_show_compass( "nav_show_compass", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 void CNavMesh::DrawEditMode( void )
 {
 	VPROF( "CNavMesh::DrawEditMode" );
@@ -2057,7 +2135,12 @@ void CNavMesh::CommandNavEndShiftXY( void )
 
 
 //--------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_shift, "Shifts the selected areas by the specified amount", 0x00004004 )
+#else
 CON_COMMAND_F( nav_shift, "Shifts the selected areas by the specified amount", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -2151,7 +2234,13 @@ void CommandNavCenterInWorld( void )
 
 	Msg( "Shifting mesh by %f,%f\n", shift.x, shift.y );
 }
-ConCommand nav_world_center( "nav_world_center", CommandNavCenterInWorld, "Centers the nav mesh in the world", FCVAR_CHEAT );
+ConCommand nav_world_center( "nav_world_center", CommandNavCenterInWorld, "Centers the nav mesh in the world", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //--------------------------------------------------------------------------------------------------------------
@@ -3765,7 +3854,12 @@ public:
 
 
 //--------------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_select_radius, "Adds all areas in a radius to the selection set", 0x00004004 )
+#else
 CON_COMMAND_F( nav_select_radius, "Adds all areas in a radius to the selection set", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() || engine->IsDedicatedServer() )
 		return;
@@ -3859,6 +3953,15 @@ void CNavMesh::ClearDragSelectionSet( void )
 void CNavMesh::ClearSelectedSet( void )
 {
 	m_selectedSet.RemoveAll();
+#if defined( L4D2 )
+	m_markedArea = NULL;
+	m_selectedArea = NULL;
+	m_lastSelectedArea = NULL;
+	m_selectedLadder = NULL;
+	m_lastSelectedLadder = NULL;
+	m_markedLadder = NULL;
+	m_markedCorner = NUM_CORNERS;
+#endif
 }
 
 
@@ -3960,5 +4063,48 @@ void CNavMesh::OnEditDestroyNotify( CNavLadder *deadLadder )
 }
 
 
-
-
+// Native server 0x480d30; 0x5c5794 is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace EditNav_PrecachePrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "EditNav_Precache", 0x5c5794 ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bot.EditSwitchOn", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_TOGGLE_PLACE_MODE", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bot.EditSwitchOff", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_PLACE_PICK", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_DELETE", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT.ToggleAttribute", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_SPLIT.MarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_SPLIT.NoMarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MERGE.Enable", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MERGE.Disable", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MARK.Enable", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MARK.Disable", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MARK_UNNAMED.Enable", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MARK_UNNAMED.NoMarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MARK_UNNAMED.MarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_CONNECT.AllDirections", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_CONNECT.Added", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_DISCONNECT.MarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_DISCONNECT.NoMarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_SPLICE.MarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_SPLICE.NoMarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_SELECT_CORNER.MarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_SELECT_CORNER.NoMarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MOVE_CORNER.MarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_MOVE_CORNER.NoMarkedArea", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_BEGIN_AREA.Creating", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_BEGIN_AREA.NotCreating", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_END_AREA.Creating", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_END_AREA.NotCreating", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "EDIT_WARP_TO_MARK", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
+#endif

@@ -24,6 +24,13 @@
 #include "Sprite.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "precache_register.h"
+#include "l4d2/director/terror_director.h"
+#include "point_template.h"
+#include "tier1/utlbuffer.h"
+extern void PrecachePointTemplates();
+#endif
 #include "tier0/memdbgon.h"
 
 static bool g_bTracingVsCommentaryNodes = false;
@@ -31,8 +38,16 @@ static const char *s_pCommentaryUpdateViewThink = "CommentaryUpdateViewThink";
 
 #define COMMENTARY_SPAWNED_SEMAPHORE		"commentary_semaphore"
 
+#ifndef L4D2
 extern ConVar commentary;
-ConVar commentary_available("commentary_available", "0", FCVAR_NONE, "Automatically set by the game when a commentary file is available for the current map." );
+#endif
+ConVar commentary_available("commentary_available", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "Automatically set by the game when a commentary file is available for the current map." );
 
 enum teleport_stages_t
 {
@@ -255,6 +270,9 @@ public:
 	CCommentarySystem() : CAutoGameSystemPerFrame( "CCommentarySystem" )
 	{
 		m_iCommentaryNodeCount = 0;
+#ifdef L4D2
+		m_pMapModifications = NULL; // S584CC0 explicitly initializes native singleton+44.
+#endif
 	}
 
 	virtual void LevelInitPreEntity()
@@ -262,6 +280,9 @@ public:
 		m_hCurrentNode = NULL;
 		m_bCommentaryConvarsChanging = false;
 		m_iClearPressedButtons = 0;
+#ifdef L4D2
+		m_bOriginalSvCheats = false; // S9B9C0, before CalculateCommentaryState.
+#endif
 
 		// If the map started via the map_commentary cmd, start in commentary
 		g_bInCommentaryMode = (engine->IsInCommentaryMode() != 0);
@@ -278,17 +299,30 @@ public:
 		{
 			commentary_available.SetValue( true );
 
+#ifndef L4D2
 			// If the user wanted commentary, kick it on
 			if ( commentary.GetBool() )
 			{
 				g_bInCommentaryMode = true;
 			}
+#endif
 		}
 		else
 		{
 			g_bInCommentaryMode = false;
 			commentary_available.SetValue( false );
 		}
+#ifdef L4D2
+		if ( IsInCommentaryMode() )
+		{
+			ConVarRef cheats( "sv_cheats" );
+			if ( cheats.IsValid() )
+			{
+				m_bOriginalSvCheats = cheats.GetBool();
+				cheats.SetValue( 1 );
+			}
+		}
+#endif
 	}
 
 	virtual void LevelShutdownPreEntity()
@@ -302,7 +336,11 @@ public:
 		while ( pkvNodeData )
 		{
 			// Handle the connections block
+#ifdef L4D2
+			if ( !Q_stricmp(pkvNodeData->GetName(), "connections") )
+#else
 			if ( !Q_strcmp(pkvNodeData->GetName(), "connections") )
+#endif
 			{
 				ParseEntKVBlock( pNode, pkvNodeData );
 			}
@@ -341,8 +379,10 @@ public:
 
 	virtual void LevelInitPostEntity( void )
 	{
+#ifndef L4D2
 		if ( !IsInCommentaryMode() )
 			return;
+#endif
 
 		// Don't spawn commentary entities when loading a savegame
 		if ( gpGlobals->eLoadType == MapLoad_LoadGame || gpGlobals->eLoadType == MapLoad_Background )
@@ -351,11 +391,18 @@ public:
 		m_bCommentaryEnabledMidGame = false;
 		InitCommentary();
 
+#ifdef L4D2
+		if ( IsInCommentaryMode() )
+		{
+#endif
 		IGameEvent *event = gameeventmanager->CreateEvent( "playing_commentary" );
 		if ( event )
 		{
 			gameeventmanager->FireEventClientSide( event );
 		}
+#ifdef L4D2
+		}
+#endif
 	}
 
 	CPointCommentaryNode *GetNodeUnderCrosshair()
@@ -581,6 +628,9 @@ public:
 
 	void InitCommentary( void )
 	{
+#ifdef L4D2
+		InitTerrorMapEntities(); // S9CD30: same singleton, real map/modification/mutation producers.
+#else
 		// Install the global cvar callback
 		cvar->InstallGlobalChangeCallback( CV_GlobalChange_Commentary );
 
@@ -667,6 +717,7 @@ public:
 		}
 
 		engine->LockNetworkStringTables( oldLock );
+#endif
 	}
 
 	void ShutDownCommentary( void )
@@ -707,14 +758,29 @@ public:
 			}
 		}
 		m_ModifiedConvars.Purge();
+#ifdef L4D2
+		if ( m_pMapModifications )
+			m_pMapModifications->deleteThis();
+		m_pMapModifications = NULL; // S9DD00: after convar restore/purge, before handle/timer reset.
+#endif
 
 		m_hCurrentNode = NULL;
 		m_hActiveCommentaryNode = NULL;
 		m_hLastCommentaryNode = NULL;
 		m_flNextTeleportTime = 0;
 		m_iTeleportStage = TELEPORT_NONE;
+#ifdef L4D2
+		if ( IsInCommentaryMode() )
+		{
+			ConVarRef cheats( "sv_cheats" );
+			if ( cheats.IsValid() )
+				cheats.SetValue( m_bOriginalSvCheats );
+		}
+		g_bInCommentaryMode = false;
+#endif
 	}
 
+#ifndef L4D2
 	void SetCommentaryMode( bool bCommentaryMode )
 	{
 		g_bInCommentaryMode = bCommentaryMode;
@@ -731,6 +797,7 @@ public:
 			ShutDownCommentary();
 		}
 	}
+#endif
 
 	void OnRestore( void )
 	{
@@ -784,6 +851,10 @@ public:
 		}
 	}
 
+#ifdef L4D2
+#include "l4d2/entities/terror_commentary_map_entities.inc"
+#endif
+
 private:
 	int		m_afPlayersLastButtons;
 	int		m_iCommentaryNodeCount;
@@ -801,6 +872,25 @@ private:
 };
 
 CCommentarySystem	g_CommentarySystem;
+
+#ifdef L4D2
+bool CommentarySystem_IsEntity( CBaseEntity *entity )
+{
+	return g_CommentarySystem.IsRoundPreservedEntity( entity ); // S9A670, actual owned handle list/semaphore.
+}
+
+void CommentarySystem_ApplyMapModifications()
+{
+	g_CommentarySystem.ApplyMapModifications(); // S99FD0 -> S99E20, actual owned KV44 tree.
+}
+
+// S09E020 aborts only the real current node before player transition capture.
+void AbortCurrentCommentary()
+{
+	if ( g_CommentarySystem.GetActiveNode() )
+		g_CommentarySystem.GetActiveNode()->AbortPlaying();
+}
+#endif
 
 void CommentarySystem_PePlayerRunCommand( CBasePlayer *player, CUserCmd *ucmd )
 {
@@ -831,6 +921,7 @@ BEGIN_SIMPLE_DATADESC( modifiedconvars_t )
 END_DATADESC()
 
 
+#ifndef L4D2
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
@@ -843,6 +934,7 @@ void CC_CommentaryChanged( IConVar *pConVar, const char *pOldString, float flOld
 	}
 }
 ConVar commentary( "commentary", "0", FCVAR_NONE, "Desired commentary mode state.", CC_CommentaryChanged );
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: We need to revert back any convar changes that are made by the
@@ -867,7 +959,11 @@ void CC_CommentaryNotChanging( void )
 {
 	g_CommentarySystem.SetCommentaryConvarsChanging( false );
 }
-static ConCommand commentary_cvarsnotchanging("commentary_cvarsnotchanging", CC_CommentaryNotChanging, 0 );
+static ConCommand commentary_cvarsnotchanging("commentary_cvarsnotchanging", CC_CommentaryNotChanging, 0
+#if defined( L4D2 )
+	, 0x00000004
+#endif
+ );
 
 bool IsListeningToCommentary( void )
 {
@@ -903,8 +999,10 @@ void CPointCommentaryNode::Spawn( void )
 	SetThink( &CPointCommentaryNode::SpinThink );
 	SetNextThink( gpGlobals->curtime + 0.1f ); 
 
+#ifndef L4D2
 	m_iNodeNumber = 0;
 	m_iNodeNumberMax = 0;
+#endif
 
 	SetDisabled( m_bDisabled );
 }
@@ -1125,7 +1223,11 @@ void CPointCommentaryNode::StartCommentary( void )
 	if ( m_iszPreCommands != NULL_STRING )
 	{
 		g_CommentarySystem.SetCommentaryConvarsChanging( true );
+#ifdef L4D2
+		engine->ClientCommand( pPlayer->edict(), "%s", STRING(m_iszPreCommands) );
+#else
 		engine->ClientCommand( pPlayer->edict(), STRING(m_iszPreCommands) );
+#endif
 		engine->ClientCommand( pPlayer->edict(), "commentary_cvarsnotchanging\n" );
 	}
 
@@ -1153,11 +1255,21 @@ void CC_CommentaryFinishNode( void )
 		g_CommentarySystem.GetActiveNode()->StopPlaying();
 	}
 }
-static ConCommand commentary_finishnode("commentary_finishnode", CC_CommentaryFinishNode, 0 );
+static ConCommand commentary_finishnode("commentary_finishnode", CC_CommentaryFinishNode, 0
+#if defined( L4D2 )
+	, 0x00000004
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CPointCommentaryNode::UpdateViewThink( void )
 {
 	if ( !m_bActive )
@@ -1177,10 +1289,12 @@ void CPointCommentaryNode::UpdateViewThink( void )
 			m_hViewTargetAngles->SetAbsAngles( pPlayer->EyeAngles() );
 			pPlayer->SetViewEntity( m_hViewTargetAngles );
 
+#ifndef L4D2
 			if ( pPlayer->GetActiveWeapon() )
 			{
 				pPlayer->GetActiveWeapon()->Holster();
 			}
+#endif
 		}
 
  		QAngle angGoal;
@@ -1205,12 +1319,20 @@ void CPointCommentaryNode::UpdateViewThink( void )
 		// Accelerate towards the target goal angles
   		float dx = AngleDiff( angGoal.x, angCurrent.x );
   		float dy = AngleDiff( angGoal.y, angCurrent.y );
+#if defined( L4D2 )
+		// S09AC63..09ACC3: pitch uses the unspilled decay; yaw reloads its F32 spill.
+		const double wideMod = 1.0 - exp( log( 0.5 ) * static_cast< double >( 3.3333333f ) * gpGlobals->frametime );
+		const float mod = static_cast< float >( wideMod );
+		angCurrent.x = AngleNormalize( static_cast< float >( wideMod * dx + angCurrent.x ) );
+		angCurrent.y = AngleNormalize( static_cast< float >( static_cast< double >( mod ) * dy + angCurrent.y ) );
+#else
 		float mod = 1.0 - ExponentialDecay( 0.5, 0.3, gpGlobals->frametime );
    		float dxmod = dx * mod;
 		float dymod = dy * mod;
 
  		angCurrent.x = AngleNormalize( angCurrent.x + dxmod );
  		angCurrent.y = AngleNormalize( angCurrent.y + dymod );
+#endif
 
 		if ( m_hViewPositionMover )
 		{
@@ -1231,10 +1353,12 @@ void CPointCommentaryNode::UpdateViewThink( void )
 
  	if ( m_hViewPosition.Get() )
 	{
+#ifndef L4D2
 		if ( pPlayer->GetActiveWeapon() )
 		{
 			pPlayer->GetActiveWeapon()->Holster();
 		}
+#endif
 
  		if ( !m_hViewPositionMover )
 		{
@@ -1257,6 +1381,9 @@ void CPointCommentaryNode::UpdateViewThink( void )
 		SetNextThink( gpGlobals->curtime, s_pCommentaryUpdateViewThink );
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1324,7 +1451,11 @@ void CPointCommentaryNode::FinishCommentary( bool bBlendOut )
 	if ( m_iszPostCommands != NULL_STRING )
 	{
 		g_CommentarySystem.SetCommentaryConvarsChanging( true );
+#ifdef L4D2
+		engine->ClientCommand( pPlayer->edict(), "%s", STRING(m_iszPostCommands) );
+#else
 		engine->ClientCommand( pPlayer->edict(), STRING(m_iszPostCommands) );
+#endif
 		engine->ClientCommand( pPlayer->edict(), "commentary_cvarsnotchanging\n" );
 	}
 
@@ -1357,10 +1488,12 @@ void CPointCommentaryNode::CleanupPostCommentary( void )
 	if ( !pPlayer )
 		return;
 
+#ifndef L4D2
 	if ( ( m_hViewPositionMover || m_hViewTargetAngles ) && pPlayer->GetActiveWeapon() )
 	{
 		pPlayer->GetActiveWeapon()->Deploy();
 	}
+#endif
 
 	if ( m_hViewTargetAngles && pPlayer->GetViewEntity() == m_hViewTargetAngles )
 	{
@@ -1554,8 +1687,10 @@ public:
 				CAI_BaseNPC::m_nDebugBits = pRestore->ReadInt();
 			}
 
+#ifndef L4D2
 			// Force the commentary convar to match the saved game state
 			commentary.SetValue( g_bInCommentaryMode );
+#endif
 		}
 	}
 
@@ -1651,4 +1786,21 @@ bool IsInCommentaryMode( void )
 	return false;
 }
 
+#endif
+
+// Native server 0x99da0; 0x5c17a0 is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace PrecachePointCommentaryNodePrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "PrecachePointCommentaryNode", 0x5c17a0 ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		handler->Precache( RESOURCETYPE_MODEL, "models/extras/info_speech.mdl", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
 #endif

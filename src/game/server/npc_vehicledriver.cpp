@@ -69,7 +69,9 @@ BEGIN_DATADESC( CNPC_VehicleDriver )
 
 END_DATADESC()
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( npc_vehicledriver, CNPC_VehicleDriver );
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 

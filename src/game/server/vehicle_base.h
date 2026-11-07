@@ -86,6 +86,9 @@ public:
 	unsigned int GetVehicleType( void )							{ return m_nVehicleType; }
 
 	// CBaseEntity
+#if defined( L4D2 )
+	virtual void Precache() OVERRIDE;
+#endif
 	void			Spawn( void );
 	virtual int		Restore( IRestore &restore );
 	void			VPhysicsUpdate( IPhysicsObject *pPhysics );

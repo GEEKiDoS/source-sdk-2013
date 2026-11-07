@@ -37,6 +37,28 @@
 #include "physics_npc_solver.h"
 #include "SoundEmitterSystem/isoundemittersystembase.h"
 #include "datacache/imdlcache.h"
+#ifdef L4D2
+#include "l4d2/director/terror_director.h"
+#include "l4d2/nav/terror_nav.h"
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/infected/common/infected.h"
+#include "l4d2/entities/survivor_rescue.h"
+#include "l4d2/director/director_session_manager.h"
+#include "l4d2/gamerules/terror_gamerules.h"
+#include "l4d2/nav/terror_nav_area.h"
+#include "l4d2/weapons/pipe_bomb_projectile.h"
+#include "l4d2/weapons/inferno.h"
+#include "EventLog.h"
+#include "l4d2/sound/ai_speechqueue.h"
+#include "team.h"
+#include "l4d2/effects/terror_physicsprop_te.h"
+#include "l4d2/weapons/terror_weapon.h"
+#include "l4d2/effects/terror_fx_shared.h"
+#include "l4d2/entities/visibility_monitor.h"
+#include "tier0/icommandline.h"
+#include "NextBot/NextBotInterface.h"
+#include "NextBot/NextBotBodyInterface.h"
+#endif
 #include "doors.h"
 #include "physics_collisionevent.h"
 #include "gamestats.h"
@@ -46,7 +68,11 @@
 #include "nav_mesh/tf_nav_mesh.h"
 #endif
 
+#if defined( L4D2 )
+#include <xmmintrin.h>
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
+#include "props_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 #define DOOR_HARDWARE_GROUP 1
@@ -61,27 +87,71 @@
 extern CBaseEntity *FindPickerEntity( CBasePlayer *pPlayer );
 
 
-ConVar g_debug_doors( "g_debug_doors", "0" );
-ConVar breakable_disable_gib_limit( "breakable_disable_gib_limit", "0" );
-ConVar breakable_multiplayer( "breakable_multiplayer", "1" );
+ConVar g_debug_doors( "g_debug_doors", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar breakable_disable_gib_limit( "breakable_disable_gib_limit", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar breakable_multiplayer( "breakable_multiplayer", "1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 // AI Interaction for being hit by a physics object
 int g_interactionHitByPlayerThrownPhysObj = 0;
 int	g_interactionPlayerPuntedHeavyObject = 0;
 
 int g_ActiveGibCount = 0;
-ConVar prop_active_gib_limit( "prop_active_gib_limit", "999999" );
-ConVar prop_active_gib_max_fade_time( "prop_active_gib_max_fade_time", "999999" );
+ConVar prop_active_gib_limit( "prop_active_gib_limit", "999999"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar prop_active_gib_max_fade_time( "prop_active_gib_max_fade_time", "999999"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 #define ACTIVE_GIB_LIMIT prop_active_gib_limit.GetInt()
 #define ACTIVE_GIB_FADE prop_active_gib_max_fade_time.GetInt()
 
 
 // Damage type modifiers for breakable objects.
-ConVar func_breakdmg_bullet( "func_breakdmg_bullet", "0.5" );
-ConVar func_breakdmg_club( "func_breakdmg_club", "1.5" );
-ConVar func_breakdmg_explosive( "func_breakdmg_explosive", "1.25" );
+ConVar func_breakdmg_bullet( "func_breakdmg_bullet", "0.5"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar func_breakdmg_club( "func_breakdmg_club", "1.5"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar func_breakdmg_explosive( "func_breakdmg_explosive", "1.25"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
-ConVar sv_turbophysics( "sv_turbophysics", "0", FCVAR_REPLICATED, "Turns on turbo physics" );
+ConVar sv_turbophysics( "sv_turbophysics", 
+#if defined( L4D2 )
+	"1"
+#else
+	"0"
+#endif
+, 
+#if defined( L4D2 )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "Turns on turbo physics" );
 
 #ifdef HL2_EPISODIC
 	#define PROP_FLARE_LIFETIME 30.0f
@@ -95,6 +165,42 @@ ConVar sv_turbophysics( "sv_turbophysics", "0", FCVAR_REPLICATED, "Turns on turb
 // Purpose: Breakable objects take different levels of damage based upon the damage type.
 //			This isn't contained by CBaseProp, because func_breakables use it as well.
 //-----------------------------------------------------------------------------
+#ifdef L4D2
+extern ConVar z_debug_breakables;
+#pragma float_control( precise, on, push )
+float GetBreakableDamage( const CTakeDamageInfo &inputInfo, IBreakableWithPropData *pProp )
+{
+	float damage = inputInfo.GetDamage();
+	const unsigned int type = inputInfo.GetDamageType();
+	if ( ( type & DMG_BULLET ) && !z_debug_breakables.GetBool() )
+	{
+		if ( pProp )
+		{
+			double modifier = pProp->GetDmgModBullet();
+			if ( type & 0x20000000u )
+				modifier += modifier;
+			damage = static_cast< float >( modifier * damage );
+		}
+		else
+		{
+			float modifier = func_breakdmg_bullet.GetFloat();
+			if ( type & 0x20000000u )
+				modifier *= 2.0f;
+			damage *= modifier;
+		}
+	}
+	if ( type & DMG_CLUB )
+		damage = pProp ? static_cast< float >( static_cast< double >( pProp->GetDmgModClub() ) * damage ) : damage * func_breakdmg_club.GetFloat();
+	if ( type & DMG_BLAST )
+		damage = pProp ? static_cast< float >( static_cast< double >( pProp->GetDmgModExplosive() ) * damage ) : damage * func_breakdmg_explosive.GetFloat();
+	if ( ( type & DMG_BURN ) && pProp )
+		damage = static_cast< float >( static_cast< double >( pProp->GetDmgModFire() ) * damage );
+	if ( ( type & DMG_SLASH ) && ( type & DMG_CRUSH ) )
+		damage *= 10.0f;
+	return g_pGameRules->Damage_IsTimeBased( type ) ? 0.0f : damage;
+}
+#pragma float_control( pop )
+#else
 float GetBreakableDamage( const CTakeDamageInfo &inputInfo, IBreakableWithPropData *pProp )
 {
 	float flDamage = inputInfo.GetDamage();
@@ -172,6 +278,7 @@ float GetBreakableDamage( const CTakeDamageInfo &inputInfo, IBreakableWithPropDa
 
 	return flDamage;
 }
+#endif
 
 //=============================================================================================================
 // BASE PROP
@@ -728,12 +835,22 @@ void CC_Prop_Debug( void )
 		}
 	}
 }
-static ConCommand prop_debug("prop_debug", CC_Prop_Debug, "Toggle prop debug mode. If on, props will show colorcoded bounding boxes. Red means ignore all damage. White means respond physically to damage but never break. Green maps health in the range of 100 down to 1.", FCVAR_CHEAT);
+static ConCommand prop_debug("prop_debug", CC_Prop_Debug, "Toggle prop debug mode. If on, props will show colorcoded bounding boxes. Red means ignore all damage. White means respond physically to damage but never break. Green maps health in the range of 100 down to 1.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //=============================================================================================================
 // BREAKABLE PROPS
 //=============================================================================================================
 IMPLEMENT_SERVERCLASS_ST(CBreakableProp, DT_BreakableProp)
+#if defined( L4D2 )
+	SendPropBool( SENDINFO( m_noGhostCollision ) ),
+	SendPropBool( SENDINFO( m_bClientPhysics ) ),
+#endif
 END_SEND_TABLE()
 
 BEGIN_DATADESC( CBreakableProp )
@@ -745,11 +862,16 @@ BEGIN_DATADESC( CBreakableProp )
 	DEFINE_FIELD( m_hBreaker, FIELD_EHANDLE ),
 	DEFINE_KEYFIELD( m_PerformanceMode, FIELD_INTEGER, "PerformanceMode" ),
 
+#ifndef L4D2
 	DEFINE_KEYFIELD( m_iszBreakModelMessage, FIELD_STRING, "BreakModelMessage" ),
+#endif
 
 	DEFINE_FIELD( m_flDmgModBullet, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flDmgModClub, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flDmgModExplosive, FIELD_FLOAT ),
+#ifdef L4D2
+	DEFINE_FIELD( m_flDmgModFire, FIELD_FLOAT ),
+#endif
 	DEFINE_FIELD( m_iszPhysicsDamageTableName, FIELD_STRING ),
 	DEFINE_FIELD( m_iszBreakableModel, FIELD_STRING ),
 	DEFINE_FIELD( m_iBreakableSkin, FIELD_INTEGER ),
@@ -819,10 +941,24 @@ CBreakableProp::CBreakableProp()
 	m_flFadeScale = 1;
 	m_flDefaultFadeScale = 1;
 	m_mpBreakMode = MULTIPLAYER_BREAK_DEFAULT;
+#ifdef L4D2
+	m_iExplosionType = 0; // S1A0710 explicit store; delay/buildup have NO ctor store.
+#endif
 	
 	// This defaults to on. Most times mapmakers won't specify a punt sound to play.
 	m_bUsePuntSound = true;
+#if defined( L4D2 )
+	m_noGhostCollision = false;
+#endif
 }
+
+#if defined( L4D2 )
+unsigned int CBreakableProp::PhysicsSolidMaskForEntity() const
+{
+	if ( m_noGhostCollision ) return BaseClass::PhysicsSolidMaskForEntity() | 0x0200;
+	return BaseClass::PhysicsSolidMaskForEntity();
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -836,6 +972,9 @@ void CBreakableProp::Spawn()
 	m_flDmgModBullet = 1.0;
 	m_flDmgModClub = 1.0;
 	m_flDmgModExplosive = 1.0;
+#ifdef L4D2
+	m_flDmgModFire = 1.0f;
+#endif
 	
 	//jmd: I am guessing that the call to Spawn will set any flags that should be set anyway; this
 	//clears flags we don't want (specifically the FL_ONFIRE for explosive barrels in HL2MP)]
@@ -924,7 +1063,32 @@ void CBreakableProp::Spawn()
 	m_hBreaker = NULL;
 
 	SetTouch( &CBreakableProp::BreakablePropTouch );
+#if defined( L4D2 )
+	if ( m_takedamage == DAMAGE_YES && static_cast< float >( m_iHealth ) <= 20.0f )
+	{
+		if ( GetOwnerEntity() && ( GetOwnerEntity()->PhysicsSolidMaskForEntity() & 0x0200 ) )
+			m_noGhostCollision = true;
+		if ( HasInteraction( PROPINTER_GAME_ONLY_BREAKABLE_BY_TANK ) ||
+			HasInteraction( PROPINTER_GAME_ONLY_BREAKABLE_BY_MOB ) )
+			m_noGhostCollision = true;
+	}
+#endif
+#ifdef L4D2
+	// S1A5450: real model-authored forbidden targets share the one Director registry.
+	if ( HasInteraction( PROPINTER_BOT_FORBIDDEN_TARGET ) )
+		TheDirector->RegisterCarAlarm( this );
+#endif
 }
+
+#ifdef L4D2
+void CBreakableProp::UpdateOnRemove()
+{
+	// S196690; DynamicProp's existing follower cleanup calls this same base.
+	if ( HasInteraction( PROPINTER_BOT_FORBIDDEN_TARGET ) )
+		TheDirector->UnregisterCarAlarm( this );
+	BaseClass::UpdateOnRemove();
+}
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1037,8 +1201,134 @@ void CBreakableProp::BreakablePropTouch( CBaseEntity *pOther )
 // and then break the children who spawn afterward ?
 // Explosions should use entities in box before they start to do damage.  Make sure nothing traverses the list
 // in a way that would hose this.
+#ifdef L4D2
+#pragma float_control( precise, on, push )
+#endif
 int CBreakableProp::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 {
+#ifdef L4D2
+	// S1A0B00. Explosion props ignore fake-client damage and damage while
+	// a recent physics influencer holds an immovable physics object.
+	CTakeDamageInfo info = inputInfo;
+	if ( m_iExplosionType != 0 )
+	{
+		CBaseEntity *attacker = info.GetAttacker();
+		if ( attacker && attacker->IsPlayer() && ( attacker->GetFlags() & FL_FAKECLIENT ) )
+			info.SetDamage( 0.0f );
+		IPhysicsObject *physics = VPhysicsGetObject();
+		if ( HasPhysicsAttacker( 1.0f ) && physics && !physics->IsMoveable() )
+			return 0;
+	}
+	if ( !( static_cast< float >( m_iMinHealthDmg ) <= info.GetDamage() ) )
+		return 0;
+	if ( !PassesDamageFilter( info ) )
+		return 1;
+
+	// Once a delayed explosion owns a valid attacker, further damage does
+	// not overwrite it. The inflictor is stored separately in m_hBreaker.
+	if ( !m_hLastAttacker || !( m_flExplosionDelay > 0.0f ) || m_pfnThink != static_cast< BASEPTR >( &CBreakableProp::BreakThink ) )
+	{
+		CBaseEntity *attacker = info.GetAttacker();
+		if ( attacker && attacker->MyCombatCharacterPointer() )
+			m_hLastAttacker = attacker;
+		else if ( attacker )
+		{
+			CBaseEntity *owner = attacker->GetOwnerEntity();
+			if ( owner && owner->MyCombatCharacterPointer() )
+				m_hLastAttacker = owner;
+		}
+	}
+	info.SetDamage( GetBreakableDamage( info, this ) );
+	if ( !( static_cast< double >( m_iMinHealthDmg ) <= static_cast< double >( info.GetDamage() ) ) )
+		return 0;
+
+	if ( m_createTick == static_cast< unsigned int >( gpGlobals->tickcount ) )
+	{
+		const int saved = m_takedamage;
+		m_takedamage = DAMAGE_EVENTS_ONLY;
+		const int result = BaseClass::OnTakeDamage( info );
+		m_takedamage = saved;
+		return result;
+	}
+	if ( IsOnFire() && ( inputInfo.GetDamageType() & DMG_BURN ) && !( inputInfo.GetDamageType() & DMG_DIRECT ) )
+		return 0;
+
+	// Native finale-area immunity excludes Tanks, fake clients, and z_debug_breakables.
+	if ( !TheDirector->IsFinale() && info.GetAttacker() && info.GetAttacker()->GetTeamNumber() == TEAM_INFECTED )
+	{
+		CTerrorPlayer *attacker = ToTerrorPlayer( info.GetAttacker() );
+		if ( attacker && !( attacker->GetFlags() & FL_FAKECLIENT ) && attacker->GetZombieClass() != 8 )
+		{
+			TerrorNavArea *area = ToTerrorNavArea( TheNavMesh->GetNearestNavArea( GetAbsOrigin(), false, 10000.0f, false, true, TEAM_UNASSIGNED ) );
+			if ( area && area->HasSpawnAttributes( TERROR_NAV_FINALE ) && !z_debug_breakables.GetBool() )
+				return 0;
+		}
+	}
+	if ( ( info.GetDamageType() & ( DMG_CLUB | DMG_SLASH ) ) && HasInteraction( PROPINTER_FIRE_MELEE_IMMUNE ) )
+	{
+		const int saved = m_takedamage;
+		m_takedamage = DAMAGE_EVENTS_ONLY;
+		const int result = BaseClass::OnTakeDamage( info );
+		m_takedamage = saved;
+		return result;
+	}
+
+	bool deadly = info.GetDamage() >= static_cast< float >( m_iHealth );
+	if ( deadly && m_flExplosionDelay > 0.0f && m_pfnThink != static_cast< BASEPTR >( &CBreakableProp::BreakThink ) )
+	{
+		if ( m_iszExplosionBuildup != NULL_STRING )
+			EmitSound( STRING( m_iszExplosionBuildup ) );
+		m_hBreaker = info.GetInflictor();
+		m_iMaxHealth = 100;
+		SetHealth( m_iMaxHealth );
+		info.SetDamage( 1.0f );
+		SetThink( &CBreakableProp::BreakThink );
+		SetNextThink( gpGlobals->curtime + m_flExplosionDelay );
+	}
+	else
+	{
+		if ( deadly && ( info.GetDamageType() & DMG_BLAST ) && HasInteraction( PROPINTER_FIRE_EXPLOSIVE_RESIST ) && info.GetInflictor() )
+		{
+			const Vector delta = WorldSpaceCenter() - info.GetInflictor()->WorldSpaceCenter();
+			float distance = sqrtf( ( delta.y * delta.y + delta.z * delta.z ) + delta.x * delta.x );
+			float burnTime;
+			if ( distance < 32.0f )
+				burnTime = random->RandomFloat( 0.1f, 0.2f );
+			else
+			{
+				if ( distance > 256.0f )
+					distance = 256.0f;
+				const float factor = ( distance * 0.00390625f ) * 5.0f;
+				const double baseTime = factor >= 0.5f ? factor : 0.5;
+				burnTime = static_cast< float >( baseTime + random->RandomFloat( 0.0f, 0.5f ) );
+			}
+			float idealHealth = static_cast< float >( m_iHealth );
+			if ( burnTime * 5.0f <= idealHealth )
+				idealHealth = burnTime * 5.0f;
+			const float idealDamage = static_cast< float >( m_iHealth ) - idealHealth;
+			info.ScaleDamage( idealDamage / info.GetDamage() );
+			deadly = info.GetDamage() >= static_cast< float >( m_iHealth );
+		}
+		if ( !deadly && ( info.GetDamageType() & ( DMG_BLAST | DMG_BURN ) ) )
+			Ignite( random->RandomFloat( 10.0f, 15.0f ), false );
+		else if ( !deadly && ( info.GetDamageType() & DMG_BULLET ) && HasInteraction( PROPINTER_FIRE_IGNITE_HALFHEALTH ) )
+		{
+			if ( !( static_cast< float >( m_iMaxHealth / 2 ) < static_cast< float >( m_iHealth ) - info.GetDamage() ) && !IsOnFire() )
+			{
+				SetHealth( m_iMaxHealth );
+				Ignite( random->RandomFloat( 10.0f, 15.0f ), false );
+			}
+			else if ( IsOnFire() )
+				info.ScaleDamage( static_cast< float >( m_iHealth ) / info.GetDamage() );
+		}
+	}
+	const int result = BaseClass::OnTakeDamage( info );
+	const float healthRatio = static_cast< float >( m_iHealth ) / static_cast< float >( m_iMaxHealth );
+	const float ratio = healthRatio <= 1.0f ? ( healthRatio >= 0.0f ? healthRatio : 0.0f ) : 1.0f;
+	m_OnHealthChanged.Set( ratio, info.GetAttacker(), this );
+	m_OnTakeDamage.FireOutput( info.GetAttacker(), this );
+	return result;
+#else
 	CTakeDamageInfo info = inputInfo;
 
 	// If attacker can't do at least the min required damage to us, don't take any damage from them
@@ -1166,7 +1456,11 @@ int CBreakableProp::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 	m_OnTakeDamage.FireOutput( info.GetAttacker(), this );
 
 	return ret;
+#endif
 }
+#ifdef L4D2
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1601,6 +1895,9 @@ IPhysicsObject *CBreakableProp::GetRootPhysicsObjectForBreak()
 	return VPhysicsGetObject();
 }
 
+#ifdef L4D2
+#pragma float_control( precise, on, push )
+#endif
 void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 {
 	const char *pModelName = STRING( GetModelName() );
@@ -1693,6 +1990,67 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 		}
 	}
 
+#ifdef L4D2
+	// S19D150: mounted prop_data selects the genuine projectile/inferno owner.
+	const char *explosionType = NULL;
+	Vector explosionPosition;
+	if ( m_iExplosionType == 1 || ( m_iExplosionType != 2 && m_iExplosionType != 3 && ( m_explodeDamage > 0.0f || m_explodeRadius > 0.0f ) ) )
+	{
+		if ( m_iExplosionType == 1 && m_iszExplosionBuildup != NULL_STRING )
+			StopSound( STRING( m_iszExplosionBuildup ) );
+		CPipeBombProjectile *projectile = CPipeBombProjectile::Create( WorldSpaceCenter(), GetAbsAngles(), GetAbsVelocity(), vec3_origin,
+			pAttacker ? pAttacker->MyCombatCharacterPointer() : NULL );
+		if ( projectile )
+			projectile->Detonate();
+		EmitSound( "PropaneTank.Burst" );
+		bExploded = true;
+		explosionType = m_iExplosionType == 1 ? "Grenade" : "Default";
+		explosionPosition = WorldSpaceCenter();
+	}
+	else if ( m_iExplosionType == 2 || m_iExplosionType == 3 )
+	{
+		trace_t trace;
+		const float depth = m_iExplosionType == 3 ? 56755.84f : 999999.88f;
+		UTIL_TraceLine( GetAbsOrigin() + Vector( 0.0f, 0.0f, 10.0f ), GetAbsOrigin() - Vector( 0.0f, 0.0f, depth ),
+			0x1400B, this, COLLISION_GROUP_NONE, &trace );
+		if ( !( trace.surface.flags & SURF_SKY ) )
+		{
+			if ( m_iExplosionType == 3 )
+				CFireCrackerBlast::Create( pAttacker, trace.endpos, trace.plane.normal, vec3_origin, 0 );
+			else
+				CInferno::Create( pAttacker, trace.endpos, trace.plane.normal, vec3_origin, 0 );
+		}
+		bExploded = true;
+		explosionType = m_iExplosionType == 3 ? "Fireworks" : "Molotov";
+		explosionPosition = trace.endpos;
+	}
+	if ( explosionType )
+	{
+		if ( pBreaker && pBreaker->IsPlayer() )
+		{
+			// The native static cast is undefined for a non-Terror player.
+			// Skip only the dependent criteria/queue step for that wrong type.
+			CTerrorPlayer *player = dynamic_cast< CTerrorPlayer * >( pBreaker );
+			if ( player )
+			{
+				AI_CriteriaSet criteria;
+				criteria.AppendCriteria( "Subject", player->GetResponseCharacterName(), 1.0f );
+				criteria.AppendCriteria( "ExplosionType", explosionType, 1.0f );
+				ResponseQueueManager().Queue( "PropExplosion", criteria, 0.0f, ResponseTarget_t( ResponseTarget_t::ALL ), NULL );
+			}
+		}
+		char breakerIdentity[256] = {};
+		char attackerIdentity[256] = {};
+		CEventLog *log = static_cast< CEventLog * >( GameLogSystem() );
+		if ( pBreaker )
+			log->GetEntityIdentity( pBreaker, breakerIdentity, sizeof( breakerIdentity ) );
+		if ( pAttacker )
+			log->GetEntityIdentity( pAttacker, attackerIdentity, sizeof( attackerIdentity ) );
+		DevMsg( "%s prop detonated %.0f,%.0f,%.0f.  Breaker:%s. Attacker:%s.\n",
+			m_iExplosionType == 2 || m_iExplosionType == 3 ? "Fire" : "Explosion",
+			explosionPosition.x, explosionPosition.y, explosionPosition.z, breakerIdentity, attackerIdentity );
+	}
+#else
 	if ( m_explodeDamage > 0 || m_explodeRadius > 0 )
 	{
 		if( HasInteraction( PROPINTER_PHYSGUN_BREAK_EXPLODE ) )
@@ -1712,6 +2070,7 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 
 		bExploded = true;
 	}
+#endif
 
 	// Allow derived classes to emit special things
 	OnBreak( velocity, angVelocity, pBreaker );
@@ -1727,6 +2086,7 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 	}
 	params.defBurstScale = 100;
 
+#ifndef L4D2
 	if ( m_iszBreakModelMessage != NULL_STRING )
 	{
 		CPVSFilter filter( GetAbsOrigin() );
@@ -1741,6 +2101,7 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 #endif
 		return;
 	}
+#endif
 
 	// in multiplayer spawn break models as clientside temp ents
 	if ( gpGlobals->maxClients > 1 && breakable_multiplayer.GetBool() )
@@ -1756,7 +2117,11 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 		{
 		case MULTIPLAYER_BREAK_DEFAULT:		// default is to break client-side
 		case MULTIPLAYER_BREAK_CLIENTSIDE:
+#if defined( L4D2 )
+			TE_PhysicsProp( filter, -1, GetModelIndex(), m_nSkin, GetAbsOrigin(), GetAbsAngles(), velocity, 1, GetEffects(), m_clrRender.GetR(), m_clrRender.GetG(), m_clrRender.GetB() );
+#else
 			te->PhysicsProp( filter, -1, GetModelIndex(), m_nSkin, GetAbsOrigin(), GetAbsAngles(), velocity, true, GetEffects() );
+#endif
 			break;
 		case MULTIPLAYER_BREAK_SERVERSIDE:	// server-side break
 			if ( m_PerformanceMode != PM_NO_GIBS || breakable_disable_gib_limit.GetBool() )
@@ -1765,7 +2130,11 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 			}
 			break;
 		case MULTIPLAYER_BREAK_BOTH:	// pieces break from both dlls
+#if defined( L4D2 )
+			TE_PhysicsProp( filter, -1, GetModelIndex(), m_nSkin, GetAbsOrigin(), GetAbsAngles(), velocity, 1, GetEffects(), m_clrRender.GetR(), m_clrRender.GetG(), m_clrRender.GetB() );
+#else
 			te->PhysicsProp( filter, -1, GetModelIndex(), m_nSkin, GetAbsOrigin(), GetAbsAngles(), velocity, true, GetEffects() );
+#endif
 			if ( m_PerformanceMode != PM_NO_GIBS || breakable_disable_gib_limit.GetBool() )
 			{
 				PropBreakableCreateAll( GetModelIndex(), pPhysics, params, this, -1, ( m_PerformanceMode == PM_FULL_GIBS ), false );
@@ -1783,8 +2152,12 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 	{
 		if ( bExploded == false )
 		{
-			ExplosionCreate( origin, angles, pAttacker, 1, m_explodeRadius, 
-				SF_ENVEXPLOSION_NOSPARKS | SF_ENVEXPLOSION_NODLIGHTS | SF_ENVEXPLOSION_NOSMOKE, 0.0f, this );			
+#ifdef L4D2
+			ExplosionCreate( origin, angles, pAttacker, 1, m_explodeRadius, 1065, 0.0f, this );
+#else
+			ExplosionCreate( origin, angles, pAttacker, 1, m_explodeRadius,
+				SF_ENVEXPLOSION_NOSPARKS | SF_ENVEXPLOSION_NODLIGHTS | SF_ENVEXPLOSION_NOSMOKE, 0.0f, this );
+#endif
 		}
 
 		// Find and ignite all NPC's within the radius
@@ -1796,16 +2169,28 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 				// Check damage filters so we don't ignite friendlies
 				if ( pEntity->PassesDamageFilter( info ) )
 				{
+#ifdef L4D2
+					pEntity->MyCombatCharacterPointer()->Ignite( 30.0f, true, 0.0f, false );
+#else
 					pEntity->MyCombatCharacterPointer()->Ignite( 30 );
+#endif
 				}
 			}
 		}
 	}
 
+#ifdef L4D2
+	if ( HasInteraction( PROPINTER_PHYSGUN_BREAK_EXPLODE_ICE ) && !bExploded )
+		ExplosionCreate( origin, angles, pAttacker, 1, m_explodeRadius, 33832, 0.0f, this );
+#endif
+
 #ifndef HL2MP
 	UTIL_Remove( this );
 #endif
 }
+#ifdef L4D2
+#pragma float_control( pop )
+#endif
 
 
 //=============================================================================================================
@@ -1831,6 +2216,13 @@ BEGIN_DATADESC( CDynamicProp )
 	DEFINE_KEYFIELD( m_bDisableBoneFollowers, FIELD_BOOLEAN, "DisableBoneFollowers" ),
 	DEFINE_FIELD(	 m_bUseHitboxesForRenderBox, FIELD_BOOLEAN ),
 	DEFINE_FIELD(	m_nPendingSequence, FIELD_SHORT ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_bUpdateAttachedChildren, FIELD_BOOLEAN, "updatechildren" ),
+	DEFINE_KEYFIELD( m_iInitialGlowState, FIELD_INTEGER, "glowstate" ),
+	DEFINE_KEYFIELD( m_nGlowRange, FIELD_INTEGER, "glowrange" ),
+	DEFINE_KEYFIELD( m_nGlowRangeMin, FIELD_INTEGER, "glowrangemin" ),
+	DEFINE_KEYFIELD( m_glowColor, FIELD_COLOR32, "glowcolor" ),
+#endif
 		
 	// Inputs
 	DEFINE_INPUTFUNC( FIELD_STRING,	"SetAnimation",	InputSetAnimation ),
@@ -1841,6 +2233,13 @@ BEGIN_DATADESC( CDynamicProp )
 	DEFINE_INPUTFUNC( FIELD_VOID,		"Disable",		InputTurnOff ),
 	DEFINE_INPUTFUNC( FIELD_VOID,		"EnableCollision",	InputEnableCollision ),
 	DEFINE_INPUTFUNC( FIELD_VOID,		"DisableCollision",	InputDisableCollision ),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetPlaybackRate", InputSetPlaybackRate ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "StartGlowing", InputStartGlowing ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "StopGlowing", InputStopGlowing ),
+	DEFINE_INPUTFUNC( FIELD_VECTOR, "SetGlowOverride", InputSetGlowOverride ),
+	DEFINE_INPUTFUNC( FIELD_INTEGER, "SetGlowRange", InputSetGlowRange ),
+#endif
 
 	// Outputs
 	DEFINE_OUTPUT( m_pOutputAnimBegun, "OnAnimationBegun" ),
@@ -1868,6 +2267,11 @@ CDynamicProp::CDynamicProp()
 		UseClientSideAnimation();
 	}
 	m_iGoalSequence = -1;
+#if defined( L4D2 )
+	m_iInitialGlowState = 0;
+	m_nGlowRangeMin = 0;
+	m_glowColor.r = m_glowColor.g = m_glowColor.b = m_glowColor.a = 0;
+#endif
 }
 
 
@@ -1953,6 +2357,12 @@ void CDynamicProp::Spawn( )
 			SetModelIndexOverride( VISION_MODE_ROME, modelinfo->GetModelIndex( "models/bots/tw2/boss_bot/twcarrier_addon.mdl" ) );
 		}
 	}
+#endif
+#if defined( L4D2 )
+	GlowProp()->SetType( m_iInitialGlowState );
+	GlowProp()->SetRange( m_nGlowRange );
+	GlowProp()->SetRangeMin( m_nGlowRangeMin );
+	GlowProp()->SetColor( Color( m_glowColor.r, m_glowColor.g, m_glowColor.b, m_glowColor.a ) );
 #endif
 }
 
@@ -2159,6 +2569,9 @@ void CDynamicProp::NotifyPositionChanged( CBaseEntity *pEntity )
 //------------------------------------------------------------------------------
 // Purpose:
 //------------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void CDynamicProp::AnimThink( void )
 {
 	if ( m_nPendingSequence != -1 )
@@ -2193,7 +2606,12 @@ void CDynamicProp::AnimThink( void )
 			// If I'm a random animator, think again when it's time to change sequence
 			if ( m_bRandomAnimator )
 			{
+#if defined( L4D2 )
+				// Native S1A5C93..1A5CA5 rounds only when passing the think deadline.
+				SetNextThink( static_cast< float >( static_cast< double >( m_flNextRandAnim ) + static_cast< double >( gpGlobals->curtime ) + 0.1 ) );
+#else
 				SetNextThink( gpGlobals->curtime + m_flNextRandAnim + 0.1 );
+#endif
 			}
 			else 
 			{
@@ -2212,7 +2630,49 @@ void CDynamicProp::AnimThink( void )
 	StudioFrameAdvance();
 	DispatchAnimEvents(this);
 	m_BoneFollowerManager.UpdateBoneFollowers(this);
+#if defined( L4D2 )
+	if ( m_bUpdateAttachedChildren )
+	{
+		for ( CBaseEntity *pChild = FirstMoveChild(); pChild; pChild = pChild->NextMovePeer() )
+			pChild->PhysicsTouchTriggers();
+	}
+#endif
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
+
+#if defined( L4D2 )
+void CDynamicProp::InputStartGlowing( inputdata_t &inputdata )
+{
+	GlowProp()->SetType( 3 );
+}
+
+void CDynamicProp::InputStopGlowing( inputdata_t &inputdata )
+{
+	GlowProp()->SetType( 0 );
+}
+
+void CDynamicProp::InputSetPlaybackRate( inputdata_t &inputdata )
+{
+	SetPlaybackRate( inputdata.value.Float() );
+}
+
+void CDynamicProp::InputSetGlowOverride( inputdata_t &inputdata )
+{
+	Vector color;
+	inputdata.value.Vector3D( color );
+	GlowProp()->SetColor( Color(
+		(unsigned char)_mm_cvttss_si32( _mm_set_ss( color.x ) ),
+		(unsigned char)_mm_cvttss_si32( _mm_set_ss( color.y ) ),
+		(unsigned char)_mm_cvttss_si32( _mm_set_ss( color.z ) ), 0 ) );
+}
+
+void CDynamicProp::InputSetGlowRange( inputdata_t &inputdata )
+{
+	GlowProp()->SetRange( inputdata.value.Int() );
+}
+#endif
 
 
 //------------------------------------------------------------------------------
@@ -2245,10 +2705,33 @@ void CDynamicProp::PropSetAnim( const char *szAnim )
 //------------------------------------------------------------------------------
 // Purpose:
 //------------------------------------------------------------------------------
+#if defined( L4D2 )
+static bool ShouldSetDynamicPropAnimationCreateTime( CDynamicProp *prop, const inputdata_t &input )
+{
+	if ( V_strcmp( STRING( gpGlobals->mapname ), "l4d_airport05_runway" ) != 0 )
+		return false;
+	if ( !input.pCaller )
+		return false;
+	if ( V_strcmp( input.pCaller->GetClassname(), "logic_relay" ) != 0 )
+		return false;
+	CStudioHdr *studio = prop->GetModelPtr();
+	if ( !studio || !studio->GetRenderHdr() )
+		return false;
+	return strstr( studio->GetRenderHdr()->name, "airliner" ) != NULL;
+}
+
+void CDynamicProp::InputSetAnimation( inputdata_t &inputdata )
+{
+	PropSetAnim( inputdata.value.String() );
+	if ( ShouldSetDynamicPropAnimationCreateTime( this, inputdata ) )
+		SetCreateTime( gpGlobals->curtime );
+}
+#else
 void CDynamicProp::InputSetAnimation( inputdata_t &inputdata )
 {
 	PropSetAnim( inputdata.value.String() );
 }
+#endif
 
 //------------------------------------------------------------------------------
 // Purpose:
@@ -2405,14 +2888,27 @@ void COrnamentProp::InputDetach( inputdata_t &inputdata )
 LINK_ENTITY_TO_CLASS( physics_prop, CPhysicsProp );
 LINK_ENTITY_TO_CLASS( prop_physics, CPhysicsProp );	
 LINK_ENTITY_TO_CLASS( prop_physics_override, CPhysicsProp );	
+#if defined( L4D2 )
+LINK_ENTITY_TO_CLASS( prop_physics_multiplayer, CPhysicsProp );
+#endif
 
 BEGIN_DATADESC( CPhysicsProp )
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_breakableType, FIELD_INTEGER, "BreakableType" ),
+	DEFINE_THINKFUNC( NavThink ),
+#endif
 
 	DEFINE_INPUTFUNC( FIELD_VOID, "EnableMotion", InputEnableMotion ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "DisableMotion", InputDisableMotion ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "Wake", InputWake ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "Sleep", InputSleep ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "DisableFloating", InputDisableFloating ),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_VOID, "StartGlowing", InputStartGlowing ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "StopGlowing", InputStopGlowing ),
+	DEFINE_INPUTFUNC( FIELD_VECTOR, "SetGlowOverride", InputSetGlowOverride ),
+	DEFINE_INPUTFUNC( FIELD_INTEGER, "SetGlowRange", InputSetGlowRange ),
+#endif
 
 	DEFINE_FIELD( m_bAwake, FIELD_BOOLEAN ),
 
@@ -2420,6 +2916,12 @@ BEGIN_DATADESC( CPhysicsProp )
 	DEFINE_KEYFIELD( m_inertiaScale, FIELD_FLOAT, "inertiascale" ),
 	DEFINE_KEYFIELD( m_damageType, FIELD_INTEGER, "Damagetype" ),
 	DEFINE_KEYFIELD( m_iszOverrideScript, FIELD_STRING, "overridescript" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iInitialGlowState, FIELD_INTEGER, "glowstate" ),
+	DEFINE_KEYFIELD( m_nGlowRange, FIELD_INTEGER, "glowrange" ),
+	DEFINE_KEYFIELD( m_nGlowRangeMin, FIELD_INTEGER, "glowrangemin" ),
+	DEFINE_KEYFIELD( m_glowColor, FIELD_COLOR32, "glowcolor" ),
+#endif
 
 	DEFINE_KEYFIELD( m_damageToEnableMotion, FIELD_INTEGER, "damagetoenablemotion" ), 
 	DEFINE_KEYFIELD( m_flForceToEnableMotion, FIELD_FLOAT, "forcetoenablemotion" ), 
@@ -2432,9 +2934,16 @@ BEGIN_DATADESC( CPhysicsProp )
 	DEFINE_OUTPUT( m_OnPlayerUse, "OnPlayerUse" ),
 	DEFINE_OUTPUT( m_OnPlayerPickup, "OnPlayerPickup" ),
 	DEFINE_OUTPUT( m_OnOutOfWorld, "OnOutOfWorld" ),
+#if defined( L4D2 )
+	DEFINE_OUTPUT( m_OnHitByTank, "OnHitByTank" ),
+#endif
 
 	DEFINE_FIELD( m_bThrownByPlayer, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bFirstCollisionAfterLaunch, FIELD_BOOLEAN ),
+
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iExploitableByPlayer, FIELD_INTEGER, "ExploitableByPlayer" ),
+#endif
 
 	DEFINE_THINKFUNC( ClearFlagsThink ),
 
@@ -2442,6 +2951,11 @@ END_DATADESC()
 
 IMPLEMENT_SERVERCLASS_ST( CPhysicsProp, DT_PhysicsProp )
 	SendPropBool( SENDINFO( m_bAwake ) ),
+#if defined( L4D2 )
+	SendPropBool( SENDINFO( m_hasTankGlow ) ),
+	SendPropBool( SENDINFO( m_isCarryable ) ),
+	SendPropInt( SENDINFO( m_spawnflags ), 16, SPROP_UNSIGNED ),
+#endif
 END_SEND_TABLE()
 
 // external function to tell if this entity is a gib physics prop
@@ -2461,6 +2975,9 @@ CPhysicsProp::~CPhysicsProp()
 	{
 		g_ActiveGibCount--;
 	}
+#if defined( L4D2 )
+	TheNavMesh->UnregisterAvoidanceObstacle( this );
+#endif
 }
 
 bool CPhysicsProp::IsGib()
@@ -2471,6 +2988,108 @@ bool CPhysicsProp::IsGib()
 //-----------------------------------------------------------------------------
 // Purpose: Create a physics object for this prop
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+void CPhysicsProp::Spawn()
+{
+	SetNetworkQuantizeOriginAndAngles( true );
+	if ( HasSpawnFlags( SF_PHYSPROP_IS_GIB ) ) ++g_ActiveGibCount;
+	if ( ClassMatches( "physics_prop" ) ) SetClassname( "prop_physics" );
+	BaseClass::Spawn();
+	if ( IsMarkedForDeletion() ) return;
+	m_impactEnergyScale = 0.1f;
+	const char *modelName = STRING( GetModelName() );
+	if ( !modelName ) modelName = "";
+	for ( int i = 0; i < 56; ++i )
+	{
+		const CTerrorWeaponInfo *info = GetTerrorWeaponInfo( i );
+		if ( info && ( info->szWorldModel == modelName || V_strcmp( info->szWorldModel, modelName ) == 0 ) )
+		{
+			SetFadeScale( 0.0f );
+			VisibilityMonitor_AddEntity( this, 400.0f, NULL, NULL );
+			break;
+		}
+	}
+	if ( ClassMatches( "prop_physics_override" ) ) SetClassname( "prop_physics" );
+	if ( HasSpawnFlags( SF_PHYSPROP_DEBRIS ) || HasInteraction( PROPINTER_PHYSGUN_CREATE_FLARE ) )
+		SetCollisionGroup( HasSpawnFlags( SF_PHYSPROP_FORCE_TOUCH_TRIGGERS ) ?
+			COLLISION_GROUP_DEBRIS_TRIGGER : COLLISION_GROUP_DEBRIS );
+	else if ( HasInteraction( PROPINTER_GAME_WEAPON_COLLISION ) )
+		SetCollisionGroup( COLLISION_GROUP_WEAPON );
+	if ( HasSpawnFlags( SF_PHYSPROP_NO_ROTORWASH_PUSH ) ) AddEFlags( EFL_NO_ROTORWASH_PUSH );
+	CreateVPhysics(); // Native ignores this result: LOS/glow/addon still execute.
+	if ( !PropDataOverrodeBlockLOS() ) CalculateBlockLOS();
+	GlowProp()->SetType( m_iInitialGlowState );
+	GlowProp()->SetRange( m_nGlowRange );
+	GlowProp()->SetRangeMin( m_nGlowRangeMin );
+	GlowProp()->SetColor( Color( m_glowColor.r, m_glowColor.g, m_glowColor.b, m_glowColor.a ) );
+	KeyValues *values = new KeyValues( "" );
+	const char *buffer = modelinfo->GetModelKeyValueText( GetModel() );
+	const char *name = modelinfo->GetModelName( GetModel() );
+	if ( values->LoadFromBuffer( name, buffer ) )
+	{
+		KeyValues *addon = values->FindKey( "ai_addon" );
+		if ( addon )
+		{
+			m_AIAddOn = AllocPooledString( addon->GetString() );
+			values->deleteThis();
+			return;
+		}
+		const char *existingAddon = STRING( GetAIAddOn() );
+		if ( !existingAddon || !*existingAddon ) m_AIAddOn = AllocPooledString( "ai_addon_thrownprojectile" );
+	}
+	values->deleteThis();
+	if ( m_iPhysicsMode == PHYSICS_MULTIPLAYER_AUTODETECT )
+	{
+		IPhysicsObject *object = VPhysicsGetObject();
+		if ( !object )
+		{
+			UTIL_Remove( this );
+			return;
+		}
+		const Vector &size = CollisionProp()->OBBSize();
+		const float mass = object->GetMass();
+		m_iPhysicsMode = GetAutoMultiplayerPhysicsMode( size, mass );
+	}
+	if ( HasSpawnFlags( SF_PHYSPROP_FORCE_SERVER_SIDE ) ) SetPhysicsMode( PHYSICS_MULTIPLAYER_NON_SOLID );
+	if ( m_iPhysicsMode == PHYSICS_MULTIPLAYER_CLIENTSIDE )
+	{
+		if ( engine->IsInEditMode() || CommandLine()->FindParm( "-makereslists" ) != 0 )
+			SetPhysicsMode( PHYSICS_MULTIPLAYER_NON_SOLID );
+		else
+		{
+			UTIL_Remove( this );
+			return;
+		}
+	}
+	InitializeTerrorNavAttributes();
+	m_isCarryable = ( ObjectCaps() & 0x0200 ) != 0;
+	if ( !HasSpawnFlags( SF_PHYSPROP_MOTIONDISABLED ) )
+	{
+		IPhysicsObject *object = VPhysicsGetObject();
+		if ( object )
+		{
+			const float mass = object->GetMass();
+			if ( mass >= 100.0f )
+			{
+				const Vector &size = CollisionProp()->OBBSize();
+				const float squared = ( size.x * size.x + size.y * size.y ) + size.z * size.z;
+				if ( squared > 10000.0f ) m_hasTankGlow = true;
+			}
+		}
+	}
+	if ( IsPotentiallyAbleToObstructNavAreas() ) TheNavMesh->RegisterAvoidanceObstacle( this );
+	m_noGhostCollision = true;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CPhysicsProp::Spawn( )
 {
 	if (HasSpawnFlags(SF_PHYSPROP_IS_GIB))
@@ -2520,6 +3139,34 @@ void CPhysicsProp::Spawn( )
 	}
 	
 }
+#endif
+
+#if defined( L4D2 )
+void CPhysicsProp::InputStartGlowing( inputdata_t &inputdata )
+{
+	GlowProp()->SetType( 3 );
+}
+
+void CPhysicsProp::InputStopGlowing( inputdata_t &inputdata )
+{
+	GlowProp()->SetType( 0 );
+}
+
+void CPhysicsProp::InputSetGlowOverride( inputdata_t &inputdata )
+{
+	Vector color;
+	inputdata.value.Vector3D( color );
+	GlowProp()->SetColor( Color(
+		(unsigned char)_mm_cvttss_si32( _mm_set_ss( color.x ) ),
+		(unsigned char)_mm_cvttss_si32( _mm_set_ss( color.y ) ),
+		(unsigned char)_mm_cvttss_si32( _mm_set_ss( color.z ) ), 0 ) );
+}
+
+void CPhysicsProp::InputSetGlowRange( inputdata_t &inputdata )
+{
+	GlowProp()->SetRange( inputdata.value.Int() );
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2541,6 +3188,50 @@ void CPhysicsProp::Precache( void )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+bool CPhysicsProp::CreateVPhysics()
+{
+	const bool asleep = HasSpawnFlags( SF_PHYSPROP_START_ASLEEP );
+	solid_t solid;
+	PhysModelParseSolid( solid, this, GetModelIndex() );
+	if ( m_massScale > 0.0f ) solid.params.mass *= m_massScale;
+	if ( m_inertiaScale > 0.0f )
+	{
+		solid.params.inertia *= m_inertiaScale;
+		if ( solid.params.inertia < 0.5f ) solid.params.inertia = 0.5f;
+	}
+	PhysGetMassCenterOverride( this, modelinfo->GetVCollide( GetModelIndex() ), solid );
+	if ( HasSpawnFlags( SF_PHYSPROP_NO_COLLISIONS ) ) solid.params.enableCollisions = false;
+	PhysSolidOverride( solid, m_iszOverrideScript );
+	IPhysicsObject *object = VPhysicsInitNormal( SOLID_VPHYSICS, 0x1000, asleep, &solid );
+	if ( !object )
+	{
+		SetSolid( SOLID_NONE );
+		SetMoveType( MOVETYPE_NONE );
+		Warning( "ERROR!: Can't create physics object for %s\n", STRING( GetModelName() ) );
+		return false;
+	}
+	if ( m_damageType == 1 ) PhysSetGameFlags( object, FVPHYSICS_DMG_SLICE );
+	if ( HasSpawnFlags( SF_PHYSPROP_MOTIONDISABLED ) || m_damageToEnableMotion > 0 || m_flForceToEnableMotion > 0.0f )
+		object->EnableMotion( false );
+	if ( HasInteraction( PROPINTER_PHYSGUN_LAUNCH_SPIN_Z ) &&
+		!( VPhysicsGetObject()->GetGameFlags() & FVPHYSICS_DMG_SLICE ) )
+		PhysSetGameFlags( object, FVPHYSICS_DMG_SLICE );
+	if ( HasInteraction( PROPINTER_PHYSGUN_DAMAGE_NONE ) ) PhysSetGameFlags( object, FVPHYSICS_NO_IMPACT_DMG );
+	if ( HasSpawnFlags( SF_PHYSPROP_PREVENT_PICKUP ) ) PhysSetGameFlags( object, FVPHYSICS_NO_PLAYER_PICKUP );
+	if ( !object->IsMoveable() || object->GetMass() >= 500.0f ) m_bClientPhysics = true;
+	return true;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool CPhysicsProp::CreateVPhysics()
 {
 	// Create the object in the physics system
@@ -2617,6 +3308,7 @@ bool CPhysicsProp::CreateVPhysics()
 
 	return true;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2858,6 +3550,15 @@ float CPhysicsProp::GetCarryDistanceOffset( void )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+int CPhysicsProp::ObjectCaps()
+{
+	int caps = CBaseEntity::ObjectCaps() | FCAP_WCEDIT_POSITION;
+	if ( CBasePlayer::CanPickupObject( this, 35.0f, 128.0f ) && GetCollisionGroup() != COLLISION_GROUP_DEBRIS ) caps |= 0x0210;
+	if ( HasSpawnFlags( 0x8000 ) ) caps |= 0x2000;
+	return caps;
+}
+#else
 int CPhysicsProp::ObjectCaps()
 { 
 	int caps = BaseClass::ObjectCaps() | FCAP_WCEDIT_POSITION;
@@ -2883,6 +3584,7 @@ int CPhysicsProp::ObjectCaps()
 
 	return caps;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2911,6 +3613,9 @@ void CPhysicsProp::Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE 
 //-----------------------------------------------------------------------------
 void CPhysicsProp::VPhysicsUpdate( IPhysicsObject *pPhysics )
 {
+#if defined( L4D2 )
+	const bool wasAwake = m_bAwake;
+#endif
 	BaseClass::VPhysicsUpdate( pPhysics );
 	m_bAwake = !pPhysics->IsAsleep();
 	NetworkStateChanged();
@@ -2933,6 +3638,10 @@ void CPhysicsProp::VPhysicsUpdate( IPhysicsObject *pPhysics )
 	{
 		m_OnOutOfWorld.FireOutput( this, this );
 	}
+#if defined( L4D2 )
+	if ( m_bAwake != wasAwake && m_breakableType == 0 )
+		SetContextThink( &CPhysicsProp::NavThink, gpGlobals->curtime, "NavContext" );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -3085,8 +3794,55 @@ void CPhysicsProp::VPhysicsCollision( int index, gamevcollisionevent_t *pEvent )
 //-----------------------------------------------------------------------------
 int CPhysicsProp::OnTakeDamage( const CTakeDamageInfo &info )
 {
+#if defined( L4D2 )
+	// S1A6810: authored breakability gates precede the tank-history producer.
+	CTakeDamageInfo damage = info;
+	if ( !z_debug_breakables.GetBool() )
+	{
+		if ( m_breakableType == 2 )
+		{
+			CBaseEntity *attacker = info.GetAttacker();
+			CBaseEntity *inflictor = info.GetInflictor();
+			if ( !attacker || !attacker->IsPlayer() || !inflictor ||
+				!( FClassnameIs( inflictor, "weapon_tank_claw" ) || FClassnameIs( inflictor, "tank_rock" ) ) )
+				return 0;
+			damage.SetDamage( static_cast< float >( static_cast< int >( static_cast< unsigned int >( GetHealth() ) * 10u ) ) );
+		}
+		else if ( m_breakableType == 1 )
+		{
+			CBaseEntity *attacker = info.GetAttacker();
+			if ( !attacker || attacker->GetTeamNumber() != TEAM_INFECTED )
+				return 0;
+			INextBot *bot = dynamic_cast< INextBot * >( attacker );
+			if ( bot )
+			{
+				IBody *body = bot->GetBodyInterface();
+				if ( !body || body->IsActivity( ACT_RESET ) )
+					return 0;
+			}
+			damage.SetDamage( static_cast< float >( static_cast< int >( static_cast< unsigned int >( GetHealth() ) * 10u ) ) );
+		}
+	}
+	if ( IsTankHittable() )
+	{
+		CBaseEntity *inflictor = info.GetInflictor();
+		if ( inflictor )
+		{
+			if ( FClassnameIs( inflictor, "weapon_tank_claw" ) || FClassnameIs( inflictor, "tank_rock" ) )
+				m_lastTankHitTimer.Start();
+		}
+		else
+		{
+			CTerrorPlayer *attacker = ToTerrorPlayer( info.GetAttacker() );
+			if ( attacker && attacker->GetTeamNumber() == TEAM_INFECTED && attacker->GetZombieClass() == 8 )
+				m_lastTankHitTimer.Invalidate();
+		}
+	}
+	int ret = BaseClass::OnTakeDamage( damage );
+#else
 	// note: if motion is disabled, OnTakeDamage can't apply physics force
 	int ret = BaseClass::OnTakeDamage( info );
+#endif
 
 	if( IsOnFire() )
 	{
@@ -3277,6 +4033,11 @@ static CBreakableProp *BreakModelCreate_Prop( CBaseEntity *pOwner, breakmodel_t 
 			pEntity->AddSpawnFlags( SF_PHYSPROP_IS_GIB );
 		}
 		pEntity->Spawn();
+#if defined( L4D2 )
+		CPhysicsProp *physicsOwner = dynamic_cast< CPhysicsProp * >( pOwner );
+		if ( physicsOwner )
+			physicsOwner->CopyTankHitTimerTo( pEntity );
+#endif
 
 		// If we're burning, break into burning pieces
 		CBaseAnimating *pAnimating = dynamic_cast<CBreakableProp *>(pOwner);
@@ -3497,11 +4258,13 @@ bool PropBreakableCapEdictsOnCreateAll(int modelindex, IPhysicsObject *pPhysics,
 //=============================================================================================================
 // BASE PROP DOOR
 //=============================================================================================================
+#if !defined( L4D2 )
 //
 // Private activities.
 //
 static int ACT_DOOR_OPEN = 0;
 static int ACT_DOOR_LOCKED = 0;
+#endif
 
 //
 // Anim events.
@@ -3540,6 +4303,10 @@ BEGIN_DATADESC(CBasePropDoor)
 	DEFINE_KEYFIELD(m_SoundClose, FIELD_SOUNDNAME, "soundcloseoverride"),
 	DEFINE_KEYFIELD(m_ls.sLockedSound, FIELD_SOUNDNAME, "soundlockedoverride"),
 	DEFINE_KEYFIELD(m_ls.sUnlockedSound, FIELD_SOUNDNAME, "soundunlockedoverride"),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_SoundLock, FIELD_SOUNDNAME, "soundsetlockedoverride" ),
+	DEFINE_KEYFIELD( m_SoundUnlock, FIELD_SOUNDNAME, "soundsetunlockedoverride" ),
+#endif
 	DEFINE_KEYFIELD(m_SlaveName, FIELD_STRING, "slavename" ),
 	DEFINE_FIELD(m_bLocked, FIELD_BOOLEAN),
 	//DEFINE_KEYFIELD(m_flBlockDamage, FIELD_FLOAT, "dmg"),
@@ -3556,6 +4323,10 @@ BEGIN_DATADESC(CBasePropDoor)
 	DEFINE_INPUTFUNC(FIELD_VOID, "Toggle", InputToggle),
 	DEFINE_INPUTFUNC(FIELD_VOID, "Lock", InputLock),
 	DEFINE_INPUTFUNC(FIELD_VOID, "Unlock", InputUnlock),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_VOID, "PlayerOpen", InputPlayerOpen ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "PlayerClose", InputPlayerClose ),
+#endif
 
 	DEFINE_OUTPUT(m_OnBlockedOpening, "OnBlockedOpening"),
 	DEFINE_OUTPUT(m_OnBlockedClosing, "OnBlockedClosing"),
@@ -3572,14 +4343,32 @@ BEGIN_DATADESC(CBasePropDoor)
 	DEFINE_THINKFUNC(DoorOpenMoveDone),
 	DEFINE_THINKFUNC(DoorCloseMoveDone),
 	DEFINE_THINKFUNC(DoorAutoCloseThink),
+
+#if defined( L4D2 )
+	DEFINE_THINKFUNC( DisableAreaPortalThink ),
+#endif
 END_DATADESC()
 
 IMPLEMENT_SERVERCLASS_ST(CBasePropDoor, DT_BasePropDoor)
+#if defined( L4D2 )
+	SendPropExclude( "DT_BaseAnimating", "m_flPoseParameter" ),
+	SendPropExclude( "DT_BaseAnimating", "m_flPlaybackRate" ),
+	SendPropExclude( "DT_BaseAnimating", "m_nMuzzleFlashParity" ),
+	SendPropExclude( "DT_AnimTimeMustBeFirst", "m_flAnimTime" ),
+	SendPropInt( SENDINFO( m_spawnflags ), 16, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO( m_eDoorState ), 3, SPROP_UNSIGNED ),
+	SendPropBool( SENDINFO( m_bLocked ) ),
+	SendPropBool( SENDINFO_NAME( m_bIsRescueDoor, m_isRescueDoor ) ),
+	SendPropEHandle( SENDINFO( m_hMaster ) ),
+#endif
 END_SEND_TABLE()
 
 CBasePropDoor::CBasePropDoor( void )
 {
 	m_hMaster = NULL;
+#if defined( L4D2 )
+	m_nCloseAttempts = 0; // Native5716; no datamap, key or wire descriptor.
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -3609,6 +4398,9 @@ void CBasePropDoor::Spawn()
 	RemoveFlag(FL_STATICPROP);
 
 	SetSolid(SOLID_VPHYSICS);
+#if defined( L4D2 )
+	AddSolidFlags( 0x1000 );
+#endif
 	VPhysicsInitShadow(false, false);
 	AddSolidFlags( FSOLID_CUSTOMRAYTEST | FSOLID_CUSTOMBOXTEST );
 
@@ -3628,6 +4420,11 @@ void CBasePropDoor::Spawn()
 
 	// Fills out the m_Soundxxx members.
 	CalcDoorSounds();
+#if defined( L4D2 )
+	// S1A97B0: after the actual sound callback, not fabricated ctor stores.
+	m_bIsRescueDoor = false;
+	m_isRequired = false;
+#endif
 }
 
 
@@ -3647,10 +4444,13 @@ void CBasePropDoor::Precache(void)
 {
 	BaseClass::Precache();
 
+#if !defined( L4D2 )
 	RegisterPrivateActivities();
+#endif
 }
 
 
+#if !defined( L4D2 )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
@@ -3664,6 +4464,7 @@ void CBasePropDoor::RegisterPrivateActivities(void)
 	REGISTER_PRIVATE_ACTIVITY( ACT_DOOR_OPEN );
 	REGISTER_PRIVATE_ACTIVITY( ACT_DOOR_LOCKED );
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -3720,8 +4521,18 @@ void CBasePropDoor::HandleAnimEvent(animevent_t *pEvent)
 	// otherwise it is called immediately when the open sequence is set.
 	if (pEvent->event == AE_DOOR_OPEN)
 	{
+#if defined( L4D2 )
+		ActivateDoorFromUse();
+#else
 		DoorActivate();
+#endif
 	}
+#if defined( L4D2 )
+	else
+	{
+		BaseClass::HandleAnimEvent( pEvent );
+	}
+#endif
 }
 
 
@@ -3741,6 +4552,11 @@ void CBasePropDoor::CalcDoorSounds()
 	string_t strSoundMoving = NULL_STRING;
 	string_t strSoundLocked = NULL_STRING;
 	string_t strSoundUnlocked = NULL_STRING;
+#if defined( L4D2 )
+	string_t strSoundLock = NULL_STRING;
+	string_t strSoundUnlock = NULL_STRING;
+	string_t strSoundPound = NULL_STRING;
+#endif
 
 	bool bFoundSkin = false;
 	// Otherwise, use the sounds specified by the model keyvalues. These are looked up
@@ -3761,6 +4577,9 @@ void CBasePropDoor::CalcDoorSounds()
 				strSoundOpen = AllocPooledString( pkvSkinData->GetString( "open" ) );
 				strSoundClose = AllocPooledString( pkvSkinData->GetString( "close" ) );
 				strSoundMoving = AllocPooledString( pkvSkinData->GetString( "move" ) );
+#if defined( L4D2 )
+				strSoundPound = AllocPooledString( pkvSkinData->GetString( "pound" ) );
+#endif
 				const char *pSurfaceprop = pkvSkinData->GetString( "surfaceprop" );
 				if ( pSurfaceprop && VPhysicsGetObject() )
 				{
@@ -3777,11 +4596,19 @@ void CBasePropDoor::CalcDoorSounds()
 			{
 				strSoundLocked = AllocPooledString( pkvHardwareData->GetString( "locked" ) );
 				strSoundUnlocked = AllocPooledString( pkvHardwareData->GetString( "unlocked" ) );
+#if defined( L4D2 )
+				strSoundLock = AllocPooledString( pkvHardwareData->GetString( "lock" ) );
+				strSoundUnlock = AllocPooledString( pkvHardwareData->GetString( "unlock" ) );
+#endif
 			}
 
 			// If any sounds were missing, try the "defaults" block.
 			if ( ( strSoundOpen == NULL_STRING ) || ( strSoundClose == NULL_STRING ) || ( strSoundMoving == NULL_STRING ) ||
-				 ( strSoundLocked == NULL_STRING ) || ( strSoundUnlocked == NULL_STRING ) )
+				 ( strSoundLocked == NULL_STRING ) || ( strSoundUnlocked == NULL_STRING )
+#if defined( L4D2 )
+				 || ( strSoundPound == NULL_STRING )
+#endif
+				)
 			{
 				KeyValues *pkvDefaults = pkvDoorSounds->FindKey( "defaults" );
 				if ( pkvDefaults )
@@ -3791,6 +4618,15 @@ void CBasePropDoor::CalcDoorSounds()
 					ASSIGN_STRING_IF_NULL( strSoundMoving, AllocPooledString( pkvDefaults->GetString( "move" ) ) );
 					ASSIGN_STRING_IF_NULL( strSoundLocked, AllocPooledString( pkvDefaults->GetString( "locked" ) ) );
 					ASSIGN_STRING_IF_NULL( strSoundUnlocked, AllocPooledString( pkvDefaults->GetString( "unlocked" ) ) );
+#if defined( L4D2 )
+					ASSIGN_STRING_IF_NULL( strSoundLock, AllocPooledString( pkvDefaults->GetString( "lock" ) ) );
+					ASSIGN_STRING_IF_NULL( strSoundUnlock, AllocPooledString( pkvDefaults->GetString( "unlock" ) ) );
+					ASSIGN_STRING_IF_NULL( strSoundPound, AllocPooledString( pkvDefaults->GetString( "pound" ) ) );
+					bFoundSkin = true;
+					const char *surfaceprop = pkvDefaults->GetString( "surfaceprop" );
+					if ( surfaceprop && VPhysicsGetObject() )
+						VPhysicsGetObject()->SetMaterialIndex( physprops->GetSurfaceIndex( surfaceprop ) );
+#endif
 					// NOTE: No default needed for surfaceprop, it's set by the model
 				}
 			}
@@ -3811,6 +4647,12 @@ void CBasePropDoor::CalcDoorSounds()
 	ASSIGN_STRING_IF_NULL( m_SoundMoving, strSoundMoving );
 	ASSIGN_STRING_IF_NULL( m_ls.sLockedSound, strSoundLocked );
 	ASSIGN_STRING_IF_NULL( m_ls.sUnlockedSound, strSoundUnlocked );
+#if defined( L4D2 )
+	// S199080 overwrites these model-selected fields even when their keyfields were authored.
+	m_SoundLock = strSoundLock;
+	m_SoundUnlock = strSoundUnlock;
+	m_SoundPound = strSoundPound;
+#endif
 
 	// Make sure we have real, precachable sound names in all cases.
 	UTIL_ValidateSoundName( m_SoundMoving, "DoorSound.Null" );
@@ -3818,12 +4660,22 @@ void CBasePropDoor::CalcDoorSounds()
 	UTIL_ValidateSoundName( m_SoundClose, "DoorSound.Null" );
 	UTIL_ValidateSoundName( m_ls.sLockedSound, "DoorSound.Null" );
 	UTIL_ValidateSoundName( m_ls.sUnlockedSound, "DoorSound.Null" );
+#if defined( L4D2 )
+	UTIL_ValidateSoundName( m_SoundLock, "WoodenDoor.Lock" );
+	UTIL_ValidateSoundName( m_SoundUnlock, "WoodenDoor.Lock" );
+	UTIL_ValidateSoundName( m_SoundPound, "WoodenDoor.Pound" );
+#endif
 
 	PrecacheScriptSound( STRING( m_SoundMoving ) );
 	PrecacheScriptSound( STRING( m_SoundOpen ) );
 	PrecacheScriptSound( STRING( m_SoundClose ) );
 	PrecacheScriptSound( STRING( m_ls.sLockedSound ) );
 	PrecacheScriptSound( STRING( m_ls.sUnlockedSound ) );
+#if defined( L4D2 )
+	PrecacheScriptSound( STRING( m_SoundLock ) );
+	PrecacheScriptSound( STRING( m_SoundUnlock ) );
+	PrecacheScriptSound( STRING( m_SoundPound ) );
+#endif
 }
 
 
@@ -3833,6 +4685,10 @@ void CBasePropDoor::CalcDoorSounds()
 //-----------------------------------------------------------------------------
 void CBasePropDoor::UpdateAreaPortals(bool isOpen)
 {
+#if defined( L4D2 )
+	SetContextThink( NULL, 0.0f, "AreaPortal" );
+	if ( !ShouldCloseAreaPortals() ) isOpen = true;
+#endif
 	string_t name = GetEntityName();
 	if (!name)
 		return;
@@ -3870,6 +4726,13 @@ void CBasePropDoor::SetDoorBlocker( CBaseEntity *pBlocker )
 //-----------------------------------------------------------------------------
 void CBasePropDoor::Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value)
 {
+#if defined( L4D2 )
+	// S1999F0: human clients issue PlayerOpen/PlayerClose instead of generic Use.
+	if ( HasSpawnFlags( SF_DOOR_IGNORE_USE ) ||
+		( pActivator && pActivator->IsPlayer() && pActivator->IsNetClient() ) )
+		return;
+#endif
+
 	if ( GetMaster() != NULL )
 	{
 		// Tell our owner we've been used
@@ -3877,11 +4740,16 @@ void CBasePropDoor::Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE
 	}
 	else
 	{
+#if defined( L4D2 )
+		HandleDoorUse( pActivator, pCaller, 3 ); // Native open | close action bits.
+#else
 		// Just let it through
 		OnUse( pActivator, pCaller, useType, value );
+#endif
 	}
 }
 
+#if !defined( L4D2 )
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Input  : *pActivator - 
@@ -3936,6 +4804,7 @@ void CBasePropDoor::OnUse( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TY
 		DoorOpen( m_hActivator );
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Closes the door if it is not already closed.
@@ -4027,22 +4896,286 @@ void CBasePropDoor::InputToggle(inputdata_t &inputdata)
 //-----------------------------------------------------------------------------
 void CBasePropDoor::InputUnlock(inputdata_t &inputdata)
 {
+#if defined( L4D2 )
+	SetLockedState( false, true );
+#else
 	Unlock();
+#endif
 }
 
 
 //-----------------------------------------------------------------------------
 // Purpose: Locks the door so that it cannot be opened.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+// S1A2230: one actual networked door marker and its own native event listener.
+void CBasePropDoor::SetRescueDoor( bool rescue )
+{
+	if ( m_bIsRescueDoor == rescue )
+		return;
+	m_bIsRescueDoor = rescue;
+	if ( rescue )
+	{
+		m_takedamage = DAMAGE_EVENTS_ONLY;
+		if ( IsDoorClosed() )
+			OnDoorClosed();
+		ListenForGameEvent( "finale_start" );
+	}
+	else
+	{
+		m_takedamage = DAMAGE_YES;
+	}
+}
+
+// S1A2300 on the genuine CGameEventListener subobject.
+void CBasePropDoor::FireGameEvent( IGameEvent *event )
+{
+	if ( !Q_stricmp( event->GetName(), "finale_start" ) && m_bIsRescueDoor )
+		SetRescueDoor( false );
+}
+
+void CBasePropDoor::SetRequired( bool required )
+{
+	m_isRequired = required;
+	if ( required )
+	{
+		if ( IsCheckpointDoor() )
+			m_takedamage = DAMAGE_EVENTS_ONLY;
+		if ( IsDoorClosed() )
+			OnDoorClosed();
+	}
+}
+
+void CBasePropDoor::SetLockedState( bool locked, bool playSound )
+{
+	m_bLocked = locked;
+	if ( playSound )
+	{
+		string_t sound = locked ? m_SoundLock : m_SoundUnlock;
+		EmitSound( STRING( sound ) );
+		FOR_EACH_VEC( m_hDoorList, i )
+		{
+			CBasePropDoor *door = m_hDoorList[i].Get();
+			if ( door )
+				door->EmitSound( STRING( sound ) );
+		}
+	}
+}
+
+void CBasePropDoor::PlayPoundSound()
+{
+	EmitSound( STRING( m_SoundPound ) );
+}
+
+ConVar z_door_reopen_interval( "z_door_reopen_interval", "0.5", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+,
+	"Closed doors can be re-opened after this amount of time" );
+
+// S1AB2F0: actions are native open/close bits, not the SDK USE_TYPE enum.
+bool CBasePropDoor::HandleDoorUse( CBaseEntity *activator, CBaseEntity *caller, int actions )
+{
+	if ( m_hBlocker.Get() )
+		return false;
+
+	CBasePlayer *player = ToBasePlayer( activator );
+	const bool playerInCheckpoint = player && player->GetLastKnownArea() &&
+		ToTerrorNavArea( player->GetLastKnownArea() )->HasSpawnAttributes( TERROR_NAV_CHECKPOINT );
+	if ( !playerInCheckpoint && IsCheckpointDoor() && activator &&
+		activator->GetTeamNumber() == TEAM_INFECTED && !IsUsableByTeam( TEAM_INFECTED ) )
+	{
+		if ( ToBasePlayer( activator ) )
+			static_cast< CCSPlayer * >( ToBasePlayer( activator ) )->HintMessage(
+				"#L4D_Hint_pz_no_break_saferoom_doors", false, false, false );
+		PlayLockSounds( this, &m_ls, TRUE, FALSE );
+		return false;
+	}
+	if ( m_bIsRescueDoor && activator && activator->GetTeamNumber() == TEAM_INFECTED )
+	{
+		if ( ToBasePlayer( activator ) )
+			static_cast< CCSPlayer * >( ToBasePlayer( activator ) )->HintMessage(
+				"#L4D_Hint_pz_no_break_rescue_doors", false, false, false );
+		PlayLockSounds( this, &m_ls, TRUE, FALSE );
+		return false;
+	}
+
+	if ( TheDirector->GetSessionManager()->IsStartAreaExitBlocked() &&
+		m_eDoorState == DOOR_STATE_CLOSED && IsCheckpointDoor() )
+	{
+		CBasePlayer *eventPlayer = ToBasePlayer( activator );
+		IGameEvent *event = gameeventmanager->CreateEvent( TerrorGameRules()->IsVersusMode() ?
+			"waiting_door_used_versus" : "waiting_checkpoint_door_used" );
+		if ( event )
+		{
+			event->SetInt( "userid", eventPlayer ? eventPlayer->GetUserID() : 0 );
+			event->SetInt( "entindex", entindex() );
+			gameeventmanager->FireEvent( event );
+		}
+		PlayLockSounds( this, &m_ls, TRUE, FALSE );
+		return false;
+	}
+
+	if ( m_eDoorState != DOOR_STATE_CLOSED &&
+		( m_eDoorState != DOOR_STATE_OPEN || !HasSpawnFlags( SF_DOOR_USE_CLOSES ) ) )
+	{
+		if ( m_eDoorState == DOOR_STATE_OPENING && m_bFirstBlocked )
+		{
+			if ( ( actions & 2 ) && !m_bLocked )
+			{
+				m_hActivator = activator;
+				DoorClose();
+				return true;
+			}
+		}
+		else if ( ( ( m_eDoorState == DOOR_STATE_CLOSING && m_bFirstBlocked ) ||
+			m_eDoorState == DOOR_STATE_AJAR ) && ( actions & 1 ) && !m_bLocked )
+		{
+			m_hActivator = activator;
+			DoorOpen( m_hActivator );
+			return true;
+		}
+		return true;
+	}
+
+	if ( m_eDoorState == DOOR_STATE_OPEN && !( actions & 2 ) )
+	{
+		if ( actions == 1 && player &&
+			( player->GetTeamNumber() == TEAM_SURVIVOR || player->GetTeamNumber() == TEAM_L4D1_SURVIVOR ) )
+		{
+			const int count = m_hDoorList.Count();
+			for ( int i = 0; i < count; ++i )
+			{
+				CBasePropDoor *linked = m_hDoorList[i].Get();
+				if ( linked )
+				{
+					linked->m_hActivator = player;
+					linked->DoorOpen( player );
+				}
+			}
+		}
+		return true;
+	}
+	if ( m_eDoorState != DOOR_STATE_OPEN && !( actions & 1 ) )
+	{
+		if ( actions == 2 && player &&
+			( player->GetTeamNumber() == TEAM_SURVIVOR || player->GetTeamNumber() == TEAM_L4D1_SURVIVOR ) )
+		{
+			const int count = m_hDoorList.Count();
+			for ( int i = 0; i < count; ++i )
+			{
+				CBasePropDoor *linked = m_hDoorList[i].Get();
+				if ( linked )
+				{
+					linked->m_hActivator = player;
+					linked->DoorClose();
+				}
+			}
+		}
+		return true;
+	}
+
+	if ( m_bLocked && activator &&
+		( activator->GetTeamNumber() == TEAM_SURVIVOR || activator->GetTeamNumber() == TEAM_L4D1_SURVIVOR ) )
+	{
+		if ( !IsCheckpointDoor() )
+		{
+			PlayLockSounds( this, &m_ls, TRUE, FALSE );
+			m_OnLockedUse.FireOutput( activator, caller );
+			return false;
+		}
+		if ( !TheDirector->GetSessionManager()->IsStartAreaExitBlocked() )
+			Unlock( activator );
+		return true;
+	}
+
+	if ( !m_bLocked && ( !activator || activator->GetTeamNumber() != TEAM_INFECTED ) )
+	{
+		m_hActivator = activator;
+		PlayLockSounds( this, &m_ls, FALSE, FALSE );
+		const int sequence = SelectWeightedSequence( TerrorActivityFromOriginal( TERROR_ORIGINAL_ACT_DOOR_OPEN ) );
+		if ( !IsCheckpointDoor() && sequence >= 0 )
+			PropSetSequence( sequence );
+		if ( sequence == -1 || !HasAnimEvent( sequence, AE_DOOR_OPEN ) )
+			ActivateDoorFromUse();
+		return true;
+	}
+
+	const int sequence = SelectWeightedSequence( TerrorActivityFromOriginal( TERROR_ORIGINAL_ACT_DOOR_OPENFAIL ) );
+	if ( !IsCheckpointDoor() && sequence >= 0 )
+		PropSetSequence( sequence );
+	PlayLockSounds( this, &m_ls, TRUE, FALSE );
+	m_OnLockedUse.FireOutput( activator, caller );
+	return true;
+}
+
+void CBasePropDoor::InputPlayerOpen( inputdata_t &inputdata )
+{
+	CBasePropDoor *door = this;
+	if ( door->HasSpawnFlags( SF_DOOR_IGNORE_USE ) )
+		return;
+	while ( door->GetMaster() )
+	{
+		door = door->GetMaster();
+		if ( door->HasSpawnFlags( SF_DOOR_IGNORE_USE ) )
+			return;
+	}
+	door->HandleDoorUse( inputdata.pActivator, inputdata.pCaller, 1 );
+}
+
+void CBasePropDoor::InputPlayerClose( inputdata_t &inputdata )
+{
+	CBasePropDoor *door = this;
+	if ( door->HasSpawnFlags( SF_DOOR_IGNORE_USE ) )
+		return;
+	while ( door->GetMaster() )
+	{
+		door = door->GetMaster();
+		if ( door->HasSpawnFlags( SF_DOOR_IGNORE_USE ) )
+			return;
+	}
+	door->HandleDoorUse( inputdata.pActivator, inputdata.pCaller, 2 );
+}
+
+bool CBasePropDoor::ActivateDoorFromUse()
+{
+	if ( m_doorReopenTimer.m_timestamp > 0.0f && !( gpGlobals->curtime >= m_doorReopenTimer.m_timestamp ) )
+		return false;
+	if ( IsDoorOpen() )
+		DoorClose();
+	else
+		DoorOpen( m_hActivator );
+	return true;
+}
+
+void CBasePropDoor::OnDoorClosed()
+{
+	m_doorReopenTimer.Start( z_door_reopen_interval.GetFloat() );
+}
+#endif
+
 void CBasePropDoor::Lock(void)
 {
+#if defined( L4D2 )
+	SetLockedState( true, true );
+#else
 	m_bLocked = true;
+#endif
 }
 
 
 //-----------------------------------------------------------------------------
 // Purpose: Unlocks the door so that it can be opened.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CBasePropDoor::Unlock( CBaseEntity *activator )
+{
+	SetLockedState( false, true ); // S1A26F0: the base intentionally ignores the actor.
+}
+#else
 void CBasePropDoor::Unlock(void)
 {
 	if (!m_nHardwareType)
@@ -4053,6 +5186,7 @@ void CBasePropDoor::Unlock(void)
 
 	m_bLocked = false;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Causes the door to "do its thing", i.e. start moving, and cascade activation.
@@ -4079,6 +5213,12 @@ void CBasePropDoor::DoorOpen(CBaseEntity *pOpenAwayFrom)
 	// Don't bother if we're already doing this
 	if ( IsDoorOpen() || IsDoorOpening() )
 		return;
+#if defined( L4D2 )
+	if ( TheDirector->GetSessionManager()->IsStartAreaExitBlocked() )
+		return;
+	CSurvivorRescue::OnDoorOpened( this, m_hActivator );
+	const bool wasClosed = IsDoorClosed(); // S1AAE09, before state becomes OPENING.
+#endif
 
 	UpdateAreaPortals(true);
 
@@ -4103,6 +5243,17 @@ void CBasePropDoor::DoorOpen(CBaseEntity *pOpenAwayFrom)
 
 	// Virtual function that starts the door moving for whatever type of door this is.
 	BeginOpening(pOpenAwayFrom);
+#if defined( L4D2 )
+	IGameEvent *event = gameeventmanager->CreateEvent( "door_open" );
+	if ( event )
+	{
+		CBasePlayer *player = ToBasePlayer( m_hActivator.Get() );
+		event->SetInt( "userid", player ? player->GetUserID() : 0 );
+		event->SetInt( "checkpoint", IsCheckpointDoor() );
+		event->SetBool( "closed", wasClosed );
+		gameeventmanager->FireEvent( event );
+	}
+#endif
 
 	m_OnOpen.FireOutput(this, this);
 
@@ -4167,6 +5318,13 @@ void CBasePropDoor::DoorOpenMoveDone(void)
 
 	// Let the leaf class do its thing.
 	OnDoorOpened();
+#if defined( L4D2 )
+	if ( m_nCloseAttempts > 0 )
+	{
+		RemoveSolidFlags( FSOLID_NOT_SOLID );
+		m_nCloseAttempts = 0;
+	}
+#endif
 
 	m_hActivator = NULL;
 }
@@ -4226,6 +5384,16 @@ void CBasePropDoor::DoorClose(void)
 
 	// This will set the movedone time.
 	BeginClosing();
+#if defined( L4D2 )
+	IGameEvent *event = gameeventmanager->CreateEvent( "door_close" );
+	if ( event )
+	{
+		CBasePlayer *player = ToBasePlayer( m_hActivator.Get() );
+		event->SetInt( "userid", player ? player->GetUserID() : 0 );
+		event->SetInt( "checkpoint", IsCheckpointDoor() );
+		gameeventmanager->FireEvent( event );
+	}
+#endif
 
 	m_OnClose.FireOutput(this, this);
 
@@ -4267,13 +5435,31 @@ void CBasePropDoor::DoorCloseMoveDone(void)
 	SetDoorState( DOOR_STATE_CLOSED );
 
 	m_OnFullyClosed.FireOutput(m_hActivator, this);
+#if defined( L4D2 )
+	SetContextThink( &CBasePropDoor::DisableAreaPortalThink, gpGlobals->curtime + 0.5f, "AreaPortal" );
+#else
 	UpdateAreaPortals(false);
+#endif
 
 	// Let the leaf class do its thing.
 	OnDoorClosed();
+#if defined( L4D2 )
+	if ( m_nCloseAttempts > 0 )
+	{
+		RemoveSolidFlags( FSOLID_NOT_SOLID );
+		m_nCloseAttempts = 0;
+	}
+#endif
 
 	m_hActivator = NULL;
 }
+
+#if defined( L4D2 )
+void CBasePropDoor::DisableAreaPortalThink()
+{
+	UpdateAreaPortals( false );
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -4326,6 +5512,12 @@ void CBasePropDoor::StartBlocked( CBaseEntity *pOther )
 // Purpose: 
 // Input  : *pOther - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CBasePropDoor::OnStartBlocked( CBaseEntity *pOther )
 {
 	if ( m_bFirstBlocked == false )
@@ -4339,6 +5531,17 @@ void CBasePropDoor::OnStartBlocked( CBaseEntity *pOther )
 	{
 		StopSound( STRING( m_SoundMoving ) );
 	}
+
+#if defined( L4D2 )
+	// S19BBD0: actors defer reversal; the continuous Blocked callback owns it.
+	const bool closing = IsDoorClosing();
+	if ( pOther->IsPlayer() || pOther->MyCombatCharacterPointer() )
+		m_doorRetryTimer.Start( z_door_retry_interval.GetFloat() );
+	if ( closing )
+		m_OnBlockedClosing.FireOutput( pOther, this );
+	else
+		m_OnBlockedOpening.FireOutput( pOther, this );
+#else
 
 	//
 	// Fire whatever events we need to due to our blocked state.
@@ -4370,14 +5573,66 @@ void CBasePropDoor::OnStartBlocked( CBaseEntity *pOther )
 
 		m_OnBlockedOpening.FireOutput( pOther, this );
 	}
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Called every frame when the door is blocked while opening or closing.
 // Input  : pOther - The blocking entity.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CBasePropDoor::Blocked(CBaseEntity *pOther)
 {
+#if defined( L4D2 )
+	// S1AAFF0: physical force-close handling does not skip actor reactions.
+	if ( m_bForceClosed && pOther->GetMoveType() == MOVETYPE_VPHYSICS )
+	{
+		if ( pOther->m_takedamage == DAMAGE_NO || pOther->m_takedamage == DAMAGE_EVENTS_ONLY )
+			EntityPhysics_CreateSolver( this, pOther, true, 4.0f );
+		else if ( pOther->m_takedamage == DAMAGE_YES )
+			pOther->TakeDamage( CTakeDamageInfo( this, this, static_cast< float >( pOther->GetHealth() ), DMG_CRUSH ) );
+	}
+
+	bool actor = false;
+	Infected *infected = pOther->MyInfectedPointer();
+	if ( infected )
+	{
+		actor = true;
+		static_cast< INextBot * >( infected )->OnShoved( this );
+		if ( IsCheckpointDoor() && IsDoorClosing() )
+			pOther->TakeDamage( CTakeDamageInfo( this, this, 25.0f, DMG_CRUSH ) );
+	}
+	else if ( pOther->IsPlayer() )
+	{
+		actor = true;
+		if ( pOther->GetTeamNumber() == TEAM_INFECTED )
+			static_cast< CTerrorPlayer * >( pOther )->StaggerPlayer( this, NULL );
+	}
+
+	if ( ( !m_bForceClosed || actor ) && gpGlobals->curtime >= m_doorRetryTimer.m_timestamp )
+	{
+		m_doorRetryTimer.Start( z_door_retry_interval.GetFloat() );
+		if ( IsDoorClosing() )
+		{
+			if ( actor )
+				m_nCloseAttempts = static_cast< int >( static_cast< unsigned int >( m_nCloseAttempts ) + 1u );
+			if ( actor && m_nCloseAttempts >= sv_prop_door_max_close_attempts.GetInt() )
+				AddSolidFlags( FSOLID_NOT_SOLID );
+			else
+				DoorOpen( pOther );
+		}
+		else
+			DoorClose();
+	}
+#else
 	// dvs: TODO: will prop_door apply any blocking damage?
 	// Hurt the blocker a little.
 	//if (m_flBlockDamage)
@@ -4462,7 +5717,11 @@ void CBasePropDoor::Blocked(CBaseEntity *pOther)
 //			}
 //		}
 //	}
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -4765,7 +6024,9 @@ BEGIN_DATADESC(CPropDoorRotating)
 	//m_vecBackBoundsMax
 END_DATADESC()
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS(prop_door_rotating, CPropDoorRotating);
+#endif
 
 //-----------------------------------------------------------------------------
 // Destructor
@@ -4832,6 +6093,9 @@ void CPropDoorRotating::Spawn()
 	// Figure out our volumes of movement as this door opens
 	CalculateDoorVolume( GetLocalAngles(), m_angRotationOpenForward, &m_vecForwardBoundsMin, &m_vecForwardBoundsMax );
 	CalculateDoorVolume( GetLocalAngles(), m_angRotationOpenBack, &m_vecBackBoundsMin, &m_vecBackBoundsMax );
+#if defined( L4D2 )
+	TheTerrorNavMesh()->OnDoorCreated( this );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -4936,6 +6200,9 @@ void CPropDoorRotating::OnDoorOpened( void )
 //-----------------------------------------------------------------------------
 void CPropDoorRotating::OnDoorClosed( void )
 {
+#if defined( L4D2 )
+	BaseClass::OnDoorClosed();
+#endif
 	if ( m_hDoorBlocker != NULL )
 	{
 		// Destroy the blocker that was preventing NPCs from getting in our way.
@@ -5541,6 +6808,7 @@ END_SEND_TABLE()
 
 
 
+#if !defined( L4D2 )
 class CPhysicsPropMultiplayer : public CPhysicsProp, public IMultiplayerPhysics
 {
 	DECLARE_CLASS( CPhysicsPropMultiplayer, CPhysicsProp );
@@ -5701,6 +6969,7 @@ IMPLEMENT_SERVERCLASS_ST( CPhysicsPropMultiplayer, DT_PhysicsPropMultiplayer )
 	SendPropVector( SENDINFO( m_collisionMins ), 0, SPROP_NOSCALE ),
 	SendPropVector( SENDINFO( m_collisionMaxs ), 0, SPROP_NOSCALE ),
 END_SEND_TABLE()
+#endif
 
 #define RESPAWNABLE_PROP_DEFAULT_TIME 60.0f
 
@@ -5892,7 +7161,13 @@ void CC_Prop_Dynamic_Create( const CCommand &args )
 	CBaseEntity::SetAllowPrecache( bAllowPrecache );
 }
 
-static ConCommand prop_dynamic_create("prop_dynamic_create", CC_Prop_Dynamic_Create, "Creates a dynamic prop with a specific .mdl aimed away from where the player is looking.\n\tArguments: {.mdl name}", FCVAR_CHEAT);
+static ConCommand prop_dynamic_create("prop_dynamic_create", CC_Prop_Dynamic_Create, "Creates a dynamic prop with a specific .mdl aimed away from where the player is looking.\n\tArguments: {.mdl name}", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 
@@ -5916,7 +7191,13 @@ void CC_Prop_Physics_Create( const CCommand &args )
 	CreatePhysicsProp( pModelName, pPlayer->EyePosition(), pPlayer->EyePosition() + forward * MAX_TRACE_LENGTH, pPlayer, true );
 }
 
-static ConCommand prop_physics_create("prop_physics_create", CC_Prop_Physics_Create, "Creates a physics prop with a specific .mdl aimed away from where the player is looking.\n\tArguments: {.mdl name}", FCVAR_CHEAT);
+static ConCommand prop_physics_create("prop_physics_create", CC_Prop_Physics_Create, "Creates a physics prop with a specific .mdl aimed away from where the player is looking.\n\tArguments: {.mdl name}", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 CPhysicsProp* CreatePhysicsProp( const char *pModelName, const Vector &vTraceStart, const Vector &vTraceEnd, const IHandleEntity *pTraceIgnore, bool bRequireVCollide, const char *pClassName )
@@ -6155,7 +7436,98 @@ void CC_Ent_Rotate( const CCommand &args )
 	pEntity->SetLocalAngles( angles );
 }
 
-static ConCommand ent_rotate("ent_rotate", CC_Ent_Rotate, "Rotates an entity by a specified # of degrees", FCVAR_CHEAT);
+static ConCommand ent_rotate("ent_rotate", CC_Ent_Rotate, "Rotates an entity by a specified # of degrees", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 // This is a dummy. The entity is entirely clientside.
 LINK_ENTITY_TO_CLASS( func_proprrespawnzone, CBaseEntity );
+
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+bool CPhysicsProp::IsTankHittable()
+{
+	return HasInteraction( PROPINTER_GAME_TANK_PROJECTILE );
+}
+
+bool CPhysicsProp::WasRecentlyHitByTank() const
+{
+	return m_lastTankHitTimer.GetStartTime() > 0.0f && gpGlobals->curtime - m_lastTankHitTimer.GetStartTime() < 2.0f;
+}
+
+void CPhysicsProp::CopyTankHitTimerTo( CBreakableProp *piece ) const
+{
+	if ( WasRecentlyHitByTank() )
+	{
+		CPhysicsProp *physicsPiece = dynamic_cast< CPhysicsProp * >( piece );
+		if ( physicsPiece )
+			physicsPiece->m_lastTankHitTimer = m_lastTankHitTimer;
+	}
+}
+
+void CPhysicsProp::OnHitByTank()
+{
+	m_OnHitByTank.FireOutput( this, this );
+}
+
+bool CPhysicsProp::IsPotentiallyAbleToObstructNavAreas() const
+{
+	if ( !IsSolid() || IsSolidFlagSet( FSOLID_NOT_SOLID ) ) return false;
+	IPhysicsObject *physics = VPhysicsGetObject();
+	if ( !physics ) return false;
+	const float mass = physics->GetMass();
+	if ( mass <= 100.0f ) return false;
+	Vector mins, maxs;
+	CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+	const Vector size = maxs - mins;
+	return size.LengthSqr() > 324.0f;
+}
+double CPhysicsProp::GetNavObstructionHeight() const
+{
+	Vector mins, maxs;
+	CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+	// S1989E0 FLD f32; FSUB f32; return x87, no f32 spill here.
+	return static_cast< double >( maxs.z ) - static_cast< double >( mins.z );
+}
+bool CPhysicsProp::CanObstructNavAreas() const
+{
+	if ( m_bAwake || m_breakableType != 0 ) return false;
+	IPhysicsObject *physics = VPhysicsGetObject();
+	if ( !physics ) return false;
+	const float mass = physics->GetMass();
+	if ( mass <= 100.0f || !IsSolid() || IsSolidFlagSet( FSOLID_NOT_SOLID ) ) return false;
+	Vector mins, maxs;
+	CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+	const float height = maxs.z - mins.z;
+	return !( height < 18.0f ) && ( m_iHealth >= 300 || m_takedamage != DAMAGE_YES );
+}
+void CPhysicsProp::OnNavMeshLoaded()
+{
+	if ( !m_bAwake && m_breakableType == 0 ) SetContextThink( &CPhysicsProp::NavThink, gpGlobals->curtime, "NavContext" );
+}
+void CPhysicsProp::NavThink()
+{
+	if ( !CanObstructNavAreas() ) return;
+	Extent extent;
+	CollisionProp()->WorldSpaceAABB( &extent.lo, &extent.hi );
+	extent.lo.z -= 71.0f;
+	CUtlVector< CNavArea * > areas;
+	TheNavMesh->CollectAreasOverlappingExtent( extent, &areas );
+	// S1A6720 FSTP f32 once, before any MarkObstacleToAvoid callbacks.
+	const float height = static_cast< float >( GetNavObstructionHeight() );
+	FOR_EACH_VEC( areas, i ) areas[i]->MarkObstacleToAvoid( height );
+}
+#pragma float_control( pop )
+#endif
+
+#if defined( L4D2 )
+#include "l4d2/entities/prop_door_breakable.inc"
+#include "l4d2/entities/prop_door_rotating_checkpoint.inc"
+#endif
+
+
+#include "props_console_server_callbacks.inc"

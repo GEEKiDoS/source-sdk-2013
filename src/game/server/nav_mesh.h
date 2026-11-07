@@ -26,11 +26,18 @@
 #include "nav.h"
 #include "nav_area.h"
 #include "nav_colors.h"
+#if defined( L4D2 )
+#include <xmmintrin.h>
+#include <emmintrin.h>
+#endif
 
 
 class CNavArea;
 class CBaseEntity; 
 class CBreakable;
+#if defined( L4D2 )
+class CFuncNavConnectionBlocker;
+#endif
 
 extern ConVar nav_edit;
 extern ConVar nav_quicksave;
@@ -154,7 +161,11 @@ abstract_class INavAvoidanceObstacle
 {
 public:
 	virtual bool IsPotentiallyAbleToObstructNavAreas( void ) const = 0;	// could we at some future time obstruct nav?
-	virtual float GetNavObstructionHeight( void ) const = 0;			// height at which to obstruct nav areas
+#if defined( L4D2 )
+	virtual double GetNavObstructionHeight( void ) const = 0; // Native x87 result, e.g.1989E0.
+#else
+	virtual float GetNavObstructionHeight( void ) const = 0;
+#endif
 	virtual bool CanObstructNavAreas( void ) const = 0;					// can we obstruct nav right this instant?
 	virtual CBaseEntity *GetObstructingEntity( void ) = 0;
 	virtual void OnNavMeshLoaded( void ) = 0;
@@ -249,6 +260,9 @@ public:
 
 
 private:
+#if defined( L4D2 )
+	friend class TerrorNavMesh;
+#endif
 	CUtlVector< Place > m_directory;
 	bool m_hasUnnamedAreas;
 };
@@ -306,8 +320,13 @@ public:
 	virtual void OnRoundRestartPreEntity( void );						// invoked when a game round restarts, but before entities are deleted and recreated
 	virtual void OnBreakableCreated( CBaseEntity *breakable ) { }		// invoked when a breakable is created
 	virtual void OnBreakableBroken( CBaseEntity *broken ) { }			// invoked when a breakable is broken
-	virtual void OnAreaBlocked( CNavArea *area );						// invoked when the area becomes blocked
-	virtual void OnAreaUnblocked( CNavArea *area );						// invoked when the area becomes un-blocked
+#if defined( L4D2 )
+	virtual void OnAreaBlocked( CNavArea *area, bool affectsFlow );
+	virtual void OnAreaUnblocked( CNavArea *area, bool affectsFlow );
+#else
+	virtual void OnAreaBlocked( CNavArea *area );
+	virtual void OnAreaUnblocked( CNavArea *area );
+#endif
 	virtual void OnAvoidanceObstacleEnteredArea( CNavArea *area );					// invoked when the area becomes obstructed
 	virtual void OnAvoidanceObstacleLeftArea( CNavArea *area );					// invoked when the area becomes un-obstructed
 
@@ -327,7 +346,12 @@ public:
 	CNavArea *GetNavArea( const Vector &pos, float beneathLimt = 120.0f ) const;	// given a position, return the nav area that IsOverlapping and is *immediately* beneath it
 	CNavArea *GetNavArea( CBaseEntity *pEntity, int nGetNavAreaFlags, float flBeneathLimit = 120.0f ) const;
 	CNavArea *GetNavAreaByID( unsigned int id ) const;
+#if defined( L4D2 )
+	bool IsConnected( const Vector &from, const Vector &to ) const;
+	CNavArea *GetNearestNavArea( const Vector &pos, bool anyZ = false, float maxDist = 10000.0f, bool checkLOS = false, bool checkGround = true, int team = TEAM_ANY, bool ignoreNavBlockers = false ) const;
+#else
 	CNavArea *GetNearestNavArea( const Vector &pos, bool anyZ = false, float maxDist = 10000.0f, bool checkLOS = false, bool checkGround = true, int team = TEAM_ANY ) const;
+#endif
 	CNavArea *GetNearestNavArea( CBaseEntity *pEntity, int nGetNavAreaFlags = GETNAVAREA_CHECK_GROUND, float maxDist = 10000.0f ) const;
 
 	Place GetPlace( const Vector &pos ) const;							// return Place at given coordinate
@@ -355,6 +379,10 @@ public:
 	//
 	#define INCREMENTAL_GENERATION true
 	void BeginGeneration( bool incremental = false );					// initiate the generation process
+#if defined( L4D2 )
+	void CollectConnectionBlockers();
+	const CUtlVector< CFuncNavConnectionBlocker * > &GetConnectionBlockers() const { return m_connectionBlockers; }
+#endif
 	void BeginAnalysis( bool quitWhenFinished = false );						// re-analyze an existing Mesh.  Determine Hiding Spots, Encounter Spots, etc.
 
 	bool IsGenerating( void ) const		{ return m_generationMode != GENERATE_NONE; }	// return true while a Navigation Mesh is being generated
@@ -682,6 +710,10 @@ public:
 	}
 
 
+#if defined( L4D2 )
+	template < typename Functor >
+	bool ForAllAreasInRadius( Functor &func, const Vector &pos, float radius );
+#else
 	template < typename Functor >
 	bool ForAllAreasInRadius( Functor &func, const Vector &pos, float radius )
 	{
@@ -742,6 +774,7 @@ public:
 		}
 		return true;
 	}
+#endif
 
 	//---------------------------------------------------------------------------------------------------------------
 	/*
@@ -1075,10 +1108,22 @@ public:
 	void ScriptUnregisterAvoidanceObstacle( HSCRIPT hEntity );
 	void ScriptGetNavAreasOverlappingEntityExtent( HSCRIPT hEntity, HSCRIPT hTable );
 
+#if defined( L4D2 )
+	void UnblockRescueVehicleNav() { m_bRescueVehicleNavUnblocked = true; } // S4A0270
+	bool IsRescueVehicleNavUnblocked() const { return m_bRescueVehicleNavUnblocked; }
+	HSCRIPT ScriptGetLadderByID( int id );
+	int GetLadderCount() const { return m_ladders.Count(); } // native mesh1312
+	void GetAllLadders( HSCRIPT table );
+	HSCRIPT FindLadderAlongRay( const Vector &start, const Vector &end, HSCRIPT ignoreArea );
+#endif
 protected:
 	NavErrorType GetNavDataFromFile( CUtlBuffer &outBuffer, bool *pNavDataFromBSP = NULL );
 
-	virtual void PostCustomAnalysis( void ) { }					// invoked when custom analysis step is complete
+#if defined( L4D2 )
+	virtual void PostCustomAnalysis( void ); // Native visibility compression phase.
+#else
+	virtual void PostCustomAnalysis( void ) { }
+#endif
 	bool FindActiveNavArea( void );								// Finds the area or ladder the local player is currently pointing at.  Returns true if a surface was hit by the traceline.
 	virtual void RemoveNavArea( CNavArea *area );				// remove an area from the grid
 	bool FindGroundForNode( Vector *pos, Vector *normal );
@@ -1088,6 +1133,12 @@ protected:
 private:
 	friend class CNavArea;
 	friend class CNavNode;
+#if defined( L4D2 )
+	friend class TerrorNavMesh;
+	bool m_navFileWritable; // Native12; cleared in constructor and DestroyNavigationMesh.
+	bool m_bRescueVehicleNavUnblocked; // Native13; same native two-byte clear.
+	CUtlVector< CFuncNavConnectionBlocker * > m_connectionBlockers;
+#endif
 	friend class CNavUIBasePanel;
 
 	mutable CUtlVector<NavAreaVector> m_grid;
@@ -1285,6 +1336,63 @@ extern CNavMesh *TheNavMesh;
 // factory for creating the Navigation Mesh
 extern CNavMesh *NavMeshFactory( void );
 
+
+
+#if defined( L4D2 )
+// MSVC floating-point controls must surround this definition at namespace scope.
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+template < typename Functor >
+inline bool CNavMesh::ForAllAreasInRadius( Functor &func, const Vector &pos, float radius )
+{
+	// S2EA990: one native NavAreaCollector specialization shares this marker/RNG
+	// with actual visibility generation and the console radius selection.
+	static unsigned int searchMarker = RandomInt( 0, 1024 * 1024 );
+	if ( ++searchMarker == 0 ) searchMarker = 1;
+	float inverseCellSize = 1.0f / m_gridCellSize;
+	int originX = _mm_cvtt_ss2si( _mm_set_ss( ( pos.x - m_minX ) * inverseCellSize ) );
+	if ( originX >= 0 ) { if ( originX >= m_gridSizeX ) originX = m_gridSizeX - 1; }
+	else originX = 0;
+	int originY = _mm_cvtt_ss2si( _mm_set_ss( ( pos.y - m_minY ) * inverseCellSize ) );
+	if ( originY >= 0 ) { if ( originY >= m_gridSizeY ) originY = m_gridSizeY - 1; }
+	else originY = 0;
+	// S2EAA3A: widen both stored F32 operands before the double product/ceil.
+	int shiftLimit = _mm_cvttsd_si32( _mm_set_sd( ceil( static_cast< double >( inverseCellSize ) * static_cast< double >( radius ) ) ) );
+	float radiusSquared = radius * radius;
+	if ( radius == 0.0f ) shiftLimit = MAX( m_gridSizeX, m_gridSizeY );
+	// Explicit native32-bit ALU wrapping also keeps CVTT's INT_MIN case defined.
+	int startX = static_cast< int >( static_cast< unsigned int >( originX ) - static_cast< unsigned int >( shiftLimit ) );
+	int endX = static_cast< int >( static_cast< unsigned int >( originX ) + static_cast< unsigned int >( shiftLimit ) );
+	int startY = static_cast< int >( static_cast< unsigned int >( originY ) - static_cast< unsigned int >( shiftLimit ) );
+	int endY = static_cast< int >( static_cast< unsigned int >( originY ) + static_cast< unsigned int >( shiftLimit ) );
+	for ( int x = startX; x <= endX; x = static_cast< int >( static_cast< unsigned int >( x ) + 1 ) )
+	{
+		if ( x < 0 || x >= m_gridSizeX ) continue;
+		for ( int y = startY; y <= endY; y = static_cast< int >( static_cast< unsigned int >( y ) + 1 ) )
+		{
+			if ( y < 0 || y >= m_gridSizeY ) continue;
+			NavAreaVector &cell = m_grid[x + y * m_gridSizeX];
+			FOR_EACH_VEC( cell, i )
+			{
+				CNavArea *area = cell[i];
+				if ( area->m_nearNavSearchMarker == searchMarker ) continue;
+				area->m_nearNavSearchMarker = searchMarker;
+				float squared = area->GetCenter().DistToSqr( pos );
+				// S2EAB32: ordered distance <= radius squared, or ordered radiusSquared == 0.
+				// Unordered distances pass only for zero squared radius; other unordered cases reject.
+				if ( !( squared <= radiusSquared || radiusSquared == 0.0f ) ) continue;
+				if ( !func( area ) ) return false;
+			}
+		}
+	}
+	return true;
+}
+#ifdef _MSC_VER
+#pragma float_control( pop )
+#endif
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------

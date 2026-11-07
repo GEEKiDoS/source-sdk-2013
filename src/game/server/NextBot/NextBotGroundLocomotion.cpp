@@ -21,6 +21,12 @@
 #include "tier0/vprof.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "l4d2/infected/common/infected.h"
+#include "l4d2/terror_trace_filter.h"
+#include "l4d2/infected/boss_zombie_contact.h"
+#include "l4d2/terror_physics_math.h"
+#endif
 #include "tier0/memdbgon.h"
 
 #pragma warning( disable : 4355 )			// warning 'this' used in base member initializer list - we're using it safely
@@ -454,6 +460,7 @@ void NextBotGroundLocomotion::DriveTo( const Vector &pos )
 /*
  * Trace filter solely for use with DetectCollision() below.
  */
+#if !defined( L4D2 )
 class GroundLocomotionCollisionTraceFilter : public CTraceFilterSimple
 {
 public:
@@ -480,6 +487,7 @@ public:
 
 	INextBot *m_me;
 };
+#endif
 
 
 //----------------------------------------------------------------------------------------------------------
@@ -488,6 +496,44 @@ public:
  */
 bool NextBotGroundLocomotion::DetectCollision( trace_t *pTrace, int &recursionLimit, const Vector &from, const Vector &to, const Vector &vecMins, const Vector &vecMaxs )
 {
+#if defined( L4D2 )
+// L4D2 branch of existing NextBotGroundLocomotion::DetectCollision, S3F9410.
+// Keep the existing SDK branch unchanged for non-L4D2 targets.
+IBody *body = GetBot()->GetBodyInterface();
+CBaseEntity *ignore = m_ignorePhysicsPropTimer.IsElapsed() ? NULL : m_ignorePhysicsProp.Get();
+ZombieBotCollisionTraceFilter filter( ignore, body->GetCollisionGroup() );
+TraceHull( from, to, vecMins, vecMaxs, body->GetSolidMask(), &filter, pTrace );
+if ( !pTrace->DidHit() )
+	return false;
+if ( pTrace->DidHitNonWorldEntity() && pTrace->m_pEnt &&
+	!pTrace->m_pEnt->MyCombatCharacterPointer() &&
+	IsEntityTraversable( pTrace->m_pEnt, IMMEDIATELY ) && IsLowHealthBossBreakable( pTrace->m_pEnt ) )
+{
+	if ( recursionLimit <= 0 )
+		return true;
+	--recursionLimit;
+	CTakeDamageInfo damage( GetBot()->GetEntity(), GetBot()->GetEntity(), 100.0f, DMG_CRUSH );
+	CalculateExplosiveDamageForce( &damage, GetMotionVector(), pTrace->endpos );
+	pTrace->m_pEnt->TakeDamage( damage );
+	return DetectCollision( pTrace, recursionLimit, from, to, vecMins, vecMaxs );
+}
+if ( GetBot()->ShouldTouch( pTrace->m_pEnt ) )
+	GetBot()->OnContact( pTrace->m_pEnt, pTrace );
+INextBot *otherBot = dynamic_cast< INextBot * >( pTrace->m_pEnt );
+if ( otherBot && otherBot->ShouldTouch( m_nextBot ) )
+	otherBot->OnContact( m_nextBot );
+else
+	pTrace->m_pEnt->Touch( GetBot()->GetEntity() );
+if ( body->HasActivityType( IBody::MOTION_CONTROLLED_Z ) && pTrace->m_pEnt->IsPlayer() )
+{
+	const int team = pTrace->m_pEnt->GetTeamNumber();
+	if ( ( team == 2 || team == 4 ) && pTrace->m_pEnt->GetMoveType() == MOVETYPE_LADDER &&
+		GetBot()->GetPosition().z - pTrace->m_pEnt->GetAbsOrigin().z > 0.0f )
+		pTrace->m_pEnt->SetMoveType( MOVETYPE_WALK );
+}
+return true;
+#else
+
 	IBody *body = GetBot()->GetBodyInterface();
 
 	CBaseEntity *ignore = m_ignorePhysicsPropTimer.IsElapsed() ? NULL : m_ignorePhysicsProp;
@@ -543,6 +589,7 @@ bool NextBotGroundLocomotion::DetectCollision( trace_t *pTrace, int &recursionLi
 	}
 
 	return true;
+#endif
 }
 
 
@@ -706,7 +753,11 @@ Vector NextBotGroundLocomotion::ResolveCollision( const Vector &from, const Vect
 		if ( trace.plane.normal.z < 0.0f )
 		{
 			trace.plane.normal.z = 0.0f;
+#if defined( L4D2 )
+			TerrorPhysicsNormalize( trace.plane.normal );
+#else
 			trace.plane.normal.NormalizeInPlace();	
+#endif
 		}
 
 		// slide off of surface we hit
@@ -720,7 +771,11 @@ Vector NextBotGroundLocomotion::ResolveCollision( const Vector &from, const Vect
 		{
 			fullMove.z = 0.0f;
 			trace.plane.normal.z = 0.0f;
+#if defined( L4D2 )
+			TerrorPhysicsNormalize( trace.plane.normal );
+#else
 			trace.plane.normal.NormalizeInPlace();
+#endif
 		}
 
 		float blocked = DotProduct( trace.plane.normal, leftToMove );
@@ -831,62 +886,63 @@ public:
 };
 
 
-#ifdef SKIPME
-//----------------------------------------------------------------------------------------------------------
-/**
- * Push away zombies that are interpenetrating
- */
+#if defined( L4D2 )
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+// S3FA250. L4D2 ground locomotion belongs to common infected and Witch.
 Vector NextBotGroundLocomotion::ResolveZombieCollisions( const Vector &pos )
 {
 	Vector adjustedNewPos = pos;
-
 	Infected *me = m_nextBot->MyInfectedPointer();
 	const float hullWidth = me->GetBodyInterface()->GetHullWidth();
 
-	// only avoid if we're actually trying to move somewhere, and are enraged
-	if ( me != NULL && !IsUsingLadder() && !IsClimbingOrJumping() && IsOnGround() && m_nextBot->IsAlive() && IsAttemptingToMove() /*&& GetBot()->GetBodyInterface()->IsArousal( IBody::INTENSE )*/ )
+	if ( !IsUsingLadder() && !IsClimbingOrJumping() && IsOnGround() &&
+		m_nextBot->IsAlive() && IsAttemptingToMove() )
 	{
 		VPROF_BUDGET( "NextBotGroundLocomotion::ResolveZombieCollisions", "NextBot" );
 
-		const CUtlVector< CHandle< Infected > > &neighbors = me->GetNeighbors();
+		const CUtlVector< EHANDLE > &neighbors = me->GetNeighbors();
 		Vector avoid = vec3_origin;
 		float avoidWeight = 0.0f;
-
 		FOR_EACH_VEC( neighbors, it )
 		{
-			Infected *them = neighbors[ it ];
+			CBaseEntity *them = neighbors[it].Get();
+			if ( !them )
+				continue;
 
-			if ( them )
+			const Vector &myOrigin = me->GetAbsOrigin();
+			const Vector &theirOrigin = them->GetAbsOrigin();
+			Vector toThem = theirOrigin - myOrigin;
+			toThem.z = 0.0f;
+			const double range = TerrorPhysicsNormalize( toThem );
+			const float roundedRange = (float)range;
+			if ( (double)hullWidth > range )
 			{
-				Vector toThem = them->GetAbsOrigin() - me->GetAbsOrigin();
-				toThem.z = 0.0f;
-
-				float range = toThem.NormalizeInPlace();
-
-				if ( range < hullWidth )
-				{
-					// these two infected are in contact
-					me->Touch( them );
-
-					// move out of contact
-					float penetration = hullWidth - range;
-
-					float weight = 1.0f + ( 2.0f * penetration/hullWidth );
-					avoid += -weight * toThem;
-					avoidWeight += weight;
-				}
+				me->Touch( them );
+				const float penetration = hullWidth - roundedRange;
+				const float weight = 1.0f + ( 2.0f * penetration ) / hullWidth;
+				avoid += -weight * toThem;
+				avoidWeight += weight;
 			}
 		}
 
 		if ( avoidWeight > 0.0f )
 		{
-			adjustedNewPos += 3.0f * ( avoid / avoidWeight );
+			const float inverseWeight = 1.0f / avoidWeight;
+			adjustedNewPos += ( avoid * inverseWeight ) * 3.0f;
 		}
 	}
 
 	return adjustedNewPos;
 }
-#endif // _DEBUG
+#ifdef _MSC_VER
+#pragma float_control( pop )
+#endif
+#endif // L4D2
 
 
 //----------------------------------------------------------------------------------------------------------
@@ -896,6 +952,16 @@ Vector NextBotGroundLocomotion::ResolveZombieCollisions( const Vector &pos )
 void NextBotGroundLocomotion::UpdatePosition( const Vector &newPos )
 {
 	VPROF_BUDGET( "NextBotGroundLocomotion::UpdatePosition", "NextBot" );
+
+#if defined( L4D2 )
+	// S3FA560: even an unchanged goal passes through the contact solver.
+	if ( NextBotStop.GetBool() || ( m_nextBot->GetFlags() & FL_FROZEN ) != 0 )
+		return;
+
+	const Vector adjustedNewPos = ResolveZombieCollisions( newPos );
+	const Vector safePos = ResolveCollision( GetBot()->GetPosition(), adjustedNewPos, 3 );
+	m_nextBot->SetPosition( safePos );
+#else
 
 	if ( NextBotStop.GetBool() || (m_nextBot->GetFlags() & FL_FROZEN) != 0 || newPos == m_nextBot->GetPosition() )
 	{
@@ -915,6 +981,7 @@ void NextBotGroundLocomotion::UpdatePosition( const Vector &newPos )
 	{
 		m_nextBot->SetPosition( safePos );
 	}
+#endif
 }
 
 

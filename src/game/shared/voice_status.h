@@ -71,6 +71,9 @@ class CVoiceStatus /*: public vgui::CDefaultInputSignal*/
 public:
 				CVoiceStatus();
 	virtual		~CVoiceStatus();
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void ResetVoiceIcons();
+#endif
 
 // CHudBase overrides.
 public:

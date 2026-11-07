@@ -31,6 +31,7 @@
 
 //Precahce the effects
 #ifndef TF_CLIENT_DLL
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheMuzzleFlash )
 CLIENTEFFECT_MATERIAL( "effects/muzzleflash1" )
 CLIENTEFFECT_MATERIAL( "effects/muzzleflash2" )
@@ -49,10 +50,17 @@ CLIENTEFFECT_MATERIAL( "effects/combinemuzzle2" )
 CLIENTEFFECT_MATERIAL( "effects/combinemuzzle2_nocull" )
 #endif
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 #endif
 
 //Whether or not we should emit a dynamic light
-ConVar muzzleflash_light( "muzzleflash_light", "1", FCVAR_ARCHIVE );
+ConVar muzzleflash_light( "muzzleflash_light", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
 
 extern void FX_TracerSound( const Vector &start, const Vector &end, int iTracerType );
 

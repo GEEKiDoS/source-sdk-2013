@@ -181,7 +181,9 @@ BEGIN_NETWORK_TABLE_NOBASE( CBeam, DT_Beam )
 	SendPropModelIndex(SENDINFO(m_nModelIndex) ),
 	SendPropVector (SENDINFO(m_vecOrigin), 19, SPROP_CHANGES_OFTEN,	MIN_COORD_INTEGER, MAX_COORD_INTEGER),
 	SendPropEHandle(SENDINFO_NAME(m_hMoveParent, moveparent) ),
+#if !defined( L4D2 )
 	SendPropInt		(SENDINFO(m_nMinDXLevel),	8,	SPROP_UNSIGNED ),
+#endif
 #if !defined( NO_ENTITY_PREDICTION )
 	SendPropDataTable( "beampredictable_id", 0, &REFERENCE_SEND_TABLE( DT_BeamPredictableId ), SendProxy_SendPredictableId ),
 #endif
@@ -220,7 +222,9 @@ BEGIN_NETWORK_TABLE_NOBASE( CBeam, DT_Beam )
 	RecvPropBool(RECVINFO(m_bDrawInPortalRender) ),
 #endif
 	RecvPropInt(RECVINFO(m_nModelIndex)),
+#if !defined( L4D2 )
 	RecvPropInt(RECVINFO(m_nMinDXLevel)),
+#endif
 
 	RecvPropVector(RECVINFO_NAME(m_vecNetworkOrigin, m_vecOrigin)),
 	RecvPropInt( RECVINFO_NAME(m_hNetworkMoveParent, moveparent), 0, RecvProxy_IntToMoveParent ),
@@ -239,7 +243,9 @@ BEGIN_DATADESC( CBeam )
 	DEFINE_FIELD( m_nNumBeamEnts, FIELD_INTEGER ),
 	DEFINE_ARRAY( m_hAttachEntity, FIELD_EHANDLE, MAX_BEAM_ENTS ),
 	DEFINE_ARRAY( m_nAttachIndex, FIELD_INTEGER, MAX_BEAM_ENTS ),
+#if !defined( L4D2 )
 	DEFINE_FIELD( m_nMinDXLevel, FIELD_INTEGER ),
+#endif
 
 	DEFINE_FIELD( m_fWidth, FIELD_FLOAT ),
 	DEFINE_FIELD( m_fEndWidth, FIELD_FLOAT ),
@@ -302,7 +308,9 @@ BEGIN_PREDICTION_DATA( CBeam )
 	DEFINE_PRED_FIELD( m_flFrameRate, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_flFrame, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_clrRender, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#if !defined( L4D2 )
 	DEFINE_PRED_FIELD( m_nMinDXLevel, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#endif
 	DEFINE_PRED_FIELD_TOL( m_vecEndPos, FIELD_VECTOR, FTYPEDESC_INSENDTABLE, 0.125f ),
 #ifdef PORTAL
 	DEFINE_PRED_FIELD( m_bDrawInMainRender, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
@@ -340,6 +348,9 @@ CBeam::CBeam( void )
 #ifdef PORTAL
 	m_bDrawInMainRender = true;
 	m_bDrawInPortalRender = true;
+#endif
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	AddToEntityList( ENTITY_LIST_SIMULATE );
 #endif
 }
 
@@ -546,7 +557,16 @@ const Vector &C_Beam::GetAbsEndPos( void ) const
 CBeam *CBeam::BeamCreate( const char *pSpriteName, float width )
 {
 	// Create a new entity with CBeam private data
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	CBeam *pBeam = dynamic_cast< CBeam * >( CreateEntityByName( "beam" ) );
+	if ( !pBeam )
+	{
+		Warning( "classname %s used to create wrong class type\n", "beam" );
+		return NULL; // Skip only native C24AB0's invalid BeamInit receiver.
+	}
+#else
 	CBeam *pBeam  = CREATE_ENTITY( CBeam, "beam" );
+#endif
 	pBeam->BeamInit( pSpriteName, width );
 
 	return pBeam;
@@ -1034,6 +1054,9 @@ void CBeam::OnDataChanged( DataUpdateType_t updateType )
 	Vector mins, maxs;
 	ComputeBounds( mins, maxs );
 	SetCollisionBounds( mins, maxs );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 }
 
 bool CBeam::IsTransparent( void )
@@ -1041,6 +1064,7 @@ bool CBeam::IsTransparent( void )
 	return true;
 }
 
+#if !defined( L4D2 )
 bool CBeam::ShouldDraw()
 {
 	if ( m_nMinDXLevel != 0 )
@@ -1050,10 +1074,12 @@ bool CBeam::ShouldDraw()
 	}
 	return BaseClass::ShouldDraw();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Adds to beam entity list
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CBeam::AddEntity( void )
 {
 	// If set to invisible, skip. Do this before resetting the entity pointer so it has 
@@ -1074,6 +1100,7 @@ void CBeam::AddEntity( void )
 
 	MoveToLastReceivedPosition();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Computes the bounding box of a beam local to the origin of the beam
@@ -1197,5 +1224,24 @@ void CBeam::ComputeBounds( Vector& mins, Vector& maxs )
 	Vector vecAbsOrigin = GetAbsOrigin();
 	mins -= vecAbsOrigin;
 	maxs -= vecAbsOrigin;
+}
+#endif
+
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+bool CBeam::Simulate( void )
+{
+	bool keep = false;
+	if ( ShouldDraw() )
+	{
+		if ( m_hAttachEntity[0].Get() || m_hAttachEntity[1].Get() )
+		{
+			Vector mins, maxs;
+			ComputeBounds( mins, maxs );
+			CollisionProp()->SetCollisionBounds( mins, maxs );
+			keep = true;
+		}
+		MoveToLastReceivedPosition( false );
+	}
+	return keep;
 }
 #endif

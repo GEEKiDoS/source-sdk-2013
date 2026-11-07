@@ -18,7 +18,12 @@
 
 #define SOUNDSCAPE_MANIFEST_FILE				"scripts/soundscapes_manifest.txt"
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(soundscape_flush, "Flushes the server & client side soundscapes", 0x00000004)
+#else
 CON_COMMAND(soundscape_flush, "Flushes the server & client side soundscapes")
+#endif
 {
 	CBasePlayer *pPlayer = ToBasePlayer( UTIL_GetCommandClient() );
 	if ( engine->IsDedicatedServer() )
@@ -92,7 +97,12 @@ void CSoundscapeSystem::AddSoundscapeFile( const char *filename )
 	pKeyValuesData->deleteThis();
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( sv_soundscape_printdebuginfo, "print soundscapes", 0x00004004 )
+#else
 CON_COMMAND_F( sv_soundscape_printdebuginfo, "print soundscapes", FCVAR_DEVELOPMENTONLY )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -115,6 +125,13 @@ void CSoundscapeSystem::PrintDebugInfo()
 	for( int entityIndex = 0; entityIndex < m_soundscapeEntities.Size(); ++entityIndex )
 	{
 		CEnvSoundscape *currentSoundscape = m_soundscapeEntities[entityIndex];
+#if defined( L4D2 )
+		if ( !currentSoundscape )
+		{
+			Msg( "- %d: REMOVED\n", entityIndex );
+			continue;
+		}
+#endif
 		Msg("- %d: %s x:%.4f y:%.4f z:%.4f\n", 
 			entityIndex, 
 			STRING(currentSoundscape->GetSoundscapeName()), 
@@ -198,6 +215,11 @@ void CSoundscapeSystem::LevelInitPreEntity()
 	g_SoundscapeSystem.Init();
 }
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+
 void CSoundscapeSystem::LevelInitPostEntity()
 {
 	if ( IsX360() )
@@ -222,6 +244,10 @@ void CSoundscapeSystem::LevelInitPostEntity()
 	// add this soundscape to the list of soundscapes for that cluster, clip cluster bounds to radius
 	for ( int i = 0; i < m_soundscapeEntities.Count(); i++ )
 	{
+#if defined( L4D2 )
+		if ( !m_soundscapeEntities[i] )
+			continue;
+#endif
 		Vector position = m_soundscapeEntities[i]->GetAbsOrigin();
 		float radius = m_soundscapeEntities[i]->m_flRadius;
 		float radiusSq = radius * radius;
@@ -231,7 +257,12 @@ void CSoundscapeSystem::LevelInitPostEntity()
 			if ( myPVS[ j >> 3 ] & (1<<(j&7)) )
 			{
 				float distSq = CalcSqrDistanceToAABB( clusterbounds[j].mins, clusterbounds[j].maxs, position );
+#if defined( L4D2 )
+				// S101DE8D0 squares even a negative radius; it has no radius<0 bypass.
+				if ( distSq < radiusSq )
+#else
 				if ( distSq < radiusSq || radius < 0 )
+#endif
 				{
 					m_soundscapesInCluster[j].soundscapeCount++;
 					clusterIndexList.AddToTail(j);
@@ -266,6 +297,10 @@ void CSoundscapeSystem::LevelInitPostEntity()
 	}
 }
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
 int	CSoundscapeSystem::GetSoundscapeIndex( const char *pName )
 {
 	return m_soundscapes.GetStringID( pName );
@@ -289,7 +324,14 @@ void CSoundscapeSystem::AddSoundscapeEntity( CEnvSoundscape *pSoundscape )
 
 void CSoundscapeSystem::RemoveSoundscapeEntity( CEnvSoundscape *pSoundscape )
 {
+#if defined( L4D2 )
+	// S101DE310: entity IDs and cluster-list entries retain their original indices.
+	const int index = m_soundscapeEntities.Find( pSoundscape );
+	if ( index != m_soundscapeEntities.InvalidIndex() )
+		m_soundscapeEntities[index] = NULL;
+#else
 	m_soundscapeEntities.FindAndRemove( pSoundscape );
+#endif
 	pSoundscape->m_soundscapeEntityId = -1;
 }
 
@@ -300,6 +342,11 @@ void CSoundscapeSystem::FrameUpdatePostEntityThink()
 	{
 		int traceCount = 0;
 		int playerCount = 0;
+#if defined( L4D2 )
+		// S101DE160..16E. Keep the inclusive loop tests below, including their overshoot.
+		int maxPlayers = 2;
+		int maxTraces = 4;
+#else
 		// budget tuned for TF.  Do a max of 20 traces.  That's going to happen anyway because a bunch of the maps
 		// use radius -1 for all soundscapes.  So to trace one player you'll often need that many and this code must
 		// always trace one player's soundscapes.
@@ -308,6 +355,7 @@ void CSoundscapeSystem::FrameUpdatePostEntityThink()
 		// maxPlayers has to be at least 1
 		maxPlayers = MAX( 1, maxPlayers );
 		int maxTraces = 20;
+#endif
 		if ( soundscape_debug.GetBool() )
 		{
 			maxTraces = 9999;
@@ -356,6 +404,10 @@ void CSoundscapeSystem::FrameUpdatePostEntityThink()
 					for ( int j = 0; j < m_soundscapesInCluster[clusterIndex].soundscapeCount; j++ )
 					{
 						int ssIndex = m_soundscapeIndexList[m_soundscapesInCluster[clusterIndex].firstSoundscape + j];
+#if defined( L4D2 )
+						if ( !m_soundscapeEntities[ssIndex] )
+							continue;
+#endif
 						if ( m_soundscapeEntities[ssIndex] == update.pCurrentSoundscape )
 							continue;
 						m_soundscapeEntities[ssIndex]->UpdateForPlayer( update );

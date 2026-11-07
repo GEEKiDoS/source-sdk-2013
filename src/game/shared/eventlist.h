@@ -69,6 +69,9 @@ typedef enum
 	AE_SV_DUSTTRAIL,
 
 	AE_CL_CREATE_PARTICLE_EFFECT,
+#if defined( L4D2 )
+	AE_CL_CREATE_PARTICLE_BRASS,
+#endif
 
 	AE_RAGDOLL,
 
@@ -85,6 +88,10 @@ typedef enum
 
 	AE_WPN_PLAYWPNSOUND,	// Play a weapon sound from the weapon script file
 
+#if defined( L4D2 )
+	// Native shared event 44 is unused; the remaining names end at 95.
+	LAST_SHARED_ANIMEVENT = 96,
+#else
 	AE_RD_ROBOT_POP_PANELS_OFF,
 
 	AE_TAUNT_ENABLE_MOVE,
@@ -98,6 +105,7 @@ typedef enum
 	AE_CL_EXCLUDE_PLAYER_SOUND,
 
 	LAST_SHARED_ANIMEVENT,
+#endif
 } Animevent;
 
 
@@ -108,10 +116,13 @@ typedef struct evententry_s evententry_t;
 extern void EventList_Init( void );
 extern void EventList_Free( void );
 extern bool EventList_RegisterSharedEvent( const char *pszEventName, int iEventIndex, int iType = 0 );
+#if defined( L4D2 )
+extern Animevent EventList_RegisterPrivateEvent( const char *pszEventName, int iType = AE_TYPE_SERVER );
+#else
 extern Animevent EventList_RegisterPrivateEvent( const char *pszEventName );
+#endif
 extern int EventList_IndexForName( const char *pszEventName );
 extern const char *EventList_NameForIndex( int iEventIndex );
-Animevent EventList_RegisterPrivateEvent( const char *pszEventName );
 
 // This macro guarantees that the names of each event and the constant used to
 // reference it in the code are identical.

@@ -213,6 +213,8 @@ private:
 
 
 extern CNavUIBasePanel *CreateNavUI( void );
+// Sole provider used by the L4D2 console owner's CC_nav_gui delegate.
+extern void NavUICommand( void );
 extern CNavUIBasePanel *TheNavUI( void );
 
 #endif // SERVER_USES_VGUI

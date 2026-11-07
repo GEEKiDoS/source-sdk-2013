@@ -7,6 +7,9 @@
 #include "cbase.h"
 #include "animation.h"
 #include "baseflex.h"
+#if defined( L4D2 )
+#include "l4d2/sound/flex_expresser.h"
+#endif
 #include "filesystem.h"
 #include "studio.h"
 #include "choreoevent.h"
@@ -27,9 +30,27 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-static ConVar scene_showlook( "scene_showlook", "0", FCVAR_ARCHIVE, "When playing back, show the directions of look events." );
-static ConVar scene_showmoveto( "scene_showmoveto", "0", FCVAR_ARCHIVE, "When moving, show the end location." );
-static ConVar scene_showunlock( "scene_showunlock", "0", FCVAR_ARCHIVE, "Show when a vcd is playing but normal AI is running." );
+static ConVar scene_showlook( "scene_showlook", "0", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+, "When playing back, show the directions of look events." );
+static ConVar scene_showmoveto( "scene_showmoveto", "0", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+, "When moving, show the end location." );
+static ConVar scene_showunlock( "scene_showunlock", "0", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Show when a vcd is playing but normal AI is running." );
 
 // static ConVar scene_checktagposition( "scene_checktagposition", "0", FCVAR_ARCHIVE, "When playing back a choreographed scene, check the current position of the tags relative to where they were authored." );
 
@@ -60,7 +81,11 @@ IMPLEMENT_SERVERCLASS_ST(CBaseFlex, DT_BaseFlex)
 // Note we can't totally disabled flexweights transmission since some things like blink and eye tracking are still done by the server
 	SendPropArray3	(SENDINFO_ARRAY3(m_flexWeight), SendPropFloat(SENDINFO_ARRAY(m_flexWeight), 12, SPROP_ROUNDDOWN, 0.0f, 1.0f ) /*, SendProxy_FlexWeights*/ ),
 	SendPropInt		(SENDINFO(m_blinktoggle), 1, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropVector	(SENDINFO(m_viewtarget), -1, SPROP_COORD_MP),
+#else
 	SendPropVector	(SENDINFO(m_viewtarget), -1, SPROP_COORD),
+#endif
 #ifdef HL2_DLL
 	SendPropFloat	( SENDINFO_VECTORELEM(m_vecViewOffset, 0), 0, SPROP_NOSCALE ),
 	SendPropFloat	( SENDINFO_VECTORELEM(m_vecViewOffset, 1), 0, SPROP_NOSCALE ),
@@ -96,14 +121,14 @@ BEGIN_DATADESC( CBaseFlex )
 END_DATADESC()
 
 BEGIN_ENT_SCRIPTDESC( CBaseFlex, CBaseAnimating, "Animated characters who have vertex flex capability." )
-#if 0
+#if defined( L4D2 )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetOldestScene, "GetCurrentScene", "Returns the instance of the oldest active scene entity (if any)." )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetSceneByIndex, "GetSceneByIndex", "Returns the instance of the scene entity at the specified index." )
 #endif
 	DEFINE_SCRIPTFUNC_NAMED( ScriptPlayScene, "PlayScene", "Play the specified .vcd file." )
 END_SCRIPTDESC();
 
-#if 0
+#if defined( L4D2 )
 //--------------------------------------------------------------------------------------------------
 // Returns the script instance of the scene entity associated with our oldest ("top level") scene event
 //--------------------------------------------------------------------------------------------------
@@ -439,7 +464,11 @@ bool CBaseFlex::ClearSceneEvent( CSceneEventInfo *info, bool fastKill, bool canc
 //			expression - 
 //			duration - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CBaseFlex::AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseEntity *pTarget, CBaseEntity *pSceneEntity )
+#else
 void CBaseFlex::AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseEntity *pTarget )
+#endif
 {
 	if ( !scene || !event )
 	{
@@ -463,6 +492,9 @@ void CBaseFlex::AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseEn
 	info.m_pScene		= scene;
 	info.m_hTarget		= pTarget;
 	info.m_bStarted	= false;
+#if defined( L4D2 )
+	info.m_hSceneEntity	= pSceneEntity;
+#endif
 
 	if (StartSceneEvent( &info, scene, event, actor, pTarget ))
 	{
@@ -1209,8 +1241,20 @@ const void *CBaseFlex::FindSceneFile( const char *filename )
 	return g_FlexSceneFileManager.FindSceneFile( this, filename, false );
 }
 
-ConVar	ai_expression_optimization( "ai_expression_optimization", "0", FCVAR_NONE, "Disable npc background expressions when you can't see them." );
-ConVar	ai_expression_frametime( "ai_expression_frametime", "0.05", FCVAR_NONE, "Maximum frametime to still play background expressions." );
+ConVar	ai_expression_optimization( "ai_expression_optimization", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "Disable npc background expressions when you can't see them." );
+ConVar	ai_expression_frametime( "ai_expression_frametime", "0.05", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "Maximum frametime to still play background expressions." );
 
 //-----------------------------------------------------------------------------
 // Various methods to process facial SceneEvents: 
@@ -2261,6 +2305,7 @@ float CSceneEventInfo::UpdateWeight( CBaseFlex *pActor )
 // Purpose: 
 //-----------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 class CFlexCycler : public CBaseFlex
 {
 private:
@@ -2296,6 +2341,7 @@ public:
 	void SetFlexTarget( LocalFlexController_t flexnum );
 	LocalFlexController_t LookupFlex( const char *szTarget );
 };
+#endif
 
 BEGIN_DATADESC( CFlexCycler )
 
@@ -2329,8 +2375,16 @@ LINK_ENTITY_TO_CLASS( cycler_flex, CGenericFlexCycler );
 
 
 
-ConVar	flex_expression( "flex_expression","-" );
-ConVar	flex_talk( "flex_talk","0" );
+ConVar	flex_expression( "flex_expression","-"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar	flex_talk( "flex_talk","0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 // Cycler member functions
 

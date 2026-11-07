@@ -17,6 +17,108 @@
 #define MAX_COMMAND_LENGTH 64
 #define MAX_CREATE_ERROR_STRING 96
 
+#if defined( L4D2 )
+
+class CVoteController;
+
+class CBaseIssue
+{
+public:
+	CBaseIssue( const char *typeString );
+	virtual ~CBaseIssue() {} // Original21A0F0: no owned pointer or unregister callback.
+	const char *GetTypeString() const { return m_szTypeString; }
+	virtual const char *GetDetailsString();
+	virtual void SetIssueDetails( const char *details );
+	virtual void OnVotePassed() {} // Native21A170.
+	virtual void OnVoteFailed() {} // Native21A180; NOT the TF cooldown implementation.
+	virtual void OnVoteStarted() {} // Native21A100; Kick overrides this.
+	virtual bool CanTeamCallVote( int team ) const { return true; } // Native21A190.
+	virtual bool CanCallVote( int entityIndex, const char *details, char *error );
+	virtual bool IsTeamRestrictedVote() const { return false; } // Native21A150.
+	virtual const char *GetDisplayString() = 0;
+	virtual void ExecuteCommand() = 0;
+	virtual void ListIssueDetails( CBasePlayer *forWhom ) = 0;
+	virtual const char *GetVotePassedString() { return "unknown vote passed."; }
+	virtual int CountPotentialVoters();
+protected:
+	static void ListStandardNoArgCommand( CBasePlayer *forWhom, const char *issueString );
+	char m_szTypeString[64]; // Native4; constructor copies only type, not details.
+	char m_szDetailsString[64]; // Native68; actual SetIssueDetails writer.
+};
+
+class CVoteController : public CBaseEntity
+{
+public:
+	DECLARE_CLASS( CVoteController, CBaseEntity );
+	DECLARE_SERVERCLASS();
+	DECLARE_DATADESC();
+	CVoteController();
+	virtual ~CVoteController();
+	virtual void Spawn() OVERRIDE;
+	virtual int UpdateTransmitState() OVERRIDE;
+	void RegisterIssue( CBaseIssue *issue );
+	void ListIssues( CBasePlayer *forWhom );
+	bool CreateVote( int entityIndex, const char *issueType, const char *details );
+	bool CanCallVote( uint32 accountID ) const;
+	bool CanTeamVote( int team ) const;
+	void HoldVotes();
+	void ReleaseVotes();
+	void CancelVote();
+	bool IsAVoteInProgress() const { return m_iActiveIssueIndex != -1; }
+	enum TryCastVoteResult
+	{
+		CAST_OK = 0,
+		CAST_FAIL_SERVER_DISABLE = 1,
+		CAST_FAIL_NO_ACTIVE_ISSUE = 2,
+		CAST_FAIL_TEAM_RESTRICTED = 3,
+		CAST_FAIL_NO_CHANGES = 4,
+		CAST_FAIL_DUPLICATE = 5,
+		CAST_FAIL_VOTE_CLOSED = 6,
+		CAST_FAIL_SYSTEM_ERROR = 7
+	};
+	TryCastVoteResult TryCastVote( int entityIndex, const char *choice );
+	static void SendCallVoteFailed( CBasePlayer *player, int reason );
+private:
+	void ResetData();
+	void VoteControllerThink();
+	void CheckForEarlyVoteClose();
+	void SendVoteFailed();
+	void RecordVoteResult( bool passed );
+	int &CallerEntityIndex() { return m_playerBallotsAndCaller[32]; }
+	const int &CallerEntityIndex() const { return m_playerBallotsAndCaller[32]; }
+	CNetworkVar( int, m_iActiveIssueIndex ); // Native1068; wire m_activeIssueIndex, signed32.
+	CNetworkVar( int, m_iOnlyTeamToVote ); // Native1072; wire m_onlyTeamToVote, signed32.
+	CNetworkVar( int, m_nVotesYes ); // Native1076; wire m_votesYes, signed32.
+	CNetworkVar( int, m_nVotesNo ); // Native1080; wire m_votesNo, signed32.
+	CNetworkVar( int, m_nPotentialVotes ); // Native1084; wire m_potentialVotes, signed32.
+	CountdownTimer m_acceptingVotesTimer; // Native1088.
+	CountdownTimer m_executeCommandTimer; // Native1100.
+	CountdownTimer m_resetVoteTimer; // Native1176.
+	// Native ballots are32 ints1188..1312, immediately followed by caller1316.
+	// TryCastVote accepts index32 and aliases caller; Think scans indices0..31.
+	// One33-word store preserves the PROVEN alias without an out-of-bounds C++ access.
+	int m_playerBallotsAndCaller[33];
+	int m_nTeamHoldingVote; // Native1320; spectator callers map to TEAM_SURVIVOR.
+	CUtlVector< CBaseIssue * > m_potentialIssues; // Native1324; owned, registration order retained.
+	int m_nVoteHoldCount; // Native1344; signed32 INC/DEC wrapping, no clamp.
+	uint32 m_nCallerAccountID; // Native1348; real Steam account ID, not entity/user ID.
+	struct CallerHistory_t
+	{
+		uint32 accountID;
+		float realtime;
+		int passedVotes;
+		int failedVotes;
+		int issueIndex;
+		bool lastVotePassed;
+	};
+	CUtlVector< CallerHistory_t > m_callerHistory; // Native1352; survives ResetData/Spawn, dies with entity.
+};
+
+extern CVoteController *g_voteControllerGlobal;
+void TerrorCreateVoteIssues(); // Exact seven native constructors AFTER real controller Spawn.
+
+#else // Existing generic/TF owner remains unchanged for non-L4D2 targets.
+
 struct VoteParams_t
 {
 	VoteParams_t()
@@ -188,5 +290,7 @@ protected:
 extern CVoteController *g_voteControllerGlobal;
 extern CVoteController *g_voteControllerRed;
 extern CVoteController *g_voteControllerBlu;
+
+#endif // L4D2 native / generic vote declarations
 
 #endif // VOTE_CONTROLLER_H

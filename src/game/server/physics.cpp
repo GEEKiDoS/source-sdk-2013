@@ -58,7 +58,11 @@ void PrecachePhysicsSounds( void );
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar phys_speeds( "phys_speeds", "0" );
+ConVar phys_speeds( "phys_speeds", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 // defined in phys_constraint
 extern IPhysicsConstraintEvent *g_pConstraintEvents;
@@ -87,7 +91,13 @@ void TimescaleChanged( IConVar *var, const char *pOldString, float flOldValue )
 	}
 }
 
-ConVar phys_timescale( "phys_timescale", "1", 0, "Scale time for physics", TimescaleChanged );
+ConVar phys_timescale( "phys_timescale", "1", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Scale time for physics", TimescaleChanged );
 
 #if _DEBUG
 ConVar phys_dontprintint( "phys_dontprintint", "1", FCVAR_NONE, "Don't print inter-penetration warnings." );
@@ -948,7 +958,13 @@ penetrateevent_t &CCollisionEvent::FindOrAddPenetrateEvent( CBaseEntity *pEntity
 
 
 
-static ConVar phys_penetration_error_time( "phys_penetration_error_time", "10", 0, "Controls the duration of vphysics penetration error boxes." );
+static ConVar phys_penetration_error_time( "phys_penetration_error_time", "10", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Controls the duration of vphysics penetration error boxes." );
 
 static bool CanResolvePenetrationWithNPC( CBaseEntity *pEntity, IPhysicsObject *pObject )
 {
@@ -1037,7 +1053,12 @@ int CCollisionEvent::ShouldSolvePenetration( IPhysicsObject *pObj0, IPhysicsObje
 	if ( eventTime > 3 )
 	{
 		// don't report penetrations on ragdolls with themselves, or outside of developer mode
+#if defined( L4D2 )
+		// Native penetration overlays require developer level 2 or higher.
+		if ( g_pDeveloper->GetInt() > 1 && pEntity0 != pEntity1 )
+#else
 		if ( g_pDeveloper->GetInt() && pEntity0 != pEntity1 )
+#endif
 		{
 			ReportPenetration( pEntity0, phys_penetration_error_time.GetFloat() );
 			ReportPenetration( pEntity1, phys_penetration_error_time.GetFloat() );
@@ -1278,7 +1299,12 @@ static void CallbackReport( CBaseEntity *pEntity )
 	Msg( "%s - %s\n", pEntity->GetClassname(), pName );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(physics_highlight_active, "Turns on the absbox for all active physics objects", 0x00000004)
+#else
 CON_COMMAND(physics_highlight_active, "Turns on the absbox for all active physics objects")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1286,7 +1312,12 @@ CON_COMMAND(physics_highlight_active, "Turns on the absbox for all active physic
 	IterateActivePhysicsEntities( CallbackHighlight );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(physics_report_active, "Lists all active physics objects", 0x00000004)
+#else
 CON_COMMAND(physics_report_active, "Lists all active physics objects")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1294,7 +1325,12 @@ CON_COMMAND(physics_report_active, "Lists all active physics objects")
 	IterateActivePhysicsEntities( CallbackReport );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(surfaceprop, "Reports the surface properties at the cursor", 0x00004004 )
+#else
 CON_COMMAND_F(surfaceprop, "Reports the surface properties at the cursor", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1538,7 +1574,12 @@ void PhysicsCommand( const CCommand &args, void (*func)( CBaseEntity *pEntity ) 
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(physics_constraints, "Highlights constraint system graph for an entity", 0x00000004)
+#else
 CON_COMMAND(physics_constraints, "Highlights constraint system graph for an entity")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1546,7 +1587,12 @@ CON_COMMAND(physics_constraints, "Highlights constraint system graph for an enti
 	PhysicsCommand( args, DebugConstraints );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(physics_debug_entity, "Dumps debug info for an entity", 0x00000004)
+#else
 CON_COMMAND(physics_debug_entity, "Dumps debug info for an entity")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1554,7 +1600,12 @@ CON_COMMAND(physics_debug_entity, "Dumps debug info for an entity")
 	PhysicsCommand( args, OutputVPhysicsDebugInfo );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(physics_select, "Dumps debug info for an entity", 0x00000004)
+#else
 CON_COMMAND(physics_select, "Dumps debug info for an entity")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1562,7 +1613,12 @@ CON_COMMAND(physics_select, "Dumps debug info for an entity")
 	PhysicsCommand( args, MarkVPhysicsDebug );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( physics_budget, "Times the cost of each active object" , 0x00000004)
+#else
 CON_COMMAND( physics_budget, "Times the cost of each active object" )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -2599,9 +2655,21 @@ void PhysBreakSound( CBaseEntity *pEntity, IPhysicsObject *pPhysObject, Vector v
 	physicssound::AddBreakSound( g_PhysicsHook.m_breakSounds, vecOrigin, pPhysObject->GetMaterialIndex() );
 }
 
-ConVar collision_shake_amp("collision_shake_amp", "0.2");
-ConVar collision_shake_freq("collision_shake_freq", "0.5");
-ConVar collision_shake_time("collision_shake_time", "0.5");
+ConVar collision_shake_amp("collision_shake_amp", "0.2"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
+ConVar collision_shake_freq("collision_shake_freq", "0.5"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
+ConVar collision_shake_time("collision_shake_time", "0.5"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
 				 
 void PhysCollisionScreenShake( gamevcollisionevent_t *pEvent, int index )
 {
@@ -2856,7 +2924,13 @@ void CC_AirDensity( const CCommand &args )
 		physenv->SetAirDensity( density );
 	}
 }
-static ConCommand air_density("air_density", CC_AirDensity, "Changes the density of air for drag computations.", FCVAR_CHEAT);
+static ConCommand air_density("air_density", CC_AirDensity, "Changes the density of air for drag computations.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 void DebugDrawContactPoints(IPhysicsObject *pPhysics)
 {

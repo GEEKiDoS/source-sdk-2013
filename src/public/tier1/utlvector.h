@@ -188,6 +188,7 @@ public:
 
 	// Set the size by which it grows when it needs to allocate more memory.
 	void SetGrowSize( int size )			{ m_Memory.SetGrowSize( size ); }
+	int GetGrowSize() const { return m_Memory.GetGrowSize(); }
 
 	int NumAllocated() const;	// Only use this if you really know what you're doing!
 

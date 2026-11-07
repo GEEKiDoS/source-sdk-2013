@@ -11,7 +11,13 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar mat_hdr_tonemapscale( "mat_hdr_tonemapscale", "1.0", FCVAR_CHEAT, "The HDR tonemap scale. 1 = Use autoexposure, 0 = eyes fully closed, 16 = eyes wide open." );
+ConVar mat_hdr_tonemapscale( "mat_hdr_tonemapscale", "1.0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "The HDR tonemap scale. 1 = Use autoexposure, 0 = eyes fully closed, 16 = eyes wide open." );
 
 // 0 - eyes fully closed / fully black
 // 1 - nominal 
@@ -26,6 +32,14 @@ class CEnvTonemapController : public CPointEntity
 public:
 	DECLARE_DATADESC();
 	DECLARE_SERVERCLASS();
+#if defined( L4D2 )
+	CEnvTonemapController();
+	void InputSetBloomExponent( inputdata_t &data );
+	void InputSetBloomSaturation( inputdata_t &data );
+	void InputSetTonemapPercentTarget( inputdata_t &data );
+	void InputSetTonemapPercentBrightPixels( inputdata_t &data );
+	void InputSetTonemapMinAvgLum( inputdata_t &data );
+#endif
 
 	void	Spawn( void );
 	int		UpdateTransmitState( void );
@@ -55,9 +69,20 @@ private:
 	CNetworkVar( float, m_flCustomAutoExposureMax );
 	CNetworkVar( float, m_flCustomBloomScale);
 	CNetworkVar( float, m_flCustomBloomScaleMinimum);
+#if defined( L4D2 )
+	CNetworkVar( float, m_flBloomExponent );
+	CNetworkVar( float, m_flBloomSaturation );
+	CNetworkVar( float, m_flTonemapPercentTarget );
+	CNetworkVar( float, m_flTonemapPercentBrightPixels );
+	CNetworkVar( float, m_flTonemapMinAvgLum );
+#endif
 };
 
 LINK_ENTITY_TO_CLASS( env_tonemap_controller, CEnvTonemapController );
+#if defined( L4D2 )
+LINK_ENTITY_TO_CLASS( env_tonemap_controller_infected, CEnvTonemapController );
+LINK_ENTITY_TO_CLASS( env_tonemap_controller_ghost, CEnvTonemapController );
+#endif
 
 BEGIN_DATADESC( CEnvTonemapController )
 	DEFINE_FIELD( m_flBlendTonemapStart, FIELD_FLOAT ),
@@ -71,6 +96,13 @@ BEGIN_DATADESC( CEnvTonemapController )
 	DEFINE_FIELD( m_flCustomBloomScale, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flCustomBloomScaleMinimum, FIELD_FLOAT ),
 	DEFINE_FIELD( m_bUseCustomBloomScale, FIELD_BOOLEAN ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_flBloomExponent, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flBloomSaturation, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flTonemapPercentTarget, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flTonemapPercentBrightPixels, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flTonemapMinAvgLum, FIELD_FLOAT ),
+#endif
 
 	DEFINE_THINKFUNC( UpdateTonemapScaleBlend ),
 
@@ -84,6 +116,13 @@ BEGIN_DATADESC( CEnvTonemapController )
 	DEFINE_INPUTFUNC( FIELD_VOID, "UseDefaultBloomScale", InputUseDefaultBloomScale ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetBloomScale", InputSetBloomScale ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetBloomScaleRange", InputSetBloomScaleRange ),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetBloomExponent", InputSetBloomExponent ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetBloomSaturation", InputSetBloomSaturation ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetTonemapPercentTarget", InputSetTonemapPercentTarget ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetTonemapPercentBrightPixels", InputSetTonemapPercentBrightPixels ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetTonemapMinAvgLum", InputSetTonemapMinAvgLum ),
+#endif
 END_DATADESC()
 
 IMPLEMENT_SERVERCLASS_ST( CEnvTonemapController, DT_EnvTonemapController )
@@ -94,11 +133,55 @@ IMPLEMENT_SERVERCLASS_ST( CEnvTonemapController, DT_EnvTonemapController )
 	SendPropFloat( SENDINFO(m_flCustomAutoExposureMax), 0, SPROP_NOSCALE),
 	SendPropFloat( SENDINFO(m_flCustomBloomScale), 0, SPROP_NOSCALE),
 	SendPropFloat( SENDINFO(m_flCustomBloomScaleMinimum), 0, SPROP_NOSCALE),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO( m_flBloomExponent ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flBloomSaturation ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flTonemapPercentTarget ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flTonemapPercentBrightPixels ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flTonemapMinAvgLum ), 0, SPROP_NOSCALE ),
+#endif
 END_SEND_TABLE()
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+CEnvTonemapController::CEnvTonemapController()
+{
+	m_flBloomExponent = 2.5f;
+	m_flBloomSaturation = 1.0f;
+	m_flTonemapPercentTarget = 45.0f;
+	m_flTonemapPercentBrightPixels = 1.0f;
+	m_flTonemapMinAvgLum = 3.0f;
+}
+
+void CEnvTonemapController::InputSetBloomExponent( inputdata_t &data )
+{
+	m_flBloomExponent = data.value.Float();
+}
+
+void CEnvTonemapController::InputSetBloomSaturation( inputdata_t &data )
+{
+	m_flBloomSaturation = data.value.Float();
+}
+
+void CEnvTonemapController::InputSetTonemapPercentTarget( inputdata_t &data )
+{
+	m_flTonemapPercentTarget = data.value.Float();
+}
+
+void CEnvTonemapController::InputSetTonemapPercentBrightPixels( inputdata_t &data )
+{
+	m_flTonemapPercentBrightPixels = data.value.Float();
+}
+
+void CEnvTonemapController::InputSetTonemapMinAvgLum( inputdata_t &data )
+{
+	m_flTonemapMinAvgLum = data.value.Float();
+}
+
+#endif
+
 void CEnvTonemapController::Spawn( void )
 {
 	SetSolid( SOLID_NONE );

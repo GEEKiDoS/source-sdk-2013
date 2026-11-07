@@ -7,6 +7,7 @@
 //=============================================================================//
 #include "cbase.h"
 #include "engine/IEngineSound.h"
+#include "l4d2/sound/terror_engine_sound_name.h"
 #include "view.h"
 
 #include "fx_line.h"
@@ -24,11 +25,13 @@
 
 //FIXME: All these functions will be moved out to FX_Main.CPP or a individual folder
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectsTest )
 CLIENTEFFECT_MATERIAL( "effects/spark" )
 CLIENTEFFECT_MATERIAL( "effects/gunshiptracer" )
 CLIENTEFFECT_MATERIAL( "effects/bluespark" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -277,7 +280,7 @@ void FX_TracerSound( const Vector &start, const Vector &end, int iTracerType )
 		VectorNormalize( shotDir );
 
 		CLocalPlayerFilter filter;
-		enginesound->EmitSound(	filter, SOUND_FROM_WORLD, CHAN_STATIC, params.soundname, 
+		enginesound->EmitSound(	filter, SOUND_FROM_WORLD, CHAN_STATIC, CTerrorEngineSoundName( params.soundname ).Get(),
 			params.volume, SNDLVL_TO_ATTN(params.soundlevel), 0, params.pitch, 0, &start, &shotDir, NULL);
 	}
 

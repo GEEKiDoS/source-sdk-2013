@@ -77,6 +77,10 @@ struct EdgeTexture_t
 class C_BreakableSurface : public C_BaseEntity, public IBrushRenderer
 {
 public:
+#if defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return m_bIsBroken ? 1 : C_BaseEntity::ComputeModelTranslucencyType(); }
+#endif
+
 	DECLARE_CLIENTCLASS();
 	DECLARE_CLASS( C_BreakableSurface, C_BaseEntity );
 	DECLARE_DATADESC();

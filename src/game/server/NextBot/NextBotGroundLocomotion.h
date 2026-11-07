@@ -22,6 +22,9 @@ class NextBotGroundLocomotion : public ILocomotion
 {
 public:
 	DECLARE_CLASS( NextBotGroundLocomotion, ILocomotion );
+	#if defined( L4D2 )
+	friend class ZombieBotLocomotion;
+	#endif
 
 	NextBotGroundLocomotion( INextBot *bot );
 	virtual ~NextBotGroundLocomotion();

@@ -84,16 +84,26 @@ public:
 protected:
 	virtual void AdjustPosture( const Vector &moveGoal );
 
+#if defined( L4D2 )
+	float m_bodyAimEaseInTime;
+#endif
+
 private:
 	CBasePlayer *m_player;									// the player we are locomoting	
 
 	mutable bool m_isJumping;
 	CountdownTimer m_jumpTimer;
 
+#if defined( L4D2 )
+protected:
+#endif
 	bool m_isClimbingUpToLedge;
 	bool m_isJumpingAcrossGap;
 	Vector m_landingGoal;
 	bool m_hasLeftTheGround;
+#if defined( L4D2 )
+private:
+#endif
 
 	float m_desiredSpeed;
 	float m_minSpeedLimit;
@@ -124,7 +134,13 @@ private:
 	const CNavArea *m_ladderDismountGoal;
 	CountdownTimer m_ladderTimer;			// a "give up" timer if things go awry
 
+#if defined( L4D2 )
+protected:
+#endif
 	bool IsClimbPossible( INextBot *me, const CBaseEntity *obstacle ) const;
+#if defined( L4D2 )
+private:
+#endif
 };
 
 

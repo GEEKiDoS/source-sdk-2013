@@ -14,6 +14,9 @@
 #include "model_types.h"
 #include "datacache/imdlcache.h"
 #include "physics.h"
+#if defined( L4D2 )
+#include <xmmintrin.h>
+#endif
 #include "ndebugoverlay.h"
 #include "tier1/strtools.h"
 #include "npcevent.h"
@@ -29,9 +32,14 @@
 #include "props.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "baseanimating_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
-ConVar ai_sequence_debug( "ai_sequence_debug", "0" );
+ConVar ai_sequence_debug( "ai_sequence_debug", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 class CIKSaveRestoreOps : public CClassPtrSaveRestoreOps
 {
@@ -74,7 +82,9 @@ private:
 	string_t		m_strLightingLandmark;
 };
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( info_lighting_relative, CInfoLightingRelative );
+#endif
 
 BEGIN_DATADESC( CInfoLightingRelative )
 	DEFINE_KEYFIELD( m_strLightingLandmark, FIELD_STRING, "LightingLandmark" ),
@@ -186,35 +196,53 @@ BEGIN_DATADESC( CBaseAnimating )
 	DEFINE_FIELD( m_nResetEventsParity, FIELD_INTEGER ),
 	DEFINE_FIELD( m_nMuzzleFlashParity, FIELD_CHARACTER ),
 
+#if !defined( L4D2 )
 	DEFINE_KEYFIELD( m_iszLightingOriginRelative, FIELD_STRING, "LightingOriginHack" ),
+#endif
 	DEFINE_KEYFIELD( m_iszLightingOrigin, FIELD_STRING, "LightingOrigin" ),
 
 	DEFINE_FIELD( m_hLightingOrigin, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_hLightingOriginRelative, FIELD_EHANDLE ),
 
 	DEFINE_FIELD( m_flModelScale, FIELD_FLOAT ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_flFrozen, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flFrozenThawRate, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flFrozenMax, FIELD_FLOAT ),
+#endif
 	DEFINE_FIELD( m_flDissolveStartTime, FIELD_TIME ),
 
  // DEFINE_FIELD( m_boneCacheHandle, memhandle_t ),
 
 	DEFINE_INPUTFUNC( FIELD_VOID, "Ignite", InputIgnite ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "IgniteLifetime", InputIgniteLifetime ),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_INTEGER, "IgniteNumHitboxFires", InputIgnite ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "IgniteHitboxFireScale", InputIgnite ),
+#else
 	DEFINE_INPUTFUNC( FIELD_INTEGER, "IgniteNumHitboxFires", InputIgniteNumHitboxFires ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "IgniteHitboxFireScale", InputIgniteHitboxFireScale ),
+#endif
 	DEFINE_INPUTFUNC( FIELD_VOID, "BecomeRagdoll", InputBecomeRagdoll ),
+#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetLightingOriginHack", InputSetLightingOriginRelative ),
+#endif
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetLightingOrigin", InputSetLightingOrigin ),
 	DEFINE_OUTPUT( m_OnIgnite, "OnIgnite" ),
 
+#if !defined( L4D2 )
 	DEFINE_INPUT( m_fadeMinDist, FIELD_FLOAT, "fademindist" ),
 	DEFINE_INPUT( m_fadeMaxDist, FIELD_FLOAT, "fademaxdist" ),
 	DEFINE_KEYFIELD( m_flFadeScale, FIELD_FLOAT, "fadescale" ),
+#endif
 
+#if !defined( L4D2 )
 	DEFINE_KEYFIELD( m_flModelScale, FIELD_FLOAT, "modelscale" ),
 	DEFINE_INPUTFUNC( FIELD_VECTOR, "SetModelScale", InputSetModelScale ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetModel", InputSetModel ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetCycle", InputSetCycle ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetPlaybackRate", InputSetPlaybackRate ),
+#endif
 
 	DEFINE_FIELD( m_fBoneCacheFlags, FIELD_SHORT ),
 
@@ -245,25 +273,48 @@ IMPLEMENT_SERVERCLASS_ST(CBaseAnimating, DT_BaseAnimating)
 	SendPropInt		( SENDINFO(m_nSequence), ANIMATION_SEQUENCE_BITS, SPROP_UNSIGNED ),
 	SendPropFloat	( SENDINFO(m_flPlaybackRate), ANIMATION_PLAYBACKRATE_BITS, SPROP_ROUNDUP, -4.0, 12.0f ), // NOTE: if this isn't a power of 2 than "1.0" can't be encoded correctly
 
+
 	SendPropArray3 	(SENDINFO_ARRAY3(m_flEncodedController), SendPropFloat(SENDINFO_ARRAY(m_flEncodedController), 11, SPROP_ROUNDDOWN, 0.0f, 1.0f ) ),
 
 	SendPropInt( SENDINFO( m_bClientSideAnimation ), 1, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO( m_bClientSideFrameReset ), 1, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropBool( SENDINFO( m_bClientSideRagdoll ) ),
+#endif
 
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nNewSequenceParity ), EF_PARITY_BITS, SPROP_UNSIGNED | SPROP_CHANGES_OFTEN ),
+#else
 	SendPropInt( SENDINFO( m_nNewSequenceParity ), EF_PARITY_BITS, SPROP_UNSIGNED ),
+#endif
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nResetEventsParity ), EF_PARITY_BITS, SPROP_UNSIGNED | SPROP_CHANGES_OFTEN ),
+#else
 	SendPropInt( SENDINFO( m_nResetEventsParity ), EF_PARITY_BITS, SPROP_UNSIGNED ),
+#endif
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nMuzzleFlashParity ), EF_MUZZLEFLASH_BITS, SPROP_UNSIGNED | SPROP_CHANGES_OFTEN ),
+#else
 	SendPropInt( SENDINFO( m_nMuzzleFlashParity ), EF_MUZZLEFLASH_BITS, SPROP_UNSIGNED ),
+#endif
 
 	SendPropEHandle( SENDINFO( m_hLightingOrigin ) ),
+#if !defined( L4D2 )
 	SendPropEHandle( SENDINFO( m_hLightingOriginRelative ) ),
+#endif
 
 	SendPropDataTable( "serveranimdata", 0, &REFERENCE_SEND_TABLE( DT_ServerAnimationData ), SendProxy_ClientSideAnimation ),
 
 	// Fading
+#if !defined( L4D2 )
 	SendPropFloat( SENDINFO( m_fadeMinDist ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_fadeMaxDist ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_flFadeScale ), 0, SPROP_NOSCALE ),
+#endif
 
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO( m_flFrozen ), 0, SPROP_NOSCALE ),
+#endif
 END_SEND_TABLE()
 
 BEGIN_ENT_SCRIPTDESC( CBaseAnimating, CBaseEntity, "Animating models" )
@@ -277,6 +328,9 @@ BEGIN_ENT_SCRIPTDESC( CBaseAnimating, CBaseEntity, "Animating models" )
 	DEFINE_SCRIPTFUNC( LookupActivity, "Get the named activity index"  )
 	DEFINE_SCRIPTFUNC( LookupBone, "Get the named bone index"  )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptLookupSequence, "LookupSequence", "Looks up a sequence by sequence name or activity name"  )
+#if defined( L4D2 )
+	pDesc->m_FunctionBindings.Tail().m_desc.m_pszFunction = "LookupSequence";
+#endif
 	DEFINE_SCRIPTFUNC( SetSequence, "Set a sequence by id"  )
 	DEFINE_SCRIPTFUNC( ResetSequence, "Reset a sequence by id. If the id is different than the current sequence, switch to the new sequence"  )
 	DEFINE_SCRIPTFUNC( GetSequence, "Get the current sequence id"  )
@@ -291,12 +345,18 @@ BEGIN_ENT_SCRIPTDESC( CBaseAnimating, CBaseEntity, "Animating models" )
 	DEFINE_SCRIPTFUNC( GetBodygroupName, "Get the bodygroup id's name")
 	DEFINE_SCRIPTFUNC( FindBodygroupByName, "Find a bodygroup id by name")
 	DEFINE_SCRIPTFUNC( GetBodygroupPartName, "Get name by group and part")
+#if !defined( L4D2 )
 	DEFINE_SCRIPTFUNC( StopAnimation, "Stop the current animation (same as SetPlaybackRate 0.0)" )
 	DEFINE_SCRIPTFUNC( SetPlaybackRate, "Set the current playback rate." )
 	DEFINE_SCRIPTFUNC( GetPlaybackRate, "Set the current playback rate." )
+#endif
 	DEFINE_SCRIPTFUNC( GetModelScale, "" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptSetModelScale, "SetModelScale", "(scale, change_duration) Changes a model's scale over time" )
+#if defined( L4D2 )
+	pDesc->m_FunctionBindings.Tail().m_desc.m_pszFunction = "SetModelScale";
+#endif
 	DEFINE_SCRIPTFUNC_NAMED( ScriptSetPoseParameter, "SetPoseParameter", "(id, value) Sets a pose parameter value" )
+#if !defined( L4D2 )
 	DEFINE_SCRIPTFUNC( GetSkin, "Gets the current skin index." )
 	DEFINE_SCRIPTFUNC( SetSkin, "Sets the skin." )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptSetModel, "SetModelSimple", "Set a model for this entity. Matches easier behaviour of the SetModel input, automatically precaches, maintains sequence/cycle if possible." )
@@ -307,6 +367,7 @@ BEGIN_ENT_SCRIPTDESC( CBaseAnimating, CBaseEntity, "Animating models" )
 	DEFINE_SCRIPTFUNC( StudioFrameAdvanceManual, "Advance animation frame to some time in the future with a manual interval" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptDispatchAnimEvents, "DispatchAnimEvents", "Dispatch animation events to a CBaseAnimating" )
 	DEFINE_SCRIPTFUNC_WRAPPED( LookupPoseParameter, "Looks up a pose parameter index by name" );
+#endif
 END_SCRIPTDESC();
 
 CBaseAnimating::CBaseAnimating()
@@ -329,10 +390,15 @@ CBaseAnimating::CBaseAnimating()
 	m_nResetEventsParity = 0;
 	m_boneCacheHandle = 0;
 	m_pStudioHdr = NULL;
+#if !defined( L4D2 )
 	m_fadeMinDist = 0;
 	m_fadeMaxDist = 0;
 	m_flFadeScale = 0.0f;
+#endif
 	m_fBoneCacheFlags = 0;
+#if defined( L4D2 )
+	m_Glow.Init( this ); // Native36270 final attach, not CBaseEntity's constructor.
+#endif
 }
 
 CBaseAnimating::~CBaseAnimating()
@@ -341,6 +407,9 @@ CBaseAnimating::~CBaseAnimating()
 	delete m_pIk;
 	UnlockStudioHdr();
 	delete m_pStudioHdr;
+#if defined( L4D2 )
+	m_Glow.Term(); // Native39900, before the base destructor.
+#endif
 }
 
 void CBaseAnimating::Precache()
@@ -440,6 +509,29 @@ void CBaseAnimating::UseClientSideAnimation()
 // Purpose: 
 // Output : float
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+float CBaseAnimating::GetAnimTimeInterval() const
+{
+	const float animationTime = m_flAnimTime;
+	const float now = gpGlobals->curtime;
+	float interval;
+	if ( animationTime < now )
+		interval = now - animationTime;
+	else
+		interval = animationTime - m_flPrevAnimTime;
+	if ( interval > MAX_ANIMTIME_INTERVAL )
+		interval = MAX_ANIMTIME_INTERVAL;
+	else if ( interval < 0.0f )
+		interval = 0.0f;
+	return interval;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CBaseAnimating::GetAnimTimeInterval( void ) const
 {
 	float flInterval;
@@ -455,11 +547,47 @@ float CBaseAnimating::GetAnimTimeInterval( void ) const
 	}
 	return flInterval;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseAnimating::StudioFrameAdvanceInternal( CStudioHdr *studio, float delta )
+{
+	float cycle = delta + GetCycle();
+	if ( cycle < 0.0f || cycle >= 1.0f )
+	{
+		if ( cycle >= 1.0f )
+			OnAnimationCycleCompleted();
+		if ( m_bSequenceLoops )
+		{
+			const int whole = _mm_cvttss_si32( _mm_set_ss( cycle ) );
+			cycle = cycle - static_cast< float >( whole );
+		}
+		else
+		{
+			cycle = cycle < 0.0f ? 0.0f : 1.0f;
+		}
+		m_bSequenceFinished = true;
+	}
+	else if ( static_cast< double >( cycle ) > GetLastVisibleCycle( studio, GetSequence() ) )
+	{
+		m_bSequenceFinished = true;
+	}
+	SetCycle( cycle );
+	m_flGroundSpeed = static_cast< float >( GetSequenceGroundSpeed( studio, GetSequence() ) );
+	InvalidatePhysicsRecursive( ANIMATION_CHANGED );
+	InvalidateBoneCacheIfOlderThan( 0.0f );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseAnimating::StudioFrameAdvanceInternal( CStudioHdr *pStudioHdr, float flCycleDelta )
 {
 	float flNewCycle = GetCycle() + flCycleDelta;
@@ -496,6 +624,7 @@ void CBaseAnimating::StudioFrameAdvanceInternal( CStudioHdr *pStudioHdr, float f
 
 	InvalidateBoneCacheIfOlderThan( 0 );
 }
+#endif
 
 void CBaseAnimating::InvalidateBoneCacheIfOlderThan( float deltaTime )
 {
@@ -509,6 +638,31 @@ void CBaseAnimating::InvalidateBoneCacheIfOlderThan( float deltaTime )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseAnimating::StudioFrameAdvanceManual( float interval )
+{
+	CStudioHdr *studio = GetModelPtr();
+	if ( !studio )
+		return;
+	UpdateModelScale();
+	m_flAnimTime = gpGlobals->curtime;
+	m_flPrevAnimTime = static_cast< float >( m_flAnimTime ) - interval;
+	const double duration = SequenceDuration( studio, GetSequence() );
+	const float storedDuration = static_cast< float >( duration );
+	const float rate = duration > 0.0 ? 1.0f / storedDuration : 10.0f;
+	const float playback = static_cast< float >( GetEffectivePlaybackRate() );
+	const float cycleRate = playback * rate;
+	CStudioHdr *currentStudio = GetModelPtr();
+	const float delta = cycleRate * interval;
+	StudioFrameAdvanceInternal( currentStudio, delta );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseAnimating::StudioFrameAdvanceManual( float flInterval )
 {
 	CStudioHdr *pStudioHdr = GetModelPtr();
@@ -520,11 +674,48 @@ void CBaseAnimating::StudioFrameAdvanceManual( float flInterval )
 	float flCycleRate = GetSequenceCycleRate( pStudioHdr, GetSequence() ) * m_flPlaybackRate;
 	StudioFrameAdvanceInternal( GetModelPtr(), flInterval * flCycleRate );
 }
+#endif
 
 
 //=========================================================
 // StudioFrameAdvance - advance the animation frame up some interval (default 0.1) into the future
 //=========================================================
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseAnimating::StudioFrameAdvance()
+{
+	CStudioHdr *studio = GetModelPtr();
+	if ( !studio || !studio->SequencesAvailable() )
+		return;
+	UpdateModelScale();
+	if ( m_flPrevAnimTime == 0.0f )
+		m_flPrevAnimTime = m_flAnimTime;
+	float interval = gpGlobals->curtime - static_cast< float >( m_flAnimTime );
+	if ( interval > 0.2f )
+		interval = 0.2f;
+	else if ( interval < 0.0f )
+		interval = 0.0f;
+	if ( static_cast< double >( interval ) <= 0.001 )
+		return;
+	m_flPrevAnimTime = m_flAnimTime;
+	m_flAnimTime = gpGlobals->curtime;
+	const double duration = SequenceDuration( studio, GetSequence() );
+	const float storedDuration = static_cast< float >( duration );
+	const float rate = duration > 0.0 ? 1.0f / storedDuration : 10.0f;
+	const float playback = static_cast< float >( GetEffectivePlaybackRate() );
+	const float cycleRate = playback * rate;
+	const float delta = cycleRate * interval;
+	StudioFrameAdvanceInternal( studio, delta );
+	if ( ai_sequence_debug.GetBool() && ( m_debugOverlays & OVERLAY_NPC_SELECTED_BIT ) )
+		Msg( "%5.2f : %s : %s : %5.3f\n", gpGlobals->curtime, GetClassname(),
+			GetSequenceName( GetSequence() ), GetCycle() );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseAnimating::StudioFrameAdvance()
 {
 	CStudioHdr *pStudioHdr = GetModelPtr();
@@ -565,6 +756,7 @@ void CBaseAnimating::StudioFrameAdvance()
 		Msg("%5.2f : %s : %s : %5.3f\n", gpGlobals->curtime, GetClassname(), GetSequenceName( GetSequence() ), GetCycle() );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -921,7 +1113,11 @@ bool CBaseAnimating::BecomeRagdollOnClient( const Vector &force )
 	{
 		VPhysicsDestroyObject();
 		AddSolidFlags( FSOLID_NOT_SOLID );
+#if defined( L4D2 )
+		m_bClientSideRagdoll = true;
+#else
 		m_nRenderFX = kRenderFxRagdoll;
+#endif
 		
 		// Have to do this dance because m_vecForce is a network vector
 		// and can't be sent to ClampRagdollForce as a Vector *
@@ -956,7 +1152,11 @@ bool CBaseAnimating::BecomeRagdollOnClient( const Vector &force )
 
 bool CBaseAnimating::IsRagdoll()
 {
+#if defined( L4D2 )
+	return m_bClientSideRagdoll;
+#else
 	return ( m_nRenderFX == kRenderFxRagdoll ) ? true : false;
+#endif
 }
 
 bool CBaseAnimating::CanBecomeRagdoll( void ) 
@@ -976,6 +1176,39 @@ bool CBaseAnimating::CanBecomeRagdoll( void )
 
 //=========================================================
 //=========================================================
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseAnimating::ResetSequenceInfo()
+{
+	if ( ai_sequence_debug.GetBool() && ( m_debugOverlays & OVERLAY_NPC_SELECTED_BIT ) )
+		DevMsg( "ResetSequenceInfo" );
+	if ( GetSequence() == -1 )
+		SetSequence( 0 );
+	CStudioHdr *studio = GetModelPtr();
+	if ( studio )
+	{
+		m_flGroundSpeed = static_cast< float >( GetSequenceGroundSpeed( studio, GetSequence() ) );
+		m_bSequenceLoops = ( ::GetSequenceFlags( studio, GetSequence() ) & STUDIO_LOOPING ) != 0;
+	}
+	else
+	{
+		m_flGroundSpeed = 0.0f;
+		m_bSequenceLoops = false;
+	}
+	m_flPlaybackRate = 1.0f;
+	m_bSequenceFinished = false;
+	m_flLastEventCheck = 0.0f;
+	m_nNewSequenceParity = ( static_cast< unsigned int >( m_nNewSequenceParity.Get() ) + 1u ) & EF_PARITY_MASK;
+	m_nResetEventsParity = ( static_cast< unsigned int >( m_nResetEventsParity.Get() ) + 1u ) & EF_PARITY_MASK;
+	if ( studio )
+		SetEventIndexForSequence( studio->pSeqdesc( GetSequence() ) );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseAnimating::ResetSequenceInfo ( )
 {
 	if (GetSequence() == -1)
@@ -1007,6 +1240,7 @@ void CBaseAnimating::ResetSequenceInfo ( )
 		SetEventIndexForSequence( pStudioHdr->pSeqdesc( GetSequence() ) );
 	}
 }
+#endif
 
 //=========================================================
 //=========================================================
@@ -1026,7 +1260,17 @@ bool CBaseAnimating::IsValidSequence( int iSequence )
 void CBaseAnimating::SetSequence( int nSequence )
 {
 	Assert( nSequence == 0 || IsDynamicModelLoading() || ( GetModelPtr( ) && ( nSequence < GetModelPtr( )->GetNumSeq() ) && ( GetModelPtr( )->GetNumSeq() < (1 << ANIMATION_SEQUENCE_BITS) ) ) );
+	#if defined( L4D2 )
+	const int oldSequence = m_nSequence.Get();
+	#endif
 	m_nSequence = nSequence;
+	#if defined( L4D2 )
+	if ( oldSequence != m_nSequence.Get() )
+	{
+		InvalidatePhysicsRecursive( SEQUENCE_CHANGED );
+		OnSequenceChanged( oldSequence ); // S36B0B AFTER invalidation.
+	}
+	#endif
 }
 
 //=========================================================
@@ -1042,6 +1286,32 @@ float CBaseAnimating::ScriptGetSequenceDuration( int iSequence )
 
 //=========================================================
 //=========================================================
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double CBaseAnimating::SequenceDuration( CStudioHdr *studio, int sequence )
+{
+	if ( !studio )
+	{
+		const char *name = GetClassname();
+		DevWarning( 2, "CBaseAnimating::SequenceDuration( %d ) NULL pstudiohdr on %s!\n",
+			sequence, name ? name : "" );
+		return static_cast< double >( 0.1f );
+	}
+	if ( !studio->SequencesAvailable() )
+		return static_cast< double >( 0.1f );
+	if ( sequence >= studio->GetNumSeq() || sequence < 0 )
+	{
+		DevWarning( 2, "CBaseAnimating::SequenceDuration( %d ) out of range\n", sequence );
+		return static_cast< double >( 0.1f );
+	}
+	return Studio_Duration( studio, sequence, GetPoseParameterArray() );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CBaseAnimating::SequenceDuration( CStudioHdr *pStudioHdr, int iSequence )
 {
 	if ( !pStudioHdr )
@@ -1061,7 +1331,23 @@ float CBaseAnimating::SequenceDuration( CStudioHdr *pStudioHdr, int iSequence )
 
 	return Studio_Duration( pStudioHdr, iSequence, GetPoseParameterArray() );
 }
+#endif
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+float CBaseAnimating::GetSequenceCycleRate( CStudioHdr *studio, int sequence )
+{
+	const double duration = SequenceDuration( studio, sequence );
+	if ( !( duration > 0.0 ) )
+		return 10.0f;
+	return static_cast< float >( 1.0 / duration );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CBaseAnimating::GetSequenceCycleRate( CStudioHdr *pStudioHdr, int iSequence )
 {
 	float t = SequenceDuration( pStudioHdr, iSequence );
@@ -1072,8 +1358,34 @@ float CBaseAnimating::GetSequenceCycleRate( CStudioHdr *pStudioHdr, int iSequenc
 	}
 	return t;
 }
+#endif
 
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double CBaseAnimating::GetLastVisibleCycle( CStudioHdr *studio, int sequence )
+{
+	if ( !studio )
+	{
+		const char *name = GetClassname();
+		DevWarning( 2, "CBaseAnimating::LastVisibleCycle( %d ) NULL pstudiohdr on %s!\n",
+			sequence, name ? name : "" );
+		return 1.0;
+	}
+	if ( ::GetSequenceFlags( studio, sequence ) & STUDIO_LOOPING )
+		return 1.0;
+	const float playback = static_cast< float >( GetEffectivePlaybackRate() );
+	const mstudioseqdesc_t &description = studio->pSeqdesc( sequence );
+	const float rate = GetSequenceCycleRate( sequence );
+	return 1.0 - ( static_cast< double >( rate ) *
+		static_cast< double >( description.fadeouttime ) ) * static_cast< double >( playback );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CBaseAnimating::GetLastVisibleCycle( CStudioHdr *pStudioHdr, int iSequence )
 {
 	if ( !pStudioHdr )
@@ -1091,8 +1403,35 @@ float CBaseAnimating::GetLastVisibleCycle( CStudioHdr *pStudioHdr, int iSequence
 		return 1.0;
 	}
 }
+#endif
 
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double CBaseAnimating::GetSequenceGroundSpeed( CStudioHdr *studio, int sequence )
+{
+	const double duration = SequenceDuration( studio, sequence );
+	const float storedDuration = static_cast< float >( duration );
+	if ( !( duration > 0.0 ) )
+		return 0.0;
+	Vector motion;
+	::GetSequenceLinearMotion( studio, sequence, GetPoseParameterArray(), &motion );
+	const float x2 = motion.x * motion.x;
+	const float z2 = motion.z * motion.z;
+	const float xz = x2 + z2;
+	const float y2 = motion.y * motion.y;
+	const float distance = sqrtf( xz + y2 );
+	const float velocity = distance / storedDuration;
+	const float scale = GetModelScale();
+	const double playback = GetEffectivePlaybackRate();
+	return playback * ( static_cast< double >( scale ) * static_cast< double >( velocity ) );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CBaseAnimating::GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence )
 {
 	float t = SequenceDuration( pStudioHdr, iSequence );
@@ -1106,6 +1445,7 @@ float CBaseAnimating::GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSeque
 		return 0;
 	}
 }
+#endif
 
 float CBaseAnimating::GetIdealSpeed( ) const
 {
@@ -1150,6 +1490,75 @@ bool CBaseAnimating::HasAnimEvent( int nSequence, int nEvent )
 //=========================================================
 // DispatchAnimEvents
 //=========================================================
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseAnimating::DispatchAnimEvents( CBaseAnimating *eventHandler )
+{
+	// Native34D63..34DA4 computes the first gate wholly in float32, including
+	// unordered !=0. Do this BEFORE any lazy studio-header lookup.
+	const float gatePlayback = static_cast< float >( GetEffectivePlaybackRate() );
+	if ( gatePlayback == 0.0f )
+		return;
+
+	CStudioHdr *studio = GetModelPtr();
+	if ( !studio || !studio->SequencesAvailable() )
+		return;
+	if ( studio->pSeqdesc( GetSequence() ).numevents == 0 )
+		return;
+
+	// Native34E0D..34E33: sequence-rate f32 spill; effective playback remains
+	// wide through multiplication, THEN the complete cycle rate spills to f32.
+	const float sequenceRate = GetSequenceCycleRate( GetSequence() );
+	const float cycleRate = static_cast< float >(
+		GetEffectivePlaybackRate() * static_cast< double >( sequenceRate ) );
+	const float start = m_flLastEventCheck;
+	float end = GetCycle();
+	if ( !m_bSequenceLoops && m_bSequenceFinished )
+		end = 1.01f;
+	m_flLastEventCheck = end;
+
+	animevent_t event;
+	int index = 0;
+	while ( ( index = GetAnimationEvent( studio, GetSequence(), &event, start, end, index ) ) != 0 )
+	{
+		event.pSource = this;
+		if ( cycleRate > 0.0f )
+		{
+			float eventCycle = event.cycle;
+			const float currentCycle = GetCycle();
+			if ( eventCycle > currentCycle )
+				eventCycle = eventCycle - 1.0f;
+			const float interval = GetAnimTimeInterval();
+			const double offset = ( static_cast< double >( eventCycle ) -
+				static_cast< double >( currentCycle ) ) / static_cast< double >( cycleRate );
+			// Native34EE1..34EF2 adds animtime to offset, then the interval;
+			// only the final eventtime store rounds the complete result to f32.
+			event.eventtime = static_cast< float >( static_cast< double >( interval ) +
+				( offset + static_cast< double >( m_flAnimTime ) ) );
+		}
+
+		// Main decision: native census proves all pinned handlers non-NULL;
+		// the existing SDK-only script binding can pass NULL. Retain ONLY this
+		// guard: cursor, event-time calculations and model checks still run.
+		if ( eventHandler )
+			eventHandler->HandleAnimEvent( &event );
+
+		if ( GetModelPtr() != studio )
+		{
+			const int sequence = GetSequence();
+			const char *name = GetDebugName();
+			Warning( "%s has changed its model while processing AnimEvents on sequence %d. Aborting dispatch.\n",
+				name, sequence );
+			break;
+		}
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseAnimating::DispatchAnimEvents ( CBaseAnimating *eventHandler )
 {
 	// don't fire events if the framerate is 0
@@ -1241,6 +1650,7 @@ void CBaseAnimating::DispatchAnimEvents ( CBaseAnimating *eventHandler )
 		}
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1626,7 +2036,13 @@ void CBaseAnimating::InitStepHeightAdjust( void )
 // Purpose: Interpolates client IK floor position and drops entity down so that the feet will reach
 //-----------------------------------------------------------------------------
 
-ConVar npc_height_adjust( "npc_height_adjust", "1", FCVAR_ARCHIVE, "Enable test mode for ik height adjustment" );
+ConVar npc_height_adjust( "npc_height_adjust", "1", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Enable test mode for ik height adjustment" );
 
 void CBaseAnimating::UpdateStepOrigin()
 {
@@ -1858,8 +2274,20 @@ void CBaseAnimating::BuildMatricesWithBoneMerge(
 	}
 }
 
-ConVar sv_pvsskipanimation( "sv_pvsskipanimation", "1", FCVAR_ARCHIVE, "Skips SetupBones when npc's are outside the PVS" );
-ConVar ai_setupbones_debug( "ai_setupbones_debug", "0", 0, "Shows that bones that are setup every think" );
+ConVar sv_pvsskipanimation( "sv_pvsskipanimation", "1", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Skips SetupBones when npc's are outside the PVS" );
+ConVar ai_setupbones_debug( "ai_setupbones_debug", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Shows that bones that are setup every think" );
 
 
 
@@ -2554,6 +2982,49 @@ float CBaseAnimating::GetExitVelocity( int iSequence )
 // Purpose:
 // Output :
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+bool CBaseAnimating::GetIntervalMovement( float interval, bool &finished, Vector &position, QAngle &angles )
+{
+	CStudioHdr *studio = GetModelPtr();
+	if ( !studio || !studio->SequencesAvailable() )
+		return false;
+	const float rate = GetSequenceCycleRate( GetSequence() );
+	const float cycle = GetCycle();
+	const float playback = static_cast< float >( GetEffectivePlaybackRate() );
+	const float timedRate = rate * interval;
+	const float advance = playback * timedRate;
+	float nextCycle = advance + cycle;
+	if ( !m_bSequenceLoops && nextCycle > 1.0f )
+	{
+		nextCycle = 1.0f;
+		finished = true;
+	}
+	else
+	{
+		finished = false;
+	}
+	Vector motion;
+	QAngle rotation;
+	if ( Studio_SeqMovement( studio, GetSequence(), GetCycle(), nextCycle,
+		GetPoseParameterArray(), motion, rotation ) )
+	{
+		VectorYawRotate( motion, GetLocalAngles().y, motion );
+		position = GetLocalOrigin() + motion;
+		angles.Init();
+		angles.y = GetLocalAngles().y + rotation.y;
+		return true;
+	}
+	position = GetLocalOrigin();
+	angles = GetLocalAngles();
+	return false;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool CBaseAnimating::GetIntervalMovement( float flIntervalUsed, bool &bMoveSeqFinished, Vector &newPosition, QAngle &newAngles )
 {
 	CStudioHdr *pstudiohdr = GetModelPtr( );
@@ -2593,6 +3064,7 @@ bool CBaseAnimating::GetIntervalMovement( float flIntervalUsed, bool &bMoveSeqFi
 		return false;
 	}
 }
+#endif
 
 
 
@@ -3459,6 +3931,33 @@ void CBaseAnimating::DoMuzzleFlash()
 // Purpose: 
 // Input  : scale - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseAnimating::SetModelScale( float scale, float change_duration )
+{
+	// S37310: UpdateModelScale is driven by animation advancement, not a think.
+	if ( change_duration > 0.0f )
+	{
+		ModelScale *state = static_cast< ModelScale * >( CreateDataObject( MODELSCALE ) );
+		state->m_flModelScaleStart = m_flModelScale;
+		state->m_flModelScaleGoal = scale;
+		state->m_flModelScaleStartTime = gpGlobals->curtime;
+		state->m_flModelScaleFinishTime = state->m_flModelScaleStartTime + change_duration;
+	}
+	else
+	{
+		if ( m_flModelScale.Get() != scale )
+			m_flModelScale.GetForModify() = scale;
+		if ( HasDataObjectType( MODELSCALE ) )
+			DestroyDataObject( MODELSCALE );
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseAnimating::SetModelScale( float scale, float change_duration /*= 0.0f*/  )
 {
 	if ( change_duration > 0.0f )
@@ -3481,7 +3980,42 @@ void CBaseAnimating::SetModelScale( float scale, float change_duration /*= 0.0f*
 		}
 	}
 }
+#endif
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseAnimating::UpdateModelScale()
+{
+	ModelScale *scale = static_cast< ModelScale * >( GetDataObject( MODELSCALE ) );
+	if ( !scale )
+		return;
+	const float now = gpGlobals->curtime;
+	const float duration = scale->m_flModelScaleFinishTime - scale->m_flModelScaleStartTime;
+	const float elapsed = now - scale->m_flModelScaleStartTime;
+	float fraction = elapsed / duration;
+	if ( fraction > 1.0f )
+		fraction = 1.0f;
+	else if ( fraction < 0.0f )
+		fraction = 0.0f;
+	// Native JB at37417 takes unordered into interpolation, like this >= arm.
+	if ( now >= scale->m_flModelScaleFinishTime )
+	{
+		m_flModelScale = scale->m_flModelScaleGoal;
+		DestroyDataObject( MODELSCALE );
+	}
+	else
+	{
+		const float difference = scale->m_flModelScaleGoal - scale->m_flModelScaleStart;
+		const float advance = difference * fraction;
+		m_flModelScale = advance + scale->m_flModelScaleStart;
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseAnimating::UpdateModelScale()
 {
 	ModelScale *mvs = ( ModelScale * )GetDataObject( MODELSCALE );
@@ -3513,14 +4047,48 @@ void CBaseAnimating::UpdateModelScale()
 		SetContextThink( &CBaseAnimating::UpdateModelScale, gpGlobals->curtime, "UpdateModelScaleThink" );
 	}
 }
+#endif
 
+#if !defined( L4D2 )
 void CBaseAnimating::RefreshCollisionBounds( void )
 {
 	CollisionProp()->RefreshScaledCollisionBounds();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+// S034180. Even a NULL factory result still sets FL_ONFIRE/effect and fires output.
+void CBaseAnimating::Ignite( float flFlameLifetime, bool bNPCOnly, float flSize, bool bCalledByLevelDesigner )
+{
+	if ( IsOnFire() )
+		return;
+	const bool isNPC = IsNPC();
+	if ( bNPCOnly && !isNPC )
+		return;
+	if ( isNPC && !bCalledByLevelDesigner )
+	{
+		CAI_BaseNPC *npc = MyNPCPointer();
+		if ( npc && !npc->AllowedToIgnite() )
+			return;
+	}
+	CEntityFlame *flame = CEntityFlame::Create( this, flFlameLifetime, flSize, true );
+	AddFlag( FL_ONFIRE );
+	SetEffectEntity( flame );
+	m_OnIgnite.FireOutput( this, this, 0.0f );
+}
+
+// S0342B0 -> S0B35E0. This is a cheap-effect BOOL, not a hitbox-fire count/scale.
+void CBaseAnimating::IgniteCheapEffect( bool cheap )
+{
+	if ( !IsOnFire() )
+		Ignite( 30.0f, false, 0.0f, true );
+	CEntityFlame *flame = dynamic_cast< CEntityFlame * >( GetEffectEntity() );
+	if ( flame )
+		flame->SetCheapEffect( cheap );
+}
+#else
 void CBaseAnimating::Ignite( float flFlameLifetime, bool bNPCOnly, float flSize, bool bCalledByLevelDesigner )
 {
 	if( IsOnFire() )
@@ -3558,6 +4126,7 @@ void CBaseAnimating::Ignite( float flFlameLifetime, bool bNPCOnly, float flSize,
 
 	m_OnIgnite.FireOutput( this, this );
 }
+#endif
 
 void CBaseAnimating::IgniteLifetime( float flFlameLifetime )
 {
@@ -3713,11 +4282,13 @@ void CBaseAnimating::InputBecomeRagdoll( inputdata_t &inputdata )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CBaseAnimating::SetFadeDistance( float minFadeDist, float maxFadeDist )
 {
 	m_fadeMinDist = minFadeDist;
 	m_fadeMaxDist = maxFadeDist;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Async prefetches all anim data used by a particular sequence.  Returns true if all of the required data is memory resident
@@ -3766,3 +4337,55 @@ CStudioHdr *CBaseAnimating::OnNewModel()
 
 	return hdr;
 }
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// S02E600: F32 (1-frozen)/ordered clamps, then genuine unspilled product.
+double CBaseAnimating::GetEffectivePlaybackRate() const
+{
+	const float unfrozen = 1.0f - m_flFrozen;
+	float factor = unfrozen;
+	if ( unfrozen > 1.0f )
+		factor = 1.0f;
+	else if ( unfrozen < 0.0f )
+		factor = 0.0f;
+	return static_cast< double >( static_cast< float >( m_flPlaybackRate ) ) * static_cast< double >( factor );
+}
+
+bool CBaseAnimating::IsFrozen() const
+{
+	return m_flFrozen >= 1.0f; // S365B0; unordered false.
+}
+
+void CBaseAnimating::Unfreeze()
+{
+	// Whole S37600: no fabricated Freeze ABI or constructor/Spawn reset.
+	if ( m_flFrozenThawRate < 0.0f && m_flFrozen != 0.0f )
+		m_flFrozen = 0.0f;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+float CBaseAnimating::GetSequenceCycleRate( int sequence )
+{
+	const double duration = SequenceDuration( GetModelPtr(), sequence );
+	const float storedDuration = static_cast< float >( duration );
+	if ( !( duration > 0.0 ) )
+		return 10.0f;
+	return 1.0f / storedDuration;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+void CBaseAnimating::OnAnimationCycleCompleted()
+{
+}
+#endif

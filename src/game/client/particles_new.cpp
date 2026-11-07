@@ -16,6 +16,10 @@
 #include "model_types.h"
 #include "vprof.h"
 #include "input.h"
+#if defined( L4D2 )
+#include "l4d2/effects/terror_materials.h"
+#include "materialsystem/imaterial.h"
+#endif
 
 extern ConVar cl_particleeffect_aabb_buffer;
 
@@ -58,6 +62,10 @@ void CNewParticleEffect::Construct()
 
 	m_nToolParticleEffectId = TOOLPARTICLESYSTEMID_INVALID;
 	m_RefCount = 0;
+#if defined( L4D2 )
+	m_nOnlyDrawForLocalUser = -1;
+	m_bTerrorFromParticleProperty = true;
+#endif
 	ParticleMgr()->AddEffect( this );
 	m_LastMax = Vector( -1.0e6, -1.0e6, -1.0e6 );
 	m_LastMin = Vector( 1.0e6, 1.0e6, 1.0e6 );
@@ -348,10 +356,20 @@ void CNewParticleEffect::SetParticleCullRadius( float radius )
 {
 }
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 bool CNewParticleEffect::RecalculateBoundingBox()
 {
 	BloatBoundsUsingControlPoint();
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	UpdateChildBoundsValidity();
+#endif
+#if defined( L4D2 )
+	if ( !m_bBoundsValid )
+#else
 	if ( m_MaxBounds.x < m_MinBounds.x )
+#endif
 	{
 		m_MaxBounds = m_MinBounds = GetSortOrigin();
 		return false;
@@ -363,6 +381,14 @@ bool CNewParticleEffect::RecalculateBoundingBox()
 
 void CNewParticleEffect::GetRenderBounds( Vector& mins, Vector& maxs )
 {
+#if defined( L4D2 )
+	if ( !m_bBoundsValid )
+	{
+		mins = vec3_origin;
+		maxs = mins;
+		return;
+	}
+#endif
 	VectorSubtract( m_MinBounds, GetRenderOrigin(), mins );
 	VectorSubtract( m_MaxBounds, GetRenderOrigin(), maxs );
 }
@@ -372,6 +398,29 @@ void CNewParticleEffect::DetectChanges()
 	// if we have no render handle, return
 	if ( m_hRenderHandle == INVALID_CLIENT_RENDER_HANDLE )
 		return;
+#if defined( L4D2 )
+	ClientLeafSystem_EnableRendering( m_hRenderHandle, m_bBoundsValid );
+	if ( m_bBoundsValid )
+	{
+		// The leaf system also caches the culling box. Unlike the SDK's
+		// placement buffer, that box must track every native bounds change.
+		if ( m_LastMin.x != m_MinBounds.x ||
+			 m_LastMin.y != m_MinBounds.y ||
+			 m_LastMin.z != m_MinBounds.z ||
+			 m_LastMax.x != m_MaxBounds.x ||
+			 m_LastMax.y != m_MaxBounds.y ||
+			 m_LastMax.z != m_MaxBounds.z )
+		{
+			ClientLeafSystem()->RenderableChanged( m_hRenderHandle );
+			m_LastMin = m_MinBounds;
+			m_LastMax = m_MaxBounds;
+		}
+	}
+	else
+	{
+		m_LastMin.Init( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+	}
+#else
 
 	float flBuffer = cl_particleeffect_aabb_buffer.GetFloat();
 	float flExtraBuffer = flBuffer * 1.3f;
@@ -402,7 +451,11 @@ void CNewParticleEffect::DetectChanges()
 		m_LastMin = m_MinBounds - Vector( flBuffer, flBuffer, flBuffer );
 		m_LastMax = m_MaxBounds + Vector( flBuffer, flBuffer, flBuffer );
 	}
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 extern ConVar r_DrawParticles;
 
@@ -506,6 +559,28 @@ void CNewParticleEffect::DebugDrawBbox ( bool bCulled )
 //-----------------------------------------------------------------------------
 // Rendering
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+// Prepare before Render or AddToRenderCache can borrow a native mesh builder.
+// An empty root can still contain active children with their own materials.
+static void PrepareTerrorParticleMaterials( CParticleCollection *pParticles )
+{
+	if ( pParticles->m_nActiveParticles && pParticles->m_pDef )
+	{
+		IMaterial *pMaterial = pParticles->m_pDef->GetMaterial();
+		if ( pMaterial && !Q_stricmp( pMaterial->GetShaderName(), "SpriteCard" ) &&
+			!Terror_PrepareParticleMaterial( pMaterial, NULL ) )
+		{
+			Warning( "Unable to prepare particle material %s for %s.\n",
+				pParticles->m_pDef->MaterialName(), pParticles->m_pDef->GetName() );
+		}
+	}
+	for ( CParticleCollection *pChild = pParticles->m_Children.m_pHead; pChild; pChild = pChild->m_pNext )
+	{
+		PrepareTerrorParticleMaterials( pChild );
+	}
+}
+#endif
+
 int CNewParticleEffect::DrawModel( int flags )
 {
 	VPROF_BUDGET( "CNewParticleEffect::DrawModel", VPROF_BUDGETGROUP_PARTICLE_RENDERING );
@@ -537,6 +612,10 @@ int CNewParticleEffect::DrawModel( int flags )
 
 		return 0;
 	}
+
+#if defined( L4D2 )
+	PrepareTerrorParticleMaterials( this );
+#endif
 
 	if ( flags & STUDIO_TRANSPARENCY )
 	{
@@ -602,8 +681,125 @@ int CNewParticleEffect::DrawModel( int flags )
 
 static void DumpParticleStats_f( void )
 {
+#if !defined( L4D2 )
 	g_pParticleSystemMgr->DumpProfileInformation();
+#endif
 }
 
-static ConCommand cl_dump_particle_stats( "cl_dump_particle_stats", DumpParticleStats_f, "dump particle profiling info to particle_profile.csv") ;
+static ConCommand cl_dump_particle_stats( "cl_dump_particle_stats", DumpParticleStats_f, "dump particle profiling info to particle_profile.csv"
+#if defined( L4D2 )
+	, 0x00000008
+#endif
+) ;
 
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING client/particles_new.cpp. Game-owned private state:
+// native complete1252 (renderable adjusted-this+1244), ctor15C0D0=-1.
+// Actual15BAB0 stores, then updates native leaf draw-user metadata only when
+// registered. Target has user0; do not emulate TLS/multislot engine interfaces.
+#if defined( L4D2 )
+void CNewParticleEffect::SetDrawOnlyForLocalUser( int user )
+{
+	if ( user == m_nOnlyDrawForLocalUser ) return;
+	m_nOnlyDrawForLocalUser = user;
+	if ( m_hRenderHandle != INVALID_CLIENT_RENDER_HANDLE )
+		ClientLeafSystem_SetDrawForLocalUser( m_hRenderHandle, ShouldDrawForLocalUser( 0 ) );
+}
+
+bool CNewParticleEffect::ShouldDrawForLocalUser( int user ) const
+{
+	// Exact native15B2D0; actual draw admission passes0, named-stop may
+	// request another selector. This is state-backed, not constant visibility.
+	return m_nOnlyDrawForLocalUser == -1 || m_nOnlyDrawForLocalUser == user;
+}
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING client/particles_new.cpp. Native1015C7D0 game-DLL
+// factory, actual real PCF metadata and public particle-collection backends.
+// Include particlemgr.h; do not extend prebuilt particle-library definitions.
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+static ConVar cl_aggregate_particles( "cl_aggregate_particles", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ ); // Actual10503FD0 raw0 ->2.
+extern "C" float L4D2_ParticleAggregationRadiusSquared( float radius );
+extern "C" void L4D2_StoreParticleAggregationCenter( Vector *destination, const Vector *origin );
+
+CNewParticleEffect *CNewParticleEffect::CreateForLocalUser( C_BaseEntity *owner,
+	CParticleSystemDefinition *definition, const Vector &origin, int referenceCount, int onlyDrawForLocalUser )
+{
+	CNewParticleEffect *effect = NULL;
+	bool aggregate = false;
+	const TerrorParticleDefinitionMetadata_t *data = NULL;
+	if ( !owner )
+	{
+		data = &ParticleMgr()->GetTerrorParticleDefinitionMetadata( definition->GetName() );
+		// Native COMISS radius/0+JBE rejects zero, negative AND unordered.
+		aggregate = data->m_flAggregationRadius > 0.0f && cl_aggregate_particles.GetBool();
+	}
+	if ( aggregate )
+	{
+		CParticleSystemDefinition *current = definition;
+		do
+		{
+			float closest = L4D2_ParticleAggregationRadiusSquared( data->m_flAggregationRadius );
+			for ( CParticleCollection *collection = current->FirstCollection(); collection;
+				collection = collection->GetNextCollectionUsingSameDef() )
+			{
+				if ( collection->m_pParent ) continue;
+				// Native root collections are the real CNewParticleEffect base
+				// subobject; C++ performs the correct target pointer adjustment.
+				CNewParticleEffect *candidate = static_cast< CNewParticleEffect * >( collection );
+				if ( candidate->m_bTerrorFromParticleProperty ) continue;
+				const float y = origin.y - candidate->m_vTerrorAggregationCenter.y;
+				const float x = origin.x - candidate->m_vTerrorAggregationCenter.x;
+				const float z = origin.z - candidate->m_vTerrorAggregationCenter.z;
+				const float distanceSquared = ( y * y + x * x ) + z * z;
+				if ( !( closest > distanceSquared ) ) continue;
+				const int capacity = static_cast< int >( static_cast< unsigned int >( collection->m_nMaxAllowedParticles ) -
+					static_cast< unsigned int >( collection->m_nActiveParticles ) );
+				if ( capacity <= data->m_nMinimumFreeToAggregate ) continue;
+				if ( candidate->m_nOnlyDrawForLocalUser != onlyDrawForLocalUser ) continue;
+				closest = distanceSquared;
+				effect = candidate;
+			}
+			current = ParticleMgr()->GetTerrorParticleFallbackDefinition( current );
+			if ( current ) data = &ParticleMgr()->GetTerrorParticleDefinitionMetadata( current->GetName() );
+			// Native resets closest for EACH definition, but does NOT clear
+			// effect: a later fallback may replace a nearer earlier candidate.
+		}
+		while ( current );
+	}
+	if ( effect )
+	{
+		// Main explicitly authorizes real noarg target Restart at BOTH sites.
+		// Native bool-only world flags are the prebuilt-library gap in ONE packet.
+		effect->CParticleCollection::Restart();
+	}
+	else
+	{
+		effect = new CNewParticleEffect( owner, definition );
+		effect->SetDrawOnlyForLocalUser( onlyDrawForLocalUser );
+		effect->SetDynamicallyAllocated( true );
+	}
+	if ( aggregate ) L4D2_StoreParticleAggregationCenter( &effect->m_vTerrorAggregationCenter, &origin );
+	// Actual native945bit2 and940 state writes; do not reinterpret target
+	// m_bShouldPerformCullCheck or substitute a shared fake-property flag.
+	effect->m_bTerrorFromParticleProperty = false;
+	effect->m_RefCount = referenceCount;
+	return effect;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif

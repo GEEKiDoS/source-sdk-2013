@@ -14,7 +14,13 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar soundscape_debug( "soundscape_debug", "0", FCVAR_CHEAT, "When on, draws lines to all env_soundscape entities. Green lines show the active soundscape, red lines show soundscapes that aren't in range, and white lines show soundscapes that are in range, but not the active soundscape." );
+ConVar soundscape_debug( "soundscape_debug", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "When on, draws lines to all env_soundscape entities. Green lines show the active soundscape, red lines show soundscapes that aren't in range, and white lines show soundscapes that are in range, but not the active soundscape." );
 
 // ----------------------------------------------------------------------------- //
 // CEnvSoundscapeProxy stuff.
@@ -186,14 +192,33 @@ bool CEnvSoundscape::KeyValue( const char *szKeyName, const char *szValue )
 // returns true if the given sound entity is in range 
 // and can see the given player entity (pTarget)
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+
+#if defined( L4D2 )
+static float SoundscapeDistance( const Vector &listener, const Vector &soundscape )
+{
+	const float x = listener.x - soundscape.x;
+	const float y = listener.y - soundscape.y;
+	const float z = listener.z - soundscape.z;
+	return sqrtf( ( y * y + z * z ) + x * x );
+}
+#endif
+
 bool CEnvSoundscape::InRangeOfPlayer( CBasePlayer *pTarget ) 
 {
 	Vector vecSpot1 = EarPosition();
 	Vector vecSpot2 = pTarget->EarPosition();
 
 	// calc range from sound entity to player
+#if defined( L4D2 )
+	float range = SoundscapeDistance( vecSpot2, vecSpot1 );
+#else
 	Vector vecRange = vecSpot2 - vecSpot1;
 	float range = vecRange.Length();
+#endif
 	if ( m_flRadius > range || m_flRadius == -1 )
 	{
 		trace_t tr;
@@ -257,7 +282,11 @@ void CEnvSoundscape::UpdateForPlayer( ss_update_t &update )
 
 	// calc range from sound entity to player
 	Vector target = EarPosition();
+#if defined( L4D2 )
+	float range = SoundscapeDistance( update.playerPosition, target );
+#else
 	float range = (update.playerPosition - target).Length();
+#endif
 	
 	if ( update.pCurrentSoundscape == this )
 	{
@@ -345,6 +374,10 @@ void CEnvSoundscape::UpdateForPlayer( ss_update_t &update )
 		NDebugOverlay::EntityTextAtPosition( GetAbsOrigin(), 0, STRING(m_soundscapeName), NDEBUG_PERSIST_TILL_NEXT_SERVER );
 	}
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //
 // env_soundscape - spawn a sound entity that will set player soundscape

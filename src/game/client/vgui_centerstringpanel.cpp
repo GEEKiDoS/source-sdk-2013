@@ -24,7 +24,11 @@
 #ifdef TF_CLIENT_DLL
 static ConVar		scr_centertime( "scr_centertime", "5" );
 #else
-static ConVar		scr_centertime( "scr_centertime", "2" );
+static ConVar		scr_centertime( "scr_centertime", "2"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 #endif
 
 //-----------------------------------------------------------------------------

@@ -33,6 +33,9 @@ public:
 	static void DecrementSuppressionCount( CBaseEntity *pTarget );
 
 	void Spawn();
+#if defined( L4D2 )
+	virtual void Precache() OVERRIDE;
+#endif
 
 private:
 	void	AttachToEntity( CBaseEntity *pTarget );

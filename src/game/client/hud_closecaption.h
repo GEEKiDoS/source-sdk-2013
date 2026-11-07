@@ -99,6 +99,9 @@ public:
 	virtual void	Paint();
 
 	void MsgFunc_CloseCaption(bf_read &msg);
+#ifdef L4D2
+	void MsgFunc_CloseCaptionDirect( bf_read &msg );
+#endif
 
 	// Clear all CC data
 	void			Reset( void );
@@ -110,7 +113,11 @@ public:
 	void			ProcessSentenceCaptionStream( char const *tokenstream );
 	void			PlayRandomCaption();
 
+#if defined( L4D2 )
+	void				InitCaptionDictionary( char const *language );
+#else
 	void				InitCaptionDictionary( char const *dbfile );
+#endif
 	void				OnFinishAsyncLoad( int nFileIndex, int nBlockNum, AsyncCaptionData_t *pData );
 
 	void			Flush();
@@ -152,12 +159,22 @@ public:
 
 private:
 
+#if defined( L4D2 )
+	void AddCaptionDictionary( const char *dbfile );
+#endif
 	void ClearAsyncWork();
 	void ProcessAsyncWork();
 	bool AddAsyncWork( char const *tokenstream, bool bIsStream, float duration, bool fromplayer, bool direct = false );
+#ifdef L4D2
+	bool AddAsyncWork( unsigned int hash, float duration, bool fromplayer, bool direct );
+#endif
 
 	void _ProcessSentenceCaptionStream( int wordCount, char const *tokenstream, const wchar_t *caption_full );
+#ifdef L4D2
+	void _ProcessCaption( const wchar_t *caption, unsigned int hash, float duration, bool fromplayer, bool direct = false );
+#else
 	void _ProcessCaption( const wchar_t *caption, char const *tokenname, float duration, bool fromplayer, bool direct = false );
+#endif
 
 	CUtlLinkedList< CAsyncCaption *, unsigned short >	m_AsyncWork;
 
@@ -206,7 +223,9 @@ private:
 	CPanelAnimationVar( float, m_flItemFadeInTime, "ItemFadeInTime", "0.15" );
 	CPanelAnimationVar( float, m_flItemFadeOutTime, "ItemFadeOutTime", "0.3" );
 	CPanelAnimationVar( int, m_nTopOffset, "topoffset", "40" );
+#if !defined( L4D2 )
 	CPanelAnimationVar( int, m_nAspectRatioOffset, "aspectratiooffset", "36" );
+#endif
 
 	CUtlVector< AsyncCaption_t > m_AsyncCaptions;
 	bool		m_bLocked;

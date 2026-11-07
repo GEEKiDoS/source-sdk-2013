@@ -50,8 +50,12 @@ public:
 	void					PerformThinkFunctions();
 
 	// Call this to destroy a thinkable object - deletes the object post think.
-	void					AddToDeleteList( ClientEntityHandle_t hEnt );	
+#if !defined( L4D2 )
+	void					AddToDeleteList( ClientEntityHandle_t hEnt );
+#endif	
+#if !defined( L4D2 )
 	void					RemoveFromDeleteList( ClientEntityHandle_t hEnt );
+#endif
 
 // IClientSystem implementation.
 public:
@@ -92,7 +96,9 @@ private:
 	void			RemoveThinkable( ClientThinkHandle_t hThink );
 	void			PerformThinkFunction( ThinkEntry_t *pEntry, float curtime );
 	ThinkEntry_t*	GetThinkEntry( ClientThinkHandle_t hThink );
+#if !defined( L4D2 )
 	void			CleanUpDeleteList();
+#endif
 
 	// Add entity to frame think list
 	void			AddEntityToFrameThinkList( ThinkEntry_t *pEntry, bool bAlwaysChain, int &nCount, ThinkEntry_t **ppFrameThinkList );
@@ -100,7 +106,9 @@ private:
 private:
 	CUtlLinkedList<ThinkEntry_t, unsigned short>	m_ThinkEntries;
 
+#if !defined( L4D2 )
 	CUtlVector<ClientEntityHandle_t>	m_aDeleteList;
+#endif
 	CUtlVector<ThinkListChanges_t>		m_aChangeList;
 
 	// Makes sure the entries are thinked once per frame in the face of hierarchy

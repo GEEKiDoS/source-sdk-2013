@@ -17,6 +17,7 @@ $Project "client"
 {
 	"game\client\client_tf.vpc"			[$TF]
 	"game\client\client_hl2mp.vpc"		[$HL2MP]
+	"game\client\client_l4d2.vpc"		[$L4D2]
 }
 
 $Project "fgdlib"
@@ -38,6 +39,11 @@ $Project "game_shader_generic_std"
 	"materialsystem\stdshaders\game_shader_generic_std_tf.vpc" [$TF]
 }
 
+$Project "game_shader_l4d2"
+{
+	"materialsystem\stdshaders\game_shader_l4d2.vpc" [$L4D2]
+}
+
 $Project "glview"
 {
 	"utils\glview\glview.vpc" [$WINDOWS]
@@ -52,12 +58,14 @@ $Project "server"
 {
 	"game\server\server_tf.vpc"			[$TF]
 	"game\server\server_hl2mp.vpc"		[$HL2MP]
+	"game\server\server_l4d2.vpc"		[$L4D2]
 }
 
 $Project "launcher_main"
 {
 	"launcher_main\launcher_main_mod_hl2mp.vpc" [$HL2MP]
 	"launcher_main\launcher_main_mod_tf.vpc" [$TF]
+	"launcher_main\launcher_main_mod_l4d2.vpc" [$L4D2]
 }
 
 $Project "mathlib"

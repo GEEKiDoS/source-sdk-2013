@@ -12,6 +12,10 @@
 #include "engine/IEngineSound.h"
 #include "globals.h"
 #include "filters.h"
+#if defined( L4D2 )
+#include "l4d2/entities/func_vphysicsclip.h"
+#include "l4d2/terror_physics_math.h"
+#endif
 
 /// XXX(JohnS): This was never fully implemented, and thus func_rotating was broken in TF2 from 2007 - 2018.  Bandwidth
 //              it intended to save is less significant now, but ideally it could be seamlessly clientside (with work -
@@ -442,6 +446,10 @@ protected:
 	void InputReverse( inputdata_t &inputdata );
 	void InputStopAtStartPos( inputdata_t &inputdata );
 
+#if defined( L4D2 )
+	void InputSnapToStartPos( inputdata_t &inputdata );
+#endif
+
 	QAngle	m_vecMoveAng;
 
 	float m_flFanFriction;
@@ -498,6 +506,10 @@ BEGIN_DATADESC( CFuncRotating )
 	DEFINE_INPUTFUNC( FIELD_VOID, "StartForward", InputStartForward ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "StartBackward", InputStartBackward ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "StopAtStartPos", InputStopAtStartPos ),
+
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_VOID, "SnapToStartPos", InputSnapToStartPos ),
+#endif
 
 END_DATADESC()
 
@@ -808,6 +820,12 @@ void CFuncRotating::Precache( void )
 // Purpose: Will hurt others based on how fast the brush is spinning.
 // Input  : pOther - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CFuncRotating::HurtTouch ( CBaseEntity *pOther )
 {
 	// we can't hurt this thing, so we're not concerned with it
@@ -815,7 +833,11 @@ void CFuncRotating::HurtTouch ( CBaseEntity *pOther )
 		return;
 
 	// calculate damage based on rotation speed
+#if defined( L4D2 )
+	m_flBlockDamage = GetLocalAngularVelocity().Length() * 0.1f;
+#else
 	m_flBlockDamage = GetLocalAngularVelocity().Length() / 10;
+#endif
 
 #ifdef HL1_DLL
 	if( m_flBlockDamage > 0 )
@@ -824,11 +846,18 @@ void CFuncRotating::HurtTouch ( CBaseEntity *pOther )
 		pOther->TakeDamage( CTakeDamageInfo( this, this, m_flBlockDamage, DMG_CRUSH ) );
 	
 		Vector vecNewVelocity = pOther->GetAbsOrigin() - WorldSpaceCenter();
+#if defined( L4D2 )
+		TerrorPhysicsNormalize( vecNewVelocity );
+#else
 		VectorNormalize(vecNewVelocity);
+#endif
 		vecNewVelocity *= m_flBlockDamage;
 		pOther->SetAbsVelocity( vecNewVelocity );
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 #define FANPITCHMIN		30
@@ -1321,6 +1350,15 @@ void CFuncRotating::InputStopAtStartPos( inputdata_t &inputdata )
 	SetMoveDoneTime( GetNextMoveInterval() );
 }
 
+#if defined( L4D2 )
+void CFuncRotating::InputSnapToStartPos( inputdata_t &inputdata )
+{
+	m_bStopAtStartPos = false;
+	SetTargetSpeed( 0.0f );
+	SetLocalAngles( m_angStart );
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: Starts the rotator if it is still, stops it if it is spinning.
 //-----------------------------------------------------------------------------
@@ -1371,6 +1409,7 @@ int CFuncRotating::DrawDebugTextOverlays(void)
 }
 
 
+#if !defined( L4D2 )
 class CFuncVPhysicsClip : public CBaseEntity
 {
 	DECLARE_DATADESC();
@@ -1393,6 +1432,7 @@ private:
 	CHandle<CBaseFilter>			m_hFilter;
 	bool							m_bDisabled;
 };
+#endif
 
 // Global Savedata for base trigger
 BEGIN_DATADESC( CFuncVPhysicsClip )

@@ -36,7 +36,11 @@ void MapEntity_PrecacheEntity( const char *pEntData, int &nStringSize );
 //-----------------------------------------------------------------------------
 struct HierarchicalSpawn_t
 {
+#if defined( L4D2 )
+	CBaseEntity *m_hEntity;
+#else
 	CHandle<CBaseEntity> m_hEntity;
+#endif
 	int			m_nDepth;
 	CBaseEntity	*m_pDeferredParent;			// attachment parents can't be set until the parents are spawned
 	const char	*m_pDeferredParentAttachment; // so defer setting them up until the second pass

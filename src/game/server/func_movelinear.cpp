@@ -12,12 +12,22 @@
 #include "ndebugoverlay.h"
 #include "engine/IEngineSound.h"
 #include "physics_saverestore.h"
+#if defined( L4D2 )
+#include "l4d2/terror_shareddefs.h"
+#endif
+
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 // -------------------------------
 //  SPAWN_FLAGS
+#if defined( L4D2 )
+IMPLEMENT_SERVERCLASS_ST( CFuncMoveLinear, DT_FuncMoveLinear )
+	SendPropVector( SENDINFO( m_vecVelocity ), 0, SPROP_NOSCALE ),
+	SendPropInt( SENDINFO( m_fFlags ), 32, SPROP_UNSIGNED ),
+END_SEND_TABLE()
+#endif
 // -------------------------------
 #define SF_MOVELINEAR_NOTSOLID		8
 
@@ -46,6 +56,10 @@ BEGIN_DATADESC( CFuncMoveLinear )
 	DEFINE_INPUTFUNC( FIELD_VOID,  "Close", InputClose ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetPosition", InputSetPosition ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetSpeed", InputSetSpeed ),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_STRING, "TeleportToTarget", InputTeleportToTarget ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "ResetPosition", InputResetPosition ),
+#endif
 
 	// Outputs
 	DEFINE_OUTPUT( m_OnFullyOpen, "OnFullyOpen" ),
@@ -60,6 +74,39 @@ END_DATADESC()
 //------------------------------------------------------------------------------
 // Purpose: Called before spawning, after keyvalues have been parsed.
 //------------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+void CFuncMoveLinear::InputTeleportToTarget( inputdata_t &inputdata )
+{
+	CBaseEntity *pTarget = gEntList.FindEntityByName( NULL, inputdata.value.String() );
+	if ( !pTarget )
+		return;
+
+	UTIL_SetOrigin( this, pTarget->GetAbsOrigin(), false );
+	m_flStartPosition = 0.0f;
+	m_vecPosition1 = GetLocalOrigin() - ( m_vecMoveDir * m_flMoveDistance * m_flStartPosition );
+	m_vecPosition2 = m_vecPosition1 + ( m_vecMoveDir * m_flMoveDistance );
+	m_vecFinalDest = GetLocalOrigin();
+}
+#pragma float_control( pop )
+#endif
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CFuncMoveLinear::InputResetPosition( inputdata_t &inputdata )
+{
+	m_flStartPosition = inputdata.value.Float();
+	m_vecPosition1 = GetLocalOrigin() - ( m_vecMoveDir * m_flMoveDistance * m_flStartPosition );
+	m_vecPosition2 = m_vecPosition1 + ( m_vecMoveDir * m_flMoveDistance );
+	m_vecFinalDest = GetLocalOrigin();
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
 void CFuncMoveLinear::Spawn( void )
 {
 	// Convert movedir from angles to a vector
@@ -84,13 +131,22 @@ void CFuncMoveLinear::Spawn( void )
 		m_flMoveDistance = DotProductAbs( m_vecMoveDir, vecOBB ) - m_flLip;
 	}
 
+#if defined( L4D2 )
+	m_vecPosition1 = GetLocalOrigin() - (m_vecMoveDir * m_flMoveDistance * m_flStartPosition);
+	m_vecPosition2 = m_vecPosition1 + (m_vecMoveDir * m_flMoveDistance);
+	m_vecFinalDest = GetLocalOrigin();
+#else
 	m_vecPosition1 = GetAbsOrigin() - (m_vecMoveDir * m_flMoveDistance * m_flStartPosition);
 	m_vecPosition2 = m_vecPosition1 + (m_vecMoveDir * m_flMoveDistance);
 	m_vecFinalDest = GetAbsOrigin();
+#endif
 
 	SetTouch( NULL );
 
 	Precache();
+#if defined( L4D2 )
+	AddFlag( FL_CONVEYOR );
+#endif
 
 	// It is solid?
 	SetSolid( SOLID_VPHYSICS );
@@ -256,11 +312,19 @@ void CFuncMoveLinear::MoveDone( void )
 	SetNextThink( gpGlobals->curtime + 0.1f );
 	BaseClass::MoveDone();
 
+#if defined( L4D2 )
+	if ( GetLocalOrigin() == m_vecPosition2 )
+#else
 	if ( GetAbsOrigin() == m_vecPosition2 )
+#endif
 	{
 		m_OnFullyOpen.FireOutput( this, this );
 	}
+#if defined( L4D2 )
+	else if ( GetLocalOrigin() == m_vecPosition1 )
+#else
 	else if ( GetAbsOrigin() == m_vecPosition1 )
+#endif
 	{
 		m_OnFullyClosed.FireOutput( this, this );
 	}
@@ -337,8 +401,18 @@ void CFuncMoveLinear::InputSetPosition( inputdata_t &inputdata )
 // Purpose: Called every frame when the bruch is blocked while moving
 // Input  : pOther - The blocking entity.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CFuncMoveLinear::Blocked( CBaseEntity *pOther )
 {
+#if defined( L4D2 )
+	// S0E8630 shares the elevator's survivor/non-world contact exception.
+	if ( m_flBlockDamage != 0.0f &&
+		( ( pOther->GetTeamNumber() != TEAM_SURVIVOR && pOther->GetTeamNumber() != TEAM_L4D1_SURVIVOR ) ||
+			!GetTouchTrace().DidHitNonWorldEntity() ) )
+		pOther->TakeDamage( CTakeDamageInfo( this, this, m_flBlockDamage, DMG_CRUSH ) );
+#else
 	// Hurt the blocker 
 	if ( m_flBlockDamage )
 	{
@@ -350,7 +424,11 @@ void CFuncMoveLinear::Blocked( CBaseEntity *pOther )
 		else
 			pOther->TakeDamage( CTakeDamageInfo( this, this, m_flBlockDamage, DMG_CRUSH ) );
 	}
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 

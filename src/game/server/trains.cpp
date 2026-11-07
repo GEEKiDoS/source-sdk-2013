@@ -15,6 +15,10 @@
 #include "vphysics/friction.h"
 #include "hierarchy.h"
 #include "vscript_shared.h"
+#if defined( L4D2 )
+#include "l4d2/terror_shareddefs.h"
+#include "l4d2/terror_physics_math.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -1231,9 +1235,11 @@ BEGIN_DATADESC( CFuncTrackTrain )
 
 END_DATADESC()
 
+#if !defined( L4D2 )
 BEGIN_ENT_SCRIPTDESC( CFuncTrackTrain, CBaseEntity, "func_train" )
 DEFINE_SCRIPTFUNC_NAMED( ScriptGetFuturePosition, "GetFuturePosition", "Get a position on the track x seconds in the future" )
 END_SCRIPTDESC()
+#endif
 
 LINK_ENTITY_TO_CLASS( func_tracktrain, CFuncTrackTrain );
 
@@ -1674,8 +1680,22 @@ static CBaseEntity *FindPhysicsBlockerForHierarchy( CBaseEntity *pParentEntity )
 // Purpose: Called when we are blocked by another entity.
 // Input  : pOther - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CFuncTrackTrain::Blocked( CBaseEntity *pOther )
 {
+#if defined( L4D2 )
+	// S1F39C0 applies the infected crush before rider/unblockable handling.
+	if ( pOther->GetTeamNumber() == TEAM_INFECTED )
+	{
+		pOther->TakeDamage( CTakeDamageInfo( this, this, 500.0f, DMG_CRUSH, 2 ) );
+		return;
+	}
+#endif
 	// Blocker is on-ground on the train
 	if ( ( pOther->GetFlags() & FL_ONGROUND ) && pOther->GetGroundEntity() == this )
 	{
@@ -1696,7 +1716,11 @@ void CFuncTrackTrain::Blocked( CBaseEntity *pOther )
 	{
 		Vector vecNewVelocity;
 		vecNewVelocity = pOther->GetAbsOrigin() - GetAbsOrigin();
+#if defined( L4D2 )
+		TerrorPhysicsNormalize( vecNewVelocity );
+#else
 		VectorNormalize(vecNewVelocity);
+#endif
 		vecNewVelocity *= m_flBlockDamage;
 		pOther->SetAbsVelocity( vecNewVelocity );
 	}
@@ -1744,6 +1768,9 @@ void CFuncTrackTrain::Blocked( CBaseEntity *pOther )
 	// we can't hurt this thing, so we're not concerned with it
 	pOther->TakeDamage( CTakeDamageInfo( this, this, m_flBlockDamage, DMG_CRUSH ) );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 extern void FixupAngles( QAngle &v );

@@ -32,19 +32,79 @@
 
 using namespace vgui;
 
-static ConVar	net_scale			( "net_scale", "5", FCVAR_ARCHIVE );
-static ConVar	net_graphpos		( "net_graphpos", "1", FCVAR_ARCHIVE );
-static ConVar	net_graphsolid		( "net_graphsolid", "1", FCVAR_ARCHIVE );
-static ConVar	net_graphtext		( "net_graphtext", "1", FCVAR_ARCHIVE, "Draw text fields" );
-static ConVar	net_graphmsecs		( "net_graphmsecs", "400", FCVAR_ARCHIVE, "The latency graph represents this many milliseconds." );
-static ConVar	net_graphshowlatency( "net_graphshowlatency", "1", FCVAR_ARCHIVE, "Draw the ping/packet loss graph." );
-static ConVar	net_graphshowinterp ( "net_graphshowinterp", "1", FCVAR_ARCHIVE, "Draw the interpolation graph." );
+static ConVar	net_scale			( "net_scale", "5", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar	net_graphpos		( "net_graphpos", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar	net_graphsolid		( "net_graphsolid", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar	net_graphtext		( "net_graphtext", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Draw text fields" );
+static ConVar	net_graphmsecs		( "net_graphmsecs", "400", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "The latency graph represents this many milliseconds." );
+static ConVar	net_graphshowlatency( "net_graphshowlatency", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Draw the ping/packet loss graph." );
+static ConVar	net_graphshowinterp ( "net_graphshowinterp", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Draw the interpolation graph." );
 
 void NetgraphFontChangeCallback( IConVar *var, const char *pOldValue, float flOldValue );
 
-static ConVar	net_graph			( "net_graph","0", 0, "Draw the network usage graph, = 2 draws data on payload, = 3 draws payload legend.", NetgraphFontChangeCallback );
-static ConVar	net_graphheight		( "net_graphheight", "64", FCVAR_ARCHIVE, "Height of netgraph panel", NetgraphFontChangeCallback );
-static ConVar	net_graphproportionalfont( "net_graphproportionalfont", "1", FCVAR_ARCHIVE, "Determines whether netgraph font is proportional or not", NetgraphFontChangeCallback );
+static ConVar	net_graph			( "net_graph","0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	0
+#endif
+, "Draw the network usage graph, = 2 draws data on payload, = 3 draws payload legend.", NetgraphFontChangeCallback );
+static ConVar	net_graphheight		( "net_graphheight", "64", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Height of netgraph panel", NetgraphFontChangeCallback );
+static ConVar	net_graphproportionalfont( "net_graphproportionalfont", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Determines whether netgraph font is proportional or not", NetgraphFontChangeCallback );
 
 
 #define	TIMINGS	1024       // Number of values to track (must be power of 2) b/c of masking

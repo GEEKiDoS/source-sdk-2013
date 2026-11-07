@@ -46,6 +46,10 @@ namespace NDebugOverlay
 	void	Circle( const Vector &position, float radius, int r, int g, int b, int a, bool bNoDepthTest, float flDuration );
 	void	Circle( const Vector &position, const QAngle &angles, float radius, int r, int g, int b, int a, bool bNoDepthTest, float flDuration );
 	void	Circle( const Vector &position, const Vector &xAxis, const Vector &yAxis, float radius, int r, int g, int b, int a, bool bNoDepthTest, float flDuration );
+#if defined( L4D2 )
+	void Cone( const Vector &origin, const Vector &direction, float angle, float length, int r, int g, int b, int a, bool noDepthTest, float duration );
+	void Cross2D( const Vector &position, float size, int r, int g, int b, bool noDepthTest, float duration );
+#endif
 	void	Sphere( const Vector &position, const QAngle &angles, float radius, int r, int g, int b, int a, bool bNoDepthTest, float flDuration );
 };
 

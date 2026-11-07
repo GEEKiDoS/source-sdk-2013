@@ -22,6 +22,13 @@
 	#include "c_tf_player.h"
 	#include "tf_weaponbase.h"
 #endif
+#if defined( L4D2 )
+#include "animationlayer.h"
+#include "datacache/imdlcache.h"
+#include "iinput.h"
+#include "l4d2/terror_shareddefs.h"
+#include "l4d2/effects/terror_glow_policy.h"
+#endif
 
 #if defined( REPLAY_ENABLED )
 #include "replay/replaycamera.h"
@@ -30,7 +37,9 @@
 #endif
 
 // NVNT haptics system interface
+#if !defined( L4D2 )
 #include "haptics/ihaptics.h"
+#endif // !L4D2
 
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -42,6 +51,136 @@
 
 #ifdef TF_CLIENT_DLL
 	ConVar cl_flipviewmodels( "cl_flipviewmodels", "0", FCVAR_USERINFO | FCVAR_ARCHIVE | FCVAR_NOT_CONNECTED, "Flip view models." );
+#endif
+#if defined( L4D2 )
+extern ConVar vm_draw_always;
+static ConVar vm_camera( "vm_camera", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar vm_camera_interp_speed( "vm_camera_interp_speed", "8.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar vm_camera_scale( "vm_camera_scale", "1.0f", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar vm_camera_no_roll( "vm_camera_no_roll", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+static ConVar vm_debug( "vm_debug", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar vm_fade( "vm_fade", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ ); // C4FABE0 / object10728CF8.
+
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// Whole C0B4CF0 with its two identical rate arguments folded at this caller.
+// This is scalar movement, NOT ApproachAngle/angle normalization or exponential
+// interpolation. Ordered outer tests leave unordered target/current unchanged;
+// unordered ADVANCED value is clamped to target by the native JA fallback.
+static void UpdateOriginalViewModelCameraAngle( float target, float rate, float *value )
+{
+	if ( target > *value )
+	{
+		const float advanced = ( gpGlobals->frametime * rate ) + *value;
+		*value = advanced;
+		if ( !( target > advanced ) )
+			*value = target;
+	}
+	else if ( *value > target )
+	{
+		const float advanced = *value - ( gpGlobals->frametime * rate );
+		*value = advanced;
+		if ( !( advanced > target ) )
+			*value = target;
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+// C1006AB20. Resolve actual registered activities through the sole native-name map.
+static bool IsTerrorViewModelFireActivity( Activity activity )
+{
+	switch ( LookupTerrorOriginalActivity( activity ) )
+	{
+	case TERROR_ORIGINAL_ACT_VM_SHOOT_DUAL_PISTOL_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_SHOOT_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_SHOOT_PISTOL_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_SHOOT_RIFLE_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_SHOOT_SMG_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_SHOOT_SNIPER_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK_DUAL_PISTOL:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK_PISTOL:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK_RIFLE:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK_SILENCED:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK_SMG:
+	case TERROR_ORIGINAL_ACT_VM_PRIMARYATTACK_SNIPER:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// C1006AB90. These are melee identities, not generic reload/weapon-type classes.
+static bool IsTerrorViewModelMeleeActivity( Activity activity )
+{
+	switch ( LookupTerrorOriginalActivity( activity ) )
+	{
+	case TERROR_ORIGINAL_ACT_VM_MELEE:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_BAREHAND:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_BAREHAND_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_DUAL_PISTOL:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_DUAL_PISTOL_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_PISTOL:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_PISTOL_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_RIFLE:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_RIFLE_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_SMG:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_SMG_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_SNIPER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_SNIPER_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_PIPEBOMB:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_PIPEBOMB_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_PAINPILLS:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_PAINPILLS_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_MEDKIT:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_MEDKIT_LAYER:
+	case TERROR_ORIGINAL_ACT_VM_MELEE_GASCAN:
+		return true;
+	default:
+		return false;
+	}
+}
 #endif
 
 void PostToolMessage( HTOOLHANDLE hEntity, KeyValues *msg );
@@ -133,6 +272,64 @@ void C_BaseViewModel::UncorrectViewModelAttachment( Vector &vOrigin )
 //-----------------------------------------------------------------------------
 // Purpose
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// C1006AFC0, complete body. Main-approved sole-user0 projection omits only the
+// native active-user flag scopes; it does not replace the genuine camera query.
+void C_BaseViewModel::FireEvent( const Vector &origin, const QAngle &angles, int event, const char *options )
+{
+	if ( ( event == AE_CL_PLAYSOUND || event == CL_EVENT_SOUND ) && GetOwner() )
+	{
+		CLocalPlayerFilter filter;
+		const Vector &soundOrigin = GetAbsOrigin();
+		C_BaseEntity *soundOwner = GetOwner();
+		const int soundSource = soundOwner->GetSoundSourceIndex();
+		EmitSound( filter, soundSource, options, &soundOrigin );
+		return;
+	}
+
+	if ( event == 21 )
+	{
+		float fireLayerWeight = -1.0f;
+		for ( int i = 0; i < GetNumAnimOverlays(); ++i )
+		{
+			CAnimationLayer *layer = GetAnimOverlay( i );
+			// C2B570 tests ONLY order!=15, not positive weight or sequence validity.
+			if ( layer->m_nOrder == 15 )
+				continue;
+			const Activity activity = GetSequenceActivity( layer->m_nSequence );
+			if ( IsTerrorViewModelFireActivity( activity ) )
+				fireLayerWeight = layer->m_flWeight; // Last fire layer wins, NOT max().
+			else if ( IsTerrorViewModelMeleeActivity( activity ) && fireLayerWeight > layer->m_flWeight )
+				return;
+		}
+	}
+
+	C_BaseEntity *owner = GetOwner();
+	if ( !owner || !owner->IsPlayer() )
+		return;
+	C_BaseCombatWeapon *weapon = static_cast< C_BasePlayer * >( owner )->GetActiveWeapon();
+	if ( !weapon || weapon->OnFireEvent( this, origin, angles, event, options ) )
+		return;
+
+	bool isZoomed = false;
+	C_BaseEntity *weaponOwner = weapon->GetOwner();
+	if ( weaponOwner && weaponOwner->IsPlayer() )
+	{
+		C_BasePlayer *player = static_cast< C_BasePlayer * >( weaponOwner );
+		const float fov = player->GetFOV();
+		const int defaultFOV = player->GetDefaultFOV();
+		isZoomed = static_cast< double >( fov ) != static_cast< double >( defaultFOV );
+	}
+	if ( event != 20 || ( !input->CAM_IsThirdPerson() && !isZoomed ) )
+		BaseClass::FireEvent( origin, angles, event, options );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseViewModel::FireEvent( const Vector& origin, const QAngle& angles, int event, const char *options )
 {
 	// We override sound requests so that we can play them locally on the owning player
@@ -151,9 +348,11 @@ void C_BaseViewModel::FireEvent( const Vector& origin, const QAngle& angles, int
 	C_BaseCombatWeapon *pWeapon = GetActiveWeapon();
 	if ( pWeapon )
 	{
+#if !defined( L4D2 )
 		// NVNT notify the haptics system of our viewmodel's event
 		if ( haptics )
 			haptics->ProcessHapticEvent(4,"Weapons",pWeapon->GetName(),"AnimationEvents",VarArgs("%i",event));
+#endif // !L4D2
 
 		bool bResult = pWeapon->OnFireEvent( this, origin, angles, event, options );
 		if ( !bResult )
@@ -163,6 +362,76 @@ void C_BaseViewModel::FireEvent( const Vector& origin, const QAngle& angles, int
 	}
 }
 
+#endif
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// Entire post-base phase of C6B210. Native primary120 is purefalse43070 for ALL
+// three RTTI-proven VM classes (Base,Predicted,Terror); fold that call ONLY here.
+// IsClientCreated is the actual other native predicate. Neither GetPredictable
+// nor ShouldPredict129/+516 may be substituted into this concrete-family path.
+bool C_BaseViewModel::Interpolate( float currentTime )
+{
+	CStudioHdr *pHdr = GetModelPtr();
+	const bool result = BaseClass::Interpolate( currentTime );
+	if ( !pHdr || !pHdr->IsValid() )
+		return result;
+
+	C_BaseEntity *owner = GetOwner();
+	C_BasePlayer *player = owner && owner->IsPlayer() ? static_cast< C_BasePlayer * >( owner ) : NULL;
+	float elapsed;
+	if ( IsClientCreated() )
+	{
+		const float now = player ? player->GetFinalPredictedTime() : currentTime;
+		elapsed = now - m_flAnimTime;
+		if ( !engine->IsPaused() )
+			elapsed = ( gpGlobals->interpolation_amount * TICK_INTERVAL ) + elapsed;
+		if ( elapsed < 0.0f )
+			elapsed = 0.0f;
+	}
+	else
+	{
+		elapsed = currentTime - m_flAnimTime;
+	}
+	if ( m_flPreviousElapsedTime > elapsed )
+		m_flPreviousElapsedTime = elapsed;
+	float delta = elapsed - m_flPreviousElapsedTime;
+	m_flPreviousElapsedTime = elapsed;
+	if ( engine->IsPaused() )
+		delta = 0.0f;
+
+	float playback = 1.0f;
+	C_BaseCombatWeapon *weapon = GetWeapon();
+	if ( weapon )
+	{
+		playback = static_cast< float >( weapon->GetEffectivePlaybackRate() );
+		if ( playback <= 0.0f )
+			playback = 1.0f;
+	}
+	const float rate = GetSequenceCycleRate( pHdr, GetSequence() );
+	// Main-approved x87-extended/x64-double numeric boundary, NOT bit-parity.
+	// C6B419 stores increment to float BEFORE the native SSE prior-cycle add.
+	const double product = static_cast< double >( rate ) * static_cast< double >( delta ) * static_cast< double >( playback );
+	const float increment = static_cast< float >( product );
+	float cycle = m_flMainSequenceCycle + increment;
+	if ( cycle >= 1.0f )
+	{
+		if ( IsSequenceLooping( GetSequence() ) )
+			cycle = static_cast< float >( fmod( static_cast< double >( cycle ), 1.0 ) );
+		else
+			cycle = 0.99900001f;
+	}
+	SetCycle( cycle );
+	m_flMainSequenceCycle = cycle;
+	AdvanceTerrorLayers( currentTime, pHdr, player, playback );
+	return result;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool C_BaseViewModel::Interpolate( float currentTime )
 {
 	CStudioHdr *pStudioHdr = GetModelPtr();
@@ -208,10 +477,24 @@ bool C_BaseViewModel::Interpolate( float currentTime )
 	}
 
 	SetCycle( dt );
+	#if defined( L4D2 )
+	AdvanceTerrorLayers( currentTime );
+	#endif
 	return bret;
 }
 
+#endif
 
+
+#if defined( L4D2 )
+// Whole C6AD90. Parsed FileWeaponInfo owner already supplies BuiltRightHanded;
+// native ignores both AllowFlipping and cl_righthand. No second parser/metadata.
+bool C_BaseViewModel::ShouldFlipViewModel()
+{
+	C_BaseCombatWeapon *weapon = GetWeapon();
+	return weapon && !weapon->GetWpnData().m_bBuiltRightHanded;
+}
+#else
 bool C_BaseViewModel::ShouldFlipViewModel()
 {
 #ifdef CSTRIKE_DLL
@@ -234,6 +517,8 @@ bool C_BaseViewModel::ShouldFlipViewModel()
 
 	return false;
 }
+
+#endif
 
 
 void C_BaseViewModel::ApplyBoneMatrixTransform( matrix3x4_t& transform )
@@ -288,16 +573,140 @@ bool C_BaseViewModel::ShouldDraw()
 				 ReplayCamera()->GetPrimaryTarget() == GetOwner() );
 	}
 #endif
+#if defined( L4D2 )
+	else if ( vm_draw_always.GetInt() != 0 )
+	{
+		return true;
+	}
+	else
+	{
+		// C6B840 uses the same IN_EYE-only owner resolver as the native view.
+		return GetOwner() == TerrorGlow_ResolveRenderPlayer( C_BasePlayer::GetLocalPlayer( 0 ) ) &&
+			C_BaseEntity::ShouldDraw();
+	}
+#else
 	else
 	{
 		return BaseClass::ShouldDraw();
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: Render the weapon. Draw the Viewmodel if the weapon's being carried
 //			by this player, otherwise draw the worldmodel.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// Whole native C6B960, target one-argument draw adapter. Native alpha is a byte
+// of RenderableInstance_t supplied by the original leaf. Main DECISION1 moves
+// exact native0/1/2 per-pass alpha/color application into Move's REAL C1ED0 leaf
+// collator. Read existing incoming render state here; never overwrite a forced
+// opaque255 pass with GetFxBlend/255. No instance getter/context/engine ABI.
+int C_BaseViewModel::DrawModel( int flags )
+{
+	if ( !m_bReadyToDraw )
+		return 0;
+	C_BaseEntity *owner = GetOwner();
+	if ( owner && owner->IsPlayer() && static_cast< C_BasePlayer * >( owner )->IsThirdPersonCameraActive() )
+		return 0;
+
+	float blend;
+	float color[3];
+	if ( flags & STUDIO_RENDER )
+	{
+		blend = render->GetBlend(); // Real already-applied incoming per-pass state.
+		if ( blend <= 0.0f )
+			return 0;
+	}
+
+	Vector cameraOrigin;
+	QAngle cameraAngles;
+	if ( vm_camera.GetInt() != 0 && m_iCameraAttachment > 0 )
+	{
+		if ( !GetAttachmentLocal( m_iCameraAttachment, cameraOrigin, cameraAngles ) )
+		{
+			// Main decision:2DA40 leaves outputs unwritten on failure;6B960/B4CF0
+			// otherwise read uninitialized angles. Use existing zero-angle arm only.
+			cameraAngles.Init();
+		}
+	}
+	else
+	{
+		cameraAngles.Init();
+	}
+	const float cameraRate = vm_camera_interp_speed.GetFloat();
+	UpdateOriginalViewModelCameraAngle( cameraAngles.x, cameraRate, &m_angViewModelCamera.x );
+	UpdateOriginalViewModelCameraAngle( cameraAngles.y, cameraRate, &m_angViewModelCamera.y );
+	UpdateOriginalViewModelCameraAngle( cameraAngles.z, cameraRate, &m_angViewModelCamera.z );
+
+	CMatRenderContextPtr pRenderContext( materials );
+	if ( ShouldFlipViewModel() )
+		pRenderContext->CullMode( MATERIAL_CULLMODE_CW );
+	// Main/parent38B2: qualified nonplayer draw cannot recurse through the
+	// virtual bridge. Strip ONLY native skip-stencil0x800 at this SDK boundary.
+	const int result = BaseClass::DrawModel( flags & ~0x800 );
+	pRenderContext->CullMode( MATERIAL_CULLMODE_CCW );
+	if ( flags & STUDIO_RENDER )
+	{
+		if ( m_nOldAnimationParity != m_nAnimationParity )
+			m_nOldAnimationParity = m_nAnimationParity;
+		if ( vm_debug.GetInt() != 0 )
+		{
+			MDLCACHE_CRITICAL_SECTION();
+			CStudioHdr *pHdr = GetModelPtr();
+			const char *modelName = pHdr ? pHdr->pszName() : "(null)";
+			const float cycle = GetCycle();
+			const double playback = GetEffectivePlaybackRate(); // Native6BBEF FSTPf64, no f32 spill.
+			const float rate = GetSequenceCycleRate( pHdr, GetSequence() );
+			engine->Con_NPrintf( 16, "%s: %s(%d), cycle: %.2f cyclerate: %.2f playbackrate: %.2f\n",
+				modelName, GetSequenceName( GetSequence() ), GetSequence(), cycle, rate, playback );
+			int line = 17;
+			for ( int i = 0; i < GetNumAnimOverlays(); ++i )
+			{
+				CAnimationLayer *layer = GetAnimOverlay( i );
+				const bool active = layer->IsActive(); // Existing native predicate: order!=15 ONLY.
+				const int order = active ? layer->m_nOrder : 0;
+				const float fadeTime = active ? layer->m_flLayerFadeOuttime : 0.0f;
+				const float cycle = active ? static_cast< float >( layer->m_flCycle ) : 0.0f;
+				const float weight = active ? static_cast< float >( layer->m_flWeight ) : 0.0f;
+				const int sequence = active ? static_cast< int >( layer->m_nSequence ) : 0;
+				const char *name = active && sequence != 0 ? GetSequenceName( sequence ) : "-- ";
+				engine->Con_NPrintf( line++, "%s(%d), weight: %.2f, cycle: %.2f, fadeouttime: %f order (%d)",
+					name, sequence, weight, cycle, fadeTime, order );
+			}
+			if ( pHdr )
+			{
+				for ( int i = 0; i < pHdr->GetNumPoseParameters(); ++i )
+					engine->Con_NPrintf( line++, "pose_param %s: %f", pHdr->pPoseParameter( i ).pszName(), GetPoseParameter( i ) );
+			}
+			GetColorModulation( color );
+			engine->Con_NPrintf( line++, "blend=%f, color=%f,%f,%f", blend,
+				color[0], color[1], color[2] );
+			engine->Con_NPrintf( line++, "GetRenderMode()=%d", static_cast< int >( GetRenderMode() ) );
+			engine->Con_NPrintf( line++, "m_nRenderFX=0x%8.8X", static_cast< int >( m_nRenderFX ) );
+			const color32 renderColor = GetRenderColor();
+			engine->Con_NPrintf( line++, "rendercolor=%d,%d,%d,%d", renderColor.r, renderColor.g, renderColor.b, renderColor.a );
+			const float originZ = GetRenderOrigin().z;
+			const float originY = GetRenderOrigin().y;
+			const float originX = GetRenderOrigin().x;
+			engine->Con_NPrintf( line++, "origin=%f, %f, %f", originX, originY, originZ );
+			const float anglesZ = GetRenderAngles().z;
+			const float anglesY = GetRenderAngles().y;
+			const float anglesX = GetRenderAngles().x;
+			engine->Con_NPrintf( line++, "angles=%f, %f, %f", anglesX, anglesY, anglesZ );
+			if ( IsEffectActive( EF_NODRAW ) )
+				engine->Con_NPrintf( line, "EF_NODRAW" );
+		}
+	}
+	return result;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 int C_BaseViewModel::DrawModel( int flags )
 {
 	if ( !m_bReadyToDraw )
@@ -319,6 +728,9 @@ int C_BaseViewModel::DrawModel( int flags )
 		GetColorModulation( color );
 		render->SetColorModulation(	color );
 	}
+	#if defined( L4D2 )
+	DrawTerrorViewmodelArms( this, flags );
+	#endif
 		
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 	C_BaseCombatWeapon *pWeapon = GetOwningWeapon();
@@ -364,6 +776,8 @@ int C_BaseViewModel::DrawModel( int flags )
 
 	return ret;
 }
+
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -438,6 +852,7 @@ bool C_BaseViewModel::IsTransparent( void )
 //-----------------------------------------------------------------------------
 bool C_BaseViewModel::UsesPowerOfTwoFrameBufferTexture( void )
 {
+#if !defined( L4D2 )
 	// See if the local player wants to override the viewmodel's rendering
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 	if ( pPlayer && pPlayer->IsOverridingViewmodel() )
@@ -451,12 +866,14 @@ bool C_BaseViewModel::UsesPowerOfTwoFrameBufferTexture( void )
 		return pWeapon->ViewModel_IsUsingFBTexture();
 	}
 
+#endif // Native renderable4 inherits C2B710 without player/weapon overrides.
 	return BaseClass::UsesPowerOfTwoFrameBufferTexture();
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: If the animation parity of the weapon has changed, we reset cycle to avoid popping
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_BaseViewModel::UpdateAnimationParity( void )
 {
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
@@ -473,17 +890,121 @@ void C_BaseViewModel::UpdateAnimationParity( void )
 		SetCycle( 0.0f ); // GetSequenceCycleRate( GetSequence() ) * 0.1;
 		m_flAnimTime = curtime;
 	}
+
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Update global map state based on data received
 // Input  : bnewentity - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
+{
+	SetPredictionEligible( true );
+	if ( GetNumAnimOverlays() != 4 )
+	{
+		SetNumAnimOverlays( 4 );
+		for ( int i = 0; i < 4; ++i )
+		{
+			GetAnimOverlay( i )->Reset();
+			GetAnimOverlay( i )->SetOrder( 15 );
+		}
+	}
+	if ( vm_fade.GetInt() != 0 &&
+		( m_nLastReceivedLayerSequence != m_nLayerSequence ||
+		  m_flLastReceivedLayerStartTime != m_flLayerStartTime ||
+		  m_nLastReceivedLayer != m_nLayer ) )
+	{
+		m_flLastReceivedLayerStartTime = m_flLayerStartTime;
+		m_nLastReceivedLayerSequence = m_nLayerSequence;
+		m_nLastReceivedLayer = m_nLayer;
+
+		C_BaseEntity *owner = GetOwner();
+		C_BasePlayer *player = owner && owner->IsPlayer() ? static_cast< C_BasePlayer * >( owner ) : NULL;
+		float now = gpGlobals->curtime;
+		// Original primary12043070 is purefalse for all3 concrete VM classes.
+		if ( IsClientCreated() )
+		{
+			if ( player )
+				now = player->GetFinalPredictedTime();
+			if ( !engine->IsPaused() )
+				now = ( gpGlobals->interpolation_amount * TICK_INTERVAL ) + now;
+			if ( now < 0.0f )
+				now = 0.0f;
+		}
+
+		CAnimationLayer *layer = GetAnimOverlay( m_nLayer );
+		CStudioHdr *pHdr = GetModelPtr();
+		bool canFadePrevious = false;
+		if ( pHdr && pHdr->IsValid() && layer->m_nSequence >= 0 && layer->m_nSequence < pHdr->GetNumSeq() )
+		{
+			switch ( LookupTerrorOriginalActivity( static_cast< Activity >( GetSequenceActivity( layer->m_nSequence ) ) ) )
+			{
+			case TERROR_ORIGINAL_ACT_INVALID:
+			case TERROR_ORIGINAL_ACT_VM_PULLPIN_PIPEBOMB_LAYER:
+			case TERROR_ORIGINAL_ACT_VM_THROW_PIPEBOMB_LAYER:
+			case TERROR_ORIGINAL_ACT_VM_PULLPIN_MOLOTOV_LAYER:
+			case TERROR_ORIGINAL_ACT_VM_THROW_MOLOTOV_LAYER:
+				break; // Native C1A2..C1C7 EXCLUDES these four, not all other acts.
+			default:
+				canFadePrevious = true;
+				break;
+			}
+		}
+		if ( layer->m_nSequence > 0 && m_nLayer != 3 &&
+			 layer->m_flWeight > 0.0f && layer->m_nOrder != 15 &&
+			 layer->m_flCycle < 1.0f && !IsSequenceLooping( layer->m_nSequence ) && canFadePrevious )
+		{
+			CAnimationLayer *previous = GetAnimOverlay( 1 );
+			*previous = *layer; // Native full36-byte record copy includes owner.
+			previous->SetOrder( 1 );
+			previous->m_flLayerFadeOuttime = now;
+		}
+
+		const float start = m_flLayerStartTime > now ? now : static_cast< float >( m_flLayerStartTime ); // C6C251 JBE includes unordered.
+		bool restart = layer->m_nSequence != m_nLayerSequence || layer->m_nOrder == 15;
+		if ( !restart )
+		{
+			const double duration = static_cast< double >( SequenceDuration( GetModelPtr(), m_nLayerSequence ) );
+			const float storedDuration = static_cast< float >( duration );
+			const float error = static_cast< float >( fabs( static_cast< double >( now ) -
+				( static_cast< double >( layer->m_flLayerAnimtime ) - static_cast< double >( static_cast< float >( layer->m_flCycle ) ) * duration ) ) );
+			const float tolerance = duration < 1.0 ? 0.5f : 0.05f; // FCOMIP/JBE includes unordered.
+			const float relativeError = error / storedDuration;
+			// C6C2FE/303/308 JBE rejects BOTH boundary equality and unordered.
+			restart = !( relativeError < 1.0f ) || !( error < 0.5f ) ||
+				!( relativeError < tolerance ) || !IsClientCreated();
+		}
+		if ( restart )
+		{
+			layer->SetCycle( 0.0f );
+			m_flOverlayPrevEventCycle[0] = -0.01f; // Native index0, even layer3.
+			layer->SetSequence( m_nLayerSequence );
+			layer->m_flPlaybackRate = static_cast< float >( GetEffectivePlaybackRate() );
+			layer->SetWeight( 1.0f );
+			layer->SetOrder( m_nLayer );
+			layer->m_flPrevCycle = 0.0f;
+			layer->m_flLayerAnimtime = start;
+			m_nOldAnimationParity = m_nAnimationParity;
+		}
+	}
+	BaseClass::OnDataChanged( updateType );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 {
 	SetPredictionEligible( true );
 	BaseClass::OnDataChanged(updateType);
 }
+
+#endif
 
 void C_BaseViewModel::PostDataUpdate( DataUpdateType_t updateType )
 {
@@ -495,6 +1016,7 @@ void C_BaseViewModel::PostDataUpdate( DataUpdateType_t updateType )
 //-----------------------------------------------------------------------------
 // Purpose: Add entity to visible view models list
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_BaseViewModel::AddEntity( void )
 {
 	// Server says don't interpolate this frame, so set previous info to new info.
@@ -503,6 +1025,7 @@ void C_BaseViewModel::AddEntity( void )
 		ResetLatched();
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -523,7 +1046,71 @@ void C_BaseViewModel::GetBoneControllers(float controllers[MAXSTUDIOBONECTRLS])
 // Purpose: 
 // Output : RenderGroup_t
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+RenderGroup_t C_BaseViewModel::GetRenderGroup()
+{
+	return BaseClass::GetRenderGroup();
+}
+#else
 RenderGroup_t C_BaseViewModel::GetRenderGroup()
 {
 	return RENDER_GROUP_VIEW_MODEL_OPAQUE;
 }
+#endif
+#if defined( L4D2 )
+// C6AC90. Root C++ parent already CBaseAnimatingOverlay under L4D2; the wire
+// table remains NOBASE. Do not add an unrelated parity, owner or layer reset.
+CStudioHdr *C_BaseViewModel::OnNewModel()
+{
+	CStudioHdr *model = BaseClass::OnNewModel();
+	m_flPreviousElapsedTime = 0.0f;
+	m_flMainSequenceCycle = 0.0f;
+	m_iCameraAttachment = LookupAttachment( "attach_camera" );
+	return model;
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// Whole C6B8D0, native primary228/+912 in Base/Predicted/Terror VM. Actual caller
+// is player CalcPlayerView20750's TWO-model loop after205D0, before roll/punch.
+// origin/fov deliberately untouched; no fake camera field or unused accumulator.
+void C_BaseViewModel::CalcViewModelCamera( Vector &origin, QAngle &angles, float &fov )
+{
+	if ( vm_camera.GetInt() != 0 && m_iCameraAttachment > 0 )
+	{
+		if ( vm_camera_no_roll.GetInt() != 0 )
+			m_angViewModelCamera.z = 0.0f;
+		const float scale = vm_camera_scale.GetFloat();
+		const float yaw = ( m_angViewModelCamera.y * scale ) + angles.y;
+		const float roll = ( m_angViewModelCamera.z * scale ) + angles.z;
+		angles.x = angles.x + ( m_angViewModelCamera.x * scale );
+		angles.y = yaw;
+		angles.z = roll;
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+// Native6AC40 in all three viewmodel renderable families. Genuine virtual byte
+// identity, unrelated to private3060; do NOT invent a ctor-enable/flag writer.
+unsigned char C_BaseViewModel::OverrideAlphaModulation( unsigned char alpha )
+{
+	return alpha;
+}
+
+// Whole native23340, shared BaseVM/PredictedVM primary229. This zero return is
+// the actual pinned native default (5bytes/2ASM), NOT an invented provider.
+int C_BaseViewModel::GetMuzzleFlashAttachment( bool, bool )
+{
+	return 0;
+}
+#endif
+
+#if defined( L4D2 )
+int C_BaseViewModel::ComputeModelTranslucencyType()
+{
+	return BaseClass::ComputeModelTranslucencyType();
+}
+#endif

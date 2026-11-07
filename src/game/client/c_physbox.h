@@ -16,12 +16,23 @@
 
 
 #include "c_baseentity.h"
+#if defined( L4D2 )
+#include "l4d2/entities/c_terror_breakable.h"
+#endif
 
 
+#if defined( L4D2 )
+class C_PhysBox : public C_Breakable
+#else
 class C_PhysBox : public C_BaseEntity
+#endif
 {
 public:
+#if defined( L4D2 )
+	DECLARE_CLASS( C_PhysBox, C_Breakable );
+#else
 	DECLARE_CLASS( C_PhysBox, C_BaseEntity );
+#endif
 	DECLARE_CLIENTCLASS();
 
 					C_PhysBox();

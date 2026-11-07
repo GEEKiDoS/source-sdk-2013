@@ -111,7 +111,9 @@ static void RecvProxy_TimerPaused( const CRecvProxyData *pData, void *pStruct, v
 #endif
 
 LINK_ENTITY_TO_CLASS( team_round_timer, CTeamRoundTimer );
+#ifndef L4D2
 PRECACHE_REGISTER( team_round_timer );
+#endif
 
 IMPLEMENT_NETWORKCLASS_ALIASED( TeamRoundTimer, DT_TeamRoundTimer )
 

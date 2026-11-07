@@ -10,7 +10,9 @@
 #include "soundent.h"
 #include "TemplateEntities.h"
 #include "point_template.h"
+#if !defined( L4D2 )
 #include "ai_initutils.h"
+#endif
 #include "lights.h"
 #include "mapentities.h"
 #include "wcedit.h"
@@ -19,6 +21,7 @@
 #include "world.h"
 #include "toolframework/iserverenginetools.h"
 #include "vscript_server.h"
+#include "tier0/vprof.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -34,7 +37,11 @@ static CStringRegistry *g_pClassnameSpawnPriority = NULL;
 extern edict_t *g_pForceAttachEdict;
 
 // creates an entity by string name, but does not spawn it
+#if defined( L4D2 )
+CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex, bool bNotify )
+#else
 CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex )
+#endif
 {
 	if ( iForceEdictIndex != -1 )
 	{
@@ -51,6 +58,11 @@ CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex )
 
 	CBaseEntity *pEntity = pNetwork->GetBaseEntity();
 	Assert( pEntity );
+
+#if defined( L4D2 )
+	if ( bNotify )
+		gEntList.NotifyCreateEntity( pEntity );
+#endif
 
 #if 0
 	if ( g_pScriptVM )
@@ -386,6 +398,7 @@ void MapEntity_ParseAllEntities(const char *pMapData, IMapEntityFilter *pFilter,
 			continue;
 		}
 
+#if !defined( L4D2 )
 		CNodeEnt *pNode = dynamic_cast<CNodeEnt*>(pEntity);
 		if ( pNode )
 		{
@@ -405,6 +418,7 @@ void MapEntity_ParseAllEntities(const char *pMapData, IMapEntityFilter *pFilter,
 			}
 			continue;
 		}
+#endif // !L4D2
 
 		if ( dynamic_cast<CLight*>(pEntity) )
 		{

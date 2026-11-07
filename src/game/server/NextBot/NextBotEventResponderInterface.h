@@ -42,6 +42,10 @@ public:
 	// these methods are used by derived classes to define how events propagate
 	virtual INextBotEventResponder *FirstContainedResponder( void ) const  { return NULL; }
 	virtual INextBotEventResponder *NextContainedResponder( INextBotEventResponder *current ) const { return NULL; }
+	#if defined( L4D2 )
+	// S298AF0: actual native base debug string is the empty literal.
+	virtual const char *DebugString( void ) const { return ""; }
+	#endif
 	
 	//
 	// Events.  All events must be 'extended' by calling the derived class explicitly to ensure propagation.
@@ -70,10 +74,15 @@ public:
 
 	virtual void OnSight( CBaseEntity *subject );			// when subject initially enters bot's visual awareness
 	virtual void OnLostSight( CBaseEntity *subject );		// when subject leaves enters bot's visual awareness
+#if defined( L4D2 )
+	virtual void OnThreatChanged( CBaseCombatCharacter *threat );
+#endif
 
 	virtual void OnSound( CBaseEntity *source, const Vector &pos, KeyValues *keys );				// when an entity emits a sound. "pos" is world coordinates of sound. "keys" are from sound's GameData
 	virtual void OnSpokeConcept( CBaseCombatCharacter *who, AIConcept_t concept, AI_Response *response );	// when an Actor speaks a concept
+#if !defined( L4D2 )
 	virtual void OnWeaponFired( CBaseCombatCharacter *whoFired, CBaseCombatWeapon *weapon );		// when someone fires a weapon
+#endif
 
 	virtual void OnNavAreaChanged( CNavArea *newArea, CNavArea *oldArea );	// when bot enters a new navigation area
 
@@ -81,9 +90,19 @@ public:
 
 	virtual void OnPickUp( CBaseEntity *item, CBaseCombatCharacter *giver );	// when something is added to our inventory
 	virtual void OnDrop( CBaseEntity *item );									// when something is removed from our inventory
+#if defined( L4D2 )
+	virtual void OnShoved( CBaseEntity *pusher );
+	virtual void OnBlinded( CBaseEntity *blinder );
+	virtual void OnEnteredSpit();
+	virtual void OnHitByVomitJar( CBaseEntity *attacker );
+#else
 	virtual void OnActorEmoted( CBaseCombatCharacter *emoter, int emote );			// when "emoter" does an "emote" (ie: manual voice command, etc)
+#endif
 
 	virtual void OnCommandAttack( CBaseEntity *victim );	// attack the given entity
+#if defined( L4D2 )
+	virtual void OnCommandAssault();
+#endif
 	virtual void OnCommandApproach( const Vector &pos, float range = 0.0f );	// move to within range of the given position
 	virtual void OnCommandApproach( CBaseEntity *goal );	// follow the given leader
 	virtual void OnCommandRetreat( CBaseEntity *threat, float range = 0.0f );	// retreat from the threat at least range units away (0 == infinite)
@@ -92,6 +111,7 @@ public:
 
 	virtual void OnCommandString( const char *command );	// for debugging: respond to an arbitrary string representing a generalized command
 
+#if !defined( L4D2 )
 	virtual void OnShoved( CBaseEntity *pusher );			// 'pusher' has shoved me
 	virtual void OnBlinded( CBaseEntity *blinder );			// 'blinder' has blinded me with a flash of light
 
@@ -101,6 +121,7 @@ public:
 
 	virtual void OnWin( void );
 	virtual void OnLose( void );
+#endif
 
 #ifdef DOTA_SERVER_DLL
 	virtual void OnCommandMoveTo( const Vector &pos );
@@ -257,6 +278,16 @@ inline void INextBotEventResponder::OnLostSight( CBaseEntity *subject )
 	}	
 }
 
+#if defined( L4D2 )
+inline void INextBotEventResponder::OnThreatChanged( CBaseCombatCharacter *threat )
+{
+	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
+	{
+		sub->OnThreatChanged( threat );
+	}
+}
+#endif
+
 inline void INextBotEventResponder::OnSound( CBaseEntity *source, const Vector &pos, KeyValues *keys )
 {
 	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
@@ -273,6 +304,7 @@ inline void INextBotEventResponder::OnSpokeConcept( CBaseCombatCharacter *who, A
 	}	
 }
 
+#if !defined( L4D2 )
 inline void INextBotEventResponder::OnWeaponFired( CBaseCombatCharacter *whoFired, CBaseCombatWeapon *weapon )
 {
 	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
@@ -280,6 +312,7 @@ inline void INextBotEventResponder::OnWeaponFired( CBaseCombatCharacter *whoFire
 		sub->OnWeaponFired( whoFired, weapon );
 	}	
 }
+#endif
 
 inline void INextBotEventResponder::OnNavAreaChanged( CNavArea *newArea, CNavArea *oldArea )
 {
@@ -313,6 +346,7 @@ inline void INextBotEventResponder::OnDrop( CBaseEntity *item )
 	}	
 }
 
+#if !defined( L4D2 )
 inline void INextBotEventResponder::OnActorEmoted( CBaseCombatCharacter *emoter, int emote )
 {
 	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
@@ -320,6 +354,7 @@ inline void INextBotEventResponder::OnActorEmoted( CBaseCombatCharacter *emoter,
 		sub->OnActorEmoted( emoter, emote );
 	}	
 }
+#endif
 
 inline void INextBotEventResponder::OnShoved( CBaseEntity *pusher )
 {
@@ -337,6 +372,24 @@ inline void INextBotEventResponder::OnBlinded( CBaseEntity *blinder )
 	}	
 }
 
+#if defined( L4D2 )
+inline void INextBotEventResponder::OnEnteredSpit()
+{
+	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
+	{
+		sub->OnEnteredSpit();
+	}
+}
+
+inline void INextBotEventResponder::OnHitByVomitJar( CBaseEntity *attacker )
+{
+	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
+	{
+		sub->OnHitByVomitJar( attacker );
+	}
+}
+#endif
+
 inline void INextBotEventResponder::OnCommandAttack( CBaseEntity *victim )
 {
 	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
@@ -344,6 +397,16 @@ inline void INextBotEventResponder::OnCommandAttack( CBaseEntity *victim )
 		sub->OnCommandAttack( victim );
 	}	
 }
+
+#if defined( L4D2 )
+inline void INextBotEventResponder::OnCommandAssault()
+{
+	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
+	{
+		sub->OnCommandAssault();
+	}
+}
+#endif
 
 inline void INextBotEventResponder::OnCommandApproach( const Vector &pos, float range )
 {
@@ -393,6 +456,7 @@ inline void INextBotEventResponder::OnCommandString( const char *command )
 	}	
 }
 
+#if !defined( L4D2 )
 inline void INextBotEventResponder::OnTerritoryContested( int territoryID )
 {
 	for ( INextBotEventResponder *sub = FirstContainedResponder(); sub; sub = NextContainedResponder( sub ) )
@@ -432,6 +496,7 @@ inline void INextBotEventResponder::OnLose( void )
 		sub->OnLose();
 	}	
 }
+#endif
 
 #ifdef DOTA_SERVER_DLL
 inline void INextBotEventResponder::OnCommandMoveTo( const Vector &pos )

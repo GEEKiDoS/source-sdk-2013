@@ -53,9 +53,11 @@ public:
 
 	virtual INextBot *GetBot( void ) const  { return m_bot; }
 
+	#if !defined( L4D2 )
 	//- Script access to component functions ------------------------------------------------------------------
 	DECLARE_ENT_SCRIPTDESC();
 	HSCRIPT GetScriptInstance();
+	#endif
 	
 private:
 	float m_lastUpdateTime;
@@ -66,7 +68,9 @@ private:
 	INextBot *m_bot;
 	INextBotComponent *m_nextComponent;									// simple linked list of components in the bot
 
+	#if !defined( L4D2 )
 	HSCRIPT	m_hScriptInstance;
+	#endif
 };
 
 
@@ -87,6 +91,11 @@ inline bool INextBotComponent::ComputeUpdateInterval()
 		return false;
 	}
 
+#if defined( L4D2 )
+	// S4ADEE0: the first pass only seeds the clock; no component update.
+	m_lastUpdateTime = gpGlobals->curtime;
+	return false;
+#else
 	// First update - assume a reasonable interval.
 	// We need the very first update to do work, for cases
 	// where the bot was just created and we need to propagate
@@ -95,6 +104,7 @@ inline bool INextBotComponent::ComputeUpdateInterval()
 	m_lastUpdateTime = gpGlobals->curtime - m_curInterval;
 
 	return true;
+#endif
 }
 
 inline float INextBotComponent::GetUpdateInterval() 
@@ -102,6 +112,7 @@ inline float INextBotComponent::GetUpdateInterval()
 	return m_curInterval; 
 }
 
+#if !defined( L4D2 )
 inline HSCRIPT ToHScript( INextBotComponent *pNextBotComponent )
 {
 	return ( pNextBotComponent ) ? pNextBotComponent->GetScriptInstance() : NULL;
@@ -112,5 +123,6 @@ inline INextBotComponent *ToNextBotComponent( HSCRIPT hScript )
 {
 	return ( IsValid( hScript ) ) ? (INextBotComponent *)g_pScriptVM->GetInstanceValue( hScript, GetScriptDescForClass( INextBotComponent ) ) : NULL;
 }
+#endif
 
 #endif // _NEXT_BOT_COMPONENT_INTERFACE_H_

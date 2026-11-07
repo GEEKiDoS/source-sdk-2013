@@ -15,21 +15,69 @@
 #include "NextBotLocomotionInterface.h"
 #include "NextBotBodyInterface.h"
 #include "NextBotVisionInterface.h"
+#if defined( L4D2 )
+#include "l4d2/terror_physics_math.h"
+#endif
 
 #include "tier0/vprof.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 
-ConVar NextBotSpeedLookAheadRange( "nb_speed_look_ahead_range", "150", FCVAR_CHEAT );
-ConVar NextBotGoalLookAheadRange( "nb_goal_look_ahead_range", "50", FCVAR_CHEAT );
-ConVar NextBotLadderAlignRange( "nb_ladder_align_range", "50", FCVAR_CHEAT );
+ConVar NextBotSpeedLookAheadRange( "nb_speed_look_ahead_range", "150", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar NextBotGoalLookAheadRange( "nb_goal_look_ahead_range", "50", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar NextBotLadderAlignRange( "nb_ladder_align_range", "50", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
-ConVar NextBotAllowAvoiding( "nb_allow_avoiding", "1", FCVAR_CHEAT );
-ConVar NextBotAllowClimbing( "nb_allow_climbing", "1", FCVAR_CHEAT );
-ConVar NextBotAllowGapJumping( "nb_allow_gap_jumping", "1", FCVAR_CHEAT );
+ConVar NextBotAllowAvoiding( "nb_allow_avoiding", "1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar NextBotAllowClimbing( "nb_allow_climbing", "1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar NextBotAllowGapJumping( "nb_allow_gap_jumping", "1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
-ConVar NextBotDebugClimbing( "nb_debug_climbing", "0", FCVAR_CHEAT );
+ConVar NextBotDebugClimbing( "nb_debug_climbing", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //--------------------------------------------------------------------------------------------------------------
@@ -44,14 +92,20 @@ PathFollower::PathFollower( void )
 	m_avoidTimer.Invalidate();
 	m_waitTimer.Invalidate();
 	m_hindrance = NULL;
+#if defined( L4D2 )
+	m_skipTimer.Invalidate();
+#endif
 
 	m_minLookAheadRange = -1.0f;
 
+	#if !defined( L4D2 )
 	// was 10.0f for L4D - need a better solution here (MSB 5/15/09)
 	m_goalTolerance = 25.0f;
+	#endif
 }
 
 
+#if !defined( L4D2 )
 //--------------------------------------------------------------------------------------------------------------
 class CDetachPath
 {
@@ -69,13 +123,16 @@ public:
 
 	PathFollower *m_path;
 };
+#endif
 
 //--------------------------------------------------------------------------------------------------------------
 PathFollower::~PathFollower()
 {
+	#if !defined( L4D2 )
 	// allow bots to detach pointer to me
 	CDetachPath detach( this );
 	TheNextBots().ForEachBot( detach );
+	#endif
 }
 
 
@@ -104,7 +161,9 @@ void PathFollower::OnPathChanged( INextBot *bot, Path::ResultType result )
 {
 	// start from the beginning
 	m_goal = FirstSegment();
+	#if !defined( L4D2 )
 	m_result = result;
+	#endif
 }
 
 
@@ -127,7 +186,13 @@ void PathFollower::AdjustSpeed( INextBot *bot )
 	const Path::Data &data = GetCursorData();
 	
 	// speed based on curvature
+#if defined( L4D2 )
+	const float walkSpeed = mover->GetWalkSpeed();
+	const float bendSpeed = static_cast< float >( ( static_cast< double >( walkSpeed ) - mover->GetRunSpeed() ) * fabs( data.curvature ) );
+	mover->SetDesiredSpeed( static_cast< float >( static_cast< double >( mover->GetRunSpeed() ) + bendSpeed ) );
+#else
 	mover->SetDesiredSpeed( mover->GetRunSpeed() + fabs( data.curvature ) * ( mover->GetWalkSpeed() - mover->GetRunSpeed() ) );
+#endif
 }
 
 
@@ -240,7 +305,11 @@ bool PathFollower::IsAtGoal( INextBot *bot ) const
 				// can't use this for positions below us because we need to be able
 				// to climb over random objects along our path that we can't actually
 				// move *through*
+#if defined( L4D2 )
+				if ( toGoal.z < mover->GetStepHeight() || ( mover->IsPotentiallyTraversable( mover->GetFeet(), next->pos ) && !mover->HasPotentialGap( mover->GetFeet(), next->pos ) ) )
+#else
 				if ( toGoal.z < mover->GetStepHeight() && ( mover->IsPotentiallyTraversable( mover->GetFeet(), next->pos ) && !mover->HasPotentialGap( mover->GetFeet(), next->pos ) ) )
+#endif
 				{
 					// passed goal
 					return true;
@@ -250,7 +319,12 @@ bool PathFollower::IsAtGoal( INextBot *bot ) const
 
 		// proximity check
 		// Z delta can be anything, since we may be climbing over a tall fence, a physics prop, etc.
+#if defined( L4D2 )
+		const float halfWidth = 0.5f * body->GetHullWidth();
+		if ( fabs( toGoal.x ) < halfWidth && fabs( toGoal.y ) < halfWidth )
+#else
 		if ( toGoal.AsVector2D().IsLengthLessThan( m_goalTolerance ) )
+#endif
 		{
 			// reached goal
 			return true;
@@ -347,7 +421,11 @@ bool PathFollower::LadderUpdate( INextBot *bot )
 							  IBody::CRITICAL, 
 							  2.0f, 
 							  NULL,
+#if defined( L4D2 )
+							  "Mounting upward ladder", bot->GetNextBotCombatCharacter() != NULL, 0.25f );
+#else
 							  "Mounting upward ladder" );
+#endif
 
 		float range = to.NormalizeInPlace();
 		if ( range < NextBotLadderAlignRange.GetFloat() )
@@ -464,6 +542,40 @@ bool PathFollower::CheckProgress( INextBot *bot )
 {
 	ILocomotion *mover = bot->GetLocomotionInterface();
 
+#if defined( L4D2 )
+	// S4B64B0: at most one expensive skip attempt per server frame, and
+	// at most three candidates per path after its own 0.1-second throttle.
+	static int lastSkipFrame = -1;
+	if ( lastSkipFrame != gpGlobals->framecount && m_skipTimer.IsElapsed() && m_minLookAheadRange > 0.0f )
+	{
+		const Vector &myFeet = mover->GetFeet();
+		const Segment *initialGoal = m_goal;
+		const Segment *candidate = m_goal;
+		const float minRangeSqr = m_minLookAheadRange * m_minLookAheadRange;
+		float rangeSoFar = 0.0f;
+		int remaining = 3;
+		while ( candidate && remaining-- && candidate->type == ON_GROUND && mover->IsOnGround() )
+		{
+			const float rangeSqr = ( candidate->pos - myFeet ).LengthSqr();
+			if ( !( rangeSqr < minRangeSqr ) )
+				break;
+			candidate = NextSegment( candidate );
+			if ( !candidate || candidate->type != ON_GROUND ||
+				DotProduct( mover->GetMotionVector(), candidate->forward ) <= 0.1f )
+				break;
+			if ( m_goal != initialGoal && ( m_goal->pos - candidate->pos ).LengthSqr() < 576.0f )
+				continue;
+			rangeSoFar += sqrtf( rangeSqr + FLT_EPSILON );
+			if ( rangeSoFar > 1.25f * m_minLookAheadRange )
+				break;
+			lastSkipFrame = gpGlobals->framecount;
+			m_skipTimer.Start( 0.1f );
+			if ( !mover->IsPotentiallyTraversable( myFeet, candidate->pos ) || mover->HasPotentialGap( myFeet, candidate->pos ) )
+				break;
+			m_goal = candidate;
+		}
+	}
+#else
 	// skip nearby goal points that are redundant to smooth path following motion
 	const Path::Segment *pSkipToGoal = NULL;
 	if ( m_minLookAheadRange > 0.0f )
@@ -521,11 +633,16 @@ bool PathFollower::CheckProgress( INextBot *bot )
 			pSkipToGoal = NULL;
 		}
 	}
+#endif
 
 	if ( IsAtGoal( bot ) )
 	{
 		// iterate to next segment of the path
+#if defined( L4D2 )
+		const Path::Segment *nextSegment = NextSegment( m_goal );
+#else
 		const Path::Segment *nextSegment = pSkipToGoal ? pSkipToGoal : NextSegment( m_goal );
+#endif
 
 		if ( nextSegment == NULL )
 		{
@@ -554,11 +671,13 @@ bool PathFollower::CheckProgress( INextBot *bot )
 			// keep moving
 			m_goal = nextSegment;
 
+			#if !defined( L4D2 )
 			if ( bot->IsDebugging( NEXTBOT_PATH ) && !mover->IsPotentiallyTraversable( mover->GetFeet(), nextSegment->pos ) )
 			{
 				Warning( "PathFollower: path to my goal is blocked by something\n" );
 				NDebugOverlay::Sphere( m_goal->pos, 5.f, 255, 0, 0, true, 3.f );
 			}
+			#endif
 		}
 	}
 
@@ -574,8 +693,10 @@ void PathFollower::Update( INextBot *bot )
 {
 	VPROF_BUDGET( "PathFollower::Update", "NextBotSpiky" );
 
+#if !defined( L4D2 )
 	// track most recent path followed
 	bot->SetCurrentPath( this );
+#endif
 
 
 	ILocomotion *mover = bot->GetLocomotionInterface();
@@ -592,7 +713,16 @@ void PathFollower::Update( INextBot *bot )
 		return;
 	}
 
+#if defined( L4D2 )
+	if ( bot->IsDebugging( NEXTBOT_PATH ) )
+	{
+		const Segment *start = GetCurrentGoal();
+		Draw( start ? PriorSegment( start ) : NULL );
+	}
+	m_didAvoidCheck = false;
+#else
 //	m_didAvoidCheck = false;
+#endif
 
 
 	if ( LadderUpdate( bot ) )
@@ -626,7 +756,11 @@ void PathFollower::Update( INextBot *bot )
 
 	forward.z = 0.0f;
 
+#if defined( L4D2 )
+	float goalRange = static_cast< float >( TerrorPhysicsNormalize( forward ) );
+#else
 	float goalRange = forward.NormalizeInPlace();
+#endif
 
 	Vector left( -forward.y, forward.x, 0.0f );
 
@@ -718,8 +852,10 @@ void PathFollower::Update( INextBot *bot )
 					DevMsg( "PathFollower: OnMoveToFailure( FAIL_FELL_OFF )\n" );
 				}
 
+#if !defined( L4D2 )
 				// reset stuck status since we're (likely) repathing anyways. otherwise, we could be stuck in a loop here and not move
 				mover->ClearStuckStatus( "Fell off path" );
+#endif
 
 				return;
 			}
@@ -732,13 +868,21 @@ void PathFollower::Update( INextBot *bot )
 	// avoid small obstacles
 	forward = goalPos - mover->GetFeet();
 	forward.z = 0.0f;
+#if defined( L4D2 )
+	float rangeToGoal = static_cast< float >( TerrorPhysicsNormalize( forward ) );
+#else
 	float rangeToGoal = forward.NormalizeInPlace();
+#endif
 
 	left.x = -forward.y;
 	left.y = forward.x;
 	left.z = 0.0f;
 
+#if defined( L4D2 )
+	if ( m_goal != LastSegment() )
+#else
 	if ( true || m_goal != LastSegment() )	// think more about this - we often need to avoid to reach the final goal pos, too (MSB 5/15/09)
+#endif
 	{
 		const float nearLedgeRange = 50.0f;
 		if ( rangeToGoal > nearLedgeRange || ( m_goal && m_goal->type != CLIMB_UP ) )
@@ -748,7 +892,11 @@ void PathFollower::Update( INextBot *bot )
 	}
 
 	// face towards movement goal
+#if defined( L4D2 )
+	if ( mover->IsOnGround() && ( bot->GetEntity()->GetAbsOrigin() - goalPos ).LengthSqr() > 1296.0f )
+#else
 	if ( mover->IsOnGround() )
+#endif
 	{	
 		mover->FaceTowards( goalPos );
 	}
@@ -765,6 +913,7 @@ void PathFollower::Update( INextBot *bot )
 
 	if ( bot->IsDebugging( NEXTBOT_PATH ) )
 	{
+		#if !defined( L4D2 )
 		const Segment *start = GetCurrentGoal();
 		if ( start )
 		{
@@ -772,6 +921,7 @@ void PathFollower::Update( INextBot *bot )
 		}
 
 		Draw( start );
+		#endif
 
 		/*
 		else
@@ -823,6 +973,13 @@ CBaseEntity *PathFollower::FindBlocker( INextBot *bot )
 		// very close, but goal is closer
 
 		Vector traceForward = s->pos - from;
+#if defined( L4D2 )
+		float traceRange = static_cast< float >( TerrorPhysicsNormalize( traceForward ) );
+		const double minimumRange = 2.0 * static_cast< double >( body->GetHullWidth() );
+		const float minTraceRange = static_cast< float >( minimumRange );
+		if ( minimumRange > static_cast< double >( traceRange ) )
+			traceRange = minTraceRange;
+#else
 		float traceRange = traceForward.NormalizeInPlace();
 
 		const float minTraceRange = 2.0f * body->GetHullWidth();
@@ -830,6 +987,7 @@ CBaseEntity *PathFollower::FindBlocker( INextBot *bot )
 		{
 			traceRange = minTraceRange;
 		}
+#endif
 
 		mover->TraceHull( from, from + traceRange * traceForward, blockerMins, blockerMaxs, body->GetSolidMask(), &filter, &result );
 
@@ -929,7 +1087,9 @@ Vector PathFollower::Avoid( INextBot *bot, const Vector &goalPos, const Vector &
 	const float offset = size + 2.0f;
 
 	float range = mover->IsRunning() ? 50.0f : 30.0f;
+#if !defined( L4D2 )
 	range *= bot->GetEntity()->GetModelScale();
+#endif
 
 	m_hullMin = Vector( -size, -size, mover->GetStepHeight()+0.1f );
 	
@@ -1071,7 +1231,11 @@ Vector PathFollower::Avoid( INextBot *bot, const Vector &goalPos, const Vector &
 		
 		// adjust goal to avoid obstacle
 		Vector avoidDir = 0.5f * forward - left * avoidResult;
+#if defined( L4D2 )
+		TerrorPhysicsNormalize( avoidDir );
+#else
 		avoidDir.NormalizeInPlace();
+#endif
 		
 		adjustedGoal = mover->GetFeet() + 100.0f * avoidDir;
 		
@@ -1153,11 +1317,19 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 	// use the 2D direction towards our goal
 	Vector climbDirection = forward;
 	climbDirection.z = 0.0f;
+#if defined( L4D2 )
+	TerrorPhysicsNormalize( climbDirection );
+#else
 	climbDirection.NormalizeInPlace();
+#endif
 
+#if defined( L4D2 )
+	const float ledgeLookAheadRange = body->GetHullWidth();
+#else
 	// we can't have this as large as our hull width, or we'll find ledges ahead of us
 	// that we will fall from when we climb up because our hull wont actually touch at the top.
 	const float ledgeLookAheadRange = body->GetHullWidth() - 1;
+#endif
 
 	if ( mover->IsClimbingOrJumping() || mover->IsAscendingOrDescendingLadder() || !mover->IsOnGround() )
 	{
@@ -1171,6 +1343,7 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 		return false;
 	}
 
+#if !defined( L4D2 )
 	if ( TheNavMesh->IsAuthoritative() )
 	{
 		//
@@ -1197,6 +1370,7 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 
 		return false;
 	}
+#endif
 
 
 	// If we're approaching a CLIMB_UP link, save off the height delta for it, and trust the nav *just* enough
@@ -1218,7 +1392,11 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 			climbDirection = nearClimbGoal - mover->GetFeet();
 			climbUpLedgeHeightDelta = climbDirection.z;
 			climbDirection.z = 0.0f;
+#if defined( L4D2 )
+			TerrorPhysicsNormalize( climbDirection );
+#else
 			climbDirection.NormalizeInPlace();
+#endif
 		}
 	}
 
@@ -1246,11 +1424,22 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 	// We also need to check traversability out to 2 * ledgeLookAheadRange in case our goal is just before a tricky ledge climb and once we pass the goal it will be too late.
 	// When we're in a CLIMB_UP segment, allow us to look for ledges - we know the destination ledge height, and will only grab the correct ledge.
 	Vector toGoal = m_goal->pos - mover->GetFeet();
+#if defined( L4D2 )
+	const float horizontalRange = toGoal.AsVector2D().Length();
+	const float normalizedRange = static_cast< float >( TerrorPhysicsNormalize( toGoal ) );
+	const float probeRange = horizontalRange > 0.0f ?
+		MAX( horizontalRange - body->GetHullWidth() * 0.25f, 0.0f ) / horizontalRange * normalizedRange : 0.0f;
+#else
 	toGoal.NormalizeInPlace();
+#endif
 
 	if ( toGoal.z < mover->GetTraversableSlopeLimit() &&
 		 !mover->IsStuck() && m_goal->type != CLIMB_UP &&
+#if defined( L4D2 )
+		 mover->IsPotentiallyTraversable( mover->GetFeet(), mover->GetFeet() + probeRange * toGoal, ILocomotion::IMMEDIATELY ) )
+#else
 		 mover->IsPotentiallyTraversable( mover->GetFeet(), mover->GetFeet() + 2.0f * ledgeLookAheadRange * toGoal, ILocomotion::IMMEDIATELY ) )
+#endif
 	{
 		return false;
 	}
@@ -1411,8 +1600,12 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 				DevMsg( "%3.2f: %s at potential ledge climb\n", gpGlobals->curtime, bot->GetDebugIdentifier() );
 			}
 
+#if defined( L4D2 )
+			float ledgeFrontWallDepth = 0.0f;
+#else
 			// the low hull sweep hit an obstacle - note how 'far in' this is
 			float ledgeFrontWallDepth = ledgeLookAheadRange * result.fraction;
+#endif
 
 			float minLedgeDepth = body->GetHullWidth()/2.0f; // 5.0f;
 			if ( m_goal->type == CLIMB_UP )
@@ -1433,8 +1626,16 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 						depthVector.y = (depthVector.y > 0) ? afterClimb->area->GetSizeY() : -afterClimb->area->GetSizeY();
 					}
 
+#if defined( L4D2 )
+					const double areaDepth = TerrorPhysicsNormalize( depthVector );
+					const float roundedAreaDepth = static_cast< float >( areaDepth );
+					// S4B815B retains ST0 across the F32 spill and compares wide.
+					if ( !( areaDepth > static_cast< double >( minLedgeDepth ) ) )
+						minLedgeDepth = roundedAreaDepth;
+#else
 					float areaDepth = depthVector.NormalizeInPlace();
 					minLedgeDepth = MIN( minLedgeDepth, areaDepth );
+#endif
 				}
 			}
 
@@ -1466,12 +1667,19 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 			float wallDepth = 0.0f;
 
 			bool isLastIteration = false;
+#if defined( L4D2 )
+			bool isFirstTrace = true;
+#endif
 			while( true )
 			{				
 				// trace forward to find the wall in front of us, or the empty space of the ledge above us
 				mover->TraceHull( feet + Vector( 0, 0, ledgeHeight ), 
 								feet + Vector( 0, 0, ledgeHeight ) + climbDirection * ledgeTopLookAheadRange, 
 								climbHullMin, climbHullMax, mask, &filter, &result );
+#if defined( L4D2 )
+				if ( isFirstTrace && ( result.startsolid || ( result.DidHit() && result.plane.normal.z < 0.7f ) ) )
+					isFirstTrace = false;
+#endif
 
 				float traceDepth = ledgeTopLookAheadRange * result.fraction;
 
@@ -1481,7 +1689,11 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 					if ( foundWall )
 					{
 						// TODO: test that potential ledge is flat enough to stand on
+#if defined( L4D2 )
+						if ( ( traceDepth - ledgeFrontWallDepth ) >= minLedgeDepth )
+#else
 						if ( ( traceDepth - ledgeFrontWallDepth ) > minLedgeDepth )
+#endif
 						{
 							bool isUsable = true;
 
@@ -1608,11 +1820,19 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 
 							if ( isUsable )
 							{
+#if defined( L4D2 )
+								if ( isFirstTrace )
+									break;
+#endif
 								// found a usable ledge here
 								foundLedge = true;
 								break;
 							}
 						}
+#if defined( L4D2 )
+						ledgeFrontWallDepth = traceDepth;
+						ledgeTopLookAheadRange = MAX( ledgeLookAheadRange, ( minLedgeDepth + 0.1f ) + traceDepth );
+#endif
 					}
 					else if ( result.DidHit() )
 					{
@@ -1625,10 +1845,17 @@ bool PathFollower::Climbing( INextBot *bot, const Path::Segment *goal, const Vec
 						// found a valid ledge wall
 						foundWall = true;
 						wallDepth = traceDepth;
+#if defined( L4D2 )
+						ledgeFrontWallDepth = traceDepth;
+#endif
 
 						// make sure the subsequent traces are at least minLedgeDepth deeper than
 						// the wall we just found, or all ledge checks will fail
+#if defined( L4D2 )
+						float minTraceDepth = ( minLedgeDepth + 0.1f ) + traceDepth;
+#else
 						float minTraceDepth = traceDepth + minLedgeDepth + 0.1f;
+#endif
 
 						if ( ledgeTopLookAheadRange < minTraceDepth )
 						{
@@ -1851,7 +2078,9 @@ void PathFollower::Draw( const Path::Segment *start ) const
 		else
 			NDebugOverlay::SweptBox( m_rightFrom, m_rightTo, m_hullMin, m_hullMax, angles, 255, 0, 0, 255, 0.1f );
 
+		#if !defined( L4D2 )
 		const_cast< PathFollower * >( this )->m_didAvoidCheck = false;
+		#endif
 	}
 
 	// highlight current goal segment
@@ -1922,3 +2151,6 @@ bool PathFollower::IsDiscontinuityAhead( INextBot *bot, Path::SegmentType type, 
 }
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif

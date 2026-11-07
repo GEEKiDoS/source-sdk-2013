@@ -22,11 +22,18 @@
 #include <KeyValues.h>
 #include <vgui_controls/AnimationController.h>
 
-#define MAX_MENU_STRING	512
+#ifdef L4D2
+#define MAX_MENU_STRING 1024
+#else
+#define MAX_MENU_STRING 512
+#endif
 wchar_t g_szMenuString[MAX_MENU_STRING];
 char g_szPrelocalisedMenuString[MAX_MENU_STRING];
 
 #include "menu.h"
+#ifdef L4D2
+#include <emmintrin.h>
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -58,6 +65,9 @@ CHudMenu::CHudMenu( const char *pElementName ) :
 	CHudElement( pElementName ), BaseClass(NULL, "HudMenu")
 {
 	m_nSelectedItem = -1;
+#ifdef L4D2
+	m_options = NULL;
+#endif
 
 	vgui::Panel *pParent = g_pClientMode->GetViewport();
 	SetParent( pParent );
@@ -163,6 +173,7 @@ void CHudMenu::PaintString( const wchar_t *text, int textlen, vgui::HFont& font,
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#ifndef L4D2
 void CHudMenu::Paint()
 {
 	if ( !m_bMenuDisplayed )
@@ -241,6 +252,7 @@ void CHudMenu::Paint()
 		y += line->height;
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: selects an item from the menu
@@ -265,6 +277,7 @@ void CHudMenu::SelectMenuItem( int menu_item )
 	}
 }
 
+#ifndef L4D2
 void CHudMenu::ProcessText( void )
 {
 	m_Processed.RemoveAll();
@@ -357,6 +370,7 @@ void CHudMenu::ProcessText( void )
 		m_nHeight += l->height;
 	}
 }
+#endif
 //-----------------------------------------------------------------------------
 // Purpose: Local method to hide a menu, mirroring code found in
 //          MsgFunc_ShowMenu.
@@ -531,3 +545,7 @@ void CHudMenu::ApplySchemeSettings(vgui::IScheme *pScheme)
 
 	ProcessText();
 }
+
+#ifdef L4D2
+#include "l4d2/ui/terror_menu_options.inc"
+#endif

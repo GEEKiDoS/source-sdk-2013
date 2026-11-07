@@ -49,12 +49,20 @@ public:
 								 LookAtPriorityType priority = BORING, 
 								 float duration = 0.0f,
 								 INextBotReply *replyWhenAimed = NULL,
+#if defined( L4D2 )
+								 const char *reason = NULL, bool requireSettled = true, float easeInTime = 0.25f );		// aim the bot's head towards the given goal
+#else
 								 const char *reason = NULL );		// aim the bot's head towards the given goal
+#endif // L4D2
 	virtual void AimHeadTowards( CBaseEntity *subject,
 								 LookAtPriorityType priority = BORING, 
 								 float duration = 0.0f,
 								 INextBotReply *replyWhenAimed = NULL,
+#if defined( L4D2 )
+								 const char *reason = NULL, bool requireSettled = true, float easeInTime = 0.25f );		// continually aim the bot's head towards the given subject
+#else
 								 const char *reason = NULL );		// continually aim the bot's head towards the given subject
+#endif // L4D2
 
 	virtual bool IsHeadAimingOnTarget( void ) const;				// return true if the bot's head has achieved its most recent lookat target
 	virtual bool IsHeadSteady( void ) const;						// return true if head is not rapidly turning to look somewhere else
@@ -128,6 +136,9 @@ public:
 
 	virtual unsigned int GetSolidMask( void ) const;					// return the bot's collision mask (hack until we get a general hull trace abstraction here or in the locomotion interface)
 	virtual unsigned int GetCollisionGroup( void ) const;
+#if defined( L4D2 )
+	virtual CBaseEntity *GetEntity() { return NULL; }
+#endif
 };
 
 

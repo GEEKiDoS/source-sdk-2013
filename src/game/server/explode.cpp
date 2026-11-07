@@ -142,7 +142,11 @@ BEGIN_DATADESC( CEnvExplosion )
 	DEFINE_FIELD( m_hInflictor, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_iCustomDamageType, FIELD_INTEGER ),
 
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iClassIgnore, FIELD_INTEGER, "ignoredClass" ),
+#else
 	DEFINE_FIELD( m_iClassIgnore, FIELD_INTEGER ),
+#endif
 	DEFINE_KEYFIELD( m_hEntityIgnore, FIELD_EHANDLE, "ignoredEntity" ),
 
 	// Function Pointers
@@ -174,6 +178,9 @@ void CEnvExplosion::Precache( void )
 	{
 		m_sFireballSprite = PrecacheModel( STRING( m_iszFireballSprite ) );
 	}
+#if defined( L4D2 )
+	PrecacheScriptSound( "explode_3" );
+#endif
 }
 
 void CEnvExplosion::Spawn( void )

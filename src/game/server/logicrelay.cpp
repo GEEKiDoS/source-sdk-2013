@@ -142,6 +142,9 @@ void CLogicRelay::InputTrigger( inputdata_t &inputdata )
 {
 	if ((!m_bDisabled) && (!m_bWaitForRefire))
 	{
+		#if defined( L4D2 )
+		m_hLastCaller = inputdata.pCaller;
+		#endif
 		m_OnTrigger.FireOutput( inputdata.pActivator, this );
 		
 		if (m_spawnflags & SF_REMOVE_ON_FIRE)

@@ -19,6 +19,9 @@
 //-----------------------------------------------------------------------------
 AI_CriteriaSet::AI_CriteriaSet() : m_Lookup( 0, 0, CritEntry_t::LessFunc )
 {
+#ifdef L4D2
+	m_nWorldContextCount = 0;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -29,6 +32,9 @@ AI_CriteriaSet::AI_CriteriaSet( const AI_CriteriaSet& src ) : m_Lookup( 0, 0, Cr
 {
 	// Use fast Copy CUtlRBTree CopyFrom. WARNING: It only handles POD.
 	m_Lookup.CopyFrom( src.m_Lookup );
+#ifdef L4D2
+	m_nWorldContextCount = src.m_nWorldContextCount;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -57,6 +63,10 @@ void AI_CriteriaSet::AppendCriteria( const char *criteria, const char *value /*=
 		MEM_ALLOC_CREDIT();
 		entry.SetValue(value);
 		entry.weight = weight;
+#ifdef L4D2
+		if ( criteria[0] == '$' )
+			++m_nWorldContextCount;
+#endif
 		m_Lookup.Insert( entry );
 	}
 	else
@@ -77,6 +87,10 @@ void AI_CriteriaSet::RemoveCriteria( const char *criteria )
 	if ( idx == -1 )
 		return;
 
+#ifdef L4D2
+	if ( m_Lookup[idx].criterianame.String()[0] == '$' )
+		--m_nWorldContextCount;
+#endif
 	m_Lookup.RemoveAt( idx );
 }
 
@@ -114,7 +128,11 @@ int AI_CriteriaSet::FindCriterionIndex( const char *name ) const
 const char *AI_CriteriaSet::GetName( int index ) const
 {
 	static char namebuf[ 128 ];
+#ifdef L4D2
+	if ( index < 0 || index >= m_Lookup.MaxElement() || !m_Lookup.IsValidIndex( index ) )
+#else
 	if ( index < 0 || index >= (int)m_Lookup.Count() )
+#endif
 		return "";
 
 	const CritEntry_t *entry = &m_Lookup[ index ];
@@ -129,7 +147,11 @@ const char *AI_CriteriaSet::GetName( int index ) const
 //-----------------------------------------------------------------------------
 const char *AI_CriteriaSet::GetValue( int index ) const
 {
+#ifdef L4D2
+	if ( index < 0 || index >= m_Lookup.MaxElement() || !m_Lookup.IsValidIndex( index ) )
+#else
 	if ( index < 0 || index >= (int)m_Lookup.Count() )
+#endif
 		return "";
 
 	const CritEntry_t *entry = &m_Lookup[ index ];
@@ -143,7 +165,11 @@ const char *AI_CriteriaSet::GetValue( int index ) const
 //-----------------------------------------------------------------------------
 float AI_CriteriaSet::GetWeight( int index ) const
 {
+#ifdef L4D2
+	if ( index < 0 || index >= m_Lookup.MaxElement() || !m_Lookup.IsValidIndex( index ) )
+#else
 	if ( index < 0 || index >= (int)m_Lookup.Count() )
+#endif
 		return 1.0f;
 
 	const CritEntry_t *entry = &m_Lookup[ index ];
@@ -197,6 +223,9 @@ AI_Response::AI_Response()
 
 	m_pCriteria = NULL;
 	m_bApplyContextToWorld = false;
+#ifdef L4D2
+	m_flMatchScore = 0.0f;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -240,6 +269,11 @@ AI_Response &AI_Response::operator=( const AI_Response &from )
 
 	m_szContext = from.m_szContext;
 	m_bApplyContextToWorld = from.m_bApplyContextToWorld;
+#ifdef L4D2
+	m_Followup = from.m_Followup;
+	m_ScriptData = from.m_ScriptData;
+	m_flMatchScore = from.m_flMatchScore;
+#endif
 
 	return *this;
 }
@@ -259,10 +293,20 @@ void AI_Response::Init( ResponseType_t type, const char *responseName, const AI_
 	V_strcpy_safe( m_szMatchingRule, ruleName ? ruleName : "NULL" );
 
 	// Copy underlying criteria
+#ifdef L4D2
+	delete m_pCriteria;
+	m_pCriteria = NULL;
+#else
 	Assert( !m_pCriteria );
+#endif
 	m_pCriteria = new AI_CriteriaSet( criteria );
 
 	m_Params = responseparams;
+#ifdef L4D2
+	// Native0A840 retains the MAIN function and score across Init.
+	m_Followup.Clear();
+	m_ScriptData.GetFollowup().Clear();
+#endif
 
 	m_szContext = applyContext;
 	m_bApplyContextToWorld = bApplyContextToWorld;
@@ -323,6 +367,9 @@ const char *AI_Response::DescribeResponse( ResponseType_t type )
 	case RESPONSE_SCENE:    return "RESPONSE_SCENE";
 	case RESPONSE_RESPONSE: return "RESPONSE_RESPONSE";
 	case RESPONSE_PRINT:    return "RESPONSE_PRINT";
+#ifdef L4D2
+	case RESPONSE_SCRIPT:   return "RESPONSE_SCRIPT";
+#endif
 	}
 
 	Assert( 0 );
@@ -454,7 +501,11 @@ void AI_Response::SetContext( const char *context )
 //			*duration -
 // Output : static bool
 //-----------------------------------------------------------------------------
+#ifdef L4D2
+const char *SplitContext( const char *raw, char *key, int keylen, char *value, int valuelen, float *duration, const char *fullContext )
+#else
 const char *SplitContext( const char *raw, char *key, int keylen, char *value, int valuelen, float *duration )
+#endif
 {
 	char *colon1 = Q_strstr( raw, ":" );
 	if ( !colon1 )
@@ -482,6 +533,14 @@ const char *SplitContext( const char *raw, char *key, int keylen, char *value, i
 	{
 		if ( duration )
 			*duration = atof( colon2 + 1 );
+#ifdef L4D2
+		if ( (unsigned char)( colon2[1] - '0' ) > 9 )
+		{
+			DevMsg( "SplitContext:  warning, ignoring context '%s', missing comma separator!  Entire context was '%s'.\n", raw, fullContext );
+			*key = *value = 0;
+			return NULL;
+		}
+#endif
 
 		len = MIN( colon2 - ( colon1 + 1 ), valuelen - 1 );
 		Q_strncpy( value, colon1 + 1, len + 1 );
@@ -499,3 +558,45 @@ const char *SplitContext( const char *raw, char *key, int keylen, char *value, i
 
 	return last ? NULL : end + 1;
 }
+
+#ifdef L4D2
+int AI_CriteriaSet::FirstCriterion() const
+{
+	short index = m_Lookup.FirstInorder();
+	return index == m_Lookup.InvalidIndex() ? -1 : index;
+}
+int AI_CriteriaSet::NextCriterion( int previous ) const
+{
+	short index = m_Lookup.NextInorder( previous );
+	return index == m_Lookup.InvalidIndex() ? -1 : index;
+}
+void AI_CriteriaSet::MergeFrom( const AI_CriteriaSet &other )
+{
+	if ( this == &other ) return;
+	for ( int index = other.FirstCriterion(); index != -1; index = other.NextCriterion( index ) )
+	{
+		const CritEntry_t &entry = other.m_Lookup[index];
+		AppendCriteria( entry.criterianame.String(), entry.value, entry.weight );
+	}
+}
+void AI_CriteriaSet::InterceptWorldSetContexts( AI_CriteriaSet &contexts )
+{
+	if ( m_nWorldContextCount == 0 ) return;
+	AI_CriteriaSet replacement;
+	for ( int index = FirstCriterion(); index != -1; index = NextCriterion( index ) )
+	{
+		const CritEntry_t &entry = m_Lookup[index];
+		const char *name = entry.criterianame.String();
+		if ( name[0] == '$' )
+		{
+			char mapped[80] = "world";
+			Q_strncpy( mapped + 5, name + 1, 75 );
+			replacement.AppendCriteria( mapped, entry.value, entry.weight );
+			contexts.AppendCriteria( name + 1, entry.value, entry.weight );
+		}
+		else replacement.AppendCriteria( name, entry.value, entry.weight );
+	}
+	m_nWorldContextCount = 0;
+	m_Lookup.Swap( replacement.m_Lookup );
+}
+#endif

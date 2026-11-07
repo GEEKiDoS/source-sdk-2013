@@ -82,6 +82,9 @@ public:
 	virtual float	GetIdealSpeed( ) const;
 	virtual float	GetIdealAccel( ) const;
 	virtual void	StudioFrameAdvance(); // advance animation frame to some time in the future
+#if defined( L4D2 )
+	virtual void OnAnimationCycleCompleted(); // Genuine36540default, all175RET0.
+#endif
 	void StudioFrameAdvanceManual( float flInterval );
 	bool	IsValidSequence( int iSequence );
 
@@ -90,6 +93,10 @@ public:
 
 	inline int GetSequence() { return m_nSequence; }
 	virtual void SetSequence(int nSequence);
+	#if defined( L4D2 )
+	// S36550 is the proven genuine empty base, NOT a missing implementation.
+	virtual void OnSequenceChanged( int oldSequence ) {}
+	#endif
 	/* inline */ void ResetSequence(int nSequence);
 	// FIXME: push transitions support down into CBaseAnimating?
 	virtual bool IsActivityFinished( void ) { return m_bSequenceFinished; }
@@ -97,15 +104,28 @@ public:
 	inline bool SequenceLoops( void ) { return m_bSequenceLoops; }
 	bool		 IsSequenceLooping( CStudioHdr *pStudioHdr, int iSequence );
 	inline bool	 IsSequenceLooping( int iSequence ) { return IsSequenceLooping(GetModelPtr(),iSequence); }
+#if defined( L4D2 )
+	inline double SequenceDuration( void ) { return SequenceDuration( m_nSequence ); }
+	double SequenceDuration( CStudioHdr *pStudioHdr, int iSequence );
+	inline double SequenceDuration( int iSequence ) { return SequenceDuration( GetModelPtr(), iSequence ); }
+#else
 	inline float SequenceDuration( void ) { return SequenceDuration( m_nSequence ); }
-	float	SequenceDuration( CStudioHdr *pStudioHdr, int iSequence );
-	inline float SequenceDuration( int iSequence ) { return SequenceDuration(GetModelPtr(), iSequence); }
+	float SequenceDuration( CStudioHdr *pStudioHdr, int iSequence );
+	inline float SequenceDuration( int iSequence ) { return SequenceDuration( GetModelPtr(), iSequence ); }
+#endif
 	float	ScriptGetSequenceDuration( int iSequence );
 	float	GetSequenceCycleRate( CStudioHdr *pStudioHdr, int iSequence );
-	inline float	GetSequenceCycleRate( int iSequence ) { return GetSequenceCycleRate(GetModelPtr(),iSequence); }
-	float	GetLastVisibleCycle( CStudioHdr *pStudioHdr, int iSequence );
-	virtual float	GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence );
-	inline float GetSequenceGroundSpeed( int iSequence ) { return GetSequenceGroundSpeed(GetModelPtr(), iSequence); }
+#if defined( L4D2 )
+	float GetSequenceCycleRate( int iSequence ); //349F0, NOT inline2argalias.
+	double GetLastVisibleCycle( CStudioHdr *pStudioHdr, int iSequence );
+	virtual double GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence );
+	inline double GetSequenceGroundSpeed( int iSequence ) { return GetSequenceGroundSpeed( GetModelPtr(), iSequence ); }
+#else
+	inline float GetSequenceCycleRate( int iSequence ) { return GetSequenceCycleRate( GetModelPtr(), iSequence ); }
+	float GetLastVisibleCycle( CStudioHdr *pStudioHdr, int iSequence );
+	virtual float GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence );
+	inline float GetSequenceGroundSpeed( int iSequence ) { return GetSequenceGroundSpeed( GetModelPtr(), iSequence ); }
+#endif
 	void	ResetActivityIndexes ( void );
 	void    ResetEventIndexes ( void );
 	int		SelectWeightedSequence ( Activity activity );
@@ -289,9 +309,17 @@ public:
 	void				SetModelScale( float scale, float change_duration = 0.0f );
 	inline void			ScriptSetModelScale( float scale, float change_duration = 0.0f )  { SetModelScale( scale, change_duration ); }
 	float				GetModelScale() const { return m_flModelScale; }
+#if defined( L4D2 )
+	float GetFrozen() const { return m_flFrozen; }
+	double GetEffectivePlaybackRate() const;
+	virtual bool IsFrozen() const;
+	virtual void Unfreeze();
+#endif
 
 	void				UpdateModelScale();
+#if !defined( L4D2 )
 	virtual	void		RefreshCollisionBounds( void );
+#endif
 	
 	// also calculate IK on server? (always done on client)
 	void EnableServerIK();
@@ -310,6 +338,9 @@ public:
 	// Fire
 	virtual void Ignite( float flFlameLifetime, bool bNPCOnly = true, float flSize = 0.0f, bool bCalledByLevelDesigner = false );
 	virtual void IgniteLifetime( float flFlameLifetime );
+#if defined( L4D2 )
+	virtual void IgniteCheapEffect( bool cheap );
+#endif
 	virtual void IgniteNumHitboxFires( int iNumHitBoxFires );
 	virtual void IgniteHitboxFireScale( float flHitboxFireScale );
 	virtual void Extinguish() { RemoveFlag( FL_ONFIRE ); }
@@ -346,7 +377,9 @@ public:
 		const Quaternion q[MAXSTUDIOBONES], matrix3x4_t bonetoworld[MAXSTUDIOBONES],
 		CBaseAnimating *pParent, CBoneCache *pParentCache );
 
+#if !defined( L4D2 )
 	void	SetFadeDistance( float minFadeDist, float maxFadeDist );
+#endif
 
 	int		GetBoneCacheFlags( void ) { return m_fBoneCacheFlags; }
 	inline void	SetBoneCacheFlags( unsigned short fFlag ) { m_fBoneCacheFlags |= fFlag; }
@@ -383,6 +416,11 @@ public:
 
 	// was pev->framerate
 	CNetworkVar( float, m_flPlaybackRate );
+#if defined( L4D2 )
+	CNetworkVar( float, m_flFrozen );
+	float m_flFrozenThawRate;
+	float m_flFrozenMax;
+#endif
 
 public:
 	void InitStepHeightAdjust( void );
@@ -412,7 +450,13 @@ private:
 
 	// was pev->frame
 	CNetworkVar( float, m_flCycle );
-	CNetworkVar( int, m_nSequence );	
+#if defined( L4D2 )
+protected:
+#endif
+	CNetworkVar( int, m_nSequence );
+#if defined( L4D2 )
+private:
+#endif
 	CNetworkArray( float, m_flPoseParameter, NUM_POSEPAREMETERS );	// must be private so manual mode works!
 	CNetworkArray( float, m_flEncodedController, NUM_BONECTRLS );		// bone controller setting (0..1)
 
@@ -437,9 +481,11 @@ private:
 	unsigned short	m_fBoneCacheFlags;		// Used for bone cache state on model
 
 protected:
+#if !defined( L4D2 )
 	CNetworkVar( float, m_fadeMinDist );	// Point at which fading is absolute
 	CNetworkVar( float, m_fadeMaxDist );	// Point at which fading is inactive
 	CNetworkVar( float, m_flFadeScale );	// Scale applied to min / max
+#endif
 
 public:
 	COutputEvent m_OnIgnite;

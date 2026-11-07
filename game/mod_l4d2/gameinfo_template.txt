@@ -1,0 +1,45 @@
+"GameInfo"
+{
+	game	"Left 4 Dead 2 (x64 port)"
+	title	"LEFT 4 DEAD 2"
+	type multiplayer_only
+	nomodels 1
+	nohimodel 1
+	nocrosshair 1
+	hidden_maps
+	{
+		"test_speakers"		1
+		"test_hardware"		1
+	}
+
+	FileSystem
+	{
+		SteamAppId				243750
+
+		// Deployment-time template. scripts/l4d2/prepare_deployment.py writes the
+		// machine-local, gitignored gameinfo.txt using the real installed games.
+		// The harness launches this mod in place; it does not generate run roots.
+		SearchPaths
+		{
+			mod+mod_write		|gameinfo_path|.
+			game+game_write		|gameinfo_path|.
+			default_write_path	|gameinfo_path|.
+			gamebin				|gameinfo_path|bin
+
+			@ORIGINAL_SEARCH_PATHS@
+
+			game				"@SDK_ROOT@/hl2/hl2_textures.vpk"
+			game				"@SDK_ROOT@/hl2/hl2_sound_misc.vpk"
+			game				"@SDK_ROOT@/hl2/hl2_misc.vpk"
+			platform			"@SDK_ROOT@/platform/platform_misc.vpk"
+
+			game				"@SDK_ROOT@/hl2"
+			platform			"@SDK_ROOT@/platform"
+
+			// Preserve SDK platform layouts; supply missing original VGUI resources.
+			platform			"@ORIGINAL_PLATFORM@"
+
+			game+download		|gameinfo_path|download
+		}
+	}
+}

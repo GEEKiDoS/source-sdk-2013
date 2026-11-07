@@ -98,7 +98,7 @@ $Project
 		$File	"$SRCDIR\game\shared\achievement_saverestore.h"
 		$File	"$SRCDIR\game\shared\achievementmgr.cpp"
 		$File	"$SRCDIR\game\shared\achievementmgr.h"
-		$File	"$SRCDIR\game\shared\achievements_hlx.cpp"
+		$File	"$SRCDIR\game\shared\achievements_hlx.cpp" [!$L4D2]
 		$File	"$SRCDIR\game\shared\activitylist.cpp"
 		$File	"$SRCDIR\game\shared\activitylist.h"
 		$File	"ai_activity.cpp"
@@ -120,22 +120,22 @@ $Project
 		$File	"ai_basenpc_squad.cpp"
 		$File	"ai_behavior.cpp"
 		$File	"ai_behavior.h"
-		$File	"ai_behavior_assault.cpp"
+		$File	"ai_behavior_assault.cpp" [!$L4D2]
 		$File	"ai_behavior_assault.h"
 		$File	"ai_behavior_fear.cpp"
 		$File	"ai_behavior_fear.h"
-		$File	"ai_behavior_follow.cpp"
+		$File	"ai_behavior_follow.cpp" [!$L4D2]
 		$File	"ai_behavior_follow.h"
 		$File	"ai_behavior_lead.cpp"
 		$File	"ai_behavior_lead.h"
-		$File	"ai_behavior_rappel.cpp"
+		$File	"ai_behavior_rappel.cpp" [!$L4D2]
 		$File	"ai_behavior_rappel.h"
-		$File	"ai_behavior_standoff.cpp"
+		$File	"ai_behavior_standoff.cpp" [!$L4D2]
 		$File	"ai_behavior_standoff.h"
 		$File	"ai_blended_movement.cpp"
 		$File	"ai_blended_movement.h"
 		$File	"ai_component.h"
-		$File	"ai_concommands.cpp"
+		$File	"ai_concommands.cpp" [!$L4D2]
 		$File	"ai_condition.cpp"
 		$File	"ai_condition.h"
 		$File	"AI_Criteria.cpp"
@@ -199,11 +199,11 @@ $Project
 		$File	"ai_route.cpp"
 		$File	"ai_route.h"
 		$File	"ai_routedist.h"
-		$File	"ai_saverestore.cpp"
+		$File	"ai_saverestore.cpp" [!$L4D2]
 		$File	"ai_saverestore.h"
 		$File	"ai_schedule.cpp"
 		$File	"ai_schedule.h"
-		$File	"ai_scriptconditions.cpp"
+		$File	"ai_scriptconditions.cpp" [!$L4D2]
 		$File	"ai_scriptconditions.h"
 		$File	"ai_senses.cpp"
 		$File	"ai_senses.h"
@@ -211,7 +211,7 @@ $Project
 		$File	"ai_sentence.h"
 		$File	"ai_speech.cpp"
 		$File	"ai_speech.h"
-		$File	"ai_speechfilter.cpp"
+		$File	"ai_speechfilter.cpp" [!$L4D2]
 		$File	"ai_speechfilter.h"
 		$File	"ai_squad.cpp"
 		$File	"ai_squad.h"
@@ -412,8 +412,8 @@ $Project
 		$File	"$SRCDIR\game\shared\gamevars_shared.h"
 		$File	"gameweaponmanager.cpp"
 		$File	"gameweaponmanager.h"
-		$File	"genericactor.cpp"
-		$File	"genericmonster.cpp"
+		$File	"genericactor.cpp" [!$L4D2]
+		$File	"genericmonster.cpp" [!$L4D2]
 		$File	"gib.cpp"
 		$File	"gib.h"
 		$File	"globals.cpp"
@@ -434,7 +434,7 @@ $Project
 		$File	"$SRCDIR\game\shared\ichoreoeventcallback.h"
 		$File	"$SRCDIR\game\shared\igamesystem.cpp"
 		$File	"$SRCDIR\game\shared\igamesystem.h"
-		$File	"info_camera_link.cpp"
+		$File	"info_camera_link.cpp" [!$L4D2]
 		$File	"info_camera_link.h"
 		$File	"info_overlay_accessor.cpp"
 		$File	"init_factory.h"
@@ -532,7 +532,7 @@ $Project
 		$File	"plugin_check.cpp"
 		$File	"$SRCDIR\game\shared\point_bonusmaps_accessor.cpp"
 		$File	"$SRCDIR\game\shared\point_bonusmaps_accessor.h"
-		$File	"point_camera.cpp"
+		$File	"point_camera.cpp" [!$L4D2]
 		$File	"point_camera.h"
 		$File	"point_devshot_camera.cpp"
 		$File	"point_playermoveconstraint.cpp"
@@ -542,7 +542,7 @@ $Project
 		$File	"point_template.cpp"
 		$File	"point_template.h"
 		$File	"pointanglesensor.cpp"
-		$File	"PointAngularVelocitySensor.cpp"
+		$File	"PointAngularVelocitySensor.cpp" [!$L4D2]
 		$File	"pointhurt.cpp"
 		$File	"pointteleport.cpp"
 		$File	"$SRCDIR\public\mathlib\polyhedron.h"
@@ -579,7 +579,7 @@ $Project
 		$File	"scratchpad_gamedll_helpers.cpp"
 		$File	"scripted.cpp"
 		$File	"scripted.h"
-		$File	"scriptedtarget.cpp"
+		$File	"scriptedtarget.cpp" [!$L4D2]
 		$File	"scriptedtarget.h"
 		$File	"$SRCDIR\game\shared\scriptevent.h"
 		$File	"sendproxy.cpp"
@@ -598,7 +598,7 @@ $Project
 		$File	"$SRCDIR\game\shared\singleplay_gamerules.cpp"
 		$File	"$SRCDIR\game\shared\singleplay_gamerules.h"
 		$File	"SkyCamera.cpp"
-		$File	"skyboxswapper.cpp"
+		$File	"skyboxswapper.cpp" [!$L4D2]
 		$File	"slideshow_display.cpp"
 		$File	"sound.cpp"
 		$File	"$SRCDIR\game\shared\SoundEmitterSystem.cpp"
@@ -622,7 +622,7 @@ $Project
 		$File	"$SRCDIR\game\shared\studio_shared.cpp"
 		$File	"subs.cpp"
 		$File	"sun.cpp"
-		$File	"tactical_mission.cpp"
+		$File	"tactical_mission.cpp" [!$L4D2]
 		$File	"tactical_mission.h"
 		$File	"$SRCDIR\game\shared\takedamageinfo.cpp"
 		$File	"tanktrain.cpp"
@@ -634,7 +634,7 @@ $Project
 		$File	"TemplateEntities.cpp"
 		$File	"TemplateEntities.h"
 		$File	"tempmonster.cpp"
-		$File	"tesla.cpp"
+		$File	"tesla.cpp" [!$L4D2]
 		$File	"$SRCDIR\game\shared\test_ehandle.cpp"
 		$File	"test_proxytoggle.cpp"
 		$File	"test_stressentities.cpp"
@@ -659,12 +659,13 @@ $Project
 		$File	"vguiscreen.h"
 		$File	"vscript_server.cpp"
 		$File	"$SRCDIR\game\shared\vscript_shared.cpp"
-		$File	"vscript_server.nut"
-		$file	"point_worldtext.cpp"
+		$File	"vscript_server.nut" [!$L4D2]
+		$File	"l4d2\vscript\vscript_server_l4d2.nut" [$L4D2]
+		$file	"point_worldtext.cpp" [!$L4D2]
 		$file	"point_worldtext.h"
 		$File	"player_voice_listener.h"
 		$File	"player_voice_listener.cpp"
-		$File	"logic_eventlistener.cpp"
+		$File	"logic_eventlistener.cpp" [!$L4D2]
 		$File	"logic_eventlistener.h"
 		$File	"spawn_helper.nut"
 		$File	"$SRCDIR\public\mathlib\vmatrix.h"
@@ -686,10 +687,10 @@ $Project
 		$File	"$SRCDIR\game\shared\mp_shareddefs.cpp"
 		$File	"$SRCDIR\game\shared\SharedFunctorUtils.h"
 		$File	"$SRCDIR\game\server\vote_controller.h"
-		$File	"$SRCDIR\game\server\vote_controller.cpp"
+		$File	"$SRCDIR\game\server\vote_controller.cpp" [!$L4D2]
 		//Haptics
-		$File	"$SRCDIR\public\haptics\haptic_msgs.cpp"
-		$File	"$SRCDIR\public\haptics\haptic_utils.cpp"	[$WINDOWS]
+		$File	"$SRCDIR\public\haptics\haptic_msgs.cpp" [!$L4D2]
+		$File	"$SRCDIR\public\haptics\haptic_utils.cpp"	[$WINDOWS&&!$L4D2]
 		$File	"netpropmanager.cpp"
 		$File	"netpropmanager.h"
 

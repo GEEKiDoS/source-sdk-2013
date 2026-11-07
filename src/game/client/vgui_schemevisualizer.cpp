@@ -230,7 +230,12 @@ static CSchemeVisualizer *g_pSchemeVisualizer = NULL;
 
 //----------------------------------------------------------------------------------------
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( showschemevisualizer, "Show borders, fonts and colors for a particular scheme.  The default is ClientScheme.res" , 0x00000008)
+#else
 CON_COMMAND( showschemevisualizer, "Show borders, fonts and colors for a particular scheme.  The default is ClientScheme.res" )
+#endif
 {
 	if ( g_pSchemeVisualizer )
 	{

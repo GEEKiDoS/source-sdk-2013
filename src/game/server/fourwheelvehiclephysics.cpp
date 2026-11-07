@@ -18,9 +18,19 @@
 #include "movevars_shared.h"
 #include "te_effect_dispatch.h"
 #include "particle_parse.h"
+#if defined( L4D2 )
+#include "precache_register.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+
+#if defined( L4D2 )
+void CFourWheelVehiclePhysics::Precache()
+{
+	PrecacheEffect( "WheelDust" ); // S0D7520.
+}
+#endif
 
 #define STICK_EXTENTS	400.0f
 
@@ -33,12 +43,40 @@
 #define BRAKE_MAX_VALUE				1.0f
 #define BRAKE_BACK_FORWARD_SCALAR	2.0f
 
-ConVar r_vehicleBrakeRate( "r_vehicleBrakeRate", "1.5", FCVAR_CHEAT );
+ConVar r_vehicleBrakeRate( "r_vehicleBrakeRate", "1.5", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
-ConVar xbox_throttlebias("xbox_throttlebias", "100", FCVAR_ARCHIVE );
-ConVar xbox_throttlespoof("xbox_throttlespoof", "200", FCVAR_ARCHIVE );
-ConVar xbox_autothrottle("xbox_autothrottle", "1", FCVAR_ARCHIVE );
-ConVar xbox_steering_deadzone( "xbox_steering_deadzone", "0.0" );
+ConVar xbox_throttlebias("xbox_throttlebias", "100", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+ConVar xbox_throttlespoof("xbox_throttlespoof", "200", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+ConVar xbox_autothrottle("xbox_autothrottle", "1", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+ConVar xbox_steering_deadzone( "xbox_steering_deadzone", "0.0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 // remaps an angular variable to a 3 band function:
 // 0 <= t < start :		f(t) = 0

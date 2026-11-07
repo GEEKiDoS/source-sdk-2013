@@ -1,0 +1,323 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Recovered from the pinned infected_ps20b VCS. BUMP is the enabled
+// DISABLEVARIATION normal-map path recovered from infected_ps30, not a normal
+// map added to the common-infected palette path.
+
+// STATIC: "FLASHLIGHT"                 "0..1"
+// STATIC: "FLASHLIGHTDEPTHFILTERMODE"  "0..2"
+// STATIC: "DETAILTEXTURE"              "0..1"
+// STATIC: "WOUNDED"                    "0..1"
+// STATIC: "DEPTHONLY"                  "0..1"
+// STATIC: "BURNDETAILTEXTURE"          "0..1"
+// STATIC: "EYEGLOW"                    "0..1"
+// STATIC: "TRANSLUCENT"                "0..1"
+// STATIC: "DISABLEVARIATION"           "0..1"
+// STATIC: "SHINYBLOOD"                 "0..1"
+// STATIC: "BUMP"                       "0..1"
+
+// DYNAMIC: "NUM_LIGHTS"                "0..4"
+// DYNAMIC: "FLASHLIGHTSHADOWS"          "0..1"
+
+// SKIP: !$FLASHLIGHT && ( $FLASHLIGHTSHADOWS || $FLASHLIGHTDEPTHFILTERMODE )
+// SKIP: $FLASHLIGHT && ( $NUM_LIGHTS > 0 )
+// SKIP: !$DISABLEVARIATION && ( $BUMP || $SHINYBLOOD )
+// SKIP: $DISABLEVARIATION && ( $DETAILTEXTURE || $BURNDETAILTEXTURE || $EYEGLOW )
+// SKIP: $DEPTHONLY && ( $FLASHLIGHT || $DETAILTEXTURE || $BURNDETAILTEXTURE || $EYEGLOW || $DISABLEVARIATION || $SHINYBLOOD || $BUMP )
+
+#include "common_ps_fxc.h"
+
+#if EYEGLOW || DETAILTEXTURE || SHINYBLOOD || ( DISABLEVARIATION && WOUNDED )
+const float4 g_cEyeGlowColor                 : register( c0 );
+#endif
+#if TRANSLUCENT || DEPTHONLY
+const float4 g_DiffuseModulation             : register( c1 );
+#endif
+#if FLASHLIGHT && FLASHLIGHTSHADOWS
+const float4 g_EnvmapTint_ShadowTweaks        : register( c2 );
+const float4 g_vShadowPoisson[4]             : register( c20 );
+#endif
+const float4 g_vGradSelect                   : register( c3 );
+const float4 g_cBloodColor_WaterFogOORange    : register( c4 );
+#if BURNDETAILTEXTURE
+const float4 g_vShaderParams                 : register( c5 );
+#endif
+#if EYEGLOW && FLASHLIGHT
+const float4 g_vEyeGlowFlashlightBoost        : register( c6 );
+#endif
+#if WOUNDED
+const float4 g_vWoundUVScaleBias1             : register( c7 );
+const float4 g_vWoundUVScaleBias2             : register( c8 );
+#endif
+#if !DISABLEVARIATION
+const float4 g_vUVTransform                  : register( c10 );
+#endif
+const float3 g_vEyePos                       : register( c11 );
+#if !TRANSLUCENT && !DEPTHONLY
+const float4 g_FogParams                     : register( c12 );
+#endif
+#if FLASHLIGHT
+const float4 g_FlashlightAttenuationFactors   : register( c13 );
+const float3 g_FlashlightPos                 : register( c14 );
+const float4x4 g_FlashlightWorldToTexture     : register( c15 );
+#endif
+const float4 g_FresnelSpecParams             : register( c19 );
+
+#if !FLASHLIGHT && NUM_LIGHTS > 0
+struct InfectedLightInfo
+{
+	float4 color;
+	float4 pos;
+};
+
+InfectedLightInfo cLightInfo[3]              : register( c20 );
+#endif
+const float4 g_SpecularRimParams             : register( c26 );
+// Original draw order: detail, skin, default, blood. The VCS uses .z for
+// the unvaried/default exponent and blends .y toward .x for detail.
+const float4 g_vSpecPowers                   : register( c27 );
+
+sampler BaseTextureSampler       : register( s0 );
+sampler ShadowDepthSampler       : register( s1 );
+sampler NormalizeRandRotSampler  : register( s2 );
+sampler FlashlightSampler        : register( s3 );
+sampler DetailSampler            : register( s4 );
+sampler ColorLookupSampler       : register( s5 );
+sampler CutOutDecalSampler       : register( s6 );
+sampler BurnSampler              : register( s8 );
+
+struct PS_INPUT
+{
+	float4 baseDetailTexCoord       : TEXCOORD0;
+	float4 lightAtten               : TEXCOORD1;
+	float4 woundTexCoord            : TEXCOORD2;
+	float4 worldNormal_viewDepth    : TEXCOORD3;
+	float4 fog                      : TEXCOORD4;
+	float3 lightingOrTangent        : TEXCOORD5;
+	float3 worldPos                 : TEXCOORD6;
+	float4 projPos_woundCull        : TEXCOORD7;
+};
+
+// The front-facing Fresnel endpoint is itself multiplied by the specular
+// mask in the original, in addition to the final specular-mask multiply.
+float InfectedFresnel( float flNDotV, float flSpecularMask )
+{
+	float flFresnel = 1.0f - flNDotV;
+	flFresnel *= flFresnel;
+	return ( flFresnel <= 0.5f ) ?
+		lerp( flSpecularMask * g_FresnelSpecParams.x, g_FresnelSpecParams.y, 2.0f * flFresnel ) :
+		lerp( g_FresnelSpecParams.y, g_FresnelSpecParams.z, 2.0f * flFresnel - 1.0f );
+}
+
+void InfectedLocalLight( float3 vLightPos, float3 vLightColor, float flAtten,
+	float3 vWorldPos, float3 vNormal, float3 vReflect, float flExponent,
+	inout float3 vDiffuse, inout float3 vSpecular )
+{
+	float3 vLightDir = normalize( vLightPos - vWorldPos );
+	float flNDotL = saturate( dot( vNormal, vLightDir ) );
+	float3 vAttenuatedLight = vLightColor * flAtten;
+#if BUMP
+	// The original BUMP path does local pixel diffuse lighting; TEXCOORD5
+	// contains a tangent instead of the unbumped ambient/vertex-light sum.
+	vDiffuse += flNDotL * vAttenuatedLight;
+#endif
+	vSpecular += flNDotL * pow( saturate( dot( vReflect, vLightDir ) ), flExponent ) * vAttenuatedLight;
+}
+
+#if FLASHLIGHT && FLASHLIGHTSHADOWS
+float InfectedFlashlightTap( float2 vOffset, float flObjectDepth )
+{
+#if FLASHLIGHTDEPTHFILTERMODE == 0
+	return tex2Dproj( ShadowDepthSampler, float4( vOffset, flObjectDepth, 1.0f ) ).x;
+#elif FLASHLIGHTDEPTHFILTERMODE == 1
+	return tex2D( ShadowDepthSampler, vOffset ).x > flObjectDepth;
+#else
+	float4 vDepths = tex2D( ShadowDepthSampler, vOffset );
+	return dot( ( vDepths > flObjectDepth ), float4( 0.25f, 0.25f, 0.25f, 0.25f ) );
+#endif
+}
+
+float InfectedFlashlightShadow( float3 vProjCoords, float2 vScreenPos )
+{
+	// These are the eight offsets and normalizations in all three original
+	// PC filter variants. In particular, PCF is 1/8, not the SDK helper's 1/4.
+	float2 vRotation = tex2D( NormalizeRandRotSampler,
+		cFlashlightScreenScale.xy * ( vScreenPos * 0.5f + 0.5f ) + g_EnvmapTint_ShadowTweaks.zw ).xy * 2.0f - 1.0f;
+	vRotation *= g_EnvmapTint_ShadowTweaks.x * 2.0f;
+	float2 vRotation2 = float2( -vRotation.y, vRotation.x );
+	float flObjectDepth = min( vProjCoords.z, 0.99999f );
+	float flShadow = 0.0f;
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[0].xy ), dot( vRotation2, g_vShadowPoisson[0].xy ) ) + vProjCoords.xy, flObjectDepth );
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[0].zw ), dot( vRotation2, g_vShadowPoisson[0].zw ) ) + vProjCoords.xy, flObjectDepth );
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[1].xy ), dot( vRotation2, g_vShadowPoisson[1].xy ) ) + vProjCoords.xy, flObjectDepth );
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[1].zw ), dot( vRotation2, g_vShadowPoisson[1].zw ) ) + vProjCoords.xy, flObjectDepth );
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[2].xy ), dot( vRotation2, g_vShadowPoisson[2].xy ) ) + vProjCoords.xy, flObjectDepth );
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[2].zw ), dot( vRotation2, g_vShadowPoisson[2].zw ) ) + vProjCoords.xy, flObjectDepth );
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[3].xy ), dot( vRotation2, g_vShadowPoisson[3].xy ) ) + vProjCoords.xy, flObjectDepth );
+	flShadow += InfectedFlashlightTap( float2( dot( vRotation, g_vShadowPoisson[3].zw ), dot( vRotation2, g_vShadowPoisson[3].zw ) ) + vProjCoords.xy, flObjectDepth );
+	return flShadow * 0.125f;
+}
+#endif
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	float flWound = 0.0f;
+#if WOUNDED
+	float2 vWoundUV1 = saturate( i.woundTexCoord.xy ) * g_vWoundUVScaleBias1.xy + g_vWoundUVScaleBias1.zw;
+	float2 vWoundUV2 = saturate( i.woundTexCoord.zw ) * g_vWoundUVScaleBias2.xy + g_vWoundUVScaleBias2.zw;
+	flWound = max( tex2D( CutOutDecalSampler, vWoundUV1 ).r, tex2D( CutOutDecalSampler, vWoundUV2 ).r );
+	clip( min( g_vGradSelect.z - flWound, i.projPos_woundCull.w - 1.0f ) );
+#endif
+
+#if DEPTHONLY
+	return float4( 1.0f, 1.0f, 1.0f, g_DiffuseModulation.w );
+#else
+	float4 baseSample = tex2D( BaseTextureSampler, i.baseDetailTexCoord.xy );
+	float3 vAlbedo;
+	float flSpecularMask;
+	float flExponent;
+	float flEyeMask = 0.0f;
+
+#if DISABLEVARIATION
+	vAlbedo = float3( SrgbGammaToLinear( baseSample.r ), SrgbGammaToLinear( baseSample.g ), SrgbGammaToLinear( baseSample.b ) );
+	flSpecularMask = max( baseSample.a, 0.0f );
+	flExponent = g_vSpecPowers.z;
+#else
+	float4 atlasSample = tex2D( BaseTextureSampler, i.baseDetailTexCoord.xy * 0.5f + g_vUVTransform.xy );
+	float3 vMasks = float3( atlasSample.rg, baseSample.b ) * 2.0f - 1.0f;
+	float flSkinMask = saturate( vMasks.z );
+	float flClothingMask = saturate( -vMasks.z );
+	float flDetailMask = saturate( vMasks.x );
+	float flLuminance = baseSample.a * baseSample.a;
+	float3 vSkin = tex2D( ColorLookupSampler, float2( baseSample.a, g_vUVTransform.z ) ).rgb;
+	float3 vClothing = tex2D( ColorLookupSampler, float2( baseSample.a, g_vUVTransform.w ) ).rgb;
+	vAlbedo = lerp( lerp( flLuminance, vSkin, flSkinMask ), vClothing, flClothingMask );
+	flSpecularMask = saturate( -vMasks.x );
+	float flSkinExponent = g_vSpecPowers.y;
+#if DETAILTEXTURE
+	// Detail and burn deliberately use opposite coordinate orders.
+	float4 detailSample = tex2D( DetailSampler, i.baseDetailTexCoord.wz );
+	vAlbedo = lerp( vAlbedo, 2.0f * detailSample.rgb * flLuminance, flDetailMask );
+	flSpecularMask = saturate( lerp( flSpecularMask, detailSample.a, flDetailMask ) );
+	flSkinExponent = lerp( g_vSpecPowers.y, g_vSpecPowers.x, flDetailMask );
+#endif
+	float flBlood = saturate( ( saturate( vMasks.y ) + flWound - g_vGradSelect.x ) /
+		( g_vGradSelect.y - g_vGradSelect.x ) );
+	flBlood = flBlood * flBlood * ( 3.0f - 2.0f * flBlood );
+	vAlbedo *= lerp( float3( 1.0f, 1.0f, 1.0f ), g_cBloodColor_WaterFogOORange.rgb, saturate( flBlood ) );
+	flExponent = lerp( lerp( g_vSpecPowers.z, flSkinExponent, flSkinMask ), g_vSpecPowers.w, flBlood );
+#if DETAILTEXTURE
+	flSpecularMask = lerp( flSpecularMask, g_cEyeGlowColor.w, detailSample.a * flBlood );
+#endif
+#if BURNDETAILTEXTURE
+	float4 burnSample = tex2D( BurnSampler, i.baseDetailTexCoord.zw );
+	float flBurnMask = saturate( burnSample.a + 2.0f * g_vShaderParams.x - ( flSkinMask * g_vShaderParams.x + 1.0f ) );
+	vAlbedo = lerp( vAlbedo, burnSample.rgb, flBurnMask );
+#endif
+#if EYEGLOW
+	flEyeMask = saturate( -1.1f * vMasks.y - 0.1f );
+#endif
+#endif
+
+	float3 vNormal = normalize( i.worldNormal_viewDepth.xyz );
+#if BUMP
+	float4 normalSample = tex2D( ColorLookupSampler, i.baseDetailTexCoord.xy );
+	float3 vTangentNormal = normalSample.xyz * 2.0f - 1.0f;
+	float3 vTangent = i.lightingOrTangent;
+	vNormal = normalize( vTangent * vTangentNormal.x + cross( vTangent, i.worldNormal_viewDepth.xyz ) * vTangentNormal.y +
+		i.worldNormal_viewDepth.xyz * vTangentNormal.z );
+	// No exponent scale is present in the original BUMP program.
+	flExponent = normalSample.a;
+#endif
+#if SHINYBLOOD
+	flSpecularMask = saturate( ( baseSample.r - 1.1f * baseSample.g ) * 10.0f );
+	flExponent = pow( saturate( 1.0f - dot( baseSample.rgb, float3( 0.3f, 0.59f, 0.11f ) ) ) + 0.5f,
+		g_SpecularRimParams.w ) * g_vSpecPowers.z;
+#endif
+#if DISABLEVARIATION && WOUNDED
+	float flWoundBlood = flWound * g_cEyeGlowColor.w;
+	float flBaseLuminance = dot( baseSample.rgb, float3( 0.3f, 0.59f, 0.11f ) );
+#if BUMP
+	flExponent = lerp( flExponent, g_vSpecPowers.w, flWoundBlood );
+#endif
+	flSpecularMask = max( flSpecularMask, flWoundBlood * flBaseLuminance );
+	vAlbedo *= lerp( float3( 1.0f, 1.0f, 1.0f ), g_cBloodColor_WaterFogOORange.rgb, saturate( flWoundBlood ) );
+#endif
+
+	float3 vEyeDir = normalize( g_vEyePos - i.worldPos );
+	float3 vReflect = 2.0f * vNormal * dot( vNormal, vEyeDir ) - vEyeDir;
+	float flNDotV = saturate( dot( vNormal, vEyeDir ) );
+	float3 vSpecular = float3( 0.0f, 0.0f, 0.0f );
+	float3 vDiffuse;
+
+#if FLASHLIGHT
+	float4 flashlightPos = mul( float4( i.worldPos, 1.0f ), g_FlashlightWorldToTexture );
+	float3 vProjCoords = flashlightPos.xyz / flashlightPos.w;
+	float3 vFlashlightColor = tex2D( FlashlightSampler, vProjCoords.xy ).rgb * cFlashlightColor.rgb;
+	vFlashlightColor *= flashlightPos.w > 0.0f;
+	float3 vLightDelta = g_FlashlightPos - i.worldPos;
+	float flDistSquared = dot( vLightDelta, vLightDelta );
+	float flOOdistance = rsqrt( flDistSquared );
+	float3 vLightDir = vLightDelta * flOOdistance;
+	float flDistance = 1.0f / flOOdistance;
+	float flAtten = saturate( dot( g_FlashlightAttenuationFactors.xyz,
+		float3( 1.0f, flOOdistance, 1.0f / flDistSquared ) ) );
+#if FLASHLIGHTSHADOWS
+	float flShadow = InfectedFlashlightShadow( vProjCoords, i.projPos_woundCull.xy / i.projPos_woundCull.z );
+	float flAttenuatedShadow = lerp( flShadow, 1.0f, g_EnvmapTint_ShadowTweaks.y );
+	vFlashlightColor *= saturate( lerp( flAttenuatedShadow, flShadow, flAtten ) );
+#endif
+	float flEndFalloff = saturate( ( flDistance - g_FlashlightAttenuationFactors.w ) /
+		( -0.4f * g_FlashlightAttenuationFactors.w ) );
+	vDiffuse = vFlashlightColor * flAtten * saturate( dot( vNormal, vLightDir ) + cFlashlightColor.w ) * flEndFalloff;
+	vSpecular = vDiffuse * pow( saturate( dot( vReflect, vLightDir ) ), flExponent );
+#else
+#if BUMP
+	vDiffuse = float3( 0.0f, 0.0f, 0.0f );
+#else
+	vDiffuse = i.lightingOrTangent;
+#endif
+#if NUM_LIGHTS > 0
+	InfectedLocalLight( cLightInfo[0].pos.xyz, cLightInfo[0].color.rgb, i.lightAtten.x,
+		i.worldPos, vNormal, vReflect, flExponent, vDiffuse, vSpecular );
+#endif
+#if NUM_LIGHTS > 1
+	InfectedLocalLight( cLightInfo[1].pos.xyz, cLightInfo[1].color.rgb, i.lightAtten.y,
+		i.worldPos, vNormal, vReflect, flExponent, vDiffuse, vSpecular );
+#endif
+#if NUM_LIGHTS > 2
+	InfectedLocalLight( cLightInfo[2].pos.xyz, cLightInfo[2].color.rgb, i.lightAtten.z,
+		i.worldPos, vNormal, vReflect, flExponent, vDiffuse, vSpecular );
+#endif
+#if NUM_LIGHTS > 3
+	InfectedLocalLight( float3( cLightInfo[1].pos.w, cLightInfo[2].color.w, cLightInfo[2].pos.w ),
+		float3( cLightInfo[0].color.w, cLightInfo[0].pos.w, cLightInfo[1].color.w ), i.lightAtten.w,
+		i.worldPos, vNormal, vReflect, flExponent, vDiffuse, vSpecular );
+#endif
+#endif
+
+	float3 vColor = vAlbedo * vDiffuse + vSpecular * flSpecularMask * g_SpecularRimParams.rgb *
+		g_FresnelSpecParams.w * InfectedFresnel( flNDotV, flSpecularMask );
+#if EYEGLOW
+#if FLASHLIGHT
+	float flEyeLighting = g_vEyeGlowFlashlightBoost.x;
+#else
+	float flEyeLighting = 2.0f * dot( i.lightingOrTangent, float3( 0.33f, 0.33f, 0.33f ) );
+#endif
+	vColor += g_cEyeGlowColor.rgb * flEyeLighting * flEyeMask * pow( flNDotV, 30.0f );
+#endif
+#if TRANSLUCENT
+	vColor *= g_DiffuseModulation.w;
+#endif
+
+	// Per-instance RGB modulation is packed palette/blood/burn data, not tint.
+	// c10 and c5 are decoded by the draw helper. Only modulation alpha is used.
+	float4 result;
+	result.rgb = lerp( vColor * LINEAR_LIGHT_SCALE, g_LinearFogColor.rgb, i.fog.w * i.fog.w );
+#if TRANSLUCENT
+	result.a = g_DiffuseModulation.w;
+#else
+	result.a = saturate( ( g_FogParams.y - i.worldPos.z - 2.0f ) * g_FogParams.w );
+#endif
+	return result;
+#endif
+}

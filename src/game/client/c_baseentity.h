@@ -15,6 +15,9 @@
 #pragma once
 #endif
 
+#if defined( L4D2 )
+#include <float.h>
+#endif
 #include "mathlib/vector.h"
 #include "icliententityinternal.h"
 #include "engine/ivmodelinfo.h"
@@ -33,6 +36,9 @@
 #include "interpolatedvar.h"
 #include "collisionproperty.h"
 #include "particle_property.h"
+#if defined( L4D2 )
+#include "l4d2/effects/glowproperty.h"
+#endif
 #include "toolframework/itoolentity.h"
 #include "tier0/threadtools.h"
 
@@ -55,6 +61,9 @@ struct EmitSound_t;
 class C_RecipientFilter;
 class CTakeDamageInfo;
 class C_BaseCombatCharacter;
+#if defined( L4D2 )
+class C_Infected;
+#endif
 class CEntityMapData;
 class ConVar;
 class CDmgAccumulator;
@@ -181,6 +190,80 @@ class C_BaseEntity : public IClientEntity
 	friend void cc_cl_interp_all_changed( IConVar *pConVar, const char *pOldString, float flOldValue );
 
 public:
+#if defined( L4D2 )
+	virtual bool IsUsable( C_BaseEntity *user ); // C042B40, compares actual team pointers.
+	virtual const wchar_t *GetUseString( C_BaseEntity *user ); // C0195D0, genuine empty base prompt.
+	virtual void GetGroundVelocityToApply( Vector &vecGroundVel ) { vecGroundVel = vec3_origin; } // Native C019790.
+#endif
+
+#if defined( L4D2 )
+	virtual int GetRealHealth() const { return GetHealth(); }
+#endif
+
+#if defined( L4D2 )
+	unsigned char ComputeRenderAlpha();
+	unsigned char GetRenderAlphaModulation() const { return m_nRenderAlphaModulation; }
+	void SetRenderFX( int renderFX, float startTime = FLT_MAX, float duration = 0.0f );
+	void SetFadeScale( float scale );
+	void EnableAlphaModulationOverride( bool enable );
+	void EnableShadowAlphaModulationOverride( bool enable );
+	void SetRenderAlphaDistanceFadeMode( bool enable );
+	virtual unsigned char OverrideAlphaModulation( unsigned char alpha );
+	virtual unsigned char OverrideShadowAlphaModulation( unsigned char alpha );
+	bool IsRenderingWithViewModels() const { return m_bRenderWithViewModels; }
+	virtual void OnParticleEffectDeleted( CNewParticleEffect *effect );
+private:
+	friend class CClientLeafSystem;
+	friend class CClientShadowMgr;
+#if defined( L4D2 )
+	friend class C_BeamSpotLight;
+#endif
+	friend class C_CombatWeaponClone;
+	void ResetRenderAlpha();
+	void SetRenderAlphaModulation( unsigned char alpha );
+	void SetRenderAlphaSeed( int seed );
+	void SetRenderAlphaFX( int renderFX, int renderMode, float startTime, float duration );
+protected:
+	void SetRenderAlphaFadeDistances( float scale, float minimum, float maximum );
+private:
+	ClientShadowHandle_t m_hRenderAlphaShadow;
+	unsigned short m_nRenderAlphaFlags;
+	unsigned short m_nRenderAlphaSeed;
+	unsigned char m_nRenderAlphaModulation;
+	unsigned short m_nRenderAlphaFadeMin;
+	unsigned short m_nRenderAlphaFadeMax;
+	float m_flRenderAlphaFadeScale;
+	float m_flRenderAlphaFXStart; // Native ctor/Clear omit both clocks.
+	float m_flRenderAlphaFXDuration;
+	bool m_bForceTranslucentRenderGroup; // Native1588, ctor store OMITTED.
+public:
+#endif
+
+#if defined( L4D2 )
+	enum EntityListId_t { ENTITY_LIST_INTERPOLATE=0, ENTITY_LIST_TELEPORT=1,
+		ENTITY_LIST_PRERENDER=2, ENTITY_LIST_SIMULATE=3, NUM_ENTITY_LISTS=4 };
+	unsigned short AddToEntityList( EntityListId_t list );
+	void RemoveFromEntityList( EntityListId_t list );
+	static void SimulateEntities();
+	static void PreRenderEntities( int splitUserSlot );
+	virtual C_BasePlayer *GetPredictionOwner();
+	virtual void OnDormancyChanged( bool dormant );
+	virtual bool ShouldDrawEntityFlameLight() const;
+	virtual bool IsGhost() const;
+	virtual bool IsGlowUseTarget() { return true; } // Native19600, distinct+356.
+	virtual int ComputeModelTranslucencyType();
+	void UpdateModelTranslucencyType();
+	void SetRenderWithViewModels( bool renderWithViewModels );
+	void DisableCachedRenderBounds( bool disable );
+private:
+	void UpdateLeafLocalViewVisibility();
+	unsigned int m_nLocalViewVisibility; // Native352 actual user0 bit.
+	bool m_bRenderWithViewModels; // Native507, explicit ctorfalse.
+	bool m_bDisableCachedRenderBounds; // Native508, explicit ctorfalse.
+	unsigned short m_ListEntry[NUM_ENTITY_LISTS];
+public:
+#endif
+
 	DECLARE_DATADESC();
 	DECLARE_CLIENTCLASS();
 	DECLARE_PREDICTABLE();
@@ -392,6 +475,11 @@ public:
 	const CCollisionProperty*CollisionProp() const;
 	CParticleProperty		*ParticleProp();
 	const CParticleProperty *ParticleProp() const;
+#if defined( L4D2 )
+	CGlowProperty *GlowProp() { return &m_Glow; }
+	const CGlowProperty *GlowProp() const { return &m_Glow; }
+	float GetGlowBackfaceMult() const { return m_bGlowBackfaceMult; }
+#endif
 
 	// Simply here for game shared 
 	bool					IsFloating();
@@ -403,6 +491,17 @@ public:
 	virtual void					OnRestore();
 	// capabilities for save/restore
 	virtual int						ObjectCaps( void );
+#if defined( L4D2 )
+	virtual int GetUsePriority( C_BaseEntity *pUser );
+	virtual bool IsPotentiallyUseable();
+	virtual int GetUseType( C_BaseEntity *pUser ) { return 2; } // Native C0195E0.
+	virtual C_BaseEntity *GetUseRedirectEntity() { return this; } // Native C0195F0.
+	static const CUtlVector< C_BaseEntity * > &GetUseableEntityList();
+	int GetSpawnFlags() const { return m_spawnflags; }
+	int m_spawnflags;
+	EHANDLE m_hScriptUseTarget;
+	bool m_bClientSideRagdoll;
+#endif
 	// only overload these if you have special data to serialize
 	virtual int						Save( ISave &save );
 	virtual int						Restore( IRestore &restore );
@@ -439,6 +538,9 @@ private:
 public:
 
 	void			VPhysicsSetObject( IPhysicsObject *pPhysics );
+#if defined( L4D2 )
+	void			VPhysicsSwapObject( IPhysicsObject *pSwap );
+#endif
 	// destroy and remove the physics object for this entity
 	virtual void	VPhysicsDestroyObject( void );
 
@@ -456,7 +558,12 @@ public:
 	virtual void					DoAnimationEvents( void );
 
 	// Add entity to visible entities list?
+#if defined( L4D2 )
+	virtual bool AddEntity();
+	virtual bool PreRender( int splitUserSlot );
+#else
 	virtual void					AddEntity( void );
+#endif
 
 	virtual const Vector&			GetAbsOrigin( void ) const;
 	virtual const QAngle&			GetAbsAngles( void ) const;
@@ -484,6 +591,9 @@ public:
 
 	void							SetModelName( string_t name );
 	string_t						GetModelName( void ) const;
+#if defined( L4D2 )
+	int GetGender() const { return m_Gender; }
+#endif
 
 	int								GetModelIndex( void ) const;
 	void							SetModelIndex( int index );
@@ -633,11 +743,19 @@ public:
 // C_BaseEntity local functions
 public:
 
+#if defined( L4D2 )
+	virtual void UpdatePartitionListEntry();
+#else
 	void UpdatePartitionListEntry();
+#endif
 
 	// This can be used to setup the entity as a client-only entity. 
 	// Override this to perform per-entity clientside setup
+#if defined( L4D2 )
+	virtual bool InitializeAsClientEntity( const char *pszModelName, bool renderWithViewModels );
+#else
 	virtual bool InitializeAsClientEntity( const char *pszModelName, RenderGroup_t renderGroup );
+#endif
 
 	
 
@@ -645,7 +763,11 @@ public:
 
 	// This function gets called on all client entities once per simulation phase.
 	// It dispatches events like OnDataChanged(), and calls the legacy function AddEntity().
+#if defined( L4D2 )
+	virtual bool Simulate();
+#else
 	virtual void					Simulate();	
+#endif
 
 
 	// This event is triggered during the simulation phase if an entity's data has changed. It is 
@@ -688,7 +810,11 @@ public:
 	virtual CollideType_t			GetCollideType( void );
 
 	virtual bool					ShouldDraw();
+#if defined( L4D2 )
+	inline bool IsVisible() const { return ( m_nLocalViewVisibility & 1u ) != 0; }
+#else
 	inline	bool					IsVisible() const { return m_hRender != INVALID_CLIENT_RENDER_HANDLE; }
+#endif
 	virtual void					UpdateVisibility();
 	
 	// Returns true if the entity changes its position every frame on the server but it doesn't
@@ -723,8 +849,10 @@ public:
 	bool							Teleported( void );
 	// Is this a submodel of the world ( *1 etc. in name ) ( brush models only )
 	virtual bool					IsSubModel( void );
+#if !defined( L4D2 )
 	// Deal with EF_* flags
 	virtual void					CreateLightEffects( void );
+#endif
 
 	void							AddToAimEntsList();
 	void							RemoveFromAimEntsList();
@@ -767,7 +895,11 @@ public:
 
 	// Sets up a render handle so the leaf system will draw this entity.
 	void							AddToLeafSystem();
+#if defined( L4D2 )
+	void AddToLeafSystem( bool renderWithViewModels );
+#else
 	void							AddToLeafSystem( RenderGroup_t group );
+#endif
 	// remove entity form leaf system again
 	void							RemoveFromLeafSystem();	
 
@@ -1007,6 +1139,9 @@ public:
 	virtual bool					IsPlayer( void ) const { return false; };
 	virtual bool					IsBaseCombatCharacter( void ) { return false; };
 	virtual C_BaseCombatCharacter	*MyCombatCharacterPointer( void ) { return NULL; }
+#if defined( L4D2 )
+	virtual C_Infected *MyInfectedPointer();
+#endif
 	virtual bool					IsNPC( void ) { return false; }
 	C_AI_BaseNPC					*MyNPCPointer( void ); 
 	virtual bool					IsNextBot() { return false; }
@@ -1017,6 +1152,9 @@ public:
 	virtual bool					IsCombatItem( void ) const { return false; }
 
 	virtual bool					IsBaseTrain( void ) const { return false; }
+#if defined( L4D2 )
+	virtual bool IsElevator() const { return false; }
+#endif
 
 	// Returns the eye point + angles (used for viewing + shooting)
 	virtual Vector			EyePosition( void );
@@ -1036,6 +1174,9 @@ public:
 
 	// Sets physics parameters
 	void				SetFriction( float flFriction );
+#if defined( L4D2 )
+	virtual float		GetFriction( void ) const { return m_flFriction; }
+#endif
 
 	void				SetGravity( float flGravity );
 	float				GetGravity( void ) const;
@@ -1061,6 +1202,9 @@ public:
 	void				SetAbsVelocity( const Vector &vecVelocity );
 	const Vector&		GetLocalVelocity() const;
 	const Vector&		GetAbsVelocity( ) const;
+#if defined( L4D2 )
+	const Vector &GetCachedAbsVelocity() const { return m_vecAbsVelocity; }
+#endif
 
 	void				ApplyLocalVelocityImpulse( const Vector &vecImpulse );
 	void				ApplyAbsVelocityImpulse( const Vector &vecImpulse );
@@ -1212,9 +1356,32 @@ protected:
 	int	PhysicsClipVelocity (const Vector& in, const Vector& normal, Vector& out, float overbounce );
 
 	// Allow entities to perform client-side fades
+#if defined( L4D2 )
+	virtual unsigned char GetClientSideFade();
+	void SetFadeMinMax( float minimum, float maximum );
+	unsigned char GetMinCPULevel() const { return m_nMinCPULevel; }
+	void SetMinCPULevel( unsigned char n ) { m_nMinCPULevel = n; }
+	unsigned char GetMaxCPULevel() const { return m_nMaxCPULevel; }
+	void SetMaxCPULevel( unsigned char n ) { m_nMaxCPULevel = n; }
+	unsigned char GetMinGPULevel() const { return m_nMinGPULevel; }
+	void SetMinGPULevel( unsigned char n ) { m_nMinGPULevel = n; }
+	unsigned char GetMaxGPULevel() const { return m_nMaxGPULevel; }
+	void SetMaxGPULevel( unsigned char n ) { m_nMaxGPULevel = n; }
+#else
     virtual unsigned char GetClientSideFade() { return 255; }
+#endif
 
 protected:
+#if defined( L4D2 )
+	int m_Gender; // Native client52, received authoritative base actor type.
+	float m_fadeMinDist;
+	float m_fadeMaxDist;
+	float m_flFadeScale;
+	unsigned char m_nMinCPULevel;
+	unsigned char m_nMaxCPULevel;
+	unsigned char m_nMinGPULevel;
+	unsigned char m_nMaxGPULevel;
+#endif
 	// Two part guts of Interpolate(). Shared with C_BaseAnimating.
 	enum
 	{
@@ -1312,6 +1479,10 @@ public:
 	byte							m_ubOldInterpolationFrame;
 
 private:
+#if defined( L4D2 )
+	friend void GetRagdollCurSequenceWithDeathPose( C_BaseAnimating *player, matrix3x4_t *bones,
+		float time, int deathPose, int deathFrame );
+#endif
 	// Effects to apply
 	int								m_fEffects;
 	unsigned char 					m_nRenderMode;
@@ -1420,6 +1591,9 @@ private:
 protected:
 	// pointer to the entity's physics object (vphysics.dll)
 	IPhysicsObject					*m_pPhysicsObject;	
+#if defined( L4D2 )
+	float m_flNonShadowMass; // Native client400; cache only, unsaved/unwired, no new getter/ctor reset.
+#endif
 
 #if !defined( NO_ENTITY_PREDICTION )
 	bool							m_bPredictionEligible;
@@ -1445,7 +1619,11 @@ protected:
 public:
 	// This can be used to setup the entity as a client-only entity. It gets an entity handle,
 	// a render handle, and is put into the spatial partition.
+#if defined( L4D2 )
+	bool InitializeAsClientEntityByIndex( int modelIndex, bool renderWithViewModels );
+#else
 	bool InitializeAsClientEntityByIndex( int iIndex, RenderGroup_t renderGroup );
+#endif
 
 	void TrackAngRotation( bool bTrack );
 
@@ -1588,6 +1766,10 @@ private:
 	string_t						m_ModelName;
 
 	CNetworkVarEmbedded( CCollisionProperty, m_Collision );
+#if defined( L4D2 )
+	CNetworkVarEmbedded( CGlowProperty, m_Glow );
+	float m_bGlowBackfaceMult;
+#endif
 	CNetworkVarEmbedded( CParticleProperty, m_Particles );
 
 	// Physics state
@@ -1684,6 +1866,7 @@ public:
 
 protected:
 
+#if !defined( L4D2 )
 	void AddToInterpolationList();
 	void RemoveFromInterpolationList();
 	unsigned short m_InterpolationListEntry;	// Entry into g_InterpolationList (or g_InterpolationList.InvalidIndex if not in the list).
@@ -1691,6 +1874,7 @@ protected:
 	void AddToTeleportList();
 	void RemoveFromTeleportList();
 	unsigned short m_TeleportListEntry;
+#endif
 
 	CThreadFastMutex m_CalcAbsolutePositionMutex;
 	CThreadFastMutex m_CalcAbsoluteVelocityMutex;
@@ -2031,8 +2215,15 @@ inline void C_BaseEntity::SetRenderColor( byte r, byte g, byte b )
 
 inline void C_BaseEntity::SetRenderColor( byte r, byte g, byte b, byte a )
 {
+#if defined( L4D2 )
+	color32 clr = { r, g, b, m_clrRender->a };
+	m_clrRender = clr;
+	SetRenderColorA( a );
+#else
+
 	color32 clr = { r, g, b, a };
 	m_clrRender = clr;
+#endif
 }
 
 inline void C_BaseEntity::SetRenderColorR( byte r )
@@ -2050,10 +2241,12 @@ inline void C_BaseEntity::SetRenderColorB( byte b )
 	SetRenderColor( GetRenderColor().r, GetRenderColor().g, b );
 }
 
+#if !defined( L4D2 )
 inline void C_BaseEntity::SetRenderColorA( byte a )
 {
 	SetRenderColor( GetRenderColor().r, GetRenderColor().g, GetRenderColor().b, a );
 }
+#endif
 
 inline RenderMode_t CBaseEntity::GetRenderMode() const
 {

@@ -32,6 +32,34 @@ extern ConVar NextBotPlayerMove;
  * static CBasePlayer *T::AllocatePlayerEntity( edict_t *pEdict, const char *playerName )
  *
  */
+#if defined( L4D2 )
+template < typename T >
+T *NextBotCreatePlayerBot( const char *name )
+{
+    ClientPutInServerOverride( T::AllocatePlayerEntity );
+    edict_t *edict = engine->CreateFakeClient( name );
+    ClientPutInServerOverride( NULL );
+    if ( !edict )
+    {
+        Msg( "CreatePlayerBot: Unable to create bot %s - CreateFakeClient() returned NULL.\n", name );
+        return NULL;
+    }
+    T *bot = dynamic_cast< T * >( CBaseEntity::Instance( edict ) );
+    if ( !bot )
+    {
+        Assert( false );
+        Error( "CreatePlayerBot: Could not Instance() from the bot edict.\n" );
+        return NULL;
+    }
+    char playerName[32];
+    Q_strncpy( playerName, name, sizeof( playerName ) );
+    bot->SetPlayerName( playerName );
+    bot->ClearFlags();
+    bot->AddFlag( FL_CLIENT | FL_FAKECLIENT );
+    return bot;
+}
+
+#else
 template < typename T > 
 T * NextBotCreatePlayerBot( const char *name, bool bReportFakeClient = true )
 {
@@ -77,6 +105,7 @@ T * NextBotCreatePlayerBot( const char *name, bool bReportFakeClient = true )
 
 	return bot;
 }
+#endif
 
 
 //--------------------------------------------------------------------------------------------------
@@ -94,11 +123,13 @@ public:
 	virtual void PressAltFireButton( float duration = -1.0f ) = 0;
 	virtual void ReleaseAltFireButton( void ) = 0;
 
+#if !defined( L4D2 )
 	virtual void PressMeleeButton( float duration = -1.0f ) = 0;
 	virtual void ReleaseMeleeButton( void ) = 0;
 
 	virtual void PressSpecialFireButton( float duration = -1.0f ) = 0;
 	virtual void ReleaseSpecialFireButton( void ) = 0;
+#endif
 
 	virtual void PressUseButton( float duration = -1.0f ) = 0;
 	virtual void ReleaseUseButton( void ) = 0;
@@ -146,8 +177,10 @@ public:
 
 	virtual void Spawn( void );
 
+#if !defined( L4D2 )
 	virtual void SetSpawnPoint( CBaseEntity *spawnPoint );						// define place in environment where bot will (re)spawn
 	virtual CBaseEntity		*EntSelectSpawnPoint( void );
+#endif
 
 	virtual void PhysicsSimulate( void );
 
@@ -161,7 +194,9 @@ public:
 
 	virtual bool IsRemovedOnReset( void ) const { return false; }				// remove this bot when the NextBot manager calls Reset
 
+#if !defined( L4D2 )
 	virtual bool IsDormantWhenDead( void ) const	{ return true; }			// should this player-bot continue to update itself when dead (respawn logic, etc)
+#endif
 
 	// allocate a bot and bind it to the edict
 	static CBasePlayer *AllocatePlayerEntity( edict_t *edict, const char *playerName );
@@ -184,11 +219,13 @@ public:
 	virtual void PressAltFireButton( float duration = -1.0f );
 	virtual void ReleaseAltFireButton( void );
 
+#if !defined( L4D2 )
 	virtual void PressMeleeButton( float duration = -1.0f );
 	virtual void ReleaseMeleeButton( void );
 
 	virtual void PressSpecialFireButton( float duration = -1.0f );
 	virtual void ReleaseSpecialFireButton( void );
+#endif
 
 	virtual void PressUseButton( float duration = -1.0f );
 	virtual void ReleaseUseButton( void );
@@ -235,7 +272,9 @@ public:
 
 	bool IsAbleToAutoCenterOnLadders( void ) const;
 
+#if !defined( L4D2 )
 	virtual void AvoidPlayers( CUserCmd *pCmd ) { }								// some game types allow players to pass through each other, this method pushes them apart
+#endif
 
 public:
 	// begin INextBot ------------------------------------------------------------------------------------------------------------------
@@ -246,7 +285,9 @@ protected:
 	int m_prevInputButtons;
 	CountdownTimer m_fireButtonTimer;
 	CountdownTimer m_meleeButtonTimer;
+#if !defined( L4D2 )
 	CountdownTimer m_specialFireButtonTimer;
+#endif
 	CountdownTimer m_useButtonTimer;
 	CountdownTimer m_reloadButtonTimer;
 	CountdownTimer m_forwardButtonTimer;
@@ -260,10 +301,13 @@ protected:
 	IntervalTimer m_burningTimer;		// how long since we were last burning
 	float m_forwardScale;
 	float m_rightScale;
+#if !defined( L4D2 )
 	CHandle< CBaseEntity > m_spawnPointEntity;
+#endif
 };
 
 
+#if !defined( L4D2 )
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::SetSpawnPoint( CBaseEntity *spawnPoint )
 {
@@ -278,6 +322,7 @@ inline CBaseEntity *NextBotPlayer< PlayerType >::EntSelectSpawnPoint( void )
 
 	return BaseClass::EntSelectSpawnPoint();
 }
+#endif
 
 template < typename PlayerType >
 inline float NextBotPlayer< PlayerType >::GetDistanceBetween( CBaseEntity *other ) const
@@ -332,15 +377,26 @@ inline void NextBotPlayer< PlayerType >::ReleaseFireButton( void )
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::PressAltFireButton( float duration )
 {
+#if defined( L4D2 )
+	m_inputButtons |= IN_ATTACK2;
+	m_meleeButtonTimer.Start( duration );
+#else
 	PressMeleeButton( duration );
+#endif
 }
 
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::ReleaseAltFireButton( void )
 {
+#if defined( L4D2 )
+	m_inputButtons &= ~IN_ATTACK2;
+	m_meleeButtonTimer.Invalidate();
+#else
 	ReleaseMeleeButton();
+#endif
 }
 
+#if !defined( L4D2 )
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::PressMeleeButton( float duration )
 {
@@ -368,6 +424,7 @@ inline void NextBotPlayer< PlayerType >::ReleaseSpecialFireButton( void )
 	m_inputButtons &= ~IN_ATTACK3;
 	m_specialFireButtonTimer.Invalidate();
 }
+#endif
 
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::PressUseButton( float duration )
@@ -512,7 +569,9 @@ inline NextBotPlayer< PlayerType >::NextBotPlayer( void )
 	m_prevInputButtons = 0;
 	m_inputButtons = 0;
 	m_burningTimer.Invalidate();
+#if !defined( L4D2 )
 	m_spawnPointEntity = NULL;
+#endif
 }
 
 
@@ -532,7 +591,9 @@ inline void NextBotPlayer< PlayerType >::Spawn( void )
 	m_prevInputButtons = m_inputButtons = 0;
 	m_fireButtonTimer.Invalidate();
 	m_meleeButtonTimer.Invalidate();
+#if !defined( L4D2 )
 	m_specialFireButtonTimer.Invalidate();
+#endif
 	m_useButtonTimer.Invalidate();
 	m_reloadButtonTimer.Invalidate();
 	m_forwardButtonTimer.Invalidate();
@@ -573,6 +634,88 @@ inline void _NextBot_BuildUserCommand( CUserCmd *cmd, const QAngle &viewangles, 
 
 
 //-----------------------------------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+template < typename PlayerType >
+inline void NextBotPlayer< PlayerType >::PhysicsSimulate( void )
+{
+	// S103963CD: native stop bit; its enum spelling has not been recovered.
+	if ( engine->IsPaused() || PlayerType::m_lifeState == LIFE_DEAD || NextBotStop.GetBool() ||
+		( static_cast< unsigned int >( this->GetFlags() ) & 0x80000000u ) != 0 )
+	{
+		PlayerType::PhysicsSimulate();
+		return;
+	}
+	if ( PlayerType::m_nSimulationTick == gpGlobals->tickcount )
+		return;
+
+	int inputButtons;
+	if ( BeginUpdate() )
+	{
+		Update();
+		if ( !m_fireButtonTimer.IsElapsed() ) m_inputButtons |= IN_ATTACK;
+		if ( !m_meleeButtonTimer.IsElapsed() ) m_inputButtons |= IN_ATTACK2;
+		if ( !m_useButtonTimer.IsElapsed() ) m_inputButtons |= IN_USE;
+		if ( !m_reloadButtonTimer.IsElapsed() ) m_inputButtons |= IN_RELOAD;
+		if ( !m_forwardButtonTimer.IsElapsed() ) m_inputButtons |= IN_FORWARD;
+		if ( !m_backwardButtonTimer.IsElapsed() ) m_inputButtons |= IN_BACK;
+		if ( !m_leftButtonTimer.IsElapsed() ) m_inputButtons |= IN_MOVELEFT;
+		if ( !m_rightButtonTimer.IsElapsed() ) m_inputButtons |= IN_MOVERIGHT;
+		if ( !m_jumpButtonTimer.IsElapsed() ) m_inputButtons |= IN_JUMP;
+		if ( !m_crouchButtonTimer.IsElapsed() ) m_inputButtons |= IN_DUCK;
+		if ( !m_walkButtonTimer.IsElapsed() ) m_inputButtons |= IN_SPEED;
+		inputButtons = m_prevInputButtons = m_inputButtons;
+		EndUpdate();
+	}
+	else
+	{
+		GetBodyInterface()->Update();
+		inputButtons = m_prevInputButtons | m_inputButtons;
+	}
+
+	IBody *body = GetBodyInterface();
+	ILocomotion *mover = GetLocomotionInterface();
+	if ( body->IsActualPosture( IBody::CROUCH ) ) inputButtons |= IN_DUCK;
+	float forward = 0.0f;
+	float side = 0.0f;
+	// The native vertical branch uses this tick's input, not merged held input.
+	float vertical = ( m_inputButtons & IN_JUMP ) ? mover->GetRunSpeed() : 0.0f;
+	if ( inputButtons & IN_FORWARD ) forward = mover->GetRunSpeed();
+	else if ( inputButtons & IN_BACK ) forward = -mover->GetRunSpeed();
+	if ( inputButtons & IN_MOVELEFT ) side = -mover->GetRunSpeed();
+	else if ( inputButtons & IN_MOVERIGHT ) side = mover->GetRunSpeed();
+	if ( NextBotPlayerWalk.GetBool() ) inputButtons |= IN_SPEED;
+	if ( NextBotPlayerCrouch.GetBool() ) inputButtons |= IN_DUCK;
+	if ( !m_buttonScaleTimer.IsElapsed() )
+	{
+		forward = mover->GetRunSpeed() * m_forwardScale;
+		side = mover->GetRunSpeed() * m_rightScale;
+	}
+	// Native 102D3210: the sole live player stun deadline, not pending stagger.
+	// Analog forward/side remain unchanged; only these button bits are masked.
+	if ( !this->m_stunTimer.IsElapsed() )
+		inputButtons &= ~( IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT | IN_JUMP | IN_DUCK );
+	if ( !NextBotPlayerMove.GetBool() )
+	{
+		inputButtons &= ~( IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT | IN_JUMP );
+		forward = side = vertical = 0.0f;
+	}
+	CUserCmd command;
+	_NextBot_BuildUserCommand( &command, this->EyeAngles(), forward, side, vertical, inputButtons, 0 );
+	this->AvoidPlayers( &command );
+	this->ProcessUsercmds( &command, 1, 1, 0, false );
+	m_inputButtons = 0;
+	PlayerType::PhysicsSimulate();
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::PhysicsSimulate( void )
 {
@@ -736,7 +879,7 @@ inline void NextBotPlayer< PlayerType >::PhysicsSimulate( void )
 	CUserCmd userCmd;
 	_NextBot_BuildUserCommand( &userCmd, angles, forwardSpeed, strafeSpeed, verticalSpeed, inputButtons, 0 );
 
-	AvoidPlayers( &userCmd );
+	this->AvoidPlayers( &userCmd );
 
 	// allocate a new command and add it to the player's list of command to process
 	this->ProcessUsercmds( &userCmd, 1, 1, 0, false );
@@ -746,6 +889,7 @@ inline void NextBotPlayer< PlayerType >::PhysicsSimulate( void )
 	// actually execute player commands and do player physics
 	PlayerType::PhysicsSimulate();
 }
+#endif
 
 
 //----------------------------------------------------------------------------------------------------------
@@ -779,7 +923,9 @@ inline void NextBotPlayer< PlayerType >::Touch( CBaseEntity *other )
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::Weapon_Equip( CBaseCombatWeapon *weapon )
 {
-#ifdef TERROR
+#if defined( L4D2 )
+	OnPickUp( weapon, static_cast< CBaseCombatCharacter * >( weapon->GetPreviousOwner() ) );
+#elif defined( TERROR )
 	// TODO: Reimplement GetDroppingPlayer() into GetLastOwner()
 	OnPickUp( weapon, weapon->GetDroppingPlayer() );
 #else
@@ -804,7 +950,7 @@ inline void NextBotPlayer< PlayerType >::Weapon_Drop( CBaseCombatWeapon *weapon,
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::OnMainActivityComplete( Activity newActivity, Activity oldActivity )
 {
-#ifdef TERROR
+#if defined( TERROR ) && !defined( L4D2 )
 	BaseClass::OnMainActivityComplete( newActivity, oldActivity );
 #endif
 	OnAnimationActivityComplete( oldActivity );
@@ -815,7 +961,7 @@ inline void NextBotPlayer< PlayerType >::OnMainActivityComplete( Activity newAct
 template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::OnMainActivityInterrupted( Activity newActivity, Activity oldActivity )
 {
-#ifdef TERROR
+#if defined( TERROR ) && !defined( L4D2 )
 	BaseClass::OnMainActivityInterrupted( newActivity, oldActivity );
 #endif
 	OnAnimationActivityInterrupted( oldActivity );
@@ -827,7 +973,11 @@ template < typename PlayerType >
 inline void NextBotPlayer< PlayerType >::Update( void )
 {
 	// don't spend CPU updating if this Survivor is dead
+#if defined( L4D2 )
+	if ( this->IsAlive() && !NextBotPlayerStop.GetBool() )
+#else
 	if ( ( this->IsAlive() || !IsDormantWhenDead() ) && !NextBotPlayerStop.GetBool() )
+#endif
 	{
 		INextBot::Update();	
 	}

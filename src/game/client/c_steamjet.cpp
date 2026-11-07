@@ -84,6 +84,9 @@ public:
 
 	int				m_spawnflags;
 	float			m_flRollSpeed;
+#if defined( L4D2 )
+	char m_NoiseStart[MAX_PATH];
+#endif
 
 private:
 
@@ -103,6 +106,9 @@ private:
 	CParticleMgr		*m_pParticleMgr;
 	PMaterialHandle	m_MaterialHandle;
 	TimedEvent		m_ParticleSpawn;
+#if defined( L4D2 )
+	bool m_bWasEmitting; // Native2236: previous Update emit state, not networked.
+#endif
 
 private:
 					C_SteamJet( const C_SteamJet & );
@@ -130,6 +136,9 @@ IMPLEMENT_CLIENTCLASS_DT(C_SteamJet, DT_SteamJet, CSteamJet)
 	RecvPropInt(RECVINFO(m_nType), 0),
 	RecvPropInt( RECVINFO( m_spawnflags ) ),
 	RecvPropFloat(RECVINFO(m_flRollSpeed), 0 ),
+#if defined( L4D2 )
+	RecvPropString( RECVINFO( m_NoiseStart ) ),
+#endif
 END_RECV_TABLE()
 
 // ------------------------------------------------------------------------- //
@@ -147,11 +156,17 @@ C_SteamJet::C_SteamJet()
 	m_Rate = 26;
 	m_JetLength = 80;
 	m_bEmit = true;
+#if defined( L4D2 )
+	m_bWasEmitting = false;
+#endif
 	m_bFaceLeft = false;
 	m_ParticleEffect.SetAlwaysSimulate( false ); // Don't simulate outside the PVS or frustum.
 
 	m_vLastRampUpdatePos.Init( 1e24, 1e24, 1e24 );
 	m_vLastRampUpdateAngles.Init( 1e24, 1e24, 1e24 );
+#if defined( L4D2 )
+	m_NoiseStart[0] = '\0';
+#endif
 }
 
 
@@ -272,6 +287,11 @@ void C_SteamJet::Update(float fTimeDelta)
 
 	if( m_bEmit )
 	{
+#if defined( L4D2 )
+		// C202E08: start sound on an off-to-on edge, even without a particle draw.
+		if ( !m_bWasEmitting && m_NoiseStart[0] )
+			EmitSound( m_NoiseStart, 0.0f );
+#endif
 		// Add new particles.
 		int nToEmit = 0;
 		float tempDelta = fTimeDelta;
@@ -328,6 +348,9 @@ void C_SteamJet::Update(float fTimeDelta)
 			UpdateLightingRamp();
 		}	
 	}
+#if defined( L4D2 )
+	m_bWasEmitting = m_bEmit != 0;
+#endif
 }
 
 

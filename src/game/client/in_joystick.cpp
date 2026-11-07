@@ -28,6 +28,9 @@
 #include "math.h"
 #include "tier1/convar_serverbounded.h"
 #include "cam_thirdperson.h"
+#if defined( L4D2 )
+#include "iclientmode.h"
+#endif
 
 #if defined( _X360 )
 #include "xbox/xbox_win32stubs.h"
@@ -49,63 +52,332 @@
 #define JOY_RELATIVE_AXIS	0x00000010		
 
 // Axis mapping
-static ConVar joy_name( "joy_name", "joystick", FCVAR_ARCHIVE );
-static ConVar joy_advanced( "joy_advanced", "1", FCVAR_ARCHIVE );
-static ConVar joy_advaxisx( "joy_advaxisx", "4", FCVAR_ARCHIVE );
-static ConVar joy_advaxisy( "joy_advaxisy", "2", FCVAR_ARCHIVE );
-static ConVar joy_advaxisz( "joy_advaxisz", "0", FCVAR_ARCHIVE );
-static ConVar joy_advaxisr( "joy_advaxisr", "1", FCVAR_ARCHIVE );
-static ConVar joy_advaxisu( "joy_advaxisu", "3", FCVAR_ARCHIVE );
-static ConVar joy_advaxisv( "joy_advaxisv", "0", FCVAR_ARCHIVE );
+static ConVar joy_name( "joy_name", "joystick", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_advanced( "joy_advanced", 
+#if defined( L4D2 )
+	"0"
+#else
+	"1"
+#endif
+, 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_advaxisx( "joy_advaxisx", 
+#if defined( L4D2 )
+	"0"
+#else
+	"4"
+#endif
+, 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_advaxisy( "joy_advaxisy", 
+#if defined( L4D2 )
+	"0"
+#else
+	"2"
+#endif
+, 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_advaxisz( "joy_advaxisz", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_advaxisr( "joy_advaxisr", 
+#if defined( L4D2 )
+	"0"
+#else
+	"1"
+#endif
+, 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_advaxisu( "joy_advaxisu", 
+#if defined( L4D2 )
+	"0"
+#else
+	"3"
+#endif
+, 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_advaxisv( "joy_advaxisv", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
 
 // Basic "dead zone" and sensitivity
-static ConVar joy_forwardthreshold( "joy_forwardthreshold", "0.15", FCVAR_ARCHIVE );
-static ConVar joy_sidethreshold( "joy_sidethreshold", "0.15", FCVAR_ARCHIVE );
-static ConVar joy_pitchthreshold( "joy_pitchthreshold", "0.15", FCVAR_ARCHIVE );
-static ConVar joy_yawthreshold( "joy_yawthreshold", "0.15", FCVAR_ARCHIVE );
-static ConVar joy_forwardsensitivity( "joy_forwardsensitivity", "-1", FCVAR_ARCHIVE );
-static ConVar joy_sidesensitivity( "joy_sidesensitivity", "1", FCVAR_ARCHIVE );
-static ConVar joy_pitchsensitivity( "joy_pitchsensitivity", "1", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX );
-static ConVar joy_yawsensitivity( "joy_yawsensitivity", "-1", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX );
+static ConVar joy_forwardthreshold( "joy_forwardthreshold", "0.15", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_sidethreshold( "joy_sidethreshold", "0.15", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_pitchthreshold( "joy_pitchthreshold", "0.15", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_yawthreshold( "joy_yawthreshold", "0.15", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_forwardsensitivity( "joy_forwardsensitivity", "-1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_sidesensitivity( "joy_sidesensitivity", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_pitchsensitivity( "joy_pitchsensitivity", "1", 
+#if defined( L4D2 )
+	0x01008088
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX
+#endif
+ );
+static ConVar joy_yawsensitivity( "joy_yawsensitivity", "-1", 
+#if defined( L4D2 )
+	0x01008088
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX
+#endif
+ );
 
 // Advanced sensitivity and response
-static ConVar joy_response_move( "joy_response_move", "1", FCVAR_ARCHIVE, "'Movement' stick response mode: 0=Linear, 1=quadratic, 2=cubic, 3=quadratic extreme, 4=power function(i.e., pow(x,1/sensitivity)), 5=two-stage" );
-ConVar joy_response_move_vehicle("joy_response_move_vehicle", "6");
-static ConVar joy_response_look( "joy_response_look", "0", FCVAR_ARCHIVE, "'Look' stick response mode: 0=Default, 1=Acceleration Promotion" );
-static ConVar joy_lowend( "joy_lowend", "1", FCVAR_ARCHIVE );
-static ConVar joy_lowmap( "joy_lowmap", "1", FCVAR_ARCHIVE );
-static ConVar joy_accelscale( "joy_accelscale", "0.6", FCVAR_ARCHIVE);
-static ConVar joy_accelmax( "joy_accelmax", "1.0", FCVAR_ARCHIVE);
-static ConVar joy_autoaimdampenrange( "joy_autoaimdampenrange", "0", FCVAR_ARCHIVE, "The stick range where autoaim dampening is applied. 0 = off" );
-static ConVar joy_autoaimdampen( "joy_autoaimdampen", "0", FCVAR_ARCHIVE, "How much to scale user stick input when the gun is pointing at a valid target." );
+static ConVar joy_response_move( "joy_response_move", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "'Movement' stick response mode: 0=Linear, 1=quadratic, 2=cubic, 3=quadratic extreme, 4=power function(i.e., pow(x,1/sensitivity)), 5=two-stage" );
+ConVar joy_response_move_vehicle("joy_response_move_vehicle", "6"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
+static ConVar joy_response_look( "joy_response_look", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "'Look' stick response mode: 0=Default, 1=Acceleration Promotion" );
+static ConVar joy_lowend( "joy_lowend", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_lowmap( "joy_lowmap", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar joy_accelscale( "joy_accelscale", "0.6", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+);
+static ConVar joy_accelmax( "joy_accelmax", "1.0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+);
+static ConVar joy_autoaimdampenrange( "joy_autoaimdampenrange", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "The stick range where autoaim dampening is applied. 0 = off" );
+static ConVar joy_autoaimdampen( "joy_autoaimdampen", "0", 
+#if defined( L4D2 )
+	0x00000288
+#else
+	FCVAR_ARCHIVE
+#endif
+, "How much to scale user stick input when the gun is pointing at a valid target." );
+#if defined( L4D2 )
+extern ConVar cl_autoaim;
+extern ConVar cl_inputmode;
+extern ConVar joy_legacy;
+extern ConVar joy_circle_correct;
+extern ConVar joy_sensitive_step2;
+extern ConVar joy_variable_frametime;
+extern ConVar joy_lookspin_default;
+extern bool IN_IsLookSpinPressed();
+extern void IN_SetJoystickWalk( bool walk );
+#endif
 
-static ConVar joy_vehicle_turn_lowend("joy_vehicle_turn_lowend", "0.7");
-static ConVar joy_vehicle_turn_lowmap("joy_vehicle_turn_lowmap", "0.4");
+static ConVar joy_vehicle_turn_lowend("joy_vehicle_turn_lowend", "0.7"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
+static ConVar joy_vehicle_turn_lowmap("joy_vehicle_turn_lowmap", "0.4"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
 
 
 // Misc
-static ConVar joy_diagonalpov( "joy_diagonalpov", "0", FCVAR_ARCHIVE, "POV manipulator operates on diagonal axes, too." );
-static ConVar joy_display_input("joy_display_input", "0", FCVAR_ARCHIVE);
-static ConVar joy_wwhack2( "joy_wingmanwarrior_turnhack", "0", FCVAR_ARCHIVE, "Wingman warrior hack related to turn axes." );
-ConVar joy_autosprint("joy_autosprint", "0", 0, "Automatically sprint when moving with an analog joystick" );
+static ConVar joy_diagonalpov( "joy_diagonalpov", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "POV manipulator operates on diagonal axes, too." );
+static ConVar joy_display_input("joy_display_input", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+);
+static ConVar joy_wwhack2( "joy_wingmanwarrior_turnhack", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Wingman warrior hack related to turn axes." );
+ConVar joy_autosprint("joy_autosprint", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Automatically sprint when moving with an analog joystick" );
 
-static ConVar joy_inverty("joy_inverty", "0", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX, "Whether to invert the Y axis of the joystick for looking." );
+static ConVar joy_inverty("joy_inverty", "0", 
+#if defined( L4D2 )
+	0x01008088
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX
+#endif
+, "Whether to invert the Y axis of the joystick for looking." );
 
 // XBox Defaults
-static ConVar joy_yawsensitivity_default( "joy_yawsensitivity_default", "-1.25", FCVAR_NONE );
-static ConVar joy_pitchsensitivity_default( "joy_pitchsensitivity_default", "-1.0", FCVAR_NONE );
+static ConVar joy_yawsensitivity_default( "joy_yawsensitivity_default", 
+#if defined( L4D2 )
+	"-1.5"
+#else
+	"-1.25"
+#endif
+, 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+ );
+static ConVar joy_pitchsensitivity_default( "joy_pitchsensitivity_default", 
+#if defined( L4D2 )
+	"-1.5"
+#else
+	"-1.0"
+#endif
+, 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+ );
 static ConVar option_duck_method_default( "option_duck_method_default", "1.0", FCVAR_NONE );
 static ConVar joy_inverty_default( "joy_inverty_default", "0", FCVAR_ARCHIVE_XBOX );				// Extracted & saved from profile
 static ConVar joy_movement_stick_default( "joy_movement_stick_default", "0", FCVAR_ARCHIVE_XBOX );	// Extracted & saved from profile
-static ConVar sv_stickysprint_default( "sv_stickysprint_default", "0", FCVAR_NONE );
+static ConVar sv_stickysprint_default( "sv_stickysprint_default", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+ );
 
 void joy_movement_stick_Callback( IConVar *var, const char *pOldString, float flOldValue )
 {
 	engine->ClientCmd( "joyadvancedupdate" );
 }
-static ConVar joy_movement_stick("joy_movement_stick", "0", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX, "Which stick controls movement (0 is left stick)", joy_movement_stick_Callback );
+static ConVar joy_movement_stick("joy_movement_stick", "0", 
+#if defined( L4D2 )
+	0x01008088
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX
+#endif
+, "Which stick controls movement (0 is left stick)", joy_movement_stick_Callback );
 
-static ConVar joy_xcontroller_cfg_loaded( "joy_xcontroller_cfg_loaded", "0", FCVAR_ARCHIVE, "If 0, the 360controller.cfg file will be executed on startup & option changes." );
+static ConVar joy_xcontroller_cfg_loaded( "joy_xcontroller_cfg_loaded", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+, "If 0, the 360controller.cfg file will be executed on startup & option changes." );
 
 extern ConVar lookspring;
 extern ConVar cl_forwardspeed;
@@ -136,6 +408,12 @@ bool CInput::EnableJoystickMode()
 //-----------------------------------------------
 // Response curve function for the move axes
 //-----------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float ResponseCurve( int curve, float x, int axis, float sensitivity )
 {
 	switch ( curve )
@@ -223,6 +501,9 @@ static float ResponseCurve( int curve, float x, int axis, float sensitivity )
 	// linear
 	return x*sensitivity;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------
@@ -232,10 +513,23 @@ static float ResponseCurve( int curve, float x, int axis, float sensitivity )
 //
 // This assists the player staying on target.
 //-----------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 float AutoAimDampening( float x, int axis, float dist )
 {
-	// FIXME: Autoaim support needs to be moved from HL2_DLL to the client dll, so all games can use it.
-#ifdef HL2_CLIENT_DLL
+#if defined( L4D2 )
+	if ( cl_autoaim.GetBool() && joy_autoaimdampen.GetFloat() > 0.0f &&
+		fabs( x ) < joy_autoaimdampenrange.GetFloat() )
+	{
+		C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+		if ( player && player->m_Local.m_bAutoAimTarget )
+			return joy_autoaimdampen.GetFloat();
+	}
+#elif defined( HL2_CLIENT_DLL )
 	// Help the user stay on target if the feature is enabled and the user
 	// is not making a gross stick movement.
 	if( joy_autoaimdampen.GetFloat() > 0.0f && fabs(x) < joy_autoaimdampenrange.GetFloat() )
@@ -255,6 +549,9 @@ float AutoAimDampening( float x, int axis, float dist )
 #endif
 	return 1.0f;// No dampening.
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------
@@ -279,8 +576,22 @@ envelope_t	controlEnvelope;
 // value for the pitch of the control stick, and
 // vice-versa.
 //-----------------------------------------------
-ConVar joy_pegged("joy_pegged", "0.75");// Once the stick is pushed this far, it's assumed pegged.
-ConVar joy_virtual_peg("joy_virtual_peg", "0");
+ConVar joy_pegged("joy_pegged", "0.75"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);// Once the stick is pushed this far, it's assumed pegged.
+ConVar joy_virtual_peg("joy_virtual_peg", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float ResponseCurveLookDefault( float x, int axis, float otherAxis, float dist, float frametime )
 {
 	float inputX = x;
@@ -365,8 +676,21 @@ static float ResponseCurveLookDefault( float x, int axis, float otherAxis, float
 
 	return x;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
-ConVar joy_accel_filter("joy_accel_filter", "0.2");// If the non-accelerated axis is pushed farther than this, then accelerate it, too.
+ConVar joy_accel_filter("joy_accel_filter", "0.2"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);// If the non-accelerated axis is pushed farther than this, then accelerate it, too.
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float ResponseCurveLookAccelerated( float x, int axis, float otherAxis, float dist, float frametime )
 {
 	float inputX = x;
@@ -408,8 +732,10 @@ static float ResponseCurveLookAccelerated( float x, int axis, float otherAxis, f
 		float flMax = joy_accelmax.GetFloat();
 		if( controlEnvelope.envelopeScale[axis] < flMax )
 		{
+#if !defined( L4D2 )
 			float delta = x - joy_lowmap.GetFloat();
 			x = joy_lowmap.GetFloat() + (delta * controlEnvelope.envelopeScale[axis]);
+#endif
 			controlEnvelope.envelopeScale[axis] += ( frametime * joy_accelscale.GetFloat() );
 
 			if( controlEnvelope.envelopeScale[axis] > flMax )
@@ -417,6 +743,10 @@ static float ResponseCurveLookAccelerated( float x, int axis, float otherAxis, f
 				controlEnvelope.envelopeScale[axis] = flMax;
 			}
 		}
+#if defined( L4D2 )
+		// C12FB10: advance first, then map on every sample, including at the cap.
+		x = joy_lowmap.GetFloat() + ( x - joy_lowmap.GetFloat() ) * controlEnvelope.envelopeScale[axis];
+#endif
 	}
 
 	x *= AutoAimDampening( inputX, axis, dist );
@@ -433,11 +763,25 @@ static float ResponseCurveLookAccelerated( float x, int axis, float otherAxis, f
 
 	return x;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------
 //-----------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float ResponseCurveLook( int curve, float x, int axis, float otherAxis, float dist, float frametime )
 {
+#if defined( L4D2 )
+	// C12FD00: controller aim admission follows actual substantial look input.
+	if ( fabs( x ) > 0.5f )
+		cl_inputmode.SetValue( 1 );
+#endif
 	switch( curve )
 	{
 	case 1://Promotion of acceleration
@@ -449,6 +793,38 @@ static float ResponseCurveLook( int curve, float x, int axis, float otherAxis, f
 		break;
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+#if defined( L4D2 )
+// C1368xx shares C12FD00 and its envelope with the regular joystick path.
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+void L4D2ControllerLook( float yaw, float pitch, float frametime, bool platformer,
+	float &yawDelta, float &pitchDelta )
+{
+	if ( platformer )
+	{
+		yawDelta = yaw * joy_yawsensitivity.GetFloat();
+		pitchDelta = pitch * joy_pitchsensitivity.GetFloat();
+		return;
+	}
+	const float distance = sqrtf( yaw * yaw + pitch * pitch );
+	const float speed = frametime * gHUD.GetFOVSensitivityAdjust();
+	yawDelta = ResponseCurveLook( joy_response_look.GetInt(), yaw, YAW, pitch, distance, frametime ) *
+		joy_yawsensitivity.GetFloat() * speed * cl_yawspeed.GetFloat();
+	pitchDelta = -ResponseCurveLook( joy_response_look.GetInt(), pitch, PITCH, yaw, distance, frametime ) *
+		joy_pitchsensitivity.GetFloat() * speed * cl_pitchspeed.GetFloat();
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Advanced joystick setup
@@ -532,14 +908,22 @@ void CInput::Joystick_Advanced(void)
 	static ConVarRef var( "joy_xcontroller_found" );
 	if ( var.IsValid() && var.GetBool() && in_joystick.GetBool() )
 	{
+#if defined( L4D2 )
+		if ( joy_xcontroller_cfg_loaded.GetInt() == 0 )
+#else
 		if ( joy_xcontroller_cfg_loaded.GetInt() < 2 )
+#endif
 		{
 			engine->ClientCmd_Unrestricted( "exec 360controller.cfg" );
+#if defined( L4D2 )
+			joy_xcontroller_cfg_loaded.SetValue( 1 );
+#else
 			if ( IsLinux () )
 			{
 				engine->ClientCmd_Unrestricted( "exec 360controller-linux.cfg" );
 			}
 			joy_xcontroller_cfg_loaded.SetValue( 2 );
+#endif
 		}
 	}
 	else if ( joy_xcontroller_cfg_loaded.GetInt() > 0 )
@@ -609,6 +993,12 @@ void CInput::ControllerCommands( void )
 //-----------------------------------------------------------------------------
 // Purpose: Scales the raw analog value to lie withing the axis range (full range - deadzone )
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 float CInput::ScaleAxisValue( const float axisValue, const float axisThreshold )
 {
 	// Xbox scales the range of all axes in the inputsystem. PC can't do that because each axis mapping
@@ -634,6 +1024,9 @@ float CInput::ScaleAxisValue( const float axisValue, const float axisThreshold )
 
 	return result;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 void CInput::Joystick_SetSampleTime(float frametime)
@@ -666,6 +1059,12 @@ float CInput::Joystick_GetYaw( void )
 // Input  : frametime - 
 //			*cmd - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 {
 	// complete initialization if first time in ( needed as cvars are not available at initialization time )
@@ -683,6 +1082,11 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 	bool haveJoysticks = ( inputsystem->GetJoystickCount() > 0 );
 	if ( haveJoysticks != m_fHadJoysticks )
 	{
+#if defined( L4D2 )
+		ConVarRef found( "joy_xcontroller_found" );
+		if ( found.IsValid() )
+			found.SetValue( haveJoysticks );
+#endif
 		Joystick_Advanced();
 		m_fHadJoysticks = haveJoysticks;
 	}
@@ -690,6 +1094,11 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 	// Verify that a joystick is available
 	if ( !haveJoysticks )
 		return; 
+#if defined( L4D2 )
+	// C1301B8: visible UI does not consume the sample or change axis history.
+	if ( vgui::surface()->IsCursorVisible() )
+		return;
+#endif
 
 	if ( m_flRemainingJoystickSampleTime <= 0 )
 		return;
@@ -756,21 +1165,36 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 		gameAxes[GAME_AXIS_SIDE] = gameAxes[GAME_AXIS_YAW];
 		gameAxes[GAME_AXIS_YAW].value = 0;
 	}
+#if defined( L4D2 )
+	// C1303F0: legacy swaps strafe/yaw before applying their own dead zones.
+	if ( joy_legacy.GetBool() )
+	{
+		axis_t side = gameAxes[GAME_AXIS_SIDE];
+		gameAxes[GAME_AXIS_SIDE] = gameAxes[GAME_AXIS_YAW];
+		gameAxes[GAME_AXIS_YAW] = side;
+	}
+#endif
 
 	m_flPreviousJoystickForward	= ScaleAxisValue( gameAxes[GAME_AXIS_FORWARD].value, MAX_BUTTONSAMPLE * joy_forwardthreshold.GetFloat() );
 	m_flPreviousJoystickSide	= ScaleAxisValue( gameAxes[GAME_AXIS_SIDE].value, MAX_BUTTONSAMPLE * joy_sidethreshold.GetFloat()  );
 	m_flPreviousJoystickPitch	= ScaleAxisValue( gameAxes[GAME_AXIS_PITCH].value, MAX_BUTTONSAMPLE * joy_pitchthreshold.GetFloat()  );
 	m_flPreviousJoystickYaw		= ScaleAxisValue( gameAxes[GAME_AXIS_YAW].value, MAX_BUTTONSAMPLE * joy_yawthreshold.GetFloat()  );
 
+#if !defined( L4D2 )
 	// Skip out if vgui is active
 	if ( vgui::surface()->IsCursorVisible() )
 		return;
+#endif
 
 	// If we're inverting our joystick, do so
 	if ( joy_inverty.GetBool() )
 	{
 		m_flPreviousJoystickPitch *= -1.0f;
 	}
+#if defined( L4D2 )
+	// C1305DB: pitch then yaw, after inversion and before platformer/look processing.
+	g_pClientMode->OverrideJoystickInput( &m_flPreviousJoystickPitch, &m_flPreviousJoystickYaw );
+#endif
 
 	// drive yaw, pitch and move like a screen relative platformer game
 	if ( CAM_IsThirdPerson() && thirdperson_platformer.GetInt() )
@@ -811,7 +1235,14 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 
 	float	joySideMove = 0.f;
 	float	joyForwardMove = 0.f;
-	float   aspeed = frametime * gHUD.GetFOVSensitivityAdjust();
+#if defined( L4D2 )
+	const bool variableFrameTime = joy_variable_frametime.GetBool();
+	const float joystickFrameTime = variableFrameTime ? frametime : gpGlobals->frametime;
+	const bool processLookInput = variableFrameTime || frametime != gpGlobals->frametime;
+	float aspeed = joystickFrameTime * gHUD.GetFOVSensitivityAdjust();
+#else
+	float aspeed = frametime * gHUD.GetFOVSensitivityAdjust();
+#endif
 
 	// apply forward and side control
 	C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
@@ -826,10 +1257,33 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 		iResponseCurve = joy_response_move.GetInt();
 	}	
 	
-	float val = ResponseCurve( iResponseCurve, m_flPreviousJoystickForward, PITCH, joy_forwardsensitivity.GetFloat() );
-	joyForwardMove	+= val * cl_forwardspeed.GetFloat();
-	val = ResponseCurve( iResponseCurve, m_flPreviousJoystickSide, YAW, joy_sidesensitivity.GetFloat() );
-	joySideMove		+= val * cl_sidespeed.GetFloat();
+#if defined( L4D2 )
+	if ( iResponseCurve > 6 && joy_circle_correct.GetBool() )
+	{
+		// C1308CB: preserve direction, clamp only radius, and use forward sensitivity.
+		float radius = sqrtf( m_flPreviousJoystickForward * m_flPreviousJoystickForward +
+			m_flPreviousJoystickSide * m_flPreviousJoystickSide );
+		if ( radius > 1.0f )
+			radius = 1.0f;
+		bool walk = true;
+		if ( radius > 0.01f )
+		{
+			if ( radius > joy_sensitive_step2.GetFloat() )
+				walk = false;
+			const float value = ResponseCurve( iResponseCurve, radius, PITCH, joy_forwardsensitivity.GetFloat() );
+			joyForwardMove = ( ( 1.0f / radius ) * m_flPreviousJoystickForward ) * value * cl_forwardspeed.GetFloat();
+			joySideMove = ( ( 1.0f / radius ) * m_flPreviousJoystickSide ) * value * cl_sidespeed.GetFloat();
+		}
+		IN_SetJoystickWalk( walk );
+	}
+	else
+#endif
+	{
+		float val = ResponseCurve( iResponseCurve, m_flPreviousJoystickForward, PITCH, joy_forwardsensitivity.GetFloat() );
+		joyForwardMove += val * cl_forwardspeed.GetFloat();
+		val = ResponseCurve( iResponseCurve, m_flPreviousJoystickSide, YAW, joy_sidesensitivity.GetFloat() );
+		joySideMove += val * cl_sidespeed.GetFloat();
+	}
 
 	Vector2D move( m_flPreviousJoystickYaw, m_flPreviousJoystickPitch );
 	float dist = move.Length();
@@ -837,15 +1291,48 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 	// apply turn control
 	float angle = 0.f;
 
-	if ( JOY_ABSOLUTE_AXIS == gameAxes[GAME_AXIS_YAW].controlType )
+#if defined( L4D2 )
+	if ( m_flRemainingLookSpinTime != 0.0f )
 	{
-		float fAxisValue = ResponseCurveLook( joy_response_look.GetInt(), m_flPreviousJoystickYaw, YAW, m_flPreviousJoystickPitch, dist, frametime );
-		angle = fAxisValue * joy_yawsensitivity.GetFloat() * aspeed * cl_yawspeed.GetFloat();
+		float step = joystickFrameTime;
+		const float remaining = m_flRemainingLookSpinTime - step;
+		if ( !( remaining <= 0.0f ) )
+			m_flRemainingLookSpinTime = remaining;
+		else
+		{
+			step = m_flRemainingLookSpinTime;
+			m_flRemainingLookSpinTime = 0.0f;
+		}
+		angle = m_flLookSpinYawRate * step;
 	}
-	else
+	else if ( processLookInput )
+#endif
 	{
-		angle = m_flPreviousJoystickYaw * joy_yawsensitivity.GetFloat() * aspeed * 180.0;
+		if ( JOY_ABSOLUTE_AXIS == gameAxes[GAME_AXIS_YAW].controlType )
+		{
+#if defined( L4D2 )
+			float fAxisValue = ResponseCurveLook( joy_response_look.GetInt(), m_flPreviousJoystickYaw, YAW, m_flPreviousJoystickPitch, dist, joystickFrameTime );
+#else
+			float fAxisValue = ResponseCurveLook( joy_response_look.GetInt(), m_flPreviousJoystickYaw, YAW, m_flPreviousJoystickPitch, dist, frametime );
+#endif
+			angle = fAxisValue * joy_yawsensitivity.GetFloat() * aspeed * cl_yawspeed.GetFloat();
+		}
+		else
+		{
+			angle = m_flPreviousJoystickYaw * joy_yawsensitivity.GetFloat() * aspeed * 180.0;
+		}
 	}
+#if defined( L4D2 )
+	if ( angle != 0.0f )
+		m_flLastJoystickYawDelta = angle;
+	// C130BCB: latch after this sample's normal yaw; begin turning next sample.
+	if ( IN_IsLookSpinPressed() && m_flRemainingLookSpinTime == 0.0f &&
+		pLocalPlayer && pLocalPlayer->GetObserverMode() == OBS_MODE_NONE )
+	{
+		m_flRemainingLookSpinTime = joy_lookspin_default.GetFloat();
+		m_flLookSpinYawRate = ( m_flLastJoystickYawDelta < 0.0f ? -180.0f : 180.0f ) / m_flRemainingLookSpinTime;
+	}
+#endif
 
 	angle = JoyStickAdjustYaw( angle );
 	viewangles[YAW] += angle;
@@ -855,14 +1342,23 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 	if ( IsX360() || in_jlook.state & 1 )
 	{
 		angle = 0;
-		if ( JOY_ABSOLUTE_AXIS == gameAxes[GAME_AXIS_PITCH].controlType )
+#if defined( L4D2 )
+		if ( processLookInput )
+#endif
 		{
-			float fAxisValue = ResponseCurveLook( joy_response_look.GetInt(), m_flPreviousJoystickPitch, PITCH, m_flPreviousJoystickYaw, dist, frametime );
-			angle = fAxisValue * joy_pitchsensitivity.GetFloat() * aspeed * cl_pitchspeed.GetFloat();
-		}
-		else
-		{
-			angle = m_flPreviousJoystickPitch * joy_pitchsensitivity.GetFloat() * aspeed * 180.0;
+			if ( JOY_ABSOLUTE_AXIS == gameAxes[GAME_AXIS_PITCH].controlType )
+			{
+#if defined( L4D2 )
+				float fAxisValue = ResponseCurveLook( joy_response_look.GetInt(), m_flPreviousJoystickPitch, PITCH, m_flPreviousJoystickYaw, dist, joystickFrameTime );
+#else
+				float fAxisValue = ResponseCurveLook( joy_response_look.GetInt(), m_flPreviousJoystickPitch, PITCH, m_flPreviousJoystickYaw, dist, frametime );
+#endif
+				angle = fAxisValue * joy_pitchsensitivity.GetFloat() * aspeed * cl_pitchspeed.GetFloat();
+			}
+			else
+			{
+				angle = m_flPreviousJoystickPitch * joy_pitchsensitivity.GetFloat() * aspeed * 180.0;
+			}
 		}
 		viewangles[PITCH] += angle;
 		cmd->mousedy = angle;
@@ -912,3 +1408,6 @@ void CInput::JoyStickMove( float frametime, CUserCmd *cmd )
 
 	engine->SetViewAngles( viewangles );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif

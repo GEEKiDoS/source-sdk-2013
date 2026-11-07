@@ -25,6 +25,20 @@ class CHudMenu : public CHudElement, public vgui::Panel
 	DECLARE_CLASS_SIMPLE( CHudMenu, vgui::Panel );
 public:
 	CHudMenu( const char *pElementName );
+#ifdef L4D2
+	virtual ~CHudMenu();
+	struct ProcessedLine;
+	class CHudMenuOptions
+	{
+	public:
+		CHudMenuOptions() : m_center( false ) {}
+		virtual void ProcessLine( int index, ProcessedLine &line, const wchar_t *text, int selectedItem, unsigned char alpha ) = 0;
+		virtual void OnBeforePaint() = 0;
+		virtual ~CHudMenuOptions() {}
+		bool m_center;
+	};
+	void ShowMenu( const char *text, int validSlots, float duration, CHudMenuOptions *options );
+#endif
 	void Init( void );
 	void VidInit( void );
 	void Reset( void );
@@ -46,6 +60,9 @@ private:
 
 	void PaintString( const wchar_t *text, int textlen, vgui::HFont& font, int x, int y );
 
+#ifdef L4D2
+public:
+#endif
 	struct ProcessedLine
 	{
 		int	menuitem; // -1 for just text
@@ -53,7 +70,17 @@ private:
 		int length;
 		int pixels;
 		int height;
+#ifdef L4D2
+		int hotspotX, hotspotY;
+		bool customColor;
+		Color color;
+		ProcessedLine() : menuitem(0), startchar(0), length(0), pixels(0), height(0), hotspotX(9999), hotspotY(9999), customColor(false), color(0,0,0,0) {}
+#endif
 	};
+#ifdef L4D2
+private:
+	CHudMenuOptions *m_options;
+#endif
 
 	CUtlVector< ProcessedLine >	m_Processed;
 

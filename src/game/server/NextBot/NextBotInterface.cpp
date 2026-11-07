@@ -19,7 +19,19 @@
 #include "tier0/memdbgon.h"
 
 // development only, off by default for 360
-ConVar NextBotDebugHistory( "nb_debug_history", IsX360() ? "0" : "1", FCVAR_CHEAT, "If true, each bot keeps a history of debug output in memory" );
+ConVar NextBotDebugHistory( "nb_debug_history", 
+#if defined( L4D2 )
+	"0"
+#else
+	IsX360() ? "0" : "1"
+#endif
+, 
+#if defined( L4D2 )
+	0x00080004
+#else
+	FCVAR_CHEAT
+#endif
+, "If true, each bot keeps a history of debug output in memory" );
 
 //----------------------------------------------------------------------------------------------------------------
 INextBot::INextBot( void ) : m_debugHistory( MAX_NEXTBOT_DEBUG_HISTORY, 0 )	// CUtlVector: grow to max length, alloc 0 initially
@@ -33,7 +45,9 @@ INextBot::INextBot( void ) : m_debugHistory( MAX_NEXTBOT_DEBUG_HISTORY, 0 )	// C
 	m_immobileCheckTimer.Invalidate();
 	m_immobileAnchor = vec3_origin;
 
+#if !defined( L4D2 )
 	m_currentPath = NULL;
+#endif
 
 	// register with the manager
 	m_id = TheNextBots().Register( this );
@@ -290,7 +304,17 @@ float INextBot::GetRangeTo( const Vector &pos ) const
 
 
 //----------------------------------------------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1930
+#pragma fp_contract( off )
+#endif
+#endif
+double INextBot::GetRangeSquaredTo( CBaseEntity *subject ) const
+#else
 float INextBot::GetRangeSquaredTo( CBaseEntity *subject ) const
+#endif
 {
 	Vector botPos;
 	CBaseEntity *bot = const_cast< INextBot * >( this )->GetEntity();
@@ -299,8 +323,15 @@ float INextBot::GetRangeSquaredTo( CBaseEntity *subject ) const
 
 	bot->CollisionProp()->CalcNearestPoint( subject->WorldSpaceCenter(), &botPos );
 	float computedRange = subject->CollisionProp()->CalcDistanceFromPoint( botPos );
+#if defined( L4D2 )
+	return static_cast< double >( computedRange ) * computedRange;
+#else
 	return computedRange * computedRange;
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //----------------------------------------------------------------------------------------------------------------

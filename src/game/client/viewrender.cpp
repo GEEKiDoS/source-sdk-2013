@@ -67,6 +67,10 @@
 #endif
 #include "rendertexture.h"
 #include "viewpostprocess.h"
+#if defined( L4D2 )
+#include "l4d2/effects/terror_depth_of_field.h"
+#include "l4d2/terror_physics_math.h"
+#endif
 #include "viewdebug.h"
 
 #if defined USES_ECON_ITEMS
@@ -81,6 +85,9 @@
 #include "C_Env_Projected_Texture.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "c_basecombatweapon.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
 
 
@@ -88,11 +95,23 @@ static void testfreezeframe_f( void )
 {
 	view->FreezeFrame( 3.0 );
 }
-static ConCommand test_freezeframe( "test_freezeframe", testfreezeframe_f, "Test the freeze frame code.", FCVAR_CHEAT );
+static ConCommand test_freezeframe( "test_freezeframe", testfreezeframe_f, "Test the freeze frame code.", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 
-static ConVar r_visocclusion( "r_visocclusion", "0", FCVAR_CHEAT );
+static ConVar r_visocclusion( "r_visocclusion", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 extern ConVar r_flashlightdepthtexture;
 extern ConVar vcollide_wireframe;
 extern ConVar r_depthoverlay;
@@ -105,42 +124,178 @@ extern bool g_bDumpRenderTargets;
 //-----------------------------------------------------------------------------
 static ConVar cl_maxrenderable_dist("cl_maxrenderable_dist", "3000", FCVAR_CHEAT, "Max distance from the camera at which things will be rendered" );
 
-ConVar r_entityclips( "r_entityclips", "1" ); //FIXME: Nvidia drivers before 81.94 on cards that support user clip planes will have problems with this, require driver update? Detect and disable?
+ConVar r_entityclips( "r_entityclips", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ ); //FIXME: Nvidia drivers before 81.94 on cards that support user clip planes will have problems with this, require driver update? Detect and disable?
 
 // Matches the version in the engine
-static ConVar r_drawopaqueworld( "r_drawopaqueworld", "1", FCVAR_CHEAT );
-static ConVar r_drawtranslucentworld( "r_drawtranslucentworld", "1", FCVAR_CHEAT );
-static ConVar r_3dsky( "r_3dsky","1", 0, "Enable the rendering of 3d sky boxes" );
+static ConVar r_drawopaqueworld( "r_drawopaqueworld", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar r_drawtranslucentworld( "r_drawtranslucentworld", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar r_3dsky( "r_3dsky","1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Enable the rendering of 3d sky boxes" );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar r_skybox( "r_skybox", "1", 0x4008, "Enable the rendering of sky boxes" );
+#else
 static ConVar r_skybox( "r_skybox","1", FCVAR_CHEAT, "Enable the rendering of sky boxes" );
+#endif
 #ifdef TF_CLIENT_DLL
 ConVar r_drawviewmodel( "r_drawviewmodel","1", FCVAR_DONTRECORD );
 #else
-ConVar r_drawviewmodel( "r_drawviewmodel","1", FCVAR_CHEAT );
+ConVar r_drawviewmodel( "r_drawviewmodel","1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
 #endif
-static ConVar r_drawtranslucentrenderables( "r_drawtranslucentrenderables", "1", FCVAR_CHEAT );
-static ConVar r_drawopaquerenderables( "r_drawopaquerenderables", "1", FCVAR_CHEAT );
+ );
+#endif
+static ConVar r_drawtranslucentrenderables( "r_drawtranslucentrenderables", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar r_drawopaquerenderables( "r_drawopaquerenderables", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 static ConVar r_threaded_renderables( "r_threaded_renderables", "0" );
 
 // FIXME: This is not static because we needed to turn it off for TF2 playtests
-ConVar r_DrawDetailProps( "r_DrawDetailProps", "1", FCVAR_NONE, "0=Off, 1=Normal, 2=Wireframe" );
+ConVar r_DrawDetailProps( "r_DrawDetailProps", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+, "0=Off, 1=Normal, 2=Wireframe" );
 
-ConVar r_worldlistcache( "r_worldlistcache", "1" );
+ConVar r_worldlistcache( "r_worldlistcache", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Convars related to fog color
 //-----------------------------------------------------------------------------
-static ConVar fog_override( "fog_override", "0", FCVAR_CHEAT );
+static ConVar fog_override( "fog_override", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+
+#if defined( L4D2 )
+	, "Overrides the map's fog settings (-1 populates fog_ vars with map's values)"
+#endif
+ );
 // set any of these to use the maps fog
-static ConVar fog_start( "fog_start", "-1", FCVAR_CHEAT );
-static ConVar fog_end( "fog_end", "-1", FCVAR_CHEAT );
-static ConVar fog_color( "fog_color", "-1 -1 -1", FCVAR_CHEAT );
-static ConVar fog_enable( "fog_enable", "-1", FCVAR_CHEAT );
-static ConVar fog_startskybox( "fog_startskybox", "-1", FCVAR_CHEAT );
-static ConVar fog_endskybox( "fog_endskybox", "-1", FCVAR_CHEAT );
-static ConVar fog_maxdensityskybox( "fog_maxdensityskybox", "-1", FCVAR_CHEAT );
-static ConVar fog_colorskybox( "fog_colorskybox", "-1 -1 -1", FCVAR_CHEAT );
-static ConVar fog_enableskybox( "fog_enableskybox", "-1", FCVAR_CHEAT );
-static ConVar fog_maxdensity( "fog_maxdensity", "-1", FCVAR_CHEAT );
+static ConVar fog_start( "fog_start", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_end( "fog_end", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_color( "fog_color", "-1 -1 -1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_enable( "fog_enable", 
+#if defined( L4D2 )
+	"1"
+#else
+	"-1"
+#endif
+, 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_startskybox( "fog_startskybox", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_endskybox( "fog_endskybox", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_maxdensityskybox( "fog_maxdensityskybox", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_colorskybox( "fog_colorskybox", "-1 -1 -1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_enableskybox( "fog_enableskybox", 
+#if defined( L4D2 )
+	"1"
+#else
+	"-1"
+#endif
+, 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar fog_maxdensity( "fog_maxdensity", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 static ConVar fog_radial( "fog_radial", "-1", FCVAR_CHEAT );
 static ConVar fog_radialskybox( "fog_radialskybox", "-1", FCVAR_CHEAT );
 
@@ -148,16 +303,62 @@ static ConVar fog_radialskybox( "fog_radialskybox", "-1", FCVAR_CHEAT );
 //-----------------------------------------------------------------------------
 // Water-related convars
 //-----------------------------------------------------------------------------
-static ConVar r_debugcheapwater( "r_debugcheapwater", "0", FCVAR_CHEAT );
-#ifndef _X360
-static ConVar r_waterforceexpensive( "r_waterforceexpensive", "0", FCVAR_ARCHIVE );
+static ConVar r_debugcheapwater( "r_debugcheapwater", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
 #endif
-static ConVar r_waterforcereflectentities( "r_waterforcereflectentities", "0", FCVAR_ALLOWED_IN_COMPETITIVE );
-static ConVar r_WaterDrawRefraction( "r_WaterDrawRefraction", "1", 0, "Enable water refraction" );
-static ConVar r_WaterDrawReflection( "r_WaterDrawReflection", "1", 0, "Enable water reflection" );
-static ConVar r_ForceWaterLeaf( "r_ForceWaterLeaf", "1", 0, "Enable for optimization to water - considers view in leaf under water for purposes of culling" );
-static ConVar mat_drawwater( "mat_drawwater", "1", FCVAR_CHEAT );
-static ConVar mat_clipz( "mat_clipz", "1" );
+ );
+#ifndef _X360
+static ConVar r_waterforceexpensive( "r_waterforceexpensive", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+#endif
+static ConVar r_waterforcereflectentities( "r_waterforcereflectentities", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ALLOWED_IN_COMPETITIVE
+#endif
+ );
+static ConVar r_WaterDrawRefraction( "r_WaterDrawRefraction", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Enable water refraction" );
+static ConVar r_WaterDrawReflection( "r_WaterDrawReflection", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Enable water reflection" );
+static ConVar r_ForceWaterLeaf( "r_ForceWaterLeaf", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Enable for optimization to water - considers view in leaf under water for purposes of culling" );
+static ConVar mat_drawwater( "mat_drawwater", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar mat_clipz( "mat_clipz", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 
 //-----------------------------------------------------------------------------
@@ -165,8 +366,24 @@ static ConVar mat_clipz( "mat_clipz", "1" );
 //-----------------------------------------------------------------------------
 static ConVar r_screenfademinsize( "r_screenfademinsize", "0" );
 static ConVar r_screenfademaxsize( "r_screenfademaxsize", "0" );
-static ConVar cl_drawmonitors( "cl_drawmonitors", "1" );
-static ConVar r_eyewaterepsilon( "r_eyewaterepsilon", "10.0f", FCVAR_CHEAT );
+static ConVar cl_drawmonitors( "cl_drawmonitors", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar r_eyewaterepsilon( "r_eyewaterepsilon", 
+#if defined( L4D2 )
+	"7.0f"
+#else
+	"10.0f"
+#endif
+, 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 #ifdef TF_CLIENT_DLL
 static ConVar pyro_dof( "pyro_dof", "1", FCVAR_ARCHIVE );
@@ -195,7 +412,12 @@ float g_flFreezeFlash = 0.0f;
 
 //-----------------------------------------------------------------------------
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_cheapwaterstart,  "" , 0x00000008)
+#else
 CON_COMMAND( r_cheapwaterstart,  "" )
+#endif
 {
 	if( args.ArgC() == 2 )
 	{
@@ -210,7 +432,12 @@ CON_COMMAND( r_cheapwaterstart,  "" )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_cheapwaterend,  "" , 0x00000008)
+#else
 CON_COMMAND( r_cheapwaterend,  "" )
+#endif
 {
 	if( args.ArgC() == 2 )
 	{
@@ -372,14 +599,46 @@ private:
 CWorldListCache g_WorldListCache;
 
 //-----------------------------------------------------------------------------
+// 
+//-----------------------------------------------------------------------------
+#if defined( L4D2 )
+static void CopyL4D2WaterRefractionTexture( IMatRenderContext *pRenderContext, const CViewSetup &view );
+#endif
+
+class CBaseWorldView : public CRendering3dView
+{
+	DECLARE_CLASS( CBaseWorldView, CRendering3dView );
+protected:
+	CBaseWorldView(CViewRender *pMainView) : CRendering3dView( pMainView ) {}
+
+	virtual bool	AdjustView( float waterHeight );
+
+	void			DrawSetup( float waterHeight, int flags, float waterZAdjust, int iForceViewLeaf = -1 );
+	void			DrawExecute( float waterHeight, view_id_t viewID, float waterZAdjust, float flWaterFogEnd = 0.0f, bool bWaterFrameBuffer = false );
+
+	virtual void	PushView( float waterHeight );
+	virtual void	PopView();
+
+	void			SSAO_DepthPass();
+	void			DrawDepthOfField();
+};
+//-----------------------------------------------------------------------------
 // Standard 3d skybox view
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+class CSkyboxView : public CBaseWorldView
+#else
 class CSkyboxView : public CRendering3dView
+#endif
 {
+#if defined( L4D2 )
+	DECLARE_CLASS( CSkyboxView, CBaseWorldView );
+#else
 	DECLARE_CLASS( CSkyboxView, CRendering3dView );
+#endif
 public:
 	CSkyboxView(CViewRender *pMainView) : 
-		CRendering3dView( pMainView ),
+		BaseClass( pMainView ),
 		m_pSky3dParams( NULL )
 	  {
 	  }
@@ -404,6 +663,12 @@ protected:
 
 	sky3dparams_t *m_pSky3dParams;
 };
+
+#if defined( L4D2 )
+extern ConVar mat_skybox_water_reflection;
+extern ConVar mat_skybox_reflection_clip;
+#include "l4d2/effects/terror_view_water_declarations.inc"
+#endif
 
 //-----------------------------------------------------------------------------
 // 3d skybox view when drawing portals
@@ -465,26 +730,6 @@ private:
 	CMaterialReference m_TranslucentSingleColor;
 };
 
-//-----------------------------------------------------------------------------
-// 
-//-----------------------------------------------------------------------------
-class CBaseWorldView : public CRendering3dView
-{
-	DECLARE_CLASS( CBaseWorldView, CRendering3dView );
-protected:
-	CBaseWorldView(CViewRender *pMainView) : CRendering3dView( pMainView ) {}
-
-	virtual bool	AdjustView( float waterHeight );
-
-	void			DrawSetup( float waterHeight, int flags, float waterZAdjust, int iForceViewLeaf = -1 );
-	void			DrawExecute( float waterHeight, view_id_t viewID, float waterZAdjust );
-
-	virtual void	PushView( float waterHeight );
-	virtual void	PopView();
-
-	void			SSAO_DepthPass();
-	void			DrawDepthOfField();
-};
 
 
 //-----------------------------------------------------------------------------
@@ -563,6 +808,9 @@ public:
 
 	void Setup(  const CViewSetup &view, bool bDrawSkybox, const VisibleFogVolumeInfo_t &fogInfo, const WaterRenderInfo_t& waterInfo );
 	void			Draw();
+#if defined( L4D2 )
+	void			DrawL4D2Water();
+#endif
 
 	class CReflectionView : public CBaseWorldView
 	{
@@ -570,7 +818,7 @@ public:
 	public:
 		CReflectionView(CViewRender *pMainView) : CBaseWorldView( pMainView ) {}
 
-		void Setup( bool bReflectEntities );
+		void Setup( bool bReflectEntities, bool bReflect2DSkybox = true );
 		void Draw();
 
 	private:
@@ -777,6 +1025,7 @@ CLIENTEFFECT_REGISTER_BEGIN( PrecacheViewRender )
 CLIENTEFFECT_REGISTER_END()
 #endif
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecachePostProcessingEffects )
 	CLIENTEFFECT_MATERIAL( "dev/blurfiltery_and_add_nohdr" )
 	CLIENTEFFECT_MATERIAL( "dev/blurfilterx" )
@@ -809,6 +1058,7 @@ CLIENTEFFECT_REGISTER_BEGIN( PrecachePostProcessingEffects )
 #endif
 
 CLIENTEFFECT_REGISTER_END_CONDITIONAL( engine->GetDXSupportLevel() >= 90 )
+#endif // !L4D2: native resource registry owns this registration.
 
 //-----------------------------------------------------------------------------
 // Accessors to return the current view being rendered
@@ -934,6 +1184,13 @@ void CSimpleRenderExecutor::AddView( CRendering3dView *pView )
 CViewRender::CViewRender()
 	: m_SimpleExecutor( this )
 {
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	m_flSystemLevelFadeMin = 0.0f;
+	m_flSystemLevelFadeMax = 0.0f;
+	m_flScreenFadeMinSize = 0.0f;
+	m_flScreenFadeMaxSize = 0.0f;
+	m_flSystemLevelMaxDistance = 0.0f;
+#endif
 	m_flCheapWaterStartDistance = 0.0f;
 	m_flCheapWaterEndDistance = 0.1f;
 	m_BaseDrawFlags = 0;
@@ -981,7 +1238,12 @@ bool CViewRender::ShouldDrawViewModel( bool bDrawViewmodel )
 	if ( !r_drawviewmodel.GetBool() )
 		return false;
 
+#if defined( L4D2 )
+	C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
+	if ( pLocalPlayer && pLocalPlayer->ShouldDrawLocalPlayerModel() )
+#else
 	if ( C_BasePlayer::ShouldDrawLocalPlayer() )
+#endif
 		return false;
 
 	if ( !ShouldDrawEntities() )
@@ -997,12 +1259,24 @@ bool CViewRender::ShouldDrawViewModel( bool bDrawViewmodel )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool CViewRender::UpdateRefractIfNeededByList( CUtlVector< ClientViewModelRenderable_t > &list )
+#else
 bool CViewRender::UpdateRefractIfNeededByList( CUtlVector< IClientRenderable * > &list )
+#endif
 {
 	int nCount = list.Count();
 	for( int i=0; i < nCount; ++i )
 	{
+#if defined( L4D2 )
+		IClientUnknown *pUnk = list[i].m_pRenderable->GetIClientUnknown();
+#else
+#if defined( L4D2 )
+		IClientUnknown *pUnk = list[i].m_pRenderable->GetIClientUnknown();
+#else
 		IClientUnknown *pUnk = list[i]->GetIClientUnknown();
+#endif
+#endif
 		Assert( pUnk );
 
 		IClientRenderable *pRenderable = pUnk->GetClientRenderable();
@@ -1021,13 +1295,25 @@ bool CViewRender::UpdateRefractIfNeededByList( CUtlVector< IClientRenderable * >
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CViewRender::DrawRenderablesInList( CUtlVector< ClientViewModelRenderable_t > &list, int flags )
+#else
 void CViewRender::DrawRenderablesInList( CUtlVector< IClientRenderable * > &list, int flags )
+#endif
 {
 	Assert( m_pCurrentlyDrawingEntity == NULL );
 	int nCount = list.Count();
 	for( int i=0; i < nCount; ++i )
 	{
+#if defined( L4D2 )
+		IClientUnknown *pUnk = list[i].m_pRenderable->GetIClientUnknown();
+#else
+#if defined( L4D2 )
+		IClientUnknown *pUnk = list[i].m_pRenderable->GetIClientUnknown();
+#else
 		IClientUnknown *pUnk = list[i]->GetIClientUnknown();
+#endif
+#endif
 		Assert( pUnk );
 
 		IClientRenderable *pRenderable = pUnk->GetClientRenderable();
@@ -1037,6 +1323,15 @@ void CViewRender::DrawRenderablesInList( CUtlVector< IClientRenderable * > &list
 		if ( pRenderable->ShouldDraw() )
 		{
 			m_pCurrentlyDrawingEntity = pUnk->GetBaseEntity();
+#if defined( L4D2 )
+			if ( list[i].m_bGameOwnedAlpha )
+			{
+				render->SetBlend( static_cast< float >( list[i].m_nAlpha ) / 255.0f );
+				float color[3];
+				pRenderable->GetColorModulation( color );
+				render->SetColorModulation( color );
+			}
+#endif
 			pRenderable->DrawModel( STUDIO_RENDER | flags );
 		}
 	}
@@ -1076,11 +1371,13 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 
 	ITexture *pRTColor = NULL;
 	ITexture *pRTDepth = NULL;
+#if !defined( L4D2 )
 	if( viewRender.m_eStereoEye != STEREO_EYE_MONO )
 	{
 		pRTColor = g_pSourceVR->GetRenderTarget( (ISourceVirtualReality::VREye)(viewRender.m_eStereoEye-1), ISourceVirtualReality::RT_Color );
 		pRTDepth = g_pSourceVR->GetRenderTarget( (ISourceVirtualReality::VREye)(viewRender.m_eStereoEye-1), ISourceVirtualReality::RT_Depth );
 	}
+#endif
 
 	// Josh: Reset modulation color + blend
 	float one[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -1111,8 +1408,13 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 	if ( bShouldDrawPlayerViewModel || bShouldDrawToolViewModels )
 	{
 
+#if defined( L4D2 )
+		CUtlVector< ClientViewModelRenderable_t > opaqueViewModelList( 32 );
+		CUtlVector< ClientViewModelRenderable_t > translucentViewModelList( 32 );
+#else
 		CUtlVector< IClientRenderable * > opaqueViewModelList( 32 );
 		CUtlVector< IClientRenderable * > translucentViewModelList( 32 );
+#endif
 
 		ClientLeafSystem()->CollateViewModelRenderables( opaqueViewModelList, translucentViewModelList );
 
@@ -1121,7 +1423,11 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			int nOpaque = opaqueViewModelList.Count();
 			for ( int i = nOpaque-1; i >= 0; --i )
 			{
+#if defined( L4D2 )
+				IClientRenderable *pRenderable = opaqueViewModelList[i].m_pRenderable;
+#else
 				IClientRenderable *pRenderable = opaqueViewModelList[ i ];
+#endif
 				bool bEntity = pRenderable->GetIClientUnknown()->GetBaseEntity();
 				if ( ( bEntity && !bShouldDrawPlayerViewModel ) || ( !bEntity && !bShouldDrawToolViewModels ) )
 				{
@@ -1132,7 +1438,11 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			int nTranslucent = translucentViewModelList.Count();
 			for ( int i = nTranslucent-1; i >= 0; --i )
 			{
+#if defined( L4D2 )
+				IClientRenderable *pRenderable = translucentViewModelList[i].m_pRenderable;
+#else
 				IClientRenderable *pRenderable = translucentViewModelList[ i ];
+#endif
 				bool bEntity = pRenderable->GetIClientUnknown()->GetBaseEntity();
 				if ( ( bEntity && !bShouldDrawPlayerViewModel ) || ( !bEntity && !bShouldDrawToolViewModels ) )
 				{
@@ -1342,6 +1652,51 @@ void CViewRender::DrawUnderwaterOverlay( void )
 //-----------------------------------------------------------------------------
 // Purpose: Returns the min/max fade distances
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+// Compose into viewrender.cpp; C1C9EA0 / C1CA9A0 / C1CAA30 / C1CAA70.
+extern ConVar cpu_level;
+extern ConVar r_fade360style;
+void CViewRender::OnSystemLevelChanged()
+{
+	static const float levels[3][5] =
+	{
+		{ 0.119999997f, 0.200000003f, 122.0f, 205.0f, 800.0f },
+		{ 0.119999997f, 0.200000003f, 60.0f, 90.0f, 1024.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f, 1280.0f }
+	};
+	const float *level = levels[clamp( cpu_level.GetInt(), 0, 2 )];
+	m_flSystemLevelFadeMin = level[0];
+	m_flSystemLevelFadeMax = level[1];
+	m_flScreenFadeMinSize = level[2];
+	m_flScreenFadeMaxSize = level[3];
+	m_flSystemLevelMaxDistance = level[4];
+}
+void CViewRender::ScreenFadeMinSize( const CCommand &args )
+{
+	if ( args.ArgC() >= 2 ) m_flScreenFadeMinSize = atof( args[1] ) * 1000.0;
+}
+void CViewRender::ScreenFadeMaxSize( const CCommand &args )
+{
+	if ( args.ArgC() >= 2 ) m_flScreenFadeMaxSize = atof( args[1] ) * 1000.0;
+}
+// Replace the L4D2 GetScreenFadeDistances body with this native version.
+void CViewRender::GetScreenFadeDistances( float *minimum, float *maximum )
+{
+	if ( minimum ) *minimum = m_flScreenFadeMinSize;
+	if ( maximum ) *maximum = m_flScreenFadeMaxSize;
+	if ( r_fade360style.GetBool() )
+	{
+		int width, height;
+		materials->GetBackBufferDimensions( width, height );
+		if ( height != 720 )
+		{
+			const float scale = (float)height * 0.00138888892f;
+			if ( minimum ) *minimum *= scale;
+			if ( maximum ) *maximum *= scale;
+		}
+	}
+}
+#else
 void CViewRender::GetScreenFadeDistances( float *min, float *max )
 {
 	if ( min )
@@ -1354,6 +1709,7 @@ void CViewRender::GetScreenFadeDistances( float *min, float *max )
 		*max = r_screenfademaxsize.GetFloat();
 	}
 }
+#endif
 
 C_BaseEntity *CViewRender::GetCurrentlyDrawingEntity()
 {
@@ -1386,7 +1742,11 @@ bool CViewRender::UpdateShadowDepthTexture( ITexture *pRenderTarget, ITexture *p
 // Purpose: Renders world and all entities, etc.
 //-----------------------------------------------------------------------------
 void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxVisible, const CViewSetup &viewRender, 
-								int nClearFlags, view_id_t viewID, bool bDrawViewModel, int baseDrawFlags, ViewCustomVisibility_t *pCustomVisibility )
+								int nClearFlags, view_id_t viewID, bool bDrawViewModel, int baseDrawFlags, ViewCustomVisibility_t *pCustomVisibility
+#if defined( L4D2 )
+								, const VisibleFogVolumeInfo_t *pFogVolumeInfo, const WaterRenderInfo_t *pWaterRenderInfo
+#endif
+								)
 {
 	VPROF( "CViewRender::ViewDrawScene" );
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
@@ -1431,7 +1791,11 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 
 	ParticleMgr()->IncrementFrameCode();
 
-	DrawWorldAndEntities( drawSkybox, viewRender, nClearFlags, pCustomVisibility );
+	DrawWorldAndEntities( drawSkybox, viewRender, nClearFlags, pCustomVisibility
+#if defined( L4D2 )
+		, pFogVolumeInfo, pWaterRenderInfo
+#endif
+		);
 
 	// Disable fog for the rest of the stuff
 	DisableFog();
@@ -1520,8 +1884,56 @@ static void GetFogColorTransition( fogparams_t *pFogParams, float *pColorPrimary
 //-----------------------------------------------------------------------------
 // Purpose: Returns the fog color to use in rendering the current frame.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+extern ConVar fog_hdrcolorscale;
+extern ConVar fog_hdrcolorscaleskybox;
+extern ConVar r_clip3Dskyboxneartoworldfar;
+extern ConVar r_clip3Dskyboxneartoworldfarfudge;
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+#endif
+#if defined( L4D2 )
+static void GetFogColor( fogparams_t *pFogParams, float *pColor, bool bIgnoreOverride = false, bool bIgnoreHDR = false )
+#else
 static void GetFogColor( fogparams_t *pFogParams, float *pColor )
+#endif
 {
+#if defined( L4D2 )
+	C_BasePlayer *pbp = C_BasePlayer::GetLocalPlayer();
+	if ( !pbp || !pFogParams )
+		return;
+	const bool bOverride = fog_override.GetInt() != 0 && !bIgnoreOverride;
+	float flHDRScale = pFogParams->HDRColorScale;
+	if ( bOverride && fog_hdrcolorscale.GetFloat() != -1.0f )
+		flHDRScale = fog_hdrcolorscale.GetFloat();
+	pColor[0] = pColor[1] = pColor[2] = -1.0f;
+	const char *pOverride = fog_color.GetString();
+	if ( bOverride && pOverride )
+		sscanf( pOverride, "%f %f %f", pColor, pColor + 1, pColor + 2 );
+	if ( pColor[0] == -1.0f && pColor[1] == -1.0f && pColor[2] == -1.0f )
+	{
+		float flPrimary[3] = { (float)pFogParams->colorPrimary.GetR(), (float)pFogParams->colorPrimary.GetG(), (float)pFogParams->colorPrimary.GetB() };
+		float flSecondary[3] = { (float)pFogParams->colorSecondary.GetR(), (float)pFogParams->colorSecondary.GetG(), (float)pFogParams->colorSecondary.GetB() };
+		GetFogColorTransition( pFogParams, flPrimary, flSecondary );
+		if ( pFogParams->blend )
+		{
+			Vector forward;
+			pbp->EyeVectors( &forward, NULL, NULL );
+			Vector direction = pFogParams->dirPrimary;
+			TerrorPhysicsNormalize( direction );
+			pFogParams->dirPrimary = direction;
+			const float flBlend = ( forward.Dot( direction ) + 1.0f ) * 0.5f;
+			for ( int i = 0; i < 3; ++i )
+				pColor[i] = ( 1.0f - flBlend ) * flSecondary[i] + flBlend * flPrimary[i];
+		}
+		else
+			VectorCopy( flPrimary, pColor );
+	}
+	if ( !bIgnoreHDR && g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_NONE )
+		VectorScale( pColor, flHDRScale, pColor );
+	VectorScale( pColor, 0.0039215688593685626983642578125f, pColor );
+#else
 	bool bUseOverride = false;
 
 	const char *fogColorString = fog_color.GetString();
@@ -1579,11 +1991,37 @@ static void GetFogColor( fogparams_t *pFogParams, float *pColor )
 	}
 
 	VectorScale( pColor, 1.0f / 255.0f, pColor );
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float GetFogStart( fogparams_t *pFogParams )
 {
+#if defined( L4D2 )
+	if ( !pFogParams )
+		return 0.0f;
+	if ( fog_override.GetInt() )
+	{
+		if ( fog_start.GetFloat() != -1.0f )
+			return fog_start.GetFloat();
+		return pFogParams->start;
+	}
+	if ( pFogParams->lerptime > gpGlobals->curtime && pFogParams->start != pFogParams->startLerpTo )
+	{
+		const float flPercent = 1.0f - ( ( pFogParams->lerptime - gpGlobals->curtime ) / pFogParams->duration );
+		return flPercent * ( pFogParams->startLerpTo - pFogParams->start ) + pFogParams->start;
+	}
+	return pFogParams->start;
+#else
 	if( fog_override.GetInt() )
 	{
 		if( fog_start.GetInt() != -1 )
@@ -1616,10 +2054,33 @@ static float GetFogStart( fogparams_t *pFogParams )
 	}
 
 	return pFogParams->start;
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 static float GetFogEnd( fogparams_t *pFogParams )
 {
+#if defined( L4D2 )
+	if ( !pFogParams )
+		return 0.0f;
+	if ( fog_override.GetInt() )
+	{
+		if ( fog_end.GetFloat() != -1.0f )
+			return fog_end.GetFloat();
+		return pFogParams->end;
+	}
+	if ( pFogParams->lerptime > gpGlobals->curtime && pFogParams->end != pFogParams->endLerpTo )
+	{
+		const float flPercent = 1.0f - ( ( pFogParams->lerptime - gpGlobals->curtime ) / pFogParams->duration );
+		return flPercent * ( pFogParams->endLerpTo - pFogParams->end ) + pFogParams->end;
+	}
+	return pFogParams->end;
+#else
 	if( fog_override.GetInt() )
 	{
 		if( fog_end.GetInt() != -1 )
@@ -1652,7 +2113,11 @@ static float GetFogEnd( fogparams_t *pFogParams )
 	}
 
 	return pFogParams->end;
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 static bool GetFogEnable( fogparams_t *pFogParams )
 {
@@ -1664,12 +2129,16 @@ static bool GetFogEnable( fogparams_t *pFogParams )
 		return false;
 
 	if( fog_override.GetInt() )
+#if defined( L4D2 )
+		return fog_enable.GetBool();
+#else
 	{
 		if ( fog_enable.GetInt() != -1 )
 		{
 			return fog_enable.GetBool();
 		}
 	}
+#endif
 
 
 	if ( pFogParams )
@@ -1680,6 +2149,12 @@ static bool GetFogEnable( fogparams_t *pFogParams )
 }
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float GetFogMaxDensity( fogparams_t *pFogParams )
 {
 	if ( cl_leveloverview.GetFloat() > 0 )
@@ -1689,6 +2164,22 @@ static float GetFogMaxDensity( fogparams_t *pFogParams )
 	if ( !g_pClientMode->ShouldDrawFog() )
 		return 1.0f;
 
+#if defined( L4D2 )
+	if ( !pFogParams )
+		return 1.0f;
+	if ( fog_override.GetInt() )
+	{
+		if ( fog_maxdensity.GetFloat() != -1.0f )
+			return fog_maxdensity.GetFloat();
+		return pFogParams->maxdensity;
+	}
+	if ( pFogParams->lerptime > gpGlobals->curtime && pFogParams->maxdensity != pFogParams->maxdensityLerpTo )
+	{
+		const float fraction = 1.0f - ( ( pFogParams->lerptime - gpGlobals->curtime ) / pFogParams->duration );
+		return ( pFogParams->maxdensityLerpTo - pFogParams->maxdensity ) * fraction + pFogParams->maxdensity;
+	}
+	return pFogParams->maxdensity;
+#else
 	if ( fog_override.GetInt() )
 	{
 		if ( fog_maxdensity.GetInt() != -1 )
@@ -1699,7 +2190,12 @@ static float GetFogMaxDensity( fogparams_t *pFogParams )
 		return 1.0f;
 
 	return pFogParams->maxdensity;
+#endif
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 static float GetFogRadial( fogparams_t *pFogParams )
 {
@@ -1726,8 +2222,53 @@ static float GetFogRadial( fogparams_t *pFogParams )
 //-----------------------------------------------------------------------------
 // Purpose: Returns the skybox fog color to use in rendering the current frame.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+#if defined( L4D2 )
+static void GetSkyboxFogColor( float *pColor, bool bIgnoreOverride = false, bool bIgnoreHDR = false )
+#else
 static void GetSkyboxFogColor( float *pColor )
+#endif
 {			   
+#if defined( L4D2 )
+	C_BasePlayer *pbp = C_BasePlayer::GetLocalPlayer();
+	if ( !pbp )
+		return;
+	fogparams_t &fog = pbp->m_Local.m_skybox3d.fog;
+	const bool bOverride = fog_override.GetInt() != 0 && !bIgnoreOverride;
+	float flHDRScale = fog.HDRColorScale;
+	if ( bOverride && fog_hdrcolorscaleskybox.GetFloat() != -1.0f )
+		flHDRScale = fog_hdrcolorscaleskybox.GetFloat();
+	pColor[0] = pColor[1] = pColor[2] = -1.0f;
+	const char *pOverride = fog_colorskybox.GetString();
+	if ( bOverride && pOverride )
+		sscanf( pOverride, "%f %f %f", pColor, pColor + 1, pColor + 2 );
+	if ( pColor[0] == -1.0f && pColor[1] == -1.0f && pColor[2] == -1.0f )
+	{
+		if ( fog.blend )
+		{
+			Vector forward;
+			pbp->EyeVectors( &forward, NULL, NULL );
+			Vector direction = fog.dirPrimary;
+			TerrorPhysicsNormalize( direction );
+			fog.dirPrimary = direction;
+			const float flBlend = ( forward.Dot( direction ) + 1.0f ) * 0.5f;
+			pColor[0] = (float)fog.colorSecondary.GetR() * ( 1.0f - flBlend ) + (float)fog.colorPrimary.GetR() * flBlend;
+			pColor[1] = (float)fog.colorSecondary.GetG() * ( 1.0f - flBlend ) + (float)fog.colorPrimary.GetG() * flBlend;
+			pColor[2] = (float)fog.colorSecondary.GetB() * ( 1.0f - flBlend ) + (float)fog.colorPrimary.GetB() * flBlend;
+		}
+		else
+		{
+			pColor[0] = (float)fog.colorPrimary.GetR();
+			pColor[1] = (float)fog.colorPrimary.GetG();
+			pColor[2] = (float)fog.colorPrimary.GetB();
+		}
+	}
+	if ( !bIgnoreHDR && g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_NONE )
+		VectorScale( pColor, flHDRScale, pColor );
+	VectorScale( pColor, 0.0039215688593685626983642578125f, pColor );
+#else
 	C_BasePlayer *pbp = C_BasePlayer::GetLocalPlayer();
 	if( !pbp )
 	{
@@ -1783,9 +2324,19 @@ static void GetSkyboxFogColor( float *pColor )
 	}
 
 	VectorScale( pColor, 1.0f / 255.0f, pColor );
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float GetSkyboxFogStart( void )
 {
 	C_BasePlayer *pbp = C_BasePlayer::GetLocalPlayer();
@@ -1797,7 +2348,11 @@ static float GetSkyboxFogStart( void )
 
 	if( fog_override.GetInt() )
 	{
+#if defined( L4D2 )
+		if ( fog_startskybox.GetFloat() != -1.0f )
+#else
 		if ( fog_startskybox.GetInt() != -1 )
+#endif
 		{
 			return fog_startskybox.GetFloat();
 		}
@@ -1806,6 +2361,16 @@ static float GetSkyboxFogStart( void )
 	return local->m_skybox3d.fog.start;
 }
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float GetSkyboxFogEnd( void )
 {
 	C_BasePlayer *pbp = C_BasePlayer::GetLocalPlayer();
@@ -1817,7 +2382,11 @@ static float GetSkyboxFogEnd( void )
 
 	if( fog_override.GetInt() )
 	{
+#if defined( L4D2 )
+		if ( fog_endskybox.GetFloat() != -1.0f )
+#else
 		if ( fog_endskybox.GetInt() != -1 )
+#endif
 		{
 			return fog_endskybox.GetFloat();
 		}
@@ -1827,6 +2396,16 @@ static float GetSkyboxFogEnd( void )
 }
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 static float GetSkyboxFogMaxDensity()
 {
 	C_BasePlayer *pbp = C_BasePlayer::GetLocalPlayer();
@@ -1844,7 +2423,11 @@ static float GetSkyboxFogMaxDensity()
 
 	if ( fog_override.GetInt() )
 	{
+#if defined( L4D2 )
+		if ( fog_maxdensityskybox.GetFloat() != -1.0f )
+#else
 		if ( fog_maxdensityskybox.GetInt() != -1 )
+#endif
 		{
 			return fog_maxdensityskybox.GetFloat();
 		}
@@ -1852,6 +2435,10 @@ static float GetSkyboxFogMaxDensity()
 
 	return local->m_skybox3d.fog.maxdensity;
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 static bool GetSkyboxFogRadial()
 {
@@ -1948,11 +2535,13 @@ void CViewRender::SetupMain3DView( const CViewSetup &viewRender, int &nClearFlag
 	{
 		ITexture *pRTColor = NULL;
 		ITexture *pRTDepth = NULL;
+#if !defined( L4D2 )
 		if( viewRender.m_eStereoEye != STEREO_EYE_MONO )
 		{
 			pRTColor = g_pSourceVR->GetRenderTarget( (ISourceVirtualReality::VREye)(viewRender.m_eStereoEye-1), ISourceVirtualReality::RT_Color );
 			pRTDepth = g_pSourceVR->GetRenderTarget( (ISourceVirtualReality::VREye)(viewRender.m_eStereoEye-1), ISourceVirtualReality::RT_Depth );
 		}
+#endif
 
 		render->Push3DView( viewRender, nClearFlags, pRTColor, GetFrustum(), pRTDepth );
 	}
@@ -2052,6 +2641,20 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		}
 	}
 
+#if defined( L4D2 )
+{
+	MDLCACHE_CRITICAL_SECTION();
+	ClientWeaponList_t &weapons = GetClientWeaponList();
+	for ( unsigned short i = weapons.Head(); i != weapons.InvalidIndex(); i = weapons.Next( i ) )
+	{
+		C_BaseCombatWeapon *weapon = weapons[i];
+		if ( !weapon->IsDormant() ) weapon->EnsureCorrectRenderingModel();
+		// Native NEXT is resolved AFTER model callbacks; do not pre-cache it,
+		// snapshot/copy the list, reject NULL entries or add a second pass.
+	}
+}
+#endif
+
 	CMatRenderContextPtr pRenderContext( materials );
 	ITexture *saveRenderTarget = pRenderContext->GetRenderTarget();
 	pRenderContext.SafeRelease(); // don't want to hold for long periods in case in a locking active share thread mode
@@ -2087,7 +2690,11 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		render->SceneBegin();
 
 		pRenderContext.GetFrom( materials );
+#if defined( L4D2 )
+		Terror_ApplyToneMapping( pRenderContext );
+#else
 		pRenderContext->TurnOnToneMapping();
+#endif
 		pRenderContext.SafeRelease();
 
 		// clear happens here probably
@@ -2096,6 +2703,28 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		bool bDrew3dSkybox = false;
 		SkyboxVisibility_t nSkyboxVisible = SKYBOX_NOT_VISIBLE;
 
+#if defined( L4D2 )
+		// C1D6D80: determine water BEFORE selecting/drawing the sky view.
+		VisibleFogVolumeInfo_t skyFogVolumeInfo;
+		render->GetVisibleFogVolume( viewRender.origin, &skyFogVolumeInfo );
+		WaterRenderInfo_t skyWaterInfo;
+		DetermineWaterRenderInfo( skyFogVolumeInfo, skyWaterInfo );
+		CSkyboxView *pSkyView;
+		if ( skyWaterInfo.m_bReflectSkyboxOnly )
+		{
+			CAboveWaterSkyboxView *pAboveWaterSkyView = new CAboveWaterSkyboxView( this );
+			bDrew3dSkybox = pAboveWaterSkyView->Setup( viewRender, &nClearFlags, &nSkyboxVisible, skyFogVolumeInfo );
+			pSkyView = pAboveWaterSkyView;
+		}
+		else
+		{
+			pSkyView = new CSkyboxView( this );
+			bDrew3dSkybox = pSkyView->Setup( viewRender, &nClearFlags, &nSkyboxVisible );
+		}
+		if ( bDrew3dSkybox )
+			AddViewToScene( pSkyView );
+		SafeRelease( pSkyView );
+#else
 		// if the 3d skybox world is drawn, then don't draw the normal skybox
 		CSkyboxView *pSkyView = new CSkyboxView( this );
 		if ( ( bDrew3dSkybox = pSkyView->Setup( viewRender, &nClearFlags, &nSkyboxVisible ) ) != false )
@@ -2103,6 +2732,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			AddViewToScene( pSkyView );
 		}
 		SafeRelease( pSkyView );
+#endif
 
 		// Force it to clear the framebuffer if they're in solid space.
 		if ( ( nClearFlags & VIEW_CLEAR_COLOR ) == 0 )
@@ -2116,7 +2746,11 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		// Render world and all entities, particles, etc.
 		if( !g_pIntroData )
 		{
-			ViewDrawScene( bDrew3dSkybox, nSkyboxVisible, viewRender, nClearFlags, VIEW_MAIN, whatToDraw & RENDERVIEW_DRAWVIEWMODEL );
+			ViewDrawScene( bDrew3dSkybox, nSkyboxVisible, viewRender, nClearFlags, VIEW_MAIN, whatToDraw & RENDERVIEW_DRAWVIEWMODEL
+#if defined( L4D2 )
+				, 0, NULL, &skyFogVolumeInfo, &skyWaterInfo
+#endif
+				);
 		}
 		else
 		{
@@ -2139,6 +2773,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 
 		RenderPlayerSprites();
 
+#if defined( L4D2 )
+		// Native C1D742C: before motion blur, independent of bloom/tone-map flag.
+		if ( !building_cubemaps.GetBool() && Terror_IsDepthOfFieldEnabled( view->GetViewSetup() ) )
+			Terror_DrawDepthOfField( viewRender );
+#endif
+
 		// Image-space motion blur
 		if ( !building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping ) // We probably should use a different view. variable here
 		{
@@ -2154,7 +2794,9 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			}
 		}
 
+#if !defined( L4D2 )
 		GetClientModeNormal()->DoPostScreenSpaceEffects( &viewRender );
+#endif
 
 		// Now actually draw the viewmodel
 		DrawViewModels( viewRender, whatToDraw & RENDERVIEW_DRAWVIEWMODEL );
@@ -2167,18 +2809,33 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		byte color[4];
 		bool blend;
 		vieweffects->GetFadeParams( &color[0], &color[1], &color[2], &color[3], &blend );
+#if defined( L4D2 )
+		Terror_SetEnginePostFade( color, blend );
+#endif
 
 		// Draw an overlay to make it even harder to see inside smoke particle systems.
 		DrawSmokeFogOverlay();
 
 		// Overlay screen fade on entire screen
+#if !defined( L4D2 )
 		IMaterial* pMaterial = blend ? m_ModulateSingleColor : m_TranslucentSingleColor;
 		render->ViewDrawFade( color, pMaterial );
+#endif
 		PerformScreenOverlay( viewRender.x, viewRender.y, viewRender.width, viewRender.height );
 
 		// Prevent sound stutter if going slow
 		engine->Sound_ExtraUpdate();	
 	
+#if defined( L4D2 )
+		// Native resets the context and ShaderAPI before engine post-processing.
+		if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_NONE )
+		{
+			pRenderContext.GetFrom( materials );
+			pRenderContext->ResetToneMappingScale( 1.0f );
+			pRenderContext.SafeRelease();
+		}
+#endif
+
 		if ( !building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping )
 		{
 			pRenderContext.GetFrom( materials );
@@ -2208,12 +2865,16 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 
 		PerformScreenSpaceEffects( 0, 0, viewRender.width, viewRender.height );
 
+#if defined( L4D2 )
+		GetClientModeNormal()->DoPostScreenSpaceEffects( &viewRender );
+#else
 		if ( g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_INTEGER )
 		{
 			pRenderContext.GetFrom( materials );
 			pRenderContext->SetToneMappingScaleLinear(Vector(1,1,1));
 			pRenderContext.SafeRelease();
 		}
+#endif
 
 		CleanupMain3DView( viewRender );
 
@@ -2288,11 +2949,13 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		pCopyMaterial->DecrementReferenceCount();
 	}
 
+#if !defined( L4D2 )
 	// if we're in VR mode we might need to override the render target
 	if( UseVR() )
 	{
 		saveRenderTarget = g_pSourceVR->GetRenderTarget( (ISourceVirtualReality::VREye)(viewRender.m_eStereoEye - 1), ISourceVirtualReality::RT_Color );
 	}
+#endif
 
 	// Draw the 2D graphics
 	render->Push2DView( viewRender, 0, saveRenderTarget, GetFrustum() );
@@ -2315,6 +2978,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		bool bClear = false;
 		bool bPaintMainMenu = false;
 		ITexture *pTexture = NULL;
+#if !defined( L4D2 )
 		if( UseVR() )
 		{
 			if( g_ClientVirtualReality.ShouldRenderHUDInWorld() )
@@ -2343,6 +3007,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 				viewFramebufferY = 0;
 			}
 		}
+#endif
 
 		// Get the render context out of materials to avoid some debug stuff.
 		// WARNING THIS REQUIRES THE .SafeRelease below or it'll never release the ref
@@ -2362,11 +3027,13 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			pRenderContext->OverrideAlphaWriteEnable( true, true );
 		}
 
+#if !defined( L4D2 )
 		// let vgui know where to render stuff for the forced-to-framebuffer panels
 		if( UseVR() )
 		{
 			g_pMatSystemSurface->SetFullscreenViewportAndRenderTarget( viewFramebufferX, viewFramebufferY, viewFramebufferWidth, viewFramebufferHeight, saveRenderTarget );
 		}
+#endif
 
 		// clear the render target if we need to
 		if( bClear )
@@ -2416,6 +3083,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		}
 		pRenderContext->PopRenderTargetAndViewport();
 
+#if !defined( L4D2 )
 		if ( UseVR() )
 		{
 			// figure out if we really want to draw the HUD based on freeze cam
@@ -2436,6 +3104,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 				CleanupMain3DView( viewRender );
 			}
 		}
+#endif
 
 		pRenderContext->Flush();
 		pRenderContext.SafeRelease();
@@ -2487,6 +3156,9 @@ void CViewRender::Render2DEffectsPostHUD( const CViewSetup &viewRender )
 //-----------------------------------------------------------------------------
 void CViewRender::DetermineWaterRenderInfo( const VisibleFogVolumeInfo_t &fogVolumeInfo, WaterRenderInfo_t &info )
 {
+#if defined( L4D2 )
+#include "l4d2/effects/terror_view_water_info.inc"
+#else
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 
 	// By default, assume cheap water (even if there's no water in the scene!)
@@ -2644,17 +3316,28 @@ void CViewRender::DetermineWaterRenderInfo( const VisibleFogVolumeInfo_t &fogVol
 	{
 		Warning( "refract: %s reflect: %s\n", info.m_bRefract ? "true" : "false", info.m_bReflect ? "true" : "false" );
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
 // Draws the world and all entities
 //-----------------------------------------------------------------------------
-void CViewRender::DrawWorldAndEntities( bool bDrawSkybox, const CViewSetup &viewIn, int nClearFlags, ViewCustomVisibility_t *pCustomVisibility )
+void CViewRender::DrawWorldAndEntities( bool bDrawSkybox, const CViewSetup &viewIn, int nClearFlags, ViewCustomVisibility_t *pCustomVisibility
+#if defined( L4D2 )
+	, const VisibleFogVolumeInfo_t *pFogVolumeInfo, const WaterRenderInfo_t *pWaterRenderInfo
+#endif
+	)
 {
 	MDLCACHE_CRITICAL_SECTION();
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 
 	VisibleFogVolumeInfo_t fogVolumeInfo;
+#if defined( L4D2 )
+	if ( pFogVolumeInfo )
+		fogVolumeInfo = *pFogVolumeInfo;
+	else
+	{
+#endif
 #ifdef PORTAL //in portal, we can't use the fog volume for the camera since it's almost never in the same fog volume as what's in front of the portal
 	if( g_pPortalRender->GetViewRecursionLevel() == 0 )
 	{
@@ -2667,9 +3350,17 @@ void CViewRender::DrawWorldAndEntities( bool bDrawSkybox, const CViewSetup &view
 #else
 	render->GetVisibleFogVolume( viewIn.origin, &fogVolumeInfo );
 #endif
+#if defined( L4D2 )
+	}
+#endif
 
 	WaterRenderInfo_t info;
-	DetermineWaterRenderInfo( fogVolumeInfo, info );
+#if defined( L4D2 )
+	if ( pWaterRenderInfo )
+		info = *pWaterRenderInfo;
+	else
+#endif
+		DetermineWaterRenderInfo( fogVolumeInfo, info );
 
 	if ( info.m_bCheapWater )
 	{		     
@@ -3444,6 +4135,9 @@ void CRendering3dView::SetupRenderablesList( int viewID )
 	{
 		// Precache information used commonly in CollateRenderables
 		SetupRenderInfo_t setupInfo;
+#if defined( L4D2 )
+		setupInfo.m_nViewID = viewID;
+#endif
 		setupInfo.m_pWorldListInfo = m_pWorldListInfo;
 		setupInfo.m_nRenderFrame = m_pMainView->BuildRenderablesListsNumber();	// only one incremented?
 		setupInfo.m_nDetailBuildFrame = m_pMainView->BuildWorldListsNumber();	//
@@ -3927,8 +4621,19 @@ static void DrawClippedDepthBox( IClientRenderable *pEnt, float *pClipPlane )
 //-----------------------------------------------------------------------------
 // Draws all opaque renderables in leaves that were rendered
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+static inline void DrawOpaqueRenderable( const CClientRenderablesList::CEntry &entry,
+	ERenderDepthMode DepthMode, int nDefaultFlags = 0 )
+#else
 static inline void DrawOpaqueRenderable( IClientRenderable *pEnt, bool bTwoPass, ERenderDepthMode DepthMode, int nDefaultFlags = 0 )
+#endif
 {
+#if defined( L4D2 )
+	IClientRenderable *pEnt = entry.m_pRenderable;
+	const bool bTwoPass = entry.m_TwoPass != 0;
+	if ( entry.m_bL4D2GameOwnedAlpha ) render->SetBlend( entry.m_nL4D2Alpha / 255.0f );
+#endif
+
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 
 	float color[3];
@@ -4002,8 +4707,12 @@ static void DrawOpaqueRenderables_DrawBrushModels( CClientRenderablesList::CEntr
 {
 	for( CClientRenderablesList::CEntry *itEntity = pEntitiesBegin; itEntity < pEntitiesEnd; ++ itEntity )
 	{
+#if defined( L4D2 )
+		DrawOpaqueRenderable( *itEntity, DepthMode );
+#else
 		Assert( !itEntity->m_TwoPass );
 		DrawOpaqueRenderable( itEntity->m_pRenderable, false, DepthMode );
+#endif
 	}
 }
 
@@ -4030,7 +4739,11 @@ static void DrawOpaqueRenderables_DrawStaticProps( CClientRenderablesList::CEntr
 
 		if ( g_pStudioStatsEntity != NULL && g_CurrentViewID == VIEW_MAIN && itEntity->m_pRenderable == g_pStudioStatsEntity )
 		{
+#if defined( L4D2 )
+			DrawOpaqueRenderable( *itEntity, DepthMode, STUDIO_GENERATE_STATS );
+#else
 			DrawOpaqueRenderable( itEntity->m_pRenderable, false, DepthMode, STUDIO_GENERATE_STATS );
+#endif
 			continue;
 		}
 
@@ -4052,7 +4765,12 @@ static void DrawOpaqueRenderables_Range( CClientRenderablesList::CEntry *pEntiti
 	for( CClientRenderablesList::CEntry *itEntity = pEntitiesBegin; itEntity < pEntitiesEnd; ++ itEntity )
 	{
 		if ( itEntity->m_pRenderable )
+		if ( itEntity->m_pRenderable )
+#if defined( L4D2 )
+			DrawOpaqueRenderable( *itEntity, DepthMode );
+#else
 			DrawOpaqueRenderable( itEntity->m_pRenderable, ( itEntity->m_TwoPass != 0 ), DepthMode );
+#endif
 	}
 }
 
@@ -4326,16 +5044,32 @@ void CRendering3dView::DrawTranslucentWorldAndDetailPropsInLeaves( int iCurLeafI
 //-----------------------------------------------------------------------------
 // Renders all translucent entities in the render list
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+static inline void DrawTranslucentRenderable( const CClientRenderablesList::CEntry &entry,
+	bool bShadowDepth, bool bIgnoreDepth )
+#else
 static inline void DrawTranslucentRenderable( IClientRenderable *pEnt, bool twoPass, bool bShadowDepth, bool bIgnoreDepth )
+#endif
 {
+#if defined( L4D2 )
+	IClientRenderable *pEnt = entry.m_pRenderable;
+	const bool twoPass = entry.m_TwoPass != 0;
+	const float blend = entry.m_bL4D2GameOwnedAlpha ?
+		entry.m_nL4D2Alpha / 255.0f : static_cast< float >( pEnt->GetFxBlend() / 255.0f );
+#else
 	// Determine blending amount and tell engine
 	float blend = (float)( pEnt->GetFxBlend() / 255.0f );
+#endif
 
 	// Totally gone
 	if ( blend <= 0.0f )
 		return;
 
+#if defined( L4D2 )
+	if ( ( entry.m_bL4D2GameOwnedAlpha ? entry.m_bL4D2IgnoreZ : pEnt->IgnoresZBuffer() ) != bIgnoreDepth )
+#else
 	if ( pEnt->IgnoresZBuffer() != bIgnoreDepth )
+#endif
 		return;
 
 	// Tell engine
@@ -4412,7 +5146,11 @@ void CRendering3dView::DrawTranslucentRenderablesNoWorld( bool bInSkybox )
 			UpdateScreenEffectTexture();
 		}
 
+#if defined( L4D2 )
+		DrawTranslucentRenderable( pEntities[iCurTranslucentEntity], bShadowDepth, false );
+#else
 		DrawTranslucentRenderable( pRenderable, pEntities[iCurTranslucentEntity].m_TwoPass != 0, bShadowDepth, false );
+#endif
 		--iCurTranslucentEntity;
 	}
 
@@ -4449,7 +5187,11 @@ void CRendering3dView::DrawNoZBufferTranslucentRenderables( void )
 			UpdateScreenEffectTexture();
 		}
 
+#if defined( L4D2 )
+		DrawTranslucentRenderable( pEntities[iCurTranslucentEntity], bShadowDepth, true );
+#else
 		DrawTranslucentRenderable( pRenderable, pEntities[iCurTranslucentEntity].m_TwoPass != 0, bShadowDepth, true );
+#endif
 		--iCurTranslucentEntity;
 	}
 
@@ -4632,7 +5374,15 @@ void CRendering3dView::DrawTranslucentRenderables( bool bInSkybox, bool bShadowD
 					}
 
 					// Then draw the translucent renderable
+#if defined( L4D2 )
+					DrawTranslucentRenderable( pEntities[iCurTranslucentEntity], bShadowDepth, false );
+#else
+#if defined( L4D2 )
+					DrawTranslucentRenderable( pEntities[iCurTranslucentEntity], bShadowDepth, false );
+#else
 					DrawTranslucentRenderable( pRenderable, (pEntities[iCurTranslucentEntity].m_TwoPass != 0), bShadowDepth, false );
+#endif
+#endif
 				}
 
 				// Draw all remaining props in this leaf
@@ -4683,7 +5433,15 @@ void CRendering3dView::DrawTranslucentRenderables( bool bInSkybox, bool bShadowD
 						pRenderContext.SafeRelease();
 					}
 
+#if defined( L4D2 )
+					DrawTranslucentRenderable( pEntities[iCurTranslucentEntity], bShadowDepth, false );
+#else
+#if defined( L4D2 )
+					DrawTranslucentRenderable( pEntities[iCurTranslucentEntity], bShadowDepth, false );
+#else
 					DrawTranslucentRenderable( pRenderable, (pEntities[iCurTranslucentEntity].m_TwoPass != 0), bShadowDepth, false );
+#endif
+#endif
 				}
 			}
 
@@ -4789,12 +5547,16 @@ bool CSkyboxView::GetSkyboxFogEnable()
 	CPlayerLocalData	*local		= &pbp->m_Local;
 
 	if( fog_override.GetInt() )
+#if defined( L4D2 )
+		return fog_enableskybox.GetBool();
+#else
 	{
 		if( fog_enableskybox.GetInt() != -1 )
 		{
 			return fog_enableskybox.GetBool();
 		}
 	}
+#endif
 
 	return !!local->m_skybox3d.fog.enable;
 }
@@ -4866,6 +5628,9 @@ sky3dparams_t *CSkyboxView::PreRender3dSkyboxWorld( SkyboxVisibility_t nSkyboxVi
 //-----------------------------------------------------------------------------
 // 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostRender, ITexture *pRenderTarget, ITexture *pDepthTarget )
 {
 	unsigned char **areabits = render->GetAreaBits();
@@ -4884,6 +5649,22 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 	// need to keep the eye position at least 2 * scale away from the geometry in the skybox
 	zNear = 2.0;
 	zFar = MAX_TRACE_LENGTH;
+#if defined( L4D2 )
+	if ( m_pSky3dParams->scale > 0 )
+	{
+		const int nClip = r_clip3Dskyboxneartoworldfar.GetInt();
+		if ( nClip != 0 && ( nClip == 1 || m_pSky3dParams->bClip3DSkyBoxNearToWorldFar ) )
+		{
+			C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
+			const float flOffset = m_pSky3dParams->flClip3DSkyBoxNearToWorldFarOffset + r_clip3Dskyboxneartoworldfarfudge.GetFloat();
+			const float flWorldFogEnd = GetFogEnd( pPlayer ? pPlayer->GetFogParams() : NULL );
+			float flNear = ( flWorldFogEnd + flOffset ) * ( 1.0f / (float)m_pSky3dParams->scale );
+			if ( !( flNear > zNear ) )
+				flNear = zNear;
+			zNear = flNear;
+		}
+	}
+#endif
 
 	// scale origin by sky scale
 	if ( m_pSky3dParams->scale > 0 )
@@ -4948,6 +5729,11 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 		FinishCurrentView();
 	}
 
+#if defined( L4D2 )
+	// Native C1D3CC0: alpha1 only, preserving RGB before PopView.
+	Terror_ClearSkyboxDepthAlpha( view->GetViewSetup() );
+#endif
+
 	render->PopView( GetFrustum() );
 
 #if defined( _X360 )
@@ -4955,6 +5741,9 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 	pRenderContext->PopVertexShaderGPRAllocation();
 #endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // 
@@ -4997,11 +5786,13 @@ void CSkyboxView::Draw()
 
 	ITexture *pRTColor = NULL;
 	ITexture *pRTDepth = NULL;
+#if !defined( L4D2 )
 	if( m_eStereoEye != STEREO_EYE_MONO )
 	{
 		pRTColor = g_pSourceVR->GetRenderTarget( (ISourceVirtualReality::VREye)(m_eStereoEye-1), ISourceVirtualReality::RT_Color );
 		pRTDepth = g_pSourceVR->GetRenderTarget( (ISourceVirtualReality::VREye)(m_eStereoEye-1), ISourceVirtualReality::RT_Depth );
 	}
+#endif
 
 	DrawInternal(VIEW_3DSKY, true, pRTColor, pRTDepth );
 }
@@ -5484,7 +6275,7 @@ void MaybeInvalidateLocalPlayerAnimation()
 	}
 }
 
-void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float waterZAdjust )
+void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float waterZAdjust, float flWaterFogEnd, bool bWaterFrameBuffer )
 {
 	int savedViewID = g_CurrentViewID;
 
@@ -5517,14 +6308,45 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		pRenderContext->SetFrameBufferCopyTexture( GetPowerOfTwoFrameBufferTexture() );
 	}
 
+#if defined( L4D2 )
+	if ( bWaterFrameBuffer )
+	{
+		// The main opaque scene produces native vertical water depth.
+		m_DrawFlags &= ~DF_RENDER_WATER;
+		pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_L4D2_WRITE_WATER_FOG_TO_DESTALPHA, 1 );
+	}
+#endif
+
 	pRenderContext.SafeRelease();
 
 	ERenderDepthMode DepthMode = DEPTH_MODE_NORMAL;
+	DrawWorld( waterZAdjust );
+#if defined( L4D2 )
+	// Native draws the fog-distance blocker with this view's height clip still
+	// active, after the opaque world and before entities.
+	if ( ( m_DrawFlags & DF_CLIP_Z ) && !( m_DrawFlags & DF_CLIP_BELOW ) )
+		m_pMainView->DrawUnderwaterFogBlocker( flWaterFogEnd );
+#endif
+	if ( m_DrawFlags & DF_DRAW_ENTITITES )
+		DrawOpaqueRenderables( DepthMode );
+
+#if defined( L4D2 )
+	if ( bWaterFrameBuffer )
+	{
+		pRenderContext.GetFrom( materials );
+		pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_L4D2_WRITE_WATER_FOG_TO_DESTALPHA, 0 );
+		CopyL4D2WaterRefractionTexture( pRenderContext, *this );
+		pRenderContext.SafeRelease();
+
+		int nOpaqueDrawFlags = m_DrawFlags;
+		m_DrawFlags = DF_RENDER_WATER;
+		DrawWorld( waterZAdjust );
+		m_DrawFlags = nOpaqueDrawFlags | DF_RENDER_WATER;
+	}
+#endif
 
 	if ( m_DrawFlags & DF_DRAW_ENTITITES )
 	{
-		DrawWorld( waterZAdjust );
-		DrawOpaqueRenderables( DepthMode );
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles
@@ -5539,7 +6361,6 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	}
 	else
 	{
-		DrawWorld( waterZAdjust );
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles
@@ -5867,6 +6688,10 @@ void CAboveWaterView::Setup( const CViewSetup &viewRender, bool bDrawSkybox, con
 	}
 
 	m_DrawFlags = DF_RENDER_ABOVEWATER | DF_DRAW_ENTITITES;
+#if defined( L4D2 )
+	if ( engine->GetDXSupportLevel() >= 92 )
+		m_DrawFlags |= DF_RENDER_UNDERWATER;
+#endif
 	m_ClearFlags = VIEW_CLEAR_DEPTH;
 
 #ifdef PORTAL
@@ -5900,14 +6725,30 @@ void CAboveWaterView::Draw()
 {
 	VPROF( "CViewRender::ViewDrawScene_EyeAboveWater" );
 
+#if defined( L4D2 )
+	if ( engine->GetDXSupportLevel() >= 92 )
+	{
+		DrawL4D2Water();
+		return;
+	}
+#endif
+
 	// eye is outside of water
 	
 	CMatRenderContextPtr pRenderContext( materials );
 	
 	// render the reflection
-	if( m_waterInfo.m_bReflect )
+	if ( m_waterInfo.m_bReflect
+#if defined( L4D2 )
+		&& !m_waterInfo.m_bReflectSkyboxOnly
+#endif
+		)
 	{
-		m_ReflectionView.Setup( m_waterInfo.m_bReflectEntities );
+		m_ReflectionView.Setup( m_waterInfo.m_bReflectEntities
+#if defined( L4D2 )
+			, m_waterInfo.m_bReflect2DSkybox
+#endif
+			);
 		m_pMainView->AddViewToScene( &m_ReflectionView );
 	}
 	
@@ -5967,7 +6808,7 @@ void CAboveWaterView::Draw()
 //-----------------------------------------------------------------------------
 // 
 //-----------------------------------------------------------------------------
-void CAboveWaterView::CReflectionView::Setup( bool bReflectEntities )
+void CAboveWaterView::CReflectionView::Setup( bool bReflectEntities, bool bReflect2DSkybox )
 {
 	BaseClass::Setup( *GetOuter() );
 
@@ -5980,7 +6821,8 @@ void CAboveWaterView::CReflectionView::Setup( bool bReflectEntities )
 
 	// NOTE: This will cause us to draw the 2d skybox in the reflection 
 	// (which we want to do instead of drawing the 3d skybox)
-	m_DrawFlags |= DF_DRAWSKYBOX;
+	if ( bReflect2DSkybox )
+		m_DrawFlags |= DF_DRAWSKYBOX;
 
 	if( bReflectEntities )
 	{
@@ -6180,7 +7022,11 @@ void CUnderWaterView::Draw()
 
 	DrawSetup( m_waterHeight, m_DrawFlags, m_waterZAdjust );
 	SetFogVolumeState( m_fogInfo, false );
+#if defined( L4D2 )
+	DrawExecute( m_waterHeight, CurrentViewID(), m_waterZAdjust, m_waterInfo.m_flWaterFogEnd );
+#else
 	DrawExecute( m_waterHeight, CurrentViewID(), m_waterZAdjust );
+#endif
 	m_ClearFlags = 0;
 
 	if( m_waterZAdjust != 0.0f && m_bSoftwareUserClipPlane && m_waterInfo.m_bRefract )
@@ -6244,8 +7090,17 @@ void CUnderWaterView::CRefractionView::Draw()
 		DumpTGAofRenderTarget( width, height, "WaterRefract" );
 	}
 
-	ITexture *pTexture = GetWaterRefractionTexture();
-	pRenderContext->CopyRenderTargetToTextureEx( pTexture, 0, &srcRect, NULL );
+#if defined( L4D2 )
+	if ( engine->GetDXSupportLevel() >= 92 )
+	{
+		CopyL4D2WaterRefractionTexture( pRenderContext, *this );
+	}
+	else
+#endif
+	{
+		ITexture *pTexture = GetWaterRefractionTexture();
+		pRenderContext->CopyRenderTargetToTextureEx( pTexture, 0, &srcRect, NULL );
+	}
 }
 
 
@@ -6396,3 +7251,7 @@ void CRefractiveGlassView::Draw()
 	pRenderContext->ClearColor4ub( 0, 0, 0, 255 );
 	pRenderContext->Flush();
 }
+
+#if defined( L4D2 )
+#include "l4d2/effects/terror_view_water_views.inc"
+#endif

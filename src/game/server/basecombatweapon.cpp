@@ -32,6 +32,9 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "precache_register.h"
+#endif
 #include "tier0/memdbgon.h"
 
 extern int	gEvilImpulse101;		// In Player.h
@@ -49,6 +52,7 @@ short		g_sModelIndexBubbles;		// holds the index for the bubbles model
 short		g_sModelIndexBloodDrop;		// holds the sprite index for the initial blood
 short		g_sModelIndexBloodSpray;	// holds the sprite index for splattered blood
 
+#if !defined( L4D2 )
 BEGIN_ENT_SCRIPTDESC( CBaseCombatWeapon, BASECOMBATWEAPON_DERIVED_FROM, "Base Combat Weapon" )
 	DEFINE_SCRIPTFUNC( SetCustomViewModel, "Sets a custom view model for this weapon by model name" )
 	DEFINE_SCRIPTFUNC( SetCustomViewModelModelIndex, "Sets a custom view model for this weapon by modelindex" )
@@ -86,8 +90,13 @@ BEGIN_ENT_SCRIPTDESC( CBaseCombatWeapon, BASECOMBATWEAPON_DERIVED_FROM, "Base Co
 	DEFINE_SCRIPTFUNC( GetPrimaryAmmoCount, "Current primary ammo count if no clip is used or to give a player if they pick up this weapon legacy style (not TF)" )
 	DEFINE_SCRIPTFUNC( GetSecondaryAmmoCount, "Current secondary ammo count if no clip is used or to give a player if they pick up this weapon legacy style (not TF)" )
 END_SCRIPTDESC();
+#endif
 
-ConVar weapon_showproficiency( "weapon_showproficiency", "0" );
+ConVar weapon_showproficiency( "weapon_showproficiency", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 extern ConVar ai_debug_shoot_positions;
 
 //-----------------------------------------------------------------------------
@@ -99,6 +108,7 @@ void W_Precache(void)
 
 
 
+#ifndef L4D2
 #ifdef HL1_DLL
 	g_sModelIndexWExplosion = CBaseEntity::PrecacheModel ("sprites/WXplo1.vmt");// underwater fireball
 	g_sModelIndexBloodSpray = CBaseEntity::PrecacheModel ("sprites/bloodspray.vmt"); // initial blood
@@ -124,6 +134,7 @@ void W_Precache(void)
 
 	CBaseEntity::PrecacheScriptSound( "BaseCombatWeapon.WeaponDrop" );
 	CBaseEntity::PrecacheScriptSound( "BaseCombatWeapon.WeaponMaterialize" );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -735,7 +746,11 @@ int	CBaseCombatWeapon::ObjectCaps( void )
 	int caps = BaseClass::ObjectCaps();
 	if ( !IsFollowingEntity() && !HasSpawnFlags(SF_WEAPON_NO_PLAYER_PICKUP) )
 	{
+#if defined( L4D2 )
+		caps |= FCAP_IMPULSE_USE | FCAP_USE_IN_RADIUS;
+#else
 		caps |= FCAP_IMPULSE_USE;
+#endif
 	}
 
 	return caps;
@@ -792,3 +807,42 @@ void CBaseCombatWeapon::SetCustomViewModelModelIndex( int nCustomViewModelModelI
 
 	m_nCustomViewmodelModelIndex = nCustomViewModelModelIndex;
 }
+
+// Native server 0x49810; 0x5c1410 is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace WeaponResourcesPrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "WeaponResources", 0x5c1410 ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		{
+			int index;
+			handler->Precache( RESOURCETYPE_MODEL, "sprites/zerogxplode.vmt", precache, resourceList, &index );
+			g_sModelIndexFireball = static_cast<short>( index );
+		}
+		{
+			int index;
+			handler->Precache( RESOURCETYPE_MODEL, "sprites/steam1.vmt", precache, resourceList, &index );
+			g_sModelIndexSmoke = static_cast<short>( index );
+		}
+		{
+			int index;
+			handler->Precache( RESOURCETYPE_MODEL, "sprites/bubble.vmt", precache, resourceList, &index );
+			g_sModelIndexBubbles = static_cast<short>( index );
+		}
+		{
+			int index;
+			handler->Precache( RESOURCETYPE_MODEL, "sprites/laserbeam.vmt", precache, resourceList, &index );
+			g_sModelIndexLaser = static_cast<short>( index );
+		}
+		handler->Precache( RESOURCETYPE_MODEL, "effects/bubble.vmt", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "BaseCombatWeapon.WeaponDrop", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "BaseCombatWeapon.WeaponMaterialize", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
+#endif

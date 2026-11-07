@@ -29,6 +29,7 @@ static ConVar cl_spraydisable( "cl_spraydisable", "0", FCVAR_CLIENTDLL | FCVAR_A
 #endif
 
 #ifndef _XBOX
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecachePlayerDecal )
 CLIENTEFFECT_MATERIAL( "decals/playerlogo01" )
 #if !defined(HL2_DLL) || defined(HL2MP)
@@ -107,6 +108,7 @@ CLIENTEFFECT_MATERIAL( "decals/playerlogo63" )
 CLIENTEFFECT_MATERIAL( "decals/playerlogo64" )
 #endif
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 #endif
 
 //-----------------------------------------------------------------------------

@@ -28,6 +28,12 @@
 #include "view.h"
 #include "ixboxsystem.h"
 #include "inputsystem/iinputsystem.h"
+#if defined( L4D2 )
+#include <ctype.h>
+#endif // L4D2
+#ifdef L4D2
+#include "l4d2/hud/terror_hud_native_numeric.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -62,6 +68,37 @@ char *VarArgs( const char *format, ... )
 
 	return string;	
 }
+
+#if defined( L4D2 )
+// C0B4D60: one native four-slot ring shared by bound-key prompts.
+const wchar_t *UTIL_ConstructStringWithKeyBinding( const char *binding, const char *token,
+	const wchar_t *param1, const wchar_t *param2, const wchar_t *param3 )
+{
+	static wchar_t output[4][256];
+	static int next = 0;
+	if ( ++next > 3 ) next = 0;
+	const char *bound = engine->Key_LookupBinding( binding );
+	if ( !bound ) bound = "<NOT BOUND>";
+	char key[64];
+	Q_strncpy( key, bound, sizeof( key ) );
+	for ( char *p = key; *p; ++p ) *p = (char)toupper( *p );
+	wchar_t wideKey[64];
+	g_pVGuiLocalize->ConvertANSIToUnicode( key, wideKey, sizeof( wideKey ) );
+	int count = 1;
+	if ( param1 )
+	{
+		count = 2;
+		if ( param2 )
+		{
+			count = 3;
+			if ( param3 ) count = 4;
+		}
+	}
+	g_pVGuiLocalize->ConstructString( output[next], sizeof( output[next] ),
+		g_pVGuiLocalize->Find( token ), count, wideKey, param1, param2, param3 );
+	return output[next];
+}
+#endif
 	
 //-----------------------------------------------------------------------------
 // Purpose: Returns true if the entity index corresponds to a player slot 
@@ -520,30 +557,39 @@ void UTIL_SetTrace(trace_t& trace, const Ray_t& ray, C_BaseEntity *ent, float fr
 // Purpose: Get the x & y positions of a world position in screenspace
 //			Returns true if it's onscreen
 //-----------------------------------------------------------------------------
-bool GetVectorInScreenSpace( Vector pos, int& iX, int& iY, Vector *vecOffset )
+// Replace ONLY GetVectorInScreenSpace in existing client/cdll_util.cpp.
+// Add #include "l4d2/terror_hud_native_numeric.h" there under #ifdef L4D2.
+// C0B4620/C1B2ED0: one supported fullscreen slot0 has origin0,0 and the real
+// surface dimensions (GetHudSize/ScreenWidth/ScreenHeight). No second owner.
+// C1C19F0 direct COMISS constant,w/JBE treats unordered w as front, matching
+// the EXISTING ScreenTransform/FrustumTransform. Do NOT change that predicate.
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+bool GetVectorInScreenSpace( Vector pos, int &iX, int &iY, Vector *vecOffset )
 {
 	Vector screen;
-
-	// Apply the offset, if one was specified
-	if ( vecOffset != NULL )
-		pos += *vecOffset;
-
-	// Transform to screen space
-	int iFacing = ScreenTransform( pos, screen );
+	if ( vecOffset != NULL ) pos += *vecOffset;
+	const int facing = ScreenTransform( pos, screen );
+#ifdef L4D2
+	const int wide = ScreenWidth(), tall = ScreenHeight();
+	iX = TerrorHudFtol( (double)screen.x * 0.5 * (double)wide );
+	iY = TerrorHudFtol( (double)screen.y * -0.5 * (double)tall );
+	iX = TerrorHudFtol( (double)wide * 0.5 + (double)iX );
+	iY = TerrorHudFtol( 0.5 * (double)tall + (double)iY );
+#else
 	iX = 0.5f * ( 1.0f + screen[0] ) * ScreenWidth();
 	iY = 0.5f * ( 1.0f - screen[1] ) * ScreenHeight();
-
-	// Make sure the player's facing it
-	if ( iFacing )
-	{
-		// We're actually facing away from the Target. Stomp the screen position.
-		iX = -640;
-		iY = -640;
-		return false;
-	}
-
+#endif
+	if ( facing ) { iX = -640; iY = -640; return false; }
 	return true;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Get the x & y positions of a world position in HUD space

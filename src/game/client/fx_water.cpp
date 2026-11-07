@@ -20,18 +20,24 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectSplash )
 CLIENTEFFECT_MATERIAL( "effects/splash1" )
 CLIENTEFFECT_MATERIAL( "effects/splash2" )
 CLIENTEFFECT_MATERIAL( "effects/splash4" )
 CLIENTEFFECT_MATERIAL( "effects/slime1" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 
 #define	SPLASH_MIN_SPEED	50.0f
 #define	SPLASH_MAX_SPEED	100.0f
 
-ConVar	cl_show_splashes( "cl_show_splashes", "1" );
+ConVar	cl_show_splashes( "cl_show_splashes", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 static Vector s_vecSlimeColor( 46.0f/255.0f, 90.0f/255.0f, 36.0f/255.0f );
 

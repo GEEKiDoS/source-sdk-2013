@@ -74,6 +74,15 @@ public:
 	static	CSoundEnvelopeController &GetController( void );
 
 	virtual void		SoundSetCloseCaptionDuration( CSoundPatch *pSound, float flDuration ) = 0;
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	// Music explicitly opts in; its native emission channel is still CHAN_STATIC.
+	virtual CSoundPatch *SoundCreateMusic( IRecipientFilter &filter, int nEntIndex,
+		const char *pSoundName, const Vector *pOrigin = NULL ) = 0;
+	virtual bool SoundIsPlaying( CSoundPatch *pSound ) = 0;
+	// Approved approximation: GUID-scoped realtime, not an audible mixer clock.
+	// Includes the requested negative resume offset; ignores pitch and pause.
+	virtual float SoundGetElapsedTimeApproximate( CSoundPatch *pSound ) = 0;
+#endif
 };
 
 

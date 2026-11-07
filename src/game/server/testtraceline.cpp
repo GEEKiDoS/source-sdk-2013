@@ -60,7 +60,11 @@ void	CTestTraceline::Spawn( void )
 
 void	CTestTraceline::Spin( void )
 {
-	static ConVar	traceline_spin( "traceline_spin","1" );
+	static ConVar	traceline_spin( "traceline_spin","1"
+#if defined( L4D2 )
+	, 0x00000002
+#endif
+ );
 
 	if (traceline_spin.GetInt())
 	{

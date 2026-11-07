@@ -64,6 +64,10 @@ class C_VGuiScreen : public C_BaseEntity
 {
 	DECLARE_CLASS( C_VGuiScreen, C_BaseEntity );
 public:
+#if defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return ( m_fScreenFlags & 8 ) != 0; }
+#endif
+
 	DECLARE_CLIENTCLASS();
 
 	C_VGuiScreen();

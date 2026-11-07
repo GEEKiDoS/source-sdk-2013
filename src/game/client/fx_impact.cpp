@@ -17,11 +17,20 @@
 #include "engine/IStaticPropMgr.h"
 #include "c_impact_effects.h"
 #include "tier0/vprof.h"
+#if defined( L4D2 )
+#include "l4d2/effects/terror_materials.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-static ConVar  r_drawflecks( "r_drawflecks", "1", FCVAR_ALLOWED_IN_COMPETITIVE );
+static ConVar  r_drawflecks( "r_drawflecks", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ALLOWED_IN_COMPETITIVE
+#endif
+ );
 extern ConVar r_drawmodeldecals;
 
 ImpactSoundRouteFn g_pImpactSoundRouteFn = NULL;
@@ -148,6 +157,9 @@ bool Impact( Vector &vecOrigin, Vector &vecStart, int iMaterial, int iDamageType
 		{
 			if ( (pEntity->entindex() == 0) && (iHitbox != 0) )
 			{
+#if defined( L4D2 )
+				Terror_PrepareDecalMaterial( decalNumber );
+#endif
 				staticpropmgr->AddDecalToStaticProp( vecStart, traceExt, iHitbox - 1, decalNumber, true, tr );
 			}
 			else if ( pEntity )
@@ -208,8 +220,20 @@ char const *GetImpactDecal( C_BaseEntity *pEntity, int iMaterial, int iDamageTyp
 //-----------------------------------------------------------------------------
 // Purpose: Perform custom effects based on the Decal index
 //-----------------------------------------------------------------------------
-static ConVar cl_new_impact_effects( "cl_new_impact_effects", "0" );
+#if defined( L4D2 )
+static ConVar cl_new_impact_effects( "cl_new_impact_effects", "1", 0x00000002 );
+extern ConVar r_impactparticles;
+static int s_nTerrorImpactParticleBudget = -1;
 
+void SetTerrorImpactParticleBudget( int count )
+{
+	s_nTerrorImpactParticleBudget = count;
+}
+#else
+static ConVar cl_new_impact_effects( "cl_new_impact_effects", "0" );
+#endif
+
+#if !defined( L4D2 )
 struct ImpactEffect_t
 {
 	const char *m_pName;
@@ -256,9 +280,13 @@ static void SetImpactControlPoint( CNewParticleEffect *pEffect, int nPoint, cons
 	pEffect->SetControlPointOrientation( nPoint, vecForward, vecImpactY, vecImpactZ );
 	pEffect->SetControlPointEntity( nPoint, pEntity );
 }
+#endif
 
 static void PerformNewCustomEffects( const Vector &vecOrigin, trace_t &tr, const Vector &shotDir, int iMaterial, int iScale, int nFlags )
 {
+#if defined( L4D2 )
+	PerformTerrorImpactParticles( vecOrigin, tr, shotDir, iMaterial, iScale, nFlags );
+#else
 	bool bNoFlecks = !r_drawflecks.GetBool();
 	if ( !bNoFlecks )
 	{
@@ -299,12 +327,17 @@ static void PerformNewCustomEffects( const Vector &vecOrigin, trace_t &tr, const
 		GetColorForSurface( &tr, &vecColor );
 		pEffect->SetControlPoint( 4, vecColor );
 	}
+#endif
 }
 
 void PerformCustomEffects( const Vector &vecOrigin, trace_t &tr, const Vector &shotDir, int iMaterial, int iScale, int nFlags )
 {
 	// Throw out the effect if any of these are true
+#if defined( L4D2 )
+	if ( tr.surface.flags & ( SURF_SKY | SURF_HINT | SURF_SKIP ) )
+#else
 	if ( tr.surface.flags & (SURF_SKY|SURF_NODRAW|SURF_HINT|SURF_SKIP) )
+#endif
 		return;
 
 	if ( cl_new_impact_effects.GetInt() )
@@ -312,6 +345,49 @@ void PerformCustomEffects( const Vector &vecOrigin, trace_t &tr, const Vector &s
 		PerformNewCustomEffects( vecOrigin, tr, shotDir, iMaterial, iScale, nFlags );
 		return;
 	}
+#if defined( L4D2 )
+	// Native C F81C0 only consumes this budget on the old-effects branch.
+	if ( s_nTerrorImpactParticleBudget == 0 && r_impactparticles.GetBool() )
+		return;
+	s_nTerrorImpactParticleBudget = static_cast< int >( static_cast< uint32 >( s_nTerrorImpactParticleBudget ) - 1U );
+	if ( r_impactparticles.GetBool() )
+	{
+		const char *name;
+		switch ( iMaterial )
+		{
+		case 1: name = "impact_clay"; break;
+		case 2: name = "impact_plaster"; break;
+		case 3: name = "impact_rock"; break;
+		case 4: name = "impact_rubber"; break;
+		case 5: name = "impact_sheetrock"; break;
+		case 6: name = "impact_cloth"; break;
+		case 7: name = "impact_carpet"; break;
+		case 8: name = "impact_paper"; break;
+		case 9: name = "impact_upholstery"; break;
+		case 10: name = "impact_puddle"; break;
+		case 'A': case 'B': case 'F': case 'G': case 'H': case 'I': case 'S': case 'X': case 'Z':
+			return;
+		case 'D': case 'N': name = "impact_dirt"; break;
+		case 'J': name = "impact_grass"; break;
+		case 'K': name = "impact_mud"; break;
+		case 'L': name = "impact_plastic"; break;
+		case 'M': case 'V': name = "impact_metal"; break;
+		case 'O': name = "impact_leaves"; break;
+		case 'P': name = "impact_electronic"; break;
+		case 'Q': name = "impact_asphalt"; break;
+		case 'R': name = "impact_brick"; break;
+		case 'T': name = "impact_tile"; break;
+		case 'U': name = "impact_cardboard"; break;
+		case 'W': name = "impact_wood"; break;
+		case 'Y': name = "impact_glass"; break;
+		default: name = "impact_concrete"; break;
+		}
+		QAngle angles;
+		VectorAngles( tr.plane.normal, angles );
+		DispatchParticleEffect( name, vecOrigin, angles );
+		return;
+	}
+#endif
 
 	bool bNoFlecks = !r_drawflecks.GetBool();
 	if ( !bNoFlecks )
@@ -332,10 +408,12 @@ void PerformCustomEffects( const Vector &vecOrigin, trace_t &tr, const Vector &s
 	{
 		FX_DustImpact( vecOrigin, &tr, iScale );
 	}
+#if !defined( L4D2 )
 	else if ( iMaterial == CHAR_TEX_ANTLION )
 	{
 		FX_AntlionImpact( vecOrigin, &tr );
 	}
+#endif
 	else if ( ( iMaterial == CHAR_TEX_METAL ) || ( iMaterial == CHAR_TEX_VENT ) )
 	{
 		Vector	reflect;

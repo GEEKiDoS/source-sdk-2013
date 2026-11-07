@@ -74,6 +74,9 @@ public:
 	void UserCmd_NextWeapon( void );
 	void UserCmd_PrevWeapon( void );
 	void UserCmd_LastWeapon( void );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void UserCmd_InvAction();
+#endif
 	void UserCmd_DropPrimary( void );
 
 	virtual void		SelectSlot( int iSlot );
@@ -98,6 +101,10 @@ protected:
 	bool	CanBeSelectedInHUD( C_BaseCombatWeapon *pWeapon );
 
 	void	UpdateSelectionTime( void );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void AdjustObserverWeaponCycle( bool next );
+	float m_flLastInvActionTime;
+#endif
 
 	float	m_flSelectionTime;	// most recent time at which weapon selection had input
 

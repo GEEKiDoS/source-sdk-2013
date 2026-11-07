@@ -60,6 +60,21 @@ IMPLEMENT_NETWORKCLASS_ALIASED( BaseGrenade, DT_BaseGrenade )
 
 BEGIN_NETWORK_TABLE( CBaseGrenade, DT_BaseGrenade )
 #if !defined( CLIENT_DLL )
+#if defined( L4D2 )
+	SendPropExclude( "DT_BaseAnimating", "m_flPoseParameter" ),
+	SendPropExclude( "DT_BaseAnimating", "m_flPlaybackRate" ),
+	SendPropExclude( "DT_BaseAnimating", "m_nSequence" ),
+	SendPropExclude( "DT_BaseAnimating", "m_nNewSequenceParity" ),
+	SendPropExclude( "DT_BaseAnimating", "m_nResetEventsParity" ),
+	SendPropExclude( "DT_BaseAnimating", "m_nMuzzleFlashParity" ),
+	SendPropExclude( "DT_BaseAnimatingOverlay", "overlay_vars" ),
+	SendPropExclude( "DT_BaseFlex", "m_flexWeight" ),
+	SendPropExclude( "DT_BaseFlex", "m_blinktoggle" ),
+	SendPropExclude( "DT_CollisionProperty", "m_vecMins" ),
+	SendPropExclude( "DT_CollisionProperty", "m_vecMaxs" ),
+	SendPropExclude( "DT_ServerAnimationData", "m_flCycle" ),
+	SendPropExclude( "DT_AnimTimeMustBeFirst", "m_flAnimTime" ),
+#endif
 	SendPropFloat( SENDINFO( m_flDamage ), 10, SPROP_ROUNDDOWN, 0.0, 256.0f ),
 	SendPropFloat( SENDINFO( m_DmgRadius ), 10, SPROP_ROUNDDOWN, 0.0, 1024.0f ),
 	SendPropInt( SENDINFO( m_bIsLive ), 1, SPROP_UNSIGNED ),
@@ -67,8 +82,12 @@ BEGIN_NETWORK_TABLE( CBaseGrenade, DT_BaseGrenade )
 	SendPropEHandle( SENDINFO( m_hThrower ) ),
 
 	SendPropVector( SENDINFO( m_vecVelocity ), 0, SPROP_NOSCALE ), 
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_fFlags ), 10, SPROP_UNSIGNED ),
+#else
 	// HACK: Use same flag bits as player for now
 	SendPropInt			( SENDINFO(m_fFlags), 0, SPROP_UNSIGNED ),
+#endif
 #else
 	RecvPropFloat( RECVINFO( m_flDamage ) ),
 	RecvPropFloat( RECVINFO( m_DmgRadius ) ),
@@ -112,6 +131,26 @@ END_PREDICTION_DATA()
 void CBaseGrenade::Explode( trace_t *pTrace, int bitsDamageType )
 {
 #if !defined( CLIENT_DLL )
+#if defined( L4D2 )
+	// S78B10, shared by the native generic grenade and all CS projectiles.
+	SetModelName( NULL_STRING );
+	AddSolidFlags( FSOLID_NOT_SOLID );
+	m_takedamage = DAMAGE_NO;
+	if ( pTrace->fraction != 1.0f )
+		SetAbsOrigin( pTrace->endpos + pTrace->plane.normal * 0.6f );
+	CSoundEnt::InsertSound( SOUND_COMBAT, GetAbsOrigin(), BASEGRENADE_EXPLOSION_VOLUME, 3.0f );
+	Vector vecReported = GetThrower() ? GetThrower()->GetAbsOrigin() : vec3_origin;
+	EmitSound( "BaseGrenade.Explode" );
+	CTakeDamageInfo info( this, GetThrower(), GetBlastForce(), GetAbsOrigin(), GetDamage(), bitsDamageType, 0, &vecReported );
+	RadiusDamage( info, GetAbsOrigin(), GetDamageRadius(), CLASS_NONE, NULL );
+	UTIL_DecalTrace( pTrace, "Scorch" );
+	SetThink( &CBaseGrenade::SUB_Remove );
+	SetTouch( NULL );
+	SetSolid( SOLID_NONE );
+	AddEffects( EF_NODRAW );
+	SetAbsVelocity( vec3_origin );
+	SetNextThink( gpGlobals->curtime );
+#else
 	
 	SetModelName( NULL_STRING );//invisible
 	AddSolidFlags( FSOLID_NOT_SOLID );
@@ -204,6 +243,7 @@ void CBaseGrenade::Explode( trace_t *pTrace, int bitsDamageType )
 		gamestats->Event_WeaponHit( pPlayer, true, "weapon_frag", info );
 	}
 #endif
+#endif // L4D2
 
 #endif
 }
@@ -296,7 +336,11 @@ void CBaseGrenade::Detonate( void )
 		UTIL_TraceLine( GetAbsOrigin(), GetAbsOrigin() + Vector( 0, 0, -32), MASK_SHOT_HULL, this, COLLISION_GROUP_NONE, &tr );
 	}
 
+#if defined( L4D2 )
+	Explode( &tr, DMG_BLAST | DMG_BLAST_SURFACE );
+#else
 	Explode( &tr, DMG_BLAST );
+#endif
 
 	if ( GetShakeAmplitude() )
 	{

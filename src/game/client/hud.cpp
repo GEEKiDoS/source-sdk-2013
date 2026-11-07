@@ -169,7 +169,17 @@ typedef struct hudelement_hidden_s
 	int		iHiddenBits;	// Bits in which this hud element is hidden
 } hudelement_hidden_t;
 
-ConVar hidehud( "hidehud", "0", FCVAR_CHEAT );
+ConVar hidehud( "hidehud", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+
+#if defined( L4D2 )
+	, "bitmask: 1=weapon selection, 2=flashlight, 4=all, 8=health, 16=player dead, 32=needssuit, 64=misc, 128=chat, 256=crosshair, 512=vehicle crosshair, 1024=in vehicle"
+#endif
+ );
 
 
 
@@ -377,8 +387,12 @@ int	CHudElement::GetRenderGroupPriority( void )
 CHud gHUD;  // global HUD object
 
 DECLARE_MESSAGE(gHUD, ResetHUD);
+#ifdef L4D2
+DECLARE_MESSAGE( gHUD, Spawn );
+DECLARE_MESSAGE( gHUD, TransitionRestore );
+#endif
 
-#ifdef CSTRIKE_DLL
+#if defined( CSTRIKE_DLL ) || defined( L4D2 )
 DECLARE_MESSAGE(gHUD, SendAudio);
 #endif
 
@@ -395,8 +409,12 @@ CHud::CHud()
 void CHud::Init( void )
 {
 	HOOK_HUD_MESSAGE( gHUD, ResetHUD );
+	#ifdef L4D2
+	HOOK_HUD_MESSAGE( gHUD, Spawn );
+	HOOK_HUD_MESSAGE( gHUD, TransitionRestore );
+	#endif
 	
-#ifdef CSTRIKE_DLL
+#if defined( CSTRIKE_DLL ) || defined( L4D2 )
 	HOOK_HUD_MESSAGE( gHUD, SendAudio );
 #endif
 
@@ -1189,7 +1207,12 @@ void CHud::UpdateHud( bool bActive )
 //-----------------------------------------------------------------------------
 // Purpose: Force a Hud UI anim to play
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( testhudanim, "Test a hud element animation.\n\tArguments: <anim name>\n", 0x00004008 )
+#else
 CON_COMMAND_F( testhudanim, "Test a hud element animation.\n\tArguments: <anim name>\n", FCVAR_CHEAT )
+#endif
 {
 	if ( args.ArgC() != 2 )
 	{

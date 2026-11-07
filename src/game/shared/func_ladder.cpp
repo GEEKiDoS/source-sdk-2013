@@ -10,7 +10,13 @@
 #include "tier0/memdbgon.h"
 
 #if !defined( CLIENT_DLL )
-/*static*/ ConVar sv_showladders( "sv_showladders", "0", 0, "Show bbox and dismount points for all ladders (must be set before level load.)\n" );
+/*static*/ ConVar sv_showladders( "sv_showladders", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "Show bbox and dismount points for all ladders (must be set before level load.)\n" );
 #endif
 
 CUtlVector< CFuncLadder * >	CFuncLadder::s_Ladders;

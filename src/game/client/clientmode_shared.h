@@ -88,6 +88,9 @@ public:
 	virtual int		KeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding );
 	virtual int		HudElementKeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding );
 	virtual void	OverrideMouseInput( float *x, float *y );
+#if defined( L4D2 )
+	virtual void OverrideJoystickInput( float *pitch, float *yaw );
+#endif
 	virtual void	StartMessageMode( int iMessageModeType );
 	virtual vgui::Panel *GetMessagePanel();
 

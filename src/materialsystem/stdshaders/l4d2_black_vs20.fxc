@@ -1,0 +1,55 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+#include "common_vs_fxc.h"
+
+// STATIC: "HARDWAREFOGBLEND" "0..1"
+// DYNAMIC: "SKINNING" "0..1"
+// DYNAMIC: "SCENEFOG" "0..1"
+
+const float3 g_FogColorPostTonemapLinearSpace : register( c48 );
+
+struct VS_INPUT
+{
+	float4 position : POSITION;
+	float4 boneWeights : BLENDWEIGHT;
+	float4 boneIndices : BLENDINDICES;
+};
+
+struct VS_OUTPUT
+{
+	float4 position : POSITION;
+#if HARDWAREFOGBLEND
+	float fog : FOG;
+#else
+	float4 color : TEXCOORD0;
+#endif
+};
+
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o;
+	float3 worldPos;
+	SkinPosition( SKINNING, v.position, v.boneWeights, v.boneIndices, worldPos );
+	o.position = mul( float4( worldPos, 1.0f ), cViewProj );
+
+	// Original black_vs20 uses XY range, squared vertex fog for ps20b,
+	// and unsaturated visibility for the fixed-function ps20 fog path.
+	// The target c16 stores visibility, not the original fog amount.
+#if HARDWAREFOGBLEND
+#if SCENEFOG
+	o.fog = max( cFogParams.z,
+		-length( worldPos.xy - cEyePos.xy ) * cFogParams.w + cFogParams.x );
+#else
+	o.fog = 1.0f;
+#endif
+#else
+#if SCENEFOG
+	float fogAmount = min( 1.0f - cFogParams.z,
+		saturate( length( worldPos.xy - cEyePos.xy ) * cFogParams.w + 1.0f - cFogParams.x ) );
+#else
+	float fogAmount = 0.0f;
+#endif
+	float squaredFog = fogAmount * fogAmount;
+	o.color = float4( g_FogColorPostTonemapLinearSpace * squaredFog, 1.0f );
+#endif
+	return o;
+}

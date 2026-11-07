@@ -92,12 +92,33 @@ const soundlevel_t AIS_DEF_SNDLVL 	 	= SNDLVL_TALKING;
 // An id that represents the core meaning of a spoken phrase, 
 // eventually to be mapped to a sentence group or scene
 
-typedef const char *AIConcept_t;
-
-inline bool CompareConcepts( AIConcept_t c1, AIConcept_t c2 ) 
+#if defined( L4D2 )
+// Native AI_Concept28B10/28AA0: existing speech APIs retain their public type
+// spelling, but now carry the native private-table symbol and criterion cache.
+class AI_Concept
 {
-	return ( (void *)c1 == (void *)c2 || ( c1 && c2 && Q_stricmp( c1, c2 ) == 0 ) );
+public:
+ AI_Concept() : m_Symbol( 0xFFFF ), m_iCriteriaIndex( -1 ) {}
+ AI_Concept( const char *name );
+ const char *GetStringConcept() const;
+ unsigned short GetSymbol() const { return m_Symbol; }
+ operator const char *() const { return GetStringConcept(); }
+ bool operator==( const AI_Concept &other ) const { return m_Symbol == other.m_Symbol; }
+ bool operator!=( const AI_Concept &other ) const { return !( *this == other ); }
+private:
+ unsigned short m_Symbol;
+ int m_iCriteriaIndex;
+};
+typedef AI_Concept AIConcept_t;
+inline bool CompareConcepts( AIConcept_t left, AIConcept_t right ) { return left == right; }
+bool IsAIConceptDebugExcluded( const AI_Concept &concept );
+#else
+typedef const char *AIConcept_t;
+inline bool CompareConcepts( AIConcept_t c1, AIConcept_t c2 )
+{
+ return ( (void *)c1 == (void *)c2 || ( c1 && c2 && Q_stricmp( c1, c2 ) == 0 ) );
 }
+#endif
 
 //-------------------------------------
 // Specifies and stores the base timing and attentuation values for concepts
@@ -145,7 +166,11 @@ class CAI_Expresser : public IResponseFilter
 {
 public:
 	CAI_Expresser( CBaseFlex *pOuter = NULL );
+#if defined( L4D2 )
+	virtual ~CAI_Expresser();
+#else
 	~CAI_Expresser();
+#endif
 
 	// --------------------------------
 	
@@ -157,10 +182,22 @@ public:
 	// --------------------------------
 	
 	bool Speak( AIConcept_t concept, const char *modifiers = NULL, char *pszOutResponseChosen = NULL, size_t bufsize = 0, IRecipientFilter *filter = NULL );
+#if defined( L4D2 )
+	void PrepareSpeechCriteria( AIConcept_t concept, AI_CriteriaSet &criteria, const char *modifiers );
+	void GatherSpeechCriteria( AI_CriteriaSet &criteria );
+	void GatherDerivedSpeechCriteria( AI_CriteriaSet &criteria );
+	bool FindResponseWithCriteria( AI_Response &response, AIConcept_t concept, AI_CriteriaSet &criteria );
+	bool SpeakWithCriteria( AIConcept_t concept, AI_CriteriaSet &criteria, char *chosen = NULL, size_t size = 0, IRecipientFilter *filter = NULL );
+	void ReleaseScriptReferences();
+#endif
 
 	// These two methods allow looking up a response and dispatching it to be two different steps
 	bool SpeakFindResponse( AI_Response &response, AIConcept_t concept, const char *modifiers = NULL );
+#if defined( L4D2 )
+	virtual bool SpeakDispatchResponse( AIConcept_t concept, AI_Response &response, IRecipientFilter *filter = NULL, const AI_CriteriaSet *queryCriteria = NULL );
+#else
 	bool SpeakDispatchResponse( AIConcept_t concept, AI_Response &response, IRecipientFilter *filter = NULL );
+#endif
 	float GetResponseDuration( AI_Response &response );
 
 	virtual int SpeakRawSentence( const char *pszSentence, float delay, float volume = VOL_NORM, soundlevel_t soundlevel = SNDLVL_TALKING, CBaseEntity *pListener = NULL );
@@ -241,7 +278,11 @@ private:
 	// --------------------------------
 	//
 public:
+#if defined( L4D2 )
+	virtual void SetOuter( CBaseFlex *pOuter );
+#else
 	virtual void SetOuter( CBaseFlex *pOuter )	{ m_pOuter = pOuter; }
+#endif
 
 	CBaseFlex *		GetOuter() 			{ return m_pOuter; }
 	const CBaseFlex *	GetOuter() const 	{ return m_pOuter; }
@@ -250,7 +291,20 @@ private:
 	CHandle<CBaseFlex>	m_pOuter;
 };
 
+#if defined( L4D2 )
+class CAI_ExpresserWithFollowup : public CAI_Expresser
+{
+public:
+	explicit CAI_ExpresserWithFollowup( CBaseFlex *outer = NULL );
+	virtual bool SpeakDispatchResponse( AIConcept_t concept, AI_Response &response,
+		IRecipientFilter *filter = NULL, const AI_CriteriaSet *queryCriteria = NULL ) OVERRIDE;
+};
+#endif
+#if defined( L4D2 )
+class CMultiplayer_Expresser : public CAI_ExpresserWithFollowup
+#else
 class CMultiplayer_Expresser : public CAI_Expresser
+#endif
 {
 public:
 	CMultiplayer_Expresser( CBaseFlex *pOuter = NULL );
@@ -265,6 +319,10 @@ private:
 	bool m_bAllowMultipleScenes;
 
 };
+
+#if defined( L4D2 )
+void HandleInputSpeakResponseConcept( CBaseEntity *speaker, CAI_Expresser *expresser, const inputdata_t &inputdata );
+#endif
 
 //-----------------------------------------------------------------------------
 //

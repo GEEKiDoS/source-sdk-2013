@@ -11,6 +11,9 @@
 #include "saverestore_stringtable.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "precache_register.h"
+#endif
 #include "tier0/memdbgon.h"
 
 //-----------------------------------------------------------------------------
@@ -29,7 +32,9 @@ END_SEND_TABLE();
 
 LINK_ENTITY_TO_CLASS( vgui_screen, CVGuiScreen );
 LINK_ENTITY_TO_CLASS( vgui_screen_team, CVGuiScreen );
+#ifndef L4D2
 PRECACHE_REGISTER( vgui_screen );
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -417,3 +422,20 @@ void DestroyVGuiScreen( CVGuiScreen *pVGuiScreen )
 		UTIL_Remove( pVGuiScreen );
 	}
 }
+
+// Native server 0x218b20; 0x5c2e88 is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace vgui_screenPrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "vgui_screen", 0x5c2e88 ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		handler->Precache( RESOURCETYPE_ENTITY, "vgui_screen", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
+#endif

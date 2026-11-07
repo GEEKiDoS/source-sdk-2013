@@ -11,6 +11,9 @@
 #include "toolframework_client.h"
 #include "particles/particles.h"
 #include "particle_parse.h"
+#if defined( L4D2 )
+#include "l4d2/effects/terror_particle_parse.h"
+#endif
 #include "rendertexture.h"
 
 #ifdef PORTAL
@@ -789,5 +792,9 @@ void CClientTools::ReloadParticleDefintions( const char *pFileName, const void *
 
 	// FIXME: Use file name to determine if we care about this data
 	CUtlBuffer buf( pBufData, nLen, CUtlBuffer::READ_ONLY );
+#if defined( L4D2 )
+	ReadTerrorParticleConfigFile( buf, true, true, pFileName );
+#else
 	g_pParticleSystemMgr->ReadParticleConfigFile( buf, true );
+#endif
 }

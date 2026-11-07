@@ -82,6 +82,9 @@ struct ragdollparams_t
 //-----------------------------------------------------------------------------
 // This hooks the main game systems callbacks to allow the AI system to manage memory
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#include "l4d2/effects/terror_ragdoll_retirement.h"
+#else
 class CRagdollLRURetirement : public CAutoGameSystemPerFrame
 {
 public:
@@ -109,6 +112,7 @@ private:
 	int m_iSimulatedRagdollCount;
 	int m_iRagdollCount;
 };
+#endif // L4D2 five-list retirement
 
 extern CRagdollLRURetirement s_RagdollLRU;
 

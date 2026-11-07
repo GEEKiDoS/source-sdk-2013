@@ -40,7 +40,13 @@ static void FovChanged_Callback( IConVar *pConVar, const char *pOldString, float
 	}
 }
 
-static ConVar fov_watcher( "_fov", "0", 0, "Automates fov command to server.", FovChanged_Callback );
+static ConVar fov_watcher( "_fov", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Automates fov command to server.", FovChanged_Callback );
 
 //-----------------------------------------------------------------------------
 // Purpose: Think

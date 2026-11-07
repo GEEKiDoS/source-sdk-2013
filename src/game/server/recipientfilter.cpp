@@ -341,7 +341,11 @@ CTeamRecipientFilter::CTeamRecipientFilter( int team, bool isReliable )
 		if ( pPlayer->GetTeamNumber() != team )
 		{
 			//If we're in the spectator team then we should be getting whatever messages the person I'm spectating gets.
-			if ( pPlayer->GetTeamNumber() == TEAM_SPECTATOR && (pPlayer->GetObserverMode() == OBS_MODE_IN_EYE || pPlayer->GetObserverMode() == OBS_MODE_CHASE || pPlayer->GetObserverMode() == OBS_MODE_POI) )
+			if ( pPlayer->GetTeamNumber() == TEAM_SPECTATOR && ( pPlayer->GetObserverMode() == OBS_MODE_IN_EYE || pPlayer->GetObserverMode() == OBS_MODE_CHASE
+#if !defined( L4D2 )
+				|| pPlayer->GetObserverMode() == OBS_MODE_POI
+#endif
+				) )
 			{
 				if ( pPlayer->GetObserverTarget() )
 				{
@@ -413,3 +417,5 @@ void CPASAttenuationFilter::Filter( const Vector& origin, float attenuation /*= 
 		RemoveRecipient( player );
 	}
 }
+
+#include "recipientfilter_console_server_callbacks.inc"

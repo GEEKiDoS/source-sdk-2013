@@ -21,6 +21,17 @@
 #include "util.h"
 #include "physics_impact_damage.h"
 #include "tier0/icommandline.h"
+#if defined( L4D2 )
+#include "nav_mesh.h"
+#include "l4d2/director/terror_director.h"
+#include "l4d2/director/director_survival_mode.h"
+#include "l4d2/director/director_scavenge_mode.h"
+#include "l4d2/nav/terror_nav_area.h"
+#include "l4d2/player/terrorplayer.h"
+#include "NextBot/NextBotInterface.h"
+#include "NextBot/NextBotBodyInterface.h"
+extern ConVar z_debug_breakables;
+#endif
 
 #ifdef PORTAL
 	#include "portal_shareddefs.h"
@@ -30,9 +41,23 @@
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+#if defined( L4D2 )
+IMPLEMENT_SERVERCLASS_ST( CBreakable, DT_Breakable )
+END_SEND_TABLE()
+#endif
 
-ConVar func_break_max_pieces( "func_break_max_pieces", "15", FCVAR_ARCHIVE | FCVAR_REPLICATED );
-ConVar func_break_reduction_factor( "func_break_reduction_factor", ".5" );
+ConVar func_break_max_pieces( "func_break_max_pieces", "15", 
+#if defined( L4D2 )
+	0x00002084
+#else
+	FCVAR_ARCHIVE | FCVAR_REPLICATED
+#endif
+ );
+ConVar func_break_reduction_factor( "func_break_reduction_factor", ".5"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 #ifdef HL1_DLL
 extern void PlayerPickupObject( CBasePlayer *pPlayer, CBaseEntity *pObject );
@@ -135,6 +160,9 @@ const char *pFGDPropData[] =
 
 LINK_ENTITY_TO_CLASS( func_breakable, CBreakable );
 BEGIN_DATADESC( CBreakable )
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_breakableType, FIELD_INTEGER, "BreakableType" ),
+#endif
 
 	DEFINE_FIELD( m_Material, FIELD_INTEGER ),
 	DEFINE_KEYFIELD( m_Explosion, FIELD_INTEGER, "explosion" ),
@@ -172,6 +200,9 @@ BEGIN_DATADESC( CBreakable )
 	DEFINE_FIELD( m_flDmgModBullet, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flDmgModClub, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flDmgModExplosive, FIELD_FLOAT ),
+#ifdef L4D2
+	DEFINE_FIELD( m_flDmgModFire, FIELD_FLOAT ),
+#endif
 	DEFINE_FIELD( m_iszPhysicsDamageTableName, FIELD_STRING ),
 	DEFINE_FIELD( m_iszBreakableModel, FIELD_STRING ),
 	DEFINE_FIELD( m_iBreakableSkin, FIELD_INTEGER ),
@@ -257,6 +288,9 @@ void CBreakable::Spawn( void )
 	m_flDmgModBullet = func_breakdmg_bullet.GetFloat();
 	m_flDmgModClub = func_breakdmg_club.GetFloat();
 	m_flDmgModExplosive = func_breakdmg_explosive.GetFloat();
+#ifdef L4D2
+	m_flDmgModFire = 1.0f;
+#endif
 
 	ParsePropData();
 
@@ -306,6 +340,9 @@ void CBreakable::Spawn( void )
 	CreateVPhysics();
 
 	ChangeTeam( m_nTeamNumber );
+#if defined( L4D2 )
+	InitializeTerrorNavAttributes();
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -822,6 +859,46 @@ void CBreakable::VPhysicsCollision( int index, gamevcollisionevent_t *pEvent )
 //-----------------------------------------------------------------------------
 int CBreakable::OnTakeDamage( const CTakeDamageInfo &info )
 {
+#if defined( L4D2 )
+	// SDD150: authored Tank/Mob restrictions precede filters and health damage.
+	if ( !z_debug_breakables.GetBool() )
+	{
+		CBaseEntity *attacker = info.GetAttacker();
+		if ( HasSpawnFlags( 0x1000 ) )
+		{
+			CBaseEntity *inflictor = info.GetInflictor();
+			if ( !attacker || !attacker->IsPlayer() || !inflictor ||
+				!( FClassnameIs( inflictor, "weapon_tank_claw" ) || FClassnameIs( inflictor, "tank_rock" ) ) )
+				return 0;
+		}
+		else if ( HasSpawnFlags( 0x2000 ) )
+		{
+			if ( !attacker || attacker->GetTeamNumber() != TEAM_INFECTED )
+				return 0;
+			INextBot *bot = dynamic_cast< INextBot * >( attacker );
+			if ( bot )
+			{
+				IBody *body = bot->GetBodyInterface();
+				if ( !body || body->IsActivity( ACT_RESET ) )
+					return 0;
+			}
+		}
+	}
+	if ( !TheDirector->IsFinale() && !TheDirector->GetSurvivalMode()->HasStarted() &&
+		!TheDirector->GetScavengeMode()->HasStarted() && info.GetAttacker() &&
+		info.GetAttacker()->GetTeamNumber() == TEAM_INFECTED )
+	{
+		TerrorNavArea *area = ToTerrorNavArea( TheNavMesh->GetNearestNavArea(
+			GetAbsOrigin(), false, 10000.0f, false, true, TEAM_UNASSIGNED ) );
+		if ( area && area->HasSpawnAttributes( TERROR_NAV_FINALE ) &&
+			!HasInteraction( PROPINTER_GAME_ONLY_BREAKABLE_BY_TANK ) )
+		{
+			CTerrorPlayer *attacker = ToTerrorPlayer( info.GetAttacker() );
+			if ( attacker && attacker->GetZombieClass() != 8 )
+				return 0;
+		}
+	}
+#endif
 	CTakeDamageInfo subInfo = info;
 
 	// If attacker can't do at least the min required damage to us, don't take any damage from them
@@ -922,6 +999,9 @@ void CBreakable::ResetOnGroundFlags(void)
 //-----------------------------------------------------------------------------
 void CBreakable::Die( void )
 {
+#if defined( L4D2 )
+	TheNavMesh->OnBreakableBroken( this ); // Native FIRST, before RNG, sound and break I/O.
+#endif
 	Vector vecVelocity;// shard velocity
 	char cFlag = 0;
 	int pitch;

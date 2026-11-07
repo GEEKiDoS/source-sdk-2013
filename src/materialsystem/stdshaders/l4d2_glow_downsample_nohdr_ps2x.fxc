@@ -1,0 +1,55 @@
+// Recovered native L4D2 programs, NOT the SDK2013 per-tap Shape implementation.
+// STATIC: "BLOOMTYPE" "0..1"
+// STATIC: "SRGB_ADAPTER" "0..1" [ps20b]
+// DYNAMIC: "FLOAT_BACK_BUFFER" "0..1" [ps20b]
+
+sampler2D TexSampler : register( s0 );
+float4 g_vBloomTint : register( c0 );
+float4 g_vBloomParams : register( c1 );
+
+struct PS_INPUT
+{
+	float2 coordTap0 : TEXCOORD0;
+	float2 coordTap1 : TEXCOORD1;
+	float2 coordTap2 : TEXCOORD2;
+	float2 coordTap3 : TEXCOORD3;
+};
+
+float3 SampleNativeDownsample( float2 uv )
+{
+	float3 color = tex2D( TexSampler, uv ).rgb;
+#if SRGB_ADAPTER
+	color = pow( color, 0.454545468f );
+#endif
+#if FLOAT_BACK_BUFFER
+	// The native ordering is adapter gamma first, then clamp and IEC sRGB.
+	color = saturate( color );
+	float3 low = color * 12.9200001f;
+	float3 high = pow( color, 0.416666657f ) * 1.05499995f - 0.0549999997f;
+	color = float3( color.r <= 0.00313080009f ? low.r : high.r,
+		color.g <= 0.00313080009f ? low.g : high.g,
+		color.b <= 0.00313080009f ? low.b : high.b );
+#endif
+	return color;
+}
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	float3 sum = SampleNativeDownsample( i.coordTap0 ) + SampleNativeDownsample( i.coordTap1 );
+	sum += SampleNativeDownsample( i.coordTap2 );
+	sum += SampleNativeDownsample( i.coordTap3 );
+	float3 average = sum * 0.25f;
+	float4 color;
+#if BLOOMTYPE == 0
+	color.rgb = pow( average, g_vBloomTint.w ) * dot( average, g_vBloomTint.rgb );
+#else
+	float3 shaped = saturate( min( sum * 0.387499988f - 0.0900000036f, 0.589999974f ) );
+	shaped = pow( shaped, g_vBloomParams.x );
+	color.rgb = lerp( dot( g_vBloomTint.rgb, shaped ), shaped, g_vBloomParams.y );
+#endif
+	color.a = dot( average, float3( 0.298999995f, 0.587000012f, 0.114f ) );
+#if SRGB_ADAPTER
+	color.rgb = pow( color.rgb, 2.20000005f );
+#endif
+	return color;
+}

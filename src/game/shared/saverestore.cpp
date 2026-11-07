@@ -2707,7 +2707,11 @@ void CEntitySaveRestoreBlockHandler::Restore( IRestore *pRestore, bool createPla
 			if ( pEntInfo->classname != NULL_STRING )
 			{
 				pent = CreateEntityByName( STRING(pEntInfo->classname) );
+#if defined( L4D2 )
+				pent->InitializeAsClientEntity( NULL, false );
+#else
 				pent->InitializeAsClientEntity( NULL, RENDER_GROUP_OPAQUE_ENTITY );
+#endif
 				
 				pRestore->SetReadPos( pEntInfo->location );
 

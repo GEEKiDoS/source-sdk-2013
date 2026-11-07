@@ -11,6 +11,7 @@
 #include "physics.h"
 #include "ndebugoverlay.h"
 #include "engine/IEngineSound.h"
+#include "l4d2/sound/terror_engine_sound_name.h"
 #include "physics_npc_solver.h"
 
 #ifdef HL1_DLL
@@ -374,7 +375,7 @@ void CBaseDoor::MovingSoundThink( void )
 	//Only loop sounds in HL1 to maintain HL2 behavior
 	if( ShouldLoopMoveSound() )
 	{
-		float duration = enginesound->GetSoundDuration( ep.m_pSoundName );
+		float duration = enginesound->GetSoundDuration( CTerrorEngineSoundName( ep.m_pSoundName ).Get() );
 		SetContextThink( &CBaseDoor::MovingSoundThink, gpGlobals->curtime + duration, "MovingSound" );
 	}
 }
@@ -544,6 +545,13 @@ void CBaseDoor::Precache( void )
 		UTIL_ValidateSoundName( m_NoiseArrived,		"RotDoorSound.DefaultArrive" );
 		UTIL_ValidateSoundName( m_ls.sLockedSound,	"RotDoorSound.DefaultLocked" );
 		UTIL_ValidateSoundName( m_ls.sUnlockedSound,"DoorSound.Null" );
+#if defined( L4D2 )
+		if ( CBaseEntity::IsPrecacheAllowed() )
+		{
+			PrecacheScriptSound( "WoodenDoor.Pound" );
+			PrecacheScriptSound( "CheckpointDoor.Pound" );
+		}
+#endif
 	}
 	else
 	{
@@ -1434,3 +1442,20 @@ void CRotDoor::SetToggleState( int state )
 	else
 		SetLocalAngles( m_vecAngle1 );
 }
+
+#if defined( L4D2 )
+extern ConVar sv_doors_push_players;
+
+bool CBaseDoor::CanPushEntity( CBaseEntity *other )
+{
+	if ( other->IsPlayer() )
+	{
+		CBasePlayer *player = ToBasePlayer( other );
+		// Native repeats the IsPlayer conversion. A cleared/wrong result has
+		// no native defined query; Ledger306 skips only that dependent veto.
+		if ( player && !player->IsBot() && !sv_doors_push_players.GetBool() )
+			return false;
+	}
+	return true;
+}
+#endif

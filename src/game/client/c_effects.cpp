@@ -22,18 +22,49 @@
 #include "collisionutils.h"
 #include "tier0/vprof.h"
 #include "viewrender.h"
+#if defined( L4D2 )
+#include "l4d2/effects/c_terror_precipitation_blocker.h"
+#include "raytrace.h"
+#include "particles_new.h"
+#include "particle_property.h"
+#include "particle_parse.h"
+#include "vphysics_interface.h"
+static void ClearPrecipitationRayEnvironments();
+extern ConVar r_RainParticleDensity;
+extern ConVar r_RainAllowInSplitScreen;
+extern ConVar r_RainDebugDuration;
+extern ConVar r_RainCheck;
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar	cl_winddir			( "cl_winddir", "0", FCVAR_CHEAT, "Weather effects wind direction angle" );
-ConVar	cl_windspeed		( "cl_windspeed", "0", FCVAR_CHEAT, "Weather effects wind speed scalar" );
+ConVar	cl_winddir			( "cl_winddir", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Weather effects wind direction angle" );
+ConVar	cl_windspeed		( "cl_windspeed", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Weather effects wind speed scalar" );
 
 Vector g_vSplashColor( 0.5, 0.5, 0.5 );
 float g_flSplashScale = 0.15;
 float g_flSplashLifetime = 0.5f;
 float g_flSplashAlpha = 0.3f;
-ConVar r_RainSplashPercentage( "r_RainSplashPercentage", "20", FCVAR_CHEAT ); // N% chance of a rain particle making a splash.
+ConVar r_RainSplashPercentage( "r_RainSplashPercentage", "20", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ ); // N% chance of a rain particle making a splash.
 
 
 float GUST_INTERVAL_MIN = 1;
@@ -45,20 +76,56 @@ float GUST_LIFETIME_MAX = 3;
 float MIN_SCREENSPACE_RAIN_WIDTH = 1;
 
 #ifndef _XBOX
-ConVar r_RainHack( "r_RainHack", "0", FCVAR_CHEAT );
-ConVar r_RainRadius( "r_RainRadius", "1500", FCVAR_CHEAT );
+ConVar r_RainHack( "r_RainHack", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar r_RainRadius( "r_RainRadius", "1500", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+#if defined( L4D2 )
+ConVar r_RainSideVel( "r_RainSideVel", "10", 0x4008, "How much sideways velocity rain gets." );
+#else
 ConVar r_RainSideVel( "r_RainSideVel", "130", FCVAR_CHEAT, "How much sideways velocity rain gets." );
+#endif
 
-ConVar r_RainSimulate( "r_RainSimulate", "1", FCVAR_CHEAT, "Enable/disable rain simulation." );
-ConVar r_DrawRain( "r_DrawRain", "1", FCVAR_CHEAT, "Enable/disable rain rendering." );
-ConVar r_RainProfile( "r_RainProfile", "0", FCVAR_CHEAT, "Enable/disable rain profiling." );
+ConVar r_RainSimulate( "r_RainSimulate", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Enable/disable rain simulation." );
+ConVar r_DrawRain( "r_DrawRain", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Enable/disable rain rendering." );
+ConVar r_RainProfile( "r_RainProfile", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Enable/disable rain profiling." );
 
 
 //Precahce the effects
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecachePrecipitation )
 CLIENTEFFECT_MATERIAL( "particle/rain" )
 CLIENTEFFECT_MATERIAL( "particle/snow" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 //-----------------------------------------------------------------------------
 // Precipitation particle type
@@ -73,8 +140,13 @@ public:
 	float	m_Mass;
 	float	m_Ramp;
 	
+#if defined( L4D2 )
+	float m_flMaxLifetime;
+	int m_nSplitScreenUser;
+#else
 	float	m_flCurLifetime;
 	float	m_flMaxLifetime;
+#endif
 };
 						  
 
@@ -113,6 +185,10 @@ class CPrecipitationEffect;
 friend class CClient_Precipitation::CPrecipitationEffect;
 
 public:
+#if defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return 1; }
+#endif
+
 	DECLARE_CLASS( CClient_Precipitation, C_BaseEntity );
 	DECLARE_CLIENTCLASS();
 	
@@ -121,6 +197,9 @@ public:
 
 	// Inherited from C_BaseEntity
 	virtual void Precache( );
+#if defined( L4D2 )
+	virtual datamap_t *GetDataDescMap() OVERRIDE { return NULL; } // Native primary17 C1EB2A0, not visibility.
+#endif
 
 	void Render();
 
@@ -143,7 +222,11 @@ private:
 	void EmitParticles( float fTimeDelta );
 	
 	// Computes where we're gonna emit
+#if defined( L4D2 )
+	bool ComputeEmissionArea( Vector &origin, Vector2D &size, C_BasePlayer *player );
+#else
 	bool ComputeEmissionArea( Vector& origin, Vector2D& size );
+#endif
 
 	// Gets the tracer width and speed
 	float GetWidth() const;
@@ -161,7 +244,9 @@ private:
 	bool SimulateSnow( CPrecipitationParticle* pParticle, float dt );
 
 	void CreateAshParticle( void );
+#if !defined( L4D2 )
 	void CreateRainOrSnowParticle( Vector vSpawnPosition, Vector vVelocity );
+#endif
 
 	// Information helpful in creating and rendering particles
 	IMaterial		*m_MatHandle;	// material used 
@@ -196,6 +281,9 @@ private:
 	Vector							m_vAshSpawnOrigin;
 
 	int								m_iAshCount;
+#if defined( L4D2 )
+#include "l4d2/effects/terror_precipitation_members.inc"
+#endif
 
 private:
 	CClient_Precipitation( const CClient_Precipitation & ); // not defined, not accessible
@@ -204,30 +292,159 @@ private:
 
 // Just receive the normal data table stuff
 IMPLEMENT_CLIENTCLASS_DT(CClient_Precipitation, DT_Precipitation, CPrecipitation)
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO( m_nPrecipType ) ),
+	RecvPropFloat( RECVINFO( m_minSpeed ) ),
+	RecvPropFloat( RECVINFO( m_maxSpeed ) ),
+#else
 	RecvPropInt( RECVINFO( m_nPrecipType ) )
+#endif
 END_RECV_TABLE()
-
-static ConVar r_SnowEnable( "r_SnowEnable", "1", FCVAR_CHEAT, "Snow Enable" );
-static ConVar r_SnowParticles( "r_SnowParticles", "500", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowInsideRadius( "r_SnowInsideRadius", "256", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowOutsideRadius( "r_SnowOutsideRadius", "1024", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowSpeedScale( "r_SnowSpeedScale", "1", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowPosScale( "r_SnowPosScale", "1", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowFallSpeed( "r_SnowFallSpeed", "1.5", FCVAR_CHEAT, "Snow fall speed scale." );
-static ConVar r_SnowWindScale( "r_SnowWindScale", "0.0035", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowDebugBox( "r_SnowDebugBox", "0", FCVAR_CHEAT, "Snow Debug Boxes." );
-static ConVar r_SnowZoomOffset( "r_SnowZoomOffset", "384.0f", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowZoomRadius( "r_SnowZoomRadius", "512.0f", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowStartAlpha( "r_SnowStartAlpha", "25", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowEndAlpha( "r_SnowEndAlpha", "255", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowColorRed( "r_SnowColorRed", "150", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowColorGreen( "r_SnowColorGreen", "175", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowColorBlue( "r_SnowColorBlue", "200", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowStartSize( "r_SnowStartSize", "1", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowEndSize( "r_SnowEndSize", "0", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowRayLength( "r_SnowRayLength", "8192.0f", FCVAR_CHEAT, "Snow." );
-static ConVar r_SnowRayRadius( "r_SnowRayRadius", "256", FCVAR_CHEAT, "Snow." );
+static ConVar r_SnowEnable( "r_SnowEnable", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow Enable" );
+static ConVar r_SnowParticles( "r_SnowParticles", "500", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowInsideRadius( "r_SnowInsideRadius", "256", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowOutsideRadius( "r_SnowOutsideRadius", "1024", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowSpeedScale( "r_SnowSpeedScale", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowPosScale( "r_SnowPosScale", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowFallSpeed( "r_SnowFallSpeed", "1.5", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow fall speed scale." );
+static ConVar r_SnowWindScale( "r_SnowWindScale", "0.0035", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowDebugBox( "r_SnowDebugBox", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow Debug Boxes." );
+static ConVar r_SnowZoomOffset( "r_SnowZoomOffset", "384.0f", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowZoomRadius( "r_SnowZoomRadius", "512.0f", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowStartAlpha( "r_SnowStartAlpha", "25", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowEndAlpha( "r_SnowEndAlpha", "255", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowColorRed( "r_SnowColorRed", "150", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowColorGreen( "r_SnowColorGreen", "175", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowColorBlue( "r_SnowColorBlue", "200", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowStartSize( "r_SnowStartSize", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowEndSize( "r_SnowEndSize", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowRayLength( "r_SnowRayLength", "8192.0f", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+static ConVar r_SnowRayRadius( "r_SnowRayRadius", "256", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Snow." );
+#if defined( L4D2 )
+static ConVar r_SnowRayEnable( "r_SnowRayEnable", "1", 0x00004008, "Snow." );
+#else
 static ConVar r_SnowRayEnable( "r_SnowRayEnable", "1", FCVAR_CHEAT, "Snow." );
+#endif
 
 void DrawPrecipitation()
 {
@@ -252,12 +469,38 @@ static bool IsInAir( const Vector& position )
 // Globals
 //-----------------------------------------------------------------------------
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar CClient_Precipitation::s_raindensity( "r_raindensity", "0.001", 0x4008, "" );
+#else
 ConVar CClient_Precipitation::s_raindensity( "r_raindensity","0.001", FCVAR_CHEAT);
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar CClient_Precipitation::s_rainwidth( "r_rainwidth", "0.5", 0x4008, "" );
+#else
 ConVar CClient_Precipitation::s_rainwidth( "r_rainwidth", "0.5", FCVAR_CHEAT );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar CClient_Precipitation::s_rainlength( "r_rainlength", "0.1f", 0x4008, "" );
+#else
 ConVar CClient_Precipitation::s_rainlength( "r_rainlength", "0.1f", FCVAR_CHEAT );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar CClient_Precipitation::s_rainspeed( "r_rainspeed", "600.0f", 0x4008, "" );
+#else
 ConVar CClient_Precipitation::s_rainspeed( "r_rainspeed", "600.0f", FCVAR_CHEAT );
-ConVar r_rainalpha( "r_rainalpha", "0.4", FCVAR_CHEAT );
+#endif
+ConVar r_rainalpha( "r_rainalpha", "0.4", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+#if defined( L4D2 )
+ConVar r_rainalphapow( "r_rainalphapow", "0.8", 0x00004008 );
+#else
 ConVar r_rainalphapow( "r_rainalphapow", "0.8", FCVAR_CHEAT );
+#endif
 
 
 Vector CClient_Precipitation::s_WindVector;		// Stores the wind speed vector
@@ -275,7 +518,11 @@ void CClient_Precipitation::OnDataChanged( DataUpdateType_t updateType )
 		}
 	}
 
+#if defined( L4D2 )
+	m_flDensity = static_cast< float >( GetRenderColor().a ) * 0.01f;
+#else
 	m_flDensity = RemapVal( m_clrRender->a, 0, 255, 0, 0.001 );
+#endif
 
 	BaseClass::OnDataChanged( updateType );
 }
@@ -325,7 +572,11 @@ inline bool CClient_Precipitation::SimulateRain( CPrecipitationParticle* pPartic
 	}
 
 		// No longer in the air? punt.
+#if defined( L4D2 )
+		if ( r_RainCheck.GetBool() && !IsInAir( pParticle->m_Pos ) )
+#else
 		if ( !IsInAir( pParticle->m_Pos ) )
+#endif
 		{
 			// Possibly make a splash if we hit a water surface and it's in front of the view.
 			if ( m_Splashes.Count() < 20 )
@@ -396,6 +647,13 @@ inline bool CClient_Precipitation::SimulateSnow( CPrecipitationParticle* pPartic
 
 void CClient_Precipitation::Simulate( float dt )
 {
+#if defined( L4D2 )
+	if ( static_cast< unsigned int >( m_nPrecipType ) > 3 )
+	{
+		SimulateParticlePrecipitation();
+		return;
+	}
+#endif
 	// NOTE: When client-side prechaching works, we need to remove this
 	Precache();
 
@@ -559,6 +817,9 @@ void CClient_Precipitation::CreateWaterSplashes()
 
 void CClient_Precipitation::Render()
 {
+#if defined( L4D2 )
+	if ( static_cast< unsigned int >( m_nPrecipType ) > 3 ) return;
+#endif
 	if ( !r_DrawRain.GetInt() )
 		return;
 
@@ -632,6 +893,12 @@ CClient_Precipitation::CClient_Precipitation() : m_Remainder(0.0f)
 	m_nPrecipType = PRECIPITATION_TYPE_RAIN;
 	m_MatHandle = INVALID_MATERIAL_HANDLE;
 	m_flHalfScreenWidth = 1;
+#if defined( L4D2 )
+	m_bParticleSlotInitialized = false;
+	m_flParticleInterval = -1.0f;
+	m_flParticleNextEvent = 0.0f;
+	// m_bParticlePrecipitationInitialized retains the native allocator zero.
+#endif
 	
 	g_Precipitations.AddToTail( this );
 }
@@ -718,7 +985,11 @@ inline float CClient_Precipitation::GetSpeed() const
 inline float CClient_Precipitation::GetRemainingLifetime( CPrecipitationParticle* pParticle ) const
 {
 	float timeSinceSpawn = gpGlobals->curtime - pParticle->m_SpawnTime;
+#if defined( L4D2 )
+	return pParticle->m_flMaxLifetime - timeSinceSpawn;
+#else
 	return m_Lifetime - timeSinceSpawn;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -741,6 +1012,7 @@ inline CPrecipitationParticle* CClient_Precipitation::CreateParticle()
 // Compute the emission area
 //-----------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 bool CClient_Precipitation::ComputeEmissionArea( Vector& origin, Vector2D& size )
 {
 	// FIXME: Compute the precipitation area based on computational power
@@ -793,6 +1065,7 @@ bool CClient_Precipitation::ComputeEmissionArea( Vector& origin, Vector2D& size 
 
 	return true;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1011,6 +1284,7 @@ void CClient_Precipitation::CreateAshParticle( void )
 		}
 	}
 
+#if !defined( L4D2 )
 void CClient_Precipitation::CreateRainOrSnowParticle( Vector vSpawnPosition, Vector vVelocity )
 {
 	// Create the particle
@@ -1095,6 +1369,7 @@ void CClient_Precipitation::EmitParticles( float fTimeDelta )
 		CreateRainOrSnowParticle( vParticlePos, vel );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1130,7 +1405,11 @@ public:
 		if ( r_RainHack.GetInt() )
 		{
 			CClient_Precipitation *pPrecipHackEnt = new CClient_Precipitation;
+#if defined( L4D2 )
+			pPrecipHackEnt->InitializeAsClientEntity( NULL, false );
+#else
 			pPrecipHackEnt->InitializeAsClientEntity( NULL, RENDER_GROUP_TRANSLUCENT_ENTITY );
+#endif
 			g_pPrecipHackEnt = pPrecipHackEnt;
 		}
 		m_bLevelInitted = true;
@@ -1143,6 +1422,9 @@ public:
 			g_pPrecipHackEnt->Release();
 		}
 		m_bLevelInitted = false;
+#if defined( L4D2 )
+		ClearPrecipitationRayEnvironments();
+#endif
 	}
 
 	virtual void Update( float frametime )
@@ -1195,12 +1477,18 @@ private:
 BEGIN_RECV_TABLE_NOBASE(CEnvWindShared, DT_EnvWindShared)
 	RecvPropInt		(RECVINFO(m_iMinWind)),
 	RecvPropInt		(RECVINFO(m_iMaxWind)),
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO( m_windRadius ) ),
+#endif
 	RecvPropInt		(RECVINFO(m_iMinGust)),
 	RecvPropInt		(RECVINFO(m_iMaxGust)),
 	RecvPropFloat	(RECVINFO(m_flMinGustDelay)),
 	RecvPropFloat	(RECVINFO(m_flMaxGustDelay)),
 	RecvPropInt		(RECVINFO(m_iGustDirChange)),
 	RecvPropInt		(RECVINFO(m_iWindSeed)),
+#if defined( L4D2 )
+	RecvPropVector( RECVINFO( m_location ) ),
+#endif
 	RecvPropInt		(RECVINFO(m_iInitialWindDir)),
 	RecvPropFloat	(RECVINFO(m_flInitialWindSpeed)),
 	RecvPropFloat	(RECVINFO(m_flStartTime)),
@@ -1326,7 +1614,11 @@ public:
 
 	virtual void	OnDataChanged( DataUpdateType_t updateType );
 	virtual bool	ShouldDraw( void );
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	virtual void	AddEntity( void );
+#endif
 
 	//Server-side
 	int		m_nDensity;
@@ -1359,6 +1651,9 @@ END_RECV_TABLE()
 C_Embers::C_Embers()
 {
 	m_pEmitter = CEmberEmitter::Create( "C_Embers" );
+#if defined( L4D2 )
+	AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 }
 
 C_Embers::~C_Embers()
@@ -1375,6 +1670,9 @@ void C_Embers::OnDataChanged( DataUpdateType_t updateType )
 
 		Start();
 	}
+#if defined( L4D2 )
+	if ( m_bEmit ) AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1400,6 +1698,7 @@ void C_Embers::Start( void )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_Embers::AddEntity( void ) 
 {
 	if ( m_bEmit == false )
@@ -1412,6 +1711,7 @@ void C_Embers::AddEntity( void )
 		SpawnEmber();
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1519,6 +1819,12 @@ int	C_QuadraticBeam::DrawModel( int )
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+struct SnowFallParticle : public SimpleParticle
+{
+	float m_minSpeed, m_maxSpeed;
+};
+#endif
 class SnowFallEffect : public CSimpleEmitter
 {
 public:
@@ -1531,6 +1837,19 @@ public:
 
 	void UpdateVelocity( SimpleParticle *pParticle, float timeDelta )
 	{
+#if defined( L4D2 )
+		SnowFallParticle *snow = static_cast< SnowFallParticle * >( pParticle );
+		const float speed = static_cast< float >( static_cast< double >( VectorNormalize( snow->m_vecVelocity ) ) - timeDelta );
+		snow->m_vecVelocity.x = static_cast< float >( static_cast< double >( RandomFloat( -0.025f, 0.025f ) ) + snow->m_vecVelocity.x );
+		snow->m_vecVelocity.y = static_cast< float >( static_cast< double >( RandomFloat( -0.025f, 0.025f ) ) + snow->m_vecVelocity.y );
+		VectorNormalize( snow->m_vecVelocity );
+		for ( int axis = 0; axis < 3; ++axis )
+			snow->m_vecVelocity[axis] = static_cast< float >( static_cast< double >( speed ) * snow->m_vecVelocity[axis] );
+		const Vector wind = GetWindspeedAtLocation( snow->m_Pos );
+		snow->m_vecVelocity += wind * r_SnowWindScale.GetFloat();
+		if ( snow->m_vecVelocity.z > snow->m_maxSpeed ) snow->m_vecVelocity.z = snow->m_maxSpeed;
+		else if ( snow->m_minSpeed > snow->m_vecVelocity.z ) snow->m_vecVelocity.z = snow->m_minSpeed;
+#else
 		float flSpeed = VectorNormalize( pParticle->m_vecVelocity );
 		flSpeed -= timeDelta;
 
@@ -1543,6 +1862,7 @@ public:
 		Vector vecWindVelocity;
 		GetWindspeedAtTime( gpGlobals->curtime, vecWindVelocity );
 		pParticle->m_vecVelocity += ( vecWindVelocity * r_SnowWindScale.GetFloat() );
+#endif
 	}
 
 	void SimulateParticles( CParticleSimulateIterator *pIterator )
@@ -1595,6 +1915,10 @@ private:
 class CSnowFallManager : public C_BaseEntity
 {
 public:
+#if defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return 0; }
+#endif
+
 
 	CSnowFallManager();
 	~CSnowFallManager();
@@ -1620,12 +1944,36 @@ private:
 
 	bool CreateSnowFallEmitter( void );
 	void CreateSnowFall( void );
+#if defined( L4D2 )
+	void CreateSnowFallParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale, C_BasePlayer *player );
+#else
 	void CreateSnowFallParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale );
+#endif
+#if defined( L4D2 )
+	void CreateOutsideVolumeSnowParticles( float flCurrentTime, float flRadius, float flZoomScale, C_BasePlayer *player );
+#else
 	void CreateOutsideVolumeSnowParticles( float flCurrentTime, float flRadius, float flZoomScale );
+#endif
+#if defined( L4D2 )
+	void CreateInsideVolumeSnowParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale, C_BasePlayer *player );
+#else
 	void CreateInsideVolumeSnowParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale );
+#endif
+#if defined( L4D2 )
+	void CreateSnowParticlesSphere( float flRadius, C_BasePlayer *player );
+#else
 	void CreateSnowParticlesSphere( float flRadius );
+#endif
+#if defined( L4D2 )
+	void CreateSnowParticlesRay( float flRadius, const Vector &vecEyePos, const Vector &vecForward, C_BasePlayer *player );
+#else
 	void CreateSnowParticlesRay( float flRadius, const Vector &vecEyePos, const Vector &vecForward );
+#endif
+#if defined( L4D2 )
+	void CreateSnowFallParticle( const Vector &vecParticleSpawn, int iBBox, C_BasePlayer *player );
+#else
 	void CreateSnowFallParticle( const Vector &vecParticleSpawn, int iBBox );
+#endif
 
 	int StandingInSnowVolume( Vector &vecPoint );
 	void FindSnowVolumes( Vector &vecCenter, float flRadius, Vector &vecEyePos, Vector &vecForward );
@@ -1975,7 +2323,11 @@ void CSnowFallManager::CreateSnowFall( void )
 	m_pSnowFallEmitter->SetSortOrigin( m_vecSnowFallEmitOrigin );
 
 	// Create snow fall particles.
+#if defined( L4D2 )
+	CreateSnowFallParticles( flCurrentTime, m_flSnowRadius, pPlayer->EyePosition(), vecForward, flZoomScale, pPlayer );
+#else
 	CreateSnowFallParticles( flCurrentTime, m_flSnowRadius, pPlayer->EyePosition(), vecForward, flZoomScale );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1986,17 +2338,29 @@ void CSnowFallManager::CreateSnowFall( void )
 //			&vecForward - 
 //			flZoomScale - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CSnowFallManager::CreateSnowFallParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale, C_BasePlayer *player )
+#else
 void CSnowFallManager::CreateSnowFallParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale )
+#endif
 		{
 	// Outside of a snow volume.
 	if ( m_iSnowFallArea == SNOWFALL_IN_ENTITY )
 	{
+#if defined( L4D2 )
+		CreateOutsideVolumeSnowParticles( flCurrentTime, flRadius, flZoomScale, player );
+#else
 		CreateOutsideVolumeSnowParticles( flCurrentTime, flRadius, flZoomScale );
+#endif
 	}
 	// Inside of a snow volume.
 	else
 	{
+#if defined( L4D2 )
+		CreateInsideVolumeSnowParticles( flCurrentTime, flRadius, vecEyePos, vecForward, flZoomScale, player );
+#else
 		CreateInsideVolumeSnowParticles( flCurrentTime, flRadius, vecEyePos, vecForward, flZoomScale );
+#endif
 	}
 }
 
@@ -2006,7 +2370,11 @@ void CSnowFallManager::CreateSnowFallParticles( float flCurrentTime, float flRad
 //			flRadius - 
 //			flZoomScale - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CSnowFallManager::CreateOutsideVolumeSnowParticles( float flCurrentTime, float flRadius, float flZoomScale, C_BasePlayer *player )
+#else
 void CSnowFallManager::CreateOutsideVolumeSnowParticles( float flCurrentTime, float flRadius, float flZoomScale )
+#endif
 {
 	Vector vecParticleSpawn;
 
@@ -2029,7 +2397,11 @@ void CSnowFallManager::CreateOutsideVolumeSnowParticles( float flCurrentTime, fl
 		float flDistance2 = ( m_vecSnowFallEmitOrigin - vecParticleSpawn ).LengthSqr();
 		if ( flDistance2 < flRadius2 )
 		{
+#if defined( L4D2 )
+			CreateSnowFallParticle( vecParticleSpawn, m_aActiveSnow[iSnow], player );
+#else
 			CreateSnowFallParticle( vecParticleSpawn, m_aActiveSnow[iSnow] );
+#endif
 		}
 
 		iSnow = ( iSnow + 1 ) % m_nActiveSnowCount;
@@ -2044,7 +2416,11 @@ void CSnowFallManager::CreateOutsideVolumeSnowParticles( float flCurrentTime, fl
 //			&vecForward - 
 //			flZoomScale - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CSnowFallManager::CreateInsideVolumeSnowParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale, C_BasePlayer *player )
+#else
 void CSnowFallManager::CreateInsideVolumeSnowParticles( float flCurrentTime, float flRadius, const Vector &vecEyePos, const Vector &vecForward, float flZoomScale )
+#endif
 {
 	Vector vecParticleSpawn;
 
@@ -2070,13 +2446,29 @@ void CSnowFallManager::CreateInsideVolumeSnowParticles( float flCurrentTime, flo
 		// Create particle inside of sphere.
 		if ( iIndex > 0 )
 		{
+#if defined( L4D2 )
+			CreateSnowParticlesSphere( flZoomRadius, player );
+#else
 			CreateSnowParticlesSphere( flZoomRadius );
+#endif
+#if defined( L4D2 )
+			CreateSnowParticlesRay( flZoomRadius, vecEyePos, vecForward, player );
+#else
 			CreateSnowParticlesRay( flZoomRadius, vecEyePos, vecForward );
+#endif
 		}
 		else
 		{
+#if defined( L4D2 )
+			CreateSnowParticlesSphere( flRadius, player );
+#else
 			CreateSnowParticlesSphere( flRadius );
+#endif
+#if defined( L4D2 )
+			CreateSnowParticlesRay( flRadius, vecEyePos, vecForward, player );
+#else
 			CreateSnowParticlesRay( flRadius, vecEyePos, vecForward );
+#endif
 		}
 
 		// Increment if zoomed.
@@ -2091,7 +2483,11 @@ void CSnowFallManager::CreateInsideVolumeSnowParticles( float flCurrentTime, flo
 // Purpose: 
 // Input  : flRadius - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CSnowFallManager::CreateSnowParticlesSphere( float flRadius, C_BasePlayer *player )
+#else
 void CSnowFallManager::CreateSnowParticlesSphere( float flRadius )
+#endif
 {
 	Vector vecParticleSpawn;
 
@@ -2115,7 +2511,11 @@ void CSnowFallManager::CreateSnowParticlesSphere( float flRadius )
 	if ( iSnow == m_nActiveSnowCount )
 		return;
 
+#if defined( L4D2 )
+	CreateSnowFallParticle( vecParticleSpawn, m_aActiveSnow[iSnow], player );
+#else
 	CreateSnowFallParticle( vecParticleSpawn, m_aActiveSnow[iSnow] );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -2123,7 +2523,11 @@ void CSnowFallManager::CreateSnowParticlesSphere( float flRadius )
 // Input  : &vecEyePos - 
 //			&vecForward - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CSnowFallManager::CreateSnowParticlesRay( float flRadius, const Vector &vecEyePos, const Vector &vecForward, C_BasePlayer *player )
+#else
 void CSnowFallManager::CreateSnowParticlesRay( float flRadius, const Vector &vecEyePos, const Vector &vecForward )
+#endif
 {
 	// Check to see if we should create particles along line-of-sight.
 	if ( !m_bRayParticles && r_SnowRayEnable.GetBool() )
@@ -2159,9 +2563,14 @@ void CSnowFallManager::CreateSnowParticlesRay( float flRadius, const Vector &vec
 	if ( iSnow == m_nActiveSnowCount )
 		return;
 
+#if defined( L4D2 )
+	CreateSnowFallParticle( vecParticleSpawn, m_aActiveSnow[iSnow], player );
+#else
 	CreateSnowFallParticle( vecParticleSpawn, m_aActiveSnow[iSnow] );
+#endif
 }
 
+#if !defined( L4D2 )
 void CSnowFallManager::CreateSnowFallParticle( const Vector &vecParticleSpawn, int iSnow )
 {	
 	SimpleParticle *pParticle = ( SimpleParticle* )m_pSnowFallEmitter->AddParticle( sizeof( SimpleParticle ), m_aSnow[iSnow].m_hMaterial, vecParticleSpawn );
@@ -2192,6 +2601,7 @@ void CSnowFallManager::CreateSnowFallParticle( const Vector &vecParticleSpawn, i
 
 	pParticle->m_iFlags			= SIMPLE_PARTICLE_FLAG_WINDBLOWN;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2202,7 +2612,11 @@ bool SnowFallManagerCreate( CClient_Precipitation *pSnowEntity )
 		{
 		s_pSnowFallMgr = new CSnowFallManager();
 		s_pSnowFallMgr->CreateEmitter();
+#if defined( L4D2 )
+		s_pSnowFallMgr->InitializeAsClientEntity( NULL, false );
+#else
 		s_pSnowFallMgr->InitializeAsClientEntity( NULL, RENDER_GROUP_OTHER );
+#endif
 		if ( !s_pSnowFallMgr )
 			return false;
 		}
@@ -2222,3 +2636,19 @@ void SnowFallManagerDestroy( void )
 		s_pSnowFallMgr = NULL;
 	}
 }
+#if defined( L4D2 )
+#include "l4d2/effects/terror_precipitation.inc"
+#include "l4d2/effects/terror_precipitation_legacy.inc"
+#endif
+
+#if defined( L4D2 )
+bool C_Embers::Simulate( void )
+{
+	if ( !m_bEmit )
+		return false;
+	float delta = gpGlobals->frametime;
+	while ( m_tParticleSpawn.NextEvent( delta ) )
+		SpawnEmber();
+	return true;
+}
+#endif

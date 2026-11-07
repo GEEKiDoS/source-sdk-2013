@@ -13,17 +13,47 @@
 #include "utldict.h"
 #include "filesystem.h"
 
+#include "base_playeranimstate_console_server_cvars.inc"
+
 
 #ifdef CLIENT_DLL
 	#include "c_baseplayer.h"
 	#include "engine/ivdebugoverlay.h"
 
+#ifdef L4D2
+	ConVar cl_showanimstate( "cl_showanimstate", "-1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Show the (client) animation state for the specified entity (-1 for none)." );
+#else
 	ConVar cl_showanimstate( "cl_showanimstate", "-1", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Show the (client) animation state for the specified entity (-1 for none)." );
-	ConVar showanimstate_log( "cl_showanimstate_log", "0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "1 to output cl_showanimstate to Msg(). 2 to store in AnimStateClient.log. 3 for both." );
+#endif
+	ConVar showanimstate_log( "cl_showanimstate_log", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000400A
+#else
+	FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY
+#endif
+, "1 to output cl_showanimstate to Msg(). 2 to store in AnimStateClient.log. 3 for both." );
 #else
 	#include "player.h"
-	ConVar sv_showanimstate( "sv_showanimstate", "-1", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Show the (server) animation state for the specified entity (-1 for none)." );
-	ConVar showanimstate_log( "sv_showanimstate_log", "0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "1 to output sv_showanimstate to Msg(). 2 to store in AnimStateServer.log. 3 for both." );
+	ConVar sv_showanimstate( "sv_showanimstate", "-1", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004006
+#else
+	FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY
+#endif
+, "Show the (server) animation state for the specified entity (-1 for none)." );
+	ConVar showanimstate_log( "sv_showanimstate_log", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004006
+#else
+	FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY
+#endif
+, "1 to output sv_showanimstate to Msg(). 2 to store in AnimStateServer.log. 3 for both." );
 #endif
 
 
@@ -39,17 +69,51 @@
 
 ConVar mp_feetyawrate( 
 	"mp_feetyawrate", 
-	"720", 
-	FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, 
+#if defined( L4D2 )
+	"180",
+#else
+	"720",
+#endif
+	
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, 
 	"How many degrees per second that we can turn our feet or upper body." );
 
 ConVar mp_facefronttime( 
 	"mp_facefronttime", 
-	"3", 
-	FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, 
+	
+#if defined( L4D2 )
+	"2"
+#else
+	"3"
+#endif
+, 
+	
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, 
 	"After this amount of time of standing in place but aiming to one side, go ahead and move feet to face upper body." );
 
-ConVar mp_ik( "mp_ik", "1", FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, "Use IK on in-place turns." );
+ConVar mp_ik( "mp_ik", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, "Use IK on in-place turns." );
 
 // Pose parameters stored for debugging.
 float g_flLastBodyPitch, g_flLastBodyYaw, m_flLastMoveYaw;

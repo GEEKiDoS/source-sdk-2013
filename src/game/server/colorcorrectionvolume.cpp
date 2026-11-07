@@ -48,7 +48,11 @@ public:
 
 private:
 
+#if defined( L4D2 )
+	CNetworkVar( bool, m_bEnabled );
+#else
 	bool		m_bEnabled;
+#endif
 	bool		m_bStartDisabled;
 
 	CNetworkVar( float, m_Weight );
@@ -61,7 +65,11 @@ private:
 	float		m_LastExitWeight;
 	float		m_LastExitTime;
 
+#if defined( L4D2 )
+	CNetworkVar( float, m_FadeDuration );
+#else
 	float		m_FadeDuration;
+#endif
 };
 
 LINK_ENTITY_TO_CLASS(color_correction_volume, CColorCorrectionVolume);
@@ -89,10 +97,19 @@ BEGIN_DATADESC( CColorCorrectionVolume )
 END_DATADESC()
 
 
+#if defined( L4D2 )
+IMPLEMENT_SERVERCLASS_ST( CColorCorrectionVolume, DT_ColorCorrectionVolume )
+	SendPropBool( SENDINFO( m_bEnabled ) ),
+	SendPropFloat( SENDINFO( m_MaxWeight ) ),
+	SendPropFloat( SENDINFO( m_FadeDuration ) ),
+	SendPropString( SENDINFO( m_lookupFilename ) ),
+END_SEND_TABLE()
+#else
 IMPLEMENT_SERVERCLASS_ST_NOBASE(CColorCorrectionVolume, DT_ColorCorrectionVolume)
 	SendPropFloat( SENDINFO(m_Weight) ),
 	SendPropString( SENDINFO(m_lookupFilename) ),
 END_SEND_TABLE()
+#endif
 
 
 CColorCorrectionVolume::CColorCorrectionVolume() : BaseClass()

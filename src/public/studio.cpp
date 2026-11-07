@@ -42,40 +42,80 @@ mstudioanimdesc_t &studiohdr_t::pAnimdesc( int i ) const
 // Purpose:
 //-----------------------------------------------------------------------------
 
+#if defined( L4D2 )
+byte *mstudioanimdesc_t::pAnimBlock( int block, int index ) const
+#else
 mstudioanim_t *mstudioanimdesc_t::pAnimBlock( int block, int index ) const
+#endif // L4D2
 {
 	if (block == -1)
 	{
+#if defined( L4D2 )
+		return NULL;
+#else
 		return (mstudioanim_t *)NULL;
+#endif // L4D2
 	}
 	if (block == 0)
 	{
+#if defined( L4D2 )
+		return ((byte *)this) + index;
+#else
 		return (mstudioanim_t *)(((byte *)this) + index);
+#endif // L4D2
 	}
 
 	byte *pAnimBlock = pStudiohdr()->GetAnimBlock( block );
 	if ( pAnimBlock )
 	{
+#if defined( L4D2 )
+		return pAnimBlock + index;
+#else
 		return (mstudioanim_t *)(pAnimBlock + index);
+#endif // L4D2
 	}
 
+#if defined( L4D2 )
+	return NULL;
+#else
 	return (mstudioanim_t *)NULL;
+#endif // L4D2
 }
 
 //-----------------------------------------------------------------------------
 // Purpose:
 //-----------------------------------------------------------------------------
 
-static ConVar mod_load_showstall( "mod_load_showstall", "0", 0, "1 - show hitches , 2 - show stalls" );
+static ConVar mod_load_showstall( "mod_load_showstall", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "1 - show hitches , 2 - show stalls" );
+#if defined( L4D2 )
+byte *mstudioanimdesc_t::pAnim( int *piFrame ) const
+#else
 mstudioanim_t *mstudioanimdesc_t::pAnim( int *piFrame ) const
+#endif // L4D2
 {
 	float flStall;
 	return pAnim( piFrame, flStall );
 }
 
+#if defined( L4D2 )
+byte *mstudioanimdesc_t::pAnim( int *piFrame, float &flStall ) const
+#else
 mstudioanim_t *mstudioanimdesc_t::pAnim( int *piFrame, float &flStall ) const
+#endif // L4D2
 {
+#if defined( L4D2 )
+	byte *panim = NULL;
+#else
 	mstudioanim_t *panim = NULL;
+#endif // L4D2
 
 	int block = animblock;
 	int index = animindex;
@@ -178,6 +218,13 @@ mstudioanim_t *mstudioanimdesc_t::pAnim( int *piFrame, float &flStall ) const
 
 mstudioikrule_t *mstudioanimdesc_t::pIKRule( int i ) const
 {
+#if defined( L4D2 )
+	if (numikrules == 0)
+	{
+		return NULL;
+	}
+
+#endif // L4D2
 	if (ikruleindex)
 	{
 		return (mstudioikrule_t *)(((byte *)this) + ikruleindex) + i;

@@ -17,7 +17,7 @@
 #include "engine/ivdebugoverlay.h"
 
 #if CSTRIKE_DLL
-#include "c_cs_player.h"
+#include "l4d2/player/c_cs_player.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!

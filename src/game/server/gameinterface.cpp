@@ -28,6 +28,10 @@
 #include "movehelper_server.h"
 #include "networkstringtable_gamedll.h"
 #include "filesystem.h"
+#if defined( L4D2 ) && defined( _WIN64 )
+#include "l4d2/bsp21/bsp21_adapter.h"
+#include "tier1/strtools.h"
+#endif
 #include "func_areaportalwindow.h"
 #include "igamesystem.h"
 #include "init_factory.h"
@@ -71,11 +75,22 @@
 #ifdef _WIN32
 #include "ienginevgui.h"
 #endif
+#if defined( L4D2 ) && defined( SERVER_USES_VGUI )
+#include "l4d2/nav/vgui_gamedll_int.h"
+#include "IGameUIFuncs.h"
+#endif
 #include "ragdoll_shared.h"
 #include "toolframework/iserverenginetools.h"
 #include "sceneentity.h"
 #include "appframework/IAppSystemGroup.h"
+#if defined( L4D2 )
+#include "l4d2/content/terror_scene_file_cache.h"
+#include "precache_register.h"
+#include "l4d2/vscript/terror_script_globals.h"
+#include "l4d2/gamerules/terror_mode.h"
+#else
 #include "scenefilecache/ISceneFileCache.h"
+#endif
 #include "tier2/tier2.h"
 #include "particles/particles.h"
 #include "gamestats.h"
@@ -132,7 +147,9 @@ extern ConVar tf_mm_servermode;
 extern IToolFrameworkServer *g_pToolFrameworkServer;
 extern IParticleSystemQuery *g_pParticleSystemQuery;
 
+#if !defined( L4D2 )
 extern ConVar commentary;
+#endif
 
 #ifndef NO_STEAM
 // this context is not available on dedicated servers
@@ -148,7 +165,14 @@ CSteamGameServerAPIContext *steamgameserverapicontext = &s_SteamGameServerAPICon
 
 IUploadGameStats *gamestatsuploader = NULL;
 
+#ifdef L4D2
+#include "l4d2/director/terror_director.h"
+#include "l4d2/director/zombiemanager.h"
+#include "l4d2/ui/instructor/tutor.h"
+#endif
+
 // memdbgon must be the last include file in a .cpp file!!!
+#include "gameinterface_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 CTimedEventMgr g_NetworkPropertyEventMgr;
@@ -179,7 +203,9 @@ IVDebugOverlay * debugoverlay = NULL;
 ISoundEmitterSystemBase *soundemitterbase = NULL;
 IServerPluginHelpers *serverpluginhelpers = NULL;
 IServerEngineTools *serverenginetools = NULL;
+#if !defined( L4D2 )
 ISceneFileCache *scenefilecache = NULL;
+#endif
 IXboxSystem *xboxsystem = NULL;	// Xbox 360 only
 IMatchmaking *matchmaking = NULL;	// Xbox 360 only
 IScriptManager *scriptmanager = NULL;
@@ -203,10 +229,26 @@ static ConVar s_UseNetworkVars( "UseNetworkVars", "1", FCVAR_CHEAT, "For profili
 #endif
 
 extern ConVar sv_noclipduringpause;
-ConVar sv_massreport( "sv_massreport", "0" );
-ConVar sv_force_transmit_ents( "sv_force_transmit_ents", "0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Will transmit all entities to client, regardless of PVS conditions (will still skip based on transmit flags, however)." );
+ConVar sv_massreport( "sv_massreport", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar sv_force_transmit_ents( "sv_force_transmit_ents", "0", 
+#if defined( L4D2 )
+	0x00004006
+#else
+	FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY
+#endif
+, "Will transmit all entities to client, regardless of PVS conditions (will still skip based on transmit flags, however)." );
 
-ConVar sv_autosave( "sv_autosave", "1", 0, "Set to 1 to autosave game on level transition. Does not affect autosave triggers." );
+ConVar sv_autosave( "sv_autosave", "1", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Set to 1 to autosave game on level transition. Does not affect autosave triggers." );
 ConVar *sv_maxreplay = NULL;
 static ConVar  *g_pcv_commentary = NULL;
 static ConVar *g_pcv_ThreadMode = NULL;
@@ -236,8 +278,12 @@ static int		g_nCommandClientIndex = 0;
 // The chapter number of the current
 static int		g_nCurrentChapterIndex = -1;
 
-#ifdef _DEBUG
+#if defined( _DEBUG ) || defined( L4D2 )
+#if defined( L4D2 )
+static ConVar sv_showhitboxes( "sv_showhitboxes", "-1", 0x00004004, "Send server-side hitboxes for specified entity to client (NOTE:  this uses lots of bandwidth, use on listen server only)." );
+#else
 static ConVar sv_showhitboxes( "sv_showhitboxes", "-1", FCVAR_CHEAT, "Send server-side hitboxes for specified entity to client (NOTE:  this uses lots of bandwidth, use on listen server only)." );
+#endif
 #endif
 
 void PrecachePointTemplates();
@@ -270,7 +316,11 @@ void ClientPutInServerOverride( ClientPutInServerOverrideFn fn )
 	g_pClientPutInServerOverride = fn;
 }
 
-ConVar ai_post_frame_navigation( "ai_post_frame_navigation", "0" );
+ConVar ai_post_frame_navigation( "ai_post_frame_navigation", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 class CPostFrameNavigationHook;
 extern CPostFrameNavigationHook *PostFrameNavigationSystem( void );
 
@@ -438,6 +488,7 @@ void DrawAllDebugOverlays( void )
 	// --------------------------------------------------------
 	UTIL_DrawOverlayLines();
 
+#if !defined( L4D2 )
 	// ------------------------------------------------------------------------
 	// If in wc_edit mode draw a box to highlight which node I'm looking at
 	// ------------------------------------------------------------------------
@@ -515,6 +566,7 @@ void DrawAllDebugOverlays( void )
 	{
 		g_pAINetworkManager->GetEditOps()->DrawAINetworkOverlay();
 	}
+#endif // !L4D2
 
 	// PERFORMANCE: only do this in developer mode
 	if ( g_pDeveloper->GetInt() && !engine->IsDedicatedServer() )
@@ -566,6 +618,10 @@ EXPOSE_SINGLE_INTERFACE_GLOBALVAR(CServerGameDLL, IServerGameDLL, INTERFACEVERSI
 // When bumping the version to this interface, check that our assumption is still valid and expose the older version in the same way
 COMPILE_TIME_ASSERT( INTERFACEVERSION_SERVERGAMEDLL_INT == 12 );
 
+#if defined( L4D2 )
+bool g_bTerrorPressDemo;
+#endif
+
 bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory, 
 		CreateInterfaceFn physicsFactory, CreateInterfaceFn fileSystemFactory, 
 		CGlobalVars *pGlobals)
@@ -573,6 +629,10 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 	ConnectTier1Libraries( &appSystemFactory, 1 );
 	ConnectTier2Libraries( &appSystemFactory, 1 );
 	ConnectTier3Libraries( &appSystemFactory, 1 );
+#if defined( L4D2 )
+	if ( CommandLine()->FindParm( "-pressdemo" ) )
+		g_bTerrorPressDemo = true;
+#endif
 
 	// Connected in ConnectTier1Libraries
 	if ( cvar == NULL )
@@ -618,8 +678,13 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 		return false;
 	if ( (serverpluginhelpers = (IServerPluginHelpers *)appSystemFactory(INTERFACEVERSION_ISERVERPLUGINHELPERS, NULL)) == NULL )
 		return false;
+#if defined( L4D2 )
+	if ( !scenefilecache->Init() )
+		return false;
+#else
 	if ( (scenefilecache = (ISceneFileCache *)appSystemFactory( SCENE_FILE_CACHE_INTERFACE_VERSION, NULL )) == NULL )
 		return false;
+#endif
 	if ( IsX360() && (xboxsystem = (IXboxSystem *)appSystemFactory( XBOXSYSTEM_INTERFACE_VERSION, NULL )) == NULL )
 		return false;
 	if ( IsX360() && (matchmaking = (IMatchmaking *)appSystemFactory( VENGINE_MATCHMAKING_VERSION, NULL )) == NULL )
@@ -633,9 +698,17 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 	// If not running dedicated, grab the engine vgui interface
 	if ( !engine->IsDedicatedServer() )
 	{
+#if defined( L4D2 ) && defined( SERVER_USES_VGUI )
+		// NativeF1580: engine GUI, optional tools, then optional bind interface.
+		if ( ( enginevgui = static_cast< IEngineVGui * >( appSystemFactory( VENGINE_VGUI_VERSION, NULL ) ) ) == NULL )
+			return false;
+#endif
 #ifdef _WIN32
 		// This interface is optional, and is only valid when running with -tools
 		serverenginetools = ( IServerEngineTools * )appSystemFactory( VSERVERENGINETOOLS_INTERFACE_VERSION, NULL );
+#endif
+#if defined( L4D2 ) && defined( SERVER_USES_VGUI )
+		gameuifuncs = static_cast< IGameUIFuncs * >( appSystemFactory( VENGINE_GAMEUIFUNCS_VERSION, NULL ) );
 #endif
 	}
 
@@ -657,8 +730,35 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 	factories.physicsFactory = physicsFactory;
 	FactoryList_Store( factories );
 
+#if defined( L4D2 ) && defined( _WIN64 )
+	// SDK Host_Init (engine RVA 1A1700) initializes the server before the
+	// client. Correct mounted VPK reads before either module loads missions.
+	if ( !L4D2_BSP21Install() )
+	{
+		Warning( "BSP21: engine/filesystem reader installation rejected.\n" );
+		return false;
+	}
+	struct Bsp21InitRollback
+	{
+		bool committed;
+		Bsp21InitRollback() : committed( false ) {}
+		~Bsp21InitRollback()
+		{
+			if ( !committed && !L4D2_BSP21Remove() )
+				Plat_FatalError( "BSP21: failed DLLInit cannot release reader ownership\n" );
+		}
+	} bsp21Init;
+#endif
+
 	// load used game events  
 	gameeventmanager->LoadEventsFromFile("resource/gameevents.res");
+#ifdef L4D2
+	m_bApplyGameSettingsOnLevelInit = false;
+	// Native MatchExt metadata exists before InitializeCvars applies + values.
+	if ( !g_TerrorModes.Init() )
+		return false;
+#endif
+
 
 	// init the cvar list first in case inits want to reference them
 	InitializeCvars();
@@ -681,7 +781,9 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 
 	g_pGameSaveRestoreBlockSet->AddBlockHandler( GetEntitySaveRestoreBlockHandler() );
 	g_pGameSaveRestoreBlockSet->AddBlockHandler( GetPhysSaveRestoreBlockHandler() );
+#if !defined( L4D2 )
 	g_pGameSaveRestoreBlockSet->AddBlockHandler( GetAISaveRestoreBlockHandler() );
+#endif
 	g_pGameSaveRestoreBlockSet->AddBlockHandler( GetTemplateSaveRestoreBlockHandler() );
 	g_pGameSaveRestoreBlockSet->AddBlockHandler( GetDefaultResponseSystemSaveRestoreBlockHandler() );
 	g_pGameSaveRestoreBlockSet->AddBlockHandler( GetCommentarySaveRestoreBlockHandler() );
@@ -693,9 +795,14 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 
 	// Physics must occur before the sound envelope manager
 	IGameSystem::Add( PhysicsGameSystem() );
+#ifdef L4D2
+	IGameSystem::Add( PrecacheRegisterSystem() );
+#endif
 	
+#if !defined( L4D2 )
 	// Used to service deferred navigation queries for NPCs
 	IGameSystem::Add( (IGameSystem *) PostFrameNavigationSystem() );
+#endif
 
 	// Add game log system
 	IGameSystem::Add( GameLogSystem() );
@@ -706,8 +813,18 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 	// Add sound emitter
 	IGameSystem::Add( SoundEmitterSystem() );
 
+#if defined( L4D2 ) && defined( SERVER_USES_VGUI )
+	// NativeED800 ->218A50: before ModEvents and InitAllSystems.
+	if ( enginevgui && !VGui_GameDLL_Init() )
+		return false;
+#endif
+
 	// load Mod specific game events ( MUST be before InitAllSystems() so it can pickup the mod specific events)
 	gameeventmanager->LoadEventsFromFile("resource/ModEvents.res");
+#ifdef L4D2
+	// Native100ED877 creates the actual manager before InitAllSystems/Director.
+	CreateZombieManager();
+#endif
 
 #ifdef CSTRIKE_DLL // BOTPORT: TODO: move these ifdefs out
 	InstallBotControl();
@@ -734,6 +851,12 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 
 	// try to get debug overlay, may be NULL if on HLDS
 	debugoverlay = (IVDebugOverlay *)appSystemFactory( VDEBUG_OVERLAY_INTERFACE_VERSION, NULL );
+#ifdef L4D2
+	// Native100ED800 publishes after construction, before Init and NAV creation.
+	TheDirector = new CDirector;
+	TheDirector->Init();
+#endif
+
 
 #ifndef _XBOX
 #ifdef USE_NAV_MESH
@@ -741,8 +864,15 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
 	TheNavMesh = NavMeshFactory();
 #endif
 
+#if defined( L4D2 )
+	ResetTutorLessons();
+#endif
 	// init the gamestatsupload connection
 	gamestatsuploader->InitConnection();
+#endif
+
+#if defined( L4D2 ) && defined( _WIN64 )
+	bsp21Init.committed = true;
 #endif
 
 	return true;
@@ -764,7 +894,9 @@ void CServerGameDLL::DLLShutdown( void )
 	g_pGameSaveRestoreBlockSet->RemoveBlockHandler( GetEventQueueSaveRestoreBlockHandler() );
 	g_pGameSaveRestoreBlockSet->RemoveBlockHandler( GetDefaultResponseSystemSaveRestoreBlockHandler() );
 	g_pGameSaveRestoreBlockSet->RemoveBlockHandler( GetTemplateSaveRestoreBlockHandler() );
+#if !defined( L4D2 )
 	g_pGameSaveRestoreBlockSet->RemoveBlockHandler( GetAISaveRestoreBlockHandler() );
+#endif
 	g_pGameSaveRestoreBlockSet->RemoveBlockHandler( GetPhysSaveRestoreBlockHandler() );
 	g_pGameSaveRestoreBlockSet->RemoveBlockHandler( GetEntitySaveRestoreBlockHandler() );
 
@@ -776,10 +908,19 @@ void CServerGameDLL::DLLShutdown( void )
 	g_TextStatsMgr.WriteFile( filesystem );
 
 	IGameSystem::ShutdownAllSystems();
+#if defined( L4D2 ) && defined( SERVER_USES_VGUI )
+	// NativeEF0F0 ->218AF0: one frame before actual Director/NAV destruction.
+	if ( enginevgui ) VGui_GameDLL_Shutdown();
+#endif
 
 #ifdef CSTRIKE_DLL // BOTPORT: TODO: move these ifdefs out
 	RemoveBotControl();
 #endif
+#ifdef L4D2
+	DestroyZombieManager();
+	delete TheDirector;
+#endif
+
 
 #ifndef _XBOX
 #ifdef USE_NAV_MESH
@@ -801,6 +942,13 @@ void CServerGameDLL::DLLShutdown( void )
 
 	gameeventmanager = NULL;
 	
+#if defined( L4D2 )
+	scenefilecache->Shutdown();
+#endif
+#if defined( L4D2 ) && defined( _WIN64 )
+	if ( !L4D2_BSP21Remove() )
+		Plat_FatalError( "BSP21: shutdown could not drain/restore native readers; refusing DLL unload.\n" );
+#endif
 	DisconnectTier3Libraries();
 	DisconnectTier2Libraries();
 	ConVar_Unregister();
@@ -828,7 +976,11 @@ bool CServerGameDLL::ReplayInit( CreateInterfaceFn fnReplayFactory )
 //-----------------------------------------------------------------------------
 float CServerGameDLL::GetTickInterval( void ) const
 {
+#if defined( L4D2 )
+	float tickinterval = 1.0f / 30.0f;
+#else
 	float tickinterval = DEFAULT_TICK_INTERVAL;
+#endif
 
 //=============================================================================
 // HPE_BEGIN:
@@ -858,6 +1010,11 @@ bool CServerGameDLL::GameInit( void )
 	engine->ServerCommand( "exec game.cfg\n" );
 	engine->ServerExecute( );
 	CBaseEntity::sm_bAccurateTriggerBboxChecks = true;
+#ifdef L4D2
+	TheDirector->BeginGameSession();
+	// GameInit, unlike LevelInit, is not called for changelevel/changelevel2.
+	m_bApplyGameSettingsOnLevelInit = true;
+#endif
 
 	IGameEvent *event = gameeventmanager->CreateEvent( "game_init" );
 	if ( event )
@@ -872,6 +1029,9 @@ bool CServerGameDLL::GameInit( void )
 // NOT on level transitions within a game
 void CServerGameDLL::GameShutdown( void )
 {
+#ifdef L4D2
+	TheDirector->OnNewGameSession(); // Native GameShutdown FIRST, before reset.
+#endif
 	ResetGlobalState();
 }
 
@@ -959,6 +1119,17 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities, 
 	VPROF("CServerGameDLL::LevelInit");
 
 	g_flServerCurTime = gpGlobals->curtime;
+#ifdef L4D2
+	// SDK engine-gap adaptation: native ExecGameTypeCfg is a new-game
+	// ingress, not another mode delivery during a level transition.
+	if ( background || m_bApplyGameSettingsOnLevelInit )
+	{
+		m_bApplyGameSettingsOnLevelInit = false;
+		KeyValues::AutoDelete settings( "::ExecGameTypeCfg" );
+		settings->SetString( "map/mapname", pMapName );
+		ApplyGameSettings( settings, background );
+	}
+#endif
 
 #ifdef USES_ECON_ITEMS
 	GameItemSchema_t *pItemSchema = ItemSystem()->GetItemSchema();
@@ -1139,7 +1310,9 @@ void CServerGameDLL::ServerActivate( edict_t *pEdictList, int edictCount, int cl
 #ifdef USE_NAV_MESH
 	// load the Navigation Mesh for this map
 	TheNavMesh->Load();
+#if !defined( L4D2 )
 	TheNavMesh->OnServerActivate();
+#endif
 #endif
 #endif
 
@@ -1149,6 +1322,9 @@ void CServerGameDLL::ServerActivate( edict_t *pEdictList, int edictCount, int cl
 
 #ifdef NEXT_BOT
 	TheNextBots().OnMapLoaded();
+#endif
+#ifdef L4D2
+	TheDirector->OnLevelChangeComplete(); // Native last phase, after NAV/NextBot.
 #endif
 }
 
@@ -1192,11 +1368,20 @@ void CServerGameDLL::GameServerSteamAPIShutdown( void )
 //-----------------------------------------------------------------------------
 // Purpose: Called at the start of every game frame
 //-----------------------------------------------------------------------------
-ConVar  trace_report( "trace_report", "0" );
+ConVar  trace_report( "trace_report", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 void CServerGameDLL::GameFrame( bool simulating )
 {
 	VPROF( "CServerGameDLL::GameFrame" );
+#if defined( L4D2 )
+	// The SDK has no post-client-message callback. Retire only the prefix
+	// marked for the previous send, before any restore or simulation exit.
+	gEntList.ClearNoInterpList();
+#endif
 
 	// Don't run frames until fully restored
 	if ( g_InRestore )
@@ -1232,6 +1417,9 @@ void CServerGameDLL::GameFrame( bool simulating )
 
 	IGameSystem::FrameUpdatePreEntityThinkAllSystems();
 	GameStartFrame();
+#ifdef L4D2
+	TheDirector->UpdateProviders(); // Native2741C0, admission/freeze gate before NAV.
+#endif
 
 #ifndef _XBOX
 #ifdef USE_NAV_MESH
@@ -1297,6 +1485,18 @@ void CServerGameDLL::GameFrame( bool simulating )
 //-----------------------------------------------------------------------------
 void CServerGameDLL::PreClientUpdate( bool simulating )
 {
+#if defined( L4D2 )
+	// Include all snapshot preparation, including the early-return paths.
+	// A later request must wait for a later send, even on catch-up ticks.
+	class CNoInterpListSnapshotMark
+	{
+	public:
+		~CNoInterpListSnapshotMark()
+		{
+			gEntList.MarkNoInterpListForClear();
+		}
+	} noInterpListSnapshotMark;
+#endif
 	if ( !simulating )
 		return;
 
@@ -1313,7 +1513,7 @@ void CServerGameDLL::PreClientUpdate( bool simulating )
 	
 	IGameSystem::PreClientUpdateAllSystems();
 
-#ifdef _DEBUG
+#if defined( _DEBUG ) || defined( L4D2 )
 	if ( sv_showhitboxes.GetInt() == -1 )
 		return;
 
@@ -1393,8 +1593,10 @@ void CServerGameDLL::LevelShutdown( void )
 	CSoundEnt::ShutdownSoundEnt();
 
 	gEntList.Clear();
-
 	InvalidateQueryCache();
+#ifdef L4D2
+	TheDirector->StopLocalScript(); // Native266940: after query-cache invalidation, before VM teardown.
+#endif
 
 	IGameSystem::LevelShutdownPostEntityAllSystems();
 
@@ -1445,6 +1647,9 @@ void CServerGameDLL::CreateNetworkStringTables( void )
 	g_pStringTableVguiScreen = networkstringtable->CreateStringTable( "VguiScreen", MAX_VGUI_SCREEN_STRINGS );
 	g_pStringTableMaterials = networkstringtable->CreateStringTable( "Materials", MAX_MATERIAL_STRINGS );
 	g_pStringTableInfoPanel = networkstringtable->CreateStringTable( "InfoPanel", MAX_INFOPANEL_STRINGS );
+#if defined( L4D2 )
+	networkstringtable->CreateStringTable( "MeleeWeapons", 16 );
+#endif
 	g_pStringTableClientSideChoreoScenes = networkstringtable->CreateStringTable( "Scenes", MAX_CHOREO_SCENES_STRINGS );
 	g_pStringTableServerMapCycle = networkstringtable->CreateStringTable( "ServerMapCycle", 128 );
 
@@ -1578,11 +1783,15 @@ int	CServerGameDLL::CreateEntityTransitionList( CSaveRestoreData *s, int a)
 	if ( movedCount )
 	{
 		g_pGameSaveRestoreBlockSet->CallBlockHandlerRestore( GetPhysSaveRestoreBlockHandler(), base, &restoreHelper, false );
+#if !defined( L4D2 )
 		g_pGameSaveRestoreBlockSet->CallBlockHandlerRestore( GetAISaveRestoreBlockHandler(), base, &restoreHelper, false );
+#endif
 	}
 
 	GetPhysSaveRestoreBlockHandler()->PostRestore();
+#if !defined( L4D2 )
 	GetAISaveRestoreBlockHandler()->PostRestore();
+#endif
 
 	return movedCount;
 }
@@ -1846,8 +2055,10 @@ bool CServerGameDLL::ShouldHideServer( void )
 	if ( g_pcv_commentary && g_pcv_commentary->GetBool() )
 		return true;
 
+#if !defined( L4D2 )
 	if ( g_pcv_hideServer && g_pcv_hideServer->GetBool() )
 		return true;
+#endif
 
 	if ( gpGlobals->eLoadType == MapLoad_Background )
 		return true;
@@ -1922,6 +2133,46 @@ const char *CServerGameDLL::GetServerBrowserMapOverride()
 
 const char *CServerGameDLL::GetServerBrowserGameData()
 {
+#if defined( L4D2 )
+	// S0EDF50: game-owned advertisement, not a matchmaking session or reservation.
+	static char rchResult[2048];
+	Q_snprintf( rchResult, sizeof( rchResult ), "g:l4d2," );
+	char *next = rchResult + Q_strlen( rchResult );
+	size_t remaining = sizeof( rchResult ) - ( next - rchResult );
+	static ConVarRef gametypes( "sv_gametypes" );
+	if ( gametypes.IsValid() && gametypes.GetString()[0] != '\0' )
+	{
+		Q_snprintf( next, remaining, "%s,", gametypes.GetString() );
+		const int length = Q_strlen( next );
+		next += length;
+		remaining -= length;
+	}
+
+	KeyValues *missions = g_TerrorModes.GetMissionDictionary();
+	for ( KeyValues *mission = missions ? missions->GetFirstTrueSubKey() : NULL;
+		mission; mission = mission->GetNextTrueSubKey() )
+	{
+		if ( mission->GetInt( "BuiltIn", 0 ) != 0 )
+			continue;
+		const char *tag = mission->GetString( "CfgTag", "" );
+		const size_t length = Q_strlen( tag );
+		if ( remaining > length + 1 )
+		{
+			Q_memcpy( next, tag, length + 1 );
+			next += length;
+			*next++ = ',';
+			remaining -= length + 1;
+		}
+		else
+		{
+			Warning( "GameData: Too many missions installed, not advertising for mission \"%s\"\n",
+				mission->GetString( "Name", "" ) );
+		}
+	}
+	if ( next > rchResult )
+		next[-1] = '\0';
+	return rchResult;
+#else
 	CUtlString sResult;
 
 #ifdef TF_DLL
@@ -1946,6 +2197,7 @@ const char *CServerGameDLL::GetServerBrowserGameData()
 	static char rchResult[2048];
 	V_strcpy_safe( rchResult, sResult );
 	return rchResult;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -2024,6 +2276,18 @@ void CServerGameDLL::BuildAdjacentMapList( void )
 		pSaveData->levelInfo.connectionCount = BuildChangeList( pSaveData->levelInfo.levelList, MAX_LEVEL_CONNECTIONS );
 }
 
+#if defined( L4D2 )
+// S0EE150: sole GapConsoleServer callback, shared by hostfile and motdfile.
+void HostFileChanged( IConVar *variable, const char *oldValue, float oldFloat )
+{
+	ConVar *value = static_cast< ConVar * >( variable );
+	const char *text = value->GetString();
+	if ( !text || Q_strlen( text ) <= 0 || Q_IsAbsolutePath( text ) || Q_strstr( text, ".." ) )
+		value->SetValue( value->GetDefault() );
+}
+ConVar hostfile( "hostfile", "host.txt", 0x00080004, "The HOST file to load.", HostFileChanged );
+static ConVar motdfile( "motdfile", "motd.txt", 0x00080004, "The MOTD file to load.", HostFileChanged );
+#else
 //-----------------------------------------------------------------------------
 // Purpose: Sanity-check to verify that a path is a relative path inside the game dir
 // Taken From: engine/cmd.cpp
@@ -2056,12 +2320,45 @@ static void ValidateMOTDFilename( IConVar *pConVar, const char *oldValue, float 
 
 static ConVar motdfile( "motdfile", "motd.txt", 0, "The MOTD file to load.", ValidateMOTDFilename );
 static ConVar motdfile_text( "motdfile_text", "motd_text.txt", 0, "The text-only MOTD file to use for clients that have disabled HTML MOTDs.", ValidateMOTDFilename );
+#endif
 void CServerGameDLL::LoadMessageOfTheDay()
 {
 	LoadSpecificMOTDMsg( motdfile, "motd" );
+#if defined( L4D2 )
+	LoadSpecificMOTDMsg( hostfile, "hostfile" );
+#else
 	LoadSpecificMOTDMsg( motdfile_text, "motd_text" );
+#endif
 }
+#if defined( L4D2 )
+void Script_LoadMOTD()
+{
+	g_ServerGameDLL.LoadMessageOfTheDay();
+}
+#endif
 
+#if defined( L4D2 )
+void CServerGameDLL::LoadSpecificMOTDMsg( const ConVar &convar, const char *stringName )
+{
+	// S0EE1B0: mounted GAME-root file and the actual InfoPanel string table.
+	int length = filesystem->Size( convar.GetString(), "GAME" );
+	if ( length <= 0 || (unsigned int)length >= 0x3FFF )
+	{
+		DevMsg( "Invalid file size for %s\n", convar.GetString() );
+		return;
+	}
+	FileHandle_t file = filesystem->Open( convar.GetString(), "rb", "GAME" );
+	if ( file )
+	{
+		char text[16384];
+		int read = filesystem->Read( text, length, file );
+		filesystem->Close( file );
+		if ( read != length ) return; // Ledger306: only skip publication of unwritten bytes.
+		text[length] = 0;
+		g_pStringTableInfoPanel->AddString( true, stringName, length + 1, text );
+	}
+}
+#else
 void CServerGameDLL::LoadSpecificMOTDMsg( const ConVar &convar, const char *pszStringName )
 {
 #ifndef _XBOX
@@ -2119,9 +2416,16 @@ void CServerGameDLL::LoadSpecificMOTDMsg( const ConVar &convar, const char *pszS
 	g_pStringTableInfoPanel->AddString( CBaseEntity::IsServer(), pszStringName, buf.TellPut(), buf.Base() );
 #endif
 }
+#endif
 
 // keeps track of which chapters the user has unlocked
-ConVar sv_unlockedchapters( "sv_unlockedchapters", "1", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX );
+ConVar sv_unlockedchapters( "sv_unlockedchapters", "1", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Updates which chapters are unlocked
@@ -3226,6 +3530,15 @@ void CServerGameClients::ClientCommandKeyValues( edict_t *pEntity, KeyValues *pK
 	if ( !pKeyValues )
 		return;
 
+#ifdef L4D2
+	// S0F0F70: engine/framework-owned avatar input, not a reconnect cache.
+	if ( !Q_stricmp( pKeyValues->GetName(), "avatarinfo" ) )
+	{
+		TheDirector->OnPlayerAvatarInfoReceived( pEntity, pKeyValues );
+		return;
+	}
+#endif
+
 	if ( g_pGameRules )
 	{
 		g_pGameRules->ClientCommandKeyValues( pEntity, pKeyValues );
@@ -3343,6 +3656,18 @@ void MessageWriteVec3Coord( const Vector& rgflValue)
 	g_pMsgBuffer->WriteBitVec3Coord( rgflValue );
 }
 
+#ifdef L4D2
+// S0EEE20: three independent BitCoordMP integral coordinates, not a Vec3Coord.
+void MessageWriteBitVecIntegral( const Vector& value )
+{
+	if ( !g_pMsgBuffer )
+		Error( "MessageWriteBitVecIntegral called with no active message\n" );
+
+	for ( int axis = 0; axis < 3; ++axis )
+		g_pMsgBuffer->WriteBitCoordMP( value[axis], true, false );
+}
+#endif
+
 void MessageWriteVec3Normal( const Vector& rgflValue)
 {
 	if (!g_pMsgBuffer)
@@ -3436,7 +3761,9 @@ public:
 	CServerDLLSharedAppSystems()
 	{
 		AddAppSystem( "soundemittersystem" DLL_EXT_STRING, SOUNDEMITTERSYSTEM_INTERFACE_VERSION );
+#if !defined( L4D2 )
 		AddAppSystem( "scenefilecache" DLL_EXT_STRING, SCENE_FILE_CACHE_INTERFACE_VERSION );
+#endif
 	}
 
 	virtual int	Count()
@@ -3492,3 +3819,13 @@ CSteamID GetSteamIDForPlayerIndex( int iPlayerIndex )
 }
 
 #endif
+
+#ifdef L4D2
+// Native S0EE5D0, called by S24ED50 after Default.Zoom; no new string table.
+void PrecacheEffect( const char *name )
+{
+	g_pStringTableEffectDispatch->AddString( true, name, -1, NULL );
+}
+#endif
+
+#include "gameinterface_console_server_callbacks.inc"

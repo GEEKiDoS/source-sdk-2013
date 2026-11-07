@@ -24,38 +24,6 @@ extern bool g_bDumpRenderTargets; // in viewpostprocess.cpp
 
 CGlowObjectManager g_GlowObjectManager;
 
-struct ShaderStencilState_t
-{
-	bool m_bEnable;
-	StencilOperation_t m_FailOp;
-	StencilOperation_t m_ZFailOp;
-	StencilOperation_t m_PassOp;
-	StencilComparisonFunction_t m_CompareFunc;
-	int m_nReferenceValue;
-	uint32 m_nTestMask;
-	uint32 m_nWriteMask;
-
-	ShaderStencilState_t()
-	{
-		m_bEnable = false;
-		m_PassOp = m_FailOp = m_ZFailOp = STENCILOPERATION_KEEP;
-		m_CompareFunc = STENCILCOMPARISONFUNCTION_ALWAYS;
-		m_nReferenceValue = 0;
-		m_nTestMask = m_nWriteMask = 0xFFFFFFFF;
-	}
-
-	void SetStencilState( CMatRenderContextPtr &pRenderContext  )
-	{
-		pRenderContext->SetStencilEnable( m_bEnable );
-		pRenderContext->SetStencilFailOperation( m_FailOp );
-		pRenderContext->SetStencilZFailOperation( m_ZFailOp );
-		pRenderContext->SetStencilPassOperation( m_PassOp );
-		pRenderContext->SetStencilCompareFunction( m_CompareFunc );
-		pRenderContext->SetStencilReferenceValue( m_nReferenceValue );
-		pRenderContext->SetStencilTestMask( m_nTestMask );
-		pRenderContext->SetStencilWriteMask( m_nWriteMask );
-	}
-};
 
 void CGlowObjectManager::RenderGlowEffects( const CViewSetup *pSetup, int nSplitScreenSlot )
 {

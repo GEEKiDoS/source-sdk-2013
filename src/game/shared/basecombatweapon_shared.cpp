@@ -14,7 +14,9 @@
 #include "activitylist.h"
 
 // NVNT start extra includes
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 #ifdef CLIENT_DLL
 	#include "prediction.h"
 #endif
@@ -36,11 +38,24 @@
 	#include "hl2mp_gamerules.h"
 #endif
 
+#if defined( L4D2 )
+#include "l4d2/player/terrorplayer.h"
+#endif
+
 #endif
 
 #include "vprof.h"
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#include "c_baseviewmodel.h"
+extern ConVar z_tracer_particles;
+#endif
+
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "precache_register.h"
+#include "particle_parse.h"
+#endif
 #include "tier0/memdbgon.h"
 
 // The minimum time a hud hint for a weapon should be on screen. If we switch away before
@@ -64,6 +79,7 @@ ConVar tf_weapon_criticals_bucket_default( "tf_weapon_criticals_bucket_default",
 
 CBaseCombatWeapon::CBaseCombatWeapon()
 {
+
 	// Constructor must call this
 	// CONSTRUCT_PREDICTABLE( CBaseCombatWeapon );
 
@@ -77,6 +93,11 @@ CBaseCombatWeapon::CBaseCombatWeapon()
 
 	// Defaults to zero
 	m_nViewModelIndex	= 0;
+	#if defined( L4D2 )
+	m_nQueuedAttack = 0;
+	m_flTimeAttackQueued = 0.0f;
+	m_bOnlyPump = false;
+	#endif
 
 	m_bFlipViewModel	= false;
 
@@ -94,6 +115,9 @@ CBaseCombatWeapon::CBaseCombatWeapon()
 	OnBaseCombatWeaponCreated( this );
 #endif
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	GetClientWeaponList().AddToTail( this );
+#endif
 	m_hWeaponFileInfo = GetInvalidWeaponInfoHandle();
 
 #if defined( TF_DLL )
@@ -114,6 +138,10 @@ CBaseCombatWeapon::CBaseCombatWeapon()
 //-----------------------------------------------------------------------------
 CBaseCombatWeapon::~CBaseCombatWeapon( void )
 {
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	GetClientWeaponList().FindAndRemove( this );
+#endif
+
 #if !defined( CLIENT_DLL )
 	//Remove our constraint, if we have one
 	if ( m_pConstraint != NULL )
@@ -315,6 +343,27 @@ void CBaseCombatWeapon::Precache( void )
 		Warning( "Error reading weapon data file for: %s\n", GetClassname() );
 	//	Remove( );	//don't remove, this gets released soon!
 	}
+#if defined( L4D2 )
+	// S04CD90/C017380: effects and standard particles precede derived precaches.
+	const char *pTracer = GetTracerType();
+	if ( pTracer )
+		PrecacheEffect( pTracer );
+	PrecacheEffect( "ParticleTracer" );
+	static const char *const s_Particles[] =
+	{
+		"weapon_tracers",
+		"impact_ricochet",
+		"weapon_tracers_incendiary",
+		"impact_incendiary_generic",
+		"weapon_tracers_explosive",
+		"impact_explosive_ammo_large",
+		"impact_explosive_ammo_small",
+		"impact_explosive_ammo_world",
+		"impact_armor"
+	};
+	for ( int i = 0; i < ARRAYSIZE( s_Particles ); ++i )
+		PrecacheParticleSystem( s_Particles[i] );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -539,6 +588,19 @@ CHudTexture const *CBaseCombatWeapon::GetSpriteZoomedAutoaim( void ) const
 {
 	return GetWpnData().iconZoomedAutoaim;
 }
+
+#if defined( L4D2 )
+// Original C015490/C0154B0: dual icons are independent script entries.
+CHudTexture const *CBaseCombatWeapon::GetSpriteActiveDual( void ) const
+{
+	return GetWpnData().iconActiveDual;
+}
+
+CHudTexture const *CBaseCombatWeapon::GetSpriteInactiveDual( void ) const
+{
+	return GetWpnData().iconInactiveDual;
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -787,6 +849,40 @@ void CBaseCombatWeapon::OnPickedUp( CBaseCombatCharacter *pNewOwner )
 //-----------------------------------------------------------------------------
 void CBaseCombatWeapon::MakeTracer( const Vector &vecTracerSrc, const trace_t &tr, int iTracerType )
 {
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	CBaseEntity *pOwner = GetOwner();
+	CBaseCombatCharacter *pCharacter = pOwner ? pOwner->MyCombatCharacterPointer() : NULL;
+	if ( !pCharacter )
+	{
+		BaseClass::MakeTracer( vecTracerSrc, tr, iTracerType );
+		return;
+	}
+	const char *pszTracerName = GetTracerType();
+	const Vector tracerSource = vecTracerSrc;
+	int entityIndex = pCharacter->entindex();
+	CBasePlayer *pPlayer = pCharacter->IsPlayer() ? static_cast< CBasePlayer * >( pCharacter ) : NULL;
+	if ( g_pGameRules->IsMultiplayer() )
+	{
+		entityIndex = entindex();
+		if ( pPlayer && pPlayer->IsCurrentInEyeViewPlayer() )
+		{
+			C_BaseViewModel *pViewModel = pPlayer->GetViewModel( 0 );
+			if ( pViewModel )
+				entityIndex = pViewModel->entindex();
+		}
+	}
+	const int attachment = GetTracerAttachment();
+	if ( z_tracer_particles.GetBool() )
+	{
+		const char *particleName = iTracerType == 5 ? "weapon_tracers_incendiary" :
+			iTracerType == 6 ? "weapon_tracers_explosive" : "weapon_tracers";
+		UTIL_ParticleTracer( particleName, tracerSource, tr.endpos, entityIndex, attachment, true );
+	}
+	else if ( iTracerType == TRACER_LINE || iTracerType == TRACER_LINE_AND_WHIZ )
+	{
+		UTIL_Tracer( tracerSource, tr.endpos, entityIndex, attachment, 0.0f, true, pszTracerName );
+	}
+#else
 	CBaseEntity *pOwner = GetOwner();
 
 	if ( pOwner == NULL )
@@ -817,6 +913,7 @@ void CBaseCombatWeapon::MakeTracer( const Vector &vecTracerSrc, const trace_t &t
 		UTIL_Tracer( vNewSrc, tr.endpos, iEntIndex, iAttachment, 0.0f, true, pszTracerName );
 		break;
 	}
+#endif
 }
 
 void CBaseCombatWeapon::GiveTo( CBaseEntity *pOther )
@@ -1022,6 +1119,51 @@ void CBaseCombatWeapon::Equip( CBaseCombatCharacter *pOwner )
 	}
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseCombatWeapon::SetActivity( Activity activity, float duration )
+{
+	int sequence = SelectWeightedSequence( activity );
+	if ( sequence == ACTIVITY_NOT_AVAILABLE )
+		sequence = SelectWeightedSequence( ACT_VM_IDLE );
+	if ( sequence == ACTIVITY_NOT_AVAILABLE )
+		return;
+	SetSequence( sequence );
+	SetActivity( activity );
+	SetCycle( 0.0f );
+	ResetSequenceInfo();
+	if ( duration > 0.0f )
+	{
+		const double rate = SequenceDuration( sequence ) / static_cast< double >( duration );
+		const float storedRate = static_cast< float >( rate );
+#ifdef CLIENT_DLL
+		m_flPlaybackRate = storedRate;
+		m_flPlaybackRate = storedRate < 12.0f ? storedRate : 12.0f;
+#else
+		if ( static_cast< double >( m_flPlaybackRate.Get() ) != rate )
+			m_flPlaybackRate.SetDirect( storedRate );
+		const float previous = m_flPlaybackRate.Get();
+		const float capped = previous < 12.0f ? previous : 12.0f;
+		if ( previous != capped )
+			m_flPlaybackRate.SetDirect( capped );
+#endif
+	}
+	else
+	{
+#ifdef CLIENT_DLL
+		m_flPlaybackRate = 1.0f;
+#else
+		if ( m_flPlaybackRate.Get() != 1.0f )
+			m_flPlaybackRate.SetDirect( 1.0f );
+#endif
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseCombatWeapon::SetActivity( Activity act, float duration ) 
 { 
 	//Adrian: Oh man...
@@ -1059,6 +1201,7 @@ void CBaseCombatWeapon::SetActivity( Activity act, float duration )
 		}
 	}
 }
+#endif
 
 //====================================================================================
 // WEAPON CLIENT HANDLING
@@ -1135,6 +1278,18 @@ void CBaseCombatWeapon::SendViewModelAnim( int nSequence )
 	vm->SendViewModelMatchingSequence( nSequence );
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double CBaseCombatWeapon::GetViewModelSequenceDuration()
+{
+	return SequenceDuration();
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CBaseCombatWeapon::GetViewModelSequenceDuration()
 {
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
@@ -1155,6 +1310,7 @@ float CBaseCombatWeapon::GetViewModelSequenceDuration()
 	Assert( vm->ViewModelIndex() == m_nViewModelIndex );
 	return vm->SequenceDuration();
 }
+#endif
 
 bool CBaseCombatWeapon::IsViewModelSequenceFinished( void ) const
 {
@@ -1198,12 +1354,18 @@ void CBaseCombatWeapon::SetViewModel()
         if ( pViewModel )
         {
             vm->SetWeaponModel( modelinfo->GetModelName( pViewModel ), this );    
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+			vm->SetSkin( GetSkin() ); // Native S4B9E0, after SetWeaponModel.
+#endif
             return;
         }
     }
 
 	Assert( vm->ViewModelIndex() == m_nViewModelIndex );
 	vm->SetWeaponModel( GetViewModel( m_nViewModelIndex ), this );
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+	vm->SetSkin( GetSkin() ); // Native S4B9E0, after SetWeaponModel.
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1215,6 +1377,7 @@ bool CBaseCombatWeapon::SendWeaponAnim( int iActivity )
 #ifdef USES_ECON_ITEMS
 	iActivity = TranslateViewmodelHandActivity( (Activity)iActivity );
 #endif		
+#if !defined( L4D2 )
 	// NVNT notify the haptics system of this weapons new activity
 #ifdef WIN32
 #ifdef CLIENT_DLL
@@ -1224,6 +1387,7 @@ bool CBaseCombatWeapon::SendWeaponAnim( int iActivity )
 		HapticSendWeaponAnim(this,iActivity);
 #endif
 #endif
+#endif // !L4D2
 	//For now, just set the ideal activity and be done with it
 	return SetIdealActivity( (Activity) iActivity );
 }
@@ -1355,6 +1519,17 @@ void CBaseCombatWeapon::SetWeaponVisible( bool visible )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+bool CBaseCombatWeapon::IsWeaponVisible()
+{
+	CBaseCombatCharacter *owner = GetOwner();
+	if ( !owner || !owner->IsPlayer() ) return false;
+	C_BasePlayer *player = static_cast< C_BasePlayer * >( owner );
+	C_BaseViewModel *viewModel = player->GetViewModel( m_nViewModelIndex );
+	if ( !viewModel ) return false;
+	return !viewModel->IsDormant() && !viewModel->IsEffectActive( EF_NODRAW );
+}
+#else
 bool CBaseCombatWeapon::IsWeaponVisible( void )
 {
 	CBaseViewModel *vm = NULL;
@@ -1368,6 +1543,7 @@ bool CBaseCombatWeapon::IsWeaponVisible( void )
 
 	return false;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: If the current weapon has more ammo, reload it. Otherwise, switch 
@@ -1416,6 +1592,48 @@ bool CBaseCombatWeapon::ReloadOrSwitchWeapons( void )
 //			*szAnimExt - 
 // Output : Returns true on success, false on failure.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+bool CBaseCombatWeapon::DefaultDeploy( char *viewModel, char *weaponModel, int activity, char *animationExtension )
+{
+	if ( !HasAnyAmmo() && AllowsAutoSwitchFrom() )
+		return false;
+	CBasePlayer *owner = ToBasePlayer( GetOwner() );
+	if ( owner )
+	{
+		if ( !owner->IsAlive() )
+			return false;
+		owner->SetAnimationExtension( animationExtension );
+		SetViewModel();
+		SendWeaponAnim( activity );
+		const double duration = GetViewModelSequenceDuration();
+		const float nextAttack = static_cast< float >( duration + static_cast< double >( gpGlobals->curtime ) );
+		owner->SetNextAttack( nextAttack );
+	}
+	// Native spills EACH of these duration queries BEFORE the f32 clock sum.
+	const float primaryDuration = static_cast< float >( SequenceDuration() );
+	const float primary = gpGlobals->curtime + primaryDuration;
+	if ( static_cast< float >( m_flNextPrimaryAttack ) != primary )
+		m_flNextPrimaryAttack.SetDirect( primary );
+	const float secondaryDuration = static_cast< float >( SequenceDuration() );
+	const float secondary = gpGlobals->curtime + secondaryDuration;
+	if ( static_cast< float >( m_flNextSecondaryAttack ) != secondary )
+		m_flNextSecondaryAttack.SetDirect( secondary );
+	m_flHudHintMinDisplayTime = 0.0f;
+	m_bAltFireHudHintDisplayed = false;
+	m_bReloadHudHintDisplayed = false;
+	m_flHudHintPollTime = gpGlobals->curtime + 5.0f;
+	SetWeaponVisible( true );
+	SetQueuedAttack( 0 );
+	SetContextThink( NULL, 0.0f, HIDEWEAPON_THINK_CONTEXT );
+	return true;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool CBaseCombatWeapon::DefaultDeploy( char *szViewModel, char *szWeaponModel, int iActivity, char *szAnimExt )
 {
 	// Msg( "deploy %s at %f\n", GetClassname(), gpGlobals->curtime );
@@ -1436,6 +1654,7 @@ bool CBaseCombatWeapon::DefaultDeploy( char *szViewModel, char *szWeaponModel, i
 
 		SetViewModel();
 		SendWeaponAnim( iActivity );
+
 
 		pOwner->SetNextAttack( gpGlobals->curtime + SequenceDuration() );
 	}
@@ -1464,6 +1683,7 @@ selects and deploys each weapon as you pass it. (sjb)
 
 	return true;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1689,6 +1909,119 @@ bool CBaseCombatWeapon::CanPerformSecondaryAttack() const
 //====================================================================================
 // WEAPON BEHAVIOUR
 //====================================================================================
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+
+// S04D720 / C017A00. Re-read the clock after the timestamp's change callback.
+void CBaseCombatWeapon::SetQueuedAttack( int buttons )
+{
+	m_nQueuedAttack = buttons;
+	if ( m_flTimeAttackQueued.Get() != gpGlobals->curtime )
+	{
+		float &queuedTime = m_flTimeAttackQueued.GetForModify();
+		queuedTime = gpGlobals->curtime;
+	}
+}
+
+// Whole S04D7C0 / C017A40. This is the real generic rifle frame, not the CS frame.
+void CBaseCombatWeapon::ItemPostFrame()
+{
+	CBasePlayer *owner = ToBasePlayer( GetOwner() );
+	if ( !owner )
+		return;
+
+	m_fFireDuration = ( owner->m_nButtons & IN_ATTACK ) ? m_fFireDuration + gpGlobals->frametime : 0.0f;
+	if ( UsesClipsForAmmo1() )
+		CheckReload();
+
+	const float queueExpiry = m_flTimeAttackQueued.Get() + 0.5f;
+	if ( gpGlobals->curtime > queueExpiry && m_nQueuedAttack != 0 )
+		m_nQueuedAttack = 0;
+	owner->m_nButtons |= m_nQueuedAttack;
+
+	bool secondaryFired = false;
+	if ( ( owner->m_nButtons & IN_ATTACK2 ) && gpGlobals->curtime >= m_flNextSecondaryAttack.Get() )
+	{
+		if ( m_iSecondaryAmmoType >= 0 && owner->GetAmmoCount( m_iSecondaryAmmoType ) <= 0 )
+		{
+			if ( gpGlobals->curtime > m_flNextEmptySoundTime )
+			{
+				WeaponSound( EMPTY, 0.0f );
+				m_flNextEmptySoundTime = gpGlobals->curtime + 0.5f;
+				if ( m_flNextSecondaryAttack.Get() != m_flNextEmptySoundTime )
+				{
+					float &nextSecondary = m_flNextSecondaryAttack.GetForModify();
+					nextSecondary = m_flNextEmptySoundTime;
+				}
+			}
+		}
+		else if ( owner->GetWaterLevel() == 3 && !m_bAltFiresUnderwater )
+		{
+			WeaponSound( EMPTY, 0.0f );
+			const double deadline = static_cast< double >( gpGlobals->curtime ) + 0.2;
+			const float storedDeadline = static_cast< float >( deadline );
+			// Native secondary underwater failure writes the PRIMARY deadline.
+			if ( static_cast< double >( m_flNextPrimaryAttack.Get() ) != deadline )
+				m_flNextPrimaryAttack.GetForModify() = storedDeadline;
+			return;
+		}
+		else
+		{
+			SecondaryAttack();
+			if ( UsesClipsForAmmo2() && m_iClip2 < 1 )
+			{
+				owner->RemoveAmmo( 1, m_iSecondaryAmmoType );
+				m_iClip2 = m_iClip2 + 1;
+			}
+			SetQueuedAttack( 0 );
+			secondaryFired = true;
+		}
+	}
+
+	if ( !secondaryFired && ( owner->m_nButtons & IN_ATTACK ) && gpGlobals->curtime >= m_flNextPrimaryAttack.Get() )
+	{
+		if ( !IsMeleeWeapon() &&
+			( ( UsesClipsForAmmo1() && m_iClip1 <= 0 ) ||
+			  ( !UsesClipsForAmmo1() && owner->GetAmmoCount( m_iPrimaryAmmoType ) <= 0 ) ) )
+		{
+			HandleFireOnEmpty();
+		}
+		else if ( owner->GetWaterLevel() == 3 && !m_bFiresUnderwater )
+		{
+			WeaponSound( EMPTY, 0.0f );
+			const double deadline = static_cast< double >( gpGlobals->curtime ) + 0.2;
+			const float storedDeadline = static_cast< float >( deadline );
+			if ( static_cast< double >( m_flNextPrimaryAttack.Get() ) != deadline )
+				m_flNextPrimaryAttack.GetForModify() = storedDeadline;
+			SetQueuedAttack( 0 );
+			return;
+		}
+		else
+		{
+			PrimaryAttack();
+			SetQueuedAttack( 0 );
+		}
+	}
+
+	if ( ( owner->m_nButtons & IN_RELOAD ) && UsesClipsForAmmo1() && !m_bInReload )
+	{
+		Reload();
+		m_fFireDuration = 0.0f;
+	}
+
+	if ( !( owner->m_nButtons & ( IN_ATTACK | IN_ATTACK2 | IN_RELOAD ) ) && !m_bInReload )
+	{
+		if ( !ReloadOrSwitchWeapons() )
+			WeaponIdle();
+	}
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBaseCombatWeapon::ItemPostFrame( void )
 {
 	CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
@@ -1819,6 +2152,7 @@ void CBaseCombatWeapon::ItemPostFrame( void )
 		}
 	}
 }
+#endif // L4D2
 
 void CBaseCombatWeapon::HandleFireOnEmpty()
 {
@@ -1842,10 +2176,31 @@ void CBaseCombatWeapon::HandleFireOnEmpty()
 //-----------------------------------------------------------------------------
 // Purpose: Called each frame by the player PostThink, if the player's not ready to attack yet
 //-----------------------------------------------------------------------------
-void CBaseCombatWeapon::ItemBusyFrame( void )
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CBaseCombatWeapon::ItemBusyFrame()
 {
+#if defined( L4D2 )
+	CBasePlayer *owner = ToBasePlayer( GetOwner() );
+	if ( !owner )
+		return;
+	const float queueExpiry = m_flTimeAttackQueued.Get() + 0.5f;
+	if ( gpGlobals->curtime > queueExpiry && m_nQueuedAttack != 0 )
+		m_nQueuedAttack = 0;
+	if ( m_bInReload && m_nQueuedAttack == 0 && m_bReloadsSingly )
+	{
+		const int buttons = owner->m_nButtons & ( IN_ATTACK | IN_ATTACK2 );
+		if ( buttons )
+			SetQueuedAttack( buttons );
+	}
+#else
 	UpdateAutoFire();
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Base class default for getting bullet type
@@ -1889,7 +2244,11 @@ const WeaponProficiencyInfo_t *CBaseCombatWeapon::GetProficiencyValues()
 // Input  :
 // Output :
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+double CBaseCombatWeapon::GetFireRate( void )
+#else
 float CBaseCombatWeapon::GetFireRate( void )
+#endif
 {
 	return 0;
 }
@@ -2004,8 +2363,61 @@ void CBaseCombatWeapon::StopWeaponSound( WeaponSound_t sound_type )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#ifdef L4D2
+#pragma float_control( precise, on, push )
+#endif
 bool CBaseCombatWeapon::DefaultReload( int iClipSize1, int iClipSize2, int iActivity )
 {
+#ifdef L4D2
+	// S04DD90 / C017F10: keep both scale calls, the native only-pump branch,
+	// and the deliberate reload-scale spill followed by final deadline spill.
+	CBaseCombatCharacter *owner = GetOwner();
+	if ( !owner || owner->GetAmmoCount( m_iPrimaryAmmoType ) <= 0 )
+		return false;
+	bool reload = false;
+	if ( UsesClipsForAmmo1() )
+	{
+		const int primary = MIN( iClipSize1 - m_iClip1, owner->GetAmmoCount( m_iPrimaryAmmoType ) );
+		if ( primary != 0 )
+			reload = true;
+	}
+	if ( UsesClipsForAmmo2() )
+	{
+		const int secondary = MIN( iClipSize2 - m_iClip2, owner->GetAmmoCount( m_iSecondaryAmmoType ) );
+		if ( secondary != 0 )
+			reload = true;
+	}
+	if ( !reload )
+	{
+		if ( !m_bOnlyPump )
+			return false;
+		m_bInReload = true;
+		return true;
+	}
+	SendWeaponAnim( iActivity );
+	if ( owner->IsPlayer() )
+		static_cast< CBasePlayer * >( owner )->SetAnimation( PLAYER_RELOAD );
+	MDLCACHE_CRITICAL_SECTION();
+	const float scale = static_cast< float >( GetReloadAnimationScale() );
+	// Native04C810/015FB0 is THIS weapon's SequenceDuration, not a viewmodel lookup.
+	const float deadline = static_cast< float >( SequenceDuration() * scale + gpGlobals->curtime );
+	const double playback = 1.0 / GetReloadAnimationScale();
+	const float playback32 = static_cast< float >( playback );
+#ifdef CLIENT_DLL
+	SetPlaybackRate( playback32 );
+#else
+	if ( static_cast< double >( GetPlaybackRate() ) != playback )
+		m_flPlaybackRate.GetForModify() = playback32;
+#endif
+	owner->SetNextAttack( deadline );
+	if ( m_flNextSecondaryAttack.Get() != deadline )
+		m_flNextSecondaryAttack.SetDirect( deadline );
+	const float primary = m_flNextSecondaryAttack.Get();
+	if ( m_flNextPrimaryAttack.Get() != primary )
+		m_flNextPrimaryAttack.SetDirect( primary );
+	m_bInReload = true;
+	return true;
+#else
 	CBaseCombatCharacter *pOwner = GetOwner();
 	if (!pOwner)
 		return false;
@@ -2060,7 +2472,11 @@ bool CBaseCombatWeapon::DefaultReload( int iClipSize1, int iClipSize2, int iActi
 	m_bInReload = true;
 
 	return true;
+#endif
 }
+#ifdef L4D2
+#pragma float_control( pop )
+#endif
 
 bool CBaseCombatWeapon::ReloadsSingly( void ) const
 {
@@ -2088,7 +2504,14 @@ bool CBaseCombatWeapon::ReloadsSingly( void ) const
 //-----------------------------------------------------------------------------
 bool CBaseCombatWeapon::Reload( void )
 {
+#ifdef L4D2
+	const Activity activity = GetReloadActivity();
+	const int maxClip2 = GetMaxClip2();
+	const int maxClip1 = GetMaxClip1();
+	return DefaultReload( maxClip1, maxClip2, activity );
+#else
 	return DefaultReload( GetMaxClip1(), GetMaxClip2(), ACT_VM_RELOAD );
+#endif
 }
 
 //=========================================================
@@ -2139,6 +2562,45 @@ char *CBaseCombatWeapon::GetDeathNoticeName( void )
 //====================================================================================
 void CBaseCombatWeapon::CheckReload( void )
 {
+#ifdef L4D2
+	// S04E0C0 / C018160: queued attack participates before the singly timer gate.
+	if ( m_bReloadsSingly )
+	{
+		CBasePlayer *player = ToBasePlayer( GetOwner() );
+		if ( !player || !m_bInReload )
+			return;
+		if ( ( ( m_nQueuedAttack | player->m_nButtons ) & ( IN_ATTACK | IN_ATTACK2 ) ) && m_iClip1 > 0 )
+		{
+			AbortReload();
+			player->SetNextAttack( gpGlobals->curtime );
+			m_flNextPrimaryAttack = gpGlobals->curtime;
+			m_flNextSecondaryAttack = gpGlobals->curtime;
+		}
+		else if ( gpGlobals->curtime >= m_flNextPrimaryAttack )
+		{
+			if ( player->GetAmmoCount( m_iPrimaryAmmoType ) > 0 )
+			{
+				if ( m_iClip1 >= GetMaxClip1() || m_bOnlyPump )
+					FinishReload();
+				else
+				{
+					++m_iClip1;
+					player->RemoveAmmo( 1, m_iPrimaryAmmoType );
+					Reload();
+				}
+			}
+			else
+				FinishReload();
+		}
+	}
+	else if ( m_bInReload && gpGlobals->curtime >= m_flNextPrimaryAttack )
+	{
+		FinishReload();
+		m_flNextPrimaryAttack = gpGlobals->curtime;
+		m_flNextSecondaryAttack = gpGlobals->curtime;
+		m_bInReload = false;
+	}
+#else
 	if ( m_bReloadsSingly )
 	{
 		CBasePlayer *pOwner = ToBasePlayer( GetOwner() );
@@ -2189,6 +2651,7 @@ void CBaseCombatWeapon::CheckReload( void )
 			m_bInReload = false;
 		}
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -2317,7 +2780,11 @@ void CBaseCombatWeapon::PrimaryAttack( void )
 	// To make the firing framerate independent, we may have to fire more than one bullet here on low-framerate systems, 
 	// especially if the weapon we're firing has a really fast rate of fire.
 	info.m_iShots = 0;
+#if defined( L4D2 )
+	float fireRate = static_cast< float >( GetFireRate() ); // Native automatic-path F32 spill.
+#else
 	float fireRate = GetFireRate();
+#endif
 
 	while ( m_flNextPrimaryAttack <= gpGlobals->curtime )
 	{
@@ -2419,7 +2886,17 @@ bool CBaseCombatWeapon::SetIdealActivity( Activity ideal )
 		SetActivity( m_IdealActivity );
 		SetSequence( m_nIdealSequence );	
 		SendViewModelAnim( m_nIdealSequence );
+#if defined( L4D2 )
+		SetPlaybackRate( 1.0f );
+#endif
 	}
+
+#if defined( L4D2 )
+	// S04EA30 / C016C60: sequence changes restart the weapon, not only its viewmodel.
+	ResetSequenceInfo();
+	SetCycle( 0.0f );
+	SetAnimTime( gpGlobals->curtime );
+#endif
 
 	//Set the next time the weapon will idle
 	SetWeaponIdleTime( gpGlobals->curtime + SequenceDuration() );
@@ -2568,7 +3045,13 @@ void CDmgAccumulator::Process( void )
 
 BEGIN_PREDICTION_DATA( CBaseCombatWeapon )
 
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_nSequence, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_NOERRORCHECK ),
+	DEFINE_PRED_FIELD( m_flCycle, FIELD_FLOAT, FTYPEDESC_INSENDTABLE | FTYPEDESC_NOERRORCHECK ),
+	DEFINE_PRED_FIELD( m_nNextThinkTick, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#else
 	DEFINE_PRED_FIELD( m_nNextThinkTick, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_NOERRORCHECK ),
+#endif
 	// Networked
 	DEFINE_PRED_FIELD( m_hOwner, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
 	// DEFINE_FIELD( m_hWeaponFileInfo, FIELD_SHORT ),
@@ -2585,12 +3068,19 @@ BEGIN_PREDICTION_DATA( CBaseCombatWeapon )
 	DEFINE_PRED_FIELD( m_iClip2, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),			
 
 	DEFINE_PRED_FIELD( m_nViewModelIndex, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD_TOL( m_flTimeAttackQueued, FIELD_FLOAT, FTYPEDESC_INSENDTABLE, 0.001f ),
+	DEFINE_PRED_FIELD( m_nQueuedAttack, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+	DEFINE_PRED_FIELD( m_bOnlyPump, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
+#endif
 
-	// Not networked
+	// Save-only prediction metadata (L4D2 also sends m_bInReload publicly).
 
 	DEFINE_FIELD( m_bInReload, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bFireOnEmpty, FIELD_BOOLEAN ),
+#if !defined( L4D2 )
 	DEFINE_FIELD( m_bFiringWholeClip, FIELD_BOOLEAN ),
+#endif
 	DEFINE_FIELD( m_flNextEmptySoundTime, FIELD_FLOAT ),
 	DEFINE_FIELD( m_Activity, FIELD_INTEGER ),
 	DEFINE_FIELD( m_fFireDuration, FIELD_FLOAT ),
@@ -2630,6 +3120,11 @@ BEGIN_DATADESC( CBaseCombatWeapon )
 	DEFINE_FIELD( m_flNextPrimaryAttack, FIELD_TIME ),
 	DEFINE_FIELD( m_flNextSecondaryAttack, FIELD_TIME ),
 	DEFINE_FIELD( m_flTimeWeaponIdle, FIELD_TIME ),
+	#if defined( L4D2 )
+	DEFINE_FIELD( m_nQueuedAttack, FIELD_INTEGER ),
+	DEFINE_FIELD( m_flTimeAttackQueued, FIELD_TIME ),
+	DEFINE_FIELD( m_bOnlyPump, FIELD_BOOLEAN ),
+	#endif
 
 	DEFINE_FIELD( m_bInReload, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bFireOnEmpty, FIELD_BOOLEAN ),
@@ -2802,6 +3297,7 @@ static void RecvProxy_WeaponOwner ( const CRecvProxyData *pData, void *pStruct, 
 }
 #endif
 
+
 #if PREDICTION_ERROR_CHECK_LEVEL > 1
 #define SendPropTime SendPropFloat
 #define RecvPropTime RecvPropFloat
@@ -2816,6 +3312,11 @@ BEGIN_NETWORK_TABLE_NOBASE( CBaseCombatWeapon, DT_LocalActiveWeaponData )
 	SendPropTime( SENDINFO( m_flNextSecondaryAttack ) ),
 	SendPropInt( SENDINFO( m_nNextThinkTick ) ),
 	SendPropTime( SENDINFO( m_flTimeWeaponIdle ) ),
+	#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nQueuedAttack ), 32 ),
+	SendPropFloat( SENDINFO( m_flTimeAttackQueued ), 0, SPROP_NOSCALE ),
+	SendPropBool( SENDINFO( m_bOnlyPump ) ),
+	#endif
 
 #if defined( TF_DLL )
 	SendPropExclude( "DT_AnimTimeMustBeFirst" , "m_flAnimTime" ),
@@ -2826,6 +3327,11 @@ BEGIN_NETWORK_TABLE_NOBASE( CBaseCombatWeapon, DT_LocalActiveWeaponData )
 	RecvPropTime( RECVINFO( m_flNextSecondaryAttack ) ),
 	RecvPropInt( RECVINFO( m_nNextThinkTick ) ),
 	RecvPropTime( RECVINFO( m_flTimeWeaponIdle ) ),
+	#if defined( L4D2 )
+	RecvPropInt( RECVINFO( m_nQueuedAttack ) ),
+	RecvPropFloat( RECVINFO( m_flTimeAttackQueued ) ),
+	RecvPropBool( RECVINFO( m_bOnlyPump ) ),
+	#endif
 #endif
 END_NETWORK_TABLE()
 
@@ -2834,42 +3340,66 @@ END_NETWORK_TABLE()
 //-----------------------------------------------------------------------------
 BEGIN_NETWORK_TABLE_NOBASE( CBaseCombatWeapon, DT_LocalWeaponData )
 #if !defined( CLIENT_DLL )
+	#if !defined( L4D2 )
 	SendPropIntWithMinusOneFlag( SENDINFO(m_iClip1 ), 8 ),
+	#endif
 	SendPropIntWithMinusOneFlag( SENDINFO(m_iClip2 ), 8 ),
 	SendPropInt( SENDINFO(m_iPrimaryAmmoType ), 8 ),
 	SendPropInt( SENDINFO(m_iSecondaryAmmoType ), 8 ),
 
 	SendPropInt( SENDINFO( m_nViewModelIndex ), VIEWMODEL_INDEX_BITS, SPROP_UNSIGNED ),
+#if !defined( L4D2 )
 	SendPropModelIndex( SENDINFO( m_nCustomViewmodelModelIndex ) ),
 
 	SendPropInt( SENDINFO( m_bFlipViewModel ) ),
+#endif
 
 #if defined( TF_DLL )
 	SendPropExclude( "DT_AnimTimeMustBeFirst" , "m_flAnimTime" ),
 #endif
 
 #else
+	#if !defined( L4D2 )
 	RecvPropIntWithMinusOneFlag( RECVINFO(m_iClip1 )),
+	#endif
 	RecvPropIntWithMinusOneFlag( RECVINFO(m_iClip2 )),
 	RecvPropInt( RECVINFO(m_iPrimaryAmmoType )),
 	RecvPropInt( RECVINFO(m_iSecondaryAmmoType )),
 
 	RecvPropInt( RECVINFO( m_nViewModelIndex ) ),
+#if !defined( L4D2 )
 	RecvPropInt( RECVINFO( m_nCustomViewmodelModelIndex ) ),
 
 	RecvPropBool( RECVINFO( m_bFlipViewModel ) ),
+#endif
 
 #endif
 END_NETWORK_TABLE()
 
 BEGIN_NETWORK_TABLE(CBaseCombatWeapon, DT_BaseCombatWeapon)
 #if !defined( CLIENT_DLL )
+	#if defined( L4D2 )
+	SendPropExclude( "DT_BaseAnimating", "m_flPoseParameter" ),
+	SendPropExclude( "DT_BaseAnimatingOverlay", "overlay_vars" ),
+	SendPropExclude( "DT_BaseFlex", "m_flexWeight" ),
+	SendPropExclude( "DT_BaseFlex", "m_blinktoggle" ),
+	SendPropExclude( "DT_ServerAnimationData", "m_flCycle" ),
+	SendPropExclude( "DT_AnimTimeMustBeFirst", "m_flAnimTime" ),
+	#endif
 	SendPropDataTable("LocalWeaponData", 0, &REFERENCE_SEND_TABLE(DT_LocalWeaponData), SendProxy_SendLocalWeaponDataTable ),
 	SendPropDataTable("LocalActiveWeaponData", 0, &REFERENCE_SEND_TABLE(DT_LocalActiveWeaponData), SendProxy_SendActiveLocalWeaponDataTable ),
 	SendPropModelIndex( SENDINFO(m_iViewModelIndex) ),
 	SendPropModelIndex( SENDINFO(m_iWorldModelIndex) ),
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_iState ), 2, SPROP_UNSIGNED ),
+#else
 	SendPropInt( SENDINFO(m_iState ), 8, SPROP_UNSIGNED ),
+#endif
 	SendPropEHandle( SENDINFO(m_hOwner) ),
+	#if defined( L4D2 )
+	SendPropBool( SENDINFO( m_bInReload ) ),
+	SendPropIntWithMinusOneFlag( SENDINFO( m_iClip1 ), 8 ),
+	#endif
 #else
 	RecvPropDataTable("LocalWeaponData", 0, 0, &REFERENCE_RECV_TABLE(DT_LocalWeaponData)),
 	RecvPropDataTable("LocalActiveWeaponData", 0, 0, &REFERENCE_RECV_TABLE(DT_LocalActiveWeaponData)),
@@ -2877,5 +3407,9 @@ BEGIN_NETWORK_TABLE(CBaseCombatWeapon, DT_BaseCombatWeapon)
 	RecvPropInt( RECVINFO(m_iWorldModelIndex)),
 	RecvPropInt( RECVINFO(m_iState), 0, &CBaseCombatWeapon::RecvProxy_WeaponState ),
 	RecvPropEHandle( RECVINFO(m_hOwner ), RecvProxy_WeaponOwner ),
+	#if defined( L4D2 )
+	RecvPropBool( RECVINFO( m_bInReload ) ),
+	RecvPropIntWithMinusOneFlag( RECVINFO( m_iClip1 ) ),
+	#endif
 #endif
 END_NETWORK_TABLE()

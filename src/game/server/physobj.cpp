@@ -25,10 +25,17 @@
 #include "decals.h"
 #include "bone_setup.h"
 
+#if defined( L4D2 )
+#include <float.h>
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar debug_physimpact("debug_physimpact", "0" );
+ConVar debug_physimpact("debug_physimpact", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 const char *GetMassEquivalent(float flMass);
 
@@ -380,6 +387,10 @@ BEGIN_DATADESC( CPhysBox )
 	DEFINE_KEYFIELD( m_flForceToEnableMotion, FIELD_FLOAT, "forcetoenablemotion" ), 
 	DEFINE_KEYFIELD( m_angPreferredCarryAngles, FIELD_VECTOR, "preferredcarryangles" ),
 	DEFINE_KEYFIELD( m_bNotSolidToWorld, FIELD_BOOLEAN, "notsolid" ),
+
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iExploitableByPlayer, FIELD_INTEGER, "ExploitableByPlayer" ),
+#endif
 
 	DEFINE_INPUTFUNC( FIELD_VOID, "Wake", InputWake ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "Sleep", InputSleep ),
@@ -1946,6 +1957,9 @@ private:
 	float	m_flMagnitude;
 	float	m_flRadius;
 	float	m_flInnerRadius;	// Inner radius where the push eminates from (on a sphere)
+#if defined( L4D2 )
+	float m_flConeOfInfluence;
+#endif
 };
 
 LINK_ENTITY_TO_CLASS( point_push, CPointPush );
@@ -1958,6 +1972,10 @@ BEGIN_DATADESC( CPointPush )
 	DEFINE_KEYFIELD( m_flMagnitude, FIELD_FLOAT,	"magnitude" ),
 	DEFINE_KEYFIELD( m_flRadius,	FIELD_FLOAT,	"radius" ),
 	DEFINE_KEYFIELD( m_flInnerRadius,FIELD_FLOAT,	"inner_radius" ),
+
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_flConeOfInfluence, FIELD_FLOAT, "influence_cone" ),
+#endif
 
 	DEFINE_INPUTFUNC( FIELD_VOID, "Enable", InputEnable ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "Disable", InputDisable ),
@@ -2058,6 +2076,12 @@ void CPointPush::PushEntity( CBaseEntity *pTarget )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CPointPush::PushThink( void )
 {
 	// Get a collection of entities in a radius around us
@@ -2087,6 +2111,25 @@ void CPointPush::PushThink( void )
 		if ( pEnts[i]->GetMoveType() == MOVETYPE_VPHYSICS && HasSpawnFlags( SF_PUSH_PHYSICS ) == false )
 			continue;
 
+#if defined( L4D2 )
+		if ( m_flConeOfInfluence != 0.0f )
+		{
+			Vector direction = pEnts[i]->BodyTarget( GetAbsOrigin(), false ) - GetAbsOrigin();
+			VectorNormalize( direction );
+			Vector forward;
+			AngleVectors( GetAbsAngles(), &forward );
+			const double dot = (double)forward.y * direction.y +
+				(double)forward.x * direction.x + (double)forward.z * direction.z;
+			const double angle = (double)m_flConeOfInfluence * (double)0.01745329238474369f;
+			// FCOS leaves a finite |angle|>=2^63 unchanged; native ignores C2.
+			const double cosine =
+				( ( angle >= 9223372036854775808.0 && angle <= DBL_MAX ) ||
+				  ( angle <= -9223372036854775808.0 && angle >= -DBL_MAX ) ) ?
+				angle : cos( angle );
+			if ( cosine > dot )
+				continue;
+		}
+#endif
 		// Test for LOS if asked to
 		if ( HasSpawnFlags( SF_PUSH_TEST_LOS ) )
 		{
@@ -2121,6 +2164,9 @@ void CPointPush::PushThink( void )
 	// Set us up for the next think
 	SetNextThink( gpGlobals->curtime + 0.05f );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 

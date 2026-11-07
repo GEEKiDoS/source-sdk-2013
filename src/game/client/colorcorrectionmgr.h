@@ -13,6 +13,9 @@
 #endif
 
 #include "igamesystem.h"
+#if defined( L4D2 )
+#include "tier1/utlvector.h"
+#endif
 
 
 //------------------------------------------------------------------------------
@@ -36,7 +39,12 @@ public:
 	void RemoveColorCorrection( ClientCCHandle_t );
 
 	// Modify color correction weights
+#if defined( L4D2 )
+	void SetColorCorrectionWeight( ClientCCHandle_t h, float flWeight, bool exclusive = false );
+	void UpdateColorCorrection();
+#else
 	void SetColorCorrectionWeight( ClientCCHandle_t h, float flWeight );
+#endif
 	void ResetColorCorrectionWeights();
 	void SetResetable( ClientCCHandle_t h, bool bResetable );
 
@@ -45,6 +53,13 @@ public:
 
 private:
 	int m_nActiveWeightCount;
+#if defined( L4D2 )
+	struct Weight_t { ClientCCHandle_t handle; float weight; bool exclusive; };
+	CUtlVector< Weight_t > m_Weights;
+	bool m_bHaveExclusiveWeight;
+	float m_flExclusiveWeight;
+	void FlushColorCorrectionWeights();
+#endif
 };
 
 

@@ -888,7 +888,8 @@ void BuildGroup::LoadControlSettings(const char *controlResourceName, const char
 
 	bool bUsePrecaching = vgui_cache_res_files.GetBool();
 	bool bUsingPrecachedSourceKeys = false;
-	bool bShouldCacheKeys = true;
+	// Preloaded keys are borrowed; only keys loaded here may enter our owning cache.
+	bool bShouldCacheKeys = ( pPreloadedKeyValues == NULL );
 	bool bDeleteKeys = false;
 
 	while ( !rDat )

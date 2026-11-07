@@ -46,6 +46,9 @@ enum SurroundingBoundsType_t
 	USE_GAME_CODE,
 	USE_ROTATION_EXPANDED_BOUNDS,
 	USE_COLLISION_BOUNDS_NEVER_VPHYSICS,
+	#if defined( L4D2 )
+	USE_SEQUENCE_BOUNDS = 7, // S093250; descriptive name.
+	#endif
 
 	SURROUNDING_TYPE_BIT_COUNT = 3
 };
@@ -72,8 +75,14 @@ public:
 
 	// Methods of ICollideable
 	virtual IHandleEntity	*GetEntityHandle();
+#if defined( L4D2 )
+	// Target ICollideable requires these queries; native collision bounds are raw.
+	virtual const Vector &OBBMinsPreScaled() const { return m_vecMins.Get(); }
+	virtual const Vector &OBBMaxsPreScaled() const { return m_vecMaxs.Get(); }
+#else
  	virtual const Vector&	OBBMinsPreScaled() const { return m_vecMinsPreScaled.Get(); }
 	virtual const Vector&	OBBMaxsPreScaled() const { return m_vecMaxsPreScaled.Get(); }
+#endif
 	virtual const Vector&	OBBMins() const { return m_vecMins.Get(); }
 	virtual const Vector&	OBBMaxs() const { return m_vecMaxs.Get(); }
 	virtual void			WorldSpaceTriggerBounds( Vector *pVecWorldMins, Vector *pVecWorldMaxs ) const;
@@ -104,13 +113,19 @@ public:
 	// Sets the collision bounds + the size (OBB)
 	void			SetCollisionBounds( const Vector& mins, const Vector &maxs );
 
+#if !defined( L4D2 )
 	// Rebuilds the scaled bounds from the pre-scaled bounds after a model's scale has changed
 	void			RefreshScaledCollisionBounds( void );
+#endif
 
 	// Sets special trigger bounds. The bloat amount indicates how much bigger the 
 	// trigger bounds should be beyond the bounds set in SetCollisionBounds
 	// This method will also set the FSOLID flag FSOLID_USE_TRIGGER_BOUNDS
+#if defined( L4D2 )
+	void UseTriggerBounds( bool bEnable, float flBloat = 0.0f );
+#else
 	void			UseTriggerBounds( bool bEnable, float flBloat = 0.0f, bool bUniformTriggerBloat = false );
+#endif
 
 	// Sets the method by which the surrounding collision bounds is set
 	// You must pass in values for mins + maxs if you select the USE_SPECIFIED_BOUNDS type. 
@@ -222,6 +237,9 @@ private:
 
 	// Computes the surrounding collision bounds from the the OBB (not vphysics)
 	void ComputeRotationExpandedBounds( Vector *pVecWorldMins, Vector *pVecWorldMaxs );
+	#if defined( L4D2 )
+	bool ComputeSequenceSurroundingBox( Vector *pWorldMins, Vector *pWorldMaxs );
+	#endif
 
 	// Computes the surrounding collision bounds based on whatever algorithm we want...
 	void ComputeSurroundingBox( Vector *pVecWorldMins, Vector *pVecWorldMaxs );
@@ -239,8 +257,10 @@ private:
 private:
 	CBaseEntity *m_pOuter;
 
+#if !defined( L4D2 )
 	CNetworkVector( m_vecMinsPreScaled );
 	CNetworkVector( m_vecMaxsPreScaled );
+#endif
 	CNetworkVector( m_vecMins );
 	CNetworkVector( m_vecMaxs );
 	float m_flRadius;
@@ -254,13 +274,17 @@ private:
 	// One of the SOLID_ defines. Use GetSolid/SetSolid.
 	CNetworkVar( unsigned char, m_nSolidType );			
 	CNetworkVar( unsigned char , m_triggerBloat );
+#if !defined( L4D2 )
 	CNetworkVar( bool, m_bUniformTriggerBloat );
+#endif
 
 	// SUCKY: We didn't use to have to store this previously
 	// but storing it here means that we can network it + avoid a ton of
 	// client-side mismatch problems
+#if !defined( L4D2 )
 	CNetworkVector( m_vecSpecifiedSurroundingMinsPreScaled );
 	CNetworkVector( m_vecSpecifiedSurroundingMaxsPreScaled );
+#endif
 	CNetworkVector( m_vecSpecifiedSurroundingMins );
 	CNetworkVector( m_vecSpecifiedSurroundingMaxs );
 
@@ -492,6 +516,9 @@ inline bool CCollisionProperty::DoesRotationInvalidateSurroundingBox( ) const
 
 	case USE_ROTATION_EXPANDED_BOUNDS:
 	case USE_SPECIFIED_BOUNDS:
+	#if defined( L4D2 )
+	case USE_SEQUENCE_BOUNDS:
+	#endif
 		return false;
 
 	default:

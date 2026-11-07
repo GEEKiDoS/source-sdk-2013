@@ -74,7 +74,11 @@ static CEffectsClient s_EffectClient;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR(CEffectsClient, IEffects, IEFFECTS_INTERFACE_VERSION, s_EffectClient);
 IEffects *g_pEffects = &s_EffectClient;
 
-ConVar r_decals( "r_decals", "2048" );
+ConVar r_decals( "r_decals", "2048"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // constructor, destructor

@@ -16,7 +16,9 @@
 #include "saverestoretypes.h"
 #include "c_rumble.h"
 // NVNT haptics interface system
+#if !defined( L4D2 )
 #include "haptics/ihaptics.h"
+#endif // !L4D2
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -196,8 +198,20 @@ void CViewEffects::LevelInit( void )
 }
 
 
-static ConVar shake_show( "shake_show", "0", 0, "Displays a list of the active screen shakes." );
-static ConCommand shake_stop("shake_stop", CC_Shake_Stop, "Stops all active screen shakes.\n", FCVAR_CHEAT );
+static ConVar shake_show( "shake_show", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Displays a list of the active screen shakes." );
+static ConCommand shake_stop("shake_stop", CC_Shake_Stop, "Stops all active screen shakes.\n", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Stops all active screen shakes.
@@ -212,6 +226,9 @@ void CC_Shake_Stop()
 // Purpose: Apply noise to the eye position.
 // UNDONE: Feedback a bit of this into the view model position.  It shakes too much
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void CViewEffects::CalcShake( void )
 {
 	float	fraction, freq;
@@ -221,8 +238,10 @@ void CViewEffects::CalcShake( void )
 	m_flShakeAppliedAngle = 0;
 	float flRumbleAngle = 0;
 
+#if !defined( L4D2 )
 	// NVNT - haptic shake effect amplitude
 	float hapticShakeAmp = 0;
+#endif // !L4D2
 
 	bool bShow = shake_show.GetBool();
 
@@ -299,7 +318,12 @@ void CViewEffects::CalcShake( void )
 		{
 			angle = 1e8;
 		}
+#if defined( L4D2 )
+		// C1C0D66..71: FSIN and its product precede the recovered float store.
+		fraction = (float)( (double)fraction * sin( (double)angle ) );
+#else
 		fraction = fraction * sin( angle );
+#endif
 		
 		if( pShake->command != SHAKE_START_NORUMBLE )
 		{
@@ -320,16 +344,23 @@ void CViewEffects::CalcShake( void )
 
 		// Drop amplitude a bit, less for higher frequency shakes
 		pShake->amplitude -= pShake->amplitude * ( gpGlobals->frametime / (pShake->duration * pShake->frequency) );
+#if !defined( L4D2 )
 		// NVNT - update our amplitude.
 		hapticShakeAmp += pShake->amplitude*fraction;
+#endif // !L4D2
 	}
+#if !defined( L4D2 )
 	// NVNT - apply our screen shake update
 	if ( haptics )
 		haptics->SetShake(hapticShakeAmp,1);
+#endif // !L4D2
 
 	// Feed this to the rumble system!
 	UpdateScreenShakeRumble( flRumbleAngle );
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------

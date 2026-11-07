@@ -20,7 +20,9 @@
 #include "../hud_crosshair.h"
 #include "sourcevr/isourcevirtualreality.h"
 // NVNT haptic utils
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -53,7 +55,13 @@ BEGIN_DATADESC( C_PropVehicleDriveable )
 	DEFINE_EMBEDDED( m_ViewSmoothingData ),
 END_DATADESC()
 
-ConVar r_VehicleViewClamp( "r_VehicleViewClamp", "1", FCVAR_CHEAT );
+ConVar r_VehicleViewClamp( "r_VehicleViewClamp", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 #define ROLL_CURVE_ZERO		20		// roll less than this is clamped to zero
 #define ROLL_CURVE_LINEAR	90		// roll greater than this is copied out
@@ -147,14 +155,20 @@ void C_PropVehicleDriveable::OnDataChanged( DataUpdateType_t updateType )
 
 	if ( m_hPlayer && !m_hPrevPlayer )
 	{
+#if !defined( L4D2 )
 		OnEnteredVehicle( m_hPlayer );
+#endif // !L4D2
 		SetNextClientThink( CLIENT_THINK_ALWAYS );
+#if !defined( L4D2 )
 		g_ClientVirtualReality.AlignTorsoAndViewToWeapon();
+#endif
 	}
 	else if ( !m_hPlayer && m_hPrevPlayer )
 	{
+#if !defined( L4D2 )
 		// NVNT notify haptics system of navigation exit
 		OnExitedVehicle( m_hPrevPlayer );
+#endif // !L4D2
 		// They have just exited the vehicle.
 		// Sometimes we never reach the end of our exit anim, such as if the
 		// animation doesn't have fadeout 0 specified in the QC, so we fail to
@@ -253,6 +267,7 @@ void C_PropVehicleDriveable::DrawHudElements( )
 		{
 			float x, y;
 
+#if !defined( L4D2 )
 			if( UseVR() )
 			{
 				C_BasePlayer *pPlayer = (C_BasePlayer *)GetPassenger( VEHICLE_ROLE_DRIVER );
@@ -277,6 +292,7 @@ void C_PropVehicleDriveable::DrawHudElements( )
 				y = 0.5f * ( 1.0f - screen[1] ) * screenHeight + 0.5f;
 			}
 			else
+#endif
 			{
 				Vector screen;
 
@@ -403,6 +419,7 @@ void C_PropVehicleDriveable::UpdateViewAngles( C_BasePlayer *pLocalPlayer, CUser
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_PropVehicleDriveable::OnEnteredVehicle( C_BaseCombatCharacter *pPassenger )
 {
 #if defined( WIN32 ) && !defined( _X360 )
@@ -410,8 +427,10 @@ void C_PropVehicleDriveable::OnEnteredVehicle( C_BaseCombatCharacter *pPassenger
 	HapticsEnteredVehicle(this,pPassenger);
 #endif
 }
+#endif // !L4D2
 
 // NVNT - added function
+#if !defined( L4D2 )
 void C_PropVehicleDriveable::OnExitedVehicle( C_BaseCombatCharacter *pPassenger )
 {
 #if defined( WIN32 ) && !defined( _X360 )
@@ -419,4 +438,5 @@ void C_PropVehicleDriveable::OnExitedVehicle( C_BaseCombatCharacter *pPassenger 
 	HapticsExitedVehicle(this,pPassenger);
 #endif
 }
+#endif // !L4D2
 

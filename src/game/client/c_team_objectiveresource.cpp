@@ -1,10 +1,280 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
+#include "cbase.h"
+
+#if defined( L4D2 )
+#include "c_team_objectiveresource.h"
+#include "igameevents.h"
+#include "teamplay_gamerules.h"
+#include "c_baseplayer.h"
+
+// memdbgon must be the last include file in a .cpp file!!!
+#include "tier0/memdbgon.h"
+
+extern ConVar mp_capstyle;
+extern ConVar mp_capdeteriorate_time;
+
+C_BaseTeamObjectiveResource *g_pObjectiveResource = NULL;
+
+// C0A1C00 / C0A1C20 / C0A1C50. The native proxies use the singleton,
+// not pStruct, and Array3's element-local offset to recover the index.
+void RecvProxy_Owner( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	ObjectiveResource()->SetOwningTeam( pData->m_pRecvProp->GetOffset() / sizeof( int ), pData->m_Value.m_Int );
+}
+
+void RecvProxy_CappingTeam( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	ObjectiveResource()->SetCappingTeam( pData->m_pRecvProp->GetOffset() / sizeof( int ), pData->m_Value.m_Int );
+}
+
+void RecvProxy_CapLayout( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	ObjectiveResource()->SetCapLayout( pData->m_Value.m_pString );
+}
+
+// C0A1CB0: 29 raw RecvProps, including the two inside-array descriptors.
+IMPLEMENT_CLIENTCLASS_DT_NOBASE( C_BaseTeamObjectiveResource, DT_BaseTeamObjectiveResource, CBaseTeamObjectiveResource )
+	RecvPropInt( RECVINFO( m_iTimerToShowInHUD ) ),
+	RecvPropInt( RECVINFO( m_iStopWatchTimer ) ),
+	RecvPropInt( RECVINFO( m_iNumControlPoints ) ),
+	RecvPropBool( RECVINFO( m_bPlayingMiniRounds ) ),
+	RecvPropBool( RECVINFO( m_bControlPointsReset ) ),
+	RecvPropInt( RECVINFO( m_iUpdateCapHudParity ) ),
+	RecvPropArray( RecvPropVector( RECVINFO( m_vCPPositions[0] ) ), m_vCPPositions ),
+	RecvPropArray3( RECVINFO_ARRAY( m_bCPIsVisible ), RecvPropInt( RECVINFO( m_bCPIsVisible[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_flLazyCapPerc ), RecvPropFloat( RECVINFO( m_flLazyCapPerc[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iTeamIcons ), RecvPropInt( RECVINFO( m_iTeamIcons[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iTeamOverlays ), RecvPropInt( RECVINFO( m_iTeamOverlays[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iTeamReqCappers ), RecvPropInt( RECVINFO( m_iTeamReqCappers[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_flTeamCapTime ), RecvPropTime( RECVINFO( m_flTeamCapTime[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iPreviousPoints ), RecvPropInt( RECVINFO( m_iPreviousPoints[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_bTeamCanCap ), RecvPropBool( RECVINFO( m_bTeamCanCap[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iTeamBaseIcons ), RecvPropInt( RECVINFO( m_iTeamBaseIcons[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iBaseControlPoints ), RecvPropInt( RECVINFO( m_iBaseControlPoints[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_bInMiniRound ), RecvPropBool( RECVINFO( m_bInMiniRound[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iWarnOnCap ), RecvPropInt( RECVINFO( m_iWarnOnCap[0] ) ) ),
+	RecvPropArray( RecvPropString( RECVINFO( m_iszWarnSound[0] ) ), m_iszWarnSound ),
+	RecvPropArray3( RECVINFO_ARRAY( m_flPathDistance ), RecvPropFloat( RECVINFO( m_flPathDistance[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iNumTeamMembers ), RecvPropInt( RECVINFO( m_iNumTeamMembers[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iCappingTeam ), RecvPropInt( RECVINFO( m_iCappingTeam[0] ), 0, RecvProxy_CappingTeam ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iTeamInZone ), RecvPropInt( RECVINFO( m_iTeamInZone[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_bBlocked ), RecvPropInt( RECVINFO( m_bBlocked[0] ) ) ),
+	RecvPropArray3( RECVINFO_ARRAY( m_iOwner ), RecvPropInt( RECVINFO( m_iOwner[0] ), 0, RecvProxy_Owner ) ),
+	RecvPropString( RECVINFO( m_pszCapLayoutInHUD ), 0, RecvProxy_CapLayout ),
+END_RECV_TABLE()
+
+// C0A2330. C_BaseEntity::operator new already performs the native full clear.
+C_BaseTeamObjectiveResource::C_BaseTeamObjectiveResource()
+{
+	m_iNumControlPoints = 0;
+	m_iPrevNumControlPoints = 0;
+	m_pszCapLayoutInHUD[0] = 0;
+	m_iUpdateCapHudParity = 0;
+	m_bControlPointsReset = false;
+	for ( int i = 0; i < MAX_CONTROL_POINTS; ++i )
+	{
+		m_flCapTimeLeft[i] = 0.0f;
+		m_flCapLastThinkTime[i] = 0.0f;
+		m_flLastCapWarningTime[i] = 0.0f;
+		m_bWarnedOnFinalCap[i] = false;
+		m_iWarnOnCap[i] = CP_WARN_NORMAL;
+		m_iszWarnSound[i][0] = 0;
+		m_flLazyCapPerc[i] = 0.0f;
+		for ( int team = 0; team < MAX_CONTROL_POINT_TEAMS; ++team )
+		{
+			int teamIndex = TEAM_ARRAY( i, team );
+			m_iTeamIcons[teamIndex] = 0;
+			m_iTeamOverlays[teamIndex] = 0;
+			m_iTeamReqCappers[teamIndex] = 0;
+			m_flTeamCapTime[teamIndex] = 0.0f;
+			m_iNumTeamMembers[teamIndex] = 0;
+			for ( int point = 0; point < MAX_PREVIOUS_POINTS; ++point )
+			{
+				m_iPreviousPoints[point + i * MAX_PREVIOUS_POINTS + team * MAX_CONTROL_POINTS * MAX_PREVIOUS_POINTS] = -1;
+			}
+		}
+	}
+	for ( int team = 0; team < MAX_CONTROL_POINT_TEAMS; ++team )
+	{
+		m_iTeamBaseIcons[team] = 0;
+	}
+	g_pObjectiveResource = this;
+}
+
+// C0A2470; base destruction and scalar deletion are generated by C++.
+C_BaseTeamObjectiveResource::~C_BaseTeamObjectiveResource()
+{
+	g_pObjectiveResource = NULL;
+}
+
+// C0A1A60; the native IClientNetworkable receiver is complete-object +8.
+void C_BaseTeamObjectiveResource::OnPreDataChanged( DataUpdateType_t updateType )
+{
+	BaseClass::OnPreDataChanged( updateType );
+	m_iPrevNumControlPoints = m_iNumControlPoints;
+	m_iOldUpdateCapHudParity = m_iUpdateCapHudParity;
+	m_bOldControlPointsReset = m_bControlPointsReset;
+	memcpy( m_flOldLazyCapPerc, m_flLazyCapPerc, sizeof( float ) * m_iNumControlPoints );
+}
+
+#pragma float_control( precise, on, push )
+// C0A24C0: unordered lazy-percentage comparisons take the changed path.
+void C_BaseTeamObjectiveResource::OnDataChanged( DataUpdateType_t updateType )
+{
+	BaseClass::OnDataChanged( updateType );
+	if ( m_bOldControlPointsReset != m_bControlPointsReset || m_iNumControlPoints != m_iPrevNumControlPoints )
+	{
+		IGameEvent *event = gameeventmanager->CreateEvent( "controlpoint_initialized" );
+		if ( event )
+		{
+			gameeventmanager->FireEventClientSide( event );
+		}
+	}
+	if ( m_iUpdateCapHudParity != m_iOldUpdateCapHudParity )
+	{
+		UpdateControlPoint( "controlpoint_updateimages" );
+	}
+	for ( int i = 0; i < m_iNumControlPoints; ++i )
+	{
+		if ( m_flOldLazyCapPerc[i] != m_flLazyCapPerc[i] )
+		{
+			m_flCapTimeLeft[i] = m_flLazyCapPerc[i] * m_flTeamCapTime[TEAM_ARRAY( i, m_iCappingTeam[i] )];
+		}
+	}
+}
+#pragma float_control( pop )
+
+// This helper is inlined at each native call site.
+void C_BaseTeamObjectiveResource::UpdateControlPoint( const char *pszEvent, int index )
+{
+	IGameEvent *event = gameeventmanager->CreateEvent( pszEvent );
+	if ( event )
+	{
+		event->SetInt( "index", index );
+		gameeventmanager->FireEventClientSide( event );
+	}
+}
+
+// C0A1AC0.
+void C_BaseTeamObjectiveResource::SetOwningTeam( int index, int team )
+{
+	if ( team == m_iCappingTeam[index] )
+	{
+		m_iCappingTeam[index] = TEAM_UNASSIGNED;
+		m_flCapTimeLeft[index] = 0.0f;
+		m_flCapLastThinkTime[index] = 0.0f;
+	}
+	m_iOwner[index] = team;
+	UpdateControlPoint( "controlpoint_updateowner", index );
+}
+
+#pragma float_control( precise, on, push )
+// C0A1B40.
+void C_BaseTeamObjectiveResource::SetCappingTeam( int index, int team )
+{
+	if ( team != GetOwningTeam( index ) && team > LAST_SHARED_TEAM )
+	{
+		m_flCapTimeLeft[index] = m_flTeamCapTime[TEAM_ARRAY( index, team )];
+	}
+	else
+	{
+		m_flCapTimeLeft[index] = 0.0f;
+	}
+	m_iCappingTeam[index] = team;
+	m_bWarnedOnFinalCap[index] = false;
+	m_flCapLastThinkTime[index] = gpGlobals->curtime;
+	SetNextClientThink( (float)( (double)gpGlobals->curtime + 0.1 ) );
+	UpdateControlPoint( "controlpoint_updatecapping", index );
+}
+#pragma float_control( pop )
+
+// Inlined into C0A1C50.
+void C_BaseTeamObjectiveResource::SetCapLayout( const char *pszLayout )
+{
+	Q_strncpy( m_pszCapLayoutInHUD, pszLayout, MAX_CAPLAYOUT_LENGTH );
+	UpdateControlPoint( "controlpoint_updatelayout" );
+}
+
+#pragma float_control( precise, on, push )
+// C0A25C0; native IClientThinkable receiver is complete-object +12.
+void C_BaseTeamObjectiveResource::ClientThink()
+{
+	BaseClass::ClientThink();
+	for ( int i = 0; i < MAX_CONTROL_POINTS; ++i )
+	{
+		if ( m_flCapTimeLeft[i] != 0.0f )
+		{
+			if ( !m_bBlocked[i] )
+			{
+				bool deteriorateNormally = true;
+				int playersCapping = m_iNumTeamMembers[TEAM_ARRAY( i, GetTeamInZone( i ) )];
+				if ( playersCapping > 0 )
+				{
+					float reduction = gpGlobals->curtime - m_flCapLastThinkTime[i];
+					if ( mp_capstyle.GetInt() == 1 )
+					{
+						for ( int player = 1; player < playersCapping; ++player )
+						{
+							reduction += ( gpGlobals->curtime - m_flCapLastThinkTime[i] ) / (float)( player + 1 );
+						}
+					}
+					if ( GetTeamInZone( i ) == m_iCappingTeam[i] )
+					{
+						deteriorateNormally = false;
+						m_flCapTimeLeft[i] -= reduction;
+						if ( !m_bWarnedOnFinalCap[i] )
+						{
+							// Native iterates valid split-screen users; target has one slot.
+							C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+							if ( player && m_iCappingTeam[i] != TEAM_UNASSIGNED &&
+								player->GetTeamNumber() != m_iCappingTeam[i] &&
+								m_iWarnOnCap[i] == CP_WARN_FINALCAP &&
+								gpGlobals->curtime > m_flLastCapWarningTime[i] + 5.0f )
+							{
+								player->EmitSound( m_iszWarnSound[i], 0.0f, NULL );
+								m_bWarnedOnFinalCap[i] = true;
+								m_flLastCapWarningTime[i] = gpGlobals->curtime;
+							}
+						}
+					}
+					else if ( GetOwningTeam( i ) == TEAM_UNASSIGNED && GetTeamInZone( i ) != TEAM_UNASSIGNED )
+					{
+						deteriorateNormally = false;
+						m_flCapTimeLeft[i] += reduction;
+					}
+				}
+				if ( deteriorateNormally )
+				{
+					if ( TeamplayGameRules() && TeamplayGameRules()->TeamMayCapturePoint( m_iCappingTeam[i], i ) )
+					{
+						float capLength = m_flTeamCapTime[TEAM_ARRAY( i, m_iCappingTeam[i] )];
+						float decrease = ( capLength / mp_capdeteriorate_time.GetFloat() ) *
+							( gpGlobals->curtime - m_flCapLastThinkTime[i] );
+						// Native's InOvertime reads a wrong-derived object at +44.
+						// Ledger minimal-undefined-step rule: omit only that multiply.
+						m_flCapTimeLeft[i] += decrease;
+					}
+					else
+					{
+						m_flCapTimeLeft[i] = 0.0f;
+					}
+					m_bWarnedOnFinalCap[i] = false;
+				}
+			}
+			UpdateControlPoint( "controlpoint_updatelayout", i );
+			m_flCapLastThinkTime[i] = gpGlobals->curtime;
+		}
+	}
+	SetNextClientThink( (float)( (double)gpGlobals->curtime + 0.1 ) );
+}
+#pragma float_control( pop )
+#else
+//========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: An entity that networks the state of the game's objectives.
 //
 //=============================================================================
 
-#include "cbase.h"
 #include "c_team_objectiveresource.h"
 #include "igameevents.h"
 #include "teamplayroundbased_gamerules.h"
@@ -462,3 +732,4 @@ void C_BaseTeamObjectiveResource::ClientThink()
 
 	SetNextClientThink( gpGlobals->curtime + RESOURCE_THINK_TIME );
 }
+#endif // L4D2

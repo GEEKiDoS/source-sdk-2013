@@ -35,6 +35,9 @@
 #include "c_te_effect_dispatch.h"
 #include "c_props.h"
 #include "c_basedoor.h"
+#if defined( L4D2 )
+#include "cliententitylist.h"
+#endif
 
 // NOTE: Always include this last!
 #include "tier0/memdbgon.h"
@@ -45,6 +48,7 @@ extern ConVar muzzleflash_light;
 
 //Precache the effects
 #ifndef TF_CLIENT_DLL
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectMuzzleFlash )
 
 	CLIENTEFFECT_MATERIAL( "effects/muzzleflash1" )
@@ -63,14 +67,29 @@ CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectMuzzleFlash )
 	CLIENTEFFECT_MATERIAL( "effects/strider_muzzle" )
 #endif
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 #endif
 
 //Whether or not to eject brass from weapons
-ConVar cl_ejectbrass( "cl_ejectbrass", "1" );
+ConVar cl_ejectbrass( "cl_ejectbrass", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
-ConVar func_break_max_pieces( "func_break_max_pieces", "15", FCVAR_ARCHIVE | FCVAR_REPLICATED );
+ConVar func_break_max_pieces( "func_break_max_pieces", "15", 
+#if defined( L4D2 )
+	0x00002088
+#else
+	FCVAR_ARCHIVE | FCVAR_REPLICATED
+#endif
+ );
 
-ConVar cl_fasttempentcollision( "cl_fasttempentcollision", "5" );
+ConVar cl_fasttempentcollision( "cl_fasttempentcollision", "5"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 #if !defined( HL1_CLIENT_DLL )		// HL1 implements a derivative of CTempEnts
 // Temp entity interface
@@ -1097,6 +1116,9 @@ void CTempEnts::BreakModel( const Vector &pos, const QAngle &angles, const Vecto
 	}
 }
 
+#if defined( L4D2 )
+#include "l4d2/effects/terror_physicsprop_tempents.inc"
+#else
 void CTempEnts::PhysicsProp( int modelindex, int skin, const Vector& pos, const QAngle& angles, const Vector& vel, int physFlags, int physEffects )
 {
 	const model_t* model = modelinfo->GetModel( modelindex );
@@ -1175,6 +1197,7 @@ C_PhysPropClientside *CTempEnts::PhysicsProp( const model_t *model, int skin, co
 
 	return pEntity;
 }
+#endif // L4D2 native PhysicsProp
 
 //-----------------------------------------------------------------------------
 // Purpose: Create a clientside projectile

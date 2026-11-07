@@ -37,6 +37,9 @@ public:
 	virtual IViewPortPanel* FindPanelByName(const char *szPanelName);
 	virtual IViewPortPanel* GetActivePanel( void );
 	virtual void RemoveAllPanels( void);
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void RecreatePanel( const char *name );
+#endif
 
 	virtual void ShowPanel( const char *pName, bool state );
 	virtual void ShowPanel( IViewPortPanel* pPanel, bool state );

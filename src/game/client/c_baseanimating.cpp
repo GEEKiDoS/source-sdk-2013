@@ -50,6 +50,11 @@
 #include "bonetoworldarray.h"
 #include "posedebugger.h"
 #include "tier0/icommandline.h"
+#if defined( L4D2 )
+#include <xmmintrin.h>
+#include "tier1/utlmap.h"
+#include "tier1/utlstring.h"
+#endif
 #include "prediction.h"
 #include "replay/replay_ragdoll.h"
 #include "studio_stats.h"
@@ -61,11 +66,159 @@
 #include "tf_gamerules.h"
 #endif
 
+#if defined( L4D2 )
+#include "l4d2/infected/common/c_infected.h"
+#include "l4d2/effects/terror_materials.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "l4d2/effects/terror_glow_render.h"
+#include "glow_outline_effect.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
+#if defined( L4D2 )
+static ConVar r_jiggle_bones( "r_jiggle_bones", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#endif
 
-static ConVar cl_SetupAllBones( "cl_SetupAllBones", "0" );
+
+static ConVar cl_SetupAllBones( "cl_SetupAllBones", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+#if defined( L4D2 )
+ConVar r_sequence_debug( "r_sequence_debug", "", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ ); // Native104F9620 input0; sole AE8D normalization.
+#else
 ConVar r_sequence_debug( "r_sequence_debug", "" );
+#endif
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+
+class CSequenceDebugHistory
+{
+public:
+	CSequenceDebugHistory() : m_nCurrent( 0 ), m_nLastTick( 0 )
+	{
+		m_Frames[0].SetLessFunc( &CSequenceDebugHistory::NameLess );
+		m_Frames[1].SetLessFunc( &CSequenceDebugHistory::NameLess );
+	}
+	~CSequenceDebugHistory()
+	{
+		// Native explicit reverse array destruction. Purge here, so later
+		// automatic map destruction sees empty stores, not a second key owner.
+		ClearFrame( 1 );
+		m_Frames[1].Purge();
+		ClearFrame( 0 );
+		m_Frames[0].Purge();
+	}
+
+	// Whole3B810 / insertion3B780. Native keys own one strdup, tags one genuine
+	// CUtlString. NULL keys insert without lookup; NULL tags mean the empty string.
+	void Record( float time, const char *sequence, float cycle, float weight, const char *tag )
+	{
+		Frame_t &frame = m_Frames[m_nCurrent];
+		int index = sequence ? frame.Find( sequence ) : frame.InvalidIndex();
+		if ( index == frame.InvalidIndex() )
+		{
+			char *key = sequence ? strdup( sequence ) : NULL;
+			index = frame.Insert( key );
+		}
+		Record_t &record = frame[index];
+		record.m_flTime = time;
+		record.m_flCycle = cycle;
+		record.m_flWeight = weight;
+		record.m_Tag = tag ? tag : "";
+	}
+
+	// Whole3B8D0. GP+24 is TICKCOUNT, not framecount. Initial lastTick0 and
+	// buffer0 are real constructor stores; no synthetic initial−1/reset.
+	void Display()
+	{
+		if ( gpGlobals->tickcount == m_nLastTick )
+			return;
+		m_nLastTick = gpGlobals->tickcount;
+		Frame_t &current = m_Frames[m_nCurrent];
+		Frame_t &previous = m_Frames[1 - m_nCurrent];
+		for ( int i = current.FirstInorder(); i != current.InvalidIndex(); i = current.NextInorder( i ) )
+		{
+			const Record_t &record = current[i];
+			const char *name = current.Key( i );
+			float previousCycle = record.m_flCycle;
+			if ( name )
+			{
+				const int old = previous.Find( name );
+				if ( old != previous.InvalidIndex() )
+					previousCycle = previous[old].m_flCycle;
+			}
+			float difference = record.m_flCycle - previousCycle;
+			if ( !( difference >= 0.0f ) && record.m_flCycle < 0.5f && previousCycle > 0.5f )
+				difference = difference + 1.0f;
+			const char *format = difference >= 0.0f ?
+				"    %8.4f : %30s : %5.3f [%5.3f]: %4.2f %s\n" :
+				"--- %8.4f : %30s : %5.3f [%5.3f]: %4.2f %s\n";
+			DevMsgRT( format, record.m_flTime, name, record.m_flCycle, difference,
+				record.m_flWeight, record.m_Tag.String() );
+		}
+		m_nCurrent = 1 - m_nCurrent;
+		ClearFrame( m_nCurrent ); // Actual3B1C0: frees keys/values, retains allocation.
+	}
+
+private:
+	struct Record_t
+	{
+		// Native POD is not ctor-initialized; Record writes all three before use.
+		float m_flTime;
+		float m_flCycle;
+		float m_flWeight;
+		CUtlString m_Tag;
+	};
+	typedef CUtlMap< const char *, Record_t, int > Frame_t;
+	static bool NameLess( const char * const &left, const char * const &right )
+	{
+		// Whole062F0: case-insensitive names; NULL sorts last, not by pointer.
+		if ( !left )
+			return false;
+		return right ? V_stricmp( left, right ) < 0 : true;
+	}
+	void ClearFrame( int slot )
+	{
+		Frame_t &frame = m_Frames[slot];
+		for ( int i = frame.FirstInorder(); i != frame.InvalidIndex(); i = frame.NextInorder( i ) )
+			free( const_cast< char * >( frame.Key( i ) ) );
+		frame.RemoveAll();
+	}
+	Frame_t m_Frames[2];
+	int m_nCurrent;
+	int m_nLastTick;
+};
+
+static CSequenceDebugHistory g_SequenceDebugHistory;
+
+// Whole3BA80 external wrapper. Real internal3BDF0/3C050 and external3DFD0(x3)/
+//3E390(x1) call sites all migrate to this SAME owner, before3C380 Display.
+void RecordSequenceDebug( float time, const char *sequence, float cycle, float weight, const char *tag )
+{
+	g_SequenceDebugHistory.Record( time, sequence, cycle, weight, tag );
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
 
 // If an NPC is moving faster than this, he should play the running footstep sound
 const float RUN_SPEED_ESTIMATE_SQR = 150.0f * 150.0f;
@@ -88,7 +241,13 @@ C_EntityFlame *FireEffect( C_BaseAnimating *pTarget, C_BaseEntity *pServerFire, 
 bool NPC_IsImportantNPC( C_BaseAnimating *pAnimating );
 void VCollideWireframe_ChangeCallback( IConVar *pConVar, char const *pOldString, float flOldValue );
 
-ConVar vcollide_wireframe( "vcollide_wireframe", "0", FCVAR_CHEAT, "Render physics collision models in wireframe", VCollideWireframe_ChangeCallback );
+ConVar vcollide_wireframe( "vcollide_wireframe", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Render physics collision models in wireframe", VCollideWireframe_ChangeCallback );
 
 bool C_AnimationLayer::IsActive( void )
 {
@@ -178,31 +337,44 @@ IMPLEMENT_CLIENTCLASS_DT(C_BaseAnimating, DT_BaseAnimating, CBaseAnimating)
 	RecvPropInt(RECVINFO(m_nHitboxSet)),
 
 	RecvPropFloat(RECVINFO(m_flModelScale)),
+#if !defined( L4D2 )
 	RecvPropFloat(RECVINFO_NAME(m_flModelScale, m_flModelWidthScale)), // for demo compatibility only
+#endif
 
 //	RecvPropArray(RecvPropFloat(RECVINFO(m_flPoseParameter[0])), m_flPoseParameter),
 	RecvPropArray3(RECVINFO_ARRAY(m_flPoseParameter), RecvPropFloat(RECVINFO(m_flPoseParameter[0])) ),
 	
 	RecvPropFloat(RECVINFO(m_flPlaybackRate)),
 
+
 	RecvPropArray3( RECVINFO_ARRAY(m_flEncodedController), RecvPropFloat(RECVINFO(m_flEncodedController[0]))),
 
 	RecvPropInt( RECVINFO( m_bClientSideAnimation )),
 	RecvPropInt( RECVINFO( m_bClientSideFrameReset )),
+#if defined( L4D2 )
+	RecvPropBool( RECVINFO( m_bClientSideRagdoll ) ),
+#endif
 
 	RecvPropInt( RECVINFO( m_nNewSequenceParity )),
 	RecvPropInt( RECVINFO( m_nResetEventsParity )),
 	RecvPropInt( RECVINFO( m_nMuzzleFlashParity ) ),
 
 	RecvPropEHandle(RECVINFO(m_hLightingOrigin)),
+#if !defined( L4D2 )
 	RecvPropEHandle(RECVINFO(m_hLightingOriginRelative)),
+#endif
 
 	RecvPropDataTable( "serveranimdata", 0, 0, &REFERENCE_RECV_TABLE( DT_ServerAnimationData ) ),
 
+#if !defined( L4D2 )
 	RecvPropFloat( RECVINFO( m_fadeMinDist ) ), 
 	RecvPropFloat( RECVINFO( m_fadeMaxDist ) ), 
 	RecvPropFloat( RECVINFO( m_flFadeScale ) ), 
+#endif
 
+#if defined( L4D2 )
+	RecvPropFloat( RECVINFO( m_flFrozen ) ),
+#endif
 END_RECV_TABLE()
 
 BEGIN_PREDICTION_DATA( C_BaseAnimating )
@@ -211,9 +383,16 @@ BEGIN_PREDICTION_DATA( C_BaseAnimating )
 	DEFINE_PRED_FIELD( m_nBody, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 //	DEFINE_PRED_FIELD( m_nHitboxSet, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
 //	DEFINE_PRED_FIELD( m_flModelScale, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
+	// Native C2B610 does not predict the base sequence or cycle. Players
+	// receive their main sequence and advance its cycle outside prediction;
+	// weapons and viewmodels declare their own prediction fields.
+#if !defined( L4D2 )
 	DEFINE_PRED_FIELD( m_nSequence, FIELD_INTEGER, FTYPEDESC_INSENDTABLE | FTYPEDESC_NOERRORCHECK ),
+#endif
 	DEFINE_PRED_FIELD( m_flPlaybackRate, FIELD_FLOAT, FTYPEDESC_INSENDTABLE | FTYPEDESC_NOERRORCHECK ),
+#if !defined( L4D2 )
 	DEFINE_PRED_FIELD( m_flCycle, FIELD_FLOAT, FTYPEDESC_INSENDTABLE | FTYPEDESC_NOERRORCHECK ),
+#endif
 //	DEFINE_PRED_ARRAY( m_flPoseParameter, FIELD_FLOAT, MAXSTUDIOPOSEPARAM, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_ARRAY_TOL( m_flEncodedController, FIELD_FLOAT, MAXSTUDIOBONECTRLS, FTYPEDESC_INSENDTABLE, 0.02f ),
 
@@ -288,6 +467,12 @@ C_ClientRagdoll::C_ClientRagdoll( bool bRestoring )
 	m_bFadeOut = false;
 	m_bFadingOut = false;
 	m_bImportant = false;
+#if defined( L4D2 )
+	m_ragdollType = 1;
+	m_flGibExpireTime = 0.0f; // Native C3CD90 this[607]=0; material fields remain allocator-zero.
+	m_bForceShadowType = false; // C3CD90, unsaved native2580/2584.
+	m_forcedShadowType = SHADOWS_NONE;
+#endif
 	m_bNoModelParticles = false;
 
 	SetClassname("client_ragdoll");
@@ -298,10 +483,47 @@ C_ClientRagdoll::C_ClientRagdoll( bool bRestoring )
 	}
 }
 
+#if defined( L4D2 )
+// C330C0: an explicit corpse override survives the live actor's shadow LOD.
+ShadowType_t C_ClientRagdoll::ShadowCastType()
+{
+	if ( IsEffectActive( EF_NOSHADOW ) )
+		return SHADOWS_NONE;
+	if ( m_bForceShadowType )
+		return m_forcedShadowType;
+	return BaseClass::ShadowCastType();
+}
+
+// C2B640: changing policy replaces the actual shadow, not just its dirty bit.
+void C_ClientRagdoll::ForceShadowCastType( bool force, ShadowType_t shadowType )
+{
+	m_forcedShadowType = shadowType;
+	m_bForceShadowType = force;
+	DestroyShadow();
+	CreateShadow();
+}
+#endif
+
 void C_ClientRagdoll::OnSave( void )
 {
 }
 
+#if defined( L4D2 )
+void C_ClientRagdoll::OnRestore()
+{
+	CStudioHdr *header = GetModelPtr();
+	if ( !header )
+	{
+		SetModelPointer( GetModel() );
+		header = GetModelPtr();
+	}
+	if ( header && m_pRagdoll )
+	{
+		m_bReleaseRagdoll = true;
+		m_pRagdoll = NULL;
+	}
+}
+#else
 void C_ClientRagdoll::OnRestore( void )
 {
 	CStudioHdr *hdr = GetModelPtr();
@@ -377,6 +599,7 @@ void C_ClientRagdoll::OnRestore( void )
 
 	RagdollMoved();
 }
+#endif
 
 void C_ClientRagdoll::ImpactTrace( trace_t *pTrace, int iDamageType, const char *pCustomImpactName )
 {
@@ -412,8 +635,13 @@ void C_ClientRagdoll::ImpactTrace( trace_t *pTrace, int iDamageType, const char 
 	m_pRagdoll->ResetRagdollSleepAfterTime();
 }
 
+#if defined( L4D2 )
+ConVar g_debug_ragdoll_visualize( "g_debug_ragdoll_visualize", "0", 0x00004008 );
+#else
 ConVar g_debug_ragdoll_visualize( "g_debug_ragdoll_visualize", "0", FCVAR_CHEAT );
+#endif
 
+#if !defined( L4D2 )
 void C_ClientRagdoll::HandleAnimatedFriction( void )
 {
 	if ( m_iFrictionAnimState == RAGDOLL_FRICTION_OFF )
@@ -511,9 +739,18 @@ void C_ClientRagdoll::HandleAnimatedFriction( void )
 			pPhysicsObject->Wake();
 	}
 }
+#endif
 
+#if defined( L4D2 )
+ConVar g_ragdoll_fadespeed( "g_ragdoll_fadespeed", "600", 0x0000000A );
+ConVar g_ragdoll_lvfadespeed( "g_ragdoll_lvfadespeed", "100", 0x0000000A );
+#else
 ConVar g_ragdoll_fadespeed( "g_ragdoll_fadespeed", "600" );
 ConVar g_ragdoll_lvfadespeed( "g_ragdoll_lvfadespeed", "100" );
+#endif
+#if defined( L4D2 )
+#include "l4d2/effects/terror_client_ragdoll.inc"
+#endif
 
 void C_ClientRagdoll::OnPVSStatusChanged( bool bInPVS )
 {
@@ -527,6 +764,7 @@ void C_ClientRagdoll::OnPVSStatusChanged( bool bInPVS )
 	}
 }
 
+#if !defined( L4D2 )
 void C_ClientRagdoll::FadeOut( void )
 {
 	if ( m_bFadingOut == false )
@@ -547,6 +785,7 @@ void C_ClientRagdoll::FadeOut( void )
 		m_bReleaseRagdoll = true;
 	}
 }
+#endif
 
 void C_ClientRagdoll::SUB_Remove( void )
 {
@@ -554,6 +793,7 @@ void C_ClientRagdoll::SUB_Remove( void )
 	SetNextClientThink( CLIENT_THINK_ALWAYS );
 }
 
+#if !defined( L4D2 )
 void C_ClientRagdoll::ClientThink( void )
 {
 	if ( m_bReleaseRagdoll == true )
@@ -580,6 +820,7 @@ void C_ClientRagdoll::ClientThink( void )
 
 	FadeOut();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: clear out any face/eye values stored in the material system
@@ -697,6 +938,9 @@ C_BaseAnimating::C_BaseAnimating() :
 	m_iMostRecentBoneSetupRequest = g_iPreviousBoneCounter - 1;
 	m_flLastBoneSetupTime = -FLT_MAX;
 
+#if defined( L4D2 )
+	m_nEjectBrassAttachment = -1;
+#endif
 	m_vecPreRagdollMins = vec3_origin;
 	m_vecPreRagdollMaxs = vec3_origin;
 
@@ -745,6 +989,12 @@ C_BaseAnimating::C_BaseAnimating() :
 	Q_memset(&m_mouth, 0, sizeof(m_mouth));
 	m_flCycle = 0;
 	m_flOldCycle = 0;
+#if defined( L4D2 )
+	m_flPreviousFrameAnimTime = 0.0f;
+#endif
+#if defined( L4D2 )
+	GlowProp()->Init( this ); // Native392D0 final operation; not root Clear().
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -776,6 +1026,9 @@ C_BaseAnimating::~C_BaseAnimating()
 
 	InvalidateMdlCache();
 
+#if defined( L4D2 )
+	GlowProp()->Term(); // Native3BC38, after studio-hdr cleanup, before attachments/base.
+#endif
 	// Kill off anything bone attached to us.
 	DestroyBoneAttachments();
 
@@ -831,9 +1084,11 @@ ShadowType_t C_BaseAnimating::ShadowCastType()
 		  
 	if ( !IsRagdoll() )
 	{
+#if !defined( L4D2 )
 		// If we have pose parameters, always update
 		if ( pStudioHdr->GetNumPoseParameters() > 0 )
 			return SHADOWS_RENDER_TO_TEXTURE_DYNAMIC;
+#endif // C2F230 tests bone controllers and IK, not pose parameters.
 		
 		// If we have bone controllers, always update
 		if ( pStudioHdr->numbonecontrollers() > 0 )
@@ -887,11 +1142,20 @@ void C_BaseAnimating::UpdateRelevantInterpolatedVars()
 void C_BaseAnimating::AddBaseAnimatingInterpolatedVars()
 {
 	AddVar( m_flEncodedController, &m_iv_flEncodedController, LATCH_ANIMATION_VAR, true );
+#if !defined( L4D2 )
 	AddVar( m_flPoseParameter, &m_iv_flPoseParameter, LATCH_ANIMATION_VAR, true );
+#endif
 	
 	int flags = LATCH_ANIMATION_VAR;
 	if ( m_bClientSideAnimation )
 		flags |= EXCLUDE_AUTO_INTERPOLATE;
+
+#if defined( L4D2 )
+	// Native C2B770 excludes both client-controlled poses and cycle from
+	// automatic interpolation. Interpolating poses fights the animation
+	// state's per-frame aim smoothing and makes survivor arms shake.
+	AddVar( m_flPoseParameter, &m_iv_flPoseParameter, flags, true );
+#endif
 		
 	AddVar( &m_flCycle, &m_iv_flCycle, flags, true );
 }
@@ -1070,6 +1334,9 @@ CStudioHdr *C_BaseAnimating::OnNewModel()
 	CStudioHdr *hdr = GetModelPtr();
 	if (hdr == NULL)
 		return NULL;
+	#if defined( L4D2 )
+	Terror_PrepareModelMaterials( GetModel() );
+	#endif
 
 	InvalidateBoneCache();
 	if ( m_pBoneMergeCache )
@@ -1155,7 +1422,11 @@ CStudioHdr *C_BaseAnimating::OnNewModel()
 
 	// If we didn't have a model before, then we might need to go in the interpolation list now.
 	if ( ShouldInterpolate() )
+#if defined( L4D2 )
+		AddToEntityList( ENTITY_LIST_INTERPOLATE );
+#else
 		AddToInterpolationList();
+#endif
 
 	// objects with attachment points need to be queryable even if they're not solid
 	if ( hdr->GetNumAttachments() != 0 )
@@ -1184,6 +1455,9 @@ CStudioHdr *C_BaseAnimating::OnNewModel()
 	}
 
 	UpdateRelevantInterpolatedVars();
+#if defined( L4D2 )
+	OnModelPoseParametersChanged(); // Native3B71C/3B724 immediately before return model.
+#endif
 		
 	return hdr;
 }
@@ -1258,6 +1532,9 @@ void C_BaseAnimating::InitModelEffects( void )
 {
 	m_bInitModelEffects = true;
 	m_bDelayInitModelEffects = true;
+#if defined( L4D2 )
+	AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 	TermRopes();
 	ParticleProp()->StopParticlesInvolving( this );
 	m_bHasAttachedParticles = false;
@@ -1381,6 +1658,21 @@ void C_BaseAnimating::GetBoneControllers(float controllers[MAXSTUDIOBONECTRLS])
 	}
 }
 
+#if defined( L4D2 )
+double C_BaseAnimating::GetPoseParameter( CStudioHdr *studio, int index )
+{
+	if ( studio->GetNumPoseParameters() < index )
+		return 0.0;
+	if ( index < 0 )
+		return 0.0;
+	// C2B820/C2B844: retain the native inclusive bound and typed load. The only
+	// two native callers are C313B60; both test cached indices >=0, and Lookup-
+	// PoseParameter yields at most23. The fixed24-float array remains in bounds
+	// even when a new model's NumPose equals an OLD cached index. Main decisionA.
+	return Studio_GetPoseParameter( studio, index, m_flPoseParameter[index] );
+}
+
+#endif
 float C_BaseAnimating::GetPoseParameter( int iPoseParameter )
 {
 	CStudioHdr *pStudioHdr = GetModelPtr();
@@ -1428,6 +1720,34 @@ void C_BaseAnimating::GetPoseParameters( CStudioHdr *pStudioHdr, float poseParam
 }
 
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// Whole C2B860. This is the existing canonical helper, not a second clamp API.
+float C_BaseAnimating::ClampCycle( float cycle, bool looping )
+{
+	if ( looping )
+	{
+		const int whole = _mm_cvttss_si32( _mm_set_ss( cycle ) );
+		cycle = cycle - static_cast< float >( whole );
+		if ( cycle < 0.0f )
+			cycle = cycle + 1.0f;
+	}
+	else if ( cycle > 0.99900001f )
+	{
+		cycle = 0.99900001f;
+	}
+	else if ( cycle < 0.0f )
+	{
+		cycle = 0.0f;
+	}
+	return cycle;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float C_BaseAnimating::ClampCycle( float flCycle, bool isLooping )
 {
 	if (isLooping) 
@@ -1445,6 +1765,8 @@ float C_BaseAnimating::ClampCycle( float flCycle, bool isLooping )
 	}
 	return flCycle;
 }
+
+#endif
 
 
 void C_BaseAnimating::GetCachedBoneMatrix( int boneIndex, matrix3x4_t &out )
@@ -1542,8 +1864,21 @@ void C_BaseAnimating::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quater
 			Assert( fabs( pos[i].y ) < 100000 );
 			Assert( fabs( pos[i].z ) < 100000 );
 
+			#if defined( L4D2 )
+			if ( (hdr->boneFlags( i ) & BONE_ALWAYS_PROCEDURAL) &&
+				(hdr->pBone( i )->proctype & STUDIO_PROC_JIGGLE) &&
+				!r_jiggle_bones.GetBool() && m_pJiggleBones )
+			{
+				delete m_pJiggleBones;
+				m_pJiggleBones = NULL;
+			}
+#endif
 			if ( (hdr->boneFlags( i ) & BONE_ALWAYS_PROCEDURAL) && 
-				 (hdr->pBone( i )->proctype & STUDIO_PROC_JIGGLE) )
+				 (hdr->pBone( i )->proctype & STUDIO_PROC_JIGGLE)
+#if defined( L4D2 )
+				&& r_jiggle_bones.GetBool() && m_bJiggleBonesEnabled
+#endif
+			)
 			{
 				//
 				// Physics-based "jiggle" bone
@@ -1583,7 +1918,13 @@ void C_BaseAnimating::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quater
 				}
 
 				// do jiggle physics
-				m_pJiggleBones->BuildJiggleTransformations( i, gpGlobals->realtime, jiggleInfo, goalMX, GetBoneForWrite( i ), this->ShouldFlipViewModel() );
+				m_pJiggleBones->BuildJiggleTransformations( i,
+#if defined( L4D2 )
+					gpGlobals->curtime,
+#else
+					gpGlobals->realtime,
+#endif
+					jiggleInfo, goalMX, GetBoneForWrite( i ), this->ShouldFlipViewModel() );
 
 			}
 			else if (hdr->boneParent(i) == -1) 
@@ -1812,6 +2153,45 @@ CollideType_t C_BaseAnimating::GetCollideType( void )
 //-----------------------------------------------------------------------------
 // Purpose: if the active sequence changes, keep track of the previous ones and decay them based on their decay rate
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimating::MaintainSequenceTransitions( IBoneSetup &boneSetup, float cycle, Vector pos[], Quaternion q[] )
+{
+	CStudioHdr *studio = boneSetup.GetStudioHdr();
+	if ( !studio )
+		return;
+	if ( prediction->InPrediction() )
+	{
+		m_nPrevNewSequenceParity = m_nNewSequenceParity;
+		return;
+	}
+	m_SequenceTransitioner.CheckForSequenceChange( studio, GetSequence(),
+		m_nNewSequenceParity != m_nPrevNewSequenceParity, !IsEffectActive( EF_NOINTERP ) );
+	m_nPrevNewSequenceParity = m_nNewSequenceParity;
+	const float playback = static_cast< float >( GetEffectivePlaybackRate() );
+	m_SequenceTransitioner.UpdateCurrent( studio, GetSequence(), cycle, playback, gpGlobals->curtime );
+	for ( int i = m_SequenceTransitioner.m_animationQueue.Count() - 2; i >= 0; --i )
+	{
+		C_AnimationLayer *layer = &m_SequenceTransitioner.m_animationQueue[i];
+		const float elapsed = gpGlobals->curtime - layer->m_flLayerAnimtime;
+		const float rate = GetSequenceCycleRate( studio, layer->m_nSequence );
+		cycle = static_cast< float >( static_cast< double >( rate ) *
+			( static_cast< double >( layer->m_flPlaybackRate ) * static_cast< double >( elapsed ) ) +
+			static_cast< double >( layer->m_flCycle ) );
+		cycle = ClampCycle( cycle, IsSequenceLooping( studio, layer->m_nSequence ) );
+		if ( r_sequence_debug.GetInt() == entindex() )
+			RecordSequenceDebug( gpGlobals->curtime, studio->pSeqdesc( layer->m_nSequence ).pszLabel(),
+				cycle, static_cast< float >( layer->m_flWeight ), "+" );
+		boneSetup.AccumulatePose( pos, q, layer->m_nSequence, cycle, layer->m_flWeight,
+			gpGlobals->curtime, m_pIk );
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseAnimating::MaintainSequenceTransitions( IBoneSetup &boneSetup, float flCycle, Vector pos[], Quaternion q[] )
 {
 	VPROF( "C_BaseAnimating::MaintainSequenceTransitions" );
@@ -1863,6 +2243,8 @@ void C_BaseAnimating::MaintainSequenceTransitions( IBoneSetup &boneSetup, float 
 		boneSetup.AccumulatePose( pos, q, blend->m_nSequence, flCycle, blend->m_flWeight, gpGlobals->curtime, m_pIk );
 	}
 }
+
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1974,11 +2356,16 @@ void C_BaseAnimating::StandardBlendingRules( CStudioHdr *hdr, Vector pos[], Quat
 	// build root animation
 	float fCycle = GetCycle();
 
+#if defined( L4D2 )
+	if ( r_sequence_debug.GetInt() == entindex() )
+		RecordSequenceDebug( currentTime, hdr->pSeqdesc( GetSequence() ).pszLabel(), fCycle, 1.0f, "" );
+#else
 #if 1 //_DEBUG
 	if (/* Q_stristr( hdr->pszName(), r_sequence_debug.GetString()) != NULL || */ r_sequence_debug.GetInt() == entindex())
 	{
 		DevMsgRT( "%8.4f : %30s : %5.3f : %4.2f\n", currentTime, hdr->pSeqdesc( GetSequence() ).pszLabel(), fCycle, 1.0 );
 	}
+#endif
 #endif
 
 	IBoneSetup boneSetup( hdr, boneMask, poseparam );
@@ -2740,7 +3127,13 @@ ConVar cl_warn_thread_contested_bone_setup("cl_warn_thread_contested_bone_setup"
 
 // Marked this developmentonly because it currently crashes, and users are enabling it and complaining because of
 // course.  Once this actually works it should just be FCVAR_INTERNAL_USE.
-ConVar cl_threaded_bone_setup("cl_threaded_bone_setup", "0", FCVAR_DEVELOPMENTONLY | FCVAR_INTERNAL_USE,
+ConVar cl_threaded_bone_setup("cl_threaded_bone_setup", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY | FCVAR_INTERNAL_USE
+#endif
+,
                               "Enable parallel processing of C_BaseAnimating::SetupBones()" );
 
 //-----------------------------------------------------------------------------
@@ -3028,6 +3421,10 @@ bool C_BaseAnimating::SetupBones( matrix3x4_t *pBoneToWorldOut, int nMaxBones, i
 			return false;
 		}
 	}
+#if defined( L4D2 )
+	if ( r_sequence_debug.GetInt() == entindex() )
+		g_SequenceDebugHistory.Display();
+#endif
 
 	return true;
 }
@@ -3177,7 +3574,13 @@ void C_BaseAnimating::UpdateVisibility()
 	}
 }
 
-ConVar r_drawothermodels( "r_drawothermodels", "1", FCVAR_CHEAT, "0=Off, 1=Normal, 2=Wireframe" );
+ConVar r_drawothermodels( "r_drawothermodels", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "0=Off, 1=Normal, 2=Wireframe" );
 
 //-----------------------------------------------------------------------------
 // Purpose: Draws the object
@@ -3317,6 +3720,11 @@ bool C_BaseAnimating::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
 //-----------------------------------------------------------------------------
 void C_BaseAnimating::DoInternalDrawModel( ClientModelRenderInfo_t *pInfo, DrawModelState_t *pState, matrix3x4_t *pBoneToWorldArray )
 {
+#if defined( L4D2 )
+	if ( TerrorGlow_DrawStudioModel( pInfo, pState, pBoneToWorldArray ) )
+		return;
+#endif
+
 	if ( pState)
 	{
 		modelrender->DrawModelExecute( *pState, *pInfo, pBoneToWorldArray );
@@ -3477,8 +3885,27 @@ int C_BaseAnimating::InternalDrawModel( int flags )
 	pInfo->body = GetBody();
 	pInfo->hitboxset = m_nHitboxSet;
 
+#if defined( L4D2 )
+	bool nativeEntityStencil = false;
+	if ( !IsPlayer() && !TerrorModel_SkipEntityStencil() &&
+		( flags & STUDIO_RENDER ) && !( flags & 0x40000000 ) )
+	{
+		ShaderStencilState_t state;
+		nativeEntityStencil = GetStencilState( state );
+		if ( nativeEntityStencil )
+		{
+			CMatRenderContextPtr context( materials );
+			state.SetStencilState( context );
+		}
+	}
+#endif
+
 	if ( !OnInternalDrawModel( pInfo ) )
 	{
+#if defined( L4D2 )
+		if ( nativeEntityStencil ) TerrorGlow_EndStencilMask();
+		OnPostInternalDrawModel( pInfo );
+#endif
 		return 0;
 	}
 
@@ -3511,6 +3938,9 @@ int C_BaseAnimating::InternalDrawModel( int flags )
 
 	DoInternalDrawModel( pInfo, ( bMarkAsDrawn && ( pInfo->flags & STUDIO_RENDER ) ) ? &state : NULL, pBoneToWorld );
 
+#if defined( L4D2 )
+	if ( nativeEntityStencil ) TerrorGlow_EndStencilMask();
+#endif
 	OnPostInternalDrawModel( pInfo );
 
 	return bMarkAsDrawn;
@@ -3940,6 +4370,7 @@ void C_BaseAnimating::FireEvent( const Vector& origin, const QAngle& angles, int
 		}
 		break;
 
+#if !defined( L4D2 )
 	case AE_CL_REMOVE_PARTICLE_EFFECT:
 		{
 			int iAttachment = -1;
@@ -3984,6 +4415,7 @@ void C_BaseAnimating::FireEvent( const Vector& origin, const QAngle& angles, int
 			}
 		}
 		break;
+#endif
 
 	case AE_CL_PLAYSOUND:
 		{
@@ -4476,7 +4908,11 @@ bool C_BaseAnimating::Interpolate( float flCurrentTime )
 	if ( retVal == INTERPOLATE_STOP )
 	{
 		if ( bNoMoreChanges )
+#if defined( L4D2 )
+			RemoveFromEntityList( ENTITY_LIST_INTERPOLATE );
+#else
 			RemoveFromInterpolationList();
+#endif
 		return true;
 	}
 
@@ -4486,11 +4922,22 @@ bool C_BaseAnimating::Interpolate( float flCurrentTime )
 		nChangeFlags |= ANIMATION_CHANGED;
 
 	if ( bNoMoreChanges )
+#if defined( L4D2 )
+		RemoveFromEntityList( ENTITY_LIST_INTERPOLATE );
+#else
 		RemoveFromInterpolationList();
+#endif
 	
 	BaseInterpolatePart2( oldOrigin, oldAngles, oldVel, nChangeFlags );
 	return true;
 }
+
+#if defined( L4D2 )
+int C_BaseAnimating::GetRagdollType() const
+{
+	return 1;
+}
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -4498,7 +4945,7 @@ bool C_BaseAnimating::Interpolate( float flCurrentTime )
 //-----------------------------------------------------------------------------
 bool C_BaseAnimating::IsRagdoll() const
 {
-	return m_pRagdoll && (m_nRenderFX == kRenderFxRagdoll);
+	return m_pRagdoll && IsAboutToRagdoll();
 }
 
 //-----------------------------------------------------------------------------
@@ -4506,7 +4953,11 @@ bool C_BaseAnimating::IsRagdoll() const
 //-----------------------------------------------------------------------------
 bool C_BaseAnimating::IsAboutToRagdoll() const
 {
+#if defined( L4D2 )
+	return m_bClientSideRagdoll;
+#else
 	return (m_nRenderFX == kRenderFxRagdoll);
+#endif
 }
 
 
@@ -4720,11 +5171,21 @@ void C_BaseAnimating::PostDataUpdate( DataUpdateType_t updateType )
 	// Cycle change? Then re-render
 	bool bAnimationChanged = m_flOldCycle != GetCycle() || bBoneControllersChanged || bPoseParametersChanged;
 	bool bSequenceChanged = m_nOldSequence != GetSequence();
+#if defined( L4D2 )
+	// C3A490: only actual animation/sequence differences; no added scale gate.
+	if ( bAnimationChanged || bSequenceChanged )
+	{
+		int flags = bAnimationChanged ? ANIMATION_CHANGED : 0;
+		if ( bSequenceChanged ) flags |= BONE_CHANGED | SEQUENCE_CHANGED;
+		InvalidatePhysicsRecursive( flags );
+	}
+#else
 	bool bScaleChanged = ( m_flOldModelScale != GetModelScale() );
 	if ( bAnimationChanged || bSequenceChanged || bScaleChanged )
 	{
 		InvalidatePhysicsRecursive( ANIMATION_CHANGED );
 	}
+#endif
 
 	if ( bAnimationChanged || bSequenceChanged )
 	{
@@ -4760,6 +5221,47 @@ void C_BaseAnimating::OnPreDataChanged( DataUpdateType_t updateType )
 	m_bLastClientSideFrameReset = m_bClientSideFrameReset;
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimating::ForceSetupBonesAtTime( matrix3x4_t *bones, float time )
+{
+	InvalidateBoneCache();
+	Interpolate( time );
+	if ( !m_bClientSideAnimation )
+	{
+		SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+		return;
+	}
+	const float savedCycle = GetCycle(); // AFTER Interpolate, as in original.
+	float previousCycle = m_flOldCycle;
+	if ( previousCycle > savedCycle )
+		previousCycle = previousCycle - 1.0f;
+	const float previousTime = m_flPreviousFrameAnimTime;
+	const float animTime = m_flAnimTime;
+	float cycle;
+	if ( previousTime == animTime )
+		cycle = time >= animTime ? savedCycle : previousCycle; // Native JB includes unordered.
+	else
+	{
+		const float elapsed = time - previousTime;
+		const float cycleDelta = savedCycle - previousCycle;
+		const float numerator = elapsed * cycleDelta;
+		const float interval = animTime - previousTime;
+		const float fraction = numerator / interval;
+		cycle = fraction + previousCycle;
+	}
+	if ( cycle > 1.0f ) cycle = 1.0f;
+	else if ( cycle < 0.0f ) cycle = 0.0f;
+	SetCycle( cycle );
+	SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+	SetCycle( savedCycle );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool C_BaseAnimating::ForceSetupBonesAtTime( matrix3x4_t *pBonesOut, float flTime )
 {
 	// blow the cached prev bones
@@ -4771,7 +5273,28 @@ bool C_BaseAnimating::ForceSetupBonesAtTime( matrix3x4_t *pBonesOut, float flTim
 	// Setup bone state at the given time
 	return SetupBones( pBonesOut, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, flTime );
 }
+#endif
 
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimating::GetRagdollInitBoneArrays( matrix3x4_t *delta0, matrix3x4_t *delta1,
+	matrix3x4_t *current, float boneDt )
+{
+	ForceSetupBonesAtTime( delta0, gpGlobals->curtime - boneDt );
+	ForceSetupBonesAtTime( delta1, gpGlobals->curtime );
+	const double createTime = PhysGetSyncCreateTime();
+	if ( createTime == static_cast< double >( gpGlobals->curtime ) )
+		Q_memcpy( current, m_CachedBoneData.Base(), sizeof( matrix3x4_t ) * m_CachedBoneData.Count() );
+	else
+		ForceSetupBonesAtTime( current, static_cast< float >( createTime ) );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool C_BaseAnimating::GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt )
 {
 	bool bSuccess = true;
@@ -4798,24 +5321,58 @@ bool C_BaseAnimating::GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matri
 
 	return bSuccess;
 }
+#endif
 
+#if defined( L4D2 )
+C_BaseAnimating *C_BaseAnimating::CreateRagdollCopy( int category, bool hideSource )
+#else
 C_BaseAnimating *C_BaseAnimating::CreateRagdollCopy()
+#endif
 {
+#if defined( L4D2 )
+	if ( AddRagdollToFadeQueue() && s_RagdollLRU.ShouldSkipRagdoll( this ) )
+	{
+		AddEffects( EF_NODRAW );
+		return NULL;
+	}
+#endif
 	//Adrian: We now create a separate entity that becomes this entity's ragdoll.
 	//That way the server side version of this entity can go away. 
 	//Plus we can hook save/restore code to these ragdolls so they don't fall on restore anymore.
+	#ifdef L4D2
+	C_ClientRagdoll *pRagdoll = CreateTerrorClientRagdoll( this );
+	#else
 	C_ClientRagdoll *pRagdoll = new C_ClientRagdoll( false );
+	#endif
 	if ( pRagdoll == NULL )
 		return NULL;
 
+#if defined( L4D2 )
+	pRagdoll->m_ragdollType = category;
+	if ( category == RAGDOLL_TYPE_GIB )
+	{
+		static ConVarRef z_gib_despawn_time( "z_gib_despawn_time" );
+		const float despawnTime = z_gib_despawn_time.GetFloat();
+		const float randomOffset = RandomFloat( -2.0f, 2.0f );
+		pRagdoll->m_flGibExpireTime = static_cast< float >( static_cast< double >( randomOffset ) + gpGlobals->curtime + despawnTime );
+	}
+#endif
 	TermRopes();
 
 	const model_t *pModel = GetModel();
 	const char *pModelName = modelinfo->GetModelName( pModel );
 
+#if defined( L4D2 )
+	if ( pRagdoll->InitializeAsClientEntity( pModelName, false ) == false )
+#else
 	if ( pRagdoll->InitializeAsClientEntity( pModelName, RENDER_GROUP_OPAQUE_ENTITY ) == false )
+#endif
 	{
+#if defined( L4D2 )
+		ClientEntityList().AddToDeleteList( pRagdoll );
+#else
 		pRagdoll->Release();
+#endif
 		return NULL;
 	}
 
@@ -4832,20 +5389,34 @@ C_BaseAnimating *C_BaseAnimating::CreateRagdollCopy()
 
 	if ( AddRagdollToFadeQueue() == true )
 	{
+#if defined( L4D2 )
+		pRagdoll->m_bImportant = NPC_IsImportantNPC( this ); // Native Boolean2397 precedes category2404 registration.
+		s_RagdollLRU.MoveToTopOfLRU( pRagdoll, category );
+#else
 		pRagdoll->m_bImportant = NPC_IsImportantNPC( this );
 		s_RagdollLRU.MoveToTopOfLRU( pRagdoll, pRagdoll->m_bImportant );
+#endif
 		pRagdoll->m_bFadeOut = true;
 	}
 
-	m_builtRagdoll = true;
-	AddEffects( EF_NODRAW );
+#if defined( L4D2 )
+	if ( hideSource )
+#endif
+	{
+		m_builtRagdoll = true;
+		AddEffects( EF_NODRAW );
+	}
 
 	if ( IsEffectActive( EF_NOSHADOW ) )
 	{
 		pRagdoll->AddEffects( EF_NOSHADOW );
 	}
 
+#if defined( L4D2 )
+	pRagdoll->m_bClientSideRagdoll = true;
+#else
 	pRagdoll->m_nRenderFX = kRenderFxRagdoll;
+#endif
 	pRagdoll->SetRenderMode( GetRenderMode() );
 	pRagdoll->SetRenderColor( GetRenderColor().r, GetRenderColor().g, GetRenderColor().b, GetRenderColor().a );
 
@@ -4857,9 +5428,37 @@ C_BaseAnimating *C_BaseAnimating::CreateRagdollCopy()
 
 	pRagdoll->SetModelName( AllocPooledString(pModelName) );
 	pRagdoll->SetModelScale( GetModelScale() );
+#if defined( L4D2 )
+	// C3AAB0 -> C3A660 copies the main-sequence transition history too.
+	pRagdoll->m_SequenceTransitioner.m_animationQueue.CopyArray(
+		m_SequenceTransitioner.m_animationQueue.Base(), m_SequenceTransitioner.m_animationQueue.Count() );
+#endif
 	return pRagdoll;
 }
 
+#if defined( L4D2 )
+C_BaseAnimating *C_BaseAnimating::BecomeRagdollOnClient( int category )
+{
+	MoveToLastReceivedPosition( true );
+	GetAbsOrigin();
+	C_BaseAnimating *ragdoll = CreateRagdollCopy( category, true );
+	if ( ragdoll )
+	{
+		// Original sets source sequence AFTER creating its copy, before197.
+		if ( GetSequence() == -1 )
+			SetSequence( 0 );
+		matrix3x4_t delta0[128];
+		matrix3x4_t delta1[128];
+		matrix3x4_t current[128];
+		const float boneDt = 0.1f;
+		GetRagdollInitBoneArrays( delta0, delta1, current, boneDt );
+		// Do not branch on SetupBones/array/Init success and do not release on a
+		// target-only failure branch: the pinned factory initializes then returns.
+		ragdoll->InitAsClientRagdoll( delta0, delta1, current, boneDt );
+	}
+	return ragdoll;
+}
+#else
 C_BaseAnimating *C_BaseAnimating::BecomeRagdollOnClient()
 {
 	MoveToLastReceivedPosition( true );
@@ -4892,6 +5491,7 @@ C_BaseAnimating *C_BaseAnimating::BecomeRagdollOnClient()
 
 	return pRagdoll;
 }
+#endif
 
 bool C_BaseAnimating::InitAsClientRagdoll( const matrix3x4_t *pDeltaBones0, const matrix3x4_t *pDeltaBones1, const matrix3x4_t *pCurrentBonePosition, float boneDt, bool bFixedConstraints )
 {
@@ -5011,10 +5611,18 @@ void C_BaseAnimating::OnDataChanged( DataUpdateType_t updateType )
 		}
 	}
 
+	#if defined( L4D2 )
+	if ( GetSequence() != m_nPrevSequence )
+		OnSequenceChanged(); // C37BF0 BEFORE the repeated model/sequence test below.
+	#endif
 	// If there's a significant change, make sure the shadow updates
 	if ( modelchanged || (GetSequence() != m_nPrevSequence))
 	{
-		InvalidatePhysicsRecursive( ANIMATION_CHANGED ); 
+#if defined( L4D2 )
+		InvalidatePhysicsRecursive( BONE_CHANGED | SEQUENCE_CHANGED ); // C37BF0 model OR sequence.
+#else
+		InvalidatePhysicsRecursive( ANIMATION_CHANGED );
+#endif
 		m_nPrevSequence = GetSequence();
 	}
 
@@ -5028,23 +5636,39 @@ void C_BaseAnimating::OnDataChanged( DataUpdateType_t updateType )
 		}
 	}
 	// build a ragdoll if necessary
-	if ( m_nRenderFX == kRenderFxRagdoll && !m_builtRagdoll )
+	if ( IsAboutToRagdoll() && !m_builtRagdoll )
 	{
+#if defined( L4D2 )
+		BecomeRagdollOnClient( GetRagdollType() );
+#else
 		BecomeRagdollOnClient();
+#endif
 	}
 
 	//HACKHACK!!!
-	if ( m_nRenderFX == kRenderFxRagdoll && m_builtRagdoll == true )
+	if ( IsAboutToRagdoll() && m_builtRagdoll == true )
 	{
 		if ( m_pRagdoll == NULL )
 			 AddEffects( EF_NODRAW );
 	}
 
-	if ( m_pRagdoll && m_nRenderFX != kRenderFxRagdoll )
+	if ( m_pRagdoll && !IsAboutToRagdoll() )
 	{
 		ClearRagdoll();
 	}
 
+#if defined( L4D2 )
+	if ( IsEffectActive( EF_NOINTERP ) )
+	{
+		if ( m_pRagdollInfo && m_pRagdollInfo->m_bActive )
+		{
+			Msg( "delete ragdoll due to nointerp\n" );
+			delete m_pRagdollInfo;
+			m_pRagdollInfo = NULL;
+		}
+		AddToEntityList( ENTITY_LIST_SIMULATE );
+	}
+#else
 	// If ragdolling and get EF_NOINTERP, we probably were dead and are now respawning,
 	//  don't do blend out of ragdoll at respawn spot.
 	if ( IsNoInterpolationFrame() && 
@@ -5056,11 +5680,13 @@ void C_BaseAnimating::OnDataChanged( DataUpdateType_t updateType )
 		delete m_pRagdollInfo;
 		m_pRagdollInfo = NULL;
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_BaseAnimating::AddEntity( void )
 {
 	// Server says don't interpolate this frame, so set previous info to new info.
@@ -5071,6 +5697,7 @@ void C_BaseAnimating::AddEntity( void )
 
 	BaseClass::AddEntity();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Get the index of the attachment point with the specified name
@@ -5152,6 +5779,31 @@ void C_BaseAnimating::UpdateClientSideAnimation()
 }
 
 
+#if defined( L4D2 )
+bool C_BaseAnimating::Simulate()
+{
+	bool continueSimulation = !m_bClientSideAnimation;
+	if ( m_bDelayInitModelEffects )
+		DelayedInitModelEffects();
+	if ( gpGlobals->frametime != 0.0f )
+	{
+		CStudioHdr *header = GetModelPtr();
+		if ( header && header->GetRenderHdr() && header->SequencesAvailable() )
+		{
+			// Actual model-header NO_ANIM_EVENTS bit, not a fabricated state.
+			if ( header->flags() & 0x00100000 )
+				continueSimulation = false;
+			else
+				DoAnimationEvents( header );
+		}
+	}
+	if ( IsEffectActive( EF_NOINTERP ) )
+		ResetLatched();
+	if ( GetSequence() != -1 && m_pRagdoll && !IsAboutToRagdoll() )
+		ClearRagdoll();
+	return continueSimulation;
+}
+#else
 void C_BaseAnimating::Simulate()
 {
 	if ( m_bDelayInitModelEffects )
@@ -5168,11 +5820,12 @@ void C_BaseAnimating::Simulate()
 	{
 		ResetLatched();
 	}
-	if ( GetSequence() != -1 && m_pRagdoll && ( m_nRenderFX != kRenderFxRagdoll ) )
+	if ( GetSequence() != -1 && m_pRagdoll && !IsAboutToRagdoll() )
 	{
 		ClearRagdoll();
 	}
 }
+#endif
 
 
 bool C_BaseAnimating::TestCollision( const Ray_t &ray, unsigned int fContentsMask, trace_t& tr )
@@ -5240,8 +5893,12 @@ bool C_BaseAnimating::TestHitboxes( const Ray_t &ray, unsigned int fContentsMask
 			IPhysicsObject *pReplace = m_pRagdoll->GetElement( tr.physicsbone );
 			if ( pReplace )
 			{
+#if defined( L4D2 )
+				VPhysicsSwapObject( pReplace );
+#else
 				VPhysicsSetObject( NULL );
 				VPhysicsSetObject( pReplace );
+#endif
 			}
 		}
 	}
@@ -5255,6 +5912,21 @@ bool C_BaseAnimating::TestHitboxes( const Ray_t &ray, unsigned int fContentsMask
 // Input  : iSequence - 
 // Output : float
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+float C_BaseAnimating::GetSequenceCycleRate( CStudioHdr *studio, int sequence )
+{
+	if ( !studio || sequence < 0 || sequence >= studio->GetNumSeq() )
+		return 0.0f;
+	mstudioseqdesc_t &description = studio->pSeqdesc( sequence );
+	return Studio_CPS( studio, description, sequence, m_flPoseParameter );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float C_BaseAnimating::GetSequenceCycleRate( CStudioHdr *pStudioHdr, int iSequence )
 {
 	float t = SequenceDuration( pStudioHdr, iSequence );
@@ -5265,6 +5937,7 @@ float C_BaseAnimating::GetSequenceCycleRate( CStudioHdr *pStudioHdr, int iSequen
 	}
 	return t;
 }
+#endif
 
 float C_BaseAnimating::GetAnimTimeInterval( void ) const
 {
@@ -5304,18 +5977,81 @@ void C_BaseAnimating::SetSequence( int nSequence )
 		*/
 
 		m_nSequence = nSequence; 
+#if defined( L4D2 )
+		InvalidatePhysicsRecursive( BONE_CHANGED | SEQUENCE_CHANGED ); // C34630 EXACT0x30.
+#else
 		InvalidatePhysicsRecursive( ANIMATION_CHANGED );
+#endif
 		if ( m_bClientSideAnimation )
 		{
 			ClientSideAnimationChanged();
 		}
+		#if defined( L4D2 )
+		OnSequenceChanged(); // Native AFTER ClientSideAnimationChanged.
+		#endif
 	}
 }
+#if defined( L4D2 )
+// C345B0..34629. Genuine virtual callback, NOT ResetSequenceInfo: no playback,
+// finished/event clocks/parity reset and NO model-scale multiplication.
+void C_BaseAnimating::OnSequenceChanged()
+{
+	CStudioHdr *studio = GetModelPtr();
+	if ( studio && studio->IsValid() )
+	{
+		m_bSequenceLoops = ( ::GetSequenceFlags( studio, GetSequence() ) & STUDIO_LOOPING ) != 0;
+		m_flGroundSpeed = GetSequenceGroundSpeed( studio, GetSequence() );
+		SetEventIndexForSequence( studio->pSeqdesc( GetSequence() ) );
+	}
+}
+
+#endif
 
 
 //=========================================================
 // StudioFrameAdvance - advance the animation frame up some interval (default 0.1) into the future
 //=========================================================
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimating::StudioFrameAdvance()
+{
+	if ( m_bClientSideAnimation )
+		return;
+	CStudioHdr *studio = GetModelPtr();
+	if ( !studio )
+		return;
+	const float elapsed = gpGlobals->curtime - m_flAnimTime;
+	const float interval = elapsed < 0.2f ? elapsed : 0.2f;
+	if ( static_cast< double >( interval ) <= 0.001 )
+		return;
+	const float playback = static_cast< float >( GetEffectivePlaybackRate() );
+	const float rate = GetSequenceCycleRate( studio, GetSequence() );
+	const float advance = static_cast< float >( ( static_cast< double >( rate ) *
+		static_cast< double >( interval ) ) * static_cast< double >( playback ) );
+	float cycle = advance + GetCycle();
+	m_flAnimTime = gpGlobals->curtime;
+	if ( cycle < 0.0f || cycle >= 1.0f )
+	{
+		if ( IsSequenceLooping( studio, GetSequence() ) )
+		{
+			const int whole = _mm_cvttss_si32( _mm_set_ss( cycle ) );
+			cycle = cycle - static_cast< float >( whole );
+		}
+		else
+		{
+			cycle = cycle < 0.0f ? 0.0f : 1.0f;
+		}
+		m_bSequenceFinished = true;
+	}
+	SetCycle( cycle );
+	m_flGroundSpeed = static_cast< float >( GetSequenceGroundSpeed( studio, GetSequence() ) );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseAnimating::StudioFrameAdvance()
 {
 	if ( m_bClientSideAnimation )
@@ -5387,7 +6123,35 @@ void C_BaseAnimating::StudioFrameAdvance()
 		Msg("%s : %s : %5.1f\n", GetClassname(), GetSequenceName( GetSequence() ), GetCycle() );
 	}
 }
+#endif
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double C_BaseAnimating::GetSequenceGroundSpeed( CStudioHdr *studio, int sequence )
+{
+	const float duration = static_cast< float >( SequenceDuration( studio, sequence ) );
+	if ( !( duration > 0.0f ) )
+		return 0.0;
+	Vector motion;
+	::GetSequenceLinearMotion( studio, sequence, m_flPoseParameter, &motion );
+	const float x2 = motion.x * motion.x;
+	const float y2 = motion.y * motion.y;
+	const float xy = x2 + y2;
+	const float z2 = motion.z * motion.z;
+	const float distance = sqrtf( xy + z2 );
+	const float velocity = distance / duration;
+	const float scale = GetModelScale();
+	// Canonical25D7 already rounds the frozen SUBSS factor to f32 and retains
+	// the playback product wide; grouping matches actual30EE3..30EF2.
+	const double playback = GetEffectivePlaybackRate();
+	return playback * ( static_cast< double >( scale ) * static_cast< double >( velocity ) );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float C_BaseAnimating::GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence )
 {
 	float t = SequenceDuration( pStudioHdr, iSequence );
@@ -5401,6 +6165,7 @@ float C_BaseAnimating::GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequ
 		return 0;
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -5461,6 +6226,57 @@ void C_BaseAnimating::GetBlendedLinearVelocity( Vector *pVec )
 // Input  : flInterval - 
 // Output : float
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+float C_BaseAnimating::FrameAdvance( float interval )
+{
+	CStudioHdr *studio = GetModelPtr();
+	if ( !studio )
+		return 0.0f;
+	const float now = gpGlobals->curtime;
+	if ( interval == 0.0f )
+	{
+		interval = now - m_flAnimTime;
+		if ( interval <= 0.001f )
+			return 0.0f;
+	}
+	if ( m_flAnimTime == 0.0f )
+		interval = 0.0f;
+	const float rate = GetSequenceCycleRate( studio, GetSequence() );
+	const float playback = static_cast< float >( GetEffectivePlaybackRate() );
+	m_flPreviousFrameAnimTime = m_flAnimTime;
+	const float timedRate = rate * interval;
+	const float advance = timedRate * playback;
+	const float previousCycle = GetCycle();
+	m_flOldCycle = previousCycle;
+	float cycle = previousCycle + advance;
+	m_flAnimTime = now;
+	if ( cycle < 0.0f || cycle >= 1.0f )
+	{
+		if ( cycle >= 1.0f )
+			OnAnimationCycleCompleted();
+		if ( IsSequenceLooping( studio, GetSequence() ) )
+		{
+			const int whole = _mm_cvttss_si32( _mm_set_ss( cycle ) );
+			cycle = cycle - static_cast< float >( whole );
+		}
+		else
+		{
+			cycle = cycle < 0.0f ? 0.0f : 1.0f;
+		}
+		m_bSequenceFinished = true;
+	}
+	SetCycle( cycle );
+	InvalidatePhysicsRecursive( ANIMATION_CHANGED );
+	m_flGroundSpeed = static_cast< float >( GetSequenceGroundSpeed( studio, GetSequence() ) );
+	return interval;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float C_BaseAnimating::FrameAdvance( float flInterval )
 {
 	CStudioHdr *hdr = GetModelPtr();
@@ -5547,8 +6363,28 @@ float C_BaseAnimating::FrameAdvance( float flInterval )
 
 	return flInterval;
 }
+#endif
 
 // Stubs for weapon prediction
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimating::ResetSequenceInfo()
+{
+	if ( GetSequence() == -1 )
+		SetSequence( 0 );
+	m_flPlaybackRate = 1.0f;
+	m_bSequenceFinished = false;
+	m_flLastEventCheck = 0.0f;
+	if ( !IsPlayer() )
+		m_nNewSequenceParity = ( static_cast< unsigned int >( m_nNewSequenceParity ) + 1u ) & EF_PARITY_MASK;
+	m_nResetEventsParity = ( static_cast< unsigned int >( m_nResetEventsParity ) + 1u ) & EF_PARITY_MASK;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseAnimating::ResetSequenceInfo( void )
 {
 	if ( GetSequence() == -1 )
@@ -5580,6 +6416,7 @@ void C_BaseAnimating::ResetSequenceInfo( void )
 		SetEventIndexForSequence( pStudioHdr->pSeqdesc( GetSequence() ) );
 	}
 }
+#endif
 
 //=========================================================
 //=========================================================
@@ -5589,6 +6426,24 @@ bool C_BaseAnimating::IsSequenceLooping( CStudioHdr *pStudioHdr, int iSequence )
 	return (::GetSequenceFlags( pStudioHdr, iSequence ) & STUDIO_LOOPING) != 0;
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double C_BaseAnimating::SequenceDuration( CStudioHdr *studio, int sequence )
+{
+	if ( studio )
+	{
+		if ( sequence < studio->GetNumSeq() && sequence >= 0 )
+			return Studio_Duration( studio, sequence, m_flPoseParameter );
+		DevWarning( 2, "C_BaseAnimating::SequenceDuration( %d ) out of range\n", sequence );
+	}
+	return static_cast< double >( 0.1f );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float C_BaseAnimating::SequenceDuration( CStudioHdr *pStudioHdr, int iSequence )
 {
 	if ( !pStudioHdr )
@@ -5610,6 +6465,7 @@ float C_BaseAnimating::SequenceDuration( CStudioHdr *pStudioHdr, int iSequence )
 	return Studio_Duration( pStudioHdr, iSequence, m_flPoseParameter );
 
 }
+#endif
 
 int C_BaseAnimating::FindTransitionSequence( int iCurrentSequence, int iGoalSequence, int *piDir )
 {
@@ -5633,6 +6489,14 @@ int C_BaseAnimating::FindTransitionSequence( int iCurrentSequence, int iGoalSequ
 
 }
 
+#if defined( L4D2 )
+void C_BaseAnimating::SetBodygroup( int group, int value )
+{
+	const int oldBody = m_nBody;
+	::SetBodygroup( GetModelPtr(), m_nBody, group, value );
+	if ( oldBody != m_nBody ) UpdateModelTranslucencyType();
+}
+#else
 void C_BaseAnimating::SetBodygroup( int iGroup, int iValue )
 {
 	// SetBodygroup is not supported on pending dynamic models. Wait for it to load!
@@ -5640,6 +6504,7 @@ void C_BaseAnimating::SetBodygroup( int iGroup, int iValue )
 	Assert( GetModelPtr() );
 	::SetBodygroup( GetModelPtr( ), m_nBody, iGroup, iValue );
 }
+#endif
 
 int C_BaseAnimating::GetBodygroup( int iGroup )
 {
@@ -5825,7 +6690,11 @@ int C_BaseAnimating::SelectWeightedSequenceFromModifiers( Activity activity, CUt
 int C_BaseAnimating::LookupPoseParameter( CStudioHdr *pstudiohdr, const char *szName )
 {
 	if ( !pstudiohdr )
+#if defined( L4D2 )
+		return -1; // Native2C160 NULL result.
+#else
 		return 0;
+#endif
 
 	for (int i = 0; i < pstudiohdr->GetNumPoseParameters(); i++)
 	{
@@ -5846,6 +6715,30 @@ float C_BaseAnimating::SetPoseParameter( CStudioHdr *pStudioHdr, const char *szN
 	return SetPoseParameter( pStudioHdr, LookupPoseParameter( pStudioHdr, szName ), flValue );
 }
 
+#if defined( L4D2 )
+// Whole C2C1C0. Existing non-L4D2 SDK implementation is retained under #else.
+float C_BaseAnimating::SetPoseParameter( CStudioHdr *studio, int index, float value )
+{
+	if ( studio && index >= 0 )
+	{
+		float normalized;
+		value = Studio_SetPoseParameter( studio, index, value, normalized );
+		if ( normalized != m_flPoseParameter[index] )
+		{
+			m_flPoseParameter[index] = normalized;
+			InvalidatePhysicsRecursive( ANIMATION_CHANGED ); // Native literal8.
+		}
+	}
+	return value;
+}
+
+// Whole C2C7C0; actual1932 CInterpolatedVarArray<float,24> virtual+20 is Reset.
+// This is NOT InvalidateBoneCache, ResetLatched(all vars) or main-cycle mutation.
+void C_BaseAnimating::ResetPoseParameterInterpolation()
+{
+	m_iv_flPoseParameter.Reset();
+}
+#else
 float C_BaseAnimating::SetPoseParameter( CStudioHdr *pStudioHdr, int iParameter, float flValue )
 {
 	if ( !pStudioHdr )
@@ -5863,6 +6756,8 @@ float C_BaseAnimating::SetPoseParameter( CStudioHdr *pStudioHdr, int iParameter,
 
 	return flValue;
 }
+
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -6138,6 +7033,20 @@ bool C_BaseAnimating::ComputeEntitySpaceHitboxSurroundingBox( Vector *pVecWorldM
 // Purpose: 
 // Input  : scale - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimating::SetModelScale( float scale )
+{
+	// C38060: actual client scale setter has no timed/scaling-bounds backend.
+	if ( m_flModelScale != scale )
+		m_flModelScale = scale;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseAnimating::SetModelScale( float scale, float change_duration /*= 0.0f*/  )
 {
 	if ( change_duration > 0.0f )
@@ -6159,10 +7068,12 @@ void C_BaseAnimating::SetModelScale( float scale, float change_duration /*= 0.0f
 		}
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_BaseAnimating::UpdateModelScale()
 {
 	ModelScale *mvs = ( ModelScale * )GetDataObject( MODELSCALE );
@@ -6189,11 +7100,14 @@ void C_BaseAnimating::UpdateModelScale()
 
 	RefreshCollisionBounds();
 }
+#endif
 
+#if !defined( L4D2 )
 void C_BaseAnimating::RefreshCollisionBounds( void )
 {
 	CollisionProp()->RefreshScaledCollisionBounds();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Clientside bone follower class. Used just to visualize them.
@@ -6290,7 +7204,11 @@ void C_BaseAnimating::DoMuzzleFlash()
 //-----------------------------------------------------------------------------
 void DevMsgRT( char const* pMsg, ... )
 {
-	if (gpGlobals->frametime != 0.0f)
+#if defined( L4D2 )
+	if ( !engine->Con_IsVisible() )
+#else
+	if ( gpGlobals->frametime != 0.0f )
+#endif
 	{
 		va_list argptr;
 		va_start( argptr, pMsg );
@@ -6529,10 +7447,12 @@ const char *C_BaseAnimating::GetFlexControllerType( LocalFlexController_t iFlexC
 // Purpose: Returns the fade scale of the entity in question
 // Output : unsigned char - 0 - 255 alpha value
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 unsigned char C_BaseAnimating::GetClientSideFade( void )
 {
 	return UTIL_ComputeEntityFade( this, m_fadeMinDist, m_fadeMaxDist, m_flFadeScale );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Note that we've been transmitted a sequence
@@ -6628,7 +7548,11 @@ void C_BaseAnimating::NotifyBoneAttached( C_BaseAnimating* attachTarget )
 	C_BasePlayer *pPlayer = dynamic_cast<C_BasePlayer*>(attachTarget);
 	if ( pPlayer && pPlayer->IsLocalPlayer() )
 	{
+#if defined( L4D2 )
+		if ( !pPlayer->ShouldDrawLocalPlayerModel() )
+#else
 		if ( !C_BasePlayer::ShouldDrawLocalPlayer() )
+#endif
 		{
 			AddEffects( EF_NODRAW );
 		}
@@ -6723,3 +7647,117 @@ void C_BaseAnimating::MoveBoneAttachments( C_BaseAnimating* attachTarget )
 		}
 	}
 }
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+// Whole C00F6A0: real received state, ordered clamps retain unordered.
+double C_BaseAnimating::GetEffectivePlaybackRate() const
+{
+	const float unfrozen = 1.0f - m_flFrozen;
+	float factor = unfrozen;
+	if ( unfrozen > 1.0f )
+		factor = 1.0f;
+	else if ( unfrozen < 0.0f )
+		factor = 0.0f;
+	return static_cast< double >( m_flPlaybackRate ) * static_cast< double >( factor );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+#if defined( L4D2 )
+void C_BaseAnimating::OnAnimationCycleCompleted()
+{
+}
+#endif
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimating::GetRagdollBoneDeltaArrays( matrix3x4_t *delta0, matrix3x4_t *current, float boneDt )
+{
+	float time = gpGlobals->curtime;
+	const double createWide = PhysGetSyncCreateTime();
+	const float createTime = static_cast< float >( createWide );
+	if ( createTime == time )
+		Q_memcpy( current, m_CachedBoneData.Base(), sizeof( matrix3x4_t ) * m_CachedBoneData.Count() );
+	else
+	{
+		time = static_cast< float >( createWide );
+		ForceSetupBonesAtTime( current, time );
+	}
+	ForceSetupBonesAtTime( delta0, time - boneDt );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+#if defined( L4D2 )
+// Native2B7E0 default191; actor callback is reached only through OnNewModel.
+void C_BaseAnimating::OnModelPoseParametersChanged()
+{
+}
+
+extern ConVar cl_ejectbrass;
+
+// Whole canonical client C1003A3C0. The native reference2372..2383 and attachment
+// 2384 belong to BaseAnimating, NOT either TerrorVM FP wick/fuse reference.
+void C_BaseAnimating::EjectParticleBrass( const char *effectName, int attachment )
+{
+	if ( cl_ejectbrass.GetInt() == 0 )
+		return;
+	if ( m_hEjectBrassEffect && m_nEjectBrassAttachment == attachment )
+	{
+		m_hEjectBrassEffect->Restart();
+		return;
+	}
+	m_nEjectBrassAttachment = attachment;
+	m_hEjectBrassEffect = ParticleProp()->Create( effectName, PATTACH_POINT_FOLLOW, attachment );
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseAnimating::SetSkin( int skin )
+{
+	if ( m_nSkin != skin )
+	{
+		m_nSkin = skin;
+		UpdateModelTranslucencyType();
+	}
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseAnimating::SetBody( int body )
+{
+	if ( m_nBody != body )
+	{
+		m_nBody = body;
+		UpdateModelTranslucencyType();
+	}
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseAnimating::InvalidateAttachments()
+{
+	for ( int i = 0; i < m_Attachments.Count(); ++i )
+		m_Attachments[i].m_nLastFramecount = -1;
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseAnimating::EnableJiggleBones()
+{
+	m_bJiggleBonesEnabled = true;
+}
+
+void C_BaseAnimating::DisableJiggleBones()
+{
+	m_bJiggleBonesEnabled = false;
+	delete m_pJiggleBones;
+	m_pJiggleBones = NULL;
+}
+#endif

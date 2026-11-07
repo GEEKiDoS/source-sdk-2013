@@ -121,8 +121,12 @@ void TE_GaussExplosion( IRecipientFilter& filter, float delayt,
 void TE_DispatchEffect( IRecipientFilter& filter, float delay, 
 			 const Vector &pos, const char *pName, const CEffectData &data );
 void TE_DispatchEffect( IRecipientFilter& filter, float delay, KeyValues *pKeyValues );
+#if defined( L4D2 )
+#include "l4d2/effects/terror_physicsprop_te.h"
+#else
 void TE_PhysicsProp( IRecipientFilter& filter, float delay,
 	int modelindex, int skin, const Vector& pos, const QAngle &angles, const Vector& vel, bool breakmodel, int effects );
+#endif
 void TE_PhysicsProp( IRecipientFilter& filter, float delay, KeyValues *pKeyValues );
 void TE_ConcussiveExplosion( IRecipientFilter& filter, float delay, KeyValues *pKeyValues );
 void TE_ClientProjectile( IRecipientFilter& filter, float delay,
@@ -513,7 +517,11 @@ public:
 	{
 		if ( !SuppressTE( filter ) )
 		{
+#if defined( L4D2 )
+			TE_PhysicsProp( filter, delay, modelindex, skin, pos, angles, vel, flags, fEffects, 255, 255, 255 );
+#else
 			TE_PhysicsProp( filter, delay, modelindex, skin, pos, angles, vel, flags, fEffects );
+#endif
 		}
 	}
 	virtual void ClientProjectile( IRecipientFilter& filter, float delay,

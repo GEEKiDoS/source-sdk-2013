@@ -19,7 +19,12 @@ extern ConVar cl_pitchup;
 CViewAngleAnimation *g_pTestAnimation = NULL;
 
 // create a view animation object to be used for creating an animation. parameter is flags
+
+#if defined( L4D2 )
+CON_COMMAND_F( viewanim_create, "viewanim_create" , 0x00004008)
+#else
 CON_COMMAND( viewanim_create, "viewanim_create" )
+#endif
 {
 	if ( g_pTestAnimation )
 	{
@@ -54,7 +59,11 @@ void TestViewAnim( void )
 	else
 		Msg( "No view anim created\n" );
 }
-ConCommand viewanim_test( "viewanim_test", TestViewAnim, "test view animation" );
+ConCommand viewanim_test( "viewanim_test", TestViewAnim, "test view animation"
+#if defined( L4D2 )
+	, 0x00004008
+#endif
+ );
 
 // set view angles to (0,0,0)
 void ResetViewAngles( void )
@@ -63,10 +72,21 @@ void ResetViewAngles( void )
 	QAngle angles = vec3_angle;
 	engine->SetViewAngles( angles );
 }
-ConCommand viewanim_reset( "viewanim_reset", ResetViewAngles, "reset view angles!", FCVAR_CHEAT );
+ConCommand viewanim_reset( "viewanim_reset", ResetViewAngles, "reset view angles!", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 // add a key frame to the test animation. first parameter is the time taken to get to this keyframe
+
+#if defined( L4D2 )
+CON_COMMAND_F( viewanim_addkeyframe, "", 0x00004008 )
+#else
 CON_COMMAND_F( viewanim_addkeyframe, "", FCVAR_CHEAT )
+#endif
 {
 	if ( g_pTestAnimation )
 	{
@@ -93,7 +113,12 @@ CON_COMMAND_F( viewanim_addkeyframe, "", FCVAR_CHEAT )
 
 
 // save the current test anim, pass filename
+
+#if defined( L4D2 )
+CON_COMMAND_F( viewanim_save, "Save current animation to file" , 0x00004008)
+#else
 CON_COMMAND( viewanim_save, "Save current animation to file" )
+#endif
 {
 	if (args.ArgC() < 2)
 		return;
@@ -111,14 +136,25 @@ CON_COMMAND( viewanim_save, "Save current animation to file" )
 }
 
 // load a view animation file into the test anim
+
+#if defined( L4D2 )
+CON_COMMAND_F( viewanim_load, "load animation from file" , 0x00004008)
+#else
 CON_COMMAND( viewanim_load, "load animation from file" )
+#endif
 {
 	if (args.ArgC() < 2)
 		return;
 
 	if ( g_pTestAnimation )
 	{	
+#if defined( L4D2 )
+		char filename[MAX_PATH];
+		V_FixupPathName( filename, sizeof( filename ), args[1] );
+		g_pTestAnimation->LoadViewAnimFile( filename );
+#else
 		g_pTestAnimation->LoadViewAnimFile( args[1] );
+#endif
 	}
 	else
 		Msg( "No view anim created\n" );

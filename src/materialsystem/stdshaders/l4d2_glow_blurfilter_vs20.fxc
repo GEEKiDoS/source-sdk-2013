@@ -1,0 +1,40 @@
+// Native blurfilter_vs20 static 0/1, recovered from original VCS.
+// STATIC: "KERNEL" "0..1"
+
+float2 g_vVsTapOffset[3] : register( c48 );
+
+struct VS_INPUT
+{
+	float3 position : POSITION;
+	float2 texCoord : TEXCOORD0;
+};
+
+struct VS_OUTPUT
+{
+	float4 position : POSITION;
+	float2 coordTap0 : TEXCOORD0;
+#if KERNEL == 0
+	float2 coordTap1 : TEXCOORD1;
+	float2 coordTap2 : TEXCOORD2;
+	float2 coordTap3 : TEXCOORD3;
+	float2 coordTap1Neg : TEXCOORD4;
+	float2 coordTap2Neg : TEXCOORD5;
+	float2 coordTap3Neg : TEXCOORD6;
+#endif
+};
+
+VS_OUTPUT main( VS_INPUT i )
+{
+	VS_OUTPUT o;
+	o.position = float4( i.position, 1.0f );
+	o.coordTap0 = i.texCoord;
+#if KERNEL == 0
+	o.coordTap1 = i.texCoord + g_vVsTapOffset[0];
+	o.coordTap2 = i.texCoord + g_vVsTapOffset[1];
+	o.coordTap3 = i.texCoord + g_vVsTapOffset[2];
+	o.coordTap1Neg = i.texCoord - g_vVsTapOffset[0];
+	o.coordTap2Neg = i.texCoord - g_vVsTapOffset[1];
+	o.coordTap3Neg = i.texCoord - g_vVsTapOffset[2];
+#endif
+	return o;
+}

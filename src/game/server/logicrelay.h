@@ -38,9 +38,15 @@ public:
 	COutputEvent m_OnSpawn;
 
 	bool IsDisabled( void ){ return m_bDisabled; }
+#if defined( L4D2 )
+	CBaseEntity *GetLastCaller() const { return m_hLastCaller.Get(); }
+#endif
 	
 private:
 
+#if defined( L4D2 )
+	EHANDLE m_hLastCaller; // Native constructor-invalid, NOT datamap.
+#endif
 	bool m_bDisabled;
 	bool m_bWaitForRefire;			// Set to disallow a refire while we are waiting for our outputs to finish firing.
 };

@@ -13,6 +13,31 @@
 
 #include "shareddefs.h"
 #include "GameEventListener.h"
+#if defined( L4D2 )
+class C_VoteController : public C_BaseEntity, public CGameEventListener
+{
+	DECLARE_CLASS( C_VoteController, C_BaseEntity );
+public:
+	DECLARE_CLIENTCLASS();
+	C_VoteController();
+	virtual ~C_VoteController();
+	virtual void Spawn() OVERRIDE;
+	virtual void ClientThink() OVERRIDE;
+	virtual void FireGameEvent( IGameEvent *event ) OVERRIDE;
+	static void RecvProxy_VoteType( const CRecvProxyData *data, void *structure, void *out );
+	static void RecvProxy_VotesYes( const CRecvProxyData *data, void *structure, void *out );
+	static void RecvProxy_VotesNo( const CRecvProxyData *data, void *structure, void *out );
+private:
+	void ResetData();
+	int m_iActiveIssueIndex;
+	int m_iOnlyTeamToVote;
+	int m_nVotesYes;
+	int m_nVotesNo;
+	int m_nPotentialVotes;
+	bool m_bVotesDirty;
+	bool m_bTypeDirty;
+};
+#else
 
 class C_VoteController : public C_BaseEntity, public CGameEventListener
 {
@@ -44,4 +69,5 @@ protected:
 	int				m_nVoteIdx;
 };
 
+#endif // L4D2 native / unchanged generic client vote controller
 #endif // C_VoteController_H

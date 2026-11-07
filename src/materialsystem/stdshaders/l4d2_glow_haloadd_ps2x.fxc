@@ -1,0 +1,16 @@
+// Native haloadd_ps20/ps20b have identical bytecode and no combinations.
+sampler2D TexSampler : register( s0 );
+float g_flDimValue : register( c0 );
+
+struct PS_INPUT
+{
+	float2 texCoord : TEXCOORD0;
+};
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	float4 color = tex2D( TexSampler, i.texCoord );
+	color.rgb *= saturate( g_flDimValue );
+	color.a = pow( max( color.r, max( color.g, color.b ) ), 0.8f );
+	return color;
+}

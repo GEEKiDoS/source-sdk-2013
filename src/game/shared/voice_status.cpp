@@ -42,8 +42,18 @@ extern int cam_thirdperson;
 #define VOICE_MODEL_INTERVAL		0.3
 #define SQUELCHOSCILLATE_PER_SECOND	2.0f
 
-ConVar voice_modenable( "voice_modenable", "1", FCVAR_ARCHIVE | FCVAR_CLIENTCMD_CAN_EXECUTE, "Enable/disable voice in this mod." );
-ConVar voice_clientdebug( "voice_clientdebug", "0" );
+ConVar voice_modenable( "voice_modenable", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x40000088
+#else
+	FCVAR_ARCHIVE | FCVAR_CLIENTCMD_CAN_EXECUTE
+#endif
+, "Enable/disable voice in this mod." );
+ConVar voice_clientdebug( "voice_clientdebug", "0"
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	, 0x0000000A
+#endif
+ );
 
 // ---------------------------------------------------------------------- //
 // The voice manager for the client.
@@ -589,3 +599,6 @@ void CVoiceStatus::SetHeadLabelMaterial( const char *pszMaterial )
 	m_pHeadLabelMaterial = materials->FindMaterial( pszMaterial, TEXTURE_GROUP_VGUI );
 	m_pHeadLabelMaterial->IncrementReferenceCount();
 }
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/sound/voice_status_console.inc"
+#endif

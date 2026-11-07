@@ -67,13 +67,21 @@ public:
 								 LookAtPriorityType priority = BORING, 
 								 float duration = 0.0f,
 								 INextBotReply *replyWhenAimed = NULL,
+#if defined( L4D2 )
+								 const char *reason = NULL, bool requireSettled = true, float easeInTime = 0.25f );		// aim the bot's head towards the given goal
+#else
 								 const char *reason = NULL );		// aim the bot's head towards the given goal
+#endif // L4D2
 
 	virtual void AimHeadTowards( CBaseEntity *subject,
 								 LookAtPriorityType priority = BORING, 
 								 float duration = 0.0f,
 								 INextBotReply *replyWhenAimed = NULL,
+#if defined( L4D2 )
+								 const char *reason = NULL, bool requireSettled = true, float easeInTime = 0.25f );		// continually aim the bot's head towards the given subject
+#else
 								 const char *reason = NULL );		// continually aim the bot's head towards the given subject
+#endif // L4D2
 
 	virtual bool IsHeadAimingOnTarget( void ) const;				// return true if the bot's head has achieved its most recent lookat target
 	virtual bool IsHeadSteady( void ) const;						// return true if head is not rapidly turning to look somewhere else
@@ -111,9 +119,16 @@ public:
 
 	virtual unsigned int GetSolidMask( void ) const;				// return the bot's collision mask (hack until we get a general hull trace abstraction here or in the locomotion interface)
 
+#if defined( L4D2 )
+	virtual CBaseEntity *GetEntity( void ) OVERRIDE;
+#else
 	virtual CBaseEntity *GetEntity( void );					// get the entity
+#endif
 
 	CBaseEntity *GetLookAtSubject( void ) const;
+#if defined( L4D2 )
+	const Vector &GetLookAtPosition() const { return m_lookAtPos; }
+#endif
 private:
 	CBasePlayer *m_player;
 	
@@ -127,8 +142,10 @@ private:
 
 	Vector m_lookAtPos;					// if m_lookAtSubject is non-NULL, it continually overwrites this position with its own
 	EHANDLE m_lookAtSubject;
+#if !defined( L4D2 )
 	Vector m_lookAtVelocity;			// world velocity of lookat point, for tracking moving subjects
 	CountdownTimer m_lookAtTrackingTimer;	
+#endif
 
 	LookAtPriorityType m_lookAtPriority;
 	CountdownTimer m_lookAtExpireTimer;		// how long until this lookat expired
@@ -136,13 +153,18 @@ private:
 	INextBotReply *m_lookAtReplyWhenAimed;
 	bool m_isSightedIn;					// true if we are looking at our last lookat target
 	bool m_hasBeenSightedIn;			// true if we have hit the current lookat target
+#if defined( L4D2 )
+	float m_lookAtEaseInTime;
+#endif // L4D2
 
 	IntervalTimer m_headSteadyTimer;
 	QAngle m_priorAngles;				// last update's head angles
 	QAngle m_desiredAngles;
 
+#if !defined( L4D2 )
 	CountdownTimer m_anchorRepositionTimer;	// the time is takes us to recenter our virtual mouse
 	Vector m_anchorForward;
+#endif
 };
 
 inline bool PlayerBody::IsHeadAimingOnTarget( void ) const

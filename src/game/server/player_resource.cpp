@@ -17,15 +17,26 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE(CPlayerResource, DT_PlayerResource)
 //	SendPropArray( SendPropString( SENDINFO(m_szName[0]) ), SENDARRAYINFO(m_szName) ),
 	SendPropArray3( SENDINFO_ARRAY3(m_iPing), SendPropInt( SENDINFO_ARRAY(m_iPing), 10, SPROP_UNSIGNED ) ),
 //	SendPropArray( SendPropInt( SENDINFO_ARRAY(m_iPacketloss), 7, SPROP_UNSIGNED ), m_iPacketloss ),
+#if defined( L4D2 )
+	SendPropArray3( SENDINFO_ARRAY3( m_iScore ), SendPropInt( SENDINFO_ARRAY( m_iScore ), 16 ) ),
+	SendPropArray3( SENDINFO_ARRAY3( m_iTankTickets ), SendPropInt( SENDINFO_ARRAY( m_iTankTickets ), 16 ) ),
+#else
 	SendPropArray3( SENDINFO_ARRAY3(m_iScore), SendPropInt( SENDINFO_ARRAY(m_iScore), 12 ) ),
+#endif
 	SendPropArray3( SENDINFO_ARRAY3(m_iDeaths), SendPropInt( SENDINFO_ARRAY(m_iDeaths), 12 ) ),
 	SendPropArray3( SENDINFO_ARRAY3(m_bConnected), SendPropInt( SENDINFO_ARRAY(m_bConnected), 1, SPROP_UNSIGNED ) ),
 	SendPropArray3( SENDINFO_ARRAY3(m_iTeam), SendPropInt( SENDINFO_ARRAY(m_iTeam), 4 ) ),
 	SendPropArray3( SENDINFO_ARRAY3(m_bAlive), SendPropInt( SENDINFO_ARRAY(m_bAlive), 1, SPROP_UNSIGNED ) ),
+#if defined( L4D2 )
+	SendPropArray3( SENDINFO_ARRAY3( m_iHealth ), SendPropInt( SENDINFO_ARRAY( m_iHealth ), 16, SPROP_UNSIGNED ) ),
+#else
 	SendPropArray3( SENDINFO_ARRAY3(m_iHealth), SendPropInt( SENDINFO_ARRAY(m_iHealth), -1, SPROP_VARINT | SPROP_UNSIGNED ) ),
+#endif
+#if !defined( L4D2 )
 	SendPropArray3( SENDINFO_ARRAY3(m_iAccountID), SendPropInt( SENDINFO_ARRAY(m_iAccountID), 32, SPROP_UNSIGNED ) ),
 	SendPropArray3( SENDINFO_ARRAY3(m_bValid), SendPropInt( SENDINFO_ARRAY(m_bValid), 1, SPROP_UNSIGNED ) ),
 	SendPropArray3( SENDINFO_ARRAY3( m_iUserID ), SendPropInt( SENDINFO_ARRAY( m_iUserID ) ) ),
+#endif
 END_SEND_TABLE()
 
 BEGIN_DATADESC( CPlayerResource )
@@ -69,14 +80,23 @@ void CPlayerResource::Init( int iIndex )
 {
 	m_iPing.Set( iIndex, 0 );
 	m_iScore.Set( iIndex, 0 );
+#if defined( L4D2 )
+	m_iTankTickets.Set( iIndex, 0 ); // S189306/S189332, base Spawn only.
+#endif
 	m_iDeaths.Set( iIndex, 0 );
 	m_bConnected.Set( iIndex, 0 );
 	m_iTeam.Set( iIndex, 0 );
 	m_bAlive.Set( iIndex, 0 );
 	m_iHealth.Set( iIndex, 0 );
+#if !defined( L4D2 )
 	m_iAccountID.Set( iIndex, 0 );
+#endif
+#if !defined( L4D2 )
 	m_bValid.Set( iIndex, 0 );
+#endif
+#if !defined( L4D2 )
 	m_iUserID.Set( iIndex, 0 );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -126,13 +146,17 @@ void CPlayerResource::UpdatePlayerData( void )
 //-----------------------------------------------------------------------------
 void CPlayerResource::UpdateConnectedPlayer( int iIndex, CBasePlayer *pPlayer )
 {
+#if !defined( L4D2 )
 	m_iScore.Set( iIndex, pPlayer->FragCount() );
+#endif
 	m_iDeaths.Set( iIndex, pPlayer->DeathCount() );
 	m_bConnected.Set( iIndex, 1 );
 	m_iTeam.Set( iIndex, pPlayer->GetTeamNumber() );
 	m_bAlive.Set( iIndex, pPlayer->IsAlive()?1:0 );
 	m_iHealth.Set( iIndex, MAX( 0, pPlayer->GetHealth() ) );
+#if !defined( L4D2 )
 	m_bValid.Set( iIndex, 1 );
+#endif
 
 	// Don't update ping / packetloss every time
 
@@ -149,10 +173,16 @@ void CPlayerResource::UpdateConnectedPlayer( int iIndex, CBasePlayer *pPlayer )
 		// m_iPacketloss.Set( iSlot, packetloss );
 	}
 
+#if !defined( L4D2 )
 	CSteamID steamID;
 	pPlayer->GetSteamID( &steamID );
+#endif
+#if !defined( L4D2 )
 	m_iAccountID.Set( iIndex, steamID.GetAccountID() );
+#endif
+#if !defined( L4D2 )
 	m_iUserID.Set( iIndex, pPlayer->GetUserID() );
+#endif
 }
 
 
@@ -162,9 +192,15 @@ void CPlayerResource::UpdateConnectedPlayer( int iIndex, CBasePlayer *pPlayer )
 void CPlayerResource::UpdateDisconnectedPlayer( int iIndex )
 {
 	m_bConnected.Set( iIndex, 0 );
+#if !defined( L4D2 )
 	m_iAccountID.Set( iIndex, 0 );
+#endif
+#if !defined( L4D2 )
 	m_bValid.Set( iIndex, 0 );
+#endif
+#if !defined( L4D2 )
 	m_iUserID.Set( iIndex, 0 );
+#endif
 }
 
 

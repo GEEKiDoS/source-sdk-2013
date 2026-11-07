@@ -32,6 +32,9 @@ struct ClientWorldListInfo_t;
 class C_BaseEntity;
 struct WriteReplayScreenshotParams_t;
 class CReplayScreenshotTaker;
+#if defined( L4D2 )
+struct ClientViewModelRenderable_t;
+#endif
 
 #ifdef HL2_EPISODIC
 	class CStunEffect;
@@ -157,6 +160,11 @@ struct WaterRenderInfo_t
 	bool m_bDrawWaterSurface : 1;
 	bool m_bOpaqueWater : 1;
 
+#if defined( L4D2 )
+	bool m_bReflectSkyboxOnly : 1;
+	bool m_bReflect2DSkybox : 1;
+	float m_flWaterFogEnd;
+#endif
 };
 
 //-----------------------------------------------------------------------------
@@ -300,6 +308,11 @@ class CViewRender : public IViewRender,
 	DECLARE_CLASS_NOBASE( CViewRender );
 public:
 	virtual void	Init( void );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void OnSystemLevelChanged();
+	CON_COMMAND_MEMBER_F( CViewRender, "screenfademaxsize", ScreenFadeMaxSize, "Modify global screen fade max size in pixels", 0x400a );
+	CON_COMMAND_MEMBER_F( CViewRender, "screenfademinsize", ScreenFadeMinSize, "Modify global screen fade min size in pixels", 0x400a );
+#endif
 	virtual void	Shutdown( void );
 
 	const CViewSetup *GetPlayerViewSetup( ) const;
@@ -423,13 +436,20 @@ public:
 	{
 		m_UnderWaterOverlayMaterial.Init( pMaterial );
 	}
+#if defined( L4D2 )
+	void DrawUnderwaterFogBlocker( float flWaterFogEnd );
+#endif
 private:
 	int				m_BuildWorldListsNumber;
 
 
 	// General draw methods
 	// baseDrawFlags is a combination of DF_ defines. DF_MONITOR is passed into here while drawing a monitor.
-	void			ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxVisible, const CViewSetup &view, int nClearFlags, view_id_t viewID, bool bDrawViewModel = false, int baseDrawFlags = 0, ViewCustomVisibility_t *pCustomVisibility = NULL );
+	void ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxVisible, const CViewSetup &view, int nClearFlags, view_id_t viewID, bool bDrawViewModel = false, int baseDrawFlags = 0, ViewCustomVisibility_t *pCustomVisibility = NULL
+#if defined( L4D2 )
+		, const VisibleFogVolumeInfo_t *pFogVolumeInfo = NULL, const WaterRenderInfo_t *pWaterRenderInfo = NULL
+#endif
+		);
 
 	void			DrawMonitors( const CViewSetup &cameraView );
 
@@ -450,7 +470,11 @@ private:
 	void DrawUnderwaterOverlay( void );
 
 	// Water-related methods
-	void			DrawWorldAndEntities( bool drawSkybox, const CViewSetup &view, int nClearFlags, ViewCustomVisibility_t *pCustomVisibility = NULL );
+	void DrawWorldAndEntities( bool drawSkybox, const CViewSetup &view, int nClearFlags, ViewCustomVisibility_t *pCustomVisibility = NULL
+#if defined( L4D2 )
+		, const VisibleFogVolumeInfo_t *pFogVolumeInfo = NULL, const WaterRenderInfo_t *pWaterRenderInfo = NULL
+#endif
+		);
 
 	virtual void			ViewDrawScene_Intro( const CViewSetup &view, int nClearFlags, const IntroData_t &introData );
 
@@ -463,8 +487,13 @@ private:
 	// Determines what kind of water we're going to use
 	void			DetermineWaterRenderInfo( const VisibleFogVolumeInfo_t &fogVolumeInfo, WaterRenderInfo_t &info );
 
+#if defined( L4D2 )
+	bool UpdateRefractIfNeededByList( CUtlVector< ClientViewModelRenderable_t > &list );
+	void DrawRenderablesInList( CUtlVector< ClientViewModelRenderable_t > &list, int flags = 0 );
+#else
 	bool			UpdateRefractIfNeededByList( CUtlVector< IClientRenderable * > &list );
 	void			DrawRenderablesInList( CUtlVector< IClientRenderable * > &list, int flags = 0 );
+#endif
 
 	// Sets up, cleans up the main 3D view
 	void			SetupMain3DView( const CViewSetup &view, int &nClearFlags );
@@ -487,6 +516,9 @@ private:
 	CMaterialReference	m_ModulateSingleColor;
 	CMaterialReference	m_ScreenOverlayMaterial;
 	CMaterialReference m_UnderWaterOverlayMaterial;
+#if defined( L4D2 )
+	CMaterialReference	m_UnderWaterFogMaterial;
+#endif
 
 	CMaterialReference	m_ScriptOverlayMaterial;
 	char m_szCurrentScriptMaterialName[ MAX_PATH ];
@@ -525,6 +557,13 @@ private:
 
 #if defined( REPLAY_ENABLED )
 	CReplayScreenshotTaker	*m_pReplayScreenshotTaker;
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	float m_flSystemLevelFadeMin;
+	float m_flSystemLevelFadeMax;
+	float m_flScreenFadeMinSize;
+	float m_flScreenFadeMaxSize;
+	float m_flSystemLevelMaxDistance;
 #endif
 };
 

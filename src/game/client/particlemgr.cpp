@@ -31,15 +31,85 @@
 #endif
 #include "tier0/icommandline.h"
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "dmxloader/dmxloader.h"
+#include "dmxloader/dmxelement.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+struct CParticleMgr::TerrorParticleDefinitionEntry_t
+{
+	TerrorParticleDefinitionMetadata_t m_Data;
+	CUtlReference< CParticleSystemDefinition > m_Fallback;
+};
+
+void CParticleMgr::UpdateTerrorParticleDefinitionMetadata( const CDmxElement &definition )
+{
+	const char *name = definition.GetName();
+	const int index = m_TerrorParticleDefinitionMetadata.Find( name );
+	TerrorParticleDefinitionEntry_t *entry;
+	if ( index == m_TerrorParticleDefinitionMetadata.InvalidIndex() )
+	{
+		entry = new TerrorParticleDefinitionEntry_t;
+		m_TerrorParticleDefinitionMetadata.Insert( name, entry );
+	}
+	else
+		entry = m_TerrorParticleDefinitionMetadata[index];
+	entry->m_Fallback = NULL;
+	entry->m_Data.m_bScreenSpace = definition.GetValue< bool >( "screen space effect" );
+	entry->m_Data.m_flAggregationRadius = definition.GetValue< float >( "aggregation radius" );
+	entry->m_Data.m_nMinimumFreeToAggregate = definition.GetValue< int >( "minimum free particles to aggregate" );
+	V_strncpy( entry->m_Data.m_FallbackDefinition, definition.GetValueString( "fallback replacement definition" ),
+		sizeof( entry->m_Data.m_FallbackDefinition ) );
+	entry->m_Data.m_nFallbackMaxCount = definition.GetValue< int >( "fallback max count", -1 );
+}
+
+const TerrorParticleDefinitionMetadata_t &CParticleMgr::GetTerrorParticleDefinitionMetadata( const char *name ) const
+{
+	const int index = m_TerrorParticleDefinitionMetadata.Find( name );
+	return index == m_TerrorParticleDefinitionMetadata.InvalidIndex() ?
+		m_TerrorParticleDefinitionDefaults : m_TerrorParticleDefinitionMetadata[index]->m_Data;
+}
+
+bool CParticleMgr::IsTerrorParticleDefinitionScreenSpace( const char *name ) const
+{
+	return GetTerrorParticleDefinitionMetadata( name ).m_bScreenSpace;
+}
+
+CParticleSystemDefinition *CParticleMgr::GetTerrorParticleFallbackDefinition( CParticleSystemDefinition *definition )
+{
+	const int index = m_TerrorParticleDefinitionMetadata.Find( definition->GetName() );
+	if ( index == m_TerrorParticleDefinitionMetadata.InvalidIndex() ) return NULL;
+	TerrorParticleDefinitionEntry_t *entry = m_TerrorParticleDefinitionMetadata[index];
+	if ( entry->m_Data.m_nFallbackMaxCount <= 0 ) return NULL; // Actual10371120 gate.
+	if ( !entry->m_Fallback )
+		entry->m_Fallback = g_pParticleSystemMgr->FindParticleSystem( entry->m_Data.m_FallbackDefinition );
+	return entry->m_Fallback;
+}
+#endif
+
+
+
 
 extern IParticleSystemQuery *g_pParticleSystemQuery;
 
 static int g_nParticlesDrawn;
 // CCycleCount	g_ParticleTimer;
 
-ConVar r_DrawParticles("r_drawparticles", "1", FCVAR_CHEAT, "Enable/disable particle rendering");
-static ConVar particle_simulateoverflow( "particle_simulateoverflow", "0", FCVAR_CHEAT, "Used for stress-testing particle systems. Randomly denies creation of particles." );
+ConVar r_DrawParticles("r_drawparticles", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Enable/disable particle rendering");
+static ConVar particle_simulateoverflow( "particle_simulateoverflow", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Used for stress-testing particle systems. Randomly denies creation of particles." );
 ConVar cl_particleeffect_aabb_buffer( "cl_particleeffect_aabb_buffer", "2", FCVAR_CHEAT, "Add this amount to a particle effect's bbox in the leaf system so if it's growing slowly, it won't have to be reinserted as often." );
 ConVar cl_particle_show_bbox( "cl_particle_show_bbox", "0", FCVAR_CHEAT );
 ConVar cl_particle_show_bbox_cost( "cl_particle_show_bbox_cost", "0", FCVAR_CHEAT, "Show # of particles: green->blue->red. Use a negative number to show ALL particles even cheap ones" );
@@ -52,8 +122,10 @@ int g_cl_particle_show_bbox_cost = 0;
 static void StatsParticlesStart();
 static void StatsParticlesStop();
 
+#if !defined( L4D2 )
 static ConCommand cl_particle_stats_start( "cl_particle_stats_start", StatsParticlesStart, "Start or restart particle stats - also dumps to particle_stats.csv") ;
 static ConCommand cl_particle_stats_stop( "cl_particle_stats_stop", StatsParticlesStop, "Stop particle stats, or snapshot this frame - also dumps to particle_stats.csv") ;
+#endif
 static ConVar cl_particle_stats_trigger_count( "cl_particle_stats_trigger_count", "0", 0, "Dump stats if the particle count exceeds this number." );
 
 
@@ -1161,6 +1233,9 @@ void CParticleMgr::Term()
 	}
 
 	Assert( m_nCurrentParticlesAllocated == 0 );
+#if defined( L4D2 )
+	m_TerrorParticleDefinitionMetadata.PurgeAndDeleteElements();
+#endif
 }
 
 
@@ -1278,6 +1353,10 @@ void CParticleMgr::AddEffect( CNewParticleEffect *pEffect )
 	{
 		ClientLeafSystem()->SetRenderGroup( pEffect->RenderHandle(), RENDER_GROUP_VIEW_MODEL_TRANSLUCENT );
 	}
+#if defined( L4D2 )
+	ClientLeafSystem_SetDrawForLocalUser( pEffect->RenderHandle(), pEffect->ShouldDrawForLocalUser( 0 ) );
+	ClientLeafSystem_EnableBloatedRenderBounds( pEffect->RenderHandle(), true );
+#endif
 }
 
 
@@ -1366,6 +1445,14 @@ void CParticleMgr::RemoveEffect( CNewParticleEffect *pEffect )
 	m_NewEffects.RemoveNode( pEffect );
 	pEffect->NotifyRemove();
 }
+
+#if defined( L4D2 )
+void CParticleMgr::StopEffectsLongerThan( float age )
+{
+	for ( CNewParticleEffect *effect = m_NewEffects.m_pHead; effect; effect = effect->m_pNext )
+		if ( effect->m_flCurTime > age ) effect->StopEmission( false, true, true );
+}
+#endif
 
 
 void CParticleMgr::RemoveAllNewEffects()
@@ -1527,7 +1614,11 @@ void BeginSimulateParticles( void )
 }
 
 
-static ConVar r_particle_sim_spike_threshold_ms( "r_particle_sim_spike_threshold_ms", "5" );
+static ConVar r_particle_sim_spike_threshold_ms( "r_particle_sim_spike_threshold_ms", "5"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 void EndSimulateParticles( void )
 {
@@ -1540,7 +1631,11 @@ void EndSimulateParticles( void )
 }
 
 
-static ConVar r_threaded_particles( "r_threaded_particles", "1" );
+static ConVar r_threaded_particles( "r_threaded_particles", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 static float s_flThreadedPSystemTimeStep;
 
@@ -1572,11 +1667,17 @@ static void ProcessPSystem( ParticleSimListEntry_t& pSimListEntry )
 	if ( pNewEffect->GetFirstFrameFlag() )
 	{
 		pNewEffect->Simulate( 0.0f, updateBboxOnly );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		pNewEffect->UpdateChildBoundsValidity();
+#endif
 		pNewEffect->SetFirstFrameFlag( false );
 	}
 	else if ( pNewEffect->ShouldSimulate() )
 	{
 		pNewEffect->Simulate( s_flThreadedPSystemTimeStep, updateBboxOnly );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		pNewEffect->UpdateChildBoundsValidity();
+#endif
 	}
 
 	if ( pNewEffect->IsFinished() )
@@ -1689,7 +1790,13 @@ bool CParticleMgr::RetireParticleCollections( CParticleSystemDefinition* pDef,
 }
 
 // Next, see if there are new particle systems that need early retirement
-static ConVar cl_particle_retire_cost( "cl_particle_retire_cost", "0", FCVAR_CHEAT | FCVAR_ALLOWED_IN_COMPETITIVE );
+static ConVar cl_particle_retire_cost( "cl_particle_retire_cost", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT | FCVAR_ALLOWED_IN_COMPETITIVE
+#endif
+ );
 
 bool CParticleMgr::EarlyRetireParticleSystems( int nCount, ParticleSimListEntry_t *ppEffects )
 {
@@ -1761,7 +1868,11 @@ bool CParticleMgr::EarlyRetireParticleSystems( int nCount, ParticleSimListEntry_
 	return bRetiredCollections;
 }
 
-static ConVar particle_sim_alt_cores( "particle_sim_alt_cores", "2" );
+static ConVar particle_sim_alt_cores( "particle_sim_alt_cores", "2"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 void CParticleMgr::BuildParticleSimList( CUtlVector< ParticleSimListEntry_t > &list )
 {
@@ -1798,7 +1909,13 @@ void CParticleMgr::BuildParticleSimList( CUtlVector< ParticleSimListEntry_t > &l
 	}
 }
 
-static ConVar r_particle_timescale( "r_particle_timescale", "1.0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
+static ConVar r_particle_timescale( "r_particle_timescale", "1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY
+#endif
+ );
 
 static int CountChildParticleSystems( CParticleCollection *p )
 {
@@ -2307,3 +2424,7 @@ void CParticleMgr::StatsSpewResults()
 
 
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/effects/particlemgr_console.inc"
+#include "l4d2/effects/particlemgr_console_registrations.inc"
+#endif

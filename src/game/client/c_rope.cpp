@@ -25,6 +25,9 @@
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "tier1/callqueue.h"
 #include "tier1/memstack.h"
+#ifdef L4D2
+#include "materialsystem/MaterialSystemUtil.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -66,37 +69,139 @@ END_RECV_TABLE()
 #define ROPE_IMPULSE_SCALE	20
 #define ROPE_IMPULSE_DECAY	0.95
 
-static ConVar rope_shake( "rope_shake", "0" );
-static ConVar rope_subdiv( "rope_subdiv", "2", 0, "Rope subdivision amount", true, 0, true, MAX_ROPE_SUBDIVS );
-static ConVar rope_collide( "rope_collide", "1", 0, "Collide rope with the world" );
+static ConVar rope_shake( "rope_shake", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar rope_subdiv( "rope_subdiv", "2", 
+#if defined( L4D2 )
+	0x0080000A
+#else
+	0
+#endif
+, "Rope subdivision amount", true, 0, true, MAX_ROPE_SUBDIVS );
+static ConVar rope_collide( "rope_collide", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Collide rope with the world" );
 
-static ConVar rope_smooth( "rope_smooth", "1", 0, "Do an antialiasing effect on ropes" );
-static ConVar rope_smooth_enlarge( "rope_smooth_enlarge", "1.4", 0, "How much to enlarge ropes in screen space for antialiasing effect" );
+static ConVar rope_smooth( "rope_smooth", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Do an antialiasing effect on ropes" );
+static ConVar rope_smooth_enlarge( "rope_smooth_enlarge", "1.4", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "How much to enlarge ropes in screen space for antialiasing effect" );
 
-static ConVar rope_smooth_minwidth( "rope_smooth_minwidth", "0.3", 0, "When using smoothing, this is the min screenspace width it lets a rope shrink to" );
-static ConVar rope_smooth_minalpha( "rope_smooth_minalpha", "0.2", 0, "Alpha for rope antialiasing effect" );
+static ConVar rope_smooth_minwidth( "rope_smooth_minwidth", "0.3", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "When using smoothing, this is the min screenspace width it lets a rope shrink to" );
+static ConVar rope_smooth_minalpha( "rope_smooth_minalpha", "0.2", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Alpha for rope antialiasing effect" );
 
-static ConVar rope_smooth_maxalphawidth( "rope_smooth_maxalphawidth", "1.75" );
-static ConVar rope_smooth_maxalpha( "rope_smooth_maxalpha", "0.5", 0, "Alpha for rope antialiasing effect" );
+static ConVar rope_smooth_maxalphawidth( "rope_smooth_maxalphawidth", "1.75"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar rope_smooth_maxalpha( "rope_smooth_maxalpha", "0.5", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Alpha for rope antialiasing effect" );
 
-static ConVar mat_fullbright( "mat_fullbright", "0", FCVAR_CHEAT ); // get it from the engine
-static ConVar r_drawropes( "r_drawropes", "1", FCVAR_CHEAT );
-static ConVar r_queued_ropes( "r_queued_ropes", "1" );
-static ConVar r_ropetranslucent( "r_ropetranslucent", "1");
+static ConVar mat_fullbright( "mat_fullbright", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ ); // get it from the engine
+static ConVar r_drawropes( "r_drawropes", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar r_queued_ropes( "r_queued_ropes", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar r_ropetranslucent( "r_ropetranslucent", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
 static ConVar r_rope_holiday_light_scale( "r_rope_holiday_light_scale", "0.055", FCVAR_DEVELOPMENTONLY );
 static ConVar r_ropes_holiday_lights_allowed( "r_ropes_holiday_lights_allowed", "1", FCVAR_DEVELOPMENTONLY );
 
-static ConVar rope_wind_dist( "rope_wind_dist", "1000", 0, "Don't use CPU applying small wind gusts to ropes when they're past this distance." );
-static ConVar rope_averagelight( "rope_averagelight", "1", 0, "Makes ropes use average of cubemap lighting instead of max intensity." );
+static ConVar rope_wind_dist( "rope_wind_dist", "1000", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Don't use CPU applying small wind gusts to ropes when they're past this distance." );
+static ConVar rope_averagelight( "rope_averagelight", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Makes ropes use average of cubemap lighting instead of max intensity." );
 
 
-static ConVar rope_rendersolid( "rope_rendersolid", "1" );
+static ConVar rope_rendersolid( "rope_rendersolid", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
-static ConVar rope_solid_minwidth( "rope_solid_minwidth", "0.3" );
-static ConVar rope_solid_maxwidth( "rope_solid_maxwidth", "1" );
+static ConVar rope_solid_minwidth( "rope_solid_minwidth", "0.3"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar rope_solid_maxwidth( "rope_solid_maxwidth", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
-static ConVar rope_solid_minalpha( "rope_solid_minalpha", "0.0" );
-static ConVar rope_solid_maxalpha( "rope_solid_maxalpha", "1" );
+static ConVar rope_solid_minalpha( "rope_solid_minalpha", "0.0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar rope_solid_maxalpha( "rope_solid_maxalpha", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 
 static CCycleCount	g_RopeCollideTicks;
@@ -255,6 +360,9 @@ private:
 
 	void RenderNonSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount );
 	void RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid );
+#ifdef L4D2
+	void RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRenderData_t &cache, bool bShadowDepth, C_RopeKeyframe::BuildRopeQueuedData_t *pQueuedData );
+#endif
 
 private:
 
@@ -275,6 +383,9 @@ private:
 	CQueuedRopeMemoryManager		m_QueuedModeMemory;
 
 	IMaterial* m_pDepthWriteMaterial;
+#ifdef L4D2
+	CMaterialReference m_SplineDepthMaterial;
+#endif
 
 
 	struct RopeQueuedRenderCache_t
@@ -401,6 +512,156 @@ void CRopeManager::AddToRenderCache( C_RopeKeyframe *pRope )
 	++m_aRenderCache[iRenderCache].m_nCacheCount;
 }
 
+#ifdef L4D2
+// Retail client.dll RVA 0x92400: the shader expands a Catmull-Rom ribbon.
+// POSITION is the spline parameter/texture coordinate/side, not world position.
+// Keep the ordinary beam path for materials whose shader is not SplineRope.
+void CRopeManager::RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRenderData_t &cache, bool bShadowDepth, C_RopeKeyframe::BuildRopeQueuedData_t *pQueuedData )
+{
+	IMaterial *pMaterial = cache.m_pSolidMaterial;
+	if ( bShadowDepth )
+	{
+		if ( !m_SplineDepthMaterial )
+			m_SplineDepthMaterial.Init( "cable/rope_shadowdepth", TEXTURE_GROUP_OTHER );
+		pMaterial = m_SplineDepthMaterial;
+	}
+	pRenderContext->Bind( pMaterial );
+	const int nMaxVertices = pRenderContext->GetMaxVerticesToRender( pMaterial );
+	const int nMaxIndices = pRenderContext->GetMaxIndicesToRender();
+	CMeshBuilder meshBuilder;
+	IMesh *pMesh = NULL;
+	int nBatchVertices = 0, nBatchIndices = 0;
+
+	for ( int iRope = 0; iRope < cache.m_nCacheCount; ++iRope )
+	{
+		C_RopeKeyframe *pRope = cache.m_aCache[iRope];
+		if ( !pRope )
+			continue;
+
+		C_RopeKeyframe::BuildRopeQueuedData_t stackData;
+		Vector vPredictedPositions[ROPE_MAX_SEGMENTS];
+		C_RopeKeyframe::BuildRopeQueuedData_t *pData;
+		if ( pQueuedData )
+		{
+			pData = &pQueuedData[iRope];
+		}
+		else
+		{
+			stackData.m_iNodeCount = pRope->m_RopePhysics.NumNodes();
+			stackData.m_pLightValues = pRope->m_LightValues;
+			stackData.m_vColorMod = pRope->m_vColorMod;
+			stackData.m_RopeLength = pRope->m_RopeLength;
+			stackData.m_Slack = pRope->m_Slack;
+			stackData.m_pPredictedPositions = vPredictedPositions;
+			for ( int i = 0; i < stackData.m_iNodeCount; ++i )
+				vPredictedPositions[i] = pRope->m_RopePhysics.GetNode( i )->m_vPredicted;
+			pData = &stackData;
+		}
+
+		const int nSpans = pData->m_iNodeCount - 1;
+		if ( nSpans <= 0 )
+			continue;
+		const int nSubdiv = pRope->m_Subdiv == 255 ? rope_subdiv.GetInt() : pRope->m_Subdiv;
+		const int nSteps = nSubdiv + 1;
+		const int nSamples = nSpans * nSteps + 1;
+		const float flStep = 1.0f / nSteps;
+		const float flTexIncrement = ( ( pData->m_RopeLength + pData->m_Slack + ROPESLACK_FUDGEFACTOR ) *
+			( 4.0f / pRope->m_TextureScale ) / ( nSpans * nSubdiv + 1 ) ) / pRope->m_TextureHeight;
+		float flTexCoord = pRope->m_flCurScroll;
+		int iFirstSample = 0, iSpan = 0, iSubdiv = 0, iPreviousSpan = -1;
+		float flT = 0.0f;
+		Vector vControl[4], vLight0, vLight1;
+		unsigned char nColor[4] = { 0, 0, 0, 255 };
+		while ( iFirstSample < nSamples - 1 )
+		{
+			int nPairs = MIN( ( nMaxVertices - nBatchVertices ) / 2,
+				( nMaxIndices - nBatchIndices ) / 6 + 1 );
+			if ( nPairs < 2 )
+			{
+				meshBuilder.End();
+				pMesh->Draw();
+				pMesh = NULL;
+				nBatchVertices = nBatchIndices = 0;
+				continue;
+			}
+			nPairs = MIN( nPairs, nSamples - iFirstSample );
+			if ( !pMesh )
+			{
+				pMesh = pRenderContext->GetDynamicMesh( true, NULL, NULL, pMaterial );
+				meshBuilder.Begin( pMesh, MATERIAL_TRIANGLES, nMaxVertices, nMaxIndices );
+			}
+			const int nFirstVertex = nBatchVertices;
+			for ( int i = 0; i < nPairs; ++i )
+			{
+				const int iSample = iFirstSample + i;
+				if ( iSpan != iPreviousSpan )
+				{
+					const Vector *pPositions = pData->m_pPredictedPositions;
+					vControl[1] = pPositions[iSpan];
+					vControl[2] = pPositions[iSpan + 1];
+					vControl[0] = iSpan ? pPositions[iSpan - 1] : 2.0f * vControl[1] - vControl[2];
+					vControl[3] = iSpan + 2 <= nSpans ? pPositions[iSpan + 2] : 2.0f * vControl[2] - vControl[1];
+					vLight0 = pData->m_pLightValues[iSpan] * pData->m_vColorMod;
+					vLight1 = pData->m_pLightValues[iSpan + 1] * pData->m_vColorMod;
+					iPreviousSpan = iSpan;
+				}
+				// Quantize once for both sides. Retail retains the previous
+				// color at the final pair, and at a duplicated buffer boundary.
+				if ( iSample != nSamples - 1 && ( i || !iFirstSample ) )
+				{
+					const Vector vColor = vLight0 * ( 1.0f - flT ) + vLight1 * flT;
+					nColor[0] = (unsigned char)FastFToC( vColor.x );
+					nColor[1] = (unsigned char)FastFToC( vColor.y );
+					nColor[2] = (unsigned char)FastFToC( vColor.z );
+				}
+				for ( int iSide = 0; iSide < 2; ++iSide )
+				{
+					meshBuilder.Color4ubv( nColor );
+					meshBuilder.Position3f( flT, flTexCoord, (float)iSide );
+					for ( int iControl = 0; iControl < 4; ++iControl )
+						meshBuilder.TexCoord4f( iControl, vControl[iControl].x, vControl[iControl].y, vControl[iControl].z, pRope->m_Width );
+					meshBuilder.AdvanceVertex();
+				}
+				// Retain the exact last pair across a buffer split; do not
+				// undo an FP texture increment or recompute t by multiplication.
+				if ( i + 1 < nPairs )
+				{
+					flTexCoord += flTexIncrement;
+					if ( ++iSubdiv == nSteps )
+					{
+						if ( iSpan + 1 < nSpans )
+						{
+							++iSpan;
+							iSubdiv = 0;
+							flT = 0.0f;
+						}
+						else
+							flT = 1.0f;
+					}
+					else
+						flT += flStep;
+				}
+			}
+			for ( int i = 0; i < nPairs - 1; ++i )
+			{
+				const int v = nFirstVertex + i * 2;
+				meshBuilder.FastIndex2( v, v + 1 );
+				meshBuilder.FastIndex2( v + 2, v + 1 );
+				meshBuilder.FastIndex2( v + 3, v + 2 );
+			}
+			nBatchVertices += nPairs * 2;
+			nBatchIndices += ( nPairs - 1 ) * 6;
+			iFirstSample += nPairs - 1;
+		}
+	}
+	if ( pMesh )
+	{
+		meshBuilder.End();
+		pMesh->Draw();
+	}
+}
+#endif
+
 void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData )
 {
 	VPROF_BUDGET( "CRopeManager::DrawRenderCache", VPROF_BUDGETGROUP_ROPES );
@@ -438,6 +699,16 @@ void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_
 
 		if ( nCacheCount == 0 )
 			continue;		
+
+#ifdef L4D2
+		if ( !Q_stricmp( pRenderCache[iRenderCache].m_pSolidMaterial->GetShaderName(), "SplineRope" ) )
+		{
+			RenderSplineRopes( pRenderContext, pRenderCache[iRenderCache], bShadowDepth, pBuildRopeQueuedData );
+			if ( pBuildRopeQueuedData )
+				pBuildRopeQueuedData += nCacheCount;
+			continue;
+		}
+#endif
 
 		ResetSegmentCache( nCacheCount );
 
@@ -1092,7 +1363,11 @@ C_RopeKeyframe* C_RopeKeyframe::Create(
 {
 	C_RopeKeyframe *pRope = new C_RopeKeyframe;
 
+#if defined( L4D2 )
+	pRope->InitializeAsClientEntity( NULL, false );
+#else
 	pRope->InitializeAsClientEntity( NULL, RENDER_GROUP_OPAQUE_ENTITY );
+#endif
 	
 	if ( pStartEnt )
 	{

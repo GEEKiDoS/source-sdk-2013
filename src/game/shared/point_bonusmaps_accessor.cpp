@@ -76,6 +76,7 @@ void CPointBonusMapsAccessor::InputComplete( inputdata_t& inputdata )
 	{
 		m_pGameUI->BonusMapComplete( m_String_tFileName.ToCStr(), m_String_tMapName.ToCStr() );
 
+#if !defined( L4D2 )
 		int iNumAdvancedComplete = m_pGameUI->BonusMapNumAdvancedCompleted();
 
 		IGameEvent *event = gameeventmanager->CreateEvent( "advanced_map_complete" );
@@ -84,6 +85,7 @@ void CPointBonusMapsAccessor::InputComplete( inputdata_t& inputdata )
 			event->SetInt( "numadvanced", iNumAdvancedComplete );
 			gameeventmanager->FireEvent( event );
 		}
+#endif
 	}
 }
 
@@ -105,6 +107,7 @@ void BonusMapChallengeUpdate( const char *pchFileName, const char *pchMapName, c
 		{
 			pGameUI->BonusMapChallengeUpdate( pchFileName, pchMapName, pchChallengeName, iBest );
 
+#if !defined( L4D2 )
 			int piNumMedals[ 3 ];
 			pGameUI->BonusMapNumMedals( piNumMedals );
 
@@ -116,6 +119,7 @@ void BonusMapChallengeUpdate( const char *pchFileName, const char *pchMapName, c
 				event->SetInt( "numgold", piNumMedals[ 2 ] );
 				gameeventmanager->FireEvent( event );
 			}
+#endif
 		}	
 	}
 }

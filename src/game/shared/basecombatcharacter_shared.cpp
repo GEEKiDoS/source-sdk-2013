@@ -132,11 +132,23 @@ void CBaseCombatCharacter::RemoveAmmo( int iCount, int iAmmoIndex )
 		return;
 
 	// Infinite ammo?
+#if defined( L4D2 )
+	if ( GetAmmoDef()->MaxCarry( iAmmoIndex, this ) == INFINITE_AMMO )
+#else
 	if ( GetAmmoDef()->MaxCarry( iAmmoIndex ) == INFINITE_AMMO )
+#endif
 		return;
 
 	// Ammo pickup sound
+#if defined( L4D2 )
+	// Substitute zero only at an undefined read, then ignore only the invalid write.
+	const int ammoCount = static_cast< unsigned int >( iAmmoIndex ) < MAX_AMMO_SLOTS ? m_iAmmo[iAmmoIndex] : 0;
+	const int remaining = MAX( ammoCount - iCount, 0 );
+	if ( static_cast< unsigned int >( iAmmoIndex ) < MAX_AMMO_SLOTS )
+		m_iAmmo.Set( iAmmoIndex, remaining );
+#else
 	m_iAmmo.Set( iAmmoIndex, MAX( m_iAmmo[iAmmoIndex] - iCount, 0 ) );
+#endif
 }
 
 void CBaseCombatCharacter::RemoveAmmo( int iCount, const char *szName )
@@ -176,7 +188,11 @@ int CBaseCombatCharacter::GetAmmoCount( int iAmmoIndex ) const
 		return 0;
 
 	// Infinite ammo?
+#if defined( L4D2 )
+	if ( GetAmmoDef()->MaxCarry( iAmmoIndex, this ) == INFINITE_AMMO )
+#else
 	if ( GetAmmoDef()->MaxCarry( iAmmoIndex ) == INFINITE_AMMO )
+#endif
 		return 999;
 
 	return m_iAmmo[ iAmmoIndex ];

@@ -24,7 +24,13 @@
 
 #define SF_PROP_VEHICLE_ALWAYSTHINK		0x00000001
 
-ConVar g_debug_vehiclebase( "g_debug_vehiclebase", "0", FCVAR_CHEAT );
+ConVar g_debug_vehiclebase( "g_debug_vehiclebase", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 extern ConVar g_debug_vehicledriver;
 
 // CFourWheelServerVehicle
@@ -85,6 +91,14 @@ CPropVehicle::~CPropVehicle ()
 {
 }
 
+#if defined( L4D2 )
+void CPropVehicle::Precache()
+{
+	BaseClass::Precache();
+	m_VehiclePhysics.Precache();
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
@@ -107,7 +121,12 @@ void CPropVehicle::Spawn( )
 
 // this allows reloading the script variables from disk over an existing vehicle state
 // This is useful for tuning vehicles or updating old saved game formats
+
+#if defined( L4D2 )
+CON_COMMAND_F(vehicle_flushscript, "Flush and reload all vehicle scripts", 0x00000004)
+#else
 CON_COMMAND(vehicle_flushscript, "Flush and reload all vehicle scripts")
+#endif
 {
 	PhysFlushVehicleScripts();
 	for ( CBaseEntity *pEnt = gEntList.FirstEnt(); pEnt != NULL; pEnt = gEntList.NextEnt(pEnt) )
@@ -1108,7 +1127,13 @@ CFourWheelServerVehicle::CFourWheelServerVehicle( void )
 #ifdef HL2_EPISODIC
 ConVar r_JeepFOV( "r_JeepFOV", "82", FCVAR_CHEAT | FCVAR_REPLICATED );
 #else
-ConVar r_JeepFOV( "r_JeepFOV", "90", FCVAR_CHEAT | FCVAR_REPLICATED );
+ConVar r_JeepFOV( "r_JeepFOV", "90", 
+#if defined( L4D2 )
+	0x00006004
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+ );
 #endif // HL2_EPISODIC
 
 //-----------------------------------------------------------------------------

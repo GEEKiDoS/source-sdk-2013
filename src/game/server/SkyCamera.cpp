@@ -15,14 +15,31 @@
 // automatically hooks in the system's callbacks
 CEntityClassList<CSkyCamera> g_SkyList;
 template <> CSkyCamera *CEntityClassList<CSkyCamera>::m_pClassList = NULL;
+#if defined( L4D2 )
+static CHandle< CSkyCamera > s_hCurrentSkyCamera;
+#endif
 
 //-----------------------------------------------------------------------------
 // Retrives the current skycamera
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+CSkyCamera *GetCurrentSkyCamera()
+{
+	if ( !s_hCurrentSkyCamera )
+		s_hCurrentSkyCamera = g_SkyList.m_pClassList;
+	return s_hCurrentSkyCamera.Get();
+}
+
+void CSkyCamera::InputActivateSkybox( inputdata_t &inputdata )
+{
+	s_hCurrentSkyCamera = this;
+}
+#else
 CSkyCamera*	GetCurrentSkyCamera()
 {
 	return g_SkyList.m_pClassList;
 }
+#endif
 
 CSkyCamera*	GetSkyCameraList()
 {
@@ -38,6 +55,10 @@ BEGIN_DATADESC( CSkyCamera )
 	DEFINE_KEYFIELD( m_skyboxData.scale, FIELD_INTEGER, "scale" ),
 	DEFINE_FIELD( m_skyboxData.origin, FIELD_VECTOR ),
 	DEFINE_FIELD( m_skyboxData.area, FIELD_INTEGER ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_skyboxData.bClip3DSkyBoxNearToWorldFar, FIELD_BOOLEAN, "clip_3D_skybox_near_to_world_far" ),
+	DEFINE_KEYFIELD( m_skyboxData.flClip3DSkyBoxNearToWorldFarOffset, FIELD_FLOAT, "clip_3D_skybox_near_to_world_far_offset" ),
+#endif
 
 	// Quiet down classcheck
 	// DEFINE_FIELD( m_skyboxData, sky3dparams_t ),
@@ -55,7 +76,13 @@ BEGIN_DATADESC( CSkyCamera )
 	DEFINE_KEYFIELD( m_skyboxData.fog.start,			FIELD_FLOAT, "fogstart" ),
 	DEFINE_KEYFIELD( m_skyboxData.fog.end,				FIELD_FLOAT, "fogend" ),
 	DEFINE_KEYFIELD( m_skyboxData.fog.maxdensity,		FIELD_FLOAT, "fogmaxdensity" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_skyboxData.fog.HDRColorScale, FIELD_FLOAT, "HDRColorScale" ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "ActivateSkybox", InputActivateSkybox ),
+#endif
+#if !defined( L4D2 )
 	DEFINE_KEYFIELD( m_skyboxData.fog.radial,			FIELD_BOOLEAN, "fogradial" ),
+#endif
 
 END_DATADESC()
 
@@ -94,6 +121,9 @@ CSkyCamera::CSkyCamera()
 {
 	g_SkyList.Insert( this );
 	m_skyboxData.fog.maxdensity = 1.0f;
+#if defined( L4D2 )
+	m_skyboxData.fog.HDRColorScale = 1.0f;
+#endif
 	m_skyboxData.fog.radial = false;
 }
 
@@ -147,9 +177,11 @@ void CSkyCamera::Activate( )
 	}
 #endif
 
+#if !defined( L4D2 )
 	// matches the behavior of fog controller
 	if ( GameRules()->IsOfficialMap() )
 	{
 		m_skyboxData.fog.radial = true;
 	}
+#endif
 }

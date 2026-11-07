@@ -1,0 +1,19 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Native Black uses fixed-function fog for ps20 and passes the vertex-computed
+// linear fog color through unchanged for ps20b.
+struct PS_INPUT
+{
+	float4 position : POSITION;
+#if !defined( SHADER_MODEL_PS_2_0 )
+	float4 color : TEXCOORD0;
+#endif
+};
+
+float4 main( PS_INPUT i ) : COLOR
+{
+#if defined( SHADER_MODEL_PS_2_0 )
+	return float4( 0.0f, 0.0f, 0.0f, 1.0f );
+#else
+	return i.color;
+#endif
+}

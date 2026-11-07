@@ -387,6 +387,29 @@ void CSoundEnt::FreeSound ( int iSound, int iPrevious )
 	g_pSoundEnt->m_iFreeSound = iSound;
 }
 
+#if defined( L4D2 )
+// S1D7E20. The saved flame index is looked up, not assumed to be list head.
+void CSoundEnt::FreeSound( int sound )
+{
+	if ( g_pSoundEnt && sound != SOUNDLIST_EMPTY )
+	{
+		int current = g_pSoundEnt->m_iActiveSound;
+		int previous = SOUNDLIST_EMPTY;
+		while ( current != SOUNDLIST_EMPTY )
+		{
+			if ( current == sound )
+			{
+				FreeSound( sound, previous );
+				return;
+			}
+			previous = current;
+			current = g_pSoundEnt->m_SoundPool[current].m_iNext;
+		}
+		Warning( "Attempted to free unknown sound %d!\n", sound );
+	}
+}
+#endif
+
 //=========================================================
 // IAllocSound - moves a sound from the Free list to the 
 // Active list returns the index of the alloc'd sound

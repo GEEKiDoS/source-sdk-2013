@@ -40,6 +40,9 @@ private:
 	CNetworkColor32( m_shadowColor );
 	CNetworkVar( float, m_flShadowMaxDist );
 	CNetworkVar( bool, m_bDisableShadows );
+#if defined( L4D2 )
+	CNetworkVar( bool, m_bEnableLocalLightShadows );
+#endif
 };
 
 LINK_ENTITY_TO_CLASS(shadow_control, CShadowControl);
@@ -48,12 +51,18 @@ BEGIN_DATADESC( CShadowControl )
 
 	DEFINE_KEYFIELD( m_flShadowMaxDist, FIELD_FLOAT, "distance" ),
 	DEFINE_KEYFIELD( m_bDisableShadows, FIELD_BOOLEAN, "disableallshadows" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_bEnableLocalLightShadows, FIELD_BOOLEAN, "enableshadowsfromlocallights" ),
+#endif
 
 	// Inputs
 	DEFINE_INPUT( m_shadowColor,		FIELD_COLOR32, "color" ),
 	DEFINE_INPUT( m_shadowDirection,	FIELD_VECTOR, "direction" ),
 	DEFINE_INPUT( m_flShadowMaxDist,	FIELD_FLOAT, "SetDistance" ),
 	DEFINE_INPUT( m_bDisableShadows,	FIELD_BOOLEAN, "SetShadowsDisabled" ),
+#if defined( L4D2 )
+	DEFINE_INPUT( m_bEnableLocalLightShadows, FIELD_BOOLEAN, "SetShadowsFromLocalLightsEnabled" ),
+#endif
 
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetAngles", InputSetAngles ),
 
@@ -65,6 +74,9 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE(CShadowControl, DT_ShadowControl)
 	SendPropInt(SENDINFO(m_shadowColor),	32, SPROP_UNSIGNED),
 	SendPropFloat(SENDINFO(m_flShadowMaxDist), 0, SPROP_NOSCALE ),
 	SendPropBool(SENDINFO(m_bDisableShadows)),
+#if defined( L4D2 )
+	SendPropBool( SENDINFO( m_bEnableLocalLightShadows ) ),
+#endif
 END_SEND_TABLE()
 
 
@@ -74,6 +86,9 @@ CShadowControl::CShadowControl()
 	m_flShadowMaxDist = 50.0f;
 	m_shadowColor.Init( 64, 64, 64, 0 );
 	m_bDisableShadows = false;
+#if defined( L4D2 )
+	m_bEnableLocalLightShadows = false;
+#endif
 }
 
 

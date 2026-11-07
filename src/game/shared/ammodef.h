@@ -15,6 +15,9 @@
 #endif
 
 class ConVar;
+#if defined( L4D2 )
+class CBaseCombatCharacter;
+#endif
 
 struct Ammo_t 
 {
@@ -75,7 +78,11 @@ public:
 	int					Index(const char *psz);
 	int					PlrDamage(int nAmmoIndex);
 	int					NPCDamage(int nAmmoIndex);
+#if defined( L4D2 )
+	virtual int			MaxCarry( int nAmmoIndex, const CBaseCombatCharacter *pOwner );
+#else
 	int					MaxCarry(int nAmmoIndex);
+#endif
 	int					DamageType(int nAmmoIndex);
 	int					TracerType(int nAmmoIndex);
 	float				DamageForce(int nAmmoIndex);

@@ -17,26 +17,46 @@ extern void SendProxy_Angles( const SendProp *pProp, const void *pStruct, const 
 
 // Stripped down CBaseEntity send table
 IMPLEMENT_SERVERCLASS_ST_NOBASE(CParticleSystem, DT_ParticleSystem)
+#if defined( L4D2 )
+	SendPropVector( SENDINFO(m_vecOrigin), -1, SPROP_COORD_MP | SPROP_CHANGES_OFTEN, 0.0f, HIGH_DEFAULT, SendProxy_Origin ),
+#else
 	SendPropVector	(SENDINFO(m_vecOrigin), -1,  SPROP_COORD|SPROP_CHANGES_OFTEN, 0.0f, HIGH_DEFAULT, SendProxy_Origin ),
+#endif
 	SendPropEHandle (SENDINFO(m_hOwnerEntity)),
 	SendPropEHandle (SENDINFO_NAME(m_hMoveParent, moveparent)),
 	SendPropInt		(SENDINFO(m_iParentAttachment), NUM_PARENTATTACHMENT_BITS, SPROP_UNSIGNED),
 	SendPropQAngles	(SENDINFO(m_angRotation), 13, SPROP_CHANGES_OFTEN, SendProxy_Angles ),
 
+#if defined( L4D2 )
+	SendPropInt( SENDINFO(m_iEffectIndex), 10, SPROP_UNSIGNED ),
+#else
 	SendPropInt( SENDINFO(m_iEffectIndex), MAX_PARTICLESYSTEMS_STRING_BITS, SPROP_UNSIGNED ),
+#endif
 	SendPropBool( SENDINFO(m_bActive) ),
 	SendPropFloat( SENDINFO(m_flStartTime) ),
+#if defined( L4D2 )
+	SendPropArray3( SENDINFO_ARRAY3(m_vServerControlPoints), SendPropVector( SENDINFO_ARRAY(m_vServerControlPoints), 32, SPROP_NOSCALE ) ),
+	SendPropArray3( SENDINFO_ARRAY3(m_iServerControlPointAssignments), SendPropInt( SENDINFO_ARRAY(m_iServerControlPointAssignments), -1, SPROP_UNSIGNED ) ),
+#endif
 
 	SendPropArray3( SENDINFO_ARRAY3(m_hControlPointEnts), SendPropEHandle( SENDINFO_ARRAY(m_hControlPointEnts) ) ),
 	SendPropArray3( SENDINFO_ARRAY3(m_iControlPointParents), SendPropInt( SENDINFO_ARRAY(m_iControlPointParents), 3, SPROP_UNSIGNED ) ),
+#if !defined( L4D2 )
 	SendPropBool( SENDINFO(m_bWeatherEffect) ),
+#endif
 END_SEND_TABLE()
 
 BEGIN_DATADESC( CParticleSystem )
 	DEFINE_KEYFIELD( m_bStartActive,	FIELD_BOOLEAN, "start_active" ),
+#if !defined( L4D2 )
 	DEFINE_KEYFIELD( m_bWeatherEffect,	FIELD_BOOLEAN, "flag_as_weather" ),
+#endif
 	DEFINE_FIELD( m_bActive,			FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flStartTime,		FIELD_TIME ),
+#if defined( L4D2 )
+	DEFINE_AUTO_ARRAY( m_vServerControlPoints, FIELD_VECTOR ),
+	DEFINE_AUTO_ARRAY( m_iServerControlPointAssignments, FIELD_CHARACTER ),
+#endif
 	DEFINE_KEYFIELD( m_iszEffectName,	FIELD_STRING, "effect_name" ),
 	//DEFINE_FIELD( m_iEffectIndex, FIELD_INTEGER ),	// Don't save. Refind after loading.
 
@@ -104,13 +124,41 @@ BEGIN_DATADESC( CParticleSystem )
 	DEFINE_KEYFIELD( m_iszControlPointNames[61], FIELD_STRING, "cpoint62" ),
 	DEFINE_KEYFIELD( m_iszControlPointNames[62], FIELD_STRING, "cpoint63" ),
 
+#if defined( L4D2 )
+	{ FIELD_CHARACTER, "m_iControlPointParents.m_Value[0]", { (int)_hacky_datamap_offsetof( classNameTypedef, m_iControlPointParents[0] ), 0 }, 1, FTYPEDESC_SAVE | FTYPEDESC_KEY, "cpoint1_parent", NULL, NULL, NULL, sizeof( ((classNameTypedef *)0)->m_iControlPointParents[0] ) },
+#else
 	DEFINE_KEYFIELD( m_iControlPointParents[0], FIELD_CHARACTER, "cpoint1_parent" ),
+#endif
+#if defined( L4D2 )
+	{ FIELD_CHARACTER, "m_iControlPointParents.m_Value[1]", { (int)_hacky_datamap_offsetof( classNameTypedef, m_iControlPointParents[1] ), 0 }, 1, FTYPEDESC_SAVE | FTYPEDESC_KEY, "cpoint2_parent", NULL, NULL, NULL, sizeof( ((classNameTypedef *)0)->m_iControlPointParents[1] ) },
+#else
 	DEFINE_KEYFIELD( m_iControlPointParents[1], FIELD_CHARACTER, "cpoint2_parent" ),
+#endif
+#if defined( L4D2 )
+	{ FIELD_CHARACTER, "m_iControlPointParents.m_Value[2]", { (int)_hacky_datamap_offsetof( classNameTypedef, m_iControlPointParents[2] ), 0 }, 1, FTYPEDESC_SAVE | FTYPEDESC_KEY, "cpoint3_parent", NULL, NULL, NULL, sizeof( ((classNameTypedef *)0)->m_iControlPointParents[2] ) },
+#else
 	DEFINE_KEYFIELD( m_iControlPointParents[2], FIELD_CHARACTER, "cpoint3_parent" ),
+#endif
+#if defined( L4D2 )
+	{ FIELD_CHARACTER, "m_iControlPointParents.m_Value[3]", { (int)_hacky_datamap_offsetof( classNameTypedef, m_iControlPointParents[3] ), 0 }, 1, FTYPEDESC_SAVE | FTYPEDESC_KEY, "cpoint4_parent", NULL, NULL, NULL, sizeof( ((classNameTypedef *)0)->m_iControlPointParents[3] ) },
+#else
 	DEFINE_KEYFIELD( m_iControlPointParents[3], FIELD_CHARACTER, "cpoint4_parent" ),
+#endif
+#if defined( L4D2 )
+	{ FIELD_CHARACTER, "m_iControlPointParents.m_Value[4]", { (int)_hacky_datamap_offsetof( classNameTypedef, m_iControlPointParents[4] ), 0 }, 1, FTYPEDESC_SAVE | FTYPEDESC_KEY, "cpoint5_parent", NULL, NULL, NULL, sizeof( ((classNameTypedef *)0)->m_iControlPointParents[4] ) },
+#else
 	DEFINE_KEYFIELD( m_iControlPointParents[4], FIELD_CHARACTER, "cpoint5_parent" ),
+#endif
+#if defined( L4D2 )
+	{ FIELD_CHARACTER, "m_iControlPointParents.m_Value[5]", { (int)_hacky_datamap_offsetof( classNameTypedef, m_iControlPointParents[5] ), 0 }, 1, FTYPEDESC_SAVE | FTYPEDESC_KEY, "cpoint6_parent", NULL, NULL, NULL, sizeof( ((classNameTypedef *)0)->m_iControlPointParents[5] ) },
+#else
 	DEFINE_KEYFIELD( m_iControlPointParents[5], FIELD_CHARACTER, "cpoint6_parent" ),
+#endif
+#if defined( L4D2 )
+	{ FIELD_CHARACTER, "m_iControlPointParents.m_Value[6]", { (int)_hacky_datamap_offsetof( classNameTypedef, m_iControlPointParents[6] ), 0 }, 1, FTYPEDESC_SAVE | FTYPEDESC_KEY, "cpoint7_parent", NULL, NULL, NULL, sizeof( ((classNameTypedef *)0)->m_iControlPointParents[6] ) },
+#else
 	DEFINE_KEYFIELD( m_iControlPointParents[6], FIELD_CHARACTER, "cpoint7_parent" ),
+#endif
 	
 	DEFINE_AUTO_ARRAY( m_hControlPointEnts, FIELD_EHANDLE ),
 
@@ -128,7 +176,12 @@ LINK_ENTITY_TO_CLASS( info_particle_system, CParticleSystem );
 //-----------------------------------------------------------------------------
 CParticleSystem::CParticleSystem()
 {
+#if defined( L4D2 )
+	for ( int i = 0; i != 4; ++i )
+		m_iServerControlPointAssignments.Set( i, 0xFF );
+#else
 	m_bWeatherEffect = false;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -140,6 +193,9 @@ void CParticleSystem::Precache( void )
 	if ( pParticleSystemName == NULL || pParticleSystemName[0] == '\0' )
 	{
 		Warning( "info_particle_system (%s) has no particle system name specified!\n", GetEntityName().ToCStr() );
+#if defined( L4D2 )
+		return; // Native12B9C0 does not precache an invalid name after warning.
+#endif
 	}
 
 	PrecacheParticleSystem( pParticleSystemName );

@@ -7,6 +7,9 @@
 #include "cbase.h"
 #include "c_baseplayer.h"
 #include "menu.h"
+#ifdef L4D2
+#include "l4d2/ui/terror_clientmenu.h"
+#endif
 #include "KeyValues.h"
 #include "multiplay_gamerules.h"
 #if defined ( TF_CLIENT_DLL )
@@ -106,8 +109,15 @@ ConCommand voice_menu_1( "voice_menu_1", OpenVoiceMenu_1, "Opens voice menu 1" )
 ConCommand voice_menu_2( "voice_menu_2", OpenVoiceMenu_2, "Opens voice menu 2" );
 ConCommand voice_menu_3( "voice_menu_3", OpenVoiceMenu_3, "Opens voice menu 3" );
 
+#ifdef L4D2
+CON_COMMAND_F( menuselect, "menuselect", FCVAR_CLIENTCMD_CAN_EXECUTE )
+#else
 CON_COMMAND( menuselect, "menuselect" )
+#endif
 {
+#ifdef L4D2
+	TerrorClientMenuSelect( args );
+#else
 	if ( args.ArgC() < 2 )
 		return;
 
@@ -144,4 +154,5 @@ CON_COMMAND( menuselect, "menuselect" )
 
 	// reset menu
 	g_ActiveVoiceMenu = 0;
+#endif
 }

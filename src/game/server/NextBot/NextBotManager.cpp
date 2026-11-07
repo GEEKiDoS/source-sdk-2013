@@ -16,15 +16,54 @@
 #include "SharedFunctorUtils.h"
 //#include "../../common/blackbox_helper.h"
 
+#if defined( L4D2 )
+#include "l4d2/director/terror_director.h"
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/director/director_scenario.h"
+#include "l4d2/director/zombiemanager.h"
+#include "l4d2/infected/boss/witch.h"
+#include "l4d2/terror_shareddefs.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
+#include "NextBotManager_console_server_cvars.inc"
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#include "filesystem.h"
+#include "tier1/fmtstr.h"
+#include "ndebugoverlay.h"
+#include "l4d2/director/director_versus_mode.h"
+#endif
 #include "tier0/memdbgon.h"
 
 extern ConVar ZombieMobMaxSize;
 
-ConVar nb_update_frequency( "nb_update_frequency", ".1", FCVAR_CHEAT );
-ConVar nb_update_framelimit( "nb_update_framelimit", ( IsDebug() ) ? "30" : "15", FCVAR_CHEAT );
-ConVar nb_update_maxslide( "nb_update_maxslide", "2", FCVAR_CHEAT );
-ConVar nb_update_debug( "nb_update_debug", "0", FCVAR_CHEAT );
+ConVar nb_update_frequency( "nb_update_frequency", ".1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar nb_update_framelimit( "nb_update_framelimit", ( IsDebug() ) ? "30" : "15", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar nb_update_maxslide( "nb_update_maxslide", "2", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar nb_update_debug( "nb_update_debug", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //---------------------------------------------------------------------------------------------
 //---------------------------------------------------------------------------------------------
@@ -107,7 +146,13 @@ static void CC_SetDebug( const CCommand &args )
 	// enable debugging
 	TheNextBots().SetDebugTypes( ( NextBotDebugType ) debugType );
 }
-static ConCommand SetDebug( "nb_debug", CC_SetDebug, "Debug NextBots.  Categories are: BEHAVIOR, LOOK_AT, PATH, ANIMATION, LOCOMOTION, VISION, HEARING, EVENTS, ERRORS.", FCVAR_CHEAT );
+static ConCommand SetDebug( "nb_debug", CC_SetDebug, "Debug NextBots.  Categories are: BEHAVIOR, LOOK_AT, PATH, ANIMATION, LOCOMOTION, VISION, HEARING, EVENTS, ERRORS.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //---------------------------------------------------------------------------------------------
 static void CC_SetDebugFilter( const CCommand &args )
@@ -132,7 +177,13 @@ static void CC_SetDebugFilter( const CCommand &args )
 		}
 	}
 }
-static ConCommand SetDebugFilter( "nb_debug_filter", CC_SetDebugFilter, "Add items to the NextBot debug filter. Items can be entindexes or part of the indentifier of one or more bots.", FCVAR_CHEAT );
+static ConCommand SetDebugFilter( "nb_debug_filter", CC_SetDebugFilter, "Add items to the NextBot debug filter. Items can be entindexes or part of the indentifier of one or more bots.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //---------------------------------------------------------------------------------------------
@@ -192,7 +243,13 @@ static void CC_SelectBot( const CCommand &args )
 		}
 	}	
 }
-static ConCommand SelectBot( "nb_select", CC_SelectBot, "Select the bot you are aiming at for further debug operations.", FCVAR_CHEAT );
+static ConCommand SelectBot( "nb_select", CC_SelectBot, "Select the bot you are aiming at for further debug operations.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //---------------------------------------------------------------------------------------------
@@ -206,7 +263,13 @@ static void CC_ForceLookAt( const CCommand &args )
 		pick->GetBodyInterface()->AimHeadTowards( player, IBody::CRITICAL, 9999999.9f, NULL, "Aim forced" );
 	}
 }
-static ConCommand ForceLookAt( "nb_force_look_at", CC_ForceLookAt, "Force selected bot to look at the local player's position", FCVAR_CHEAT );
+static ConCommand ForceLookAt( "nb_force_look_at", CC_ForceLookAt, "Force selected bot to look at the local player's position", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //--------------------------------------------------------------------------------------------------------
@@ -231,7 +294,13 @@ void CC_WarpSelectedHere( const CCommand &args )
 		pick->GetEntity()->Teleport( &spot, &vec3_angle, &vec3_origin );
 	}
 }
-static ConCommand WarpSelectedHere( "nb_warp_selected_here", CC_WarpSelectedHere, "Teleport the selected bot to your cursor position", FCVAR_CHEAT );
+static ConCommand WarpSelectedHere( "nb_warp_selected_here", CC_WarpSelectedHere, "Teleport the selected bot to your cursor position", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //---------------------------------------------------------------------------------------------
@@ -305,6 +374,9 @@ static int g_nRun;
 static int g_nSlid;
 static int g_nBlockedSlides;
 
+#if defined( L4D2 )
+static void DrawConsoleStuckDump();
+#endif
 void NextBotManager::Update( void )
 {
 	// do lightweight upkeep every tick
@@ -410,6 +482,9 @@ void NextBotManager::Update( void )
 		}
 
 	}
+#if defined( L4D2 )
+	DrawConsoleStuckDump();
+#endif
 }
 
 //---------------------------------------------------------------------------------------------
@@ -646,12 +721,17 @@ void NextBotManager::OnSpokeConcept( CBaseCombatCharacter *who, AIConcept_t conc
 	{
 		// const char *who = response->GetCriteria()->GetValue( response->GetCriteria()->FindCriterionIndex( "Who" ) );
 
+#if defined( L4D2 )
+		DevMsg( "%3.2f: OnSpokeConcept( %s, %s )\n", gpGlobals->curtime, who->GetDebugName(), static_cast< const char * >( concept ) );
+#else
 		// TODO: Need concept.GetStringConcept()
 		DevMsg( "%3.2f: OnSpokeConcept( %s, %s )\n", gpGlobals->curtime, who->GetDebugName(), "concept.GetStringConcept()" );
+#endif
 	}
 }
 
 
+#if !defined( L4D2 )
 //----------------------------------------------------------------------------------------------------------
 class NextBotWeaponFiredNotifyScan
 {
@@ -688,6 +768,7 @@ void NextBotManager::OnWeaponFired( CBaseCombatCharacter *whoFired, CBaseCombatW
 		DevMsg( "%3.2f: OnWeaponFired( %s, %s )\n", gpGlobals->curtime, whoFired->GetDebugName(), weapon->GetName() );
 	}
 }
+#endif
 
 
 //---------------------------------------------------------------------------------------------
@@ -890,3 +971,79 @@ void NextBotManager::CollectAllBots( CUtlVector< INextBot * > *botVector )
 	}
 }
 
+
+#if defined( _MSC_VER ) && defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
+
+// Append to existing NextBot/NextBotManager.cpp under the L4D2 guard.
+// Required includes/declaration and all four caller sites are in integration_packet.txt.
+#if defined( L4D2 )
+
+extern ConVar z_mob_spawn_max_size;
+
+extern ConVar z_notice_it_range;
+
+namespace
+{
+// S4AA8A0, in the actual registry's order. Native excludes Witch through
+// RTTI on INextBot, not a class-number shortcut. It counts the dispatch
+// even when the real current action ignores the command.
+class CollectITMob
+{
+public:
+	CollectITMob( CBaseEntity *victim, float range ) : m_victim( victim ), m_range( range ), m_count( 0 ) {}
+	bool operator()( INextBot *bot )
+	{
+		CBaseCombatCharacter *entity = bot->GetEntity();
+		if ( entity->GetTeamNumber() == TEAM_INFECTED && entity->IsAlive() )
+		{
+			const Vector &position = m_victim->GetAbsOrigin();
+			const Vector delta = bot->GetPosition() - position;
+			const float rangeSquared = ( delta.x * delta.x + delta.y * delta.y ) + delta.z * delta.z;
+			if ( m_range * m_range > rangeSquared && !dynamic_cast< Witch * >( bot ) && bot->GetEntity() != m_victim )
+			{
+				bot->OnCommandAttack( m_victim );
+				++m_count;
+			}
+		}
+		return true;
+	}
+	int GetCount() const { return m_count; }
+private:
+	CBaseEntity *m_victim;
+	float m_range;
+	int m_count;
+};
+}
+
+// S4ABB20. This is a real method on the existing singleton; no Director
+// facade, attraction registry, actor target overwrite or extra actor scan.
+void NextBotManager::OnInfectedIT( CBaseEntity *victim )
+{
+	int count = 0;
+	if ( victim )
+	{
+		CollectITMob collect( victim, z_notice_it_range.GetFloat() );
+		ForEachBot( collect );
+		count = collect.GetCount();
+	}
+	int desired = (int)TheDirector->GetDirectorOptionFloat( "MobMaxSize", z_mob_spawn_max_size.GetFloat() );
+	const int finaleType = TheDirector->GetScenario()->GetFinaleType();
+	if ( finaleType == 2 || finaleType == 3 || finaleType == 4 || TheDirector->GetScriptedMode()->IsActive() )
+		desired = TheDirector->GetDirectorOptionInt( "BileMobSize", desired );
+	DevMsg( "(MOB) %d wanderers grabbed for an IT mob of desired size %d.\n", count, desired );
+	if ( count < desired )
+		TheZombieManager->SpawnITMob( desired - count );
+	// The canonical existing ResetMobTimer is native26AAA0. Never add an
+	// obsolete OnITMob forwarding alias, and never conditionalize this call.
+	TheDirector->ResetMobTimer();
+}
+
+#endif // L4D2
+
+#if defined( _MSC_VER ) && defined( L4D2 )
+#pragma float_control( pop )
+#endif
+
+#include "NextBotManager_console_server_callbacks.inc"

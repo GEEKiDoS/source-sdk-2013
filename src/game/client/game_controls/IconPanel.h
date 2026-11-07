@@ -28,6 +28,7 @@ public:
 	virtual void ApplySchemeSettings( vgui::IScheme *pScheme );
 
 	void SetIcon( const char *szIcon );
+	void SetIcon( CHudTexture *icon );
 	void SetIconColor( Color cColor ) { m_IconColor = cColor; }
 
 private:

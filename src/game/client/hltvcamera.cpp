@@ -19,10 +19,16 @@
 #include <KeyValues.h>
 
 #ifdef CSTRIKE_DLL
-	#include "c_cs_player.h"
+	#include "l4d2/player/c_cs_player.h"
 #endif
 
-ConVar spec_autodirector( "spec_autodirector", "1", FCVAR_CLIENTDLL | FCVAR_CLIENTCMD_CAN_EXECUTE, "Auto-director chooses best view modes while spectating" );
+ConVar spec_autodirector( "spec_autodirector", "1", 
+#if defined( L4D2 )
+	0x4000000A
+#else
+	FCVAR_CLIENTDLL | FCVAR_CLIENTCMD_CAN_EXECUTE
+#endif
+, "Auto-director chooses best view modes while spectating" );
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -551,9 +557,12 @@ void C_HLTVCamera::SetMode(int iMode)
 
     Assert( iMode > OBS_MODE_NONE && iMode <= LAST_PLAYER_OBSERVERMODE );
 
+#if !defined( L4D2 )
 	int iOldMode = m_nCameraMode;
+#endif
 	m_nCameraMode = iMode;
 
+#if !defined( L4D2 )
 	IGameEvent *event = gameeventmanager->CreateEvent( "hltv_changed_mode" );
 	if ( event )
 	{
@@ -562,6 +571,7 @@ void C_HLTVCamera::SetMode(int iMode)
 		event->SetInt( "obs_target", m_iTraget1 );
 		gameeventmanager->FireEventClientSide( event );
 	}
+#endif
 }
 
 void C_HLTVCamera::SetPrimaryTarget( int nEntity ) 
@@ -569,7 +579,9 @@ void C_HLTVCamera::SetPrimaryTarget( int nEntity )
  	if ( m_iTraget1 == nEntity )
 		return;
 
+#if !defined( L4D2 )
 	int iOldTarget = m_iTraget1;
+#endif
 	m_iTraget1 = nEntity;
 
 	if ( GetMode() == OBS_MODE_ROAMING )
@@ -593,6 +605,7 @@ void C_HLTVCamera::SetPrimaryTarget( int nEntity )
 	m_flLastDistance = m_flDistance;
 	m_flLastAngleUpdateTime = -1;
 
+#if !defined( L4D2 )
 	IGameEvent *event = gameeventmanager->CreateEvent( "hltv_changed_target" );
 	if ( event )
 	{
@@ -601,6 +614,7 @@ void C_HLTVCamera::SetPrimaryTarget( int nEntity )
 		event->SetInt( "obs_target", m_iTraget1 );
 		gameeventmanager->FireEventClientSide( event );
 	}
+#endif
 }
 
 void C_HLTVCamera::SpecNextPlayer( bool bInverse )
@@ -647,6 +661,21 @@ void C_HLTVCamera::SpecNextPlayer( bool bInverse )
 	SetAutoDirector( false );
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+void C_HLTVCamera::SpecPlayerByPredicate( const char *name )
+{
+	for ( int i = 1; i <= gpGlobals->maxClients; ++i )
+	{
+		C_BasePlayer *player = UTIL_PlayerByIndex( i );
+		if ( player && !Q_stricmp( name, player->GetPlayerName() ) &&
+			( player->GetObserverMode() == OBS_MODE_NONE || player->GetTeamNumber() == TEAM_SPECTATOR ) )
+		{
+			SetPrimaryTarget( i );
+			return;
+		}
+	}
+}
+#else
 void C_HLTVCamera::SpecPlayerByPredicate( const char *szSearch )
 {
 	C_BasePlayer *pPlayer =	UTIL_PlayerByCommandArg( szSearch );
@@ -660,6 +689,7 @@ void C_HLTVCamera::SpecPlayerByPredicate( const char *szSearch )
 	SetPrimaryTarget( pPlayer->entindex() );
 	return;
 }
+#endif
 
 void C_HLTVCamera::FireGameEvent( IGameEvent * event)
 {

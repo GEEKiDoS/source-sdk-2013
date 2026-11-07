@@ -13,6 +13,12 @@
 #include "viewdebug.h"
 #include "smoke_fog_overlay.h"
 #include "materialsystem/imaterialvar.h"
+#if defined( L4D2 )
+#include "l4d2/player/c_terrorplayer.h"
+#include "iclientmode.h"
+#include "l4d2/clientmode_terror.h"
+void DrawTerrorClientPaths();
+#endif
 
 #ifdef PORTAL
 //#include "C_Portal_Player.h"
@@ -23,18 +29,104 @@
 //-----------------------------------------------------------------------------
 // debugging overlays
 //-----------------------------------------------------------------------------
-static ConVar cl_drawmaterial( "cl_drawmaterial", "", FCVAR_CHEAT, "Draw a particular material over the frame" );
-static ConVar mat_showwatertextures( "mat_showwatertextures", "0", FCVAR_CHEAT );
-static ConVar mat_wateroverlaysize( "mat_wateroverlaysize", "256" );
-static ConVar mat_showframebuffertexture( "mat_showframebuffertexture", "0", FCVAR_CHEAT );
-static ConVar mat_framebuffercopyoverlaysize( "mat_framebuffercopyoverlaysize", "256" );
-static ConVar mat_showcamerarendertarget( "mat_showcamerarendertarget", "0", FCVAR_CHEAT );
-static ConVar mat_camerarendertargetoverlaysize( "mat_camerarendertargetoverlaysize", "256", FCVAR_CHEAT );
-static ConVar mat_hsv( "mat_hsv", "0", FCVAR_CHEAT );
-static ConVar mat_yuv( "mat_yuv", "0", FCVAR_CHEAT );
-static ConVar cl_overdraw_test( "cl_overdraw_test", "0", FCVAR_CHEAT | FCVAR_NEVER_AS_STRING );
-static ConVar mat_drawTexture( "mat_drawTexture", "", 0, "Enable debug view texture" );
-static ConVar mat_drawTextureScale( "mat_drawTextureScale", "1.0", 0, "Debug view texture scale" );
+static ConVar cl_drawmaterial( "cl_drawmaterial", "", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Draw a particular material over the frame" );
+static ConVar mat_showwatertextures( "mat_showwatertextures", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar mat_wateroverlaysize( "mat_wateroverlaysize", 
+#if defined( L4D2 )
+	"128"
+#else
+	"256"
+#endif
+
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar mat_showframebuffertexture( "mat_showframebuffertexture", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar mat_framebuffercopyoverlaysize( "mat_framebuffercopyoverlaysize", 
+#if defined( L4D2 )
+	"128"
+#else
+	"256"
+#endif
+
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar mat_showcamerarendertarget( "mat_showcamerarendertarget", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar mat_camerarendertargetoverlaysize( "mat_camerarendertargetoverlaysize", 
+#if defined( L4D2 )
+	"128"
+#else
+	"256"
+#endif
+, 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar mat_hsv( "mat_hsv", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar mat_yuv( "mat_yuv", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar cl_overdraw_test( "cl_overdraw_test", "0", 
+#if defined( L4D2 )
+	0x00005008
+#else
+	FCVAR_CHEAT | FCVAR_NEVER_AS_STRING
+#endif
+ );
+static ConVar mat_drawTexture( "mat_drawTexture", "", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Enable debug view texture" );
+static ConVar mat_drawTextureScale( "mat_drawTextureScale", "1.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Debug view texture scale" );
 #ifdef _X360
 static ConVar mat_drawColorRamp( "mat_drawColorRamp", "0", 0, "Draw color test pattern (0=Off, 1=[0..255], 2=[0..127]" );
 #endif
@@ -43,13 +135,39 @@ static ConVar mat_drawColorRamp( "mat_drawColorRamp", "0", 0, "Draw color test p
 // debugging
 //-----------------------------------------------------------------------------
 // (the engine owns this cvar).
-ConVar mat_wireframe( "mat_wireframe", "0", FCVAR_CHEAT );
+ConVar mat_wireframe( "mat_wireframe", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 const ConVar *sv_cheats = NULL;
-ConVar	mat_showlightmappage(  "mat_showlightmappage", "-1" ); // set this to the lightmap page that you want to see on screen, set to -1 to show nothing.
-ConVar cl_drawshadowtexture( "cl_drawshadowtexture", "0", FCVAR_CHEAT );
-ConVar cl_shadowtextureoverlaysize( "cl_shadowtextureoverlaysize", "256", FCVAR_CHEAT );
+ConVar	mat_showlightmappage(  "mat_showlightmappage", "-1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ ); // set this to the lightmap page that you want to see on screen, set to -1 to show nothing.
+ConVar cl_drawshadowtexture( "cl_drawshadowtexture", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar cl_shadowtextureoverlaysize( "cl_shadowtextureoverlaysize", "256", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
-static ConVar r_flashlightdrawdepth( "r_flashlightdrawdepth", "0" );
+static ConVar r_flashlightdrawdepth( "r_flashlightdrawdepth", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 
 //-----------------------------------------------------------------------------
@@ -517,8 +635,19 @@ static void OverlayColorRamp( bool bHalfSpace )
 void CDebugViewRender::Draw3DDebuggingInfo( const CViewSetup &viewDebug )
 {
 	VPROF("CViewRender::Draw3DDebuggingInfo");
+#if defined( L4D2 )
+	DrawTerrorClientPaths();
+#endif
 
 	// Draw 3d overlays
+#if defined( L4D2 )
+	if ( GetClientMode() )
+	{
+		(void)GetClientMode();
+		C_TerrorPlayer *player = static_cast< C_TerrorPlayer * >( C_BasePlayer::GetLocalPlayer() );
+		if ( player ) player->DrawLineOfScrimmagePresentation();
+	}
+#endif
 	render->Draw3DDebugOverlays();
 
 	// Draw the line file used for debugging leaks
@@ -627,12 +756,21 @@ void CDebugViewRender::Draw2DDebuggingInfo( const CViewSetup &viewDebug )
 //-----------------------------------------------------------------------------
 // A console command allowing you to draw a material as an overlay
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_screenoverlay, "Draw specified material as an overlay", 0x10004008 )
+#else
 CON_COMMAND_F( r_screenoverlay, "Draw specified material as an overlay", FCVAR_CHEAT|FCVAR_SERVER_CAN_EXECUTE )
+#endif
 {
 	if( args.ArgC() == 2 )
 	{
-		// This command is silly an undocumented, but, users are expecting r_screenoverlay 0 to function as 'off'.
+#if defined( L4D2 )
+		if ( !Q_stricmp( "off", args[1] ) )
+#else
+		// Preserve the SDK-only "0" alias outside L4D2.
 		if ( !Q_stricmp( "off", args[1] ) || !Q_stricmp( "0", args[1] ) )
+#endif
 		{
 			view->SetScreenOverlayMaterial( NULL );
 		}

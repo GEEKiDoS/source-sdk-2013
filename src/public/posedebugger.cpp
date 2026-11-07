@@ -31,10 +31,22 @@ extern IVEngineClient *engine;
 extern CGlobalVarsBase *gpGlobals;
 
 static ConVar ui_posedebug_fade_in_time( "ui_posedebug_fade_in_time", "0.2",
-										 FCVAR_CHEAT | FCVAR_DONTRECORD,
+										 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00024008
+#else
+	FCVAR_CHEAT | FCVAR_DONTRECORD
+#endif
+,
 										 "Time during which a new pose activity layer is shown in green in +posedebug UI" );
 static ConVar ui_posedebug_fade_out_time( "ui_posedebug_fade_out_time", "0.8",
-										  FCVAR_CHEAT | FCVAR_DONTRECORD,
+										  
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00024008
+#else
+	FCVAR_CHEAT | FCVAR_DONTRECORD
+#endif
+,
 										  "Time to keep a no longer active pose activity layer in red until removing it from +posedebug UI" );
 
 
@@ -651,5 +663,17 @@ static void IN_PoseDebuggerEnd( const CCommand &args )
 	}
 }
 
-static ConCommand posedebuggerstart( "+posedebug", IN_PoseDebuggerStart, "Turn on pose debugger or add ents to pose debugger UI", FCVAR_CHEAT );
-static ConCommand posedebuggerend  ( "-posedebug", IN_PoseDebuggerEnd, "Turn off pose debugger or hide ents from pose debugger UI", FCVAR_CHEAT );
+static ConCommand posedebuggerstart( "+posedebug", IN_PoseDebuggerStart, "Turn on pose debugger or add ents to pose debugger UI", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConCommand posedebuggerend  ( "-posedebug", IN_PoseDebuggerEnd, "Turn off pose debugger or hide ents from pose debugger UI", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );

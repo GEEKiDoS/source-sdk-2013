@@ -23,6 +23,9 @@ enum { MAX_NAV_TEAMS = 2 };
 class CFuncElevator;
 class CFuncNavPrerequisite;
 class CFuncNavCost;
+#if defined( L4D2 )
+namespace TerrorNavSearch { class Heap; }
+#endif
 
 class CNavVectorNoEditAllocator
 {
@@ -305,7 +308,11 @@ public:
 	void MarkAsBlocked( int teamID, CBaseEntity *blocker, bool bGenerateEvent = true );	// An entity can force a nav area to be blocked
 	virtual void UpdateBlocked( bool force = false, int teamID = TEAM_ANY );		// Updates the (un)blocked status of the nav area (throttled)
 	virtual bool IsBlocked( int teamID, bool ignoreNavBlockers = false ) const;
-	void UnblockArea( int teamID = TEAM_ANY );					// clear blocked status for the given team(s)
+#if defined( L4D2 )
+	void UnblockArea(); // Clears both native team bits; no team argument.
+#else
+	void UnblockArea( int teamID = TEAM_ANY );
+#endif
 
 	void CheckFloor( CBaseEntity *ignore );						// Checks if there is a floor under the nav area, in case a breakable floor is gone
 
@@ -335,15 +342,25 @@ public:
 	bool IsOverlapping( const Extent &extent ) const;			// return true if 'extent' overlaps our 2D extents
 	bool IsOverlappingX( const CNavArea *area ) const;			// return true if 'area' overlaps our X extent
 	bool IsOverlappingY( const CNavArea *area ) const;			// return true if 'area' overlaps our Y extent
+#if defined( L4D2 )
+	inline double GetZ( const Vector * RESTRICT pPos ) const;
+	inline double GetZ( const Vector &pos ) const;
+	double GetZ( float x, float y ) const RESTRICT;
+#else
 	inline float GetZ( const Vector * RESTRICT pPos ) const ;			// return Z of area at (x,y) of 'pos'
 	inline float GetZ( const Vector &pos ) const;						// return Z of area at (x,y) of 'pos'
 	float GetZ( float x, float y ) const RESTRICT;				// return Z of area at (x,y) of 'pos'
+#endif
 	bool Contains( const Vector &pos ) const;					// return true if given point is on or above this area, but no others
 	bool Contains( const CNavArea *area ) const;	
 	bool IsCoplanar( const CNavArea *area ) const;				// return true if this area and given area are approximately co-planar
 	void GetClosestPointOnArea( const Vector * RESTRICT pPos, Vector *close ) const RESTRICT;	// return closest point to 'pos' on this area - returned point in 'close'
 	void GetClosestPointOnArea( const Vector &pos, Vector *close ) const { return GetClosestPointOnArea( &pos, close ); }
-	float GetDistanceSquaredToPoint( const Vector &pos ) const;	// return shortest distance between point and this area
+#if defined( L4D2 )
+	double GetDistanceSquaredToPoint( const Vector &pos ) const; // Native476C00 retains its x87 return.
+#else
+	float GetDistanceSquaredToPoint( const Vector &pos ) const;
+#endif
 	bool IsDegenerate( void ) const;							// return true if this area is badly formed
 	bool IsRoughlySquare( void ) const;							// return true if this area is approximately square
 	bool IsFlat( void ) const;									// return true if this area is approximately flat
@@ -419,8 +436,13 @@ public:
 	unsigned char GetPlayerCount( int teamID = 0 ) const;		// return number of players of given team currently within this area (team of zero means any/all)
 
 	//- lighting ----------------------------------------------------------------------------------------
+#if defined( L4D2 )
+	double GetLightIntensity( const Vector &pos ) const;
+	double GetLightIntensity( float x, float y ) const;
+#else
 	float GetLightIntensity( const Vector &pos ) const;			// returns a 0..1 light intensity for the given point
 	float GetLightIntensity( float x, float y ) const;			// returns a 0..1 light intensity for the given point
+#endif
 	float GetLightIntensity( void ) const;						// returns a 0..1 light intensity averaged over the whole area
 
 	//- A* pathfinding algorithm ------------------------------------------------------------------------
@@ -544,10 +566,16 @@ public:
 				continue;
 
 			// If this assertion triggers, an area is in here twice!
+#if !defined( L4D2 )
 			Assert( area->m_nVisTestCounter != s_nCurrVisTestCounter );
+#endif
 			area->m_nVisTestCounter = s_nCurrVisTestCounter;
 
+#if defined( L4D2 )
+			if ( ( m_potentiallyVisibleAreas[i].attributes & 3 ) == 0 )
+#else
 			if ( m_potentiallyVisibleAreas[i].attributes == NOT_VISIBLE )
+#endif
 				continue;
 			
 			if ( func( area ) == false )
@@ -572,7 +600,11 @@ public:
 			// Theoretically, this shouldn't matter. But, just in case!
 			inherited[i].area->m_nVisTestCounter = s_nCurrVisTestCounter;
 
+#if defined( L4D2 )
+			if ( ( inherited[i].attributes & 3 ) == 0 )
+#else
 			if ( inherited[i].attributes == NOT_VISIBLE )
+#endif
 				continue;
 
 			if ( func( inherited[i].area ) == false )
@@ -601,7 +633,9 @@ public:
 				continue;
 
 			// If this assertion triggers, an area is in here twice!
+#if !defined( L4D2 )
 			Assert( area->m_nVisTestCounter != s_nCurrVisTestCounter );
+#endif
 			area->m_nVisTestCounter = s_nCurrVisTestCounter;
 
 			if ( ( m_potentiallyVisibleAreas[i].attributes & COMPLETELY_VISIBLE ) == 0 )
@@ -642,6 +676,12 @@ public:
 
 private:
 	friend class CNavMesh;
+#if defined( L4D2 )
+	friend class TerrorNavArea;
+	friend class TerrorNavMesh;
+	friend class TerrorNavSearch::Heap; // Sole native heap publishes the existing open marker.
+	bool m_usesTerrorAttributes;
+#endif
 	friend class CNavLadder;
 	friend class CCSNavArea;									// allow CS load code to complete replace our default load behavior
 
@@ -669,12 +709,19 @@ private:
 
 	CountdownTimer m_blockedTimer;								// Throttle checks on our blocked state while blocked
 	void UpdateBlockedFromNavBlockers( void );					// checks if nav blockers are still blocking the area
+#if defined( L4D2 )
+	void UpdateBlockedFromPhysicalEntities( bool force, int teamID, bool preserveNavBlockers );
+#endif
 
 	bool m_isUnderwater;										// true if the center of the area is underwater
 
 	bool m_isBattlefront;
 
-	float m_avoidanceObstacleHeight;							// if nonzero, a prop is obstructing movement through this nav area
+#if defined( L4D2 )
+	unsigned char m_avoidanceObstacleHeight; // Native58, actual quantized runtime owner.
+#else
+	float m_avoidanceObstacleHeight;
+#endif
 	CountdownTimer m_avoidanceObstacleTimer;					// Throttle checks on our obstructed state while obstructed
 
 	//- for hunting -------------------------------------------------------------------------------------
@@ -912,10 +959,21 @@ inline void CNavArea::MarkAsDamaging( float duration )
 
 
 //--------------------------------------------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 inline bool CNavArea::HasAvoidanceObstacle( float maxObstructionHeight ) const
 {
+#if defined( L4D2 )
+	return m_avoidanceObstacleHeight != 0 &&
+		static_cast< float >( m_avoidanceObstacleHeight ) > maxObstructionHeight;
+#else
 	return m_avoidanceObstacleHeight > maxObstructionHeight;
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1014,12 +1072,20 @@ inline unsigned char CNavArea::GetPlayerCount( int teamID ) const
 * Trilinear interpolation of Z values at quad edges.
 * NOTE: pos->z is not used.
 */
+#if defined( L4D2 )
+inline double CNavArea::GetZ( const Vector * RESTRICT pos ) const RESTRICT
+#else
 inline float CNavArea::GetZ( const Vector * RESTRICT pos ) const RESTRICT
+#endif
 {
 	return GetZ( pos->x, pos->y );
 }
 
+#if defined( L4D2 )
+inline double CNavArea::GetZ( const Vector & pos ) const RESTRICT
+#else
 inline float CNavArea::GetZ( const Vector & pos ) const RESTRICT
+#endif
 {
 	return GetZ( pos.x, pos.y );
 }

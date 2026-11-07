@@ -24,34 +24,123 @@ void MapCycleFileChangedCallback( IConVar *var, const char *pOldString, float fl
 	}
 }
 
-ConVar	displaysoundlist( "displaysoundlist","0" );
-ConVar  mapcyclefile( "mapcyclefile", "mapcycle.txt", FCVAR_NONE, "Name of the .txt file used to cycle the maps on multiplayer servers ", MapCycleFileChangedCallback );
-ConVar  servercfgfile( "servercfgfile","server.cfg" );
-ConVar  lservercfgfile( "lservercfgfile","listenserver.cfg" );
+ConVar	displaysoundlist( "displaysoundlist","0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar  mapcyclefile( "mapcyclefile", "mapcycle.txt", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "Name of the .txt file used to cycle the maps on multiplayer servers ", MapCycleFileChangedCallback );
+ConVar  servercfgfile( "servercfgfile","server.cfg"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar  lservercfgfile( "lservercfgfile","listenserver.cfg"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 // multiplayer server rules
-ConVar	teamplay( "mp_teamplay","0", FCVAR_NOTIFY );
-ConVar	falldamage( "mp_falldamage","0", FCVAR_NOTIFY );
-ConVar	weaponstay( "mp_weaponstay","0", FCVAR_NOTIFY );
-ConVar	forcerespawn( "mp_forcerespawn","1", FCVAR_NOTIFY );
-ConVar	footsteps( "mp_footsteps","1", FCVAR_NOTIFY );
-#ifdef CSTRIKE
+ConVar	teamplay( "mp_teamplay","0", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+ConVar	falldamage( "mp_falldamage","0", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+ConVar	weaponstay( "mp_weaponstay","0", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+ConVar	forcerespawn( "mp_forcerespawn","1", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+ConVar	footsteps( "mp_footsteps","1", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+#if defined( L4D2 )
+// S587DA0: neutral common vision relies on the survivor's spawn flashlight.
+ConVar	flashlight( "mp_flashlight","1", 0x00000106 );
+#elif defined( CSTRIKE )
 ConVar	flashlight( "mp_flashlight","1", FCVAR_NOTIFY );
 #else
 ConVar	flashlight( "mp_flashlight","0", FCVAR_NOTIFY );
 #endif
-ConVar	aimcrosshair( "mp_autocrosshair","1", FCVAR_NOTIFY );
-ConVar	decalfrequency( "decalfrequency","10", FCVAR_NOTIFY );
-ConVar	teamlist( "mp_teamlist","hgrunt;scientist", FCVAR_NOTIFY );
-ConVar	teamoverride( "mp_teamoverride","1" );
-ConVar	defaultteam( "mp_defaultteam","0" );
-ConVar	allowNPCs( "mp_allowNPCs","1", FCVAR_NOTIFY );
+ConVar	aimcrosshair( "mp_autocrosshair","1", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+ConVar	decalfrequency( "decalfrequency","10", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+ConVar	teamlist( "mp_teamlist","hgrunt;scientist", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
+ConVar	teamoverride( "mp_teamoverride","1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar	defaultteam( "mp_defaultteam","0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar	allowNPCs( "mp_allowNPCs","1", 
+#if defined( L4D2 )
+	0x00000106
+#else
+	FCVAR_NOTIFY
+#endif
+ );
 
 // Engine Cvars
 const ConVar	*g_pDeveloper = NULL;
 
 
-ConVar suitvolume( "suitvolume", "0.25", FCVAR_ARCHIVE );
+ConVar suitvolume( "suitvolume", "0.25", 
+#if defined( L4D2 )
+	0x00000084
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
 
 class CGameDLL_ConVarAccessor : public IConCommandBaseAccessor
 {

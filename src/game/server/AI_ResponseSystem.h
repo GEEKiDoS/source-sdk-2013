@@ -35,6 +35,9 @@ public:
 IResponseSystem *PrecacheCustomResponseSystem( const char *scriptfile );
 IResponseSystem *BuildCustomResponseSystemGivenCriteria( const char *pszBaseFile, const char *pszCustomName, AI_CriteriaSet &criteriaSet, float flCriteriaScore );
 void DestroyCustomResponseSystems();
+#if defined( L4D2 )
+void ResetAllResponseSystemGroups();
+#endif
 
 class ISaveRestoreBlockHandler *GetDefaultResponseSystemSaveRestoreBlockHandler();
 class ISaveRestoreOps *GetResponseSystemSaveRestoreOps();

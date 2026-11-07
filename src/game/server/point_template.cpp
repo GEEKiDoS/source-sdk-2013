@@ -317,7 +317,11 @@ void CPointTemplate::PerformPrecache()
 //			pEntities - 
 // Output : Returns true on success, false on failure.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool CPointTemplate::CreateInstance( const Vector &vecOrigin, const QAngle &vecAngles, CUtlVector<CBaseEntity*> *pEntities, CBaseEntity *pEntityMaker, bool bCreateTime )
+#else
 bool CPointTemplate::CreateInstance( const Vector &vecOrigin, const QAngle &vecAngles, CUtlVector<CBaseEntity*> *pEntities )
+#endif
 {
 	// Go through all our templated map data and spawn all the entities in it
 	int iTemplates = m_hTemplates.Count();
@@ -396,6 +400,17 @@ bool CPointTemplate::CreateInstance( const Vector &vecOrigin, const QAngle &vecA
 	}
 
 	SpawnHierarchicalList( iTemplates, pSpawnList, true );
+#if defined( L4D2 )
+	if ( bCreateTime )
+	{
+		const float createTime = gpGlobals->curtime;
+		for ( int index = 0; index < iTemplates; ++index )
+		{
+			CBaseEntity *entity = pSpawnList[index].m_hEntity;
+			if ( entity ) entity->SetCreateTime( createTime );
+		}
+	}
+#endif
 
 	for ( i = 0; i < iTemplates; ++i )
 	{
@@ -427,7 +442,18 @@ void CPointTemplate::InputForceSpawn( inputdata_t &inputdata )
 {
 	// Spawn our template
 	CUtlVector<CBaseEntity*> hNewEntities;
+#if defined( L4D2 )
+	bool createTime = false;
+	if ( V_strcmp( STRING( gpGlobals->mapname ), "l4d_farm05_cornfield" ) == 0 &&
+		inputdata.pCaller && V_strcmp( inputdata.pCaller->GetClassname(), "logic_relay" ) == 0 &&
+		V_strcmp( inputdata.pCaller->GetDebugName(), "new_apc_arrive_relay" ) == 0 )
+	{
+		createTime = true;
+	}
+	if ( !CreateInstance( GetAbsOrigin(), GetAbsAngles(), &hNewEntities, NULL, createTime ) )
+#else
 	if ( !CreateInstance( GetAbsOrigin(), GetAbsAngles(), &hNewEntities ) )
+#endif
 		return;
 
 	CreationComplete( hNewEntities );
@@ -663,16 +689,21 @@ bool CPointScriptTemplate::CreateInstance( const Vector &vecOrigin, const QAngle
 
 	SpawnHierarchicalList( iTemplates, pSpawnList, true );
 
-#if defined(ENABLE_CREATE_TIME)
+#if defined( L4D2 ) || defined( ENABLE_CREATE_TIME )
 	// Set the time of creation for these entities.
 	if ( bCreateTime )
 	{
 		float flCreateTime = gpGlobals->curtime;
 		for ( int i = 0; i < iTemplates; ++i )
 		{
-			if ( pSpawnList[i].m_pEntity )
+#if defined( L4D2 )
+			CBaseEntity *pEntity = pSpawnList[i].m_hEntity;
+#else
+			CBaseEntity *pEntity = pSpawnList[i].m_pEntity;
+#endif
+			if ( pEntity )
 			{
-				pSpawnList[i].m_pEntity->SetCreateTime( flCreateTime );
+				pEntity->SetCreateTime( flCreateTime );
 			}
 		}
 	}
@@ -708,7 +739,11 @@ void CPointScriptTemplate::InputForceSpawn( inputdata_t &inputdata )
 	CUtlVector<CBaseEntity*> hNewEntities;
 
 	// Spawn our template
+#if defined( L4D2 )
+	if ( !CreateInstance( GetAbsOrigin(), GetAbsAngles(), &hNewEntities, NULL, false ) )
+#else
 	if ( !CreateInstance( GetAbsOrigin(), GetAbsAngles(), &hNewEntities ) )
+#endif
 		return;
 
 	CreationComplete( hNewEntities );

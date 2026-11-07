@@ -1,0 +1,212 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Native retail static layout, stdshader_dx9 10024010. No original programs
+// are loaded by the target. Singleton tools/SM3 dimensions preserve the stride.
+// STATIC: "HALFLAMBERT" "0..1"
+// STATIC: "CUBEMAP" "0..1"
+// STATIC: "SELFILLUM" "0..1"
+// STATIC: "SELFILLUMFRESNEL" "0..1"
+// STATIC: "FLASHLIGHT" "0..1"
+// STATIC: "LIGHTWARPTEXTURE" "0..1"
+// STATIC: "PHONGWARPTEXTURE" "0..0"
+// STATIC: "WRINKLEMAP" "0..1"
+// STATIC: "DETAIL_BLEND_MODE" "0..6"
+// STATIC: "DETAILTEXTURE" "0..1"
+// STATIC: "WOUNDED" "0..0"
+// STATIC: "RIMLIGHT" "0..0"
+// STATIC: "FLASHLIGHTDEPTHFILTERMODE" "0..2"
+// STATIC: "SHADER_SRGB_READ" "0..0"
+// STATIC: "BLENDTINTBYBASEALPHA" "0..1"
+// STATIC: "SHINYBLOOD" "0..1"
+// STATIC: "WORLD_NORMAL" "0..0"
+// DYNAMIC: "WRITEWATERFOGTODESTALPHA" "0..1"
+// DYNAMIC: "NUM_LIGHTS" "0..4"
+// DYNAMIC: "FLASHLIGHTSHADOWS" "0..1"
+// SKIP: (!$DETAILTEXTURE) && ($DETAIL_BLEND_MODE != 0)
+// SKIP: (!$FLASHLIGHT) && ($FLASHLIGHTSHADOWS || $FLASHLIGHTDEPTHFILTERMODE)
+// SKIP: (!$SELFILLUM) && $SELFILLUMFRESNEL
+// SKIP: $FLASHLIGHT && ($SELFILLUM || $CUBEMAP || $NUM_LIGHTS || $LIGHTWARPTEXTURE || $WRITEWATERFOGTODESTALPHA)
+// SKIP: $BLENDTINTBYBASEALPHA && $SELFILLUM
+#include "l4d2_model_flashlight_fxc.h"
+#include "common_vertexlitgeneric_dx9.h"
+#include "shader_constant_register_map.h"
+
+const float4 g_SelfIllumTintAndDetail : register( c0 );
+const float4 g_DiffuseModulation : register( c1 );
+const float4 g_EnvmapTintAndMask : register( c2 );
+#if SELFILLUMFRESNEL
+const float4 g_SelfIllumFresnel : register( c3 );
+#endif
+const float3 cAmbientCube[6] : register( c4 );
+// envmap Fresnel / luminance Phong mask / fixed exponent / selfillum mask.
+const float4 g_ShaderControls2 : register( c10 );
+const float4 g_EyePosition : register( c11 );
+const float4 g_FogParams : register( c12 );
+const float4 g_FlashlightAttenuation : register( c13 );
+const float4 g_FlashlightPosition : register( c14 );
+#if FLASHLIGHT
+const float4x4 g_FlashlightWorldToTexture : register( c15 );
+#endif
+const float4 g_FresnelSpecParams : register( c19 );
+const PixelShaderLightInfo cLightInfo[3] : register( c20 );
+const float4 g_SpecularTint : register( c26 );
+// base-alpha Phong mask (shiny-blood exponent in the blood variant),
+// inverse fog distance, dynamic-light diffuse exponent, invert envmap mask.
+const float4 g_ShaderControls : register( c27 );
+
+sampler BaseTextureSampler : register( s0 );
+sampler SpecularWarpSampler : register( s1 );
+sampler DiffuseWarpSampler : register( s2 );
+sampler NormalMapSampler : register( s3 );
+sampler ShadowDepthSampler : register( s4 );
+sampler RandomRotationSampler : register( s5 );
+sampler FlashlightSampler : register( s6 );
+sampler SpecExponentSampler : register( s7 );
+sampler EnvmapSampler : register( s8 );
+#if WRINKLEMAP
+sampler WrinkleSampler : register( s9 );
+#endif
+#if DETAILTEXTURE
+sampler DetailSampler : register( s13 );
+#endif
+sampler SelfIllumMaskSampler : register( s14 );
+
+struct PS_INPUT
+{
+	float4 texcoord : TEXCOORD0;
+	float4 attenuation : TEXCOORD1;
+	float3 tangent : TEXCOORD2;
+	float3 bitangent : TEXCOORD3;
+	float3 normal : TEXCOORD4;
+	float4 projectionAndWrinkle : TEXCOORD5;
+	float3 worldPosition : TEXCOORD6;
+};
+
+float NativeFresnel( float cosine, float3 ranges )
+{
+	float value = 1 - cosine;
+	value *= value;
+	return value > 0.5 ? lerp( ranges.y, ranges.z, 2 * value - 1 ) : lerp( ranges.x, ranges.y, 2 * value );
+}
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	float4 base = tex2D( BaseTextureSampler, i.texcoord.xy );
+#if WRINKLEMAP
+	base.rgb = lerp( base.rgb, tex2D( WrinkleSampler, i.texcoord.xy ).rgb, saturate( -i.projectionAndWrinkle.w ) );
+#endif
+#if DETAILTEXTURE
+	float4 detail = tex2D( DetailSampler, i.texcoord.zw );
+	base = TextureCombine( base, detail, DETAIL_BLEND_MODE, g_SelfIllumTintAndDetail.w );
+#endif
+	float4 normalSample = tex2D( NormalMapSampler, i.texcoord.xy );
+	float3 tangentNormal = 2 * normalSample.xyz - 1;
+	float3 normal = normalize( tangentNormal.x * i.tangent + tangentNormal.y * i.bitangent + tangentNormal.z * i.normal );
+	float3 eye = normalize( g_EyePosition.xyz - i.worldPosition );
+	float ndotv = saturate( dot( normal, eye ) );
+	float4 exponentMap = tex2D( SpecExponentSampler, i.texcoord.xy );
+	float exponent = g_ShaderControls2.z == 0 ? 1 + 149 * exponentMap.r : g_ShaderControls2.z;
+#if SHINYBLOOD
+	float bloodMask = saturate( base.r - 1.1 * base.g );
+	float3 fresnelRanges = float3( g_FresnelSpecParams.x * bloodMask, g_FresnelSpecParams.yz );
+	float bloodExponent = pow( saturate( 1 - dot( base.rgb, float3( .3, .59, .11 ) ) ) + .5, g_ShaderControls.x );
+	float bloodFixedExponent = g_ShaderControls2.z * bloodExponent;
+	exponent = bloodFixedExponent == 0 ? 1 + 149 * exponentMap.r : bloodFixedExponent;
+	float mask = 1;
+#else
+	float3 fresnelRanges = g_FresnelSpecParams.xyz;
+	float mask = lerp( normalSample.a, base.a, g_ShaderControls.x );
+	mask = lerp( mask, dot( base.rgb, float3( .3, .59, .11 ) ), g_ShaderControls2.y );
+#endif
+	float fresnel = NativeFresnel( ndotv, fresnelRanges );
+	float3 specularTint = g_SpecularTint.r >= 0 ? g_SpecularTint.rgb : lerp( float3( 1, 1, 1 ), base.rgb, exponentMap.g );
+	float3 diffuseLighting = 0;
+	float3 specularLighting = 0;
+	float3 reflection = reflect( -eye, normal );
+#if FLASHLIGHT
+	float4 flashlightPosition = mul( float4( i.worldPosition, 1 ), g_FlashlightWorldToTexture );
+	float2 screenPosition = i.projectionAndWrinkle.xy / i.projectionAndWrinkle.z;
+	DoSpecularFlashlight( g_FlashlightPosition.xyz, i.worldPosition, flashlightPosition, normal,
+		g_FlashlightAttenuation.xyz, g_FlashlightAttenuation.w,
+		FlashlightSampler, ShadowDepthSampler, RandomRotationSampler,
+		FLASHLIGHTDEPTHFILTERMODE, FLASHLIGHTSHADOWS != 0, true, screenPosition,
+		exponent, eye, false, SpecularWarpSampler, fresnel, g_EnvmapTintAndMask,
+		diffuseLighting, specularLighting );
+#else
+	diffuseLighting = AmbientLight( normal, cAmbientCube );
+	[unroll]
+	for ( int light = 0; light < NUM_LIGHTS; ++light )
+	{
+		float3 direction = PixelShaderGetLightVector( i.worldPosition, cLightInfo, light );
+		float3 color = PixelShaderGetLightColor( cLightInfo, light ) * i.attenuation[light];
+		float lambert = dot( normal, direction );
+#if HALFLAMBERT
+		float diffuse = saturate( .5 * lambert + .5 );
+#if !LIGHTWARPTEXTURE
+		diffuse *= diffuse;
+#endif
+#else
+		float diffuse = pow( saturate( lambert ), g_ShaderControls.z );
+#endif
+#if LIGHTWARPTEXTURE
+		diffuseLighting += color * (2 * tex2D( DiffuseWarpSampler, float2( diffuse, diffuse ) ).rgb);
+#else
+		diffuseLighting += color * diffuse;
+#endif
+		float specularMask = saturate( lambert );
+#if SHINYBLOOD && HALFLAMBERT && !CUBEMAP && !SELFILLUM && !LIGHTWARPTEXTURE && !WRINKLEMAP && !DETAILTEXTURE && !BLENDTINTBYBASEALPHA && (NUM_LIGHTS == 3)
+		// Retail static10753/dynamic6 uses raw N.L for light1; dynamic7
+		// uses it for light0 (dp3 r1.xw followed by the specular mul).
+		// Preserve the compiled native arithmetic, including the old
+		// compiler's missing saturation, rather than correcting it.
+		if ( light == (WRITEWATERFOGTODESTALPHA ? 0 : 1) )
+			specularMask = lambert;
+#endif
+		specularLighting += color * (pow( saturate( dot( reflection, direction ) ), exponent ) * specularMask);
+	}
+#endif
+	specularLighting *= mask * fresnel * g_FresnelSpecParams.w;
+	float3 environment = 0;
+#if CUBEMAP
+	float environmentMask = lerp( base.a, mask, g_EnvmapTintAndMask.w );
+	environmentMask = lerp( environmentMask, 1 - environmentMask, g_ShaderControls.w );
+	float3 cubeReflection = 2 * normal * dot( normal, eye ) - eye * dot( normal, normal );
+	environment = texCUBE( EnvmapSampler, cubeReflection ).rgb * g_EnvmapTintAndMask.rgb * environmentMask;
+	environment *= cLightScale.z * lerp( 1, fresnel, g_ShaderControls2.x );
+#endif
+	float3 albedo = base.rgb;
+#if BLENDTINTBYBASEALPHA
+	albedo = lerp( albedo, albedo * g_DiffuseModulation.rgb, base.a );
+#else
+	albedo *= g_DiffuseModulation.rgb;
+#endif
+	float3 diffuseComponent = albedo * diffuseLighting;
+#if SELFILLUM && !FLASHLIGHT
+#if SELFILLUMFRESNEL
+	float selfFresnel = pow( saturate( dot( normalize( i.normal ), eye ) ), g_SelfIllumFresnel.z );
+	float selfMask = base.a * saturate( selfFresnel * g_SelfIllumFresnel.x + g_SelfIllumFresnel.y );
+	diffuseComponent = lerp( diffuseComponent, g_SelfIllumTintAndDetail.rgb * base.rgb * g_SelfIllumFresnel.w, selfMask );
+#else
+	float3 selfMask = lerp( base.aaa, tex2D( SelfIllumMaskSampler, i.texcoord.xy ).rgb, g_ShaderControls2.w );
+	diffuseComponent = lerp( diffuseComponent, g_SelfIllumTintAndDetail.rgb * base.rgb, selfMask );
+#endif
+	diffuseComponent = max( 0, diffuseComponent );
+#endif
+#if DETAILTEXTURE
+	diffuseComponent = TextureCombinePostLighting( diffuseComponent, detail, DETAIL_BLEND_MODE, g_SelfIllumTintAndDetail.w );
+#endif
+	float3 result = diffuseComponent + specularLighting * specularTint + environment;
+	float fog = min( saturate( length( g_EyePosition.xy - i.worldPosition.xy ) * g_FogParams.w - g_FogParams.x ), g_FogParams.z );
+	result *= cLightScale.x;
+	result = lerp( result, g_LinearFogColor.rgb, fog * fog );
+	float alpha = g_DiffuseModulation.a;
+#if WRITEWATERFOGTODESTALPHA
+	alpha = saturate( (g_FogParams.y - i.worldPosition.z - 2) * g_ShaderControls.y );
+#elif !SHINYBLOOD
+#if SELFILLUM
+	alpha *= lerp( 1, base.a, (1 - g_ShaderControls.x) * g_ShaderControls2.w );
+#else
+	alpha *= lerp( base.a, 1, g_ShaderControls.x );
+#endif
+#endif
+	return float4( result, alpha );
+}

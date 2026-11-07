@@ -44,12 +44,24 @@ class CBaseTrigger : public CBaseToggle
 	DECLARE_CLASS( CBaseTrigger, CBaseToggle );
 public:
 	CBaseTrigger();
+#if defined( L4D2 )
+	DECLARE_SERVERCLASS();
+	DECLARE_ENT_SCRIPTDESC();
+	bool Script_IsTouching( HSCRIPT entity ) const;
+	const CUtlVector< EHANDLE > &GetTouchingEntities() const { return m_hTouchingEntities; }
+#endif
 	
 	void Activate( void );
 	virtual void PostClientActive( void );
 	void InitTrigger( void );
 
+	#if defined( L4D2 )
+	virtual
+	#endif
 	void Enable( void );
+	#if defined( L4D2 )
+	virtual
+	#endif
 	void Disable( void );
 	void Spawn( void );
 	void UpdateOnRemove( void );
@@ -98,6 +110,9 @@ protected:
 
 	// Entities currently being touched by this trigger
 	CUtlVector< EHANDLE >	m_hTouchingEntities;
+#if defined( L4D2 )
+	CNetworkVar( bool, m_bClientSidePredicted );
+#endif
 
 	DECLARE_DATADESC();
 };
@@ -115,12 +130,57 @@ public:
 	void MultiTouch( CBaseEntity *pOther );
 	void MultiWaitOver( void );
 	void ActivateMultiTrigger(CBaseEntity *pActivator);
+#if defined( L4D2 )
+	CTriggerMultiple();
+	void StartTouch( CBaseEntity *other ) OVERRIDE;
+	void EndTouch( CBaseEntity *other ) OVERRIDE;
+	bool PassesTriggerFilters( CBaseEntity *other ) OVERRIDE;
+	void TeamTouchThink();
+	int DrawDebugTextOverlays() OVERRIDE;
+#endif
 
 	DECLARE_DATADESC();
 
 	// Outputs
 	COutputEvent m_OnTrigger;
+#if defined( L4D2 )
+	bool CheckEntireTeam( int *count ) const;
+	bool m_bEntireTeamTriggered;
+	int m_iEntireTeam;
+	bool m_bAllowIncapTouch;
+	bool m_bAllowGhostTouch;
+	COutputEvent m_OnEntireTeamStartTouch;
+	COutputEvent m_OnEntireTeamEndTouch;
+#endif
 };
+
+#if defined( L4D2 )
+// Exposed from triggers.cpp so script brush subclasses use the actual bases.
+class CTriggerOnce : public CTriggerMultiple
+{
+	DECLARE_CLASS( CTriggerOnce, CTriggerMultiple );
+public:
+	void Spawn() OVERRIDE;
+};
+
+class CTriggerPush : public CBaseTrigger
+{
+	DECLARE_CLASS( CTriggerPush, CBaseTrigger );
+public:
+	void Spawn() OVERRIDE;
+	void Activate() OVERRIDE;
+	void StartTouch( CBaseEntity *other ) OVERRIDE;
+	void Touch( CBaseEntity *other ) OVERRIDE;
+	void DrawDebugGeometryOverlays() OVERRIDE;
+	void InputSetPushDirection( inputdata_t &inputdata );
+	void InputSetPushSpeed( inputdata_t &inputdata );
+	DECLARE_DATADESC();
+	Vector m_vecPushDir;
+	bool m_bTriggerOnStartTouch;
+	float m_flAlternateTicksFix;
+	float m_flPushSpeed;
+};
+#endif
 
 // Global list of triggers that care about weapon fire
 extern CUtlVector< CHandle<CTriggerMultiple> >	g_hWeaponFireTriggers;
@@ -173,11 +233,17 @@ class CTriggerHurtShim : public CBaseTrigger
 {
 	virtual void RadiationThink( void ) = 0;
 	virtual void HurtThink( void ) = 0;
+#if defined( L4D2 )
+	virtual void NavThink() = 0;
+#endif
 
 public:
 
 	void RadiationThinkShim( void ){ RadiationThink(); }
 	void HurtThinkShim( void ){ HurtThink(); }
+#if defined( L4D2 )
+	void NavThinkShim() { NavThink(); }
+#endif
 };
 
 DECLARE_AUTO_LIST( ITriggerHurtAutoList );
@@ -188,6 +254,9 @@ public:
 	{
 		// This field came along after levels were built so the field defaults to 20 here in the constructor.
 		m_flDamageCap = 20.0f;
+		#if defined( L4D2 )
+		m_vDamageForce.Init();
+		#endif
 	}
 
 	DECLARE_CLASS( CTriggerHurt, CTriggerHurtShim );
@@ -195,6 +264,9 @@ public:
 	void Spawn( void );
 	void RadiationThink( void );
 	void HurtThink( void );
+#if defined( L4D2 )
+	void NavThink();
+#endif
 	void Touch( CBaseEntity *pOther );
 	void EndTouch( CBaseEntity *pOther );
 	bool HurtEntity( CBaseEntity *pOther, float damage );
@@ -210,6 +282,10 @@ public:
 	int		m_bitsDamageInflict;	// DMG_ damage type that the door or tigger does
 	int		m_damageModel;
 	bool	m_bNoDmgForce;		// Should damage from this trigger impart force on what it's hurting
+#if defined( L4D2 )
+	Vector m_vDamageForce;
+	bool m_thinkAlways;
+#endif
 
 	enum
 	{

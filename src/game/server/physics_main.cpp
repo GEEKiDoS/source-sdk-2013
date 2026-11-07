@@ -39,6 +39,11 @@
 #include "pushentity.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "l4d2/player/terror_gamemovement.h"
+extern IGameMovement *g_pGameMovement;
+#include "world.h"
+#endif
 #include "tier0/memdbgon.h"
 
 extern ConVar think_limit;
@@ -46,10 +51,22 @@ extern ConVar think_limit;
 ConVar vprof_think_limit( "vprof_think_limit", "0" );
 #endif
 
-ConVar vprof_scope_entity_thinks( "vprof_scope_entity_thinks", "0" );
-ConVar vprof_scope_entity_gamephys( "vprof_scope_entity_gamephys", "0" );
+ConVar vprof_scope_entity_thinks( "vprof_scope_entity_thinks", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar vprof_scope_entity_gamephys( "vprof_scope_entity_gamephys", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
-ConVar	npc_vphysics	( "npc_vphysics","0");
+ConVar	npc_vphysics	( "npc_vphysics","0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
 //-----------------------------------------------------------------------------
 // helper method for trace hull as used by physics...
 //-----------------------------------------------------------------------------
@@ -221,6 +238,126 @@ bool CPhysicsPushedEntities::IsPushedPositionValid( CBaseEntity *pBlocker )
 //-----------------------------------------------------------------------------
 // Speculatively checks to see if all entities in this list can be pushed
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+bool CPhysicsPushedEntities::SpeculativelyCheckPush( PhysicsPushedInfo_t &info,
+	const Vector &vecAbsPush, bool bRotationalPush, CBaseEntity *root )
+{
+	CBaseEntity *blocker = info.m_pEntity;
+	int *handles = (int *)stackalloc( m_rgPusher.Count() * sizeof( int ) );
+	UnlinkPusherList( handles );
+	CTraceFilterPushMove filter( blocker, blocker->GetCollisionGroup() );
+	const Vector destination = blocker->GetAbsOrigin() + vecAbsPush;
+	UTIL_TraceEntity( blocker, blocker->GetAbsOrigin(), destination, blocker->PhysicsSolidMaskForEntity(), &filter, &info.m_Trace );
+	RelinkPusherList( handles );
+	info.m_bPusherIsGround = false;
+	if ( blocker->GetGroundEntity() && blocker->GetGroundEntity()->GetRootMoveParent() == m_rgPusher[0].m_pEntity )
+		info.m_bPusherIsGround = true;
+	const Vector before = blocker->GetAbsOrigin();
+	const bool unblockable = m_bIsUnblockableByPlayer && ( blocker->IsPlayer() || blocker->MyNPCPointer() );
+	if ( unblockable )
+		blocker->SetAbsOrigin( destination );
+	else
+	{
+		if ( root && !root->CanPushEntity( blocker ) )
+		{
+			info.m_bBlocked = true;
+			return false;
+		}
+		if ( info.m_Trace.fraction != 0.0f )
+			blocker->SetAbsOrigin( info.m_Trace.endpos );
+		if ( blocker->IsPointSized() || !blocker->IsSolid() || blocker->IsSolidFlagSet( FSOLID_VOLUME_CONTENTS ) )
+			return true;
+		if ( !bRotationalPush && info.m_Trace.fraction == 1.0f )
+		{
+			if ( !IsPushedPositionValid( blocker ) )
+				Warning( "Interpenetrating entities! (%s and %s)\n", blocker->GetClassname(), m_rgPusher[0].m_pEntity->GetClassname() );
+			return true;
+		}
+	}
+	info.m_bBlocked = !IsPushedPositionValid( blocker );
+	if ( !info.m_bBlocked )
+		return true;
+	if ( unblockable )
+	{
+		const Vector origin = blocker->GetAbsOrigin();
+		for ( int i = 0; i < 4; ++i )
+		{
+			Vector direction;
+			MatrixGetColumn( m_rgPusher[0].m_pEntity->EntityToWorldTransform(), i >> 1, direction );
+			blocker->SetAbsOrigin( origin + direction * ( ( i & 1 ) ? -0.5f : 0.5f ) );
+			info.m_bBlocked = !IsPushedPositionValid( blocker );
+			if ( !info.m_bBlocked )
+			{
+				DevMsg( 1, "Fixing player blocking train!\n" );
+				return true;
+			}
+		}
+		blocker->SetAbsOrigin( destination );
+		DevMsg( 1, "Ignoring player blocking train!\n" );
+		return true;
+	}
+	const Vector postPush = blocker->GetAbsOrigin();
+	CBaseEntity *ground = blocker->GetGroundEntity();
+	if ( ground && ground != GetWorldEntity() )
+	{
+		Vector direction = ground->GetAbsOrigin() - postPush;
+		direction.z = 0.0f;
+		if ( !( direction.x > -0.01f && direction.x < 0.01f &&
+			direction.y > -0.01f && direction.y < 0.01f ) )
+		{
+			const double length = sqrt( ( (double)direction.x * direction.x + (double)direction.y * direction.y ) + (double)direction.z * direction.z );
+			const float roundedLength = (float)length;
+			const float inverse = 1.0f / ( roundedLength + FLT_EPSILON );
+			direction *= inverse;
+			blocker->SetAbsOrigin( postPush + direction * 16.0f );
+			info.m_bBlocked = !IsPushedPositionValid( blocker );
+			if ( !info.m_bBlocked )
+			{
+				DevMsg( 1, "Fixing player blocking train by moving to center!\n" );
+				return true;
+			}
+		}
+	}
+	if ( !blocker->IsPlayer() )
+	{
+		for ( int i = 0; i < 4; ++i )
+		{
+			Vector direction;
+			MatrixGetColumn( m_rgPusher[0].m_pEntity->EntityToWorldTransform(), i >> 1, direction );
+			blocker->SetAbsOrigin( postPush + direction * ( ( i & 1 ) ? -0.5f : 0.5f ) );
+			info.m_bBlocked = !IsPushedPositionValid( blocker );
+			if ( !info.m_bBlocked )
+			{
+				DevMsg( 1, "Fixing player blocking train!\n" );
+				return true;
+			}
+		}
+		blocker->SetAbsOrigin( postPush );
+	}
+	else
+	{
+		blocker->SetAbsOrigin( before );
+		static_cast< CTerrorGameMovement * >( g_pGameMovement )->UnblockPusher( ToBasePlayer( blocker ), m_rgPusher[0].m_pEntity );
+		info.m_bBlocked = before == blocker->GetAbsOrigin() || !IsPushedPositionValid( blocker );
+		if ( !info.m_bBlocked )
+		{
+			DevMsg( 1, "Fixing player blocking train via gamemovement!\n" );
+			return true;
+		}
+	}
+	DevMsg( 2, "Blocked by player on train!\n" );
+	return false;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool CPhysicsPushedEntities::SpeculativelyCheckPush( PhysicsPushedInfo_t &info, const Vector &vecAbsPush, bool bRotationalPush )
 {
 	CBaseEntity *pBlocker = info.m_pEntity;
@@ -306,6 +443,7 @@ bool CPhysicsPushedEntities::SpeculativelyCheckPush( PhysicsPushedInfo_t &info, 
 	}
 	return false;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -318,7 +456,11 @@ bool CPhysicsPushedEntities::SpeculativelyCheckRotPush( const RotatingPushMove_t
 	for (int i = m_rgMoved.Count(); --i >= 0; )
 	{
 		ComputeRotationalPushDirection( m_rgMoved[i].m_pEntity, rotPushMove, &vecAbsPush, pRoot );
+#if defined( L4D2 )
+		if (!SpeculativelyCheckPush( m_rgMoved[i], vecAbsPush, true, pRoot ))
+#else
 		if (!SpeculativelyCheckPush( m_rgMoved[i], vecAbsPush, true ))
+#endif
 		{
 			m_nBlocker = i;
 			return false;
@@ -337,7 +479,11 @@ bool CPhysicsPushedEntities::SpeculativelyCheckLinearPush( const Vector &vecAbsP
 	m_nBlocker = -1;
 	for (int i = m_rgMoved.Count(); --i >= 0; )
 	{
+#if defined( L4D2 )
+		if (!SpeculativelyCheckPush( m_rgMoved[i], vecAbsPush, false, NULL ))
+#else
 		if (!SpeculativelyCheckPush( m_rgMoved[i], vecAbsPush, false ))
+#endif
 		{
 			m_nBlocker = i;
 			return false;
@@ -1564,7 +1710,13 @@ void CBaseEntity::PhysicsCustom()
 }
 
 bool g_bTestMoveTypeStepSimulation = true;
-ConVar sv_teststepsimulation( "sv_teststepsimulation", "1", 0 );
+ConVar sv_teststepsimulation( "sv_teststepsimulation", "1", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Until we remove the above cvar, we need to have the entities able

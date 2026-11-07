@@ -11,6 +11,10 @@
 #include "utlvector.h"
 #include "tier0/threadtools.h"
 #include "tier0/tslist.h"
+#if defined( L4D2 )
+#include "animation.h"
+#include <xmmintrin.h>
+#endif
 
 #ifdef CLIENT_DLL
 
@@ -259,8 +263,10 @@ void CDirtySpatialPartitionEntityList::OnPostQuery( SpatialPartitionListMask_t l
 	BEGIN_DATADESC_NO_BASE( CCollisionProperty )
 
 //		DEFINE_FIELD( m_pOuter, FIELD_CLASSPTR ),
+#if !defined( L4D2 )
 		DEFINE_GLOBAL_FIELD( m_vecMinsPreScaled, FIELD_VECTOR ),
 		DEFINE_GLOBAL_FIELD( m_vecMaxsPreScaled, FIELD_VECTOR ),
+#endif
 		DEFINE_GLOBAL_FIELD( m_vecMins, FIELD_VECTOR ),
 		DEFINE_GLOBAL_FIELD( m_vecMaxs, FIELD_VECTOR ),
 		DEFINE_KEYFIELD( m_nSolidType, FIELD_CHARACTER, "solid" ),
@@ -268,9 +274,11 @@ void CDirtySpatialPartitionEntityList::OnPostQuery( SpatialPartitionListMask_t l
 		DEFINE_FIELD( m_nSurroundType, FIELD_CHARACTER ),
 		DEFINE_FIELD( m_flRadius, FIELD_FLOAT ),
 		DEFINE_FIELD( m_triggerBloat, FIELD_CHARACTER ),
+#if !defined( L4D2 )
 		DEFINE_FIELD( m_bUniformTriggerBloat, FIELD_BOOLEAN ),
 		DEFINE_FIELD( m_vecSpecifiedSurroundingMinsPreScaled, FIELD_VECTOR ),
 		DEFINE_FIELD( m_vecSpecifiedSurroundingMaxsPreScaled, FIELD_VECTOR ),
+#endif
 		DEFINE_FIELD( m_vecSpecifiedSurroundingMins, FIELD_VECTOR ),
 		DEFINE_FIELD( m_vecSpecifiedSurroundingMaxs, FIELD_VECTOR ),
 		DEFINE_FIELD( m_vecSurroundingMins, FIELD_VECTOR ),
@@ -287,14 +295,18 @@ void CDirtySpatialPartitionEntityList::OnPostQuery( SpatialPartitionListMask_t l
 //-----------------------------------------------------------------------------
 BEGIN_PREDICTION_DATA_NO_BASE( CCollisionProperty )
 
+#if !defined( L4D2 )
 	DEFINE_PRED_FIELD( m_vecMinsPreScaled, FIELD_VECTOR, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_vecMaxsPreScaled, FIELD_VECTOR, FTYPEDESC_INSENDTABLE ),
+#endif
 	DEFINE_PRED_FIELD( m_vecMins, FIELD_VECTOR, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_vecMaxs, FIELD_VECTOR, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_nSolidType, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_usSolidFlags, FIELD_SHORT, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_triggerBloat, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
+#if !defined( L4D2 )
 	DEFINE_PRED_FIELD( m_bUniformTriggerBloat, FIELD_BOOLEAN, FTYPEDESC_INSENDTABLE ),
+#endif
 
 END_PREDICTION_DATA()
 
@@ -315,6 +327,21 @@ static void RecvProxy_SolidFlags( const CRecvProxyData *pData, void *pStruct, vo
 	((CCollisionProperty*)pStruct)->SetSolidFlags( pData->m_Value.m_Int );
 }
 
+#if defined( L4D2 )
+static void RecvProxy_OBBMins( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	CCollisionProperty *collision = static_cast< CCollisionProperty * >( pStruct );
+	const Vector &mins = *reinterpret_cast< const Vector * >( pData->m_Value.m_Vector );
+	collision->SetCollisionBounds( mins, collision->OBBMaxs() );
+}
+
+static void RecvProxy_OBBMaxs( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	CCollisionProperty *collision = static_cast< CCollisionProperty * >( pStruct );
+	const Vector &maxs = *reinterpret_cast< const Vector * >( pData->m_Value.m_Vector );
+	collision->SetCollisionBounds( collision->OBBMins(), maxs );
+}
+#else
 static void RecvProxy_OBBMinsPreScaled( const CRecvProxyData *pData, void *pStruct, void *pOut )
 {
 	CCollisionProperty *pProp = ((CCollisionProperty*)pStruct);
@@ -328,6 +355,7 @@ static void RecvProxy_OBBMaxsPreScaled( const CRecvProxyData *pData, void *pStru
 	Vector &vecMaxs = *((Vector*)pData->m_Value.m_Vector);
 	pProp->SetCollisionBounds( pProp->OBBMinsPreScaled(), vecMaxs );
 }
+#endif
 
 static void RecvProxy_VectorDirtySurround( const CRecvProxyData *pData, void *pStruct, void *pOut )
 {
@@ -367,31 +395,44 @@ static void SendProxy_SolidFlags( const SendProp *pProp, const void *pStruct, co
 BEGIN_NETWORK_TABLE_NOBASE( CCollisionProperty, DT_CollisionProperty )
 
 #ifdef CLIENT_DLL
+#if !defined( L4D2 )
 	RecvPropVector( RECVINFO(m_vecMinsPreScaled), 0, RecvProxy_OBBMinsPreScaled ),
 	RecvPropVector( RECVINFO(m_vecMaxsPreScaled), 0, RecvProxy_OBBMaxsPreScaled ),
+#endif
+#if defined( L4D2 )
+	RecvPropVector( RECVINFO( m_vecMins ), 0, RecvProxy_OBBMins ),
+	RecvPropVector( RECVINFO( m_vecMaxs ), 0, RecvProxy_OBBMaxs ),
+#else
 	RecvPropVector( RECVINFO(m_vecMins), 0 ),
 	RecvPropVector( RECVINFO(m_vecMaxs), 0 ),
+#endif
 	RecvPropInt( RECVINFO( m_nSolidType ),		0, RecvProxy_Solid ),
 	RecvPropInt( RECVINFO( m_usSolidFlags ),	0, RecvProxy_SolidFlags ),
 	RecvPropInt( RECVINFO(m_nSurroundType), 0, RecvProxy_IntDirtySurround ),
 	RecvPropInt( RECVINFO(m_triggerBloat), 0, RecvProxy_IntDirtySurround ), 
+#if !defined( L4D2 )
 	RecvPropBool( RECVINFO(m_bUniformTriggerBloat) ),
 	RecvPropVector( RECVINFO(m_vecSpecifiedSurroundingMinsPreScaled), 0, RecvProxy_VectorDirtySurround ),
 	RecvPropVector( RECVINFO(m_vecSpecifiedSurroundingMaxsPreScaled), 0, RecvProxy_VectorDirtySurround ),
+#endif
 	RecvPropVector( RECVINFO(m_vecSpecifiedSurroundingMins), 0, RecvProxy_VectorDirtySurround ),
 	RecvPropVector( RECVINFO(m_vecSpecifiedSurroundingMaxs), 0, RecvProxy_VectorDirtySurround ),
 #else
+#if !defined( L4D2 )
 	SendPropVector( SENDINFO(m_vecMinsPreScaled), 0, SPROP_NOSCALE),
 	SendPropVector( SENDINFO(m_vecMaxsPreScaled), 0, SPROP_NOSCALE),
+#endif
 	SendPropVector( SENDINFO(m_vecMins), 0, SPROP_NOSCALE),
 	SendPropVector( SENDINFO(m_vecMaxs), 0, SPROP_NOSCALE),
 	SendPropInt( SENDINFO( m_nSolidType ),		3, SPROP_UNSIGNED, SendProxy_Solid ),
 	SendPropInt( SENDINFO( m_usSolidFlags ),	FSOLID_MAX_BITS, SPROP_UNSIGNED, SendProxy_SolidFlags ),
 	SendPropInt( SENDINFO( m_nSurroundType ), SURROUNDING_TYPE_BIT_COUNT, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO(m_triggerBloat), 0, SPROP_UNSIGNED),
+#if !defined( L4D2 )
 	SendPropBool( SENDINFO(m_bUniformTriggerBloat) ),
 	SendPropVector( SENDINFO(m_vecSpecifiedSurroundingMinsPreScaled), 0, SPROP_NOSCALE),
 	SendPropVector( SENDINFO(m_vecSpecifiedSurroundingMaxsPreScaled), 0, SPROP_NOSCALE),
+#endif
 	SendPropVector( SENDINFO(m_vecSpecifiedSurroundingMins), 0, SPROP_NOSCALE),
 	SendPropVector( SENDINFO(m_vecSpecifiedSurroundingMaxs), 0, SPROP_NOSCALE),
 #endif
@@ -420,13 +461,17 @@ CCollisionProperty::~CCollisionProperty()
 void CCollisionProperty::Init( CBaseEntity *pEntity )
 {
 	m_pOuter = pEntity;
+#if !defined( L4D2 )
 	m_vecMinsPreScaled.GetForModify().Init();
 	m_vecMaxsPreScaled.GetForModify().Init();
+#endif
 	m_vecMins.GetForModify().Init();
 	m_vecMaxs.GetForModify().Init();
 	m_flRadius = 0.0f;
 	m_triggerBloat = 0;
+#if !defined( L4D2 )
 	m_bUniformTriggerBloat = false;
+#endif
 	m_usSolidFlags = 0;
 	m_nSolidType = SOLID_NONE;
 
@@ -434,8 +479,10 @@ void CCollisionProperty::Init( CBaseEntity *pEntity )
 	m_nSurroundType = USE_OBB_COLLISION_BOUNDS;
 	m_vecSurroundingMins = vec3_origin;
 	m_vecSurroundingMaxs = vec3_origin;
+#if !defined( L4D2 )
 	m_vecSpecifiedSurroundingMinsPreScaled.GetForModify().Init();
 	m_vecSpecifiedSurroundingMaxsPreScaled.GetForModify().Init();
+#endif
 	m_vecSpecifiedSurroundingMins.GetForModify().Init();
 	m_vecSpecifiedSurroundingMaxs.GetForModify().Init();
 }
@@ -474,7 +521,12 @@ bool CCollisionProperty::ShouldTouchTrigger( int triggerSolidFlags ) const
 	if ( IsSolidFlagSet( FSOLID_TRIGGER ) )
 		return false;
 
+#if defined( L4D2 )
+	return GetCollisionGroup() == COLLISION_GROUP_PLAYER ||
+		( triggerSolidFlags & FSOLID_L4D2_PLAYER_ONLY_TRIGGER ) == 0;
+#else
 	return true;
+#endif
 }
 
 const matrix3x4_t *CCollisionProperty::GetRootParentToWorldTransform() const
@@ -661,6 +713,27 @@ const matrix3x4_t& CCollisionProperty::CollisionToWorldTransform() const
 //-----------------------------------------------------------------------------
 // Sets the collision bounds + the size
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CCollisionProperty::SetCollisionBounds( const Vector &mins, const Vector &maxs )
+{
+	// S93E20/CD8050: raw bounds, one notification for each changed vector.
+	if ( m_vecMins.Get() == mins && m_vecMaxs.Get() == maxs )
+		return;
+	if ( m_vecMins.Get() != mins )
+		m_vecMins.GetForModify() = mins;
+	if ( m_vecMaxs.Get() != maxs )
+		m_vecMaxs.GetForModify() = maxs;
+	const Vector size = maxs - mins;
+	m_flRadius = sqrtf( ( size.y * size.y + size.z * size.z ) + size.x * size.x ) * 0.5f;
+	MarkSurroundingBoundsDirty();
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CCollisionProperty::SetCollisionBounds( const Vector &mins, const Vector &maxs )
 {
 	if ( ( m_vecMinsPreScaled != mins ) || ( m_vecMaxsPreScaled != maxs ) )
@@ -709,10 +782,12 @@ void CCollisionProperty::SetCollisionBounds( const Vector &mins, const Vector &m
 		MarkSurroundingBoundsDirty();
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Rebuilds the scaled bounds from the prescaled bounds after a model's scale has changed
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CCollisionProperty::RefreshScaledCollisionBounds( void )
 {
 	SetCollisionBounds( m_vecMinsPreScaled, m_vecMaxsPreScaled );
@@ -729,6 +804,7 @@ void CCollisionProperty::RefreshScaledCollisionBounds( void )
 		SetSurroundingBoundsType( nSurroundType );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -754,6 +830,7 @@ void CCollisionProperty::WorldSpaceTriggerBounds( Vector *pVecWorldMins, Vector 
 	if ( ( GetSolidFlags() & FSOLID_USE_TRIGGER_BOUNDS ) == 0 )
 		return;
 
+#if !defined( L4D2 )
 	if ( m_bUniformTriggerBloat )
 	{
 		pVecWorldMins->x -= m_triggerBloat;
@@ -765,6 +842,7 @@ void CCollisionProperty::WorldSpaceTriggerBounds( Vector *pVecWorldMins, Vector 
 		pVecWorldMaxs->z += m_triggerBloat;
 	}
 	else
+#endif
 	{
 		// Don't bloat below, we don't want to trigger it with our heads
 		pVecWorldMins->x -= m_triggerBloat;
@@ -776,6 +854,17 @@ void CCollisionProperty::WorldSpaceTriggerBounds( Vector *pVecWorldMins, Vector 
 	}
 }
 
+#if defined( L4D2 )
+void CCollisionProperty::UseTriggerBounds( bool enable, float bloat )
+{
+	// S94270: integer truncation followed by byte narrowing; no uniform flag.
+	m_triggerBloat = static_cast< unsigned char >( _mm_cvttss_si32( _mm_set_ss( bloat ) ) );
+	if ( enable )
+		AddSolidFlags( FSOLID_USE_TRIGGER_BOUNDS );
+	else
+		RemoveSolidFlags( FSOLID_USE_TRIGGER_BOUNDS );
+}
+#else
 void CCollisionProperty::UseTriggerBounds( bool bEnable, float flBloat, bool bUniformBloat )
 {
 	Assert( flBloat <= 127.0f );
@@ -791,6 +880,7 @@ void CCollisionProperty::UseTriggerBounds( bool bEnable, float flBloat, bool bUn
 		RemoveSolidFlags( FSOLID_USE_TRIGGER_BOUNDS );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -946,14 +1036,25 @@ void CCollisionProperty::CalcNearestPoint( const Vector &vecWorldPt, Vector *pVe
 //-----------------------------------------------------------------------------
 // Computes the nearest point in the OBB to a point specified in world space
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 float CCollisionProperty::CalcDistanceFromPoint( const Vector &vecWorldPt ) const
 {
 	// Calculate physics force
 	Vector localPt, localClosestPt;
 	WorldToCollisionSpace( vecWorldPt, &localPt );
 	CalcClosestPointOnAABB( m_vecMins.Get(), m_vecMaxs.Get(), localPt, localClosestPt );
+#if defined( L4D2 )
+	const Vector delta = localPt - localClosestPt;
+	return sqrtf( ( delta.y * delta.y + delta.z * delta.z ) + delta.x * delta.x );
+#else
 	return localPt.DistTo( localClosestPt );
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1101,6 +1202,53 @@ void CCollisionProperty::ComputeCollisionSurroundingBox( bool bUseVPhysics, Vect
 }
 
   
+// External insertion into existing shared/collisionproperty.cpp, L4D2 only.
+// Native S093250. False selects the EXISTING USE_OBB_COLLISION_BOUNDS case
+// (S0931F0); it is not a new collision cache or a substitute bounds owner.
+#if defined( L4D2 )
+bool CCollisionProperty::ComputeSequenceSurroundingBox( Vector *pWorldMins, Vector *pWorldMaxs )
+{
+	CBaseAnimating *animating = GetOuter()->GetBaseAnimating();
+	if ( !animating )
+		return false;
+	CStudioHdr *studio = animating->GetModelPtr();
+	if ( !studio || !studio->IsValid() )
+		return false;
+
+	Vector mins, maxs;
+	const bool extracted = ::ExtractBbox( studio, animating->GetSequence(), mins, maxs ) != 0;
+	// S0932B9 reads uninitialized outputs when S02D7B0 reports unavailable
+	// sequences. Main approved using the SAME S0931F0 no-usable-model fallback.
+	Assert( extracted );
+	if ( !extracted )
+		return false;
+
+	const float minX = fabsf( mins.x );
+	const float maxX = fabsf( maxs.x );
+	const float extentX = minX > maxX ? minX : maxX;
+	const float minY = fabsf( mins.y );
+	const float maxY = fabsf( maxs.y );
+	const float extentY = minY > maxY ? minY : maxY;
+	const float radius = extentX > extentY ? extentX : extentY;
+	mins.x = -radius - 6.0f;
+	mins.y = -radius - 6.0f;
+	maxs.x = radius + 6.0f;
+	maxs.y = radius + 6.0f;
+
+	// JA skips the assignment: unordered also selects the remembered bound.
+	// Keep these scalar tests rather than VectorMin/Max or ordered <= tests.
+	if ( !( m_vecSurroundingMins.x > mins.x ) ) mins.x = m_vecSurroundingMins.x;
+	if ( !( m_vecSurroundingMins.y > mins.y ) ) mins.y = m_vecSurroundingMins.y;
+	if ( !( m_vecSurroundingMins.z > mins.z ) ) mins.z = m_vecSurroundingMins.z;
+	if ( !( maxs.x > m_vecSurroundingMaxs.x ) ) maxs.x = m_vecSurroundingMaxs.x;
+	if ( !( maxs.y > m_vecSurroundingMaxs.y ) ) maxs.y = m_vecSurroundingMaxs.y;
+	if ( !( maxs.z > m_vecSurroundingMaxs.z ) ) maxs.z = m_vecSurroundingMaxs.z;
+
+	*pWorldMins = GetCollisionOrigin() + mins;
+	*pWorldMaxs = GetCollisionOrigin() + maxs;
+	return true;
+}
+#endif
 //-----------------------------------------------------------------------------
 // Computes the surrounding collision bounds based on whatever algorithm we want...
 //-----------------------------------------------------------------------------
@@ -1117,6 +1265,12 @@ void CCollisionProperty::ComputeSurroundingBox( Vector *pVecWorldMins, Vector *p
 
 	switch( m_nSurroundType )
 	{
+	#if defined( L4D2 )
+	case USE_SEQUENCE_BOUNDS:
+		if ( ComputeSequenceSurroundingBox( pVecWorldMins, pVecWorldMaxs ) )
+			break;
+		// SAME native OBB/asleep-VPhysics fallback, no competing cache.
+	#endif
 	case USE_OBB_COLLISION_BOUNDS:
 		{
 			Assert( GetSolid() != SOLID_CUSTOM );
@@ -1187,6 +1341,9 @@ void CCollisionProperty::ComputeSurroundingBox( Vector *pVecWorldMins, Vector *p
 //-----------------------------------------------------------------------------
 // Sets the method by which the surrounding collision bounds is set
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CCollisionProperty::SetSurroundingBoundsType( SurroundingBoundsType_t type, const Vector *pMins, const Vector *pMaxs )
 {	
 	m_nSurroundType = type;
@@ -1198,6 +1355,16 @@ void CCollisionProperty::SetSurroundingBoundsType( SurroundingBoundsType_t type,
 	else
 	{
 		Assert( pMins && pMaxs );
+#if defined( L4D2 )
+		// S93FD0: no scale projection; specified bounds and cached bounds agree.
+		if ( m_vecSpecifiedSurroundingMins.Get() != *pMins )
+			m_vecSpecifiedSurroundingMins.GetForModify() = *pMins;
+		if ( m_vecSpecifiedSurroundingMaxs.Get() != *pMaxs )
+			m_vecSpecifiedSurroundingMaxs.GetForModify() = *pMaxs;
+		m_vecSurroundingMins = *pMins;
+		m_vecSurroundingMaxs = *pMaxs;
+
+#else
 		m_vecSpecifiedSurroundingMinsPreScaled = *pMins;
 		m_vecSpecifiedSurroundingMaxsPreScaled = *pMaxs;
 
@@ -1225,10 +1392,14 @@ void CCollisionProperty::SetSurroundingBoundsType( SurroundingBoundsType_t type,
 			
 		}
 
+#endif
 		ASSERT_COORD( m_vecSurroundingMins );
 		ASSERT_COORD( m_vecSurroundingMaxs );
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1268,6 +1439,9 @@ bool CCollisionProperty::DoesVPhysicsInvalidateSurroundingBox( ) const
 	case USE_HITBOXES:
 	case USE_ROTATION_EXPANDED_BOUNDS:
 	case USE_SPECIFIED_BOUNDS:
+	#if defined( L4D2 )
+	case USE_SEQUENCE_BOUNDS:
+	#endif
 		return false;
 
 	default:

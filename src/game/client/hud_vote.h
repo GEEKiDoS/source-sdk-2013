@@ -13,6 +13,55 @@
 
 #include "hudelement.h"
 #include <vgui_controls/EditablePanel.h>
+#if defined( L4D2 )
+class VoteBarPanel : public vgui::Panel
+{
+	DECLARE_CLASS_SIMPLE( VoteBarPanel, vgui::Panel );
+public:
+	VoteBarPanel( vgui::Panel *parent, const char *name );
+	void SetVoteCounts( int yes, int no, int potential );
+	virtual void Paint() OVERRIDE;
+private:
+	int m_nYesVotes;
+	int m_nNoVotes;
+	int m_nPotentialVotes;
+	CPanelAnimationVarAliasType( int, m_iBoxSize, "box_size", "16", "proportional_int" );
+	CPanelAnimationVarAliasType( int, m_iSpacer, "spacer", "4", "proportional_int" );
+	CPanelAnimationVarAliasType( int, m_iBoxInset, "box_inset", "1", "proportional_int" );
+	CPanelAnimationVarAliasType( int, m_nYesTextureId, "yes_texture", "vgui/hud/vote_yes", "textureid" );
+	CPanelAnimationVarAliasType( int, m_nNoTextureId, "no_texture", "vgui/hud/vote_no", "textureid" );
+};
+class CHudVote : public vgui::EditablePanel, public CHudElement
+{
+	DECLARE_CLASS_SIMPLE( CHudVote, vgui::EditablePanel );
+public:
+	CHudVote( const char *name );
+	virtual void Init() OVERRIDE;
+	virtual void LevelInit() OVERRIDE;
+	virtual bool ShouldDraw() OVERRIDE;
+	virtual void ApplySchemeSettings( vgui::IScheme *scheme ) OVERRIDE;
+	virtual void FireGameEvent( IGameEvent *event ) OVERRIDE;
+	virtual void OnThink() OVERRIDE;
+	virtual int KeyInput( int down, ButtonCode_t key, const char *binding );
+	void MsgFunc_VoteRegistered( bf_read &message );
+	void MsgFunc_CallVoteFailed( bf_read &message );
+	void MsgFunc_VoteStart( bf_read &message );
+	void MsgFunc_VotePass( bf_read &message );
+	void MsgFunc_VoteFail( bf_read &message );
+private:
+	vgui::EditablePanel *m_pVoteActive;
+	vgui::EditablePanel *m_pVoteFailed;
+	vgui::EditablePanel *m_pVotePassed;
+	vgui::EditablePanel *m_pCallVoteFailed;
+	VoteBarPanel *m_voteBar;
+	bool m_bVotingActive;
+	float m_flVoteResultCycleTime;
+	float m_flHideTime;
+	bool m_bVotePassed;
+	bool m_bPlayerVoted;
+};
+extern ConVar cl_vote_active;
+#else
 #include <vgui_controls/SectionedListPanel.h>
 #include <vgui_controls/Frame.h>
 #include <vgui_controls/Button.h>
@@ -247,4 +296,5 @@ private:
 	CHudVotePanel		*m_pVotePanels[ 2 ];
 };
 
+#endif // L4D2 native / unchanged generic HUD vote declarations
 #endif // HUD_VOTE_H

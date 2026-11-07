@@ -88,6 +88,10 @@ protected:
 	QAngle			m_angPreferredCarryAngles;
 	bool			m_bNotSolidToWorld;
 
+#if defined( L4D2 )
+	int m_iExploitableByPlayer;
+#endif
+
 	// Outputs
 	COutputEvent	m_OnDamaged;
 	COutputEvent	m_OnAwakened;

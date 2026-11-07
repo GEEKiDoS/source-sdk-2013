@@ -32,7 +32,11 @@ public:
 	virtual void OnDataChanged( DataUpdateType_t updateType );
 	void	ShutDownLightHandle( void );
 
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	virtual void Simulate();
+#endif
 
 	void	UpdateLight( bool bForceUpdate );
 
@@ -227,10 +231,18 @@ void C_EnvProjectedTexture::UpdateLight( bool bForceUpdate )
 	}
 }
 
+#if defined( L4D2 )
+bool C_EnvProjectedTexture::Simulate( void )
+{
+	UpdateLight( false );
+	return true;
+}
+#else
 void C_EnvProjectedTexture::Simulate( void )
 {
 	UpdateLight( false );
 
 	BaseClass::Simulate();
 }
+#endif
 

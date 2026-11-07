@@ -52,6 +52,7 @@ inline void DebugConnectMsg( int node1, int node2, const char *pszFormat, ... )
 	}
 }
 
+#if !defined( L4D2 )
 CON_COMMAND( ai_debug_node_connect, "Debug the attempted connection between two nodes" )
 {
 	g_DebugConnectNode1 = atoi( args[1] );
@@ -59,6 +60,7 @@ CON_COMMAND( ai_debug_node_connect, "Debug the attempted connection between two 
 	
 	DevMsg( "ai_debug_node_connect: debugging enbabled for %d <--> %d\n", g_DebugConnectNode1, g_DebugConnectNode2 );
 }
+#endif // !L4D2
 
 //-----------------------------------------------------------------------------
 // This CVAR allows level designers to override the building
@@ -82,7 +84,9 @@ CAI_NetworkManager *g_pAINetworkManager;
 
 bool CAI_NetworkManager::gm_fNetworksLoaded;
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS(ai_network,CAI_NetworkManager);
+#endif
 
 BEGIN_DATADESC( CAI_NetworkManager )
 
@@ -922,6 +926,7 @@ void CAI_NetworkManager::BuildNetworkGraph( void )
 //------------------------------------------------------------------------------
 bool g_bAIDisabledByUser = false;
 
+#if !defined( L4D2 )
 void CAI_NetworkManager::InitializeAINetworks()
 {
 	// For not just create a single AI Network called "BigNet"
@@ -951,6 +956,7 @@ void CAI_NetworkManager::InitializeAINetworks()
 	pNetwork->SetThink( &CAI_NetworkManager::DelayedInit );
 	pNetwork->SetNextThink( gpGlobals->curtime );
 }
+#endif // !L4D2
 
 // UNDONE: Where should this be defined?
 #ifndef MAX_PATH

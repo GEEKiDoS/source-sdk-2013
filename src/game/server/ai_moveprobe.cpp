@@ -48,6 +48,7 @@ ConVar ai_old_check_stand_position( "ai_old_check_stand_position", "0" );
 // function is called, but for now, that appears to not be a problem.
 float MOVE_HEIGHT_EPSILON = 0.0625f;
 
+#if !defined( L4D2 )
 CON_COMMAND( ai_set_move_height_epsilon, "Set how high AI bumps up ground walkers when checking steps" )
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
@@ -63,6 +64,7 @@ CON_COMMAND( ai_set_move_height_epsilon, "Set how high AI bumps up ground walker
 		Msg( "Epsilon now %f\n", MOVE_HEIGHT_EPSILON );
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 

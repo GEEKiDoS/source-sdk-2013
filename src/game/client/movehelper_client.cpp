@@ -11,6 +11,9 @@
 #include "igamemovement.h"
 #include "engine/IEngineTrace.h"
 #include "engine/ivmodelinfo.h"
+#if defined( L4D2 )
+#include "l4d2/entities/c_trigger_player_movement.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -149,21 +152,28 @@ ConVar cl_movehelper_process_imp( "cl_movehelper_process_imp", "1", 0 );
 
 void CMoveHelperClient::ProcessImpacts( void )
 {
+#if defined( L4D2 )
+	TouchTriggers( m_pHost ); // Native first phase, before debug/solid gates.
+#endif
 	if ( !cl_movehelper_process.GetBool() )
 		return;
 
 	// Relink in order to build absorigin and absmin/max to reflect any changes
 	//  from prediction.  Relink will early out on SOLID_NOT
 
+#if !defined( L4D2 )
 	// TODO: Touch triggers on the client
 	//pPlayer->PhysicsTouchTriggers();
+#endif
 
 	// Don't bother if the player ain't solid
 	if ( m_pHost->IsSolidFlagSet( FSOLID_NOT_SOLID ) )
 		return;
 
 	// Save off the velocity, cause we need to temporarily reset it
+#if !defined( L4D2 )
 	Vector vOldLocalVel = m_pHost->GetLocalVelocity();
+#endif
 	Vector vOldAbsVel = m_pHost->GetAbsVelocity();
 
 	// Touch other objects that were intersected during the movement.
@@ -190,22 +200,16 @@ void CMoveHelperClient::ProcessImpacts( void )
 			entity->PhysicsImpact( m_pHost, m_TouchList[i].trace );
 	}
 
-	// misyl: Debug
-//	if ( vOldLocalVel != vOldAbsVel )
-// 	{
-// 		Msg( "%d\n", gpGlobals->tickcount );
-// 		Msg( "vOldLocalVel: %f %f %f\n", vOldLocalVel.x, vOldLocalVel.y, vOldLocalVel.z );
-// 		Msg( "vOldAbsVel: %f %f %f\n", vOldAbsVel.x, vOldAbsVel.y, vOldAbsVel.z );
-// 	}
-		// Restore the velocity
-		m_pHost->SetAbsVelocity( vOldAbsVel );
-		//m_pHost->SetLocalVelocity( vOldLocalVel );
+	// Restore the velocity
+	m_pHost->SetAbsVelocity( vOldAbsVel );
 
+#if !defined( L4D2 )
 	if ( vOldLocalVel != vOldAbsVel )
 	{
 		Msg( "vNewLocalVel: %f %f %f\n", m_pHost->GetLocalVelocity().x, m_pHost->GetLocalVelocity().y, m_pHost->GetLocalVelocity().z );
 		Msg( "vNewAbsVel: %f %f %f\n\n", m_pHost->GetAbsVelocity().x, m_pHost->GetAbsVelocity().y, m_pHost->GetAbsVelocity().z );
 	}
+#endif
 
 	// So no stuff is ever left over, sigh...
 	ResetTouchList();

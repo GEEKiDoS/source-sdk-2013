@@ -12,6 +12,8 @@
 #pragma once
 #endif
 
+#if !defined( L4D2 )
 ISaveRestoreBlockHandler *GetAISaveRestoreBlockHandler();
+#endif
 
 #endif // AI_SAVERESTORE_H

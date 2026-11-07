@@ -1,0 +1,167 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Native PC content-used VS20/PS20b generic path. Editor/SM3-only paths elided.
+// STATIC: "DETAILTEXTURE" "0..1"
+// STATIC: "CUBEMAP" "0..1"
+// STATIC: "DIFFUSELIGHTING" "0..1"
+// STATIC: "ENVMAPMASK" "0..1"
+// STATIC: "BASEALPHAENVMAPMASK" "0..1"
+// STATIC: "SELFILLUM" "0..1"
+// STATIC: "VERTEXCOLOR" "0..1"
+// STATIC: "FLASHLIGHT" "0..1"
+// STATIC: "SELFILLUM_ENVMAPMASK_ALPHA" "0..1"
+// STATIC: "DETAIL_BLEND_MODE" "0..9"
+// STATIC: "SEAMLESS_BASE" "0..1"
+// STATIC: "SEAMLESS_DETAIL" "0..1"
+// STATIC: "FLASHLIGHTDEPTHFILTERMODE" "0..2"
+// STATIC: "BLENDTINTBYBASEALPHA" "0..1"
+// STATIC: "ENVMAPFRESNEL" "0..1"
+// STATIC: "PIXELFOG" "0..1"
+// DYNAMIC: "WRITEWATERFOGTODESTALPHA" "0..1"
+// DYNAMIC: "FLASHLIGHTSHADOWS" "0..1"
+// SKIP: !$DETAILTEXTURE && ($DETAIL_BLEND_MODE || $SEAMLESS_DETAIL)
+// SKIP: !$FLASHLIGHT && ($FLASHLIGHTDEPTHFILTERMODE || $FLASHLIGHTSHADOWS)
+// SKIP: $FLASHLIGHT && ($CUBEMAP || $SELFILLUM || $ENVMAPMASK || $WRITEWATERFOGTODESTALPHA)
+// SKIP: $BASEALPHAENVMAPMASK && ($ENVMAPMASK || $SELFILLUM)
+// SKIP: $SELFILLUM_ENVMAPMASK_ALPHA && (!$ENVMAPMASK || $SELFILLUM)
+// SKIP: $ENVMAPFRESNEL && !$CUBEMAP
+#include "l4d2_model_flashlight_fxc.h"
+#include "common_vertexlitgeneric_dx9.h"
+const float4 g_EnvmapTint : register( c0 );
+const float4 g_DiffuseModulation : register( c1 );
+const float4 g_EnvmapContrast : register( c2 );
+const float4 g_EnvmapSaturation : register( c3 );
+const float4 g_SelfIllumTintAndDetail : register( c4 );
+const float4 g_BaseAlphaMask : register( c7 );
+const float3 g_DetailTint : register( c10 );
+const float4 g_ShaderControls : register( c12 );
+const float4 g_FresnelConstants : register( c13 );
+const float2 g_FogDensityAndInverseDistance : register( c19 );
+const float4 g_EyePositionAndBaseTranslucency : register( c20 );
+const float4 g_FogParams : register( c21 );
+const float4 g_FlashlightAttenuation : register( c22 );
+const float3 g_FlashlightPosition : register( c23 );
+const float4x4 g_FlashlightWorldToTexture : register( c24 );
+sampler BaseTextureSampler : register( s0 );
+sampler EnvmapSampler : register( s1 );
+sampler DetailSampler : register( s2 );
+sampler EnvmapMaskSampler : register( s4 );
+sampler RandomRotationSampler : register( s6 );
+sampler FlashlightSampler : register( s7 );
+sampler ShadowDepthSampler : register( s8 );
+sampler SelfIllumMaskSampler : register( s11 );
+struct PS_INPUT
+{
+	float3 baseTexcoord : TEXCOORD0;
+	float3 detailTexcoord : TEXCOORD1;
+	float2 envmapTexcoord : TEXCOORD2;
+	float4 eyeVector : TEXCOORD3;
+	float3 worldNormal : TEXCOORD4;
+	float4 projection : TEXCOORD5;
+	float4 lighting : TEXCOORD6;
+	float4 worldPosition : TEXCOORD7;
+#if FLASHLIGHT
+	float4 flashlightLighting : COLOR1;
+#endif
+#if SEAMLESS_BASE || SEAMLESS_DETAIL
+	float3 seamlessWeights : COLOR0;
+#endif
+};
+float4 main( PS_INPUT i ) : COLOR
+{
+#if SEAMLESS_BASE
+	float4 base = i.seamlessWeights.x * tex2D( BaseTextureSampler, i.baseTexcoord.yz ) +
+		i.seamlessWeights.y * tex2D( BaseTextureSampler, i.baseTexcoord.zx ) +
+		i.seamlessWeights.z * tex2D( BaseTextureSampler, i.baseTexcoord.xy );
+#else
+	float4 base = tex2D( BaseTextureSampler, i.baseTexcoord.xy );
+#endif
+#if DETAILTEXTURE
+#if SEAMLESS_DETAIL
+	float4 detail = i.seamlessWeights.x * tex2D( DetailSampler, i.detailTexcoord.yz ) +
+		i.seamlessWeights.y * tex2D( DetailSampler, i.detailTexcoord.zx ) +
+		i.seamlessWeights.z * tex2D( DetailSampler, i.detailTexcoord.xy );
+#else
+	float4 detail = tex2D( DetailSampler, i.detailTexcoord.xy );
+#endif
+	detail.rgb *= g_DetailTint;
+	base = TextureCombine( base, detail, DETAIL_BLEND_MODE, g_SelfIllumTintAndDetail.w );
+#endif
+	float3 lighting = 1;
+#if DIFFUSELIGHTING || VERTEXCOLOR
+	lighting = i.lighting.rgb;
+#endif
+#if FLASHLIGHT
+	lighting = DoFlashlight( g_FlashlightPosition, i.worldPosition.xyz, i.projection, i.worldNormal,
+		g_FlashlightAttenuation.xyz, g_FlashlightAttenuation.w,
+		FlashlightSampler, ShadowDepthSampler, RandomRotationSampler, FLASHLIGHTDEPTHFILTERMODE,
+		FLASHLIGHTSHADOWS != 0, false, i.lighting.xy / i.lighting.w, false, g_EnvmapContrast, true );
+	lighting += i.flashlightLighting.rgb * g_EnvmapTint.w;
+#endif
+	float3 albedo = base.rgb;
+#if BLENDTINTBYBASEALPHA
+	albedo *= lerp( float3( 1, 1, 1 ), g_DiffuseModulation.rgb, base.a );
+#else
+	albedo *= g_DiffuseModulation.rgb;
+#endif
+#if VERTEXCOLOR && DIFFUSELIGHTING
+	albedo *= i.lighting.rgb;
+#endif
+	float3 diffuse = albedo * lighting;
+#if DETAILTEXTURE
+	diffuse = TextureCombinePostLighting( diffuse, detail, DETAIL_BLEND_MODE, g_SelfIllumTintAndDetail.w );
+#endif
+	float3 environment = 0;
+#if ENVMAPMASK
+	float4 envMask = tex2D( EnvmapMaskSampler, i.baseTexcoord.xy );
+#endif
+#if SELFILLUM_ENVMAPMASK_ALPHA
+	float glow = 8 * envMask.a;
+	diffuse = max( 0, 1 - glow ) * diffuse + glow * g_SelfIllumTintAndDetail.rgb * base.rgb;
+#elif SELFILLUM
+	float3 selfMask = lerp( base.aaa, tex2D( SelfIllumMaskSampler, i.baseTexcoord.xy ).rgb, g_EnvmapSaturation.w );
+	diffuse = lerp( diffuse, g_SelfIllumTintAndDetail.rgb * base.rgb, selfMask );
+#endif
+#if CUBEMAP
+	float3 reflection = CalcReflectionVectorUnnormalized( i.worldNormal, i.eyeVector.xyz );
+	environment = texCUBE( EnvmapSampler, reflection ).rgb * cLightScale.z;
+#if ENVMAPMASK
+	environment *= envMask.rgb;
+#endif
+#if BASEALPHAENVMAPMASK
+	float baseMask = saturate( g_BaseAlphaMask.z + g_BaseAlphaMask.w * pow( base.a, g_FresnelConstants.w ) );
+	environment *= baseMask;
+#endif
+#if ENVMAPFRESNEL
+	float ndotv = saturate( dot( normalize( i.worldNormal ), normalize( i.eyeVector.xyz ) ) );
+	environment *= g_FresnelConstants.x + g_FresnelConstants.y * pow( 1 - ndotv, g_FresnelConstants.z );
+	environment *= g_EnvmapTint.rgb;
+#else
+	environment *= g_EnvmapTint.rgb;
+	environment = lerp( environment, environment * environment, g_EnvmapContrast.rgb );
+	float grey = dot( environment, float3( .299, .587, .114 ) );
+	environment = lerp( grey.xxx, environment, g_EnvmapSaturation.rgb );
+#endif
+#endif
+	float3 result = (diffuse + environment) * cLightScale.x;
+#if PIXELFOG
+	// Target SetPixelShaderFogParams supplies +start/range.
+	float fog = min( saturate( length( g_EyePositionAndBaseTranslucency.xy - i.worldPosition.xy ) * g_FogParams.w - g_FogParams.x ),
+		g_FogParams.z * g_FogDensityAndInverseDistance.x );
+#else
+	float fog = i.eyeVector.w;
+#endif
+	result = lerp( result, g_LinearFogColor.rgb, fog * fog );
+	float alpha = g_DiffuseModulation.a;
+#if !SELFILLUM && !BASEALPHAENVMAPMASK
+	alpha *= lerp( 1, base.a, g_EyePositionAndBaseTranslucency.w );
+#endif
+#if FLASHLIGHT
+	alpha *= lerp( 1, i.flashlightLighting.a, g_ShaderControls.w );
+#else
+	alpha *= lerp( 1, i.lighting.a, g_ShaderControls.w );
+#endif
+#if WRITEWATERFOGTODESTALPHA
+	alpha = saturate( (g_FogParams.y - i.worldPosition.z - 2) * g_FogDensityAndInverseDistance.y );
+#endif
+	return float4( result, alpha );
+}

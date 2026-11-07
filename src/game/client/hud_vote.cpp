@@ -4,6 +4,7 @@
 
 
 #include "cbase.h"
+#if !defined( L4D2 )
 #include "inputsystem/iinputsystem.h"
 #include "input.h"
 #include "iinput.h"
@@ -2212,3 +2213,4 @@ bool CHudVotePanel::IsShowingVotingUI()
 	return m_pVoteActive && m_pVoteActive->IsEnabled() && m_pVoteActive->IsVisible();
 }
 
+#endif // Non-L4D2 generic voting UI; native L4D2 owner is l4d2/hud_terror_vote.cpp.

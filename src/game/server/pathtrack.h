@@ -76,9 +76,15 @@ public:
 	TrackOrientationType_t GetOrientationType();
 	QAngle GetOrientation( bool bForwardDir );
 
+#if defined( L4D2 )
+	CPathTrack *m_pnext;
+	CPathTrack *m_pprevious;
+	CPathTrack *m_paltpath;
+#else
 	CHandle<CPathTrack>	m_pnext;
 	CHandle<CPathTrack>	m_pprevious;
 	CHandle<CPathTrack>	m_paltpath;
+#endif
 
 	float GetRadius() const { return m_flRadius; }
 

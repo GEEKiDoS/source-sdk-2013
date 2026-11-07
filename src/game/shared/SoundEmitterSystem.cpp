@@ -11,11 +11,19 @@
 #include "SoundEmitterSystem/isoundemittersystembase.h"
 #include "igamesystem.h"
 #include "soundchars.h"
+#include "l4d2/sound/terror_engine_sound_name.h"
 #include "filesystem.h"
 #include "tier0/vprof.h"
 #include "checksum_crc.h"
 #include "tier0/icommandline.h"
 #include "util_shared.h"
+#if defined( L4D2 )
+#include "l4d2/sound/terror_sound_gamedata.h"
+#include "l4d2/sound/terror_music.h"
+#if !defined( CLIENT_DLL )
+#include "NextBot/NextBotManager.h"
+#endif
+#endif
 
 #if defined( TF_CLIENT_DLL ) || defined( TF_DLL )
 #include "tf_shareddefs.h"
@@ -23,7 +31,9 @@
 #endif
 
 // NVNT haptic utils
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 
 #ifndef CLIENT_DLL
 #include "envmicrophone.h"
@@ -36,9 +46,39 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "SoundEmitterSystem_console_server_cvars.inc"
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#include "captioncompiler.h"
+#include "tier1/utlsortvector.h"
+#include "tier1/utlsymbol.h"
+#include "tier1/utlbuffer.h"
+#include "tier1/utlmap.h"
+#include "tier1/utlrbtree.h"
+#include <xmmintrin.h>
+#endif
 #include "tier0/memdbgon.h"
 
-static ConVar sv_soundemitter_trace( "sv_soundemitter_trace", "0", FCVAR_REPLICATED, "Show all EmitSound calls including their symbolic name and the actual wave file they resolved to\n" );
+static ConVar sv_soundemitter_trace( "sv_soundemitter_trace", 
+#if defined( L4D2 )
+	"-1"
+#else
+	"0"
+#endif
+, 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, 
+#if defined( L4D2 )
+	"Show all EmitSound calls including their symbolic name and the actual wave file they resolved to. (-1 = for nobody, 0 = for everybody, n = for one entity)\n"
+#else
+	"Show all EmitSound calls including their symbolic name and the actual wave file they resolved to\n"
+#endif
+ );
 
 extern ISoundEmitterSystemBase *soundemitterbase;
 static ConVar *g_pClosecaption = NULL;
@@ -54,6 +94,22 @@ bool g_bPermitDirectSoundPrecache = false;
 void ClearModelSoundsCache();
 
 #endif // !CLIENT_DLL
+
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+static void PrecacheTerrorSoundForEmission( const CTerrorEngineSoundName &engineSoundName, int flags )
+{
+	// Sentences and updates/stops do not start a new sample-table sound.
+	if ( ( flags & ( SND_STOP | SND_CHANGE_VOL | SND_CHANGE_PITCH ) ) ||
+		engineSoundName.IsPrecached() )
+		return;
+	// Survivor response waves are admitted when selected for playback. Use the
+	// real target table before emitting, without another selection/RNG draw;
+	// retain genuine overflow/error behavior instead of dropping the sound.
+	const char *sample = engineSoundName.Get();
+	Warning( "Late precache of %s\n", sample );
+	enginesound->PrecacheSound( sample, true );
+}
+#endif
 
 void WaveTrace( char const *wavname, char const *funcname )
 {
@@ -131,6 +187,12 @@ void Hack_FixEscapeChars( char *str )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+static void ReloadServerCaptionDictionaries();
+static void ClearServerCaptionRepeat();
+static void EmitServerCloseCaption( IRecipientFilter &filter, int entindex, bool fromplayer, const char *token, CUtlVector< Vector > &origins, float duration, bool warnifmissing, bool direct );
+#endif
+
 class CSoundEmitterSystem : public CBaseGameSystem
 {
 public:
@@ -222,7 +284,22 @@ public:
 #endif
 		g_pClosecaption = cvar->FindVar("closecaption");
 		Assert(g_pClosecaption);
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+		ReloadServerCaptionDictionaries();
+#endif
+#if defined( L4D2 )
+		PurgeSoundGameData();
+		InvalidateMusicSoundHashes();
+		const bool initialized = soundemitterbase->ModInit();
+		if ( initialized )
+		{
+			InitSoundGameData();
+			InvalidateMusicSoundHashes();
+		}
+		return initialized;
+#else
 		return soundemitterbase->ModInit();
+#endif
 	}
 
 	virtual void Shutdown()
@@ -231,17 +308,51 @@ public:
 #if !defined( CLIENT_DLL )
 		FinishLog();
 #endif
+#if defined( L4D2 )
+		PurgeSoundGameData();
+		InvalidateMusicSoundHashes();
+#endif
 		soundemitterbase->ModShutdown();
 	}
 
 	void ReloadSoundEntriesInList( IFileList *pFilesToReload )
 	{
+#if defined( L4D2 )
+		BeginSoundGameDataReload( pFilesToReload );
+		InvalidateMusicSoundHashes();
+#endif
 		soundemitterbase->ReloadSoundEntriesInList( pFilesToReload );
+#if defined( L4D2 )
+		EndSoundGameDataReload();
+		InvalidateMusicSoundHashes();
+#endif
 	}
 
-	virtual void TraceEmitSound( char const *fmt, ... )
+	void AddSoundOverrides( const char *scriptfile, bool bPreload = false )
 	{
+#if defined( L4D2 )
+		InvalidateSoundGameDataHandles();
+		InvalidateMusicSoundHashes();
+#endif
+		soundemitterbase->AddSoundOverrides( scriptfile, bPreload );
+#if defined( L4D2 )
+		AddSoundGameDataOverrides( scriptfile );
+		InvalidateMusicSoundHashes();
+#endif
+	}
+
+	#if defined( L4D2 )
+	virtual void TraceEmitSound( int entindex, char const *fmt, ... )
+#else
+	virtual void TraceEmitSound( char const *fmt, ... )
+#endif
+	{
+		#if defined( L4D2 )
+		const int nTraceEntity = sv_soundemitter_trace.GetInt();
+		if ( nTraceEntity == -1 || ( nTraceEntity != 0 && nTraceEntity != entindex ) )
+#else
 		if ( !sv_soundemitter_trace.GetBool() )
+#endif
 			return;
 
 		va_list	argptr;
@@ -257,6 +368,10 @@ public:
 	// Precache all wave files referenced in wave or rndwave keys
 	virtual void LevelInitPreEntity()
 	{
+#if defined( L4D2 )
+		InvalidateSoundGameDataHandles();
+		InvalidateMusicSoundHashes();
+#endif
 		char mapname[ 256 ];
 #if !defined( CLIENT_DLL )
 		StartLog();
@@ -279,19 +394,19 @@ public:
 			V_strncpy( scriptfile, "scripts/mvm_level_sounds.txt", sizeof( scriptfile ) );
 			if ( filesystem->FileExists( "scripts/mvm_level_sounds.txt", "GAME" ) )
 			{
-				soundemitterbase->AddSoundOverrides( "scripts/mvm_level_sounds.txt", true );
+				AddSoundOverrides( "scripts/mvm_level_sounds.txt", true );
 			}
 			if ( filesystem->FileExists( "scripts/mvm_level_sound_tweaks.txt", "GAME" ) )
 			{
-				soundemitterbase->AddSoundOverrides( "scripts/mvm_level_sound_tweaks.txt" );
+				AddSoundOverrides( "scripts/mvm_level_sound_tweaks.txt" );
  			}
 			if ( filesystem->FileExists( "scripts/game_sounds_vo_mvm.txt", "GAME" ) )
 			{
-				soundemitterbase->AddSoundOverrides( "scripts/game_sounds_vo_mvm.txt", true );
+				AddSoundOverrides( "scripts/game_sounds_vo_mvm.txt", true );
 			}
 			if ( filesystem->FileExists( "scripts/game_sounds_vo_mvm_mighty.txt", "GAME" ) )
 			{
-				soundemitterbase->AddSoundOverrides( "scripts/game_sounds_vo_mvm_mighty.txt", true );
+				AddSoundOverrides( "scripts/game_sounds_vo_mvm_mighty.txt", true );
 			}
 			g_pTFPlayerClassDataMgr->AddAdditionalPlayerDeathSounds();
 		}
@@ -301,7 +416,7 @@ public:
 			Q_strncat( scriptfile, "_level_sounds.txt", sizeof( scriptfile ), COPY_ALL_CHARACTERS );
 			if ( filesystem->FileExists( scriptfile, "GAME" ) )
 			{
-				soundemitterbase->AddSoundOverrides( scriptfile );
+				AddSoundOverrides( scriptfile );
 			}
 		}
 #else
@@ -310,8 +425,12 @@ public:
 
 		if ( filesystem->FileExists( scriptfile, "GAME" ) )
 		{
-			soundemitterbase->AddSoundOverrides( scriptfile );
+			AddSoundOverrides( scriptfile );
 		}
+#endif
+#if defined( L4D2 )
+		RefreshSoundGameDataHandles();
+		InvalidateMusicSoundHashes();
 #endif
 
 #if !defined( CLIENT_DLL )
@@ -332,10 +451,21 @@ public:
 
 	virtual void LevelShutdownPostEntity()
 	{
+#if defined( L4D2 )
+		InvalidateSoundGameDataHandles();
+		InvalidateMusicSoundHashes();
+#endif
 		soundemitterbase->ClearSoundOverrides();
+#if defined( L4D2 )
+		ClearSoundGameDataOverrides();
+		InvalidateMusicSoundHashes();
+#endif
 
 #if !defined( CLIENT_DLL )
 		FinishLog();
+#endif
+	#if defined( L4D2 ) && !defined( CLIENT_DLL )
+		ClearServerCaptionRepeat();
 #endif
 	}
 
@@ -345,7 +475,15 @@ public:
 #if !defined( CLIENT_DLL )
 		FinishLog();
 #endif
+#if defined( L4D2 )
+		PurgeSoundGameData();
+		InvalidateMusicSoundHashes();
+#endif
 		soundemitterbase->Flush();
+#if defined( L4D2 )
+		InitSoundGameData();
+		InvalidateMusicSoundHashes();
+#endif
 	}
 		
 	void InternalPrecacheWaves( int soundIndex )
@@ -459,7 +597,11 @@ public:
 		if ( ent )
 		{
 			char const *actorModel = STRING( ent->GetModelName() );
+#if defined( L4D2 )
+			gender = GetTerrorSoundActorGender( actorModel );
+#else
 			gender = soundemitterbase->GetActorGender( actorModel );
+#endif
 		}
 
 		if ( !soundemitterbase->GetParametersForSoundEx( ep.m_pSoundName, handle, params, gender, true ) )
@@ -497,9 +639,10 @@ public:
 		if ( bSwallowed )
 			return;
 #endif
+		CTerrorEngineSoundName engineSoundName( params.soundname );
 
 #if defined( _DEBUG ) && !defined( CLIENT_DLL )
-		if ( !enginesound->IsSoundPrecached( params.soundname ) )
+		if ( !engineSoundName.IsPrecached() )
 		{
 			Msg( "Sound %s:%s was not precached\n", ep.m_pSoundName, params.soundname );
 		}
@@ -512,11 +655,14 @@ public:
 			st = gpGlobals->curtime + (float)params.delay_msec / 1000.f;
 		}
 
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+		PrecacheTerrorSoundForEmission( engineSoundName, ep.m_nFlags );
+#endif
 		enginesound->EmitSound( 
 			filter, 
 			entindex, 
 			params.channel, 
-			params.soundname,
+			engineSoundName.Get(),
 			params.volume,
 			(soundlevel_t)params.soundlevel,
 			ep.m_nFlags,
@@ -530,19 +676,35 @@ public:
 			ep.m_nSpeakerEntity );
 		if ( ep.m_pflSoundDuration )
 		{
-			*ep.m_pflSoundDuration = enginesound->GetSoundDuration( params.soundname );
+			*ep.m_pflSoundDuration = enginesound->GetSoundDuration( engineSoundName.Get() );
 		}
 
-		TraceEmitSound( "EmitSound:  '%s' emitted as '%s' (ent %i)\n",
+		TraceEmitSound(
+#if defined( L4D2 )
+			entindex,
+#endif
+			"EmitSound:  '%s' emitted as '%s' (ent %i)\n",
 			ep.m_pSoundName, params.soundname, entindex );
 
 
 		// Don't caption modulations to the sound
 		if ( !( ep.m_nFlags & ( SND_CHANGE_PITCH | SND_CHANGE_VOL ) ) )
 		{
-			EmitCloseCaption( filter, entindex, params, ep );
+			EmitCloseCaption( filter, entindex, params, ep, engineSoundName.Get() );
 		}
-#if defined( WIN32 ) && !defined( _X360 )
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+		if ( ent )
+		{
+			KeyValues *gameData = NULL;
+			if ( GetSoundGameData( handle, &gameData ) == SOUND_GAMEDATA_PRESENT )
+			{
+				// S1D7344 copies before synchronous dispatch; callbacks may mutate ep's source.
+				const Vector origin = ep.m_pOrigin ? *ep.m_pOrigin : ent->WorldSpaceCenter();
+				TheNextBots().OnSound( ent, origin, gameData );
+			}
+		}
+#endif
+#if defined( WIN32 ) && !defined( _X360 ) && !defined( L4D2 )
 		// NVNT notify the haptics system of this sound
 		HapticProcessSound(ep.m_pSoundName, entindex);
 #endif
@@ -578,18 +740,22 @@ public:
 			{
 				WaveTrace( ep.m_pSoundName, "Emitsound" );
 			}
+			CTerrorEngineSoundName engineSoundName( ep.m_pSoundName );
 
 #if defined( _DEBUG ) && !defined( CLIENT_DLL )
-			if ( !enginesound->IsSoundPrecached( ep.m_pSoundName ) )
+			if ( !engineSoundName.IsPrecached() )
 			{
 				Msg( "Sound %s was not precached\n", ep.m_pSoundName );
 			}
+#endif
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+			PrecacheTerrorSoundForEmission( engineSoundName, ep.m_nFlags );
 #endif
 			enginesound->EmitSound( 
 				filter, 
 				entindex, 
 				ep.m_nChannel, 
-				ep.m_pSoundName, 
+				engineSoundName.Get(),
 				ep.m_flVolume, 
 				ep.m_SoundLevel, 
 				ep.m_nFlags, 
@@ -603,10 +769,14 @@ public:
 				ep.m_nSpeakerEntity );
 			if ( ep.m_pflSoundDuration )
 			{
-				*ep.m_pflSoundDuration = enginesound->GetSoundDuration( ep.m_pSoundName );
+				*ep.m_pflSoundDuration = enginesound->GetSoundDuration( engineSoundName.Get() );
 			}
 
-			TraceEmitSound( "EmitSound:  Raw wave emitted '%s' (ent %i)\n",
+			TraceEmitSound(
+#if defined( L4D2 )
+				entindex,
+#endif
+				"EmitSound:  Raw wave emitted '%s' (ent %i)\n",
 				ep.m_pSoundName, entindex );
 			return;
 		}
@@ -622,10 +792,21 @@ public:
 		EmitSoundByHandle( filter, entindex, ep, ep.m_hSoundScriptHandle );
 	}
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void EmitCloseCaption( IRecipientFilter& filter, int entindex, bool fromplayer, char const *token, CUtlVector< Vector >& originlist, float duration, bool warnifmissing, bool direct = false )
+#else
 	void EmitCloseCaption( IRecipientFilter& filter, int entindex, bool fromplayer, char const *token, CUtlVector< Vector >& originlist, float duration, bool warnifmissing /*= false*/ )
+#endif
 	{
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+EmitServerCloseCaption( filter, entindex, fromplayer, token, originlist, duration, warnifmissing, false );
+#else
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+		if ( gpGlobals->maxClients == 1 && !g_pClosecaption->GetBool() )
+#else
 		// No close captions in multiplayer...
 		if ( gpGlobals->maxClients > 1 || (gpGlobals->maxClients==1 && !g_pClosecaption->GetBool()))
+#endif
 		{
 			return;
 		}
@@ -636,7 +817,7 @@ public:
 			char const *wav = soundemitterbase->GetWavFileForSound( token, GENDER_NONE );
 			if ( wav )
 			{
-				duration = enginesound->GetSoundDuration( wav );
+				duration = enginesound->GetSoundDuration( CTerrorEngineSoundName( wav ).Get() );
 			}
 			else
 			{
@@ -657,6 +838,10 @@ public:
 		CRecipientFilter filterCopy;
 		filterCopy.CopyFrom( (CRecipientFilter &)filter );
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+		// C1FA770 removes secondary split-screen slots; the target has only slot 0.
+		if ( !direct )
+#endif
 		// Remove any players who don't want close captions
 		CBaseEntity::RemoveRecipientsIfNotCloseCaptioning( (CRecipientFilter &)filterCopy );
 
@@ -731,10 +916,55 @@ public:
 			}
 #endif
 		}
+	#endif
 	}
 
-	void EmitCloseCaption( IRecipientFilter& filter, int entindex, const CSoundParameters & params, const EmitSound_t & ep )
+	void EmitCloseCaption( IRecipientFilter& filter, int entindex, const CSoundParameters & params, const EmitSound_t & ep, const char *pEngineSoundName )
 	{
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+if ( gpGlobals->maxClients == 1 && !g_pClosecaption->GetBool() ) return;
+const bool direct = TestSoundChar( params.soundname, '$' );
+if ( !direct && !ep.m_bEmitCloseCaption ) return;
+CRecipientFilter recipients;
+recipients.CopyFrom( static_cast< CRecipientFilter & >( filter ) );
+if ( !direct ) CBaseEntity::RemoveRecipientsIfNotCloseCaptioning( recipients );
+if ( recipients.GetRecipientCount() <= 0 ) return;
+const float duration = ep.m_pflSoundDuration ? *ep.m_pflSoundDuration : enginesound->GetSoundDuration( pEngineSoundName );
+bool fromplayer = false;
+for ( CBaseEntity *owner = CBaseEntity::Instance( entindex ); owner; owner = owner->GetOwnerEntity() )
+{
+ if ( owner->IsPlayer() ) { fromplayer = true; break; }
+}
+EmitServerCloseCaption( filter, entindex, fromplayer, ep.m_pSoundName, ep.m_UtlVecSoundOrigin, duration, ep.m_bWarnOnMissingCloseCaption, direct );
+#elif defined( L4D2 ) && defined( CLIENT_DLL )
+		if ( gpGlobals->maxClients == 1 && !g_pClosecaption->GetBool() )
+			return;
+
+		const bool direct = TestSoundChar( params.soundname, '$' );
+		if ( !direct && !ep.m_bEmitCloseCaption )
+			return;
+
+		CRecipientFilter recipients;
+		recipients.CopyFrom( static_cast< CRecipientFilter & >( filter ) );
+		if ( !direct )
+		{
+			CBaseEntity::RemoveRecipientsIfNotCloseCaptioning( recipients );
+		}
+		if ( recipients.GetRecipientCount() <= 0 )
+			return;
+
+		const float duration = ep.m_pflSoundDuration ? *ep.m_pflSoundDuration : enginesound->GetSoundDuration( pEngineSoundName );
+		bool fromplayer = false;
+		for ( CBaseEntity *owner = CBaseEntity::Instance( entindex ); owner; owner = owner->GetOwnerEntity() )
+		{
+			if ( owner->IsPlayer() )
+			{
+				fromplayer = true;
+				break;
+			}
+		}
+		EmitCloseCaption( filter, entindex, fromplayer, ep.m_pSoundName, ep.m_UtlVecSoundOrigin, duration, ep.m_bWarnOnMissingCloseCaption, direct );
+#else
 		// No close captions in multiplayer...
 		if ( gpGlobals->maxClients > 1 || (gpGlobals->maxClients==1 && !g_pClosecaption->GetBool()))
 		{
@@ -767,7 +997,7 @@ public:
 		}
 		else
 		{
-			duration = enginesound->GetSoundDuration( params.soundname );
+			duration = enginesound->GetSoundDuration( pEngineSoundName );
 		}
 
 		bool fromplayer = false;
@@ -786,6 +1016,7 @@ public:
 			}
 		}
 		EmitCloseCaption( filter, entindex, fromplayer, ep.m_pSoundName, ep.m_UtlVecSoundOrigin, duration, ep.m_bWarnOnMissingCloseCaption );
+	#endif
 	}
 
 	void EmitAmbientSound( int entindex, const Vector& origin, const char *soundname, float flVolume, int iFlags, int iPitch, float soundtime /*= 0.0f*/, float *duration /*=NULL*/ )
@@ -809,10 +1040,14 @@ public:
 			params.volume = flVolume;
 		}
 
+		CTerrorEngineSoundName engineSoundName( params.soundname );
 #if defined( CLIENT_DLL )
-		enginesound->EmitAmbientSound( params.soundname, params.volume, params.pitch, iFlags, soundtime );
+		enginesound->EmitAmbientSound( engineSoundName.Get(), params.volume, params.pitch, iFlags, soundtime );
 #else
-		engine->EmitAmbientSound(entindex, origin, params.soundname, params.volume, params.soundlevel, iFlags, params.pitch, soundtime );
+#if defined( L4D2 )
+		PrecacheTerrorSoundForEmission( engineSoundName, iFlags );
+#endif
+		engine->EmitAmbientSound(entindex, origin, engineSoundName.Get(), params.volume, params.soundlevel, iFlags, params.pitch, soundtime );
 #endif
 
 		bool needsCC = !( iFlags & ( SND_STOP | SND_CHANGE_VOL | SND_CHANGE_PITCH ) );
@@ -821,14 +1056,18 @@ public:
 		
 		if ( duration || needsCC )
 		{
-			soundduration = enginesound->GetSoundDuration( params.soundname );
+			soundduration = enginesound->GetSoundDuration( engineSoundName.Get() );
 			if ( duration )
 			{
 				*duration = soundduration;
 			}
 		}
 
-		TraceEmitSound( "EmitAmbientSound:  '%s' emitted as '%s' (ent %i)\n",
+		TraceEmitSound(
+#if defined( L4D2 )
+			entindex,
+#endif
+			"EmitAmbientSound:  '%s' emitted as '%s' (ent %i)\n",
 			soundname, params.soundname, entindex );
 
 		// We only want to trigger the CC on the start of the sound, not on any changes or halting of the sound
@@ -872,9 +1111,13 @@ public:
 			enginesound->StopSound( 
 				entindex, 
 				params->GetChannel(), 
-				wavename );
+				CTerrorEngineSoundName( wavename ).Get() );
 
-			TraceEmitSound( "StopSound:  '%s' stopped as '%s' (ent %i)\n",
+			TraceEmitSound(
+#if defined( L4D2 )
+				entindex,
+#endif
+				"StopSound:  '%s' stopped as '%s' (ent %i)\n",
 				soundname, wavename, entindex );
 		}
 	}
@@ -895,9 +1138,13 @@ public:
 	{
 		if ( pSample && ( Q_stristr( pSample, ".wav" ) || Q_stristr( pSample, ".mp3" ) || pSample[0] == '!' ) )
 		{
-			enginesound->StopSound( iEntIndex, iChannel, pSample );
+			enginesound->StopSound( iEntIndex, iChannel, CTerrorEngineSoundName( pSample ).Get() );
 
-			TraceEmitSound( "StopSound:  Raw wave stopped '%s' (ent %i)\n",
+			TraceEmitSound(
+#if defined( L4D2 )
+				iEntIndex,
+#endif
+				"StopSound:  Raw wave stopped '%s' (ent %i)\n",
 				pSample, iEntIndex );
 		}
 		else
@@ -931,18 +1178,26 @@ public:
 
 		if ( pSample && ( Q_stristr( pSample, ".wav" ) || Q_stristr( pSample, ".mp3" )) )
 		{
+			CTerrorEngineSoundName engineSoundName( pSample );
 #if defined( CLIENT_DLL )
-			enginesound->EmitAmbientSound( pSample, volume, pitch, flags, soundtime );
+			enginesound->EmitAmbientSound( engineSoundName.Get(), volume, pitch, flags, soundtime );
 #else
-			engine->EmitAmbientSound( entindex, origin, pSample, volume, soundlevel, flags, pitch, soundtime );
+#if defined( L4D2 )
+			PrecacheTerrorSoundForEmission( engineSoundName, flags );
+#endif
+			engine->EmitAmbientSound( entindex, origin, engineSoundName.Get(), volume, soundlevel, flags, pitch, soundtime );
 #endif
 
 			if ( duration )
 			{
-				*duration = enginesound->GetSoundDuration( pSample );
+				*duration = enginesound->GetSoundDuration( engineSoundName.Get() );
 			}
 
-			TraceEmitSound( "EmitAmbientSound:  Raw wave emitted '%s' (ent %i)\n",
+			TraceEmitSound(
+#if defined( L4D2 )
+				entindex,
+#endif
+				"EmitAmbientSound:  Raw wave emitted '%s' (ent %i)\n",
 				pSample, entindex );
 		}
 		else
@@ -988,14 +1243,21 @@ void S_SoundEmitterSystemFlush( void )
 	// TODO:  when we go to a handle system, we'll need to invalidate handles somehow
 }
 
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 #if defined( CLIENT_DLL )
 CON_COMMAND_F( cl_soundemitter_flush, "Flushes the sounds.txt system (client only)", FCVAR_CHEAT )
 #else
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( sv_soundemitter_flush, "Flushes the sounds.txt system (server only)", 0x00000006 )
+#else
 CON_COMMAND_F( sv_soundemitter_flush, "Flushes the sounds.txt system (server only)", FCVAR_DEVELOPMENTONLY )
+#endif
 #endif
 {
 	S_SoundEmitterSystemFlush( );
 }
+#endif
 
 #if !defined(_RETAIL)
 
@@ -1003,7 +1265,12 @@ CON_COMMAND_F( sv_soundemitter_flush, "Flushes the sounds.txt system (server onl
 
 #if !defined( _XBOX )
 
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( sv_soundemitter_filecheck, "Report missing wave files for sounds and game_sounds files.", 0x00000006 )
+#else
 CON_COMMAND_F( sv_soundemitter_filecheck, "Report missing wave files for sounds and game_sounds files.", FCVAR_DEVELOPMENTONLY )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1012,7 +1279,12 @@ CON_COMMAND_F( sv_soundemitter_filecheck, "Report missing wave files for sounds 
 	DevMsg( "---------------------------\nTotal missing files %i\n", missing );
 }
 
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( sv_findsoundname, "Find sound names which reference the specified wave files.", 0x00000006 )
+#else
 CON_COMMAND_F( sv_findsoundname, "Find sound names which reference the specified wave files.", FCVAR_DEVELOPMENTONLY )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1065,6 +1337,11 @@ void Playgamesound_f( const CCommand &args )
 			Vector forward;
 			pPlayer->GetVectors( &forward, NULL, NULL );
 			position += atof( args[2] ) * forward;
+#if defined( L4D2 )
+			const bool absQueriesValid = CBaseEntity::IsAbsQueriesValid();
+			CBaseEntity::SetAbsQueriesValid( true );
+			{
+#endif
 			CPASAttenuationFilter filter( pPlayer );
 			EmitSound_t params;
 			params.m_pSoundName = args[1];
@@ -1072,6 +1349,10 @@ void Playgamesound_f( const CCommand &args )
 			params.m_flVolume = 0.0f;
 			params.m_nPitch = 0;
 			g_SoundEmitterSystem.EmitSound( filter, 0, params );
+#if defined( L4D2 )
+			}
+			CBaseEntity::SetAbsQueriesValid( absQueriesValid );
+#endif
 		}
 		else
 		{
@@ -1116,7 +1397,13 @@ static int GamesoundCompletion( const char *partial, char commands[ COMMAND_COMP
 	return current;
 }
 
-static ConCommand Command_Playgamesound( "playgamesound", Playgamesound_f, "Play a sound from the game sounds txt file", FCVAR_CLIENTCMD_CAN_EXECUTE | FCVAR_SERVER_CAN_EXECUTE, GamesoundCompletion );
+static ConCommand Command_Playgamesound( "playgamesound", Playgamesound_f, "Play a sound from the game sounds txt file", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x50000008
+#else
+	FCVAR_CLIENTCMD_CAN_EXECUTE | FCVAR_SERVER_CAN_EXECUTE
+#endif
+, GamesoundCompletion );
 #endif
 
 #endif
@@ -1370,16 +1657,20 @@ void UTIL_EmitAmbientSound( int entindex, const Vector &vecOrigin, const char *s
 			char name[32];
 			Q_snprintf( name, sizeof(name), "!%d", sentenceIndex );
 #if !defined( CLIENT_DLL )
-			engine->EmitAmbientSound( entindex, vecOrigin, name, vol, soundlevel, fFlags, pitch, soundtime );
+			engine->EmitAmbientSound( entindex, vecOrigin, CTerrorEngineSoundName( name ).Get(), vol, soundlevel, fFlags, pitch, soundtime );
 #else
-			enginesound->EmitAmbientSound( name, vol, pitch, fFlags, soundtime );
+			enginesound->EmitAmbientSound( CTerrorEngineSoundName( name ).Get(), vol, pitch, fFlags, soundtime );
 #endif
 			if ( duration )
 			{
-				*duration = enginesound->GetSoundDuration( name );
+				*duration = enginesound->GetSoundDuration( CTerrorEngineSoundName( name ).Get() );
 			}
 
-			g_SoundEmitterSystem.TraceEmitSound( "UTIL_EmitAmbientSound:  Sentence emitted '%s' (ent %i)\n",
+			g_SoundEmitterSystem.TraceEmitSound(
+#if defined( L4D2 )
+				entindex,
+#endif
+				"UTIL_EmitAmbientSound:  Sentence emitted '%s' (ent %i)\n",
 				name, entindex );
 		}
 	}
@@ -1402,24 +1693,40 @@ static const char *UTIL_TranslateSoundName( const char *soundname, const char *a
 		return soundname;
 	}
 
+#if defined( L4D2 )
+	return soundemitterbase->GetWavFileForSound( soundname, GetTerrorSoundActorGender( actormodel ) );
+#else
 	return soundemitterbase->GetWavFileForSound( soundname, actormodel );
+#endif
 }
 
 void CBaseEntity::GenderExpandString( char const *in, char *out, int maxlen )
 {
+#if defined( L4D2 )
+	ExpandTerrorSoundActorString( GetTerrorSoundActorGender( STRING( GetModelName() ) ), in, out, maxlen );
+#else
 	soundemitterbase->GenderExpandString( STRING( GetModelName() ), in, out, maxlen );
+#endif
 }
 
 bool CBaseEntity::GetParametersForSound( const char *soundname, CSoundParameters &params, const char *actormodel )
 {
+#if defined( L4D2 )
+	gender_t gender = GetTerrorSoundActorGender( actormodel );
+#else
 	gender_t gender = soundemitterbase->GetActorGender( actormodel );
+#endif
 	
 	return soundemitterbase->GetParametersForSound( soundname, params, gender );
 }
 
 bool CBaseEntity::GetParametersForSound( const char *soundname, HSOUNDSCRIPTHANDLE& handle, CSoundParameters &params, const char *actormodel )
 {
+#if defined( L4D2 )
+	gender_t gender = GetTerrorSoundActorGender( actormodel );
+#else
 	gender_t gender = soundemitterbase->GetActorGender( actormodel );
+#endif
 	
 	return soundemitterbase->GetParametersForSoundEx( soundname, handle, params, gender );
 }
@@ -1453,7 +1760,7 @@ void CBaseEntity::PrefetchScriptSound( const char *soundname )
 //-----------------------------------------------------------------------------
 float CBaseEntity::GetSoundDuration( const char *soundname, char const *actormodel )
 {
-	return enginesound->GetSoundDuration( PSkipSoundChars( UTIL_TranslateSoundName( soundname, actormodel ) ) );
+	return enginesound->GetSoundDuration( CTerrorEngineSoundName( PSkipSoundChars( UTIL_TranslateSoundName( soundname, actormodel ) ) ).Get() );
 }
 
 //-----------------------------------------------------------------------------
@@ -1493,10 +1800,11 @@ bool CBaseEntity::PrecacheSound( const char *name )
 		Warning( "Direct precache of %s\n", name );
 	}
 
+	const CTerrorEngineSoundName engineSoundName( name );
 	// If this is out of order, warn
 	if ( !CBaseEntity::IsPrecacheAllowed() )
 	{
-		if ( !enginesound->IsSoundPrecached( name ) )
+		if ( !engineSoundName.IsPrecached() )
 		{
 			Assert( !"CBaseEntity::PrecacheSound:  too late" );
 
@@ -1504,7 +1812,7 @@ bool CBaseEntity::PrecacheSound( const char *name )
 		}
 	}
 
-	bool bret = enginesound->PrecacheSound( name, true );
+	bool bret = enginesound->PrecacheSound( engineSoundName.Get(), true );
 	return bret;
 }
 
@@ -1514,6 +1822,12 @@ bool CBaseEntity::PrecacheSound( const char *name )
 //-----------------------------------------------------------------------------
 void CBaseEntity::PrefetchSound( const char *name )
 {
-	 enginesound->PrefetchSound( name );
+	 enginesound->PrefetchSound( CTerrorEngineSoundName( name ).Get() );
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/sound/soundemittersystem_console.inc"
+#include "l4d2/sound/soundemittersystem_console_registrations.inc"
+#endif
+
+#include "SoundEmitterSystem_console_server_callbacks.inc"

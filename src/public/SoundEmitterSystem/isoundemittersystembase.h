@@ -76,6 +76,30 @@ enum gender_t
 	GENDER_NONE = 0,
 	GENDER_MALE,
 	GENDER_FEMALE,
+#if defined( L4D2 )
+	// Native actor catalog values. The ABI remains int; SoundFile keeps its
+	// existing byte tag. The pinned SDK selector compares the full tag value.
+	GENDER_NAMVET,
+	GENDER_TEENGIRL,
+	GENDER_BIKER,
+	GENDER_MANAGER,
+	GENDER_GAMBLER,
+	GENDER_PRODUCER,
+	GENDER_COACH,
+	GENDER_MECHANIC,
+	GENDER_CEDA,
+	GENDER_CRAWLER,
+	GENDER_UNDISTRACTABLE,
+	GENDER_FALLEN,
+	GENDER_RIOT_CONTROL,
+	GENDER_CLOWN,
+	GENDER_JIMMY,
+	GENDER_HOSPITAL_PATIENT,
+	GENDER_BRIDE,
+	GENDER_POLICE,
+	GENDER_MALE_L4D1,
+	GENDER_FEMALE_L4D1,
+#endif
 };
 
 
@@ -165,6 +189,15 @@ struct CSoundParametersInternal
 	int			NumConvertedNames() const					{ return m_nConvertedNames; }
 	SoundFile * GetConvertedNames()							{ return ( m_nConvertedNames == 1 ) ? (SoundFile *)&m_pConvertedNames : m_pConvertedNames; }
 	const SoundFile *GetConvertedNames() const				{ return ( m_nConvertedNames == 1 ) ? (SoundFile *)&m_pConvertedNames : m_pConvertedNames; }
+
+#if defined( L4D2 )
+	// Empty temporary only: allocate the exact final wave-array sizes, then
+	// fill every SoundFile through GetSoundNames/GetConvertedNames. Swapping
+	// only these arrays preserves all packed intervals/flags in the live entry.
+	void AllocateWaveNames( uint16 soundCount, uint16 convertedCount );
+	// Leave converted storage untouched when only the main wave array changed.
+	void SwapWaveNameStorage( CSoundParametersInternal &other, bool swapConverted );
+#endif
 
 private:
 	void operator=( const CSoundParametersInternal& src ); // disallow implicit copies

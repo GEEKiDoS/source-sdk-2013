@@ -1496,7 +1496,13 @@ static void CC_ResetGameStats( const CCommand &args )
 	gamestats->StatsLog( "CC_ResetGameStats : Server cleared game stats\n" );
 }
 
-static ConCommand resetGameStats("_resetgamestats", CC_ResetGameStats, "Erases current game stats and writes out a blank stats file", 0 );
+static ConCommand resetGameStats("_resetgamestats", CC_ResetGameStats, "Erases current game stats and writes out a blank stats file", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00000004
+#else
+	0
+#endif
+ );
 
 class CPointGamestatsCounter : public CPointEntity
 {

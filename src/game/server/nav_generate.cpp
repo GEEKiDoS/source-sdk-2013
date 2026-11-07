@@ -18,8 +18,11 @@
 //#include "terror/TerrorShared.h"
 #include "fmtstr.h"
 
-#ifdef TERROR
-#include "func_simpleladder.h"
+#if defined( TERROR ) || defined( L4D2 )
+#include "l4d2/entities/func_simpleladder.h"
+#endif
+#if defined( L4D2 )
+#include "l4d2/nav/nav_blocker_entities.h"
 #endif
 
 // NOTE: This has to be the last file included!
@@ -34,15 +37,63 @@ static float lastMsgTime = 0.0f;
 bool TraceAdjacentNode( int depth, const Vector& start, const Vector& end, trace_t *trace, float zLimit = DeathDrop );
 bool StayOnFloor( trace_t *trace, float zLimit = DeathDrop );
 
-ConVar nav_slope_limit( "nav_slope_limit", "0.7", FCVAR_CHEAT, "The ground unit normal's Z component must be greater than this for nav areas to be generated." );
-ConVar nav_slope_tolerance( "nav_slope_tolerance", "0.1", FCVAR_CHEAT, "The ground unit normal's Z component must be this close to the nav area's Z component to be generated." );
-ConVar nav_displacement_test( "nav_displacement_test", "10000", FCVAR_CHEAT, "Checks for nodes embedded in displacements (useful for in-development maps)" );
-ConVar nav_generate_fencetops( "nav_generate_fencetops", "1", FCVAR_CHEAT, "Autogenerate nav areas on fence and obstacle tops" );
-ConVar nav_generate_fixup_jump_areas( "nav_generate_fixup_jump_areas", "1", FCVAR_CHEAT, "Convert obsolete jump areas into 2-way connections" );
+ConVar nav_slope_limit( "nav_slope_limit", "0.7", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "The ground unit normal's Z component must be greater than this for nav areas to be generated." );
+ConVar nav_slope_tolerance( "nav_slope_tolerance", "0.1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "The ground unit normal's Z component must be this close to the nav area's Z component to be generated." );
+ConVar nav_displacement_test( "nav_displacement_test", "10000", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Checks for nodes embedded in displacements (useful for in-development maps)" );
+ConVar nav_generate_fencetops( "nav_generate_fencetops", "1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Autogenerate nav areas on fence and obstacle tops" );
+ConVar nav_generate_fixup_jump_areas( "nav_generate_fixup_jump_areas", "1", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Convert obsolete jump areas into 2-way connections" );
 ConVar nav_generate_jump_connections( "nav_generate_jump_connections", "1", FCVAR_CHEAT, "If disabled, don't generate jump connections from jump areas" );
-ConVar nav_generate_incremental_range( "nav_generate_incremental_range", "2000", FCVAR_CHEAT );
-ConVar nav_generate_incremental_tolerance( "nav_generate_incremental_tolerance", "0", FCVAR_CHEAT, "Z tolerance for adding new nav areas." );
-ConVar nav_area_max_size( "nav_area_max_size", "50", FCVAR_CHEAT, "Max area size created in nav generation" );
+ConVar nav_generate_incremental_range( "nav_generate_incremental_range", "2000", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar nav_generate_incremental_tolerance( "nav_generate_incremental_tolerance", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Z tolerance for adding new nav areas." );
+ConVar nav_area_max_size( "nav_area_max_size", "50", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Max area size created in nav generation" );
 
 // Common bounding box for traces
 Vector NavTraceMins( -0.45, -0.45, 0 );
@@ -148,7 +199,7 @@ void CNavMesh::BuildLadders( void )
 	// remove any left-over ladders
 	DestroyLadders();
 
-#ifdef TERROR
+#if defined( TERROR ) || defined( L4D2 )
 	CFuncSimpleLadder *ladder = NULL;
 	while( (ladder = dynamic_cast< CFuncSimpleLadder * >(gEntList.FindEntityByClassname( ladder, "func_simpleladder" ))) != NULL )
 	{
@@ -1240,7 +1291,13 @@ static void CommandNavCheckStairs( void )
 
 	TheNavMesh->MarkStairAreas();
 }
-static ConCommand nav_check_stairs( "nav_check_stairs", CommandNavCheckStairs, "Update the nav mesh STAIRS attribute", FCVAR_CHEAT );
+static ConCommand nav_check_stairs( "nav_check_stairs", CommandNavCheckStairs, "Update the nav mesh STAIRS attribute", 
+#if defined( L4D2 )
+	0x00000004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //--------------------------------------------------------------------------------------------------------------
 /**
@@ -1452,7 +1509,12 @@ bool CNavArea::TestStairs( void )
 
 
 //--------------------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_test_stairs, "Test the selected set for being on stairs", 0x00004004 )
+#else
 CON_COMMAND_F( nav_test_stairs, "Test the selected set for being on stairs", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1794,6 +1856,9 @@ inline bool testJumpDown( const Vector *fromPos, const Vector *toPos )
 	if ( result.endpos.z > to.z + StepHeight )
 		return false;
 
+#if defined( L4D2 )
+#include "l4d2/nav/nav_connection_jump.inc"
+#endif
 	return true;
 }
 
@@ -3453,6 +3518,9 @@ void CNavMesh::BeginGeneration( bool incremental )
 	DestroyNavigationMesh( incremental );
 
 	SetNavPlace( UNDEFINED_PLACE );
+#if defined( L4D2 )
+	CollectConnectionBlockers();
+#endif
 
 	// build internal representations of ladders, which are used to find new walkable areas
 	if ( !incremental ) ///< @incremental update doesn't build ladders to avoid overlapping existing ones
@@ -4947,7 +5015,12 @@ void CNavMesh::PostProcessCliffAreas()
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( nav_gen_cliffs_approx, "Mark cliff areas, post-processing approximation", 0x00004004 )
+#else
 CON_COMMAND_F( nav_gen_cliffs_approx, "Mark cliff areas, post-processing approximation", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;

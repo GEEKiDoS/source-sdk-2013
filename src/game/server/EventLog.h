@@ -15,6 +15,9 @@
 
 #include "GameEventListener.h"
 #include <igamesystem.h>
+#if defined( L4D2 )
+class CBaseEntity;
+#endif
 
 class CEventLog : public CGameEventListener, public CBaseGameSystem
 {
@@ -22,6 +25,9 @@ class CEventLog : public CGameEventListener, public CBaseGameSystem
 public:
 	CEventLog();
 	virtual ~CEventLog();
+#if defined( L4D2 )
+	virtual void GetEntityIdentity( CBaseEntity *pEntity, char *pBuffer, int nBufferSize ) = 0;
+#endif
 
 public: // IGameEventListener Interface
 	

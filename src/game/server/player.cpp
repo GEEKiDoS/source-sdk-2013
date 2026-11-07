@@ -69,31 +69,77 @@
 #include "dt_utlvector_send.h"
 #include "vote_controller.h"
 #include "ai_speech.h"
+#if defined( L4D2 )
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/terror_shareddefs.h"
+#include "l4d2/effects/terror_environment.h"
+#endif
 
 #if defined USES_ECON_ITEMS
 #include "econ_wearable.h"
 #endif
 
 // NVNT haptic utils
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 
 #ifdef HL2_DLL
 #include "combine_mine.h"
 #include "weapon_physcannon.h"
 #endif
 
+#if defined( L4D2 )
+// Actual server58B1B0/58B1E0 raw0->DEVELOPMENTONLY; no global SDK policy rewrite.
+ConVar autoaim_max_dist( "autoaim_max_dist", "2160", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+ConVar autoaim_max_deflect( "autoaim_max_deflect", "0.99", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+// Server591AA0: qualified final8198 is encoded directly, without a shared Create policy.
+ConVar sv_showdebugtracers( "sv_showdebugtracers", "0", 0x00002006,
+	"1: Shows a line following bullet path. Blue on client, red on server. (They should always match.) 2:Show autoaim candidates." );
+#else
 ConVar autoaim_max_dist( "autoaim_max_dist", "2160" ); // 2160 = 180 feet
 ConVar autoaim_max_deflect( "autoaim_max_deflect", "0.99" );
+#endif
 
 #ifdef CSTRIKE_DLL
 ConVar	spec_freeze_time( "spec_freeze_time", "5.0", FCVAR_CHEAT | FCVAR_REPLICATED, "Time spend frozen in observer freeze cam." );
 ConVar	spec_freeze_traveltime( "spec_freeze_traveltime", "0.7", FCVAR_CHEAT | FCVAR_REPLICATED, "Time taken to zoom in to frame a target in observer freeze cam.", true, 0.01, false, 0 );
 #else
-ConVar	spec_freeze_time( "spec_freeze_time", "4.0", FCVAR_CHEAT | FCVAR_REPLICATED, "Time spend frozen in observer freeze cam." );
-ConVar	spec_freeze_traveltime( "spec_freeze_traveltime", "0.4", FCVAR_CHEAT | FCVAR_REPLICATED, "Time taken to zoom in to frame a target in observer freeze cam.", true, 0.01, false, 0 );
+ConVar	spec_freeze_time( "spec_freeze_time", "4.0", 
+#if defined( L4D2 )
+	0x00006004
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+, "Time spend frozen in observer freeze cam." );
+ConVar	spec_freeze_traveltime( "spec_freeze_traveltime", "0.4", 
+#if defined( L4D2 )
+	0x00006004
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+, "Time taken to zoom in to frame a target in observer freeze cam.", true, 0.01, false, 0 );
 #endif
 
-ConVar sv_bonus_challenge( "sv_bonus_challenge", "0", FCVAR_REPLICATED, "Set to values other than 0 to select a bonus map challenge type." );
+ConVar sv_bonus_challenge( "sv_bonus_challenge", "0", 
+#if defined( L4D2 )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "Set to values other than 0 to select a bonus map challenge type." );
 
 ConVar sv_chat_bucket_size_tier1( "sv_chat_bucket_size_tier1", "4", FCVAR_NONE, "The maximum size of the short term chat msg bucket." );
 ConVar sv_chat_seconds_per_msg_tier1( "sv_chat_seconds_per_msg_tier1", "3", FCVAR_NONE, "The number of seconds to accrue an additional short term chat msg." );
@@ -102,24 +148,48 @@ ConVar sv_chat_seconds_per_msg_tier2( "sv_chat_seconds_per_msg_tier2", "10", FCV
 
 static ConVar sv_maxusrcmdprocessticks( "sv_maxusrcmdprocessticks", "24", FCVAR_NOTIFY, "Maximum number of client-issued usrcmd ticks that can be replayed in packet loss conditions, 0 to allow no restrictions" );
 
+#if defined( L4D2 )
+#include <emmintrin.h>
+#endif
+
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "precache_register.h"
+#endif
+#include "player_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
-static ConVar old_armor( "player_old_armor", "0" );
+static ConVar old_armor( "player_old_armor", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
-static ConVar physicsshadowupdate_render( "physicsshadowupdate_render", "0" );
+static ConVar physicsshadowupdate_render( "physicsshadowupdate_render", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 bool IsInCommentaryMode( void );
 bool IsListeningToCommentary( void );
 
 #if !defined( CSTRIKE_DLL )
 ConVar cl_sidespeed( "cl_sidespeed", "450", FCVAR_REPLICATED | FCVAR_CHEAT );
+#if !defined( L4D2 )
 ConVar cl_upspeed( "cl_upspeed", "320", FCVAR_REPLICATED | FCVAR_CHEAT );
+#endif
 ConVar cl_forwardspeed( "cl_forwardspeed", "450", FCVAR_REPLICATED | FCVAR_CHEAT );
 ConVar cl_backspeed( "cl_backspeed", "450", FCVAR_REPLICATED | FCVAR_CHEAT );
 #endif // CSTRIKE_DLL
 
 // This is declared in the engine, too
-ConVar	sv_noclipduringpause( "sv_noclipduringpause", "0", FCVAR_REPLICATED | FCVAR_CHEAT, "If cheats are enabled, then you can noclip with the game paused (for doing screenshots, etc.)." );
+ConVar	sv_noclipduringpause( "sv_noclipduringpause", "0", 
+#if defined( L4D2 )
+	0x00006004
+#else
+	FCVAR_REPLICATED | FCVAR_CHEAT
+#endif
+, "If cheats are enabled, then you can noclip with the game paused (for doing screenshots, etc.)." );
 
 extern ConVar sv_maxunlag;
 extern ConVar sv_turbophysics;
@@ -182,11 +252,31 @@ extern void AddMultiDamage( const CTakeDamageInfo &info, CBaseEntity *pEntity );
 //#define MAX_SAFE_FALL_UNITS			( PLAYER_MAX_SAFE_FALL_DIST * 12 )
 
 // player damage adjusters
-ConVar	sk_player_head( "sk_player_head","2" );
-ConVar	sk_player_chest( "sk_player_chest","1" );
-ConVar	sk_player_stomach( "sk_player_stomach","1" );
-ConVar	sk_player_arm( "sk_player_arm","1" );
-ConVar	sk_player_leg( "sk_player_leg","1" );
+ConVar	sk_player_head( "sk_player_head","2"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar	sk_player_chest( "sk_player_chest","1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar	sk_player_stomach( "sk_player_stomach","1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar	sk_player_arm( "sk_player_arm","1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar	sk_player_leg( "sk_player_leg","1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 ConVar	sv_player_usercommand_timeout( "sv_player_usercommand_timeout", "3", FCVAR_CHEAT, "After this many seconds without a usercommand from a player, the server will RunNullCommand as if client sends an empty command." );
 #ifdef _DEBUG
@@ -194,7 +284,13 @@ ConVar  sv_player_net_suppress_usercommands( "sv_player_net_suppress_usercommand
 #endif // _DEBUG
 ConVar  sv_player_display_usercommand_errors( "sv_player_display_usercommand_errors", "0", FCVAR_CHEAT, "1 = Display warning when command values are out-of-range. 2 = Spew invalid ranges." );
 
-ConVar  player_debug_print_damage( "player_debug_print_damage", "0", FCVAR_CHEAT, "When true, print amount and type of all damage received by player to console." );
+ConVar  player_debug_print_damage( "player_debug_print_damage", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "When true, print amount and type of all damage received by player to console." );
 
 
 void CC_GiveCurrentAmmo( void )
@@ -214,7 +310,11 @@ void CC_GiveCurrentAmmo( void )
 				if( ammoIndex != -1 )
 				{
 					int giveAmount;
+#if defined( L4D2 )
+					giveAmount = GetAmmoDef()->MaxCarry( ammoIndex, pPlayer );
+#else
 					giveAmount = GetAmmoDef()->MaxCarry(ammoIndex);
+#endif
 					pPlayer->GiveAmmo( giveAmount, GetAmmoDef()->GetAmmoOfIndex(ammoIndex)->pName );
 				}
 			}
@@ -229,14 +329,24 @@ void CC_GiveCurrentAmmo( void )
 				if( ammoIndex != -1 )
 				{
 					int giveAmount;
+#if defined( L4D2 )
+					giveAmount = GetAmmoDef()->MaxCarry( ammoIndex, pPlayer );
+#else
 					giveAmount = GetAmmoDef()->MaxCarry(ammoIndex);
+#endif
 					pPlayer->GiveAmmo( giveAmount, GetAmmoDef()->GetAmmoOfIndex(ammoIndex)->pName );
 				}
 			}
 		}
 	}
 }
-static ConCommand givecurrentammo("givecurrentammo", CC_GiveCurrentAmmo, "Give a supply of ammo for current weapon..\n", FCVAR_CHEAT );
+static ConCommand givecurrentammo("givecurrentammo", CC_GiveCurrentAmmo, "Give a supply of ammo for current weapon..\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 // pl
@@ -316,6 +426,9 @@ BEGIN_DATADESC( CBasePlayer )
 	DEFINE_FIELD( m_iTargetVolume, FIELD_INTEGER ),
 	DEFINE_AUTO_ARRAY( m_rgItems, FIELD_INTEGER ),
 	//DEFINE_FIELD( m_fNextSuicideTime, FIELD_TIME ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_flNextTauntTime, FIELD_TIME ),
+#endif
 	// DEFINE_FIELD( m_PlayerInfo, CPlayerInfo ),
 
 	DEFINE_FIELD( m_flSwimTime, FIELD_TIME ),
@@ -331,6 +444,9 @@ BEGIN_DATADESC( CBasePlayer )
 	DEFINE_FIELD( m_iBonusProgress, FIELD_INTEGER ),
 	DEFINE_FIELD( m_iBonusChallenge, FIELD_INTEGER ),
 	DEFINE_FIELD( m_lastDamageAmount, FIELD_INTEGER ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_fTimeLastHurt, FIELD_TIME ),
+#endif
 	DEFINE_FIELD( m_tbdPrev, FIELD_TIME ),
 	DEFINE_FIELD( m_flStepSoundTime, FIELD_FLOAT ),
 	DEFINE_ARRAY( m_szNetname, FIELD_CHARACTER, MAX_PLAYER_NAME_LENGTH ),
@@ -390,6 +506,9 @@ BEGIN_DATADESC( CBasePlayer )
 	DEFINE_FIELD( m_nImpulse, FIELD_INTEGER ),
 	DEFINE_FIELD( m_flSwimSoundTime, FIELD_TIME ),
 	DEFINE_FIELD( m_vecLadderNormal, FIELD_VECTOR ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_ladderSurfaceProps, FIELD_INTEGER ),
+#endif
 
 	DEFINE_FIELD( m_flFlashTime, FIELD_TIME ),
 	DEFINE_FIELD( m_nDrownDmgRate, FIELD_INTEGER ),
@@ -425,12 +544,23 @@ BEGIN_DATADESC( CBasePlayer )
 	DEFINE_FIELD( m_flOldPlayerViewOffsetZ, FIELD_FLOAT ),
 	DEFINE_FIELD( m_bPlayerUnderwater, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_hViewEntity, FIELD_EHANDLE ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_hPostProcessCtrl, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_hColorCorrectionCtrl, FIELD_EHANDLE ),
+#endif
 
 	DEFINE_FIELD( m_hConstraintEntity, FIELD_EHANDLE ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_vecConstraintCenter, FIELD_POSITION_VECTOR ),
+#else
 	DEFINE_FIELD( m_vecConstraintCenter, FIELD_VECTOR ),
+#endif
 	DEFINE_FIELD( m_flConstraintRadius, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flConstraintWidth, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flConstraintSpeedFactor, FIELD_FLOAT ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_bConstraintPastRadius, FIELD_BOOLEAN ),
+#endif
 	DEFINE_FIELD( m_hZoomOwner, FIELD_EHANDLE ),
 	
 	DEFINE_FIELD( m_flLaggedMovementValue, FIELD_FLOAT ),
@@ -450,7 +580,9 @@ BEGIN_DATADESC( CBasePlayer )
 	DEFINE_INPUTFUNC( FIELD_INTEGER, "SetHealth", InputSetHealth ),
 	DEFINE_INPUTFUNC( FIELD_BOOLEAN, "SetHUDVisibility", InputSetHUDVisibility ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetFogController", InputSetFogController ),
+#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_STRING, "HandleMapEvent", InputHandleMapEvent ),
+#endif
 
 	DEFINE_FIELD( m_nNumCrouches, FIELD_INTEGER ),
 	DEFINE_FIELD( m_bDuckToggled, FIELD_BOOLEAN ),
@@ -460,7 +592,9 @@ BEGIN_DATADESC( CBasePlayer )
 
 	DEFINE_FIELD( m_nNumCrateHudHints, FIELD_INTEGER ),
 
+#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetScriptOverlayMaterial", InputSetScriptOverlayMaterial ),
+#endif
 
 	// DEFINE_FIELD( m_nBodyPitchPoseParam, FIELD_INTEGER ),
 	// DEFINE_ARRAY( m_StepSoundCache, StepSoundCache_t,  2  ),
@@ -554,6 +688,18 @@ CBasePlayer *CBasePlayer::CreatePlayer( const char *className, edict_t *ed )
 // Input  : 
 // Output : 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+// S176940 -> S171640. Admission belongs to the movement ground writer.
+// Resolved-pointer equality intentionally retains a stale unresolved handle.
+void CBasePlayer::SetElevator( CBaseEntity *elevator )
+{
+	if ( m_iPlayerLocked != 0 )
+		elevator = NULL;
+	if ( GetElevator() != elevator )
+		m_hElevator = elevator;
+}
+#endif
+
 CBasePlayer::CBasePlayer( )
 {
 	AddEFlags( EFL_NO_AUTO_EDICT_ATTACH );
@@ -592,6 +738,12 @@ CBasePlayer::CBasePlayer( )
 
 	m_bForceOrigin = false;
 	m_hVehicle = NULL;
+#if defined( L4D2 )
+	m_hElevator = NULL;
+	m_hPostProcessCtrl = NULL;
+	m_hColorCorrectionCtrl = NULL;
+	m_hTonemapController = NULL;
+#endif
 	m_pCurrentCommand = NULL;
 	m_iLockViewanglesTickNumber = 0;
 	m_qangLockViewangles.Init();
@@ -638,6 +790,10 @@ CBasePlayer::CBasePlayer( )
 	// Used to mask off buttons
 	m_afButtonDisabled = 0;
 	m_afButtonForced = 0;
+#if defined( L4D2 )
+	m_bIsSplitScreenPlayer = false;
+	// The sole EHANDLE/vector constructors supply native invalid/empty state.
+#endif
 
 	m_nBodyPitchPoseParam = -1;
 	m_flForwardMove = 0;
@@ -715,6 +871,13 @@ int CBasePlayer::ShouldTransmit( const CCheckTransmitInfo *pInfo )
 		return FL_EDICT_ALWAYS;
 	}
 
+#if defined( L4D2 )
+	// S171380 / S1725E0: the split-screen owner receives its partner too.
+	if ( IsSplitScreenPlayer() &&
+		CBaseEntity::Instance( pInfo->m_pClientEnt ) == GetSplitScreenPlayerOwner() )
+		return FL_EDICT_ALWAYS;
+#endif
+
 	// when HLTV/Replay is connected and spectators press +USE, they
 	// signal that they are recording a interesting scene
 	// so transmit these 'cameramans' to the HLTV or Replay client
@@ -725,8 +888,11 @@ int CBasePlayer::ShouldTransmit( const CCheckTransmitInfo *pInfo )
 		Assert( pRecipientEntity->IsPlayer() );
 		
 		CBasePlayer *pRecipientPlayer = static_cast<CBasePlayer*>( pRecipientEntity );
-		if ( pRecipientPlayer->IsHLTV() ||
-			 pRecipientPlayer->IsReplay() )
+		if ( pRecipientPlayer->IsHLTV()
+#if !defined( L4D2 )
+			|| pRecipientPlayer->IsReplay()
+#endif
+			)
 		{
 			// HACK force calling RecomputePVSInformation to update PVS data
 			NetworkProp()->AreaNum();
@@ -734,10 +900,17 @@ int CBasePlayer::ShouldTransmit( const CCheckTransmitInfo *pInfo )
 		}
 	}
 
+#if defined( L4D2 )
+	// S1725E0 only suppresses a live NODRAW player at this gate.
+	const bool noDraw = IsAlive() && IsEffectActive( EF_NODRAW );
+#else
+	const bool noDraw = IsEffectActive( EF_NODRAW );
+#endif
+
 	// Transmit for a short time after death and our death anim finishes so ragdolls can access reliable player data.
 	// Note that if m_flDeathAnimTime is never set, as long as m_lifeState is set to LIFE_DEAD after dying, this
 	// test will act as if the death anim is finished.
-	if ( IsEffectActive( EF_NODRAW ) || ( IsObserver() && ( gpGlobals->curtime - m_flDeathTime > 0.5 ) && 
+	if ( noDraw || ( IsObserver() && ( gpGlobals->curtime - m_flDeathTime > 0.5 ) &&
 		( m_lifeState == LIFE_DEAD ) && ( gpGlobals->curtime - m_flDeathAnimTime > 0.5 ) ) )
 	{
 		return FL_EDICT_DONTSEND;
@@ -1175,6 +1348,9 @@ int CBasePlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 
 	// keep track of amount of damage last sustained
 	m_lastDamageAmount = info.GetDamage();
+#if defined( L4D2 )
+	ToCSPlayer( this )->m_iDamageArmor = 0;
+#endif
 
 	// Armor. 
 	if (m_ArmorValue && !(info.GetDamageType() & (DMG_FALL | DMG_DROWN | DMG_POISON | DMG_RADIATION)) )// armor doesn't protect against fall or drown damage!
@@ -1192,6 +1368,10 @@ int CBasePlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 				flArmor = 1.0;
 			}
 		}
+#if defined( L4D2 )
+		// S:0x24A2A2 records the computed amount before the armor clamp.
+		ToCSPlayer( this )->m_iDamageArmor = (int)flArmor;
+#endif
 
 		// Does this use more armor than we have?
 		if (flArmor > m_ArmorValue)
@@ -1212,7 +1392,7 @@ int CBasePlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 	}
 
 
-#if defined( WIN32 ) && !defined( _X360 )
+#if defined( WIN32 ) && !defined( _X360 ) && !defined( L4D2 )
 	// NVNT if player's client has a haptic device send them a user message with the damage.
 	if(HasHaptics())
 		HapticsDamage(this,info);
@@ -1224,6 +1404,11 @@ int CBasePlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 	// NOTENOTE: jdw - We are now capable of retaining the mantissa of this damage value and deferring its application
 	
 	// info.SetDamage( (int)info.GetDamage() );
+#if defined( L4D2 )
+	// S:0x24A375 precedes the lower damage call; this is per-hit truncated
+	// processed damage, not the later HUD accumulator or integer HP delta.
+	ToCSPlayer( this )->m_iDamageHealth = (int)info.GetDamage();
+#endif
 
 	// Call up to the base class
 	fTookDamage = BaseClass::OnTakeDamage( info );
@@ -1422,6 +1607,10 @@ int CBasePlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
 		OnDamagedByExplosion( info );
 	}
 
+#if defined( L4D2 )
+	if ( m_iHealth < 100 )
+		m_fTimeLastHurt = gpGlobals->curtime;
+#endif
 	return fTookDamage;
 }
 
@@ -1614,11 +1803,22 @@ int CBasePlayer::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 	if ( !BaseClass::OnTakeDamage_Alive( info ) )
 		return 0;
 
+#if defined( L4D2 )
+	return OnTerrorDamageAlive( info );
+}
+
+int CBasePlayer::OnTerrorDamageAlive( const CTakeDamageInfo &info )
+{
+#endif
+
 	CBaseEntity * attacker = info.GetAttacker();
 
+#if !defined( L4D2 )
 	if ( !attacker )
 		return 0;
+#endif
 
+#if !defined( L4D2 )
 	Vector vecDir = vec3_origin;
 	if ( info.GetInflictor() )
 	{
@@ -1626,8 +1826,8 @@ int CBasePlayer::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 		VectorNormalize( vecDir );
 	}
 
-	if ( info.GetInflictor() && (GetMoveType() == MOVETYPE_WALK) && 
-		( !attacker->IsSolidFlagSet(FSOLID_TRIGGER)) )
+	if ( info.GetInflictor() && (GetMoveType() == MOVETYPE_WALK) &&
+		attacker && ( !attacker->IsSolidFlagSet(FSOLID_TRIGGER)) )
 	{
 		Vector force = vecDir * -DamageForce( WorldAlignSize(), info.GetBaseDamage() );
 		if ( force.z > 250.0f )
@@ -1636,6 +1836,7 @@ int CBasePlayer::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 		}
 		ApplyAbsVelocityImpulse( force );
 	}
+#endif
 
 	// fire global game event
 
@@ -1644,9 +1845,18 @@ int CBasePlayer::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 	{
 		event->SetInt("userid", GetUserID() );
 		event->SetInt("health", MAX(0, m_iHealth) );
+#if defined( L4D2 )
+		// Original full producer S:0x2424C0; preserve its one create/fire.
+		event->SetInt( "armor", MAX( 0, ArmorValue() ) );
+		event->SetInt( "dmg_health", ToCSPlayer( this )->m_iDamageHealth );
+		event->SetInt( "dmg_armor", ToCSPlayer( this )->m_iDamageArmor );
+		event->SetInt( "type", info.GetDamageType() );
+		event->SetInt( "hitgroup", ( info.GetDamageType() & DMG_BLAST ) ? 0 : LastHitGroup() );
+#else
 		event->SetInt("priority", 5 );	// HLTV event priority, not transmitted
+#endif
 
-		if ( attacker->IsPlayer() )
+		if ( attacker && attacker->IsPlayer() )
 		{
 			CBasePlayer *player = ToBasePlayer( attacker );
 			event->SetInt("attacker", player->GetUserID() ); // hurt by other player
@@ -1655,15 +1865,48 @@ int CBasePlayer::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 		{
 			event->SetInt("attacker", 0 ); // hurt by "world"
 		}
+#if defined( L4D2 )
+		event->SetInt( "attackerentid", attacker ? attacker->entindex() : 0 );
+		const char *pWeapon = "";
+		CBaseEntity *pInflictor = info.GetInflictor();
+		// S:0x2424C0 bypasses weapon lookup for non-player attackers.
+		if ( pInflictor && attacker && attacker->IsPlayer() )
+		{
+			if ( pInflictor == attacker )
+			{
+				CBaseCombatWeapon *pActiveWeapon = ToBasePlayer( attacker )->GetActiveWeapon();
+				if ( pActiveWeapon )
+					pWeapon = pActiveWeapon->GetClassname();
+			}
+			else
+			{
+				pWeapon = pInflictor->GetClassname();
+			}
+			CTerrorPlayer *pPlayerInflictor = ToTerrorPlayer( pInflictor );
+			if ( pPlayerInflictor && pPlayerInflictor->GetTeamNumber() == TEAM_INFECTED &&
+				pPlayerInflictor->m_zombieClass == 2 )
+				pWeapon = "boomer";
+		}
+		if ( !Q_strncmp( pWeapon, "weapon_", 7 ) )
+			pWeapon += 7;
+		else if ( !Q_strncmp( pWeapon, "hegrenade", 9 ) ) pWeapon = "hegrenade";
+		else if ( !Q_strncmp( pWeapon, "pipe_bomb", 9 ) ) pWeapon = "pipe_bomb";
+		else if ( !Q_strncmp( pWeapon, "flashbang", 9 ) ) pWeapon = "flashbang";
+		else if ( !Q_strncmp( pWeapon, "smokegrenade", 12 ) ) pWeapon = "smokegrenade";
+		event->SetString( "weapon", pWeapon );
+		event->SetInt( "priority", 5 );
+#endif
 
         gameeventmanager->FireEvent( event );
 	}
 	
+#if !defined( L4D2 )
 	// Insert a combat sound so that nearby NPCs hear battle
-	if ( attacker->IsNPC() )
+	if ( attacker && attacker->IsNPC() )
 	{
 		CSoundEnt::InsertSound( SOUND_COMBAT, GetAbsOrigin(), 512, 0.5, this );//<<TODO>>//magic number
 	}
+#endif
 
 	return 1;
 }
@@ -1684,7 +1927,7 @@ void CBasePlayer::Event_Killed( const CTakeDamageInfo &info )
 
 	RumbleEffect( RUMBLE_STOP_ALL, 0, RUMBLE_FLAGS_NONE );
 
-#if defined( WIN32 ) && !defined( _X360 )
+#if defined( WIN32 ) && !defined( _X360 ) && !defined( L4D2 )
 	// NVNT set the drag to zero in the case of underwater death.
 	HapticSetDrag(this,0);
 #endif
@@ -1713,10 +1956,14 @@ void CBasePlayer::Event_Killed( const CTakeDamageInfo &info )
 
 	SetAnimation( PLAYER_DIE );
 
+#if defined( L4D2 )
+	SetViewOffset( VEC_DEAD_VIEWHEIGHT ); // S1789D0: unconditional, unscaled Rules vector.
+#else
 	if ( !IsObserver() )
 	{
 		SetViewOffset( VEC_DEAD_VIEWHEIGHT_SCALED( this ) );
 	}
+#endif
 	m_lifeState		= LIFE_DYING;
 
 	pl.deadflag = true;
@@ -1736,11 +1983,19 @@ void CBasePlayer::Event_Killed( const CTakeDamageInfo &info )
 	SetSuitUpdate(NULL, false, 0);
 
 	// reset FOV
+#if defined( L4D2 )
+	SetFOV( this, 0, 0.0f, 0 ); // S178B72..178B7D retains both explicit zero arguments.
+#else
 	SetFOV( this, 0 );
+#endif
 	
 	if ( FlashlightIsOn() )
 	{
-		 FlashlightTurnOff();
+#if defined( L4D2 )
+		FlashlightTurnOff( false );
+#else
+		FlashlightTurnOff();
+#endif
 	}
 
 	m_flDeathTime = gpGlobals->curtime;
@@ -2182,7 +2437,9 @@ void CBasePlayer::PlayerDeathThink(void)
 
 	//Msg( "Respawn\n");
 
+#if !defined( L4D2 )
 	respawn( this, !IsObserver() );// don't copy a corpse if we're in deathcam.
+#endif
 	SetNextThink( TICK_NEVER_THINK );
 }
 
@@ -2289,7 +2546,13 @@ bool CBasePlayer::StartObserverMode(int mode)
 
 	SetObserverMode( mode );
 
+#if defined( L4D2 )
+	// S173198..173214: an external view entity owns its spectator UI.
+	CBaseEntity *viewEntity = GetViewEntity();
+	if ( gpGlobals->eLoadType != MapLoad_Background && ( !viewEntity || viewEntity == this ) )
+#else
 	if ( gpGlobals->eLoadType != MapLoad_Background )
+#endif
 	{
 		ShowViewPortPanel( "specgui" , ModeWantsSpectatorGUI(mode) );
 	}
@@ -2345,7 +2608,9 @@ bool CBasePlayer::SetObserverMode(int mode )
 			break;
 
 		case OBS_MODE_CHASE :
+#if !defined( L4D2 )
 		case OBS_MODE_POI: // PASSTIME
+#endif
 		case OBS_MODE_IN_EYE :	
 			// udpate FOV and viewmodels
 			SetObserverTarget( m_hObserverTarget );	
@@ -2441,7 +2706,11 @@ void CBasePlayer::CheckObserverSettings()
 	}
 
 	// check if our spectating target is still a valid one
-	if (  m_iObserverMode == OBS_MODE_IN_EYE || m_iObserverMode == OBS_MODE_CHASE || m_iObserverMode == OBS_MODE_FIXED || m_iObserverMode == OBS_MODE_POI )
+	if ( m_iObserverMode == OBS_MODE_IN_EYE || m_iObserverMode == OBS_MODE_CHASE || m_iObserverMode == OBS_MODE_FIXED
+#if !defined( L4D2 )
+		|| m_iObserverMode == OBS_MODE_POI
+#endif
+		)
 	{
 		ValidateCurrentObserverTarget();
 				
@@ -2811,6 +3080,38 @@ bool CBasePlayer::IsUseableEntity( CBaseEntity *pEntity, unsigned int requiredCa
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+bool CBasePlayer::CanPickupObject( CBaseEntity *object, float massLimit, float sizeLimit )
+{
+	if ( !object || object->GetMoveType() != MOVETYPE_VPHYSICS ) return false;
+	IPhysicsObject *objects[1024];
+	const int count = object->VPhysicsGetObjectList( objects, ARRAYSIZE( objects ) );
+	if ( count == 0 ) return false;
+	float mass = 0.0f;
+	for ( int i = 0; i < count; ++i )
+	{
+		mass += objects[i]->GetMass();
+		if ( !objects[i]->IsMoveable() ||
+			( objects[i]->GetGameFlags() & FVPHYSICS_NO_PLAYER_PICKUP ) || objects[i]->IsHinged() ) return false;
+	}
+	if ( massLimit > 0.0f && mass > massLimit ) return false;
+	if ( sizeLimit > 0.0f )
+	{
+		const Vector &size = object->CollisionProp()->OBBSize();
+		if ( size.x > sizeLimit || size.y > sizeLimit || size.z > sizeLimit ) return false;
+	}
+	return true;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool CBasePlayer::CanPickupObject( CBaseEntity *pObject, float massLimit, float sizeLimit )
 {
 	// UNDONE: Make this virtual and move to HL2 player
@@ -2884,6 +3185,7 @@ bool CBasePlayer::CanPickupObject( CBaseEntity *pObject, float massLimit, float 
 	return false;
 #endif
 }
+#endif
 
 float CBasePlayer::GetHeldObjectMass( IPhysicsObject *pHeldObject )
 {
@@ -3104,8 +3406,26 @@ int CBasePlayer::DetermineSimulationTicks( void )
 }
 
 // 2 ticks ahead or behind current clock means we need to fix clock on client
-static ConVar sv_clockcorrection_msecs( "sv_clockcorrection_msecs", "60", 0, "The server tries to keep each player's m_nTickBase withing this many msecs of the server absolute tickcount" );
-static ConVar sv_playerperfhistorycount( "sv_playerperfhistorycount", "60", 0, "Number of samples to maintain in player perf history", true, 1.0f, true, 128.0 );
+static ConVar sv_clockcorrection_msecs( "sv_clockcorrection_msecs", "60", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "The server tries to keep each player's m_nTickBase withing this many msecs of the server absolute tickcount" );
+static ConVar sv_playerperfhistorycount( "sv_playerperfhistorycount", 
+#if defined( L4D2 )
+	"20"
+#else
+	"60"
+#endif
+, 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Number of samples to maintain in player perf history", true, 1.0f, true, 128.0 );
 
 //-----------------------------------------------------------------------------
 // Purpose: Based upon amount of time in simulation time, adjust m_nTickBase so that
@@ -3770,7 +4090,13 @@ void CBasePlayer::DumpPerfToRecipient( CBasePlayer *pRecipient, int nMaxRecords 
 }
 
 // Duck debouncing code to stop menu changes from disallowing crouch/uncrouch
-ConVar xc_crouch_debounce( "xc_crouch_debounce", "0", FCVAR_NONE );
+ConVar xc_crouch_debounce( "xc_crouch_debounce", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -3950,7 +4276,13 @@ void CBasePlayer::HandleFuncTrain(void)
 void CBasePlayer::PreThink(void)
 {						
 	if ( g_fGameOver || m_iPlayerLocked )
+	{
+#if defined( L4D2 )
+		if ( GetElevator() )
+			m_hElevator = NULL;
+#endif
 		return;         // intermission or finale
+	}
 
 	if ( Hints() )
 	{
@@ -4008,6 +4340,26 @@ void CBasePlayer::PreThink(void)
 	// track where we are in the nav mesh
 	UpdateLastKnownArea();
 
+
+#if defined( L4D2 )
+	// S173EF8..3FE0: no local prediction; this is a server-owned100ms query.
+	if ( ShouldAutoaim() && atof( engine->GetClientConVarValue( entindex(), "joy_autoaimdampen" ) ) > 0.0 )
+	{
+		if ( GetActiveWeapon() && m_AutoaimTimer.Expired() )
+		{
+			m_AutoaimTimer.Set( 0.1f );
+			autoaim_params_t params;
+			params.m_fScale = 1.0f;
+			params.m_fMaxDist = autoaim_max_dist.GetFloat();
+			params.m_fMaxDeflection = -1.0f;
+			params.m_bDirectOnly = true;
+			GetAutoaimVector( params );
+			m_Local.m_bAutoAimTarget = params.m_bOnTargetNatural;
+		}
+	}
+	else
+		m_Local.m_bAutoAimTarget = false;
+#endif
 
 	// StudioFrameAdvance( );//!!!HACKHACK!!! Can't be hit by traceline when not animating?
 }
@@ -4636,6 +4988,9 @@ void CBasePlayer::ForceOrigin( const Vector &vecOrigin )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CBasePlayer::PostThink()
 {
 	// Attempt to apply pending client settings
@@ -4645,6 +5000,9 @@ void CBasePlayer::PostThink()
 	}
 
 	m_vecSmoothedVelocity = m_vecSmoothedVelocity * SMOOTHING_FACTOR + GetAbsVelocity() * ( 1 - SMOOTHING_FACTOR );
+#if defined( L4D2 )
+	UpdateTonemapController();
+#endif
 
 	if ( !g_fGameOver && !m_iPlayerLocked )
 	{
@@ -4756,7 +5114,24 @@ void CBasePlayer::PostThink()
 	SimulatePlayerSimulatedEntities();
 #endif
 
+#if defined( L4D2 )
+	if ( IsAlive() && m_iHealth < GetMaxHealth() &&
+		GlobalEntity_GetState( "player_regenerates_health" ) != GLOBAL_OFF )
+	{
+		const float flRegenerationDeadline = m_fTimeLastHurt + sv_regeneration_wait_time.GetFloat();
+		if ( gpGlobals->curtime > flRegenerationDeadline )
+			TakeHealth( 1.0f, DMG_GENERIC );
+		else
+		{
+			color32 red = { 64, 0, 0, 64 };
+			UTIL_ScreenFade( this, red, 1.0f, 0.1f, FFADE_IN | FFADE_PURGE );
+		}
+	}
+#endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 // handles touching physics objects
 void CBasePlayer::Touch( CBaseEntity *pOther )
@@ -5034,6 +5409,10 @@ void CBasePlayer::Spawn( void )
 	}
 
 	SetClassname( "player" );
+#if defined( L4D2 )
+	if ( GetElevator() )
+		m_hElevator = NULL;
+#endif
 
 	// Shared spawning code..
 	SharedSpawn();
@@ -5070,6 +5449,9 @@ void CBasePlayer::Spawn( void )
 
 	// Initialize the fog and postprocess controllers.
 	InitFogController();
+#if defined( L4D2 )
+	SetTerrorPostProcessController( Terror_GetMasterPostProcessController() );
+#endif
 
 	m_DmgTake		= 0;
 	m_DmgSave		= 0;
@@ -5080,6 +5462,9 @@ void CBasePlayer::Spawn( void )
 	m_idrownrestored = m_idrowndmg;
 
 	SetFOV( this, 0 );
+#if defined( L4D2 )
+	m_flNextTauntTime = 0.0f;
+#endif
 
 	m_flNextDecalTime	= 0;// let this player decal as soon as he spawns.
 
@@ -5161,7 +5546,7 @@ void CBasePlayer::Spawn( void )
 	m_vecSmoothedVelocity = vec3_origin;
 	InitVCollision( GetAbsOrigin(), GetAbsVelocity() );
 
-#if !defined( TF_DLL )
+#if !defined( TF_DLL ) && !defined( L4D2 )
 	IGameEvent *event = gameeventmanager->CreateEvent( "player_spawn" );
 	
 	if ( event )
@@ -5221,7 +5606,7 @@ void CBasePlayer::Precache( void )
 	enginesound->PrecacheSentenceGroup( "HEV" );
 
 	// These are always needed
-#ifndef TF_DLL
+#if !defined( TF_DLL ) && !defined( L4D2 )
 	PrecacheParticleSystem( "slime_splash_01" );
 	PrecacheParticleSystem( "slime_splash_02" );
 	PrecacheParticleSystem( "slime_splash_03" );
@@ -5616,9 +6001,21 @@ bool CBasePlayer::GetInVehicle( IServerVehicle *pVehicle, int nRole )
 	SetViewOffset( VEC_VIEW_SCALED( this ) );
 	m_Local.m_bDucked = false;
 	m_Local.m_bDucking  = false;
+#if defined( L4D2 )
+	m_Local.m_nDuckTimeMsecs = 0;
+#else
 	m_Local.m_flDucktime = 0.0f;
+#endif
+#if defined( L4D2 )
+	m_Local.m_nDuckJumpTimeMsecs = 0;
+#else
 	m_Local.m_flDuckJumpTime = 0.0f;
+#endif
+#if defined( L4D2 )
+	m_Local.m_nJumpTimeMsecs = 0;
+#else
 	m_Local.m_flJumpTime = 0.0f;
+#endif
 
 	// Turn our toggled duck off
 	if ( GetToggledDuckState() )
@@ -5635,6 +6032,7 @@ bool CBasePlayer::GetInVehicle( IServerVehicle *pVehicle, int nRole )
 
 	OnVehicleStart();
 
+#if !defined( L4D2 )
 	if ( IsPlayer() )
 	{
 		IGameEvent *event = gameeventmanager->CreateEvent( "enter_vehicle" );
@@ -5644,6 +6042,7 @@ bool CBasePlayer::GetInVehicle( IServerVehicle *pVehicle, int nRole )
 			gameeventmanager->FireEvent( event );
 		}
 	}
+#endif
 
 	return true;
 }
@@ -5719,6 +6118,7 @@ void CBasePlayer::LeaveVehicle( const Vector &vecExitPoint, const QAngle &vecExi
 	// Just cut all of the rumble effects. 
 	RumbleEffect( RUMBLE_STOP_ALL, 0, RUMBLE_FLAGS_NONE );
 
+#if !defined( L4D2 )
 	if ( IsPlayer() )
 	{
 		IGameEvent *event = gameeventmanager->CreateEvent( "leave_vehicle" );
@@ -5728,6 +6128,7 @@ void CBasePlayer::LeaveVehicle( const Vector &vecExitPoint, const QAngle &vecExi
 			gameeventmanager->FireEvent( event );
 		}
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -5756,7 +6157,9 @@ public:
 };
 
 LINK_ENTITY_TO_CLASS( spraycan, CSprayCan );
+#ifndef L4D2
 PRECACHE_REGISTER( spraycan );
+#endif
 
 void CSprayCan::Spawn ( CBasePlayer *pOwner )
 {
@@ -6007,6 +6410,7 @@ CBaseEntity *FindPickerEntity( CBasePlayer *pPlayer )
 // Input  :
 // Output :
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 CAI_Node *FindPickerAINode( CBasePlayer *pPlayer, NodeType_e nNodeType )
 {
 	Vector forward;
@@ -6031,6 +6435,7 @@ CAI_Link *FindPickerAILink( CBasePlayer* pPlayer )
 	origin = pPlayer->EyePosition();	
 	return g_pAINetworkManager->GetEditOps()->FindAILinkNearestFacing( origin, forward,0.90);
 }
+#endif // !L4D2
 
 /*
 ===============
@@ -6241,7 +6646,13 @@ void CC_CH_CreateJeep( void )
 	CreateJeep( pPlayer );
 }
 
-static ConCommand ch_createjeep("ch_createjeep", CC_CH_CreateJeep, "Spawn jeep in front of the player.", FCVAR_CHEAT);
+static ConCommand ch_createjeep("ch_createjeep", CC_CH_CreateJeep, "Spawn jeep in front of the player.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //-----------------------------------------------------------------------------
@@ -6282,7 +6693,13 @@ void CC_CH_CreateAirboat( void )
 
 }
 
-static ConCommand ch_createairboat( "ch_createairboat", CC_CH_CreateAirboat, "Spawn airboat in front of the player.", FCVAR_CHEAT );
+static ConCommand ch_createairboat( "ch_createairboat", CC_CH_CreateAirboat, "Spawn airboat in front of the player.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //=========================================================
@@ -6589,6 +7006,12 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 			return true;
 		}
 
+		int nLastObserverMode = LAST_PLAYER_OBSERVERMODE;
+#if defined( L4D2 )
+		if ( !CanRoam() )
+			nLastObserverMode = OBS_MODE_CHASE;
+#endif
+
 		// not allowed to change spectator modes when mp_fadetoblack is being used
 		if ( mp_fadetoblack.GetBool() )
 		{
@@ -6609,13 +7032,13 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 			// switch to next spec mode if no parameter given
  			mode = GetObserverMode() + 1;
 			
-			if ( mode > LAST_PLAYER_OBSERVERMODE )
+			if ( mode > nLastObserverMode )
 			{
 				mode = OBS_MODE_IN_EYE;
 			}
 			else if ( mode < OBS_MODE_IN_EYE )
 			{
-				mode = OBS_MODE_ROAMING;
+				mode = nLastObserverMode;
 			}
 
 		}
@@ -6624,16 +7047,25 @@ bool CBasePlayer::ClientCommand( const CCommand &args )
 		if ( GetObserverMode() > OBS_MODE_DEATHCAM )
 		{
 			// set new spectator mode, don't allow OBS_MODE_NONE
+#if defined( L4D2 )
+			if ( SetObserverMode( mode ) )
+				engine->ClientCommand( edict(), "cl_ideal_spec_mode %d", mode );
+#else
 			if ( !SetObserverMode( mode ) )
 				ClientPrint( this, HUD_PRINTCONSOLE, "#Spectator_Mode_Unknown");
 			else
 				engine->ClientCommand( edict(), "cl_spec_mode %d", mode );
+#endif
 		}
 		else
 		{
 			// remember spectator mode for later use
 			m_iObserverLastMode = mode;
+#if defined( L4D2 )
+			engine->ClientCommand( edict(), "cl_ideal_spec_mode %d", mode );
+#else
 			engine->ClientCommand( edict(), "cl_spec_mode %d", mode );
+#endif
 		}
 
 		return true;
@@ -7040,6 +7472,7 @@ void CBasePlayer::UpdateClientData( void )
 
 void CBasePlayer::RumbleEffect( unsigned char index, unsigned char rumbleData, unsigned char rumbleFlags )
 {
+#ifndef L4D2
 	if( !IsAlive() )
 		return;
 
@@ -7051,6 +7484,11 @@ void CBasePlayer::RumbleEffect( unsigned char index, unsigned char rumbleData, u
 	WRITE_BYTE( rumbleData );
 	WRITE_BYTE( rumbleFlags	);
 	MessageEnd();
+#else
+	// S16C700 requires native IVEngineServer slot126, which is constant false
+	// in the pinned PC engine. Keep its Rumble registration/client hook, but
+	// do not replace that unavailable native branch with an SDK PC sender.
+#endif
 }
 
 void CBasePlayer::EnableControl(bool fControl)
@@ -7082,6 +7520,227 @@ void CBasePlayer::CheckTrainUpdate( void )
 // Purpose: Returns whether the player should autoaim or not
 // Output : Returns true on success, false on failure.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+class CTraceFilterSkipTwoEntitiesAndTeammates : public CTraceFilterSkipTwoEntities
+{
+public:
+	CTraceFilterSkipTwoEntitiesAndTeammates( const IHandleEntity *first, const IHandleEntity *second, int group ) :
+		CTraceFilterSkipTwoEntities( first, second, group ) {}
+	virtual bool ShouldHitEntity( IHandleEntity *pHandle, int contentsMask ) OVERRIDE
+	{
+		// S16A690 deliberately ignores static props as well as teammates.
+		if ( staticpropmgr->IsStaticProp( pHandle ) || !pHandle )
+			return false;
+		const CBaseEntity *pPassEntity = EntityFromEntityHandle( GetPassEntity() );
+		if ( !pPassEntity )
+			return false;
+		if ( pPassEntity->GetTeamNumber() == ( (CBaseEntity *)pHandle )->GetTeamNumber() )
+			return false;
+		return CTraceFilterSkipTwoEntities::ShouldHitEntity( pHandle, contentsMask );
+	}
+};
+
+bool CBasePlayer::ShouldAutoaim()
+{
+	if ( IsBot() || GetTeamNumber() != TEAM_SURVIVOR )
+		return false;
+	// Native VEngineServer022 v126/+504 -> E1319E0 is xor al,al;ret on PC.
+	// Main engine proof authorizes eliding ONLY that literal-false branch.
+	const bool enabled = atoi( engine->GetClientConVarValue( entindex(), "cl_autoaim" ) ) == 1;
+	const int inputMode = atoi( engine->GetClientConVarValue( entindex(), "cl_inputmode" ) );
+	if ( enabled && inputMode > 0 )
+		return true;
+	// S16A510 reads gpGlobals directly; no match-session/offline query here.
+	return gpGlobals->maxClients <= 1 && !g_pGameRules->IsSkillLevel( 3 );
+}
+
+Vector CBasePlayer::GetAutoaimVector( float scale )
+{
+	autoaim_params_t params;
+	params.m_fScale = scale;
+	params.m_fMaxDist = autoaim_max_dist.GetFloat();
+	params.m_fMaxDeflection = -1.0f;
+	params.m_bDirectOnly = false;
+	GetAutoaimVector( params );
+	return params.m_vecAutoAimDir;
+}
+
+Vector CBasePlayer::GetAutoaimVector( float scale, float maxRange )
+{
+	autoaim_params_t params;
+	params.m_fScale = scale;
+	params.m_fMaxDist = maxRange;
+	params.m_fMaxDeflection = -1.0f;
+	params.m_bDirectOnly = false;
+	GetAutoaimVector( params );
+	return params.m_vecAutoAimDir;
+}
+
+Vector CBasePlayer::GetAutoaimVector( float scale, float maxRange, float maxDeflection, int *outKind )
+{
+	autoaim_params_t params;
+	params.m_fScale = scale;
+	params.m_fMaxDist = maxRange;
+	params.m_fMaxDeflection = maxDeflection;
+	params.m_bDirectOnly = false;
+	GetAutoaimVector( params );
+	*outKind = 0; // Native requires a real output pointer; no invented null fallback.
+	if ( params.m_bOnTargetNatural )
+		*outKind = 1;
+	else if ( params.m_bAutoAimAssisting )
+		*outKind = 2;
+	return params.m_vecAutoAimDir;
+}
+
+void CBasePlayer::GetAutoaimVector( autoaim_params_t &params )
+{
+	params.m_bAutoAimAssisting = false;
+	params.m_bOnTargetNatural = false;
+	params.m_hAutoAimEntity = NULL;
+	params.m_vecAutoAimPoint = vec3_invalid;
+	if ( !ShouldAutoaim() || params.m_fScale == 0.0f )
+	{
+		AngleVectors( EyeAngles() + GetPunchAngle(), &params.m_vecAutoAimDir );
+		return;
+	}
+	Vector source = Weapon_ShootPosition();
+	AutoaimDeflection( source, params ); // Native does NOT store/clamp returned angle.
+	if ( !g_pGameRules->AllowAutoTargetCrosshair() )
+		m_fOnTarget = false;
+	if ( !params.m_hAutoAimEntity.Get() )
+		AngleVectors( EyeAngles() + GetPunchAngle(), &params.m_vecAutoAimDir );
+	// NO HL2 25/12 degree clamp, .9 sticky correction, or m_vecAutoAim reset.
+}
+
+float CBasePlayer::GetAutoaimScore( const Vector &eye, const Vector &viewDirection,
+	const Vector &target, CBaseEntity *pTarget, float scale, CBaseCombatWeapon *pWeapon )
+{
+	float radius = pTarget->GetAutoAimRadius();
+	if ( scale == 1.0f )
+	{
+		if ( pWeapon )
+			radius = pWeapon->WeaponAutoAimScale() * radius;
+	}
+	else
+		radius = radius * scale; // Native does NOT also multiply weapon scale here.
+	const float radiusSquared = radius * radius;
+	const Vector nearest = PointOnLineNearestPoint( eye, eye + viewDirection * 8192.0f, target );
+	const Vector difference = target - nearest;
+	const float distanceSquared = ( difference.x * difference.x + difference.y * difference.y ) + difference.z * difference.z;
+	// Native COMISS radiusSquared,distanceSquared / JB returns zero on unordered.
+	const float score = radiusSquared >= distanceSquared ? 1.0f - distanceSquared / radiusSquared : 0.0f;
+	if ( sv_showdebugtracers.GetInt() == 2 )
+	{
+		const bool positive = score > 0.0f; // Native JBE chooses gray on NaN too.
+		NDebugOverlay::Circle( target, radius, positive ? 255 : 50, positive ? 255 : 50, positive ? 0 : 50, 255, true, 5.0f );
+	}
+	return score;
+}
+
+QAngle CBasePlayer::AutoaimDeflection( Vector &source, autoaim_params_t &params )
+{
+	m_fOnTarget = false;
+	Vector forward, right, up;
+	AngleVectors( EyeAngles() + GetPunchAngle() + m_vecAutoAim, &forward, &right, &up );
+	Vector bestDirection = forward;
+	QAngle bestAngles = vec3_angle;
+	float bestScore = 0.0f;
+	CBaseEntity *pBest = NULL;
+	CBaseEntity *pIgnore = IsInAVehicle() ? GetVehicleEntity() : NULL;
+	CTraceFilterSkipTwoEntitiesAndTeammates filter( this, pIgnore, COLLISION_GROUP_NONE );
+	trace_t trace;
+	UTIL_TraceLine( source, source + bestDirection * 16384.0f, MASK_SHOT, &filter, &trace );
+	CBaseEntity *pHit = trace.m_pEnt;
+	if ( pHit && pHit->m_takedamage != DAMAGE_NO && pHit->IsAlive() )
+	{
+		const bool waterBlocked = GetWaterLevel() == 3 ? pHit->GetWaterLevel() == 0 : pHit->GetWaterLevel() == 3;
+		if ( !waterBlocked && pHit->ShouldAttractAutoAim( this ) )
+		{
+			if ( pHit->GetFlags() & FL_AIMTARGET )
+				m_fOnTarget = true;
+			params.m_hAutoAimEntity = pHit;
+			params.m_vecAutoAimDir = bestDirection;
+			params.m_vecAutoAimPoint = trace.endpos;
+			params.m_bAutoAimAssisting = false;
+			params.m_bOnTargetNatural = true;
+		}
+	}
+	if ( params.m_bDirectOnly )
+		return bestAngles; // Native early return BEFORE deflection fallback/debug.
+	float maximumDeflection = params.m_fMaxDeflection;
+	if ( maximumDeflection < 0.0f )
+		maximumDeflection = GetActiveWeapon()->GetMaxAutoAimDeflection(); // Native has NO null-weapon guard here.
+	if ( !params.m_bOnTargetNatural )
+	{
+		const int count = AimTarget_ListCount();
+		for ( int i = 0; i < count; ++i )
+		{
+			CBaseEntity *pEntity = AimTarget_ListGet( i ); // Genuine existing-vector index, no allocation/copy.
+			if ( pEntity == this || !pEntity->ShouldAttractAutoAim( this ) || !pEntity->IsAlive() )
+				continue;
+			if ( !pEntity->edict() || !g_pGameRules->ShouldAutoAim( this, pEntity->edict() ) )
+				continue;
+			if ( GetWaterLevel() == 3 ? pEntity->GetWaterLevel() == 0 : pEntity->GetWaterLevel() == 3 )
+				continue;
+			const Vector center = pEntity->GetAutoAimCenter();
+			Vector direction = center - source;
+			const float distance = sqrtf( direction.x * direction.x + direction.y * direction.y );
+			// Native rejects ordered distance>maximum; unordered passes this gate.
+			if ( params.m_fMaxDist != 0.0f && distance > params.m_fMaxDist )
+				continue;
+			VectorNormalize( direction );
+			const float dot = ( direction.y * forward.y + direction.x * forward.x ) + direction.z * forward.z;
+			if ( dot < 0.0f || ( !( pEntity->GetFlags() & FL_FLY ) && GetActiveWeapon() && maximumDeflection > dot ) )
+				continue;
+			const float score = GetAutoaimScore( source, forward, pEntity->GetAutoAimCenter(), pEntity, params.m_fScale, GetActiveWeapon() );
+			// Native FCOMIP best,score / JNB rejects >= but ACCEPTS unordered.
+			if ( !( bestScore >= score ) )
+			{
+				UTIL_TraceLine( source, center, MASK_SHOT, &filter, &trace );
+				if ( trace.fraction == 1.0f || trace.m_pEnt == pEntity )
+				{
+					bestScore = score;
+					bestDirection = direction;
+					pBest = pEntity;
+				}
+			}
+		}
+		if ( pBest )
+		{
+			VectorAngles( bestDirection, bestAngles );
+			if ( IsInAVehicle() )
+				bestAngles -= EyeAngles();
+			else
+				bestAngles -= EyeAngles() - GetPunchAngle();
+			m_fOnTarget = true;
+			params.m_hAutoAimEntity = pBest;
+			params.m_vecAutoAimDir = bestDirection;
+			params.m_vecAutoAimPoint = pBest->BodyTarget( source, false );
+			params.m_bAutoAimAssisting = true;
+			params.m_bOnTargetNatural = false;
+		}
+	}
+	if ( sv_showdebugtracers.GetInt() == 2 )
+	{
+		const float length = params.m_fMaxDist == 0.0f ? 1000.0f : params.m_fMaxDist;
+		int r = 50, g = 50, b = 50;
+		if ( params.m_bOnTargetNatural ) { r = 255; g = 0; b = 0; }
+		else if ( params.m_bAutoAimAssisting ) { r = 0; g = 255; b = 0; }
+		NDebugOverlay::Line( source, source + forward * length, r, g, b, true, 5.0f );
+		const double coneAngle = acos( static_cast< double >( maximumDeflection ) );
+		NDebugOverlay::Cone( source, forward, static_cast< float >( coneAngle + coneAngle ), length, r, g, b, 255, true, 5.0f );
+		if ( params.m_bOnTargetNatural || params.m_bAutoAimAssisting )
+			NDebugOverlay::Cross2D( params.m_vecAutoAimPoint, params.m_hAutoAimEntity->GetAutoAimRadius(), r, g, b, true, 5.0f );
+	}
+	return bestAngles;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool CBasePlayer::ShouldAutoaim( void )
 {
 	// cannot be in multiplayer
@@ -7429,6 +8088,7 @@ QAngle CBasePlayer::AutoaimDeflection( Vector &vecSrc, autoaim_params_t &params 
 
 	return vec3_angle;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -7672,7 +8332,12 @@ void CBasePlayer::ChangeTeam( int iTeamNum, bool bAutoTeam, bool bSilent, bool b
 		event->SetInt("disconnect", IsDisconnecting());
 		event->SetInt("autoteam", bAutoTeam );
 		event->SetInt("silent", bSilent );
+#if defined( L4D2 )
+		event->SetString( "name", GetTeamNumber() == TEAM_UNASSIGNED ? GetPlayerName() : "" );
+		event->SetBool( "isbot", !IsNetClient() );
+#else
 		event->SetString("name", GetPlayerName() );
+#endif
 
 		gameeventmanager->FireEvent( event );
 	}
@@ -7759,6 +8424,10 @@ class CStripWeapons : public CPointEntity
 public:
 	void InputStripWeapons(inputdata_t &data);
 	void InputStripWeaponsAndSuit(inputdata_t &data);
+#if defined( L4D2 )
+	void InputStripWeaponByClassname( inputdata_t &data );
+	void InputStripActiveWeapon( inputdata_t &inputdata );
+#endif
 
 	void StripWeapons(inputdata_t &data, bool stripSuit);
 	DECLARE_DATADESC();
@@ -7769,8 +8438,13 @@ LINK_ENTITY_TO_CLASS( player_weaponstrip, CStripWeapons );
 BEGIN_DATADESC( CStripWeapons )
 	DEFINE_INPUTFUNC( FIELD_VOID, "Strip", InputStripWeapons ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "StripWeaponsAndSuit", InputStripWeaponsAndSuit ),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_VOID, "StripActiveWeapon", InputStripActiveWeapon ),
+	DEFINE_INPUTFUNC( FIELD_STRING, "StripWeaponByClassname", InputStripWeaponByClassname ),
+#endif
 END_DATADESC()
 	
+#if !defined( L4D2 )
 BEGIN_ENT_SCRIPTDESC( CBasePlayer, CBaseCombatCharacter, "The player entity." )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptIsPlayerNoclipping, "IsNoclipping", "Returns true if the player is in noclip mode." ) 
 	DEFINE_SCRIPTFUNC( ViewPunch, "Ow! Punches the player's view" ) 
@@ -7783,6 +8457,7 @@ BEGIN_ENT_SCRIPTDESC( CBasePlayer, CBaseCombatCharacter, "The player entity." )
 	DEFINE_SCRIPTFUNC( GetScriptOverlayMaterial, "Gets the current view overlay material" )
 	DEFINE_SCRIPTFUNC( SetScriptOverlayMaterial, "Sets a view overlay material" )
 END_SCRIPTDESC();
+#endif
 
 void CStripWeapons::InputStripWeapons(inputdata_t &data)
 {
@@ -7812,6 +8487,54 @@ void CStripWeapons::StripWeapons(inputdata_t &data, bool stripSuit)
 		pPlayer->RemoveAllItems( stripSuit );
 	}
 }
+
+#if defined( L4D2 )
+// S16CB90: first case-sensitive classname match, in inventory-slot order.
+void CStripWeapons::InputStripWeaponByClassname( inputdata_t &data )
+{
+	const char *pClassname = data.value.String();
+	if ( !pClassname || !pClassname[0] )
+		return;
+
+	CBasePlayer *pPlayer = NULL;
+	if ( data.pActivator && data.pActivator->IsPlayer() )
+		pPlayer = static_cast< CBasePlayer * >( data.pActivator );
+	else if ( !g_pGameRules->IsDeathmatch() )
+		pPlayer = UTIL_GetLocalPlayer();
+	if ( !pPlayer )
+		return;
+
+	for ( int i = 0; i < MAX_WEAPONS; ++i )
+	{
+		CBaseCombatWeapon *pWeapon = pPlayer->GetWeapon( i );
+		if ( pWeapon && !strcmp( pWeapon->GetClassname(), pClassname ) )
+		{
+			pPlayer->Weapon_Detach( pWeapon );
+			UTIL_Remove( pWeapon );
+			return;
+		}
+	}
+}
+
+void CStripWeapons::InputStripActiveWeapon( inputdata_t &inputdata )
+{
+	CBasePlayer *pPlayer = NULL;
+	if ( inputdata.pActivator && inputdata.pActivator->IsPlayer() )
+		pPlayer = static_cast< CBasePlayer * >( inputdata.pActivator );
+	else if ( !g_pGameRules->IsDeathmatch() )
+		pPlayer = UTIL_GetLocalPlayer();
+
+	if ( pPlayer )
+	{
+		CBaseCombatWeapon *pWeapon = pPlayer->GetActiveWeapon();
+		if ( pWeapon )
+		{
+			pPlayer->Weapon_Detach( pWeapon );
+			UTIL_Remove( pWeapon );
+		}
+	}
+}
+#endif
 
 
 class CRevertSaved : public CPointEntity
@@ -8119,7 +8842,7 @@ void CMovementSpeedMod::InputSpeedMod(inputdata_t &data)
 		SendPropDataTable	( SENDINFO_DT(m_Local), &REFERENCE_SEND_TABLE(DT_Local) ),
 		
 // If HL2_DLL is defined, then baseflex.cpp already sends these.
-#ifndef HL2_DLL
+#if !defined( HL2_DLL ) && !defined( L4D2 )
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecViewOffset, 0), 8, SPROP_ROUNDDOWN, -32.0, 32.0f),
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecViewOffset, 1), 8, SPROP_ROUNDDOWN, -32.0, 32.0f),
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecViewOffset, 2), 20, SPROP_CHANGES_OFTEN,	0.0f, 256.0f),
@@ -8127,32 +8850,50 @@ void CMovementSpeedMod::InputSpeedMod(inputdata_t &data)
 
 		SendPropFloat		( SENDINFO(m_flFriction),		8,	SPROP_ROUNDDOWN,	0.0f,	4.0f),
 
+#if defined( L4D2 )
+		SendPropArray3( SENDINFO_ARRAY3( m_iAmmo ), SendPropInt( SENDINFO_ARRAY( m_iAmmo ), 10, SPROP_UNSIGNED ) ),
+#else
 		SendPropArray3		( SENDINFO_ARRAY3(m_iAmmo), SendPropInt( SENDINFO_ARRAY(m_iAmmo), -1, SPROP_VARINT | SPROP_UNSIGNED ) ),
+#endif
 			
 		SendPropInt			( SENDINFO( m_fOnTarget ), 2, SPROP_UNSIGNED ),
 
 		SendPropInt			( SENDINFO( m_nTickBase ), -1, SPROP_CHANGES_OFTEN ),
 		SendPropInt			( SENDINFO( m_nNextThinkTick ) ),
 
+#if !defined( L4D2 )
 		SendPropEHandle		( SENDINFO( m_hLastWeapon ) ),
 		SendPropEHandle		( SENDINFO( m_hGroundEntity ), SPROP_CHANGES_OFTEN ),
+#endif
 
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecVelocity, 0), 32, SPROP_NOSCALE|SPROP_CHANGES_OFTEN ),
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecVelocity, 1), 32, SPROP_NOSCALE|SPROP_CHANGES_OFTEN ),
 		SendPropFloat		( SENDINFO_VECTORELEM(m_vecVelocity, 2), 32, SPROP_NOSCALE|SPROP_CHANGES_OFTEN ),
 
+#if defined( L4D2 )
+		SendPropVector( SENDINFO( m_vecBaseVelocity ), 20, 0, -1000.0f, 1000.0f ),
+#else
 		SendPropVector		( SENDINFO( m_vecBaseVelocity ), 32, SPROP_NOSCALE ),
+#endif
 
 		SendPropEHandle		( SENDINFO( m_hConstraintEntity)),
 		SendPropVector		( SENDINFO( m_vecConstraintCenter), 0, SPROP_NOSCALE ),
 		SendPropFloat		( SENDINFO( m_flConstraintRadius ), 0, SPROP_NOSCALE ),
 		SendPropFloat		( SENDINFO( m_flConstraintWidth ), 0, SPROP_NOSCALE ),
 		SendPropFloat		( SENDINFO( m_flConstraintSpeedFactor ), 0, SPROP_NOSCALE ),
+#if defined( L4D2 )
+		SendPropBool		( SENDINFO( m_bConstraintPastRadius ) ),
+#endif
 
 		SendPropFloat		( SENDINFO( m_flDeathTime ), 0, SPROP_NOSCALE ),
 
+#if !defined( L4D2 )
 		SendPropInt			( SENDINFO( m_nWaterLevel ), 2, SPROP_UNSIGNED ),
+#endif
 		SendPropFloat		( SENDINFO( m_flLaggedMovementValue ), 0, SPROP_NOSCALE ),
+#if defined( L4D2 )
+		SendPropEHandle( SENDINFO( m_hTonemapController ) ),
+#endif
 
 	END_SEND_TABLE()
 
@@ -8172,15 +8913,35 @@ void CMovementSpeedMod::InputSpeedMod(inputdata_t &data)
 #endif
 
 		SendPropDataTable(SENDINFO_DT(pl), &REFERENCE_SEND_TABLE(DT_PlayerState), SendProxy_DataTableToDataTable),
+#if defined( L4D2 )
+		SendPropFloat( SENDINFO_VECTORELEM( m_vecViewOffset, 0 ), 10, SPROP_ROUNDDOWN, -64.0f, 64.0f ),
+		SendPropFloat( SENDINFO_VECTORELEM( m_vecViewOffset, 1 ), 10, SPROP_ROUNDDOWN, -64.0f, 64.0f ),
+		SendPropFloat( SENDINFO_VECTORELEM( m_vecViewOffset, 2 ), 10, SPROP_CHANGES_OFTEN, 0.0f, 128.0f ),
+#endif
 
 		SendPropEHandle(SENDINFO(m_hVehicle)),
 		SendPropEHandle(SENDINFO(m_hUseEntity)),
+#if defined( L4D2 )
+		SendPropEHandle( SENDINFO( m_hGroundEntity ) ),
+		SendPropEHandle( SENDINFO( m_hLastWeapon ) ),
+#endif
+#if defined( L4D2 )
+		SendPropEHandle(SENDINFO(m_hElevator)),
+#endif
+#if defined( L4D2 )
+		SendPropInt( SENDINFO( m_iHealth ), 16, SPROP_UNSIGNED ),
+#else
 		SendPropInt		(SENDINFO(m_iHealth), -1, SPROP_VARINT | SPROP_CHANGES_OFTEN ),
+#endif
 		SendPropInt		(SENDINFO(m_lifeState), 3, SPROP_UNSIGNED ),
 		SendPropInt		(SENDINFO(m_iBonusProgress), 15 ),
 		SendPropInt		(SENDINFO(m_iBonusChallenge), 4 ),
 		SendPropFloat	(SENDINFO(m_flMaxspeed), 12, SPROP_ROUNDDOWN, 0.0f, 2048.0f ),  // CL
+#if defined( L4D2 )
+		SendPropInt		(SENDINFO(m_fFlags), PLAYER_FLAG_BITS, SPROP_UNSIGNED|SPROP_CHANGES_OFTEN ),
+#else
 		SendPropInt		(SENDINFO(m_fFlags), 0, SPROP_UNSIGNED|SPROP_CHANGES_OFTEN ),
+#endif
 		SendPropInt		(SENDINFO(m_iObserverMode), 3, SPROP_UNSIGNED ),
 		SendPropEHandle	(SENDINFO(m_hObserverTarget) ),
 		SendPropInt		(SENDINFO(m_iFOV), 8, SPROP_UNSIGNED ),
@@ -8190,10 +8951,23 @@ void CMovementSpeedMod::InputSpeedMod(inputdata_t &data)
 		SendPropEHandle	(SENDINFO(m_hZoomOwner) ),
 		SendPropArray	( SendPropEHandle( SENDINFO_ARRAY( m_hViewModel ) ), m_hViewModel ),
 		SendPropString	(SENDINFO(m_szLastPlaceName) ),
+#if defined( L4D2 )
+		SendPropVector( SENDINFO( m_vecLadderNormal ), -1, SPROP_NORMAL ),
+		SendPropInt( SENDINFO( m_ladderSurfaceProps ), 32, SPROP_UNSIGNED ),
+		SendPropInt( SENDINFO( m_ubEFNoInterpParity ), 2, SPROP_UNSIGNED ),
+		SendPropInt( SENDINFO( m_nWaterLevel ), 2, SPROP_UNSIGNED ),
+#endif
 
 #if defined USES_ECON_ITEMS
 		SendPropUtlVector( SENDINFO_UTLVECTOR( m_hMyWearables ), MAX_WEARABLES_SENT_FROM_SERVER, SendPropEHandle( NULL, 0 ) ),
 #endif // USES_ECON_ITEMS
+
+#if defined( L4D2 )
+		SendPropEHandle( SENDINFO( m_hPostProcessCtrl ) ),
+		SendPropEHandle( SENDINFO( m_hColorCorrectionCtrl ) ),
+		SendPropEHandle( SENDINFO_NAME( m_Local.m_PlayerFog.m_hCtrl, m_PlayerFog.m_hCtrl ) ),
+		SendPropEHandle( SENDINFO( m_hViewEntity ) ),
+#endif
 
 		// Data that only gets sent to the local player.
 		SendPropDataTable( "localdata", 0, &REFERENCE_SEND_TABLE(DT_LocalPlayerExclusive), SendProxy_SendLocalDataTable ),
@@ -8494,6 +9268,7 @@ bool CBasePlayer::ShouldSavePhysics()
 	return false;
 }
 
+#if !defined( L4D2 )
 void CBasePlayer::RefreshCollisionBounds( void )
 {
 	BaseClass::RefreshCollisionBounds();
@@ -8501,6 +9276,7 @@ void CBasePlayer::RefreshCollisionBounds( void )
 	InitVCollision( GetAbsOrigin(), GetAbsVelocity() );
 	SetViewOffset( VEC_VIEW_SCALED( this ) );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose:
@@ -8589,6 +9365,57 @@ void CBasePlayer::SetVCollisionState( const Vector &vecAbsOrigin, const Vector &
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+int CBasePlayer::GetFOV( void )
+{
+	// S177EF0: actual EAX integer result, not the client's F32 virtual.
+	int defaultFOV;
+	if ( GetVehicle() )
+	{
+		CacheVehicleView();
+		const float vehicleFOV = m_flVehicleViewFOV;
+		defaultFOV = vehicleFOV == 0.0f ? GetDefaultFOV() :
+			_mm_cvttss_si32( _mm_set_ss( vehicleFOV ) );
+	}
+	else
+	{
+		defaultFOV = GetDefaultFOV();
+	}
+
+	const int requestedFOV = m_iFOV;
+	const int fov = requestedFOV != 0 ? requestedFOV : defaultFOV;
+	const float rate = m_Local.m_flFOVRate;
+	if ( rate == 0.0f )
+		return fov;
+
+	const float elapsed = gpGlobals->curtime - m_flFOVTime;
+	float delta = elapsed / rate;
+	if ( delta >= 1.0f )
+	{
+		m_iFOVStart = fov; // Native integer network comparison/callback/store.
+		return fov;
+	}
+
+	const float startFOV = static_cast< float >( static_cast< int >( m_iFOVStart ) );
+	const float targetFOV = static_cast< float >( fov );
+	if ( delta > 1.0f ) delta = 1.0f;
+	else if ( delta < 0.0f ) delta = 0.0f; // Unordered retains NaN.
+	const float squared = delta * delta;
+	const float first = squared * 3.0f;
+	const float second = ( squared * 2.0f ) * delta;
+	const float spline = first - second;
+	const float difference = targetFOV - startFOV;
+	const float scaled = spline * difference;
+	const float result = scaled + startFOV;
+	return _mm_cvttss_si32( _mm_set_ss( result ) ); // Native integer-indefinite bits.
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 int CBasePlayer::GetFOV( void )
 {
 	int nDefaultFOV;
@@ -8624,6 +9451,7 @@ int CBasePlayer::GetFOV( void )
 
 	return fFOV;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -8686,6 +9514,9 @@ void CBasePlayer::SetDefaultFOV( int FOV )
 // Purpose: // static func
 // Input  : set - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CBasePlayer::ModifyOrAppendPlayerCriteria( AI_CriteriaSet& set )
 {
 	// Append our health
@@ -8711,10 +9542,19 @@ void CBasePlayer::ModifyOrAppendPlayerCriteria( AI_CriteriaSet& set )
 	// Append current activity name
 	set.AppendCriteria( "playeractivity", CAI_BaseNPC::GetActivityName( GetActivity() ) );
 
+#ifdef L4D2
+	const Vector &velocity = GetAbsVelocity();
+	const float speedSqr = ( velocity.x * velocity.x + velocity.y * velocity.y ) + velocity.z * velocity.z;
+	set.AppendCriteria( "playerspeed", UTIL_VarArgs( "%.3f", sqrt( static_cast< double >( speedSqr ) ) ) );
+#else
 	set.AppendCriteria( "playerspeed", UTIL_VarArgs( "%.3f", GetAbsVelocity().Length() ) );
+#endif
 
 	AppendContextToCriteria( set, "player" );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 const QAngle& CBasePlayer::GetPunchAngle()
@@ -8746,6 +9586,19 @@ void CBasePlayer::SetPunchAngle( const QAngle &punchAngle )
 //-----------------------------------------------------------------------------
 // Purpose: Apply a movement constraint to the player
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CBasePlayer::ActivateMovementConstraint( CBaseEntity *entity, const Vector &center,
+	float radius, float width, float speedFactor, bool pastRadius )
+{
+	m_hConstraintEntity = entity;
+	m_vecConstraintCenter = center;
+	m_flConstraintRadius = radius;
+	m_flConstraintWidth = width;
+	m_flConstraintSpeedFactor = speedFactor;
+	m_bConstraintPastRadius = pastRadius;
+}
+
+#else
 void CBasePlayer::ActivateMovementConstraint( CBaseEntity *pEntity, const Vector &vecCenter, float flRadius, float flConstraintWidth, float flSpeedFactor )
 {
 	m_hConstraintEntity = pEntity;
@@ -8755,15 +9608,29 @@ void CBasePlayer::ActivateMovementConstraint( CBaseEntity *pEntity, const Vector
 	m_flConstraintSpeedFactor = flSpeedFactor;
 }
 
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CBasePlayer::DeactivateMovementConstraint()
+{
+	if ( m_hConstraintEntity.Get() )
+		m_hConstraintEntity = NULL;
+	m_flConstraintRadius = 0.0f;
+	m_vecConstraintCenter = vec3_origin;
+}
+
+#else
 void CBasePlayer::DeactivateMovementConstraint( )
 {
 	m_hConstraintEntity = NULL;
 	m_flConstraintRadius = 0.0f;
 	m_vecConstraintCenter = vec3_origin;
 }
+
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Fight chat spam with a two tiered token bucket
@@ -9012,6 +9879,7 @@ bool CBasePlayer::HasAnyAmmoOfType( int nAmmoIndex )
 	return false;
 }
 
+#if !defined( L4D2 )
 CVoteController *CBasePlayer::GetTeamVoteController()
 {
 	return g_voteControllerGlobal;
@@ -9108,6 +9976,7 @@ bool CBasePlayer::HandleVoteCommands( const CCommand &args )
 
 	return false;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 //  return a string version of the players network (i.e steam) ID.
@@ -9165,7 +10034,12 @@ private:
 //-----------------------------------------------------------------------------
 // sets the "don't autokick me" flag on a player
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( mp_disable_autokick, "Prevents a userid from being auto-kicked" , 0x00000004)
+#else
 CON_COMMAND( mp_disable_autokick, "Prevents a userid from being auto-kicked" )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -9679,3 +10553,20 @@ void* SendProxy_SendNonLocalDataTable( const SendProp *pProp, const void *pStruc
 }
 REGISTER_SEND_PROXY_NON_MODIFIED_POINTER( SendProxy_SendNonLocalDataTable );
 
+
+// Native server 0x169f20; 0x5c24d8 is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace spraycanPrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "spraycan", 0x5c24d8 ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		handler->Precache( RESOURCETYPE_ENTITY, "spraycan", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
+#endif

@@ -178,12 +178,17 @@ public:
 
 	virtual ~Behavior() 
 	{
+#if !defined( L4D2 )
 		if ( m_me && m_action )
 		{
 			// allow all currently active Actions to end
 			m_action->InvokeOnEnd( m_me, this, NULL );
 			m_me = NULL;
 		}
+#endif
+
+		// L4D2 destroys the owned Action tree without live OnEnd callbacks.
+		// Its actor's locomotion and body components may already be gone.
 
 		// dig down to the bottom of the action stack and delete 
 		// that, so we don't leak action memory since action 
@@ -302,6 +307,13 @@ public:
 	{
 		return m_name;
 	}
+	#if defined( L4D2 )
+	// S3A0E00: reuse the existing Action256 formatter and root traversal.
+	virtual const char *DebugString( void ) const OVERRIDE
+	{
+		return m_action ? m_action->Action< Actor >::DebugString() : "< NULL action >";
+	}
+	#endif
 
 	// INextBotEventResponder propagation ----------------------------------------------------------------------
 	virtual INextBotEventResponder *FirstContainedResponder( void ) const
@@ -405,7 +417,11 @@ public:
 		return result;
 	}
 
+#if defined( L4D2 )
+	virtual QueryResultType ShouldAttack( const INextBot *me, CBaseCombatCharacter *them ) const
+#else
 	virtual QueryResultType ShouldAttack( const INextBot *me, const CKnownEntity *them ) const	// should we attack "them"?
+#endif
 	{
 		QueryResultType result = ANSWER_UNDEFINED;
 
@@ -497,6 +513,30 @@ public:
 	}
 
 
+#if defined( L4D2 )
+	virtual const Path *GetCurrentPath( const INextBot *me ) const OVERRIDE
+	{
+		const Path *result = NULL;
+		if ( m_action )
+		{
+			Action< Actor > *action;
+			for ( action = m_action; action->m_child; action = action->m_child )
+				;
+			while ( action && !result )
+			{
+				Action< Actor > *containingAction = action->m_parent;
+				while ( action && !result )
+				{
+					result = action->GetCurrentPath( me );
+					action = action->GetActionBuriedUnderMe();
+				}
+				action = containingAction;
+			}
+		}
+		return result;
+	}
+#endif
+
 	/**
 	 * Allow bot to approve of positions game movement tries to put him into.
 	 * This is most useful for bots derived from CBasePlayer that go through
@@ -534,9 +574,17 @@ public:
 
 
 
+#if defined( L4D2 )
+	virtual CBaseEntity *SelectMoreDangerousThreat( const INextBot *me, const CBaseCombatCharacter *subject, CBaseEntity *threat1, CBaseEntity *threat2 ) const
+#else
 	virtual const CKnownEntity *SelectMoreDangerousThreat( const INextBot *me, const CBaseCombatCharacter *subject, const CKnownEntity *threat1, const CKnownEntity *threat2 ) const	// return the more dangerous of the two threats, or NULL if we have no opinion
+#endif
 	{
+#if defined( L4D2 )
+		CBaseEntity *result = NULL;
+#else
 		const CKnownEntity *result = NULL;
+#endif
 
 		if ( m_action )
 		{
@@ -661,16 +709,31 @@ public:
 	virtual EventDesiredResult< Actor > OnOtherKilled( Actor *me, CBaseCombatCharacter *victim, const CTakeDamageInfo &info )	{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnSight( Actor *me, CBaseEntity *subject )								{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnLostSight( Actor *me, CBaseEntity *subject )							{ return TryContinue(); }
+#if defined( L4D2 )
+	virtual EventDesiredResult< Actor > OnThreatChanged( Actor *me, CBaseCombatCharacter *threat ) { return TryContinue(); }
+#endif
 	virtual EventDesiredResult< Actor > OnSound( Actor *me, CBaseEntity *source, const Vector &pos, KeyValues *keys )	{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnSpokeConcept( Actor *me, CBaseCombatCharacter *who, AIConcept_t concept, AI_Response *response )	{ return TryContinue(); }
+#if !defined( L4D2 )
 	virtual EventDesiredResult< Actor > OnWeaponFired( Actor *me, CBaseCombatCharacter *whoFired, CBaseCombatWeapon *weapon )	{ return TryContinue(); }
+#endif
 	virtual EventDesiredResult< Actor > OnNavAreaChanged( Actor *me, CNavArea *newArea, CNavArea *oldArea )		{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnModelChanged( Actor *me )												{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnPickUp( Actor *me, CBaseEntity *item, CBaseCombatCharacter *giver )	{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnDrop( Actor *me, CBaseEntity *item )									{ return TryContinue(); }
+#if defined( L4D2 )
+	virtual EventDesiredResult< Actor > OnShoved( Actor *me, CBaseEntity *pusher ) { return TryContinue(); }
+	virtual EventDesiredResult< Actor > OnBlinded( Actor *me, CBaseEntity *blinder ) { return TryContinue(); }
+	virtual EventDesiredResult< Actor > OnEnteredSpit( Actor *me ) { return TryContinue(); }
+	virtual EventDesiredResult< Actor > OnHitByVomitJar( Actor *me, CBaseEntity *attacker ) { return TryContinue(); }
+#else
 	virtual EventDesiredResult< Actor > OnActorEmoted( Actor *me, CBaseCombatCharacter *emoter, int emote )			{ return TryContinue(); }
+#endif
 
 	virtual EventDesiredResult< Actor > OnCommandAttack( Actor *me, CBaseEntity *victim )						{ return TryContinue(); }
+#if defined( L4D2 )
+	virtual EventDesiredResult< Actor > OnCommandAssault( Actor *me ) { return TryContinue(); }
+#endif
 	virtual EventDesiredResult< Actor > OnCommandApproach( Actor *me, const Vector &pos, float range )			{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnCommandApproach( Actor *me, CBaseEntity *goal )						{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnCommandRetreat( Actor *me, CBaseEntity *threat, float range )			{ return TryContinue(); }
@@ -678,6 +741,7 @@ public:
 	virtual EventDesiredResult< Actor > OnCommandResume( Actor *me )											{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnCommandString( Actor *me, const char *command )						{ return TryContinue(); }
 
+#if !defined( L4D2 )
 	virtual EventDesiredResult< Actor > OnShoved( Actor *me, CBaseEntity *pusher )								{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnBlinded( Actor *me, CBaseEntity *blinder )							{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnTerritoryContested( Actor *me, int territoryID )						{ return TryContinue(); }
@@ -685,6 +749,7 @@ public:
 	virtual EventDesiredResult< Actor > OnTerritoryLost( Actor *me, int territoryID )							{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnWin( Actor *me )														{ return TryContinue(); }
 	virtual EventDesiredResult< Actor > OnLose( Actor *me )														{ return TryContinue(); }
+#endif
 
 #ifdef DOTA_SERVER_DLL
 	virtual EventDesiredResult< Actor > OnCommandMoveTo( Actor *me, const Vector &pos ) { return TryContinue(); }
@@ -719,7 +784,11 @@ public:
 
 	bool IsSuspended( void ) const;						// return true if we are currently suspended for another Action
 
-	const char *DebugString( void ) const;								// return a temporary string describing the current action stack for debugging
+#if defined( L4D2 )
+	virtual const char *DebugString( void ) const OVERRIDE;
+#else
+	const char *DebugString( void ) const;
+#endif
 
 	/**
 	 * Sometimes we want to pass through other NextBots. OnContact() will always
@@ -912,16 +981,31 @@ private:
 	virtual void OnOtherKilled( CBaseCombatCharacter *victim, const CTakeDamageInfo &info )	{ PROCESS_EVENT_WITH_2_ARGS( OnOtherKilled, victim, info ); }
 	virtual void OnSight( CBaseEntity *subject )						{ PROCESS_EVENT_WITH_1_ARG( OnSight, subject ); }
 	virtual void OnLostSight( CBaseEntity *subject )					{ PROCESS_EVENT_WITH_1_ARG( OnLostSight, subject ); }
+#if defined( L4D2 )
+	virtual void OnThreatChanged( CBaseCombatCharacter *threat ) { PROCESS_EVENT_WITH_1_ARG( OnThreatChanged, threat ); }
+#endif
 	virtual void OnSound( CBaseEntity *source, const Vector &pos, KeyValues *keys )					{ PROCESS_EVENT_WITH_3_ARGS( OnSound, source, pos, keys ); }
 	virtual void OnSpokeConcept( CBaseCombatCharacter *who, AIConcept_t concept, AI_Response *response )	{ PROCESS_EVENT_WITH_3_ARGS( OnSpokeConcept, who, concept, response ); }
+#if !defined( L4D2 )
 	virtual void OnWeaponFired( CBaseCombatCharacter *whoFired, CBaseCombatWeapon *weapon )			{ PROCESS_EVENT_WITH_2_ARGS( OnWeaponFired, whoFired, weapon ); }
+#endif
 	virtual void OnNavAreaChanged( CNavArea *newArea, CNavArea *oldArea )	{ PROCESS_EVENT_WITH_2_ARGS( OnNavAreaChanged, newArea, oldArea ); }
 	virtual void OnModelChanged( void )									{ PROCESS_EVENT( OnModelChanged ); }
 	virtual void OnPickUp( CBaseEntity *item, CBaseCombatCharacter *giver )	{ PROCESS_EVENT_WITH_2_ARGS( OnPickUp, item, giver ); }
 	virtual void OnDrop( CBaseEntity *item )							{ PROCESS_EVENT_WITH_1_ARG( OnDrop, item ); }
+#if defined( L4D2 )
+	virtual void OnShoved( CBaseEntity *pusher ) { PROCESS_EVENT_WITH_1_ARG( OnShoved, pusher ); }
+	virtual void OnBlinded( CBaseEntity *blinder ) { PROCESS_EVENT_WITH_1_ARG( OnBlinded, blinder ); }
+	virtual void OnEnteredSpit() { PROCESS_EVENT( OnEnteredSpit ); }
+	virtual void OnHitByVomitJar( CBaseEntity *attacker ) { PROCESS_EVENT_WITH_1_ARG( OnHitByVomitJar, attacker ); }
+#else
 	virtual void OnActorEmoted( CBaseCombatCharacter *emoter, int emote )	{ PROCESS_EVENT_WITH_2_ARGS( OnActorEmoted, emoter, emote ); }
+#endif
 
 	virtual void OnCommandAttack( CBaseEntity *victim )					{ PROCESS_EVENT_WITH_1_ARG( OnCommandAttack, victim ); }
+#if defined( L4D2 )
+	virtual void OnCommandAssault() { PROCESS_EVENT( OnCommandAssault ); }
+#endif
 	virtual void OnCommandApproach( const Vector &pos, float range )	{ PROCESS_EVENT_WITH_2_ARGS( OnCommandApproach, pos, range ); }
 	virtual void OnCommandApproach( CBaseEntity *goal )					{ PROCESS_EVENT_WITH_1_ARG( OnCommandApproach, goal ); }
 	virtual void OnCommandRetreat( CBaseEntity *threat, float range )	{ PROCESS_EVENT_WITH_2_ARGS( OnCommandRetreat, threat, range ); }
@@ -929,6 +1013,7 @@ private:
 	virtual void OnCommandResume( void )								{ PROCESS_EVENT( OnCommandResume ); }
 	virtual void OnCommandString( const char *command )					{ PROCESS_EVENT_WITH_1_ARG( OnCommandString, command ); }
 
+#if !defined( L4D2 )
 	virtual void OnShoved( CBaseEntity *pusher )						{ PROCESS_EVENT_WITH_1_ARG( OnShoved, pusher ); }
 	virtual void OnBlinded( CBaseEntity *blinder )						{ PROCESS_EVENT_WITH_1_ARG( OnBlinded, blinder ); }
 	virtual void OnTerritoryContested( int territoryID )				{ PROCESS_EVENT_WITH_1_ARG( OnTerritoryContested, territoryID ); }
@@ -936,6 +1021,7 @@ private:
 	virtual void OnTerritoryLost( int territoryID )						{ PROCESS_EVENT_WITH_1_ARG( OnTerritoryLost, territoryID ); }
 	virtual void OnWin( void )											{ PROCESS_EVENT( OnWin ); }
 	virtual void OnLose( void )											{ PROCESS_EVENT( OnLose ); }
+#endif
 
 #ifdef DOTA_SERVER_DLL
 	virtual void OnCommandMoveTo( const Vector &pos ) { PROCESS_EVENT_WITH_1_ARG( OnCommandMoveTo, pos ); }
@@ -968,10 +1054,16 @@ private:
 	bool m_isStarted;										// Action doesn't start until OnStart() is invoked
 	bool m_isSuspended;										// are we suspended for another Action
 
+#if defined( L4D2 )
+public:
+#endif
 	Action< Actor > *GetActionBuriedUnderMe( void ) const	// return Action just "under" us that we will resume to when we finish
 	{
 		return m_buriedUnderMe;
 	}
+#if defined( L4D2 )
+private:
+#endif
 
 	Action< Actor > *GetActionCoveringMe( void ) const		// return Action just "above" us that will resume to us when it finishes
 	{
@@ -1057,6 +1149,39 @@ private:
 			return;
 		}
 
+#ifdef L4D2
+		// Native S:1038D4F0 keeps the first equal-priority request unless
+		// the stored result merely sustains the current action.
+		if ( result.m_priority > m_eventResult.m_priority )
+		{
+			if ( result.m_priority != RESULT_NONE && m_eventResult.m_action )
+			{
+				delete m_eventResult.m_action;
+			}
+			m_eventResult = result;
+		}
+		else if ( result.m_priority == m_eventResult.m_priority && m_eventResult.m_type == SUSTAIN )
+		{
+			if ( m_eventResult.m_action )
+			{
+				delete m_eventResult.m_action;
+			}
+			m_eventResult = result;
+		}
+		else
+		{
+			if ( result.m_priority == RESULT_CRITICAL && developer.GetBool() )
+			{
+				const char *name = GetName();
+				const float now = gpGlobals->curtime;
+				DevMsg( "%3.2f: WARNING: %s::%s() RESULT_CRITICAL collision\n", now, name, eventName );
+			}
+			if ( result.m_action )
+			{
+				delete result.m_action;
+			}
+		}
+#else
 		if ( result.m_priority >= m_eventResult.m_priority )
 		{
 			if ( m_eventResult.m_priority == RESULT_CRITICAL )
@@ -1087,6 +1212,7 @@ private:
 				delete result.m_action;
 			}
 		}
+#endif
 	}
 	
 	char *BuildDecoratedName( char *name, const Action< Actor > *action ) const;	// recursive name outMsg for DebugString()

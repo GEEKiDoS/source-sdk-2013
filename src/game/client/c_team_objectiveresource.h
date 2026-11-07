@@ -1,3 +1,92 @@
+#if defined( L4D2 )
+//========= Copyright Valve Corporation, All rights reserved. ============//
+#ifndef C_TEAM_OBJECTIVERESOURCE_H
+#define C_TEAM_OBJECTIVERESOURCE_H
+#ifdef _WIN32
+#pragma once
+#endif
+
+#include "shareddefs.h"
+#include "c_baseentity.h"
+
+#define TEAM_ARRAY( index, team ) ( (index) + ( (team) * MAX_CONTROL_POINTS ) )
+
+// Native L4D2 C_BaseTeamObjectiveResource, C0A2330 / RTTI C6C410C.
+class C_BaseTeamObjectiveResource : public C_BaseEntity
+{
+	DECLARE_CLASS( C_BaseTeamObjectiveResource, C_BaseEntity );
+public:
+	DECLARE_CLIENTCLASS();
+
+	C_BaseTeamObjectiveResource();
+	virtual ~C_BaseTeamObjectiveResource();
+	virtual void ClientThink();
+	virtual void OnPreDataChanged( DataUpdateType_t updateType );
+	virtual void OnDataChanged( DataUpdateType_t updateType );
+
+	void SetOwningTeam( int index, int team );
+	virtual void SetCappingTeam( int index, int team );
+	void SetCapLayout( const char *pszLayout );
+	void UpdateControlPoint( const char *pszEvent, int index = -1 );
+
+	virtual const char *GetGameSpecificCPCappingSwipe( int index, int team ) { return NULL; }
+	virtual const char *GetGameSpecificCPBarFG( int index, int team ) { return NULL; }
+	virtual const char *GetGameSpecificCPBarBG( int index, int team ) { return NULL; }
+
+protected:
+	int GetOwningTeam( int index ) const
+	{
+		return index < m_iNumControlPoints ? m_iOwner[index] : TEAM_UNASSIGNED;
+	}
+	int GetTeamInZone( int index ) const
+	{
+		return index < m_iNumControlPoints ? m_iTeamInZone[index] : TEAM_UNASSIGNED;
+	}
+
+	int m_iTimerToShowInHUD;
+	int m_iStopWatchTimer;
+	int m_iNumControlPoints;
+	int m_iPrevNumControlPoints;
+	bool m_bPlayingMiniRounds;
+	bool m_bControlPointsReset;
+	bool m_bOldControlPointsReset;
+	int m_iUpdateCapHudParity;
+	int m_iOldUpdateCapHudParity;
+	Vector m_vCPPositions[MAX_CONTROL_POINTS];
+	bool m_bCPIsVisible[MAX_CONTROL_POINTS];
+	float m_flLazyCapPerc[MAX_CONTROL_POINTS];
+	float m_flOldLazyCapPerc[MAX_CONTROL_POINTS];
+	int m_iTeamIcons[MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS];
+	int m_iTeamOverlays[MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS];
+	int m_iTeamReqCappers[MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS];
+	float m_flTeamCapTime[MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS];
+	int m_iPreviousPoints[MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS * MAX_PREVIOUS_POINTS];
+	bool m_bTeamCanCap[MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS];
+	int m_iTeamBaseIcons[MAX_TEAMS];
+	int m_iBaseControlPoints[MAX_TEAMS];
+	bool m_bInMiniRound[MAX_CONTROL_POINTS];
+	int m_iWarnOnCap[MAX_CONTROL_POINTS];
+	char m_iszWarnSound[MAX_CONTROL_POINTS][255];
+	float m_flPathDistance[MAX_CONTROL_POINTS];
+	int m_iNumTeamMembers[MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS];
+	int m_iCappingTeam[MAX_CONTROL_POINTS];
+	int m_iTeamInZone[MAX_CONTROL_POINTS];
+	bool m_bBlocked[MAX_CONTROL_POINTS];
+	int m_iOwner[MAX_CONTROL_POINTS];
+	float m_flCapTimeLeft[MAX_CONTROL_POINTS];
+	float m_flCapLastThinkTime[MAX_CONTROL_POINTS];
+	bool m_bWarnedOnFinalCap[MAX_CONTROL_POINTS];
+	float m_flLastCapWarningTime[MAX_CONTROL_POINTS];
+	char m_pszCapLayoutInHUD[MAX_CAPLAYOUT_LENGTH];
+};
+
+extern C_BaseTeamObjectiveResource *g_pObjectiveResource;
+inline C_BaseTeamObjectiveResource *ObjectiveResource()
+{
+	return g_pObjectiveResource;
+}
+#endif // C_TEAM_OBJECTIVERESOURCE_H
+#else
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: 
@@ -345,3 +434,4 @@ inline C_BaseTeamObjectiveResource *ObjectiveResource()
 }
 
 #endif // C_TEAM_OBJECTIVERESOURCE_H
+#endif // L4D2

@@ -156,6 +156,25 @@ void C_AI_BaseNPC::OnDataChanged( DataUpdateType_t type )
 	}
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_AI_BaseNPC::GetRagdollInitBoneArrays( matrix3x4_t *delta0, matrix3x4_t *delta1,
+	matrix3x4_t *current, float boneDt )
+{
+	ForceSetupBonesAtTime( delta0, gpGlobals->curtime - boneDt );
+	GetRagdollCurSequenceWithDeathPose( this, delta1, gpGlobals->curtime, m_iDeathPose, m_iDeathFrame );
+	const float createTime = static_cast< float >( PhysGetSyncCreateTime() );
+	if ( createTime == gpGlobals->curtime )
+		SetupBones( current, 128, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+	else
+		ForceSetupBonesAtTime( current, createTime );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 bool C_AI_BaseNPC::GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt )
 {
 	bool bRet = true;
@@ -182,4 +201,5 @@ bool C_AI_BaseNPC::GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x
 
 	return bRet;
 }
+#endif
 

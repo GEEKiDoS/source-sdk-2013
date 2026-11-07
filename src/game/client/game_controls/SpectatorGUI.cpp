@@ -55,7 +55,11 @@ extern IGameUIFuncs *gameuifuncs; // for key binding details
 
 // void DuckMessage(const char *str); // from vgui_teamfortressviewport.cpp
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar spec_scoreboard( "spec_scoreboard", "0", 0x88, "" );
+#else
 ConVar spec_scoreboard( "spec_scoreboard", "0", FCVAR_CLIENTDLL | FCVAR_ARCHIVE );
+#endif
 
 CSpectatorGUI *g_pSpectatorGUI = NULL;
 
@@ -69,17 +73,33 @@ static const char *s_SpectatorModes[] =
 	"#Spec_Mode2",	// 	OBS_MODE_FIXED,		
 	"#Spec_Mode3",	// 	OBS_MODE_IN_EYE,	
 	"#Spec_Mode4",	// 	OBS_MODE_CHASE,		
+#if !defined( L4D2 )
 	"#Spec_Mode_POI",	// 	OBS_MODE_POI, PASSTIME
+#endif
 	"#Spec_Mode5",	// 	OBS_MODE_ROAMING,	
 };
 
 using namespace vgui;
 
+#if defined( L4D2 )
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar cl_ideal_spec_mode( "cl_ideal_spec_mode", "5", 0x10000208, "desired spectator mode (4 = in-eye, 5 = chase, 6 = roaming)", true, 4.0f, true, 6.0f );
+#else
+ConVar cl_ideal_spec_mode( "cl_ideal_spec_mode", "5", FCVAR_USERINFO | FCVAR_SERVER_CAN_EXECUTE,
+	"desired spectator mode (4 = in-eye, 5 = chase, 6 = roaming)" );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar spec_allowroaming( "spec_allowroaming", "0", 0x288, "" );
+#else
+ConVar spec_allowroaming( "spec_allowroaming", "0", FCVAR_ARCHIVE | FCVAR_USERINFO );
+#endif
+#else
 ConVar cl_spec_mode(
 	"cl_spec_mode",
 	"1",
 	FCVAR_ARCHIVE | FCVAR_USERINFO | FCVAR_SERVER_CAN_EXECUTE,
 	"spectator mode" );
+#endif
 
 
 
@@ -763,6 +783,19 @@ void CSpectatorGUI::UpdateTimer()
 	SetLabelText("timerlabel", szText );
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+static void ForwardSpecCmdToServer( const CCommand &args )
+{
+	if ( engine->IsPlayingDemo() ) return;
+	if ( args.ArgC() == 1 ) engine->ServerCmd( args[0], true );
+	else if ( args.ArgC() == 2 )
+	{
+		char command[128];
+		V_snprintf( command, sizeof( command ), "%s \"%s\"", args[0], args[1] );
+		engine->ServerCmd( command, true );
+	}
+}
+#else
 static void ForwardSpecCmdToServer( const CCommand &args )
 {
 	if ( engine->IsPlayingDemo() )
@@ -782,8 +815,13 @@ static void ForwardSpecCmdToServer( const CCommand &args )
 		engine->ServerCmd( command );
 	}
 }
+#endif
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( spec_next, "Spectate next player", 0x40000008 )
+#else
 CON_COMMAND_F( spec_next, "Spectate next player", FCVAR_CLIENTCMD_CAN_EXECUTE )
+#endif
 {
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 
@@ -804,7 +842,11 @@ CON_COMMAND_F( spec_next, "Spectate next player", FCVAR_CLIENTCMD_CAN_EXECUTE )
 	}
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( spec_prev, "Spectate previous player", 0x40000008 )
+#else
 CON_COMMAND_F( spec_prev, "Spectate previous player", FCVAR_CLIENTCMD_CAN_EXECUTE )
+#endif
 {
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 
@@ -825,7 +867,11 @@ CON_COMMAND_F( spec_prev, "Spectate previous player", FCVAR_CLIENTCMD_CAN_EXECUT
 	}
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( spec_mode, "Set spectator mode", 0x40000008 )
+#else
 CON_COMMAND_F( spec_mode, "Set spectator mode", FCVAR_CLIENTCMD_CAN_EXECUTE )
+#endif
 {
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 
@@ -856,8 +902,10 @@ CON_COMMAND_F( spec_mode, "Set spectator mode", FCVAR_CLIENTCMD_CAN_EXECUTE )
 
 				if ( mode > LAST_PLAYER_OBSERVERMODE )
 					mode = OBS_MODE_IN_EYE;
+#if !defined( L4D2 )
 				else if ( mode == OBS_MODE_POI ) // PASSTIME skip POI mode since hltv doesn't have the entity data required to make it work
 					mode = OBS_MODE_ROAMING;
+#endif
 			}
 			
 			// handle the command clientside
@@ -874,6 +922,18 @@ CON_COMMAND_F( spec_mode, "Set spectator mode", FCVAR_CLIENTCMD_CAN_EXECUTE )
 	}
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( spec_player, "Spectate player by name", 0x40000008 )
+{
+	C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+	if ( !player || player->GetObserverMode() == OBS_MODE_NONE || args.ArgC() != 2 ) return;
+	if ( engine->IsHLTV() )
+	{
+		if ( !HLTVCamera()->IsPVSLocked() ) HLTVCamera()->SpecPlayerByPredicate( args[1] );
+	}
+	else ForwardSpecCmdToServer( args );
+}
+#else
 CON_COMMAND_F( spec_player, "Spectate player by partial name, steamid, or userid", FCVAR_CLIENTCMD_CAN_EXECUTE )
 {
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
@@ -900,6 +960,7 @@ CON_COMMAND_F( spec_player, "Spectate player by partial name, steamid, or userid
 		ForwardSpecCmdToServer( args );
 	}
 }
+#endif
 
 
 

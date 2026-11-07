@@ -58,6 +58,7 @@ private:
 };*/
 #endif
 
+#if !defined( L4D2 ) || !defined( GAME_DLL )
 HSCRIPT VScriptCompileScript( const char *pszScriptName, bool bWarnMissing )
 {
 	if ( !g_pScriptVM )
@@ -129,6 +130,7 @@ HSCRIPT VScriptCompileScript( const char *pszScriptName, bool bWarnMissing )
 	}
 	return hScript;
 }
+#endif // The L4D2 server compiler is owned by l4d2/terror_vscript.cpp.
 
 static int g_ScriptServerRunScriptDepth;
 
@@ -141,14 +143,22 @@ bool VScriptRunScript( const char *pszScriptName, HSCRIPT hScope, bool bWarnMiss
 
 	if ( !pszScriptName || !*pszScriptName )
 	{
+#if defined( L4D2 ) && defined( GAME_DLL )
+		Msg( "Cannot run script: NULL script name\n" );
+#else
 		Log_Warning( LOG_VScript, "Cannot run script: NULL script name\n" );
+#endif
 		return false;
 	}
 
 	// Prevent infinite recursion in VM
 	if ( g_ScriptServerRunScriptDepth > 16 )
 	{
+#if defined( L4D2 ) && defined( GAME_DLL )
+		Warning( "IncludeScript stack overflow\n" );
+#else
 		Log_Warning( LOG_VScript, "IncludeScript stack overflow\n" );
+#endif
 		return false;
 	}
 
@@ -170,9 +180,17 @@ bool VScriptRunScript( const char *pszScriptName, HSCRIPT hScope, bool bWarnMiss
 		bSuccess = ( g_pScriptVM->Run( hScript, hScope ) != SCRIPT_ERROR );
 		if ( !bSuccess )
 		{
+#if defined( L4D2 ) && defined( GAME_DLL )
+			DevMsg( "Error running script named %s\n", pszScriptName );
+#else
 			Log_Warning( LOG_VScript, "Error running script named %s\n", pszScriptName );
 			Assert( "Error running script" );
+#endif
 		}
+#if defined( L4D2 ) && defined( GAME_DLL )
+		// Native2221A0 releases the compiled script after the synchronous Run.
+		g_pScriptVM->ReleaseScript( hScript );
+#endif
 	}
 	g_ScriptServerRunScriptDepth--;
 	return bSuccess;
@@ -181,7 +199,13 @@ bool VScriptRunScript( const char *pszScriptName, HSCRIPT hScope, bool bWarnMiss
 #ifdef CLIENT_DLL
 CON_COMMAND( script_client, "Run the text as a script" )
 #else
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( script, "Run the text as a script" , 0x00004004)
+#else
 CON_COMMAND( script, "Run the text as a script" )
+#endif
+
 #endif
 {
 #ifdef CLIENT_DLL
@@ -249,7 +273,13 @@ CON_COMMAND( script, "Run the text as a script" )
 #ifdef CLIENT_DLL
 CON_COMMAND( script_execute_client, "Run a vscript file" )
 #else
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( script_execute, "Run a vscript file" , 0x00004004)
+#else
 CON_COMMAND( script_execute, "Run a vscript file" )
+#endif
+
 #endif
 {
 #ifdef CLIENT_DLL
@@ -275,6 +305,7 @@ CON_COMMAND( script_execute, "Run a vscript file" )
 	VScriptRunScript( args[1], true );
 }
 
+#if !defined( L4D2 ) || defined( CLIENT_DLL )
 #ifdef CLIENT_DLL
 CON_COMMAND( script_debug_client, "Connect the vscript VM to the script debugger" )
 #else
@@ -297,10 +328,18 @@ CON_COMMAND( script_debug, "Connect the vscript VM to the script debugger" )
 	g_pScriptVM->ConnectDebugger();
 }
 
+#endif // !L4D2 || CLIENT_DLL
+
 #ifdef CLIENT_DLL
 CON_COMMAND( script_help_client, "Output help for script functions, optionally with a search string" )
 #else
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( script_help, "Output help for script functions, optionally with a search string" , 0x00004004)
+#else
 CON_COMMAND( script_help, "Output help for script functions, optionally with a search string" )
+#endif
+
 #endif
 {
 #ifdef CLIENT_DLL
@@ -328,7 +367,13 @@ CON_COMMAND( script_help, "Output help for script functions, optionally with a s
 #ifdef CLIENT_DLL
 CON_COMMAND( script_dump_all_client, "Dump the state of the VM to the console" )
 #else
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( script_dump_all, "Dump the state of the VM to the console" , 0x00004004)
+#else
 CON_COMMAND( script_dump_all, "Dump the state of the VM to the console" )
+#endif
+
 #endif
 {
 #ifdef CLIENT_DLL

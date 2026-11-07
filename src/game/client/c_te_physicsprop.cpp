@@ -39,6 +39,9 @@ public:
 	int				m_nSkin;
 	int				m_nFlags;
 	int				m_nEffects;
+#if defined( L4D2 )
+	int r, g, b;
+#endif
 };
 
 
@@ -55,6 +58,11 @@ IMPLEMENT_CLIENTCLASS_EVENT_DT(C_TEPhysicsProp, DT_TEPhysicsProp, CTEPhysicsProp
 	RecvPropInt( RECVINFO(m_nFlags)),
 	RecvPropInt( RECVINFO(m_nSkin)),
 	RecvPropInt( RECVINFO(m_nEffects)),
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO(r) ),
+	RecvPropInt( RECVINFO(g) ),
+	RecvPropInt( RECVINFO(b) ),
+#endif
 END_RECV_TABLE()
 
 
@@ -70,6 +78,9 @@ C_TEPhysicsProp::C_TEPhysicsProp( void )
 	m_nSkin				= 0;
 	m_nFlags			= 0;
 	m_nEffects			= 0;
+#if defined( L4D2 )
+	r = g = b = 0;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -83,8 +94,14 @@ C_TEPhysicsProp::~C_TEPhysicsProp( void )
 //-----------------------------------------------------------------------------
 // Recording 
 //-----------------------------------------------------------------------------
-static inline void RecordPhysicsProp( const Vector& start, const QAngle &angles, 
-	const Vector& vel, int nModelIndex, bool bBreakModel, int nSkin, int nEffects )
+static inline void RecordPhysicsProp( const Vector& start, const QAngle &angles,
+	const Vector& vel, int nModelIndex,
+#if defined( L4D2 )
+	int bBreakModel, int nSkin, int nEffects, int r, int g, int b
+#else
+	bool bBreakModel, int nSkin, int nEffects
+#endif
+	)
 {
 	if ( !ToolsEnabled() )
 		return;
@@ -112,6 +129,9 @@ static inline void RecordPhysicsProp( const Vector& start, const QAngle &angles,
  		msg->SetInt( "breakmodel", bBreakModel );
 		msg->SetInt( "skin", nSkin );
 		msg->SetInt( "effects", nEffects );
+#if defined( L4D2 )
+		msg->SetColor( "color", Color( r, g, b, 255 ) );
+#endif
 
 		ToolFramework_PostToolMessage( HTOOLHANDLE_INVALID, msg );
 		msg->deleteThis();
@@ -122,12 +142,21 @@ static inline void RecordPhysicsProp( const Vector& start, const QAngle &angles,
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void TE_PhysicsProp( IRecipientFilter& filter, float delay, int modelindex, int skin,
+	const Vector &pos, const QAngle &angles, const Vector &vel, int flags, int effects, int r, int g, int b )
+{
+	tempents->PhysicsProp( modelindex, skin, pos, angles, vel, flags, effects, r, g, b );
+	RecordPhysicsProp( pos, angles, vel, modelindex, flags, skin, effects, r, g, b );
+}
+#else
 void TE_PhysicsProp( IRecipientFilter& filter, float delay,
 	int modelindex, int skin, const Vector& pos, const QAngle &angles, const Vector& vel, bool breakmodel, int fEffects )
 {
 	tempents->PhysicsProp( modelindex, skin, pos, angles, vel, breakmodel, fEffects );
 	RecordPhysicsProp( pos, angles, vel, modelindex, breakmodel, skin, fEffects );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -136,8 +165,13 @@ void C_TEPhysicsProp::PostDataUpdate( DataUpdateType_t updateType )
 {
 	VPROF( "C_TEPhysicsProp::PostDataUpdate" );
 
+#if defined( L4D2 )
+	tempents->PhysicsProp( m_nModelIndex, m_nSkin, m_vecOrigin, m_angRotation, m_vecVelocity, m_nFlags, m_nEffects, r, g, b );
+	RecordPhysicsProp( m_vecOrigin, m_angRotation, m_vecVelocity, m_nModelIndex, m_nFlags, m_nSkin, m_nEffects, r, g, b );
+#else
 	tempents->PhysicsProp( m_nModelIndex, m_nSkin, m_vecOrigin, m_angRotation, m_vecVelocity, m_nFlags, m_nEffects );
 	RecordPhysicsProp( m_vecOrigin, m_angRotation, m_vecVelocity, m_nModelIndex, m_nFlags, m_nSkin, m_nEffects );
+#endif
 }
 
 void TE_PhysicsProp( IRecipientFilter& filter, float delay, KeyValues *pKeyValues )
@@ -157,9 +191,18 @@ void TE_PhysicsProp( IRecipientFilter& filter, float delay, KeyValues *pKeyValue
 	vecVel.z = pKeyValues->GetFloat( "velz" );
 	const char *pModelName = pKeyValues->GetString( "model" );
 	int nModelIndex = pModelName[0] ? modelinfo->GetModelIndex( pModelName ) : 0;
+#if defined( L4D2 )
+	int bBreakModel = pKeyValues->GetInt( "breakmodel" );
+	const Color color = pKeyValues->GetColor( "color" );
+#else
 	bool bBreakModel = pKeyValues->GetInt( "breakmodel" ) != 0;
+#endif
 	int nEffects = pKeyValues->GetInt( "effects" );
 
+#if defined( L4D2 )
+	TE_PhysicsProp( filter, delay, nModelIndex, nSkin, vecOrigin, angles, vecVel, bBreakModel, nEffects, color.r(), color.g(), color.b() );
+#else
 	TE_PhysicsProp( filter, delay, nModelIndex, nSkin, vecOrigin, angles, vecVel, bBreakModel, nEffects );
+#endif
 }
 

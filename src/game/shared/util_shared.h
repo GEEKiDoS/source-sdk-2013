@@ -522,6 +522,13 @@ CUtlVector< T* > TAutoList< T >::m_autolist;
 class IntervalTimer
 {
 public:
+#if defined( L4D2 )
+	DECLARE_CLASS_NOBASE( IntervalTimer );
+	DECLARE_EMBEDDED_NETWORKVAR();
+#ifdef CLIENT_DLL
+	DECLARE_PREDICTABLE();
+#endif
+#endif
 	IntervalTimer( void )
 	{
 		m_timestamp = -1.0f;
@@ -532,10 +539,14 @@ public:
 		m_timestamp = Now();
 	}		
 
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+	void Start( void );
+#else
 	void Start( void )
 	{
 		m_timestamp = Now();
 	}
+#endif
 
 	void Invalidate( void )
 	{
@@ -546,6 +557,8 @@ public:
 	{
 		return (m_timestamp > 0.0f);
 	}
+
+	float GetStartTime() const { return m_timestamp; }
 
 	/// if not started, elapsed time is very large
 	float GetElapsedTime( void ) const
@@ -563,10 +576,32 @@ public:
 		return (Now() - m_timestamp > duration) ? true : false;
 	}
 
+#if defined( L4D2 )
+public:
+	CNetworkVar( float, m_timestamp );
+#else
 private:
 	float m_timestamp;
+#endif
+private:
 	float Now( void ) const;		// work-around since client header doesn't like inlined gpGlobals->curtime
 };
+
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+inline void IntervalTimer::Start( void )
+{
+	const float timestamp = Now();
+	// Native Start skips only ordered-equal timestamps, preserving signed zero.
+	if ( m_timestamp.Get() != timestamp )
+		m_timestamp.SetDirect( timestamp );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------
@@ -574,13 +609,30 @@ private:
  * Simple class for counting down a short interval of time.
  * Upon creation, the timer is invalidated.  Invalidated countdown timers are considered to have elapsed.
  */
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 class CountdownTimer
 {
 public:
+#if defined( L4D2 )
+	DECLARE_CLASS_NOBASE( CountdownTimer );
+	DECLARE_EMBEDDED_NETWORKVAR();
+#ifdef CLIENT_DLL
+	DECLARE_PREDICTABLE();
+#endif
+	DECLARE_SIMPLE_DATADESC();
+#endif
 	CountdownTimer( void )
 	{
+#if defined( L4D2 )
+		// Native embedded timers construct duration before the invalid timestamp.
+		m_duration.SetDirect( 0.0f );
+		m_timestamp.SetDirect( -1.0f );
+#else
 		m_timestamp = -1.0f;
 		m_duration = 0.0f;
+#endif
 	}
 
 	void Reset( void )
@@ -590,8 +642,16 @@ public:
 
 	void Start( float duration )
 	{
+#if defined( L4D2 )
+		const double timestamp = static_cast< double >( Now() ) + static_cast< double >( duration );
+		if ( static_cast< double >( m_timestamp.Get() ) != timestamp )
+			m_timestamp.SetDirect( static_cast< float >( timestamp ) );
+		if ( m_duration.Get() != duration )
+			m_duration.SetDirect( duration );
+#else
 		m_timestamp = Now() + duration;
 		m_duration = duration;
+#endif
 	}
 
 	void Invalidate( void )
@@ -606,7 +666,11 @@ public:
 
 	bool IsElapsed( void ) const
 	{
+#if defined( L4D2 )
+		return (Now() >= m_timestamp);
+#else
 		return (Now() > m_timestamp);
+#endif
 	}
 
 	float GetElapsedTime( void ) const
@@ -619,17 +683,43 @@ public:
 		return (m_timestamp - Now());
 	}
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	// Whole C252D90. Real f32 difference/divide spills; unordered ratio survives.
+	float GetRemainingRatio( void ) const
+	{
+		if ( !HasStarted() )
+			return 0.0f;
+		const float remaining = static_cast< float >( m_timestamp ) - Now();
+		const float ratio = remaining / static_cast< float >( m_duration );
+		if ( ratio < 0.0f )
+			return 0.0f;
+		if ( ratio > 1.0f )
+			return 1.0f;
+		return ratio;
+	}
+#endif
+
 	/// return original countdown time
 	float GetCountdownDuration( void ) const
 	{
 		return (m_timestamp > 0.0f) ? m_duration : 0.0f;
 	}
 
+#if defined( L4D2 )
+public:
+	CNetworkVar( float, m_duration );
+	CNetworkVar( float, m_timestamp );
+private:
+#else
 private:
 	float m_duration;
 	float m_timestamp;
+#endif
 	virtual float Now( void ) const;		// work-around since client header doesn't like inlined gpGlobals->curtime
 };
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 class RealTimeCountdownTimer : public CountdownTimer
 {

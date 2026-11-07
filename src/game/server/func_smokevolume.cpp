@@ -37,6 +37,9 @@ private:
 	CNetworkVar( float, m_RotationSpeed );
 	CNetworkVar( float, m_MovementSpeed );
 	CNetworkVar( float, m_Density );
+#if defined( L4D2 )
+	CNetworkVar( float, m_maxDrawDistance );
+#endif
 };
 
 BEGIN_DATADESC( CFuncSmokeVolume )
@@ -52,6 +55,9 @@ BEGIN_DATADESC( CFuncSmokeVolume )
 	DEFINE_KEYFIELD( m_RotationSpeed, FIELD_FLOAT, "RotationSpeed" ),
 	DEFINE_KEYFIELD( m_MovementSpeed, FIELD_FLOAT, "MovementSpeed" ),
 	DEFINE_KEYFIELD( m_Density, FIELD_FLOAT, "Density" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_maxDrawDistance, FIELD_FLOAT, "MaxDrawDistance" ),
+#endif
 	// inputs
 	DEFINE_INPUT( m_RotationSpeed, FIELD_FLOAT, "SetRotationSpeed"),
 	DEFINE_INPUT( m_MovementSpeed, FIELD_FLOAT, "SetMovementSpeed"),
@@ -72,7 +78,10 @@ IMPLEMENT_SERVERCLASS_ST( CFuncSmokeVolume, DT_FuncSmokeVolume )
 	SendPropFloat( SENDINFO( m_RotationSpeed ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_MovementSpeed ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_Density ), 0, SPROP_NOSCALE ),
-	SendPropInt( SENDINFO(m_spawnflags), 8, SPROP_UNSIGNED )
+	SendPropInt( SENDINFO(m_spawnflags), 8, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO( m_maxDrawDistance ), 0, SPROP_NOSCALE ),
+#endif
 END_SEND_TABLE()
 
 LINK_ENTITY_TO_CLASS( func_smokevolume, CFuncSmokeVolume );

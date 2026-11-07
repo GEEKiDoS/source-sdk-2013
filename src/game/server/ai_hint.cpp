@@ -875,7 +875,9 @@ void CAI_HintManager::DrawHintOverlays(float flDrawDuration)
 //##################################################################
 // > CAI_Hint
 //##################################################################
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( ai_hint, CAI_Hint );
+#endif
 
 BEGIN_DATADESC( CAI_Hint )
 
@@ -1535,6 +1537,7 @@ void CAI_Hint::NPCStoppedUsing( CAI_BaseNPC *pNPC )
 }
 
 
+#if !defined( L4D2 )
 CON_COMMAND(ai_dump_hints, "")
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
@@ -1543,6 +1546,7 @@ CON_COMMAND(ai_dump_hints, "")
 	CAI_HintManager::ValidateHints();
 	CAI_HintManager::DumpHints();
 }
+#endif // !L4D2
 
 
 //-----------------------------------------------------------------------------
@@ -1648,6 +1652,7 @@ const char *GetHintTypeDescription( CAI_Hint *pHint )
 }
 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 // Purpose: Debug command to drop hints into the world
 //-----------------------------------------------------------------------------
 void CC_ai_drop_hint( const CCommand &args )
@@ -1687,3 +1692,4 @@ void CC_ai_drop_hint( const CCommand &args )
 	}
 }
 ConCommand ai_drop_hint( "ai_drop_hint", CC_ai_drop_hint, "Drop an ai_hint at the player's current eye position.", FCVAR_CHEAT );
+#endif // !L4D2

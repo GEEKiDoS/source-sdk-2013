@@ -36,36 +36,56 @@ namespace vgui
 //-----------------------------------------------------------------------------
 // Purpose: header label that separates and names each section
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+CSectionHeader::CSectionHeader(SectionedListPanel *parent, const char *name, int sectionID) : Label(parent, name, "")
+#else
 SectionedListPanelHeader::SectionedListPanelHeader(SectionedListPanel *parent, const char *name, int sectionID) : Label(parent, name, "")
+#endif // L4D2
 {
 	m_pListPanel = parent;
 	m_iSectionID = sectionID;
+#if defined( L4D2 )
+	m_SectionDividerColor = Color(0,0,0,0);
+#endif // L4D2
 	SetTextImageIndex(-1);
 	ClearImages();
 	SetPaintBackgroundEnabled( false );
 	m_bDrawDividerBar = true;
 }
 
+#if defined( L4D2 )
+CSectionHeader::CSectionHeader(SectionedListPanel *parent, const wchar_t *name, int sectionID) : Label(parent, "SectionHeader", "")
+#else
 SectionedListPanelHeader::SectionedListPanelHeader(SectionedListPanel *parent, const wchar_t *name, int sectionID) : Label(parent, "SectionHeader", "")
+#endif // L4D2
 {
 	SetText(name);	
 	SetVisible(false);
 	m_pListPanel = parent;
 	m_iSectionID = sectionID;
+#if defined( L4D2 )
+	m_SectionDividerColor = Color(0,0,0,0);
+#endif // L4D2
 	SetTextImageIndex(-1);
 	ClearImages();
 	m_bDrawDividerBar = true;
 }
 
+#if defined( L4D2 )
+void CSectionHeader::ApplySchemeSettings(IScheme *pScheme)
+#else
 void SectionedListPanelHeader::ApplySchemeSettings(IScheme *pScheme)
+#endif // L4D2
 {
 	BaseClass::ApplySchemeSettings(pScheme);
 
 	SetFgColor(GetSchemeColor("SectionedListPanel.HeaderTextColor", pScheme));
 	m_SectionDividerColor = GetSchemeColor("SectionedListPanel.DividerColor", pScheme);
 	SetBgColor(GetSchemeColor("SectionedListPanelHeader.BgColor", GetBgColor(), pScheme));
+#if !defined( L4D2 )
 	SetFont(pScheme->GetFont("DefaultVerySmall", IsProportional()));
 	ClearImages();
+#endif // !L4D2
 	
 	HFont hFont = m_pListPanel->GetHeaderFont();
 	if ( hFont != INVALID_FONT )
@@ -76,9 +96,16 @@ void SectionedListPanelHeader::ApplySchemeSettings(IScheme *pScheme)
 	{
 		SetFont(pScheme->GetFont("DefaultVerySmall", IsProportional()));
 	}
+#if defined( L4D2 )
+	ClearImages();
+#endif // L4D2
 }
 
+#if defined( L4D2 )
+void CSectionHeader::Paint()
+#else
 void SectionedListPanelHeader::Paint()
+#endif // L4D2
 {
 	BaseClass::Paint();
 
@@ -94,17 +121,29 @@ void SectionedListPanelHeader::Paint()
 	}
 }
 
+#if defined( L4D2 )
+void CSectionHeader::SetColor(Color col)
+#else
 void SectionedListPanelHeader::SetColor(Color col)
+#endif // L4D2
 {
 	m_SectionDividerColor = col;
 	SetFgColor(col);
 }
+#if defined( L4D2 )
+void CSectionHeader::SetDividerColor(Color col )
+#else
 void SectionedListPanelHeader::SetDividerColor(Color col )
+#endif // L4D2
 {
 	m_SectionDividerColor = col;
 }
 
+#if defined( L4D2 )
+void CSectionHeader::PerformLayout()
+#else
 void SectionedListPanelHeader::PerformLayout()
+#endif // L4D2
 {
 	BaseClass::PerformLayout();
 
@@ -186,7 +225,11 @@ void SectionedListPanelHeader::PerformLayout()
 
 			if (columnFlags & SectionedListPanel::COLUMN_RIGHT)
 			{
+#if defined( L4D2 )
+				SetImageBounds(i, xpos + wide - contentWide, contentWide - SectionedListPanel::COLUMN_DATA_GAP);
+#else
 				SetImageBounds(i, xpos + wide - contentWide, wide - SectionedListPanel::COLUMN_DATA_GAP);
+#endif // L4D2
 			}
 			else
 			{
@@ -1194,7 +1237,11 @@ void SectionedListPanel::SetVerticalScrollbar(bool state)
 //-----------------------------------------------------------------------------
 void SectionedListPanel::AddSection(int sectionID, const char *name, SectionSortFunc_t sortFunc)
 {
+#if defined( L4D2 )
+	CSectionHeader *header = new CSectionHeader(this, name, sectionID);
+#else
 	SectionedListPanelHeader *header = new SectionedListPanelHeader(this, name, sectionID);
+#endif // L4D2
 	AddSection(sectionID, header, sortFunc);
 }
 
@@ -1203,14 +1250,22 @@ void SectionedListPanel::AddSection(int sectionID, const char *name, SectionSort
 //-----------------------------------------------------------------------------
 void SectionedListPanel::AddSection(int sectionID, const wchar_t *name, SectionSortFunc_t sortFunc)
 {
+#if defined( L4D2 )
+	CSectionHeader *header = new CSectionHeader(this, name, sectionID);
+#else
 	SectionedListPanelHeader *header = new SectionedListPanelHeader(this, name, sectionID);
+#endif // L4D2
 	AddSection(sectionID, header, sortFunc);
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: Adds a new section, given object
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void SectionedListPanel::AddSection(int sectionID, CSectionHeader *header, SectionSortFunc_t sortFunc)
+#else
 void SectionedListPanel::AddSection(int sectionID, SectionedListPanelHeader *header, SectionSortFunc_t sortFunc)
+#endif // L4D2
 {
 	header = SETUP_PANEL( header );
 	int index = m_Sections.AddToTail();

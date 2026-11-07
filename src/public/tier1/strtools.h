@@ -170,6 +170,8 @@ int64 		V_atoi64(const char *str);
 uint64 		V_atoui64(const char *str);
 int64		V_strtoi64( const char *nptr, char **endptr, int base );
 uint64		V_strtoui64( const char *nptr, char **endptr, int base );
+// Native-wide Valve grammar; deliberately no float return spill.
+double		V_atod(const char *str);
 float		V_atof(const char *str);
 char*		V_stristr( char* pStr, const char* pSearch );
 const char*	V_stristr( const char* pStr, const char* pSearch );

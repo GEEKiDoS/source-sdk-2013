@@ -27,6 +27,9 @@
 #include "igamesystem.h"
 #include "KeyValues.h"
 #include "filesystem.h"
+#if defined( L4D2 )
+#include <emmintrin.h>
+#endif
 
 #ifdef PORTAL
 #include "portal_gamerules.h"
@@ -52,6 +55,11 @@ ConVar hl1_ref_db_distance( "hl1_ref_db_distance", "18.0" );
 #define REFERENCE_dB_DISTANCE	36.0
 #endif//HL1_DLL
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+
 static soundlevel_t ComputeSoundlevel( float radius, bool playEverywhere )
 {
 	soundlevel_t soundlevel = SNDLVL_NONE;
@@ -60,13 +68,23 @@ static soundlevel_t ComputeSoundlevel( float radius, bool playEverywhere )
 	{
 		// attenuation is set to a distance, compute falloff
 
+#if defined( L4D2 )
+		// S1002C258..273: float reciprocal, wide logarithm/product/sum, then __ftol2_sse.
+		const double level = 40.0 + 20.0 * log10( static_cast< double >( radius ) * 0.027777778f );
+		soundlevel = static_cast< soundlevel_t >( _mm_cvttsd_si32( _mm_set_sd( level ) ) );
+#else
 		float dB_loss = 20 * log10( radius / REFERENCE_dB_DISTANCE );
 
 		soundlevel = (soundlevel_t)(int)(40 + dB_loss); // sound at 40dB at reference distance
+#endif
 	}
 
 	return soundlevel;
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 // ==================== GENERIC AMBIENT SOUND ======================================
 
@@ -175,6 +193,14 @@ public:
 
 	void ToggleSound();
 	void SendSound( SoundFlags_t flags );
+	const char *GetSoundFile() const
+	{
+#if defined( L4D2 )
+		return STRING( m_iszSound );
+#else
+		return m_szSoundFile;
+#endif
+	}
 
 	// Input handlers
 	void InputPlaySound( inputdata_t &inputdata );
@@ -195,15 +221,21 @@ public:
 	bool m_fActive;		// only true when the entity is playing a looping sound
 	bool m_fLooping;		// true when the sound played will loop
 
+#if !defined( L4D2 )
 	char m_szSoundFile[MAX_PATH];			// Path/filename of WAV or MP3 file to play.
+#endif
 	string_t m_sSourceEntName;
 	EHANDLE m_hSoundSource;	// entity from which the sound comes
 	int		m_nSoundSourceEntIndex; // In case the entity goes away before we finish stopping the sound...
 
 private:
+#if !defined( L4D2 )
 	void ValidateSoundFile( void );
+#endif
 	string_t m_iszSound;
+#if !defined( L4D2 )
 	string_t m_iszPrevSound; // track if the sound has changed and we need to re-Validate
+#endif
 };
 
 LINK_ENTITY_TO_CLASS( ambient_generic, CAmbientGeneric );
@@ -254,9 +286,11 @@ END_DATADESC()
 //-----------------------------------------------------------------------------
 CAmbientGeneric::CAmbientGeneric()
 {
+#if !defined( L4D2 )
 	m_szSoundFile[0] = 0;
-	m_iszSound = NULL_STRING;
 	m_iszPrevSound = NULL_STRING;
+#endif
+	m_iszSound = NULL_STRING;
 }
 
 //-----------------------------------------------------------------------------
@@ -267,9 +301,11 @@ void CAmbientGeneric::Spawn( void )
 	m_iSoundLevel = ComputeSoundlevel( m_radius, FBitSet( m_spawnflags, SF_AMBIENT_SOUND_EVERYWHERE )?true:false );
 	ComputeMaxAudibleDistance( );
 
+#if !defined( L4D2 )
 	ValidateSoundFile();
+#endif
 
-	if ( V_strlen( m_szSoundFile ) < 1 )
+	if ( V_strlen( GetSoundFile() ) < 1 )
 	{
 		Warning( "Empty %s (%s) at %.2f, %.2f, %.2f\n", GetClassname(), GetDebugName(), GetAbsOrigin().x, GetAbsOrigin().y, GetAbsOrigin().z );
 		UTIL_Remove(this);
@@ -373,9 +409,21 @@ void CAmbientGeneric::ComputeMaxAudibleDistance( )
 // Purpose: Input handler for changing pitch.
 // Input  : Float new pitch from 0 - 255 (100 = as recorded).
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+
 void CAmbientGeneric::InputPitch( inputdata_t &inputdata )
 {
+#if defined( L4D2 )
+	float pitch = inputdata.value.Float();
+	if ( pitch > 255.0f ) pitch = 255.0f;
+	else if ( pitch < 0.0f ) pitch = 0.0f;
+	m_dpv.pitch = _mm_cvtt_ss2si( _mm_set_ss( pitch ) );
+#else
 	m_dpv.pitch = clamp( FastFloatToSmallInt( inputdata.value.Float() ), 0, 255 );
+#endif
 
 	SendSound( SND_CHANGE_PITCH );
 }
@@ -390,8 +438,16 @@ void CAmbientGeneric::InputVolume( inputdata_t &inputdata )
 	//
 	// Multiply the input value by ten since volumes are expected to be from 0 - 100.
 	//
+#if defined( L4D2 )
+	float volume = inputdata.value.Float();
+	if ( volume > 10.0f ) volume = 10.0f;
+	else if ( volume < 0.0f ) volume = 0.0f;
+	m_dpv.vol = _mm_cvtt_ss2si( _mm_set_ss( volume * 10.0f ) );
+	m_dpv.volfrac = static_cast< int >( static_cast< uint32 >( m_dpv.vol ) << 8 );
+#else
 	m_dpv.vol = clamp( RoundFloatToInt( inputdata.value.Float() * 10.f ), 0, 100 );
 	m_dpv.volfrac = m_dpv.vol << 8;
+#endif
 
 	SendSound( SND_CHANGE_VOL );
 }
@@ -406,7 +462,11 @@ void CAmbientGeneric::InputFadeIn( inputdata_t &inputdata )
 	// cancel any fade out that might be happening
 	m_dpv.fadeout = 0;
 
+#if defined( L4D2 )
+	m_dpv.fadein = _mm_cvtt_ss2si( _mm_set_ss( inputdata.value.Float() ) );
+#else
 	m_dpv.fadein = inputdata.value.Float();
+#endif
 	if (m_dpv.fadein > 100) m_dpv.fadein = 100;
 	if (m_dpv.fadein < 0) m_dpv.fadein = 0;
 
@@ -426,7 +486,11 @@ void CAmbientGeneric::InputFadeOut( inputdata_t &inputdata )
 	// cancel any fade in that might be happening
 	m_dpv.fadein = 0;
 
+#if defined( L4D2 )
+	m_dpv.fadeout = _mm_cvtt_ss2si( _mm_set_ss( inputdata.value.Float() ) );
+#else
 	m_dpv.fadeout = inputdata.value.Float();
+#endif
 
 	if (m_dpv.fadeout > 100) m_dpv.fadeout = 100;
 	if (m_dpv.fadeout < 0) m_dpv.fadeout = 0;
@@ -437,7 +501,12 @@ void CAmbientGeneric::InputFadeOut( inputdata_t &inputdata )
 	SetNextThink( gpGlobals->curtime + 0.1f );
 }
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
+
+#if !defined( L4D2 )
 void CAmbientGeneric::ValidateSoundFile( void )
 {
 	if ( m_iszSound == NULL_STRING )
@@ -481,15 +550,17 @@ void CAmbientGeneric::ValidateSoundFile( void )
 
 	V_strcpy_safe( m_szSoundFile, szSoundFile );
 }
+#endif
 
 
 void CAmbientGeneric::Precache( void )
 {
-	if ( V_strlen( m_szSoundFile ) > 1 )
+	const char *soundFile = GetSoundFile();
+	if ( V_strlen( soundFile ) > 1 )
 	{
-		if ( m_szSoundFile[0] != '!' )
+		if ( soundFile[0] != '!' )
 		{
-			PrecacheScriptSound( m_szSoundFile );
+			PrecacheScriptSound( soundFile );
 		}
 	}
 
@@ -818,10 +889,12 @@ void CAmbientGeneric::RampThink( void )
 		CBaseEntity* pSoundSource = m_hSoundSource;
 		if (pSoundSource)
 		{
+#if !defined( L4D2 )
 			ValidateSoundFile();
+#endif
 
-			UTIL_EmitAmbientSound(pSoundSource->GetSoundSourceIndex(), pSoundSource->GetAbsOrigin(), 
-				m_szSoundFile, ( vol * 0.01 ), m_iSoundLevel, flags, pitch );
+			UTIL_EmitAmbientSound(pSoundSource->GetSoundSourceIndex(), pSoundSource->GetAbsOrigin(),
+				GetSoundFile(), ( vol * 0.01 ), m_iSoundLevel, flags, pitch );
 		}
 	}
 
@@ -941,19 +1014,21 @@ void CAmbientGeneric::InputStopSound( inputdata_t &inputdata )
 
 void CAmbientGeneric::SendSound( SoundFlags_t flags)
 {
+#if !defined( L4D2 )
 	ValidateSoundFile();
+#endif
 
 	CBaseEntity* pSoundSource = m_hSoundSource;
 	if ( pSoundSource )
 	{
 		if ( flags == SND_STOP )
 		{
-			UTIL_EmitAmbientSound( pSoundSource->GetSoundSourceIndex(), pSoundSource->GetAbsOrigin(), m_szSoundFile,
+			UTIL_EmitAmbientSound( pSoundSource->GetSoundSourceIndex(), pSoundSource->GetAbsOrigin(), GetSoundFile(),
 						0, SNDLVL_NONE, flags, 0);
 		}
 		else
 		{
-			UTIL_EmitAmbientSound( pSoundSource->GetSoundSourceIndex(), pSoundSource->GetAbsOrigin(), m_szSoundFile,
+			UTIL_EmitAmbientSound( pSoundSource->GetSoundSourceIndex(), pSoundSource->GetAbsOrigin(), GetSoundFile(),
 				(m_dpv.vol * 0.01), m_iSoundLevel, flags, m_dpv.pitch);
 		}
 	}	
@@ -962,7 +1037,7 @@ void CAmbientGeneric::SendSound( SoundFlags_t flags)
 		if ( ( flags == SND_STOP ) && 
 			( m_nSoundSourceEntIndex != -1 ) )
 		{
-			UTIL_EmitAmbientSound( m_nSoundSourceEntIndex, GetAbsOrigin(), m_szSoundFile,
+			UTIL_EmitAmbientSound( m_nSoundSourceEntIndex, GetAbsOrigin(), GetSoundFile(),
 					0, SNDLVL_NONE, flags, 0);
 		}
 	}
@@ -1421,7 +1496,7 @@ void UTIL_RestartAmbientSounds( void )
 	{
 		if ( pAmbient->m_fActive )
 		{
-			if ( V_strstr( pAmbient->m_szSoundFile, "mp3" ) )
+			if ( V_strstr( pAmbient->GetSoundFile(), "mp3" ) )
 			{
 				pAmbient->SendSound( SND_CHANGE_VOL ); // fake a change, so we don't create 2 sounds
 			}

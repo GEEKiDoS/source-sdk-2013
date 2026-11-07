@@ -37,10 +37,19 @@ typedef struct
 	Vector		m_vecAutoAimDir;		// The direction autoaim wishes to point.
 	Vector		m_vecAutoAimPoint;		// The point (world space) that autoaim is aiming at.
 	EHANDLE		m_hAutoAimEntity;		// The entity that autoaim is aiming at.
+#if defined( L4D2 )
+	float		m_fScale;
+	float		m_fMaxDist;
+	float		m_fMaxDeflection;
+	bool		m_bDirectOnly;
+	bool		m_bAutoAimAssisting;
+	bool		m_bOnTargetNatural;
+#else
 	bool		m_bAutoAimAssisting;	// If this is true, autoaim is aiming at the target. If false, the player is naturally aiming.
 	bool		m_bOnTargetNatural;		
 	float		m_fScale;
 	float		m_fMaxDist;
+#endif
 } autoaim_params_t;
 
 enum stepsoundtimes_t

@@ -13,7 +13,13 @@
 #include "tier0/memdbgon.h"
 
 // Hook the engine's mat_stub cvar.
-ConVar mat_stub( "mat_stub", "0", FCVAR_CHEAT );
+ConVar mat_stub( "mat_stub", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 extern ConVar gl_clear;
 
 

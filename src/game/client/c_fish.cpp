@@ -19,7 +19,13 @@
 extern float UTIL_WaterLevel( const Vector &position, float minz, float maxz );
 
 
-ConVar FishDebug( "fish_debug", "0", FCVAR_CHEAT, "Show debug info for fish" );
+ConVar FishDebug( "fish_debug", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Show debug info for fish" );
 
 
 //-----------------------------------------------------------------------------

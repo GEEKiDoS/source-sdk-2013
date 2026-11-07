@@ -38,6 +38,12 @@
 #include "rumble_shared.h"
 #include "saverestoretypes.h"
 #include "nav_mesh.h"
+#if defined( L4D2 )
+#include "l4d2/weapons/weapon_csbase.h"
+#include "l4d2/nav/terror_nav_area.h"
+#include "playernet_vars.h"
+#include "l4d2/sound/terror_footstep_surface.h"
+#endif
 
 #ifdef TF_DLL
 #include "nav_mesh/tf_nav_area.h"
@@ -59,7 +65,12 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "basecombatcharacter_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
+
+#if defined( L4D2 )
+static int s_nTerrorActorID = 1; // Native1074DB30, process lifetime rather than map/round lifetime.
+#endif
 
 #ifdef HL2_DLL
 extern int	g_interactionBarnacleVictimReleased;
@@ -67,19 +78,35 @@ extern int	g_interactionBarnacleVictimReleased;
 
 extern ConVar weapon_showproficiency;
 
-ConVar ai_show_hull_attacks( "ai_show_hull_attacks", "0" );
-ConVar ai_force_serverside_ragdoll( "ai_force_serverside_ragdoll", "0" );
+ConVar ai_show_hull_attacks( "ai_show_hull_attacks", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar ai_force_serverside_ragdoll( "ai_force_serverside_ragdoll", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 ConVar nb_last_area_update_tolerance( "nb_last_area_update_tolerance", "4.0", FCVAR_CHEAT, "Distance a character needs to travel in order to invalidate cached area" ); // 4.0 tested as sweet spot (for wanderers, at least). More resulted in little benefit, less quickly diminished benefit [7/31/2008 tom]
 
 #ifndef _RETAIL
-ConVar ai_use_visibility_cache( "ai_use_visibility_cache", "1" );
+ConVar ai_use_visibility_cache( "ai_use_visibility_cache", "1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 #define ShouldUseVisibilityCache() ai_use_visibility_cache.GetBool()
 #else
 #define ShouldUseVisibilityCache() true
 #endif
 
 BEGIN_DATADESC( CBaseCombatCharacter )
+#if defined( L4D2 )
+	DEFINE_UTLVECTOR( m_hTriggerFogList, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_hLastFogTrigger, FIELD_EHANDLE ),
+#endif
 
 #ifdef INVASION_DLL
 	DEFINE_FIELD( m_iPowerups, FIELD_INTEGER ),
@@ -525,8 +552,27 @@ bool CBaseCombatCharacter::FInViewCone( CBaseEntity *pEntity )
 // the caller's forward view cone. The dot product is performed
 // in 2d, making the view cone infinitely tall. 
 //=========================================================
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+
 bool CBaseCombatCharacter::FInViewCone( const Vector &vecSpot )
 {
+#ifdef L4D2
+	Vector los = vecSpot - EyePosition();
+	los.z = 0.0f;
+	const Vector facing = EyeDirection3D();
+	const float dot = ( facing.y * los.y + los.x * facing.x ) + facing.z * los.z;
+	const float threshold = ( ( los.x * los.x + los.y * los.y ) + los.z * los.z ) *
+		m_flFieldOfView * m_flFieldOfView;
+	if ( m_flFieldOfView > 0.0f )
+	{
+		if ( dot < 0.0f ) return false;
+		return !( dot * dot < threshold );
+	}
+	if ( dot > 0.0f ) return true;
+	return !( threshold < dot * dot );
+#else
 	Vector los = ( vecSpot - EyePosition() );
 
 	// do this in 2D
@@ -541,7 +587,12 @@ bool CBaseCombatCharacter::FInViewCone( const Vector &vecSpot )
 		return true;
 
 	return false;
+#endif
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 #ifdef PORTAL
 //=========================================================
@@ -742,6 +793,9 @@ CBaseCombatCharacter::CBaseCombatCharacter( void )
 	{
 		m_hMyWeapons.Set( i, NULL );
 	}
+	#if defined( L4D2 )
+	Q_memset( m_weaponIndexByID, 0, sizeof( m_weaponIndexByID ) );
+	#endif
 
 	// Default so that spawned entities have this set
 	m_impactEnergyScale = 1.0f;
@@ -751,6 +805,9 @@ CBaseCombatCharacter::CBaseCombatCharacter( void )
 #ifdef GLOWS_ENABLE
 	m_bGlowEnabled.Set( false );
 #endif // GLOWS_ENABLE
+#if defined( L4D2 )
+	m_nActorID = -1; // S043737.
+#endif
 }
 
 //------------------------------------------------------------------------------
@@ -772,6 +829,10 @@ void CBaseCombatCharacter::Spawn( void )
 	BaseClass::Spawn();
 	
 	SetBlocksLOS( false );
+#if defined( L4D2 )
+	m_hTriggerFogList.RemoveAll();
+	m_hLastFogTrigger = NULL;
+#endif
 	m_aliveTimer.Start();
 	m_hasBeenInjured = 0;
 
@@ -783,6 +844,13 @@ void CBaseCombatCharacter::Spawn( void )
 	// not standing on a nav area yet
 	ClearLastKnownArea();
 
+#if defined( L4D2 )
+	// S04127C..0412A6: assigned1024 is valid; only the NEXT identity returns to2.
+	++s_nTerrorActorID;
+	m_nActorID = s_nTerrorActorID;
+	if ( s_nTerrorActorID >= 1024 )
+		s_nTerrorActorID = 1;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -846,6 +914,9 @@ void CBaseCombatCharacter::UpdateOnRemove( void )
 			UTIL_Remove( m_hMyWeapons[i] );
 		}
 	}
+	#if defined( L4D2 )
+	Q_memset( m_weaponIndexByID, 0, sizeof( m_weaponIndexByID ) );
+	#endif
 
 	// tell owner ( if any ) that we're dead.This is mostly for NPCMaker functionality.
 	CBaseEntity *pOwner = GetOwnerEntity();
@@ -1702,16 +1773,32 @@ void CBaseCombatCharacter::Event_Dying()
 // ===========================================================================
 bool CBaseCombatCharacter::Weapon_Detach( CBaseCombatWeapon *pWeapon )
 {
+	#if defined( L4D2 )
+	if ( !pWeapon )
+		return false;
+	#endif
 	for ( int i = 0; i < MAX_WEAPONS; i++ )
 	{
 		if ( pWeapon == m_hMyWeapons[i] )
 		{
+			#if !defined( L4D2 )
 			pWeapon->Detach();
 			if ( pWeapon->HolsterOnDetach() )
 			{
 				pWeapon->Holster();
 			}
+			#endif
 			m_hMyWeapons.Set( i, NULL );
+			#if defined( L4D2 )
+			for ( int id = 0; id < ARRAYSIZE( m_weaponIndexByID ); ++id )
+			{
+				if ( m_weaponIndexByID[id] == i + 1 )
+				{
+					m_weaponIndexByID[id] = 0;
+					break;
+				}
+			}
+			#endif
 			pWeapon->SetOwner( NULL );
 
 			if ( pWeapon == m_hActiveWeapon )
@@ -2080,6 +2167,11 @@ void CBaseCombatCharacter::Weapon_Equip( CBaseCombatWeapon *pWeapon )
 		if (!m_hMyWeapons[i]) 
 		{
 			m_hMyWeapons.Set( i, pWeapon );
+			#if defined( L4D2 )
+			CWeaponCSBase *pCSWeapon = dynamic_cast< CWeaponCSBase * >( pWeapon );
+			if ( pCSWeapon )
+				m_weaponIndexByID[pCSWeapon->GetWeaponID()] = (unsigned char)( i + 1 );
+			#endif
 			break;
 		}
 	}
@@ -2169,6 +2261,7 @@ void CBaseCombatCharacter::Weapon_Equip( CBaseCombatWeapon *pWeapon )
 	// Pass the lighting origin over to the weapon if we have one
 	pWeapon->SetLightingOriginRelative( GetLightingOriginRelative() );
 
+#if !defined( L4D2 )
 	if ( IsPlayer() )
 	{
 		IGameEvent *event = gameeventmanager->CreateEvent( "weapon_equipped" );
@@ -2180,6 +2273,7 @@ void CBaseCombatCharacter::Weapon_Equip( CBaseCombatWeapon *pWeapon )
 			gameeventmanager->FireEvent( event );
 		}
 	}
+#endif
 }
 
 
@@ -2361,6 +2455,10 @@ void CBaseCombatCharacter::RemoveAllWeapons()
 			m_hMyWeapons.Set( i, NULL );
 		}
 	}
+#if defined( L4D2 )
+	// S045FB0 clears the ID-byte cache after retiring every inventory handle.
+	Q_memset( m_weaponIndexByID, 0, sizeof( m_weaponIndexByID ) );
+#endif
 }
 
 
@@ -2479,13 +2577,25 @@ int CBaseCombatCharacter::OnTakeDamage( const CTakeDamageInfo &info )
 
 int CBaseCombatCharacter::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 {
-	// grab the vector of the incoming attack. ( pretend that the inflictor is a little lower than it really is, so the body will tend to fly upward a bit).
+#if defined( L4D2 )
+	Vector vecDir = vec3_origin;
+	CBaseEntity *inflictor = info.GetInflictor();
+	if ( inflictor )
+	{
+		const Vector &victimCenter = WorldSpaceCenter();
+		const Vector &inflictorCenter = inflictor->WorldSpaceCenter();
+		vecDir = inflictorCenter - victimCenter;
+		VectorNormalize( vecDir );
+	}
+#else
+	// Stock SDK bias is retained only for non-L4D2 games.
 	Vector vecDir = vec3_origin;
 	if (info.GetInflictor())
 	{
 		vecDir = info.GetInflictor()->WorldSpaceCenter() - Vector ( 0, 0, 10 ) - WorldSpaceCenter();
 		VectorNormalize(vecDir);
 	}
+#endif
 	g_vecAttackDir = vecDir;
 
 	//!!!LATER - make armor consideration here!
@@ -2574,6 +2684,13 @@ void CBaseCombatCharacter::SetTransmit( CCheckTransmitInfo *pInfo, bool bAlways 
 	BaseClass::SetTransmit( pInfo, bAlways );
 
 	bool bLocalPlayer = ( pInfo->m_pClientEnt == edict() );
+#if defined( L4D2 )
+	// S03FFE0 uses the same split-screen owner admission as ShouldTransmit.
+	CBasePlayer *player = ToBasePlayer( this );
+	if ( player && player->IsSplitScreenPlayer() &&
+		CBaseEntity::Instance( pInfo->m_pClientEnt ) == player->GetSplitScreenPlayerOwner() )
+		bLocalPlayer = true;
+#endif
 
 	if ( bLocalPlayer )
 	{
@@ -2996,7 +3113,11 @@ int CBaseCombatCharacter::GiveAmmo( int iCount, int iAmmoIndex, bool bSuppressSo
 	if ( iAmmoIndex < 0 || iAmmoIndex >= MAX_AMMO_SLOTS )
 		return 0;
 
+#if defined( L4D2 )
+	int iMax = GetAmmoDef()->MaxCarry( iAmmoIndex, this );
+#else
 	int iMax = GetAmmoDef()->MaxCarry(iAmmoIndex);
+#endif
 	int iAdd = MIN( iCount, iMax - m_iAmmo[iAmmoIndex] );
 	if ( iAdd < 1 )
 		return 0;
@@ -3009,6 +3130,8 @@ int CBaseCombatCharacter::GiveAmmo( int iCount, int iAmmoIndex, bool bSuppressSo
 
 	m_iAmmo.Set( iAmmoIndex, m_iAmmo[iAmmoIndex] + iAdd );
 
+#if !defined( L4D2 )
+	// L4D2's native pickup event belongs to CTerrorPlayer::OnAmmoPickup.
 	if ( IsPlayer() )
 	{
 		IGameEvent *event = gameeventmanager->CreateEvent( "ammo_pickup" );
@@ -3020,6 +3143,7 @@ int CBaseCombatCharacter::GiveAmmo( int iCount, int iAmmoIndex, bool bSuppressSo
 			gameeventmanager->FireEvent( event );
 		}
 	}
+#endif
 
 	return iAdd;
 }
@@ -3039,7 +3163,11 @@ int CBaseCombatCharacter::GiveAmmo( int iCount, const char *szName, bool bSuppre
 }
 
 
-ConVar	phys_stressbodyweights( "phys_stressbodyweights", "5.0" );
+ConVar	phys_stressbodyweights( "phys_stressbodyweights", "5.0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 void CBaseCombatCharacter::VPhysicsUpdate( IPhysicsObject *pPhysics )
 {
 	ApplyStressDamage( pPhysics, false );
@@ -3103,8 +3231,16 @@ const impactdamagetable_t &CBaseCombatCharacter::GetPhysicsImpactDamageTable( vo
 // how much to amplify impact forces
 // This is to account for the ragdolls responding differently than
 // the shadow objects.  Also this makes the impacts more dramatic.
-ConVar	phys_impactforcescale( "phys_impactforcescale", "1.0" ); 
-ConVar	phys_upimpactforcescale( "phys_upimpactforcescale", "0.375" ); 
+ConVar	phys_impactforcescale( "phys_impactforcescale", "1.0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ ); 
+ConVar	phys_upimpactforcescale( "phys_upimpactforcescale", "0.375"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ ); 
 
 void CBaseCombatCharacter::VPhysicsShadowCollision( int index, gamevcollisionevent_t *pEvent )
 {
@@ -3427,27 +3563,29 @@ float CBaseCombatCharacter::GetFogObscuredRatio( CBaseEntity *target ) const
 //-----------------------------------------------------------------------------
 // Purpose: return 0-1 ratio where zero is not obscured, and 1 is completely obscured
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 float CBaseCombatCharacter::GetFogObscuredRatio( float range ) const
 {
-/* TODO: Get global fog from map somehow since nav mesh fog is gone
+#if defined( L4D2 )
 	fogparams_t fog;
 	GetFogParams( &fog );
-
-	if ( !fog.enable )
+	if ( !fog.enable || fog.start >= range )
 		return 0.0f;
-
-	if ( range <= fog.start )
-		return 0.0f;
-
 	if ( range >= fog.end )
 		return 1.0f;
-
-	float ratio = (range - fog.start) / (fog.end - fog.start);
-	ratio = MIN( ratio, fog.maxdensity );
+	const float ratio = ( range - fog.start ) / ( fog.end - fog.start );
+	if ( fog.maxdensity <= ratio )
+		return fog.maxdensity;
 	return ratio;
-*/
+#else
 	return 0.0f;
+#endif
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -3622,7 +3760,7 @@ float CBaseCombatCharacter::GetTimeSinceLastInjury( int team /*= TEAM_ANY */ ) c
 //-----------------------------------------------------------------------------
 HSCRIPT CBaseCombatCharacter::ScriptGetLastKnownArea( void ) const 
 { 
-#ifdef TF_DLL
+#if defined( TF_DLL ) || defined( L4D2 )
 	return ToHScript( GetLastKnownArea() ); 
 #else
 	return NULL;
@@ -3632,3 +3770,148 @@ HSCRIPT CBaseCombatCharacter::ScriptGetLastKnownArea( void ) const
 BEGIN_ENT_SCRIPTDESC( CBaseCombatCharacter, CBaseFlex, "Base combat characters." )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetLastKnownArea, "GetLastKnownArea", "Return the last nav area occupied - NULL if unknown" )
 END_SCRIPTDESC();
+
+#if defined( L4D2 )
+static ConVar sv_showfootsteps( "sv_showfootsteps", "0", 0x00006004,
+	"Shows client (red) and server (green) footsteps (1=client-only, 2=server-only, 3=both)" );
+extern ConVar sv_footstepinterval;
+
+// S47300: trace the native world-space hull downward, not a point/ray trace.
+surfacedata_t *CBaseCombatCharacter::GetTerrorFootstepSurface( int &surfaceIndex )
+{
+	Vector mins, maxs;
+	CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+	trace_t trace;
+	Ray_t ray;
+	ray.Init( vec3_origin, Vector( 0.0f, 0.0f, -64.0f ), mins, maxs );
+	CTraceFilterSimple filter( this, COLLISION_GROUP_PLAYER_MOVEMENT );
+	enginetrace->TraceRay( ray, MASK_SOLID, &filter, &trace );
+	if ( r_visualizetraces.GetInt() != 0 )
+		NDebugOverlay::Line( trace.startpos, trace.endpos, 255, 0, 0, true, -1.0f );
+	if ( trace.fraction == 1.0f )
+	{
+		surfaceIndex = -1;
+		return NULL;
+	}
+	surfaceIndex = trace.surface.surfaceProps;
+	return physprops->GetSurfaceData( surfaceIndex );
+}
+
+const char *CBaseCombatCharacter::GetTerrorFootstepSoundName( const char *sound, bool right, float speed, bool force )
+{
+	return sound;
+}
+
+bool CBaseCombatCharacter::ShouldPlayTerrorFootstepSound() const
+{
+	return !( GetFlags() & ( FL_ATCONTROLS | FL_FROZEN ) );
+}
+
+bool CBaseCombatCharacter::IsTerrorFootstepSurfaceValid( float speed, bool force ) const
+{
+	return true;
+}
+
+float CBaseCombatCharacter::GetTerrorFootstepRunThreshold() const
+{
+	return 110.0f;
+}
+
+void CBaseCombatCharacter::OnTerrorFootstep( const Vector &origin, bool left, bool force )
+{
+	// Native437F0 is a genuine RET12; Terror owns its real override.
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+// S0D6850: animation/landing audio is distinct from the genuine CCS movement
+// PlayStepSound/UpdateStepSound RET leaves. Keep the native virtual hook order.
+void CBaseCombatCharacter::PlayTerrorFootstepSound( const Vector &origin, bool left, bool shallow, bool wading, bool force )
+{
+	if ( sv_footsteps.GetFloat() == 0.0f )
+		return;
+	const MoveType_t moveType = GetMoveType();
+	if ( moveType == MOVETYPE_NOCLIP || moveType == MOVETYPE_OBSERVER ||
+		( !( static_cast< double >( gpGlobals->curtime ) >= static_cast< double >( m_footstepTimer.m_timestamp.Get() ) ) && !force ) )
+		return;
+	if ( !ShouldPlayTerrorFootstepSound() )
+		return;
+	Vector velocity = GetAbsVelocity();
+	if ( !force )
+		velocity.z = 0.0f;
+	const float speed = sqrtf( ( velocity.y * velocity.y + velocity.z * velocity.z ) + velocity.x * velocity.x );
+	if ( speed < 100.0f && !IsPlayer() && speed * 0.0099999998f < 0.1f )
+		return;
+	int surfaceIndex;
+	surfacedata_t *surface;
+	if ( GetMoveType() == MOVETYPE_LADDER )
+	{
+		surfaceIndex = physprops->GetSurfaceIndex( "ladder" );
+		surface = physprops->GetSurfaceData( surfaceIndex );
+	}
+	else if ( wading )
+	{
+		surfaceIndex = physprops->GetSurfaceIndex( "wade" );
+		surface = physprops->GetSurfaceData( surfaceIndex );
+	}
+	else if ( shallow )
+	{
+		surfaceIndex = physprops->GetSurfaceIndex( "water" );
+		surface = physprops->GetSurfaceData( surfaceIndex );
+	}
+	else
+	{
+		if ( !IsTerrorFootstepSurfaceValid( speed, force ) )
+			return;
+		surface = GetTerrorFootstepSurface( surfaceIndex );
+	}
+	if ( !surface )
+		return;
+	const double runThreshold = static_cast< double >( GetTerrorFootstepRunThreshold() );
+	// Native FCOMIP/JB selects walking for unordered as well as speed<threshold.
+	const char *baseSound = TerrorFootstepSurfaceSound( surfaceIndex, left,
+		static_cast< double >( speed ) >= runThreshold );
+	if ( !baseSound )
+		return;
+	const char *soundName = GetTerrorFootstepSoundName( baseSound, !left, speed, force );
+	CSoundParameters params;
+	if ( !GetParametersForSound( soundName, params, NULL ) && !GetParametersForSound( baseSound, params, NULL ) )
+		return;
+	m_footstepTimer.Start( sv_footstepinterval.GetFloat() );
+	CRecipientFilter filter;
+	filter.AddRecipientsByPAS( origin );
+	// Visible actors' ordinary animation audio is client-owned. Server audio
+	// reaches PAS listeners outside PVS, without changing prediction globally.
+	if ( gpGlobals->maxClients > 1 )
+		filter.RemoveRecipientsByPVS( origin );
+	EmitSound_t sound;
+	sound.m_nChannel = params.channel;
+	sound.m_pSoundName = params.soundname;
+	sound.m_flVolume = params.volume;
+	sound.m_SoundLevel = params.soundlevel;
+	sound.m_nPitch = params.pitch;
+	sound.m_nFlags = 0;
+	sound.m_pOrigin = &origin;
+	EmitSound( filter, entindex(), sound );
+	OnTerrorFootstep( origin, left, force );
+	if ( sv_showfootsteps.GetInt() & 2 )
+	{
+		Vector start = origin, end = origin;
+		start.z -= 5.0f; end.z += 5.0f;
+		NDebugOverlay::Line( start, end, 0, 255, 0, true, 6.0f );
+		start = origin; end = origin;
+		start.y -= 5.0f; end.y += 5.0f;
+		NDebugOverlay::Line( start, end, 0, 255, 0, true, 6.0f );
+		start = origin; end = origin;
+		start.x -= 5.0f; end.x += 5.0f;
+		NDebugOverlay::Line( start, end, 0, 255, 0, true, 6.0f );
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif // L4D2

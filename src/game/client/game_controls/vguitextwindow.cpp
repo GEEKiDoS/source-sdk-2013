@@ -40,7 +40,11 @@ ConVar cl_disablehtmlmotd( "cl_disablehtmlmotd", "0", FCVAR_ARCHIVE, "Disable HT
 // of options.  Passing a command string is dangerous and allowed a server network
 // message to run arbitrary commands on the client.
 //=============================================================================
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( showinfo, "Shows a info panel: <type> <title> <message> [<command>]", 0x8 )
+#else
 CON_COMMAND( showinfo, "Shows a info panel: <type> <title> <message> [<command number>]" )
+#endif
 {
 	if ( !gViewPortInterface )
 		return;

@@ -28,6 +28,9 @@ inline bool IsSoundChar(char c)
 	b = (c == CHAR_STREAM || c == CHAR_USERVOX || c == CHAR_SENTENCE || c == CHAR_DRYMIX || c == CHAR_OMNI );
 	b = b || (c == CHAR_DOPPLER || c == CHAR_DIRECTIONAL || c == CHAR_DISTVARIANT || c == CHAR_SPATIALSTEREO || c == CHAR_FAST_PITCH );
 
+#if defined( L4D2 )
+	b = b || c == '(' || c == '$';
+#endif
 	return b;
 }
 

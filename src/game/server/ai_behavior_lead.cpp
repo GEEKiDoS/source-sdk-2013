@@ -1432,7 +1432,9 @@ private:
 // CAI_LeadGoal implementation
 //
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( ai_goal_lead, CAI_LeadGoal );
+#endif
 
 BEGIN_DATADESC( CAI_LeadGoal )
 
@@ -1659,7 +1661,9 @@ private:
 // CAI_LeadGoal_Weapon implementation
 //
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( ai_goal_lead_weapon, CAI_LeadGoal_Weapon );
+#endif
 
 BEGIN_DATADESC( CAI_LeadGoal_Weapon )
 

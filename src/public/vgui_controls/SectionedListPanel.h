@@ -23,7 +23,11 @@ namespace vgui
 {
 
 class SectionedListPanel;
+#if defined( L4D2 )
+class CSectionHeader;
+#else
 class SectionedListPanelHeader;
+#endif // L4D2
 class CItemButton;
 
 // sorting function, should return true if itemID1 should be displayed before itemID2
@@ -43,7 +47,11 @@ public:
 	// adds a new section; returns false if section already exists
 	virtual void AddSection(int sectionID, const char *name, SectionSortFunc_t sortFunc = NULL);
 	virtual void AddSection(int sectionID, const wchar_t *name, SectionSortFunc_t sortFunc = NULL);
+#if defined( L4D2 )
+	virtual void AddSection(int sectionID, CSectionHeader *pHeader, SectionSortFunc_t sortFunc = NULL);
+#else
 	virtual void AddSection(int sectionID, SectionedListPanelHeader *pHeader, SectionSortFunc_t sortFunc = NULL);
+#endif // L4D2
 
 	// clears all the sections - leaves the items in place
 	virtual void RemoveAllSections();
@@ -277,7 +285,11 @@ private:
 	{
 		int m_iID;
 		bool m_bAlwaysVisible;
+#if defined( L4D2 )
+		CSectionHeader *m_pHeader;
+#else
 		SectionedListPanelHeader *m_pHeader;
+#endif // L4D2
 		CUtlVector<column_t> m_Columns;
 		SectionSortFunc_t m_pSortFunc;
 		int m_iMinimumHeight;
@@ -323,13 +335,26 @@ private:
 	CPanelAnimationVar( bool, m_bShowColumns, "show_columns", "false" );
 };
 
+#if defined( L4D2 )
+class CSectionHeader : public Label
+#else
 class SectionedListPanelHeader : public Label
+#endif // L4D2
 {
+#if defined( L4D2 )
+	DECLARE_CLASS_SIMPLE( CSectionHeader, Label );
+#else
 	DECLARE_CLASS_SIMPLE( SectionedListPanelHeader, Label );
+#endif // L4D2
 
 public:
+#if defined( L4D2 )
+	CSectionHeader(SectionedListPanel *parent, const char *name, int sectionID);
+	CSectionHeader(SectionedListPanel *parent, const wchar_t *name, int sectionID);
+#else
 	SectionedListPanelHeader(SectionedListPanel *parent, const char *name, int sectionID);
 	SectionedListPanelHeader(SectionedListPanel *parent, const wchar_t *name, int sectionID);
+#endif // L4D2
 
 	virtual void ApplySchemeSettings(IScheme *pScheme) OVERRIDE;
 	virtual void Paint() OVERRIDE;

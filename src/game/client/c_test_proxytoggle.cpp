@@ -57,7 +57,12 @@ END_RECV_TABLE()
 // ---------------------------------------------------------------------------------------- //
 
 // The engine uses this to get the current value.
+
+#if defined( L4D2 )
+CON_COMMAND_F( Test_ProxyToggle_EnsureValue, "Test_ProxyToggle_EnsureValue", 0x00004008 )
+#else
 CON_COMMAND_F( Test_ProxyToggle_EnsureValue, "Test_ProxyToggle_EnsureValue", FCVAR_CHEAT )
+#endif
 {
 	if ( args.ArgC() < 2 )
 	{

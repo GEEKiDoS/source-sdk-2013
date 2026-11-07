@@ -24,7 +24,12 @@ class CStringTableSaveRestoreOps;
 #define MAX_MATERIAL_STRINGS			( 1 << MAX_MATERIAL_STRING_BITS )
 #define OVERLAY_MATERIAL_INVALID_STRING	( MAX_MATERIAL_STRINGS - 1 )
 
+#if defined( L4D2 )
+// Native L4D2's game-owned Scenes table and DT_SceneEntity index are 14-bit.
+#define MAX_CHOREO_SCENES_STRING_BITS	14
+#else
 #define MAX_CHOREO_SCENES_STRING_BITS	13
+#endif
 #define MAX_CHOREO_SCENES_STRINGS		( 1 << MAX_CHOREO_SCENES_STRING_BITS )
 #define CHOREO_SCENES_INVALID_STRING	( MAX_CHOREO_SCENES_STRINGS - 1 )
 

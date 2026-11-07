@@ -12,7 +12,9 @@
 #include "NextBotLocomotionInterface.h"
 #include "NextBotBodyInterface.h"
 
-#ifdef TERROR
+#if defined( L4D2 )
+#include "l4d2/gamerules/terror_gamerules.h"
+#elif defined( TERROR )
 #include "TerrorGamerules.h"
 #endif
 
@@ -24,7 +26,13 @@
 #include "tier0/memdbgon.h"
 
 
-ConVar NextBotStop( "nb_stop", "0", FCVAR_CHEAT | FCVAR_REPLICATED, "Stop all NextBots" );
+ConVar NextBotStop( "nb_stop", "0", 
+#if defined( L4D2 )
+	0x00006004
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+, "Stop all NextBots" );
 
 
 //--------------------------------------------------------------------------------------------------------
@@ -46,7 +54,12 @@ public:
 };
 
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( nb_command, "Sends a command string to all bots", 0x00004004 )
+#else
 CON_COMMAND_F( nb_command, "Sends a command string to all bots", FCVAR_CHEAT )
+#endif
 {
 	if ( args.ArgC() <= 1 )
 	{
@@ -74,6 +87,7 @@ END_SEND_TABLE()
 
 //-----------------------------------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 BEGIN_ENT_SCRIPTDESC( NextBotCombatCharacter, CBaseCombatCharacter, "Nextbot combat character" )
 	DEFINE_SCRIPTFUNC( GetBotId, "Get this bot's id" )
 	DEFINE_SCRIPTFUNC( FlagForUpdate, "Flag this bot for update" )
@@ -90,6 +104,7 @@ BEGIN_ENT_SCRIPTDESC( NextBotCombatCharacter, CBaseCombatCharacter, "Nextbot com
 	DEFINE_SCRIPTFUNC( ClearImmobileStatus, "Clear immobile status" )
 	DEFINE_SCRIPTFUNC( GetImmobileSpeedThreshold, "Return units/second below which this actor is considered immobile" )
 END_SCRIPTDESC();
+#endif
 
 //-----------------------------------------------------------------------------------------------------
 NextBotDestroyer::NextBotDestroyer( int team )
@@ -119,7 +134,12 @@ bool NextBotDestroyer::operator() ( INextBot *bot  )
 
 
 //-----------------------------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( nb_delete_all, "Delete all non-player NextBot entities.", 0x00004004 )
+#else
 CON_COMMAND_F( nb_delete_all, "Delete all non-player NextBot entities.", FCVAR_CHEAT )
+#endif
 {
 	// Listenserver host or rcon access only!
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
@@ -195,7 +215,12 @@ public:
 	Vector m_goal;
 };
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( nb_move_to_cursor, "Tell all NextBots to move to the cursor position", 0x00004004 )
+#else
 CON_COMMAND_F( nb_move_to_cursor, "Tell all NextBots to move to the cursor position", FCVAR_CHEAT )
+#endif
 {
 	// Listenserver host or rcon access only!
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
@@ -211,7 +236,11 @@ CON_COMMAND_F( nb_move_to_cursor, "Tell all NextBots to move to the cursor posit
 bool IgnoreActorsTraceFilterFunction( IHandleEntity *pServerEntity, int contentsMask )
 {
 	CBaseEntity *entity = EntityFromEntityHandle( pServerEntity );
-	return ( entity->MyCombatCharacterPointer() == NULL );	// includes all bots, npcs, players, and TF2 buildings
+#ifdef L4D2
+	return entity->MyNextBotPointer() == NULL && !entity->IsPlayer();
+#else
+	return ( entity->MyCombatCharacterPointer() == NULL );
+#endif
 }
 
 
@@ -360,10 +389,18 @@ void NextBotCombatCharacter::Ignite( float flFlameLifetime, CBaseEntity *pAttack
 		return;
 
 	// BaseClass::Ignite stuff, plus SetAttacker on the flame, so our attacker gets credit
+#if defined( L4D2 )
+	CEntityFlame *pFlame = CEntityFlame::Create( this, flFlameLifetime, 0.0f, true );
+#else
 	CEntityFlame *pFlame = CEntityFlame::Create( this );
+#endif
 	if ( pFlame )
 	{
+#if defined( L4D2 )
+		pFlame->SetAttacker( pAttacker );
+#else
 		pFlame->SetLifetime( flFlameLifetime );
+#endif
 		AddFlag( FL_ONFIRE );
 
 		SetEffectEntity( pFlame );
@@ -425,14 +462,9 @@ void NextBotCombatCharacter::Event_Killed( const CTakeDamageInfo &info )
 	// Advance life state to dying
 	m_lifeState = LIFE_DYING;
 
-#ifdef TERROR
-	/*
-	 * TODO: Make this game-generic
-	 */
-	// Create the death event just like players do.
+#if defined( TERROR ) || defined( L4D2 )
+	// Native4AA230: generic entity notice precedes the infected-specific notice.
 	TerrorGameRules()->DeathNoticeForEntity( this, info );
-
-	// Infected specific event
 	TerrorGameRules()->DeathNoticeForInfected( this, info );
 #endif
 
@@ -539,3 +571,149 @@ void NextBotCombatCharacter::UseEntity( CBaseEntity *entity, USE_TYPE useType )
 		entity->AcceptInput( "Use", this, this, emptyVariant, useType );
 	}
 }
+
+#if defined( L4D2 )
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/gamerules/terror_gamerules.h"
+#include "l4d2/terror_shareddefs.h"
+#include "l4d2/stats/l4d_gamestats.h"
+#include "NextBotLocomotionInterface.h"
+#include "NextBotIntentionInterface.h"
+#include "filesystem.h"
+#include "tier1/fmtstr.h"
+#include <time.h>
+
+static ConVar nb_stuck_dump_threshold( "nb_stuck_dump_threshold", "-1", 
+#if defined( L4D2 )
+	0x00080004
+#else
+	0x80000
+#endif
+,
+	"If a bot is stuck equal to or longer than this value in seconds, dump debug data to console and logfile. -1 to disable" ); // S5ABED0
+
+// S4AD670..4AD7F4. One quiet256 cache, keyed by the native PREFIX comparison
+// against its map substring, not an exact map-name key and not the current date.
+static const char *GetTerrorStuckLogFilename()
+{
+	static CFmtStrN< 256, true > filename;
+	if ( filename.Get()[0] )
+	{
+		const size_t mapLength = V_strlen( STRING( gpGlobals->mapname ) );
+		if ( V_strncmp( STRING( gpGlobals->mapname ), filename.Get() + 5, mapLength ) == 0 )
+			return filename.Get();
+	}
+	char timeText[128];
+	char dateText[128];
+	_strtime_s( timeText, sizeof( timeText ) );
+	for ( int i = 0; timeText[i]; ++i )
+	{
+		if ( timeText[i] == ':' )
+		{
+			if ( i > 3 )
+			{
+				timeText[i] = '\0';
+				break;
+			}
+			timeText[i] = '-';
+		}
+	}
+	_strdate_s( dateText, sizeof( dateText ) );
+	for ( int i = 0; dateText[i]; ++i )
+	{
+		if ( dateText[i] == '\\' || dateText[i] == '/' )
+		{
+			if ( i > 3 )
+			{
+				dateText[i] = '\0';
+				break;
+			}
+			dateText[i] = '-';
+		}
+	}
+	filename.Clear();
+	filename.sprintf( "logs\\%s_%s_%s.stuck", STRING( gpGlobals->mapname ), dateText, timeText );
+	return filename.Get();
+}
+
+// S4AD800..4ADC2D. The inherited responder implementation is exactly the
+// original FirstContainedResponder/NextContainedResponder OnStuck fanout.
+void INextBot::OnStuck( void )
+{
+	INextBotEventResponder::OnStuck();
+	if ( nb_stuck_dump_threshold.GetFloat() >= 0.0f )
+	{
+		ILocomotion *locomotion = GetLocomotionInterface();
+		const float threshold = nb_stuck_dump_threshold.GetFloat();
+		if ( locomotion->GetStuckDuration() >= static_cast< double >( threshold ) )
+		{
+			FileHandle_t file = filesystem->Open( GetTerrorStuckLogFilename(), "at", NULL );
+			// Shared S33C180 owner: format -> console -> optional file. Main's
+			// standing formatted-text rule uses Msg("%s",buffer), never Msg(buffer).
+			TerrorDebugPrintf( file, "\n" );
+			const double duration = GetLocomotionInterface()->GetStuckDuration();
+			const char *identifier = GetDebugIdentifier();
+			TerrorDebugPrintf( file, "STUCK: %s for %2.2f seconds\n", identifier, duration );
+			TerrorDebugPrintf( file, "   Entindex: %d\n", GetEntity()->entindex() );
+
+			// The three GetEntity/absolute-transform resolutions are distinct.
+			const Vector &originForZ = GetEntity()->GetAbsOrigin();
+			const Vector &originForY = GetEntity()->GetAbsOrigin();
+			const Vector &originForX = GetEntity()->GetAbsOrigin();
+			const double originZ = static_cast< double >( originForZ.z );
+			const double originY = static_cast< double >( originForY.y );
+			const double originX = static_cast< double >( originForX.x );
+			TerrorDebugPrintf( file, "   Origin: %2.2f %2.2f %2.2f\n", originX, originY, originZ );
+			const float yaw = GetEntity()->GetAbsAngles().y;
+			const float pitch = GetEntity()->GetAbsAngles().x;
+			const double roll = static_cast< double >( GetEntity()->GetAbsAngles().z );
+			// Native S4ADA38 prints ROLL, PITCH, YAW in this diagnostic.
+			TerrorDebugPrintf( file, "   Angles: %2.2f %2.2f %2.2f\n", roll,
+				static_cast< double >( pitch ), static_cast< double >( yaw ) );
+			const char *behavior = GetIntentionInterface()->DebugString();
+			TerrorDebugPrintf( file, "   Behavior: %s\n", behavior );
+
+			ILocomotion *first = GetLocomotionInterface();
+			ILocomotion *second = GetLocomotionInterface();
+			ILocomotion *third = GetLocomotionInterface();
+			const Vector &goalForX = third->GetApproachGoal();
+			const Vector &goalForZ = first->GetApproachGoal();
+			const double goalZ = static_cast< double >( goalForZ.z );
+			const Vector &goalForY = second->GetApproachGoal();
+			const double goalY = static_cast< double >( goalForY.y );
+			const double goalX = static_cast< double >( goalForX.x );
+			TerrorDebugPrintf( file, "   Approaching: %2.2f %2.2f %2.2f\n", goalX, goalY, goalZ );
+			TerrorDebugPrintf( file, "   Time: %3.2f\n", static_cast< double >( gpGlobals->curtime ) );
+			if ( file )
+				filesystem->Close( file );
+		}
+	}
+	if ( GetLocomotionInterface()->GetStuckDuration() >= 3.0 )
+	{
+		CBaseCombatCharacter *entity = GetEntity(); // S4ADB5F: adjusted PRIMARY actor, not this INextBot subobject.
+		if ( entity && entity->IsPlayer() )
+		{
+			CTerrorPlayer *player = static_cast< CTerrorPlayer * >( entity );
+			const int zombieClass = player->GetZombieClass();
+			if ( ( ( zombieClass >= 1 && zombieClass <= 6 ) || zombieClass == 8 ) && !player->m_hasReportedStuck )
+			{
+				player->m_hasReportedStuck = true;
+				L4DGameStats().RecordStuckZombie( player );
+			}
+		}
+	}
+	if ( TerrorGameRules()->IsCoopMode() && !TerrorGameRules()->IsPlayerControlledZombies() )
+	{
+		if ( GetLocomotionInterface()->GetStuckDuration() >= 120.0 )
+		{
+			CBaseCombatCharacter *entity = GetEntity();
+			if ( entity && entity->IsPlayer() )
+			{
+				CTerrorPlayer *player = static_cast< CTerrorPlayer * >( entity );
+				if ( static_cast< unsigned int >( player->GetZombieClass() ) - 1U <= 5U )
+					player->CommitSuicide( false ); // Native virtual2268 S2FACE0; no extra alive/team gate.
+			}
+		}
+	}
+}
+#endif // L4D2

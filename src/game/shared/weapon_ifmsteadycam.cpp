@@ -27,7 +27,9 @@
 IMPLEMENT_NETWORKCLASS_ALIASED( WeaponIFMSteadyCam, DT_WeaponIFMSteadyCam )
 LINK_ENTITY_TO_CLASS( weapon_ifm_steadycam, CWeaponIFMSteadyCam );
 #if !( defined( TF_CLIENT_DLL ) || defined( TF_DLL ) )
+#ifndef L4D2
 PRECACHE_WEAPON_REGISTER( weapon_ifm_steadycam );
+#endif
 #endif
 
 BEGIN_NETWORK_TABLE( CWeaponIFMSteadyCam, DT_WeaponIFMSteadyCam )	

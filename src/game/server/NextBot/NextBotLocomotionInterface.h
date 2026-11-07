@@ -9,6 +9,8 @@
 #include "NextBotComponentInterface.h"
 #ifdef TF_DLL
 #include "tf/nav_mesh/tf_nav_area.h"
+#elif defined( L4D2 )
+#include "l4d2/nav/terror_nav_area.h"
 #else
 class CTFNavArea;
 
@@ -195,10 +197,18 @@ public:
 	// this stuck state by successfully moving and becoming un-stuck.
 	//
 	virtual bool IsStuck( void ) const;				// return true if bot is stuck 
-	virtual float GetStuckDuration( void ) const;	// return how long we've been stuck
+#if defined( L4D2 )
+	virtual double GetStuckDuration( void ) const; // S3A35A0 returns unspilled now-minus-float timestamp.
+#else
+	virtual float GetStuckDuration( void ) const;
+#endif
 	virtual void ClearStuckStatus( const char *reason = "" );	// reset stuck status to un-stuck
 
 	virtual bool IsAttemptingToMove( void ) const;	// return true if we have tried to Approach() or DriveTo() very recently
+	#if defined( L4D2 )
+	// S3A30D0. Descriptive name; the real last Approach/DriveTo goal owner.
+	virtual const Vector &GetApproachGoal( void ) const { return m_approachGoal; }
+	#endif
 
 	void TraceHull( const Vector& start, const Vector& end, const Vector &mins, const Vector &maxs, unsigned int fMask, ITraceFilter *pFilter, trace_t *pTrace ) const;
 
@@ -207,8 +217,10 @@ public:
 	 */
 	virtual bool ShouldCollideWith( const CBaseEntity *object ) const	{ return true; }
 
+	#if !defined( L4D2 )
 	//- Script access to locomotion functions ------------------------------------------------------------------
 	DECLARE_ENT_SCRIPTDESC();
+	#endif
 
 protected:
 	virtual void AdjustPosture( const Vector &moveGoal );
@@ -226,6 +238,9 @@ private:
 	CountdownTimer m_stillStuckTimer;				// for resending stuck events
 	Vector m_stuckPos;								// where we got stuck
 	IntervalTimer m_moveRequestTimer;
+	#if defined( L4D2 )
+	Vector m_approachGoal; // Native96; ctor positivezero, Reset deliberately preserves.
+	#endif
 };
 
 
@@ -374,10 +389,21 @@ inline bool ILocomotion::IsStuck( void ) const
 	return m_isStuck;
 }
 
+#if defined( L4D2 )
+inline double ILocomotion::GetStuckDuration( void ) const
+{
+	if ( !IsStuck() )
+		return 0.0;
+	const float timestamp = m_stuckTimer.m_timestamp.Get();
+	return timestamp > 0.0f ? static_cast< double >( gpGlobals->curtime ) - static_cast< double >( timestamp ) :
+		static_cast< double >( 99999.9f );
+}
+#else
 inline float ILocomotion::GetStuckDuration( void ) const
 {
 	return ( IsStuck() ) ? m_stuckTimer.GetElapsedTime() : 0.0f;
 }
+#endif
 
 inline void ILocomotion::TraceHull( const Vector& start, const Vector& end, const Vector &mins, const Vector &maxs, unsigned int fMask, ITraceFilter *pFilter, trace_t *pTrace ) const
 {

@@ -8,8 +8,27 @@
 #include "NextBotInterface.h"
 #include "NextBotIntentionInterface.h"
 
+#if defined( L4D2 )
+#include "tier1/fmtstr.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+
+#if defined( L4D2 )
+// S39F790: one process-lifetime quiet1024 buffer, cleared per call. No extra
+// behavior cache, separator, null filter or parallel formatter is introduced.
+const char *IIntention::DebugString( void ) const
+{
+	static CFmtStrN< 1024, true > text;
+	text.Clear();
+	for ( INextBotEventResponder *responder = FirstContainedResponder(); responder;
+		responder = NextContainedResponder( responder ) )
+	{
+		text.AppendFormat( "%s", responder->DebugString() );
+	}
+	return text.Get();
+}
+#endif
 
 
 //------------------------------------------------------------------------------------------------------------------------
@@ -42,6 +61,7 @@ Vector IIntention::SelectTargetPoint( const INextBot *me, const CBaseCombatChara
 }
 
 
+#if !defined( L4D2 )
 //------------------------------------------------------------------------------------------------------------------------
 /**
  * Given two threats, decide which one is more dangerous
@@ -85,6 +105,7 @@ const CKnownEntity *IIntention::SelectMoreDangerousThreat( const INextBot *me, c
 
 	return threat2;
 }
+#endif
 
 
 

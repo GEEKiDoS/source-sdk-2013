@@ -281,7 +281,7 @@ bool CAI_MoveSolver::HaveRegulationForObstacle( CBaseEntity *pEntity)
 // Commands and tests
 //
 
-#ifdef DEBUG
+#if defined( DEBUG ) && !defined( L4D2 )
 CON_COMMAND(ai_test_move_solver, "Tests the AI move solver system")
 {
 #ifdef DEBUG

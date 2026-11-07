@@ -50,7 +50,12 @@ const int DT_RIGHT = 3;
 CLCD gLCD;
 IHudLCD *hudlcd = &gLCD;
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( g15_reload, "Reloads the Logitech G-15 Keyboard configs." , 0x00000008)
+#else
 CON_COMMAND( g15_reload, "Reloads the Logitech G-15 Keyboard configs." )
+#endif
 {
 	if ( !CommandLine()->FindParm( "-g15" ) )
 	{
@@ -61,7 +66,12 @@ CON_COMMAND( g15_reload, "Reloads the Logitech G-15 Keyboard configs." )
 	gLCD.Reload();
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( g15_dumpplayer, "Spew player data." , 0x00000008)
+#else
 CON_COMMAND( g15_dumpplayer, "Spew player data." )
+#endif
 {
 	if ( !CommandLine()->FindParm( "-g15" ) )
 	{
@@ -72,7 +82,13 @@ CON_COMMAND( g15_dumpplayer, "Spew player data." )
 	gLCD.DumpPlayer();
 }
 
-static ConVar g15_update_msec( "g15_update_msec", "250", FCVAR_ARCHIVE, "Logitech G-15 Keyboard update interval." );
+static ConVar g15_update_msec( "g15_update_msec", "250", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Logitech G-15 Keyboard update interval." );
 
 void CLCDItem::Wipe( IG15 *lcd )
 {

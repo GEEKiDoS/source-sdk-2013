@@ -100,7 +100,12 @@ int	CAmmoDef::NPCDamage(int nAmmoIndex)
 // Input  :
 // Output :
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+// S2D280 accepts this actor argument but genuinely does not read it.
+int CAmmoDef::MaxCarry( int nAmmoIndex, const CBaseCombatCharacter * )
+#else
 int	CAmmoDef::MaxCarry(int nAmmoIndex)
+#endif
 {
 	if ( nAmmoIndex < 1 || nAmmoIndex >= m_nAmmoIndex )
 		return 0;
@@ -108,7 +113,11 @@ int	CAmmoDef::MaxCarry(int nAmmoIndex)
 	if ( m_AmmoType[nAmmoIndex].pMaxCarry == USE_CVAR )
 	{
 		if ( m_AmmoType[nAmmoIndex].pMaxCarryCVar )
+#if defined( L4D2 )
+			return m_AmmoType[nAmmoIndex].pMaxCarryCVar->GetInt();
+#else
 			return m_AmmoType[nAmmoIndex].pMaxCarryCVar->GetFloat();
+#endif
 
 		return 0;
 	}

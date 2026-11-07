@@ -39,6 +39,11 @@ class CBasePlayer;
 class CBaseCombatCharacter;
 class IPhysicsConstraint;
 class CUserCmd;
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+class C_TerrorGun;
+#elif defined( L4D2 )
+class CTerrorGun;
+#endif
 
 // How many times to display altfire hud hints (per weapon)
 #define WEAPON_ALTFIRE_HUD_HINT_COUNT	1
@@ -151,13 +156,35 @@ private:
 // Purpose: Client side rep of CBaseTFCombatWeapon 
 //-----------------------------------------------------------------------------
 // Hacky
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+class C_CombatWeaponClone;
+#endif
 class CBaseCombatWeapon : public BASECOMBATWEAPON_DERIVED_FROM
 {
 public:
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	using BaseClass::GetAttachment;
+	virtual int ObjectCaps() OVERRIDE;
+	virtual void UpdateOnRemove() OVERRIDE;
+	virtual int LookupAttachment( const char *attachmentName ) OVERRIDE;
+	virtual bool GetAttachment( int number, Vector &origin ) OVERRIDE;
+	virtual bool GetAttachment( int number, Vector &origin, QAngle &angles ) OVERRIDE;
+	virtual bool GetAttachment( int number, matrix3x4_t &matrix ) OVERRIDE;
+	virtual bool GetAttachmentVelocity( int number, Vector &origin, Quaternion &angles ) OVERRIDE;
+	virtual void InvalidateAttachments() OVERRIDE;
+	void EnsureCorrectRenderingModel();
+private:
+	friend class C_CombatWeaponClone;
+	bool IsCarriedByObservedPlayer();
+	void OnWeaponCloneDestroyed();
+	C_CombatWeaponClone *m_pWeaponClone;
+public:
+#endif
+
 	DECLARE_CLASS( CBaseCombatWeapon, BASECOMBATWEAPON_DERIVED_FROM );
 	DECLARE_NETWORKCLASS();
 	DECLARE_PREDICTABLE();
-#ifdef GAME_DLL
+#if defined( GAME_DLL ) && !defined( L4D2 )
 	DECLARE_ENT_SCRIPTDESC();
 #endif
 
@@ -166,6 +193,16 @@ public:
 
 	virtual bool			IsBaseCombatWeapon( void ) const { return true; }
 	virtual CBaseCombatWeapon *MyCombatWeaponPointer( void ) { return this; }
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	virtual C_TerrorGun *GetTerrorGun() { return NULL; } // C19B90, genuine root default.
+#elif defined( L4D2 )
+	virtual CTerrorGun *GetTerrorGun() { return NULL; } // S50970; Gun3E6F30 returns this.
+#endif
+
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+	virtual CBaseEntity *GetPreviousOwner() const { return NULL; } // Genuine server509D0 root; Terror3ED2C0 overrides.
+#endif
 
 	// A derived weapon class should return true here so that weapon sounds, etc, can
 	//  apply the proper filter
@@ -208,7 +245,11 @@ public:
 	virtual void			SetViewModelIndex( int index = 0 );
 	virtual bool			SendWeaponAnim( int iActivity );
 	virtual void			SendViewModelAnim( int nSequence );
-	float					GetViewModelSequenceDuration();	// Return how long the current view model sequence is.
+#if defined( L4D2 )
+	double GetViewModelSequenceDuration(); // Native ownWEAPONduration4C810/15FB0.
+#else
+	float GetViewModelSequenceDuration();
+#endif
 	bool					IsViewModelSequenceFinished( void ) const; // Returns if the viewmodel's current animation is finished
 
 	virtual void			SetViewModel();
@@ -226,6 +267,9 @@ public:
 	void					GiveDefaultAmmo( void );
 	
 	virtual bool			CanHolster( void ) const { return TRUE; };		// returns true if the weapon can be holstered
+#if defined( L4D2 )
+	virtual bool CanBeSwitchedFrom() const { return true; }
+#endif
 	virtual bool			DefaultDeploy( char *szViewModel, char *szWeaponModel, int iActivity, char *szAnimExt );
 	virtual bool			CanDeploy( void ) { return true; }			// return true if the weapon's allowed to deploy
 	virtual bool			Deploy( void );								// returns true is deploy was successful
@@ -251,6 +295,13 @@ public:
 	virtual bool			CanPerformSecondaryAttack() const;
 
 	virtual bool			ShouldBlockPrimaryFire() { return false; }
+#ifdef L4D2
+	// Unspilled x87 results are transported wide; callers retain native f32 spills.
+	virtual double			GetReloadAnimationScale() { return 1.0; }
+	virtual double			GetDeployAnimationScale() { return 1.0; }
+	virtual Activity		GetReloadActivity() { return ACT_VM_RELOAD; }
+	void					SetQueuedAttack( int buttons );
+#endif
 
 #ifdef CLIENT_DLL
 	virtual void			CreateMove( float flInputSampleTime, CUserCmd *pCmd, const QAngle &vecOldViewAngles ) {}
@@ -288,7 +339,11 @@ public:
 	virtual const Vector&	GetBulletSpread( void );
 	virtual Vector			GetBulletSpread( WeaponProficiency_t proficiency )		{ return GetBulletSpread(); }
 	virtual float			GetSpreadBias( WeaponProficiency_t proficiency )			{ return 1.0; }
+#if defined( L4D2 )
+	virtual double			GetFireRate( void );
+#else
 	virtual float			GetFireRate( void );
+#endif
 	virtual int				GetMinBurst() { return 1; }
 	virtual int				GetMaxBurst() { return 1; }
 	virtual float			GetMinRestTime() { return 0.3; }
@@ -389,6 +444,10 @@ public:
 	virtual CHudTexture const	*GetSpriteAutoaim( void ) const;
 	virtual CHudTexture const	*GetSpriteZoomedCrosshair( void ) const;
 	virtual CHudTexture const	*GetSpriteZoomedAutoaim( void ) const;
+#if defined( L4D2 )
+	virtual CHudTexture const	*GetSpriteActiveDual( void ) const;
+	virtual CHudTexture const	*GetSpriteInactiveDual( void ) const;
+#endif
 
 	virtual Activity		ActivityOverride( Activity baseAct, bool *pRequired );
 	virtual	acttable_t*		ActivityList( int &iActivityCount ) { return NULL; }
@@ -495,9 +554,16 @@ public:
 	// Returns the aiment render origin + angles
 	virtual int				DrawModel( int flags );
 	virtual bool			ShouldDraw( void );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	virtual bool			ShouldDrawWeapon(); // C41020, native primary363, distinct from renderable3.
+#endif
 	virtual bool			ShouldDrawPickup( void );
 	virtual void			HandleInput( void ) { return; };
 	virtual void			OverrideMouseInput( float *x, float *y ) { return; };
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	// Native C10019C10, primary1432: genuinely empty RET8, inherited by all weapons.
+	virtual void OverrideJoystickInput( float *, float * ) {}
+#endif
 	virtual int				KeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding ) { return 1; }
 	virtual bool			AddLookShift( void ) { return true; };
 
@@ -582,8 +648,17 @@ public:
 	CNetworkVar( float, m_flNextPrimaryAttack );						// soonest time ItemPostFrame will call PrimaryAttack
 	CNetworkVar( float, m_flNextSecondaryAttack );					// soonest time ItemPostFrame will call SecondaryAttack
 	CNetworkVar( float, m_flTimeWeaponIdle );							// soonest time ItemPostFrame will call WeaponIdle
+	#if defined( L4D2 )
+	CNetworkVar( int, m_nQueuedAttack );
+	CNetworkVar( float, m_flTimeAttackQueued );
+	CNetworkVar( bool, m_bOnlyPump );
+	#endif
 	// Weapon state
+	#if defined( L4D2 )
+	CNetworkVar( bool, m_bInReload );
+	#else
 	bool					m_bInReload;			// Are we in the middle of a reload;
+	#endif
 	bool					m_bFireOnEmpty;			// True when the gun is empty and the player is still holding down the attack key(s)
 	bool					m_bFiringWholeClip;		// Are we in the middle of firing the whole clip;
 	// Weapon art

@@ -53,7 +53,11 @@ CFXDiscreetLine::~CFXDiscreetLine( void )
 }
 
 // Does extra calculations to make them more visible over distance
-ConVar	tracer_extra( "tracer_extra", "1" );
+ConVar	tracer_extra( "tracer_extra", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 /*
 ==================================================

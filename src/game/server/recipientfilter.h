@@ -47,6 +47,9 @@ public:
 	void			RemoveRecipientsByPVS( const Vector& origin );
 	void			AddRecipientsByPAS( const Vector& origin );
 	void			AddRecipient( const CBasePlayer *player );
+#if defined( L4D2 )
+	void RemoveBots(); // Native1B4E90; genuine existing-filter operation, no new filter class.
+#endif
 	void			RemoveAllRecipients( void );
 	void			RemoveRecipient( CBasePlayer *player );
 	void			RemoveRecipientByPlayerIndex( int playerindex );

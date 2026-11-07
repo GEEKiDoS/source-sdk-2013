@@ -6950,7 +6950,12 @@ void CAI_BaseNPC::OnUpdateShotRegulator( )
 		return;
 
 	// Default values
+#if defined( L4D2 )
+	m_ShotRegulator.SetBurstInterval( static_cast< float >( pWeapon->GetFireRate() ),
+		static_cast< float >( pWeapon->GetFireRate() ) ); // Two independent native calls, not a cached rate.
+#else
 	m_ShotRegulator.SetBurstInterval( pWeapon->GetFireRate(), pWeapon->GetFireRate() );
+#endif
 	m_ShotRegulator.SetBurstShotCountRange( pWeapon->GetMinBurst(), pWeapon->GetMaxBurst() );
 	m_ShotRegulator.SetRestInterval( pWeapon->GetMinRestTime(), pWeapon->GetMaxRestTime() );
 
@@ -12888,7 +12893,13 @@ float CAI_BaseNPC::LineOfSightDist( const Vector &vecDir, float zEye )
 	return (tr.startpos - tr.endpos ).Length();
 }
 
-ConVar ai_LOS_mode( "ai_LOS_mode", "0", FCVAR_REPLICATED );
+ConVar ai_LOS_mode( "ai_LOS_mode", "0", 
+#if defined( L4D2 )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Use this to perform AI tracelines that are trying to determine LOS between points.

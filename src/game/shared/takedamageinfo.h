@@ -81,6 +81,14 @@ public:
 
 	Vector			GetReportedPosition() const;
 	void			SetReportedPosition( const Vector &reportedPosition );
+#if defined( L4D2 )
+	const Vector	&GetDamageDirection() const { return m_vecDamageDirection; }
+	void			SetDamageDirection( const Vector &direction ) { m_vecDamageDirection = direction; }
+	float			GetDamageRadius() const { return m_flRadius; }
+	void			SetDamageRadius( float radius ) { m_flRadius = radius; }
+	int				GetDamageVictimIndex() const { return m_iDamageVictimIndex; }
+	void			SetDamageVictimIndex( int index ) { m_iDamageVictimIndex = index; }
+#endif
 
 	int				GetDamageType() const;
 	void			SetDamageType( int bitsDamageType );
@@ -146,6 +154,13 @@ protected:
 	float			m_flDamageForForce;
 
 	ECritType		m_eCritType;
+#if defined( L4D2 )
+private:
+	Vector			m_vecDamageDirection;
+	float			m_flRadius;
+	int				m_iDamageVictimIndex;
+protected:
+#endif
 
 	DECLARE_SIMPLE_DATADESC();
 };

@@ -16,6 +16,13 @@
 #include "baseplayer_shared.h"
 #include "shared_classnames.h"
 #include "econ/ihasowner.h"
+#if defined( L4D2 )
+#ifdef CLIENT_DLL
+#include "c_baseanimatingoverlay.h"
+#else
+#include "baseanimatingoverlay.h"
+#endif
+#endif
 
 class CBaseCombatWeapon;
 class CBaseCombatCharacter;
@@ -23,14 +30,23 @@ class CVGuiScreen;
 
 #if defined( CLIENT_DLL )
 #define CBaseViewModel C_BaseViewModel
+class C_BasePlayer;
 #define CBaseCombatWeapon C_BaseCombatWeapon
 #endif
 
 #define VIEWMODEL_INDEX_BITS 1
 
+#if defined( L4D2 )
+class CBaseViewModel : public CBaseAnimatingOverlay, public IHasOwner
+#else
 class CBaseViewModel : public CBaseAnimating, public IHasOwner
+#endif
 {
+#if defined( L4D2 )
+	DECLARE_CLASS( CBaseViewModel, CBaseAnimatingOverlay );
+#else
 	DECLARE_CLASS( CBaseViewModel, CBaseAnimating );
+#endif
 public:
 
 	DECLARE_NETWORKCLASS();
@@ -50,6 +66,13 @@ public:
 
 	// Weapon client handling
 	virtual void			SendViewModelMatchingSequence( int sequence );
+#if defined( L4D2 )
+	void SendTerrorLayerSequence( int nSequence );
+	void ApplyTerrorLayerSequence( int nSequence, int nLayer, float flStartTime );
+#ifdef CLIENT_DLL
+	void AdvanceTerrorLayers( float currentTime, CStudioHdr *pHdr, C_BasePlayer *player, float playback );
+#endif
+#endif
 	virtual void			SetWeaponModel( const char *pszModelname, CBaseCombatWeapon *weapon );
 
 	virtual void			CalcViewModelLag( Vector& origin, QAngle& angles, QAngle& original_angles );
@@ -104,6 +127,9 @@ public:
 #else
 
 	virtual RenderGroup_t	GetRenderGroup();
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE;
+#endif
 
 // Only supported in TF2 right now
 #if defined( INVASION_CLIENT_DLL )
@@ -124,10 +150,18 @@ public:
 	virtual void			OnDataChanged( DataUpdateType_t updateType );
 	virtual void			PostDataUpdate( DataUpdateType_t updateType );
 
+#if defined( L4D2 )
+	virtual CStudioHdr *OnNewModel() OVERRIDE;
+	virtual void CalcViewModelCamera( Vector &origin, QAngle &angles, float &fov );
+	virtual unsigned char OverrideAlphaModulation( unsigned char alpha ) OVERRIDE;
+	virtual int GetMuzzleFlashAttachment( bool dual, bool right );
+#endif
 	virtual bool			Interpolate( float currentTime );
 
 	virtual bool			ShouldFlipViewModel() OVERRIDE;
-	void					UpdateAnimationParity( void );
+#if !defined( L4D2 )
+	void UpdateAnimationParity( void );
+#endif
 
 	virtual void			ApplyBoneMatrixTransform( matrix3x4_t& transform );
 
@@ -149,7 +183,9 @@ public:
 	}
 
 	// Add entity to visible view models list?
-	virtual void			AddEntity( void );
+#if !defined( L4D2 )
+	virtual void AddEntity( void );
+#endif
 
 	virtual void			GetBoneControllers(float controllers[MAXSTUDIOBONECTRLS]);
 
@@ -196,6 +232,16 @@ private:
 
 #if defined( CLIENT_DLL )
 	int						m_nOldAnimationParity;
+#if defined( L4D2 )
+	float m_flPreviousElapsedTime; // Native3036; only OnNewModel resets it.
+	float m_flMainSequenceCycle; // Native3040; only OnNewModel resets it.
+	int m_nLastReceivedLayerSequence; // Native3048; constructor write omitted.
+	int m_nLastReceivedLayer; // Native3052; constructor write omitted.
+	float m_flLastReceivedLayerStartTime; // Native3056; constructor write omitted.
+	int m_nClientViewModelState; // Native3060; genuine private32-bit ctor-1.
+	int m_iCameraAttachment; // Native3064; genuine ctor-1/model callback writer.
+	QAngle m_angViewModelCamera; // Native3068..3076; constructor write omitted.
+#endif
 #endif
 
 
@@ -205,6 +251,11 @@ private:
 	// Control panel
 	typedef CHandle<CVGuiScreen>	ScreenHandle_t;
 	CUtlVector<ScreenHandle_t>	m_hScreens;
+#if defined( L4D2 )
+	CNetworkVar( int, m_nLayerSequence );
+	CNetworkVar( int, m_nLayer );
+	CNetworkVar( float, m_flLayerStartTime );
+#endif
 };
 
 #endif // BASEVIEWMODEL_SHARED_H

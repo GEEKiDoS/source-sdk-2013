@@ -1,0 +1,13 @@
+// Game-owned reconstruction of native blurgaussian_3x3_ps20/ps20b.
+// Native VCS6 has one static/dynamic combination; no CLEAR_ALPHA variant.
+// Original ordered four-tap equations, CRC BB8C9E10, are analysis evidence only.
+sampler2D BaseSampler : register( s0 );
+float2 Tap0 : register( c0 );
+float2 Tap1 : register( c1 );
+float4 main( float2 uv : TEXCOORD0 ) : COLOR
+{
+	float4 result = tex2D( BaseSampler, uv - Tap0 ) * 0.25f;
+	result = tex2D( BaseSampler, uv + Tap0 ) * 0.25f + result;
+	result = tex2D( BaseSampler, uv + Tap1 ) * 0.25f + result;
+	return tex2D( BaseSampler, uv - Tap1 ) * 0.25f + result;
+}

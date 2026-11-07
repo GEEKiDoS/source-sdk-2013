@@ -118,7 +118,9 @@ BEGIN_DATADESC( CAI_ScriptedSequence )
 END_DATADESC()
 
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( scripted_sequence, CAI_ScriptedSequence );
+#endif
 #define CLASSNAME "scripted_sequence"
 
 //-----------------------------------------------------------------------------
@@ -1639,7 +1641,9 @@ BEGIN_DATADESC( CAI_ScriptedSchedule )
 END_DATADESC()
 
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( aiscripted_schedule, CAI_ScriptedSchedule );
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1985,7 +1989,9 @@ END_DATADESC()
 
 
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( scripted_sentence, CAI_ScriptedSentence );
+#endif
 
 
 //-----------------------------------------------------------------------------

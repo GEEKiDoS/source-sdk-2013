@@ -278,6 +278,10 @@ private:
 class CSpriteOriented : public CSprite
 {
 public:
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return 1; }
+#endif
+
 	DECLARE_CLASS( CSpriteOriented, CSprite );
 #if !defined( CLIENT_DLL )
 	DECLARE_SERVERCLASS();

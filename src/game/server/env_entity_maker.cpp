@@ -177,7 +177,11 @@ void CEnvEntityMaker::SpawnEntity( Vector vecAlternateOrigin, QAngle vecAlternat
 	}
 
 	CUtlVector<CBaseEntity*> hNewEntities;
+#if defined( L4D2 )
+	if ( !pTemplate->CreateInstance( vecSpawnOrigin, vecSpawnAngles, &hNewEntities, this, false ) )
+#else
 	if ( !pTemplate->CreateInstance( vecSpawnOrigin, vecSpawnAngles, &hNewEntities ) )
+#endif
 		return;
 	
 	//Adrian: oops we couldn't spawn the entity (or entities) for some reason!

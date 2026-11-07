@@ -673,3 +673,60 @@ void NDebugOverlay::Sphere( const Vector &position, const QAngle &angles, float 
 	Circle( position, yAxis, zAxis, radius, r, g, b, a, bNoDepthTest, flDuration );	// yz plane
 	Circle( position, xAxis, zAxis, radius, r, g, b, a, bNoDepthTest, flDuration );	// xz plane
 }
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void NDebugOverlay::Cone( const Vector &origin, const Vector &direction, float angle,
+	float length, int r, int g, int b, int /*a*/, bool noDepthTest, float duration )
+{
+	// Native S0A1DC0 uses sine HALF-angle, not the familiar tangent cone formula.
+	const float sineHalf = static_cast< float >( sin( static_cast< double >( angle ) * 0.5 ) );
+	float radius = length * sineHalf;
+	QAngle angles;
+	VectorAngles( direction, angles );
+	matrix3x4_t transform;
+	AngleMatrix( angles, origin, transform );
+	Vector xAxis, yAxis;
+	MatrixGetColumn( transform, 2, xAxis );
+	MatrixGetColumn( transform, 1, yAxis );
+	const Vector end = origin + direction * length;
+	for ( int i = 0; i < 8; ++i )
+	{
+		const float phase = static_cast< float >( i ) * 0.78539819f;
+		const float sine = static_cast< float >( sin( static_cast< double >( phase ) ) );
+		const float cosine = static_cast< float >( cos( static_cast< double >( phase ) ) );
+		const Vector edge = ( xAxis * cosine * radius + end ) + yAxis * sine * radius;
+		Line( origin, edge, r, g, b, noDepthTest, duration );
+	}
+	const float third = length * 0.33333334f;
+	for ( int i = 0; i < 3; ++i )
+	{
+		const float distance = static_cast< float >( i + 1 ) * third;
+		const Vector center = origin + direction * distance;
+		Circle( center, xAxis, yAxis, distance * sineHalf, r, g, b, 0, noDepthTest, duration );
+	}
+	// Native alpha input is intentionally unused; rings pass alpha ZERO.
+}
+
+void NDebugOverlay::Cross2D( const Vector &position, float size, int r, int g, int b,
+	bool noDepthTest, float duration )
+{
+	// Descriptive name for stripped S0A2020: TWO camera-plane lines, not Sphere
+	// or Cross3D (which would silently add a third line/rotate the target marker).
+	CBasePlayer *player = GetLocalPlayer();
+	if ( !player )
+		return;
+	Vector forward, right, up;
+	player->EyeVectors( &forward, &right, &up );
+	Vector positive = position + right * size;
+	Vector negative = position - right * size;
+	Line( negative, positive, r, g, b, noDepthTest, duration );
+	positive = position + up * size;
+	negative = position - up * size;
+	Line( negative, positive, r, g, b, noDepthTest, duration );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif

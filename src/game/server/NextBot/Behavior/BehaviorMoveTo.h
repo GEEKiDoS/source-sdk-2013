@@ -7,6 +7,39 @@
 #define _BEHAVIOR_MOVE_TO_H_
 
 
+#if defined( L4D2 )
+// Native L4D2 template: one goal/path and inherited move-result handlers.
+template < typename Actor, typename PathCost >
+class BehaviorMoveTo : public Action< Actor >
+{
+public:
+	explicit BehaviorMoveTo( const Vector &goal )
+	{
+		m_goal = goal;
+		m_path.Invalidate();
+	}
+	virtual const char *GetName() const OVERRIDE { return "BehaviorMoveTo"; }
+	virtual ActionResult< Actor > OnStart( Actor *me, Action< Actor > *prior ) OVERRIDE
+	{
+		if ( !ComputePath( me, m_goal, &m_path ) )
+			return this->Done( "No path to goal" );
+		return this->Continue();
+	}
+	virtual ActionResult< Actor > Update( Actor *me, float interval ) OVERRIDE
+	{
+		m_path.Update( me );
+		return m_path.IsValid() ? this->Continue() : this->Done();
+	}
+	virtual bool ComputePath( Actor *me, const Vector &goal, PathFollower *path )
+	{
+		PathCost cost( me );
+		return path->Compute( me, goal, cost );
+	}
+private:
+	Vector m_goal;
+	PathFollower m_path;
+};
+#else
 //----------------------------------------------------------------------------------------------
 /**
  * Move to a potentially far away position, using path planning.
@@ -122,5 +155,6 @@ inline EventDesiredResult< Actor > BehaviorMoveTo< Actor, PathCost >::OnMoveToFa
 
 
 
+#endif // L4D2
 #endif // _BEHAVIOR_MOVE_TO_H_
 

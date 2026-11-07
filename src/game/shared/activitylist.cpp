@@ -14,6 +14,10 @@
 #include "filesystem.h"
 #include <KeyValues.h>
 #include "utldict.h"
+#if defined( L4D2 )
+#include "l4d2/infected/infected_activities.h"
+#include "l4d2/terror_shareddefs.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -51,6 +55,9 @@ void ActivityList_Init( void )
 
 void ActivityList_Free( void )
 {
+#if defined( L4D2 )
+	FreeTerrorActivities();
+#endif
 	g_ActivityStrings.ClearStrings();
 	g_ActivityList.Purge();
 	m_ActivityRemapDatabase.Purge();
@@ -2522,7 +2529,19 @@ void ActivityList_RegisterSharedActivities( void )
 	REGISTER_SHARED_ACTIVITY( ACT_MP_CYOA_PDA_IDLE );
 	REGISTER_SHARED_ACTIVITY( ACT_MP_CYOA_PDA_OUTRO );
 	
+	#if defined( L4D2 )
+	REGISTER_SHARED_ACTIVITY( ACT_VM_MELEE );
+	REGISTER_SHARED_ACTIVITY( ACT_VM_DEPLOY_LAYER );
+	REGISTER_SHARED_ACTIVITY( ACT_VM_PRIMARYATTACK_LAYER );
+	REGISTER_SHARED_ACTIVITY( ACT_VM_RELOAD_LAYER );
+	REGISTER_SHARED_ACTIVITY( ACT_VM_MELEE_LAYER );
+	#endif
+
 	AssertMsg( g_HighestActivity == LAST_SHARED_ACTIVITY - 1, "Not all activities from ai_activity.h registered in activitylist.cpp" ); 
+	#if defined( L4D2 )
+	RegisterTerrorActivities();
+	RegisterInfectedActivities();
+	#endif
 } 
 
 // HACKHACK: Keep backwards compatibility on broken activities temporarily

@@ -5,6 +5,12 @@
 //=============================================================================//
 
 #include "cbase.h"
+#ifdef L4D2
+#include "l4d2/content/terror_precache_membership.h"
+#include "l4d2/content/terror_model_precache.h"
+#include "l4d2/player/bots/survivor_bot.h"
+#include "l4d2/sound/terror_sound_gamedata.h"
+#endif
 #include <stdarg.h>
 #include "baseflex.h"
 #include "entitylist.h"
@@ -29,7 +35,12 @@
 #include "datacache/idatacache.h"
 #include "dt_utlvector_send.h"
 #include "ichoreoeventcallback.h"
+#if defined( L4D2 )
+#include "l4d2/content/terror_scene_file_cache.h"
+#include <xmmintrin.h>
+#else
 #include "scenefilecache/ISceneFileCache.h"
+#endif
 #include "SceneCache.h"
 #include "scripted.h"
 #include "env_debughistory.h"
@@ -43,7 +54,14 @@
 #include "tier0/memdbgon.h"
 
 extern ISoundEmitterSystemBase *soundemitterbase;
+#if defined( L4D2 )
+// The scene and sound producers share the native dictionary and repeat state.
+extern bool FindServerCaptionHash( const char *token, bool warn, CRC32_t *hash );
+extern bool AllowServerCaptionRepeat( CRC32_t hash );
+#endif
+#if !defined( L4D2 )
 extern ISceneFileCache *scenefilecache;
+#endif
 
 class CSceneEntity;
 class CBaseFlex;
@@ -52,8 +70,20 @@ class CBaseFlex;
 // Requies vcds be saved as compiled assets
 //#define COMPILED_VCDS 1
 
-static ConVar scene_forcecombined( "scene_forcecombined", "0", 0, "When playing back, force use of combined .wav files even in english." );
-static ConVar scene_maxcaptionradius( "scene_maxcaptionradius", "1200", 0, "Only show closed captions if recipient is within this many units of speaking actor (0==disabled)." );
+static ConVar scene_forcecombined( "scene_forcecombined", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "When playing back, force use of combined .wav files even in english." );
+static ConVar scene_maxcaptionradius( "scene_maxcaptionradius", "1200", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Only show closed captions if recipient is within this many units of speaking actor (0==disabled)." );
 
 // Assume sound system is 100 msec lagged (only used if we can't find snd_mixahead cvar!)
 #define SOUND_SYSTEM_LATENCY_DEFAULT ( 0.1f )
@@ -318,7 +348,9 @@ public:
 
 	DECLARE_CLASS( CSceneEntity, CPointEntity );
 	DECLARE_SERVERCLASS();
+	#if !defined( L4D2 )
 	DECLARE_ENT_SCRIPTDESC();
+	#endif
 
 							CSceneEntity( void );
 							~CSceneEntity( void );
@@ -729,6 +761,7 @@ BEGIN_DATADESC( CSceneEntity )
 	DEFINE_KEYFIELD( m_iPlayerDeathBehavior, FIELD_INTEGER, "onplayerdeath" ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "ScriptPlayerDeath", InputScriptPlayerDeath ),
 
+#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget1", InputSetTarget1 ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget2", InputSetTarget2 ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget3", InputSetTarget3 ),
@@ -737,6 +770,7 @@ BEGIN_DATADESC( CSceneEntity )
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget6", InputSetTarget6 ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget7", InputSetTarget7 ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget8", InputSetTarget8 ),
+#endif
 
 	// Outputs
 	DEFINE_OUTPUT( m_OnStart, "OnStart"),
@@ -760,6 +794,7 @@ BEGIN_DATADESC( CSceneEntity )
 	DEFINE_OUTPUT( m_OnTrigger16, "OnTrigger16"),
 END_DATADESC()
 
+#if !defined( L4D2 )
 BEGIN_ENT_SCRIPTDESC( CSceneEntity, CBaseEntity, "Choreographed scene which controls animation and/or dialog on one or more actors." )
 	DEFINE_SCRIPTFUNC( EstimateLength, "Returns length of this scene in seconds." )
 	DEFINE_SCRIPTFUNC( IsPlayingBack, "If this scene is currently playing." )
@@ -769,6 +804,7 @@ BEGIN_ENT_SCRIPTDESC( CSceneEntity, CBaseEntity, "Choreographed scene which cont
 	DEFINE_SCRIPTFUNC_NAMED( ScriptFindNamedEntity, "FindNamedEntity", "given an entity reference, such as !target, get actual entity from scene object" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptLoadSceneFromString, "LoadSceneFromString", "given a dummy scene name and a vcd string, load the scene" )
 END_SCRIPTDESC();
+#endif
 
 const ConVar	*CSceneEntity::m_pcvSndMixahead = NULL;
 
@@ -1457,7 +1493,11 @@ void CSceneEntity::DispatchEndInterrupt( CChoreoScene *scene, CChoreoEvent *even
 //-----------------------------------------------------------------------------
 void CSceneEntity::DispatchStartExpression( CChoreoScene *scene, CBaseFlex *actor, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, this );
+#else
 	actor->AddSceneEvent( scene, event );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1477,7 +1517,11 @@ void CSceneEntity::DispatchEndExpression( CChoreoScene *scene, CBaseFlex *actor,
 //-----------------------------------------------------------------------------
 void CSceneEntity::DispatchStartFlexAnimation( CChoreoScene *scene, CBaseFlex *actor, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, this );
+#else
 	actor->AddSceneEvent( scene, event );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1501,7 +1545,11 @@ void CSceneEntity::DispatchStartGesture( CChoreoScene *scene, CBaseFlex *actor, 
 	if ( !Q_stricmp( event->GetName(), "NULL" ) )
 		return;
 
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, this );
+#else
 	actor->AddSceneEvent( scene, event); 
+#endif
 }
 
 
@@ -1527,7 +1575,11 @@ void CSceneEntity::DispatchEndGesture( CChoreoScene *scene, CBaseFlex *actor, CC
 void CSceneEntity::DispatchStartGeneric( CChoreoScene *scene, CBaseFlex *actor, CChoreoEvent *event )
 {
 	CBaseEntity *pTarget = FindNamedEntity( event->GetParameters2( ) );
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, pTarget, this );
+#else
 	actor->AddSceneEvent( scene, event, pTarget );
+#endif
 }
 
 
@@ -1548,7 +1600,11 @@ void CSceneEntity::DispatchEndGeneric( CChoreoScene *scene, CBaseFlex *actor, CC
 //-----------------------------------------------------------------------------
 void CSceneEntity::DispatchStartLookAt( CChoreoScene *scene, CBaseFlex *actor, CBaseEntity *actor2, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, actor2, this );
+#else
 	actor->AddSceneEvent( scene, event, actor2 );
+#endif
 }
 
 
@@ -1567,7 +1623,11 @@ void CSceneEntity::DispatchEndLookAt( CChoreoScene *scene, CBaseFlex *actor, CCh
 //-----------------------------------------------------------------------------
 void CSceneEntity::DispatchStartMoveTo( CChoreoScene *scene, CBaseFlex *actor, CBaseEntity *actor2, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, actor2, this );
+#else
 	actor->AddSceneEvent( scene, event, actor2 );
+#endif
 }
 
 
@@ -1778,6 +1838,9 @@ void CSceneEntity::DispatchStartSpeak( CChoreoScene *scene, CBaseFlex *actor, CC
 		// No CC since we do it manually
 		// FIXME:  This will  change
 		es.m_bEmitCloseCaption = false;
+#if defined( L4D2 )
+		filter.RemoveBots();
+#endif
 
 		int c = filter.GetRecipientCount();
 		for ( int i = 0; i < c; ++i )
@@ -1821,7 +1884,11 @@ void CSceneEntity::DispatchStartSpeak( CChoreoScene *scene, CBaseFlex *actor, CC
 			}
 
 			EmitSound( filter2, actor->entindex(), es );
+#if defined( L4D2 )
+			actor->AddSceneEvent( scene, event, NULL, this );
+#else
 			actor->AddSceneEvent( scene, event );
+#endif
 		}
 	
 		// Close captioning only on master token no matter what...
@@ -1872,6 +1939,43 @@ void CSceneEntity::DispatchStartSpeak( CChoreoScene *scene, CBaseFlex *actor, CC
 					float duration = MAX( durationShort, durationLong );
 
 
+#if defined( L4D2 )
+					// Native scene speech uses the same dictionary/repeat gates as
+					// ordinary sound captions, but never marks the packet fromplayer.
+					char base[256];
+					Q_strncpy( base, lowercase, sizeof( base ) );
+					const int gender = static_cast< int >( GetTerrorSoundActorGender( STRING( actor->GetModelName() ) ) );
+					bool gendered = false;
+					if ( gender == 1 || gender == 21 )
+					{
+						Q_strncat( lowercase, "_male", sizeof( lowercase ) );
+						gendered = true;
+					}
+					else if ( gender == 2 || gender == 22 )
+					{
+						Q_strncat( lowercase, "_female", sizeof( lowercase ) );
+						gendered = true;
+					}
+
+					CRC32_t hash = 0;
+					if ( ( FindServerCaptionHash( lowercase, true, &hash ) ||
+						( gendered && FindServerCaptionHash( base, true, &hash ) ) ) &&
+						AllowServerCaptionRepeat( hash ) )
+					{
+						UserMessageBegin( filter, "CloseCaption" );
+							WRITE_UBITLONG( hash, 32 );
+							const float scaled = duration * 10.0f;
+							int encoded = _mm_cvttss_si32( _mm_set_ss( scaled ) );
+							if ( encoded > 65535 )
+								encoded = 65535;
+							else if ( encoded < 0 )
+								encoded = 0;
+							// Native clamps at 65535 before writing only 15 bits.
+							WRITE_UBITLONG( static_cast< unsigned int >( encoded ), 15 );
+							WRITE_UBITLONG( 0, 1 );
+						MessageEnd();
+					}
+#else
 					byte byteflags = CLOSE_CAPTION_WARNIFMISSING; // warnifmissing
 					/*
 					// Never for .vcds...
@@ -1898,6 +2002,7 @@ void CSceneEntity::DispatchStartSpeak( CChoreoScene *scene, CBaseFlex *actor, CC
 						WRITE_SHORT( MIN( 255, (int)( duration * 10.0f ) ) );
 						WRITE_BYTE( byteflags ); // warn on missing
 					MessageEnd();
+					#endif
 				}
 			}
 		}
@@ -1917,7 +2022,11 @@ void CSceneEntity::DispatchEndSpeak( CChoreoScene *scene, CBaseFlex *actor, CCho
 //-----------------------------------------------------------------------------
 void CSceneEntity::DispatchStartFace( CChoreoScene *scene, CBaseFlex *actor, CBaseEntity *actor2, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, actor2, this );
+#else
 	actor->AddSceneEvent( scene, event, actor2 );
+#endif
 }
 
 
@@ -1940,7 +2049,11 @@ void CSceneEntity::DispatchEndFace( CChoreoScene *scene, CBaseFlex *actor, CChor
 //-----------------------------------------------------------------------------
 void CSceneEntity::DispatchStartSequence( CChoreoScene *scene, CBaseFlex *actor, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, this );
+#else
 	actor->AddSceneEvent( scene, event );
+#endif
 }
 
 
@@ -2441,7 +2554,13 @@ bool CSceneEntity::CheckActors()
 }
 
 #if !defined( _RETAIL )
-static ConVar scene_async_prefetch_spew( "scene_async_prefetch_spew", "0", 0, "Display async .ani file loading info." );
+static ConVar scene_async_prefetch_spew( "scene_async_prefetch_spew", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "Display async .ani file loading info." );
 #endif
 
 void CSceneEntity::PrefetchAnimBlocks( CChoreoScene *scene )
@@ -2518,7 +2637,11 @@ void CSceneEntity::PrefetchAnimBlocks( CChoreoScene *scene )
 
 										// Async load the animation
 										int iFrame = 0;
+#if defined( L4D2 )
+										const byte *panim = animdesc.pAnim( &iFrame );
+#else
 										const mstudioanim_t *panim = animdesc.pAnim( &iFrame );
+#endif // L4D2
 										if ( panim )
 										{
 											++resident;
@@ -3100,8 +3223,10 @@ void CSceneEntity::StartEvent( float currenttime, CChoreoScene *scene, CChoreoEv
 		break;
 	case CChoreoEvent::FIRETRIGGER:
 		{
+#if !defined( L4D2 )
 			if ( IsMultiplayer() )
 				break;
+#endif
 
 			// Don't re-fire triggers during restore, the entities should already reflect all such state...
 			if ( m_bRestoring )
@@ -3970,6 +4095,14 @@ CBaseEntity *CSceneEntity::FindNamedEntity( const char *name, CBaseEntity *pActo
 		}
 	}
 
+#if defined( L4D2 )
+	if ( !entity )
+	{
+		entity = FindSurvivorByCharacter( static_cast< SurvivorCharacterType >(
+			GetTerrorSurvivorCharacterForName( name ) ) );
+	}
+#endif
+
 	return entity;
 }
 
@@ -4657,7 +4790,18 @@ float InstancedScriptedScene( CBaseFlex *pActor, const char *pszScene, EHANDLE *
 	pScene->m_bHadOwner = pActor != NULL;
 	pScene->m_bMultiplayer = bMultiplayer;
 	pScene->SetPostSpeakDelay( flPostDelay );
-	DispatchSpawn( pScene );
+	{
+#if defined( L4D2 )
+		// Survivor response scenes are precached when selected, not when the
+		// entire response catalog loads. Spawn only walks this scene's resources.
+		// Restore the permission before activation or any playback callbacks.
+		const bool bPrecacheAllowed = CBaseEntity::IsPrecacheAllowed();
+		RunCodeAtScopeExit( CBaseEntity::SetAllowPrecache( bPrecacheAllowed ) );
+		if ( response )
+			CBaseEntity::SetAllowPrecache( true );
+#endif
+		DispatchSpawn( pScene );
+	}
 	pScene->Activate();
 	pScene->m_bIsBackground = bIsBackground;
 
@@ -4749,7 +4893,11 @@ float GetSceneDuration( char const *pszScene )
 {
 	unsigned int msecs = 0;
 
+#if defined( L4D2 )
+	TerrorSceneCachedData_t cachedData;
+#else
 	SceneCachedData_t cachedData;
+#endif
 	if ( scenefilecache->GetSceneCachedData( pszScene, &cachedData ) )
 	{
 		msecs = cachedData.msecs;
@@ -4765,7 +4913,11 @@ float GetSceneDuration( char const *pszScene )
 //-----------------------------------------------------------------------------
 int GetSceneSpeechCount( char const *pszScene )
 {
+#if defined( L4D2 )
+	TerrorSceneCachedData_t cachedData;
+#else
 	SceneCachedData_t cachedData;
+#endif
 	if ( scenefilecache->GetSceneCachedData( pszScene, &cachedData ) )
 	{
 		return cachedData.numSounds;
@@ -4779,6 +4931,9 @@ int GetSceneSpeechCount( char const *pszScene )
 //-----------------------------------------------------------------------------
 void PrecacheInstancedScene( char const *pszScene )
 {
+#ifdef L4D2
+	if ( !g_ScenePrecacheSystem.ShouldPrecacheInstancedScene( pszScene ) ) return;
+#endif
 	static int nMakingReslists = -1;
 	
 	if ( nMakingReslists == -1 )
@@ -4793,7 +4948,11 @@ void PrecacheInstancedScene( char const *pszScene )
 	}
 
 	// verify existence, cache is pre-populated, should be there
+#if defined( L4D2 )
+	TerrorSceneCachedData_t sceneData;
+#else
 	SceneCachedData_t sceneData;
+#endif
 	if ( !scenefilecache->GetSceneCachedData( pszScene, &sceneData ) )
 	{
 		// Scenes are sloppy and don't always exist.
@@ -4823,7 +4982,9 @@ HSCRIPT ScriptCreateSceneEntity( const char* pszScene )
 		return NULL;
 	}
 
+	#if !defined( L4D2 )
 	g_pScriptVM->RegisterClass( GetScriptDescForClass( CSceneEntity ) );
+	#endif
 	CSceneEntity *pScene = (CSceneEntity *)CBaseEntity::CreateNoSpawn( "logic_choreographed_scene", vec3_origin, vec3_angle );
 
 	if ( pScene )
@@ -5817,7 +5978,12 @@ static void ListRecentNPCSpeech( void )
 
 static ConCommand ListRecentNPCSpeechCmd( "listRecentNPCSpeech", ListRecentNPCSpeech, "Displays a list of the last 5 lines of speech from NPCs.", FCVAR_DONTRECORD|FCVAR_GAMEDLL );
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( scene_flush, "Flush all .vcds from the cache and reload from disk." , 0x00000004)
+#else
 CON_COMMAND( scene_flush, "Flush all .vcds from the cache and reload from disk." )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;

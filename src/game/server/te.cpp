@@ -100,8 +100,12 @@ void TE_Dust( IRecipientFilter& filter, float delayt,
 			 const Vector &pos, const Vector &dir, float size, float speed );
 void TE_DispatchEffect( IRecipientFilter& filter, float delay,
 				const Vector &pos, const char *pName, const CEffectData &data );
+#if defined( L4D2 )
+#include "l4d2/effects/terror_physicsprop_te.h"
+#else
 void TE_PhysicsProp( IRecipientFilter& filter, float delay,
 	int modelindex, int skin, const Vector& pos, const QAngle &angles, const Vector& vel, int flags, int effects );
+#endif
 void TE_ClientProjectile( IRecipientFilter& filter, float delay,
 	 const Vector* vecOrigin, const Vector* vecVelocity, int modelindex, int lifetime, CBaseEntity *pOwner );
 
@@ -501,7 +505,11 @@ public:
 	{
 		if ( !SuppressTE( filter ) )
 		{
+#if defined( L4D2 )
+			TE_PhysicsProp( filter, delay, modelindex, skin, pos, angles, vel, flags, effects, 255, 255, 255 );
+#else
 			TE_PhysicsProp( filter, delay, modelindex, skin, pos, angles, vel, flags, effects );
+#endif
 		}
 	}
 

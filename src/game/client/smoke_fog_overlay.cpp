@@ -22,9 +22,11 @@ static IMaterial *g_pSmokeFogMaterial = NULL;
 float		g_SmokeFogOverlayAlpha;
 Vector		g_SmokeFogOverlayColor;
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheSmokeFogOverlay )
 CLIENTEFFECT_MATERIAL( "particle/screenspace_fog" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 void InitSmokeFogOverlay()
 {

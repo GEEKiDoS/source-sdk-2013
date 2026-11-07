@@ -147,6 +147,7 @@ void CMessage::Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useT
 }
 
 
+#if !defined( L4D2 )
 class CCredits : public CPointEntity
 {
 public:
@@ -276,3 +277,4 @@ void CCredits::InputRollCredits( inputdata_t &inputdata )
 		WRITE_BYTE( 2 );
 	MessageEnd();
 }
+#endif // !L4D2: retain the entire stock credits implementation for other games.

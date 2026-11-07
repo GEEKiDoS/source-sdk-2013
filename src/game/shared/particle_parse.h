@@ -22,17 +22,31 @@ enum ParticleAttachment_t
 	PATTACH_ABSORIGIN = 0,			// Create at absorigin, but don't follow
 	PATTACH_ABSORIGIN_FOLLOW,		// Create at absorigin, and update to follow the entity
 	PATTACH_CUSTOMORIGIN,			// Create at a custom origin, but don't follow
+#if defined( L4D2 )
+	PATTACH_CUSTOMORIGIN_FOLLOW, // Native3.
+#endif
 	PATTACH_POINT,					// Create on attachment point, but don't follow
 	PATTACH_POINT_FOLLOW,			// Create on attachment point, and update to follow the entity
+#if defined( L4D2 )
+	PATTACH_EYES_FOLLOW, // Native6, NOT SDK root-bone-follow.
+#endif
 
 	PATTACH_WORLDORIGIN,			// Used for control points that don't attach to an entity
 
-	PATTACH_ROOTBONE_FOLLOW,		// Create at the root bone of the entity, and update to follow
+#if defined( L4D2 )
+	PATTACH_WATERWAKE, // Native8; WORLDORIGIN above is native7.
+#else
+	PATTACH_ROOTBONE_FOLLOW,
+#endif
 
 	MAX_PATTACH_TYPES,
 };
 
 extern int GetAttachTypeFromString( const char *pszString );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+void DispatchParticleEffect( int index, const Vector &origin, const QAngle &angles,
+	ParticleAttachment_t attachType, C_BaseEntity *entity, int onlyDrawForLocalUser );
+#endif
 
 #define PARTICLE_DISPATCH_FROM_ENTITY		(1<<0)
 #define PARTICLE_DISPATCH_RESET_PARTICLES	(1<<1)
@@ -70,11 +84,23 @@ void ReloadParticleEffects();
 //-----------------------------------------------------------------------------
 // Particle spawning methods
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType, CBaseEntity *pEntity, const char *pszAttachmentName, bool bResetAllParticlesOnEntity = false, int onlyDrawForLocalUser = -1 );
+void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType, CBaseEntity *pEntity = NULL, int iAttachmentPoint = -1, bool bResetAllParticlesOnEntity = false, int onlyDrawForLocalUser = -1 );
+#else
 void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType, CBaseEntity *pEntity, const char *pszAttachmentName, bool bResetAllParticlesOnEntity = false );
 void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType, CBaseEntity *pEntity = NULL, int iAttachmentPoint = -1, bool bResetAllParticlesOnEntity = false );
+#endif
 void DispatchParticleEffect( const char *pszParticleName, Vector vecOrigin, QAngle vecAngles, CBaseEntity *pEntity = NULL );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+void DispatchParticleEffect( const char *name, Vector origin, Vector start, QAngle angles,
+	CBaseEntity *entity = NULL, bool alternateAxes = false, int onlyDrawForLocalUser = -1 );
+void DispatchParticleEffect( int index, Vector origin, Vector start, QAngle angles,
+	CBaseEntity *entity = NULL, bool alternateAxes = false, int onlyDrawForLocalUser = -1 );
+#else
 void DispatchParticleEffect( const char *pszParticleName, Vector vecOrigin, Vector vecStart, QAngle vecAngles, CBaseEntity *pEntity = NULL );
 void DispatchParticleEffect( int iEffectIndex, Vector vecOrigin, Vector vecStart, QAngle vecAngles, CBaseEntity *pEntity = NULL );
+#endif
 
 void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType, CBaseEntity *pEntity, const char *pszAttachmentName, Vector vecColor1, Vector vecColor2, bool bUseColors=true, bool bResetAllParticlesOnEntity = false );
 void DispatchParticleEffect( const char *pszParticleName, Vector vecOrigin, QAngle vecAngles, Vector vecColor1, Vector vecColor2, bool bUseColors=true, CBaseEntity *pEntity = NULL, int iAttachType = PATTACH_CUSTOMORIGIN );

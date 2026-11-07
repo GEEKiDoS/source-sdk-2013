@@ -23,4 +23,10 @@ class C_BaseViewModel;
 C_BaseCombatWeapon *GetActiveWeapon( void );
 
 
+#if defined( L4D2 )
+#include "tier1/utllinkedlist.h"
+typedef CUtlLinkedList< C_BaseCombatWeapon *, unsigned short > ClientWeaponList_t;
+ClientWeaponList_t &GetClientWeaponList();
+#endif
+
 #endif // C_BASECOMBATWEAPON

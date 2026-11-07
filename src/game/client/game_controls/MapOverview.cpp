@@ -26,11 +26,31 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar overview_health( "overview_health", "1", 0x40000088, "Show player's health in map overview.\n" );
+#else
 ConVar overview_health( "overview_health", "1", FCVAR_ARCHIVE | FCVAR_CLIENTCMD_CAN_EXECUTE, "Show player's health in map overview.\n" );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar overview_names( "overview_names", "1", 0x40000088, "Show player's names in map overview.\n" );
+#else
 ConVar overview_names ( "overview_names",  "1", FCVAR_ARCHIVE | FCVAR_CLIENTCMD_CAN_EXECUTE, "Show player's names in map overview.\n" );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar overview_tracks( "overview_tracks", "1", 0x40000088, "Show player's tracks in map overview.\n" );
+#else
 ConVar overview_tracks( "overview_tracks", "1", FCVAR_ARCHIVE | FCVAR_CLIENTCMD_CAN_EXECUTE, "Show player's tracks in map overview.\n" );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar overview_locked( "overview_locked", "1", 0x40000088, "Locks map angle, doesn't follow view angle.\n" );
+#else
 ConVar overview_locked( "overview_locked", "1", FCVAR_ARCHIVE | FCVAR_CLIENTCMD_CAN_EXECUTE, "Locks map angle, doesn't follow view angle.\n" );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar overview_alpha( "overview_alpha", "1.0", 0x40000088, "Overview map translucency.\n" );
+#else
 ConVar overview_alpha( "overview_alpha",  "1.0", FCVAR_ARCHIVE | FCVAR_CLIENTCMD_CAN_EXECUTE, "Overview map translucency.\n" );
+#endif
 
 IMapOverviewPanel *g_pMapOverview = NULL; // we assume only one overview is created
 
@@ -54,6 +74,26 @@ static int AdjustValue( int curValue, int targetValue, int amount )
 	return curValue;
 }
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+// Replace the L4D2 overview_zoom registration/body in MapOverview.cpp.
+// C1E79C0: persist preferred size before the alive gate; retain float spill.
+CON_COMMAND_F( overview_zoom, "Sets overview map zoom: <zoom> [<time>] [rel]", 0x8 )
+{
+	if ( !g_pMapOverview || args.ArgC() < 2 ) return;
+	float zoom = atof( args[1] );
+	float duration = args.ArgC() >= 3 ? atof( args[2] ) : 0.0f;
+	if ( args.ArgC() == 4 ) zoom *= g_pMapOverview->GetZoom();
+	const float numerator = (float)( (double)g_pMapOverview->GetFullZoom() * ( (double)zoom * 1024.0 ) );
+	const float desiredViewSize = (float)( (double)numerator / (double)g_pMapOverview->GetMapScale() );
+	g_pMapOverview->SetPlayerPreferredViewSize( desiredViewSize );
+	if ( !g_pMapOverview->AllowConCommandsWhileAlive() )
+	{
+		C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+		if ( player && ( player->IsAlive() || player->GetObserverMode() == OBS_MODE_DEATHCAM ) ) return;
+	}
+	g_pClientMode->GetViewportAnimationController()->RunAnimationCommand( g_pMapOverview->GetAsPanel(), "zoom", zoom, 0.0f, duration, vgui::AnimationController::INTERPOLATOR_LINEAR );
+}
+#else
 CON_COMMAND( overview_zoom, "Sets overview map zoom: <zoom> [<time>] [rel]" )
 {
 	if ( !g_pMapOverview || args.ArgC() < 2 )
@@ -86,8 +126,13 @@ CON_COMMAND( overview_zoom, "Sets overview map zoom: <zoom> [<time>] [rel]" )
 
 	g_pClientMode->GetViewportAnimationController()->RunAnimationCommand( g_pMapOverview->GetAsPanel(), "zoom", zoom, 0.0, time, vgui::AnimationController::INTERPOLATOR_LINEAR );
 }
+#endif
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( overview_mode, "Sets overview map mode off,small,large: <0|1|2>", 0x8 )
+#else
 CON_COMMAND( overview_mode, "Sets overview map mode off,small,large: <0|1|2>" )
+#endif
 {
 	if ( !g_pMapOverview )
 		return;

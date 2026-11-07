@@ -136,7 +136,11 @@ BEGIN_DATADESC( CLogicScript )
 	DEFINE_KEYFIELD( m_iszGroupMembers[12], FIELD_STRING, "Group12"),
 	DEFINE_KEYFIELD( m_iszGroupMembers[13], FIELD_STRING, "Group13"),
 	DEFINE_KEYFIELD( m_iszGroupMembers[14], FIELD_STRING, "Group14"),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iszGroupMembers[15], FIELD_STRING, "Group15" ),
+#else
 	DEFINE_KEYFIELD( m_iszGroupMembers[15], FIELD_STRING, "Group16"),
+#endif
 
 END_DATADESC()
 
@@ -960,7 +964,13 @@ void CC_Global_Set( const CCommand &args )
 	}
 }
 
-static ConCommand global_set( "global_set", CC_Global_Set, "global_set <globalname> <state>: Sets the state of the given env_global (0 = OFF, 1 = ON, 2 = DEAD).", FCVAR_CHEAT );
+static ConCommand global_set( "global_set", CC_Global_Set, "global_set <globalname> <state>: Sets the state of the given env_global (0 = OFF, 1 = ON, 2 = DEAD).", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //-----------------------------------------------------------------------------
@@ -2342,6 +2352,16 @@ bool CLogicBranch::GetLogicBranchState()
 {
 	return m_bInValue;
 }
+
+#if defined( L4D2 )
+bool GetTerrorLogicBranchState( CBaseEntity *entity, bool *state )
+{
+	CLogicBranch *branch = dynamic_cast< CLogicBranch * >( entity );
+	if ( !branch ) return false;
+	*state = branch->GetLogicBranchState();
+	return true;
+}
+#endif
 
 
 //-----------------------------------------------------------------------------

@@ -31,6 +31,9 @@ extern ConVar hl2_episodic;
 #define		FCAP_USE_ONGROUND			0x00000100
 #define		FCAP_USE_IN_RADIUS			0x00000200
 #define		FCAP_SAVE_NON_NETWORKABLE	0x00000400
+#if defined( L4D2 )
+#define		FCAP_USE_BY_INFECTED			0x00001000 // C254F20 infected-use capability.
+#endif
 
 #define		FCAP_MASTER					0x10000000		// Can be used to "master" other entities (like multisource)
 #define		FCAP_WCEDIT_POSITION		0x40000000		// Can change position and update Hammer in edit mode
@@ -52,6 +55,10 @@ enum InvalidatePhysicsBits_t
 	ANGLES_CHANGED		= 0x2,
 	VELOCITY_CHANGED	= 0x4,
 	ANIMATION_CHANGED	= 0x8,
+	#if defined( L4D2 )
+	BONE_CHANGED = 0x10, // Descriptive: native distinct attachment/render flag.
+	SEQUENCE_CHANGED = 0x20, // Consumed before move-child propagation.
+	#endif
 };
 
 

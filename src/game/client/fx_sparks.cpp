@@ -23,6 +23,7 @@
 #include "tier0/memdbgon.h"
 
 //Precahce the effects
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectSparks )
 CLIENTEFFECT_MATERIAL( "effects/spark" )
 CLIENTEFFECT_MATERIAL( "effects/energysplash" )
@@ -35,10 +36,17 @@ CLIENTEFFECT_MATERIAL( "effects/combinemuzzle1_nocull" )
 CLIENTEFFECT_MATERIAL( "effects/combinemuzzle2_nocull" )
 CLIENTEFFECT_MATERIAL( "effects/yellowflare_noz" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 PMaterialHandle g_Material_Spark = NULL;
 
-static ConVar fx_drawmetalspark( "fx_drawmetalspark", "1", FCVAR_DEVELOPMENTONLY, "Draw metal spark effects." );
+static ConVar fx_drawmetalspark( "fx_drawmetalspark", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Draw metal spark effects." );
 
 //-----------------------------------------------------------------------------
 // Purpose: 

@@ -40,10 +40,17 @@ public:
 	virtual QueryResultType			ShouldPickUp( const INextBot *me, CBaseEntity *item ) const;		// if the desired item was available right now, should we pick it up?
 	virtual QueryResultType			ShouldHurry( const INextBot *me ) const;							// are we in a hurry?
 	virtual QueryResultType			ShouldRetreat( const INextBot *me ) const;							// is it time to retreat?
+#if defined( L4D2 )
+	virtual QueryResultType			ShouldAttack( const INextBot *me, CBaseCombatCharacter *them ) const;
+#else
 	virtual QueryResultType			ShouldAttack( const INextBot *me, const CKnownEntity *them ) const;	// should we attack "them"?
+#endif
 	virtual QueryResultType			IsHindrance( const INextBot *me, CBaseEntity *blocker ) const;		// return true if we should wait for 'blocker' that is across our path somewhere up ahead.
 
 	virtual Vector					SelectTargetPoint( const INextBot *me, const CBaseCombatCharacter *subject ) const;		// given a subject, return the world space position we should aim at
+#if defined( L4D2 )
+	virtual const Path *GetCurrentPath( const INextBot *me ) const { return NULL; }
+#endif
 
 	/**
 	 * Allow bot to approve of positions game movement tries to put him into.
@@ -52,10 +59,15 @@ public:
 	 */
 	virtual QueryResultType IsPositionAllowed( const INextBot *me, const Vector &pos ) const;
 
+#if defined( L4D2 )
+	virtual CBaseEntity *SelectMoreDangerousThreat( const INextBot *me,
+		const CBaseCombatCharacter *subject, CBaseEntity *threat1, CBaseEntity *threat2 ) const;
+#else
 	virtual const CKnownEntity *	SelectMoreDangerousThreat( const INextBot *me, 
 															   const CBaseCombatCharacter *subject,
 															   const CKnownEntity *threat1, 
 															   const CKnownEntity *threat2 ) const;	// return the more dangerous of the two threats to 'subject', or NULL if we have no opinion
+#endif
 };
 
 inline QueryResultType IContextualQuery::ShouldPickUp( const INextBot *me, CBaseEntity *item ) const
@@ -73,7 +85,11 @@ inline QueryResultType IContextualQuery::ShouldRetreat( const INextBot *me ) con
 	return ANSWER_UNDEFINED;
 }
 
+#if defined( L4D2 )
+inline QueryResultType IContextualQuery::ShouldAttack( const INextBot *me, CBaseCombatCharacter *them ) const
+#else
 inline QueryResultType IContextualQuery::ShouldAttack( const INextBot *me, const CKnownEntity *them ) const
+#endif
 {
 	return ANSWER_UNDEFINED;
 }
@@ -93,7 +109,11 @@ inline QueryResultType IContextualQuery::IsPositionAllowed( const INextBot *me, 
 	return ANSWER_UNDEFINED;
 }
 
+#if defined( L4D2 )
+inline CBaseEntity *IContextualQuery::SelectMoreDangerousThreat( const INextBot *me, const CBaseCombatCharacter *subject, CBaseEntity *threat1, CBaseEntity *threat2 ) const
+#else
 inline const CKnownEntity *IContextualQuery::SelectMoreDangerousThreat( const INextBot *me, const CBaseCombatCharacter *subject, const CKnownEntity *threat1, const CKnownEntity *threat2 ) const
+#endif
 {
 	return NULL;
 }

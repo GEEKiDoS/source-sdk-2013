@@ -20,8 +20,20 @@
 //-----------------------------------------------------------------------------
 // Convars related to controlling rendering
 //-----------------------------------------------------------------------------
-ConVar r_updaterefracttexture( "r_updaterefracttexture", "1", FCVAR_CHEAT );
-ConVar r_depthoverlay( "r_depthoverlay", "0", FCVAR_CHEAT, "Replaces opaque objects with their grayscaled depth values. r_showz_power scales the output." );
+ConVar r_updaterefracttexture( "r_updaterefracttexture", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar r_depthoverlay( "r_depthoverlay", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Replaces opaque objects with their grayscaled depth values. r_showz_power scales the output." );
 
 
 int g_viewscene_refractUpdateFrame = 0;
@@ -102,11 +114,13 @@ int ScreenTransform( const Vector& point, Vector& screen )
 //-----------------------------------------------------------------------------
 int HudTransform( const Vector& point, Vector& screen )
 {
+#if !defined( L4D2 )
 	if ( UseVR() )
 	{
 		return FrustumTransform ( g_ClientVirtualReality.GetHudProjectionFromWorld(), point, screen );
 	}
 	else
+#endif
 	{
 		return FrustumTransform ( engine->WorldToScreenMatrix(), point, screen );
 	}

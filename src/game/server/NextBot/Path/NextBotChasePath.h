@@ -201,7 +201,11 @@ inline void ChasePath::RefreshPath( INextBot *bot, CBaseEntity *subject, const I
 	if ( !IsValid() || IsRepathNeeded( bot, subject ) )
 	{
 		// the situation has changed - try a new path
+#if defined( L4D2 )
+		bool isPath = false;
+#else
 		bool isPath;
+#endif
 		Vector pathTarget = subject->GetAbsOrigin();
 
 		if ( m_chaseHow == LEAD_SUBJECT )
@@ -209,11 +213,19 @@ inline void ChasePath::RefreshPath( INextBot *bot, CBaseEntity *subject, const I
 			pathTarget = pPredictedSubjectPos ? *pPredictedSubjectPos : PredictSubjectPosition( bot, subject );
 			isPath = Compute( bot, pathTarget, cost, GetMaxPathLength() );
 		}
+#if defined( L4D2 )
+		if ( !isPath && subject->MyCombatCharacterPointer() )
+#else
 		else if ( subject->MyCombatCharacterPointer() && subject->MyCombatCharacterPointer()->GetLastKnownArea() )
+#endif
 		{
 			isPath = Compute( bot, subject->MyCombatCharacterPointer(), cost, GetMaxPathLength() );
 		}
+#if defined( L4D2 )
+		else if ( !isPath )
+#else
 		else
+#endif
 		{
 			isPath = Compute( bot, pathTarget, cost, GetMaxPathLength() );
 		}
@@ -250,7 +262,14 @@ inline void ChasePath::RefreshPath( INextBot *bot, CBaseEntity *subject, const I
 			m_failTimer.Start( 0.005f * ( bot->GetRangeTo( subject ) ) );
 			
 			// allow bot to react to path failure
+			#if defined( L4D2 )
+			CBaseEntity *priorSubject = GetSubject();
+			SetSubject( subject );
+			#endif
 			bot->OnMoveToFailure( this, FAIL_NO_PATH_EXISTS );
+			#if defined( L4D2 )
+			SetSubject( priorSubject );
+			#endif
 
 			if ( bot->IsDebugging( NEXTBOT_PATH ) )
 			{

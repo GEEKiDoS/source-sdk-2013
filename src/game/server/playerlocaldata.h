@@ -50,10 +50,17 @@ public:
 	// In process of duck-jumping
 	CNetworkVar( bool, m_bInDuckJump );
 	// During ducking process, amount of time before full duc
+#if defined( L4D2 )
+	// Native integer milliseconds; these are not float timestamps.
+	CNetworkVar( int, m_nDuckTimeMsecs );
+	CNetworkVar( int, m_nDuckJumpTimeMsecs );
+	CNetworkVar( int, m_nJumpTimeMsecs );
+#else
 	CNetworkVar( float, m_flDucktime );
 	CNetworkVar( float, m_flDuckJumpTime );
 	// Jump time, time to auto unduck (since we auto crouch jump now).
 	CNetworkVar( float, m_flJumpTime );
+#endif
 	// Step sound side flip/flip
 	int m_nStepside;
 	// Velocity at time when we hit ground
@@ -69,6 +76,9 @@ public:
 	CNetworkQAngle( m_vecPunchAngleVel );
 	// Draw view model for the player
 	CNetworkVar( bool, m_bDrawViewmodel );
+#if defined( L4D2 )
+	CNetworkVar( bool, m_bAutoAimTarget );
+#endif
 
 	// Is the player wearing the HEV suit
 	CNetworkVar( bool, m_bWearingSuit );

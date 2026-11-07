@@ -53,7 +53,9 @@ CON_COMMAND_F( simple_bot_add, "Add a simple bot.", FCVAR_CHEAT )
 LINK_ENTITY_TO_CLASS( simple_bot, CSimpleBot );
 
 #ifndef TF_DLL
+#ifndef L4D2
 PRECACHE_REGISTER( simple_bot );
+#endif
 #endif
 
 

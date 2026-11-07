@@ -12,6 +12,10 @@
 #include "collisionutils.h"
 #include "UtlSortVector.h"
 #include "tier0/vprof.h"
+#if defined( L4D2 )
+#include "bitvec.h"
+#include "tier1/utlhash.h"
+#endif
 #include "mapentities.h"
 #include "client.h"
 #include "ai_initutils.h"
@@ -22,6 +26,11 @@
 #include "npc_playercompanion.h"
 #endif // HL2_DLL
 
+#if defined( L4D2 )
+#include "l4d2/content/terror_model_precache.h"
+#include "l4d2/player/bots/survivor_bot.h"
+#endif
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -29,6 +38,39 @@ CBaseEntity *FindPickerEntity( CBasePlayer *pPlayer );
 void SceneManager_ClientActive( CBasePlayer *player );
 
 static CUtlVector<IServerNetworkable*> g_DeleteList;
+
+#if defined( L4D2 )
+struct NoInterpEntity_t
+{
+	unsigned short m_nIndex;
+	unsigned short m_nSerialNumber;
+};
+
+// Native indices remain ushort; the serial sidecar prevents clearing a new
+// entity that reused an index while the SDK deferred the post-send cleanup.
+COMPILE_TIME_ASSERT( NUM_SERIAL_NUM_BITS <= sizeof( unsigned short ) * 8 );
+static CUtlVector<NoInterpEntity_t> g_NoInterpEntities;
+static int g_nMarkedNoInterpEntities;
+
+struct EntityClassnameHash_t
+{
+	string_t m_iszClassname;
+	CBaseEntity *m_pFirstEntity;
+};
+
+static bool CompareEntityClassnames( const EntityClassnameHash_t &lhs, const EntityClassnameHash_t &rhs )
+{
+	return lhs.m_iszClassname == rhs.m_iszClassname;
+}
+
+static unsigned int HashEntityClassname( const EntityClassnameHash_t &entry )
+{
+	return HashString( STRING( entry.m_iszClassname ) );
+}
+
+// Keep class entries until Clear(): their handles are stored in the entities.
+static CUtlHash<EntityClassnameHash_t> g_EntityClassnameHash( 512, 0, 0, CompareEntityClassnames, HashEntityClassname );
+#endif
 
 CGlobalEntityList gEntList;
 CBaseEntityList *g_pEntityList = &gEntList;
@@ -96,6 +138,9 @@ public:
 		}
 	}
 	int ListCount() { return m_targetList.Count(); }
+#if defined( L4D2 )
+	CBaseEntity *ListGet( int index ) { return m_targetList[index]; }
+#endif
 	int ListCopy( CBaseEntity *pList[], int listMax )
 	{
 		int count = MIN(listMax, ListCount() );
@@ -113,6 +158,12 @@ int AimTarget_ListCount()
 {
 	return g_AimManager.ListCount();
 }
+#if defined( L4D2 )
+CBaseEntity *AimTarget_ListGet( int index )
+{
+	return g_AimManager.ListGet( index );
+}
+#endif
 int AimTarget_ListCopy( CBaseEntity *pList[], int listMax )
 {
 	return g_AimManager.ListCopy( pList, listMax );
@@ -376,6 +427,11 @@ void CGlobalEntityList::Clear( void )
 	CleanupDeleteList();
 	// free the memory
 	g_DeleteList.Purge();
+#if defined( L4D2 )
+	g_EntityClassnameHash.RemoveAll();
+	g_NoInterpEntities.Purge();
+	g_nMarkedNoInterpEntities = 0;
+#endif
 
 	CBaseEntity::m_nDebugPlayer = -1;
 	CBaseEntity::m_bInDebugSelect = false; 
@@ -384,6 +440,67 @@ void CGlobalEntityList::Clear( void )
 
 	m_bClearingEntities = false;
 }
+
+#if defined( L4D2 )
+static CBaseEntity *GetQueuedNoInterpEntity( const NoInterpEntity_t &entry )
+{
+	IHandleEntity *entity = gEntList.LookupEntityByNetworkIndex( entry.m_nIndex );
+	if ( !entity || gEntList.GetEntInfoPtrByIndex( entry.m_nIndex )->m_SerialNumber != entry.m_nSerialNumber )
+		return NULL;
+	return static_cast<IServerUnknown *>( entity )->GetBaseEntity();
+}
+
+void CGlobalEntityList::AddToNoInterpList( CBaseEntity *pEnt )
+{
+	const CBaseHandle &handle = pEnt->GetRefEHandle();
+	NoInterpEntity_t &entry = g_NoInterpEntities[g_NoInterpEntities.AddToTail()];
+	entry.m_nIndex = static_cast<unsigned short>( handle.GetEntryIndex() );
+	entry.m_nSerialNumber = static_cast<unsigned short>( handle.GetSerialNumber() );
+}
+
+void CGlobalEntityList::MarkNoInterpListForClear()
+{
+	g_nMarkedNoInterpEntities = g_NoInterpEntities.Count();
+}
+
+void CGlobalEntityList::ClearNoInterpList()
+{
+	const int markedCount = g_nMarkedNoInterpEntities;
+	g_nMarkedNoInterpEntities = 0;
+	if ( markedCount == 0 )
+		return;
+
+	if ( markedCount == g_NoInterpEntities.Count() )
+	{
+		for ( int i = markedCount - 1; i >= 0; --i )
+		{
+			CBaseEntity *entity = GetQueuedNoInterpEntity( g_NoInterpEntities[i] );
+			if ( entity && entity->IsEffectActive( EF_NOINTERP ) )
+				entity->RemoveEffects( EF_NOINTERP );
+		}
+		g_NoInterpEntities.RemoveAll();
+		return;
+	}
+
+	// A request made after the send mark still belongs to the next snapshot.
+	// Do not let an older entry clear that same live entity's fresh request.
+	CBitVec<NUM_ENT_ENTRIES> pendingEntities;
+	for ( int i = markedCount; i < g_NoInterpEntities.Count(); ++i )
+	{
+		const NoInterpEntity_t &entry = g_NoInterpEntities[i];
+		if ( GetQueuedNoInterpEntity( entry ) )
+			pendingEntities.Set( entry.m_nIndex );
+	}
+	for ( int i = markedCount - 1; i >= 0; --i )
+	{
+		const NoInterpEntity_t &entry = g_NoInterpEntities[i];
+		CBaseEntity *entity = GetQueuedNoInterpEntity( entry );
+		if ( entity && !pendingEntities.IsBitSet( entry.m_nIndex ) && entity->IsEffectActive( EF_NOINTERP ) )
+			entity->RemoveEffects( EF_NOINTERP );
+	}
+	g_NoInterpEntities.RemoveMultiple( 0, markedCount );
+}
+#endif
 
 
 int CGlobalEntityList::NumberOfEntities( void )
@@ -474,6 +591,20 @@ bool CGlobalEntityList::IsEntityPtr( void *pTest )
 	return false; 
 }
 
+#if defined( L4D2 )
+CBaseEntity *CGlobalEntityList::FindEntityByClassnameFast( CBaseEntity *pStartEntity, string_t iszName )
+{
+	if ( pStartEntity )
+		return pStartEntity->m_pNextByClass;
+
+	EntityClassnameHash_t entry;
+	entry.m_iszClassname = iszName;
+	entry.m_pFirstEntity = NULL;
+	UtlHashHandle_t handle = g_EntityClassnameHash.Find( entry );
+	return handle != g_EntityClassnameHash.InvalidHandle() ? g_EntityClassnameHash[handle].m_pFirstEntity : NULL;
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: Iterates the entities with a given classname.
 // Input  : pStartEntity - Last entity found, NULL to start a new iteration.
@@ -514,6 +645,20 @@ CBaseEntity *CGlobalEntityList::FindEntityByClassname( CBaseEntity *pStartEntity
 //-----------------------------------------------------------------------------
 CBaseEntity *CGlobalEntityList::FindEntityProcedural( const char *szName, CBaseEntity *pSearchingEntity, CBaseEntity *pActivator, CBaseEntity *pCaller )
 {
+#if defined( L4D2 )
+	// S0B4D10: #index is procedural too, including Instance's world fallback.
+	if ( szName[0] != '!' )
+	{
+		if ( szName[0] == '#' )
+		{
+			const int index = atoi( szName + 1 );
+			if ( index != 0 )
+				return CBaseEntity::Instance( index );
+			Warning( "Invalid entity index %s\n", szName );
+		}
+		return NULL;
+	}
+#endif
 	//
 	// Check for the name escape character.
 	//
@@ -562,10 +707,22 @@ CBaseEntity *CGlobalEntityList::FindEntityProcedural( const char *szName, CBaseE
 		{
 			return pSearchingEntity;
 		}
+#if defined( L4D2 )
+		else if ( FStrEq( pName, "nick" ) || FStrEq( pName, "rochelle" ) ||
+			FStrEq( pName, "ellis" ) || FStrEq( pName, "coach" ) ||
+			FStrEq( pName, "bill" ) || FStrEq( pName, "zoey" ) ||
+			FStrEq( pName, "louis" ) || FStrEq( pName, "francis" ) )
+		{
+			return FindSurvivorByCharacter( static_cast< SurvivorCharacterType >(
+				GetTerrorSurvivorCharacterForName( pName ) ) );
+		}
+#endif
 		else 
 		{
 			Warning( "Invalid entity search name %s\n", szName );
+#if !defined( L4D2 )
 			Assert(0);
+#endif
 		}
 	}
 
@@ -585,7 +742,11 @@ CBaseEntity *CGlobalEntityList::FindEntityByName( CBaseEntity *pStartEntity, con
 	if ( !szName || szName[0] == 0 )
 		return NULL;
 
-	if ( szName[0] == '!' )
+	if ( szName[0] == '!'
+#if defined( L4D2 )
+		|| szName[0] == '#'
+#endif
+		)
 	{
 		//
 		// Avoid an infinite loop, only find one match per procedural search!
@@ -884,12 +1045,23 @@ CBaseEntity *CGlobalEntityList::FindEntityByClassnameWithin( CBaseEntity *pStart
 
 	while ((pEntity = gEntList.FindEntityByClassname( pEntity, szName )) != NULL)
 	{
+#if defined( L4D2 )
+		// Native100B5450 intersects the entity's collision OBB, not its origin.
+		if ( !pEntity->edict() && !pEntity->IsEFlagSet( EFL_SERVER_ONLY ) )
+			continue;
+
+		Vector vecRelativeCenter;
+		pEntity->CollisionProp()->WorldToCollisionSpace( vecSrc, &vecRelativeCenter );
+		if ( IsBoxIntersectingSphere( pEntity->CollisionProp()->OBBMins(),
+			pEntity->CollisionProp()->OBBMaxs(), vecRelativeCenter, flRadius ) )
+#else
 		if ( !pEntity->edict() )
 			continue;
 
 		float flDist2 = (pEntity->GetAbsOrigin() - vecSrc).LengthSqr();
 
 		if (flMaxDist2 > flDist2)
+#endif
 		{
 			if ( pFilter && !pFilter->ShouldFindEntity( pEntity ) )
 				continue;
@@ -1166,7 +1338,22 @@ void CGlobalEntityList::NotifyCreateEntity( CBaseEntity *pEnt )
 	if ( !pEnt )
 		return;
 
-	//DevMsg(2,"Deleted %s\n", pBaseEnt->GetClassname() );
+#if defined( L4D2 )
+	EntityClassnameHash_t entry;
+	entry.m_iszClassname = pEnt->m_iClassname;
+	entry.m_pFirstEntity = NULL;
+	UtlHashHandle_t handle = g_EntityClassnameHash.Insert( entry );
+	pEnt->m_iClassnameHash = handle;
+	EntityClassnameHash_t &classList = g_EntityClassnameHash[handle];
+	if ( classList.m_pFirstEntity )
+	{
+		classList.m_pFirstEntity->m_pPrevByClass = pEnt;
+		pEnt->m_pNextByClass = classList.m_pFirstEntity;
+	}
+	classList.m_pFirstEntity = pEnt;
+#endif
+
+	// Native L4D2 deliberately calls listeners again after the earlier OnAddEntity.
 	for ( int i = m_entityListeners.Count()-1; i >= 0; i-- )
 	{
 		m_entityListeners[i]->OnEntityCreated( pEnt );
@@ -1188,9 +1375,15 @@ void CGlobalEntityList::NotifySpawn( CBaseEntity *pEnt )
 // NOTE: This doesn't happen in OnRemoveEntity() specifically because 
 // listeners may want to reference the object as it's being deleted
 // OnRemoveEntity isn't called until the destructor and all data is invalid.
+#if defined( L4D2 )
+// Precache-only players have no entity handle, but still own classname links.
+void CGlobalEntityList::NotifyRemoveEntity( CBaseEntity *pBaseEnt )
+{
+#else
 void CGlobalEntityList::NotifyRemoveEntity( CBaseHandle hEnt )
 {
 	CBaseEntity *pBaseEnt = GetBaseEntity( hEnt );
+#endif
 	if ( !pBaseEnt )
 		return;
 
@@ -1199,6 +1392,23 @@ void CGlobalEntityList::NotifyRemoveEntity( CBaseHandle hEnt )
 	{
 		m_entityListeners[i]->OnEntityDeleted( pBaseEnt );
 	}
+
+#if defined( L4D2 )
+	// Native removal leaves the classname chain visible throughout the callbacks.
+	if ( pBaseEnt->m_iClassnameHash != g_EntityClassnameHash.InvalidHandle() )
+	{
+		EntityClassnameHash_t &classList = g_EntityClassnameHash[pBaseEnt->m_iClassnameHash];
+		if ( classList.m_pFirstEntity == pBaseEnt )
+			classList.m_pFirstEntity = pBaseEnt->m_pNextByClass;
+		if ( pBaseEnt->m_pNextByClass )
+			pBaseEnt->m_pNextByClass->m_pPrevByClass = pBaseEnt->m_pPrevByClass;
+		if ( pBaseEnt->m_pPrevByClass )
+			pBaseEnt->m_pPrevByClass->m_pNextByClass = pBaseEnt->m_pNextByClass;
+		pBaseEnt->m_pNextByClass = NULL;
+		pBaseEnt->m_pPrevByClass = NULL;
+		pBaseEnt->m_iClassnameHash = g_EntityClassnameHash.InvalidHandle();
+	}
+#endif
 }
 
 
@@ -1493,8 +1703,10 @@ public:
 			// Allows us to immediately re-use the edict indices we just freed to avoid edict overflow
 			engine->AllowImmediateEdictReuse();
 
+#if !defined( L4D2 )
 			// Reset node counter used during load
 			CNodeEnt::m_nNodeCount = 0;
+#endif
 
 			CRespawnEntitiesFilter filter;
 			MapEntity_ParseAllEntities( engine->GetMapEntitiesString(), &filter, true );
@@ -1525,7 +1737,13 @@ void RespawnEntities()
 	g_EntityListSystem.m_bRespawnAllEntities = true;
 }
 
-static ConCommand restart_entities( "respawn_entities", RespawnEntities, "Respawn all the entities in the map.", FCVAR_CHEAT | FCVAR_SPONLY );
+static ConCommand restart_entities( "respawn_entities", RespawnEntities, "Respawn all the entities in the map.", 
+#if defined( L4D2 )
+	0x00004044
+#else
+	FCVAR_CHEAT | FCVAR_SPONLY
+#endif
+ );
 
 class CSortedEntityList
 {
@@ -1600,7 +1818,12 @@ private:
 
 
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(report_entities, "Lists all entities", 0x00004004)
+#else
 CON_COMMAND(report_entities, "Lists all entities")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1616,7 +1839,12 @@ CON_COMMAND(report_entities, "Lists all entities")
 }
 
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(report_touchlinks, "Lists all touchlinks", 0x00004004)
+#else
 CON_COMMAND(report_touchlinks, "Lists all touchlinks")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -1648,7 +1876,12 @@ CON_COMMAND(report_touchlinks, "Lists all touchlinks")
 	list.ReportEntityList();
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F(report_simthinklist, "Lists all simulating/thinking entities", 0x00000004)
+#else
 CON_COMMAND(report_simthinklist, "Lists all simulating/thinking entities")
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;

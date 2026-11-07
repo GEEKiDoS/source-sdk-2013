@@ -29,7 +29,11 @@ public:
 	bool					ShouldAvoidObstacle( void ){ return m_bPerformAvoidance; }
 	virtual bool			AddRagdollToFadeQueue( void ) { return m_bFadeCorpse; }
 
-	virtual bool			GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt ) OVERRIDE;
+#if defined( L4D2 )
+	virtual void GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt ) OVERRIDE;
+#else
+	virtual bool GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt ) OVERRIDE;
+#endif
 
 	int						GetDeathPose( void ) { return m_iDeathPose; }
 

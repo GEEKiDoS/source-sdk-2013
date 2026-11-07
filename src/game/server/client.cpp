@@ -46,6 +46,14 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "precache_register.h"
+#include "l4d2/director/terror_director.h"
+#endif
+#include "client_console_server_cvars.inc"
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#include <xmmintrin.h>
+#endif
 #include "tier0/memdbgon.h"
 
 extern int giPrecacheGrunt;
@@ -290,6 +298,11 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 	// so check it, or it will infinite loop
 
 	client = NULL;
+#if defined( L4D2 )
+	// Native8F810: gate other recipients only; retain self echo, log and event.
+	if ( TheDirector->GetScriptedMode()->InterceptChat( pPlayer, text ) )
+	{
+#endif
 	for ( int i = 1; i <= gpGlobals->maxClients; i++ )
 	{
 		client = ToBaseMultiplayerPlayer( UTIL_PlayerByIndex( i ) );
@@ -323,6 +336,9 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 			UTIL_SayTextFilter( user, text, pPlayer, true );
 		}
 	}
+#if defined( L4D2 )
+	}
+#endif
 
 	if ( pPlayer )
 	{
@@ -382,6 +398,33 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 
 void ClientPrecache( void )
 {
+#ifdef L4D2
+	// Native S08E2B0: shared assets were registered earlier by S08E0C0.
+	ClientGamePrecache();
+	char file[MAX_PATH];
+	for ( int i = 0; i < 3; ++i )
+	{
+		Q_snprintf( file, sizeof( file ), "cfg/cpu_level_%d_pc.ekv", i );
+		engine->ForceExactFile( file );
+		Q_snprintf( file, sizeof( file ), "cfg/cpu_level_%d_pc_ss.ekv", i );
+		engine->ForceExactFile( file );
+	}
+	for ( int i = 0; i < 4; ++i )
+	{
+		Q_snprintf( file, sizeof( file ), "cfg/gpu_level_%d_pc.ekv", i );
+		engine->ForceExactFile( file );
+	}
+	for ( int i = 0; i < 3; ++i )
+	{
+		Q_snprintf( file, sizeof( file ), "cfg/mem_level_%d_pc.ekv", i );
+		engine->ForceExactFile( file );
+	}
+	for ( int i = 0; i < 3; ++i )
+	{
+		Q_snprintf( file, sizeof( file ), "cfg/gpu_mem_level_%d_pc.ekv", i );
+		engine->ForceExactFile( file );
+	}
+#else
 	// Precache cable textures.
 	CBaseEntity::PrecacheModel( "cable/cable.vmt" );	
 	CBaseEntity::PrecacheModel( "cable/cable_lit.vmt" );	
@@ -415,9 +458,15 @@ void ClientPrecache( void )
 	CBaseEntity::PrecacheScriptSound( "Bounce.Concrete" );
 
 	ClientGamePrecache();
+#endif
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( cast_ray, "Tests collision detection", 0x00004004 )
+#else
 CON_COMMAND_F( cast_ray, "Tests collision detection", FCVAR_CHEAT )
+#endif
 {
 	CBasePlayer *pPlayer = UTIL_GetCommandClient();
 	
@@ -439,7 +488,12 @@ CON_COMMAND_F( cast_ray, "Tests collision detection", FCVAR_CHEAT )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( cast_hull, "Tests hull collision detection", 0x00004004 )
+#else
 CON_COMMAND_F( cast_hull, "Tests hull collision detection", FCVAR_CHEAT )
+#endif
 {
 	CBasePlayer *pPlayer = UTIL_GetCommandClient();
 	
@@ -692,7 +746,13 @@ void CC_DrawLine( const CCommand &args )
 
 	UTIL_AddDebugLine(startPos,endPos,true,true);
 }
-static ConCommand drawline("drawline", CC_DrawLine, "Draws line between two 3D Points.\n\tGreen if no collision\n\tRed is collides with something\n\tArguments: x1 y1 z1 x2 y2 z2", FCVAR_CHEAT);
+static ConCommand drawline("drawline", CC_DrawLine, "Draws line between two 3D Points.\n\tGreen if no collision\n\tRed is collides with something\n\tArguments: x1 y1 z1 x2 y2 z2", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 // Purpose : Draw a cross at a points.
@@ -727,7 +787,13 @@ void CC_DrawCross( const CCommand &args )
 	end.x	+= (maxs.x - mins.x);
 	UTIL_AddDebugLine(start,end,true,true);
 }
-static ConCommand drawcross("drawcross", CC_DrawCross, "Draws a cross at the given location\n\tArguments: x y z", FCVAR_CHEAT);
+static ConCommand drawcross("drawcross", CC_DrawCross, "Draws a cross at the given location\n\tArguments: x y z", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
@@ -762,14 +828,24 @@ void kill_helper( const CCommand &args, bool bExplode )
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( kill, "Kills the player with generic damage" , 0x00004004)
+#else
 CON_COMMAND( kill, "Kills the player with generic damage" )
+#endif
 {
 	kill_helper( args, false );
 }
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( explode, "Kills the player with explosive damage" , 0x00004004)
+#else
 CON_COMMAND( explode, "Kills the player with explosive damage" )
+#endif
 {
 	kill_helper( args, true );
 }
@@ -805,14 +881,24 @@ void killvector_helper( const CCommand &args, bool bExplode )
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( killvector, "Kills a player applying force. Usage: killvector <player> <x value> <y value> <z value>", 0x00004004 )
+#else
 CON_COMMAND_F( killvector, "Kills a player applying force. Usage: killvector <player> <x value> <y value> <z value>", FCVAR_CHEAT )
+#endif
 {
 	killvector_helper( args, false );
 }
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( explodevector, "Kills a player applying an explosive force. Usage: explodevector <player> <x value> <y value> <z value>", 0x00004004 )
+#else
 CON_COMMAND_F( explodevector, "Kills a player applying an explosive force. Usage: explodevector <player> <x value> <y value> <z value>", FCVAR_CHEAT )
+#endif
 {
 	killvector_helper( args, false );
 }
@@ -840,7 +926,12 @@ CON_COMMAND_F( buddha, "Toggle.  Player takes damage but won't die. (Shows red c
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( say, "Display player message" , 0x00000004)
+#else
 CON_COMMAND( say, "Display player message" )
+#endif
 {
 	CBasePlayer *pPlayer = ToBasePlayer( UTIL_GetCommandClient() ); 
 	if ( pPlayer )
@@ -864,7 +955,12 @@ CON_COMMAND( say, "Display player message" )
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( say_team, "Display player message to team" , 0x00000004)
+#else
 CON_COMMAND( say_team, "Display player message to team" )
+#endif
 {
 	CBasePlayer *pPlayer = ToBasePlayer( UTIL_GetCommandClient() ); 
 	if (pPlayer)
@@ -880,7 +976,12 @@ CON_COMMAND( say_team, "Display player message to team" )
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( give, "Give item to player.\n\tArguments: <item_name>" , 0x00004004)
+#else
 CON_COMMAND( give, "Give item to player.\n\tArguments: <item_name>" )
+#endif
 {
 	CBasePlayer *pPlayer = ToBasePlayer( UTIL_GetCommandClient() ); 
 	if ( pPlayer 
@@ -958,7 +1059,13 @@ void CC_Player_SetModel( const CCommand &args )
 		UTIL_SetSize(pPlayer, VEC_HULL_MIN, VEC_HULL_MAX);
 	}
 }
-static ConCommand setmodel("setmodel", CC_Player_SetModel, "Changes's player's model", FCVAR_CHEAT );
+static ConCommand setmodel("setmodel", CC_Player_SetModel, "Changes's player's model", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1036,7 +1143,13 @@ void CC_Player_TestDispatchEffect( const CCommand &args )
 	DispatchEffect( (char *)args[1], data );
 }
 
-static ConCommand test_dispatcheffect("test_dispatcheffect", CC_Player_TestDispatchEffect, "Test a clientside dispatch effect.\n\tUsage: test_dispatcheffect <effect name> <distance away> <flags> <magnitude> <scale>\n\tDefaults are: <distance 1024> <flags 0> <magnitude 0> <scale 0>\n", FCVAR_CHEAT);
+static ConCommand test_dispatcheffect("test_dispatcheffect", CC_Player_TestDispatchEffect, "Test a clientside dispatch effect.\n\tUsage: test_dispatcheffect <effect name> <distance away> <flags> <magnitude> <scale>\n\tDefaults are: <distance 1024> <flags 0> <magnitude 0> <scale 0>\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 #ifdef HL2_DLL
 //-----------------------------------------------------------------------------
@@ -1101,7 +1214,13 @@ void CC_Player_BugBaitSwap( void )
 		}
 	}
 }
-static ConCommand bugswap("bug_swap", CC_Player_BugBaitSwap, "Automatically swaps the current weapon for the bug bait and back again.", FCVAR_CHEAT );
+static ConCommand bugswap("bug_swap", CC_Player_BugBaitSwap, "Automatically swaps the current weapon for the bug bait and back again.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
@@ -1113,17 +1232,33 @@ void CC_Player_Use( const CCommand &args )
 		pPlayer->SelectItem((char *)args[1]);
 	}
 }
-static ConCommand use("use", CC_Player_Use, "Use a particular weapon\t\nArguments: <weapon_name>");
+static ConCommand use("use", CC_Player_Use, "Use a particular weapon\t\nArguments: <weapon_name>"
+#if defined( L4D2 )
+	, 0x00000004
+#endif
+);
 
 
 //------------------------------------------------------------------------------
 // A small wrapper around SV_Move that never clips against the supplied entity.
 //------------------------------------------------------------------------------
-static bool TestEntityPosition ( CBasePlayer *pPlayer )
-{	
-	trace_t	trace;
-	UTIL_TraceEntity( pPlayer, pPlayer->GetAbsOrigin(), pPlayer->GetAbsOrigin(), MASK_PLAYERSOLID, &trace );
-	return (trace.startsolid == 0);
+static bool TestEntityPosition( CBasePlayer *player, unsigned int mask )
+{
+ trace_t trace;
+#if defined( L4D2 )
+ IPhysicsObject *physics = player->VPhysicsGetObject();
+ const Vector &origin = player->GetAbsOrigin();
+ if ( physics )
+ {
+  Vector mins, maxs;
+  player->CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+  UTIL_TraceHull( vec3_origin, vec3_origin, mins, maxs, mask, player, COLLISION_GROUP_NONE, &trace );
+ }
+ else UTIL_TraceEntity( player, origin, origin, mask, &trace );
+#else
+ UTIL_TraceEntity( player, player->GetAbsOrigin(), player->GetAbsOrigin(), mask, &trace );
+#endif
+ return trace.startsolid == 0;
 }
 
 
@@ -1140,7 +1275,7 @@ static int FindPassableSpace( CBasePlayer *pPlayer, const Vector& direction, flo
 		Vector origin = pPlayer->GetAbsOrigin();
 		VectorMA( origin, step, direction, origin );
 		pPlayer->SetAbsOrigin( origin );
-		if ( TestEntityPosition( pPlayer ) )
+		if ( TestEntityPosition( pPlayer, MASK_PLAYERSOLID ) )
 		{
 			VectorCopy( pPlayer->GetAbsOrigin(), oldorigin );
 			return 1;
@@ -1185,7 +1320,7 @@ void CC_Player_NoClip( void )
 
 	Vector oldorigin = pPlayer->GetAbsOrigin();
 	ClientPrint( pPlayer, HUD_PRINTCONSOLE, "noclip OFF\n");
-	if ( !TestEntityPosition( pPlayer ) )
+	if ( !TestEntityPosition( pPlayer, MASK_PLAYERSOLID ) )
 	{
 		Vector forward, right, up;
 
@@ -1216,12 +1351,19 @@ void CC_Player_NoClip( void )
 	}
 }
 
-static ConCommand noclip("noclip", CC_Player_NoClip, "Toggle. Player becomes non-solid and flies.", FCVAR_CHEAT);
+static ConCommand noclip("noclip", CC_Player_NoClip, "Toggle. Player becomes non-solid and flies.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
 // Sets client to godmode
 //------------------------------------------------------------------------------
+#ifndef L4D2
 void CC_God_f (void)
 {
 	if ( !sv_cheats->GetBool() )
@@ -1250,12 +1392,18 @@ void CC_God_f (void)
 }
 
 static ConCommand god("god", CC_God_f, "Toggle. Player becomes invulnerable.", FCVAR_CHEAT );
+#endif
 
 
 //------------------------------------------------------------------------------
 // Sets client to godmode
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( setpos, "Move player to specified origin (must have sv_cheats).", 0x00004004 )
+#else
 CON_COMMAND_F( setpos, "Move player to specified origin (must have sv_cheats).", FCVAR_CHEAT )
+#endif
 {
 	if ( !sv_cheats->GetBool() )
 		return;
@@ -1279,7 +1427,7 @@ CON_COMMAND_F( setpos, "Move player to specified origin (must have sv_cheats).",
 
 	pPlayer->SetAbsOrigin( newpos );
 
-	if ( !TestEntityPosition( pPlayer ) )
+	if ( !TestEntityPosition( pPlayer, MASK_PLAYERSOLID ) )
 	{
 		ClientPrint( pPlayer, HUD_PRINTCONSOLE, "setpos into world, use noclip to unstick yourself!\n");
 	}
@@ -1314,7 +1462,13 @@ void CC_setang_f (const CCommand &args)
 	pPlayer->SnapEyeAngles( newang );
 }
 
-static ConCommand setang("setang", CC_setang_f, "Snap player eyes to specified pitch yaw <roll:optional> (must have sv_cheats).", FCVAR_CHEAT );
+static ConCommand setang("setang", CC_setang_f, "Snap player eyes to specified pitch yaw <roll:optional> (must have sv_cheats).", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 static float GetHexFloat( const char *pStr )
 {
@@ -1330,7 +1484,12 @@ static float GetHexFloat( const char *pStr )
 //------------------------------------------------------------------------------
 // Move position
 //------------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( setpos_exact, "Move player to an exact specified origin (must have sv_cheats).", 0x00004004 )
+#else
 CON_COMMAND_F( setpos_exact, "Move player to an exact specified origin (must have sv_cheats).", FCVAR_CHEAT )
+#endif
 {
 	if ( !sv_cheats->GetBool() )
 		return;
@@ -1354,7 +1513,7 @@ CON_COMMAND_F( setpos_exact, "Move player to an exact specified origin (must hav
 
 	pPlayer->Teleport( &newpos, NULL, NULL );
 
-	if ( !TestEntityPosition( pPlayer ) )
+	if ( !TestEntityPosition( pPlayer, MASK_PLAYERSOLID ) )
 	{
 		if ( pPlayer->GetMoveType() != MOVETYPE_NOCLIP )
 		{
@@ -1364,7 +1523,12 @@ CON_COMMAND_F( setpos_exact, "Move player to an exact specified origin (must hav
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( setang_exact, "Snap player eyes and orientation to specified pitch yaw <roll:optional> (must have sv_cheats).", 0x00004004 )
+#else
 CON_COMMAND_F( setang_exact, "Snap player eyes and orientation to specified pitch yaw <roll:optional> (must have sv_cheats).", FCVAR_CHEAT )
+#endif
 {
 	if ( !sv_cheats->GetBool() )
 		return;
@@ -1417,7 +1581,13 @@ void CC_Notarget_f (void)
 		ClientPrint( pPlayer, HUD_PRINTCONSOLE, "notarget ON\n");
 }
 
-ConCommand notarget("notarget", CC_Notarget_f, "Toggle. Player becomes hidden to NPCs.", FCVAR_CHEAT);
+ConCommand notarget("notarget", CC_Notarget_f, "Toggle. Player becomes hidden to NPCs.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 // Damage the client the specified amount
@@ -1440,7 +1610,13 @@ void CC_HurtMe_f(const CCommand &args)
 	pPlayer->TakeDamage( CTakeDamageInfo( pPlayer, pPlayer, iDamage, DMG_PREVENT_PHYSICS_FORCE ) );
 }
 
-static ConCommand hurtme("hurtme", CC_HurtMe_f, "Hurts the player.\n\tArguments: <health to lose>", FCVAR_CHEAT);
+static ConCommand hurtme("hurtme", CC_HurtMe_f, "Hurts the player.\n\tArguments: <health to lose>", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 #ifdef DBGFLAG_ASSERT
 static bool IsInGroundList( CBaseEntity *ent, CBaseEntity *ground )
@@ -1540,7 +1716,11 @@ void CC_GroundList_f(const CCommand &args)
 	}
 }
 
-static ConCommand groundlist("groundlist", CC_GroundList_f, "Display ground entity list <index>" );
+static ConCommand groundlist("groundlist", CC_GroundList_f, "Display ground entity list <index>"
+#if defined( L4D2 )
+	, 0x00004004
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: called each time a player uses a "cmd" command
@@ -1627,3 +1807,46 @@ void ClientCommand( CBasePlayer *pPlayer, const CCommand &args )
 		}
 	}
 }
+
+// Native server 0x8e0c0; 0x5c16d8 is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace ClientPrecachePrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "ClientPrecache", 0x5c16d8 ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		handler->Precache( RESOURCETYPE_MODEL, "cable/cable.vmt", precache, resourceList );
+		handler->Precache( RESOURCETYPE_MODEL, "cable/cable_lit.vmt", precache, resourceList );
+		handler->Precache( RESOURCETYPE_MODEL, "cable/chain.vmt", precache, resourceList );
+		handler->Precache( RESOURCETYPE_MODEL, "cable/rope.vmt", precache, resourceList );
+		if ( !ignoreConditionals && g_Language.GetInt() == LANGUAGE_GERMAN )
+			handler->Precache( RESOURCETYPE_MODEL, "models/germangibs.mdl", precache, resourceList );
+		if ( !ignoreConditionals && g_Language.GetInt() != LANGUAGE_GERMAN )
+			handler->Precache( RESOURCETYPE_MODEL, "models/gibs/hgibs.mdl", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Player.FallDamage", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Player.Swim", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Player.PickupWeapon", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Player.DenyWeaponSelection", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Player.WeaponSelected", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Player.WeaponSelectionClose", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Player.WeaponSelectionMoveSlot", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.Glass", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.Metal", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.Flesh", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.Wood", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.Shrapnel", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.ShotgunShell", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.Shell", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Bounce.Concrete", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "BaseEntity.EnterWater", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "BaseEntity.ExitWater", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
+#endif
+
+#include "client_console_server_callbacks.inc"

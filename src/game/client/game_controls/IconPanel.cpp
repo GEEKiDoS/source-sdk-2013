@@ -35,6 +35,12 @@ void CIconPanel::SetIcon( const char *szIcon )
 	m_icon = gHUD.GetIcon( m_szIcon );
 }
 
+void CIconPanel::SetIcon( CHudTexture *icon )
+{
+	m_icon = icon;
+	m_szIcon[0] = '\0';
+}
+
 void CIconPanel::Paint()
 {
 	BaseClass::Paint();

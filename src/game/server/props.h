@@ -15,6 +15,10 @@
 #include "physics_bone_follower.h"
 #include "player_pickup.h"
 #include "positionwatcher.h"
+#if defined( L4D2 )
+#include "nav_mesh.h"
+#include "util_shared.h"
+#endif
 
 //=============================================================================================================
 // PROP TYPES
@@ -55,7 +59,13 @@ public:
 	DECLARE_DATADESC();
 
 	virtual void Spawn();
+#if defined( L4D2 )
+	unsigned int PhysicsSolidMaskForEntity() const OVERRIDE;
+#endif
 	virtual void Precache();
+	#ifdef L4D2
+	void UpdateOnRemove() OVERRIDE;
+	#endif
 	virtual float GetAutoAimRadius() { return 24.0f; }
 
 	void BreakablePropTouch( CBaseEntity *pOther );
@@ -120,6 +130,16 @@ public:
 	float			GetDmgModBullet( void ) { return m_flDmgModBullet; }
 	float			GetDmgModClub( void ) { return m_flDmgModClub; }
 	float			GetDmgModExplosive( void ) { return m_flDmgModExplosive; }
+#ifdef L4D2
+	void SetDmgModFire( float modifier ) { m_flDmgModFire = modifier; }
+	float GetDmgModFire() { return m_flDmgModFire; }
+	void SetExplosionType( int type ) { m_iExplosionType = type; }
+	int GetExplosionType() { return m_iExplosionType; }
+	void SetExplosionDelay( float delay ) { m_flExplosionDelay = delay; }
+	float GetExplosionDelay() { return m_flExplosionDelay; }
+	void SetExplosionBuildup( string_t sound ) { m_iszExplosionBuildup = sound; }
+	string_t GetExplosionBuildup() { return m_iszExplosionBuildup; }
+#endif
 	void			SetExplosiveRadius( float flRadius ) { m_explodeRadius = flRadius; }
 	void			SetExplosiveDamage( float flDamage ) { m_explodeDamage = flDamage; }
 	float			GetExplosiveRadius( void ) { return m_explodeRadius; }
@@ -144,9 +164,14 @@ public:
 	void			SetMultiplayerBreakMode( mp_break_t mode ) { m_mpBreakMode = mode; }
 	mp_break_t		GetMultiplayerBreakMode( void ) const { return m_mpBreakMode; }
 
+#if defined( L4D2 )
+	virtual void SetPhysicsMode( int mode ) { m_iPhysicsMode = mode; }
+	virtual int GetPhysicsMode() { return m_iPhysicsMode; }
+#else
 // derived by multiplayer phys props:
 	virtual void	SetPhysicsMode(int iMode) {}
 	virtual int		GetPhysicsMode() { return PHYSICS_MULTIPLAYER_SOLID; }
+#endif
 
 	// Copy fade from another breakable prop
 	void CopyFadeFrom( CBreakableProp *pSource );
@@ -168,6 +193,9 @@ protected:
 	float			m_flDmgModBullet;
 	float			m_flDmgModClub;
 	float			m_flDmgModExplosive;
+#ifdef L4D2
+	float m_flDmgModFire;
+#endif
 	string_t		m_iszPhysicsDamageTableName;
 	string_t		m_iszBreakableModel;
 	int				m_iBreakableSkin;
@@ -177,10 +205,22 @@ protected:
 	int				m_iInteractions;
 	float			m_explodeDamage;
 	float			m_explodeRadius;
+#ifdef L4D2
+	int m_iExplosionType;
+	float m_flExplosionDelay;
+	string_t m_iszExplosionBuildup;
+#endif
+#ifndef L4D2
 	string_t		m_iszBreakModelMessage;
+#endif
 
 	// Count of how many pieces we'll break into, custom or generic
 	int				m_iNumBreakableChunks;
+#if defined( L4D2 )
+	int m_iPhysicsMode; // Native inherited5196; no ctor/save/key/wire store.
+	CNetworkVar( bool, m_noGhostCollision );
+	CNetworkVar( bool, m_bClientPhysics );
+#endif
 
 	void			SetEnableMotionPosition( const Vector &position, const QAngle &angles );
 	bool			GetEnableMotionPosition( Vector *pPosition, QAngle *pAngles );
@@ -194,13 +234,13 @@ public:
 	virtual void OnPhysGunDrop( CBasePlayer *pPhysGunUser, PhysGunDrop_t reason );
 	virtual AngularImpulse	PhysGunLaunchAngularImpulse();
 	virtual	CBasePlayer *HasPhysicsAttacker( float dt );
+	void SetPhysicsAttacker( CBasePlayer *pEntity, float flTime );
 
 #ifdef HL2_EPISODIC
 	void CreateFlare( float flLifetime );
 #endif //HL2_EPISODIC
 
 protected:
-	void SetPhysicsAttacker( CBasePlayer *pEntity, float flTime );
 	void CheckRemoveRagdolls();
 	
 private:
@@ -293,6 +333,13 @@ public:
 	void InputTurnOff( inputdata_t &inputdata );
 	void InputDisableCollision( inputdata_t &inputdata );
 	void InputEnableCollision( inputdata_t &inputdata );
+#if defined( L4D2 )
+	void InputStartGlowing( inputdata_t &inputdata );
+	void InputStopGlowing( inputdata_t &inputdata );
+	void InputSetPlaybackRate( inputdata_t &inputdata );
+	void InputSetGlowOverride( inputdata_t &inputdata );
+	void InputSetGlowRange( inputdata_t &inputdata );
+#endif
 
 	COutputEvent		m_pOutputAnimBegun;
 	COutputEvent		m_pOutputAnimOver;
@@ -311,6 +358,13 @@ public:
 
 	bool				m_bStartDisabled;
 	bool				m_bDisableBoneFollowers;
+#if defined( L4D2 )
+	bool m_bUpdateAttachedChildren;
+	int m_iInitialGlowState;
+	int m_nGlowRange;
+	int m_nGlowRangeMin;
+	color32 m_glowColor;
+#endif
 
 	CNetworkVar( bool, m_bUseHitboxesForRenderBox );
 
@@ -328,6 +382,9 @@ protected:
 //-----------------------------------------------------------------------------
 DECLARE_AUTO_LIST( IPhysicsPropAutoList );
 class CPhysicsProp : public CBreakableProp, public IPhysicsPropAutoList
+#if defined( L4D2 )
+	, public INavAvoidanceObstacle
+#endif
 {
 	DECLARE_CLASS( CPhysicsProp, CBreakableProp );
 	DECLARE_SERVERCLASS();
@@ -336,9 +393,18 @@ public:
 	~CPhysicsProp();
 	CPhysicsProp( void ) 
 	{
+#if defined( L4D2 )
+		m_iInitialGlowState = 0;
+		m_nGlowRangeMin = 0;
+		m_glowColor.r = m_glowColor.g = m_glowColor.b = m_glowColor.a = 0;
+#endif
 	}
 
 	void Spawn( void );
+#if defined( L4D2 )
+	void InitializeTerrorNavAttributes();
+	virtual void OnBreak( const Vector &velocity, const AngularImpulse &angles, CBaseEntity *breaker ) OVERRIDE;
+#endif
 	void Precache();
 	bool CreateVPhysics( void );
 	bool OverridePropdata( void );
@@ -351,6 +417,12 @@ public:
 	void InputEnableMotion( inputdata_t &inputdata );
 	void InputDisableMotion( inputdata_t &inputdata );
 	void InputDisableFloating( inputdata_t &inputdata );
+#if defined( L4D2 )
+	void InputStartGlowing( inputdata_t &inputdata );
+	void InputStopGlowing( inputdata_t &inputdata );
+	void InputSetGlowOverride( inputdata_t &inputdata );
+	void InputSetGlowRange( inputdata_t &inputdata );
+#endif
 
 	void EnableMotion( void );
 	bool CanBePickedUpByPhyscannon( void );
@@ -365,6 +437,20 @@ public:
 
 	void GetMassCenter( Vector *pMassCenter );
 	float GetMass() const;
+#if defined( L4D2 )
+	virtual int GetUsePriority( CBaseEntity *user ) OVERRIDE { return m_isCarryable ? 1 : 0; } // S1986B0.
+	int GetBreakableType() const { return m_breakableType; }
+	virtual bool IsPotentiallyAbleToObstructNavAreas() const OVERRIDE;
+	virtual double GetNavObstructionHeight() const OVERRIDE;
+	virtual bool CanObstructNavAreas() const OVERRIDE;
+	virtual CBaseEntity *GetObstructingEntity() OVERRIDE { return this; }
+	virtual void OnNavMeshLoaded() OVERRIDE;
+	void NavThink();
+	void OnHitByTank();
+	bool IsTankHittable();
+	bool WasRecentlyHitByTank() const;
+	void CopyTankHitTimerTo( CBreakableProp *piece ) const;
+#endif
 
 	void ClearFlagsThink( void );
 
@@ -392,10 +478,24 @@ private:
 	COutputEvent m_OnPlayerUse;
 	COutputEvent m_OnPlayerPickup;
 	COutputEvent m_OnOutOfWorld;
+#if defined( L4D2 )
+	COutputEvent m_OnHitByTank;
+	IntervalTimer m_lastTankHitTimer;
+#endif
 
 	float		m_massScale;
 	float		m_inertiaScale;
 	int			m_damageType;
+#if defined( L4D2 )
+	int m_breakableType; // Native5708, saved map key; allocation-zero default.
+	int m_iExploitableByPlayer;
+#endif
+#if defined( L4D2 )
+	int m_iInitialGlowState;
+	int m_nGlowRange;
+	int m_nGlowRangeMin;
+	color32 m_glowColor;
+#endif
 	string_t	m_iszOverrideScript;
 	int			m_damageToEnableMotion;
 	float		m_flForceToEnableMotion;
@@ -405,6 +505,10 @@ private:
 
 protected:
 	CNetworkVar( bool, m_bAwake );
+#if defined( L4D2 )
+	CNetworkVar( bool, m_hasTankGlow );
+	CNetworkVar( bool, m_isCarryable );
+#endif
 };
 
 

@@ -1,0 +1,68 @@
+// Original downsample_nohdr_ps20b (CRC 980300DD, static 0, dynamic 0/1)
+// and blurfilter_ps20b (CRC E5CB3C54, static 4/9, dynamic 0).
+// STATIC: "PASS" "0..4"
+// DYNAMIC: "FLOAT_BACK_BUFFER" "0..1" [ps20b]
+#ifndef SHADER_MODEL_PS_2_B
+#define FLOAT_BACK_BUFFER 0
+#endif
+sampler2D TexSampler : register( s0 );
+float4 BloomTint : register( c0 );
+float2 TexelSize : register( c4 );
+
+float3 LinearToRetailSRGB( float3 color )
+{
+	color = saturate( color );
+	float3 high = 1.055f * pow( color, 1.0f / 2.4f ) - 0.055f;
+	return float3( color.r <= 0.0031308f ? 12.92f * color.r : high.r,
+		color.g <= 0.0031308f ? 12.92f * color.g : high.g,
+		color.b <= 0.0031308f ? 12.92f * color.b : high.b );
+}
+
+float3 DownsampleTap( float2 uv )
+{
+	float3 color = tex2D( TexSampler, uv ).rgb;
+#if FLOAT_BACK_BUFFER
+	color = LinearToRetailSRGB( color );
+#endif
+	return color;
+}
+
+float4 main( float2 uv : TEXCOORD0 ) : COLOR
+{
+#if PASS == 3
+	float4 first = tex2D( TexSampler, uv + float2( 0.5f, 0.5f ) * TexelSize );
+	float4 second = tex2D( TexSampler, uv + float2( 2.5f, 0.5f ) * TexelSize );
+	float4 third = tex2D( TexSampler, uv + float2( 0.5f, 2.5f ) * TexelSize );
+	float4 fourth = tex2D( TexSampler, uv + float2( 2.5f, 2.5f ) * TexelSize );
+	return ( fourth + ( third + ( first + second ) ) ) * 0.25f;
+#elif PASS == 0
+	float3 first = DownsampleTap( uv + float2( 0.5f, 0.5f ) * TexelSize );
+	float3 second = DownsampleTap( uv + float2( 2.5f, 0.5f ) * TexelSize );
+	float3 third = DownsampleTap( uv + float2( 0.5f, 2.5f ) * TexelSize );
+	float3 fourth = DownsampleTap( uv + float2( 2.5f, 2.5f ) * TexelSize );
+	float3 average = ( fourth + ( third + ( first + second ) ) ) * 0.25f;
+	float3 color = pow( average, BloomTint.w ) * dot( average, BloomTint.rgb );
+	// The original writes luma, NOT source alpha or 1. The later clear pass
+	// preserves this blurred alpha for EnginePost's vomit/local-contrast reads.
+	return float4( color, dot( average, float3( 0.299f, 0.587f, 0.114f ) ) );
+#else
+	float2 stepUV = TexelSize;
+	float4 color = tex2D( TexSampler, uv - stepUV * 9.289172f ) * 0.003733f;
+	color = tex2D( TexSampler, uv - stepUV * 11.251852f ) * 0.000534f + color;
+	color = tex2D( TexSampler, uv - stepUV * 7.329586f ) * 0.018004f + color;
+	color = tex2D( TexSampler, uv - stepUV * 5.372686f ) * 0.059928f + color;
+	color = tex2D( TexSampler, uv - stepUV * 3.417910f ) * 0.137740f + color;
+	color = tex2D( TexSampler, uv - stepUV * 1.464557f ) * 0.218677f + color;
+	color = tex2D( TexSampler, uv ) * 0.122765f + color;
+	color = tex2D( TexSampler, uv + stepUV * 1.464557f ) * 0.218677f + color;
+	color = tex2D( TexSampler, uv + stepUV * 3.417910f ) * 0.137740f + color;
+	color = tex2D( TexSampler, uv + stepUV * 5.372686f ) * 0.059928f + color;
+	color = tex2D( TexSampler, uv + stepUV * 7.329586f ) * 0.018004f + color;
+	color = tex2D( TexSampler, uv + stepUV * 9.289172f ) * 0.003733f + color;
+	color = tex2D( TexSampler, uv + stepUV * 11.251852f ) * 0.000534f + color;
+#if PASS == 2
+	color.rgb = float3( 0.5f, 0.5f, 0.0f );
+#endif
+	return color;
+#endif
+}

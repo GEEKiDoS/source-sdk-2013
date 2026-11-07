@@ -82,7 +82,11 @@ private:
 	enum
 	{
 		// NOTE: # of points max must be a power of two!
+#if defined( L4D2 )
+		MAX_SPRITE_TRAIL_POINTS = 64,
+#else
 		MAX_SPRITE_TRAIL_POINTS	= 256,
+#endif
 		MAX_SPRITE_TRAIL_MASK = MAX_SPRITE_TRAIL_POINTS - 1,
 	};
 

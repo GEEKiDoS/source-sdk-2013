@@ -144,5 +144,11 @@ void CC_DumpGameStringTable( void )
 
 	g_GameStringPool.Dump();
 }
-static ConCommand dumpgamestringtable("dumpgamestringtable", CC_DumpGameStringTable, "Dump the contents of the game string table to the console.", FCVAR_CHEAT);
+static ConCommand dumpgamestringtable("dumpgamestringtable", CC_DumpGameStringTable, "Dump the contents of the game string table to the console.", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 #endif

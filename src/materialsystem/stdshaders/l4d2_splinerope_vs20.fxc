@@ -1,0 +1,53 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Readable reconstruction of the retail splinerope_vs20.vcs, static/dynamic 0.
+// Compiled as the game-owned l4d2_splinerope_vs20 program; no original VCS mount.
+#include "common_vs_fxc.h"
+
+const float4x3 cModelView : register( c48 );
+const float4x4 cProj : register( c51 );
+const float g_MinPixelSize : register( c55 );
+
+struct VS_INPUT
+{
+	float4 color : COLOR0;
+	float3 parameters : POSITION0; // t, longitudinal texture coordinate, side [0,1]
+	float4 p0 : TEXCOORD0; // xyz world position; w is full rope width
+	float4 p1 : TEXCOORD1;
+	float4 p2 : TEXCOORD2;
+	float4 p3 : TEXCOORD3;
+};
+struct VS_OUTPUT
+{
+	float4 position : POSITION0;
+	float fog : FOG;
+	float2 uv : TEXCOORD0;
+	float4 worldPositionAndProjectedZ : TEXCOORD1;
+	float4 color : COLOR0;
+};
+
+VS_OUTPUT main( const VS_INPUT i )
+{
+	VS_OUTPUT o;
+	float t = i.parameters.x;
+	float4 b = 2.0f * i.p0 - 5.0f * i.p1 + 4.0f * i.p2 - i.p3;
+	float4 c = -i.p0 + 3.0f * i.p1 - 3.0f * i.p2 + i.p3;
+	float4 d = i.p2 - i.p0;
+	float4 centerAndWidth = i.p1 + (0.5f * t) * (d + t * (b + t * c));
+	float3 viewCenter = mul( float4( centerAndWidth.xyz, 1.0f ), cModelView );
+	float4 projectedCenter = mul( float4( viewCenter, 1.0f ), cProj );
+	float4 projectedEdge = mul( float4( viewCenter + float3( centerAndWidth.w, 0, 0 ), 1.0f ), cProj );
+	float screenWidth = abs( projectedCenter.x / projectedCenter.w - projectedEdge.x / projectedEdge.w );
+	float width = centerAndWidth.w;
+	if ( screenWidth < g_MinPixelSize )
+		width *= g_MinPixelSize / screenWidth;
+	float3 tangent = normalize( 0.5f * (d.xyz + t * (2.0f * b.xyz + 3.0f * t * c.xyz)) );
+	float3 facing = normalize( cross( centerAndWidth.xyz - cEyePos, tangent ) );
+	float3 worldPosition = centerAndWidth.xyz + facing * (width * (i.parameters.z - 0.5f));
+	o.position = mul( float4( worldPosition, 1.0f ), cViewProj );
+	float distanceXY = length( cEyePos.xy - worldPosition.xy );
+	o.fog = max( cFogParams.x - distanceXY * cFogParams.w, cFogParams.z );
+	o.uv = float2( 1.0f - i.parameters.z, i.parameters.y );
+	o.worldPositionAndProjectedZ = float4( worldPosition, o.position.z );
+	o.color = i.color;
+	return o;
+}

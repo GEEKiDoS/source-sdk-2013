@@ -52,7 +52,9 @@
 #endif
 
 // NVNT haptic utils
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -88,7 +90,13 @@
 #endif
 
 #ifdef CLIENT_DLL
-ConVar mp_usehwmmodels( "mp_usehwmmodels", "0", NULL, "Enable the use of the hw morph models. (-1 = never, 1 = always, 0 = based upon GPU)" ); // -1 = never, 0 = if hasfastvertextextures, 1 = always
+ConVar mp_usehwmmodels( "mp_usehwmmodels", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#else
+	NULL
+#endif
+, "Enable the use of the hw morph models. (-1 = never, 1 = always, 0 = based upon GPU)" ); // -1 = never, 0 = if hasfastvertextextures, 1 = always
 #endif
 
 bool UseHWMorphModels()
@@ -342,7 +350,11 @@ Vector CBasePlayer::EyePosition( )
 #ifdef CLIENT_DLL
 		if ( IsObserver() )
 		{
-			if ( GetObserverMode() == OBS_MODE_CHASE || GetObserverMode() == OBS_MODE_POI )
+			if ( GetObserverMode() == OBS_MODE_CHASE
+#if !defined( L4D2 )
+				|| GetObserverMode() == OBS_MODE_POI
+#endif
+				)
 			{
 				if ( IsLocalPlayer() )
 				{
@@ -365,17 +377,29 @@ const Vector CBasePlayer::GetPlayerMins( void ) const
 {
 	if ( IsObserver() )
 	{
-		return VEC_OBS_HULL_MIN_SCALED( this );	
+#ifdef L4D2
+		return VEC_OBS_HULL_MIN;
+#else
+		return VEC_OBS_HULL_MIN_SCALED( this );
+#endif
 	}
 	else
 	{
 		if ( GetFlags() & FL_DUCKING )
 		{
+#ifdef L4D2
+			return VEC_DUCK_HULL_MIN;
+#else
 			return VEC_DUCK_HULL_MIN_SCALED( this );
+#endif
 		}
 		else
 		{
+#ifdef L4D2
+			return VEC_HULL_MIN;
+#else
 			return VEC_HULL_MIN_SCALED( this );
+#endif
 		}
 	}
 }
@@ -389,17 +413,29 @@ const Vector CBasePlayer::GetPlayerMaxs( void ) const
 {	
 	if ( IsObserver() )
 	{
-		return VEC_OBS_HULL_MAX_SCALED( this );	
+#ifdef L4D2
+		return VEC_OBS_HULL_MAX;
+#else
+		return VEC_OBS_HULL_MAX_SCALED( this );
+#endif
 	}
 	else
 	{
 		if ( GetFlags() & FL_DUCKING )
 		{
+#ifdef L4D2
+			return VEC_DUCK_HULL_MAX;
+#else
 			return VEC_DUCK_HULL_MAX_SCALED( this );
+#endif
 		}
 		else
 		{
+#ifdef L4D2
+			return VEC_HULL_MAX;
+#else
 			return VEC_HULL_MAX_SCALED( this );
+#endif
 		}
 	}
 }
@@ -427,7 +463,7 @@ void CBasePlayer::CacheVehicleView( void )
 		pVehicle->GetVehicleViewPosition( nRole, &m_vecVehicleViewOrigin, &m_vecVehicleViewAngles, &m_flVehicleViewFOV );
 		m_nVehicleViewSavedFrame = gpGlobals->framecount;
 
-#ifdef CLIENT_DLL
+#if defined( CLIENT_DLL ) && !defined( L4D2 )
 		if( UseVR() )
 		{
 			C_BaseAnimating *pVehicleAnimating = dynamic_cast<C_BaseAnimating *>( pVehicle );
@@ -491,6 +527,15 @@ void CBasePlayer::EyePositionAndVectors( Vector *pPosition, Vector *pForward,
 surfacedata_t * CBasePlayer::GetFootstepSurface( const Vector &origin, const char *surfaceName )
 {
 	return physprops->GetSurfaceData( physprops->GetSurfaceIndex( surfaceName ) );
+}
+#endif
+
+#if defined( L4D2 )
+// S7DC80/C1F2D0. Client receives one byte, server stores an int; both wrap at4.
+void CBasePlayer::IncrementEFNoInterpParity()
+{
+	if ( gpGlobals->maxClients != 1 )
+		m_ubEFNoInterpParity = ( m_ubEFNoInterpParity + 1 ) & 3;
 }
 #endif
 
@@ -1046,7 +1091,15 @@ void CBasePlayer::SelectItem( const char *pstr, int iSubType )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-ConVar sv_debug_player_use( "sv_debug_player_use", "0", FCVAR_REPLICATED, "Visualizes +use logic. Green cross=trace success, Red cross=trace too far, Green box=radius success" );
+ConVar sv_debug_player_use( "sv_debug_player_use", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "Visualizes +use logic. Green cross=trace success, Red cross=trace too far, Green box=radius success" );
 float IntervalDistance( float x, float x0, float x1 )
 {
 	// swap so x0 < x1
@@ -1271,7 +1324,11 @@ CBaseEntity *CBasePlayer::FindUseEntity()
 //-----------------------------------------------------------------------------
 // Purpose: Handles USE keypress
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+void CBasePlayer::PlayerUse( CBaseEntity *preferred )
+#else
 void CBasePlayer::PlayerUse ( void )
+#endif
 {
 #ifdef GAME_DLL
 	// Was use pressed or released?
@@ -1397,7 +1454,15 @@ void CBasePlayer::PlayerUse ( void )
 #endif
 }
 
-ConVar	sv_suppress_viewpunch( "sv_suppress_viewpunch", "0", FCVAR_REPLICATED | FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
+ConVar	sv_suppress_viewpunch( "sv_suppress_viewpunch", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000600A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00006006
+#else
+	FCVAR_REPLICATED | FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1438,11 +1503,73 @@ void CBasePlayer::ViewPunchReset( float tolerance )
 
 #endif
 
-static ConVar smoothstairs( "smoothstairs", "1", FCVAR_REPLICATED, "Smooth player eye z coordinate when traversing stairs." );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+static ConVar smoothstairs( "smoothstairs", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#else
+	FCVAR_DEVELOPMENTONLY | FCVAR_REPLICATED
+#endif
+, "Smooth player eye z coordinate when traversing stairs." );
+#else
+static ConVar smoothstairs( "smoothstairs", "1", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "Smooth player eye z coordinate when traversing stairs." );
+#endif
 
 //-----------------------------------------------------------------------------
 // Handle view smoothing when going up or down stairs
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+// Whole native C205D0: staircase eye-origin smoothing, not a separate bob backend.
+void CBasePlayer::SmoothViewOnStairs( Vector &eyeOrigin )
+{
+	CBaseEntity *ground = GetGroundEntity();
+	const float currentZ = GetLocalOrigin().z;
+	const float viewOffsetZ = GetViewOffset().z;
+	if ( ground && ground->GetMoveType() == MOVETYPE_NONE &&
+		currentZ != m_flOldPlayerZ && smoothstairs.GetInt() != 0 &&
+		m_flOldPlayerViewOffsetZ == viewOffsetZ )
+	{
+		const int direction = currentZ > m_flOldPlayerZ ? 1 : -1;
+		float stepTime = gpGlobals->frametime;
+		if ( stepTime < 0.0f )
+			stepTime = 0.0f;
+		m_flOldPlayerZ = ( stepTime * 150.0f ) * static_cast< float >( direction ) + m_flOldPlayerZ;
+		if ( direction > 0 )
+		{
+			if ( m_flOldPlayerZ > currentZ )
+				m_flOldPlayerZ = currentZ;
+			if ( currentZ - m_flOldPlayerZ > 18.0f )
+				m_flOldPlayerZ = currentZ - 18.0f;
+		}
+		else
+		{
+			if ( currentZ > m_flOldPlayerZ )
+				m_flOldPlayerZ = currentZ;
+			if ( currentZ - m_flOldPlayerZ < -18.0f )
+				m_flOldPlayerZ = currentZ + 18.0f;
+		}
+		eyeOrigin.z = ( m_flOldPlayerZ - currentZ ) + eyeOrigin.z;
+	}
+	else
+	{
+		m_flOldPlayerZ = currentZ;
+		m_flOldPlayerViewOffsetZ = viewOffsetZ;
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBasePlayer::SmoothViewOnStairs( Vector& eyeOrigin )
 {
 	CBaseEntity *pGroundEntity = GetGroundEntity();
@@ -1498,6 +1625,8 @@ void CBasePlayer::SmoothViewOnStairs( Vector& eyeOrigin )
 	}
 }
 
+#endif
+
 static bool IsWaterContents( int contents )
 {
 	if ( contents & MASK_WATER )
@@ -1530,6 +1659,36 @@ void CBasePlayer::ResetObserverMode()
 //			zFar - 
 //			fov - 
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+void CBasePlayer::CalcView( Vector &eyeOrigin, QAngle &eyeAngles, float &zNear, float &zFar, float &fov )
+{
+	IClientVehicle *vehicle = GetVehicle();
+	if ( vehicle )
+		CalcVehicleView( vehicle, eyeOrigin, eyeAngles, zNear, zFar, fov );
+	else if ( GetObserverMode() != 0 )
+		CalcObserverView( eyeOrigin, eyeAngles, fov );
+	else
+		CalcPlayerView( eyeOrigin, eyeAngles, fov ); // VMRoot owns whole C20750.
+
+	static ConVarRef followBone( "cl_camera_follow_bone_index" );
+	CStudioHdr *header = GetCameraFollowStudioHdr();
+	if ( header && header->IsValid() && followBone.IsValid() && C_BasePlayer::GetLocalPlayer( 0 ) == this )
+	{
+		const int bone = followBone.GetInt();
+		const studiohdr_t *rawHeader = header->GetRenderHdr();
+		if ( bone >= -1 && bone < rawHeader->numbones )
+		{
+			if ( bone == -1 )
+				g_vecCameraFollowBoneOrigin = GetRenderOrigin();
+			else if ( rawHeader->pBone( bone )->flags & 0x0007FF00 )
+			{
+				const matrix3x4_t &transform = GetBone( bone ); // Cached, NOT SetupBones/GetBoneTransform.
+				g_vecCameraFollowBoneOrigin.Init( transform[0][3], transform[1][3], transform[2][3] );
+			}
+		}
+	}
+}
+#else
 void CBasePlayer::CalcView( Vector &eyeOrigin, QAngle &eyeAngles, float &zNear, float &zFar, float &fov )
 {
 #if defined( CLIENT_DLL )
@@ -1541,7 +1700,7 @@ void CBasePlayer::CalcView( Vector &eyeOrigin, QAngle &eyeAngles, float &zNear, 
 
 	if ( !pVehicle )
 	{
-#if defined( CLIENT_DLL )
+#if defined( CLIENT_DLL ) && !defined( L4D2 )
 		if( UseVR() )
 			g_ClientVirtualReality.CancelTorsoTransformOverride();
 #endif
@@ -1560,11 +1719,12 @@ void CBasePlayer::CalcView( Vector &eyeOrigin, QAngle &eyeAngles, float &zNear, 
 		CalcVehicleView( pVehicle, eyeOrigin, eyeAngles, zNear, zFar, fov );
 	}
 	// NVNT update fov on the haptics dll for input scaling.
-#if defined( CLIENT_DLL )
+#if defined( CLIENT_DLL ) && !defined( L4D2 )
 	if(IsLocalPlayer() && haptics)
 		haptics->UpdatePlayerFOV(fov);
 #endif
 }
+#endif
 
 
 void CBasePlayer::CalcViewModelView( const Vector& eyeOrigin, const QAngle& eyeAngles)
@@ -1579,6 +1739,61 @@ void CBasePlayer::CalcViewModelView( const Vector& eyeOrigin, const QAngle& eyeA
 	}
 }
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+// Whole native C20750, the ordinary player-view branch selected by C21980.
+// C21980 owns vehicle/observer dispatch; this body adds neither branch again.
+void CBasePlayer::CalcPlayerView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov )
+{
+	if ( !prediction->InPrediction() )
+		view->DriftPitch();
+
+	// Native PC100A84B0 is proven pure false; the dead autoaim-offset arm folds.
+	eyeOrigin = EyePosition();
+	eyeAngles = EyeAngles();
+	if ( !prediction->InPrediction() )
+		SmoothViewOnStairs( eyeOrigin );
+
+	for ( int i = 0; i < MAX_VIEWMODELS; ++i ) // Actual constant2, not local-user count.
+	{
+		CBaseViewModel *viewModel = GetViewModel( i );
+		if ( viewModel )
+			viewModel->CalcViewModelCamera( eyeOrigin, eyeAngles, fov );
+	}
+
+	if ( GetMoveType() != MOVETYPE_NOCLIP )
+	{
+		const float rollSpeed = sv_rollspeed.GetFloat();
+		const float rollAngle = sv_rollangle.GetFloat();
+		const Vector &velocity = GetAbsVelocity();
+		const QAngle &angles = GetAbsAngles();
+		const float roll = CalcRoll( angles, velocity, rollAngle, rollSpeed );
+		eyeAngles.z = static_cast< float >( static_cast< double >( roll ) + static_cast< double >( eyeAngles.z ) );
+	}
+	eyeAngles.x = eyeAngles.x + m_Local.m_vecPunchAngle.GetX();
+	eyeAngles.y = m_Local.m_vecPunchAngle.GetY() + eyeAngles.y;
+	eyeAngles.z = m_Local.m_vecPunchAngle.GetZ() + eyeAngles.z;
+
+	if ( !prediction->InPrediction() )
+	{
+		vieweffects->CalcShake();
+		vieweffects->ApplyShake( eyeOrigin, eyeAngles, 1.0f );
+	}
+	Vector smoothing;
+	GetPredictionErrorSmoothingVector( smoothing );
+	eyeOrigin.x = eyeOrigin.x + smoothing.x;
+	eyeOrigin.y = eyeOrigin.y + smoothing.y;
+	eyeOrigin.z = smoothing.z + eyeOrigin.z;
+	m_flObserverChaseDistance = 0.0f;
+	fov = GetFOV(); // Actual C67600 family returns F32 on every exit; keep API.
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CBasePlayer::CalcPlayerView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov )
 {
 #if defined( CLIENT_DLL )
@@ -1639,9 +1854,31 @@ void CBasePlayer::CalcPlayerView( Vector& eyeOrigin, QAngle& eyeAngles, float& f
 	fov = GetFOV();
 }
 
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: The main view setup function for vehicles
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+void CBasePlayer::CalcVehicleView( IClientVehicle *vehicle, Vector &eyeOrigin, QAngle &eyeAngles,
+	float &zNear, float &zFar, float &fov )
+{
+	CacheVehicleView();
+	eyeOrigin = m_vecVehicleViewOrigin;
+	eyeAngles = m_vecVehicleViewAngles;
+	fov = GetFOV();
+	vehicle->GetVehicleClipPlanes( zNear, zFar );
+	CalcViewRoll( eyeAngles );
+	eyeAngles.x = m_Local.m_vecPunchAngle.GetX() + eyeAngles.x;
+	eyeAngles.y = m_Local.m_vecPunchAngle.GetY() + eyeAngles.y;
+	eyeAngles.z = m_Local.m_vecPunchAngle.GetZ() + eyeAngles.z;
+	if ( !prediction->InPrediction() )
+	{
+		vieweffects->CalcShake();
+		vieweffects->ApplyShake( eyeOrigin, eyeAngles, 1.0f );
+	}
+}
+#else
 void CBasePlayer::CalcVehicleView( 
 #if defined( CLIENT_DLL )
 	IClientVehicle *pVehicle, 
@@ -1684,8 +1921,33 @@ void CBasePlayer::CalcVehicleView(
 #endif
 
 }
+#endif
 
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+void CBasePlayer::CalcObserverView( Vector &eyeOrigin, QAngle &eyeAngles, float &fov )
+{
+	switch ( GetObserverMode() )
+	{
+	case OBS_MODE_DEATHCAM: // 1 -> primary1316 / C2565E0 -> qualified C66ED0.
+		CalcRoamingView( eyeOrigin, eyeAngles, fov );
+		break;
+	case OBS_MODE_FREEZECAM: // 2 -> primary1324 / C667A0.
+		CalcFreezeCamView( eyeOrigin, eyeAngles, fov );
+		break;
+	case OBS_MODE_FIXED: // 3 -> primary1320 / C255EB0 (genuine fly/keyframe).
+	case OBS_MODE_ROAMING: // 6 -> same primary1320.
+		CalcInEyeCamView( eyeOrigin, eyeAngles, fov );
+		break;
+	case OBS_MODE_IN_EYE: // 4 -> primary1312 / actor-owned C255AA0 -> C66C20.
+		CalcDeathCamView( eyeOrigin, eyeAngles, fov );
+		break;
+	case OBS_MODE_CHASE: // 5 -> primary1308 / C255CB0 -> C66370.
+		CalcChaseCamView( eyeOrigin, eyeAngles, fov );
+		break;
+	}
+}
+#else
 void CBasePlayer::CalcObserverView( Vector& eyeOrigin, QAngle& eyeAngles, float& fov )
 {
 #if defined( CLIENT_DLL )
@@ -1702,7 +1964,9 @@ void CBasePlayer::CalcObserverView( Vector& eyeOrigin, QAngle& eyeAngles, float&
 		case OBS_MODE_IN_EYE	:	CalcInEyeCamView( eyeOrigin, eyeAngles, fov );
 									break;
 
+#if !defined( L4D2 )
 		case OBS_MODE_POI		: // PASSTIME
+#endif
 		case OBS_MODE_CHASE		:	CalcChaseCamView( eyeOrigin, eyeAngles, fov  );
 									break;
 
@@ -1715,6 +1979,7 @@ void CBasePlayer::CalcObserverView( Vector& eyeOrigin, QAngle& eyeAngles, float&
 	VectorCopy( EyeAngles(), eyeAngles );
 #endif
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Compute roll angle for a particular lateral velocity
@@ -1724,6 +1989,33 @@ void CBasePlayer::CalcObserverView( Vector& eyeOrigin, QAngle& eyeAngles, float&
 //			rollspeed - 
 // Output : float CViewRender::CalcRoll
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+// Whole native C1F0F0. Native scalar products/adds and the linear arm spill F32.
+// The last x87 multiply is by exactly +/-1: its finite result is F32-exact,
+// so the existing canonical float API is retained without an alternate helper.
+float CBasePlayer::CalcRoll( const QAngle &angles, const Vector &velocity, float rollAngle, float rollSpeed )
+{
+	Vector forward, right, up;
+	AngleVectors( angles, &forward, &right, &up );
+	const float lateral = ( velocity.y * right.y + velocity.x * right.x ) + velocity.z * right.z;
+	const float sign = lateral < 0.0f ? -1.0f : 1.0f;
+	const float magnitude = fabsf( lateral );
+	float value = rollAngle;
+	if ( rollSpeed > magnitude )
+	{
+		const float scaled = magnitude * rollAngle;
+		value = scaled / rollSpeed;
+	}
+	return static_cast< float >( static_cast< double >( sign ) * static_cast< double >( value ) );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float CBasePlayer::CalcRoll (const QAngle& angles, const Vector& velocity, float rollangle, float rollspeed)
 {
     float   sign;
@@ -1755,6 +2047,8 @@ float CBasePlayer::CalcRoll (const QAngle& angles, const Vector& velocity, float
     return side*sign;
 }
 
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: Determine view roll, including data kick
 //-----------------------------------------------------------------------------
@@ -1783,6 +2077,7 @@ void CBasePlayer::DoMuzzleFlash()
 }
 
 
+#if !defined( CLIENT_DLL ) || !defined( L4D2 )
 float CBasePlayer::GetFOVDistanceAdjustFactor()
 {
 	float defaultFOV	= (float)GetDefaultFOV();
@@ -1797,6 +2092,35 @@ float CBasePlayer::GetFOVDistanceAdjustFactor()
 	//  shorted accordingly
 	return localFOV / defaultFOV;
 }
+#endif
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Replace the CLIENT_DLL && L4D2 arm of the EXISTING GetFOVDistanceAdjustFactor
+// in game/shared/baseplayer_shared.cpp. Stock/server keep their original float
+// signature/body. Client c_baseplayer.h declares double on L4D2 only.
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+// Whole native C1F1A0. Default FOV is queried before current FOV. Only the
+// equality comparison spills the current value to float; division stays wide.
+double CBasePlayer::GetFOVDistanceAdjustFactor()
+{
+	const float defaultFOV = static_cast< float >( GetDefaultFOV() );
+	const double currentFOV = GetFOV();
+	const float comparisonFOV = static_cast< float >( currentFOV );
+	if ( comparisonFOV == defaultFOV || defaultFOV < 0.001f )
+		return 1.0;
+	return currentFOV / defaultFOV;
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -1849,7 +2173,7 @@ void CBasePlayer::SharedSpawn()
 
 	SetBloodColor( BLOOD_COLOR_RED );
 	// NVNT inform haptic dll we have just spawned local player
-#ifdef CLIENT_DLL
+#if defined( CLIENT_DLL ) && !defined( L4D2 )
 	if(IsLocalPlayer() &&haptics)
 		haptics->LocalPlayerReset();
 #endif
@@ -1874,6 +2198,29 @@ bool CBasePlayer::IsLerpingFOV( void ) const
 // Purpose: 
 // Output : int
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( CLIENT_DLL )
+int CBasePlayer::GetDefaultFOV()
+{
+	if ( GetObserverMode() == OBS_MODE_IN_EYE )
+	{
+		C_BaseEntity *entity = GetObserverTarget();
+		if ( entity && entity->IsPlayer() )
+		{
+			C_BasePlayer *target = static_cast< C_BasePlayer * >( entity );
+			if ( target->GetObserverMode() == OBS_MODE_NONE ) return target->GetDefaultFOV();
+		}
+	}
+	return m_iDefaultFOV != 0 ? m_iDefaultFOV : g_pGameRules->DefaultFOV();
+}
+#else
+int CBasePlayer::GetDefaultFOV() const
+{
+	return m_iDefaultFOV != 0 ? m_iDefaultFOV : g_pGameRules->DefaultFOV();
+}
+#endif
+#endif
+#if !defined( L4D2 )
 int CBasePlayer::GetDefaultFOV( void ) const
 {
 #if defined( CLIENT_DLL )
@@ -1894,6 +2241,7 @@ int CBasePlayer::GetDefaultFOV( void ) const
 
 	return iFOV;
 }
+#endif
 
 void CBasePlayer::AvoidPhysicsProps( CUserCmd *pCmd )
 {
@@ -2044,7 +2392,8 @@ void CBasePlayer::SetPlayerUnderwater( bool state )
 {
 	if ( m_bPlayerUnderwater != state )
 	{
-#if defined( WIN32 ) && !defined( _X360 ) 
+		// S07ABB0/C01F290 have no haptic message or input-feedback call here.
+#if defined( WIN32 ) && !defined( _X360 ) && !defined( L4D2 )
 		// NVNT turn on haptic drag when underwater
 		if(state)
 			HapticSetDrag(this,1);
@@ -2073,8 +2422,58 @@ const Vector &CBasePlayer::GetPreviouslyPredictedOrigin() const
 	return m_vecPreviouslyPredictedOrigin;
 }
 
+#if defined( L4D2 )
+fogparams_t::fogparams_t()
+{
+	dirPrimary.Init( 1.0f, 0.0f, 0.0f );
+	color32 black = { 0, 0, 0, 0 };
+	colorPrimary = black;
+	colorSecondary = black;
+	colorPrimaryLerpTo = black;
+	colorSecondaryLerpTo = black;
+	start = 0.0f;
+	end = 0.0f;
+	farz = 0.0f;
+	maxdensity = 0.0f;
+	skyboxFogFactor = 0.0f;
+	skyboxFogFactorLerpTo = 0.0f;
+	startLerpTo = 0.0f;
+	endLerpTo = 0.0f;
+	maxdensityLerpTo = 0.0f;
+	lerptime = 0.0f;
+	duration = 0.0f;
+	enable = false;
+	blend = false;
+	radial = false;
+	HDRColorScale = 0.0f;
+}
+#endif
+
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 bool fogparams_t::operator !=( const fogparams_t& other ) const
 {
+#if defined( L4D2 )
+	if ( enable != other.enable || blend != other.blend ||
+		fabs( static_cast< double >( dirPrimary.Get().x ) - static_cast< double >( other.dirPrimary.Get().x ) ) > static_cast< double >( 0.01f ) ||
+		fabs( static_cast< double >( dirPrimary.Get().y ) - static_cast< double >( other.dirPrimary.Get().y ) ) > static_cast< double >( 0.01f ) ||
+		!( fabs( static_cast< double >( dirPrimary.Get().z ) - static_cast< double >( other.dirPrimary.Get().z ) ) <= static_cast< double >( 0.01f ) ) ||
+		colorPrimary.Get() != other.colorPrimary.Get() ||
+		colorSecondary.Get() != other.colorSecondary.Get() ||
+		skyboxFogFactor != other.skyboxFogFactor ||
+		skyboxFogFactorLerpTo != other.skyboxFogFactorLerpTo ||
+		start != other.start || end != other.end || farz != other.farz ||
+		maxdensity != other.maxdensity ||
+		colorPrimaryLerpTo.Get() != other.colorPrimaryLerpTo.Get() ||
+		colorSecondaryLerpTo.Get() != other.colorSecondaryLerpTo.Get() ||
+		startLerpTo != other.startLerpTo || endLerpTo != other.endLerpTo ||
+		maxdensityLerpTo != other.maxdensityLerpTo ||
+		lerptime != other.lerptime || duration != other.duration ||
+		HDRColorScale != other.HDRColorScale )
+		return true;
+	return false;
+#else
 	if ( this->enable != other.enable ||
 		this->blend != other.blend ||
 		this->radial != other.radial ||
@@ -2094,5 +2493,9 @@ bool fogparams_t::operator !=( const fogparams_t& other ) const
 		return true;
 
 	return false;
+#endif
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 

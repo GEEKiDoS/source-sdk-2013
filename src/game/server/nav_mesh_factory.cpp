@@ -12,6 +12,10 @@
 #include "cbase.h"
 #include "nav_mesh.h"
 
+#if defined( L4D2 )
+#include "l4d2/nav/terror_nav.h"
+#endif
+
 #ifdef TERROR
 #include "terror/TerrorNav.h"
 #endif
@@ -29,6 +33,10 @@
 
 CNavMesh *NavMeshFactory( void )
 {
+#if defined( L4D2 )
+	return new TerrorNavMesh;
+#endif
+
 #ifdef TERROR
 	return new TerrorNavMesh;
 #endif

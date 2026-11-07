@@ -33,7 +33,10 @@ using namespace vgui;
 // Purpose: 
 //-----------------------------------------------------------------------------
 
+// Retail L4D2 retains the test command but has no notification HUD factory.
+#if !defined( L4D2 )
 DECLARE_HUDELEMENT_DEPTH( CAchievementNotificationPanel, 100 );
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -245,7 +248,12 @@ void CAchievementNotificationPanel::SetXAndWide( Panel *pPanel, int x, int wide 
 	pPanel->SetWide( wide );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( achievement_notification_test, "Test the hud notification UI", 0x0000400A )
+#else
 CON_COMMAND_F( achievement_notification_test, "Test the hud notification UI", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY )
+#endif
 {
 	static int iCount=0;
 

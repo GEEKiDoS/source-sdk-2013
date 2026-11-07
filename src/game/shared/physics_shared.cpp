@@ -23,6 +23,9 @@
 #include "physics_saverestore.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "precache_register.h"
+#endif
 #include "tier0/memdbgon.h"
 
 //
@@ -1053,3 +1056,20 @@ void PrecachePhysicsSounds()
 }
 
 
+// Native server 0x1605f0; 0x5c23ec is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace PhysFrictionEffectPrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "PhysFrictionEffect", 0x5c23ec ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		handler->Precache( RESOURCETYPE_PARTICLE_SYSTEM, "impact_physics_dust", precache, resourceList );
+		handler->Precache( RESOURCETYPE_PARTICLE_SYSTEM, "impact_physics_sparks", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
+#endif

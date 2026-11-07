@@ -6,6 +6,10 @@
 #ifndef _NEXT_BOT_PATH_H_
 #define _NEXT_BOT_PATH_H_
 
+#if defined( L4D2 )
+#include "nav_mesh.h"
+#include "nav_pathfind.h"
+#endif
 #include "NextBotInterface.h"
 
 #include "tier0/vprof.h"
@@ -90,7 +94,12 @@ public:
 
 	virtual const Vector &GetStartPosition( void ) const;	// return the position where this path starts
 	virtual const Vector &GetEndPosition( void ) const;		// return the position where this path ends
+#if defined( L4D2 )
+	virtual CBaseEntity *GetSubject( void ) const;
+	virtual void SetSubject( CBaseEntity *subject ) { m_subject = subject; }
+#else
 	virtual CBaseCombatCharacter *GetSubject( void ) const;	// return the actor this path leads to, or NULL if there is no subject
+#endif
 
 	virtual const Path::Segment *GetCurrentGoal( void ) const;	// return current goal along the path we are trying to reach
 
@@ -608,7 +617,11 @@ private:
 	mutable bool m_isCursorDataDirty;
 
 	IntervalTimer m_ageTimer;					// how old is this path?
+#if defined( L4D2 )
+	EHANDLE m_subject;
+#else
 	CHandle< CBaseCombatCharacter > m_subject;	// the subject this path leads to
+#endif
 
 	/**
 	 * Build a vector of adjacent areas reachable from the given area
@@ -809,7 +822,11 @@ inline const Vector &Path::GetEndPosition( void ) const
 	return ( IsValid() ) ? m_path[ m_segmentCount-1 ].pos : vec3_origin;
 }
 
+#if defined( L4D2 )
+inline CBaseEntity *Path::GetSubject( void ) const
+#else
 inline CBaseCombatCharacter *Path::GetSubject( void ) const
+#endif
 {
 	return m_subject;
 }

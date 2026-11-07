@@ -20,17 +20,50 @@
 #include "choreoscene.h"
 #include "choreoactor.h"
 #include "toolframework_client.h"
+#if defined( L4D2 )
+#include "c_sceneentity.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 bool UseHWMorphVCDs();
 
-ConVar g_CV_PhonemeDelay("phonemedelay", "0", 0, "Phoneme delay to account for sound system latency." );
-ConVar g_CV_PhonemeFilter("phonemefilter", "0.08", 0, "Time duration of box filter to pass over phonemes." );
-ConVar g_CV_FlexRules("flex_rules", "1", 0, "Allow flex animation rules to run." );
-ConVar g_CV_BlinkDuration("blink_duration", "0.2", 0, "How many seconds an eye blink will last." );
-ConVar g_CV_FlexSmooth("flex_smooth", "1", 0, "Applies smoothing/decay curve to flex animation controller changes." );
+ConVar g_CV_PhonemeDelay("phonemedelay", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Phoneme delay to account for sound system latency." );
+ConVar g_CV_PhonemeFilter("phonemefilter", "0.08", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Time duration of box filter to pass over phonemes." );
+ConVar g_CV_FlexRules("flex_rules", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Allow flex animation rules to run." );
+ConVar g_CV_BlinkDuration("blink_duration", "0.2", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "How many seconds an eye blink will last." );
+ConVar g_CV_FlexSmooth("flex_smooth", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Applies smoothing/decay curve to flex animation controller changes." );
 
 #if defined( CBaseFlex )
 #undef CBaseFlex
@@ -345,6 +378,24 @@ bool CFlexSceneFileManager::Init()
 	FindSceneFile( NULL, "phonemes", true );
 	FindSceneFile( NULL, "phonemes_weak", true );
 	FindSceneFile(NULL,  "phonemes_strong", true );
+
+#if defined( L4D2 )
+	// C52540 preloads all eight survivor expression banks before gameplay.
+	static const char *const directories[] =
+	{
+		"biker", "coach", "gambler", "manager", "mechanic", "namvet", "producer", "teenangst"
+	};
+	static const char *const expressions[] =
+	{
+		"biker", "coach", "gambler", "manager", "mechanic", "namvet", "producer", "teen"
+	};
+	for ( int i = 0; i < ARRAYSIZE( directories ); ++i )
+	{
+		char filename[MAX_PATH];
+		Q_snprintf( filename, sizeof( filename ), "survivors/survivor_%s/%s_expressions", directories[i], expressions[i] );
+		FindSceneFile( NULL, filename, true );
+	}
+#endif
 
 #if defined( HL2_CLIENT_DLL )
 	FindSceneFile( NULL, "random", true );
@@ -824,7 +875,13 @@ bool C_BaseFlex::SetupEmphasisBlend( Emphasized_Phoneme *classes, int phoneme )
 //			dt - 
 //			juststarted - 
 //-----------------------------------------------------------------------------
-ConVar g_CV_PhonemeSnap("phonemesnap", "2", 0, "Lod at level at which visemes stops always considering two phonemes, regardless of duration." );
+ConVar g_CV_PhonemeSnap("phonemesnap", "2", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Lod at level at which visemes stops always considering two phonemes, regardless of duration." );
 void C_BaseFlex::AddVisemesForSentence( Emphasized_Phoneme *classes, float emphasis_intensity, CSentence *sentence, float t, float dt, bool juststarted )
 {
 	CStudioHdr *hdr = GetModelPtr();
@@ -1476,7 +1533,11 @@ bool C_BaseFlex::ClearSceneEvent( CSceneEventInfo *info, bool fastKill, bool can
 //			expression - 
 //			duration - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_BaseFlex::AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseEntity *pTarget, bool bClientSide, C_BaseEntity *pSceneEntity )
+#else
 void C_BaseFlex::AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseEntity *pTarget, bool bClientSide )
+#endif
 {
 	if ( !scene || !event )
 	{
@@ -1501,6 +1562,9 @@ void C_BaseFlex::AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseE
 	info.m_hTarget		= pTarget;
 	info.m_bStarted		= false;
 	info.m_bClientSide	= bClientSide;
+#if defined( L4D2 )
+	info.m_hSceneEntity	= pSceneEntity;
+#endif
 
 	if (StartSceneEvent( &info, scene, event, actor, pTarget ))
 	{
@@ -2050,18 +2114,52 @@ void C_BaseFlex::AddFlexAnimation( CSceneEventInfo *info )
 
 void CSceneEventInfo::InitWeight( C_BaseFlex *pActor )
 {
+#if defined( L4D2 )
+	m_flWeight = m_bClientSide ? 0.0f : 1.0f;
+#else
 	m_flWeight = 1.0;
+#endif
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: update weight for background events.  Only call once per think
 //-----------------------------------------------------------------------------
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 float CSceneEventInfo::UpdateWeight( C_BaseFlex *pActor )
 {
+#if defined( L4D2 )
+	if ( m_bClientSide && pActor->IsSceneActive( m_pScene ) )
+	{
+		m_flWeight += 0.05f;
+		if ( !( 1.0f > m_flWeight ) )
+			m_flWeight = 1.0f;
+	}
+	else
+	{
+		m_flWeight -= 0.05f;
+		if ( !( m_flWeight > 0.0f ) )
+			m_flWeight = 0.0f;
+		if ( m_bClientSide && m_flWeight == 0.0f )
+		{
+			C_SceneEntity *sceneEntity = static_cast< C_SceneEntity * >( m_hSceneEntity.Get() );
+			if ( sceneEntity )
+			{
+				sceneEntity->StopClientOnlyScene();
+				ClientEntityList().AddToDeleteList( sceneEntity );
+			}
+		}
+	}
+#else
 	m_flWeight = MIN( m_flWeight + 0.1, 1.0 );
+#endif
 	return m_flWeight;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 BEGIN_BYTESWAP_DATADESC( flexsettinghdr_t )
 	DEFINE_FIELD( id, FIELD_INTEGER ),

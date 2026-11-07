@@ -12,7 +12,11 @@
 #include "choreochannel.h"
 #include "filesystem.h"
 #include "ichoreoeventcallback.h"
+#if defined( L4D2 )
+#include "l4d2/content/terror_scene_file_cache.h"
+#else
 #include "scenefilecache/ISceneFileCache.h"
+#endif
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "tier2/tier2.h"
 #include "hud_closecaption.h"
@@ -80,7 +84,13 @@ char const *C_SceneEntity::GetSceneFileName()
 	return g_pStringTableClientSideChoreoScenes->GetString( m_nSceneStringIndex );
 }
 
-ConVar mp_usehwmvcds( "mp_usehwmvcds", "0", NULL, "Enable the use of the hw morph vcd(s). (-1 = never, 1 = always, 0 = based upon GPU)" ); // -1 = never, 0 = if hasfastvertextextures, 1 = always
+ConVar mp_usehwmvcds( "mp_usehwmvcds", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	NULL
+#endif
+, "Enable the use of the hw morph vcd(s). (-1 = never, 1 = always, 0 = based upon GPU)" ); // -1 = never, 0 = if hasfastvertextextures, 1 = always
 bool UseHWMorphVCDs()
 {
 // 	if ( mp_usehwmvcds.GetInt() == 0 )
@@ -175,14 +185,23 @@ void C_SceneEntity::SetupClientOnlyScene( const char *pszFilename, C_BaseFlex *p
 		{
 			if ( m_pScene )
 			{
+#if defined( L4D2 )
+				int types[7];
+#else
 				int types[6];
+#endif
 				types[0] = CChoreoEvent::FLEXANIMATION;
 				types[1] = CChoreoEvent::EXPRESSION;
 				types[2] = CChoreoEvent::GESTURE;
 				types[3] = CChoreoEvent::SEQUENCE;
 				types[4] = CChoreoEvent::SPEAK;
 				types[5] = CChoreoEvent::LOOP;
+#if defined( L4D2 )
+				types[6] = CChoreoEvent::LOOKAT;
+				m_pScene->RemoveEventsExceptTypes( types, 7 );
+#else
 				m_pScene->RemoveEventsExceptTypes( types, 6 );
+#endif
 			}
 
 			PrefetchAnimBlocks( m_pScene );
@@ -294,14 +313,23 @@ void C_SceneEntity::PostDataUpdate( DataUpdateType_t updateType )
 			{
 				if ( m_pScene )
 				{
+#if defined( L4D2 )
+					int types[7];
+#else
 					int types[6];
+#endif
 					types[0] = CChoreoEvent::FLEXANIMATION;
 					types[1] = CChoreoEvent::EXPRESSION;
 					types[2] = CChoreoEvent::GESTURE;
 					types[3] = CChoreoEvent::SEQUENCE;				
 					types[4] = CChoreoEvent::SPEAK;
 					types[5] = CChoreoEvent::LOOP;
+#if defined( L4D2 )
+					types[6] = CChoreoEvent::LOOKAT;
+					m_pScene->RemoveEventsExceptTypes( types, 7 );
+#else
 					m_pScene->RemoveEventsExceptTypes( types, 6 );
+#endif
 				}
 
 				PrefetchAnimBlocks( m_pScene );
@@ -451,6 +479,26 @@ C_BaseFlex *C_SceneEntity::FindNamedActor( CChoreoActor *pChoreoActor )
 	return m_hActorList[ idx ].Get();
 }
 
+#if defined( L4D2 )
+// C96E20: LOOKAT resolves a local player or another networked scene actor.
+C_BaseEntity *C_SceneEntity::FindNamedEntity( const char *name )
+{
+	if ( !Q_stricmp( name, "!player" ) )
+		return C_BasePlayer::GetLocalPlayer();
+	if ( Q_stricmp( name, "!self" ) )
+	{
+		CChoreoActor *actor = m_pScene->FindActor( name );
+		if ( actor )
+		{
+			int index = m_pScene->FindActorIndex( actor );
+			if ( index >= 0 && index < m_hActorList.Count() )
+				return m_hActorList[index].Get();
+		}
+	}
+	return NULL;
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: All events are leading edge triggered
 // Input  : currenttime - 
@@ -501,6 +549,15 @@ void C_SceneEntity::StartEvent( float currenttime, CChoreoScene *scene, CChoreoE
 			}
 		}
 		break;
+#if defined( L4D2 )
+	case CChoreoEvent::LOOKAT:
+		{
+			C_BaseEntity *target = FindNamedEntity( event->GetParameters() );
+			if ( pActor && target )
+				DispatchStartLookAt( scene, pActor, target, event );
+		}
+		break;
+#endif
 	case CChoreoEvent::GESTURE:
 		{
 			// Verify data.
@@ -622,7 +679,11 @@ void C_SceneEntity::DispatchStartSpeak( CChoreoScene *scene, C_BaseFlex *actor, 
 		es.m_pSoundName = event->GetParameters();
 
 		EmitSound( filter, actor->entindex(), es );
+#if defined( L4D2 )
+		actor->AddSceneEvent( scene, event, NULL, IsClientOnly(), this );
+#else
 		actor->AddSceneEvent( scene, event, NULL, IsClientOnly() );
+#endif
 
 		// Close captioning only on master token no matter what...
 		if ( event->GetCloseCaptionType() == CChoreoEvent::CC_MASTER )
@@ -706,6 +767,14 @@ void C_SceneEntity::EndEvent( float currenttime, CChoreoScene *scene, CChoreoEve
 			}
 		}
 		break;
+#if defined( L4D2 )
+	case CChoreoEvent::LOOKAT:
+		{
+			if ( IsClientOnly() && pActor )
+				DispatchEndLookAt( scene, pActor, event );
+		}
+		break;
+#endif
 	case CChoreoEvent::GESTURE:
 		{
 			if ( pActor )
@@ -852,6 +921,18 @@ void C_SceneEntity::UnloadScene( void )
 	m_pScene = NULL;
 }
 
+#if defined( L4D2 )
+void C_SceneEntity::DispatchStartLookAt( CChoreoScene *scene, C_BaseFlex *actor, C_BaseEntity *target, CChoreoEvent *event )
+{
+	actor->AddSceneEvent( scene, event, target, IsClientOnly() || m_bMultiplayer, this );
+}
+
+void C_SceneEntity::DispatchEndLookAt( CChoreoScene *scene, C_BaseFlex *actor, CChoreoEvent *event )
+{
+	actor->RemoveSceneEvent( scene, event, false );
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Input  : *actor - 
@@ -859,7 +940,11 @@ void C_SceneEntity::UnloadScene( void )
 //-----------------------------------------------------------------------------
 void C_SceneEntity::DispatchStartFlexAnimation( CChoreoScene *scene, C_BaseFlex *actor, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() || m_bMultiplayer, this );
+#else
 	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -879,7 +964,11 @@ void C_SceneEntity::DispatchEndFlexAnimation( CChoreoScene *scene, C_BaseFlex *a
 //-----------------------------------------------------------------------------
 void C_SceneEntity::DispatchStartExpression( CChoreoScene *scene, C_BaseFlex *actor, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() || m_bMultiplayer, this );
+#else
 	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -903,7 +992,11 @@ void C_SceneEntity::DispatchStartGesture( CChoreoScene *scene, C_BaseFlex *actor
 	if ( !Q_stricmp( event->GetName(), "NULL" ) )
 		return;
 
-	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() ); 
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() || m_bMultiplayer, this );
+#else
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -918,7 +1011,11 @@ void C_SceneEntity::DispatchProcessGesture( CChoreoScene *scene, C_BaseFlex *act
 		return;
 
 	actor->RemoveSceneEvent( scene, event, false );
-	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() ); 
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() || m_bMultiplayer, this );
+#else
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -941,7 +1038,11 @@ void C_SceneEntity::DispatchEndGesture( CChoreoScene *scene, C_BaseFlex *actor, 
 //-----------------------------------------------------------------------------
 void C_SceneEntity::DispatchStartSequence( CChoreoScene *scene, CBaseFlex *actor, CChoreoEvent *event )
 {
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() || m_bMultiplayer, this );
+#else
 	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -951,7 +1052,11 @@ void C_SceneEntity::DispatchStartSequence( CChoreoScene *scene, CBaseFlex *actor
 void C_SceneEntity::DispatchProcessSequence( CChoreoScene *scene, CBaseFlex *actor, CChoreoEvent *event )
 {
 	actor->RemoveSceneEvent( scene, event, false );
+#if defined( L4D2 )
+	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() || m_bMultiplayer, this );
+#else
 	actor->AddSceneEvent( scene, event, NULL, IsClientOnly() );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1125,7 +1230,11 @@ void C_SceneEntity::PrefetchAnimBlocks( CChoreoScene *pScene )
 
 										// Async load the animation
 										int iFrame = 0;
+#if defined( L4D2 )
+										const byte *panim = animdesc.pAnim( &iFrame );
+#else
 										const mstudioanim_t *panim = animdesc.pAnim( &iFrame );
+#endif // L4D2
 										if ( panim )
 										{
 											++nResident;

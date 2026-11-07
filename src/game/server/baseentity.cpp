@@ -5,6 +5,9 @@
 //===========================================================================//
 
 #include "cbase.h"
+#ifdef L4D2
+#include "l4d2/content/terror_precache_membership.h"
+#endif
 #include "globalstate.h"
 #include "isaverestore.h"
 #include "client.h"
@@ -68,7 +71,16 @@
 #include "tf_gamerules.h"
 #endif
 
+#if defined( L4D2 )
+#include "l4d2/infected/common/infected_damage_cutouts.h"
+#include "l4d2/director/terror_director.h"
+#endif
+
+#if defined( L4D2 )
+#include "l4d2/player/terror_lagcompensation.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
+#include "baseentity_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 extern bool g_bTestMoveTypeStepSimulation;
@@ -96,9 +108,19 @@ int g_nInsideDispatchUpdateTransmitState = 0;
 // When this is false, throw an assert in debug when GetAbsAnything is called. Used when hierachy is incomplete/invalid.
 bool CBaseEntity::s_bAbsQueriesValid = true;
 
-ConVar sv_netvisdist( "sv_netvisdist", "10000", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Test networking visibility distance" );
+ConVar sv_netvisdist( "sv_netvisdist", "10000", 
+#if defined( L4D2 )
+	0x00004006
+#else
+	FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY
+#endif
+, "Test networking visibility distance" );
 
-ConVar sv_script_think_interval("sv_script_think_interval", "0.1");
+ConVar sv_script_think_interval("sv_script_think_interval", "0.1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
 
 // This table encodes edict data.
 void SendProxy_AnimTime( const SendProp *pProp, const void *pStruct, const void *pVarData, DVariant *pOut, int iElement, int objectID )
@@ -263,6 +285,9 @@ void SendProxy_Angles( const SendProp *pProp, const void *pStruct, const void *p
 IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 	SendPropDataTable( "AnimTimeMustBeFirst", 0, &REFERENCE_SEND_TABLE(DT_AnimTimeMustBeFirst), SendProxy_ClientSideAnimation ),
 	SendPropInt			(SENDINFO(m_flSimulationTime),	SIMULATION_TIME_WINDOW_BITS, SPROP_UNSIGNED|SPROP_CHANGES_OFTEN|SPROP_ENCODED_AGAINST_TICKCOUNT, SendProxy_SimulationTime),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO( m_flCreateTime ), 0, SPROP_NOSCALE ),
+#endif
 
 #if PREDICTION_ERROR_CHECK_LEVEL > 1 
 	SendPropVector	(SENDINFO(m_vecOrigin), -1,  SPROP_NOSCALE|SPROP_CHANGES_OFTEN, 0.0f, HIGH_DEFAULT, SendProxy_Origin ),
@@ -273,26 +298,42 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 	SendPropInt		(SENDINFO( m_ubInterpolationFrame ), NOINTERP_PARITY_MAX_BITS, SPROP_UNSIGNED ),
 	SendPropModelIndex(SENDINFO(m_nModelIndex)),
 	SendPropDataTable( SENDINFO_DT( m_Collision ), &REFERENCE_SEND_TABLE(DT_CollisionProperty) ),
+#if defined( L4D2 )
+	SendPropDataTable( SENDINFO_DT( m_Glow ), &REFERENCE_SEND_TABLE( DT_GlowProperty ) ),
+#endif
 	SendPropInt		(SENDINFO(m_nRenderFX),		8, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_nRenderMode),	8, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_fEffects),		EF_MAX_BITS, SPROP_UNSIGNED),
 	SendPropInt		(SENDINFO(m_clrRender),	32, SPROP_UNSIGNED),
 	SendPropInt		(SENDINFO(m_iTeamNum),		TEAMNUM_NUM_BITS, 0),
 	SendPropInt		(SENDINFO(m_CollisionGroup), 5, SPROP_UNSIGNED),
+#if !defined( L4D2 )
 	SendPropFloat	(SENDINFO(m_flGravity)),
+#endif
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO( m_flElasticity ), 0, SPROP_COORD_MP ),
+#else
 	SendPropFloat	(SENDINFO(m_flElasticity), 0, SPROP_COORD),
+#endif
 	SendPropFloat	(SENDINFO(m_flShadowCastDistance), 12, SPROP_UNSIGNED ),
 	SendPropEHandle (SENDINFO(m_hOwnerEntity)),
 	SendPropEHandle (SENDINFO(m_hEffectEntity)),
 	SendPropEHandle (SENDINFO_NAME(m_hMoveParent, moveparent)),
 	SendPropInt		(SENDINFO(m_iParentAttachment), NUM_PARENTATTACHMENT_BITS, SPROP_UNSIGNED),
+#if defined( L4D2 )
+	SendPropEHandle( SENDINFO( m_hScriptUseTarget ) ),
+#endif
 
 	SendPropInt		(SENDINFO_NAME( m_MoveType, movetype ), MOVETYPE_MAX_BITS, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO_NAME( m_MoveCollide, movecollide ), MOVECOLLIDE_MAX_BITS, SPROP_UNSIGNED ),
 #if PREDICTION_ERROR_CHECK_LEVEL > 1 
 	SendPropVector	(SENDINFO(m_angRotation), -1, SPROP_NOSCALE|SPROP_CHANGES_OFTEN, 0, HIGH_DEFAULT, SendProxy_Angles ),
 #else
+#if defined( L4D2 )
+	SendPropVector( SENDINFO( m_angRotation ), 13, SPROP_CHANGES_OFTEN | SPROP_ROUNDDOWN, 0.0f, 359.9560546875f, SendProxy_Angles ),
+#else
 	SendPropQAngles	(SENDINFO(m_angRotation), 13, SPROP_CHANGES_OFTEN, SendProxy_Angles ),
+#endif
 #endif
 
 	SendPropInt		( SENDINFO( m_iTextureFrameIndex ),		8, SPROP_UNSIGNED ),
@@ -305,6 +346,17 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CBaseEntity, DT_BaseEntity )
 	SendPropInt		(SENDINFO(m_bSimulatedEveryTick),		1, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_bAnimatedEveryTick),		1, SPROP_UNSIGNED ),
 	SendPropBool( SENDINFO( m_bAlternateSorting )),
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_bGlowBackfaceMult ), 32, 0, SendProxy_Int32ToInt32 ),
+	SendPropInt( SENDINFO( m_Gender ), 32 ),
+	SendPropFloat( SENDINFO( m_fadeMinDist ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_fadeMaxDist ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flFadeScale ), 0, SPROP_NOSCALE ),
+	SendPropInt( SENDINFO( m_nMinCPULevel ), 2, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO( m_nMaxCPULevel ), 2, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO( m_nMinGPULevel ), 3, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO( m_nMaxGPULevel ), 3, SPROP_UNSIGNED ),
+#endif
 
 #ifdef TF_DLL
 	SendPropArray3( SENDINFO_ARRAY3(m_nModelIndexOverrides), SendPropInt( SENDINFO_ARRAY(m_nModelIndexOverrides), SP_MODEL_INDEX_BITS, 0 ) ),
@@ -349,6 +401,16 @@ void CBaseEntityModelLoadProxy::Handler::OnModelLoadComplete( const model_t *pMo
 CBaseEntity::CBaseEntity( bool bServerOnly )
 {
 	m_pAttributes = NULL;
+#if defined( L4D2 )
+	m_hScriptUseTarget = NULL;
+	m_bForceFullDemoRecording = true;
+	m_nScriptedBotQueryEpoch = 0;
+	m_nScriptedBotQueryValues = 0;
+	m_nScriptedBotQueryKnown = 0;
+	m_PreStasisMoveType = MOVETYPE_NONE;
+	m_bIsInStasis = false;
+	m_bGlowBackfaceMult = 1.0f;
+#endif
 
 	COMPILE_TIME_ASSERT( MOVETYPE_LAST < (1 << MOVETYPE_MAX_BITS) );
 	COMPILE_TIME_ASSERT( MOVECOLLIDE_COUNT < (1 << MOVECOLLIDE_MAX_BITS) );
@@ -409,6 +471,11 @@ CBaseEntity::CBaseEntity( bool bServerOnly )
 	ClearFlags();
 
 	SetFriction( 1.0f );
+#if defined( L4D2 )
+	m_fadeMinDist = 0.0f;
+	m_fadeMaxDist = 0.0f;
+	m_flFadeScale = 0.0f;
+#endif
 
 	if ( bServerOnly )
 	{
@@ -421,7 +488,98 @@ CBaseEntity::CBaseEntity( bool bServerOnly )
 #endif
 
 	m_bTruceValidForEnt = false;
+#if defined( L4D2 )
+	m_iClassnameHash = ~0u;
+	m_pPrevByClass = NULL;
+	m_pNextByClass = NULL;
+	m_bNetworkQuantizeOriginAndAngles = false; // Late native65020, before sole CreateTime store.
+	m_flCreateTime = 0.0f; // S65743, after quantization state, before precache state.
+#endif
 }
+
+#if defined( L4D2 )
+void CBaseEntity::SetFadeDistance( float minFadeDist, float maxFadeDist )
+{
+	m_fadeMinDist = minFadeDist;
+	m_fadeMaxDist = maxFadeDist;
+}
+
+// Native37F30: model-name publication/transmit notification precedes the
+// existing mounted expanded-actor catalog query for EVERY entity class.
+void CBaseEntity::SetModelName( string_t name )
+{
+	m_ModelName = name;
+	DispatchUpdateTransmitState();
+	m_Gender = InfectedModelTypeForModel( name != NULL_STRING ? STRING( name ) : "" );
+}
+#endif
+
+#if defined( L4D2 )
+extern "C" void L4D2_NetworkQuantizePose( Vector *origin, QAngle *angles );
+
+void CBaseEntity::SetNetworkQuantizeOriginAndAngles( bool enable )
+{
+	m_bNetworkQuantizeOriginAndAngles = enable;
+}
+
+void CBaseEntity::NetworkQuantizeOriginAndAngles( Vector &origin, QAngle &angles )
+{
+	if ( m_bNetworkQuantizeOriginAndAngles ) L4D2_NetworkQuantizePose( &origin, &angles );
+}
+
+void CBaseEntity::NetworkQuantizeOriginAndAngles()
+{
+	if ( m_bNetworkQuantizeOriginAndAngles )
+	{
+		Vector origin = GetAbsOrigin();
+		QAngle angles = GetAbsAngles();
+		NetworkQuantizeOriginAndAngles( origin, angles );
+		SetAbsOrigin( origin );
+		SetAbsAngles( angles );
+	}
+}
+
+void CBaseEntity::VPhysicsUpdate( IPhysicsObject *object )
+{
+	if ( GetMoveType() == MOVETYPE_VPHYSICS )
+	{
+		if ( GetMoveParent() )
+		{
+			DevWarning( "Updating physics on object in hierarchy %s!\n", GetClassname() );
+			return;
+		}
+		Vector origin;
+		QAngle angles;
+		object->GetPosition( &origin, &angles );
+		// Original70C10 checks x/y/x, NOT z. Retain its defined omission and
+		// exponent-only nonfinite test, not SDK's magnitude/position policy.
+		if ( ( FloatBits( angles.x ) & 0x7F800000 ) == 0x7F800000 ||
+			( FloatBits( angles.y ) & 0x7F800000 ) == 0x7F800000 ||
+			( FloatBits( angles.x ) & 0x7F800000 ) == 0x7F800000 )
+		{
+			Msg( "Infinite angles from vphysics! (entity %s)\n", GetDebugName() );
+			angles = vec3_angle;
+		}
+		const Vector previousOrigin = GetAbsOrigin();
+		for ( int i = 0; i < 3; ++i ) angles[i] = AngleNormalize( angles[i] );
+		NetworkQuantizeOriginAndAngles( origin, angles );
+		if ( ( FloatBits( origin.x ) & 0x7F800000 ) == 0x7F800000 ||
+			( FloatBits( origin.y ) & 0x7F800000 ) == 0x7F800000 ||
+			( FloatBits( origin.z ) & 0x7F800000 ) == 0x7F800000 )
+			Msg( "Infinite origin from vphysics! (entity %s)\n", GetDebugName() );
+		else
+			SetAbsOrigin( origin );
+		SetAbsAngles( angles );
+		if ( object->IsAsleep() && GetCollisionGroup() == COLLISION_GROUP_INTERACTIVE_DEBRIS )
+			SetCollisionGroup( COLLISION_GROUP_DEBRIS );
+		PhysicsTouchTriggers( &previousOrigin );
+		PhysicsRelinkChildren( gpGlobals->frametime );
+	}
+	else if ( GetMoveType() == MOVETYPE_PUSH )
+		VPhysicsUpdatePusher( object );
+}
+#endif
+
 
 //-----------------------------------------------------------------------------
 // Purpose: Scale up our physics hull and test against the new one
@@ -1433,6 +1591,10 @@ void CBaseEntity::Activate( void )
 	}
 	g_bReceivedChainedActivate = true;
 #endif
+#if defined( L4D2 )
+	if ( m_bLagCompensate )
+		AddTerrorLagCompensatedEntity( this );
+#endif
 
 	// NOTE: This forces a team change so that stuff in the level
 	// that starts out on a team correctly changes team
@@ -1481,6 +1643,7 @@ int CBaseEntity::TakeHealth( float flHealth, int bitsDamageType )
 	if (m_iHealth > iMax)
 		m_iHealth = iMax;
 
+#if !defined( L4D2 )
 	if ( m_iHealth > oldHealth && IsPlayer() )
 	{
 		IGameEvent *event = gameeventmanager->CreateEvent( "take_health" );
@@ -1492,6 +1655,7 @@ int CBaseEntity::TakeHealth( float flHealth, int bitsDamageType )
 			gameeventmanager->FireEvent( event );
 		}
 	}
+#endif
 
 	return m_iHealth - oldHealth;
 }
@@ -1675,24 +1839,36 @@ int CBaseEntity::TakeDamage( const CTakeDamageInfo &inputInfo )
 		}
 	}
 
+#if defined( L4D2 )
+	// Native55C70: one mutable copy, Challenge hook, filter, rules, physics.
+	CTakeDamageInfo info = inputInfo;
+	if ( !TheDirector->GetScriptedMode()->AllowTakeDamage( this, info ) )
+		return 0;
+	const CTakeDamageInfo &filteredInfo = info;
+#else
+	const CTakeDamageInfo &filteredInfo = inputInfo;
+#endif
+
 	// Make sure our damage filter allows the damage.
-	if ( !PassesDamageFilter( inputInfo ))
+	if ( !PassesDamageFilter( filteredInfo ))
 	{
 		return 0;
 	}
 
-	if( !g_pGameRules->AllowDamage(this, inputInfo) )
+	if( !g_pGameRules->AllowDamage(this, filteredInfo) )
 	{
 		return 0;
 	}
 
 	if ( PhysIsInCallback() )
 	{
-		PhysCallbackDamage( this, inputInfo );
+		PhysCallbackDamage( this, filteredInfo );
 	}
 	else
 	{
+#if !defined( L4D2 )
 		CTakeDamageInfo info = inputInfo;
+#endif
 		
 		// Scale the damage by the attacker's modifier.
 		if ( info.GetAttacker() )
@@ -1705,6 +1881,7 @@ int CBaseEntity::TakeDamage( const CTakeDamageInfo &inputInfo )
 
 		//Msg("%s took %.2f Damage, at %.2f\n", GetClassname(), info.GetDamage(), gpGlobals->curtime );
 
+#if !defined( L4D2 )
 		if ( ScriptHookEnabled( "OnTakeDamage" ) )
 		{
 			IScriptVM *pVM = g_pScriptVM;
@@ -1760,6 +1937,7 @@ int CBaseEntity::TakeDamage( const CTakeDamageInfo &inputInfo )
 			}
 		}
 
+#endif
 		return OnTakeDamage( info );
 	}
 	return 0;
@@ -2026,6 +2204,14 @@ BEGIN_DATADESC_NO_BASE( CBaseEntity )
 	DEFINE_GLOBAL_KEYFIELD( m_iGlobalname, FIELD_STRING, "globalname" ),
 	DEFINE_KEYFIELD( m_iParent, FIELD_STRING, "parentname" ),
 
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_nMinCPULevel, FIELD_CHARACTER, "mincpulevel" ),
+	DEFINE_KEYFIELD( m_nMaxCPULevel, FIELD_CHARACTER, "maxcpulevel" ),
+	DEFINE_KEYFIELD( m_nMinGPULevel, FIELD_CHARACTER, "mingpulevel" ),
+	DEFINE_KEYFIELD( m_nMaxGPULevel, FIELD_CHARACTER, "maxgpulevel" ),
+	DEFINE_KEYFIELD( m_bDisableX360, FIELD_BOOLEAN, "disableX360" ),
+#endif
+
 	DEFINE_KEYFIELD( m_iHammerID, FIELD_INTEGER, "hammerid" ), // save ID numbers so that entities can be tracked between save/restore and vmf
 
 	DEFINE_KEYFIELD( m_flSpeed, FIELD_FLOAT, "speed" ),
@@ -2036,6 +2222,9 @@ BEGIN_DATADESC_NO_BASE( CBaseEntity )
 	DEFINE_FIELD( m_flPrevAnimTime, FIELD_TIME ),
 	DEFINE_FIELD( m_flAnimTime, FIELD_TIME ),
 	DEFINE_FIELD( m_flSimulationTime, FIELD_TIME ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_flCreateTime, FIELD_TIME ),
+#endif
 	DEFINE_FIELD( m_nLastThinkTick, FIELD_TICK ),
 
 	DEFINE_FIELD( m_iszScriptId, FIELD_STRING ),
@@ -2084,19 +2273,46 @@ BEGIN_DATADESC_NO_BASE( CBaseEntity )
 
 	DEFINE_FIELD( m_iName, FIELD_STRING ),
 	DEFINE_EMBEDDED( m_Collision ),
+#if defined( L4D2 )
+	DEFINE_EMBEDDED( m_Glow ),
+#endif
 	DEFINE_EMBEDDED( m_Network ),
 
+#if defined( L4D2 )
+	DEFINE_FIELD( m_MoveType, FIELD_CHARACTER ),
+#else
 	DEFINE_KEYFIELD( m_MoveType, FIELD_CHARACTER, "MoveType" ),
+#endif
 	DEFINE_FIELD( m_MoveCollide, FIELD_CHARACTER ),
 	DEFINE_FIELD( m_hOwnerEntity, FIELD_EHANDLE ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_hScriptUseTarget, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_bClientSideRagdoll, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_PreStasisMoveType, FIELD_INTEGER ),
+	DEFINE_FIELD( m_bIsInStasis, FIELD_BOOLEAN ),
+#endif
+#if defined( L4D2 )
+	DEFINE_FIELD( m_CollisionGroup, FIELD_INTEGER ),
+#else
 	DEFINE_KEYFIELD( m_CollisionGroup, FIELD_INTEGER, "CollisionGroup" ),
+#endif
 	DEFINE_PHYSPTR( m_pPhysicsObject),
 	DEFINE_FIELD( m_flElasticity, FIELD_FLOAT ),
 	DEFINE_KEYFIELD( m_flShadowCastDistance, FIELD_FLOAT, "shadowcastdist" ),
 	DEFINE_FIELD( m_flDesiredShadowCastDistance, FIELD_FLOAT ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_AIAddOn, FIELD_STRING, "addon" ),
+#endif
 
 	DEFINE_INPUT( m_iInitialTeamNum, FIELD_INTEGER, "TeamNum" ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_iTeamNum, FIELD_INTEGER ),
+#else
 	DEFINE_KEYFIELD( m_iTeamNum, FIELD_INTEGER, "teamnumber" ),
+#endif
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_bLagCompensate, FIELD_BOOLEAN, "LagCompensate" ),
+#endif
 
 //	DEFINE_FIELD( m_bSentLastFrame, FIELD_INTEGER ),
 
@@ -2131,6 +2347,12 @@ BEGIN_DATADESC_NO_BASE( CBaseEntity )
 	DEFINE_FIELD( m_bSimulatedEveryTick, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bAnimatedEveryTick, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bAlternateSorting, FIELD_BOOLEAN ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_bGlowBackfaceMult, FIELD_FLOAT, "glowbackfacemult" ),
+	DEFINE_INPUT( m_fadeMinDist, FIELD_FLOAT, "fademindist" ),
+	DEFINE_INPUT( m_fadeMaxDist, FIELD_FLOAT, "fademaxdist" ),
+	DEFINE_KEYFIELD( m_flFadeScale, FIELD_FLOAT, "fadescale" ),
+#endif
 	DEFINE_KEYFIELD( m_spawnflags, FIELD_INTEGER, "spawnflags" ),
 	DEFINE_FIELD( m_nTransmitStateOwnedCounter, FIELD_CHARACTER ),
 	DEFINE_FIELD( m_angAbsRotation, FIELD_VECTOR ),
@@ -2176,7 +2398,9 @@ BEGIN_DATADESC_NO_BASE( CBaseEntity )
 	DEFINE_INPUTFUNC( FIELD_VOID, "EnableDamageForces", InputEnableDamageForces ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "DisableDamageForces", InputDisableDamageForces ),
 
+#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_STRING, "DispatchEffect", InputDispatchEffect ),
+#endif
 	DEFINE_INPUTFUNC( FIELD_STRING, "DispatchResponse", InputDispatchResponse ),
 
 	// Entity I/O methods to alter context
@@ -2197,7 +2421,9 @@ BEGIN_DATADESC_NO_BASE( CBaseEntity )
 	DEFINE_INPUTFUNC( FIELD_STRING, "RunScriptFile", InputRunScriptFile ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "RunScriptCode", InputRunScript ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "CallScriptFunction", InputCallScriptFunction ),
+#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_VOID, "TerminateScriptScope", InputTerminateScriptScope ),
+#endif
 
 	DEFINE_OUTPUT( m_OnUser1, "OnUser1" ),
 	DEFINE_OUTPUT( m_OnUser2, "OnUser2" ),
@@ -2215,6 +2441,9 @@ BEGIN_DATADESC_NO_BASE( CBaseEntity )
 	DEFINE_THINKFUNC( ShadowCastDistThink ),
 
 	DEFINE_THINKFUNC( ScriptThink ),
+#ifdef L4D2
+	DEFINE_THINKFUNC( FrictionRevertThink ),
+#endif
 
 	DEFINE_FIELD( m_bForcePurgeFixedupStrings, FIELD_BOOLEAN ),
 
@@ -2231,6 +2460,9 @@ END_DATADESC()
 
 DEFINE_SCRIPT_INSTANCE_HELPER( CBaseEntity, &g_BaseEntityScriptInstanceHelper )
 
+#ifdef L4D2
+#include "l4d2/vscript/baseentity_native_scriptdesc.inc"
+#else
 BEGIN_ENT_SCRIPTDESC_ROOT( CBaseEntity, "Root class of all server-side entities" )
 	DEFINE_SCRIPTFUNC_NAMED( ConnectOutputToScript, "ConnectOutput", "Adds an I/O connection that will call the named function when the specified output fires"  )
 	DEFINE_SCRIPTFUNC_NAMED( DisconnectOutputFromScript, "DisconnectOutput", "Removes a connected script function from an I/O event."  )
@@ -2410,6 +2642,7 @@ BEGIN_ENT_SCRIPTDESC_ROOT( CBaseEntity, "Root class of all server-side entities"
 	DEFINE_SCRIPTFUNC_NAMED( ScriptAcceptInput, "AcceptInput", "Generate a synchronous I/O event" )
 	DEFINE_SCRIPTFUNC( IsAlive, "" )
 END_SCRIPTDESC();
+#endif // L4D2 native descriptor / SDK descriptor
 
 // For code error checking
 extern bool g_bReceivedChainedUpdateOnRemove;
@@ -2444,9 +2677,17 @@ void CBaseEntity::UpdateOnRemove( void )
 
 	// Virtual call to shut down any looping sounds.
 	StopLoopingSounds();
+#if defined( L4D2 )
+	if ( m_bLagCompensate )
+		RemoveTerrorLagCompensatedEntity( this );
+#endif
 
 	// Notifies entity listeners, etc
+#if defined( L4D2 )
+	gEntList.NotifyRemoveEntity( this );
+#else
 	gEntList.NotifyRemoveEntity( GetRefEHandle() );
+#endif
 
 	if ( edict() )
 	{
@@ -2536,6 +2777,19 @@ void CBaseEntity::UpdateOnRemove( void )
 //-----------------------------------------------------------------------------
 // capabilities
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+int CBaseEntity::ObjectCaps()
+{
+	const model_t *model = modelinfo->GetModel( GetModelIndex() );
+	const bool brush = model && modelinfo->GetModelType( model ) == mod_brush;
+	CBaseEntity *parent = GetParent();
+	if ( !parent ) return brush ? 0 : 2;
+	const int inherited = parent->ObjectCaps();
+	int caps = inherited & ( brush ? 0x10F0 : 0x10F2 );
+	if ( parent->IsPlayer() ) caps &= ~2;
+	return caps;
+}
+#else
 int CBaseEntity::ObjectCaps( void ) 
 {
 #if 1
@@ -2582,6 +2836,7 @@ int CBaseEntity::ObjectCaps( void )
 	return FCAP_ACROSS_TRANSITION | parentCaps;
 #endif
 }
+#endif
 
 void CBaseEntity::StartTouch( CBaseEntity *pOther )
 {
@@ -3391,7 +3646,13 @@ void CC_AI_LOS_Debug( IConVar *var, const char *pOldString, float flOldValue )
 		}
 	}
 }
-ConVar ai_debug_los("ai_debug_los", "0", FCVAR_CHEAT, "NPC Line-Of-Sight debug mode. If 1, solid entities that block NPC LOC will be highlighted with white bounding boxes. If 2, it'll show non-solid entities that would do it if they were solid.", CC_AI_LOS_Debug );
+ConVar ai_debug_los("ai_debug_los", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "NPC Line-Of-Sight debug mode. If 1, solid entities that block NPC LOC will be highlighted with white bounding boxes. If 2, it'll show non-solid entities that would do it if they were solid.", CC_AI_LOS_Debug );
 
 
 Class_T CBaseEntity::Classify ( void )
@@ -3600,7 +3861,11 @@ CBaseEntity *CBaseEntity::Create( const char *szName, const Vector &vecOrigin, c
 // will keep a pointer to it after this call.
 CBaseEntity * CBaseEntity::CreateNoSpawn( const char *szName, const Vector &vecOrigin, const QAngle &vecAngles, CBaseEntity *pOwner )
 {
+#if defined( L4D2 )
+	CBaseEntity *pEntity = CreateEntityByName( szName, -1, false );
+#else
 	CBaseEntity *pEntity = CreateEntityByName( szName );
+#endif
 	if ( !pEntity )
 	{
 		Assert( !"CreateNoSpawn: only works for CBaseEntities" );
@@ -3950,6 +4215,10 @@ void CBaseEntity::SetMoveType( MoveType_t val, MoveCollide_t moveCollide )
 
 void CBaseEntity::Spawn( void ) 
 {
+#if defined( L4D2 )
+	// S30570 -> S5A000 retires the actual signal at the base Spawn phase.
+	m_bClientSideRagdoll = false;
+#endif
 }
 
 
@@ -4198,6 +4467,14 @@ const char *CBaseEntity::GetDebugName(void)
 	}
 	else
 	{
+#if defined( L4D2 )
+		// S052FE0 queries IsPlayer twice before the real player-name leaf.
+		if ( IsPlayer() )
+		{
+			CBasePlayer *player = IsPlayer() ? static_cast< CBasePlayer * >( this ) : NULL;
+			return player->GetPlayerName();
+		}
+#endif
 		return STRING(m_iClassname);
 	}
 }
@@ -4334,7 +4611,13 @@ void CBaseEntity::OnEntityEvent( EntityEvent_t event, void *pEventData )
 }
 
 
-ConVar ent_messages_draw( "ent_messages_draw", "0", FCVAR_CHEAT, "Visualizes all entity input/output activity." );
+ConVar ent_messages_draw( "ent_messages_draw", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Visualizes all entity input/output activity." );
 
 
 //-----------------------------------------------------------------------------
@@ -4513,6 +4796,12 @@ void CBaseEntity::InputColor( inputdata_t &inputdata )
 void CBaseEntity::InputUse( inputdata_t &inputdata )
 {
 	Use( inputdata.pActivator, inputdata.pCaller, (USE_TYPE)inputdata.nOutputID, 0 );
+#if defined( L4D2 )
+	// Native S053450 uses the model first, then its scripted use target.
+	CBaseEntity *pScriptUseTarget = m_hScriptUseTarget.Get();
+	if ( pScriptUseTarget )
+		pScriptUseTarget->Use( inputdata.pActivator, inputdata.pCaller, (USE_TYPE)inputdata.nOutputID, 0 );
+#endif
 }
 
 
@@ -5038,6 +5327,7 @@ void CBaseEntity::Teleport( const Vector *newPosition, const QAngle *newAngles, 
 		teleportList[i].pEntity->CollisionRulesChanged();
 	}
 
+#if !defined( L4D2 )
 	if ( IsPlayer() )
 	{
 		// Tell the client being teleported
@@ -5048,6 +5338,7 @@ void CBaseEntity::Teleport( const Vector *newPosition, const QAngle *newAngles, 
 			gameeventmanager->FireEventClientSide( event );
 		}
 	}
+#endif
 
 	Assert( g_TeleportStack[index] == this );
 	g_TeleportStack.FastRemove( index );
@@ -5249,6 +5540,10 @@ void CBaseEntity::PrecacheSoundHelper( const char *pName )
 //-----------------------------------------------------------------------------
 void CBaseEntity::PrecacheModelComponents( int nModelIndex )
 {
+#ifdef L4D2
+	if ( !g_ModelPrecacheSystem.ShouldPrecacheModelComponents( nModelIndex ) )
+		return;
+#endif
 
 	model_t *pModel = (model_t *)modelinfo->GetModel( nModelIndex );
 	if ( !pModel || modelinfo->GetModelType( pModel ) != mod_studio )
@@ -5461,6 +5756,7 @@ void CBaseEntity::Remove( )
 	UTIL_Remove( this );
 }
 
+#if !defined( L4D2 )
 //-----------------------------------------------------------------------------
 // VScript access to model's key values
 // for iteration and value access, use:
@@ -5501,16 +5797,24 @@ HSCRIPT CBaseEntity::ScriptGetModelKeyValues( void )
 
 	return hScript;
 }
+#endif
 
 //------------------------------------------------------------------------------
 // Purpose :
 // Input   :
 // Output  :
 //------------------------------------------------------------------------------
+#ifdef L4D2
+int CBaseEntity::ScriptPrecacheModel( const char *name )
+{
+	return PrecacheModel( name );
+}
+#else
 void CBaseEntity::ScriptPrecacheModel( const char *name )
 {
 	PrecacheModel( name );
 }
+#endif
 
 //------------------------------------------------------------------------------
 // Purpose :
@@ -5637,7 +5941,13 @@ void CC_Ent_Call( const CCommand& args )
         Warning("Can't ent_call w/o arguments!\n");
 }
 
-static ConCommand ent_call("ent_call", CC_Ent_Call, "ent_call <funcname> <option:entname> calls function on current look target or filtername, checks on ent, then root, then mode, then map scope", FCVAR_CHEAT);
+static ConCommand ent_call("ent_call", CC_Ent_Call, "ent_call <funcname> <option:entname> calls function on current look target or filtername, checks on ent, then root, then mode, then map scope", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 // Purpose : 
@@ -5648,28 +5958,52 @@ void CC_Ent_Name( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_NAME_BIT);
 }
-static ConCommand ent_name("ent_name", CC_Ent_Name, 0, FCVAR_CHEAT);
+static ConCommand ent_name("ent_name", CC_Ent_Name, 0, 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_Text( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_TEXT_BIT);
 }
-static ConCommand ent_text("ent_text", CC_Ent_Text, "Displays text debugging information about the given entity(ies) on top of the entity (See Overlay Text)\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_text("ent_text", CC_Ent_Text, "Displays text debugging information about the given entity(ies) on top of the entity (See Overlay Text)\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_Script_Dump( const CCommand& args )
 {
 	DumpScriptScope(UTIL_GetCommandClient(),args[1]);
 }
-static ConCommand ent_script_dump("ent_script_dump", CC_Ent_Script_Dump, "Dumps the names and values of this entity's script scope to the console\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_script_dump("ent_script_dump", CC_Ent_Script_Dump, "Dumps the names and values of this entity's script scope to the console\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_BBox( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_BBOX_BIT);
 }
-static ConCommand ent_bbox("ent_bbox", CC_Ent_BBox, "Displays the movement bounding box for the given entity(ies) in orange.  Some entites will also display entity specific overlays.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_bbox("ent_bbox", CC_Ent_BBox, "Displays the movement bounding box for the given entity(ies) in orange.  Some entites will also display entity specific overlays.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
@@ -5677,7 +6011,13 @@ void CC_Ent_AbsBox( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_ABSBOX_BIT);
 }
-static ConCommand ent_absbox("ent_absbox", CC_Ent_AbsBox, "Displays the total bounding box for the given entity(s) in green.  Some entites will also display entity specific overlays.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_absbox("ent_absbox", CC_Ent_AbsBox, "Displays the total bounding box for the given entity(s) in green.  Some entites will also display entity specific overlays.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
@@ -5685,21 +6025,39 @@ void CC_Ent_RBox( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_RBOX_BIT);
 }
-static ConCommand ent_rbox("ent_rbox", CC_Ent_RBox, "Displays the total bounding box for the given entity(s) in green.  Some entites will also display entity specific overlays.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_rbox("ent_rbox", CC_Ent_RBox, "Displays the total bounding box for the given entity(s) in green.  Some entites will also display entity specific overlays.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_AttachmentPoints( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_ATTACHMENTS_BIT);
 }
-static ConCommand ent_attachments("ent_attachments", CC_Ent_AttachmentPoints, "Displays the attachment points on an entity.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_attachments("ent_attachments", CC_Ent_AttachmentPoints, "Displays the attachment points on an entity.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_ViewOffset( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_VIEWOFFSET);
 }
-static ConCommand ent_viewoffset("ent_viewoffset", CC_Ent_ViewOffset, "Displays the eye position for the given entity(ies) in red.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_viewoffset("ent_viewoffset", CC_Ent_ViewOffset, "Displays the eye position for the given entity(ies) in red.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_Remove( const CCommand& args )
@@ -5742,7 +6100,13 @@ void CC_Ent_Remove( const CCommand& args )
 		UTIL_Remove( pEntity );
 	}
 }
-static ConCommand ent_remove("ent_remove", CC_Ent_Remove, "Removes the given entity(s)\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_remove("ent_remove", CC_Ent_Remove, "Removes the given entity(s)\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_RemoveAll( const CCommand& args )
@@ -5778,7 +6142,13 @@ void CC_Ent_RemoveAll( const CCommand& args )
 		}
 	}
 }
-static ConCommand ent_remove_all("ent_remove_all", CC_Ent_RemoveAll, "Removes all entities of the specified type\n\tArguments:   	{entity_name} / {class_name} ", FCVAR_CHEAT);
+static ConCommand ent_remove_all("ent_remove_all", CC_Ent_RemoveAll, "Removes all entities of the specified type\n\tArguments:   	{entity_name} / {class_name} ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Ent_SetName( const CCommand& args )
@@ -5824,7 +6194,13 @@ void CC_Ent_SetName( const CCommand& args )
 		}
 	}
 }
-static ConCommand ent_setname("ent_setname", CC_Ent_SetName, "Sets the targetname of the given entity(s)\n\tArguments:   	{new entity name} {entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_setname("ent_setname", CC_Ent_SetName, "Sets the targetname of the given entity(s)\n\tArguments:   	{new entity name} {entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Find_Ent( const CCommand& args )
@@ -5872,7 +6248,13 @@ void CC_Find_Ent( const CCommand& args )
 
 	Msg("Found %d matches.\n", iCount);
 }
-static ConCommand find_ent("find_ent", CC_Find_Ent, "Find and list all entities with classnames or targetnames that contain the specified substring.\nFormat: find_ent <substring>\n", FCVAR_CHEAT);
+static ConCommand find_ent("find_ent", CC_Find_Ent, "Find and list all entities with classnames or targetnames that contain the specified substring.\nFormat: find_ent <substring>\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_Find_Ent_Index( const CCommand& args )
@@ -5894,7 +6276,13 @@ void CC_Find_Ent_Index( const CCommand& args )
 		Msg("Found no entity at %d.\n", iIndex);
 	}
 }
-static ConCommand find_ent_index("find_ent_index", CC_Find_Ent_Index, "Display data for entity matching specified index.\nFormat: find_ent_index <index>\n", FCVAR_CHEAT);
+static ConCommand find_ent_index("find_ent_index", CC_Find_Ent_Index, "Display data for entity matching specified index.\nFormat: find_ent_index <index>\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 // Purpose : 
 //------------------------------------------------------------------------------
@@ -5972,7 +6360,13 @@ void CC_Ent_Dump( const CCommand& args )
 		}
 	}
 }
-static ConCommand ent_dump("ent_dump", CC_Ent_Dump, "Usage:\n   ent_dump <entity name>\n", FCVAR_CHEAT);
+static ConCommand ent_dump("ent_dump", CC_Ent_Dump, "Usage:\n   ent_dump <entity name>\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
@@ -5984,7 +6378,13 @@ void CC_Ent_FireTarget( const CCommand& args )
 {
 	ConsoleFireTargets(UTIL_GetCommandClient(),args[1]);
 }
-static ConCommand firetarget("firetarget", CC_Ent_FireTarget, 0, FCVAR_CHEAT);
+static ConCommand firetarget("firetarget", CC_Ent_FireTarget, 0, 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 class CEntFireAutoCompletionFunctor : public ICommandCallback, public ICommandCompletionCallback
 {
@@ -6215,7 +6615,13 @@ private:
 };
 
 static CEntFireAutoCompletionFunctor g_EntFireAutoComplete;
-static ConCommand ent_fire("ent_fire", &g_EntFireAutoComplete, "Usage:\n   ent_fire <target> [action] [value] [delay]\n", FCVAR_CHEAT, &g_EntFireAutoComplete );
+static ConCommand ent_fire("ent_fire", &g_EntFireAutoComplete, "Usage:\n   ent_fire <target> [action] [value] [delay]\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, &g_EntFireAutoComplete );
 
 void CC_Ent_CancelPendingEntFires( const CCommand& args )
 {
@@ -6228,7 +6634,11 @@ void CC_Ent_CancelPendingEntFires( const CCommand& args )
 
 	g_EventQueue.CancelEvents( pPlayer );
 }
-static ConCommand ent_cancelpendingentfires("ent_cancelpendingentfires", CC_Ent_CancelPendingEntFires, "Cancels all ent_fire created outputs that are currently waiting for their delay to expire." );
+static ConCommand ent_cancelpendingentfires("ent_cancelpendingentfires", CC_Ent_CancelPendingEntFires, "Cancels all ent_fire created outputs that are currently waiting for their delay to expire."
+#if defined( L4D2 )
+	, 0x00000004
+#endif
+ );
 
 //------------------------------------------------------------------------------
 // Purpose : 
@@ -6287,7 +6697,13 @@ void CC_Ent_Info( const CCommand& args )
 		}
 	}
 }
-static ConCommand ent_info("ent_info", CC_Ent_Info, "Usage:\n   ent_info <class name>\n", FCVAR_CHEAT);
+static ConCommand ent_info("ent_info", CC_Ent_Info, "Usage:\n   ent_info <class name>\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
@@ -6299,7 +6715,13 @@ void CC_Ent_Messages( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_MESSAGE_BIT);
 }
-static ConCommand ent_messages("ent_messages", CC_Ent_Messages ,"Toggles input/output message display for the selected entity(ies).  The name of the entity will be displayed as well as any messages that it sends or receives.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at", FCVAR_CHEAT);
+static ConCommand ent_messages("ent_messages", CC_Ent_Messages ,"Toggles input/output message display for the selected entity(ies).  The name of the entity will be displayed as well as any messages that it sends or receives.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
@@ -6320,7 +6742,13 @@ void CC_Ent_Pause( void )
 		CBaseEntity::Debug_Pause(true);
 	}
 }
-static ConCommand ent_pause("ent_pause", CC_Ent_Pause, "Toggles pausing of input/output message processing for entities.  When turned on processing of all message will stop.  Any messages displayed with 'ent_messages' will stop fading and be displayed indefinitely. To step through the messages one by one use 'ent_step'.", FCVAR_CHEAT);
+static ConCommand ent_pause("ent_pause", CC_Ent_Pause, "Toggles pausing of input/output message processing for entities.  When turned on processing of all message will stop.  Any messages displayed with 'ent_messages' will stop fading and be displayed indefinitely. To step through the messages one by one use 'ent_step'.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 //------------------------------------------------------------------------------
@@ -6336,7 +6764,13 @@ void CC_Ent_Picker( void )
 	// Remember the player that's making this request
 	CBaseEntity::m_nDebugPlayer = UTIL_GetCommandClientIndex();
 }
-static ConCommand picker("picker", CC_Ent_Picker, "Toggles 'picker' mode.  When picker is on, the bounding box, pivot and debugging text is displayed for whatever entity the player is looking at.\n\tArguments:	full - enables all debug information", FCVAR_CHEAT);
+static ConCommand picker("picker", CC_Ent_Picker, "Toggles 'picker' mode.  When picker is on, the bounding box, pivot and debugging text is displayed for whatever entity the player is looking at.\n\tArguments:	full - enables all debug information", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 // Purpose : 
@@ -6347,7 +6781,13 @@ void CC_Ent_Pivot( const CCommand& args )
 {
 	SetDebugBits(UTIL_GetCommandClient(),args[1],OVERLAY_PIVOT_BIT);
 }
-static ConCommand ent_pivot("ent_pivot", CC_Ent_Pivot, "Displays the pivot for the given entity(ies).\n\t(y=up=green, z=forward=blue, x=left=red). \n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_pivot("ent_pivot", CC_Ent_Pivot, "Displays the pivot for the given entity(ies).\n\t(y=up=green, z=forward=blue, x=left=red). \n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 // Purpose : 
@@ -6363,7 +6803,13 @@ void CC_Ent_Step( const CCommand& args )
 	}
 	CBaseEntity::Debug_SetSteps(nSteps);
 }
-static ConCommand ent_step("ent_step", CC_Ent_Step, "When 'ent_pause' is set this will step through one waiting input / output message at a time.", FCVAR_CHEAT);
+static ConCommand ent_step("ent_step", CC_Ent_Step, "When 'ent_pause' is set this will step through one waiting input / output message at a time.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 void CBaseEntity::SetCheckUntouch( bool check )
 {
@@ -7050,6 +7496,13 @@ void CBaseEntity::AppendContextToCriteria( AI_CriteriaSet& set, const char *pref
 		const char *name = GetContextName( i );
 		const char *value = GetContextValue( i );
 
+#ifdef L4D2
+		if ( !prefix || !prefix[0] )
+		{
+			set.AppendCriteria( name, value );
+			continue;
+		}
+#endif
 		Q_snprintf( sz, sizeof( sz ), "%s%s", prefix, name );
 
 		set.AppendCriteria( sz, value );
@@ -7547,12 +8000,19 @@ void CBaseEntity::AddContext( const char *contextName )
 	while ( p )
 	{
 		duration = 0.0f;
+#ifdef L4D2
+		p = SplitContext( p, key, sizeof( key ), value, sizeof( value ), &duration, contextName );
+#else
 		p = SplitContext( p, key, sizeof( key ), value, sizeof( value ), &duration );
+#endif
 		if ( duration )
 		{
 			duration += gpGlobals->curtime;
 		}
 
+#ifdef L4D2
+		AddContext( key, value, duration );
+#else
 		int iIndex = FindContextByName( key );
 		if ( iIndex != -1 )
 		{
@@ -7568,8 +8028,49 @@ void CBaseEntity::AddContext( const char *contextName )
 		newContext.m_fExpirationTime = duration;
 
 		m_ResponseContexts.AddToTail( newContext );
+#endif
 	}
 }
+
+#ifdef L4D2
+void CBaseEntity::AddContext( const char *name, const char *operand, float expiration )
+{
+	int index = FindContextByName( name );
+	const char *prior = index == -1 ? NULL : m_ResponseContexts[index].m_iszValue.ToCStr();
+	char value[64];
+	if ( operand && operand[0] == '+' && operand[1] == '+' && operand[2] )
+	{
+		uint32 before = prior ? static_cast< uint32 >( V_atoi( prior ) ) : 0;
+		uint32 amount = static_cast< uint32 >( V_atoi( operand + 2 ) );
+		Q_snprintf( value, sizeof( value ), "%d", static_cast< int32 >( before + amount ) );
+	}
+	else if ( operand && operand[0] == '-' && operand[1] == '-' && operand[2] )
+	{
+		uint32 before = prior ? static_cast< uint32 >( V_atoi( prior ) ) : 0;
+		uint32 amount = static_cast< uint32 >( V_atoi( operand + 2 ) );
+		Q_snprintf( value, sizeof( value ), "%d", static_cast< int32 >( before - amount ) );
+	}
+	else if ( operand && operand[0] == '!' )
+	{
+		Q_snprintf( value, sizeof( value ), "%d", !prior || V_atoi( prior ) == 0 ? 1 : 0 );
+	}
+	else if ( operand ) Q_strncpy( value, operand, sizeof( value ) );
+	else value[0] = 0;
+	if ( index != -1 )
+	{
+		m_ResponseContexts[index].m_iszValue = AllocPooledString( value );
+		m_ResponseContexts[index].m_fExpirationTime = expiration;
+	}
+	else
+	{
+		ResponseContext_t context;
+		context.m_iszName = AllocPooledString( name );
+		context.m_iszValue = AllocPooledString( value );
+		context.m_fExpirationTime = expiration;
+		m_ResponseContexts.AddToTail( context );
+	}
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -7749,7 +8250,13 @@ void CC_Ent_Show_Response_Criteria( const CCommand& args )
 		pEntity->DumpResponseCriteria();
 	}
 }
-static ConCommand ent_show_response_criteria("ent_show_response_criteria", CC_Ent_Show_Response_Criteria, "Print, to the console, an entity's current criteria set used to select responses.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+static ConCommand ent_show_response_criteria("ent_show_response_criteria", CC_Ent_Show_Response_Criteria, "Print, to the console, an entity's current criteria set used to select responses.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 // Purpose: Show an entity's autoaim radius
@@ -7758,7 +8265,13 @@ void CC_Ent_Autoaim( const CCommand& args )
 {
 	SetDebugBits( UTIL_GetCommandClient(),args[1], OVERLAY_AUTOAIM_BIT );
 }
-static ConCommand ent_autoaim("ent_autoaim", CC_Ent_Autoaim, "Displays the entity's autoaim radius.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at", FCVAR_CHEAT );
+static ConCommand ent_autoaim("ent_autoaim", CC_Ent_Autoaim, "Displays the entity's autoaim radius.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -7771,7 +8284,11 @@ CAI_BaseNPC	*CBaseEntity::MyNPCPointer( void )
 	return NULL;
 }
 
-ConVar step_spline( "step_spline", "0" );
+ConVar step_spline( "step_spline", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Run one tick's worth of faked simulation
@@ -8341,7 +8858,11 @@ void CBaseEntity::RunVScripts()
 		else if ( language == SL_SQUIRREL )
 		{
 			//TODO: For perf, this should be precompiled and the %s should be passed as a parameter
+#if defined( L4D2 )
+			HSCRIPT hCreateChainScript = g_pScriptVM->CompileScript( CFmtStr( "%sCallChain <- CSimpleCallChainer(\"%s\", self.GetScriptScope().weakref(), true)", sCallChainFunctions[j], sCallChainFunctions[j] ) );
+#else
 			HSCRIPT hCreateChainScript = g_pScriptVM->CompileScript( CFmtStr( "%sCallChain <- CSimpleCallChainer(\"%s\", self.GetScriptScope(), true)", sCallChainFunctions[j], sCallChainFunctions[j] ) );
+#endif
 			g_pScriptVM->Run( hCreateChainScript, (HSCRIPT)m_ScriptScope ); 
 			g_pScriptVM->ReleaseScript( hCreateChainScript );
 		}
@@ -8375,6 +8896,12 @@ void CBaseEntity::RunVScripts()
 			}
 		}
 	}
+
+#if defined( L4D2 )
+	// Native642B0: after all VSCRIPTS, before think and DispatchPrecache.
+	g_VScriptGameEventListener.CollectGameEventCallbacksInScope(
+		(HSCRIPT)m_ScriptScope == INVALID_HSCRIPT ? NULL : (HSCRIPT)m_ScriptScope );
+#endif
 
 	if( m_iszScriptThinkFunction != NULL_STRING )
 	{
@@ -8661,7 +9188,13 @@ void CC_Ent_Teleport( const CCommand& args )
 	}
 }
 
-static ConCommand ent_teleport("ent_teleport", CC_Ent_Teleport, "Teleport the specified entity to where the player is looking.\n\tFormat: ent_teleport <entity name>", FCVAR_CHEAT);
+static ConCommand ent_teleport("ent_teleport", CC_Ent_Teleport, "Teleport the specified entity to where the player is looking.\n\tFormat: ent_teleport <entity name>", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 // Purpose: Orient a specified entity to match the player's angles
@@ -8692,4 +9225,10 @@ void CC_Ent_Orient( const CCommand& args )
 	}
 }
 
-static ConCommand ent_orient("ent_orient", CC_Ent_Orient, "Orient the specified entity to match the player's angles. By default, only orients target entity's YAW. Use the 'allangles' option to orient on all axis.\n\tFormat: ent_orient <entity name> <optional: allangles>", FCVAR_CHEAT);
+static ConCommand ent_orient("ent_orient", CC_Ent_Orient, "Orient the specified entity to match the player's angles. By default, only orients target entity's YAW. Use the 'allangles' option to orient on all axis.\n\tFormat: ent_orient <entity name> <optional: allangles>", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);

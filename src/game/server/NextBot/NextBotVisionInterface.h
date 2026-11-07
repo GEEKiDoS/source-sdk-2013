@@ -17,6 +17,64 @@ class INextBotEntityFilter;
 /**
  * The interface for HOW the bot sees (near sighted? night vision? etc)
  */
+#if defined( L4D2 )
+struct VisionKnownEntity
+{
+	EHANDLE entity;
+	Vector position;
+	float recognizeAt;
+};
+
+class IVision : public INextBotComponent
+{
+public:
+	IVision( INextBot *bot );
+	virtual ~IVision() {}
+	virtual void Reset();
+	virtual void Update();
+
+	class IForEachKnownEntity
+	{
+	public:
+		virtual bool Inspect( const VisionKnownEntity &known ) = 0;
+	};
+	bool ForEachKnownEntity( IForEachKnownEntity &func );
+	const CUtlVector< VisionKnownEntity > &GetKnownEntities() const { return m_knownEntityVector; }
+	virtual CBaseEntity *GetPrimaryKnownThreat() const;
+	virtual float GetTimeSinceVisible( int team ) const;
+	virtual CBaseEntity *GetClosestKnown( const INextBotEntityFilter &filter ) const;
+	virtual CBaseEntity *GetClosestKnown( int team = TEAM_ANY ) const;
+	virtual int GetKnownCount( int team, float rangeLimit = -1.0f ) const;
+	virtual float GetMaxVisionRange() const { return 0.0f; }
+	virtual float GetMinRecognizeTime() const { return 0.0f; }
+
+	enum FieldOfViewCheckType { USE_FOV, DISREGARD_FOV };
+	virtual bool IsAbleToSee( const Vector &pos, FieldOfViewCheckType checkFOV ) const;
+	virtual bool IsAbleToSee( CBaseEntity *subject, FieldOfViewCheckType checkFOV, Vector *visibleSpot = NULL ) const;
+	virtual bool IsVisibleEntityNoticed( CBaseEntity *subject ) const { return true; }
+	virtual bool IsIgnored( CBaseEntity *subject ) const { return false; }
+	virtual bool IsInFieldOfView( CBaseEntity *subject ) const;
+	virtual bool IsInFieldOfView( const Vector &pos ) const;
+	virtual float GetDefaultFieldOfView() const { return 90.0f; }
+	virtual float GetFieldOfView() const { return m_FOV; }
+	virtual void SetFieldOfView( float angle );
+	virtual bool IsLineOfSightClear( const Vector &pos ) const;
+	virtual bool IsLineOfSightClearToEntity( const CBaseEntity *subject, Vector *visibleSpot = NULL ) const;
+	virtual bool IsLookingAt( const CBaseCombatCharacter *actor, float cosTolerance = 0.95f ) const;
+	virtual bool IsLookingAt( const Vector &pos, float cosTolerance = 0.95f ) const;
+
+private:
+	CountdownTimer m_scanTimer;
+	IBody *m_body;
+	float m_FOV;
+	float m_cosHalfFOV;
+	CUtlVector< VisionKnownEntity > m_knownEntityVector;
+	CHandle< CBaseEntity > m_primaryThreat;
+	float m_lastVisionUpdateTimestamp;
+	IntervalTimer m_notVisibleTimer[MAX_TEAMS];
+	void UpdateRecognizedSet();
+};
+#else
 class IVision : public INextBotComponent
 {
 public:
@@ -222,5 +280,7 @@ inline float IVision::GetMinRecognizeTime( void ) const
 	return 0.0f;
 }
 
+
+#endif // L4D2
 
 #endif // _NEXT_BOT_VISION_INTERFACE_H_

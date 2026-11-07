@@ -15,7 +15,9 @@ class CBaseMultiplayerPlayer : public CAI_ExpresserHost<CBasePlayer>
 {
 
 	DECLARE_CLASS( CBaseMultiplayerPlayer, CAI_ExpresserHost<CBasePlayer> );
+	#if !defined( L4D2 )
 	DECLARE_ENT_SCRIPTDESC();
+	#endif
 
 public:
 
@@ -28,6 +30,9 @@ public:
 	virtual void		ModifyOrAppendCriteria( AI_CriteriaSet& criteriaSet );
 
 	virtual bool			SpeakIfAllowed( AIConcept_t concept, const char *modifiers = NULL, char *pszOutResponseChosen = NULL, size_t bufsize = 0, IRecipientFilter *filter = NULL );
+#if defined( L4D2 )
+	virtual bool			SpeakIfAllowed( AIConcept_t concept, AI_CriteriaSet &criteria, char *pszOutResponseChosen = NULL, size_t bufsize = 0, IRecipientFilter *filter = NULL );
+#endif
 	virtual IResponseSystem *GetResponseSystem();
 	bool					SpeakConcept( AI_Response& response, int iConcept );
 	virtual bool			SpeakConceptIfAllowed( int iConcept, const char *modifiers = NULL, char *pszOutResponseChosen = NULL, size_t bufsize = 0, IRecipientFilter *filter = NULL );
@@ -73,7 +78,11 @@ public:
 
 	virtual int	CalculateTeamBalanceScore( void );
 
+#ifdef L4D2
+	void AwardAchievement( int iAchievement );
+#else
 	void AwardAchievement( int iAchievement, int iCount = 1 );
+#endif
 	int	GetPerLifeCounterKV( const char *name );
 	void SetPerLifeCounterKV( const char *name, int value );
 	void ResetPerLifeCounters( void );
@@ -96,10 +105,10 @@ protected:
 	virtual CAI_Expresser *CreateExpresser( void );
 
 	int		m_iCurrentConcept;
-private:
 	//---------------------------------
 	CMultiplayer_Expresser		*m_pExpresser;
 
+private:
 	float m_flConnectionTime;
 	float m_flLastForcedChangeTeamTime;
 

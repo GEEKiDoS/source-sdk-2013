@@ -106,8 +106,9 @@
 
 // CBaseEntity::m_fFlags
 // PLAYER SPECIFIC FLAGS FIRST BECAUSE WE USE ONLY A FEW BITS OF NETWORK PRECISION
-// This top block is for singleplayer games only....no HL2:DM (which defines HL2_DLL)
-#if !defined( HL2MP ) && ( defined( PORTAL ) || defined( HL2_EPISODIC ) || defined ( HL2_DLL ) || defined( HL2_LOSTCOAST ) )
+// L4D2 and singleplayer games use this layout, without FL_ANIMDUCKING.
+// HL2:DM retains the multiplayer layout below.
+#if !defined( HL2MP ) && ( defined( L4D2 ) || defined( PORTAL ) || defined( HL2_EPISODIC ) || defined ( HL2_DLL ) || defined( HL2_LOSTCOAST ) )
 #define	FL_ONGROUND				(1<<0)	// At rest / on the ground
 #define FL_DUCKING				(1<<1)	// Player flag -- Player is fully crouched
 #define	FL_WATERJUMP			(1<<2)	// player jumping out of water
@@ -121,7 +122,11 @@
 #define	FL_INWATER				(1<<9)	// In water
 
 // NOTE if you move things up, make sure to change this value
+#if defined( L4D2 )
+#define PLAYER_FLAG_BITS		10
+#else
 #define PLAYER_FLAG_BITS		32
+#endif
 
 #define	FL_FLY					(1<<10)	// Changes the SV_Movestep() behavior to not need to be on ground
 #define	FL_SWIM					(1<<11)	// Changes the SV_Movestep() behavior to not need to be on ground (but stay in water)
@@ -259,7 +264,13 @@ enum SolidFlags_t
 	FSOLID_ROOT_PARENT_ALIGNED	= 0x0100,	// Collisions are defined in root parent's local coordinate space
 	FSOLID_TRIGGER_TOUCH_DEBRIS	= 0x0200,	// This trigger will touch debris objects
 
+#if defined( L4D2 )
+	// Descriptive name: S10092500 restricts this trigger flag to player touches.
+	FSOLID_L4D2_PLAYER_ONLY_TRIGGER = 0x0400,
+	FSOLID_MAX_BITS	= 13
+#else
 	FSOLID_MAX_BITS	= 10
+#endif
 };
 
 //-----------------------------------------------------------------------------
@@ -419,6 +430,11 @@ enum Collision_Group_t
 
 	COLLISION_GROUP_NPC_ACTOR,		// Used so NPCs in scripts ignore the player.
 	COLLISION_GROUP_NPC_SCRIPTED,	// USed for NPCs in scripts that should not collide with each other
+#if defined( L4D2 )
+	// Pinned native identities20/21; no recoverable enum spelling.
+	COLLISION_GROUP_L4D2_20 = 20,
+	COLLISION_GROUP_L4D2_21 = 21,
+#endif
 
 	LAST_SHARED_COLLISION_GROUP
 };

@@ -14,6 +14,10 @@
 
 #include "shareddefs.h"
 #include "c_baseflex.h"
+#ifdef L4D2
+#include "util_shared.h"
+#include "particles_new.h"
+#endif
 #ifdef GLOWS_ENABLE
 #include "glow_outline_effect.h"
 #endif // GLOWS_ENABLE
@@ -27,14 +31,55 @@ class C_BaseCombatCharacter : public C_BaseFlex
 {
 	DECLARE_CLASS( C_BaseCombatCharacter, C_BaseFlex );
 public:
+#if defined( L4D2 )
+	virtual C_BaseCombatWeapon *Weapon_GetSlot( int slot ) const;
+#endif
+
+#if defined( L4D2 )
+	static void RecvProxy_WeaponArray( const RecvProp *prop, void **out, void *data, int objectID );
+	virtual CStudioHdr *OnNewModel() OVERRIDE;
+	void PlayTerrorFootstepSound( const Vector &origin, bool left, bool shallow, bool wading, bool force );
+	virtual void OnTerrorFootstep( const Vector &origin, bool left, bool force );
+	virtual surfacedata_t *GetTerrorFootstepSurface( int &surfaceIndex );
+	virtual const char *GetTerrorFootstepSoundName( const char *sound, bool right, float speed, bool force );
+	virtual bool ShouldPlayTerrorFootstepSound() const;
+	virtual bool IsTerrorFootstepSurfaceValid( float speed, bool force ) const;
+	virtual float GetTerrorFootstepRunThreshold() const;
+#endif
+
+
+
+#if defined( L4D2 )
+	virtual bool Simulate() OVERRIDE;
+#endif
+
 	DECLARE_CLIENTCLASS();
 	DECLARE_PREDICTABLE();
 
 					C_BaseCombatCharacter( void );
 	virtual			~C_BaseCombatCharacter( void );
+#ifdef L4D2
+#if defined( L4D2 )
+	virtual void UpdateClientSideParticleEffects();
+	virtual void OnNewParticleEffect( const char *name, CNewParticleEffect *effect ) OVERRIDE;
+	virtual void OnParticleEffectDeleted( CNewParticleEffect *effect ) OVERRIDE;
+#endif
+	virtual int GetZombieClass() const { return 9; } // C1E0B0, native human/default class.
+	virtual void GetGlowColor( float *r, float *g, float *b, float *a )
+	{
+		*r = 0.0f;
+		*g = 0.0f;
+		*b = 0.0f;
+		*a = 0.0f;
+	} // C1E0C0, the genuine combat-character default.
+#endif
 
 	virtual void	OnPreDataChanged( DataUpdateType_t updateType );
+#if defined( L4D2 )
+	virtual void	PostDataUpdate( DataUpdateType_t updateType ) OVERRIDE;
+#else
 	virtual void	OnDataChanged( DataUpdateType_t updateType );
+#endif
 
 	virtual bool	IsBaseCombatCharacter( void ) { return true; };
 	virtual C_BaseCombatCharacter *MyCombatCharacterPointer( void ) { return this; }
@@ -115,6 +160,16 @@ protected:
 #endif // GLOWS_ENABLE
 
 	int			m_bloodColor;			// color of blood particless
+#if defined( L4D2 )
+	void SetWaterTrailMode( int mode, int onlyDrawForLocalUser );
+	int m_leftFootAttachment;
+	int m_rightFootAttachment;
+	int m_nWaterTrailMode;
+	float m_flWaterTrailSurfaceZ;
+	float m_flWaterTrailNextProbeTime;
+	bool m_bWeaponArrayChanged;
+	unsigned char m_weaponIndexByID[56];
+#endif
 
 private:
 	bool				ComputeLOS( const Vector &vecEyePosition, const Vector &vecTarget ) const;
@@ -123,6 +178,17 @@ private:
 
 	CHandle<C_BaseCombatWeapon>		m_hMyWeapons[MAX_WEAPONS];
 	CHandle< C_BaseCombatWeapon > m_hActiveWeapon;
+#ifdef L4D2
+protected:
+	CountdownTimer m_footstepTimer;
+#if defined( L4D2 )
+	// Real native4316 timer constructs BEFORE intrusive4328/4340/4352 refs.
+	HPARTICLEFFECT m_hWaterTrailDirectional;
+	HPARTICLEFFECT m_hWaterTrailWalk;
+	HPARTICLEFFECT m_hWaterTrailIdle;
+#endif
+private:
+#endif
 
 #ifdef GLOWS_ENABLE
 	bool				m_bClientSideGlowEnabled;	// client-side only value used for spectator

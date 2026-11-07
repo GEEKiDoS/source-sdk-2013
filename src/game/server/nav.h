@@ -495,4 +495,9 @@ private:
 
 extern bool IsWalkableTraceLineClear( const Vector &from, const Vector &to, unsigned int flags = 0 );
 
+#if defined( L4D2 )
+// NAV's native selector intersects collision bounds before ranking centers.
+CBaseEntity *FindNavEntityByClassnameNearest( const char *classname, const Vector &origin, float radius );
+#endif
+
 #endif // _NAV_H_

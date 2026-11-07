@@ -108,10 +108,21 @@ public:
 
 	void ReportEntityFlagsChanged( CBaseEntity *pEntity, unsigned int flagsOld, unsigned int flagsNow );
 
-	// entity is about to be removed, notify the listeners
+	// L4D2: insert into the classname hash, then notify listeners (in reverse order).
+	// This is separate from the earlier handle-list OnAddEntity notification.
 	void NotifyCreateEntity( CBaseEntity *pEnt );
 	void NotifySpawn( CBaseEntity *pEnt );
+#if defined( L4D2 )
+	// The SDK lacks the native post-client-message callback. Mark the sent
+	// prefix during snapshot preparation, then retire it at the next frame.
+	void AddToNoInterpList( CBaseEntity *pEnt );
+	void MarkNoInterpListForClear();
+	void ClearNoInterpList();
+
+	void NotifyRemoveEntity( CBaseEntity *pEnt );
+#else
 	void NotifyRemoveEntity( CBaseHandle hEnt );
+#endif
 	// iteration functions
 
 	// returns the next entity after pCurrentEnt;  if pCurrentEnt is NULL, return the first entity
@@ -134,6 +145,10 @@ public:
 	// search functions
 	bool		 IsEntityPtr( void *pTest );
 	CBaseEntity *FindEntityByClassname( CBaseEntity *pStartEntity, const char *szName, IEntityFindFilter *pFilter = NULL );
+#if defined( L4D2 )
+	// Exact pooled-classname lookup, newest notified entity first; no wildcard scan.
+	CBaseEntity *FindEntityByClassnameFast( CBaseEntity *pStartEntity, string_t iszName );
+#endif
 	CBaseEntity *FindEntityByName( CBaseEntity *pStartEntity, const char *szName, CBaseEntity *pSearchingEntity = NULL, CBaseEntity *pActivator = NULL, CBaseEntity *pCaller = NULL, IEntityFindFilter *pFilter = NULL );
 	CBaseEntity *FindEntityByName( CBaseEntity *pStartEntity, string_t iszName, CBaseEntity *pSearchingEntity = NULL, CBaseEntity *pActivator = NULL, CBaseEntity *pCaller = NULL, IEntityFindFilter *pFilter = NULL )
 	{
@@ -353,6 +368,9 @@ extern INotify *g_pNotify;
 
 void EntityTouch_Add( CBaseEntity *pEntity );
 int AimTarget_ListCount();
+#if defined( L4D2 )
+CBaseEntity *AimTarget_ListGet( int index );
+#endif
 int AimTarget_ListCopy( CBaseEntity *pList[], int listMax );
 void AimTarget_ForceRepopulateList();
 

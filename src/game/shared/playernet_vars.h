@@ -21,6 +21,9 @@ struct fogparams_t
 {
 	DECLARE_CLASS_NOBASE( fogparams_t );
 	DECLARE_EMBEDDED_NETWORKVAR();
+#if defined( L4D2 )
+	fogparams_t();
+#endif
 
 #ifndef CLIENT_DLL
 	DECLARE_SIMPLE_DATADESC();
@@ -37,6 +40,12 @@ struct fogparams_t
 	CNetworkVar( float, end );
 	CNetworkVar( float, farz );
 	CNetworkVar( float, maxdensity );
+#if defined( L4D2 )
+	CNetworkVar( float, skyboxFogFactor );
+	CNetworkVar( float, skyboxFogFactorLerpTo );
+	CNetworkVar( float, maxdensityLerpTo );
+	CNetworkVar( float, HDRColorScale );
+#endif
 
 	CNetworkVar( float, startLerpTo );
 	CNetworkVar( float, endLerpTo );
@@ -69,10 +78,20 @@ struct fogplayerparams_t
 	color32					m_OldColor;
 	float					m_flOldStart;
 	float					m_flOldEnd;
+#if defined( L4D2 )
+	float					m_flOldMaxDensity;
+	float					m_flOldHDRColorScale;
+	float					m_flOldFarZ;
+#endif
 
 	color32					m_NewColor;
 	float					m_flNewStart;
 	float					m_flNewEnd;
+#if defined( L4D2 )
+	float					m_flNewMaxDensity;
+	float					m_flNewHDRColorScale;
+	float					m_flNewFarZ;
+#endif
 
 	fogplayerparams_t()
 	{
@@ -81,9 +100,19 @@ struct fogplayerparams_t
 		m_OldColor.r = m_OldColor.g = m_OldColor.b = m_OldColor.a = 0;
 		m_flOldStart = 0.0f;
 		m_flOldEnd = 0.0f;
+#if defined( L4D2 )
+		m_flOldMaxDensity = 1.0f;
+		m_flOldHDRColorScale = 1.0f;
+		m_flOldFarZ = 0.0f;
+#endif
 		m_NewColor.r = m_NewColor.g = m_NewColor.b = m_NewColor.a = 0;
 		m_flNewStart = 0.0f;
 		m_flNewEnd = 0.0f;
+#if defined( L4D2 )
+		m_flNewMaxDensity = 1.0f;
+		m_flNewHDRColorScale = 1.0f;
+		m_flNewFarZ = 0.0f;
+#endif
 	}
 };
 
@@ -100,6 +129,10 @@ struct sky3dparams_t
 	CNetworkVar( int, scale );
 	CNetworkVector( origin );
 	CNetworkVar( int, area );
+#if defined( L4D2 )
+	CNetworkVar( bool, bClip3DSkyBoxNearToWorldFar );
+	CNetworkVar( float, flClip3DSkyBoxNearToWorldFarOffset );
+#endif
 
 	// 3d skybox fog data
 	CNetworkVarEmbedded( fogparams_t, fog );

@@ -20,10 +20,30 @@
 
 static void PixelvisDrawChanged( IConVar *pPixelvisVar, const char *pOld, float flOldValue );
 
-ConVar r_pixelvisibility_partial( "r_pixelvisibility_partial", "1" );
-ConVar r_dopixelvisibility( "r_dopixelvisibility", "1", FCVAR_ALLOWED_IN_COMPETITIVE );
-ConVar r_drawpixelvisibility( "r_drawpixelvisibility", "0", 0, "Show the occlusion proxies", PixelvisDrawChanged );
-ConVar r_pixelvisibility_spew( "r_pixelvisibility_spew", "0" );
+ConVar r_pixelvisibility_partial( "r_pixelvisibility_partial", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+ConVar r_dopixelvisibility( "r_dopixelvisibility", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ALLOWED_IN_COMPETITIVE
+#endif
+ );
+ConVar r_drawpixelvisibility( "r_drawpixelvisibility", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Show the occlusion proxies", PixelvisDrawChanged );
+ConVar r_pixelvisibility_spew( "r_pixelvisibility_spew", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 #ifdef OSX
 	// GLMgr will set this one to "1" if it senses the new post-10.6.4 driver (m_hasPerfPackage1)
@@ -430,7 +450,11 @@ void CPixelVisibilityQuery::IssueQuery( IMatRenderContext *pRenderContext, float
 		}
 	}
 #ifndef PORTAL // FIXME: In portal we query visibility multiple times per frame because of portal renders!
+#if defined( L4D2 )
+	Assert ( m_frameIssued != gpGlobals->framecount );
+#else
 	Assert ( ( m_frameIssued != gpGlobals->framecount ) || UseVR() );
+#endif
 #endif
 
 	m_frameIssued = gpGlobals->framecount;
@@ -458,10 +482,12 @@ void CPixelVisibilityQuery::IssueCountingQuery( IMatRenderContext *pRenderContex
 }
 
 //Precache the effects
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheOcclusionProxy )
 CLIENTEFFECT_MATERIAL( "engine/occlusionproxy" )
 CLIENTEFFECT_MATERIAL( "engine/occlusionproxy_countdraw" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 class CPixelVisibilitySystem : public CAutoGameSystem
 {
@@ -875,7 +901,12 @@ void PixelVisibility_ShiftVisibilityViews( int iSourceViewID, int iDestViewID )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( pixelvis_debug, "Dump debug info" , 0x00000008)
+#else
 CON_COMMAND( pixelvis_debug, "Dump debug info" )
+#endif
 {
 	g_PixelVisibilitySystem.DebugInfo();
 }

@@ -12,6 +12,9 @@
 #include "NextBotUtil.h"
 #include "NextBotLocomotionInterface.h"
 #include "NextBotBodyInterface.h"
+#if defined( L4D2 )
+#include "l4d2/terror_physics_math.h"
+#endif
 
 #include "tier0/vprof.h"
 
@@ -30,6 +33,9 @@
 ILocomotion::ILocomotion( INextBot *bot ) : INextBotComponent( bot )
 {
 	Reset();
+	#if defined( L4D2 )
+	m_approachGoal.Init(); // S4AF1C0: ctor-only zero, not part of Reset.
+	#endif
 }
 
 ILocomotion::~ILocomotion()
@@ -113,9 +119,19 @@ void ILocomotion::AdjustPosture( const Vector &moveGoal )
 	const Vector &groundNormal = GetGroundNormal();
 	const Vector &feet = GetFeet();
 	Vector moveDir = moveGoal - feet;
+#if defined( L4D2 )
+	float moveLength = static_cast< float >( TerrorPhysicsNormalize( moveDir ) );
+#else
 	float moveLength = moveDir.NormalizeInPlace();
+#endif
 	Vector left( -moveDir.y, moveDir.x, 0.0f );
+#if defined( L4D2 )
+	Vector groundMoveDir = CrossProduct( left, groundNormal );
+	TerrorPhysicsNormalize( groundMoveDir );
+	Vector goal = feet + moveLength * groundMoveDir;
+#else
 	Vector goal = feet + moveLength * CrossProduct( left, groundNormal ).Normalized();
+#endif
 
 	TraceHull( feet, goal, mins, standMaxs, body->GetSolidMask(), &filter, &trace );
 
@@ -153,6 +169,9 @@ void ILocomotion::Approach( const Vector &goalPos, float goalWeight )
 {
 	// there is a desire to move
 	m_moveRequestTimer.Start();
+	#if defined( L4D2 )
+	m_approachGoal = goalPos; // S4AF550: AFTER the real request-timer Start.
+	#endif
 }
 
 
@@ -164,6 +183,9 @@ void ILocomotion::DriveTo( const Vector &pos )
 {
 	// there is a desire to move
 	m_moveRequestTimer.Start();
+	#if defined( L4D2 )
+	m_approachGoal = pos; // S4AF5B0: AFTER the real request-timer Start.
+	#endif
 }
 
 
@@ -172,10 +194,24 @@ void ILocomotion::DriveTo( const Vector &pos )
  * Return true if this locomotor could potentially move along the line given.
  * If false is returned, fraction of walkable ray is returned in 'fraction'
  */
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 bool ILocomotion::IsPotentiallyTraversable( const Vector &from, const Vector &to, TraverseWhenType when, float *fraction ) const
 {
 	VPROF_BUDGET( "Locomotion::IsPotentiallyTraversable", "NextBotExpensive" );
 
+#if defined( L4D2 )
+	// S4AEC90 rejects a high endpoint outright; the SDK's gentle-slope
+	// exemption is not part of L4D2's local traversal probe.
+	const float heightDelta = to.z - from.z;
+	if ( static_cast< double >( heightDelta ) > static_cast< double >( GetMaxJumpHeight() ) + static_cast< double >( 0.1f ) )
+	{
+		if ( fraction )
+			*fraction = 0.0f;
+		return false;
+	}
+#else
 	// if 'to' is high above us, it's not directly traversable
 	// Adding a bit of fudge room to allow for floating point roundoff errors
 	if ( ( to.z - from.z ) > GetMaxJumpHeight() + 0.1f )
@@ -192,6 +228,7 @@ bool ILocomotion::IsPotentiallyTraversable( const Vector &from, const Vector &to
 		}
 	}
 
+#endif
 	trace_t result;
 	NextBotTraversableTraceFilter filter( GetBot(), when );
 
@@ -222,6 +259,9 @@ bool ILocomotion::IsPotentiallyTraversable( const Vector &from, const Vector &to
 
 	return ( result.fraction >= 1.0f ) && ( !result.startsolid );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //----------------------------------------------------------------------------------------------------------
@@ -241,7 +281,11 @@ bool ILocomotion::HasPotentialGap( const Vector &from, const Vector &desiredTo, 
 	Vector to = from + ( desiredTo - from ) * traversableFraction;
 
 	Vector forward = to - from;
+#if defined( L4D2 )
+	float length = static_cast< float >( TerrorPhysicsNormalize( forward ) );
+#else
 	float length = forward.NormalizeInPlace();
+#endif
 
 	IBody *body = GetBot()->GetBodyInterface();
 
@@ -410,12 +454,19 @@ void ILocomotion::ClearStuckStatus( const char *reason )
 /** 
  * Stuck check
  */
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void ILocomotion::StuckMonitor( void )
 {
 	// a timer is needed to smooth over a few frames of inactivity due to state changes, etc.
 	// we only want to detect idle situations when the bot really doesn't "want" to move.
 	const float idleTime = 0.25f;
+#if defined( L4D2 )
+	if ( static_cast< double >( gpGlobals->curtime ) - m_moveRequestTimer.GetStartTime() > idleTime )
+#else
 	if ( m_moveRequestTimer.IsGreaterThen( idleTime ) )
+#endif
 	{
 		// we have no desire to move, and therefore cannot emit stuck events
 
@@ -489,9 +540,18 @@ void ILocomotion::StuckMonitor( void )
 				NDebugOverlay::Line( GetBot()->GetEntity()->WorldSpaceCenter(), m_stuckPos, 255, 0, 255, true, 0.1f );
 			}
 
+#if defined( L4D2 )
+			// S4AF9D9: retain the unspilled x87 sum/product until escapeTime's F32 store.
+			const float escapeTime = static_cast< float >( 100.0 / ( ( static_cast< double >( GetDesiredSpeed() ) + 1.0 ) * static_cast< double >( 0.1f ) ) );
+#else
 			float minMoveSpeed = 0.1f * GetDesiredSpeed() + 0.1f;
 			float escapeTime = STUCK_RADIUS / minMoveSpeed;
+#endif
+#if defined( L4D2 )
+			if ( static_cast< double >( gpGlobals->curtime ) - m_stuckTimer.GetStartTime() > escapeTime )
+#else
 			if ( m_stuckTimer.IsGreaterThen( escapeTime ) )
+#endif
 			{
 				// we have taken too long - we're stuck
 				m_isStuck = true;
@@ -504,12 +564,19 @@ void ILocomotion::StuckMonitor( void )
 					NDebugOverlay::Circle( m_stuckPos + Vector( 0, 0, 5.0f ), QAngle( -90.0f, 0, 0 ), 5.0f, 255, 0, 0, 255, true, 9999999.9f );
 				}
 
+#if defined( L4D2 )
+				// Native duration is time SINCE becoming stuck, not time at the anchor.
+				m_stuckTimer.Start();
+#endif
 				// tell other components we've become stuck
 				GetBot()->OnStuck();
 			}
 		}
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //--------------------------------------------------------------------------------------------------------------
@@ -520,6 +587,7 @@ const Vector &ILocomotion::GetFeet( void ) const
 
 //--------------------------------------------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 BEGIN_ENT_SCRIPTDESC( ILocomotion, INextBotComponent, "Next bot locomotion" )
 	DEFINE_SCRIPTFUNC( Approach, "The primary locomotive method. Sets the goal destination for the bot" )
 	DEFINE_SCRIPTFUNC( DriveTo, "Move the bot to the precise given position immediately, updating internal state" )
@@ -572,3 +640,4 @@ BEGIN_ENT_SCRIPTDESC( ILocomotion, INextBotComponent, "Next bot locomotion" )
 	DEFINE_SCRIPTFUNC( ClearStuckStatus, "Reset stuck status to un-stuck" )
 	DEFINE_SCRIPTFUNC( IsAttemptingToMove, "Return true if we have tried to Approach() or DriveTo() very recently" )
 END_SCRIPTDESC();
+#endif

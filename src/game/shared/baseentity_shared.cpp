@@ -41,7 +41,15 @@
 #ifdef HL2_EPISODIC
 ConVar hl2_episodic( "hl2_episodic", "1", FCVAR_REPLICATED );
 #else
-ConVar hl2_episodic( "hl2_episodic", "0", FCVAR_REPLICATED );
+ConVar hl2_episodic( "hl2_episodic", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+ );
 #endif//HL2_EPISODIC
 
 #ifdef PORTAL
@@ -59,7 +67,11 @@ ConVar hl2_episodic( "hl2_episodic", "0", FCVAR_REPLICATED );
 #include "tier0/memdbgon.h"
 
 #ifdef GAME_DLL
-	ConVar ent_debugkeys( "ent_debugkeys", "" );
+	ConVar ent_debugkeys( "ent_debugkeys", ""
+#if defined( L4D2 ) && defined( GAME_DLL )
+	, 0x00000006
+#endif
+ );
 	extern bool ParseKeyvalue( void *pObject, typedescription_t *pFields, int iNumFields, const char *szKeyName, const char *szValue );
 	extern bool ExtractKeyvalue( void *pObject, typedescription_t *pFields, int iNumFields, const char *szKeyName, char *szValue, int iMaxLen );
 #endif
@@ -75,9 +87,33 @@ float k_flMaxEntityEulerAngle = 360.0 * 1000.0f; // really should be restricted 
 float k_flMaxEntitySpeed = k_flMaxVelocity * 2.0f;
 float k_flMaxEntitySpinRate = k_flMaxAngularVelocity * 10.0f;
 
-ConVar	ai_shot_bias_min( "ai_shot_bias_min", "-1.0", FCVAR_REPLICATED );
-ConVar	ai_shot_bias_max( "ai_shot_bias_max", "1.0", FCVAR_REPLICATED );
-ConVar	ai_debug_shoot_positions( "ai_debug_shoot_positions", "0", FCVAR_REPLICATED | FCVAR_CHEAT );
+ConVar	ai_shot_bias_min( "ai_shot_bias_min", "-1.0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+ );
+ConVar	ai_shot_bias_max( "ai_shot_bias_max", "1.0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+ );
+ConVar	ai_debug_shoot_positions( "ai_debug_shoot_positions", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00006008
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00006004
+#else
+	FCVAR_REPLICATED | FCVAR_CHEAT
+#endif
+ );
 
 // Utility func to throttle rate at which the "reasonable position" spew goes out
 static double s_LastEntityReasonableEmitTime;
@@ -217,6 +253,15 @@ void CBaseEntity::SetEffects( int nEffects )
 #endif // !CLIENT_DLL
 
 		m_fEffects = nEffects;
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+		if ( nEffects & EF_NOINTERP )
+			gEntList.AddToNoInterpList( this );
+#endif
+#if defined( L4D2 )
+		// S6FFDC/C19F25: only changed SetEffects with EF_NOINTERP bumps parity.
+		if ( ( nEffects & EF_NOINTERP ) && IsPlayer() )
+			static_cast< CBasePlayer * >( this )->IncrementEFNoInterpParity();
+#endif
 
 #ifndef CLIENT_DLL
 		DispatchUpdateTransmitState();
@@ -241,7 +286,16 @@ void CBaseEntity::AddEffects( int nEffects )
 #endif // HL2_EPISODIC
 #endif // !CLIENT_DLL
 
-	m_fEffects |= nEffects; 
+	m_fEffects |= nEffects;
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+	// Native AddEffects queues every request, even when the bit was already set.
+	if ( nEffects & EF_NOINTERP )
+		gEntList.AddToNoInterpList( this );
+#endif
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	if ( m_fEffects & EF_DIMLIGHT )
+		AddToEntityList( ENTITY_LIST_PRERENDER );
+#endif
 
 	if ( nEffects & EF_NODRAW)
 	{
@@ -804,6 +858,11 @@ BASEPTR	CBaseEntity::ThinkSet( BASEPTR func, float thinkTime, const char *szCont
 void CBaseEntity::SetNextThink( float thinkTime, const char *szContext )
 {
 	int thinkTick = ( thinkTime == TICK_NEVER_THINK ) ? TICK_NEVER_THINK : TIME_TO_TICKS( thinkTime );
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+	// S0702C0: a positive deadline must not become the inactive zero tick.
+	if ( thinkTick == 0 && thinkTime > 0.0f )
+		thinkTick = 1;
+#endif
 
 	// Are we currently in a think function with a context?
 	int iIndex = 0;
@@ -1128,6 +1187,7 @@ int CheckEntityVelocity( Vector &v )
 //-----------------------------------------------------------------------------
 // Purpose: My physics object has been updated, react or extract data
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 ) || defined( CLIENT_DLL )
 void CBaseEntity::VPhysicsUpdate( IPhysicsObject *pPhysics )
 {
 	switch( GetMoveType() )
@@ -1197,6 +1257,7 @@ void CBaseEntity::VPhysicsUpdate( IPhysicsObject *pPhysics )
 	break;
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Init this object's physics as a static
@@ -1206,6 +1267,9 @@ IPhysicsObject *CBaseEntity::VPhysicsInitStatic( void )
 	if ( !VPhysicsInitSetup() )
 		return NULL;
 
+#if defined( L4D2 )
+	m_flNonShadowMass = -1.0f;
+#endif
 #ifndef CLIENT_DLL
 	// If this entity has a move parent, it needs to be shadow, not static
 	if ( GetMoveParent() )
@@ -1230,6 +1294,16 @@ IPhysicsObject *CBaseEntity::VPhysicsInitStatic( void )
 	{
 		pPhysicsObject = PhysModelCreateBox( this, WorldAlignMins(), WorldAlignMaxs(), GetAbsOrigin(), true );
 	}
+#if defined( L4D2 )
+	else if ( GetSolid() == SOLID_OBB )
+	{
+		const QAngle &angles = GetAbsAngles();
+		const Vector &origin = GetAbsOrigin();
+		const Vector &maxs = CollisionProp()->OBBMaxs();
+		const Vector &mins = CollisionProp()->OBBMins();
+		pPhysicsObject = PhysModelCreateOBB( this, mins, maxs, origin, angles, true );
+	}
+#endif
 	else
 	{
 		pPhysicsObject = PhysModelCreateUnmoveable( this, GetModelIndex(), GetAbsOrigin(), GetAbsAngles() );
@@ -1244,6 +1318,23 @@ IPhysicsObject *CBaseEntity::VPhysicsInitStatic( void )
 //-----------------------------------------------------------------------------
 void CBaseEntity::VPhysicsSetObject( IPhysicsObject *pPhysics )
 {
+#if defined( L4D2 )
+	const bool installed = !m_pPhysicsObject && pPhysics;
+	if ( m_pPhysicsObject && pPhysics )
+		Warning( "Overwriting physics object for %s\n", GetClassname() );
+	m_pPhysicsObject = pPhysics;
+#ifndef CLIENT_DLL
+	RemoveSolidFlags( 0x800 );
+#endif
+	if ( m_pPhysicsObject )
+	{
+		m_flNonShadowMass = m_pPhysicsObject->GetMass();
+#ifndef CLIENT_DLL
+		if ( m_pPhysicsObject->IsStatic() ) AddSolidFlags( 0x800 );
+#endif
+	}
+	if ( installed ) CollisionRulesChanged();
+#else
 	if ( m_pPhysicsObject && pPhysics )
 	{
 		Warning( "Overwriting physics object for %s\n", GetClassname() );
@@ -1253,6 +1344,7 @@ void CBaseEntity::VPhysicsSetObject( IPhysicsObject *pPhysics )
 	{
 		CollisionRulesChanged();
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1266,7 +1358,11 @@ void CBaseEntity::VPhysicsDestroyObject( void )
 		PhysRemoveShadow( this );
 #endif
 		PhysDestroyObject( m_pPhysicsObject, this );
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+		VPhysicsSetObject( NULL );
+#else
 		m_pPhysicsObject = NULL;
+#endif
 	}
 }
 
@@ -1299,6 +1395,9 @@ IPhysicsObject *CBaseEntity::VPhysicsInitNormal( SolidType_t solidType, int nSol
 	if ( !VPhysicsInitSetup() )
 		return NULL;
 
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+	m_flNonShadowMass = -1.0f;
+#endif
 	// NOTE: This has to occur before PhysModelCreate because that call will
 	// call back into ShouldCollide(), which uses solidtype for rules.
 	SetSolid( solidType );
@@ -1332,6 +1431,9 @@ IPhysicsObject *CBaseEntity::VPhysicsInitShadow( bool allowPhysicsMovement, bool
 	if ( !VPhysicsInitSetup() )
 		return NULL;
 
+#if defined( L4D2 )
+	m_flNonShadowMass = -1.0f;
+#endif
 	// No physics
 	if ( GetSolid() == SOLID_NONE )
 		return NULL;
@@ -1405,6 +1507,92 @@ bool CBaseEntity::IsBSPModel() const
 //-----------------------------------------------------------------------------
 // Invalidates the abs state of all children
 //-----------------------------------------------------------------------------
+// Existing shared/baseentity_shared.cpp owner only. L4D2 branch replaces the
+// whole function; the original SDK definition remains byte-for-byte under #else.
+// Native S06ED90 / C01B4E0. BONE_CHANGED(0x10) and SEQUENCE_CHANGED(0x20) are
+// descriptive target names; their distinct native flags/behavior are proven.
+#if defined( L4D2 )
+void CBaseEntity::InvalidatePhysicsRecursive( int nChangeFlags )
+{
+	int nDirtyFlags = 0;
+	bool bSurroundingBoundsMarkedDirty = false;
+	if ( nChangeFlags & VELOCITY_CHANGED )
+		nDirtyFlags |= EFL_DIRTY_ABSVELOCITY;
+	if ( nChangeFlags & POSITION_CHANGED )
+	{
+		nDirtyFlags |= EFL_DIRTY_ABSTRANSFORM;
+#ifndef CLIENT_DLL
+		NetworkProp()->MarkPVSInformationDirty();
+		if ( edict() && entindex() != 0 )
+#else
+		if ( entindex() != 0 )
+#endif
+			CollisionProp()->MarkPartitionHandleDirty();
+	}
+	if ( nChangeFlags & ANGLES_CHANGED )
+	{
+		nDirtyFlags |= EFL_DIRTY_ABSTRANSFORM;
+		if ( CollisionProp()->DoesRotationInvalidateSurroundingBox() )
+		{
+			CollisionProp()->MarkSurroundingBoundsDirty();
+			bSurroundingBoundsMarkedDirty = true;
+		}
+		nChangeFlags |= POSITION_CHANGED | VELOCITY_CHANGED;
+	}
+	if ( nChangeFlags & SEQUENCE_CHANGED )
+	{
+		if ( !bSurroundingBoundsMarkedDirty && CollisionProp()->m_nSurroundType == USE_SEQUENCE_BOUNDS )
+		{
+			CollisionProp()->MarkSurroundingBoundsDirty();
+#ifdef CLIENT_DLL
+			bSurroundingBoundsMarkedDirty = true;
+#endif
+		}
+#ifdef CLIENT_DLL
+		g_pClientShadowMgr->MarkRenderToTextureShadowDirty( GetShadowHandle() );
+#endif
+		// The sequence distinction never propagates to move children.
+		nChangeFlags &= ~SEQUENCE_CHANGED;
+	}
+#ifdef CLIENT_DLL
+	// C01B4E0's genuine deferred gate, AFTER sequence dirtying. No early angle-
+	// only duplicate and no sequence-only workaround. Native networkable slot32
+	// returns entindex; worldindex0 skips this render/ordinary-shadow phase.
+	if ( !bSurroundingBoundsMarkedDirty &&
+		( nChangeFlags & ( POSITION_CHANGED | ANGLES_CHANGED | BONE_CHANGED ) ) && entindex() != 0 )
+	{
+		MarkRenderHandleDirty();
+		g_pClientShadowMgr->AddToDirtyShadowList( this );
+		g_pClientShadowMgr->MarkRenderToTextureShadowDirty( GetShadowHandle() );
+	}
+#endif
+	AddEFlags( nDirtyFlags );
+	bool bOnlyDueToAttachment = false;
+	if ( nChangeFlags & ( ANIMATION_CHANGED | BONE_CHANGED ) )
+	{
+#ifdef CLIENT_DLL
+		if ( !( nChangeFlags & BONE_CHANGED ) )
+			g_pClientShadowMgr->MarkRenderToTextureShadowDirty( GetShadowHandle() );
+#endif
+		bOnlyDueToAttachment = !( nChangeFlags & ( POSITION_CHANGED | VELOCITY_CHANGED | ANGLES_CHANGED ) );
+		nChangeFlags = POSITION_CHANGED | ANGLES_CHANGED | VELOCITY_CHANGED;
+	}
+	for ( CBaseEntity *child = FirstMoveChild(); child; child = child->NextMovePeer() )
+	{
+		if ( bOnlyDueToAttachment )
+		{
+#ifdef CLIENT_DLL
+			if ( child->GetParentAttachment() == 0 && !child->IsFollowingEntity() )
+				continue;
+#else
+			if ( child->GetParentAttachment() == 0 )
+				continue;
+#endif
+		}
+		child->InvalidatePhysicsRecursive( nChangeFlags );
+	}
+}
+#else
 void CBaseEntity::InvalidatePhysicsRecursive( int nChangeFlags )
 {
 	// Main entry point for dirty flag setting for the 90% case
@@ -1521,6 +1709,7 @@ void CBaseEntity::InvalidatePhysicsRecursive( int nChangeFlags )
 	//	}
 	//#endif
 }
+#endif // L4D2 / unchanged SDK owner
 
 
 
@@ -2535,7 +2724,15 @@ void CBaseEntity::SetWaterType( int nType )
 		m_nWaterType |= 2;
 }
 
-ConVar	sv_alternateticks( "sv_alternateticks", ( IsX360() ) ? "1" : "0", FCVAR_SPONLY, "If set, server only simulates entities on even numbered ticks.\n" );
+ConVar	sv_alternateticks( "sv_alternateticks", ( IsX360() ) ? "1" : "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000004A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00000046
+#else
+	FCVAR_SPONLY
+#endif
+, "If set, server only simulates entities on even numbered ticks.\n" );
 
 //-----------------------------------------------------------------------------
 // Purpose: 

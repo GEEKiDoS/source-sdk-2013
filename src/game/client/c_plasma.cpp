@@ -47,7 +47,11 @@ public:
 	C_Plasma();
 	~C_Plasma();
 
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	void	AddEntity( void );
+#endif
 
 protected:
 	void	Update( void );
@@ -198,6 +202,9 @@ C_Plasma::C_Plasma()
 	{
 		m_entFlames[i].Clear();
 	}
+#if defined( L4D2 )
+	AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 }
 
 C_Plasma::~C_Plasma()
@@ -222,6 +229,7 @@ float C_Plasma::GetFlickerScale( void )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_Plasma::AddEntity( void )
 {
 	//Only do this if we're active
@@ -238,6 +246,7 @@ void C_Plasma::AddEntity( void )
 	m_entGlow.SetScale( MAX( 0.0000001f, (m_flScaleRegister*1.5f) + GetFlickerScale() ) );
 	m_entGlow.SetLocalOriginDim( Z_INDEX, m_entGlow.GetLocalOriginDim( Z_INDEX ) + ( dScale * 32.0f ) );
 }
+#endif
 
 #define	FLAME_ALPHA_START	0.8f
 #define FLAME_ALPHA_END		1.0f
@@ -285,6 +294,9 @@ void C_Plasma::OnDataChanged( DataUpdateType_t updateType )
 	{
 		Start();
 	}
+#if defined( L4D2 )
+	if ( m_nFlags & bitsFIRESMOKE_ACTIVE ) AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -474,3 +486,25 @@ void C_Plasma::Update( void )
 	}
 }
 
+#if defined( L4D2 )
+bool C_Plasma::Simulate( void )
+{
+	if ( !( m_nFlags & bitsFIRESMOKE_ACTIVE ) )
+		return false;
+	Update();
+	AddFlames();
+	const float scaleDelta = m_flScaleRegister - m_flGlowScale;
+	m_flGlowScale = m_flScaleRegister;
+	const double scale = ( sin( 2000.0 * gpGlobals->curtime ) * 0.5
+		+ sin( gpGlobals->curtime * 10000.0 )
+		- 0.5 * cos( gpGlobals->curtime * 8000.0 ) ) * 0.1
+		+ m_flScaleRegister * 1.5;
+	const float floorScale = 0.0000001f;
+	// Ordered native comparison: unordered chooses the floor, no MAX macro.
+	const float glowScale = scale >= floorScale ? static_cast< float >( scale ) : floorScale;
+	m_entGlow.SetScale( glowScale );
+	m_entGlow.SetLocalOriginDim( Z_INDEX,
+		m_entGlow.GetLocalOriginDim( Z_INDEX ) + scaleDelta * 32.0f );
+	return true;
+}
+#endif

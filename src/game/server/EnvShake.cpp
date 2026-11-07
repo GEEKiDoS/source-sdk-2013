@@ -408,6 +408,12 @@ int CEnvShake::DrawDebugTextOverlays( void )
 	return text_offset;
 }
 
-static ConCommand shake("shake", CC_Shake, "Shake the screen.", FCVAR_CHEAT );
+static ConCommand shake("shake", CC_Shake, "Shake the screen.", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 

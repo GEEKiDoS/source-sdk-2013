@@ -37,6 +37,11 @@ enum
 
 // Do spiffy things according to the material hit
 void PerformCustomEffects( const Vector &vecOrigin, trace_t &tr, const Vector &shotDir, int iMaterial, int iScale, int nFlags = 0 );
+#if defined( L4D2 )
+// Native C F7FC0 shares the actual cached surface table with every impact caller.
+void PerformTerrorImpactParticles( const Vector &origin, trace_t &tr, const Vector &shotDir, int material, int scale, int flags );
+void SetTerrorImpactParticleBudget( int count );
+#endif
 
 // Play the correct impact sound according to the material hit
 void PlayImpactSound( C_BaseEntity *pServerEntity, trace_t &tr, Vector &vecServerOrigin, int nServerSurfaceProp );

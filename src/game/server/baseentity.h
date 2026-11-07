@@ -17,11 +17,17 @@
 #include "entityoutput.h"
 #include "networkvar.h"
 #include "collisionproperty.h"
+#if defined( L4D2 )
+#include "l4d2/effects/glowproperty.h"
+#endif
 #include "ServerNetworkProperty.h"
 #include "shareddefs.h"
 #include "engine/ivmodelinfo.h"
 #include "vscript/ivscript.h"
 #include "vscript_server.h"
+#if defined( L4D2 )
+#include "l4d2/demo/server_demo_recording_state.h"
+#endif
 
 class CDamageModifier;
 class CDmgAccumulator;
@@ -80,6 +86,9 @@ class CBaseCombatWeapon;
 class IPhysicsObject;
 class IPhysicsShadowController;
 class CBaseCombatCharacter;
+#if defined( L4D2 )
+class Infected;
+#endif
 class CTeam;
 class Vector;
 struct gamevcollisionevent_t;
@@ -323,7 +332,13 @@ a list of all CBaseEntitys is kept in gEntList
 // creates an entity by string name, but does not spawn it
 // If iForceEdictIndex is not -1, then it will use the edict by that index. If the index is 
 // invalid or there is already an edict using that index, it will error out.
+#if defined( L4D2 )
+// bNotify gates the late classname-hash insertion and creation notification.
+// The handle-list OnAddEntity notification still occurs during construction.
+CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex = -1, bool bNotify = true );
+#else
 CBaseEntity *CreateEntityByName( const char *className, int iForceEdictIndex = -1 );
+#endif
 CBaseNetworkable *CreateNetworkableByName( const char *className );
 CBaseEntity *ToEnt( HSCRIPT hScript );
 
@@ -423,6 +438,31 @@ public:
 	virtual int				GetModelIndex( void ) const;
  	virtual string_t		GetModelName( void ) const;
 	const char				*ScriptGetModelName( void ) const;
+#if defined( L4D2 )
+	virtual bool GetDemoRecordingState( KeyValues *message );
+	const ServerDemoBaseEntityState_t &GetDemoRecordingStateCache() const { return m_DemoRecordingState; }
+	bool HasCachedScriptedBotQuery( unsigned int epoch, unsigned int query ) const
+	{
+		return epoch == m_nScriptedBotQueryEpoch && ( query & m_nScriptedBotQueryKnown ) != 0;
+	}
+	bool GetCachedScriptedBotQuery( unsigned int query ) const
+	{
+		return ( query & m_nScriptedBotQueryValues ) != 0;
+	}
+	void SetCachedScriptedBotQuery( unsigned int epoch, unsigned int query, bool value )
+	{
+		if ( m_nScriptedBotQueryEpoch != epoch )
+		{
+			m_nScriptedBotQueryKnown = 0;
+			m_nScriptedBotQueryEpoch = epoch;
+		}
+		if ( value )
+			m_nScriptedBotQueryValues |= query;
+		else
+			m_nScriptedBotQueryValues &= ~query;
+		m_nScriptedBotQueryKnown |= query;
+	}
+#endif
 
 	void					ClearModelIndexOverrides( void );
 	virtual void			SetModelIndexOverride( int index, int nValue );
@@ -438,6 +478,11 @@ public:
 	// An inline version the game code can use
 	CCollisionProperty		*CollisionProp();
 	const CCollisionProperty*CollisionProp() const;
+#if defined( L4D2 )
+	CGlowProperty *GlowProp() { return &m_Glow; }
+	const CGlowProperty *GlowProp() const { return &m_Glow; }
+	float GetGlowBackfaceMult() const { return m_bGlowBackfaceMult; }
+#endif
 	CServerNetworkProperty *NetworkProp();
 	const CServerNetworkProperty *NetworkProp() const;
 
@@ -651,6 +696,10 @@ public:
 	// makes the entity inactive
 	void		MakeDormant( void );
 	int			IsDormant( void );
+#if defined( L4D2 )
+	virtual void SetInStasis( bool stasis );
+	virtual bool IsInStasis() const { return m_bIsInStasis; }
+#endif
 
 	void		RemoveDeferred( void );	// Sets the entity invisible, and makes it remove itself on the next frame
 
@@ -659,6 +708,13 @@ public:
 
 	// capabilities
 	virtual int	ObjectCaps( void );
+#if defined( L4D2 )
+	virtual int GetUsePriority( CBaseEntity *user ) { return 1; } // Native S02C0A0.
+	virtual CBaseEntity *GetUseRedirectEntity() { return this; } // Native S02BAD0.
+	virtual int GetUseType( CBaseEntity *user ) { return 2; } // Native S02BAE0.
+	CNetworkHandle( CBaseEntity, m_hScriptUseTarget );
+	CNetworkVar( bool, m_bClientSideRagdoll );
+#endif
 
 	// Verifies that the data description is valid in debug builds.
 	#ifdef _DEBUG
@@ -834,8 +890,29 @@ public:
 
 	void				SetRenderMode( RenderMode_t nRenderMode );
 	RenderMode_t		GetRenderMode() const;
+#if defined( L4D2 )
+	void SetFadeDistance( float minFadeDist, float maxFadeDist );
+	void SetFadeScale( float scale ) { m_flFadeScale = scale; } // Native S05FA70.
+	int GetGender() const { return m_Gender; } // Native54120, expanded actor type.
+protected:
+	CNetworkVar( int, m_Gender );
+	CNetworkVar( float, m_fadeMinDist );
+	CNetworkVar( float, m_fadeMaxDist );
+	CNetworkVar( float, m_flFadeScale );
+public:
+#endif
 
 private:
+#if defined( L4D2 )
+	friend class CGlobalEntityList;
+	unsigned int m_iClassnameHash;
+	CBaseEntity *m_pPrevByClass;
+	CBaseEntity *m_pNextByClass;
+
+	void AdjustSuspendedEntityTimes( bool suspend );
+	int m_PreStasisMoveType;
+	bool m_bIsInStasis;
+#endif
 	// NOTE: Keep this near vtable so it's in cache with vtable.
 	CServerNetworkProperty m_Network;
 
@@ -844,6 +921,22 @@ public:
 	string_t m_iClassname;  // identifier for entity creation and save/restore
 	string_t m_iGlobalname; // identifier for carrying entity across level transitions
 	string_t m_iParent;	// the name of the entities parent; linked into m_pParent during Activate()
+
+#if defined( L4D2 )
+	unsigned char GetMinCPULevel() const { return m_nMinCPULevel; }
+	void SetMinCPULevel( unsigned char n ) { m_nMinCPULevel = n; }
+	unsigned char GetMaxCPULevel() const { return m_nMaxCPULevel; }
+	void SetMaxCPULevel( unsigned char n ) { m_nMaxCPULevel = n; }
+	unsigned char GetMinGPULevel() const { return m_nMinGPULevel; }
+	void SetMinGPULevel( unsigned char n ) { m_nMinGPULevel = n; }
+	unsigned char GetMaxGPULevel() const { return m_nMaxGPULevel; }
+	void SetMaxGPULevel( unsigned char n ) { m_nMaxGPULevel = n; }
+	CNetworkVar( unsigned char, m_nMinCPULevel );
+	CNetworkVar( unsigned char, m_nMaxCPULevel );
+	CNetworkVar( unsigned char, m_nMinGPULevel );
+	CNetworkVar( unsigned char, m_nMaxGPULevel );
+	bool m_bDisableX360;
+#endif
 
 	int		m_iHammerID; // Hammer unique edit id number
 
@@ -874,6 +967,9 @@ public:
 	float		m_flPrevAnimTime;
 	CNetworkVar( float, m_flAnimTime );  // this is the point in time that the client will interpolate to position,angle,frame,etc.
 	CNetworkVar( float, m_flSimulationTime );
+#if defined( L4D2 )
+	CNetworkVar( float, m_flCreateTime );
+#endif
 
 	void IncrementInterpolationFrame(); // Call this to cause a discontinuity (teleport)
 
@@ -913,6 +1009,14 @@ protected:
 	int FindContextByName( const char *name ) const;
 public:
 	void	AddContext( const char *nameandvalue );
+#ifdef L4D2
+	void AddContext( const char *name, const char *operand, float absoluteExpiration );
+	void AddContextForScript( const char *name, const char *value, float duration );
+	void AddContextForScriptNumeric( const char *name, float value, float duration );
+	ScriptVariant_t GetContextForScript( const char *name );
+	void OverrideFriction( float duration, float value );
+	void FrictionRevertThink();
+#endif
 
 protected:
 	CUtlVector< ResponseContext_t > m_ResponseContexts;
@@ -926,6 +1030,9 @@ private:
 	// list handling
 	friend class CGlobalEntityList;
 	friend class CThinkSyncTester;
+#if defined( L4D2 )
+	friend class CFilterContext;
+#endif
 
 	// was pev->nextthink
 	CNetworkVarForDerived( int, m_nNextThinkTick );
@@ -1002,6 +1109,9 @@ public:
 	CAI_BaseNPC				*MyNPCPointer( void ); 
 	virtual CBaseCombatCharacter *MyCombatCharacterPointer( void ) { return NULL; }
 	virtual INextBot		*MyNextBotPointer( void ) { return NULL; }
+#if defined( L4D2 )
+	virtual Infected		*MyInfectedPointer( void ) { return NULL; }
+#endif
 	virtual float			GetDelay( void ) { return 0; }
 	virtual bool			IsMoving( void );
 	bool					IsWorld() { return entindex() == 0; }
@@ -1020,6 +1130,9 @@ public:
 	virtual bool	IsTemplate( void ) { return false; }
 	virtual bool	IsBaseObject( void ) const { return false; }
 	virtual bool	IsBaseTrain( void ) const { return false; }
+#if defined( L4D2 )
+	virtual bool IsElevator() const { return false; }
+#endif
 	bool			IsBSPModel() const;
 	bool			IsCombatCharacter() { return MyCombatCharacterPointer() == NULL ? false : true; }
 	bool			IsInWorld( void ) const;
@@ -1340,9 +1453,15 @@ public:
 		return (int)GetSolid();
 	}
 
+	#if !defined( L4D2 )
 	HSCRIPT ScriptGetModelKeyValues( void );
+	#endif
 
+#ifdef L4D2
+	int ScriptPrecacheModel( const char *name );
+#else
 	void ScriptPrecacheModel( const char *name );
+#endif
 	void ScriptPrecacheScriptSound( const char *name );
 
 	bool ScriptAcceptInput( const char *pInputName, const char *pValue, HSCRIPT hActivator, HSCRIPT hCaller );
@@ -1352,7 +1471,9 @@ public:
 	CScriptScope	m_ScriptScope;
 	HSCRIPT			m_hScriptInstance;
 	string_t		m_iszScriptId;
+	#if !defined( L4D2 )
 	CScriptKeyValues *m_pScriptModelKeyValues;
+	#endif
 
 	// virtual functions used by a few classes
 	
@@ -1421,7 +1542,11 @@ public:
 
 	float			GetGravity( void ) const;
 	void			SetGravity( float gravity );
+#if defined( L4D2 )
+	virtual float	GetFriction( void ) const;
+#else
 	float			GetFriction( void ) const;
+#endif
 	void			SetFriction( float flFriction );
 
 	virtual	bool FVisible ( CBaseEntity *pEntity, int traceMask = MASK_BLOCKLOS, CBaseEntity **ppBlocker = NULL );
@@ -1440,6 +1565,9 @@ public:
 	bool					GetCheckUntouch() const;
 
 	void					SetGroundEntity( CBaseEntity *ground );
+#ifdef L4D2
+	virtual void OnGroundChanged( CBaseEntity *oldGround, CBaseEntity *newGround ) {} // S02BE30 genuine empty default.
+#endif
 	CBaseEntity				*GetGroundEntity( void );
 	CBaseEntity				*GetGroundEntity( void ) const { return const_cast<CBaseEntity *>(this)->GetGroundEntity(); }
 
@@ -1462,6 +1590,13 @@ public:
 	bool					IsSolid() const;
 	
 	void					SetModelName( string_t name );
+#if defined( L4D2 )
+	void SetCreateTime( float createTime ) { m_flCreateTime = createTime; }
+	virtual string_t GetAIAddOn() const { return m_AIAddOn; }
+	void SetNetworkQuantizeOriginAndAngles( bool enable );
+	void NetworkQuantizeOriginAndAngles( Vector &origin, QAngle &angles );
+	void NetworkQuantizeOriginAndAngles();
+#endif
 
 	model_t					*GetModel( void );
 
@@ -1622,6 +1757,9 @@ public:
 	void			VPhysicsSwapObject( IPhysicsObject *pSwap );
 
 	inline IPhysicsObject *VPhysicsGetObject( void ) const { return m_pPhysicsObject; }
+#if defined( L4D2 )
+	float GetNonShadowMass() const { return m_flNonShadowMass; }
+#endif
 	virtual void	VPhysicsUpdate( IPhysicsObject *pPhysics );
 	void			VPhysicsUpdatePusher( IPhysicsObject *pPhysics );
 	
@@ -1801,6 +1939,9 @@ protected:
 
 	// FIXME: Make this private! Still too many references to do so...
 	CNetworkVar( int, m_spawnflags );
+#if defined( L4D2 )
+	string_t m_AIAddOn; // Native592: FIELD_STRING SAVE|KEY "addon"; allocator-zero only.
+#endif
 
 private:
 	int		m_iEFlags;	// entity flags EFL_*
@@ -1830,15 +1971,30 @@ private:
 	friend class CCollisionProperty;
 	friend class CServerNetworkProperty;
 	CNetworkVarEmbedded( CCollisionProperty, m_Collision );
+#if defined( L4D2 )
+public:
+	CNetworkVarEmbedded( CGlowProperty, m_Glow );
+	CNetworkVar( float, m_bGlowBackfaceMult );
+private:
+#endif
 
+#if defined( L4D2 )
+	bool m_bLagCompensate; // Native969; the entity allocator supplies false.
+#endif
 	CNetworkHandle( CBaseEntity, m_hOwnerEntity );	// only used to point to an edict it won't collide with
 	CNetworkHandle( CBaseEntity, m_hEffectEntity );	// Fire/Dissolve entity.
 
 	CNetworkVar( int, m_CollisionGroup );		// used to cull collision tests
 	IPhysicsObject	*m_pPhysicsObject;	// pointer to the entity's physics object (vphysics.dll)
+#if defined( L4D2 )
+	float m_flNonShadowMass; // Native552, cached at nonNULL installation BEFORE shadow mass override.
+#endif
 
 	CNetworkVar( float, m_flShadowCastDistance );
 	float		m_flDesiredShadowCastDistance;
+#if defined( L4D2 )
+	bool m_bNetworkQuantizeOriginAndAngles; // Native968, NO wire/save row.
+#endif
 
 	// Team handling
 	int			m_iInitialTeamNum;		// Team number of this entity's team read from file
@@ -1878,6 +2034,9 @@ private:
 	CNetworkVar( float, m_flGravity );  // rename to m_flGravityScale;
 	// was pev->friction
 	CNetworkVarForDerived( float, m_flFriction );
+#ifdef L4D2
+	float m_flFrictionDefault; // Native +696, unsaved; entity zero-on-allocation.
+#endif
 	CNetworkVar( float, m_flElasticity );
 
 	// was pev->ltime
@@ -1968,6 +2127,13 @@ private:
 	friend void TransferChildren( CBaseEntity *pOldParent, CBaseEntity *pNewParent );
 
 	bool m_bForcePurgeFixedupStrings; // For template entites so we don't leak strings.
+#if defined( L4D2 )
+	unsigned int m_nScriptedBotQueryValues;
+	unsigned int m_nScriptedBotQueryKnown;
+	unsigned int m_nScriptedBotQueryEpoch;
+	ServerDemoBaseEntityState_t m_DemoRecordingState;
+	bool m_bForceFullDemoRecording;
+#endif
 	
 public:
 	// Accessors for above
@@ -2011,6 +2177,9 @@ public:
 	}
 
 	virtual bool ShouldBlockNav() const { return true; }
+#if defined( L4D2 )
+	virtual bool CanPushEntity( CBaseEntity *other ) { return true; } // Native S02BEB0 default.
+#endif
 
 	virtual bool ShouldForceTransmitsForTeam( int iTeam ) { return false; }
 
@@ -2703,11 +2872,13 @@ inline CBaseEntity *CBaseEntity::GetBaseEntity()
 //-----------------------------------------------------------------------------
 // Model related methods
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 inline void CBaseEntity::SetModelName( string_t name )
 {
 	m_ModelName = name;
 	DispatchUpdateTransmitState();
 }
+#endif
 
 inline string_t CBaseEntity::GetModelName( void ) const
 {

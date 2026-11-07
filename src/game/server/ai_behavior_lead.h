@@ -14,7 +14,12 @@
 #pragma once
 #endif
 
+#if defined( L4D2 )
+class AI_Concept;
+typedef AI_Concept AIConcept_t;
+#else
 typedef const char *AIConcept_t;
+#endif
 
 // Speak concepts
 #define TLK_LEAD_START				"TLK_LEAD_START"

@@ -22,6 +22,7 @@
 #include "icommandline.h"
 
 // NOTE: This has to be the last file included!
+#include "steamworks_gamestats_sdk_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 static CSteamWorksGameStatsUploader g_SteamWorksGameStats;
@@ -74,6 +75,9 @@ void CSteamWorksGameStatsUploader::Reset()
 //-----------------------------------------------------------------------------
 bool CSteamWorksGameStatsUploader::Init()
 {
+#if defined( L4D2 ) && defined( GAME_DLL )
+	ListenForGameEvent( "hostname_changed" ); // S1E1184, native uploader owner.
+#endif
 
 	return true;
 }
@@ -83,6 +87,14 @@ bool CSteamWorksGameStatsUploader::Init()
 //-----------------------------------------------------------------------------
 void CSteamWorksGameStatsUploader::FireGameEvent( IGameEvent *event )
 {
+#if defined( L4D2 ) && defined( GAME_DLL )
+	// S1E20A0 hostname branch: only local metadata, no fabricated upload.
+	if ( event && !Q_stricmp( event->GetName(), "hostname_changed" ) )
+	{
+		const char *hostname = event->GetString( "hostname", "" );
+		Q_strncpy( m_pzHostName, hostname ? hostname : "No Host Name", sizeof( m_pzHostName ) );
+	}
+#endif
 
 }
 

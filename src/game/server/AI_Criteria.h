@@ -14,8 +14,16 @@
 #include "tier1/utlsymbol.h"
 #include "interval.h"
 #include "mathlib/compressed_vector.h"
+#ifdef L4D2
+#include "l4d2/sound/ai_responsefollowup.h"
+#include "l4d2/sound/ai_responsescript.h"
+#endif
 
+#ifdef L4D2
+extern const char *SplitContext( const char *raw, char *key, int keylen, char *value, int valuelen, float *duration, const char *fullContext );
+#else
 extern const char *SplitContext( const char *raw, char *key, int keylen, char *value, int valuelen, float *duration );
+#endif
 
 
 class AI_CriteriaSet
@@ -36,6 +44,12 @@ public:
 	const char *GetName( int index ) const;
 	const char *GetValue( int index ) const;
 	float		GetWeight( int index ) const;
+#ifdef L4D2
+	int FirstCriterion() const;
+	int NextCriterion( int previous ) const;
+	void MergeFrom( const AI_CriteriaSet &other );
+	void InterceptWorldSetContexts( AI_CriteriaSet &contexts );
+#endif
 
 private:
 
@@ -93,6 +107,9 @@ private:
 	};
 
 	CUtlRBTree< CritEntry_t, short > m_Lookup;
+#ifdef L4D2
+	int m_nWorldContextCount;
+#endif
 };
 
 #pragma pack(1)
@@ -166,6 +183,9 @@ enum ResponseType_t
 	RESPONSE_SCENE,
 	RESPONSE_RESPONSE, // A reference to another response by name
 	RESPONSE_PRINT,
+#ifdef L4D2
+	RESPONSE_SCRIPT,
+#endif
 
 	NUM_RESPONSES,
 };
@@ -195,6 +215,15 @@ public:
 	int				GetOdds() const;
 	float			GetDelay() const;
 	float			GetPreDelay() const;
+#ifdef L4D2
+	AI_ResponseFollowup &GetFollowup() { return m_Followup; }
+	const AI_ResponseFollowup &GetFollowup() const { return m_Followup; }
+	void SetFollowup( const AI_ResponseFollowup &followup ) { m_Followup = followup; }
+	AI_ResponseScriptData &GetScriptData() { return m_ScriptData; }
+	const AI_ResponseScriptData &GetScriptData() const { return m_ScriptData; }
+	float GetMatchScore() const { return m_flMatchScore; }
+	void SetMatchScore( float score ) { m_flMatchScore = score; }
+#endif
 
 	void			SetContext( const char *context );
 	const char *	GetContext( void ) const { return m_szContext.Length() ? m_szContext.Get() : NULL; }
@@ -234,6 +263,11 @@ private:
 
 	CUtlString		m_szContext;
 	bool			m_bApplyContextToWorld;
+#ifdef L4D2
+	AI_ResponseFollowup m_Followup;
+	AI_ResponseScriptData m_ScriptData;
+	float m_flMatchScore;
+#endif
 };
 
 #endif // AI_CRITERIA_H

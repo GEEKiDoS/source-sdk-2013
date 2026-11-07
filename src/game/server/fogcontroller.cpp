@@ -39,12 +39,19 @@ BEGIN_DATADESC( CFogController )
 	DEFINE_INPUTFUNC( FIELD_COLOR32,	"SetColorSecondary",	InputSetColorSecondary ),
 	DEFINE_INPUTFUNC( FIELD_INTEGER,	"SetFarZ",		InputSetFarZ ),
 	DEFINE_INPUTFUNC( FIELD_STRING,		"SetAngles",	InputSetAngles ),
+#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_BOOLEAN,	"SetRadial",	InputSetRadial ),
+#endif
 
 	DEFINE_INPUTFUNC( FIELD_COLOR32,	"SetColorLerpTo",		InputSetColorLerpTo ),
 	DEFINE_INPUTFUNC( FIELD_COLOR32,	"SetColorSecondaryLerpTo",	InputSetColorSecondaryLerpTo ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT,		"SetStartDistLerpTo",	InputSetStartDistLerpTo ),
 	DEFINE_INPUTFUNC( FIELD_FLOAT,		"SetEndDistLerpTo",	InputSetEndDistLerpTo ),
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetMaxDensityLerpTo", InputSetMaxDensityLerpTo ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "Set2DSkyboxFogFactorLerpTo", InputSet2DSkyboxFogFactorLerpTo ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "Set2DSkyboxFogFactor", InputSet2DSkyboxFogFactor ),
+#endif
 	DEFINE_INPUTFUNC( FIELD_VOID,		"StartFogTransition", InputStartFogTransition ),
 
 	// Quiet classcheck
@@ -61,7 +68,12 @@ BEGIN_DATADESC( CFogController )
 	DEFINE_KEYFIELD( m_fog.maxdensity,		FIELD_FLOAT,	"fogmaxdensity" ),
 	DEFINE_KEYFIELD( m_fog.farz,			FIELD_FLOAT,	"farz" ),
 	DEFINE_KEYFIELD( m_fog.duration,		FIELD_FLOAT,	"foglerptime" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_fog.HDRColorScale, FIELD_FLOAT, "HDRColorScale" ),
+#endif
+#if !defined( L4D2 )
 	DEFINE_KEYFIELD( m_fog.radial,			FIELD_BOOLEAN,  "fogradial" ),
+#endif
 
 	DEFINE_THINKFUNC( SetLerpValues ),
 
@@ -72,6 +84,11 @@ BEGIN_DATADESC( CFogController )
 	DEFINE_FIELD( m_fog.colorSecondaryLerpTo, FIELD_COLOR32 ),
 	DEFINE_FIELD( m_fog.startLerpTo, FIELD_FLOAT ),
 	DEFINE_FIELD( m_fog.endLerpTo, FIELD_FLOAT ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_fog.maxdensityLerpTo, FIELD_FLOAT ),
+	DEFINE_FIELD( m_fog.skyboxFogFactor, FIELD_FLOAT ),
+	DEFINE_FIELD( m_fog.skyboxFogFactorLerpTo, FIELD_FLOAT ),
+#endif
 
 END_DATADESC()
 
@@ -79,7 +96,9 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CFogController, DT_FogController )
 // fog data
 	SendPropInt( SENDINFO_STRUCTELEM( m_fog.enable ), 1, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO_STRUCTELEM( m_fog.blend ), 1, SPROP_UNSIGNED ),
+#if !defined( L4D2 )
 	SendPropInt( SENDINFO_STRUCTELEM( m_fog.radial ), 1, SPROP_UNSIGNED ),
+#endif
 	SendPropVector( SENDINFO_STRUCTELEM(m_fog.dirPrimary), -1, SPROP_COORD),
 	SendPropInt( SENDINFO_STRUCTELEM( m_fog.colorPrimary ), 32, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO_STRUCTELEM( m_fog.colorSecondary ), 32, SPROP_UNSIGNED ),
@@ -87,13 +106,23 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CFogController, DT_FogController )
 	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.end ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.maxdensity ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.farz ), 0, SPROP_NOSCALE ),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.skyboxFogFactor ), 0, SPROP_NOSCALE ),
+#endif
 
 	SendPropInt( SENDINFO_STRUCTELEM( m_fog.colorPrimaryLerpTo ), 32, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO_STRUCTELEM( m_fog.colorSecondaryLerpTo ), 32, SPROP_UNSIGNED ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.startLerpTo ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.endLerpTo ), 0, SPROP_NOSCALE ),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.maxdensityLerpTo ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.skyboxFogFactorLerpTo ), 0, SPROP_NOSCALE ),
+#endif
 	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.lerptime ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.duration ), 0, SPROP_NOSCALE ),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO_STRUCTELEM( m_fog.HDRColorScale ), 0, SPROP_NOSCALE ),
+#endif
 END_SEND_TABLE()
 
 CFogController::CFogController()
@@ -101,6 +130,9 @@ CFogController::CFogController()
 	// Make sure that old maps without fog fields don't get wacked out fog values.
 	m_fog.enable = false;
 	m_fog.maxdensity = 1.0f;
+#if defined( L4D2 )
+	m_fog.HDRColorScale = 1.0f;
+#endif
 }
 
 
@@ -114,6 +146,9 @@ void CFogController::Spawn( void )
 
 	m_fog.colorPrimaryLerpTo = m_fog.colorPrimary;
 	m_fog.colorSecondaryLerpTo = m_fog.colorSecondary;
+#if defined( L4D2 )
+	m_fog.skyboxFogFactorLerpTo = m_fog.skyboxFogFactor;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -226,12 +261,14 @@ void CFogController::InputSetAngles( inputdata_t &inputdata )
 	m_fog.dirPrimary.GetForModify() *= -1.0f;
 }
 
+#if !defined( L4D2 )
 void CFogController::InputSetRadial( inputdata_t &inputdata )
 {
 	bool bRadial = inputdata.value.Bool();
 
 	m_fog.radial = bRadial;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -292,6 +329,28 @@ int CFogController::DrawDebugTextOverlays(void)
 #define FOG_CONTROLLER_START_LERP 4
 #define FOG_CONTROLLER_END_LERP 8
 
+#if defined( L4D2 )
+#define FOG_CONTROLLER_MAXDENSITY_LERP 16
+#define FOG_CONTROLLER_SKYBOXFOGFACTOR_LERP 32
+
+void CFogController::InputSetMaxDensityLerpTo( inputdata_t &data )
+{
+	m_iChangedVariables |= FOG_CONTROLLER_MAXDENSITY_LERP;
+	m_fog.maxdensityLerpTo = data.value.Float();
+}
+
+void CFogController::InputSet2DSkyboxFogFactor( inputdata_t &data )
+{
+	m_fog.skyboxFogFactor = data.value.Float();
+}
+
+void CFogController::InputSet2DSkyboxFogFactorLerpTo( inputdata_t &data )
+{
+	m_iChangedVariables |= FOG_CONTROLLER_SKYBOXFOGFACTOR_LERP;
+	m_fog.skyboxFogFactorLerpTo = data.value.Float();
+}
+#endif
+
 void CFogController::InputSetColorLerpTo(inputdata_t &data)
 {
 	m_iChangedVariables |= FOG_CONTROLLER_COLORPRIMARY_LERP;
@@ -316,13 +375,26 @@ void CFogController::InputSetEndDistLerpTo(inputdata_t &data)
 	m_fog.endLerpTo = data.value.Float();
 }
 
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void CFogController::InputStartFogTransition(inputdata_t &data)
 {
 	SetThink( &CFogController::SetLerpValues );
 
+#if defined( L4D2 )
+	// Native S0D611F..0D6139 compares the unrounded x87 deadline before storing it.
+	const double flLerpTime = static_cast< double >( gpGlobals->curtime ) + static_cast< double >( m_fog.duration.Get() ) + 0.1;
+	if ( static_cast< double >( m_fog.lerptime.Get() ) != flLerpTime )
+		m_fog.lerptime.SetDirect( static_cast< float >( flLerpTime ) );
+#else
 	m_fog.lerptime = gpGlobals->curtime + m_fog.duration + 0.1;
+#endif
     SetNextThink( gpGlobals->curtime + m_fog.duration );
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 void CFogController::SetLerpValues( void )
 {
@@ -346,6 +418,12 @@ void CFogController::SetLerpValues( void )
 		m_fog.end = m_fog.endLerpTo;
 	}
 
+#if defined( L4D2 )
+	if ( m_iChangedVariables & FOG_CONTROLLER_MAXDENSITY_LERP )
+		m_fog.maxdensity = m_fog.maxdensityLerpTo;
+	if ( m_iChangedVariables & FOG_CONTROLLER_SKYBOXFOGFACTOR_LERP )
+		m_fog.skyboxFogFactor = m_fog.skyboxFogFactorLerpTo;
+#endif
 	m_iChangedVariables = 0;
 	m_fog.lerptime = gpGlobals->curtime;
 }
@@ -356,8 +434,31 @@ void CFogController::SetLerpValues( void )
 //-----------------------------------------------------------------------------
 void CFogSystem::LevelInitPreEntity( void )
 {
+#if defined( L4D2 )
+	m_hMasterController = NULL;
+	ListenForGameEvent( "round_start" );
+#else
 	m_pMasterController = NULL;
+#endif
 }
+
+#if defined( L4D2 )
+void CFogSystem::FindMasterController()
+{
+	CFogController *controller = NULL;
+	while ( ( controller = static_cast< CFogController * >(
+		gEntList.FindEntityByClassname( controller, "env_fog_controller" ) ) ) != NULL )
+	{
+		if ( !m_hMasterController.Get() || controller->IsMaster() )
+			m_hMasterController = controller;
+	}
+}
+
+void CFogSystem::FireGameEvent( IGameEvent *event )
+{
+	FindMasterController();
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: On level load find the master fog controller.  If no controller is 
@@ -365,17 +466,22 @@ void CFogSystem::LevelInitPreEntity( void )
 //-----------------------------------------------------------------------------
 void CFogSystem::LevelInitPostEntity( void )
 {
+#if defined( L4D2 )
+	FindMasterController();
+#else
 	CFogController *pFogController = NULL;
 	do
 	{
 		pFogController = static_cast<CFogController*>( gEntList.FindEntityByClassname( pFogController, "env_fog_controller" ) );
 		if ( pFogController )
 		{
+#if !defined( L4D2 )
 			// HACK(misyl): If this is an official map then force on radial fog.
 			if ( GameRules()->IsOfficialMap() )
 			{
 				pFogController->m_fog.radial = true;
 			}
+#endif
 
 			if ( m_pMasterController == NULL )
 			{
@@ -390,6 +496,7 @@ void CFogSystem::LevelInitPostEntity( void )
 			}
 		}
 	} while ( pFogController );
+#endif
 
 	// HACK: Singleplayer games don't get a call to CBasePlayer::Spawn on level transitions.
 	// CBasePlayer::Activate is called before this is called so that's too soon to set up the fog controller.

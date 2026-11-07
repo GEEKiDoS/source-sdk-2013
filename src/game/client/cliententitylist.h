@@ -98,6 +98,17 @@ friend class C_BaseEntityIterator;
 friend class C_AllBaseEntityIterator;
 
 public:
+#if defined( L4D2 )
+	void AddToDeleteList( C_BaseEntity *entity );
+	void DeferEntityReleases( bool defer );
+	void CleanUpDeleteList();
+	void NotifyEntityDormancyChanged( int entityIndex, bool dormant );
+private:
+	CUtlVector< C_BaseEntity * > m_DeferredEntityReleases;
+	int m_nDeferredEntityReleaseDepth;
+public:
+#endif
+
 	// Constructor, destructor
 								CClientEntityList( void );
 	virtual 					~CClientEntityList( void );
@@ -190,6 +201,9 @@ private:
 	{
 		// Cached off because GetClientNetworkable is called a *lot*
 		IClientNetworkable *m_pNetworkable;
+#if defined( L4D2 )
+		unsigned short m_nDormancy;
+#endif
 		unsigned short m_BaseEntitiesIndex;	// Index into m_BaseEntities (or m_BaseEntities.InvalidIndex() if none).
 	};
 

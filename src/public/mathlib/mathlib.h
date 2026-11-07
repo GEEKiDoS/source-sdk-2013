@@ -20,6 +20,11 @@
 // For MMX intrinsics
 #include <xmmintrin.h>
 
+#if defined( L4D2 ) && defined( PLATFORM_WINDOWS_PC64 )
+// Original scalar SSE polynomial; one canonical assembly source is selected once per game DLL.
+extern "C" float _SSE_cos( float x );
+#endif
+
 // XXX remove me
 #undef clamp
 

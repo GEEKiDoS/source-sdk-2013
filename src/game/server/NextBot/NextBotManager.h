@@ -108,7 +108,9 @@ public:
 	virtual void OnKilled( CBaseCombatCharacter *victim, const CTakeDamageInfo &info );	// when an actor is killed
 	virtual void OnSound( CBaseEntity *source, const Vector &pos, KeyValues *keys );				// when an entity emits a sound
 	virtual void OnSpokeConcept( CBaseCombatCharacter *who, AIConcept_t concept, AI_Response *response );	// when an Actor speaks a concept
+#if !defined( L4D2 )
 	virtual void OnWeaponFired( CBaseCombatCharacter *whoFired, CBaseCombatWeapon *weapon );		// when someone fires a weapon
+#endif
 
 	/**
 	 * Debugging
@@ -132,7 +134,11 @@ public:
 	//
 	// Put these in a derived class
 	//
+#if defined( L4D2 )
+	void OnInfectedIT( CBaseEntity *victim ); // Native4ABB20, real singleton transport.
+#else
 	void OnSurvivorVomitedUpon( CTerrorPlayer *victim );	// when a Survivor has been hit by Boomer Vomit
+#endif
 
 	static void SetInstance( NextBotManager *pInstance ) { sInstance = pInstance; };
 	static NextBotManager* GetInstance() { return sInstance; }

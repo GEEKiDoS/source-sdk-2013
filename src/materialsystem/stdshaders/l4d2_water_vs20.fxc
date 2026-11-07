@@ -1,0 +1,95 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Native Water VS20, with a shared entry point for the cheap cubemap pass.
+// STATIC: "CHEAP" "0..1"
+// STATIC: "BASETEXTURE" "0..1"
+// STATIC: "MULTITEXTURE" "0..1"
+// STATIC: "FLASHLIGHT" "0..1"
+// STATIC: "LIGHTMAPWATERFOG" "0..1"
+// SKIP: $CHEAP && ($BASETEXTURE || $FLASHLIGHT || $LIGHTMAPWATERFOG)
+// SKIP: $BASETEXTURE && ($MULTITEXTURE || $FLASHLIGHT || $LIGHTMAPWATERFOG)
+// SKIP: $MULTITEXTURE && ($FLASHLIGHT || $LIGHTMAPWATERFOG)
+
+#include "common_vs_fxc.h"
+
+const float4 cBumpTransform[2] : register( SHADER_SPECIFIC_CONST_1 );
+const float4 cScrollOffsets : register( SHADER_SPECIFIC_CONST_3 );
+const float4x4 cFlashlightWorldToTexture : register( SHADER_SPECIFIC_CONST_4 );
+
+struct VS_INPUT
+{
+	float4 position : POSITION;
+	float3 normal : NORMAL;
+	float4 texcoord : TEXCOORD0;
+	float2 lightmap : TEXCOORD1;
+	float2 lightmapOffset : TEXCOORD2;
+	float3 tangentS : TANGENT;
+	float3 tangentT : BINORMAL0;
+};
+
+struct VS_OUTPUT
+{
+	float4 position : POSITION;
+	float fog : FOG;
+	float2 bump : TEXCOORD0;
+	float3 eye : TEXCOORD1;
+#if CHEAP
+	float3 tangentS : TEXCOORD2;
+	float3 tangentT : TEXCOORD3;
+	float3 normal : TEXCOORD4;
+	float4 extraBump : TEXCOORD5;
+	float3 world : TEXCOORD7;
+#else
+	float4 reflectRefract : TEXCOORD2;
+	float4 projected : TEXCOORD3;
+	float3 world : TEXCOORD4;
+#if FLASHLIGHT
+	float4 flashlight : TEXCOORD5;
+#elif MULTITEXTURE
+	float4 extraBump : TEXCOORD5;
+#elif BASETEXTURE
+	float4 lightmap12 : TEXCOORD5;
+	float2 lightmap3 : TEXCOORD6;
+#endif
+#if LIGHTMAPWATERFOG
+	float2 lightmap : TEXCOORD7;
+#endif
+#endif
+};
+
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o = (VS_OUTPUT)0;
+	o.position = mul( v.position, cModelViewProj );
+	o.world = mul( v.position, cModel[0] );
+	o.eye = cEyePos - o.world;
+	// Native water fog is radial in the horizontal plane, not view-space Z.
+	float distanceXY = length( o.eye.xy );
+	o.fog = max( cFogParams.x - distanceXY * cFogParams.w, cFogParams.z );
+#if CHEAP
+	o.bump = v.texcoord.xy;
+	o.tangentS = mul( v.tangentS, (float3x3)cModel[0] );
+	o.tangentT = mul( v.tangentT, (float3x3)cModel[0] );
+	o.normal = mul( v.normal, (float3x3)cModel[0] );
+#else
+	o.bump.x = dot( v.texcoord, cBumpTransform[0] );
+	o.bump.y = dot( v.texcoord, cBumpTransform[1] );
+	o.projected = o.position;
+	o.reflectRefract = float4( o.position.x, o.position.y, -o.position.y, o.position.x );
+	o.reflectRefract = (o.reflectRefract + o.position.w) * 0.5f;
+#if FLASHLIGHT
+	o.flashlight = mul( float4( o.world, 1.0f ), cFlashlightWorldToTexture );
+#elif BASETEXTURE
+	o.lightmap12.xy = v.lightmap + v.lightmapOffset;
+	o.lightmap12.wz = o.lightmap12.xy + v.lightmapOffset;
+	o.lightmap3 = o.lightmap12.wz + v.lightmapOffset;
+#endif
+#if LIGHTMAPWATERFOG
+	o.lightmap = v.lightmap;
+#endif
+#endif
+#if MULTITEXTURE
+	o.extraBump.xy = float2( v.texcoord.x + v.texcoord.y, v.texcoord.y - v.texcoord.x ) * 0.1f + cScrollOffsets.xy;
+	o.extraBump.zw = v.texcoord.yx * 0.45f + cScrollOffsets.zw;
+#endif
+	return o;
+}

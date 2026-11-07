@@ -8,6 +8,7 @@
 #include "hud.h"
 #include "hudelement.h"
 #include "clientmode.h"
+#include "l4d2/sound/terror_engine_sound_name.h"
 #include <vgui_controls/Panel.h>
 #include <vgui/ISurface.h>
 #include <vgui/ILocalize.h>
@@ -274,7 +275,10 @@ void C_PointCommentaryNode::OnDataChanged( DataUpdateType_t updateType )
 		}
 
 		// Get the duration so we know when it finishes
-		float flDuration = enginesound->GetSoundDuration( STRING( CSoundEnvelopeController::GetController().SoundGetName( m_sndCommentary ) ) ) ;
+		float flDuration = enginesound->GetSoundDuration( CTerrorEngineSoundName( STRING( CSoundEnvelopeController::GetController().SoundGetName( m_sndCommentary ) ) ).Get() ) ;
+#if defined( L4D2 )
+		flDuration += 0.5f; // C08CCD5: caption/HUD completion includes the native tail.
+#endif
 
 		CHudCloseCaption *pHudCloseCaption = (CHudCloseCaption *)GET_HUDELEMENT( CHudCloseCaption );
 		if ( pHudCloseCaption )
@@ -441,10 +445,18 @@ void CHudCommentary::Paint()
 	// Draw the speaker names
 	// Get our scheme and font information
 	vgui::HScheme scheme = vgui::scheme()->GetScheme( "ClientScheme" );
+#if defined( L4D2 )
+	vgui::HFont hFont = vgui::scheme()->GetIScheme(scheme)->GetFont( "CommentaryDefault", false );
+#else
 	vgui::HFont hFont = vgui::scheme()->GetIScheme(scheme)->GetFont( "CommentaryDefault", true );
+#endif
 	if ( !hFont )
 	{
+#if defined( L4D2 )
+		hFont = vgui::scheme()->GetIScheme(scheme)->GetFont( "Default", false );
+#else
 		hFont = vgui::scheme()->GetIScheme(scheme)->GetFont( "Default", true );
+#endif
 	}
 	vgui::surface()->DrawSetTextFont( hFont );
 	vgui::surface()->DrawSetTextColor( clr ); 

@@ -43,6 +43,10 @@ public:
 // IClientRenderable.
 public:
 
+#if defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return m_pMaterial && m_pMaterial->IsTranslucent(); }
+#endif
+
 	virtual int			DrawModel( int flags );
 
 
@@ -327,6 +331,12 @@ int C_Hairball::DrawModel( int flags )
 }
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CreateHairballCallback()
 {
 	for ( int i=0; i < 20; i++ )
@@ -342,9 +352,26 @@ void CreateHairballCallback()
 
 		Vector vForward;
 		AngleVectors( pPlayer->GetAbsAngles(), &vForward );
+#if defined( L4D2 )
+		Vector offset;
+		offset.x = ( float( RandomInt( 0, 0x7fff ) ) * ( 1.0f / 32767.0f ) ) * 100.0f;
+		offset.y = ( float( RandomInt( 0, 0x7fff ) ) * ( 1.0f / 32767.0f ) ) * 100.0f;
+		offset.z = ( float( RandomInt( 0, 0x7fff ) ) * ( 1.0f / 32767.0f ) ) * 100.0f;
+		pHairball->SetLocalOrigin( pPlayer->GetAbsOrigin() + vForward * 300 + offset );
+#else
 		pHairball->SetLocalOrigin( pPlayer->GetAbsOrigin() + vForward * 300 + RandomVector( 0, 100 ) );
+#endif
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
-ConCommand cc_CreateHairball( "CreateHairball", CreateHairballCallback, 0, FCVAR_CHEAT );
+ConCommand cc_CreateHairball( "CreateHairball", CreateHairballCallback, 0, 
+#if defined( L4D2 )
+	0x0000400A
+#else
+	FCVAR_CHEAT
+#endif
+ );
 

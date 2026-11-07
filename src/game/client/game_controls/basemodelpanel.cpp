@@ -291,7 +291,11 @@ void CModelPanel::SetupVCD( void )
 	if ( !pEnt )
 		return;
 
+#if defined( L4D2 )
+	if ( pEnt->InitializeAsClientEntity( "", false ) == false )
+#else
 	if ( pEnt->InitializeAsClientEntity( "", RENDER_GROUP_OTHER ) == false )
+#endif
 	{
 		// we failed to initialize this entity so just return gracefully
 		pEnt->Remove();
@@ -404,7 +408,11 @@ void CModelPanel::SetupModel( void )
 	if ( !pEnt )
 		return;
 
+#if defined( L4D2 )
+	if ( pEnt->InitializeAsClientEntity( pszModelName, false ) == false )
+#else
 	if ( pEnt->InitializeAsClientEntity( pszModelName, RENDER_GROUP_OPAQUE_ENTITY ) == false )
+#endif
 	{
 		// we failed to initialize this entity so just return gracefully
 		pEnt->Remove();
@@ -469,7 +477,11 @@ void CModelPanel::SetupModel( void )
 
 		if ( pTemp )
 		{
+#if defined( L4D2 )
+			if ( pTemp->InitializeAsClientEntity( pInfo->m_pszModelName, false ) == false )
+#else
 			if ( pTemp->InitializeAsClientEntity( pInfo->m_pszModelName, RENDER_GROUP_OPAQUE_ENTITY ) == false )
+#endif
 			{	
 				// we failed to initialize this model so just skip it
 				pTemp->Remove();

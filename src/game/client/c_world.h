@@ -40,6 +40,10 @@ public:
 
 	float GetWaveHeight() const;
 	const char *GetDetailSpriteMaterial() const;
+#if defined( L4D2 )
+	int GetStartMusicType() const { return m_iStartMusicType; }
+	const char *GetMusicPostfix() const { return m_iszMusicPostFix; }
+#endif
 
 public:
 	enum
@@ -60,6 +64,10 @@ public:
 private:
 	void	RegisterSharedActivities( void );
 	char	m_iszDetailSpriteMaterial[MAX_DETAIL_SPRITE_MATERIAL_NAME_LENGTH];
+#if defined( L4D2 )
+	int m_iStartMusicType;
+	char m_iszMusicPostFix[64];
+#endif
 };
 
 inline float C_World::GetWaveHeight() const

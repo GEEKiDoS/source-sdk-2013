@@ -1,3 +1,58 @@
+#if defined( L4D2 )
+//========= Copyright Valve Corporation, All rights reserved. ============//
+#ifndef TEAM_OBJECTIVERESOURCE_H
+#define TEAM_OBJECTIVERESOURCE_H
+#ifdef _WIN32
+#pragma once
+#endif
+
+#include "shareddefs.h"
+
+// Native L4D2 retains this ServerClass/datamap, but no entity producer.
+// No constructor, factory, singleton or gameplay implementation is supplied.
+class CBaseTeamObjectiveResource : public CBaseEntity
+{
+	DECLARE_CLASS( CBaseTeamObjectiveResource, CBaseEntity );
+public:
+	DECLARE_SERVERCLASS();
+	DECLARE_DATADESC();
+
+	// S1EB910 is the datamap's virtual-dispatch member-pointer thunk only.
+	virtual void ObjectiveThink();
+
+private:
+	CNetworkVar( int, m_iTimerToShowInHUD );
+	CNetworkVar( int, m_iStopWatchTimer );
+	CNetworkVar( int, m_iNumControlPoints );
+	CNetworkVar( bool, m_bPlayingMiniRounds );
+	CNetworkVar( bool, m_bControlPointsReset );
+	CNetworkVar( int, m_iUpdateCapHudParity );
+	CNetworkArray( Vector, m_vCPPositions, MAX_CONTROL_POINTS );
+	CNetworkArray( int, m_bCPIsVisible, MAX_CONTROL_POINTS );
+	CNetworkArray( float, m_flLazyCapPerc, MAX_CONTROL_POINTS );
+	CNetworkArray( int, m_iTeamIcons, MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS );
+	CNetworkArray( int, m_iTeamOverlays, MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS );
+	CNetworkArray( int, m_iTeamReqCappers, MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS );
+	CNetworkArray( float, m_flTeamCapTime, MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS );
+	CNetworkArray( int, m_iPreviousPoints, MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS * MAX_PREVIOUS_POINTS );
+	CNetworkArray( bool, m_bTeamCanCap, MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS );
+	CNetworkArray( int, m_iTeamBaseIcons, MAX_TEAMS );
+	CNetworkArray( int, m_iBaseControlPoints, MAX_TEAMS );
+	CNetworkArray( bool, m_bInMiniRound, MAX_CONTROL_POINTS );
+	CNetworkArray( int, m_iWarnOnCap, MAX_CONTROL_POINTS );
+	CNetworkArray( string_t, m_iszWarnSound, MAX_CONTROL_POINTS );
+	CNetworkArray( float, m_flPathDistance, MAX_CONTROL_POINTS );
+	CNetworkArray( int, m_iNumTeamMembers, MAX_CONTROL_POINTS * MAX_CONTROL_POINT_TEAMS );
+	CNetworkArray( int, m_iCappingTeam, MAX_CONTROL_POINTS );
+	CNetworkArray( int, m_iTeamInZone, MAX_CONTROL_POINTS );
+	CNetworkArray( bool, m_bBlocked, MAX_CONTROL_POINTS );
+	CNetworkArray( int, m_iOwner, MAX_CONTROL_POINTS );
+	CNetworkString( m_pszCapLayoutInHUD, MAX_CAPLAYOUT_LENGTH );
+	float m_flCapPercentages[MAX_CONTROL_POINTS];
+};
+
+#endif // TEAM_OBJECTIVERESOURCE_H
+#else
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: 
@@ -240,3 +295,4 @@ inline CBaseTeamObjectiveResource *ObjectiveResource()
 }
 
 #endif // TEAM_OBJECTIVERESOURCE_H
+#endif // L4D2

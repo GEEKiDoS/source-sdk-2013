@@ -48,6 +48,7 @@ public:
 	// Content alignment
 	// Get the size of the content within the label
 	virtual void GetContentSize(int &wide, int &tall);
+	void GetTextImageBounds( int &x, int &y, int &right, int &bottom );
 
 	// Set how the content aligns itself within the label
 	// alignment code, used to determine how the images are layed out within the Label

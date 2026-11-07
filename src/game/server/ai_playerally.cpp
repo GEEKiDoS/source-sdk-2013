@@ -136,10 +136,10 @@ bool ConceptStringLessFunc( const string_t &lhs, const string_t &rhs )
 
 //-----------------------------------------------------------------------------
 
-class CConceptInfoMap : public CUtlMap<AIConcept_t, ConceptInfo_t *> {
+class CConceptInfoMap : public CUtlMap<const char *, ConceptInfo_t *> {
 public:
 	CConceptInfoMap() :
-	  CUtlMap<AIConcept_t, ConceptInfo_t *>( CaselessStringLessThan )
+	  CUtlMap<const char *, ConceptInfo_t *>( CaselessStringLessThan )
 	  {
 		  for ( int i = 0; i < ARRAYSIZE(g_ConceptInfos); i++ )
 		  {
@@ -279,7 +279,9 @@ bool CAI_AllySpeechManager::ConceptDelayExpired( AIConcept_t concept )
 
 //-----------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( ai_ally_speech_manager, CAI_AllySpeechManager );
+#endif
 
 BEGIN_DATADESC( CAI_AllySpeechManager )
 
@@ -752,11 +754,11 @@ void CAI_PlayerAlly::PostSpeakDispatchResponse( AIConcept_t concept, AI_Response
 		{
 			if ( bSaidHelloToNPC )
 			{
-				Warning("Q&A: '%s' said Hello to '%s' (concept %s)\n", GetDebugName(), GetSpeechTarget()->GetDebugName(), concept );
+				Warning("Q&A: '%s' said Hello to '%s' (concept %s)\n", GetDebugName(), GetSpeechTarget()->GetDebugName(), static_cast< const char * >( concept ) );
 			}
 			else
 			{
-				Warning("Q&A: '%s' questioned '%s' (concept %s)\n", GetDebugName(), GetSpeechTarget()->GetDebugName(), concept );
+				Warning("Q&A: '%s' questioned '%s' (concept %s)\n", GetDebugName(), GetSpeechTarget()->GetDebugName(), static_cast< const char * >( concept ) );
 			}
 			NDebugOverlay::HorzArrow( GetAbsOrigin(), GetSpeechTarget()->GetAbsOrigin(), 8, 0, 255, 0, 64, true, duration );
 		}

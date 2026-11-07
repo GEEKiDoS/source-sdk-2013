@@ -366,7 +366,12 @@ bool VideoPanel_Create( unsigned int nXPos, unsigned int nYPos,
 //  user must include file extension
 //-----------------------------------------------------------------------------
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( playvideo, "Plays a video: <filename> [width height]" , 0x00000008)
+#else
 CON_COMMAND( playvideo, "Plays a video: <filename> [width height]" )
+#endif
 {
 	if ( args.ArgC() < 2 )
 		return;
@@ -379,6 +384,9 @@ CON_COMMAND( playvideo, "Plays a video: <filename> [width height]" )
 	char strFilename[MAX_PATH];
 	Q_StripExtension( args[1], strFilename, MAX_PATH );
 	Q_strncat( strFullpath, args[1], MAX_PATH );
+#if defined( L4D2 )
+	Q_strncat( strFullpath, ".bik", MAX_PATH );
+#endif
 	
 	if ( nScreenWidth == 0 )
 	{
@@ -401,7 +409,12 @@ CON_COMMAND( playvideo, "Plays a video: <filename> [width height]" )
 // Purpose: Used to launch a video playback and fire a command on completion
 //-----------------------------------------------------------------------------
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( playvideo_exitcommand, "Plays a video and fires and exit command when it is stopped or finishes: <filename> <exit command>" , 0x00000008)
+#else
 CON_COMMAND( playvideo_exitcommand, "Plays a video and fires and exit command when it is stopped or finishes: <filename> <exit command>" )
+#endif
 {
 	if ( args.ArgC() < 2 )
 		return;
@@ -414,6 +427,9 @@ CON_COMMAND( playvideo_exitcommand, "Plays a video and fires and exit command wh
 	char strFilename[MAX_PATH];
 	Q_StripExtension( args[1], strFilename, MAX_PATH );
 	Q_strncat( strFullpath, args[1], MAX_PATH );
+#if defined( L4D2 )
+	Q_strncat( strFullpath, ".bik", MAX_PATH );
+#endif
 
 	char *pExitCommand = Q_strstr( args.GetCommandString(), args[2] );
 

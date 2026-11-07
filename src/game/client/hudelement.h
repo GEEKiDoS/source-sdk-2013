@@ -41,6 +41,10 @@ public:
 	// LevelShutdown's called whenever a level is finishing
 	virtual void				LevelShutdown( void ) { return; };
 
+#if defined( L4D2 )
+	virtual void OnTransitionRestore() {} // Native10001760 genuine base nullsub.
+#endif
+
 	// called whenever the hud receives "reset" message, which is (usually) every time the client respawns after getting killed
 	virtual void				Reset( void ) { return; }
 

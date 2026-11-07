@@ -97,7 +97,11 @@ void CPointPlayerMoveConstraint::InputTurnOn( inputdata_t &inputdata )
 		{
 			m_hConstrainedPlayers.AddToTail( pPlayer );
 
+#if defined( L4D2 )
+			pPlayer->ActivateMovementConstraint( this, GetAbsOrigin(), m_flRadius, m_flConstraintWidth, m_flSpeedFactor, false );
+#else
 			pPlayer->ActivateMovementConstraint( this, GetAbsOrigin(), m_flRadius, m_flConstraintWidth, m_flSpeedFactor );
+#endif
 		}
 	}
 

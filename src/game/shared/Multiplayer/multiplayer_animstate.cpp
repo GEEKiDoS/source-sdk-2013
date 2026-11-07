@@ -11,13 +11,20 @@
 #include "utldict.h"
 #include "multiplayer_animstate.h"
 #include "activitylist.h"
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#include "datacache/imdlcache.h"
+#endif
 
 #ifdef CLIENT_DLL
 #include "c_baseplayer.h"
 #include "engine/ivdebugoverlay.h"
 #include "filesystem.h"
 #include "eventlist.h"
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar anim_showmainactivity( "anim_showmainactivity", "0", 0x4008, "Show the idle, walk, run, and/or sprint activities." );
+#else
 ConVar anim_showmainactivity( "anim_showmainactivity", "0", FCVAR_CHEAT, "Show the idle, walk, run, and/or sprint activities." );
+#endif
 #else
 #include "player.h"
 #endif
@@ -32,10 +39,54 @@ ConVar anim_showmainactivity( "anim_showmainactivity", "0", FCVAR_CHEAT, "Show t
 
 #define MOVING_MINIMUM_SPEED	0.5f
 
-ConVar anim_showstate( "anim_showstate", "-1", FCVAR_CHEAT | FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, "Show the (client) animation state for the specified entity (-1 for none)." );
-ConVar anim_showstatelog( "anim_showstatelog", "0", FCVAR_CHEAT | FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, "1 to output anim_showstate to Msg(). 2 to store in AnimState.log. 3 for both." );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar anim_showstate( "anim_showstate", "-1", 0x600a, "Show the (client) animation state for the specified entity (-1 for none)." );
+#else
+ConVar anim_showstate( "anim_showstate", "-1", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00006006
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, "Show the (client) animation state for the specified entity (-1 for none)." );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar anim_showstatelog( "anim_showstatelog", "0", 0x600a, "1 to output anim_showstate to Msg(). 2 to store in AnimState.log. 3 for both." );
+#else
+ConVar anim_showstatelog( "anim_showstatelog", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00006006
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, "1 to output anim_showstate to Msg(). 2 to store in AnimState.log. 3 for both." );
+#endif
+#if defined( L4D2 )
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar mp_showgestureslots( "mp_showgestureslots", "0", 0x600a, "Show multiplayer client/server gesture slot information for the specified player index (-1 for no one)." );
+#else
+ConVar mp_showgestureslots( "mp_showgestureslots", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00006006
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, "Show multiplayer client/server gesture slot information for the specified player index (-1 for no one)." );
+#endif
+#else
 ConVar mp_showgestureslots( "mp_showgestureslots", "-1", FCVAR_CHEAT | FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, "Show multiplayer client/server gesture slot information for the specified player index (-1 for no one)." );
-ConVar mp_slammoveyaw( "mp_slammoveyaw", "0", FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, "Force movement yaw along an animation path." );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar mp_slammoveyaw( "mp_slammoveyaw", "0", 0x200a, "Force movement yaw along an animation path." );
+#else
+ConVar mp_slammoveyaw( "mp_slammoveyaw", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, "Force movement yaw along an animation path." );
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -401,6 +452,9 @@ bool CMultiPlayerAnimState::InitGestureSlots( void )
 	for ( int iGesture = 0; iGesture < GESTURE_SLOT_COUNT; ++iGesture )
 	{
 		m_aGestureSlots[iGesture].m_pAnimLayer = NULL;
+#if defined( L4D2 )
+		m_aGestureSlots[iGesture].m_bActive = false;
+#endif
 	}
 
 	// Get the base player.
@@ -438,6 +492,11 @@ void CMultiPlayerAnimState::ResetGestureSlots( void )
 	// Clear out all the gesture slots.
 	for ( int iGesture = 0; iGesture < GESTURE_SLOT_COUNT; ++iGesture )
 	{
+#if defined( L4D2 )
+		// S:0x123B70 / C:0x147B80 leave inactive slot/layer data alone.
+		if ( !m_aGestureSlots[iGesture].m_bActive )
+			continue;
+#endif
 		ResetGestureSlot( iGesture );
 	}
 }
@@ -445,7 +504,14 @@ void CMultiPlayerAnimState::ResetGestureSlots( void )
 //-----------------------------------------------------------------------------
 // Purpose:
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+#if defined( L4D2 )
+void CMultiPlayerAnimState::ResetGestureSlot( int iGestureSlot, float flFadeDuration )
+#else
 void CMultiPlayerAnimState::ResetGestureSlot( int iGestureSlot )
+#endif
 {
 	// Sanity Check
 	Assert( iGestureSlot >= 0 && iGestureSlot < GESTURE_SLOT_COUNT );
@@ -454,13 +520,36 @@ void CMultiPlayerAnimState::ResetGestureSlot( int iGestureSlot )
 		return;
 
 	GestureSlot_t *pGestureSlot = &m_aGestureSlots[iGestureSlot];
+#if defined( L4D2 )
+	if ( flFadeDuration > 0.0f )
+	{
+		if ( pGestureSlot->m_flFadeDuration == 0.0f )
+		{
+			pGestureSlot->m_flFadeDuration = flFadeDuration;
+			pGestureSlot->m_flFadeRemaining = flFadeDuration;
+		}
+		return;
+	}
+#endif
 	if ( pGestureSlot )
 	{
 #ifdef CLIENT_DLL
 		// briefly set to 1.0 so we catch the events, before we reset the slot
+#if defined( L4D2 )
+		pGestureSlot->m_pAnimLayer->SetCycle( 1.0f );
+#else
 		pGestureSlot->m_pAnimLayer->m_flCycle = 1.0;
+#endif
 
 		RunGestureSlotAnimEventsToCompletion( pGestureSlot );
+#endif
+#if defined( L4D2 )
+		// C147670 completes events before the active stop hook or slot clears.
+		if ( pGestureSlot->m_bActive )
+			OnGestureStopped( iGestureSlot );
+		pGestureSlot->m_bLooping = false;
+		pGestureSlot->m_flFadeDuration = 0.0f;
+		pGestureSlot->m_flFadeRemaining = 0.0f;
 #endif
 
 		pGestureSlot->m_iGestureSlot = GESTURE_SLOT_INVALID;
@@ -472,10 +561,17 @@ void CMultiPlayerAnimState::ResetGestureSlot( int iGestureSlot )
 			pGestureSlot->m_pAnimLayer->SetOrder( CBaseAnimatingOverlay::MAX_OVERLAYS );
 #ifdef CLIENT_DLL
 			pGestureSlot->m_pAnimLayer->Reset();
+#elif defined( L4D2 )
+			// S1236C0 retires only sequence and weight, not other layer history.
+			pGestureSlot->m_pAnimLayer->m_nSequence = 0;
+			pGestureSlot->m_pAnimLayer->m_flWeight = 0.0f;
 #endif
 		}
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 #ifdef CLIENT_DLL
 
@@ -487,6 +583,9 @@ void CMultiPlayerAnimState::RunGestureSlotAnimEventsToCompletion( GestureSlot_t 
 	CBasePlayer *pPlayer = GetBasePlayer();
 	if( !pPlayer )
 		return;
+#if defined( L4D2 )
+	CMDLCacheCriticalSection cacheCriticalSection( mdlcache );
+#endif
 
 	// Get the studio header for the player.
 	CStudioHdr *pStudioHdr = pPlayer->GetModelPtr();
@@ -578,7 +677,11 @@ bool CMultiPlayerAnimState::IsGestureSlotPlaying( int iGestureSlot, Activity iGe
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CMultiPlayerAnimState::RestartGesture( int iGestureSlot, Activity iGestureActivity, bool bAutoKill, bool bLooping )
+#else
 void CMultiPlayerAnimState::RestartGesture( int iGestureSlot, Activity iGestureActivity, bool bAutoKill )
+#endif
 {
 	// Sanity Check
 	Assert( iGestureSlot >= 0 && iGestureSlot < GESTURE_SLOT_COUNT );
@@ -594,31 +697,63 @@ void CMultiPlayerAnimState::RestartGesture( int iGestureSlot, Activity iGestureA
 			GestureSlot_t *pGesture = &m_aGestureSlots[iGestureSlot];
 			if ( pGesture && pGesture->m_pAnimLayer )
 			{
-				pGesture->m_pAnimLayer->m_flCycle = 1.0; // run until the end
+#if defined( L4D2 )
+				pGesture->m_pAnimLayer->SetCycle( 1.0f );
+#else
+				pGesture->m_pAnimLayer->m_flCycle = 1.0;
+#endif
 				RunGestureSlotAnimEventsToCompletion( &m_aGestureSlots[iGestureSlot] );
 			}
 		}
 #endif
 
 		Activity iIdealGestureActivity = TranslateActivity( iGestureActivity );
+#if defined( L4D2 )
+		const int iSequence = AddToGestureSlot( iGestureSlot, iIdealGestureActivity, bAutoKill, bLooping );
+		OnGestureStarted( iGestureSlot, iGestureActivity, iSequence );
+#else
 		AddToGestureSlot( iGestureSlot, iIdealGestureActivity, bAutoKill );
+#endif
 		return;
 	}
 
 	// Reset the cycle = restart the gesture.
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_pAnimLayer->SetCycle( 0.0f );
+#else
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flCycle = 0.0f;
+#endif
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flPrevCycle = 0.0f;
+#if defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_flFadeDuration = 0.0f;
+	m_aGestureSlots[iGestureSlot].m_flFadeRemaining = 0.0f;
+	OnGestureStarted( iGestureSlot, iGestureActivity, m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_nSequence );
+#endif
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+int CMultiPlayerAnimState::AddToGestureSlot( int iGestureSlot, Activity iGestureActivity, bool bAutoKill, bool bLooping )
+#else
 void CMultiPlayerAnimState::AddToGestureSlot( int iGestureSlot, Activity iGestureActivity, bool bAutoKill )
+#endif
 {
 	// Sanity Check
 	Assert( iGestureSlot >= 0 && iGestureSlot < GESTURE_SLOT_COUNT );
 
 	CBasePlayer *pPlayer = GetBasePlayer();
+#if defined( L4D2 )
+	if ( !pPlayer || !m_aGestureSlots[iGestureSlot].m_pAnimLayer || !VerifyAnimLayerInSlot( iGestureSlot ) )
+		return -1;
+	const int iGestureSequence = SelectGestureSequence( iGestureSlot, iGestureActivity, pPlayer );
+	if ( iGestureSequence <= 0 )
+		return iGestureSequence;
+	m_aGestureSlots[iGestureSlot].m_bLooping = bLooping;
+	m_aGestureSlots[iGestureSlot].m_flFadeDuration = 0.0f;
+	m_aGestureSlots[iGestureSlot].m_flFadeRemaining = 0.0f;
+#else
 	if ( !pPlayer )
 		return;
 
@@ -633,6 +768,7 @@ void CMultiPlayerAnimState::AddToGestureSlot( int iGestureSlot, Activity iGestur
 	int iGestureSequence = pPlayer->SelectWeightedSequence( iGestureActivity );
 	if ( iGestureSequence <= 0 )
 		return;
+#endif
 
 #ifdef CLIENT_DLL 
 
@@ -641,14 +777,31 @@ void CMultiPlayerAnimState::AddToGestureSlot( int iGestureSlot, Activity iGestur
 	m_aGestureSlots[iGestureSlot].m_iActivity = iGestureActivity;
 	m_aGestureSlots[iGestureSlot].m_bAutoKill = bAutoKill;
 	m_aGestureSlots[iGestureSlot].m_bActive = true;
+#if defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_pAnimLayer->SetSequence( iGestureSequence );
+	m_aGestureSlots[iGestureSlot].m_pAnimLayer->SetOrder( iGestureSlot );
+#else
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_nSequence = iGestureSequence;
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_nOrder = iGestureSlot;
+#endif
+#if defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_pAnimLayer->SetWeight( 0.0f );
+#else
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flWeight = 1.0f;
+#endif
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flPlaybackRate = 1.0f;
+#if defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_pAnimLayer->SetCycle( 0.0f );
+#else
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flCycle = 0.0f;
+#endif
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flPrevCycle = 0.0f;
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flLayerAnimtime = 0.0f;
+#if defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flLayerFadeOuttime = 0.2f;
+#else
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flLayerFadeOuttime = 0.0f;
+#endif
 
 	pPlayer->m_flOverlayPrevEventCycle[iGestureSlot] = -1.0;
 
@@ -673,7 +826,11 @@ void CMultiPlayerAnimState::AddToGestureSlot( int iGestureSlot, Activity iGestur
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_bSequenceFinished = false;
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flLastEventCheck = 0.0f;
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_flLastEventCheck = gpGlobals->curtime;
+#if defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_bLooping = false;
+#else
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_bLooping = false;//( ( GetSequenceFlags( GetModelPtr(), iGestureSequence ) & STUDIO_LOOPING ) != 0);
+#endif
 	if ( bAutoKill )
 	{
 		m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_fFlags |= ANIM_LAYER_AUTOKILL;
@@ -684,6 +841,9 @@ void CMultiPlayerAnimState::AddToGestureSlot( int iGestureSlot, Activity iGestur
 	}
 	m_aGestureSlots[iGestureSlot].m_pAnimLayer->m_fFlags |= ANIM_LAYER_ACTIVE;
 
+#endif
+#if defined( L4D2 )
+	return iGestureSequence;
 #endif
 }
 
@@ -708,6 +868,11 @@ void CMultiPlayerAnimState::AddVCDSequenceToGestureSlot( int iGestureSlot, int i
 
 	// Set the activity.
 	Activity iGestureActivity = ACT_MP_VCD;
+#if defined( L4D2 )
+	m_aGestureSlots[iGestureSlot].m_bLooping = false;
+	m_aGestureSlots[iGestureSlot].m_flFadeDuration = 0.0f;
+	m_aGestureSlots[iGestureSlot].m_flFadeRemaining = 0.0f;
+#endif
 
 #ifdef CLIENT_DLL 
 
@@ -1006,7 +1171,11 @@ Activity CMultiPlayerAnimState::TranslateActivity( Activity actDesired )
 // Input  :  - 
 // Output : float
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+double CMultiPlayerAnimState::GetCurrentMaxGroundSpeed()
+#else
 float CMultiPlayerAnimState::GetCurrentMaxGroundSpeed()
+#endif
 {
 	CStudioHdr *pStudioHdr = GetBasePlayer()->GetModelPtr();
 
@@ -1154,7 +1323,9 @@ void CMultiPlayerAnimState::ComputeMainSequence()
 			}
 
 			pPlayer->ResetSequence( m_nSpecificMainSequence );
+#if !defined( L4D2 )
 			ResetGroundSpeed();
+#endif
 			return;
 		}
 		 
@@ -1163,11 +1334,21 @@ void CMultiPlayerAnimState::ComputeMainSequence()
 
 		m_nSpecificMainSequence = -1;
 		RestartMainSequence();
+#if !defined( L4D2 )
 		ResetGroundSpeed();
+#endif
 	}
 
 	// Export to our outer class..
 	int animDesired = SelectWeightedSequence( TranslateActivity( idealActivity ) );
+#if defined( L4D2 )
+	if ( animDesired < 0 )
+		animDesired = 0;
+	const Activity oldSequenceActivity = pPlayer->GetSequenceActivity( pPlayer->GetSequence() );
+	const Activity newSequenceActivity = pPlayer->GetSequenceActivity( animDesired );
+	if ( oldSequenceActivity == newSequenceActivity )
+		return;
+#else
 	if ( pPlayer->GetSequenceActivity( pPlayer->GetSequence() ) == pPlayer->GetSequenceActivity( animDesired ) )
 		return;
 
@@ -1175,6 +1356,7 @@ void CMultiPlayerAnimState::ComputeMainSequence()
 	{
 		 animDesired = 0;
 	}
+#endif
 
 	if ( anim_showstate.GetInt() == pPlayer->entindex() )
 	{
@@ -1189,6 +1371,13 @@ void CMultiPlayerAnimState::ComputeMainSequence()
 		}
 	}
 
+#if defined( L4D2 )
+	const Activity oldBaseActivity = UntranslateActivity( oldSequenceActivity );
+	const Activity newBaseActivity = UntranslateActivity( newSequenceActivity );
+	if ( ( oldBaseActivity != ACT_WALK && oldBaseActivity != ACT_RUN ) ||
+		 ( newBaseActivity != ACT_WALK && newBaseActivity != ACT_RUN ) )
+		RestartMainSequence();
+#endif
 	pPlayer->ResetSequence( animDesired );
 
 #ifdef CLIENT_DLL
@@ -1272,49 +1461,99 @@ void CMultiPlayerAnimState::ComputeGestureSequence( CStudioHdr *pStudioHdr )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( CLIENT_DLL ) && defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+
 void CMultiPlayerAnimState::UpdateGestureLayer( CStudioHdr *pStudioHdr, GestureSlot_t *pGesture )
 {
-	// Sanity check.
 	if ( !pStudioHdr || !pGesture )
 		return;
-
 	CBasePlayer *pPlayer = GetBasePlayer();
-	if( !pPlayer )
+	if ( !pPlayer )
 		return;
 
-#ifdef CLIENT_DLL 
-
-	// Get the current cycle.
-	float flCycle = pGesture->m_pAnimLayer->m_flCycle;
-	flCycle += pPlayer->GetSequenceCycleRate( pStudioHdr, pGesture->m_pAnimLayer->m_nSequence ) * gpGlobals->frametime * GetGesturePlaybackRate() * pGesture->m_pAnimLayer->m_flPlaybackRate;
-
-	pGesture->m_pAnimLayer->m_flPrevCycle =	pGesture->m_pAnimLayer->m_flCycle;
-	pGesture->m_pAnimLayer->m_flCycle = flCycle;
-
-	if( flCycle > 1.0f )
+#ifdef CLIENT_DLL
+#if defined( L4D2 )
+	// C147800 caches the sequence BEFORE rate/event callbacks, and spills only
+	// after wide rate * frame time + the previously stored cycle.
+	const int nSequence = pGesture->m_pAnimLayer->m_nSequence;
+	const float flPreviousCycle = pGesture->m_pAnimLayer->m_flCycle;
+	const float flRate = pPlayer->GetSequenceCycleRate( pStudioHdr, nSequence );
+	const float flCycle = static_cast< float >( static_cast< double >( flRate ) *
+		static_cast< double >( gpGlobals->frametime ) + static_cast< double >( flPreviousCycle ) );
+	pGesture->m_pAnimLayer->m_flPrevCycle = pGesture->m_pAnimLayer->m_flCycle;
+	pGesture->m_pAnimLayer->SetCycle( flCycle );
+	if ( flCycle > 1.0f )
 	{
 		RunGestureSlotAnimEventsToCompletion( pGesture );
-
 		if ( pGesture->m_bAutoKill )
 		{
 			ResetGestureSlot( pGesture->m_iGestureSlot );
 			return;
 		}
+		pGesture->m_pAnimLayer->SetCycle( pGesture->m_bLooping ? 0.0f : 1.0f );
+	}
+
+	const mstudioseqdesc_t &sequence = pStudioHdr->pSeqdesc( nSequence );
+	if ( ( sequence.flags & STUDIO_SNAP ) || pGesture->m_bLooping )
+	{
+		pGesture->m_pAnimLayer->SetWeight( 1.0f );
+	}
+	else
+	{
+		// Unlike the infected handler, this duration spills BEFORE multiplying.
+		const float flDuration = static_cast< float >( pPlayer->SequenceDuration( pStudioHdr, nSequence ) );
+		const float flElapsed = flDuration * flCycle;
+		const float flRemaining = flDuration - flElapsed;
+		float flWeight = 1.0f;
+		// Both native JBE arms include unordered values.
+		if ( !( pGesture->m_flFadeDuration > 0.0f ) || !( flRemaining > pGesture->m_flFadeRemaining ) )
+		{
+			if ( sequence.fadeintime > flElapsed )
+				flWeight = 1.0f - ( sequence.fadeintime - flElapsed ) / sequence.fadeintime;
+			else if ( sequence.fadeouttime > flRemaining )
+				flWeight = 1.0f - ( sequence.fadeouttime - flRemaining ) / sequence.fadeouttime;
+		}
 		else
 		{
-			pGesture->m_pAnimLayer->m_flCycle = 1.0f;
+			const float flElapsedFade = pGesture->m_flFadeDuration - pGesture->m_flFadeRemaining;
+			const float flNextRemaining = pGesture->m_flFadeRemaining - gpGlobals->frametime;
+			flWeight = 1.0f - flElapsedFade / pGesture->m_flFadeDuration;
+			pGesture->m_flFadeRemaining = flNextRemaining;
+			if ( flNextRemaining < 0.0f )
+				ResetGestureSlot( pGesture->m_iGestureSlot );
 		}
+		// Keep native post-reset execution and the original local cycle, even
+		// after completion changed the layer cycle. No completion-bug repair.
+		pGesture->m_pAnimLayer->SetWeight( ( flWeight * 3.0f ) * flWeight -
+			( ( flWeight * 2.0f ) * flWeight ) * flWeight );
 	}
-
 #else
-
-	if ( pGesture->m_iActivity != ACT_INVALID && pGesture->m_pAnimLayer->m_nActivity == ACT_INVALID )
+	float flCycle = pGesture->m_pAnimLayer->m_flCycle;
+	flCycle += pPlayer->GetSequenceCycleRate( pStudioHdr, pGesture->m_pAnimLayer->m_nSequence ) * gpGlobals->frametime * GetGesturePlaybackRate() * pGesture->m_pAnimLayer->m_flPlaybackRate;
+	pGesture->m_pAnimLayer->m_flPrevCycle = pGesture->m_pAnimLayer->m_flCycle;
+	pGesture->m_pAnimLayer->m_flCycle = flCycle;
+	if ( flCycle > 1.0f )
 	{
-		ResetGestureSlot( pGesture->m_iGestureSlot );
+		RunGestureSlotAnimEventsToCompletion( pGesture );
+		if ( pGesture->m_bAutoKill )
+		{
+			ResetGestureSlot( pGesture->m_iGestureSlot );
+			return;
+		}
+		pGesture->m_pAnimLayer->m_flCycle = 1.0f;
 	}
-
+#endif
+#else
+	if ( pGesture->m_iActivity != ACT_INVALID && pGesture->m_pAnimLayer->m_nActivity == ACT_INVALID )
+		ResetGestureSlot( pGesture->m_iGestureSlot );
 #endif
 }
+
+#if defined( CLIENT_DLL ) && defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 extern ConVar mp_facefronttime;
 extern ConVar mp_feetyawrate;
@@ -1361,7 +1600,12 @@ void CMultiPlayerAnimState::Update( float eyeYaw, float eyePitch )
 	}
 
 #ifdef CLIENT_DLL
+#if defined( L4D2 )
+	C_BasePlayer *pLocalPlayer = C_BasePlayer::GetLocalPlayer();
+	if ( pLocalPlayer && pLocalPlayer->ShouldDrawLocalPlayerModel() )
+#else
 	if ( C_BasePlayer::ShouldDrawLocalPlayer() )
+#endif
 	{
 		GetBasePlayer()->SetPlaybackRate( 1.0f );
 	}

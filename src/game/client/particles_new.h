@@ -40,6 +40,12 @@ public:
 	// your particles are for sorting amongst other translucent entities.
 	void SetSortOrigin( const Vector &vSortOrigin );
 	bool ShouldDraw( void );
+#if defined( L4D2 )
+	void SetDrawOnlyForLocalUser( int user );
+	bool ShouldDrawForLocalUser( int user ) const;
+	static CNewParticleEffect *CreateForLocalUser( C_BaseEntity *owner, CParticleSystemDefinition *definition,
+		const Vector &origin, int referenceCount, int onlyDrawForLocalUser );
+#endif
 	virtual bool IsTransparent( void );
 	virtual bool IsTwoPass( void );
 	virtual bool UsesPowerOfTwoFrameBufferTexture( void );
@@ -157,6 +163,11 @@ protected:
 	Vector		m_LastMax;
 
 	bool		m_bViewModelEffect;
+#if defined( L4D2 )
+	int m_nOnlyDrawForLocalUser; // Native1252, constructor-1, not prediction/wire/save.
+	bool m_bTerrorFromParticleProperty; // Native945bit2, ctortrue/worldfactoryfalse.
+	Vector m_vTerrorAggregationCenter; // Native1256, constructor STORE OMITTED.
+#endif
 
 private:
 	// Update the reference count.

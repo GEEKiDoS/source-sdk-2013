@@ -6,14 +6,25 @@
 //===========================================================================//
 #include "cbase.h"
 #include "view_shared.h"
+#if defined( L4D2 )
+#include "l4d2/entities/c_terror_func_brush.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#if defined( L4D2 )
+class C_FuncReflectiveGlass : public C_FuncBrush
+#else
 class C_FuncReflectiveGlass : public C_BaseEntity
+#endif
 {
 public:
+#if defined( L4D2 )
+	DECLARE_CLASS( C_FuncReflectiveGlass, C_FuncBrush );
+#else
 	DECLARE_CLASS( C_FuncReflectiveGlass, C_BaseEntity );
+#endif
 	DECLARE_CLIENTCLASS();
 
 // C_BaseEntity.

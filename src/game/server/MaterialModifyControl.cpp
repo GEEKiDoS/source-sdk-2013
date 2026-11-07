@@ -25,7 +25,11 @@ enum MaterialModifyMode_t
 	MATERIAL_MODIFY_MODE_FLOAT_LERP = 3,
 };
 
-ConVar debug_materialmodifycontrol( "debug_materialmodifycontrol", "0" );
+ConVar debug_materialmodifycontrol( "debug_materialmodifycontrol", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 class CMaterialModifyControl : public CBaseEntity
 {

@@ -1,0 +1,149 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Recovered from the pinned infected_vs20/vs30 VCS programs. The wound
+// constants are already in model space; their CPU producer owns bone transforms.
+
+// STATIC: "WOUNDED"                    "0..1"
+// STATIC: "DEPTHONLY"                  "0..1"
+// STATIC: "HALFLAMBERT"                "0..1"
+// STATIC: "USE_STATIC_CONTROL_FLOW"    "0..1"
+// STATIC: "BUMP"                       "0..1"
+
+// DYNAMIC: "SKINNING"                  "0..1"
+// DYNAMIC: "COMPRESSED_VERTS"          "0..1"
+// DYNAMIC: "STATICLIGHT"               "0..1"
+// DYNAMIC: "NUM_LIGHTS"                "0..4"
+// DYNAMIC: "SCENEFOG"                  "0..1"
+
+// SKIP: $USE_STATIC_CONTROL_FLOW && ( $NUM_LIGHTS > 0 )
+// SKIP: $DEPTHONLY && ( $BUMP || $HALFLAMBERT || $STATICLIGHT )
+
+#include "common_vs_fxc.h"
+
+const float4 g_vEyeVector                 : register( c12 );
+const float3 g_vEllipsoidUp2               : register( c14 );
+const float4 g_vEllipsoidSide2             : register( c15 );
+const float4 g_vWoundUvScales              : register( c48 );
+const float4 g_vWoundUvBiases              : register( c49 );
+const float4 cDetailTexCoordTransform[2]   : register( c50 );
+const float4 g_vEllipsoidCenter           : register( c52 );
+const float4 g_vEllipsoidLookAt           : register( c53 );
+const float3 g_vEllipsoidUp               : register( c54 );
+const float3 g_vEllipsoidSide             : register( c55 );
+const float3 g_vEllipsoidCenter2          : register( c56 );
+const float3 g_vEllipsoidLookAt2          : register( c57 );
+
+struct VS_INPUT
+{
+	float4 vPos          : POSITION;
+	float4 vBoneWeights  : BLENDWEIGHT;
+	float4 vBoneIndices  : BLENDINDICES;
+	float4 vNormal       : NORMAL;
+	float4 vTexCoord     : TEXCOORD0;
+	float3 vStaticLight  : COLOR1;
+	float4 vTangent      : TANGENT;
+};
+
+struct VS_OUTPUT
+{
+	float4 projPos                  : POSITION;
+	float4 baseDetailTexCoord       : TEXCOORD0;
+	float4 lightAtten               : TEXCOORD1;
+	float4 woundTexCoord            : TEXCOORD2;
+	float4 worldNormal_viewDepth    : TEXCOORD3;
+	float4 fog                      : TEXCOORD4;
+	float3 lightingOrTangent        : TEXCOORD5;
+	float3 worldPos                 : TEXCOORD6;
+	float4 projPos_woundCull        : TEXCOORD7;
+};
+
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+	float3 worldPos;
+
+#if DEPTHONLY
+	SkinPosition( SKINNING != 0, v.vPos, v.vBoneWeights, v.vBoneIndices, worldPos );
+#else
+	float3 modelNormal, worldNormal;
+#if BUMP
+	float4 modelTangent;
+	float3 worldTangent, worldBinormal;
+	DecompressVertex_NormalTangent( v.vNormal, v.vTangent, modelNormal, modelTangent );
+	SkinPositionNormalAndTangentSpace( SKINNING != 0, v.vPos, modelNormal,
+		modelTangent, v.vBoneWeights, v.vBoneIndices, worldPos,
+		worldNormal, worldTangent, worldBinormal );
+	o.lightingOrTangent = normalize( worldTangent );
+#else
+	DecompressVertex_Normal( v.vNormal, modelNormal );
+	SkinPositionAndNormal( SKINNING != 0, v.vPos, modelNormal,
+		v.vBoneWeights, v.vBoneIndices, worldPos, worldNormal );
+#endif
+	worldNormal = normalize( worldNormal );
+	o.worldNormal_viewDepth.xyz = worldNormal;
+	o.worldNormal_viewDepth.w = dot( g_vEyeVector.xyz, worldPos - cEyePos );
+	o.worldPos = worldPos;
+
+	// The target's c16 is visibility for enabled vertex fog, not the
+	// original amount. Unlike its pixel-fog constants, c16 is NOT rigged
+	// to no-fog when the scene disables fog (shaderapidx9 RVA 0x16A80).
+	// Keep the original XY distance and squared pixel interpolation.
+#if SCENEFOG
+	float flVisibility = max( cFogParams.z,
+		-length( worldPos.xy - cEyePos.xy ) * cFogParams.w + cFogParams.x );
+	o.fog.w = max( saturate( 1.0f - flVisibility ), 0.0001f );
+#else
+	o.fog.w = 0.0001f;
+#endif
+	o.baseDetailTexCoord.xy = v.vTexCoord.xy;
+	o.baseDetailTexCoord.z = dot( v.vTexCoord.xy, cDetailTexCoordTransform[0].xy );
+	o.baseDetailTexCoord.w = dot( v.vTexCoord.xy, cDetailTexCoordTransform[1].xy );
+
+#if USE_STATIC_CONTROL_FLOW
+	o.lightAtten.x = GetVertexAttenForLight( worldPos, 0, true );
+	o.lightAtten.y = GetVertexAttenForLight( worldPos, 1, true );
+	o.lightAtten.z = GetVertexAttenForLight( worldPos, 2, true );
+	o.lightAtten.w = GetVertexAttenForLight( worldPos, 3, true );
+#if !BUMP
+	o.lightingOrTangent = DoLighting( worldPos, worldNormal, v.vStaticLight,
+		STATICLIGHT != 0, true, HALFLAMBERT != 0 );
+#endif
+#else
+#if NUM_LIGHTS > 0
+	o.lightAtten.x = GetVertexAttenForLight( worldPos, 0, false );
+#endif
+#if NUM_LIGHTS > 1
+	o.lightAtten.y = GetVertexAttenForLight( worldPos, 1, false );
+#endif
+#if NUM_LIGHTS > 2
+	o.lightAtten.z = GetVertexAttenForLight( worldPos, 2, false );
+#endif
+#if NUM_LIGHTS > 3
+	o.lightAtten.w = GetVertexAttenForLight( worldPos, 3, false );
+#endif
+#if !BUMP
+	o.lightingOrTangent = DoLightingUnrolled( worldPos, worldNormal, v.vStaticLight,
+		STATICLIGHT != 0, true, HALFLAMBERT != 0, NUM_LIGHTS );
+#endif
+#endif
+#endif
+
+	o.projPos = mul( float4( worldPos, 1.0f ), cViewProj );
+	o.projPos_woundCull.xyz = o.projPos.xyz;
+
+#if WOUNDED
+	float3 delta1 = v.vPos.xyz - g_vEllipsoidCenter.xyz;
+	float3 delta2 = v.vPos.xyz - g_vEllipsoidCenter2;
+	float3 wound1 = float3( dot( g_vEllipsoidSide, delta1 ),
+		-dot( g_vEllipsoidUp, delta1 ), dot( g_vEllipsoidLookAt.xyz, delta1 ) );
+	float3 wound2 = float3( dot( g_vEllipsoidSide2.xyz, delta2 ),
+		-dot( g_vEllipsoidUp2, delta2 ), dot( g_vEllipsoidLookAt2, delta2 ) );
+	float3 mappedWound2 = lerp( wound1, wound2, g_vEllipsoidSide2.w );
+	float2 projectionScale = rsqrt( saturate( 1.0f - float2( wound1.z, mappedWound2.z ) *
+		float2( wound1.z, mappedWound2.z ) ) ) / g_vEllipsoidLookAt.w;
+	o.woundTexCoord = float4( wound1.xy * projectionScale.x, mappedWound2.xy * projectionScale.y ) *
+		g_vWoundUvScales + g_vWoundUvBiases;
+	o.projPos_woundCull.w = length( wound2 ) + g_vEllipsoidSide2.w;
+#endif
+
+	return o;
+}

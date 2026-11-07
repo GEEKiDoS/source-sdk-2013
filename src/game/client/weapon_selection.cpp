@@ -18,6 +18,10 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#if defined( L4D2 )
+#include "l4d2/hud/weapon_selection_l4d2.inc"
+#else
+
 #define HISTORY_DRAW_TIME	"5"
 
 ConVar hud_drawhistory_time( "hud_drawhistory_time", HISTORY_DRAW_TIME, 0 );
@@ -681,3 +685,5 @@ C_BaseCombatWeapon *CBaseHudWeaponSelection::GetNextActivePos( int iSlot, int iS
 
 	return pNextWeapon;
 }
+
+#endif // L4D2

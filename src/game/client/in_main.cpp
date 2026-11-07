@@ -34,7 +34,9 @@
 #include "sourcevr/isourcevirtualreality.h"
 
 // NVNT Include
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 #include <vgui/ISurface.h>
 
 extern ConVar in_joystick;
@@ -62,11 +64,53 @@ float anglemod( float a );
 static int in_impulse = 0;
 static int in_cancel = 0;
 
-ConVar cl_anglespeedkey( "cl_anglespeedkey", "0.67", 0 );
-ConVar cl_yawspeed( "cl_yawspeed", "210", FCVAR_NONE, "Client yaw speed.", true, -100000, true, 100000 );
-ConVar cl_pitchspeed( "cl_pitchspeed", "225", FCVAR_NONE, "Client pitch speed.", true, -100000, true, 100000 );
-ConVar cl_pitchdown( "cl_pitchdown", "89", FCVAR_CHEAT );
-ConVar cl_pitchup( "cl_pitchup", "89", FCVAR_CHEAT );
+ConVar cl_anglespeedkey( "cl_anglespeedkey", "0.67", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+ );
+ConVar cl_yawspeed( "cl_yawspeed", "210", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+, 
+#if defined( L4D2 )
+	""
+#else
+	"Client yaw speed.", true, -100000, true, 100000
+#endif
+ );
+ConVar cl_pitchspeed( "cl_pitchspeed", "225", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_NONE
+#endif
+, 
+#if defined( L4D2 )
+	""
+#else
+	"Client pitch speed.", true, -100000, true, 100000
+#endif
+ );
+ConVar cl_pitchdown( "cl_pitchdown", "89", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar cl_pitchup( "cl_pitchup", "89", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 #if defined( CSTRIKE_DLL )
 ConVar cl_sidespeed( "cl_sidespeed", "400", FCVAR_CHEAT );
 ConVar cl_upspeed( "cl_upspeed", "320", FCVAR_ARCHIVE|FCVAR_CHEAT );
@@ -74,18 +118,60 @@ ConVar cl_forwardspeed( "cl_forwardspeed", "400", FCVAR_ARCHIVE|FCVAR_CHEAT );
 ConVar cl_backspeed( "cl_backspeed", "400", FCVAR_ARCHIVE|FCVAR_CHEAT );
 #else
 ConVar cl_sidespeed( "cl_sidespeed", "450", FCVAR_REPLICATED | FCVAR_CHEAT );
-ConVar cl_upspeed( "cl_upspeed", "320", FCVAR_REPLICATED | FCVAR_CHEAT );
+ConVar cl_upspeed( "cl_upspeed", "320", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_REPLICATED | FCVAR_CHEAT
+#endif
+ );
 ConVar cl_forwardspeed( "cl_forwardspeed", "450", FCVAR_REPLICATED | FCVAR_CHEAT );
 ConVar cl_backspeed( "cl_backspeed", "450", FCVAR_REPLICATED | FCVAR_CHEAT );
 #endif // CSTRIKE_DLL
-ConVar lookspring( "lookspring", "0", FCVAR_ARCHIVE );
-ConVar lookstrafe( "lookstrafe", "0", FCVAR_ARCHIVE );
-ConVar in_joystick( "joystick","0", FCVAR_ARCHIVE );
+ConVar lookspring( "lookspring", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+ConVar lookstrafe( "lookstrafe", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+ConVar in_joystick( "joystick","0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
 
-ConVar thirdperson_platformer( "thirdperson_platformer", "0", 0, "Player will aim in the direction they are moving." );
-ConVar thirdperson_screenspace( "thirdperson_screenspace", "0", 0, "Movement will be relative to the camera, eg: left means screen-left" );
+ConVar thirdperson_platformer( "thirdperson_platformer", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Player will aim in the direction they are moving." );
+ConVar thirdperson_screenspace( "thirdperson_screenspace", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Movement will be relative to the camera, eg: left means screen-left" );
 
-ConVar sv_noclipduringpause( "sv_noclipduringpause", "0", FCVAR_REPLICATED | FCVAR_CHEAT, "If cheats are enabled, then you can noclip with the game paused (for doing screenshots, etc.)." );
+ConVar sv_noclipduringpause( "sv_noclipduringpause", "0", 
+#if defined( L4D2 )
+	0x00006008
+#else
+	FCVAR_REPLICATED | FCVAR_CHEAT
+#endif
+, "If cheats are enabled, then you can noclip with the game paused (for doing screenshots, etc.)." );
 
 extern ConVar cl_mouselook;
 
@@ -145,7 +231,9 @@ static	kbutton_t	in_break;
 static	kbutton_t	in_zoom;
 static  kbutton_t   in_grenade1;
 static  kbutton_t   in_grenade2;
+#if !defined( L4D2 )
 static	kbutton_t	in_attack3;
+#endif
 kbutton_t	in_ducktoggle;
 
 /*
@@ -311,6 +399,15 @@ void CInput::AddKeyButton( const char *name, kbutton_t *pkb )
 //-----------------------------------------------------------------------------
 CInput::CInput( void )
 {
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	m_nCameraCommand = CAM_COMMAND_NONE;
+	m_flRemainingLookSpinTime = 0.0f;
+	m_flLookSpinYawRate = 0.0f;
+	m_flLastJoystickYawDelta = 0.0f;
+	m_flRemainingSteamControllerSampleTime = 0.0f;
+	m_flRemainingResetCameraTime = 0.0f;
+	m_flResetCameraPitchRate = 0.0f;
+#endif
 	m_pCommands = NULL;
 	m_pCameraThirdData = NULL;
 	m_pVerifiedCommands = NULL;
@@ -474,10 +571,51 @@ void IN_Attack2Down( const CCommand &args ) { KeyDown(&in_attack2, args[1] );}
 void IN_Attack2Up( const CCommand &args ) {KeyUp(&in_attack2, args[1] );}
 void IN_UseDown ( const CCommand &args ) {KeyDown(&in_use, args[1] );}
 void IN_UseUp ( const CCommand &args ) {KeyUp(&in_use, args[1] );}
+#if defined( L4D2 )
+// C131270: release the latch independently of the key that enabled it.
+static void IN_ClearDuckToggle()
+{
+	if ( ::input->KeyState( &in_ducktoggle ) != 0.0f )
+	{
+		in_ducktoggle.down[0] = in_ducktoggle.down[1] = 0;
+		in_ducktoggle.state = 4;
+	}
+}
+
+// C1312C0/C131340: circular analog movement owns the speed-button latch.
+void IN_SetJoystickWalk( bool walk )
+{
+	if ( walk )
+		KeyDown( &in_speed, NULL );
+	else
+	{
+		in_speed.down[0] = in_speed.down[1] = 0;
+		in_speed.state = 4;
+	}
+}
+#endif
 void IN_JumpDown ( const CCommand &args ) {KeyDown(&in_jump, args[1] );}
-void IN_JumpUp ( const CCommand &args ) {KeyUp(&in_jump, args[1] );}
-void IN_DuckDown( const CCommand &args ) {KeyDown(&in_duck, args[1] );}
-void IN_DuckUp( const CCommand &args ) {KeyUp(&in_duck, args[1] );}
+void IN_JumpUp ( const CCommand &args )
+{
+	KeyUp( &in_jump, args[1] );
+#if defined( L4D2 )
+	IN_ClearDuckToggle();
+#endif
+}
+void IN_DuckDown( const CCommand &args )
+{
+	KeyDown( &in_duck, args[1] );
+#if defined( L4D2 )
+	IN_ClearDuckToggle();
+#endif
+}
+void IN_DuckUp( const CCommand &args )
+{
+	KeyUp( &in_duck, args[1] );
+#if defined( L4D2 )
+	IN_ClearDuckToggle();
+#endif
+}
 void IN_ReloadDown( const CCommand &args ) {KeyDown(&in_reload, args[1] );}
 void IN_ReloadUp( const CCommand &args ) {KeyUp(&in_reload, args[1] );}
 void IN_Alt1Down( const CCommand &args ) {KeyDown(&in_alt1, args[1] );}
@@ -493,14 +631,20 @@ void IN_Grenade1Down( const CCommand &args ) { KeyDown( &in_grenade1, args[1] );
 void IN_Grenade2Up( const CCommand &args ) { KeyUp( &in_grenade2, args[1] ); }
 void IN_Grenade2Down( const CCommand &args ) { KeyDown( &in_grenade2, args[1] ); }
 void IN_XboxStub( const CCommand &args ) { /*do nothing*/ }
+#if !defined( L4D2 )
 void IN_Attack3Down( const CCommand &args ) { KeyDown(&in_attack3, args[1] );}
 void IN_Attack3Up( const CCommand &args ) { KeyUp(&in_attack3, args[1] );}
+#endif
 
 void IN_DuckToggle( const CCommand &args ) 
 { 
 	if ( ::input->KeyState(&in_ducktoggle) )
 	{
-		KeyUp( &in_ducktoggle, args[1] ); 
+#if defined( L4D2 )
+		IN_ClearDuckToggle();
+#else
+		KeyUp( &in_ducktoggle, args[1] );
+#endif
 	}
 	else
 	{
@@ -633,6 +777,10 @@ float CInput::KeyState ( kbutton_t *key )
 void CInput::IN_SetSampleTime( float frametime )
 {
 	m_flKeyboardSampleTime = frametime;
+#if defined( L4D2 )
+	// Native C135F10 has its own per-frame Steam-controller sample budget.
+	m_flRemainingSteamControllerSampleTime = frametime;
+#endif
 }
 
 /*
@@ -641,7 +789,13 @@ DetermineKeySpeed
 
 ==============================
 */
-static ConVar in_usekeyboardsampletime( "in_usekeyboardsampletime", "1", 0, "Use keyboard sample time smoothing." );
+static ConVar in_usekeyboardsampletime( "in_usekeyboardsampletime", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Use keyboard sample time smoothing." );
 
 float CInput::DetermineKeySpeed( float frametime )
 {
@@ -950,9 +1104,16 @@ void CInput::ControllerMove( float frametime, CUserCmd *cmd )
 		}
 	}
 
+#if defined( L4D2 )
+	// C133720: joystick precedes Steam input, including their device-mode writes.
+	JoyStickMove( frametime, cmd );
+	SteamControllerMove( frametime, cmd );
+#else
 	SteamControllerMove( frametime, cmd );
 	JoyStickMove( frametime, cmd );
+#endif
 
+#if !defined( L4D2 )
 	// NVNT if we have a haptic device..
 	if(haptics && haptics->HasDevice())
 	{
@@ -978,6 +1139,7 @@ void CInput::ControllerMove( float frametime, CUserCmd *cmd )
 		UpdateAvatarEffect();
 #endif
 	}
+#endif // !L4D2
 
 
 }
@@ -1080,6 +1242,7 @@ void CInput::ExtraMouseSample( float frametime, bool active )
 		prediction->SetLocalViewAngles( cmd->viewangles );
 	}
 
+#if !defined( L4D2 )
 	// Let the headtracker override the view at the very end of the process so
 	// that vehicles and other stuff in g_pClientMode->CreateMove can override 
 	// first
@@ -1105,6 +1268,7 @@ void CInput::ExtraMouseSample( float frametime, bool active )
 			prediction->SetLocalViewAngles( cmd->viewangles );
 		}
 	}
+#endif
 
 }
 
@@ -1239,6 +1403,7 @@ void CInput::CreateMove ( int sequence_number, float input_sample_frametime, boo
 
 #endif
 
+#if !defined( L4D2 )
 		if ( UseVR() )
 		{
 			C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
@@ -1265,6 +1430,7 @@ void CInput::CreateMove ( int sequence_number, float input_sample_frametime, boo
 				engine->SetViewAngles( cmd->viewangles );
 			}
 		}
+#endif
 	}
 
 	m_flLastForwardMove = cmd->forwardmove;
@@ -1450,6 +1616,10 @@ Returns appropriate button info for keyboard and mouse state
 Set bResetState to 1 to clear old state info
 ============
 */
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/player/in_main_console.inc"
+#include "l4d2/player/in_main_console_registrations.inc"
+#endif
 int CInput::GetButtonBits( int bResetState )
 {
 	int bits = 0;
@@ -1474,7 +1644,12 @@ int CInput::GetButtonBits( int bResetState )
 	CalcButtonBits( bits, IN_ZOOM, s_ClearInputState, &in_zoom, bResetState );
 	CalcButtonBits( bits, IN_GRENADE1, s_ClearInputState, &in_grenade1, bResetState );
 	CalcButtonBits( bits, IN_GRENADE2, s_ClearInputState, &in_grenade2, bResetState );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	CalcButtonBits( bits, IN_LOOKSPIN, s_ClearInputState, &in_lookspin, bResetState );
+	CalcButtonBits( bits, IN_RESETCAMERA, s_ClearInputState, &in_resetcamera, bResetState );
+#else
 	CalcButtonBits( bits, IN_ATTACK3, s_ClearInputState, &in_attack3, bResetState );
+#endif
 
 	if ( KeyState(&in_ducktoggle) )
 	{
@@ -1565,81 +1740,353 @@ void CInput::AddIKGroundContactInfo( int entindex, float minheight, float maxhei
 #endif
 
 
-static ConCommand startcommandermousemove("+commandermousemove", IN_CommanderMouseMoveDown);
-static ConCommand endcommandermousemove("-commandermousemove", IN_CommanderMouseMoveUp);
-static ConCommand startmoveup("+moveup",IN_UpDown);
-static ConCommand endmoveup("-moveup",IN_UpUp);
-static ConCommand startmovedown("+movedown",IN_DownDown);
-static ConCommand endmovedown("-movedown",IN_DownUp);
-static ConCommand startleft("+left",IN_LeftDown);
-static ConCommand endleft("-left",IN_LeftUp);
-static ConCommand startright("+right",IN_RightDown);
-static ConCommand endright("-right",IN_RightUp);
-static ConCommand startforward("+forward",IN_ForwardDown);
-static ConCommand endforward("-forward",IN_ForwardUp);
-static ConCommand startback("+back",IN_BackDown);
-static ConCommand endback("-back",IN_BackUp);
-static ConCommand startlookup("+lookup", IN_LookupDown);
-static ConCommand endlookup("-lookup", IN_LookupUp);
-static ConCommand startlookdown("+lookdown", IN_LookdownDown);
-static ConCommand lookdown("-lookdown", IN_LookdownUp);
-static ConCommand startstrafe("+strafe", IN_StrafeDown);
-static ConCommand endstrafe("-strafe", IN_StrafeUp);
-static ConCommand startmoveleft("+moveleft", IN_MoveleftDown);
-static ConCommand endmoveleft("-moveleft", IN_MoveleftUp);
-static ConCommand startmoveright("+moveright", IN_MoverightDown);
-static ConCommand endmoveright("-moveright", IN_MoverightUp);
-static ConCommand startspeed("+speed", IN_SpeedDown);
-static ConCommand endspeed("-speed", IN_SpeedUp);
-static ConCommand startwalk("+walk", IN_WalkDown);
-static ConCommand endwalk("-walk", IN_WalkUp);
-static ConCommand startattack("+attack", IN_AttackDown);
-static ConCommand endattack("-attack", IN_AttackUp);
-static ConCommand startattack2("+attack2", IN_Attack2Down);
-static ConCommand endattack2("-attack2", IN_Attack2Up);
-static ConCommand startuse("+use", IN_UseDown);
-static ConCommand enduse("-use", IN_UseUp);
-static ConCommand startjump("+jump", IN_JumpDown);
-static ConCommand endjump("-jump", IN_JumpUp);
-static ConCommand impulse("impulse", IN_Impulse);
-static ConCommand startklook("+klook", IN_KLookDown);
-static ConCommand endklook("-klook", IN_KLookUp);
-static ConCommand startjlook("+jlook", IN_JLookDown);
-static ConCommand endjlook("-jlook", IN_JLookUp);
-static ConCommand startduck("+duck", IN_DuckDown);
-static ConCommand endduck("-duck", IN_DuckUp);
-static ConCommand startreload("+reload", IN_ReloadDown);
-static ConCommand endreload("-reload", IN_ReloadUp);
-static ConCommand startalt1("+alt1", IN_Alt1Down);
-static ConCommand endalt1("-alt1", IN_Alt1Up);
-static ConCommand startalt2("+alt2", IN_Alt2Down);
-static ConCommand endalt2("-alt2", IN_Alt2Up);
-static ConCommand startscore("+score", IN_ScoreDown);
-static ConCommand endscore("-score", IN_ScoreUp);
-static ConCommand startshowscores("+showscores", IN_ScoreDown);
-static ConCommand endshowscores("-showscores", IN_ScoreUp);
-static ConCommand startgraph("+graph", IN_GraphDown);
-static ConCommand endgraph("-graph", IN_GraphUp);
-static ConCommand startbreak("+break",IN_BreakDown);
-static ConCommand endbreak("-break",IN_BreakUp);
-static ConCommand force_centerview("force_centerview", IN_CenterView_f);
-static ConCommand joyadvancedupdate("joyadvancedupdate", IN_Joystick_Advanced_f, "", FCVAR_CLIENTCMD_CAN_EXECUTE);
-static ConCommand startzoom("+zoom", IN_ZoomDown);
-static ConCommand endzoom("-zoom", IN_ZoomUp);
-static ConCommand endgrenade1( "-grenade1", IN_Grenade1Up );
-static ConCommand startgrenade1( "+grenade1", IN_Grenade1Down );
-static ConCommand endgrenade2( "-grenade2", IN_Grenade2Up );
-static ConCommand startgrenade2( "+grenade2", IN_Grenade2Down );
+static ConCommand startcommandermousemove("+commandermousemove", IN_CommanderMouseMoveDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endcommandermousemove("-commandermousemove", IN_CommanderMouseMoveUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startmoveup("+moveup",IN_UpDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endmoveup("-moveup",IN_UpUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startmovedown("+movedown",IN_DownDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endmovedown("-movedown",IN_DownUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startleft("+left",IN_LeftDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endleft("-left",IN_LeftUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startright("+right",IN_RightDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endright("-right",IN_RightUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startforward("+forward",IN_ForwardDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endforward("-forward",IN_ForwardUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startback("+back",IN_BackDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endback("-back",IN_BackUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startlookup("+lookup", IN_LookupDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endlookup("-lookup", IN_LookupUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startlookdown("+lookdown", IN_LookdownDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand lookdown("-lookdown", IN_LookdownUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startstrafe("+strafe", IN_StrafeDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endstrafe("-strafe", IN_StrafeUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startmoveleft("+moveleft", IN_MoveleftDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endmoveleft("-moveleft", IN_MoveleftUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startmoveright("+moveright", IN_MoverightDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endmoveright("-moveright", IN_MoverightUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startspeed("+speed", IN_SpeedDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endspeed("-speed", IN_SpeedUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startwalk("+walk", IN_WalkDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endwalk("-walk", IN_WalkUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startattack("+attack", IN_AttackDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endattack("-attack", IN_AttackUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startattack2("+attack2", IN_Attack2Down
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endattack2("-attack2", IN_Attack2Up
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startuse("+use", IN_UseDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand enduse("-use", IN_UseUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startjump("+jump", IN_JumpDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endjump("-jump", IN_JumpUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand impulse("impulse", IN_Impulse
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startklook("+klook", IN_KLookDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endklook("-klook", IN_KLookUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startjlook("+jlook", IN_JLookDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endjlook("-jlook", IN_JLookUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startduck("+duck", IN_DuckDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endduck("-duck", IN_DuckUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startreload("+reload", IN_ReloadDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endreload("-reload", IN_ReloadUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startalt1("+alt1", IN_Alt1Down
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endalt1("-alt1", IN_Alt1Up
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startalt2("+alt2", IN_Alt2Down
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endalt2("-alt2", IN_Alt2Up
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startscore("+score", IN_ScoreDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endscore("-score", IN_ScoreUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startshowscores("+showscores", IN_ScoreDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endshowscores("-showscores", IN_ScoreUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startgraph("+graph", IN_GraphDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endgraph("-graph", IN_GraphUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startbreak("+break",IN_BreakDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endbreak("-break",IN_BreakUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand force_centerview("force_centerview", IN_CenterView_f
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand joyadvancedupdate("joyadvancedupdate", IN_Joystick_Advanced_f, "", 
+#if defined( L4D2 )
+	0x40000008
+#else
+	FCVAR_CLIENTCMD_CAN_EXECUTE
+#endif
+);
+static ConCommand startzoom("+zoom", IN_ZoomDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endzoom("-zoom", IN_ZoomUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endgrenade1( "-grenade1", IN_Grenade1Up
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand startgrenade1( "+grenade1", IN_Grenade1Down
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand endgrenade2( "-grenade2", IN_Grenade2Up
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand startgrenade2( "+grenade2", IN_Grenade2Down
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+#if !defined( L4D2 )
 static ConCommand startattack3("+attack3", IN_Attack3Down);
 static ConCommand endattack3("-attack3", IN_Attack3Up);
+#endif
 
-#ifdef TF_CLIENT_DLL
+#if defined( TF_CLIENT_DLL ) || defined( L4D2 )
 static ConCommand toggle_duck( "toggle_duck", IN_DuckToggle );
 #endif
 
 // Xbox 360 stub commands
-static ConCommand xboxmove("xmove", IN_XboxStub);
-static ConCommand xboxlook("xlook", IN_XboxStub);
+static ConCommand xboxmove("xmove", IN_XboxStub
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand xboxlook("xlook", IN_XboxStub
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
 
 /*
 ============

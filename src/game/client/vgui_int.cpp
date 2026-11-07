@@ -17,6 +17,9 @@
 #include <vgui/ISurface.h>
 #include <vgui/IVGui.h>
 #include <vgui/IInput.h>
+#if defined( L4D2 )
+#include <vgui/ILocalize.h>
+#endif // L4D2
 #include "tier0/vprof.h"
 #include "iclientmode.h"
 #include <vgui_controls/Panel.h>
@@ -167,6 +170,10 @@ bool VGui_Startup( CreateInterfaceFn appSystemFactory )
 	if ( !vgui::VGui_InitInterfacesList( "CLIENT", &appSystemFactory, 1 ) )
 		return false;
 
+#ifdef L4D2
+	g_pVGuiLocalize->AddFile( "resource/left4dead2_%language%.txt", "GAME", true );
+#endif
+
 	if ( !vgui::VGui_InitMatSysInterfacesList( "CLIENT", &appSystemFactory, 1 ) )
 		return false;
 
@@ -251,7 +258,13 @@ void VGui_Shutdown()
 	vgui::ivgui()->RunFrame();
 }
 
-static ConVar cl_showpausedimage( "cl_showpausedimage", "1", 0, "Show the 'Paused' image when game is paused." );
+static ConVar cl_showpausedimage( "cl_showpausedimage", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Show the 'Paused' image when game is paused." );
 
 //-----------------------------------------------------------------------------
 // Things to do before rendering vgui stuff...
@@ -284,7 +297,12 @@ void VGui_PostRender()
 // Purpose: 
 // Input  : cl_panelanimation - 
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( cl_panelanimation, "Shows panel animation variables: <panelname | blank for all panels>." , 0x00000008)
+#else
 CON_COMMAND( cl_panelanimation, "Shows panel animation variables: <panelname | blank for all panels>." )
+#endif
 {
 	if ( args.ArgC() == 2 )
 	{

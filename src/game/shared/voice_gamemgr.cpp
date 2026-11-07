@@ -33,11 +33,27 @@ CPlayerBitVec	g_SentGameRulesMasks[VOICE_MAX_PLAYERS];	// These store the masks 
 CPlayerBitVec	g_SentBanMasks[VOICE_MAX_PLAYERS];			// we need to resend them.
 CPlayerBitVec	g_bWantModEnable;
 
-ConVar voice_serverdebug( "voice_serverdebug", "0" );
+ConVar voice_serverdebug( "voice_serverdebug", "0"
+#if defined( L4D2 ) && defined( GAME_DLL )
+	, 0x00000006
+#endif
+ );
 
 // Set game rules to allow all clients to talk to each other.
 // Muted players still can't talk to each other.
-ConVar sv_alltalk( "sv_alltalk", "0", FCVAR_NOTIFY | FCVAR_REPLICATED, "Players can hear all other players, no team restrictions" );
+ConVar sv_alltalk( "sv_alltalk", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00080104
+#else
+	FCVAR_NOTIFY | FCVAR_REPLICATED
+#endif
+, 
+#if defined( L4D2 )
+	"Players can hear all other players' voice communication, no team restrictions"
+#else
+	"Players can hear all other players, no team restrictions"
+#endif
+ );
 
 
 CVoiceGameMgr g_VoiceGameMgr;

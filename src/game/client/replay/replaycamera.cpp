@@ -32,7 +32,7 @@
 #include "mathlib/noise.h"
 
 #ifdef CSTRIKE_DLL
-	#include "c_cs_player.h"
+	#include "l4d2/player/c_cs_player.h"
 #endif
 
 ConVar replay_editor_camera_length( "replay_editor_camera_length", "15", FCVAR_CLIENTDLL | FCVAR_ARCHIVE, "This is the camera length used to simulate camera shake in the replay editor.  The larger this number, the more the actual position will change.  It can also be set to negative values." );

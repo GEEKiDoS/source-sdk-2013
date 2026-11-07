@@ -14,6 +14,9 @@
 #include "rangecheckedvar.h"
 #include "lerp_functions.h"
 #include "networkvar.h"
+#if defined( L4D2 )
+class C_BaseAnimatingOverlay;
+#endif
 
 class C_AnimationLayer
 {
@@ -26,6 +29,11 @@ public:
 	void Reset();
 
 	void SetOrder( int order );
+#if defined( L4D2 )
+	void SetWeight( float weight );
+	void SetCycle( float cycle );
+	void SetSequence( int sequence );
+#endif
 
 public:
 
@@ -51,6 +59,9 @@ public:
 	float   m_flBlendOut;
 
 	bool    m_bClientBlend;
+#if defined( L4D2 )
+	C_BaseAnimatingOverlay *m_pOwnerEntity;
+#endif
 };
 #ifdef CLIENT_DLL
 	#define CAnimationLayer C_AnimationLayer
@@ -58,9 +69,16 @@ public:
 
 inline C_AnimationLayer::C_AnimationLayer()
 {
+#if defined( L4D2 )
+	m_pOwnerEntity = NULL;
+	// Main decision:3E9C0 omits heap order+8;3D120/6C01C otherwise read it.
+	// New order0 preserves the selected initial dirty16 outcome. Reset keeps it.
+	m_nOrder = 0;
+#endif
 	Reset();
 }
 
+#if !defined( L4D2 )
 inline void C_AnimationLayer::Reset()
 {
 	m_nSequence = 0;
@@ -80,7 +98,11 @@ inline void C_AnimationLayer::SetOrder( int order )
 {
 	m_nOrder = order;
 }
+#endif
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 inline float C_AnimationLayer::GetFadeout( float flCurTime )
 {
 	float s;
@@ -92,7 +114,11 @@ inline float C_AnimationLayer::GetFadeout( float flCurTime )
 	else
 	{
 		// blend in over 0.2 seconds
+#if defined( L4D2 )
+		s = 1.0f - (flCurTime - m_flLayerAnimtime) / m_flLayerFadeOuttime;
+#else
 		s = 1.0 - (flCurTime - m_flLayerAnimtime) / m_flLayerFadeOuttime;
+#endif
 		if (s > 0 && s <= 1.0)
 		{
 			// do a nice spline curve
@@ -106,6 +132,9 @@ inline float C_AnimationLayer::GetFadeout( float flCurTime )
 	}
 	return s;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 inline C_AnimationLayer LoopingLerp( float flPercent, C_AnimationLayer& from, C_AnimationLayer& to )
@@ -120,6 +149,9 @@ inline C_AnimationLayer LoopingLerp( float flPercent, C_AnimationLayer& from, C_
 
 	output.m_flLayerAnimtime = to.m_flLayerAnimtime;
 	output.m_flLayerFadeOuttime = to.m_flLayerFadeOuttime;
+#if defined( L4D2 )
+	output.m_pOwnerEntity = to.m_pOwnerEntity;
+#endif
 	return output;
 }
 
@@ -135,6 +167,9 @@ inline C_AnimationLayer Lerp( float flPercent, const C_AnimationLayer& from, con
 
 	output.m_flLayerAnimtime = to.m_flLayerAnimtime;
 	output.m_flLayerFadeOuttime = to.m_flLayerFadeOuttime;
+#if defined( L4D2 )
+	output.m_pOwnerEntity = to.m_pOwnerEntity;
+#endif
 	return output;
 }
 
@@ -150,6 +185,9 @@ inline C_AnimationLayer LoopingLerp_Hermite( float flPercent, C_AnimationLayer& 
 
 	output.m_flLayerAnimtime = to.m_flLayerAnimtime;
 	output.m_flLayerFadeOuttime = to.m_flLayerFadeOuttime;
+#if defined( L4D2 )
+	output.m_pOwnerEntity = to.m_pOwnerEntity;
+#endif
 	return output;
 }
 
@@ -166,6 +204,9 @@ inline C_AnimationLayer Lerp_Hermite( float flPercent, const C_AnimationLayer& p
 
 	output.m_flLayerAnimtime = to.m_flLayerAnimtime;
 	output.m_flLayerFadeOuttime = to.m_flLayerFadeOuttime;
+#if defined( L4D2 )
+	output.m_pOwnerEntity = to.m_pOwnerEntity;
+#endif
 	return output;
 }
 

@@ -469,6 +469,9 @@ LINK_ENTITY_TO_CLASS( env_fire_trail, CFireTrail );
 
 void CFireTrail::Precache( void )
 {
+#if defined( L4D2 )
+	PrecacheMaterial( "sprites/white" ); // S4BE330.
+#else
 	PrecacheMaterial( "sprites/flamelet1" );
 	PrecacheMaterial( "sprites/flamelet2" );
 	PrecacheMaterial( "sprites/flamelet3" );
@@ -476,6 +479,7 @@ void CFireTrail::Precache( void )
 	PrecacheMaterial( "sprites/flamelet5" );
 	PrecacheMaterial( "particle/particle_smokegrenade" );
 	PrecacheMaterial( "particle/particle_noisesphere" );
+#endif
 }
 
 //-----------------------------------------------------------------------------

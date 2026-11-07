@@ -25,6 +25,12 @@ public:
 
 	void InputTeleport( inputdata_t &inputdata );
 
+#if defined( L4D2 )
+	void InputTeleportEntity( inputdata_t &inputdata );
+	void InputTeleportToCurrentPos( inputdata_t &inputdata );
+	void TeleportEntity( inputdata_t &inputdata, const Vector &origin, const QAngle &angles, bool useInputName );
+#endif
+
 private:
 	
 	bool	EntityMayTeleport( CBaseEntity *pTarget );
@@ -45,6 +51,11 @@ BEGIN_DATADESC( CPointTeleport )
 	DEFINE_FIELD( m_vSaveAngles, FIELD_VECTOR ),
 
 	DEFINE_INPUTFUNC( FIELD_VOID, "Teleport", InputTeleport ),
+
+#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_STRING, "TeleportEntity", InputTeleportEntity ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "TeleportToCurrentPos", InputTeleportToCurrentPos ),
+#endif
 
 END_DATADESC()
 
@@ -107,9 +118,46 @@ void CPointTeleport::Activate( void )
 	BaseClass::Activate();
 }
 
+#if defined( L4D2 )
+void CPointTeleport::TeleportEntity( inputdata_t &inputdata, const Vector &origin,
+	const QAngle &angles, bool useInputName )
+{
+	const char *name = useInputName ? inputdata.value.String() : STRING( m_target );
+	CBaseEntity *pTarget = gEntList.FindEntityByName( NULL, name, this,
+		inputdata.pActivator, inputdata.pCaller );
+	if ( !pTarget )
+		return;
+	if ( !EntityMayTeleport( pTarget ) )
+	{
+		Warning( "ERROR: (%s) can't teleport object (%s) as it has a parent (%s)!\n",
+			GetDebugName(), pTarget->GetDebugName(), pTarget->GetMoveParent()->GetDebugName() );
+		return;
+	}
+	pTarget->Teleport( &origin, &angles, NULL );
+}
+
+void CPointTeleport::InputTeleportEntity( inputdata_t &inputdata )
+{
+	TeleportEntity( inputdata, m_vSaveOrigin, m_vSaveAngles, true );
+}
+
+void CPointTeleport::InputTeleportToCurrentPos( inputdata_t &inputdata )
+{
+	if ( HasSpawnFlags( SF_TELEPORT_TO_SPAWN_POS ) )
+		Warning( "%s: TeleportToCurrentPos input received; ignoring 'Teleport Home' spawnflag.\n", GetDebugName() );
+	TeleportEntity( inputdata, GetAbsOrigin(), GetAbsAngles(), false );
+}
+#endif
+
 //------------------------------------------------------------------------------
 // Purpose:
 //------------------------------------------------------------------------------
+#if defined( L4D2 )
+void CPointTeleport::InputTeleport( inputdata_t &inputdata )
+{
+	TeleportEntity( inputdata, m_vSaveOrigin, m_vSaveAngles, false );
+}
+#else
 void CPointTeleport::InputTeleport( inputdata_t &inputdata )
 {
 	// Attempt to find the entity in question
@@ -135,7 +183,11 @@ void CPointTeleport::InputTeleport( inputdata_t &inputdata )
 			pPlayer->AddFlag( FL_DUCKING );
 			pPlayer->m_Local.m_bDucked = true;
 			pPlayer->m_Local.m_bDucking = true;
+#if defined( L4D2 )
+			pPlayer->m_Local.m_nDuckTimeMsecs = 0;
+#else
 			pPlayer->m_Local.m_flDucktime = 0.0f;
+#endif
 			pPlayer->SetViewOffset( VEC_DUCK_VIEW_SCALED( pPlayer ) );
 			pPlayer->SetCollisionBounds( VEC_DUCK_HULL_MIN, VEC_DUCK_HULL_MAX );
 		}
@@ -144,4 +196,5 @@ void CPointTeleport::InputTeleport( inputdata_t &inputdata )
 
 	pTarget->Teleport( &m_vSaveOrigin, &m_vSaveAngles, NULL );
 }
+#endif
 

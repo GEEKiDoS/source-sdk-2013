@@ -141,6 +141,7 @@ float GetLongFloorZ(const Vector &origin)
 // Purpose : Draws a large crosshair at flCrossDistance from the debug player
 //			 with tick marks
 //------------------------------------------------------------------------------
+#if !defined( L4D2 )
 void UTIL_DrawPositioningOverlay( float flCrossDistance )
 {
 	CBasePlayer* pPlayer = UTIL_PlayerByIndex(CBaseEntity::m_nDebugPlayer);
@@ -212,6 +213,7 @@ void UTIL_DrawPositioningOverlay( float flCrossDistance )
 	NDebugOverlay::Text( textPos, text, true, 0 );
 	*/
 }
+#endif // !L4D2
 
 //------------------------------------------------------------------------------
 // Purpose : Draw all overlay lines in the list
@@ -246,7 +248,12 @@ void DebugDrawLine( const Vector& vecAbsStart, const Vector& vecAbsEnd, int r, i
 //-----------------------------------------------------------------------------
 // Purpose: Allow all debug overlays to be cleared at once
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( clear_debug_overlays, "clears debug overlays" , 0x00000004)
+#else
 CON_COMMAND( clear_debug_overlays, "clears debug overlays" )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;

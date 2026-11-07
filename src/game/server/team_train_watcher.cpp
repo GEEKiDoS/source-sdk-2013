@@ -148,7 +148,9 @@ IMPLEMENT_AUTO_LIST( ITFTeamTrainWatcher );
 
 /*
 LINK_ENTITY_TO_CLASS( team_train_watcher_master, CTeamTrainWatcherMaster );
+#ifndef L4D2
 PRECACHE_REGISTER( team_train_watcher_master );
+#endif
 
 CTeamTrainWatcherMaster::CTeamTrainWatcherMaster()
 {

@@ -151,6 +151,14 @@ BEGIN_DATADESC( CBaseToggle )
 
 END_DATADESC()
 
+#if defined( L4D2 )
+void CBaseToggle::GetGroundVelocityToApply( Vector &vecGroundVel )
+{
+	// Native S1E7CD0 copies LOCAL velocity, including Z.
+	vecGroundVel = GetLocalVelocity();
+}
+#endif
+
 
 CBaseToggle::CBaseToggle()
 {

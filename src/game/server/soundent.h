@@ -233,6 +233,9 @@ public:
 
 	static void		InsertSound ( int iType, const Vector &vecOrigin, int iVolume, float flDuration, CBaseEntity *pOwner = NULL, int soundChannelIndex = SOUNDENT_CHANNEL_UNSPECIFIED, CBaseEntity *pSoundTarget = NULL );
 	static void		FreeSound ( int iSound, int iPrevious );
+#if defined( L4D2 )
+	static void FreeSound( int sound );
+#endif
 	static int		ActiveList( void );// return the head of the active list
 	static int		FreeList( void );// return the head of the free list
 	static CSound*	SoundPointerForIndex( int iIndex );// return a pointer for this index in the sound list

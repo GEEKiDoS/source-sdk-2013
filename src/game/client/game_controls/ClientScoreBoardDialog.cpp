@@ -32,6 +32,9 @@
 #include <igameresources.h>
 
 #include "vgui_avatarimage.h"
+#ifdef L4D2
+#include "l4d2/hud/hud_terror_statscrawl.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -206,6 +209,11 @@ void CClientScoreBoardDialog::ShowPanel(bool bShow)
 		InvalidateLayout( true, true );
 	}
 
+#ifdef L4D2
+	// Native2D9350: credits ONLY, not transition-panel or other HUD visibility.
+	if ( g_pStatsCrawl && g_pStatsCrawl->IsShowingCredits() )
+		bShow = false;
+#endif
 	if ( !bShow )
 	{
 		m_nCloseKey = BUTTON_CODE_INVALID;

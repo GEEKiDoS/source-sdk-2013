@@ -27,17 +27,61 @@
 	#include "voice_gamemgr.h"
 	#include "globalstate.h"
 	#include "player_resource.h"
+#if !defined( L4D2 )
 	#include "tactical_mission.h"
+#endif
 	#include "gamestats.h"
 
+#endif
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#include "precache_register.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+void CGameRules::Precache()
+{
+	// S0FCB00: the base list precedes the team-manager precaches.
+	static const char *const s_Effects[] =
+	{
+		"ParticleEffect",
+		"ParticleEffectStop",
+		"GlassImpact",
+		"Impact",
+		"RagdollImpact",
+		"gunshotsplash",
+		"TracerSound",
+		"Tracer",
+		"watersplash",
+		"waterripple",
+		"bloodimpact"
+	};
+	for ( int i = 0; i < ARRAYSIZE( s_Effects ); ++i )
+		PrecacheEffect( s_Effects[i] );
+}
+#endif
 
-ConVar g_Language( "g_Language", "0", FCVAR_REPLICATED );
-ConVar sk_autoaim_mode( "sk_autoaim_mode", "1", FCVAR_ARCHIVE | FCVAR_REPLICATED );
+
+ConVar g_Language( "g_Language", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+ );
+ConVar sk_autoaim_mode( "sk_autoaim_mode", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00002088
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002084
+#else
+	FCVAR_ARCHIVE | FCVAR_REPLICATED
+#endif
+ );
 
 #ifndef CLIENT_DLL
 ConVar log_verbose_enable( "log_verbose_enable", "0", FCVAR_GAMEDLL, "Set to 1 to enable verbose server log on the server." );
@@ -114,7 +158,15 @@ void CGameRulesProxy::NotifyNetworkStateChanged()
 
 
 
-ConVar	old_radius_damage( "old_radiusdamage", "0.0", FCVAR_REPLICATED );
+ConVar	old_radius_damage( "old_radiusdamage", "0.0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+ );
 
 #ifdef CLIENT_DLL //{
 
@@ -166,7 +218,11 @@ bool CGameRules::CanHaveAmmo( CBaseCombatCharacter *pPlayer, int iAmmoIndex )
 	if ( iAmmoIndex > -1 )
 	{
 		// Get the max carrying capacity for this ammo
+#if defined( L4D2 )
+		int iMaxCarry = GetAmmoDef()->MaxCarry( iAmmoIndex, pPlayer );
+#else
 		int iMaxCarry = GetAmmoDef()->MaxCarry( iAmmoIndex );
+#endif
 
 		// Does the player have room for more of this type of ammo?
 		if ( pPlayer->GetAmmoCount( iAmmoIndex ) < iMaxCarry )
@@ -573,7 +629,15 @@ void CGameRules::FrameUpdatePostEntityThink()
 }
 
 // Hook into the convar from the engine
-ConVar skill( "skill", "1" );
+ConVar skill( "skill", "1"
+#if defined( L4D2 ) && defined( GAME_DLL )
+	, 0x00000084
+#endif
+
+#if defined( L4D2 )
+	, "Game skill level (1-3).", true, 1.0f, true, 3.0f
+#endif
+ );
 
 void CGameRules::Think()
 {
@@ -595,6 +659,22 @@ void CGameRules::Think()
 //-----------------------------------------------------------------------------
 void CGameRules::EndGameFrame( void )
 {
+#if defined( L4D2 )
+	// Native100FD630 snapshots all three entities before the debug-name calls.
+	if ( g_MultiDamage.GetTarget() )
+	{
+		CBaseEntity *attacker = g_MultiDamage.GetAttacker();
+		CBaseEntity *inflictor = g_MultiDamage.GetInflictor();
+		CBaseEntity *target = g_MultiDamage.GetTarget();
+		const double damage = g_MultiDamage.GetDamage();
+		const char *attackerName = attacker->GetDebugName();
+		const char *inflictorName = inflictor->GetDebugName();
+		const char *targetName = target->GetDebugName();
+		Warning( "Unapplied multidamage left in the system:\nTarget: %s\nInflictor: %s\nAttacker: %s\nDamage: %.2f\n",
+			targetName, inflictorName, attackerName, damage );
+		ApplyMultiDamage();
+	}
+#else
 	// If you hit this assert, it means something called AddMultiDamage() and didn't ApplyMultiDamage().
 	// The g_MultiDamage.m_hAttacker & g_MultiDamage.m_hInflictor should give help you figure out the culprit.
 	Assert( g_MultiDamage.IsClear() );
@@ -607,6 +687,7 @@ void CGameRules::EndGameFrame( void )
 			g_MultiDamage.GetDamage() );
 		ApplyMultiDamage();
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -675,6 +756,32 @@ CBaseCombatWeapon *CGameRules::GetNextBestWeapon( CBaseCombatCharacter *pPlayer,
 
 bool CGameRules::ShouldCollide( int collisionGroup0, int collisionGroup1 )
 {
+#if defined( L4D2 )
+	// S0FD3D0: complete native base policy, including projectile/21.
+	if ( collisionGroup0 > collisionGroup1 ) V_swap( collisionGroup0, collisionGroup1 );
+	const int a = collisionGroup0, b = collisionGroup1;
+	if ( ( a == 5 || a == 8 ) && b == 17 ) return false;
+	if ( a == 1 && b == 17 ) return true;
+	if ( a == 13 )
+	{
+		if ( b == 21 ) return true;
+	}
+	else
+	{
+		if ( a == 21 || b == 21 || a == 10 ) return false;
+	}
+	if ( b == 10 || ( b == 14 && a != 9 ) ) return false;
+	if ( a == 5 && b == 15 ) return false;
+	if ( a != 5 && ( a == 1 || a == 2 ) ) return false;
+	if ( ( a == 16 || b == 16 ) && a != 0 ) return false;
+	if ( a == 3 && ( b == 3 || b == 8 || b == 5 ) ) return false;
+	if ( a == 6 && b == 6 ) return false;
+	if ( b == 4 && a != 0 ) return false;
+	if ( b == 13 && ( a == 11 || a == 13 ) ) return false;
+	if ( b == 11 && ( a == 7 || a == 5 || a == 9 ) ) return false;
+	if ( a == 12 || b == 12 ) return a == 7;
+	return true;
+#else
 	if ( collisionGroup0 > collisionGroup1 )
 	{
 		// swap so that lowest is always first
@@ -779,6 +886,7 @@ bool CGameRules::ShouldCollide( int collisionGroup0, int collisionGroup1 )
 	}
 
 	return true;
+#endif
 }
 
 
@@ -828,6 +936,7 @@ const char *CGameRules::GetChatPrefix( bool bTeamOnly, CBasePlayer *pPlayer )
 	return "";
 }
 
+#if !defined( L4D2 )
 void CGameRules::CheckHaptics(CBasePlayer* pPlayer)
 {
 	// NVNT see if the client of pPlayer is using a haptic device.
@@ -838,6 +947,7 @@ void CGameRules::CheckHaptics(CBasePlayer* pPlayer)
 		pPlayer->SetHaptics( iHH != 0 );
 	}
 }
+#endif // !L4D2
 
 void CGameRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 {
@@ -874,6 +984,7 @@ void CGameRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 		pPlayer->SetDefaultFOV( iFov );
 	}
 
+#if !defined( L4D2 )
 	// NVNT see if this user is still or has began using a haptic device
 	const char *pszHH = engine->GetClientConVarValue( pPlayer->entindex(), "hap_HasDevice" );
 	if( pszHH )
@@ -881,12 +992,15 @@ void CGameRules::ClientSettingsChanged( CBasePlayer *pPlayer )
 		int iHH = atoi( pszHH );
 		pPlayer->SetHaptics( iHH != 0 );
 	}
+#endif // !L4D2
 }
 
+#if !defined( L4D2 )
 CTacticalMissionManager *CGameRules::TacticalMissionManagerFactory( void )
 {
 	return new CTacticalMissionManager;
 }
+#endif
 
 #endif
 

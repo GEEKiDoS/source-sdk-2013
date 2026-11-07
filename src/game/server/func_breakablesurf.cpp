@@ -19,6 +19,12 @@
 #include "globals.h"
 #include "physics_impact_damage.h"
 #include "te_effect_dispatch.h"
+#if defined( L4D2 )
+#include <xmmintrin.h>
+#endif
+#if defined( L4D2 )
+#include "precache_register.h"
+#endif
 
 //=============================================================================
 // HPE_BEGIN
@@ -241,6 +247,10 @@ void CBreakableSurface::Precache(void)
 		PrecacheMaterial( "models/brokenglass/glassbroken_03d" );
 	}
 
+#if defined( L4D2 )
+	PrecacheEffect( "GlassImpact" );
+	PrecacheEffect( "Impact" );
+#endif
 	BaseClass::Precache();
 }
 
@@ -371,7 +381,14 @@ void CBreakableSurface::TraceAttack( const CTakeDamageInfo &info, const Vector &
     //=============================================================================
 
 	// Decrease health
+#if defined( L4D2 )
+	// SE1F80 CVTTSS2SI preserves INT_MIN for unordered/out-of-range DAMAGE.
+	const int damage = _mm_cvttss_si32( _mm_set_ss( info.GetDamage() ) );
+	m_iHealth = static_cast< int >( static_cast< unsigned int >( m_iHealth ) -
+		static_cast< unsigned int >( damage ) );
+#else
 	m_iHealth -= info.GetDamage();
+#endif
 	m_OnHealthChanged.Set( m_iHealth, info.GetAttacker(), this );
 
 	// If I'm not broken yet, break me
@@ -509,7 +526,7 @@ void CBreakableSurface::TraceAttack( const CTakeDamageInfo &info, const Vector &
 
 			float flDot = DotProduct(m_vNormal,vecDir);
 
-#ifdef CSTRIKE_DLL
+#if defined( CSTRIKE_DLL ) || defined( L4D2 )
 			float damageMultiplier = info.GetDamage();
 #else
 			float damageMultiplier = 1.0f;

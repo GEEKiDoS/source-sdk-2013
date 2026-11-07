@@ -59,7 +59,9 @@ class CFuncTrackTrain : public CBaseEntity
 {
 	DECLARE_CLASS( CFuncTrackTrain, CBaseEntity );
 	DECLARE_SERVERCLASS();
+	#if !defined( L4D2 )
 	DECLARE_ENT_SCRIPTDESC();
+	#endif
 
 public:
 	CFuncTrackTrain();

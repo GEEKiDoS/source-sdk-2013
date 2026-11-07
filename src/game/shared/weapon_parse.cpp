@@ -34,7 +34,15 @@ const char *pWeaponSoundCategories[ NUM_SHOOT_SOUND_TYPES ] =
 	"special2",
 	"special3",
 	"taunt",
+#if defined( L4D2 )
+	"fastreload",
+	"reload_dual",
+	"reload_pump",
+	"idle",
+	"shoot_incendiary"
+#else
 	"deploy"
+#endif
 };
 #else
 extern const char *pWeaponSoundCategories[ NUM_SHOOT_SOUND_TYPES ];
@@ -166,6 +174,10 @@ void PrecacheFileWeaponInfoDatabase( IFileSystem *pFilesystem, const unsigned ch
 		return;
 
 	KeyValues *manifest = new KeyValues( "weaponscripts" );
+#if defined( L4D2 )
+	// S23561A/C1DBCF0: the manifest uses the same native escape convention.
+	manifest->UsesEscapeSequences( true );
+#endif
 	if ( manifest->LoadFromFile( pFilesystem, "scripts/weapon_manifest.txt", "GAME" ) )
 	{
 		for ( KeyValues *sub = manifest->GetFirstSubKey(); sub != NULL ; sub = sub->GetNextKey() )
@@ -198,15 +210,24 @@ KeyValues* ReadEncryptedKVFile( IFileSystem *pFilesystem, const char *szFilename
 	Assert( strchr( szFilenameWithoutExtension, '.' ) == NULL );
 	char szFullName[512];
 
+#if defined( L4D2 )
+	// S233BD1/C1DA2D1: both the text and encrypted readers use GAME.
+	const char *pSearchPath = "GAME";
+#else
 	const char *pSearchPath = "MOD";
 
 	if ( pICEKey == NULL )
 	{
 		pSearchPath = "GAME";
 	}
+#endif
 
 	// Open the weapon data file, and abort if we can't
 	KeyValues *pKV = new KeyValues( "WeaponDatafile" );
+#if defined( L4D2 )
+	// S233BA3/C1DA2A3: enable escape decoding before either load path.
+	pKV->UsesEscapeSequences( true );
+#endif
 
 	Q_snprintf(szFullName,sizeof(szFullName), "%s.txt", szFilenameWithoutExtension);
 
@@ -344,6 +365,10 @@ FileWeaponInfo_t::FileWeaponInfo_t()
 	iconAutoaim = 0;
 	iconZoomedCrosshair = 0;
 	iconZoomedAutoaim = 0;
+#if defined( L4D2 )
+	iconActiveDual = 0;
+	iconInactiveDual = 0;
+#endif
 	bShowUsageHint = false;
 	m_bAllowFlipping = true;
 	m_bBuiltRightHanded = true;

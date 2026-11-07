@@ -20,6 +20,9 @@
 #include "con_nprint.h"
 #include "hud_pdump.h"
 #include "datacache/imdlcache.h"
+#if defined( L4D2 )
+#include "l4d2/entities/c_trigger_player_movement.h"
+#endif
 
 #ifdef HL2_CLIENT_DLL
 #include "c_basehlplayer.h"
@@ -34,18 +37,72 @@ IPredictionSystem *IPredictionSystem::g_pPredictionSystems = NULL;
 
 #if !defined( NO_ENTITY_PREDICTION )
 
-ConVar	cl_predictweapons	( "cl_predictweapons","1", FCVAR_USERINFO | FCVAR_NOT_CONNECTED, "Perform client side prediction of weapon effects." );
-ConVar	cl_lagcompensation	( "cl_lagcompensation","1", FCVAR_USERINFO | FCVAR_NOT_CONNECTED, "Perform server side lag compensation of weapon firing events." );
-ConVar	cl_showerror		( "cl_showerror", "0", 0, "Show prediction errors, 2 for above plus detailed field deltas." );
+ConVar	cl_predictweapons	( "cl_predictweapons","1", 
+#if defined( L4D2 )
+	0x00000208
+#else
+	FCVAR_USERINFO | FCVAR_NOT_CONNECTED
+#endif
+, "Perform client side prediction of weapon effects." );
+ConVar	cl_lagcompensation	( "cl_lagcompensation","1", 
+#if defined( L4D2 )
+	0x00000208
+#else
+	FCVAR_USERINFO | FCVAR_NOT_CONNECTED
+#endif
+, "Perform server side lag compensation of weapon firing events." );
+ConVar	cl_showerror		( "cl_showerror", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Show prediction errors, 2 for above plus detailed field deltas." );
 
-static ConVar	cl_idealpitchscale	( "cl_idealpitchscale", "0.8", FCVAR_ARCHIVE );
-static ConVar	cl_predictionlist	( "cl_predictionlist", "0", FCVAR_CHEAT, "Show which entities are predicting\n" );
+static ConVar	cl_idealpitchscale	( "cl_idealpitchscale", "0.8", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+static ConVar	cl_predictionlist	( "cl_predictionlist", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Show which entities are predicting\n" );
 
-static ConVar	cl_predictionentitydump( "cl_pdump", "-1", FCVAR_CHEAT, "Dump info about this entity to screen." );
-static ConVar	cl_predictionentitydumpbyclass( "cl_pclass", "", FCVAR_CHEAT, "Dump entity by prediction classname." );
-static ConVar	cl_pred_optimize( "cl_pred_optimize", "2", 0, "Optimize for not copying data if didn't receive a network update (1), and also for not repredicting if there were no errors (2)." );
+static ConVar	cl_predictionentitydump( "cl_pdump", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Dump info about this entity to screen." );
+static ConVar	cl_predictionentitydumpbyclass( "cl_pclass", "", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Dump entity by prediction classname." );
+static ConVar	cl_pred_optimize( "cl_pred_optimize", "2", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Optimize for not copying data if didn't receive a network update (1), and also for not repredicting if there were no errors (2)." );
 
-static ConVar	cl_pred_doresetlatch( "cl_pred_doresetlatch", "1", 0 );
+static ConVar	cl_pred_doresetlatch( "cl_pred_doresetlatch", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+ );
 
 
 #endif
@@ -675,6 +732,9 @@ void CPrediction::SetupMove( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper *
 	move->m_flConstraintRadius = player->m_flConstraintRadius;
 	move->m_flConstraintWidth = player->m_flConstraintWidth;
 	move->m_flConstraintSpeedFactor = player->m_flConstraintSpeedFactor;
+#if defined( L4D2 )
+	move->m_bConstraintPastRadius = player->m_bConstraintPastRadius;
+#endif
 
 #ifdef HL2_CLIENT_DLL
 	// Convert to HL2 data.
@@ -879,6 +939,9 @@ void CPrediction::CheckMovingGround( C_BasePlayer *player, double frametime )
 //			*player - 
 //			*u - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CPrediction::RunCommand( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper *moveHelper )
 {
 #if !defined( NO_ENTITY_PREDICTION )
@@ -893,6 +956,10 @@ void CPrediction::RunCommand( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	// Set globals appropriately
 	gpGlobals->curtime		= player->m_nTickBase * TICK_INTERVAL;
 	gpGlobals->frametime	= m_bEnginePaused ? 0 : TICK_INTERVAL;
+	#ifdef L4D2
+	ucmd->buttons |= player->m_afButtonForced;
+	ucmd->buttons &= ~player->m_afButtonDisabled;
+	#endif
 
 	g_pGameMovement->StartTrackPredictionErrors( player );
 
@@ -972,12 +1039,21 @@ void CPrediction::RunCommand( C_BasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 
 	FinishCommand( player );
 
+#if defined( L4D2 )
+	// C17B745..775: publish the just-simulated base before advancing it.
+	player->m_nOldTickBase = player->m_nTickBase;
+	if ( gpGlobals->frametime != 0.0f )
+#else
 	if ( gpGlobals->frametime > 0 )
+#endif
 	{
 		player->m_nTickBase++;
 	}
 #endif
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: In the forward direction, creates rays straight down and determines the
@@ -1578,7 +1654,16 @@ bool CPrediction::PerformPrediction( bool received_new_world_update, C_BasePlaye
 	Assert( C_BaseEntity::IsAbsQueriesValid() );
 	Assert( C_BaseEntity::IsAbsRecomputationsEnabled() );
 
+#if defined( L4D2 )
+	// Restore prediction state before untouch/touch and ground hierarchy rollback.
+	int i = ComputeFirstCommandToExecute( received_new_world_update, incoming_acknowledged, outgoing_command );
+#endif
 	m_bInPrediction = true;
+#if defined( L4D2 )
+	localPlayer->SetCheckUntouch( true );
+	localPlayer->PhysicsCheckForEntityUntouch();
+	TouchTriggers( localPlayer );
+#endif
 
 	// undo interpolation changes for entities we stand on
 	C_BaseEntity *entity = localPlayer->GetGroundEntity();
@@ -1592,7 +1677,9 @@ bool CPrediction::PerformPrediction( bool received_new_world_update, C_BasePlaye
 
 	// Start at command after last one server has processed and 
 	//  go until we get to targettime or we run out of new commands
+#if !defined( L4D2 )
 	int i = ComputeFirstCommandToExecute( received_new_world_update, incoming_acknowledged, outgoing_command );
+#endif
 
 	//Msg( "%i/%i tickbase %i\n",
 	//	gpGlobals->framecount,

@@ -13,7 +13,10 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+// L4D2 binds predicted_viewmodel to CTerrorViewModel; one factory per entity name.
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( predicted_viewmodel, CPredictedViewModel );
+#endif
 
 IMPLEMENT_NETWORKCLASS_ALIASED( PredictedViewModel, DT_PredictedViewModel )
 
@@ -24,10 +27,15 @@ END_NETWORK_TABLE()
 // Purpose: 
 //-----------------------------------------------------------------------------
 #ifdef CLIENT_DLL
-CPredictedViewModel::CPredictedViewModel() : m_LagAnglesHistory("CPredictedViewModel::m_LagAnglesHistory")
+CPredictedViewModel::CPredictedViewModel()
+	: m_LagAnglesHistory( "CPredictedViewModel::m_LagAnglesHistory" )
 {
 	m_vLagAngles.Init();
+#if defined( L4D2 )
+	m_LagAnglesHistory.Setup( &m_vLagAngles, INTERPOLATE_LINEAR_ONLY );
+#else
 	m_LagAnglesHistory.Setup( &m_vLagAngles, 0 );
+#endif
 	m_vPredictedOffset.Init();
 }
 #else
@@ -51,12 +59,19 @@ ConVar sv_wpn_sway_pred_legacy( "sv_wpn_sway_pred_legacy", "1", FCVAR_REPLICATED
 #endif
 
 #ifdef CLIENT_DLL
-ConVar cl_wpn_sway_interp( "cl_wpn_sway_interp", "0.1", FCVAR_CLIENTDLL );
+ConVar cl_wpn_sway_interp( "cl_wpn_sway_interp", "0.1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#else
+	FCVAR_CLIENTDLL
+#endif
+ );
 ConVar cl_wpn_sway_scale( "cl_wpn_sway_scale", "1.0", FCVAR_CLIENTDLL|FCVAR_CHEAT );
 #endif
 
 void CPredictedViewModel::CalcViewModelLag( Vector& origin, QAngle& angles, QAngle& original_angles )
 {
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 	if ( sv_wpn_sway_pred_legacy.GetBool() )
 	{
 		// misyl: This whole class and codepath exists to compensate for a prediction bug that I have now fixed...
@@ -103,4 +118,5 @@ void CPredictedViewModel::CalcViewModelLag( Vector& origin, QAngle& angles, QAng
 	{
 		return BaseClass::CalcViewModelLag( origin, angles, original_angles );
 	}
+#endif // Native client17A4F0 is a genuine RET12 leaf.
 }

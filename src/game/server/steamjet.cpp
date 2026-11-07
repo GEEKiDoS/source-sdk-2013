@@ -7,6 +7,9 @@
 
 #include "cbase.h"
 #include "steamjet.h"
+#if defined( L4D2 )
+#include "sendproxy.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -24,6 +27,9 @@ IMPLEMENT_SERVERCLASS_ST(CSteamJet, DT_SteamJet)
 	SendPropInt(SENDINFO(m_nType), 32, SPROP_UNSIGNED),
 	SendPropInt( SENDINFO(m_spawnflags), 8, SPROP_UNSIGNED ),
 	SendPropFloat(SENDINFO(m_flRollSpeed), 0, SPROP_NOSCALE),
+#if defined( L4D2 )
+	SendPropStringT( SENDINFO( m_NoiseStart ) ),
+#endif
 END_SEND_TABLE()
 
 LINK_ENTITY_TO_CLASS( env_steam, CSteamJet );
@@ -38,6 +44,9 @@ BEGIN_DATADESC( CSteamJet )
 	DEFINE_KEYFIELD( m_InitialState,	FIELD_BOOLEAN,	"InitialState" ),
 	DEFINE_KEYFIELD( m_nType,		FIELD_INTEGER,	"Type" ),
 	DEFINE_KEYFIELD( m_flRollSpeed, FIELD_FLOAT, "RollSpeed" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_NoiseStart, FIELD_SOUNDNAME, "StartNoise" ),
+#endif
 
 	//Regular fields
 	DEFINE_FIELD( m_bEmit, FIELD_INTEGER ),
@@ -83,8 +92,10 @@ void CSteamJet::Spawn( void )
 
 void CSteamJet::Precache( void )
 {
+#if !defined( L4D2 )
 	PrecacheMaterial( "particle/particle_smokegrenade" );
 	PrecacheMaterial( "sprites/heatwave" );
+#endif // S4C2710 is genuinely empty.
 }
 
  void CSteamJet::Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value )

@@ -443,6 +443,7 @@ const char *CAI_BaseNPC::TaskName(int taskID)
 
 
 
+#if !defined( L4D2 )
 // This hooks the main game systems callbacks to allow the AI system to manage memory
 class CAI_SystemHook : public CAutoGameSystem
 {
@@ -484,6 +485,7 @@ public:
 
 
 static CAI_SystemHook g_AISystemHook( "CAI_SystemHook" );
+#endif // !L4D2
 
 
 //-----------------------------------------------------------------------------

@@ -627,6 +627,9 @@ int CRopeKeyframe::OnTakeDamage( const CTakeDamageInfo &info )
 void CRopeKeyframe::Precache()
 {
 	m_iRopeMaterialModelIndex = PrecacheModel( STRING( m_strRopeMaterialModel ) );
+#if defined( L4D2 )
+	PrecacheMaterial( "cable/rope_shadowdepth" );
+#endif
 	BaseClass::Precache();
 }
 

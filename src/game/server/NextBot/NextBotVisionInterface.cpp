@@ -23,14 +23,23 @@
 #include "tier0/memdbgon.h"
 
 
-ConVar nb_blind( "nb_blind", "0", FCVAR_CHEAT, "Disable vision" );
+ConVar nb_blind( "nb_blind", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Disable vision" );
 ConVar nb_debug_known_entities( "nb_debug_known_entities", "0", FCVAR_CHEAT, "Show the 'known entities' for the bot that is the current spectator target" );
 
 
 //------------------------------------------------------------------------------------------
 IVision::IVision( INextBot *bot ) : INextBotComponent( bot )
 { 
+	// L4D2 resets after the actor's complete component set has been published.
+#if !defined( L4D2 )
 	Reset();
+#endif
 }
 
 
@@ -41,6 +50,9 @@ IVision::IVision( INextBot *bot ) : INextBotComponent( bot )
 void IVision::Reset( void )
 {
 	INextBotComponent::Reset();
+#if defined( L4D2 )
+	m_body = GetBot()->GetBodyInterface();
+#endif
 
 	m_knownEntityVector.RemoveAll();
 	m_lastVisionUpdateTimestamp = 0.0f;
@@ -56,6 +68,7 @@ void IVision::Reset( void )
 }
 
 
+#if !defined( L4D2 )
 //------------------------------------------------------------------------------------------
 /**
  * Ask the current behavior to select the most dangerous threat from
@@ -636,6 +649,7 @@ bool IVision::IsAbleToSee( const Vector &pos, FieldOfViewCheckType checkFOV ) co
 	// do actual line-of-sight trace	
 	return IsLineOfSightClear( pos );
 }
+#endif
 
 
 //------------------------------------------------------------------------------------------
@@ -649,6 +663,7 @@ void IVision::SetFieldOfView( float horizAngle )
 }
 
 
+#if !defined( L4D2 )
 //------------------------------------------------------------------------------------------
 bool IVision::IsInFieldOfView( const Vector &pos ) const
 {
@@ -772,6 +787,7 @@ bool IVision::IsLineOfSightClearToEntity( const CBaseEntity *subject, Vector *vi
 
 #endif
 }
+#endif
 
 
 //------------------------------------------------------------------------------------------

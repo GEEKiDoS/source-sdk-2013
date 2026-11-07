@@ -13,6 +13,9 @@
 #include "glow_overlay.h"
 #include "view.h"
 #include "particle_litsmokeemitter.h"
+#if defined( L4D2 )
+#include "particles_new.h"
+#endif
 
 class CFireOverlay;
 
@@ -122,7 +125,11 @@ public:
 	~C_FireSmoke();
 
 	void	Start( void );
+#if defined( L4D2 )
+	virtual void ClientThink() OVERRIDE;
+#else
 	void	Simulate( void );
+#endif
 
 	void	StartClientOnly( void );
 	void	RemoveClientOnly( void );
@@ -278,25 +285,42 @@ public:
 class C_EntityFlame : public C_BaseEntity
 {
 public:
+#if defined( L4D2 )
+	void StopEffect();
+#endif
+
 	DECLARE_CLIENTCLASS();
 	DECLARE_CLASS( C_EntityFlame, C_BaseEntity );
 
 	C_EntityFlame( void );
 	~C_EntityFlame( void );
 
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	virtual void	Simulate( void );
+#endif
 	virtual void	UpdateOnRemove( void );
 	virtual void	OnDataChanged( DataUpdateType_t updateType );
 	virtual void	ClientThink( void );
 
+#if defined( L4D2 )
+	HPARTICLEFFECT m_hEffect;
+#else
 	CNewParticleEffect *m_hEffect;
+#endif
 	EHANDLE				m_hEntAttached;		// The entity that we are burning (attached to).
 	EHANDLE				m_hOldAttached;
+#if defined( L4D2 )
+	bool m_bCheapEffect;
+#endif
 
 protected:
 
 	void	CreateEffect( void );
+#if !defined( L4D2 )
 	void	StopEffect( void );
+#endif
 };
 
 #endif //C_FIRE_SMOKE_H

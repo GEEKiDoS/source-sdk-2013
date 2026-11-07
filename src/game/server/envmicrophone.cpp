@@ -30,6 +30,22 @@ const float MICROPHONE_SETTLE_EPSILON = 0.005;
 // List of env_microphones who want to be told whenever a sound is started
 static CUtlVector< CHandle<CEnvMicrophone> > s_Microphones;
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+
+#if defined( L4D2 )
+// S100C7630 / S100C7840: y*y + z*z, then x*x, all scalar float.
+static float MicrophoneDistance( const Vector &sound, const Vector &measure )
+{
+	const float x = sound.x - measure.x;
+	const float y = sound.y - measure.y;
+	const float z = sound.z - measure.z;
+	return sqrtf( ( y * y + z * z ) + x * x );
+}
+#endif
+
 
 LINK_ENTITY_TO_CLASS(env_microphone, CEnvMicrophone);
 
@@ -48,6 +64,10 @@ BEGIN_DATADESC( CEnvMicrophone )
 	DEFINE_KEYFIELD(m_iSpeakerDSPPreset, FIELD_INTEGER, "speaker_dsp_preset" ),
 	DEFINE_KEYFIELD(m_flMaxRange, FIELD_FLOAT, "MaxRange"),
 	DEFINE_AUTO_ARRAY(m_szLastSound, FIELD_CHARACTER),
+
+#if defined( L4D2 )
+	DEFINE_FIELD( m_iLastRoutedFrame, FIELD_INTEGER ),
+#endif
 
 	DEFINE_INPUTFUNC(FIELD_VOID, "Enable", InputEnable),
 	DEFINE_INPUTFUNC(FIELD_VOID, "Disable", InputDisable),
@@ -105,7 +125,13 @@ void CEnvMicrophone::Spawn(void)
 		m_flSensitivity = 10;
 	}
 
+#if defined( L4D2 )
+	// Native ordered upper/lower tests preserve an unordered value.
+	if ( m_flSmoothFactor > 0.9 ) m_flSmoothFactor = 0.9f;
+	else if ( m_flSmoothFactor < 0.0f ) m_flSmoothFactor = 0.0f;
+#else
 	m_flSmoothFactor = clamp(m_flSmoothFactor, 0.f, 0.9f);
+#endif
 
 	if (!m_bDisabled)
 	{
@@ -261,7 +287,12 @@ bool CEnvMicrophone::CanHearSound(CSound *pSound, float &flVolume)
 		}
 	}
 
+#if defined( L4D2 )
+	const Vector &measure = m_hMeasureTarget->GetAbsOrigin();
+	const float flDistance = MicrophoneDistance( pSound->GetSoundOrigin(), measure );
+#else
 	float flDistance = (pSound->GetSoundOrigin() - m_hMeasureTarget->GetAbsOrigin()).Length();
+#endif
 
 	if (flDistance == 0)
 	{
@@ -278,7 +309,12 @@ bool CEnvMicrophone::CanHearSound(CSound *pSound, float &flVolume)
 	if (flDistance <= pSound->Volume() * m_flSensitivity)
 	{
 		flVolume = 1 - (flDistance / (pSound->Volume() * m_flSensitivity));
+#if defined( L4D2 )
+		if ( flVolume > 1.0f ) flVolume = 1.0f;
+		else if ( flVolume < 0.0f ) flVolume = 0.0f;
+#else
 		flVolume = clamp(flVolume, 0.f, 1.f);
+#endif
 		return true;
 	}
 
@@ -322,11 +358,20 @@ bool CEnvMicrophone::CanHearSound( int entindex, soundlevel_t soundlevel, float 
 	float flDistance = 0;
 	if ( pOrigin )
 	{
+#if defined( L4D2 )
+		flDistance = MicrophoneDistance( *pOrigin, m_hMeasureTarget->GetAbsOrigin() );
+#else
 		flDistance = pOrigin->DistTo( m_hMeasureTarget->GetAbsOrigin() );
+#endif
 	}
 	else if ( pEntity )
 	{
+#if defined( L4D2 )
+		const Vector &measure = m_hMeasureTarget->GetAbsOrigin();
+		flDistance = MicrophoneDistance( pEntity->WorldSpaceCenter(), measure );
+#else
 		flDistance = pEntity->WorldSpaceCenter().DistTo( m_hMeasureTarget->GetAbsOrigin() );
+#endif
 	}
 
 	// Over our max range?
@@ -419,7 +464,11 @@ void CEnvMicrophone::Think(void)
 		// Don't smooth if we are within an epsilon. This allows the output to stop firing
 		// much more quickly.
 		//
+#if defined( L4D2 )
+		if ( fabs( static_cast< double >( flMaxVolume ) - static_cast< double >( m_SoundLevel.Get() ) ) < MICROPHONE_SETTLE_EPSILON )
+#else
 		if (fabs(flMaxVolume - m_SoundLevel.Get()) < MICROPHONE_SETTLE_EPSILON)
+#endif
 		{
 			m_SoundLevel.Set(flMaxVolume, this, this);
 		}
@@ -473,16 +522,31 @@ MicrophoneResult_t CEnvMicrophone::SoundPlayed( int entindex, const char *soundn
 		}
 	}
 
+#if defined( L4D2 )
+	if ( m_iLastRoutedFrame == gpGlobals->framecount && m_szLastSound[0] &&
+		!Q_strcmp( m_szLastSound, soundname ) )
+		return HasSpawnFlags( SF_MICROPHONE_SWALLOW_ROUTED_SOUNDS ) ?
+			MicrophoneResult_Swallow : MicrophoneResult_Ok;
+#endif
 	m_bAvoidFeedback = true;
 
 	// Add the speaker flag. Detected at playback and applies the speaker filter.
 	iFlags |= SND_SPEAKER;
-	CPASAttenuationFilter filter( m_hSpeaker );
+	CPASAttenuationFilter filter( m_hSpeaker
+#if defined( L4D2 )
+		, 0.8f
+#endif
+	);
 
 	EmitSound_t ep;
 	ep.m_nChannel = CHAN_STATIC;
 	ep.m_pSoundName = soundname;
-	ep.m_flVolume = flVolume;
+	ep.m_flVolume =
+#if defined( L4D2 )
+		1.0f;
+#else
+		flVolume;
+#endif
 	ep.m_SoundLevel = soundlevel;
 	ep.m_nFlags = iFlags;
 	ep.m_nPitch = iPitch;
@@ -494,6 +558,9 @@ MicrophoneResult_t CEnvMicrophone::SoundPlayed( int entindex, const char *soundn
 
 	Q_strncpy( m_szLastSound, soundname, sizeof(m_szLastSound) );
 	m_OnRoutedSound.FireOutput( this, this, 0 );
+#if defined( L4D2 )
+	m_iLastRoutedFrame = gpGlobals->framecount;
+#endif
 
 	m_bAvoidFeedback = false;
 
@@ -558,3 +625,7 @@ bool CEnvMicrophone::OnSoundPlayed( int entindex, const char *soundname, soundle
 
 	return bSwallowed;
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif

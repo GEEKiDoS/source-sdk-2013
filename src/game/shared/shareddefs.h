@@ -115,7 +115,11 @@ public:
 #define MAX_WEAPON_SLOTS		6	// hud item selection slots
 #define MAX_WEAPON_POSITIONS	20	// max number of items within a slot
 #define MAX_ITEM_TYPES			6	// hud item selection slots
+#if defined( L4D2 )
+#define MAX_WEAPONS				56
+#else
 #define MAX_WEAPONS				48	// Max number of weapons available
+#endif
 
 #define MAX_ITEMS				5	// hard coded item types
 
@@ -251,6 +255,8 @@ enum CastVote
 //Since this is decided by the gamerules (and it can be whatever number as long as its less than MAX_PLAYERS).
 #if defined( CSTRIKE_DLL )
 	#define MAX_PLAYERS				65  // Absolute max players supported
+#elif defined( L4D2 )
+	#define MAX_PLAYERS				32  // Absolute max players supported
 #elif defined( TF_DLL ) || defined ( TF_CLIENT_DLL ) || defined( HL2MP )
 	#define MAX_PLAYERS				101
 #else
@@ -474,6 +480,17 @@ enum PLAYER_ANIM
 #define DMG_DIRECT			(1<<28)
 #define DMG_BUCKSHOT		(1<<29)		// not quite a bullet. Little, rounder, different.
 
+#if defined( L4D2 )
+// Native L4D2 names include overlapping damage roles, not a separate bit domain.
+#define DMG_BLAMELESS_FRIENDLY_FIRE	(1<<11)
+#define DMG_FORCE_INCAPACITATE		(1<<15)
+#define DMG_CHOKE					(1<<20)
+#define DMG_MELEE					(1<<21)
+#define DMG_STUMBLE					(1<<25)
+#define DMG_HEADSHOT				(1<<30)
+#define DMG_DISMEMBER				(1U<<31)
+#endif
+
 // NOTE: DO NOT ADD ANY MORE CUSTOM DMG_ TYPES. MODS USE THE DMG_LASTGENERICFLAG BELOW, AND
 //		 IF YOU ADD NEW DMG_ TYPES, THEIR TYPES WILL BE HOSED. WE NEED A BETTER SOLUTION.
 
@@ -496,7 +513,9 @@ enum {
 	OBS_MODE_FIXED,		// view from a fixed camera position
 	OBS_MODE_IN_EYE,	// follow a player in first person view
 	OBS_MODE_CHASE,		// follow a player in third person view
+#if !defined( L4D2 )
 	OBS_MODE_POI,		// PASSTIME point of interest - game objective, big fight, anything interesting; added in the middle of the enum due to tons of hard-coded "<ROAMING" enum compares
+#endif
 	OBS_MODE_ROAMING,	// free roaming
 
 	NUM_OBSERVER_MODES,

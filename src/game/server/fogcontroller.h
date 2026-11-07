@@ -12,6 +12,9 @@
 
 #include "playernet_vars.h"
 #include "igamesystem.h"
+#if defined( L4D2 )
+#include "GameEventListener.h"
+#endif
 
 // Spawn Flags
 #define SF_FOG_MASTER		0x0001
@@ -45,13 +48,20 @@ public:
 	void InputSetColorSecondary(inputdata_t &data);
 	void InputSetFarZ( inputdata_t &data );
 	void InputSetAngles( inputdata_t &inputdata );
+#if !defined( L4D2 )
 	void InputSetRadial( inputdata_t& inputdata );
+#endif
 	void InputSetMaxDensity( inputdata_t &inputdata );
 
 	void InputSetColorLerpTo(inputdata_t &data);
 	void InputSetColorSecondaryLerpTo(inputdata_t &data);
 	void InputSetStartDistLerpTo(inputdata_t &data);
 	void InputSetEndDistLerpTo(inputdata_t &data);
+#if defined( L4D2 )
+	void InputSetMaxDensityLerpTo( inputdata_t &data );
+	void InputSet2DSkyboxFogFactor( inputdata_t &data );
+	void InputSet2DSkyboxFogFactorLerpTo( inputdata_t &data );
+#endif
 
 	void InputStartFogTransition(inputdata_t &data);
 
@@ -74,27 +84,48 @@ public:
 // Fog Controller System.
 //
 class CFogSystem : public CAutoGameSystem
+#if defined( L4D2 )
+	, public CGameEventListener
+#endif
 {
 public:
 
 	// Creation/Init.
 	CFogSystem( char const *name ) : CAutoGameSystem( name ) 
 	{
+#if defined( L4D2 )
+		m_hMasterController = NULL;
+#else
 		m_pMasterController = NULL;
+#endif
 	}
 
 	~CFogSystem()
 	{
+#if defined( L4D2 )
+		m_hMasterController = NULL;
+#else
 		m_pMasterController = NULL;
+#endif
 	}
 
 	virtual void LevelInitPreEntity();
 	virtual void LevelInitPostEntity();
+#if defined( L4D2 )
+	CFogController *GetMasterFogController( void ) { return m_hMasterController.Get(); }
+	void FireGameEvent( IGameEvent *event ) OVERRIDE;
+#else
 	CFogController *GetMasterFogController( void )			{ return m_pMasterController; }
+#endif
 
 private:
 
+#if defined( L4D2 )
+	CHandle< CFogController > m_hMasterController;
+	void FindMasterController();
+#else
 	CFogController	*m_pMasterController;
+#endif
 };
 
 CFogSystem *FogSystem( void );

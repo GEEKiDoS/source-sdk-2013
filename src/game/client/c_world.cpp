@@ -14,7 +14,9 @@
 #include "shake.h"
 #include "eventlist.h"
 // NVNT haptic include for notification of world precache
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -59,6 +61,10 @@ BEGIN_RECV_TABLE( C_World, DT_World )
 	RecvPropFloat(RECVINFO(m_flMinPropScreenSpaceWidth)),
 	RecvPropString(RECVINFO(m_iszDetailSpriteMaterial)),
 	RecvPropInt(RECVINFO(m_bColdWorld)),
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO( m_iStartMusicType ) ),
+	RecvPropString( RECVINFO( m_iszMusicPostFix ) ),
+#endif
 END_RECV_TABLE()
 
 
@@ -148,6 +154,7 @@ void W_Precache(void)
 {
 	PrecacheFileWeaponInfoDatabase( filesystem, g_pGameRules->GetEncryptionKey() );
 
+#ifndef L4D2
 	g_sModelIndexFireball = modelinfo->GetModelIndex ("sprites/zerogxplode.vmt");// fireball
 	g_sModelIndexWExplosion = modelinfo->GetModelIndex ("sprites/WXplo1.vmt");// underwater fireball
 	g_sModelIndexSmoke = modelinfo->GetModelIndex ("sprites/steam1.vmt");// smoke
@@ -156,6 +163,8 @@ void W_Precache(void)
 	g_sModelIndexBloodDrop = modelinfo->GetModelIndex ("sprites/blood.vmt"); // splattered blood 
 	g_sModelIndexLaser = modelinfo->GetModelIndex( (char *)g_pModelNameLaser );
 	g_sModelIndexLaserDot = modelinfo->GetModelIndex("sprites/laserdot.vmt");
+#endif
+
 }
 
 void C_World::Precache( void )
@@ -173,10 +182,14 @@ void C_World::Precache( void )
 	W_Precache();	
 
 	// Call all registered precachers.
+#ifndef L4D2
 	CPrecacheRegister::Precache();
+#endif
+#if !defined( L4D2 )
 	// NVNT notify system of precache
 	if (haptics)
 		haptics->WorldPrecache();
+#endif // !L4D2
 }
 
 void C_World::Spawn( void )

@@ -129,6 +129,7 @@ public:
 
 	// Set the size by which the memory grows
 	void SetGrowSize( int size );
+	int GetGrowSize() const { return m_nGrowSize; }
 
 protected:
 	void ValidateGrowSize()

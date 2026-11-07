@@ -1,0 +1,98 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// L4D2 SpriteCard distance-alpha path for the reached TerrorSpriteCard
+// materials. Equations and register/interpolator layout recovered from the
+// original spritecard_ps20b.vcs (version 6), not approximated alpha testing.
+// Original static IDs: 6144 distance-alpha, 18432 + soft edges,
+// 30720 + outline, 43008 + outline + soft edges; add 192 for animation.
+// Original SpriteCard draw selects SOFTEDGES from DISTANCEALPHA && OUTLINE,
+// ignoring the material's SOFTEDGES value. The three reached outline VMTs
+// therefore select 43200 (43008 + animation), despite declaring softedges 0.
+//
+// STATIC: "DISTANCEALPHA"  "0..1"
+// STATIC: "SOFTEDGES"      "0..1"
+// STATIC: "OUTLINE"        "0..1"
+// STATIC: "ANIMBLEND"      "0..1"
+// SKIP: !$DISTANCEALPHA && ( $SOFTEDGES || $OUTLINE )
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+const float4 g_Parameters : register( c0 );
+const float4 g_vecOutlineColor : register( c7 );
+const float4 g_vecOutlineControl : register( c8 );
+const float4 g_vecEdgeControl : register( c9 );
+
+#define OVERBRIGHT_FACTOR   ( g_Parameters.y )
+#define OUTLINE_START0      ( g_vecOutlineControl.x )
+#define OUTLINE_START1      ( g_vecOutlineControl.y )
+#define OUTLINE_END0        ( g_vecOutlineControl.z )
+#define OUTLINE_END1        ( g_vecOutlineControl.w )
+#define EDGE_SOFTNESS_START ( g_vecEdgeControl.x )
+#define EDGE_SOFTNESS_END   ( g_vecEdgeControl.y )
+
+struct PS_INPUT
+{
+	float4 texCoords : TEXCOORD0; // frame 0 UV.xy, frame 1 UV.yx
+	float4 argbcolor : COLOR0;
+#if ANIMBLEND
+	float4 blendfactor : TEXCOORD1;
+#endif
+#if OUTLINE
+	float4 outlineColor : TEXCOORD4;
+#endif
+};
+
+sampler BaseTextureSampler : register( s0 );
+
+float4 main( PS_INPUT i ) : COLOR0
+{
+	float4 blended = tex2D( BaseTextureSampler, i.texCoords.xy );
+#if ANIMBLEND
+	float4 nextFrame = tex2D( BaseTextureSampler, i.texCoords.wz );
+	blended = lerp( blended, nextFrame, i.blendfactor.x );
+#endif
+
+#if DISTANCEALPHA
+	// Keep the pre-remap distance for the outline's two independent ramps.
+	float distanceAlpha = blended.a;
+#if SOFTEDGES
+	// The endpoints are deliberately reversed: start is the opaque side.
+	blended.a = smoothstep( EDGE_SOFTNESS_END, EDGE_SOFTNESS_START, distanceAlpha );
+#else
+	// The native hard distance-alpha path zeros all channels below 0.5,
+	// and retains the sampled alpha above it (it does not force alpha=1).
+	if ( distanceAlpha < 0.5f )
+	{
+		blended = 0;
+	}
+#endif
+#endif
+
+#if OUTLINE
+	// Native outlining tints the base RGB before interpolation. The outline
+	// RGBA is instead multiplied by the independent per-particle TEXCOORD4.
+	// Tint alpha and overbright apply to the result, not to the outline ramp.
+	blended.rgb *= i.argbcolor.rgb;
+	if ( distanceAlpha >= OUTLINE_START0 && distanceAlpha <= OUTLINE_END1 )
+	{
+		float outlineBlend;
+		if ( distanceAlpha <= OUTLINE_START1 )
+		{
+			outlineBlend = smoothstep( OUTLINE_START0, OUTLINE_START1, distanceAlpha );
+		}
+		else
+		{
+			outlineBlend = smoothstep( OUTLINE_END1, OUTLINE_END0, distanceAlpha );
+		}
+		blended = lerp( blended, g_vecOutlineColor * i.outlineColor, outlineBlend );
+	}
+	blended.rgb *= OVERBRIGHT_FACTOR;
+	blended.a *= i.argbcolor.a;
+#else
+	blended.rgb *= OVERBRIGHT_FACTOR;
+	blended *= i.argbcolor;
+#endif
+
+	return FinalOutput( blended, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR );
+}

@@ -11,10 +11,19 @@
 #include "NextBotPlayer.h"
 #include "NextBotPlayerLocomotion.h"
 
+#if defined( L4D2 )
+#include "props.h"
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/terror_physics_math.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar NextBotPlayerMoveDirect( "nb_player_move_direct", "0" );
+ConVar NextBotPlayerMoveDirect( "nb_player_move_direct", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 //-----------------------------------------------------------------------------------------------------
 PlayerLocomotion::PlayerLocomotion( INextBot *bot ) : ILocomotion( bot )
@@ -47,6 +56,9 @@ void PlayerLocomotion::Reset( void )
 	m_minSpeedLimit = 0.0f;
 	m_maxSpeedLimit = 9999999.9f;
 
+#if defined( L4D2 )
+	m_bodyAimEaseInTime = 0.25f;
+#endif
 	BaseClass::Reset();
 }
 
@@ -141,6 +153,9 @@ PlayerLocomotion::LadderState PlayerLocomotion::ApproachAscendingLadder( void )
 
 
 //-----------------------------------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 PlayerLocomotion::LadderState PlayerLocomotion::ApproachDescendingLadder( void )
 {
 	if ( m_ladderInfo == NULL )
@@ -159,7 +174,11 @@ PlayerLocomotion::LadderState PlayerLocomotion::ApproachDescendingLadder( void )
 	Vector to = mountPoint - GetFeet();
 	to.z = 0.0f;
 
+#if defined( L4D2 )
+	double mountRange = TerrorPhysicsNormalize( to ); // S4BC4E0: wide return is compared directly with ten.
+#else
 	float mountRange = to.NormalizeInPlace();
+#endif
 	Vector moveGoal;
 
 	const float veryClose = 10.0f;
@@ -216,6 +235,9 @@ PlayerLocomotion::LadderState PlayerLocomotion::ApproachDescendingLadder( void )
 
 	return APPROACHING_DESCENDING_LADDER;
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------------------------------
@@ -243,7 +265,11 @@ PlayerLocomotion::LadderState PlayerLocomotion::AscendLadder( void )
 	// climb up this ladder - look up
 	Vector goal = GetFeet() + 100.0f * ( -m_ladderInfo->GetNormal() + Vector( 0, 0, 2 ) );
 
+#if defined( L4D2 )
+	GetBot()->GetBodyInterface()->AimHeadTowards( goal, IBody::MANDATORY, 0.1f, NULL, "Ladder", false, 0.25f );
+#else
 	GetBot()->GetBodyInterface()->AimHeadTowards( goal, IBody::MANDATORY, 0.1f, NULL, "Ladder" );
+#endif
 
 	// it is important to approach precisely, so use a very large weight to wash out all other Approaches
 	Approach( goal, 9999999.9f );
@@ -307,14 +333,27 @@ PlayerLocomotion::LadderState PlayerLocomotion::DismountLadderTop( void )
 
 	IBody *body = GetBot()->GetBodyInterface();
 	Vector toGoal = m_ladderDismountGoal->GetCenter() - GetFeet();
+#if defined( L4D2 )
+	const float heightDelta = toGoal.z;
+#endif
 	toGoal.z = 0.0f;
+#if defined( L4D2 )
+	float range = static_cast< float >( TerrorPhysicsNormalize( toGoal ) );
+#else
 	float range = toGoal.NormalizeInPlace();
+#endif
+	#if !defined( L4D2 )
 	toGoal.z = 1.0f;
 	
+	#endif
 	body->AimHeadTowards( body->GetEyePosition() + 100.0f * toGoal, IBody::MANDATORY, 0.1f, NULL, "Ladder dismount" );
 
 	// it is important to approach precisely, so use a very large weight to wash out all other Approaches
+#if defined( L4D2 )
+	Approach( m_ladderDismountGoal->GetCenter(), 9999999.9f );
+#else
 	Approach( GetFeet() + 100.0f * toGoal, 9999999.9f );
+#endif
 
 	if ( GetBot()->IsDebugging( NEXTBOT_LOCOMOTION ) )
 	{
@@ -322,9 +361,12 @@ PlayerLocomotion::LadderState PlayerLocomotion::DismountLadderTop( void )
 		NDebugOverlay::HorzArrow( GetFeet(), m_ladderDismountGoal->GetCenter(), 5.0f, 255, 255, 0, 255, true, 0.1f );
 	}
 
-	// test 2D vector here in case nav area is under the geometry a bit
+#if defined( L4D2 )
+	if ( range < 20.0f && fabs( heightDelta ) < body->GetStandHullHeight() )
+#else
 	const float tolerance = 10.0f;
 	if ( GetBot()->GetEntity()->GetLastKnownArea() == m_ladderDismountGoal && range < tolerance )
+#endif
 	{
 		// reached dismount goal
 		m_ladderInfo = NULL;
@@ -373,7 +415,11 @@ void PlayerLocomotion::Update( void )
 
 		Vector toLanding = m_landingGoal - GetFeet();
 		toLanding.z = 0.0f;
+#if defined( L4D2 )
+		TerrorPhysicsNormalize( toLanding );
+#else
 		toLanding.NormalizeInPlace();
+#endif
 
 		if ( m_hasLeftTheGround )
 		{
@@ -477,7 +523,14 @@ void PlayerLocomotion::Approach( const Vector &pos, float goalWeight )
 	float ahead = to.Dot( forward );
 	float side = to.Dot( right );
 
-#ifdef NEED_TO_INTEGRATE_MOTION_CONTROLLED_CODE_FROM_L4D_PLAYERS
+#if defined( L4D2 )
+	CTerrorPlayer *player = ToTerrorPlayer( m_player );
+	if ( player && CTerrorPlayer::IsClimbingActivity( player->GetTerrorActivity() ) )
+	{
+		playerButtons->PressCrouchButton();
+		return;
+	}
+#elif defined( NEED_TO_INTEGRATE_MOTION_CONTROLLED_CODE_FROM_L4D_PLAYERS )
 	// If we're climbing ledges, we need to stay crouched to prevent player movement code from messing
 	// with our origin.
 	CTerrorPlayer *player = ToTerrorPlayer(m_player);
@@ -500,7 +553,11 @@ void PlayerLocomotion::Approach( const Vector &pos, float goalWeight )
 			CalcClosestPointOnLine( GetFeet(), m_ladderInfo->m_bottom, m_ladderInfo->m_top, posOnLadder );
 
 			Vector alongLadder = m_ladderInfo->m_top - m_ladderInfo->m_bottom;
+#if defined( L4D2 )
+			TerrorPhysicsNormalize( alongLadder );
+#else
 			alongLadder.NormalizeInPlace();
+#endif
 
 			Vector rightLadder = CrossProduct( alongLadder, m_ladderInfo->GetNormal() );
 
@@ -508,7 +565,11 @@ void PlayerLocomotion::Approach( const Vector &pos, float goalWeight )
 
 			// we only want error in plane of ladder
 			float error = DotProduct( away, rightLadder );
+#if defined( L4D2 )
+			TerrorPhysicsNormalize( away );
+#else
 			away.NormalizeInPlace();
+#endif
 
 			const float tolerance = 5.0f + 0.25f * GetBot()->GetBodyInterface()->GetHullWidth();
 			if ( error > tolerance )
@@ -597,7 +658,12 @@ void PlayerLocomotion::DriveTo( const Vector &pos )
 bool PlayerLocomotion::IsClimbPossible( INextBot *me, const CBaseEntity *obstacle ) const
 {
 	// don't jump unless we have to
+#if defined( L4D2 )
+	const Path *currentPath = GetBot()->GetIntentionInterface()->GetCurrentPath( GetBot() );
+	const PathFollower *path = dynamic_cast< const PathFollower * >( currentPath );
+#else
 	const PathFollower *path = GetBot()->GetCurrentPath();
+#endif
 	if ( path )
 	{
 		const float watchForClimbRange = 75.0f;
@@ -614,6 +680,10 @@ bool PlayerLocomotion::IsClimbPossible( INextBot *me, const CBaseEntity *obstacl
 					// movable physics object - climb over it
 					return true;
 				}
+#if defined( L4D2 )
+				if ( dynamic_cast< const CBreakableProp * >( obstacle ) )
+					return true;
+#endif
 			}
 
 			if ( !GetBot()->GetLocomotionInterface()->IsStuck() )
@@ -784,10 +854,19 @@ bool PlayerLocomotion::IsUsingLadder( void ) const
  */
 void PlayerLocomotion::FaceTowards( const Vector &target )
 {
+#if defined( L4D2 )
+	IBody *body = GetBot()->GetBodyInterface();
+	if ( body )
+	{
+		Vector look( target.x, target.y, GetBot()->GetEntity()->EyePosition().z );
+		body->AimHeadTowards( look, IBody::BORING, 0.1f, NULL, "Body facing", false, m_bodyAimEaseInTime );
+	}
+#else
 	// player body follows view direction
 	Vector look( target.x, target.y, GetBot()->GetEntity()->EyePosition().z );
 
 	GetBot()->GetBodyInterface()->AimHeadTowards( look, IBody::BORING, 0.1f, NULL, "Body facing" );
+#endif
 }
 
 

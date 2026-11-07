@@ -30,7 +30,9 @@ public:
 	DECLARE_CLASS( NextBotCombatCharacter, CBaseCombatCharacter );
 	DECLARE_SERVERCLASS();
 	DECLARE_DATADESC();
+	#if !defined( L4D2 )
 	DECLARE_ENT_SCRIPTDESC();
+	#endif
 	
 	NextBotCombatCharacter( void );
 	virtual ~NextBotCombatCharacter() { }

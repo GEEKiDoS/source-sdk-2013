@@ -26,17 +26,33 @@
 #include "c_portal_player.h"
 #endif // PORTAL
 
+#if defined( L4D2 )
+#include <emmintrin.h>
+#endif
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar crosshair( "crosshair", "1", FCVAR_ARCHIVE );
-ConVar cl_observercrosshair( "cl_observercrosshair", "1", FCVAR_ARCHIVE );
+ConVar crosshair( "crosshair", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
+ConVar cl_observercrosshair( "cl_observercrosshair", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+ );
 
 using namespace vgui;
 
 int ScreenTransform( const Vector& point, Vector& screen );
 
-#ifdef TF_CLIENT_DLL
+#if defined( TF_CLIENT_DLL ) || defined( L4D2 )
 // If running TF, we use CHudTFCrosshair instead (which is derived from CHudCrosshair)
 #else
 DECLARE_HUDELEMENT( CHudCrosshair );
@@ -165,6 +181,7 @@ void CHudCrosshair::GetDrawPosition ( float *pX, float *pY, bool *pbBehindCamera
 		Vector vecStart;
 		Vector vecEnd;
 
+#if !defined( L4D2 )
 		if ( UseVR() )
 		{
 			// These are the correct values to use, but they lag the high-speed view data...
@@ -176,6 +193,7 @@ void CHudCrosshair::GetDrawPosition ( float *pX, float *pY, bool *pbBehindCamera
 
 			bUseOffset = true;
 		}
+#endif
 
 #ifdef SIXENSE
 		// TODO: actually test this Sixsense code interaction with things like HMDs & stereo.
@@ -230,6 +248,40 @@ void CHudCrosshair::GetDrawPosition ( float *pX, float *pY, bool *pbBehindCamera
 }
 
 
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+void CHudCrosshair::Paint()
+{
+	// C120E10: the pinned PC console-autoaim branch is literally false.
+	if ( !m_pCrosshair || !IsCurrentViewAccessAllowed() ) return;
+	float x = static_cast< float >( ScreenWidth() / 2 );
+	float y = static_cast< float >( ScreenHeight() / 2 );
+	const QAngle angles = CurrentViewAngles();
+	const Vector origin = CurrentViewOrigin();
+	Vector screen( 0, 0, 0 );
+	if ( m_vecCrossHairOffsetAngle != vec3_angle )
+	{
+		Vector forward;
+		AngleVectors( angles + m_vecCrossHairOffsetAngle, &forward );
+		ScreenTransform( origin + forward, screen ); // Native ignores behind-camera result.
+	}
+	x = ( static_cast< float >( ScreenWidth() ) * ( screen.x * 0.5f ) + 0.5f ) + x;
+	y = ( static_cast< float >( ScreenHeight() ) * ( screen.y * 0.5f ) + 0.5f ) + y;
+	const int width = m_pCrosshair->Width();
+	const int height = m_pCrosshair->Height();
+	const int drawX = _mm_cvttss_si32( _mm_set_ss( x - static_cast< float >( width ) * 0.5f ) );
+	const int drawY = _mm_cvttss_si32( _mm_set_ss( y - static_cast< float >( height ) * 0.5f ) );
+	m_pCrosshair->DrawSelf( drawX, drawY, m_clrCrosshair );
+	// Main's minimal undefined-native skip if drawing invalidated the icon.
+	if ( !m_pCrosshair ) return;
+	const int hookWidth = m_pCrosshair->Width();
+	const int hookHeight = m_pCrosshair->Height();
+	const int hookX = _mm_cvttss_si32( _mm_set_ss( x - static_cast< float >( hookWidth ) * 0.5f ) );
+	const int hookY = _mm_cvttss_si32( _mm_set_ss( y - static_cast< float >( hookHeight ) * 0.5f ) );
+	DrawCrosshair( hookX, hookY, hookWidth, hookHeight ); // Actual C2CB820, including alpha0.
+}
+#pragma float_control( pop )
+#else
 void CHudCrosshair::Paint( void )
 {
 	if ( !m_pCrosshair )
@@ -279,6 +331,7 @@ void CHudCrosshair::Paint( void )
 		iWidth, iHeight,
 		clr );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 

@@ -2747,7 +2747,12 @@ BEGIN_BYTESWAP_DATADESC( mstudioanimdesc_t )
 	DEFINE_FIELD( numframes, FIELD_INTEGER ),
 	DEFINE_FIELD( nummovements, FIELD_INTEGER ),
 	DEFINE_INDEX( movementindex, FIELD_INTEGER ),
+#if defined( L4D2 )
+	DEFINE_INDEX( ikrulezeroframeindex, FIELD_INTEGER ),
+	DEFINE_ARRAY( unused1, FIELD_INTEGER, 5 ),
+#else
 	DEFINE_ARRAY( unused1, FIELD_INTEGER, 6 ),
+#endif // L4D2
 	DEFINE_FIELD( animblock, FIELD_INTEGER ),
 	DEFINE_INDEX( animindex, FIELD_INTEGER ),
 	DEFINE_FIELD( numikrules, FIELD_INTEGER ),

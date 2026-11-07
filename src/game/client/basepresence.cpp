@@ -67,6 +67,7 @@ void CBasePresence::UploadStats()
 {
 }
 
+#if !defined( L4D2 )
 //---------------------------------------------------------
 // Debug support
 //---------------------------------------------------------
@@ -92,3 +93,4 @@ void CBasePresence::DebugUserSetProperty( const CCommand &args )
 		Warning( "user_property <property id> <property value>\n" );
 	}
 }
+#endif

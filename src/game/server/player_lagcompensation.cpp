@@ -13,6 +13,14 @@
 #include "utllinkedlist.h"
 #include "BaseAnimatingOverlay.h"
 #include "tier0/vprof.h"
+#if defined( L4D2 )
+#include "l4d2/player/terror_lagcompensation.h"
+#include "l4d2/player/terrorplayer.h"
+#include "NextBot/NextBotManager.h"
+#include "gamevars_shared.h"
+#include "in_buttons.h"
+#include "tier1/utlmap.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -25,17 +33,49 @@
 #define LC_SIZE_CHANGED		(1<<10)
 #define LC_ANIMATION_CHANGED (1<<11)
 
+#if !defined( L4D2 )
 static ConVar sv_lagcompensation_teleport_dist( "sv_lagcompensation_teleport_dist", "64", FCVAR_DEVELOPMENTONLY | FCVAR_CHEAT, "How far a player got moved by game code before we can't lag compensate their position back" );
+#endif
 #define LAG_COMPENSATION_EPS_SQR ( 0.1f * 0.1f )
 // Allow 4 units of error ( about 1 / 8 bbox width )
 #define LAG_COMPENSATION_ERROR_EPS_SQR ( 4.0f * 4.0f )
 
-ConVar sv_unlag( "sv_unlag", "1", FCVAR_DEVELOPMENTONLY, "Enables player lag compensation" );
-ConVar sv_maxunlag( "sv_maxunlag", "1.0", FCVAR_DEVELOPMENTONLY, "Maximum lag compensation in seconds", true, 0.0f, true, 1.0f );
-ConVar sv_lagflushbonecache( "sv_lagflushbonecache", "1", FCVAR_DEVELOPMENTONLY, "Flushes entity bone cache on lag compensation" );
-ConVar sv_showlagcompensation( "sv_showlagcompensation", "0", FCVAR_CHEAT, "Show lag compensated hitboxes whenever a player is lag compensated." );
+ConVar sv_unlag( "sv_unlag", "1", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Enables player lag compensation" );
+ConVar sv_maxunlag( "sv_maxunlag", "1.0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Maximum lag compensation in seconds", true, 0.0f, true, 1.0f );
+ConVar sv_lagflushbonecache( "sv_lagflushbonecache", "1", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Flushes entity bone cache on lag compensation" );
+ConVar sv_showlagcompensation( "sv_showlagcompensation", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Show lag compensated hitboxes whenever a player is lag compensated." );
 
-ConVar sv_unlag_fixstuck( "sv_unlag_fixstuck", "0", FCVAR_DEVELOPMENTONLY, "Disallow backtracking a player for lag compensation if it will cause them to become stuck" );
+ConVar sv_unlag_fixstuck( "sv_unlag_fixstuck", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+, "Disallow backtracking a player for lag compensation if it will cause them to become stuck" );
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -135,6 +175,9 @@ public:
 ConVar sv_unlag_debug( "sv_unlag_debug", "0", FCVAR_GAMEDLL | FCVAR_DEVELOPMENTONLY );
 
 float g_flFractionScale = 0.95;
+#if defined( L4D2 )
+#include "l4d2/player/terror_lagcompensation.inc"
+#else
 static void RestorePlayerTo( CBasePlayer *pPlayer, const Vector &vWantedPos )
 {
 	// Try to move to the wanted position from our current position.
@@ -873,3 +916,4 @@ void CLagCompensationManager::FinishLagCompensation( CBasePlayer *player )
 }
 
 
+#endif // L4D2

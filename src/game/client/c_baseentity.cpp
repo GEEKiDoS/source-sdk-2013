@@ -46,6 +46,21 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "tier0/fasttimer.h"
+#include "tier1/utllinkedlist.h"
+#include "iclientmode.h"
+#include "cliententitylist.h"
+#include "studio.h"
+#include "istudiorender.h"
+#include "materialsystem/imaterial.h"
+#include "tier3/tier3.h"
+#include "l4d2/effects/terror_materials.h"
+#endif // L4D2
+#if defined( L4D2 )
+#include <emmintrin.h>
+#include <float.h>
+#endif
 #include "tier0/memdbgon.h"
 
 
@@ -59,6 +74,13 @@ static bool g_bWasSkipping = (bool)-1;
 static bool g_bWasThreaded =(bool)-1;
 static int  g_nThreadModeTicks = 0;
 
+#if defined( L4D2 )
+C_Infected *C_BaseEntity::MyInfectedPointer()
+{
+	return NULL;
+}
+#endif
+
 void cc_cl_interp_all_changed( IConVar *pConVar, const char *pOldString, float flOldValue )
 {
 	ConVarRef var( pConVar );
@@ -70,17 +92,45 @@ void cc_cl_interp_all_changed( IConVar *pConVar, const char *pOldString, float f
 		{
 			if ( pEnt->ShouldInterpolate() )
 			{
+#if defined( L4D2 )
+				pEnt->AddToEntityList( C_BaseEntity::ENTITY_LIST_INTERPOLATE );
+#else
 				pEnt->AddToInterpolationList();
+#endif
 			}
 		}
 	}
 }
 
 
-static ConVar  cl_extrapolate( "cl_extrapolate", "1", FCVAR_CHEAT, "Enable/disable extrapolation if interpolation history runs out." );
-static ConVar  cl_interp_npcs( "cl_interp_npcs", "0.0", FCVAR_USERINFO, "Interpolate NPC positions starting this many seconds in past (or cl_interp, if greater)" );  
-static ConVar  cl_interp_all( "cl_interp_all", "0", 0, "Disable interpolation list optimizations.", 0, 0, 0, 0, cc_cl_interp_all_changed );
-ConVar  r_drawmodeldecals( "r_drawmodeldecals", "1", FCVAR_ALLOWED_IN_COMPETITIVE );
+static ConVar  cl_extrapolate( "cl_extrapolate", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Enable/disable extrapolation if interpolation history runs out." );
+static ConVar  cl_interp_npcs( "cl_interp_npcs", "0.0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_USERINFO
+#endif
+, "Interpolate NPC positions starting this many seconds in past (or cl_interp, if greater)" );  
+static ConVar  cl_interp_all( "cl_interp_all", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Disable interpolation list optimizations.", 0, 0, 0, 0, cc_cl_interp_all_changed );
+ConVar  r_drawmodeldecals( "r_drawmodeldecals", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ALLOWED_IN_COMPETITIVE
+#endif
+ );
 extern ConVar	cl_showerror;
 int C_BaseEntity::m_nPredictionRandomSeed = -1;
 C_BasePlayer *C_BaseEntity::m_pPredictionPlayer = NULL;
@@ -90,14 +140,36 @@ bool C_BaseEntity::s_bInterpolate = true;
 
 bool C_BaseEntity::sm_bDisableTouchFuncs = false;	// Disables PhysicsTouch and PhysicsStartTouch function calls
 
-static ConVar  r_drawrenderboxes( "r_drawrenderboxes", "0", FCVAR_CHEAT );  
+static ConVar  r_drawrenderboxes( "r_drawrenderboxes", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );  
 
 static bool g_bAbsRecomputationStack[8];
 static unsigned short g_iAbsRecomputationStackPos = 0;
 
 // All the entities that want Interpolate() called on them.
+#if defined( L4D2 )
+typedef CUtlLinkedList< C_BaseEntity *, unsigned short > ClientEntityList_t;
+static ClientEntityList_t g_EntityLists[C_BaseEntity::NUM_ENTITY_LISTS];
+ConVar report_cliententitysim( "report_cliententitysim", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+,
+	"List all clientside simulations and time - will report and turn itself off." );
+#else
 static CUtlLinkedList<C_BaseEntity*, unsigned short> g_InterpolationList;
 static CUtlLinkedList<C_BaseEntity*, unsigned short> g_TeleportList;
+#endif
+#if defined( L4D2 )
+static CUtlVector< C_BaseEntity * > s_UseableEntities;
+#endif
 
 #if !defined( NO_ENTITY_PREDICTION )
 //-----------------------------------------------------------------------------
@@ -392,6 +464,16 @@ void RecvProxy_ToolRecording( const CRecvProxyData *pData, void *pStruct, void *
 }
 
 // Expose it to the engine.
+#if defined( L4D2 )
+static void RecvProxy_TerrorRenderColor( const CRecvProxyData *data, void *object, void *output )
+{
+	C_BaseEntity *entity = static_cast< C_BaseEntity * >( object );
+	const unsigned int value = static_cast< unsigned int >( data->m_Value.m_Int );
+	entity->SetRenderColor( static_cast< byte >( value ), static_cast< byte >( value >> 8 ),
+		static_cast< byte >( value >> 16 ), static_cast< byte >( value >> 24 ) );
+}
+#endif
+
 IMPLEMENT_CLIENTCLASS(C_BaseEntity, DT_BaseEntity, CBaseEntity);
 
 static void RecvProxy_MoveType( const CRecvProxyData *pData, void *pStruct, void *pOut )
@@ -436,6 +518,9 @@ END_RECV_TABLE()
 BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
 	RecvPropDataTable( "AnimTimeMustBeFirst", 0, 0, &REFERENCE_RECV_TABLE(DT_AnimTimeMustBeFirst) ),
 	RecvPropInt( RECVINFO(m_flSimulationTime), 0, RecvProxy_SimulationTime ),
+#if defined( L4D2 )
+	RecvPropFloat( RECVINFO( m_flCreateTime ) ),
+#endif
 	RecvPropInt( RECVINFO( m_ubInterpolationFrame ) ),
 
 	RecvPropVector( RECVINFO_NAME( m_vecNetworkOrigin, m_vecOrigin ) ),
@@ -454,20 +539,32 @@ BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
 	RecvPropInt(RECVINFO(m_fEffects), 0, RecvProxy_EffectFlags ),
 	RecvPropInt(RECVINFO(m_nRenderMode)),
 	RecvPropInt(RECVINFO(m_nRenderFX)),
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO(m_clrRender), 0, RecvProxy_TerrorRenderColor ),
+#else
 	RecvPropInt(RECVINFO(m_clrRender)),
+#endif
 	RecvPropInt(RECVINFO(m_iTeamNum)),
 	RecvPropInt(RECVINFO(m_CollisionGroup)),
+#if !defined( L4D2 )
 	RecvPropFloat(RECVINFO(m_flGravity)),
+#endif
 	RecvPropFloat(RECVINFO(m_flElasticity)),
 	RecvPropFloat(RECVINFO(m_flShadowCastDistance)),
 	RecvPropEHandle( RECVINFO(m_hOwnerEntity) ),
 	RecvPropEHandle( RECVINFO(m_hEffectEntity) ),
 	RecvPropInt( RECVINFO_NAME(m_hNetworkMoveParent, moveparent), 0, RecvProxy_IntToMoveParent ),
 	RecvPropInt( RECVINFO( m_iParentAttachment ) ),
+#if defined( L4D2 )
+	RecvPropEHandle( RECVINFO( m_hScriptUseTarget ) ),
+#endif
 
 	RecvPropInt( "movetype", 0, SIZEOF_IGNORE, 0, RecvProxy_MoveType ),
 	RecvPropInt( "movecollide", 0, SIZEOF_IGNORE, 0, RecvProxy_MoveCollide ),
 	RecvPropDataTable( RECVINFO_DT( m_Collision ), 0, &REFERENCE_RECV_TABLE(DT_CollisionProperty) ),
+#if defined( L4D2 )
+	RecvPropDataTable( RECVINFO_DT( m_Glow ), 0, &REFERENCE_RECV_TABLE( DT_GlowProperty ) ),
+#endif
 	
 	RecvPropInt( RECVINFO ( m_iTextureFrameIndex ) ),
 #if !defined( NO_ENTITY_PREDICTION )
@@ -477,6 +574,17 @@ BEGIN_RECV_TABLE_NOBASE(C_BaseEntity, DT_BaseEntity)
 	RecvPropInt		( RECVINFO( m_bSimulatedEveryTick ), 0, RecvProxy_InterpolationAmountChanged ),
 	RecvPropInt		( RECVINFO( m_bAnimatedEveryTick ), 0, RecvProxy_InterpolationAmountChanged ),
 	RecvPropBool	( RECVINFO( m_bAlternateSorting ) ),
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO( m_bGlowBackfaceMult ) ),
+	RecvPropInt( RECVINFO( m_Gender ) ),
+	RecvPropFloat( RECVINFO( m_fadeMinDist ) ),
+	RecvPropFloat( RECVINFO( m_fadeMaxDist ) ),
+	RecvPropFloat( RECVINFO( m_flFadeScale ) ),
+	RecvPropInt( RECVINFO( m_nMinCPULevel ) ),
+	RecvPropInt( RECVINFO( m_nMaxCPULevel ) ),
+	RecvPropInt( RECVINFO( m_nMinGPULevel ) ),
+	RecvPropInt( RECVINFO( m_nMaxGPULevel ) ),
+#endif
 
 #ifdef TF_CLIENT_DLL
 	RecvPropArray3( RECVINFO_ARRAY(m_nModelIndexOverrides),	RecvPropInt( RECVINFO(m_nModelIndexOverrides[0]) ) ),
@@ -489,14 +597,25 @@ const float coordTolerance = 2.0f / (float)( 1 << COORD_FRACTIONAL_BITS );
 BEGIN_PREDICTION_DATA_NO_BASE( C_BaseEntity )
 
 	// These have a special proxy to handle send/receive
+#if defined( L4D2 )
+#ifndef NO_ENTITY_PREDICTION
+	{ FIELD_EMBEDDED, "m_Collision", { (int)_hacky_datamap_offsetof( classNameTypedef, m_Collision ), 0 },
+		1, FTYPEDESC_SAVE | FTYPEDESC_KEY, NULL, NULL, NULL, &CCollisionProperty::m_PredMap },
+#else
+	DEFINE_FIELD_NULL,
+#endif
+#else
 	DEFINE_PRED_TYPEDESCRIPTION( m_Collision, CCollisionProperty ),
+#endif
 
 	DEFINE_PRED_FIELD( m_MoveType, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_MoveCollide, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
 
 	DEFINE_FIELD( m_vecAbsVelocity, FIELD_VECTOR ),
 	DEFINE_PRED_FIELD_TOL( m_vecVelocity, FIELD_VECTOR, FTYPEDESC_INSENDTABLE, 0.5f ),
-//	DEFINE_PRED_FIELD( m_fEffects, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#if defined( L4D2 )
+	DEFINE_PRED_FIELD( m_fEffects, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#endif
 	DEFINE_PRED_FIELD( m_nRenderMode, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_nRenderFX, FIELD_CHARACTER, FTYPEDESC_INSENDTABLE ),
 //	DEFINE_PRED_FIELD( m_flAnimTime, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
@@ -506,6 +625,9 @@ BEGIN_PREDICTION_DATA_NO_BASE( C_BaseEntity )
 	DEFINE_PRED_FIELD( m_nModelIndex, FIELD_SHORT, FTYPEDESC_INSENDTABLE | FTYPEDESC_MODELINDEX ),
 	DEFINE_PRED_FIELD( m_flFriction, FIELD_FLOAT, FTYPEDESC_INSENDTABLE ),
 	DEFINE_PRED_FIELD( m_iTeamNum, FIELD_INTEGER, FTYPEDESC_INSENDTABLE ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_iHealth, FIELD_INTEGER ),
+#endif
 	DEFINE_PRED_FIELD( m_hOwnerEntity, FIELD_EHANDLE, FTYPEDESC_INSENDTABLE ),
 
 //	DEFINE_FIELD( m_nSimulationTick, FIELD_INTEGER ),
@@ -535,12 +657,18 @@ BEGIN_PREDICTION_DATA_NO_BASE( C_BaseEntity )
 //	DEFINE_FIELD( m_ClientHandle, FIELD_SHORT ),
 //	DEFINE_FIELD( m_Partition, FIELD_SHORT ),
 //	DEFINE_FIELD( m_hRender, FIELD_SHORT ),
+#if !defined( L4D2 )
 	DEFINE_FIELD( m_bDormant, FIELD_BOOLEAN ),
+#endif
 //	DEFINE_FIELD( current_position, FIELD_INTEGER ),
 //	DEFINE_FIELD( m_flLastMessageTime, FIELD_FLOAT ),
 	DEFINE_FIELD( m_vecBaseVelocity, FIELD_VECTOR ),
 	DEFINE_FIELD( m_iEFlags, FIELD_INTEGER ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_flGravity, FIELD_FLOAT ),
+#else
 	DEFINE_PRED_FIELD( m_flGravity, FIELD_FLOAT, FTYPEDESC_INSENDTABLE | FTYPEDESC_NOERRORCHECK ),
+#endif
 //	DEFINE_FIELD( m_ModelInstance, FIELD_SHORT ),
 	DEFINE_FIELD( m_flProxyRandomValue, FIELD_FLOAT ),
 
@@ -951,11 +1079,29 @@ C_BaseEntity::C_BaseEntity() :
 	m_pPredictionContext = NULL;
 #endif
 	
+#if defined( L4D2 )
+	m_nLocalViewVisibility = 0;
+	m_bRenderWithViewModels = false;
+	m_bDisableCachedRenderBounds = false;
+	for ( int i = 0; i < NUM_ENTITY_LISTS; ++i )
+		m_ListEntry[i] = 0xFFFF;
+	// Native4E500 inlines list2 AddToTail before Clear, not list3.
+	AddToEntityList( ENTITY_LIST_PRERENDER );
+#endif
 	//NOTE: not virtual! we are in the constructor!
 	C_BaseEntity::Clear();
+#if defined( L4D2 )
+	m_flCreateTime = 0.0f;
+#endif
+#if defined( L4D2 )
+	m_spawnflags = 0;
+	m_hScriptUseTarget = NULL;
+#endif
 	
+#if !defined( L4D2 )
 	m_InterpolationListEntry = 0xFFFF;
 	m_TeleportListEntry = 0xFFFF;
+#endif
 
 #ifndef NO_TOOLFRAMEWORK
 	m_bEnabledInToolView = true;
@@ -972,6 +1118,15 @@ C_BaseEntity::C_BaseEntity() :
 #endif
 
 	ParticleProp()->Init( this );
+#if defined( L4D2 )
+	m_fadeMinDist = 0.0f;
+	m_fadeMaxDist = 0.0f;
+	m_flFadeScale = 0.0f;
+	m_nMinCPULevel = 0;
+	m_nMaxCPULevel = 0;
+	m_nMinGPULevel = 0;
+	m_nMaxGPULevel = 0;
+#endif
 }
 
 
@@ -987,8 +1142,13 @@ C_BaseEntity::~C_BaseEntity()
 #if !defined( NO_ENTITY_PREDICTION )
 	delete m_pPredictionContext;
 #endif
+#if defined( L4D2 )
+	for ( int i = 0; i < NUM_ENTITY_LISTS; ++i )
+		RemoveFromEntityList( static_cast< EntityListId_t >( i ) );
+#else
 	RemoveFromInterpolationList();
 	RemoveFromTeleportList();
+#endif
 }
 
 void C_BaseEntity::Clear( void )
@@ -1005,6 +1165,9 @@ void C_BaseEntity::Clear( void )
 
 	index = -1;
 	m_Collision.Init( this );
+#if defined( L4D2 )
+	ResetRenderAlpha();
+#endif
 	SetLocalOrigin( vec3_origin );
 	SetLocalAngles( vec3_angle );
 	model = NULL;
@@ -1113,6 +1276,9 @@ bool C_BaseEntity::Init( int entnum, int iSerialNum )
 		}
 	}
 
+#if defined( L4D2 )
+	SetRenderAlphaSeed( index );
+#endif
 	cl_entitylist->AddNetworkableEntity( GetIClientUnknown(), entnum, iSerialNum );
 
 	CollisionProp()->CreatePartitionHandle();
@@ -1127,6 +1293,22 @@ bool C_BaseEntity::Init( int entnum, int iSerialNum )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool C_BaseEntity::InitializeAsClientEntity( const char *modelName, bool renderWithViewModels )
+{
+	int modelIndex;
+	if ( modelName )
+	{
+		modelIndex = modelinfo->GetModelIndex( modelName );
+		if ( modelIndex == -1 )
+			return false;
+	}
+	else
+		modelIndex = -1;
+	Interp_SetupMappings( GetVarMapping() );
+	return InitializeAsClientEntityByIndex( modelIndex, renderWithViewModels );
+}
+#else
 bool C_BaseEntity::InitializeAsClientEntity( const char *pszModelName, RenderGroup_t renderGroup )
 {
 	int nModelIndex;
@@ -1151,10 +1333,25 @@ bool C_BaseEntity::InitializeAsClientEntity( const char *pszModelName, RenderGro
 
 	return InitializeAsClientEntityByIndex( nModelIndex, renderGroup );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool C_BaseEntity::InitializeAsClientEntityByIndex( int modelIndex, bool renderWithViewModels )
+{
+	SetRenderWithViewModels( renderWithViewModels );
+	SetModelByIndex( modelIndex );
+	cl_entitylist->AddNonNetworkableEntity( GetIClientUnknown() );
+	CollisionProp()->CreatePartitionHandle();
+	index = -1;
+	const int seed = random->RandomInt( 0, 0x7FFF ) % 1024;
+	SetRenderAlphaSeed( seed );
+	SpawnClientEntity();
+	return true;
+}
+#else
 bool C_BaseEntity::InitializeAsClientEntityByIndex( int iIndex, RenderGroup_t renderGroup )
 {
 	index = -1;
@@ -1176,6 +1373,7 @@ bool C_BaseEntity::InitializeAsClientEntityByIndex( int iIndex, RenderGroup_t re
 
 	return true;
 }
+#endif
 
 void C_BaseEntity::TrackAngRotation( bool bTrack )
 {
@@ -1307,6 +1505,23 @@ void C_BaseEntity::SetRemovalFlag( bool bRemove )
 //-----------------------------------------------------------------------------
 // VPhysics objects..
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_BaseEntity::VPhysicsSwapObject( IPhysicsObject *pSwap )
+{
+	if ( !pSwap )
+	{
+		VPhysicsSetObject( NULL );
+		return;
+	}
+
+	if ( !m_pPhysicsObject )
+	{
+		DevWarning( "Bad vphysics swap for %s\n", STRING( m_iClassname ) );
+	}
+	m_pPhysicsObject = pSwap;
+}
+#endif
+
 int C_BaseEntity::VPhysicsGetObjectList( IPhysicsObject **pList, int listMax )
 {
 	IPhysicsObject *pPhys = VPhysicsGetObject();
@@ -1367,6 +1582,21 @@ void C_BaseEntity::GetVectors(Vector* pForward, Vector* pRight, Vector* pUp) con
 	}
 }
 
+#if defined( L4D2 )
+void C_BaseEntity::UpdateVisibility()
+{
+	const unsigned int oldVisibility = m_nLocalViewVisibility;
+	m_nLocalViewVisibility = 0;
+	if ( ShouldDraw() && !IsDormant() && ( !ToolsEnabled() || IsEnabledInToolView() ) )
+		m_nLocalViewVisibility |= 1u;
+	if ( oldVisibility != m_nLocalViewVisibility )
+		UpdateLeafLocalViewVisibility();
+	if ( m_nLocalViewVisibility != 0 )
+		AddToLeafSystem( m_bRenderWithViewModels );
+	else
+		RemoveFromLeafSystem();
+}
+#else
 void C_BaseEntity::UpdateVisibility()
 {
 #ifdef TF_CLIENT_DLL
@@ -1430,6 +1660,7 @@ void C_BaseEntity::UpdateVisibility()
 		RemoveFromLeafSystem();
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Returns whether object should render.
@@ -1446,6 +1677,19 @@ bool C_BaseEntity::ShouldDraw()
 	// Some rendermodes prevent rendering
 	if ( m_nRenderMode == kRenderNone )
 		return false;
+#if defined( L4D2 )
+	// C43EB0: the received limits are one-based; zero leaves that end open.
+	static ConVarRef cpuLevel( "cpu_level" );
+	const int cpu = clamp( cpuLevel.GetInt(), 0, 2 );
+	if ( ( m_nMinCPULevel && m_nMinCPULevel - 1 > cpu ) ||
+		( m_nMaxCPULevel && m_nMaxCPULevel - 1 < cpu ) )
+		return false;
+	static ConVarRef gpuLevel( "gpu_level" );
+	const int gpu = clamp( gpuLevel.GetInt(), 0, 3 );
+	if ( ( m_nMinGPULevel && m_nMinGPULevel - 1 > gpu ) ||
+		( m_nMaxGPULevel && m_nMaxGPULevel - 1 < gpu ) )
+		return false;
+#endif
 
 	return (model != 0) && !IsEffectActive(EF_NODRAW) && (index != 0);
 }
@@ -1572,10 +1816,15 @@ bool C_BaseEntity::ShouldReceiveProjectedTextures( int flags )
 
 	if( flags & SHADOW_FLAGS_FLASHLIGHT )
 	{
+#if defined( L4D2 )
+		// C440E0 reads the alpha property's modulation, not the wire color.
+		return GetRenderMode() == kRenderNormal || GetRenderAlphaModulation() != 0;
+#else
 		if ( GetRenderMode() > kRenderNormal && GetRenderColor().a == 0 )
 			 return false;
 
 		return true;
+#endif
 	}
 
 	Assert( flags & SHADOW_FLAGS_SHADOW );
@@ -1787,7 +2036,11 @@ void C_BaseEntity::SetModelPointer( const model_t *pModel )
 		model = pModel;
 		OnNewModel();
 
+#if defined( L4D2 )
+		C_BaseEntity::UpdateVisibility();
+#else
 		UpdateVisibility();
+#endif
 	}
 }
 
@@ -2542,7 +2795,11 @@ void C_BaseEntity::PostDataUpdate( DataUpdateType_t updateType )
 	PREDICTION_TRACKVALUECHANGESCOPE_ENTITY( this, "postdataupdate" );
 
 	// NOTE: This *has* to happen first. Otherwise, Origin + angles may be wrong 
+#if defined( L4D2 )
+	if ( m_bClientSideRagdoll && updateType == DATA_UPDATE_CREATED )
+#else
 	if ( m_nRenderFX == kRenderFxRagdoll && updateType == DATA_UPDATE_CREATED )
+#endif
 	{
 		MoveToLastReceivedPosition( true );
 	}
@@ -2640,7 +2897,11 @@ void C_BaseEntity::PostDataUpdate( DataUpdateType_t updateType )
 	if ( !IsClientCreated() )
 	{
 		if ( Teleported() || IsNoInterpolationFrame() )
+#if defined( L4D2 )
+			AddToEntityList( ENTITY_LIST_TELEPORT );
+#else
 			AddToTeleportList();
+#endif
 	}
 
 	// if we changed parents, recalculate visibility
@@ -2767,7 +3028,11 @@ void C_BaseEntity::OnStoreLastNetworkedValue()
 
 	// Kind of a hack, but we want to latch the actual networked value for origin/angles, not what's sitting in m_vecOrigin in the
 	//  ragdoll case where we don't copy it over in MoveToLastNetworkOrigin
+#if defined( L4D2 )
+	if ( m_bClientSideRagdoll && GetPredictable() )
+#else
 	if ( m_nRenderFX == kRenderFxRagdoll && GetPredictable() )
+#endif
 	{
 		bRestore = true;
 		savePos = GetLocalOrigin();
@@ -2831,7 +3096,11 @@ void C_BaseEntity::OnLatchInterpolatedVariables( int flags )
 	
 	if ( ShouldInterpolate() )
 	{
+#if defined( L4D2 )
+		AddToEntityList( ENTITY_LIST_INTERPOLATE );
+#else
 		AddToInterpolationList();
+#endif
 	}
 }
 
@@ -2925,7 +3194,11 @@ bool C_BaseEntity::Interpolate( float currentTime )
 	// If all the Interpolate() calls returned that their values aren't going to
 	// change anymore, then get us out of the interpolation list.
 	if ( bNoMoreChanges )
+#if defined( L4D2 )
+		RemoveFromEntityList( ENTITY_LIST_INTERPOLATE );
+#else
 		RemoveFromInterpolationList();
+#endif
 
 	if ( retVal == INTERPOLATE_STOP )
 		return true;
@@ -2949,6 +3222,10 @@ void C_BaseEntity::OnNewParticleEffect( const char *pszParticleName, CNewParticl
 {
 	return;
 }
+#if defined( L4D2 )
+// Genuine native root1E0A0 five-byte default; Terror's received7322 override remains.
+bool C_BaseEntity::IsGhost() const { return false; }
+#endif
 
 // Above this velocity and we'll assume a warp/teleport
 #define MAX_INTERPOLATE_VELOCITY 4000.0f
@@ -2990,6 +3267,7 @@ bool C_BaseEntity::IsSubModel( void )
 //-----------------------------------------------------------------------------
 // Purpose: Create entity lighting effects
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_BaseEntity::CreateLightEffects( void )
 {
 	dlight_t *dl;
@@ -3016,10 +3294,15 @@ void C_BaseEntity::CreateLightEffects( void )
 		dl->die = gpGlobals->curtime + 0.001;
 	}
 }
+#endif
 
 void C_BaseEntity::MoveToLastReceivedPosition( bool force )
 {
+#if defined( L4D2 )
+	if ( force || !m_bClientSideRagdoll )
+#else
 	if ( force || ( m_nRenderFX != kRenderFxRagdoll ) )
+#endif
 	{
 		SetLocalOrigin( GetNetworkOrigin() );
 		SetLocalAngles( GetNetworkAngles() );
@@ -3035,7 +3318,12 @@ bool C_BaseEntity::ShouldInterpolate()
 		return false;
 
 	// always interpolate if visible
+#if defined( L4D2 )
+	// C46480 requires leaf membership as well as the local-view draw bit.
+	if ( GetRenderHandle() != INVALID_CLIENT_RENDER_HANDLE && IsVisible() )
+#else
 	if ( IsVisible() )
+#endif
 		return true;
 
 	// if any movement child needs interpolation, we have to interpolate too
@@ -3053,6 +3341,29 @@ bool C_BaseEntity::ShouldInterpolate()
 }
 
 
+#if defined( L4D2 )
+void C_BaseEntity::ProcessTeleportList()
+{
+	ClientEntityList_t &entities = g_EntityLists[ENTITY_LIST_TELEPORT];
+	for ( unsigned short entry = entities.Head(); entry != entities.InvalidIndex(); )
+	{
+		C_BaseEntity *entity = entities[entry];
+		const unsigned short next = entities.Next( entry );
+		const bool teleported = entity->Teleported();
+		const bool noInterpolation = entity->IsEffectActive( EF_NOINTERP );
+		if ( teleported || noInterpolation )
+		{
+			entity->m_hOldMoveParent = entity->m_hNetworkMoveParent;
+			entity->m_iOldParentAttachment = entity->m_iParentAttachment;
+			entity->MoveToLastReceivedPosition( true );
+			entity->ResetLatched();
+		}
+		else
+			entity->RemoveFromEntityList( ENTITY_LIST_TELEPORT );
+		entry = next;
+	}
+}
+#else
 void C_BaseEntity::ProcessTeleportList()
 {
 	int iNext;
@@ -3076,10 +3387,15 @@ void C_BaseEntity::ProcessTeleportList()
 		else
 		{
 			// Get it out of the list as soon as we can.
+#if defined( L4D2 )
+			pCur->RemoveFromEntityList( ENTITY_LIST_TELEPORT );
+#else
 			pCur->RemoveFromTeleportList();
+#endif
 		}
 	}
 }
+#endif
 
 
 void C_BaseEntity::CheckInterpolatedVarParanoidMeasurement()
@@ -3092,7 +3408,11 @@ void C_BaseEntity::CheckInterpolatedVarParanoidMeasurement()
 	for ( int i=0; i <= iHighest; i++ )
 	{
 		C_BaseEntity *pEnt = ClientEntityList().GetBaseEntity( i );
+#if defined( L4D2 )
+		if ( !pEnt || pEnt->m_ListEntry[ENTITY_LIST_INTERPOLATE] != 0xFFFF || !pEnt->ShouldInterpolate() )
+#else
 		if ( !pEnt || pEnt->m_InterpolationListEntry != 0xFFFF || !pEnt->ShouldInterpolate() )
+#endif
 			continue;
 		
 		// Player angles always generates this error when the console is up.
@@ -3120,6 +3440,20 @@ void C_BaseEntity::CheckInterpolatedVarParanoidMeasurement()
 }
 
 
+#if defined( L4D2 )
+void C_BaseEntity::ProcessInterpolatedList()
+{
+	CheckInterpolatedVarParanoidMeasurement();
+	ClientEntityList_t &entities = g_EntityLists[ENTITY_LIST_INTERPOLATE];
+	for ( unsigned short entry = entities.Head(); entry != entities.InvalidIndex(); )
+	{
+		C_BaseEntity *entity = entities[entry];
+		const unsigned short next = entities.Next( entry );
+		entity->m_bReadyToDraw = entity->Interpolate( gpGlobals->curtime );
+		entry = next;
+	}
+}
+#else
 void C_BaseEntity::ProcessInterpolatedList()
 {
 	CheckInterpolatedVarParanoidMeasurement();
@@ -3134,11 +3468,44 @@ void C_BaseEntity::ProcessInterpolatedList()
 		pCur->m_bReadyToDraw = pCur->Interpolate( gpGlobals->curtime );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
 // Purpose: Add entity to visibile entities list
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool C_BaseEntity::AddEntity()
+{
+	bool continuePreRender = false;
+	const int entityIndex = entindex();
+	// Original IVRenderView::IsViewEntity(entityIndex), projected to the
+	// genuine SDK single view. Do not retain SDK's extra world-index0 gate.
+	if ( entityIndex != render->GetViewEntity() )
+	{
+		if ( IsEffectActive( EF_BRIGHTLIGHT ) )
+		{
+			continuePreRender = true;
+			dlight_t *light = effects->CL_AllocDlight( index );
+			light->origin = GetAbsOrigin();
+			light->origin.z += 16.0f;
+			light->color.r = light->color.g = light->color.b = 250;
+			light->radius = random->RandomFloat( 400.0f, 431.0f );
+			light->die = gpGlobals->curtime + 0.001;
+		}
+		if ( IsEffectActive( EF_DIMLIGHT ) )
+		{
+			continuePreRender = true;
+			dlight_t *light = effects->CL_AllocDlight( index );
+			light->origin = GetAbsOrigin();
+			light->color.r = light->color.g = light->color.b = 100;
+			light->radius = random->RandomFloat( 200.0f, 231.0f );
+			light->die = gpGlobals->curtime + 0.001;
+		}
+	}
+	return continuePreRender;
+}
+#else
 void C_BaseEntity::AddEntity( void )
 {
 	// Don't ever add the world, it's drawn separately
@@ -3148,6 +3515,7 @@ void C_BaseEntity::AddEntity( void )
 	// Create flashlight effects, etc.
 	CreateLightEffects();
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -3207,13 +3575,26 @@ void C_BaseEntity::ClientThink()
 {
 }
 
+#if defined( L4D2 )
+bool C_BaseEntity::Simulate()
+{
+	return false;
+}
+#else
 void C_BaseEntity::Simulate()
 {
 	AddEntity();	// Legacy support. Once-per-frame stuff should go in Simulate().
 }
+#endif
 
 // Defined in engine
-static ConVar cl_interpolate( "cl_interpolate", "1.0f", FCVAR_USERINFO | FCVAR_DEVELOPMENTONLY );
+static ConVar cl_interpolate( "cl_interpolate", "1.0f", 
+#if defined( L4D2 )
+	0x0000020A
+#else
+	FCVAR_USERINFO | FCVAR_DEVELOPMENTONLY
+#endif
+ );
 
 // (static function)
 void C_BaseEntity::InterpolateServerEntities()
@@ -3266,6 +3647,14 @@ void C_BaseEntity::InterpolateServerEntities()
 
 
 // (static function)
+#if defined( L4D2 )
+void C_BaseEntity::AddVisibleEntities()
+{
+	C_BaseEntityIterator iterator;
+	for ( C_BaseEntity *entity = iterator.Next(); entity; entity = iterator.Next() )
+		entity->C_BaseEntity::UpdateVisibility();
+}
+#else
 void C_BaseEntity::AddVisibleEntities()
 {
 #if !defined( NO_ENTITY_PREDICTION )
@@ -3294,6 +3683,7 @@ void C_BaseEntity::AddVisibleEntities()
 	}
 #endif
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -3306,6 +3696,27 @@ void C_BaseEntity::OnPreDataChanged( DataUpdateType_t type )
 	m_iOldParentAttachment = m_iParentAttachment;
 }
 
+#if defined( L4D2 )
+void C_BaseEntity::OnDataChanged( DataUpdateType_t type )
+{
+	CheckInitPredictable( "OnDataChanged" );
+	if ( type == DATA_UPDATE_CREATED )
+	{
+		C_BaseEntity::UpdateVisibility();
+		if ( IsPotentiallyUseable() && s_UseableEntities.Find( this ) == s_UseableEntities.InvalidIndex() )
+			s_UseableEntities.AddToTail( this );
+	}
+	CreateShadow();
+	SetRenderAlphaFX( m_nRenderFX, m_nRenderMode, FLT_MAX, 0.0f );
+	SetRenderAlphaSeed( index );
+	SetRenderAlphaFadeDistances( m_flFadeScale, m_fadeMinDist, m_fadeMaxDist );
+}
+
+unsigned char C_BaseEntity::GetClientSideFade()
+{
+	return UTIL_ComputeEntityFade( this, m_fadeMinDist, m_fadeMaxDist, m_flFadeScale );
+}
+#else
 void C_BaseEntity::OnDataChanged( DataUpdateType_t type )
 {
 	// See if it needs to allocate prediction stuff
@@ -3319,6 +3730,7 @@ void C_BaseEntity::OnDataChanged( DataUpdateType_t type )
 		UpdateVisibility();
 	}
 }
+#endif
 
 ClientThinkHandle_t C_BaseEntity::GetThinkHandle()
 {
@@ -3631,6 +4043,10 @@ void C_BaseEntity::AddStudioDecal( const Ray_t& ray, int hitbox, int decalIndex,
 	if ( !r_drawmodeldecals.GetBool() )
 		return;
 
+#if defined( L4D2 )
+	Terror_PrepareDecalMaterial( decalIndex );
+#endif
+
 	// Found the point, now lets apply the decals
 	CreateModelInstance();
 
@@ -3672,6 +4088,10 @@ void C_BaseEntity::AddColoredStudioDecal( const Ray_t& ray, int hitbox, int deca
 	// Exit out after doing the trace so any other effects that want to happen can happen.
 	if ( !r_drawmodeldecals.GetBool() )
 		return;
+
+#if defined( L4D2 )
+	Terror_PrepareDecalMaterial( decalIndex );
+#endif
 
 	// Found the point, now lets apply the decals
 	CreateModelInstance();
@@ -3930,11 +4350,41 @@ void C_BaseEntity::SetNextClientThink( float nextThinkTime )
 	ClientThinkList()->SetNextClientThink( GetClientHandle(), nextThinkTime );
 }
 
+#if defined( L4D2 )
+void C_BaseEntity::AddToLeafSystem()
+{
+	AddToLeafSystem( m_bRenderWithViewModels );
+}
+#else
 void C_BaseEntity::AddToLeafSystem()
 {
 	AddToLeafSystem( GetRenderGroup() );
 }
+#endif
 
+#if defined( L4D2 )
+void C_BaseEntity::AddToLeafSystem( bool renderWithViewModels )
+{
+	m_bRenderWithViewModels = renderWithViewModels;
+	if ( GetRenderHandle() == INVALID_CLIENT_RENDER_HANDLE )
+	{
+		// Native snapshots actual draw eligibility BEFORE the classifier call.
+		const bool drawForLocalUser = ( m_nLocalViewVisibility & 1u ) != 0;
+		const int type = ComputeModelTranslucencyType();
+		ClientLeafSystem_AddEntityRenderable( this, renderWithViewModels, type, drawForLocalUser );
+		ClientLeafSystem()->EnableAlternateSorting( GetRenderHandle(), m_bAlternateSorting );
+		ClientLeafSystem_DisableCachedRenderBounds( GetRenderHandle(), m_bDisableCachedRenderBounds );
+	}
+	else
+	{
+		ClientLeafSystem_SetRenderWithViewModels( GetRenderHandle(), renderWithViewModels );
+		// Native leaf+112/BD430(...,-1) refreshes MODEL TYPE, not draw-user bits
+		// (+116) and not translucency. It dirties only if model-type bits change.
+		ClientLeafSystem_UpdateModelType( GetRenderHandle() );
+		ClientLeafSystem_DisableCachedRenderBounds( GetRenderHandle(), m_bDisableCachedRenderBounds );
+	}
+}
+#else
 void C_BaseEntity::AddToLeafSystem( RenderGroup_t group )
 {
 	if( m_hRender == INVALID_CLIENT_RENDER_HANDLE )
@@ -3950,6 +4400,7 @@ void C_BaseEntity::AddToLeafSystem( RenderGroup_t group )
 		ClientLeafSystem()->RenderableChanged( m_hRender );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -4012,6 +4463,17 @@ void C_BaseEntity::RemoveFromLeafSystem()
 //			NOTE: this is meaningless for client-side only entities.
 // Input  : inside_pvs - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_BaseEntity::SetDormant( bool dormant )
+{
+	Assert( IsServerEntity() );
+	m_bDormant = dormant;
+	C_BaseEntity::UpdateVisibility();
+	ParticleProp()->OwnerSetDormantTo( dormant );
+	OnDormancyChanged( dormant );
+	ClientEntityList().NotifyEntityDormancyChanged( entindex(), dormant );
+}
+#else
 void C_BaseEntity::SetDormant( bool bDormant )
 {
 	Assert( IsServerEntity() );
@@ -4022,6 +4484,7 @@ void C_BaseEntity::SetDormant( bool bDormant )
 
 	ParticleProp()->OwnerSetDormantTo( bDormant );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Returns whether this entity is dormant. Client/server entities become
@@ -4736,6 +5199,20 @@ int C_BaseEntity::PrecacheModel( const char *name )
 // Purpose: 
 // Input  : *obj - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_BaseEntity::Remove()
+{
+	if ( GetPredictable() || IsClientCreated() )
+	{
+		AddSolidFlags( FSOLID_NOT_SOLID );
+		// Native word324 zeroes BOTH move-type and move-collide, with no
+		// additional setter callbacks and no SDK unconditional EFL_KILLME.
+		m_MoveType = MOVETYPE_NONE;
+		m_MoveCollide = MOVECOLLIDE_DEFAULT;
+	}
+	ClientEntityList().AddToDeleteList( this );
+}
+#else
 void C_BaseEntity::Remove( )
 {
 	// Nothing for now, if it's a predicted entity, could flag as "delete" or dormant
@@ -4750,6 +5227,7 @@ void C_BaseEntity::Remove( )
 
 	Release();
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -4854,7 +5332,12 @@ CON_COMMAND( cl_sizeof, "Determines the size of the specified client class." )
 }
 #endif
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( dlight_debug, "Creates a dlight in front of the player", 0x00004008 )
+#else
 CON_COMMAND_F( dlight_debug, "Creates a dlight in front of the player", FCVAR_CHEAT )
+#endif
 {
 	dlight_t *el = effects->CL_AllocDlight( 1 );
 	C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
@@ -5079,6 +5562,11 @@ void C_BaseEntity::UpdateOnRemove( void )
 	Assert( !GetMoveParent() );
 	UnlinkFromHierarchy();
 	SetGroundEntity( NULL );
+	#if defined( L4D2 )
+	const int nUseable = s_UseableEntities.Find( this );
+	if ( nUseable != s_UseableEntities.InvalidIndex() )
+		s_UseableEntities.FastRemove( nUseable );
+	#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -5538,7 +6026,13 @@ static void RemoveDecals_f( void )
 	}
 }
 
-static ConCommand cl_removedecals( "cl_removedecals", RemoveDecals_f, "Remove the decals from the entity under the crosshair.", FCVAR_CHEAT );
+static ConCommand cl_removedecals( "cl_removedecals", RemoveDecals_f, "Remove the decals from the entity under the crosshair.", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 
 //-----------------------------------------------------------------------------
@@ -5587,7 +6081,12 @@ static void ToggleBBoxVisualization( int fVisFlags, const CCommand &args )
 //-----------------------------------------------------------------------------
 // Purpose: Command to toggle visualizations of bboxes on the client
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( cl_ent_bbox, "Displays the client's bounding box for the entity under the crosshair.", 0x00004008 )
+#else
 CON_COMMAND_F( cl_ent_bbox, "Displays the client's bounding box for the entity under the crosshair.", FCVAR_CHEAT )
+#endif
 {
 	ToggleBBoxVisualization( CBaseEntity::VISUALIZE_COLLISION_BOUNDS, args );
 }
@@ -5596,7 +6095,12 @@ CON_COMMAND_F( cl_ent_bbox, "Displays the client's bounding box for the entity u
 //-----------------------------------------------------------------------------
 // Purpose: Command to toggle visualizations of bboxes on the client
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( cl_ent_absbox, "Displays the client's absbox for the entity under the crosshair.", 0x00004008 )
+#else
 CON_COMMAND_F( cl_ent_absbox, "Displays the client's absbox for the entity under the crosshair.", FCVAR_CHEAT )
+#endif
 {
 	ToggleBBoxVisualization( CBaseEntity::VISUALIZE_SURROUNDING_BOUNDS, args );
 }
@@ -5605,7 +6109,12 @@ CON_COMMAND_F( cl_ent_absbox, "Displays the client's absbox for the entity under
 //-----------------------------------------------------------------------------
 // Purpose: Command to toggle visualizations of bboxes on the client
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( cl_ent_rbox, "Displays the client's render box for the entity under the crosshair.", 0x00004008 )
+#else
 CON_COMMAND_F( cl_ent_rbox, "Displays the client's render box for the entity under the crosshair.", FCVAR_CHEAT )
+#endif
 {
 	ToggleBBoxVisualization( CBaseEntity::VISUALIZE_RENDER_BOUNDS, args );
 }
@@ -5648,16 +6157,34 @@ void C_BaseEntity::DrawBBoxVisualizations( void )
 //-----------------------------------------------------------------------------
 // Sets the render mode
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_BaseEntity::SetRenderMode( RenderMode_t nRenderMode, bool bForceUpdate )
 {
 	m_nRenderMode = nRenderMode;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Output : RenderGroup_t
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+RenderGroup_t C_BaseEntity::GetRenderGroup()
+{
+	const int type = ComputeModelTranslucencyType();
+
+	// Native507 is a real separate leaf-list membership owner. Reuse Move's
+	// one actual root state/accessor; no extra field, split flag or engine ABI.
+	if ( IsRenderingWithViewModels() )
+		return type == 0 ? RENDER_GROUP_VIEW_MODEL_OPAQUE : RENDER_GROUP_VIEW_MODEL_TRANSLUCENT;
+	if ( type == 1 )
+		return RENDER_GROUP_TRANSLUCENT_ENTITY;
+	if ( type == 2 )
+		return RENDER_GROUP_TWOPASS;
+	return RENDER_GROUP_OPAQUE_ENTITY; // The closed helper's remaining domain is0.
+}
+#else
 RenderGroup_t C_BaseEntity::GetRenderGroup()
 {
 	// Don't sort things that don't need rendering
@@ -5700,6 +6227,7 @@ RenderGroup_t C_BaseEntity::GetRenderGroup()
 
 	return renderGroup;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Copy from this entity into one of the save slots (original or intermediate)
@@ -6125,6 +6653,27 @@ int C_BaseEntity::ObjectCaps( void )
 	return 0; 
 }
 
+#if defined( L4D2 )
+int C_BaseEntity::GetUsePriority( C_BaseEntity *pUser )
+{
+	return 1;
+}
+
+bool C_BaseEntity::IsPotentiallyUseable()
+{
+	const bool bWasDormant = m_bDormant;
+	m_bDormant = false;
+	const int nCaps = ObjectCaps();
+	m_bDormant = bWasDormant;
+	return ( nCaps & 0x10F0 ) != 0;
+}
+
+const CUtlVector< C_BaseEntity * > &C_BaseEntity::GetUseableEntityList()
+{
+	return s_UseableEntities;
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Output : C_AI_BaseNPC
@@ -6279,13 +6828,16 @@ void C_BaseEntity::ToolRecordEntities()
 }
 
 
+#if !defined( L4D2 )
 void C_BaseEntity::AddToInterpolationList()
 {
 	if ( m_InterpolationListEntry == 0xFFFF )
 		m_InterpolationListEntry = g_InterpolationList.AddToTail( this );
 }
+#endif
 
 
+#if !defined( L4D2 )
 void C_BaseEntity::RemoveFromInterpolationList()
 {
 	if ( m_InterpolationListEntry != 0xFFFF )
@@ -6294,15 +6846,19 @@ void C_BaseEntity::RemoveFromInterpolationList()
 		m_InterpolationListEntry = 0xFFFF;
 	}
 }
+#endif
 
 				
+#if !defined( L4D2 )
 void C_BaseEntity::AddToTeleportList()
 {
 	if ( m_TeleportListEntry == 0xFFFF )
 		m_TeleportListEntry = g_TeleportList.AddToTail( this );
 }
+#endif
 
 
+#if !defined( L4D2 )
 void C_BaseEntity::RemoveFromTeleportList()
 {
 	if ( m_TeleportListEntry != 0xFFFF )
@@ -6311,6 +6867,7 @@ void C_BaseEntity::RemoveFromTeleportList()
 		m_TeleportListEntry = 0xFFFF;
 	}
 }
+#endif
 
 #ifdef TF_CLIENT_DLL
 bool C_BaseEntity::ValidateEntityAttachedToPlayer( bool &bShouldRetry )
@@ -6512,7 +7069,13 @@ void CC_CL_Find_Ent( const CCommand& args )
 
 	Msg("Found %d matches.\n", iCount);
 }
-static ConCommand cl_find_ent("cl_find_ent", CC_CL_Find_Ent, "Find and list all client entities with classnames that contain the specified substring.\nFormat: cl_find_ent <substring>\n", FCVAR_CHEAT);
+static ConCommand cl_find_ent("cl_find_ent", CC_CL_Find_Ent, "Find and list all client entities with classnames that contain the specified substring.\nFormat: cl_find_ent <substring>\n", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 //------------------------------------------------------------------------------
 void CC_CL_Find_Ent_Index( const CCommand& args )
@@ -6535,4 +7098,538 @@ void CC_CL_Find_Ent_Index( const CCommand& args )
 		Msg("Found no entity at %d.\n", iIndex);
 	}
 }
-static ConCommand cl_find_ent_index("cl_find_ent_index", CC_CL_Find_Ent_Index, "Display data for clientside entity matching specified index.\nFormat: cl_find_ent_index <index>\n", FCVAR_CHEAT);
+static ConCommand cl_find_ent_index("cl_find_ent_index", CC_CL_Find_Ent_Index, "Display data for clientside entity matching specified index.\nFormat: cl_find_ent_index <index>\n", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+);
+
+#if defined( L4D2 )
+void C_BaseEntity::SetRenderWithViewModels( bool renderWithViewModels )
+{
+	m_bRenderWithViewModels = renderWithViewModels;
+	ClientLeafSystem_SetRenderWithViewModels( GetRenderHandle(), renderWithViewModels );
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseEntity::DisableCachedRenderBounds( bool disable )
+{
+	m_bDisableCachedRenderBounds = disable;
+	ClientLeafSystem_DisableCachedRenderBounds( GetRenderHandle(), disable );
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseEntity::UpdateLeafLocalViewVisibility()
+{
+	if ( GetRenderHandle() != INVALID_CLIENT_RENDER_HANDLE )
+		ClientLeafSystem_SetDrawForLocalUser( GetRenderHandle(),
+			( m_nLocalViewVisibility & 1u ) != 0 );
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseEntity::OnDormancyChanged( bool dormant )
+{
+}
+#endif
+
+#if defined( L4D2 )
+unsigned short C_BaseEntity::AddToEntityList( EntityListId_t list )
+{
+	ClientEntityList_t &entities = g_EntityLists[list];
+	if ( m_ListEntry[list] != entities.InvalidIndex() )
+		return entities.InvalidIndex();
+	m_ListEntry[list] = entities.AddToTail( this );
+	return m_ListEntry[list];
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseEntity::RemoveFromEntityList( EntityListId_t list )
+{
+	ClientEntityList_t &entities = g_EntityLists[list];
+	if ( m_ListEntry[list] != entities.InvalidIndex() )
+	{
+		entities.Remove( m_ListEntry[list] );
+		m_ListEntry[list] = entities.InvalidIndex();
+	}
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseEntity::SimulateEntities()
+{
+	const bool report = report_cliententitysim.GetBool();
+	ClientEntityList_t &entities = g_EntityLists[ENTITY_LIST_SIMULATE];
+	for ( unsigned short entry = entities.Head(); entry != entities.InvalidIndex(); )
+	{
+		C_BaseEntity *entity = entities[entry];
+		const unsigned short next = entities.Next( entry );
+		if ( report )
+		{
+			CFastTimer timer;
+			timer.Start();
+			if ( !entity->Simulate() )
+				entity->RemoveFromEntityList( ENTITY_LIST_SIMULATE );
+			timer.End();
+			const double milliseconds = timer.GetDuration().GetMillisecondsF();
+			const char *className = entity->GetClassname();
+			const int entityIndex = entity->entindex();
+			Msg( "Entity(%d): %s - %f\n", entityIndex, className, milliseconds );
+		}
+		else if ( !entity->Simulate() )
+			entity->RemoveFromEntityList( ENTITY_LIST_SIMULATE );
+		entry = next;
+	}
+	if ( report )
+		report_cliententitysim.Revert();
+}
+#endif
+
+#if defined( L4D2 )
+void C_BaseEntity::PreRenderEntities( int splitUserSlot )
+{
+	MDLCACHE_CRITICAL_SECTION();
+	ClientEntityList_t &entities = g_EntityLists[ENTITY_LIST_PRERENDER];
+	for ( unsigned short entry = entities.Head(); entry != entities.InvalidIndex(); )
+	{
+		C_BaseEntity *entity = entities[entry];
+		const unsigned short next = entities.Next( entry );
+		if ( !entity->PreRender( splitUserSlot ) )
+			entity->RemoveFromEntityList( ENTITY_LIST_PRERENDER );
+		entry = next;
+	}
+}
+#endif
+
+#if defined( L4D2 )
+bool C_BaseEntity::PreRender( int splitUserSlot )
+{
+	return AddEntity();
+}
+#endif
+
+#if defined( L4D2 )
+C_BasePlayer *C_BaseEntity::GetPredictionOwner()
+{
+	if ( IsPlayer() )
+		return static_cast< C_BasePlayer * >( this );
+	C_BaseEntity *owner = GetOwnerEntity();
+	if ( owner && owner->IsPlayer() )
+		return static_cast< C_BasePlayer * >( owner );
+	C_BaseAnimating *animating = GetBaseAnimating();
+	if ( animating && animating->IsBaseCombatWeapon() )
+	{
+		C_BaseCombatCharacter *weaponOwner = static_cast< C_BaseCombatWeapon * >( animating )->GetOwner();
+		if ( weaponOwner && weaponOwner->IsPlayer() )
+			return static_cast< C_BasePlayer * >( weaponOwner );
+	}
+	return NULL;
+}
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING c_baseentity.cpp. Not a new translation unit and not
+// an IClientAlphaProperty/engine interface. Required includes: <emmintrin.h>,
+// <float.h>, "datacache/imdlcache.h", "studio.h".
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+// Native B8930's defined data. The original leaves its two FX clocks alone;
+// FX0 never reads them. Clear owns this reset, not each derived constructor.
+void C_BaseEntity::ResetRenderAlpha()
+{
+	m_nRenderAlphaSeed = 0;
+	m_nRenderAlphaFadeMin = 0;
+	m_nRenderAlphaFadeMax = 0;
+	m_nRenderAlphaFlags = 0;
+	m_hRenderAlphaShadow = CLIENTSHADOW_INVALID_HANDLE;
+	m_nRenderAlphaModulation = 255;
+	m_flRenderAlphaFadeScale = 0.0f;
+}
+
+// Whole B87B0, B8900, B87C0, B87F0 and B8910 responsibilities.
+void C_BaseEntity::SetRenderAlphaModulation( unsigned char alpha )
+{
+	m_nRenderAlphaModulation = alpha;
+}
+
+void C_BaseEntity::SetRenderAlphaSeed( int seed )
+{
+	m_nRenderAlphaSeed = static_cast< unsigned short >( seed );
+}
+
+void C_BaseEntity::EnableAlphaModulationOverride( bool enable )
+{
+	m_nRenderAlphaFlags = ( m_nRenderAlphaFlags & 0xFDFF ) |
+		( static_cast< unsigned short >( enable ) << 9 );
+}
+
+void C_BaseEntity::EnableShadowAlphaModulationOverride( bool enable )
+{
+	m_nRenderAlphaFlags = ( m_nRenderAlphaFlags & 0xFBFF ) |
+		( static_cast< unsigned short >( enable ) << 10 );
+}
+
+void C_BaseEntity::SetRenderAlphaDistanceFadeMode( bool enable )
+{
+	m_nRenderAlphaFlags ^= ( m_nRenderAlphaFlags ^
+		( static_cast< unsigned short >( enable ) << 11 ) ) & 0x0800;
+}
+
+// Whole B8820. Compare the incoming FX before masking its five stored bits.
+// A same-FX FLT_MAX update does not restart or replace either stored clock.
+void C_BaseEntity::SetRenderAlphaFX( int renderFX, int renderMode,
+	float startTime, float duration )
+{
+	const unsigned short oldFlags = m_nRenderAlphaFlags;
+	const bool changed = ( oldFlags & 0x1F ) != renderFX;
+	float effectiveStart = startTime;
+	switch ( renderFX )
+	{
+	case 5:
+	case 7:
+		if ( startTime == FLT_MAX ) effectiveStart = gpGlobals->curtime;
+		duration = 4.0f;
+		break;
+	case 6:
+	case 8:
+		if ( startTime == FLT_MAX ) effectiveStart = gpGlobals->curtime;
+		duration = 1.0f;
+		break;
+	case 15:
+	case 16:
+		if ( startTime == FLT_MAX ) effectiveStart = gpGlobals->curtime;
+		break;
+	}
+	m_nRenderAlphaFlags = ( renderFX & 0x1F ) | ( oldFlags & 0xFE00 ) |
+		( ( renderMode & 0x0F ) << 5 );
+	if ( changed || startTime != FLT_MAX )
+	{
+		m_flRenderAlphaFXStart = effectiveStart;
+		m_flRenderAlphaFXDuration = duration;
+	}
+}
+
+// Whole B8960. These are the backend's quantized distances; the existing
+// received/map-facing root float fields remain distinct and are not clamped.
+void C_BaseEntity::SetRenderAlphaFadeDistances( float scale, float minimum, float maximum )
+{
+	if ( minimum > maximum )
+	{
+		const float oldMinimum = minimum;
+		minimum = maximum;
+		maximum = oldMinimum;
+	}
+	if ( minimum < 0.0f )
+	{
+		minimum += maximum;
+		if ( minimum < 0.0f ) minimum = 0.0f;
+	}
+	const int minimumInteger = _mm_cvtt_ss2si( _mm_set_ss( minimum ) );
+	const int maximumInteger = _mm_cvtt_ss2si( _mm_set_ss( maximum ) );
+	m_nRenderAlphaFadeMin = static_cast< unsigned short >( minimumInteger );
+	m_nRenderAlphaFadeMax = static_cast< unsigned short >( maximumInteger );
+	m_flRenderAlphaFadeScale = scale;
+}
+
+// Whole C43D60, C43DB0, C44E90, C44EE0 and C48840. These are the genuine
+// local producers; receiving color uses the same changed-alpha responsibility.
+void C_BaseEntity::SetFadeMinMax( float minimum, float maximum )
+{
+	m_fadeMinDist = minimum;
+	m_fadeMaxDist = maximum;
+	SetRenderAlphaFadeDistances( m_flFadeScale, minimum, maximum );
+}
+
+void C_BaseEntity::SetFadeScale( float scale )
+{
+	m_flFadeScale = scale;
+	if ( modelinfo->GetModelType( model ) == mod_studio )
+	{
+		mdlcache->BeginLock();
+		const MDLHandle_t handle = modelinfo->GetCacheHandle( model );
+		if ( handle != MDLHANDLE_INVALID )
+		{
+			studiohdr_t *header = mdlcache->LockStudioHdr( handle );
+			if ( header->flags & STUDIOHDR_FLAGS_NO_FORCED_FADE ) scale = 0.0f;
+			mdlcache->UnlockStudioHdr( handle );
+		}
+		mdlcache->EndLock();
+	}
+	SetRenderAlphaFadeDistances( scale, m_fadeMinDist, m_fadeMaxDist );
+}
+
+void C_BaseEntity::SetRenderMode( RenderMode_t mode, bool forceUpdate )
+{
+	// Native C44E90 does not use the second argument.
+	if ( mode != m_nRenderMode )
+	{
+		m_nRenderMode = mode;
+		SetRenderAlphaFX( m_nRenderFX, mode, FLT_MAX, 0.0f );
+	}
+}
+
+void C_BaseEntity::SetRenderFX( int renderFX, float startTime, float duration )
+{
+	if ( renderFX == m_nRenderFX && startTime == FLT_MAX )
+		return;
+	if ( renderFX != m_nRenderFX && startTime == FLT_MAX )
+		startTime = gpGlobals->curtime;
+	m_nRenderFX = renderFX;
+	SetRenderAlphaFX( renderFX, m_nRenderMode, startTime, duration );
+}
+
+void C_BaseEntity::SetRenderColorA( byte alpha )
+{
+	if ( m_clrRender->a != alpha )
+	{
+		m_clrRender.GetForModify().a = alpha;
+		SetRenderAlphaModulation( alpha );
+	}
+}
+
+// Whole C2CC30. In its equal-bound arm COMISS/JB admits unordered values to
+// the lower output. Non-equal bounds divide as floats, then finish wide.
+static double RenderAlpha_Remap( float value, float inputMinimum, float inputMaximum,
+	float outputMinimum, float outputMaximum )
+{
+	if ( inputMinimum == inputMaximum )
+		return !( value >= inputMaximum ) ? outputMinimum : outputMaximum;
+	float fraction = ( value - inputMinimum ) / ( inputMaximum - inputMinimum );
+	if ( fraction < 0.0f ) fraction = 0.0f;
+	else if ( fraction > 1.0f ) fraction = 1.0f;
+	return static_cast< double >( outputMinimum ) +
+		( static_cast< double >( outputMaximum ) - outputMinimum ) * fraction;
+}
+
+// Preserve FSIN's defined finite-out-of-range behavior on the x64 target,
+// which cannot express the original x87 instruction with MSVC inline asm.
+static double RenderAlpha_Sin( double angle )
+{
+	if ( ( angle >= 9223372036854775808.0 && angle <= DBL_MAX ) ||
+		( angle <= -9223372036854775808.0 && angle >= -DBL_MAX ) )
+		return angle;
+	return sin( angle );
+}
+
+static int RenderAlpha_Truncate( double value )
+{
+	// Native __ftol2_sse's SSE2 path spills double, then CVTTSD2SI to int32.
+	return _mm_cvttsd_si32( _mm_set_sd( value ) );
+}
+
+// Whole B89B0. No frame cache, render-group mutation, distance/screen fade,
+// shadow update, RNG, or writes to m_clrRender belong to this calculator.
+unsigned char C_BaseEntity::ComputeRenderAlpha()
+{
+	const unsigned short flags = m_nRenderAlphaFlags;
+	const int mode = ( flags >> 5 ) & 0x0F;
+	if ( mode == 10 || mode == 6 )
+		return 0;
+	const double phase = static_cast< double >( m_nRenderAlphaSeed ) * 363.0;
+	int blend;
+	switch ( flags & 0x1F )
+	{
+	case 1:
+	case 3:
+		{
+			const double time = gpGlobals->curtime;
+			const double sine = RenderAlpha_Sin( phase + ( time + time ) );
+			blend = RenderAlpha_Truncate( sine * ( ( flags & 0x1F ) == 1 ? 16.0 : 64.0 ) +
+				m_nRenderAlphaModulation );
+		}
+		break;
+	case 2:
+	case 4:
+		{
+			const double time = gpGlobals->curtime;
+			const double sine = RenderAlpha_Sin( phase + time * 8.0 );
+			blend = RenderAlpha_Truncate( sine * ( ( flags & 0x1F ) == 2 ? 16.0 : 64.0 ) +
+				m_nRenderAlphaModulation );
+		}
+		break;
+	case 5:
+	case 6:
+	case 7:
+	case 8:
+	case 15:
+	case 16:
+		{
+			const int effect = flags & 0x1F;
+			const bool fadingOut = effect == 5 || effect == 6 || effect == 15;
+			const float from = fadingOut ? m_nRenderAlphaModulation : 0.0f;
+			const float to = fadingOut ? 0.0f : m_nRenderAlphaModulation;
+			const float elapsed = gpGlobals->curtime - m_flRenderAlphaFXStart;
+			const double remapped = RenderAlpha_Remap( elapsed, 0.0f,
+				m_flRenderAlphaFXDuration, from, to );
+			float spilled = static_cast< float >( remapped );
+			if ( remapped > 255.0 ) blend = 255;
+			else
+			{
+				if ( spilled < 0.0f ) spilled = 0.0f;
+				blend = _mm_cvtt_ss2si( _mm_set_ss( spilled ) );
+			}
+		}
+		break;
+	case 9:
+	case 10:
+	case 11:
+		{
+			const double frequency = ( flags & 0x1F ) == 9 ? 4.0 :
+				( ( flags & 0x1F ) == 10 ? 16.0 : 36.0 );
+			const double time = gpGlobals->curtime;
+			const int strobe = RenderAlpha_Truncate( RenderAlpha_Sin( phase + time * frequency ) * 20.0 );
+			blend = strobe >= 0 ? m_nRenderAlphaModulation : 0;
+		}
+		break;
+	case 12:
+		{
+			const double time = gpGlobals->curtime;
+			const double first = RenderAlpha_Sin( phase + time * 17.0 );
+			const double second = RenderAlpha_Sin( time + time );
+			blend = RenderAlpha_Truncate( ( first + second ) * 20.0 ) >= 0 ?
+				m_nRenderAlphaModulation : 0;
+		}
+		break;
+	case 13:
+		{
+			const double time = gpGlobals->curtime;
+			const double first = RenderAlpha_Sin( phase + time * 23.0 );
+			const double second = RenderAlpha_Sin( time * 16.0 );
+			blend = RenderAlpha_Truncate( ( first + second ) * 20.0 ) >= 0 ?
+				m_nRenderAlphaModulation : 0;
+		}
+		break;
+	case 17:
+		{
+			const double time = gpGlobals->curtime;
+			blend = RenderAlpha_Truncate( fabs( RenderAlpha_Sin( phase + time * 12.0 ) ) * 255.0 );
+		}
+		break;
+	default:
+		blend = mode == 0 ? 255 : m_nRenderAlphaModulation;
+		break;
+	}
+	if ( blend > 255 ) blend = 255;
+	else if ( blend < 0 ) blend = 0;
+	if ( flags & 0x0200 )
+		return OverrideAlphaModulation( m_nRenderAlphaModulation );
+	return static_cast< unsigned char >( blend );
+}
+
+// Genuine default renderable callbacks C19620/C19630. The complete258-table
+// census has only the three VM identity overrides for the first callback.
+unsigned char C_BaseEntity::OverrideAlphaModulation( unsigned char alpha )
+{
+	return alpha;
+}
+
+unsigned char C_BaseEntity::OverrideShadowAlphaModulation( unsigned char alpha )
+{
+	return alpha;
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
+#if defined( L4D2 )
+// Native domain:0 opaque,1 translucent,2 translucent two-pass. NOT an enumcast.
+static int ComputeOriginalModelTranslucencyType( const model_t *model, int skin, int body )
+{
+	if ( !model )
+		return 0;
+	const int type = modelinfo->GetModelType( model );
+	if ( type == mod_brush )
+	{
+		if ( modelinfo->IsTranslucent( model ) )
+			return modelinfo->IsTranslucentTwoPass( model ) ? 2 : 1;
+		return 0;
+	}
+	if ( type == mod_sprite )
+		return 1;
+	if ( type != mod_studio )
+		return 0;
+
+	const MDLHandle_t handle = modelinfo->GetCacheHandle( model );
+	studiohdr_t *header = mdlcache->GetStudioHdr( handle );
+	if ( header->flags & STUDIOHDR_FLAGS_FORCE_OPAQUE )
+		return 0;
+	IMaterial *materials[128];
+	const int count = g_pStudioRender->GetMaterialListFromBodyAndSkin( handle, skin, body,
+		ARRAYSIZE( materials ), materials );
+	for ( int i = 0; i < count; ++i )
+	{
+		if ( materials[i] && materials[i]->IsTranslucent() )
+			return ( header->flags & STUDIOHDR_FLAGS_TRANSLUCENT_TWOPASS ) ? 2 : 1;
+	}
+	return 0;
+}
+
+// Whole native C42520. Preserve its native0/1/2 domain for Move's real leaf
+// metadata/dual-pass collator. This game-DLL virtual is NOT an engine ABI change.
+// Native96 is MODEL pointer; BODY renderable10 first, SKIN37 second, MODEL last.
+int C_BaseEntity::ComputeModelTranslucencyType()
+{
+	if ( m_bForceTranslucentRenderGroup ) // Native1588, true -> domain1, NOTopaque.
+		return 1;
+	const int body = GetBody();
+	const int skin = GetSkin();
+	const model_t *model = GetModel();
+	return ComputeOriginalModelTranslucencyType( model, skin, body );
+}
+
+#endif
+
+// Compose into existing client/c_baseentity.cpp beside B's sole native42520
+// ComputeModelTranslucencyType() / SDK bucket adapter. No new CPP TU.
+// Existing clientleafsystem.h gains the sole game-owned declaration already
+// implemented by A1C8: ClientLeafSystem_SetModelTranslucencyType(handle,int).
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+// Whole native42570. Retain fresh handle read AFTER the virtual query; no
+// RenderGroup_t cast, duplicate classifier, RenderableChanged/alpha/RNG call.
+void C_BaseEntity::UpdateModelTranslucencyType()
+{
+	if ( m_hRender == INVALID_CLIENT_RENDER_HANDLE ) return;
+	const int type = ComputeModelTranslucencyType();
+	ClientLeafSystem_SetModelTranslucencyType( m_hRender, type );
+}
+#endif
+
+#if defined( L4D2 )
+bool C_BaseEntity::ShouldDrawEntityFlameLight() const
+{
+	return !UTIL_IsLowViolence();
+}
+
+void C_BaseEntity::OnParticleEffectDeleted( CNewParticleEffect *effect )
+{
+}
+#endif
+
+#if defined( L4D2 )
+
+bool C_BaseEntity::IsUsable( C_BaseEntity *user )
+{
+	return user && user->GetTeam() == GetTeam();
+}
+
+const wchar_t *C_BaseEntity::GetUseString( C_BaseEntity *user )
+{
+	return L"";
+}
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/entities/c_baseentity_console.inc"
+#endif

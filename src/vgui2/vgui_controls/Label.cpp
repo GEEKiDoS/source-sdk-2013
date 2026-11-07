@@ -147,6 +147,27 @@ void Label::GetContentSize(int &wide, int &tall)
 	tall = max((ty1 - ty0) + _textInset[1], iTall);
 }
 
+void vgui::Label::GetTextImageBounds( int &x, int &y, int &right, int &bottom )
+{
+	int panelW, panelH; GetSize( panelW, panelH );
+	int width = 0, height = 0; Alignment horizontal = _contentAlignment;
+	FOR_EACH_VEC( _imageDar, i )
+	{
+		IImage *image = _imageDar[i].image;
+		if ( !image ) continue;
+		int imageW, imageH; image->GetSize( imageW, imageH );
+		if ( imageW > panelW ) horizontal = a_west;
+		width += imageW + _imageDar[i].offset; height = MAX( height, imageH );
+	}
+	x = y = 0;
+	if ( horizontal == a_north || horizontal == a_center || horizontal == a_south ) x = ( panelW - width ) / 2;
+	else if ( horizontal == a_northeast || horizontal == a_east || horizontal == a_southeast ) x = panelW - width;
+	if ( _contentAlignment == a_west || _contentAlignment == a_center || _contentAlignment == a_east ) y = ( panelH - height ) / 2;
+	else if ( _contentAlignment == a_southwest || _contentAlignment == a_south || _contentAlignment == a_southeast ) y = panelH - height;
+	right = x + width; bottom = y + height;
+}
+
+
 //-----------------------------------------------------------------------------
 // Purpose: Calculate the keyboard key that is a hotkey 
 //-----------------------------------------------------------------------------

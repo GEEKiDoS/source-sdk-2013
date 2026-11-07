@@ -24,7 +24,13 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar	r_drawsprites( "r_drawsprites", "1", FCVAR_CHEAT );
+ConVar	r_drawsprites( "r_drawsprites", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Generic sprite model renderer

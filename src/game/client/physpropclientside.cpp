@@ -21,7 +21,13 @@
 #define FADEOUT_TIME	1.0f
 
 ConVar	cl_phys_props_max( "cl_phys_props_max", "300", 0, "Maximum clientside physic props" );
-ConVar	r_propsmaxdist( "r_propsmaxdist", "1200", 0, "Maximum visible distance" );
+ConVar	r_propsmaxdist( "r_propsmaxdist", "1200", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Maximum visible distance" );
 
 ConVar	cl_phys_props_enable( "cl_phys_props_enable", "1", 0, "Disable clientside physics props (must be set before loading a level)." );
 ConVar	cl_phys_props_respawndist( "cl_phys_props_respawndist", "1500", 0, "Minimum distance from the player that a clientside prop must be before it's allowed to respawn." );
@@ -232,7 +238,11 @@ int C_PhysPropClientside::ParsePropData( void )
 
 bool C_PhysPropClientside::Initialize()
 {
+#if defined( L4D2 )
+	if ( InitializeAsClientEntity( STRING(GetModelName()), false ) == false )
+#else
 	if ( InitializeAsClientEntity( STRING(GetModelName()), RENDER_GROUP_OPAQUE_ENTITY ) == false )
+#endif
 	{
 		return false;
 	}
@@ -246,6 +256,9 @@ bool C_PhysPropClientside::Initialize()
 	}
 
 	solid_t tmpSolid;
+#if defined( L4D2 )
+	const bool wakeAfterCreate = ( m_spawnflags & SF_PHYSPROP_START_ASLEEP ) == 0;
+#endif
 
 	// Create the object in the physics system
 
@@ -256,7 +269,12 @@ bool C_PhysPropClientside::Initialize()
 	}
 	else
 	{
+#if defined( L4D2 )
+		tmpSolid.params.enableCollisions = false;
+		m_pPhysicsObject = VPhysicsInitNormal( SOLID_VPHYSICS, 0x1000, true, &tmpSolid );
+#else
 		m_pPhysicsObject = VPhysicsInitNormal( SOLID_VPHYSICS, 0, m_spawnflags & SF_PHYSPROP_START_ASLEEP, &tmpSolid );
+#endif
 	
 		if ( !m_pPhysicsObject )
 		{
@@ -274,6 +292,10 @@ bool C_PhysPropClientside::Initialize()
 	{
 		m_pPhysicsObject->EnableMotion( false );
 	}
+#if defined( L4D2 )
+	m_pPhysicsObject->EnableCollisions( true );
+	if ( wakeAfterCreate ) m_pPhysicsObject->Wake();
+#endif
 		
 	Spawn(); // loads breakable & prop data
 
@@ -308,8 +330,13 @@ bool C_PhysPropClientside::Initialize()
 	if ( m_fadeMinDist < 0 )
 	{
 		// start fading out at 75% of r_propsmaxdist
+#if defined( L4D2 )
+		const float maxDistance = r_propsmaxdist.GetFloat();
+		SetFadeMinMax( maxDistance * 0.75f, maxDistance );
+#else
 		m_fadeMaxDist = r_propsmaxdist.GetFloat();
 		m_fadeMinDist = r_propsmaxdist.GetFloat() * 0.75f;
+#endif
 	}
 
 	// player can push it away
@@ -337,6 +364,9 @@ void C_PhysPropClientside::Spawn()
 	m_flDmgModBullet = 1.0;
 	m_flDmgModClub = 1.0;
 	m_flDmgModExplosive = 1.0;
+#ifdef L4D2
+	m_flDmgModFire = 1.0f;
+#endif
 
 	BaseClass::Spawn();
 
@@ -476,7 +506,11 @@ void C_PhysPropClientside::Break()
 	// spwan break chunks
 	PropBreakableCreateAll( GetModelIndex(), pPhysics, params, this, -1, false );
 
+#if defined( L4D2 )
+	ClientEntityList().AddToDeleteList( this ); // Native C175D30 -> CBB020.
+#else
 	Release(); // destroy object
+#endif
 }
 
 void C_PhysPropClientside::Clone( Vector &velocity )
@@ -742,12 +776,22 @@ CBaseEntity *BreakModelCreateSingle( CBaseEntity *pOwner, breakmodel_t *pModel, 
 
 	if ( !pEntity->Initialize() )
 	{
+#if defined( L4D2 )
+		ClientEntityList().AddToDeleteList( pEntity ); // Native C176B40 -> CBB020.
+#else
 		pEntity->Release();
+#endif
 		return NULL;
 	}
 
 	pEntity->m_nSkin = nSkin;
 	pEntity->m_iHealth = pModel->health;
+#if defined( L4D2 )
+	if ( pOwner ) pEntity->SetRenderColor( pOwner->GetRenderColor().r, pOwner->GetRenderColor().g, pOwner->GetRenderColor().b );
+#endif
+#if defined( L4D2 )
+	pEntity->SetCollisionGroup( COLLISION_GROUP_DEBRIS ); // Native unconditional group1 before health0.
+#endif
 
 #ifdef TF_CLIENT_DLL
 	pEntity->SetCollisionGroup( COLLISION_GROUP_DEBRIS );
@@ -797,7 +841,11 @@ CBaseEntity *BreakModelCreateSingle( CBaseEntity *pOwner, breakmodel_t *pModel, 
 	else
 	{
 		// failed to create a physics object
+#if defined( L4D2 )
+		ClientEntityList().AddToDeleteList( pEntity ); // Same native failure join.
+#else
 		pEntity->Release();
+#endif
 		return NULL;
 	}
 
@@ -845,7 +893,11 @@ bool C_FuncPhysicsRespawnZone::KeyValue( const char *szKeyName, const char *szVa
 //-----------------------------------------------------------------------------
 bool C_FuncPhysicsRespawnZone::Initialize( void )
 {
+#if defined( L4D2 )
+	if ( InitializeAsClientEntity( STRING(GetModelName()), false ) == false )
+#else
 	if ( InitializeAsClientEntity( STRING(GetModelName()), RENDER_GROUP_OPAQUE_ENTITY ) == false )
+#endif
 		return false;
 
 	SetSolid( SOLID_BSP );	

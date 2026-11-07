@@ -195,6 +195,9 @@ void CPlayerMove::SetupMove( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper *p
 	move->m_flConstraintRadius = player->m_flConstraintRadius;
 	move->m_flConstraintWidth = player->m_flConstraintWidth;
 	move->m_flConstraintSpeedFactor = player->m_flConstraintSpeedFactor;
+#if defined( L4D2 )
+	move->m_bConstraintPastRadius = player->m_bConstraintPastRadius;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -334,7 +337,12 @@ void CPlayerMove::RunCommand ( CBasePlayer *player, CUserCmd *ucmd, IMoveHelper 
 	}
 
 	const float playerCurTime = player->m_nTickBase * TICK_INTERVAL;
+#if defined( L4D2 )
+	// Native S1802F0 processes paused commands without advancing movement time.
+	const float playerFrameTime = player->m_bGamePaused ? 0.0f : TICK_INTERVAL;
+#else
 	const float playerFrameTime = TICK_INTERVAL;
+#endif
 
 	StartCommand( player, ucmd );
 

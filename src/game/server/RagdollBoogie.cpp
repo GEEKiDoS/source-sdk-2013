@@ -15,6 +15,9 @@
 #include "effect_dispatch_data.h"
 #include "te_effect_dispatch.h"
 #include "IEffects.h"
+#if defined( L4D2 )
+#include "precache_register.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -43,6 +46,13 @@ BEGIN_DATADESC( CRagdollBoogie )
 END_DATADESC()
 
 LINK_ENTITY_TO_CLASS( env_ragdoll_boogie, CRagdollBoogie );
+
+#if defined( L4D2 )
+void CRagdollBoogie::Precache()
+{
+	PrecacheEffect( "TeslaHitboxes" ); // S1B4090.
+}
+#endif
 
 
 //-----------------------------------------------------------------------------

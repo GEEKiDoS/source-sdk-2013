@@ -364,6 +364,28 @@ CSoundParametersInternal::~CSoundParametersInternal()
 	m_nConvertedNames = 0;
 }
 
+#if defined( L4D2 )
+void CSoundParametersInternal::AllocateWaveNames( uint16 soundCount, uint16 convertedCount )
+{
+	Assert( m_nSoundNames == 0 && m_nConvertedNames == 0 );
+	m_nSoundNames = soundCount;
+	m_nConvertedNames = convertedCount;
+	m_pSoundNames = soundCount > 1 ? (SoundFile *)malloc( soundCount * sizeof( SoundFile ) ) : NULL;
+	m_pConvertedNames = convertedCount > 1 ? (SoundFile *)malloc( convertedCount * sizeof( SoundFile ) ) : NULL;
+}
+
+void CSoundParametersInternal::SwapWaveNameStorage( CSoundParametersInternal &other, bool swapConverted )
+{
+	V_swap( m_pSoundNames, other.m_pSoundNames );
+	V_swap( m_nSoundNames, other.m_nSoundNames );
+	if ( swapConverted )
+	{
+		V_swap( m_pConvertedNames, other.m_pConvertedNames );
+		V_swap( m_nConvertedNames, other.m_nConvertedNames );
+	}
+}
+#endif
+
 void CSoundParametersInternal::CopyFrom( const CSoundParametersInternal& src )
 {
 	if ( m_nSoundNames > 1 )

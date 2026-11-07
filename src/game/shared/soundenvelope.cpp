@@ -20,12 +20,29 @@
 #include "SoundEmitterSystem/isoundemittersystembase.h"
 #include "tier0/vprof.h"
 #include "gamerules.h"
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+#include "tier1/utlmap.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-static ConVar soundpatch_captionlength( "soundpatch_captionlength", "2.0", FCVAR_REPLICATED, "How long looping soundpatch captions should display for." );
+static ConVar soundpatch_captionlength( "soundpatch_captionlength", "2.0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "How long looping soundpatch captions should display for." );
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+// The sole Music clock owner. These are requested logical start times, not
+// engine mixer/sample positions. Pitch, pause and actual negative-seek
+// alignment are outside this explicitly approved approximation.
+static CUtlMap<int, float> s_musicEmissionStarts( DefLessFunc( int ) );
+#endif
 // Envelope
 // This is a class that controls a ramp for a sound (pitch / volume / etc)
 class CSoundEnvelope
@@ -242,10 +259,20 @@ public:
 		m_iszSoundName = NULL_STRING;
 		m_iszSoundScriptName = NULL_STRING;
 		m_flCloseCaptionDuration = soundpatch_captionlength.GetFloat();
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		m_isMusicPatch = false;
+		m_hasSoundOrigin = false;
+		m_soundOrigin.Init();
+		m_soundGuid = 0;
+		m_musicEntityIndex = -1;
+#endif
 	}
 	~CSoundPatch()
 	{
 		g_SoundPatchCount--;
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		ForgetMusicEmission();
+#endif
 	}
 
 	void	Init( IRecipientFilter *pFilter, CBaseEntity *pEnt, int channel, const char *pSoundName, 
@@ -269,6 +296,30 @@ public:
 
 	void	SetBaseFlags( int iFlags ) { m_baseFlags = iFlags; }
 	
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	void SetMusicOrigin( const Vector *pOrigin )
+	{
+		// Original Init caches the actual entity index (patch+64) separately
+		// from its EHANDLE, for updates/stops after that entity disappears.
+		m_musicEntityIndex = EntIndex();
+		m_isMusicPatch = true;
+		m_hasSoundOrigin = pOrigin != NULL;
+		if ( pOrigin )
+			m_soundOrigin = *pOrigin;
+	}
+	bool IsSoundPlaying() const
+	{
+		return enginesound->IsSoundStillPlaying( m_soundGuid );
+	}
+	float GetApproximateMusicElapsed() const
+	{
+		if ( !IsSoundPlaying() )
+			return -1.0f;
+		const int i = s_musicEmissionStarts.Find( m_soundGuid );
+		return i != s_musicEmissionStarts.InvalidIndex()
+			? gpGlobals->realtime - s_musicEmissionStarts[i] : -1.0f;
+	}
+#endif
 	// Returns the ent index
 	int		EntIndex() const;
 
@@ -277,6 +328,30 @@ private:
 	// This function is an internal method of accessing the real volume passed into the engine (i.e. post multiply)
 	float	GetVolumeForEngine( void );
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	void ForgetMusicEmission()
+	{
+		if ( m_isMusicPatch )
+		{
+			const int i = s_musicEmissionStarts.Find( m_soundGuid );
+			if ( i != s_musicEmissionStarts.InvalidIndex() )
+				s_musicEmissionStarts.RemoveAt( i );
+		}
+		m_soundGuid = 0;
+	}
+	void CaptureSoundEmission( float flStartTime = 0.0f )
+	{
+		// Capture immediately, before captions or another sound can replace it.
+		// Native GUID identity belongs to every patch, so SoundIsPlaying is
+		// truthful for non-Music patches too. Only Music opts into the clock.
+		const int guid = enginesound->GetGuidForLastSoundEmitted();
+		ForgetMusicEmission();
+		m_soundGuid = guid;
+		if ( m_isMusicPatch )
+			s_musicEmissionStarts.InsertOrReplace( m_soundGuid,
+				gpGlobals->realtime + MIN( flStartTime, 0.0f ) );
+	}
+#endif
 private:
 	CSoundEnvelope	m_pitch;
 	CSoundEnvelope	m_volume;
@@ -296,6 +371,13 @@ private:
 
 	float			m_flCloseCaptionDuration;
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	bool			m_isMusicPatch;
+	bool			m_hasSoundOrigin;
+	Vector			m_soundOrigin;
+	int				m_soundGuid;
+	int				m_musicEntityIndex;
+#endif
 #ifdef _DEBUG
 	// Used to get the classname of the entity associated with the sound
 	string_t		m_iszClassName;
@@ -307,7 +389,12 @@ private:
 
 int CSoundPatch::g_SoundPatchCount = 0;
 
+
+#if defined( L4D2 ) && defined( GAME_DLL )
+CON_COMMAND_F( report_soundpatch, "reports sound patch count" , 0x00000004)
+#else
 CON_COMMAND( report_soundpatch, "reports sound patch count" )
+#endif
 {
 #ifndef CLIENT_DLL
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
@@ -336,6 +423,13 @@ BEGIN_SIMPLE_DATADESC( CSoundPatch )
 	DEFINE_EMBEDDED( m_Filter ),
 	DEFINE_FIELD( m_flCloseCaptionDuration, FIELD_FLOAT ),
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	DEFINE_FIELD( m_isMusicPatch, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_hasSoundOrigin, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_soundOrigin, FIELD_VECTOR ),
+	DEFINE_FIELD( m_musicEntityIndex, FIELD_INTEGER ),
+	// GUIDs and their start times are runtime-owned; ResumeSound captures anew.
+#endif
 	// Not saved, it's debug only
 //  DEFINE_FIELD( m_iszClassName, FIELD_STRING ),
 	
@@ -369,7 +463,12 @@ void CSoundPatch::Init( IRecipientFilter *pFilter, CBaseEntity *pEnt, int channe
 		pSoundName = params.soundname;
 		m_soundlevel = params.soundlevel;
 
-		m_entityChannel = params.channel;
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		// Original 1019B910 retains explicitly allocated high channels.
+		// Music itself passes CHAN_STATIC, so this does not identify Music.
+		if ( m_entityChannel < 135 )
+#endif
+			m_entityChannel = params.channel;
 	}
 	else
 	{
@@ -457,6 +556,10 @@ float CSoundPatch::GetVolume( void )
 //-----------------------------------------------------------------------------
 inline int CSoundPatch::EntIndex() const
 {
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	if ( m_isMusicPatch && !m_hEnt.Get() )
+		return m_musicEntityIndex;
+#endif
 	Assert( !m_hEnt.IsValid() || m_hEnt.Get() );
 	return m_hEnt.Get() ? m_hEnt->entindex() : -1;
 }
@@ -477,6 +580,9 @@ float CSoundPatch::GetVolumeForEngine( void )
 void CSoundPatch::Shutdown( void )
 {
 //	Msg( "Removing sound %s\n", m_pszSoundName );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	ForgetMusicEmission();
+#endif
 	if ( m_isPlaying )
 	{
 		int entIndex = EntIndex();
@@ -546,6 +652,10 @@ bool CSoundPatch::Update( float time, float deltaTime )
 		ep.m_SoundLevel = m_soundlevel;
 		ep.m_nFlags = m_flags;
 		ep.m_nPitch = (int)m_pitch.Value();
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		if ( m_hasSoundOrigin )
+			ep.m_pOrigin = &m_soundOrigin;
+#endif
 
 		CBaseEntity::EmitSound( m_Filter, EntIndex(), ep );
 
@@ -577,9 +687,18 @@ void CSoundPatch::StartSound( float flStartTime )
 		ep.m_pSoundName = STRING(m_iszSoundName);
 		ep.m_flVolume = GetVolumeForEngine();
 		ep.m_SoundLevel = m_soundlevel;
-		ep.m_nFlags = (SND_CHANGE_VOL | m_baseFlags);
+		ep.m_nFlags = m_baseFlags;
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		// Original 1019AFC0: music starts without SND_CHANGE_VOL.
+		if ( !Q_stristr( STRING( m_iszSoundName ), "music" ) )
+#endif
+			ep.m_nFlags |= SND_CHANGE_VOL;
 		ep.m_nPitch = (int)m_pitch.Value();
 		ep.m_bEmitCloseCaption = false;
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		if ( m_hasSoundOrigin )
+			ep.m_pOrigin = &m_soundOrigin;
+#endif
 
 		if ( flStartTime )
 		{
@@ -587,6 +706,9 @@ void CSoundPatch::StartSound( float flStartTime )
 		}
 
 		CBaseEntity::EmitSound( m_Filter, EntIndex(), ep );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		CaptureSoundEmission( flStartTime );
+#endif
 		CBaseEntity::EmitCloseCaption( m_Filter, EntIndex(), STRING( m_iszSoundScriptName ), ep.m_UtlVecSoundOrigin, m_flCloseCaptionDuration, true );
 	}
 	m_isPlaying = true;
@@ -609,8 +731,15 @@ void CSoundPatch::ResumeSound( void )
 			ep.m_SoundLevel = m_soundlevel;
 			ep.m_nFlags = (SND_CHANGE_VOL | SND_CHANGE_PITCH | m_baseFlags);
 			ep.m_nPitch = (int)m_pitch.Value();
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+			if ( m_hasSoundOrigin )
+				ep.m_pOrigin = &m_soundOrigin;
+#endif
 
 			CBaseEntity::EmitSound( m_Filter, EntIndex(), ep );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+			CaptureSoundEmission();
+#endif
 		}
 		else
 		{
@@ -641,8 +770,15 @@ void CSoundPatch::AddPlayerPost( CBasePlayer *pPlayer )
 		ep.m_SoundLevel = m_soundlevel;
 		ep.m_nFlags = (SND_CHANGE_VOL | m_baseFlags);
 		ep.m_nPitch = (int)m_pitch.Value();
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		if ( m_hasSoundOrigin )
+			ep.m_pOrigin = &m_soundOrigin;
+#endif
 
 		CBaseEntity::EmitSound( filter, EntIndex(), ep );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		CaptureSoundEmission();
+#endif
 	}
 }
 
@@ -741,6 +877,18 @@ public:
 	string_t		SoundGetName( CSoundPatch *pSound ) { return pSound->GetName(); }
 	void			SoundSetCloseCaptionDuration( CSoundPatch *pSound, float flDuration ) { pSound->SetCloseCaptionDuration(flDuration); }
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	CSoundPatch *SoundCreateMusic( IRecipientFilter &filter, int nEntIndex,
+		const char *pSoundName, const Vector *pOrigin = NULL );
+	bool SoundIsPlaying( CSoundPatch *pSound )
+	{
+		return pSound->IsSoundPlaying();
+	}
+	float SoundGetElapsedTimeApproximate( CSoundPatch *pSound )
+	{
+		return pSound->GetApproximateMusicElapsed();
+	}
+#endif
 	float			SoundPlayEnvelope( CSoundPatch *pSound, soundcommands_t soundCommand, envelopePoint_t *points, int numPoints );
 	float			SoundPlayEnvelope( CSoundPatch *pSound, soundcommands_t soundCommand, envelopeDescription_t *envelope );
 
@@ -875,6 +1023,9 @@ void CSoundControllerImp::SystemReset( void )
 
 	// clear the command queue
 	m_commandList.RemoveAll();
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	s_musicEmissionStarts.RemoveAll();
+#endif
 }
 
 
@@ -1114,6 +1265,18 @@ CSoundPatch *CSoundControllerImp::SoundCreate( IRecipientFilter& filter, int nEn
 	return pSound;
 }
 
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+CSoundPatch *CSoundControllerImp::SoundCreateMusic( IRecipientFilter &filter,
+	int nEntIndex, const char *pSoundName, const Vector *pOrigin )
+{
+	// Original 1024CB70 hardcodes CHAN_STATIC, not the unused channel ring.
+	CSoundPatch *pSound = SoundCreate( filter, nEntIndex, CHAN_STATIC,
+		pSoundName, ATTN_NORM );
+	if ( pSound )
+		pSound->SetMusicOrigin( pOrigin );
+	return pSound;
+}
+#endif
 void CSoundControllerImp::SoundDestroy( CSoundPatch	*pSound )
 {
 	if ( !pSound )
@@ -1310,3 +1473,7 @@ ISaveRestoreOps *GetSoundSaveRestoreOps( )
 {
 	return &s_SoundPatchSaveRestoreOps;
 }
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/sound/soundenvelope_console.inc"
+#include "l4d2/sound/soundenvelope_console_registrations.inc"
+#endif

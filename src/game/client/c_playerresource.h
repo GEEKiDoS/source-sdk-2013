@@ -69,15 +69,20 @@ protected:
 	string_t	m_szName[MAX_PLAYERS_ARRAY_SAFE];
 	int		m_iPing[MAX_PLAYERS_ARRAY_SAFE];
 	int		m_iScore[MAX_PLAYERS_ARRAY_SAFE];
+#if defined( L4D2 )
+	int m_iTankTickets[MAX_PLAYERS_ARRAY_SAFE];
+#endif
 	int		m_iDeaths[MAX_PLAYERS_ARRAY_SAFE];
 	bool	m_bConnected[MAX_PLAYERS_ARRAY_SAFE];
 	int		m_iTeam[MAX_PLAYERS_ARRAY_SAFE];
 	bool	m_bAlive[MAX_PLAYERS_ARRAY_SAFE];
 	int		m_iHealth[MAX_PLAYERS_ARRAY_SAFE];
 	Color	m_Colors[MAX_TEAMS];
+#if !defined( L4D2 )
 	uint32	m_iAccountID[MAX_PLAYERS_ARRAY_SAFE];
 	bool	m_bValid[MAX_PLAYERS_ARRAY_SAFE];
 	int		m_iUserID[MAX_PLAYERS_ARRAY_SAFE];
+#endif
 	string_t m_szUnconnectedName;
 };
 

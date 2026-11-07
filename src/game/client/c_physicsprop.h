@@ -24,11 +24,21 @@ public:
 	~C_PhysicsProp();
 
 	virtual bool OnInternalDrawModel( ClientModelRenderInfo_t *pInfo );
+#if defined( L4D2 )
+	void OnDataChanged( DataUpdateType_t type ) OVERRIDE;
+	int ObjectCaps() OVERRIDE;
+	bool IsGlowUseTarget() OVERRIDE;
+#endif
 
 protected:
 	// Networked vars.
 	bool m_bAwake;
 	bool m_bAwakeLastTime;
+#if defined( L4D2 )
+	bool m_hasTankGlow;
+	bool m_isCarryable;
+	bool m_bStaticLightingEligible; // Native2404, cached by C86540, not networked.
+#endif
 };
 
 #endif // C_PHYSICSPROP_H 

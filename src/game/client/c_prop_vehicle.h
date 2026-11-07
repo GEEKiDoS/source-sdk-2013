@@ -82,9 +82,11 @@ public:
 
 protected:
 
+#if !defined( L4D2 )
 	virtual void OnEnteredVehicle( C_BaseCombatCharacter *pPassenger );
 	// NVNT added to notify haptics system of vehicle exit.
 	virtual void OnExitedVehicle( C_BaseCombatCharacter *pPassenger );
+#endif // !L4D2
 
 	virtual void RestrictView( float *pYawBounds, float *pPitchBounds, float *pRollBounds, QAngle &vecViewAngles );
 	virtual void SetVehicleFOV( float flFOV ) { m_flFOV = flFOV; }

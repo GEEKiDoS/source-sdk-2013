@@ -86,8 +86,8 @@ void CalcBoneDerivatives( Vector &velocity, AngularImpulse &angVel, const matrix
 // Give a derivative of a bone, compute the velocity & angular velocity of that bone
 void CalcBoneVelocityFromDerivative( const QAngle &vecAngles, Vector &velocity, AngularImpulse &angVel, const matrix3x4_t &current );
 
-// This function sets up the local transform for a single frame of animation. It doesn't handle
-// pose parameters or interpolation between frames.
+// This function sets up the local transform for a single frame of RLE or frame
+// animation. It doesn't handle pose parameters or interpolation between frames.
 void SetupSingleBoneMatrix( 
 	CStudioHdr *pOwnerHdr, 
 	int nSequence, 
@@ -352,7 +352,11 @@ float Studio_SetController( const CStudioHdr *pStudioHdr, int iController, float
 float Studio_GetController( const CStudioHdr *pStudioHdr, int iController, float ctlValue );
 
 void Studio_CalcDefaultPoseParameters( const CStudioHdr *pStudioHdr, float flPoseParameter[MAXSTUDIOPOSEPARAM], int nCount );
+#if defined( L4D2 )
+double Studio_GetPoseParameter( const CStudioHdr *pStudioHdr, int iParameter, float ctlValue );
+#else
 float Studio_GetPoseParameter( const CStudioHdr *pStudioHdr, int iParameter, float ctlValue );
+#endif
 float Studio_SetPoseParameter( const CStudioHdr *pStudioHdr, int iParameter, float flValue, float &ctlValue );
 
 // converts a global 0..1 pose parameter into the local sequences blending value
@@ -362,7 +366,11 @@ void Studio_SeqAnims( const CStudioHdr *pStudioHdr, mstudioseqdesc_t &seqdesc, i
 int Studio_MaxFrame( const CStudioHdr *pStudioHdr, int iSequence, const float poseParameter[] );
 float Studio_FPS( const CStudioHdr *pStudioHdr, int iSequence, const float poseParameter[] );
 float Studio_CPS( const CStudioHdr *pStudioHdr, mstudioseqdesc_t &seqdesc, int iSequence, const float poseParameter[] );
+#if defined( L4D2 )
+double Studio_Duration( const CStudioHdr *pStudioHdr, int iSequence, const float poseParameter[] );
+#else
 float Studio_Duration( const CStudioHdr *pStudioHdr, int iSequence, const float poseParameter[] );
+#endif
 void Studio_MovementRate( const CStudioHdr *pStudioHdr, int iSequence, const float poseParameter[], Vector *pVec );
 
 // void Studio_Movement( const CStudioHdr *pStudioHdr, int iSequence, const float poseParameter[], Vector *pVec );

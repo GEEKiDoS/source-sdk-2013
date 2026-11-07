@@ -1,0 +1,21 @@
+// Native screenspaceeffect_vs20 static0 used by the halo material.
+// Original bytecode equals blurfilter_vs20 static1: clip-space position + UV.
+struct VS_INPUT
+{
+	float3 position : POSITION;
+	float2 texCoord : TEXCOORD0;
+};
+
+struct VS_OUTPUT
+{
+	float4 position : POSITION;
+	float2 texCoord : TEXCOORD0;
+};
+
+VS_OUTPUT main( VS_INPUT i )
+{
+	VS_OUTPUT o;
+	o.position = float4( i.position, 1.0f );
+	o.texCoord = i.texCoord;
+	return o;
+}

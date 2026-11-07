@@ -24,6 +24,7 @@
 
 #define	__EXPLOSION_DEBUG	0
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectExplosion )
 CLIENTEFFECT_MATERIAL( "effects/fire_cloud1" )
 CLIENTEFFECT_MATERIAL( "effects/fire_cloud2" )
@@ -35,6 +36,7 @@ CLIENTEFFECT_MATERIAL( "particle/particle_smokegrenade1" )
 CLIENTEFFECT_MATERIAL( "effects/splash3" )
 CLIENTEFFECT_MATERIAL( "effects/splashwake1" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 //
 // CExplosionParticle

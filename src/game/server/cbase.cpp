@@ -1095,7 +1095,11 @@ void CC_DumpEventQueue()
 
 	g_EventQueue.Dump();
 }
-static ConCommand dumpeventqueue( "dumpeventqueue", CC_DumpEventQueue, "Dump the contents of the Entity I/O event queue to the console." );
+static ConCommand dumpeventqueue( "dumpeventqueue", CC_DumpEventQueue, "Dump the contents of the Entity I/O event queue to the console."
+#if defined( L4D2 )
+	, 0x00000004
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Removes all pending events from the I/O queue that were added by the

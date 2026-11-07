@@ -38,9 +38,11 @@ extern vgui::IInputInternal *g_InputInternal;
 #define VGUI_SCREEN_MODE_RADIUS	80
 
 //Precache the materials
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectVGuiScreen )
 CLIENTEFFECT_MATERIAL( "engine/writez" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 IMPLEMENT_CLIENTCLASS_DT(C_VGuiScreen, DT_VGuiScreen, CVGuiScreen)
 	RecvPropFloat( RECVINFO(m_flWidth) ),

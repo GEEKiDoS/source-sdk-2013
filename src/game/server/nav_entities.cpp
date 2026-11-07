@@ -20,7 +20,7 @@
 #include "func_breakablesurf.h"
 
 #ifdef TERROR
-#include "func_elevator.h"
+#include "l4d2/entities/func_elevator.h"
 #include "AmbientLight.h"
 #endif
 
@@ -55,8 +55,10 @@ BEGIN_DATADESC( CFuncNavCost )
 
 END_DATADESC()
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( func_nav_avoid, CFuncNavAvoid );
 LINK_ENTITY_TO_CLASS( func_nav_prefer, CFuncNavPrefer );
+#endif
 
 CUtlVector< CHandle< CFuncNavCost > > CFuncNavCost::gm_masterCostVector;
 CountdownTimer CFuncNavCost::gm_dirtyTimer;
@@ -352,6 +354,9 @@ float CFuncNavPrefer::GetCostMultiplier( CBaseCombatCharacter *who ) const
 
 //--------------------------------------------------------------------------------------------------------
 //--------------------------------------------------------------------------------------------------------
+#if defined( L4D2 )
+#include "l4d2/nav/nav_blocker_parent.inc"
+#else
 BEGIN_DATADESC( CFuncNavBlocker )
 
 	// Inputs
@@ -580,6 +585,7 @@ bool CFuncNavBlocker::CalculateBlocked( bool *pResultByTeam, const Vector &vecMi
  	}
 	return bBlocked;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------------------------------
@@ -601,7 +607,11 @@ public:
 	void InputDisable( inputdata_t &inputdata );
 
 	virtual bool IsPotentiallyAbleToObstructNavAreas( void ) const { return true; }		// could we at some future time obstruct nav?
-	virtual float GetNavObstructionHeight( void ) const { return JumpCrouchHeight; }	// height at which to obstruct nav areas
+#if defined( L4D2 )
+	virtual double GetNavObstructionHeight( void ) const { return 64.0; } // Native48B240.
+#else
+	virtual float GetNavObstructionHeight( void ) const { return JumpCrouchHeight; }
+#endif
 	virtual bool CanObstructNavAreas( void ) const { return !m_bDisabled; }				// can we obstruct nav right this instant?
 	virtual CBaseEntity *GetObstructingEntity( void ) { return this; }
 	virtual void OnNavMeshLoaded( void )

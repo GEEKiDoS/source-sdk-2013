@@ -129,8 +129,8 @@ public:
 	operator char() const					{ Assert( m_type == FIELD_CHARACTER );	return m_char; }
 	operator bool() const					{ Assert( m_type == FIELD_BOOLEAN );	return m_bool; }
 	operator HSCRIPT() const				{ Assert( m_type == FIELD_HSCRIPT );	return m_hScript; }
-	operator CBaseHandle() const			{ Assert( m_type == FIELD_EHANDLE );	return CBaseHandle( m_hEntity ); }
-        operator CBaseEntity*() const				{ Assert( m_type == FIELD_EHANDLE );    return CHandle<CBaseEntity>(CBaseHandle( m_hEntity )); }
+	operator CBaseHandle() const			{ Assert( m_type == FIELD_EHANDLE );	return CBaseHandle::UnsafeFromIndex( m_hEntity ); }
+        operator CBaseEntity*() const				{ Assert( m_type == FIELD_EHANDLE );    return CHandle<CBaseEntity>::UnsafeFromIndex( m_hEntity ).Get(); }
 	operator const Quaternion &() const		{ Assert( m_type == FIELD_QUATERNION );	return m_pData ? *(Quaternion*)m_pData : quat_identity; }
 //	operator CUtlStringToken() const		{ Assert( m_type == FIELD_UTLSTRINGTOKEN );	CUtlStringToken t; t.m_nHashCode = m_utlStringToken; return t; }
 
@@ -189,6 +189,9 @@ public:
 
 	int GetType() const						{ return m_type; }
 	uint16 GetFlags() const					{ return m_flags; }
+#ifdef L4D2
+	uint32 GetRawPayload32() const { return m_uint; }
+#endif
 
 	void ConvertToCopiedData(bool silent = false );
 

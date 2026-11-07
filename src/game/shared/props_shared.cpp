@@ -21,13 +21,43 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar sv_pushaway_clientside_size( "sv_pushaway_clientside_size", "15", FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY, "Minimum size of pushback objects" );
-ConVar props_break_max_pieces( "props_break_max_pieces", "-1", 0, "Maximum prop breakable piece count (-1 = model default)" );
-ConVar props_break_max_pieces_perframe( "props_break_max_pieces_perframe", "-1", FCVAR_REPLICATED, "Maximum prop breakable piece count per frame (-1 = model default)" );
+ConVar sv_pushaway_clientside_size( "sv_pushaway_clientside_size", "15", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED | FCVAR_DEVELOPMENTONLY
+#endif
+, "Minimum size of pushback objects" );
+ConVar props_break_max_pieces( "props_break_max_pieces", "-1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	0
+#endif
+, "Maximum prop breakable piece count (-1 = model default)" );
+ConVar props_break_max_pieces_perframe( "props_break_max_pieces_perframe", "-1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "Maximum prop breakable piece count per frame (-1 = model default)" );
 #ifdef GAME_DLL
 extern ConVar breakable_multiplayer;
 #else
-ConVar cl_burninggibs( "cl_burninggibs", "0", 0, "A burning player that gibs has burning gibs." );
+ConVar cl_burninggibs( "cl_burninggibs", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#else
+	0
+#endif
+, "A burning player that gibs has burning gibs." );
 #endif // GAME_DLL
 
 extern bool PropBreakableCapEdictsOnCreateAll(int modelindex, IPhysicsObject *pPhysics, const breakablepropparams_t &params, CBaseEntity *pEntity, int iPrecomputedBreakableCount = -1 );
@@ -161,6 +191,9 @@ propdata_interaction_s sPropdataInteractionSections[PROPINTER_NUM_INTERACTIONS] 
 	{ "physgun_interactions", "onlaunch", "spin_none" },		// PROPINTER_PHYSGUN_LAUNCH_SPIN_NONE,
 	{ "physgun_interactions", "onlaunch", "spin_zaxis" },		// PROPINTER_PHYSGUN_LAUNCH_SPIN_Z,
 	{ "physgun_interactions", "onbreak", "explode_fire" },		// PROPINTER_PHYSGUN_BREAK_EXPLODE,
+	#ifdef L4D2
+	{ "physgun_interactions", "onbreak", "explode_ice" },
+	#endif
 	{ "physgun_interactions", "damage", "none" },				// PROPINTER_PHYSGUN_DAMAGE_NONE,
 	
 	{ "fire_interactions", "flammable", "yes" },				// PROPINTER_FIRE_FLAMMABLE,
@@ -172,6 +205,15 @@ propdata_interaction_s sPropdataInteractionSections[PROPINTER_NUM_INTERACTIONS] 
 	{ "physgun_interactions", "allow_overhead", "yes" },	// 	PROPINTER_PHYSGUN_ALLOW_OVERHEAD,
 
 	{ "world_interactions", "onworldimpact", "bloodsplat" },	// PROPINTER_WORLD_BLOODSPLAT,
+	#ifdef L4D2
+	{ "physgun_interactions", "physgun_notify_children", "yes" },
+	{ "fire_interactions", "melee_immune", "yes" },
+	{ "game_interactions", "only_breakable_by", "tank" },
+	{ "game_interactions", "only_breakable_by", "mob" },
+	{ "bot_interactions", "forbidden_target", "yes" },
+	{ "game_interactions", "weapon_collision", "yes" },
+	{ "game_interactions", "tank_projectile", "yes" },
+	#endif
 };
 #else
 extern propdata_interaction_s sPropdataInteractionSections[PROPINTER_NUM_INTERACTIONS];
@@ -340,15 +382,41 @@ int CPropData::ParsePropFromKV( CBaseEntity *pProp, KeyValues *pSection, KeyValu
 	pBreakableInterface->SetDmgModBullet( pSection->GetFloat( "dmg.bullets", pBreakableInterface->GetDmgModBullet() ) );
 	pBreakableInterface->SetDmgModClub( pSection->GetFloat( "dmg.club", pBreakableInterface->GetDmgModClub() ) );
 	pBreakableInterface->SetDmgModExplosive( pSection->GetFloat( "dmg.explosive", pBreakableInterface->GetDmgModExplosive() ) );
+#ifdef L4D2
+	pBreakableInterface->SetDmgModFire( pSection->GetFloat( "dmg.fire", pBreakableInterface->GetDmgModFire() ) );
+#endif
 
 	// Get the health (unless this is an override prop)
 	if ( !FClassnameIs( pProp, "prop_physics_override" ) && !FClassnameIs( pProp, "prop_dynamic_override" ) )
 	{
 		pProp->SetHealth( pSection->GetInt( "health", pProp->GetHealth() ) );
+#ifdef L4D2
+		const char *type = pSection->GetString( "explosion_type", NULL );
+		if ( type )
+		{
+			int explosionType = 0;
+			if ( !Q_stricmp( type, "grenade" ) ) explosionType = 1;
+			else if ( !Q_stricmp( type, "molotov" ) ) explosionType = 2;
+			else if ( !Q_stricmp( type, "fireworks" ) ) explosionType = 3;
+			pBreakableInterface->SetExplosionType( explosionType );
+			if ( explosionType != 0 ) pProp->SetEFlags( EFL_NO_DAMAGE_FORCES );
+		}
+#endif
 
 		// Explosive?
 		pBreakableInterface->SetExplosiveDamage( pSection->GetFloat( "explosive_damage", pBreakableInterface->GetExplosiveDamage() ) );
+#ifdef L4D2
+		pBreakableInterface->SetExplosionDelay( pSection->GetFloat( "explosion_delay", pBreakableInterface->GetExplosionDelay() ) );
+		const char *buildup = pSection->GetString( "explosion_buildup", STRING( pBreakableInterface->GetExplosionBuildup() ) );
+		if ( buildup && buildup[0] )
+		{
+			pBreakableInterface->SetExplosionBuildup( AllocPooledString( buildup ) );
+			CBaseEntity::PrecacheScriptSound( buildup );
+		}
+		else pBreakableInterface->SetExplosionBuildup( NULL_STRING );
+#else
 		pBreakableInterface->SetExplosiveRadius( pSection->GetFloat( "explosive_radius", pBreakableInterface->GetExplosiveRadius() ) );
+#endif
 
 #ifdef GAME_DLL
 		// If we now have health, we're not allowed to ignore physics damage

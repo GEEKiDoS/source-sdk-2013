@@ -238,6 +238,7 @@ public:
 
 	virtual void PaintBackground();
 	bool	IsValid() { return (m_pImage->IsValid()); }
+	void SetAvatarColor( Color color ) { m_pImage->SetColor( color ); }
 
 	void SetClickable( bool bClickable ) { m_bClickable = bClickable; }
 

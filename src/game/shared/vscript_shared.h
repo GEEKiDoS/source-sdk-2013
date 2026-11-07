@@ -16,6 +16,10 @@
 DECLARE_LOGGING_CHANNEL( LOG_VScript );
 
 extern IScriptVM * g_pScriptVM;
+#if defined( L4D2 ) && defined( GAME_DLL )
+// Native834634: canonical compiler result, consumed by DoIncludeScript.
+extern bool g_bTerrorScriptFileMissing;
+#endif
 
 HSCRIPT VScriptCompileScript( const char *pszScriptName, bool bWarnMissing = false );
 bool VScriptRunScript( const char *pszScriptName, HSCRIPT hScope, bool bWarnMissing = false );

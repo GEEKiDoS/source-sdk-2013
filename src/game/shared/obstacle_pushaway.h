@@ -19,11 +19,18 @@
 
 //--------------------------------------------------------------------------------------------------------------
 bool IsPushAwayEntity( CBaseEntity *pEnt );
+#if !defined( L4D2 )
 bool IsPushableEntity( CBaseEntity *pEnt );
+#endif
 
 //--------------------------------------------------------------------------------------------------------------
 #ifndef CLIENT_DLL
+#ifdef L4D2
+class CTakeDamageInfo;
+bool IsBreakableEntity( CBaseEntity *entity, bool allowInteraction17 = false, bool allowInteraction18 = false, const CTakeDamageInfo *damageInfo = NULL );
+#else
 bool IsBreakableEntity( CBaseEntity *pEnt );
+#endif
 #endif // !CLIENT_DLL
 
 //--------------------------------------------------------------------------------------------------------------

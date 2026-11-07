@@ -1,0 +1,220 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Native PC SpriteCard outline and simple-colour spline paths. Other material
+// capabilities retain SpriteCard; spline admission requires orientation 0..2
+// and the SDK rope backend's four-point packet, without endpoint normals.
+//
+// Interface recovered from the original spritecard_vs20.vcs (version 6):
+// static 1056 = ANIMBLEND_OR_MAXLUMFRAMEBLEND1 | PERPARTICLEOUTLINE,
+// dynamic 0..3 = ORIENTATION. Original PERPARTICLEOUTLINE is static bit 10.
+// The material shader uploads c48..57 with the original SpriteCard layout.
+//
+// STATIC: "ANIMBLEND"                 "0..1"
+// STATIC: "PERPARTICLEOUTLINE"         "0..1"
+// STATIC: "SPRITECARDVERTEXFOG"        "0..1"
+// STATIC: "SPLINE"                    "0..1"
+// DYNAMIC: "ORIENTATION"              "0..3"
+// SKIP: $SPLINE && ( $ANIMBLEND || $PERPARTICLEOUTLINE || $ORIENTATION == 3 )
+
+#include "common_vs_fxc.h"
+
+const float4x3 cModelView : register( SHADER_SPECIFIC_CONST_0 );
+const float4x4 cProj : register( SHADER_SPECIFIC_CONST_3 );
+const float4 ScaleParms : register( SHADER_SPECIFIC_CONST_7 );
+const float4 SizeParms : register( SHADER_SPECIFIC_CONST_8 );
+const float4 SizeParms2 : register( SHADER_SPECIFIC_CONST_9 );
+
+#define MINIMUM_SIZE_FACTOR     ( SizeParms.x )
+#define MAXIMUM_SIZE_FACTOR     ( SizeParms.y )
+#define START_FADE_SIZE_FACTOR  ( SizeParms.z )
+#define END_FADE_SIZE_FACTOR    ( SizeParms.w )
+#define START_FAR_FADE          ( SizeParms2.x )
+#define FAR_FADE_FACTOR         ( SizeParms2.y )
+#define VERTEX_FOG_AMOUNT       ( ScaleParms.z )
+
+struct VS_INPUT
+{
+	float4 vTint : COLOR;
+	float4 vPos : POSITION;
+#if SPLINE
+	float4 vSplinePoint0 : TEXCOORD0; // world position.xyz, radius.w
+	float4 vSplinePoint1 : TEXCOORD1;
+	float4 vSplinePoint2 : TEXCOORD2;
+	float4 vSplinePoint3 : TEXCOORD3;
+#else
+	float4 vTexCoord0 : TEXCOORD0;
+	float4 vTexCoord1 : TEXCOORD1;
+	float4 vParms : TEXCOORD2; // frame blend, rotation, radius, yaw
+	float2 vCornerID : TEXCOORD3;
+#if PERPARTICLEOUTLINE || ( ORIENTATION == 3 )
+	// Native SpriteCard also uses this slot as the orientation-3 normal.
+	// Reached outlined cards are screen aligned (orientation 0).
+	float4 vOutlineColorOrNormal : TEXCOORD5;
+#endif
+#endif
+};
+
+struct VS_OUTPUT
+{
+	float4 projPos : POSITION;
+	float4 argbcolor : COLOR0;
+	// The original PC shader packs frame 1 in reversed component order.
+	float4 texCoords : TEXCOORD0; // frame 0 UV.xy, frame 1 UV.yx
+#if ANIMBLEND
+	float4 blendfactor : TEXCOORD1;
+#endif
+	float4 outlineColor : TEXCOORD4;
+	float fogFactor : FOG;
+};
+
+VS_OUTPUT main( VS_INPUT v )
+{
+	VS_OUTPUT o;
+	float4 tint = float4( GammaToLinear( v.vTint.rgb ), v.vTint.a );
+#if SPLINE
+	float t = v.vPos.x;
+	float4 delta = v.vSplinePoint2 - v.vSplinePoint0;
+	float4 quadratic = 2.0f * v.vSplinePoint0 - 5.0f * v.vSplinePoint1 +
+		4.0f * v.vSplinePoint2 - v.vSplinePoint3;
+	float4 cubic = -v.vSplinePoint0 + 3.0f * v.vSplinePoint1 -
+		3.0f * v.vSplinePoint2 + v.vSplinePoint3;
+	float4 curve = delta + t * ( quadratic + t * cubic );
+	float4 positionRadius = v.vSplinePoint1 + 0.5f * t * curve;
+	float3 tangent = normalize( 0.5f * ( curve.xyz + t * ( quadratic.xyz + 2.0f * t * cubic.xyz ) ) );
+#if ORIENTATION == 0
+	float3 side = normalize( cross( positionRadius.xyz - cEyePos, tangent ) );
+#else // Native orientations 1 and 2 use the fixed Z axis.
+	float3 side = normalize( cross( float3( 0, 0, 1 ), tangent ) );
+#endif
+	positionRadius.w *= 1.0f + t * ( SizeParms2.w - 1.0f );
+	positionRadius.xyz += side * ( positionRadius.w * ( v.vPos.z - 0.5f ) );
+	tint.a *= 1.0f + t * ( SizeParms2.z - 1.0f );
+#if SPRITECARDVERTEXFOG
+	// Native spline fog uses the displaced vertex, not the curve's centre.
+	float2 fogDelta = positionRadius.xy - cEyePos.xy;
+	float visibility = max( cFogParams.z, -length( fogDelta ) * cFogParams.w + cFogParams.x );
+	float fog = saturate( 1.0f - visibility );
+	tint.a *= 1.0f - VERTEX_FOG_AMOUNT * fog;
+#endif
+	o.projPos = mul( float4( positionRadius.xyz, 1.0f ), cViewProj );
+	// The native rope renderer always emits rectangle (0,0,1,1). The SDK
+	// omits that constant stream, so synthesize the same packed UV here.
+	o.texCoords = float4( 1.0f - v.vPos.z, v.vPos.y, v.vPos.y, 1.0f - v.vPos.z );
+	o.outlineColor = 1.0f;
+	o.argbcolor = tint;
+	o.fogFactor = 0.0f;
+	return o;
+#else
+	float3 worldPos = mul4x3( v.vPos, cModel[0] );
+	float3 v2p = worldPos - cEyePos;
+	float distanceToEye = length( v2p );
+	float radius = max( v.vParms.z, MINIMUM_SIZE_FACTOR * distanceToEye );
+
+	// Size and distance fades affect RGB as well as alpha in native SpriteCard.
+	if ( radius > START_FADE_SIZE_FACTOR * distanceToEye )
+	{
+		if ( radius > END_FADE_SIZE_FACTOR * distanceToEye )
+		{
+			tint = 0;
+			radius = 0;
+		}
+		else
+		{
+			tint *= 1.0f - ( radius - START_FADE_SIZE_FACTOR * distanceToEye ) /
+				( END_FADE_SIZE_FACTOR * distanceToEye - START_FADE_SIZE_FACTOR * distanceToEye );
+		}
+	}
+
+	float farFade = 1.0f - saturate( ( distanceToEye - START_FAR_FADE ) * FAR_FADE_FACTOR );
+	tint *= farFade;
+	if ( farFade <= 0.0f )
+	{
+		radius = 0;
+	}
+
+#if SPRITECARDVERTEXFOG
+	// Original static 256/1280 attenuates alpha by horizontal radial fog.
+	// The SDK c16 stores visibility, not the original fog amount: invert
+	// native RangeFog's expression while keeping the original XY distance.
+	// Native no-fog visibility of one must leave these cards unaffected.
+	float visibility = max( cFogParams.z, -length( v2p.xy ) * cFogParams.w + cFogParams.x );
+	float fog = saturate( 1.0f - visibility );
+	tint.a *= 1.0f - VERTEX_FOG_AMOUNT * fog;
+#endif
+
+	// Native cards below one alpha byte become zero-sized before max-size
+	// clamping. Orientation 2 intentionally uses the unmodified input radius.
+	if ( tint.a < ( 1.0f / 255.0f ) )
+	{
+		radius = 0;
+	}
+	radius = min( radius, MAXIMUM_SIZE_FACTOR * distanceToEye );
+
+	float2 rotationSC;
+	sincos( v.vParms.y, rotationSC.y, rotationSC.x );
+	float2 corner = 2.0f * v.vCornerID - 1.0f;
+	float x = dot( corner, rotationSC );
+	float y = rotationSC.x * corner.y - rotationSC.y * corner.x;
+
+#if ORIENTATION == 0
+	float2 yawSC;
+	sincos( v.vParms.w, yawSC.y, yawSC.x );
+	float3 viewPos = mul4x3( v.vPos, cModelView );
+	viewPos += float3( -x * yawSC.x, y, x * yawSC.y ) * radius;
+	o.projPos = mul( float4( viewPos, 1.0f ), cProj );
+#elif ORIENTATION == 1
+	if ( distanceToEye > radius * 0.5f )
+	{
+		float2 yawSC;
+		sincos( v.vParms.w, yawSC.y, yawSC.x );
+		float3 right = normalize( cross( float3( 0, 0, 1 ), v2p ) );
+		right.xy = float2( right.x * yawSC.x + right.y * yawSC.y,
+			right.y * yawSC.x - right.x * yawSC.y );
+		worldPos += x * radius * right;
+		worldPos.z += y * radius;
+		if ( distanceToEye < radius * 2.0f )
+		{
+			tint *= smoothstep( radius * 0.5f, radius, distanceToEye );
+		}
+	}
+	o.projPos = mul( float4( worldPos, 1.0f ), cViewProj );
+#elif ORIENTATION == 2
+	// c48..50 holds ORIENTATIONMATRIX in this mode, not model-view.
+	float3 displacement = mul3x3( float3( y, x, 0 ), ( const float3x3 )cModelView );
+	float3 modelPos = v.vPos.xyz + v.vParms.z * displacement;
+	o.projPos = mul( float4( modelPos, 1.0f ), cModelViewProj );
+#else // ORIENTATION == 3
+	if ( distanceToEye > radius * 0.5f )
+	{
+		float3 normal = v.vOutlineColorOrNormal.xyz;
+		float3 axis = ( abs( normal.z ) > 0.9f ) ? float3( 1, 0, 0 ) : float3( 0, 0, 1 );
+		float3 right = normalize( cross( normal, axis ) );
+		float3 up = cross( normal, right );
+		worldPos += radius * ( x * up + y * right );
+		if ( distanceToEye < radius * 2.0f )
+		{
+			tint *= smoothstep( radius * 0.5f, radius, distanceToEye );
+		}
+	}
+	o.projPos = mul( float4( worldPos, 1.0f ), cViewProj );
+#endif
+
+	float2 frame0 = lerp( v.vTexCoord0.zw, v.vTexCoord0.xy, v.vCornerID );
+	float2 frame1 = lerp( v.vTexCoord1.zw, v.vTexCoord1.xy, v.vCornerID );
+	o.texCoords = float4( frame0, frame1.yx );
+#if ANIMBLEND
+	o.blendfactor = float4( v.vParms.x, 0, 0, 0 );
+#endif
+#if PERPARTICLEOUTLINE
+	// RGB is authored in gamma space; outline alpha is already linear.
+	// Outline color does not receive size/distance/fog fading here: the PS
+	// applies the faded primary tint alpha after the outline interpolation.
+	o.outlineColor = float4( GammaToLinear( v.vOutlineColorOrNormal.rgb ), v.vOutlineColorOrNormal.a );
+#else
+	o.outlineColor = 1.0f;
+#endif
+	o.argbcolor = tint;
+	o.fogFactor = 1.0f;
+	return o;
+#endif
+}

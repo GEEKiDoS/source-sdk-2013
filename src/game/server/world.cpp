@@ -18,9 +18,11 @@
 #include "activitylist.h"
 #include "eventlist.h"
 #include "eventqueue.h"
+#if !defined( L4D2 )
 #include "ai_network.h"
 #include "ai_schedule.h"
 #include "ai_networkmanager.h"
+#endif
 #include "ai_utils.h"
 #include "basetempentity.h"
 #include "world.h"
@@ -31,6 +33,12 @@
 #include "engine/IStaticPropMgr.h"
 #include "particle_parse.h"
 #include "globalstate.h"
+#if defined( L4D2 )
+#include "model_types.h"
+#include "editor_sendcommand.h"
+#include "l4d2/sound/terror_music.h"
+#include "l4d2/director/terror_director.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -65,6 +73,11 @@ public:
 	int		m_nTexture;
 	bool	m_bLowPriority;
 
+#if defined( L4D2 )
+	string_t m_entityName;
+	CBaseEntity *GetDecalTarget( Vector &position, bool isStatic );
+#endif
+
 private:
 
 	void	StaticDecal( void );
@@ -74,6 +87,10 @@ BEGIN_DATADESC( CDecal )
 
 	DEFINE_FIELD( m_nTexture, FIELD_INTEGER ),
 	DEFINE_KEYFIELD( m_bLowPriority, FIELD_BOOLEAN, "LowPriority" ), // Don't mark as FDECAL_PERMANENT so not save/restored and will be reused on the client preferentially
+
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_entityName, FIELD_STRING, "ApplyEntity" ),
+#endif
 
 	// Function pointers
 	DEFINE_FUNCTION( StaticDecal ),
@@ -112,6 +129,83 @@ void CDecal::Activate()
 	}
 }
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+CBaseEntity *CDecal::GetDecalTarget( Vector &position, bool isStatic )
+{
+	class CTraceFilterValidForDecal : public CTraceFilterSimple
+	{
+	public:
+		CTraceFilterValidForDecal( const IHandleEntity *passentity, int collisionGroup )
+			: CTraceFilterSimple( passentity, collisionGroup )
+		{
+		}
+		virtual bool ShouldHitEntity( IHandleEntity *pServerEntity, int contentsMask )
+		{
+			static const char *ppszIgnoredClasses[] =
+			{
+				"weapon_*", "item_*", "prop_ragdoll", "prop_dynamic",
+				"prop_static", "prop_physics", "npc_bullseye"
+			};
+			CBaseEntity *pEntity = EntityFromEntityHandle( pServerEntity );
+			if ( pEntity->IsEffectActive( EF_NODRAW ) )
+				return false;
+			for ( int i = 0; i < ARRAYSIZE( ppszIgnoredClasses ); ++i )
+				if ( pEntity->ClassMatches( ppszIgnoredClasses[i] ) )
+					return false;
+			return CTraceFilterSimple::ShouldHitEntity( pServerEntity, contentsMask );
+		}
+	};
+
+	position = GetAbsOrigin();
+	if ( m_entityName != NULL_STRING )
+		return gEntList.FindEntityByName( NULL, m_entityName );
+
+	Vector direction( 1.0f, 1.0f, 1.0f );
+	const QAngle &angles = GetAbsAngles();
+	if ( angles.x == 0.0f && angles.y == 0.0f && angles.z == 0.0f )
+		position -= direction * 5.0f;
+	else
+		GetVectors( &direction, NULL, NULL );
+	const Vector end = position + direction * 10.0f;
+	trace_t trace;
+	if ( isStatic )
+	{
+		CTraceFilterValidForDecal filter( this, COLLISION_GROUP_NONE );
+		UTIL_TraceLine( position, end, MASK_SOLID, &filter, &trace );
+	}
+	else
+	{
+		UTIL_TraceLine( position, end, MASK_SOLID_BRUSHONLY, this,
+			COLLISION_GROUP_NONE, &trace );
+	}
+	if ( trace.DidHit() )
+	{
+		position = trace.endpos;
+		return trace.m_pEnt;
+	}
+	position = GetAbsOrigin();
+	return NULL;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+#if defined( L4D2 )
+void CDecal::TriggerDecal( CBaseEntity *pActivator, CBaseEntity *pCaller,
+	USE_TYPE useType, float value )
+{
+	Vector position;
+	CBaseEntity *pTarget = GetDecalTarget( position, false );
+	const int entityIndex = pTarget ? pTarget->entindex() : 0;
+	CBroadcastRecipientFilter filter;
+	te->BSPDecal( filter, 0.0f, &position, entityIndex, m_nTexture );
+	SetThink( &CDecal::SUB_Remove );
+	SetNextThink( gpGlobals->curtime + 0.1f );
+}
+#else
 void CDecal::TriggerDecal ( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value )
 {
 	// this is set up as a USE function for info_decals that have targetnames, so that the
@@ -131,6 +225,7 @@ void CDecal::TriggerDecal ( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_T
 	SetThink( &CDecal::SUB_Remove );
 	SetNextThink( gpGlobals->curtime + 0.1f );
 }
+#endif
 
 
 void CDecal::InputActivate( inputdata_t &inputdata )
@@ -139,6 +234,34 @@ void CDecal::InputActivate( inputdata_t &inputdata )
 }
 
 
+#if defined( L4D2 )
+void CDecal::StaticDecal()
+{
+	Vector position;
+	CBaseEntity *pTarget = GetDecalTarget( position, true );
+	int entityIndex = 0;
+	int modelIndex = 0;
+	bool canDraw = true;
+	if ( pTarget )
+	{
+		entityIndex = pTarget->entindex();
+		modelIndex = pTarget->GetModelIndex();
+		Vector worldPosition = position;
+		VectorITransform( worldPosition, pTarget->EntityToWorldTransform(), position );
+		canDraw = modelinfo->GetModelType( pTarget->GetModel() ) == mod_brush;
+		if ( !canDraw )
+			Warning( "Suppressed StaticDecal which would have hit entity %i (class:%s, name:%s) with modelindex = 0\n",
+				entityIndex, pTarget->GetClassname(), STRING( pTarget->GetEntityName() ) );
+	}
+	else
+	{
+		position = GetAbsOrigin();
+	}
+	if ( canDraw )
+		engine->StaticDecal( position, m_nTexture, entityIndex, modelIndex, m_bLowPriority );
+	SUB_Remove();
+}
+#else
 void CDecal::StaticDecal( void )
 {
 	class CTraceFilterValidForDecal : public CTraceFilterSimple
@@ -215,6 +338,7 @@ void CDecal::StaticDecal( void )
 
 	SUB_Remove();
 }
+#endif
 
 
 bool CDecal::KeyValue( const char *szKeyName, const char *szValue )
@@ -391,6 +515,11 @@ BEGIN_DATADESC( CWorld )
 	DEFINE_KEYFIELD( m_flMinPropScreenSpaceWidth, FIELD_FLOAT, "minpropscreenwidth" ),
 	DEFINE_KEYFIELD( m_iszDetailSpriteMaterial, FIELD_STRING, "detailmaterial" ),
 	DEFINE_KEYFIELD( m_bColdWorld,		FIELD_BOOLEAN, "coldworld" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iStartMusicType, FIELD_INTEGER, "startmusictype" ),
+	DEFINE_KEYFIELD( m_iszMusicPostFix, FIELD_STRING, "musicpostfix" ),
+	DEFINE_KEYFIELD( m_iTimeOfDay, FIELD_INTEGER, "timeofday" ),
+#endif
 
 END_DATADESC()
 
@@ -407,6 +536,10 @@ IMPLEMENT_SERVERCLASS_ST(CWorld, DT_WORLD)
 	SendPropFloat	(SENDINFO(m_flMinPropScreenSpaceWidth), 0, SPROP_NOSCALE ),
 	SendPropStringT (SENDINFO(m_iszDetailSpriteMaterial) ),
 	SendPropInt		(SENDINFO(m_bColdWorld), 1, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_iStartMusicType ), 1, SPROP_UNSIGNED ),
+	SendPropStringT( SENDINFO( m_iszMusicPostFix ) ),
+#endif
 END_SEND_TABLE()
 
 //
@@ -441,6 +574,14 @@ bool CWorld::KeyValue( const char *szKeyName, const char *szValue )
 		sscanf(	szValue, "%f %f %f", &vec.x, &vec.y, &vec.z ); 
 		m_WorldMaxs = vec;
 	}
+#if defined( L4D2 )
+	else if ( FStrEq( szKeyName, "timeofday" ) )
+		SetTimeOfDay( atoi( szValue ) );
+	else if ( FStrEq( szKeyName, "musicpostfix" ) )
+		m_iszMusicPostFix = AllocPooledString( szValue );
+	else if ( FStrEq( szKeyName, "startmusictype" ) )
+		m_iStartMusicType = atoi( szValue );
+#endif
 	else
 		return BaseClass::KeyValue( szKeyName, szValue );
 
@@ -467,6 +608,9 @@ CWorld::CWorld( )
 	SetMoveType( MOVETYPE_NONE );
 
 	m_bColdWorld = false;
+#if defined( L4D2 )
+	m_iTimeOfDay = 0; // S236D50, after the existing cold-world store.
+#endif
 }
 
 CWorld::~CWorld( )
@@ -579,6 +723,9 @@ void CWorld::Precache( void )
 	g_WorldEntity = this;
 	g_fGameOver = false;
 	g_pLastSpawn = NULL;
+#ifdef L4D2
+	g_Language.SetValue( LANGUAGE_ENGLISH ); // S2372B0, before the global precachers.
+#endif
 
 	ConVarRef stepsize( "sv_stepsize" );
 	stepsize.SetValue( 18 );
@@ -598,10 +745,21 @@ void CWorld::Precache( void )
 	g_pGameRules->Init();
 
 	CSoundEnt::InitSoundEnt();
+#ifdef L4D2
+	ActivityList_Free();
+	RegisterSharedActivities();
+	EventList_Free();
+	RegisterSharedEvents();
+#endif
 
 	// Only allow precaching between LevelInitPreEntity and PostEntity
 	CBaseEntity::SetAllowPrecache( true );
 	IGameSystem::LevelInitPreEntityAllSystems( STRING( GetModelName() ) );
+#if defined( L4D2 )
+	// S2372B0: the VM exists now; mutation rules precede all map items,
+	// standard entities and the post-entity commentary/mutation placements.
+	TheDirector->InitScripts(); // Native rules476 -> S2D94C0 -> Director72.
+#endif
 
 	// Create the player resource
 	g_pGameRules->CreateStandardEntities();
@@ -610,11 +768,13 @@ void CWorld::Precache( void )
 	// =================================================
 	//	Activities
 	// =================================================
+#ifndef L4D2
 	ActivityList_Free();
 	RegisterSharedActivities();
 
 	EventList_Free();
 	RegisterSharedEvents();
+#endif
 
 	InitBodyQue();
 // init sentence group playback stuff from sentences.txt.
@@ -630,10 +790,13 @@ void CWorld::Precache( void )
 // player precaches     
 	W_Precache ();									// get weapon precaches
 	ClientPrecache();
+#if !defined( L4D2 )
 	g_pGameRules->Precache();
+#endif
 	// precache all temp ent stuff
 	CBaseTempEntity::PrecacheTempEnts();
 
+#ifndef L4D2
 	g_Language.SetValue( LANGUAGE_ENGLISH );	// TODO use VGUI to get current language
 
 	if ( g_Language.GetInt() == LANGUAGE_GERMAN )
@@ -647,6 +810,7 @@ void CWorld::Precache( void )
 
 	PrecacheScriptSound( "BaseEntity.EnterWater" );
 	PrecacheScriptSound( "BaseEntity.ExitWater" );
+#endif
 
 //
 // Setup light animation tables. 'a' is total darkness, 'z' is maxbright.
@@ -661,6 +825,24 @@ void CWorld::Precache( void )
 	// 63 testing
 	engine->LightStyle(63, "a");
 
+#if defined( L4D2 )
+	// Native S237456-S237507: Hammer session, not the SDK node graph.
+	if ( engine->IsInEditMode() )
+	{
+		EditorSendResult_t status = Editor_BeginSession( STRING( gpGlobals->mapname ), gpGlobals->mapversion, false );
+		if ( status == Editor_NotRunning || status == Editor_BadCommand )
+		{
+			const char *message = status == Editor_NotRunning ? "Hammer not running...\n" : "Hammer/Engine map versions different...\n";
+			DevMsg( "\nAborting map_edit\n%s\n", message );
+			UTIL_ClientPrintAll( HUD_PRINTCENTER, message );
+			engine->ServerCommand( "disconnect\n" );
+			SetThink( NULL );
+			return;
+		}
+		++gpGlobals->mapversion;
+	}
+	PrecacheMusicScripts(); // Native S2AB6D0; no .ain or schedule owner.
+#else
 	// =================================================
 	//	Load and Init AI Networks
 	// =================================================
@@ -669,14 +851,20 @@ void CWorld::Precache( void )
 	//	Load and Init AI Schedules
 	// =================================================
 	g_AI_SchedulesManager.LoadAllSchedules();
+#endif
 	// =================================================
 	//	Initialize NPC Relationships
 	// =================================================
 	g_pGameRules->InitDefaultAIRelationships();
 	CBaseCombatCharacter::InitInteractionSystem();
+#if defined( L4D2 )
+	g_pGameRules->Precache(); // S23754A, after music and relationships.
+#endif
 
 	// Call all registered precachers.
-	CPrecacheRegister::Precache();	
+#ifndef L4D2
+	CPrecacheRegister::Precache();
+#endif
 
 	if ( m_iszChapterTitle != NULL_STRING )
 	{

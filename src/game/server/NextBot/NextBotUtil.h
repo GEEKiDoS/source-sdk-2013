@@ -171,7 +171,11 @@ public:
 class NextBotTraversableTraceFilter : public CTraceFilterSimple
 {
 public:
-	NextBotTraversableTraceFilter( INextBot *bot, ILocomotion::TraverseWhenType when = ILocomotion::EVENTUALLY ) : CTraceFilterSimple( bot->GetEntity(), COLLISION_GROUP_NONE )
+	NextBotTraversableTraceFilter( INextBot *bot, ILocomotion::TraverseWhenType when = ILocomotion::EVENTUALLY ) : CTraceFilterSimple( bot->GetEntity(), COLLISION_GROUP_NONE
+#ifdef L4D2
+		, IgnoreActorsTraceFilterFunction
+#endif
+		)
 	{
 		m_bot = bot;
 		m_when = when;

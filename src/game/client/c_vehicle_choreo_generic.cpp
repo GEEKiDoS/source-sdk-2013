@@ -13,7 +13,9 @@
 #include "vehicle_choreo_generic_shared.h"
 #include "vehicle_viewblend_shared.h"
 // NVNT haptic utils
+#if !defined( L4D2 )
 #include "haptics/haptic_utils.h"
+#endif // !L4D2
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -147,6 +149,7 @@ void C_PropVehicleChoreoGeneric::PostDataUpdate( DataUpdateType_t updateType )
 {
 	BaseClass::PostDataUpdate( updateType );
 
+#if !defined( L4D2 )
 	// NVNT if we have entered this vehicle notify the haptics system
 	if ( m_hPlayer && !m_hPrevPlayer )
 	{
@@ -155,10 +158,11 @@ void C_PropVehicleChoreoGeneric::PostDataUpdate( DataUpdateType_t updateType )
 		HapticsEnteredVehicle(this,m_hPlayer);
 #endif
 	}
+#endif // !L4D2
 
 	if ( !m_hPlayer && m_hPrevPlayer )
 	{
-#if defined( WIN32 ) && !defined( _X360 )
+#if defined( WIN32 ) && !defined( _X360 ) && !defined( L4D2 )
 		// NVNT we have just exited this vehicle so we notify the haptics system
 		HapticsExitedVehicle(this,m_hPrevPlayer);
 #endif

@@ -9,6 +9,10 @@
 #include "winerror.h"
 #endif
 #include "achievementmgr.h"
+#if defined(L4D2) && defined(CLIENT_DLL)
+#include "l4d2/stats/achievements_l4d2.h"
+static bool g_bTerrorAchievementPressDemo;
+#endif
 #include "icommandline.h"
 #include "KeyValues.h"
 #include "filesystem.h"
@@ -47,7 +51,17 @@
 #include "tf_gamerules.h"
 #endif
 
-ConVar	cc_achievement_debug( "achievement_debug", "0", FCVAR_CHEAT | FCVAR_REPLICATED, "Turn on achievement debug msgs." );
+#include "achievementmgr_console_server_cvars.inc"
+
+ConVar	cc_achievement_debug( "achievement_debug", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00006008
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00006004
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+, "Turn on achievement debug msgs." );
 
 #ifdef CSTRIKE_DLL
 //=============================================================================
@@ -66,6 +80,7 @@ extern ConVar developer;
 
 #define DEBUG_ACHIEVEMENTS_IN_RELEASE 0
 
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 //-----------------------------------------------------------------------------
 // Purpose: Write helper
 //-----------------------------------------------------------------------------
@@ -232,6 +247,7 @@ private:
 };
 
 static CAchievementSaveThread g_AchievementSaveThread;
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -310,7 +326,12 @@ bool CAchievementMgr::Init()
 	ListenForGameEvent( "game_init" );
 #else
 	ListenForGameEvent( "player_death" );
+#ifdef L4D2
+	ListenForGameEvent( "achievement_write_failed" ); // C028C0; C03730 has no mutation for this event.
+	if ( CommandLine()->FindParm( "-pressdemo" ) ) g_bTerrorAchievementPressDemo = true;
+#else
 	ListenForGameEvent( "player_stats_updated" );
+#endif
 	usermessages->HookMessage( "AchievementEvent", MsgFunc_AchievementEvent );
 #endif // CLIENT_DLL
 
@@ -330,6 +351,7 @@ bool CAchievementMgr::Init()
 //-----------------------------------------------------------------------------
 void CAchievementMgr::PostInit()
 {
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 	if ( !g_AchievementSaveThread.IsAlive() )
 	{
 		g_AchievementSaveThread.Start();
@@ -340,6 +362,7 @@ void CAchievementMgr::PostInit()
 		}
 #endif // WIN32
 	}
+#endif
 
 	// get current game dir
 	const char *pGameDir = COM_GetModDirectory();
@@ -392,9 +415,11 @@ void CAchievementMgr::PostInit()
 //-----------------------------------------------------------------------------
 void CAchievementMgr::Shutdown()
 {
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 	g_AchievementSaveThread.CallWorker( CAchievementSaveThread::EXIT );
+#endif
 
-	SaveGlobalState( false ); // we just told the thread to shutdown so don't try an async save here
+	SaveGlobalState( false ); // Synchronous where global-state storage is available.
 
 	FOR_EACH_MAP( m_mapAchievement, iter )
 	{
@@ -442,8 +467,8 @@ void CAchievementMgr::Update( float frametime )
 	}
 #endif
 
-#ifndef _DEBUG
-	// keep track if cheats have ever been turned on during this level
+#if !defined(_DEBUG) || (defined(L4D2) && defined(CLIENT_DLL))
+	// L4D2 retains this cheat latch for the application session.
 	if ( !WereCheatsEverOn() )
 	{
 		if ( sv_cheats && sv_cheats->GetBool() )
@@ -480,7 +505,9 @@ void CAchievementMgr::Update( float frametime )
 //-----------------------------------------------------------------------------
 void CAchievementMgr::LevelInitPreEntity()
 {
+#if !defined(L4D2) || !defined(CLIENT_DLL)
 	m_bCheatsEverOn = false;
+#endif // Native C045B0 does not reset the application-session latch on map changes.
 
 	// load global state if we haven't already; X360 users may not have had a storage device available or selected at boot time
 	EnsureGlobalStateLoaded();
@@ -730,6 +757,10 @@ void CAchievementMgr::UploadUserData()
 //-----------------------------------------------------------------------------
 void CAchievementMgr::LoadGlobalState()
 {
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	// C0029B0: without a MatchFramework local user, neither ApplySettings nor
+	// the loaded latch is reached. Do not substitute SDK file/cloud storage.
+#else
 	if ( IsX360() )
 	{
 #ifdef _X360
@@ -823,6 +854,7 @@ void CAchievementMgr::LoadGlobalState()
 
 		m_bGlobalStateLoaded = true;
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -833,6 +865,10 @@ void CAchievementMgr::SaveGlobalState( bool bAsync )
 {
 	VPROF_BUDGET( "CAchievementMgr::SaveGlobalState", "Achievements" );
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	// C002B50: no MatchFramework local user means no serialization, clock
+	// update or dirty-latch clear. Genuine Steam UserStats is independent.
+#else
 	KeyValues *pKV = new KeyValues("GameState" );
 	FOR_EACH_MAP( m_mapAchievement, i )
 	{
@@ -857,6 +893,7 @@ void CAchievementMgr::SaveGlobalState( bool bAsync )
 
 	m_flTimeLastSaved = Plat_FloatTime();
 	m_bGlobalStateDirty = false;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -922,12 +959,14 @@ void CAchievementMgr::AwardAchievement( int iAchievementID )
 	pAchievement->OnAchieved();
 
     // [tj]
+#if !defined( L4D2 )
     IGameEvent * event = gameeventmanager->CreateEvent( "achievement_earned_local" );
     if ( event )
     {
         event->SetInt( "achievement", pAchievement->GetAchievementID() );
         gameeventmanager->FireEventClientSide( event );
     }
+#endif
 
     //=============================================================================
     // HPE_END
@@ -1025,6 +1064,31 @@ extern bool IsInCommentaryMode( void );
 //-----------------------------------------------------------------------------
 bool CAchievementMgr::CheckAchievementsEnabled()
 {
+#if defined(L4D2) && defined(CLIENT_DLL)
+	ConVarRef disabled( "achievement_disable" );
+	if ( disabled.GetBool() ) return false;
+#ifndef NO_STEAM
+	if ( !steamapicontext || !steamapicontext->SteamUser() || !steamapicontext->SteamUserStats() || !steamapicontext->SteamUser()->BLoggedOn() )
+#else
+	if ( true )
+#endif
+	{
+		Msg( "Achievements disabled: Steam not running.\n" );
+		return false;
+	}
+	if ( g_bTerrorAchievementPressDemo ) return false;
+	if ( IsInCommentaryMode() ) { Msg( "Achievements disabled: in commentary mode.\n" ); return false; }
+	if ( engine->IsPlayingDemo() ) { Msg( "Achievements disabled: demo playing.\n" ); return false; }
+	if ( WereCheatsEverOn() )
+	{
+#ifndef NO_STEAM
+		if ( developer.GetInt() != 0 && steamapicontext->SteamUtils() && steamapicontext->SteamUtils()->GetConnectedUniverse() != k_EUniversePublic ) return true;
+#endif
+		Msg( "Achievements disabled: cheats turned on in this app session.\n" );
+		return false;
+	}
+	return true;
+#else
 	// if PC, Steam must be running and user logged in
 	if ( IsPC() && !LoggedIntoSteam() )
 	{
@@ -1117,6 +1181,7 @@ bool CAchievementMgr::CheckAchievementsEnabled()
 	}
 
 	return true;
+#endif
 }
 
 #ifdef CLIENT_DLL
@@ -1494,6 +1559,7 @@ void CAchievementMgr::FireGameEvent( IGameEvent *event )
 			m_iMiniroundsCompleted ++;
 		}
 	}
+#ifndef L4D2
 	else if ( 0 == Q_strcmp( name, "player_stats_updated" ) )
 	{
 		FOR_EACH_MAP( m_mapAchievement, i )
@@ -1502,6 +1568,7 @@ void CAchievementMgr::FireGameEvent( IGameEvent *event )
 			pAchievement->OnPlayerStatsUpdate();
 		}
 	}
+#endif
 #endif // CLIENT_DLL
 }
 
@@ -1603,6 +1670,10 @@ void CAchievementMgr::OnAchievementEvent( int iAchievementID, int iCount )
 		Assert( pAchievement );
 		if ( pAchievement )
 		{
+#if defined(L4D2) && defined(CLIENT_DLL)
+			CLeft4DeadAchievement *nativeAchievement = dynamic_cast<CLeft4DeadAchievement *>( pAchievement );
+			if ( nativeAchievement ) { nativeAchievement->OnNativeAchievementEvent(); return; }
+#endif
 			if ( !pAchievement->IsAchieved() )
 			{
 				pAchievement->IncrementCount( iCount );
@@ -1790,11 +1861,18 @@ void CAchievementMgr::ResetAchievement_Internal( CBaseAchievement *pAchievement 
 		steamapicontext->SteamUserStats()->ClearAchievement( pAchievement->GetName() );		
 	}
 #endif	
+#if defined(L4D2) && defined(CLIENT_DLL)
+	CLeft4DeadAchievement *nativeAchievement = dynamic_cast<CLeft4DeadAchievement *>( pAchievement );
+	if ( nativeAchievement ) nativeAchievement->ResetNativeState();
+	else
+#endif
+	{
 	pAchievement->SetAchieved( false );
 	pAchievement->SetCount( 0 );	
 	if ( pAchievement->HasComponents() )
 	{
 		pAchievement->SetComponentBits( 0 );
+	}
 	}
 	pAchievement->SetProgressShown( 0 );
 	pAchievement->StopListeningForAllEvents();
@@ -1878,6 +1956,7 @@ void CAchievementMgr::UpdateStateFromSteam_Internal()
 	}
 
 	// send an event to anyone else who needs Steam user stat data
+#if !defined( L4D2 )
 	IGameEvent *event = gameeventmanager->CreateEvent( "user_data_downloaded" );
 	if ( event )
 	{
@@ -1888,6 +1967,7 @@ void CAchievementMgr::UpdateStateFromSteam_Internal()
 #endif
 	}
 #endif
+#endif
 }
 
 #ifdef CLIENT_DLL
@@ -1895,15 +1975,55 @@ void CAchievementMgr::UpdateStateFromSteam_Internal()
 void MsgFunc_AchievementEvent( bf_read &msg )
 {
 	int iAchievementID = (int) msg.ReadShort();
+#ifdef L4D2
+	int iCount = 1; // Native C0024A0 consumes exactly one signed short: the INTERNAL ID.
+#else
 	int iCount = (int) msg.ReadShort();
+#endif
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
 		return;
 	pAchievementMgr->OnAchievementEvent( iAchievementID, iCount );
 }
 
-#if defined(_DEBUG) || defined(STAGING_ONLY) || DEBUG_ACHIEVEMENTS_IN_RELEASE
+#if defined(_DEBUG) || defined(STAGING_ONLY) || DEBUG_ACHIEVEMENTS_IN_RELEASE || defined(L4D2)
+
+#if defined( L4D2 )
+static int AchievementCompletionCompare( const void *left, const void *right )
+{
+	return Q_strcmp( static_cast< const char * >( left ), static_cast< const char * >( right ) );
+}
+
+static int AchievementNameCompletion( const char *partial, char commands[ COMMAND_COMPLETION_MAXITEMS ][ COMMAND_COMPLETION_ITEM_LENGTH ] )
+{
+	CAchievementMgr *manager = dynamic_cast< CAchievementMgr * >( engine->GetAchievementMgr() );
+	if ( !manager )
+		return 0;
+	const char *space = Q_strstr( partial, " " );
+	if ( !space )
+		return 0;
+	char command[COMMAND_COMPLETION_ITEM_LENGTH];
+	Q_strncpy( command, partial, MIN( int( space - partial ) + 1, int( sizeof( command ) ) ) );
+	const char *prefix = space + 1;
+	const int prefixLength = Q_strlen( prefix );
+	int count = 0;
+	CUtlMap< int, CBaseAchievement * > &achievements = manager->GetAchievements();
+	for ( int i = achievements.FirstInorder(); i != achievements.InvalidIndex() && count < COMMAND_COMPLETION_MAXITEMS; i = achievements.NextInorder( i ) )
+	{
+		const char *name = achievements[i]->GetName();
+		if ( !Q_strnicmp( name, prefix, prefixLength ) )
+			Q_snprintf( commands[count++], COMMAND_COMPLETION_ITEM_LENGTH, "%s %s", command, name );
+	}
+	qsort( commands, count, COMMAND_COMPLETION_ITEM_LENGTH, AchievementCompletionCompare );
+	return count;
+}
+#endif
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( achievement_reset_all, "Clears all achievements", 0x0000000A )
+#else
 CON_COMMAND_F( achievement_reset_all, "Clears all achievements", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -1911,7 +2031,12 @@ CON_COMMAND_F( achievement_reset_all, "Clears all achievements", FCVAR_CHEAT )
 	pAchievementMgr->ResetAchievements();
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F_COMPLETION( achievement_reset, "<internal name> Clears specified achievement", 0x0000000A, AchievementNameCompletion )
+#else
 CON_COMMAND_F( achievement_reset, "<internal name> Clears specified achievement", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -1932,7 +2057,12 @@ CON_COMMAND_F( achievement_reset, "<internal name> Clears specified achievement"
 
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( achievement_status, "Shows status of all achievement", 0x0000000A )
+#else
 CON_COMMAND_F( achievement_status, "Shows status of all achievement", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -1940,7 +2070,12 @@ CON_COMMAND_F( achievement_status, "Shows status of all achievement", FCVAR_CHEA
 	pAchievementMgr->PrintAchievementStatus();
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F_COMPLETION( achievement_unlock, "<internal name> Unlocks achievement", 0x0000000A, AchievementNameCompletion )
+#else
 CON_COMMAND_F( achievement_unlock, "<internal name> Unlocks achievement", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -1960,7 +2095,12 @@ CON_COMMAND_F( achievement_unlock, "<internal name> Unlocks achievement", FCVAR_
 	pAchievementMgr->AwardAchievement( pAchievement->GetAchievementID() );
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( achievement_unlock_all, "Unlocks all achievements", 0x0000000A )
+#else
 CON_COMMAND_F( achievement_unlock_all, "Unlocks all achievements", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -1977,7 +2117,12 @@ CON_COMMAND_F( achievement_unlock_all, "Unlocks all achievements", FCVAR_CHEAT )
 	}	
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F_COMPLETION( achievement_evaluate, "<internal name> Causes failable achievement to be evaluated", 0x0000000A, AchievementNameCompletion )
+#else
 CON_COMMAND_F( achievement_evaluate, "<internal name> Causes failable achievement to be evaluated", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -1998,14 +2143,21 @@ CON_COMMAND_F( achievement_evaluate, "<internal name> Causes failable achievemen
 	CFailableAchievement *pFailableAchievement = dynamic_cast<CFailableAchievement *>( pAchievement );
 	if ( !pFailableAchievement )
 	{
+#if !defined( L4D2 )
 		Msg( "Achievement %s is not failable\n", args[1] );
+#endif
 		return;
 	}
 
 	pFailableAchievement->OnEvaluationEvent();
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( achievement_test_friend_count, "Counts the # of teammates on local player's friends list", 0x0000000A )
+#else
 CON_COMMAND_F( achievement_test_friend_count, "Counts the # of teammates on local player's friends list", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -2020,7 +2172,12 @@ CON_COMMAND_F( achievement_test_friend_count, "Counts the # of teammates on loca
 	Msg( "You %s have at least %d friends in the game.\n", bRet ? "do" : "do not", iMinFriends );
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( achievement_test_clan_count, "Determines if specified # of teammates belong to same clan w/local player", 0x0000000A )
+#else
 CON_COMMAND_F( achievement_test_clan_count, "Determines if specified # of teammates belong to same clan w/local player", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
@@ -2036,12 +2193,21 @@ CON_COMMAND_F( achievement_test_clan_count, "Determines if specified # of teamma
 	Msg( "There %s %d players who you're in a Steam group with.\n", bRet ? "are" : "are not", iClanPlayers );
 }
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( achievement_mark_dirty, "Mark achievement data as dirty", 0x0000000A )
+#else
 CON_COMMAND_F( achievement_mark_dirty, "Mark achievement data as dirty", FCVAR_CHEAT )
+#endif
 {
 	CAchievementMgr *pAchievementMgr = dynamic_cast<CAchievementMgr *>( engine->GetAchievementMgr() );
 	if ( !pAchievementMgr )
 		return;
+#if defined( L4D2 )
+	pAchievementMgr->MarkGlobalStateDirty();
+#else
 	pAchievementMgr->SetDirty( true );
+#endif
 }
 #endif // _DEBUG
 

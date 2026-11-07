@@ -1,0 +1,55 @@
+// Semantic reconstruction of all four original depth_of_field_ps20b
+// combinations (CRC CEEC1F09). See evidence/*combo*.txt, not binary reuse.
+// DYNAMIC: "QUALITY" "0..3" [ps20b]
+sampler2D FullSampler : register( s0 );
+sampler2D SmallSampler : register( s1 );
+float3 BlurAmounts : register( c1 );
+float4 Magic : register( c3 );
+float4 Poisson[16] : register( c4 );
+
+float BlurAmount( float depth )
+{
+	float nearAmount = saturate( Magic.x * depth + Magic.y ) * BlurAmounts.y;
+	float farAmount = saturate( Magic.z * depth + Magic.w ) * BlurAmounts.z;
+	return max( nearAmount, farAmount );
+}
+float4 WeightedTap( float2 uv, float centerDepth )
+{
+	float4 sample = tex2D( FullSampler, uv );
+#if QUALITY < 2
+	float blend = saturate( BlurAmount( sample.a ) * 2.20000005f );
+	sample = lerp( sample, tex2D( SmallSampler, uv ), blend );
+#endif
+	float amount = BlurAmount( sample.a );
+	float weight = sample.a - centerDepth >= 0.0f ? 1.0f : amount * amount;
+	return float4( sample.rgb, 1.0f ) * weight;
+}
+float4 main( float2 uv : TEXCOORD0 ) : COLOR
+{
+	float4 center = tex2D( FullSampler, uv );
+	float radius = BlurAmount( center.a ) * BlurAmounts.x;
+	center.a = center.a - 0.00100000005f;
+#if QUALITY < 2
+	// Native low qualities accumulate tap1 before tap0, without a separate
+	// center contribution. Quality0's Poisson tap0 itself is (0,0).
+	float4 sum = WeightedTap( uv + radius * Poisson[0].wz, center.a );
+	sum = WeightedTap( uv + radius * Poisson[0].xy, center.a ) + sum;
+#else
+	float4 sum = float4( center.rgb, 1.0f );
+	sum = WeightedTap( uv + radius * Poisson[0].xy, center.a ) + sum;
+	sum = WeightedTap( uv + radius * Poisson[0].wz, center.a ) + sum;
+#endif
+#if QUALITY == 0
+	#define TAP_PAIRS 4
+#elif QUALITY == 3
+	#define TAP_PAIRS 16
+#else
+	#define TAP_PAIRS 8
+#endif
+	[unroll] for ( int i = 1; i < TAP_PAIRS; ++i )
+	{
+		sum = WeightedTap( uv + radius * Poisson[i].xy, center.a ) + sum;
+		sum = WeightedTap( uv + radius * Poisson[i].wz, center.a ) + sum;
+	}
+	return -sum.a >= 0.0f ? center : sum * ( 1.0f / sum.a );
+}

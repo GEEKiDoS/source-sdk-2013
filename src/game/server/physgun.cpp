@@ -106,7 +106,9 @@ public:
 };
 
 LINK_ENTITY_TO_CLASS(gravity_pellet, CGravityPellet);
+#ifndef L4D2
 PRECACHE_REGISTER(gravity_pellet);
+#endif
 
 BEGIN_DATADESC( CGravityPellet )
 
@@ -582,7 +584,9 @@ IMPLEMENT_SERVERCLASS_ST( CWeaponGravityGun, DT_WeaponGravityGun )
 END_SEND_TABLE()
 
 LINK_ENTITY_TO_CLASS( weapon_physgun, CWeaponGravityGun );
+#ifndef L4D2
 PRECACHE_WEAPON_REGISTER(weapon_physgun);
+#endif
 
 //---------------------------------------------------------
 // Save/Restore

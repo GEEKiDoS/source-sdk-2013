@@ -57,10 +57,16 @@ public:
 	bool CreateVPhysics();
 	bool KeyValue( const char *szKeyName, const char *szValue );
 	virtual void Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
+#if defined( L4D2 )
+	bool IsDoorLocked() const { return m_bLocked; }
+#endif
 
 	virtual void StartBlocked( CBaseEntity *pOther );
 	virtual void Blocked( CBaseEntity *pOther );
 	virtual void EndBlocked( void );
+#if defined( L4D2 )
+	virtual bool CanPushEntity( CBaseEntity *other ) OVERRIDE;
+#endif
 
 	void Activate( void );
 

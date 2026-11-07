@@ -263,7 +263,19 @@ void CRagdoll::PhysForceRagdollToSleep()
 }
 
 #define RAGDOLL_SLEEP_TOLERANCE	1.0f
-static ConVar ragdoll_sleepaftertime( "ragdoll_sleepaftertime", "5.0f", 0, "After this many seconds of being basically stationary, the ragdoll will go to sleep." );
+static ConVar ragdoll_sleepaftertime( "ragdoll_sleepaftertime", 
+#if defined( L4D2 )
+	"5"
+#else
+	"5.0f"
+#endif
+, 
+#if defined( L4D2 )
+	0x0000200A
+#else
+	0
+#endif
+, "After this many seconds of being basically stationary, the ragdoll will go to sleep." );
 
 void CRagdoll::CheckSettleStationaryRagdoll()
 {
@@ -384,11 +396,17 @@ public:
 
 	virtual int InternalDrawModel( int flags );
 	virtual CStudioHdr *OnNewModel( void );
+#if !defined( L4D2 )
 	virtual unsigned char GetClientSideFade();
+#endif
 	virtual void	SetupWeights( const matrix3x4_t *pBoneToWorld, int nFlexWeightCount, float *pFlexWeights, float *pFlexDelayedWeights );
 
 	void GetRenderBounds( Vector& theMins, Vector& theMaxs );
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	virtual void AddEntity( void );
+#endif
 	virtual void AccumulateLayers( IBoneSetup &boneSetup, Vector pos[], Quaternion q[], float currentTime );
 	virtual void BuildTransformations( CStudioHdr *pStudioHdr, Vector *pos, Quaternion q[], const matrix3x4_t &cameraTransform, int boneMask, CBoneBitList &boneComputed );
 	IPhysicsObject *GetElement( int elementNum );
@@ -450,7 +468,13 @@ void C_ServerRagdoll::PostDataUpdate( DataUpdateType_t updateType )
 	m_iv_ragPos.NoteChanged( gpGlobals->curtime, true );
 	m_iv_ragAngles.NoteChanged( gpGlobals->curtime, true );
 	// this is the local client time at which this update becomes stale
+#if defined( L4D2 )
+	const bool pendingBlend = m_flBlendWeightCurrent != m_flBlendWeight;
+#endif
 	m_flLastBoneChangeTime = gpGlobals->curtime + GetInterpolationAmount(m_iv_ragPos.GetType());
+#if defined( L4D2 )
+	if ( pendingBlend ) AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 }
 
 float C_ServerRagdoll::LastBoneChangedTime()
@@ -548,6 +572,7 @@ void C_ServerRagdoll::GetRenderBounds( Vector& theMins, Vector& theMaxs )
 	}
 }
 
+#if !defined( L4D2 )
 void C_ServerRagdoll::AddEntity( void )
 {
 	BaseClass::AddEntity();
@@ -555,6 +580,7 @@ void C_ServerRagdoll::AddEntity( void )
 	// Move blend weight toward target over 0.2 seconds
 	m_flBlendWeightCurrent = Approach( m_flBlendWeight, m_flBlendWeightCurrent, gpGlobals->frametime * 5.0f );
 }
+#endif
 
 void C_ServerRagdoll::AccumulateLayers( IBoneSetup &boneSetup, Vector pos[], Quaternion q[], float currentTime )
 {
@@ -671,10 +697,12 @@ void C_ServerRagdoll::UpdateOnRemove()
 //-----------------------------------------------------------------------------
 // Fade out
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 unsigned char C_ServerRagdoll::GetClientSideFade()
 {
 	return UTIL_ComputeEntityFade( this, m_fadeMinDist, m_fadeMaxDist, m_flFadeScale );
 }
+#endif
 
 static int GetHighestBit( int flags )
 {
@@ -866,3 +894,14 @@ bool WasRagdollCreatedOnCurrentTick( C_BaseEntity *pRagdoll )
 	return gRagdolls.IsInList( pRagdoll );
 }
 
+#if defined( L4D2 )
+bool C_ServerRagdoll::Simulate( void )
+{
+	const bool baseResult = BaseClass::Simulate();
+	m_flBlendWeightCurrent = Approach( m_flBlendWeight, m_flBlendWeightCurrent,
+		gpGlobals->frametime * 5.0f );
+	if ( m_flBlendWeightCurrent == m_flBlendWeight )
+		return baseResult;
+	return true;
+}
+#endif

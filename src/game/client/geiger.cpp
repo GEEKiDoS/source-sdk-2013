@@ -25,6 +25,9 @@ using namespace vgui;
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+// Native L4D2 registers Geiger but has no CHudGeiger or message hook.
+#ifndef L4D2
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
@@ -214,3 +217,4 @@ void CHudGeiger::Paint()
 		}
 	}
 }
+#endif // !L4D2

@@ -13,7 +13,14 @@
 #include "iserverentity.h"
 #include "sceneentity.h"
 #include "particles/particles.h"
+#if defined( L4D2 )
+#include "l4d2/effects/terror_particle_parse.h"
+#endif
 
+
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+#include "filesystem.h"
+#endif
 
 //-----------------------------------------------------------------------------
 // Interface from engine to tools for manipulating entities
@@ -263,7 +270,11 @@ void CServerTools::ReloadParticleDefintions( const char *pFileName, const void *
 {
 	// FIXME: Use file name to determine if we care about this data
 	CUtlBuffer buf( pBufData, nLen, CUtlBuffer::READ_ONLY );
+#if defined( L4D2 )
+	ReadTerrorParticleConfigFile( buf, true, true, pFileName );
+#else
 	g_pParticleSystemMgr->ReadParticleConfigFile( buf, true );
+#endif
 }
 
 void CServerTools::AddOriginToPVS( const Vector &org )
@@ -571,4 +582,12 @@ void CC_Ent_Keyvalue( const CCommand &args )
 	}
 } 
 
-static ConCommand ent_keyvalue("ent_keyvalue", CC_Ent_Keyvalue, "Applies the comma delimited key=value pairs to the entity with the given Hammer ID.\n\tFormat: ent_keyvalue <entity id> <key1> <value1> <key2> <value2> ... <keyN> <valueN>\n", FCVAR_CHEAT);
+static ConCommand ent_keyvalue("ent_keyvalue", CC_Ent_Keyvalue, "Applies the comma delimited key=value pairs to the entity with the given Hammer ID.\n\tFormat: ent_keyvalue <entity id> <key1> <value1> <key2> <value2> ... <keyN> <valueN>\n", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
+
+#include "entity_tools_server_console_server_callbacks.inc"

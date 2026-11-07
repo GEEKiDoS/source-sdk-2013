@@ -19,6 +19,10 @@
 class C_FuncAreaPortalWindow : public C_BaseEntity
 {
 public:
+#if defined( L4D2 )
+	virtual int ComputeModelTranslucencyType() OVERRIDE { return 1; }
+#endif
+
 	DECLARE_CLIENTCLASS();
 	DECLARE_CLASS( C_FuncAreaPortalWindow, C_BaseEntity );
 

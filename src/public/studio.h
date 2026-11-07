@@ -434,7 +434,13 @@ private:
 #define BONE_FIXED_ALIGNMENT		0x00100000	// bone can't spin 360 degrees, all interpolation is normalized around a fixed orientation
 
 #define BONE_HAS_SAVEFRAME_POS		0x00200000	// Vector48
+#if defined( L4D2 )
+#define BONE_HAS_SAVEFRAME_ROT64		0x00400000	// Quaternion64
+#define BONE_HAS_SAVEFRAME_ROT32		0x00800000	// Quaternion32
+#define BONE_HAS_SAVEFRAME_ROT		BONE_HAS_SAVEFRAME_ROT64
+#else
 #define BONE_HAS_SAVEFRAME_ROT		0x00400000	// Quaternion64
+#endif // L4D2
 
 // bone controllers
 struct mstudiobonecontroller_t
@@ -605,6 +611,18 @@ private:
 	mstudioikrule_t(const mstudioikrule_t& vOther);
 };
 
+#if defined( L4D2 )
+struct mstudioikrulezeroframe_t
+{
+	short		chain;
+	short		slot;
+	float16		start;
+	float16		peak;
+	float16		tail;
+	float16		end;
+};
+
+#endif // L4D2
 
 struct mstudioiklock_t
 {
@@ -686,6 +704,29 @@ struct mstudioanim_t
 	inline mstudioanim_t	*pNext( void ) const { if (nextoffset != 0) return  (mstudioanim_t *)(((byte *)this) + nextoffset); else return NULL; };
 };
 
+#if defined( L4D2 )
+#define STUDIO_FRAME_CONST_POS		0x01 // Vector48
+#define STUDIO_FRAME_CONST_ROT		0x02 // Quaternion48
+#define STUDIO_FRAME_ANIM_POS		0x04 // Vector48
+#define STUDIO_FRAME_ANIM_ROT		0x08 // Quaternion48
+#define STUDIO_FRAME_FULL_ANIM_POS	0x10 // Vector
+#define STUDIO_FRAME_FULL_CONST_POS	0x20 // Vector
+#define STUDIO_FRAME_CONST_ROT2		0x40 // Quaternion48S
+#define STUDIO_FRAME_ANIM_ROT2		0x80 // Quaternion48S
+
+struct mstudioframeanim_t
+{
+	int					constantsoffset;
+	int					frameoffset;
+	int					framelength;
+	int					unused[3];
+
+	inline byte			*pBoneFlags( void ) const { return ((byte *)this) + sizeof( mstudioframeanim_t ); }
+	inline byte			*pConstantData( void ) const { return ((byte *)this) + constantsoffset; }
+	inline byte			*pFrameData( int iFrame ) const { return ((byte *)this) + frameoffset + iFrame * framelength; }
+};
+
+#endif // L4D2
 struct mstudiomovement_t
 {
 	DECLARE_BYTESWAP_DATADESC();
@@ -739,13 +780,25 @@ struct mstudioanimdesc_t
 	int					movementindex;
 	inline mstudiomovement_t * const pMovement( int i ) const { return (mstudiomovement_t *)(((byte *)this) + movementindex) + i; };
 
+#if defined( L4D2 )
+	int					ikrulezeroframeindex; // non-zero when resident IK release data is stored in the mdl
+	inline mstudioikrulezeroframe_t *pIKRuleZeroFrame( int i ) const { return ikrulezeroframeindex ? (mstudioikrulezeroframe_t *)(((byte *)this) + ikrulezeroframeindex) + i : NULL; }
+	int					unused1[5];			// remove as appropriate (and zero if loading older versions)
+#else
 	int					unused1[6];			// remove as appropriate (and zero if loading older versions)	
+#endif // L4D2
 
 	int					animblock;
 	int					animindex;	 // non-zero when anim data isn't in sections
+#if defined( L4D2 )
+	byte *pAnimBlock( int block, int index ) const; // returns pointer to a specific anim block (local or external)
+	byte *pAnim( int *piFrame, float &flStall ) const; // returns pointer to data and new frame index
+	byte *pAnim( int *piFrame ) const; // returns pointer to data and new frame index
+#else
 	mstudioanim_t *pAnimBlock( int block, int index ) const; // returns pointer to a specific anim block (local or external)
 	mstudioanim_t *pAnim( int *piFrame, float &flStall ) const; // returns pointer to data and new frame index
 	mstudioanim_t *pAnim( int *piFrame ) const; // returns pointer to data and new frame index
+#endif // L4D2
 
 	int					numikrules;
 	int					ikruleindex;	// non-zero when IK data is stored in the mdl
@@ -3081,7 +3134,11 @@ inline const mstudioflexcontroller_t *mstudioflexcontrollerui_t::pController( in
 #define STUDIO_AUTOPLAY	0x0008		// temporary flag that forces the sequence to always play
 #define STUDIO_POST		0x0010		// 
 #define STUDIO_ALLZEROS	0x0020		// this animation/sequence has no real animation data
+#if defined( L4D2 )
+#define STUDIO_FRAMEANIM	0x0040		// animation data uses mstudioframeanim_t instead of mstudioanim_t
+#else
 //						0x0040
+#endif // L4D2
 #define STUDIO_CYCLEPOSE 0x0080		// cycle index is taken from a pose parameter index
 #define STUDIO_REALTIME	0x0100		// cycle index is taken from a real-time clock, not the animations cycle index
 #define STUDIO_LOCAL	0x0200		// sequence has a local context sequence

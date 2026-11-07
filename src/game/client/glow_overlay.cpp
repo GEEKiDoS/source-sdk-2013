@@ -20,10 +20,12 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectGlow )
 CLIENTEFFECT_MATERIAL( "sun/overlay" )
 CLIENTEFFECT_MATERIAL( "sprites/light_glow02_add_noz" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 class CGlowOverlaySystem : public CAutoGameSystem
 {
@@ -54,9 +56,21 @@ public:
 };
 CGlowOverlaySystem g_GlowOverlaySystem;
 
-ConVar cl_ShowSunVectors( "cl_ShowSunVectors", "0", 0 );
+ConVar cl_ShowSunVectors( "cl_ShowSunVectors", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+ );
 
-ConVar cl_sun_decay_rate( "cl_sun_decay_rate", "0.05", FCVAR_CHEAT );
+ConVar cl_sun_decay_rate( "cl_sun_decay_rate", "0.05", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 // Dot product space the overlays are drawn in.
 // Here it's setup to allow you to see it if you're looking within 40 degrees of the source.
@@ -124,7 +138,11 @@ bool CGlowOverlay::Update()
 	return true;
 }
 
-ConVar building_cubemaps( "building_cubemaps", "0" );
+ConVar building_cubemaps( "building_cubemaps", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 float CGlowOverlay::CalcGlowAspect()
 {

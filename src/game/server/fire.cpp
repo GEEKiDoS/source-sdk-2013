@@ -62,16 +62,62 @@
 #define	FIRE_NORMAL_ATTACK_TIME	20.0f
 #define FIRE_THINK_INTERVAL		0.1
 
-ConVar fire_maxabsorb( "fire_maxabsorb", "50" );
-ConVar fire_absorbrate( "fire_absorbrate", "3" );
-ConVar fire_extscale("fire_extscale", "12");
-ConVar fire_extabsorb("fire_extabsorb", "5");
-ConVar fire_heatscale( "fire_heatscale", "1.0" );
-ConVar fire_incomingheatscale( "fire_incomingheatscale", "0.1" );
-ConVar fire_dmgscale( "fire_dmgscale", "0.1" );
-ConVar fire_dmgbase( "fire_dmgbase", "1" );
-ConVar fire_growthrate( "fire_growthrate", "1.0" );
-ConVar fire_dmginterval( "fire_dmginterval", "1.0" );
+ConVar fire_maxabsorb( "fire_maxabsorb", "50"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar fire_absorbrate( "fire_absorbrate", "3"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar fire_extscale("fire_extscale", "12"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
+ConVar fire_extabsorb("fire_extabsorb", "5"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
+ConVar fire_heatscale( "fire_heatscale", "1.0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar fire_incomingheatscale( "fire_incomingheatscale", "0.1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar fire_dmgscale( "fire_dmgscale", "0.1"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar fire_dmgbase( "fire_dmgbase", 
+#if defined( L4D2 )
+	"3"
+#else
+	"1"
+#endif
+
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar fire_growthrate( "fire_growthrate", "1.0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar fire_dmginterval( "fire_dmginterval", "1.0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 #define VPROF_FIRE(s) VPROF( s )
 
@@ -1012,7 +1058,13 @@ void CFire::Update( float simTime )
 		{
 			bool bDoDamage;
 
+#if defined( L4D2 )
+			// S0D0A5B: players use the same damage box as every other target.
+			// The larger box above is only for finding/spreading heat to fires.
+			if ( FIRE_SPREAD_DAMAGE_MULTIPLIER != 1.0 )
+#else
 			if ( FIRE_SPREAD_DAMAGE_MULTIPLIER != 1.0 && !pOther->IsPlayer() ) // if set to 1.0, optimizer will remove this code
+#endif
 			{
 				Vector otherMins, otherMaxs;
 				pOther->CollisionProp()->WorldSpaceAABB( &otherMins, &otherMaxs );

@@ -50,9 +50,15 @@ public:
 	bool					m_bDucked;
 	bool					m_bDucking;
 	bool					m_bInDuckJump;
+#if defined( L4D2 )
+	int						m_nDuckTimeMsecs;
+	int						m_nDuckJumpTimeMsecs;
+	int						m_nJumpTimeMsecs;
+#else
 	float					m_flDucktime;
 	float					m_flDuckJumpTime;
 	float					m_flJumpTime;
+#endif
 	int						m_nStepside;
 	float					m_flFallVelocity;
 	int						m_nOldButtons;
@@ -66,6 +72,9 @@ public:
 	CNetworkQAngle( m_vecPunchAngleVel );		// velocity of auto-decaying view angle adjustment
 	CInterpolatedVar< QAngle >	m_iv_vecPunchAngleVel;
 	bool					m_bDrawViewmodel;
+#if defined( L4D2 )
+	bool m_bAutoAimTarget;
+#endif
 	bool					m_bWearingSuit;
 	bool					m_bPoisoned;
 	bool					m_bForceLocalPlayerDraw; // Allows VScripts, etc to force the local player to draw.

@@ -171,4 +171,8 @@ void mat_show_ab_hdr_hudelement_changed( IConVar *pConVar, const char *pOldStrin
 		pHudDemo->SetHDRDemoActive( var.GetBool() );
 	}
 }
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+ConVar mat_show_ab_hdr_hudelement( "mat_show_ab_hdr_hudelement", "0", 0xa, "HDR Demo HUD Element toggle.", mat_show_ab_hdr_hudelement_changed );
+#else
 ConVar mat_show_ab_hdr_hudelement( "mat_show_ab_hdr_hudelement", "0", FCVAR_CHEAT, "HDR Demo HUD Element toggle.", mat_show_ab_hdr_hudelement_changed );
+#endif

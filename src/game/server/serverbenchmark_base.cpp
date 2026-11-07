@@ -18,8 +18,20 @@
 // At the end, report the # seconds it took to complete the test.
 // Don't start measuring for the first N ticks to account for HD load.
 
-static ConVar sv_benchmark_numticks( "sv_benchmark_numticks", "3300", 0, "If > 0, then it only runs the benchmark for this # of ticks." );
-static ConVar sv_benchmark_autovprofrecord( "sv_benchmark_autovprofrecord", "0", 0, "If running a benchmark and this is set, it will record a vprof file over the duration of the benchmark with filename benchmark.vprof." );
+static ConVar sv_benchmark_numticks( "sv_benchmark_numticks", "3300", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "If > 0, then it only runs the benchmark for this # of ticks." );
+static ConVar sv_benchmark_autovprofrecord( "sv_benchmark_autovprofrecord", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	0
+#endif
+, "If running a benchmark and this is set, it will record a vprof file over the duration of the benchmark with filename benchmark.vprof." );
 
 static float s_flBenchmarkStartWaitSeconds = 3;	// Wait this many seconds after level load before starting the benchmark.
 
@@ -400,7 +412,12 @@ private:
 static CServerBenchmark g_ServerBenchmark;
 IServerBenchmark *g_pServerBenchmark = &g_ServerBenchmark;
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( sv_benchmark_force_start, "Force start the benchmark. This is only for debugging. It's better to set sv_benchmark to 1 and restart the level." , 0x00000004)
+#else
 CON_COMMAND( sv_benchmark_force_start, "Force start the benchmark. This is only for debugging. It's better to set sv_benchmark to 1 and restart the level." )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;

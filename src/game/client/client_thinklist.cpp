@@ -320,13 +320,16 @@ void CClientThinkList::PerformThinkFunctions()
 	m_aChangeList.RemoveAll();
 
 	// Clear out the client-side entity deletion list.
+#if !defined( L4D2 )
 	CleanUpDeleteList();
+#endif
 }
 
 
 //-----------------------------------------------------------------------------
 // Queued-up entity deletion
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CClientThinkList::AddToDeleteList( ClientEntityHandle_t hEnt )
 {
 	// Sanity check!
@@ -351,7 +354,9 @@ void CClientThinkList::AddToDeleteList( ClientEntityHandle_t hEnt )
 		}
 	}
 }
+#endif
 
+#if !defined( L4D2 )
 void CClientThinkList::RemoveFromDeleteList( ClientEntityHandle_t hEnt )
 {
 	// Sanity check!
@@ -374,7 +379,9 @@ void CClientThinkList::RemoveFromDeleteList( ClientEntityHandle_t hEnt )
 		}
 	}
 }
+#endif
 
+#if !defined( L4D2 )
 void CClientThinkList::CleanUpDeleteList()
 {
 	int nThinkCount = m_aDeleteList.Count();
@@ -399,4 +406,5 @@ void CClientThinkList::CleanUpDeleteList()
 
 	m_aDeleteList.RemoveAll();
 }
+#endif
 

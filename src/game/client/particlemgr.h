@@ -109,6 +109,11 @@ entities. Each one is useful under different conditions.
 #pragma once
 #endif
 
+#if defined( L4D2 )
+#include "l4d2/effects/terror_particle_definition_metadata.h"
+#include "tier1/utldict.h"
+class CDmxElement;
+#endif
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialsystem.h"
 #include "mathlib/vector.h"
@@ -619,9 +624,24 @@ class CParticleMgr
 	friend class CParticleCollection;
 
 public:
+#if defined( L4D2 )
+	void UpdateTerrorParticleDefinitionMetadata( const CDmxElement &definition );
+	const TerrorParticleDefinitionMetadata_t &GetTerrorParticleDefinitionMetadata( const char *name ) const;
+	bool IsTerrorParticleDefinitionScreenSpace( const char *name ) const;
+	CParticleSystemDefinition *GetTerrorParticleFallbackDefinition( CParticleSystemDefinition *definition );
+private:
+	struct TerrorParticleDefinitionEntry_t;
+	CUtlDict< TerrorParticleDefinitionEntry_t *, int > m_TerrorParticleDefinitionMetadata;
+	TerrorParticleDefinitionMetadata_t m_TerrorParticleDefinitionDefaults;
+public:
+#endif
+
 
 	CParticleMgr();
 	virtual			~CParticleMgr();
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void DumpEffects();
+#endif
 
 	// Call at init time to preallocate the bucket of particles.
 	bool			Init(unsigned long nPreallocatedParticles, IMaterialSystem *pMaterial);
@@ -648,6 +668,9 @@ public:
 	// Called at level shutdown to free all the lingering particle effects (usually
 	// CParticleEffect-derived effects that can linger with noone holding onto them).
 	void			RemoveAllEffects();
+#if defined( L4D2 )
+	void StopEffectsLongerThan( float age );
+#endif
 
 	// This should be called at the start of the frame.
 	void			IncrementFrameCode();

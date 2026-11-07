@@ -59,6 +59,17 @@ public:
 	float			GetDmgModBullet( void ) { return m_flDmgModBullet; }
 	float			GetDmgModClub( void ) { return m_flDmgModClub; }
 	float			GetDmgModExplosive( void ) { return m_flDmgModExplosive; }
+#ifdef L4D2
+	void SetDmgModFire( float modifier ) { m_flDmgModFire = modifier; }
+	float GetDmgModFire() { return m_flDmgModFire; }
+	// Genuine native client prop policy C175270..1752C0, NOT a fabricated fallback.
+	void SetExplosionType( int ) {}
+	int GetExplosionType() { return 0; }
+	void SetExplosionDelay( float ) {}
+	float GetExplosionDelay() { return 0.0f; }
+	void SetExplosionBuildup( string_t ) {}
+	string_t GetExplosionBuildup() { return NULL_STRING; }
+#endif
 	void			SetExplosiveRadius( float flRadius ) { m_explodeRadius = flRadius; }
 	void			SetExplosiveDamage( float flDamage ) { m_explodeDamage = flDamage; }
 	float			GetExplosiveRadius( void ) { return m_explodeRadius; }
@@ -113,6 +124,9 @@ protected:
 	float			m_flDmgModBullet;
 	float			m_flDmgModClub;
 	float			m_flDmgModExplosive;
+#ifdef L4D2
+	float m_flDmgModFire;
+#endif
 	string_t		m_iszPhysicsDamageTableName;
 	string_t		m_iszBreakableModel;
 	int				m_iBreakableSkin;

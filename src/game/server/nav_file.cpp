@@ -21,7 +21,7 @@
 #include "tier2/fileutils.h"
 
 #ifdef TERROR
-#include "func_elevator.h"
+#include "l4d2/entities/func_elevator.h"
 #endif
 
 #include "tier1/lzmaDecoder.h"
@@ -34,7 +34,12 @@
 
 #include "util_shared.h"
 
+#if defined( L4D2 )
+#include "l4d2/nav/terror_nav.h"
+#endif
+
 // NOTE: This has to be the last file included!
+#include "nav_file_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 
@@ -129,6 +134,11 @@ Place PlaceDirectory::IndexToPlace( IndexType entry ) const
 /// store the directory
 void PlaceDirectory::Save( CUtlBuffer &fileBuffer )
 {
+#if defined( L4D2 )
+	TheTerrorNavMesh()->SavePlaceDirectory( *this, fileBuffer );
+	return;
+#endif
+
 	// store number of entries in directory
 	IndexType count = (IndexType)m_directory.Count();
 	fileBuffer.PutUnsignedShort( count );
@@ -150,6 +160,11 @@ void PlaceDirectory::Save( CUtlBuffer &fileBuffer )
 /// load the directory
 void PlaceDirectory::Load( CUtlBuffer &fileBuffer, int version )
 {
+#if defined( L4D2 )
+	TheTerrorNavMesh()->LoadPlaceDirectory( *this, fileBuffer, version );
+	return;
+#endif
+
 	// read number of entries
 	IndexType count = fileBuffer.GetUnsignedShort();
 
@@ -222,7 +237,11 @@ void CNavArea::Save( CUtlBuffer &fileBuffer, unsigned int version ) const
 	fileBuffer.PutUnsignedInt( m_id );
 
 	// save attribute flags
+#if defined( L4D2 )
+	fileBuffer.PutInt( ToTerrorNavArea( this )->GetSerializedBaseAttributes() );
+#else
 	fileBuffer.PutInt( m_attributeFlags );
+#endif
 
 	// save extent of area
 	fileBuffer.Put( &m_nwCorner, 3*sizeof(float) );
@@ -337,7 +356,11 @@ void CNavArea::Save( CUtlBuffer &fileBuffer, unsigned int version ) const
 	}
 
 	// store place dictionary entry
+#if defined( L4D2 )
+	PlaceDirectory::IndexType entry = ToTerrorNavArea( this )->GetPlaceDirectoryIndex( placeDirectory );
+#else
 	PlaceDirectory::IndexType entry = placeDirectory.GetIndex( GetPlace() );
+#endif
 	fileBuffer.Put( &entry, sizeof(entry) );
 
 	// write out ladder info
@@ -371,6 +394,7 @@ void CNavArea::Save( CUtlBuffer &fileBuffer, unsigned int version ) const
 		fileBuffer.PutFloat( m_lightIntensity[i] );
 	}
 
+#if !defined( L4D2 )
 	// save visible area set
 	unsigned int visibleAreaCount = m_potentiallyVisibleAreas.Count();
 	fileBuffer.PutUnsignedInt( visibleAreaCount );
@@ -388,6 +412,7 @@ void CNavArea::Save( CUtlBuffer &fileBuffer, unsigned int version ) const
 	// store area we inherit visibility from
 	unsigned int id = ( m_inheritVisibilityFrom.area ) ? m_inheritVisibilityFrom.area->GetID() : 0;
 	fileBuffer.PutUnsignedInt( id );
+#endif
 }
 
 
@@ -597,6 +622,9 @@ NavErrorType CNavArea::Load( CUtlBuffer &fileBuffer, unsigned int version, unsig
 
 	// convert entry to actual Place
 	SetPlace( placeDirectory.IndexToPlace( entry ) );
+#if defined( L4D2 )
+	ToTerrorNavArea( this )->OnLoadPlace( entry );
+#endif
 
 	if ( version < 7 )
 		return NAV_OK;
@@ -648,6 +676,11 @@ NavErrorType CNavArea::Load( CUtlBuffer &fileBuffer, unsigned int version, unsig
 
 	if ( version < 16 )
 		return NAV_OK;
+
+#if defined( L4D2 )
+	if ( subVersion != 0 )
+		return NAV_OK;
+#endif
 
 	// load visibility information
 	unsigned int visibleAreaCount = fileBuffer.GetUnsignedInt();
@@ -1142,6 +1175,7 @@ bool CNavMesh::Save( void ) const
 	//
 	// Build a directory of the Places in this map
 	//
+#if !defined( L4D2 )
 	placeDirectory.Reset();
 
 	FOR_EACH_VEC( TheNavAreas, nit )
@@ -1151,6 +1185,7 @@ bool CNavMesh::Save( void ) const
 		Place place = area->GetPlace();
 		placeDirectory.AddPlace( place );
 	}
+#endif
 
 	placeDirectory.Save( fileBuffer );
 
@@ -1367,6 +1402,11 @@ const CUtlVector< Place > *CNavMesh::GetPlacesFromNavFile( bool *hasUnnamedPlace
 		}
 	}
 
+#if defined( L4D2 )
+	if ( !TheTerrorNavMesh()->BeginLoad( version, subVersion ) )
+		return NULL;
+#endif
+
 	fileBuffer.GetUnsignedInt();	// skip BSP file size
 	if ( version >= 14 )
 	{
@@ -1374,8 +1414,16 @@ const CUtlVector< Place > *CNavMesh::GetPlacesFromNavFile( bool *hasUnnamedPlace
 	}
 
 	placeDirectory.Load( fileBuffer, version );
+#if defined( L4D2 )
+	if ( TheTerrorNavMesh()->GetLoadError() != NAV_OK )
+		return NULL;
+#endif
 
 	LoadCustomDataPreArea( fileBuffer, subVersion );
+#if defined( L4D2 )
+	if ( TheTerrorNavMesh()->GetLoadError() != NAV_OK )
+		return NULL;
+#endif
 
 	if ( hasUnnamedPlaces )
 	{
@@ -1398,6 +1446,13 @@ NavErrorType CNavMesh::GetNavDataFromFile( CUtlBuffer &outBuffer, bool *pNavData
 	char filename[MAX_PATH] = { 0 };
 	Q_snprintf( filename, sizeof( filename ), FORMAT_NAVFILE, pszMapName );
 
+#if defined( L4D2 )
+	// Native1048D910 reads the effective GAME NAV, including update/DLC layers.
+	if ( !filesystem->ReadFile( filename, "GAME", outBuffer ) )
+		return NAV_CANT_ACCESS_FILE;
+	if ( pNavDataFromBSP )
+		*pNavDataFromBSP = false;
+#else
 	if ( !filesystem->ReadFile( filename, "MOD", outBuffer ) )	// this ignores .nav files embedded in the .bsp ...
 	{
 		if ( !filesystem->ReadFile( filename, "BSP", outBuffer ) )	// ... and this looks for one if it's the only one around.
@@ -1413,6 +1468,7 @@ NavErrorType CNavMesh::GetNavDataFromFile( CUtlBuffer &outBuffer, bool *pNavData
 			*pNavDataFromBSP = true;
 		}
 	}
+#endif
 
 	if ( IsX360() )
 	{
@@ -1481,6 +1537,11 @@ NavErrorType CNavMesh::Load( void )
 		}
 	}
 
+#if defined( L4D2 )
+	if ( !TheTerrorNavMesh()->BeginLoad( version, subVersion ) )
+		return NAV_BAD_FILE_VERSION;
+#endif
+
 	if ( version >= 4 )
 	{
 		// get size of source bsp file and verify that the bsp hasn't changed
@@ -1521,8 +1582,16 @@ NavErrorType CNavMesh::Load( void )
 	{
 		placeDirectory.Load( fileBuffer, version );
 	}
+#if defined( L4D2 )
+	if ( TheTerrorNavMesh()->GetLoadError() != NAV_OK )
+		return TheTerrorNavMesh()->GetLoadError();
+#endif
 
 	LoadCustomDataPreArea( fileBuffer, subVersion );
+#if defined( L4D2 )
+	if ( TheTerrorNavMesh()->GetLoadError() != NAV_OK )
+		return TheTerrorNavMesh()->GetLoadError();
+#endif
 
 	// get number of areas
 	unsigned int count = fileBuffer.GetUnsignedInt();
@@ -1545,7 +1614,16 @@ NavErrorType CNavMesh::Load( void )
 	for( i=0; i<count; ++i )
 	{
 		CNavArea *area = TheNavMesh->CreateArea();
+#if defined( L4D2 )
+		NavErrorType areaError = area->Load( fileBuffer, version, subVersion );
+		if ( areaError != NAV_OK )
+		{
+			delete area;
+			return areaError;
+		}
+#else
 		area->Load( fileBuffer, version, subVersion );
+#endif
 		TheNavAreas.AddToTail( area );
 
 		area->GetExtent( &areaExtent );
@@ -1636,7 +1714,13 @@ NavErrorType CNavMesh::PostLoad( unsigned int version )
 	FOR_EACH_VEC( TheNavAreas, pit )
 	{
 		CNavArea *area = TheNavAreas[ pit ];
+#if defined( L4D2 )
+		NavErrorType areaError = area->PostLoad();
+		if ( areaError != NAV_OK )
+			return areaError;
+#else
 		area->PostLoad();
+#endif
 	}
 
 	// allow hiding spots to compute information

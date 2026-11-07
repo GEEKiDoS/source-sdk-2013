@@ -16,6 +16,9 @@
 #include "voice_common.h"
 #include "vgui_avatarimage.h"
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/hud/terror_client_colors.h"
+#endif
 ConVar *sv_alltalk = NULL;
 
 //=============================================================================
@@ -355,7 +358,11 @@ void CHudVoiceStatus::Paint()
 		float oldAlphaMultiplier = surface()->DrawGetAlphaMultiplier();
 		surface()->DrawSetAlphaMultiplier(oldAlphaMultiplier * m_SpeakingList[i].fAlpha);
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+		Color c = ::GetClientColor( playerId );
+#else
 		Color c = g_PR->GetTeamColor( g_PR ? g_PR->GetTeam(playerId) : TEAM_UNASSIGNED );
+#endif
 
 		c[3] = 128;
 

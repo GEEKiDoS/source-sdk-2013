@@ -26,6 +26,7 @@
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "bone_setup_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
 class CBoneSetup
@@ -567,6 +568,373 @@ inline void CalcBonePosition( int frame, float s,
 
 
 
+#if defined( L4D2 )
+// Frame animations are byte streams, not mstudioanim_t lists. Keep their
+// unpackers local: the native RLE Quaternion48 conversion has different scales.
+COMPILE_TIME_ASSERT( sizeof( mstudioframeanim_t ) == 24 );
+COMPILE_TIME_ASSERT( sizeof( mstudioikrulezeroframe_t ) == 12 );
+COMPILE_TIME_ASSERT( sizeof( mstudioanimdesc_t ) == 100 );
+
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
+
+static uint16 FrameAnimWord( const byte *pData )
+{
+	return (uint16)( pData[0] | ( pData[1] << 8 ) );
+}
+
+static float FrameAnimHalf( uint16 bits )
+{
+	float16 value;
+	V_memcpy( &value, &bits, sizeof( value ) );
+	return value.GetFloat();
+}
+
+static uint32 FrameAnimDWord( const byte *pData )
+{
+	return (uint32)pData[0] | ( (uint32)pData[1] << 8 ) |
+		( (uint32)pData[2] << 16 ) | ( (uint32)pData[3] << 24 );
+}
+
+static float FrameAnimFloat( uint32 bits )
+{
+	float value;
+	memcpy( &value, &bits, sizeof( value ) );
+	return value;
+}
+
+static void FrameAnimVector( const byte *pData, bool bFull, Vector &pos )
+{
+	for ( int i = 0; i < 3; i++ )
+	{
+		pos[i] = bFull ? FrameAnimFloat( FrameAnimDWord( pData + i * 4 ) ) :
+			FrameAnimHalf( FrameAnimWord( pData + i * 2 ) );
+	}
+}
+
+static void FrameAnimQuaternion48( const byte *pData, Quaternion &q )
+{
+	// server 0x4DC160: PC53 intermediates survive the x/y/z float stores.
+	double x = ( (int)FrameAnimWord( pData ) - 32768 ) * 3.051711247081801e-05;
+	double y = ( (int)FrameAnimWord( pData + 2 ) - 32768 ) * 3.051711247081801e-05;
+	uint16 z = FrameAnimWord( pData + 4 );
+	double dz = ( (int)( z & 0x7FFF ) - 16384 ) * 6.103329366169245e-05;
+	q.x = (float)x;
+	q.y = (float)y;
+	q.z = (float)dz;
+	q.w = (float)sqrt( ( ( 1.0 - x * x ) - y * y ) - dz * dz );
+	if ( z & 0x8000 )
+		q.w = -q.w;
+}
+
+static void FrameAnimQuaternion48S( const byte *pData, Quaternion &q )
+{
+	uint16 x = FrameAnimWord( pData );
+	uint16 y = FrameAnimWord( pData + 2 );
+	uint16 z = FrameAnimWord( pData + 4 );
+	int k = 2 * ( x >> 15 ) + ( y >> 15 );
+	float scale = FrameAnimFloat( 0x383509E7 );
+	q[k] = ( (int)( x & 0x7FFF ) - 16384 ) * scale;
+	q[( k + 1 ) & 3] = ( (int)( y & 0x7FFF ) - 16384 ) * scale;
+	q[( k + 2 ) & 3] = ( (int)( z & 0x7FFF ) - 16384 ) * scale;
+	double a = q[k], b = q[( k + 1 ) & 3], c = q[( k + 2 ) & 3];
+	q[( k + 3 ) & 3] = (float)sqrt( ( ( 1.0 - a * a ) - b * b ) - c * c );
+	if ( z & 0x8000 )
+		q[( k + 3 ) & 3] = -q[( k + 3 ) & 3];
+}
+
+static void FrameAnimQuaternion64( const byte *pData, Quaternion &q )
+{
+	uint64 bits = (uint64)FrameAnimDWord( pData ) | ( (uint64)FrameAnimDWord( pData + 4 ) << 32 );
+	float scale = FrameAnimFloat( 0x357FFFF8 );
+	q.x = ( (int)( bits & 0x1FFFFF ) - 1048576 ) * scale;
+	q.y = ( (int)( ( bits >> 21 ) & 0x1FFFFF ) - 1048576 ) * scale;
+	q.z = ( (int)( ( bits >> 42 ) & 0x1FFFFF ) - 1048576 ) * scale;
+	double x = q.x, y = q.y, z = q.z;
+	q.w = (float)sqrt( ( ( 1.0 - x * x ) - y * y ) - z * z );
+	if ( bits >> 63 )
+		q.w = -q.w;
+}
+
+static void FrameAnimQuaternion32( const byte *pData, Quaternion &q )
+{
+	uint32 bits = FrameAnimDWord( pData );
+	q.x = ( (int)( bits & 0x7FF ) - 1024 ) * ( 1.0f / 1024.0f );
+	q.y = ( (int)( ( bits >> 11 ) & 0x3FF ) - 512 ) * ( 1.0f / 512.0f );
+	q.z = ( (int)( ( bits >> 21 ) & 0x3FF ) - 512 ) * ( 1.0f / 512.0f );
+	double x = q.x, y = q.y, z = q.z;
+	q.w = (float)sqrt( ( ( 1.0 - x * x ) - y * y ) - z * z );
+	if ( bits & 0x80000000 )
+		q.w = -q.w;
+}
+
+static bool FrameAnimQuaternionFlip( const Quaternion &a, const Quaternion &b )
+{
+	float minus = 0.0f, plus = 0.0f;
+	for ( int i = 0; i < 4; i++ )
+	{
+		float d = a[i] - b[i];
+		float s = a[i] + b[i];
+		minus = minus + d * d;
+		plus = plus + s * s;
+	}
+	return minus > plus;
+}
+
+static void FrameAnimQuaternionNormalize( Quaternion &q )
+{
+	float length = q.x * q.x;
+	length = length + q.y * q.y;
+	length = length + q.z * q.z;
+	length = length + q.w * q.w;
+	if ( length != 0.0f )
+	{
+		double scale = 1.0 / sqrt( (double)length );
+		for ( int i = 0; i < 4; i++ )
+			q[i] = (float)( q[i] * scale );
+	}
+}
+
+static void FrameAnimQuaternionBlend( const Quaternion &a, const Quaternion &b, float s, Quaternion &q )
+{
+	bool bFlip = FrameAnimQuaternionFlip( a, b );
+	float t = 1.0f - s;
+	for ( int i = 0; i < 4; i++ )
+	{
+		float v = bFlip ? -b[i] : b[i];
+		q[i] = a[i] * t + v * s;
+	}
+	FrameAnimQuaternionNormalize( q );
+}
+
+static float FrameAnimHermite( float p0, float p1, float p2, float t )
+{
+	float t2 = t * t;
+	float t3 = t2 * t;
+	float h = 2.0f * t3 - 3.0f * t2 + 1.0f;
+	float a = t3 - 2.0f * t2 + t;
+	float b = t3 - t2;
+	float value = p1 * h + p2 * ( 1.0f - h );
+	value = value + a * ( p1 - p0 );
+	return value + b * ( p2 - p1 );
+}
+
+static void FrameAnimQuaternionHermite( const Quaternion &q0, const Quaternion &q1, const Quaternion &q2, float t, Quaternion &q )
+{
+	bool bFlip0 = FrameAnimQuaternionFlip( q2, q0 );
+	bool bFlip1 = FrameAnimQuaternionFlip( q2, q1 );
+	for ( int i = 0; i < 4; i++ )
+	{
+		q[i] = FrameAnimHermite( bFlip0 ? -q0[i] : q0[i], bFlip1 ? -q1[i] : q1[i], q2[i], t );
+	}
+	FrameAnimQuaternionNormalize( q );
+}
+
+static void FrameAnimStreams( const byte *pData, int iFrame, const byte *&pConstant, const byte *&pFrame, int &nFrameLength )
+{
+	nFrameLength = (int)FrameAnimDWord( pData + 8 );
+	pConstant = pData + (int)FrameAnimDWord( pData );
+	pFrame = pData + (int)FrameAnimDWord( pData + 4 ) + iFrame * nFrameLength;
+}
+
+// Null outputs skip a bone without unpacking it. Selection and cursor movement
+// deliberately share this path, including the original overlapping-flag priority.
+static void CalcFrameBone( byte flags, const byte *&pConstant, const byte *&pFrame, int nFrameLength, float s, Vector *pos, Quaternion *q )
+{
+	const byte *pRotation = NULL;
+	bool bAnimated = false, bRotation2 = false;
+	if ( flags & STUDIO_FRAME_ANIM_ROT )
+	{
+		pRotation = pFrame;
+		pFrame += 6;
+		bAnimated = true;
+	}
+	else if ( flags & STUDIO_FRAME_ANIM_ROT2 )
+	{
+		pRotation = pFrame;
+		pFrame += 6;
+		bAnimated = bRotation2 = true;
+	}
+	else if ( flags & STUDIO_FRAME_CONST_ROT )
+	{
+		pRotation = pConstant;
+		pConstant += 6;
+	}
+	else if ( flags & STUDIO_FRAME_CONST_ROT2 )
+	{
+		pRotation = pConstant;
+		pConstant += 6;
+		bRotation2 = true;
+	}
+	if ( q && pRotation )
+	{
+		if ( bRotation2 )
+			FrameAnimQuaternion48S( pRotation, *q );
+		else
+			FrameAnimQuaternion48( pRotation, *q );
+		if ( bAnimated && s > 0.0f )
+		{
+			Quaternion q1;
+			if ( bRotation2 )
+				FrameAnimQuaternion48S( pRotation + nFrameLength, q1 );
+			else
+				FrameAnimQuaternion48( pRotation + nFrameLength, q1 );
+			FrameAnimQuaternionBlend( *q, q1, s, *q );
+		}
+	}
+
+	const byte *pPosition = NULL;
+	bool bFull = false;
+	bAnimated = false;
+	if ( flags & STUDIO_FRAME_ANIM_POS )
+	{
+		pPosition = pFrame;
+		pFrame += 6;
+		bAnimated = true;
+	}
+	else if ( flags & STUDIO_FRAME_CONST_POS )
+	{
+		pPosition = pConstant;
+		pConstant += 6;
+	}
+	else if ( flags & STUDIO_FRAME_FULL_ANIM_POS )
+	{
+		pPosition = pFrame;
+		pFrame += 12;
+		bAnimated = bFull = true;
+	}
+	else if ( flags & STUDIO_FRAME_FULL_CONST_POS )
+	{
+		pPosition = pConstant;
+		pConstant += 12;
+		bFull = true;
+	}
+	if ( pos && pPosition )
+	{
+		FrameAnimVector( pPosition, bFull, *pos );
+		if ( bAnimated && s > 0.0f )
+		{
+			Vector p1;
+			FrameAnimVector( pPosition + nFrameLength, bFull, p1 );
+			float t = 1.0f - s;
+			for ( int i = 0; i < 3; i++ )
+				(*pos)[i] = (*pos)[i] * t + p1[i] * s;
+		}
+	}
+}
+
+static void CalcFrameZeroframeData( const CStudioHdr *pStudioHdr, const studiohdr_t *pAnimStudioHdr, const virtualgroup_t *pAnimGroup, const mstudiobone_t *pAnimbone, mstudioanimdesc_t &animdesc, float fFrame, Vector *pos, Quaternion *q, int boneMask, float flWeight )
+{
+	const byte *pData = animdesc.pZeroFrameData();
+	if ( !pData )
+		return;
+
+	int i0 = 0, i1 = 0, i2 = 0;
+	float s = 0.0f;
+	if ( animdesc.zeroframecount > 1 )
+	{
+		i1 = (int)( fFrame / animdesc.zeroframespan );
+		if ( i1 >= animdesc.zeroframecount - 1 )
+		{
+			i1 = animdesc.zeroframecount - 2;
+			s = 1.0f;
+		}
+		else
+		{
+			s = clamp( ( fFrame - i1 * animdesc.zeroframespan ) / animdesc.zeroframespan, 0.0f, 1.0f );
+		}
+		i0 = max( i1 - 1, 0 );
+		i2 = min( i1 + 1, animdesc.zeroframecount - 1 );
+	}
+
+	for ( int j = 0; j < pAnimStudioHdr->numbones; j++ )
+	{
+		int i = pAnimGroup ? pAnimGroup->masterBone[j] : j;
+		bool bSelected = i >= 0 && ( pStudioHdr->boneFlags( i ) & boneMask );
+		if ( pAnimbone[j].flags & BONE_HAS_SAVEFRAME_POS )
+		{
+			if ( bSelected )
+			{
+				Vector p;
+				FrameAnimVector( pData + i1 * 6, false, p );
+				if ( animdesc.zeroframecount > 1 )
+				{
+					Vector p0, p2;
+					FrameAnimVector( pData + i0 * 6, false, p0 );
+					FrameAnimVector( pData + i2 * 6, false, p2 );
+					for ( int k = 0; k < 3; k++ )
+						p[k] = FrameAnimHermite( p0[k], p[k], p2[k], s );
+				}
+				if ( animdesc.zeroframecount > 1 && flWeight == 1.0f )
+				{
+					pos[i] = p;
+				}
+				else
+				{
+					float t = 1.0f - flWeight;
+					for ( int k = 0; k < 3; k++ )
+						pos[i][k] = pos[i][k] * t + p[k] * flWeight;
+				}
+			}
+			pData += 6 * animdesc.zeroframecount;
+		}
+
+		// server 0x4DDA50: ROT64 wins when both saved-rotation bits are set.
+		bool bRot64 = ( pAnimbone[j].flags & BONE_HAS_SAVEFRAME_ROT64 ) != 0;
+		if ( bRot64 || ( pAnimbone[j].flags & BONE_HAS_SAVEFRAME_ROT32 ) )
+		{
+			int nSize = bRot64 ? 8 : 4;
+			if ( bSelected )
+			{
+				Quaternion q0, q1, q2, q3;
+				if ( bRot64 )
+					FrameAnimQuaternion64( pData + i1 * nSize, q1 );
+				else
+					FrameAnimQuaternion32( pData + i1 * nSize, q1 );
+				if ( animdesc.zeroframecount > 1 )
+				{
+					if ( bRot64 )
+					{
+						FrameAnimQuaternion64( pData + i0 * nSize, q0 );
+						FrameAnimQuaternion64( pData + i2 * nSize, q2 );
+					}
+					else
+					{
+						FrameAnimQuaternion32( pData + i0 * nSize, q0 );
+						FrameAnimQuaternion32( pData + i2 * nSize, q2 );
+					}
+					FrameAnimQuaternionHermite( q0, q1, q2, s, q3 );
+					if ( flWeight == 1.0f )
+						q[i] = q3;
+					else
+						FrameAnimQuaternionBlend( q[i], q3, flWeight, q[i] );
+				}
+				else
+				{
+					FrameAnimQuaternionBlend( q[i], q1, flWeight, q[i] );
+				}
+			}
+			pData += nSize * animdesc.zeroframecount;
+		}
+	}
+}
+
+static void FrameAnimIKInfluence( const byte *pZero, double start, float dt, float weight, ikcontextikrule_t &ikRule )
+{
+	// Resident half values pass through x87 arithmetic before their float stores.
+	ikRule.start = (float)( ikRule.start + ( start + dt ) * weight );
+	ikRule.peak = (float)( ikRule.peak + ( (double)FrameAnimHalf( FrameAnimWord( pZero + 6 ) ) + dt ) * weight );
+	ikRule.tail = (float)( ikRule.tail + ( (double)FrameAnimHalf( FrameAnimWord( pZero + 8 ) ) + dt ) * weight );
+	ikRule.end = (float)( ikRule.end + ( (double)FrameAnimHalf( FrameAnimWord( pZero + 10 ) ) + dt ) * weight );
+}
+
+#ifdef _MSC_VER
+#pragma float_control( pop )
+#endif
+
+#endif // L4D2
 void SetupSingleBoneMatrix( 
 	CStudioHdr *pOwnerHdr, 
 	int nSequence, 
@@ -575,22 +943,65 @@ void SetupSingleBoneMatrix(
 	matrix3x4_t &mBoneLocal )
 {
 	mstudioseqdesc_t &seqdesc = pOwnerHdr->pSeqdesc( nSequence );
+#if defined( L4D2 )
+	virtualmodel_t *pVModel = pOwnerHdr->GetVirtualModel();
+	int iAnimation = pOwnerHdr->iRelativeAnim( nSequence, seqdesc.anim( 0, 0 ) );
+	mstudioanimdesc_t &frameanimdesc = pOwnerHdr->pAnimdesc( iAnimation );
+	if ( frameanimdesc.flags & STUDIO_FRAMEANIM )
+	{
+		const virtualgroup_t *pAnimGroup = pVModel ? pVModel->pAnimGroup( iAnimation ) : NULL;
+		int iAnimBone = pAnimGroup ? pAnimGroup->boneMap[iBone] : iBone;
+		const studiohdr_t *pSeqHdr = pOwnerHdr->pSeqStudioHdr( nSequence );
+		int iSeqBone = pVModel ? pVModel->pSeqGroup( nSequence )->boneMap[iBone] : iBone;
+		const mstudiobone_t *pBone = iSeqBone >= 0 ? pSeqHdr->pBone( iSeqBone ) : pOwnerHdr->pBone( iBone );
+		Quaternion boneQuat = pBone->quat;
+		Vector bonePos = pBone->pos;
+		if ( frameanimdesc.flags & STUDIO_DELTA )
+		{
+			boneQuat.Init( 0.0f, 0.0f, 0.0f, 1.0f );
+			bonePos.Init( 0.0f, 0.0f, 0.0f );
+		}
+		else if ( iSeqBone >= 0 && pSeqHdr->pLinearBones() )
+		{
+			boneQuat = pSeqHdr->pLinearBones()->quat( iSeqBone );
+			bonePos = pSeqHdr->pLinearBones()->pos( iSeqBone );
+		}
+
+		int iLocalFrame = iFrame;
+		const byte *pAnimData = frameanimdesc.pAnim( &iLocalFrame );
+		if ( pAnimData && iAnimBone >= 0 && iSeqBone >= 0 && seqdesc.weight( iSeqBone ) > 0.0f )
+		{
+			const byte *pConstant, *pFrame;
+			int nFrameLength;
+			FrameAnimStreams( pAnimData, iLocalFrame, pConstant, pFrame, nFrameLength );
+			const byte *pFlags = pAnimData + sizeof( mstudioframeanim_t );
+			for ( int i = 0; i <= iAnimBone; i++ )
+			{
+				CalcFrameBone( pFlags[i], pConstant, pFrame, nFrameLength, 0.0f,
+					i == iAnimBone ? &bonePos : NULL, i == iAnimBone ? &boneQuat : NULL );
+			}
+		}
+		QuaternionMatrix( boneQuat, bonePos, mBoneLocal );
+		return;
+	}
+
+	// Preserve the native RLE single-bone path.
+#endif // L4D2
 	mstudioanimdesc_t &animdesc = pOwnerHdr->pAnimdesc( seqdesc.anim( 0, 0 ) );
 	int iLocalFrame = iFrame;
+#if defined( L4D2 )
+	const mstudioanim_t *panim = (const mstudioanim_t *)animdesc.pAnim( &iLocalFrame );
+#else
 	mstudioanim_t *panim = animdesc.pAnim( &iLocalFrame );
+#endif // L4D2
 	float s = 0;
 	mstudiobone_t *pbone = pOwnerHdr->pBone( iBone );
-
 	Quaternion boneQuat;
 	Vector bonePos;
-
-	// search for bone
 	while (panim && panim->bone != iBone)
 	{
 		panim = panim->pNext();
 	}
-
-	// look up animation if found, if not, initialize
 	if (panim && seqdesc.weight(iBone) > 0)
 	{
 		CalcBoneQuaternion( iLocalFrame, s, pbone, NULL, panim, boneQuat );
@@ -606,7 +1017,6 @@ void SetupSingleBoneMatrix(
 		boneQuat = pbone->quat;
 		bonePos = pbone->pos;
 	}
-
 	QuaternionMatrix( boneQuat, bonePos, mBoneLocal );
 }
 
@@ -775,6 +1185,14 @@ static void CalcLocalHierarchyAnimation(
 
 static void CalcZeroframeData( const CStudioHdr *pStudioHdr, const studiohdr_t *pAnimStudioHdr, const virtualgroup_t *pAnimGroup, const mstudiobone_t *pAnimbone, mstudioanimdesc_t &animdesc, float fFrame, Vector *pos, Quaternion *q, int boneMask, float flWeight )
 {
+#if defined( L4D2 )
+	if ( animdesc.flags & STUDIO_FRAMEANIM )
+	{
+		CalcFrameZeroframeData( pStudioHdr, pAnimStudioHdr, pAnimGroup, pAnimbone, animdesc, fFrame, pos, q, boneMask, flWeight );
+		return;
+	}
+
+#endif // L4D2
 	byte *pData = animdesc.pZeroFrameData();
 
 	if (!pData)
@@ -811,6 +1229,19 @@ static void CalcZeroframeData( const CStudioHdr *pStudioHdr, const studiohdr_t *
 					Assert( q[i].IsValid() );
 				}
 				pData += sizeof( Quaternion64 );
+#if defined( L4D2 )
+			}
+			else if (pAnimbone[j].flags & BONE_HAS_SAVEFRAME_ROT32)
+			{
+				if ((i >= 0) && (pStudioHdr->boneFlags(i) & boneMask))
+				{
+					Quaternion q0;
+					FrameAnimQuaternion32( pData, q0 );
+					QuaternionBlend( q[i], q0, flWeight, q[i] );
+					Assert( q[i].IsValid() );
+				}
+				pData += sizeof( Quaternion32 );
+#endif // L4D2
 			}
 		}
 	}
@@ -872,6 +1303,30 @@ static void CalcZeroframeData( const CStudioHdr *pStudioHdr, const studiohdr_t *
 				}
 				pData += sizeof( Quaternion64 ) * animdesc.zeroframecount;
 			}
+#if defined( L4D2 )
+			else if (pAnimbone[j].flags & BONE_HAS_SAVEFRAME_ROT32)
+			{
+				if ((i >= 0) && (pStudioHdr->boneFlags(i) & boneMask))
+				{
+					Quaternion q0, q1, q2;
+					FrameAnimQuaternion32( pData + i0 * sizeof( Quaternion32 ), q0 );
+					FrameAnimQuaternion32( pData + i1 * sizeof( Quaternion32 ), q1 );
+					FrameAnimQuaternion32( pData + i2 * sizeof( Quaternion32 ), q2 );
+					if (flWeight == 1.0f)
+					{
+						Hermite_Spline( q0, q1, q2, s1, q[i] );
+					}
+					else
+					{
+						Quaternion q3;
+						Hermite_Spline( q0, q1, q2, s1, q3 );
+						QuaternionBlend( q[i], q3, flWeight, q[i] );
+					}
+					Assert( q[i].IsValid() );
+				}
+				pData += sizeof( Quaternion32 ) * animdesc.zeroframecount;
+			}
+#endif // L4D2
 		}
 	}
 }
@@ -892,7 +1347,11 @@ static void CalcVirtualAnimation( virtualmodel_t *pVModel, const CStudioHdr *pSt
 	const studiohdr_t *pSeqStudioHdr;
 	const mstudiolinearbone_t *pSeqLinearBones;
 	const mstudiobone_t *pSeqbone;
+#if defined( L4D2 )
+	const byte *pAnimData;
+#else
 	const mstudioanim_t *panim;
+#endif // L4D2
 	const studiohdr_t *pAnimStudioHdr;
 	const mstudiolinearbone_t *pAnimLinearBones;
 	const mstudiobone_t *pAnimbone;
@@ -919,7 +1378,11 @@ static void CalcVirtualAnimation( virtualmodel_t *pVModel, const CStudioHdr *pSt
 
 	int iLocalFrame = iFrame;
 	float flStall;
+#if defined( L4D2 )
+	pAnimData = animdesc.pAnim( &iLocalFrame, flStall );
+#else
 	panim = animdesc.pAnim( &iLocalFrame, flStall );
+#endif // L4D2
 
 	float *pweight = seqdesc.pBoneweight( 0 );
 	pbone = pStudioHdr->pBone( 0 );
@@ -954,10 +1417,41 @@ static void CalcVirtualAnimation( virtualmodel_t *pVModel, const CStudioHdr *pSt
 	}
 
 	// if the animation isn't available, look for the zero frame cache
+#if defined( L4D2 )
+	if (!pAnimData)
+#else
 	if (!panim)
+#endif // L4D2
 	{
 		CalcZeroframeData( ((CStudioHdr *)pStudioHdr), pAnimStudioHdr, pAnimGroup, pAnimbone, animdesc, fFrame, pos, q, boneMask, 1.0 );
 		return;
+#if defined( L4D2 )
+	}
+
+	const mstudioanim_t *panim = NULL;
+	if ( animdesc.flags & STUDIO_FRAMEANIM )
+	{
+		const byte *pConstant, *pFrame;
+		int nFrameLength;
+		FrameAnimStreams( pAnimData, iLocalFrame, pConstant, pFrame, nFrameLength );
+		const byte *pFlags = pAnimData + sizeof( mstudioframeanim_t );
+		for ( int i = 0; i < pAnimStudioHdr->numbones; i++ )
+		{
+			int j = pAnimGroup->masterBone[i];
+			// Unlike RLE, the original frame path does not retest sequence weights.
+			bool bSelected = j >= 0 && ( pStudioHdr->boneFlags( j ) & boneMask );
+			CalcFrameBone( pFlags[i], pConstant, pFrame, nFrameLength, s,
+				bSelected ? &pos[j] : NULL, bSelected ? &q[j] : NULL );
+#ifdef STUDIO_ENABLE_PERF_COUNTERS
+			if ( bSelected )
+				pStudioHdr->m_nPerfAnimatedBones++;
+#endif
+		}
+	}
+	else
+	{
+		panim = (const mstudioanim_t *)pAnimData;
+#endif // L4D2
 	}
 
 	// FIXME: change encoding so that bone -1 is never the case
@@ -1060,12 +1554,20 @@ static void CalcAnimation( const CStudioHdr *pStudioHdr,	Vector *pos, Quaternion
 
 	int iLocalFrame = iFrame;
 	float flStall;
+#if defined( L4D2 )
+	const byte *pAnimData = animdesc.pAnim( &iLocalFrame, flStall );
+#else
 	mstudioanim_t *panim = animdesc.pAnim( &iLocalFrame, flStall );
+#endif // L4D2
 
 	float *pweight = seqdesc.pBoneweight( 0 );
 
 	// if the animation isn't available, look for the zero frame cache
+#if defined( L4D2 )
+	if (!pAnimData)
+#else
 	if (!panim)
+#endif // L4D2
 	{
 		// Msg("zeroframe %s\n", animdesc.pszName() );
 		// pre initialize
@@ -1091,20 +1593,102 @@ static void CalcAnimation( const CStudioHdr *pStudioHdr,	Vector *pos, Quaternion
 		return;
 	}
 
+#if defined( L4D2 )
+	if ( animdesc.flags & STUDIO_FRAMEANIM )
+#else
 	// BUGBUG: the sequence, the anim, and the model can have all different bone mappings.
 	for (int i = 0; i < pStudioHdr->numbones(); i++, pbone++, pweight++)
+#endif // L4D2
 	{
+#if defined( L4D2 )
+		const byte *pConstant, *pFrame;
+		int nFrameLength;
+		FrameAnimStreams( pAnimData, iLocalFrame, pConstant, pFrame, nFrameLength );
+		const byte *pFlags = pAnimData + sizeof( mstudioframeanim_t );
+		for ( int i = 0; i < pStudioHdr->numbones(); i++ )
+#else
 		if (panim && panim->bone == i)
+#endif // L4D2
 		{
+#if defined( L4D2 )
+			bool bSelected = pweight[i] > 0.0f && ( pStudioHdr->boneFlags( i ) & boneMask );
+			if ( bSelected && pLinearBones )
+#else
 			if (*pweight > 0 && (pStudioHdr->boneFlags(i) & boneMask))
+#endif // L4D2
 			{
+#if defined( L4D2 )
+				if ( !( pFlags[i] & ( STUDIO_FRAME_ANIM_ROT | STUDIO_FRAME_ANIM_ROT2 | STUDIO_FRAME_CONST_ROT | STUDIO_FRAME_CONST_ROT2 ) ) )
+				{
+					if ( animdesc.flags & STUDIO_DELTA )
+						q[i].Init( 0.0f, 0.0f, 0.0f, 1.0f );
+					else
+						q[i] = pLinearBones->quat( i );
+				}
+				if ( !( pFlags[i] & ( STUDIO_FRAME_ANIM_POS | STUDIO_FRAME_CONST_POS | STUDIO_FRAME_FULL_ANIM_POS | STUDIO_FRAME_FULL_CONST_POS ) ) )
+				{
+					if ( animdesc.flags & STUDIO_DELTA )
+						pos[i].Init( 0.0f, 0.0f, 0.0f );
+					else
+						pos[i] = pLinearBones->pos( i );
+				}
+			}
+			CalcFrameBone( pFlags[i], pConstant, pFrame, nFrameLength, s,
+				bSelected ? &pos[i] : NULL, bSelected ? &q[i] : NULL );
+#else
 				CalcBoneQuaternion( iLocalFrame, s, pbone, pLinearBones, panim, q[i] );
 				CalcBonePosition  ( iLocalFrame, s, pbone, pLinearBones, panim, pos[i] );
+#endif // L4D2
 #ifdef STUDIO_ENABLE_PERF_COUNTERS
+#if defined( L4D2 )
+			if ( bSelected )
+			{
+#endif // L4D2
 				pStudioHdr->m_nPerfAnimatedBones++;
+				pStudioHdr->m_nPerfUsedBones++;
+#if defined( L4D2 )
+			}
+#endif // L4D2
+#endif // STUDIO_ENABLE_PERF_COUNTERS
+		}
+#if defined( L4D2 )
+	}
+	else
+	{
+		const mstudioanim_t *panim = (const mstudioanim_t *)pAnimData;
+		// BUGBUG: the sequence, the anim, and the model can have all different bone mappings.
+		for (int i = 0; i < pStudioHdr->numbones(); i++, pbone++, pweight++)
+		{
+			if (panim && panim->bone == i)
+			{
+				if (*pweight > 0 && (pStudioHdr->boneFlags(i) & boneMask))
+				{
+					CalcBoneQuaternion( iLocalFrame, s, pbone, pLinearBones, panim, q[i] );
+					CalcBonePosition  ( iLocalFrame, s, pbone, pLinearBones, panim, pos[i] );
+#ifdef STUDIO_ENABLE_PERF_COUNTERS
+					pStudioHdr->m_nPerfAnimatedBones++;
+					pStudioHdr->m_nPerfUsedBones++;
+#endif
+				}
+				panim = panim->pNext();
+			}
+			else if (*pweight > 0 && (pStudioHdr->boneFlags(i) & boneMask))
+			{
+				if (animdesc.flags & STUDIO_DELTA)
+				{
+					q[i].Init( 0.0f, 0.0f, 0.0f, 1.0f );
+					pos[i].Init( 0.0f, 0.0f, 0.0f );
+				}
+				else
+				{
+					q[i] = pbone->quat;
+					pos[i] = pbone->pos;
+				}
+#ifdef STUDIO_ENABLE_PERF_COUNTERS
 				pStudioHdr->m_nPerfUsedBones++;
 #endif
 			}
+#else // L4D2
 			panim = panim->pNext();
 		}
 		else if (*pweight > 0 && (pStudioHdr->boneFlags(i) & boneMask))
@@ -1122,6 +1706,7 @@ static void CalcAnimation( const CStudioHdr *pStudioHdr,	Vector *pos, Quaternion
 #ifdef STUDIO_ENABLE_PERF_COUNTERS
 			pStudioHdr->m_nPerfUsedBones++;
 #endif
+#endif // L4D2
 		}
 	}
 
@@ -1835,7 +2420,15 @@ inline bool PoseIsAllZeros(
 //			the triangle is a right triangle, and the diagonal is between elements [0] and [2]
 //-----------------------------------------------------------------------------
 
-static ConVar anim_3wayblend( "anim_3wayblend", "1", FCVAR_REPLICATED, "Toggle the 3-way animation blending code." );
+static ConVar anim_3wayblend( "anim_3wayblend", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+, "Toggle the 3-way animation blending code." );
 
 void Calc3WayBlendIndices( int i0, int i1, float s0, float s1, const mstudioseqdesc_t &seqdesc, int *pAnimIndices, float *pWeight )
 {
@@ -2624,14 +3217,14 @@ public:
          X[i] = P[i];
       normalize(X);
 
-// Its y axis is perpendicular to P, so Y = unit( E - X(E·X) ).
+// Its y axis is perpendicular to P, so Y = unit( E - X(EÂ·X) ).
 
       float dDOTx = dot(D,X);
       for (i = 0 ; i < 3 ; i++)
          Y[i] = D[i] - dDOTx * X[i];
       normalize(Y);
 
-// Its z axis is perpendicular to both X and Y, so Z = X×Y.
+// Its z axis is perpendicular to both X and Y, so Z = XÃ—Y.
 
       cross(X,Y,Z);
 
@@ -3049,6 +3642,9 @@ bool Studio_IKSequenceError( const CStudioHdr *pStudioHdr, mstudioseqdesc_t &seq
 
 
 	mstudioikrule_t *prevRule = NULL;
+#if defined( L4D2 )
+	float flPreviousStart = 0.0f;
+#endif // L4D2
 
 	// find overall influence
 	for (i = 0; i < 4; i++)
@@ -3063,10 +3659,45 @@ bool Studio_IKSequenceError( const CStudioHdr *pStudioHdr, mstudioseqdesc_t &seq
 
 			mstudioikrule_t *pRule = panim[i]->pIKRule( iRule );
 			if (pRule == NULL)
+#if defined( L4D2 )
+			{
+				const byte *pZero = (const byte *)panim[i]->pIKRuleZeroFrame( iRule );
+				if ( !pZero )
+					return false;
+
+				// server 0x4D66F0: zero is the original "no previous start"
+				// sentinel, even when an earlier rule really starts at zero.
+				double start = FrameAnimHalf( FrameAnimWord( pZero + 4 ) );
+				float dt = 0.0f;
+				if ( flPreviousStart == 0.0f )
+					flPreviousStart = (float)start;
+				else if ( start - flPreviousStart > 0.5 )
+					dt = -1.0f;
+				else if ( start - flPreviousStart < -0.5 )
+					dt = 1.0f;
+
+				FrameAnimIKInfluence( pZero, start, dt, weight[i], ikRule );
+				continue;
+			}
+#else
 				return false;
+#endif // L4D2
 
 			float dt = 0.0;
+#if defined( L4D2 )
+			if ( panim[i]->flags & STUDIO_FRAMEANIM )
+			{
+				if ( flPreviousStart == 0.0f )
+					flPreviousStart = pRule->start;
+				else if ( pRule->start - flPreviousStart > 0.5f )
+					dt = -1.0f;
+				else if ( pRule->start - flPreviousStart < -0.5f )
+					dt = 1.0f;
+			}
+			else if (prevRule != NULL)
+#else
 			if (prevRule != NULL)
+#endif // L4D2
 			{
 				if (pRule->start - prevRule->start > 0.5)
 				{
@@ -3137,8 +3768,34 @@ bool Studio_IKSequenceError( const CStudioHdr *pStudioHdr, mstudioseqdesc_t &seq
 
 			mstudioikrule_t *pRule = panim[i]->pIKRule( iRule );
 			if (pRule == NULL)
+#if defined( L4D2 )
+			{
+				const byte *pZero = (const byte *)panim[i]->pIKRuleZeroFrame( iRule );
+				if ( !pZero )
+					return false;
+				ikRule.type = IK_RELEASE;
+				ikRule.chain = (short)FrameAnimWord( pZero );
+				ikRule.slot = (short)FrameAnimWord( pZero + 2 );
+				ikRule.bone = -1;
+			}
+			else
+			{
+				ikRule.chain = pRule->chain;	// FIXME: this is anim local
+				ikRule.bone = pRule->bone;		// FIXME: this is anim local
+				ikRule.type = pRule->type;
+				ikRule.slot = pRule->slot;
+#else
 				return false;
+#endif // L4D2
 
+#if defined( L4D2 )
+				ikRule.height += pRule->height * weight[i];
+				ikRule.floor += pRule->floor * weight[i];
+				ikRule.radius += pRule->radius * weight[i];
+				ikRule.drop += pRule->drop * weight[i];
+				ikRule.top += pRule->top * weight[i];
+			}
+#else
 			ikRule.chain = pRule->chain;	// FIXME: this is anim local
 			ikRule.bone = pRule->bone;		// FIXME: this is anim local
 			ikRule.type = pRule->type;
@@ -3149,6 +3806,7 @@ bool Studio_IKSequenceError( const CStudioHdr *pStudioHdr, mstudioseqdesc_t &seq
 			ikRule.radius += pRule->radius * weight[i];
 			ikRule.drop += pRule->drop * weight[i];
 			ikRule.top += pRule->top * weight[i];
+#endif // L4D2
 
 			// keep track of tail condition
 			ikRule.release += Studio_IKTail( ikRule, flCycle ) * weight[i];
@@ -5131,6 +5789,25 @@ float Studio_SetPoseParameter( const CStudioHdr *pStudioHdr, int iParameter, flo
 // Output: 	returns ranged value
 //-----------------------------------------------------------------------------
 
+// Existing public/bone_setup.cpp, SAME Studio_GetPoseParameter owner only.
+// C342640..342679 returns the FLD/FSUB/FMUL/FADD expression UNSPILLED.
+#if defined( L4D2 )
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#endif
+double Studio_GetPoseParameter( const CStudioHdr *studio, int index, float normalized )
+{
+	if ( index < 0 || index >= studio->GetNumPoseParameters() )
+		return 0.0;
+	const mstudioposeparamdesc_t &pose = const_cast< CStudioHdr * >( studio )->pPoseParameter( index );
+	const double start = static_cast< double >( pose.start );
+	const double end = static_cast< double >( pose.end );
+	return start + ( end - start ) * static_cast< double >( normalized );
+}
+#ifdef _MSC_VER
+#pragma float_control( pop )
+#endif
+#else
 float Studio_GetPoseParameter( const CStudioHdr *pStudioHdr, int iParameter, float ctlValue )
 {
 	if (iParameter < 0 || iParameter >= pStudioHdr->GetNumPoseParameters())
@@ -5142,6 +5819,7 @@ float Studio_GetPoseParameter( const CStudioHdr *pStudioHdr, int iParameter, flo
 
 	return ctlValue * (PoseParam.end - PoseParam.start) + PoseParam.start;
 }
+#endif // L4D2 / unchanged SDK Studio_GetPoseParameter
 
 
 #pragma warning (disable : 4701)
@@ -5552,6 +6230,22 @@ float Studio_CPS( const CStudioHdr *pStudioHdr, mstudioseqdesc_t &seqdesc, int i
 // Purpose: returns length (in seconds) of a sequence (seconds/cycle)
 //-----------------------------------------------------------------------------
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+double Studio_Duration( const CStudioHdr *studio, int sequence, const float poseParameters[] )
+{
+	mstudioseqdesc_t &description = ( (CStudioHdr *)studio )->pSeqdesc( sequence );
+	const float cps = Studio_CPS( studio, description, sequence, poseParameters );
+	if ( cps == 0.0f )
+		return 0.0;
+	return 1.0 / static_cast< double >( cps );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 float Studio_Duration( const CStudioHdr *pStudioHdr, int iSequence, const float poseParameter[] )
 {
 	mstudioseqdesc_t &seqdesc = ((CStudioHdr *)pStudioHdr)->pSeqdesc( iSequence );
@@ -5562,6 +6256,7 @@ float Studio_Duration( const CStudioHdr *pStudioHdr, int iSequence, const float 
 
 	return 1.0f/cps;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -5957,7 +6652,11 @@ bool Studio_PrefetchSequence( const CStudioHdr *pStudioHdr, int iSequence )
 		{
 			mstudioanimdesc_t &animdesc = ((CStudioHdr *)pStudioHdr)->pAnimdesc( seqdesc.anim( i, j ) );
 			int iFrame = 0;
+#if defined( L4D2 )
+			const byte *panim = animdesc.pAnim( &iFrame );
+#else
 			mstudioanim_t *panim = animdesc.pAnim( &iFrame );
+#endif // L4D2
 			if ( !panim )
 			{
 				pendingload = true;

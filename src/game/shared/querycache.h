@@ -29,6 +29,9 @@ enum EQueryType_t
 	EQUERY_TRACELINE,
 	EQUERY_ENTITY_LOS_CHECK,
 
+#if defined( L4D2 )
+	EQUERY_ENTITY_LOS_CHECK_ALLOW_HIT_TARGET,
+#endif
 };
 
 enum EEntityOffsetMode_t
@@ -87,6 +90,18 @@ bool IsLineOfSightBetweenTwoEntitiesClear( CBaseEntity *pSrcEntity,
 										   ShouldHitFunc_t pTraceFilterCallback,
 										   float flMinimumUpdateInterval = 0.2
 	);
+#if defined( L4D2 )
+bool IsLineOfSightBetweenTwoEntitiesClear( CBaseEntity *pSrcEntity,
+										   EEntityOffsetMode_t nSrcOffsetMode,
+										   CBaseEntity *pDestEntity,
+										   EEntityOffsetMode_t nDestOffsetMode,
+										   CBaseEntity *pSkipEntity,
+										   int nCollisionGroup,
+										   unsigned int nTraceMask,
+										   ShouldHitFunc_t pTraceFilterCallback,
+										   float flMinimumUpdateInterval,
+										   bool includeSkipEntity );
+#endif
 
 
 

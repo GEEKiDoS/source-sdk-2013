@@ -35,6 +35,9 @@
 #endif // TF_DLL
 
 class CNavArea;
+#if defined( L4D2 )
+struct fogparams_t;
+#endif
 class CScriptedTarget;
 typedef CHandle<CBaseCombatWeapon> CBaseCombatWeaponHandle;
 
@@ -119,6 +122,18 @@ class CBaseCombatCharacter : public CBaseFlex
 public:
 	CBaseCombatCharacter(void);
 	~CBaseCombatCharacter(void);
+#if defined( L4D2 )
+	int GetActorID() const { return m_nActorID; }
+	virtual void OnHitByVomitJar( CBaseEntity *attacker ) {} // Native043930 RET4.
+	virtual bool IsIT() const { return false; } // Native043940 genuine base policy.
+	void PlayTerrorFootstepSound( const Vector &origin, bool left, bool shallow, bool wading, bool force );
+	virtual void OnTerrorFootstep( const Vector &origin, bool left, bool force );
+	virtual surfacedata_t *GetTerrorFootstepSurface( int &surfaceIndex );
+	virtual const char *GetTerrorFootstepSoundName( const char *sound, bool right, float speed, bool force );
+	virtual bool ShouldPlayTerrorFootstepSound() const;
+	virtual bool IsTerrorFootstepSurfaceValid( float speed, bool force ) const;
+	virtual float GetTerrorFootstepRunThreshold() const;
+#endif
 
 	DECLARE_SERVERCLASS();
 	DECLARE_DATADESC();
@@ -182,6 +197,12 @@ public:
 	virtual float		GetFogObscuredRatio( const Vector &target ) const;///< return 0-1 ratio where zero is not obscured, and 1 is completely obscured
 	virtual float		GetFogObscuredRatio( CBaseEntity *target ) const;	///< return 0-1 ratio where zero is not obscured, and 1 is completely obscured
 	virtual float		GetFogObscuredRatio( float range ) const;		///< return 0-1 ratio where zero is not obscured, and 1 is completely obscured
+#if defined( L4D2 )
+	virtual bool GetFogParams( fogparams_t *fog ) const;
+	void AddFogTrigger( CBaseEntity *trigger );
+	void RemoveFogTrigger( CBaseEntity *trigger );
+	CBaseEntity *GetFogTrigger() const;
+#endif
 
 
 	// -----------------------
@@ -218,6 +239,9 @@ public:
 	virtual int			GetAmmoCount( int iAmmoIndex ) const;
 	int					GetAmmoCount( char *szName ) const;
 
+#ifdef L4D2
+	virtual bool IsGhost() const { return false; } // S43960, native combat-character default.
+#endif
 	virtual Activity	NPC_TranslateActivity( Activity baseAct );
 
 	// -----------------------
@@ -263,7 +287,11 @@ public:
 	virtual int				OnTakeDamage_Dying( const CTakeDamageInfo &info );
 	virtual int				OnTakeDamage_Dead( const CTakeDamageInfo &info );
 
+#if defined( L4D2 )
+	virtual double GetAliveDuration( void ) const;
+#else
 	virtual float			GetAliveDuration( void ) const;			// return time we have been alive (only valid when alive)
+#endif
 
 	virtual void 			OnFriendDamaged( CBaseCombatCharacter *pSquadmate, CBaseEntity *pAttacker ) {}
 	virtual void 			NotifyFriendsOfDamage( CBaseEntity *pAttackerEntity ) {}
@@ -316,6 +344,9 @@ public:
 	virtual CBaseEntity		*CheckTraceHullAttack( const Vector &vStart, const Vector &vEnd, const Vector &mins, const Vector &maxs, int iDamage, int iDmgType, float flForceScale = 1.0f, bool bDamageAnyNPC = false );
 
 	virtual CBaseCombatCharacter *MyCombatCharacterPointer( void ) { return this; }
+#if defined( L4D2 )
+	virtual int				GetZombieClass() const { return 9; }
+#endif
 
 	// VPHYSICS
 	virtual void			VPhysicsShadowCollision( int index, gamevcollisionevent_t *pEvent );
@@ -396,7 +427,11 @@ public:
 	void SetRelationshipString( string_t theString ) { m_RelationshipString = theString; }
 
 	float				GetNextAttack() const { return m_flNextAttack; }
-	void				SetNextAttack( float flWait ) { m_flNextAttack = flWait; }
+#if defined( L4D2 )
+	void SetNextAttack( float flWait );
+#else
+	void SetNextAttack( float flWait ) { m_flNextAttack = flWait; }
+#endif
 
 	bool				m_bForceServerRagdoll;
 
@@ -472,12 +507,19 @@ protected:
 #endif // GLOWS_ENABLE
 
 private:
+#if defined( L4D2 )
+	int m_nActorID; // Native6712, plain server identity; no wire/save/prediction property.
+#endif
 	Hull_t		m_eHull;
 
 	void				UpdateGlowEffect( void );
 	void				DestroyGlowEffect( void );
 
 protected:
+#if defined( L4D2 )
+	CUtlVector< EHANDLE > m_hTriggerFogList;
+	mutable EHANDLE m_hLastFogTrigger;
+#endif
 	int			m_bloodColor;			// color of blood particless
 
 	// -------------------
@@ -492,6 +534,9 @@ public:
 	static int					GetInteractionID();	// Returns the next interaction #
 
 protected:
+#if defined( L4D2 )
+	CountdownTimer m_footstepTimer;
+#endif
 	// Visibility-related stuff
 	bool ComputeLOS( const Vector &vecEyePosition, const Vector &vecTarget ) const;
 private:
@@ -524,6 +569,9 @@ protected:
 
 	// Usable character items 
 	CNetworkArray( CBaseCombatWeaponHandle, m_hMyWeapons, MAX_WEAPONS );
+#if defined( L4D2 )
+	unsigned char m_weaponIndexByID[56];
+#endif
 
 	CNetworkHandle( CBaseCombatWeapon, m_hActiveWeapon );
 
@@ -549,10 +597,18 @@ protected:
 };
 
 
+#if defined( L4D2 )
+inline double CBaseCombatCharacter::GetAliveDuration( void ) const
+{
+	const float timestamp = m_aliveTimer.m_timestamp;
+	return timestamp > 0.0f ? (double)gpGlobals->curtime - (double)timestamp : 99999.8984375;
+}
+#else
 inline float CBaseCombatCharacter::GetAliveDuration( void ) const
 {
 	return m_aliveTimer.GetElapsedTime();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -608,5 +664,19 @@ public:
 	float				m_flForceScale;
 	bool				m_bDamageAnyNPC;
 };
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+inline void CBaseCombatCharacter::SetNextAttack( float flWait )
+{
+	if ( m_flNextAttack.Get() != flWait )
+		m_flNextAttack.SetDirect( flWait );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
 
 #endif // BASECOMBATCHARACTER_H

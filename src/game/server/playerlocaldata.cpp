@@ -30,9 +30,15 @@ BEGIN_SEND_TABLE_NOBASE( CPlayerLocalData, DT_Local )
 	SendPropInt		(SENDINFO(m_bDucked),	1, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_bDucking),	1, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_bInDuckJump),	1, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nDuckTimeMsecs ), 10, SPROP_UNSIGNED | SPROP_CHANGES_OFTEN ),
+	SendPropInt( SENDINFO( m_nDuckJumpTimeMsecs ), 10, SPROP_UNSIGNED ),
+	SendPropInt( SENDINFO( m_nJumpTimeMsecs ), 10, SPROP_UNSIGNED ),
+#else
 	SendPropFloat	(SENDINFO(m_flDucktime), 12, SPROP_ROUNDDOWN|SPROP_CHANGES_OFTEN, 0.0f, 2048.0f ),
 	SendPropFloat	(SENDINFO(m_flDuckJumpTime), 12, SPROP_ROUNDDOWN, 0.0f, 2048.0f ),
 	SendPropFloat	(SENDINFO(m_flJumpTime), 12, SPROP_ROUNDDOWN, 0.0f, 2048.0f ),
+#endif
 #if PREDICTION_ERROR_CHECK_LEVEL > 1 
 	SendPropFloat	(SENDINFO(m_flFallVelocity), 32, SPROP_NOSCALE ),
 
@@ -46,48 +52,118 @@ BEGIN_SEND_TABLE_NOBASE( CPlayerLocalData, DT_Local )
 
 #else
 	// misyl: was causing some rare pred errors at 17 bits...
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO( m_flFallVelocity ), 17, SPROP_CHANGES_OFTEN, -4096.0f, 4096.0f ),
+#else
 	SendPropFloat	(SENDINFO(m_flFallVelocity), 32, SPROP_NOSCALE | SPROP_CHANGES_OFTEN, -4096.0f, 4096.0f ),
+#endif
+#if defined( L4D2 )
+	SendPropVector	(SENDINFO(m_vecPunchAngle),      -1,  SPROP_COORD_MP|SPROP_CHANGES_OFTEN),
+#else
 	SendPropVector	(SENDINFO(m_vecPunchAngle),      -1,  SPROP_COORD|SPROP_CHANGES_OFTEN),
+#endif
+#if defined( L4D2 )
+	SendPropVector	(SENDINFO(m_vecPunchAngleVel),   -1,  SPROP_COORD_MP ),
+#else
 	SendPropVector	(SENDINFO(m_vecPunchAngleVel),   -1,  SPROP_COORD| SPROP_CHANGES_OFTEN ),
+#endif
 #endif
 	SendPropInt		(SENDINFO(m_bDrawViewmodel), 1, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_bWearingSuit), 1, SPROP_UNSIGNED ),
 	SendPropBool	(SENDINFO(m_bPoisoned)),
+#if !defined( L4D2 )
 	SendPropBool	(SENDINFO(m_bForceLocalPlayerDraw)),
+#endif
 
 	SendPropFloat	(SENDINFO(m_flStepSize), 16, SPROP_ROUNDUP, 0.0f, 128.0f ),
 	SendPropInt		(SENDINFO(m_bAllowAutoMovement),1, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropBool( SENDINFO( m_bAutoAimTarget ) ),
+#endif
 
 	// 3d skybox data
 	SendPropInt(SENDINFO_STRUCTELEM(m_skybox3d.scale), 12),
+#if defined( L4D2 )
+	SendPropVector	(SENDINFO_STRUCTELEM(m_skybox3d.origin),      -1,  SPROP_COORD_MP),
+#else
 	SendPropVector	(SENDINFO_STRUCTELEM(m_skybox3d.origin),      -1,  SPROP_COORD),
+#endif
 	SendPropInt	(SENDINFO_STRUCTELEM(m_skybox3d.area),	8, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropBool( SENDINFO_STRUCTELEM( m_skybox3d.bClip3DSkyBoxNearToWorldFar ) ),
+	SendPropFloat( SENDINFO_STRUCTELEM( m_skybox3d.flClip3DSkyBoxNearToWorldFarOffset ), 0, SPROP_NOSCALE ),
+#endif
 	SendPropInt( SENDINFO_STRUCTELEM( m_skybox3d.fog.enable ), 1, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO_STRUCTELEM( m_skybox3d.fog.blend ), 1, SPROP_UNSIGNED ),
+#if !defined( L4D2 )
 	SendPropInt( SENDINFO_STRUCTELEM( m_skybox3d.fog.radial ), 1, SPROP_UNSIGNED ),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTELEM(m_skybox3d.fog.dirPrimary), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTELEM(m_skybox3d.fog.dirPrimary), -1, SPROP_COORD),
+#endif
 	SendPropInt( SENDINFO_STRUCTELEM( m_skybox3d.fog.colorPrimary ), 32, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO_STRUCTELEM( m_skybox3d.fog.colorSecondary ), 32, SPROP_UNSIGNED ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_skybox3d.fog.start ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_skybox3d.fog.end ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO_STRUCTELEM( m_skybox3d.fog.maxdensity ), 0, SPROP_NOSCALE ),
+#if defined( L4D2 )
+	SendPropFloat( SENDINFO_STRUCTELEM( m_skybox3d.fog.HDRColorScale ), 0, SPROP_NOSCALE ),
+#endif
 
+#if !defined( L4D2 )
 	SendPropEHandle( SENDINFO_STRUCTELEM( m_PlayerFog.m_hCtrl ) ),
+#endif
 
 	// audio data
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 0 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 0 ), -1, SPROP_COORD),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 1 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 1 ), -1, SPROP_COORD),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 2 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 2 ), -1, SPROP_COORD),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 3 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 3 ), -1, SPROP_COORD),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 4 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 4 ), -1, SPROP_COORD),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 5 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 5 ), -1, SPROP_COORD),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 6 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 6 ), -1, SPROP_COORD),
+#endif
+#if defined( L4D2 )
+	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 7 ), -1, SPROP_COORD_MP),
+#else
 	SendPropVector( SENDINFO_STRUCTARRAYELEM( m_audio.localSound, 7 ), -1, SPROP_COORD),
+#endif
 	SendPropInt( SENDINFO_STRUCTELEM( m_audio.soundscapeIndex ), 17, 0 ),
 	SendPropInt( SENDINFO_STRUCTELEM( m_audio.localBits ), NUM_AUDIO_LOCAL_SOUNDS, SPROP_UNSIGNED ),
 	SendPropInt( SENDINFO_STRUCTELEM( m_audio.entIndex ) ),
 
+#if !defined( L4D2 )
 	SendPropString( SENDINFO( m_szScriptOverlayMaterial ) ),
+#endif
 END_SEND_TABLE()
 
 BEGIN_SIMPLE_DATADESC( fogplayerparams_t )
@@ -118,7 +194,13 @@ BEGIN_SIMPLE_DATADESC( fogparams_t )
 	DEFINE_FIELD( endLerpTo, FIELD_FLOAT ),
 	DEFINE_FIELD( lerptime, FIELD_TIME ),
 	DEFINE_FIELD( duration, FIELD_FLOAT ),
+#if defined( L4D2 )
+	DEFINE_FIELD( maxdensityLerpTo, FIELD_FLOAT ),
+	DEFINE_FIELD( skyboxFogFactor, FIELD_FLOAT ),
+	DEFINE_FIELD( skyboxFogFactorLerpTo, FIELD_FLOAT ),
+#else
 	DEFINE_FIELD( radial, FIELD_BOOLEAN ),
+#endif
 END_DATADESC()
 
 BEGIN_SIMPLE_DATADESC( sky3dparams_t )
@@ -148,9 +230,15 @@ BEGIN_SIMPLE_DATADESC( CPlayerLocalData )
 	DEFINE_FIELD( m_bDucked, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bDucking, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bInDuckJump, FIELD_BOOLEAN ),
+#if defined( L4D2 )
+	DEFINE_FIELD( m_nDuckTimeMsecs, FIELD_INTEGER ),
+	DEFINE_FIELD( m_nDuckJumpTimeMsecs, FIELD_INTEGER ),
+	DEFINE_FIELD( m_nJumpTimeMsecs, FIELD_INTEGER ),
+#else
 	DEFINE_FIELD( m_flDucktime, FIELD_TIME ),
 	DEFINE_FIELD( m_flDuckJumpTime, FIELD_TIME ),
 	DEFINE_FIELD( m_flJumpTime, FIELD_TIME ),
+#endif
 	DEFINE_FIELD( m_nStepside, FIELD_INTEGER ),
 	DEFINE_FIELD( m_flFallVelocity, FIELD_FLOAT ),
 	DEFINE_FIELD( m_nOldButtons, FIELD_INTEGER ),

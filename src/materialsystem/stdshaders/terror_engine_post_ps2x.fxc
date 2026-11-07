@@ -1,0 +1,142 @@
+// L4D2 Engine_Post reconstruction from the pinned retail shader bytecode.
+// Original source CRC AA426DD5, engine_post_ps20b.vcs static 0/8, dynamics
+// 0..251. See E:/l4d2_work/m4/postprocess_integration.txt for IDs and order.
+// STATIC: "CONVERT_FROM_LINEAR" "0..1" [ps20b]
+// DYNAMIC: "COL_CORRECT_NUM_LOOKUPS" "0..3"
+// DYNAMIC: "NOISE_ENABLE" "0..1" [ps20b]
+// DYNAMIC: "VIGNETTE_ENABLE" "0..1" [ps20b]
+// DYNAMIC: "LOCAL_CONTRAST_ENABLE" "0..1" [ps20b]
+// DYNAMIC: "BLURRED_VIGNETTE_ENABLE" "0..1" [ps20b]
+// DYNAMIC: "VOMIT_ENABLE" "0..1"
+// SKIP: $BLURRED_VIGNETTE_ENABLE && !$LOCAL_CONTRAST_ENABLE [ps20b]
+
+#ifndef SHADER_MODEL_PS_2_B
+#define CONVERT_FROM_LINEAR 0
+#define NOISE_ENABLE 0
+#define VIGNETTE_ENABLE 0
+#define LOCAL_CONTRAST_ENABLE 0
+#define BLURRED_VIGNETTE_ENABLE 0
+#endif
+
+sampler2D BaseTextureSampler : register( s0 );
+sampler2D FBTextureSampler : register( s1 );
+sampler3D ColorCorrectionVolumeTexture0 : register( s2 );
+sampler3D ColorCorrectionVolumeTexture1 : register( s3 );
+sampler3D ColorCorrectionVolumeTexture2 : register( s4 );
+sampler2D NoiseSampler : register( s6 );
+sampler2D VignetteSampler : register( s7 );
+float4 uvTransform : register( c2 );
+float ColorCorrectionDefaultWeight : register( c3 );
+float4 ColorCorrectionVolumeWeights : register( c4 );
+float BloomFactor : register( c5 );
+float NoiseScale : register( c6 );
+float NoiseTime : register( c7 );
+float4 LocalContrastParams : register( c8 );
+float4 LocalContrastVignetteParams : register( c9 );
+float2 ScaleParams : register( c10 );
+float4 VomitColor1 : register( c11 );
+float4 VomitColor2 : register( c12 );
+float4 ViewportTransform : register( c13 );
+float4 InvViewportTransform : register( c14 );
+float4 ViewFadeColor : register( c15 );
+float2 DesaturationAndFade : register( c16 );
+
+float3 RetailLinearToSRGB( float3 color )
+{
+	float3 high = 1.055f * pow( color, 1.0f / 2.4f ) - 0.055f;
+	return float3( color.r <= 0.0031308f ? 12.92f * color.r : high.r,
+		color.g <= 0.0031308f ? 12.92f * color.g : high.g,
+		color.b <= 0.0031308f ? 12.92f * color.b : high.b );
+}
+
+float2 MirrorViewport( float2 uv )
+{
+	uv = uv * ViewportTransform.xy + ViewportTransform.zw;
+	// Retail uses min(abs(uv), 2-uv), not clamp, frac or mirrored texture wrap.
+	uv = min( abs( uv ), 2.0f - uv );
+	return uv * InvViewportTransform.xy + InvViewportTransform.zw;
+}
+
+float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
+{
+	float2 fbUV = bloomUV * uvTransform.wz + uvTransform.xy;
+	float4 bloom;
+	float3 color;
+#if VOMIT_ENABLE
+	float4 screen = tex2D( BaseTextureSampler, bloomUV );
+	float2 refract = ( screen.rg - 0.5f ) * VomitColor1.w;
+#if defined( SHADER_MODEL_PS_2_B )
+	fbUV = MirrorViewport( fbUV + refract );
+	float2 refractedBloomUV = MirrorViewport( bloomUV + refract );
+#else
+	// Retail PS20 does not mirror the viewport, and samples SmallFB0 using
+	// the refracted framebuffer UV, unlike the independent PS20b bloom UV.
+	fbUV += refract;
+	float2 refractedBloomUV = fbUV;
+#endif
+	color = tex2D( FBTextureSampler, fbUV ).rgb;
+#if CONVERT_FROM_LINEAR
+	color = RetailLinearToSRGB( color );
+#endif
+	bloom = tex2D( BaseTextureSampler, refractedBloomUV );
+	float3 vomitColor = screen.b * ( VomitColor2.rgb - VomitColor1.rgb ) + VomitColor1.rgb;
+	float3 tinted = color * ( screen.b * ( vomitColor - 1.0f ) + 1.0f );
+	// Blue is the original particle coverage, alpha is the separately blurred
+	// scene luminance. Neither is a network timer or a synthetic screen fade.
+	color = screen.b * ( vomitColor * bloom.a - tinted ) + tinted;
+#else
+	color = tex2D( FBTextureSampler, fbUV ).rgb;
+#if CONVERT_FROM_LINEAR
+	color = RetailLinearToSRGB( color );
+#endif
+	bloom = tex2D( BaseTextureSampler, bloomUV );
+#endif
+
+#if LOCAL_CONTRAST_ENABLE
+	float2 viewportUV = bloomUV * ViewportTransform.xy + ViewportTransform.zw;
+	float radial = length( viewportUV * 2.0f - 1.0f );
+	float vignette = saturate( ( radial - LocalContrastVignetteParams.x ) /
+		( LocalContrastVignetteParams.y - LocalContrastVignetteParams.x ) );
+	vignette = vignette * vignette * ( 3.0f - 2.0f * vignette );
+	float contrast = vignette * ( LocalContrastVignetteParams.z - LocalContrastParams.x ) + LocalContrastParams.x;
+	float delta = ( dot( color, float3( 0.299f, 0.587f, 0.114f ) ) - bloom.a ) * contrast;
+	color += max( delta, contrast >= 0.0f ? 0.0f : -1.0f );
+#if BLURRED_VIGNETTE_ENABLE
+	color = lerp( color, bloom.a, vignette * LocalContrastParams.z );
+#endif
+#endif
+
+	color = BloomFactor * bloom.rgb + color;
+	float3 fadeColor = DesaturationAndFade.y * ( ViewFadeColor.rgb * color - ViewFadeColor.rgb ) + ViewFadeColor.rgb;
+	color = lerp( color, fadeColor, ViewFadeColor.a );
+
+#if COL_CORRECT_NUM_LOOKUPS > 0
+	float3 lookupUV = color * ( 31.0f / 32.0f ) + ( 0.5f / 32.0f );
+	float3 corrected = tex3D( ColorCorrectionVolumeTexture0, lookupUV ).rgb * ColorCorrectionVolumeWeights.x;
+	corrected = color * ColorCorrectionDefaultWeight + corrected;
+#if COL_CORRECT_NUM_LOOKUPS > 1
+	corrected = tex3D( ColorCorrectionVolumeTexture1, lookupUV ).rgb * ColorCorrectionVolumeWeights.y + corrected;
+#endif
+#if COL_CORRECT_NUM_LOOKUPS > 2
+	corrected = tex3D( ColorCorrectionVolumeTexture2, lookupUV ).rgb * ColorCorrectionVolumeWeights.z + corrected;
+#endif
+	color = corrected;
+#endif
+
+#if VIGNETTE_ENABLE
+	float topVignette = saturate( tex2D( VignetteSampler, bloomUV * ( 31.0f / 32.0f ) + ( 0.5f / 32.0f ) ).r * 0.55f + 0.46f );
+	color *= ScaleParams.y * ( topVignette - 1.0f ) + 1.0f;
+#endif
+#if NOISE_ENABLE
+	float n0 = tex2D( NoiseSampler, bloomUV * 10.0f + NoiseTime ).g;
+	float n1 = tex2D( NoiseSampler, bloomUV.yx * 20.0f - NoiseTime ).g;
+	float noise = tex2D( NoiseSampler, float2( n0, n1 ) ).g;
+	float luminance = saturate( dot( color, float3( 0.2125f, 0.7154f, 0.0721f ) ) );
+	float shadow = saturate( pow( 1.0f - luminance, 12.0f ) ) * 0.8f + 0.2f;
+	color += ( noise * 0.3f - 0.15f ) * NoiseScale * shadow;
+#endif
+	color = ScaleParams.x * -color + color;
+	// Native pre-bloom tonemapping owns exposure. Retail static 0/8 does not
+	// call SDK FinalOutput or apply another tone-map / output sRGB transform.
+	return float4( color, 1.0f );
+}

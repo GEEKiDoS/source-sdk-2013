@@ -52,7 +52,11 @@ public:
 	int				GetTemplateIndexForTemplate( int iTemplate );
 
 	// Template instancing
+#if defined( L4D2 )
+	virtual bool CreateInstance( const Vector &vecOrigin, const QAngle &vecAngles, CUtlVector<CBaseEntity*> *pEntities, CBaseEntity *pEntityMaker = NULL, bool bCreateTime = false );
+#else
 	bool			CreateInstance( const Vector &vecOrigin, const QAngle &vecAngles, CUtlVector<CBaseEntity*> *pEntities );
+#endif
 	void			CreationComplete( const CUtlVector<CBaseEntity*> &entities );
 
 	// Inputs
@@ -99,7 +103,11 @@ public:
 
 	void			AddTemplate( const char *pClassname, HSCRIPT spawnTable );
 	void			SetGroupSpawnTables( HSCRIPT templateSpawnTable, HSCRIPT spawnTables );
+#if defined( L4D2 )
+	bool CreateInstance( const Vector &vecOrigin, const QAngle &vecAngles, CUtlVector<CBaseEntity*> *pEntities, CBaseEntity *pEntityMaker = NULL, bool bCreateTime = false ) OVERRIDE;
+#else
 	virtual bool	CreateInstance( const Vector &vecOrigin, const QAngle &vecAngles, CUtlVector<CBaseEntity*> *pEntities, CBaseEntity *pEntityMaker = NULL, bool bCreateTime = false );
+#endif
 	void			CreationComplete( const CUtlVector<CBaseEntity*> &entities );
 
 	// Inputs

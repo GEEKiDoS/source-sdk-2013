@@ -17,8 +17,132 @@
 #include "toolframework/itoolframework.h"
 #include "toolframework_client.h"
 
+#if defined( L4D2 )
+#include "c_baseanimating.h"
+#include "bone_setup.h"
+#include "datacache/imdlcache.h"
+#include "l4d2/terror_shareddefs.h"
+#include "cliententitylist.h"
+#include <xmmintrin.h>
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+#if defined( L4D2 )
+static ClientWeaponList_t s_ClientWeaponList;
+ClientWeaponList_t &GetClientWeaponList()
+{
+	return s_ClientWeaponList;
+}
+
+#endif
+#if defined( L4D2 )
+extern ConVar cl_viewmodelsclonedasworld;
+
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+
+class C_CombatWeaponClone : public C_BaseAnimating
+{
+public:
+	DECLARE_CLASS( C_CombatWeaponClone, C_BaseAnimating );
+	explicit C_CombatWeaponClone( C_BaseCombatWeapon *weapon );
+	virtual ~C_CombatWeaponClone();
+	void UpdateClone();
+	virtual bool ShouldDraw() OVERRIDE;
+	virtual int DrawModel( int flags ) OVERRIDE;
+	virtual bool SetupBones( matrix3x4_t *bones, int maximum, int mask, float time ) OVERRIDE;
+	virtual bool GetStencilState( ShaderStencilState_t &state ) OVERRIDE;
+
+private:
+	C_BaseCombatWeapon *m_pOriginalWeapon; //2392, genuine raw weapon owner pointer.
+	int m_nLastUpdateTime; //2396, INTEGER curtime cache, no native ctor write.
+};
+
+C_CombatWeaponClone::C_CombatWeaponClone( C_BaseCombatWeapon *weapon )
+{
+	m_pOriginalWeapon = weapon;
+	InitializeAsClientEntity( weapon->GetWorldModel(), false ); // Native ignores bool.
+}
+
+C_CombatWeaponClone::~C_CombatWeaponClone()
+{
+	m_pOriginalWeapon->OnWeaponCloneDestroyed(); // C40E60 BEFORE base/M7 lifetime.
+}
+
+void C_CombatWeaponClone::UpdateClone()
+{
+	const float now = gpGlobals->curtime;
+	if ( static_cast< float >( m_nLastUpdateTime ) == now )
+		return;
+	// Preserve original bug: integer storage compared to FLOAT curtime, NOT a
+	// frame/tick cache. CVTT has the real INT_MIN indefinite for out-of-range.
+	m_nLastUpdateTime = _mm_cvttss_si32( _mm_set_ss( now ) );
+	const int attachment = m_pOriginalWeapon->GetParentAttachment();
+	C_BaseEntity *parent = m_pOriginalWeapon->GetMoveParent();
+	SetParent( parent, attachment );
+	SetLocalOrigin( m_pOriginalWeapon->GetLocalOrigin() );
+	SetLocalAngles( m_pOriginalWeapon->GetLocalAngles() );
+	SetCycle( m_pOriginalWeapon->GetCycle() );
+	SetEffects( m_pOriginalWeapon->GetEffects() );
+	m_flAnimTime = m_pOriginalWeapon->m_flAnimTime; // Real root friend; NO setter/watch reset.
+	SetBody( m_pOriginalWeapon->GetBody() ); // Whole changed-only2C130, same42570 owner.
+	SetSkin( m_pOriginalWeapon->GetSkin() ); // Reuse existing2C110 owner, no extra refresh.
+	m_flPlaybackRate = static_cast< float >( m_pOriginalWeapon->GetEffectivePlaybackRate() );
+	const int worldIndex = m_pOriginalWeapon->GetWorldModelIndex();
+	if ( GetModelIndex() != worldIndex )
+		SetModelIndex( m_pOriginalWeapon->GetWorldModelIndex() ); // Genuine SECOND query.
+	CStudioHdr *studio = GetModelPtr();
+	if ( studio && m_pOriginalWeapon->GetSequence() >= studio->GetNumSeq() )
+		SetSequence( 0 );
+	else
+		SetSequence( m_pOriginalWeapon->GetSequence() );
+	SetBodygroup( 1, m_pOriginalWeapon->GetOwnerEntity() != NULL ? 1 : 0 );
+	GlowProp()->SetType( m_pOriginalWeapon->GlowProp()->GetType() );
+	GlowProp()->SetRange( m_pOriginalWeapon->GlowProp()->GetRange() );
+	// Native109810 raw packed override DOES NOT refresh cached float RGB.
+	GlowProp()->SetColorOverride( m_pOriginalWeapon->GlowProp()->GetColorOverride().GetRawColor() );
+	SetRenderAlphaModulation( m_pOriginalWeapon->m_nRenderAlphaModulation );
+	SetRenderAlphaFadeDistances( m_pOriginalWeapon->m_flRenderAlphaFadeScale,
+		static_cast< float >( m_pOriginalWeapon->m_nRenderAlphaFadeMin ),
+		static_cast< float >( m_pOriginalWeapon->m_nRenderAlphaFadeMax ) );
+}
+
+// C6E500 calls the weapon's PRIMARY visibility policy, not C40CD0's
+// renderable wrapper, which necessarily hides the original while this exists.
+bool C_CombatWeaponClone::ShouldDraw()
+{
+	return m_pOriginalWeapon->ShouldDrawWeapon() && m_pOriginalWeapon->GetOwner() &&
+		!m_pOriginalWeapon->IsDormant() && C_BaseEntity::ShouldDraw();
+}
+
+// Whole C6E8B0, projected onto existing one-arg DrawModel. Incoming per-pass
+// blend/color were applied by the caller. Never substitute GetFxBlend()/255.
+int C_CombatWeaponClone::DrawModel( int flags )
+{
+	if ( m_pOriginalWeapon->IsCarriedByObservedPlayer() )
+		return 0;
+	UpdateClone();
+	if ( !ShouldDraw() )
+		return 0;
+	return BaseClass::DrawModel( flags );
+}
+
+bool C_CombatWeaponClone::SetupBones( matrix3x4_t *bones, int maximum, int mask, float time )
+{
+	UpdateClone();
+	return BaseClass::SetupBones( bones, maximum, mask, time );
+}
+
+bool C_CombatWeaponClone::GetStencilState( ShaderStencilState_t &state )
+{
+	return m_pOriginalWeapon->GetStencilState( state );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Gets the local client's active weapon, if any.
@@ -76,11 +200,14 @@ void C_BaseCombatWeapon::NotifyShouldTransmit( ShouldTransmitState_t state )
 
 
 //-----------------------------------------------------------------------------
-// Purpose: To wrap PORTAL mod specific functionality into one place
+// Purpose: Select the local viewmodel using the game's local-model policy.
 //-----------------------------------------------------------------------------
 static inline bool ShouldDrawLocalPlayerViewModel( void )
 {
-#if defined( PORTAL )
+#if defined( L4D2 )
+	C_BasePlayer *localPlayer = C_BasePlayer::GetLocalPlayer();
+	return localPlayer && !localPlayer->ShouldDrawLocalPlayerModel();
+#elif defined( PORTAL )
 	return false;
 #else
 	return !C_BasePlayer::ShouldDrawLocalPlayer();
@@ -102,6 +229,19 @@ void C_BaseCombatWeapon::OnRestore()
 	}
 }
 
+#if defined( L4D2 )
+#if defined( L4D2 )
+int C_BaseCombatWeapon::GetWorldModelIndex()
+{
+	return m_iWorldModelIndex;
+}
+#else
+int C_BaseCombatWeapon::GetWorldModelIndex()
+{
+	return m_iWorldModelIndex;
+}
+#endif
+#else
 int C_BaseCombatWeapon::GetWorldModelIndex( void )
 {
 	if ( GameRules() )
@@ -117,11 +257,63 @@ int C_BaseCombatWeapon::GetWorldModelIndex( void )
 
 	return m_iWorldModelIndex;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Input  : bnewentity - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
+{
+	UpdateVisibility();
+	BaseClass::OnDataChanged( updateType );
+	C_BasePlayer *owner = ToBasePlayer( GetOwnerEntity() );
+	if ( owner && owner->IsLocalPlayer() )
+	{
+		if ( m_iState != WEAPON_NOT_CARRIED && m_iOldState == WEAPON_NOT_CARRIED && ShouldDrawPickup() )
+		{
+			CBaseHudWeaponSelection *selection = GetHudWeaponSelection();
+			if ( selection )
+				selection->OnWeaponPickup( this );
+			owner->EmitSound( "Player.PickupWeapon" );
+		}
+	}
+	m_iOldState = m_iState;
+	m_bJustRestored = false;
+	bool removeClone = !cl_viewmodelsclonedasworld.GetBool();
+	if ( !removeClone )
+	{
+		const int worldIndex = GetWorldModelIndex();
+		removeClone = GetModelIndex() == worldIndex;
+		if ( !removeClone )
+			removeClone = IsDormant();
+	}
+	if ( removeClone )
+	{
+		if ( m_pWeaponClone )
+		{
+			ClientEntityList().AddToDeleteList( m_pWeaponClone );
+			m_pWeaponClone = NULL;
+		}
+	}
+	else if ( !m_pWeaponClone )
+	{
+		m_pWeaponClone = new C_CombatWeaponClone( this ); // Plain SDK allocation.
+	}
+	if ( m_pWeaponClone )
+	{
+		m_pWeaponClone->UpdateClone();
+		m_pWeaponClone->UpdateVisibility();
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
 {
 	BaseClass::OnDataChanged(updateType);
@@ -172,6 +364,7 @@ void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
 
 	m_bJustRestored = false;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Is anyone carrying it?
@@ -200,6 +393,14 @@ ShadowType_t C_BaseCombatWeapon::ShadowCastType()
 	if ( IsEffectActive( /*EF_NODRAW |*/ EF_NOSHADOW ) )
 		return SHADOWS_NONE;
 
+#if defined( L4D2 )
+	// C41380: inactive carried weapons have no world-model shadow.
+	if ( !GetOwner() )
+		return SHADOWS_RENDER_TO_TEXTURE;
+	if ( ShouldDrawUsingViewModel() )
+		return SHADOWS_NONE;
+	return m_iState == WEAPON_IS_CARRIED_BY_PLAYER ? SHADOWS_NONE : SHADOWS_RENDER_TO_TEXTURE;
+#else
 	if (!IsBeingCarried())
 		return SHADOWS_RENDER_TO_TEXTURE;
 
@@ -207,6 +408,7 @@ ShadowType_t C_BaseCombatWeapon::ShadowCastType()
 		return SHADOWS_NONE;
 
 	return SHADOWS_RENDER_TO_TEXTURE;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -326,7 +528,11 @@ bool C_BaseCombatWeapon::IsCarriedByLocalPlayer( void )
 //-----------------------------------------------------------------------------
 bool C_BaseCombatWeapon::ShouldDrawUsingViewModel( void )
 {
+#if defined( L4D2 )
+	return IsCarriedByLocalPlayer() && ShouldDrawLocalPlayerViewModel();
+#else
 	return IsCarriedByLocalPlayer() && !C_BasePlayer::ShouldDrawLocalPlayer();
+#endif
 }
 
 
@@ -392,10 +598,38 @@ bool C_BaseCombatWeapon::GetShootPosition( Vector &vOrigin, QAngle &vAngles )
 }
 
 
+#if defined( L4D2 )
+int C_BaseCombatWeapon::ObjectCaps()
+{
+	// C040BA0 retains the base query before adding both use capabilities.
+	return C_BaseEntity::ObjectCaps() | FCAP_IMPULSE_USE | FCAP_USE_IN_RADIUS;
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Output : Returns true on success, false on failure.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool C_BaseCombatWeapon::ShouldDraw()
+{
+	return m_pWeaponClone == NULL && ShouldDrawWeapon(); // C40CD0.
+}
+
+// C41020, primary363. Clone and particle consumers bypass C40CD0.
+bool C_BaseCombatWeapon::ShouldDrawWeapon()
+{
+	if ( m_iWorldModelIndex == 0 || IsEffectActive( EF_NODRAW ) ) return false;
+	C_BaseCombatCharacter *owner = GetOwner();
+	if ( !owner ) return true;
+	if ( owner->GetRenderTeamNumber() == TEAM_INFECTED ) return false;
+	const bool active = m_iState == WEAPON_IS_ACTIVE;
+	C_BasePlayer *local = C_BasePlayer::GetLocalPlayer();
+	if ( owner == local ) return active && local->ShouldDrawLocalPlayerModel();
+	if ( !owner->IsPlayer() ) return true;
+	return active;
+}
+#else
 bool C_BaseCombatWeapon::ShouldDraw( void )
 {
 	if ( m_iWorldModelIndex == 0 )
@@ -450,10 +684,17 @@ bool C_BaseCombatWeapon::ShouldDraw( void )
 	// These are carried by AIs; always show them
 	return true;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Return true if a weapon-pickup icon should be displayed when this weapon is received
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool C_BaseCombatWeapon::ShouldDrawPickup()
+{
+	return static_cast< signed char >( GetPosition() ) >= 0 && !m_bJustRestored;
+}
+#else
 bool C_BaseCombatWeapon::ShouldDrawPickup( void )
 {
 	if ( GetWeaponFlags() & ITEM_FLAG_NOITEMPICKUP )
@@ -464,11 +705,23 @@ bool C_BaseCombatWeapon::ShouldDrawPickup( void )
 
 	return true;
 }
+#endif
 		   
 //-----------------------------------------------------------------------------
 // Purpose: Render the weapon. Draw the Viewmodel if the weapon's being carried
 //			by this player, otherwise draw the worldmodel.
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+int C_BaseCombatWeapon::DrawModel( int flags )
+{
+	VPROF_BUDGET( "C_BaseCombatWeapon::DrawModel", VPROF_BUDGETGROUP_MODEL_RENDERING );
+	if ( !m_bReadyToDraw ) return 0;
+	if ( !IsVisible() ) return 0;
+	if ( IsCarriedByObservedPlayer() ) return 0; // B's sole410B0 NONCONST provider.
+	EnsureCorrectRenderingModel();
+	return BaseClass::DrawModel( flags );
+}
+#else
 int C_BaseCombatWeapon::DrawModel( int flags )
 {
 	VPROF_BUDGET( "C_BaseCombatWeapon::DrawModel", VPROF_BUDGETGROUP_MODEL_RENDERING );
@@ -494,6 +747,7 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 
 	return BaseClass::DrawModel( flags );
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -571,3 +825,120 @@ void C_BaseCombatWeapon::GetToolRecordingState( KeyValues *msg )
 		SetModelIndex( nModelIndex );
 	}
 }
+#if defined( L4D2 )
+bool C_BaseCombatWeapon::IsCarriedByObservedPlayer()
+{
+	C_BasePlayer *local = C_BasePlayer::GetLocalPlayer();
+	if ( local && local->GetObserverMode() != OBS_MODE_NONE && GetOwnerEntity() &&
+		local->GetObserverMode() == OBS_MODE_IN_EYE )
+	{
+		C_BaseEntity *target = local->GetObserverTarget();
+		if ( target == GetOwnerEntity() )
+			return true;
+	}
+	return false;
+}
+
+void C_BaseCombatWeapon::OnWeaponCloneDestroyed()
+{
+	m_pWeaponClone = NULL; // Whole C40E60, do not compare current clone identity.
+}
+
+void C_BaseCombatWeapon::UpdateOnRemove()
+{
+	if ( m_pWeaponClone )
+		m_pWeaponClone->Release();
+	m_pWeaponClone = NULL;
+	BaseClass::UpdateOnRemove();
+}
+
+// Native C19210 resolves weapon attachment names against the world model,
+// matching the clone used by GetAttachment, not the networked viewmodel.
+int C_BaseCombatWeapon::LookupAttachment( const char *attachmentName )
+{
+	const int worldModelIndex = GetWorldModelIndex();
+	if ( worldModelIndex != GetModelIndex() )
+	{
+		const model_t *worldModel = modelinfo->GetModel( worldModelIndex );
+		if ( worldModel )
+		{
+			const MDLHandle_t handle = modelinfo->GetCacheHandle( worldModel );
+			if ( handle != MDLHANDLE_INVALID )
+			{
+				const studiohdr_t *header = mdlcache->GetStudioHdr( handle );
+				if ( header )
+				{
+					CStudioHdr studioHdr( header, mdlcache );
+					return Studio_FindAttachment( &studioHdr, attachmentName ) + 1;
+				}
+			}
+		}
+	}
+	return BaseClass::LookupAttachment( attachmentName );
+}
+
+bool C_BaseCombatWeapon::GetAttachment( int number, Vector &origin )
+{
+	if ( !m_pWeaponClone )
+		return BaseClass::GetAttachment( number, origin );
+	m_pWeaponClone->UpdateClone();
+	return m_pWeaponClone->GetAttachment( number, origin );
+}
+
+bool C_BaseCombatWeapon::GetAttachment( int number, Vector &origin, QAngle &angles )
+{
+	if ( !m_pWeaponClone )
+		return BaseClass::GetAttachment( number, origin, angles );
+	m_pWeaponClone->UpdateClone();
+	return m_pWeaponClone->GetAttachment( number, origin, angles );
+}
+
+bool C_BaseCombatWeapon::GetAttachment( int number, matrix3x4_t &matrix )
+{
+	if ( !m_pWeaponClone )
+		return BaseClass::GetAttachment( number, matrix );
+	m_pWeaponClone->UpdateClone();
+	return m_pWeaponClone->GetAttachment( number, matrix );
+}
+
+bool C_BaseCombatWeapon::GetAttachmentVelocity( int number, Vector &origin, Quaternion &angles )
+{
+	if ( !m_pWeaponClone )
+		return BaseClass::GetAttachmentVelocity( number, origin, angles );
+	m_pWeaponClone->UpdateClone();
+	return m_pWeaponClone->GetAttachmentVelocity( number, origin, angles );
+}
+
+void C_BaseCombatWeapon::InvalidateAttachments()
+{
+	if ( m_pWeaponClone )
+	{
+		m_pWeaponClone->UpdateClone();
+		m_pWeaponClone->InvalidateAttachments();
+	}
+	BaseClass::InvalidateAttachments();
+}
+#endif
+
+#if defined( L4D2 )
+ConVar cl_viewmodelsclonedasworld( "cl_viewmodelsclonedasworld", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+void C_BaseCombatWeapon::EnsureCorrectRenderingModel()
+{
+	if ( cl_viewmodelsclonedasworld.GetBool() ) return;
+	C_BasePlayer *local = C_BasePlayer::GetLocalPlayer();
+	if ( !local || local != GetOwner() || local->ShouldDrawLocalPlayerModel() )
+	{
+		SetModelIndex( static_cast< short >( GetWorldModelIndex() ) );
+		CStudioHdr *header = GetModelPtr();
+		if ( header && header->IsValid() && GetSequence() >= header->GetNumSeq() )
+			SetSequence( 0 );
+		SetBodygroup( 1, GetOwner() ? 1 : 0 ); // Native FRESH owner after model/sequence callbacks.
+	}
+}
+#endif

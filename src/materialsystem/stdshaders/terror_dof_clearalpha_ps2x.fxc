@@ -1,0 +1,7 @@
+// Game-owned implementation of native dev/clearalpha's constant RGBA output.
+// The TerrorDOFClearAlpha class disables RGB writes and enables alpha writes.
+// This replaces CLEAR_ALPHA=1; Gaussian now uses its canonical source program.
+float4 main() : COLOR
+{
+	return float4( 0, 0, 0, 1 );
+}

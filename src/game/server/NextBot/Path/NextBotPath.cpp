@@ -19,9 +19,21 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar NextBotPathDrawIncrement( "nb_path_draw_inc", "100", FCVAR_CHEAT );
+ConVar NextBotPathDrawIncrement( "nb_path_draw_inc", "100", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 ConVar NextBotPathDrawSegmentCount( "nb_path_draw_segment_count", "100", FCVAR_CHEAT );
-ConVar NextBotPathSegmentInfluenceRadius( "nb_path_segment_influence_radius", "100", FCVAR_CHEAT );
+ConVar NextBotPathSegmentInfluenceRadius( "nb_path_segment_influence_radius", "100", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 //--------------------------------------------------------------------------------------------------------------
 Path::Path( void )

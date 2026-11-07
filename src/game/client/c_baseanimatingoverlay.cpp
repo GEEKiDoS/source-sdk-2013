@@ -37,12 +37,39 @@ C_BaseAnimatingOverlay::C_BaseAnimatingOverlay()
 
 
 
+#if defined( L4D2 )
+// Native3D4E0/3D510/3D2C0/3D160: pOut is genuinely unused.
+static void RecvProxy_AnimationLayerSequence( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	static_cast< C_AnimationLayer * >( pStruct )->SetSequence( pData->m_Value.m_Int );
+}
+static void RecvProxy_AnimationLayerCycle( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	static_cast< C_AnimationLayer * >( pStruct )->SetCycle( pData->m_Value.m_Float );
+}
+static void RecvProxy_AnimationLayerWeight( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	static_cast< C_AnimationLayer * >( pStruct )->SetWeight( pData->m_Value.m_Float );
+}
+static void RecvProxy_AnimationLayerOrder( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	static_cast< C_AnimationLayer * >( pStruct )->SetOrder( pData->m_Value.m_Int );
+}
+#endif
 BEGIN_RECV_TABLE_NOBASE(CAnimationLayer, DT_Animationlayer)
+#if defined( L4D2 )
+	RecvPropInt( RECVINFO_NAME( m_nSequence, m_nSequence ), 0, RecvProxy_AnimationLayerSequence ),
+	RecvPropFloat( RECVINFO_NAME( m_flCycle, m_flCycle ), 0, RecvProxy_AnimationLayerCycle ),
+	RecvPropFloat( RECVINFO_NAME( m_flPrevCycle, m_flPrevCycle ) ),
+	RecvPropFloat( RECVINFO_NAME( m_flWeight, m_flWeight ), 0, RecvProxy_AnimationLayerWeight ),
+	RecvPropInt( RECVINFO_NAME( m_nOrder, m_nOrder ), 0, RecvProxy_AnimationLayerOrder )
+#else
 	RecvPropInt(	RECVINFO_NAME(m_nSequence, m_nSequence)),
 	RecvPropFloat(	RECVINFO_NAME(m_flCycle, m_flCycle)),
 	RecvPropFloat(	RECVINFO_NAME(m_flPrevCycle, m_flPrevCycle)),
 	RecvPropFloat(	RECVINFO_NAME(m_flWeight, m_flWeight)),
 	RecvPropInt(	RECVINFO_NAME(m_nOrder, m_nOrder))
+#endif
 END_RECV_TABLE()
 
 const char *s_m_iv_AnimOverlayNames[C_BaseAnimatingOverlay::MAX_OVERLAYS] =
@@ -102,6 +129,10 @@ void ResizeAnimationLayerCallback( void *pStruct, int offsetToUtlVector, int len
 	// Rebind all the variables in the ent's list.
 	for ( int i=0; i < len; i++ )
 	{
+#if defined( L4D2 )
+		// Bind before AddVar snapshots current state; buffered copies retain owner.
+		pVec->Element( i ).m_pOwnerEntity = pEnt;
+#endif
 		IInterpolatedVar *pWatcher = &pVecIV->Element( i );
 		pWatcher->SetDebugName( s_m_iv_AnimOverlayNames[i] );
 		pEnt->AddVar( &pVec->Element( i ), pWatcher, LATCH_ANIMATION_VAR, true );
@@ -153,6 +184,21 @@ C_AnimationLayer* C_BaseAnimatingOverlay::GetAnimOverlay( int i )
 }
 
 
+#if defined( L4D2 )
+void C_BaseAnimatingOverlay::SetNumAnimOverlays( int num )
+{
+	while ( m_AnimOverlay.Count() < num )
+	{
+		const int index = m_AnimOverlay.AddToTail();
+		m_AnimOverlay[index].m_pOwnerEntity = this;
+	}
+	if ( m_AnimOverlay.Count() > num )
+	{
+		m_AnimOverlay.RemoveMultiple( num, m_AnimOverlay.Count() - num );
+		InvalidatePhysicsRecursive( 0x10 );
+	}
+}
+#else
 void C_BaseAnimatingOverlay::SetNumAnimOverlays( int num )
 {
 	if ( m_AnimOverlay.Count() < num )
@@ -164,6 +210,7 @@ void C_BaseAnimatingOverlay::SetNumAnimOverlays( int num )
 		m_AnimOverlay.RemoveMultiple( num, m_AnimOverlay.Count() - num );
 	}
 }
+#endif
 
 
 int C_BaseAnimatingOverlay::GetNumAnimOverlays() const
@@ -233,10 +280,18 @@ void C_BaseAnimatingOverlay::CheckForLayerChanges( CStudioHdr *hdr, float curren
 	#if 1 // _DEBUG
 			if (/* Q_stristr( hdr->pszName(), r_sequence_debug.GetString()) != NULL || */ r_sequence_debug.GetInt() == entindex())
 			{
+#if defined( L4D2 )
+				RecordSequenceDebug( t0, hdr->pSeqdesc( pHead->m_nSequence ).pszLabel(), pHead->m_flCycle, pHead->m_flWeight, VarArgs( "%d", i ) );
+				RecordSequenceDebug( t1, hdr->pSeqdesc( pPrev1->m_nSequence ).pszLabel(), pPrev1->m_flCycle, pPrev1->m_flWeight, VarArgs( "%d", i ) );
+				if ( pPrev2 )
+					RecordSequenceDebug( t2, hdr->pSeqdesc( pPrev2->m_nSequence ).pszLabel(), pPrev2->m_flCycle, pPrev2->m_flWeight, VarArgs( "%d", i ) );
+#else
 				DevMsgRT( "(%7.4f : %30s : %5.3f : %4.2f : %1d)\n", t0, hdr->pSeqdesc( pHead->m_nSequence ).pszLabel(),  (float)pHead->m_flCycle,  (float)pHead->m_flWeight, i );
 				DevMsgRT( "(%7.4f : %30s : %5.3f : %4.2f : %1d)\n", t1, hdr->pSeqdesc( pPrev1->m_nSequence ).pszLabel(),  (float)pPrev1->m_flCycle, (float)pPrev1->m_flWeight, i );
 				if (pPrev2)
 					DevMsgRT( "(%7.4f : %30s : %5.3f : %4.2f : %1d)\n", t2, hdr->pSeqdesc( pPrev2->m_nSequence ).pszLabel(),  (float)pPrev2->m_flCycle,  (float)pPrev2->m_flWeight, i );
+
+#endif
 			}
 	#endif
 
@@ -291,6 +346,53 @@ void C_BaseAnimatingOverlay::CheckForLayerChanges( CStudioHdr *hdr, float curren
 
 
 
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_BaseAnimatingOverlay::AccumulateLayers( IBoneSetup &boneSetup, Vector pos[], Quaternion q[], float currentTime )
+{
+	BaseClass::AccumulateLayers( boneSetup, pos, q, currentTime );
+	int layer[MAX_OVERLAYS];
+	for ( int i = 0; i < MAX_OVERLAYS; ++i )
+		layer[i] = MAX_OVERLAYS;
+	for ( int i = 0; i < m_AnimOverlay.Count(); ++i )
+	{
+		const int order = m_AnimOverlay[i].m_nOrder;
+		if ( order < MAX_OVERLAYS )
+		{
+			if ( layer[order] == MAX_OVERLAYS )
+				layer[order] = i;
+			else
+				m_AnimOverlay[i].SetOrder( MAX_OVERLAYS );
+		}
+	}
+	CheckForLayerChanges( boneSetup.GetStudioHdr(), currentTime );
+	const int sequences = boneSetup.GetStudioHdr()->GetNumSeq();
+	for ( int order = 0; order < MAX_OVERLAYS; ++order )
+	{
+		const int i = layer[order];
+		if ( i >= m_AnimOverlay.Count() )
+			continue;
+		if ( m_AnimOverlay[i].m_nSequence >= sequences )
+			continue;
+		float weight = m_AnimOverlay[i].m_flWeight;
+		if ( !( weight > 0.0f ) )
+			continue;
+		const float cycle = ClampCycle( m_AnimOverlay[i].m_flCycle,
+			IsSequenceLooping( m_AnimOverlay[i].m_nSequence ) );
+		if ( weight > 1.0f )
+			weight = 1.0f;
+		boneSetup.AccumulatePose( pos, q, m_AnimOverlay[i].m_nSequence, cycle, weight, currentTime, m_pIk );
+		if ( r_sequence_debug.GetInt() == entindex() )
+			RecordSequenceDebug( currentTime, boneSetup.GetStudioHdr()->pSeqdesc( m_AnimOverlay[i].m_nSequence ).pszLabel(),
+				cycle, weight, VarArgs( "%d", i ) );
+	}
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void C_BaseAnimatingOverlay::AccumulateLayers( IBoneSetup &boneSetup, Vector pos[], Quaternion q[], float currentTime )
 {
 	BaseClass::AccumulateLayers( boneSetup, pos, q, currentTime );
@@ -425,6 +527,11 @@ void C_BaseAnimatingOverlay::AccumulateLayers( IBoneSetup &boneSetup, Vector pos
 	}
 }
 
+#endif
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 {
 	if ( !pStudioHdr || !pStudioHdr->SequencesAvailable() )
@@ -447,6 +554,14 @@ void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 		{
 			continue;
 		}
+#if defined( L4D2 )
+		// Native 1003E610 excludes inactive layers before reading their events.
+		// A shove resets event cursor zero even when it starts on layer three.
+		if ( m_AnimOverlay[j].m_flWeight == 0.0f || m_AnimOverlay[j].m_nOrder == MAX_OVERLAYS )
+		{
+			continue;
+		}
+#endif
 
 		mstudioseqdesc_t &seqdesc = pStudioHdr->pSeqdesc( m_AnimOverlay[j].m_nSequence );
 		if ( seqdesc.numevents == 0 )
@@ -547,6 +662,9 @@ void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 		m_flOverlayPrevEventCycle[j] = m_AnimOverlay[j].m_flCycle;
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -564,3 +682,64 @@ CStudioHdr *C_BaseAnimatingOverlay::OnNewModel()
 
 	return hdr;
 }
+
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void C_AnimationLayer::Reset()
+{
+	if ( m_pOwnerEntity )
+	{
+		int flags = 0;
+		if ( m_nSequence != 0 || m_flWeight != 0.0f )
+			flags = 0x10;
+		if ( m_flCycle != 0.0f )
+			flags |= 0x08;
+		if ( flags )
+			m_pOwnerEntity->InvalidatePhysicsRecursive( flags );
+	}
+	m_nSequence = 0;
+	m_flPrevCycle = 0.0f;
+	m_flWeight = 0.0f;
+	m_flPlaybackRate = 0.0f;
+	m_flCycle = 0.0f;
+	m_flLayerAnimtime = 0.0f;
+	m_flLayerFadeOuttime = 0.0f;
+	// These are existing SDK adapter fields, not new native network state.
+	m_flBlendIn = 0.0f;
+	m_flBlendOut = 0.0f;
+	m_bClientBlend = false;
+}
+
+void C_AnimationLayer::SetOrder( int order )
+{
+	if ( m_pOwnerEntity && m_nOrder != order && ( m_nOrder == 15 || order == 15 ) )
+		m_pOwnerEntity->InvalidatePhysicsRecursive( 0x10 );
+	m_nOrder = order;
+}
+
+void C_AnimationLayer::SetWeight( float weight )
+{
+	if ( m_pOwnerEntity && m_flWeight != weight && ( m_flWeight == 0.0f || weight == 0.0f ) )
+		m_pOwnerEntity->InvalidatePhysicsRecursive( 0x10 );
+	m_flWeight = weight;
+}
+
+void C_AnimationLayer::SetCycle( float cycle )
+{
+	if ( m_pOwnerEntity && m_flCycle != cycle )
+		m_pOwnerEntity->InvalidatePhysicsRecursive( 0x08 );
+	m_flCycle = cycle;
+}
+
+void C_AnimationLayer::SetSequence( int sequence )
+{
+	if ( m_pOwnerEntity && m_nSequence != sequence )
+		m_pOwnerEntity->InvalidatePhysicsRecursive( 0x10 );
+	m_nSequence = sequence;
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif

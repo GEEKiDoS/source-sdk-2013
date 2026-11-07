@@ -190,6 +190,9 @@ public:
 	// Keep track of what scenes are being played
 	void				StartChoreoScene( CChoreoScene *scene );
 	void				RemoveChoreoScene( CChoreoScene *scene );
+#if defined( L4D2 )
+	virtual bool		IsSceneActive( CChoreoScene *scene ) { return false; }
+#endif
 
 	// Start the specifics of an scene event
 	virtual bool		StartSceneEvent( CSceneEventInfo *info, CChoreoScene *scene, CChoreoEvent *event, CChoreoActor *actor, C_BaseEntity *pTarget );
@@ -213,7 +216,11 @@ public:
 	virtual	bool		ClearSceneEvent( CSceneEventInfo *info, bool fastKill, bool canceled );
 
 	// Add the event to the queue for this actor
+#if defined( L4D2 )
+	void				AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, C_BaseEntity *pTarget = NULL, bool bClientSide = false, C_BaseEntity *pSceneEntity = NULL );
+#else
 	void				AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, C_BaseEntity *pTarget = NULL, bool bClientSide = false );
+#endif
 
 	// Remove the event from the queue for this actor
 	void				RemoveSceneEvent( CChoreoScene *scene, CChoreoEvent *event, bool fastKill );

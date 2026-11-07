@@ -31,16 +31,58 @@
 extern ISoundEmitterSystemBase *soundemitterbase;
 
 // Marked as FCVAR_USERINFO so that the server can cull CC messages before networking them down to us!!!
-ConVar closecaption( "closecaption", "0", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX | FCVAR_USERINFO, "Enable close captioning." );
+ConVar closecaption( "closecaption", "0", 
+#if defined( L4D2 )
+	0x01000288
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX | FCVAR_USERINFO
+#endif
+, "Enable close captioning." );
 extern ConVar cc_lang;
-static ConVar cc_linger_time( "cc_linger_time", "1.0", FCVAR_ARCHIVE, "Close caption linger time." );
-static ConVar cc_predisplay_time( "cc_predisplay_time", "0.25", FCVAR_ARCHIVE, "Close caption delay before showing caption." );
-static ConVar cc_captiontrace( "cc_captiontrace", "1", 0, "Show missing closecaptions (0 = no, 1 = devconsole, 2 = show in hud)" );
-static ConVar cc_subtitles( "cc_subtitles", "0", FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX, "If set, don't show sound effect captions, just voice overs (i.e., won't help hearing impaired players)." );
-ConVar english( "english", "1", FCVAR_USERINFO, "If set to 1, running the english language set of assets." );
+static ConVar cc_linger_time( "cc_linger_time", "1.0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Close caption linger time." );
+static ConVar cc_predisplay_time( "cc_predisplay_time", "0.25", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Close caption delay before showing caption." );
+static ConVar cc_captiontrace( "cc_captiontrace", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Show missing closecaptions (0 = no, 1 = devconsole, 2 = show in hud)" );
+static ConVar cc_subtitles( "cc_subtitles", "0", 
+#if defined( L4D2 )
+	0x01000088
+#else
+	FCVAR_ARCHIVE | FCVAR_ARCHIVE_XBOX
+#endif
+, "If set, don't show sound effect captions, just voice overs (i.e., won't help hearing impaired players)." );
+ConVar english( "english", "1", 
+#if defined( L4D2 )
+	0x00000208
+#else
+	FCVAR_USERINFO
+#endif
+, "If set to 1, running the english language set of assets." );
+#if !defined( L4D2 )
 static ConVar cc_smallfontlength( "cc_smallfontlength", "300", 0, "If text stream is this long, force usage of small font size." );
+#endif
 
+#if defined( L4D2 )
+#define	MAX_CAPTION_CHARACTERS		10200
+#else
 #define	MAX_CAPTION_CHARACTERS		4096
+#endif
 
 #define CAPTION_PAN_FADE_TIME		0.5			// The time it takes for a line to fade while panning over a large entry
 #define CAPTION_PAN_SLIDE_TIME		0.5			// The time it takes for a line to slide on while panning over a large entry
@@ -198,8 +240,12 @@ void CCloseCaptionWorkUnit::SetStream( const wchar_t *stream )
 	delete[] m_pszStream;
 	m_pszStream = NULL;
 
+#if defined( L4D2 )
+	int len = (int)wcsnlen( stream, MAX_CAPTION_CHARACTERS - 1 );
+#else
 	int len = wcslen( stream );
 	Assert( len < 4096 );
+#endif
 	m_pszStream = new wchar_t[ len + 1 ];
 	wcsncpy( m_pszStream, stream, len );
 	m_pszStream[ len ] = L'\0';
@@ -809,6 +855,9 @@ void CaptionAsyncLoaderCallback( const FileAsyncRequest_t &request, int numReadB
 DECLARE_HUDELEMENT( CHudCloseCaption );
 
 DECLARE_HUD_MESSAGE( CHudCloseCaption, CloseCaption );
+#ifdef L4D2
+DECLARE_HUD_MESSAGE( CHudCloseCaption, CloseCaptionDirect );
+#endif
 
 CHudCloseCaption::CHudCloseCaption( const char *pElementName )
 	: CHudElement( pElementName ), 
@@ -819,7 +868,9 @@ CHudCloseCaption::CHudCloseCaption( const char *pElementName )
 {
 	vgui::Panel *pParent = g_pClientMode->GetViewport();
 	SetParent( pParent );
+#if !defined( L4D2 )
 	SetProportional( true );
+#endif
 
 	m_nGoalHeight = 0;
 	m_nCurrentHeight = 0;
@@ -843,6 +894,9 @@ CHudCloseCaption::CHudCloseCaption( const char *pElementName )
 	}
 
 	HOOK_HUD_MESSAGE( CHudCloseCaption, CloseCaption );
+#ifdef L4D2
+	HOOK_HUD_MESSAGE( CHudCloseCaption, CloseCaptionDirect );
+#endif
 
 	char uilanguage[ 64 ];
 	uilanguage[0] = 0;
@@ -857,9 +911,13 @@ CHudCloseCaption::CHudCloseCaption( const char *pElementName )
 		english.SetValue( 0 );
 	}
 
+#if defined( L4D2 )
+	InitCaptionDictionary( uilanguage );
+#else
 	char dbfile [ 512 ];
 	Q_snprintf( dbfile, sizeof( dbfile ), "resource/closecaption_%s.dat", uilanguage );
 	InitCaptionDictionary( dbfile );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -886,7 +944,13 @@ void CHudCloseCaption::LevelInit( void )
 	ClearAsyncWork();
 }
 
-static ConVar cc_minvisibleitems( "cc_minvisibleitems", "1", 0, "Minimum number of caption items to show." );
+static ConVar cc_minvisibleitems( "cc_minvisibleitems", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "Minimum number of caption items to show." );
 
 void CHudCloseCaption::TogglePaintDebug()
 {
@@ -958,7 +1022,11 @@ void CHudCloseCaption::Paint( void )
 		
 	wrect_t rcText = rcOutput;
 
+#if defined( L4D2 )
+	int inset = 12;
+#else
 	int inset = vgui::scheme()->GetProportionalScaledValueEx( GetScheme(), CC_INSET );
+#endif
 
 	int avail_width = rcText.right - rcText.left - 2 * inset;
 	int avail_height = rcText.bottom - rcText.top - 2 * inset;
@@ -1453,7 +1521,9 @@ void CHudCloseCaption::Process( const wchar_t *stream, float duration, const cha
 	{
 		if ( !closecaption.GetBool() )
 		{
+#if !defined( L4D2 )
 			Reset();
+#endif
 			return;
 		}
 
@@ -1490,7 +1560,11 @@ void CHudCloseCaption::Process( const wchar_t *stream, float duration, const cha
 		{
 			if ( cc_captiontrace.GetInt() == 1 )
 			{
+#ifdef L4D2
+				Msg( "Missing caption for '%ls'\n", stream ); // C11C4D0 uses the caption text, not a nonexistent hash token.
+#else
 				Msg( "Missing caption for '%s'\n", tokenstream );
+#endif
 			}
 
 			return;
@@ -1596,6 +1670,18 @@ void CHudCloseCaption::CreateFonts( void )
 {
 	vgui::IScheme *pScheme = vgui::scheme()->GetIScheme( GetScheme() );
 
+#if defined( L4D2 )
+	m_hFonts[CCFONT_NORMAL] = pScheme->GetFont( "CloseCaption_Normal", false );
+	// SDK schemes apply the surface resolution key to every resource key,
+	// unlike L4D2: "_normal" renames this same definition to "CloseCaption".
+	// Detect the loaded scheme's capability, not the current video-mode key,
+	// since a cached scheme can outlive a resolution change.
+	if ( !m_hFonts[CCFONT_NORMAL] )
+		m_hFonts[CCFONT_NORMAL] = pScheme->GetFont( "CloseCaption", false );
+	m_hFonts[CCFONT_BOLD] = pScheme->GetFont( "CloseCaption_Bold", false );
+	m_hFonts[CCFONT_ITALIC] = pScheme->GetFont( "CloseCaption_Italic", false );
+	m_hFonts[CCFONT_ITALICBOLD] = pScheme->GetFont( "CloseCaption_BoldItalic", false );
+#else
 	m_hFonts[CCFONT_NORMAL] = pScheme->GetFont( "CloseCaption", true );
 
 	if ( IsPC() )
@@ -1608,6 +1694,7 @@ void CHudCloseCaption::CreateFonts( void )
 	{
 		m_hFonts[CCFONT_SMALL] = pScheme->GetFont( "CloseCaption_Small" );
 	}
+#endif
 
 	m_nLineHeight = MAX( 6, vgui::surface()->GetFontTall( m_hFonts[ CCFONT_NORMAL ] ) );
 }
@@ -1794,6 +1881,9 @@ void CHudCloseCaption::ComputeStreamWork( int available_width, CCloseCaptionItem
 			continue;
 		}
 
+#if defined( L4D2 )
+		int font = params.GetFontNumber();
+#else
 		int font;
 		if ( IsPC() )
 		{
@@ -1803,6 +1893,7 @@ void CHudCloseCaption::ComputeStreamWork( int available_width, CCloseCaptionItem
 		{
 			font = streamlen >= cc_smallfontlength.GetInt() ? CCFONT_SMALL : CCFONT_NORMAL;
 		}
+#endif
 		vgui::HFont useF = m_hFonts[font];
 		params.font = useF;
 
@@ -1984,7 +2075,13 @@ static bool CaptionTrace( const char *token )
 	return false;
 }
 
-static ConVar cc_sentencecaptionnorepeat( "cc_sentencecaptionnorepeat", "4", 0, "How often a sentence can repeat." );
+static ConVar cc_sentencecaptionnorepeat( "cc_sentencecaptionnorepeat", "4", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	0
+#endif
+, "How often a sentence can repeat." );
 
 int CRCString( const char *str )
 {
@@ -2042,6 +2139,12 @@ public:
 			caption_t *caption = m_Tokens[ i ];
 			if ( caption->stream != NULL )
 				continue;
+#if defined( L4D2 )
+			// A block arrival may complete work for several dictionaries. Native
+			// only indexes the directory belonging to this pending token.
+			if ( caption->fileindex != nFileIndex )
+				continue;
+#endif
 
 			// Lookup the data
 			CaptionLookup_t &entry = directories[ nFileIndex ].m_CaptionDirectory[ caption->dirindex ];
@@ -2193,6 +2296,9 @@ public:
 		int c = Count();
 		for ( int i = 0 ; i < c; ++i )
 		{
+#ifdef L4D2
+			if ( GetToken( i ) ) // hashed requests have no token string (S306 minimal skip).
+#endif
 			Q_strncat( buf, GetToken( i ), bufsize, COPY_ALL_CHARACTERS );
 			if ( i != c - 1 )
 			{
@@ -2230,6 +2336,10 @@ public:
 	{
 		m_bDirect = state;
 	}
+#ifdef L4D2
+	bool AddTokenHash( CUtlVector< AsyncCaption_t > &directories, unsigned int hash );
+	unsigned int GetTokenHash( CUtlVector< AsyncCaption_t > &directories ) const;
+#endif
 private:
 	float					m_flDuration;
 	bool					m_bIsStream : 1;
@@ -2308,7 +2418,11 @@ void CHudCloseCaption::ProcessAsyncWork()
 			}
 			else
 			{
+#ifdef L4D2
+				_ProcessCaption( stream, item->GetTokenHash( m_AsyncCaptions ), item->GetDuration(), item->IsFromPlayer(), item->IsDirect() );
+#else
 				_ProcessCaption( stream, original, item->GetDuration(), item->IsFromPlayer(), item->IsDirect() );
+#endif
 			}
 		}
 
@@ -2404,6 +2518,9 @@ bool CHudCloseCaption::AddAsyncWork( const char *tokenstream, bool bIsStream, fl
 }
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
 void CHudCloseCaption::ProcessSentenceCaptionStream( const char *tokenstream )
 {
 	float interval = cc_sentencecaptionnorepeat.GetFloat();
@@ -2434,6 +2551,15 @@ void CHudCloseCaption::ProcessSentenceCaptionStream( const char *tokenstream )
 		}
 		else
 		{
+#if defined( L4D2 )
+			CaptionRepeat &stored = m_CloseCaptionRepeats[ idx ];
+			if ( stored.m_flLastEmitTime + stored.m_flInterval > gpGlobals->curtime )
+			{
+				return;
+			}
+			stored.m_flLastEmitTime = gpGlobals->curtime;
+			stored.m_nLastEmitTick = gpGlobals->tickcount;
+#else
 			entry = m_CloseCaptionRepeats[ idx ];
 			if ( gpGlobals->curtime < ( entry.m_flLastEmitTime + entry.m_flInterval ) )
 			{
@@ -2442,11 +2568,15 @@ void CHudCloseCaption::ProcessSentenceCaptionStream( const char *tokenstream )
 
 			entry.m_flLastEmitTime = gpGlobals->curtime;
 			entry.m_nLastEmitTick = gpGlobals->tickcount;
+#endif
 		}
 	}
 
 	AddAsyncWork( tokenstream, true, 0.0f, false );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 void CHudCloseCaption::_ProcessSentenceCaptionStream( int wordCount, const char *tokenstream, const wchar_t *caption_full )
 {
@@ -2461,6 +2591,96 @@ bool CHudCloseCaption::ProcessCaption( const char *tokenname, float duration, bo
 	return AddAsyncWork( tokenname, false, duration, fromplayer, direct );
 }
 
+#ifdef L4D2
+bool CAsyncCaption::AddTokenHash( CUtlVector< AsyncCaption_t > &directories, unsigned int hash )
+{
+	CaptionLookup_t search;
+	search.hash = hash;
+	for ( int file = 0; file < directories.Count(); ++file )
+	{
+		const int index = directories[file].m_CaptionDirectory.Find( search );
+		if ( index == directories[file].m_CaptionDirectory.InvalidIndex() ) continue;
+		caption_t *caption = new caption_t;
+		caption->dirindex = index;
+		caption->fileindex = file;
+		// Native hashed requests have no original token string. The existing
+		// caption_t constructor supplies NULL token/stream; no decimal/hex alias.
+		m_Tokens.AddToTail( caption );
+		return true;
+	}
+	return false;
+}
+unsigned int CAsyncCaption::GetTokenHash( CUtlVector< AsyncCaption_t > &directories ) const
+{
+	if ( !m_Tokens.Count() ) return 0;
+	const caption_t *caption = m_Tokens[0];
+	return directories[caption->fileindex].m_CaptionDirectory[caption->dirindex].hash;
+}
+bool CHudCloseCaption::AddAsyncWork( unsigned int hash, float duration, bool fromplayer, bool direct )
+{
+	if ( !closecaption.GetBool() && !direct ) return false;
+	CAsyncCaption *async = new CAsyncCaption;
+	async->SetIsStream( false );
+	async->SetDirect( direct );
+	const bool found = async->AddTokenHash( m_AsyncCaptions, hash );
+	m_AsyncWork.AddToTail( async );
+	async->SetDuration( duration );
+	async->SetFromPlayer( fromplayer );
+	async->StartRequesting( this, m_AsyncCaptions );
+	return found;
+}
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#endif
+void CHudCloseCaption::_ProcessCaption( const wchar_t *caption, unsigned int hash, float duration, bool fromplayer, bool direct )
+{
+	float interval = 0.0f;
+	const bool hasNoRepeat = GetNoRepeatValue( caption, interval );
+	CaptionRepeat search;
+	search.m_nTokenIndex = hash;
+	const int index = m_CloseCaptionRepeats.Find( search );
+	if ( index == m_CloseCaptionRepeats.InvalidIndex() )
+	{
+		search.m_flLastEmitTime = gpGlobals->curtime;
+		search.m_nLastEmitTick = gpGlobals->tickcount;
+		search.m_flInterval = interval;
+		m_CloseCaptionRepeats.Insert( search );
+	}
+	else
+	{
+		// Native writes the stored record, not the SDK's old local copy.
+		CaptionRepeat &entry = m_CloseCaptionRepeats[index];
+		if ( entry.m_flInterval <= 0.0f )
+		{
+			if ( gpGlobals->tickcount <= entry.m_nLastEmitTick ) return;
+		}
+		else if ( hasNoRepeat && gpGlobals->curtime < entry.m_flLastEmitTime + entry.m_flInterval ) return;
+		entry.m_flLastEmitTime = gpGlobals->curtime;
+		entry.m_nLastEmitTick = gpGlobals->tickcount;
+	}
+	Process( caption, duration, "", fromplayer, direct );
+}
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+void CHudCloseCaption::MsgFunc_CloseCaptionDirect( bf_read &msg )
+{
+	const unsigned int hash = msg.ReadUBitLong( 32 );
+	const float duration = static_cast< float >( static_cast< double >( msg.ReadUBitLong( 15 ) ) * static_cast< double >( 0.1f ) );
+	const bool fromplayer = msg.ReadOneBit() != 0;
+	m_bVisibleDueToDirect = true;
+	AddAsyncWork( hash, duration, fromplayer, true );
+}
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CHudCloseCaption::_ProcessCaption( const wchar_t *caption, const char *tokenname, float duration, bool fromplayer, bool direct )
 {
 	// Get the string for the token
@@ -2504,6 +2724,7 @@ void CHudCloseCaption::_ProcessCaption( const wchar_t *caption, const char *toke
 
 	Process( caption, duration, tokenname, fromplayer, direct );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2511,8 +2732,20 @@ void CHudCloseCaption::_ProcessCaption( const wchar_t *caption, const char *toke
 //			iSize - 
 //			*pbuf - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void CHudCloseCaption::MsgFunc_CloseCaption(bf_read &msg)
 {
+#if defined( L4D2 )
+	const unsigned int hash = msg.ReadUBitLong( 32 );
+	const float duration = static_cast< float >( static_cast< double >( msg.ReadUBitLong( 15 ) ) * static_cast< double >( 0.1f ) );
+	const bool fromplayer = msg.ReadOneBit() != 0;
+	AddAsyncWork( hash, duration, fromplayer, false );
+#else
 	char tokenname[ 512 ];
 	msg.ReadString( tokenname, sizeof( tokenname ) );
 	float duration = msg.ReadShort() * 0.1f;
@@ -2543,7 +2776,12 @@ void CHudCloseCaption::MsgFunc_CloseCaption(bf_read &msg)
 	}
 
 	ProcessCaption( tokenname, duration, fromplayer );	
+#endif
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 int CHudCloseCaption::GetFontNumber( bool bold, bool italic )
 {
@@ -2573,6 +2811,101 @@ void CHudCloseCaption::Flush()
 	g_AsyncCaptionResourceManager.Flush();
 }
 
+#if defined( L4D2 )
+void CHudCloseCaption::AddCaptionDictionary( const char *dbfile )
+{
+	const int searchPathSize = filesystem->GetSearchPath( "GAME", true, NULL, 0 );
+	char *searchPaths = (char *)_alloca( searchPathSize + 1 );
+	filesystem->GetSearchPath( "GAME", true, searchPaths, searchPathSize );
+
+	for ( char *path = strtok( searchPaths, ";" ); path; path = strtok( NULL, ";" ) )
+	{
+		char fullpath[MAX_PATH];
+		Q_snprintf( fullpath, sizeof( fullpath ), "%s%s", path, dbfile );
+		Q_FixSlashes( fullpath );
+		Q_strlower( fullpath );
+
+		const int index = m_AsyncCaptions.AddToTail();
+		AsyncCaption_t &entry = m_AsyncCaptions[index];
+		FileHandle_t fh = filesystem->Open( fullpath, "rb" );
+		if ( fh == FILESYSTEM_INVALID_HANDLE )
+		{
+			m_AsyncCaptions.Remove( index );
+			continue;
+		}
+
+		CUtlBuffer dirbuffer;
+		filesystem->Read( &entry.m_Header, sizeof( entry.m_Header ), fh );
+		if ( entry.m_Header.magic != COMPILED_CAPTION_FILEID )
+		{
+			Warning( "Invalid file id for %s\n", fullpath );
+			m_AsyncCaptions.Remove( index );
+			continue; // Native C0D5E70 leaves the invalid file handle open.
+		}
+		if ( entry.m_Header.version != COMPILED_CAPTION_VERSION )
+		{
+			Warning( "Invalid file version for %s\n", fullpath );
+			m_AsyncCaptions.Remove( index );
+			continue;
+		}
+		if ( entry.m_Header.directorysize < 0 || entry.m_Header.directorysize > 64 * 1024 )
+		{
+			Warning( "Invalid directory size %d for %s\n", entry.m_Header.directorysize, fullpath );
+			m_AsyncCaptions.Remove( index );
+			continue;
+		}
+
+		const int directoryBytes = entry.m_Header.directorysize * sizeof( CaptionLookup_t );
+		entry.m_CaptionDirectory.EnsureCapacity( entry.m_Header.directorysize );
+		dirbuffer.EnsureCapacity( directoryBytes );
+		filesystem->Read( dirbuffer.Base(), directoryBytes, fh );
+		filesystem->Close( fh );
+		entry.m_CaptionDirectory.CopyArray( (const CaptionLookup_t *)dirbuffer.PeekGet(), entry.m_Header.directorysize );
+		entry.m_CaptionDirectory.RedoSort( true );
+		entry.m_DataBaseFile = fullpath;
+		DevMsg( "Client: added caption file: %s\n", fullpath );
+	}
+}
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+void CHudCloseCaption::InitCaptionDictionary( const char *language )
+{
+	if ( m_CurrentLanguage.IsValid() && !Q_stricmp( m_CurrentLanguage.String(), language ) )
+		return;
+
+	m_CurrentLanguage = language;
+	const float start = (float)Plat_FloatTime();
+	while ( m_AsyncWork.Count() > 0 )
+	{
+		ProcessAsyncWork();
+		if ( Plat_FloatTime() - start >= 0.5 )
+		{
+			DevWarning( "Could not finish async caption work after %f seconds of processing before caption dictionary init!\n", 0.5 );
+			// Native C1205C0 drops the nodes without deleting timed-out requests.
+			m_AsyncWork.RemoveAll();
+			break;
+		}
+	}
+
+	m_AsyncCaptions.Purge();
+	g_AsyncCaptionResourceManager.Clear();
+
+	char dbfile[512];
+	Q_snprintf( dbfile, sizeof( dbfile ), "resource/closecaption_%s.dat", language );
+	AddCaptionDictionary( dbfile );
+	Q_snprintf( dbfile, sizeof( dbfile ), "resource/subtitles_%s.dat", language );
+	AddCaptionDictionary( dbfile );
+	g_AsyncCaptionResourceManager.SetDbInfo( m_AsyncCaptions );
+}
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#else
 void CHudCloseCaption::InitCaptionDictionary( const char *dbfile )
 {
 	if ( m_CurrentLanguage.IsValid() && !Q_stricmp( m_CurrentLanguage.String(), dbfile ) )
@@ -2643,6 +2976,8 @@ void CHudCloseCaption::InitCaptionDictionary( const char *dbfile )
 	g_AsyncCaptionResourceManager.SetDbInfo( m_AsyncCaptions );
 }
 
+#endif
+
 void CHudCloseCaption::OnFinishAsyncLoad( int nFileIndex, int nBlockNum, AsyncCaptionData_t *pData )
 {
 	// Fill in data for all users of pData->m_nBlockNum
@@ -2705,7 +3040,12 @@ static int EmitCaptionCompletion( const char *partial, char commands[ COMMAND_CO
 	return current;
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F_COMPLETION( cc_emit, "Emits a closed caption", 0x00000008, EmitCaptionCompletion )
+#else
 CON_COMMAND_F_COMPLETION( cc_emit, "Emits a closed caption", 0, EmitCaptionCompletion )
+#endif
 {
 	if ( args.ArgC() != 2 )
 	{
@@ -2720,7 +3060,12 @@ CON_COMMAND_F_COMPLETION( cc_emit, "Emits a closed caption", 0, EmitCaptionCompl
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( cc_random, "Emits a random caption" , 0x00000008)
+#else
 CON_COMMAND( cc_random, "Emits a random caption" )
+#endif
 {
 	int count = 1;
 	if ( args.ArgC() == 2 )
@@ -2738,7 +3083,12 @@ CON_COMMAND( cc_random, "Emits a random caption" )
 }
 
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( cc_flush, "Flushes async'd captions." , 0x00000008)
+#else
 CON_COMMAND( cc_flush, "Flushes async'd captions." )
+#endif
 {
 	CHudCloseCaption *hudCloseCaption = GET_HUDELEMENT( CHudCloseCaption );
 	if ( hudCloseCaption )
@@ -2747,7 +3097,12 @@ CON_COMMAND( cc_flush, "Flushes async'd captions." )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( cc_showblocks, "Toggles showing which blocks are pending/loaded async." , 0x00000008)
+#else
 CON_COMMAND( cc_showblocks, "Toggles showing which blocks are pending/loaded async." )
+#endif
 {
 	CHudCloseCaption *hudCloseCaption = GET_HUDELEMENT( CHudCloseCaption );
 	if ( hudCloseCaption )
@@ -2756,6 +3111,45 @@ CON_COMMAND( cc_showblocks, "Toggles showing which blocks are pending/loaded asy
 	}
 }
 
+#if defined( L4D2 )
+void OnCaptionLanguageChanged( IConVar *pConVar, const char *pOldString, float flOldValue )
+{
+	if ( !g_pVGuiLocalize )
+		return;
+
+	ConVarRef var( pConVar );
+	char fn[512];
+	Q_snprintf( fn, sizeof( fn ), "resource/closecaption_%s.txt", var.GetString() );
+	g_pVGuiLocalize->AddFile( "resource/closecaption_%language%.txt", "GAME", true );
+
+	char uilanguage[64];
+	engine->GetUILanguage( uilanguage, sizeof( uilanguage ) );
+	CHudCloseCaption *hudCloseCaption = GET_HUDELEMENT( CHudCloseCaption );
+	if ( !hudCloseCaption )
+		return;
+
+	if ( Q_strlen( var.GetString() ) > 0 && Q_stricmp( var.GetString(), uilanguage ) )
+	{
+		if ( g_pFullFileSystem->FileExists( fn ) )
+		{
+			g_pVGuiLocalize->AddFile( fn, "GAME", true );
+		}
+		else
+		{
+			char fallback[512];
+			Q_snprintf( fallback, sizeof( fallback ), "resource/closecaption_%s.txt", uilanguage );
+			Msg( "%s not found\n", fn );
+			Msg( "%s will be used\n", fallback );
+		}
+		hudCloseCaption->InitCaptionDictionary( var.GetString() );
+	}
+	else
+	{
+		hudCloseCaption->InitCaptionDictionary( uilanguage );
+	}
+	DevMsg( "cc_lang = %s\n", var.GetString() );
+}
+#else
 void OnCaptionLanguageChanged( IConVar *pConVar, const char *pOldString, float flOldValue )
 {
 	if ( !g_pVGuiLocalize )
@@ -2818,9 +3212,22 @@ void OnCaptionLanguageChanged( IConVar *pConVar, const char *pOldString, float f
 
 
 
-ConVar cc_lang( "cc_lang", "", FCVAR_ARCHIVE, "Current close caption language (emtpy = use game UI language)", OnCaptionLanguageChanged );
+#endif
 
+ConVar cc_lang( "cc_lang", "", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Current close caption language (emtpy = use game UI language)", OnCaptionLanguageChanged );
+
+
+#if defined( L4D2 )
+CON_COMMAND_F( cc_findsound, "Searches for soundname which emits specified text." , 0x00000008)
+#else
 CON_COMMAND( cc_findsound, "Searches for soundname which emits specified text." )
+#endif
 {
 	if ( args.ArgC() != 2 )
 	{

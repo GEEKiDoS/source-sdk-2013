@@ -45,6 +45,9 @@ public:
 	CNetworkVar( float, m_EndSize );
 	CNetworkVar( float, m_Rate );
 	CNetworkVar( float, m_JetLength );	// Length of the jet. Lifetime is derived from this.
+#if defined( L4D2 )
+	CNetworkVar( string_t, m_NoiseStart );
+#endif
 
 	CNetworkVar( int, m_bEmit );		// Emit particles?
 	CNetworkVar( bool, m_bFaceLeft );	// For support of legacy env_steamjet, which faced left instead of forward.

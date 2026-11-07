@@ -84,19 +84,44 @@
 
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "l4d2/effects/terror_flashlight.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
 
-static ConVar r_flashlightdrawfrustum( "r_flashlightdrawfrustum", "0" );
-static ConVar r_flashlightmodels( "r_flashlightmodels", "1" );
-static ConVar r_shadowrendertotexture( "r_shadowrendertotexture", "0" );
+static ConVar r_flashlightdrawfrustum( "r_flashlightdrawfrustum", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar r_flashlightmodels( "r_flashlightmodels", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
+static ConVar r_shadowrendertotexture( "r_shadowrendertotexture", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 static ConVar r_flashlight_version2( "r_flashlight_version2", "0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
 
-ConVar r_flashlightdepthtexture( "r_flashlightdepthtexture", "1", FCVAR_ALLOWED_IN_COMPETITIVE );
+ConVar r_flashlightdepthtexture( "r_flashlightdepthtexture", "1", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_ALLOWED_IN_COMPETITIVE
+#endif
+ );
 
 #if defined( _X360 )
 ConVar r_flashlightdepthres( "r_flashlightdepthres", "512" );
 #else
-ConVar r_flashlightdepthres( "r_flashlightdepthres", "1024" );
+ConVar r_flashlightdepthres( "r_flashlightdepthres", "1024"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 #endif
 
 ConVar r_threaded_client_shadow_manager( "r_threaded_client_shadow_manager", "0" );
@@ -681,9 +706,23 @@ void CTextureAllocator::GetTextureRect(TextureHandle_t handle, int& x, int& y, i
 #define MAX_CLIP_PLANE_COUNT 4
 #define SHADOW_CULL_TOLERANCE 0.5f
 
-static ConVar r_shadows( "r_shadows", "1" ); // hook into engine's cvars..
-static ConVar r_shadowmaxrendered("r_shadowmaxrendered", "32");
-static ConVar r_shadows_gamecontrol( "r_shadows_gamecontrol", "-1", FCVAR_CHEAT );	 // hook into engine's cvars..
+static ConVar r_shadows( "r_shadows", "1"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ ); // hook into engine's cvars..
+static ConVar r_shadowmaxrendered("r_shadowmaxrendered", "32"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+);
+static ConVar r_shadows_gamecontrol( "r_shadows_gamecontrol", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );	 // hook into engine's cvars..
 
 //-----------------------------------------------------------------------------
 // The class responsible for dealing with shadows on the client side
@@ -694,6 +733,13 @@ class CClientShadowMgr : public IClientShadowMgr
 {
 public:
 	CClientShadowMgr();
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void RequeueDeferredShadows();
+	void DirtyAllNonFlashlightShadows();
+	virtual void SetShadowFromWorldLightsEnabled( bool enabled );
+	void ShadowFromWorldLightsChanged();
+	void ReprojectDirtyShadows();
+#endif
 
 	virtual char const *Name() { return "CCLientShadowMgr"; }
 
@@ -782,7 +828,11 @@ public:
 	void RestoreRenderState();
 
 	// Computes a rough bounding box encompassing the volume of the shadow
+#if defined( L4D2 )
+	void ComputeShadowBBox( IClientRenderable *pRenderable, ClientShadowHandle_t handle, const Vector &vecAbsCenter, float flRadius, Vector *pAbsMins, Vector *pAbsMaxs );
+#else
 	void ComputeShadowBBox( IClientRenderable *pRenderable, const Vector &vecAbsCenter, float flRadius, Vector *pAbsMins, Vector *pAbsMaxs );
+#endif
 
 	bool WillParentRenderBlobbyShadow( IClientRenderable *pRenderable );
 
@@ -813,6 +863,12 @@ private:
 		Vector2D				m_WorldSize;
 		Vector					m_LastOrigin;
 		QAngle					m_LastAngles;
+#if defined( L4D2 )
+		Vector					m_vecShadowDirection;
+		Vector					m_vecCurrentLightPosition;
+		Vector					m_vecTargetLightPosition;
+		float					m_flLightPosLerp;
+#endif
 		TextureHandle_t			m_ShadowTexture;
 		CTextureReference		m_ShadowDepthTexture;
 		int						m_nRenderFrame;
@@ -824,6 +880,9 @@ private:
 	void UpdateStudioShadow( IClientRenderable *pRenderable, ClientShadowHandle_t handle );
 	void UpdateBrushShadow( IClientRenderable *pRenderable, ClientShadowHandle_t handle );
 	void UpdateShadow( ClientShadowHandle_t handle, bool force );
+#if defined( L4D2 )
+	void UpdateShadowDirectionFromLocalLightSource( ClientShadowHandle_t handle );
+#endif
 
 	// Gets the entity whose shadow this shadow will render into
 	IClientRenderable *GetParentShadowEntity( ClientShadowHandle_t handle );
@@ -909,7 +968,11 @@ private:
 
 	// Returns renderable-specific shadow info
 	float GetShadowDistance( IClientRenderable *pRenderable ) const;
+#if defined( L4D2 )
+	void GetShadowDirection( ClientShadowHandle_t handle, ShadowType_t shadowType, Vector &direction ) const;
+#else
 	const Vector &GetShadowDirection( IClientRenderable *pRenderable ) const;
+#endif
 
 	// Initialize, shutdown render-to-texture shadows
 	void InitDepthTextureShadows();
@@ -961,6 +1024,11 @@ private:
 	float m_flShadowCastDist;
 	float m_flMinShadowArea;
 	CUtlRBTree< ClientShadowHandle_t, unsigned short >	m_DirtyShadows;
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	CUtlRBTree< ClientShadowHandle_t, unsigned short > m_DeferredDirtyShadows;
+	bool m_bShadowFromWorldLightsEnabled;
+	bool m_bShadowFromWorldLightsDisabled;
+#endif
 	CUtlVector< ClientShadowHandle_t > m_TransparentShadows;
 
 	// These members maintain current state of depth texturing (size and global active state)
@@ -981,6 +1049,13 @@ private:
 //-----------------------------------------------------------------------------
 static CClientShadowMgr s_ClientShadowMgr;
 IClientShadowMgr* g_pClientShadowMgr = &s_ClientShadowMgr;
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/effects/clientshadowmgr_console.inc"
+#endif
+
+#if defined( L4D2 )
+#include "l4d2/effects/clientshadowmgr_worldlight.inc"
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1088,7 +1163,11 @@ void CVisibleShadowList::EnumShadow( unsigned short clientShadowHandle )
 
 	// Compute a box surrounding the shadow
 	Vector vecAbsMins, vecAbsMaxs;
+#if defined( L4D2 )
+	s_ClientShadowMgr.ComputeShadowBBox( pRenderable, clientShadowHandle, vecAbsCenter, flRadius, &vecAbsMins, &vecAbsMaxs );
+#else
 	s_ClientShadowMgr.ComputeShadowBBox( pRenderable, vecAbsCenter, flRadius, &vecAbsMins, &vecAbsMaxs );
+#endif
 
 	// FIXME: Add distance check here?
 
@@ -1167,6 +1246,11 @@ int CVisibleShadowList::FindShadows( const CViewSetup *pView, int nLeafCount, Le
 //-----------------------------------------------------------------------------
 CClientShadowMgr::CClientShadowMgr() :
 	m_DirtyShadows( 0, 0, ShadowHandleCompareFunc ),
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	m_DeferredDirtyShadows( 0, 0, ShadowHandleCompareFunc ),
+	m_bShadowFromWorldLightsEnabled( false ),
+	m_bShadowFromWorldLightsDisabled( false ),
+#endif
 	m_RenderToTextureActive( false ),
 	m_bDepthTextureActive( false )
 {
@@ -1178,7 +1262,12 @@ CClientShadowMgr::CClientShadowMgr() :
 //-----------------------------------------------------------------------------
 // Changes the shadow direction...
 //-----------------------------------------------------------------------------
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_shadowdir, "Set shadow direction", 0x00004008 )
+#else
 CON_COMMAND_F( r_shadowdir, "Set shadow direction", FCVAR_CHEAT )
+#endif
 {
 	if ( args.ArgC() == 1 )
 	{
@@ -1197,7 +1286,12 @@ CON_COMMAND_F( r_shadowdir, "Set shadow direction", FCVAR_CHEAT )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_shadowangles, "Set shadow angles", 0x00004008 )
+#else
 CON_COMMAND_F( r_shadowangles, "Set shadow angles", FCVAR_CHEAT )
+#endif
 {
 	if (args.ArgC() == 1)
 	{
@@ -1220,7 +1314,12 @@ CON_COMMAND_F( r_shadowangles, "Set shadow angles", FCVAR_CHEAT )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_shadowcolor, "Set shadow color", 0x00004008 )
+#else
 CON_COMMAND_F( r_shadowcolor, "Set shadow color", FCVAR_CHEAT )
+#endif
 {
 	if (args.ArgC() == 1)
 	{
@@ -1239,7 +1338,12 @@ CON_COMMAND_F( r_shadowcolor, "Set shadow color", FCVAR_CHEAT )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_shadowdist, "Set shadow distance", 0x00004008 )
+#else
 CON_COMMAND_F( r_shadowdist, "Set shadow distance", FCVAR_CHEAT )
+#endif
 {
 	if (args.ArgC() == 1)
 	{
@@ -1255,7 +1359,12 @@ CON_COMMAND_F( r_shadowdist, "Set shadow distance", FCVAR_CHEAT )
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( r_shadowblobbycutoff, "some shadow stuff", 0x00004008 )
+#else
 CON_COMMAND_F( r_shadowblobbycutoff, "some shadow stuff", FCVAR_CHEAT )
+#endif
 {
 	if (args.ArgC() == 1)
 	{
@@ -1539,6 +1648,10 @@ void CClientShadowMgr::LevelInitPreEntity()
 //-----------------------------------------------------------------------------
 void CClientShadowMgr::LevelShutdownPostEntity()
 {
+#if defined( L4D2 )
+	ResetTerrorFlashlight();
+#endif
+
 	// All shadows *should* have been cleaned up when the entities went away
 	// but, just in case....
 	Assert( m_Shadows.Count() == 0 );
@@ -1655,7 +1768,11 @@ void CClientShadowMgr::UpdateAllShadows()
 void CClientShadowMgr::SetShadowDirection( const Vector& dir )
 {
 	VectorCopy( dir, m_SimpleShadowDir );
+#if defined( L4D2 )
+	NormalizeWorldLightShadowVector( m_SimpleShadowDir );
+#else
 	VectorNormalize( m_SimpleShadowDir );
+#endif
 
 	if ( m_RenderToTextureActive )
 	{
@@ -1687,6 +1804,7 @@ float CClientShadowMgr::GetShadowDistance( IClientRenderable *pRenderable ) cons
 	return flDist;
 }
 
+#if !defined( L4D2 )
 const Vector &CClientShadowMgr::GetShadowDirection( IClientRenderable *pRenderable ) const
 {
 	Vector &vecResult = AllocTempVector();
@@ -1697,6 +1815,7 @@ const Vector &CClientShadowMgr::GetShadowDirection( IClientRenderable *pRenderab
 
 	return vecResult;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1820,6 +1939,12 @@ ClientShadowHandle_t CClientShadowMgr::CreateProjectedTexture( ClientEntityHandl
 	shadow.m_nRenderFrame = -1;
 	shadow.m_LastOrigin.Init( FLT_MAX, FLT_MAX, FLT_MAX );
 	shadow.m_LastAngles.Init( FLT_MAX, FLT_MAX, FLT_MAX );
+#if defined( L4D2 )
+	shadow.m_vecShadowDirection = GetShadowDirection();
+	shadow.m_vecCurrentLightPosition.Init( FLT_MAX, FLT_MAX, FLT_MAX );
+	shadow.m_vecTargetLightPosition.Init( FLT_MAX, FLT_MAX, FLT_MAX );
+	shadow.m_flLightPosLerp = FLT_MAX;
+#endif
 	Assert( ( ( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT ) == 0 ) != 
 			( ( shadow.m_Flags & SHADOW_FLAGS_SHADOW ) == 0 ) );
 
@@ -1887,6 +2012,11 @@ ClientShadowHandle_t CClientShadowMgr::CreateShadow( ClientEntityHandle_t entity
 	IClientRenderable *pRenderable = ClientEntityList().GetClientRenderableFromHandle( entity );
 	if ( pRenderable )
 	{
+#if defined( L4D2 )
+		C_BaseEntity *alphaOwner = pRenderable->GetIClientUnknown()->GetBaseEntity();
+		if ( alphaOwner )
+			alphaOwner->m_hRenderAlphaShadow = shadowHandle;
+#endif
 		Assert( !pRenderable->IsShadowDirty( ) );
 		pRenderable->MarkShadowDirty( true );
 	}
@@ -1940,6 +2070,11 @@ void CClientShadowMgr::RemoveShadowFromDirtyList( ClientShadowHandle_t handle )
 void CClientShadowMgr::DestroyShadow( ClientShadowHandle_t handle )
 {
 	Assert( m_Shadows.IsValidIndex(handle) );
+#if defined( L4D2 )
+	C_BaseEntity *alphaOwner = ClientEntityList().GetBaseEntityFromHandle( m_Shadows[handle].m_Entity );
+	if ( alphaOwner )
+		alphaOwner->m_hRenderAlphaShadow = CLIENTSHADOW_INVALID_HANDLE;
+#endif
 	RemoveShadowFromDirtyList( handle );
 	shadowmgr->DestroyShadow( m_Shadows[handle].m_ShadowHandle );
 	ClientLeafSystem()->RemoveShadow( m_Shadows[handle].m_ClientLeafShadowHandle );
@@ -2281,6 +2416,9 @@ static void BuildShadowLeafList( CShadowLeafEnum *pEnum, const Vector& origin,
 //-----------------------------------------------------------------------------
 // Builds a simple blobby shadow
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void CClientShadowMgr::BuildOrthoShadow( IClientRenderable* pRenderable, 
 		ClientShadowHandle_t handle, const Vector& mins, const Vector& maxs)
 {
@@ -2289,7 +2427,12 @@ void CClientShadowMgr::BuildOrthoShadow( IClientRenderable* pRenderable,
 	AngleVectors( pRenderable->GetRenderAngles(), &vec[0], &vec[1], &vec[2] );
 	vec[1] *= -1.0f;
 
+#if defined( L4D2 )
+	Vector vecShadowDir;
+	GetShadowDirection( handle, GetActualShadowCastType( handle ), vecShadowDir );
+#else
 	Vector vecShadowDir = GetShadowDirection( pRenderable );
+#endif
 
 	// Project the shadow casting direction into the space of the object
 	Vector localShadowDir;
@@ -2311,8 +2454,13 @@ void CClientShadowMgr::BuildOrthoShadow( IClientRenderable* pRenderable,
 	// Project them into a plane perpendicular to the shadow direction
 	xvec -= vecShadowDir * DotProduct( vecShadowDir, xvec );
 	yvec -= vecShadowDir * DotProduct( vecShadowDir, yvec );
+#if defined( L4D2 )
+	NormalizeWorldLightShadowVector( xvec );
+	NormalizeWorldLightShadowVector( yvec );
+#else
 	VectorNormalize( xvec );
 	VectorNormalize( yvec );
+#endif
 
 	// Compute the box size
 	Vector boxSize;
@@ -2347,9 +2495,15 @@ void CClientShadowMgr::BuildOrthoShadow( IClientRenderable* pRenderable,
 
 	// FUNKY: A trick to reduce annoying texelization artifacts!?
 	float dx = 1.0f / TEXEL_SIZE_PER_CASTER_SIZE;
+#if defined( L4D2 )
+	worldOrigin.x = _mm_cvtt_ss2si( _mm_set_ss( worldOrigin.x / dx ) ) * dx;
+	worldOrigin.y = _mm_cvtt_ss2si( _mm_set_ss( worldOrigin.y / dx ) ) * dx;
+	worldOrigin.z = _mm_cvtt_ss2si( _mm_set_ss( worldOrigin.z / dx ) ) * dx;
+#else
 	worldOrigin.x = (int)(worldOrigin.x / dx) * dx;
 	worldOrigin.y = (int)(worldOrigin.y / dx) * dx;
 	worldOrigin.z = (int)(worldOrigin.z / dx) * dx;
+#endif
 
 	// NOTE: We gotta use the general matrix because xvec and yvec aren't perp
 	VMatrix matWorldToShadow, matWorldToTexture;
@@ -2381,6 +2535,9 @@ void CClientShadowMgr::BuildOrthoShadow( IClientRenderable* pRenderable,
 	// leafs as being affected by a particular shadow
 	ClientLeafSystem()->ProjectShadow( m_Shadows[handle].m_ClientLeafShadowHandle, nCount, pLeafList );
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -2461,6 +2618,9 @@ extern ConVar cl_shadowtextureoverlaysize;
 //-----------------------------------------------------------------------------
 // Builds a more complex shadow...
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void CClientShadowMgr::BuildRenderToTextureShadow( IClientRenderable* pRenderable, 
 		ClientShadowHandle_t handle, const Vector& mins, const Vector& maxs)
 {
@@ -2475,7 +2635,12 @@ void CClientShadowMgr::BuildRenderToTextureShadow( IClientRenderable* pRenderabl
 	AngleVectors( pRenderable->GetRenderAngles(), &vec[0], &vec[1], &vec[2] );
 	vec[1] *= -1.0f;
 
+#if defined( L4D2 )
+	Vector vecShadowDir;
+	GetShadowDirection( handle, GetActualShadowCastType( handle ), vecShadowDir );
+#else
 	Vector vecShadowDir = GetShadowDirection( pRenderable );
+#endif
 
 //	Debugging aid
 //	const model_t *pModel = pRenderable->GetModel();
@@ -2491,7 +2656,11 @@ void CClientShadowMgr::BuildRenderToTextureShadow( IClientRenderable* pRenderabl
 	Vector boxSize;
 	VectorSubtract( maxs, mins, boxSize );
 	
+#if defined( L4D2 )
+	Vector yvec;
+#else
 	Vector yvec = vec3_origin;
+#endif
 	float fProjMax = 0.0f;
 	for( int i = 0; i != 3; ++i )
 	{
@@ -2504,8 +2673,18 @@ void CClientShadowMgr::BuildRenderToTextureShadow( IClientRenderable* pRenderabl
 			yvec = test;
 		}
 	}		
+#if defined( L4D2 )
+	// C0D1B10 leaves its basis unwritten if no projected axis wins.
+	// Standing rule306: skip only the projection that needs that basis.
+	if ( fProjMax == 0.0f )
+		return;
+#endif
 
+#if defined( L4D2 )
+	NormalizeWorldLightShadowVector( yvec );
+#else
 	VectorNormalize( yvec );
+#endif
 
 	// Compute the x vector
 	Vector xvec;
@@ -2563,6 +2742,9 @@ void CClientShadowMgr::BuildRenderToTextureShadow( IClientRenderable* pRenderabl
 	// leafs as being affected by a particular shadow
 	ClientLeafSystem()->ProjectShadow( m_Shadows[handle].m_ClientLeafShadowHandle, nCount, pLeafList );
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 static void LineDrawHelper( const Vector &startShadowSpace, const Vector &endShadowSpace, 
 						   const VMatrix &shadowToWorld, unsigned char r = 255, unsigned char g = 255, 
@@ -2761,6 +2943,10 @@ void CClientShadowMgr::UpdateStudioShadow( IClientRenderable *pRenderable, Clien
 {
 	if( !( m_Shadows[handle].m_Flags & SHADOW_FLAGS_FLASHLIGHT ) )
 	{
+#if defined( L4D2 )
+		if ( m_bShadowFromWorldLightsEnabled && !m_bShadowFromWorldLightsDisabled )
+			UpdateShadowDirectionFromLocalLightSource( handle );
+#endif
 		Vector mins, maxs;
 		ComputeHierarchicalBounds( pRenderable, mins, maxs );
 
@@ -2784,6 +2970,10 @@ void CClientShadowMgr::UpdateBrushShadow( IClientRenderable *pRenderable, Client
 {
 	if( !( m_Shadows[handle].m_Flags & SHADOW_FLAGS_FLASHLIGHT ) )
 	{
+#if defined( L4D2 )
+		if ( m_bShadowFromWorldLightsEnabled && !m_bShadowFromWorldLightsDisabled )
+			UpdateShadowDirectionFromLocalLightSource( handle );
+#endif
 		// Compute the bounding box in the space of the shadow...
 		Vector mins, maxs;
 		ComputeHierarchicalBounds( pRenderable, mins, maxs );
@@ -2937,6 +3127,9 @@ void CClientShadowMgr::PreRender()
 
 	m_bUpdatingDirtyShadows = true;
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	ReprojectDirtyShadows();
+#else
 	unsigned short i = m_DirtyShadows.FirstInorder();
 	while ( i != m_DirtyShadows.InvalidIndex() )
 	{
@@ -2954,6 +3147,7 @@ void CClientShadowMgr::PreRender()
 		m_DirtyShadows.Insert( m_TransparentShadows[i] );
 	}
 	m_TransparentShadows.RemoveAll();
+#endif
 
 	m_bUpdatingDirtyShadows = false;
 }
@@ -3251,12 +3445,21 @@ void CClientShadowMgr::ComputeBoundingSphere( IClientRenderable* pRenderable, Ve
 //-----------------------------------------------------------------------------
 // Computes a rough AABB encompassing the volume of the shadow
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CClientShadowMgr::ComputeShadowBBox( IClientRenderable *pRenderable, ClientShadowHandle_t handle, const Vector &vecAbsCenter, float flRadius, Vector *pAbsMins, Vector *pAbsMaxs )
+#else
 void CClientShadowMgr::ComputeShadowBBox( IClientRenderable *pRenderable, const Vector &vecAbsCenter, float flRadius, Vector *pAbsMins, Vector *pAbsMaxs )
+#endif
 {
 	// This is *really* rough. Basically we simply determine the
 	// maximum shadow casting length and extrude the box by that distance
 
+#if defined( L4D2 )
+	Vector vecShadowDir;
+	GetShadowDirection( handle, GetActualShadowCastType( handle ), vecShadowDir );
+#else
 	Vector vecShadowDir = GetShadowDirection( pRenderable );
+#endif
 	for (int i = 0; i < 3; ++i)
 	{
 		float flShadowCastDistance = GetShadowDistance( pRenderable );
@@ -3354,7 +3557,12 @@ bool CClientShadowMgr::CullReceiver( ClientShadowHandle_t handle, IClientRendera
 	if (foundSeparatingPlane)
 	{
 		// Compute which side of the plane the renderable is on..
+#if defined( L4D2 )
+		Vector vecShadowDir;
+		GetShadowDirection( handle, GetActualShadowCastType( handle ), vecShadowDir );
+#else
 		Vector vecShadowDir = GetShadowDirection( pSourceRenderable );
+#endif
 		float shadowDot = DotProduct( vecShadowDir, plane.normal );
 		float receiverDot = DotProduct( plane.normal, origin );
 		float sourceDot = DotProduct( plane.normal, originSource );

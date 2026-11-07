@@ -151,10 +151,17 @@ void CModelSoundsCache::BuildAnimationEventSoundList( CStudioHdr *hdr, CUtlVecto
 				{
 					if ( pEvent->type & AE_TYPE_NEWEVENTSYSTEM )
 					{
+#if defined( L4D2 )
+						if ( pEvent->event == AE_SV_PLAYSOUND )
+						{
+							FindOrAddScriptSound( sounds, pEvent->pszOptions() );
+						}
+#else
 						if ( pEvent->event == AE_SV_PLAYSOUND || pEvent->event == AE_SV_EXCLUDE_PLAYER_SOUND )
 						{
 							FindOrAddScriptSound( sounds, pEvent->pszOptions() );
 						}
+#endif
 					}
 				}
 				break;
@@ -185,7 +192,9 @@ void CModelSoundsCache::BuildAnimationEventSoundList( CStudioHdr *hdr, CUtlVecto
 				}
 				break;
 			case AE_CL_PLAYSOUND:
+#if !defined( L4D2 )
 			case AE_CL_EXCLUDE_PLAYER_SOUND:
+#endif
 				{
 					if ( !( pEvent->type & AE_TYPE_CLIENT ) )
 						break;

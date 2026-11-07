@@ -102,6 +102,10 @@ void WeaponsResource::LoadWeaponSprites( WEAPON_FILE_INFO_HANDLE hWeaponFileInfo
 	pWeaponInfo->iconCrosshair = NULL;
 	pWeaponInfo->iconAutoaim = NULL;
 	pWeaponInfo->iconSmall = NULL;
+#if defined( L4D2 )
+	pWeaponInfo->iconActiveDual = NULL;
+	pWeaponInfo->iconInactiveDual = NULL;
+#endif
 
 	char sz[128];
 	Q_snprintf(sz, sizeof( sz ), "scripts/%s", pWeaponInfo->szClassName);
@@ -153,7 +157,10 @@ void WeaponsResource::LoadWeaponSprites( WEAPON_FILE_INFO_HANDLE hWeaponFileInfo
 	}
 
 	CHudHistoryResource *pHudHR = GET_HUDELEMENT( CHudHistoryResource );	
+	// L4D2 C:0x1DCE30 binds icons independently of the pickup-history panel.
+#if !defined( L4D2 )
 	if( pHudHR )
+#endif
 	{
 		p = FindHudTextureInDict( tempList, "weapon" );
 		if ( p )
@@ -162,7 +169,8 @@ void WeaponsResource::LoadWeaponSprites( WEAPON_FILE_INFO_HANDLE hWeaponFileInfo
 			if ( pWeaponInfo->iconInactive )
 			{
 				pWeaponInfo->iconInactive->Precache();
-				pHudHR->SetHistoryGap( pWeaponInfo->iconInactive->Height() );
+				if ( pHudHR )
+					pHudHR->SetHistoryGap( pWeaponInfo->iconInactive->Height() );
 			}
 		}
 
@@ -193,7 +201,8 @@ void WeaponsResource::LoadWeaponSprites( WEAPON_FILE_INFO_HANDLE hWeaponFileInfo
 			if ( pWeaponInfo->iconAmmo )
 			{
 				pWeaponInfo->iconAmmo->Precache();
-				pHudHR->SetHistoryGap( pWeaponInfo->iconAmmo->Height() );
+				if ( pHudHR )
+					pHudHR->SetHistoryGap( pWeaponInfo->iconAmmo->Height() );
 			}
 		}
 
@@ -204,10 +213,34 @@ void WeaponsResource::LoadWeaponSprites( WEAPON_FILE_INFO_HANDLE hWeaponFileInfo
 			if ( pWeaponInfo->iconAmmo2 )
 			{
 				pWeaponInfo->iconAmmo2->Precache();
-				pHudHR->SetHistoryGap( pWeaponInfo->iconAmmo2->Height() );
+				if ( pHudHR )
+					pHudHR->SetHistoryGap( pWeaponInfo->iconAmmo2->Height() );
 			}
 		}
 	}
+
+#if defined( L4D2 )
+	// C1DCE30 loads both dual variants, without substituting weapon_s.
+	p = FindHudTextureInDict( tempList, "weapon_dual" );
+	if ( p )
+	{
+		pWeaponInfo->iconInactiveDual = gHUD.AddUnsearchableHudIconToList( *p );
+		if ( pWeaponInfo->iconInactiveDual )
+		{
+			pWeaponInfo->iconInactiveDual->Precache();
+		}
+	}
+
+	p = FindHudTextureInDict( tempList, "weapon_dual_s" );
+	if ( p )
+	{
+		pWeaponInfo->iconActiveDual = gHUD.AddUnsearchableHudIconToList( *p );
+		if ( pWeaponInfo->iconActiveDual )
+		{
+			pWeaponInfo->iconActiveDual->Precache();
+		}
+	}
+#endif
 
 	FreeHudTextureList( tempList );
 }

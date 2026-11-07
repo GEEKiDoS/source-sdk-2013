@@ -14,7 +14,7 @@
 #include "sixense/sixense_convars_extern.h"
 
 #if !defined( HL2_CLIENT_DLL) && !defined( TF_CLIENT_DLL )
-#include "weapon_csbase.h"
+#include "l4d2/weapons/weapon_csbase.h"
 #endif
 
 #if defined( HL2_CLIENT_DLL )
@@ -33,7 +33,7 @@ extern const char *COM_GetModDirectory();
 #endif
 
 #if defined( CSTRIKE15 ) || defined (CSTRIKE_DLL)
-#include "c_cs_player.h"
+#include "l4d2/player/c_cs_player.h"
 #endif
 
 #include <isixense.h>
@@ -75,7 +75,7 @@ using sixenseMath::Line;
 #include "usermessages.h"
 #include "cdll_int.h"
 #include "iclientmode.h"
-#include "c_gameinstructor.h"
+#include "l4d2/ui/instructor/c_gameinstructor.h"
 #include "glow_outline_effect.h"
 #include "portal2/vsixensevideohint.h"
 #include "portal2/basemodframe.h"

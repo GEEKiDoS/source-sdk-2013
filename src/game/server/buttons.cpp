@@ -13,9 +13,30 @@
 #include "tier1/strtools.h"
 #include "buttons.h"
 #include "eventqueue.h"
+#if defined( L4D2 )
+#include "basecombatweapon.h"
+#include "in_buttons.h"
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/gamerules/terror_gamerules.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+
+#if defined( L4D2 )
+CBaseButton::CBaseButton()
+{
+	m_glowEntity = NULL;
+}
+CBaseEntity *CBaseButton::GetUseRedirectEntity()
+{
+	return m_usable ? m_glowEntity.Get() : NULL;
+}
+unsigned int CBaseButton::PhysicsSolidMaskForEntity() const
+{
+	return BaseClass::PhysicsSolidMaskForEntity() | 0x200;
+}
+#endif
 
 void PlayLockSounds( CBaseEntity *pEdict, locksound_t *pls, int flocked, int fbutton );
 string_t MakeButtonSound( int sound );				// get string of button sound number
@@ -47,6 +68,9 @@ BEGIN_DATADESC( CBaseButton )
 	DEFINE_FIELD( m_bSolidBsp, FIELD_BOOLEAN ),
 	
 	DEFINE_KEYFIELD( m_sounds, FIELD_INTEGER, "sounds" ),
+	#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_sGlowEntity, FIELD_STRING, "glow" ),
+	#endif
 	
 //	DEFINE_FIELD( m_ls, FIELD_SOUNDNAME ),   // This is restored in Precache()
 //  DEFINE_FIELD( m_nState, FIELD_INTEGER ),
@@ -433,10 +457,16 @@ void CBaseButton::Spawn( )
 	if (HasSpawnFlags(SF_BUTTON_USE_ACTIVATES))
 	{
 		SetUse(&CBaseButton::ButtonUse);
+#if defined( L4D2 )
+		m_usable = true;
+#endif
 	}
 	else
 	{
 		SetUse(NULL);
+#if defined( L4D2 )
+		m_usable = false;
+#endif
 	}
 
 	//
@@ -451,6 +481,9 @@ void CBaseButton::Spawn( )
 		SetTouch ( NULL );
 	}
 
+#if defined( L4D2 )
+	m_glowEntity = gEntList.FindEntityByName( NULL, STRING( m_sGlowEntity ) );
+#endif
 	CreateVPhysics();
 }
 
@@ -711,6 +744,9 @@ void CBaseButton::TriggerAndWait( void )
 	}
 
 	m_toggle_state = TS_AT_TOP;
+#if defined( L4D2 )
+	m_usable = HasSpawnFlags( SF_BUTTON_TOGGLE );
+#endif
 	
 	//
 	// Re-instate touches if the button is of the toggle variety.
@@ -769,6 +805,9 @@ void CBaseButton::ButtonBackHome( void )
 {
 	ASSERT(m_toggle_state == TS_GOING_DOWN);
 	m_toggle_state = TS_AT_BOTTOM;
+#if defined( L4D2 )
+	m_usable = true;
+#endif
 
 	m_OnOut.FireOutput(m_hActivator, this);
 
@@ -1585,3 +1624,190 @@ void CMomentaryRotButton::Disable( void )
 {
 	m_bDisabled = true;
 }
+
+#if defined( L4D2 )
+IMPLEMENT_SERVERCLASS_ST( CBaseButton, DT_BaseButton )
+	SendPropEHandle( SENDINFO( m_glowEntity ) ),
+	SendPropBool( SENDINFO( m_usable ) ),
+END_SEND_TABLE()
+
+IMPLEMENT_SERVERCLASS_ST( CButtonTimed, DT_ButtonTimed )
+	SendPropStringT( SENDINFO( m_sUseString ) ),
+	SendPropStringT( SENDINFO( m_sUseSubString ) ),
+END_SEND_TABLE()
+
+LINK_ENTITY_TO_CLASS( func_button_timed, CButtonTimed );
+
+BEGIN_DATADESC( CButtonTimed )
+	DEFINE_KEYFIELD( m_nUseTime, FIELD_INTEGER, "use_time" ),
+	DEFINE_KEYFIELD( m_sUseString, FIELD_STRING, "use_string" ),
+	DEFINE_KEYFIELD( m_sUseSubString, FIELD_STRING, "use_sub_string" ),
+	DEFINE_KEYFIELD( m_bAutoDisable, FIELD_BOOLEAN, "auto_disable" ),
+	DEFINE_FUNCTION( UseTimed ),
+	DEFINE_FUNCTION( UseThink ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "Enable", InputEnable ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "Disable", InputDisable ),
+	DEFINE_OUTPUT( m_OnUnpressed, "OnUnpressed" ),
+	DEFINE_OUTPUT( m_OnTimeUp, "OnTimeUp" ),
+END_DATADESC()
+
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+CButtonTimed::CButtonTimed()
+{
+	m_nUseTime = 5;
+	m_sUseString = NULL_STRING;
+	m_sUseSubString = NULL_STRING;
+	m_bAutoDisable = true;
+	m_bInUse = false;
+	m_flUseStartTime = 0.0f;
+	m_flLastUseTime = 0.0f;
+}
+
+void CButtonTimed::Spawn()
+{
+	BaseClass::Spawn();
+	SetUse( &CButtonTimed::UseTimed );
+	m_usable = true;
+	if ( ( TerrorGameRules()->IsVersusMode() || TerrorGameRules()->IsTankRun() ) &&
+		FStrEq( STRING( gpGlobals->mapname ), "c7m1_docks" ) &&
+		NameMatches( "tankdoorout_button" ) )
+	{
+		Unlock();
+		CBaseEntity *pTarget = gEntList.FindEntityByName( NULL, "tank_touch_test" );
+		if ( pTarget )
+			g_EventQueue.AddEvent( pTarget, "Kill", 1.0f, NULL, NULL );
+	}
+}
+
+int CButtonTimed::ObjectCaps()
+{
+	return ( CBaseEntity::ObjectCaps() & ~FCAP_ACROSS_TRANSITION ) |
+		FCAP_CONTINUOUS_USE | FCAP_USE_IN_RADIUS |
+		( HasSpawnFlags( SF_BUTTON_USE_ACTIVATES ) ?
+			( FCAP_IMPULSE_USE | FCAP_USE_IN_RADIUS ) : 0 );
+}
+
+void CButtonTimed::UseTimed( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value )
+{
+	if ( m_bLocked )
+	{
+		OnUseLocked( pActivator );
+		return;
+	}
+	CTerrorPlayer *pPlayer = dynamic_cast< CTerrorPlayer * >( pActivator );
+	if ( !pPlayer )
+		return;
+	if ( m_bInUse )
+	{
+		if ( m_hActivator.Get() == pActivator )
+			m_flLastUseTime = gpGlobals->curtime;
+		return;
+	}
+	m_hActivator = pActivator;
+	m_OnPressed.FireOutput( pActivator, this );
+	SetThink( &CButtonTimed::UseThink );
+	SetNextThink( gpGlobals->curtime );
+	m_bInUse = true;
+	m_flLastUseTime = gpGlobals->curtime;
+	m_flUseStartTime = gpGlobals->curtime;
+	CBaseCombatWeapon *pWeapon = pPlayer->GetActiveWeapon();
+	if ( pWeapon && pWeapon->m_bInReload )
+	{
+		pWeapon = pPlayer->GetActiveWeapon();
+		if ( pWeapon )
+		{
+			pWeapon->Holster( NULL );
+			pWeapon->Deploy();
+		}
+	}
+	pPlayer->SetUseAction( 10, this, static_cast< float >( m_nUseTime ), true );
+}
+
+void CButtonTimed::UseThink()
+{
+	CTerrorPlayer *pPlayer = dynamic_cast< CTerrorPlayer * >( m_hActivator.Get() );
+	if ( !pPlayer || pPlayer->m_lifeState == LIFE_DEAD || pPlayer->IsIncapacitated() ||
+		!( pPlayer->m_nButtons & IN_USE ) || pPlayer->m_iCurrentUseAction != 10 ||
+		pPlayer->m_useActionTarget.Get() != this )
+	{
+		StopPressing();
+		return;
+	}
+	// Native CVTSI2SS/ADDSS/COMISS/JBE: equality and unordered both wait.
+	const float flNow = gpGlobals->curtime;
+	const float flUseTime = static_cast< float >( m_nUseTime );
+	const float flDeadline = flUseTime + m_flUseStartTime;
+	if ( flNow > flDeadline )
+	{
+		TimeUp();
+		return;
+	}
+	SetNextThink( flNow + 0.033f );
+}
+
+void CButtonTimed::StopPressing()
+{
+	if ( !m_bInUse )
+		return;
+	CTerrorPlayer *pPlayer = dynamic_cast< CTerrorPlayer * >( m_hActivator.Get() );
+	if ( pPlayer )
+	{
+		pPlayer->StopUseAction();
+		if ( pPlayer->GetUseEntity() == this )
+		{
+			pPlayer->SetUseEntity( NULL );
+			pPlayer->OnUseEntityChanged();
+		}
+	}
+	m_bInUse = false;
+	m_flUseStartTime = 0.0f;
+	m_hActivator = NULL;
+	// Native88950 resolves the output activator AFTER clearing the handle.
+	m_OnUnpressed.FireOutput( m_hActivator.Get(), this );
+	SetThink( NULL );
+	SetNextThink( TICK_NEVER_THINK );
+}
+
+void CButtonTimed::TimeUp()
+{
+	m_OnTimeUp.FireOutput( m_hActivator.Get(), this );
+	StopPressing();
+	if ( m_bAutoDisable )
+		Disable();
+}
+
+void CButtonTimed::InputEnable( inputdata_t &inputdata )
+{
+	Enable();
+}
+
+void CButtonTimed::InputDisable( inputdata_t &inputdata )
+{
+	Disable();
+}
+
+void CButtonTimed::Enable()
+{
+	SetUse( &CButtonTimed::UseTimed );
+	m_usable = true;
+}
+
+void CButtonTimed::Disable()
+{
+	StopPressing();
+	m_usable = false;
+	SetUse( NULL );
+	SetThink( NULL );
+	SetNextThink( TICK_NEVER_THINK );
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif

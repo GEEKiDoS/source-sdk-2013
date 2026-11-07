@@ -38,6 +38,9 @@ public:
 	~CFourWheelVehiclePhysics ();
 
 	// Call Precache + Spawn from the containing entity's Precache + Spawn methods
+#if defined( L4D2 )
+	void Precache();
+#endif
 	void Spawn();
 	void SetOuter( CBaseAnimating *pOuter, CFourWheelServerVehicle *pServerVehicle ); 
 	

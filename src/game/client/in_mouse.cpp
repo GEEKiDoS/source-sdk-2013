@@ -49,12 +49,21 @@ extern ConVar lookstrafe;
 extern ConVar cl_pitchdown;
 extern ConVar cl_pitchup;
 extern const ConVar *sv_cheats;
+#if defined( L4D2 )
+extern ConVar cl_inputmode;
+#endif
 
 class ConVar_m_pitch : public ConVar_ServerBounded
 {
 public:
 	ConVar_m_pitch() : 
-		ConVar_ServerBounded( "m_pitch","0.022", FCVAR_ARCHIVE, "Mouse pitch factor." )
+		ConVar_ServerBounded( "m_pitch","0.022", 
+#if defined( L4D2 )
+	0x00008088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Mouse pitch factor." )
 	{
 	}
 	
@@ -81,28 +90,112 @@ extern ConVar cam_idealyaw;
 extern ConVar cam_idealpitch;
 extern ConVar thirdperson_platformer;
 
-static ConVar m_filter( "m_filter","0", FCVAR_ARCHIVE, "Mouse filtering (set this to 1 to average the mouse over 2 frames)." );
-ConVar sensitivity( "sensitivity","3", FCVAR_ARCHIVE, "Mouse sensitivity.", true, 0.0001f, true, 10000000 );
+static ConVar m_filter( "m_filter","0", 
+#if defined( L4D2 )
+	0x00008088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Mouse filtering (set this to 1 to average the mouse over 2 frames)." );
+ConVar sensitivity( "sensitivity","3", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Mouse sensitivity.", true, 0.0001f, true, 10000000 );
 
-static ConVar m_side( "m_side","0.8", FCVAR_ARCHIVE, "Mouse side factor." );
-static ConVar m_yaw( "m_yaw","0.022", FCVAR_ARCHIVE, "Mouse yaw factor." );
-static ConVar m_forward( "m_forward","1", FCVAR_ARCHIVE, "Mouse forward factor." );
+static ConVar m_side( "m_side","0.8", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Mouse side factor." );
+static ConVar m_yaw( "m_yaw","0.022", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Mouse yaw factor." );
+static ConVar m_forward( "m_forward","1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Mouse forward factor." );
 
-static ConVar m_customaccel( "m_customaccel", "0", FCVAR_ARCHIVE, "Custom mouse acceleration:"
+static ConVar m_customaccel( "m_customaccel", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Custom mouse acceleration:"
 	"\n0: custom accelaration disabled"
 	"\n1: mouse_acceleration = min(m_customaccel_max, pow(raw_mouse_delta, m_customaccel_exponent) * m_customaccel_scale + sensitivity)"
 	"\n2: Same as 1, with but x and y sensitivity are scaled by m_pitch and m_yaw respectively."
 	"\n3: mouse_acceleration = pow(raw_mouse_delta, m_customaccel_exponent - 1) * sensitivity"
 	);
-static ConVar m_customaccel_scale( "m_customaccel_scale", "0.04", FCVAR_ARCHIVE, "Custom mouse acceleration value.", true, 0, false, 0.0f );
-static ConVar m_customaccel_max( "m_customaccel_max", "0", FCVAR_ARCHIVE, "Max mouse move scale factor, 0 for no limit" );
-static ConVar m_customaccel_exponent( "m_customaccel_exponent", "1", FCVAR_ARCHIVE, "Mouse move is raised to this power before being scaled by scale factor.", true, 1.0f, false, 0.0f);
+static ConVar m_customaccel_scale( "m_customaccel_scale", "0.04", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Custom mouse acceleration value.", true, 0, false, 0.0f );
+static ConVar m_customaccel_max( "m_customaccel_max", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Max mouse move scale factor, 0 for no limit" );
+static ConVar m_customaccel_exponent( "m_customaccel_exponent", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Mouse move is raised to this power before being scaled by scale factor.", true, 1.0f, false, 0.0f);
 
-static ConVar m_mousespeed( "m_mousespeed", "1", FCVAR_ARCHIVE, "Windows mouse acceleration (0 to disable, 1 to enable [Windows 2000: enable initial threshold], 2 to enable secondary threshold [Windows 2000 only]).", true, 0, true, 2 );
-static ConVar m_mouseaccel1( "m_mouseaccel1", "0", FCVAR_ARCHIVE, "Windows mouse acceleration initial threshold (2x movement).", true, 0, false, 0.0f );
-static ConVar m_mouseaccel2( "m_mouseaccel2", "0", FCVAR_ARCHIVE, "Windows mouse acceleration secondary threshold (4x movement).", true, 0, false, 0.0f );
+static ConVar m_mousespeed( "m_mousespeed", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Windows mouse acceleration (0 to disable, 1 to enable [Windows 2000: enable initial threshold], 2 to enable secondary threshold [Windows 2000 only]).", true, 0, true, 2 );
+static ConVar m_mouseaccel1( "m_mouseaccel1", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Windows mouse acceleration initial threshold (2x movement).", true, 0, false, 0.0f );
+static ConVar m_mouseaccel2( "m_mouseaccel2", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Windows mouse acceleration secondary threshold (4x movement).", true, 0, false, 0.0f );
 
-static ConVar m_rawinput( "m_rawinput", "1", FCVAR_ARCHIVE, "Use Raw Input for mouse input.");
+static ConVar m_rawinput( "m_rawinput",
+#if defined( L4D2 )
+	"0",
+#else
+	"1",
+#endif
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Use Raw Input for mouse input.");
+#if !defined( L4D2 )
 static ConVar m_rawinput_onetime_reset( "m_rawinput_onetime_reset", "0", FCVAR_ARCHIVE | FCVAR_HIDDEN );
 
 class CRawInputConvarOnetimeReset : public CAutoGameSystem
@@ -123,17 +216,36 @@ public:
 	}
 };
 CRawInputConvarOnetimeReset g_RawInputConvarOnetimeReset( "CRawInputConvarOnetimeReset" );
-
-static ConVar m_limitedcapture_workaround( "m_limitedcapture_workaround", "0", FCVAR_NONE,
-                                           "Workaround limitations on mouse capture in some environments" );
-
-#if DEBUG
-ConVar cl_mouselook( "cl_mouselook", "1", FCVAR_ARCHIVE, "Set to 1 to use mouse for look, 0 for keyboard look." );
-#else
-ConVar cl_mouselook( "cl_mouselook", "1", FCVAR_ARCHIVE | FCVAR_NOT_CONNECTED, "Set to 1 to use mouse for look, 0 for keyboard look. Cannot be set while connected to a server." );
 #endif
 
-ConVar cl_mouseenable( "cl_mouseenable", "1" );
+#if !defined( L4D2 )
+static ConVar m_limitedcapture_workaround( "m_limitedcapture_workaround", "0", FCVAR_NONE,
+                                           "Workaround limitations on mouse capture in some environments" );
+#endif
+
+#if DEBUG
+ConVar cl_mouselook( "cl_mouselook", "1", 
+#if defined( L4D2 )
+	0x00408288
+#else
+	FCVAR_ARCHIVE
+#endif
+, "Set to 1 to use mouse for look, 0 for keyboard look." );
+#else
+ConVar cl_mouselook( "cl_mouselook", "1", 
+#if defined( L4D2 )
+	0x00408288
+#else
+	FCVAR_ARCHIVE | FCVAR_NOT_CONNECTED
+#endif
+, "Set to 1 to use mouse for look, 0 for keyboard look. Cannot be set while connected to a server." );
+#endif
+
+ConVar cl_mouseenable( "cl_mouseenable", "1"
+#if defined( L4D2 )
+	, 0x00080008
+#endif
+ );
 
 // From other modules...
 void GetVGUICursorPos( int& x, int& y );
@@ -278,9 +390,11 @@ void CInput::Init_Mouse (void)
 	m_flPreviousMouseXPosition = 0.0f;
 	m_flPreviousMouseYPosition = 0.0f;
 
+#if !defined( L4D2 )
 	// Should be calling ResetMouse() before using these
 	m_iCaptureWorkaroundLastMouseX = 0.f;
 	m_iCaptureWorkaroundLastMouseY = 0.f;
+#endif
 
 	m_fMouseInitialized = true;
 
@@ -352,6 +466,7 @@ void CInput::ResetMouse( void )
 	int x, y;
 	GetWindowCenter( x,  y );
 
+#if !defined( L4D2 )
 	// Under RDP in windows, possibly VNC, we can teleport the mouse back into our window, but not within our window.
 	// The cursor will appear to move, but the next RDP input will teleport it to the host's location.  Store off the
 	// last mouse location and use deltas until the mouse escapes, and everything seems to work.
@@ -370,6 +485,7 @@ void CInput::ResetMouse( void )
 		m_iCaptureWorkaroundLastMouseX = x;
 		m_iCaptureWorkaroundLastMouseY = y;
 	}
+#endif
 
 	SetMousePos( x, y );
 }
@@ -630,12 +746,14 @@ void CInput::AccumulateMouse( void )
 	int x = w >> 1;	x;
 	int y = h >> 1;	y;
 
+#if !defined( L4D2 )
 	// See comment in ResetMouse()
 	if ( m_limitedcapture_workaround.GetBool() )
 	{
 		x = m_iCaptureWorkaroundLastMouseX;
 		y = m_iCaptureWorkaroundLastMouseY;
 	}
+#endif
 
 	//only accumulate mouse if we are not moving the camera with the mouse
 	if ( !m_fCameraInterceptingMouse && vgui::surface()->IsCursorLocked() )
@@ -732,6 +850,11 @@ void CInput::MouseMove( CUserCmd *cmd )
 
 		// Let the client mode at the mouse input before it's used
 		g_pClientMode->OverrideMouseInput( &mouse_x, &mouse_y );
+#if defined( L4D2 )
+		// C135940: only a nonzero, overridden mouse sample selects mouse input.
+		if ( mouse_x != 0.0f || mouse_y != 0.0f )
+			cl_inputmode.SetValue( 0 );
+#endif
 
 		// Add mouse X/Y movement to cmd
 		ApplyMouse( viewangles, cmd, mouse_x, mouse_y );

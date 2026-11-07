@@ -25,13 +25,39 @@
 #include "viewrender.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "c_baseentity.h"
+#include "c_baseplayer.h"
+#include "tier0/threadtools.h"
+#endif // L4D2
+#if defined( L4D2 )
+#include <emmintrin.h>
+#endif
 #include "tier0/memdbgon.h"
 
 class VMatrix;  // forward decl
 
-static ConVar cl_drawleaf("cl_drawleaf", "-1", FCVAR_CHEAT );
-static ConVar r_PortalTestEnts( "r_PortalTestEnts", "1", FCVAR_CHEAT, "Clip entities against portal frustums." );
-static ConVar r_portalsopenall( "r_portalsopenall", "0", FCVAR_CHEAT, "Open all portals" );
+static ConVar cl_drawleaf("cl_drawleaf", "-1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConVar r_PortalTestEnts( "r_PortalTestEnts", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Clip entities against portal frustums." );
+static ConVar r_portalsopenall( "r_portalsopenall", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Open all portals" );
 static ConVar cl_threaded_client_leaf_system("cl_threaded_client_leaf_system", "0"  );
 
 
@@ -56,12 +82,32 @@ static void CallComputeFXBlend( IClientRenderable *&pRenderable )
 	pRenderable->ComputeFxBlend();
 }
 
+#if defined( L4D2 )
+struct RenderAlphaScreenState_t;
+extern ConVar cl_leveloverview;
+extern ConVar cl_leafsystemvis;
+#endif
+
 //-----------------------------------------------------------------------------
 // The client leaf system
 //-----------------------------------------------------------------------------
 class CClientLeafSystem : public IClientLeafSystem, public ISpatialLeafEnumerator
 {
 public:
+#if defined( L4D2 )
+	bool CullCachedWorldBounds( ClientRenderHandle_t handle );
+#endif
+
+#if defined( L4D2 )
+	void SetModelTranslucencyType( ClientRenderHandle_t handle, int type );
+	void SetDrawForLocalUser( ClientRenderHandle_t handle, bool draw );
+	void SetRenderWithViewModels( ClientRenderHandle_t handle, bool enable );
+	void EnableBloatedRenderBounds( ClientRenderHandle_t handle, bool enable );
+	void DisableCachedRenderBounds( ClientRenderHandle_t handle, bool disable );
+	void AddEntityRenderable( C_BaseEntity *entity, bool renderWithViewModels, int type, bool drawForLocalUser );
+	void UpdateModelType( ClientRenderHandle_t handle );
+#endif
+
 	virtual char const *Name() { return "CClientLeafSystem"; }
 
 	// constructor, destructor
@@ -108,10 +154,19 @@ public:
 	virtual bool ShouldDrawDetailObjectsInLeaf( int leaf, int frameNumber );
 	virtual void RenderableChanged( ClientRenderHandle_t handle );
 	virtual void SetRenderGroup( ClientRenderHandle_t handle, RenderGroup_t group );
+#if defined( L4D2 )
+	void EnableRendering( ClientRenderHandle_t handle, bool enable );
+#endif
 	virtual void ComputeTranslucentRenderLeaf( int count, const LeafIndex_t *pLeafList, const LeafFogVolume_t *pLeafFogVolumeList, int frameNumber, int viewID );
+#if defined( L4D2 )
+	virtual void CollateViewModelRenderables( CUtlVector< ClientViewModelRenderable_t > &opaque, CUtlVector< ClientViewModelRenderable_t > &translucent );
+#else
 	virtual void CollateViewModelRenderables( CUtlVector< IClientRenderable * >& opaque, CUtlVector< IClientRenderable * >& translucent );
+#endif
 	virtual void BuildRenderablesList( const SetupRenderInfo_t &info );
+#if !defined( L4D2 )
 			void CollateRenderablesInLeaf( int leaf, int worldListLeafIndex, const SetupRenderInfo_t &info );
+#endif
 	virtual void DrawStaticProps( bool enable );
 	virtual void DrawSmallEntities( bool enable );
 	virtual void EnableAlternateSorting( ClientRenderHandle_t handle, bool bEnable );
@@ -160,7 +215,11 @@ private:
 	short GetRenderableArea( ClientRenderHandle_t handle );
 
 	// remove renderables from leaves
+#if defined( L4D2 )
+	void InsertIntoTree( ClientRenderHandle_t handle, const Vector &absMins, const Vector &absMaxs );
+#else
 	void InsertIntoTree( ClientRenderHandle_t &handle );
+#endif
 	void RemoveFromTree( ClientRenderHandle_t handle );
 
 	// Returns if it's a view model render group
@@ -255,7 +314,52 @@ private:
 		unsigned short		m_FirstShadow;	// The first shadow caster that cast on it
 		short m_Area;	// -1 if the renderable spans multiple areas.
 		signed char			m_TranslucencyCalculatedView;
+#if defined( L4D2 )
+		C_BaseEntity *m_pL4D2AlphaOwner;
+		int m_nL4D2WorldDataIndex;
+		unsigned char m_nL4D2TranslucencyType;
+		bool m_bL4D2DrawForLocalUser;
+		bool m_bL4D2RenderingEnabled; // Native WORD22 disable flag0x1, inverse.
+		bool m_bL4D2ViewModel;
+		unsigned char m_nL4D2BoundsFlags;
+		Vector m_vecCachedWorldMins;
+		Vector m_vecCachedWorldMaxs;
+		Vector m_vecPlacementMins;
+		Vector m_vecPlacementMaxs;
+#endif
 	};
+#if defined( L4D2 )
+	struct L4D2EntityRenderData_t
+	{
+		RenderableInfo_t *m_pInfo;
+		C_BaseEntity *m_pAlphaOwner;
+		Vector m_vecMins, m_vecMaxs, m_vecCenter;
+		float m_flDistanceSquared, m_flRadius, m_flFade;
+		ClientRenderHandle_t m_hRenderable;
+		int m_nOpaqueWorldLeaf, m_nTranslucentWorldLeaf;
+		short m_nArea;
+		unsigned char m_nAlpha;
+		bool m_bIgnoreZ, m_bCulled;
+	};
+	// The native2048-row scratch uses the existing SDK fixed+growable allocator:
+	// no per-frame heap allocation below that size, no artificial hard cap.
+	typedef CUtlVectorFixedGrowable< L4D2EntityRenderData_t, 2048 > L4D2EntityRenderDataList_t;
+	void CollectEntityRenderables( const SetupRenderInfo_t &setup, L4D2EntityRenderDataList_t &rows );
+	void ComputeEntityWorldBounds( L4D2EntityRenderDataList_t &rows );
+	void CullEntityWorldBounds( const SetupRenderInfo_t &setup, L4D2EntityRenderDataList_t &rows );
+	void ComputeEntityRenderAlpha( const SetupRenderInfo_t &setup, L4D2EntityRenderDataList_t &rows );
+	void ApplyEntityDistanceFade( const SetupRenderInfo_t &setup, L4D2EntityRenderDataList_t &rows );
+	void ApplyEntityScreenFade( const RenderAlphaScreenState_t &screen, float minimum,
+		float maximum, L4D2EntityRenderDataList_t &rows );
+	void CullOccludedEntityRenderables( L4D2EntityRenderDataList_t &rows );
+	void AppendEntityRenderable( const SetupRenderInfo_t &setup, int worldLeaf,
+		const L4D2EntityRenderData_t &row );
+	void CollateRenderablesInLeaf( int leaf, int worldListLeafIndex, const SetupRenderInfo_t &info,
+		const L4D2EntityRenderDataList_t &rows );
+	void ComputePlacementBounds( RenderableInfo_t &info, Vector &mins, Vector &maxs );
+	void ComputeCachedWorldBounds( RenderableInfo_t &info );
+	void UpdateSDKRenderGroupForEntity( RenderableInfo_t &info );
+#endif
 
 	// The leaf contains an index into a list of renderables
 	struct ClientLeaf_t
@@ -402,6 +506,7 @@ inline void CalcRenderableWorldSpaceAABB(
 
 // This gets an AABB for the renderable, but it doesn't cause a parent's bones to be setup.
 // This is used for placement in the leaves, but the more expensive version is used for culling.
+#if !defined( L4D2 )
 void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *pRenderable, Vector &absMin, Vector &absMax )
 {
 	C_BaseEntity *pEnt = pRenderable->GetIClientUnknown()->GetBaseEntity();
@@ -431,6 +536,7 @@ void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *pRenderable, Vector &
 		CalcRenderableWorldSpaceAABB( pRenderable, absMin, absMax );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -525,6 +631,7 @@ void CClientLeafSystem::LevelShutdownPostEntity()
 //-----------------------------------------------------------------------------
 // This is what happens before rendering a particular view
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CClientLeafSystem::PreRender()
 {
 	VPROF_BUDGET( "CClientLeafSystem::PreRender", "PreRender" );
@@ -596,6 +703,7 @@ void CClientLeafSystem::PreRender()
 		m_DirtyRenderables.RemoveMultiple( 0, nDirty );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -631,6 +739,21 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 	info.m_RenderGroup = (unsigned char)type;
 	info.m_EnumCount = 0;
 	info.m_RenderLeaf = m_RenderablesInLeaf.InvalidIndex();
+#if defined( L4D2 )
+	info.m_pL4D2AlphaOwner = pRenderable->GetIClientUnknown()->GetBaseEntity();
+	info.m_nL4D2WorldDataIndex = -1;
+	// Native metadata is assigned by the ONE typed root registration/model
+	// hook, not recomputed by this allocator or derived from current alpha.
+	info.m_nL4D2TranslucencyType = 0;
+	info.m_bL4D2DrawForLocalUser = true;
+	info.m_bL4D2RenderingEnabled = true;
+	info.m_bL4D2ViewModel = IsViewModelRenderGroup( (RenderGroup_t)info.m_RenderGroup );
+	info.m_nL4D2BoundsFlags = 0;
+	info.m_vecCachedWorldMins.Init();
+	info.m_vecCachedWorldMaxs.Init();
+	info.m_vecPlacementMins.Init( FLT_MAX, FLT_MAX, FLT_MAX );
+	info.m_vecPlacementMaxs.Init( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+#endif
 	if ( IsViewModelRenderGroup( (RenderGroup_t)info.m_RenderGroup ) )
 	{
 		AddToViewModelList( handle );
@@ -1217,6 +1340,21 @@ bool CClientLeafSystem::EnumerateLeaf( int leaf, intp context )
 	return true;
 }
 
+#if defined( L4D2 )
+void CClientLeafSystem::InsertIntoTree( ClientRenderHandle_t handle, const Vector &absMins, const Vector &absMaxs )
+{
+	// Native C1C40 commits the placement box before enumerating its BSP leaves.
+	m_Renderables[handle].m_vecPlacementMins = absMins;
+	m_Renderables[handle].m_vecPlacementMaxs = absMaxs;
+	++m_ShadowEnum;
+
+	EnumResultList_t list = { NULL, handle };
+	Assert( absMins.IsValid() && absMaxs.IsValid() );
+	ISpatialQuery *pQuery = engine->GetBSPTreeQuery();
+	pQuery->EnumerateLeavesInBox( absMins, absMaxs, this, (intp)&list );
+	m_Renderables[handle].m_Area = GetRenderableArea( handle );
+}
+#else
 void CClientLeafSystem::InsertIntoTree( ClientRenderHandle_t &handle )
 {
 	if ( ThreadInMainThread() )
@@ -1243,6 +1381,7 @@ void CClientLeafSystem::InsertIntoTree( ClientRenderHandle_t &handle )
 		m_DeferredInserts.PushItem( list );
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Removes an element from the tree
@@ -1271,6 +1410,7 @@ void CClientLeafSystem::RemoveFromTree( ClientRenderHandle_t handle )
 //-----------------------------------------------------------------------------
 // Call this when the renderable moves
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CClientLeafSystem::RenderableChanged( ClientRenderHandle_t handle )
 {
 	Assert ( handle != INVALID_CLIENT_RENDER_HANDLE );
@@ -1291,6 +1431,7 @@ void CClientLeafSystem::RenderableChanged( ClientRenderHandle_t handle )
 	}
 #endif
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1358,6 +1499,11 @@ void CClientLeafSystem::SetRenderGroup( ClientRenderHandle_t handle, RenderGroup
 	}
 
 	pInfo->m_RenderGroup = group;
+#if defined( L4D2 )
+	// Retained engine/nonentity SDK metadata interop, not entity native0/1/2.
+	// AddEffect's genuine existing particle VM-translucent bucket remains.
+	pInfo->m_bL4D2ViewModel = bNewViewModelRenderGroup;
+#endif
 
 }
 
@@ -1416,7 +1562,18 @@ void CClientLeafSystem::ComputeTranslucentRenderLeaf( int count, const LeafIndex
 		while (idx != m_RenderablesInLeaf.InvalidIndex())
 		{
 			RenderableInfo_t& info = m_Renderables[m_RenderablesInLeaf.Element(idx)];
-			if ( info.m_TranslucencyCalculated != globalFrameCount || info.m_TranslucencyCalculatedView != viewID )
+#if defined( L4D2 )
+			if ( !info.m_bL4D2RenderingEnabled || !info.m_bL4D2DrawForLocalUser )
+			{
+				idx = m_RenderablesInLeaf.NextElement(idx);
+				continue;
+			}
+#endif
+			if (
+#if defined( L4D2 )
+				!info.m_pL4D2AlphaOwner &&
+#endif
+				( info.m_TranslucencyCalculated != globalFrameCount || info.m_TranslucencyCalculatedView != viewID ) )
 			{ 
 				// Compute translucency
 				if ( bThreaded )
@@ -1448,7 +1605,11 @@ void CClientLeafSystem::ComputeTranslucentRenderLeaf( int count, const LeafIndex
 		{
 			if( pInfo->m_RenderFrame != frameNumber )
 			{   
-				if( pInfo->m_RenderGroup == RENDER_GROUP_TRANSLUCENT_ENTITY )
+				if (
+#if defined( L4D2 )
+					pInfo->m_pL4D2AlphaOwner ||
+#endif
+					pInfo->m_RenderGroup == RENDER_GROUP_TRANSLUCENT_ENTITY )
 				{
 					pInfo->m_RenderLeaf = leaf;
 				}
@@ -1456,7 +1617,11 @@ void CClientLeafSystem::ComputeTranslucentRenderLeaf( int count, const LeafIndex
 			}
 			else if ( pInfo->m_Flags & RENDER_FLAGS_ALTERNATE_SORTING )
 			{
-				if( pInfo->m_RenderGroup == RENDER_GROUP_TRANSLUCENT_ENTITY )
+				if (
+#if defined( L4D2 )
+					pInfo->m_pL4D2AlphaOwner ||
+#endif
+					pInfo->m_RenderGroup == RENDER_GROUP_TRANSLUCENT_ENTITY )
 				{
 					pInfo->m_RenderLeaf = leaf;
 				}
@@ -1476,8 +1641,12 @@ void CClientLeafSystem::ComputeTranslucentRenderLeaf( int count, const LeafIndex
 //-----------------------------------------------------------------------------
 // Adds a renderable to the list of renderables to render this frame
 //-----------------------------------------------------------------------------
-inline void AddRenderableToRenderList( CClientRenderablesList &renderList, IClientRenderable *pRenderable, 
-	int iLeaf, RenderGroup_t group,	ClientRenderHandle_t renderHandle, bool bTwoPass = false )
+inline void AddRenderableToRenderList( CClientRenderablesList &renderList, IClientRenderable *pRenderable,
+	int iLeaf, RenderGroup_t group, ClientRenderHandle_t renderHandle, bool bTwoPass = false
+#if defined( L4D2 )
+	, unsigned char alpha = 255, bool gameOwnedAlpha = false, bool ignoreZ = false
+#endif
+	)
 {
 #ifdef _DEBUG
 	if (cl_drawleaf.GetInt() >= 0)
@@ -1499,6 +1668,11 @@ inline void AddRenderableToRenderList( CClientRenderablesList &renderList, IClie
 		pEntry->m_iWorldListInfoLeaf = iLeaf;
 		pEntry->m_TwoPass = bTwoPass;
 		pEntry->m_RenderHandle = renderHandle;
+#if defined( L4D2 )
+		pEntry->m_nL4D2Alpha = alpha;
+		pEntry->m_bL4D2GameOwnedAlpha = gameOwnedAlpha;
+		pEntry->m_bL4D2IgnoreZ = ignoreZ;
+#endif
 		curCount++;
 	}
 	else
@@ -1513,6 +1687,7 @@ inline void AddRenderableToRenderList( CClientRenderablesList &renderList, IClie
 // Input  : renderList - 
 //			renderGroup - 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CClientLeafSystem::CollateViewModelRenderables( CUtlVector< IClientRenderable * >& opaque, CUtlVector< IClientRenderable * >& translucent )
 {
 	for ( int i = m_ViewModels.Count()-1; i >= 0; --i )
@@ -1534,6 +1709,7 @@ void CClientLeafSystem::CollateViewModelRenderables( CUtlVector< IClientRenderab
 		}
 	}
 }
+#endif
 
 static RenderGroup_t DetectBucketedRenderGroup( RenderGroup_t group, float fDimension )
 {
@@ -1571,7 +1747,11 @@ static RenderGroup_t DetectBucketedRenderGroup( RenderGroup_t group, float fDime
 	return bucketedGroup;
 }
 
-void CClientLeafSystem::CollateRenderablesInLeaf( int leaf, int worldListLeafIndex,	const SetupRenderInfo_t &info )
+void CClientLeafSystem::CollateRenderablesInLeaf( int leaf, int worldListLeafIndex, const SetupRenderInfo_t &info
+#if defined( L4D2 )
+	, const L4D2EntityRenderDataList_t &rows
+#endif
+	)
 {
 	bool portalTestEnts = r_PortalTestEnts.GetBool() && !r_portalsopenall.GetBool();
 	
@@ -1585,6 +1765,15 @@ void CClientLeafSystem::CollateRenderablesInLeaf( int leaf, int worldListLeafInd
 	{
 		ClientRenderHandle_t handle = m_RenderablesInLeaf.Element(idx);
 		RenderableInfo_t& renderable = m_Renderables[handle];
+#if defined( L4D2 )
+		if ( !renderable.m_bL4D2RenderingEnabled || !renderable.m_bL4D2DrawForLocalUser ) continue;
+		if ( renderable.m_pL4D2AlphaOwner )
+		{
+			if ( renderable.m_nL4D2WorldDataIndex != -1 )
+				AppendEntityRenderable( info, worldListLeafIndex, rows[renderable.m_nL4D2WorldDataIndex] );
+			continue;
+		}
+#endif
 
 		// Early out on static props if we don't want to render them
 		if ((!m_DrawStaticProps) && (renderable.m_Flags & RENDER_FLAGS_STATIC_PROP))
@@ -1633,7 +1822,15 @@ void CClientLeafSystem::CollateRenderablesInLeaf( int leaf, int worldListLeafInd
 		}
 
 		Vector absMins, absMaxs;
+#if defined( L4D2 )
+		// Cache policy applies to EVERY leaf row, including real engine-owned
+		// nonentities. Their existing alpha/order path above remains untouched.
+		ComputeCachedWorldBounds( renderable );
+		absMins = renderable.m_vecCachedWorldMins;
+		absMaxs = renderable.m_vecCachedWorldMaxs;
+#else
 		CalcRenderableWorldSpaceAABB( renderable.m_pRenderable, absMins, absMaxs );
+#endif
 		// If the renderable is inside an area, cull it using the frustum for that area.
 		if ( portalTestEnts && renderable.m_Area != -1 )
 		{
@@ -1810,6 +2007,7 @@ void CClientLeafSystem::SortEntities( const Vector &vecRenderOrigin, const Vecto
 }
 
 
+#if !defined( L4D2 )
 void CClientLeafSystem::BuildRenderablesList( const SetupRenderInfo_t &info )
 {
 	VPROF_BUDGET( "BuildRenderablesList", "BuildRenderablesList" );
@@ -1834,3 +2032,899 @@ void CClientLeafSystem::BuildRenderablesList( const SetupRenderInfo_t &info )
 		}
 	}
 }
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING clientleafsystem.cpp after its class declaration.
+// Definitions replace the L4D2 responsibilities, not the public engine ABI.
+#if defined( L4D2 )
+
+// Native BD380. Domain0/1/2 is not RenderGroup_t. Keep the actual two-bit
+// assignment, including the native behavior for an explicitly supplied3.
+void CClientLeafSystem::SetModelTranslucencyType( ClientRenderHandle_t handle, int type )
+{
+	if ( handle == INVALID_CLIENT_RENDER_HANDLE )
+		return;
+	RenderableInfo_t &info = m_Renderables[handle];
+	info.m_nL4D2TranslucencyType = type & 3;
+	UpdateSDKRenderGroupForEntity( info );
+}
+
+// Native BD3F0, folded to the one real view user0. This is actual eligibility,
+// not a synthetic local-resolvability or input-camera flag.
+void CClientLeafSystem::SetDrawForLocalUser( ClientRenderHandle_t handle, bool draw )
+{
+	if ( handle != INVALID_CLIENT_RENDER_HANDLE )
+		m_Renderables[handle].m_bL4D2DrawForLocalUser = draw;
+}
+
+// Native BD4C0/+120: WORD22 flag0x1, not local-user draw flags/+116.
+// No RenderableChanged callback; both world and VM admission read the state.
+void CClientLeafSystem::EnableRendering( ClientRenderHandle_t handle, bool enable )
+{
+	if ( handle != INVALID_CLIENT_RENDER_HANDLE )
+		m_Renderables[handle].m_bL4D2RenderingEnabled = enable;
+}
+
+// Native C2940. Enabling adds the VM list BEFORE removing spatial/shadow
+// memberships. Disabling removes VM membership BEFORE RenderableChanged.
+void CClientLeafSystem::SetRenderWithViewModels( ClientRenderHandle_t handle, bool enable )
+{
+	if ( handle == INVALID_CLIENT_RENDER_HANDLE )
+		return;
+	RenderableInfo_t &info = m_Renderables[handle];
+	if ( enable )
+	{
+		if ( !info.m_bL4D2ViewModel )
+		{
+			info.m_bL4D2ViewModel = true;
+			AddToViewModelList( handle );
+			RemoveFromTree( handle );
+			UpdateSDKRenderGroupForEntity( info );
+		}
+	}
+	else if ( info.m_bL4D2ViewModel )
+	{
+		info.m_bL4D2ViewModel = false;
+		RemoveFromViewModelList( handle );
+		RenderableChanged( handle );
+		UpdateSDKRenderGroupForEntity( info );
+	}
+}
+
+// Only a bucket adapter for existing SDK consumers. Native metadata remains
+// separate, and neither alpha255 nor an SDK bucket destroys native type2.
+void CClientLeafSystem::UpdateSDKRenderGroupForEntity( RenderableInfo_t &info )
+{
+	if ( !info.m_pL4D2AlphaOwner )
+		return;
+	if ( info.m_bL4D2ViewModel )
+	{
+		info.m_RenderGroup = info.m_nL4D2TranslucencyType == 0 ?
+			RENDER_GROUP_VIEW_MODEL_OPAQUE : RENDER_GROUP_VIEW_MODEL_TRANSLUCENT;
+	}
+	else if ( info.m_nL4D2TranslucencyType != 0 )
+	{
+		info.m_RenderGroup = RENDER_GROUP_TRANSLUCENT_ENTITY;
+	}
+	else
+	{
+		info.m_RenderGroup = ( info.m_Flags & RENDER_FLAGS_BRUSH_MODEL ) ?
+			RENDER_GROUP_OPAQUE_BRUSH : RENDER_GROUP_OPAQUE_ENTITY;
+	}
+	if ( info.m_nL4D2TranslucencyType == 2 )
+		info.m_Flags |= RENDER_FLAGS_TWOPASS;
+	else
+		info.m_Flags &= ~RENDER_FLAGS_TWOPASS;
+}
+
+static void AddL4D2ViewModelRenderable( CUtlVector< ClientViewModelRenderable_t > &list,
+	IClientRenderable *renderable, unsigned char alpha, bool gameOwnedAlpha )
+{
+	ClientViewModelRenderable_t &entry = list[list.AddToTail()];
+	entry.m_pRenderable = renderable;
+	entry.m_nAlpha = alpha;
+	entry.m_bGameOwnedAlpha = gameOwnedAlpha;
+}
+
+// Whole native C1ED0 on game-owned rows. Main's explicit target-engine
+// capability adaptation keeps nonentity rows on their preexisting SDK path.
+// In particular, native2 gets BOTH passes even when its translucent alpha0.
+void CClientLeafSystem::CollateViewModelRenderables(
+	CUtlVector< ClientViewModelRenderable_t > &opaque,
+	CUtlVector< ClientViewModelRenderable_t > &translucent )
+{
+	for ( int i = m_ViewModels.Count() - 1; i >= 0; --i )
+	{
+		const ClientRenderHandle_t handle = m_ViewModels[i];
+		RenderableInfo_t &info = m_Renderables[handle];
+		// Native draw-user metadata applies to EVERY row, including genuine
+		// game-owned nonentity particles whose GetBaseEntity is NULL.
+		if ( !info.m_bL4D2RenderingEnabled || !info.m_bL4D2DrawForLocalUser )
+			continue;
+		if ( info.m_pL4D2AlphaOwner )
+		{
+			const unsigned char alpha = info.m_pL4D2AlphaOwner->ComputeRenderAlpha();
+			const unsigned char type = info.m_nL4D2TranslucencyType;
+			if ( alpha != 255 || type != 0 )
+			{
+				AddL4D2ViewModelRenderable( translucent, info.m_pRenderable, alpha, true );
+				if ( type != 2 )
+					continue;
+			}
+			AddL4D2ViewModelRenderable( opaque, info.m_pRenderable, 255, true );
+		}
+		else
+		{
+			// Original SDK order/side effects retained for engine/nonproperty
+			// renderables. ComputeFxBlend can remove a VM-list membership.
+			info.m_pRenderable->ComputeFxBlend();
+			if ( info.m_RenderGroup == RENDER_GROUP_VIEW_MODEL_OPAQUE ||
+				info.m_RenderGroup == RENDER_GROUP_OPAQUE_ENTITY )
+			{
+				AddL4D2ViewModelRenderable( opaque, info.m_pRenderable, 255, false );
+			}
+			else
+			{
+				AddL4D2ViewModelRenderable( translucent, info.m_pRenderable, 255, false );
+			}
+		}
+	}
+}
+
+void ClientLeafSystem_SetModelTranslucencyType( ClientRenderHandle_t handle, int type )
+{
+	CClientLeafSystem::s_ClientLeafSystem.SetModelTranslucencyType( handle, type );
+}
+
+void ClientLeafSystem_SetDrawForLocalUser( ClientRenderHandle_t handle, bool draw )
+{
+	CClientLeafSystem::s_ClientLeafSystem.SetDrawForLocalUser( handle, draw );
+}
+
+void ClientLeafSystem_SetRenderWithViewModels( ClientRenderHandle_t handle, bool enable )
+{
+	CClientLeafSystem::s_ClientLeafSystem.SetRenderWithViewModels( handle, enable );
+}
+
+void ClientLeafSystem_EnableRendering( ClientRenderHandle_t handle, bool enable )
+{
+	CClientLeafSystem::s_ClientLeafSystem.EnableRendering( handle, enable );
+}
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING clientleafsystem.cpp AFTER CClientLeafSystem's class
+// declaration. Not a new TU; no engine interface/ABI extension. Native cache
+//20/40 and cached world AABB are new PRIVATE per-renderable game-owned data.
+#if defined( L4D2 )
+enum
+{
+	L4D2_BOUNDS_CACHE_VALID = 0x20,
+	L4D2_BOUNDS_DISABLE_CACHE = 0x40
+};
+
+// NativeC0910 serializes invalidation + its existing dirty-queue admission.
+static CThreadFastMutex s_L4D2RenderableChangedMutex;
+
+// Whole shared compute-or-reuse responsibility of nativeBD760/BDF00. Native
+// batch output copies these six cached floats; the standalone query passes the
+// actual cache directly. The standalone consumer is frustum CULL, never PVS.
+void CClientLeafSystem::ComputeCachedWorldBounds( RenderableInfo_t &info )
+{
+	if ( ( info.m_nL4D2BoundsFlags & L4D2_BOUNDS_CACHE_VALID ) == 0 )
+	{
+		info.m_pRenderable->GetRenderBoundsWorldspace( info.m_vecCachedWorldMins,
+			info.m_vecCachedWorldMaxs );
+		if ( ( info.m_nL4D2BoundsFlags & L4D2_BOUNDS_DISABLE_CACHE ) == 0 )
+		{
+			// NativeGetIClientUnknown ->GetBaseEntity, not GetBaseAnimating.
+			// Native516/C1B030 is the actual live hierarchy parent; use the
+			// real target hierarchy, not received network-parent308/storage.
+			C_BaseEntity *entity = info.m_pRenderable->GetIClientUnknown()->GetBaseEntity();
+			if ( !entity || !entity->GetMoveParent() )
+				info.m_nL4D2BoundsFlags |= L4D2_BOUNDS_CACHE_VALID;
+		}
+	}
+}
+
+// Whole nativeBD550. IMPORTANT retained bug: toggling40 does NOT clear an
+// already-valid20 cache. Do NOT call RenderableChanged, dirty bounds, or repair
+// stale vectors here; the separate native invalidation owner does that.
+void CClientLeafSystem::DisableCachedRenderBounds( ClientRenderHandle_t handle, bool disable )
+{
+	if ( handle == INVALID_CLIENT_RENDER_HANDLE )
+		return;
+	RenderableInfo_t &info = m_Renderables[handle];
+	if ( disable )
+		info.m_nL4D2BoundsFlags |= L4D2_BOUNDS_DISABLE_CACHE;
+	else
+		info.m_nL4D2BoundsFlags &= ~L4D2_BOUNDS_DISABLE_CACHE;
+}
+
+// Whole native BDF00. TRUE means culled; an invalid handle is not culled.
+// No PVS/cluster test, inverted visibility result, or model-bound substitute.
+bool CClientLeafSystem::CullCachedWorldBounds( ClientRenderHandle_t handle )
+{
+	if ( handle == INVALID_CLIENT_RENDER_HANDLE )
+		return false;
+	RenderableInfo_t &info = m_Renderables[handle];
+	ComputeCachedWorldBounds( info );
+	return engine->CullBox( info.m_vecCachedWorldMins, info.m_vecCachedWorldMaxs );
+}
+
+// Real game-DLL-only backend function, declared in game/client/clientleafsystem.h.
+// It does actual flag work above; it is NOT an appended virtual in a public
+// engine header, a vtable cast, a no-op setter, or a second leaf/cache registry.
+void ClientLeafSystem_DisableCachedRenderBounds( ClientRenderHandle_t handle, bool disable )
+{
+	CClientLeafSystem::s_ClientLeafSystem.DisableCachedRenderBounds( handle, disable );
+}
+
+void ClientLeafSystem_EnableBloatedRenderBounds( ClientRenderHandle_t handle, bool enable )
+{
+	CClientLeafSystem::s_ClientLeafSystem.EnableBloatedRenderBounds( handle, enable );
+}
+
+bool ClientLeafSystem_CullCachedWorldBounds( ClientRenderHandle_t handle )
+{
+	return CClientLeafSystem::s_ClientLeafSystem.CullCachedWorldBounds( handle );
+}
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING clientleafsystem.cpp after its class declaration and
+// client_leaf_cached_bounds.cpp. Stock PreRender/RenderableChanged remain !L4D2.
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+static bool s_L4D2RecomputingRenderableLeaves = false;
+
+// Whole native C0910. Cache invalidation happens under the SAME mutex and
+// BEFORE already-dirty admission/re-entrancy behavior; no extra queue owner.
+void CClientLeafSystem::RenderableChanged( ClientRenderHandle_t handle )
+{
+	if ( !m_Renderables.IsValidIndex( handle ) ) return;
+	RenderableInfo_t &info = m_Renderables[handle];
+	AUTO_LOCK( s_L4D2RenderableChangedMutex );
+	info.m_nL4D2BoundsFlags &= ~L4D2_BOUNDS_CACHE_VALID;
+	if ( info.m_Flags & RENDER_FLAGS_HASCHANGED )
+	{
+		if ( s_L4D2RecomputingRenderableLeaves )
+		{
+			Warning( "------------------------------------------------------------\n" );
+			Warning( "------------------------------------------------------------\n" );
+			Warning( "------------------------------------------------------------\n" );
+			Warning( "------------------------------------------------------------\n" );
+			Warning( "Re-entrancy found in CClientLeafSystem::RenderableChanged\n" );
+			Warning( "Contact Shanon or Brian\n" );
+			Warning( "------------------------------------------------------------\n" );
+			Warning( "------------------------------------------------------------\n" );
+			Warning( "------------------------------------------------------------\n" );
+			Warning( "------------------------------------------------------------\n" );
+		}
+	}
+	else
+	{
+		info.m_Flags |= RENDER_FLAGS_HASCHANGED;
+		m_DirtyRenderables.AddToTail( handle );
+	}
+}
+
+// Whole native BD500. Disable invalidates/requeues ONLY when10 was set;
+// enable merely sets10. This is distinct from40, which must never invalidate20.
+void CClientLeafSystem::EnableBloatedRenderBounds( ClientRenderHandle_t handle, bool enable )
+{
+	if ( handle == INVALID_CLIENT_RENDER_HANDLE ) return;
+	RenderableInfo_t &info = m_Renderables[handle];
+	if ( enable ) info.m_nL4D2BoundsFlags |= 0x10;
+	else if ( info.m_nL4D2BoundsFlags & 0x10 )
+	{
+		info.m_nL4D2BoundsFlags &= ~0x10;
+		RenderableChanged( handle );
+	}
+}
+
+// Whole native BD180 placement responsibility. Cached culling boxes+48 are
+// separate from these 32-unit placement boxes+24; do not merge their lifetimes.
+void CClientLeafSystem::ComputePlacementBounds( RenderableInfo_t &info, Vector &mins, Vector &maxs )
+{
+	CalcRenderableWorldSpaceAABB_Fast( info.m_pRenderable, mins, maxs );
+	mins.x = static_cast< float >( floor( static_cast< double >( mins.x ) * 0.03125 ) * 32.0 );
+	mins.y = static_cast< float >( floor( static_cast< double >( mins.y ) * 0.03125 ) * 32.0 );
+	mins.z = static_cast< float >( floor( static_cast< double >( mins.z ) * 0.03125 ) * 32.0 );
+	maxs.x = static_cast< float >( ceil( static_cast< double >( maxs.x ) * 0.03125 ) * 32.0 );
+	maxs.y = static_cast< float >( ceil( static_cast< double >( maxs.y ) * 0.03125 ) * 32.0 );
+	maxs.z = static_cast< float >( ceil( static_cast< double >( maxs.z ) * 0.03125 ) * 32.0 );
+	if ( info.m_nL4D2BoundsFlags & 0x10 )
+	{
+		Vector combinedMins, combinedMaxs;
+		combinedMins.x = mins.x > info.m_vecPlacementMins.x ? info.m_vecPlacementMins.x : mins.x;
+		combinedMins.y = mins.y > info.m_vecPlacementMins.y ? info.m_vecPlacementMins.y : mins.y;
+		combinedMins.z = mins.z;
+		if ( combinedMins.z > info.m_vecPlacementMins.z ) combinedMins.z = info.m_vecPlacementMins.z;
+		combinedMaxs.x = maxs.x;
+		if ( info.m_vecPlacementMaxs.x > combinedMaxs.x ) combinedMaxs.x = info.m_vecPlacementMaxs.x;
+		combinedMaxs.y = info.m_vecPlacementMaxs.y > maxs.y ? info.m_vecPlacementMaxs.y : maxs.y;
+		combinedMaxs.z = info.m_vecPlacementMaxs.z > maxs.z ? info.m_vecPlacementMaxs.z : maxs.z;
+		const float dx = combinedMaxs.x - combinedMins.x;
+		const float dy = combinedMaxs.y - combinedMins.y;
+		const float dz = combinedMaxs.z - combinedMins.z;
+		const float combinedSize = ( dy * dy + dx * dx ) + dz * dz;
+		const float ownX = maxs.x - mins.x;
+		const float ownY = maxs.y - mins.y;
+		const float ownZ = maxs.z - mins.z;
+		const float ownSize = ( ownY * ownY + ownX * ownX ) + ownZ * ownZ;
+		if ( combinedSize <= 32768.0f || ownSize * 2.0f >= combinedSize )
+		{
+			mins = combinedMins;
+			maxs = combinedMaxs;
+		}
+	}
+}
+
+// Whole native C2520 scheduling/placement ownership. Reverse batch order;
+// clear dirty BEFORE callbacks; only changed placement boxes leave/reenter the
+// retained real BSP/shadow backend. Newly queued entries survive RemoveMultiple.
+void CClientLeafSystem::PreRender()
+{
+	VPROF_BUDGET( "CClientLeafSystem::RecomputeRenderableLeaves", "ClientLeafSystem" );
+	const bool visualize = cl_leafsystemvis.GetBool();
+	int iterations = 0;
+	while ( m_DirtyRenderables.Count() )
+	{
+		if ( ++iterations > 10 )
+		{
+			Warning( "Too many dirty renderables!\n" );
+			break;
+		}
+		const int dirtyCount = m_DirtyRenderables.Count();
+		s_L4D2RecomputingRenderableLeaves = true;
+		for ( int i = dirtyCount - 1; i >= 0; --i )
+		{
+			const ClientRenderHandle_t handle = m_DirtyRenderables[i];
+			RenderableInfo_t &info = m_Renderables[handle];
+			info.m_Flags &= ~RENDER_FLAGS_HASCHANGED;
+			if ( info.m_bL4D2ViewModel ) continue;
+			Vector mins, maxs;
+			ComputePlacementBounds( info, mins, maxs );
+			if ( info.m_vecPlacementMins.x != mins.x || info.m_vecPlacementMins.y != mins.y ||
+				info.m_vecPlacementMins.z != mins.z || info.m_vecPlacementMaxs.x != maxs.x ||
+				info.m_vecPlacementMaxs.y != maxs.y || info.m_vecPlacementMaxs.z != maxs.z )
+			{
+				RemoveFromTree( handle );
+				InsertIntoTree( handle, mins, maxs );
+				if ( visualize ) debugoverlay->AddBoxOverlay( vec3_origin, mins, maxs,
+					vec3_angle, 0, 255, 0, 0, 0.0f );
+			}
+		}
+		s_L4D2RecomputingRenderableLeaves = false;
+		m_DirtyRenderables.RemoveMultiple( 0, dirtyCount );
+	}
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Replace ONLY the L4D2 arm of existing CalcRenderableWorldSpaceAABB_Fast in
+// clientleafsystem.cpp. Stock function remains !L4D2. No second public provider.
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+static float L4D2BoundsSquareRoot( float value )
+{
+	return _mm_cvtss_f32( _mm_sqrt_ss( _mm_set_ss( value ) ) );
+}
+
+// Whole native BCF50. Native504 is the ALREADY received parent attachment byte,
+// not a new bool/policy. Attachment parenting also takes the parent-fast-box
+// arm even without IsFollowingEntity. The parent is freshly resolved again at
+// the adjustment itself; no missing-parent guard or cached network-parent308.
+void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *renderable, Vector &mins, Vector &maxs )
+{
+	C_BaseEntity *entity = renderable->GetIClientUnknown()->GetBaseEntity();
+	if ( !entity || ( !entity->IsFollowingEntity() &&
+		( !entity->GetMoveParent() || entity->GetParentAttachment() == 0 ) ) )
+	{
+		renderable->GetRenderBoundsWorldspace( mins, maxs );
+		return;
+	}
+	C_BaseEntity *parent = entity->GetMoveParent();
+	CalcRenderableWorldSpaceAABB_Fast( parent, mins, maxs );
+	Vector localMins, localMaxs;
+	entity->GetRenderBounds( localMins, localMaxs );
+	const Vector &offset = entity->GetLocalOrigin();
+	const float offsetSize = ( offset.x * offset.x + offset.y * offset.y ) + offset.z * offset.z;
+	const float offsetLength = L4D2BoundsSquareRoot( offsetSize );
+	const float maximumSize = ( localMaxs.y * localMaxs.y + localMaxs.x * localMaxs.x ) + localMaxs.z * localMaxs.z;
+	const float minimumSize = ( localMins.z * localMins.z + localMins.x * localMins.x ) + localMins.y * localMins.y;
+	const float maximumLength = L4D2BoundsSquareRoot( maximumSize );
+	const float minimumLength = L4D2BoundsSquareRoot( minimumSize );
+	float radius = maximumLength > minimumLength ? maximumLength : minimumLength;
+	radius = radius > offsetLength ? radius : offsetLength;
+	mins.x -= radius;
+	mins.y -= radius;
+	mins.z -= radius;
+	maxs.x += radius;
+	maxs.y = radius + maxs.y;
+	maxs.z = radius + maxs.z;
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING clientleafsystem.cpp after DetectBucketedRenderGroup.
+// Private declaration/entry transport is in client_world_alpha_transport.patch.txt.
+// Main-approved Plan A: retain SDK PVS/fog/area-frustum, engine/nonentity rows,
+// detail objects, opaque buckets and translucent sorting. No engine ABI changes.
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+void CClientLeafSystem::CollectEntityRenderables( const SetupRenderInfo_t &setup,
+	L4D2EntityRenderDataList_t &rows )
+{
+	for ( int worldLeaf = 0; worldLeaf < setup.m_pWorldListInfo->m_LeafCount; ++worldLeaf )
+	{
+		const int leaf = setup.m_pWorldListInfo->m_pLeafList[worldLeaf];
+		for ( unsigned int index = m_RenderablesInLeaf.FirstElement( leaf );
+			index != m_RenderablesInLeaf.InvalidIndex(); index = m_RenderablesInLeaf.NextElement( index ) )
+		{
+			const ClientRenderHandle_t handle = m_RenderablesInLeaf.Element( index );
+			RenderableInfo_t &info = m_Renderables[handle];
+			if ( !info.m_pL4D2AlphaOwner ) continue;
+			if ( info.m_RenderFrame2 != setup.m_nRenderFrame )
+			{
+				info.m_RenderFrame2 = setup.m_nRenderFrame;
+				info.m_nL4D2WorldDataIndex = -1;
+				if ( ( !m_DrawStaticProps && ( info.m_Flags & RENDER_FLAGS_STATIC_PROP ) ) ||
+					!info.m_bL4D2RenderingEnabled || !info.m_bL4D2DrawForLocalUser || info.m_bL4D2ViewModel ||
+					( !setup.m_bDrawTranslucentObjects && info.m_nL4D2TranslucencyType == 1 ) )
+					continue;
+				info.m_nL4D2WorldDataIndex = rows.AddToTail();
+				L4D2EntityRenderData_t &row = rows[info.m_nL4D2WorldDataIndex];
+				row.m_pInfo = &info;
+				row.m_pAlphaOwner = info.m_pL4D2AlphaOwner;
+				row.m_hRenderable = handle;
+				row.m_nOpaqueWorldLeaf = worldLeaf;
+				row.m_nTranslucentWorldLeaf = -1;
+				row.m_nAlpha = 255;
+				row.m_bIgnoreZ = false;
+				row.m_bCulled = false;
+			}
+			if ( info.m_nL4D2WorldDataIndex != -1 && info.m_RenderLeaf == static_cast< unsigned int >( leaf ) )
+				rows[info.m_nL4D2WorldDataIndex].m_nTranslucentWorldLeaf = worldLeaf;
+		}
+	}
+}
+
+// Native BD760 completes ALL bounds before BD870 starts any frustum callback.
+void CClientLeafSystem::ComputeEntityWorldBounds( L4D2EntityRenderDataList_t &rows )
+{
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		RenderableInfo_t &info = *row.m_pInfo;
+		row.m_nArea = info.m_Area;
+		ComputeCachedWorldBounds( info );
+		row.m_vecMins = info.m_vecCachedWorldMins;
+		row.m_vecMaxs = info.m_vecCachedWorldMaxs;
+	}
+}
+
+// MAXPS(value, zero) selects the second operand on equality AND unordered.
+static float L4D2PositiveBoxDelta( float value )
+{
+	return value > 0.0f ? value : 0.0f;
+}
+
+void CClientLeafSystem::CullEntityWorldBounds( const SetupRenderInfo_t &setup,
+	L4D2EntityRenderDataList_t &rows )
+{
+	const bool portalTestEnts = r_PortalTestEnts.GetBool() && !r_portalsopenall.GetBool();
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		// Main retains the actual SDK area-frustum backend, not a reconstructed
+		// native engine frustum buffer or an added public-interface virtual.
+		if ( portalTestEnts && row.m_nArea != -1 )
+			row.m_bCulled = !engine->DoesBoxTouchAreaFrustum( row.m_vecMins, row.m_vecMaxs, row.m_nArea );
+		else
+			row.m_bCulled = engine->CullBox( row.m_vecMins, row.m_vecMaxs );
+		if ( row.m_bCulled ) continue;
+		if ( !portalTestEnts )
+		{
+			// Actual native BD870 behavior: no-portal branch writes ZERO, not
+			// closest-box distance. Preserve this defined distance-fade bug.
+			row.m_flDistanceSquared = 0.0f;
+			continue;
+		}
+		const Vector &origin = setup.m_vecRenderOrigin;
+		const float x = L4D2PositiveBoxDelta( origin.x - row.m_vecMaxs.x ) +
+			L4D2PositiveBoxDelta( row.m_vecMins.x - origin.x );
+		const float y = L4D2PositiveBoxDelta( origin.y - row.m_vecMaxs.y ) +
+			L4D2PositiveBoxDelta( row.m_vecMins.y - origin.y );
+		const float z = L4D2PositiveBoxDelta( origin.z - row.m_vecMaxs.z ) +
+			L4D2PositiveBoxDelta( row.m_vecMins.z - origin.z );
+		row.m_flDistanceSquared = ( y * y + x * x ) + z * z;
+		// CM(P)LE is ordered: equality culls; unordered does not.
+		if ( setup.m_flRenderDistSq <= row.m_flDistanceSquared ) row.m_bCulled = true;
+	}
+}
+
+void CClientLeafSystem::AppendEntityRenderable( const SetupRenderInfo_t &setup,
+	int worldLeaf, const L4D2EntityRenderData_t &row )
+{
+	if ( row.m_bCulled ) return;
+	const RenderableInfo_t &info = *row.m_pInfo;
+	const int type = info.m_nL4D2TranslucencyType;
+	const bool translucent = row.m_nAlpha != 255 || type != 0;
+	const bool twoPass = type == 2 && row.m_nAlpha == 255;
+	if ( translucent && setup.m_bDrawTranslucentObjects && worldLeaf == row.m_nTranslucentWorldLeaf )
+	{
+		AddRenderableToRenderList( *setup.m_pRenderList, info.m_pRenderable, worldLeaf,
+			RENDER_GROUP_TRANSLUCENT_ENTITY, row.m_hRenderable, twoPass, row.m_nAlpha, true, row.m_bIgnoreZ );
+	}
+	// World type2 is dual pass ONLY at alpha255. VM type2 is different and
+	// retains opaque255 even at translucent alpha0; C1ED0 owns that policy.
+	const int opaqueLeaf = twoPass && setup.m_bDrawTranslucentObjects ?
+		row.m_nTranslucentWorldLeaf : row.m_nOpaqueWorldLeaf;
+	if ( ( !translucent || twoPass ) && worldLeaf == opaqueLeaf )
+	{
+		RenderGroup_t group = ( info.m_Flags & RENDER_FLAGS_BRUSH_MODEL ) ?
+			RENDER_GROUP_OPAQUE_BRUSH : RENDER_GROUP_OPAQUE_ENTITY;
+		if ( RENDER_GROUP_CFG_NUM_OPAQUE_ENT_BUCKETS > 1 && group == RENDER_GROUP_OPAQUE_ENTITY )
+		{
+			Vector dimensions;
+			VectorSubtract( row.m_vecMaxs, row.m_vecMins, dimensions );
+			const float dimension = MAX( MAX( fabs( dimensions.x ), fabs( dimensions.y ) ), fabs( dimensions.z ) );
+			group = DetectBucketedRenderGroup( group, dimension );
+		}
+		AddRenderableToRenderList( *setup.m_pRenderList, info.m_pRenderable, worldLeaf,
+			group, row.m_hRenderable, twoPass, 255, true, false );
+	}
+}
+
+// Whole retained SDK BuildRenderablesList, L4D2 definition. Stock body is !L4D2.
+void CClientLeafSystem::BuildRenderablesList( const SetupRenderInfo_t &setup )
+{
+	VPROF_BUDGET( "BuildRenderablesList", "BuildRenderablesList" );
+	L4D2EntityRenderDataList_t rows;
+	CollectEntityRenderables( setup, rows );
+	ComputeEntityWorldBounds( rows );
+	CullEntityWorldBounds( setup, rows );
+	// C1FE0 calls BEBC0 only when DrawTranslucentObjects is enabled. A depth
+	// pass retains alpha255/ignoreZfalse and performs NO alpha/shadow callbacks.
+	if ( setup.m_bDrawTranslucentObjects ) ComputeEntityRenderAlpha( setup, rows );
+	CullOccludedEntityRenderables( rows );
+	CClientRenderablesList::CEntry *translucentEntries =
+		setup.m_pRenderList->m_RenderGroups[RENDER_GROUP_TRANSLUCENT_ENTITY];
+	int &translucentCount = setup.m_pRenderList->m_RenderGroupCounts[RENDER_GROUP_TRANSLUCENT_ENTITY];
+	for ( int i = 0; i < setup.m_pWorldListInfo->m_LeafCount; ++i )
+	{
+		const int previousCount = translucentCount;
+		CollateRenderablesInLeaf( setup.m_pWorldListInfo->m_pLeafList[i], i, setup, rows );
+		const int newCount = translucentCount - previousCount;
+		if ( newCount != 0 && setup.m_bDrawTranslucentObjects )
+			SortEntities( setup.m_vecRenderOrigin, setup.m_vecRenderForward,
+				&translucentEntries[previousCount], newCount );
+	}
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING clientleafsystem.cpp after its class declaration.
+// Main-approved A: SDK PVS/frustum collection precedes this ONE entity batch;
+// SDK bucket/sort and untouched engine-row paths consume its stored results.
+// Required real includes: emmintrin.h, mathlib/vmatrix.h, materialsystem/
+// imaterialsystem.h, iclientshadowmgr.h, iviewrender.h, viewrender.h, view.h.
+#if defined( L4D2 )
+#if defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+struct RenderAlphaScreenState_t
+{
+	VMatrix m_WorldToProjection;
+	Vector m_Up;
+	int m_nHeight;
+};
+
+// Whole native BEAE0 via the actual target material context, not an engine
+// vtable cast or a guessed view/FOV projection. Matrix/query order is retained.
+static void CaptureRenderAlphaScreenState( RenderAlphaScreenState_t &state )
+{
+	CMatRenderContextPtr context( materials );
+	VMatrix viewMatrix, projectionMatrix;
+	context->GetMatrix( MATERIAL_VIEW, &viewMatrix );
+	context->GetMatrix( MATERIAL_PROJECTION, &projectionMatrix );
+	MatrixMultiply( projectionMatrix, viewMatrix, state.m_WorldToProjection );
+	int x, y, width;
+	context->GetViewport( x, y, width, state.m_nHeight );
+	context->GetWorldSpaceCameraVectors( NULL, NULL, &state.m_Up );
+}
+
+// Whole BC780. The two near-plane tests use COMISS/JB, including unordered.
+// Plus projection spills float; the final minus product/difference stays wide.
+static double RenderAlphaProjectedSphereSize( const Vector &center, float radius,
+	const RenderAlphaScreenState_t &state )
+{
+	const VMatrix &matrix = state.m_WorldToProjection;
+	const Vector &up = state.m_Up;
+	const float yCenter = ( ( center.x * matrix[1][0] + center.y * matrix[1][1] ) +
+		center.z * matrix[1][2] ) + matrix[1][3];
+	const float yRadius = ( ( up.x * matrix[1][0] + up.y * matrix[1][1] ) +
+		up.z * matrix[1][2] ) * radius;
+	const float wCenter = ( ( matrix[3][0] * center.x + matrix[3][1] * center.y ) +
+		matrix[3][2] * center.z ) + matrix[3][3];
+	const float wRadius = ( ( matrix[3][0] * up.x + matrix[3][1] * up.y ) +
+		matrix[3][2] * up.z ) * radius;
+	const float plusW = wRadius + wCenter;
+	const float plusY = yRadius + yCenter;
+	const float plusInverse = !( plusW >= 0.001f ) ? 1000.0f : 1.0f / plusW;
+	const float plusProjected = plusInverse * plusY;
+	const float minusW = wCenter - wRadius;
+	const float minusY = yCenter - yRadius;
+	const float minusInverse = !( minusW >= 0.001f ) ? 1000.0f : 1.0f / minusW;
+	return fabs( static_cast< double >( minusInverse ) * minusY - plusProjected ) *
+		state.m_nHeight * 0.5;
+}
+
+// Whole BBE10 over the eligible property rows. The actual local user/FOV is
+// queried ONCE, after every B89B0 query, not once per leaf or per entity.
+void CClientLeafSystem::ApplyEntityDistanceFade( const SetupRenderInfo_t &setup,
+	L4D2EntityRenderDataList_t &rows )
+{
+	float fovSquared = 1.0f;
+	C_BasePlayer *local = C_BasePlayer::GetLocalPlayer();
+	if ( local )
+	{
+		const double fov = local->GetFOVDistanceAdjustFactor();
+		fovSquared = static_cast< float >( fov * fov );
+	}
+	const float globalMaximum = setup.m_flRenderDistSq;
+	const float globalMinimum = globalMaximum * 0.90249997f;
+	const float globalInverse = 1.0f / ( globalMaximum - globalMinimum );
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		if ( row.m_bCulled ) continue;
+		C_BaseEntity *entity = row.m_pAlphaOwner;
+		const float distanceSquared = row.m_flDistanceSquared * fovSquared;
+		bool useGlobalInverse = true;
+		float minimum = globalMinimum;
+		float maximum = globalMaximum;
+		if ( entity->m_nRenderAlphaFadeMax != 0 )
+		{
+			const float entityMinimum = entity->m_nRenderAlphaFadeMin;
+			const float minimumSquared = entityMinimum * entityMinimum;
+			if ( globalMinimum > minimumSquared )
+			{
+				useGlobalInverse = false;
+				minimum = minimumSquared;
+			}
+			const float entityMaximum = entity->m_nRenderAlphaFadeMax;
+			const float maximumSquared = entityMaximum * entityMaximum;
+			if ( globalMaximum > maximumSquared )
+			{
+				useGlobalInverse = false;
+				maximum = maximumSquared;
+			}
+		}
+		if ( minimum < distanceSquared )
+		{
+			if ( distanceSquared < maximum )
+			{
+				row.m_flFade = useGlobalInverse ?
+					( maximum - distanceSquared ) * globalInverse :
+					( maximum - distanceSquared ) / ( maximum - minimum );
+			}
+			else row.m_flFade = 0.0f;
+		}
+	}
+}
+
+// Whole BC8B0. Do not rewrite the guards as positive ordered tests: native
+// COMISS/JNB admits NaN minimum/scale; COMISS/JB sends NaN maximum to full1.
+void CClientLeafSystem::ApplyEntityScreenFade( const RenderAlphaScreenState_t &screen,
+	float minimum, float maximum, L4D2EntityRenderDataList_t &rows )
+{
+	if ( minimum >= maximum ) maximum = minimum;
+	if ( minimum <= 0.0f ) return;
+	const float inverse = maximum == minimum ? 1.0f : 1.0f / ( maximum - minimum );
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		if ( row.m_bCulled ) continue;
+		const float scale = row.m_pAlphaOwner->m_flRenderAlphaFadeScale;
+		if ( scale <= 0.0f ) continue;
+		const double size = RenderAlphaProjectedSphereSize( row.m_vecCenter, row.m_flRadius, screen ) /
+			scale * 2.0;
+		float fade = 0.0f;
+		if ( size > minimum )
+		{
+			const float spilledSize = static_cast< float >( size );
+			if ( !( maximum >= 0.0f ) || !( maximum > spilledSize ) ) fade = 1.0f;
+			else fade = ( spilledSize - minimum ) * inverse;
+		}
+		if ( fade > row.m_flFade ) fade = row.m_flFade;
+		row.m_flFade = fade;
+	}
+}
+
+// Whole BEBC0 alpha responsibilities on rows that actually have a game-owned
+// property. All real bounds/frustum results have already been collected. Its
+// only B89B0 queries happen in the first complete query pass below.
+void CClientLeafSystem::ComputeEntityRenderAlpha( const SetupRenderInfo_t &setup,
+	L4D2EntityRenderDataList_t &rows )
+{
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		if ( row.m_bCulled ) continue;
+		row.m_pAlphaOwner = row.m_pInfo->m_pL4D2AlphaOwner;
+		row.m_vecCenter.x = ( row.m_vecMins.x + row.m_vecMaxs.x ) * 0.5f;
+		row.m_vecCenter.y = ( row.m_vecMins.y + row.m_vecMaxs.y ) * 0.5f;
+		row.m_vecCenter.z = ( row.m_vecMins.z + row.m_vecMaxs.z ) * 0.5f;
+		const float dx = row.m_vecCenter.x - row.m_vecMaxs.x;
+		const float dy = row.m_vecCenter.y - row.m_vecMaxs.y;
+		const float dz = row.m_vecCenter.z - row.m_vecMaxs.z;
+		const float radiusSquared = ( dy * dy + dz * dz ) + dx * dx;
+		row.m_flRadius = _mm_cvtss_f32( _mm_sqrt_ss( _mm_set_ss( radiusSquared ) ) );
+		row.m_flFade = 1.0f;
+	}
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		if ( row.m_bCulled ) continue;
+		row.m_nAlpha = row.m_pAlphaOwner->ComputeRenderAlpha();
+		const int mode = ( row.m_pAlphaOwner->m_nRenderAlphaFlags >> 5 ) & 0x0F;
+		row.m_bIgnoreZ = mode == 3 || mode == 9;
+	}
+
+	// Native view1 is 3Dsky. These are the genuine existing module/cvar/view
+	// owners, not private replacements or a second once-per-frame scope.
+	if ( !g_MakingDevShots && cl_leveloverview.GetInt() == 0 && setup.m_nViewID != VIEW_3DSKY )
+	{
+		ApplyEntityDistanceFade( setup, rows );
+		RenderAlphaScreenState_t screen;
+		CaptureRenderAlphaScreenState( screen );
+		float minimum, maximum;
+		modelinfo->GetLevelScreenFadeRange( &minimum, &maximum );
+		ApplyEntityScreenFade( screen, minimum, maximum, rows );
+		view->GetScreenFadeDistances( &minimum, &maximum );
+		ApplyEntityScreenFade( screen, minimum, maximum, rows );
+		for ( int i = 0; i < rows.Count(); ++i )
+		{
+			L4D2EntityRenderData_t &row = rows[i];
+			if ( row.m_bCulled ) continue;
+			const float product = static_cast< float >( row.m_nAlpha ) * row.m_flFade;
+			int alpha = _mm_cvtt_ss2si( _mm_set_ss( product ) );
+			if ( alpha > 255 ) alpha = 255;
+			else if ( alpha < 0 ) alpha = 0;
+			row.m_nAlpha = static_cast< unsigned char >( alpha );
+		}
+	}
+
+	// Every shadow is updated BEFORE any alpha0 entry is dropped, and before
+	// the later occlusion pass. Native400 callback receives EFFECTIVE alpha.
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		if ( row.m_bCulled ) continue;
+		C_BaseEntity *entity = row.m_pAlphaOwner;
+		if ( entity->m_hRenderAlphaShadow != CLIENTSHADOW_INVALID_HANDLE )
+		{
+			unsigned char shadowAlpha = row.m_nAlpha;
+			if ( entity->m_nRenderAlphaFlags & 0x0400 )
+				shadowAlpha = entity->OverrideShadowAlphaModulation( shadowAlpha );
+			g_pClientShadowMgr->SetFalloffBias( entity->m_hRenderAlphaShadow,
+				static_cast< unsigned char >( 255 - shadowAlpha ) );
+		}
+	}
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		if ( !row.m_bCulled && row.m_nAlpha == 0 ) row.m_bCulled = true;
+	}
+}
+
+// Native BDB10 responsibility after the completed alpha batch. This is a
+// reference to the genuine engine-owned cvar, not a newly defined control.
+void CClientLeafSystem::CullOccludedEntityRenderables( L4D2EntityRenderDataList_t &rows )
+{
+	static ConVarRef occlusion( "r_occlusion" );
+	if ( !occlusion.GetBool() ) return;
+	for ( int i = 0; i < rows.Count(); ++i )
+	{
+		L4D2EntityRenderData_t &row = rows[i];
+		if ( !row.m_bCulled && ( row.m_pInfo->m_Flags & RENDER_FLAGS_STUDIO_MODEL ) &&
+			engine->IsOccluded( row.m_vecMins, row.m_vecMaxs ) )
+		{
+			row.m_bCulled = true;
+		}
+	}
+}
+
+#if defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+#endif
+
+#if defined( L4D2 )
+void CClientLeafSystem::AddEntityRenderable( C_BaseEntity *entity,
+	bool renderWithViewModels, int type, bool drawForLocalUser )
+{
+	// NewRenderable is the existing allocation/model-query/VM-list owner.
+	// SDK bucket here is only initial storage; native0/1/2 stays independent.
+	NewRenderable( entity, renderWithViewModels ? RENDER_GROUP_VIEW_MODEL_OPAQUE :
+		RENDER_GROUP_OPAQUE_ENTITY, RENDER_FLAGS_HASCHANGED );
+	const ClientRenderHandle_t handle = entity->GetRenderHandle();
+	RenderableInfo_t &info = m_Renderables[handle];
+	info.m_nL4D2TranslucencyType = type & 3;
+	info.m_bL4D2DrawForLocalUser = drawForLocalUser;
+	UpdateSDKRenderGroupForEntity( info );
+	m_DirtyRenderables.AddToTail( handle );
+}
+#endif
+
+#if defined( L4D2 )
+void CClientLeafSystem::UpdateModelType( ClientRenderHandle_t handle )
+{
+	if ( handle == INVALID_CLIENT_RENDER_HANDLE )
+		return;
+	RenderableInfo_t &info = m_Renderables[handle];
+	const int modelType = modelinfo->GetModelType( info.m_pRenderable->GetModel() );
+	const int modelFlags = modelType == mod_brush ? RENDER_FLAGS_BRUSH_MODEL :
+		( modelType == mod_studio ? RENDER_FLAGS_STUDIO_MODEL : 0 );
+	const int mask = RENDER_FLAGS_BRUSH_MODEL | RENDER_FLAGS_STUDIO_MODEL;
+	if ( ( info.m_Flags & mask ) != modelFlags )
+	{
+		info.m_Flags = ( info.m_Flags & ~mask ) | modelFlags;
+		RenderableChanged( handle );
+	}
+}
+#endif
+
+#if defined( L4D2 )
+void ClientLeafSystem_AddEntityRenderable( C_BaseEntity *entity,
+	bool renderWithViewModels, int type, bool drawForLocalUser )
+{
+	CClientLeafSystem::s_ClientLeafSystem.AddEntityRenderable(
+		entity, renderWithViewModels, type, drawForLocalUser );
+}
+#endif
+
+#if defined( L4D2 )
+void ClientLeafSystem_UpdateModelType( ClientRenderHandle_t handle )
+{
+	CClientLeafSystem::s_ClientLeafSystem.UpdateModelType( handle );
+}
+#endif

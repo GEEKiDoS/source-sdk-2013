@@ -25,12 +25,35 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectBloodSpray )
 CLIENTEFFECT_MATERIAL( "effects/blood_core" )
 CLIENTEFFECT_MATERIAL( "effects/blood_gore" )
 CLIENTEFFECT_MATERIAL( "effects/blood_drop" )
 CLIENTEFFECT_MATERIAL( "effects/blood_puff" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
+
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#if defined( _MSC_VER ) && _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+// C18BE40 feeds the original blood vectors from vstdlib's integer stream,
+// not Vector::Random's CRT rand(). Keep three draws and the F32 mapping.
+static Vector TerrorBloodRandomVector( float minVal, float maxVal )
+{
+	const float range = maxVal - minVal;
+	Vector value;
+	for ( int i = 0; i < 3; ++i )
+	{
+		const float sample = static_cast< float >( RandomInt( 0, 32767 ) ) * 0.000030518509f;
+		value[i] = sample * range + minVal;
+	}
+	return value;
+}
+#pragma float_control( pop )
+#endif
 
 // Cached material handles
 PMaterialHandle g_Blood_Core = NULL;
@@ -145,7 +168,11 @@ void FX_BloodSpray( const Vector &origin, const Vector &normal, float scale, uns
 
 			tParticle->m_flLifetime	= 0.0f;
 
+#if defined( L4D2 )
+			offDir = normal + TerrorBloodRandomVector( -0.3f, 0.3f );
+#else
 			offDir = normal + RandomVector( -0.3f, 0.3f );
+#endif
 
 			tParticle->m_vecVelocity = offDir * random->RandomFloat( 4.0f * scale, 40.0f * scale );
 			tParticle->m_vecVelocity[2] += random->RandomFloat( 4.0f, 16.0f ) * scale;
@@ -174,7 +201,11 @@ void FX_BloodSpray( const Vector &origin, const Vector &normal, float scale, uns
 
 			tParticle->m_flLifetime	= 0.0f;
 
+#if defined( L4D2 )
+			offDir = normal + TerrorBloodRandomVector( -1.0f, 1.0f );
+#else
 			offDir = normal + RandomVector( -1.0f, 1.0f );
+#endif
 			offDir[2] += random->RandomFloat(0, 1.0f);
 
 			tParticle->m_vecVelocity = offDir * random->RandomFloat( 2.0f * scale, 25.0f * scale );
@@ -223,7 +254,11 @@ void FX_BloodSpray( const Vector &origin, const Vector &normal, float scale, uns
 					pParticle->m_flDieTime	= 0.3f;
 
 					spread = 0.2f;
+#if defined( L4D2 )
+					pParticle->m_vecVelocity = TerrorBloodRandomVector( -spread, spread );
+#else
 					pParticle->m_vecVelocity.Random( -spread, spread );
+#endif
 					pParticle->m_vecVelocity += normal * random->RandomInt( 10, 100 );
 					//VectorNormalize( pParticle->m_vecVelocity );
 
@@ -269,7 +304,11 @@ void FX_BloodSpray( const Vector &origin, const Vector &normal, float scale, uns
 					pParticle->m_flDieTime	= random->RandomFloat( 0.5f, 0.8f);
 
 					spread = 0.5f;
+#if defined( L4D2 )
+					pParticle->m_vecVelocity = TerrorBloodRandomVector( -spread, spread );
+#else
 					pParticle->m_vecVelocity.Random( -spread, spread );
+#endif
 					pParticle->m_vecVelocity += normal * random->RandomInt( 100, 200 );
 
 					colorRamp = random->RandomFloat( 0.75f, 1.25f );
@@ -343,7 +382,11 @@ void FX_BloodBulletImpact( const Vector &origin, const Vector &normal, float sca
 
 	SimpleParticle *pParticle;
 
+#if defined( L4D2 )
+	Vector	dir = normal * TerrorBloodRandomVector( -0.5f, 0.5f );
+#else
 	Vector	dir = normal * RandomVector( -0.5f, 0.5f );
+#endif
 
 	offset = origin + ( 2.0f * normal );
 
@@ -447,7 +490,11 @@ void FX_BloodBulletImpact( const Vector &origin, const Vector &normal, float sca
 
 		tParticle->m_flLifetime	= 0.0f;
 
+#if defined( L4D2 )
+		offDir = TerrorBloodRandomVector( -1.0f, 1.0f );
+#else
 		offDir = RandomVector( -1.0f, 1.0f );
+#endif
 
 		tParticle->m_vecVelocity = offDir * random->RandomFloat( 64.0f, 128.0f );
 

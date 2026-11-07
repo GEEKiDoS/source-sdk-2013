@@ -17,12 +17,18 @@
 #include "tier0/icommandline.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "cliententitylist.h"
+#include <emmintrin.h>
+#endif // L4D2
 #include "tier0/memdbgon.h"
 
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( SmokeStackMaterials )
 	CLIENTEFFECT_MATERIAL( "particle/SmokeStack" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 
 //-----------------------------------------------------------------------------
@@ -112,9 +118,11 @@ C_FireSmoke::~C_FireSmoke()
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void C_FireSmoke::Simulate( void )
 {
 }
+#endif
 
 #define	FLAME_ALPHA_START	0.9f
 #define FLAME_ALPHA_END		1.0f
@@ -132,6 +140,12 @@ void C_FireSmoke::AddFlames( void )
 // Purpose: 
 // Input  : bnewentity - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void C_FireSmoke::OnDataChanged( DataUpdateType_t updateType )
 {
 	BaseClass::OnDataChanged( updateType );
@@ -139,9 +153,25 @@ void C_FireSmoke::OnDataChanged( DataUpdateType_t updateType )
 
 	if ( updateType == DATA_UPDATE_CREATED )
 	{
+#if defined( L4D2 )
+		SetNextClientThink( static_cast< float >( static_cast< double >( gpGlobals->curtime ) + 0.1 ) ); // C755E0.
+#else
 		Start();
+#endif
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
+#if defined( L4D2 )
+// C75BF0 starts the effect once, then removes this thinkable from the list.
+void C_FireSmoke::ClientThink()
+{
+	Start();
+	ClientThinkList()->RemoveThinkable( GetClientHandle() );
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -163,10 +193,21 @@ bool C_FireSmoke::ShouldDraw()
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
 void C_FireSmoke::Start( void )
 {
 	const char *lpszEffectName;
+#if defined( L4D2 )
+	// C75AB0 widens the original float multiplier before the x87 product.
+	int nSize = _mm_cvttsd_si32( _mm_set_sd( floor( static_cast< double >( m_flStartScale ) * static_cast< double >( 0.027777778f ) ) ) );
+#else
 	int nSize = (int) floor( m_flStartScale / 36.0f );
+#endif
 	switch ( nSize )
 	{
 	case 0:
@@ -191,6 +232,9 @@ void C_FireSmoke::Start( void )
 	m_hEffect = ParticleProp()->Create( lpszEffectName, PATTACH_ABSORIGIN );
 
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -269,28 +313,65 @@ void C_FireSmoke::SpawnSmoke( void )
 
 IMPLEMENT_CLIENTCLASS_DT( C_EntityFlame, DT_EntityFlame, CEntityFlame )
 	RecvPropEHandle(RECVINFO(m_hEntAttached)),
+#if defined( L4D2 )
+	RecvPropBool( RECVINFO( m_bCheapEffect ) ),
+#endif
 END_RECV_TABLE()
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+C_EntityFlame::C_EntityFlame() : m_hEffect( NULL )
+{
+	m_hOldAttached = NULL;
+	AddToEntityList( ENTITY_LIST_SIMULATE );
+}
+#else
 C_EntityFlame::C_EntityFlame( void ) :
 m_hEffect( NULL )
 {
 	m_hOldAttached = NULL;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+C_EntityFlame::~C_EntityFlame()
+{
+	StopEffect();
+}
+#else
 C_EntityFlame::~C_EntityFlame( void )
 {
 	StopEffect();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_EntityFlame::StopEffect()
+{
+	if ( m_hEffect )
+	{
+		ParticleProp()->StopEmission( m_hEffect, true, false );
+		m_hEffect = NULL;
+	}
+	if ( m_hEntAttached.Get() )
+	{
+		// Keep the native fresh resolves/callback order, no cached attachment.
+		m_hEntAttached->RemoveFlag( FL_ONFIRE );
+		m_hEntAttached->SetEffectEntity( NULL );
+		m_hEntAttached->StopSound( "General.BurningFlesh" );
+		m_hEntAttached->StopSound( "General.BurningObject" );
+		m_hEntAttached = NULL;
+	}
+}
+#else
 void C_EntityFlame::StopEffect( void )
 {
 	if ( m_hEffect )
@@ -312,16 +393,50 @@ void C_EntityFlame::StopEffect( void )
 		m_hEntAttached = NULL;
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_EntityFlame::UpdateOnRemove()
+{
+	StopEffect();
+	BaseClass::UpdateOnRemove();
+}
+#else
 void C_EntityFlame::UpdateOnRemove( void )
 {
 	StopEffect();
 	BaseClass::UpdateOnRemove();
 }
+#endif
 
+#if defined( L4D2 )
+void C_EntityFlame::CreateEffect()
+{
+	if ( m_hEffect )
+	{
+		m_hOldAttached = m_hEntAttached;
+		ParticleProp()->StopEmission( m_hEffect, true, false );
+		m_hEffect = NULL;
+	}
+	C_BaseEntity *attached = m_hEntAttached.Get();
+	if ( attached && !attached->ShouldDrawEntityFlameLight() )
+		return;
+	m_hEffect = ParticleProp()->Create( m_bCheapEffect ? "burning_gib_01" : "burning_character",
+		PATTACH_ABSORIGIN_FOLLOW );
+	if ( m_hEffect )
+	{
+		m_hOldAttached = m_hEntAttached;
+		ParticleProp()->AddControlPoint( m_hEffect, 1, attached, PATTACH_ABSORIGIN_FOLLOW );
+		m_hEffect->SetControlPoint( 0, GetAbsOrigin() );
+		m_hEffect->SetControlPoint( 1, GetAbsOrigin() );
+		m_hEffect->SetControlPointEntity( 0, attached );
+		m_hEffect->SetControlPointEntity( 1, attached );
+	}
+}
+#else
 void C_EntityFlame::CreateEffect( void )
 {
 	if ( m_hEffect )
@@ -332,7 +447,9 @@ void C_EntityFlame::CreateEffect( void )
 		m_hEffect = NULL;
 	}
 
-#ifdef TF_CLIENT_DLL
+#if defined( L4D2 )
+	m_hEffect = ParticleProp()->Create( m_bCheapEffect ? "burning_gib_01" : "burning_character", PATTACH_ABSORIGIN_FOLLOW );
+#elif defined( TF_CLIENT_DLL )
 	m_hEffect = ParticleProp()->Create( "burningplayer_red", PATTACH_ABSORIGIN_FOLLOW );
 #else
 	m_hEffect = ParticleProp()->Create( "burning_character", PATTACH_ABSORIGIN_FOLLOW );
@@ -350,10 +467,26 @@ void C_EntityFlame::CreateEffect( void )
 		m_hEffect->SetControlPointEntity( 1, pEntity );
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_EntityFlame::OnDataChanged( DataUpdateType_t updateType )
+{
+	if ( updateType == DATA_UPDATE_CREATED )
+		CreateEffect();
+	else if ( updateType == DATA_UPDATE_DATATABLE_CHANGED )
+	{
+		C_BaseEntity *oldAttached = m_hOldAttached.Get();
+		C_BaseEntity *attached = m_hEntAttached.Get();
+		if ( attached != oldAttached )
+			CreateEffect();
+	}
+	BaseClass::OnDataChanged( updateType );
+}
+#else
 void C_EntityFlame::OnDataChanged( DataUpdateType_t updateType )
 {
 	if ( updateType == DATA_UPDATE_CREATED )
@@ -373,10 +506,39 @@ void C_EntityFlame::OnDataChanged( DataUpdateType_t updateType )
 
 	BaseClass::OnDataChanged( updateType );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#endif
+bool C_EntityFlame::Simulate( void )
+{
+	if ( !( gpGlobals->frametime <= 0.0f ) )
+	{
+		C_BaseEntity *pAttached = m_hEntAttached.Get();
+		if ( !pAttached || pAttached->ShouldDrawEntityFlameLight() )
+		{
+			dlight_t *pLight = effects->CL_AllocElight( entindex() );
+			pLight->origin = GetAbsOrigin();
+			pLight->origin.z += 64.0f;
+			pLight->color.r = 254;
+			pLight->color.g = 100;
+			pLight->color.b = 10;
+			pLight->radius = random->RandomFloat( 48.0f, 96.0f );
+			pLight->die = gpGlobals->curtime + 0.001f;
+			pLight->color.exponent = 5;
+		}
+	}
+	return true;
+}
+#ifdef _MSC_VER
+#pragma float_control( pop )
+#endif
+#else
 void C_EntityFlame::Simulate( void )
 {
 	if ( gpGlobals->frametime <= 0.0f )
@@ -398,12 +560,21 @@ void C_EntityFlame::Simulate( void )
 
 #endif // HL2_EPISODIC 
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void C_EntityFlame::ClientThink()
+{
+	StopEffect();
+	ClientEntityList().AddToDeleteList( this );
+}
+#else
 void C_EntityFlame::ClientThink( void )
 {
 	StopEffect();
 	Release();
 }
+#endif

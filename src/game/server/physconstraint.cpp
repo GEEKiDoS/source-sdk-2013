@@ -36,7 +36,13 @@
 #define SF_CONSTRAINT_NO_CONNECT_UNTIL_ACTIVATED	0x0010	// Will only check the two attached entities at activation
 
 
-ConVar    g_debug_constraint_sounds	  ( "g_debug_constraint_sounds", "0", FCVAR_CHEAT, "Enable debug printing about constraint sounds.");
+ConVar    g_debug_constraint_sounds	  ( "g_debug_constraint_sounds", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Enable debug printing about constraint sounds.");
 
 struct constraint_anchor_t
 {

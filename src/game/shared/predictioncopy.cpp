@@ -1344,8 +1344,20 @@ typedescription_t *FindFieldByName( const char *fieldname, datamap_t *dmap )
 	return FindFieldByName_R( fieldname, dmap );
 }
 
-static ConVar pwatchent( "pwatchent", "-1", FCVAR_CHEAT, "Entity to watch for prediction system changes." );
-static ConVar pwatchvar( "pwatchvar", "", FCVAR_CHEAT, "Entity variable to watch in prediction system for changes." );
+static ConVar pwatchent( "pwatchent", "-1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Entity to watch for prediction system changes." );
+static ConVar pwatchvar( "pwatchvar", "", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Entity variable to watch in prediction system for changes." );
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -2019,7 +2031,12 @@ void CValueChangeTracker::Spew()
 static CValueChangeTracker g_ChangeTracker;
 CValueChangeTracker *g_pChangeTracker = &g_ChangeTracker;
 
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+CON_COMMAND_F( cl_pred_track, "<entindex> <fieldname>:  Track changes to entity index entindex, for field fieldname.", 0x00000008 )
+#else
 CON_COMMAND_F( cl_pred_track, "<entindex> <fieldname>:  Track changes to entity index entindex, for field fieldname.", 0 )
+#endif
 {
 	g_pChangeTracker->ClearTracking();
 

@@ -35,8 +35,16 @@ void usrCmd_Abort()
 	s_PerfVisualBenchmark.Stop();
 }
 
-static ConCommand perfvisualbenchmark("perfvisualbenchmark", usrCmd_Start);
-static ConCommand perfvisualbenchmark_abort("perfvisualbenchmark_abort", usrCmd_Abort);
+static ConCommand perfvisualbenchmark("perfvisualbenchmark", usrCmd_Start
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand perfvisualbenchmark_abort("perfvisualbenchmark_abort", usrCmd_Abort
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
 
 
 CPerfVisualBenchmark::CPerfVisualBenchmark()

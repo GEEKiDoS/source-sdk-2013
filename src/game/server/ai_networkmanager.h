@@ -32,7 +32,9 @@ class CAI_TestHull;
 class CAI_NetworkManager : public CPointEntity
 {
 public:
+#if !defined( L4D2 )
 	static void		InitializeAINetworks();
+#endif
 
 	DECLARE_DATADESC();
 

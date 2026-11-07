@@ -35,6 +35,7 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#if !defined( L4D2 )
 extern CAI_Node*		FindPickerAINode( CBasePlayer* pPlayer, NodeType_e nNodeType );
 extern CAI_Link*		FindPickerAILink( CBasePlayer* pPlayer );
 extern float			GetFloorZ(const Vector &origin);
@@ -446,6 +447,8 @@ void NWCEdit::DestroyAILink( CBasePlayer *pPlayer )
 	}
 }
 
+#endif // !L4D2
+
 Vector *g_EntityPositions = NULL;
 QAngle *g_EntityOrientations = NULL;
 string_t *g_EntityClassnames = NULL;
@@ -546,6 +549,7 @@ error:
 // Input   :
 // Output  :
 //------------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CC_WC_Create( void )
 {
 	// Only allowed in wc_edit_mode
@@ -686,6 +690,7 @@ void CC_WC_LinkEdit( void )
 	}
 }
 static ConCommand wc_link_edit("wc_link_edit", CC_WC_LinkEdit, 0, FCVAR_CHEAT);
+#endif // !L4D2
 
 
 /// This is an entity used by the hammer_update_safe_entities command. It allows designers
@@ -738,7 +743,12 @@ END_DATADESC()
 
 
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( hammer_update_entity, "Updates the entity's position/angles when in edit mode" , 0x00000004)
+#else
 CON_COMMAND( hammer_update_entity, "Updates the entity's position/angles when in edit mode" )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -767,7 +777,12 @@ CON_COMMAND( hammer_update_entity, "Updates the entity's position/angles when in
 	}
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( hammer_update_safe_entities, "Updates entities in the map that can safely be updated (don't have parents or are affected by constraints). Also excludes entities mentioned in any hammer_updateignorelist objects in this map." , 0x00000004)
+#else
 CON_COMMAND( hammer_update_safe_entities, "Updates entities in the map that can safely be updated (don't have parents or are affected by constraints). Also excludes entities mentioned in any hammer_updateignorelist objects in this map." )
+#endif
 {
 	int iCount = 0;
 	CBaseEntity *pEnt = NULL;

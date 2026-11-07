@@ -26,7 +26,9 @@ struct OverlayLine_t
 };
 
 extern void	UTIL_AddDebugLine( const Vector &startPos, const Vector &endPos, bool noDepthTest, bool testLOS );
+#if !defined( L4D2 )
 extern void	UTIL_DrawPositioningOverlay( float flCrossDistance );
+#endif
 extern void UTIL_DrawOverlayLines( void );
 
 extern void DebugDrawLine( const Vector& vecAbsStart, const Vector& vecAbsEnd, int r, int g, int b, bool test, float duration );

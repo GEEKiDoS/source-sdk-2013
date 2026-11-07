@@ -32,7 +32,11 @@ enum MaterialModifyMode_t
 // forward declarations
 void ToolFramework_RecordMaterialParams( IMaterial *pMaterial );
 
-ConVar debug_materialmodifycontrol_client( "debug_materialmodifycontrol_client", "0" );
+ConVar debug_materialmodifycontrol_client( "debug_materialmodifycontrol_client", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
 struct materialanimcommands_t
 {

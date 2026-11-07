@@ -9,6 +9,9 @@
 #include <KeyValues.h>
 #include "particle_parse.h"
 #include "particles/particles.h"
+#if defined( L4D2 )
+#include "l4d2/effects/terror_particle_parse.h"
+#endif
 
 #ifdef GAME_DLL
 #include "te_effect_dispatch.h"
@@ -44,14 +47,26 @@ int GetAttachTypeFromString( const char *pszString )
 		"start_at_origin",		// PATTACH_ABSORIGIN = 0,
 		"follow_origin",		// PATTACH_ABSORIGIN_FOLLOW,
 		"start_at_customorigin",// PATTACH_CUSTOMORIGIN,
+#if defined( L4D2 )
+		"follow_customorigin",
+#endif
 		"start_at_attachment",	// PATTACH_POINT,
 		"follow_attachment",	// PATTACH_POINT_FOLLOW,
-		"follow_rootbone",		// PATTACH_ROOTBONE_FOLLOW
+#if defined( L4D2 )
+		"follow_eyes",
+		NULL, NULL, // Native106D7D14 entries7/8 are genuinely NULL holes.
+#else
+		"follow_rootbone",
+#endif
 	};
 
 	for ( int i = 0; i < MAX_PATTACH_TYPES; i++ )
 	{
+#if defined( L4D2 )
+		if ( !Q_stricmp( pAttachmentNames[i], pszString ) )
+#else
 		if ( FStrEq( pAttachmentNames[i], pszString ) )
+#endif
 			return i;
 	}
 
@@ -103,7 +118,11 @@ void ParseParticleEffects( bool bLoadSheets, bool bPrecache )
 	int nCount = files.Count();
 	for ( int i = 0; i < nCount; ++i )
 	{
+		#if defined( L4D2 )
+		ReadTerrorParticleConfigFile( files[i], bPrecache, false );
+		#else
 		g_pParticleSystemMgr->ReadParticleConfigFile( files[i], bPrecache, false );
+		#endif
 	}
 
 	g_pParticleSystemMgr->DecommitTempMemory();
@@ -115,9 +134,19 @@ void ParseParticleEffects( bool bLoadSheets, bool bPrecache )
 void ReloadParticleEffects()
 {
 	MEM_ALLOC_CREDIT();
+#if defined( L4D2 )
+	// C150B40 reloads the selected global manifest only, in authored order.
+	g_pParticleSystemMgr->ShouldLoadSheets( true );
+#endif
 
 	CUtlVector<CUtlString> files;
 	GetParticleManifest( files );
+#if defined( L4D2 )
+	FOR_EACH_VEC( files, i )
+	{
+		ReadTerrorParticleConfigFile( files[i], true, true );
+	}
+#else
 
 	// CAB 2/17/11 Reload all the particles regardless (Fixes filename change exploits).
 	bool bReloadAll = true;
@@ -165,6 +194,7 @@ void ReloadParticleEffects()
 	{
 		ParseParticleEffects( true, true );
 	}
+#endif
 	
 	g_pParticleSystemMgr->DecommitTempMemory();
 }
@@ -248,7 +278,11 @@ void ParseParticleEffectsMap( const char *pMapName, bool bLoadSheets )
 
 	for ( int i = 0; i < nCount; ++i )
 	{
+		#if defined( L4D2 )
+		ReadTerrorParticleConfigFile( files[i], true, true );
+		#else
 		g_pParticleSystemMgr->ReadParticleConfigFile( files[i], true, true );
+		#endif
 	}
 
 	g_pParticleSystemMgr->DecommitTempMemory();
@@ -281,6 +315,7 @@ void PrecacheStandardParticleSystems( )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType, CBaseEntity *pEntity, const char *pszAttachmentName, bool bResetAllParticlesOnEntity )
 {
 	int iAttachment = -1;
@@ -296,12 +331,14 @@ void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t i
 
 	DispatchParticleEffect( pszParticleName, iAttachType, pEntity, iAttachment, bResetAllParticlesOnEntity );
 }
+#endif
 
 
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType, CBaseEntity *pEntity, int iAttachmentPoint, bool bResetAllParticlesOnEntity )
 {
 	CEffectData	data;
@@ -325,7 +362,7 @@ void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t i
 		data.m_fFlags |= PARTICLE_DISPATCH_RESET_PARTICLES;
 	}
 
-#ifdef GAME_DLL
+#if defined( GAME_DLL ) && !defined( L4D2 )
 	if ( ( data.m_fFlags & PARTICLE_DISPATCH_FROM_ENTITY ) != 0 &&
 		 ( iAttachType == PATTACH_ABSORIGIN_FOLLOW || iAttachType == PATTACH_POINT_FOLLOW || iAttachType == PATTACH_ROOTBONE_FOLLOW ) )
 	{
@@ -338,6 +375,7 @@ void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t i
 		DispatchEffect( "ParticleEffect", data );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -384,7 +422,7 @@ void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t i
 		data.m_CustomColors.m_vecColor2 = vecColor2;
 	}
 
-#ifdef GAME_DLL
+#if defined( GAME_DLL ) && !defined( L4D2 )
 	if ( ( data.m_fFlags & PARTICLE_DISPATCH_FROM_ENTITY ) != 0 &&
 		 ( iAttachType == PATTACH_ABSORIGIN_FOLLOW || iAttachType == PATTACH_POINT_FOLLOW || iAttachType == PATTACH_ROOTBONE_FOLLOW ) )
 	{
@@ -402,6 +440,7 @@ void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t i
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 void DispatchParticleEffect( int iEffectIndex, Vector vecOrigin, Vector vecStart, QAngle vecAngles, CBaseEntity *pEntity )
 {
 	CEffectData	data;
@@ -432,6 +471,7 @@ void DispatchParticleEffect( int iEffectIndex, Vector vecOrigin, Vector vecStart
 
 	DispatchEffect( "ParticleEffect", data );
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -489,11 +529,13 @@ void DispatchParticleEffect( const char *pszParticleName, Vector vecOrigin, QAng
 //-----------------------------------------------------------------------------
 // Purpose: Yet another overload, lets us supply vecStart
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 ) || !defined( CLIENT_DLL )
 void DispatchParticleEffect( const char *pszParticleName, Vector vecOrigin, Vector vecStart, QAngle vecAngles, CBaseEntity *pEntity )
 {
 	int iIndex = GetParticleSystemIndex( pszParticleName );
 	DispatchParticleEffect( iIndex, vecOrigin, vecStart, vecAngles, pEntity );
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -523,9 +565,27 @@ void StopParticleEffects( CBaseEntity *pEntity )
 
 	extern CBaseEntity *GetNextCommandEntity( CBasePlayer *pPlayer, const char *name, CBaseEntity *ent );
 
-	ConVar particle_test_file( "particle_test_file", "", FCVAR_CHEAT, "Name of the particle system to dynamically spawn" );
-	ConVar particle_test_attach_mode( "particle_test_attach_mode", "follow_attachment", FCVAR_CHEAT, "Possible Values: 'start_at_attachment', 'follow_attachment', 'start_at_origin', 'follow_origin'" );
-	ConVar particle_test_attach_attachment( "particle_test_attach_attachment", "0", FCVAR_CHEAT, "Attachment index for attachment mode" );
+	ConVar particle_test_file( "particle_test_file", "", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Name of the particle system to dynamically spawn" );
+	ConVar particle_test_attach_mode( "particle_test_attach_mode", "follow_attachment", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Possible Values: 'start_at_attachment', 'follow_attachment', 'start_at_origin', 'follow_origin'" );
+	ConVar particle_test_attach_attachment( "particle_test_attach_attachment", "0", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Attachment index for attachment mode" );
 
 	void Particle_Test_Start( CBasePlayer* pPlayer, const char *name, bool bStart )
 	{
@@ -564,7 +624,13 @@ void StopParticleEffects( CBaseEntity *pEntity )
 	{
 		Particle_Test_Start( UTIL_GetCommandClient(), args[1], true );
 	}
-	static ConCommand particle_test_start("particle_test_start", CC_Particle_Test_Start, "Dispatches the test particle system with the parameters specified in particle_test_file,\n particle_test_attach_mode and particle_test_attach_param on the entity the player is looking at.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+	static ConCommand particle_test_start("particle_test_start", CC_Particle_Test_Start, "Dispatches the test particle system with the parameters specified in particle_test_file,\n particle_test_attach_mode and particle_test_attach_param on the entity the player is looking at.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 
 	void Particle_Test_Stop( CBasePlayer* pPlayer, const char *name, bool bStart )
@@ -584,7 +650,13 @@ void StopParticleEffects( CBaseEntity *pEntity )
 	{
 		Particle_Test_Stop( UTIL_GetCommandClient(), args[1], false );
 	}
-	static ConCommand particle_test_stop("particle_test_stop", CC_Particle_Test_Stop, "Stops all particle systems on the selected entities.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", FCVAR_CHEAT);
+	static ConCommand particle_test_stop("particle_test_stop", CC_Particle_Test_Stop, "Stops all particle systems on the selected entities.\n\tArguments:   	{entity_name} / {class_name} / no argument picks what player is looking at ", 
+#if defined( L4D2 ) && defined( GAME_DLL )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+);
 
 #endif	//!CLIENT_DLL
 

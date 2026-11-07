@@ -88,6 +88,10 @@ public:
 	virtual		void		CAM_Think( void );
 	virtual		int			CAM_IsThirdPerson( void );
 	virtual		void		CAM_ToThirdPerson(void);
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void CAM_ToThirdPersonShoulder();
+	void CAM_SetCommand( int command );
+#endif
 	virtual		void		CAM_ToFirstPerson(void);
 	virtual		void		CAM_StartMouseMove(void);
 	virtual		void		CAM_EndMouseMove(void);
@@ -224,8 +228,10 @@ private:
 	float		m_flRemainingJoystickSampleTime;
 	float		m_flKeyboardSampleTime;
 
+#if !defined( L4D2 )
 	int			m_iCaptureWorkaroundLastMouseX;
 	int			m_iCaptureWorkaroundLastMouseY;
+#endif
 
 	// Flag to restore systemparameters when exiting
 	bool		m_fRestoreSPI;
@@ -268,6 +274,14 @@ private:
 	float m_flPreviousJoystickSide;
 	float m_flPreviousJoystickPitch;
 	float m_flPreviousJoystickYaw;
+#if defined( L4D2 )
+	float m_flRemainingLookSpinTime;
+	float m_flLookSpinYawRate;
+	float m_flLastJoystickYawDelta;
+	float m_flRemainingSteamControllerSampleTime;
+	float m_flRemainingResetCameraTime;
+	float m_flResetCameraPitchRate;
+#endif
 
 	// Steam controller stuff
 	int m_nControllerType[MAX_JOYSTICKS + MAX_STEAM_CONTROLLERS];
@@ -295,6 +309,10 @@ private:
 
 #if defined( HL2_CLIENT_DLL )
 	CUtlVector< CEntityGroundContact > m_EntityGroundContact;
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+private:
+	int m_nCameraCommand;
 #endif
 };
 

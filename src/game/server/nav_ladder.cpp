@@ -173,6 +173,9 @@ CNavLadder::~CNavLadder()
 
 		area->OnDestroyNotify( this );
 	}
+#if defined( L4D2 )
+	ClearScriptInstance();
+#endif
 }
 
 
@@ -457,7 +460,11 @@ void CNavLadder::OnRoundRestart( void )
 //--------------------------------------------------------------------------------------------------------------
 void CNavLadder::FindLadderEntity( void )
 {
+#if defined( L4D2 )
+	m_ladderEntity = FindNavEntityByClassnameNearest( "func_simpleladder", ( m_top + m_bottom ) * 0.5f, HalfHumanWidth );
+#else
 	m_ladderEntity = gEntList.FindEntityByClassnameNearest( "func_simpleladder", (m_top + m_bottom) * 0.5f, HalfHumanWidth );
+#endif
 }
 
 

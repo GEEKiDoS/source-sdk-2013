@@ -88,7 +88,11 @@ public:
 public:
 
 	virtual void	OnDataChanged( DataUpdateType_t updateType );
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	virtual void	Simulate( void );
+#endif
 	virtual void	ClientThink( void );
 
 public:
@@ -134,14 +138,25 @@ m_nHorizontalSize( 0 ), m_nVerticalSize( 0 ), m_nMinDist( 0 ), m_nMaxDist( 0 )
 {
 	m_Glow.m_bDirectional = false;
 	m_Glow.m_bInSky = false;
+#if defined( L4D2 )
+	AddToEntityList( ENTITY_LIST_SIMULATE );
+#endif
 }
 
+#if defined( L4D2 )
+bool C_LightGlow::Simulate( void )
+{
+	m_Glow.m_vPos = GetAbsOrigin();
+	return true;
+}
+#else
 void C_LightGlow::Simulate( void )
 {
 	BaseClass::Simulate();
 
 	m_Glow.m_vPos = GetAbsOrigin();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 

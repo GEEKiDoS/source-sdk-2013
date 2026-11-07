@@ -5,6 +5,7 @@
 // $NoKeywords: $
 //=============================================================================//
 #include "cbase.h"
+#if !defined( L4D2 )
 #include "c_vote_controller.h"
 #include "shareddefs.h"
 #include "hud.h"
@@ -191,3 +192,4 @@ void C_VoteController::FireGameEvent( IGameEvent *event )
 		}
 	}
 }
+#endif // Non-L4D2 generic wire protocol; native owner is l4d2/c_terror_vote_controller.cpp.

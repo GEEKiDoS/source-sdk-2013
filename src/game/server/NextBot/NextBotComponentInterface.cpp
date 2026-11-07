@@ -15,7 +15,9 @@
 INextBotComponent::INextBotComponent( INextBot *bot )
 {
 	m_curInterval = TICK_INTERVAL;
+	#if !defined( L4D2 )
 	m_hScriptInstance = NULL;
+	#endif
 	m_lastUpdateTime = 0;
 	m_bot = bot;
 	
@@ -25,13 +27,16 @@ INextBotComponent::INextBotComponent( INextBot *bot )
 
 INextBotComponent::~INextBotComponent()
 {
+	#if !defined( L4D2 )
 	if ( g_pScriptVM && m_hScriptInstance )
 	{
 		g_pScriptVM->RemoveInstance( m_hScriptInstance );
 		m_hScriptInstance = NULL;
 	}
+	#endif
 }
 
+#if !defined( L4D2 )
 HSCRIPT INextBotComponent::GetScriptInstance()
 {
 	if ( !m_hScriptInstance )
@@ -50,3 +55,4 @@ BEGIN_ENT_SCRIPTDESC_ROOT( INextBotComponent, "Next bot component" )
 	DEFINE_SCRIPTFUNC( ComputeUpdateInterval, "Recomputes the component update interval" )
 	DEFINE_SCRIPTFUNC( GetUpdateInterval, "Returns the component update interval" )
 END_SCRIPTDESC();
+#endif

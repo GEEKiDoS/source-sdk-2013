@@ -26,9 +26,23 @@ ConVar mp_forcecamera(
 #ifdef CSTRIKE
 	"0", 
 #else
-	"1",
+	
+#if defined( L4D2 )
+	"0"
+#else
+	"1"
 #endif
-	FCVAR_REPLICATED,
+,
+#endif
+	
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+,
 	"Restricts spectator modes for dead players"
 #ifdef GAME_DLL
 	, MPForceCameraCallback 
@@ -38,20 +52,52 @@ ConVar mp_forcecamera(
 ConVar mp_allowspectators(
 	"mp_allowspectators", 
 	"1.0", 
-	FCVAR_REPLICATED,
+	
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000200A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002006
+#else
+	FCVAR_REPLICATED
+#endif
+,
 	"toggles whether the server allows spectator mode or not" );
 
+#if defined( L4D2 )
+ConVar friendlyfire(
+	"mp_friendlyfire", "1",
+	
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000210A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002106
+#else
+	FCVAR_DEVELOPMENTONLY | FCVAR_NOTIFY | FCVAR_REPLICATED
+#endif
+,
+	"Allows team members to injure other members of their team", true, 1.0f, true, 1.0f
+	);
+#else
 ConVar friendlyfire(
 	"mp_friendlyfire",
 	"0",
 	FCVAR_REPLICATED | FCVAR_NOTIFY,
 	"Allows team members to injure other members of their team"
 	);
+#endif
 
 ConVar mp_fadetoblack( 
 	"mp_fadetoblack", 
 	"0", 
-	FCVAR_REPLICATED | FCVAR_NOTIFY, 
+	
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000210A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00002106
+#else
+	FCVAR_REPLICATED | FCVAR_NOTIFY
+#endif
+, 
 	"fade a player's screen to black when he dies" );
 
 

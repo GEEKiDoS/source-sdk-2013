@@ -78,7 +78,13 @@ class CHudVote;
 
 static vgui::HContext s_hVGuiContext = DEFAULT_VGUI_CONTEXT;
 
-ConVar cl_drawhud( "cl_drawhud", "1", FCVAR_CHEAT, "Enable the rendering of the hud" );
+ConVar cl_drawhud( "cl_drawhud", "1", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "Enable the rendering of the hud" );
 ConVar hud_takesshots( "hud_takesshots", "0", FCVAR_CLIENTDLL | FCVAR_ARCHIVE, "Auto-save a scoreboard screenshot at the end of a map." );
 ConVar hud_freezecamhide( "hud_freezecamhide", "0", FCVAR_CLIENTDLL | FCVAR_ARCHIVE, "Hide the HUD during freeze-cam" );
 ConVar cl_show_num_particle_systems( "cl_show_num_particle_systems", "0", FCVAR_CLIENTDLL, "Display the number of active particle systems." );
@@ -90,10 +96,12 @@ extern ConVar cl_enable_text_chat;
 extern bool IsInCommentaryMode( void );
 extern const char* GetWearLocalizationString( float flWear );
 
+#if !defined( L4D2 )
 CON_COMMAND( cl_reload_localization_files, "Reloads all localization files" )
 {
 	g_pVGuiLocalize->ReloadLocalizationFiles();
 }
+#endif
 
 #ifdef VOICE_VOX_ENABLE
 void VoxCallback( IConVar *var, const char *oldString, float oldFloat )
@@ -144,7 +152,12 @@ static CVoxManager s_VoxManager;
 // --------------------------------------------------------------------------------- //
 #endif // VOICE_VOX_ENABLE
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( hud_reloadscheme, "Reloads hud layout and animation scripts." , 0x00000008)
+#else
 CON_COMMAND( hud_reloadscheme, "Reloads hud layout and animation scripts." )
+#endif
 {
 	ClientModeShared *mode = ( ClientModeShared * )GetClientModeNormal();
 	if ( !mode )
@@ -258,12 +271,14 @@ static void __MsgFunc_VGUIMenu( bf_read &msg )
 			gHUD.SetScreenShotTime( gpGlobals->curtime + 1.0 ); // take a screenshot in 1 second
 		}
 
+#if !defined( L4D2 )
 		IGameEvent *event = gameeventmanager->CreateEvent( "ds_screenshot" );
 		if ( event )
 		{
 			event->SetFloat( "delay", 0.5f );
 			gameeventmanager->FireEventClientSide( event );
 		}
+#endif
 	}
 
 	// is the server trying to show an MOTD panel? Check that it's allowed right now.
@@ -327,10 +342,12 @@ void ClientModeShared::ReloadScheme( bool flushLowLevel )
 //-----------------------------------------------------------------------------
 void	ClientModeShared::ComputeVguiResConditions( KeyValues *pkvConditions ) 
 {
+#if !defined( L4D2 )
 	if ( UseVR() )
 	{
 		pkvConditions->FindKey( "if_vr", true );
 	}
+#endif
 }
 
 
@@ -343,8 +360,10 @@ void ClientModeShared::Init()
 	m_pChatElement = ( CBaseHudChat * )GET_HUDELEMENT( CHudChat );
 	Assert( m_pChatElement );
 
+#if !defined( L4D2 )
 	m_pWeaponSelection = ( CBaseHudWeaponSelection * )GET_HUDELEMENT( CHudWeaponSelection );
 	Assert( m_pWeaponSelection );
+#endif
 
 	KeyValuesAD pConditions( "conditions" );
 	ComputeVguiResConditions( pConditions );
@@ -358,7 +377,11 @@ void ClientModeShared::Init()
  	Assert( m_pReplayReminderPanel );
 #endif
 
+#ifdef L4D2
+	ListenForGameEvent( "player_connect" ); // C0C3DC5, native name (no alias).
+#else
 	ListenForGameEvent( "player_connect_client" );
+#endif
 	ListenForGameEvent( "player_disconnect" );
 	ListenForGameEvent( "player_team" );
 	ListenForGameEvent( "server_cvar" );
@@ -431,6 +454,10 @@ bool ClientModeShared::CreateMove( float flInputSampleTime, CUserCmd *cmd )
 // Purpose: 
 // Input  : *pSetup - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
 void ClientModeShared::OverrideView( CViewSetup *pSetup )
 {
 	QAngle camAngles;
@@ -444,6 +471,44 @@ void ClientModeShared::OverrideView( CViewSetup *pSetup )
 
 	if( ::input->CAM_IsThirdPerson() )
 	{
+#if defined( L4D2 )
+		// C100C3EE0 consumes the current input camera distance, not the SDK
+		// manager's independently configured desired offset/fraction.
+		Vector offset = g_ThirdPersonManager.GetCameraOffsetAngles();
+		camAngles.Init( offset[PITCH], offset[YAW], 0.0f );
+		Vector forward, right, up;
+		AngleVectors( camAngles, &forward, &right, &up );
+		const float back = -offset[DIST];
+		pSetup->origin.x = forward.x * back + pSetup->origin.x;
+		pSetup->origin.y = forward.y * back + pSetup->origin.y;
+		pSetup->origin.z = forward.z * back + pSetup->origin.z;
+
+		static ConVarRef shoulder( "c_thirdpersonshoulder" );
+		if ( shoulder.GetBool() )
+		{
+			static ConVarRef shoulderOffset( "c_thirdpersonshoulderoffset" );
+			static ConVarRef shoulderHeight( "c_thirdpersonshoulderheight" );
+			static ConVarRef shoulderAimDistance( "c_thirdpersonshoulderaimdist" );
+			const float side = shoulderOffset.GetFloat();
+			pSetup->origin.x = right.x * side + pSetup->origin.x;
+			pSetup->origin.y = right.y * side + pSetup->origin.y;
+			pSetup->origin.z = right.z * side + pSetup->origin.z;
+			const float height = shoulderHeight.GetFloat();
+			pSetup->origin.x = up.x * height + pSetup->origin.x;
+			pSetup->origin.y = up.y * height + pSetup->origin.y;
+			pSetup->origin.z = up.z * height + pSetup->origin.z;
+			// C40CE..411A keeps the sum, ratio, atan and degree conversion
+			// wide until each final angle store. The degree constant is F32.
+			const double degrees = static_cast< double >( 57.29578f );
+			camAngles.y = static_cast< float >( atan2( static_cast< double >( shoulderOffset.GetFloat() ) /
+				( static_cast< double >( shoulderAimDistance.GetFloat() ) + static_cast< double >( offset[DIST] ) ), 1.0 ) *
+				degrees + static_cast< double >( camAngles.y ) );
+			camAngles.x = static_cast< float >( degrees * atan2( static_cast< double >( shoulderHeight.GetFloat() ) /
+				( static_cast< double >( offset[DIST] ) + static_cast< double >( shoulderAimDistance.GetFloat() ) ), 1.0 ) +
+				static_cast< double >( camAngles.x ) );
+		}
+		pSetup->angles = camAngles;
+#else
 		const Vector& cam_ofs = g_ThirdPersonManager.GetCameraOffsetAngles();
 		Vector cam_ofs_distance = g_ThirdPersonManager.GetFinalCameraOffset();
 
@@ -470,6 +535,7 @@ void ClientModeShared::OverrideView( CViewSetup *pSetup )
 
 		// Override angles from third person camera
 		VectorCopy( camAngles, pSetup->angles );
+#endif
 	}
 	else if (::input->CAM_IsOrthographic())
 	{
@@ -484,6 +550,9 @@ void ClientModeShared::OverrideView( CViewSetup *pSetup )
 		pSetup->m_OrthoBottom = h;
 	}
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -512,12 +581,32 @@ bool ClientModeShared::ShouldDrawParticles( )
 //-----------------------------------------------------------------------------
 void ClientModeShared::OverrideMouseInput( float *x, float *y )
 {
+#if defined( L4D2 )
+	C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+	if ( !player ) return;
+	player->OverrideMouseInput( x, y );
+#endif
 	C_BaseCombatWeapon *pWeapon = GetActiveWeapon();
 	if ( pWeapon )
 	{
 		pWeapon->OverrideMouseInput( x, y );
 	}
 }
+
+// Add only this separate L4D2 method to existing clientmode_shared.cpp.
+// ColorRoot8B2E owns the existing OverrideMouseInput method; do not replay it.
+#if defined( L4D2 )
+void ClientModeShared::OverrideJoystickInput( float *pitch, float *yaw ) // Whole C100C2E20.
+{
+	C_BasePlayer *player = C_BasePlayer::GetLocalPlayer( 0 );
+	if ( !player )
+		return;
+	player->OverrideJoystickInput( pitch, yaw );
+	C_BaseCombatWeapon *weapon = player->GetActiveWeapon();
+	if ( weapon )
+		weapon->OverrideJoystickInput( pitch, yaw );
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -564,6 +653,15 @@ bool ClientModeShared::ShouldDrawCrosshair( void )
 //-----------------------------------------------------------------------------
 // Purpose: Don't draw the current view entity if we are using the fake viewmodel instead
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+bool ClientModeShared::ShouldDrawLocalPlayer( C_BasePlayer *player )
+{
+	const int entityIndex = player->entindex();
+	if ( entityIndex != render->GetViewEntity() )
+		return true;
+	return player->ShouldDrawLocalPlayerModel();
+}
+#else
 bool ClientModeShared::ShouldDrawLocalPlayer( C_BasePlayer *pPlayer )
 {
 	if ( ( pPlayer->index == render->GetViewEntity() ) && !C_BasePlayer::ShouldDrawLocalPlayer() )
@@ -571,6 +669,7 @@ bool ClientModeShared::ShouldDrawLocalPlayer( C_BasePlayer *pPlayer )
 
 	return true;
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -696,8 +795,8 @@ int	ClientModeShared::KeyInput( int down, ButtonCode_t keynum, const char *pszCu
 		return 0;
 	}
 	
-	// If we're voting...
-#ifdef VOTING_ENABLED
+	// L4D2 dispatches the actual ordinary vote between credits and PZ in its HUD route.
+#if defined( VOTING_ENABLED ) && !defined( L4D2 )
 	CHudVote *pHudVote = GET_HUDELEMENT( CHudVote );
 	if ( pHudVote && pHudVote->IsVisible() )
 	{
@@ -710,6 +809,12 @@ int	ClientModeShared::KeyInput( int down, ButtonCode_t keynum, const char *pszCu
 
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 
+#if defined( L4D2 )
+	// C0C2F80: the complete game HUD route precedes spectator interception.
+	if ( !HudElementKeyInput( down, keynum, pszCurrentBinding ) )
+		return 0;
+#endif
+
 	// if ingame spectator mode, let spectator input intercept key event here
 	if( pPlayer &&
 		( pPlayer->GetObserverMode() > OBS_MODE_DEATHCAM ) &&
@@ -718,11 +823,13 @@ int	ClientModeShared::KeyInput( int down, ButtonCode_t keynum, const char *pszCu
 		return 0;
 	}
 
+#if !defined( L4D2 )
 	// Let game-specific hud elements get a crack at the key input
 	if ( !HudElementKeyInput( down, keynum, pszCurrentBinding ) )
 	{
 		return 0;
 	}
+#endif
 
 	C_BaseCombatWeapon *pWeapon = GetActiveWeapon();
 	if ( pWeapon )
@@ -733,11 +840,63 @@ int	ClientModeShared::KeyInput( int down, ButtonCode_t keynum, const char *pszCu
 	return 1;
 }
 
+#if defined( L4D2 )
+// C0C30D0: semicolon tokens are case-insensitive, without whitespace trimming.
+static bool TerrorSpectatorBindingMatches( const char *binding, const char *command )
+{
+	if ( !strchr( binding, ';' ) )
+		return Q_stricmp( binding, command ) == 0;
+
+	char commands[256];
+	Q_strncpy( commands, binding, sizeof( commands ) );
+	for ( char *token = strtok( commands, ";" ); token; token = strtok( NULL, ";" ) )
+	{
+		if ( Q_stricmp( command, token ) == 0 )
+			return true;
+	}
+	return false;
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: See if spectator input occurred. Return 0 if the key is swallowed.
 //-----------------------------------------------------------------------------
 int ClientModeShared::HandleSpectatorKeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding )
 {
+#if defined( L4D2 )
+	// C0C4210: mimic can pass these buttons through instead of consuming them.
+	static ConVarRef bot_mimic( "bot_mimic" );
+	static ConVarRef bot_mimic_spec_buttons( "bot_mimic_spec_buttons" );
+	if ( bot_mimic.GetInt() != 0 && bot_mimic_spec_buttons.GetInt() == 0 )
+		return 1;
+	if ( !down || !pszCurrentBinding )
+		return 1;
+	if ( TerrorSpectatorBindingMatches( pszCurrentBinding, "+duck" ) )
+	{
+		m_pViewport->ShowPanel( PANEL_SPECMENU, true );
+		return 0;
+	}
+	if ( TerrorSpectatorBindingMatches( pszCurrentBinding, "+attack" ) )
+	{
+		engine->ClientCmd( "spec_next" );
+		return 0;
+	}
+	if ( TerrorSpectatorBindingMatches( pszCurrentBinding, "+attack2" ) )
+	{
+		engine->ClientCmd( "spec_prev" );
+		return 0;
+	}
+	if ( TerrorSpectatorBindingMatches( pszCurrentBinding, "+jump" ) )
+	{
+		engine->ClientCmd( "spec_mode" );
+		return 0;
+	}
+	if ( TerrorSpectatorBindingMatches( pszCurrentBinding, "+strafe" ) )
+	{
+		HLTVCamera()->SetAutoDirector( true );
+		return 0;
+	}
+#else
 	// we are in spectator mode, open spectator menu
 	if ( down && pszCurrentBinding && Q_strcmp( pszCurrentBinding, "+duck" ) == 0 )
 	{
@@ -767,6 +926,7 @@ int ClientModeShared::HandleSpectatorKeyInput( int down, ButtonCode_t keynum, co
 #endif
 		return 0;
 	}
+#endif
 
 	return 1;
 }
@@ -1013,7 +1173,11 @@ void ClientModeShared::FireGameEvent( IGameEvent *event )
 
 	const char *eventname = event->GetName();
 
+#ifdef L4D2
+	if ( Q_strcmp( "player_connect", eventname ) == 0 )
+#else
 	if ( Q_strcmp( "player_connect_client", eventname ) == 0 )
+#endif
 	{
 		if ( !hudChat )
 			return;
@@ -1024,9 +1188,18 @@ void ClientModeShared::FireGameEvent( IGameEvent *event )
 		{
 			wchar_t wszLocalized[100];
 			wchar_t wszPlayerName[ MAX_PLAYER_NAME_LENGTH ];
+#ifdef L4D2
+			// Original client RVA 0xC4330 converts event names without a Steam filtering request.
+			g_pVGuiLocalize->ConvertANSIToUnicode( event->GetString( "name" ), wszPlayerName, sizeof( wszPlayerName ) );
+#else
 			int iPlayerIndex = engine->GetPlayerForUserID( event->GetInt( "userid" ) );
 			UTIL_GetFilteredPlayerNameAsWChar( iPlayerIndex, event->GetString( "name" ), wszPlayerName );
+#endif
+#ifdef L4D2
+			g_pVGuiLocalize->ConstructString_safe( wszLocalized, g_pVGuiLocalize->Find( "#game_player_connecting" ), 1, wszPlayerName );
+#else
 			g_pVGuiLocalize->ConstructString_safe( wszLocalized, g_pVGuiLocalize->Find( "#game_player_joined_game" ), 1, wszPlayerName );
+#endif
 
 			char szLocalized[100];
 			g_pVGuiLocalize->ConvertUnicodeToANSI( wszLocalized, szLocalized, sizeof(szLocalized) );
@@ -1104,8 +1277,13 @@ void ClientModeShared::FireGameEvent( IGameEvent *event )
 		if ( !bSilent )
 		{
 			wchar_t wszPlayerName[MAX_PLAYER_NAME_LENGTH];
+#ifdef L4D2
+			// Original client RVA 0xC4330 directly converts the player's name for team messages.
+			g_pVGuiLocalize->ConvertANSIToUnicode( pszName, wszPlayerName, sizeof( wszPlayerName ) );
+#else
 			int iPlayerIndex = engine->GetPlayerForUserID( event->GetInt( "userid" ) );
 			UTIL_GetFilteredPlayerNameAsWChar( iPlayerIndex, pszName, wszPlayerName );
+#endif
 
 			bool bUsingCustomTeamName = false;
 #ifdef TF_CLIENT_DLL
@@ -1159,13 +1337,17 @@ void ClientModeShared::FireGameEvent( IGameEvent *event )
 		if ( PlayerNameNotSetYet(pszOldName) )
 			return;
 
-		int iPlayerIndex = engine->GetPlayerForUserID( event->GetInt( "userid" ) );
-
 		wchar_t wszOldName[ MAX_PLAYER_NAME_LENGTH ];
-		UTIL_GetFilteredPlayerNameAsWChar( iPlayerIndex, pszOldName, wszOldName );
-
 		wchar_t wszNewName[ MAX_PLAYER_NAME_LENGTH ];
+#ifdef L4D2
+		// Original client RVA 0xC4330 directly converts both names for name-change messages.
+		g_pVGuiLocalize->ConvertANSIToUnicode( pszOldName, wszOldName, sizeof( wszOldName ) );
+		g_pVGuiLocalize->ConvertANSIToUnicode( event->GetString( "newname" ), wszNewName, sizeof( wszNewName ) );
+#else
+		int iPlayerIndex = engine->GetPlayerForUserID( event->GetInt( "userid" ) );
+		UTIL_GetFilteredPlayerNameAsWChar( iPlayerIndex, pszOldName, wszOldName );
 		UTIL_GetFilteredPlayerNameAsWChar( iPlayerIndex, event->GetString( "newname" ), wszNewName );
+#endif
 
 		wchar_t wszLocalized[100];
 		g_pVGuiLocalize->ConstructString_safe( wszLocalized, g_pVGuiLocalize->Find( "#game_player_changed_name" ), 2, wszOldName, wszNewName );
@@ -1191,7 +1373,11 @@ void ClientModeShared::FireGameEvent( IGameEvent *event )
 		{
 			CBasePlayer *pSpectatorTarget = UTIL_PlayerByIndex( GetSpectatorTarget() );
 
-			if ( pSpectatorTarget && ( GetSpectatorMode() == OBS_MODE_IN_EYE || GetSpectatorMode() == OBS_MODE_CHASE || GetSpectatorMode() == OBS_MODE_POI ) )
+			if ( pSpectatorTarget && ( GetSpectatorMode() == OBS_MODE_IN_EYE || GetSpectatorMode() == OBS_MODE_CHASE
+#if !defined( L4D2 )
+				|| GetSpectatorMode() == OBS_MODE_POI
+#endif
+				) )
 			{
 				if ( pSpectatorTarget->GetTeamNumber() == team )
 				{

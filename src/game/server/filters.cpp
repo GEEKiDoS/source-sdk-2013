@@ -80,7 +80,11 @@ void CBaseFilter::InputTestActivator( inputdata_t &inputdata )
 //
 //   Allows one to filter through mutiple filters
 // ###################################################################
+#if defined( L4D2 )
+#define MAX_FILTERS 10
+#else
 #define MAX_FILTERS 5
+#endif
 enum filter_t
 {
 	FILTER_AND,
@@ -117,6 +121,14 @@ BEGIN_DATADESC( CFilterMultiple )
 	DEFINE_KEYFIELD(m_iFilterName[2], FIELD_STRING, "Filter03"),
 	DEFINE_KEYFIELD(m_iFilterName[3], FIELD_STRING, "Filter04"),
 	DEFINE_KEYFIELD(m_iFilterName[4], FIELD_STRING, "Filter05"),
+
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iFilterName[5], FIELD_STRING, "Filter06" ),
+	DEFINE_KEYFIELD( m_iFilterName[6], FIELD_STRING, "Filter07" ),
+	DEFINE_KEYFIELD( m_iFilterName[7], FIELD_STRING, "Filter08" ),
+	DEFINE_KEYFIELD( m_iFilterName[8], FIELD_STRING, "Filter09" ),
+	DEFINE_KEYFIELD( m_iFilterName[9], FIELD_STRING, "Filter10" ),
+#endif
 	DEFINE_ARRAY( m_hFilter, FIELD_EHANDLE, MAX_FILTERS ),
 
 END_DATADESC()

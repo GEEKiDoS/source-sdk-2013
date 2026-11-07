@@ -1,0 +1,72 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Native retail Phong VS20 equations, adapted to the target standard VS ABI.
+// STATIC: "USE_STATIC_CONTROL_FLOW" "0..1"
+// DYNAMIC: "COMPRESSED_VERTS" "0..1"
+// DYNAMIC: "SKINNING" "0..1"
+// DYNAMIC: "NUM_LIGHTS" "0..2"
+// SKIP: $USE_STATIC_CONTROL_FLOW && ($NUM_LIGHTS > 0)
+#include "common_vs_fxc.h"
+
+const float4 cBaseTexCoordTransform[2] : register( SHADER_SPECIFIC_CONST_0 );
+const float4 cDetailTexCoordTransform[2] : register( SHADER_SPECIFIC_CONST_4 );
+
+struct VS_INPUT
+{
+	float4 position : POSITION;
+	float4 normal : NORMAL;
+	float4 texcoord : TEXCOORD0;
+	float4 weights : BLENDWEIGHT;
+	float4 indices : BLENDINDICES;
+	float4 tangent : TANGENT;
+	float4 positionFlex : POSITION1;
+	float3 normalFlex : NORMAL1;
+};
+
+struct VS_OUTPUT
+{
+	float4 position : POSITION;
+	float4 texcoord : TEXCOORD0;
+	float4 attenuation : TEXCOORD1;
+	float3 tangent : TEXCOORD2;
+	float3 bitangent : TEXCOORD3;
+	float3 normal : TEXCOORD4;
+	float4 projectionAndWrinkle : TEXCOORD5;
+	float3 worldPosition : TEXCOORD6;
+};
+
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o = (VS_OUTPUT)0;
+	float4 position = v.position;
+	float3 normal;
+	float4 tangent;
+	DecompressVertex_NormalTangent( v.normal, v.tangent, normal, tangent );
+	ApplyMorph( v.positionFlex, v.normalFlex, position.xyz, normal, tangent.xyz, o.projectionAndWrinkle.w );
+	float3 worldPosition, worldNormal, worldTangent, worldBitangent;
+	SkinPositionNormalAndTangentSpace( SKINNING != 0, position, normal, tangent,
+		v.weights, v.indices, worldPosition, worldNormal, worldTangent, worldBitangent );
+	o.position = mul( float4( worldPosition, 1 ), cViewProj );
+	o.projectionAndWrinkle.xyz = o.position.xyz;
+	o.worldPosition = worldPosition;
+	o.tangent = normalize( worldTangent );
+	o.bitangent = normalize( worldBitangent );
+	o.normal = normalize( worldNormal );
+	o.texcoord = float4( dot( v.texcoord, cBaseTexCoordTransform[0] ),
+		dot( v.texcoord, cBaseTexCoordTransform[1] ),
+		dot( v.texcoord, cDetailTexCoordTransform[0] ),
+		dot( v.texcoord, cDetailTexCoordTransform[1] ) );
+#if USE_STATIC_CONTROL_FLOW
+	o.attenuation.x = GetVertexAttenForLight( worldPosition, 0, true );
+	o.attenuation.y = GetVertexAttenForLight( worldPosition, 1, true );
+	o.attenuation.z = GetVertexAttenForLight( worldPosition, 2, true );
+	o.attenuation.w = GetVertexAttenForLight( worldPosition, 3, true );
+#else
+#if NUM_LIGHTS > 0
+	o.attenuation.x = GetVertexAttenForLight( worldPosition, 0, false );
+#endif
+#if NUM_LIGHTS > 1
+	o.attenuation.y = GetVertexAttenForLight( worldPosition, 1, false );
+#endif
+#endif
+	return o;
+}

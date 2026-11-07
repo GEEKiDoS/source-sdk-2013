@@ -22,6 +22,7 @@
 #include "particle_parse.h"
 #include "usermessages.h"
 #include "engine/IEngineSound.h"
+#include "l4d2/sound/terror_engine_sound_name.h"
 #include "vscript_utils.h"
 #include "netpropmanager.h"
 #include "client.h"
@@ -29,6 +30,18 @@
 #include "in_buttons.h"
 #include "coordsize.h"
 #include "team.h"
+
+#if defined( L4D2 )
+#include "l4d2/sound/ai_scriptedrules.h"
+#include "vscript_container_helpers.h"
+#include "l4d2/director/terror_director.h"
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/nav/terror_nav_area.h"
+#include "nav_ladder.h"
+#include "nav_mesh.h"
+#include "l4d2/vscript/terror_script_globals.h"
+#include "l4d2/director/director_scavenge_mode.h"
+#endif
 
 #ifdef TF_DLL
 #include "tf/tf_gamerules.h"
@@ -39,7 +52,11 @@
 #endif
 
 #if defined( _WIN32 ) || defined( POSIX )
+#if defined( L4D2 )
+#include "vscript_server_l4d2_nut.h"
+#else
 #include "vscript_server_nut.h"
+#endif
 #endif
 
 #if defined( PORTAL2_PUZZLEMAKER )
@@ -71,31 +88,50 @@ extern CServerGameDLL g_ServerGameDLL;
 
 ConVar script_connect_debugger_on_mapspawn( "script_connect_debugger_on_mapspawn", "0" );
 
-ConVar script_attach_debugger_at_startup( "script_attach_debugger_at_startup", "0" );
-ConVar script_break_in_native_debugger_on_error( "script_break_in_native_debugger_on_error", "0" );
+ConVar script_attach_debugger_at_startup( "script_attach_debugger_at_startup", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
+ConVar script_break_in_native_debugger_on_error( "script_break_in_native_debugger_on_error", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
+#if !defined( L4D2 )
 #define VSCRIPT_CONVAR_ALLOWLIST_NAME "cfg/vscript_convar_allowlist.txt"
+#endif
 
 /// Exposes convars to script
-class CScriptConvarAccessor : public CAutoGameSystem
+// Native22B9B0 exposes only the four original Convars operations.
+class CScriptConvarAccessor
+#if !defined( L4D2 )
+	: public CAutoGameSystem
+#endif
 {
 public:
+#if !defined( L4D2 )
 	ScriptVariant_t GetBool( const char *cvar );
 	ScriptVariant_t GetInt( const char *cvar );
+#endif
 	ScriptVariant_t GetFloat( const char *cvar );
 	ScriptVariant_t GetStr( const char *cvar );
 	const char *GetClientConvarValue( const char *cvar, int entindex );
 	void SetValue( const char *cvar, ScriptVariant_t value );
 
+#if !defined( L4D2 )
 	void LevelInitPreEntity() OVERRIDE;
 	void LevelShutdownPostEntity() OVERRIDE;
 
 	bool IsConVarOnAllowList( const char *cvar );
 
 	CUtlSymbolTable m_AllowedConVars;
+#endif
 };
 CScriptConvarAccessor g_ScriptConvars;
 
+#if !defined( L4D2 )
 #define FCVAR_SCRIPT_NONO ( FCVAR_PROTECTED | FCVAR_SERVER_CANNOT_QUERY )
 
 ScriptVariant_t CScriptConvarAccessor::GetBool( const char *cvar )
@@ -130,13 +166,21 @@ ScriptVariant_t CScriptConvarAccessor::GetInt( const char *cvar )
 	}
 }
 
+#endif
+
 ScriptVariant_t CScriptConvarAccessor::GetFloat( const char *cvar )
 {
+#if !defined( L4D2 )
 	if ( !cvar || !*cvar )
 		return ScriptVariant_t();
+#endif
 
 	ConVarRef cref( cvar );
+#if defined( L4D2 )
+	if ( cref.IsValid() ) // Native2209F0: validity only, no SDK flag policy.
+#else
 	if ( cref.IsValid() && !cref.IsFlagSet( FCVAR_SCRIPT_NONO ) )
+#endif
 	{
 		return cref.GetFloat();
 	}
@@ -148,17 +192,21 @@ ScriptVariant_t CScriptConvarAccessor::GetFloat( const char *cvar )
 
 ScriptVariant_t CScriptConvarAccessor::GetStr( const char *cvar )
 {
+#if !defined( L4D2 )
 	if ( !cvar || !*cvar )
 		return ScriptVariant_t();
+#endif
 
 	ConVarRef cref( cvar );
 	if ( cref.IsValid() )
 	{
+#if !defined( L4D2 )
 		if ( cref.IsFlagSet( FCVAR_SCRIPT_NONO ) )
 		{
 			// the funny.
 			return "hunter2";
 		}
+#endif
 		return cref.GetString();
 	}
 	else
@@ -169,14 +217,17 @@ ScriptVariant_t CScriptConvarAccessor::GetStr( const char *cvar )
 
 const char *CScriptConvarAccessor::GetClientConvarValue( const char *cvar, int entindex )
 {
+#if !defined( L4D2 )
 	if ( !cvar || !*cvar )
 		return "";
+#endif
 
 	return engine->GetClientConVarValue( entindex, cvar );
 }
 
 void CScriptConvarAccessor::SetValue( const char *cvar, ScriptVariant_t value )
 {
+#if !defined( L4D2 )
 	if ( !cvar || !*cvar )
 		return;
 
@@ -185,9 +236,14 @@ void CScriptConvarAccessor::SetValue( const char *cvar, ScriptVariant_t value )
 		DevMsg( "Convar %s was not in " VSCRIPT_CONVAR_ALLOWLIST_NAME "\n", cvar );
 		return;
 	}
+#endif
 
 	ConVarRef cref( cvar );
+#if defined( L4D2 )
+	if ( cref.IsValid() ) // Native220A40: bool/int/float/string then SaveConvar.
+#else
 	if ( cref.IsValid() && !cref.IsFlagSet( FCVAR_SCRIPT_NONO ) )
+#endif
 	{
 		bool bSave = true;
 		switch( value.GetType() )
@@ -217,6 +273,7 @@ void CScriptConvarAccessor::SetValue( const char *cvar, ScriptVariant_t value )
 	}
 }
 
+#if !defined( L4D2 )
 void CScriptConvarAccessor::LevelInitPreEntity()
 {
 	m_AllowedConVars.RemoveAll();
@@ -252,15 +309,22 @@ bool CScriptConvarAccessor::IsConVarOnAllowList( const char *cvar )
 
 	return m_AllowedConVars.Find( cvar ) != UTL_INVAL_SYMBOL;
 }
+#endif
 
 BEGIN_SCRIPTDESC_ROOT_NAMED( CScriptConvarAccessor, "Convars", SCRIPT_SINGLETON "Access to convar functions" )
+#if !defined( L4D2 )
 DEFINE_SCRIPTFUNC( GetBool, "GetBool(name) : returns the convar as a bool. May return null if no such convar." )
 DEFINE_SCRIPTFUNC( GetInt, "GetInt(name) : returns the convar as an int. May return null if no such convar." )
+#endif
 DEFINE_SCRIPTFUNC( GetFloat, "GetFloat(name) : returns the convar as a float. May return null if no such convar." )
 DEFINE_SCRIPTFUNC( GetStr, "GetStr(name) : returns the convar as a string. May return null if no such convar." )
 DEFINE_SCRIPTFUNC( GetClientConvarValue, "GetClientConvarValue(name) : returns the convar value for the entindex as a string." )
+#if defined( L4D2 )
+DEFINE_SCRIPTFUNC( SetValue, "SetValue(name, value) : sets the value of the convar. Supported types are bool, int, float, string." )
+#else
 DEFINE_SCRIPTFUNC( SetValue, "SetValue(name, value) : sets the value of the convar. The convar must be in " VSCRIPT_CONVAR_ALLOWLIST_NAME " to be set. Supported types are bool, int, float, string." )
 DEFINE_SCRIPTFUNC( IsConVarOnAllowList, "IsConVarOnAllowList(name) : checks if the convar is allowed to be used and is in " VSCRIPT_CONVAR_ALLOWLIST_NAME ". Please be nice with this and use it for *compatibility* if you need check support and NOT to force server owners to allow hostname to be set... or else this will simply lie and return true in future. ;-) You have been warned!"  )
+#endif
 END_SCRIPTDESC()
 
 
@@ -570,7 +634,10 @@ bool VScriptServerScriptErrorFunc( ScriptErrorLevel_t /*eLevel*/, const char *ps
 //-----------------------------------------------------------------------------
 //
 //-----------------------------------------------------------------------------
-class CScriptEntityIterator : public IEntityFindFilter
+class CScriptEntityIterator
+#if !defined( L4D2 )
+	: public IEntityFindFilter
+#endif
 {
 public:
 	HSCRIPT First() { return Next(NULL); }
@@ -587,47 +654,83 @@ public:
 
 	HSCRIPT FindByClassname( HSCRIPT hStartEntity, const char *szName )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByClassname( ToEnt( hStartEntity ), szName ) );
+#else
 		return ToHScript( gEntList.FindEntityByClassname( ToEnt( hStartEntity ), szName, this ) );
+#endif
 	}
 
 	HSCRIPT FindByName( HSCRIPT hStartEntity, const char *szName )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByName( ToEnt( hStartEntity ), szName ) );
+#else
 		return ToHScript( gEntList.FindEntityByName( ToEnt( hStartEntity ), szName, NULL, NULL, NULL, this ) );
+#endif
 	}
 
 	HSCRIPT FindInSphere( HSCRIPT hStartEntity, const Vector &vecCenter, float flRadius )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityInSphere( ToEnt( hStartEntity ), vecCenter, flRadius ) );
+#else
 		return ToHScript( gEntList.FindEntityInSphere( ToEnt( hStartEntity ), vecCenter, flRadius, this ) );
+#endif
 	}
 
 	HSCRIPT FindByTarget( HSCRIPT hStartEntity, const char *szName )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByTarget( ToEnt( hStartEntity ), szName ) );
+#else
 		return ToHScript( gEntList.FindEntityByTarget( ToEnt( hStartEntity ), szName, this ) );
+#endif
 	}
 
 	HSCRIPT FindByModel( HSCRIPT hStartEntity, const char *szModelName )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByModel( ToEnt( hStartEntity ), szModelName ) );
+#else
 		return ToHScript( gEntList.FindEntityByModel( ToEnt( hStartEntity ), szModelName, this ) );
+#endif
 	}
 
 	HSCRIPT FindByNameNearest( const char *szName, const Vector &vecSrc, float flRadius )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByNameNearest( szName, vecSrc, flRadius ) );
+#else
 		return ToHScript( gEntList.FindEntityByNameNearest( szName, vecSrc, flRadius, NULL, NULL, NULL, this ) );
+#endif
 	}
 
 	HSCRIPT FindByNameWithin( HSCRIPT hStartEntity, const char *szName, const Vector &vecSrc, float flRadius )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByNameWithin( ToEnt( hStartEntity ), szName, vecSrc, flRadius ) );
+#else
 		return ToHScript( gEntList.FindEntityByNameWithin( ToEnt( hStartEntity ), szName, vecSrc, flRadius, NULL, NULL, NULL, this ) );
+#endif
 	}
 
 	HSCRIPT FindByClassnameNearest( const char *szName, const Vector &vecSrc, float flRadius )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByClassnameNearest( szName, vecSrc, flRadius ) );
+#else
 		return ToHScript( gEntList.FindEntityByClassnameNearest( szName, vecSrc, flRadius, this ) );
+#endif
 	}
 
 	HSCRIPT FindByClassnameWithin( HSCRIPT hStartEntity , const char *szName, const Vector &vecSrc, float flRadius )
 	{
+#if defined( L4D2 )
+		return ToHScript( gEntList.FindEntityByClassnameWithin( ToEnt( hStartEntity ), szName, vecSrc, flRadius ) );
+#else
 		return ToHScript( gEntList.FindEntityByClassnameWithin( ToEnt( hStartEntity ), szName, vecSrc, flRadius, this ) );
+#endif
 	}
 
 	void DispatchSpawn( HSCRIPT hEntity )
@@ -635,6 +738,7 @@ public:
 		::DispatchSpawn( ToEnt( hEntity ), false );
 	}
 
+#if !defined( L4D2 )
 	bool ShouldFindEntity( CBaseEntity *pEntity )
 	{
 		if ( !pEntity )
@@ -655,13 +759,16 @@ public:
 		return NULL;
 	}
 
+#endif
 private:
 } g_ScriptEntityIterator;
 
 BEGIN_SCRIPTDESC_ROOT_NAMED( CScriptEntityIterator, "CEntities", SCRIPT_SINGLETON "The global list of entities" )
 	DEFINE_SCRIPTFUNC( First, "Begin an iteration over the list of entities" )
 	DEFINE_SCRIPTFUNC( Next, "Continue an iteration over the list of entities, providing reference to a previously found entity" )
+#if !defined( L4D2 )
 	DEFINE_SCRIPTFUNC( CreateByClassname, "Creates an entity by classname" )
+#endif
 	DEFINE_SCRIPTFUNC( FindByClassname, "Find entities by class name. Pass 'null' to start an iteration, or reference to a previously found entity to continue a search"  )
 	DEFINE_SCRIPTFUNC( FindByName, "Find entities by name. Pass 'null' to start an iteration, or reference to a previously found entity to continue a search"  )
 	DEFINE_SCRIPTFUNC( FindInSphere, "Find entities within a radius. Pass 'null' to start an iteration, or reference to a previously found entity to continue a search"  )
@@ -671,7 +778,9 @@ BEGIN_SCRIPTDESC_ROOT_NAMED( CScriptEntityIterator, "CEntities", SCRIPT_SINGLETO
 	DEFINE_SCRIPTFUNC( FindByNameWithin, "Find entities by name within a radius. Pass 'null' to start an iteration, or reference to a previously found entity to continue a search"  )
 	DEFINE_SCRIPTFUNC( FindByClassnameNearest, "Find entities by class name nearest to a point."  )
 	DEFINE_SCRIPTFUNC( FindByClassnameWithin, "Find entities by class name within a radius. Pass 'null' to start an iteration, or reference to a previously found entity to continue a search"  )
+#if !defined( L4D2 )
 	DEFINE_SCRIPTFUNC( DispatchSpawn, "Dispatches spawn of an entity!" )
+#endif
 END_SCRIPTDESC();
 
 CVScriptGameEventListener g_VScriptGameEventListener;
@@ -680,7 +789,9 @@ void CVScriptGameEventListener::Init()
 {
 	m_RunGameEventCallbacksFunc = INVALID_HSCRIPT;
 	m_CollectGameEventCallbacksFunc = INVALID_HSCRIPT;
+#if !defined( L4D2 )
 	m_ScriptHookCallbacksFunc = INVALID_HSCRIPT;
+#endif
 }
 void CVScriptGameEventListener::FireGameEvent( IGameEvent *event )
 {
@@ -689,6 +800,7 @@ void CVScriptGameEventListener::FireGameEvent( IGameEvent *event )
 	RunGameEventCallbacks( event->GetName(), paramsTable );
 }
 
+#if !defined( L4D2 )
 void CVScriptGameEventListener::ListenForScriptHook( const char* szName )
 {
 	m_ScriptHooks.AddString( szName );
@@ -716,11 +828,14 @@ bool CVScriptGameEventListener::FireScriptHook( const char *pszHookName, HSCRIPT
 	return true;
 }
 
+#endif
 // Calls a squirrel func (see vscript_server.nut) to call each
 // registered script function associated with this game event.
 void CVScriptGameEventListener::RunGameEventCallbacks( const char* szName, HSCRIPT params )
 {
+#if !defined( L4D2 )
 	Assert( szName );
+#endif
 	if ( !szName )
 		return;
 
@@ -733,6 +848,7 @@ void CVScriptGameEventListener::RunGameEventCallbacks( const char* szName, HSCRI
 	}
 }
 
+#if !defined( L4D2 )
 void CVScriptGameEventListener::RunScriptHookCallbacks( const char* szName, HSCRIPT params )
 {
 	Assert( szName );
@@ -748,6 +864,7 @@ void CVScriptGameEventListener::RunScriptHookCallbacks( const char* szName, HSCR
 	}
 }
 
+#endif
 void CVScriptGameEventListener::CollectGameEventCallbacksInScope( HSCRIPT scope )
 {
 	if ( m_CollectGameEventCallbacksFunc == INVALID_HSCRIPT )
@@ -761,15 +878,18 @@ void CVScriptGameEventListener::CollectGameEventCallbacksInScope( HSCRIPT scope 
 
 void RegisterScriptGameEventListener( const char* pszEventName )
 {
+#if !defined( L4D2 )
 	if ( !pszEventName || !*pszEventName )
 	{
 		Log_Warning( LOG_VScript, "No event name specified\n" );
 		return;
 	}
+#endif
 
 	g_VScriptGameEventListener.ListenForGameEvent( pszEventName );
 }
 
+#if !defined( L4D2 )
 void RegisterScriptHookListener( const char* pszEventName )
 {
 	if ( !pszEventName || !*pszEventName )
@@ -781,6 +901,7 @@ void RegisterScriptHookListener( const char* pszEventName )
 	g_VScriptGameEventListener.ListenForScriptHook( pszEventName );
 }
 
+#endif
 void CollectGameEventCallbacksInScope( HSCRIPT scope )
 {
 	g_VScriptGameEventListener.CollectGameEventCallbacksInScope( scope );
@@ -789,9 +910,12 @@ void CollectGameEventCallbacksInScope( HSCRIPT scope )
 void ClearScriptGameEventListeners( void )
 {
 	g_VScriptGameEventListener.StopListeningForAllEvents();
+#if !defined( L4D2 )
 	g_VScriptGameEventListener.ClearAllScriptHooks();
+#endif
 }
 
+#if !defined( L4D2 )
 ConVar vscript_script_hooks( "vscript_script_hooks", "1" );
 
 bool ScriptHooksEnabled()
@@ -824,6 +948,7 @@ bool RunScriptHook( const char *pszHookName, HSCRIPT params )
 	return g_VScriptGameEventListener.FireScriptHook( pszHookName, params );
 }
 
+#endif
 CNetPropManager g_ScriptNetPropManager;
 
 BEGIN_SCRIPTDESC_ROOT_NAMED( CNetPropManager, "CNetPropManager", SCRIPT_SINGLETON "Used to get/set entity network fields" )
@@ -850,12 +975,14 @@ BEGIN_SCRIPTDESC_ROOT_NAMED( CNetPropManager, "CNetPropManager", SCRIPT_SINGLETO
 	DEFINE_SCRIPTFUNC( GetPropArraySize, "Arguments: ( entity, propertyName )" )
 	DEFINE_SCRIPTFUNC( HasProp, "Arguments: ( entity, propertyName )" )
 	DEFINE_SCRIPTFUNC( GetPropType, "Arguments: ( entity, propertyName ) - return the prop type as a string" )
+#if !defined( L4D2 )
 	DEFINE_SCRIPTFUNC( GetPropBool, "Arguments: ( entity, propertyName )" )
 	DEFINE_SCRIPTFUNC( GetPropBoolArray, "Arguments: ( entity, propertyName, arrayElement )" )
 	DEFINE_SCRIPTFUNC( SetPropBool, "Arguments: ( entity, propertyName, value )" )
 	DEFINE_SCRIPTFUNC( SetPropBoolArray, "Arguments: ( entity, propertyName, value, arrayElement )" )
 	DEFINE_SCRIPTFUNC( GetPropInfo, "Arguments: ( entity, propertyName, arrayElement, table ) - Fills in a passed table with property info for the provided entity" )
 	DEFINE_SCRIPTFUNC( GetTable, "Arguments: ( entity, iPropType, table ) - Fills in a passed table with all props of a specified type for the provided entity (set iPropType to 0 for SendTable or 1 for DataMap)" )
+#endif
 END_SCRIPTDESC()
 
 //-----------------------------------------------------------------------------
@@ -890,6 +1017,7 @@ END_SCRIPTDESC();
 // KeyValues access - CBaseEntity::ScriptGetKeyFromModel returns root KeyValues
 // ----------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 BEGIN_SCRIPTDESC_ROOT( CScriptKeyValues, "Wrapper class over KeyValues instance" )
 	DEFINE_SCRIPT_CONSTRUCTOR()	
 	DEFINE_SCRIPTFUNC_NAMED( ScriptFindKey, "FindKey", "Given a KeyValues object and a key name, find a KeyValues object associated with the key name" );
@@ -994,6 +1122,7 @@ CScriptKeyValues::~CScriptKeyValues( )
 	}
 	m_pKeyValues = NULL;
 }
+#endif
 
 
 
@@ -1036,6 +1165,7 @@ static void SendToServerConsole( const char *pszCommand )
 	if ( !pszCommand )
 		return;
 
+#if !defined( L4D2 )
 	bool bAllowed = ( sAllowPointServerCommand == eAllowAlways );
 #ifdef TF_DLL
 	if ( sAllowPointServerCommand == eAllowOfficial )
@@ -1048,6 +1178,7 @@ static void SendToServerConsole( const char *pszCommand )
 	{
 		return;
 	}
+#endif
 
 	engine->ServerCommand( UTIL_VarArgs( "%s\n", pszCommand ) );
 }
@@ -1112,8 +1243,10 @@ HSCRIPT PlayerInstanceFromIndex( int idx )
 	if ( !pPlayer )
 		return NULL;
 
+#if !defined( L4D2 )
 	if ( pPlayer->IsHLTV() )
 		return NULL;
+#endif
 
 	return ToHScript( pPlayer );
 }
@@ -1123,13 +1256,18 @@ HSCRIPT PlayerInstanceFromIndex( int idx )
 // will be notified.
 bool ScriptFireGameEvent( const char* szName, HSCRIPT params )
 {
+#if defined( L4D2 )
+	if ( !szName ) // Native224090 permits an empty name, but not a NULL name.
+#else
 	if ( !szName || !*szName )
+#endif
 		return false;
 
 	g_VScriptGameEventListener.RunGameEventCallbacks( szName, params );
 	return true;
 }
 
+#if !defined( L4D2 )
 bool ScriptFireScriptHook( const char* szName, HSCRIPT params )
 {
 	if ( !szName || !*szName )
@@ -1182,6 +1320,7 @@ bool ScriptSendGlobalGameEvent( const char *szName, HSCRIPT params )
 	
 	return true;
 }
+#endif // !L4D2
 
 const Vector &RotatePosition( const Vector rotateOrigin, const QAngle rotateAngles, const Vector position )
 {
@@ -1209,6 +1348,9 @@ QAngle RotateOrientation( QAngle posAngles, QAngle entAngles )
 }
 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#include "l4d2/vscript/vscript_spawn_table.inc"
+#else
 static void ParseTable( CBaseEntity *pEntity, HSCRIPT spawn_table, const char *pKeyNameOverride = NULL )
 {
 	ScriptVariant_t vKey, vValue;
@@ -1250,6 +1392,7 @@ static void ParseTable( CBaseEntity *pEntity, HSCRIPT spawn_table, const char *p
 		g_pScriptVM->ReleaseValue( vValue );
 	}
 }
+#endif
 
 //// @todo: rewrite there 4 to not need classname everywhere since it is always in the spawntable!
 //-----------------------------------------------------------------------------
@@ -1277,7 +1420,9 @@ CBaseEntity *ScriptCreateEntityFromTable( const char *pszClassname, HSCRIPT hSpa
 
 	CBaseEntity *pEntity = VScript_ParseEntity( pszClassname, hSpawnTable );
 
-#ifdef TERROR
+#if defined( L4D2 )
+	TheDirector->GetScriptedMode()->RecordScriptSpawnedEntity( pEntity );
+#elif defined( TERROR )
 	TheDirector->GetChallengeMode()->RecordScriptSpawnedEntity( pEntity );
 #endif
 
@@ -1345,7 +1490,11 @@ static bool Script_SpawnEntityGroupFromTable( HSCRIPT groupSpawnTables )
 //-----------------------------------------------------------------------------
 static void Script_EmitSoundOn( const char *pszSoundName, HSCRIPT hEnt )
 {
+#if defined( L4D2 )
+	if ( !pszSoundName )
+#else
 	if ( !pszSoundName || !*pszSoundName )
+#endif
 		return;
 
 	CBaseEntity *pEnt = ToEnt( hEnt );
@@ -1359,7 +1508,11 @@ static void Script_EmitSoundOn( const char *pszSoundName, HSCRIPT hEnt )
 //-----------------------------------------------------------------------------
 static void Script_StopSoundOn( const char *pszSoundName, HSCRIPT hEnt )
 {
+#if defined( L4D2 )
+	if ( !pszSoundName )
+#else
 	if ( !pszSoundName || !*pszSoundName )
+#endif
 		return;
 
 	CBaseEntity *pEnt = ToEnt( hEnt );
@@ -1373,7 +1526,11 @@ static void Script_StopSoundOn( const char *pszSoundName, HSCRIPT hEnt )
 //-----------------------------------------------------------------------------
 static void Script_EmitSoundOnClient( const char *pszSoundName, HSCRIPT hEnt )
 {
+#if defined( L4D2 )
+	if ( !pszSoundName )
+#else
 	if ( !pszSoundName || !*pszSoundName )
+#endif
 		return;
 
 	CBaseEntity *pEnt = ToEnt( hEnt );
@@ -1538,7 +1695,11 @@ static void Script_PickupObject( HSCRIPT hPlayer, HSCRIPT hEnt)
 {
 	CBaseEntity *pEnt  = ToEnt( hEnt );
 	CBaseEntity *pBaseP = ToEnt( hPlayer );
+#if defined( L4D2 )
+	CTerrorPlayer *pPlayer = dynamic_cast< CTerrorPlayer* >(pBaseP);
+#else
 	CBasePlayer *pPlayer = dynamic_cast< CBasePlayer* >(pBaseP);
+#endif
 	if (pPlayer)
 		pPlayer->PickupObject( pEnt, false );
 }
@@ -1573,7 +1734,9 @@ static void Script_OverlayClear( void )
 
 static const Vector& Script_GetPhysVelocity( HSCRIPT hEnt )
 {
+#if !defined( L4D2 )
 	DevMsg("Using legacy GetPhysVelocity.\nDo not use me! Use GetPhysVelocity on the entity instead.\n");
+#endif
 	CBaseEntity *pEnt = ToEnt(hEnt);
 	if ( !pEnt )
 		return vec3_origin;
@@ -1591,7 +1754,9 @@ static const Vector& Script_GetPhysVelocity( HSCRIPT hEnt )
 
 static const Vector& Script_GetPhysAngularVelocity( HSCRIPT hEnt )
 {
+#if !defined( L4D2 )
 	DevMsg("Using legacy GetPhysAngularVelocity.\nDo not use me! Use GetPhysAngularVelocity on the entity instead.\n");
+#endif
 	CBaseEntity *pEnt = ToEnt(hEnt);
 	if ( !pEnt )
 		return vec3_origin;
@@ -1658,8 +1823,10 @@ static HSCRIPT Script_GetPlayerFromUserID( int userID )
 	if ( !pPlayer )
 		return NULL;
 
+#if !defined( L4D2 )
 	if ( pPlayer->IsHLTV() )
 		return NULL;
+#endif
 
 	return ToHScript( pPlayer );
 }
@@ -1670,28 +1837,35 @@ static bool Script_IsPlayerABot( HSCRIPT hEnt )
 	return pPlayer ? pPlayer->IsBot() : false;
 }
 
-// Users have requested the ability to write to subdirectories of /scriptdata/, so some extra
-// validation will be needed to prevent writing to any locations outside the scriptdata directory
+// Keep script persistence within the game's script-data directory.
 template <size_t maxLenInChars> 
 static bool CreateAndValidateFileLocation( char (&pDest)[maxLenInChars], const char *pFileName )
 {
-	// establish the scriptdata directory
+	// Establish the game's script-data directory.
 	char szFullSCRIPTDATAPath[MAX_PATH];
+#if defined( L4D2 )
+	V_MakeAbsolutePath( szFullSCRIPTDATAPath, sizeof( szFullSCRIPTDATAPath ), "ems" );
+#else
 	V_MakeAbsolutePath( szFullSCRIPTDATAPath, sizeof( szFullSCRIPTDATAPath ), "scriptdata" );
+#endif
 
-	// Get the filepath, clean it up, and make it a subdir of /scriptdata/
+	// Clean up the file path beneath the script-data directory.
 	char szPath[MAX_PATH];
 	char szFullFilePath[MAX_PATH];
 	char szFixedPathName[MAX_PATH];
 	V_FixupPathName( szFixedPathName, sizeof( szFixedPathName ), pFileName );
+#if defined( L4D2 )
+	V_snprintf( szPath, sizeof( szPath ), "ems%c%s", CORRECT_PATH_SEPARATOR, szFixedPathName );
+#else
 	V_snprintf( szPath, sizeof( szPath ), "scriptdata%c%s", CORRECT_PATH_SEPARATOR, szFixedPathName );
+#endif
 	V_MakeAbsolutePath( szFullFilePath, sizeof( szFullFilePath ), szPath );
 
 	// Get the relative path, if possible
 	char szRelativePath[MAX_PATH];
 	bool bSuccess = V_MakeRelativePath( szFullFilePath, szFullSCRIPTDATAPath, szRelativePath, sizeof( szRelativePath ) );
 
-	// Don't allow users to move outside the scriptdata folder
+	// Don't allow users to move outside the script-data directory.
 	if ( !bSuccess || V_stristr( szRelativePath, ".." ) )
 	{
 		Warning( "Invalid file location: %s\n", szFullFilePath );
@@ -1702,23 +1876,33 @@ static bool CreateAndValidateFileLocation( char (&pDest)[maxLenInChars], const c
 	char szDirHierarchy[ MAX_PATH ];
 	V_ExtractFilePath( szPath, szDirHierarchy, sizeof( szDirHierarchy ) );
 	g_pFullFileSystem->CreateDirHierarchy( szDirHierarchy, "DEFAULT_WRITE_PATH" );
+#if defined( L4D2 )
+	V_snprintf( pDest, maxLenInChars, "ems%c%s", CORRECT_PATH_SEPARATOR, szRelativePath );
+#else
 	V_snprintf( pDest, maxLenInChars, "scriptdata%c%s", CORRECT_PATH_SEPARATOR, szRelativePath );
+#endif
 	return true;
 }
 
 static bool Script_StringToFile( const char *pszFileName, const char *pszTmp )
 {
+#if defined( L4D2 )
+	if ( !pszFileName )
+#else
 	if ( !pszFileName || !*pszFileName )
+#endif
 	{
 		Log_Warning( LOG_VScript, "Script_StringToFile: NULL/empty file name\n" );
 		return false;
 	}
 
+#if !defined( L4D2 )
 	if ( V_strstr( pszFileName, "..") )
 	{
 		Log_Warning( LOG_VScript, "StringToFile() file name cannot contain '..'\n" );
 		return false;
 	}
+#endif
 
 	char szFilePath[MAX_PATH];
 	if ( !CreateAndValidateFileLocation( szFilePath, pszFileName ) )
@@ -1731,6 +1915,9 @@ static bool Script_StringToFile( const char *pszFileName, const char *pszTmp )
 		return false;
 	}
 //	int rval = 
+#if defined( L4D2 )
+	if ( pszTmp )
+#endif
 	g_pFullFileSystem->Write( pszTmp, V_strlen(pszTmp)+1, hFile );
 //	DevMsg("Think we wrote to %s rval is %d and size is %d\n", pszFileName, rval, V_strlen(pszTmp)+1 );
 	g_pFullFileSystem->Close( hFile );
@@ -1741,17 +1928,23 @@ static bool Script_StringToFile( const char *pszFileName, const char *pszTmp )
 static char fileReadBuf[ FILE_TO_STRING_BUF_SIZE + 1 ];
 static const char *Script_FileToString( const char *pszFileName )
 {
+#if defined( L4D2 )
+	if ( !pszFileName )
+#else
 	if ( !pszFileName || !*pszFileName )
+#endif
 	{
 		Log_Warning( LOG_VScript, "Script_FileToString: NULL/empty file name\n" );
 		return NULL;
 	}
 
+#if !defined( L4D2 )
 	if ( V_strstr( pszFileName, "..") )
 	{
 		Log_Warning( LOG_VScript, "FileToString() file name cannot contain '..'\n" );
 		return NULL;
 	}
+#endif
 
 	char szFilePath[MAX_PATH];
 	if ( !CreateAndValidateFileLocation( szFilePath, pszFileName ) )
@@ -1916,7 +2109,11 @@ static void Script_ClientPrint( HSCRIPT hPlayer, int iDest, const char *pText )
 
 static void ScriptEmitAmbientSoundOn( const char *soundname, float volume, int soundlevel, int pitch, HSCRIPT entity )
 {
+#if defined( L4D2 )
+	if ( !soundname )
+#else
 	if ( !soundname || !*soundname )
+#endif
 		return;
 
 	CBaseEntity *pEntity = ToEnt( entity );
@@ -1928,7 +2125,11 @@ static void ScriptEmitAmbientSoundOn( const char *soundname, float volume, int s
 
 static void ScriptStopAmbientSoundOn( const char *soundname, HSCRIPT entity )
 {
+#if defined( L4D2 )
+	if ( !soundname )
+#else
 	if ( !soundname || !*soundname )
+#endif
 		return;
 
 	CBaseEntity *pEntity = ToEnt( entity );
@@ -1940,7 +2141,11 @@ static void ScriptStopAmbientSoundOn( const char *soundname, HSCRIPT entity )
 
 static void Script_SetFakeClientConVarValue( HSCRIPT fakeclient, const char *cvar, const char *value )
 {
+#if defined( L4D2 )
+	if ( !cvar )
+#else
 	if ( !cvar || !*cvar )
+#endif
 		return;
 
 	if ( !value )
@@ -1986,6 +2191,9 @@ static void Script_ScreenFade( HSCRIPT hEntity, int r, int g, int b, int a, floa
 
 int Script_PrecacheModel( const char *modelname )
 {
+#if defined( L4D2 )
+	return CBaseEntity::PrecacheModel( modelname );
+#else
 	if ( !modelname || !*modelname )
 	{
 		Log_Warning( LOG_VScript, "Script_PrecacheModel: NULL/empty modelname\n" );
@@ -2000,10 +2208,18 @@ int Script_PrecacheModel( const char *modelname )
 	CBaseEntity::SetAllowPrecache( bPrecacheAllowed );
 
 	return nModelIndex;
+#endif
 }
 
 extern bool g_bPermitDirectSoundPrecache;
 
+#if defined( L4D2 )
+void Script_PrecacheSound( const char *soundname )
+{
+	if ( soundname )
+		CBaseEntity::PrecacheSound( soundname ); // S21C900: no policy toggles.
+}
+#else
 bool Script_PrecacheSound( const char *soundname )
 {
 	if ( !soundname || !*soundname )
@@ -2021,6 +2237,7 @@ bool Script_PrecacheSound( const char *soundname )
 
 	return bRet;
 }
+#endif
 
 bool Script_PrecacheScriptSound( const char *pszScriptSoundName )
 {
@@ -2039,7 +2256,11 @@ bool Script_PrecacheScriptSound( const char *pszScriptSoundName )
 
 bool Script_IsModelPrecached( const char *modelname )
 {
+#if defined( L4D2 )
+	if ( !modelname )
+#else
 	if ( !modelname || !*modelname )
+#endif
 		return false;
 
 	return engine->IsModelPrecached( modelname );
@@ -2047,7 +2268,11 @@ bool Script_IsModelPrecached( const char *modelname )
 
 int Script_GetModelIndex( const char *modelname )
 {
+#if defined( L4D2 )
+	if ( !modelname )
+#else
 	if ( !modelname || !*modelname )
+#endif
 		return false;
 
 	return modelinfo->GetModelIndex( modelname );
@@ -2065,7 +2290,11 @@ HSCRIPT Script_GetListenServerHost()
 
 static float Script_GetSoundDuration( const char *soundname, const char *actormodel )
 {
+#if defined( L4D2 )
+	if ( !soundname )
+#else
 	if ( !soundname || !*soundname )
+#endif
 		return 0.0f;
 
 	return CBaseEntity::GetSoundDuration( soundname, actormodel );
@@ -2073,10 +2302,14 @@ static float Script_GetSoundDuration( const char *soundname, const char *actormo
 
 static bool Script_IsSoundPrecached( const char *soundname )
 {
+#if defined( L4D2 )
+	if ( !soundname )
+#else
 	if ( !soundname || !*soundname )
+#endif
 		return 0.0f;
 
-	return enginesound->IsSoundPrecached( soundname );
+	return CTerrorEngineSoundName( soundname ).IsPrecached();
 }
 
 static void Script_GetLocalTime( HSCRIPT hTable )
@@ -2113,26 +2346,6 @@ static void Script_FadeClientVolume( HSCRIPT hPlayer, float fadePercent, float f
 	}
 }
 
-#if 0
-static void Script_QueueSpeak( HSCRIPT hEntity, const char *pszConcept, float flDelay, const char *pszCriteria )
-{
-	CBaseEntity *pBaseEntity = ToEnt( hEntity );
-	if ( !pBaseEntity )
-		return;
-
-	if ( !pszCriteria )
-		pszCriteria = "";
-
-	AI_CriteriaSet criteria;
-	if ( V_strlen( pszCriteria ) > 0 )
-	{
-		criteria.Merge( pszCriteria );
-	}
-
-	AIConcept_t concept( pszConcept );
-	QueueSpeak( concept, pBaseEntity, flDelay, criteria );
-}
-#endif
 
 #if 0
 static void DoRecordAchievementEvent( const char *pszAchievementname, int iPlayerIndex )
@@ -2160,6 +2373,14 @@ bool DoIncludeScript( const char *pszScript, HSCRIPT hScope )
 {
 	if ( !VScriptRunScript( pszScript, hScope, true ) )
 	{
+#if defined( L4D2 )
+		// Native223FE0: optional missing/empty files are not execution errors.
+		if ( g_bTerrorScriptFileMissing )
+		{
+			DevMsg( "IncludeScript Warning - Script %s either missing or empty\n", pszScript ? pszScript : "unknown" );
+			return false;
+		}
+#endif
 		g_pScriptVM->RaiseException( CFmtStr( "Failed to include script \"%s\"", ( pszScript ) ? pszScript : "unknown" ) );
 		return false;
 	}
@@ -2454,6 +2675,55 @@ int SetMapAsPlayed( void )
 }
 #endif // PORTAL2_PUZZLEMAKER
 
+// Native21E520/21E5D0/21E690: one actual criteria-service instance and buffer.
+#if defined( L4D2 )
+class CScriptResponseCriteria
+{
+public:
+	const char *GetValue( HSCRIPT entity, const char *criterion )
+	{
+		// S21E520: invoke ONLY the entity's virtual508 criteria producer, not
+		// expresser full/derived gather, script conversion, or a cached query.
+		CBaseEntity *outer = entity ? ToEnt( entity ) : NULL;
+		if ( !outer ) return "";
+		AI_CriteriaSet criteria;
+		outer->ModifyOrAppendCriteria( criteria );
+		int index = criteria.FindCriterionIndex( criterion );
+		if ( index < 0 ) return "";
+		Q_strncpy( m_Value, criteria.GetValue( index ), sizeof( m_Value ) );
+		return m_Value;
+	}
+	void GetTable( HSCRIPT entity, HSCRIPT table )
+	{
+		// S21E5D0 returns VOID and mutates the supplied table without clearing.
+		CBaseEntity *outer = entity ? ToEnt( entity ) : NULL;
+		if ( !outer || !table ) return;
+		AI_CriteriaSet criteria;
+		outer->ModifyOrAppendCriteria( criteria );
+		// Fresh native collection uses actual insertion indices. Keep values as
+		// STRINGS, including numerals/empty values; do not use speech conversion.
+		for ( int index = 0; index < criteria.GetCount(); ++index )
+			g_pScriptVM->SetValue( table, criteria.GetName( index ), criteria.GetValue( index ) );
+	}
+	bool HasCriterion( HSCRIPT entity, const char *criterion )
+	{
+		// S21E690: existence, not nonempty text. Gather independently each call.
+		CBaseEntity *outer = entity ? ToEnt( entity ) : NULL;
+		if ( !outer ) return false;
+		AI_CriteriaSet criteria;
+		outer->ModifyOrAppendCriteria( criteria );
+		return criteria.FindCriterionIndex( criterion ) >= 0;
+	}
+private:
+	char m_Value[64]; // Native service storage; invalid reads return literal"".
+};
+BEGIN_SCRIPTDESC_ROOT( CScriptResponseCriteria, "!Used to get response criteria" )
+	DEFINE_SCRIPTFUNC( GetValue, "Arguments: ( entity, criteriaName ) - returns a string" )
+	DEFINE_SCRIPTFUNC( GetTable, "Arguments: ( entity, table ) - returns a table of all criteria" )
+	DEFINE_SCRIPTFUNC( HasCriterion, "Arguments: ( entity, criteriaName ) - returns true if the criterion exists" )
+END_SCRIPTDESC()
+static CScriptResponseCriteria g_ScriptResponseCriteria;
+#endif
 bool VScriptServerInit()
 {
 	VMPROF_START
@@ -2499,6 +2769,9 @@ bool VScriptServerInit()
 				Log_Msg( LOG_VScript, "VSCRIPT: Started VScript virtual machine using script language '%s'\n", g_pScriptVM->GetLanguageName() );
 				g_pScriptVM->SetErrorCallback( &VScriptServerScriptErrorFunc );
 
+#if defined( L4D2 )
+#include "l4d2/vscript/global_registration.inc"
+#else
 				ScriptRegisterFunctionNamed( g_pScriptVM, UTIL_ShowMessageAll, "ShowMessage", "Print a hud message on all clients" );
 				ScriptRegisterFunction( g_pScriptVM, SendToConsole, "Send a string to the console as a command" );
 				ScriptRegisterFunction( g_pScriptVM, SendToServerConsole, "Send a string that gets executed on the server as a ServerCommand. Respects sv_allow_point_servercommand." );
@@ -2609,25 +2882,33 @@ bool VScriptServerInit()
 				ScriptRegisterFunction( g_pScriptVM, SetMapAsPlayed, "Adds the current map to the play order and returns the new index therein. Returns -2 if this is not a known community map." );
 #endif	// PORTAL2_PUZZLEMAKER
 #endif
+#endif // L4D2 native ordinary globals / SDK globals
 
+#if !defined( L4D2 )
 				g_pScriptVM->RegisterAllClasses();
+#endif
 				
 				if ( GameRules() )
 				{
 					GameRules()->RegisterScriptFunctions();
 				}
 
-#ifdef TF_DLL
+#if defined( L4D2 )
+				g_pScriptVM->RegisterInstance( TheDirector, "Director" );
+#endif
+#if defined( TF_DLL ) || defined( L4D2 )
 				g_pScriptVM->RegisterInstance( TheNavMesh, "NavMesh" );
 #endif
 				g_pScriptVM->RegisterInstance( &g_ScriptEntityIterator, "Entities" );
-#if 0
-				g_pScriptVM->RegisterInstance( &g_ScriptPanorama, "Panorama" );
-#endif
-				g_pScriptVM->RegisterInstance( &g_ScriptConvars, "Convars" ) ;
+				g_pScriptVM->RegisterInstance( &g_ScriptConvars, "Convars" );
 				g_pScriptVM->RegisterInstance( &g_ScriptEntityOutputs, "EntityOutputs" );
 				g_pScriptVM->RegisterInstance( &g_ScriptNetPropManager, "NetProps" );
+#if defined( L4D2 )
+				g_pScriptVM->RegisterInstance( &g_ScriptResponseCriteria, "ResponseCriteria" );
+				RegisterSpeechScriptServiceClasses(); // Exact last service: Decider.
+#endif
 
+#if !defined( L4D2 )
 				ScriptVariant_t	vConstantsTable;
 				g_pScriptVM->CreateTable( vConstantsTable );
 #define DECLARE_SCRIPT_CONST_TABLE( x ) ScriptVariant_t	vConstantsTable_##x; g_pScriptVM->CreateTable( vConstantsTable_##x );
@@ -2916,7 +3197,9 @@ DECLARE_SCRIPT_CONST( FButtons, IN_WEAPON2 )
 DECLARE_SCRIPT_CONST( FButtons, IN_BULLRUSH )
 DECLARE_SCRIPT_CONST( FButtons, IN_GRENADE1 )
 DECLARE_SCRIPT_CONST( FButtons, IN_GRENADE2 )
+#if !defined( L4D2 )
 DECLARE_SCRIPT_CONST( FButtons, IN_ATTACK3 )
+#endif
 REGISTER_SCRIPT_CONST_TABLE( FButtons )
 
 DECLARE_SCRIPT_CONST_TABLE( FHideHUD )
@@ -3003,7 +3286,9 @@ DECLARE_SCRIPT_CONST( ESpectatorMode, OBS_MODE_FREEZECAM )
 DECLARE_SCRIPT_CONST( ESpectatorMode, OBS_MODE_FIXED )
 DECLARE_SCRIPT_CONST( ESpectatorMode, OBS_MODE_IN_EYE )
 DECLARE_SCRIPT_CONST( ESpectatorMode, OBS_MODE_CHASE )
+#if !defined( L4D2 )
 DECLARE_SCRIPT_CONST( ESpectatorMode, OBS_MODE_POI )
+#endif
 DECLARE_SCRIPT_CONST( ESpectatorMode, OBS_MODE_ROAMING )
 DECLARE_SCRIPT_CONST( ESpectatorMode, NUM_OBSERVER_MODES )
 REGISTER_SCRIPT_CONST_TABLE( ESpectatorMode )
@@ -3497,14 +3782,23 @@ DECLARE_SCRIPT_CONST_NAMED( Server, "ConstantNamingConvention", "Constants are n
 REGISTER_SCRIPT_CONST_TABLE( Server )
 #endif
 				g_pScriptVM->SetValue( "Constants", vConstantsTable );
+#endif
 
 				if ( scriptLanguage == SL_SQUIRREL )
 				{
-					g_pScriptVM->Run( g_Script_vscript_server );
+	#if defined( L4D2 )
+				g_pScriptVM->Run( g_Script_vscript_server_l4d2 );
+#else
+				g_pScriptVM->Run( g_Script_vscript_server );
+#endif
 				}
 				g_VScriptGameEventListener.Init();
 
 				VScriptRunScript( "mapspawn", false );
+#if defined( L4D2 )
+				VScriptRunScriptAddons( "mapspawn", NULL, false );
+				InitSpeechScriptBridge();
+#endif
 
 				if ( script_connect_debugger_on_mapspawn.GetBool() )
 				{
@@ -3535,6 +3829,13 @@ void VScriptServerTerm()
 	{
 		if( g_pScriptVM )
 		{
+#if defined( L4D2 )
+			// Native21F220: release Director VM references before speech/VM teardown.
+			TheDirector->ReleaseScriptHandles();
+			ShutdownSpeechScriptBridge();
+			VScriptReleaseNavScriptInstances();
+			VScriptReleaseContainerHelpers();
+#endif
 			scriptmanager->DestroyVM( g_pScriptVM );
 			g_pScriptVM = NULL;
 		}
@@ -3587,7 +3888,12 @@ void VScriptServerToggleGameDebug()
 	g_pScriptVM->ReleaseFunction( hFunction );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_attach_debugger, "Connect the vscript VM to the script debugger", 0x00004004 )
+#else
 CON_COMMAND_F( script_attach_debugger, "Connect the vscript VM to the script debugger", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3600,7 +3906,12 @@ CON_COMMAND_F( script_attach_debugger, "Connect the vscript VM to the script deb
 	g_pScriptVM->ConnectDebugger();
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_debug, "Toggle the in-game script debug features", 0x00004004 )
+#else
 CON_COMMAND_F( script_debug, "Toggle the in-game script debug features", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3619,7 +3930,12 @@ CON_COMMAND_F( script_debug, "Toggle the in-game script debug features", FCVAR_C
 	VScriptServerToggleGameDebug();
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_add_watch, "Add a watch to the game debug overlay", 0x00004004 )
+#else
 CON_COMMAND_F( script_add_watch, "Add a watch to the game debug overlay", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3634,7 +3950,12 @@ CON_COMMAND_F( script_add_watch, "Add a watch to the game debug overlay", FCVAR_
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugAddWatch( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_remove_watch, "Remove a watch from the game debug overlay", 0x00004004 )
+#else
 CON_COMMAND_F( script_remove_watch, "Remove a watch from the game debug overlay", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3649,7 +3970,12 @@ CON_COMMAND_F( script_remove_watch, "Remove a watch from the game debug overlay"
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugRemoveWatch( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_add_watch_pattern, "Add a watch to the game debug overlay", 0x00004004 )
+#else
 CON_COMMAND_F( script_add_watch_pattern, "Add a watch to the game debug overlay", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3664,7 +3990,12 @@ CON_COMMAND_F( script_add_watch_pattern, "Add a watch to the game debug overlay"
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugAddWatchPattern( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_remove_watch_pattern, "Remove a watch from the game debug overlay", 0x00004004 )
+#else
 CON_COMMAND_F( script_remove_watch_pattern, "Remove a watch from the game debug overlay", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3679,7 +4010,12 @@ CON_COMMAND_F( script_remove_watch_pattern, "Remove a watch from the game debug 
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugRemoveWatchPattern( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_add_debug_filter, "Add a filter to the game debug overlay", 0x00004004 )
+#else
 CON_COMMAND_F( script_add_debug_filter, "Add a filter to the game debug overlay", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3694,7 +4030,12 @@ CON_COMMAND_F( script_add_debug_filter, "Add a filter to the game debug overlay"
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugAddTextFilter( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_remove_debug_filter, "Remove a filter from the game debug overlay", 0x00004004 )
+#else
 CON_COMMAND_F( script_remove_debug_filter, "Remove a filter from the game debug overlay", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3709,7 +4050,12 @@ CON_COMMAND_F( script_remove_debug_filter, "Remove a filter from the game debug 
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugRemoveTextFilter( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_trace_enable, "Turn on a particular trace output by file or function name", 0x00004004 )
+#else
 CON_COMMAND_F( script_trace_enable, "Turn on a particular trace output by file or function name", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3730,7 +4076,12 @@ CON_COMMAND_F( script_trace_enable, "Turn on a particular trace output by file o
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugAddTrace( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_trace_disable, "Turn off a particular trace output by file or function name", 0x00004004 )
+#else
 CON_COMMAND_F( script_trace_disable, "Turn off a particular trace output by file or function name", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3751,7 +4102,12 @@ CON_COMMAND_F( script_trace_disable, "Turn off a particular trace output by file
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugRemoveTrace( \"%s\" )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_trace_enable_key, "Turn on a particular trace output by table/instance", 0x00004004 )
+#else
 CON_COMMAND_F( script_trace_enable_key, "Turn on a particular trace output by table/instance", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3772,7 +4128,12 @@ CON_COMMAND_F( script_trace_enable_key, "Turn on a particular trace output by ta
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugAddTrace( %s )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_trace_disable_key, "Turn off a particular trace output by table/instance", 0x00004004 )
+#else
 CON_COMMAND_F( script_trace_disable_key, "Turn off a particular trace output by table/instance", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3793,7 +4154,12 @@ CON_COMMAND_F( script_trace_disable_key, "Turn off a particular trace output by 
 	g_pScriptVM->Run( CFmtStr( "ScriptDebugRemoveTrace( %s )", pszScript ) );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_trace_enable_all, "Turn on all trace output", 0x00004004 )
+#else
 CON_COMMAND_F( script_trace_enable_all, "Turn on all trace output", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3807,7 +4173,12 @@ CON_COMMAND_F( script_trace_enable_all, "Turn on all trace output", FCVAR_CHEAT 
 	g_pScriptVM->Run( "ScriptDebugTraceAll( true )" );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_trace_disable_all, "Turn off all trace output", 0x00004004 )
+#else
 CON_COMMAND_F( script_trace_disable_all, "Turn off all trace output", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3821,7 +4192,12 @@ CON_COMMAND_F( script_trace_disable_all, "Turn off all trace output", FCVAR_CHEA
 	g_pScriptVM->Run( "ScriptDebugTraceAll( false )" );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_clear_watches, "Clear all watches from the game debug overlay", 0x00004004 )
+#else
 CON_COMMAND_F( script_clear_watches, "Clear all watches from the game debug overlay", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3835,7 +4211,12 @@ CON_COMMAND_F( script_clear_watches, "Clear all watches from the game debug over
 	g_pScriptVM->Run( "ScriptDebugClearWatches()" );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_find, "Find a key in the VM ", 0x00004004 )
+#else
 CON_COMMAND_F( script_find, "Find a key in the VM ", FCVAR_CHEAT )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3860,7 +4241,12 @@ CON_COMMAND_F( script_find, "Find a key in the VM ", FCVAR_CHEAT )
 	g_pScriptVM->ReleaseFunction( hFunction );
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_reload_code, "Execute a vscript file, replacing existing functions with the functions in the run script" , 0x00004004)
+#else
 CON_COMMAND( script_reload_code, "Execute a vscript file, replacing existing functions with the functions in the run script" )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3880,6 +4266,7 @@ CON_COMMAND( script_reload_code, "Execute a vscript file, replacing existing fun
 	VScriptServerReplaceClosures( args[1], NULL, true );
 }
 
+#if !defined( L4D2 )
 CON_COMMAND( script_reload_entity_code, "Execute all of this entity's VScripts, replacing existing functions with the functions in the run scripts" )
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
@@ -3920,8 +4307,14 @@ CON_COMMAND( script_reload_entity_code, "Execute all of this entity's VScripts, 
 		}
 	}
 }
+#endif
 
+
+#if defined( L4D2 )
+CON_COMMAND_F( script_reload_think, "Execute an activation script, replacing existing functions with the functions in the run script" , 0x00004004)
+#else
 CON_COMMAND( script_reload_think, "Execute an activation script, replacing existing functions with the functions in the run script" )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3960,7 +4353,9 @@ public:
 	// Inherited from IAutoServerSystem
 	virtual void LevelInitPreEntity( void )
 	{
+#if !defined( L4D2 )
 		ClearScriptGameEventListeners();
+#endif
 		g_ScriptErrorScreenOverlay.Clear();
 
 		// <sergiy> Note: we may need script VM garbage collection at this point in the future. Currently, VM does not persist 
@@ -3979,7 +4374,9 @@ public:
 
 	virtual void LevelShutdownPostEntity( void )
 	{
+#if !defined( L4D2 )
 		ClearScriptGameEventListeners();
+#endif
 		VScriptServerTerm();
 	}
 
@@ -4166,16 +4563,19 @@ void *CBaseEntityScriptInstanceHelper::BindOnRead( HSCRIPT hInstance, void *pOld
 
 CBaseEntityScriptInstanceHelper g_BaseEntityScriptInstanceHelper;
 
-#ifdef TF_DLL
+#if defined( TF_DLL ) || defined( L4D2 )
 bool CNavAreaScriptInstanceHelper::ToString( void *p, char *pBuf, int bufSize )	
 {
-	CTFNavArea *pArea = (CTFNavArea *)p;
+	CNavArea *pArea = static_cast< CNavArea * >( p );
 	V_snprintf( pBuf, bufSize, "([%u] Area)", pArea->GetID() );
 	return true;
 }
 
 CNavAreaScriptInstanceHelper g_NavAreaScriptInstanceHelper;
 
+#endif
+
+#ifdef TF_DLL
 bool INextBotComponentScriptInstanceHelper::ToString( void *p, char *pBuf, int bufSize )	
 {
 	INextBotComponent *pNextBotComponent = (INextBotComponent *)p;
@@ -4188,3 +4588,5 @@ bool INextBotComponentScriptInstanceHelper::ToString( void *p, char *pBuf, int b
 
 INextBotComponentScriptInstanceHelper g_NextBotComponentScriptInstanceHelper;
 #endif
+
+#include "vscript_server_console_server_callbacks.inc"

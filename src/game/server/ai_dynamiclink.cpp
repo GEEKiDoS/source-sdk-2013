@@ -25,7 +25,9 @@
 
 //-----------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS(info_node_link_controller, CAI_DynamicLinkController);
+#endif
 
 BEGIN_DATADESC( CAI_DynamicLinkController )
 
@@ -171,7 +173,9 @@ void CAI_DynamicLinkController::InputSetInvert( inputdata_t &inputdata )
 
 //-----------------------------------------------------------------------------
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS(info_node_link, CAI_DynamicLink);
+#endif
 
 BEGIN_DATADESC( CAI_DynamicLink )
 
@@ -579,7 +583,9 @@ CAI_DynamicLink::~CAI_DynamicLink(void) {
 	}
 }
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS(info_radial_link_controller, CAI_RadialLinkController);
+#endif
 
 BEGIN_DATADESC( CAI_RadialLinkController )
 DEFINE_KEYFIELD( m_flRadius, FIELD_FLOAT, "radius" ),

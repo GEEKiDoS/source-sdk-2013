@@ -285,7 +285,12 @@ static int HudElementCompletion( const char *partial, char commands[ COMMAND_COM
 	return current;
 }
 
+
+#if defined( L4D2 )
+CON_COMMAND_F_COMPLETION( cl_animationinfo, "Hud element to examine.", 0x00000008, HudElementCompletion )
+#else
 CON_COMMAND_F_COMPLETION( cl_animationinfo, "Hud element to examine.", 0, HudElementCompletion )
+#endif
 {
 	CHudAnimationInfo *info = GET_HUDELEMENT( CHudAnimationInfo );
 	Assert( info );

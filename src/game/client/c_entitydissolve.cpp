@@ -24,11 +24,13 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#ifndef L4D2
 CLIENTEFFECT_REGISTER_BEGIN( PrecacheEffectBuild )
 CLIENTEFFECT_MATERIAL( "effects/tesla_glow_noz" )
 CLIENTEFFECT_MATERIAL( "effects/spark" )
 CLIENTEFFECT_MATERIAL( "effects/combinemuzzle2" )
 CLIENTEFFECT_REGISTER_END()
+#endif // !L4D2: native resource registry owns this registration.
 
 //-----------------------------------------------------------------------------
 // Networking

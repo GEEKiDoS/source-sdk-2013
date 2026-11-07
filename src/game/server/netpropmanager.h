@@ -59,6 +59,9 @@ private:
 		int m_nElements;		/**< The number of elements */
 		bool m_bIsSendProp;		/**< Is this a SendProp (if false, it is a DataMap) */
 		bool m_IsPropValid;		/**< Is the prop data in the struct valid? */
+#if defined( L4D2 )
+		bool m_bNativeRawString;	/**< Native string_t classification over raw char storage. */
+#endif
 		int m_nPropLen;			/**< The length of the prop (applies to strings) */
 		int m_nProps;			/**< The number of props in an array */
 	};

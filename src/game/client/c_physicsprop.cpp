@@ -16,15 +16,33 @@
 #include "c_physicsprop.h"
 #include "tier0/vprof.h"
 #include "ivrenderview.h"
+#if defined( L4D2 )
+#include "studio.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 IMPLEMENT_CLIENTCLASS_DT(C_PhysicsProp, DT_PhysicsProp, CPhysicsProp)
 	RecvPropBool( RECVINFO( m_bAwake ) ),
+#if defined( L4D2 )
+	RecvPropBool( RECVINFO( m_hasTankGlow ) ),
+	RecvPropBool( RECVINFO( m_isCarryable ) ),
+	RecvPropInt( RECVINFO( m_spawnflags ) ),
+#endif
 END_RECV_TABLE()
 
-ConVar r_PhysPropStaticLighting( "r_PhysPropStaticLighting", "1" );
+ConVar r_PhysPropStaticLighting( "r_PhysPropStaticLighting", 
+#if defined( L4D2 )
+	"0"
+#else
+	"1"
+#endif
+
+#if defined( L4D2 )
+	, 0x00080008
+#endif
+ );
 
 
 //-----------------------------------------------------------------------------
@@ -48,8 +66,63 @@ C_PhysicsProp::~C_PhysicsProp( void )
 
 
 // @MULTICORE (toml 9/18/2006): this visualization will need to be implemented elsewhere
-ConVar r_visualizeproplightcaching( "r_visualizeproplightcaching", "0" );
+ConVar r_visualizeproplightcaching( "r_visualizeproplightcaching", "0"
+#if defined( L4D2 )
+	, 0x0000000A
+#endif
+ );
 
+#if defined( L4D2 )
+// Original engine E1AFFC0 maps studio-header flags in E0E9430. The target
+// has no r_staticlight_streams engine control; Main selects its default1
+// branch, not a half-functional game-owned renderer setting.
+static bool TerrorModelSupportsStaticLighting( const model_t *model )
+{
+	if ( !model || modelinfo->GetModelType( model ) != mod_studio )
+		return false;
+	const studiohdr_t *header = modelinfo->GetStudiomodel( model );
+	return header && ( header->flags & STUDIOHDR_FLAGS_STATIC_PROP ) &&
+		!( header->flags & STUDIOHDR_FLAGS_USES_BUMPMAPPING );
+}
+
+void C_PhysicsProp::OnDataChanged( DataUpdateType_t type )
+{
+	BaseClass::OnDataChanged( type );
+	m_bStaticLightingEligible = TerrorModelSupportsStaticLighting( GetModel() );
+	if ( m_bStaticLightingEligible )
+		CreateModelInstance();
+}
+
+// C86800: ineligible models do not bake, flag, tint, or advance awake history.
+bool C_PhysicsProp::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
+{
+	if ( m_bStaticLightingEligible && r_PhysPropStaticLighting.GetBool() )
+	{
+		if ( m_bAwakeLastTime != m_bAwake )
+		{
+			if ( m_bAwakeLastTime && !m_bAwake )
+			{
+				if ( !modelrender->RecomputeStaticLighting( GetModelInstance() ) )
+					return false;
+				if ( r_visualizeproplightcaching.GetBool() )
+				{
+					float color[] = { 0.0f, 1.0f, 0.0f, 1.0f };
+					render->SetColorModulation( color );
+				}
+			}
+			else if ( r_visualizeproplightcaching.GetBool() )
+			{
+				float color[] = { 1.0f, 0.0f, 0.0f, 1.0f };
+				render->SetColorModulation( color );
+			}
+		}
+		if ( !m_bAwake )
+			pInfo->flags |= STUDIO_STATIC_LIGHTING;
+		m_bAwakeLastTime = m_bAwake;
+	}
+	return true;
+}
+#else
 //-----------------------------------------------------------------------------
 // Purpose: Draws the object
 // Input  : flags - 
@@ -93,3 +166,34 @@ bool C_PhysicsProp::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
 
 	return true;
 }
+#endif
+
+#if defined( L4D2 )
+static ConVar cl_glow_physics_props( "cl_glow_physics_props", "0", 
+#if defined( L4D2 )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+
+// Whole C86590. Native2408 wire maps to the ONE existing client root spawnflags
+// storage, not a duplicated derived field or invented ObjectCaps provider.
+int C_PhysicsProp::ObjectCaps()
+{
+	int caps = C_BaseEntity::ObjectCaps();
+	if ( GetSpawnFlags() & 0x8000 ) caps |= 0x2000;
+	if ( m_hasTankGlow ) return caps | 0x1000;
+	if ( m_isCarryable ) return caps | 0x0210;
+	return caps;
+}
+
+// Whole C867C0. Both bools are received from the actual paired server writers;
+// this predicate is NOT IsPotentiallyUseable360/registration or awake/static.
+bool C_PhysicsProp::IsGlowUseTarget()
+{
+	if ( m_hasTankGlow ) return true;
+	return ( ObjectCaps() & 0x2000 ) != 0 || cl_glow_physics_props.GetBool();
+}
+
+#endif

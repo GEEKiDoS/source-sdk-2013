@@ -17,35 +17,142 @@
 #include "debugoverlay_shared.h"
 #include "cam_thirdperson.h"
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/gamerules/terror_mode.h"
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "l4d2/gamerules/terror_mode.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
 
 //-------------------------------------------------- Global Variables
 
+#if !defined( L4D2 )
 static ConVar cam_command( "cam_command", "0", FCVAR_CHEAT | FCVAR_CHEAT);	 // tells camera to go to thirdperson
-static ConVar cam_snapto( "cam_snapto", "0", FCVAR_ARCHIVE | FCVAR_CHEAT);	 // snap to thirdperson view
-static ConVar cam_ideallag( "cam_ideallag", "4.0", FCVAR_ARCHIVE| FCVAR_CHEAT, "Amount of lag used when matching offset to ideal angles in thirdperson view" );
-static ConVar cam_idealdelta( "cam_idealdelta", "4.0", FCVAR_ARCHIVE| FCVAR_CHEAT, "Controls the speed when matching offset to ideal angles in thirdperson view" );
-ConVar cam_idealyaw( "cam_idealyaw", "0", FCVAR_ARCHIVE| FCVAR_CHEAT );	 // thirdperson yaw
-ConVar cam_idealpitch( "cam_idealpitch", "0", FCVAR_ARCHIVE | FCVAR_CHEAT  );	 // thirperson pitch
-ConVar cam_idealdist( "cam_idealdist", "150", FCVAR_ARCHIVE | FCVAR_CHEAT );	 // thirdperson distance
+#endif
+static ConVar cam_snapto( "cam_snapto", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE | FCVAR_CHEAT
+#endif
+);	 // snap to thirdperson view
+static ConVar cam_ideallag( "cam_ideallag", "4.0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+, "Amount of lag used when matching offset to ideal angles in thirdperson view" );
+static ConVar cam_idealdelta( "cam_idealdelta", "4.0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+, "Controls the speed when matching offset to ideal angles in thirdperson view" );
+ConVar cam_idealyaw( "cam_idealyaw", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+ );	 // thirdperson yaw
+ConVar cam_idealpitch( "cam_idealpitch", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE | FCVAR_CHEAT
+#endif
+  );	 // thirperson pitch
+ConVar cam_idealdist( "cam_idealdist", "150", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE | FCVAR_CHEAT
+#endif
+ );	 // thirdperson distance
 ConVar cam_idealdistright( "cam_idealdistright", "0", FCVAR_ARCHIVE | FCVAR_CHEAT );	 // thirdperson distance
 ConVar cam_idealdistup( "cam_idealdistup", "0", FCVAR_ARCHIVE | FCVAR_CHEAT );	 // thirdperson distance
-static ConVar cam_collision( "cam_collision", "1", FCVAR_ARCHIVE | FCVAR_CHEAT, "When in thirdperson and cam_collision is set to 1, an attempt is made to keep the camera from passing though walls." );
-static ConVar cam_showangles( "cam_showangles", "0", FCVAR_CHEAT, "When in thirdperson, print viewangles/idealangles/cameraoffsets to the console." );
-static ConVar c_maxpitch( "c_maxpitch", "90", FCVAR_ARCHIVE| FCVAR_CHEAT );
-static ConVar c_minpitch( "c_minpitch", "0", FCVAR_ARCHIVE| FCVAR_CHEAT );
-static ConVar c_maxyaw( "c_maxyaw",   "135", FCVAR_ARCHIVE | FCVAR_CHEAT);
-static ConVar c_minyaw( "c_minyaw",   "-135", FCVAR_ARCHIVE| FCVAR_CHEAT );
-static ConVar c_maxdistance( "c_maxdistance",   "200", FCVAR_ARCHIVE| FCVAR_CHEAT );
-static ConVar c_mindistance( "c_mindistance",   "30", FCVAR_ARCHIVE| FCVAR_CHEAT );
-static ConVar c_orthowidth( "c_orthowidth",   "100", FCVAR_ARCHIVE| FCVAR_CHEAT );
-static ConVar c_orthoheight( "c_orthoheight",   "100", FCVAR_ARCHIVE | FCVAR_CHEAT );
+static ConVar cam_collision( "cam_collision", "1", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE | FCVAR_CHEAT
+#endif
+, "When in thirdperson and cam_collision is set to 1, an attempt is made to keep the camera from passing though walls." );
+static ConVar cam_showangles( "cam_showangles", "0", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+, "When in thirdperson, print viewangles/idealangles/cameraoffsets to the console." );
+static ConVar c_maxpitch( "c_maxpitch", "90", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+ );
+static ConVar c_minpitch( "c_minpitch", "0", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+ );
+static ConVar c_maxyaw( "c_maxyaw",   "135", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE | FCVAR_CHEAT
+#endif
+);
+static ConVar c_minyaw( "c_minyaw",   "-135", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+ );
+static ConVar c_maxdistance( "c_maxdistance",   "200", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+ );
+static ConVar c_mindistance( "c_mindistance",   "30", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+ );
+static ConVar c_orthowidth( "c_orthowidth",   "100", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE| FCVAR_CHEAT
+#endif
+ );
+static ConVar c_orthoheight( "c_orthoheight",   "100", 
+#if defined( L4D2 )
+	0x00000088
+#else
+	FCVAR_ARCHIVE | FCVAR_CHEAT
+#endif
+ );
 
 static kbutton_t cam_pitchup, cam_pitchdown, cam_yawleft, cam_yawright;
 static kbutton_t cam_in, cam_out; // -- "cam_move" is unused
 
 extern ConVar cl_thirdperson;
+#if defined( L4D2 )
+extern ConVar c_thirdpersonshoulder;
+#endif
 
 
 // API Wrappers
@@ -58,11 +165,13 @@ CAM_ToThirdPerson
 */
 void CAM_ToThirdPerson(void)
 {
+#if !defined( L4D2 )
 	if ( cl_thirdperson.GetBool() == false )
 	{
 		g_ThirdPersonManager.SetDesiredCameraOffset( Vector( cam_idealdist.GetFloat(), cam_idealdistright.GetFloat(), cam_idealdistup.GetFloat() ) );
 		g_ThirdPersonManager.SetOverridingThirdPerson( true );
 	}
+#endif
 
 	input->CAM_ToThirdPerson();
 
@@ -99,6 +208,7 @@ CAM_ToFirstPerson
 */
 void CAM_ToFirstPerson(void) 
 { 
+#if !defined( L4D2 )
 	C_BasePlayer *localPlayer = C_BasePlayer::GetLocalPlayer();
 	if ( localPlayer && !localPlayer->CanUseFirstPersonCommand() )
 		return;
@@ -107,14 +217,23 @@ void CAM_ToFirstPerson(void)
 	{
 		g_ThirdPersonManager.SetOverridingThirdPerson( false );
 	}
+#endif
 
 	input->CAM_ToFirstPerson();
+#if defined( L4D2 )
+	C_BasePlayer *localPlayer = C_BasePlayer::GetLocalPlayer();
+#endif
 
 	// Let the local player know
 	if ( localPlayer )
 	{
 		localPlayer->ThirdPersonSwitch( false );
 	}
+#if defined( L4D2 )
+	// C12DBF0 retires shoulder mode and restores the ordinary ideal distance.
+	c_thirdpersonshoulder.SetValue( 0 );
+	cam_idealdist.SetValue( cam_idealdist.GetDefault() );
+#endif
 }
 
 /*
@@ -234,6 +353,10 @@ CAM_Think
 
 ==============================
 */
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#pragma fp_contract( off )
+#endif
 void CInput::CAM_Think( void )
 {
 	VPROF("CAM_Think");
@@ -248,7 +371,11 @@ void CInput::CAM_Think( void )
 	float flSensitivity;
 	QAngle viewangles;
 	
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	switch( m_nCameraCommand )
+#else
 	switch( cam_command.GetInt() )
+#endif
 	{
 	case CAM_COMMAND_TOTHIRDPERSON:
 		CAM_ToThirdPerson();
@@ -263,10 +390,29 @@ void CInput::CAM_Think( void )
 		break;
 	}
 
+#if defined( L4D2 )
+	// C12E667 uses the mode-gated query, not the raw camera flag.
+	if ( !CAM_IsThirdPerson() )
+		return;
+	static ConVarRef svCheats( "sv_cheats" );
+	if ( svCheats.IsValid() && !svCheats.GetBool() &&
+		( g_TerrorModes.IsPlayerControlledZombies() || !c_thirdpersonshoulder.GetBool() ) )
+	{
+		CAM_ToFirstPerson();
+		return;
+	}
+	C_BasePlayer *localPlayer = C_BasePlayer::GetLocalPlayer();
+	if ( localPlayer && localPlayer->m_lifeState != LIFE_ALIVE )
+	{
+		CAM_ToFirstPerson();
+		return;
+	}
+#else
 	g_ThirdPersonManager.Update();
 
 	if( !m_fCameraInThirdPerson )
 		return;
+#endif
 
 	// In Maya-mode
 	if ( Is_CAM_ThirdPerson_MayaMode() )
@@ -545,6 +691,30 @@ void CInput::CAM_Think( void )
 	// move the camera closer to the player if it hit something
 	if ( cam_collision.GetInt() )
 	{
+#if defined( L4D2 )
+		// C12F03D..F195: trace the smoothed camera distance with a nine-unit
+		// scenery hull; do not use the SDK desired-offset/fraction owner.
+		C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+		if ( player )
+		{
+			Vector origin = player->GetLocalOrigin();
+			const Vector offset = player->GetViewOffset();
+			origin.x = origin.x + offset.x;
+			origin.y = offset.y + origin.y;
+			origin.z = offset.z + origin.z;
+			QAngle angles( camOffset[PITCH], camOffset[YAW], 0.0f );
+			Vector forward;
+			AngleVectors( angles, &forward );
+			const Vector destination( origin.x - camOffset[DIST] * forward.x,
+				origin.y - forward.y * camOffset[DIST], origin.z - forward.z * camOffset[DIST] );
+			CTraceFilterNoNPCsOrPlayer filter( player, COLLISION_GROUP_NONE );
+			trace_t trace;
+			UTIL_TraceHull( origin, destination, Vector( -9.0f, -9.0f, -9.0f ), Vector( 9.0f, 9.0f, 9.0f ),
+				0x00004081u, &filter, &trace );
+			if ( trace.fraction < 1.0f )
+				camOffset[DIST] = camOffset[DIST] * trace.fraction;
+		}
+#else
 		QAngle desiredCamAngles = QAngle( camOffset[ PITCH ], camOffset[ YAW ], camOffset[ DIST ] );
 
 		if ( g_ThirdPersonManager.IsOverridingThirdPerson() == false )
@@ -553,7 +723,8 @@ void CInput::CAM_Think( void )
 		}
 
 		g_ThirdPersonManager.PositionCamera( C_BasePlayer::GetLocalPlayer(), desiredCamAngles );
-    }
+#endif
+	}
 
 	if ( cam_showangles.GetInt() )
 	{
@@ -641,11 +812,30 @@ void CInput::CAM_CameraThirdThink( void )
 
 	if ( pLocalPlayer )
 	{
+#if defined( L4D2 )
+		// C12F2A0 consumes the caller's custom hull and current lagged distance.
+		Vector origin = pLocalPlayer->GetLocalOrigin();
+		const Vector offset = pLocalPlayer->GetViewOffset();
+		origin.x = offset.x + origin.x;
+		origin.y = offset.y + origin.y;
+		origin.z = offset.z + origin.z;
+		QAngle angles( vecCamOffset[PITCH], vecCamOffset[YAW], 0.0f );
+		Vector forward;
+		AngleVectors( angles, &forward );
+		const Vector destination( origin.x - vecCamOffset[DIST] * forward.x,
+			origin.y - forward.y * vecCamOffset[DIST], origin.z - forward.z * vecCamOffset[DIST] );
+		trace_t trace;
+		UTIL_TraceHull( origin, destination, m_pCameraThirdData->m_vecHullMin, m_pCameraThirdData->m_vecHullMax,
+			0x0200400Bu, pLocalPlayer, COLLISION_GROUP_NONE, &trace );
+		if ( trace.fraction < 1.0f )
+			vecCamOffset[DIST] = vecCamOffset[DIST] * trace.fraction;
+#else
 		QAngle desiredCamAngles = QAngle( vecCamOffset[ PITCH ], vecCamOffset[ YAW ], vecCamOffset[DIST] );
 	
 		g_ThirdPersonManager.PositionCamera( C_BasePlayer::GetLocalPlayer(), desiredCamAngles );
 		
 	//	vecCamOffset = g_ThirdPersonManager.GetCameraOffsetAngles();
+#endif
 	}
 
 	ClampRange180( vecCamOffset[PITCH] );
@@ -653,6 +843,9 @@ void CInput::CAM_CameraThirdThink( void )
 
 	g_ThirdPersonManager.SetCameraOffsetAngles( vecCamOffset );
 }
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 void CAM_PitchUpDown( const CCommand &args ) { KeyDown( &cam_pitchup, args[1] ); }
 void CAM_PitchUpUp( const CCommand &args ) { KeyUp( &cam_pitchup, args[1] ); }
@@ -686,7 +879,11 @@ void CInput::CAM_ToThirdPerson(void)
 		g_ThirdPersonManager.SetCameraOffsetAngles( Vector( viewangles[ PITCH ], viewangles[ YAW ], CAM_MIN_DIST ) );
 	}
 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	m_nCameraCommand = CAM_COMMAND_NONE;
+#else
 	cam_command.SetValue( 0 );
+#endif
 }
 
 /*
@@ -697,17 +894,25 @@ CAM_ToFirstPerson
 */
 void CInput::CAM_ToFirstPerson(void)
 {
+#if !defined( L4D2 )
 	g_ThirdPersonManager.SetDesiredCameraOffset( vec3_origin );
+#endif
 
 	m_fCameraInThirdPerson = false;
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	m_nCameraCommand = CAM_COMMAND_NONE;
+#else
 	cam_command.SetValue( 0 );
+#endif
 
+#if !defined( L4D2 )
 	// Let the local player know
 	C_BasePlayer *localPlayer = C_BasePlayer::GetLocalPlayer();
 	if ( localPlayer )
 	{
 		localPlayer->ThirdPersonSwitch( false );
 	}
+#endif
 }
 
 /*
@@ -744,7 +949,11 @@ void CInput::CAM_ToOrthographic(void)
 {
 	m_fCameraInThirdPerson = false;
 	m_CameraIsOrthographic = true;
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	m_nCameraCommand = CAM_COMMAND_NONE;
+#else
 	cam_command.SetValue( 0 );
+#endif
 }
 
 /*
@@ -877,10 +1086,28 @@ CAM_IsThirdPerson
 
 ==============================
 */
+#if defined( L4D2 )
+int CInput::CAM_IsThirdPerson( void )
+{
+#if defined( L4D2 )
+	// C1012E056 calls C27C640; TEST AL at E05B / JZ E05D reaches the
+	// camera-state read only when the mode query isFALSE. TRUE falls through
+	// XOR EAX,EAX at E05F and returns0. Reuse M6's real mode-description owner.
+	if ( g_TerrorModes.IsPlayerControlledZombies() )
+		return 0;
+	// Main-approved single-slot mapping: native C131470(-1) resolves active
+	// slot504; the SDK has one genuine slot0 and one existing camera bool.
+	// Keep the SDK no-argument ABI, state and producers, with no fake slot,
+	// flag emulation or engine hook. Other games retain their stock result.
+#endif
+	return m_fCameraInThirdPerson;
+}
+#else
 int CInput::CAM_IsThirdPerson( void )
 {
 	return m_fCameraInThirdPerson;
 }
+#endif
 
 /*
 ==============================
@@ -893,34 +1120,124 @@ int CInput::CAM_InterceptingMouse( void )
 	return m_fCameraInterceptingMouse;
 }
 
-static ConCommand startpitchup( "+campitchup", CAM_PitchUpDown );
-static ConCommand endpitcup( "-campitchup", CAM_PitchUpUp );
-static ConCommand startpitchdown( "+campitchdown", CAM_PitchDownDown );
-static ConCommand endpitchdown( "-campitchdown", CAM_PitchDownUp );
-static ConCommand startcamyawleft( "+camyawleft", CAM_YawLeftDown );
-static ConCommand endcamyawleft( "-camyawleft", CAM_YawLeftUp );
-static ConCommand startcamyawright( "+camyawright", CAM_YawRightDown );
-static ConCommand endcamyawright( "-camyawright", CAM_YawRightUp );
-static ConCommand startcamin( "+camin", CAM_InDown );
-static ConCommand endcamin( "-camin", CAM_InUp );
-static ConCommand startcamout( "+camout", CAM_OutDown );
-static ConCommand camout( "-camout", CAM_OutUp );
-static ConCommand thirdperson_mayamode( "thirdperson_mayamode", ::CAM_ToThirdPerson_MayaMode, "Switch to thirdperson Maya-like camera controls.", FCVAR_CHEAT );
+static ConCommand startpitchup( "+campitchup", CAM_PitchUpDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand endpitcup( "-campitchup", CAM_PitchUpUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand startpitchdown( "+campitchdown", CAM_PitchDownDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand endpitchdown( "-campitchdown", CAM_PitchDownUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand startcamyawleft( "+camyawleft", CAM_YawLeftDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand endcamyawleft( "-camyawleft", CAM_YawLeftUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand startcamyawright( "+camyawright", CAM_YawRightDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand endcamyawright( "-camyawright", CAM_YawRightUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand startcamin( "+camin", CAM_InDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand endcamin( "-camin", CAM_InUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand startcamout( "+camout", CAM_OutDown
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand camout( "-camout", CAM_OutUp
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand thirdperson_mayamode( "thirdperson_mayamode", ::CAM_ToThirdPerson_MayaMode, "Switch to thirdperson Maya-like camera controls.", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 // TF allows servers to push people into first/thirdperson, for mods
 #ifdef TF_CLIENT_DLL
 static ConCommand thirdperson( "thirdperson", ::CAM_ToThirdPerson, "Switch to thirdperson camera.", FCVAR_CHEAT | FCVAR_SERVER_CAN_EXECUTE );
 static ConCommand firstperson( "firstperson", ::CAM_ToFirstPerson, "Switch to firstperson camera.", FCVAR_SERVER_CAN_EXECUTE );
 #else
-static ConCommand thirdperson( "thirdperson", ::CAM_ToThirdPerson, "Switch to thirdperson camera.", FCVAR_CHEAT );
-static ConCommand firstperson( "firstperson", ::CAM_ToFirstPerson, "Switch to firstperson camera." );
+static ConCommand thirdperson( "thirdperson", ::CAM_ToThirdPerson, "Switch to thirdperson camera.", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
 #endif
-static ConCommand camortho( "camortho", ::CAM_ToOrthographic, "Switch to orthographic camera.", FCVAR_CHEAT );
-static ConCommand startcammousemove( "+cammousemove",::CAM_StartMouseMove);
-static ConCommand endcammousemove( "-cammousemove",::CAM_EndMouseMove);
-static ConCommand startcamdistance( "+camdistance", ::CAM_StartDistance );
-static ConCommand endcamdistance( "-camdistance", ::CAM_EndDistance );
-static ConCommand snapto( "snapto", CAM_ToggleSnapto );
+ );
+static ConCommand firstperson( "firstperson", ::CAM_ToFirstPerson, "Switch to firstperson camera."
+#if defined( L4D2 )
+	, 0x00000008
+#endif
+ );
+#endif
+static ConCommand camortho( "camortho", ::CAM_ToOrthographic, "Switch to orthographic camera.", 
+#if defined( L4D2 )
+	0x00004008
+#else
+	FCVAR_CHEAT
+#endif
+ );
+static ConCommand startcammousemove( "+cammousemove",::CAM_StartMouseMove
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand endcammousemove( "-cammousemove",::CAM_EndMouseMove
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+);
+static ConCommand startcamdistance( "+camdistance", ::CAM_StartDistance
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand endcamdistance( "-camdistance", ::CAM_EndDistance
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
+static ConCommand snapto( "snapto", CAM_ToggleSnapto
+#if defined( L4D2 )
+	, 0, 0x00000008
+#endif
+ );
 /*
 ==============================
 Init_Camera
@@ -931,3 +1248,7 @@ void CInput::Init_Camera( void )
 {
 	m_CameraIsOrthographic = false;
 }
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/player/in_camera_console.inc"
+#include "l4d2/player/in_camera_console_registrations.inc"
+#endif

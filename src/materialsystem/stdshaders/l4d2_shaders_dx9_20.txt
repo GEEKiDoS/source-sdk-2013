@@ -1,0 +1,12 @@
+// Genuine ps_2_0 programs; build_l4d2_ps20.py compiles these shared source bodies.
+l4d2_glow_blurfilter_ps2x.fxc
+l4d2_glow_downsample_nohdr_ps2x.fxc
+l4d2_glow_haloadd_ps2x.fxc
+terror_engine_post_ps2x.fxc
+terror_post_prepare_ps2x.fxc
+fade_blur_ps2x.fxc
+l4d2_splinerope_ps2x.fxc
+blurgaussian_3x3_ps2x.fxc
+terror_motion_blur_ps2x.fxc
+l4d2_black_ps2x.fxc
+l4d2_unlittwotexture_ps2x.fxc

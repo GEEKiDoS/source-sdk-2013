@@ -53,7 +53,11 @@ C_Gib *C_Gib::CreateClientsideGib( const char *pszModelName, Vector vecOrigin, V
 //-----------------------------------------------------------------------------
 bool C_Gib::InitializeGib( const char *pszModelName, Vector vecOrigin, Vector vecForceDir, AngularImpulse vecAngularImp, float flLifetime )
 {
+#if defined( L4D2 )
+	if ( InitializeAsClientEntity( pszModelName, false ) == false )
+#else
 	if ( InitializeAsClientEntity( pszModelName, RENDER_GROUP_OPAQUE_ENTITY ) == false )
+#endif
 	{
 		Release();
 		return false;

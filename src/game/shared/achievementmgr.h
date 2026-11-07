@@ -92,6 +92,9 @@ public:
 			m_bSteamDataDirty = true;
 		}
 	}
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void MarkGlobalStateDirty() { m_bGlobalStateDirty = true; }
+#endif
 	
 	//=============================================================================
 	// HPE_END
@@ -146,7 +149,7 @@ private:
 	bool  m_bGlobalStateDirty;			// do we have interesting state changes that needs to be saved?
 	bool  m_bSteamDataDirty;			// do we have changes to upload to Steamworks?
 	bool  m_bGlobalStateLoaded;			// have we loaded global state
-	bool  m_bCheatsEverOn;				// have cheats ever been turned on in this level
+	bool  m_bCheatsEverOn;                // L4D2: application-session latch; stock branches: current level.
 	float m_flTimeLastSaved;			// last time we uploaded to Steam
 
     //=============================================================================

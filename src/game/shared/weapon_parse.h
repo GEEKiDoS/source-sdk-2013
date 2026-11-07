@@ -38,7 +38,15 @@ typedef enum {
 	SPECIAL2,
 	SPECIAL3,
 	TAUNT,
+#if defined( L4D2 )
+	FASTRELOAD,
+	RELOAD_DUAL,
+	RELOAD_PUMP,
+	IDLE,
+	SHOOT_INCENDIARY,
+#else
 	DEPLOY,
+#endif
 
 	// Add new shoot sound types here
 
@@ -124,6 +132,10 @@ public:
 	CHudTexture 					*iconZoomedCrosshair;
 	CHudTexture 					*iconZoomedAutoaim;
 	CHudTexture						*iconSmall;
+#if defined( L4D2 )
+	CHudTexture						*iconActiveDual;
+	CHudTexture						*iconInactiveDual;
+#endif
 
 // TF2 specific
 	bool					bShowUsageHint;							// if true, then when you receive the weapon, show a hint about it

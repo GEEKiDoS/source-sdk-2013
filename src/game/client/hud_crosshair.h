@@ -32,7 +32,11 @@ public:
 	virtual void	SetCrosshairAngle( const QAngle& angle );
 	virtual void	SetCrosshair( CHudTexture *texture, const Color& clr );
 	virtual void	ResetCrosshair();
+#if defined( L4D2 )
+	virtual void	DrawCrosshair( int x, int y, int width, int height ) {} // Native1213D0 RET16.
+#else
 	virtual void	DrawCrosshair( void ) {}
+#endif
   	virtual bool	HasCrosshair( void ) { return ( m_pCrosshair != NULL ); }
 	virtual bool	ShouldDraw();
 

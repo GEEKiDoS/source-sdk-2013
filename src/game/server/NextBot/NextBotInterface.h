@@ -43,6 +43,9 @@ public:
 	virtual void Reset( void );										// (EXTEND) reset to initial state
 	virtual void Update( void );									// (EXTEND) update internal state
 	virtual void Upkeep( void );									// (EXTEND) lightweight update guaranteed to occur every server tick
+	#if defined( L4D2 )
+	virtual void OnStuck( void ) OVERRIDE; // S4AD800: propagate, diagnostics, real actor/stat record, coop timeout.
+	#endif
 
 	void FlagForUpdate( bool b = true );
 	bool IsFlaggedForUpdate();
@@ -54,7 +57,7 @@ public:
 	virtual CBaseCombatCharacter *GetEntity( void ) const	= 0;
 	virtual class NextBotCombatCharacter *GetNextBotCombatCharacter( void ) const	{ return NULL; }
 
-#ifdef TERROR
+#if defined( TERROR ) || defined( L4D2 )
 	virtual class SurvivorBot *MySurvivorBotPointer() const { return NULL; }
 #endif
 
@@ -63,10 +66,12 @@ public:
 	virtual IBody *			GetBodyInterface( void ) const;
 	virtual IIntention *	GetIntentionInterface( void ) const;
 	virtual IVision *		GetVisionInterface( void ) const;
+	#if !defined( L4D2 )
 	HSCRIPT ScriptGetLocomotionInterface( void ) const { return ToHScript( this->GetLocomotionInterface() ); }
 	HSCRIPT ScriptGetIntentionInterface( void ) const { return ToHScript( this->GetIntentionInterface() ); }
 	HSCRIPT ScriptGetBodyInterface( void ) const { return ToHScript( this->GetBodyInterface() ); }
 	HSCRIPT ScriptGetVisionInterface( void ) const { return ToHScript( this->GetVisionInterface() ); }
+	#endif
 
 	/**
 	 * Attempt to change the bot's position. Return true if successful.
@@ -115,6 +120,7 @@ public:
 	virtual void ClearImmobileStatus( void );		
 	virtual float GetImmobileSpeedThreshold( void ) const;	// return units/second below which this actor is considered "immobile"
 
+#if !defined( L4D2 )
 	/**
 	 * Get the last PathFollower we followed. This method gives other interfaces a
 	 * single accessor to the most recent Path being followed by the myriad of 
@@ -123,6 +129,10 @@ public:
 	virtual const PathFollower *GetCurrentPath( void ) const;
 	virtual void SetCurrentPath( const PathFollower *path );
 	virtual void NotifyPathDestruction( const PathFollower *path );		// this PathFollower is going away, which may or may not be ours
+#endif
+#if defined( L4D2 )
+	virtual bool IsAbleToSee() const { return true; } // Genuine native INextBot default, overridden by common flags0x2000.
+#endif
 
 	// between distance utility methods
 	virtual bool IsRangeLessThan( CBaseEntity *subject, float range ) const;
@@ -131,7 +141,11 @@ public:
 	virtual bool IsRangeGreaterThan( const Vector &pos, float range ) const;
 	virtual float GetRangeTo( CBaseEntity *subject ) const;
 	virtual float GetRangeTo( const Vector &pos ) const;
+#if defined( L4D2 )
+	virtual double GetRangeSquaredTo( CBaseEntity *subject ) const;
+#else
 	virtual float GetRangeSquaredTo( CBaseEntity *subject ) const;
+#endif
 	virtual float GetRangeSquaredTo( const Vector &pos ) const;
 
 	// event propagation
@@ -162,7 +176,9 @@ private:
 	void RegisterComponent( INextBotComponent *comp );		// components call this to register themselves with the bot that contains them
 	INextBotComponent *m_componentList;						// the first component
 
+#if !defined( L4D2 )
 	const PathFollower *m_currentPath;						// the path we most recently followed
+#endif
 
 	int m_id;
 	bool m_bFlaggedForUpdate;
@@ -188,6 +204,7 @@ private:
 };
 
 
+#if !defined( L4D2 )
 inline const PathFollower *INextBot::GetCurrentPath( void ) const
 {
 	return m_currentPath;
@@ -203,6 +220,7 @@ inline void INextBot::NotifyPathDestruction( const PathFollower *path )
 	if ( m_currentPath == path )
 		m_currentPath = NULL;
 }
+#endif
 
 
 inline ILocomotion *INextBot::GetLocomotionInterface( void ) const

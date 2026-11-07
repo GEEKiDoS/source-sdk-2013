@@ -18,6 +18,9 @@
 #include "hintsystem.h"
 #include "SoundEmitterSystem/isoundemittersystembase.h"
 #include "util_shared.h"
+#if defined( L4D2 )
+#include "simtimer.h"
+#endif
 
 #if defined USES_ECON_ITEMS
 #include "game_item_schema.h"
@@ -242,12 +245,17 @@ public:
 protected:
 	// HACK FOR BOTS
 	friend class CBotManager;
+#if defined( L4D2 )
+	friend class CTerrorPlayer;
+#endif
 	static edict_t *s_PlayerEdict; // must be set before calling constructor
 public:
 	DECLARE_DATADESC();
 	DECLARE_SERVERCLASS();
+#if !defined( L4D2 )
 	// script description
 	DECLARE_ENT_SCRIPTDESC();
+	#endif
 	
 	CBasePlayer();
 	~CBasePlayer();
@@ -356,6 +364,10 @@ public:
 	
 	virtual const impactdamagetable_t &GetPhysicsImpactDamageTable();
 	virtual int				OnTakeDamage_Alive( const CTakeDamageInfo &info );
+#if defined( L4D2 )
+	int						OnTerrorDamageAlive( const CTakeDamageInfo &info );
+	bool					IsUserMessageSuppressed( const char *name );
+#endif
 	virtual void			Event_Killed( const CTakeDamageInfo &info );
 	// Notifier that I've killed some other entity. (called from Victim's Event_Killed).
 	virtual void			Event_KilledOther( CBaseEntity *pVictim, const CTakeDamageInfo &info );
@@ -374,7 +386,7 @@ public:
 	int						GetClientIndex()	{ return ENTINDEX( edict() ) - 1; }
 
 	// returns the player name
-	const char *			GetPlayerName() { return m_szNetname; }
+	const char *			GetPlayerName() const { return m_szNetname; }
 	void					SetPlayerName( const char *name );
 
 	int						GetUserID() const { return engine->GetPlayerUserId( edict() ); }
@@ -434,7 +446,11 @@ public:
 	CBaseCombatWeapon		*GetLastWeapon( void ) { return m_hLastWeapon.Get(); }
 
 	virtual void			OnMyWeaponFired( CBaseCombatWeapon *weapon );	// call this when this player fires a weapon to allow other systems to react
+#ifdef L4D2
+	virtual double			GetTimeSinceWeaponFired( void ) const;
+#else
 	virtual float			GetTimeSinceWeaponFired( void ) const;			// returns the time, in seconds, since this player fired a weapon
+#endif
 	virtual bool			IsFiringWeapon( void ) const;					// return true if this player is currently firing their weapon
 
 	bool					HasAnyAmmoOfType( int nAmmoIndex );
@@ -449,11 +465,21 @@ public:
 	bool					IsOnLadder( void );
 	virtual void			ExitLadder() {}
 	virtual surfacedata_t	*GetLadderSurface( const Vector &origin );
+#if defined( L4D2 )
+	void IncrementEFNoInterpParity();
+	int GetLadderSurfaceProps() const { return m_ladderSurfaceProps; }
+	void SetLadderSurfaceProps( int surfaceProps ) { m_ladderSurfaceProps = surfaceProps; }
+#endif
 
 	virtual void			SetFlashlightEnabled( bool bState ) { };
 	virtual int				FlashlightIsOn( void ) { return false; }
+#if defined( L4D2 )
+	virtual bool			FlashlightTurnOn( bool playSound = true ) { return false; } // S079740.
+	virtual void			FlashlightTurnOff( bool playSound = true ) {} // S079750.
+#else
 	virtual void			FlashlightTurnOn( void ) { };
 	virtual void			FlashlightTurnOff( void ) { };
+#endif
 	virtual bool			IsIlluminatedByFlashlight( CBaseEntity *pEntity, float *flReturnDot ) {return false; }
 	
 	void					UpdatePlayerSound ( void );
@@ -481,7 +507,9 @@ public:
 
 	bool					HandleVoteCommands( const CCommand &args );
 
+#if !defined( L4D2 )
 	virtual CVoteController *GetTeamVoteController();
+#endif
 	
 	// Observer functions
 	virtual bool			StartObserverMode(int mode); // true, if successful
@@ -501,6 +529,16 @@ public:
 	virtual void			ResetObserverMode(); // resets all observer related settings
 	virtual void			ValidateCurrentObserverTarget( void ); // Checks the current observer target, and moves on if it's not valid anymore
 	virtual void			AttemptToExitFreezeCam( void );
+#if defined( L4D2 )
+	virtual bool			CanRoam() { return true; }
+	bool					IsSplitScreenPlayer() const { return m_bIsSplitScreenPlayer; }
+	CBasePlayer				*GetSplitScreenPlayerOwner() const { return static_cast< CBasePlayer * >( m_hSplitScreenPlayerOwner.Get() ); }
+	bool					IsSplitScreenPartner( const CBasePlayer *other ) const
+	{
+		return other && ( other->m_hSplitScreenPlayerOwner.Get() == this || m_hSplitScreenPlayerOwner.Get() == other );
+	}
+	const CUtlVector< EHANDLE > &GetSplitScreenPlayers() const { return m_hSplitScreenPlayers; }
+#endif
 
 	virtual bool			StartReplayMode( float fDelay, float fDuration, int iEntity );
 	virtual void			StopReplayMode();
@@ -523,6 +561,10 @@ public:
 	virtual void			OnVehicleEnd( Vector &playerDestPosition ) {} 
 	IServerVehicle			*GetVehicle();
 	CBaseEntity				*GetVehicleEntity( void );
+#if defined( L4D2 )
+	CBaseEntity *GetElevator() const { return m_hElevator.Get(); }
+	void SetElevator( CBaseEntity *elevator );
+#endif
 	bool					UsingStandardWeaponsInVehicle( void );
 	
 	void					AddPoints( int score, bool bAllowNegativeScore );
@@ -578,6 +620,9 @@ public:
 	
 	virtual Vector			GetAutoaimVector( float flScale );
 	virtual Vector			GetAutoaimVector( float flScale, float flMaxDist );
+#if defined( L4D2 )
+	virtual Vector GetAutoaimVector( float scale, float maxRange, float maxDeflection, int *outKind );
+#endif
 	virtual void			GetAutoaimVector( autoaim_params_t &params );
 
 	float					GetAutoaimScore( const Vector &eyePosition, const Vector &viewDir, const Vector &vecTarget, CBaseEntity *pTarget, float fScale, CBaseCombatWeapon *pActiveWeapon );
@@ -591,6 +636,10 @@ public:
 	virtual void			ForceClientDllUpdate( void );  // Forces all client .dll specific data to be resent to client.
 
 	void					DeathMessage( CBaseEntity *pKiller );
+#if defined( L4D2 )
+	virtual void OnSpoke( CBaseCombatCharacter *speaker, const char *sound, float duration ) {} // S079990 RET0C.
+#endif
+
 
 	virtual void			ProcessUsercmds( CUserCmd *cmds, int numcmds, int totalcmds,
 								int dropped_packets, bool paused );
@@ -655,7 +704,9 @@ public:
 	bool					TouchedPhysics( void );
 	Vector					GetSmoothedVelocity( void );
 
+#if !defined( L4D2 )
 	virtual	void			RefreshCollisionBounds( void );
+#endif
 	virtual void			InitVCollision( const Vector &vecAbsOrigin, const Vector &vecAbsVelocity );
 	virtual void			VPhysicsDestroyObject();
 	void					SetVCollisionState( const Vector &vecAbsOrigin, const Vector &vecAbsVelocity, int collisionState );
@@ -769,7 +820,11 @@ public:
 	int		GetImpulse( void ) const { return m_nImpulse; }
 
 	// Movement constraints
+#if defined( L4D2 )
+	void ActivateMovementConstraint( CBaseEntity *pEntity, const Vector &vecCenter, float flRadius, float flConstraintWidth, float flSpeedFactor, bool bPastRadius );
+#else
 	void	ActivateMovementConstraint( CBaseEntity *pEntity, const Vector &vecCenter, float flRadius, float flConstraintWidth, float flSpeedFactor );
+#endif
 	void	DeactivateMovementConstraint( );
 
 	// talk control
@@ -792,6 +847,9 @@ public:
 
 	surfacedata_t *GetSurfaceData( void ) { return m_pSurfaceData; }
 	void SetLadderNormal( Vector vecLadderNormal ) { m_vecLadderNormal = vecLadderNormal; }
+#ifdef L4D2
+	const Vector &GetLadderNormal() const { return m_vecLadderNormal; }
+#endif
 
 	// Here so that derived classes can use the expresser
 	virtual CAI_Expresser *GetExpresser() { return NULL; };
@@ -828,7 +886,13 @@ private:
 	int				m_nMovementTicksForUserCmdProcessingRemaining;
 
 	// For queueing up CUserCmds and running them from PhysicsSimulate
+#if defined( L4D2 )
+protected:
+#endif
 	int					GetCommandContextCount( void ) const;
+#if defined( L4D2 )
+private:
+#endif
 	CCommandContext		*GetCommandContext( int index );
 	CCommandContext		*AllocCommandContext( void );
 	void				RemoveCommandContext( int index );
@@ -847,6 +911,9 @@ public:
 
 	// Used by gamemovement to check if the entity is stuck.
 	int m_StuckLast;
+#if defined( L4D2 )
+	EHANDLE m_hLastStuckActor; // Local combat actor; default EHANDLE construction is invalid.
+#endif
 	
 	// FIXME: Make these protected or private!
 
@@ -860,6 +927,16 @@ public:
 
 	void InitFogController( void );
 	void InputSetFogController( inputdata_t &inputdata );
+#if defined( L4D2 )
+	CBaseEntity *GetTerrorPostProcessController() const { return m_hPostProcessCtrl.Get(); }
+	void SetTerrorPostProcessController( CBaseEntity *entity ) { m_hPostProcessCtrl = entity; }
+	CBaseEntity *GetTerrorColorCorrectionController() const { return m_hColorCorrectionCtrl.Get(); }
+	void SetTerrorColorCorrectionController( CBaseEntity *entity ) { m_hColorCorrectionCtrl = entity; }
+	CBaseEntity *GetTerrorTonemapController() const { return m_hTonemapController.Get(); }
+	void AddTonemapTrigger( CBaseEntity *trigger );
+	void RemoveTonemapTrigger( CBaseEntity *trigger );
+	virtual void UpdateTonemapController();
+#endif
 
 	// Used by env_soundscape_triggerable to manage when the player is touching multiple
 	// soundscape triggers simultaneously.
@@ -951,6 +1028,9 @@ protected:
 	
 	// Vehicles
 	CNetworkHandle( CBaseEntity, m_hVehicle );
+#if defined( L4D2 )
+	CNetworkHandle( CBaseEntity, m_hElevator );
+#endif
 
 	int						m_iVehicleAnalogBias;
 
@@ -961,6 +1041,9 @@ protected:
 	CNetworkVar( int, m_iBonusChallenge );
 
 	int						m_lastDamageAmount;		// Last damage taken
+#if defined( L4D2 )
+	float					m_fTimeLastHurt;
+#endif
 
 	Vector					m_DmgOrigin;
 	float					m_DmgTake;
@@ -980,6 +1063,17 @@ protected:
 	int						m_iObserverLastMode; // last used observer mode
 	CNetworkHandle( CBaseEntity, m_hObserverTarget );	// entity handle to m_iObserverTarget
 	bool					m_bForcedObserverMode; // true, player was forced by invalid targets to switch mode
+#if defined( L4D2 )
+	// Native BasePlayer9037/9040/9044. The target split-screen engine producer
+	// is unsupported; these are actual constructor-owned state, not defaults
+	// returned by vote logic. No native SAVE/send descriptors exist.
+	bool					m_bIsSplitScreenPlayer;
+	EHANDLE					m_hSplitScreenPlayerOwner;
+	CUtlVector< EHANDLE >	m_hSplitScreenPlayers;
+public:
+	IntervalTimer			m_lastVoteCallTimer;
+protected:
+#endif
 	
 	CNetworkHandle( CBaseEntity, m_hZoomOwner );	//This is a pointer to the entity currently controlling the player's zoom
 													//Only this entity can change the zoom state once it has ownership
@@ -998,6 +1092,9 @@ protected:
 	virtual int SpawnArmorValue( void ) const { return 0; }
 
 	float					m_fNextSuicideTime; // the time after which the player can next use the suicide command
+#if defined( L4D2 )
+	float m_flNextTauntTime; // Native8044, inherited actor taunt timestamp.
+#endif
 	int						m_iSuicideCustomKillFlags;
 
 	// Replay mode	
@@ -1074,6 +1171,9 @@ private:
 
 	// player locking
 	int						m_iPlayerLocked;
+#if defined( L4D2 )
+	CSimpleSimTimer			m_AutoaimTimer; // Native8068; constructor starts at-1.
+#endif
 		
 protected:
 	// the player's personal view model
@@ -1105,7 +1205,12 @@ private:
 	Vector					m_vecWaterJumpVel;
 	int						m_nImpulse;
 	float					m_flSwimSoundTime;
+#if defined( L4D2 )
+	CNetworkVar( int, m_ladderSurfaceProps );
+	CNetworkVector( m_vecLadderNormal );
+#else
 	Vector					m_vecLadderNormal;
+#endif
 
 	float					m_flFlashTime;
 	int						m_nDrownDmgRate;		// Drowning damage in points per second without air.
@@ -1138,6 +1243,9 @@ private:
 	float					m_fLastPlayerTalkAttemptTime;
 	
 	CNetworkVar( CBaseCombatWeaponHandle, m_hLastWeapon );
+#if defined( L4D2 )
+	CNetworkVar( int, m_ubEFNoInterpParity );
+#endif
 
 #if !defined( NO_ENTITY_PREDICTION )
 	CUtlVector< CHandle< CBaseEntity > > m_SimulatedByThisPlayer;
@@ -1148,7 +1256,15 @@ private:
 
 	bool					m_bPlayerUnderwater;
 
+#if defined( L4D2 )
+	CNetworkHandle( CBaseEntity, m_hViewEntity );
+	CNetworkHandle( CBaseEntity, m_hPostProcessCtrl );
+	CNetworkHandle( CBaseEntity, m_hColorCorrectionCtrl );
+	CNetworkHandle( CBaseEntity, m_hTonemapController );
+	CUtlVector< EHANDLE > m_hTriggerTonemapList;
+#else
 	EHANDLE					m_hViewEntity;
+#endif
 
 	// Movement constraints
 	CNetworkHandle( CBaseEntity, m_hConstraintEntity );
@@ -1156,6 +1272,9 @@ private:
 	CNetworkVar( float, m_flConstraintRadius );
 	CNetworkVar( float, m_flConstraintWidth );
 	CNetworkVar( float, m_flConstraintSpeedFactor );
+#if defined( L4D2 )
+	CNetworkVar( bool, m_bConstraintPastRadius );
+#endif
 
 	friend class CPlayerMove;
 	friend class CPlayerClass;
@@ -1391,7 +1510,11 @@ inline void CBasePlayer::OnMyWeaponFired( CBaseCombatWeapon *weapon )
 	m_weaponFiredTimer.Start();
 }
 
+#ifdef L4D2
+inline double CBasePlayer::GetTimeSinceWeaponFired( void ) const
+#else
 inline float CBasePlayer::GetTimeSinceWeaponFired( void ) const
+#endif
 {
 	return m_weaponFiredTimer.GetElapsedTime();
 }

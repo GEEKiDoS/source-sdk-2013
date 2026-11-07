@@ -16,6 +16,13 @@
 #include "particles_new.h"
 #include "engine/ivdebugoverlay.h"
 #include "bone_setup.h"
+#if defined( L4D2 )
+#include "physics.h"
+#include "c_baseplayer.h"
+#include "particlemgr.h"
+#include "tier1/checksum_crc.h"
+#include "tier1/utlrbtree.h"
+#endif
 #else
 
 #include "baseentity.h"
@@ -84,6 +91,7 @@ void CParticleProperty::Init( CBaseEntity *pEntity )
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 int CParticleProperty::GetParticleAttachment( C_BaseEntity *pEntity, const char *pszAttachmentName, const char *pszParticleName )
 {
 	Assert( pEntity && pEntity->GetBaseAnimating() );
@@ -95,10 +103,12 @@ int CParticleProperty::GetParticleAttachment( C_BaseEntity *pEntity, const char 
 
 	return iAttachment;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Create a new particle system and attach it to our owner
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 CNewParticleEffect *CParticleProperty::Create( const char *pszParticleName, ParticleAttachment_t iAttachType, const char *pszAttachmentName )
 {
 	int iAttachment = GetParticleAttachment( GetOuter(), pszAttachmentName, pszParticleName );
@@ -108,11 +118,23 @@ CNewParticleEffect *CParticleProperty::Create( const char *pszParticleName, Part
 	// Create the system
 	return Create( pszParticleName, iAttachType, iAttachment );
 }
+#endif
 	  
 //-----------------------------------------------------------------------------
 // Purpose: Create a new particle system and attach it to our owner
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+static ConVar cl_particle_batch_mode( "cl_particle_batch_mode", "1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#else
+	FCVAR_DEVELOPMENTONLY
+#endif
+ );
+#else
 static ConVar cl_particle_batch_mode( "cl_particle_batch_mode", "1" );
+#endif
+#if !defined( L4D2 )
 CNewParticleEffect *CParticleProperty::Create( const char *pszParticleName, ParticleAttachment_t iAttachType, int iAttachmentPoint, Vector vecOriginOffset )
 {
 	if ( GameRules() )
@@ -161,10 +183,12 @@ CNewParticleEffect *CParticleProperty::Create( const char *pszParticleName, Part
 	
 	return newEffect->pParticleEffect.GetObject();
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CParticleProperty::AddControlPoint( CNewParticleEffect *pEffect, int iPoint, C_BaseEntity *pEntity, ParticleAttachment_t iAttachType, const char *pszAttachmentName, Vector vecOriginOffset )
 {
 	int iAttachment = INVALID_PARTICLE_ATTACHMENT;
@@ -181,10 +205,12 @@ void CParticleProperty::AddControlPoint( CNewParticleEffect *pEffect, int iPoint
 		}
 	}
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CParticleProperty::AddControlPoint( int iEffectIndex, int iPoint, C_BaseEntity *pEntity, ParticleAttachment_t iAttachType, int iAttachmentPoint, Vector vecOriginOffset )
 {
 	Assert( iEffectIndex >= 0 && iEffectIndex < m_ParticleEffects.Count() );
@@ -216,6 +242,7 @@ void CParticleProperty::AddControlPoint( int iEffectIndex, int iPoint, C_BaseEnt
 
 	UpdateParticleEffect( pEffect, true, iIndex );
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -292,11 +319,15 @@ void CParticleProperty::StopEmissionAndDestroyImmediately( CNewParticleEffect *p
 		//Assert( iIndex != -1 );
 		if ( iIndex != -1 )
 		{
+#if defined( L4D2 )
+			pEffect->SetOwner( NULL );
 			m_ParticleEffects.Remove( iIndex );
-
-			// Clear the owner so it doesn't try to call back to us on deletion
+			pEffect->StopEmission( false, true, false );
+#else
+			m_ParticleEffects.Remove( iIndex );
 			pEffect->SetOwner( NULL );
 			pEffect->StopEmission( false, true );
+#endif
 		}
 	}
 	else
@@ -306,11 +337,15 @@ void CParticleProperty::StopEmissionAndDestroyImmediately( CNewParticleEffect *p
 		for ( int i = nCount-1; i >= 0; i-- )
 		{
 			CNewParticleEffect *pTmp = m_ParticleEffects[i].pParticleEffect.GetObject();
+#if defined( L4D2 )
+			pTmp->SetOwner( NULL );
 			m_ParticleEffects.Remove( i );
-
-			// Clear the owner so it doesn't try to call back to us on deletion
+			pTmp->StopEmission( false, true, false );
+#else
+			m_ParticleEffects.Remove( i );
 			pTmp->SetOwner( NULL );
 			pTmp->StopEmission( false, true );
+#endif
 		}
 	}
 }
@@ -356,6 +391,7 @@ void CParticleProperty::StopParticlesInvolving( CBaseEntity *pEntity )
 // Purpose: Stop all effects that were created using the given definition
 //			name.
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CParticleProperty::StopParticlesNamed( const char *pszEffectName, bool bForceRemoveInstantly /* =false */,  bool bInverse /*= false*/ )
 {
 	if ( !pszEffectName || !pszEffectName[0] )
@@ -384,6 +420,7 @@ void CParticleProperty::StopParticlesNamed( const char *pszEffectName, bool bFor
 		}
 	}
 }
+#endif
 
 
 void CParticleProperty::StopParticlesWithNameAndAttachment( const char *pszEffectName, int iAttachmentPoint, bool bForceRemoveInstantly /* =false */ )
@@ -448,6 +485,22 @@ void CParticleProperty::OnParticleSystemUpdated( CNewParticleEffect *pEffect, fl
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+void CParticleProperty::OnParticleSystemDeleted( CNewParticleEffect *pEffect )
+{
+	int iIndex = FindEffect( pEffect );
+	if ( iIndex == -1 )
+		return;
+
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	pEffect->SetOwner( NULL ); // Native152587, BEFORE the actual owner virtual.
+	if ( m_pOuter )
+		m_pOuter->OnParticleEffectDeleted( pEffect );
+#endif
+	m_ParticleEffects[iIndex].pParticleEffect.MarkDeleted();
+	m_ParticleEffects.Remove( iIndex );
+}
+#else
 void CParticleProperty::OnParticleSystemDeleted( CNewParticleEffect *pEffect )
 {
 	int iIndex = FindEffect( pEffect );
@@ -457,6 +510,7 @@ void CParticleProperty::OnParticleSystemDeleted( CNewParticleEffect *pEffect )
 	m_ParticleEffects[iIndex].pParticleEffect.MarkDeleted();
 	m_ParticleEffects.Remove( iIndex );
 }
+#endif
 
 #ifdef CLIENT_DLL
 //-----------------------------------------------------------------------------
@@ -524,6 +578,7 @@ extern void FormatViewModelAttachment( Vector &vOrigin, bool bInverse );
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CParticleProperty::UpdateControlPoint( ParticleEffectList_t *pEffect, int iPoint, bool bInitializing )
 {
 	ParticleControlPoint_t *pPoint = &pEffect->pControlPoints[iPoint];
@@ -664,6 +719,7 @@ void CParticleProperty::UpdateControlPoint( ParticleEffectList_t *pEffect, int i
 	pEffect->pParticleEffect->SetControlPoint( pPoint->iControlPoint, vecOrigin + vecForcedOriginOffset );
 	pEffect->pParticleEffect->SetSortOrigin( vecOrigin + vecForcedOriginOffset);
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Output all active effects
@@ -686,3 +742,303 @@ void CParticleProperty::DebugPrintEffects( void )
 			( pParticleEffect->m_bEmissionStopped ) ? "yes" : "no" );
 	}
 }
+
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+// Whole native151A70. The null guard is native, not a fallback policy.
+bool CParticleProperty::IsValidEffect( CNewParticleEffect *effect )
+{
+	if ( !effect )
+		return false;
+	const int count = m_ParticleEffects.Count();
+	for ( int i = 0; i < count; ++i )
+	{
+		if ( m_ParticleEffects[i].pParticleEffect.GetObject() == effect )
+			return true;
+	}
+	return false;
+}
+#endif
+
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Compose into EXISTING shared/particle_property.cpp CLIENT_DLL+L4D2 branch.
+// Real includes before memdbgon: c_baseplayer.h, particlemgr.h, physics.h.
+// Native1512A0 whole control-point family, plus151C90 append/matrix writer.
+// Other games retain their SDK bodies. No engine/particlelib ABI extension.
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+extern "C" double L4D2_GlowNormalize( Vector *direction );
+extern "C" bool L4D2_WaterWakeNormalizeAndIsShort( Vector *direction );
+
+// Native106D7D38: module-lifetime U32 CRC keys/U16 RB-tree indices, NOT a
+// second particle-definition map. Preserve CRC-collision suppression.
+static CUtlRBTree< CRC32_t, unsigned short > s_ParticleAttachmentWarningCRCs( 0, 0, DefLessFunc( CRC32_t ) );
+
+static void WarnMissingParticleAttachment( C_BaseAnimating *animating, const char *attachmentName, const char *particleName )
+{
+	if ( !animating ) return; // Genuine1510970 guard.
+	const char *modelName = modelinfo->GetModelName( animating->GetModel() );
+	const char *debugName = animating->GetDebugName();
+	char message[256];
+	// Native CFmtStrN<256> uses BufferCount255, then explicitly stores255=0.
+	V_snprintf( message, 255, "%s Model '%s' doesn't have attachment '%s' to attach particle system '%s' to.\n",
+		debugName, modelName, attachmentName, particleName );
+	message[255] = '\0';
+	CRC32_t crc;
+	CRC32_Init( &crc );
+	CRC32_ProcessBuffer( &crc, message, V_strlen( message ) );
+	CRC32_Final( &crc );
+	if ( s_ParticleAttachmentWarningCRCs.Find( crc ) == s_ParticleAttachmentWarningCRCs.InvalidIndex() )
+	{
+		s_ParticleAttachmentWarningCRCs.Insert( crc );
+		Warning( "%s", message );
+	}
+}
+
+// Whole native C1509F0: named attachments share the existing C150970 warning.
+void DispatchParticleEffect( const char *pszParticleName, ParticleAttachment_t iAttachType,
+	C_BaseEntity *pEntity, const char *pszAttachmentName, bool bResetAllParticlesOnEntity, int onlyDrawForLocalUser )
+{
+	int iAttachment = -1;
+	if ( pEntity && pEntity->GetBaseAnimating() )
+	{
+		C_BaseAnimating *animating = pEntity->GetBaseAnimating();
+		iAttachment = animating->LookupAttachment( pszAttachmentName );
+		if ( iAttachment == -1 )
+		{
+			WarnMissingParticleAttachment( pEntity->GetBaseAnimating(), pszAttachmentName, pszParticleName );
+			return;
+		}
+	}
+	DispatchParticleEffect( pszParticleName, iAttachType, pEntity, iAttachment,
+		bResetAllParticlesOnEntity, onlyDrawForLocalUser );
+}
+
+int CParticleProperty::GetParticleAttachment( C_BaseEntity *entity, const char *attachmentName, const char *particleName )
+{
+	if ( !entity || !entity->GetBaseAnimating() ) return -1;
+	C_BaseAnimating *animating = entity->GetBaseAnimating(); // Native FRESH second query.
+	const int attachment = animating->LookupAttachment( attachmentName );
+	if ( attachment == -1 )
+		WarnMissingParticleAttachment( entity->GetBaseAnimating(), attachmentName, particleName );
+	return attachment; // Native accepts0; do NOT compare SDK INVALID_PARTICLE_ATTACHMENT0.
+}
+
+// Whole152600 named-attachment wrapper: attachment query precedes name lookup.
+CNewParticleEffect *CParticleProperty::Create( const char *name, ParticleAttachment_t attachType, const char *attachmentName )
+{
+	const int attachment = GetParticleAttachment( GetOuter(), attachmentName, name );
+	if ( attachment == -1 ) return NULL;
+	return Create( name, attachType, attachment, vec3_origin, NULL );
+}
+
+// Whole151DB0: all matching records, FRESH count/base per iteration, -1 when
+// there is no attachment name; carry the genuine optional local matrix.
+void CParticleProperty::AddControlPoint( CNewParticleEffect *effect, int controlPoint,
+	C_BaseEntity *entity, ParticleAttachment_t attachType, const char *attachmentName,
+	Vector originOffset, const matrix3x4_t *localMatrix )
+{
+	int attachment = -1;
+	if ( attachmentName ) attachment = GetParticleAttachment( entity, attachmentName, effect->GetName() );
+	for ( int i = 0; i < m_ParticleEffects.Count(); ++i )
+	{
+		if ( m_ParticleEffects[i].pParticleEffect.GetObject() == effect )
+			AddControlPoint( i, controlPoint, entity, attachType, attachment, originOffset, localMatrix );
+	}
+}
+
+// Whole151180. The third integer selects LOCAL USER via effect-renderable
+// v+164/15B2D0, NOT an attachment ID and NOT SDK's inverse-name bool.
+void CParticleProperty::StopParticlesNamed( const char *name, bool forceRemoveInstantly, int onlyDrawForLocalUser )
+{
+	CParticleSystemDefinition *definition = g_pParticleSystemMgr->FindParticleSystem( name );
+	if ( !definition ) return;
+	const int count = m_ParticleEffects.Count();
+	const bool remove = forceRemoveInstantly | ( m_iDormancyChangedAtFrame == gpGlobals->framecount );
+	for ( int i = 0; i < count; ++i )
+	{
+		CNewParticleEffect *effect = m_ParticleEffects[i].pParticleEffect.GetObject();
+		if ( effect->m_pDef() == definition &&
+			( onlyDrawForLocalUser == -1 || effect->ShouldDrawForLocalUser( onlyDrawForLocalUser ) ) )
+			effect->StopEmission( false, remove, false );
+	}
+}
+
+// Existing sole cl_particle_batch_mode lives earlier in particle_property.cpp.
+// Native152220 named wrapper resolves a real definition and warns on failure.
+CNewParticleEffect *CParticleProperty::Create( const char *name, ParticleAttachment_t attachType,
+	int attachment, Vector originOffset, const matrix3x4_t *localMatrix )
+{
+	CParticleSystemDefinition *definition = g_pParticleSystemMgr->FindParticleSystem( name );
+	if ( definition ) return Create( definition, attachType, attachment, originOffset, localMatrix );
+	Warning( "Attempting to create unknown particle system '%s' \n", name );
+	return NULL;
+}
+
+// Whole native152060 actual definition-based creation/backend/callback phase.
+CNewParticleEffect *CParticleProperty::Create( CParticleSystemDefinition *definition,
+	ParticleAttachment_t attachType, int attachment, Vector originOffset, const matrix3x4_t *localMatrix )
+{
+	const int batchMode = cl_particle_batch_mode.GetInt();
+	const bool batch = batchMode == 2 || ( batchMode == 1 && definition && definition->ShouldBatch() );
+	if ( attachType == PATTACH_CUSTOMORIGIN && batch )
+	{
+		const int index = FindEffect( definition->GetName() );
+		if ( index >= 0 )
+		{
+			CNewParticleEffect *effect = m_ParticleEffects[index].pParticleEffect.GetObject();
+			effect->CParticleCollection::Restart(); // Main-authorized real target backend; native bool0 site.
+			return effect;
+		}
+	}
+	const int index = m_ParticleEffects.AddToTail();
+	ParticleEffectList_t *record = &m_ParticleEffects[index];
+	record->pParticleEffect = CNewParticleEffect::Create( m_pOuter, definition );
+	if ( !record->pParticleEffect->IsValid() )
+	{
+		ParticleMgr()->RemoveEffect( record->pParticleEffect.GetObject() );
+		return NULL;
+	}
+	AddControlPoint( index, 0, GetOuter(), attachType, attachment, originOffset, localMatrix );
+	if ( m_pOuter )
+		m_pOuter->OnNewParticleEffect( definition->GetName(), record->pParticleEffect.GetObject() );
+	return record->pParticleEffect.GetObject();
+}
+
+void CParticleProperty::AddControlPoint( int effectIndex, int controlPoint,
+	C_BaseEntity *entity, ParticleAttachment_t attachType, int attachment,
+	Vector originOffset, const matrix3x4_t *localMatrix )
+{
+	ParticleEffectList_t *record = &m_ParticleEffects[effectIndex];
+	// Native151AB0 InsertBefore(size) ALWAYS APPENDS, including repeated CP IDs.
+	// Do not keep SDK's replace-first-ID behavior or use CP ID as vector index.
+	const int index = record->pControlPoints.AddToTail();
+	ParticleControlPoint_t &point = record->pControlPoints[index];
+	point.iControlPoint = controlPoint;
+	point.hEntity = entity;
+	point.iAttachType = attachType;
+	point.iAttachmentPoint = attachment;
+	point.vecOriginOffset = originOffset;
+	if ( localMatrix ) MatrixCopy( *localMatrix, point.m_LocalMatrix );
+	else SetIdentityMatrix( point.m_LocalMatrix );
+	UpdateParticleEffect( record, true, index );
+}
+
+void CParticleProperty::UpdateControlPoint( ParticleEffectList_t *record, int pointIndex, bool initializing )
+{
+	ParticleControlPoint_t *point = &record->pControlPoints[pointIndex];
+	// Original101512C8 tests REAL definition byte703/2BFh and ARRAY INDEX0.
+	// Main's game-owned DMX table preserves that data because target prebuilt
+	// particles has no such member. Its separate screen-space RENDER gap stays
+	// explicit: this is native control-point behavior, NOT renderer emulation.
+	if ( ParticleMgr()->IsTerrorParticleDefinitionScreenSpace( record->pParticleEffect->GetName() ) && pointIndex == 0 )
+	{
+		record->pParticleEffect->SetControlPointOrientation( point->iControlPoint,
+			Vector( 1, 0, 0 ), Vector( 0, 1, 0 ), Vector( 0, 0, 1 ) );
+		record->pParticleEffect->SetControlPoint( point->iControlPoint, vec3_origin );
+		return;
+	}
+	if ( !point->hEntity.Get() )
+	{
+		if ( point->iAttachType == PATTACH_WORLDORIGIN && initializing )
+		{
+			record->pParticleEffect->SetControlPointOrientation( point->iControlPoint,
+				Vector( 1, 0, 0 ), Vector( 0, 1, 0 ), Vector( 0, 0, 1 ) );
+			record->pParticleEffect->SetControlPoint( point->iControlPoint, point->vecOriginOffset );
+			record->pParticleEffect->SetSortOrigin( point->vecOriginOffset );
+		}
+		record->pParticleEffect->SetControlPointEntity( point->iControlPoint, NULL );
+		return;
+	}
+	if ( !initializing && !point->hEntity->GetMoveParent() &&
+		( point->iAttachType == PATTACH_ABSORIGIN || point->iAttachType == PATTACH_POINT ) ) return;
+	if ( point->iAttachType == PATTACH_CUSTOMORIGIN ) return;
+
+	Vector origin, forward, right, up;
+	switch ( point->iAttachType )
+	{
+	case PATTACH_CUSTOMORIGIN_FOLLOW:
+		{
+			matrix3x4_t world;
+			L4D2ClientConcatTransforms( point->hEntity->RenderableToWorldTransform(), point->m_LocalMatrix, world );
+			MatrixVectors( world, &forward, &right, &up );
+			MatrixPosition( world, origin );
+			record->pParticleEffect->SetControlPointEntity( point->iControlPoint, point->hEntity.Get() );
+			record->pParticleEffect->SetControlPoint( point->iControlPoint, origin );
+			record->pParticleEffect->SetSortOrigin( origin );
+			record->pParticleEffect->SetControlPointOrientation( point->iControlPoint, forward, right, up );
+			return;
+		}
+	case PATTACH_POINT:
+	case PATTACH_POINT_FOLLOW:
+		{
+			C_BaseAnimating *animating = point->hEntity->GetBaseAnimating();
+			matrix3x4_t attachment;
+			// Native VM/non-VM branches perform this SAME query. Only their
+			// TLS owner-slot guard differs; Main's real sole user0 omits it.
+			if ( !animating || !animating->GetAttachment( point->iAttachmentPoint, attachment ) )
+			{
+				static bool warned = false;
+				if ( !warned )
+				{
+					warned = true;
+					// Original42FA0 has no NULL-this guard. Do not invent one or
+					// SDK's retry/fallback/StopParticlesNamed removal path.
+					DevWarning( "Attempted to attach particle effect %s to an unknown attachment on entity %s\n",
+						record->pParticleEffect->GetName(), animating->GetDebugName() );
+				}
+				return;
+			}
+			MatrixVectors( attachment, &forward, &right, &up );
+			MatrixPosition( attachment, origin );
+			if ( record->pParticleEffect->GetIsViewModelEffect() ) FormatViewModelAttachment( origin, true );
+			break;
+		}
+	case PATTACH_EYES_FOLLOW:
+		{
+			C_BaseEntity *entity = point->hEntity.Get();
+			if ( !entity->IsPlayer() ) return;
+			C_BasePlayer *player = static_cast< C_BasePlayer * >( entity );
+			const Vector eye = player->EyePosition();
+			origin.x = point->vecOriginOffset.x + eye.x;
+			origin.y = point->vecOriginOffset.y + eye.y;
+			origin.z = point->vecOriginOffset.z + eye.z;
+			player->EyeVectors( &forward, &right, &up );
+			break;
+		}
+	case PATTACH_WATERWAKE:
+		{
+			const Vector &entityOrigin = point->hEntity->GetAbsOrigin();
+			origin.x = entityOrigin.x;
+			origin.y = entityOrigin.y;
+			origin.z = point->vecOriginOffset.z; // Absolute water plane; never add ownerZ.
+			point->hEntity->EstimateAbsVelocity( forward );
+			forward.z = 0.0f;
+			if ( L4D2_WaterWakeNormalizeAndIsShort( &forward ) )
+			{
+				AngleVectors( point->hEntity->GetAbsAngles(), &forward );
+				forward.z = 0.0f;
+				L4D2_GlowNormalize( &forward );
+			}
+			up.Init( 0.0f, 0.0f, 1.0f );
+			right.Init( forward.y, -forward.x, 0.0f );
+			record->pParticleEffect->SetControlPointEntity( point->iControlPoint, point->hEntity.Get() );
+			record->pParticleEffect->SetControlPoint( point->iControlPoint, origin );
+			record->pParticleEffect->SetSortOrigin( origin );
+			record->pParticleEffect->SetControlPointOrientation( point->iControlPoint, forward, right, up );
+			return;
+		}
+	default:
+		{
+			const Vector &entityOrigin = point->hEntity->GetAbsOrigin();
+			origin.x = point->vecOriginOffset.x + entityOrigin.x;
+			origin.y = point->vecOriginOffset.y + entityOrigin.y;
+			origin.z = point->vecOriginOffset.z + entityOrigin.z;
+			point->hEntity->GetVectors( &forward, &right, &up );
+			break;
+		}
+	}
+	record->pParticleEffect->SetControlPointOrientation( point->iControlPoint, forward, right, up );
+	record->pParticleEffect->SetControlPointEntity( point->iControlPoint, point->hEntity.Get() );
+	record->pParticleEffect->SetControlPoint( point->iControlPoint, origin );
+	record->pParticleEffect->SetSortOrigin( origin );
+}
+#endif

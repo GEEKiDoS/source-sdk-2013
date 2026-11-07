@@ -24,11 +24,41 @@
 #include "multiplay_gamerules.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "l4d2/sound/ai_scriptedrules.h"
+#include <emmintrin.h>
+#include "l4d2/terror_native_qsort.h"
+#endif
+#include "AI_ResponseSystem_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
-ConVar rr_debugresponses( "rr_debugresponses", "0", FCVAR_NONE, "Show verbose matching output (1 for simple, 2 for rule scoring). If set to 3, it will only show response success/failure for npc_selected NPCs." );
-ConVar rr_debugrule( "rr_debugrule", "", FCVAR_NONE, "If set to the name of the rule, that rule's score will be shown whenever a concept is passed into the response rules system.");
-ConVar rr_dumpresponses( "rr_dumpresponses", "0", FCVAR_NONE, "Dump all response_rules.txt and rules (requires restart)" );
+ConVar rr_debugresponses( "rr_debugresponses", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, 
+#if defined( L4D2 )
+	"Show verbose matching output (1 for simple, 2 for rule scoring, 3 for noisy). If set to 4, it will only show response success/failure for npc_selected NPCs."
+#else
+	"Show verbose matching output (1 for simple, 2 for rule scoring). If set to 3, it will only show response success/failure for npc_selected NPCs."
+#endif
+ );
+ConVar rr_debugrule( "rr_debugrule", "", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "If set to the name of the rule, that rule's score will be shown whenever a concept is passed into the response rules system.");
+ConVar rr_dumpresponses( "rr_dumpresponses", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "Dump all response_rules.txt and rules (requires restart)" );
 
 static CUtlSymbolTable g_RS;
 
@@ -172,6 +202,10 @@ struct Response
 		depletioncount = src.depletioncount;
 		first = src.first;
 		last = src.last;
+#ifdef L4D2
+		params = src.params;
+		followup = src.followup;
+#endif
 	}
 
 	Response& operator =( const Response& src )
@@ -184,6 +218,10 @@ struct Response
 		depletioncount = src.depletioncount;
 		first = src.first;
 		last = src.last;
+#ifdef L4D2
+		params = src.params;
+		followup = src.followup;
+#endif
 		return *this;
 	}
 
@@ -201,6 +239,10 @@ struct Response
 	byte						type : 6;							// 8
 	byte						first : 1;							// 
 	byte						last : 1;							// 
+#ifdef L4D2
+	AI_ResponseParams params;
+	AI_ResponseFollowup followup;
+#endif
 };
 
 struct ResponseGroup
@@ -218,6 +260,9 @@ struct ResponseGroup
 		m_nDepletionCount = 1;
 		m_bHasFirst = false;
 		m_bHasLast = false;
+#ifdef L4D2
+		rp.odds = 0;
+#endif
 	}
 
 	ResponseGroup( const ResponseGroup& src )
@@ -462,6 +507,9 @@ struct Rule
 		m_bEnabled = true;
 		m_szContext = NULL;
 		m_bApplyContextToWorld = false;
+#ifdef L4D2
+		m_nForceWeight = 0;
+#endif
 	}
 
 	Rule& operator =( const Rule& src )
@@ -488,6 +536,9 @@ struct Rule
 		m_bMatchOnce = src.m_bMatchOnce;
 		m_bEnabled = src.m_bEnabled;
 		m_bApplyContextToWorld = src.m_bApplyContextToWorld;
+#ifdef L4D2
+		m_nForceWeight = src.m_nForceWeight;
+#endif
 		return *this;
 	}
 
@@ -512,6 +563,9 @@ struct Rule
 		m_bMatchOnce = src.m_bMatchOnce;
 		m_bEnabled = src.m_bEnabled;
 		m_bApplyContextToWorld = src.m_bApplyContextToWorld;
+#ifdef L4D2
+		m_nForceWeight = src.m_nForceWeight;
+#endif
 	}
 
 	~Rule()
@@ -541,6 +595,9 @@ struct Rule
 
 	bool				m_bMatchOnce : 1;
 	bool				m_bEnabled : 1;
+#ifdef L4D2
+	unsigned char		m_nForceWeight;
+#endif
 };
 #pragma pack()
 
@@ -580,7 +637,13 @@ protected:
 	virtual const char *GetScriptFile( void ) = 0;
 	void		LoadRuleSet( const char *setname );
 
+#ifdef L4D2
+public:
+#endif
 	void		ResetResponseGroups();
+#ifdef L4D2
+protected:
+#endif
 
 	float		LookForCriteria( const AI_CriteriaSet &criteriaSet, int iCriteria );
 	float		RecursiveLookForCriteria( const AI_CriteriaSet &criteriaSet, Criteria *pParent );
@@ -666,7 +729,13 @@ public:
 		return false;
 	}
 	
+#ifdef L4D2
+	void ParseOneResponse( const char *responseGroupName, ResponseGroup &group, const AI_ResponseParams *defaults );
+	void ParseResponseFire( AI_ResponseFollowup &followup );
+	void ParseResponseThen( AI_ResponseFollowup &followup );
+#else
 	void		ParseOneResponse( const char *responseGroupName, ResponseGroup& group );
+#endif
 
 	void		ParseInclude( CStringPool &includedFiles );
 	void		ParseResponse( void );
@@ -682,7 +751,11 @@ public:
 	void		ResolveToken( Matcher& matcher, char *token, size_t bufsize, char const *rawtoken );
 	float		LookupEnumeration( const char *name, bool& found );
 
+#ifdef L4D2
+	int FindBestMatchingRule( const AI_CriteriaSet &set, bool verbose, float *bestScore = NULL );
+#else
 	int			FindBestMatchingRule( const AI_CriteriaSet& set, bool verbose );
+#endif
 
 	float		ScoreCriteriaAgainstRule( const AI_CriteriaSet& set, int irule, bool verbose = false );
 	float		RecursiveScoreSubcriteriaAgainstRule( const AI_CriteriaSet& set, Criteria *parent, bool& exclude, bool verbose /*=false*/ );
@@ -729,7 +802,92 @@ public:
 
 	friend class CDefaultResponseSystemSaveRestoreBlockHandler;
 	friend class CResponseSystemSaveRestoreOps;
+#ifdef L4D2
+private:
+	CUtlSymbolTable m_ScriptSymbols;
+	CUtlVector< CScriptRule * > m_ScriptRules;
+	friend CUtlSymbol ScriptRuleSymbol( IResponseSystem *system, const char *text );
+	friend const char *ScriptRuleSymbolText( IResponseSystem *system, CUtlSymbol symbol );
+	friend bool StoreScriptRule( IResponseSystem *system, CScriptRule *rule );
+	friend void RemoveScriptRules( IResponseSystem *system );
+	friend CScriptRule *FindBestScriptRule( IResponseSystem *system, const CScriptRuleQuery &query, float &score );
+	friend void FindAllScriptRules( IResponseSystem *system, const CScriptRuleQuery &query, CUtlVector< ScriptRuleMatch_t > &matches );
+#endif
 };
+
+#ifdef L4D2
+#pragma float_control( precise, on, push )
+class CScriptRuleResponseSystem : public CResponseSystem
+{
+public:
+	virtual const char *GetScriptFile() OVERRIDE { return NULL; } // Isolated typed store: no text file.
+	virtual void Release() OVERRIDE { Clear(); delete this; }
+};
+IResponseSystem *CreateScriptRuleResponseSystem() { return new CScriptRuleResponseSystem; }
+void DestroyScriptRuleResponseSystem( IResponseSystem *system ) { if ( system ) static_cast< CResponseSystem * >( system )->Release(); }
+CUtlSymbol ScriptRuleSymbol( IResponseSystem *system, const char *text )
+{
+	return static_cast< CResponseSystem * >( system )->m_ScriptSymbols.AddString( text );
+}
+const char *ScriptRuleSymbolText( IResponseSystem *system, CUtlSymbol symbol )
+{
+	return static_cast< CResponseSystem * >( system )->m_ScriptSymbols.String( symbol );
+}
+bool StoreScriptRule( IResponseSystem *system, CScriptRule *rule )
+{
+	rule->AddRef();
+	static_cast< CResponseSystem * >( system )->m_ScriptRules.AddToTail( rule );
+	return true;
+}
+void RemoveScriptRules( IResponseSystem *system )
+{
+	CUtlVector<CScriptRule *> &rules = static_cast< CResponseSystem * >( system )->m_ScriptRules;
+	CUtlVector<CScriptRule *> detached;
+	detached.Swap( rules );
+	FOR_EACH_VEC( detached, i ) detached[i]->Release();
+}
+CScriptRule *FindBestScriptRule( IResponseSystem *system, const CScriptRuleQuery &query, float &score )
+{
+	const CUtlVector<CScriptRule *> &rules = static_cast< CResponseSystem * >( system )->m_ScriptRules;
+	score = -2147483648.0f;
+	CScriptRule *best = NULL;
+	int count = rules.Count();
+	for ( int i = 0; i < count; ++i )
+	{
+		float value = rules[i]->Score( query );
+		// Native S4F6B50 uses >=, so the LAST equal-score rule wins. No RNG.
+		if ( value >= score ) { score = value; best = value > 0.0f ? rules[i] : NULL; }
+	}
+	return best;
+}
+static int CompareScriptRuleMatches( const void *first, const void *second )
+{
+	const ScriptRuleMatch_t *left = static_cast< const ScriptRuleMatch_t * >( first );
+	const ScriptRuleMatch_t *right = static_cast< const ScriptRuleMatch_t * >( second );
+	// Native S4F7130 truncates the floating difference to int. Do not turn
+	// this into a conventional comparator: sub-unit differences compare equal.
+	return _mm_cvtt_ss2si( _mm_set_ss( right->score - left->score ) );
+}
+void FindAllScriptRules( IResponseSystem *system, const CScriptRuleQuery &query, CUtlVector<ScriptRuleMatch_t> &matches )
+{
+	const CUtlVector<CScriptRule *> &rules = static_cast< CResponseSystem * >( system )->m_ScriptRules;
+	matches.RemoveAll();
+	int count = rules.Count();
+	for ( int i = 0; i < count; ++i )
+	{
+		bool accepted;
+		float value = rules[i]->Score( query, &accepted );
+		if ( accepted )
+		{
+			ScriptRuleMatch_t match = { value > 0.0f ? rules[i] : NULL, value };
+			matches.AddToTail( match );
+		}
+	}
+	TerrorNativeQSort( matches.Base(), matches.Count(), sizeof( ScriptRuleMatch_t ), CompareScriptRuleMatches );
+}
+
+#pragma float_control( pop )
+#endif
 
 BEGIN_SIMPLE_DATADESC( Response )
 	// DEFINE_FIELD( type, FIELD_INTEGER ),
@@ -757,6 +915,9 @@ END_DATADESC()
 // Purpose: 
 //-----------------------------------------------------------------------------
 CResponseSystem::CResponseSystem()
+#ifdef L4D2
+	: m_ScriptSymbols( 0, 64, true )
+#endif
 {
 	token[0] = 0;
 	m_bUnget = false;
@@ -769,6 +930,9 @@ CResponseSystem::CResponseSystem()
 //-----------------------------------------------------------------------------
 CResponseSystem::~CResponseSystem()
 {
+#ifdef L4D2
+	RemoveScriptRules( this );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -813,6 +977,9 @@ void CResponseSystem::PopScript(void)
 //-----------------------------------------------------------------------------
 void CResponseSystem::Clear()
 {
+#ifdef L4D2
+	RemoveScriptRules( this );
+#endif
 	m_Responses.RemoveAll();
 	m_Criteria.RemoveAll();
 	m_Rules.RemoveAll();
@@ -1270,6 +1437,14 @@ float CResponseSystem::ScoreCriteriaAgainstRule( const AI_CriteriaSet& set, int 
 		DevMsg( "}\n" );
 	}
 	
+#ifdef L4D2
+	if ( rule->m_nForceWeight )
+	{
+		// S1E9AD: subtract FLT_MIN in float, then COMISS/JB rejects unordered.
+		const __m128 adjusted = _mm_sub_ss( _mm_set_ss( score ), _mm_set_ss( 1.17549435e-38f ) );
+		return _mm_comige_ss( adjusted, _mm_setzero_ps() ) ? rule->m_nForceWeight : 0.0f;
+	}
+#endif
 	return score;
 }
 
@@ -1682,7 +1857,11 @@ bool CResponseSystem::GetBestResponse( ResponseSearchResult& searchResult, Rule 
 //			verbose - 
 // Output : int
 //-----------------------------------------------------------------------------
+#ifdef L4D2
+int CResponseSystem::FindBestMatchingRule( const AI_CriteriaSet &set, bool verbose, float *bestScore )
+#else
 int CResponseSystem::FindBestMatchingRule( const AI_CriteriaSet& set, bool verbose )
+#endif
 {
 	CUtlVector< int >	bestrules;
 	float bestscore = 0.001f;
@@ -1708,6 +1887,10 @@ int CResponseSystem::FindBestMatchingRule( const AI_CriteriaSet& set, bool verbo
 	}
 
 	int bestCount = bestrules.Count();
+#ifdef L4D2
+	if ( bestScore )
+		*bestScore = bestCount > 0 ? bestscore : 0.0f;
+#endif
 	if ( bestCount <= 0 )
 		return -1;
 
@@ -1730,17 +1913,34 @@ int CResponseSystem::FindBestMatchingRule( const AI_CriteriaSet& set, bool verbo
 //-----------------------------------------------------------------------------
 bool CResponseSystem::FindBestResponse( const AI_CriteriaSet& set, AI_Response& response, IResponseFilter *pFilter )
 {
+#ifdef L4D2
+	if ( FindScriptedSpeechResponse( this, set, response ) )
+		return true;
+	float matchScore = 0.0f;
+#endif
 	bool valid = false;
 
 	int iDbgResponse = rr_debugresponses.GetInt();
+	#if defined( L4D2 )
+	bool showRules = ( iDbgResponse == 2 || iDbgResponse == 3 );
+	bool showResult = ( iDbgResponse >= 1 && iDbgResponse <= 3 );
+#else
 	bool showRules = ( iDbgResponse == 2 );
 	bool showResult = ( iDbgResponse == 1 || iDbgResponse == 2 );
+#endif
 
 	// Look for match. verbose mode used to be at level 2, but disabled because the writers don't actually care for that info.
-	int bestRule = FindBestMatchingRule( set, iDbgResponse == 3 ); 
+#ifdef L4D2
+	int bestRule = FindBestMatchingRule( set, iDbgResponse == 3, &matchScore );
+#else
+	int bestRule = FindBestMatchingRule( set, iDbgResponse == 3 );
+#endif
 
 	ResponseType_t responseType = RESPONSE_NONE;
 	AI_ResponseParams rp;
+#ifdef L4D2
+	AI_ResponseFollowup followup;
+#endif
 
 	char ruleName[ 128 ];
 	char responseName[ 128 ];
@@ -1759,7 +1959,12 @@ bool CResponseSystem::FindBestResponse( const AI_CriteriaSet& set, AI_Response& 
 		{
 			Q_strncpy( responseName, result.action->value, sizeof( responseName ) );
 			responseType = result.action->GetType();
+#ifdef L4D2
+			rp = result.action->params;
+			followup = result.action->followup;
+#else
 			rp = result.group->rp;
+#endif
 		}
 
 		Q_strncpy( ruleName, m_Rules.GetElementName( bestRule ), sizeof( ruleName ) );
@@ -1776,6 +1981,10 @@ bool CResponseSystem::FindBestResponse( const AI_CriteriaSet& set, AI_Response& 
 	}
 
 	response.Init( responseType, responseName, set, rp, ruleName, context, bcontexttoworld );
+#ifdef L4D2
+	response.SetFollowup( followup );
+	response.SetMatchScore( matchScore );
+#endif
 
 	if ( showResult )
 	{
@@ -1792,7 +2001,18 @@ bool CResponseSystem::FindBestResponse( const AI_CriteriaSet& set, AI_Response& 
 		if ( valid || showRules )
 		{
 			// Describe the response, too
-			response.Describe();
+#if defined( L4D2 )
+   const char *filter = rr_debugresponseconcept.GetString();
+   const int conceptIndex = set.FindCriterionIndex( "concept" );
+   const char *concept = set.GetValue( conceptIndex );
+   if ( !*filter || rr_debugresponseconcept.GetInt() != 0 )
+   {
+    if ( !IsAIConceptDebugExcluded( AI_Concept( concept ) ) ) response.Describe();
+   }
+   else if ( !Q_stricmp( filter, concept ) ) response.Describe();
+#else
+   response.Describe();
+#endif
 		}
 	}
 
@@ -1813,7 +2033,12 @@ void CResponseSystem::GetAllResponses( CUtlVector<AI_Response *> *pResponses )
 			if ( response.type != RESPONSE_RESPONSE )
 			{
 				AI_Response *pResponse = new AI_Response;
+#ifdef L4D2
+				pResponse->Init( response.GetType(), response.value, AI_CriteriaSet(), response.params, NULL, NULL, false );
+				pResponse->SetFollowup( response.followup );
+#else
 				pResponse->Init( response.GetType(), response.value, AI_CriteriaSet(), group.rp, NULL, NULL, false );
+#endif
 				pResponses->AddToTail(pResponse);
 			}
 		}
@@ -1825,12 +2050,22 @@ static void TouchFile( char const *pchFileName )
 	filesystem->Size( pchFileName );
 }
 
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
 void CResponseSystem::Precache()
 {
 	bool bTouchFiles = CommandLine()->FindParm( "-makereslists" ) != 0;
+#ifdef L4D2
+	// The native engine admits 20,000 sounds; the SDK engine admits 16,384.
+	// Keep the survivor response catalog available, but precache only the scene
+	// or wave actually selected for playback. Explicit player sounds and other
+	// response systems retain eager precaching; resource-list tools need it too.
+	const char *scriptFile = GetScriptFile();
+	if ( !bTouchFiles && scriptFile && !Q_stricmp( scriptFile, "scripts/talker/terror_player.txt" ) )
+		return;
+#endif
 
 	// enumerate and mark all the scripts so we know they're referenced
 	for ( int i = 0; i < (int)m_Responses.Count(); i++ )
@@ -2032,11 +2267,23 @@ static ResponseType_t ComputeResponseType( const char *s )
 	return RESPONSE_NONE;
 }
 
+#ifdef L4D2
+void CResponseSystem::ParseOneResponse( const char *responseGroupName, ResponseGroup &group, const AI_ResponseParams *defaults )
+#else
 void CResponseSystem::ParseOneResponse( const char *responseGroupName, ResponseGroup& group )
+#endif
 {
 	Response newResponse;
 	newResponse.weight.SetFloat( 1.0f );
+#ifdef L4D2
+	if ( defaults )
+		newResponse.params = *defaults;
+	else
+		newResponse.params.odds = 0;
+	AI_ResponseParams *rp = &newResponse.params;
+#else
 	AI_ResponseParams *rp = &group.rp;
+#endif
 
 	newResponse.type = ComputeResponseType( token );
 	if ( RESPONSE_NONE == newResponse.type )
@@ -2155,6 +2402,18 @@ void CResponseSystem::ParseOneResponse( const char *responseGroupName, ResponseG
 			continue;
 		}
 
+#ifdef L4D2
+		if ( !Q_stricmp( token, "THEN" ) )
+		{
+			ParseResponseThen( newResponse.followup );
+			continue;
+		}
+		if ( !Q_stricmp( token, "FIRE" ) )
+		{
+			ParseResponseFire( newResponse.followup );
+			continue;
+		}
+#endif
 		ResponseWarning( "response entry '%s' with unknown command '%s'\n", responseGroupName, token );
 	}
 
@@ -2233,7 +2492,11 @@ void CResponseSystem::ParseResponse( void )
 					continue;
 				}
 
+#ifdef L4D2
+				ParseOneResponse( responseGroupName, newGroup, NULL );
+#else
 				ParseOneResponse( responseGroupName, newGroup );
+#endif
 			}
 			break;
 		}
@@ -2321,7 +2584,11 @@ void CResponseSystem::ParseResponse( void )
 			continue;
 		}
 
+#ifdef L4D2
+		ParseOneResponse( responseGroupName, newGroup, &newGroup.rp );
+#else
 		ParseOneResponse( responseGroupName, newGroup );
+#endif
 	}
 
 	m_Responses.Insert( responseGroupName, newGroup );
@@ -2523,6 +2790,21 @@ void CResponseSystem::ParseRule( void )
 			break;
 		}
 
+#ifdef L4D2
+		if ( !Q_stricmp( token, "forceweight" ) )
+		{
+			ParseToken();
+			if ( !token[0] )
+			{
+				ResponseWarning( "Forceweight token in rule '%s' did not specify a numerical weight! Ignoring.\n", ruleName );
+				continue;
+			}
+			newRule.m_nForceWeight = static_cast< unsigned char >( atoi( token ) );
+			if ( !newRule.m_nForceWeight )
+				ResponseWarning( "Rule '%s' had forceweight '%s', which doesn't work out to a nonzero number. Ignoring.\n", ruleName, token );
+			continue;
+		}
+#endif
 		if ( !Q_stricmp( token, "matchonce" ) )
 		{
 			newRule.m_bMatchOnce = true;
@@ -2792,6 +3074,9 @@ void CResponseSystem::CopyRuleFrom( Rule *pSrcRule, int iRule, CResponseSystem *
 	dstRule.m_bMatchOnce = pSrcRule->m_bMatchOnce;
 	dstRule.m_bEnabled = pSrcRule->m_bEnabled;
 	dstRule.m_bApplyContextToWorld = pSrcRule->m_bApplyContextToWorld;
+#ifdef L4D2
+	dstRule.m_nForceWeight = pSrcRule->m_nForceWeight;
+#endif
 
 	// Copy off criteria.
 	CopyCriteriaFrom( pSrcRule, &dstRule, pCustomSystem );
@@ -2883,6 +3168,7 @@ public:
 	{
 	}
 
+
 	virtual void Release()
 	{
 		Assert( 0 );
@@ -2941,6 +3227,16 @@ public:
 
 		ResetResponseGroups();
 	}
+
+#ifdef L4D2
+	void ResetAllGroupsForRound()
+	{
+		// S016260: reverse existing instances first, then the default groups.
+		for ( int i = m_InstancedSystems.Count() - 1; i >= 0; --i )
+			m_InstancedSystems[i]->ResetResponseGroups();
+		ResetResponseGroups();
+	}
+#endif
 
 	void ReloadAllResponseSystems()
 	{
@@ -3034,7 +3330,19 @@ void CDefaultResponseSystem::DestroyCustomResponseSystems()
 static CDefaultResponseSystem defaultresponsesytem;
 IResponseSystem *g_pResponseSystem = &defaultresponsesytem;
 
+#ifdef L4D2
+void ResetAllResponseSystemGroups()
+{
+	defaultresponsesytem.ResetAllGroupsForRound();
+}
+#endif
+
+
+#if defined( L4D2 )
+CON_COMMAND_F( rr_reloadresponsesystems, "Reload all response system scripts." , 0x00000004)
+#else
 CON_COMMAND( rr_reloadresponsesystems, "Reload all response system scripts." )
+#endif
 {
 	if ( !UTIL_IsCommandIssuedByServerAdmin() )
 		return;
@@ -3402,3 +3710,33 @@ void CResponseSystem::DumpDictionary( const char *pszName )
 		}
 	}
 }
+
+#ifdef L4D2
+void CResponseSystem::ParseResponseFire( AI_ResponseFollowup &followup )
+{
+	if ( !ParseToken() ) { ResponseWarning( "FIRE token in response lacked any further tokens.\n" ); return; }
+	followup.fireTarget = token;
+	if ( !ParseToken() ) { ResponseWarning( "FIRE token in response lacked an input.\n" ); return; }
+	followup.fireInput = token;
+	followup.hasEntityIO = true;
+	if ( !ParseToken() ) { ResponseWarning( "FIRE token in response lacked a delay.\n" ); return; }
+	followup.fireDelay = atof( token );
+}
+void CResponseSystem::ParseResponseThen( AI_ResponseFollowup &followup )
+{
+	if ( !ParseToken() ) { ResponseWarning( "THEN token in response lacked any further tokens.\n" ); return; }
+	followup.target = token;
+	if ( !ParseToken() ) { ResponseWarning( "THEN token in response had a target '%s' but no concept.\n", followup.target.String() ); return; }
+	followup.concept = token;
+	if ( !ParseToken() ) { ResponseWarning( "THEN token in response lacked contexts.\n" ); return; }
+	char contexts[4096]; contexts[0] = 0;
+	while ( TokenWaiting() )
+	{
+		Q_strncat( contexts, token, sizeof( contexts ) );
+		ParseToken();
+	}
+	followup.contexts = contexts;
+	followup.hasFollowup = true;
+	followup.delay = atof( token );
+}
+#endif

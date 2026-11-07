@@ -89,6 +89,9 @@ void MessageWriteFloat( float flValue);
 void MessageWriteAngle( float flValue);
 void MessageWriteCoord( float flValue);
 void MessageWriteVec3Coord( const Vector& rgflValue);
+#ifdef L4D2
+void MessageWriteBitVecIntegral( const Vector& value );
+#endif
 void MessageWriteVec3Normal( const Vector& rgflValue);
 void MessageWriteAngles( const QAngle& rgflValue);
 void MessageWriteString( const char *sz );

@@ -19,6 +19,9 @@
 #include "particle_parse.h"
 #include "KeyValues.h"
 #include "time.h"
+#if defined( L4D2 )
+#include "vstdlib/random.h"
+#endif
 
 #ifdef USES_ECON_ITEMS
 	#include "econ_item_constants.h"
@@ -39,10 +42,27 @@ bool NPC_CheckBrushExclude( CBaseEntity *pEntity, CBaseEntity *pBrush );
 #include "steam/steam_api.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#include "util_shared_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 
-ConVar r_visualizetraces( "r_visualizetraces", "0", FCVAR_CHEAT );
-ConVar developer("developer", "0", 0, "Set developer message level" ); // developer mode
+ConVar r_visualizetraces( "r_visualizetraces", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00004008
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar developer("developer", "0", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x00080008
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00080004
+#else
+	0
+#endif
+, "Set developer message level" ); // developer mode
 
 float UTIL_VecToYaw( const Vector &vec )
 {
@@ -154,13 +174,22 @@ static int SeedFileLineHash( int seedvalue, const char *sharedname, int addition
 	return (int)( retval );
 }
 
+#if defined( L4D2 )
+static CUniformRandomStream s_SharedRandomStream;
+#endif
+
 float SharedRandomFloat( const char *sharedname, float flMinVal, float flMaxVal, int additionalSeed /*=0*/ )
 {
 	Assert( CBaseEntity::GetPredictionRandomSeed() != -1 );
 
 	int seed = SeedFileLineHash( CBaseEntity::GetPredictionRandomSeed(), sharedname, additionalSeed );
+	#if defined( L4D2 )
+	s_SharedRandomStream.SetSeed( seed );
+	return s_SharedRandomStream.RandomFloat( flMinVal, flMaxVal );
+	#else
 	RandomSeed( seed );
 	return RandomFloat( flMinVal, flMaxVal );
+	#endif
 }
 
 int SharedRandomInt( const char *sharedname, int iMinVal, int iMaxVal, int additionalSeed /*=0*/ )
@@ -168,8 +197,13 @@ int SharedRandomInt( const char *sharedname, int iMinVal, int iMaxVal, int addit
 	Assert( CBaseEntity::GetPredictionRandomSeed() != -1 );
 
 	int seed = SeedFileLineHash( CBaseEntity::GetPredictionRandomSeed(), sharedname, additionalSeed );
+	#if defined( L4D2 )
+	s_SharedRandomStream.SetSeed( seed );
+	return s_SharedRandomStream.RandomInt( iMinVal, iMaxVal );
+	#else
 	RandomSeed( seed );
 	return RandomInt( iMinVal, iMaxVal );
+	#endif
 }
 
 Vector SharedRandomVector( const char *sharedname, float minVal, float maxVal, int additionalSeed /*=0*/ )
@@ -177,13 +211,23 @@ Vector SharedRandomVector( const char *sharedname, float minVal, float maxVal, i
 	Assert( CBaseEntity::GetPredictionRandomSeed() != -1 );
 
 	int seed = SeedFileLineHash( CBaseEntity::GetPredictionRandomSeed(), sharedname, additionalSeed );
+	#if defined( L4D2 )
+	s_SharedRandomStream.SetSeed( seed );
+	#else
 	RandomSeed( seed );
+	#endif
 	// HACK:  Can't call RandomVector/Angle because it uses rand() not vstlib Random*() functions!
 	// Get a random vector.
 	Vector vRandom;
+	#if defined( L4D2 )
+	vRandom.x = s_SharedRandomStream.RandomFloat( minVal, maxVal );
+	vRandom.y = s_SharedRandomStream.RandomFloat( minVal, maxVal );
+	vRandom.z = s_SharedRandomStream.RandomFloat( minVal, maxVal );
+	#else
 	vRandom.x = RandomFloat( minVal, maxVal );
 	vRandom.y = RandomFloat( minVal, maxVal );
 	vRandom.z = RandomFloat( minVal, maxVal );
+	#endif
 	return vRandom;
 }
 
@@ -192,14 +236,24 @@ QAngle SharedRandomAngle( const char *sharedname, float minVal, float maxVal, in
 	Assert( CBaseEntity::GetPredictionRandomSeed() != -1 );
 
 	int seed = SeedFileLineHash( CBaseEntity::GetPredictionRandomSeed(), sharedname, additionalSeed );
+	#if defined( L4D2 )
+	s_SharedRandomStream.SetSeed( seed );
+	#else
 	RandomSeed( seed );
+	#endif
 
 	// HACK:  Can't call RandomVector/Angle because it uses rand() not vstlib Random*() functions!
 	// Get a random vector.
 	Vector vRandom;
+	#if defined( L4D2 )
+	vRandom.x = s_SharedRandomStream.RandomFloat( minVal, maxVal );
+	vRandom.y = s_SharedRandomStream.RandomFloat( minVal, maxVal );
+	vRandom.z = s_SharedRandomStream.RandomFloat( minVal, maxVal );
+	#else
 	vRandom.x = RandomFloat( minVal, maxVal );
 	vRandom.y = RandomFloat( minVal, maxVal );
 	vRandom.z = RandomFloat( minVal, maxVal );
+	#endif
 	return QAngle( vRandom.x, vRandom.y, vRandom.z );
 }
 
@@ -344,12 +398,17 @@ bool CTraceFilterNoNPCsOrPlayer::ShouldHitEntity( IHandleEntity *pHandleEntity, 
 	{
 		CBaseEntity *pEntity = EntityFromEntityHandle( pHandleEntity );
 		if ( !pEntity )
-			return NULL;
+			return false;
+#if defined( L4D2 )
+		if ( pEntity->MyCombatCharacterPointer() != NULL )
+			return false;
+#else
 #ifndef CLIENT_DLL
 		if ( pEntity->Classify() == CLASS_PLAYER_ALLY )
-			return false; // CS hostages are CLASS_PLAYER_ALLY but not IsNPC()
+			return false;
 #endif
-		return (!pEntity->IsNPC() && !pEntity->IsPlayer());
+#endif
+		return !pEntity->IsNPC() && !pEntity->IsPlayer();
 	}
 	return false;
 }
@@ -751,6 +810,10 @@ void UTIL_Tracer( const Vector &vecStart, const Vector &vecEnd, int iEntIndex,
 #endif
 	data.m_flScale = flVelocity;
 	data.m_nHitBox = iParticleID;
+#if defined( L4D2 )
+	// C101ACBD5 also writes the native unnetworked low-byte selector.
+	data.m_nParticleSystemIndex = static_cast< unsigned char >( iParticleID );
+#endif
 
 	// Flags
 	if ( bWhiz )
@@ -814,10 +877,42 @@ void UTIL_BloodDrips( const Vector &origin, const Vector &direction, int color, 
 //-----------------------------------------------------------------------------
 // Purpose: Returns low violence settings
 //-----------------------------------------------------------------------------
-static ConVar	violence_hblood( "violence_hblood","1", 0, "Draw human blood" );
-static ConVar	violence_hgibs( "violence_hgibs","1", 0, "Show human gib entities" );
-static ConVar	violence_ablood( "violence_ablood","1", 0, "Draw alien blood" );
-static ConVar	violence_agibs( "violence_agibs","1", 0, "Show alien gib entities" );
+static ConVar	violence_hblood( "violence_hblood","1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "Draw human blood" );
+static ConVar	violence_hgibs( "violence_hgibs","1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "Show human gib entities" );
+static ConVar	violence_ablood( "violence_ablood","1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "Draw alien blood" );
+static ConVar	violence_agibs( "violence_agibs","1", 
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	0x0000000A
+#elif defined( L4D2 ) && defined( GAME_DLL )
+	0x00000006
+#else
+	0
+#endif
+, "Show alien gib entities" );
 
 bool UTIL_IsLowViolence( void )
 {

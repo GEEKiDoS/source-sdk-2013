@@ -12,10 +12,12 @@
 
 ConVar voice_player_speaking_delay_threshold( "voice_player_speaking_delay_threshold", "0.5f", FCVAR_CHEAT );
 
+#if !defined( L4D2 )
 BEGIN_SCRIPTDESC_ROOT_NAMED( CPlayerVoiceListener, "CPlayerVoiceListener", SCRIPT_SINGLETON "Player voice listeners" )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptIsPlayerSpeaking, "IsPlayerSpeaking", "Returns whether the player specified is speaking." )
 	DEFINE_SCRIPTFUNC_NAMED( ScriptGetPlayerSpeechDuration, "GetPlayerSpeechDuration", "Returns the number of seconds the player has been continuously speaking." )
 END_SCRIPTDESC()
+#endif
 
 inline bool IsPlayerIndexValid( int nPlayerIndex )
 {

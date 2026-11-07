@@ -40,9 +40,15 @@ class CBreakable : public CBaseEntity, public IBreakableWithPropData, public CDe
 {
 public:
 	DECLARE_CLASS( CBreakable, CBaseEntity );
+#if defined( L4D2 )
+	DECLARE_SERVERCLASS();
+#endif
 
 	// basic functions
 	virtual void Spawn( void );
+#if defined( L4D2 )
+	void InitializeTerrorNavAttributes();
+#endif
 	void ParsePropData( void );
 	bool CreateVPhysics( void );
 	virtual void Precache( void );
@@ -69,6 +75,9 @@ public:
 
 	bool IsBreakable( void );
 	bool SparkWhenHit( void );
+#ifdef L4D2
+	int GetMinHealthDamage() const { return m_iMinHealthDmg; }
+#endif
 
 	char const		*DamageDecal( int bitsDamageType, int gameMaterial );
 
@@ -95,6 +104,17 @@ public:
 	float			GetDmgModBullet( void ) { return m_flDmgModBullet; }
 	float			GetDmgModClub( void ) { return m_flDmgModClub; }
 	float			GetDmgModExplosive( void ) { return m_flDmgModExplosive; }
+#ifdef L4D2
+	void SetDmgModFire( float modifier ) { m_flDmgModFire = modifier; }
+	float GetDmgModFire() { return m_flDmgModFire; }
+	// Genuine native brush policy SDC6B0..DC8B0: no retained prop explosion state.
+	void SetExplosionType( int ) {}
+	int GetExplosionType() { return 0; }
+	void SetExplosionDelay( float ) {}
+	float GetExplosionDelay() { return 0.0f; }
+	void SetExplosionBuildup( string_t ) {}
+	string_t GetExplosionBuildup() { return NULL_STRING; }
+#endif
 	void			SetExplosiveRadius( float flRadius ) { m_explodeRadius = flRadius; }
 	void			SetExplosiveDamage( float flDamage ) { m_ExplosionMagnitude = flDamage; }
 	float			GetExplosiveRadius( void ) { return m_explodeRadius; }
@@ -152,6 +172,9 @@ protected:
 	float			m_flDmgModBullet;
 	float			m_flDmgModClub;
 	float			m_flDmgModExplosive;
+#ifdef L4D2
+	float m_flDmgModFire;
+#endif
 	string_t		m_iszPhysicsDamageTableName;
 	string_t		m_iszBreakableModel;
 	int				m_iBreakableSkin;
@@ -159,6 +182,9 @@ protected:
 	int				m_iMaxBreakableSize;
 	string_t		m_iszBasePropData;	
 	int				m_iInteractions;
+#if defined( L4D2 )
+	int m_breakableType; // Native1128, saved map key; allocation-zero default.
+#endif
 	PerformanceMode_t m_PerformanceMode;
 	int				m_nTeamNumber;
 

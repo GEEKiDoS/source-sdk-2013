@@ -157,6 +157,7 @@ void C_TeamTrainWatcher::OnDataChanged( DataUpdateType_t updateType )
 			gameeventmanager->FireEventClientSide( event );
 		}
 
+#if !defined( L4D2 )
 		// check to see if the train is now on a hill
 		if ( ObjectiveResource() )
 		{
@@ -174,6 +175,7 @@ void C_TeamTrainWatcher::OnDataChanged( DataUpdateType_t updateType )
 			}
 		}
 	}
+#endif // !L4D2
 
 	if ( m_flOldRecedeTime != m_flRecedeTime )
 	{

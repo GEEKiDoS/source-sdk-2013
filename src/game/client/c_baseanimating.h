@@ -26,6 +26,13 @@
 #include "ragdoll_shared.h"
 #include "tier0/threadtools.h"
 #include "datacache/idatacache.h"
+#if defined( L4D2 )
+#include "particles_new.h"
+#endif
+
+#if defined( L4D2 )
+void RecvProxy_Sequence( const CRecvProxyData *pData, void *pStruct, void *pOut );
+#endif
 
 #define LIPSYNC_POSEPARAM_NAME "mouth"
 #define NUM_HITBOX_FIRES	10
@@ -47,6 +54,9 @@ class CBoneList;
 class KeyValues;
 class CJiggleBones;
 class IBoneSetup;
+#ifdef L4D2
+struct ShaderStencilState_t;
+#endif
 FORWARD_DECLARE_HANDLE( memhandle_t );
 typedef unsigned short MDLHandle_t;
 
@@ -91,7 +101,21 @@ typedef unsigned int			ClientSideAnimationListHandle_t;
 class C_BaseAnimating : public C_BaseEntity, private IModelLoadCallback
 {
 public:
+#if defined( L4D2 )
+	void EnableJiggleBones();
+	void DisableJiggleBones();
+#endif
+
+#if defined( L4D2 )
+	void SetSkin( int skin );
+	void SetBody( int body );
+	virtual void InvalidateAttachments();
+#endif
+
 	DECLARE_CLASS( C_BaseAnimating, C_BaseEntity );
+#ifdef L4D2
+	virtual bool GetStencilState( ShaderStencilState_t &state ) { return false; } // C2BF10.
+#endif
 	DECLARE_CLIENTCLASS();
 	DECLARE_PREDICTABLE();
 	DECLARE_INTERPOLATION();
@@ -110,12 +134,18 @@ public:
 	bool UsesPowerOfTwoFrameBufferTexture( void );
 
 	virtual bool	Interpolate( float currentTime );
+#if defined( L4D2 )
+	virtual bool Simulate() OVERRIDE;
+#else
 	virtual void	Simulate();	
+#endif
 	virtual void	Release();	
 
 	float	GetAnimTimeInterval( void ) const;
 
+#if !defined( L4D2 )
 	virtual unsigned char	GetClientSideFade( void );
+#endif
 
 	// Get bone controller values.
 	virtual void	GetBoneControllers(float controllers[MAXSTUDIOBONECTRLS]);
@@ -175,6 +205,14 @@ public:
 	virtual void ValidateModelIndex( void );
 	virtual CStudioHdr *OnNewModel( void );
 	CStudioHdr	*GetModelPtr() const;
+#if defined( L4D2 )
+	CStudioHdr *GetCameraFollowStudioHdr()
+	{
+		if ( !m_pStudioHdr && GetModel() != NULL )
+			LockStudioHdr();
+		return m_pStudioHdr;
+	}
+#endif
 	void InvalidateMdlCache();
 	
 	virtual void SetPredictable( bool state );
@@ -185,7 +223,12 @@ public:
 	virtual	void StandardBlendingRules( CStudioHdr *pStudioHdr, Vector pos[], Quaternion q[], float currentTime, int boneMask );
 	void UnragdollBlend( CStudioHdr *hdr, Vector pos[], Quaternion q[], float currentTime );
 
+#if defined( L4D2 )
+	virtual void MaintainSequenceTransitions( IBoneSetup &boneSetup, float cycle, Vector pos[], Quaternion q[] );
+	virtual void OnModelPoseParametersChanged(); // Genuine native191 default2B7E0 RET0.
+#else
 	void MaintainSequenceTransitions( IBoneSetup &boneSetup, float flCycle, Vector pos[], Quaternion q[] );
+#endif
 	virtual void AccumulateLayers( IBoneSetup &boneSetup, Vector pos[], Quaternion q[], float currentTime );
 
 	virtual void ChildLayerBlend( Vector pos[], Quaternion q[], float currentTime, int boneMask );
@@ -202,7 +245,17 @@ public:
 	float	SetPoseParameter( CStudioHdr *pStudioHdr, int iParameter, float flValue );
 	inline float SetPoseParameter( int iParameter, float flValue ) { return SetPoseParameter( GetModelPtr(), iParameter, flValue ); }
 
+#if defined( L4D2 )
+	void ResetPoseParameterInterpolation();
+	virtual void EjectParticleBrass( const char *effectName, int attachment );
+#endif
 	float	GetPoseParameter( int iPoseParameter );
+	#if defined( L4D2 )
+	double GetPoseParameter( CStudioHdr *studio, int index ); // C2B820 physical-domain getter; raw one-arg API is distinct.
+	#endif
+#if defined( L4D2 )
+	const float *GetPoseParameterArray() const { return m_flPoseParameter; }
+#endif
 
 	bool	GetPoseParameterRange( int iPoseParameter, float &minValue, float &maxValue );
 
@@ -243,7 +296,9 @@ public:
 	virtual void					NotifyShouldTransmit( ShouldTransmitState_t state );
 	virtual void					OnPreDataChanged( DataUpdateType_t updateType );
 	virtual void					OnDataChanged( DataUpdateType_t updateType );
+#if !defined( L4D2 )
 	virtual void					AddEntity( void );
+#endif
 
 	// This can be used to force client side animation to be on. Only use if you know what you're doing!
 	// Normally, the server entity should set this.
@@ -290,9 +345,20 @@ public:
 
 	// returns true if we're currently being ragdolled
 	bool							IsRagdoll() const;
+#if defined( L4D2 )
+	virtual int GetRagdollType() const;
+#endif
 	bool							IsAboutToRagdoll() const;
+#if defined( L4D2 )
+	virtual C_BaseAnimating *BecomeRagdollOnClient( int category );
+#else
 	virtual C_BaseAnimating			*BecomeRagdollOnClient();
+#endif
+#if defined( L4D2 )
+	C_BaseAnimating *CreateRagdollCopy( int category, bool hideSource );
+#else
 	C_BaseAnimating					*CreateRagdollCopy();
+#endif
 	bool							InitAsClientRagdoll( const matrix3x4_t *pDeltaBones0, const matrix3x4_t *pDeltaBones1, const matrix3x4_t *pCurrentBonePosition, float boneDt, bool bFixedConstraints=false );
 	void							IgniteRagdoll( C_BaseAnimating *pSource );
 	void							TransferDissolveFrom( C_BaseAnimating *pSource );
@@ -301,30 +367,56 @@ public:
 	virtual void					Clear( void );
 	void							ClearRagdoll();
 	void							CreateUnragdollInfo( C_BaseAnimating *pRagdoll );
-	bool							ForceSetupBonesAtTime( matrix3x4_t *pBonesOut, float flTime );
-	virtual bool					GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt );
+#if defined( L4D2 )
+	void ForceSetupBonesAtTime( matrix3x4_t *pBonesOut, float flTime );
+	virtual void GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt );
+	void GetRagdollBoneDeltaArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pCurrentBones, float boneDt );
+#else
+	bool ForceSetupBonesAtTime( matrix3x4_t *pBonesOut, float flTime );
+	virtual bool GetRagdollInitBoneArrays( matrix3x4_t *pDeltaBones0, matrix3x4_t *pDeltaBones1, matrix3x4_t *pCurrentBones, float boneDt );
+#endif
 
 	// For shadows rendering the correct body + sequence...
 	virtual int GetBody()			{ return m_nBody; }
 	virtual int GetSkin()			{ return m_nSkin; }
 
 	bool IsOnFire() { return ( (GetFlags() & FL_ONFIRE) != 0 ); }
+#if defined( L4D2 )
+	float GetFrozen() const { return m_flFrozen; }
+	double GetEffectivePlaybackRate() const;
+#endif
 
 	inline float					GetPlaybackRate();
 	inline void						SetPlaybackRate( float rate );
 
+#if defined( L4D2 )
+	void SetModelScale( float scale );
+#else
 	void							SetModelScale( float scale, float change_duration = 0.0f  );
+#endif
 	float							GetModelScale() const { return m_flModelScale; }
 	inline bool						IsModelScaleFractional() const;  /// very fast way to ask if the model scale is < 1.0f  (faster than if (GetModelScale() < 1.0f) )
 	inline bool						IsModelScaled() const;
+#if !defined( L4D2 )
 	void							UpdateModelScale( void );
+#endif
+#if !defined( L4D2 )
 	virtual	void					RefreshCollisionBounds( void );
+#endif
 
 	int								GetSequence();
 	virtual void					SetSequence(int nSequence);
+	#if defined( L4D2 )
+	virtual void OnSequenceChanged(); // C345B0 genuine metadata callback, not ResetSequenceInfo.
+	#endif
 	inline void						ResetSequence(int nSequence);
-	float							GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence );
-	inline float					GetSequenceGroundSpeed( int iSequence ) { return GetSequenceGroundSpeed(GetModelPtr(), iSequence); }
+#if defined( L4D2 )
+	double GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence );
+	inline double GetSequenceGroundSpeed( int iSequence ) { return GetSequenceGroundSpeed( GetModelPtr(), iSequence ); }
+#else
+	float GetSequenceGroundSpeed( CStudioHdr *pStudioHdr, int iSequence );
+	inline float GetSequenceGroundSpeed( int iSequence ) { return GetSequenceGroundSpeed( GetModelPtr(), iSequence ); }
+#endif
 	bool							IsSequenceLooping( CStudioHdr *pStudioHdr, int iSequence );
 	inline bool						IsSequenceLooping( int iSequence ) { return IsSequenceLooping(GetModelPtr(),iSequence); }
 	float							GetSequenceMoveDist( CStudioHdr *pStudioHdr, int iSequence );
@@ -340,6 +432,9 @@ public:
 
 	// Clientside animation
 	virtual float					FrameAdvance( float flInterval = 0.0f );
+#if defined( L4D2 )
+	virtual void OnAnimationCycleCompleted(); // Genuine198C0default, all130RET0.
+#endif
 	virtual float					GetSequenceCycleRate( CStudioHdr *pStudioHdr, int iSequence );
 	virtual void					UpdateClientSideAnimation();
 	void							ClientSideAnimationChanged();
@@ -434,9 +529,15 @@ public:
 	int								SelectWeightedSequence ( int activity );
 	int								SelectWeightedSequenceFromModifiers( Activity activity, CUtlSymbol *pActivityModifiers, int iModifierCount );
 	void							ResetSequenceInfo( void );
-	float							SequenceDuration( void );
-	float							SequenceDuration( CStudioHdr *pStudioHdr, int iSequence );
-	inline float					SequenceDuration( int iSequence ) { return SequenceDuration(GetModelPtr(), iSequence); }
+#if defined( L4D2 )
+	double SequenceDuration( void );
+	double SequenceDuration( CStudioHdr *pStudioHdr, int iSequence );
+	inline double SequenceDuration( int iSequence ) { return SequenceDuration( GetModelPtr(), iSequence ); }
+#else
+	float SequenceDuration( void );
+	float SequenceDuration( CStudioHdr *pStudioHdr, int iSequence );
+	inline float SequenceDuration( int iSequence ) { return SequenceDuration( GetModelPtr(), iSequence ); }
+#endif
 	int								FindTransitionSequence( int iCurrentSequence, int iGoalSequence, int *piDir );
 
 	void							RagdollMoved( void );
@@ -500,6 +601,9 @@ public:
 	CSequenceTransitioner			m_SequenceTransitioner;
 
 protected:
+#if defined( L4D2 )
+	float m_flFrozen;
+#endif
 	CIKContext						*m_pIk;
 
 	int								m_iEyeAttachment;
@@ -538,9 +642,11 @@ protected:
 
 protected:
 
+#if !defined( L4D2 )
 	float							m_fadeMinDist;
 	float							m_fadeMaxDist;
 	float							m_flFadeScale;
+#endif
 
 private:
 
@@ -588,7 +694,13 @@ private:
 	Vector							m_vecPreRagdollMaxs;
 
 	// Current animation sequence
+#if defined( L4D2 )
+protected:
+#endif
 	int								m_nSequence;
+#if defined( L4D2 )
+private:
+#endif
 	bool							m_bReceivedSequence;
 
 	// Current cycle location from server
@@ -596,6 +708,9 @@ protected:
 	float							m_flCycle;
 	CInterpolatedVar< float >		m_iv_flCycle;
 	float							m_flOldCycle;
+#if defined( L4D2 )
+	float m_flPreviousFrameAnimTime; //2268, actualCBActor0; NOT networkoldanimtime.
+#endif
 	bool							m_bNoModelParticles;
 
 private:
@@ -608,6 +723,9 @@ private:
 	memhandle_t						m_hitboxBoneCacheHandle;
 	float							m_flLastBoneSetupTime;
 	CJiggleBones					*m_pJiggleBones;
+#if defined( L4D2 )
+	bool m_bJiggleBonesEnabled;
+#endif
 
 	// Calculated attachment points
 	CUtlVector<CAttachmentData>		m_Attachments;
@@ -642,7 +760,16 @@ private:
 	mutable MDLHandle_t				m_hStudioHdr;
 	CThreadFastMutex				m_StudioHdrInitLock;
 	bool							m_bHasAttachedParticles;
+#if defined( L4D2 )
+	HPARTICLEFFECT m_hEjectBrassEffect; // Native2372: actual ancestor weak lifetime.
+	int m_nEjectBrassAttachment; // Native2384: actual ctor store-1.
+#endif
 };
+
+#if defined( L4D2 )
+void GetRagdollCurSequenceWithDeathPose( C_BaseAnimating *player, matrix3x4_t *bones,
+	float time, int deathPose, int deathFrame );
+#endif
 
 enum 
 {
@@ -657,6 +784,15 @@ class C_ClientRagdoll : public C_BaseAnimating, public IPVSNotify
 {
 	
 public:
+#if defined( L4D2 )
+	virtual int GetRagdollType() const OVERRIDE { return m_ragdollType; }
+	virtual ShadowType_t ShadowCastType() OVERRIDE;
+	void ForceShadowCastType( bool force, ShadowType_t shadowType = SHADOWS_NONE );
+	int m_ragdollType; // Native2404, unsaved; independent m_bImportant remains Boolean.
+	float m_burnPercent, m_bbqPercent, m_itBlend, m_camoPercent, m_bloodyHands; // Native2408..2424, unsaved.
+	float m_flGibExpireTime; // Native2428, unsaved; C3CD90 explicitly clears this one field.
+#endif
+
 	C_ClientRagdoll( bool bRestoring = true );
 	DECLARE_CLASS( C_ClientRagdoll, C_BaseAnimating );
 	DECLARE_DATADESC();
@@ -686,6 +822,10 @@ public:
 	float m_flEffectTime;
 
 private:
+#if defined( L4D2 )
+	bool m_bForceShadowType; // Native2580, unsaved.
+	ShadowType_t m_forcedShadowType; // Native2584, unsaved.
+#endif
 	int m_iCurrentFriction;
 	int m_iMinFriction;
 	int m_iMaxFriction;
@@ -793,7 +933,11 @@ inline bool C_BaseAnimating::IsSequenceFinished( void )
 	return m_bSequenceFinished; 
 }
 
+#if defined( L4D2 )
+inline double C_BaseAnimating::SequenceDuration( void )
+#else
 inline float C_BaseAnimating::SequenceDuration( void )
+#endif
 { 
 	return SequenceDuration( GetSequence() ); 
 }
@@ -816,5 +960,8 @@ EXTERN_RECV_TABLE(DT_BaseAnimating);
 
 
 extern void DevMsgRT( PRINTF_FORMAT_STRING char const* pMsg, ... );
+#if defined( L4D2 )
+void RecordSequenceDebug( float time, const char *sequence, float cycle, float weight, const char *tag );
+#endif
 
 #endif // C_BASEANIMATING_H

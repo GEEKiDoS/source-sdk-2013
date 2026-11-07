@@ -21,6 +21,9 @@ class CFuncMoveLinear : public CBaseToggle
 {
 public:
 	DECLARE_CLASS( CFuncMoveLinear, CBaseToggle );
+#if defined( L4D2 )
+	DECLARE_SERVERCLASS();
+#endif
 
 	void		Spawn( void );
 	void		Precache( void );
@@ -41,6 +44,10 @@ public:
 	void InputClose( inputdata_t &inputdata );
 	void InputSetPosition( inputdata_t &inputdata );
 	void InputSetSpeed( inputdata_t &inputdata );
+#if defined( L4D2 )
+	void InputTeleportToTarget( inputdata_t &inputdata );
+	void InputResetPosition( inputdata_t &inputdata );
+#endif
 	
 	DECLARE_DATADESC();
 

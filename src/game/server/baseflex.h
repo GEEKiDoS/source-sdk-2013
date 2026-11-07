@@ -92,7 +92,11 @@ public:
 	virtual	bool		ClearSceneEvent( CSceneEventInfo *info, bool fastKill, bool canceled );
 
 	// Add the event to the queue for this actor
+#if defined( L4D2 )
+	void				AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseEntity *pTarget, CBaseEntity *pSceneEntity );
+#else
 	void				AddSceneEvent( CChoreoScene *scene, CChoreoEvent *event, CBaseEntity *pTarget = NULL );
+#endif
 
 	// Remove the event from the queue for this actor
 	void				RemoveSceneEvent( CChoreoScene *scene, CChoreoEvent *event, bool fastKill );
@@ -141,7 +145,7 @@ protected:
 	LocalFlexController_t	FlexControllerLocalToGlobal( const flexsettinghdr_t *pSettinghdr, int key );
 
 public:
-#if 0
+#if defined( L4D2 )
 	// Returns the script instance of the scene entity associated with our oldest ("top level") scene event
 	HSCRIPT		ScriptGetOldestScene( void );
 	HSCRIPT		ScriptGetSceneByIndex( int index );

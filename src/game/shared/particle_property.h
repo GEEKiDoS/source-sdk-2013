@@ -20,6 +20,9 @@
 //-----------------------------------------------------------------------------
 class CBaseEntity;
 class CNewParticleEffect;
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+class CParticleSystemDefinition;
+#endif
 
 // Argh: Server considers -1 to be an invalid attachment, whereas the client uses 0
 #ifdef CLIENT_DLL
@@ -43,6 +46,9 @@ struct ParticleControlPoint_t
 	int								iAttachmentPoint;
 	Vector							vecOriginOffset;
 	EHANDLE							hEntity;
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	matrix3x4_t m_LocalMatrix;
+#endif
 };
 
 struct ParticleEffectList_t
@@ -77,9 +83,27 @@ public:
 
 	// Effect Creation
 	CNewParticleEffect *Create( const char *pszParticleName, ParticleAttachment_t iAttachType, const char *pszAttachmentName );
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	CNewParticleEffect *Create( const char *name, ParticleAttachment_t attachType, int attachment = INVALID_PARTICLE_ATTACHMENT,
+		Vector originOffset = vec3_origin, const matrix3x4_t *localMatrix = NULL );
+	CNewParticleEffect *Create( CParticleSystemDefinition *definition, ParticleAttachment_t attachType,
+		int attachment = INVALID_PARTICLE_ATTACHMENT, Vector originOffset = vec3_origin, const matrix3x4_t *localMatrix = NULL );
+#else
 	CNewParticleEffect *Create( const char *pszParticleName, ParticleAttachment_t iAttachType, int iAttachmentPoint = INVALID_PARTICLE_ATTACHMENT, Vector vecOriginOffset = vec3_origin );
-	void				AddControlPoint( CNewParticleEffect *pEffect, int iPoint, C_BaseEntity *pEntity, ParticleAttachment_t iAttachType, const char *pszAttachmentName = NULL, Vector vecOriginOffset = vec3_origin );
-	void				AddControlPoint( int iEffectIndex, int iPoint, C_BaseEntity *pEntity, ParticleAttachment_t iAttachType, int iAttachmentPoint = INVALID_PARTICLE_ATTACHMENT, Vector vecOriginOffset = vec3_origin );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void AddControlPoint( CNewParticleEffect *effect, int controlPoint, C_BaseEntity *entity, ParticleAttachment_t attachType,
+		const char *attachmentName = NULL, Vector originOffset = vec3_origin, const matrix3x4_t *localMatrix = NULL );
+#else
+	void AddControlPoint( CNewParticleEffect *pEffect, int iPoint, C_BaseEntity *pEntity, ParticleAttachment_t iAttachType,
+		const char *pszAttachmentName = NULL, Vector vecOriginOffset = vec3_origin );
+#endif
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void AddControlPoint( int effectIndex, int controlPoint, C_BaseEntity *entity, ParticleAttachment_t attachType,
+		int attachment = INVALID_PARTICLE_ATTACHMENT, Vector originOffset = vec3_origin, const matrix3x4_t *localMatrix = NULL );
+#else
+	void AddControlPoint( int iEffectIndex, int iPoint, C_BaseEntity *pEntity, ParticleAttachment_t iAttachType, int iAttachmentPoint = INVALID_PARTICLE_ATTACHMENT, Vector vecOriginOffset = vec3_origin );
+#endif
 
 	inline void			SetControlPointParent( CNewParticleEffect *pEffect, int whichControlPoint, int parentIdx );
 	void				SetControlPointParent( int iEffectIndex, int whichControlPoint, int parentIdx );
@@ -90,12 +114,19 @@ public:
 
 	// kill all particle systems involving a given entity for their control points
 	void				StopParticlesInvolving( CBaseEntity *pEntity );
-	void				StopParticlesNamed( const char *pszEffectName, bool bForceRemoveInstantly = false, bool bInverse = false ); ///< kills all particles using the given definition name
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+	void StopParticlesNamed( const char *name, bool forceRemoveInstantly = false, int onlyDrawForLocalUser = -1 );
+#else
+	void StopParticlesNamed( const char *pszEffectName, bool bForceRemoveInstantly = false, bool bInverse = false );
+#endif
 	void				StopParticlesWithNameAndAttachment( const char *pszEffectName, int iAttachmentPoint, bool bForceRemoveInstantly = false ); ///< kills all particles using the given definition name
 
 	// Particle System hooks
 	void				OnParticleSystemUpdated( CNewParticleEffect *pEffect, float flTimeDelta );
 	void				OnParticleSystemDeleted( CNewParticleEffect *pEffect );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	bool IsValidEffect( CNewParticleEffect *effect ); // Native151A70, nonconst.
+#endif
 
 #ifdef CLIENT_DLL
 	void				OwnerSetDormantTo( bool bDormant );

@@ -27,7 +27,11 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar template_debug( "template_debug", "0" );
+ConVar template_debug( "template_debug", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 // This is appended to key's values that will need to be unique in template instances
 const char *ENTITYIO_FIXUP_STRING = "&0000";

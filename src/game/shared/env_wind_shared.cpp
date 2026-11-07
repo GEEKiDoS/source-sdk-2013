@@ -188,8 +188,13 @@ void CEnvWindShared::UpdateTreeSway( float flTime )
 	// Update vertex shader
 	float flPercentage = ( 1 - ( ( m_flSwayTime - flTime ) / TREE_SWAY_UPDATE_TIME ) );
 	CMatRenderContextPtr pRenderContext( g_pMaterialSystem );
+#if defined( L4D2 )
+	// Native L4D2 scales the interpolated wind for the tree-sway shader.
+	Vector vecWind = Lerp( flPercentage, m_PrevSwayVector, m_CurrentSwayVector ) * 0.04f;
+#else
 	// Dividing by 2 helps the numbers the shader is expecting stay in line with other expected game values.
 	Vector vecWind = Lerp( flPercentage, m_PrevSwayVector, m_CurrentSwayVector ) / 2;
+#endif
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_WIND_DIRECTION, vecWind );
 #endif
 }

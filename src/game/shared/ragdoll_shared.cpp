@@ -14,6 +14,9 @@
 #include "tier0/vprof.h"
 #include "engine/ivdebugoverlay.h"
 #include "solidsetdefaults.h"
+#if defined( L4D2 ) && defined( CLIENT_DLL )
+#include "l4d2/player/c_terrorplayer.h"
+#endif
 //CLIENT
 #ifdef CLIENT_DLL 
 #include "c_fire_smoke.h"
@@ -645,8 +648,9 @@ void RagdollSolveSeparation( ragdoll_t &ragdoll, CBaseEntity *pEntity )
 			Vector dir = target-start;
 			if ( dir.LengthSqr() > 1.0f )
 			{
-				// this fixes a bug in ep2 with antlion grubs, but causes problems in TF2 - revisit, but disable for TF now
-#if !defined(TF_CLIENT_DLL)
+				// L4D2's native client/server solver requires directional contact.
+				// The SDK mass-ratio shortcut can repeatedly teleport light limbs.
+#if !defined(TF_CLIENT_DLL) && !defined(L4D2)
 				// heuristic: guess that anything separated and small mass ratio is in some state that's 
 				// keeping the solver from fixing it
 				float mass = element.pObject->GetMass();
@@ -706,6 +710,9 @@ void RagdollSolveSeparation( ragdoll_t &ragdoll, CBaseEntity *pEntity )
 //-----------------------------------------------------------------------------
 // LRU
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#include "l4d2/effects/terror_ragdoll_retirement.inc"
+#else
 #ifdef _XBOX
 // xbox defaults to 4 ragdolls max
 ConVar g_ragdoll_maxcount("g_ragdoll_maxcount", "4", FCVAR_REPLICATED );
@@ -1079,6 +1086,7 @@ void CRagdollLRURetirement::MoveToTopOfLRU( CBaseAnimating *pRagdoll, bool bImpo
 
 	m_LRU.AddToTail( pRagdoll );
 }
+#endif // L4D2 five-list retirement
 
 
 //EFFECT/ENTITY TRANSFERS
@@ -1097,7 +1105,11 @@ C_EntityDissolve *DissolveEffect( C_BaseEntity *pTarget, float flTime )
 {
 	C_EntityDissolve *pDissolve = new C_EntityDissolve;
 
+#if defined( L4D2 )
+	if ( pDissolve->InitializeAsClientEntity( "sprites/blueglow1.vmt", false ) == false )
+#else
 	if ( pDissolve->InitializeAsClientEntity( "sprites/blueglow1.vmt", RENDER_GROUP_TRANSLUCENT_ENTITY ) == false )
+#endif
 	{
 		pDissolve->Release();
 		return NULL;
@@ -1134,7 +1146,11 @@ C_EntityFlame *FireEffect( C_BaseAnimating *pTarget, C_BaseEntity *pServerFire, 
 {
 	C_EntityFlame *pFire = new C_EntityFlame;
 
+#if defined( L4D2 )
+	if ( pFire->InitializeAsClientEntity( NULL, false ) == false )
+#else
 	if ( pFire->InitializeAsClientEntity( NULL, RENDER_GROUP_TRANSLUCENT_ENTITY ) == false )
+#endif
 	{
 		pFire->Release();
 		return NULL;
@@ -1177,6 +1193,16 @@ C_EntityFlame *FireEffect( C_BaseAnimating *pTarget, C_BaseEntity *pServerFire, 
 
 void C_BaseAnimating::IgniteRagdoll( C_BaseAnimating *pSource )
 {
+#if defined( L4D2 )
+	C_ClientRagdoll *corpse = dynamic_cast< C_ClientRagdoll * >( this );
+	if ( corpse )
+	{
+		corpse->m_burnPercent = corpse->m_bbqPercent = corpse->m_itBlend = corpse->m_camoPercent = corpse->m_bloodyHands = 0.0f;
+		C_TerrorPlayer *player = ToTerrorPlayer( pSource );
+		if ( player ) { corpse->m_itBlend = player->GetITBlend(); corpse->m_bloodyHands = player->GetBloodyHandsBlend(); }
+	}
+	if ( !pSource ) return; // Only the remaining source-effect reads require this pointer.
+#endif
 	C_BaseEntity *pChild = pSource->GetEffectEntity();
 	
 	if ( pChild )
@@ -1184,7 +1210,7 @@ void C_BaseAnimating::IgniteRagdoll( C_BaseAnimating *pSource )
 		C_EntityFlame *pFireChild = dynamic_cast<C_EntityFlame *>( pChild );
 		C_ClientRagdoll *pRagdoll = dynamic_cast< C_ClientRagdoll * > ( this );
 
-		if ( pFireChild )
+		if ( pFireChild && pRagdoll )
 		{
 			pRagdoll->SetEffectEntity ( FireEffect( pRagdoll, pFireChild, NULL, NULL, NULL ) );
 		}

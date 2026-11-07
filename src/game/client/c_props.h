@@ -27,6 +27,9 @@ public:
 	// constructor, destructor
 	C_DynamicProp( void );
 	~C_DynamicProp( void );
+#if defined( L4D2 )
+	void OnDataChanged( DataUpdateType_t type ) OVERRIDE;
+#endif
 
 	void GetRenderBounds( Vector& theMins, Vector& theMaxs );
 	unsigned int ComputeClientSideAnimationFlags();

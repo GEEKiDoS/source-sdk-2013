@@ -34,16 +34,35 @@
 #include "ai_behavior_lead.h"
 #include "gameinterface.h"
 #include "ilagcompensationmanager.h"
+#if defined( L4D2 )
+#include "l4d2/player/terrorplayer.h"
+#include "l4d2/director/terror_director.h"
+#include "team.h"
+#include "nav_mesh.h"
+#include "nav_area.h"
+#include "vscript_server.h"
+#endif
 
 #ifdef HL2_DLL
 #include "hl2_player.h"
+#endif
+
+#if defined( L4D2 )
+#include <xmmintrin.h>
+#include <math.h>
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 #define DEBUG_TRANSITIONS_VERBOSE	2
-ConVar g_debug_transitions( "g_debug_transitions", "0", FCVAR_NONE, "Set to 1 and restart the map to be warned if the map has no trigger_transition volumes. Set to 2 to see a dump of all entities & associated results during a transition." );
+ConVar g_debug_transitions( "g_debug_transitions", "0", 
+#if defined( L4D2 )
+	0x00000006
+#else
+	FCVAR_NONE
+#endif
+, "Set to 1 and restart the map to be warned if the map has no trigger_transition volumes. Set to 2 to see a dump of all entities & associated results during a transition." );
 
 // Global list of triggers that care about weapon fire
 // Doesn't need saving, the triggers re-add themselves on restore.
@@ -51,7 +70,13 @@ CUtlVector< CHandle<CTriggerMultiple> >	g_hWeaponFireTriggers;
 
 extern CServerGameDLL	g_ServerGameDLL;
 extern bool				g_fGameOver;
-ConVar showtriggers( "showtriggers", "0", FCVAR_CHEAT, "Shows trigger brushes" );
+ConVar showtriggers( "showtriggers", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+, "Shows trigger brushes" );
 
 bool IsTriggerClass( CBaseEntity *pEntity );
 
@@ -92,7 +117,13 @@ void Cmd_ShowtriggersToggle_f( const CCommand &args )
 	}
 }
 
-static ConCommand showtriggers_toggle( "showtriggers_toggle", Cmd_ShowtriggersToggle_f, "Toggle show triggers", FCVAR_CHEAT );
+static ConCommand showtriggers_toggle( "showtriggers_toggle", Cmd_ShowtriggersToggle_f, "Toggle show triggers", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
 // Global Savedata for base trigger
 BEGIN_DATADESC( CBaseTrigger )
@@ -106,7 +137,9 @@ BEGIN_DATADESC( CBaseTrigger )
 	// Inputs	
 	DEFINE_INPUTFUNC( FIELD_VOID, "Enable", InputEnable ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "Disable", InputDisable ),
+	#if !defined( L4D2 )
 	DEFINE_INPUTFUNC( FIELD_VOID, "DisableAndEndTouch", InputDisableAndEndTouch ),
+	#endif
 	DEFINE_INPUTFUNC( FIELD_VOID, "Toggle", InputToggle ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "TouchTest", InputTouchTest ),
 
@@ -130,6 +163,9 @@ LINK_ENTITY_TO_CLASS( trigger, CBaseTrigger );
 CBaseTrigger::CBaseTrigger()
 {
 	AddEFlags( EFL_USE_PARTITION_WHEN_NOT_SOLID );
+	#if defined( L4D2 )
+	m_bClientSidePredicted = false;
+	#endif
 }
 
 //------------------------------------------------------------------------------
@@ -324,6 +360,10 @@ int CBaseTrigger::DrawDebugTextOverlays(void)
 		}
 		EntityText(text_offset,tempstr,0);
 		text_offset++;
+		#if defined( L4D2 )
+		debugoverlay->AddBoxOverlay( GetAbsOrigin(), CollisionProp()->OBBMins(), CollisionProp()->OBBMaxs(),
+			GetAbsAngles(), 255, 0, 0, 10, 0.01023f );
+		#endif
 	}
 	return text_offset;
 }
@@ -378,6 +418,7 @@ void CBaseTrigger::InitTrigger( )
 // Purpose: Returns true if this entity passes the filter criteria, false if not.
 // Input  : pOther - The entity to be filtered.
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 bool CBaseTrigger::PassesTriggerFilters(CBaseEntity *pOther)
 {
 	// First test spawn flag filters
@@ -455,6 +496,7 @@ bool CBaseTrigger::PassesTriggerFilters(CBaseEntity *pOther)
 	}
 	return false;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: Called to simulate what happens when an entity touches the trigger.
@@ -499,7 +541,9 @@ void CBaseTrigger::StartTouch(CBaseEntity *pOther)
 		{
 			// First entity to touch us that passes our filters
 			m_OnStartTouchAll.FireOutput( pOther, this );
+			#if !defined( L4D2 )
 			StartTouchAll();
+			#endif
 		}
 	}
 }
@@ -536,10 +580,12 @@ void CBaseTrigger::EndTouch(CBaseEntity *pOther)
 			{
 				m_hTouchingEntities.Remove( i );
 			}
+			#if !defined( L4D2 )
 			else if ( hOther->IsPlayer() && !hOther->IsAlive() )
 			{
 				m_hTouchingEntities.Remove( i );
 			}
+			#endif
 			else
 			{
 				bFoundOtherTouchee = true;
@@ -551,7 +597,9 @@ void CBaseTrigger::EndTouch(CBaseEntity *pOther)
 		if ( !bFoundOtherTouchee /*&& !m_bDisabled*/ )
 		{
 			m_OnEndTouchAll.FireOutput(pOther, this);
+			#if !defined( L4D2 )
 			EndTouchAll();
+			#endif
 		}
 	}
 }
@@ -656,8 +704,21 @@ void CTriggerRemove::Touch( CBaseEntity *pOther )
 BEGIN_DATADESC( CTriggerHurt )
 
 	// Function Pointers
+#if defined( L4D2 )
+	{ FIELD_VOID, "CTriggerHurtRadiationThink", { 0, 0 }, 1, FTYPEDESC_FUNCTIONTABLE, NULL, NULL, (inputfunc_t)( (inputfunc_t)( &classNameTypedef::CTriggerHurtShim::RadiationThinkShim ) ) },
+#else
 	DEFINE_FUNCTION( CTriggerHurtShim::RadiationThinkShim ),
+#endif
+#if defined( L4D2 )
+	{ FIELD_VOID, "CTriggerHurtHurtThink", { 0, 0 }, 1, FTYPEDESC_FUNCTIONTABLE, NULL, NULL, (inputfunc_t)( (inputfunc_t)( &classNameTypedef::CTriggerHurtShim::HurtThinkShim ) ) },
+#else
 	DEFINE_FUNCTION( CTriggerHurtShim::HurtThinkShim ),
+#endif
+	#if defined( L4D2 )
+	{ FIELD_VOID, "CTriggerHurtNavThink", { 0, 0 }, 1, FTYPEDESC_FUNCTIONTABLE, NULL, NULL, (inputfunc_t)( (inputfunc_t)( &classNameTypedef::CTriggerHurtShim::NavThinkShim ) ) },
+	DEFINE_KEYFIELD( m_vDamageForce, FIELD_VECTOR, "damageforce" ),
+	DEFINE_KEYFIELD( m_thinkAlways, FIELD_BOOLEAN, "thinkalways" ),
+	#endif
 
 	// Fields
 	DEFINE_FIELD( m_flOriginalDamage, FIELD_FLOAT ),
@@ -703,6 +764,10 @@ void CTriggerHurt::Spawn( void )
 		SetThink ( &CTriggerHurtShim::RadiationThinkShim );
 		SetNextThink( gpGlobals->curtime + random->RandomFloat(0.0, 0.5) );
 	}
+	#if defined( L4D2 )
+	if ( TheNavMesh )
+		SetContextThink( &CTriggerHurtShim::NavThinkShim, gpGlobals->curtime, "NavContext" );
+	#endif
 }
 
 
@@ -741,6 +806,7 @@ void CTriggerHurt::RadiationThink( void )
 // Purpose: When touched, a hurt trigger does m_flDamage points of damage each half-second.
 // Input  : pOther - The entity that is touching us.
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 bool CTriggerHurt::HurtEntity( CBaseEntity *pOther, float damage )
 {
 	if ( !pOther->m_takedamage || !PassesTriggerFilters(pOther) )
@@ -794,6 +860,7 @@ bool CTriggerHurt::HurtEntity( CBaseEntity *pOther, float damage )
 	//NDebugOverlay::Box( pOther->GetAbsOrigin(), pOther->WorldAlignMins(), pOther->WorldAlignMaxs(), 255,0,0,0,0.5 );
 	return true;
 }
+#endif
 
 void CTriggerHurt::HurtThink()
 {
@@ -804,7 +871,11 @@ void CTriggerHurt::HurtThink()
 	}
 	else
 	{
+		#if defined( L4D2 )
+		SetNextThink( gpGlobals->curtime + ( m_thinkAlways ? 0.0f : 0.5f ) );
+		#else
 		SetNextThink( gpGlobals->curtime + 0.5f );
+		#endif
 	}
 }
 
@@ -832,6 +903,9 @@ void CTriggerHurt::EndTouch( CBaseEntity *pOther )
 // Output : int - number of entities actually hurt
 //-----------------------------------------------------------------------------
 #define TRIGGER_HURT_FORGIVE_TIME	3.0f	// time in seconds
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 int CTriggerHurt::HurtAllTouchers( float dt )
 {
 	int hurtCount = 0;
@@ -889,6 +963,9 @@ int CTriggerHurt::HurtAllTouchers( float dt )
 
 	return hurtCount;
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 void CTriggerHurt::Touch( CBaseEntity *pOther )
 {
@@ -929,6 +1006,14 @@ BEGIN_DATADESC( CTriggerMultiple )
 	// Function Pointers
 	DEFINE_FUNCTION(MultiTouch),
 	DEFINE_FUNCTION(MultiWaitOver ),
+	#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_iEntireTeam, FIELD_INTEGER, "entireteam" ),
+	DEFINE_KEYFIELD( m_bAllowIncapTouch, FIELD_BOOLEAN, "allowincap" ),
+	DEFINE_KEYFIELD( m_bAllowGhostTouch, FIELD_BOOLEAN, "allowghost" ),
+	DEFINE_FUNCTION( TeamTouchThink ),
+	DEFINE_OUTPUT( m_OnEntireTeamStartTouch, "OnEntireTeamStartTouch" ),
+	DEFINE_OUTPUT( m_OnEntireTeamEndTouch, "OnEntireTeamEndTouch" ),
+	#endif
 
 	// Outputs
 	DEFINE_OUTPUT(m_OnTrigger, "OnTrigger")
@@ -940,6 +1025,7 @@ END_DATADESC()
 //-----------------------------------------------------------------------------
 // Purpose: Called when spawning, after keyvalues have been handled.
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CTriggerMultiple::Spawn( void )
 {
 	BaseClass::Spawn();
@@ -954,12 +1040,14 @@ void CTriggerMultiple::Spawn( void )
 	ASSERTSZ(m_iHealth == 0, "trigger_multiple with health");
 	SetTouch( &CTriggerMultiple::MultiTouch );
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
 // Purpose: Touch function. Activates the trigger.
 // Input  : pOther - The thing that touched us.
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CTriggerMultiple::MultiTouch(CBaseEntity *pOther)
 {
 	if (PassesTriggerFilters(pOther))
@@ -967,12 +1055,16 @@ void CTriggerMultiple::MultiTouch(CBaseEntity *pOther)
 		ActivateMultiTrigger( pOther );
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Input  : pActivator - 
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+#pragma float_control( precise, on, push )
+#endif
 void CTriggerMultiple::ActivateMultiTrigger(CBaseEntity *pActivator)
 {
 	if (GetNextThink() > gpGlobals->curtime)
@@ -996,6 +1088,9 @@ void CTriggerMultiple::ActivateMultiTrigger(CBaseEntity *pActivator)
 		SetThink(  &CTriggerMultiple::SUB_Remove );
 	}
 }
+#if defined( L4D2 )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -1009,6 +1104,7 @@ void CTriggerMultiple::MultiWaitOver( void )
 // ##################################################################################
 //	>> TriggerOnce
 // ##################################################################################
+#if !defined( L4D2 )
 class CTriggerOnce : public CTriggerMultiple
 {
 	DECLARE_CLASS( CTriggerOnce, CTriggerMultiple );
@@ -1016,6 +1112,7 @@ public:
 
 	void Spawn( void );
 };
+#endif
 
 LINK_ENTITY_TO_CLASS( trigger_once, CTriggerOnce );
 
@@ -1373,7 +1470,9 @@ private:
 };
 
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( trigger_changelevel, CChangeLevel );
+#endif
 
 // Global Savedata for changelevel trigger
 BEGIN_DATADESC( CChangeLevel )
@@ -2174,6 +2273,7 @@ int CChangeLevel::ChangeList( levellist_t *pLevelList, int maxList )
 //-----------------------------------------------------------------------------
 // Purpose: A trigger that pushes the player, NPCs, or objects.
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 class CTriggerPush : public CBaseTrigger
 {
 public:
@@ -2191,10 +2291,16 @@ public:
 	float m_flAlternateTicksFix; // Scale factor to apply to the push speed when running with alternate ticks
 	float m_flPushSpeed;
 };
+#endif
 
 BEGIN_DATADESC( CTriggerPush )
 	DEFINE_KEYFIELD( m_vecPushDir, FIELD_VECTOR, "pushdir" ),
 	DEFINE_KEYFIELD( m_flAlternateTicksFix, FIELD_FLOAT, "alternateticksfix" ),
+	#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_bTriggerOnStartTouch, FIELD_BOOLEAN, "triggeronstarttouch" ),
+	DEFINE_INPUTFUNC( FIELD_VECTOR, "SetPushDirection", InputSetPushDirection ),
+	DEFINE_INPUTFUNC( FIELD_FLOAT, "SetPushSpeed", InputSetPushSpeed ),
+	#endif
 	//DEFINE_FIELD( m_flPushSpeed, FIELD_FLOAT ),
 END_DATADESC()
 
@@ -2249,6 +2355,7 @@ void CTriggerPush::Activate()
 // Purpose: 
 // Input  : *pOther - 
 //-----------------------------------------------------------------------------
+#if !defined( L4D2 )
 void CTriggerPush::Touch( CBaseEntity *pOther )
 {
 	if ( !pOther->IsSolid() || (pOther->GetMoveType() == MOVETYPE_PUSH || pOther->GetMoveType() == MOVETYPE_NONE ) )
@@ -2341,6 +2448,7 @@ void CTriggerPush::Touch( CBaseEntity *pOther )
 		break;
 	}
 }
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -2471,7 +2579,9 @@ public:
 	DECLARE_DATADESC();
 };
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( trigger_teleport_relative, CTriggerTeleportRelative );
+#endif
 BEGIN_DATADESC( CTriggerTeleportRelative )
 	DEFINE_KEYFIELD( m_TeleportOffset, FIELD_VECTOR, "teleportoffset" )
 END_DATADESC()
@@ -2844,6 +2954,9 @@ void CAI_ChangeHintGroup::InputActivate( inputdata_t &inputdata )
 #define SF_CAMERA_PLAYER_SNAP_TO		16
 #define SF_CAMERA_PLAYER_NOT_SOLID		32
 #define SF_CAMERA_PLAYER_INTERRUPT		64
+#if defined( L4D2 )
+#define SF_CAMERA_PLAYER_FOV 128
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -2853,6 +2966,9 @@ class CTriggerCamera : public CBaseEntity
 {
 public:
 	DECLARE_CLASS( CTriggerCamera, CBaseEntity );
+#if defined( L4D2 )
+	CTriggerCamera();
+#endif
 
 	void Spawn( void );
 	bool KeyValue( const char *szKeyName, const char *szValue );
@@ -2888,6 +3004,10 @@ private:
 	float m_deceleration;
 	int	  m_state;
 	Vector m_vecMoveDir;
+#if defined( L4D2 )
+	float m_fov;
+	float m_fovSpeed;
+#endif
 
 
 	string_t m_iszTargetAttachment;
@@ -2944,9 +3064,17 @@ BEGIN_DATADESC( CTriggerCamera )
 #endif
 	DEFINE_FIELD( m_nPlayerButtons, FIELD_INTEGER ),
 	DEFINE_FIELD( m_nOldTakeDamage, FIELD_INTEGER ),
+	#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_fov, FIELD_FLOAT, "fov" ),
+	DEFINE_KEYFIELD( m_fovSpeed, FIELD_FLOAT, "fov_rate" ),
+	#endif
 
 	// Inputs
+	#if defined( L4D2 )
+	DEFINE_INPUTFUNC( FIELD_STRING, "Enable", InputEnable ),
+	#else
 	DEFINE_INPUTFUNC( FIELD_VOID, "Enable", InputEnable ),
+	#endif
 	DEFINE_INPUTFUNC( FIELD_VOID, "Disable", InputDisable ),
 
 	// Function Pointers
@@ -2954,6 +3082,19 @@ BEGIN_DATADESC( CTriggerCamera )
 	DEFINE_OUTPUT( m_OnEndFollow, "OnEndFollow" ),
 
 END_DATADESC()
+
+#if defined( L4D2 )
+#ifdef _MSC_VER
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
+CTriggerCamera::CTriggerCamera() : m_fov( 90.0f ), m_fovSpeed( 1.0f )
+{
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -3026,8 +3167,18 @@ bool CTriggerCamera::KeyValue( const char *szKeyName, const char *szValue )
 //------------------------------------------------------------------------------
 void CTriggerCamera::InputEnable( inputdata_t &inputdata )
 { 
+#if defined( L4D2 )
+	m_hPlayer = NULL;
+	const char *name = inputdata.value.String();
+	if ( name && name[0] )
+		m_hPlayer = gEntList.FindEntityByName( NULL, name );
+	if ( !m_hPlayer )
+		m_hPlayer = inputdata.pActivator;
+	Enable();
+#else
 	m_hPlayer = inputdata.pActivator;
 	Enable();
+#endif
 }
 
 
@@ -3044,6 +3195,92 @@ void CTriggerCamera::InputDisable( inputdata_t &inputdata )
 //-----------------------------------------------------------------------------
 void CTriggerCamera::Enable( void )
 {
+#if defined( L4D2 )
+	m_state = USE_ON;
+	CBaseEntity *entity = m_hPlayer.Get();
+	CBasePlayer *player = entity && entity->IsPlayer() ? static_cast< CBasePlayer * >( entity ) : NULL;
+	if ( entity )
+	{
+		if ( entity->IsPlayer() )
+			m_nPlayerButtons = player->m_nButtons;
+		m_nOldTakeDamage = entity->m_takedamage;
+		entity->m_takedamage = DAMAGE_NO;
+	}
+	if ( HasSpawnFlags( SF_CAMERA_PLAYER_NOT_SOLID ) && entity )
+		entity->AddSolidFlags( FSOLID_NOT_SOLID );
+	m_flReturnTime = gpGlobals->curtime + m_flWait;
+	m_flSpeed = m_initialSpeed;
+	m_targetSpeed = m_initialSpeed;
+	if ( HasSpawnFlags( SF_CAMERA_PLAYER_SNAP_TO ) )
+		m_bSnapToGoal = true;
+	if ( HasSpawnFlags( SF_CAMERA_PLAYER_FOV ) && player )
+	{
+		CBaseEntity *owner = player->GetFOVOwner();
+		if ( owner && ( FClassnameIs( owner, "point_viewcontrol_multiplayer" ) || FClassnameIs( owner, "point_viewcontrol" ) ) )
+			player->ClearZoomOwner();
+		player->SetFOV( this, _mm_cvttss_si32( _mm_set_ss( m_fov ) ), m_fovSpeed, 0 );
+	}
+	m_hTarget = HasSpawnFlags( SF_CAMERA_PLAYER_TARGET ) ? entity : GetNextTarget();
+	if ( m_hTarget )
+	{
+		m_iAttachmentIndex = 0;
+		if ( m_iszTargetAttachment != NULL_STRING )
+		{
+			CBaseAnimating *animating = m_hTarget->GetBaseAnimating();
+			if ( !animating )
+			{
+				Warning( "%s tried to target an attachment (%s) on target %s, which has no model.\n", GetClassname(), STRING( m_iszTargetAttachment ), STRING( m_hTarget->GetEntityName() ) );
+			}
+			else
+			{
+				m_iAttachmentIndex = animating->LookupAttachment( STRING( m_iszTargetAttachment ) );
+				if ( m_iAttachmentIndex == 0 )
+					Warning( "%s could not find attachment %s on target %s.\n", GetClassname(), STRING( m_iszTargetAttachment ), STRING( m_hTarget->GetEntityName() ) );
+			}
+		}
+	}
+	if ( player && HasSpawnFlags( SF_CAMERA_PLAYER_TAKECONTROL ) )
+		player->EnableControl( false );
+	m_pPath = m_sPath != NULL_STRING ? gEntList.FindEntityByName( NULL, m_sPath, NULL, entity ) : NULL;
+	m_flStopTime = gpGlobals->curtime;
+	if ( m_pPath )
+	{
+		if ( m_pPath->m_flSpeed != 0.0f )
+			m_targetSpeed = m_pPath->m_flSpeed;
+		m_flStopTime += m_pPath->GetDelay();
+	}
+	if ( HasSpawnFlags( SF_CAMERA_PLAYER_POSITION ) )
+	{
+		// Re-resolve at the native read points. A failed receiver skips only
+		// its own copy; never substitute a local player or abort Enable.
+		CBaseEntity *positionEntity = m_hPlayer.Get();
+		if ( positionEntity )
+			SetLocalOrigin( positionEntity->EyePosition() ); // S1FF85A -> S206EB0(false) -> S63A90.
+		positionEntity = m_hPlayer.Get();
+		if ( positionEntity )
+			SetLocalAngles( QAngle( positionEntity->GetLocalAngles().x, positionEntity->GetLocalAngles().y, 0 ) );
+		positionEntity = m_hPlayer.Get();
+		if ( positionEntity )
+			SetAbsVelocity( positionEntity->GetAbsVelocity() );
+	}
+	else
+	{
+		SetAbsVelocity( vec3_origin );
+	}
+	if ( player )
+	{
+		player->SetViewEntity( this );
+		player->ShowViewModel( false );
+	}
+	if ( m_hTarget )
+	{
+		SetThink( &CTriggerCamera::FollowTarget );
+		SetNextThink( gpGlobals->curtime );
+	}
+	m_moveDistance = 0.0f;
+	Move();
+	DispatchUpdateTransmitState();
+#else
 	m_state = USE_ON;
 
 	if ( !m_hPlayer || !m_hPlayer->IsPlayer() )
@@ -3217,6 +3454,7 @@ void CTriggerCamera::Enable( void )
 	Move();
 
 	DispatchUpdateTransmitState();
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -3224,6 +3462,33 @@ void CTriggerCamera::Enable( void )
 //-----------------------------------------------------------------------------
 void CTriggerCamera::Disable( void )
 {
+#if defined( L4D2 )
+	CBaseEntity *entity = m_hPlayer.Get();
+	if ( entity )
+	{
+		CBasePlayer *player = entity->IsPlayer() ? static_cast< CBasePlayer * >( entity ) : NULL;
+		if ( entity->IsAlive() )
+		{
+			if ( HasSpawnFlags( SF_CAMERA_PLAYER_NOT_SOLID ) )
+				entity->RemoveSolidFlags( FSOLID_NOT_SOLID );
+			if ( player )
+			{
+				player->SetViewEntity( NULL );
+				player->EnableControl( true );
+				player->ShowViewModel( true );
+			}
+		}
+		if ( HasSpawnFlags( SF_CAMERA_PLAYER_FOV ) && player )
+			player->SetFOV( this, 0, m_fovSpeed, 0 );
+		entity->m_takedamage = m_nOldTakeDamage;
+	}
+	m_state = USE_OFF;
+	m_flReturnTime = gpGlobals->curtime;
+	SetThink( NULL );
+	m_OnEndFollow.FireOutput( this, this );
+	SetLocalAngularVelocity( vec3_angle );
+	DispatchUpdateTransmitState();
+#else
 	if ( m_hPlayer && m_hPlayer->IsAlive() )
 	{
 		if ( HasSpawnFlags( SF_CAMERA_PLAYER_NOT_SOLID ) )
@@ -3251,6 +3516,7 @@ void CTriggerCamera::Disable( void )
 	SetLocalAngularVelocity( vec3_angle );
 
 	DispatchUpdateTransmitState();
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -3278,6 +3544,71 @@ void CTriggerCamera::Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYP
 //-----------------------------------------------------------------------------
 void CTriggerCamera::FollowTarget( )
 {
+#if defined( L4D2 )
+	if ( !m_hPlayer )
+		return;
+	if ( !m_hTarget || ( !HasSpawnFlags( SF_CAMERA_PLAYER_INFINITE_WAIT ) &&
+		( !m_hTarget || gpGlobals->curtime > m_flReturnTime ) ) )
+	{
+		Disable();
+		return;
+	}
+
+	QAngle goal;
+	bool hasGoal = true;
+	if ( m_iAttachmentIndex != 0 )
+	{
+		CBaseEntity *target = m_hTarget.Get();
+		CBaseAnimating *animating = target ? target->GetBaseAnimating() : NULL;
+		Vector origin;
+		hasGoal = animating && animating->GetAttachment( m_iAttachmentIndex, origin );
+		if ( hasGoal )
+			VectorAngles( origin - GetAbsOrigin(), goal );
+	}
+	else if ( m_hTarget )
+	{
+		VectorAngles( m_hTarget->GetAbsOrigin() - GetAbsOrigin(), goal );
+	}
+	else
+	{
+		goal = GetAbsAngles();
+	}
+	if ( hasGoal )
+	{
+		if ( m_bSnapToGoal )
+		{
+			SetAbsAngles( goal );
+			m_bSnapToGoal = false;
+		}
+		else
+		{
+			QAngle angles = GetLocalAngles();
+			if ( angles.y > 360.0f )
+				angles.y -= 360.0f;
+			if ( angles.y < 0.0f )
+				angles.y += 360.0f;
+			SetLocalAngles( angles );
+			float dx = goal.x - GetLocalAngles().x;
+			float dy = goal.y - GetLocalAngles().y;
+			if ( dx < -180.0f ) dx += 360.0f;
+			if ( dx > 180.0f ) dx -= 360.0f;
+			if ( dy < -180.0f ) dy += 360.0f;
+			if ( dy > 180.0f ) dy -= 360.0f;
+			SetLocalAngularVelocity( QAngle( ( dx * 40.0f ) * gpGlobals->frametime,
+				( dy * 40.0f ) * gpGlobals->frametime, GetLocalAngularVelocity().z ) );
+		}
+	}
+	if ( !HasSpawnFlags( SF_CAMERA_PLAYER_TAKECONTROL ) )
+	{
+		SetAbsVelocity( GetAbsVelocity() * 0.8f );
+		const Vector &velocity = GetAbsVelocity();
+		const float length = sqrtf( ( velocity.x * velocity.x + velocity.y * velocity.y ) + velocity.z * velocity.z );
+		if ( length < 10.0f )
+			SetAbsVelocity( vec3_origin );
+	}
+	SetNextThink( gpGlobals->curtime );
+	Move();
+#else
 	if (m_hPlayer == NULL)
 		return;
 
@@ -3362,10 +3693,70 @@ void CTriggerCamera::FollowTarget( )
 	SetNextThink( gpGlobals->curtime );
 
 	Move();
+#endif
 }
 
 void CTriggerCamera::Move()
 {
+#if defined( L4D2 )
+	if ( HasSpawnFlags( SF_CAMERA_PLAYER_INTERRUPT ) )
+	{
+		CBaseEntity *entity = m_hPlayer.Get();
+		CBasePlayer *player = entity && entity->IsPlayer() ? static_cast< CBasePlayer * >( entity ) : NULL;
+		if ( player )
+		{
+			if ( player->m_nButtons != m_nPlayerButtons && player->m_nButtons != 0 )
+			{
+				Disable();
+				return;
+			}
+			m_nPlayerButtons = player->m_nButtons;
+		}
+	}
+	if ( !m_pPath )
+		return;
+
+	m_moveDistance -= gpGlobals->frametime * m_flSpeed;
+	if ( m_moveDistance <= 0.0f )
+	{
+		variant_t emptyVariant;
+		m_pPath->AcceptInput( "InPass", this, this, emptyVariant, 0 );
+		m_pPath = m_pPath->GetNextTarget();
+		if ( m_pPath )
+		{
+			if ( m_pPath->m_flSpeed != 0.0f )
+				m_targetSpeed = m_pPath->m_flSpeed;
+			m_vecMoveDir = m_pPath->GetLocalOrigin() - GetLocalOrigin();
+			m_moveDistance = VectorNormalize( m_vecMoveDir );
+			m_flStopTime = static_cast< float >( static_cast< double >( m_pPath->GetDelay() ) + gpGlobals->curtime );
+		}
+		else
+		{
+			SetAbsVelocity( vec3_origin );
+		}
+	}
+	// Native COMISS/JBE takes acceleration on unordered time, not braking.
+	const bool braking = m_flStopTime > gpGlobals->curtime;
+	const float speed = ( braking ? m_deceleration : m_acceleration ) * gpGlobals->frametime;
+	const float targetSpeed = braking ? 0.0f : m_targetSpeed;
+	const float delta = targetSpeed - m_flSpeed;
+	// S4EE0A0 COMISS/JBE: unordered falls through to targetSpeed.
+	if ( delta > speed )
+		m_flSpeed += speed;
+	else if ( -speed > delta )
+		m_flSpeed -= speed;
+	else
+		m_flSpeed = targetSpeed;
+
+	const float fraction = gpGlobals->frametime * 2.0f;
+	const float inverse = 1.0f - fraction;
+	const Vector &velocity = GetAbsVelocity();
+	Vector nextVelocity;
+	nextVelocity.x = ( m_vecMoveDir.x * m_flSpeed ) * fraction + velocity.x * inverse;
+	nextVelocity.y = ( m_vecMoveDir.y * m_flSpeed ) * fraction + velocity.y * inverse;
+	nextVelocity.z = ( m_vecMoveDir.z * m_flSpeed ) * fraction + velocity.z * inverse;
+	SetAbsVelocity( nextVelocity );
+#else
 	if ( HasSpawnFlags( SF_CAMERA_PLAYER_INTERRUPT ) )
 	{
 		if ( m_hPlayer )
@@ -3456,7 +3847,12 @@ void CTriggerCamera::Move()
 		}
 	}
 #endif
+#endif
 }
+
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
 
 
 //-----------------------------------------------------------------------------
@@ -4227,11 +4623,18 @@ int CTriggerImpact::DrawDebugTextOverlays(void)
 
 const int SF_TRIGGER_MOVE_AUTODISABLE				= 0x80;		// disable auto movement
 const int SF_TRIGGER_AUTO_DUCK						= 0x800;	// Duck automatically
+#if defined( L4D2 )
+const int SF_TRIGGER_AUTO_SPEED = 0x1000;
+const int SF_TRIGGER_DISABLE_JUMP = 0x2000;
+#endif
 
 class CTriggerPlayerMovement : public CBaseTrigger
 {
 	DECLARE_CLASS( CTriggerPlayerMovement, CBaseTrigger );
 public:
+#if defined( L4D2 )
+	DECLARE_SERVERCLASS();
+#endif
 
 	void Spawn( void );
 	void StartTouch( CBaseEntity *pOther );
@@ -4240,6 +4643,11 @@ public:
 	DECLARE_DATADESC();
 
 };
+
+#if defined( L4D2 )
+IMPLEMENT_SERVERCLASS_ST( CTriggerPlayerMovement, DT_TriggerPlayerMovement )
+END_SEND_TABLE()
+#endif
 
 BEGIN_DATADESC( CTriggerPlayerMovement )
 
@@ -4264,6 +4672,15 @@ void CTriggerPlayerMovement::Spawn( void )
 	BaseClass::Spawn();
 
 	InitTrigger();
+#if defined( L4D2 )
+	// S202690: these flags enable the actual client trigger and PVS transmission.
+	if ( HasSpawnFlags( SF_TRIGGER_AUTO_DUCK ) || HasSpawnFlags( SF_TRIGGER_AUTO_SPEED ) ||
+		HasSpawnFlags( SF_TRIGGER_DISABLE_JUMP ) )
+	{
+		m_bClientSidePredicted = true;
+		SetTransmitState( FL_EDICT_PVSCHECK );
+	}
+#endif
 }
 
 
@@ -4283,6 +4700,12 @@ void CTriggerPlayerMovement::StartTouch( CBaseEntity *pOther )
 	{
 		pPlayer->ForceButtons( IN_DUCK );
 	}
+#if defined( L4D2 )
+	if ( HasSpawnFlags( SF_TRIGGER_AUTO_SPEED ) )
+		pPlayer->ForceButtons( IN_SPEED );
+	if ( HasSpawnFlags( SF_TRIGGER_DISABLE_JUMP ) )
+		pPlayer->DisableButtons( IN_JUMP );
+#endif
 
 	// UNDONE: Currently this is the only operation this trigger can do
 	if ( HasSpawnFlags(SF_TRIGGER_MOVE_AUTODISABLE) )
@@ -4305,6 +4728,12 @@ void CTriggerPlayerMovement::EndTouch( CBaseEntity *pOther )
 	{
 		pPlayer->UnforceButtons( IN_DUCK );
 	}
+#if defined( L4D2 )
+	if ( HasSpawnFlags( SF_TRIGGER_AUTO_SPEED ) )
+		pPlayer->UnforceButtons( IN_SPEED );
+	if ( HasSpawnFlags( SF_TRIGGER_DISABLE_JUMP ) )
+		pPlayer->EnableButtons( IN_JUMP );
+#endif
 
 	if ( HasSpawnFlags(SF_TRIGGER_MOVE_AUTODISABLE) )
 	{
@@ -4931,7 +5360,9 @@ BEGIN_DATADESC( CTriggerApplyImpulse )
 END_DATADESC()
 
 
+#if !defined( L4D2 )
 LINK_ENTITY_TO_CLASS( trigger_apply_impulse, CTriggerApplyImpulse );
+#endif
 
 
 CTriggerApplyImpulse::CTriggerApplyImpulse()
@@ -5055,3 +5486,204 @@ bool IsTriggerClass( CBaseEntity *pEntity )
 	
 	return false;
 }
+
+#if defined( L4D2 )
+bool CBaseTrigger::Script_IsTouching( HSCRIPT entity ) const
+{
+	return IsTouching( ToEnt( entity ) );
+}
+
+// S:1FA660. In particular, native L4D2 has no IsAlive or fake-client rejection.
+bool CBaseTrigger::PassesTriggerFilters( CBaseEntity *other )
+{
+	if ( !HasSpawnFlags( SF_TRIGGER_ALLOW_ALL ) &&
+		!( HasSpawnFlags( SF_TRIGGER_ALLOW_CLIENTS ) && ( other->GetFlags() & FL_CLIENT ) ) &&
+		!( HasSpawnFlags( SF_TRIGGER_ALLOW_NPCS ) && ( other->GetFlags() & FL_NPC ) ) &&
+		!( HasSpawnFlags( SF_TRIGGER_ALLOW_PUSHABLES ) && FClassnameIs( other, "func_pushable" ) ) &&
+		!( HasSpawnFlags( SF_TRIGGER_ALLOW_PHYSICS ) && other->GetMoveType() == MOVETYPE_VPHYSICS ) )
+		return false;
+	if ( other->GetFlags() & FL_NPC )
+	{
+		CAI_BaseNPC *npc = other->MyNPCPointer();
+		if ( HasSpawnFlags( SF_TRIGGER_ONLY_PLAYER_ALLY_NPCS ) && ( !npc || !npc->IsPlayerAlly() ) )
+			return false;
+		if ( HasSpawnFlags( SF_TRIGGER_ONLY_NPCS_IN_VEHICLES ) && ( !npc || !npc->IsInAVehicle() ) )
+			return false;
+	}
+	if ( other->IsPlayer() )
+	{
+		CBasePlayer *player = ToBasePlayer( other );
+		if ( HasSpawnFlags( SF_TRIGGER_ONLY_CLIENTS_IN_VEHICLES ) )
+		{
+			if ( !player->IsInAVehicle() )
+				return false;
+			IServerVehicle *vehicle = player->GetVehicle();
+			if ( !vehicle || vehicle->IsPassengerExiting() )
+				return false;
+		}
+		if ( HasSpawnFlags( SF_TRIGGER_ONLY_CLIENTS_OUT_OF_VEHICLES ) && player->IsInAVehicle() )
+			return false;
+	}
+	CBaseFilter *filter = m_hFilter.Get();
+	return !filter || filter->PassesFilter( this, other );
+}
+
+#pragma float_control( precise, on, push )
+// S:1FE5D0. NaN damage follows the DAMAGE path (COMISS zero,damage / JBE).
+bool CTriggerHurt::HurtEntity( CBaseEntity *other, float damage )
+{
+	if ( !other->m_takedamage || !PassesTriggerFilters( other ) )
+		return false;
+	if ( damage < 0.0f )
+		other->TakeHealth( -damage, m_bitsDamageInflict );
+	else
+	{
+		Vector center = CollisionProp()->WorldSpaceCenter();
+		Vector position;
+		other->CollisionProp()->CalcNearestPoint( center, &position );
+		CTakeDamageInfo info( this, this, damage, m_bitsDamageInflict );
+		info.SetDamagePosition( position );
+		if ( m_bNoDmgForce )
+			info.SetDamageForce( vec3_origin );
+		else if ( m_vDamageForce == vec3_origin )
+			GuessDamageForce( &info, position - center, position );
+		else
+			info.SetDamageForce( m_vDamageForce );
+		other->TakeDamage( info );
+	}
+	if ( other->IsPlayer() )
+		m_OnHurtPlayer.FireOutput( other, this );
+	else
+		m_OnHurt.FireOutput( other, this );
+	m_hurtEntities.AddToTail( EHANDLE( other ) );
+	return true;
+}
+#pragma float_control( pop )
+
+// S:200AF0: same five-second cadence while disabled, but no NAV marking then.
+void CTriggerHurt::NavThink()
+{
+	SetContextThink( &CTriggerHurtShim::NavThinkShim, gpGlobals->curtime + 5.0f, "NavContext" );
+	if ( m_bDisabled )
+		return;
+	Extent extent;
+	CollisionProp()->WorldSpaceAABB( &extent.lo, &extent.hi );
+	extent.lo.z -= 71.0f;
+	if ( m_bitsDamageInflict & DMG_BURN )
+	{
+		extent.lo.x -= 16.0f;
+		extent.lo.y -= 16.0f;
+		extent.hi.x += 16.0f;
+		extent.hi.y += 16.0f;
+	}
+	CUtlVector< CNavArea * > areas;
+	TheNavMesh->CollectAreasOverlappingExtent( extent, &areas );
+	FOR_EACH_VEC( areas, i )
+		areas[i]->MarkAsDamaging( 6.0f );
+}
+
+
+void CTriggerPush::InputSetPushDirection( inputdata_t &inputdata ) // S:1F8E70
+{
+	inputdata.value.Vector3D( m_vecPushDir );
+	Vector absolute;
+	AngleVectors( QAngle( m_vecPushDir.x, m_vecPushDir.y, m_vecPushDir.z ), &absolute );
+	VectorIRotate( absolute, EntityToWorldTransform(), m_vecPushDir );
+}
+void CTriggerPush::InputSetPushSpeed( inputdata_t &inputdata ) // S:1F7E80
+{
+	m_flPushSpeed = inputdata.value.Float();
+}
+void CTriggerPush::StartTouch( CBaseEntity *other ) // S:1FF300
+{
+	BaseClass::StartTouch( other );
+	if ( !other->IsSolid() || other->GetMoveType() == MOVETYPE_PUSH || other->GetMoveType() == MOVETYPE_NONE ||
+		!PassesTriggerFilters( other ) || other->GetMoveParent() || !m_bTriggerOnStartTouch )
+		return;
+	Vector absolute;
+	VectorRotate( m_vecPushDir, EntityToWorldTransform(), absolute );
+	other->ApplyAbsVelocityImpulse( absolute * m_flPushSpeed );
+	if ( absolute.z > 0.0f )
+		other->SetGroundEntity( NULL );
+}
+#pragma float_control( precise, on, push )
+void CTriggerPush::Touch( CBaseEntity *other ) // S:1FD950
+{
+	if ( !other->IsSolid() || other->GetMoveType() == MOVETYPE_PUSH || other->GetMoveType() == MOVETYPE_NONE ||
+		!PassesTriggerFilters( other ) || other->GetMoveParent() || m_bTriggerOnStartTouch )
+		return;
+	Vector absolute;
+	VectorRotate( m_vecPushDir, EntityToWorldTransform(), absolute );
+	if ( HasSpawnFlags( SF_TRIG_PUSH_ONCE ) )
+	{
+		other->ApplyAbsVelocityImpulse( absolute * m_flPushSpeed );
+		if ( absolute.z > 0.0f )
+			other->SetGroundEntity( NULL );
+		UTIL_Remove( this );
+		return;
+	}
+	switch ( other->GetMoveType() )
+	{
+	case MOVETYPE_NONE:
+	case MOVETYPE_PUSH:
+	case MOVETYPE_NOCLIP:
+		return;
+	case MOVETYPE_VPHYSICS:
+		{
+			if ( HasSpawnFlags( 0x1000 ) )
+			{
+				IPhysicsObject *objects[1024];
+				int count = other->VPhysicsGetObjectList( objects, ARRAYSIZE( objects ) );
+				for ( int i = 0; i < count; ++i )
+				{
+					Vector force = ( ( absolute * m_flPushSpeed ) * 100.0f ) * gpGlobals->frametime;
+					float massScale = static_cast< float >( static_cast< double >( objects[i]->GetMass() ) * static_cast< double >( 0.01f ) );
+					objects[i]->ApplyForceCenter( force * massScale );
+				}
+			}
+			else if ( IPhysicsObject *physics = other->VPhysicsGetObject() )
+				physics->ApplyForceCenter( ( ( absolute * m_flPushSpeed ) * 100.0f ) * gpGlobals->frametime );
+			return;
+		}
+	default:
+		{
+			Vector push = absolute * m_flPushSpeed;
+			// Native accumulates during lag compensation too.
+			if ( other->GetFlags() & FL_BASEVELOCITY )
+				push += other->GetBaseVelocity();
+			if ( push.z > 0.0f && ( other->GetFlags() & FL_ONGROUND ) )
+			{
+				other->SetGroundEntity( NULL );
+				Vector origin = other->GetAbsOrigin();
+				origin.z += 1.0f;
+				other->SetAbsOrigin( origin );
+			}
+			other->SetBaseVelocity( push );
+			other->AddFlag( FL_BASEVELOCITY );
+		}
+	}
+}
+#pragma float_control( pop )
+void CTriggerPush::DrawDebugGeometryOverlays() // S:1F8F30
+{
+	BaseClass::DrawDebugGeometryOverlays();
+	if ( m_debugOverlays & OVERLAY_BBOX_BIT )
+	{
+		Vector absolute;
+		VectorRotate( m_vecPushDir, EntityToWorldTransform(), absolute );
+		NDebugOverlay::HorzArrow( WorldSpaceCenter(), WorldSpaceCenter() + absolute * 100.0f, 10.0f, 255, 0, 255, 0, true, 0.1f );
+	}
+}
+#endif
+
+#if defined( L4D2 )
+IMPLEMENT_SERVERCLASS_ST( CBaseTrigger, DT_BaseTrigger )
+	SendPropBool( SENDINFO( m_bClientSidePredicted ) ),
+	SendPropInt( SENDINFO( m_spawnflags ), 32, SPROP_NOSCALE ),
+END_SEND_TABLE()
+BEGIN_ENT_SCRIPTDESC( CBaseTrigger, CBaseEntity, "Trigger" )
+	DEFINE_SCRIPTFUNC( Enable, "" )
+	DEFINE_SCRIPTFUNC( Disable, "" )
+	DEFINE_SCRIPTFUNC_NAMED( Script_IsTouching, "IsTouching", "Is the passed entity touching this trigger?" )
+END_SCRIPTDESC()
+#endif

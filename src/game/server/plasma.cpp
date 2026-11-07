@@ -88,6 +88,8 @@ void CPlasma::EnableSmoke( int state )
 //-----------------------------------------------------------------------------
 void CPlasma::Precache( void )
 {
+#if !defined( L4D2 )
 	PrecacheModel( "sprites/plasma1.vmt" );
 	PrecacheModel( "sprites/fire_floor.vmt" );
+#endif // S4BDD60 is genuinely empty.
 }

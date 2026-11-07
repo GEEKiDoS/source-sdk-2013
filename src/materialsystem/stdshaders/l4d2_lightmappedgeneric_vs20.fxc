@@ -1,0 +1,134 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// STATIC: "ENVMAP_MASK" "0..1"
+// STATIC: "TANGENTSPACE" "0..1"
+// STATIC: "BUMPMAP" "0..1"
+// STATIC: "DETAILTEXTURE" "0..1"
+// STATIC: "DIFFUSEBUMPMAP" "0..1"
+// STATIC: "VERTEXCOLOR" "0..1"
+// STATIC: "VERTEXALPHATEXBLENDFACTOR" "0..1"
+// STATIC: "SEAMLESS" "0..1"
+// STATIC: "BUMPMASK" "0..1"
+// STATIC: "FANCY_BLENDING" "0..1"
+// STATIC: "SELFILLUM" "0..1"
+// DYNAMIC: "LIGHTING_PREVIEW" "0..3"
+// STATIC: "PIXELFOG" "0..1"
+// DYNAMIC: "FASTPATH" "0..1"
+// SKIP: !$BUMPMAP && $DIFFUSEBUMPMAP
+// SKIP: $BUMPMASK && ($SEAMLESS || $DETAILTEXTURE)
+// SKIP: $SEAMLESS && $DETAILTEXTURE
+// SKIP: $LIGHTING_PREVIEW == 2
+
+#include "common_vs_fxc.h"
+
+const float4 cPreviewDirection : register( c12 );
+const float4 cSecondaryTransform[2] : register( c14 );
+const float4 cBaseTransform[2] : register( c48 );
+const float4 cDetailOrBumpTransform[2] : register( c50 );
+const float4 cMaskTransform[2] : register( c52 );
+
+struct VS_INPUT
+{
+	float3 position : POSITION;
+	float4 normal : NORMAL;
+	float2 base : TEXCOORD0;
+	float2 lightmap : TEXCOORD1;
+	float2 lightmapOffset : TEXCOORD2;
+	float3 tangentS : TANGENT;
+	float3 tangentT : BINORMAL;
+	float4 color : COLOR0;
+};
+
+struct VS_OUTPUT
+{
+	float4 position : POSITION;
+	float fog : FOG;
+#if SEAMLESS
+	float4 base : TEXCOORD0;
+#else
+	float3 base : TEXCOORD0;
+#endif
+	float4 detailBumpMask : TEXCOORD1;
+	float4 lightmap12 : TEXCOORD2;
+	float4 lightmap3 : TEXCOORD3;
+	float4 world : TEXCOORD4;
+	float3 tangentX : TEXCOORD5;
+	float3 tangentY : TEXCOORD6;
+	float3 tangentZ : TEXCOORD7;
+	float4 color : COLOR0;
+	float blend : COLOR1;
+};
+
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o = (VS_OUTPUT)0;
+	float4 position = float4( v.position, 1 );
+	o.position = mul( position, cModelViewProj );
+	o.world = float4( mul( position, cModel[0] ), o.position.z );
+	float3 normal;
+	DecompressVertex_Normal( v.normal, normal );
+	normal = mul( normal, (float3x3)cModel[0] );
+#if TANGENTSPACE || LIGHTING_PREVIEW
+	float3 tangentS = mul( v.tangentS, (float3x3)cModel[0] );
+	float3 tangentT = mul( v.tangentT, (float3x3)cModel[0] );
+	o.tangentX = float3( tangentS.x, tangentT.x, normal.x );
+	o.tangentY = float3( tangentS.y, tangentT.y, normal.y );
+	o.tangentZ = float3( tangentS.z, tangentT.z, normal.z );
+#endif
+#if SEAMLESS
+	o.base.xyz = o.world.xyz * cBaseTransform[0].x;
+	normal = normalize( normal );
+	o.color.rgb = normal * normal;
+	o.color.a = cModulationColor.a;
+#else
+#if FASTPATH
+	o.base.xy = v.base;
+	o.detailBumpMask.xy = v.base;
+	o.lightmap3.wz = v.base;
+#else
+	o.base.xy = float2( dot( v.base, cBaseTransform[0].xy ) + cBaseTransform[0].w,
+		dot( v.base, cBaseTransform[1].xy ) + cBaseTransform[1].w );
+	o.detailBumpMask.xy = float2( dot( v.base, cDetailOrBumpTransform[0].xy ) + cDetailOrBumpTransform[0].w,
+		dot( v.base, cDetailOrBumpTransform[1].xy ) + cDetailOrBumpTransform[1].w );
+	o.lightmap3.wz = float2( dot( v.base, cSecondaryTransform[0].xy ) + cSecondaryTransform[0].w,
+		dot( v.base, cSecondaryTransform[1].xy ) + cSecondaryTransform[1].w );
+#endif
+	o.color = float4( 1, 1, 1, cModulationColor.a );
+#if VERTEXCOLOR
+	o.color.rgb = v.color.rgb;
+#if !VERTEXALPHATEXBLENDFACTOR
+	o.color.a *= v.color.a;
+#endif
+#endif
+#endif
+#if ENVMAP_MASK || BUMPMASK
+#if FASTPATH
+	o.detailBumpMask.wz = v.base;
+#else
+	o.detailBumpMask.wz = float2( dot( v.base, cMaskTransform[0].xy ) + cMaskTransform[0].w,
+		dot( v.base, cMaskTransform[1].xy ) + cMaskTransform[1].w );
+#endif
+#endif
+#if BUMPMAP && DIFFUSEBUMPMAP
+	o.lightmap12.xy = v.lightmap + v.lightmapOffset;
+	o.lightmap12.wz = o.lightmap12.xy + v.lightmapOffset;
+	o.lightmap3.xy = o.lightmap12.wz + v.lightmapOffset;
+#else
+	o.lightmap12.xy = v.lightmap;
+#endif
+#if VERTEXALPHATEXBLENDFACTOR
+	o.blend = v.color.a;
+#endif
+#if !PIXELFOG
+	// SDK vertex fog constants encode visibility, not native fog amount.
+	float fog = min( saturate( 1 - cFogParams.x + length( cEyePos.xy - o.world.xy ) * cFogParams.w ), 1 - cFogParams.z );
+#if SEAMLESS
+	o.base.w = fog;
+#else
+	o.base.z = fog;
+#endif
+#endif
+#if LIGHTING_PREVIEW == 3
+	o.world.w = dot( cPreviewDirection.xyz, o.world.xyz - cEyePos );
+#endif
+	return o;
+}

@@ -43,16 +43,22 @@ SendProp *CNetPropManager::SearchSendTable( SendTable *pSendTable, const char *p
 		// If we found the property, return the prop
 		if ( pszPropName && V_strcmp( pszPropName, pszProperty ) == 0 )
 		{
+#if !defined( L4D2 )
 			// Skip the prop if it's inside an array, since we want the array itself
 			if ( pSendProp->IsInsideArray() )
 				continue;
 			else
+#endif
 				return pSendProp;
 		}
 
 		// Search nested tables
 		SendTable *pInternalSendTable = pSendProp->GetDataTable();
+#if defined( L4D2 )
+		if ( pInternalSendTable )
+#else
 		if ( pInternalSendTable && pSendProp->GetOffset() == 0 )
+#endif
 		{
 			pSendProp = SearchSendTable( pInternalSendTable, pszProperty );
 			if ( pSendProp )
@@ -79,7 +85,11 @@ inline typedescription_t *CNetPropManager::SearchDataMap( datamap_t *pMap, const
 			if ( V_strcmp( pszProperty, fieldName ) == 0 )
 				return pTypeDesc;
 			
+#if defined( L4D2 )
+			if ( pTypeDesc->td )
+#else
 			if ( pTypeDesc->td && pTypeDesc->fieldOffset[TD_OFFSET_NORMAL] == 0)
+#endif
 			{
 				typedescription_t *td = SearchDataMap( pTypeDesc->td, pszProperty );
 				if ( td )
@@ -93,15 +103,18 @@ inline typedescription_t *CNetPropManager::SearchDataMap( datamap_t *pMap, const
 	return NULL; 
 }
 
+#if !defined( L4D2 )
 const char *s_pszBannedNetProps[]
 {
 	"EntityQuality",
 	"AccountID",
 };
+#endif
 
 //-----------------------------------------------------------------------------
 inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEntity* pBaseEntity, const char *pszProperty, int element )
 {
+#if !defined( L4D2 )
 	for ( int i = 0; i < ARRAYSIZE( s_pszBannedNetProps ); i++ )
 	{
 		if ( V_stristr( pszProperty, s_pszBannedNetProps[ i ] ) != NULL)
@@ -110,6 +123,7 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 			pszProperty = "Y6WP5EH4I45F2LMKSDY2";
 		}
 	}
+#endif
 
 	ServerClass *pServerClass       = pBaseEntity->GetServerClass();
 	const char  *pszServerClassName = pServerClass->GetName();
@@ -143,6 +157,7 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 
 	V_SplitString( pszProperty, ".", szPropertyList );
 
+#if !defined( L4D2 )
 	if ( V_strcmp( szPropertyList[0], "SendTable" ) == 0 )
 	{
 		szPropertyList.Remove(0);
@@ -153,6 +168,7 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 		szPropertyList.Remove(0);
 		bDataMapOnly = true;
 	}
+#endif
 	
 	int nPropertyCount = szPropertyList.Count();
 	if ( nPropertyCount )
@@ -175,7 +191,9 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 				pSendProp = SearchSendTable( pSendTable, pszSearchProperty );
 				if ( !pSendProp )
 				{
+#if !defined( L4D2 )
 					if ( iProperty != nPropertyCount - 1 )
+#endif
 					{
 						// Try the full string remainder as a single property name
 						const char *pszPropertyRemainder = pszProperty + nRootStringLength;
@@ -190,7 +208,9 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 				++iProperty;
 				offset += pSendProp->GetOffset();
 				nRootStringLength += V_strlen( pszSearchProperty ) + iProperty;
+#if !defined( L4D2 )
 				pSendTable = pSendProp->GetDataTable();
+#endif
 			}
 		}
 
@@ -212,7 +232,9 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 				pTypeDesc = SearchDataMap( pDataMap, pszSearchProperty );
 				if ( !pTypeDesc )
 				{
+#if !defined( L4D2 )
 					if ( iProperty != nPropertyCount - 1 )
+#endif
 					{
 						// Try the full string remainder as a single property name
 						const char *pszPropertyRemainder = pszProperty + nRootStringLength;
@@ -227,12 +249,17 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 				++iProperty;
 				offset += pTypeDesc->fieldOffset[TD_OFFSET_NORMAL];
 				nRootStringLength += V_strlen( pszSearchProperty ) + iProperty;
+#if !defined( L4D2 )
 				pDataMap = pTypeDesc->td;
+#endif
 			}
 		}
 	}
 
 	PropInfo_t  propInfo;
+#if defined( L4D2 )
+	propInfo.m_bNativeRawString = false;
+#endif
 	if ( pSendProp )
 	{
 		if ( element < 0 )
@@ -245,7 +272,9 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 		propInfo.m_nOffset	= offset;
 		propInfo.m_nProps	= 0;
 		
+#ifndef L4D2
 		int nElements = pSendProp->GetNumElements();
+#endif
 		NetPropType ePropType = (NetPropType)pSendProp->GetType();
 		if ( ePropType == Type_DataTable )
 		{
@@ -261,6 +290,7 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 			pSendProp = pArrayTable.GetProp( element );
 			propInfo.m_nOffset += pSendProp->GetOffset();
 		}
+#if !defined( L4D2 )
 		else if ( ePropType == Type_Array )
 		{
 			propInfo.m_nProps = nElements;
@@ -275,6 +305,7 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 			pSendProp = pSendProp->GetArrayProp();
 			propInfo.m_nOffset += pSendProp->GetOffset();
 		}
+#endif
 
 		ePropType = (NetPropType)pSendProp->GetType();
 		int nBits = pSendProp->m_nBits;
@@ -282,10 +313,17 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 		{
 			if ( pSendProp->GetProxyFn() != NULL )
 			{
+#if defined( L4D2 )
+				// S128F00 classifies every proxied string as string_t.
+				propInfo.m_bNativeRawString = pSendProp->GetProxyFn() == &SendProxy_StringToString;
+				ePropType = Type_String_t;
+#else
 				if ( pSendProp->GetProxyFn() == &SendProxy_StringT_To_String )
 					ePropType = Type_String_t;
+#endif
 			}
 		}
+#if !defined( L4D2 )
 		else if ( ePropType == Type_Int )
 		{
 			if ( nBits == NUM_NETWORKED_EHANDLE_BITS )
@@ -293,18 +331,27 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 			else if ( nBits < 2 )
 				ePropType = Type_Bool;
 		}
+#endif
 
 		propInfo.m_bIsSendProp = true;
 		propInfo.m_eType       = ePropType;
 		propInfo.m_nBitCount   = nBits;
+#if defined( L4D2 )
+		propInfo.m_nElements   = pSendProp->GetNumElements();
+#else
 		propInfo.m_nElements   = nElements;
+#endif
 		propInfo.m_nTransFlags = pSendProp->GetFlags();
 		propInfo.m_IsPropValid = true;
 
 		if ( propInfo.m_eType == Type_String )
 			propInfo.m_nPropLen = DT_MAX_STRING_BUFFERSIZE;
 	}
+#if defined( L4D2 )
+	else if ( pTypeDesc && pTypeDesc->fieldSizeInBytes > 0 )
+#else
 	else if ( (pTypeDesc) && (!(pTypeDesc->flags & FTYPEDESC_INPUT) && !(pTypeDesc->flags & FTYPEDESC_OUTPUT) && !(pTypeDesc->flags & FTYPEDESC_FUNCTIONTABLE)) )
+#endif
 	{
 		if ( element < 0 || element >= pTypeDesc->fieldSize )
 		{
@@ -351,7 +398,11 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 		case FIELD_BOOLEAN:
 			{
 				propInfo.m_nBitCount = 1;
+#if defined( L4D2 )
+				propInfo.m_eType = Type_Int;
+#else
 				propInfo.m_eType = Type_Bool;
+#endif
 				break;
 			}
 		case FIELD_CHARACTER:
@@ -387,9 +438,14 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 		case FIELD_EHANDLE:
 			{
 				propInfo.m_nBitCount = 32;
+#if defined( L4D2 )
+				propInfo.m_eType = Type_Int;
+#else
 				propInfo.m_eType = Type_EHandle;
+#endif
 				break;
 			}
+#if !defined( L4D2 )
 		case FIELD_CLASSPTR:
 			{
 				propInfo.m_nBitCount = 32;
@@ -417,6 +473,7 @@ inline CNetPropManager::PropInfo_t CNetPropManager::GetEntityPropInfo( CBaseEnti
 				propInfo.m_eType = Type_InvalidOrMax;
 				break;
 			}
+#endif
 		default:
 			{
 				propInfo.m_IsPropValid = false;
@@ -580,7 +637,11 @@ void CNetPropManager::SetPropIntArray( HSCRIPT hEnt, const char *pszProperty, in
 	// be updated until the engine re-transmits the entire table)
 	if ( propInfo.m_bIsSendProp )
 	{
+#if defined( L4D2 )
+		pBaseEntity->edict()->StateChanged();
+#else
 		pBaseEntity->edict()->StateChanged( propInfo.m_nOffset );
+#endif
 	}
 }
 
@@ -647,7 +708,11 @@ void CNetPropManager::SetPropFloatArray( HSCRIPT hEnt, const char *pszProperty, 
 
 	if ( propInfo.m_bIsSendProp )
 	{
+#if defined( L4D2 )
+		pBaseEntity->edict()->StateChanged();
+#else
 		pBaseEntity->edict()->StateChanged( propInfo.m_nOffset );
+#endif
 	}
 }
 
@@ -668,7 +733,11 @@ HSCRIPT CNetPropManager::GetPropEntityArray( HSCRIPT hEnt, const char *pszProper
 
 	PropInfo_t propInfo = GetEntityPropInfo( pBaseEntity, pszProperty, element );
 
+#if defined( L4D2 )
+	if ( !propInfo.m_IsPropValid || propInfo.m_eType != Type_Int )
+#else
 	if ( (!propInfo.m_IsPropValid) || (propInfo.m_eType != Type_EHandle && propInfo.m_eType != Type_ClassPtr) )
+#endif
 		return NULL;
 
 	void *pBaseEntityOrGameRules = pBaseEntity;
@@ -682,7 +751,11 @@ HSCRIPT CNetPropManager::GetPropEntityArray( HSCRIPT hEnt, const char *pszProper
 	uint8 *pEntityPropData = (uint8 *)pBaseEntityOrGameRules + propInfo.m_nOffset;
 
 	CBaseEntity *pPropEntity = NULL;
+#if defined( L4D2 )
+	if ( propInfo.m_eType == Type_Int )
+#else
 	if ( propInfo.m_eType == Type_EHandle )
+#endif
 	{
 		CBaseHandle &baseHandle = *(CBaseHandle *)pEntityPropData;
 		pPropEntity = CBaseEntity::Instance( baseHandle );
@@ -710,7 +783,11 @@ void CNetPropManager::SetPropEntityArray( HSCRIPT hEnt, const char *pszProperty,
 
 	PropInfo_t propInfo = GetEntityPropInfo( pBaseEntity, pszProperty, element );
 
+#if defined( L4D2 )
+	if ( !propInfo.m_IsPropValid || propInfo.m_eType != Type_Int )
+#else
 	if ( (!propInfo.m_IsPropValid) || (propInfo.m_eType != Type_EHandle && propInfo.m_eType != Type_ClassPtr) )
+#endif
 		return;
 
 	void *pBaseEntityOrGameRules = pBaseEntity;
@@ -724,7 +801,11 @@ void CNetPropManager::SetPropEntityArray( HSCRIPT hEnt, const char *pszProperty,
 	uint8 *pEntityPropData = (uint8 *)pBaseEntityOrGameRules + propInfo.m_nOffset;
 
 	CBaseEntity *pOtherEntity = ToEnt( hPropEnt );
+#if defined( L4D2 )
+	if ( propInfo.m_eType == Type_Int )
+#else
 	if ( propInfo.m_eType == Type_EHandle )
+#endif
 	{
 		CBaseHandle &baseHandle = *(CBaseHandle *)pEntityPropData;
 		if ( !pOtherEntity )
@@ -737,7 +818,11 @@ void CNetPropManager::SetPropEntityArray( HSCRIPT hEnt, const char *pszProperty,
 
 	if ( propInfo.m_bIsSendProp )
 	{
+#if defined( L4D2 )
+		pBaseEntity->edict()->StateChanged();
+#else
 		pBaseEntity->edict()->StateChanged( propInfo.m_nOffset );
+#endif
 	}
 }
 
@@ -809,7 +894,11 @@ void CNetPropManager::SetPropVectorArray( HSCRIPT hEnt, const char *pszProperty,
 
 	if ( propInfo.m_bIsSendProp )
 	{
+#if defined( L4D2 )
+		pBaseEntity->edict()->StateChanged();
+#else
 		pBaseEntity->edict()->StateChanged( propInfo.m_nOffset );
+#endif
 	}
 }
 
@@ -850,6 +939,11 @@ const char *CNetPropManager::GetPropStringArray( HSCRIPT hEnt, const char *pszPr
 	}
 	else if ( propInfo.m_eType == Type_String_t )
 	{
+#if defined( L4D2 )
+		// Main's minimal-undefined-step ruling: no raw-array fallback.
+		if ( propInfo.m_bNativeRawString )
+			return ""; // S129D00's genuine lookup-miss result.
+#endif
 		string_t propString = *(string_t *)pEntityPropData;
 		return (propString == NULL_STRING) ? "" : STRING(propString);
 	}
@@ -896,7 +990,14 @@ void CNetPropManager::SetPropStringArray( HSCRIPT hEnt, const char *pszProperty,
 	}
 	else if ( propInfo.m_eType == Type_String_t )
 	{
+#if defined( L4D2 )
+		string_t pooledString = AllocPooledString( value );
+		// Skip only the invalid store, retaining pooling and the dirty step.
+		if ( !propInfo.m_bNativeRawString )
+			*(string_t *)pEntityPropData = pooledString;
+#else
 		*(string_t *)pEntityPropData = AllocPooledString(value);
+#endif
 	}
 	else
 	{
@@ -906,7 +1007,11 @@ void CNetPropManager::SetPropStringArray( HSCRIPT hEnt, const char *pszProperty,
 
 	if ( propInfo.m_bIsSendProp )
 	{
+#if defined( L4D2 )
+		pBaseEntity->edict()->StateChanged();
+#else
 		pBaseEntity->edict()->StateChanged( propInfo.m_nOffset );
+#endif
 	}
 }
 

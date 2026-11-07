@@ -17,9 +17,15 @@
 //-----------------------------------------------------------------------------
 BEGIN_DATADESC( CPathTrack )
 
+#if defined( L4D2 )
+	DEFINE_FIELD( m_pnext, FIELD_CLASSPTR ),
+	DEFINE_FIELD( m_pprevious, FIELD_CLASSPTR ),
+	DEFINE_FIELD( m_paltpath, FIELD_CLASSPTR ),
+#else
 	DEFINE_FIELD( m_pnext,			FIELD_EHANDLE ),
 	DEFINE_FIELD( m_pprevious,		FIELD_EHANDLE ),
 	DEFINE_FIELD( m_paltpath,		FIELD_EHANDLE ),
+#endif
 
 	DEFINE_KEYFIELD( m_flRadius,	FIELD_FLOAT, "radius" ),
 	DEFINE_FIELD( m_length,			FIELD_FLOAT ),
@@ -342,12 +348,16 @@ CPathTrack *CPathTrack::GetNext( void )
 {
 	if ( m_paltpath && FBitSet( m_spawnflags, SF_PATH_ALTERNATE ) && !FBitSet( m_spawnflags, SF_PATH_ALTREVERSE ) )
 	{
+#if !defined( L4D2 )
 		Assert( !m_paltpath.IsValid() || m_paltpath.Get() != NULL );
+#endif
 		return m_paltpath;
 	}
 
 	// The paths shouldn't normally be getting deleted so assert that if it was set, it's valid.
+#if !defined( L4D2 )
 	Assert( !m_pnext.IsValid() || m_pnext.Get() != NULL );
+#endif
 	return m_pnext;
 }
 
@@ -357,11 +367,15 @@ CPathTrack *CPathTrack::GetPrevious( void )
 {
 	if ( m_paltpath && FBitSet( m_spawnflags, SF_PATH_ALTERNATE ) && FBitSet( m_spawnflags, SF_PATH_ALTREVERSE ) )
 	{
+#if !defined( L4D2 )
 		Assert( !m_paltpath.IsValid() || m_paltpath.Get() != NULL );
+#endif
 		return m_paltpath;
 	}
 
+#if !defined( L4D2 )
 	Assert( !m_pprevious.IsValid() || m_pprevious.Get() != NULL );
+#endif
 	return m_pprevious;
 }
 

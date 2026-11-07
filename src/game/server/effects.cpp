@@ -31,6 +31,9 @@
 #include "shot_manipulator.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef L4D2
+#include "precache_register.h"
+#endif
 #include "tier0/memdbgon.h"
 
 #define SF_FUNNEL_REVERSE			1 // funnel effect repels particles instead of attracting them.
@@ -768,10 +771,16 @@ CGib *CEnvShooter::CreateGib ( void )
 	if ( HasSpawnFlags( SF_SHOOTER_FLAMING ) )
 	{
 		// Tag an entity flame along with us
+#if defined( L4D2 )
+		CEntityFlame *pFlame = CEntityFlame::Create( pGib, pGib->m_lifeTime, 0.0f, false );
+#else
 		CEntityFlame *pFlame = CEntityFlame::Create( pGib, false );
+#endif
 		if ( pFlame != NULL )
 		{
+#if !defined( L4D2 )
 			pFlame->SetLifetime( pGib->m_lifeTime );
+#endif
 			pGib->SetFlame( pFlame );
 		}
 	}
@@ -1020,6 +1029,9 @@ class CBlood : public CPointEntity
 public:
 	DECLARE_CLASS( CBlood, CPointEntity );
 
+#if defined( L4D2 )
+	void Precache() OVERRIDE { PrecacheEffect( "bloodspray" ); }
+#endif
 	void	Spawn( void );
 	bool	KeyValue( const char *szKeyName, const char *szValue );
 
@@ -1481,6 +1493,11 @@ public:
 
 	CPrecipitation();
 	void	Spawn( void );
+#if defined( L4D2 )
+	int UpdateTransmitState() OVERRIDE { return SetTransmitState( FL_EDICT_ALWAYS ); }
+	CNetworkVar( float, m_minSpeed );
+	CNetworkVar( float, m_maxSpeed );
+#endif
 
 	CNetworkVar( PrecipitationType_t, m_nPrecipType );
 };
@@ -1489,30 +1506,61 @@ LINK_ENTITY_TO_CLASS( func_precipitation, CPrecipitation );
 
 BEGIN_DATADESC( CPrecipitation )
 	DEFINE_KEYFIELD( m_nPrecipType, FIELD_INTEGER, "preciptype" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_minSpeed, FIELD_FLOAT, "minSpeed" ),
+	DEFINE_KEYFIELD( m_maxSpeed, FIELD_FLOAT, "maxSpeed" ),
+#endif
 END_DATADESC()
 
 // Just send the normal entity stuff
 IMPLEMENT_SERVERCLASS_ST( CPrecipitation, DT_Precipitation)
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_nPrecipType ), 4, SPROP_UNSIGNED ),
+	SendPropFloat( SENDINFO( m_minSpeed ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_maxSpeed ), 0, SPROP_NOSCALE ),
+#else
 	SendPropInt( SENDINFO( m_nPrecipType ), Q_log2( NUM_PRECIPITATION_TYPES ) + 1, SPROP_UNSIGNED )
+#endif
 END_SEND_TABLE()
 
 
 CPrecipitation::CPrecipitation()
 {
 	m_nPrecipType = PRECIPITATION_TYPE_RAIN; // default to rain.
+#if defined( L4D2 )
+	m_minSpeed = 25.0f;
+	m_maxSpeed = 35.0f;
+#endif
 }
 
 void CPrecipitation::Spawn( void )
 {
+#if defined( L4D2 )
+	SetTransmitState( FL_EDICT_PVSCHECK );
+#endif
 	PrecacheMaterial( "effects/fleck_ash1" );
 	PrecacheMaterial( "effects/fleck_ash2" );
 	PrecacheMaterial( "effects/fleck_ash3" );
 	PrecacheMaterial( "effects/ember_swirling001" );
 
 	Precache();
+#if defined( L4D2 )
+	// Native selects solid type after binding the brush model.
+#else
 	SetSolid( SOLID_NONE );							// Remove model & collisions
+#endif
 	SetMoveType( MOVETYPE_NONE );
 	SetModel( STRING( GetModelName() ) );		// Set size
+#if defined( L4D2 )
+	if ( m_nPrecipType == PRECIPITATION_TYPE_PARTICLE_RAIN )
+	{
+		SetSolid( SOLID_VPHYSICS );
+		AddSolidFlags( FSOLID_NOT_SOLID );
+		AddSolidFlags( FSOLID_FORCE_WORLD_ALIGNED );
+		VPhysicsInitStatic();
+	}
+	else SetSolid( SOLID_NONE );
+#endif
 
 	// Default to rain.
 	if ( m_nPrecipType < 0 || m_nPrecipType > NUM_PRECIPITATION_TYPES )
@@ -1552,6 +1600,9 @@ BEGIN_DATADESC( CEnvWind )
 
 	DEFINE_KEYFIELD( m_EnvWindShared.m_iMinWind, FIELD_INTEGER, "minwind" ),
 	DEFINE_KEYFIELD( m_EnvWindShared.m_iMaxWind, FIELD_INTEGER, "maxwind" ),
+#if defined( L4D2 )
+	DEFINE_KEYFIELD( m_EnvWindShared.m_windRadius, FIELD_INTEGER, "windradius" ),
+#endif
 	DEFINE_KEYFIELD( m_EnvWindShared.m_iMinGust, FIELD_INTEGER, "mingust" ),
 	DEFINE_KEYFIELD( m_EnvWindShared.m_iMaxGust, FIELD_INTEGER, "maxgust" ),
 	DEFINE_KEYFIELD( m_EnvWindShared.m_flMinGustDelay, FIELD_FLOAT, "mingustdelay" ),
@@ -1579,12 +1630,18 @@ BEGIN_SEND_TABLE_NOBASE(CEnvWindShared, DT_EnvWindShared)
 	// These are parameters that are used to generate the entire motion
 	SendPropInt		(SENDINFO(m_iMinWind),		10, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_iMaxWind),		10, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropInt( SENDINFO( m_windRadius ), 14, 0 ),
+#endif
 	SendPropInt		(SENDINFO(m_iMinGust),		10, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_iMaxGust),		10, SPROP_UNSIGNED ),
 	SendPropFloat	(SENDINFO(m_flMinGustDelay), 0, SPROP_NOSCALE),		// NOTE: Have to do this, so it's *exactly* the same on client
 	SendPropFloat	(SENDINFO(m_flMaxGustDelay), 0, SPROP_NOSCALE),
 	SendPropInt		(SENDINFO(m_iGustDirChange), 9, SPROP_UNSIGNED ),
 	SendPropInt		(SENDINFO(m_iWindSeed),		32, SPROP_UNSIGNED ),
+#if defined( L4D2 )
+	SendPropVector( SENDINFO( m_location ), 0, SPROP_NOSCALE ),
+#endif
 
 	// These are related to initial state
 	SendPropInt		(SENDINFO(m_iInitialWindDir),9, SPROP_UNSIGNED ),
@@ -1615,7 +1672,12 @@ void CEnvWind::Spawn( void )
 	SetSolid( SOLID_NONE );
 	AddEffects( EF_NODRAW );
 
+#if defined( L4D2 )
+	m_EnvWindShared.Init( entindex(), 0, gpGlobals->curtime, GetLocalAngles().y, 0 );
+	m_EnvWindShared.SetLocation( GetAbsOrigin() );
+#else
 	m_EnvWindShared.Init( entindex(), 0, gpGlobals->frametime, GetLocalAngles().y, 0 );
+#endif
 
 	SetThink( &CEnvWind::WindThink );
 	SetNextThink( gpGlobals->curtime );
@@ -1928,6 +1990,9 @@ class CEnvSplash : public CPointEntity
 
 public:
 	// Input handlers
+#if defined( L4D2 )
+	void Precache() OVERRIDE { PrecacheEffect( "watersplash" ); }
+#endif
 	void	InputSplash( inputdata_t &inputdata );
 
 protected:
@@ -2293,6 +2358,7 @@ CEnvQuadraticBeam *CreateQuadraticBeam( const char *pSpriteName, const Vector &s
 	return pBeam;
 }
 
+#ifndef L4D2
 void EffectsPrecache( void *pUser )
 {
 	CBaseEntity::PrecacheScriptSound( "Underwater.BulletImpact" );
@@ -2316,7 +2382,10 @@ void EffectsPrecache( void *pUser )
 #endif
 }
 
+#endif
+#ifndef L4D2
 PRECACHE_REGISTER_FN( EffectsPrecache );
+#endif
 
 
 class CEnvViewPunch : public CPointEntity
@@ -2384,3 +2453,49 @@ void CEnvViewPunch::InputViewPunch( inputdata_t &inputdata )
 {
 	DoViewPunch();
 }
+
+#if defined( L4D2 )
+class CPrecipitationBlocker : public CBaseEntity
+{
+public:
+	DECLARE_CLASS( CPrecipitationBlocker, CBaseEntity );
+	DECLARE_SERVERCLASS();
+	DECLARE_DATADESC();
+	int UpdateTransmitState() OVERRIDE { return SetTransmitState( FL_EDICT_ALWAYS ); }
+	void Spawn() OVERRIDE
+	{
+		SetTransmitState( FL_EDICT_ALWAYS );
+		Precache();
+		SetSolid( SOLID_NONE );
+		SetMoveType( MOVETYPE_NONE );
+		SetModel( STRING( GetModelName() ) );
+		SetRenderMode( kRenderEnvironmental );
+	}
+};
+LINK_ENTITY_TO_CLASS( func_precipitation_blocker, CPrecipitationBlocker );
+IMPLEMENT_SERVERCLASS_ST( CPrecipitationBlocker, DT_PrecipitationBlocker ) END_SEND_TABLE()
+BEGIN_DATADESC( CPrecipitationBlocker ) END_DATADESC()
+#endif
+
+// Native server 0xaa390; 0x5c192c is its original .CRT pointer RVA.
+#if defined( L4D2 ) && !defined( CLIENT_DLL )
+namespace EffectsPrecachePrecache
+{
+class CResourcePrecacher : public CBaseResourcePrecacher
+{
+public:
+	CResourcePrecacher() : CBaseResourcePrecacher( 1, "EffectsPrecache", 0x5c192c ) {}
+	virtual void Precache( IPrecacheHandler *handler, bool precache, int resourceList, bool ignoreConditionals ) OVERRIDE
+	{
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Underwater.BulletImpact", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "FX_RicochetSound.Ricochet", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Physics.WaterSplash", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "BaseExplosionEffect.Sound", precache, resourceList );
+		handler->Precache( RESOURCETYPE_SCRIPTSOUND, "Splash.SplashSound", precache, resourceList );
+		if ( !ignoreConditionals && gpGlobals->maxClients > 1 )
+			handler->Precache( RESOURCETYPE_SCRIPTSOUND, "HudChat.Message", precache, resourceList );
+	}
+};
+static CResourcePrecacher s_ResourcePrecacher;
+}
+#endif

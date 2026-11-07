@@ -28,10 +28,26 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar g_debug_vehiclesound( "g_debug_vehiclesound", "0", FCVAR_CHEAT );
-ConVar g_debug_vehicleexit( "g_debug_vehicleexit", "0", FCVAR_CHEAT );
+ConVar g_debug_vehiclesound( "g_debug_vehiclesound", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
+ConVar g_debug_vehicleexit( "g_debug_vehicleexit", "0", 
+#if defined( L4D2 )
+	0x00004004
+#else
+	FCVAR_CHEAT
+#endif
+ );
 
-ConVar sv_vehicle_autoaim_scale("sv_vehicle_autoaim_scale", "8");
+ConVar sv_vehicle_autoaim_scale("sv_vehicle_autoaim_scale", "8"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+);
 
 bool ShouldVehicleIgnoreEntity( CBaseEntity *pVehicle, CBaseEntity *pCollide );
 
@@ -769,7 +785,11 @@ CPassengerRole *CBaseServerVehicle::FindOrCreatePassengerRole( string_t strName,
 	return &m_PassengerRoles[nNewIndex];
 }
 
-ConVar g_debug_npc_vehicle_roles( "g_debug_npc_vehicle_roles", "0" );
+ConVar g_debug_npc_vehicle_roles( "g_debug_npc_vehicle_roles", "0"
+#if defined( L4D2 )
+	, 0x00000006
+#endif
+ );
 
 //-----------------------------------------------------------------------------
 // Purpose: Parse NPC entry and exit anim data

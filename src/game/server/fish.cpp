@@ -16,7 +16,13 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar fish_dormant( "fish_dormant", "0", FCVAR_REPLICATED | FCVAR_CHEAT, "Turns off interactive fish behavior. Fish become immobile and unresponsive." );
+ConVar fish_dormant( "fish_dormant", "0", 
+#if defined( L4D2 )
+	0x00006004
+#else
+	FCVAR_REPLICATED | FCVAR_CHEAT
+#endif
+, "Turns off interactive fish behavior. Fish become immobile and unresponsive." );
 
 
 //-----------------------------------------------------------------------------------------------------

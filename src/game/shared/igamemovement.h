@@ -72,6 +72,9 @@ public:
 	float			m_flConstraintRadius;
 	float			m_flConstraintWidth;
 	float			m_flConstraintSpeedFactor;
+#if defined( L4D2 )
+	bool			m_bConstraintPastRadius;
+#endif
 
 	void			SetAbsOrigin( const Vector &vec );
 	const Vector	&GetAbsOrigin() const;

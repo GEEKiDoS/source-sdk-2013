@@ -35,6 +35,9 @@ enum
 struct surfacedata_t;
 
 class CBasePlayer;
+#if defined( L4D2 )
+class ITraceFilter;
+#endif
 
 class CGameMovement : public IGameMovement
 {
@@ -58,10 +61,26 @@ public:
 	
 	// allows derived classes to exclude entities from trace
 	virtual void	TryTouchGround( const Vector& start, const Vector& end, const Vector& mins, const Vector& maxs, unsigned int fMask, int collisionGroup, trace_t& pm );
+#if defined( L4D2 )
+	virtual ITraceFilter *GetMovementTraceFilter( int collisionGroup );
+	virtual void ReleaseMovementTraceFilter( ITraceFilter **filter );
+	CBasePlayer *GetMovingPlayer() const
+	{
+		return m_bProcessingMovement ? player : NULL;
+	}
+	CBasePlayer *GetMovingPlayerOutsideStuckTest() const
+	{
+		return m_bProcessingMovement && !m_bInStuckTest ? player : NULL;
+	}
+#endif
 
 
 #define BRUSH_ONLY true
+#if defined( L4D2 )
+	virtual unsigned int PlayerSolidMask( bool brushOnly = false, CBasePlayer *pPlayerOverride = NULL );
+#else
 	virtual unsigned int PlayerSolidMask( bool brushOnly = false );	///< returns the solid mask for the given player, so bots can have a more-restrictive set
+#endif
 	CBasePlayer		*player;
 	CMoveData *GetMoveData() { return mv; }
 protected:
@@ -104,23 +123,39 @@ protected:
 	virtual float	GetAirSpeedCap( void ) { return 30.f; }
 	
 	virtual bool	CanAccelerate();
+#if defined( L4D2 )
+	virtual bool	CanCheckStuck() { return true; }
+#endif
 	virtual void	Accelerate( Vector& wishdir, float wishspeed, float accel);
 
 	// Only used by players.  Moves along the ground when player is a MOVETYPE_WALK.
 	virtual void	WalkMove( void );
+#if defined( L4D2 )
+	virtual float GetStandableNormal() const { return 0.7f; }
+#endif
 
 	// Try to keep a walking player on the ground when running down slopes etc
 	void			StayOnGround( void );
 
 	// Handle MOVETYPE_WALK.
 	virtual void	FullWalkMove();
+#ifdef L4D2
+	virtual void FullCustomMove();
+	virtual bool ShouldStayOnGround();
+#endif
 
 	// allow overridden versions to respond to jumping
 	virtual void	OnJump( float fImpulse ) {}
 	virtual void	OnLand( float fVelocity ) {}
+#if defined( L4D2 )
+	virtual void OnStartDuck() {}
+#endif
 
 	// Implement this if you want to know when the player collides during OnPlayerMove
 	virtual void	OnTryPlayerMoveCollision( trace_t &tr ) {}
+#if defined( L4D2 )
+	virtual void OnPlayerMoveCollision( const Vector &start, const Vector &end, trace_t *trace ) {}
+#endif
 
 	virtual Vector	GetPlayerMins( void ) const; // uses local player
 	virtual Vector	GetPlayerMaxs( void ) const; // uses local player
@@ -200,7 +235,11 @@ protected:
 	virtual bool			CheckWater( void );
 	
 	// Determine if player is in water, on ground, etc.
+#ifdef L4D2
+	virtual void CategorizePosition( bool bForceMoveToEndPos );
+#else
 	virtual void CategorizePosition( void );
+#endif
 
 	virtual void	CheckParameters( void );
 
@@ -242,12 +281,22 @@ protected:
 	virtual CBaseHandle		TestPlayerPosition( const Vector& pos, int collisionGroup, trace_t& pm );
 
 	// Checks to see if we should actually jump 
+#if defined( L4D2 )
+	virtual void PlaySwimSound();
+	virtual bool CanSwim() const { return true; }
+	virtual void HandleAbilityJump() {}
+#else
 	void			PlaySwimSound();
+#endif
 
 	bool			IsDead( void ) const;
 
 	// Figures out how the constraint should slow us down
+#if defined( L4D2 )
+	double			ComputeConstraintSpeedFactor( void );
+#else
 	float			ComputeConstraintSpeedFactor( void );
+#endif
 
 	virtual void	SetGroundEntity( trace_t *pm );
 
@@ -283,6 +332,17 @@ protected:
 	int				m_iSpeedCropped;
 
 	float			m_flStuckCheckTime[MAX_PLAYERS_ARRAY_SAFE][2]; // Last time we did a full test
+#if defined( L4D2 )
+	bool m_bInStuckTest;
+	bool m_bProcessingMovement;
+	unsigned int m_nMovementTraces;
+#ifndef CLIENT_DLL
+	float m_flStuckStartTime[MAX_PLAYERS_ARRAY_SAFE];
+#endif
+	void ElevatorPushPlayer( CBaseEntity *elevator );
+	void TracePlayerBBoxWithFilter( const Vector &start, const Vector &end,
+		const Vector &mins, const Vector &maxs, unsigned int mask, ITraceFilter *filter, trace_t &trace );
+#endif
 
 	// special function for teleport-with-duck for episodic
 #ifdef HL2_EPISODIC

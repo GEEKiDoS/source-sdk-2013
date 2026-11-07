@@ -45,6 +45,15 @@ enum
 };
 
 
+#if defined( L4D2 )
+struct ClientViewModelRenderable_t
+{
+	IClientRenderable *m_pRenderable;
+	unsigned char m_nAlpha;
+	bool m_bGameOwnedAlpha;
+};
+#endif
+
 class CClientRenderablesList : public CRefCounted<>
 {
 	DECLARE_FIXEDSIZE_ALLOCATOR( CClientRenderablesList );
@@ -61,6 +70,11 @@ public:
 		unsigned short		m_iWorldListInfoLeaf; // NOTE: this indexes WorldListInfo_t's leaf list.
 		unsigned short		m_TwoPass;
 		ClientRenderHandle_t m_RenderHandle;
+#if defined( L4D2 )
+		unsigned char m_nL4D2Alpha;
+		bool m_bL4D2GameOwnedAlpha : 1;
+		bool m_bL4D2IgnoreZ : 1;
+#endif
 	};
 
 	// The leaves for the entries are in the order of the leaves you call CollateRenderablesInLeaf in.
@@ -81,6 +95,9 @@ struct SetupRenderInfo_t
 	int m_nRenderFrame;
 	int m_nDetailBuildFrame;	// The "render frame" for detail objects
 	float m_flRenderDistSq;
+#if defined( L4D2 )
+	int m_nViewID;
+#endif
 	bool m_bDrawDetailObjects : 1;
 	bool m_bDrawTranslucentObjects : 1;
 
@@ -169,7 +186,11 @@ public:
 	virtual void BuildRenderablesList( const SetupRenderInfo_t &info ) = 0;
 
 	// Put renderables in the leaf into their appropriate lists.
+#if defined( L4D2 )
+	virtual void CollateViewModelRenderables( CUtlVector< ClientViewModelRenderable_t > &opaqueList, CUtlVector< ClientViewModelRenderable_t > &translucentList ) = 0;
+#else
 	virtual void CollateViewModelRenderables( CUtlVector< IClientRenderable * >& opaqueList, CUtlVector< IClientRenderable * >& translucentList ) = 0;
+#endif
 
 	// Call this to deactivate static prop rendering..
 	virtual void DrawStaticProps( bool enable ) = 0;
@@ -210,7 +231,23 @@ inline IClientLeafSystem* ClientLeafSystem()
 {
 	return g_pClientLeafSystem;
 }
+#if defined( L4D2 )
+void ClientLeafSystem_SetDrawForLocalUser( ClientRenderHandle_t handle, bool draw );
+void ClientLeafSystem_SetRenderWithViewModels( ClientRenderHandle_t handle, bool enable );
+void ClientLeafSystem_EnableRendering( ClientRenderHandle_t handle, bool enable );
+#endif
 
+
+#if defined( L4D2 )
+void ClientLeafSystem_SetModelTranslucencyType( ClientRenderHandle_t handle, int type );
+void ClientLeafSystem_SetDrawForLocalUser( ClientRenderHandle_t handle, bool draw );
+void ClientLeafSystem_SetRenderWithViewModels( ClientRenderHandle_t handle, bool enable );
+void ClientLeafSystem_EnableRendering( ClientRenderHandle_t handle, bool enable );
+void ClientLeafSystem_DisableCachedRenderBounds( ClientRenderHandle_t handle, bool disable );
+void ClientLeafSystem_EnableBloatedRenderBounds( ClientRenderHandle_t handle, bool enable );
+void ClientLeafSystem_AddEntityRenderable( C_BaseEntity *entity, bool renderWithViewModels, int type, bool drawForLocalUser );
+void ClientLeafSystem_UpdateModelType( ClientRenderHandle_t handle );
+#endif
 
 #endif	// CLIENTLEAFSYSTEM_H
 

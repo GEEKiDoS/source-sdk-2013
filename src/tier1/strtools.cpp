@@ -600,6 +600,83 @@ int V_atoi( const char *str )
 	return (int)V_atoi64( str );
 }
 
+// Native server104F8B10 tail-jumps104F8740 and returns its wide x87 result.
+// Keep the native grammar/arithmetic here, distinct from the SDK float V_atof
+// (which uses decimal division and CRT pow). Standing x87 adaptation: double.
+#pragma float_control( precise, on, push )
+static double NativeParseIntegerPower( double base, int exponent )
+{
+	// Native104F8700: unsigned magnitude also preserves INT_MIN's NEG result.
+	unsigned int power = static_cast< unsigned int >( exponent );
+	if ( exponent < 0 ) power = 0u - power;
+	double value = 1.0;
+	for ( ;; )
+	{
+		if ( power & 1u ) value *= base;
+		power >>= 1;
+		if ( !power ) break;
+		base *= base;
+	}
+	return exponent < 0 ? 1.0 / value : value;
+}
+
+double V_atod( const char *str )
+{
+	AssertValidStringPtr( str );
+	int sign = 1;
+	if ( *str == '-' ) { sign = -1; ++str; }
+	else if ( *str == '+' ) ++str;
+	double value = 0.0; // Native var_C is DOUBLE at104F8765, never a float spill.
+	if ( str[0] == '0' && ( str[1] == 'x' || str[1] == 'X' ) )
+	{
+		str += 2;
+		for ( ;; )
+		{
+			const int c = static_cast< signed char >( *str++ );
+			if ( c >= '0' && c <= '9' ) value = ( value * 16.0 + c ) - 48.0;
+			else if ( c >= 'a' && c <= 'f' ) value = ( ( value * 16.0 + c ) - 97.0 ) + 10.0;
+			else if ( c >= 'A' && c <= 'F' ) value = ( ( value * 16.0 + c ) - 65.0 ) + 10.0;
+			else return value * sign;
+		}
+	}
+	if ( *str == '\'' ) return sign * static_cast< signed char >( str[1] );
+
+	int decimal = -1;
+	int total = 0;
+	for ( ;; )
+	{
+		const int c = static_cast< signed char >( *str++ );
+		if ( c == '.' )
+		{
+			if ( decimal != -1 ) break;
+			decimal = total;
+			continue;
+		}
+		if ( c < '0' || c > '9' )
+		{
+			if ( c == 'e' || c == 'E' )
+			{
+				// Native104F8859 stores DOUBLE before V_atoi104F7560, then
+				// explicitly reloads that value for the exponent0/multiply path.
+				const double mantissa = value;
+				const int exponent = V_atoi( str );
+				value = exponent ? NativeParseIntegerPower( 10.0, exponent ) * mantissa : mantissa;
+			}
+			break;
+		}
+		value = ( value * 10.0 + c ) - 48.0;
+		++total;
+	}
+	// Native104F88A5's spill is likewise DOUBLE. The native rescaling loop
+	// multiplies by the DOUBLE0.1 literal105DDF38, not division by10 or pow.
+	if ( decimal != -1 )
+	{
+		while ( total > decimal ) { value *= 0.1; --total; }
+	}
+	return value * sign;
+}
+#pragma float_control( pop )
+
 float V_atof (const char *str)
 {
 	AssertValidStringPtr( str );

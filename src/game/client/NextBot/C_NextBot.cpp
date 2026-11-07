@@ -8,13 +8,33 @@
 #include "debugoverlay_shared.h"
 #include <bitbuf.h>
 #include "viewrender.h"
+#if defined( L4D2 )
+#include "view_shared.h"
+#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
+#if defined( L4D2 )
+#include "l4d2/effects/terror_view_frustum.h"
+#endif // L4D2
 #include "tier0/memdbgon.h"
 
 #undef NextBot
 
+#if defined( L4D2 )
+extern ConVar nb_shadow_blobby_dist;
+extern ConVar nb_shadow_cull_dist;
+#else
 ConVar NextBotShadowDist( "nb_shadow_dist", "400" );
+#endif
+#ifdef L4D2
+ConVar NextBotStop( "nb_stop", "0", 
+#if defined( L4D2 )
+	0x00006008
+#else
+	FCVAR_CHEAT | FCVAR_REPLICATED
+#endif
+, "Stop all NextBots" );
+#endif
 
 //-----------------------------------------------------------------------------
 IMPLEMENT_CLIENTCLASS_DT( C_NextBotCombatCharacter, DT_NextBot, NextBotCombatCharacter )
@@ -62,6 +82,13 @@ void C_NextBotCombatCharacter::UpdateClientSideAnimation()
 }
 
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( precise, on, push )
+#if _MSC_VER >= 1933
+#pragma fp_contract( off )
+#endif
+#endif
+
 //--------------------------------------------------------------------------------------------------------
 void C_NextBotCombatCharacter::UpdateShadowLOD( void )
 {
@@ -73,6 +100,29 @@ void C_NextBotCombatCharacter::UpdateShadowLOD( void )
 	}
 	else
 	{
+#if defined( L4D2 )
+		// C2D4F30, projected onto the one real local view. Both boundaries
+		// include equality; unordered distances take the dynamic-shadow arm.
+		if ( C_BasePlayer::GetLocalPlayer( 0 ) )
+		{
+			const Vector &localOrigin = C_BasePlayer::GetLocalPlayer( 0 )->GetAbsOrigin();
+			const Vector &origin = GetAbsOrigin();
+			const float x = origin.x - localOrigin.x;
+			const float y = origin.y - localOrigin.y;
+			const float z = origin.z - localOrigin.z;
+			const float distanceSquared = ( x * x + y * y ) + z * z;
+			const float cullDistance = nb_shadow_cull_dist.GetFloat();
+			const float blobbyDistance = nb_shadow_blobby_dist.GetFloat();
+			if ( distanceSquared > cullDistance * cullDistance )
+				m_shadowType = SHADOWS_NONE;
+			else if ( distanceSquared > blobbyDistance * blobbyDistance )
+				m_shadowType = SHADOWS_SIMPLE;
+			else
+				m_shadowType = SHADOWS_RENDER_TO_TEXTURE_DYNAMIC;
+		}
+		else
+			m_shadowType = SHADOWS_SIMPLE;
+#else
 #ifdef NEED_SPLITSCREEN_INTEGRATION
 		FOR_EACH_VALID_SPLITSCREEN_PLAYER( hh )
 		{
@@ -100,6 +150,7 @@ void C_NextBotCombatCharacter::UpdateShadowLOD( void )
 				m_shadowType = SHADOWS_SIMPLE;
 			}
 		}
+#endif
 	}
 
 	if ( oldShadowType != m_shadowType )
@@ -108,11 +159,20 @@ void C_NextBotCombatCharacter::UpdateShadowLOD( void )
 	}
 }
 
+#if defined( L4D2 ) && defined( _MSC_VER )
+#pragma float_control( pop )
+#endif
+
 
 //--------------------------------------------------------------------------------------------------------
 ShadowType_t C_NextBotCombatCharacter::ShadowCastType( void ) 
 {
+#if defined( L4D2 )
+	// C2D53A0 checks the handle before the per-view visibility bit.
+	if ( GetRenderHandle() == INVALID_CLIENT_RENDER_HANDLE || !IsVisible() )
+#else
 	if ( !IsVisible() )
+#endif
 		return SHADOWS_NONE;
 
 	if ( m_shadowTimer.IsElapsed() )
@@ -151,6 +211,9 @@ C_NextBotManager &TheClientNextBots( void )
 //--------------------------------------------------------------------------------------------------------
 C_NextBotManager::C_NextBotManager( void )
 {
+	#if defined( L4D2 )
+	m_nInFrustumFrame = -1;
+	#endif
 }
 
 
@@ -178,7 +241,32 @@ void C_NextBotManager::UnRegister( C_NextBotCombatCharacter *bot )
 //-----------------------------------------------------------------------------
 bool C_NextBotManager::SetupInFrustumData( void )
 {
-#ifdef ENABLE_AFTER_INTEGRATION
+#if defined( L4D2 )
+	if ( IsInFrustumDataValid() ) return true;
+	const GameViewFrustum_t &frustum = GetGameViewFrustum();
+	if ( frustum.m_nFrame != gpGlobals->framecount ) return false;
+	FOR_EACH_VEC( m_botList, iBot )
+		if ( m_botList[iBot] ) m_botList[iBot]->InitFrustumData();
+	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
+	if ( pPlayer )
+	{
+		FOR_EACH_VEC( m_botList, iBot )
+		{
+			C_NextBotCombatCharacter *pBot = m_botList[iBot];
+			if ( !pBot ) continue;
+			Vector mins, maxs;
+			pBot->CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+			if ( !frustum.CullBox( mins, maxs ) )
+			{
+				const Vector delta = pBot->GetAbsOrigin() - pPlayer->GetAbsOrigin();
+				const float distanceSqr = ( delta.y * delta.y + delta.x * delta.x ) + delta.z * delta.z;
+				if ( pBot->GetInFrustumDistanceSqr() > distanceSqr ) pBot->SetInFrustumDistanceSqr( distanceSqr );
+				pBot->SetInFrustum( true );
+			}
+		}
+	}
+	m_nInFrustumFrame = gpGlobals->framecount;
+#elif defined( ENABLE_AFTER_INTEGRATION )
 	// Done already this frame.
 	if ( IsInFrustumDataValid() )
 		return true;

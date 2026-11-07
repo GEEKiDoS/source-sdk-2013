@@ -1,0 +1,123 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// STATIC: "NORMALMAP" "0..2"
+// STATIC: "NORMALMAP2" "0..1"
+// STATIC: "WORLDVERTEXTRANSITION" "0..1"
+// STATIC: "SEAMLESS" "0..1"
+// STATIC: "DETAIL" "0..1"
+// STATIC: "DETAIL_BLEND_MODE" "0..11"
+// STATIC: "FLASHLIGHTDEPTHFILTERMODE" "0..2"
+// STATIC: "BLENDTINTBYBASEALPHA" "0..1"
+// STATIC: "PIXELFOG" "0..1"
+// DYNAMIC: "FLASHLIGHTSHADOWS" "0..1"
+// SKIP: !$NORMALMAP && $NORMALMAP2
+// SKIP: !$WORLDVERTEXTRANSITION && $NORMALMAP2
+// SKIP: $SEAMLESS && $DETAIL
+// SKIP: !$DETAIL && $DETAIL_BLEND_MODE
+// SKIP: $DETAIL_BLEND_MODE == 1 || $DETAIL_BLEND_MODE == 4 || $DETAIL_BLEND_MODE == 6
+
+#include "l4d2_lightmappedgeneric_fxc.h"
+#include "l4d2_model_flashlight_fxc.h"
+
+const float3 g_Modulation : register( c1 );
+const float4 g_ShadowTweaks : register( c2 );
+const float4 g_DetailTintAndBlend : register( c0 );
+const float3 g_EyePos : register( c11 );
+const float4 g_FogParams : register( c12 );
+const float4 g_Attenuation : register( c13 );
+const float3 g_LightOrigin : register( c14 );
+
+sampler2D SpotlightSampler : register( s0 );
+sampler BaseSampler : register( s1 );
+samplerCUBE NormalizerSampler : register( s2 );
+sampler NormalSampler : register( s3 );
+sampler Base2Sampler : register( s4 );
+sampler ShadowRotationSampler : register( s5 );
+sampler Normal2Sampler : register( s6 );
+sampler ShadowDepthSampler : register( s7 );
+sampler2D DetailSampler : register( s8 );
+
+struct PS_INPUT
+{
+	float4 flashlight : TEXCOORD0;
+	float3 base : TEXCOORD1;
+	float3 lightDirection : TEXCOORD2;
+	float3 normal : TEXCOORD3;
+	float2 detail : TEXCOORD4;
+	float4 world : TEXCOORD5;
+	float4 projected : TEXCOORD6;
+	float4 weights : COLOR1;
+};
+
+float4 main( const PS_INPUT i ) : COLOR
+{
+	float4 base = L4D2WorldTexture( BaseSampler, i.base, i.weights.rgb );
+#if WORLDVERTEXTRANSITION
+	float4 base2 = L4D2WorldTexture( Base2Sampler, i.base, i.weights.rgb );
+	base.rgb = lerp( base.rgb, base2.rgb, i.world.w );
+#endif
+	float4 detail = 1;
+#if DETAIL
+	detail = tex2D( DetailSampler, i.detail ) * float4( g_DetailTintAndBlend.rgb, 1 );
+#if DETAIL_BLEND_MODE == 3 || DETAIL_BLEND_MODE == 8
+	base.rgb = TextureCombine( base, detail, DETAIL_BLEND_MODE, g_DetailTintAndBlend.a ).rgb;
+#else
+	base = TextureCombine( base, detail, DETAIL_BLEND_MODE, g_DetailTintAndBlend.a );
+#endif
+#endif
+#if NORMALMAP
+#if SEAMLESS
+	float3 normalCoords = i.base;
+#else
+	float3 normalCoords = i.normal;
+#endif
+	float3 normal = L4D2WorldTexture( NormalSampler, normalCoords, i.weights.rgb ).rgb;
+#if NORMALMAP2
+	normal = lerp( normal, L4D2WorldTexture( Normal2Sampler, normalCoords, i.weights.rgb ).rgb, i.world.w );
+#endif
+#if NORMALMAP == 1
+	normal = normalize( normal * 2 - 1 );
+#endif
+#else
+	float3 normal = normalize( normalize( i.normal ) );
+#endif
+#if NORMALMAP == 2
+#if DETAIL && DETAIL_BLEND_MODE == 10
+	normal *= 2 * detail.rgb;
+#endif
+	float3 direction = normalize( i.lightDirection );
+	float diffuse = saturate( dot( normal, float3( dot( direction, g_L4D2BumpBasis[0] ),
+		dot( direction, g_L4D2BumpBasis[1] ), dot( direction, g_L4D2BumpBasis[2] ) ) ) );
+#else
+	float3 direction = texCUBE( NormalizerSampler, i.lightDirection ).rgb * 2 - 1;
+	float diffuse = saturate( dot( direction, normal ) );
+#endif
+	float3 delta = g_LightOrigin - i.world.xyz;
+	float distanceSquared = dot( delta, delta );
+	float inverseDistance = rsqrt( distanceSquared );
+	float falloff = saturate( (1 / inverseDistance - g_Attenuation.w) / (-0.4 * g_Attenuation.w) );
+	float attenuation = saturate( dot( g_Attenuation.xyz, float3( 1, inverseDistance, 1 / distanceSquared ) ) * falloff );
+	float3 projectedLight = i.flashlight.xyz / i.flashlight.w;
+	float3 light = tex2D( SpotlightSampler, projectedLight.xy ).rgb * (i.flashlight.w > 0);
+	light *= cFlashlightColor.rgb;
+#if FLASHLIGHTSHADOWS
+	float2 screen = i.projected.xy / i.projected.z;
+	float shadow = DoFlashlightShadow( ShadowDepthSampler, ShadowRotationSampler, projectedLight,
+		screen, FLASHLIGHTDEPTHFILTERMODE, g_ShadowTweaks, false );
+	shadow = saturate( lerp( lerp( shadow, 1, g_ShadowTweaks.y ), shadow, attenuation ) );
+	light *= shadow;
+#endif
+#if BLENDTINTBYBASEALPHA
+	light *= lerp( float3( 1, 1, 1 ), g_Modulation, base.a );
+#else
+	light *= g_Modulation;
+#endif
+	float3 color = base.rgb * light;
+	color *= diffuse;
+	color *= attenuation;
+#if PIXELFOG
+	float fog = L4D2WorldFog( g_EyePos, i.world.xyz, g_FogParams );
+#else
+	float fog = i.projected.w;
+#endif
+	return float4( L4D2WorldOutput( color, fog ), base.a );
+}

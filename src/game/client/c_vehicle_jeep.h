@@ -41,7 +41,11 @@ public:
 	void DampenEyePosition( Vector &vecVehicleEyePos, QAngle &vecVehicleEyeAngles );
 
 	void OnEnteredVehicle( C_BasePlayer *pPlayer );
+#if defined( L4D2 )
+	virtual bool Simulate( void ) OVERRIDE;
+#else
 	void Simulate( void );
+#endif
 
 private:
 
