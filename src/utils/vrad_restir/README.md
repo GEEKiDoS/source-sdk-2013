@@ -84,6 +84,16 @@ game\vrad_restir.bat -both -StaticPropLighting -TextureShadows -final ep2_outlan
 ```
 
 Content roots default to the local Steam library; override with `SDK_MP`, `SDK_SP` and `HL2_DIR` environment variables (or edit the defaults at the top of the script).
+For the L4D2 port use `game\vrad_restir_l4d2.bat`. It expands the retail L4D2 layers (`update`, `left4dead2_dlc3`, `left4dead2_dlc2`, `left4dead2_dlc1`, and `left4dead2`) plus the SDK Base 2013 Multiplayer `hl2`/`platform` fallbacks into a private tool-readable gameinfo. The roots default to `L4D2_ROOT=C:\Program Files (x86)\Steam\steamapps\common\Left 4 Dead 2` and `SDK_MP=C:\Program Files (x86)\Steam\steamapps\common\Source SDK Base 2013 Multiplayer`; set those environment variables to override them.
+
+L4D2 retail BSPs are version 21 and are rejected by the shared SDK tool loader (`<map> is version 21, not 20`). Bake a v20 BSP instead: compile a port-authored VMF with the SDK Base 2013 Multiplayer `vbsp`/`vvis` tools, or use a separately validated v21-to-v20 converter. The server's runtime BSP21 adapter is an in-memory engine compatibility layer and is not used by this offline tool.
+
+```bat
+game\vrad_restir_l4d2.bat -both -StaticPropLighting -TextureShadows -fast C:\path\to\l4d2_v20_map.bsp
+```
+
+The L4D2 wrapper stages the executable, shaders, and SDK `filesystem_stdio.dll` under `%TEMP%` so the SDK Base installation and repository tool directory are not modified. If OIDN DLLs are present beside `game\bin\x64\vrad_restir.exe`, they are staged too and the bake summary reports `denoiser=oidn device=...`; otherwise it reports the bilateral fallback.
+
 
 Running the executable directly from `game\bin\x64`:
 
