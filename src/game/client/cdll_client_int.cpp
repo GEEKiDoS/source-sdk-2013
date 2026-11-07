@@ -175,6 +175,7 @@ extern vgui::IInputInternal *g_InputInternal;
 #endif
 
 #include "framegen_dx12.h"
+#include "postprocess_dx12.h"
 #include "shaderapi/ishaderapidx12.h"
 #include "shadowmaps_dx12.h"
 
@@ -1693,6 +1694,7 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	g_bLevelInitialized = true;
 
 	ApplyAdapterQualityTier();
+	PostProcessDX12_ValidateConfig();
 
 	input->LevelInit();
 

@@ -660,7 +660,9 @@ private:
 	int m_nPerformanceTier = -1; // SHADERAPIDX12_ADAPTER_TIER_UNKNOWN until Initialize
 	int m_nWidth = 0, m_nHeight = 0;
 	int m_nSampleCount = 1, m_nSampleQuality = 0;
-	int m_nBackBufferCount = 2;
+	// Flip-model chains always have three buffers (mat_triplebuffered is ignored). With two, a vsynced frame that
+	// misses a vblank stalls the queue on the final back-buffer copy until the next one, so the rate snaps to 60/30.
+	static constexpr int kBackBufferCount = 3;
 	void *m_pWindow = nullptr;
 	char m_szDisplayDeviceName[128] = {};
 	float m_flGamma = 2.2f, m_flGammaMin = 0.0f, m_flGammaMax = 255.0f, m_flGammaExponent = 2.2f;

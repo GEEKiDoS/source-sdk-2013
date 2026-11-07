@@ -310,7 +310,6 @@ bool CShaderDeviceDX12::Initialize( void *hWnd, int nAdapter, const ShaderDevice
 	m_nOwnerThread = GetCurrentThreadId();
 	m_bWaitForVsync = info.m_bWaitForVSync;
 	m_bWindowed = info.m_bWindowed;
-	m_nBackBufferCount = clamp( info.m_nBackBufferCount, 1, 2 ) + 1;
 	m_nSampleCount = MAX( 1, info.m_nAASamples );
 	m_nSampleQuality = info.m_nAAQuality;
 	if ( !SupportsMSAA( m_nSampleCount, m_nSampleQuality ) )
@@ -733,7 +732,7 @@ bool CShaderDeviceDX12::CreateViewTargets( View &view )
 {
 	D3D12_DESCRIPTOR_HEAP_DESC heap{};
 	heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-	heap.NumDescriptors = m_nBackBufferCount;
+	heap.NumDescriptors = kBackBufferCount;
 	if ( FAILED( m_pDevice->CreateDescriptorHeap( &heap, IID_PPV_ARGS( &view.rtvHeap ) ) ) )
 		return false;
 	heap.NumDescriptors = 2;
@@ -744,11 +743,11 @@ bool CShaderDeviceDX12::CreateViewTargets( View &view )
 	if ( FAILED( m_pDevice->CreateDescriptorHeap( &heap, IID_PPV_ARGS( &view.sceneDSVHeap ) ) ) )
 		return false;
 	view.ReleaseBackBuffers();
-	view.backBuffers.SetCount( m_nBackBufferCount );
+	view.backBuffers.SetCount( kBackBufferCount );
 	for ( int i = 0; i < view.backBuffers.Count(); ++i )
 		view.backBuffers[i] = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE handle = view.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-	for ( int i = 0; i < m_nBackBufferCount; ++i )
+	for ( int i = 0; i < kBackBufferCount; ++i )
 	{
 		HRESULT hr = view.swap->GetBuffer( i, IID_PPV_ARGS( &view.backBuffers[i] ) );
 		if ( FAILED( hr ) )
@@ -849,7 +848,7 @@ bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeig
 	desc.Width = nWidth;
 	desc.Height = nHeight;
 	desc.Format = m_PresentFormat;
-	desc.BufferCount = m_nBackBufferCount;
+	desc.BufferCount = kBackBufferCount;
 	desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 	desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 	desc.SampleDesc.Count = 1;
@@ -938,7 +937,7 @@ bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight )
 	if ( FAILED( view.swap->GetDesc1( &old ) ) )
 		return false;
 	m_FrameGen.BeforeResize( view.swap.Get() );
-	HRESULT hr = view.swap->ResizeBuffers( m_nBackBufferCount, nWidth, nHeight, m_PresentFormat, old.Flags );
+	HRESULT hr = view.swap->ResizeBuffers( kBackBufferCount, nWidth, nHeight, m_PresentFormat, old.Flags );
 	if ( !CheckDevice( "ResizeBuffers", hr ) )
 		return false;
 	if ( !CreateViewTargets( view ) )
@@ -965,7 +964,7 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 	const int nNewWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : newRect.right - newRect.left;
 	const int nNewHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : newRect.bottom - newRect.top;
 	const bool bDropFrameGen = !info.m_bWindowed && m_FrameGen.Kind() != FrameGenKindDX12::None;
-	const bool bChangesResources = bDropFrameGen || info.m_bWindowed != m_bWindowed || MAX( 1, info.m_nAASamples ) != m_nSampleCount || info.m_nAAQuality != m_nSampleQuality || clamp( info.m_nBackBufferCount, 1, 2 ) + 1 != m_nBackBufferCount || ( m_pCurrentView && ( nNewWidth != m_pCurrentView->width || nNewHeight != m_pCurrentView->height ) );
+	const bool bChangesResources = bDropFrameGen || info.m_bWindowed != m_bWindowed || MAX( 1, info.m_nAASamples ) != m_nSampleCount || info.m_nAAQuality != m_nSampleQuality || ( m_pCurrentView && ( nNewWidth != m_pCurrentView->width || nNewHeight != m_pCurrentView->height ) );
 	m_bChangingMode = true;
 
 	struct ChangeScope
@@ -998,12 +997,10 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 	m_bWindowed = info.m_bWindowed;
 	m_bWaitForVsync = info.m_bWaitForVSync;
 	const int nSamples = MAX( 1, info.m_nAASamples ), nQuality = info.m_nAAQuality;
-	const int nBuffers = clamp( info.m_nBackBufferCount, 1, 2 ) + 1;
-	if ( nSamples != m_nSampleCount || nQuality != m_nSampleQuality || nBuffers != m_nBackBufferCount )
+	if ( nSamples != m_nSampleCount || nQuality != m_nSampleQuality )
 	{
 		m_nSampleCount = nSamples;
 		m_nSampleQuality = nQuality;
-		m_nBackBufferCount = nBuffers;
 		if ( !RecreateViews() )
 			return false;
 	}

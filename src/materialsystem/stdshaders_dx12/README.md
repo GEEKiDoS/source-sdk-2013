@@ -877,6 +877,15 @@ adapter (`r_quality_tier_adapter` records it) a low-tier adapter gets the low pr
 volumetrics stay on, SSR traces at half resolution, low GTAO, PCF sun shadows at low resolution, two realtime local
 lights, low bloom and 4-tap motion blur).
 High-tier adapters keep the defaults. `-dx12adaptertier 0|1` forces the class.
+A config.cfg saved before `mat_postfx_dx12_set` existed gets `mat_postfx_dx12 1` once on the first level load
+(`PostProcessDX12_ValidateConfig`); later changes to `mat_postfx_dx12` stick. When the post stack cannot create its
+render targets or materials, the console says so and the legacy engine post runs.
+
+Swap chains always have three flip buffers (`mat_triplebuffered` is ignored): with two, a vsynced frame that misses a
+vblank stalls the queue on the back-buffer copy, so the frame rate snaps to 60/30.
+Texture filtering offers anisotropic 4x, 8x and 16x only (`vgui_graphics_options.cpp`): a global cvar change callback
+snaps `mat_forceaniso` to the nearest offered level at or below its value (below 4 becomes 4) and keeps
+`mat_trilinear` at 0, whether the value comes from config.cfg at boot, the console or the stock video page.
 
 Upload pages (`pipeline_dx12.cpp`) use cached write-back memory only on cache-coherent UMA adapters and the
 write-combined upload heap elsewhere; `-dx12uploadwb` forces the write-back pages for A/B comparisons.

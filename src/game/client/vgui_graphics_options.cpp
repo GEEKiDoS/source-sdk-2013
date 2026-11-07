@@ -32,9 +32,39 @@ using namespace vgui;
 static bool s_bDX12Renderer = false;
 static bool s_bShaderDetailNotice = false;
 static ConVar *s_pReduceFillrate = NULL;
+static ConVar *s_pForceAniso = NULL;
+static ConVar *s_pTrilinear = NULL;
 
-static void EnforceDX12ShaderDetail( IConVar *variable, const char *, float )
+// Texture filtering is anisotropic 4x, 8x or 16x only (kFilter). The nearest offered level below the requested one
+// replaces any other value, whether it comes from config.cfg at boot, the console or the stock video page; below 4x
+// becomes 4x. Anisotropic sampling filters mips linearly by itself, so mat_trilinear stays 0 to match the choices.
+static int OfferedAnisoLevel( int nLevel )
 {
+	return nLevel >= 16 ? 16 : nLevel >= 8 ? 8 : 4;
+}
+
+static void EnforceTextureFiltering()
+{
+	if ( s_pForceAniso )
+	{
+		const int nLevel = s_pForceAniso->GetInt(), nOffered = OfferedAnisoLevel( nLevel );
+		if ( nLevel != nOffered )
+		{
+			Msg( "Texture filtering: mat_forceaniso %d is not offered; using %d.\n", nLevel, nOffered );
+			s_pForceAniso->SetValue( nOffered );
+		}
+	}
+	if ( s_pTrilinear && s_pTrilinear->GetBool() )
+		s_pTrilinear->SetValue( 0 );
+}
+
+static void EnforceGraphicsOptions( IConVar *variable, const char *, float )
+{
+	if ( variable == s_pForceAniso || variable == s_pTrilinear )
+	{
+		EnforceTextureFiltering();
+		return;
+	}
 	if ( variable != s_pReduceFillrate || !s_pReduceFillrate->GetBool() )
 		return;
 
@@ -109,9 +139,6 @@ static const Choice_t kTexture[] =
 
 static const Choice_t kFilter[] =
 {
-	{ "#GraphicsOptions_Bilinear", { 0, 1, 0, 0, 0 } },
-	{ "#GraphicsOptions_Trilinear", { 1, 1, 0, 0, 0 } },
-	{ "#GraphicsOptions_Aniso2", { 0, 2, 0, 0, 0 } },
 	{ "#GraphicsOptions_Aniso4", { 0, 4, 0, 0, 0 } },
 	{ "#GraphicsOptions_Aniso8", { 0, 8, 0, 0, 0 } },
 	{ "#GraphicsOptions_Aniso16", { 0, 16, 0, 0, 0 } },
@@ -1287,15 +1314,14 @@ public:
 		const char *shaderDLL = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShaderDLLName() : NULL;
 		s_bDX12Renderer = shaderDLL && !Q_stricmp( shaderDLL, "stdshader_dx12" );
 		s_bShaderDetailNotice = false;
-		if ( s_bDX12Renderer )
-		{
-			s_pReduceFillrate = g_pCVar->FindVar( "mat_reducefillrate" );
-			if ( s_pReduceFillrate )
-			{
-				g_pCVar->InstallGlobalChangeCallback( EnforceDX12ShaderDetail );
-				EnforceDX12ShaderDetail( s_pReduceFillrate, NULL, 0.f );
-			}
-		}
+		s_pReduceFillrate = s_bDX12Renderer ? g_pCVar->FindVar( "mat_reducefillrate" ) : NULL;
+		s_pForceAniso = g_pCVar->FindVar( "mat_forceaniso" );
+		s_pTrilinear = g_pCVar->FindVar( "mat_trilinear" );
+		// config.cfg runs after Init; the callback corrects its values as they are set.
+		g_pCVar->InstallGlobalChangeCallback( EnforceGraphicsOptions );
+		if ( s_pReduceFillrate )
+			EnforceGraphicsOptions( s_pReduceFillrate, NULL, 0.f );
+		EnforceTextureFiltering();
 		return true;
 	}
 	void PostInit()
@@ -1306,11 +1332,10 @@ public:
 	}
 	void Shutdown()
 	{
-		if ( s_pReduceFillrate )
-		{
-			g_pCVar->RemoveGlobalChangeCallback( EnforceDX12ShaderDetail );
-			s_pReduceFillrate = NULL;
-		}
+		g_pCVar->RemoveGlobalChangeCallback( EnforceGraphicsOptions );
+		s_pReduceFillrate = NULL;
+		s_pForceAniso = NULL;
+		s_pTrilinear = NULL;
 		s_bDX12Renderer = false;
 	}
 };

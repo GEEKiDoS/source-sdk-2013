@@ -172,7 +172,10 @@ static void CreateMaterial( PostMaterial_t &material, IMaterialSystem *pMaterial
 		pMaterial->DecrementReferenceCount();
 	material.m_pVarNames = pVarNames;
 	if ( !MaterialValid( material ) )
+	{
+		Warning( "DX12 post: material %s failed to load\n", pName );
 		return;
+	}
 
 	Assert( nVarCount <= ARRAYSIZE( material.m_nVarTokens ) );
 	// Render-target initialization is main-side. Prime every shader parameter before queuing any pass,
@@ -231,6 +234,10 @@ static void SetPostPass( PostMaterial_t &material, ITexture *pSource, int nSourc
 }
 
 static ConVar mat_postfx_dx12( "mat_postfx_dx12", "1", FCVAR_ARCHIVE, "DX12 post stack (HDR bloom, AgX, lens effects, LUT); 0 = legacy engine_post" );
+// A config.cfg saved before this flag existed may carry mat_postfx_dx12 0 that no option of the current build wrote
+// (a GTX 1070 perftest config did). PostProcessDX12_ValidateConfig turns the stack back on once for such a config;
+// afterwards the archived mat_postfx_dx12 is the user's choice.
+static ConVar mat_postfx_dx12_set( "mat_postfx_dx12_set", "0", FCVAR_ARCHIVE | FCVAR_HIDDEN, "Set once the DX12 post stack was validated for this config" );
 static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap" );
 static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "100", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (MagicBloom's 100; 0 off, 25..400 useful)" );
 static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
@@ -300,7 +307,10 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	s_bRenderTargetsReady = s_PostScene.IsValid() && s_BloomDown.IsValid() && s_BloomUp.IsValid() && s_FlareInput.IsValid() && s_Flare.IsValid() && s_Glare.IsValid() &&
 		s_GlareBounds.IsValid() && s_Composite.IsValid();
 	if ( !s_bRenderTargetsReady )
+	{
+		Warning( "DX12 post: render targets unavailable; the legacy engine post runs instead\n" );
 		return;
+	}
 
 	CreatePassMaterial( s_BloomFirst, pMaterialSystem, "dx12/postfx_bloom_first", 7 );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomDownsample ); ++i )
@@ -327,6 +337,8 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomDownsample[i] );
 	for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
 		s_bMaterialsReady = s_bMaterialsReady && MaterialValid( s_BloomUpsample[i] );
+	if ( !s_bMaterialsReady )
+		Warning( "DX12 post: materials unavailable; the legacy engine post runs instead\n" );
 }
 
 void PostProcessDX12_Shutdown()
@@ -364,6 +376,17 @@ void PostProcessDX12_Shutdown()
 bool PostProcessDX12_Active()
 {
 	return s_bDX12 && mat_postfx_dx12.GetBool() && s_bRenderTargetsReady && s_bMaterialsReady && s_pShaderAPIDX12;
+}
+
+void PostProcessDX12_ValidateConfig()
+{
+	if ( !s_bDX12 || mat_postfx_dx12_set.GetBool() )
+		return;
+	mat_postfx_dx12_set.SetValue( 1 );
+	if ( mat_postfx_dx12.GetBool() )
+		return;
+	mat_postfx_dx12.SetValue( 1 );
+	Msg( "DX12 post: config.cfg predates mat_postfx_dx12_set and had the post stack off; re-enabled mat_postfx_dx12\n" );
 }
 
 // Per-frame HDR output settings; a plain store in the renderer, so no render context is involved.
