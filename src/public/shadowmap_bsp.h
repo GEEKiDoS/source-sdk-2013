@@ -548,12 +548,16 @@ inline bool ShadowMap_ReadBspDirectory( ShadowMapBspReadFn read, void *context, 
 		return false;
 	for ( int i = 0; i < HEADER_LUMPS; ++i )
 	{
-		if ( h->lumps[i].fileofs < 0 || h->lumps[i].filelen < 0 ||
-			(uint64)h->lumps[i].fileofs + h->lumps[i].filelen > 0xFFFFFFFFu ) return false;
-		lumps[i].fileofs = h->lumps[i].fileofs;
-		lumps[i].filelen = h->lumps[i].filelen;
-		lumps[i].version = h->lumps[i].version;
-		lumps[i].uncompressedSize = (uint32)h->lumps[i].uncompressedSize;
+		// Version 21 (Left 4 Dead 2) stores each lump header as version, fileofs, filelen.
+		const lump_t &lump = h->lumps[i];
+		const int fileofs = h->version == 21 ? lump.filelen : lump.fileofs;
+		const int filelen = h->version == 21 ? lump.version : lump.filelen;
+		const int version = h->version == 21 ? lump.fileofs : lump.version;
+		if ( fileofs < 0 || filelen < 0 || (uint64)fileofs + filelen > 0xFFFFFFFFu ) return false;
+		lumps[i].fileofs = fileofs;
+		lumps[i].filelen = filelen;
+		lumps[i].version = version;
+		lumps[i].uncompressedSize = (uint32)lump.uncompressedSize;
 	}
 	if ( lumps[LUMP_MAP_FLAGS].filelen >= sizeof( uint32 ) )
 	{
