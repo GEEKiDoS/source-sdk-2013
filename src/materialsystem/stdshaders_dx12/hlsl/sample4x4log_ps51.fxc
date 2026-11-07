@@ -1,0 +1,81 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/sample4x4log_ps2x.fxc for logical sample4x4log_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+
+Texture2D TexSampler_Texture : register( t0 );
+SamplerState TexSampler_Sampler : register( s0 );
+static const DX12Sampler2D TexSampler = { TexSampler_Texture, TexSampler_Sampler };
+
+struct PS_INPUT
+{
+	float2 coordTap0;
+	float2 coordTap1;
+	float2 coordTap2;
+	float2 coordTap3;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 baseTexCoord : TEXCOORD0;
+	float2 ZeroTexCoord : TEXCOORD1;
+	float2 bloomTexCoord : TEXCOORD2;
+	float4 vColor : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.coordTap0 = dx12In.baseTexCoord;
+	l.coordTap1 = dx12In.ZeroTexCoord;
+	l.coordTap2 = dx12In.bloomTexCoord;
+	l.coordTap3 = ( dx12In.vColor ).xy;
+	return l;
+}
+
+
+cbuffer sample4x4log_ps2x : register( b1, space1 )
+{
+	float AlphaConst; // @legacy ps:c0
+};
+
+
+#define LOG_EPSILON 0.000001
+
+float luminance(float3 color) : FLOAT
+{
+	return 0.2125*color.x+0.7154*color.y+0.0721*color.z;
+}
+
+float logluminance(float3 color) : FLOAT
+{
+	return log(0.2125*color.x+0.7154*color.y+0.0721*color.z+LOG_EPSILON);
+}
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float3 s0, s1, s2, s3;
+
+	// Sample 4 taps. We use the trick of sampling four taps with bilinear in order
+	// to average 16 texels.
+	s0 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap0 );
+	s1 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap1 );
+	s2 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap2 );
+	s3 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap3 );
+	float maxlum=max(max(luminance(s0),luminance(s1)),max(luminance(s2),luminance(s3)));
+	float loglum0=logluminance(s0);
+	float loglum1=logluminance(s1);
+	float loglum2=logluminance(s2);
+	float loglum3=logluminance(s3);
+
+//	return float4(0.25*(loglum0+loglum1+loglum2+loglum3),maxlum,0,1);
+	return DX12FinishPixel( FinalOutput( float4(0.25*(loglum0+loglum1+loglum2+loglum3),0,.5,AlphaConst), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}
+

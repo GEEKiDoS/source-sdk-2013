@@ -33,14 +33,14 @@ public:
 			{
 				(fieldtype_t)KEY_TYPE, 
 				"K", 
-				{ 0, 0 },
+				{ offsetof(typename UTLMAP::Node_t, key), 0 },
 				1, 
 				FTYPEDESC_SAVE, 
 				NULL, 
 				NULL, 
 				NULL,
 				pKeyDatamap,
-				sizeof(KEY_TYPE),
+				sizeof(typename UTLMAP::KeyType_t),
 			},
 			
 			{
@@ -53,7 +53,7 @@ public:
 				NULL, 
 				NULL,
 				pFieldDatamap,
-				sizeof(FIELD_TYPE),
+				sizeof(typename UTLMAP::ElemType_t),
 			}
 		};
 		
@@ -99,14 +99,14 @@ public:
 			{
 				(fieldtype_t)KEY_TYPE, 
 				"K", 
-				{ 0, 0 },
+				{ offsetof(typename UTLMAP::Node_t, key), 0 },
 				1, 
 				FTYPEDESC_SAVE, 
 				NULL, 
 				NULL, 
 				NULL,
 				pKeyDatamap,
-				sizeof(KEY_TYPE),
+				sizeof(typename UTLMAP::KeyType_t),
 			},
 			
 			{
@@ -119,7 +119,7 @@ public:
 				NULL, 
 				NULL,
 				pFieldDatamap,
-				sizeof(FIELD_TYPE),
+				sizeof(typename UTLMAP::ElemType_t),
 			}
 		};
 		

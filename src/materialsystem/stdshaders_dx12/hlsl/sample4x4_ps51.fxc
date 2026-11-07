@@ -1,0 +1,62 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/sample4x4_ps2x.fxc for logical sample4x4_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+
+Texture2D TexSampler_Texture : register( t0 );
+SamplerState TexSampler_Sampler : register( s0 );
+static const DX12Sampler2D TexSampler = { TexSampler_Texture, TexSampler_Sampler };
+
+struct PS_INPUT
+{
+	float2 coordTap0;
+	float2 coordTap1;
+	float2 coordTap2;
+	float2 coordTap3;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 coordTap0 : TEXCOORD0;
+	float2 coordTap1 : TEXCOORD1;
+	float2 coordTap2 : TEXCOORD2;
+	float2 coordTap3 : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.coordTap0 = dx12In.coordTap0;
+	l.coordTap1 = dx12In.coordTap1;
+	l.coordTap2 = dx12In.coordTap2;
+	l.coordTap3 = dx12In.coordTap3;
+	return l;
+}
+
+
+cbuffer sample4x4_ps2x : register( b1, space1 )
+{
+	float AlphaConst; // @legacy ps:c0
+};
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float3 s0, s1, s2, s3;
+
+	// Sample 4 taps. We use the trick of sampling four taps with bilinear in order
+	// to average 16 texels.
+	s0 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap0 );
+	s1 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap1 );
+	s2 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap2 );
+	s3 = TexSampler.tex.Sample( TexSampler.smp, i.coordTap3 );
+	return DX12FinishPixel( FinalOutput( float4(0.25*(s0+s1+s2+s3),1), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}
+

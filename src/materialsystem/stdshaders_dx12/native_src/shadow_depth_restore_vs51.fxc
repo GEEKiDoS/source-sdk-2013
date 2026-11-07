@@ -1,0 +1,25 @@
+// Native SM5.1 depth-only raster restore. Shared VS/PS b0 space0 layout:
+// ShadowDepthRestoreConstants, 64 bytes:
+//   offset  0: uint4 srcRect (source x,y,width,height)
+//   offset 16: uint4 dstRect (destination x,y,width,height)
+//   offset 32: uint4 srcSize (source full target width,height,0,0)
+//   offset 48: uint4 dstSize (DESTINATION full target width,height,0,0)
+// Backend sets a whole-destination viewport, dstRect scissor, ALWAYS/write
+// normal [0,1] depth, no color attachments. Source/destination must not alias.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+cbuffer ShadowDepthRestoreConstants : register(b0)
+{
+	uint4 srcRect;
+	uint4 dstRect;
+	uint4 srcSize;
+	uint4 dstSize;
+};
+float4 main( uint vertexId : SV_VertexID ) : SV_Position
+{
+	// Oversized fullscreen triangle over the RECT, not over the whole target.
+	float2 corner = float2( ( vertexId << 1 ) & 2, vertexId & 2 );
+	float2 pixel = float2( dstRect.xy ) + corner * float2( dstRect.zw );
+	float2 clip = pixel / float2( dstSize.xy ) * float2( 2.0, -2.0 ) + float2( -1.0, 1.0 );
+	return float4( clip, 0.0, 1.0 );
+}

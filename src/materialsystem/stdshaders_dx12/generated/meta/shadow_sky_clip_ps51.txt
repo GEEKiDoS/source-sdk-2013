@@ -1,0 +1,3 @@
+logical=shadow_sky_clip_ps51 stage=ps source=shadow_sky_clip_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=DX12ShadowSkyClip space=6 register=b2 size=16 layoutHash=0x34d5d3e384e91402 engine
+    member=cShadowSkyClip type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=

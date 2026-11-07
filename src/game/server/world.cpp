@@ -39,6 +39,7 @@
 #include "l4d2/sound/terror_music.h"
 #include "l4d2/director/terror_director.h"
 #endif
+#include "shadowmap_transmit.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -540,6 +541,7 @@ IMPLEMENT_SERVERCLASS_ST(CWorld, DT_WORLD)
 	SendPropInt( SENDINFO( m_iStartMusicType ), 1, SPROP_UNSIGNED ),
 	SendPropStringT( SENDINFO( m_iszMusicPostFix ) ),
 #endif
+	SendPropBool	(SENDINFO(m_bShadowMapTransmitReady) ),
 END_SEND_TABLE()
 
 //
@@ -611,6 +613,13 @@ CWorld::CWorld( )
 #if defined( L4D2 )
 	m_iTimeOfDay = 0; // S236D50, after the existing cold-world store.
 #endif
+	m_bShadowMapTransmitReady = false;
+}
+
+void CWorld::RefreshShadowMapTransmitReady()
+{
+	// Capability is derived from this map's verified server data, not saved.
+	m_bShadowMapTransmitReady = ShadowMapTransmit_Ready();
 }
 
 CWorld::~CWorld( )
@@ -662,6 +671,7 @@ void CWorld::RegisterSharedEvents( void )
 
 void CWorld::Spawn( void )
 {
+	m_bShadowMapTransmitReady = false;
 	SetLocalOrigin( vec3_origin );
 	SetLocalAngles( vec3_angle );
 	// NOTE:  SHOULD NEVER BE ANYTHING OTHER THAN 1!!!

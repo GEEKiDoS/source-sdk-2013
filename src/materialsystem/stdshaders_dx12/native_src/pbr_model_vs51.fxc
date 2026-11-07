@@ -1,0 +1,140 @@
+// Native SM5.1 PBR model (studio / static prop) vertex shader. Skinning, hardware morph, CPU flex stream and
+// compressed-vertex decode follow hlsl/vertexlit_and_unlit_generic_bump_vs51.fxc (TANGENT=1) and
+// hlsl/vertexlit_and_unlit_generic_vs51.fxc (TANGENT=0, no tangent stream: the pixel shader derives its frame
+// from derivatives). Draw-local light attenuation is computed here (the pixel engine block carries only light
+// color and position) and interpolated like the legacy lightAtten.
+#define DX12_LEGACY_VS30 1
+#define DECAL 0
+#include "dx12_preamble.h"
+// STATIC: "TANGENT" "0..1"
+// DYNAMIC: "COMPRESSED_VERTS" "0..1"
+// DYNAMIC: "SKINNING" "0..1"
+// DYNAMIC: "MORPHING" "0..1"
+// DYNAMIC: "DOWATERFOG" "0..1"
+// DYNAMIC: "STATIC_LIGHT_VERTEX" "0..1"
+// Static per-vertex prop lighting (COLOR1) exists only in the unbumped legacy VS; the bumped legacy VS and its
+// shadowmap twin never read it, so the bumped PBR variant has no such combo.
+// SKIP: $STATIC_LIGHT_VERTEX && $TANGENT
+// The TANGENT combo name collides with the TANGENT vertex semantic: capture the value, then release the macro.
+#if TANGENT
+#define PBR_HAS_TANGENT 1
+#else
+#define PBR_HAS_TANGENT 0
+#endif
+#undef TANGENT
+#include "common_vs_fxc.h"
+#include "pbr_material.h"
+
+Texture2D morphSampler_Texture : register( t0 );
+SamplerState morphSampler_Sampler : register( s0 );
+static const DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
+
+struct DX12_VS_INPUT
+{
+#if PBR_HAS_TANGENT
+#if COMPRESSED_VERTS
+	uint4 vTangentS : TANGENT;
+#else
+	float4 vTangentS : TANGENT;
+#endif
+#endif
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	int2 vBoneWeights : BLENDWEIGHT;
+#else
+	float4 vBoneWeights : BLENDWEIGHT;
+#endif
+	float4 vBoneIndices : BLENDINDICES;
+#if COMPRESSED_VERTS
+	uint4 vNormal : NORMAL;
+#else
+	float4 vNormal : NORMAL;
+#endif
+	float4 vTexCoord0 : TEXCOORD0;
+	float3 vPosFlex : POSITION1;
+	float3 vNormalFlex : NORMAL1;
+	float vVertexID : POSITION2;
+#if !PBR_HAS_TANGENT && STATIC_LIGHT_VERTEX
+	float4 vSpecular : COLOR1;      // static prop vertex lighting (gamma, pre-multiplied by 1 / cOverbright)
+#endif
+};
+
+struct VS_OUTPUT
+{
+	float4 projPos : SV_Position;
+	float fog : FOG;
+	float4 baseBumpUV : TEXCOORD0;    // xy base, zw bump
+	float2 detailUV : TEXCOORD1;
+	float4 lightAtten : TEXCOORD2;    // draw-local lights 0..3
+	float4 worldPos_projPosZ : TEXCOORD3;
+	float3 toEye : TEXCOORD4;
+	float3 worldNormal : TEXCOORD5;
+#if PBR_HAS_TANGENT
+	float4 worldTangent : TEXCOORD6;  // xyz S, w binormal sign
+#else
+	float3 staticLight : TEXCOORD6; // decoded linear static vertex irradiance, zero without STATIC_LIGHT_VERTEX
+#endif
+	DX12ClipDistances dx12Clip;       // SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+
+VS_OUTPUT main( const DX12_VS_INPUT v )
+{
+	VS_OUTPUT o = (VS_OUTPUT)0;
+	bool bSkinning = SKINNING != 0;
+
+#if COMPRESSED_VERTS
+	float4 boneWeights = float4( (float2)v.vBoneWeights, 0, 1 );
+	float4 normalIn = (float4)v.vNormal;
+#else
+	float4 boneWeights = v.vBoneWeights;
+	float4 normalIn = v.vNormal;
+#endif
+
+	float4 vPosition = v.vPos;
+	float3 vNormal;
+#if PBR_HAS_TANGENT
+	float4 vTangent;
+	DecompressVertex_NormalTangent( normalIn, (float4)v.vTangentS, vNormal, vTangent );
+#if MORPHING
+	ApplyMorph( morphSampler, g_MorphTargetTextureDim, g_MorphSubrect, v.vVertexID, float3( 0, 0, 0 ), vPosition.xyz, vNormal, vTangent.xyz );
+#else
+	ApplyMorph( v.vPosFlex, v.vNormalFlex, vPosition.xyz, vNormal, vTangent.xyz );
+#endif
+#else
+	DecompressVertex_Normal( normalIn, vNormal );
+#if MORPHING
+	ApplyMorph( morphSampler, g_MorphTargetTextureDim, g_MorphSubrect, v.vVertexID, float3( 0, 0, 0 ), vPosition.xyz, vNormal );
+#else
+	ApplyMorph( v.vPosFlex, v.vNormalFlex, vPosition.xyz, vNormal );
+#endif
+#endif
+
+	float3 worldNormal, worldPos;
+#if PBR_HAS_TANGENT
+	float3 worldTangentS, worldTangentT;
+	SkinPositionNormalAndTangentSpace( bSkinning, vPosition, vNormal, vTangent, boneWeights, v.vBoneIndices,
+		worldPos, worldNormal, worldTangentS, worldTangentT );
+	o.worldTangent = float4( normalize( worldTangentS ), vTangent.w );
+#else
+	SkinPositionAndNormal( bSkinning, vPosition, vNormal, boneWeights, v.vBoneIndices, worldPos, worldNormal );
+#endif
+	o.worldNormal = normalize( worldNormal );
+
+	float4 projPos = mul( float4( worldPos, 1 ), cViewProj );
+	o.dx12Clip = DX12UserClipDistances( projPos );
+	o.projPos = DX12Position( projPos );
+	projPos.z = dot( float4( worldPos, 1 ), cViewProjZ );
+	o.worldPos_projPosZ = float4( worldPos, projPos.z );
+	o.toEye = cEyePos - worldPos;
+	o.fog = CalcFog( worldPos, projPos.xyz, DOWATERFOG );
+
+	o.lightAtten = float4( GetVertexAttenForLight( worldPos, 0, true ), GetVertexAttenForLight( worldPos, 1, true ),
+		GetVertexAttenForLight( worldPos, 2, true ), GetVertexAttenForLight( worldPos, 3, true ) );
+	o.baseBumpUV = float4( PBR_TransformUV( v.vTexCoord0.xy, g_BaseTransform ), PBR_TransformUV( v.vTexCoord0.xy, g_BumpTransform ) );
+	o.detailUV = PBR_TransformUV( v.vTexCoord0.xy, g_DetailTransform );
+#if !PBR_HAS_TANGENT && STATIC_LIGHT_VERTEX
+	// DoLighting's static term: the carrier arrives in gamma space, scaled by 1 / cOverbright.
+	o.staticLight = GammaToLinear( v.vSpecular.rgb * cOverbright );
+#endif
+	return o;
+}

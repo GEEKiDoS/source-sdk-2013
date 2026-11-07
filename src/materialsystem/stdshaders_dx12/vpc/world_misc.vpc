@@ -1,0 +1,13 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\core_dx12.cpp"
+        $File "cpp\portal.cpp"
+        $File "cpp\portalstaticoverlay.cpp"
+        $File "cpp\sky_dx12.cpp"
+        $File "cpp\sky_hdr_dx12.cpp"
+        $File "cpp\vortwarp_dx12.cpp"
+        $File "cpp\warp.cpp"
+    }
+}

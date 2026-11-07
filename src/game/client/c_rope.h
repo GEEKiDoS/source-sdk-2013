@@ -21,6 +21,7 @@
 class KeyValues;
 class C_BaseAnimating;
 struct RopeSegData_t;
+class CShadowMapRopeFootprint;
 
 #define MAX_ROPE_SUBDIVS		8
 #define MAX_ROPE_SEGMENTS		(ROPE_MAX_SEGMENTS+(ROPE_MAX_SEGMENTS-1)*MAX_ROPE_SUBDIVS)
@@ -256,7 +257,8 @@ public:
 	virtual						~IRopeManager() {}
 	virtual void				ResetRenderCache( void ) = 0;
 	virtual void				AddToRenderCache( C_RopeKeyframe *pRope ) = 0;
-	virtual void				DrawRenderCache( bool bShadowDepth ) = 0;
+	// Shadow feedback is owned by the record and captured when the mesh is emitted.
+	virtual void				DrawRenderCache( bool bShadowDepth, CShadowMapRopeFootprint *footprint = NULL ) = 0;
 	virtual void				OnRenderStart( void ) = 0;
 	virtual void				SetHolidayLightMode( bool bHoliday ) = 0;
 	virtual bool				IsHolidayLightMode( void ) = 0;

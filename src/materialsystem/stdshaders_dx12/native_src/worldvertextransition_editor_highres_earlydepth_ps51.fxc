@@ -1,0 +1,4 @@
+// Output-identical editor receiver twin; select only without alpha test/effective A2C.
+// HIGHLIGHT_SAMPLERS: 4
+#define DX12_EARLY_DEPTH 1
+#include "worldvertextransition_editor_highres_ps51.fxc"

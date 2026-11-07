@@ -1,0 +1,20 @@
+logical=eyes_flashlight_ps51 stage=ps source=eyes_flashlight_ps51.fxc legacy=eyes_flashlight_ps2x.fxc legacyName=eyes_flashlight_ps30 profile=30 static=3 dynamic=6 present=18
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=eyes_flashlight_ps2x space=1 register=b1 size=64 layoutHash=0xaefa89c1cabd4f07 material
+    member=g_vShadowTweaks type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c2
+    member=g_EyePos_SpecExponent type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c11
+    member=cFlashlightColor type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c28
+    member=cFlashlightScreenScale type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=ps:c31
+    legacyEntry=0,16,1,0,0,0,2
+    legacyEntry=16,16,1,0,0,0,11
+    legacyEntry=32,16,1,0,0,0,28
+    legacyEntry=48,16,1,0,0,0,31
+    bridge=WriteNativeCBuffer(api, block)

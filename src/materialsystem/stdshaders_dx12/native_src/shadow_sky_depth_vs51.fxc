@@ -1,0 +1,11 @@
+// Native-only vertex stage of the sun sky-clip map (shaderapidx12 CLightingDX12 private PSO, no pixel stage,
+// depth GREATER/write cleared to 0 so the sky entry nearest the ground wins). The client transforms the few
+// sky entry triangles of the receiver region with the chart's exact light world-to-clip matrix on the CPU
+// and streams float4 clip positions (POSITION, slot 0); nothing is bound besides the vertex buffer.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+
+float4 main( float4 clip : POSITION ) : SV_Position
+{
+	return clip;
+}

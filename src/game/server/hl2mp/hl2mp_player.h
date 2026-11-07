@@ -77,6 +77,8 @@ public:
 	virtual void UpdateOnRemove( void );
 	virtual void DeathSound( const CTakeDamageInfo &info );
 	virtual CBaseEntity* EntSelectSpawnPoint( void );
+	// Logo maps (info_player_logo) never show viewport panels, as in CS:S.
+	virtual void ShowViewPortPanel( const char * name, bool bShow = true, KeyValues *data = NULL );
 		
 	int FlashlightIsOn( void );
 	void FlashlightTurnOn( void );

@@ -1,0 +1,378 @@
+// Native SM5.1 raymarched volumetric lighting. The low-quality 8-step profile runs on a quarter-resolution footprint;
+// balanced/high profiles retain the half-resolution footprint. One pass over completed main-scene depth marches
+// in-scattering from opted-in local/projected lights and the sun into an RGBA16F scatter + R32F representative-depth MRT.
+// A provider-independent temporal pass integrates the rotating per-step dither
+// before the depth-aware upsample composites scattering onto the scene.
+//
+// Each light segment [a, b] takes N = cVolumeControl.x samples at t = a + ( i + j ) * ( b - a ) / N.
+// Every step has its own IGN offset; w rotates the sequence over 64 frames for
+// every AA mode, including AA off.
+// ShadowMap_StandardLightRadiance (range/fade/cone/lightstyle; never scaled by the realtime weight) times the
+// Henyey-Greenstein phase, density * strength * ds. Shadowing: a chart published for this view (positive realtime
+// weight, not UNSHADOWED, chart.valid) gives lerp( 1, PCF, realtimeWeight ) so the ramp fades the shadow in; a light
+// without one is marched unshadowed (visibility 1). Projected lights without a depth slot and sun samples outside
+// every valid cascade/static chart are unshadowed too.
+// Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
+// STATIC: "MSAA" "0..1"
+// DYNAMIC: "QUARTER" "0..1"
+#define DX12_SHADOWMAPS 1
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#ifdef HDRTYPE
+#undef HDRTYPE
+#endif
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+#include "projected_lighting.hlsli"
+
+struct PS_INPUT
+{
+	float4 svPos : SV_Position;
+};
+
+struct PS_OUTPUT
+{
+	float4 scatter : SV_Target0;
+	float depth : SV_Target1;
+};
+
+static const float VOLUME_PI = 3.14159265358979323846;
+static const float VOLUME_UNBOUNDED = 3.402823466e+38;
+static const float VOLUME_DEPTH_FAR = 1e30;      // stored view depth of a clear-only footprint (volumetric_upsample_ps51 matches)
+static const float VOLUME_NOISE_FRAME = 5.588238; // texels of IGN offset per noise index
+
+// Henyey-Greenstein phase for anisotropy g and mu = dot( sampleToLight, eyeToSample ).
+float Volume_Phase( float g, float mu )
+{
+	float g2 = g * g;
+	return ( 1.0 - g2 ) / ( 4.0 * VOLUME_PI * pow( max( 1.0 + g2 - 2.0 * g * mu, 1e-4 ), 1.5 ) );
+}
+
+// Interleaved gradient noise (Jimenez 2014) of a texel coordinate, [0, 1).
+float Volume_Noise( float2 p )
+{
+	return frac( 52.9829189 * frac( dot( p, float2( 0.06711056, 0.00583715 ) ) ) );
+}
+
+// Clips the eye segment [a, b] along unit ray D to a sphere; false when the remaining segment is empty.
+bool Volume_SphereSegment( float3 eye, float3 D, float3 center, float radius, inout float a, inout float b )
+{
+	float3 oc = eye - center;
+	float half_b = dot( oc, D );
+	float discriminant = half_b * half_b - ( dot( oc, oc ) - radius * radius );
+	bool hit = discriminant > 0.0;
+	if ( hit )
+	{
+		float root = sqrt( discriminant );
+		a = max( a, -half_b - root );
+		b = min( b, -half_b + root );
+		hit = b > a;
+	}
+	return hit;
+}
+
+// Camera-forward distance is monotone in hardware depth for this perspective main view.
+// Quarter resolution reduces the entire footprint in hardware depth, then reconstructs only its representative.
+void Volume_GatherDepth( float2 scenePixel, float depth, inout float zMin, inout float zMax, inout bool covered )
+{
+	if ( depth == cScreenDepth.x )
+		return;
+#if QUARTER
+	float z = depth;
+#else
+	float z = Screen_ViewDepth( Screen_PixelToWorld( scenePixel, depth ) );
+#endif
+	zMin = min( zMin, z );
+	zMax = max( zMax, z );
+	covered = true;
+}
+// SunProjection builds every cascade and the static chart with BuildOrtho: clip.w is exactly 1, and the
+// published depth.z is one physical texel along cSunBasisX/Y. A zero-normal volume receiver never passes
+// the plane/PCSS preflight, so its four PCF taps have one reference and fixed texel offsets. Keep the
+// ray transforms outside the step loop, and never put the five rays in a dynamically indexed local array.
+struct VolumeSunRay
+{
+	float3 start;
+	float3 step;
+};
+struct VolumeSunRays
+{
+	VolumeSunRay cascade0, cascade1, cascade2, cascade3, staticSun;
+};
+VolumeSunRay Volume_MakeSunRay( row_major float4x4 worldToClip, float3 eye, float3 step )
+{
+	VolumeSunRay ray;
+	ray.start = mul( worldToClip, float4( eye, 1.0 ) ).xyz;
+	ray.step = mul( worldToClip, float4( step, 0.0 ) ).xyz;
+	return ray;
+}
+float3 Volume_SunClip( VolumeSunRays rays, uint mapIndex, float sampleIndex )
+{
+	float3 start = mapIndex == 0 ? rays.cascade0.start : mapIndex == 1 ? rays.cascade1.start :
+		mapIndex == 2 ? rays.cascade2.start : mapIndex == 3 ? rays.cascade3.start : rays.staticSun.start;
+	float3 step = mapIndex == 0 ? rays.cascade0.step : mapIndex == 1 ? rays.cascade1.step :
+		mapIndex == 2 ? rays.cascade2.step : mapIndex == 3 ? rays.cascade3.step : rays.staticSun.step;
+	return start + step * sampleIndex;
+}
+bool Volume_SunMapValid( uint mapIndex, float3 clip )
+{
+	uint size = mapIndex < DX12_SHADOW_CSM_CASCADES ? cCascadeRects[mapIndex].z : cStaticSunRect.z;
+	float4 depth = cShadowDepthRecords[mapIndex];
+	return ShadowMap_SunSlotInitialized( mapIndex ) && depth.y > depth.x && depth.z > 0.0 &&
+		ShadowMap_InCore( float4( clip, 1.0 ), size );
+}
+float Volume_SunPCF( uint mapIndex, float3 clip, float2 cascadeTexel, float2 staticTexel )
+{
+	uint4 rect = mapIndex < DX12_SHADOW_CSM_CASCADES ? cCascadeRects[mapIndex] : cStaticSunRect;
+	float2 texel = mapIndex < DX12_SHADOW_CSM_CASCADES ? cascadeTexel : staticTexel;
+	float2 uv = ( float2( rect.xy ) + ( clip.xy * float2( 0.5, -0.5 ) + 0.5 ) * rect.z ) * texel;
+	// Preserve the zero-normal chart's axial-depth/reference arithmetic.
+	float4 depth = cShadowDepthRecords[mapIndex];
+	float reference = ( depth.x + clip.z * ( depth.y - depth.x ) - depth.x ) / ( depth.y - depth.x );
+	float visibility = 0.0;
+	[unroll] for ( uint tap = 0; tap < 4; ++tap )
+	{
+		float2 tapUV = uv + ShadowDither_Rotate( g_ShadowPCFOffsets[tap] ) * texel;
+		if ( mapIndex < DX12_SHADOW_CSM_CASCADES )
+			visibility += g_ShadowCascadeAtlas.SampleCmpLevelZero( g_ShadowCmpSampler, tapUV, reference );
+		else
+			visibility += g_ShadowStaticSun.SampleCmpLevelZero( g_ShadowCmpSampler, tapUV, reference );
+	}
+	return visibility * 0.25;
+}
+float Volume_SunVisibility( VolumeSunRays rays, float sampleIndex, float distance, float2 cascadeTexel, float2 staticTexel )
+{
+	// Same validity/coverage/blend table as ShadowMap_SunResultCharted, with invalidVisibility = 1.
+	uint map0 = 4, map1 = 4, map2 = 4;
+	float weight0 = 1.0, weight1 = 0.0, weight2 = 0.0;
+	uint entryCount = 1;
+	float farDistance = cSunTravel.w;
+	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_CSM_VALID ) != 0 && farDistance > cEyePosition.w &&
+		distance >= cEyePosition.w && distance < farDistance )
+	{
+		uint first = ShadowMap_Cascade( distance );
+		uint second = first;
+		float blend = 0.0;
+		[unroll] for ( uint splitIndex = 0; splitIndex < 3; ++splitIndex )
+		{
+			float split = cCascadeSplits[splitIndex];
+			float width = cCascadeBlend[splitIndex];
+			if ( width > 0.0 && distance >= split - width && distance <= split + width )
+			{
+				first = splitIndex;
+				second = splitIndex + 1;
+				blend = saturate( ( distance - ( split - width ) ) / ( 2.0 * width ) );
+			}
+		}
+		bool firstValid = Volume_SunMapValid( first, Volume_SunClip( rays, first, sampleIndex ) );
+		bool secondValid = second != first && Volume_SunMapValid( second, Volume_SunClip( rays, second, sampleIndex ) );
+		if ( firstValid || secondValid )
+		{
+			float coverage = 1.0 - smoothstep( 0.9 * farDistance, farDistance, distance );
+			entryCount = 0;
+			if ( firstValid )
+			{
+				map0 = first;
+				weight0 = coverage * ( secondValid ? 1.0 - blend : 1.0 );
+				entryCount = 1;
+			}
+			if ( secondValid )
+			{
+				float secondWeight = coverage * ( firstValid ? blend : 1.0 );
+				if ( entryCount == 0 ) { map0 = second; weight0 = secondWeight; }
+				else { map1 = second; weight1 = secondWeight; }
+				++entryCount;
+			}
+			if ( coverage < 1.0 )
+			{
+				if ( entryCount == 1 ) { map1 = 4; weight1 = 1.0 - coverage; }
+				else { map2 = 4; weight2 = 1.0 - coverage; }
+				++entryCount;
+			}
+		}
+	}
+	float visibility = 0.0;
+	[loop] for ( uint entry = 0; entry < entryCount; ++entry )
+	{
+		float weight = entry == 0 ? weight0 : entry == 1 ? weight1 : weight2;
+		if ( weight <= 0.0 ) continue;
+		uint mapIndex = entry == 0 ? map0 : entry == 1 ? map1 : map2;
+		float3 clip = Volume_SunClip( rays, mapIndex, sampleIndex );
+		float mapVisibility = 1.0;
+		if ( Volume_SunMapValid( mapIndex, clip ) )
+			mapVisibility = Volume_SunPCF( mapIndex, clip, cascadeTexel, staticTexel );
+		visibility += weight * mapVisibility;
+	}
+	return visibility;
+}
+
+
+PS_OUTPUT main( PS_INPUT i )
+{
+	PS_OUTPUT o;
+	o.scatter = float4( 0.0, 0.0, 0.0, 0.0 );
+	o.depth = VOLUME_DEPTH_FAR;
+	int2 texel = int2( floor( i.svPos.xy ) );
+	int2 origin = int2( cScreenViewport.xy );
+	int2 size = int2( cScreenViewport.zw );
+	const int footprint = QUARTER ? 4 : 2;
+	int2 base = origin + texel * footprint;
+	float2 center = min( float2( base ) + 0.5 * float( footprint ), cScreenViewport.xy + cScreenViewport.zw - 0.5 );
+
+	// Every sample in the 2x2 or 4x4 footprint participates, retaining both sides of opaque depth edges.
+	float zMin = VOLUME_DEPTH_FAR, zMax = 0.0;
+	bool covered = false;
+	[unroll] for ( int dy = 0; dy < footprint; ++dy )
+	{
+		[unroll] for ( int dx = 0; dx < footprint; ++dx )
+		{
+			int2 pixel = base + int2( dx, dy );
+			if ( any( pixel >= origin + size ) )
+				continue;
+#if MSAA
+			[loop] for ( uint s = 0; s < cScreenControl.y; ++s )
+				Volume_GatherDepth( float2( pixel ) + 0.5 + g_ScreenSceneDepthMS.GetSamplePosition( int( s ) ), g_ScreenSceneDepthMS.Load( pixel, int( s ) ), zMin, zMax, covered );
+#else
+			Volume_GatherDepth( float2( pixel ) + 0.5, g_ScreenSceneDepth.Load( int3( pixel, 0 ) ), zMin, zMax, covered );
+#endif
+		}
+	}
+	float z = covered ? ( ( ( texel.x + texel.y ) & 1 ) ? zMax : zMin ) : VOLUME_DEPTH_FAR;
+#if QUARTER
+	if ( covered )
+		z = Screen_ViewDepth( Screen_PixelToWorld( center, z ) );
+#endif
+	o.depth = z;
+	if ( cVolumeControl.z == 0 )
+		return o;
+
+	// Perspective eye ray through the footprint centre (any in-frustum depth lies on it); the representative depth,
+	// a camera-forward distance, becomes the stop distance along the ray. A clear footprint runs to each light's limit.
+	float2 local = ( center - cScreenViewport.xy ) / cScreenViewport.zw;
+	float4 world = mul( cScreenClipToWorld, float4( local.x * 2.0 - 1.0, 1.0 - local.y * 2.0, 0.5, 1.0 ) );
+	if ( world.w <= 0.0 )
+		return o;
+	float3 eye = cScreenEyeLength.xyz;
+	float3 D = normalize( world.xyz / world.w - eye );
+	float cosForward = dot( D, cScreenForwardThickness.xyz );
+	if ( cosForward <= 0.0 )
+		return o;
+	float opaqueDistance = covered ? z / cosForward : VOLUME_UNBOUNDED;
+	uint steps = max( cVolumeControl.x, 1u );
+	uint noiseFrame = cVolumeControl.w & 63u;
+	float3 delta = float3( 0.0, 0.0, 0.0 );
+	// Give every march sample an independent IGN value and rotate the sequence
+	// over time so all AA providers receive the same unbiased volume input.
+	const float2 stepNoiseStride = float2( 17.071, 31.113 );
+
+	// Local map/editor lights of this footprint's tile and the projected lights share the global medium.
+	float localScatter = cVolumeMedium.x * cVolumeMedium.y;
+	float localLimit = min( opaqueDistance, cVolumeMedium.w );
+	[branch] if ( localScatter > 0.0 && localLimit > 0.0 )
+	{
+		ShadowMapReceiver tileReceiver = (ShadowMapReceiver)0;
+		tileReceiver.screenPos = center;
+		tileReceiver.tile = uint2( max( ( center - cShadowViewport.xy ) / DX12_SHADOW_TILE_PIXELS, 0.0 ) );
+		uint2 range = ShadowMap_TileRange( tileReceiver );
+		[loop] for ( uint n = 0; n < range.y; ++n )
+		{
+			uint index = g_ShadowTileIndices[range.x + n];
+			RuntimeShadowLightGpu light = g_ShadowLights[index];
+			if ( ( light.reserved0 & DX12_VOLUMETRIC_LIGHT_ENABLED ) == 0 )
+				continue;
+			// Charts are sampled only when this view published them; otherwise the light is marched unshadowed.
+			bool shadowed = light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0;
+			// Finite influence sphere: attenuation radius and/or hard fade end; an unbounded light uses the whole interval.
+			float radius = light.attenuationRadius > 0.0 ? light.attenuationRadius : 0.0;
+			if ( light.fadeEnd > light.fadeStart ) radius = radius > 0.0 ? min( radius, light.fadeEnd ) : light.fadeEnd;
+			float a = 0.0, b = localLimit;
+			if ( radius > 0.0 && !Volume_SphereSegment( eye, D, light.origin, radius, a, b ) )
+				continue;
+			float ds = ( b - a ) / float( steps );
+			float3 scattered = float3( 0.0, 0.0, 0.0 );
+			[loop] for ( uint k = 0; k < steps; ++k )
+			{
+				float sampleJitter = Volume_Noise( float2( texel ) + stepNoiseStride * float( k ) + VOLUME_NOISE_FRAME * float( noiseFrame ) );
+				float3 P = eye + D * ( a + ( float( k ) + sampleJitter ) * ds );
+				float3 L;
+				float3 radiance = ShadowMap_StandardLightRadiance( light, P, L );
+				if ( !any( radiance != 0.0 ) ) continue;
+				float visibility = 1.0;
+				if ( shadowed )
+				{
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, P, float3( 0.0, 0.0, 0.0 ) );
+					if ( chart.valid )
+						visibility = lerp( 1.0, ShadowMap_LocalPCFChart( light, chart ), light.realtimeWeight );
+				}
+				if ( visibility <= 0.0 ) continue;
+				scattered += radiance * ( visibility * Volume_Phase( cVolumeMedium.z, dot( L, D ) ) );
+			}
+			delta += scattered * ( localScatter * ds );
+		}
+
+		uint count, stride;
+		g_ProjectedLights.GetDimensions( count, stride );
+		[loop] for ( uint p = 0; p < count; ++p )
+		{
+			PBRSpotGpu light = g_ProjectedLights[p];
+			if ( ( uint( light.slotsFlags.w ) & DX12_VOLUMETRIC_LIGHT_ENABLED ) == 0 )
+				continue;
+			float a = 0.0, b = localLimit;
+			if ( !Volume_SphereSegment( eye, D, light.originFar.xyz, light.originFar.w, a, b ) )
+				continue;
+			float ds = ( b - a ) / float( steps );
+			// Homogeneous projection is affine along the eye ray, even for perspective lights.
+			float4 clipStart = mul( light.worldToTexture, float4( eye + D * a, 1.0 ) );
+			float4 clipStep = mul( light.worldToTexture, float4( D * ds, 0.0 ) );
+			float3 scattered = float3( 0.0, 0.0, 0.0 );
+			[loop] for ( uint k = 0; k < steps; ++k )
+			{
+				float sampleJitter = Volume_Noise( float2( texel ) + stepNoiseStride * float( k ) + VOLUME_NOISE_FRAME * float( noiseFrame ) );
+				float sampleIndex = float( k ) + sampleJitter;
+				float sampleDistance = a + sampleIndex * ds;
+				float3 P = eye + D * sampleDistance;
+				float4 projected = clipStart + clipStep * sampleIndex;
+				if ( !( projected.w > 0.0 && projected.z >= 0.0 && projected.z <= projected.w ) ) continue;
+				float3 L, incident;
+				float distance, visibility; // rawVisibility is 1 without a depth slot (DX12_ProjectedSample)
+				if ( !DX12_ProjectedSampleClip( light, P, projected, L, distance, incident, visibility ) || visibility <= 0.0 ) continue;
+				scattered += incident * ( visibility * Volume_Phase( cVolumeMedium.z, dot( L, D ) ) );
+			}
+			delta += scattered * ( localScatter * ds );
+		}
+	}
+
+	// Sun: its own medium and ray limit; samples outside valid current shadow coverage are unshadowed (visibility 1).
+	float sunScatter = cVolumeSunMedium.x * cVolumeSunMedium.y;
+	float sunLimit = min( opaqueDistance, cVolumeSunMedium.w );
+	[branch] if ( cVolumeControl.y != 0 && sunScatter > 0.0 && sunLimit > 0.0 && ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0 )
+	{
+		float ds = sunLimit / float( steps );
+		float3 rayStep = D * ds;
+		VolumeSunRays rays;
+		rays.cascade0 = Volume_MakeSunRay( cSunWorldToClip[0], eye, rayStep );
+		rays.cascade1 = Volume_MakeSunRay( cSunWorldToClip[1], eye, rayStep );
+		rays.cascade2 = Volume_MakeSunRay( cSunWorldToClip[2], eye, rayStep );
+		rays.cascade3 = Volume_MakeSunRay( cSunWorldToClip[3], eye, rayStep );
+		rays.staticSun = Volume_MakeSunRay( cStaticSunWorldToClip, eye, rayStep );
+		float distanceStart = dot( eye - cEyePosition.xyz, cViewForward.xyz );
+		float distanceStep = dot( rayStep, cViewForward.xyz );
+		uint cascadeWidth, cascadeHeight, staticWidth, staticHeight;
+		g_ShadowCascadeAtlas.GetDimensions( cascadeWidth, cascadeHeight );
+		g_ShadowStaticSun.GetDimensions( staticWidth, staticHeight );
+		float2 cascadeTexel = 1.0 / float2( cascadeWidth, cascadeHeight );
+		float2 staticTexel = 1.0 / float2( staticWidth, staticHeight );
+		float phase = Volume_Phase( cVolumeSunMedium.z, dot( normalize( -cSunTravel.xyz ), D ) );
+		float visibilitySum = 0.0;
+		[loop] for ( uint k = 0; k < steps; ++k )
+		{
+			float sampleJitter = Volume_Noise( float2( texel ) + stepNoiseStride * float( k ) + VOLUME_NOISE_FRAME * float( noiseFrame ) );
+			float sampleIndex = float( k ) + sampleJitter;
+			float distance = distanceStart + distanceStep * sampleIndex;
+			visibilitySum += saturate( Volume_SunVisibility( rays, sampleIndex, distance, cascadeTexel, staticTexel ) );
+		}
+		delta += cSunRadiance.rgb * ( visibilitySum * phase * sunScatter * ds );
+	}
+	o.scatter = float4( delta * cVolumeOutputScale.x, 0.0 );
+	return o;
+}

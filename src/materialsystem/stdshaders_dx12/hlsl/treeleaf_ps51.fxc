@@ -1,0 +1,42 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/TreeLeaf_ps2x.fxc for logical treeleaf_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+struct PS_INPUT
+{
+	float2 texCoord0;
+	float3 color;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 texCoord : TEXCOORD0;
+	float3 color : COLOR;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.texCoord0 = dx12In.texCoord;
+	l.color = dx12In.color;
+	return l;
+}
+
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+
+HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 baseTex = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.texCoord0 );	
+	return DX12FinishPixel( FinalOutput( baseTex * float4( i.color, 1 ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}
+

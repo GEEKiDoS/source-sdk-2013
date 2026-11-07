@@ -1,0 +1,55 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/constant_color_ps2x.fxc for logical constant_color_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+// this pixel shader compares the luminance against a conatnt value and retruns all 1s when
+// greater.
+
+struct PS_INPUT
+{
+	float2 coordTap0;
+	
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+	float2 ZeroTexCoord;
+    float2 bloomTexCoord;
+#endif
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 baseTexCoord : TEXCOORD0;
+	float2 ZeroTexCoord : TEXCOORD1;
+	float2 bloomTexCoord : TEXCOORD2;
+	float4 vColor : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.coordTap0 = dx12In.baseTexCoord;
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+	l.ZeroTexCoord = dx12In.ZeroTexCoord;
+	l.bloomTexCoord = dx12In.bloomTexCoord;
+#endif
+	return l;
+}
+
+
+cbuffer constant_color_ps2x : register( b1, space1 )
+{
+	float4 Constant_color; // @legacy ps:c0
+};
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	return DX12FinishPixel( FinalOutput( float4(0,1,0,1), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f ); //Constant_color;
+}
+

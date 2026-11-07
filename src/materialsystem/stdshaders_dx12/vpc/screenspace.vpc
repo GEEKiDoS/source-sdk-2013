@@ -1,0 +1,21 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\BufferClearObeyStencil_dx12.cpp"
+        $File "cpp\DebugTextureView.cpp"
+        $File "cpp\bik_dx90.cpp"
+        $File "cpp\compositor.cpp"
+        $File "cpp\debugmrttexture.cpp"
+        $File "cpp\depthwrite.cpp"
+        $File "cpp\occlusion_dx12.cpp"
+        $File "cpp\rendertargetblit_x360.cpp"
+        $File "cpp\screenspace_general.cpp"
+        $File "cpp\shadow.cpp"
+        $File "cpp\shadowbuild_dx12.cpp"
+        $File "cpp\shadowmodel_dx12.cpp"
+        $File "cpp\showz.cpp"
+        $File "cpp\writestencil_dx12.cpp"
+        $File "cpp\writez_dx12.cpp"
+    }
+}

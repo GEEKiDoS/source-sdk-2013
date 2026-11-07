@@ -1,0 +1,55 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/eyeglint_ps2x.fxc for logical eyeglint_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// ======= Copyright © 1996-2007, Valve Corporation, All rights reserved. ======
+//
+// Run procedural glint generation inner loop in pixel shader (ps_2_0)
+//
+// =============================================================================
+
+struct PS_INPUT
+{
+	float2 tc;	// Interpolated coordinate of current texel
+	float2 glintCenter;	// Uniform value containing center of glint
+	float3 glintColor;	// Uniform value of color of glint
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 tc : TEXCOORD0;
+	float2 glintCenter : TEXCOORD1;
+	float3 glintColor : TEXCOORD2;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.tc = dx12In.tc;
+	l.glintCenter = dx12In.glintCenter;
+	l.glintColor = dx12In.glintColor;
+	return l;
+}
+
+
+float GlintGaussSpotCoefficient( float2 d )
+{
+	return saturate( exp( -25.0f * dot(d, d) ) );
+}
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float2 uv = i.tc - i.glintCenter;	// This texel relative to glint center
+
+	float intensity =	GlintGaussSpotCoefficient( uv + float2(-0.25f, -0.25f) ) + 
+						GlintGaussSpotCoefficient( uv + float2( 0.25f, -0.25f) ) + 
+					5 * GlintGaussSpotCoefficient( uv ) + 
+						GlintGaussSpotCoefficient( uv + float2(-0.25f,  0.25f) ) + 
+						GlintGaussSpotCoefficient( uv + float2( 0.25f,  0.25f) );
+			
+	intensity *= 4.0f/9.0f;
+
+	return DX12FinishPixel( float4( intensity * i.glintColor, 1.0f ), 0.0f );
+}

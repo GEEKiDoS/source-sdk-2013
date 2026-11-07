@@ -19,6 +19,8 @@
 #if defined( L4D2 )
 #include "studio.h"
 #endif
+#include "clientleafsystem.h"
+#include "shadowmaps_dx12.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -30,6 +32,7 @@ IMPLEMENT_CLIENTCLASS_DT(C_PhysicsProp, DT_PhysicsProp, CPhysicsProp)
 	RecvPropBool( RECVINFO( m_isCarryable ) ),
 	RecvPropInt( RECVINFO( m_spawnflags ) ),
 #endif
+	RecvPropBool( RECVINFO( m_bShadowMapOrdinaryPhysicsProp ) ),
 END_RECV_TABLE()
 
 ConVar r_PhysPropStaticLighting( "r_PhysPropStaticLighting", 
@@ -44,6 +47,19 @@ ConVar r_PhysPropStaticLighting( "r_PhysPropStaticLighting",
 #endif
  );
 
+#if defined( L4D2 )
+// Original engine E1AFFC0 maps studio-header flags in E0E9430. The target
+// has no r_staticlight_streams engine control; Main selects its default1
+// branch, not a half-functional game-owned renderer setting.
+static bool TerrorModelSupportsStaticLighting( const model_t *model )
+{
+	if ( !model || modelinfo->GetModelType( model ) != mod_studio )
+		return false;
+	const studiohdr_t *header = modelinfo->GetStudiomodel( model );
+	return header && ( header->flags & STUDIOHDR_FLAGS_STATIC_PROP ) &&
+		!( header->flags & STUDIOHDR_FLAGS_USES_BUMPMAPPING );
+}
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -55,6 +71,31 @@ C_PhysicsProp::C_PhysicsProp( void )
 
 	// default true so static lighting will get recomputed when we go to sleep
 	m_bAwakeLastTime = true;
+	m_bShadowMapOrdinaryPhysicsProp = false;
+	m_bShadowMapOverrideEligibleLast = false;
+}
+
+void C_PhysicsProp::OnDataChanged( DataUpdateType_t type )
+{
+	BaseClass::OnDataChanged( type );
+#if defined( L4D2 )
+	m_bStaticLightingEligible = TerrorModelSupportsStaticLighting( GetModel() );
+	if ( m_bStaticLightingEligible )
+		CreateModelInstance();
+#endif
+
+	bool eligible = CanOverrideShadowMapNoShadow();
+	if ( eligible != m_bShadowMapOverrideEligibleLast )
+	{
+		m_bShadowMapOverrideEligibleLast = eligible;
+		// Render registration can predate the first receive, including save restores.
+		// Identity/solidity/visibility changes also retire cached rigid silhouettes.
+		if ( RenderHandle() != INVALID_CLIENT_RENDER_HANDLE )
+		{
+			ShadowMapsDX12_InvalidateCasterRegistration( this );
+			ClientLeafSystem()->RenderableChanged( RenderHandle() );
+		}
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -73,26 +114,6 @@ ConVar r_visualizeproplightcaching( "r_visualizeproplightcaching", "0"
  );
 
 #if defined( L4D2 )
-// Original engine E1AFFC0 maps studio-header flags in E0E9430. The target
-// has no r_staticlight_streams engine control; Main selects its default1
-// branch, not a half-functional game-owned renderer setting.
-static bool TerrorModelSupportsStaticLighting( const model_t *model )
-{
-	if ( !model || modelinfo->GetModelType( model ) != mod_studio )
-		return false;
-	const studiohdr_t *header = modelinfo->GetStudiomodel( model );
-	return header && ( header->flags & STUDIOHDR_FLAGS_STATIC_PROP ) &&
-		!( header->flags & STUDIOHDR_FLAGS_USES_BUMPMAPPING );
-}
-
-void C_PhysicsProp::OnDataChanged( DataUpdateType_t type )
-{
-	BaseClass::OnDataChanged( type );
-	m_bStaticLightingEligible = TerrorModelSupportsStaticLighting( GetModel() );
-	if ( m_bStaticLightingEligible )
-		CreateModelInstance();
-}
-
 // C86800: ineligible models do not bake, flag, tint, or advance awake history.
 bool C_PhysicsProp::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
 {

@@ -398,9 +398,11 @@ public:
 		m_nGlowRangeMin = 0;
 		m_glowColor.r = m_glowColor.g = m_glowColor.b = m_glowColor.a = 0;
 #endif
+		m_bShadowMapOrdinaryClass = false;
 	}
 
 	void Spawn( void );
+	virtual void OnRestore();
 #if defined( L4D2 )
 	void InitializeTerrorNavAttributes();
 	virtual void OnBreak( const Vector &velocity, const AngularImpulse &angles, CBaseEntity *breaker ) OVERRIDE;
@@ -457,6 +459,7 @@ public:
 	virtual int OnTakeDamage( const CTakeDamageInfo &info );
 	int DrawDebugTextOverlays(void);
 	bool IsGib();
+	virtual bool IsOrdinaryShadowMapPhysicsProp() { return m_bShadowMapOrdinaryClass && !IsGib(); }
 	DECLARE_DATADESC();
 
 	// Specific interactions
@@ -466,6 +469,10 @@ public:
 	float	GetMassScale( void ) { return m_massScale; }
 
 private:
+	// Derived identity, deliberately not saved: reconstruct after Spawn/OnRestore.
+	void UpdateShadowMapPhysicsClass();
+	bool m_bShadowMapOrdinaryClass;
+
 	// Compute impulse to apply to the enabled entity.
 	void ComputeEnablingImpulse( int index, gamevcollisionevent_t *pEvent );
 

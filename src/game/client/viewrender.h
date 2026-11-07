@@ -15,6 +15,11 @@
 #include "iviewrender.h"
 #include "view_shared.h"
 #include "replay/ireplayscreenshotsystem.h"
+#include "clientleafsystem.h"
+#include "detailobjectsystem.h"
+#include "shaderapi/ishaderapidx12lighting.h"
+#include "tier1/refcount.h"
+#include <atomic>
 
 
 //-----------------------------------------------------------------------------
@@ -35,6 +40,99 @@ class CReplayScreenshotTaker;
 #if defined( L4D2 )
 struct ClientViewModelRenderable_t;
 #endif
+
+// Client-owned private-depth scene views. The list is gathered once per receiver,
+// independently of the camera lists, then classified against each expanded face.
+struct ShadowMapSceneCaster_t
+{
+	IClientRenderable *renderable;
+	Vector mins, maxs;
+	bool staticProp;
+	bool immutable;
+	bool rigid; // Current chart's unchanged certified subset, not mere geometric rigidity.
+};
+
+enum ShadowMapDynamicLayer_t
+{
+	SHADOWMAP_DYNAMIC_ALL,
+	SHADOWMAP_DYNAMIC_RIGID,
+	SHADOWMAP_DYNAMIC_OVERLAY
+};
+
+enum ShadowMapDepthFootprintFullReason_t
+{
+	SHADOWMAP_FOOTPRINT_UNKNOWN=1, SHADOWMAP_FOOTPRINT_ROPE=2, SHADOWMAP_FOOTPRINT_CUSTOM_DRAW=4,
+	SHADOWMAP_FOOTPRINT_NONFINITE=8, SHADOWMAP_FOOTPRINT_W_NONPOSITIVE=16,
+	SHADOWMAP_FOOTPRINT_INVALID_BOUNDS=32, SHADOWMAP_FOOTPRINT_QUEUED_ROPE=64
+};
+
+// Synchronous feedback from the actual overlay draw; coordinates are chart-local.
+// An empty rectangle wrote no pixels. A vertex behind the light is clipped to the
+// near plane with its triangle or bounds; it does not expand the whole chart.
+// Unknown geometry is full.
+struct ShadowMapDepthFootprint_t
+{
+	void Reset( const float *clip, int chartSize );
+	void AddPoint( const Vector &worldPoint );
+	void AddBounds( const Vector &worldMins, const Vector &worldMaxs );
+	void AddTriangle( const Vector &a, const Vector &b, const Vector &c );
+	void AddQuad( const Vector v[4] );
+	void SetFull( uint32 reason = SHADOWMAP_FOOTPRINT_UNKNOWN );
+	const float *matrix;
+	int size, x0, y0, x1, y1;
+	bool full;
+	uint32 reasons;
+};
+
+// Replay owns this record, never a caller's stack footprint or mutable cache matrix.
+// CPU geometry stays separate; merge the precise rope result only after IsComplete.
+// AddConservativeBounds is main-thread only, before the queue, and stays readable
+// while the replay is still pending.
+class CShadowMapRopeFootprint : public CRefCounted<>
+{
+public:
+	CShadowMapRopeFootprint() : m_Complete(true), m_HasConservative(false) {}
+	void Reset( const float *clip, int size );
+	void BeginQueued();
+	ShadowMapDepthFootprint_t *BeginReplay();
+	void EndReplay();
+	bool IsComplete() const;
+	bool CanReset();
+	void AddConservativeBounds( const Vector &mins, const Vector &maxs );
+	bool CopyConservative( int &x0, int &y0, int &x1, int &y1, bool &full, uint32 &reasons ) const;
+	const ShadowMapDepthFootprint_t &GetFootprint() const { return m_Footprint; }
+private:
+	float m_Matrix[16];
+	ShadowMapDepthFootprint_t m_Footprint;
+	std::atomic<bool> m_Complete;
+	std::atomic<bool> m_HasConservative;
+	int m_ConservativeX0, m_ConservativeY0, m_ConservativeX1, m_ConservativeY1;
+	bool m_ConservativeFull;
+	uint32 m_ConservativeReasons;
+};
+
+struct ShadowMapDepthScene_t
+{
+	CViewSetup lightView, receiverView;
+	ShadowCasterVolume_t volume;
+	ShadowMapDetailOrientation_t detail;
+	const CUtlVector<ShadowMapSceneCaster_t> *casters;
+	const CUtlVector<int> *candidateIndices;
+	int candidateFirst, candidateCount;
+	IShaderAPIDX12Lighting *lighting;
+	DX12ShadowTarget_t target;
+	int x, y, size;
+	bool clear, drawWorld, drawStatic, drawDynamic, drawDetail, orientedDetail, instanceCasters;
+	ShadowMapDynamicLayer_t dynamicLayer;
+	uint32 *overlayCasterDraws;
+	ShadowMapDepthFootprint_t *overlayFootprint;
+	CShadowMapRopeFootprint *overlayRopeFootprint;
+	const DX12ShadowSkyClip *skyClip; // sun charts: BeginShadowPass sky clip, NULL for local charts
+};
+
+void ViewRender_DrawShadowMapScene( const ShadowMapDepthScene_t &scene );
+// Release map-scoped world-list scratch without waiting for engine/backend leases.
+void ViewRender_ClearShadowMapScenes();
 
 #ifdef HL2_EPISODIC
 	class CStunEffect;
@@ -201,6 +299,7 @@ public:
 	virtual ~CRendering3dView() { ReleaseLists(); }
 
 	void Setup( const CViewSetup &setup );
+	ViewCustomVisibility_t *GetCustomVisibility() const { return m_pCustomVisibility; }
 
 	// What are we currently rendering? Returns a combination of DF_ flags.
 	virtual int		GetDrawFlags();
@@ -232,7 +331,7 @@ protected:
 	void			DrawWorld( float waterZAdjust );
 
 	// Draws all opaque/translucent renderables in leaves that were rendered
-	void			DrawOpaqueRenderables( ERenderDepthMode DepthMode );
+	void			DrawOpaqueRenderables( ERenderDepthMode DepthMode, bool bContactDepthReplay = false );
 	void			DrawTranslucentRenderables( bool bInSkybox, bool bShadowDepth );
 
 	// Renders all translucent entities in the render list
@@ -329,6 +428,7 @@ public:
 	static CViewRender *	GetMainView() { return assert_cast<CViewRender *>( view ); }
 
 	void			AddViewToScene( CRendering3dView *pView ) { m_SimpleExecutor.AddView( pView ); }
+	bool			DrawDeferredSkybox();
 protected:
 	// Sets up the view parameters for all views (left, middle and right eyes).
     void            SetUpViews();
@@ -489,9 +589,11 @@ private:
 
 #if defined( L4D2 )
 	bool UpdateRefractIfNeededByList( CUtlVector< ClientViewModelRenderable_t > &list );
+	void DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< ClientViewModelRenderable_t > &list );
 	void DrawRenderablesInList( CUtlVector< ClientViewModelRenderable_t > &list, int flags = 0 );
 #else
 	bool			UpdateRefractIfNeededByList( CUtlVector< IClientRenderable * > &list );
+	void			DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< IClientRenderable * > &list );
 	void			DrawRenderablesInList( CUtlVector< IClientRenderable * > &list, int flags = 0 );
 #endif
 
@@ -550,6 +652,7 @@ private:
 	Frustum m_Frustum;
 
 	CBase3dView *m_pActiveRenderer;
+	CRendering3dView *m_pDeferredSkybox; // Non-owning; the RenderView stack retains the sky view.
 	CSimpleRenderExecutor m_SimpleExecutor;
 
 	bool			m_rbTakeFreezeFrame[ STEREO_EYE_MAX ];

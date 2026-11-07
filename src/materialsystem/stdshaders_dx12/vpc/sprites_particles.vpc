@@ -1,0 +1,19 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\cloud_dx12.cpp"
+        $File "cpp\particlelitgeneric_dx12.cpp"
+        $File "cpp\particlelitgeneric_dx9_helper.cpp"
+        $File "cpp\particlesphere_dx12.cpp"
+        $File "cpp\sprite_dx12.cpp"
+        $File "cpp\spritecard.cpp"
+        $File "cpp\volume_clouds.cpp"
+        $File "cpp\volume_clouds_helper.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "cpp\particlelitgeneric_dx9_helper.h"
+        $File "cpp\volume_clouds_helper.h"
+    }
+}

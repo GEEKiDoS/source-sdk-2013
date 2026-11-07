@@ -1888,7 +1888,7 @@ private:
 
 
 // Also be sure to enable PIX_INSTRUMENTATION in shaderdevicedx8.h
-//#define PIX_ENABLE 1		// set this to 1 and build engine/studiorender to enable pix events in the engine
+#define PIX_ENABLE 1		// set this to 1 and build engine/studiorender to enable pix events in the engine
 
 #if PIX_ENABLE
 #	define PIXEVENT PIXEvent _pixEvent

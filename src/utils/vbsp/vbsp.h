@@ -607,9 +607,11 @@ void SaveVertexNormals( void );
 
 //=============================================================================
 // cubemap.cpp
-void Cubemap_InsertSample( const Vector& origin, int size );
+void Cubemap_InsertSample( const Vector& origin, int size, const char *pParallaxObbName );
+void Cubemap_AddParallaxObb( entity_t *pEntity, const mapbrush_t *pBrushes, const plane_t *pPlanes );
 void Cubemap_CreateDefaultCubemaps( void );
 void Cubemap_SaveBrushSides( const char *pSideListStr );
+void Cubemap_ResolveParallax( void );
 void Cubemap_FixupBrushSidesMaterials( void );
 void Cubemap_AttachDefaultCubemapToSpecularSides( void );
 // Add skipped cubemaps that are referenced by the engine

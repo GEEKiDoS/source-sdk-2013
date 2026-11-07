@@ -1,0 +1,4 @@
+You may distribute the following files:
+
+dxbcSigner.dll
+dxbcsigner.lib

@@ -83,6 +83,20 @@ inline void UpdateScreenEffectTexture( int textureIndex, int x, int y, int w, in
 
 	CMatRenderContextPtr pRenderContext( materials );
 	ITexture *pTexture = GetFullFrameFrameBufferTexture( textureIndex );
+	ITexture *pCurrent = pRenderContext->GetRenderTarget();
+	// Float HDR renders into _rt_FullFrameFB, so a copy requested onto that texture would read
+	// and write the bound target. Publish the other full-frame buffer on the caller's slot.
+	if ( pCurrent && pTexture == pCurrent )
+	{
+		ITexture *pOther = GetFullFrameFrameBufferTexture( textureIndex == 0 ? 1 : 0 );
+		if ( pOther && !pOther->IsError() && pOther != pCurrent
+			&& pOther->GetImageFormat() == pTexture->GetImageFormat()
+			&& pOther->GetActualWidth() == pTexture->GetActualWidth()
+			&& pOther->GetActualHeight() == pTexture->GetActualHeight() )
+		{
+			pTexture = pOther;
+		}
+	}
 	int nSrcWidth, nSrcHeight;
 	pRenderContext->GetRenderTargetDimensions( nSrcWidth, nSrcHeight );
 	int nDestWidth = pTexture->GetActualWidth();

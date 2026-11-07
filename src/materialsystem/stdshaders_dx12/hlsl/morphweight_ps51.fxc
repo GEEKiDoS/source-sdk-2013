@@ -1,0 +1,32 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/morphweight_ps30.fxc for logical morphweight_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+struct PS_INPUT
+{
+	float4 vMorphWeights;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vDestCoord : SV_Position;
+	float4 vMorphWeights : TEXCOORD0;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vMorphWeights = dx12In.vMorphWeights;
+	return l;
+}
+
+
+HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	return DX12FinishPixel( i.vMorphWeights, 0.0f );
+}
+

@@ -1,0 +1,124 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+#ifndef LIGHTING_DX12_H
+#define LIGHTING_DX12_H
+#pragma once
+
+#include "shaderapi/ishaderapidx12lighting.h"
+#include "pipeline_dx12.h"
+#include "textures_dx12.h"
+#include "tier1/utlstring.h"
+
+namespace shaderapidx12
+{
+class CShaderAPIDX12;
+class CShaderDeviceDX12;
+struct LightingPacketDX12;
+struct LightingViewStateDX12;
+struct ShaderRecordDX12;
+bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage, bool *lightingAbi, CUtlString &error, bool *sunVisibility = nullptr, bool *propVisibility = nullptr, bool *pbrSpots = nullptr, bool *probeAbi = nullptr );
+bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixelStage );
+bool ValidateInstancedCasterShaderDX12( const D3D12_SHADER_BYTECODE &bytecode );
+bool RequiresStaticPropReceiverShaderDX12( const char *logical );
+
+struct SunReceiverStreamDX12
+{
+	const CVertexBufferDX12 *buffer = nullptr;
+	uint32 byteOffset = 0, firstVertex = 0, vertexCount = 0, repetitions = 1;
+};
+struct SunReceiverDrawDX12
+{
+	SunReceiverStreamDX12 streams[16];
+	const CIndexBufferDX12 *indices = nullptr;
+	const VertexLayoutDX12 *layout = nullptr;
+	const ShaderRecordDX12 *pixelShader = nullptr;
+	const char *vertexLogical = nullptr, *pixelLogical = nullptr;
+	size_t indexOffset = 0;
+	MaterialPrimitiveType_t primitive = MATERIAL_TRIANGLES;
+	int firstIndex = 0, indexCount = 0;
+	uint64 materialToken = 0;
+	const char *materialName = nullptr;
+	uint32 diagnosticFlags = 0, pass = ~0u;
+};
+struct SunReceiverCoordinatesDX12
+{
+	// Float2 values indexed by the original vertex ID. Borrowed through this Draw,
+	// including submission/reclaim; the next resolve or control mutation may retire them.
+	const float *values = nullptr;
+	uint32 count = 0;
+};
+// Device-owned control plane; mutable GPU recording state belongs exclusively to the recording owner.
+class CLightingDX12 final : public IShaderAPIDX12Lighting
+{
+public:
+	CLightingDX12();
+	~CLightingDX12();
+	void Initialize( CShaderDeviceDX12 *device, CShaderAPIDX12 *api );
+	void Shutdown();
+	bool ValidateMap( const DX12LightingMapDesc &map, char *error, int errorBytes ) override;
+	void PrepareMap( const DX12LightingMapDesc &map ) override;
+	DX12LightingStatus GetStatus( uint32 mapGeneration, uint32 viewGeneration, char *error, int errorBytes ) override;
+	void BeginView( const DX12LightingViewPacket &view ) override;
+	DX12ShadowTarget_t CreateShadowDepthTarget( const char *name, int width, int height ) override;
+	IRefCounted *RetainShadowDepthTarget( DX12ShadowTarget_t target ) override;
+	void DestroyShadowDepthTarget( DX12ShadowTarget_t target ) override;
+	void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear, const DX12ShadowSkyClip *skyClip ) override;
+	void EndShadowPass() override;
+	void BeginShadowCasterBatch() override;
+	void EndShadowCasterBatch() override;
+	void CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height ) override;
+	void EndView() override;
+	void UnloadMap( uint32 mapGeneration ) override;
+	void BeginStaticPropReceiver( const DX12StaticPropReceiver &receiver ) override;
+	void EndStaticPropReceiver() override;
+	void RegisterStaticPropReceiver( uint64 renderableToken, const DX12StaticPropReceiver &receiver ) override;
+	void GetStaticPropVisibilityStats( uint32 mapGeneration, DX12StaticPropVisibilityStats &stats ) override;
+	void RegisterModelMeshMetadata( const DX12ModelMeshMetadata &metadata ) override;
+	void GetStaticPropVisibilityDetails( uint32 mapGeneration, IDX12StaticPropVisibilityDetailsSink &sink ) override;
+	void SetReceiverFeatureGeneration( uint32 mapGeneration ) override;
+	uint32 ReceiverFeatureGeneration() override;
+	void RejectUnsupportedLitShader( const char *shaderName ) override;
+	void RequestPbrOverride( bool enabled ) override;
+	bool PbrOverridePending() override;
+	bool CommitPbrOverride() override;
+	bool PbrOverride() override;
+	bool BeginMaterialTransaction() override;
+	void EndMaterialTransaction() override;
+	void SetProjectedLightTextures( const ShaderAPITextureHandle_t *cookies, const ShaderAPITextureHandle_t *depths, int count ) override;
+	void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) override;
+	void GetSunVisibilityStats( uint32 mapGeneration, DX12LightingSunVisibilityStats &stats ) override;
+	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );
+	void ForgetSunReceiverTexture( ShaderAPITextureHandle_t texture );
+	bool PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDrawDX12 &draw,
+		const float modelToWorld[12], CPipelineCacheDX12::BindingInputDX12 &input );
+
+	bool ShadowPassActive() const;
+	bool PrepareShadowDraw( RenderTargetBindingDX12 &target, D3D12_VIEWPORT &viewport, D3D12_RECT &scissor );
+	// Recording owner, inside a shadow pass. Sky-clipped sun passes: the pixel stage every opaque depth-only caster draw
+	// runs (shadow_sky_clip_ps51) and the space-6 sky map table / constants of the pass; NULL / neutral otherwise.
+	ShaderRecordDX12 *ShadowSkyClipPixelShader() const;
+	bool PrepareShadowSkyClipDraw( CPipelineCacheDX12::BindingInputDX12 &input );
+	bool PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input );
+	// Recording owner, before PrepareBindings: the current projected-light descriptor table for a PS that reflects space 5.
+	bool PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input );
+	bool PresentationBlocked();
+	void FailRecording( const char *error );
+	void Reclaim();
+	void Execute( LightingPacketDX12 *packet );
+	void Recycle( LightingPacketDX12 *packet );
+	// Volumetric lighting (recording owner, screenspace_volumetric_dx12.cpp). The main view's lighting state is
+	// captured while its scope is current and stays owned by the volume holder past its EndView until
+	// EndVolumetrics; PrepareVolumetricDraw binds that state (or neutral space 2 when no lighting view existed)
+	// with lightingAbi, without receiver/prop visibility. False: no valid capture, or its packet was rejected.
+	void BeginVolumetrics();
+	void CaptureVolumetricView();
+	bool PrepareVolumetricDraw( CPipelineCacheDX12::BindingInputDX12 &input );
+	void EndVolumetrics();
+private:
+	LightingPacketDX12 *Packet( int operation );
+	void Enqueue( LightingPacketDX12 *packet );
+	bool PrepareViewTables( LightingViewStateDX12 &scope, bool receiverVisibility, CPipelineCacheDX12::BindingInputDX12 &input );
+	struct Impl;
+	Impl *m_Impl;
+};
+} // namespace shaderapidx12
+#endif // LIGHTING_DX12_H

@@ -1,0 +1,132 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/bik_ps2x.fxc for logical bik_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// DYNAMIC: "PIXELFOGTYPE"				"0..1"
+
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#include "common_ps_fxc.h"
+#include "shader_constant_register_map.h"
+
+
+cbuffer bik_ps2x : register( b1, space1 )
+{
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+Texture2D YTextureSampler_Texture : register( t0 );
+SamplerState YTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D YTextureSampler = { YTextureSampler_Texture, YTextureSampler_Sampler };
+Texture2D cRTextureSampler_Texture : register( t1 );
+SamplerState cRTextureSampler_Sampler : register( s1 );
+static const DX12Sampler2D cRTextureSampler = { cRTextureSampler_Texture, cRTextureSampler_Sampler };
+Texture2D cBTextureSampler_Texture : register( t2 );
+SamplerState cBTextureSampler_Sampler : register( s2 );
+static const DX12Sampler2D cBTextureSampler = { cBTextureSampler_Texture, cBTextureSampler_Sampler };
+//sampler ATextureSampler		: register( s3 );
+
+struct PS_INPUT
+{
+	HALF2 baseTexCoord;
+	HALF4 worldPos_projPosZ;
+	float4 fogFactorW;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	HALF2 baseTexCoord : TEXCOORD0;
+	float4 worldPos_projPosZ : TEXCOORD1;
+	float4 fogFactorW : COLOR1;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.baseTexCoord = dx12In.baseTexCoord;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.fogFactorW = dx12In.fogFactorW;
+	return l;
+}
+
+
+#if 0
+static float yuvtorgb[] =
+{
+   1.164123535f,  1.595794678f,  0.0f,         -0.87065506f,
+   1.164123535f, -0.813476563f, -0.391448975f,  0.529705048f,
+   1.164123535f,  0.0f,          2.017822266f, -1.081668854f,
+   1.0f, 0.0f, 0.0f, 0.0f
+};
+" sampler tex0   : register( s0 );      "
+" sampler tex1   : register( s1 );      "
+" sampler tex2   : register( s2 );      "
+" sampler tex3   : register( s3 );      "
+" float4  tor    : register( c0 );      "
+" float4  tog    : register( c1 );      "
+" float4  tob    : register( c2 );      "
+" float4  consts : register( c3 );      "
+"                                       "
+" struct VS_OUT                         "
+" {                                     "
+"     float2 T0: TEXCOORD0;             "
+" };                                    "
+"                                       "
+" float4 main( VS_OUT In ) : COLOR      "
+" {                                     "
+"   float4 c;                           "
+"   float4 p;                           "
+"   c.x = tex0.tex.Sample( tex0.smp, In.T0 ).x;       "
+"   c.y = tex1.tex.Sample( tex1.smp, In.T0 ).x;       "
+"   c.z = tex2.tex.Sample( tex2.smp, In.T0 ).x;       "
+"   c.w = consts.x;                     "
+"   p.w = tex3.tex.Sample( tex3.smp, In.T0 ).x;       "
+"   p.x = dot( tor, c );                "
+"   p.y = dot( tog, c );                "
+"   p.z = dot( tob, c );                "
+"   p.w *= consts.w;                    "
+"   return p;                           "
+" }                                     ";
+#endif
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	half y, cR, cB;
+	y = YTextureSampler.tex.Sample( YTextureSampler.smp, i.baseTexCoord.xy );
+	cR = cRTextureSampler.tex.Sample( cRTextureSampler.smp, i.baseTexCoord.xy );
+	cB = cBTextureSampler.tex.Sample( cBTextureSampler.smp, i.baseTexCoord.xy );
+//	half a = tex2D( ATextureSampler, i.baseTexCoord.xy );
+	
+	HALF4 c;
+	c = float4( y, cR, cB, 1.0f );
+
+	float4 tor = float4( 1.164123535f,  1.595794678f,  0.0f,         -0.87065506f );
+	float4 tog = float4( 1.164123535f, -0.813476563f, -0.391448975f,  0.529705048f );
+	float4 tob = float4( 1.164123535f,  0.0f,          2.017822266f, -1.081668854f );
+
+	HALF4 rgba;
+	
+	rgba.r = dot( c, tor );
+	rgba.g = dot( c, tog );
+	rgba.b = dot( c, tob );
+	rgba.a = 1.0f;
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	float4 result = FinalOutput( rgba, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE );
+
+	// The 360 will do an sRGB write to put the linear values into 360 gamma space, but the PC just outputs gamma values directly
+	#if defined( _X360 )
+		result.r = SrgbGammaToLinear( result.r );
+		result.g = SrgbGammaToLinear( result.g );
+		result.b = SrgbGammaToLinear( result.b );
+	#endif
+
+	return DX12FinishPixel( result.rgba, dx12In.fog );
+}

@@ -149,6 +149,12 @@ public:
 
 	
 	bool	IsTeamplay( void ) { return m_bTeamPlayEnabled;	}
+	// A map with an info_player_logo entity (the test_hardware benchmark, E3 demos) runs a scripted camera:
+	// the player spawns locked at the logo spot and menus/input are suppressed (ported from CS:S).
+	bool	IsLogoMap( void ) const { return m_bLogoMap; }
+#ifndef CLIENT_DLL
+	virtual void LevelInitPostEntity( void );
+#endif
 	void	CheckAllPlayersReady( void );
 
 	virtual bool IsConnectedUserInfoChangeAllowed( CBasePlayer *pPlayer );
@@ -156,6 +162,7 @@ public:
 private:
 	
 	CNetworkVar( bool, m_bTeamPlayEnabled );
+	CNetworkVar( bool, m_bLogoMap );
 	CNetworkVar( float, m_flGameStartTime );
 	CUtlVector<EHANDLE> m_hRespawnableItemsAndWeapons;
 	float m_tmNextPeriodicThink;

@@ -13,11 +13,56 @@ $Project "captioncompiler"
 	"utils\captioncompiler\captioncompiler.vpc" [$WINDOWS]
 }
 
+$Project "dx12_shaderconv"
+{
+	"thirdparty\dx12_shaderconv\dx12_shaderconv.vpc" [$WIN64]
+}
+$Project "unicode"
+{
+	"unicode\unicode.vpc" [$WIN64]
+}
+
+$Project "shaderapidx12"
+{
+    "materialsystem\shaderapidx12\shaderapidx12.vpc" [$WIN64]
+}
+
+$Project "nvngx_forwarder_dx12"
+{
+    "materialsystem\shaderapidx12\nvngx_forwarder\nvngx_forwarder_dx12.vpc" [$WIN64]
+}
+
+$Project "nativeshaderpack_dx12"
+{
+	"utils\nativeshaderpack_dx12\nativeshaderpack_dx12.vpc" [$WIN64]
+}
+
+$Project "stdshader_dx12"
+{
+	"materialsystem\stdshaders_dx12\stdshader_dx12.vpc" [$WIN64]
+}
+
+$Project "shaderapidx12_smoke"
+{
+	"utils\shaderapidx12_smoke\shaderapidx12_smoke.vpc" [$WIN64]
+}
+
+$Project "vrad_restir_dll"
+{
+	"utils\vrad_restir\vrad_restir.vpc" [$WIN64]
+}
+
+$Project "vrad_restir_launcher"
+{
+	"utils\vrad_restir\vrad_restir_launcher.vpc" [$WIN64]
+}
+
 $Project "client"
 {
 	"game\client\client_tf.vpc"			[$TF]
 	"game\client\client_hl2mp.vpc"		[$HL2MP]
 	"game\client\client_l4d2.vpc"		[$L4D2]
+	"game\client\client_episodic.vpc"	[$EPISODIC]
 }
 
 $Project "fgdlib"
@@ -29,6 +74,7 @@ $Project "game_shader_generic_example"
 {
 	"materialsystem\stdshaders\game_shader_generic_example_hl2mp.vpc" [$HL2MP]
 	"materialsystem\stdshaders\game_shader_generic_example_tf.vpc" [$TF]
+	"materialsystem\stdshaders\game_shader_generic_example_episodic.vpc" [$EPISODIC]
 }
 
 // Use this project if you want to override all std shaders with your own.
@@ -37,6 +83,7 @@ $Project "game_shader_generic_std"
 {
 	"materialsystem\stdshaders\game_shader_generic_std_hl2mp.vpc" [$HL2MP]
 	"materialsystem\stdshaders\game_shader_generic_std_tf.vpc" [$TF]
+	"materialsystem\stdshaders\game_shader_generic_std_episodic.vpc" [$EPISODIC]
 }
 
 $Project "game_shader_l4d2"
@@ -59,6 +106,7 @@ $Project "server"
 	"game\server\server_tf.vpc"			[$TF]
 	"game\server\server_hl2mp.vpc"		[$HL2MP]
 	"game\server\server_l4d2.vpc"		[$L4D2]
+	"game\server\server_episodic.vpc"	[$EPISODIC]
 }
 
 $Project "launcher_main"
@@ -66,6 +114,7 @@ $Project "launcher_main"
 	"launcher_main\launcher_main_mod_hl2mp.vpc" [$HL2MP]
 	"launcher_main\launcher_main_mod_tf.vpc" [$TF]
 	"launcher_main\launcher_main_mod_l4d2.vpc" [$L4D2]
+	"launcher_main\launcher_main_mod_episodic.vpc" [$EPISODIC]
 }
 
 $Project "mathlib"

@@ -688,8 +688,14 @@ void CBaseViewModel::CalcViewModelLag( Vector& origin, QAngle& angles, QAngle& o
 			flSpeed *= flScale;
 		}
 
+#if defined( L4D2 )
 		// FIXME:  Needs to be predictable?
 		VectorMA( m_vecLastFacing, flSpeed * gpGlobals->frametime, vDifference, m_vecLastFacing );
+#else
+		// A long frame must catch up to the camera, not extrapolate past it.
+		const float flBlend = clamp( flSpeed * gpGlobals->frametime, 0.0f, 1.0f );
+		VectorMA( m_vecLastFacing, flBlend, vDifference, m_vecLastFacing );
+#endif
 		// Make sure it doesn't grow out of control!!!
 		VectorNormalize( m_vecLastFacing );
 		VectorMA( origin, 5.0f, vDifference * -1.0f, origin );

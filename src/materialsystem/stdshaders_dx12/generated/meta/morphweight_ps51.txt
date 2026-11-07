@@ -1,0 +1,10 @@
+logical=morphweight_ps51 stage=ps source=morphweight_ps51.fxc legacy=morphweight_ps30.fxc legacyName=morphweight_ps30 profile=30 static=1 dynamic=1 present=1
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none

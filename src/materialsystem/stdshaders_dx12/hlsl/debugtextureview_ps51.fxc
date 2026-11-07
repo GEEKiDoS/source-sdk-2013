@@ -1,0 +1,115 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/DebugTextureView_ps2x.fxc for logical debugtextureview_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "SHOWALPHA"			"0..1"
+// DYNAMIC: "ISCUBEMAP"			"0..1"
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+#if ISCUBEMAP
+TextureCube g_tSampler_Texture : register( t0 );
+SamplerState g_tSampler_Sampler : register( s0 );
+static const DX12SamplerCube g_tSampler = { g_tSampler_Texture, g_tSampler_Sampler };
+#else
+Texture2D g_tSampler_Texture : register( t0 );
+SamplerState g_tSampler_Sampler : register( s0 );
+static const DX12Sampler2D g_tSampler = { g_tSampler_Texture, g_tSampler_Sampler };
+#endif
+
+struct PS_INPUT
+{
+	float2 texCoord;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPos : SV_Position;
+	float2 vUv0 : TEXCOORD0;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.texCoord = dx12In.vUv0;
+	return l;
+}
+
+
+cbuffer DebugTextureView_ps2x : register( b1, space1 )
+{
+	float3 g_vConst0; // @legacy ps:c0
+};
+
+#define g_flIsHdrCube g_vConst0.x
+#define g_flIsHdr2D g_vConst0.y
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+#if ISCUBEMAP
+	float4 sample = g_tSampler.tex.Sample( g_tSampler.smp, float3( i.texCoord, 0 ) );
+#else
+	float4 sample = g_tSampler.tex.Sample( g_tSampler.smp, i.texCoord );
+#endif
+	float4 result = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+	result.rgb = sample.rgb;
+	#if SHOWALPHA
+		result.rgb = sample.a;
+	#endif
+
+	if ( g_flIsHdr2D )
+		result.rgb *= MAX_HDR_OVERBRIGHT;
+
+	#if ISCUBEMAP
+		bool bNoDataForThisPixel = false;
+		float3 vec = float3( 0, 0, 0 );
+		float x = i.texCoord.x;
+		float y = i.texCoord.y;
+		float x2 = frac( ( i.texCoord.x ) * 3.0f ) * 2.0f - 1.0f;
+		float y2 = frac( ( i.texCoord.y ) * 4.0f ) * 2.0f - 1.0f;
+		if ( ( x >= 0.3333f ) && ( x <= 0.6666f ) ) //Center row
+		{
+			if ( y >= 0.75f )
+				vec = float3( x2, 1.0, y2 );
+			else if ( y >= 0.5f )
+				vec = float3( x2, y2, -1.0 );
+			else if ( y >= 0.25f )
+				vec = float3( x2, -1.0, -y2 );
+			else if ( y >= 0.0f )
+				vec = float3( x2, -y2, 1.0 );
+		}
+		else if ( ( y >= 0.25f ) && ( y <= 0.5f ) )
+		{
+			if ( x <= 0.3333f )
+				vec = float3( -1.0f, -x2, -y2 );
+			else if (x >= 0.6666f)
+				vec = float3( 1.0f, x2, -y2 );
+			else
+				bNoDataForThisPixel = true;
+		}
+		else
+		{
+			bNoDataForThisPixel = true;
+		}
+
+		float4 cBase = g_tSampler.tex.Sample( g_tSampler.smp, vec );
+		#if SHOWALPHA
+			cBase.rgb = cBase.a;
+		#endif
+
+		if ( g_flIsHdrCube )
+			cBase.rgb *= ENV_MAP_SCALE;
+
+		if ( bNoDataForThisPixel == true )
+			cBase.rgb = float3( 0.9f, 0.4f, 0.15f );
+
+		result.rgb = cBase.rgb;
+		result.a = 1.0f; // - bNoDataForThisPixel;
+	#endif
+
+	return DX12FinishPixel( FinalOutput( result, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

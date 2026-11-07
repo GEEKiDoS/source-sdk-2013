@@ -8,6 +8,7 @@
 #include "c_rope.h"
 #include "beamdraw.h"
 #include "view.h"
+#include "viewrender.h"
 #include "env_wind_shared.h"
 #include "input.h"
 #ifdef TF_CLIENT_DLL
@@ -28,6 +29,7 @@
 #ifdef L4D2
 #include "materialsystem/MaterialSystemUtil.h"
 #endif
+#include "tier1/smartptr.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -261,6 +263,7 @@ public:
 	CQueuedRopeMemoryManager( void )
 	{
 		m_nCurrentStack = 0;
+		m_nOverflowBlocksUsed = 0;
 		MEM_ALLOC_CREDIT();
 		m_QueuedRopeMemory[0].Init( 131072, 0, 16384 );
 		m_QueuedRopeMemory[1].Init( 131072, 0, 16384 );
@@ -271,12 +274,12 @@ public:
 		m_QueuedRopeMemory[1].FreeAll( true );
 		for( int i = 0; i != 2; ++i )
 		{
-			for( int j = m_DeleteOnSwitch[i].Count(); --j >= 0; )
+			for( int j = m_OverflowBlocks[i].Count(); --j >= 0; )
 			{
-				free( m_DeleteOnSwitch[i].Element(j) );
+				free( m_OverflowBlocks[i][j].memory );
 			}
 
-			m_DeleteOnSwitch[i].RemoveAll();
+			m_OverflowBlocks[i].RemoveAll();
 		}
 	}
 
@@ -285,11 +288,9 @@ public:
 		m_nCurrentStack = 1 - m_nCurrentStack;
 		m_QueuedRopeMemory[m_nCurrentStack].FreeAll( false );
 
-		for( int i = m_DeleteOnSwitch[m_nCurrentStack].Count(); --i >= 0; )
-		{
-			free( m_DeleteOnSwitch[m_nCurrentStack].Element(i) );
-		}
-		m_DeleteOnSwitch[m_nCurrentStack].RemoveAll();
+		// This half is no longer referenced by queued rendering. Retain its
+		// high-water storage instead of malloc/free for every excess light view.
+		m_nOverflowBlocksUsed = 0;
 	}
 
 	inline void *Alloc( size_t bytes )
@@ -298,17 +299,36 @@ public:
 		void *pReturn = m_QueuedRopeMemory[m_nCurrentStack].Alloc( bytes, false );
 		if( pReturn == NULL )
 		{
-			int iMaxSize = m_QueuedRopeMemory[m_nCurrentStack].GetMaxSize();
-			Warning( "Overflowed rope queued rendering memory stack. Needed %llu, have %d/%d\n", (uint64)bytes, iMaxSize - m_QueuedRopeMemory[m_nCurrentStack].GetUsed(), iMaxSize );
-			pReturn = malloc( bytes );
-			m_DeleteOnSwitch[m_nCurrentStack].AddToTail( pReturn );
+			CUtlVector<OverflowBlock_t> &blocks = m_OverflowBlocks[m_nCurrentStack];
+			const int index = m_nOverflowBlocksUsed++;
+			if ( index == blocks.Count() )
+			{
+				OverflowBlock_t block = { NULL, 0 };
+				blocks.AddToTail( block );
+			}
+			OverflowBlock_t &block = blocks[index];
+			if ( block.capacity < bytes )
+			{
+				free( block.memory );
+				block.memory = malloc( bytes );
+				if ( !block.memory )
+					Error( "Unable to allocate %llu bytes for queued rope rendering\n", (uint64)bytes );
+				block.capacity = bytes;
+			}
+			pReturn = block.memory;
 		}
 		return pReturn;
 	}
 
+	struct OverflowBlock_t
+	{
+		void *memory;
+		size_t capacity;
+	};
 	CMemoryStack	m_QueuedRopeMemory[2];
 	int				m_nCurrentStack;
-	CUtlVector<void *>	m_DeleteOnSwitch[2]; //when we overflow the stack, we do new/delete
+	int				m_nOverflowBlocksUsed;
+	CUtlVector<OverflowBlock_t> m_OverflowBlocks[2];
 };
 
 //=============================================================================
@@ -325,6 +345,31 @@ struct RopeSegData_t
 	float		m_flMaxBackWidth;
 };
 
+class CShadowMapRopeReplayScope
+{
+public:
+	explicit CShadowMapRopeReplayScope( CShadowMapRopeFootprint *pRecord )
+		: m_pRecord( pRecord ), m_pFootprint( pRecord ? pRecord->BeginReplay() : NULL )
+	{
+	}
+
+	~CShadowMapRopeReplayScope()
+	{
+		if ( m_pRecord )
+			m_pRecord->EndReplay();
+	}
+
+	ShadowMapDepthFootprint_t *GetFootprint() const { return m_pFootprint; }
+
+private:
+	CShadowMapRopeReplayScope( const CShadowMapRopeReplayScope & );
+	CShadowMapRopeReplayScope &operator=( const CShadowMapRopeReplayScope & );
+
+	// The callback's owning argument outlives this scope and its feedback pointer.
+	CShadowMapRopeFootprint *m_pRecord;
+	ShadowMapDepthFootprint_t *m_pFootprint;
+};
+
 class CRopeManager : public IRopeManager
 {
 public:
@@ -334,7 +379,7 @@ public:
 
 	void ResetRenderCache( void );
 	void AddToRenderCache( C_RopeKeyframe *pRope );
-	void DrawRenderCache( bool bShadowDepth );
+	void DrawRenderCache( bool bShadowDepth, CShadowMapRopeFootprint *footprint = NULL );
 	void OnRenderStart( void )
 	{
 		m_QueuedModeMemory.SwitchStack();
@@ -347,7 +392,7 @@ public:
 private:
 	struct RopeRenderData_t;
 public:
-	void DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData );
+	void DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData, CSmartPtr<CShadowMapRopeFootprint> replayFootprint );
 	
 	void			ResetSegmentCache( int nMaxSegments );
 	RopeSegData_t	*GetNextSegmentFromCache( void );
@@ -359,7 +404,8 @@ public:
 private:
 
 	void RenderNonSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount );
-	void RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid );
+	void RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid, ShadowMapDepthFootprint_t *footprint = NULL );
+	void ProjectQueuedRopeBounds( CShadowMapRopeFootprint *record, C_RopeKeyframe *pRope );
 #ifdef L4D2
 	void RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRenderData_t &cache, bool bShadowDepth, C_RopeKeyframe::BuildRopeQueuedData_t *pQueuedData );
 #endif
@@ -662,10 +708,12 @@ void CRopeManager::RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRen
 }
 #endif
 
-void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData )
+void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_t *pRenderCache, int nRenderCacheCount, const Vector &vCurrentViewForward, const Vector &vCurrentViewOrigin, C_RopeKeyframe::BuildRopeQueuedData_t *pBuildRopeQueuedData, CSmartPtr<CShadowMapRopeFootprint> replayFootprint )
 {
 	VPROF_BUDGET( "CRopeManager::DrawRenderCache", VPROF_BUDGETGROUP_ROPES );
 	AUTO_LOCK( m_RenderCacheMutex ); //contention cases: Toggling from queued mode on to off. Rope deletion from the cache.
+	CShadowMapRopeReplayScope replayScope( bShadowDepth ? replayFootprint.GetObject() : NULL );
+	ShadowMapDepthFootprint_t *footprint = replayScope.GetFootprint();
 
 	// Check to see if we want to render the ropes.
 	if( !r_drawropes.GetBool() )
@@ -704,6 +752,9 @@ void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_
 		if ( !Q_stricmp( pRenderCache[iRenderCache].m_pSolidMaterial->GetShaderName(), "SplineRope" ) )
 		{
 			RenderSplineRopes( pRenderContext, pRenderCache[iRenderCache], bShadowDepth, pBuildRopeQueuedData );
+			// The shader expands the ribbon from control points; its silhouette is not known here.
+			if ( footprint )
+				footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE | SHADOWMAP_FOOTPRINT_UNKNOWN );
 			if ( pBuildRopeQueuedData )
 				pBuildRopeQueuedData += nCacheCount;
 			continue;
@@ -778,7 +829,7 @@ void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_
 		if ( rope_rendersolid.GetInt() )
 		{
 			if ( bShadowDepth )
-				RenderSolidRopes( pRenderContext, m_pDepthWriteMaterial, nVertCount, nIndexCount, bRenderNonSolid );
+				RenderSolidRopes( pRenderContext, m_pDepthWriteMaterial, nVertCount, nIndexCount, bRenderNonSolid, footprint );
 			else
 				RenderSolidRopes( pRenderContext, pRenderCache[iRenderCache].m_pSolidMaterial, nVertCount, nIndexCount, bRenderNonSolid );
 		}
@@ -794,7 +845,7 @@ void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_
 //-----------------------------------------------------------------------------
 // Purpose:
 //-----------------------------------------------------------------------------
-void CRopeManager::DrawRenderCache( bool bShadowDepth )
+void CRopeManager::DrawRenderCache( bool bShadowDepth, CShadowMapRopeFootprint *footprint )
 {
 	int iRenderCacheCount = m_aRenderCache.Count();
 
@@ -868,6 +919,8 @@ void CRopeManager::DrawRenderCache( bool bShadowDepth )
 
 				pWriteCache->m_aCache[pWriteCache->m_nCacheCount] = pRope;
 				++pWriteCache->m_nCacheCount;
+				if ( footprint )
+					ProjectQueuedRopeBounds( footprint, pRope );
 
 				int iNodes = pRope->m_RopePhysics.NumNodes();
 
@@ -891,17 +944,21 @@ void CRopeManager::DrawRenderCache( bool bShadowDepth )
 			}
 		}
 		Assert( ((void *)pVectorWrite == (void *)(((uint8 *)pMemory) + iMemoryNeeded)) && ((void *)pWriteRopeQueuedData == (void *)pVectorDataStart));		
-		pCallQueue->QueueCall( this, &CRopeManager::DrawRenderCache_NonQueued, bShadowDepth, pRenderCachesStart, iRenderCacheCount, vForward, vOrigin, pBuildRopeQueuedDataStart );
+		// CSmartPtr adds a reference for each functor/argument copy; CRefPtr does not.
+		CSmartPtr<CShadowMapRopeFootprint> replayFootprint( bShadowDepth ? footprint : NULL );
+		if ( replayFootprint.IsValid() )
+			replayFootprint->BeginQueued();
+		pCallQueue->QueueCall( this, &CRopeManager::DrawRenderCache_NonQueued, bShadowDepth, pRenderCachesStart, iRenderCacheCount, vForward, vOrigin, pBuildRopeQueuedDataStart, replayFootprint );
 
 		if ( IsHolidayLightMode() )
 		{
 			// With holiday lights we need to also build the ropes non-queued without rendering them
-			DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL );
+			DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL, CSmartPtr<CShadowMapRopeFootprint>() );
 		}
 	}
 	else
 	{
-		DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL );
+		DrawRenderCache_NonQueued( bShadowDepth, m_aRenderCache.Base(), iRenderCacheCount, vForward, vOrigin, NULL, CSmartPtr<CShadowMapRopeFootprint>( bShadowDepth ? footprint : NULL ) );
 	}
 }
 
@@ -987,7 +1044,7 @@ void CRopeManager::RenderNonSolidRopes( IMatRenderContext *pRenderContext, IMate
 //-----------------------------------------------------------------------------
 // Purpose:
 //-----------------------------------------------------------------------------
-void CRopeManager::RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid )
+void CRopeManager::RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid, ShadowMapDepthFootprint_t *footprint )
 {
 	// Render the solid portion of the ropes.
 	CMeshBuilder meshBuilder;
@@ -1043,6 +1100,38 @@ void CRopeManager::RenderSolidRopes( IMatRenderContext *pRenderContext, IMateria
 			}
 			beamSegment.End();
 			nVerts += ( m_aSegmentCache[iSegmentCache].m_nSegmentCount * 2 );
+		}
+	}
+
+	if ( footprint && !footprint->full && meshBuilder.VertexCount() > 0 )
+	{
+		// Read the actual position stream while the mesh is still locked, after
+		// CBeamSegDraw has emitted every vertex (including its deferred last pair).
+		// This includes Catmull-Rom/barbed overshoot and the actual camera/width
+		// expansion without duplicating beam math or changing the builder cursor.
+		if ( !meshBuilder.m_pPosition || meshBuilder.m_VertexSize_Position < sizeof( float ) * 3 )
+		{
+			footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE | SHADOWMAP_FOOTPRINT_UNKNOWN );
+		}
+		else
+		{
+			const unsigned char *position = reinterpret_cast<const unsigned char *>( meshBuilder.m_pPosition );
+			const int vertexCount = meshBuilder.VertexCount();
+			const int stride = meshBuilder.m_VertexSize_Position;
+			// Beam vertices are a strip (two per sample), indexed as triangles. Clip every
+			// strip edge so a sample behind the light only expands the visible fragment.
+			Vector *verts = (Vector *)stackalloc( vertexCount * sizeof( Vector ) );
+			for ( int vertex = 0; vertex < vertexCount; ++vertex )
+			{
+				const float *point = reinterpret_cast<const float *>( position + vertex * stride );
+				verts[vertex].Init( point[0], point[1], point[2] );
+			}
+			for ( int vertex = 0; vertex + 1 < vertexCount && !footprint->full; ++vertex )
+				footprint->AddTriangle( verts[vertex], verts[vertex], verts[vertex + 1] );
+			for ( int vertex = 0; vertex + 2 < vertexCount && !footprint->full; ++vertex )
+				footprint->AddTriangle( verts[vertex], verts[vertex + 1], verts[vertex + 2] );
+			if ( footprint->full )
+				footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE );
 		}
 	}
 
@@ -1946,6 +2035,59 @@ inline void Catmull_Rom_Eval( const catmull_t &spline, const Vector &t, Vector &
 	Assert(spline.t2.IsValid());
 	Assert(spline.t3.IsValid());
 	output = spline.c + (t.x * spline.t) + (t.y*spline.t2) + (t.z * spline.t3);
+}
+void CRopeManager::ProjectQueuedRopeBounds( CShadowMapRopeFootprint *record, C_RopeKeyframe *pRope )
+{
+	const int nodeCount = pRope->m_RopePhysics.NumNodes();
+	if ( nodeCount <= 0 )
+		return;
+	int nSubdivs = 0;
+	Vector *subdivs = pRope->GetRopeSubdivVectors( &nSubdivs );
+	// The ribbon sits half a width off the centerline, and a far rope can be widened
+	// to a few pixels. The pad covers that plus segment joins; the samples cover the spline.
+	const float pad = MAX( pRope->m_Width, 1.0f ) + 32.0f;
+	Vector mins( FLT_MAX, FLT_MAX, FLT_MAX ), maxs( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+	const int last = nodeCount - 1;
+	int prev = 0;
+	for ( int i = 0; i < nodeCount; ++i )
+	{
+		const Vector &node = pRope->m_RopePhysics.GetNode( i )->m_vPredicted;
+		if ( !node.IsValid() )
+		{
+			Vector invalid;
+			invalid.Invalidate();
+			record->AddConservativeBounds( invalid, invalid );
+			return;
+		}
+		VectorMin( mins, node, mins );
+		VectorMax( maxs, node, maxs );
+		if ( i < last && nSubdivs > 0 )
+		{
+			const int next = MIN( i + 1, last );
+			const int next2 = MIN( i + 2, last );
+			catmull_t spline;
+			Catmull_Rom_Spline_Matrix( pRope->m_RopePhysics.GetNode( prev )->m_vPredicted, node,
+				pRope->m_RopePhysics.GetNode( next )->m_vPredicted,
+				pRope->m_RopePhysics.GetNode( next2 )->m_vPredicted, spline );
+			for ( int s = 0; s < nSubdivs; ++s )
+			{
+				Vector pos;
+				Catmull_Rom_Eval( spline, subdivs[s], pos );
+				if ( !pos.IsValid() )
+				{
+					Vector invalid;
+					invalid.Invalidate();
+					record->AddConservativeBounds( invalid, invalid );
+					return;
+				}
+				VectorMin( mins, pos, mins );
+				VectorMax( maxs, pos, maxs );
+			}
+			prev = i;
+		}
+	}
+	const Vector padv( pad, pad, pad );
+	record->AddConservativeBounds( mins - padv, maxs + padv );
 }
 
 

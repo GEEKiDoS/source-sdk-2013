@@ -25,6 +25,8 @@ public:
 	virtual void SetParameters( KeyValues *params );
 	virtual void Enable( bool bEnable ) {};
 	virtual bool IsEnabled( ) { return true; }
+	// This effect captures/reads STUN_TEXTURE, not the motion-vector target.
+	virtual bool RequiresMotionVectors( ) { return false; }
 
 	virtual void Render( int x, int y, int w, int h );
 
@@ -57,6 +59,7 @@ public:
 	virtual void SetParameters( KeyValues *params );
 	virtual void Enable( bool bEnable ) { m_bEnabled = bEnable; }
 	virtual bool IsEnabled( ) { return m_bEnabled; }
+	virtual bool RequiresMotionVectors( ) { return false; }
 
 	virtual void Render( int x, int y, int w, int h );
 
@@ -98,6 +101,7 @@ public:
 	virtual void SetParameters( KeyValues *params );
 	virtual void Enable( bool bEnable ) { m_bEnabled = bEnable; }
 	virtual bool IsEnabled( ) { return m_bEnabled; }
+	virtual bool RequiresMotionVectors( ) { return false; }
 
 	virtual void Render( int x, int y, int w, int h );
 

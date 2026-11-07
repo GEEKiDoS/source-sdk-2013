@@ -13,6 +13,7 @@
 #include <KeyValues.h>
 #include "tier1/strtools.h"
 #include "tier1/utlsymbol.h"
+#include "tier1/utlstring.h"
 #include "vtf/vtf.h"
 #include "materialpatch.h"
 #include "materialsystem/imaterialsystem.h"
@@ -48,6 +49,7 @@ struct PatchInfo_t
 {
 	char *m_pMapName;
 	int m_pOrigin[3];
+	const float *m_pParallaxRows;	// 3 rows of 4 floats mapping world space to the unit box of a parallax_obb, NULL when the cubemap has none
 };
 
 struct CubemapInfo_t
@@ -85,13 +87,136 @@ inline bool SideHasCubemapAndWasntManuallyReferenced( int iSide )
 }
 
 
-void Cubemap_InsertSample( const Vector& origin, int size )
+//-----------------------------------------------------------------------------
+// parallax_obb: a compile-only box brush. Its rows map world space to the unit box [0,1]^3,
+// u_k = dot( m_Rows[k].xyz, p ) + m_Rows[k].w, which the PBR shaders intersect the reflection ray with.
+//-----------------------------------------------------------------------------
+struct ParallaxObb_t
+{
+	CUtlString	m_Name;
+	float		m_Rows[3][4];
+};
+
+static CUtlVector<ParallaxObb_t> s_ParallaxObbs;
+
+// Parallel to g_CubemapSamples
+struct CubemapParallax_t
+{
+	CubemapParallax_t() : m_nObb( -1 ) {}
+
+	CUtlString	m_ObbName;	// the env_cubemap "parallaxobb" key
+	int			m_nObb;		// index into s_ParallaxObbs, set by Cubemap_ResolveParallax
+};
+
+static CubemapParallax_t s_aCubemapParallax[MAX_MAP_CUBEMAPSAMPLES];
+
+
+//-----------------------------------------------------------------------------
+// The box is the brush's six real sides (AddBrushBevels may have added bevel sides) forming three
+// pairs of opposite sides. The interior of a side is dot( normal, p ) <= dist, so along the normal n
+// of a pair ( i, j ) the box spans [ -dist_j, dist_i ] and u = ( dot( n, p ) + dist_j ) / ( dist_i + dist_j ).
+//
+// LoadEntityCallback has already rebased the planes of an entity with an origin to that origin, so they
+// describe the box in entity space ( q = p - origin ). The rows take world space p, so w loses dot( row.xyz, origin ).
+//-----------------------------------------------------------------------------
+static bool ParallaxObbRowsFromBrush( const mapbrush_t &brush, const plane_t *pPlanes, const Vector &origin, float rows[3][4] )
+{
+	const plane_t *pSides[6];
+	int nSides = 0;
+	for ( int i = 0; i < brush.numsides; i++ )
+	{
+		if ( brush.original_sides[i].bevel )
+			continue;
+
+		if ( nSides == 6 )
+			return false;
+
+		pSides[nSides++] = &pPlanes[brush.original_sides[i].planenum];
+	}
+
+	if ( nSides != 6 )
+		return false;
+
+	bool bPaired[6] = {};
+	int nRows = 0;
+	for ( int i = 0; i < 6; i++ )
+	{
+		if ( bPaired[i] )
+			continue;
+
+		int j = i + 1;
+		while ( j < 6 && ( bPaired[j] || DotProduct( pSides[i]->normal, pSides[j]->normal ) >= -0.999f ) )
+			j++;
+
+		if ( j == 6 )
+			return false;
+
+		bPaired[j] = true;
+
+		const float flScale = 1.0f / ( pSides[i]->dist + pSides[j]->dist );
+		for ( int k = 0; k < 3; k++ )
+		{
+			rows[nRows][k] = pSides[i]->normal[k] * flScale;
+		}
+		rows[nRows][3] = pSides[j]->dist * flScale - DotProduct( Vector( rows[nRows][0], rows[nRows][1], rows[nRows][2] ), origin );
+		nRows++;
+	}
+
+	return true;
+}
+
+
+void Cubemap_AddParallaxObb( entity_t *pEntity, const mapbrush_t *pBrushes, const plane_t *pPlanes )
+{
+	ParallaxObb_t obb;
+	if ( pEntity->numbrushes != 1 || !ParallaxObbRowsFromBrush( pBrushes[pEntity->firstbrush], pPlanes, pEntity->origin, obb.m_Rows ) )
+	{
+		Warning( "parallax_obb \"%s\" ignored: it needs exactly one box brush (three pairs of opposite sides)\n", ValueForKey( pEntity, "targetname" ) );
+		return;
+	}
+
+	obb.m_Name = ValueForKey( pEntity, "targetname" );
+	s_ParallaxObbs.AddToTail( obb );
+}
+
+
+//-----------------------------------------------------------------------------
+// Matches the "parallaxobb" name of every env_cubemap with a parallax_obb. The whole map is loaded by now.
+//-----------------------------------------------------------------------------
+void Cubemap_ResolveParallax( void )
+{
+	for ( int iCubemap = 0; iCubemap < g_nCubemapSamples; iCubemap++ )
+	{
+		CubemapParallax_t &parallax = s_aCubemapParallax[iCubemap];
+		if ( parallax.m_ObbName.IsEmpty() )
+			continue;
+
+		for ( int iObb = 0; iObb < s_ParallaxObbs.Count(); iObb++ )
+		{
+			if ( !Q_stricmp( s_ParallaxObbs[iObb].m_Name.Get(), parallax.m_ObbName.Get() ) )
+			{
+				parallax.m_nObb = iObb;
+				break;
+			}
+		}
+
+		if ( parallax.m_nObb < 0 )
+		{
+			Warning( "env_cubemap at (%d, %d, %d): parallaxobb \"%s\" doesn't match any valid parallax_obb\n",
+				g_CubemapSamples[iCubemap].origin[0], g_CubemapSamples[iCubemap].origin[1], g_CubemapSamples[iCubemap].origin[2], parallax.m_ObbName.Get() );
+		}
+	}
+}
+
+
+void Cubemap_InsertSample( const Vector& origin, int size, const char *pParallaxObbName )
 {
 	dcubemapsample_t *pSample = &g_CubemapSamples[g_nCubemapSamples];
 	pSample->origin[0] = ( int )origin[0];	
 	pSample->origin[1] = ( int )origin[1];	
 	pSample->origin[2] = ( int )origin[2];	
 	pSample->size = size;
+	s_aCubemapParallax[g_nCubemapSamples].m_ObbName = pParallaxObbName;
 	g_nCubemapSamples++;
 }
 
@@ -557,14 +682,43 @@ static bool PatchEnvmapForMaterialAndDependents( const char *pMaterialName, cons
 	char pPatchedMaterialName[1024];
 	GeneratePatchedName( pMaterialName, info, true, pPatchedMaterialName, 1024 );
 
-	MaterialPatchInfo_t pPatchInfo[2];
+	// $envmap, the 3 parallax rows and $envmaporigin, the dependent material
+	MaterialPatchInfo_t pPatchInfo[6];
 	int nPatchCount = 0;
+
+	// These have to outlive CreateMaterialPatch
+	char pParallaxRows[3][128];
+	char pEnvmapOrigin[64];
+
 	if ( bShouldPatchEnvCubemap )
 	{
 		pPatchInfo[nPatchCount].m_pKey = "$envmap";
 		pPatchInfo[nPatchCount].m_pRequiredOriginalValue = "env_cubemap";
 		pPatchInfo[nPatchCount].m_pValue = pCubemapTexture;
 		++nPatchCount;
+
+		if ( info.m_pParallaxRows )
+		{
+			// The original material doesn't have these keys, so they go in the patch's insert section.
+			// Vectors must be bracketed or the material system reads them as strings.
+			static const char *s_pParallaxKeys[3] = { "$envmapparallaxobb1", "$envmapparallaxobb2", "$envmapparallaxobb3" };
+			for ( int i = 0; i < 3; ++i )
+			{
+				const float *pRow = info.m_pParallaxRows + 4 * i;
+				Q_snprintf( pParallaxRows[i], sizeof( pParallaxRows[i] ), "[%.9g %.9g %.9g %.9g]", pRow[0], pRow[1], pRow[2], pRow[3] );
+				pPatchInfo[nPatchCount].m_pKey = s_pParallaxKeys[i];
+				pPatchInfo[nPatchCount].m_pValue = pParallaxRows[i];
+				pPatchInfo[nPatchCount].m_bInsert = true;
+				++nPatchCount;
+			}
+
+			// The shader intersects from the capture point, which is the snapped origin named by the cubemap texture
+			Q_snprintf( pEnvmapOrigin, sizeof( pEnvmapOrigin ), "[%d %d %d]", info.m_pOrigin[0], info.m_pOrigin[1], info.m_pOrigin[2] );
+			pPatchInfo[nPatchCount].m_pKey = "$envmaporigin";
+			pPatchInfo[nPatchCount].m_pValue = pEnvmapOrigin;
+			pPatchInfo[nPatchCount].m_bInsert = true;
+			++nPatchCount;
+		}
 	}
 
 	char pDependentPatchedMaterialName[1024];
@@ -597,8 +751,10 @@ static bool PatchEnvmapForMaterialAndDependents( const char *pMaterialName, cons
 // default (skybox) cubemap into this file so the cubemap doesn't have the pink checkerboard at
 // runtime before they run buildcubemaps.
 //-----------------------------------------------------------------------------
-static int Cubemap_CreateTexInfo( int originalTexInfo, int origin[3] )
+static int Cubemap_CreateTexInfo( int originalTexInfo, int iCubemap )
 {
+	const int *origin = g_CubemapSamples[iCubemap].origin;
+
 	// Don't make cubemap tex infos for nodes
 	if ( originalTexInfo == TEXINFO_NODE )
 		return originalTexInfo;
@@ -624,6 +780,8 @@ static int Cubemap_CreateTexInfo( int originalTexInfo, int origin[3] )
 	info.m_pOrigin[0] = origin[0];
 	info.m_pOrigin[1] = origin[1];
 	info.m_pOrigin[2] = origin[2];
+	const CubemapParallax_t &parallax = s_aCubemapParallax[iCubemap];
+	info.m_pParallaxRows = ( parallax.m_nObb >= 0 ) ? &s_ParallaxObbs[parallax.m_nObb].m_Rows[0][0] : NULL;
 
 	// Generate the name of the patched material
 	char pGeneratedTexDataName[1024];
@@ -730,7 +888,7 @@ void Cubemap_FixupBrushSidesMaterials( void )
 			}
 #endif
 			
-			pSide->texinfo = Cubemap_CreateTexInfo( pSide->texinfo, g_CubemapSamples[cubemapID].origin );
+			pSide->texinfo = Cubemap_CreateTexInfo( pSide->texinfo, cubemapID );
 			if ( pSide->pMapDisp )
 			{
 				pSide->pMapDisp->face.texinfo = pSide->texinfo;
@@ -946,7 +1104,7 @@ void Cubemap_AttachDefaultCubemapToSpecularSides( void )
 			Assert( pSide->texinfo == pSide->pMapDisp->face.texinfo );
 		}
 #endif				
-		pSide->texinfo = Cubemap_CreateTexInfo( pSide->texinfo, g_CubemapSamples[iCubemap].origin );
+		pSide->texinfo = Cubemap_CreateTexInfo( pSide->texinfo, iCubemap );
 		if ( pSide->pMapDisp )
 		{
 			pSide->pMapDisp->face.texinfo = pSide->texinfo;

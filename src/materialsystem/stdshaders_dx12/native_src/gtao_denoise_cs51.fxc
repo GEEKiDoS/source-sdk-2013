@@ -1,0 +1,53 @@
+// Native SM5.1 XeGTAO edge-aware spatial denoise.
+// STATIC: "FINAL" "0..1"
+#include "gtao_common.hlsli"
+Texture2D<float> gAoIn : register( t0, space0 );
+Texture2D<float> gEdgesIn : register( t1, space0 );
+RWTexture2D<unorm float> gAoOut : register( u0, space0 );
+SamplerState gPointClamp : register( s0, space0 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 dispatchID : SV_DispatchThreadID )
+{
+	uint2 base = dispatchID.xy * uint2( 2, 1 );
+	float blurAmount = FINAL != 0 ? gDenoiseBlurBeta : gDenoiseBlurBeta / 5.0;
+	const float diagonalWeight = 0.85 * 0.5;
+	for ( uint lane = 0; lane < 2; ++lane )
+	{
+		int2 p = int2( base ) + int2( lane, 0 );
+		if ( p.x >= gViewportSize.x || p.y >= gViewportSize.y ) continue;
+		int2 leftP = clamp( p + int2( -1, 0 ), int2( 0, 0 ), gViewportSize - 1 );
+		int2 rightP = clamp( p + int2( 1, 0 ), int2( 0, 0 ), gViewportSize - 1 );
+		int2 topP = clamp( p + int2( 0, -1 ), int2( 0, 0 ), gViewportSize - 1 );
+		int2 bottomP = clamp( p + int2( 0, 1 ), int2( 0, 0 ), gViewportSize - 1 );
+		float4 centerEdges = UnpackEdges( gEdgesIn.Load( int3( p, 0 ) ) );
+		float4 leftEdges = UnpackEdges( gEdgesIn.Load( int3( leftP, 0 ) ) );
+		float4 rightEdges = UnpackEdges( gEdgesIn.Load( int3( rightP, 0 ) ) );
+		float4 topEdges = UnpackEdges( gEdgesIn.Load( int3( topP, 0 ) ) );
+		float4 bottomEdges = UnpackEdges( gEdgesIn.Load( int3( bottomP, 0 ) ) );
+		centerEdges *= float4( leftEdges.y, rightEdges.x, topEdges.w, bottomEdges.z );
+		float edginess = saturate( 4.0 - 2.5 - dot( centerEdges, 1.0.xxxx ) ) / 1.5 * 0.5;
+		centerEdges = saturate( centerEdges + edginess );
+		float weightTL = diagonalWeight * ( centerEdges.x * leftEdges.z + centerEdges.z * topEdges.x );
+		float weightTR = diagonalWeight * ( centerEdges.z * topEdges.y + centerEdges.y * rightEdges.z );
+		float weightBL = diagonalWeight * ( centerEdges.w * bottomEdges.x + centerEdges.x * leftEdges.w );
+		float weightBR = diagonalWeight * ( centerEdges.y * rightEdges.w + centerEdges.w * bottomEdges.y );
+		int2 tlP = clamp( p + int2( -1, -1 ), int2( 0, 0 ), gViewportSize - 1 );
+		int2 trP = clamp( p + int2( 1, -1 ), int2( 0, 0 ), gViewportSize - 1 );
+		int2 blP = clamp( p + int2( -1, 1 ), int2( 0, 0 ), gViewportSize - 1 );
+		int2 brP = clamp( p + int2( 1, 1 ), int2( 0, 0 ), gViewportSize - 1 );
+		float sumWeight = blurAmount;
+		float sum = gAoIn.Load( int3( p, 0 ) ) * sumWeight;
+		sum += gAoIn.Load( int3( leftP, 0 ) ) * centerEdges.x; sumWeight += centerEdges.x;
+		sum += gAoIn.Load( int3( rightP, 0 ) ) * centerEdges.y; sumWeight += centerEdges.y;
+		sum += gAoIn.Load( int3( topP, 0 ) ) * centerEdges.z; sumWeight += centerEdges.z;
+		sum += gAoIn.Load( int3( bottomP, 0 ) ) * centerEdges.w; sumWeight += centerEdges.w;
+		sum += gAoIn.Load( int3( tlP, 0 ) ) * weightTL; sumWeight += weightTL;
+		sum += gAoIn.Load( int3( trP, 0 ) ) * weightTR; sumWeight += weightTR;
+		sum += gAoIn.Load( int3( blP, 0 ) ) * weightBL; sumWeight += weightBL;
+		sum += gAoIn.Load( int3( brP, 0 ) ) * weightBR; sumWeight += weightBR;
+		float output = sum / max( sumWeight, 1e-4 );
+		if ( FINAL != 0 ) output *= 1.5;
+		gAoOut[p] = saturate( output );
+	}
+}

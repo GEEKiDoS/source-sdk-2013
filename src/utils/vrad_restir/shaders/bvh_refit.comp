@@ -1,0 +1,38 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// Karras 2012 section 4: second child arrival computes the parent bounds.
+// coherent BvhNodesBuf plus device memory barriers publishes each child before
+// the integer arrival counter; no floating-point atomic operation is used.
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count || index >= pc.numTriangles )
+		return;
+	uint node = pc.numTriangles - 1u + index;
+	ReSTIRGpuTriangle triangle = triangles[bvhPrims[index]];
+	bvhNodes[node].boundsMin.xyz = min( min( triangle.v0.xyz, triangle.v1.xyz ), triangle.v2.xyz ) - vec3( 0.0001 );
+	bvhNodes[node].boundsMax.xyz = max( max( triangle.v0.xyz, triangle.v1.xyz ), triangle.v2.xyz ) + vec3( 0.0001 );
+	memoryBarrierBuffer();
+	uint parent = bvhNodes[node].parent;
+	while ( parent != RESTIR_NO_HIT )
+	{
+		uint arrivals = atomicAdd( bvhNodes[parent].refitCounter, 1u );
+		if ( arrivals != 1u )
+			break;
+		memoryBarrierBuffer();
+		uint left = floatBitsToUint( bvhNodes[parent].boundsMin.w );
+		uint right = floatBitsToUint( bvhNodes[parent].boundsMax.w );
+		bvhNodes[parent].boundsMin.xyz = min( bvhNodes[left].boundsMin.xyz, bvhNodes[right].boundsMin.xyz );
+		bvhNodes[parent].boundsMax.xyz = max( bvhNodes[left].boundsMax.xyz, bvhNodes[right].boundsMax.xyz );
+		memoryBarrierBuffer();
+		parent = bvhNodes[parent].parent;
+	}
+}

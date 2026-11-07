@@ -22,7 +22,6 @@ l4d2_vertexlit_and_unlit_generic_vs20.fxc
 l4d2_vertexlit_and_unlit_generic_ps2x.fxc
 l4d2_vertexlit_and_unlit_generic_bump_vs20.fxc
 l4d2_vertexlit_and_unlit_generic_bump_ps2x.fxc
-terror_motion_blur_ps2x.fxc
 l4d2_black_vs20.fxc
 l4d2_black_ps2x.fxc
 l4d2_water_vs20.fxc

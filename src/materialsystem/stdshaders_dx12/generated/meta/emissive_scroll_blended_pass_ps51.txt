@@ -1,0 +1,18 @@
+logical=emissive_scroll_blended_pass_ps51 stage=ps source=emissive_scroll_blended_pass_ps51.fxc legacy=emissive_scroll_blended_pass_ps2x.fxc legacyName=emissive_scroll_blended_pass_ps30 profile=30 static=2 dynamic=1 present=2
+  cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
+    member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
+    member=cLightScale type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=none
+    member=cAmbientCube type=3 class=1 offset=48 size=92 elements=6 arrayStride=16 legacy=none
+    member=cLightInfo type=0 class=5 offset=144 size=96 elements=3 arrayStride=32 legacy=none
+    member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
+    member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
+  cbuffer=emissive_scroll_blended_pass_ps2x space=1 register=b1 size=48 layoutHash=0x877470aec88d9688 material
+    member=g_vPackedConst0 type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
+    member=g_vEmissiveScrollVector type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=ps:c1
+    member=g_cSelfIllumTint type=3 class=1 offset=32 size=12 elements=0 arrayStride=0 legacy=ps:c2
+    legacyEntry=0,16,1,0,0,0,0
+    legacyEntry=16,8,1,0,0,0,1
+    legacyEntry=32,12,1,0,0,0,2
+    bridge=WriteNativeCBuffer(api, block)

@@ -1,0 +1,219 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/cloak_vs20.fxc for logical cloak_vs30 (legacy profile vs30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs30 set.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+//====== Copyright � 1996-2005, Valve Corporation, All rights reserved. =======
+//
+// Purpose: 
+//
+//=============================================================================
+
+//  STATIC: "MODEL"						"0..1"
+
+//	DYNAMIC: "COMPRESSED_VERTS"			"0..1"
+//	DYNAMIC: "DOWATERFOG"				"0..1"
+//	DYNAMIC: "SKINNING"					"0..1"
+//  DYNAMIC: "MORPHING"					"0..1"
+
+// If using static control flow on Direct3D, we should use the NUM_LIGHTS=0 combo
+
+#include "common_vs_fxc.h"
+
+static const bool g_bSkinning		= SKINNING ? true : false;
+static const int g_FogType			= DOWATERFOG;
+
+
+cbuffer cloak_vs20 : register( b2, space1 )
+{
+	float3 cMorphTargetTextureDim; // @legacy vs:c54
+	float4 cMorphSubrect; // @legacy vs:c55
+};
+#ifdef DX12_LEGACY_VS30
+// NOTE: cMorphTargetTextureDim.xy = target dimensions,
+//		 cMorphTargetTextureDim.z = 4tuples/morph
+
+
+Texture2D morphSampler_Texture : register( t0 );
+SamplerState morphSampler_Sampler : register( s0 );
+static const DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
+#endif
+
+struct VS_INPUT
+{
+	float4 vPos;
+	float4 vBoneWeights;
+	float4 vBoneIndices;
+	float4 vNormal;
+	float4 vBaseTexCoord;
+	float4 vUserData;
+
+	// Position and normal/tangent deltas
+	float3 vPosFlex;
+	float3 vNormalFlex;
+
+#ifdef DX12_LEGACY_VS30
+	float vVertexID;
+#endif
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	int2 vBoneWeights : BLENDWEIGHT;
+#else
+	float4 vBoneWeights : BLENDWEIGHT;
+#endif
+	float4 vBoneIndices : BLENDINDICES;
+#if COMPRESSED_VERTS
+	uint4 vNormal : NORMAL;
+#else
+	float4 vNormal : NORMAL;
+#endif
+	float4 vBaseTexCoord : TEXCOORD0;
+#if COMPRESSED_VERTS
+	uint4 vUserData : TANGENT;
+#else
+	float4 vUserData : TANGENT;
+#endif
+	float3 vPosFlex : POSITION1;
+	float3 vNormalFlex : NORMAL1;
+#ifdef DX12_LEGACY_VS30
+	float vVertexID : POSITION2;
+#endif
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+#if COMPRESSED_VERTS
+	l.vBoneWeights = float4( (float2)i.vBoneWeights, 0, 1 );
+#else
+	l.vBoneWeights = i.vBoneWeights;
+#endif
+	l.vBoneIndices = i.vBoneIndices;
+#if COMPRESSED_VERTS
+	l.vNormal = (float4)i.vNormal;
+#else
+	l.vNormal = i.vNormal;
+#endif
+	l.vBaseTexCoord = i.vBaseTexCoord;
+#if COMPRESSED_VERTS
+	l.vUserData = (float4)i.vUserData;
+#else
+	l.vUserData = i.vUserData;
+#endif
+	l.vPosFlex = i.vPosFlex;
+	l.vNormalFlex = i.vNormalFlex;
+#ifdef DX12_LEGACY_VS30
+	l.vVertexID = i.vVertexID;
+#endif
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 vSetupProjPos : SV_Position; 	
+	float fFog : FOG;
+	float2 vBaseTexCoord : TEXCOORD0;
+	float3x3 tangentSpaceTranspose : TEXCOORD1;
+	float3 worldPos : TEXCOORD4;
+	float3 projPos : TEXCOORD5;
+	float4 lightAtten : TEXCOORD6;
+	float3 vRefract : TEXCOORD7;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.vSetupProjPos );
+	o.vSetupProjPos = DX12Position( o.vSetupProjPos );
+	return o;
+}
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+
+	float4 vPosition = v.vPos;
+	float3 vNormal;
+	float4 vTangent;
+
+	DecompressVertex_NormalTangent( v.vNormal, v.vUserData, vNormal, vTangent );
+
+#if !defined( DX12_LEGACY_VS30 ) || !MORPHING
+	ApplyMorph( v.vPosFlex, v.vNormalFlex, vPosition.xyz, vNormal, vTangent.xyz );
+#else
+	ApplyMorph( morphSampler, cMorphTargetTextureDim, cMorphSubrect, v.vVertexID, float3( 0, 0, 0 ),
+		vPosition.xyz, vNormal, vTangent.xyz );
+#endif
+
+	// Perform skinning
+	float3 worldNormal, worldPos, worldTangentS, worldTangentT;
+	SkinPositionNormalAndTangentSpace( g_bSkinning, vPosition, vNormal, vTangent,
+										v.vBoneWeights, v.vBoneIndices, worldPos,
+										worldNormal, worldTangentS, worldTangentT );
+
+	// Always normalize since flex path is controlled by runtime
+	// constant not a shader combo and will always generate the normalization
+	worldNormal   = normalize( worldNormal );
+	worldTangentS = normalize( worldTangentS );
+	worldTangentT = normalize( worldTangentT );
+
+	// Projected position
+	float4 vProjPos = mul( float4( worldPos, 1 ), cViewProj );
+	o.vSetupProjPos = vProjPos;
+
+	// Map projected position to the refraction texture
+	float2 vRefractPos;
+	vRefractPos.x = vProjPos.x;
+	vRefractPos.y = -vProjPos.y; // invert Y
+	vRefractPos = (vRefractPos + vProjPos.w) * 0.5f;
+
+#if defined ( DX12_LEGACY_VS20 ) && ( !USE_STATIC_CONTROL_FLOW )
+	o.lightAtten = float4(0,0,0,0);
+	#if ( NUM_LIGHTS > 0 )
+		o.lightAtten.x = GetVertexAttenForLight( worldPos, 0, false );
+	#endif
+	#if ( NUM_LIGHTS > 1 )
+		o.lightAtten.y = GetVertexAttenForLight( worldPos, 1, false );
+	#endif
+	#if ( NUM_LIGHTS > 2 )
+		o.lightAtten.z = GetVertexAttenForLight( worldPos, 2, false );
+	#endif
+	#if ( NUM_LIGHTS > 3 )
+		o.lightAtten.w = GetVertexAttenForLight( worldPos, 3, false );
+	#endif
+#else
+	// Scalar light attenuation
+	o.lightAtten.x = GetVertexAttenForLight( worldPos, 0, true );
+	o.lightAtten.y = GetVertexAttenForLight( worldPos, 1, true );
+	o.lightAtten.z = GetVertexAttenForLight( worldPos, 2, true );
+	o.lightAtten.w = GetVertexAttenForLight( worldPos, 3, true );
+#endif
+
+	// Compute fog based on the position
+	float3 vWorldPos = mul( v.vPos, cModel[0] );
+#if !defined( _X360 )
+	o.fFog = CalcFog( vWorldPos, vProjPos, FOGTYPE_RANGE );
+#endif
+
+	// World position
+	o.worldPos = worldPos;
+
+	// Refract position
+	o.projPos = float3(vRefractPos.x, vRefractPos.y, vProjPos.w);
+
+	// Tranform bump coordinates
+	o.vBaseTexCoord = v.vBaseTexCoord;
+
+	// Tangent space transform
+	o.tangentSpaceTranspose[0] = float3( worldTangentS.x, worldTangentT.x, worldNormal.x );
+	o.tangentSpaceTranspose[1] = float3( worldTangentS.y, worldTangentT.y, worldNormal.y );
+	o.tangentSpaceTranspose[2] = float3( worldTangentS.z, worldTangentT.z, worldNormal.z );
+
+	return DX12FinishVertex( o );
+}

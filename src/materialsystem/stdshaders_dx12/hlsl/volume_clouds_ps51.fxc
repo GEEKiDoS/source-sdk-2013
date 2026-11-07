@@ -1,0 +1,94 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/volume_clouds_ps2x.fxc for logical volume_clouds_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//========= Copyright © 1996-2006, Valve Corporation, All rights reserved. ============//
+
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+// Includes =======================================================================================
+#include "common_vertexlitgeneric_dx9.h"
+
+// Texture Samplers ===============================================================================
+Texture2D g_tInnerSampler_Texture : register( t0 );
+SamplerState g_tInnerSampler_Sampler : register( s0 );
+static const DX12Sampler2D g_tInnerSampler = { g_tInnerSampler_Texture, g_tInnerSampler_Sampler };
+Texture2D g_tMiddleSampler_Texture : register( t1 );
+SamplerState g_tMiddleSampler_Sampler : register( s1 );
+static const DX12Sampler2D g_tMiddleSampler = { g_tMiddleSampler_Texture, g_tMiddleSampler_Sampler };
+Texture2D g_tOuterSampler_Texture : register( t2 );
+SamplerState g_tOuterSampler_Sampler : register( s2 );
+static const DX12Sampler2D g_tOuterSampler = { g_tOuterSampler_Texture, g_tOuterSampler_Sampler };
+
+// Shaders Constants and Globals ==================================================================
+//const float4 g_vPackedConst6		: register( c6 );
+//#define g_flTime          g_vPackedConst6.w
+
+// Interpolated values ============================================================================
+struct PS_INPUT
+{
+	float4 v2DTangentViewVector01;
+	float4 vUv01;
+	float4 v2DTangentViewVector2_vUv2;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPosition : SV_Position;
+	float4 v2DTangentViewVector01 : TEXCOORD0;
+	float4 vUv01 : TEXCOORD1;
+	float4 v2DTangentViewVector2_vUv2 : TEXCOORD2;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.v2DTangentViewVector01 = dx12In.v2DTangentViewVector01;
+	l.vUv01 = dx12In.vUv01;
+	l.v2DTangentViewVector2_vUv2 = dx12In.v2DTangentViewVector2_vUv2;
+	return l;
+}
+
+
+// Main ===========================================================================================
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 vFinalColor = float4( 0.0f, 0.0f, 0.0f, 1.0f );
+
+#if defined(DX12_LEGACY_PS20)
+	float flNumLayers = 2.0f;
+#else
+	float flNumLayers = 10.0f;
+#endif
+
+	//float flColorDim = 1.0f;
+	for ( float j=flNumLayers-1.0f; j>=0.0f; j-=1.0f ) // From hightest to lowest layer
+	{
+		float4 vInnerTexel = g_tInnerSampler.tex.Sample( g_tInnerSampler.smp, saturate( i.vUv01.xy + i.v2DTangentViewVector01.xy * 0.005 * j ) );
+		float4 vMiddleTexel = g_tMiddleSampler.tex.Sample( g_tMiddleSampler.smp, saturate( i.vUv01.wz + i.v2DTangentViewVector01.wz * 0.005 * j ) );
+		float4 vOuterTexel = g_tOuterSampler.tex.Sample( g_tOuterSampler.smp, saturate( i.v2DTangentViewVector2_vUv2.wz + i.v2DTangentViewVector2_vUv2.xy * 0.005 * j ) );
+
+		float4 vThisTexel;
+		vThisTexel.rgb = ( vInnerTexel.rgb * vInnerTexel.a ) + ( vMiddleTexel.rgb * vMiddleTexel.a ) + ( vOuterTexel.rgb * vOuterTexel.a );
+		vThisTexel.a = 1.0f - ( ( 1.0f - vOuterTexel.a ) * ( 1.0f - vMiddleTexel.a ) * ( 1.0f - vInnerTexel.a ) );
+
+		//vThisTexel.rgb *= flColorDim;
+		//flColorDim *= 0.95f;
+
+		// 5.0 and 0.8625 are magic numbers that look good with the current textures
+		float flBlendValue = saturate( pow( vThisTexel.a, lerp( 5.0f, 0.8625f, saturate( j/(flNumLayers-1.0f) ) ) ) );
+
+		vFinalColor.rgb = vThisTexel.rgb + ( vFinalColor.rgb * ( 1.0f - flBlendValue ) );
+		vFinalColor.a *= 1.0f - flBlendValue; // Dest alpha scalar
+	}
+
+	//===============//
+	// Combine terms //
+	//===============//
+	float4 result;
+	result.rgb = vFinalColor.rgb;
+	result.a = 1.0f - vFinalColor.a;
+
+	return DX12FinishPixel( FinalOutput( result, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR ), 0.0f ); //go back to final output when it'll fit.
+}

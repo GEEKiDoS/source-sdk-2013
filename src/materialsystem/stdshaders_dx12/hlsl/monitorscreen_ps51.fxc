@@ -1,0 +1,88 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/monitorscreen_ps2x.fxc for logical monitorscreen_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB"			"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "TEXTURE2"					"0..1"
+// DYNAMIC: "PIXELFOGTYPE"				"0..1"
+// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"	"0..1"
+
+#if defined( DX12_LEGACY_PS20 )
+#	define WRITE_DEPTH_TO_DESTALPHA 0
+#endif
+
+#include "shader_constant_register_map.h"
+#include "common_ps_fxc.h"
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D SecondaryTextureSampler_Texture : register( t1 );
+SamplerState SecondaryTextureSampler_Sampler : register( s1 );
+static const DX12Sampler2D SecondaryTextureSampler = { SecondaryTextureSampler_Texture, SecondaryTextureSampler_Sampler };
+
+
+cbuffer monitorscreen_ps2x : register( b1, space1 )
+{
+	float4 g_Contrast; // @legacy ps:c1
+	float4 g_Saturation; // @legacy ps:c2
+	float4 g_Tint; // @legacy ps:c3
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+#define g_Grey float4( 0.33333f, 0.33333f, 0.33333f, 0.33333f )
+
+struct PS_INPUT
+{
+	float2 vTexCoord0;
+	float2 vTexCoord1;
+	
+	float4 vColor;
+	
+	float4 worldPos_projPosZ;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	HALF2 baseTexCoord : TEXCOORD0;
+	HALF2 baseTexCoord2 : TEXCOORD1;
+	float4 worldPos_projPosZ : TEXCOORD7;
+	float4 vColor : COLOR0;
+	float4 fogFactorW : COLOR1;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vTexCoord0 = dx12In.baseTexCoord;
+	l.vTexCoord1 = dx12In.baseTexCoord2;
+	l.vColor = dx12In.vColor;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );	
+	float4 resultColor = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vTexCoord0 ) * i.vColor; // base texture modulated with vertex color
+		
+#if (TEXTURE2 == 1)
+	resultColor = SecondaryTextureSampler.tex.Sample( SecondaryTextureSampler.smp, i.vTexCoord1 ) * resultColor; // modulate base color by another texture
+#endif
+
+	float3 tempColor = resultColor.rgb * resultColor.rgb;								//base * base
+	resultColor.rgb = lerp( resultColor.rgb, tempColor.rgb, g_Contrast.rgb );			// blend between color and color * color
+	tempColor = dot( resultColor.rgb, g_Grey );						// color greyscaled
+	resultColor.rgb = lerp( tempColor.rgb, resultColor.rgb, g_Saturation.rgb );			// blend between color and greyscale
+	resultColor.rgb = resultColor.rgb * g_Tint.rgb;										// tint
+	
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( resultColor, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE, (WRITE_DEPTH_TO_DESTALPHA != 0), i.worldPos_projPosZ.w ), dx12In.fog );
+}

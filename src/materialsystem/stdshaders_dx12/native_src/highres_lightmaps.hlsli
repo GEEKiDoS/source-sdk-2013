@@ -1,0 +1,291 @@
+// Explicit native-atlas translation; never interprets RGB or reconstructed geometry as identity.
+#ifndef DX12_HIGHRES_LIGHTMAPS_HLSLI
+#define DX12_HIGHRES_LIGHTMAPS_HLSLI
+// Fixed-function embedding includes this source before the shadow evaluator.
+#define DX12_HIGHRES_LIGHTMAPS 1
+struct HlightFaceGpuDX12
+{
+    uint4 owner; // packed native origin/extents (16 bits each), face flags/count, pose/overflow offset
+    uint styles; // four authored style IDs, one byte each (255 terminates)
+    uint4 tiles[4];
+    float4 bakedModelToWorld[3];
+};
+struct HlightTileGpuDX12 { uint4 address; uint4 size; }; // Expanded invocation-local address, never a whole GPU record.
+Texture2D<uint> HlightFaceIds : register(t0, space3);
+StructuredBuffer<HlightFaceGpuDX12> HlightFaces : register(t1, space3);
+StructuredBuffer<uint3> HlightTiles : register(t2, space3); // kind/slice/page exponents, packed origin, packed extent
+Texture2D<float4> HlightDynamic : register(t3, space3);
+Texture2DArray<float4> HlightPages2048 : register(t4, space3);
+Texture2DArray<float4> HlightPages4096 : register(t5, space3);
+Texture2DArray<float4> HlightPages8192 : register(t6, space3);
+Texture2DArray<float4> HlightPages16384 : register(t7, space3);
+RWByteAddressBuffer HlightFailure : register(u0, space3);
+SamplerState HlightLinear : register(s0, space3);
+cbuffer DX12HighresDrawConstants : register(b0, space3)
+{
+    uint4 cHlightRoute;
+    float4 cHlightModelToWorld[3];
+    float4 cHlightStyles[16];
+};
+struct HlightReceiver
+{
+    uint4 nativeRect;
+    uint styles;
+    uint baseTile;
+    float2 q;
+    float2 nativeUV;
+    uint valid;
+    uint nativeOnly;
+    uint faceId; // Zero-based ordinal in the active mode's face domain.
+    uint localVisibilityEligible;
+    uint bakedDirectEligible;
+    uint2 unbakedLocalRange; // Raw t1032 byte offset/count, only for baked-direct receivers.
+    float sun;
+    float sunDilated; // Continuous ~1-texel dilation of the baked sun alpha within the same tile (>= sun).
+    float3 style0BaseRGB;
+};
+// Per-invocation state, not a UAV read. Report after material derivatives have run.
+static uint hlightRejected = 0;
+static uint hlightReason = 0;
+static uint hlightDetail = 0;
+static uint4 hlightLocation = 0; // one-based native page, cell x/y bits, one-based face ID
+static float2 hlightNativeUV = 0;
+void HighresLightmap_Reject(uint reason, uint detail = 0)
+{
+    if (hlightRejected == 0) { hlightReason = reason; hlightDetail = detail; }
+    hlightRejected = 1;
+}
+void HighresLightmap_Report()
+{
+    if (hlightRejected != 0)
+    {
+        uint previous;
+        HlightFailure.InterlockedCompareExchange(0, 0, 1, previous);
+        if (previous == 0)
+        {
+            // Preserve the first failing invocation, not a mixture of parallel pixels.
+            HlightFailure.Store4(4, uint4(hlightReason, hlightLocation.xyz));
+            HlightFailure.Store4(20, uint4(hlightLocation.w, asuint(hlightNativeUV), hlightDetail));
+        }
+    }
+}
+float4 HighresLightmap_Finish(float4 color)
+{
+    HighresLightmap_Report();
+    return color;
+}
+HlightTileGpuDX12 HighresLightmap_LoadTile(uint index)
+{
+    uint3 packed = HlightTiles[index];
+    HlightTileGpuDX12 tile;
+    tile.address = uint4(packed.x & 3, (packed.x >> 2) & 2047, packed.y & 65535, packed.y >> 16);
+    tile.size = uint4(packed.z & 65535, packed.z >> 16, 1u << ((packed.x >> 16) & 15), 1u << ((packed.x >> 20) & 15));
+    return tile;
+}
+// Four bilinear taps of one tile page. The page kind is per tile (coherent), so one branch serves all four taps; a
+// branch per tap would replicate the four arrays' sample code sixteen times at every call site.
+void HighresLightmap_Page4(uint kind, float slice, float2 uv0, float2 uv1, float2 uv2, float2 uv3, out float4 c0, out float4 c1, out float4 c2, out float4 c3)
+{
+    c0 = 0; c1 = 0; c2 = 0; c3 = 0;
+    switch (kind)
+    {
+#define HIGHRES_PAGE4(pages) \
+        c0 = pages.SampleLevel(HlightLinear, float3(uv0, slice), 0); c1 = pages.SampleLevel(HlightLinear, float3(uv1, slice), 0); \
+        c2 = pages.SampleLevel(HlightLinear, float3(uv2, slice), 0); c3 = pages.SampleLevel(HlightLinear, float3(uv3, slice), 0)
+    case 0: HIGHRES_PAGE4(HlightPages2048); break;
+    case 1: HIGHRES_PAGE4(HlightPages4096); break;
+    case 2: HIGHRES_PAGE4(HlightPages8192); break;
+    case 3: HIGHRES_PAGE4(HlightPages16384); break;
+#undef HIGHRES_PAGE4
+    default: HighresLightmap_Reject(4, kind); break;
+    }
+}
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+// Cubic B-spline (Sigg & Hadwiger): the 4x4 neighbourhood folded into four bilinear taps.
+// f in [0,1). weight is the two pair sums; offset is each tap's position relative to floor(pixel - 0.5).
+void HighresLightmap_BSpline(float f, out float2 weight, out float2 offset)
+{
+    float4 n = float4(1.0, 2.0, 3.0, 4.0) - f;
+    float4 s = n * n * n;
+    float x = s.x;
+    float y = s.y - 4.0 * s.x;
+    float z = s.z - 4.0 * s.y + 6.0 * s.x;
+    float w = 6.0 - x - y - z;
+    float4 c = float4(x, y, z, w) * (1.0 / 6.0);
+    weight = float2(c.x + c.y, c.z + c.w);
+    offset = float2(c.y / weight.x - 1.0, 1.0 + c.w / weight.y);
+}
+// Taps are clamped to the tile's texel centers, so the bilinear footprint cannot leave the tile.
+float4 HighresLightmap_Bicubic(HlightTileGpuDX12 tile, float2 pixel)
+{
+    float2 tex = pixel - 0.5;
+    float2 base = floor(tex);
+    float2 weightX, weightY, offsetX, offsetY;
+    HighresLightmap_BSpline(frac(tex.x), weightX, offsetX);
+    HighresLightmap_BSpline(frac(tex.y), weightY, offsetY);
+    float2 lo = tile.address.zw + 0.5;
+    float2 hi = tile.address.zw + tile.size.xy - 0.5;
+    float2 tap0 = clamp(base + float2(offsetX.x, offsetY.x) + 0.5, lo, hi);
+    float2 tap1 = clamp(base + float2(offsetX.y, offsetY.y) + 0.5, lo, hi);
+    float2 invPage = 1.0 / tile.size.zw;
+    uint kind = tile.address.x;
+    float slice = tile.address.y;
+    float4 c00, c10, c01, c11;
+    HighresLightmap_Page4(kind, slice, tap0 * invPage, float2(tap1.x, tap0.y) * invPage, float2(tap0.x, tap1.y) * invPage, tap1 * invPage, c00, c10, c01, c11);
+    float sx = weightX.x / (weightX.x + weightX.y);
+    float sy = weightY.x / (weightY.x + weightY.y);
+    return lerp(lerp(c11, c01, sx), lerp(c10, c00, sx), sy);
+}
+#endif
+float4 HighresLightmap_TileLoaded(HlightTileGpuDX12 tile, float2 q)
+{
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+    float2 pixel = tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5;
+    return HighresLightmap_Bicubic(tile, pixel);
+#else
+    float2 uv = (tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5) / tile.size.zw;
+    float3 location = float3(uv, tile.address.y);
+    switch(tile.address.x)
+    {
+    case 0: return HlightPages2048.SampleLevel(HlightLinear, location, 0);
+    case 1: return HlightPages4096.SampleLevel(HlightLinear, location, 0);
+    case 2: return HlightPages8192.SampleLevel(HlightLinear, location, 0);
+    case 3: return HlightPages16384.SampleLevel(HlightLinear, location, 0);
+    }
+    HighresLightmap_Reject(4, tile.address.x); return 0;
+#endif
+}
+float4 HighresLightmap_Tile(uint index, float2 q)
+{
+    uint count, stride;
+    HlightTiles.GetDimensions(count, stride);
+    if (index >= count) { HighresLightmap_Reject(3, index); return 0; }
+    return HighresLightmap_TileLoaded(HighresLightmap_LoadTile(index), q);
+}
+// Baked sun alpha dilated by about one texel: the max of four bilinear taps at (+-1, +-1) texels around
+// HighresLightmap_Tile's sample point, each clamped to the tile's texel centers so no tap reads a neighbouring
+// tile. A max of continuous bilinear functions is continuous, so the bound never steps at texel boundaries.
+static const float HIGHRES_SUN_DILATION_TEXELS = 1.0;
+float HighresLightmap_SunDilated(HlightTileGpuDX12 tile, float2 q)
+{
+    float2 pixel = tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5;
+    float2 lo = tile.address.zw + 0.5;
+    float2 hi = tile.address.zw + tile.size.xy - 0.5;
+    float2 invPage = 1.0 / tile.size.zw;
+    uint kind = tile.address.x;
+    float slice = tile.address.y;
+    float h = HIGHRES_SUN_DILATION_TEXELS;
+    float4 a, b, c, d;
+    HighresLightmap_Page4(kind, slice, clamp(pixel + float2(-h, -h), lo, hi) * invPage, clamp(pixel + float2( h, -h), lo, hi) * invPage,
+        clamp(pixel + float2(-h,  h), lo, hi) * invPage, clamp(pixel + float2( h,  h), lo, hi) * invPage, a, b, c, d);
+    return saturate(max(max(a.a, b.a), max(c.a, d.a)));
+}
+// Ownership is a property of the primitive, not of an interpolated fragment coordinate: vertexUV is the lightmap UV of the
+// primitive's provoking vertex (a nointerpolation varying), always inside the owning face's allocation, and selects the face.
+// baseUV is the interpolated coordinate used only for the position inside that face; it is clamped to the face rectangle, so
+// the numerically meaningless fragments the rasterizer covers on near-degenerate triangles (collinear T-junction fan
+// triangles, surfaces seen exactly edge-on) shade with the face's edge instead of addressing an unrelated or unowned cell.
+HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
+{
+    HlightReceiver r = (HlightReceiver)0;
+    r.sun = 1;
+    r.sunDilated = 1;
+    r.nativeUV = baseUV;
+    if (cHlightRoute.x == 0) return r;
+    r.sun = 0; // Rejected owners cannot appear unoccluded while GPU rejection is in flight.
+    r.sunDilated = 0;
+    // No `precise` here: fxc spreads it through every value these feed (most of the receiver shader), which bars
+    // MAD/FMA contraction GPU-wide. Ownership needs only floor( vertexUV * dims ), a lone multiply that nothing can
+    // contract; pixel only positions the fragment inside the face (continuous filters), so a contracted
+    // `pixel - rect` differs by an ulp at most.
+    float2 pixel = baseUV * cHlightRoute.yz;
+    float2 vertexPixel = vertexUV * cHlightRoute.yz;
+    int2 owner = int2(floor(vertexPixel));
+    hlightNativeUV = vertexUV;
+    hlightLocation = uint4(cHlightRoute.w, asuint(owner), 0);
+    if (any(owner < 0) || any(owner >= int2(cHlightRoute.yz))) { HighresLightmap_Reject(1); return r; }
+    uint faceId = HlightFaceIds.Load(int3(owner, 0));
+    hlightLocation.w = faceId;
+    uint count, stride;
+    HlightFaces.GetDimensions(count, stride);
+    if (faceId == 0 || faceId > count) { HighresLightmap_Reject(2, faceId); return r; }
+    r.faceId = faceId - 1;
+    uint4 ownerRecord = HlightFaces[r.faceId].owner;
+    r.nativeRect = uint4(ownerRecord.x & 65535, ownerRecord.x >> 16, ownerRecord.y & 65535, ownerRecord.y >> 16);
+    // Explicitly unlit BSP faces can still own regular (including bumped)
+    // native allocations. Preserve their executed native lighting; they have
+    // no baked tiles or selected-direct contribution. Unknown owners still reject.
+    if ((ownerRecord.z & 4) == 0) { r.nativeOnly = 1; return r; }
+    float2 local = pixel - r.nativeRect.xy - 0.5;
+    r.q = saturate(float2(r.nativeRect.z == 0 ? 0 : local.x / r.nativeRect.z,
+                         r.nativeRect.w == 0 ? 0 : local.y / r.nativeRect.w));
+    r.valid = 1;
+    r.styles = HlightFaces[r.faceId].styles;
+    r.baseTile = HlightFaces[r.faceId].tiles[0].x;
+    HlightTiles.GetDimensions(count, stride);
+    if (r.baseTile >= count) { HighresLightmap_Reject(3, r.baseTile); r.valid = 0; return r; }
+    // Reuse the base tile's unpacked address for its RGB/alpha and sun dilation.
+    HlightTileGpuDX12 baseTile = HighresLightmap_LoadTile(r.baseTile);
+    float4 base = HighresLightmap_TileLoaded(baseTile, r.q);
+    bool bakedPose = (ownerRecord.w & 1) != 0;
+    [branch] if ((ownerRecord.z & 32) != 0)
+    {
+        bakedPose = bakedPose && all(cHlightModelToWorld[0] == float4(1, 0, 0, 0)) &&
+            all(cHlightModelToWorld[1] == float4(0, 1, 0, 0)) && all(cHlightModelToWorld[2] == float4(0, 0, 1, 0));
+    }
+    else
+    {
+        [unroll] for (uint row = 0; row < 3; ++row)
+            bakedPose = bakedPose && all(HlightFaces[r.faceId].bakedModelToWorld[row] == cHlightModelToWorld[row]);
+    }
+    r.localVisibilityEligible = bakedPose ? 1 : 0;
+    r.bakedDirectEligible = bakedPose && (ownerRecord.z & 16) != 0 ? 1 : 0;
+    r.unbakedLocalRange = r.bakedDirectEligible != 0 ?
+        uint2((ownerRecord.w >> 1) * 4u, ownerRecord.z >> 16) : uint2(0, 0);
+    r.style0BaseRGB = base.rgb;
+    bool bakedSun = bakedPose && (ownerRecord.z & 8) != 0;
+    r.sun = bakedSun ? saturate(base.a) : 1;
+    r.sunDilated = bakedSun ? max(HighresLightmap_SunDilated(baseTile, r.q), r.sun) : 1;
+    return r;
+}
+float3 HighresLightmap_RGB(HlightReceiver r, uint plane)
+{
+    if (r.valid == 0) return 0; // rejected owner stays visibly dark; the UAV reports the actual failure.
+    float3 rgb = 0;
+    // Read the four style bytes once; absent slots never load tile indices. Keep dynamically indexed tile reads
+    // in the structured buffer, not an invocation-local array (which would become an indexable temp).
+    [loop] for (uint styleSlot = 0; styleSlot < 4; ++styleSlot)
+    {
+        uint style = (r.styles >> (styleSlot * 8)) & 255;
+        if (style == 255) break;
+        if (style >= 64) { HighresLightmap_Reject(5, style); continue; }
+        // Component select avoids fxc unrolling a dynamic component of a structured-buffer array element.
+        uint4 slotTiles = HlightFaces[r.faceId].tiles[styleSlot];
+        uint tile = styleSlot == 0 && plane == 0 ? r.baseTile :
+            plane == 0 ? slotTiles.x : plane == 1 ? slotTiles.y : plane == 2 ? slotTiles.z : slotTiles.w;
+        if (tile == 0xffffffff) continue;
+        rgb += (styleSlot == 0 && plane == 0 ? r.style0BaseRGB : HighresLightmap_Tile(tile, r.q).rgb) * cHlightStyles[style / 4][style % 4];
+    }
+    // Captured actual native dynamic additions use the native padded bumped stride, not highres coordinates.
+    [branch] if ((cHlightRoute.x & 2) != 0)
+    {
+        float2 dynamicPixel = r.nativeRect.xy + r.q * r.nativeRect.zw + 0.5;
+        dynamicPixel.x += plane * (r.nativeRect.z + 3);
+        uint dynamicWidth, dynamicHeight;
+        HlightDynamic.GetDimensions(dynamicWidth, dynamicHeight);
+        rgb += HlightDynamic.SampleLevel(HlightLinear, dynamicPixel / float2(dynamicWidth, dynamicHeight), 0).rgb;
+    }
+    return rgb;
+}
+float4 HighresLightmap_Plane(HlightReceiver r, uint plane, float4 original)
+{
+    if (cHlightRoute.x != 0 && r.nativeOnly == 0) original.rgb = HighresLightmap_RGB(r, plane);
+    return original; // Native alpha is never replaced by the independent sun visibility.
+}
+float4 HighresLightmap_NativeScalePlane(HlightReceiver r, uint plane, float4 original, float nativeScale)
+{
+    float4 result = HighresLightmap_Plane(r, plane, original);
+    if (cHlightRoute.x == 0 || r.nativeOnly != 0) result.rgb *= nativeScale;
+    return result;
+}
+#endif

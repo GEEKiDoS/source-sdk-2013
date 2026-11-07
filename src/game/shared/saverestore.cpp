@@ -22,6 +22,7 @@
 #include "igamesystem.h"
 #include "interval.h"
 #include "vphysics/object_hash.h"
+#include "physics_saverestore.h"
 #include "datacache/imdlcache.h"
 #include "tier0/vprof.h"
 
@@ -784,7 +785,7 @@ bool CSave::WriteBasicField( const char *pname, void *pData, datamap_t *pRootMap
 				((char *)pData) - pField->fieldOffset[ TD_OFFSET_NORMAL ],
 				pField
 			};
-			pField->pSaveRestoreOps->Save( fieldInfo, this );
+			ResolvePhysSaveRestoreOps( pField->pSaveRestoreOps )->Save( fieldInfo, this );
 			
 			EndBlock();
 			break;
@@ -1460,7 +1461,7 @@ void CRestore::ReadBasicField( const SaveRestoreRecordHeader_t &header, void *pD
 				pField
 			};
 			
-			pField->pSaveRestoreOps->Restore( fieldInfo, this );
+			ResolvePhysSaveRestoreOps( pField->pSaveRestoreOps )->Restore( fieldInfo, this );
 			
 			Assert( posNextField >= GetReadPos() );
 			SetReadPos( posNextField );

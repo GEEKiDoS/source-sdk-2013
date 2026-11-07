@@ -1,0 +1,118 @@
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: DX12 post-processing composite. Adds lens flare and glare to the HDR scene, tonemaps it with AgX, then
+//          screens MagicBloom's layered bloom over it in normalised display space: bloomT = Uncharted2( bloom * bloom
+//          exposure ) with MagicBloom's constants and white 11.2, raised by the lens dirt as screen( bloomT, dirt *
+//          bloomT ), output = peak * screen( AgX / peak, saturate( bloomT ) ). Then up to four colour-correction
+//          lookups (Engine_Post semantics). $params0 = scene scale, bloom exposure already divided by the summed
+//          layer count, lens flare scale; $params1.x = dirt intensity, $output.x = HDR output flag.
+//
+//===========================================================================//
+#include "BaseVSShaderDX12.h"
+#include "screenspaceeffect_vs51.inc"
+#include "postfx_composite_ps51.inc"
+
+// memdbgon must be the last include file in a .cpp file!!!
+#include "tier0/memdbgon.h"
+
+namespace
+{
+const int kMaxColorCorrectionLookups = 4;
+const int kFlagDirt = 2;
+const int kFlagColorCorrection = 4;
+const int kFlagSkipBloom = 8; // disabled producer: do not Load mip 1 of one-mip standard black
+}
+
+BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
+	BEGIN_SHADER_PARAMS
+		SHADER_PARAM( SCENE, SHADER_PARAM_TYPE_TEXTURE, "", "Scene" )
+		SHADER_PARAM( BLOOM, SHADER_PARAM_TYPE_TEXTURE, "", "Bloom chain (mip 1 is sampled)" )
+		SHADER_PARAM( FLARE, SHADER_PARAM_TYPE_TEXTURE, "", "Lens flare ghosts and halo" )
+		SHADER_PARAM( GLARE, SHADER_PARAM_TYPE_TEXTURE, "", "Lens flare glare" )
+		SHADER_PARAM( DIRT, SHADER_PARAM_TYPE_TEXTURE, "", "Lens dirt" )
+		SHADER_PARAM( DIRTENABLED, SHADER_PARAM_TYPE_INTEGER, "0", "Lens dirt enabled" )
+		SHADER_PARAM( BLOOMENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Bloom producer active" )
+		SHADER_PARAM( FLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Flare producer active" )
+		SHADER_PARAM( GLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Glare producer active" )
+		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Scene scale, bloom exposure / summed layers and lens flare scale" )
+		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Lens dirt intensity (screened into the bloom)" )
+		SHADER_PARAM( OUTPUT, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: 1 when writing HDR output" )
+		SHADER_PARAM( OUTSCALE, SHADER_PARAM_TYPE_FLOAT, "1", "Output scale (world nits / UI nits in HDR)" )
+		SHADER_PARAM( PEAK, SHADER_PARAM_TYPE_FLOAT, "1", "AgX peak relative to paper white" )
+		SHADER_PARAM( DEBUGVIEW, SHADER_PARAM_TYPE_INTEGER, "0", "0 off, 1 bloom, 2 flare, 3 glare, 4 dirt" )
+	END_SHADER_PARAMS
+
+	SHADER_INIT_PARAMS()
+	{
+		SET_PARAM_INT_IF_NOT_DEFINED( BLOOMENABLED, 1 );
+		SET_PARAM_INT_IF_NOT_DEFINED( FLAREENABLED, 1 );
+		SET_PARAM_INT_IF_NOT_DEFINED( GLAREENABLED, 1 );
+	}
+
+	SHADER_FALLBACK
+	{
+		return 0;
+	}
+
+	SHADER_INIT
+	{
+		LoadTexture( DIRT );
+	}
+
+	SHADER_DRAW
+	{
+		SHADOW_STATE
+		{
+			pShaderShadow->EnableDepthTest( false );
+			pShaderShadow->EnableDepthWrites( false );
+			pShaderShadow->EnableSRGBWrite( false );
+			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER4 + kMaxColorCorrectionLookups; ++nSampler )
+				pShaderShadow->EnableTexture( static_cast<Sampler_t>( nSampler ), true );
+			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION, 1, nullptr, 0 );
+			DECLARE_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+			SET_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+			DECLARE_STATIC_PIXEL_SHADER( postfx_composite_ps51 );
+			SET_STATIC_PIXEL_SHADER( postfx_composite_ps51 );
+		}
+		DYNAMIC_STATE
+		{
+			BindTexture( SHADER_SAMPLER0, SCENE, -1 );
+			if ( params[BLOOMENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER1, BLOOM, -1 );
+			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER1, TEXTURE_BLACK );
+			if ( params[FLAREENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER2, FLARE, -1 );
+			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER2, TEXTURE_BLACK );
+			if ( params[GLAREENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER3, GLARE, -1 );
+			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER3, TEXTURE_BLACK );
+			BindTexture( SHADER_SAMPLER4, DIRT, -1 );
+
+			ShaderColorCorrectionInfo_t info;
+			pShaderAPI->GetCurrentColorCorrection( &info );
+			const int nLookups = info.m_bIsEnabled ? MIN( info.m_nLookupCount, kMaxColorCorrectionLookups ) : 0;
+			for ( int i = 0; i < nLookups; ++i )
+				pShaderAPI->BindStandardTexture( static_cast<Sampler_t>( SHADER_SAMPLER5 + i ), static_cast<StandardTextureId_t>( TEXTURE_COLOR_CORRECTION_VOLUME_0 + i ) );
+
+			int nFlags = static_cast<int>( params[OUTPUT]->GetVecValue()[0] );
+			if ( params[DIRTENABLED]->GetIntValue() )
+				nFlags |= kFlagDirt;
+			if ( nLookups )
+				nFlags |= kFlagColorCorrection;
+			if ( !params[BLOOMENABLED]->GetIntValue() )
+				nFlags |= kFlagSkipBloom;
+			const float dirtPeak[4] = { params[PARAMS1]->GetVecValue()[0], params[PEAK]->GetFloatValue(), 0.0f, 0.0f };
+			const float output[4] = { params[OUTSCALE]->GetFloatValue(), static_cast<float>( nFlags ), static_cast<float>( params[DEBUGVIEW]->GetIntValue() ), static_cast<float>( nLookups ) };
+			const float lutWeights[4] = { info.m_flDefaultWeight, info.m_pLookupWeights[0], info.m_pLookupWeights[1], info.m_pLookupWeights[2] };
+			const float lutWeight4[4] = { info.m_pLookupWeights[3], 0.0f, 0.0f, 0.0f };
+			DX12SetPixelShaderConstant( 0, params[PARAMS0]->GetVecValue() );
+			DX12SetPixelShaderConstant( 1, dirtPeak );
+			DX12SetPixelShaderConstant( 2, output );
+			DX12SetPixelShaderConstant( 3, lutWeights );
+			DX12SetPixelShaderConstant( 4, lutWeight4 );
+
+			DECLARE_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+			SET_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
+			DECLARE_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
+			SET_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
+		}
+		Draw();
+	}
+END_SHADER

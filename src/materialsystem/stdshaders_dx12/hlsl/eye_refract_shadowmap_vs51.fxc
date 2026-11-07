@@ -1,0 +1,284 @@
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/eye_refract_vs20.fxc for logical eye_refract_vs30 (legacy profile vs30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs30 set.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+// Feature receivers are lit, non-flashlight, non-preview passes only.
+// SKIP: $FLASHLIGHT
+//========= Copyright � 1996-2006, Valve Corporation, All rights reserved. ============//
+
+// STATIC: "INTRO"				"0..1"
+// STATIC: "HALFLAMBERT"		"0..1"
+// STATIC: "FLASHLIGHT"			"0..1"
+// STATIC: "LIGHTWARPTEXTURE"	"0..1"
+
+// DYNAMIC: "COMPRESSED_VERTS"	"0..1"
+// DYNAMIC: "SKINNING"			"0..1"
+// DYNAMIC: "DOWATERFOG"		"0..1"
+// DYNAMIC: "DYNAMIC_LIGHT"		"0..1"
+// DYNAMIC: "STATIC_LIGHT"		"0..1"
+// DYNAMIC: "NUM_LIGHTS"		"0..4"
+// DYNAMIC: "MORPHING"			"0..1"
+
+#include "vortwarp_vs20_helper.h"
+
+static const bool g_bSkinning		= SKINNING ? true : false;
+static const int  g_iFogType		= DOWATERFOG;
+static const bool g_bHalfLambert	= HALFLAMBERT ? true : false;
+
+
+cbuffer eye_refract_vs20 : register( b2, space1 )
+{
+	float3 cMorphTargetTextureDim; // @legacy vs:c14
+	float4 cMorphSubrect; // @legacy vs:c15
+	float3 g_cEyeOrigin; // @legacy vs:c48
+	float4 g_vIrisProjectionU; // @legacy vs:c50
+	float4 g_vIrisProjectionV; // @legacy vs:c51
+	float4 g_vFlashlightPosition; // @legacy vs:c52
+	float4 g_vConst4; // @legacy vs:c53
+	float4 g_vFlashlightMatrixRow1; // @legacy vs:c54
+	float4 g_vFlashlightMatrixRow2; // @legacy vs:c55
+	float4 g_vFlashlightMatrixRow3; // @legacy vs:c56
+	float4 g_vFlashlightMatrixRow4; // @legacy vs:c57
+};
+
+
+#if INTRO
+
+#define g_vModelOrigin g_vConst4.xyz
+#define g_flTime       g_vConst4.w
+#endif
+
+
+#ifdef DX12_LEGACY_VS30
+// NOTE: cMorphTargetTextureDim.xy = target dimensions,
+//		 cMorphTargetTextureDim.z = 4tuples/morph
+
+
+Texture2D morphSampler_Texture : register( t0 );
+SamplerState morphSampler_Sampler : register( s0 );
+static const DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
+#endif
+
+struct VS_INPUT
+{
+	float4 vPos;		// Position
+	float4 vBoneWeights;	// Skin weights
+	float4 vBoneIndices;	// Skin indices
+	float4 vTexCoord0;	// Base (sclera) texture coordinates
+
+	// Position deltas
+	float3 vPosFlex;
+	
+#ifdef DX12_LEGACY_VS30
+	float vVertexID;
+#endif
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	int2 vBoneWeights : BLENDWEIGHT;
+#else
+	float4 vBoneWeights : BLENDWEIGHT;
+#endif
+	float4 vBoneIndices : BLENDINDICES;
+	float4 vTexCoord0 : TEXCOORD0;
+	float3 vPosFlex : POSITION1;
+#ifdef DX12_LEGACY_VS30
+	float vVertexID : POSITION2;
+#endif
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+#if COMPRESSED_VERTS
+	l.vBoneWeights = float4( (float2)i.vBoneWeights, 0, 1 );
+#else
+	l.vBoneWeights = i.vBoneWeights;
+#endif
+	l.vBoneIndices = i.vBoneIndices;
+	l.vTexCoord0 = i.vTexCoord0;
+	l.vPosFlex = i.vPosFlex;
+#ifdef DX12_LEGACY_VS30
+	l.vVertexID = i.vVertexID;
+#endif
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 projPos : SV_Position; 		// Projection-space position
+#if !defined( _X360 )
+	float fog : FOG; 			// Fixed-function fog factor
+#endif
+	float4 vAmbientOcclUv_fallbackCorneaUv : TEXCOORD0; 	// Base texture coordinate
+	float4 cVertexLight : TEXCOORD1; 	// Vertex-lit color (Note: w is used for flashlight pass)
+	float4 vTangentViewVector : TEXCOORD2; 	// Tangent view vector (Note: w is used for flashlight pass)
+	float4 vWorldPosition_ProjPosZ : TEXCOORD3;
+	float3 vWorldNormal : TEXCOORD4; 	// World-space normal
+	float3 vWorldTangent : TEXCOORD5; 	// World-space tangent
+	float4 vLightFalloffCosine01 : TEXCOORD6; 	// Light falloff and cosine terms for first two local lights
+	float4 vLightFalloffCosine23 : TEXCOORD7; 	// Light falloff and cosine terms for next two local lights
+	float3 vWorldBinormal : COLOR0; 	// World-space normal
+	float3 worldPos : TEXCOORD8;
+	float3 worldNormal : TEXCOORD9;
+	float2 shadowResponse : TEXCOORD10;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.projPos );
+	o.projPos = DX12Position( o.projPos );
+#if !defined( _X360 )
+#endif
+	return o;
+}
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = (VS_OUTPUT)0;
+
+	bool bDynamicLight = DYNAMIC_LIGHT ? true : false;
+	bool bStaticLight = STATIC_LIGHT ? true : false;
+	int nNumLights = NUM_LIGHTS;
+
+	float4 vPosition = v.vPos;
+
+#if !defined( DX12_LEGACY_VS30 ) || !MORPHING
+	ApplyMorph( v.vPosFlex, vPosition.xyz );
+#else
+	ApplyMorph( morphSampler, cMorphTargetTextureDim, cMorphSubrect, v.vVertexID, float3( 0, 0, 0 ), vPosition.xyz );
+#endif
+
+	// Transform the position
+	float3 vWorldPosition;
+	SkinPosition( g_bSkinning, vPosition, v.vBoneWeights, v.vBoneIndices, vWorldPosition );
+
+	// Note: I'm relying on the iris projection vector math not changing or this will break
+	float3 vEyeSocketUpVector = normalize( -g_vIrisProjectionV.xyz );
+	float3 vEyeSocketLeftVector = normalize( -g_vIrisProjectionU.xyz );
+
+#if INTRO
+	float3 dummy = float3( 0.0f, 0.0f, 0.0f );
+	WorldSpaceVertexProcess( g_flTime, g_vModelOrigin, vWorldPosition, dummy, dummy, dummy );
+#endif
+
+	o.vWorldPosition_ProjPosZ.xyz = vWorldPosition.xyz;
+
+	// Transform into projection space
+	//vWorldPosition -= ( vWorldPosition - g_cEyeOrigin ) * 0.9; //Debug to visualize eye origin
+	float4 vProjPos = mul( float4( vWorldPosition, 1.0f ), cViewProj );
+	o.projPos = vProjPos;
+	vProjPos.z = dot( float4( vWorldPosition, 1.0f ), cViewProjZ );
+
+	
+	o.vWorldPosition_ProjPosZ.w = vProjPos.z;
+
+#if !defined( _X360 )
+	// Set fixed-function fog factor
+	o.fog = CalcFog( vWorldPosition, vProjPos, g_iFogType );
+#endif
+
+	// Normal = (Pos - Eye origin)
+	float3 vWorldNormal = normalize( vWorldPosition.xyz - g_cEyeOrigin.xyz );
+	o.vWorldNormal.xyz = vWorldNormal.xyz;
+
+	// Tangent & binormal
+	/*
+	float3 vWorldBinormal = normalize( cross( vWorldNormal.xyz, vEyeSocketLeftVector.xyz ) );
+	o.vWorldBinormal.xyz = vWorldBinormal.xyz * 0.5f + 0.5f;
+
+	float3 vWorldTangent = normalize( cross( vWorldBinormal.xyz, vWorldNormal.xyz ) );
+	o.vWorldTangent.xyz = vWorldTangent.xyz;
+	//*/
+
+	//*
+	float3 vWorldTangent = normalize( cross( vEyeSocketUpVector.xyz, vWorldNormal.xyz ) );
+	o.vWorldTangent.xyz = vWorldTangent.xyz;
+
+	float3 vWorldBinormal = normalize( cross( vWorldNormal.xyz, vWorldTangent.xyz ) );
+	o.vWorldBinormal.xyz = vWorldBinormal.xyz * 0.5f + 0.5f;
+	//*/
+
+	float3 vWorldViewVector = normalize (vWorldPosition.xyz - cEyePos.xyz);
+	o.vTangentViewVector.xyz = Vec3WorldToTangentNormalized (vWorldViewVector.xyz, vWorldNormal.xyz, vWorldTangent.xyz, vWorldBinormal.xyz);
+
+	// AV - I think this will effectively make the eyeball less rounded left to right to help vertext lighting quality
+	// AV - Note: This probably won't look good if put on an exposed eyeball
+  	//float vNormalDotSideVec = -dot( vWorldNormal, g_vEyeballUp ) * 0.5f;
+  	float vNormalDotSideVec = -dot( vWorldNormal, vEyeSocketLeftVector) * 0.5f;
+	float3 vBentWorldNormal = normalize(vNormalDotSideVec * vEyeSocketLeftVector + vWorldNormal);
+
+	// Compute vertex lighting
+	o.cVertexLight.a = 0.0f; //Only used for flashlight pass
+	o.cVertexLight.rgb = DoLightingUnrolled( vWorldPosition, vBentWorldNormal, float3(0.0f, 0.0f, 0.0f), bStaticLight, bDynamicLight, g_bHalfLambert, nNumLights );
+
+	// Only interpolate ambient light for TF NPR lighting
+	bool bDoDiffuseWarp = LIGHTWARPTEXTURE ? true : false;
+	if ( bDoDiffuseWarp )
+	{
+		if( bDynamicLight )
+		{
+			o.cVertexLight.rgb = AmbientLight( vBentWorldNormal.xyz );
+		}
+		else
+		{
+			o.cVertexLight.rgb = float3( 0.0f, 0.0f, 0.0f );
+		}
+	}
+
+// NOTE: it appears that o.vLightFalloffCosine01 and o.vLightFalloffCosine23 are filled in even if
+// we don't have enough lights, meaning we pass garbage to the pixel shader which then throws it away
+
+	// Light falloff for first two local lights
+	o.vLightFalloffCosine01.x = VertexAttenInternal( vWorldPosition.xyz, 0 );
+	o.vLightFalloffCosine01.y = VertexAttenInternal( vWorldPosition.xyz, 1 );
+	o.vLightFalloffCosine01.z = CosineTermInternal( vWorldPosition.xyz, vWorldNormal.xyz, 0, g_bHalfLambert );
+	o.vLightFalloffCosine01.w = CosineTermInternal( vWorldPosition.xyz, vWorldNormal.xyz, 1, g_bHalfLambert );
+
+	// Light falloff for next two local lights
+	o.vLightFalloffCosine23.x = VertexAttenInternal( vWorldPosition.xyz, 2 );
+	o.vLightFalloffCosine23.y = VertexAttenInternal( vWorldPosition.xyz, 3 );
+	o.vLightFalloffCosine23.z = CosineTermInternal( vWorldPosition.xyz, vWorldNormal.xyz, 2, g_bHalfLambert );
+	o.vLightFalloffCosine23.w = CosineTermInternal( vWorldPosition.xyz, vWorldNormal.xyz, 3, g_bHalfLambert );
+
+	// Texture coordinates set by artists for ambient occlusion
+	o.vAmbientOcclUv_fallbackCorneaUv.xy = v.vTexCoord0.xy;
+
+	// Cornea uv for ps.2.0 fallback
+	float2 vCorneaUv; // Note: Cornea texture is a cropped version of the iris texture
+	vCorneaUv.x = dot( g_vIrisProjectionU, float4( vWorldPosition, 1.0f ) );
+	vCorneaUv.y = dot( g_vIrisProjectionV, float4( vWorldPosition, 1.0f ) );
+	float2 vSphereUv = ( vCorneaUv.xy * 0.5f ) + 0.25f;
+	o.vAmbientOcclUv_fallbackCorneaUv.wz = vCorneaUv.xy; // Note: wz unpacks faster than zw in ps.2.0!
+
+	// Step on the vertex light interpolator for the flashlight tex coords
+	bool bFlashlight = ( FLASHLIGHT != 0 ) ? true : false;
+	o.vTangentViewVector.w = 0.0f;
+	if ( bFlashlight )
+	{
+		o.cVertexLight.x = dot( g_vFlashlightMatrixRow1.xyzw, float4( vWorldPosition, 1.0f ) );
+		o.cVertexLight.y = dot( g_vFlashlightMatrixRow2.xyzw, float4( vWorldPosition, 1.0f ) );
+		o.cVertexLight.z = dot( g_vFlashlightMatrixRow3.xyzw, float4( vWorldPosition, 1.0f ) );
+		o.cVertexLight.w = dot( g_vFlashlightMatrixRow4.xyzw, float4( vWorldPosition, 1.0f ) );
+
+		o.vTangentViewVector.w = saturate( dot( vBentWorldNormal.xyz, normalize ( g_vFlashlightPosition.xyz - vWorldPosition.xyz ) ) ); // Flashlight N.L with modified normal
+
+		// Half lambert version
+		//o.cVertexLight.z = dot( vBentWorldNormal.xyz, normalize ( g_vFlashlightPosition.xyz - vWorldPosition.xyz ) ); // Flashlight N.L with modified normal
+		//o.cVertexLight.z = ( o.cVertexLight.z * 0.5f ) + 0.5f;
+		//o.cVertexLight.z *= o.cVertexLight.z;
+	}
+
+	o.worldPos = vWorldPosition;
+	o.worldNormal = normalize( vWorldNormal );
+	o.shadowResponse = float2( HALFLAMBERT, 1.0f );
+	return DX12FinishVertex( o );
+}

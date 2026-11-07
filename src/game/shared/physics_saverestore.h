@@ -21,6 +21,14 @@ class CPhysCollide;
 //-----------------------------------------------------------------------------
 
 ISaveRestoreBlockHandler *GetPhysSaveRestoreBlockHandler();
+// Valid after ReadRestoreHeaders; callers must reject incompatible saves before
+// restoring entities, since skipping only the physics block leaves null objects.
+bool IsPhysSaveRestoreCompatible();
+// Module-only preflight: restore headers precede creation of the new environment.
+// Unsupported providers cannot write the repaired format or restore its payload.
+bool IsPhysSaveRestoreSupported();
+// Redirects only the certified provider's two broken native pointer serializers.
+ISaveRestoreOps *ResolvePhysSaveRestoreOps( ISaveRestoreOps *pOps );
 ISaveRestoreOps *GetPhysObjSaveRestoreOps( PhysInterfaceId_t );
 
 //-------------------------------------

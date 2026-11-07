@@ -1,0 +1,17 @@
+// Native SM5.1 dual Kawase blur, downsample half (Froyok's lens flare blur).
+#include "postfx_common.hlsli"
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= dstWidth || id.y >= dstHeight )
+		return;
+	float2 uv = DstUv( id.xy );
+	float2 halfPixel = 0.5 / float2( dstWidth, dstHeight );
+	float3 c = gSrc.SampleLevel( gLinearClamp, uv, 0 ).rgb * 4.0;
+	c += gSrc.SampleLevel( gLinearClamp, uv + float2( -halfPixel.x, halfPixel.y ), 0 ).rgb;
+	c += gSrc.SampleLevel( gLinearClamp, uv + halfPixel, 0 ).rgb;
+	c += gSrc.SampleLevel( gLinearClamp, uv + float2( halfPixel.x, -halfPixel.y ), 0 ).rgb;
+	c += gSrc.SampleLevel( gLinearClamp, uv - halfPixel, 0 ).rgb;
+	gDst[id.xy] = float4( c / 8.0, 1 );
+}

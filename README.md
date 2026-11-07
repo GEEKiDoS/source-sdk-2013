@@ -26,7 +26,7 @@ Inside the cloned directory, navigate to `src`, run:
 ```bat
 createallprojects.bat
 ```
-This will generate the Visual Studio project `everything.sln` which will be used to build your mod.
+This will generate the Visual Studio project `everything.sln` which will be used to build your mod. The generated game projects are the Episodic ones (`client_win64_episodic`, `server_win64_episodic`, `launcher_main_win64_episodic`); to target TF2 or HL2: DM instead, replace `/episodic` in `createallprojects.bat` (and `buildallprojects`) with `/tf` and/or `/hl2mp`.
 
 Then, on the menu bar, go to `Build > Build Solution`, and wait for everything to build.
 
@@ -36,11 +36,26 @@ The default launch options should be already filled in for the `Release` configu
 
 ### L4D2 in-place deployment (Windows)
 
-The L4D2 port runs from `game/mod_l4d2` with the installed Source SDK 2013
-Multiplayer **x64** executable, `hl2_win64.exe` (`srcds_win64.exe` for dedicated
+The L4D2 port runs from `game/mod_l4d2`. The client starts through the repo-built
+mod launcher `game/mod_l4d2_win64.exe`, which loads the SDK Base 2013
+Multiplayer x64 engine and redirects `shaderapidx9` to the DX12 renderer in
+`game/bin/x64`; pass `-dx9` to keep the stock DirectX 9 renderer. The installed
+`hl2_win64.exe` still runs the mod on DX9 (`srcds_win64.exe` for dedicated
 hosting). Original-game tests run from the real Left 4 Dead 2 Steam install.
 Do not create staged game roots, mirrors, junction trees or bulk runtime-asset
 copies. Startup files are provisioned locally from the user's retail install.
+
+```bat
+cd /d game
+mod_l4d2_win64.exe -game "%CD%\mod_l4d2" -novid -windowed +map c1m1_hotel
+```
+
+The DX12 renderer needs its native shader pack published into the mod once
+(and again after DX12 shader changes): `cd src` then
+`devtools\bin\buildshaders_dx12.bat -game ..\game\mod_l4d2`. Its optional
+upscaler, frame-generation and denoiser runtimes (DLSS, FSR, XeSS, Streamline,
+Open Image Denoise) are copied beside the renderer into `game/bin/x64`; they are
+not part of the repository.
 
 Dedicated hosting uses `srcds_win64.exe -console -game <absolute mod_l4d2 path>
 +sv_pure 0 +mp_gamemode coop +map c5m1_waterfront`. Preserve its native console
@@ -176,10 +191,9 @@ evidence files or reports.
 
 The current checkout is `C:/Users/Administrator/Documents/repo/source-sdk-l4d2`.
 The session-local `local://BuildRecipe.md` records the current machine recipe;
-its reusable command files are in `C:/l4d2_work/build/` (`build95_*.bat`, whose
-historical name does not select an older source revision). Build roles
-separately and serially: L4D2 client, L4D2 server, both stock HL2MP regression
-roles, then the game shader DLL. Stock HL2MP outputs are not L4D2 payload.
+its reusable command files are in `C:/l4d2_work/build/`
+(`merge_build_target.bat <solution target>` builds one target). Build roles
+separately and serially.
 
 Use VS18 Community at `C:/Program Files/Microsoft Visual Studio/18/Community`,
 MSVC `14.44.35207` and Windows SDK `10.0.26100.0`. VS18 registers the MSBuild
@@ -187,24 +201,37 @@ toolset as `v145`, but both `vcvars64.bat -vcvars_ver=14.44` and
 `VCToolsVersion=14.44.35207` select the required MSVC14.44 compiler; do not
 substitute compiler14.51. The current `py -3` is Python3.15.
 
-Generate from `src`:
+Project generation (`createallprojects.bat`, or the command below from `src`)
+selects only the L4D2 game DLLs and shader DLL, the DX12 renderer
+(`shaderapidx12`, `stdshader_dx12` and their build tools), the L4D2 mod
+launcher and the ReSTIR lightmap baker. The HL2MP, TF and Episodic game
+projects and the stock SDK tools keep their scripts in `projects.vgc` but are
+not selected by the `everything` group.
 
 ```bat
-devtools\bin\vpc.exe /l4d2 /define:SOURCESDK +game +game_shader_l4d2 /mksln l4d2.sln
-devtools\bin\vpc.exe /hl2mp /define:SOURCESDK +gamedlls /mksln hl2mp_regression.sln
+devtools\bin\vpc.exe /l4d2 /define:SOURCESDK +everything /mksln l4d2.sln
 ```
 
 Initialize the compiler environment once, then run separate role invocations
-from `src` (with the VS18 MSBuild directory on `PATH`):
+from `src` (with the VS18 MSBuild directory on `PATH`). Every role uses the same
+switches; the game shader DLL adds `SelectedFiles=skip_custombuild`:
 
 ```bat
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.44
 set CL=/MP2
-MSBuild.exe l4d2.sln /t:client_win64_l4d2 /p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v145 /p:VCToolsVersion=14.44.35207 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:PostBuildEventUseInBuild=true /m:2
-MSBuild.exe l4d2.sln /t:server_win64_l4d2 /p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v145 /p:VCToolsVersion=14.44.35207 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:PostBuildEventUseInBuild=true /m:2
-MSBuild.exe hl2mp_regression.sln /t:client_win64_hl2mp /p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v145 /p:VCToolsVersion=14.44.35207 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:PostBuildEventUseInBuild=true /m:2
-MSBuild.exe hl2mp_regression.sln /t:server_win64_hl2mp /p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v145 /p:VCToolsVersion=14.44.35207 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:PostBuildEventUseInBuild=true /m:2
-MSBuild.exe l4d2.sln /t:game_shader_l4d2_win64_l4d2 /p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v145 /p:VCToolsVersion=14.44.35207 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:PostBuildEventUseInBuild=true /p:SelectedFiles=skip_custombuild /p:L4D2ShaderGameDir=C:\Users\Administrator\Documents\repo\source-sdk-l4d2\game\mod_l4d2 /m:2
+set ROLE=/p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v145 /p:VCToolsVersion=14.44.35207 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:PostBuildEventUseInBuild=true /m:2
+MSBuild.exe l4d2.sln /t:client_win64_l4d2 %ROLE%
+MSBuild.exe l4d2.sln /t:server_win64_l4d2 %ROLE%
+MSBuild.exe l4d2.sln /t:game_shader_l4d2_win64_l4d2 %ROLE% /p:SelectedFiles=skip_custombuild /p:L4D2ShaderGameDir=C:\Users\Administrator\Documents\repo\source-sdk-l4d2\game\mod_l4d2
+MSBuild.exe l4d2.sln /t:shaderapidx12_win64 %ROLE%
+MSBuild.exe l4d2.sln /t:nvngx_forwarder_dx12_win64 %ROLE%
+MSBuild.exe l4d2.sln /t:unicode_win64 %ROLE%
+MSBuild.exe l4d2.sln /t:nativeshaderpack_dx12_win64 %ROLE%
+rem publish the DX12 shader pack (devtools\bin\buildshaders_dx12.bat -game ..\game\mod_l4d2) before stdshader_dx12
+MSBuild.exe l4d2.sln /t:stdshader_dx12_win64 %ROLE%
+MSBuild.exe l4d2.sln /t:launcher_main_win64_l4d2 %ROLE%
+MSBuild.exe l4d2.sln /t:vrad_restir_dll_win64 %ROLE%
+MSBuild.exe l4d2.sln /t:vrad_restir_launcher_win64 %ROLE%
 ```
 
 Normal post-build publishing copies DLL/PDB pairs into the mod; do not pass
@@ -213,17 +240,17 @@ artifact deployment, take the pairs directly from
 `src/game/client/Release_mod_l4d2`, `src/game/server/Release_mod_l4d2` and
 `src/materialsystem/stdshaders/Release_dx9_mod_l4d2`, rather than trusting an
 already-published mod-bin directory that another setup may have overwritten.
-Arrange them as `dlls/` beside `vcs/` containing the committed 45 catalog VCS,
+Arrange them as `dlls/` beside `vcs/` containing the committed 43 catalog VCS,
 then use `prepare_deployment.py --artifact-root` as described above.
 An artifact folder is not a second game root.
 
 **Never Clean or Rebuild the shader project.** Normal shader-DLL builds use
-`SelectedFiles=skip_custombuild` and retain the committed `.inc`/45 VCS inputs.
+`SelectedFiles=skip_custombuild` and retain the committed `.inc`/43 VCS inputs.
 Only a shader-source/catalog change justifies explicit full regeneration with
 `buildl4d2shaders.bat` / `build_l4d2_ps20.py` (or the local
 `build95_shader_full.bat`); these compile port sources, never original VCS.
 That path is separate from the normal shader-DLL build and must preserve the
-catalog-defined 45-file closure.
+catalog-defined 43-file closure.
 
 The game-owned `UnlitTwoTexture` retains the native translucent pixel-shader
 combo: both texture alphas multiply material modulation rather than becoming
@@ -261,6 +288,76 @@ selection in `client_l4d2.vpc`, `server_l4d2.vpc` and the inherited
 not change DLL ownership, VPC virtual groups, source order, or which files
 compile; regenerate the projects after changing source paths.
 
+### Episodic mod (Windows x64)
+
+`game\mod_episodic` runs Episode One/Two game code on the x64 Source SDK Base 2013 Multiplayer engine. Its `gameinfo.txt` mounts content from three Steam installs, which must all be present:
+ - Source SDK Base 2013 Multiplayer (243750): the engine and its `hl2` content, whose shaders match the engine.
+ - Source SDK Base 2013 Singleplayer (243730): the Episode One/Two VPKs this SDK's game code and UI were made for.
+ - Half-Life 2 (220): only for the loose episode maps. This engine does not mount the embedded pakfile (patched water materials, cubemaps) of a map read from a VPK.
+
+The client sets `cl_localnetworkbackdoor 0` on x64 because the engine crashes with the singleplayer network backdoor ([#610](https://github.com/ValveSoftware/source-sdk-2013/issues/610)).
+
+**Skill configuration:** Use Source's `//` comment syntax and cvars registered by the SDK game DLLs. The shipped `game\mod_episodic\cfg\skill.cfg` converts the copied retail HL2 file's 37 `#` comment lines and removes its unsupported `sk_npc_dmg_strider_to_plr`, `sk_npc_dmg_strider`, and `sk_max_strider` assignments. Game rules re-execute the skill manifest on each map spawn. During a connected level transition, unknown tokens are forwarded as client string commands: the old file consumed all 40 commands in the engine's default quota, then the normal `unpause` command triggered `#GameUI_Disconnect_TooManyCommands`. Valid skill values, per-map refresh, and the quota remain unchanged. A physical `d1_trainstation_01` → `d1_trainstation_02` landmark transition was verified with zero invalid skill commands and the client still connected.
+
+**Save compatibility:** 64-bit physics saves now use format 7. Older format-5/6 saves contain truncated pointer identities and, for pointer lists/arrays, missing entries; they cannot be safely recovered. Loading rejects them before restoring entities. Start a map and create a new save with this build; 32-bit saves retain format 5.
+
+The full-width save/restore bridge is certified for the Windows x64 SDK Base 2013 Multiplayer `vphysics.dll` with PE timestamp `0x67b40ef3` and image size `0x15d000`. It uses game-side serialization and the provider's existing object helpers; it does not patch Steam files, executable code, or vtables. An uncertified 64-bit provider visibly refuses saving/loading rather than writing or restoring truncated pointers. Engine updates require recertifying the profile in `src/game/shared/physics_saverestore.cpp`.
+
+DX12 rebinding no longer calls the previous borrowed material during shutdown or level changes. It caches page identity from the live incoming material, advances the selected material on same-page binds, and clears both caches on device reset/shutdown.
+
+The DX12 renderer needs the native shader pack published into the mod once (and after shader changes):
+```bat
+cd src
+devtools\bin\buildshaders_dx12.bat -game ..\game\mod_episodic
+```
+Without it every DX12 draw fails and the screen stays black. Launch with `game\mod_episodic_win64.exe`, or `game\start_ep2.bat` (extra arguments such as `-dx9` or `+map ep2_outland_01` are passed through).
+
+**PBR materials:** `PBR_Metalness` / `PBR_Specular` and the `PBR_*` adapters are DX12 material shaders; `mat_pbr_override 1` switches LightmappedGeneric, VertexLitGeneric and WorldVertexTransition to the PBR path at runtime without removing the old shaders (details: `src/materialsystem/stdshaders_dx12/README.md`, "PBR shader set"). The DX12 renderer appends `-forceallmips` to the engine command line (`CShaderDeviceMgrDX12::Init`, before `CMaterialSystem::Init` reads it) so cubemap mip tails exist for rough reflections.
+
+**Realtime light editor (DX12, enhanced maps):** `deferred_lighteditor_toggle` (or Tab) opens a port of the swarm-deferred light editor: right mouse + WASD flies the editor camera, X/B/V/C select / add / translate / rotate, click or drag-box to select, Delete removes, the Properties frame edits origin, angles, colour, intensity, radius, cone angles, spot, shadow and cookie live; Save / Reload write and read `maps/<map>_lights.txt` (KeyValues, loaded automatically at map start). Console: `deferred_light_add` (light at the crosshair), `deferred_lights_save`, `deferred_lights_reload`. Editor lights are unbaked dynamic lights in the per-view shadow light list and tiles, lighting PBR and legacy materials alike; the `r_editor_lights_max_shadowed` (default 8) nearest get realtime shadow maps, the rest are unshadowed, and they do not count against `r_shadowmap_max_realtime_lights`. Spot lights with a cookie go through the projected-texture path (shared limit of 8 projected lights per view, flashlight included). Point/spot editor lights need an enhanced (`vrad_restir -restir_shadowmaps`) map; cookie spots work on any map.
+
+**Advanced graphics dialog (DX12):** Options > Video > Advanced… opens a client dialog (`src/game/client/vgui_graphics_options.cpp`, `resource/graphicsoptions*.res|txt`) instead of the stock GameUI one; the loose `resource/OptionsSubVideo.res` hides the stock button and the client attaches its own in the same place. Tabs: display/quality (stock rows plus PBR materials, bicubic lightmaps, detail prop distance), lighting and shadows (`r_shadowmap_enable`, `r_shadowmap_resolution` 0–3, `r_shadowmap_filter`, `r_csm_distance`, max shadowed lights, GTAO presets), post-processing (`mat_postfx_bloom_quality`, bloom intensity, `mat_postfx_lensdirt_enable`, lens flare, `mat_motion_blur_enabled` / `mat_motion_blur_quality`, exposure, sharpening, HDR output) and upscaling (`r_upscaler`, `r_framegen`, `r_reflex`). Apply writes the changed cvars, then `mat_savechanges` and `host_writeconfig`.
+
+**SSR resolution (DX12):** the lighting tab exposes `r_ssr_resolution` independently of SSR quality. The archived default 1 preserves the quality profile's existing half/full-resolution tracing; 0.5 and 0.25 reduce each trace axis to half or quarter without lowering ray steps, roughness/cone filtering or temporal accumulation quality. At balanced quality and 1080p the trace is 960×540 / 480×270 / 240×135. Depth-plane/normal-aware ray reuse reconstructs full-resolution receivers, and the composite/history remain full resolution; lower settings trade spatial softness for cost rather than disabling reflections.
+
+**Velocity motion blur (DX12):** the default remains `mat_motion_blur_quality 2` (High, 16 taps), at full resolution. Existing quality values 0/1/2 still select 8/12/16 taps; -1 adds Very low (4 taps), used by the low-tier adapter preset. There is no half-resolution option. CPU-certified zero-motion frames bypass the frame copy, tile compute and full-screen blur without changing velocity output, including queued material rendering. Certification requires the current resolved main-view pass, a stationary effective view-projection, matching current/previous model, bone and view-projection transforms for every emitted motion draw, and a camera-inversion/half-float residual bound proving the existing tile earlyout. Unknown/stale passes, unproven residuals and force-mode/custom writers (`r_motionvectors >= 2`) retain the conservative reference path; no delayed GPU readback is used. Zero exposure (zero strength/shutter or hitch suppression) also bypasses those passes. Cheat-only `mat_motion_blur_static_skip` defaults to 1; setting it to 0 retains the reference copy/tile/gather path for screenshot and timing comparisons. Moving frames retain the HDR copy because the sampled scene must remain separate while preserving the bound output-target identity. The default reachable-vector neighbor search is retained: scalar tile bounds alone cannot replace its directional reachability test.
+
+**`buildcubemaps` on enhanced maps:** the engine renders every face of every cubemap sample inside one client frame. Each face used to allocate a new receiver view with its own 4096² sun targets, so captures ran out of GPU memory after a few samples (`Shadowmaps: insufficient shadow residency`, `ReadPixels ... 0x8007000e`) and the rest were black. Completed views are now reused while `building_cubemaps` is set. Faces captured from inside a moving brush entity (e.g. a train in `d1_trainstation_01`) are still black; that is the scene, not the renderer.
+
+**Parallax-corrected cubemaps:** load `game\bin\pbr_cubemaps.fgd` after the game's base FGD in Hammer. Make a box brush entity `parallax_obb` (may be rotated) with a `targetname`, and set the `env_cubemap`'s `parallaxobb` key to it. VBSP removes the entity and writes `$envmapparallaxobb1..3` / `$envmaporigin` into the patched materials of that cubemap (only VMTs that literally contain `$envmap env_cubemap` are patched); PBR shaders then intersect the reflection ray with the box.
+
+DX12 occlusion queries retain one logical result across command-list submissions. Submission ends and resolves each active native segment before closing its list, then resumes on the next list; completed segment counts are accumulated with fenced readback reuse. Query destruction and shutdown also balance native intervals and retain their GPU objects. RTX 4090 and WARP regression runs verified exact visible/hidden/reused counts and sampler-descriptor rollover without debug-layer errors. This fixes the reproduced cross-list query violation; the exact native API that failed in the original queued-submission dump was not established.
+
+Streamline SDK logging is off by default, with no SDK callback forwarding into the game console. `-dx12framegenlog` enables verbose plugin-directory file logging without console forwarding. Renderer errors, DLSS-G API diagnostics and NVIDIA signature validation remain enabled. The signed interposer still prints its own unconditional signature-success notices to process stdout; no signed DLL modification or process-wide stdout filter is used.
+
+Optional Counter-Strike: Source content mounts below the required episodic/HL2 content. Keep that precedence: particle initialization reads the first `GAME` particle manifest, so putting CSS first hides Episode Two's Vortigaunt effects. Hand-glow and charge-token callbacks also check for a missing particle definition before assigning its control-point entity; successful effects retain their normal attachment.
+
+Viewmodel sway bounds its facing interpolation factor to `[0, 1]`, preventing long frames from extrapolating the stored facing past the camera without changing normal interpolation.
+
+DX12 shadow-caster notifications do not sample world bounds synchronously. Entity transform setters notify before committing their local values; a following actor's bound query could recompute its viewmodel parent's absolute transform from the old angles and clear the dirty flag. Bounds refresh at the ordinary leaf flush or shadow query instead, with a separate pending bit preserving pose-only silhouette changes and both old/new affected light volumes. Ineligible casters, including viewmodels, are not sampled. An owned `ep2_outland_06` pickup-ready/closed/ready-again and friendly-NPC pistol lower/raise run completed normally: all 2,760 sampled local/absolute rotations matched, and the open gravity gun and lowered pistol were visually verified. Temporary pose/stack instrumentation was removed afterward.
+
+### DX12 Unicode title DLL (Windows x64)
+
+The `unicode` project builds a source-compatible replacement for the installed x64 `unicode.dll`. It exports the same `CreateInterface` factory and `VENGINEUNICODE001` methods; unless `-dx9` (or `-gl`/`-vulkan`/`-noshaderapi`) is passed, an x64 launch changes an incoming `Direct3D 9` window-title substring to `Direct3D 12`. Do not overwrite the Steam SDK installation. Generate and build the isolated project from `src`:
+
+```bat
+cd /d F:\repo\source-sdk-2013\src
+devtools\bin\vpc.exe /hl2mp /win64 /define:SOURCESDK +unicode /mksln unicode
+msbuild unicode.sln /m /p:Configuration=Release /p:Platform=win64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0
+```
+
+The VPC post-build step publishes the build artifact directly to the mod launcher's effective lookup path, `game\bin\x64\unicode.dll`. Launch from the `game` directory so the Source loader resolves this artifact before the SDK installation's PATH fallback; do not overwrite the Steam SDK installation.
+
+Run the x64 launcher from `game` and inspect `MainWindowTitle` while each process is running:
+
+```bat
+cd /d F:\repo\source-sdk-2013\game
+mod_hl2mp_win64.exe -game mod_hl2mp -dx9 -windowed -novid
+mod_hl2mp_win64.exe -game mod_hl2mp -windowed -novid
+```
+
+Expected result: the `-dx9` launch retains `My First HL2MP Mod - Direct3D 9 - 64 Bit`, while the default launch (native DX12) displays `My First HL2MP Mod - Direct3D 12 - 64 Bit`. Both launches should load `F:\repo\source-sdk-2013\game\bin\x64\unicode.dll`; the read-only Steam SDK `bin\x64\unicode.dll` remains untouched.
+
 ### Linux
 
 Requirements:
@@ -276,7 +373,7 @@ This will build all the projects related to the SDK and your mods automatically 
 
 You can then, in the root of the cloned directory, you can navigate to `game` and run your mod by launching the build launcher for your mod project, eg:
 ```bash
-./mod_tf
+./mod_episodic
 ```
 
 *Mods that are distributed on Steam MUST be built against the Steam Runtime, which the above steps will automatically do for you.*

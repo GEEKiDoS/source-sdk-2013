@@ -1,0 +1,4 @@
+// Highres-ABI twin of pbr_world_vs51: the same program (the unshifted base lightmap UV is already carried in
+// lightmapUV.xy). The backend swaps the ordinary logical for this one on enhanced maps; the *_highres_* name is
+// what marks the logical as highres ABI for the packer and the runtime.
+#include "pbr_world_vs51.fxc"

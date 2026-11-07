@@ -1,0 +1,43 @@
+// Native SM5.1 FSR1 RCAS sharpening pass.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#ifdef HDRTYPE
+#undef HDRTYPE
+#endif
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+cbuffer RcasParams : register( b1, space1 )
+{
+	float4 gRcasParams; // @legacy ps:c0
+};
+Texture2D<float4> gBaseTexture : register( t0 );
+SamplerState gLinearClamp : register( s0 );
+struct PS_INPUT { float4 projPos : SV_Position; float2 vUv0 : TEXCOORD0; };
+
+float4 main( PS_INPUT input ) : SV_Target0
+{
+	float2 uv = input.vUv0;
+	float2 step = gRcasParams.zw;
+	float norm = max( gRcasParams.y, 1e-4 );
+	float3 b = gBaseTexture.SampleLevel( gLinearClamp, uv + float2( 0, -step.y ), 0 ).rgb / norm;
+	float3 d = gBaseTexture.SampleLevel( gLinearClamp, uv + float2( -step.x, 0 ), 0 ).rgb / norm;
+	float3 e = gBaseTexture.SampleLevel( gLinearClamp, uv, 0 ).rgb / norm;
+	float3 f = gBaseTexture.SampleLevel( gLinearClamp, uv + float2( step.x, 0 ), 0 ).rgb / norm;
+	float3 h = gBaseTexture.SampleLevel( gLinearClamp, uv + float2( 0, step.y ), 0 ).rgb / norm;
+	const float3 luma = float3( 0.5, 1.0, 0.5 );
+	float bL = dot( b, luma ), dL = dot( d, luma ), eL = dot( e, luma ), fL = dot( f, luma ), hL = dot( h, luma );
+	float noise = 0.25 * ( bL + dL + fL + hL ) - eL;
+	float ringMax = max( max( bL, dL ), max( fL, hL ) );
+	float ringMin = min( min( bL, dL ), min( fL, hL ) );
+	noise = saturate( abs( noise ) / max( ringMax - ringMin, 1e-4 ) );
+	noise = 1.0 - 0.5 * noise;
+	float3 minRing = min( min( b, d ), min( f, h ) );
+	float3 maxRing = max( max( b, d ), max( f, h ) );
+	float3 hitMin = min( minRing, e ) / max( 4.0 * maxRing, 1e-4 );
+	float3 hitMax = ( 1.0 - max( maxRing, e ) ) / min( 4.0 * minRing - 4.0, -1e-4 );
+	float3 lobeRGB = max( -hitMin, hitMax );
+	float lobe = max( -0.1875, min( max( max( lobeRGB.r, lobeRGB.g ), lobeRGB.b ), 0.0 ) ) * exp2( -gRcasParams.x );
+	float3 result = ( lobe * ( b + d + h + f ) + e ) / ( 1.0 + 4.0 * lobe );
+	return DX12FinishPixel( FinalOutput( float4( result * norm, 1 ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

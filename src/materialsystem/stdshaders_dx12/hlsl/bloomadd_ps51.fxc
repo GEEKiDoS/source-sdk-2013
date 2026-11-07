@@ -1,0 +1,51 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/bloomadd_ps2x.fxc for logical bloomadd_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//======= Copyright © 1996-2006, Valve Corporation, All rights reserved. ======
+#define CONVERT_TO_SRGB 0
+
+#include "common_ps_fxc.h"
+
+Texture2D TexSampler_Texture : register( t0 );
+SamplerState TexSampler_Sampler : register( s0 );
+static const DX12Sampler2D TexSampler = { TexSampler_Texture, TexSampler_Sampler };
+
+struct PS_INPUT
+{
+	HALF2 baseTexCoord;		// Base texture coordinate
+	
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+	float2 ZeroTexCoord;
+    float2 bloomTexCoord;
+#endif
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 baseTexCoord : TEXCOORD0;
+	float2 ZeroTexCoord : TEXCOORD1;
+	float2 bloomTexCoord : TEXCOORD2;
+	float4 vColor : TEXCOORD3;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.baseTexCoord = dx12In.baseTexCoord;
+#if defined( _X360 ) //matching pixel shader inputs to vertex shader outputs to avoid shader patches	
+	l.ZeroTexCoord = dx12In.ZeroTexCoord;
+	l.bloomTexCoord = dx12In.bloomTexCoord;
+#endif
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float4 result = TexSampler.tex.Sample( TexSampler.smp, i.baseTexCoord );
+	result.a = 1.0f;
+	return DX12FinishPixel( result, 0.0f ); //FinalOutput( result, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE );
+}

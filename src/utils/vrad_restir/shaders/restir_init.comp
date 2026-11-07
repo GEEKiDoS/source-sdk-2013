@@ -1,0 +1,33 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	if ( pc.pass == 0u )
+	{
+		ReSTIRReservoir empty = EmptyReservoir();
+		reservoirsPrev[index] = empty;
+		reservoirsCur[index] = empty;
+		reservoirsNext[index] = empty;
+		for ( uint channel = 0u; channel < RESTIR_MAX_CHANNELS; ++channel )
+			accumulation[index * RESTIR_MAX_CHANNELS + channel] = vec4( 0.0 );
+	}
+	else if ( pc.pass == 1u )
+	{
+		luxelValid[index] = 0u;
+	}
+	else if ( pc.pass == 2u )
+	{
+		outputRadiance[index] = vec4( 0.0 );
+	}
+}

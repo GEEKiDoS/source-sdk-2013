@@ -1,0 +1,81 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// Karras 2012, Maximizing Parallelism in the Construction of BVHs, section 3.
+// Lexicographic uvec2 keys emulate (Morton << 32) | primitive without int64.
+int CommonPrefix( int first, int second )
+{
+	if ( second < 0 || second >= int( pc.numTriangles ) )
+		return -1;
+	uint high = bvhScratch[2 * first] ^ bvhScratch[2 * second];
+	if ( high != 0u )
+		return 31 - findMSB( high );
+	uint low = bvhScratch[2 * first + 1] ^ bvhScratch[2 * second + 1];
+	return low == 0u ? 64 : 63 - findMSB( low );
+}
+
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count || index >= pc.numTriangles )
+		return;
+	uint leaf = pc.numTriangles - 1u + index;
+	// Only initialize node-owned fields: another invocation owns parent. Never
+	// write a whole struct here, which would race with the child's parent store.
+	bvhNodes[leaf].boundsMin = vec4( 0.0, 0.0, 0.0, uintBitsToFloat( RESTIR_NO_HIT ) );
+	bvhNodes[leaf].boundsMax = vec4( 0.0, 0.0, 0.0, uintBitsToFloat( RESTIR_NO_HIT ) );
+	bvhNodes[leaf].primitive = index;
+	bvhNodes[leaf].refitCounter = 0u;
+	bvhNodes[leaf].pad = 0u;
+	bvhPrims[index] = bvhScratch[2u * index + 1u];
+	if ( pc.numTriangles == 1u )
+	{
+		bvhNodes[leaf].parent = RESTIR_NO_HIT;
+		return;
+	}
+	if ( index >= pc.numTriangles - 1u )
+		return;
+	int i = int( index );
+	int direction = CommonPrefix( i, i + 1 ) - CommonPrefix( i, i - 1 ) >= 0 ? 1 : -1;
+	int minimumPrefix = CommonPrefix( i, i - direction );
+	int maximumLength = 2;
+	while ( CommonPrefix( i, i + maximumLength * direction ) > minimumPrefix )
+		maximumLength *= 2;
+	int rangeLength = 0;
+	for ( int step = maximumLength / 2; step >= 1; step /= 2 )
+	{
+		if ( CommonPrefix( i, i + ( rangeLength + step ) * direction ) > minimumPrefix )
+			rangeLength += step;
+	}
+	int other = i + rangeLength * direction;
+	int first = min( i, other );
+	int last = max( i, other );
+	int rangePrefix = CommonPrefix( first, last );
+	int split = first;
+	int step = last - first;
+	do
+	{
+		step = ( step + 1 ) / 2;
+		int next = split + step;
+		if ( next < last && CommonPrefix( first, next ) > rangePrefix )
+			split = next;
+	} while ( step > 1 );
+	uint left = split == first ? pc.numTriangles - 1u + uint( split ) : uint( split );
+	uint right = split + 1 == last ? pc.numTriangles - 1u + uint( split + 1 ) : uint( split + 1 );
+	bvhNodes[index].boundsMin = vec4( 0.0, 0.0, 0.0, uintBitsToFloat( left ) );
+	bvhNodes[index].boundsMax = vec4( 0.0, 0.0, 0.0, uintBitsToFloat( right ) );
+	bvhNodes[index].primitive = RESTIR_NO_HIT;
+	bvhNodes[index].refitCounter = 0u;
+	bvhNodes[index].pad = 0u;
+	if ( index == 0u )
+		bvhNodes[index].parent = RESTIR_NO_HIT;
+	bvhNodes[left].parent = index;
+	bvhNodes[right].parent = index;
+}

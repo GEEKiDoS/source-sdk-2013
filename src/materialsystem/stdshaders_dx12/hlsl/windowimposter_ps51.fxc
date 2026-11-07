@@ -1,0 +1,69 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/windowimposter_ps2x.fxc for logical windowimposter_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//====== Copyright � 1996-2004, Valve Corporation, All rights reserved. =======
+//
+// Purpose: 
+//
+//=============================================================================
+
+// DYNAMIC: "PIXELFOGTYPE"		"0..2"
+
+// STATIC: "CONVERT_TO_SRGB"	"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#include "common_ps_fxc.h"
+#include "shader_constant_register_map.h"
+
+TextureCube EnvmapSampler_Texture : register( t0 );
+SamplerState EnvmapSampler_Sampler : register( s0 );
+static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+
+
+cbuffer windowimposter_ps2x : register( b1, space1 )
+{
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+struct PS_INPUT
+{
+	float3 eyeToVertVector;
+	float4 vertexColor;
+	
+	float4 worldPos_projPosZ;		// Necessary for pixel fog
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	float3 eyeToVertVector : TEXCOORD0;
+	float4 vertexColor : COLOR;
+	float4 worldPos_projPosZ : TEXCOORD7;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.eyeToVertVector = dx12In.eyeToVertVector;
+	l.vertexColor = dx12In.vertexColor;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	HALF4 color;
+	color.xyz = ENV_MAP_SCALE * EnvmapSampler.tex.Sample( EnvmapSampler.smp, i.eyeToVertVector );
+	color.a = 1.0f;
+	color *= i.vertexColor;
+	
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( color, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+}

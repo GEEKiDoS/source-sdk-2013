@@ -1,0 +1,67 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// Midpoint-stratified cos(theta) and base-2 radical inverse azimuth avoid
+// cardinal rays grazing axis-aligned brush edges. Fixed 32-ray solid-angle set.
+vec3 SunConeDirection( vec3 direction, float angularRadius, uint sampleIndex )
+{
+	float u = ( float( sampleIndex ) + 0.5 ) / 32.0;
+	float v = ( float( bitfieldReverse( sampleIndex ) >> 27u ) + 0.5 ) / 32.0;
+	float halfSin = sin( 0.5 * angularRadius );
+	// 1-cos(radius) in this form preserves very small authored radii.
+	float cosOffset = u * ( 2.0 * halfSin * halfSin );
+	float radial = sqrt( max( 0.0, cosOffset * ( 2.0 - cosOffset ) ) );
+	float azimuth = 2.0 * RESTIR_PI * v;
+	return SafeNormal( LocalDirection( direction,
+		vec3( radial * cos( azimuth ), radial * sin( azimuth ), 1.0 - cosOffset ) ) );
+}
+
+void main()
+{
+	uint localIndex = gl_GlobalInvocationID.x;
+	if ( localIndex >= pc.count )
+		return;
+	uint index = pc.first + localIndex;
+	if ( index >= pc.numLuxels )
+		return;
+	sunVisibility[index] = 0.0;
+	if ( pc.skyLight < 0 || uint( pc.skyLight ) >= pc.numLights )
+		return;
+	ReSTIRGpuLight sun = lights[pc.skyLight];
+	if ( sun.type != EMIT_SKYLIGHT || ( sun.lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) == 0 )
+		return;
+	vec4 origin = sunVisibilityOrigins[index];
+	if ( origin.w != 1.0 || any( isnan( origin.xyz ) ) || any( isinf( origin.xyz ) ) )
+		return;
+	vec3 direction = -sun.normal.xyz;
+	float directionLengthSquared = dot( direction, direction );
+	float angularRadius = pc.shadowSun.x;
+	if ( any( isnan( direction ) ) || any( isinf( direction ) ) ||
+		directionLengthSquared <= 0.0 || isinf( directionLengthSquared ) ||
+		isnan( angularRadius ) || isinf( angularRadius ) || angularRadius < 0.0 || angularRadius > RESTIR_PI )
+		return;
+	direction *= inversesqrt( directionLengthSquared );
+	uint rayCount = angularRadius == 0.0 ? 1u : 32u;
+	uint visibleCount = 0u;
+	for ( uint sampleIndex = 0u; sampleIndex < rayCount; ++sampleIndex )
+	{
+		vec3 rayDirection = rayCount == 1u ? direction : SunConeDirection( direction, angularRadius, sampleIndex );
+		HitInfo hit;
+		// Only immutable occluders may cap runtime sunlight. Marked brush entities
+		// remain in ordinary transport but their current shadows belong to runtime CSM.
+		// Closest accepted hit uses the shared alpha test; sky is visible, miss is blocked.
+		if ( TraceRay( origin.xyz, rayDirection, RESTIR_DIST_EPSILON, RESTIR_TRACE_LENGTH,
+			RESTIR_RAY_MASK_STATIC_SUN, RESTIR_NO_HIT, hit ) && ( hit.flags & RESTIR_TRI_SKY ) != 0u )
+			++visibleCount;
+	}
+	// No receiver cosine, light intensity/style, transport spread, PDF or bump term.
+	sunVisibility[index] = float( visibleCount ) / float( rayCount );
+}

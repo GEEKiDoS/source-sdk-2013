@@ -262,7 +262,10 @@ void C_VortigauntChargeToken::NotifyShouldTransmit( ShouldTransmitState_t state 
 	if ( state == SHOULDTRANSMIT_START )
 	{
 		m_hEffect = ParticleProp()->Create( "vortigaunt_charge_token", PATTACH_ABSORIGIN_FOLLOW );
-		m_hEffect->SetControlPointEntity( 0, this );
+		if ( m_hEffect )
+		{
+			m_hEffect->SetControlPointEntity( 0, this );
+		}
 	}
 }
 
@@ -393,7 +396,10 @@ void C_VortigauntEffectDispel::NotifyShouldTransmit( ShouldTransmitState_t state
 	if ( state == SHOULDTRANSMIT_START )
 	{
 		m_hEffect = ParticleProp()->Create( "vortigaunt_hand_glow", PATTACH_ABSORIGIN_FOLLOW );
-		m_hEffect->SetControlPointEntity( 0, this );
+		if ( m_hEffect )
+		{
+			m_hEffect->SetControlPointEntity( 0, this );
+		}
 	}
 }
 

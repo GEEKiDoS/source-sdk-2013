@@ -1,0 +1,240 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/weapon_sheen_pass_ps2x.fxc for logical weapon_sheen_pass_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+//========= Copyright © 1996-2006, Valve Corporation, All rights reserved. ============//
+
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "BUMPMAP" "0..1"
+
+// Includes =======================================================================================
+#include "common_vertexlitgeneric_dx9.h"
+
+// Texture Samplers ===============================================================================
+Texture2D g_tRefractionSampler_Texture : register( t0 );
+SamplerState g_tRefractionSampler_Sampler : register( s0 );
+static const DX12Sampler2D g_tRefractionSampler = { g_tRefractionSampler_Texture, g_tRefractionSampler_Sampler };
+#if BUMPMAP
+	Texture2D g_tBumpSampler_Texture : register( t1 );
+	SamplerState g_tBumpSampler_Sampler : register( s1 );
+	static const DX12Sampler2D g_tBumpSampler = { g_tBumpSampler_Texture, g_tBumpSampler_Sampler };
+#endif
+
+Texture2D EnvmapSampler_Texture : register( t2 );
+SamplerState EnvmapSampler_Sampler : register( s2 );
+static const DX12Sampler2D EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+TextureCube EnvmapSampler_TextureCUBE : register( t2 );
+static const DX12SamplerCube EnvmapSampler_CUBE = { EnvmapSampler_TextureCUBE, EnvmapSampler_Sampler };
+Texture2D EnvmapMaskSampler_Texture : register( t3 );
+SamplerState EnvmapMaskSampler_Sampler : register( s3 );
+static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
+
+// Shaders Constants and Globals ==================================================================
+
+cbuffer weapon_sheen_pass_ps2x : register( b1, space1 )
+{
+	float4 g_mViewProj0; // @legacy ps:c0
+	float4 g_mViewProj1; // @legacy ps:c1
+	float4 g_vCameraPosition; // @legacy ps:c5
+	float4 g_vPackedConst6; // @legacy ps:c6
+	float4 g_vPackedConst7; // @legacy ps:c7
+	float4 g_cCloakColorTint; // @legacy ps:c8
+};
+
+
+#define g_flSheenMapMaskScaleX   g_vPackedConst6.x // Default = 1.0f
+#define g_flSheenMapMaskScaleY   g_vPackedConst6.y // Default = 1.0f
+#define g_flSheenMapMaskOffsetX  g_vPackedConst6.z // Default = 0.0f
+#define g_flSheenMapMaskOffsetY  g_vPackedConst6.w // Default = 0.0f
+
+#define g_flSheenDirection		g_vPackedConst7.x // 0,1,2 -> XYZ
+#define g_flEffectIndex			g_vPackedConst7.y // W
+
+// 8 2D Poisson offsets (designed to use .xy and .wz swizzles (not .zw)
+static const float4 g_vPoissonOffset[4] = {	float4 (-0.0876f,  0.9703f,  0.5651f,  0.4802f ),
+											float4 ( 0.1851f,  0.1580f, -0.0617f, -0.2616f ),
+											float4 (-0.5477f, -0.6603f,  0.0711f, -0.5325f ),
+											float4 (-0.0751f, -0.8954f,  0.4054f,  0.6384f ) };
+
+// Interpolated values ============================================================================
+struct PS_INPUT
+{
+	float3 vWorldNormal; // World-space normal
+	float3 vProjPosForRefract;
+	float3 vWorldViewVector;
+	float3x3 mTangentSpaceTranspose;
+	//	     second row;
+	//	     third row;
+	float2 vTexCoord0;
+
+	float4 vModelSpacePos;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPosition : SV_Position;
+	float3 vWorldNormal : TEXCOORD0;
+	float3 vProjPosForRefract : TEXCOORD1;
+	float3 vWorldViewVector : TEXCOORD2;
+	float3x3 mTangentSpaceTranspose : TEXCOORD3;
+	float2 vTexCoord0 : TEXCOORD6;
+	float4 vModelSpacePos : TEXCOORD7;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vWorldNormal = dx12In.vWorldNormal;
+	l.vProjPosForRefract = dx12In.vProjPosForRefract;
+	l.vWorldViewVector = dx12In.vWorldViewVector;
+	l.mTangentSpaceTranspose = dx12In.mTangentSpaceTranspose;
+	l.vTexCoord0 = dx12In.vTexCoord0;
+	l.vModelSpacePos = dx12In.vModelSpacePos;
+	return l;
+}
+
+
+// Main ===========================================================================================
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float3 vWorldNormal = normalize( i.vWorldNormal.xyz );
+
+	#if BUMPMAP
+		float4 vBumpTexel = g_tBumpSampler.tex.Sample( g_tBumpSampler.smp, i.vTexCoord0.xy );
+		float3 vTangentNormal = ( 2.0f * vBumpTexel ) - 1.0f;
+		vWorldNormal.xyz = mul( i.mTangentSpaceTranspose, vTangentNormal.xyz );
+	#endif
+
+	float4 result;
+
+	// Staging test for weapon patterns
+	if ( g_flEffectIndex == 2 )
+	{
+		float3 ppos = i.vModelSpacePos;
+		float2 temp = 0;
+
+		// 'Scaling' of texture to get it to map to the weapons
+		// No Skewing, just move left to right
+		if ( g_flSheenDirection == 0 )
+		{
+			temp.x = ppos.z;
+			temp.y = ppos.y;
+		}
+		else if ( g_flSheenDirection == 1 )
+		{
+			temp.x = ppos.z;
+			temp.y = ppos.x;
+		}
+		else
+		{
+			temp.x = ppos.y;
+			temp.y = ppos.x;
+		}
+
+		temp.x -= ( g_flSheenMapMaskOffsetX );		// offset
+		temp.y -= ( g_flSheenMapMaskOffsetY );		// offset
+
+		temp.x /= g_flSheenMapMaskScaleX;	// scale
+		temp.y /= g_flSheenMapMaskScaleY;
+
+		temp.y = 1.0 - temp.y;
+
+		// Sample Texture
+		// Sample Mask
+		//float4 patternTexel = tex2D( EnvmapSampler, temp );
+		float4 patternTexel = EnvmapSampler.tex.Sample( EnvmapSampler.smp, i.vTexCoord0.xy );
+		float4 maskTexel = EnvmapMaskSampler.tex.Sample( EnvmapMaskSampler.smp, i.vTexCoord0.xy );
+
+		//result.rgba = float4( patternTexel.xyz * 1.0, maskTexel.x * 1.0);		// 0.3 is a hack to preserve rimlight
+		//result.rgba = float4( patternTexel.xyz, 1.0);		// 0.3 is a hack to preserve rimlight
+		result.rgba = float4( 0.0,0.0,0.0,0.0);		// 0.3 is a hack to preserve rimlight
+	}
+	else
+	{
+		// generate a hard reflection in to the cube map
+		float3 vEyeDir = -normalize(i.vWorldViewVector.xyz);
+		float3 worldSpaceNormal, tangentSpaceNormal;
+	
+		tangentSpaceNormal = float3(0, 0, 1);
+		worldSpaceNormal = normalize( mul( i.mTangentSpaceTranspose, tangentSpaceNormal ) );
+	
+		float3 vReflect = 2 * worldSpaceNormal * dot(worldSpaceNormal, vEyeDir) - vEyeDir;
+
+		float3 envMapColor = float3( 0.0f, 0.0f, 0.0f );
+		envMapColor = ENV_MAP_SCALE * EnvmapSampler_CUBE.tex.Sample( EnvmapSampler_CUBE.smp, vReflect ) * g_cCloakColorTint.xyz;
+		envMapColor *= 10.0f;
+
+		// Sample the Mask
+		float4 envmapMaskTexel;
+		float2 temp = 0;
+		float3 ppos = i.vModelSpacePos;
+
+		//
+		// skew the sampling based on sheen direction
+		//if ( g_flSheenDirection == 0 )
+		//{
+		//	temp.x = ppos.z - ppos.y;
+		//	temp.y = (ppos.x + ppos.y);
+		//}
+		//else if ( g_flSheenDirection == 1 )
+		//{
+		//	temp.x = ppos.x - ppos.z;
+		//	temp.y = (ppos.y + ppos.z);
+		//}
+		//else
+		//{
+		//	temp.x = ppos.y - ppos.x;
+		//	temp.y = (ppos.z + ppos.x);
+		//}
+
+		// No Skewing, just move left to right
+		if ( g_flSheenDirection == 0 )
+		{
+			temp.x = ppos.z;
+			temp.y = ppos.y;
+		}
+		else if ( g_flSheenDirection == 1 )
+		{
+			temp.x = ppos.z;
+			temp.y = ppos.x;
+		}
+		else
+		{
+			temp.x = ppos.y;
+			temp.y = ppos.x;
+		}
+
+		temp.x -= ( g_flSheenMapMaskOffsetX );		// offset
+		temp.y -= ( g_flSheenMapMaskOffsetY );		// offset
+
+		temp.x /= g_flSheenMapMaskScaleX;	// scale
+		temp.y /= g_flSheenMapMaskScaleY;
+
+		temp.y = 1.0 - temp.y;
+
+		envmapMaskTexel = EnvmapMaskSampler.tex.Sample( EnvmapMaskSampler.smp, temp );
+	
+		// Build result, only have alpha if there was value in the mask.
+		// High alpha (white) will override the underlying texture while low to none will show model underneath
+		//float4 result;
+		//result.rgba = float4( envMapColor, envmapMaskTexel.x * g_cCloakColorTint.w );
+
+		if ( g_flEffectIndex == 1 )
+		{
+			//float alpha = max( max( envmapMaskTexel.x, envmapMaskTexel.y), envmapMaskTexel.z );
+			//result.rgba = float4( envMapColor.xyz * envmapMaskTexel.xyz, alpha );
+		
+			float alpha = max( max( envMapColor.x, envMapColor.y), envMapColor.z );
+			result.rgba = float4( envMapColor.xyz * envmapMaskTexel.xyz, alpha * envmapMaskTexel.x );
+			result.rgba = result.rgba * 1.8f;
+		}
+		else
+		{
+			float alpha = max( max( envMapColor.x, envMapColor.y), envMapColor.z );
+			result.rgba = float4( envMapColor.xyz * envmapMaskTexel.xyz, alpha * envmapMaskTexel.x );
+		}
+	}
+
+	return DX12FinishPixel( FinalOutput( result, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}

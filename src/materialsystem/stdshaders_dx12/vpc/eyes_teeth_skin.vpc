@@ -1,0 +1,19 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\eye_refract.cpp"
+        $File "cpp\eye_refract_helper.cpp"
+        $File "cpp\eyeglint_dx12.cpp"
+        $File "cpp\eyes_dx8_dx9_helper.cpp"
+        $File "cpp\eyes_dx12.cpp"
+        $File "cpp\skin_dx9_helper.cpp"
+        $File "cpp\teeth.cpp"
+    }
+    $Folder "Header Files"
+    {
+        $File "cpp\eye_refract_helper.h"
+        $File "cpp\eyes_dx8_dx9_helper.h"
+        $File "cpp\skin_dx9_helper.h"
+    }
+}

@@ -1,0 +1,81 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+layout( std430, set = 0, binding = 15 ) readonly buffer VisibilityQueriesBuf { ReSTIRGpuVisibilityQuery visibilityQueries[]; };
+layout( std430, set = 0, binding = 16 ) writeonly buffer LocalVisibilityBuf { float localVisibility[]; };
+
+// Identical fixed area-stratified disk for every invocation, independent of seed,
+// radiance, style, transport iterations and service/world dispatch chunking.
+vec3 LocalDiskOffset( vec3 direction, float radius, uint sampleIndex )
+{
+	float u = ( float( sampleIndex ) + 0.5 ) / 32.0;
+	float v = ( float( bitfieldReverse( sampleIndex ) >> 27u ) + 0.5 ) / 32.0;
+	float radial = radius * sqrt( u );
+	float angle = 2.0 * RESTIR_PI * v;
+	return LocalDirection( direction, vec3( radial * cos( angle ), radial * sin( angle ), 0.0 ) );
+}
+
+float ComputeVisibility( ReSTIRGpuVisibilityQuery query )
+{
+	if ( query.position.w != 1.0 || any( isnan( query.position.xyz ) ) || any( isinf( query.position.xyz ) ) ||
+		query.reserved != 0u || ( query.flags & ~RESTIR_VISIBILITY_NO_SELF_SHADOW ) != 0u ||
+		query.selectedLightIndex >= uint( selectedSources.length() ) )
+		return 0.0;
+	vec4 source = selectedSources[query.selectedLightIndex];
+	// The canonical sun slot is uploaded with radius -1; never trace it as a local.
+	if ( any( isnan( source ) ) || any( isinf( source ) ) || source.w < 0.0 )
+		return 0.0;
+	vec3 central = source.xyz - query.position.xyz;
+	float centralLengthSquared = dot( central, central );
+	if ( isnan( centralLengthSquared ) || isinf( centralLengthSquared ) )
+		return 0.0;
+	vec3 direction = centralLengthSquared > 0.0 ? central * inversesqrt( centralLengthSquared ) : vec3( 0.0, 0.0, 1.0 );
+	uint skipHitId = ( query.flags & RESTIR_VISIBILITY_NO_SELF_SHADOW ) != 0u ? query.skipHitId : RESTIR_NO_HIT;
+	uint rayCount = source.w == 0.0 ? 1u : 32u;
+	uint visibleCount = 0u;
+	for ( uint sampleIndex = 0u; sampleIndex < rayCount; ++sampleIndex )
+	{
+		vec3 target = source.xyz + ( rayCount == 1u ? vec3( 0.0 ) : LocalDiskOffset( direction, source.w, sampleIndex ) );
+		vec3 segment = target - query.position.xyz;
+		float segmentLength = length( segment );
+		if ( isnan( segmentLength ) || isinf( segmentLength ) )
+			continue;
+		// Empty/epsilon-length segments have no interior occluder. Other rays end
+		// at the sampled emitter, not at the sun/transport's infinite trace length.
+		if ( segmentLength <= 2.0 * RESTIR_DIST_EPSILON || TraceVisibility( query.position.xyz,
+			segment / segmentLength, RESTIR_DIST_EPSILON, segmentLength - RESTIR_DIST_EPSILON,
+			RESTIR_RAY_MASK_STATIC_SUN, skipHitId ) )
+			++visibleCount;
+	}
+	return float( visibleCount ) / float( rayCount );
+}
+
+void main()
+{
+	uint localIndex = gl_GlobalInvocationID.x;
+	if ( localIndex >= pc.count )
+		return;
+	uint index = pc.first + localIndex;
+	ReSTIRGpuVisibilityQuery query;
+	if ( pc.pass == RESTIR_NO_HIT )
+		query = visibilityQueries[index];
+	else
+	{
+		// World batches use resident geometric origins directly; no expanded CPU
+		// query/ray allocation. iteration carries only this batch's luxel base.
+		uint luxel = pc.iteration + index;
+		query.position = luxel < pc.numLuxels ? sunVisibilityOrigins[luxel] : vec4( 0.0 );
+		query.selectedLightIndex = pc.pass;
+		query.skipHitId = RESTIR_NO_HIT;
+		query.flags = 0u;
+		query.reserved = 0u;
+	}
+	localVisibility[index] = ComputeVisibility( query );
+}

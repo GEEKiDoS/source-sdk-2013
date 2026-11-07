@@ -17,6 +17,7 @@ struct MaterialPatchInfo_t
 	const char *m_pKey;
 	const char *m_pRequiredOriginalValue;  // NULL if you don't require one.
 	const char *m_pValue;
+	bool m_bInsert;  // PATCH_REPLACE only: put the key in the insert section, for keys the original material doesn't have.
 	MaterialPatchInfo_t()
 	{
 		memset( this, 0, sizeof( *this ) );

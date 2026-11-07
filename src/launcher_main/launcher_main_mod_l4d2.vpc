@@ -14,4 +14,9 @@ $Configuration
 
 $Project "Launcher Main (Mod L4D2)"
 {
+	$Folder "Resource Files" [$WINDOWS]
+	{
+		$File	"launcher_main_mod_l4d2.rc"
+		$File	"res\mod_l4d2.ico"
+	}
 }

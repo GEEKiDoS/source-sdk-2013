@@ -1,0 +1,144 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/WaterCheap_vs20.fxc for logical watercheap_vs20 (legacy profile vs20);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs20 set.
+#define DX12_LEGACY_VS20 1
+#include "dx12_preamble.h"
+// STATIC: "BLEND"		"0..1"
+#include "common_vs_fxc.h"
+
+struct VS_INPUT
+{
+	float4 vPos;
+	float4 vNormal;
+	float2 vNormalMapCoord;
+	float3 vTangentS;
+	float3 vTangentT;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	uint4 vNormal : NORMAL;
+#else
+	float4 vNormal : NORMAL;
+#endif
+	float2 vNormalMapCoord : TEXCOORD0;
+#if COMPRESSED_VERTS
+	uint4 vTangentS : TANGENT;
+#else
+	float3 vTangentS : TANGENT;
+#endif
+	float3 vTangentT : BINORMAL;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+#if COMPRESSED_VERTS
+	l.vNormal = (float4)i.vNormal;
+#else
+	l.vNormal = i.vNormal;
+#endif
+	l.vNormalMapCoord = i.vNormalMapCoord;
+#if COMPRESSED_VERTS
+	l.vTangentS = ( (float4)i.vTangentS ).xyz;
+#else
+	l.vTangentS = i.vTangentS;
+#endif
+	l.vTangentT = i.vTangentT;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 projPos : SV_Position; 	
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	float2 normalMapTexCoord : TEXCOORD0;
+	float3 worldVertToEyeVector : TEXCOORD1;
+	float3x3 tangentSpaceTranspose : TEXCOORD2;
+	float4 vRefract_W_ProjZ : TEXCOORD5;
+	float4 vExtraBumpTexCoord : TEXCOORD6;
+	float3 vWorldPos : TEXCOORD7;
+	float4 fogFactorW : COLOR1;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.projPos );
+	o.projPos = DX12Position( o.projPos );
+#if !defined( _X360 )
+#endif
+	o.fogFactorW = saturate( o.fogFactorW );	// vs_2_0 oD# clamp (vsconv.cpp:1033-1035)
+	return o;
+}
+
+
+cbuffer WaterCheap_vs20 : register( b2, space1 )
+{
+	float4 cNormalMapTransform[2]; // @legacy vs:c48
+	float4 TexOffsets; // @legacy vs:c51
+};
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+
+	float3 vObjNormal;
+	DecompressVertex_Normal( v.vNormal, vObjNormal );
+
+	float4 projPos;
+	float3 worldPos;
+
+	projPos = mul( v.vPos, cModelViewProj );
+	o.projPos = projPos;
+
+#if BLEND
+	// Map projected position to the reflection texture
+	o.vRefract_W_ProjZ.x = projPos.x;
+	o.vRefract_W_ProjZ.y = -projPos.y; // invert Y
+	o.vRefract_W_ProjZ.xy = (o.vRefract_W_ProjZ + projPos.w) * 0.5f;
+	o.vRefract_W_ProjZ.z = projPos.w;
+#endif
+	
+	o.vRefract_W_ProjZ.w = projPos.z;
+	
+	worldPos = mul( v.vPos, cModel[0] );
+
+	float3 worldTangentS = mul( v.vTangentS, ( const float3x3 )cModel[0] );
+	float3 worldTangentT = mul( v.vTangentT, ( const float3x3 )cModel[0] );
+	float3 worldNormal = mul( vObjNormal, ( float3x3 )cModel[0] );
+	o.tangentSpaceTranspose[0] = worldTangentS;
+	o.tangentSpaceTranspose[1] = worldTangentT;
+	o.tangentSpaceTranspose[2] = worldNormal;
+
+	float3 worldVertToEyeVector = VSHADER_VECT_SCALE * (cEyePos - worldPos);
+	o.worldVertToEyeVector = worldVertToEyeVector;
+
+	// FIXME: need to add a normalMapTransform to all of the water shaders.
+	//o.normalMapTexCoord.x = dot( v.vNormalMapCoord, cNormalMapTransform[0] ) + cNormalMapTransform[0].w;
+	//o.normalMapTexCoord.y = dot( v.vNormalMapCoord, cNormalMapTransform[1] ) + cNormalMapTransform[1].w;
+	o.normalMapTexCoord = v.vNormalMapCoord;
+
+	float f45x=v.vNormalMapCoord.x+v.vNormalMapCoord.y;
+	float f45y=v.vNormalMapCoord.y-v.vNormalMapCoord.x;
+	o.vExtraBumpTexCoord.x=f45x*0.1+TexOffsets.x;
+	o.vExtraBumpTexCoord.y=f45y*0.1+TexOffsets.y;
+	o.vExtraBumpTexCoord.z=v.vNormalMapCoord.y*0.45+TexOffsets.z;
+	o.vExtraBumpTexCoord.w=v.vNormalMapCoord.x*0.45+TexOffsets.w;
+
+	o.fogFactorW = CalcFog( worldPos, projPos, FOGTYPE_RANGE );
+#if !defined( _X360 )
+	o.fog = o.fogFactorW;
+#endif
+	o.vWorldPos = worldPos;
+
+	return DX12FinishVertex( o );
+}
+
+

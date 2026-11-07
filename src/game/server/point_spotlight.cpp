@@ -408,7 +408,7 @@ void CPointSpotlight::SpotlightCreate(void)
 	m_hSpotlight->SetHaloScale(60);
 #endif
 	m_hSpotlight->SetEndWidth(m_flSpotlightGoalWidth);
-	m_hSpotlight->SetBeamFlags( (FBEAM_SHADEOUT|FBEAM_NOTILE) );
+	m_hSpotlight->SetBeamFlags( (FBEAM_SHADEOUT|FBEAM_NOTILE|FBEAM_POINT_SPOTLIGHT) );
 	m_hSpotlight->SetBrightness( 64 );
 	m_hSpotlight->SetNoise( 0 );
 	m_hSpotlight->SetMinDXLevel( m_nMinDXLevel );

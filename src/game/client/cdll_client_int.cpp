@@ -25,6 +25,7 @@
 #include "networkstringtable_clientdll.h"
 #include "voice_status.h"
 #include "filesystem.h"
+#include "fmtstr.h"
 #include "c_te_legacytempents.h"
 #include "c_rope.h"
 #include "engine/ishadowmgr.h"
@@ -203,6 +204,11 @@ extern vgui::IInputInternal *g_InputInternal;
 #include "util_shared.h"
 #include "viewrender.h"
 #endif
+#include "framegen_dx12.h"
+#include "postprocess_dx12.h"
+#include "shaderapi/ishaderapidx12.h"
+#include "shadowmaps_dx12.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #if defined( L4D2 )
 #include "precache_register.h"
@@ -1152,6 +1158,10 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 
 	g_pClientMode->Init();
 
+	// Runtime shadow maps (SHADOW_MAPS_PLAN.md step 8): resolve the DX12 lighting interface before any map can load.
+	// A missing interface only disables feature-map admission.
+	ShadowMapsDX12_Init();
+
 	if ( !IGameSystem::InitAllSystems() )
 		return false;
 
@@ -1285,6 +1295,13 @@ void CHLClient::PostInit()
 	}
 #endif
 
+	ConVar *pBicubic = g_pCVar->FindVar( "r_lightmap_bicubic" );
+	if ( pBicubic )
+		pBicubic->AddFlags( FCVAR_ARCHIVE );
+	ConVar *pFpsMax = g_pCVar->FindVar( "fps_max" );
+	if ( pFpsMax )
+		pFpsMax->AddFlags( FCVAR_ARCHIVE );
+
 	if ( !r_lightmap_bicubic_set.GetBool() && materials )
 	{
 		MaterialAdapterInfo_t info{};
@@ -1294,6 +1311,17 @@ void CHLClient::PostInit()
 		r_lightmap_bicubic.SetValue( info.m_nMaxDXSupportLevel >= 95 || ( info.m_nMaxDXSupportLevel >= 90 && IsLinux() ) );
 		r_lightmap_bicubic_set.SetValue( true );
 	}
+
+	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_%language%.txt" );
+
+#if defined( PLATFORM_64BITS ) && defined( HL2_CLIENT_DLL ) && !defined( HL2MP )
+	// The x64 Source SDK Base 2013 Multiplayer engine crashes in the server's send proxies
+	// (SendProxy_AnimTime) when the singleplayer local network backdoor transfers entities:
+	// https://github.com/ValveSoftware/source-sdk-2013/issues/610. Use the regular
+	// loopback path instead.
+	ConVarRef cl_localnetworkbackdoor( "cl_localnetworkbackdoor" );
+	cl_localnetworkbackdoor.SetValue( 0 );
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -1334,6 +1362,9 @@ void CHLClient::Shutdown( void )
 	UncacheAllMaterials();
 
 	IGameSystem::ShutdownAllSystems();
+
+	// Runtime shadow maps: drain and release backend state before this DLL unloads.
+	ShadowMapsDX12_Shutdown();
 	
 	gHUD.Shutdown();
 	VGui_Shutdown();
@@ -1705,6 +1736,57 @@ void CHLClient::View_Fade( ScreenFade_t *pSF )
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Once per rendering adapter, a low-tier DX12 adapter (ShaderAPIDX12AdapterTier_t) gets cheaper defaults:
+//          SMAA T2x instead of a provider AA, half-resolution SSR, and the low settings of GTAO, shadow maps, bloom and
+//          motion blur. The 3D view stays at native resolution (r_upscaler_scale stays opt-in). A
+//          high-tier adapter keeps the shipped defaults. Runs after config.cfg is loaded (first level init) and only
+//          when the adapter differs from the one recorded in r_quality_tier_adapter, so later user changes stick.
+//-----------------------------------------------------------------------------
+static ConVar r_quality_tier_adapter( "r_quality_tier_adapter", "", FCVAR_ARCHIVE,
+	"Adapter (vendor:device) the automatic DX12 quality tier was last applied for; clear it to apply the tier again" );
+
+static void ApplyAdapterQualityTier()
+{
+	CreateInterfaceFn factory = Sys_GetFactory( "shaderapidx12" );
+	IShaderAPIDX12 *pShaderAPIDX12 = factory ? static_cast<IShaderAPIDX12 *>( factory( SHADERAPIDX12_INTERFACE_VERSION, nullptr ) ) : nullptr;
+	const int nTier = pShaderAPIDX12 ? pShaderAPIDX12->AdapterPerformanceTier() : SHADERAPIDX12_ADAPTER_TIER_UNKNOWN;
+	if ( nTier == SHADERAPIDX12_ADAPTER_TIER_UNKNOWN )
+		return;
+	MaterialAdapterInfo_t adapter;
+	materials->GetDisplayAdapterInfo( materials->GetCurrentAdapter(), adapter );
+	const CFmtStr adapterId( "%04x:%04x", adapter.m_VendorID, adapter.m_DeviceID );
+	if ( !V_stricmp( r_quality_tier_adapter.GetString(), adapterId ) )
+		return;
+	r_quality_tier_adapter.SetValue( adapterId );
+	if ( nTier != SHADERAPIDX12_ADAPTER_TIER_LOW )
+		return;
+	static const char *const s_ppLowTier[][2] =
+	{
+		{ "r_upscaler", "5" },
+		{ "r_ssr", "1" },
+		{ "r_ssr_quality", "1" },
+		{ "r_ssr_resolution", "0.5" },
+		{ "r_gtao_resolution", "0.5" },
+		{ "r_gtao_slices", "1" },
+		{ "r_gtao_steps", "2" },
+		{ "r_gtao_denoise", "1" },
+		{ "r_shadowmap_filter", "0" },
+		{ "r_shadowmap_filter_quality", "0" },
+		{ "r_shadowmap_resolution", "0" },
+		{ "r_shadowmap_max_realtime_lights", "2" },
+		{ "mat_postfx_bloom_quality", "0" },
+		{ "mat_motion_blur_quality", "-1" },
+	};
+	for ( int i = 0; i < ARRAYSIZE( s_ppLowTier ); ++i )
+	{
+		ConVarRef var( s_ppLowTier[i][0], true );
+		if ( var.IsValid() )
+			var.SetValue( s_ppLowTier[i][1] );
+	}
+	Msg( "DX12: low-tier adapter %s (%s): applied the low quality preset (screen-space effects, shadows)\n", adapter.m_pDriverName, adapterId.Get() );
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Per level init
 //-----------------------------------------------------------------------------
 void CHLClient::LevelInitPreEntity( char const* pMapName )
@@ -1718,6 +1800,9 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 #if defined( L4D2 )
 	TerrorLevelWaterInit( pMapName );
 #endif
+
+	ApplyAdapterQualityTier();
+	PostProcessDX12_ValidateConfig();
 
 	::input->LevelInit();
 
@@ -1737,6 +1822,18 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	view->LevelInit();
 	tempents->LevelInit();
 	ResetToneMapping(1.0);
+
+	// Validate the rshd-v4 manifest and require exact native high-resolution
+	// admission before client systems initialize. Rejected enhanced maps disconnect;
+	// ordinary maps retain their original lighting and rendering mode.
+	{
+		char szShadowError[256] = {};
+		if ( !ShadowMapsDX12_LevelInitPreEntity( pMapName, szShadowError, sizeof( szShadowError ) ) )
+		{
+			Warning( "%s\n", szShadowError );
+			engine->ClientCmd_Unrestricted( "disconnect\n" );
+		}
+	}
 
 	IGameSystem::LevelInitPreEntityAllSystems(pMapName);
 
@@ -1773,6 +1870,10 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	g_RagdollLVManager.SetLowViolence( pMapName );
 
 	gHUD.LevelInit();
+
+	// Per-map client settings: cfg/<map name>.cfg, when the mod provides one.
+	if ( pMapName && *pMapName && g_pFullFileSystem->FileExists( CFmtStr( "cfg/%s.cfg", pMapName ), "MOD" ) )
+		engine->ClientCmd_Unrestricted( CFmtStr( "exec %s.cfg\n", pMapName ) );
 
 #if defined( REPLAY_ENABLED )
 	// Initialize replay ragdoll recorder
@@ -1829,6 +1930,9 @@ void CHLClient::LevelShutdown( void )
 		return;
 
 	g_bLevelInitialized = false;
+	// Disable admission and drain native material/client views while entities and
+	// the leaf system still exist. Keep this bracket through all level teardown.
+	ShadowMapsDX12_BeginClientLevelShutdown();
 
 	// Disable abs recomputations when everything is shutting down
 	CBaseEntity::EnableAbsRecomputations( false );
@@ -1859,6 +1963,7 @@ void CHLClient::LevelShutdown( void )
 	IGameSystem::LevelShutdownPostEntityAllSystems();
 
 	view->LevelShutdown();
+	ShadowMapsDX12_LevelShutdown();
 	beams->ClearBeams();
 	ParticleMgr()->RemoveAllEffects();
 	
@@ -1889,6 +1994,7 @@ void CHLClient::LevelShutdown( void )
 	CReplayRagdollRecorder::Instance().Shutdown();
 	CReplayRagdollCache::Instance().Shutdown();
 #endif
+	ShadowMapsDX12_EndClientLevelShutdown();
 }
 
 
@@ -2424,6 +2530,8 @@ void OnRenderEnd()
 void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 {
 	g_CurFrameStage = curStage;
+	// Reflex/XeLL latency markers for DX12 frame generation (time-critical, straight to the shader API).
+	FrameGenDX12_FrameStage( curStage );
 
 	switch( curStage )
 	{
@@ -2507,6 +2615,8 @@ void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 		break;
 	case FRAME_START:
 		{
+			ShadowMapsDX12_OnDeviceReset();
+			ShadowMapsDX12_CommitPbrOverride();
 			// Mark the frame as open for client fx additions
 			SetFXCreationAllowed( true );
 			SetBeamCreationAllowed( true );

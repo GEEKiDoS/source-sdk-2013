@@ -1,0 +1,97 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+#include "restir_lights.glsl"
+#include "restir_lightmap.glsl"
+layout( std430, set = 0, binding = 15 ) readonly buffer ServiceIn { ReSTIRGpuAmbientQuery queries[]; };
+layout( std430, set = 0, binding = 16 ) buffer ServiceOut { ReSTIRGpuProbeResult results[]; };
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+const uint PROBE_SAMPLES = 256u;
+const uint EMITTER_SAMPLES = 16u;
+// Clamped-cosine convolution A_l per SH band l = 0, 1, 2 (hprobe_bsp.h basis order k = 0..8).
+const float SH_A[3] = float[3]( 3.14159265, 2.09439510, 0.78539816 );
+
+uint ShBand( uint k )
+{
+	return k == 0u ? 0u : ( k < 4u ? 1u : 2u );
+}
+
+void ShBasis( vec3 d, out float y[9] )
+{
+	y[0] = 0.282095;
+	y[1] = 0.488603 * d.y;
+	y[2] = 0.488603 * d.z;
+	y[3] = 0.488603 * d.x;
+	y[4] = 1.092548 * d.x * d.y;
+	y[5] = 1.092548 * d.y * d.z;
+	y[6] = 0.315392 * ( 3.0 * d.z * d.z - 1.0 );
+	y[7] = 1.092548 * d.x * d.z;
+	y[8] = 0.546274 * ( d.x * d.x - d.y * d.y );
+}
+
+// Irradiance coefficients e_k = (A_l / pi) * c_k of the radiance projection c_k = 4 pi / N * sum L(w) Y_k(w), in the
+// engine's linear cube units. The lightmap gather mirrors restir_gather_ambient.comp over uniform sphere directions
+// (a miss is black); material emitters mirror the PointDirectLight sampling of restir_light_points.comp and enter as
+// delta lights, e_k += I * A_l * Y_k(d), like the INAMBIENTCUBE surface worldlights added by the host.
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	vec3 origin = queries[index].position.xyz;
+	vec3 coefficients[9];
+	for ( uint k = 0u; k < 9u; ++k )
+		coefficients[k] = vec3( 0.0 );
+	for ( uint sampleIndex = 0u; sampleIndex < PROBE_SAMPLES; ++sampleIndex )
+	{
+		vec3 direction = DirectionalSample( sampleIndex );
+		HitInfo hit;
+		if ( !TraceGatherRay( origin, direction, RESTIR_DIST_EPSILON, RESTIR_AMBIENT_LENGTH, hit ) )
+			continue;
+		vec3 radiance = RayAmbientColor( hit, origin, direction, sceneStyles[0] );
+		float basis[9];
+		ShBasis( direction, basis );
+		for ( uint k = 0u; k < 9u; ++k )
+			coefficients[k] += radiance * ( basis[k] * SH_A[ShBand( k )] * 4.0 / float( PROBE_SAMPLES ) );
+	}
+	// Seed from the probe position and pc.seed, never the dispatch index (batching-invariant, as the point services).
+	uint key = Hash( pc.seed ^ floatBitsToUint( origin.x ) );
+	key = Hash( key ^ floatBitsToUint( origin.y ) );
+	key = Hash( key ^ floatBitsToUint( origin.z ) );
+	for ( uint lightIndex = 0u; lightIndex < pc.numLights; ++lightIndex )
+	{
+		ReSTIRGpuLight light = lights[lightIndex];
+		if ( ( light.lightFlags & RESTIR_LIGHT_MATERIAL ) == 0 || ( light.lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0 )
+			continue;
+		// Same negligible-emitter cull and 4 unit push towards the light as PointDirectLight.
+		float distanceBound = max( length( origin - light.origin.xyz ) - light.attenuation.x, 1.0 );
+		if ( light.intensity.w / ( distanceBound * distanceBound ) < 0.01 )
+			continue;
+		vec3 source = origin + 4.0 * SafeNormal( light.origin.xyz - origin );
+		uint seed = Hash( key ^ lightIndex );
+		for ( uint sampleIndex = 0u; sampleIndex < EMITTER_SAMPLES; ++sampleIndex )
+		{
+			vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( EMITTER_SAMPLES ), CandidateDimension( seed, sampleIndex, 1u ), CandidateDimension( seed, sampleIndex, 2u ) );
+			ReSTIRReservoir candidate;
+			if ( !SampleLight( lightIndex, source, vec3( 0.0, 0.0, 1.0 ), uniformValue, candidate ) || candidate.sourcePdf <= 0.0 )
+				continue;
+			if ( !LightVisibility( lightIndex, source, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )
+				continue;
+			// VRAD light units / 255 are the cube units; the receiver cosine is the SH convolution.
+			vec3 intensity = candidate.radiance.rgb / candidate.sourcePdf / float( EMITTER_SAMPLES ) / 255.0;
+			float basis[9];
+			ShBasis( SafeNormal( candidate.samplePos.xyz - source ), basis );
+			for ( uint k = 0u; k < 9u; ++k )
+				coefficients[k] += intensity * ( SH_A[ShBand( k )] * basis[k] );
+		}
+	}
+	for ( uint k = 0u; k < 9u; ++k )
+		results[index].coeff[k] = vec4( FiniteSigned( coefficients[k] ), 0.0 );
+}

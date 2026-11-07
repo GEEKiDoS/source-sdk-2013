@@ -1,0 +1,133 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/teeth_bump_ps2x.fxc for logical teeth_bump_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+//====== Copyright � 1996-2006, Valve Corporation, All rights reserved. =======
+
+// STATIC: "CONVERT_TO_SRGB"			"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+// DYNAMIC: "PIXELFOGTYPE"				"0..2"
+// DYNAMIC: "NUM_LIGHTS"				"0..4"
+// DYNAMIC: "AMBIENT_LIGHT"				"0..1"
+// DYNAMIC: "WRITE_DEPTH_TO_DESTALPHA"	"0..1"
+
+#if defined( DX12_LEGACY_PS20 )
+#	define WRITE_DEPTH_TO_DESTALPHA 0
+#endif
+
+#include "shader_constant_register_map.h"
+
+
+cbuffer teeth_bump_ps2x : register( b1, space1 )
+{
+	float4 g_EyePos_SpecExponent; // @legacy ps:c11
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D BumpTextureSampler_Texture : register( t1 );
+SamplerState BumpTextureSampler_Sampler : register( s1 );
+static const DX12Sampler2D BumpTextureSampler = { BumpTextureSampler_Texture, BumpTextureSampler_Sampler };
+Texture2D NormalizeSampler_Texture : register( t2 );
+SamplerState NormalizeSampler_Sampler : register( s2 );
+static const DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+Texture2D NormalizeSampler_Texture1D : register( t2 );
+static const DX12Sampler1D NormalizeSampler_1D = { NormalizeSampler_Texture1D, NormalizeSampler_Sampler };
+TextureCube NormalizeSampler_TextureCUBE : register( t2 );
+static const DX12SamplerCube NormalizeSampler_CUBE = { NormalizeSampler_TextureCUBE, NormalizeSampler_Sampler };
+
+struct PS_INPUT
+{
+	float2 baseTexCoord;
+	float4 worldVertToEyeVector_Darkening;
+	float3x3 tangentSpaceTranspose;
+	//	     second row;
+	//	     third row;
+	float4 worldPos_projPosZ;
+	float2 lightAtten01;
+	float2 lightAtten23;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )    	
+	float fog : FOG;
+#endif
+	float2 baseTexCoord : TEXCOORD0;
+	float4 worldVertToEyeVector_Darkening : TEXCOORD1;
+	float3x3 tangentSpaceTranspose : TEXCOORD2;
+	float4 worldPos_projPosZ : TEXCOORD5;
+	float2 lightAtten01 : TEXCOORD6;
+	float2 lightAtten23 : TEXCOORD7;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.baseTexCoord = dx12In.baseTexCoord;
+	l.worldVertToEyeVector_Darkening = dx12In.worldVertToEyeVector_Darkening;
+	l.tangentSpaceTranspose = dx12In.tangentSpaceTranspose;
+	l.worldPos_projPosZ = dx12In.worldPos_projPosZ;
+	l.lightAtten01 = dx12In.lightAtten01;
+	l.lightAtten23 = dx12In.lightAtten23;
+	return l;
+}
+
+
+#if ((defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)))
+
+#define worldVertToEyeVector i.worldVertToEyeVector_Darkening.xyz
+#define fDarkening i.worldVertToEyeVector_Darkening.w
+
+#endif
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	bool bAmbientLight = AMBIENT_LIGHT ? true : false;
+	int nNumLights = NUM_LIGHTS;
+
+	float4 vLightAtten = float4( i.lightAtten01, i.lightAtten23 );
+	float4 baseSample = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord );
+
+	float3 worldSpaceNormal, tangentSpaceNormal = float3(0, 0, 1);
+	float fSpecExp = g_EyePos_SpecExponent.w;
+
+	float4 normalTexel = BumpTextureSampler.tex.Sample( BumpTextureSampler.smp, i.baseTexCoord );
+	tangentSpaceNormal = 2.0f * normalTexel.xyz - 1.0f;
+	worldSpaceNormal = normalize( mul( i.tangentSpaceTranspose, tangentSpaceNormal ) );
+
+	// If the exponent passed in as a constant is zero, use the value from the map as the exponent
+	if ( fSpecExp == 0 )
+		fSpecExp = 1.0f * ( 1.0f - normalTexel.w ) + 150.0f * normalTexel.w;
+
+	// Summation of diffuse illumination from all local lights
+	float3 diffuseLighting = PixelShaderDoLighting(i.worldPos_projPosZ.xyz,worldSpaceNormal,float3( 0.0f, 0.0f, 0.0f ),false,bAmbientLight,vLightAtten,cAmbientCube, NormalizeSampler_CUBE,nNumLights,cLightInfo,true,false,0,false, NormalizeSampler_1D );
+
+#if ((defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)))
+
+	float3 vDummy, specularLighting;
+
+	// Summation of specular from all local lights
+	PixelShaderDoSpecularLighting( i.worldPos_projPosZ.xyz, worldSpaceNormal, fSpecExp, normalize(worldVertToEyeVector),
+								   vLightAtten, nNumLights, cLightInfo,
+								   false, 1.0f, false, NormalizeSampler, 1.0f, false, 1.0f,
+
+								   // Outputs
+								   specularLighting, vDummy );
+
+	// Specular plus diffuse, all darkened as a function of mouth openness
+	float3 result = (specularLighting * baseSample.a + baseSample.rgb * diffuseLighting) * fDarkening;
+
+#else
+	float3 result = baseSample.rgb * diffuseLighting * i.worldVertToEyeVector_Darkening.w;
+#endif
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.xyz, i.worldPos_projPosZ.xyz, i.worldPos_projPosZ.w );
+	return DX12FinishPixel( FinalOutput( float4(result, 1.0f), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, (WRITE_DEPTH_TO_DESTALPHA != 0), i.worldPos_projPosZ.w ), dx12In.fog );
+}

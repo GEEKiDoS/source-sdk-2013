@@ -1,0 +1,6 @@
+logical=shadow_depth_restore_ps51 stage=ps source=shadow_depth_restore_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=ShadowDepthRestoreConstants space=0 register=b0 size=64 layoutHash=0x65583912a544cb50 engine
+    member=srcRect type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=dstRect type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=srcSize type=19 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=dstSize type=19 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=

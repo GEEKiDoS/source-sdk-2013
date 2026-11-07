@@ -1,0 +1,9 @@
+$Project "stdshader_dx12"
+{
+    $Folder "Source Files"
+    {
+        $File "cpp\debugmorphaccumulator_dx12.cpp"
+        $File "cpp\morphaccumulate_dx12.cpp"
+        $File "cpp\morphweight_dx12.cpp"
+    }
+}

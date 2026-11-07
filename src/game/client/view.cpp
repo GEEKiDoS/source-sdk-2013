@@ -14,6 +14,7 @@
 #include "iclientmode.h"
 #include "prediction.h"
 #include "viewrender.h"
+#include "deferred/deferred_light_editor.h"
 #include "c_te_legacytempents.h"
 #include "cl_mat_stub.h"
 #include "tier0/vprof.h"
@@ -40,6 +41,8 @@
 #include "toolframework_client.h"
 #include "tier0/icommandline.h"
 #include "ienginevgui.h"
+#include "postprocess_dx12.h"
+#include "upscaler_dx12.h"
 #include <vgui_controls/Controls.h>
 #include <vgui/ISurface.h>
 #include "ScreenSpaceEffects.h"
@@ -72,6 +75,7 @@ bool ToolFramework_SetupEngineMicrophone( Vector &origin, QAngle &angles );
 
 
 extern ConVar default_fov;
+extern ConVar building_cubemaps;
 extern bool g_bRenderingScreenshot;
 
 #if !defined( _X360 )
@@ -889,6 +893,21 @@ void CViewRender::SetUpViews()
 		m_ViewRight.m_eStereoEye = STEREO_EYE_RIGHT;
 	}
 
+	if ( GetLightingEditor()->IsEditorActive() && !building_cubemaps.GetBool() )
+	{
+		GetLightingEditor()->GetEditorView( viewEye.origin, viewEye.angles );
+		ViewModelOrigin = viewEye.origin;
+		ViewModelAngles = viewEye.angles;
+		m_ViewLeft = m_View;
+		m_ViewRight = m_View;
+		m_ViewLeft.m_eStereoEye = STEREO_EYE_LEFT;
+		m_ViewRight.m_eStereoEye = STEREO_EYE_RIGHT;
+	}
+	else if ( !building_cubemaps.GetBool() )
+	{
+		GetLightingEditor()->SetEditorView( viewEye.origin, viewEye.angles );
+	}
+
 	if ( bCalcViewModelView )
 	{
 		Assert ( pPlayer != NULL );
@@ -1175,6 +1194,7 @@ void CViewRender::Render( vrect_t *rect )
 	Assert(s_DbgSetupOrigin == m_View.origin);
 	Assert(s_DbgSetupAngles == m_View.angles);
 
+	PostProcessDX12_SubmitFrameConfig();
 	VPROF_BUDGET( "CViewRender::Render", "CViewRender::Render" );
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 
@@ -1220,7 +1240,9 @@ void CViewRender::Render( vrect_t *rect )
 
 	    ToolFramework_AdjustEngineViewport( vr.x, vr.y, vr.width, vr.height );
 
-	    float flViewportScale = mat_viewportscale.GetFloat();
+	    // The temporal upscaler's render scale shrinks the 3D viewport like mat_viewportscale; RenderView switches back
+	    // to the unscaled viewport once the upscaler has reconstructed the frame.
+	    float flViewportScale = mat_viewportscale.GetFloat() * UpscalerDX12_RenderScale();
 
 		viewEye.m_nUnscaledX = vr.x;
 		viewEye.m_nUnscaledY = vr.y;
@@ -1437,7 +1459,7 @@ CON_COMMAND( spec_pos, "dump position and angles to the console" )
 #if defined( L4D2 )
 CON_COMMAND_F( getpos, "dump position and angles to the console" , 0x00000008)
 #else
-CON_COMMAND( getpos, "dump position and angles to the console" )
+CON_COMMAND( getpos, "dump position and angles to the console as setpos/setang commands (getpos 2: setpos_exact/setang_exact)" )
 #endif
 {
 	Vector vecOrigin;
@@ -1450,6 +1472,12 @@ CON_COMMAND( getpos, "dump position and angles to the console" )
 	{
 		pCommand1 = "setpos_exact";
 		pCommand2 = "setang_exact";
+	}
+	else if ( C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer() )
+	{
+		// setpos places the player origin (feet), not the eye, so print the origin; the printed command then
+		// reproduces this view instead of landing one view offset (64 units standing) higher.
+		vecOrigin = pPlayer->GetAbsOrigin();
 	}
 
 	Warning( "%s %f %f %f;", pCommand1, vecOrigin.x, vecOrigin.y, vecOrigin.z );

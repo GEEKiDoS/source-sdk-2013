@@ -1,0 +1,172 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/flesh_interior_blended_pass_ps2x.fxc for logical flesh_interior_blended_pass_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//========= Copyright © 1996-2006, Valve Corporation, All rights reserved. ============//
+// Includes =======================================================================================
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+#include "common_vertexlitgeneric_dx9.h"
+
+// Texture Samplers ===============================================================================
+Texture2D g_tBaseSampler_Texture : register( t0 );
+SamplerState g_tBaseSampler_Sampler : register( s0 );
+static const DX12Sampler2D g_tBaseSampler = { g_tBaseSampler_Texture, g_tBaseSampler_Sampler };
+Texture2D g_tNoiseSampler_Texture : register( t1 );
+SamplerState g_tNoiseSampler_Sampler : register( s1 );
+static const DX12Sampler2D g_tNoiseSampler = { g_tNoiseSampler_Texture, g_tNoiseSampler_Sampler };
+Texture2D g_tBorder1DSampler_Texture : register( t2 );
+SamplerState g_tBorder1DSampler_Sampler : register( s2 );
+static const DX12Sampler2D g_tBorder1DSampler = { g_tBorder1DSampler_Texture, g_tBorder1DSampler_Sampler };
+Texture2D g_tNormalSampler_Texture : register( t3 );
+SamplerState g_tNormalSampler_Sampler : register( s3 );
+static const DX12Sampler2D g_tNormalSampler = { g_tNormalSampler_Texture, g_tNormalSampler_Sampler };
+Texture2D g_tSubsurfaceSampler_Texture : register( t4 );
+SamplerState g_tSubsurfaceSampler_Sampler : register( s4 );
+static const DX12Sampler2D g_tSubsurfaceSampler = { g_tSubsurfaceSampler_Texture, g_tSubsurfaceSampler_Sampler };
+TextureCube g_tCubeSampler_Texture : register( t5 );
+SamplerState g_tCubeSampler_Sampler : register( s5 );
+static const DX12SamplerCube g_tCubeSampler = { g_tCubeSampler_Texture, g_tCubeSampler_Sampler };
+
+// Shaders Constants and Globals ==================================================================
+
+cbuffer flesh_interior_blended_pass_ps2x : register( b1, space1 )
+{
+	float3 g_cSubsurfaceTint; // @legacy ps:c0
+	float2 g_flBorderWidth; // @legacy ps:c1
+	float g_flBorderSoftness; // @legacy ps:c2
+	float3 g_cBorderTint; // @legacy ps:c3
+	float g_flGlobalOpacity; // @legacy ps:c4
+	float g_flGlossBrightness; // @legacy ps:c5
+};
+
+
+// Interpolated values ============================================================================
+struct PS_INPUT
+{
+	float2 vTexCoord0;
+	float2 flDistanceToEffectCenter_flFresnelEffect;
+	float4 vNoiseTexCoord;
+	float3 vTangentViewVector;
+	float3 cVertexLight;
+	float3x3 mTangentSpaceTranspose;
+	//	     second row;
+	//	     third row;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 vProjPosition : SV_Position;
+	float2 vTexCoord0 : TEXCOORD0;
+	float2 flDistanceToEffectCenter_flFresnelEffect : TEXCOORD1;
+	float4 vNoiseTexCoord : TEXCOORD2;
+	float3 vTangentViewVector : TEXCOORD3;
+	float3 cVertexLight : TEXCOORD4;
+	float3x3 mTangentSpaceTranspose : TEXCOORD5;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.vTexCoord0 = dx12In.vTexCoord0;
+	l.flDistanceToEffectCenter_flFresnelEffect = dx12In.flDistanceToEffectCenter_flFresnelEffect;
+	l.vNoiseTexCoord = dx12In.vNoiseTexCoord;
+	l.vTangentViewVector = dx12In.vTangentViewVector;
+	l.cVertexLight = dx12In.cVertexLight;
+	l.mTangentSpaceTranspose = dx12In.mTangentSpaceTranspose;
+	return l;
+}
+
+
+// Main ===========================================================================================
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	// Color texture
+    float4 cBaseColor = g_tBaseSampler.tex.Sample( g_tBaseSampler.smp, i.vTexCoord0.xy );
+	float flFleshMaskFromTexture = cBaseColor.a;
+
+	// Subsurface colors
+    float4 cSubsurfaceColor = g_tSubsurfaceSampler.tex.Sample( g_tSubsurfaceSampler.smp, i.vTexCoord0.xy );
+	cBaseColor.rgb += cBaseColor.rgb * cSubsurfaceColor.rgb * g_cSubsurfaceTint.rgb;
+
+	// Scroll noise textures to ripple border of opening
+	float flNoise0 = g_tNoiseSampler.tex.Sample( g_tNoiseSampler.smp, i.vNoiseTexCoord.xy ).g; // Use green so we can DXT1 if we want
+	float flNoise1 = g_tNoiseSampler.tex.Sample( g_tNoiseSampler.smp, i.vNoiseTexCoord.wz ).g; // Use green so we can DXT1 if we want
+	float flNoise = ( flNoise0 + flNoise1 ) * 0.5f;
+
+	// Generate 0-1 mask from distance computed in the VS
+	float flClampedInputMask = 0.0f;
+	flClampedInputMask = 1.0f - saturate( i.flDistanceToEffectCenter_flFresnelEffect.x );
+	flClampedInputMask *= i.flDistanceToEffectCenter_flFresnelEffect.y;
+	flClampedInputMask *= flFleshMaskFromTexture;
+
+	// Noise mask - Only apply noise around border of sphere
+	float flBorderMask = saturate( ( 1.0f - flClampedInputMask ) * g_flBorderWidth.x - g_flBorderWidth.y );
+	float flNoiseMask = 1.0f - abs( ( flBorderMask * 2.0f ) - 1.0f );
+
+	// This is used to lerp in the 1D border texture over the flesh color
+	float flBorderMaskWithNoise = ( 1.0f - smoothstep( flNoiseMask - g_flBorderSoftness, flNoiseMask + g_flBorderSoftness, flNoise.r ) ) * flNoiseMask;
+
+	// Border color
+	float vBorderUv = ( sign( flBorderMask - 0.5 ) * (1.0f - pow( flBorderMaskWithNoise, 4.0f )) * 0.5f ) + 0.5f;
+	float4 cBorderColor = 2.0f * g_tBorder1DSampler.tex.Sample( g_tBorder1DSampler.smp, vBorderUv );
+	cBorderColor.rgb *= g_cBorderTint;
+	cBorderColor.rgb *= flNoise;
+
+	// Normal map
+	float4 vNormalMapValue = g_tNormalSampler.tex.Sample( g_tNormalSampler.smp, i.vTexCoord0.xy );
+	float3 vTangentNormal = ( vNormalMapValue.xyz * 2.0f ) - 1.0f;
+	vTangentNormal.xy += ( flNoise * 1.5f ) - 0.75f; // NOTE: This will denormalize the normal.
+	//float3 vWorldNormal = mul( i.mTangentSpaceTranspose, vTangentNormal.xyz );
+
+	// Specular gloss layer
+	float3 vTangentReflectionVector = reflect( i.vTangentViewVector.xyz, vTangentNormal.xyz );
+	//vTangentReflectionVector.xy += ( flNoise * 1.5f ) - 0.75f;
+	float3 vWorldReflectionVector = mul( i.mTangentSpaceTranspose, vTangentReflectionVector.xyz );
+	float3 cGlossLayer = ENV_MAP_SCALE * g_tCubeSampler.tex.Sample( g_tCubeSampler.smp, vWorldReflectionVector.xyz ).rgb;
+	cGlossLayer.rgb *= g_flGlossBrightness;
+
+	// Gloss mask is just hard-coded fresnel for now
+	float flGlossMask = pow( saturate( dot( vTangentNormal.xyz, -i.vTangentViewVector.xyz ) ), 8.0f );
+
+	// Opacity
+	float flOpacity = 1.0f;
+	flOpacity = max( flBorderMaskWithNoise, step( flBorderMask, 0.5f ) );
+
+	// Apply global opacity
+	flOpacity *= g_flGlobalOpacity;
+
+	//===============//
+	// Combine terms //
+	//===============//
+	float4 result;
+	result.rgb = cBaseColor.rgb * i.cVertexLight.rgb;
+	result.rgb += cGlossLayer.rgb * flGlossMask;
+	result.rgb *= pow( 1.0f - flBorderMaskWithNoise, 2.0f ); // Darken near border
+	result.rgb = lerp( result.rgb, cBorderColor.rgb, saturate( vBorderUv * 2.0f ) ); // bring in transition 1D texture
+
+	//result.rgb = flClampedInputMask;
+	//result.rgb = flBorderMask;
+	//result.rgb = saturate( flClampedInputMask * 2.0f );
+	//result.rgb = i.flDistanceToEffectCenter_flFresnelEffect.x;// * i.flDistanceToEffectCenter_flFresnelEffect.y;
+	//result.rgb = i.flDistanceToEffectCenter_flFresnelEffect.y * g_flBorderWidth.x - g_flBorderWidth.y;
+	//result.rgb = flNoiseMask;
+	//result.rgb = flBorderMaskWithNoise;
+	//result.rgb = flOpacity;
+	//result.rgb = flBorderUv;
+	//result.rgb = cBorderColor;
+	//result.rgb = -i.vTangentViewVector.z;
+	//result.rgb = vNormalMapValue.xyz;
+	//result.rgb = vTangentNormal.xyz;
+	//result.rgb = flGlossLayer;
+	//result.rgb = i.cVertexLight.rgb;
+	//result.rgb = texCUBE( g_tCubeSampler, vTangentNormal.xyz ).rgb;
+	//result.rgb = i.vTangentViewVector.x;
+	//result.rgb = cGlossLayer.rgb;
+
+	// Set alpha for blending
+	result.a = flOpacity;
+	//result.a = 1.0f;
+	
+	return DX12FinishPixel( FinalOutput( result, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR ), 0.0f );
+}

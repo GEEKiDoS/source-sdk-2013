@@ -24,8 +24,19 @@ public:
 	~C_PhysicsProp();
 
 	virtual bool OnInternalDrawModel( ClientModelRenderInfo_t *pInfo );
+	virtual void OnDataChanged( DataUpdateType_t type );
+
+	// Authoritative server identity excludes inherited weapon/projectile classes,
+	// gibs and non-solid multiplayer modes. Collision solidity remains live.
+	bool CanOverrideShadowMapNoShadow() const
+	{
+		return m_bShadowMapOrdinaryPhysicsProp && IsSolid() && !IsEffectActive( EF_NODRAW );
+	}
+
+	// Depth geometry is standard C_BaseAnimating drawing. Do not reuse while
+	// the sleep transition can still reject a draw during lighting recomputation.
+	bool CanReuseRigidShadowDepth() const { return !m_bAwake && !m_bAwakeLastTime; }
 #if defined( L4D2 )
-	void OnDataChanged( DataUpdateType_t type ) OVERRIDE;
 	int ObjectCaps() OVERRIDE;
 	bool IsGlowUseTarget() OVERRIDE;
 #endif
@@ -39,6 +50,8 @@ protected:
 	bool m_isCarryable;
 	bool m_bStaticLightingEligible; // Native2404, cached by C86540, not networked.
 #endif
+	bool m_bShadowMapOrdinaryPhysicsProp;
+	bool m_bShadowMapOverrideEligibleLast;
 };
 
 #endif // C_PHYSICSPROP_H 

@@ -1,0 +1,15 @@
+nvngx_dlssnr.dll is NOT included in this repository.
+
+DLSS Neural Rendering (NGX feature 18) needs the NVIDIA runtime nvngx_dlssnr.dll. The build that runs on GeForce RTX 40
+series GPUs is a third-party modified build, which NVIDIA's license (LICENSE.txt, the NVIDIA RTX SDKs license, the
+same terms as ../ngx/LICENSE.txt) does not permit redistributing.
+
+To enable DLSS-NR, place your own copy at src/thirdparty/upscalers/dlssnr/redist/nvngx_dlssnr.dll (git-ignored) or
+directly in game/bin/x64; ../README.txt covers all upscaler runtimes. Without it DLSS-NR reports unavailable
+(r_dlss_nr status -1) and everything else works.
+The build verified with this renderer is 310.8.0.0, SHA-256
+e67dee209320cdafe0e93e45675d7aa34323a53acc57a72b2e40a181581c989a.
+
+shaderapidx12 never calls the DLL directly: nvngx.dll_dlssnr_dx12.dll (built from
+src/materialsystem/shaderapidx12/nvngx_forwarder) forwards every call, because the runtime only accepts callers from a
+module whose path contains "nvngx.dll".

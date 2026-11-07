@@ -1,0 +1,320 @@
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/vertexlit_and_unlit_generic_vs20.fxc for logical vertexlit_and_unlit_generic_vs30 (legacy profile vs30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs30 set.
+#define DX12_LEGACY_VS30 1
+#define DX12_COMBO_FOLD 1
+#include "dx12_preamble.h"
+//======= Copyright Valve Corporation, All rights reserved. ======
+// Folded VS30 source; declaration order follows the selected legacy VS30/PC directives.
+// SEAMLESS_BASE/DETAIL select output widths; COMPRESSED_VERTS selects integer vertex streams.
+
+// STATIC: "SEAMLESS_BASE" "0..1"
+// STATIC: "SEAMLESS_DETAIL" "0..1"
+// DYNAMIC: "COMPRESSED_VERTS" "0..1"
+// FOLD: "VERTEXCOLOR" "0..1" STATIC slot=0
+// FOLD: "CUBEMAP" "0..1" STATIC slot=1
+// FOLD: "HALFLAMBERT" "0..1" STATIC slot=2
+// FOLD: "FLASHLIGHT" "0..1" STATIC slot=3
+// FOLD: "SEPARATE_DETAIL_UVS" "0..1" STATIC slot=4
+// FOLD: "DECAL" "0..1" STATIC slot=5
+// FOLD: "DONT_GAMMA_CONVERT_VERTEX_COLOR" "0..1" STATIC slot=6
+// FOLD: "TREESWAY" "0..2" STATIC slot=7
+// FOLD: "DYNAMIC_LIGHT" "0..1" DYNAMIC slot=8
+// FOLD: "STATIC_LIGHT_VERTEX" "0..1" DYNAMIC slot=9
+// FOLD: "STATIC_LIGHT_LIGHTMAP" "0..1" DYNAMIC slot=10
+// FOLD: "DOWATERFOG" "0..1" DYNAMIC slot=11
+// FOLD: "SKINNING" "0..1" DYNAMIC slot=12
+// FOLD: "LIGHTING_PREVIEW" "0..1" DYNAMIC slot=13
+// FOLD: "MORPHING" "0..1" DYNAMIC slot=14
+
+#define VERTEXCOLOR ( cComboFold[0].x )
+#define CUBEMAP ( cComboFold[0].y )
+#define HALFLAMBERT ( cComboFold[0].z )
+#define FLASHLIGHT ( cComboFold[0].w )
+#define SEPARATE_DETAIL_UVS ( cComboFold[1].x )
+#define DECAL ( cComboFold[1].y )
+#define DONT_GAMMA_CONVERT_VERTEX_COLOR ( cComboFold[1].z )
+#define TREESWAY ( cComboFold[1].w )
+#define DYNAMIC_LIGHT ( cComboFold[2].x )
+#define STATIC_LIGHT_VERTEX ( cComboFold[2].y )
+#define STATIC_LIGHT_LIGHTMAP ( cComboFold[2].z )
+#define DOWATERFOG ( cComboFold[2].w )
+#define SKINNING ( cComboFold[3].x )
+#define LIGHTING_PREVIEW ( cComboFold[3].y )
+#define MORPHING ( cComboFold[3].z )
+
+
+#include "common_vs_fxc.h"
+
+
+cbuffer vertexlit_and_unlit_generic_vs20 : register( b2, space1 )
+{
+	float3 cMorphTargetTextureDim; // @legacy vs:c14
+	float4 g_vMiscParams3; // @legacy vs:c14
+	float4 cMorphSubrect; // @legacy vs:c15
+	float4 g_vMiscParams4; // @legacy vs:c15
+	float4 cBaseTexCoordTransform[2]; // @legacy vs:c48
+	float cSeamlessScale; // @legacy vs:c50
+	float4 g_vMiscParams2; // @legacy vs:c50
+	float4 g_vMiscParams1; // @legacy vs:c51
+	float4 cDetailTexCoordTransform[2]; // @legacy vs:c52
+};
+
+#if SEAMLESS_DETAIL || SEAMLESS_BASE
+
+#define SEAMLESS_SCALE cSeamlessScale.x
+#endif
+
+
+Texture2D morphSampler_Texture : register( t0 );
+SamplerState morphSampler_Sampler : register( s0 );
+static const DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
+
+// Morph and tree-sway constants deliberately alias the same legacy registers.
+// Only the selected runtime path reads their corresponding interpretation.
+
+
+#define g_flTime g_vMiscParams2.y
+#define g_vWindDir g_vMiscParams2.zw
+#define g_flFastSwaySpeedScale g_vMiscParams1.x
+#define g_flScrumbleFalloffCurve g_vMiscParams1.y
+#define g_flSwayFalloffCurve g_vMiscParams1.z
+#define g_flScrumbleSpeed g_vMiscParams1.w
+#define g_flHeight g_vMiscParams3.x
+#define g_flStartHeight g_vMiscParams3.y
+#define g_flRadius g_vMiscParams3.z
+#define g_flStartRadius g_vMiscParams3.w
+#define g_flSwaySpeed g_vMiscParams4.x
+#define g_flSwayIntensity g_vMiscParams4.y
+#define g_flScrumbleWaveCount g_vMiscParams4.z
+#define g_flScrumbleIntensity g_vMiscParams4.w
+#define g_flWindSpeedLerpStart cDetailTexCoordTransform[0].x
+#define g_flWindSpeedLerpEnd cDetailTexCoordTransform[0].y
+
+struct VS_INPUT
+{
+	float4 vPos;
+	float4 vBoneWeights;
+	float4 vBoneIndices;
+	float4 vNormal;
+	float4 vColor;
+	float3 vSpecular;
+	float4 vTexCoord0;
+	float4 vTexCoord1;
+	float4 vTexCoord2;
+	float4 vTexCoord3;
+	float3 vPosFlex;
+	float3 vNormalFlex;
+	float vVertexID;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	int2 vBoneWeights : BLENDWEIGHT;
+#else
+	float4 vBoneWeights : BLENDWEIGHT;
+#endif
+	float4 vBoneIndices : BLENDINDICES;
+#if COMPRESSED_VERTS
+	uint4 vNormal : NORMAL;
+#else
+	float4 vNormal : NORMAL;
+#endif
+	float4 vColor : COLOR0;
+	float4 vSpecular : COLOR1;
+	float4 vTexCoord0 : TEXCOORD0;
+	float4 vTexCoord1 : TEXCOORD1;
+	float4 vTexCoord2 : TEXCOORD2;
+	float4 vTexCoord3 : TEXCOORD3;
+	float3 vPosFlex : POSITION1;
+	float3 vNormalFlex : NORMAL1;
+	float vVertexID : POSITION2;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+#if COMPRESSED_VERTS
+	l.vBoneWeights = float4( (float2)i.vBoneWeights, 0, 1 );
+#else
+	l.vBoneWeights = i.vBoneWeights;
+#endif
+	l.vBoneIndices = i.vBoneIndices;
+#if COMPRESSED_VERTS
+	l.vNormal = (float4)i.vNormal;
+#else
+	l.vNormal = i.vNormal;
+#endif
+	l.vColor = i.vColor;
+	l.vSpecular = ( i.vSpecular ).xyz;
+	l.vTexCoord0 = i.vTexCoord0;
+	l.vTexCoord1 = i.vTexCoord1;
+	l.vTexCoord2 = i.vTexCoord2;
+	l.vTexCoord3 = i.vTexCoord3;
+	l.vPosFlex = i.vPosFlex;
+	l.vNormalFlex = i.vNormalFlex;
+	l.vVertexID = i.vVertexID;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 projPos : SV_Position;
+	float fog : FOG;
+#if SEAMLESS_BASE
+	HALF3 SeamlessTexCoord : TEXCOORD0;
+#else
+	HALF2 baseTexCoord : TEXCOORD0;
+#endif
+#if SEAMLESS_DETAIL
+	HALF3 SeamlessDetailTexCoord : TEXCOORD1;
+#else
+	HALF2 detailTexCoord : TEXCOORD1;
+#endif
+	float4 color : TEXCOORD2;
+	float3 worldVertToEyeVector : TEXCOORD3;
+	float3 worldSpaceNormal : TEXCOORD4;
+	float4 vProjPos : TEXCOORD6;
+	float4 worldPos_ProjPosZ : TEXCOORD7;
+	float4 fogFactorW : COLOR1;
+#if SEAMLESS_DETAIL || SEAMLESS_BASE
+	float3 SeamlessWeights : COLOR0;
+#endif
+	float3 worldPos : TEXCOORD5;
+	float3 worldNormal : TEXCOORD8;
+	float2 shadowResponse : TEXCOORD9;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.projPos );
+	o.projPos = DX12Position( o.projPos );
+#if SEAMLESS_BASE
+#else
+#endif
+#if SEAMLESS_DETAIL
+#else
+#endif
+#if SEAMLESS_DETAIL || SEAMLESS_BASE
+#endif
+	return o;
+}
+
+
+#include "tree_sway.h"
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+	bool g_bSkinning = SKINNING != 0;
+	int g_FogType = DOWATERFOG;
+	bool g_bVertexColor = VERTEXCOLOR != 0;
+	bool g_bHalfLambert = HALFLAMBERT != 0;
+	bool g_bDecalOffset = MORPHING != 0 && DECAL != 0;
+	bool bDynamicLight = DYNAMIC_LIGHT != 0;
+	bool bStaticLight = STATIC_LIGHT_VERTEX != 0;
+	bool bDoLighting = !g_bVertexColor && (bDynamicLight || bStaticLight);
+
+	float4 vPosition = v.vPos;
+	float3 vNormal = 0;
+	if ( true ) // Feature receivers always carry a valid normal, even with no baked/legacy lights.
+	{
+		// Preserve the shadow_vertex normal-fetch anchor exactly.
+		DecompressVertex_Normal( v.vNormal, vNormal );
+	}
+
+#if SEAMLESS_BASE || SEAMLESS_DETAIL
+	float3 NNormal = normalize( vNormal );
+	o.SeamlessWeights.xyz = NNormal * NNormal;
+#endif
+
+	if ( MORPHING )
+	{
+		ApplyMorph( morphSampler, cMorphTargetTextureDim, cMorphSubrect,
+			v.vVertexID, v.vTexCoord2, vPosition.xyz, vNormal );
+	}
+	else
+	{
+		ApplyMorph( v.vPosFlex, v.vNormalFlex, vPosition.xyz, vNormal );
+	}
+	if ( TREESWAY )
+	{
+		vPosition.xyz = ComputeTreeSway( vPosition.xyz, g_flTime ) + 0;
+	}
+
+	float3 worldNormal, worldPos;
+	SkinPositionAndNormal(
+		g_bSkinning,
+		vPosition, vNormal,
+		v.vBoneWeights, v.vBoneIndices,
+		worldPos, worldNormal );
+	if ( !g_bVertexColor )
+	{
+		worldNormal = normalize( worldNormal );
+	}
+	if ( g_bDecalOffset )
+	{
+		worldPos += worldNormal * 0.05f * v.vTexCoord2.z;
+	}
+	o.worldSpaceNormal = worldNormal;
+
+	float4 vProjPos = mul( float4( worldPos, 1 ), cViewProj );
+	o.projPos = vProjPos;
+	vProjPos.z = dot( float4( worldPos, 1 ), cViewProjZ );
+	o.vProjPos = vProjPos;
+	o.fogFactorW.w = CalcFog( worldPos, vProjPos, g_FogType );
+	o.fog = o.fogFactorW.w;
+	o.worldPos_ProjPosZ.xyz = worldPos.xyz;
+	o.worldPos_ProjPosZ.w = vProjPos.z;
+	if ( CUBEMAP )
+	{
+		o.worldVertToEyeVector.xyz = VSHADER_VECT_SCALE * (cEyePos - worldPos);
+	}
+
+	if ( FLASHLIGHT )
+	{
+		o.color = float4( 0.0f, 0.0f, 0.0f, 0.0f );
+	}
+	else if ( g_bVertexColor )
+	{
+		o.color.rgb = DONT_GAMMA_CONVERT_VERTEX_COLOR ? v.vColor.rgb : GammaToLinear( v.vColor.rgb );
+		o.color.a = v.vColor.a;
+	}
+	else
+	{
+		// VS30 already uses an engine-cbuffer runtime light count in DoLighting.
+		o.color.xyz = DoLighting( worldPos, worldNormal, v.vSpecular, bStaticLight, bDynamicLight, g_bHalfLambert );
+	}
+
+#if SEAMLESS_BASE
+	o.SeamlessTexCoord.xyz = SEAMLESS_SCALE * v.vPos.xyz;
+#else
+	o.baseTexCoord.x = dot( v.vTexCoord0, cBaseTexCoordTransform[0] );
+	o.baseTexCoord.y = dot( v.vTexCoord0, cBaseTexCoordTransform[1] );
+#endif
+#if SEAMLESS_DETAIL
+	o.SeamlessDetailTexCoord.xyz = (SEAMLESS_SCALE * cDetailTexCoordTransform[0].x) * v.vPos.xyz;
+#else
+	o.detailTexCoord.x = dot( v.vTexCoord0, cDetailTexCoordTransform[0] );
+	o.detailTexCoord.y = dot( v.vTexCoord0, cDetailTexCoordTransform[1] );
+	if ( SEPARATE_DETAIL_UVS )
+	{
+		o.detailTexCoord.xy = v.vTexCoord1.xy;
+	}
+#endif
+
+	if ( LIGHTING_PREVIEW )
+	{
+		float dot = 0.5 + 0.5 * worldNormal * float3( 0.7071, 0.7071, 0 );
+		o.color.xyz = float3( dot, dot, dot );
+	}
+	o.worldPos = worldPos;
+	o.worldNormal = normalize( worldNormal );
+	o.shadowResponse = float2( HALFLAMBERT, 1.0f );
+	return DX12FinishVertex( o );
+}

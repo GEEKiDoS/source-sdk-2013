@@ -1,0 +1,43 @@
+// Dilate tile maxima by the blur search radius so a still pixel is skipped only when no
+// velocity the gather could reach is large enough to move a sample.
+cbuffer MotionTile : register( b0, space1 )
+{
+	uint2 gVelocitySize;
+	uint2 gTileCount;
+	float gSearchRadius;
+	float gPad0;
+	float gPad1;
+	float gPad2;
+};
+
+Texture2D<float> gTileIn : register( t0, space0 );
+RWTexture2D<float> gTileOut : register( u0, space0 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= gTileCount.x || id.y >= gTileCount.y )
+		return;
+	// One tile past the disc covers a velocity anywhere in a neighbouring tile. Wider than
+	// eight tiles falls back to "always gather" rather than looping the whole screen.
+	int radiusX = (int)ceil( gSearchRadius * (float)gVelocitySize.x / 16.0 ) + 1;
+	int radiusY = (int)ceil( gSearchRadius * (float)gVelocitySize.y / 16.0 ) + 1;
+	if ( radiusX > 8 || radiusY > 8 )
+	{
+		gTileOut[id.xy] = 1e8;
+		return;
+	}
+	float maximum = 0;
+	int2 count = int2( gTileCount ) - 1;
+	[loop]
+	for ( int y = -radiusY; y <= radiusY; ++y )
+	{
+		[loop]
+		for ( int x = -radiusX; x <= radiusX; ++x )
+		{
+			int2 tap = clamp( int2( id.xy ) + int2( x, y ), int2( 0, 0 ), count );
+			maximum = max( maximum, gTileIn.Load( int3( tap, 0 ) ) );
+		}
+	}
+	gTileOut[id.xy] = maximum + gPad0 + gPad1 + gPad2;
+}

@@ -1,0 +1,340 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/flashlight_ps2x.fxc for logical flashlight_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//====== Copyright c 1996-2004, Valve Corporation, All rights reserved. =======
+//
+// Purpose: 
+//
+//=============================================================================
+
+
+// STATIC: "NORMALMAP"					"0..2"
+// STATIC: "NORMALMAP2"					"0..1"
+// STATIC: "WORLDVERTEXTRANSITION"		"0..1"
+// STATIC: "SEAMLESS"               	"0..1"
+// STATIC: "DETAILTEXTURE"             	"0..1"
+// STATIC: "DETAIL_BLEND_MODE"			"0..1"
+// STATIC: "FLASHLIGHTDEPTHFILTERMODE"	"0..2"
+
+// DYNAMIC: "PIXELFOGTYPE"				"0..1"
+// DYNAMIC: "FLASHLIGHTSHADOWS"			"0..1"
+
+// SKIP: !$WORLDVERTEXTRANSITION && $NORMALMAP2
+// SKIP: !$NORMALMAP && $NORMALMAP2
+// SKIP: !$DETAILTEXTURE && ( $DETAIL_BLEND_MODE != 0 )
+
+#include "shader_constant_register_map.h"
+#include "common_flashlight_fxc.h"
+#include "common_lightmappedgeneric_fxc.h"
+
+
+cbuffer flashlight_ps2x : register( b1, space1 )
+{
+	float4 g_DetailConstants; // @legacy ps:c0
+	float4 g_vShadowTweaks; // @legacy ps:c2
+	float4 g_EyePos; // @legacy ps:c11
+	float4 g_FlashlightAttenuation; // @legacy ps:c13
+	float4 cFlashlightColor; // @legacy ps:c28
+	float4 cFlashlightScreenScale; // @legacy ps:c31
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+Texture2D SpotSampler_Texture : register( t0 );
+SamplerState SpotSampler_Sampler : register( s0 );
+static const DX12Sampler2D SpotSampler = { SpotSampler_Texture, SpotSampler_Sampler };
+Texture2D BaseTextureSampler_Texture : register( t1 );
+SamplerState BaseTextureSampler_Sampler : register( s1 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+TextureCube NormalizingCubemapSampler_Texture : register( t2 );
+SamplerState NormalizingCubemapSampler_Sampler : register( s2 );
+static const DX12SamplerCube NormalizingCubemapSampler = { NormalizingCubemapSampler_Texture, NormalizingCubemapSampler_Sampler };
+
+// use a normalizing cube map here if we aren't normal mapping
+Texture2D BumpMapSampler_Texture : register( t3 );
+SamplerState BumpMapSampler_Sampler : register( s3 );
+static const DX12Sampler2D BumpMapSampler = { BumpMapSampler_Texture, BumpMapSampler_Sampler };
+Texture2D BaseTextureSampler2_Texture : register( t4 );
+SamplerState BaseTextureSampler2_Sampler : register( s4 );
+static const DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
+
+#ifdef WORLDVERTEXTRANSITION
+Texture2D NormalMap2Sampler_Texture : register( t6 );
+SamplerState NormalMap2Sampler_Sampler : register( s6 );
+static const DX12Sampler2D NormalMap2Sampler = { NormalMap2Sampler_Texture, NormalMap2Sampler_Sampler };
+#endif
+
+#if DETAILTEXTURE
+Texture2D DetailSampler_Texture : register( t8 );
+SamplerState DetailSampler_Sampler : register( s8 );
+static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+#endif
+
+#if FLASHLIGHTSHADOWS && ( defined( DX12_LEGACY_PS20B ) || defined( DX12_LEGACY_PS30 ) )
+Texture2D RandomRotationSampler_Texture : register( t5 );
+SamplerState RandomRotationSampler_Sampler : register( s5 );	//  Random rotation sampler
+static const DX12Sampler2D RandomRotationSampler = { RandomRotationSampler_Texture, RandomRotationSampler_Sampler };
+Texture2D FlashlightDepthSampler_Texture : register( t7 );
+SamplerComparisonState FlashlightDepthSampler_Sampler : register( s7 );
+static const DX12ShadowSampler FlashlightDepthSampler = { FlashlightDepthSampler_Texture, FlashlightDepthSampler_Sampler };
+#endif
+
+struct PS_INPUT
+{
+	float4 spotTexCoord;
+#if SEAMLESS
+	float3 SeamlessTexCoord;
+#else
+	float2 baseTexCoord;
+#endif
+#if NORMALMAP
+	float3 tangentPosToLightVector;
+	float2 normalMapTexCoord;
+#else
+	float3 worldPosToLightVector;
+	float3 normal;
+#endif
+
+	float2 detailCoords;
+	float4 worldPos_worldTransition;	
+	float3 projPos;
+	float4 fogFactorW;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )
+	float fog : FOG;
+#endif
+	float4 spotTexCoord : TEXCOORD0;
+#if SEAMLESS
+	float3 SeamlessTexCoord : TEXCOORD1;
+#else
+	float2 baseTexCoord : TEXCOORD1;
+#endif
+#if NORMALMAP
+	float3 tangentPosToLightVector : TEXCOORD2;
+	float2 normalMapTexCoord : TEXCOORD3;
+#else
+	float3 worldPosToLightVector : TEXCOORD2;
+	float3 normal : TEXCOORD3;
+#endif
+	float2 detailCoords : TEXCOORD4;
+	float4 worldPos_worldTransition : TEXCOORD5;
+	float3 vProjPos : TEXCOORD6;
+	float4 fogFactorW : TEXCOORD7;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.spotTexCoord = dx12In.spotTexCoord;
+#if SEAMLESS
+#if ( ( SEAMLESS ) )
+	l.SeamlessTexCoord = dx12In.SeamlessTexCoord;
+#endif
+#if ( !( SEAMLESS ) )
+	l.SeamlessTexCoord.xy = dx12In.baseTexCoord;
+#endif
+#else
+#if ( ( SEAMLESS ) )
+	l.baseTexCoord = ( dx12In.SeamlessTexCoord ).xy;
+#endif
+#if ( !( SEAMLESS ) )
+	l.baseTexCoord = dx12In.baseTexCoord;
+#endif
+#endif
+#if NORMALMAP
+#if ( ( NORMALMAP ) )
+	l.tangentPosToLightVector = dx12In.tangentPosToLightVector;
+#endif
+#if ( !( NORMALMAP ) )
+	l.tangentPosToLightVector = dx12In.worldPosToLightVector;
+#endif
+#if ( ( NORMALMAP ) )
+	l.normalMapTexCoord = dx12In.normalMapTexCoord;
+#endif
+#if ( !( NORMALMAP ) )
+	l.normalMapTexCoord = ( dx12In.normal ).xy;
+#endif
+#else
+#if ( ( NORMALMAP ) )
+	l.worldPosToLightVector = dx12In.tangentPosToLightVector;
+#endif
+#if ( !( NORMALMAP ) )
+	l.worldPosToLightVector = dx12In.worldPosToLightVector;
+#endif
+#if ( ( NORMALMAP ) )
+	l.normal.xy = dx12In.normalMapTexCoord;
+#endif
+#if ( !( NORMALMAP ) )
+	l.normal = dx12In.normal;
+#endif
+#endif
+	l.detailCoords = dx12In.detailCoords;
+	l.worldPos_worldTransition = dx12In.worldPos_worldTransition;
+	l.projPos = dx12In.vProjPos;
+	l.fogFactorW = dx12In.fogFactorW;
+	return l;
+}
+
+
+float4 SampleNormal( DX12Sampler2D s, PS_INPUT i )
+{
+#if SEAMLESS
+	float4 szy=s.tex.Sample( s.smp, i.SeamlessTexCoord.zy );
+	float4 sxz=s.tex.Sample( s.smp, i.SeamlessTexCoord.xz );
+	float4 syx=s.tex.Sample( s.smp, i.SeamlessTexCoord.xy );
+	return i.fogFactorW.r*szy + i.fogFactorW.g*sxz + i.fogFactorW.b*syx;
+#else
+#if NORMALMAP
+	return s.tex.Sample( s.smp, i.normalMapTexCoord.xy );
+#else
+	return float4(0,0,1,1);
+#endif
+#endif
+
+}
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	bool bBase2 = WORLDVERTEXTRANSITION ? true : false;
+	bool bBump  = (NORMALMAP != 0) ? true : false;
+
+	// Do spot stuff early since we can bail out
+	float3 spotColor = float3(0,0,0);
+	float3 vProjCoords = i.spotTexCoord.xyz / i.spotTexCoord.w;
+
+#if ( defined( _X360 ) )
+
+	float3 ltz = vProjCoords.xyz < float3( 0.0f, 0.0f, 0.0f );
+	float3 gto = vProjCoords.xyz > float3( 1.0f, 1.0f, 1.0f );
+
+	[branch]
+	if ( dot(ltz + gto, float3(1,1,1)) > 0 )
+	{
+		clip (-1);
+		return DX12FinishPixel( float4(0,0,0,0), dx12In.fog );
+	}
+	else
+	{
+		spotColor = SpotSampler.tex.Sample( SpotSampler.smp, vProjCoords );
+
+		[branch]
+		if ( dot(spotColor.xyz, float3(1,1,1)) <= 0 )
+		{
+			clip(-1);
+			return DX12FinishPixel( float4(0,0,0,0), dx12In.fog );
+		}
+		else
+		{
+#else
+	spotColor = SpotSampler.tex.Sample( SpotSampler.smp, vProjCoords );
+#endif
+
+	float4 baseColor = 0.0f;
+	float4 baseColor2 = 0.0f;
+	float4 vNormal = float4(0, 0, 1, 1);
+	float3 baseTexCoords = float3(0,0,0);
+
+#if SEAMLESS
+	baseTexCoords = i.SeamlessTexCoord.xyz;
+#else
+	baseTexCoords.xy = i.baseTexCoord.xy;
+#endif
+
+	GetBaseTextureAndNormal( BaseTextureSampler, BaseTextureSampler2, BumpMapSampler, bBase2, bBump, baseTexCoords, i.fogFactorW.xyz, baseColor, baseColor2, vNormal );
+
+#if WORLDVERTEXTRANSITION
+	float lerpAlpha = 1-i.worldPos_worldTransition.a;
+#endif
+
+#if ( NORMALMAP == 0 )
+	vNormal.xyz = normalize( i.normal.xyz );
+#endif
+
+#if ( NORMALMAP == 1 )
+	vNormal.xyz = vNormal.xyz * 2.0f - 1.0f;		// signed
+
+#	if NORMALMAP2
+	float3 normal2 = SampleNormal( NormalMap2Sampler, i ) * 2.0f - 1.0f;
+	vNormal.xyz = lerp( normal2, vNormal.xyz, lerpAlpha );
+#	endif
+#endif
+
+// ssbump
+#if ( NORMALMAP == 2 )
+
+#	if NORMALMAP2
+	float3 normal2 = SampleNormal( NormalMap2Sampler, i );
+	vNormal.xyz = lerp( normal2, vNormal.xyz, lerpAlpha );
+#	endif
+#else
+	// Normalize normal after all of the lerps above (including the tri/bilinear texel fetches)
+	vNormal.xyz = normalize( vNormal.xyz );
+#endif
+
+	spotColor.rgb *= cFlashlightColor.rgb;
+
+	// Compute per-pixel distance attenuation
+	float3 delta = g_EyePos.xyz - i.worldPos_worldTransition.xyz;
+	float distSquared = dot( delta, delta );
+	float dist = sqrt( distSquared );
+	float farZ = g_FlashlightAttenuation.w;
+	float endFalloffFactor = RemapValClamped( dist, farZ, 0.6f * farZ, 0.0f, 1.0f );
+	float flAtten = saturate(endFalloffFactor * dot( g_FlashlightAttenuation.xyz, float3( 1.0f, 1.0f/dist, 1.0f/distSquared ) ) );
+
+#if FLASHLIGHTSHADOWS && ( defined( DX12_LEGACY_PS20B ) || defined( DX12_LEGACY_PS30 ) )
+	float flShadow = DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, i.projPos.xy / i.projPos.z, FLASHLIGHTDEPTHFILTERMODE, g_vShadowTweaks, false, cFlashlightScreenScale );
+	float flAttenuated = lerp( flShadow, 1.0f, g_vShadowTweaks.y );	// Blend between fully attenuated and not attenuated
+	flShadow = saturate(lerp( flAttenuated, flShadow, flAtten ));	// Blend between shadow and above, according to light attenuation
+	spotColor *= flShadow;
+#endif
+
+#if WORLDVERTEXTRANSITION
+	baseColor.xyz = lerp( baseColor2.xyz, baseColor.xyz, lerpAlpha );
+#endif
+
+#if DETAILTEXTURE
+	float4 detailColor = float4( g_DetailConstants.xyz, 1.0f ) * DetailSampler.tex.Sample( DetailSampler.smp, i.detailCoords );
+	float4 vBase = TextureCombine( float4(baseColor.xyz, 1.0f), detailColor, DETAIL_BLEND_MODE, g_DetailConstants.w );
+	baseColor.xyz = vBase.xyz;
+#endif
+
+#if NORMALMAP == 0
+	float3 worldPosToLightVector = NormalizingCubemapSampler.tex.Sample( NormalizingCubemapSampler.smp, i.worldPosToLightVector ) * 2.0f - 1.0f;
+	float nDotL = dot( worldPosToLightVector, vNormal.xyz );
+#endif
+
+#if NORMALMAP == 1
+	// flashlightfixme: wrap this!
+	float3 tangentPosToLightVector = NormalizingCubemapSampler.tex.Sample( NormalizingCubemapSampler.smp, i.tangentPosToLightVector ) * 2.0f - 1.0f;
+	float nDotL = dot( tangentPosToLightVector, vNormal.xyz );
+#endif
+
+#if NORMALMAP == 2
+	float3 tangentPosToLightVector = normalize( i.tangentPosToLightVector );
+
+	float nDotL = 
+		vNormal.x*dot( tangentPosToLightVector, bumpBasis[0]) +
+		vNormal.y*dot( tangentPosToLightVector, bumpBasis[1]) +
+		vNormal.z*dot( tangentPosToLightVector, bumpBasis[2]);
+#endif
+
+	float3 outColor;
+	outColor = spotColor * baseColor.xyz * saturate( nDotL );
+	outColor *= flAtten;
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.z, i.worldPos_worldTransition.z, i.projPos.z );
+	return DX12FinishPixel( FinalOutput( float4(outColor, baseColor.a) , fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+
+	// so we can jump over all of the above
+#if ( defined( _X360 ) )
+		}
+	}
+#endif
+
+}

@@ -1,0 +1,210 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/weapon_sheen_pass_vs20.fxc for logical weapon_sheen_pass_vs30 (legacy profile vs30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs30 set.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+//========= Copyright � 1996-2006, Valve Corporation, All rights reserved. ============//
+
+// STATIC: "BUMPMAP"					"0..1"
+
+// DYNAMIC: "COMPRESSED_VERTS"			"0..1"
+// DYNAMIC: "SKINNING"					"0..1"
+// DYNAMIC: "MORPHING"					"0..1"
+
+// Includes
+#include "common_vs_fxc.h"
+
+// Globals
+static const bool g_bSkinning		= SKINNING ? true : false;
+
+cbuffer weapon_sheen_pass_vs20 : register( b2, space1 )
+{
+	float4 cBaseTexCoordTransform[2]; // @legacy vs:c48
+	float3 cMorphTargetTextureDim; // @legacy vs:c54
+	float4 cMorphSubrect; // @legacy vs:c55
+};
+
+
+#ifdef DX12_LEGACY_VS30
+// NOTE: cMorphTargetTextureDim.xy = target dimensions,
+//		 cMorphTargetTextureDim.z = 4tuples/morph
+
+
+Texture2D morphSampler_Texture : register( t0 );
+SamplerState morphSampler_Sampler : register( s0 );
+static const DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
+#endif
+
+// Structs
+struct VS_INPUT
+{
+	float4 vPos;		// Position
+	float4 vNormal;		// Normal
+	float4 vBoneWeights;	// Skin weights
+	float4 vBoneIndices;	// Skin indices
+	float4 vTexCoord0;	// Base texture coordinates
+
+	#if BUMPMAP
+		float4 vTangent;
+	#endif
+
+	// Position and normal/tangent deltas
+	float3 vPosFlex;
+	float3 vNormalFlex;
+
+	#ifdef DX12_LEGACY_VS30
+		float vVertexID;
+	#endif
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float4 vPos : POSITION;
+#if COMPRESSED_VERTS
+	uint4 vNormal : NORMAL;
+#else
+	float4 vNormal : NORMAL;
+#endif
+#if COMPRESSED_VERTS
+	int2 vBoneWeights : BLENDWEIGHT;
+#else
+	float4 vBoneWeights : BLENDWEIGHT;
+#endif
+	float4 vBoneIndices : BLENDINDICES;
+	float4 vTexCoord0 : TEXCOORD0;
+	#if BUMPMAP
+#if COMPRESSED_VERTS
+	uint4 vTangent : TANGENT;
+#else
+	float4 vTangent : TANGENT;
+#endif
+	#endif
+	float3 vPosFlex : POSITION1;
+	float3 vNormalFlex : NORMAL1;
+	#ifdef DX12_LEGACY_VS30
+	float vVertexID : POSITION2;
+	#endif
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vPos = i.vPos;
+#if COMPRESSED_VERTS
+	l.vNormal = (float4)i.vNormal;
+#else
+	l.vNormal = i.vNormal;
+#endif
+#if COMPRESSED_VERTS
+	l.vBoneWeights = float4( (float2)i.vBoneWeights, 0, 1 );
+#else
+	l.vBoneWeights = i.vBoneWeights;
+#endif
+	l.vBoneIndices = i.vBoneIndices;
+	l.vTexCoord0 = i.vTexCoord0;
+	#if BUMPMAP
+#if COMPRESSED_VERTS
+	l.vTangent = (float4)i.vTangent;
+#else
+	l.vTangent = i.vTangent;
+#endif
+	#endif
+	l.vPosFlex = i.vPosFlex;
+	l.vNormalFlex = i.vNormalFlex;
+	#ifdef DX12_LEGACY_VS30
+	l.vVertexID = i.vVertexID;
+	#endif
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 vProjPosition : SV_Position; 		// Projection-space position
+	float3 vWorldNormal : TEXCOORD0; 	// World-space normal
+	float3 vProjPosForRefract : TEXCOORD1;
+	float3 vWorldViewVector : TEXCOORD2;
+	float3x3 mTangentSpaceTranspose : TEXCOORD3;
+	float2 vTexCoord0 : TEXCOORD6;
+	float4 vModelSpacePos : TEXCOORD7;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.vProjPosition );
+	o.vProjPosition = DX12Position( o.vProjPosition );
+	return o;
+}
+
+
+// Main
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT i = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = (VS_OUTPUT)0;
+
+	// Flexes coming in from a separate stream (contribution masked by cFlexScale.x)
+	float4 vObjPosition = i.vPos;
+	float3 vObjNormal;
+
+	#if BUMPMAP
+		float4 vObjTangent;
+		DecompressVertex_NormalTangent( i.vNormal, i.vTangent, vObjNormal, vObjTangent );
+
+		#if !defined( DX12_LEGACY_VS30 ) || !MORPHING
+			ApplyMorph( i.vPosFlex, i.vNormalFlex, vObjPosition.xyz, vObjNormal, vObjTangent.xyz );
+		#else
+			ApplyMorph( morphSampler, cMorphTargetTextureDim, cMorphSubrect, i.vVertexID, float3( 0, 0, 0 ), vObjPosition.xyz, vObjNormal, vObjTangent.xyz );
+		#endif
+	#else // !BUMPMAP
+		DecompressVertex_Normal( i.vNormal, vObjNormal );
+
+		#if !defined( DX12_LEGACY_VS30 ) || !MORPHING
+			ApplyMorph( i.vPosFlex, i.vNormalFlex, vObjPosition.xyz, vObjNormal );
+		#else
+			ApplyMorph( morphSampler, cMorphTargetTextureDim, cMorphSubrect, i.vVertexID, float3( 0, 0, 0 ), 
+				vObjPosition.xyz, vObjNormal );
+		#endif
+	#endif
+
+	// Transform the position
+	float3 vWorldPosition = { 0.0f, 0.0f, 0.0f };
+	float3 vWorldNormal = { 0.0f, 0.0f, 0.0f };
+	
+	float3 vWorldTangent = { 0.0f, 0.0f, 0.0f };
+	float3 vWorldBinormal = { 0.0f, 0.0f, 0.0f };
+
+	#if BUMPMAP
+		SkinPositionNormalAndTangentSpace( g_bSkinning, vObjPosition, vObjNormal.xyz, vObjTangent.xyzw, i.vBoneWeights, i.vBoneIndices, vWorldPosition, vWorldNormal, vWorldTangent, vWorldBinormal );
+	#else
+		SkinPositionAndNormal( g_bSkinning, vObjPosition, vObjNormal.xyz, i.vBoneWeights, i.vBoneIndices, vWorldPosition, vWorldNormal );
+	#endif
+	o.vWorldNormal.xyz = normalize( vWorldNormal.xyz );
+
+	// Transform into projection space
+	float4 vProjPosition = mul( float4( vWorldPosition, 1.0f ), cViewProj );
+	o.vProjPosition = vProjPosition;
+
+	// Map projected position to the refraction texture
+	float2 vRefractPos;
+	vRefractPos.x = vProjPosition.x;
+	vRefractPos.y = -vProjPosition.y; // Invert Y
+	vRefractPos = (vRefractPos + vProjPosition.w) * 0.5f;
+	o.vProjPosForRefract.xyz = float3(vRefractPos.x, vRefractPos.y, vProjPosition.w);
+
+	// View vector
+	float3 vWorldViewVector = normalize (vWorldPosition.xyz - cEyePos.xyz);
+	o.vWorldViewVector.xyz = vWorldViewVector.xyz;
+
+	// Tangent space transform
+	o.mTangentSpaceTranspose[0] = float3( vWorldTangent.x, vWorldBinormal.x, vWorldNormal.x );
+	o.mTangentSpaceTranspose[1] = float3( vWorldTangent.y, vWorldBinormal.y, vWorldNormal.y );
+	o.mTangentSpaceTranspose[2] = float3( vWorldTangent.z, vWorldBinormal.z, vWorldNormal.z );
+
+	// Texture coordinates
+	o.vTexCoord0.x = dot( i.vTexCoord0.xy, cBaseTexCoordTransform[0] );
+	o.vTexCoord0.y = dot( i.vTexCoord0.xy, cBaseTexCoordTransform[1] );
+
+	// model space 
+	o.vModelSpacePos = float4( i.vPos.xyz, 0) ;
+	return DX12FinishVertex( o );
+}

@@ -1,0 +1,106 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/teeth_flashlight_ps2x.fxc for logical teeth_flashlight_ps30 (legacy profile ps30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps30 set.
+#define DX12_LEGACY_PS30 1
+#include "dx12_preamble.h"
+//====== Copyright � 1996-2004, Valve Corporation, All rights reserved. =======
+//
+// Purpose: 
+//
+//=============================================================================
+
+// STATIC: "CONVERT_TO_SRGB"			"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+// STATIC: "FLASHLIGHTDEPTHFILTERMODE"	"0..2"
+
+// DYNAMIC: "PIXELFOGTYPE"				"0..2"
+// DYNAMIC: "FLASHLIGHTSHADOWS"			"0..1"
+
+#include "common_flashlight_fxc.h"
+#include "shader_constant_register_map.h"
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D SpotSampler_Texture : register( t1 );
+SamplerState SpotSampler_Sampler : register( s1 );
+static const DX12Sampler2D SpotSampler = { SpotSampler_Texture, SpotSampler_Sampler };
+Texture2D FlashlightDepthSampler_Texture : register( t2 );
+SamplerComparisonState FlashlightDepthSampler_Sampler : register( s2 );
+static const DX12ShadowSampler FlashlightDepthSampler = { FlashlightDepthSampler_Texture, FlashlightDepthSampler_Sampler };
+Texture2D RandomRotationSampler_Texture : register( t3 );
+SamplerState RandomRotationSampler_Sampler : register( s3 );
+static const DX12Sampler2D RandomRotationSampler = { RandomRotationSampler_Texture, RandomRotationSampler_Sampler };
+
+
+cbuffer teeth_flashlight_ps2x : register( b1, space1 )
+{
+	float4 g_ShadowTweaks; // @legacy ps:c2
+	float3 g_EyePos; // @legacy ps:c11
+	float4 g_FlashlightAtten; // @legacy ps:c13
+	float3 g_FlashlightPos; // @legacy ps:c14
+	float4x4 g_FlashlightWorldToTexture; // @legacy ps:c15
+	float4 cFlashlightColor; // @legacy ps:c28
+	float4 cFlashlightScreenScale; // @legacy ps:c31
+};
+#define g_FogParams cPixelFogParams	// engine-owned (DX12PSEngine)
+
+
+struct PS_INPUT
+{
+	float2 baseTexCoord;		// Base texture coordinates
+	float4 spotTexCoord;		// Spotlight texture coordinates
+	float3 vertAtten;		// Distance/spot attenuation
+	float4 projPos;		// Projective space position
+	float3 worldPos;		// Necessary for pixel fog
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+#if !defined( _X360 )    
+	float fog : FOG;
+#endif
+	float2 baseTexCoord : TEXCOORD0;
+	float4 spotTexCoord : TEXCOORD1;
+	float3 vertAtten : TEXCOORD2;
+	float4 vProjPos : TEXCOORD3;
+	float3 worldPos : TEXCOORD4;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.baseTexCoord = dx12In.baseTexCoord;
+	l.spotTexCoord = dx12In.spotTexCoord;
+	l.vertAtten = dx12In.vertAtten;
+	l.projPos = dx12In.vProjPos;
+	l.worldPos = dx12In.worldPos;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+#if defined( DX12_LEGACY_PS20 )
+		float3 result = SpotSampler.tex.Sample( SpotSampler.smp, ( i.spotTexCoord.xyzw ).xy / ( i.spotTexCoord.xyzw ).w );
+#else 
+		float3 vProjCoords = i.spotTexCoord.xyz / i.spotTexCoord.w;
+		float3 result = SpotSampler.tex.Sample( SpotSampler.smp, vProjCoords );
+#endif
+
+	result *= cFlashlightColor.rgb;
+
+#if FLASHLIGHTSHADOWS && ( defined( DX12_LEGACY_PS20B ) || defined( DX12_LEGACY_PS30 ) )
+	result *= DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, i.projPos.xy / i.projPos.z, FLASHLIGHTDEPTHFILTERMODE, g_ShadowTweaks, true, cFlashlightScreenScale );
+#endif
+	result *= 0.35f;	// Without this, unshadowed teeth always seem to glow
+
+	result *= i.vertAtten;										// Distance atten, NdotL and forward vector
+
+	float4 baseSample = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.baseTexCoord );
+	result *= baseSample.rgb;									// Multiply by base map and diffuse
+
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.xyz, i.worldPos.xyz, i.projPos.z );
+	return DX12FinishPixel( FinalOutput( float4( result, baseSample.a ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), dx12In.fog );
+}
+

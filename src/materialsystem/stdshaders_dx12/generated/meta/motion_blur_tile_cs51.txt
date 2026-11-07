@@ -1,0 +1,4 @@
+logical=motion_blur_tile_cs51 stage=cs source=motion_blur_tile_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=MotionTile space=1 register=b0 size=16 layoutHash=0x0ae540f3943d9f2e material
+    member=gVelocitySize type=19 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gTileCount type=19 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=

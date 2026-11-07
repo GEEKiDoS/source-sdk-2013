@@ -1,0 +1,1 @@
+logical=shadow_sky_depth_vs51 stage=vs source=shadow_sky_depth_vs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1

@@ -99,6 +99,15 @@ Debug_*/
 *.vpc_crc
 *.vpc_cache
 
+# Local NuGet restore cache of the DX12 compiler SDK/WDK packages (the build uses the vendored copies instead).
+/src/thirdparty/dx12_shaderconv/packages/
+
+# Upscaler runtimes are supplied locally; see src/thirdparty/upscalers/README.txt.
+/src/thirdparty/upscalers/*/redist/
+
+# Local DX12 renderer hardware smoke-test harness (kept out of tree).
+/src/utils/shaderapidx12_smoke/
+
 *_nut.h
 
 __vpc__/
@@ -134,6 +143,8 @@ x86/
 [Aa][Rr][Mm]64/
 bld/
 [Bb]in/
+# Vendored Vulkan SDK subset (src/thirdparty/vulkan_sdk/README.txt); negation must follow [Bb]in/.
+!/src/thirdparty/vulkan_sdk/Bin/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
@@ -506,6 +517,9 @@ FodyWeavers.xsd
 # Machine-local L4D2 installation paths; keep gameinfo_template.txt tracked.
 /game/mod_l4d2/gameinfo.txt
 
+# Build output: the mod launcher is published beside game/bin by launcher_main_mod_l4d2.
+/game/mod_l4d2_win64.exe
+
 # Retail startup data is provisioned from the user's install at deployment.
 /game/mod_l4d2/cfg/valve.rc
 /game/mod_l4d2/cfg/config_default.cfg
@@ -524,10 +538,10 @@ FodyWeavers.xsd
 /game/mod_l4d2/screenshots/
 /game/mod_l4d2/maps/
 /game/mod_l4d2/models/
-/game/mod_l4d2/materials/
+/game/mod_l4d2/materials/*
 /game/mod_l4d2/sound/
 /game/mod_l4d2/particles/
-/game/mod_l4d2/resource/
+/game/mod_l4d2/resource/*
 /game/mod_l4d2/media/
 /game/mod_l4d2/expressions/
 /game/mod_l4d2/gfx/
@@ -535,6 +549,15 @@ FodyWeavers.xsd
 /game/mod_l4d2/**/*.vpk
 /game/mod_l4d2/**/*.exe
 /game/mod_l4d2/**/*.dll
+
+# Port-owned DX12 renderer and options assets (not retail content).
+!/game/mod_l4d2/materials/dev/
+/game/mod_l4d2/materials/dev/*
+!/game/mod_l4d2/materials/dev/motion_blur_mv.vmt
+!/game/mod_l4d2/materials/effects/
+/game/mod_l4d2/materials/effects/*
+!/game/mod_l4d2/materials/effects/lensdirt.vtf
+!/game/mod_l4d2/resource/deferred/
 
 # Local reference trees and reverse-engineering outputs are not distributable.
 /retail/
@@ -551,3 +574,6 @@ FodyWeavers.xsd
 
 # Shader compiler intermediate output; the published VCS live in game/mod_l4d2/shaders.
 /src/materialsystem/stdshaders/shaders/
+
+# Local GPU benchmark/capture harness and its artifacts (machine-specific paths).
+/src/_agent_tools/

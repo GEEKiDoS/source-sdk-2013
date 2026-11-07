@@ -1,0 +1,9 @@
+// Native SM5.1 fullscreen triangle for both volumetric draws (volumetric_ps51 march, volumetric_upsample_ps51): clip-space corners from
+// SV_VertexID, no constants, no second half-pixel/jitter adjustment. No static combos (index 0).
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+float4 main( uint vertexId : SV_VertexID ) : SV_Position
+{
+	float2 corner = float2( ( vertexId << 1 ) & 2, vertexId & 2 );
+	return float4( corner * float2( 2.0, -2.0 ) + float2( -1.0, 1.0 ), 0.0, 1.0 );
+}

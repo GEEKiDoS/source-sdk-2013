@@ -1,0 +1,73 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/HDRSelectRange_ps2x.fxc for logical hdrselectrange_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "CONVERT_TO_SRGB" "0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+
+Texture2D LowSampler_Texture : register( t0 );
+SamplerState LowSampler_Sampler : register( s0 );
+static const DX12Sampler2D LowSampler = { LowSampler_Texture, LowSampler_Sampler };
+Texture2D HiSampler_Texture : register( t1 );
+SamplerState HiSampler_Sampler : register( s1 );
+static const DX12Sampler2D HiSampler = { HiSampler_Texture, HiSampler_Sampler };
+
+struct PS_INPUT
+{
+	float2 texCoord;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 texCoord : TEXCOORD0;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.texCoord = dx12In.texCoord;
+	return l;
+}
+
+
+struct MYHDR_PS_OUTPUT
+{
+    float4 color[2] : SV_Target0;
+};
+MYHDR_PS_OUTPUT DX12FinishPixel( MYHDR_PS_OUTPUT o, float vertexFog )
+{
+	o.color[0] = DX12FinishPixel( o.color[0], vertexFog );
+	return o;
+}
+
+
+MYHDR_PS_OUTPUT main( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+	float3 lowColor = GammaToLinear( LowSampler.tex.Sample( LowSampler.smp, i.texCoord ) );
+	float3 hiColor = GammaToLinear( HiSampler.tex.Sample( HiSampler.smp, i.texCoord ) );
+
+	float4 lowOut;
+	lowOut.a = 1.0f;
+	float4 hiOut;
+	hiOut.a = 1.0f;
+
+	float3 hdrColor = max( lowColor, hiColor * MAX_HDR_OVERBRIGHT );
+	
+	float fMax = max( hdrColor.b, max( hdrColor.r, hdrColor.g ) );
+
+	float blendFactor = saturate( ( fMax - 0.9f ) * 10.0f );
+
+	blendFactor = 1.0f;
+
+	lowOut.rgb = LinearToGamma( lowColor * ( 1.0f - blendFactor ) );
+	hiOut.rgb = LinearToGamma( hiColor * ( blendFactor ) );
+	MYHDR_PS_OUTPUT output;
+	output.color[0] = lowOut;
+	output.color[1] = hiOut;
+	return DX12FinishPixel( output, 0.0f );
+}
+

@@ -7,6 +7,5 @@ terror_post_prepare_ps2x.fxc
 fade_blur_ps2x.fxc
 l4d2_splinerope_ps2x.fxc
 blurgaussian_3x3_ps2x.fxc
-terror_motion_blur_ps2x.fxc
 l4d2_black_ps2x.fxc
 l4d2_unlittwotexture_ps2x.fxc

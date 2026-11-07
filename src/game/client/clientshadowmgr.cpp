@@ -81,6 +81,8 @@
 #include "toolframework_client.h"
 #include "bonetoworldarray.h"
 #include "cmodel.h"
+#include "shadowmaps_dx12.h"
+#include "screenspace_dx12.h"
 
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -125,6 +127,11 @@ ConVar r_flashlightdepthres( "r_flashlightdepthres", "1024"
 #endif
 
 ConVar r_threaded_client_shadow_manager( "r_threaded_client_shadow_manager", "0" );
+
+// DX12_PBRLights material variables, one per projected-light slot.
+static const char *const s_pPbrCookieVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$cookie0", "$cookie1", "$cookie2", "$cookie3", "$cookie4", "$cookie5", "$cookie6", "$cookie7" };
+static const char *const s_pPbrCookieFrameVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$cookieframe0", "$cookieframe1", "$cookieframe2", "$cookieframe3", "$cookieframe4", "$cookieframe5", "$cookieframe6", "$cookieframe7" };
+static const char *const s_pPbrDepthVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$depth0", "$depth1", "$depth2", "$depth3", "$depth4", "$depth5", "$depth6", "$depth7" };
 
 #ifdef _WIN32
 #pragma warning( disable: 4701 )
@@ -794,6 +801,12 @@ public:
 	// Kicks off rendering into shadow depth maps (if any)
 	void ComputeShadowDepthTextures( const CViewSetup &view );
 
+	// Publishes the view's projected lights (flashlight, env_projectedtexture) to the DX12 PBR shaders
+	void PublishProjectedLights( const CViewSetup &view, bool depthRenderedThisView );
+
+	// Volumetric opt-in for a projected light (§8); takes effect only with shadows and a current depth texture
+	void SetVolumetric( ClientShadowHandle_t handle, bool enabled );
+
 	// Frees shadow depth textures for use in subsequent view/frame
 	void FreeShadowDepthTextures();
 
@@ -873,6 +886,8 @@ private:
 		CTextureReference		m_ShadowDepthTexture;
 		int						m_nRenderFrame;
 		EHANDLE					m_hTargetEntity;
+		ITexture				*m_pFlashlightDepth = nullptr;	// shadow depth texture of the current main view (ComputeShadowDepthTextures); null when unshadowed
+		bool					m_bVolumetric = false;			// SetVolumetric opt-in; published as DX12_VOLUMETRIC_LIGHT_ENABLED (unshadowed volume when no depth slot)
 	};
 
 private:
@@ -883,6 +898,7 @@ private:
 #if defined( L4D2 )
 	void UpdateShadowDirectionFromLocalLightSource( ClientShadowHandle_t handle );
 #endif
+	void UpdateLegacyShadowSuppression();
 
 	// Gets the entity whose shadow this shadow will render into
 	IClientRenderable *GetParentShadowEntity( ClientShadowHandle_t handle );
@@ -1001,8 +1017,8 @@ private:
 
 	bool	IsFlashlightTarget( ClientShadowHandle_t shadowHandle, IClientRenderable *pRenderable );
 
-	// Builds a list of active shadows requiring shadow depth renders
-	int		BuildActiveShadowDepthList( const CViewSetup &viewSetup, int nMaxDepthShadows, ClientShadowHandle_t *pActiveDepthShadows );
+	// Builds a list of the flashlights touching the view; requireDepth keeps only those that render a shadow depth texture
+	int		BuildActiveFlashlightList( const CViewSetup &viewSetup, bool requireDepth, int nMaxFlashlights, ClientShadowHandle_t *pActiveFlashlights );
 
 	// Sets the view's active flashlight render state
 	void	SetViewFlashlightState( int nActiveFlashlightCount, ClientShadowHandle_t* pActiveFlashlights );
@@ -1013,6 +1029,8 @@ private:
 	CMaterialReference m_SimpleShadow;
 	CMaterialReference m_RenderShadow;
 	CMaterialReference m_RenderModelShadow;
+	CMaterialReference m_PbrLights;	// dx12/pbr_lights (DX12_PBRLights): binds the projected-light cookie and depth textures
+	int m_nPublishedLightCount = -1;	// lights in the projected-light packet last published (-1: none yet)
 	CTextureReference m_DummyColorTexture;
 	CUtlLinkedList< ClientShadow_t, ClientShadowHandle_t >	m_Shadows;
 	CTextureAllocator m_ShadowAllocator;
@@ -1020,6 +1038,7 @@ private:
 	bool m_RenderToTextureActive;
 	bool m_bRenderTargetNeedsClear;
 	bool m_bUpdatingDirtyShadows;
+	bool m_bLegacyShadowsSuppressed;
 	bool m_bThreaded;
 	float m_flShadowCastDist;
 	float m_flMinShadowArea;
@@ -1252,6 +1271,7 @@ CClientShadowMgr::CClientShadowMgr() :
 	m_bShadowFromWorldLightsDisabled( false ),
 #endif
 	m_RenderToTextureActive( false ),
+	m_bLegacyShadowsSuppressed( false ),
 	m_bDepthTextureActive( false )
 {
 	m_nDepthTextureResolution = r_flashlightdepthres.GetInt();
@@ -1429,6 +1449,7 @@ bool CClientShadowMgr::Init()
 void CClientShadowMgr::Shutdown()
 {
 	m_SimpleShadow.Shutdown();
+	m_PbrLights.Shutdown();
 	m_Shadows.RemoveAll();
 	ShutdownRenderToTextureShadows();
 
@@ -1505,6 +1526,10 @@ void CClientShadowMgr::ShutdownDepthTextureShadows()
 	{
 		// Shut down the dummy texture
 		m_DummyColorTexture.Shutdown();
+
+		// The depth textures are released below: projected lights must not keep their pointers.
+		for ( ClientShadowHandle_t i = m_Shadows.Head(); i != m_Shadows.InvalidIndex(); i = m_Shadows.Next(i) )
+			m_Shadows[i].m_pFlashlightDepth = nullptr;
 
 		while( m_DepthTextureCache.Count() )
 		{
@@ -1622,6 +1647,7 @@ void CClientShadowMgr::GetShadowColor( unsigned char *r, unsigned char *g, unsig
 void CClientShadowMgr::LevelInitPreEntity()
 {
 	m_bUpdatingDirtyShadows = false;
+	m_bLegacyShadowsSuppressed = false;
 
 	Vector ambientColor;
 	engine->GetAmbientLightColor( ambientColor );
@@ -1937,6 +1963,7 @@ ClientShadowHandle_t CClientShadowMgr::CreateProjectedTexture( ClientEntityHandl
 	shadow.m_ClientLeafShadowHandle = ClientLeafSystem()->AddShadow( h, flags );
 	shadow.m_Flags = flags;
 	shadow.m_nRenderFrame = -1;
+	shadow.m_bVolumetric = false;
 	shadow.m_LastOrigin.Init( FLT_MAX, FLT_MAX, FLT_MAX );
 	shadow.m_LastAngles.Init( FLT_MAX, FLT_MAX, FLT_MAX );
 #if defined( L4D2 )
@@ -2008,6 +2035,10 @@ ClientShadowHandle_t CClientShadowMgr::CreateShadow( ClientEntityHandle_t entity
 	flags &= ~SHADOW_FLAGS_PROJECTED_TEXTURE_TYPE_MASK;
 	flags |= SHADOW_FLAGS_SHADOW | SHADOW_FLAGS_TEXTURE_DIRTY;
 	ClientShadowHandle_t shadowHandle = CreateProjectedTexture( entity, flags );
+	if ( shadowHandle != CLIENTSHADOW_INVALID_HANDLE && ShadowMapsDX12_ShadowsEnabled() )
+	{
+		shadowmgr->EnableShadow( m_Shadows[shadowHandle].m_ShadowHandle, false );
+	}
 
 	IClientRenderable *pRenderable = ClientEntityList().GetClientRenderableFromHandle( entity );
 	if ( pRenderable )
@@ -3056,12 +3087,45 @@ bool CClientShadowMgr::ShouldUseParentShadow( IClientRenderable *pRenderable )
 
 
 //-----------------------------------------------------------------------------
-// Before we render any view, make sure all shadows are re-projected vs world
+// Enhanced mapping owns entity shadowing while admitted and enabled.
+// Keep entity-owned handles alive so ordinary rendering can resume without
+// recreating entities. Disabling the engine shadow removes existing world/model
+// receiver projections; skipping texture rendering alone would leave blobs.
+void CClientShadowMgr::UpdateLegacyShadowSuppression()
+{
+	const bool suppressed = ShadowMapsDX12_ShadowsEnabled();
+	if ( suppressed == m_bLegacyShadowsSuppressed )
+		return;
+	m_bLegacyShadowsSuppressed = suppressed;
+
+	for ( ClientShadowHandle_t h = m_Shadows.Head(); h != m_Shadows.InvalidIndex(); h = m_Shadows.Next(h) )
+	{
+		ClientShadow_t &shadow = m_Shadows[h];
+		if ( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT )
+			continue;
+		if ( suppressed )
+		{
+			shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
+		}
+		else
+		{
+			// Force re-projection even for stationary, already-dirty entities.
+			// EnableShadow(true) alone cannot rebuild the removed receiver cache.
+			shadow.m_LastAngles.Init( FLT_MAX, FLT_MAX, FLT_MAX );
+			shadow.m_Flags |= SHADOW_FLAGS_TEXTURE_DIRTY;
+		}
+	}
+	if ( !suppressed )
+		UpdateAllShadows();
+}
+
 //-----------------------------------------------------------------------------
+// Before we render any view, make sure all shadows are re-projected vs world.
 void CClientShadowMgr::PreRender()
 {
 	VPROF_BUDGET( "CClientShadowMgr::PreRender", VPROF_BUDGETGROUP_SHADOW_RENDERING );
 	MDLCACHE_CRITICAL_SECTION();
+	UpdateLegacyShadowSuppression();
 
 	//
 	// -- Shadow Depth Textures -----------------------
@@ -3281,6 +3345,12 @@ void CClientShadowMgr::UpdateShadow( ClientShadowHandle_t handle, bool force )
 	{
 		// Retire the shadow if the entity is gone
 		DestroyShadow( handle );
+		return;
+	}
+	if ( ShadowMapsDX12_ShadowsEnabled() )
+	{
+		shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
+		pRenderable->MarkShadowDirty( false );
 		return;
 	}
 
@@ -3648,6 +3718,10 @@ void CClientShadowMgr::AddShadowToReceiver( ClientShadowHandle_t handle,
 	IClientRenderable* pRenderable, ShadowReceiver_t type )
 {
 	ClientShadow_t &shadow = m_Shadows[handle];
+	// Leaf associations can survive suppression and receivers can move later.
+	// Do not reattach a disabled legacy projection; flashlights remain distinct.
+	if ( !( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT ) && ShadowMapsDX12_ShadowsEnabled() )
+		return;
 
 	// Don't add a shadow cast by an object to itself...
 	IClientRenderable* pSourceRenderable = ClientEntityList().GetClientRenderableFromHandle( shadow.m_Entity );
@@ -4045,23 +4119,26 @@ void CClientShadowMgr::AdvanceFrame()
 
 
 //-----------------------------------------------------------------------------
-// Re-render shadow depth textures that lie in the leaf list
+// Builds the list of flashlights whose frustum touches the view. requireDepth keeps only the flashlights that render a
+// shadow depth texture (and clears the depth texture of those that are culled or overflow); otherwise every flashlight is
+// listed and no depth texture state is touched.
 //-----------------------------------------------------------------------------
-int CClientShadowMgr::BuildActiveShadowDepthList( const CViewSetup &viewSetup, int nMaxDepthShadows, ClientShadowHandle_t *pActiveDepthShadows )
+int CClientShadowMgr::BuildActiveFlashlightList( const CViewSetup &viewSetup, bool requireDepth, int nMaxFlashlights, ClientShadowHandle_t *pActiveFlashlights )
 {
-	int nActiveDepthShadowCount = 0;
+	const int nRequiredFlag = requireDepth ? (int)SHADOW_FLAGS_USE_DEPTH_TEXTURE : (int)SHADOW_FLAGS_FLASHLIGHT;
+	int nActiveFlashlightCount = 0;
 	for ( ClientShadowHandle_t i = m_Shadows.Head(); i != m_Shadows.InvalidIndex(); i = m_Shadows.Next(i) )
 	{
 		ClientShadow_t& shadow = m_Shadows[i];
 
-		// If this is not a flashlight which should use a shadow depth texture, skip!
-		if ( ( shadow.m_Flags & SHADOW_FLAGS_USE_DEPTH_TEXTURE ) == 0 )
+		// If this is not a flashlight which should use a shadow depth texture (any flashlight without requireDepth), skip!
+		if ( ( shadow.m_Flags & nRequiredFlag ) == 0 )
 			continue;
 
 		const FlashlightState_t& flashlightState = shadowmgr->GetFlashlightState( shadow.m_ShadowHandle );
 
 		// Bail if this flashlight doesn't want shadows
-		if ( !flashlightState.m_bEnableShadows )
+		if ( requireDepth && !flashlightState.m_bEnableShadows )
 			continue;
 
 		// Calculate an AABB around the shadow frustum
@@ -4075,26 +4152,30 @@ int CClientShadowMgr::BuildActiveShadowDepthList( const CViewSetup &viewSetup, i
 		// If it's not in the view frustum, move on
 		if ( R_CullBox( vecAbsMins, vecAbsMaxs, viewFrustum ) )
 		{
-			shadowmgr->SetFlashlightDepthTexture( shadow.m_ShadowHandle, NULL, 0 );
+			if ( requireDepth )
+				shadowmgr->SetFlashlightDepthTexture( shadow.m_ShadowHandle, NULL, 0 );
 			continue;
 		}
 
-		if ( nActiveDepthShadowCount >= nMaxDepthShadows )
+		if ( nActiveFlashlightCount >= nMaxFlashlights )
 		{
-			static bool s_bOverflowWarning = false;
-			if ( !s_bOverflowWarning )
+			if ( requireDepth )
 			{
-				Warning( "Too many depth textures rendered in a single view!\n" );
-				Assert( 0 );
-				s_bOverflowWarning = true;
+				static bool s_bOverflowWarning = false;
+				if ( !s_bOverflowWarning )
+				{
+					Warning( "Too many depth textures rendered in a single view!\n" );
+					Assert( 0 );
+					s_bOverflowWarning = true;
+				}
+				shadowmgr->SetFlashlightDepthTexture( shadow.m_ShadowHandle, NULL, 0 );
 			}
-			shadowmgr->SetFlashlightDepthTexture( shadow.m_ShadowHandle, NULL, 0 );
 			continue;
 		}
 
-		pActiveDepthShadows[nActiveDepthShadowCount++] = i;
+		pActiveFlashlights[nActiveFlashlightCount++] = i;
 	}
-	return nActiveDepthShadowCount;
+	return nActiveFlashlightCount;
 }
 
 
@@ -4132,9 +4213,13 @@ void CClientShadowMgr::ComputeShadowDepthTextures( const CViewSetup &viewSetup )
 	CMatRenderContextPtr pRenderContext( materials );
 	PIXEVENT( pRenderContext, "Shadow Depth Textures" );
 
+	// Only the flashlights that get a depth texture below publish one to the PBR shaders
+	for ( ClientShadowHandle_t i = m_Shadows.Head(); i != m_Shadows.InvalidIndex(); i = m_Shadows.Next(i) )
+		m_Shadows[i].m_pFlashlightDepth = nullptr;
+
 	// Build list of active render-to-texture shadows
 	ClientShadowHandle_t pActiveDepthShadows[1024];
-	int nActiveDepthShadowCount = BuildActiveShadowDepthList( viewSetup, ARRAYSIZE( pActiveDepthShadows ), pActiveDepthShadows );
+	int nActiveDepthShadowCount = BuildActiveFlashlightList( viewSetup, true, ARRAYSIZE( pActiveDepthShadows ), pActiveDepthShadows );
 
 	// Iterate over all existing textures and allocate shadow textures
 	bool bDebugFrustum = r_flashlightdrawfrustum.GetBool();
@@ -4191,9 +4276,108 @@ void CClientShadowMgr::ComputeShadowDepthTextures( const CViewSetup &viewSetup )
 
 		// Associate the shadow depth texture and stencil bit with the flashlight for use during scene rendering
 		shadowmgr->SetFlashlightDepthTexture( shadow.m_ShadowHandle, shadowDepthTexture, 0 );
+		shadow.m_pFlashlightDepth = shadowDepthTexture;
 	}
 
 	SetViewFlashlightState( nActiveDepthShadowCount, pActiveDepthShadows );
+}
+
+//-----------------------------------------------------------------------------
+// Publishes the main view's projected lights (flashlight, env_projectedtexture) to the DX12 PBR shaders, which evaluate
+// them as ordinary cookie spotlights in their standard pass. Other views reuse this packet: the transforms are world space
+// and the depth textures are rewritten only by the next main view. A depth slot is published only when depthRenderedThisView:
+// ComputeShadowDepthTextures ran for this view, so m_pFlashlightDepth is never a stale pointer. The volumetric bit does not
+// need a depth slot: the volume pass then marches the light unshadowed.
+//-----------------------------------------------------------------------------
+void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup, bool depthRenderedThisView )
+{
+	if ( !ShadowMapsDX12_ProjectedLightsAvailable() )
+		return;
+
+	ClientShadowHandle_t pActiveFlashlights[1024];
+	int nActiveCount = BuildActiveFlashlightList( viewSetup, false, ARRAYSIZE( pActiveFlashlights ), pActiveFlashlights );
+
+	// The last packet stays current until the next one: after an empty packet, a view without lights has nothing to publish.
+	if ( nActiveCount == 0 && m_nPublishedLightCount == 0 )
+		return;
+
+	// The packet holds DX12_PBR_MAX_PROJECTED_LIGHTS lights: keep the ones nearest the camera.
+	if ( nActiveCount > DX12_PBR_MAX_PROJECTED_LIGHTS )
+	{
+		auto DistanceSqr = [&]( ClientShadowHandle_t h )
+		{
+			return viewSetup.origin.DistToSqr( shadowmgr->GetFlashlightState( m_Shadows[h].m_ShadowHandle ).m_vecLightOrigin );
+		};
+		for ( int i = 0; i < DX12_PBR_MAX_PROJECTED_LIGHTS; ++i )
+		{
+			int nNearest = i;
+			for ( int j = i + 1; j < nActiveCount; ++j )
+			{
+				if ( DistanceSqr( pActiveFlashlights[j] ) < DistanceSqr( pActiveFlashlights[nNearest] ) )
+					nNearest = j;
+			}
+			ClientShadowHandle_t hNearest = pActiveFlashlights[nNearest];
+			pActiveFlashlights[nNearest] = pActiveFlashlights[i];
+			pActiveFlashlights[i] = hNearest;
+		}
+		nActiveCount = DX12_PBR_MAX_PROJECTED_LIGHTS;
+	}
+
+	if ( !m_PbrLights.IsValid() )
+		m_PbrLights.Init( "dx12/pbr_lights", new KeyValues( "DX12_PBRLights" ) );
+	IMaterial *pPbrLights = m_PbrLights;
+	bool bFound;
+
+	// Same scaling the legacy flashlight shaders apply (SetFlashLightColorFromState, ShadowAttenFromState).
+	const bool bSRGBBlend = g_pMaterialSystemHardwareConfig->UsesSRGBCorrectBlending();
+	const float flColorScale = ( g_pMaterialSystemHardwareConfig->GetHDREnabled() ? 0.25f : 2.0f ) * ( bSRGBBlend ? 2.5f : 1.0f );
+	const float flShadowAttenScale = bSRGBBlend ? 0.1f : 1.0f;
+	const int nModelFlag = r_flashlightmodels.GetBool() ? DX12_PBR_LIGHT_MODELS : 0;
+	// Volume opt-in travels in the reserved word only to the screen-space-capable backend; older backends receive zero.
+	const bool bVolumetricCapable = ScreenSpaceDX12_Available();
+
+	DX12ProjectedLightDesc lights[DX12_PBR_MAX_PROJECTED_LIGHTS];
+	for ( int i = 0; i < nActiveCount; ++i )
+	{
+		const ClientShadow_t &shadow = m_Shadows[ pActiveFlashlights[i] ];
+		const FlashlightState_t &state = shadowmgr->GetFlashlightState( shadow.m_ShadowHandle );
+		// Depth is only current when this view actually ran ComputeShadowDepthTextures (never last frame's pointer).
+		ITexture *pDepth = ( depthRenderedThisView && state.m_bEnableShadows ) ? shadow.m_pFlashlightDepth : NULL;
+
+		DX12ProjectedLightDesc &light = lights[i];
+		memcpy( light.worldToTexture, shadow.m_WorldToShadow.Base(), sizeof( light.worldToTexture ) );
+		state.m_vecLightOrigin.CopyToArray( light.origin );
+		light.farZ = state.m_FarZ;
+		light.color[0] = state.m_Color[0] * flColorScale;
+		light.color[1] = state.m_Color[1] * flColorScale;
+		light.color[2] = state.m_Color[2] * flColorScale;
+		light.constantAttn = state.m_fConstantAtten;
+		light.linearAttn = state.m_fLinearAtten;
+		light.quadraticAttn = state.m_fQuadraticAtten;
+		light.shadowAtten = state.m_flShadowAtten * flShadowAttenScale;
+		light.filterTexels = pDepth ? 1.0f / pDepth->GetActualWidth() : 0.0f;
+		light.cookieSlot = i;
+		light.depthSlot = pDepth ? i : -1;
+		light.flags = ( ( shadow.m_Flags & SHADOW_FLAGS_LIGHT_WORLD ) ? DX12_PBR_LIGHT_WORLD : 0 ) | nModelFlag;
+		light.reserved = ( shadow.m_bVolumetric && bVolumetricCapable ) ? DX12_VOLUMETRIC_LIGHT_ENABLED : 0;
+
+		// An unshadowed slot keeps its previous depth texture bound; the shader never samples it (depthSlot -1).
+		pPbrLights->FindVar( s_pPbrCookieVars[i], &bFound, false )->SetTextureValue( state.m_pSpotlightTexture );
+		pPbrLights->FindVar( s_pPbrCookieFrameVars[i], &bFound, false )->SetIntValue( state.m_nSpotlightTextureFrame );
+		if ( pDepth )
+			pPbrLights->FindVar( s_pPbrDepthVars[i], &bFound, false )->SetTextureValue( pDepth );
+	}
+	pPbrLights->FindVar( "$count", &bFound, false )->SetIntValue( nActiveCount );
+
+	// The material only stages the cookie/depth texture handles for the packet; the rectangle drives it like the compute passes.
+	CMatRenderContextPtr pRenderContext( materials );
+	pRenderContext->DrawScreenSpaceRectangle( pPbrLights, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
+
+	DX12ProjectedLightPacket packet;
+	packet.count = nActiveCount;
+	packet.lights = lights;
+	ShadowMapsDX12_PublishProjectedLights( packet );
+	m_nPublishedLightCount = nActiveCount;
 }
 
 	
@@ -4209,6 +4393,16 @@ static void SetupBonesOnBaseAnimating( C_BaseAnimating *&pBaseAnimating )
 void CClientShadowMgr::ComputeShadowTextures( const CViewSetup &viewShadow, int leafCount, LeafIndex_t* pLeafList )
 {
 	VPROF_BUDGET( "CClientShadowMgr::ComputeShadowTextures", VPROF_BUDGETGROUP_SHADOW_RENDERING );
+	const bool wasSuppressed = m_bLegacyShadowsSuppressed;
+	UpdateLegacyShadowSuppression();
+	if ( m_bLegacyShadowsSuppressed )
+		return;
+	if ( wasSuppressed )
+	{
+		// A release/readmission may occur after the game-system PreRender.
+		// Rebuild the invalidated projections before collecting visible textures.
+		PreRender();
+	}
 
 	if ( !m_RenderToTextureActive || (r_shadows.GetInt() == 0) || r_shadows_gamecontrol.GetInt() == 0 )
 		return;
@@ -4375,6 +4569,17 @@ void CClientShadowMgr::SetFlashlightLightWorld( ClientShadowHandle_t shadowHandl
 	{
 		shadow.m_Flags &= ~SHADOW_FLAGS_LIGHT_WORLD;
 	}
+}
+
+void CClientShadowMgr::SetVolumetric( ClientShadowHandle_t handle, bool enabled )
+{
+	Assert( m_Shadows.IsValidIndex( handle ) );
+
+	ClientShadow_t &shadow = m_Shadows[ handle ];
+	if( ( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT ) == 0 )
+		return;
+
+	shadow.m_bVolumetric = enabled;
 }
 
 

@@ -1,0 +1,65 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/showz_ps2x.fxc for logical showz_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+// STATIC: "DEPTH_IN_ALPHA"				"0..1"
+// STATIC: "CONVERT_TO_SRGB"			"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
+
+#include "common_ps_fxc.h"
+
+
+cbuffer showz_ps2x : register( b1, space1 )
+{
+	float4 g_Parameters; // @legacy ps:c0
+};
+
+
+Texture2D DepthTextureSampler_Texture : register( t0 );
+SamplerState DepthTextureSampler_Sampler : register( s0 );	// Scalar shadow depth map
+static const DX12Sampler2D DepthTextureSampler = { DepthTextureSampler_Texture, DepthTextureSampler_Sampler };
+
+struct DX12_LEGACY_PS_INPUT
+{
+	float2 baseTexCoord;
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 vBaseTexCoords : TEXCOORD0;
+};
+DX12_LEGACY_PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	DX12_LEGACY_PS_INPUT l = (DX12_LEGACY_PS_INPUT)0;
+	l.baseTexCoord = dx12In.vBaseTexCoords;
+	return l;
+}
+
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	DX12_LEGACY_PS_INPUT dx12Legacy = DX12ConvertInput( dx12In );
+	float2 baseTexCoord = dx12Legacy.baseTexCoord;
+	float fDepth = 0;
+
+#	if (DEPTH_IN_ALPHA == 1)
+	{
+		fDepth = DepthTextureSampler.tex.Sample( DepthTextureSampler.smp, baseTexCoord ).a;
+	
+	}
+#	else
+	{
+#		if !(defined(SHADER_MODEL_PS_1_1) || defined(SHADER_MODEL_PS_1_4) || defined(DX12_LEGACY_PS20)) //Minimum requirement of ps2b
+		{
+			fDepth = DepthTextureSampler.tex.Sample( DepthTextureSampler.smp, baseTexCoord ).r;
+		}
+#		endif
+	}
+#	endif
+
+	fDepth = pow( fDepth, g_Parameters.x );
+
+	return DX12FinishPixel( FinalOutput( float4( fDepth, fDepth, fDepth, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}
+

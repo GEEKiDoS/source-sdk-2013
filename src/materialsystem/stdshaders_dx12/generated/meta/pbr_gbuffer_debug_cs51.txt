@@ -1,0 +1,3 @@
+logical=pbr_gbuffer_debug_cs51 stage=cs source=pbr_gbuffer_debug_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+  cbuffer=PBRGBufferDebug space=1 register=b0 size=16 layoutHash=0x77654eb4e3745df1 material
+    member=g_Params type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=

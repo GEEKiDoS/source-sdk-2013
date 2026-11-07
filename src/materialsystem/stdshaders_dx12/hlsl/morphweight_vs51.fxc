@@ -1,0 +1,57 @@
+// Native SM5.1 rewrite of materialsystem/stdshaders/morphweight_vs30.fxc for logical morphweight_vs30 (legacy profile vs30);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs30 set.
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+#include "common_vs_fxc.h"
+
+struct VS_INPUT
+{
+	float2 vSrcCoord;
+	float4 vMorphWeights;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float2 vSrcCoord : TEXCOORD0;
+	float4 vMorphWeights : TEXCOORD1;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.vSrcCoord = i.vSrcCoord;
+	l.vMorphWeights = i.vMorphWeights;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 vDestCoord : SV_Position;
+	float4 vMorphWeights : TEXCOORD0;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.vDestCoord );
+	o.vDestCoord = DX12Position( o.vDestCoord );
+	return o;
+}
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+
+	// FIXME: Want these to be in pixel centers!
+	float2 projSpace = v.vSrcCoord.xy;
+	projSpace *= 2.0f;
+	projSpace -= 1.0f;
+	projSpace.y *= -1.0f;
+	
+	o.vDestCoord = float4( projSpace.x, projSpace.y, 0.0f, 1.0f );
+	o.vMorphWeights	= v.vMorphWeights;
+
+	return DX12FinishVertex( o );
+}

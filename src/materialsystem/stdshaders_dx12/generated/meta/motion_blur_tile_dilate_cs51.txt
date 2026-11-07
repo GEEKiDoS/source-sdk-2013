@@ -1,0 +1,8 @@
+logical=motion_blur_tile_dilate_cs51 stage=cs source=motion_blur_tile_dilate_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=MotionTile space=1 register=b0 size=32 layoutHash=0x6d5c7201c18e586d material
+    member=gVelocitySize type=19 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gTileCount type=19 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
+    member=gSearchRadius type=3 class=0 offset=16 size=4 elements=0 arrayStride=0 legacy=
+    member=gPad0 type=3 class=0 offset=20 size=4 elements=0 arrayStride=0 legacy=
+    member=gPad1 type=3 class=0 offset=24 size=4 elements=0 arrayStride=0 legacy=
+    member=gPad2 type=3 class=0 offset=28 size=4 elements=0 arrayStride=0 legacy=
