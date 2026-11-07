@@ -522,6 +522,12 @@ FodyWeavers.xsd
 /game/mod_l4d2_win64.exe
 /game/steam_appid.txt
 
+# DX12 native shader pack published by buildshaders_dx12.bat -game ..\game\mod_l4d2.
+/game/mod_l4d2/shaders/vsh/
+/game/mod_l4d2/shaders/psh/
+/game/mod_l4d2/shaders/csh/
+/game/mod_l4d2/shaders/native_dx12_*.txt
+
 # Retail startup data is provisioned from the user's install at deployment.
 /game/mod_l4d2/cfg/valve.rc
 /game/mod_l4d2/cfg/config_default.cfg
