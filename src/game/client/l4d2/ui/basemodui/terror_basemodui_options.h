@@ -38,8 +38,6 @@ public:
 	void OnCursorMoved( int x, int y ) OVERRIDE;
 	void NavigateTo() OVERRIDE;
 	void NavigateFrom() OVERRIDE;
-	vgui::Panel *NavigateUp() OVERRIDE;
-	vgui::Panel *NavigateDown() OVERRIDE;
 	void SetValue( float value, bool silent = true );
 	float GetValue() const { return m_flValue; }
 	void Reset();
@@ -49,12 +47,13 @@ protected:
 	void PaintBackground() OVERRIDE;
 private:
 	void SetMouseValue( int x );
+	void SetDisplayValue( float value );
 	float GetDefaultValue() const;
 	L4D360HybridButton *m_pButton;
 	vgui::Label *m_pLabel;
 	vgui::ProgressBar *m_pProgress;
 	vgui::Panel *m_pDefaultMark;
-	CUtlString m_ConCommand, m_DefaultCommand, m_NavUp, m_NavDown;
+	CUtlString m_ConCommand, m_DefaultCommand;
 	float m_flMin, m_flMax, m_flStep, m_flValue;
 	Color m_BorderColor;
 	bool m_bInverse, m_bDragging, m_bDirty;
@@ -232,6 +231,8 @@ public:
 	void OnOpen() OVERRIDE;
 	void OnCommand( const char *command ) OVERRIDE;
 	void OnClose() OVERRIDE;
+	void ApplyVideoSettings();
+	void LoadControlSettings( const char *resource, const char *pathID = NULL, KeyValues *preloaded = NULL, KeyValues *conditions = NULL ) OVERRIDE;
 protected:
 	void OnThink() OVERRIDE;
 	void PaintBackground() OVERRIDE;
@@ -245,7 +246,6 @@ private:
 	bool StageCommand( const char *command );
 	void PopulateModes();
 	void PopulateAA();
-	void ApplyVideoSettings();
 	CUtlVector<Mode_t> m_Modes;
 	CUtlVector<AAMode_t> m_AAModes;
 	vgui::DHANDLE<vgui::Frame> m_hCredits;

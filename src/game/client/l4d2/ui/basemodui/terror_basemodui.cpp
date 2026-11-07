@@ -11,6 +11,7 @@
 #include "l4d2/ui/basemodui/terror_basemodui_addons.h"
 #include "l4d2/ui/basemodui/terror_basemodui_options.h"
 #include "l4d2/ui/basemodui/terror_basemodui_ingame.h"
+#include "l4d2/ui/basemodui/terror_basemodui_graphics_dx12.h"
 #include "l4d2/ui/terror_hud_resources.h"
 #include "l4d2/gamerules/terror_mode.h"
 #include "l4d2/clientmode_terror.h"
@@ -355,6 +356,7 @@ public:
 		m_bGameUIWasVisible = visible;
 	}
 	virtual void OnCommand( const char *command ) OVERRIDE;
+	void OpenGraphicsOptions( int section );
 protected:
 	virtual void OnTick() OVERRIDE
 	{
@@ -496,6 +498,31 @@ void CL4DBasePanel::OnCommand( const char *command )
 	BaseClass::OnCommand( command );
 }
 
+void CL4DBasePanel::OpenGraphicsOptions( int section )
+{
+	RefreshCurrentWindow();
+	if ( GraphicsDX12 *graphics = dynamic_cast<GraphicsDX12 *>( m_hWindow.Get() ) )
+	{
+		graphics->SetSection( section );
+		graphics->OnOpen();
+		return;
+	}
+	CL4DFrame *video = m_hWindow.Get();
+	if ( !dynamic_cast<Video *>( video ) )
+	{
+		video = CreateNativeOptionsWindow( this, "Video" );
+		video->SetNavBack( m_hWindow.Get() );
+		video->OnOpen();
+	}
+	if ( Video *nativeVideo = dynamic_cast<Video *>( video ) )
+		nativeVideo->ApplyVideoSettings();
+	GraphicsDX12 *graphics = static_cast<GraphicsDX12 *>( CreateNativeOptionsWindow( this, "GraphicsDX12" ) );
+	graphics->SetNavBack( video );
+	graphics->SetSection( section );
+	m_hWindow = graphics;
+	graphics->OnOpen();
+}
+
 void MainMenu::OnCommand( const char *command )
 {
 	const char *value;
@@ -621,6 +648,17 @@ void GameSettings::OnCommand( const char *command )
 	BaseClass::OnCommand( command );
 }
 } // namespace L4D360UI
+
+void OpenTerrorGraphicsOptions( int section )
+{
+	if ( !L4D360UI::s_pBasePanel )
+	{
+		Warning( "graphics_options: BaseModUI is not ready\n" );
+		return;
+	}
+	engine->ClientCmd_Unrestricted( "gameui_activate\n" );
+	L4D360UI::s_pBasePanel->OpenGraphicsOptions( section );
+}
 
 bool InitTerrorBaseModUI()
 {

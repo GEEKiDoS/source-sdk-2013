@@ -2,6 +2,7 @@
 #include "cbase.h"
 #include "l4d2/ui/basemodui/terror_basemodui_options.h"
 #include "l4d2/ui/basemodui/terror_basemodui_ingame.h"
+#include "l4d2/ui/terror_hud_resources.h"
 #include "cdll_client_int.h"
 #include "IGameUIFuncs.h"
 #include "modes.h"
@@ -11,6 +12,8 @@
 #include "tier0/platform.h"
 #include "vgui/ISurface.h"
 #include "vgui_controls/Button.h"
+#include "vgui/ILocalize.h"
+#include "vgui/IScheme.h"
 #include "tier0/memdbgon.h"
 namespace L4D360UI
 {
@@ -30,6 +33,32 @@ static void PagedPoolOpened(DropDownMenu *drop,FlyoutMenu *)
 	if ( drop && drop->GetParent() ) drop->GetParent()->OnCommand("PagedPoolWarning");
 }
 Video::Video(vgui::Panel *parent,const char *name) : BaseClass(parent,name,"#GameUI_Video"), m_nAspect(0),m_nWidth(640),m_nHeight(480),m_nGPU(0),m_nGPUMem(0),m_nCPU(0),m_nMem(0),m_nAA(0),m_nAniso(0),m_nQueue(0),m_flOldGamma(VideoFloat("mat_monitorgamma")),m_flOldGrain(VideoFloat("mat_grain_scale_override")),m_bWindowed(false),m_bBorderless(false),m_bVSync(false),m_bTriple(false),m_bDirty(false),m_bCancelled(false),m_bAdvanced(false) {}
+void Video::LoadControlSettings( const char *resource, const char *pathID, KeyValues *preloaded, KeyValues *conditions )
+{
+	KeyValues::AutoDelete data( preloaded ? preloaded->MakeCopy() : new KeyValues( "" ) );
+	if ( !preloaded && !LoadTerrorUiResource( data, resource ) ) return;
+	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_%language%.txt", NULL, false );
+	if ( KeyValues *advanced = data->FindKey( "BtnAdvanced" ) )
+	{
+		KeyValues *graphics = advanced->MakeCopy();
+		graphics->SetName( "BtnGraphicsDX12" );
+		graphics->SetString( "fieldName", "BtnGraphicsDX12" );
+		graphics->SetString( "labelText", "#GraphicsOptions_DX12Entry" );
+		graphics->SetString( "tooltiptext", "#GraphicsOptions_Title" );
+		graphics->SetString( "command", "GraphicsDX12" );
+		graphics->SetInt( "ypos", advanced->GetInt( "ypos" ) + 20 );
+		data->AddSubKey( graphics );
+		// Leave the native advanced rows intact, with one additional row before
+		// Recommended/Cancel/Done when that list is expanded.
+		const char *lower[] = { "Video", "ImgBackground", "BtnUseRecommended", "BtnCancel", "BtnDone", "Btn3rdPartyCredits" };
+		for ( int i = 0; i < ARRAYSIZE( lower ); ++i )
+		{
+			KeyValues *control = data->FindKey( lower[i] );
+			if ( control ) control->SetInt( i < 2 ? "tall" : "ypos", control->GetInt( i < 2 ? "tall" : "ypos" ) + 20 );
+		}
+	}
+	BaseClass::LoadControlSettings( resource, pathID, data, conditions );
+}
 void Video::OnOpen()
 {
 	if ( !LoadLayout( "resource/ui/l4d360ui/video.res" ) )
@@ -38,6 +67,12 @@ void Video::OnOpen()
 		return;
 	}
 	BaseClass::OnOpen();
+	if ( m_hAspectRatio.Get() && !m_bDirty )
+	{
+		ReadSettings();
+		Refresh();
+		m_bDirty = false;
+	}
 	CenterDialogOnScreen();
 }
 void Video::OnThink()
@@ -234,6 +269,17 @@ void Video::Refresh()
 	SetControlEnabled("SldBrightness",!m_bWindowed,true);
 	static const char *advanced[]={"DrpModelDetail","DrpPagedPoolMem","DrpQueuedMode","DrpFiltering","DrpVSync","DrpShaderDetail","DrpCPUDetail","DrpAntialias"};
 	SetControlVisible("BtnAdvanced",!m_bAdvanced,true); for ( int i=0;i<ARRAYSIZE(advanced);++i ) SetControlVisible(advanced[i],m_bAdvanced,true);
+	if ( vgui::Panel *graphics = FindChildByName( "BtnGraphicsDX12", true ) )
+	{
+		int x, y; graphics->GetPos( x, y );
+		graphics->SetPos( x, vgui::scheme()->GetProportionalScaledValueEx( GetScheme(), m_bAdvanced ? 370 : 230 ) );
+		graphics->SetNavUp( m_bAdvanced ? "DrpPagedPoolMem" : "BtnAdvanced" );
+		graphics->SetNavDown( "BtnUseRecommended" );
+	}
+	if ( vgui::Panel *advancedButton = FindChildByName( "BtnAdvanced", true ) ) advancedButton->SetNavDown( "BtnGraphicsDX12" );
+	if ( vgui::Panel *lastAdvanced = FindChildByName( "DrpPagedPoolMem", true ) ) lastAdvanced->SetNavDown( "BtnGraphicsDX12" );
+	if ( vgui::Panel *firstAdvanced = FindChildByName( "DrpAntialias", true ) ) firstAdvanced->SetNavUp( "SldFilmGrain" );
+	if ( vgui::Panel *recommended = FindChildByName( "BtnUseRecommended", true ) ) recommended->SetNavUp( "BtnGraphicsDX12" );
 	PopulateModes();
 }
 void Video::ApplyVideoSettings()
@@ -247,6 +293,8 @@ void Video::ApplyVideoSettings()
 	const MaterialSystem_Config_t &current=materials->GetCurrentConfigForVideoCard();
 	if ( current.m_VideoMode.m_Width!=m_nWidth || current.m_VideoMode.m_Height!=m_nHeight || current.Windowed()!=m_bWindowed || current.NoWindowBorder()!=m_bBorderless ) engine->ClientCmd_Unrestricted(CFmtStr("mat_setvideomode %d %d %d %d\n",m_nWidth,m_nHeight,m_bWindowed ? 1 : 0,m_bBorderless ? 1 : 0));
 	engine->ClientCmd_Unrestricted("mat_savechanges\n"); SaveConfig(); m_bDirty=false;
+	m_flOldGamma = VideoFloat( "mat_monitorgamma" );
+	m_flOldGrain = VideoFloat( "mat_grain_scale_override" );
 }
 void Video::OnClose()
 {
@@ -263,6 +311,12 @@ void Video::PaintBackground() { DrawDialogBackground(m_bAdvanced ? "#GameUI_Vide
 void Video::OnCommand(const char *command)
 {
 	if ( m_bRefreshing ) return;
+	if ( !Q_stricmp( command, "GraphicsDX12" ) )
+	{
+		ApplyVideoSettings();
+		OpenChild( "GraphicsDX12" );
+		return;
+	}
 	if ( !Q_stricmp(command,"3rdPartyCredits") ) { ShowNativeOptionsCredits(this,m_hCredits); return; }
 	if ( !Q_stricmp(command,"PagedPoolWarning") )
 	{

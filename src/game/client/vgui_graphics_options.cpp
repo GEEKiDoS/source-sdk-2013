@@ -5,6 +5,11 @@
 //===========================================================================//
 
 #include "cbase.h"
+#include "vgui_graphics_options.h"
+
+#ifdef L4D2
+#include "l4d2/ui/basemodui/terror_basemodui.h"
+#else
 #include "ienginevgui.h"
 #include "GameEventListener.h"
 #include "vgui_controls/PropertyDialog.h"
@@ -22,12 +27,15 @@
 #include "vgui/ILocalize.h"
 #include "vgui/IScheme.h"
 #include "vgui/ISurface.h"
+#endif
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include <math.h>
 
 #include "tier0/memdbgon.h"
 
+#ifndef L4D2
 using namespace vgui;
+#endif
 
 static bool s_bDX12Renderer = false;
 static bool s_bShaderDetailNotice = false;
@@ -78,49 +86,8 @@ static void EnforceGraphicsOptions( IConVar *variable, const char *, float )
 	}
 }
 
-enum
+namespace GraphicsOptions
 {
-	TAB_DISPLAY = 0,
-	TAB_LIGHTING,
-	TAB_POST,
-	TAB_FRAMEGEN,
-	TAB_COUNT
-};
-
-enum
-{
-	ROW_COMBO = 0,
-	ROW_SLIDER,
-	ROW_CHECK
-};
-
-enum
-{
-	ROWF_NONE = 0,
-	ROWF_OFF_ENABLE_ONLY = 1,	// choice 0 matches and writes only the enable cvar, keeping the remembered quality cvars
-	ROWF_LEGACY_ONLY = 2		// native DX12 has no reduced-fillrate shader quality tier
-};
-
-struct Choice_t
-{
-	const char *label;
-	float v[5];
-};
-
-struct RowDef_t
-{
-	const char *label;
-	int tab;
-	int kind;
-	const char *cvars[5];
-	const Choice_t *choices;
-	int nChoices;
-	float sliderMin;
-	float sliderMax;
-	float sliderStep;
-	const char *note;
-	int flags;
-};
 
 static const Choice_t kModel[] =
 {
@@ -297,48 +264,59 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Model", TAB_DISPLAY, ROW_COMBO, { "r_rootlod", NULL, NULL, NULL, NULL }, kModel, ARRAYSIZE( kModel ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Texture", TAB_DISPLAY, ROW_COMBO, { "mat_picmip", NULL, NULL, NULL, NULL }, kTexture, ARRAYSIZE( kTexture ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Filtering", TAB_DISPLAY, ROW_COMBO, { "mat_trilinear", "mat_forceaniso", NULL, NULL, NULL }, kFilter, ARRAYSIZE( kFilter ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_AA", TAB_DISPLAY, ROW_COMBO, { "r_upscaler", NULL, NULL, NULL, NULL }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_RenderScale", TAB_DISPLAY, ROW_COMBO, { "r_upscaler_scale", NULL, NULL, NULL, NULL }, kRenderScale, ARRAYSIZE( kRenderScale ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_AA", TAB_DISPLAY, ROW_COMBO, { "r_upscaler", NULL, NULL, NULL, NULL }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_RenderScale", TAB_DISPLAY, ROW_COMBO, { "r_upscaler_scale", NULL, NULL, NULL, NULL }, kRenderScale, ARRAYSIZE( kRenderScale ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Water", TAB_DISPLAY, ROW_COMBO, { "r_waterforceexpensive", "r_waterforcereflectentities", NULL, NULL, NULL }, kWater, ARRAYSIZE( kWater ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Shader", TAB_DISPLAY, ROW_COMBO, { "mat_reducefillrate", NULL, NULL, NULL, NULL }, kShader, ARRAYSIZE( kShader ), 0, 0, 0, NULL, ROWF_LEGACY_ONLY },
 	{ "#GraphicsOptions_Color", TAB_DISPLAY, ROW_CHECK, { "mat_colorcorrection", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Multicore", TAB_DISPLAY, ROW_COMBO, { "mat_queue_mode", NULL, NULL, NULL, NULL }, kMulticore, ARRAYSIZE( kMulticore ), 0, 0, 0, "#GraphicsOptions_Restart", ROWF_NONE },
 	{ "#GraphicsOptions_VSync", TAB_DISPLAY, ROW_CHECK, { "mat_vsync", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Fps", TAB_DISPLAY, ROW_SLIDER, { "fps_max", NULL, NULL, NULL, NULL }, NULL, 0, 0, 1000, 1, "#GraphicsOptions_FpsNote", ROWF_NONE },
-	{ "#GraphicsOptions_PBR", TAB_DISPLAY, ROW_CHECK, { "mat_pbr_override", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Bicubic", TAB_DISPLAY, ROW_CHECK, { "r_lightmap_bicubic", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_PBR", TAB_DISPLAY, ROW_CHECK, { "mat_pbr_override", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Bicubic", TAB_DISPLAY, ROW_CHECK, { "r_lightmap_bicubic", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Detail", TAB_DISPLAY, ROW_SLIDER, { "cl_detaildist", NULL, NULL, NULL, NULL }, NULL, 0, 0, 4000, 50, NULL, ROWF_NONE },
 
-	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_enable", "r_shadowmap_filter_quality", NULL, NULL, NULL }, kShadowQuality, ARRAYSIZE( kShadowQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
-	{ "#GraphicsOptions_ShadowRes", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_resolution", NULL, NULL, NULL, NULL }, kQuality4, ARRAYSIZE( kQuality4 ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_ShadowFilter", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_filter", NULL, NULL, NULL, NULL }, kShadowFilter, ARRAYSIZE( kShadowFilter ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_SunDist", TAB_LIGHTING, ROW_COMBO, { "r_csm_distance", NULL, NULL, NULL, NULL }, kSunDistance, ARRAYSIZE( kSunDistance ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_MaxLights", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_max_realtime_lights", NULL, NULL, NULL, NULL }, kRealtimeLights, ARRAYSIZE( kRealtimeLights ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_EditorLights", TAB_LIGHTING, ROW_SLIDER, { "r_editor_lights_max_shadowed", NULL, NULL, NULL, NULL }, NULL, 0, 0, 32, 1, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_AO", TAB_LIGHTING, ROW_COMBO, { "r_gtao", "r_gtao_resolution", "r_gtao_slices", "r_gtao_steps", "r_gtao_denoise" }, kGtao, ARRAYSIZE( kGtao ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
-	{ "#GraphicsOptions_ContactShadows", TAB_LIGHTING, ROW_COMBO, { "r_contactshadows", "r_contactshadows_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
-	{ "#GraphicsOptions_SSR", TAB_LIGHTING, ROW_COMBO, { "r_ssr", "r_ssr_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
-	{ "#GraphicsOptions_SSRResolution", TAB_LIGHTING, ROW_COMBO, { "r_ssr_resolution", NULL, NULL, NULL, NULL }, kSsrResolution, ARRAYSIZE( kSsrResolution ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Volumetric", TAB_LIGHTING, ROW_COMBO, { "r_volumetric", "r_volumetric_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY },
+	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_enable", "r_shadowmap_filter_quality", NULL, NULL, NULL }, kShadowQuality, ARRAYSIZE( kShadowQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_ShadowRes", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_resolution", NULL, NULL, NULL, NULL }, kQuality4, ARRAYSIZE( kQuality4 ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_ShadowFilter", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_filter", NULL, NULL, NULL, NULL }, kShadowFilter, ARRAYSIZE( kShadowFilter ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_SunDist", TAB_LIGHTING, ROW_COMBO, { "r_csm_distance", NULL, NULL, NULL, NULL }, kSunDistance, ARRAYSIZE( kSunDistance ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_MaxLights", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_max_realtime_lights", NULL, NULL, NULL, NULL }, kRealtimeLights, ARRAYSIZE( kRealtimeLights ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_EditorLights", TAB_LIGHTING, ROW_SLIDER, { "r_editor_lights_max_shadowed", NULL, NULL, NULL, NULL }, NULL, 0, 0, 32, 1, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_AO", TAB_LIGHTING, ROW_COMBO, { "r_gtao", "r_gtao_resolution", "r_gtao_slices", "r_gtao_steps", "r_gtao_denoise" }, kGtao, ARRAYSIZE( kGtao ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_ContactShadows", TAB_LIGHTING, ROW_COMBO, { "r_contactshadows", "r_contactshadows_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_SSR", TAB_LIGHTING, ROW_COMBO, { "r_ssr", "r_ssr_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_SSRResolution", TAB_LIGHTING, ROW_COMBO, { "r_ssr_resolution", NULL, NULL, NULL, NULL }, kSsrResolution, ARRAYSIZE( kSsrResolution ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Volumetric", TAB_LIGHTING, ROW_COMBO, { "r_volumetric", "r_volumetric_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 
-	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_BloomQuality", TAB_POST, ROW_COMBO, { "mat_postfx_bloom_quality", NULL, NULL, NULL, NULL }, kQuality3, ARRAYSIZE( kQuality3 ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Bloom", TAB_POST, ROW_SLIDER, { "mat_postfx_bloom_intensity", NULL, NULL, NULL, NULL }, NULL, 0, 0, 400, 5, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Dirt", TAB_POST, ROW_CHECK, { "mat_postfx_lensdirt_enable", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Flare", TAB_POST, ROW_SLIDER, { "mat_postfx_lensflare", NULL, NULL, NULL, NULL }, NULL, 0, 0, 2, 0.01f, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_BloomQuality", TAB_POST, ROW_COMBO, { "mat_postfx_bloom_quality", NULL, NULL, NULL, NULL }, kQuality3, ARRAYSIZE( kQuality3 ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Bloom", TAB_POST, ROW_SLIDER, { "mat_postfx_bloom_intensity", NULL, NULL, NULL, NULL }, NULL, 0, 0, 400, 5, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Dirt", TAB_POST, ROW_CHECK, { "mat_postfx_lensdirt_enable", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Flare", TAB_POST, ROW_SLIDER, { "mat_postfx_lensflare", NULL, NULL, NULL, NULL }, NULL, 0, 0, 2, 0.01f, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Motion", TAB_POST, ROW_CHECK, { "mat_motion_blur_enabled", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_MotionQuality", TAB_POST, ROW_COMBO, { "mat_motion_blur_quality", NULL, NULL, NULL, NULL }, kMotionQuality, ARRAYSIZE( kMotionQuality ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Exposure", TAB_POST, ROW_SLIDER, { "mat_postfx_exposure", NULL, NULL, NULL, NULL }, NULL, 0, -4, 4, 0.1f, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Sharpen", TAB_POST, ROW_SLIDER, { "mat_postfx_sharpen", NULL, NULL, NULL, NULL }, NULL, 0, 0, 1, 0.01f, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Hdr", TAB_POST, ROW_CHECK, { "mat_hdr_output", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Nits", TAB_POST, ROW_SLIDER, { "mat_hdr_output_max_nits", NULL, NULL, NULL, NULL }, NULL, 0, 0, 2000, 10, "#GraphicsOptions_NitsNote", ROWF_NONE },
+	{ "#GraphicsOptions_MotionQuality", TAB_POST, ROW_COMBO, { "mat_motion_blur_quality", NULL, NULL, NULL, NULL }, kMotionQuality, ARRAYSIZE( kMotionQuality ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Exposure", TAB_POST, ROW_SLIDER, { "mat_postfx_exposure", NULL, NULL, NULL, NULL }, NULL, 0, -4, 4, 0.1f, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Sharpen", TAB_POST, ROW_SLIDER, { "mat_postfx_sharpen", NULL, NULL, NULL, NULL }, NULL, 0, 0, 1, 0.01f, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Hdr", TAB_POST, ROW_CHECK, { "mat_hdr_output", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Nits", TAB_POST, ROW_SLIDER, { "mat_hdr_output_max_nits", NULL, NULL, NULL, NULL }, NULL, 0, 0, 2000, 10, "#GraphicsOptions_NitsNote", ROWF_DX12_ONLY },
 
-	{ "#GraphicsOptions_Framegen", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen", NULL, NULL, NULL, NULL }, kFramegen, ARRAYSIZE( kFramegen ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_FramegenRate", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen_multiplier", NULL, NULL, NULL, NULL }, kMultiplier, ARRAYSIZE( kMultiplier ), 0, 0, 0, NULL, ROWF_NONE },
-	{ "#GraphicsOptions_Reflex", TAB_FRAMEGEN, ROW_COMBO, { "r_reflex", NULL, NULL, NULL, NULL }, kReflex, ARRAYSIZE( kReflex ), 0, 0, 0, NULL, ROWF_NONE },
+	{ "#GraphicsOptions_Framegen", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen", NULL, NULL, NULL, NULL }, kFramegen, ARRAYSIZE( kFramegen ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_FramegenRate", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen_multiplier", NULL, NULL, NULL, NULL }, kMultiplier, ARRAYSIZE( kMultiplier ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Reflex", TAB_FRAMEGEN, ROW_COMBO, { "r_reflex", NULL, NULL, NULL, NULL }, kReflex, ARRAYSIZE( kReflex ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 };
 
-static int RowCvarCount( const RowDef_t &row )
+const RowDef_t *GetRows( int &count )
+{
+	count = ARRAYSIZE( g_Rows );
+	return g_Rows;
+}
+
+bool IsDX12Renderer()
+{
+	return s_bDX12Renderer;
+}
+
+int RowCvarCount( const RowDef_t &row )
 {
 	int n = 0;
 	while ( n < 5 && row.cvars[n] )
@@ -346,6 +324,25 @@ static int RowCvarCount( const RowDef_t &row )
 	return n;
 }
 
+bool IsRowAvailable( const RowDef_t &row )
+{
+	if ( IsDX12Renderer() && ( row.flags & ROWF_LEGACY_ONLY ) )
+		return false;
+#ifdef L4D2
+	if ( !IsDX12Renderer() && ( row.flags & ROWF_DX12_ONLY ) )
+		return false;
+	const int nCvars = RowCvarCount( row );
+	for ( int i = 0; i < nCvars; ++i )
+	{
+		ConVar *pCvar = g_pCVar->FindVar( row.cvars[i] );
+		if ( !pCvar || pCvar->IsFlagSet( FCVAR_DEVELOPMENTONLY | FCVAR_HIDDEN ) )
+			return false;
+	}
+#endif
+	return true;
+}
+
+#ifndef L4D2
 static int SliderSteps( const RowDef_t &row )
 {
 	int steps = (int)( ( row.sliderMax - row.sliderMin ) / row.sliderStep + 0.5f );
@@ -368,6 +365,7 @@ static float SliderToFloat( const RowDef_t &row, int s )
 {
 	return row.sliderMin + row.sliderStep * s;
 }
+#endif
 
 static bool Nearly( float a, float b )
 {
@@ -379,6 +377,40 @@ static float ReadCvar( const char *name )
 	ConVarRef ref( name );
 	return ref.IsValid() ? ref.GetFloat() : 0.f;
 }
+
+static int MatchChoice( const RowDef_t &row, const float *values, int nCvars )
+{
+	for ( int choice = 0; choice < row.nChoices; ++choice )
+	{
+		bool match = true;
+		int compare = ( ( row.flags & ROWF_OFF_ENABLE_ONLY ) && choice == 0 ) ? 1 : nCvars;
+		for ( int c = 0; c < compare; ++c )
+		{
+			if ( !Nearly( values[c], row.choices[choice].v[c] ) )
+			{
+				match = false;
+				break;
+			}
+		}
+		if ( match )
+			return choice;
+	}
+	return -1;
+}
+
+int FindChoice( const RowDef_t &row )
+{
+	const int nCvars = RowCvarCount( row );
+	float values[5];
+	for ( int i = 0; i < nCvars; ++i )
+		values[i] = ReadCvar( row.cvars[i] );
+	return MatchChoice( row, values, nCvars );
+}
+
+} // namespace GraphicsOptions
+
+#ifndef L4D2
+using namespace GraphicsOptions;
 
 static void FormatNumber( char *buf, int n, float value )
 {
@@ -527,7 +559,7 @@ void CGraphicsOptionsDialog::BuildRows()
 	for ( int i = 0; i < ARRAYSIZE( g_Rows ); ++i )
 	{
 		const RowDef_t &row = g_Rows[i];
-		if ( s_bDX12Renderer && ( row.flags & ROWF_LEGACY_ONLY ) )
+		if ( !IsRowAvailable( row ) )
 			continue;
 		CGraphicsOptionsPage *page = m_pPages[row.tab];
 		int index = m_Widgets.AddToTail();
@@ -748,25 +780,7 @@ void CGraphicsOptionsDialog::ReadAll()
 				w.combo->AddItem( row.choices[choice].label, kv );
 				kv->deleteThis();
 			}
-			int match = -1;
-			for ( int choice = 0; choice < row.nChoices; ++choice )
-			{
-				bool ok = true;
-				int compare = ( ( row.flags & ROWF_OFF_ENABLE_ONLY ) && choice == 0 ) ? 1 : n;
-				for ( int c = 0; c < compare; ++c )
-				{
-					if ( !Nearly( cur[c], row.choices[choice].v[c] ) )
-					{
-						ok = false;
-						break;
-					}
-				}
-				if ( ok )
-				{
-					match = choice;
-					break;
-				}
-			}
+			int match = MatchChoice( row, cur, n );
 			if ( match < 0 )
 			{
 				for ( int c = 0; c < 5; ++c )
@@ -1304,6 +1318,7 @@ static void ActivateVideoTab()
 	}
 	Warning( "graphics_options: video tab panel is in another module\n" );
 }
+#endif // !L4D2
 
 class CGraphicsOptionsSystem : public CAutoGameSystem
 {
@@ -1324,12 +1339,14 @@ public:
 		EnforceTextureFiltering();
 		return true;
 	}
+#ifndef L4D2
 	void PostInit()
 	{
 		VPANEL parent = enginevgui->GetPanel( PANEL_CLIENTDLL );
 		if ( parent && !s_hHook.Get() )
 			s_hHook = new CGraphicsOptionsHook( parent );
 	}
+#endif
 	void Shutdown()
 	{
 		g_pCVar->RemoveGlobalChangeCallback( EnforceGraphicsOptions );
@@ -1343,6 +1360,10 @@ static CGraphicsOptionsSystem s_GraphicsOptionsSystem;
 
 static void CC_GraphicsOptions( const CCommand &args )
 {
+#ifdef L4D2
+	int section = args.ArgC() >= 2 ? atoi( args[1] ) : 0;
+	OpenTerrorGraphicsOptions( section );
+#else
 	if ( args.ArgC() >= 2 && !Q_stricmp( args[1], "video" ) )
 	{
 		ActivateVideoTab();
@@ -1394,6 +1415,7 @@ static void CC_GraphicsOptions( const CCommand &args )
 		return;
 	int tab = args.ArgC() >= 2 ? atoi( args[1] ) : 0;
 	dlg->Open( tab );
+#endif
 }
 
 static ConCommand graphics_options( "graphics_options", CC_GraphicsOptions, "Open the advanced graphics dialog.", 0 );

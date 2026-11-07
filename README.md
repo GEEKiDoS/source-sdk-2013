@@ -57,6 +57,16 @@ upscaler, frame-generation and denoiser runtimes (DLSS, FSR, XeSS, Streamline,
 Open Image Denoise) are copied beside the renderer into `game/bin/x64`; they are
 not part of the repository.
 
+L4D2's **Options > Video > Graphics (DX12)...** opens a native options screen
+with Display, Lighting, Post-processing and Frame generation sections. It uses
+the mounted Video screen's hybrid buttons, flyouts, sliders, fonts and footer;
+`graphics_options [section]` opens the same screen. Its bindings and choices
+come from the shared graphics row table, while rows with missing, hidden or
+development-only ConVars are omitted (including DX12-only rows under `-dx9`).
+Changes take effect immediately and Done / Escape / controller B returns to
+Video, saving through `mat_savechanges` and `host_writeconfig`. Other SDK games
+retain their four-tab GameUI advanced graphics dialog.
+
 Dedicated hosting uses `srcds_win64.exe -console -game <absolute mod_l4d2 path>
 +sv_pure 0 +mp_gamemode coop +map c5m1_waterfront`. Preserve its native console
 input handle when redirecting output. The BSP/VPK readers select `dedicated.dll`

@@ -3,6 +3,7 @@
 #include "l4d2/ui/basemodui/terror_basemodui_options.h"
 #include "l4d2/ui/basemodui/terror_basemodui_footer.h"
 #include "l4d2/ui/basemodui/terror_basemodui_ingame.h"
+#include "l4d2/ui/basemodui/terror_basemodui_graphics_dx12.h"
 #include "l4d2/ui/terror_hud_resources.h"
 #include "GameUI/IGameUI.h"
 #include "inputsystem/ButtonCode.h"
@@ -73,7 +74,6 @@ void SliderControl::ApplySettings( KeyValues *data )
 	m_flMin = data->GetFloat( "minValue", 0 ); m_flMax = data->GetFloat( "maxValue", 100 ); m_flStep = data->GetFloat( "stepSize", 1 );
 	m_bInverse = data->GetInt( "inverseFill" ) == 1;
 	m_ConCommand = data->GetString( "conCommand", "" ); m_DefaultCommand = data->GetString( "conCommandDefault", "" );
-	m_NavUp = data->GetString( "navUp", "" ); m_NavDown = data->GetString( "navDown", "" );
 	m_pLabel->SetText( data->GetString( "labelText", "" ) );
 	m_pButton->SetMouseInputEnabled( false );
 	Reset();
@@ -104,9 +104,7 @@ void SliderControl::SetValue( float value, bool silent )
 		if ( value==m_flValue ) { vgui::surface()->PlaySound("UI/menu_invalid.wav"); return; }
 		vgui::surface()->PlaySound("UI/buttonclick.wav"); m_bDirty=true;
 	}
-	m_flValue = value;
-	float fraction = ( m_flValue - m_flMin ) / ( m_flMax - m_flMin );
-	m_pProgress->SetProgress( m_bInverse ? 1.0f - fraction : fraction );
+	SetDisplayValue( value );
 	ConVar *variable = cvar->FindVar( m_ConCommand.String() );
 	if ( variable ) variable->SetValue( m_flValue );
 	if ( !silent )
@@ -115,10 +113,16 @@ void SliderControl::SetValue( float value, bool silent )
 		message->SetFloat( "value", m_flValue ); PostActionSignal( message );
 	}
 }
+void SliderControl::SetDisplayValue( float value )
+{
+	m_flValue = clamp( value, m_flMin, m_flMax );
+	const float fraction = ( m_flValue - m_flMin ) / ( m_flMax - m_flMin );
+	m_pProgress->SetProgress( m_bInverse ? 1.0f - fraction : fraction );
+}
 void SliderControl::Reset()
 {
 	ConVar *variable = cvar->FindVar( m_ConCommand.String() );
-	if ( variable ) SetValue( variable->GetFloat() );
+	if ( variable ) SetDisplayValue( variable->GetFloat() );
 	m_bDirty = false; InvalidateLayout();
 }
 void SliderControl::PerformLayout()
@@ -133,18 +137,6 @@ void SliderControl::PerformLayout()
 void SliderControl::PaintBackground() { BaseClass::PaintBackground(); }
 void SliderControl::NavigateTo() { BaseClass::NavigateTo(); m_pButton->NavigateTo(); }
 void SliderControl::NavigateFrom() { BaseClass::NavigateFrom(); m_pButton->NavigateFrom(); }
-vgui::Panel *SliderControl::NavigateUp()
-{
-	vgui::Panel *next = GetParent() ? GetParent()->FindChildByName( m_NavUp.String(), true ) : NULL;
-	if ( next ) next->NavigateTo();
-	return next;
-}
-vgui::Panel *SliderControl::NavigateDown()
-{
-	vgui::Panel *next = GetParent() ? GetParent()->FindChildByName( m_NavDown.String(), true ) : NULL;
-	if ( next ) next->NavigateTo();
-	return next;
-}
 void SliderControl::OnKeyCodePressed( vgui::KeyCode code )
 {
 	const vgui::KeyCode base=GetBaseButtonCode(code);
@@ -324,7 +316,7 @@ vgui::Panel *CreateBaseModOptionsControl( vgui::Panel *parent, const char *name 
 }
 bool IsNativeOptionsCommand( const char *name )
 {
-	static const char *names[] = { "Audio","AudioVideo","CloudSettings","Controller","KeyboardMouse","MultiplayerSettings","Video","Game" };
+	static const char *names[] = { "Audio","AudioVideo","CloudSettings","Controller","KeyboardMouse","MultiplayerSettings","Video","Game","GraphicsDX12" };
 	for ( int i=0;i<ARRAYSIZE(names);++i ) if ( !Q_stricmp( name,names[i] ) ) return true;
 	return false;
 }
@@ -340,6 +332,7 @@ CL4DFrame *CreateNativeOptionsWindow( vgui::Panel *parent, const char *name )
 	if ( !Q_stricmp(name,"Multiplayer") || !Q_stricmp(name,"MultiplayerSettings") ) return new Multiplayer(parent,"Multiplayer");
 	if ( !Q_stricmp(name,"Options") ) return new Options(parent,"Options");
 	if ( !Q_stricmp(name,"Video") ) return new Video(parent,"Video");
+	if ( !Q_stricmp(name,"GraphicsDX12") ) return new GraphicsDX12(parent,"GraphicsDX12");
 	if ( !Q_stricmp(name,"Game") || !Q_stricmp(name,"GameOptions") ) return new GameOptions(parent,"GameOptions");
 	return NULL;
 }

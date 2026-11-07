@@ -8,5 +8,6 @@
 // Client-owned UI only. The target GameUI module and its root retain ownership.
 bool InitTerrorBaseModUI();
 void ShutdownTerrorBaseModUI();
+void OpenTerrorGraphicsOptions( int section = 0 );
 
 #endif // TERROR_BASEMODUI_H

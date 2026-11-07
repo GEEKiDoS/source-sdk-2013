@@ -517,8 +517,10 @@ FodyWeavers.xsd
 # Machine-local L4D2 installation paths; keep gameinfo_template.txt tracked.
 /game/mod_l4d2/gameinfo.txt
 
-# Build output: the mod launcher is published beside game/bin by launcher_main_mod_l4d2.
+# Build/runtime output: the mod launcher is published beside game/bin by launcher_main_mod_l4d2
+# and writes steam_appid.txt into its working directory.
 /game/mod_l4d2_win64.exe
+/game/steam_appid.txt
 
 # Retail startup data is provisioned from the user's install at deployment.
 /game/mod_l4d2/cfg/valve.rc
@@ -558,6 +560,8 @@ FodyWeavers.xsd
 /game/mod_l4d2/materials/effects/*
 !/game/mod_l4d2/materials/effects/lensdirt.vtf
 !/game/mod_l4d2/resource/deferred/
+!/game/mod_l4d2/resource/graphicsoptions_english.txt
+!/game/mod_l4d2/resource/graphicsoptions_schinese.txt
 
 # Local reference trees and reverse-engineering outputs are not distributable.
 /retail/
