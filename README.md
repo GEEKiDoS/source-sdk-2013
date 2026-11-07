@@ -67,6 +67,24 @@ space. Its downsampled local-contrast luminance uses the same display-sRGB domai
 The renderer's fast pipeline memo renews each reused PSO's retirement fence, so
 cache reclamation cannot release it while recorded or GPU work still references it.
 
+DX12 is the mod's default renderer; `-dx9` remains supported. The game-owned
+shaders in `game_shader_generic_l4d2` (LightmappedGeneric, WorldVertexTransition,
+VertexLitGeneric, UnlitGeneric, UnlitTwoTexture, Water, the flashlight families,
+Infected, SplineRope and the Terror post shaders) still override the stock
+shaders by name on both renderers. On DX12 their DX9 VCS run through the
+renderer's legacy-VCS translation (`-dx12shaderlog` lists them from
+`shaders/fxc`), so the L4D2 alpha, flashlight, shader-clock and water fixes
+apply on both renderers. Per-material native DX12 features (PBR, high-resolution
+lightmaps, shadow-map receivers) only reach materials whose shader L4D2 does not
+own. The shader clock is `FLOAT_RENDERPARM_L4D2_CURRENT_TIME`, which follows
+the DX12 float render parameters. Post-processing ownership on DX12: the native
+stack owns the final tone curve, bloom, lens dirt, temporal AA/upscaling (SMAA
+T2x on GPUs without DLSS), GTAO and motion blur. L4D2 keeps histogram exposure,
+env_tonemap_controller, depth of field, glow and the TerrorEnginePost effects.
+Motion blur on both renderers is the SDK/DX12 `DoImageSpaceMotionBlur` (DX12
+velocity blur, SDK camera blur on DX9); the former Terror motion blur and its
+shader were removed.
+
 L4D2's **Options > Video > Graphics (DX12)...** opens a native options screen
 with Display, Lighting, Post-processing and Frame generation sections. It uses
 the mounted Video screen's hybrid buttons, flyouts, sliders, fonts and footer;
