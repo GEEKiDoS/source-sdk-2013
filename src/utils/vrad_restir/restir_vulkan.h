@@ -6,6 +6,7 @@
 
 #include "restir_types.h"
 
+typedef void (*ReSTIRProgressCallback)( const char *phase, unsigned int done, unsigned int total, void *user );
 class CReSTIRVulkanDevice
 {
 public:
@@ -14,6 +15,7 @@ public:
 
 	bool Init( const ReSTIROptions &options );
 	void Shutdown();
+	void SetProgressCallback( ReSTIRProgressCallback callback, void *user );
 	const ReSTIRDeviceInfo &GetDeviceInfo() const;
 	bool UploadScene( const ReSTIRScene &scene );
 	// Re-uploads faces after ReSTIR_ResolveFaceStyles; styles may only shrink.
@@ -23,6 +25,8 @@ public:
 	// Selected suns and locals produce independent geometric-luxel visibility, even at zero intensity.
 	// No-selected bakes clear visibility; RGB denoising and source upload do not alter it.
 	bool BakeLightmaps( const ReSTIROptions &options, ReSTIRLightmapResult &result );
+	void PrintBakeStageSummaries() const;
+	void PrintBakeSummary() const;
 	// Bounce/probe/prop gathers always read sourceRadiance when present, otherwise the ordinary radiance.
 	bool UploadFinalLightmap( const ReSTIRLightmapResult &result );
 	bool TraceRays( const CUtlVector<ReSTIRGpuRay> &rays, unsigned int triangleMask, CUtlVector<ReSTIRGpuHit> &hits );

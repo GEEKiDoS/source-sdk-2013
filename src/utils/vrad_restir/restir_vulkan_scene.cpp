@@ -16,6 +16,32 @@ static VkAccelerationStructureGeometryKHR TriangleGeometry( VkDeviceAddress vert
 	geometry.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
 	return geometry;
 }
+static void SubmitSceneDispatch( CReSTIRVulkanDevice::Impl &gpu, ReSTIRPipeline pipeline,
+	unsigned int count, unsigned int pass )
+{
+	unsigned int first = 0;
+	unsigned int chunkItems = MIN( RESTIR_SUBMIT_INITIAL_ITEMS, gpu.DispatchItemLimit() );
+	while ( first < count )
+	{
+		const unsigned int chunk = MIN( chunkItems, count - first );
+		VkCommandBuffer command = gpu.BeginCommands();
+		gpu.DispatchRange( command, pipeline, first, chunk, pass );
+		gpu.Barrier( command );
+		const double submitStart = Plat_FloatTime();
+		gpu.Submit( command );
+		gpu.Wait();
+		const double submitSeconds = Plat_FloatTime() - submitStart;
+		if ( submitSeconds > 0.0 )
+		{
+			const double desired = chunkItems * RESTIR_SUBMIT_TARGET_SECONDS / submitSeconds;
+			chunkItems = (unsigned int)MAX( (double)RESTIR_SUBMIT_MIN_ITEMS,
+				MIN( (double)gpu.DispatchItemLimit(), MIN( (double)chunkItems * 2.0, desired ) ) );
+		}
+		first += chunk;
+		gpu.ReportProgress( "scene-bvh", first, count );
+	}
+}
+
 
 static VkAccelerationStructureBuildGeometryInfoKHR BuildInfo( VkAccelerationStructureTypeKHR type, const VkAccelerationStructureGeometryKHR *geometry )
 {
@@ -104,9 +130,7 @@ void CReSTIRVulkanDevice::Impl::BuildAcceleration()
 	create.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
 	Check( createAcceleration( device, &create, NULL, &tlas.handle ), "vkCreateAccelerationStructureKHR(TLAS)" );
 	Wait();
-	ResetQueries();
-	VkCommandBuffer command = BeginCommands();
-	unsigned int start = Timestamp( command );
+	const double blasStart = Plat_FloatTime();
 	VkDeviceAddress scratchAddress = ( BufferAddress( scratchBuffer ) + scratchAlignment - 1 ) & ~( scratchAlignment - 1 );
 	FOR_EACH_VEC( blas, i )
 	{
@@ -120,16 +144,17 @@ void CReSTIRVulkanDevice::Impl::BuildAcceleration()
 		VkAccelerationStructureBuildRangeInfoKHR range = {};
 		range.primitiveCount = acceleration.primitiveCount;
 		const VkAccelerationStructureBuildRangeInfoKHR *ranges = &range;
+		VkCommandBuffer command = BeginCommands();
 		cmdBuildAcceleration( command, 1, &build, &ranges );
 		VkMemoryBarrier barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
 		barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 		barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 		vkCmdPipelineBarrier( command, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &barrier, 0, NULL, 0, NULL );
+		Submit( command );
+		Wait();
+		ReportProgress( "scene-bvh", (unsigned int)i + 1, (unsigned int)blas.Count() );
 	}
-	unsigned int end = Timestamp( command );
-	Submit( command );
-	Wait();
-	timings.sceneBuildMs += TimestampMs( start, end );
+	timings.sceneBuildMs += ( Plat_FloatTime() - blasStart ) * 1000.0;
 	CUtlVector<VkAccelerationStructureInstanceKHR> instances;
 	instances.SetCount( blas.Count() );
 	FOR_EACH_VEC( blas, i )
@@ -147,8 +172,9 @@ void CReSTIRVulkanDevice::Impl::BuildAcceleration()
 	Upload( instanceBuffer, instances.Base(), (VkDeviceSize)instances.Count() * sizeof( VkAccelerationStructureInstanceKHR ) );
 	Wait();
 	ResetQueries();
-	command = BeginCommands();
-	start = Timestamp( command );
+	VkCommandBuffer command = BeginCommands();
+	unsigned int start = Timestamp( command );
+	unsigned int end;
 	VkAccelerationStructureGeometryKHR geometry = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
 	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
 	geometry.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -233,6 +259,7 @@ void CReSTIRVulkanDevice::Impl::UploadTextures()
 			}
 			Submit( command );
 		}
+		ReportProgress( "textures-albedo", (unsigned int)i + 1, (unsigned int)images.Count() );
 	}
 }
 
@@ -455,30 +482,20 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.Wait();
 	if ( !gpu.hardware && scene.triangles.Count() )
 	{
-		gpu.ResetQueries();
-		VkCommandBuffer command = gpu.BeginCommands();
-		unsigned int start = gpu.Timestamp( command );
-		gpu.Dispatch( command, RESTIR_PIPE_MORTON, gpu.paddedTriangles );
-		gpu.Barrier( command );
+		const double sceneStart = Plat_FloatTime();
+		gpu.push.iteration = 0;
+		SubmitSceneDispatch( gpu, RESTIR_PIPE_MORTON, gpu.paddedTriangles, 0 );
 		for ( unsigned int logK = 1; logK < 32 && ( 1u << logK ) <= gpu.paddedTriangles; ++logK )
 		{
 			unsigned int k = 1u << logK;
 			gpu.push.iteration = logK;
 			for ( unsigned int j = k / 2; j; j /= 2 )
-			{
-				gpu.Dispatch( command, RESTIR_PIPE_SORT, gpu.paddedTriangles, j );
-				gpu.Barrier( command );
-			}
+				SubmitSceneDispatch( gpu, RESTIR_PIPE_SORT, gpu.paddedTriangles, j );
 		}
 		gpu.push.iteration = 0;
-		gpu.Dispatch( command, RESTIR_PIPE_HIERARCHY, scene.triangles.Count() );
-		gpu.Barrier( command );
-		gpu.Dispatch( command, RESTIR_PIPE_REFIT, scene.triangles.Count() );
-		gpu.Barrier( command );
-		unsigned int end = gpu.Timestamp( command );
-		gpu.Submit( command );
-		gpu.Wait();
-		gpu.timings.sceneBuildMs = gpu.TimestampMs( start, end );
+		SubmitSceneDispatch( gpu, RESTIR_PIPE_HIERARCHY, scene.triangles.Count(), 0 );
+		SubmitSceneDispatch( gpu, RESTIR_PIPE_REFIT, scene.triangles.Count(), 0 );
+		gpu.timings.sceneBuildMs = ( Plat_FloatTime() - sceneStart ) * 1000.0;
 	}
 	return true;
 }

@@ -149,8 +149,8 @@
 #endif // BSP_USE_LESS_MEMORY
 
 // key / value pair sizes
-#define	MAX_KEY		32
 #define	MAX_VALUE	1024
+#define	MAX_KEY		MAX_VALUE
 
 
 // ------------------------------------------------------------------------------------------------ //

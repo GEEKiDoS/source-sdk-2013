@@ -1485,8 +1485,9 @@ bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 			++warnings;
 		}
 	}
-	Msg( "VRAD ReSTIR: %d faces reached by more than %d source light styles; %d receiver style overflows after shadow rays\n",
-		scene.styleOverflowFaces.Count(), MAXLIGHTMAPS, warnings );
+	if ( verbose )
+		Msg( "VRAD ReSTIR: %d faces reached by more than %d source light styles; %d receiver style overflows after shadow rays\n",
+			scene.styleOverflowFaces.Count(), MAXLIGHTMAPS, warnings );
 	if ( warnings && g_ReSTIROptions.shadowMaps )
 	{
 		Warning( "Hlight: refusing to discard authored styles from %d overflowing faces\n", warnings );

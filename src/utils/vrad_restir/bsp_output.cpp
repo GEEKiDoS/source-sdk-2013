@@ -630,7 +630,7 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			hasSamples = true;
 			break;
 		}
-		if ( !hasSamples )
+		if ( !hasSamples && verbose )
 			Msg( "no samples %d\n", sceneFace.dface );
 	}
 
@@ -745,7 +745,15 @@ bool CReSTIRBSPOutput::Write( const ReSTIROptions &options )
 	int gameLumpBytes = 0;
 	int gameLumpCount = 0;
 	g_GameLumps.ComputeGameLumpSizeAndCount( gameLumpBytes, gameLumpCount );
-	Msg( "ReSTIR: wrote %s (lighting=%d bytes, worldlights=%d, game-lumps=%d/%d bytes)\n",
-		sourcePath, pdlightdata ? pdlightdata->Count() : 0, pNumworldlights ? *pNumworldlights : 0, gameLumpCount, gameLumpBytes );
+	m_LastWritePath = sourcePath;
+	m_LastLightingBytes = pdlightdata ? pdlightdata->Count() : 0;
+	m_LastWorldlights = pNumworldlights ? *pNumworldlights : 0;
+	m_LastGameLumpCount = gameLumpCount;
+	m_LastGameLumpBytes = gameLumpBytes;
 	return true;
+}
+void CReSTIRBSPOutput::PrintWriteSummary() const
+{
+	Msg( "ReSTIR: wrote %s (lighting=%d bytes, worldlights=%d, game-lumps=%d/%d bytes)\n",
+		m_LastWritePath.String(), m_LastLightingBytes, m_LastWorldlights, m_LastGameLumpCount, m_LastGameLumpBytes );
 }

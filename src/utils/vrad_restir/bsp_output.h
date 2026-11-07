@@ -10,6 +10,7 @@
 #pragma once
 
 #include "restir_types.h"
+#include "tier1/utlstring.h"
 
 // Imports checked high-resolution mode storage before mutation. Frozen rshd v3 and
 // .hlight v1/v2/v3 formats are accepted only as rebake inputs; publication is always
@@ -26,6 +27,7 @@ bool ReSTIR_ReusePairedLeafAmbientLighting();
 class CReSTIRBSPOutput
 {
 public:
+	CReSTIRBSPOutput() : m_LastLightingBytes( 0 ), m_LastWorldlights( 0 ), m_LastGameLumpCount( 0 ), m_LastGameLumpBytes( 0 ) {}
 	// Reserves *pdlightdata like PrecompLightmapOffsets, encodes luxels and
 	// per-channel median averages, and exports unselected scene worldlights.
 	// A selected sun requires result.sunVisibility for every geometric luxel.
@@ -34,6 +36,14 @@ public:
 	bool EncodeLightmaps( const ReSTIROptions &options, const ReSTIRScene &scene, const ReSTIRLightmapResult &result );
 	bool Validate( const ReSTIROptions &options );
 	bool Write( const ReSTIROptions &options );
+	void PrintWriteSummary() const;
+
+private:
+	CUtlString m_LastWritePath;
+	int m_LastLightingBytes;
+	int m_LastWorldlights;
+	int m_LastGameLumpCount;
+	int m_LastGameLumpBytes;
 };
 
 #endif // RESTIR_BSP_OUTPUT_H

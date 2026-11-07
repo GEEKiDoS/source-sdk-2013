@@ -275,13 +275,15 @@ bool ComputeScale( const ReSTIROptions &options, const ReSTIRScene &scene, entit
 	const char *mode = ModeName( options.hdr );
 	if ( scene.skyAmbientLight < 0 )
 	{
-		Msg( "VRAD ReSTIR: sky ambient match (%s): no light_environment; no _skyscale_%s written\n", mode, mode );
+		if ( verbose )
+			Msg( "VRAD ReSTIR: sky ambient match (%s): no light_environment; no _skyscale_%s written\n", mode, mode );
 		return false;
 	}
 	const char *skyName = ValueForKey( world, "skyname" );
 	if ( !skyName[0] )
 	{
-		Msg( "VRAD ReSTIR: sky ambient match (%s): worldspawn has no skyname; no _skyscale_%s written\n", mode, mode );
+		if ( verbose )
+			Msg( "VRAD ReSTIR: sky ambient match (%s): worldspawn has no skyname; no _skyscale_%s written\n", mode, mode );
 		return false;
 	}
 
@@ -297,11 +299,13 @@ bool ComputeScale( const ReSTIROptions &options, const ReSTIRScene &scene, entit
 	const double sky = SkyLuminance( faces );
 	if ( ambient <= 0.0 || sky <= 0.0 )
 	{
-		Msg( "VRAD ReSTIR: sky ambient match (%s): ambient luminance %.5f, sky luminance %.5f; no _skyscale_%s written\n", mode, ambient, sky, mode );
+		if ( verbose )
+			Msg( "VRAD ReSTIR: sky ambient match (%s): ambient luminance %.5f, sky luminance %.5f; no _skyscale_%s written\n", mode, ambient, sky, mode );
 		return false;
 	}
 	scale = (float)( ambient / sky );
-	Msg( "VRAD ReSTIR: sky ambient match (%s): ambient luminance %.5f, sky luminance %.5f, _skyscale_%s %.6g\n", mode, ambient, sky, mode, scale );
+	if ( verbose )
+		Msg( "VRAD ReSTIR: sky ambient match (%s): ambient luminance %.5f, sky luminance %.5f, _skyscale_%s %.6g\n", mode, ambient, sky, mode, scale );
 	return true;
 }
 

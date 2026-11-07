@@ -1,5 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #include "restir_vulkan_internal.h"
+#include "cmdlib.h"
 #include <windows.h>
 #include <stdio.h>
 #include <limits.h>
@@ -33,6 +34,8 @@ CReSTIRVulkanDevice::Impl::Impl()
 	stagingMemory( VK_NULL_HANDLE ), staging( VK_NULL_HANDLE ), mappedStaging( NULL ), stagingCoherent( false ),
 	memoryBudget( false ), hardware( false ), finalUploaded( false ), commandPool( VK_NULL_HANDLE ),
 	timeline( VK_NULL_HANDLE ), submittedValue( 0 ), queryPool( VK_NULL_HANDLE ), queryCursor( 0 ),
+	lastBakeSeconds( 0.0 ), lastBakeSubmits( 0 ),
+	progressCallback( NULL ), progressUser( NULL ),
 	setLayout( VK_NULL_HANDLE ), descriptorPool( VK_NULL_HANDLE ), descriptorSet( VK_NULL_HANDLE ),
 	pipelineLayout( VK_NULL_HANDLE ), textureSampler( VK_NULL_HANDLE ), instanceBuffer( -1 ), scratchBuffer( -1 ),
 	scratchAlignment( 256 ), paddedTriangles( 1 ), scene( NULL ), createAcceleration( NULL ),
@@ -41,6 +44,7 @@ CReSTIRVulkanDevice::Impl::Impl()
 	memset( &properties, 0, sizeof( properties ) );
 	memset( &memoryProperties, 0, sizeof( memoryProperties ) );
 	memset( &timings, 0, sizeof( timings ) );
+	memset( stageStats, 0, sizeof( stageStats ) );
 	memset( &push, 0, sizeof( push ) );
 	memset( pipelines, 0, sizeof( pipelines ) );
 	memset( info.luid, 0, sizeof( info.luid ) );
@@ -71,6 +75,17 @@ CReSTIRVulkanDevice::~CReSTIRVulkanDevice()
 {
 	m_pImpl->Release();
 	delete m_pImpl;
+}
+void CReSTIRVulkanDevice::SetProgressCallback( ReSTIRProgressCallback callback, void *user )
+{
+	m_pImpl->progressCallback = callback;
+	m_pImpl->progressUser = user;
+}
+
+void CReSTIRVulkanDevice::Impl::ReportProgress( const char *phase, unsigned int done, unsigned int total ) const
+{
+	if ( progressCallback )
+		progressCallback( phase, done, total, progressUser );
 }
 
 bool CReSTIRVulkanDevice::Init( const ReSTIROptions &options )
@@ -316,7 +331,19 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 	VkDeviceSize requested[VK_MAX_MEMORY_HEAPS] = {};
 	for ( int i = 0; i < 3; ++i )
 		requested[memoryProperties.memoryTypes[types[i]].heapIndex] += totals[i];
-	Msg( "VRAD ReSTIR memory: scene=%llu work=%llu staging=%llu bytes\n", totals[0], totals[1], totals[2] );
+	if ( verbose )
+	{
+		Msg( "VRAD ReSTIR memory: scene=%llu work=%llu staging=%llu bytes\n", totals[0], totals[1], totals[2] );
+		for ( unsigned int h = 0; h < memoryProperties.memoryHeapCount; ++h )
+		{
+			if ( !requested[h] )
+				continue;
+			VkDeviceSize available = memoryProperties.memoryHeaps[h].size;
+			if ( memoryBudget )
+				available = budget.heapBudget[h] > budget.heapUsage[h] ? budget.heapBudget[h] - budget.heapUsage[h] : 0;
+			Msg( "  heap %u requested=%llu available=%llu bytes\n", h, requested[h], available );
+		}
+	}
 	for ( unsigned int h = 0; h < memoryProperties.memoryHeapCount; ++h )
 	{
 		if ( !requested[h] )
@@ -324,7 +351,6 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 		VkDeviceSize available = memoryProperties.memoryHeaps[h].size;
 		if ( memoryBudget )
 			available = budget.heapBudget[h] > budget.heapUsage[h] ? budget.heapBudget[h] - budget.heapUsage[h] : 0;
-		Msg( "  heap %u requested=%llu available=%llu bytes\n", h, requested[h], available );
 		if ( requested[h] > available )
 			Fail( "scene exceeds GPU heap budget before dispatch" );
 	}
@@ -542,23 +568,35 @@ void CReSTIRVulkanDevice::Impl::Barrier( VkCommandBuffer command ) const
 	vkCmdPipelineBarrier( command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, NULL, 0, NULL );
 }
 
-void CReSTIRVulkanDevice::Impl::Dispatch( VkCommandBuffer command, ReSTIRPipeline pipeline, unsigned int count, unsigned int pass )
+unsigned int CReSTIRVulkanDevice::Impl::DispatchItemLimit() const
+{
+	uint64_t limit = (uint64_t)properties.limits.maxComputeWorkGroupCount[0] * RESTIR_WORKGROUP_SIZE;
+	return (unsigned int)MIN( limit, (uint64_t)UINT_MAX - ( RESTIR_WORKGROUP_SIZE - 1 ) );
+}
+
+void CReSTIRVulkanDevice::Impl::DispatchRange( VkCommandBuffer command, ReSTIRPipeline pipeline,
+	unsigned int first, unsigned int count, unsigned int pass )
 {
 	if ( !count )
 		return;
 	vkCmdBindPipeline( command, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[pipeline] );
 	vkCmdBindDescriptorSets( command, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL );
-	uint64_t limit = (uint64_t)properties.limits.maxComputeWorkGroupCount[0] * RESTIR_WORKGROUP_SIZE;
-	limit = MIN( limit, (uint64_t)UINT_MAX - ( RESTIR_WORKGROUP_SIZE - 1 ) );
-	for ( unsigned int first = 0; first < count; )
+	const uint64_t limit = DispatchItemLimit();
+	while ( count )
 	{
 		push.first = first;
-		push.count = (unsigned int)MIN( (uint64_t)count - first, limit );
+		push.count = (unsigned int)MIN( (uint64_t)count, limit );
 		push.pass = pass;
 		vkCmdPushConstants( command, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
 		vkCmdDispatch( command, ( push.count + RESTIR_WORKGROUP_SIZE - 1 ) / RESTIR_WORKGROUP_SIZE, 1, 1 );
 		first += push.count;
+		count -= push.count;
 	}
+}
+
+void CReSTIRVulkanDevice::Impl::Dispatch( VkCommandBuffer command, ReSTIRPipeline pipeline, unsigned int count, unsigned int pass )
+{
+	DispatchRange( command, pipeline, 0, count, pass );
 }
 
 void CReSTIRVulkanDevice::Impl::Upload( int buffer, const void *data, VkDeviceSize bytes, VkDeviceSize offset )

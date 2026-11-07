@@ -9,6 +9,9 @@
 #include <vulkan/vulkan.h>
 
 static const VkDeviceSize RESTIR_STAGING_BYTES = 64ull * 1024 * 1024;
+static const double RESTIR_SUBMIT_TARGET_SECONDS = 0.25;
+static const unsigned int RESTIR_SUBMIT_INITIAL_ITEMS = 8192;
+static const unsigned int RESTIR_SUBMIT_MIN_ITEMS = 1024;
 
 enum ReSTIRPipeline
 {
@@ -76,6 +79,15 @@ struct ReSTIRAcceleration
 	}
 };
 
+struct ReSTIRGpuStageStats
+{
+	uint64_t submits;
+	unsigned int minChunk;
+	unsigned int maxChunk;
+	unsigned int finalChunk;
+	ReSTIRGpuStageStats() : submits( 0 ), minChunk( 0 ), maxChunk( 0 ), finalChunk( 0 ) {}
+};
+
 struct CReSTIRVulkanDevice::Impl
 {
 	VkInstance instance;
@@ -101,6 +113,11 @@ struct CReSTIRVulkanDevice::Impl
 	CUtlVector<VkCommandBuffer> pendingCommands;
 	VkQueryPool queryPool;
 	unsigned int queryCursor;
+	ReSTIRGpuStageStats stageStats[RESTIR_PIPE_COUNT];
+	double lastBakeSeconds;
+	uint64_t lastBakeSubmits;
+	ReSTIRProgressCallback progressCallback;
+	void *progressUser;
 	VkDescriptorSetLayout setLayout;
 	VkDescriptorPool descriptorPool;
 	VkDescriptorSet descriptorSet;
@@ -143,6 +160,10 @@ struct CReSTIRVulkanDevice::Impl
 	void Submit( VkCommandBuffer command );
 	void Wait();
 	void Barrier( VkCommandBuffer command ) const;
+	void ReportProgress( const char *phase, unsigned int done, unsigned int total ) const;
+	unsigned int DispatchItemLimit() const;
+	void DispatchRange( VkCommandBuffer command, ReSTIRPipeline pipeline, unsigned int first,
+		unsigned int count, unsigned int pass = 0 );
 	void Dispatch( VkCommandBuffer command, ReSTIRPipeline pipeline, unsigned int count, unsigned int pass = 0 );
 	void Upload( int buffer, const void *data, VkDeviceSize bytes, VkDeviceSize offset = 0 );
 	void Download( int buffer, void *data, VkDeviceSize bytes, VkDeviceSize offset = 0, double *pTransferMs = NULL );

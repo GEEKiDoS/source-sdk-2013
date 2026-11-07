@@ -16,9 +16,12 @@ void CReSTIRVulkanDevice::Impl::RunService( ReSTIRPipeline pipeline, const void 
 	capacity = MIN( capacity, RESTIR_STAGING_BYTES / MAX( (VkDeviceSize)inputStride, outputItemBytes ) );
 	if ( !capacity )
 		Fail( "service item exceeds staging ring capacity" );
+	unsigned int chunkItems = MIN( (unsigned int)capacity, DispatchItemLimit() );
+	chunkItems = MIN( chunkItems, RESTIR_SUBMIT_INITIAL_ITEMS );
+	unsigned int completed = 0;
 	for ( unsigned int first = 0; first < count; )
 	{
-		unsigned int chunk = (unsigned int)MIN( (VkDeviceSize)count - first, capacity );
+		unsigned int chunk = MIN( (VkDeviceSize)count - first, chunkItems );
 		Upload( RESTIR_BIND_SERVICE_IN, (const unsigned char *)input + (VkDeviceSize)first * inputStride, (VkDeviceSize)chunk * inputStride );
 		ResetQueries();
 		push.rayMask = mask;
@@ -29,13 +32,28 @@ void CReSTIRVulkanDevice::Impl::RunService( ReSTIRPipeline pipeline, const void 
 			( pipeline == RESTIR_PIPE_TRACE ? 0 : scene->faceNeighbors.Count() ) );
 		Barrier( command );
 		unsigned int end = Timestamp( command );
+		const double submitStart = Plat_FloatTime();
 		Submit( command );
 		Download( RESTIR_BIND_SERVICE_OUT, (unsigned char *)output + (VkDeviceSize)first * outputItemBytes, (VkDeviceSize)chunk * outputItemBytes );
+		const double submitSeconds = Plat_FloatTime() - submitStart;
+		if ( submitSeconds > 0.0 )
+		{
+			const double desired = chunkItems * RESTIR_SUBMIT_TARGET_SECONDS / submitSeconds;
+			chunkItems = (unsigned int)MAX( (double)RESTIR_SUBMIT_MIN_ITEMS,
+				MIN( (double)DispatchItemLimit(), MIN( (double)chunkItems * 2.0, desired ) ) );
+			chunkItems = MIN( chunkItems, (unsigned int)capacity );
+		}
 		double duration = TimestampMs( start, end );
 		if ( pipeline == RESTIR_PIPE_AMBIENT || pipeline == RESTIR_PIPE_PROBE_SH )
 			timings.ambientMs += duration;
 		else if ( pipeline == RESTIR_PIPE_POINTS )
 			timings.propMs += duration;
+		completed += chunk;
+		const char *phase = pipeline == RESTIR_PIPE_AMBIENT ? "ambient" :
+			pipeline == RESTIR_PIPE_PROBE_SH ? "probes" :
+			pipeline == RESTIR_PIPE_POINTS ? "static-props" :
+			pipeline == RESTIR_PIPE_LOCAL_VISIBILITY ? "local-visibility" : "gpu-service";
+		ReportProgress( phase, completed, count );
 		first += chunk;
 	}
 }

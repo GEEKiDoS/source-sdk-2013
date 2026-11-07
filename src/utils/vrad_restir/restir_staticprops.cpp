@@ -7,6 +7,7 @@
 #include "restir_baked_direct.h"
 #include "restir_byte_buffer.h"
 #include "bsplib.h"
+#include "cmdlib.h"
 #include "filesystem.h"
 #include "studio.h"
 #include "optimize.h"
@@ -102,7 +103,12 @@ static bool LoadVtx( const char *name, const studiohdr_t *hdr, CUtlBuffer &buf )
 	Q_StripExtension( name, file, sizeof( file ) );
 	Q_strncat( file, ".dx80.vtx", sizeof( file ), COPY_ALL_CHARACTERS );
 	if ( !ReadFile( file, buf ) )
-		return false;
+	{
+		Q_StripExtension( name, file, sizeof( file ) );
+		Q_strncat( file, ".dx90.vtx", sizeof( file ), COPY_ALL_CHARACTERS );
+		if ( !ReadFile( file, buf ) )
+			return false;
+	}
 	OptimizedModel::FileHeader_t *v = (OptimizedModel::FileHeader_t *)buf.Base();
 	return v->version == OPTIMIZED_MODEL_FILE_VERSION && v->checkSum == hdr->checksum;
 }
@@ -157,6 +163,7 @@ bool CReSTIRStaticPropMgr::UnserializeModelDict( CUtlBuffer &buf )
 		Warning( "VRAD ReSTIR: static prop dictionary count %d is invalid\n", count );
 		return false;
 	}
+	int missingCount = 0;
 	for ( int i = 0; i < count; ++i )
 	{
 		StaticPropDictLump_t l;
@@ -164,12 +171,15 @@ bool CReSTIRStaticPropMgr::UnserializeModelDict( CUtlBuffer &buf )
 		Model *m = new Model;
 		if ( !LoadModel( *m, l.m_Name ) )
 		{
-			// vradstaticprops.cpp:464-503: VRAD warns and keeps a null entry; props using it are skipped.
-			Warning( "VRAD ReSTIR: static prop model \"%s\" could not be loaded; its instances are skipped\n", l.m_Name );
+			if ( verbose )
+				Warning( "VRAD ReSTIR: unable to load static prop model %s\n", l.m_Name );
+			++missingCount;
 			m->header = NULL;
 		}
 		m_Models.AddToTail( m );
 	}
+	if ( missingCount )
+		Warning( "VRAD ReSTIR: %d static prop models could not be loaded; their instances are skipped\n", missingCount );
 	return true;
 }
 // The engine accepts static prop lump versions 4..6 and 10 through the conversion operators in

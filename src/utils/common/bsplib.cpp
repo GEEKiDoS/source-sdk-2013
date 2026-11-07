@@ -8,6 +8,7 @@
 
 #include "cmdlib.h"
 #include "mathlib/mathlib.h"
+#include "bsp21_format.h"
 #include "bsplib.h"
 #include "zip_utils.h"
 #include "scriplib.h"
@@ -716,7 +717,235 @@ struct Lump_t
 	bool	bLumpParsed[HEADER_LUMPS];
 } g_Lumps;
 
-CGameLump	g_GameLumps;
+CGameLump g_GameLumps;
+static CUtlVector< byte > g_Bsp21File;
+static CUtlVector< Bsp21StaticPropTint > g_Bsp21PropTints;
+static bool g_Bsp21Source = false;
+static bool g_Bsp21PropTinted = false;
+
+static int Bsp21Append( const void *data, int bytes )
+{
+	int offset = g_Bsp21File.Count();
+	g_Bsp21File.AddMultipleToTail( bytes );
+	if ( bytes )
+		memcpy( g_Bsp21File.Base() + offset, data, bytes );
+	return offset;
+}
+
+static bool Bsp21Decode( const byte *source, uint32_t stored, uint32_t length, byte *destination )
+{
+	if ( stored < sizeof( lzma_header_t ) || length > INT_MAX )
+		return false;
+	lzma_header_t header;
+	memcpy( &header, source, sizeof( header ) );
+	if ( header.id != LZMA_ID || header.actualSize != length ||
+		header.lzmaSize > stored - sizeof( header ) )
+		return false;
+	CUtlVector< byte > packed;
+	packed.SetCount( static_cast< int >( stored ) );
+	memcpy( packed.Base(), source, stored );
+	return CLZMA::Uncompress( packed.Base(), destination ) == static_cast< int >( length );
+}
+
+static bool Bsp21ConvertStaticProps( const byte *source, uint32_t length, uint32_t version,
+	CUtlVector< byte > &converted, uint32_t &sdkVersion, CUtlVector< Bsp21StaticPropTint > *tints )
+{
+	if ( ( version != 8 && version != 9 ) || length < 4 )
+		return false;
+	uint32_t modelCount, leafCount, propCount;
+	memcpy( &modelCount, source, 4 );
+	if ( modelCount > ( length - 4 ) / STATIC_PROP_NAME_LENGTH )
+		return false;
+	uint32_t cursor = 4 + modelCount * STATIC_PROP_NAME_LENGTH;
+	if ( cursor > length - 4 )
+		return false;
+	memcpy( &leafCount, source + cursor, 4 );
+	if ( leafCount > ( length - cursor - 4 ) / sizeof( StaticPropLeafLump_t ) )
+		return false;
+	cursor += 4 + leafCount * sizeof( StaticPropLeafLump_t );
+	if ( cursor > length - 4 )
+		return false;
+	memcpy( &propCount, source + cursor, 4 );
+	cursor += 4;
+	const uint32_t sourceStride = version == 8 ? BSP21_STATIC_PROP_V8_BYTES : BSP21_STATIC_PROP_V9_BYTES;
+	const uint32_t targetStride = version == 8 ? sizeof( StaticPropLumpV6_t ) : sizeof( StaticPropLump_t );
+	if ( propCount > ( length - cursor ) / sourceStride || cursor + propCount * sourceStride != length ||
+		propCount > ( INT_MAX - cursor ) / targetStride )
+		return false;
+	if ( tints )
+		tints->SetCount( static_cast< int >( propCount ) );
+	converted.SetCount( static_cast< int >( cursor + propCount * targetStride ) );
+	memcpy( converted.Base(), source, cursor );
+	for ( uint32_t i = 0; i < propCount; ++i )
+	{
+		byte *destination = converted.Base() + cursor + i * targetStride;
+		const byte *record = source + cursor + i * sourceStride;
+		if ( tints )
+		{
+			uint32_t rgba;
+			memcpy( &rgba, record + BSP21_STATIC_PROP_DIFFUSE_MODULATION_OFFSET, sizeof( rgba ) );
+			( *tints )[i].rgba = rgba;
+			if ( !Bsp21StaticPropTintIsUntinted( rgba ) )
+				g_Bsp21PropTinted = true;
+		}
+		if ( version == 8 )
+			Bsp21StaticPropV8ToSdkV6( destination, record );
+		else
+			Bsp21StaticPropV9ToSdkV10( destination, record );
+	}
+	sdkVersion = version == 8 ? 6 : GAMELUMP_STATIC_PROPS_VERSION;
+	return true;
+}
+
+static bool CanonicalizeBsp21( const byte *source, int bytes )
+{
+	if ( bytes < static_cast< int >( sizeof( Bsp21Header ) ) )
+		return false;
+	Bsp21Header sourceHeader;
+	memcpy( &sourceHeader, source, sizeof( sourceHeader ) );
+	if ( sourceHeader.ident != BSP21_IDENT || sourceHeader.version != BSP21_VERSION )
+		return false;
+	g_Bsp21File.SetCount( bytes );
+	memcpy( g_Bsp21File.Base(), source, bytes );
+	Bsp21NormalizeHeader( g_Bsp21File.Base() );
+	dheader_t *header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+
+	for ( int i = 0; i < HEADER_LUMPS; ++i )
+	{
+		const Bsp21Lump &sourceLump = sourceHeader.lumps[i];
+		if ( !sourceLump.length )
+			continue;
+		if ( sourceLump.offset < sizeof( Bsp21Header ) ||
+			sourceLump.offset > static_cast< uint32_t >( bytes ) ||
+			sourceLump.length > static_cast< uint32_t >( bytes ) - sourceLump.offset )
+			return false;
+		if ( sourceLump.uncompressedLength )
+		{
+			if ( sourceLump.uncompressedLength > INT_MAX ||
+				sourceLump.uncompressedLength > static_cast< uint32_t >( INT_MAX - g_Bsp21File.Count() ) )
+				return false;
+			int offset = g_Bsp21File.Count();
+			g_Bsp21File.AddMultipleToTail( static_cast< int >( sourceLump.uncompressedLength ) );
+			if ( !Bsp21Decode( source + sourceLump.offset, sourceLump.length, sourceLump.uncompressedLength,
+				g_Bsp21File.Base() + offset ) )
+				return false;
+			header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+			header->lumps[i].fileofs = offset;
+			header->lumps[i].filelen = static_cast< int >( sourceLump.uncompressedLength );
+			header->lumps[i].uncompressedSize = 0;
+		}
+	}
+
+	const Bsp21Lump &sourceLeafs = sourceHeader.lumps[LUMP_LEAFS];
+	if ( sourceLeafs.length )
+	{
+		const uint32_t leafLength = sourceLeafs.uncompressedLength ? sourceLeafs.uncompressedLength : sourceLeafs.length;
+		const uint32_t leafStride = sourceLeafs.version ? sizeof( dleaf_t ) : sizeof( dleaf_version_0_t );
+		if ( sourceLeafs.version > 1 || leafLength % leafStride )
+			return false;
+	}
+	for ( int lumpId = LUMP_WORLDLIGHTS; lumpId <= LUMP_WORLDLIGHTS_HDR; lumpId += LUMP_WORLDLIGHTS_HDR - LUMP_WORLDLIGHTS )
+	{
+		const Bsp21Lump &sourceLump = sourceHeader.lumps[lumpId];
+		if ( !sourceLump.length || !sourceLump.version )
+			continue;
+		if ( sourceLump.version != 1 )
+			return false;
+		header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+		const int sourceOffset = header->lumps[lumpId].fileofs;
+		const int sourceLength = header->lumps[lumpId].filelen;
+		if ( sourceLength % BSP21_WORLDLIGHT_BYTES )
+			return false;
+		const int count = sourceLength / BSP21_WORLDLIGHT_BYTES;
+		if ( count > ( INT_MAX - g_Bsp21File.Count() ) / static_cast< int >( sizeof( dworldlight_t ) ) )
+			return false;
+		const int offset = g_Bsp21File.Count();
+		g_Bsp21File.AddMultipleToTail( count * sizeof( dworldlight_t ) );
+		header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+		const byte *worldSource = g_Bsp21File.Base() + sourceOffset;
+		for ( int i = 0; i < count; ++i )
+			Bsp21WorldLightToSdk( g_Bsp21File.Base() + offset + i * sizeof( dworldlight_t ),
+				worldSource + i * BSP21_WORLDLIGHT_BYTES );
+		header->lumps[lumpId].fileofs = offset;
+		header->lumps[lumpId].filelen = count * sizeof( dworldlight_t );
+		header->lumps[lumpId].version = 0;
+	}
+
+	header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+	const lump_t gameLump = header->lumps[LUMP_GAME_LUMP];
+	if ( gameLump.filelen < static_cast< int >( sizeof( int ) ) )
+		return true;
+	if ( gameLump.fileofs < 0 || gameLump.filelen < 0 ||
+		gameLump.fileofs > g_Bsp21File.Count() - gameLump.filelen )
+		return false;
+	const byte *gameBase = g_Bsp21File.Base() + gameLump.fileofs;
+	int gameCount;
+	memcpy( &gameCount, gameBase, sizeof( gameCount ) );
+	if ( gameCount < 0 || gameCount > ( gameLump.filelen - 4 ) / static_cast< int >( sizeof( dgamelump_t ) ) )
+		return false;
+	const int directoryEnd = gameLump.fileofs + 4 + gameCount * sizeof( dgamelump_t );
+	const int gameEnd = gameLump.fileofs + gameLump.filelen;
+	for ( int i = 0; i < gameCount; ++i )
+	{
+		header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+		dgamelump_t *entry = reinterpret_cast< dgamelump_t * >( g_Bsp21File.Base() + gameLump.fileofs + 4 ) + i;
+		const int nextOffset = ( i + 1 < gameCount ) ?
+			reinterpret_cast< dgamelump_t * >( g_Bsp21File.Base() + gameLump.fileofs + 4 )[i + 1].fileofs : gameEnd;
+		if ( entry->fileofs < directoryEnd || entry->fileofs > gameEnd || nextOffset < entry->fileofs ||
+			nextOffset > gameEnd || entry->filelen < 0 || entry->flags & ~GAMELUMPFLAG_COMPRESSED )
+			return false;
+		const int stored = nextOffset - entry->fileofs;
+		if ( !( entry->flags & GAMELUMPFLAG_COMPRESSED ) && entry->filelen > stored )
+			return false;
+		if ( entry->flags & GAMELUMPFLAG_COMPRESSED )
+		{
+			CUtlVector< byte > decoded;
+			decoded.SetCount( entry->filelen );
+			if ( !Bsp21Decode( g_Bsp21File.Base() + entry->fileofs, stored, entry->filelen, decoded.Base() ) )
+				return false;
+			const int offset = Bsp21Append( decoded.Base(), decoded.Count() );
+			header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+			entry = reinterpret_cast< dgamelump_t * >( g_Bsp21File.Base() + gameLump.fileofs + 4 ) + i;
+			entry->fileofs = offset;
+			entry->flags &= ~GAMELUMPFLAG_COMPRESSED;
+		}
+		const byte *payload = g_Bsp21File.Base() + entry->fileofs;
+		if ( entry->id == GAMELUMP_STATIC_PROPS && ( entry->version == 8 || entry->version == 9 ) )
+		{
+			CUtlVector< byte > converted;
+			uint32_t sdkVersion;
+			if ( !Bsp21ConvertStaticProps( payload, entry->filelen, entry->version, converted,
+				sdkVersion, &g_Bsp21PropTints ) )
+				return false;
+			const int offset = Bsp21Append( converted.Base(), converted.Count() );
+			header = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+			entry = reinterpret_cast< dgamelump_t * >( g_Bsp21File.Base() + gameLump.fileofs + 4 ) + i;
+			entry->fileofs = offset;
+			entry->filelen = converted.Count();
+			entry->version = sdkVersion;
+		}
+	}
+	return true;
+}
+
+static bool InstallBsp21PropTintLump()
+{
+	if ( !g_Bsp21Source || !g_Bsp21PropTints.Count() || !g_Bsp21PropTinted )
+		return true;
+	GameLumpHandle_t existing = g_GameLumps.GetGameLumpHandle( BSP21_STATIC_PROP_TINT_LUMP );
+	if ( existing != g_GameLumps.InvalidGameLump() )
+	{
+		return g_GameLumps.GetGameLumpVersion( existing ) == BSP21_STATIC_PROP_TINT_LUMP_VERSION &&
+			g_GameLumps.GameLumpSize( existing ) == g_Bsp21PropTints.Count() * sizeof( Bsp21StaticPropTint );
+	}
+	const int bytes = g_Bsp21PropTints.Count() * sizeof( Bsp21StaticPropTint );
+	GameLumpHandle_t handle = g_GameLumps.CreateGameLump( BSP21_STATIC_PROP_TINT_LUMP, bytes, 0,
+		BSP21_STATIC_PROP_TINT_LUMP_VERSION );
+	if ( handle == g_GameLumps.InvalidGameLump() || !g_GameLumps.GetGameLump( handle ) )
+		return false;
+	memcpy( g_GameLumps.GetGameLump( handle ), g_Bsp21PropTints.Base(), bytes );
+	return true;
+}
 
 static IZip *s_pakFile = 0;
 
@@ -1821,8 +2050,11 @@ static void SwapVisibilityLump( byte *pDest, byte *pSrc, int count )
 void Lumps_Init( void )
 {
 	memset( &g_Lumps, 0, sizeof(g_Lumps) );
+	g_Bsp21File.Purge();
+	g_Bsp21PropTints.Purge();
+	g_Bsp21Source = false;
+	g_Bsp21PropTinted = false;
 }
-
 int LumpVersion( int lump )
 {
 	return g_pBSPHeader->lumps[lump].version;
@@ -2186,7 +2418,16 @@ void OpenBSPFile( const char *filename )
 	Lumps_Init();
 
 	// load the file header
-	LoadFile( filename, (void **)&g_pBSPHeader );
+	int fileBytes = LoadFile( filename, (void **)&g_pBSPHeader );
+	if ( g_pBSPHeader && !g_bSwapOnLoad && Bsp21IsHeader( g_pBSPHeader ) )
+	{
+		byte *source = reinterpret_cast< byte * >( g_pBSPHeader );
+		if ( !CanonicalizeBsp21( source, fileBytes ) )
+			Error( "%s is a malformed version-21 BSP", filename );
+		free( source );
+		g_pBSPHeader = reinterpret_cast< dheader_t * >( g_Bsp21File.Base() );
+		g_Bsp21Source = true;
+	}
 
 	if ( g_bSwapOnLoad )
 	{
@@ -2204,7 +2445,15 @@ void OpenBSPFile( const char *filename )
 //-----------------------------------------------------------------------------
 void CloseBSPFile( void )
 {
-	free( g_pBSPHeader );
+	if ( g_Bsp21Source )
+	{
+		g_Bsp21File.Purge();
+		g_Bsp21Source = false;
+	}
+	else
+	{
+		free( g_pBSPHeader );
+	}
 	g_pBSPHeader = NULL;
 }
 
@@ -2323,6 +2572,8 @@ void LoadBSPFile( const char *filename )
 	free( pakbuffer );
 
 	g_GameLumps.ParseGameLump( g_pBSPHeader );
+	if ( !InstallBsp21PropTintLump() )
+		Error( "Malformed BSP21 static-prop tint side lump" );
 
 	// NOTE: Do NOT call CopyLump after Lumps_Parse() it parses all un-Copied lumps
 	// parse any additional lumps
@@ -3007,7 +3258,7 @@ epair_t *ParseEpair (void)
 	e = (epair_t*)malloc (sizeof(epair_t));
 	memset (e, 0, sizeof(epair_t));
 	
-	if (strlen(token) >= MAX_KEY-1)
+	if (strlen(token) >= MAX_VALUE)
 		Error ("ParseEpar: token too long");
 	e->key = copystring(token);
 
@@ -3088,9 +3339,9 @@ Generates the dentdata string from all the entities
 void UnparseEntities (void)
 {
 	epair_t	*ep;
-	char	line[2048 + 16];
+	char	line[MAX_VALUE * 2 + 16];
 	int		i;
-	char	key[1024], value[1024];
+	char	key[MAX_VALUE], value[MAX_VALUE];
 
 	CUtlBuffer buffer( 0, 0, CUtlBuffer::TEXT_BUFFER );
 	buffer.EnsureCapacity( 256 * 1024 );

@@ -1,9 +1,12 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-rem Runs vrad_restir against L4D2 content without installing anything into SDK Base.
+rem Runs vrad_restir against extracted L4D2 content without installing anything into SDK Base.
+rem Shipped BSP v21 maps are accepted; vrad_restir writes standard BSP v20 output and
+rem carries each v21 static-prop RGBA tint through the v20 ptnt game lump (version 1).
+rem GPU submissions adapt toward about 250 ms per fence wait to avoid Windows TDR on slow GPUs.
 rem   vrad_restir_l4d2.bat [vrad_restir options] <map.bsp | map name under mod_l4d2\maps>
 rem Example:
-rem   vrad_restir_l4d2.bat -fast -StaticPropLighting -TextureShadows c1m1_hotel.bsp
+rem   vrad_restir_l4d2.bat -both -StaticPropLighting -fast c1m1_hotel.bsp
 rem
 rem Override the content roots by setting these before calling:
 set "SDK_MP=%SDK_MP%"
@@ -62,20 +65,20 @@ if not exist "!TOOLGAME!" mkdir "!TOOLGAME!"
     echo         SearchPaths
     echo         {
     echo             game+mod "!MOD!"
-    echo             game "!L4D2_ROOT!\update\pak01.vpk"
+    echo             game "!L4D2_ROOT!\update\pak01_dir.vpk"
     echo             game "!L4D2_ROOT!\update"
-    echo             game "!L4D2_ROOT!\left4dead2_dlc3\pak01.vpk"
+    echo             game "!L4D2_ROOT!\left4dead2_dlc3\pak01_dir.vpk"
     echo             game "!L4D2_ROOT!\left4dead2_dlc3"
-    echo             game "!L4D2_ROOT!\left4dead2_dlc2\pak01.vpk"
+    echo             game "!L4D2_ROOT!\left4dead2_dlc2\pak01_dir.vpk"
     echo             game "!L4D2_ROOT!\left4dead2_dlc2"
-    echo             game "!L4D2_ROOT!\left4dead2_dlc1\pak01.vpk"
+    echo             game "!L4D2_ROOT!\left4dead2_dlc1\pak01_dir.vpk"
     echo             game "!L4D2_ROOT!\left4dead2_dlc1"
-    echo             game "!L4D2_ROOT!\left4dead2\pak01.vpk"
+    echo             game "!L4D2_ROOT!\left4dead2\pak01_dir.vpk"
     echo             game "!L4D2_ROOT!\left4dead2"
-    echo             game "!SDK_MP!\hl2\hl2_textures.vpk"
-    echo             game "!SDK_MP!\hl2\hl2_misc.vpk"
+    echo             game "!SDK_MP!\hl2\hl2_textures_dir.vpk"
+    echo             game "!SDK_MP!\hl2\hl2_misc_dir.vpk"
     echo             game "!SDK_MP!\hl2"
-    echo             platform "!SDK_MP!\platform\platform_misc.vpk"
+    echo             platform "!SDK_MP!\platform\platform_misc_dir.vpk"
     echo             platform "!SDK_MP!\platform"
     echo         }
     echo     }

@@ -9,6 +9,7 @@
 #include "third_party/minhook-1.3.4/include/MinHook.h"
 #include "bsp21_adapter.h"
 #include "bsp21_format.h"
+#include "gamebspfile.h"
 #include "tier0/dbg.h"
 #include "filesystem.h"
 #include "datacache/imdlcache.h"
@@ -83,21 +84,8 @@ static __declspec(noreturn) void AbortServer()
 }
 static uint32_t Read32( const void *data ) { uint32_t value; memcpy( &value, data, 4 ); return value; }
 static void Put32( void *data, uint32_t value ) { memcpy( data, &value, 4 ); }
-static bool IsBsp21( const void *data )
-{
-	return Read32( data ) == 0x50534256 && Read32( static_cast< const unsigned char * >( data ) + 4 ) == 21;
-}
-static void NormalizeHeader( void *data )
-{
-	unsigned char *header = static_cast<unsigned char *>(data);
-	for ( int i = 0; i < 64; ++i )
-	{
-		unsigned char *lump = header + 8 + i * 16;
-		uint32_t version = Read32(lump), offset = Read32(lump + 4), length = Read32(lump + 8);
-		Put32(lump, offset); Put32(lump + 4, length); Put32(lump + 8, version);
-	}
-	Put32( header + 4, 20 );
-}
+static bool IsBsp21( const void *data ) { return Bsp21IsHeader( data ); }
+static void NormalizeHeader( void *data ) { Bsp21NormalizeHeader( data ); }
 static void *BaseFS() { return reinterpret_cast<unsigned char *>(Engine<void *>(0x7500E0)) + 8; }
 static void *Open( const char *name )
 {
@@ -547,10 +535,7 @@ static __declspec(noinline) uintptr_t Worldlights( void *helper, bool hdr )
 	Bsp21Resize( canonical, static_cast< int >( count * 88 ) );
 	unsigned char localHelper[304];
 	for ( unsigned i = 0; i < count; ++i )
-	{
-		memcpy( canonical.Base() + i * 88, source + i * 100, 36 );
-		memcpy( canonical.Base() + i * 88 + 36, source + i * 100 + 48, 52 );
-	}
+		Bsp21WorldLightToSdk( canonical.Base() + i * 88, source + i * 100 );
 	memcpy( localHelper, helper, sizeof( localHelper ) );
 	Put32( localHelper, count * 88 );
 	*reinterpret_cast< void ** >( localHelper + 24 ) = canonical.Base();
@@ -570,6 +555,101 @@ typedef void (*PropManagerFn)(void *);
 static GameIntFn g_GameVersion;
 static GameLoadFn g_GameLoad;
 static PropManagerFn g_PropsShutdown;
+
+static bool LoadV20PropTints( const char *name, const void *sprp, int sprpBytes )
+{
+	if ( !name || !*name || !sprp || sprpBytes < 4 )
+		return false;
+	const unsigned char *props = static_cast< const unsigned char * >( sprp );
+	uint32_t modelCount = Read32( props );
+	if ( modelCount > static_cast< uint32_t >( sprpBytes - 4 ) / STATIC_PROP_NAME_LENGTH )
+		return false;
+	uint32_t cursor = 4 + modelCount * STATIC_PROP_NAME_LENGTH;
+	if ( cursor > static_cast< uint32_t >( sprpBytes - 4 ) )
+		return false;
+	uint32_t leafCount = Read32( props + cursor );
+	if ( leafCount > ( static_cast< uint32_t >( sprpBytes ) - cursor - 4 ) / sizeof( StaticPropLeafLump_t ) )
+		return false;
+	cursor += 4 + leafCount * sizeof( StaticPropLeafLump_t );
+	if ( cursor > static_cast< uint32_t >( sprpBytes - 4 ) )
+		return false;
+	uint32_t propCount = Read32( props + cursor );
+	cursor += 4;
+	if ( propCount > ( static_cast< uint32_t >( sprpBytes ) - cursor ) / sizeof( StaticPropLump_t ) )
+		return false;
+
+	void *file = Open( name );
+	if ( !file )
+		return false;
+	const uint32_t fileSize = FileSystem()->Size( file );
+	dheader_t header = {};
+	bool valid = fileSize >= sizeof( header );
+	if ( valid )
+	{
+		Seek( file, 0 );
+		valid = Read( &header, sizeof( header ), file ) == sizeof( header ) &&
+			header.ident == IDBSPHEADER && header.version == BSPVERSION;
+	}
+	if ( !valid )
+	{
+		Close( file );
+		return false;
+	}
+	const lump_t &gameLump = header.lumps[LUMP_GAME_LUMP];
+	if ( gameLump.fileofs < 0 || gameLump.filelen < static_cast< int >( sizeof( int ) ) ||
+		static_cast< uint64_t >( gameLump.fileofs ) + gameLump.filelen > fileSize )
+	{
+		Close( file );
+		return false;
+	}
+	CUtlVector< unsigned char > game;
+	game.SetCount( gameLump.filelen );
+	Seek( file, gameLump.fileofs );
+	valid = Read( game.Base(), game.Count(), file ) == game.Count();
+	Close( file );
+	if ( !valid )
+		return false;
+	int gameCount = 0;
+	memcpy( &gameCount, game.Base(), sizeof( gameCount ) );
+	if ( gameCount < 0 || gameCount > ( game.Count() - 4 ) / static_cast< int >( sizeof( dgamelump_t ) ) )
+		return false;
+	const int directoryBytes = 4 + gameCount * sizeof( dgamelump_t );
+	const int gameEnd = gameLump.fileofs + gameLump.filelen;
+	for ( int i = 0; i < gameCount; ++i )
+	{
+		dgamelump_t entry;
+		memcpy( &entry, game.Base() + 4 + i * sizeof( entry ), sizeof( entry ) );
+		if ( entry.id != BSP21_STATIC_PROP_TINT_LUMP )
+			continue;
+		if ( entry.version != BSP21_STATIC_PROP_TINT_LUMP_VERSION || entry.flags & GAMELUMPFLAG_COMPRESSED ||
+			entry.fileofs < gameLump.fileofs + directoryBytes || entry.filelen < 0 ||
+			entry.fileofs > gameEnd - entry.filelen ||
+			entry.filelen != static_cast< int >( propCount * sizeof( Bsp21StaticPropTint ) ) )
+			return false;
+		CUtlVector< Bsp21StaticPropTint > tints;
+		tints.SetCount( propCount );
+		file = Open( name );
+		if ( !file )
+			return false;
+		Seek( file, entry.fileofs );
+		valid = Read( tints.Base(), tints.Count() * sizeof( Bsp21StaticPropTint ), file ) ==
+			tints.Count() * sizeof( Bsp21StaticPropTint );
+		Close( file );
+		if ( !valid )
+			return false;
+		g_PropTint.SetCount( propCount );
+		for ( uint32_t prop = 0; prop < propCount; ++prop )
+		{
+			g_PropTint[prop].rgba = tints[prop].rgba;
+			for ( int channel = 0; channel < 3; ++channel )
+				g_PropTint[prop].rgb[channel] = ( ( tints[prop].rgba >> ( channel * 8 ) ) & 0xff ) * ( 1.0f / 255.0f );
+		}
+		g_PropCount = propCount;
+		BspLog( "v20 prop tint lump map=%s count=%u", name, propCount );
+		return true;
+	}
+	return false;
+}
 static int GameVersion( int id )
 {
 	void *caller=_ReturnAddress();
@@ -586,7 +666,17 @@ static bool GameLoad( int id, void *data, int bytes )
 {
 	void *caller = _ReturnAddress();
 	HookCall call;
-	if ( !g_SourceMap ) return g_GameLoad( id, data, bytes );
+	if ( !g_SourceMap )
+	{
+		bool loaded = g_GameLoad( id, data, bytes );
+		if ( loaded && caller == reinterpret_cast< void * >( g_Engine + 0x2058E5 ) && id == 0x73707270 )
+		{
+			g_PropTint.RemoveAll();
+			g_PropCount = 0;
+			LoadV20PropTints( &Engine<char>( 0x69F310 ), data, bytes );
+		}
+		return loaded;
+	}
 	int index = g_Source.gameLumps.Count();
 	for ( int i = 0; i < g_Source.gameLumps.Count(); ++i )
 		if ( g_Source.gameLumps[i].id == static_cast< uint32_t >( id ) ) index = i;
@@ -613,21 +703,12 @@ static bool GameLoad( int id, void *data, int bytes )
 	{
 		g_PropTint[i].rgba = Read32( p + 64 );
 		for ( int channel = 0; channel < 3; ++channel ) g_PropTint[i].rgb[channel] = p[64 + channel] * ( 1.0f / 255.0f );
-		unsigned flags = p[31];
 		// Preserve the established conversion: native CPU/GPU quality bytes,
 		// authored alpha and force_disablex360 have no SDK field equivalent.
 		if ( g_Source.propVersion == 8 )
-		{
-			memmove( native, p, 60 );
-			Put32( native + 60, 0 );
-		}
+			Bsp21StaticPropV8ToSdkV6( native, p );
 		else
-		{
-			native[31] = 0;
-			Put32( native + 60, 0 );
-			Put32( native + 64, flags | 0x100 );
-			Put32( native + 68, 0 );
-		}
+			Bsp21StaticPropV9ToSdkV10( native, p );
 	}
 	g_PropCount = g_Source.propCount;
 	BspLog( "sprp%u map=%s private manager view count=%u; RGB tint retained", g_Source.propVersion, g_SourceName, g_Source.propCount );
@@ -647,7 +728,7 @@ static DrawArrayFn g_DrawArray;
 static int TintIndex( void *renderable )
 {
 	int index=*reinterpret_cast<int *>(static_cast<unsigned char *>(renderable)+60)&0x7fffffff;
-	return index<g_PropCount && g_PropTint[index].rgba!=0xffffffff?index:-1;
+	return index<g_PropCount && !Bsp21StaticPropTintIsUntinted( g_PropTint[index].rgba )?index:-1;
 }
 static int Draw( void *renderable,unsigned flags )
 {

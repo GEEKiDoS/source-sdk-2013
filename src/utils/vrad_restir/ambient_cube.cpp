@@ -599,7 +599,8 @@ bool ReSTIR_ComputeLeafAmbientLighting( const ReSTIROptions &options, const ReST
 		if ( light->flags & DWL_FLAGS_INAMBIENTCUBE )
 			++nInAmbientCube;
 	}
-	Msg( "%d of %d (%d%% of) surface lights went in leaf ambient cubes.\n", nInAmbientCube, nSurfaceLights, nSurfaceLights ? ( nInAmbientCube * 100 ) / nSurfaceLights : 0 );
+	if ( verbose )
+		Msg( "%d of %d (%d%% of) surface lights went in leaf ambient cubes.\n", nInAmbientCube, nSurfaceLights, nSurfaceLights ? ( nInAmbientCube * 100 ) / nSurfaceLights : 0 );
 
 	CUtlVector<int> leafParents;
 	CUtlVector<int> nodeParents;

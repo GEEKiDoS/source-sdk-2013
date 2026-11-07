@@ -14,12 +14,12 @@
 #include "restir_sky_ambient.h"
 #include "hlight_output.h"
 #include "hprobe_bsp.h"
-#include "cmdlib.h"
+#include "pacifier.h"
 #include "bsplib.h"
+#include "cmdlib.h"
 #include "loadcmdline.h"
 #include "tools_minidump.h"
 #include "tier0/icommandline.h"
-#include "tier0/fasttimer.h"
 #include "tier1/strtools.h"
 #include "mathlib/mathlib.h"
 
@@ -33,6 +33,53 @@ ReSTIROptions g_ReSTIROptions;
 static CUtlString s_ShadowMapDiagnosticsPath;
 static bool s_BakeBothModes = false;
 dface_t *g_pFaces = NULL;
+
+struct ReSTIRPhaseProgress
+{
+	const char *name;
+	unsigned int done;
+	unsigned int total;
+	double start;
+	bool active;
+};
+
+static void ReSTIRPhaseBegin( ReSTIRPhaseProgress &progress, const char *name );
+static void ReSTIRPhaseEnd( ReSTIRPhaseProgress &progress );
+
+static void ReSTIRPhaseCallback( const char *phase, unsigned int done, unsigned int total, void *user )
+{
+	ReSTIRPhaseProgress *progress = static_cast< ReSTIRPhaseProgress * >( user );
+	if ( !Q_stricmp( phase, "scene-bvh" ) && !Q_stricmp( progress->name, "textures/albedo" ) )
+	{
+		ReSTIRPhaseEnd( *progress );
+		ReSTIRPhaseBegin( *progress, "scene/BVH" );
+	}
+	progress->done = done;
+	progress->total = total;
+	UpdatePacifier( total ? MIN( 1.0f, static_cast< float >( done ) / total ) : 1.0f );
+}
+
+static void ReSTIRPhaseBegin( ReSTIRPhaseProgress &progress, const char *name )
+{
+	progress.name = name;
+	progress.done = 0;
+	progress.total = 1;
+	progress.start = Plat_FloatTime();
+	progress.active = true;
+	Msg( "VRAD ReSTIR: %s\n", name );
+	StartPacifier( "  " );
+}
+
+static void ReSTIRPhaseEnd( ReSTIRPhaseProgress &progress )
+{
+	if ( !progress.active )
+		return;
+	progress.active = false;
+	UpdatePacifier( 1.0f );
+	EndPacifier( false );
+	Msg( " done=%u/%u elapsed=%.3f s\n", progress.done, progress.total,
+		Plat_FloatTime() - progress.start );
+}
 
 static CVRadRestirDLL g_VRadRestirDLL;
 EXPOSE_SINGLE_INTERFACE( CVRadRestirDLL, IVRadDLL, VRAD_INTERFACE_VERSION );
@@ -89,7 +136,7 @@ static bool IsIgnoredOption( const char *pArg )
 	static const char *const s_pIgnored[] =
 	{
 		"-extra", "-noextra", "-low", "-fastambient", "-nodetaillight",
-		"-nossprops", "-StaticPropNormals", "-OnlyStaticProps", "-centersamples", "-verbose", "-v",
+		"-nossprops", "-StaticPropNormals", "-OnlyStaticProps", "-centersamples",
 		"-novconfig", "-StopOnExit", "-steam", "-allowdebug", "-FullMinidumps", "-insert_search_path",
 		"-debugextra", "-rederrors", "-dump", "-dumpnormals", "-dumptrace", "-LargeDispSampleRadius",
 		"-dumppropmaps", "-noskyboxrecurse", "-loghash", "-onlydetail", "-dlightmap", "-luxeldensity",
@@ -483,6 +530,11 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			if ( !loggedIgnored ) { Msg( "Ignoring legacy VRAD options not used by ReSTIR.\n" ); loggedIgnored = true; }
 			continue;
 		}
+		if ( IsOption( pArg, "-verbose" ) || IsOption( pArg, "-v" ) )
+		{
+			verbose = true;
+			continue;
+		}
 		if ( IsMPIOptionWithValue( pArg ) )
 		{
 			if ( !ConsumeIgnoredValue( argc, argv, i, pArg, true ) ) return false;
@@ -758,8 +810,12 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 
 	const char *bspPath = options.transactionPath.Length() ? options.transactionPath.String() : options.mapPath.String();
 	Msg( "Loading %s\n", bspPath );
+	ReSTIRPhaseProgress phase = { NULL, 0, 0, 0.0, false };
+	ReSTIRPhaseBegin( phase, "BSP load/v21 canonicalize" );
 	LoadBSPFile( bspPath );
 	ParseEntities();
+	phase.done = phase.total = 1;
+	ReSTIRPhaseEnd( phase );
 	SetHDRMode( options.hdr );
 	VRadRestirDetailProps_SetHDRMode( options.hdr );
 	SelectFaceArrayForMode( options.hdr );
@@ -768,9 +824,12 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 	{
 		g_pFullFileSystem->AddSearchPath( bspPath, "GAME", PATH_ADD_TO_HEAD );
 		g_pFullFileSystem->AddSearchPath( bspPath, "MOD", PATH_ADD_TO_HEAD );
-		char searchPaths[4096];
-		g_pFullFileSystem->GetSearchPath( "GAME", true, searchPaths, sizeof( searchPaths ) );
-		Msg( "GAME search paths: %s\n", searchPaths );
+		if ( verbose )
+		{
+			char searchPaths[4096];
+			g_pFullFileSystem->GetSearchPath( "GAME", true, searchPaths, sizeof( searchPaths ) );
+			Msg( "GAME search paths: %s\n", searchPaths );
+		}
 	}
 
 	// VRAD never initializes the material system (VMTs are parsed with KeyValues, vradstaticprops.cpp:700);
@@ -922,13 +981,12 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 	bool success = false;
 	bool reusePaired = false;
 	const char *pFailedStage = NULL;
+	ReSTIRPhaseProgress phase = { NULL, 0, 0, 0.0, false };
 
 	// Every stage names itself on failure so a non-zero exit is never silent.
 	#define RESTIR_STAGE( name, expr ) \
 		if ( m_bInterrupted ) { pFailedStage = "interrupted"; goto cleanup; } \
-		Msg( "VRAD ReSTIR: %s\n", name ); \
 		if ( !( expr ) ) { pFailedStage = name; goto cleanup; }
-
 	RESTIR_STAGE( "loading static props", g_ReSTIRStaticPropMgr.Init() );
 	staticPropsInitialized = true;
 	ReSTIR_EnableStaticPropDirectDiagnostics( s_ShadowMapDiagnosticsPath.Length() != 0 );
@@ -962,13 +1020,23 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 	}
 	m_flProgress = 0.25f;
 	RESTIR_STAGE( "initializing Vulkan", device.Init( g_ReSTIROptions ) );
+	device.SetProgressCallback( ReSTIRPhaseCallback, &phase );
+	ReSTIRPhaseBegin( phase, "textures/albedo" );
 	RESTIR_STAGE( "uploading scene", device.UploadScene( scene ) );
 	RESTIR_STAGE( "resolving light styles", ReSTIR_ResolveFaceStyles( scene, device ) );
+	ReSTIRPhaseEnd( phase );
 	m_flProgress = 0.40f;
+	ReSTIRPhaseBegin( phase, "bake" );
 	RESTIR_STAGE( "baking lightmaps", device.BakeLightmaps( g_ReSTIROptions, result ) );
+	ReSTIRPhaseEnd( phase );
+	device.PrintBakeStageSummaries();
+	device.PrintBakeSummary();
 	RESTIR_STAGE( "writing shadowmap diagnostics", WritePairedShadowMapDiagnostics( scene, result, reusePaired ) );
 	m_flProgress = 0.65f;
 
+	device.SetProgressCallback( NULL, NULL );
+	ReSTIRPhaseBegin( phase, "denoise" );
+	phase.done = phase.total = 1;
 	if ( g_ReSTIROptions.denoiser == RESTIR_DENOISER_NONE )
 	{
 		denoiser.Init( g_ReSTIROptions, device.GetDeviceInfo() );
@@ -978,16 +1046,16 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 		RESTIR_STAGE( "initializing denoiser", denoiser.Init( g_ReSTIROptions, device.GetDeviceInfo() ) );
 		RESTIR_STAGE( "denoising", denoiser.Denoise( scene, result ) );
 	}
+	ReSTIRPhaseEnd( phase );
 	m_flProgress = 0.75f;
 	RESTIR_STAGE( "uploading final lightmap", device.UploadFinalLightmap( result ) );
-	if ( g_ReSTIROptions.probeEnabled )
-	{
-		RunProbe( scene, device );
-	}
 
 	{
 		CReSTIRBSPOutput output;
-		RESTIR_STAGE( "encoding lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
+		ReSTIRPhaseBegin( phase, "static-prop/ambient/probe gathers" );
+		device.SetProgressCallback( ReSTIRPhaseCallback, &phase );
+		if ( g_ReSTIROptions.probeEnabled )
+			RunProbe( scene, device );
 		RESTIR_STAGE( "computing leaf ambient lighting", ReSTIR_ComputeLeafAmbientLighting( g_ReSTIROptions, scene, device, result ) );
 		RESTIR_STAGE( "capturing ambient probe grid", ReSTIR_CaptureAmbientProbes( g_ReSTIROptions, scene, device ) );
 		RESTIR_STAGE( "computing static prop lighting", ReSTIR_ComputeStaticPropLighting( g_ReSTIROptions, scene, device ) );
@@ -998,6 +1066,11 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 			RESTIR_STAGE( "writing static prop direct diagnostics", ReSTIR_WriteStaticPropDirectDiagnostics( path.String(), g_ReSTIROptions.hdr ) );
 		}
 		RESTIR_STAGE( "computing detail prop lighting", ReSTIR_ComputeDetailPropLighting( g_ReSTIROptions, scene, device ) );
+		ReSTIRPhaseEnd( phase );
+		device.SetProgressCallback( NULL, NULL );
+
+		ReSTIRPhaseBegin( phase, "write" );
+		RESTIR_STAGE( "encoding lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
 		RESTIR_STAGE( "validating output", output.Validate( g_ReSTIROptions ) );
 		ReSTIR_WriteSkyAmbientMatch( g_ReSTIROptions, scene );
 		RESTIR_STAGE( "writing BSP", output.Write( g_ReSTIROptions ) );
@@ -1024,14 +1097,15 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 			}
 			RESTIR_STAGE( "serializing reused HDR detail prop lighting", ReSTIR_ReuseDetailPropLighting() );
 			if ( g_ReSTIROptions.shadowMaps )
-			{
 				RESTIR_STAGE( "sharing proven paired visibility", ReSTIR_MarkPairedVisibilityReuse() );
-			}
 			RESTIR_STAGE( "validating reused HDR output", output.Validate( g_ReSTIROptions ) );
 			ReSTIR_WriteSkyAmbientMatch( g_ReSTIROptions, scene );
 			RESTIR_STAGE( "writing reused HDR BSP", output.Write( g_ReSTIROptions ) );
 			pairedComplete = true;
 		}
+		phase.done = phase.total;
+		ReSTIRPhaseEnd( phase );
+		output.PrintWriteSummary();
 	}
 	#undef RESTIR_STAGE
 	m_flProgress = 1.0f;
@@ -1039,6 +1113,7 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 	success = true;
 
 cleanup:
+	ReSTIRPhaseEnd( phase );
 	if ( staticPropsInitialized )
 		g_ReSTIRStaticPropMgr.Shutdown();
 	if ( success )
