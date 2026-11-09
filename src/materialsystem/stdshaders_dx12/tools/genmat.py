@@ -108,7 +108,7 @@ def shadowmap_logical(logical):
 
 def equal_combos(vs_logical, ps_logical, cpps):
     """Combo variables the material C++ sets from one identical expression in the vertex and the pixel shader: those
-    must hold EQUAL values in a rendered pair (enums such as pyro_vision's EFFECT), not merely the same truth."""
+    must hold EQUAL values in a rendered pair (enums set from one material parameter), not merely the same truth."""
     exprs = {'VERTEX': {}, 'PIXEL': {}}
     for c in cpps:
         text = open(os.path.join(LEGACY, c), encoding='latin-1').read()
@@ -241,7 +241,7 @@ def run(only_slices=None):
         except Exception as e:
             errors.append(f'{slice_} shadowmap {vlog}/{plog}: {e}')
     # Every actual BSP-lightmap consumer has an explicit RGB join. Do not reuse the old
-    # shadow receiver whitelist: water, glass and world pyro consume native lightmaps too.
+    # shadow receiver whitelist: water and glass consume native lightmaps too.
     import genhighres
     import gencommon
     earlydepth_common, _, _ = gencommon.translate_all()

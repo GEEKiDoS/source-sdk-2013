@@ -54,9 +54,6 @@ introscreenspaceeffect_ps51.fxc ps introscreenspaceeffect_ps51 20b IntroScreenSp
 motion_blur_vs51.fxc vs motion_blur_vs51 20b motion_blur_vs20.fxc
 motion_blur_ps51.fxc ps motion_blur_ps51 20b motion_blur_ps2x.fxc
 # pair motion_blur_vs51 motion_blur_ps51
-pyro_vision_vs51.fxc vs pyro_vision_vs51 30 pyro_vision_vs20.fxc
-pyro_vision_ps51.fxc ps pyro_vision_ps51 30 pyro_vision_ps2x.fxc
-# pair pyro_vision_vs51 pyro_vision_ps51 =BASETEXTURE2 =EFFECT =STRIPES =STRIPES_USE_NORMAL2 =VERTEX_LIT @fog=c11
 sample4x4_ps51.fxc ps sample4x4_ps51 20b sample4x4_ps2x.fxc
 # pair downsample_vs51 sample4x4_ps51
 sample4x4_blend_ps51.fxc ps sample4x4_blend_ps51 20b sample4x4_blend_ps2x.fxc
@@ -70,13 +67,6 @@ vr_distort_hud_ps51.fxc ps vr_distort_hud_ps51 30 vr_distort_hud_ps2x.fxc
 vr_distort_texture_vs51.fxc vs vr_distort_texture_vs51 30 vr_distort_texture_vs20.fxc
 vr_distort_texture_ps51.fxc ps vr_distort_texture_ps51 30 vr_distort_texture_ps2x.fxc
 # pair vr_distort_texture_vs51 vr_distort_texture_ps51
-pyro_vision_highres_vs51.fxc vs pyro_vision_highres_vs51 native -
-# noparity pyro_vision_highres_vs51 - highres-feature-variant
-pyro_vision_highres_ps51.fxc ps pyro_vision_highres_ps51 native -
-# noparity pyro_vision_highres_ps51 - highres-feature-variant
-pyro_vision_highres_earlydepth_ps51.fxc ps pyro_vision_highres_earlydepth_ps51 native -
-# noparity pyro_vision_highres_earlydepth_ps51 - highres-earlydepth-feature-variant
-# earlydepth pyro_vision_highres_ps51 pyro_vision_highres_earlydepth_ps51
 motion_blur_mv_ps51.fxc ps motion_blur_mv_ps51 native -
 # noparity motion_blur_mv_ps51 - native-only
 motion_blur_tile_cs51.fxc cs motion_blur_tile_cs51 native -

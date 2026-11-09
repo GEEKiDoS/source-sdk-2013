@@ -74,8 +74,6 @@
 #include "portalstaticoverlay_ps2x.h"
 #include "PostComposite.h"
 #include "RcasParams.h"
-#include "pyro_vision_ps2x.h"
-#include "pyro_vision_vs20.h"
 #include "refract_ps2x.h"
 #include "Refract_vs20.h"
 #include "sample4x4log_ps2x.h"
@@ -265,11 +263,6 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "portalstaticoverlay_vs51", dx12native::kStageVertex, nullptr },
 	{ "postfx_composite_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PostComposite > },
 	{ "postfx_rcas_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::RcasParams > },
-	{ "pyro_vision_highres_earlydepth_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_ps2x > },
-	{ "pyro_vision_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_ps2x > },
-	{ "pyro_vision_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_vs20 > },
-	{ "pyro_vision_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_ps2x > },
-	{ "pyro_vision_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::pyro_vision_vs20 > },
 	{ "refract_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::refract_ps2x > },
 	{ "refract_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::Refract_vs20 > },
 	{ "rendertargetblit_ps51", dx12native::kStagePixel, nullptr },

@@ -19,7 +19,7 @@ logical=pbr_world_highres_vs51 stage=vs source=pbr_world_highres_vs51.fxc legacy
     member=cViewportScale type=3 class=1 offset=752 size=16 elements=0 arrayStride=0 legacy=none
     member=cClipPlanes type=3 class=1 offset=768 size=96 elements=6 arrayStride=16 legacy=none
     member=cClipMask type=19 class=1 offset=864 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=PBRMaterialVS space=1 register=b2 size=176 layoutHash=0x43b230be442689f1 material
+  cbuffer=PBRMaterialVS space=1 register=b2 size=256 layoutHash=0x09987fb527498007 material
     member=g_BaseTransform type=3 class=1 offset=0 size=32 elements=2 arrayStride=16 legacy=vs:c48
     member=g_BumpTransform type=3 class=1 offset=32 size=32 elements=2 arrayStride=16 legacy=vs:c50
     member=g_DetailTransform type=3 class=1 offset=64 size=32 elements=2 arrayStride=16 legacy=vs:c52
@@ -27,6 +27,11 @@ logical=pbr_world_highres_vs51 stage=vs source=pbr_world_highres_vs51.fxc legacy
     member=g_MorphTargetTextureDim type=3 class=1 offset=128 size=12 elements=0 arrayStride=0 legacy=vs:c14
     member=g_MorphSubrect type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=vs:c15
     member=g_PbrVertexColor type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=vs:c56
+    member=g_TreeSwayParams0 type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=vs:c217
+    member=g_TreeSwayParams1 type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=vs:c218
+    member=g_TreeSwayParams2 type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=vs:c219
+    member=g_TreeSwayParams3 type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=vs:c220
+    member=g_TreeSwayParams4 type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=vs:c221
     legacyEntry=0,16,2,16,0,0,48
     legacyEntry=32,16,2,16,0,0,50
     legacyEntry=64,16,2,16,0,0,52
@@ -34,4 +39,9 @@ logical=pbr_world_highres_vs51 stage=vs source=pbr_world_highres_vs51.fxc legacy
     legacyEntry=128,12,1,0,0,0,14
     legacyEntry=144,16,1,0,0,0,15
     legacyEntry=160,16,1,0,0,0,56
+    legacyEntry=176,16,1,0,0,0,217
+    legacyEntry=192,16,1,0,0,0,218
+    legacyEntry=208,16,1,0,0,0,219
+    legacyEntry=224,16,1,0,0,0,220
+    legacyEntry=240,16,1,0,0,0,221
     bridge=WriteNativeCBuffer(api, block)

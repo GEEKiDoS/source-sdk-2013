@@ -10,8 +10,12 @@ typedef dx12cb::PBRMaterialVS pbr_model_vs51_Block;
 class pbr_model_vs51_Static_Index
 {
 	unsigned int m_nTANGENT : 2;
+	unsigned int m_nVERTEXCOLOR : 2;
+	unsigned int m_nTREESWAY : 2;
 #ifdef _DEBUG
 	bool m_bTANGENT : 1;
+	bool m_bVERTEXCOLOR : 1;
+	bool m_bTREESWAY : 1;
 #endif	// _DEBUG
 public:
 	void SetTANGENT( int i )
@@ -23,22 +27,44 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetVERTEXCOLOR( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nVERTEXCOLOR = i;
+#ifdef _DEBUG
+		m_bVERTEXCOLOR = true;
+#endif	// _DEBUG
+	}
+
+	void SetTREESWAY( int i )
+	{
+		Assert( i >= 0 && i <= 2 );
+		m_nTREESWAY = i;
+#ifdef _DEBUG
+		m_bTREESWAY = true;
+#endif	// _DEBUG
+	}
+
 	pbr_model_vs51_Static_Index(  )
 	{
 		m_nTANGENT = 0;
+		m_nVERTEXCOLOR = 0;
+		m_nTREESWAY = 0;
 #ifdef _DEBUG
 		m_bTANGENT = false;
+		m_bVERTEXCOLOR = false;
+		m_bTREESWAY = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bTANGENT );
-		return ( 32 * m_nTANGENT ) + 0;
+		Assert( m_bTANGENT && m_bVERTEXCOLOR && m_bTREESWAY );
+		return ( 32 * m_nTANGENT ) + ( 64 * m_nVERTEXCOLOR ) + ( 128 * m_nTREESWAY ) + 0;
 	}
 };
 
-#define shaderStaticTest_pbr_model_vs51 vsh_forgot_to_set_static_TANGENT
+#define shaderStaticTest_pbr_model_vs51 vsh_forgot_to_set_static_TANGENT + vsh_forgot_to_set_static_VERTEXCOLOR + vsh_forgot_to_set_static_TREESWAY
 
 
 class pbr_model_vs51_Dynamic_Index

@@ -138,6 +138,12 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		SHADER_PARAM( DEPTHBLENDSCALE, SHADER_PARAM_TYPE_FLOAT, "50.0", "Amplify or reduce DEPTHBLEND fading. Lower values make harder edges." )
 
 		SHADER_PARAM( BLENDTINTBYBASEALPHA, SHADER_PARAM_TYPE_BOOL, "0", "Use the base alpha to blend in the $color modulation")
+		SHADER_PARAM( ALLOWDIFFUSEMODULATION, SHADER_PARAM_TYPE_BOOL, "1", "Allow per-instance color modulation" )
+		SHADER_PARAM( SHINYBLOOD, SHADER_PARAM_TYPE_BOOL, "0", "Derive the specular mask from red blood tones" )
+		SHADER_PARAM( SHINYBLOODEXPONENT, SHADER_PARAM_TYPE_FLOAT, "17.0", "Exponent for the shiny-blood specular mask" )
+
+		SHADER_PARAM( BASEMAPLUMINANCEPHONGMASK, SHADER_PARAM_TYPE_INTEGER, "0", "Use base luminance for the Phong mask" )
+		SHADER_PARAM( DIFFUSEEXP, SHADER_PARAM_TYPE_FLOAT, "0", "Diffuse exponent used for dynamic lights" )
 		SHADER_PARAM( BLENDTINTCOLOROVERBASE, SHADER_PARAM_TYPE_FLOAT, "0", "blend between tint acting as a multiplication versus a replace" )
 
 		// vertexlitgeneric tree sway animation control
@@ -236,6 +242,11 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 
 		info.m_nSelfIllumMask = SELFILLUMMASK;
 		info.m_nBlendTintByBaseAlpha = BLENDTINTBYBASEALPHA;
+		info.m_nAllowDiffuseModulation = ALLOWDIFFUSEMODULATION;
+		info.m_nBaseMapLuminancePhongMask = BASEMAPLUMINANCEPHONGMASK;
+		info.m_nDiffuseExponent = DIFFUSEEXP;
+		info.m_nShinyBlood = SHINYBLOOD;
+		info.m_nShinyBloodExponent = SHINYBLOODEXPONENT;
 		info.m_nTintReplacesBaseColor = BLENDTINTCOLOROVERBASE;
 
 		info.m_nTreeSway = TREESWAY;

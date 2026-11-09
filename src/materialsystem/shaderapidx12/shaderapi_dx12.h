@@ -1291,6 +1291,9 @@ private:
 	// F0 + roughness) always exist with the pass; 2/3/4 (environment contribution E + specular light distance D, SSR
 	// response K, direct specular S) are created lazily for SSR brackets and attached only while m_ScreenSpace.ssrCapture is set.
 	static constexpr uint8_t kGBufferStencilBit = 0x80;
+	// Bits the renderer owns (G-buffer validity, skybox hidden-pixel mask). Engine/material stencil masks never see them, so
+	// game stencil tests (e.g. L4D2's glow composite, EQUAL 0 under mask 0xFA) and clears behave as on DX9.
+	static constexpr uint8_t kGameStencilMask = uint8_t( ~( kGBufferStencilBit | kSkyboxStencilBit ) );
 	static constexpr UINT kGBufferBaseTargets = 2, kGBufferSsrTargets = 5;
 	static constexpr DXGI_FORMAT kGBufferFormats[kGBufferSsrTargets] = { DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT };
 	static constexpr D3D12_RESOURCE_STATES kGBufferReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;

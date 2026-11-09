@@ -14,7 +14,7 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	float4 g_BaseTint; // @legacy ps:c0
 	// x metalness, y roughness, z ao (multipliers of MRAO.rgb when hasMrao), w workflow (0 metalness, 1 specular)
 	float4 g_Surface; // @legacy ps:c1
-	// rgb linear F0 (specular workflow without texture, legacy Phong); w unused (alpha test is engine state)
+	// rgb linear dielectric F0 (specular workflow, metalness workflow base F0, legacy Phong); w unused (alpha test is engine state)
 	float4 g_SpecularColor; // @legacy ps:c2
 	// x hasMrao, y hasBump (0 none, 1 normal map, 2 ssbump), z hasSpecTex, w emissionMode (0 none, 1 base alpha * tint, 2 emission texture)
 	float4 g_Flags0; // @legacy ps:c3
@@ -51,6 +51,16 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	// normal map of $bumpmask: $envmapmasktransform when the material has an $envmapmask texture, else $bumptransform2. Rows (a b _ tx)
 	// and (c d _ ty), applied to the untransformed UV in the pixel shader.
 	float4 g_PbrMaskTransform[2]; // @legacy ps:c33
+	// L4D2 model Phong tint/boost (xyz linear tint, w boost).
+	float4 g_L4D2Phong; // @legacy ps:c35
+	// L4D2 Phong Fresnel minimum/maximum/exponent (xyz); w is explicit $phongexponent override (0 = exponent-map R).
+	float4 g_L4D2PhongRanges; // @legacy ps:c36
+	// L4D2 blend-tint, modulation, SSBump math-fix and self-illum-mask controls.
+	float4 g_L4D2Controls; // @legacy ps:c37
+	// L4D2 luminance Phong mask, flashlight-no-Lambert, model diffuse exponent and albedo-tint opt-in.
+	float4 g_L4D2Model; // @legacy ps:c38
+	// L4D2 detail blend mode (world/model).
+	float4 g_L4D2World; // @legacy ps:c39
 };
 #endif
 
@@ -68,6 +78,13 @@ cbuffer PBRMaterialVS : register( b2, space1 )
 	float4 g_MorphSubrect; // @legacy vs:c15
 	// x 1: $vertexcolor (the mesh COLOR stream scales albedo and alpha)
 	float4 g_PbrVertexColor; // @legacy vs:c56
+	// L4D2 tree sway (VERTEX_SHADER_SHADER_SPECIFIC_CONST_13..17; c58 onward holds cModel): time/wind, static
+	// parameters, dimensions, speed/intensity and wind interpolation.
+	float4 g_TreeSwayParams0; // @legacy vs:c217
+	float4 g_TreeSwayParams1; // @legacy vs:c218
+	float4 g_TreeSwayParams2; // @legacy vs:c219
+	float4 g_TreeSwayParams3; // @legacy vs:c220
+	float4 g_TreeSwayParams4; // @legacy vs:c221
 };
 #endif
 

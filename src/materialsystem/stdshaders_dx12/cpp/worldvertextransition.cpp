@@ -63,6 +63,9 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 		SHADER_PARAM( BLENDMASKTRANSFORM, SHADER_PARAM_TYPE_MATRIX, "center .5 .5 scale 1 1 rotate 0 translate 0 0", "$blendmodulatetexture texcoord transform" )
 		SHADER_PARAM( MASKEDBLENDING, SHADER_PARAM_TYPE_INTEGER, "0", "blend using texture with no vertex alpha. For using texture blending on non-displacements" )
 		SHADER_PARAM( SSBUMP, SHADER_PARAM_TYPE_INTEGER, "0", "whether or not to use alternate bumpmap format with height" )
+		SHADER_PARAM( BLENDTINTBYBASEALPHA, SHADER_PARAM_TYPE_BOOL, "0", "Blend color modulation using base alpha" )
+		SHADER_PARAM( SSBUMPMATHFIX, SHADER_PARAM_TYPE_FLOAT, "0", "Native SSBump lightmap scale" )
+		SHADER_PARAM( VERTEXFOG, SHADER_PARAM_TYPE_BOOL, "0", "Evaluate radial fog in the vertex shader" )
 		SHADER_PARAM( SEAMLESS_SCALE, SHADER_PARAM_TYPE_FLOAT, "0", "Scale factor for 'seamless' texture mapping. 0 means to use ordinary mapping" )
 
 		PBR_SHADER_PARAMS
@@ -122,6 +125,9 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 		info.m_nBlendMaskTransform = BLENDMASKTRANSFORM;
 		info.m_nMaskedBlending = MASKEDBLENDING;
 		info.m_nSelfShadowedBumpFlag = SSBUMP;
+		info.m_nSsBumpMathFix = SSBUMPMATHFIX;
+		info.m_nBlendTintByBaseAlpha = BLENDTINTBYBASEALPHA;
+		info.m_nVertexFog = VERTEXFOG;
 		info.m_nSeamlessMappingScale = SEAMLESS_SCALE;
 		info.m_nAlphaTestReference = -1;
 	}

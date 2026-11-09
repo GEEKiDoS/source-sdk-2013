@@ -13,9 +13,8 @@ SAMPLER_ROLES = {
     'lightmappedgeneric_decal_ps20b': 14,
     'water_ps20b': 8,
     'shatteredglass_ps20b': 2,
-    'pyro_vision_ps30': 2,
 }
-EXTRA_VERTEX = {'water_vs20', 'shatteredglass_vs20', 'pyro_vision_vs30'}
+EXTRA_VERTEX = {'water_vs20', 'shatteredglass_vs20'}
 # Safety is checked across every include, retaining every combo-dependent branch.
 # Console flashlight helpers contain kills, but their _X360 branches are absent on PC.
 EARLY_DEPTH_MACROS = {'_X360': 0, 'DX12_EARLY_DEPTH': 1,
@@ -131,14 +130,9 @@ def extra_vertex(text, logical):
     for headers, bs, be in reversed(gs.main_defs(text)):
         arg = gs.param_parts(headers[0][1][0])[2]
         pos = f'float4( {arg}.vPos.xyz, 1 )'
-        if logical == 'pyro_vision_vs30':
-            normal = f'cross( {arg}.vTangentS, {arg}.vTangentT )'
-        else:
-            normal = 'hlightObjectNormal'
         code = f'o.shadowBaseLightmapUV = {arg}.vLightmapTexCoord.xy;\no.shadowVertexLightmapUV = {arg}.vLightmapTexCoord.xy;\n'
-        if logical != 'pyro_vision_vs30':
-            code += f'float3 hlightObjectNormal; DecompressVertex_Normal( {arg}.vNormal, hlightObjectNormal );\n'
-        code += f'o.highresPosition = mul( {pos}, cModel[0] );\no.highresNormal = normalize( mul( {normal}, (float3x3)cModel[0] ) );\n'
+        code += f'float3 hlightObjectNormal; DecompressVertex_Normal( {arg}.vNormal, hlightObjectNormal );\n'
+        code += f'o.highresPosition = mul( {pos}, cModel[0] );\no.highresNormal = normalize( mul( hlightObjectNormal, (float3x3)cModel[0] ) );\n'
         if logical == 'shatteredglass_vs20':
             code += 'o.highresTangentS = 0; o.highresTangentT = 0;\n'
         else:
@@ -157,10 +151,10 @@ def replace_samples(text, logical):
     calls = list(re.finditer(r'\b(LightMapSample|tex2D)\s*\(\s*(LightmapSampler|LightMap[012]Sampler)\s*,\s*([^()]+?)\s*\)', text))
     expected = {'lightmappedgeneric_ps20b': 4, 'worldtwotextureblend_ps20b': 4,
                 'lightmappedreflective_ps20b': 3, 'lightmappedgeneric_decal_ps20b': 3,
-                'water_ps20b': 3, 'shatteredglass_ps20b': 1, 'pyro_vision_ps30': 3}[logical]
+                'water_ps20b': 3, 'shatteredglass_ps20b': 1}[logical]
     if len(calls) != expected: raise RuntimeError(f'highres sample contract drift: {logical}: {len(calls)} != {expected}')
     for index, match in reversed(list(enumerate(calls))):
-        plane = index + 1 if index < 3 and logical not in {'shatteredglass_ps20b', 'pyro_vision_ps30'} else 0
+        plane = index + 1 if index < 3 and logical != 'shatteredglass_ps20b' else 0
         original = match.group(0)
         if match.group(1) == 'LightMapSample':
             # PC LightMapSample returns ordinary decoded RGB; use original tex2D only to preserve A.
@@ -198,10 +192,6 @@ def transform(text, logical, stage, folded_names):
         basis = ', '.join(f'mul( bumpBasis[{n}], float3x3( i.hlightTangentS, i.hlightTangentT, i.hlightNormal ) )' for n in range(3))
         text = gs.shadow_replace(text, 'diffuseLighting *= (cHlightRoute.x != 0 ? 1.0f : LIGHT_MAP_SCALE) / sum;',
             'diffuseLighting *= (cHlightRoute.x != 0 ? 1.0f : LIGHT_MAP_SCALE) / sum;\n ShadowMapDirect hld = ShadowMap_GatherDirect( i.hlightShadow, ShadowMap_ShadeBumped( ' + basis + ', dp / sum ) );\n diffuseLighting += hld.diffuse;')
-    elif logical == 'pyro_vision_ps30':
-        # The effect's authored color transforms remain after linear irradiance replacement.
-        text = text.replace('HighresLightmap_Plane( hlr, 0, tex2D( LightmapSampler, i.vLightmapBlendTexCoord.xy ) )',
-            '( HighresLightmap_NativeScalePlane( hlr, 0, tex2D( LightmapSampler, i.vLightmapBlendTexCoord.xy ), LIGHT_MAP_SCALE ) + float4( hld.diffuse, 0 ) )')
     # Unknown owners and explicitly neutral native fullbright pages receive no
     # selected direct. Model/VHV shaders have their independent runtime-only route.
     text = text.replace('smd.diffuse', '(smd.diffuse * hlr.valid)')
@@ -245,8 +235,7 @@ def pixel_entry(text, logical, folded_names):
                     ' ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );')
             text = text[:match.start()] + code + text[match.end():]
         return finish_pixels(text)
-    guard = {'water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT', 'shatteredglass_ps20b': '1',
-             'pyro_vision_ps30': 'VERTEX_LIT == 0 && ( EFFECT == 0 || EFFECT == 1 )'}[logical]
+    guard = {'water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT', 'shatteredglass_ps20b': '1'}[logical]
     for headers, bs, be in reversed(gs.main_defs(text)):
         body = text[bs + 1:be]
         conv = re.search(r'\bDX12ConvertInput\s*\([^;]+;', body)

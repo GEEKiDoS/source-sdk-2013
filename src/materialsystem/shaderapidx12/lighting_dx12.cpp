@@ -1765,7 +1765,6 @@ bool CLightingDX12::ValidateMap( const DX12LightingMapDesc &map, char *error, in
 			"lightmappedgeneric_decal_highres_ps51", "lightmappedreflective_highres_vs51",
 			"lightmappedreflective_highres_ps51", "water_highres_vs51", "water_highres_ps51",
 			"shatteredglass_highres_vs51", "shatteredglass_highres_ps51",
-			"pyro_vision_highres_vs51", "pyro_vision_highres_ps51",
 			"worldvertextransition_editor_highres_vs51", "worldvertextransition_editor_highres_ps51",
 			"vertexlit_and_unlit_generic_shadowmap_vs51", "vertexlit_and_unlit_generic_shadowmap_ps51",
 			"dx12_detailshadowlit_vs51", "dx12_detailshadowlit_ps51", "dx12_detailshadowlit_depth_ps51"

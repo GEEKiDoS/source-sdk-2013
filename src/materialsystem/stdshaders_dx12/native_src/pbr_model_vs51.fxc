@@ -7,6 +7,8 @@
 #define DECAL 0
 #include "dx12_preamble.h"
 // STATIC: "TANGENT" "0..1"
+// STATIC: "VERTEXCOLOR" "0..1"
+// STATIC: "TREESWAY" "0..2"
 // DYNAMIC: "COMPRESSED_VERTS" "0..1"
 // DYNAMIC: "SKINNING" "0..1"
 // DYNAMIC: "MORPHING" "0..1"
@@ -22,8 +24,28 @@
 #define PBR_HAS_TANGENT 0
 #endif
 #undef TANGENT
+// Include the shared material block before the tree helper so its register aliases are visible.
 #include "common_vs_fxc.h"
 #include "pbr_material.h"
+#if TREESWAY
+#define g_flTime g_TreeSwayParams0.x
+#define g_vWindDir g_TreeSwayParams0.yz
+#define g_flFastSwaySpeedScale g_TreeSwayParams1.x
+#define g_flScrumbleFalloffCurve g_TreeSwayParams1.y
+#define g_flSwayFalloffCurve g_TreeSwayParams1.z
+#define g_flScrumbleSpeed g_TreeSwayParams1.w
+#define g_flHeight g_TreeSwayParams2.x
+#define g_flStartHeight g_TreeSwayParams2.y
+#define g_flRadius g_TreeSwayParams2.z
+#define g_flStartRadius g_TreeSwayParams2.w
+#define g_flSwaySpeed g_TreeSwayParams3.x
+#define g_flSwayIntensity g_TreeSwayParams3.y
+#define g_flScrumbleWaveCount g_TreeSwayParams3.z
+#define g_flScrumbleIntensity g_TreeSwayParams3.w
+#define g_flWindSpeedLerpStart g_TreeSwayParams4.x
+#define g_flWindSpeedLerpEnd g_TreeSwayParams4.y
+#endif
+#include "tree_sway.h"
 
 Texture2D morphSampler_Texture : register( t0 );
 SamplerState morphSampler_Sampler : register( s0 );
@@ -51,6 +73,9 @@ struct DX12_VS_INPUT
 	float4 vNormal : NORMAL;
 #endif
 	float4 vTexCoord0 : TEXCOORD0;
+#if VERTEXCOLOR
+	float4 vColor : COLOR0;
+#endif
 	float3 vPosFlex : POSITION1;
 	float3 vNormalFlex : NORMAL1;
 	float vVertexID : POSITION2;
@@ -74,6 +99,7 @@ struct VS_OUTPUT
 #else
 	float3 staticLight : TEXCOORD6; // decoded linear static vertex irradiance, zero without STATIC_LIGHT_VERTEX
 #endif
+	float4 vertexColor : TEXCOORD7;
 	DX12ClipDistances dx12Clip;       // SV_ClipDistance0/1 (trailing; pixel inputs omit it)
 };
 
@@ -109,6 +135,9 @@ VS_OUTPUT main( const DX12_VS_INPUT v )
 #endif
 #endif
 
+#if TREESWAY
+	vPosition.xyz = ComputeTreeSway( vPosition.xyz, g_flTime );
+#endif
 	float3 worldNormal, worldPos;
 #if PBR_HAS_TANGENT
 	float3 worldTangentS, worldTangentT;
@@ -132,6 +161,10 @@ VS_OUTPUT main( const DX12_VS_INPUT v )
 		GetVertexAttenForLight( worldPos, 2, true ), GetVertexAttenForLight( worldPos, 3, true ) );
 	o.baseBumpUV = float4( PBR_TransformUV( v.vTexCoord0.xy, g_BaseTransform ), PBR_TransformUV( v.vTexCoord0.xy, g_BumpTransform ) );
 	o.detailUV = PBR_TransformUV( v.vTexCoord0.xy, g_DetailTransform );
+	o.vertexColor = float4( 1.0, 1.0, 1.0, 1.0 );
+#if VERTEXCOLOR
+	o.vertexColor = v.vColor;
+#endif
 #if !PBR_HAS_TANGENT && STATIC_LIGHT_VERTEX
 	// DoLighting's static term: the carrier arrives in gamma space, scaled by 1 / cOverbright.
 	o.staticLight = GammaToLinear( v.vSpecular.rgb * cOverbright );

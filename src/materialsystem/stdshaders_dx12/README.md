@@ -514,7 +514,7 @@ compile-time specialization and include it in the shader cache key; a runtime al
 or a PSO-only change is not sufficient.
 
 The generated families are `lightmappedgeneric`, `lightmappedgeneric_decal`, `lightmappedreflective`,
-`worldtwotextureblend`, `water`, `shatteredglass`, and `pyro_vision`. The hand-authored
+`worldtwotextureblend`, `water` and `shatteredglass`. The hand-authored
 `worldvertextransition_editor_highres_earlydepth_ps51.fxc` includes the ordinary editor receiver
 under the same specialization, retaining its original combo ABI.
 
@@ -638,18 +638,32 @@ All of them, and the original wrappers, also accept `$subsurface`/`$subsurfaceti
 `$envmapparallaxobb1..3`/`$envmaporigin`. Studio models with `PBR_Metalness`/`PBR_Specular` need the usual `$model 1`.
 
 `mat_pbr_override 1` (`FCVAR_ARCHIVE`, default 1, in this DLL) routes LightmappedGeneric, VertexLitGeneric and
-WorldVertexTransition through the PBR path at runtime. The backend's committed state starts at the default, so materials
-load with it from the first frame; a changed value is a request committed by the client at `FRAME_START` inside a
-material transaction, followed by a preserving refresh of loaded materials; draws read only the committed value. The
-original shaders keep their legacy path when `PBR_LegacySupported` declines: spherical envmaps, `$lightwarptexture`,
-detail blend modes other than 0/1; models with `$lightmap`, decals, tree sway, distance alpha, seamless mapping,
-`$selfillumfresnel`/`$selfillummask`, `$vertexcolor`; world `$seamless_scale`, `$outline`, `$softedges`.
+WorldVertexTransition through the PBR path at runtime when `PBR_LegacySupported` accepts the material. The backend's
+committed state starts at the default, so materials load with it from the first frame; a changed value is a request
+committed by the client at `FRAME_START` inside a material transaction, followed by a preserving refresh of loaded
+materials; draws read only the committed value.
+
+The L4D2 compatibility adapter preserves decals, `$vertexcolor`, `$ssbump` and `$ssbumpmathfix`, blend tint,
+Phong tint/boost/Fresnel ranges, self-illumination masks, flashlight-no-Lambert, tree sway, linear-write and
+diffuse-modulation controls, `$diffuseexp`, and the authored detail blend modes (world 0..12, model 0..9).
+The original shader keeps ownership when the adapter cannot reproduce a feature: spherical envmaps, lightwarp or
+Phong warp, model `$lightmap`, rim lighting, distance alpha, seamless model mapping, `$selfillumfresnel`,
+`$shinyblood`, world seamless mapping, outline/soft edges, vertex fog, or an out-of-range detail mode.
 
 Conversion of legacy inputs: dielectric F0 0.04; roughness from explicit PBR inputs, else the Phong exponent
-(`(2/(exp+2))^0.25`, F0 scaled by the phong mask), else the envmap mask as gloss (roughness = 1 - mask, the mask no
-longer scales the reflection; `$envmaptint` does), else 0.6. Detail blend factor/tint, `$vertexcolor` (world),
-`$nodiffusebumplighting`, `$maskedblending`, `$alpha2`, `$envmapmasktransform`, `$bumptransform2`/`$bumpmask` follow the
-legacy LightmappedGeneric math.
+(`exp = 1 + 149 * R` in `l4d2_phong_ps20b.fxc` / `skin_ps20b.fxc`, unless a nonzero `$phongexponent` overrides it,
+converted as `(2/(exp+2))^0.25`), else the envmap mask as gloss (roughness = 1 - mask, the mask no longer scales
+the reflection; `$envmaptint` does), else 0.6.
+With an exponent texture and `$phongalbedotint`, G tints the Phong specular colour toward the linear albedo
+(`l4d2_phong_ps20b.fxc:121`, `skin_ps20b.fxc:271-276`); the legacy diffuse albedo is retained, not converted to metal.
+R remains the exponent channel, not a color channel; A remains the legacy rim mask only when rim lighting is enabled,
+and rim-lit materials stay on the legacy shader. `$envmapmask`, `$basealphaenvmapmask`, and `$normalmapalphaenvmapmask`
+continue to select the legacy environment mask in the opt-in adapter. For legacy L4D2 Phong materials, `$envmap`
+uses the authored mask and `$envmapfresnel`/Phong Fresnel ranges as in `l4d2_phong_ps20b.fxc`; it is not attenuated
+by the dielectric PBR EnvBRDF. `$phongboost` is folded into bounded F0 (rather than multiplying a normalized GGX lobe),
+while diffuse albedo remains energy-conserving. There is no `$phongalbedoboost` parameter in the retail/source shader
+vocabulary. Detail blend factor/tint, `$vertexcolor` (world), `$nodiffusebumplighting`, `$alpha2`, `$envmapmasktransform`,
+`$bumptransform2`/`$bumpmask` follow the legacy LightmappedGeneric math.
 
 Lighting (all PBR materials alike): GGX with height-correlated Smith visibility, pre-multiplied by pi so units match the
 legacy `albedo * NdotL * C`; Lambert diffuse where the term must match stored baked data (lightmaps, ambient cube,
@@ -730,6 +744,24 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
   it. `pbr_gbuffer_debug_cs51` is the reference consumer.
 - The pass does not clear the colour targets, and `specular.a == 0` is not a validity test.
 - Translucent draws are outside the pass. Outside the main view the targets are not attached.
+
+### GTAO temporal accumulation
+
+`gtao_main_cs51` and the optional spatial denoise passes produce a deliberately
+animated low-sample XeGTAO term. `gtao_temporal_cs51` then reprojects that term
+through the current frame's motion vectors (or the previous view-projection when
+motion vectors are unavailable). Accepted history is reconstructed from a
+depth-weighted bilinear 2x2 footprint, rejects out-of-bounds and
+view-depth-disoccluded taps, and clamps the result to the current 3x3 AO
+neighbourhood before applying a default 0.93 history weight. The history and its
+view-depth guard are ping-ponged at the AO working resolution, so the accumulation
+is reset on a camera cut, level initialization, target resize, or disabled `r_gtao_temporal`.
+
+`r_gtao_temporal 0` selects the pre-temporal term. `r_gtao_temporal_weight`
+controls the accepted-history blend from 0.5 to 0.98 (default 0.93); it is
+intentionally not exposed in the Graphics tab because it is a debugging/tuning
+control rather than a quality tier. The final temporal output remains the term
+published to SSR, preserving AO on both receivers and reflected hits.
 
 ### Screen-space reflections
 

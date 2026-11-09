@@ -1,0 +1,125 @@
+// Native SM5.1 GTAO temporal accumulation. Reprojects the current AO term through the
+// motion-vector history (or the previous camera when motion is unavailable), rejects
+// disocclusions by view depth, and clamps history to the current 3x3 AO neighbourhood.
+cbuffer GtaoTemporal : register( b0, space1 )
+{
+	row_major float4x4 gPrevWorldToClip;
+	row_major float4x4 gClipToWorld;
+	float4 gTemporalParams; // history valid, motion valid, history weight, depth unpack x
+	float4 gTemporalViewport; // AO width/height, full scene width/height
+	float4 gTemporalOriginScale; // scene origin x/y, full pixels per AO pixel x/y
+	float4 gTemporalDepth; // depth unpack y in x
+};
+
+Texture2D<float> gAoIn : register( t0, space0 );
+Texture2D<float> gCurrentDepth : register( t1, space0 );
+Texture2D<float> gHistoryAo : register( t2, space0 );
+Texture2D<float> gHistoryDepth : register( t3, space0 );
+Texture2D<float4> gMotion : register( t4, space0 );
+RWTexture2D<unorm float> gHistoryAoOut : register( u0, space0 );
+RWTexture2D<float> gHistoryDepthOut : register( u1, space0 );
+SamplerState gLinearClamp : register( s0, space0 );
+
+float LoadAo( int2 p, int2 size )
+{
+	return gAoIn.Load( int3( clamp( p, int2( 0, 0 ), size - 1 ), 0 ) );
+}
+
+float SampleHistoryAoDepthAware( float2 p, int2 size, float expectedDepth, float depthTolerance )
+{
+	int2 base = int2( floor( p ) );
+	float2 fraction = frac( p );
+	float sum = 0.0;
+	float weightSum = 0.0;
+	[unroll] for ( int y = 0; y < 2; ++y )
+	{
+		[unroll] for ( int x = 0; x < 2; ++x )
+		{
+			float bilinear = ( x == 0 ? 1.0 - fraction.x : fraction.x ) * ( y == 0 ? 1.0 - fraction.y : fraction.y );
+			int2 tap = clamp( base + int2( x, y ), int2( 0, 0 ), size - 1 );
+			float depth = gHistoryDepth.Load( int3( tap, 0 ) );
+			float depthWeight = depth < 65503.0 ? saturate( 1.0 - abs( depth - expectedDepth ) / max( depthTolerance, 1e-3 ) ) : 0.0;
+			float weight = bilinear * depthWeight;
+			sum += gHistoryAo.Load( int3( tap, 0 ) ) * weight;
+			weightSum += weight;
+		}
+	}
+	int2 center = clamp( int2( floor( p + 0.5 ) ), int2( 0, 0 ), size - 1 );
+	return weightSum > 1e-4 ? sum / weightSum : gHistoryAo.Load( int3( center, 0 ) );
+}
+
+float SampleHistoryDepth( float2 p, int2 size )
+{
+	int2 ip = clamp( int2( floor( p + 0.5 ) ), int2( 0, 0 ), size - 1 );
+	return gHistoryDepth.Load( int3( ip, 0 ) );
+}
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 dispatchID : SV_DispatchThreadID )
+{
+	int2 aoSize = max( int2( gTemporalViewport.xy ), int2( 1, 1 ) );
+	int2 fullSize = max( int2( gTemporalViewport.zw ), int2( 1, 1 ) );
+	int2 p = int2( dispatchID.xy );
+	if ( any( p >= aoSize ) ) return;
+
+	float2 localFullPixel = ( float2( p ) + 0.5 ) * gTemporalOriginScale.zw;
+	float2 scenePixel = gTemporalOriginScale.xy + localFullPixel;
+	int2 sceneP = clamp( int2( floor( scenePixel ) ), int2( 0, 0 ), int2( gTemporalOriginScale.xy ) + fullSize - 1 );
+	int2 localP = clamp( int2( floor( localFullPixel ) ), int2( 0, 0 ), fullSize - 1 );
+	float currentDepth = gCurrentDepth.Load( int3( localP, 0 ) );
+	float currentAo = LoadAo( p, aoSize );
+	float minAo = currentAo, maxAo = currentAo;
+	[unroll] for ( int y = -1; y <= 1; ++y )
+	{
+		[unroll] for ( int x = -1; x <= 1; ++x )
+		{
+			float n = LoadAo( p + int2( x, y ), aoSize );
+			minAo = min( minAo, n );
+			maxAo = max( maxAo, n );
+		}
+	}
+
+	float result = currentAo;
+	bool historyValid = gTemporalParams.x > 0.5 && currentDepth < 65503.0;
+	float2 previousAo = -1.0;
+	float expectedPreviousDepth = currentDepth;
+	if ( historyValid )
+	{
+		float2 uv = localFullPixel / float2( fullSize );
+		float clipZ = gTemporalDepth.x - gTemporalParams.w / max( currentDepth, 1e-4 );
+		float4 world = mul( gClipToWorld, float4( uv * float2( 2.0, -2.0 ) + float2( -1.0, 1.0 ), clipZ, 1.0 ) );
+		world.xyz /= max( abs( world.w ), 1e-6 );
+		float4 previousClip = mul( gPrevWorldToClip, float4( world.xyz, 1.0 ) );
+		if ( previousClip.w > 0.0 )
+		{
+			float2 cameraPreviousUv = previousClip.xy / previousClip.w * float2( 0.5, -0.5 ) + 0.5;
+			previousAo = ( cameraPreviousUv * fullSize - gTemporalOriginScale.xy ) / gTemporalOriginScale.zw - 0.5;
+			expectedPreviousDepth = previousClip.w;
+		}
+		if ( gTemporalParams.y > 0.5 )
+		{
+			float2 motion = gMotion.Load( int3( sceneP, 0 ) ).xy;
+			previousAo = ( scenePixel - motion * fullSize - gTemporalOriginScale.xy ) / gTemporalOriginScale.zw - 0.5;
+		}
+		bool inside = all( previousAo >= 0.0 ) && all( previousAo < float2( aoSize ) );
+		if ( inside )
+		{
+			float previousDepth = SampleHistoryDepth( previousAo, aoSize );
+			float depthTolerance = max( 1.0, 0.04 * max( currentDepth, expectedPreviousDepth ) );
+			bool depthValid = previousDepth < 65503.0 && abs( previousDepth - expectedPreviousDepth ) <= depthTolerance;
+			if ( depthValid )
+			{
+				float historyAo = SampleHistoryAoDepthAware( previousAo, aoSize, expectedPreviousDepth, depthTolerance );
+				// A generous neighbourhood clamp blocks bright/dark trails while retaining the
+				// high history weight needed to converge the low-sample horizon search.
+				float extent = max( maxAo - minAo, 0.025 );
+				historyAo = clamp( historyAo, minAo - extent, maxAo + extent );
+				float motionPixels = length( previousAo - ( float2( p ) + 0.5 ) );
+				float blend = gTemporalParams.z * saturate( 1.0 - ( motionPixels - 0.5 ) / 8.0 );
+				result = lerp( currentAo, historyAo, blend );
+			}
+		}
+	}
+	gHistoryAoOut[p] = saturate( result );
+	gHistoryDepthOut[p] = currentDepth;
+}

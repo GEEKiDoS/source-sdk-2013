@@ -10,3 +10,5 @@ gtao_denoise_cs51.fxc cs gtao_denoise_cs51 native -
 # noparity gtao_denoise_cs51 - native-only
 gtao_apply_ps51.fxc ps gtao_apply_ps51 native -
 # noparity gtao_apply_ps51 - native-only
+gtao_temporal_cs51.fxc cs gtao_temporal_cs51 native -
+# noparity gtao_temporal_cs51 - native-only

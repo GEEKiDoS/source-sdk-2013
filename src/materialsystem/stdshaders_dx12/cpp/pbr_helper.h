@@ -88,7 +88,8 @@ struct PBR_Vars_t
 
 	// Model: legacy Phong adapter and the unbumped $ambientonly debug mode
 	int phong, phongExponent, phongExponentTexture, baseMapAlphaPhongMask, ambientOnly;
-
+	int phongTint, phongAlbedoTint, phongBoost, phongFresnelRanges, envmapFresnel, baseMapLuminancePhongMask, diffuseExponent;
+	int phongWarp, rimLight, shinyBlood, flashlightNoLambert, blendTintByBaseAlpha, linearWrite, allowDiffuseModulation;
 	// PBR_Metalness / PBR_Specular only
 	int normalTexture;
 
@@ -97,10 +98,22 @@ struct PBR_Vars_t
 	int subsurface, subsurfaceTint, backlight, backlightTint, thickness, thicknessTexture, anisotropy, anisotropyRotation;
 	int parallaxObb1, parallaxObb2, parallaxObb3, envmapOrigin;
 
-	// Legacy features the PBR shaders do not render (read by PBR_LegacySupported)
+	// Legacy features the PBR shaders still decline (read by PBR_LegacySupported)
 	int seamlessScale, lightWarp, outline, softEdges;
-	int treeSway, distanceAlpha, seamlessBase, seamlessDetail, selfIllumFresnel, selfIllumMask, lightmap;
+	int distanceAlpha, seamlessBase, seamlessDetail, selfIllumFresnel, lightmap;
 
+	// L4D2 model controls implemented by the PBR adapter.
+	int treeSway, selfIllumMask;
+
+	// World: L4D2 SSBump correction and blend-tint controls.
+	int ssBumpMathFix, vertexFog;
+
+	// L4D2 tree sway material rows (staged by the model adapter).
+	int treeSwayHeight, treeSwayStartHeight, treeSwayRadius, treeSwayStartRadius;
+	int treeSwaySpeed, treeSwaySpeedHighWindMultiplier, treeSwayStrength;
+	int treeSwayScrumbleSpeed, treeSwayScrumbleStrength, treeSwayScrumbleFrequency;
+	int treeSwayFalloffExp, treeSwayScrumbleFalloffExp, treeSwaySpeedLerpStart, treeSwaySpeedLerpEnd;
+	int treeSwayStatic;
 	bool model;				// studio-model draw (pbr_model_*); PBR_Metalness / PBR_Specular take it from the $model material flag
 	bool standalone;		// no legacy helper initializes the material (PBR_Metalness / PBR_Specular)
 	bool specularWorkflow;	// F0 from $speculartexture / $specularcolor instead of $metalness

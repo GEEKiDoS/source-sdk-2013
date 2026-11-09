@@ -8,7 +8,7 @@ logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=PBRMaterialPS space=1 register=b1 size=320 layoutHash=0xe13458959e25d606 material
+  cbuffer=PBRMaterialPS space=1 register=b1 size=400 layoutHash=0x87880f0b8fb14c8e material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_SpecularColor type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
@@ -28,6 +28,11 @@ logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.
     member=g_PbrFlags2 type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=ps:c31
     member=g_PbrBlend type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=ps:c32
     member=g_PbrMaskTransform type=3 class=1 offset=288 size=32 elements=2 arrayStride=16 legacy=ps:c33
+    member=g_L4D2Phong type=3 class=1 offset=320 size=16 elements=0 arrayStride=0 legacy=ps:c35
+    member=g_L4D2PhongRanges type=3 class=1 offset=336 size=16 elements=0 arrayStride=0 legacy=ps:c36
+    member=g_L4D2Controls type=3 class=1 offset=352 size=16 elements=0 arrayStride=0 legacy=ps:c37
+    member=g_L4D2Model type=3 class=1 offset=368 size=16 elements=0 arrayStride=0 legacy=ps:c38
+    member=g_L4D2World type=3 class=1 offset=384 size=16 elements=0 arrayStride=0 legacy=ps:c39
     legacyEntry=0,16,1,0,0,0,0
     legacyEntry=16,16,1,0,0,0,1
     legacyEntry=32,16,1,0,0,0,2
@@ -47,4 +52,9 @@ logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.
     legacyEntry=256,16,1,0,0,0,31
     legacyEntry=272,16,1,0,0,0,32
     legacyEntry=288,16,2,16,0,0,33
+    legacyEntry=320,16,1,0,0,0,35
+    legacyEntry=336,16,1,0,0,0,36
+    legacyEntry=352,16,1,0,0,0,37
+    legacyEntry=368,16,1,0,0,0,38
+    legacyEntry=384,16,1,0,0,0,39
     bridge=WriteNativeCBuffer(api, block)

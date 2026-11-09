@@ -9,6 +9,7 @@
 
 #include "BaseVSShader.h"
 #include "l4d2_vertexlitgeneric_dx9_helper.h"
+#include "l4d2_pbr_route.h"
 
 
 BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
@@ -253,7 +254,12 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 
 	SHADER_FALLBACK
 	{
-		// Original VertexLitGeneric primary1 (10038F30) returns NULL.
+		const bool hasUnsupportedPass = params[SHINYBLOOD]->GetIntValue() != 0 ||
+			params[EMISSIVEBLENDENABLED]->GetIntValue() != 0 || params[CLOAKPASSENABLED]->GetIntValue() != 0 ||
+			params[FLESHINTERIORENABLED]->GetIntValue() != 0 || params[ENABLEWOUNDCUTOUT]->GetIntValue() != 0;
+		if ( !hasUnsupportedPass && L4D2PbrRoute( params, true, DETAILBLENDMODE, LIGHTWARPTEXTURE, PHONGWARPTEXTURE, RIMLIGHT, -1,
+			SEAMLESS_BASE, SEAMLESS_DETAIL, -1, SELFILLUMFRESNEL, VERTEXFOG ) )
+			return "PBR_VertexLitGeneric";
 		return NULL;
 	}
 

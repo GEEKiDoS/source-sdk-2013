@@ -20,7 +20,6 @@
 // STATIC: "ALPHATEST" "0..1"
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
 // DYNAMIC: "SHADOWQUALITY" "0..3"
-// Only the ENHANCED receiver variants sample shadow maps.
 // SKIP: ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
 // The TANGENT combo name collides with the TANGENT vertex semantic: capture the value, then release the macro.
 #if TANGENT
@@ -55,6 +54,8 @@ Texture2D ThicknessTexture : register( t8 );
 SamplerState ThicknessSampler : register( s8 );
 Texture2D PhongExponentTexture : register( t9 );
 SamplerState PhongExponentSampler : register( s9 );
+Texture2D SelfIllumMaskTexture : register( t10 );
+SamplerState SelfIllumMaskSampler : register( s10 );
 
 // Exact mirror of the paired vertex output (same types, order and interpolation).
 struct DX12_PS_INPUT
@@ -72,6 +73,7 @@ struct DX12_PS_INPUT
 #else
 	float3 staticLight : TEXCOORD6;
 #endif
+	float4 vertexColor : TEXCOORD7;
 #if ENHANCED
 	uint primitiveId : SV_PrimitiveID;
 #endif
@@ -90,10 +92,27 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	uint phongBits = uint( g_Misc.z );
 
 	float4 base = BaseTexture.Sample( BaseSampler, baseUV );
+	float4 detail = float4( 1.0, 1.0, 1.0, 1.0 );
 	if ( g_Flags1.z != 0.0 )
 	{
-		float3 detail = DetailTexture.Sample( DetailSampler, i.detailUV ).rgb * g_PbrDetail.rgb;
-		base.rgb = g_Flags1.w == 0.0 ? base.rgb * lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * detail, g_PbrDetail.w ) : base.rgb + g_PbrDetail.w * detail;
+		detail = DetailTexture.Sample( DetailSampler, i.detailUV ) * float4( g_PbrDetail.rgb, 1.0 );
+		const int detailMode = int( g_L4D2World.x + 0.5 );
+		if ( detailMode == 0 )
+			base.rgb *= lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * detail.rgb, g_PbrDetail.w );
+		else if ( detailMode == 1 )
+			base.rgb += g_PbrDetail.w * detail.rgb;
+		else if ( detailMode == 2 )
+			base.rgb = lerp( base.rgb, detail.rgb, g_PbrDetail.w * detail.a );
+		else if ( detailMode == 3 )
+			base = lerp( base, detail, g_PbrDetail.w );
+		else if ( detailMode == 4 )
+			base.rgb = lerp( base.rgb, detail.rgb, g_PbrDetail.w * ( 1.0 - base.a ) );
+		else if ( detailMode == 7 )
+			base.rgb *= lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * lerp( detail.r, detail.a, base.a ), g_PbrDetail.w );
+		else if ( detailMode == 8 )
+			base = lerp( base, base * detail, g_PbrDetail.w );
+		else if ( detailMode == 9 )
+			base.a = lerp( base.a, base.a * detail.a, g_PbrDetail.w );
 	}
 
 	float3 vertexNormal = normalize( i.worldNormal );
@@ -122,10 +141,11 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( g_Flags1.y == 1.0 )
 		envMask = EnvmapMaskTexture.Sample( EnvmapMaskSampler, baseUV ).rgb;
 	else if ( g_Flags1.y == 2.0 )
-		envMask = 1.0 - base.a;
+		envMask = base.a;
 	else if ( g_Flags1.y == 3.0 )
 		envMask = normalAlpha;
-
+	if ( ( phongBits & 4u ) != 0 )
+		envMask = base.a;
 	float3 surface = g_Surface.xyz;
 	if ( g_Flags0.x != 0.0 )
 		surface *= MraoTexture.Sample( MraoSampler, baseUV ).rgb;
@@ -134,29 +154,45 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	const bool glossFromMask = g_PbrFlags2.y != 0.0;
 	if ( glossFromMask )
 		surface.y = 1.0 - saturate( dot( envMask, float3( 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0 ) ) );
+	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( float3( 1.0, 1.0, 1.0 ), g_BaseTint.rgb, base.a ) : g_BaseTint.rgb;
+	float3 baseColor = base.rgb * modColor * i.vertexColor.rgb;
 	float3 specularF0 = g_SpecularColor.rgb;
 	if ( g_Flags0.z != 0.0 )
 		specularF0 = SpecularTexture.Sample( SpecularSampler, baseUV ).rgb;
 	if ( ( phongBits & 1u ) != 0 )
 	{
-		// Legacy Phong adapter: roughness = (2 / (exponent + 2))^0.25, F0 = specular color * phong mask.
+		// Legacy Phong mask and Fresnel range. $basemapluminancephongmask replaces the base-alpha mask.
+		float phongMask = ( phongBits & 4u ) != 0 ? ( g_L4D2Model.x != 0.0 ? dot( base.rgb, float3( 0.299, 0.587, 0.114 ) ) : base.a ) : normalAlpha;
 		if ( ( phongBits & 2u ) != 0 )
-			surface.y = sqrt( sqrt( 2.0 / ( PhongExponentTexture.Sample( PhongExponentSampler, baseUV ).r * 149.0 + 3.0 ) ) );
-		specularF0 *= ( phongBits & 4u ) != 0 ? base.a : normalAlpha;
+		{
+			float4 phongMap = PhongExponentTexture.Sample( PhongExponentSampler, baseUV );
+			// Legacy skin/l4d2 Phong uses exponent = 1 + 149 * R unless $phongexponent overrides it.
+			float exponent = g_L4D2PhongRanges.w > 0.0 ? g_L4D2PhongRanges.w : 1.0 + 149.0 * phongMap.r;
+			surface.y = sqrt( sqrt( 2.0 / ( exponent + 2.0 ) ) );
+			// Legacy $phongalbedotint tints the specular colour only; it does not remove diffuse albedo.
+			if ( g_L4D2Model.w != 0.0 )
+				specularF0 = lerp( specularF0, baseColor, saturate( phongMap.g ) );
+		}
+		// Legacy $phongboost is represented as bounded reflectance, not a post-GGX intensity multiplier.
+		specularF0 *= phongMask * g_L4D2Phong.rgb * max( g_L4D2Phong.w, 0.0 );
+		float fresnel = pow( 1.0 - saturate( dot( normalize( i.toEye ), N ) ), max( g_L4D2PhongRanges.z, 0.0 ) );
+		specularF0 *= lerp( g_L4D2PhongRanges.x, g_L4D2PhongRanges.y, fresnel );
+		specularF0 = saturate( specularF0 );
 	}
 	float thickness = g_Options.z;
 	if ( g_SubsurfaceTint.w != 0.0 && ( g_Options.x > 0.0 || g_Options.y > 0.0 ) )
 		thickness = ThicknessTexture.Sample( ThicknessSampler, baseUV ).r;
-
-	float3 baseColor = base.rgb * g_BaseTint.rgb;
 	PBRSurface s = PBR_MakeSurface( N, V, frameT, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, g_Misc.y != 0.0 ? 1 : 0 );
 
-	float alpha = g_BaseTint.a;
+	float alpha = g_BaseTint.a * i.vertexColor.a;
 	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 && ( phongBits & 4u ) == 0 )
 		alpha *= base.a;
 	float3 emission = 0.0;
 	if ( g_Flags0.w == 1.0 )
-		emission = baseColor * g_EmissionTint.rgb * base.a;
+	{
+		float selfIllum = g_L4D2Controls.w != 0.0 ? SelfIllumMaskTexture.Sample( SelfIllumMaskSampler, baseUV ).r : base.a;
+		emission = baseColor * g_EmissionTint.rgb * selfIllum;
+	}
 	else if ( g_Flags0.w == 2.0 )
 		emission = EmissionTexture.Sample( EmissionSampler, baseUV ).rgb * g_EmissionTint.rgb;
 	// Alpha-tested fragments that fail are killed before the light loops (DX12FinishPixel repeats the same test on the
@@ -204,6 +240,15 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	result += direct.diffuse + direct.specular;
 #endif
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );
+	if ( int( g_L4D2World.x + 0.5 ) == 5 )
+		result += g_PbrDetail.w * detail.rgb;
+	else if ( int( g_L4D2World.x + 0.5 ) == 6 )
+	{
+		float f = g_PbrDetail.w - 0.5;
+		float fMult = f >= 0.0 ? 1.0 / max( g_PbrDetail.w, 1e-4 ) : 4.0 * g_PbrDetail.w;
+		float fAdd = f >= 0.0 ? 1.0 - fMult : -0.5 * fMult;
+		result += saturate( fMult * detail.rgb + fAdd );
+	}
 	// SSR payload: the environment term as it reaches the scene (E) and the response a sampled scene radiance must be
 	// multiplied by to replace it (K), both through this pixel's fog transmission, plus the direct GGX specular (S) in
 	// the same units and its luminance-weighted light distance (D). Only an envmapped material in a capturing bracket

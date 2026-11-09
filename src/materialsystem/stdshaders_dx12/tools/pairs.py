@@ -52,7 +52,6 @@ POSTFX = [
     pair('postfx', SSE, 'hsv_ps20b', ['hsv.cpp']),
     pair('postfx', SSE, 'introscreenspaceeffect_ps20b', ['introscreenspaceeffect.cpp']),
     pair('postfx', 'motion_blur_vs20', 'motion_blur_ps20b', ['motion_blur_dx9.cpp']),
-    pair('postfx', 'pyro_vision_vs30', 'pyro_vision_ps30', ['pyro_vision.cpp']),
     pair('postfx', 'downsample_vs20', 'sample4x4_ps20b', ['sample4x4.cpp']),
     pair('postfx', 'downsample_vs20', 'sample4x4_blend_ps20b', ['sample4x4_blend.cpp']),
     pair('postfx', 'sfm_combine_vs20', 'sfm_integercombine_ps20b', ['sfm_integercombine.cpp']),

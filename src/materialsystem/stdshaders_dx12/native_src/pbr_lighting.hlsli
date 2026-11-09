@@ -33,7 +33,17 @@ float3 PBR_ProjectedSpots( PBRSurface s, float3 P, uint receiverFlag, inout PBRS
 			rawVisibility *= DX12_ContactVisibility( P, s.N, L, distance - 0.25 );
 		float shadow = lerp( rawVisibility, 1.0, light.attnShadow.z );
 		float3 specular;
-		result += PBR_DirectSplit( s, L, radiance, shadow, true, specular );
+		float3 diffuse = PBR_DiffuseBurley( s, L );
+		if ( g_L4D2Model.y != 0.0 )
+			diffuse = s.diffuseColor;
+		else if ( g_L4D2Model.z > 0.0 )
+		{
+			float nDotL = saturate( dot( s.N, L ) );
+			diffuse *= pow( nDotL, g_L4D2Model.z ) / max( nDotL, 1e-4 );
+		}
+		float3 ggx = PBR_Specular( s, L );
+		specular = ggx * radiance * shadow;
+		result += ( diffuse + ggx ) * radiance * shadow;
 		PBR_AddSpecular( specularSum, specular, distance );
 	}
 	return result;

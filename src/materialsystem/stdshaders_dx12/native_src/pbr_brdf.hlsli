@@ -234,6 +234,7 @@ float3 PBR_Specular( PBRSurface s, float3 L )
 		}
 		float3 F = s.F0 + ( 1.0 - s.F0 ) * PBR_Pow5( 1.0 - VdotH );
 		result = min( D * Vis, PBR_MAX_SPECULAR ) * F * NdotL;
+		// Phong boost is already encoded in the bounded legacy reflectance F0.
 	}
 	return result;
 }
@@ -265,10 +266,24 @@ float3 PBR_EnvBRDF( float3 F0, float roughness, float NdotV )
 	return F0 * AB.x + AB.y;
 }
 
-// Split-sum response of the environment term for the effective envmap mask: what a reflected radiance is multiplied
-// by before it reaches the scene (tint, mask, material AO, EnvBRDF). Shared by the cube term and the SSR payload.
+// Split-sum response of the environment term for the effective envmap mask. Legacy L4D2 Phong materials use
+// $envmap as an explicitly authored reflection, not a dielectric IBL whose strength is limited by F0.
 float3 PBR_EnvironmentResponse( PBRSurface s, float3 effectiveMask )
 {
+	if ( g_Misc.z != 0.0 )
+	{
+		float envFresnel = 1.0;
+		if ( g_L4D2World.y != 0.0 )
+		{
+			float value = 1.0 - saturate( s.NdotV );
+			value *= value;
+			envFresnel = value > 0.5
+				? lerp( g_L4D2PhongRanges.y, g_L4D2PhongRanges.z, 2.0 * value - 1.0 )
+				: lerp( g_L4D2PhongRanges.x, g_L4D2PhongRanges.y, 2.0 * value );
+			envFresnel = lerp( 1.0, envFresnel, saturate( g_L4D2World.y ) );
+		}
+		return g_ReflectionTint.rgb * effectiveMask * s.ao * envFresnel;
+	}
 	return g_ReflectionTint.rgb * effectiveMask * s.ao * PBR_EnvBRDF( s.F0, s.roughness, s.NdotV );
 }
 

@@ -9,6 +9,7 @@
 #include "BaseVSShader.h"
 #include "convar.h"
 #include "l4d2_lightmappedgeneric_dx9_helper.h"
+#include "l4d2_pbr_route.h"
 
 static L4D2LightmappedGeneric_DX9_Vars_t s_info;
 
@@ -135,9 +136,10 @@ BEGIN_VS_SHADER( LightmappedGeneric,
 
 	SHADER_FALLBACK
 	{
-		if( g_pHardwareConfig->GetDXSupportLevel() < 92 )
+		if ( L4D2PbrRoute( params, false, DETAILBLENDMODE, LIGHTWARPTEXTURE, -1, -1, -1, -1, -1, SEAMLESS_SCALE, -1, VERTEXFOG ) )
+			return "PBR_LightmappedGeneric";
+		if ( g_pHardwareConfig->GetDXSupportLevel() < 92 )
 			return "LightmappedGeneric_DX8";
-
 		return 0;
 	}
 
@@ -158,4 +160,4 @@ BEGIN_VS_SHADER( LightmappedGeneric,
 	{
 		DrawL4D2LightmappedGeneric_DX9( this, params, pShaderAPI, pShaderShadow, s_info, pContextDataPtr );
 	}
-END_SHADER
+END_SHADER

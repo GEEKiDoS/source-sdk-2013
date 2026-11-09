@@ -5,6 +5,7 @@
 //===========================================================================//
 #include "cbase.h"
 #include "gtao_dx12.h"
+#include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
@@ -37,6 +38,7 @@ static GtaoMaterial_t s_Prefilter;
 static GtaoMaterial_t s_ViewDepth;
 static GtaoMaterial_t s_Main;
 static GtaoMaterial_t s_Denoise[3];
+static GtaoMaterial_t s_Temporal;
 static GtaoMaterial_t s_Apply;
 static GtaoMaterial_t s_ApplyDebug;
 static CTextureReference s_GtaoDepth;
@@ -44,6 +46,17 @@ static CTextureReference s_GtaoViewDepth;
 static CTextureReference s_GtaoTerm0;
 static CTextureReference s_GtaoTerm1;
 static CTextureReference s_GtaoEdges;
+static CTextureReference s_GtaoHistory[2];
+static CTextureReference s_GtaoHistoryDepth[2];
+static int s_nTemporalCurrent = 0;
+static int s_nTemporalAoWidth = 0, s_nTemporalAoHeight = 0;
+static int s_nTemporalFullWidth = 0, s_nTemporalFullHeight = 0;
+static bool s_bTemporalValid = false;
+static Vector s_vecTemporalPreviousEye( 0, 0, 0 );
+static Vector s_vecTemporalPreviousForward( 0, 0, 1 );
+static VMatrix s_TemporalPreviousWorldToClip;
+static char s_TemporalLevel[256] = {};
+static int s_nTemporalPreviousFrame = -1;
 
 static IMaterialVar *FindVar( IMaterial *pMaterial, const char *pName )
 {
@@ -127,6 +140,27 @@ static void SetGtaoConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, i
 	SetVector4( pMaterial, "$sceneorigin", sceneOrigin );
 	SetVector4( pMaterial, "$depthscale", depthScale );
 }
+static void SetGtaoTemporalConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, int fullWidth, int fullHeight,
+	int originX, int originY, const VMatrix &worldToClip, const VMatrix &clipToWorld,
+	const float *depthUnpack, bool bHistoryValid, bool bMotionValid, float historyWeight )
+{
+	static const char *const kPreviousRows[4] = { "$temporal0", "$temporal1", "$temporal2", "$temporal3" };
+	static const char *const kInverseRows[4] = { "$temporal4", "$temporal5", "$temporal6", "$temporal7" };
+	for ( int i = 0; i < 4; ++i )
+	{
+		SetVector4( pMaterial, kPreviousRows[i], worldToClip[i] );
+		SetVector4( pMaterial, kInverseRows[i], clipToWorld[i] );
+	}
+	const float temporalParams[4] = { bHistoryValid ? 1.f : 0.f, bMotionValid ? 1.f : 0.f, historyWeight, depthUnpack[0] };
+	const float temporalViewport[4] = { static_cast<float>( aoWidth ), static_cast<float>( aoHeight ), static_cast<float>( fullWidth ), static_cast<float>( fullHeight ) };
+	const float temporalOriginScale[4] = { static_cast<float>( originX ), static_cast<float>( originY ),
+		fullWidth / static_cast<float>( aoWidth ), fullHeight / static_cast<float>( aoHeight ) };
+	const float temporalDepth[4] = { depthUnpack[1], 0.f, 0.f, 0.f };
+	SetVector4( pMaterial, "$temporalparams", temporalParams );
+	SetVector4( pMaterial, "$temporalviewport", temporalViewport );
+	SetVector4( pMaterial, "$temporaloriginscale", temporalOriginScale );
+	SetVector4( pMaterial, "$temporaldepth", temporalDepth );
+}
 
 static void SetGtaoApplyConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, int fullWidth, int fullHeight, bool bRestoreScale, int originX, int originY,
 	const VMatrix &view, const VMatrix &projection )
@@ -181,6 +215,8 @@ ConVar r_gtao_radius( "r_gtao_radius", "24", FCVAR_ARCHIVE, "GTAO effect radius 
 ConVar r_gtao_power( "r_gtao_power", "2.2", FCVAR_ARCHIVE, "GTAO final value power (occlusion contrast)", true, 0.1f, true, 8.f );
 ConVar r_gtao_denoise( "r_gtao_denoise", "1", FCVAR_ARCHIVE, "GTAO spatial denoise passes (with temporal AA the noise pattern also animates so the upscaler accumulates it)", true, 0, true, 3 );
 ConVar r_gtao_debug( "r_gtao_debug", "0", 0, "GTAO: 1 shows the AO term instead of applying it", true, 0, true, 1 );
+ConVar r_gtao_temporal( "r_gtao_temporal", "1", FCVAR_ARCHIVE, "DX12: accumulate GTAO across frames with motion/depth rejection", true, 0, true, 1 );
+ConVar r_gtao_temporal_weight( "r_gtao_temporal_weight", "0.93", FCVAR_ARCHIVE, "DX12 GTAO history weight after reprojection", true, 0.5f, true, 0.98f );
 
 void GTAODX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig )
 {
@@ -188,6 +224,11 @@ void GTAODX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig )
 	s_bDX12 = shaderDLL && !V_stricmp( shaderDLL, "stdshader_dx12" );
 	s_bMaterialsReady = false;
 	s_nComputedFrame = s_nAppliedFrame = -1;
+	s_nTemporalCurrent = 0;
+	s_bTemporalValid = false;
+	s_nTemporalAoWidth = s_nTemporalAoHeight = s_nTemporalFullWidth = s_nTemporalFullHeight = 0;
+	s_TemporalLevel[0] = '\0';
+	s_nTemporalPreviousFrame = -1;
 }
 
 void GTAODX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig )
@@ -207,7 +248,16 @@ void GTAODX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSy
 		IMAGE_FORMAT_I8, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
 	s_GtaoEdges.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_GTAOEdges", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_I8, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+	for ( int i = 0; i < 2; ++i )
+	{
+		s_GtaoHistory[i].Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( CFmtStr( "_rt_GTAOHistory%d", i ), 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
+			IMAGE_FORMAT_I8, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+		s_GtaoHistoryDepth[i].Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( CFmtStr( "_rt_GTAOHistoryDepth%d", i ), 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
+			IMAGE_FORMAT_R32F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+	}
 	s_bRenderTargetsReady = s_GtaoDepth.IsValid() && s_GtaoViewDepth.IsValid() && s_GtaoTerm0.IsValid() && s_GtaoTerm1.IsValid() && s_GtaoEdges.IsValid();
+	for ( int i = 0; i < 2; ++i )
+		s_bRenderTargetsReady = s_bRenderTargetsReady && s_GtaoHistory[i].IsValid() && s_GtaoHistoryDepth[i].IsValid();
 	if ( !s_bRenderTargetsReady )
 		return;
 
@@ -216,11 +266,12 @@ void GTAODX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSy
 	s_Main.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/gtao_main", "DX12_GTAO", "$pass", 2 );
 	for ( int i = 0; i < ARRAYSIZE( s_Denoise ); ++i )
 		s_Denoise[i].m_pMaterial = CreateMaterial( pMaterialSystem, CFmtStr( "dx12/gtao_denoise_%d", i ), "DX12_GTAO", "$pass", 3 );
+	s_Temporal.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/gtao_temporal", "DX12_GTAO", "$pass", 4 );
 	s_Apply.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/gtao_apply", "DX12_GTAOApply", "$debugview", 0 );
 	s_ApplyDebug.m_pMaterial = CreateMaterial( pMaterialSystem, "dx12/gtao_apply_debug", "DX12_GTAOApply", "$debugview", 1 );
 	s_bMaterialsReady = MaterialValid( s_Prefilter.m_pMaterial ) && MaterialValid( s_ViewDepth.m_pMaterial ) && MaterialValid( s_Main.m_pMaterial ) &&
 		MaterialValid( s_Denoise[0].m_pMaterial ) && MaterialValid( s_Denoise[1].m_pMaterial ) && MaterialValid( s_Denoise[2].m_pMaterial ) &&
-		MaterialValid( s_Apply.m_pMaterial ) && MaterialValid( s_ApplyDebug.m_pMaterial );
+		MaterialValid( s_Temporal.m_pMaterial ) && MaterialValid( s_Apply.m_pMaterial ) && MaterialValid( s_ApplyDebug.m_pMaterial );
 }
 
 void GTAODX12_Shutdown()
@@ -230,6 +281,7 @@ void GTAODX12_Shutdown()
 	ReleaseMaterial( s_Main );
 	for ( int i = 0; i < ARRAYSIZE( s_Denoise ); ++i )
 		ReleaseMaterial( s_Denoise[i] );
+	ReleaseMaterial( s_Temporal );
 	ReleaseMaterial( s_Apply );
 	ReleaseMaterial( s_ApplyDebug );
 	s_GtaoDepth.Shutdown();
@@ -237,10 +289,20 @@ void GTAODX12_Shutdown()
 	s_GtaoTerm0.Shutdown();
 	s_GtaoTerm1.Shutdown();
 	s_GtaoEdges.Shutdown();
+	for ( int i = 0; i < 2; ++i )
+	{
+		s_GtaoHistory[i].Shutdown();
+		s_GtaoHistoryDepth[i].Shutdown();
+	}
 	s_bMaterialsReady = false;
 	s_bRenderTargetsReady = false;
 	s_bDX12 = false;
 	s_nComputedFrame = s_nAppliedFrame = -1;
+	s_nTemporalCurrent = 0;
+	s_bTemporalValid = false;
+	s_nTemporalAoWidth = s_nTemporalAoHeight = s_nTemporalFullWidth = s_nTemporalFullHeight = 0;
+	s_TemporalLevel[0] = '\0';
+	s_nTemporalPreviousFrame = -1;
 }
 
 bool GTAODX12_Enabled()
@@ -265,17 +327,45 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext )
 	const float projectionDepth = projection[3][2];
 	if ( projection[3][3] != 0.f || projectionDepth == 0.f || projection[0][0] == 0.f || projection[1][1] == 0.f )
 		return;
+	VMatrix worldToClip = projection * view;
+	VMatrix clipToWorld;
+	VMatrix cameraToWorld;
+	if ( !MatrixInverseGeneral( worldToClip, clipToWorld ) || !MatrixInverseGeneral( view, cameraToWorld ) )
+		return;
+	const Vector eye = cameraToWorld.GetTranslation();
+	const Vector forward = cameraToWorld.GetForward();
 	const float scale = Clamp( r_gtao_resolution.GetFloat(), 0.25f, 1.f );
 	const int aoWidth = MAX( 1, static_cast<int>( ceilf( fullWidth * scale ) ) );
 	const int aoHeight = MAX( 1, static_cast<int>( ceilf( fullHeight * scale ) ) );
+	bool bLevelChange = false;
+	const char *pszLevel = engine ? engine->GetLevelName() : nullptr;
+	if ( pszLevel && V_stricmp( pszLevel, s_TemporalLevel ) )
+	{
+		V_strncpy( s_TemporalLevel, pszLevel, sizeof( s_TemporalLevel ) );
+		bLevelChange = true;
+	}
+	const bool bFrameGap = s_bTemporalValid && s_nTemporalPreviousFrame + 1 != gpGlobals->framecount;
+	const bool bCameraCut = s_bTemporalValid &&
+		( eye.DistToSqr( s_vecTemporalPreviousEye ) > 512.f * 512.f ||
+		  forward.Dot( s_vecTemporalPreviousForward ) < 0.5f );
+	const bool bResize = s_nTemporalAoWidth != aoWidth || s_nTemporalAoHeight != aoHeight ||
+		s_nTemporalFullWidth != fullWidth || s_nTemporalFullHeight != fullHeight;
 	const int slices = Clamp( r_gtao_slices.GetInt(), 1, 9 );
 	const int steps = Clamp( r_gtao_steps.GetInt(), 1, 8 );
-	// A temporal upscaler accumulates an animated noise pattern on top of the spatial filter.
-	const bool bTemporal = UpscalerDX12_Enabled() && UpscalerDX12_Status() > 0;
+	const bool bTemporalAccumulation = r_gtao_temporal.GetBool();
+	// A temporal accumulator deliberately keeps the animated noise sequence alive; the
+	// reprojection turns it into stratified samples instead of visible frame noise.
+	const bool bTemporal = bTemporalAccumulation || ( UpscalerDX12_Enabled() && UpscalerDX12_Status() > 0 );
 	const int denoisePasses = Clamp( r_gtao_denoise.GetInt(), 0, 3 );
 	const int noiseIndex = bTemporal ? gpGlobals->framecount & 63 : 0;
 	const float radius = Clamp( r_gtao_radius.GetFloat(), 1.f, 1024.f );
 	const float power = Clamp( r_gtao_power.GetFloat(), 0.1f, 8.f );
+	if ( !bTemporalAccumulation || bLevelChange || bFrameGap || bCameraCut || bResize )
+	{
+		s_bTemporalValid = false;
+		s_nTemporalCurrent = 0;
+	}
+	const bool bMotion = bTemporalAccumulation && MotionVectorsDX12_Enabled() && MotionVectorsDX12_RenderTarget() != nullptr;
 
 	SetTexture( s_Prefilter.m_pMaterial, "$depthmips", s_GtaoDepth );
 	SetTexture( s_ViewDepth.m_pMaterial, "$viewdepth", s_GtaoViewDepth );
@@ -288,8 +378,17 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext )
 		SetTexture( s_Denoise[i].m_pMaterial, "$edges", s_GtaoEdges );
 		SetTexture( s_Denoise[i].m_pMaterial, "$aoout", ( i & 1 ) ? s_GtaoTerm0 : s_GtaoTerm1 );
 	}
+	const int nHistoryOut = s_nTemporalCurrent;
+	const int nHistoryIn = nHistoryOut ^ 1;
+	SetTexture( s_Temporal.m_pMaterial, "$aoin", denoisePasses & 1 ? s_GtaoTerm1 : s_GtaoTerm0 );
+	SetTexture( s_Temporal.m_pMaterial, "$viewdepth", scale < 1.f ? s_GtaoViewDepth : s_GtaoDepth );
+	SetTexture( s_Temporal.m_pMaterial, "$historyin", s_GtaoHistory[nHistoryIn] );
+	SetTexture( s_Temporal.m_pMaterial, "$historydepthin", s_GtaoHistoryDepth[nHistoryIn] );
+	SetTexture( s_Temporal.m_pMaterial, "$historyout", s_GtaoHistory[nHistoryOut] );
+	SetTexture( s_Temporal.m_pMaterial, "$historydepthout", s_GtaoHistoryDepth[nHistoryOut] );
+	SetTexture( s_Temporal.m_pMaterial, "$motion", bMotion ? MotionVectorsDX12_RenderTarget() : s_GtaoDepth );
 	IMaterial *pApply = r_gtao_debug.GetBool() ? s_ApplyDebug.m_pMaterial : s_Apply.m_pMaterial;
-	SetTexture( pApply, "$aoin", denoisePasses & 1 ? s_GtaoTerm1 : s_GtaoTerm0 );
+	SetTexture( pApply, "$aoin", bTemporalAccumulation ? s_GtaoHistory[nHistoryOut] : ( denoisePasses & 1 ? s_GtaoTerm1 : s_GtaoTerm0 ) );
 	SetTexture( pApply, "$viewdepth", s_GtaoViewDepth );
 	SetTexture( pApply, "$depthmips", s_GtaoDepth );
 
@@ -298,6 +397,12 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext )
 	SetGtaoConstants( s_Main.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY );
 	for ( int i = 0; i < denoisePasses; ++i )
 		SetGtaoConstants( s_Denoise[i].m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, i + 1 == denoisePasses, viewportX, viewportY );
+	SetGtaoConstants( s_Temporal.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, denoisePasses > 0, viewportX, viewportY );
+	const float temporalDepthUnpack[4] = { projection[2][3] / projectionDepth, projection[2][2] / projectionDepth, 0.f, 0.f };
+	const VMatrix &previousWorldToClip = s_bTemporalValid ? s_TemporalPreviousWorldToClip : worldToClip;
+	SetGtaoTemporalConstants( s_Temporal.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, viewportX, viewportY,
+		previousWorldToClip, clipToWorld, temporalDepthUnpack, bTemporalAccumulation && s_bTemporalValid, bMotion,
+		Clamp( r_gtao_temporal_weight.GetFloat(), 0.5f, 0.98f ) );
 	SetGtaoApplyConstants( pApply, aoWidth, aoHeight, fullWidth, fullHeight, denoisePasses == 0, viewportX, viewportY, view, projection );
 
 	DrawCompute( pRenderContext, s_Prefilter.m_pMaterial );
@@ -306,6 +411,20 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext )
 	DrawCompute( pRenderContext, s_Main.m_pMaterial );
 	for ( int i = 0; i < denoisePasses; ++i )
 		DrawCompute( pRenderContext, s_Denoise[i].m_pMaterial );
+	if ( bTemporalAccumulation )
+	{
+		DrawCompute( pRenderContext, s_Temporal.m_pMaterial );
+		s_bTemporalValid = true;
+		s_nTemporalCurrent ^= 1;
+		s_nTemporalAoWidth = aoWidth;
+		s_nTemporalAoHeight = aoHeight;
+		s_nTemporalFullWidth = fullWidth;
+		s_nTemporalFullHeight = fullHeight;
+		s_TemporalPreviousWorldToClip = worldToClip;
+		s_vecTemporalPreviousEye = eye;
+		s_vecTemporalPreviousForward = forward;
+		s_nTemporalPreviousFrame = gpGlobals->framecount;
+	}
 	s_nApplyWidth = fullWidth;
 	s_nApplyHeight = fullHeight;
 	s_nComputedFrame = gpGlobals->framecount;

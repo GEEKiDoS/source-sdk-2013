@@ -9,6 +9,7 @@
 #include "BaseVSShader.h"
 #include "convar.h"
 #include "l4d2_lightmappedgeneric_dx9_helper.h"
+#include "l4d2_pbr_route.h"
 
 static L4D2LightmappedGeneric_DX9_Vars_t s_info;
 
@@ -137,9 +138,10 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9,
 
 	SHADER_FALLBACK
 	{
-		if( g_pHardwareConfig->GetDXSupportLevel() < 92 )
+		if ( L4D2PbrRoute( params, false, DETAILBLENDMODE, LIGHTWARPTEXTURE, -1, -1, -1, -1, -1, SEAMLESS_SCALE, -1, VERTEXFOG ) )
+			return "PBR_WorldVertexTransition";
+		if ( g_pHardwareConfig->GetDXSupportLevel() < 92 )
 			return "WorldVertexTransition_DX8";
-
 		return 0;
 	}
 
@@ -160,4 +162,4 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9,
 	{
 		DrawL4D2LightmappedGeneric_DX9( this, params, pShaderAPI, pShaderShadow, s_info, pContextDataPtr );
 	}
-END_SHADER
+END_SHADER

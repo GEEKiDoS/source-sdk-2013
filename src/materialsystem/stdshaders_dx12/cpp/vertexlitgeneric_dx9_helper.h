@@ -133,6 +133,12 @@ struct VertexLitGeneric_DX9_Vars_t
 	int m_nReceiveFlashlight;
 
 	int m_nBlendTintByBaseAlpha;
+	int m_nAllowDiffuseModulation;
+	int m_nBaseMapLuminancePhongMask;
+	int m_nDiffuseExponent;
+
+	int m_nShinyBlood;
+	int m_nShinyBloodExponent;
 
 	int m_nTintReplacesBaseColor;
 

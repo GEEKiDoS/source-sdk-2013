@@ -120,6 +120,9 @@ struct LightmappedGeneric_DX9_Vars_t
 	int m_nMaskedBlending;
 	int m_nBlendMaskTransform;
 	int m_nSelfShadowedBumpFlag;
+	int m_nSsBumpMathFix;
+	int m_nBlendTintByBaseAlpha;
+	int m_nVertexFog;
 	int m_nSeamlessMappingScale;
 	int m_nAlphaTestReference;
 

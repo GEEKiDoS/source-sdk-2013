@@ -1,0 +1,8 @@
+logical=gtao_temporal_cs51 stage=cs source=gtao_temporal_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=GtaoTemporal space=1 register=b0 size=192 layoutHash=0x3eaeb29d5c10e56e material
+    member=gPrevWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
+    member=gClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
+    member=gTemporalParams type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
+    member=gTemporalViewport type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=
+    member=gTemporalOriginScale type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
+    member=gTemporalDepth type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=

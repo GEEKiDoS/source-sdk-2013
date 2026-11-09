@@ -65,6 +65,8 @@ void InitParamsVertexLitGeneric_DX9( CBaseVSShaderDX12 *pShader, IMaterialVar** 
 	InitIntParam( info.m_nVertexAlphaTest, params, 0 );
 
 	InitIntParam( info.m_nFlashlightNoLambert, params, 0 );
+	// L4D2 $allowdiffusemodulation defaults to 1 (l4d2_vertexlitgeneric_dx9_helper.cpp); unset parameters are zero after init.
+	InitIntParam( info.m_nAllowDiffuseModulation, params, 1 );
 
 	if ( info.m_nDetailTint != -1 && !params[info.m_nDetailTint]->IsDefined() )
 	{

@@ -153,12 +153,29 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		bumpTexel = g_Misc.w != 0.0 && g_Flags1.y == 3.0 ? lerp( bumpTexel, bump2, blend ) : float4( lerp( bumpTexel.xyz, bump2.xyz, blend ), bumpTexel.a );
 	}
 #endif
-	// Detail and vertex color follow the LightmappedGeneric shader: TextureCombine with the tinted detail (mod2x lerps toward
-	// 2 * detail by the blend factor, additive adds detail scaled by it), then the vertex color.
+	float4 detail = float4( 1.0, 1.0, 1.0, 1.0 );
 	if ( hasDetail )
 	{
-		float3 detail = DetailTexture.Sample( DetailSampler, i.detailBlendUV.xy ).rgb * g_PbrDetail.rgb;
-		base.rgb = g_Flags1.w == 0.0 ? base.rgb * lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * detail, g_PbrDetail.w ) : base.rgb + g_PbrDetail.w * detail;
+		detail = DetailTexture.Sample( DetailSampler, i.detailBlendUV.xy ) * float4( g_PbrDetail.rgb, 1.0 );
+		const int detailMode = int( g_L4D2World.x + 0.5 );
+		if ( detailMode == 0 )
+			base.rgb *= lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * detail.rgb, g_PbrDetail.w );
+		else if ( detailMode == 1 )
+			base.rgb += g_PbrDetail.w * detail.rgb;
+		else if ( detailMode == 2 )
+			base.rgb = lerp( base.rgb, detail.rgb, g_PbrDetail.w * detail.a );
+		else if ( detailMode == 3 )
+			base = lerp( base, detail, g_PbrDetail.w );
+		else if ( detailMode == 4 )
+			base.rgb = lerp( base.rgb, detail.rgb, g_PbrDetail.w * ( 1.0 - base.a ) );
+		else if ( detailMode == 7 )
+			base.rgb *= lerp( float3( 1.0, 1.0, 1.0 ), 2.0 * lerp( detail.r, detail.a, base.a ), g_PbrDetail.w );
+		else if ( detailMode == 8 )
+			base = lerp( base, base * detail, g_PbrDetail.w );
+		else if ( detailMode == 9 )
+			base.a = lerp( base.a, base.a * detail.a, g_PbrDetail.w );
+		else if ( detailMode == 11 )
+			base.rgb *= dot( detail.rgb, 2.0 / 3.0 );
 	}
 	base.rgb *= i.vertexColor.rgb;
 
@@ -181,6 +198,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 			planeWeights /= max( planeWeights.x + planeWeights.y + planeWeights.z, 1e-4 );
 		}
 	}
+	if ( int( g_L4D2World.x + 0.5 ) == 10 && hasBump )
+		planeWeights *= 2.0 * detail.rgb;
 
 	float2 lightmapUV = i.lightmapUV.xy;
 	float2 planeStep = i.lightmapUV.zw;
@@ -196,6 +215,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	else
 		lightmap = LIGHTMAP_PLANE( 0, lightmapUV );
+	if ( g_Flags0.y == 2.0 )
+		lightmap *= g_L4D2Controls.z;
 
 	float3 vertexNormal = normalize( i.worldNormal );
 	float3 N = vertexNormal;
@@ -233,7 +254,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( g_SubsurfaceTint.w != 0.0 && ( g_Options.x > 0.0 || g_Options.y > 0.0 ) )
 		thickness = ThicknessTexture.Sample( DataSampler, baseUV ).r;
 
-	float3 baseColor = base.rgb * g_BaseTint.rgb;
+	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( float3( 1.0, 1.0, 1.0 ), g_BaseTint.rgb, blendedAlpha ) : g_BaseTint.rgb;
+	float3 baseColor = base.rgb * modColor;
 	PBRSurface s = PBR_MakeSurface( flatDiffuse ? vertexNormal : N, V, i.tangentS, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, 0 );
 	// Reflections, projected lights and the G-buffer use the normal map even when the diffuse is flat.
 	PBRSurface sBump = s;
@@ -294,6 +316,15 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	result += PBR_ProjectedSpots( sBump, P, PBR_RECEIVER_WORLD, specularSum );
 
+	if ( int( g_L4D2World.x + 0.5 ) == 5 )
+		result += g_PbrDetail.w * detail.rgb;
+	else if ( int( g_L4D2World.x + 0.5 ) == 6 )
+	{
+		float f = g_PbrDetail.w - 0.5;
+		float fMult = f >= 0.0 ? 1.0 / max( g_PbrDetail.w, 1e-4 ) : 4.0 * g_PbrDetail.w;
+		float fAdd = f >= 0.0 ? 1.0 - fMult : -0.5 * fMult;
+		result += saturate( fMult * detail.rgb + fAdd );
+	}
 	result += emission;
 
 	float3 eyePosition = P + i.toEye;

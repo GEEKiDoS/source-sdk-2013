@@ -53,10 +53,10 @@ namespace
 // Pixel shader texture slots, -1 = the logical has no such texture.
 struct PBRSamplers
 {
-	int base, bump, envmap, lightmap, detail, envmapMask, mrao, specular, emission, thickness, base2, bump2, blendModulate, phongExponent, bumpMask;
+	int base, bump, envmap, lightmap, detail, envmapMask, mrao, specular, emission, thickness, base2, bump2, blendModulate, phongExponent, bumpMask, selfIllumMask;
 };
-const PBRSamplers kWorldSamplers = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, -1, 13 };
-const PBRSamplers kModelSamplers = { 0, 1, 2, -1, 3, 4, 5, 6, 7, 8, -1, -1, -1, 9, -1 };
+const PBRSamplers kWorldSamplers = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, -1, 13, -1 };
+const PBRSamplers kModelSamplers = { 0, 1, 2, -1, 3, 4, 5, 6, 7, 8, -1, -1, -1, 9, -1, 10 };
 
 // SetPixelShaderStateAmbientLightCube / CommitPixelShaderLighting / SetPixelShaderFogParams feed the DX12PSEngine
 // block whatever register they are given; these only mirror into the legacy register file, outside c0..c14.
@@ -78,10 +78,13 @@ public:
 	CCommandBufferBuilder< CFixedCommandStorageBuffer< 1500 > > m_SemiStaticCmdsOut;
 	DX12ShadowmapSnapshot m_Snapshot;
 	float m_SelfIllumTint[3] = {};
+	float m_TreeSwayParams[5][4] = {};
 	bool m_bModel = false;
 	bool m_bEnvmap = false;
 	bool m_bBump = false;
 	bool m_bAmbientOnly = false;
+	bool m_bAllowDiffuseModulation = true;
+	int m_nTreeSway = 0;
 };
 
 //-----------------------------------------------------------------------------
@@ -115,8 +118,14 @@ void LinearColor( IMaterialVar **params, int var, float defaultValue, float *rgb
 
 bool DetailAdditive( IMaterialVar **params, const PBR_Vars_t &v )
 {
-	// pbr_*_ps51 combine detail either mod2x (0) or additive (1); anything else is declined by PBR_LegacySupported.
+	// Native PBR implements the authored detail modes; this helper identifies the additive mode for texture color-space state.
 	return GetIntParam( v.detailBlendMode, params ) == 1;
+}
+
+bool DetailSRGB( IMaterialVar **params, const PBR_Vars_t &v )
+{
+	const int mode = GetIntParam( v.detailBlendMode, params );
+	return mode == 1 || mode == 2 || mode == 3 || mode == 4;
 }
 
 bool LightingOnlyDebug( IMaterialVar **params )
@@ -131,7 +140,7 @@ bool LightingOnlyDebug( IMaterialVar **params )
 struct PBRState
 {
 	bool model, layered, hasBase, hasBase2, hasBump, ssBump, hasBump2, hasBumpMask, hasBlendModulate, hasMrao, hasSpecular, hasEnvmap, maskedBlending;
-	bool hasDetail, detailAdditive, hasEmission, hasThickness, alphaTested, fullyOpaque, lightingOnly, vertexColor, noDiffuseBump;
+	bool hasDetail, detailAdditive, hasEmission, hasSelfIllumMask, hasThickness, alphaTested, fullyOpaque, lightingOnly, vertexColor, noDiffuseBump;
 	int envmapMask;		// 0 none, 1 $envmapmask, 2 base alpha, 3 normal map alpha
 	int emissionMode;	// 0 none, 1 $selfillum (base alpha), 2 $emissiontexture
 	int phong;			// bit 0 legacy phong, bit 1 $phongexponenttexture, bit 2 phong mask in base alpha
@@ -158,16 +167,17 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	s.hasSpecular = v.specularWorkflow && IsTextureSet( v.specularTexture, params );
 	// A sphere map is a 2D texture; the shaders only sample cubemaps.
 	s.hasEnvmap = IsTextureSet( v.envmap, params ) && !IS_FLAG_SET( MATERIAL_VAR_ENVMAPSPHERE );
-	s.hasDetail = IsTextureSet( v.detail, params );
+	s.hasDetail = IsTextureSet( v.detail, params ) && GetIntParam( v.detailBlendMode, params ) != 12;
 	// $bumpmask (static mask normal over two scrolling ones) excludes the layers the legacy helper excludes it from.
 	s.hasBumpMask = s.hasBump2 && !s.ssBump && IsTextureSet( v.bumpMask, params ) && !IS_FLAG_SET( MATERIAL_VAR_SELFILLUM ) && !s.hasDetail && !s.hasBase2 &&
 		GetIntParam( v.baseTextureNoEnvmap, params ) == 0;
 	s.detailAdditive = DetailAdditive( params, v );
 	s.hasEmission = IsTextureSet( v.emissionTexture, params );
+	s.hasSelfIllumMask = s.model && IS_FLAG_SET( MATERIAL_VAR_SELFILLUM ) && IsTextureSet( v.selfIllumMask, params );
 	s.hasThickness = IsTextureSet( v.thicknessTexture, params );
 	s.lightingOnly = LightingOnlyDebug( params );
-	// World $vertexcolor scales albedo and alpha by the mesh COLOR stream (on models the flag makes the stream replace the lighting).
-	s.vertexColor = !s.model && IS_FLAG_SET( MATERIAL_VAR_VERTEXCOLOR );
+	// $vertexcolor scales albedo and alpha by the mesh COLOR stream on routed worlds and models.
+	s.vertexColor = IS_FLAG_SET( MATERIAL_VAR_VERTEXCOLOR );
 	// $nodiffusebumplighting: diffuse from the flat lightmap plane and the vertex normal; the normal map still shades reflections.
 	s.noDiffuseBump = !s.model && s.hasBump && IsBoolSet( v.noDiffuseBumpLighting, params );
 
@@ -187,7 +197,8 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	if ( s.model && v.phong != -1 && params[v.phong]->GetIntValue() != 0 && !s.explicitRoughness )
 	{
 		s.phong = 1;
-		if ( IsTextureSet( v.phongExponentTexture, params ) )
+		if ( IS_PARAM_DEFINED( v.phongExponentTexture ) && params[v.phongExponentTexture]->IsDefined() &&
+			params[v.phongExponentTexture]->IsTexture() )
 			s.phong |= 2;
 		if ( GetIntParam( v.baseMapAlphaPhongMask, params ) != 0 )
 			s.phong |= 4;
@@ -195,7 +206,8 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	s.glossFromMask = !s.explicitRoughness && s.hasEnvmap && ( s.phong & 1 ) == 0;
 
 	s.alphaTested = IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) != 0;
-	s.blendType = pShader->EvaluateBlendRequirements( s.hasBase ? v.base : v.envmapMask, s.hasBase );
+	const int blendTexture = IsBoolSet( v.blendTintByBaseAlpha, params ) ? -1 : ( s.hasBase ? v.base : v.envmapMask );
+	s.blendType = pShader->EvaluateBlendRequirements( blendTexture, s.hasBase );
 	s.fullyOpaque = s.blendType != BT_BLENDADD && s.blendType != BT_BLEND && !s.alphaTested;
 	return s;
 }
@@ -237,6 +249,8 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		enable( sm.specular, true );
 	if ( s.hasEmission )
 		enable( sm.emission, true );
+	if ( s.hasSelfIllumMask )
+		enable( sm.selfIllumMask, false );
 	if ( s.hasThickness )
 		enable( sm.thickness, false );
 	if ( s.hasBase2 )
@@ -249,17 +263,17 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		enable( sm.bumpMask, false );
 	if ( s.phong & 2 )
 		enable( sm.phongExponent, false );
-
 	if ( s.model )
 	{
 		// Same stream layout as the legacy bump vertex shader: compressed vertices, tangent as user data, vertex id for morphing.
 		SET_FLAGS2( MATERIAL_VAR2_USES_VERTEXID );
-		pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION | VERTEX_NORMAL | VERTEX_FORMAT_COMPRESSED, 1, 0, s.hasBump ? 4 : 0 );
+		pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION | VERTEX_NORMAL | ( s.vertexColor ? VERTEX_COLOR : 0 ) | VERTEX_FORMAT_COMPRESSED, 1, 0, s.hasBump ? 4 : 0 );
 
 		DECLARE_STATIC_VERTEX_SHADER( pbr_model_vs51 );
 		SET_STATIC_VERTEX_SHADER_COMBO( TANGENT, s.hasBump );
+		SET_STATIC_VERTEX_SHADER_COMBO( VERTEXCOLOR, s.vertexColor );
+		SET_STATIC_VERTEX_SHADER_COMBO( TREESWAY, clamp( GetIntParam( v.treeSway, params ), 0, 2 ) );
 		SET_STATIC_VERTEX_SHADER( pbr_model_vs51 );
-
 		DECLARE_STATIC_PIXEL_SHADER( pbr_model_ps51 );
 		SET_STATIC_PIXEL_SHADER_COMBO( TANGENT, s.hasBump );
 		SET_STATIC_PIXEL_SHADER_COMBO( ENHANCED, bEnhanced );
@@ -282,7 +296,7 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 	}
 
 	pShaderShadow->EnableAlphaWrites( s.fullyOpaque );
-	pShaderShadow->EnableSRGBWrite( true );
+	pShaderShadow->EnableSRGBWrite( !IsBoolSet( v.linearWrite, params ) );
 	pShader->DefaultFog();
 }
 
@@ -323,8 +337,11 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ps[1][3] = v.specularWorkflow ? 1.0f : 0.0f;
 	if ( s.phong & 1 )
 	{
-		// Phong adapter: roughness from the exponent; F0 = 0.04 * phong mask is the shader's.
-		const float exponent = clamp( DefinedFloat( params, v.phongExponent, 5.0f ), 1.0f, 150.0f );
+		// Legacy l4d2_phong_dx9_helper binds TEXTURE_WHITE when no exponent map exists, so an unset exponent evaluates to 1 + 149 * 1 = 150.
+		float exponent = DefinedFloat( params, v.phongExponent, 0.0f );
+		if ( exponent <= 0.0f && ( s.phong & 2 ) == 0 )
+			exponent = 150.0f;
+		exponent = clamp( exponent, 1.0f, 150.0f );
 		ps[1][0] = 0.0f;
 		ps[1][1] = powf( 2.0f / ( exponent + 2.0f ), 0.25f );
 	}
@@ -365,6 +382,37 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 		}
 	}
 
+	float l4d2[4][4] = {};
+	LinearColor( params, v.phongTint, 1.0f, l4d2[0] );
+	// Legacy BuildPhongCommands starts with white tint; an unset/zero Phong tint must not erase the specular term.
+	if ( l4d2[0][0] == 0.0f && l4d2[0][1] == 0.0f && l4d2[0][2] == 0.0f )
+		l4d2[0][0] = l4d2[0][1] = l4d2[0][2] = 1.0f;
+	// The legacy L4D2 Phong boost: an unset $phongboost is 1 (l4d2_phong_dx9_helper.cpp).
+	l4d2[0][3] = IS_PARAM_DEFINED( v.phongBoost ) ? params[v.phongBoost]->GetFloatValue() : 1.0f;
+	if ( IS_PARAM_DEFINED( v.phongFresnelRanges ) && params[v.phongFresnelRanges]->IsDefined() )
+		params[v.phongFresnelRanges]->GetVecValue( l4d2[1], 3 );
+	else
+	{
+		l4d2[1][0] = 0.0f;
+		l4d2[1][1] = 0.5f;
+		l4d2[1][2] = 1.0f;
+	}
+	// Legacy l4d2_phong_ps20b uses this explicit exponent when nonzero; otherwise it evaluates 1 + 149 * map.R.
+	l4d2[1][3] = max( 0.0f, GetFloatParam( v.phongExponent, params, 0.0f ) );
+	l4d2[2][0] = IsBoolSet( v.blendTintByBaseAlpha, params ) ? 1.0f : 0.0f;
+	const bool allowDiffuseModulation = GetIntParam( v.allowDiffuseModulation, params, 1 ) != 0;
+	l4d2[2][1] = allowDiffuseModulation ? 1.0f : 0.0f;
+	l4d2[2][2] = GetFloatParam( v.ssBumpMathFix, params, 0.0f ) * 0.57735026f;
+	if ( l4d2[2][2] == 0.0f )
+		l4d2[2][2] = 1.0f;
+	l4d2[2][3] = s.hasSelfIllumMask ? 1.0f : 0.0f;
+	l4d2[3][0] = GetIntParam( v.baseMapLuminancePhongMask, params, 0 ) != 0 ? 1.0f : 0.0f;
+	l4d2[3][1] = IsBoolSet( v.flashlightNoLambert, params ) ? 1.0f : 0.0f;
+	l4d2[3][2] = max( 0.0f, GetFloatParam( v.diffuseExponent, params, 0.0f ) );
+	// $phongalbedotint opts into the exponent texture's G channel as a specular-albedo tint.
+	l4d2[3][3] = ( s.phong & 2 ) != 0 && GetIntParam( v.phongAlbedoTint, params, 0 ) != 0 ? 1.0f : 0.0f;
+	float l4d2World[4] = { float( GetIntParam( v.detailBlendMode, params ) ),
+		GetFloatParam( v.envmapFresnel, params, 0.0f ), 0.0f, 0.0f };
 	LinearColor( params, v.selfIllumTint, 1.0f, ps[10] );
 	memcpy( ctx.m_SelfIllumTint, ps[10], sizeof( ctx.m_SelfIllumTint ) );
 
@@ -380,7 +428,7 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ps[14][0] = sinf( anisotropyRotation );
 	ps[14][1] = s.model && IS_FLAG_SET( MATERIAL_VAR_HALFLAMBERT ) ? 1.0f : 0.0f;
 	ps[14][2] = float( s.phong );
-	ps[14][3] = s.hasBlendModulate ? 1.0f : 0.0f;
+	ps[14][3] = s.model ? ( IsBoolSet( v.flashlightNoLambert, params ) ? 1.0f : 0.0f ) : ( s.hasBlendModulate ? 1.0f : 0.0f );
 
 	// PBRMaterialPS c30: $detailtint (world: raw, as the LightmappedGeneric shader multiplies it; models: gamma to linear as the
 	// VertexLitGeneric helper stages it) and $detailblendfactor; c31: $nodiffusebumplighting, gloss from the mask, $basetexture2 layer
@@ -415,18 +463,43 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	TextureTransform( params, IS_PARAM_DEFINED( v.detailTransform ) ? v.detailTransform : v.baseTransform, DefinedFloat( params, v.detailScale, 4.0f ), vs[2] );
 	TextureTransform( params, v.blendMaskTransform, 1.0f, vs[3] );
 
+	float treeSway[5][4] = {};
+	if ( s.model && clamp( GetIntParam( v.treeSway, params ), 0, 2 ) != 0 )
+	{
+		treeSway[1][0] = GetFloatParam( v.treeSwaySpeedHighWindMultiplier, params, 2.0f );
+		treeSway[1][1] = GetFloatParam( v.treeSwayScrumbleFalloffExp, params, 1.0f );
+		treeSway[1][2] = GetFloatParam( v.treeSwayFalloffExp, params, 1.5f );
+		treeSway[1][3] = GetFloatParam( v.treeSwayScrumbleSpeed, params, 5.0f );
+		treeSway[2][0] = GetFloatParam( v.treeSwayHeight, params, 1000.0f );
+		treeSway[2][1] = GetFloatParam( v.treeSwayStartHeight, params, 0.1f );
+		treeSway[2][2] = GetFloatParam( v.treeSwayRadius, params, 300.0f );
+		treeSway[2][3] = GetFloatParam( v.treeSwayStartRadius, params, 0.2f );
+		treeSway[3][0] = GetFloatParam( v.treeSwaySpeed, params, 1.0f );
+		treeSway[3][1] = GetFloatParam( v.treeSwayStrength, params, 10.0f );
+		treeSway[3][2] = GetFloatParam( v.treeSwayScrumbleFrequency, params, 12.0f );
+		treeSway[3][3] = GetFloatParam( v.treeSwayScrumbleStrength, params, 10.0f );
+		treeSway[4][0] = GetFloatParam( v.treeSwaySpeedLerpStart, params, 3.0f );
+		treeSway[4][1] = GetFloatParam( v.treeSwaySpeedLerpEnd, params, 6.0f );
+	}
+
 	ctx.m_bModel = s.model;
 	ctx.m_bEnvmap = s.hasEnvmap;
 	ctx.m_bBump = s.hasBump;
 	ctx.m_bAmbientOnly = IsBoolSet( v.ambientOnly, params );
+	ctx.m_bAllowDiffuseModulation = allowDiffuseModulation;
+	ctx.m_nTreeSway = s.model ? clamp( GetIntParam( v.treeSway, params ), 0, 2 ) : 0;
+	memcpy( ctx.m_TreeSwayParams, treeSway, sizeof( ctx.m_TreeSwayParams ) );
 
 	auto &cmds = ctx.m_SemiStaticCmdsOut;
 	cmds.Reset();
 	cmds.SetPixelShaderConstant( 0, ps[0], 15 );
+	cmds.SetPixelShaderConstant( 35, l4d2[0], 4 );
+	cmds.SetPixelShaderConstant( 39, l4d2World, 1 );
 	cmds.SetPixelShaderConstant( kExtraMaterialRegister, extra[0], 2 );
 	cmds.SetPixelShaderConstant( kExtraMaterialRegister + 2, world[0], 3 );
 	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0, vs[0][0], 8 );
 	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0 + 8, vertexColor, 1 );
+	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_13, treeSway[0], 5 );
 	cmds.SetPixelShaderFogParams( kFogRegister );
 
 	// Textures
@@ -453,6 +526,8 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 		cmds.BindTexture( pShader, sampler( sm.specular ), v.specularTexture, -1 );
 	if ( s.hasEmission )
 		cmds.BindTexture( pShader, sampler( sm.emission ), v.emissionTexture, -1 );
+	if ( s.hasSelfIllumMask )
+		cmds.BindTexture( pShader, sampler( sm.selfIllumMask ), v.selfIllumMask, -1 );
 	if ( s.hasThickness )
 		cmds.BindTexture( pShader, sampler( sm.thickness ), v.thicknessTexture, -1 );
 	if ( s.hasBase2 )
@@ -529,6 +604,9 @@ void PBR_FillWorldVars( PBR_Vars_t &v, const LightmappedGeneric_DX9_Vars_t &info
 	v.bumpMask = info.m_nBumpMask;
 	v.baseTextureNoEnvmap = info.m_nBaseTextureNoEnvmap;
 	v.ssBump = info.m_nSelfShadowedBumpFlag;
+	v.ssBumpMathFix = info.m_nSsBumpMathFix;
+	v.vertexFog = info.m_nVertexFog;
+	v.blendTintByBaseAlpha = info.m_nBlendTintByBaseAlpha;
 	v.seamlessScale = info.m_nSeamlessMappingScale;
 	v.lightWarp = info.m_nLightWarpTexture;
 	v.outline = info.m_nOutline;
@@ -545,8 +623,37 @@ void PBR_FillModelVars( PBR_Vars_t &v, const VertexLitGeneric_DX9_Vars_t &info )
 	v.phongExponent = info.m_nPhongExponent;
 	v.phongExponentTexture = info.m_nPhongExponentTexture;
 	v.baseMapAlphaPhongMask = info.m_nBaseMapAlphaPhongMask;
+	v.phongTint = info.m_nPhongTint;
+	v.phongAlbedoTint = info.m_nPhongAlbedoTint;
+	v.phongBoost = info.m_nPhongBoost;
+	v.phongFresnelRanges = info.m_nPhongFresnelRanges;
+	v.envmapFresnel = info.m_nEnvmapFresnel;
+	v.baseMapLuminancePhongMask = info.m_nBaseMapLuminancePhongMask;
+	v.diffuseExponent = info.m_nDiffuseExponent;
+	v.shinyBlood = info.m_nShinyBlood;
+	v.flashlightNoLambert = info.m_nFlashlightNoLambert;
+	v.blendTintByBaseAlpha = info.m_nBlendTintByBaseAlpha;
+	v.linearWrite = info.m_nLinearWrite;
+	v.allowDiffuseModulation = info.m_nAllowDiffuseModulation;
 	v.lightWarp = info.m_nDiffuseWarpTexture;
+	v.phongWarp = info.m_nPhongWarpTexture;
+	v.rimLight = info.m_nRimLight;
 	v.treeSway = info.m_nTreeSway;
+	v.treeSwayHeight = info.m_nTreeSwayHeight;
+	v.treeSwayStartHeight = info.m_nTreeSwayStartHeight;
+	v.treeSwayRadius = info.m_nTreeSwayRadius;
+	v.treeSwayStartRadius = info.m_nTreeSwayStartRadius;
+	v.treeSwaySpeed = info.m_nTreeSwaySpeed;
+	v.treeSwaySpeedHighWindMultiplier = info.m_nTreeSwaySpeedHighWindMultiplier;
+	v.treeSwayStrength = info.m_nTreeSwayStrength;
+	v.treeSwayScrumbleSpeed = info.m_nTreeSwayScrumbleSpeed;
+	v.treeSwayScrumbleStrength = info.m_nTreeSwayScrumbleStrength;
+	v.treeSwayScrumbleFrequency = info.m_nTreeSwayScrumbleFrequency;
+	v.treeSwayFalloffExp = info.m_nTreeSwayFalloffExp;
+	v.treeSwayScrumbleFalloffExp = info.m_nTreeSwayScrumbleFalloffExp;
+	v.treeSwaySpeedLerpStart = info.m_nTreeSwaySpeedLerpStart;
+	v.treeSwaySpeedLerpEnd = info.m_nTreeSwaySpeedLerpEnd;
+	v.treeSwayStatic = info.m_nTreeSwayStatic;
 	v.distanceAlpha = info.m_nDistanceAlpha;
 	v.seamlessBase = info.m_nSeamlessBase;
 	v.seamlessDetail = info.m_nSeamlessDetail;
@@ -632,7 +739,7 @@ void InitPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_Vars_
 			pShader->LoadBumpMap( v.bump2 );
 	}
 	load( v.blendModulate );
-	load( v.detail, DetailAdditive( params, v ) ? TEXTUREFLAGS_SRGB : 0 );
+	load( v.detail, DetailSRGB( params, v ) ? TEXTUREFLAGS_SRGB : 0 );
 	if ( IS_PARAM_DEFINED( v.envmap ) && !params[v.envmap]->IsTexture() && !IS_FLAG_SET( MATERIAL_VAR_ENVMAPSPHERE ) )
 		pShader->LoadCubeMap( v.envmap, g_pHardwareConfig->GetHDRType() == HDR_TYPE_NONE ? TEXTUREFLAGS_SRGB : 0 );
 	load( v.envmapMask );
@@ -640,6 +747,7 @@ void InitPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_Vars_
 	load( v.specularTexture, TEXTUREFLAGS_SRGB );
 	load( v.emissionTexture, TEXTUREFLAGS_SRGB );
 	load( v.thicknessTexture );
+	load( v.selfIllumMask );
 	load( v.phongExponentTexture );
 
 	if ( !v.standalone )
@@ -666,14 +774,11 @@ bool PBR_LegacySupported( IMaterialVar **params, const PBR_Vars_t &v )
 	const int flags = params[FLAGS]->GetIntValue();
 	if ( flags & MATERIAL_VAR_ENVMAPSPHERE )
 		return false;
-	if ( IS_PARAM_DEFINED( v.lightWarp ) )
-		return false;
 
-	if ( IS_PARAM_DEFINED( v.detail ) )
+	if ( IS_PARAM_DEFINED( v.detail ) && IsTextureSet( v.detail, params ) )
 	{
-		// Modes 0 (mod2x) and 1 (additive) only; $detailblendfactor and $detailtint are staged (g_PbrDetail).
 		const int mode = GetIntParam( v.detailBlendMode, params );
-		if ( mode != 0 && mode != 1 )
+		if ( mode < 0 || mode > 12 || ( v.model && mode > 9 ) )
 			return false;
 	}
 
@@ -682,24 +787,24 @@ bool PBR_LegacySupported( IMaterialVar **params, const PBR_Vars_t &v )
 		// A prop lit by a $lightmap texture (STATIC_LIGHT_LIGHTMAP) has no carrier in the PBR model shaders.
 		if ( IsTextureSet( v.lightmap, params ) )
 			return false;
-		if ( flags & MATERIAL_VAR_DECAL )
+		if ( IsTextureSet( v.lightWarp, params ) || IsTextureSet( v.phongWarp, params ) || IsBoolSet( v.rimLight, params ) )
 			return false;
-		if ( GetIntParam( v.treeSway, params ) != 0 || IsBoolSet( v.distanceAlpha, params ) )
+		if ( IsBoolSet( v.shinyBlood, params ) )
+			return false;
+		if ( IsBoolSet( v.distanceAlpha, params ) )
 			return false;
 		if ( IsBoolSet( v.seamlessBase, params ) || IsBoolSet( v.seamlessDetail, params ) )
 			return false;
-		// One emission source: base alpha or $emissiontexture
-		if ( ( flags & MATERIAL_VAR_SELFILLUM ) && ( IsBoolSet( v.selfIllumFresnel, params ) || IsTextureSet( v.selfIllumMask, params ) ) )
-			return false;
-		// $vertexcolor replaces the lighting with the mesh COLOR stream on models.
-		if ( flags & MATERIAL_VAR_VERTEXCOLOR )
+		if ( flags & MATERIAL_VAR_SELFILLUM && IsBoolSet( v.selfIllumFresnel, params ) )
 			return false;
 	}
 	else
 	{
 		if ( GetFloatParam( v.seamlessScale, params ) != 0.0f )
 			return false;
-		if ( IsBoolSet( v.outline, params ) || IsBoolSet( v.softEdges, params ) )
+		if ( IsTextureSet( v.lightWarp, params ) || IsBoolSet( v.outline, params ) || IsBoolSet( v.softEdges, params ) )
+			return false;
+		if ( IsBoolSet( v.vertexFog, params ) )
 			return false;
 	}
 	return true;
@@ -754,6 +859,13 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			DynamicCmdsOut.BindTexture( pShader, Sampler_t( sm.envmap ), v.envmap, v.envmapFrame );
 
 		const bool bWaterFog = pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z;
+		if ( pContextData->m_bModel && pContextData->m_nTreeSway != 0 )
+		{
+			Vector wind = IsBoolSet( v.treeSwayStatic, params ) ? Vector( 0.5f, 0.5f, 0.0f ) :
+				pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_WIND_DIRECTION );
+			float treeTime[4] = { pShaderAPI->GetFloatRenderingParameter( FLOAT_RENDERPARM_L4D2_CURRENT_TIME ), wind.x, wind.y, 0.0f };
+			DynamicCmdsOut.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_13, treeTime, 1 );
+		}
 		if ( pContextData->m_bModel )
 		{
 			LightState_t lightState = { 0, false, false, false };
@@ -804,7 +916,13 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 		DX12ExecuteCommandBuffer( pShaderAPI, DynamicCmdsOut.Base() );
 
 		// c0 sits inside the semi-static c0..c14 block: stage it after the replay.
-		pShader->SetModulationPixelShaderDynamicState_LinearColorSpace( 0 );
+		if ( pContextData->m_bAllowDiffuseModulation )
+			pShader->SetModulationPixelShaderDynamicState_LinearColorSpace( 0 );
+		else
+		{
+			const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+			DX12SetPixelShaderConstant( 0, white, 1 );
+		}
 		// The ENHANCED variants are the receiver variants (lighting ABI); the draw check in CBaseVSShaderDX12::Draw needs
 		// the same admission DX12_SET_DYNAMIC_PIXEL_SHADER_CMD gives the legacy receivers.
 		if ( bEnhanced )

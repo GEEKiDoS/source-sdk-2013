@@ -3621,8 +3621,8 @@ void CShaderAPIDX12::ResetNativeState()
 	m_CullMode = MATERIAL_CULLMODE_CCW;
 	m_bStencilEnabled = false;
 	m_nStencilRef = 0;
-	m_nStencilReadMask = 0xff;
-	m_nStencilWriteMask = 0xff;
+	m_nStencilReadMask = kGameStencilMask;
+	m_nStencilWriteMask = kGameStencilMask;
 	m_StencilCompare = STENCILCOMPARISONFUNCTION_ALWAYS;
 	m_StencilPassOp = STENCILOPERATION_KEEP;
 	m_StencilFailOp = STENCILOPERATION_KEEP;
@@ -4169,12 +4169,12 @@ void CShaderAPIDX12::SetStencilReferenceValue( int ref )
 
 void CShaderAPIDX12::SetStencilTestMask( uint32 msk )
 {
-	m_nStencilReadMask = static_cast<uint8_t>( msk );
+	m_nStencilReadMask = static_cast<uint8_t>( msk ) & kGameStencilMask;
 }
 
 void CShaderAPIDX12::SetStencilWriteMask( uint32 msk )
 {
-	m_nStencilWriteMask = static_cast<uint8_t>( msk );
+	m_nStencilWriteMask = static_cast<uint8_t>( msk ) & kGameStencilMask;
 }
 
 void CShaderAPIDX12::GetDXLevelDefaults( uint &max_dxlevel, uint &recommended_dxlevel )
@@ -4844,8 +4844,8 @@ StateSnapshot_t CShaderAPIDX12::TakeSnapshot()
 		snapshot.stencilFail = shadow.StencilFailOperation();
 		snapshot.stencilDepthFail = shadow.StencilDepthFailOperation();
 		snapshot.stencilPass = shadow.StencilPassOperation();
-		snapshot.stencilReadMask = shadow.StencilTestMask();
-		snapshot.stencilWriteMask = shadow.StencilWriteMask();
+		snapshot.stencilReadMask = shadow.StencilTestMask() & kGameStencilMask;
+		snapshot.stencilWriteMask = shadow.StencilWriteMask() & kGameStencilMask;
 		snapshot.stencilReference = shadow.StencilReferenceValue();
 		snapshot.depthFunction = shadow.DepthFunction();
 		snapshot.vertexShaderName = InternShaderNameDX12( shadow.VertexShaderName().Get() );
