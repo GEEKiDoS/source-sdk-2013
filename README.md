@@ -168,6 +168,10 @@ The quick-message radial menus load their authored `scripts/RadialMenu.txt` and
 `CRadialMenu` inherits the standard VGUI frame layout, as in the native client;
 opening the menu restores its alpha and only its selection/cancel fade reduces
 it. Layout must not reset the panel alpha, which also hides every item and label.
+
+**Loading screen:** The L4D2 launcher routes GameUI through `game/bin/x64/gameui_mod.dll`. This module implements the complete SDK `GameUI011` interface, loads the original SDK GameUI from `SDK_EXEC_DIR/bin/x64/GameUI.dll`, and forwards other interface requests and dialogs unchanged. An explicit client callback interface delivers loading start, real engine progress/status, and loading completion to BaseModUI. The game-owned `LoadingProgress` child loads the mounted retail `loadingprogress.res`, campaign poster metadata, progress bar and spinner; it is hidden and deleted on completion or disconnect. No progress is simulated and there are no independent loading popups or client-level-init detection workarounds.
+The bar retains the retail resource's authored aspect ratio and scratched frame texture. Its label displays the engine's live status, localizing token strings; the generic Loading label is used only before the first status arrives.
+
 Scene-dispatched survivor speech uses the original caption dictionaries and the
 same server hash/repeat lookup as sound-emitter captions. Its `CloseCaption`
 message carries the token CRC32, 15-bit duration, and one player flag bit, not the

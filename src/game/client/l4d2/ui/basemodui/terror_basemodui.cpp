@@ -15,12 +15,14 @@
 #include "l4d2/ui/terror_hud_resources.h"
 #include "l4d2/gamerules/terror_mode.h"
 #include "l4d2/clientmode_terror.h"
+#include "l4d2/ui/terror_client_panels.h"
 #include "cdll_client_int.h"
 #include "filesystem.h"
 #include "eiface.h"
 #include "ienginevgui.h"
 #include "GameUI/IGameUI.h"
 #include "inputsystem/iinputsystem.h"
+#include "GameUI/IGameUIMod.h"
 #include "inputsystem/ButtonCode.h"
 #include "steam/isteamcontroller.h"
 #include "steam/steam_api.h"
@@ -301,12 +303,12 @@ private:
 	bool m_bUpdatingSettings;
 };
 
-class CL4DBasePanel : public vgui::Frame
+class CL4DBasePanel : public vgui::Frame, public IGameUIModClient
 {
 	DECLARE_CLASS_SIMPLE( CL4DBasePanel, vgui::Frame );
 public:
 	CL4DBasePanel() : BaseClass( NULL, "L4D2BasePanel" ), m_bInGame( false ), m_bGameUIWasVisible( enginevgui->IsGameUIVisible() ),
-		m_bPauseGameUIWasVisible( enginevgui->IsGameUIVisible() ), m_flBlurScale( 0.0f ), m_flLastBlurTime( 0.0f )
+		m_bPauseGameUIWasVisible( enginevgui->IsGameUIVisible() ), m_bLevelLoading( false ), m_bLoadingFinished( false ), m_flBlurScale( 0.0f ), m_flLastBlurTime( 0.0f )
 	{
 		SetParent( enginevgui->GetPanel( PANEL_GAMEUIDLL ) );
 		SetAutoDelete( false ); SetDeleteSelfOnClose( false );
@@ -320,11 +322,13 @@ public:
 		SetScheme( vgui::scheme()->LoadSchemeFromFile( "resource/l4d360uischeme.res", "L4D360UIScheme" ) );
 		m_pFooter = new CL4DFooterPanel( this, "FooterPanel" ); m_pFooter->LoadLayout( "resource/ui/l4d360ui/footerpanel.res" );
 		m_pWorkshop = new CL4DWorkshopDownPanel( this, "WorkshopDownloadPanel" ); m_pWorkshop->LoadLayout( "resource/ui/l4d360ui/workshopdownloadpanel.res" );
+		SetTerrorLoadingScreenParent( this );
 		ShowRootMenu();
 		vgui::ivgui()->AddTickSignal( GetVPanel(), 0 );
 	}
 	virtual ~CL4DBasePanel()
 	{
+		::SetTerrorLoadingScreenVisible( false );
 		vgui::ivgui()->RemoveTickSignal( GetVPanel() );
 		static_cast< ClientModeTerrorNormal * >( GetClientModeNormal() )->SetBlurScale( 0.0f );
 	}
@@ -337,15 +341,14 @@ public:
 	virtual void PaintBackground() OVERRIDE { m_Background.PaintBackground( GetWide(), GetTall() ); }
 	virtual void SetVisible( bool visible ) OVERRIDE
 	{
-		BaseClass::SetVisible( visible ); if ( !visible ) m_Background.OnGameUIHidden();
+		BaseClass::SetVisible( visible || m_bLevelLoading ); if ( !visible ) m_Background.OnGameUIHidden();
 	}
 	virtual void OnThink() OVERRIDE
 	{
-		BaseClass::OnThink();
 		int wide, tall; vgui::surface()->GetScreenSize( wide, tall );
 		if ( GetWide() != wide || GetTall() != tall ) SetBounds( 0, 0, wide, tall );
+		if ( m_bLevelLoading ) return;
 		if ( ( engine->IsInGame() && !engine->IsLevelMainMenuBackground() ) != m_bInGame ) ShowRootMenu();
-		RefreshCurrentWindow();
 		const bool visible = enginevgui->IsGameUIVisible();
 		if ( visible && !m_bGameUIWasVisible && m_bInGame )
 		{
@@ -356,10 +359,29 @@ public:
 		m_bGameUIWasVisible = visible;
 	}
 	virtual void OnCommand( const char *command ) OVERRIDE;
+	virtual void LoadingStarted() OVERRIDE { OnCommand( "LevelLoadingStarted" ); }
+	virtual void LoadingProgress( float fraction, const char *statusText ) OVERRIDE { UpdateTerrorLoadingScreenProgress( fraction, statusText ); }
+	virtual void LoadingFinished( bool error, const char *reason, const char *extended ) OVERRIDE
+	{
+		m_bLoadingFinished = !error;
+		if ( !error ) return;
+		m_bLevelLoading = false;
+		::SetTerrorLoadingScreenVisible( false );
+		ShowRootMenu();
+		SetVisible( true );
+	}
 	void OpenGraphicsOptions( int section );
 protected:
 	virtual void OnTick() OVERRIDE
 	{
+		if ( m_bLoadingFinished && C_BasePlayer::GetLocalPlayer() && engine->IsInGame() && !engine->IsDrawingLoadingImage() )
+		{
+			m_bLoadingFinished = false;
+			m_bLevelLoading = false;
+			::SetTerrorLoadingScreenVisible( false );
+			CloseWindows();
+			SetVisible( false );
+		}
 		// G872F0/G86A10 pause on GameUI activation/hide, including the console.
 		// The SDK GameUI only does so for maxClients <= 1. Tick delivery keeps
 		// the hide edge observable even while this panel's ancestors are hidden.
@@ -413,6 +435,7 @@ private:
 	CL4DWorkshopDownPanel *m_pWorkshop;
 	vgui::DHANDLE<CL4DFrame> m_hWindow; // Root parent owns deletion; never a second registry.
 	bool m_bInGame, m_bGameUIWasVisible, m_bPauseGameUIWasVisible;
+	bool m_bLevelLoading, m_bLoadingFinished;
 	float m_flBlurScale, m_flLastBlurTime;
 };
 
@@ -467,6 +490,25 @@ void CL4DBasePanel::BeginOffline( const char *modeName )
 
 void CL4DBasePanel::OnCommand( const char *command )
 {
+	if ( !Q_stricmp( command, "LevelLoadingStarted" ) )
+	{
+		m_bLevelLoading = true;
+		m_bLoadingFinished = false;
+		CloseWindows();
+		::SetTerrorLoadingScreenParent( this );
+		::PrepareTerrorLoadingScreen();
+		::SetTerrorLoadingScreenVisible( true );
+		SetVisible( true );
+		return;
+	}
+	if ( !Q_stricmp( command, "DisconnectedFromGame" ) )
+	{
+		m_bLevelLoading = false;
+		::SetTerrorLoadingScreenVisible( false );
+		ShowRootMenu();
+		SetVisible( true );
+		return;
+	}
 	RefreshCurrentWindow();
 	const char *value;
 	if ( !Q_stricmp( command, "Back" ) )
@@ -668,18 +710,24 @@ bool InitTerrorBaseModUI()
 	CreateInterfaceFn engineFactory = Sys_GetFactory( "engine.dll" );
 	s_pEngineServer = engineFactory ? static_cast<IVEngineServer *>( engineFactory( INTERFACEVERSION_VENGINESERVER, NULL ) ) : NULL;
 	if ( !s_pEngineServer ) return false;
-	s_pGameUIModule = Sys_LoadModule( "gameui" );
+	s_pGameUIModule = Sys_LoadModule( "gameui_mod" );
 	CreateInterfaceFn factory = s_pGameUIModule ? Sys_GetFactory( s_pGameUIModule ) : NULL;
 	s_pGameUI = factory ? static_cast<IGameUI *>( factory( GAMEUI_INTERFACE_VERSION, NULL ) ) : NULL;
 	if ( !s_pGameUI ) { if ( s_pGameUIModule ) Sys_UnloadModule( s_pGameUIModule ); s_pGameUIModule = NULL; s_pEngineServer = NULL; return false; }
 	SetNativeOptionsGameUI( s_pGameUI );
 	s_pBasePanel = new CL4DBasePanel;
 	if ( !s_pBasePanel->IsReady() ) { ShutdownTerrorBaseModUI(); return false; }
-	s_pGameUI->SetMainMenuOverride( s_pBasePanel->GetVPanel() ); return true;
+	s_pGameUI->SetMainMenuOverride( s_pBasePanel->GetVPanel() );
+	IGameUIMod *pGameUIMod = static_cast<IGameUIMod *>( factory( GAMEUI_MOD_INTERFACE_VERSION, NULL ) );
+	if ( pGameUIMod ) pGameUIMod->RegisterClient( s_pBasePanel );
+	return true;
 }
 void ShutdownTerrorBaseModUI()
 {
 	using namespace L4D360UI;
+	CreateInterfaceFn factory = s_pGameUIModule ? Sys_GetFactory( s_pGameUIModule ) : NULL;
+	IGameUIMod *pGameUIMod = factory ? static_cast<IGameUIMod *>( factory( GAMEUI_MOD_INTERFACE_VERSION, NULL ) ) : NULL;
+	if ( pGameUIMod ) pGameUIMod->RegisterClient( NULL );
 	if ( s_pGameUI ) s_pGameUI->SetMainMenuOverride( 0 );
 	delete s_pBasePanel; s_pBasePanel = NULL;
 	SetNativeOptionsGameUI( NULL ); s_pGameUI = NULL; s_pEngineServer = NULL;

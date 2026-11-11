@@ -27,6 +27,7 @@
 #include "vgui_controls/Label.h"
 #include "vgui_controls/ImagePanel.h"
 #include "vgui_controls/Button.h"
+#include "vgui_controls/ProgressBar.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterial.h"
 #include <float.h>
@@ -60,13 +61,13 @@ private:
 	int m_nFrame;
 };
 
-KeyValues *TerrorClient_GetTransitionChapterInfo( bool next, KeyValues **mission )
+KeyValues *TerrorClient_GetTransitionChapterInfo( bool next, KeyValues **mission, const char *levelName )
 {
 	// Main-approved match-framework adaptation. The SAME mounted dictionary
 	// owns current/next chapter lookup; no filename/campaign heuristic/parser.
 	if ( mission ) *mission = NULL;
 	char map[MAX_PATH];
-	V_FileBase( engine->GetLevelName(), map, sizeof( map ) );
+	V_FileBase( levelName ? levelName : engine->GetLevelName(), map, sizeof( map ) );
 	KeyValues *settings = new KeyValues( "settings" );
 	KeyValues::AutoDelete deleteSettings( settings );
 	settings->SetString( "Game/mode", g_TerrorModes.GetName() );
@@ -133,6 +134,173 @@ void CTerrorViewportPanel::OnThink()
 	m_bChatActive = active;
 	SetMouseInputEnabled( !active ); SetKeyBoardInputEnabled( !active );
 	if ( active ) chat->RequestFocus(); else RequestFocus();
+}
+
+class CTerrorLoadingProgressBar : public vgui::ContinuousProgressBar
+{
+	DECLARE_CLASS_SIMPLE( CTerrorLoadingProgressBar, vgui::ContinuousProgressBar );
+public:
+	CTerrorLoadingProgressBar( vgui::Panel *parent, const char *name ) : BaseClass( parent, name )
+	{
+		m_Background = vgui::surface()->CreateNewTextureID();
+		m_Fill = vgui::surface()->CreateNewTextureID();
+		vgui::surface()->DrawSetTextureFile( m_Background, "vgui/loadingbar_bg", true, false );
+		vgui::surface()->DrawSetTextureFile( m_Fill, "vgui/loadingbar", true, false );
+	}
+	virtual ~CTerrorLoadingProgressBar()
+	{
+		vgui::surface()->DestroyTextureID( m_Background );
+		vgui::surface()->DestroyTextureID( m_Fill );
+	}
+	virtual void Paint() OVERRIDE
+	{
+		vgui::surface()->DrawSetColor( 255, 255, 255, 255 );
+		vgui::surface()->DrawSetTexture( m_Background );
+		vgui::surface()->DrawTexturedRect( 0, 0, GetWide(), GetTall() );
+		vgui::surface()->DrawSetTexture( m_Fill );
+		const float fraction = clamp( GetProgress(), 0.0f, 1.0f );
+		vgui::surface()->DrawTexturedSubRect( 0, 0, GetWide() * fraction, GetTall(), 0, 0, fraction, 1 );
+	}
+	virtual void PaintBackground() OVERRIDE {}
+	virtual void PaintBorder() OVERRIDE {}
+private:
+	int m_Background, m_Fill;
+};
+
+class CTerrorLoadingScreenPanel : public vgui::EditablePanel
+{
+	DECLARE_CLASS_SIMPLE( CTerrorLoadingScreenPanel, vgui::EditablePanel );
+public:
+	CTerrorLoadingScreenPanel() : BaseClass( NULL, "LoadingProgress" ), m_flLastSpinner( 0.0f )
+	{
+		SetProportional( true );
+		m_pPoster = new vgui::ImagePanel( this, "Poster" );
+		m_pTitle = new vgui::Label( this, "LocalizedCampaignName", "" );
+		m_pTagline = new vgui::Label( this, "LocalizedCampaignTagline", "" );
+		m_pLoadingText = new vgui::Label( this, "LoadingText", "#L4D360UI_Loading" );
+		m_pSpinner = new CTerrorLoadingImagePanel( this, "WorkingAnim" );
+		m_pProgress = new CTerrorLoadingProgressBar( this, "ProTotalProgress" );
+		m_pMode = new vgui::Label( this, "GameModeLabel", "" );
+		m_pStarring = new vgui::Label( this, "StarringLabel", "#L4D360UI_Loading_Starring" );
+		m_pNames = new vgui::Label( this, "PlayerNames", "" );
+		SetVisible( false ); SetMouseInputEnabled( false ); SetKeyBoardInputEnabled( false );
+		vgui::ivgui()->AddTickSignal( GetVPanel(), 100 );
+		m_bHasPoster = false;
+	}
+	virtual ~CTerrorLoadingScreenPanel() { vgui::ivgui()->RemoveTickSignal( GetVPanel() ); }
+	virtual void OnTick() OVERRIDE
+	{
+		const float now = (float)Plat_FloatTime();
+		if ( now - m_flLastSpinner < 0.1f ) return;
+		m_flLastSpinner = now;
+		m_pSpinner->AdvanceFrame();
+	}
+	void SetProgress( float fraction, const char *text )
+	{
+		if ( !m_bHasPoster ) PreparePoster();
+		m_pProgress->SetProgress( fraction );
+		if ( text && *text )
+		{
+			const wchar_t *localized = text[0] == '#' ? g_pVGuiLocalize->Find( text ) : NULL;
+			if ( localized ) m_pLoadingText->SetText( localized );
+			else m_pLoadingText->SetText( text );
+		}
+		Repaint();
+	}
+	void Prepare()
+	{
+		LoadControlSettings( "resource/ui/l4d360ui/loadingprogress.res" );
+		PreparePoster();
+		InvalidateLayout( true, true );
+	}
+	void PreparePoster()
+	{
+		KeyValues *mission = NULL;
+		ConVarRef hostMap( "host_map" );
+		TerrorClient_GetTransitionChapterInfo( false, &mission, hostMap.IsValid() ? hostMap.GetString() : NULL );
+		KeyValues *poster = mission ? mission->FindKey( "poster" ) : NULL;
+		m_bHasPoster = poster != NULL;
+		int w, h; vgui::surface()->GetScreenSize( w, h );
+		const bool widescreen = (float)w / (float)h > 1.5f;
+		const char *image = poster ? poster->GetString( widescreen ? "posterImage_widescreen" : "posterImage", "LoadingScreen_Default" ) : "LoadingScreen_Default";
+		m_pPoster->SetImage( image );
+		m_pPoster->SetVisible( true );
+		m_pTitle->SetText( poster ? poster->GetString( "posterTitle", "" ) : "" );
+		m_pTagline->SetText( poster ? poster->GetString( "posterTagline", "" ) : "" );
+		m_pMode->SetText( CFmtStr( "#L4D360UI_Loading_GameMode_%s", g_TerrorModes.GetName() ) );
+		m_pMode->SetVisible( true ); m_pStarring->SetVisible( true ); m_pNames->SetVisible( true );
+		char order[256], names[256] = "";
+		Q_strncpy( order, poster ? poster->GetString( "character_order", "" ) : "", sizeof( order ) );
+		for ( char *key = order; key && *key; )
+		{
+			char *next = Q_strstr( key, ";" );
+			if ( next ) *next++ = 0;
+			for ( int character = 0; character < 8; ++character )
+			{
+				if ( Q_stricmp( key, GetSurvivorCharacterName( character ) ) ) continue;
+				if ( names[0] ) Q_strncat( names, ", ", sizeof( names ) );
+				Q_strncat( names, GetSurvivorCharacterDisplayName( character ), sizeof( names ) );
+				break;
+			}
+			key = next;
+		}
+		m_pNames->SetText( names );
+		m_pSpinner->SetVisible( true );
+		m_pProgress->SetProgress( 0.0f );
+		InvalidateLayout( true, true );
+	}
+	virtual void PerformLayout() OVERRIDE
+	{
+		BaseClass::PerformLayout();
+		int w, h; vgui::surface()->GetScreenSize( w, h ); SetBounds( 0, 0, w, h );
+		m_pPoster->SetBounds( 0, 0, w, h );
+		const int unit = vgui::scheme()->GetProportionalScaledValue( 20 );
+		m_pSpinner->SetBounds( w - unit * 3, unit * 2, unit * 2, unit * 2 );
+	}
+	virtual void PaintBackground() OVERRIDE { vgui::surface()->DrawSetColor( 0, 0, 0, 255 ); vgui::surface()->DrawFilledRect( 0, 0, GetWide(), GetTall() ); }
+	vgui::ImagePanel *m_pPoster;
+	vgui::Label *m_pTitle;
+	vgui::Label *m_pTagline;
+	vgui::Label *m_pLoadingText;
+	vgui::Label *m_pMode, *m_pStarring, *m_pNames;
+	CTerrorLoadingImagePanel *m_pSpinner;
+	vgui::ContinuousProgressBar *m_pProgress;
+	bool m_bHasPoster;
+	float m_flLastSpinner;
+};
+static CTerrorLoadingScreenPanel *s_pTerrorLoadingScreen;
+void SetTerrorLoadingScreenParent( vgui::Panel *parent )
+{
+	if ( !s_pTerrorLoadingScreen )
+		s_pTerrorLoadingScreen = new CTerrorLoadingScreenPanel;
+	if ( s_pTerrorLoadingScreen->GetParent() != parent )
+		s_pTerrorLoadingScreen->SetParent( parent );
+	s_pTerrorLoadingScreen->SetScheme( parent->GetScheme() );
+}
+void PrepareTerrorLoadingScreen()
+{
+	if ( !s_pTerrorLoadingScreen ) s_pTerrorLoadingScreen = new CTerrorLoadingScreenPanel;
+	s_pTerrorLoadingScreen->Prepare();
+}
+void UpdateTerrorLoadingScreenProgress( float fraction, const char *statusText )
+{
+	if ( s_pTerrorLoadingScreen ) s_pTerrorLoadingScreen->SetProgress( fraction, statusText );
+}
+void SetTerrorLoadingScreenVisible( bool state )
+{
+	if ( state )
+	{
+		PrepareTerrorLoadingScreen();
+		s_pTerrorLoadingScreen->SetVisible( true );
+		s_pTerrorLoadingScreen->MoveToFront();
+		return;
+	}
+	if ( s_pTerrorLoadingScreen )
+	{
+		s_pTerrorLoadingScreen->SetVisible( false );
+		s_pTerrorLoadingScreen->MarkForDeletion();
+		s_pTerrorLoadingScreen = NULL;
+	}
 }
 
 CTransitionStatsPanel *GetTransitionStatsPanel()

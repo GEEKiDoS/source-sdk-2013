@@ -28,7 +28,7 @@
 
 #include "tier0/basetypes.h"
 #if defined( _WIN64 )
-#include "shaderapi_redirect_win64.h"
+#include "module_redirect_win64.h"
 #endif
 
 #ifdef WIN32
@@ -515,10 +515,30 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 	szBuffer[sizeof( szBuffer ) - 1] = '\0';
 	_putenv( szBuffer );
 #if defined( _WIN64 )
-	if ( bDx12Requested )
 	{
 		wchar_t error[256] = {};
-		if ( !InstallShaderApiDx12Redirect( sRendererDll.c_str(), error, sizeof( error ) / sizeof( error[0] ) ) )
+		bool bRedirected = true;
+		if ( bDx12Requested )
+			bRedirected = AddModuleRedirect( L"shaderapidx9", sRendererDll.c_str(), error, sizeof( error ) / sizeof( error[0] ) );
+#if defined( L4D2 )
+		// L4D2 owns its menu, pause and loading screens: the engine's GameUI.dll is served by the EXE-local gameui_mod.dll,
+		// which implements IGameUI and forwards to the real %SDK_EXEC_DIR%\bin\x64\GameUI.dll that it loads itself.
+		if ( bRedirected )
+		{
+			const std::wstring sExePath = GetExePath();
+			const std::wstring sGameUIMod = sExePath.substr( 0, sExePath.find_last_of( L"\\/" ) + 1 ) + L"bin\\x64\\gameui_mod.dll";
+			if ( !FileExists( sGameUIMod.c_str() ) )
+			{
+				wcsncpy_s( error, _countof( error ), L"The EXE-local bin\\x64\\gameui_mod.dll is missing.", _TRUNCATE );
+				bRedirected = false;
+			}
+			else
+			{
+				bRedirected = AddModuleRedirect( L"GameUI", sGameUIMod.c_str(), error, sizeof( error ) / sizeof( error[0] ) );
+			}
+		}
+#endif
+		if ( !bRedirected || !InstallModuleRedirects( error, sizeof( error ) / sizeof( error[0] ) ) )
 		{
 			MessageBoxW( 0, error, L"Launcher Error", MB_OK );
 			return 1;

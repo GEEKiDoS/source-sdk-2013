@@ -71,7 +71,7 @@ $Project
 	$Folder	"Source Files"
 	{
 		$File	"main.cpp"
-		$File	"shaderapi_redirect_win64.cpp" [$WIN64]
+		$File	"module_redirect_win64.cpp" [$WIN64]
 		$File	"$SRCDIR\thirdparty\minhook\src\buffer.c" [$WIN64]
 		$File	"$SRCDIR\thirdparty\minhook\src\hook.c" [$WIN64]
 		$File	"$SRCDIR\thirdparty\minhook\src\trampoline.c" [$WIN64]

@@ -1,0 +1,33 @@
+$Macro SRCDIR ".."
+$Macro OUTBINNAME "gameui_mod"
+$Macro OUTBINDIR "$SRCDIR\..\game\bin"
+$Include "$SRCDIR\vpc_scripts\source_dll_base.vpc"
+
+$Configuration
+{
+	$Compiler
+	{
+		$Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+		$ForceIncludes " "
+		$AdditionalIncludeDirectories "$BASE;$SRCDIR\common"
+	}
+}
+$Project "gameui_mod"
+{
+	$Folder "Source Files"
+	{
+		-$File "$SRCDIR\public\tier0\memoverride.cpp"
+		$File "gameui_mod.cpp"
+	}
+	$Folder "Header Files"
+	{
+		$File "$SRCDIR\common\GameUI\IGameUI.h"
+		$File "$SRCDIR\common\GameUI\IGameUIMod.h"
+	}
+	$Folder "Link Libraries"
+	{
+		-$Implib "$LIBPUBLIC\tier0"
+		-$Lib "$LIBPUBLIC\tier1"
+		-$Implib "$LIBPUBLIC\vstdlib"
+	}
+}

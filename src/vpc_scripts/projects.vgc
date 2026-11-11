@@ -117,6 +117,11 @@ $Project "launcher_main"
 	"launcher_main\launcher_main_mod_episodic.vpc" [$EPISODIC]
 }
 
+$Project "gameui_mod"
+{
+	"gameui_mod\gameui_mod.vpc" [$L4D2]
+}
+
 $Project "mathlib"
 {
 	"mathlib\mathlib.vpc"

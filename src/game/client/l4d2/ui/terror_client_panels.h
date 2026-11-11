@@ -116,12 +116,16 @@ private:
 };
 
 CTransitionStatsPanel *GetTransitionStatsPanel(); // 2EB040.
+void SetTerrorLoadingScreenParent( vgui::Panel *parent );
+void UpdateTerrorLoadingScreenProgress( float fraction, const char *statusText );
+void SetTerrorLoadingScreenVisible( bool state );
+void PrepareTerrorLoadingScreen();
 IViewPortPanel *CreateTerrorClientPanel( IViewPort *viewport, const char *name );
 bool IsZombieIntroPanelVisible(); // 2EF870, native process-global latch.
 bool IsTransitionStatsPostProcessingSuppressed(); // 1C4420 / 1C9310.
 void ShutdownPersonalStatsSummary(); // 2D4620; single supported split-screen slot 0.
 void ShowPersonalStatsSummary(); // 2D4DC0; native personalstats command.
 // Match-framework adaptation: borrowed nodes from the existing mission dictionary.
-KeyValues *TerrorClient_GetTransitionChapterInfo( bool next, KeyValues **mission );
+KeyValues *TerrorClient_GetTransitionChapterInfo( bool next, KeyValues **mission, const char *levelName = NULL );
 const wchar_t *TerrorFindLocalizedTextSafe( const char *token ); // existing VGUI FindSafe adaptation, one owner
 #endif
