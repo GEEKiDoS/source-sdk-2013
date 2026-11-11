@@ -1,6 +1,6 @@
 "GameInfo"
 {
-	game	"Left 4 Dead 2 (x64 port)"
+	game	"Left 4 Dead 2"
 	title	"LEFT 4 DEAD 2"
 	type multiplayer_only
 	nomodels 1
