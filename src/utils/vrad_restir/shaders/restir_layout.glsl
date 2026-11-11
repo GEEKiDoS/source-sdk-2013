@@ -59,6 +59,8 @@
 // Push-constant flags
 #define RESTIR_PC_FINAL_ITERATION 0x1u
 #define RESTIR_PC_HARDWARE_RT     0x2u
+#define RESTIR_PC_RECEIVER_PAGE   0x4u
+#define RESTIR_PC_RESERVOIR_PAGE  0x8u
 
 //-----------------------------------------------------------------------------
 // Structs (restir_types.h / restir_gpu_layout.h)
@@ -232,7 +234,7 @@ struct ReSTIRBvhNode					// 48 bytes
 };
 
 //-----------------------------------------------------------------------------
-// Push constants (128 bytes)
+// Push constants (144 bytes)
 //-----------------------------------------------------------------------------
 layout( push_constant ) uniform ReSTIRPush
 {
@@ -258,7 +260,8 @@ layout( push_constant ) uniform ReSTIRPush
 	uint numReservoirs;
 	vec4 worldMins;
 	vec4 worldMaxs;
-	vec4 shadowSun;						// x: resolved shadow angular radius in radians; yzw = 0 (not transport spread)
+	vec4 shadowSun;
+	uvec4 pageBase;						// reservoir, sample, luxel, output page bases
 } pc;
 
 //-----------------------------------------------------------------------------
@@ -296,9 +299,11 @@ layout( std430, set = 0, binding = 26 ) buffer ReceiverOutputBuf         { vec4 
 layout( std430, set = 0, binding = 27 ) readonly buffer SunOriginsBuf   { vec4 sunVisibilityOrigins[]; };
 layout( std430, set = 0, binding = 28 ) buffer SunVisibilityBuf          { float sunVisibility[]; };
 layout( std430, set = 0, binding = 29 ) readonly buffer SelectedSourcesBuf { vec4 selectedSources[]; }; // canonical origin/radius; sun w=-1
-layout( set = 0, binding = 30 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
+layout( std430, set = 0, binding = 30 ) readonly buffer PreviousIrradianceBuf { vec4 previousIrradiance[]; }; // style-0 RGB and weight per sample
+layout( std430, set = 0, binding = 31 ) readonly buffer SamplePositionsBuf { vec4 samplePositions[]; };
+layout( set = 0, binding = 32 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
 #if RESTIR_HW_RAYQUERY
-layout( set = 0, binding = 31 ) uniform accelerationStructureEXT tlas;
+layout( set = 0, binding = 33 ) uniform accelerationStructureEXT tlas;
 #endif
 
 #endif // RESTIR_LAYOUT_GLSL

@@ -125,7 +125,34 @@ vec3 LuxelSpaceToWorld( ReSTIRGpuFace face, vec2 coord )
 	return face.luxelOrigin.xyz + coord.x * face.luxelToWorld0.xyz + coord.y * face.luxelToWorld1.xyz;
 }
 
-// utils/vrad/lightmap.cpp:2445-2451 pushes every sample (including displacements).
+uint ReservoirAddress( uint index )
+{
+	return ( pc.flags & RESTIR_PC_RESERVOIR_PAGE ) != 0u ?
+		index - pc.pageBase.x : index;
+}
+
+uint SampleAddress( uint index )
+{
+	return ( pc.flags & RESTIR_PC_RESERVOIR_PAGE ) != 0u ?
+		index - pc.pageBase.y : index;
+}
+
+uint LuxelAddress( uint index )
+{
+	return ( pc.flags & RESTIR_PC_RESERVOIR_PAGE ) != 0u ?
+		index - pc.pageBase.z : index;
+}
+
+uint OutputAddress( uint index )
+{
+	return ( pc.flags & RESTIR_PC_RESERVOIR_PAGE ) != 0u ?
+		index - pc.pageBase.w : index;
+}
+
+uint AccumulationAddress( uint index )
+{
+	return ReservoirAddress( index ) * RESTIR_MAX_CHANNELS;
+}
 vec3 ShadingOrigin( ReSTIRGpuFace face, ReSTIRGpuSample sampleRecord )
 {
 	return sampleRecord.position.xyz + face.faceNormal.xyz;

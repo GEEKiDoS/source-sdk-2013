@@ -40,7 +40,7 @@ struct ModeStorage
     CUtlVector<byte> visibilityPayload, faceSupport;
     bool visibilityPropsCaptured, visibilityShared;
     ReSTIRAmbientProbeGrid probes; bool probesCaptured;
-    void Clear()
+    void Clear(bool preserveProbes = false)
     {
         active = false;
         memset(&record,0,sizeof(record)); identities.Purge(); models.Purge(); faces.Purge();
@@ -49,7 +49,7 @@ struct ModeStorage
         visibilityFaces.Purge(); visibilityEntries.Purge(); visibilityProps.Purge(); visibilityMeshes.Purge();
         unbakedFaces.Purge(); unbakedLightIndices.Purge();
         visibilityPayload.Purge(); faceSupport.Purge(); visibilityPropsCaptured = visibilityShared = false;
-        probes.Purge(); probesCaptured = false;
+        if (!preserveProbes) { probes.Purge(); probesCaptured = false; }
     }
 };
 ModeStorage s_Mode[2];
@@ -721,7 +721,9 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
         for (int i = 0; i < 2; ++i) s_Mode[i].Clear();
         return true;
     }
-    ModeStorage &m = s_Mode[SelectedMode()]; m.Clear(); m.active = true; m.lights.AddVectorToTail(scene.shadowLights);
+    // The gather stage has already captured this mode's probes. Receiver capture
+    // replaces only RGB/visibility storage, not the paired ambient grid.
+    ModeStorage &m = s_Mode[SelectedMode()]; m.Clear(true); m.active = true; m.lights.AddVectorToTail(scene.shadowLights);
     const int faceCount = SelectedFaces();
     if (nummodels <= 0 || nummodels > MAX_MAP_MODELS || faceCount <= 0 || faceCount > MAX_MAP_FACES ||
         scene.dfaceToFace.Count() != faceCount || !color) return Fail("invalid model/face capture domain");

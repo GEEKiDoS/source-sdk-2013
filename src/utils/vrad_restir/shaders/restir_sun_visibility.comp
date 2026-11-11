@@ -32,13 +32,13 @@ void main()
 	uint index = pc.first + localIndex;
 	if ( index >= pc.numLuxels )
 		return;
-	sunVisibility[index] = 0.0;
+	sunVisibility[LuxelAddress( index )] = 0.0;
 	if ( pc.skyLight < 0 || uint( pc.skyLight ) >= pc.numLights )
 		return;
 	ReSTIRGpuLight sun = lights[pc.skyLight];
 	if ( sun.type != EMIT_SKYLIGHT || ( sun.lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) == 0 )
 		return;
-	vec4 origin = sunVisibilityOrigins[index];
+	vec4 origin = sunVisibilityOrigins[LuxelAddress( index )];
 	if ( origin.w != 1.0 || any( isnan( origin.xyz ) ) || any( isinf( origin.xyz ) ) )
 		return;
 	vec3 direction = -sun.normal.xyz;
@@ -63,5 +63,5 @@ void main()
 			++visibleCount;
 	}
 	// No receiver cosine, light intensity/style, transport spread, PDF or bump term.
-	sunVisibility[index] = float( visibleCount ) / float( rayCount );
+	sunVisibility[LuxelAddress( index )] = float( visibleCount ) / float( rayCount );
 }

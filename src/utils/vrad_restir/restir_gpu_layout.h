@@ -46,16 +46,18 @@
 #define RESTIR_BIND_HW_PRIM_MAP      21  // uint[]: hardware instanceCustomIndex + primitiveID -> scene triangle index (hardware-rt)
 #define RESTIR_BIND_SCENE_STYLES     22  // int[numStyles]
 #define RESTIR_BIND_EMITTER_TRIS     23  // ReSTIRGpuEmitterTriangle[] (ReSTIRScene::emitterTriangles)
-#define RESTIR_BIND_STYLE_LIGHTS     24  // int[] (ReSTIRScene::styleLights): numStyles+1 offsets, then local light indices per style
-#define RESTIR_BIND_RECEIVER_ACCUMULATION 25 // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: as ACCUMULATION minus RESTIR_LIGHT_RUNTIME_DIRECT
+#define RESTIR_BIND_STYLE_LIGHTS     24  // int[] (ReSTIRScene::styleLights): numStyles+1 offsets, then light indices
+#define RESTIR_BIND_RECEIVER_ACCUMULATION 25 // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: as ACCUMULATION minus flagged non-PATH direct
                                          //   non-PATH direct (shadowMaps bakes with selected lights only; else the 16-byte dummy)
 #define RESTIR_BIND_RECEIVER_OUTPUT  26  // vec4[numOutputValues] reconstructed receiver radiance (ReSTIRLightmapResult::radiance when split)
 #define RESTIR_BIND_SUN_ORIGINS      27  // vec4[numLuxels]: final origin xyz, w=1 valid / 0 blocked; any selected local/sun
 #define RESTIR_BIND_SUN_VISIBILITY   28  // float[numLuxels]: independent closest-sky cone fraction; selected sun only
-#define RESTIR_BIND_SELECTED_SOURCES 29  // vec4[shadowLights.Count()]: canonical selected origin xyz, shadowSourceRadius w; sun w=-1
-#define RESTIR_BIND_COVERAGE         30  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
-#define RESTIR_BIND_TLAS             31  // accelerationStructureEXT (hardware-rt only); MUST stay the last binding
-#define RESTIR_BIND_COUNT            32
+#define RESTIR_BIND_SELECTED_SOURCES 29 // vec4[shadowLights.Count()]: canonical origin/radius; sun w=-1
+#define RESTIR_BIND_PREVIOUS_IRRADIANCE 30 // vec4[numSamples]: previous style-0 irradiance RGB and weight per sample
+#define RESTIR_BIND_SAMPLE_POSITIONS 31 // vec4[numSamples]: resident positions for exact cross-page nearest-sample lookup
+#define RESTIR_BIND_COVERAGE         32  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
+#define RESTIR_BIND_TLAS             33  // accelerationStructureEXT (hardware-rt only); MUST stay the last binding
+#define RESTIR_BIND_COUNT            34
 
 #define RESTIR_MAX_CHANNELS          4   // NUM_BUMP_VECTS + 1; accumulation always reserves 4 per reservoir
 #define RESTIR_WORKGROUP_SIZE        64
@@ -124,10 +126,13 @@ struct ReSTIRPushConstants
 	unsigned int numReservoirs;
 	float		worldMins[4];			// scene bounds (morton codes)
 	float		worldMaxs[4];
-	float		shadowSun[4];			// x: resolved shadowSunAngularRadius in radians (not transport spread); yzw = 0
+	float		shadowSun[4];			// x: resolved shadowSunAngularRadius
+	unsigned int pageBase[4];			// reservoir, sample, luxel and output page bases
 };
-COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 128 );
+COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 144 );
 #define RESTIR_PC_FINAL_ITERATION   0x1
 #define RESTIR_PC_HARDWARE_RT       0x2   // informative; shaders are compiled per backend anyway
+#define RESTIR_PC_RECEIVER_PAGE     0x4   // receiverAccumulation is addressed relative to pageBase.x
+#define RESTIR_PC_RESERVOIR_PAGE    0x8   // reservoir arrays are addressed relative to pageBase.x
 
 #endif // RESTIR_GPU_LAYOUT_H

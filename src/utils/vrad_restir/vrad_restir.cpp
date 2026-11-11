@@ -356,7 +356,8 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 
 		if ( IsOption( pArg, "-restir_iterations" ) || IsOption( pArg, "-restir_candidates" ) ||
 			IsOption( pArg, "-restir_spatial_radius" ) || IsOption( pArg, "-restir_maxbounces" ) ||
-			IsOption( pArg, "-restir_seed" ) || IsOption( pArg, "-restir_gpu" ) )
+			IsOption( pArg, "-restir_seed" ) || IsOption( pArg, "-restir_gpu" ) ||
+			IsOption( pArg, "-restir_vram_budget" ) )
 		{
 			if ( i + 1 >= argc )
 			{
@@ -371,6 +372,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			else if ( IsOption( pArg, "-restir_spatial_radius" ) ) { minValue = 0; maxValue = 128; }
 			else if ( IsOption( pArg, "-restir_maxbounces" ) ) { minValue = 0; maxValue = 128; }
 			else if ( IsOption( pArg, "-restir_seed" ) ) { minValue = 0; maxValue = 0x7fffffff; }
+			else if ( IsOption( pArg, "-restir_vram_budget" ) ) { minValue = 256; maxValue = 262144; }
 			else { minValue = 0; maxValue = 255; }
 			if ( !ParseIntValue( pArg, argv[++i], minValue, maxValue, value ) )
 				return false;
@@ -379,6 +381,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			else if ( IsOption( pArg, "-restir_spatial_radius" ) ) options.spatialRadius = value;
 			else if ( IsOption( pArg, "-restir_maxbounces" ) ) { options.maxBounces = value; explicitOptions.maxBounces = true; }
 			else if ( IsOption( pArg, "-restir_seed" ) ) options.seed = value;
+			else if ( IsOption( pArg, "-restir_vram_budget" ) ) options.vramBudgetMB = value;
 			else options.gpuIndex = value;
 			continue;
 		}
@@ -764,13 +767,13 @@ static void SelectFaceArrayForMode( bool bHDR )
 		g_pFaces = dfaces;
 	}
 }
-// Resolve both authored modes before solving either. The same loaded BSP,
-// assets, secondary-query domains and quality options remain alive throughout
-// a reuse pair; only hdr changes. No result is reused across map loads.
+// Resolve both authored modes before solving ordinary paired bakes. Dense
+// shadow-map domains are intentionally solved per mode: retaining both dense
+// receiver domains resident would exceed low-VRAM heaps before paging begins.
 static bool BuildPairedScene( CReSTIRSceneBuilder &builder, ReSTIRScene &scene, bool &reuse )
 {
 	reuse = false;
-	if ( !s_BakeBothModes || g_ReSTIROptions.hdr )
+	if ( !s_BakeBothModes || g_ReSTIROptions.hdr || g_ReSTIROptions.shadowMaps )
 		return builder.Build( g_ReSTIROptions, scene );
 	ReSTIRScene hdrScene;
 	ReSTIROptions hdrOptions = g_ReSTIROptions;

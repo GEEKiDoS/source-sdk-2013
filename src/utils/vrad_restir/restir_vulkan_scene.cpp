@@ -20,7 +20,9 @@ static void SubmitSceneDispatch( CReSTIRVulkanDevice::Impl &gpu, ReSTIRPipeline 
 	unsigned int count, unsigned int pass )
 {
 	unsigned int first = 0;
-	unsigned int chunkItems = MIN( RESTIR_SUBMIT_INITIAL_ITEMS, gpu.DispatchItemLimit() );
+	const unsigned int itemLimit = gpu.DispatchItemLimit();
+	double slowestItemSeconds = 0.0;
+	unsigned int chunkItems = MIN( MIN( RESTIR_SUBMIT_INITIAL_ITEMS, RESTIR_SUBMIT_MAX_ITEMS ), itemLimit );
 	while ( first < count )
 	{
 		const unsigned int chunk = MIN( chunkItems, count - first );
@@ -33,9 +35,15 @@ static void SubmitSceneDispatch( CReSTIRVulkanDevice::Impl &gpu, ReSTIRPipeline 
 		const double submitSeconds = Plat_FloatTime() - submitStart;
 		if ( submitSeconds > 0.0 )
 		{
-			const double desired = chunkItems * RESTIR_SUBMIT_TARGET_SECONDS / submitSeconds;
-			chunkItems = (unsigned int)MAX( (double)RESTIR_SUBMIT_MIN_ITEMS,
-				MIN( (double)gpu.DispatchItemLimit(), MIN( (double)chunkItems * 2.0, desired ) ) );
+			slowestItemSeconds = MAX( slowestItemSeconds, submitSeconds / (double)chunk );
+			const double desired = 0.5 / slowestItemSeconds;
+			const double growth = submitSeconds < RESTIR_SUBMIT_TARGET_SECONDS * 0.25 ?
+				(double)chunkItems * 2.0 : (double)chunkItems;
+			const unsigned int next = submitSeconds >= RESTIR_SUBMIT_TARGET_SECONDS ?
+				(unsigned int)MAX( (double)RESTIR_SUBMIT_MIN_ITEMS, (double)chunkItems * 0.25 ) :
+				(unsigned int)MIN( (double)RESTIR_SUBMIT_MAX_ITEMS,
+					MIN( (double)itemLimit, MIN( growth, desired ) ) );
+			chunkItems = MAX( RESTIR_SUBMIT_MIN_ITEMS, next );
 		}
 		first += chunk;
 		gpu.ReportProgress( "scene-bvh", first, count );
@@ -287,7 +295,25 @@ bool CReSTIRVulkanDevice::UpdateFaceStyles( const ReSTIRScene &scene )
 	const uint64_t reservoirCount = AssignReservoirs( gpu, scene, faces );
 	if ( reservoirCount > gpu.push.numReservoirs )
 		gpu.Fail( "face style update grew the reservoir count" );
+	gpu.uploadedFaces.CopyArray( faces.Base(), faces.Count() );
+	gpu.fullReservoirs = (unsigned int)reservoirCount;
 	gpu.push.numReservoirs = (unsigned int)reservoirCount;
+	// Rebudget after source-style pruning, before persistent page state exists.
+	gpu.Wait();
+	for ( int binding = 0; binding < gpu.buffers.Count(); ++binding )
+	{
+		if ( gpu.buffers[binding].sceneHeap )
+			continue;
+		vkDestroyBuffer( gpu.device, gpu.buffers[binding].handle, NULL );
+		gpu.buffers[binding].handle = VK_NULL_HANDLE;
+	}
+	vkFreeMemory( gpu.device, gpu.workMemory, NULL );
+	gpu.workMemory = VK_NULL_HANDLE;
+	for ( int binding = 0; binding < gpu.buffers.Count(); ++binding )
+		if ( !gpu.buffers[binding].sceneHeap )
+			gpu.RecreateBuffer( binding, gpu.buffers[binding].size );
+	gpu.AllocateHeaps();
+	gpu.RefreshDescriptorSet();
 	gpu.Upload( RESTIR_BIND_FACES, faces.Base(), (VkDeviceSize)faces.Count() * sizeof( ReSTIRGpuFace ) );
 	gpu.Wait();
 	return true;
@@ -329,8 +355,11 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	}
 	CUtlVector<ReSTIRGpuFace> faces;
 	const uint64_t reservoirCount = AssignReservoirs( gpu, scene, faces );
+	gpu.uploadedFaces.CopyArray( faces.Base(), faces.Count() );
+	gpu.fullReservoirs = (unsigned int)reservoirCount;
+	gpu.receiverPageReservoirs = gpu.fullReservoirs;
 	gpu.push.numReservoirs = (unsigned int)reservoirCount;
-	while ( gpu.paddedTriangles < gpu.push.numTriangles )
+	while ( gpu.paddedTriangles < (unsigned int)scene.triangles.Count() )
 	{
 		if ( gpu.paddedTriangles > 0x40000000u )
 			gpu.Fail( "triangle sort count exceeds 32-bit range" );
@@ -367,14 +396,18 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		shadowSplit ? (VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4 : 16,
 		selectedVisibility ? (VkDeviceSize)scene.luxels.Count() * sizeof( Vector4D ) : 16,
 		selectedSun ? (VkDeviceSize)scene.luxels.Count() * sizeof( float ) : 16,
-		(VkDeviceSize)scene.shadowLights.Count() * sizeof( Vector4D )
+		(VkDeviceSize)scene.shadowLights.Count() * sizeof( Vector4D ),
+		(VkDeviceSize)scene.samples.Count() * sizeof( float ) * 4,
+		(VkDeviceSize)scene.samples.Count() * sizeof( Vector4D )
 	};
 	COMPILE_TIME_ASSERT( sizeof( Vector4D ) == 16 );
 	for ( int binding = 0; binding < RESTIR_BIND_COVERAGE; ++binding )
 	{
 		if ( sizes[binding] > gpu.properties.limits.maxStorageBufferRange )
 			gpu.Fail( "scene buffer exceeds maxStorageBufferRange" );
-		bool sceneHeap = binding <= RESTIR_BIND_CELL_SAMPLES || binding == RESTIR_BIND_FINAL_LIGHTMAP || binding >= RESTIR_BIND_ANORMS;
+		bool sceneHeap = !gpu.IsPagedBinding( binding ) &&
+			( binding <= RESTIR_BIND_CELL_SAMPLES || binding >= RESTIR_BIND_ANORMS ||
+				( binding >= RESTIR_BIND_BVH_NODES && binding <= RESTIR_BIND_BVH_SCRATCH ) );
 		gpu.AddBuffer( sizes[binding], sceneHeap );
 	}
 	int imageCount = MAX( 1, scene.textures.Count() );
@@ -410,15 +443,16 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.Upload( RESTIR_BIND_MATERIALS, scene.materials.Base(), sizes[RESTIR_BIND_MATERIALS] );
 	gpu.Upload( RESTIR_BIND_LIGHTS, scene.lights.Base(), sizes[RESTIR_BIND_LIGHTS] );
 	gpu.Upload( RESTIR_BIND_FACES, faces.Base(), sizes[RESTIR_BIND_FACES] );
-	gpu.Upload( RESTIR_BIND_SAMPLES, scene.samples.Base(), sizes[RESTIR_BIND_SAMPLES] );
-	gpu.Upload( RESTIR_BIND_LUXELS, scene.luxels.Base(), sizes[RESTIR_BIND_LUXELS] );
-	if ( selectedVisibility )
-		gpu.Upload( RESTIR_BIND_SUN_ORIGINS, scene.sunVisibilityOrigins.Base(), sizes[RESTIR_BIND_SUN_ORIGINS] );
-	else
-	{
-		const float dummyOrigins[4] = {};
-		gpu.Upload( RESTIR_BIND_SUN_ORIGINS, dummyOrigins, sizeof( dummyOrigins ) );
-	}
+	// Samples, luxels and selected origins are uploaded per face page by BakeLightmaps.
+	CUtlVector<float> previousIrradiance;
+	previousIrradiance.SetCount( scene.samples.Count() * 4 );
+	memset( previousIrradiance.Base(), 0, previousIrradiance.Count() * sizeof( float ) );
+	gpu.Upload( RESTIR_BIND_PREVIOUS_IRRADIANCE, previousIrradiance.Base(), sizes[RESTIR_BIND_PREVIOUS_IRRADIANCE] );
+	CUtlVector<Vector4D> samplePositions;
+	samplePositions.SetCount( scene.samples.Count() );
+	FOR_EACH_VEC( scene.samples, i )
+		memcpy( &samplePositions[i], scene.samples[i].position, sizeof( Vector4D ) );
+	gpu.Upload( RESTIR_BIND_SAMPLE_POSITIONS, samplePositions.Base(), sizes[RESTIR_BIND_SAMPLE_POSITIONS] );
 	// Derive this compact source buffer from the exact canonical manifest, not
 	// transport GPU indices. Paired equality already compares every source byte.
 	CUtlVector<Vector4D> sources;

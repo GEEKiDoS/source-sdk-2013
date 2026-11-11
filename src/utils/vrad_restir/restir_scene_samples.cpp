@@ -1160,6 +1160,43 @@ static bool AllocateFaceStyles( const ReSTIRScene &scene, const int *lightIndice
 	}
 	return fits;
 }
+static bool RestoreAuthoredFaceStyles( const ReSTIRScene &scene, const int *visibleLights, int visibleCount,
+	ReSTIRGpuFace &face, bool &hadAuthoredList )
+{
+	hadAuthoredList = false;
+	const dface_t &bspFace = g_pFaces[face.dface];
+	int authored[MAXLIGHTMAPS];
+	int authoredCount = 0;
+	for ( int slot = 0; slot < MAXLIGHTMAPS && bspFace.styles[slot] != 255; ++slot )
+		authored[authoredCount++] = bspFace.styles[slot];
+	if ( authoredCount <= 0 || authored[0] != 0 )
+		return false;
+	hadAuthoredList = true;
+	face.numStyles = 0;
+	for ( int i = 0; i < RESTIR_MAX_FACE_STYLES; ++i )
+		face.styles[i] = 255;
+	for ( int i = 0; i < authoredCount; ++i )
+		face.styles[face.numStyles++] = authored[i];
+	bool fits = true;
+	for ( int i = 0; i < visibleCount; ++i )
+	{
+		const int style = scene.lights[visibleLights[i]].style;
+		bool present = false;
+		for ( int slot = 0; slot < face.numStyles; ++slot )
+			present |= face.styles[slot] == style;
+		if ( present )
+			continue;
+		if ( scene.IsReceiverStyle( style ) )
+			continue;
+		if ( face.numStyles >= RESTIR_MAX_FACE_STYLES )
+		{
+			fits = false;
+			continue;
+		}
+		face.styles[face.numStyles++] = style;
+	}
+	return fits;
+}
 
 // utils/vrad/lightmap.cpp:2529-2541 — one overflow warning per face.
 static void WarnFaceStyleOverflow( const ReSTIRScene &scene, const ReSTIRGpuFace &face )
@@ -1425,7 +1462,7 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 
 // utils/vrad/lightmap.cpp:2512-2541 — overflowing faces keep only the candidates whose shadow
 // ray reaches the light from at least one point, in light order; a real overflow warns like VRAD.
-// Slots only shrink, so the output layout sized from the provisional styles stays valid.
+// Compact the output prefix after pruning so face-aligned pages have no gaps.
 bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 {
 	if ( !scene.styleOverflowFaces.Count() )
@@ -1454,8 +1491,13 @@ bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 	{
 		return false;
 	}
-	int warnings = 0;
 	CUtlVector<int> visible;
+	int warnings = 0;
+	int receiverOverflowWarnings = 0;
+	int sourceOverflowWarnings = 0;
+	int receiverStyleHistogram[MAXLIGHTMAPS + 1] = {};
+	int resolvedAuthored = 0;
+	int resolvedBrightness = 0;
 	for ( int o = 0; o < scene.styleOverflowFaces.Count(); ++o )
 	{
 		ReSTIRGpuFace &face = scene.faces[scene.styleOverflowFaces[o]];
@@ -1473,12 +1515,32 @@ bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 			}
 		}
 		const int maxStyles = g_ReSTIROptions.shadowMaps ? RESTIR_MAX_FACE_STYLES : MAXLIGHTMAPS;
-		const bool fits = AllocateFaceStyles( scene, visible.Base(), visible.Count(), maxStyles, face );
+		bool fits = AllocateFaceStyles( scene, visible.Base(), visible.Count(), maxStyles, face );
 		int receiverStyles = 0;
 		for ( int slot = 0; slot < face.numStyles; ++slot )
 		{
 			receiverStyles += scene.IsReceiverStyle( face.styles[slot] ) ? 1 : 0;
 		}
+		if ( g_ReSTIROptions.shadowMaps && receiverStyles > MAXLIGHTMAPS )
+		{
+			bool hadAuthoredList = false;
+			bool authoredFits = RestoreAuthoredFaceStyles( scene, visible.Base(), visible.Count(), face, hadAuthoredList );
+			if ( hadAuthoredList )
+			{
+				fits = authoredFits;
+				++resolvedAuthored;
+			}
+			else
+				++resolvedBrightness;
+			receiverStyles = 0;
+			for ( int slot = 0; slot < face.numStyles; ++slot )
+				receiverStyles += scene.IsReceiverStyle( face.styles[slot] ) ? 1 : 0;
+		}
+		++receiverStyleHistogram[MIN( receiverStyles, MAXLIGHTMAPS )];
+		if ( receiverStyles > MAXLIGHTMAPS )
+			++receiverOverflowWarnings;
+		if ( !fits )
+			++sourceOverflowWarnings;
 		if ( !fits || receiverStyles > MAXLIGHTMAPS )
 		{
 			WarnFaceStyleOverflow( scene, face );
@@ -1486,16 +1548,27 @@ bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 		}
 	}
 	if ( verbose )
+	{
 		Msg( "VRAD ReSTIR: %d faces reached by more than %d source light styles; %d receiver style overflows after shadow rays\n",
 			scene.styleOverflowFaces.Count(), MAXLIGHTMAPS, warnings );
-	if ( warnings && g_ReSTIROptions.shadowMaps )
+		Msg( "Hlight overflow resolution: authored-list=%d brightness=%d receiver-overflow=%d source-overflow=%d\n",
+			resolvedAuthored, resolvedBrightness, receiverOverflowWarnings, sourceOverflowWarnings );
+	}
+	if ( sourceOverflowWarnings && g_ReSTIROptions.shadowMaps )
 	{
-		Warning( "Hlight: refusing to discard authored styles from %d overflowing faces\n", warnings );
+		Warning( "Hlight: unable to fit source styles on %d overflowing faces\n", sourceOverflowWarnings );
 		return false;
 	}
 	scene.styleOverflowFaces.Purge();
 	scene.styleCandidateFirst.Purge();
 	scene.styleCandidateCount.Purge();
 	scene.styleCandidateLights.Purge();
+	scene.numOutputValues = 0;
+	FOR_EACH_VEC( scene.faces, f )
+	{
+		ReSTIRGpuFace &face = scene.faces[f];
+		face.firstOutput = scene.numOutputValues;
+		scene.numOutputValues += face.numStyles * face.numChannels * face.luxelW * face.luxelH;
+	}
 	return device.UpdateFaceStyles( scene );
 }

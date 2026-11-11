@@ -48,7 +48,7 @@ void main()
 	uint slot;
 	ResolveReservoir( index, faceIndex, sampleIndex, slot );
 	ReSTIRGpuFace face = faces[faceIndex];
-	ReSTIRGpuSample sampleRecord = samples[sampleIndex];
+	ReSTIRGpuSample sampleRecord = samples[SampleAddress( sampleIndex )];
 	vec3 origin = ShadingOrigin( face, sampleRecord );
 	vec3 normal = sampleRecord.normal.xyz;
 	int style = face.styles[slot];
@@ -72,7 +72,7 @@ void main()
 	float totalCandidates = float( localCandidates ) + ( hasSun ? 1.0 : 0.0 ) + ( hasSkyAmbient ? 1.0 : 0.0 ) + ( generatePath ? 1.0 : 0.0 );
 	if ( totalCandidates <= 0.0 )
 	{
-		reservoirsCur[index] = result;
+		reservoirsCur[ReservoirAddress( index )] = result;
 		return;
 	}
 	uint candidateIndex = 0u;
@@ -95,5 +95,5 @@ void main()
 		ReservoirUpdate( result, path, weight, 1.0, rng );
 	}
 	ReservoirNormalize( result );
-	reservoirsCur[index] = result;
+	reservoirsCur[ReservoirAddress( index )] = result;
 }

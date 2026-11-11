@@ -12,6 +12,11 @@ static const VkDeviceSize RESTIR_STAGING_BYTES = 64ull * 1024 * 1024;
 static const double RESTIR_SUBMIT_TARGET_SECONDS = 0.25;
 static const unsigned int RESTIR_SUBMIT_INITIAL_ITEMS = 8192;
 static const unsigned int RESTIR_SUBMIT_MIN_ITEMS = 1024;
+// Ray-query cost varies sharply with page-local face/light distributions. The
+// adaptive sizer uses this as a watchdog safety ceiling, not as its target.
+static const unsigned int RESTIR_SUBMIT_MAX_ITEMS = 65536;
+static const unsigned int RESTIR_SPATIAL_SAFE_ITEMS = 8192;
+static const unsigned int RESTIR_CANDIDATE_SAFE_ITEMS = 16384;
 
 enum ReSTIRPipeline
 {
@@ -40,8 +45,9 @@ struct ReSTIRBuffer
 	VkDeviceSize size;
 	VkDeviceSize offset;
 	VkMemoryRequirements requirements;
+	VkBufferUsageFlags usage;
 	bool sceneHeap;
-	ReSTIRBuffer() : handle( VK_NULL_HANDLE ), size( 0 ), offset( 0 ), sceneHeap( false )
+	ReSTIRBuffer() : handle( VK_NULL_HANDLE ), size( 0 ), offset( 0 ), usage( 0 ), sceneHeap( false )
 	{
 		memset( &requirements, 0, sizeof( requirements ) );
 	}
@@ -78,6 +84,17 @@ struct ReSTIRAcceleration
 		sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 	}
 };
+struct ReSTIRPage
+{
+	unsigned int firstFace, faceCount;
+	unsigned int firstSample, sampleCount;
+	unsigned int firstLuxel, luxelCount;
+	unsigned int firstReservoir, reservoirCount;
+	unsigned int firstOutput, outputCount;
+	ReSTIRPage() : firstFace( 0 ), faceCount( 0 ), firstSample( 0 ), sampleCount( 0 ),
+		luxelCount( 0 ), firstLuxel( 0 ), firstReservoir( 0 ), reservoirCount( 0 ),
+		firstOutput( 0 ), outputCount( 0 ) {}
+};
 
 struct ReSTIRGpuStageStats
 {
@@ -107,6 +124,19 @@ struct CReSTIRVulkanDevice::Impl
 	bool memoryBudget;
 	bool hardware;
 	bool finalUploaded;
+	bool receiverFullForReconstruct;
+	bool transportPaged;
+	unsigned int receiverPageReservoirs;
+	unsigned int fullReservoirs;
+	unsigned int pageSamples;
+	unsigned int pageLuxels;
+	unsigned int pageReservoirs;
+	unsigned int pageOutputs;
+	unsigned int pageCount;
+	unsigned int reconstructSampleCapacity;
+	unsigned int reconstructReservoirCapacity;
+	CUtlVector<ReSTIRPage> pages;
+	CUtlVector<ReSTIRGpuFace> uploadedFaces;
 	VkCommandPool commandPool;
 	VkSemaphore timeline;
 	uint64_t submittedValue;
@@ -152,8 +182,15 @@ struct CReSTIRVulkanDevice::Impl
 	void Fail( const char *message ) const;
 	unsigned int MemoryType( unsigned int bits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred = 0 ) const;
 	int AddBuffer( VkDeviceSize bytes, bool useSceneHeap, VkBufferUsageFlags extraUsage = 0 );
+	void RecreateBuffer( int index, VkDeviceSize bytes );
 	VkDeviceAddress BufferAddress( int index ) const;
 	void AllocateHeaps();
+	bool IsPagedBinding( int binding ) const;
+	void BuildPages( VkDeviceSize room );
+	void RebuildPageBufferSizes();
+	void PrepareReconstructionPages( unsigned int sampleCapacity, unsigned int reservoirCapacity, unsigned int luxelCapacity );
+	void RefreshDescriptorSet();
+	void ReallocateForReconstruct();
 	void CreateDescriptorsAndPipelines();
 	void WriteReservoirDescriptors();
 	VkCommandBuffer BeginCommands();

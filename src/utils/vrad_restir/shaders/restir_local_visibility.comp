@@ -70,12 +70,13 @@ void main()
 	{
 		// World batches use resident geometric origins directly; no expanded CPU
 		// query/ray allocation. iteration carries only this batch's luxel base.
-		uint luxel = pc.iteration + index;
-		query.position = luxel < pc.numLuxels ? sunVisibilityOrigins[luxel] : vec4( 0.0 );
+		uint luxel = index;
+		query.position = luxel < pc.numLuxels ? sunVisibilityOrigins[LuxelAddress( luxel )] : vec4( 0.0 );
 		query.selectedLightIndex = pc.pass;
 		query.skipHitId = RESTIR_NO_HIT;
 		query.flags = 0u;
 		query.reserved = 0u;
 	}
-	localVisibility[index] = ComputeVisibility( query );
+	uint outputIndex = pc.pass == RESTIR_NO_HIT ? index : LuxelAddress( index );
+	localVisibility[outputIndex] = ComputeVisibility( query );
 }

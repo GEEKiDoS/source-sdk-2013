@@ -22,9 +22,9 @@ void main()
 	uint slot;
 	ResolveReservoir( index, faceIndex, sampleIndex, slot );
 	ReSTIRGpuFace face = faces[faceIndex];
-	ReSTIRGpuSample sampleRecord = samples[sampleIndex];
+	ReSTIRGpuSample sampleRecord = samples[SampleAddress( sampleIndex )];
 	vec3 origin = ShadingOrigin( face, sampleRecord );
-	ReSTIRReservoir reservoir = reservoirsNext[index];
+	ReSTIRReservoir reservoir = reservoirsNext[ReservoirAddress( index )];
 	bool visible = ( reservoir.flags & RESTIR_RES_VALID ) != 0u;
 	if ( visible && ( reservoir.flags & RESTIR_RES_VISIBLE ) == 0u )
 		visible = ReservoirVisibility( reservoir, origin );
@@ -54,16 +54,18 @@ void main()
 		// restarts at the half-way point, where every estimate covers the same converged integrand.
 		uint firstAveraged = max( 1u, pc.totalIterations / 2u );
 		if ( pc.iteration == firstAveraged )
-			accumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] = vec4( contribution, 1.0 );
+			accumulation[AccumulationAddress( index ) + uint( channel )] = vec4( contribution, 1.0 );
 		else
-			accumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] += vec4( contribution, 1.0 );
+			accumulation[AccumulationAddress( index ) + uint( channel )] += vec4( contribution, 1.0 );
 		if ( receiverAccumulation.length() > 1 )
 		{
+			uint receiverIndex = ( pc.flags & RESTIR_PC_RECEIVER_PAGE ) != 0u ?
+				index - pc.pageBase.x : index;
 			vec3 receiverContribution = receiverDirect ? vec3( 0.0 ) : contribution;
 			if ( pc.iteration == firstAveraged )
-				receiverAccumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] = vec4( receiverContribution, 1.0 );
+				receiverAccumulation[receiverIndex * RESTIR_MAX_CHANNELS + uint( channel )] = vec4( receiverContribution, 1.0 );
 			else
-				receiverAccumulation[index * RESTIR_MAX_CHANNELS + uint( channel )] += vec4( receiverContribution, 1.0 );
+				receiverAccumulation[receiverIndex * RESTIR_MAX_CHANNELS + uint( channel )] += vec4( receiverContribution, 1.0 );
 		}
 	}
 }

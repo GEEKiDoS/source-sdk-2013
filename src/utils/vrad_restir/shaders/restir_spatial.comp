@@ -16,7 +16,7 @@ int NeighborSample( ReSTIRGpuFace face, ReSTIRGpuSample receiver, uint ordinal )
 	if ( ( face.flags & RESTIR_FACE_DISP ) != 0 )
 	{
 		uint index = uint( face.firstSample ) + ordinal;
-		if ( length( samples[index].position.xyz - receiver.position.xyz ) > sqrt( face.reflectivity.w ) )
+		if ( length( samples[SampleAddress( index )].position.xyz - receiver.position.xyz ) > sqrt( face.reflectivity.w ) )
 			return -1;
 		return int( index );
 	}
@@ -28,14 +28,13 @@ int NeighborSample( ReSTIRGpuFace face, ReSTIRGpuSample receiver, uint ordinal )
 	return cellSamples[face.firstLuxel + s + t * face.luxelW];
 }
 
-// Geometric compatibility only (plan 4.4): same face, normal within 25 degrees, close enough.
-// Independent of what the neighbour's reservoir currently holds, so that empty neighbour
-// reservoirs still count towards the normalization (their M candidates could have produced y).
+// Geometric compatibility only: same face, normal within 25 degrees, close enough.
+// Face-aligned pages retain every same-face sample and style slot.
 bool CompatibleNeighbor( ReSTIRGpuFace face, ReSTIRGpuSample receiver, uint receiverIndex, int neighborIndex )
 {
 	if ( neighborIndex < 0 || uint( neighborIndex ) == receiverIndex )
 		return false;
-	ReSTIRGpuSample neighbor = samples[neighborIndex];
+	ReSTIRGpuSample neighbor = samples[SampleAddress( uint( neighborIndex ) )];
 	if ( dot( receiver.normal.xyz, neighbor.normal.xyz ) < 0.906 )
 		return false;
 	float distanceLimit = ( face.flags & RESTIR_FACE_DISP ) != 0 ? sqrt( face.reflectivity.w ) : 2.0 * max( length( face.luxelToWorld0.xyz ), length( face.luxelToWorld1.xyz ) );
@@ -70,7 +69,7 @@ void main()
 	uint slot;
 	ResolveReservoir( index, faceIndex, sampleIndex, slot );
 	ReSTIRGpuFace face = faces[faceIndex];
-	ReSTIRGpuSample receiver = samples[sampleIndex];
+	ReSTIRGpuSample receiver = samples[SampleAddress( sampleIndex )];
 	uint rng = SampleSeed( faceIndex, sampleIndex - uint( face.firstSample ), slot, 0x53504154u );
 	uint diameter = pc.spatialRadius * 2u + 1u;
 	uint neighborCount = ( face.flags & RESTIR_FACE_DISP ) != 0 ? uint( face.numSamples ) : diameter * diameter;
@@ -80,7 +79,7 @@ void main()
 
 	// Own reservoir: its sample was generated here, so p_hat_r(y_r) is its stored target
 	// (candidate generation already folded visibility into it).
-	ReSTIRReservoir own = reservoirsCur[index];
+	ReSTIRReservoir own = reservoirsCur[ReservoirAddress( index )];
 	float ownWeight = 0.0;
 	if ( ( own.flags & RESTIR_RES_VALID ) != 0u )
 	{
@@ -98,7 +97,8 @@ void main()
 		int neighborIndex = NeighborSample( face, receiver, ordinal );
 		if ( !CompatibleNeighbor( face, receiver, sampleIndex, neighborIndex ) )
 			continue;
-		ReSTIRReservoir source = reservoirsCur[ReservoirIndex( face, uint( neighborIndex ), slot )];
+		uint neighborReservoir = ReservoirIndex( face, uint( neighborIndex ), slot );
+		ReSTIRReservoir source = reservoirsCur[ReservoirAddress( neighborReservoir )];
 		float weight = 0.0;
 		candidate = source;
 		if ( ( source.flags & RESTIR_RES_VALID ) != 0u )
@@ -113,7 +113,7 @@ void main()
 	if ( ( result.flags & RESTIR_RES_VALID ) == 0u || result.radiance.w <= 0.0 )
 	{
 		result.W = 0.0;
-		reservoirsNext[index] = result;
+		reservoirsNext[ReservoirAddress( index )] = result;
 		return;
 	}
 
@@ -124,11 +124,14 @@ void main()
 		int neighborIndex = NeighborSample( face, receiver, ordinal );
 		if ( !CompatibleNeighbor( face, receiver, sampleIndex, neighborIndex ) )
 			continue;
-		ReSTIRGpuSample neighbor = samples[neighborIndex];
+		ReSTIRGpuSample neighbor = samples[SampleAddress( uint( neighborIndex ) )];
 		ReSTIRReservoir atNeighbor;
 		if ( TargetAt( result, face, neighbor, atNeighbor ) > 0.0 )
-			z += reservoirsCur[ReservoirIndex( face, uint( neighborIndex ), slot )].M;
+		{
+			uint neighborReservoir = ReservoirIndex( face, uint( neighborIndex ), slot );
+			z += reservoirsCur[ReservoirAddress( neighborReservoir )].M;
+		}
 	}
 	result.W = z > 0.0 ? result.wSum / ( z * result.radiance.w ) : 0.0;
-	reservoirsNext[index] = result;
+	reservoirsNext[ReservoirAddress( index )] = result;
 }

@@ -23,9 +23,9 @@ void main()
 	uint slot;
 	ResolveReservoir( index, faceIndex, sampleIndex, slot );
 	ReSTIRGpuFace face = faces[faceIndex];
-	ReSTIRGpuSample sampleRecord = samples[sampleIndex];
+	ReSTIRGpuSample sampleRecord = samples[SampleAddress( sampleIndex )];
 	vec3 origin = ShadingOrigin( face, sampleRecord );
-	ReSTIRReservoir previous = reservoirsPrev[index];
+	ReSTIRReservoir previous = reservoirsPrev[ReservoirAddress( index )];
 	float historyCount = min( previous.M, 20.0 * float( pc.candidates ) );
 	ReSTIRReservoir candidate = previous;
 	float target = 0.0;
@@ -42,9 +42,9 @@ void main()
 			candidate.radiance.w = 0.0;
 		}
 	}
-	ReSTIRReservoir result = reservoirsCur[index];
+	ReSTIRReservoir result = reservoirsCur[ReservoirAddress( index )];
 	uint rng = SampleSeed( faceIndex, sampleIndex - uint( face.firstSample ), slot, 0x54454D50u );
 	ReservoirUpdate( result, candidate, target * previous.W * historyCount, historyCount, rng );
 	ReservoirNormalize( result );
-	reservoirsCur[index] = result;
+	reservoirsCur[ReservoirAddress( index )] = result;
 }

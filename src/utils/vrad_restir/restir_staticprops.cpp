@@ -993,11 +993,7 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 			localLightIndices.AddToTail( i );
 	if ( !hdr || !vtx )
 	{
-		if ( localLightIndices.Count() )
-		{
-			Warning( "VRAD ReSTIR: prop %d has no model geometry for required local visibility\n", propIndex );
-			return false;
-		}
+		Warning( "VRAD ReSTIR: prop %d has no loaded model geometry; skipping static-prop lighting and visibility\n", propIndex );
 		hlight::PropVisibilityDisk directory = {};
 		directory.staticPropOrdinal = propIndex;
 		directory.firstMesh = visibility.meshes.Count();

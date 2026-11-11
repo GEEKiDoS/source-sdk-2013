@@ -248,22 +248,24 @@ vec3 PreviousIrradianceAtHit( HitInfo hit, vec3 position, out vec3 reflectivity 
 	int sampleIndex = cellSamples[face.firstLuxel + coord.x + coord.y * face.luxelW];
 	if ( sampleIndex < 0 )
 	{
-		// Displacement cells and clipped brush cells without a sample: nearest sample of the face by distance.
+		// Clipped/displacement cells select the nearest sample to the exact hit,
+		// matching the unpaged scan without reading another page's sample record.
 		float best = 1.0e30;
 		for ( int k = 0; k < face.numSamples; ++k )
 		{
-			vec3 delta = samples[face.firstSample + k].position.xyz - position;
-			float d2 = dot( delta, delta );
-			if ( d2 < best )
+			int candidate = face.firstSample + k;
+			vec3 delta = samplePositions[candidate].xyz - position;
+			float distanceSquared = dot( delta, delta );
+			if ( distanceSquared < best )
 			{
-				best = d2;
-				sampleIndex = face.firstSample + k;
+				best = distanceSquared;
+				sampleIndex = candidate;
 			}
 		}
-		if ( sampleIndex < 0 )
-			return vec3( 0.0 );
 	}
-	vec4 value = accumulation[ReservoirIndex( face, uint( sampleIndex ), 0u ) * RESTIR_MAX_CHANNELS];
+	if ( sampleIndex < 0 )
+		return vec3( 0.0 );
+	vec4 value = previousIrradiance[uint( sampleIndex )];
 	return value.w > 0.0 ? value.rgb / value.w : vec3( 0.0 );
 }
 

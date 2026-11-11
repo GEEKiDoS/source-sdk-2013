@@ -16,18 +16,18 @@ void main()
 	if ( pc.pass == 0u )
 	{
 		ReSTIRReservoir empty = EmptyReservoir();
-		reservoirsPrev[index] = empty;
-		reservoirsCur[index] = empty;
-		reservoirsNext[index] = empty;
+		reservoirsPrev[ReservoirAddress( index )] = empty;
+		reservoirsCur[ReservoirAddress( index )] = empty;
+		reservoirsNext[ReservoirAddress( index )] = empty;
 		for ( uint channel = 0u; channel < RESTIR_MAX_CHANNELS; ++channel )
-			accumulation[index * RESTIR_MAX_CHANNELS + channel] = vec4( 0.0 );
+			accumulation[AccumulationAddress( index ) + channel] = vec4( 0.0 );
 	}
 	else if ( pc.pass == 1u )
 	{
-		luxelValid[index] = 0u;
+		luxelValid[LuxelAddress( index )] = 0u;
 	}
 	else if ( pc.pass == 2u )
 	{
-		outputRadiance[index] = vec4( 0.0 );
+		outputRadiance[OutputAddress( index )] = vec4( 0.0 );
 	}
 }

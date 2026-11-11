@@ -32,7 +32,10 @@ CReSTIRVulkanDevice::Impl::Impl()
 	: instance( VK_NULL_HANDLE ), physical( VK_NULL_HANDLE ), device( VK_NULL_HANDLE ), queue( VK_NULL_HANDLE ),
 	queueFamily( 0 ), timestampBits( 0 ), sceneMemory( VK_NULL_HANDLE ), workMemory( VK_NULL_HANDLE ),
 	stagingMemory( VK_NULL_HANDLE ), staging( VK_NULL_HANDLE ), mappedStaging( NULL ), stagingCoherent( false ),
-	memoryBudget( false ), hardware( false ), finalUploaded( false ), commandPool( VK_NULL_HANDLE ),
+	memoryBudget( false ), hardware( false ), finalUploaded( false ), receiverFullForReconstruct( false ),
+	transportPaged( false ), receiverPageReservoirs( 0 ), fullReservoirs( 0 ), pageSamples( 0 ), pageLuxels( 0 ),
+	pageReservoirs( 0 ), pageOutputs( 0 ), pageCount( 0 ), reconstructSampleCapacity( 0 ), reconstructReservoirCapacity( 0 ),
+	commandPool( VK_NULL_HANDLE ),
 	timeline( VK_NULL_HANDLE ), submittedValue( 0 ), queryPool( VK_NULL_HANDLE ), queryCursor( 0 ),
 	lastBakeSeconds( 0.0 ), lastBakeSubmits( 0 ),
 	progressCallback( NULL ), progressUser( NULL ),
@@ -137,8 +140,8 @@ bool CReSTIRVulkanDevice::Init( const ReSTIROptions &options )
 	identity.pNext = &subgroup;
 	vkGetPhysicalDeviceProperties2( gpu.physical, &properties2 );
 	gpu.properties = properties2.properties;
-	if ( gpu.properties.apiVersion < VK_API_VERSION_1_2 || !( subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT ) || !( subgroup.supportedOperations & VK_SUBGROUP_FEATURE_BASIC_BIT ) )
-		gpu.Fail( "GPU requires Vulkan 1.2 and compute subgroup operations" );
+	if ( gpu.properties.limits.maxPushConstantsSize < sizeof( ReSTIRPushConstants ) )
+		gpu.Fail( "GPU push-constant range is smaller than the paging layout" );
 	vkGetPhysicalDeviceMemoryProperties( gpu.physical, &gpu.memoryProperties );
 	uint32_t familyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties( gpu.physical, &familyCount, NULL );
@@ -192,6 +195,9 @@ bool CReSTIRVulkanDevice::Init( const ReSTIROptions &options )
 		vkGetPhysicalDeviceProperties2( gpu.physical, &properties2 );
 		gpu.scratchAlignment = accelerationProperties.minAccelerationStructureScratchOffsetAlignment;
 	}
+	memset( &features, 0, sizeof( features ) );
+	features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features.pNext = &features12;
 	memset( &features12, 0, sizeof( features12 ) );
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	features12.bufferDeviceAddress = features12.timelineSemaphore = features12.descriptorIndexing = VK_TRUE;
@@ -214,7 +220,7 @@ bool CReSTIRVulkanDevice::Init( const ReSTIROptions &options )
 	queueInfo.queueCount = 1;
 	queueInfo.pQueuePriorities = &priority;
 	VkDeviceCreateInfo deviceInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-	deviceInfo.pNext = &features12;
+	deviceInfo.pNext = &features;
 	deviceInfo.queueCreateInfoCount = 1;
 	deviceInfo.pQueueCreateInfos = &queueInfo;
 	deviceInfo.enabledExtensionCount = enabledExtensions.Count();
@@ -266,8 +272,11 @@ unsigned int CReSTIRVulkanDevice::Impl::MemoryType( unsigned int bits, VkMemoryP
 	}
 	if ( preferred )
 		return MemoryType( bits, required );
-	Fail( "no compatible GPU memory type" );
-	return 0;
+	if ( required == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT )
+		for ( unsigned int i = 0; i < memoryProperties.memoryTypeCount; ++i )
+			if ( bits & ( 1u << i ) )
+				return i;
+	Error( "VRAD ReSTIR: no compatible GPU memory type bits=0x%08x required=0x%08x\n", bits, (unsigned int)required );
 }
 
 int CReSTIRVulkanDevice::Impl::AddBuffer( VkDeviceSize bytes, bool useSceneHeap, VkBufferUsageFlags extraUsage )
@@ -275,13 +284,30 @@ int CReSTIRVulkanDevice::Impl::AddBuffer( VkDeviceSize bytes, bool useSceneHeap,
 	ReSTIRBuffer buffer;
 	buffer.size = MAX( bytes, (VkDeviceSize)16 );
 	buffer.sceneHeap = useSceneHeap;
+	buffer.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | extraUsage;
 	VkBufferCreateInfo create = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	create.size = buffer.size;
-	create.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | extraUsage;
+	create.usage = buffer.usage;
 	create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	Check( vkCreateBuffer( device, &create, NULL, &buffer.handle ), "vkCreateBuffer" );
 	vkGetBufferMemoryRequirements( device, buffer.handle, &buffer.requirements );
 	return buffers.AddToTail( buffer );
+}
+
+void CReSTIRVulkanDevice::Impl::RecreateBuffer( int index, VkDeviceSize bytes )
+{
+	ReSTIRBuffer &buffer = buffers[index];
+	if ( buffer.handle )
+		vkDestroyBuffer( device, buffer.handle, NULL );
+	buffer.handle = VK_NULL_HANDLE;
+	buffer.size = MAX( bytes, (VkDeviceSize)16 );
+	buffer.offset = 0;
+	VkBufferCreateInfo create = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	create.size = buffer.size;
+	create.usage = buffer.usage;
+	create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	Check( vkCreateBuffer( device, &create, NULL, &buffer.handle ), "vkCreateBuffer(recreate)" );
+	vkGetBufferMemoryRequirements( device, buffer.handle, &buffer.requirements );
 }
 
 VkDeviceAddress CReSTIRVulkanDevice::Impl::BufferAddress( int index ) const
@@ -291,10 +317,250 @@ VkDeviceAddress CReSTIRVulkanDevice::Impl::BufferAddress( int index ) const
 	return vkGetBufferDeviceAddress( device, &address );
 }
 
+bool CReSTIRVulkanDevice::Impl::IsPagedBinding( int binding ) const
+{
+	if ( receiverFullForReconstruct )
+		return false;
+	return binding == RESTIR_BIND_SAMPLES || binding == RESTIR_BIND_LUXELS ||
+		binding == RESTIR_BIND_RESERVOIRS_PREV || binding == RESTIR_BIND_RESERVOIRS_CUR ||
+		binding == RESTIR_BIND_RESERVOIRS_NEXT || binding == RESTIR_BIND_ACCUMULATION ||
+		binding == RESTIR_BIND_OUTPUT || binding == RESTIR_BIND_LUXEL_VALID ||
+		binding == RESTIR_BIND_FINAL_LIGHTMAP || binding == RESTIR_BIND_RECEIVER_ACCUMULATION ||
+		binding == RESTIR_BIND_RECEIVER_OUTPUT || binding == RESTIR_BIND_SUN_ORIGINS ||
+		binding == RESTIR_BIND_SUN_VISIBILITY;
+}
+
+static uint64_t PageBytes( const ReSTIRPage &page, bool shadowSplit )
+{
+	const uint64_t samples = (uint64_t)page.sampleCount * sizeof( ReSTIRGpuSample );
+	const uint64_t luxels = (uint64_t)page.luxelCount * ( sizeof( ReSTIRGpuLuxel ) + sizeof( Vector4D ) + sizeof( float ) + sizeof( unsigned int ) );
+	const uint64_t reservoirs = (uint64_t)page.reservoirCount * ( sizeof( ReSTIRReservoir ) * 3 + sizeof( float ) * RESTIR_MAX_CHANNELS * 4 +
+		( shadowSplit ? sizeof( float ) * RESTIR_MAX_CHANNELS * 4 : 0 ) );
+	const uint64_t output = (uint64_t)page.outputCount * sizeof( float ) * 4 * ( shadowSplit ? 2 : 1 );
+	const uint64_t finalLightmap = (uint64_t)page.outputCount * sizeof( float ) * 4;
+	return samples + luxels + reservoirs + output + finalLightmap;
+}
+
+void CReSTIRVulkanDevice::Impl::BuildPages( VkDeviceSize room )
+{
+	pages.RemoveAll();
+	const bool shadowSplit = options.shadowMaps && scene->shadowLights.Count() != 0;
+	ReSTIRPage page;
+	for ( int faceIndex = 0; faceIndex < uploadedFaces.Count(); ++faceIndex )
+	{
+		const ReSTIRGpuFace &face = uploadedFaces[faceIndex];
+		ReSTIRPage candidate = page;
+		if ( !candidate.faceCount )
+		{
+			candidate.firstFace = faceIndex;
+			candidate.firstSample = face.firstSample;
+			candidate.firstLuxel = face.firstLuxel;
+			candidate.firstReservoir = face.firstReservoir;
+			candidate.firstOutput = face.firstOutput;
+		}
+		candidate.faceCount++;
+		candidate.sampleCount += face.numSamples;
+		candidate.luxelCount += face.luxelW * face.luxelH;
+		candidate.reservoirCount += face.numSamples * face.numStyles;
+		candidate.outputCount += face.numStyles * face.numChannels * face.luxelW * face.luxelH;
+		if ( page.faceCount && PageBytes( candidate, shadowSplit ) > room )
+		{
+			pages.AddToTail( page );
+			page = ReSTIRPage();
+			page.firstFace = faceIndex;
+			page.firstSample = face.firstSample;
+			page.firstLuxel = face.firstLuxel;
+			page.firstReservoir = face.firstReservoir;
+			page.firstOutput = face.firstOutput;
+			page.faceCount = 1;
+			page.sampleCount = face.numSamples;
+			page.luxelCount = face.luxelW * face.luxelH;
+			page.reservoirCount = face.numSamples * face.numStyles;
+			page.outputCount = face.numStyles * face.numChannels * face.luxelW * face.luxelH;
+		}
+		else
+			page = candidate;
+		if ( page.faceCount == 1 && PageBytes( page, shadowSplit ) > room )
+			Fail( "GPU heap budget cannot fit one complete face page" );
+	}
+	if ( page.faceCount )
+		pages.AddToTail( page );
+	pageCount = pages.Count();
+	pageSamples = pageLuxels = pageReservoirs = pageOutputs = 0;
+	FOR_EACH_VEC( pages, i )
+	{
+		pageSamples = MAX( pageSamples, pages[i].sampleCount );
+		pageLuxels = MAX( pageLuxels, pages[i].luxelCount );
+		pageReservoirs = MAX( pageReservoirs, pages[i].reservoirCount );
+		pageOutputs = MAX( pageOutputs, pages[i].outputCount );
+	}
+	if ( !pageCount )
+		Fail( "scene has no complete transport pages" );
+	transportPaged = pageCount > 1;
+	receiverPageReservoirs = pageReservoirs;
+	if ( verbose )
+		Msg( "VRAD ReSTIR paging decision: pages=%u pageBytes=%llu samples=%u luxels=%u reservoirs=%u outputs=%u\n",
+			pageCount, (unsigned long long)PageBytes( pages[0], shadowSplit ), pageSamples, pageLuxels, pageReservoirs, pageOutputs );
+}
+
+void CReSTIRVulkanDevice::Impl::RebuildPageBufferSizes()
+{
+	if ( !pageCount )
+		return;
+	const VkDeviceSize samples = (VkDeviceSize)pageSamples * sizeof( ReSTIRGpuSample );
+	const VkDeviceSize luxels = (VkDeviceSize)pageLuxels * sizeof( ReSTIRGpuLuxel );
+	const VkDeviceSize reservoirs = (VkDeviceSize)pageReservoirs * sizeof( ReSTIRReservoir );
+	const VkDeviceSize accumulation = (VkDeviceSize)pageReservoirs * RESTIR_MAX_CHANNELS * sizeof( float ) * 4;
+	const VkDeviceSize output = (VkDeviceSize)pageOutputs * sizeof( float ) * 4;
+	const VkDeviceSize valid = (VkDeviceSize)pageLuxels * sizeof( unsigned int );
+	RecreateBuffer( RESTIR_BIND_SAMPLES, samples );
+	RecreateBuffer( RESTIR_BIND_LUXELS, luxels );
+	for ( int binding = RESTIR_BIND_RESERVOIRS_PREV; binding <= RESTIR_BIND_RESERVOIRS_NEXT; ++binding )
+		RecreateBuffer( binding, reservoirs );
+	RecreateBuffer( RESTIR_BIND_ACCUMULATION, accumulation );
+	RecreateBuffer( RESTIR_BIND_OUTPUT, output );
+	RecreateBuffer( RESTIR_BIND_LUXEL_VALID, valid );
+	RecreateBuffer( RESTIR_BIND_FINAL_LIGHTMAP, output );
+	if ( options.shadowMaps && scene->shadowLights.Count() )
+	{
+		RecreateBuffer( RESTIR_BIND_RECEIVER_ACCUMULATION, accumulation );
+		RecreateBuffer( RESTIR_BIND_RECEIVER_OUTPUT, output );
+	}
+	RecreateBuffer( RESTIR_BIND_SUN_ORIGINS, (VkDeviceSize)pageLuxels * sizeof( Vector4D ) );
+	RecreateBuffer( RESTIR_BIND_SUN_VISIBILITY, (VkDeviceSize)pageLuxels * sizeof( float ) );
+}
+void CReSTIRVulkanDevice::Impl::PrepareReconstructionPages( unsigned int sampleCapacity, unsigned int reservoirCapacity, unsigned int luxelCapacity )
+{
+	Wait();
+	for ( int i = 0; i < buffers.Count(); ++i )
+		if ( !buffers[i].sceneHeap )
+		{
+			vkDestroyBuffer( device, buffers[i].handle, NULL );
+			buffers[i].handle = VK_NULL_HANDLE;
+		}
+	if ( workMemory )
+	{
+		vkFreeMemory( device, workMemory, NULL );
+		workMemory = VK_NULL_HANDLE;
+	}
+	receiverFullForReconstruct = true;
+	for ( int i = 0; i < buffers.Count(); ++i )
+	{
+		if ( buffers[i].sceneHeap )
+			continue;
+		if ( i == RESTIR_BIND_SAMPLES )
+			buffers[i].size = MAX( (VkDeviceSize)16, (VkDeviceSize)sampleCapacity * sizeof( ReSTIRGpuSample ) );
+		else if ( i == RESTIR_BIND_LUXELS )
+			buffers[i].size = MAX( (VkDeviceSize)16, (VkDeviceSize)luxelCapacity * sizeof( ReSTIRGpuLuxel ) );
+		else if ( i == RESTIR_BIND_ACCUMULATION || ( i == RESTIR_BIND_RECEIVER_ACCUMULATION && options.shadowMaps && scene->shadowLights.Count() ) )
+			buffers[i].size = MAX( (VkDeviceSize)16, (VkDeviceSize)reservoirCapacity * RESTIR_MAX_CHANNELS * sizeof( float ) * 4 );
+		else if ( i == RESTIR_BIND_RECEIVER_ACCUMULATION )
+			buffers[i].size = 16;
+		else if ( i == RESTIR_BIND_RESERVOIRS_PREV || i == RESTIR_BIND_RESERVOIRS_CUR || i == RESTIR_BIND_RESERVOIRS_NEXT ||
+			i == RESTIR_BIND_FINAL_LIGHTMAP || i == RESTIR_BIND_SUN_ORIGINS || i == RESTIR_BIND_SUN_VISIBILITY )
+			buffers[i].size = 16;
+		VkBufferCreateInfo create = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		create.size = buffers[i].size;
+		create.usage = buffers[i].usage;
+		create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		Check( vkCreateBuffer( device, &create, NULL, &buffers[i].handle ), "vkCreateBuffer(reconstruct-page)" );
+		vkGetBufferMemoryRequirements( device, buffers[i].handle, &buffers[i].requirements );
+	}
+	pageSamples = sampleCapacity;
+	pageLuxels = luxelCapacity;
+	pageReservoirs = reservoirCapacity;
+	AllocateHeaps();
+	RefreshDescriptorSet();
+}
+
+
 void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 {
-	VkDeviceSize totals[3] = { 0, 0, 0 };
-	unsigned int typeBits[3] = { ~0u, ~0u, ~0u };
+	const bool retainScene = sceneMemory != VK_NULL_HANDLE;
+	const bool retainStaging = stagingMemory != VK_NULL_HANDLE;
+	// Create the host-visible transfer ring once. Reallocation between the
+	// transport and reconstruction phases reuses this allocation.
+	VkMemoryRequirements stagingRequirements = {};
+	if ( !staging )
+	{
+		VkBufferCreateInfo stagingInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		stagingInfo.size = RESTIR_STAGING_BYTES;
+		stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		Check( vkCreateBuffer( device, &stagingInfo, NULL, &staging ), "vkCreateBuffer(staging)" );
+	}
+	vkGetBufferMemoryRequirements( device, staging, &stagingRequirements );
+
+	int preferredWorkHeap = -1;
+	// Every large per-luxel/sample transport allocation is a page. Geometry,
+	// the nearest-sample table and previous-irradiance state remain resident.
+	if ( !receiverFullForReconstruct && buffers.Count() > RESTIR_BIND_SUN_VISIBILITY )
+	{
+		VkDeviceSize fixedTotals[3] = { 0, 0, stagingRequirements.size };
+		unsigned int fixedBits[3] = { ~0u, ~0u, stagingRequirements.memoryTypeBits };
+		FOR_EACH_VEC( buffers, i )
+		{
+			if ( IsPagedBinding( i ) )
+				continue;
+			ReSTIRBuffer &buffer = buffers[i];
+			int heap = buffer.sceneHeap ? 0 : 1;
+			buffer.offset = AlignSize( fixedTotals[heap], MAX( buffer.requirements.alignment, properties.limits.bufferImageGranularity ) );
+			fixedTotals[heap] = buffer.offset + buffer.requirements.size;
+			fixedBits[heap] &= buffer.requirements.memoryTypeBits;
+		}
+		FOR_EACH_VEC( images, i )
+		{
+			ReSTIRImage &image = images[i];
+			image.offset = AlignSize( fixedTotals[0], MAX( image.requirements.alignment, properties.limits.bufferImageGranularity ) );
+			fixedTotals[0] = image.offset + image.requirements.size;
+			fixedBits[0] &= image.requirements.memoryTypeBits;
+		}
+		unsigned int fixedTypes[3] =
+		{
+			MemoryType( fixedBits[0], VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ),
+			MemoryType( fixedBits[1], VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ),
+			MemoryType( fixedBits[2], VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+		};
+		VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
+		VkPhysicalDeviceMemoryProperties2 memory2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 };
+		memory2.pNext = memoryBudget ? &budget : NULL;
+		vkGetPhysicalDeviceMemoryProperties2( physical, &memory2 );
+		const unsigned int workHeap = memoryProperties.memoryTypes[fixedTypes[1]].heapIndex;
+		preferredWorkHeap = workHeap;
+		VkDeviceSize available = memoryProperties.memoryHeaps[workHeap].size;
+		if ( memoryBudget )
+			available = budget.heapBudget[workHeap] > budget.heapUsage[workHeap] ? budget.heapBudget[workHeap] - budget.heapUsage[workHeap] : 0;
+		if ( retainScene && memoryProperties.memoryTypes[fixedTypes[0]].heapIndex == workHeap )
+			available += fixedTotals[0];
+		if ( retainStaging && memoryProperties.memoryTypes[fixedTypes[2]].heapIndex == workHeap )
+			available += fixedTotals[2];
+		if ( options.vramBudgetMB > 0 )
+			available = MIN( available, (VkDeviceSize)options.vramBudgetMB * 1024ull * 1024ull );
+		VkDeviceSize fixedRequested = 0;
+		for ( int i = 0; i < 3; ++i )
+			if ( memoryProperties.memoryTypes[fixedTypes[i]].heapIndex == workHeap )
+				fixedRequested += fixedTotals[i];
+		ReSTIRPage fullPage;
+		fullPage.sampleCount = scene->samples.Count();
+		fullPage.luxelCount = scene->luxels.Count();
+		fullPage.reservoirCount = fullReservoirs;
+		fullPage.outputCount = scene->numOutputValues;
+		const VkDeviceSize unpagedHeadroom = 128ull * 1024ull * 1024ull;
+		const bool fitsUnpaged = available > unpagedHeadroom &&
+			fixedRequested + PageBytes( fullPage, options.shadowMaps && scene->shadowLights.Count() ) <= available - unpagedHeadroom;
+		const VkDeviceSize headroom = fitsUnpaged ? unpagedHeadroom :
+			MAX( (VkDeviceSize)512ull * 1024ull * 1024ull, available / 10 );
+		const VkDeviceSize usable = available > headroom ? available - headroom : 0;
+		const VkDeviceSize room = usable > fixedRequested ? usable - fixedRequested : 0;
+		BuildPages( room );
+		RebuildPageBufferSizes();
+		if ( verbose )
+			Msg( "VRAD ReSTIR paging budget: resident=%llu page-room=%llu staging=%llu heap=%u\n",
+				(unsigned long long)( fixedTotals[0] + fixedTotals[1] ), (unsigned long long)room,
+				(unsigned long long)fixedTotals[2], workHeap );
+	}
+
+	VkDeviceSize totals[3] = { 0, 0, stagingRequirements.size };
+	unsigned int typeBits[3] = { ~0u, ~0u, stagingRequirements.memoryTypeBits };
 	FOR_EACH_VEC( buffers, i )
 	{
 		ReSTIRBuffer &buffer = buffers[i];
@@ -302,6 +568,10 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 		buffer.offset = AlignSize( totals[heap], MAX( buffer.requirements.alignment, properties.limits.bufferImageGranularity ) );
 		totals[heap] = buffer.offset + buffer.requirements.size;
 		typeBits[heap] &= buffer.requirements.memoryTypeBits;
+		if ( verbose )
+			Msg( "VRAD ReSTIR allocation binding=%d bytes=%llu heap=%d%s\n", i,
+				(unsigned long long)buffer.requirements.size, heap,
+				i == RESTIR_BIND_RECEIVER_ACCUMULATION ? " receiver" : "" );
 	}
 	FOR_EACH_VEC( images, i )
 	{
@@ -310,20 +580,18 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 		totals[0] = image.offset + image.requirements.size;
 		typeBits[0] &= image.requirements.memoryTypeBits;
 	}
-	VkBufferCreateInfo stagingInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	stagingInfo.size = RESTIR_STAGING_BYTES;
-	stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-	Check( vkCreateBuffer( device, &stagingInfo, NULL, &staging ), "vkCreateBuffer(staging)" );
-	VkMemoryRequirements stagingRequirements;
-	vkGetBufferMemoryRequirements( device, staging, &stagingRequirements );
-	totals[2] = stagingRequirements.size;
-	typeBits[2] = stagingRequirements.memoryTypeBits;
-	unsigned int types[3] =
-	{
-		MemoryType( typeBits[0], VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ),
-		MemoryType( typeBits[1], VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ),
-		MemoryType( typeBits[2], VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
-	};
+	unsigned int types[3];
+	types[0] = MemoryType( typeBits[0], VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
+	types[1] = MemoryType( typeBits[1], VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
+	if ( preferredWorkHeap >= 0 && memoryProperties.memoryTypes[types[1]].heapIndex != (unsigned int)preferredWorkHeap )
+		for ( unsigned int i = 0; i < memoryProperties.memoryTypeCount; ++i )
+			if ( ( typeBits[1] & ( 1u << i ) ) && memoryProperties.memoryTypes[i].heapIndex == (unsigned int)preferredWorkHeap &&
+				( memoryProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ) )
+			{
+				types[1] = i;
+				break;
+			}
+	types[2] = MemoryType( typeBits[2], VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT );
 	VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
 	VkPhysicalDeviceMemoryProperties2 memory2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 };
 	memory2.pNext = memoryBudget ? &budget : NULL;
@@ -341,7 +609,14 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 			VkDeviceSize available = memoryProperties.memoryHeaps[h].size;
 			if ( memoryBudget )
 				available = budget.heapBudget[h] > budget.heapUsage[h] ? budget.heapBudget[h] - budget.heapUsage[h] : 0;
-			Msg( "  heap %u requested=%llu available=%llu bytes\n", h, requested[h], available );
+			if ( retainScene && memoryProperties.memoryTypes[types[0]].heapIndex == h )
+				available += totals[0];
+			if ( retainStaging && memoryProperties.memoryTypes[types[2]].heapIndex == h )
+				available += totals[2];
+			if ( options.vramBudgetMB > 0 )
+				available = MIN( available, (VkDeviceSize)options.vramBudgetMB * 1024ull * 1024ull );
+			Msg( "  heap %u requested=%llu available=%llu peak=%llu bytes\n", h,
+				(unsigned long long)requested[h], (unsigned long long)available, (unsigned long long)requested[h] );
 		}
 	}
 	for ( unsigned int h = 0; h < memoryProperties.memoryHeapCount; ++h )
@@ -351,6 +626,12 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 		VkDeviceSize available = memoryProperties.memoryHeaps[h].size;
 		if ( memoryBudget )
 			available = budget.heapBudget[h] > budget.heapUsage[h] ? budget.heapBudget[h] - budget.heapUsage[h] : 0;
+		if ( retainScene && memoryProperties.memoryTypes[types[0]].heapIndex == h )
+			available += totals[0];
+		if ( retainStaging && memoryProperties.memoryTypes[types[2]].heapIndex == h )
+			available += totals[2];
+		if ( options.vramBudgetMB > 0 )
+			available = MIN( available, (VkDeviceSize)options.vramBudgetMB * 1024ull * 1024ull );
 		if ( requested[h] > available )
 			Fail( "scene exceeds GPU heap budget before dispatch" );
 	}
@@ -359,6 +640,8 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 	flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 	for ( int i = 0; i < 3; ++i )
 	{
+		if ( *allocations[i] )
+			continue;
 		VkMemoryAllocateInfo allocation = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
 		allocation.pNext = i < 2 ? &flags : NULL;
 		allocation.allocationSize = totals[i];
@@ -366,18 +649,123 @@ void CReSTIRVulkanDevice::Impl::AllocateHeaps()
 		Check( vkAllocateMemory( device, &allocation, NULL, allocations[i] ), "vkAllocateMemory" );
 	}
 	FOR_EACH_VEC( buffers, i )
+	{
+		if ( buffers[i].sceneHeap && retainScene )
+			continue;
+		if ( !buffers[i].handle )
+			continue;
 		Check( vkBindBufferMemory( device, buffers[i].handle, buffers[i].sceneHeap ? sceneMemory : workMemory, buffers[i].offset ), "vkBindBufferMemory" );
+	}
 	FOR_EACH_VEC( images, i )
+	{
+		if ( retainScene )
+			continue;
 		Check( vkBindImageMemory( device, images[i].handle, sceneMemory, images[i].offset ), "vkBindImageMemory" );
-	Check( vkBindBufferMemory( device, staging, stagingMemory, 0 ), "vkBindBufferMemory(staging)" );
-	void *mapped = NULL;
-	Check( vkMapMemory( device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mapped ), "vkMapMemory" );
-	mappedStaging = (unsigned char *)mapped;
+	}
+	if ( !retainStaging )
+	{
+		Check( vkBindBufferMemory( device, staging, stagingMemory, 0 ), "vkBindBufferMemory(staging)" );
+		void *mapped = NULL;
+		Check( vkMapMemory( device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mapped ), "vkMapMemory" );
+		mappedStaging = (unsigned char *)mapped;
+	}
 	stagingCoherent = ( memoryProperties.memoryTypes[types[2]].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ) != 0;
 }
 
+
 // The module containing this function is authoritative even in a standalone smoke executable.
 static void ShaderModuleAnchor() {}
+
+void CReSTIRVulkanDevice::Impl::RefreshDescriptorSet()
+{
+	unsigned int textureCount = MAX( 1, images.Count() );
+	CUtlVector<VkDescriptorBufferInfo> bufferInfo;
+	bufferInfo.SetCount( RESTIR_BIND_COVERAGE );
+	CUtlVector<VkWriteDescriptorSet> writes;
+	writes.SetCount( RESTIR_BIND_COVERAGE );
+	memset( bufferInfo.Base(), 0, bufferInfo.Count() * sizeof( VkDescriptorBufferInfo ) );
+	memset( writes.Base(), 0, writes.Count() * sizeof( VkWriteDescriptorSet ) );
+	for ( int i = 0; i < RESTIR_BIND_COVERAGE; ++i )
+	{
+		bufferInfo[i].buffer = buffers[i].handle;
+		bufferInfo[i].range = buffers[i].size;
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = descriptorSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[i].pBufferInfo = &bufferInfo[i];
+	}
+	CUtlVector<VkDescriptorImageInfo> imageInfo;
+	imageInfo.SetCount( textureCount );
+	FOR_EACH_VEC( imageInfo, i )
+	{
+		imageInfo[i].sampler = textureSampler;
+		imageInfo[i].imageView = images[i].view;
+		imageInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	}
+	VkWriteDescriptorSet imageWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	imageWrite.dstSet = descriptorSet;
+	imageWrite.dstBinding = RESTIR_BIND_COVERAGE;
+	imageWrite.descriptorCount = textureCount;
+	imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	imageWrite.pImageInfo = imageInfo.Base();
+	writes.AddToTail( imageWrite );
+	VkWriteDescriptorSetAccelerationStructureKHR accelerationWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+	VkWriteDescriptorSet accelerationSet = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	if ( hardware )
+	{
+		accelerationWrite.accelerationStructureCount = 1;
+		accelerationWrite.pAccelerationStructures = &tlas.handle;
+		accelerationSet.pNext = &accelerationWrite;
+		accelerationSet.dstSet = descriptorSet;
+		accelerationSet.dstBinding = RESTIR_BIND_TLAS;
+		accelerationSet.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+		accelerationSet.descriptorCount = 1;
+		writes.AddToTail( accelerationSet );
+	}
+	vkUpdateDescriptorSets( device, writes.Count(), writes.Base(), 0, NULL );
+}
+void CReSTIRVulkanDevice::Impl::ReallocateForReconstruct()
+{
+	Wait();
+	receiverFullForReconstruct = true;
+	const VkDeviceSize finalBytes = ( (VkDeviceSize)scene->numOutputValues +
+		(VkDeviceSize)scene->faces.Count() * RESTIR_MAX_FACE_STYLES ) * sizeof( float ) * 4;
+	for ( int i = 0; i < buffers.Count(); ++i )
+	{
+		if ( buffers[i].sceneHeap )
+			continue;
+		vkDestroyBuffer( device, buffers[i].handle, NULL );
+		buffers[i].handle = VK_NULL_HANDLE;
+		if ( i == RESTIR_BIND_FINAL_LIGHTMAP )
+			buffers[i].size = finalBytes;
+		else if ( i == RESTIR_BIND_LUXEL_VALID )
+			buffers[i].size = (VkDeviceSize)scene->luxels.Count() * sizeof( unsigned int );
+		else if ( i == RESTIR_BIND_SERVICE_IN || i == RESTIR_BIND_SERVICE_OUT )
+			buffers[i].size = RESTIR_STAGING_BYTES;
+		else
+			buffers[i].size = 16;
+		VkBufferCreateInfo create = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		create.size = buffers[i].size;
+		create.usage = buffers[i].usage;
+		create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		Check( vkCreateBuffer( device, &create, NULL, &buffers[i].handle ), "vkCreateBuffer(reconstruct)" );
+		vkGetBufferMemoryRequirements( device, buffers[i].handle, &buffers[i].requirements );
+	}
+	if ( workMemory )
+	{
+		vkFreeMemory( device, workMemory, NULL );
+		workMemory = VK_NULL_HANDLE;
+	}
+	receiverPageReservoirs = fullReservoirs;
+	AllocateHeaps();
+	RefreshDescriptorSet();
+	Msg( "VRAD ReSTIR paging: final-lightmap heap rebound after transport pages were released\n" );
+	push.flags = hardware ? RESTIR_PC_HARDWARE_RT : 0;
+	memset( push.pageBase, 0, sizeof( push.pageBase ) );
+}
+
 
 void CReSTIRVulkanDevice::Impl::CreateDescriptorsAndPipelines()
 {
@@ -465,7 +853,7 @@ void CReSTIRVulkanDevice::Impl::CreateDescriptorsAndPipelines()
 	}
 	vkUpdateDescriptorSets( device, bindingCount, writes, 0, NULL );
 	VkPushConstantRange range = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ReSTIRPushConstants ) };
-	COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 128 );
+	COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 144 );
 	VkPipelineLayoutCreateInfo pipelineInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	pipelineInfo.setLayoutCount = 1;
 	pipelineInfo.pSetLayouts = &setLayout;

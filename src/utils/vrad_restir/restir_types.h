@@ -106,20 +106,21 @@ struct ReSTIROptions
 	int			maxBounces;				// -restir_maxbounces (4; fast 2, final 6): 0 disables indirect light entirely
 	int			seed;					// -restir_seed (1)
 	int			gpuIndex;				// -restir_gpu, -1 = first discrete GPU
+	int			vramBudgetMB;			// -restir_vram_budget (0 = queried Vulkan budget)
 	bool		forceComputeBvh;		// -restir_force_compute_bvh
 	bool		probeEnabled;			// -restir_probe x y z nx ny nz (diagnostic: prints LightPoints at that point)
 	float		probe[6];
 
 	ReSTIRDenoiserMode		denoiser;			// -restir_denoiser (oidn)
 	ReSTIRDenoiserQuality	denoiserQuality;	// -restir_denoiser_quality (balanced; fast fast, final high)
-	ReSTIRDenoiserDevice	denoiserDevice;		// -restir_denoiser_device (default)
+	ReSTIRDenoiserDevice		denoiserDevice;		// -restir_denoiser_device (default)
 
 	ReSTIROptions()
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
 		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
 		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
-		  seed( 1 ), gpuIndex( -1 ), forceComputeBvh( false ), probeEnabled( false ),
+		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
 		  denoiserDevice( RESTIR_DENOISER_DEVICE_DEFAULT ) {}
 };
