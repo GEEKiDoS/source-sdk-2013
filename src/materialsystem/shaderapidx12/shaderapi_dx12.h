@@ -437,6 +437,11 @@ public:
 	bool PrepareSampledTexture( ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource = nullptr, bool bComparison = false, int nFirstMip = -1, int nMipCount = 0 );
 	bool PrepareRenderTargets( RenderTargetBindingDX12 &binding, bool bEncodeSRGB = true );
 	void ReleaseTextureDeviceResources();
+	// Texture staging buffers and deleted textures stay pinned until the recording that retained them completes
+	// (textures_dx12.cpp). Texture downloads submit once a recording pins kPinnedTextureSubmitBytes.
+	static constexpr uint64_t kPinnedTextureSubmitBytes = 64ull * 1024 * 1024;
+	void PinTextureMemory( size_t nBytes );
+	void RelieveTextureMemoryPressure();
 	enum class BlitEncodeDX12 : uint8_t { None, Gamma, HdrScale };
 	// Presentation encode of the scene into a scene-sized FP16 or R8G8B8A8_UNORM texture (textures_dx12.cpp).
 	bool EncodeSceneTo( ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState );
@@ -1109,6 +1114,8 @@ private:
 	ShaderAPITextureHandle_t m_hNextTexture = 16;
 	uint64 m_nNextTextureAllocationSerial = 1;
 	ShaderAPITextureHandle_t m_hModifiedTexture = 0;
+	// Bytes pinned by the recording that ends with fence m_nPinnedTextureFence.
+	uint64_t m_nPinnedTextureBytes = 0, m_nPinnedTextureFence = 0;
 	ShaderAPITextureHandle_t m_BoundTextures[16]{};
 	ShaderAPITextureHandle_t m_VertexTextures[4]{};
 	// Canonical states are immutable and block addresses survive growth. Only ClearSnapshots

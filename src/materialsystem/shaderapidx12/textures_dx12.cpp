@@ -1089,6 +1089,37 @@ void CShaderAPIDX12::ProcessPendingTextureDeletes()
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Bounds the memory one recording keeps alive through texture staging buffers and deleted textures.
+//          A resource restore or level change deletes and re-downloads every texture between two frame
+//          submits. Left in one recording, the replaced set, the new set and one staging buffer per
+//          subresource are all resident behind a single command list: about three times the texture
+//          set, twice the video memory budget of a 2 GB adapter, which is then removed as hung.
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::PinTextureMemory( size_t nBytes )
+{
+	const uint64_t nFence = m_pDevice->NextFenceValue();
+	if ( m_nPinnedTextureFence != nFence )
+	{
+		m_nPinnedTextureFence = nFence;
+		m_nPinnedTextureBytes = 0;
+	}
+	// Every staging buffer and texture copy is its own committed allocation of at least one 64 KiB page.
+	m_nPinnedTextureBytes += ( static_cast<uint64_t>( nBytes ) + 65535 ) & ~static_cast<uint64_t>( 65535 );
+}
+
+void CShaderAPIDX12::RelieveTextureMemoryPressure()
+{
+	if ( m_nPinnedTextureBytes < kPinnedTextureSubmitBytes || !m_pDevice->CommandList() || m_nPinnedTextureFence != m_pDevice->NextFenceValue() )
+		return;
+	// Texture downloads arrive between draws, the boundary FlushHardware submits at. The next recording first
+	// waits for the oldest of the three frame contexts and releases what that one retained, so at most three
+	// budgets stay pinned.
+	ProcessPendingTextureDeletes();
+	m_pDevice->Submit( false );
+	m_Pipeline.Reclaim( m_pDevice->CompletedFenceValue() );
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Destroys a texture once the GPU no longer references its resources and views
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::DeleteTexture( ShaderAPITextureHandle_t handle )
@@ -1152,6 +1183,7 @@ void CShaderAPIDX12::DeleteTexture( ShaderAPITextureHandle_t handle )
 			if ( pRecord->resources[i].resource )
 				m_pDevice->RetainResource( pRecord->resources[i].resource.Get() );
 		}
+		PinTextureMemory( pRecord->bytesPerCopy * pRecord->copies );
 	}
 	for ( int i = 0; i < ARRAYSIZE( pRecord->m_SrvSources ); ++i )
 		m_Pipeline.ReleaseResourceDescriptor( pRecord->m_SrvSources[i], m_pDevice ? m_pDevice->NextFenceValue() : 0 );
@@ -1294,8 +1326,13 @@ void CShaderAPIDX12::TexSubImage2D( int level, int face, int x, int y, int z, in
 		return;
 	const size_t nFullBytes = MipBytes( nMipWidth, nMipHeight, Faces( t ) == 1 ? MAX( 1, t.depth >> level ) : 1, t.format );
 	if ( CreateUpload( m_pDevice->NativeDevice(), m_pDevice->CommandList(), t.resource.Get(), t.pixels.Base() + nBase, nFullBytes, nSub, t.subresourceStates[nSubresource], m_pDevice ) )
+	{
 		t.dirtySubresources[nSubresource] = 0;
+		PinTextureMemory( nFullBytes );
+	}
 	t.gpuDirty = HasDirtySubresource( t );
+	// Last: the submit also retires queued deletions, which may include this texture.
+	RelieveTextureMemoryPressure();
 }
 
 //-----------------------------------------------------------------------------
@@ -1358,9 +1395,12 @@ void CShaderAPIDX12::TexImageFromVTF( IVTFTexture *vtf, int frame )
 			if ( !CreateUpload( m_pDevice->NativeDevice(), m_pDevice->CommandList(), texture.resource.Get(), pDest, nDestBytes, nSubresource, texture.subresourceStates[nIndex], m_pDevice ) )
 				return;
 			texture.dirtySubresources[nIndex] = 0;
+			PinTextureMemory( nDestBytes );
 		}
 	}
 	texture.gpuDirty = HasDirtySubresource( texture );
+	// Last: the submit also retires queued deletions, which may include this texture.
+	RelieveTextureMemoryPressure();
 }
 
 //-----------------------------------------------------------------------------
