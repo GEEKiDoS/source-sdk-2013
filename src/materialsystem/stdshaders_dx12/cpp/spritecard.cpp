@@ -207,7 +207,9 @@ SHADER_DRAW
 		else
 			pShaderShadow->EnableAlphaTest( true );
 
-		pShaderShadow->AlphaFunc( SHADER_ALPHAFUNC_GREATER, 0.01f );
+		// Retail SpriteCard keeps every nonzero-alpha texel. The SDK's 0.01
+		// cutoff clips low-alpha glow tails into a sharply bounded disc.
+		pShaderShadow->AlphaFunc( SHADER_ALPHAFUNC_GREATER, 0.0f );
 
 		if ( bAdditive2ndTexture || bAddOverBlend || bAddSelf )
 		{

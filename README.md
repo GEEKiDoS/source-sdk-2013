@@ -64,6 +64,12 @@ effects in display-sRGB space and returns linear scRGB to the DX12 framebuffer.
 Film grain retains its strength control and luminance weighting (more in shadows,
 less in highlights), rather than being amplified by adding it directly in linear
 space. Its downsampled local-contrast luminance uses the same display-sRGB domain.
+L4D2's precache-register system also primes the post-processing materials and
+their variable tokens before queued rendering. It replaces the SDK client-effect
+precache system, so it must retain that system's post-process preparation step;
+otherwise histogram queries never start and automatic exposure remains at unity.
+Native DX12 SpriteCard uses retail's zero alpha-test reference; the SDK's
+0.01 reference cuts faint particle glow falloff into a visible hard-edged disc.
 The renderer's fast pipeline memo renews each reused PSO's retirement fence, so
 cache reclamation cannot release it while recorded or GPU work still references it.
 

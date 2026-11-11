@@ -10,6 +10,7 @@
 #include "l4d2/content/terror_precache_client.h"
 #include "particlemgr.h"
 #include "materialsystem/imaterialsystem.h"
+#include "viewpostprocess.h"
 #endif
 #endif
 #include "tier0/memdbgon.h"
@@ -225,6 +226,9 @@ public:
 #ifdef CLIENT_DLL
 		COM_TimestampedLog( "LevelInitPreEntity - CacheUsedMaterials - Start" );
 		materials->CacheUsedMaterials();
+		// L4D2 replaces ClientEffectPrecacheSystem, which normally primes these
+		// references and material-variable tokens before queued postprocessing.
+		PrepareViewPostProcessMaterials();
 		COM_TimestampedLog( "LevelInitPreEntity - CacheUsedMaterials - Finish" );
 #endif
 	}
