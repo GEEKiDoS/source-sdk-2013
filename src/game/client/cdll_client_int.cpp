@@ -974,6 +974,26 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 	ConnectTier1Libraries( &appSystemFactory, 1 );
 	ConnectTier2Libraries( &appSystemFactory, 1 );
 	ConnectTier3Libraries( &appSystemFactory, 1 );
+#if defined( L4D2 )
+	// Default to non-VAC operation unless explicitly overridden. This is not an
+	// offline-authentication bypass: insecure Internet servers still check Steam tickets.
+	if ( !CommandLine()->FindParm( "-secure" ) && !CommandLine()->FindParm( "-insecure" ) )
+		CommandLine()->AppendParm( "-insecure", NULL );
+
+	// Console/menu-hosted games default to LAN so an offline listen host is not
+	// disconnected by Steam ticket validation. Startup configs and stuffcmds run
+	// after Init and may explicitly select Internet hosting with sv_lan 0.
+	// This does not affect dedicated servers or authentication by remote servers.
+	if ( !CommandLine()->FindParm( "-secure" ) && !CommandLine()->FindParm( "+sv_lan" ) )
+	{
+		ConVar *pLan = g_pCVar->FindVar( "sv_lan" );
+		if ( pLan )
+		{
+			pLan->SetDefault( "1" );
+			pLan->SetValue( 1 );
+		}
+	}
+#endif
 #ifdef L4D2
 	// Optional genuine tools interface; absence is not a client Init failure.
 	g_pL4D2EngineTool = static_cast< IEngineTool * >( appSystemFactory( VENGINETOOL_INTERFACE_VERSION, NULL ) );

@@ -50,6 +50,16 @@ cd /d game
 mod_l4d2_win64.exe -game "%CD%\mod_l4d2" -novid -windowed +map c1m1_hotel
 ```
 
+Listen servers default to LAN (`sv_lan 1`) for local/offline play. This avoids
+Steam ticket validation disconnecting an offline host on map load or chapter
+change. Set `sv_lan 0` in a startup config or pass `+sv_lan 0` to opt into
+Internet hosting; `-secure` also leaves the engine's Internet-server default.
+The client adds `-insecure` unless `-secure` or `-insecure` was supplied,
+disabling VAC by default. `-insecure` alone does **not** disable Steam ticket
+authentication on Internet servers. Use `-secure +sv_lan 0` for secure hosting
+or `-secure` when joining a secure remote server. Dedicated-server defaults and
+remote-server authentication are unchanged.
+
 The DX12 renderer needs its native shader pack published into the mod once
 (and again after DX12 shader changes): `cd src` then
 `devtools\bin\buildshaders_dx12.bat -game ..\game\mod_l4d2`. Its optional
