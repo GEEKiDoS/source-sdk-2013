@@ -1,0 +1,37 @@
+// Native haloadd colour math; only stencil coverage receives spatial AA.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+cbuffer GlowParams : register( b1, space1 )
+{
+	// Dim, mask write, inverse coverage width/height.
+	float4 gGlowParams; // @legacy ps:c0
+};
+Texture2D<float4> gGlow : register( t0 );
+SamplerState gGlowSampler : register( s0 );
+Texture2D<float4> gCoverage : register( t1 );
+SamplerState gCoverageSampler : register( s1 );
+struct PS_INPUT { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+
+float4 main( PS_INPUT input ) : SV_Target0
+{
+	[branch] if ( gGlowParams.y != 0.0f ) return 0.0f;
+	// SV_Position is the physical pixel centre, including the scene viewport's offset.
+	float2 texel = gGlowParams.zw;
+	float2 uv = input.position.xy * texel;
+	float coverage = 0.0f;
+	[unroll] for ( int y = -1; y <= 1; ++y )
+	{
+		[unroll] for ( int x = -1; x <= 1; ++x )
+		{
+			float weight = ( x == 0 ? 2.0f : 1.0f ) * ( y == 0 ? 2.0f : 1.0f );
+			coverage += weight * gCoverage.SampleLevel( gCoverageSampler, uv + float2( x, y ) * texel, 0 ).r;
+		}
+	}
+	coverage *= 1.0f / 16.0f;
+	float4 color = gGlow.SampleLevel( gGlowSampler, input.uv, 0 );
+	color.rgb *= saturate( gGlowParams.x );
+	color.a = pow( max( color.r, max( color.g, color.b ) ), 0.8f );
+	// Filter premultiplied coverage, not halo colour: preserve native brightness
+	// and the ONE / ONE_MINUS_SRC_ALPHA material's scene contribution.
+	return DX12FinishPixel( color * coverage, 0.0f );
+}

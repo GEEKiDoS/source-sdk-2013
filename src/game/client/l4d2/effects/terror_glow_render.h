@@ -5,6 +5,8 @@
 #pragma once
 #endif
 
+class IMaterialSystem;
+class IMaterialSystemHardwareConfig;
 class CViewSetup;
 class C_BaseEntity;
 struct ClientModelRenderInfo_t;
@@ -26,6 +28,8 @@ bool TerrorGlow_DrawStudioModel( ClientModelRenderInfo_t *pInfo,
 	DrawModelState_t *pState, matrix3x4_t *pBoneToWorld );
 bool TerrorGlow_IsModelPass();
 void TerrorGlow_Render( const CViewSetup &view, int slot );
+void TerrorGlow_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig );
+void TerrorGlow_ShutdownRenderTargets();
 
 // GPU stages of C:10273210 / C:102755F0.
 void TerrorGlow_BeginColorBuffer( const CViewSetup &view );

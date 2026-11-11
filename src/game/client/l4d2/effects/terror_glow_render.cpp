@@ -10,6 +10,7 @@
 #include "l4d2/effects/terror_glow_scene.h"
 #include "l4d2/effects/terror_glow_policy.h"
 #include "l4d2/clientmode_terror.h"
+#include "postprocess_dx12.h"
 #include "view_shared.h"
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialvar.h"
@@ -102,13 +103,53 @@ public:
 		}
 		return m_Materials[material];
 	}
+	IMaterial *GetGlowCoverageMaterial( bool maskWrite )
+	{
+		CMaterialReference &material = maskWrite ? m_GlowMaskMaterial : m_GlowCompositeMaterial;
+		if ( !material.IsValid() )
+		{
+			KeyValues *pDefinition = new KeyValues( "DX12_GlowComposite" );
+			if ( !maskWrite )
+			{
+				// Keep the mounted native material's blend and colour-space policy.
+				pDefinition->LoadFromFile( filesystem, "materials/dev/halo_add_to_screen.vmt", "GAME" );
+				pDefinition->SetName( "DX12_GlowComposite" );
+				pDefinition->SetString( "$coveragetexture", "_rt_L4D2GlowCoverage" );
+			}
+			pDefinition->SetInt( "$maskwrite", maskWrite ? 1 : 0 );
+			material.Init( maskWrite ? "__l4d2/glow_coverage" : "__l4d2/glow_composite", pDefinition );
+		}
+		return material;
+	}
+	ITexture *GetGlowCoverage()
+	{
+		return m_GlowCoverage;
+	}
+	void CreateRenderTargets( IMaterialSystem *pMaterialSystem )
+	{
+		if ( !m_GlowCoverage.IsValid() )
+			m_GlowCoverage.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_L4D2GlowCoverage",
+				1, 1, RT_SIZE_FULL_FRAME_BUFFER, IMAGE_FORMAT_I8, MATERIAL_RT_DEPTH_SHARED,
+				TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+	}
+	void ShutdownRenderTargets()
+	{
+		m_GlowCoverage.Shutdown();
+	}
 	virtual void Shutdown() override
 	{
 		for ( int i = 0; i < GLOW_MATERIAL_COUNT; ++i )
 			m_Materials[i].Shutdown();
+		m_GlowMaskMaterial.Shutdown();
+		m_GlowCompositeMaterial.Shutdown();
+		m_GlowCoverage.Shutdown();
 	}
+
 private:
 	CMaterialReference m_Materials[GLOW_MATERIAL_COUNT];
+	CMaterialReference m_GlowMaskMaterial;
+	CMaterialReference m_GlowCompositeMaterial;
+	CTextureReference m_GlowCoverage;
 };
 static CTerrorGlowMaterials g_TerrorGlowMaterials;
 
@@ -135,6 +176,19 @@ void PrepareQuarterTarget( IMatRenderContext *pContext, ITexture *pTarget, int w
 	}
 	SetTargetViewport( pContext, pTarget, width, height );
 }
+}
+// Render targets must exist inside the engine's render-target allocation block. The glow materials stay lazy:
+// this runs before the client's material and filesystem interfaces are connected.
+void TerrorGlow_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig )
+{
+	const char *shaderDLL = pHardwareConfig ? pHardwareConfig->GetShaderDLLName() : nullptr;
+	if ( pMaterialSystem && shaderDLL && !V_stricmp( shaderDLL, "stdshader_dx12" ) )
+		g_TerrorGlowMaterials.CreateRenderTargets( pMaterialSystem );
+}
+
+void TerrorGlow_ShutdownRenderTargets()
+{
+	g_TerrorGlowMaterials.ShutdownRenderTargets();
 }
 
 int TerrorModel_DrawModel( C_BaseEntity *pEntity, int nativeFlags )
@@ -269,6 +323,7 @@ void TerrorGlow_Composite( const CViewSetup &view, float blurScale, float compos
 	const int width = view.width / 4;
 	const int height = view.height / 4;
 	CMatRenderContextPtr pContext( materials );
+	// Push/pop below preserves the scene colour target and its viewport.
 	int viewportX, viewportY, viewportWidth, viewportHeight;
 	pContext->GetViewport( viewportX, viewportY, viewportWidth, viewportHeight );
 	pContext->PushRenderTargetAndViewport();
@@ -298,20 +353,61 @@ void TerrorGlow_Composite( const CViewSetup &view, float blurScale, float compos
 	pComposite->FindVar( "$C0_X", NULL, true )->SetFloatValue( compositeScale );
 	pComposite->FindVar( "$C0_Y", NULL, true )->SetFloatValue( 0.8f );
 
-	// Main-view stencil bits 1 and 3 suppress the interior. Bits0/2 are
-	// deliberately excluded by the native 0xFA test mask. No stencil clear.
-	pContext->SetStencilEnable( true );
-	pContext->SetStencilFailOperation( STENCILOPERATION_KEEP );
-	pContext->SetStencilZFailOperation( STENCILOPERATION_KEEP );
-	pContext->SetStencilPassOperation( STENCILOPERATION_KEEP );
-	pContext->SetStencilCompareFunction( STENCILCOMPARISONFUNCTION_EQUAL );
-	pContext->SetStencilReferenceValue( 0 );
-	pContext->SetStencilTestMask( 0xfa );
-	pContext->SetStencilWriteMask( 0 );
-	pContext->DrawScreenSpaceRectangle( pComposite, 0, 0, viewportWidth, viewportHeight,
-		0.0f, -0.5f, width - 1.0f, height - 1.0f,
-		pSmall1->GetActualWidth(), pSmall1->GetActualHeight() );
-	TerrorGlow_EndStencilMask();
+	if ( PostProcessDX12_Active() )
+	{
+		ITexture *pCoverage = g_TerrorGlowMaterials.GetGlowCoverage();
+		Assert( pCoverage && !pCoverage->IsError() );
+
+		// MATERIAL_RT_DEPTH_SHARED resolves to SceneDepth/SceneDSV on DX12,
+		// exactly as the native scene composite does. Clear colour only: stencil
+		// still contains the jittered scene's native interior bits.
+		pContext->PushRenderTargetAndViewport();
+		SetTargetViewport( pContext, pCoverage, pCoverage->GetActualWidth(), pCoverage->GetActualHeight() );
+		pContext->ClearColor4ub( 255, 255, 255, 255 );
+		pContext->ClearBuffers( true, false, false );
+		pContext->Viewport( viewportX, viewportY, viewportWidth, viewportHeight );
+		pContext->SetStencilEnable( true );
+		pContext->SetStencilFailOperation( STENCILOPERATION_KEEP );
+		pContext->SetStencilZFailOperation( STENCILOPERATION_KEEP );
+		pContext->SetStencilPassOperation( STENCILOPERATION_KEEP );
+		pContext->SetStencilCompareFunction( STENCILCOMPARISONFUNCTION_NOTEQUAL );
+		pContext->SetStencilReferenceValue( 0 );
+		pContext->SetStencilTestMask( 0xfa );
+		pContext->SetStencilWriteMask( 0 );
+		pContext->DrawScreenSpaceRectangle( g_TerrorGlowMaterials.GetGlowCoverageMaterial( true ),
+			0, 0, viewportWidth, viewportHeight, 0, 0, viewportWidth - 1, viewportHeight - 1,
+			viewportWidth, viewportHeight );
+		TerrorGlow_EndStencilMask();
+		pContext->PopRenderTargetAndViewport();
+
+		IMaterial *pGlowComposite = g_TerrorGlowMaterials.GetGlowCoverageMaterial( false );
+		pGlowComposite->FindVar( "$C0_X", NULL, true )->SetFloatValue( compositeScale );
+		// The native VMT samples SmallFB0, the final Y-blur output (not SmallFB1).
+		pGlowComposite->FindVar( "$coveragesize", NULL, true )->SetVecValue(
+			1.0f / pCoverage->GetActualWidth(), 1.0f / pCoverage->GetActualHeight(), 0.0f, 0.0f );
+		// Preserve the native quarter-buffer UVs (including its -0.5 Y offset).
+		// Coverage uses physical full-frame pixel coordinates, not those UVs.
+		pContext->DrawScreenSpaceRectangle( pGlowComposite, 0, 0, viewportWidth, viewportHeight,
+			0.0f, -0.5f, width - 1.0f, height - 1.0f,
+			pSmall1->GetActualWidth(), pSmall1->GetActualHeight() );
+	}
+	else
+	{
+		// Main-view stencil bits 1 and 3 suppress the interior. Bits0/2 are
+		// deliberately excluded by the native 0xFA test mask. No stencil clear.
+		pContext->SetStencilEnable( true );
+		pContext->SetStencilFailOperation( STENCILOPERATION_KEEP );
+		pContext->SetStencilZFailOperation( STENCILOPERATION_KEEP );
+		pContext->SetStencilPassOperation( STENCILOPERATION_KEEP );
+		pContext->SetStencilCompareFunction( STENCILCOMPARISONFUNCTION_EQUAL );
+		pContext->SetStencilReferenceValue( 0 );
+		pContext->SetStencilTestMask( 0xfa );
+		pContext->SetStencilWriteMask( 0 );
+		pContext->DrawScreenSpaceRectangle( pComposite, 0, 0, viewportWidth, viewportHeight,
+			0.0f, -0.5f, width - 1.0f, height - 1.0f,
+			pSmall1->GetActualWidth(), pSmall1->GetActualHeight() );
+		TerrorGlow_EndStencilMask();
+	}
 }
 
 bool TerrorGlow_IsModelPass()

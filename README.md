@@ -88,7 +88,12 @@ lists them from `shaders/fxc`). The shader clock is
 the DX12 float render parameters. Post-processing ownership on DX12: the native
 stack owns the final tone curve, bloom, lens dirt, temporal AA/upscaling (SMAA
 T2x on GPUs without DLSS), GTAO and motion blur. L4D2 keeps histogram exposure,
-env_tonemap_controller, depth of field, glow and the TerrorEnginePost effects.
+env_tonemap_controller, depth of field and the TerrorEnginePost effects. The
+item/teammate glow remains after temporal AA/upscaling in native order; on DX12
+its native halo samples a full-resolution R8 stencil-coverage mask through a
+history-free 3x3 tent filter, smoothing only the inner edge without filtering the
+scene or retaining moving teammates. DX9 and `mat_postfx_dx12 0` keep the original
+glow composite unchanged.
 Motion blur on both renderers is the SDK/DX12 `DoImageSpaceMotionBlur` (DX12
 velocity blur, SDK camera blur on DX9); the former Terror motion blur and its
 shader were removed.

@@ -47,6 +47,7 @@
 #include "GtaoApply.h"
 #include "hsl_filmgrain_pass1_ps2x.h"
 #include "IntroScreenSpaceEffect_ps2x.h"
+#include "GlowParams.h"
 #include "lightmappedgeneric_decal_ps2x.h"
 #include "lightmappedgeneric_decal_vs20.h"
 #include "lightmappedgeneric_flashlight_vs20.h"
@@ -210,6 +211,7 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "hsl_filmgrain_pass2_ps51", dx12native::kStagePixel, nullptr },
 	{ "hsv_ps51", dx12native::kStagePixel, nullptr },
 	{ "introscreenspaceeffect_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::IntroScreenSpaceEffect_ps2x > },
+	{ "l4d2_glow_composite_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::GlowParams > },
 	{ "lightmappedgeneric_decal_highres_earlydepth_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_ps2x > },
 	{ "lightmappedgeneric_decal_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_ps2x > },
 	{ "lightmappedgeneric_decal_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_vs20 > },

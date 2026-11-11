@@ -12,6 +12,7 @@
 #include "screenspace_dx12.h"
 #include "postprocess_dx12.h"
 #include "framegen_dx12.h"
+#include "l4d2/effects/terror_glow_render.h"
 #include "tier0/memdbgon.h"
 
 // C286160/C286180, base C011B70/C011B10. Engine ABI remains IClientRenderTargets.
@@ -64,9 +65,11 @@ public:
 		ScreenSpaceDX12_Init( pHardwareConfig );
 		PostProcessDX12_Init( pHardwareConfig );
 		PostProcessDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
+		TerrorGlow_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 	}
 	virtual void ShutdownClientRenderTargets() OVERRIDE
 	{
+		TerrorGlow_ShutdownRenderTargets();
 		PostProcessDX12_Shutdown();
 		ScreenSpaceDX12_Shutdown();
 		PBRDebugDX12_Shutdown();

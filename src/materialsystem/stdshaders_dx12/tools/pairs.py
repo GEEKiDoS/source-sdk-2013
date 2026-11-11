@@ -130,6 +130,7 @@ EFFECTS = [
 ]
 
 NATIVE_ONLY = [
+    native_only('postfx', 'l4d2_glow_composite_ps51.fxc', 'ps', 'l4d2_glow_composite_ps51'),
     native_only('postfx', 'motion_blur_mv_ps51.fxc', 'ps', 'motion_blur_mv_ps51'),
     native_only('postfx', 'motion_blur_tile_cs51.fxc', 'cs', 'motion_blur_tile_cs51'),
     native_only('postfx', 'motion_blur_tile_dilate_cs51.fxc', 'cs', 'motion_blur_tile_dilate_cs51'),

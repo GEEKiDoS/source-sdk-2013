@@ -107,3 +107,5 @@ volumetric_temporal_ps51.fxc ps volumetric_temporal_ps51 native -
 # noparity volumetric_temporal_ps51 - native-only
 volumetric_upsample_ps51.fxc ps volumetric_upsample_ps51 native -
 # noparity volumetric_upsample_ps51 - native-only
+l4d2_glow_composite_ps51.fxc ps l4d2_glow_composite_ps51 native -
+# noparity l4d2_glow_composite_ps51 - native-only

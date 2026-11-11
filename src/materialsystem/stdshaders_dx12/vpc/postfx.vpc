@@ -40,6 +40,7 @@ $Project "stdshader_dx12"
         $File "cpp\DX12_PostFX.cpp"
         $File "cpp\DX12_PostFXComposite.cpp"
         $File "cpp\DX12_PostFXRcas.cpp"
+        $File "cpp\DX12_GlowComposite.cpp"
         $File "cpp\vr_distort_texture.cpp"
     }
     $Folder "Header Files"
