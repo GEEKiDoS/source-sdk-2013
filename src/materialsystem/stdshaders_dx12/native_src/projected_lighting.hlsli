@@ -4,6 +4,7 @@
 #ifndef PROJECTED_LIGHTING_HLSLI
 #define PROJECTED_LIGHTING_HLSLI
 #include "shadow_dither.hlsli"
+#include "projected_light_limits.h"
 
 struct PBRSpotGpu // 128 bytes, mirrors DX12ProjectedLightDesc
 {
@@ -14,8 +15,8 @@ struct PBRSpotGpu // 128 bytes, mirrors DX12ProjectedLightDesc
 	int4 slotsFlags;                   // cookieSlot, depthSlot (-1 unshadowed), flags (1 world, 2 model), DX12_VOLUMETRIC_LIGHT_ENABLED or 0
 };
 StructuredBuffer<PBRSpotGpu> g_ProjectedLights : register( t0, space5 );
-Texture2D<float4> g_ProjectedCookies[8] : register( t1, space5 );
-Texture2D<float> g_ProjectedDepth[8] : register( t9, space5 );
+Texture2D<float4> g_ProjectedCookies[DX12_PBR_MAX_PROJECTED_LIGHTS] : register( t1, space5 );
+Texture2D<float> g_ProjectedDepth[DX12_PBR_MAX_PROJECTED_LIGHTS] : register( DX12_PBR_DEPTH_REGISTER, space5 );
 #if !defined( DX12_PBR_SHADOW_GATHER )
 SamplerState g_CookieSampler : register( s0, space5 );
 #endif

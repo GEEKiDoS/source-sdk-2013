@@ -936,6 +936,8 @@ void CFlashlightEffect::SubmitFlashlightState( FlashlightState_t &state )
 		m_FlashlightHandle = g_pClientShadowMgr->CreateFlashlight( state );
 	else if ( !r_flashlightlockposition.GetBool() )
 		g_pClientShadowMgr->UpdateFlashlightState( m_FlashlightHandle, state );
+	if ( m_FlashlightHandle != CLIENTSHADOW_INVALID_HANDLE )
+		g_pClientShadowMgr->SetFlashlightEffectOwned( m_FlashlightHandle );
 	g_pClientShadowMgr->UpdateProjectedTexture( m_FlashlightHandle, true );
 #ifndef NO_TOOLFRAMEWORK
 	if ( clienttools->IsInRecordingMode() )

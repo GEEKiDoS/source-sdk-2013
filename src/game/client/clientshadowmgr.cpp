@@ -129,9 +129,9 @@ ConVar r_flashlightdepthres( "r_flashlightdepthres", "1024"
 ConVar r_threaded_client_shadow_manager( "r_threaded_client_shadow_manager", "0" );
 
 // DX12_PBRLights material variables, one per projected-light slot.
-static const char *const s_pPbrCookieVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$cookie0", "$cookie1", "$cookie2", "$cookie3", "$cookie4", "$cookie5", "$cookie6", "$cookie7" };
-static const char *const s_pPbrCookieFrameVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$cookieframe0", "$cookieframe1", "$cookieframe2", "$cookieframe3", "$cookieframe4", "$cookieframe5", "$cookieframe6", "$cookieframe7" };
-static const char *const s_pPbrDepthVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$depth0", "$depth1", "$depth2", "$depth3", "$depth4", "$depth5", "$depth6", "$depth7" };
+static const char *const s_pPbrCookieVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$cookie0", "$cookie1", "$cookie2", "$cookie3", "$cookie4", "$cookie5", "$cookie6", "$cookie7", "$cookie8", "$cookie9", "$cookie10", "$cookie11" };
+static const char *const s_pPbrCookieFrameVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$cookieframe0", "$cookieframe1", "$cookieframe2", "$cookieframe3", "$cookieframe4", "$cookieframe5", "$cookieframe6", "$cookieframe7", "$cookieframe8", "$cookieframe9", "$cookieframe10", "$cookieframe11" };
+static const char *const s_pPbrDepthVars[DX12_PBR_MAX_PROJECTED_LIGHTS] = { "$depth0", "$depth1", "$depth2", "$depth3", "$depth4", "$depth5", "$depth6", "$depth7", "$depth8", "$depth9", "$depth10", "$depth11" };
 
 #ifdef _WIN32
 #pragma warning( disable: 4701 )
@@ -776,6 +776,7 @@ public:
 	virtual ClientShadowHandle_t CreateFlashlight( const FlashlightState_t &lightState );
 	virtual void UpdateFlashlightState( ClientShadowHandle_t shadowHandle, const FlashlightState_t &lightState );
 	virtual void DestroyFlashlight( ClientShadowHandle_t shadowHandle );
+	virtual void SetFlashlightEffectOwned( ClientShadowHandle_t handle ) { m_Shadows[handle].m_bFlashlightEffectOwned = true; }
 
 	// Update a shadow
 	virtual void UpdateProjectedTexture( ClientShadowHandle_t handle, bool force );
@@ -888,6 +889,7 @@ private:
 		EHANDLE					m_hTargetEntity;
 		ITexture				*m_pFlashlightDepth = nullptr;	// shadow depth texture of the current main view (ComputeShadowDepthTextures); null when unshadowed
 		bool					m_bVolumetric = false;			// SetVolumetric opt-in; published as DX12_VOLUMETRIC_LIGHT_ENABLED (unshadowed volume when no depth slot)
+		bool					m_bFlashlightEffectOwned = false;
 	};
 
 private:
@@ -1019,6 +1021,7 @@ private:
 
 	// Builds a list of the flashlights touching the view; requireDepth keeps only those that render a shadow depth texture
 	int		BuildActiveFlashlightList( const CViewSetup &viewSetup, bool requireDepth, int nMaxFlashlights, ClientShadowHandle_t *pActiveFlashlights );
+	int SelectProjectedLights( const CViewSetup &viewSetup, int nActiveCount, ClientShadowHandle_t *pActiveFlashlights );
 
 	// Sets the view's active flashlight render state
 	void	SetViewFlashlightState( int nActiveFlashlightCount, ClientShadowHandle_t* pActiveFlashlights );
@@ -1420,7 +1423,11 @@ bool CClientShadowMgr::Init()
 	SetShadowBlobbyCutoffArea( 0.005 );
 
 	bool bTools = CommandLine()->CheckParm( "-tools" ) != NULL;
-	m_nMaxDepthTextureShadows = bTools ? 4 : 1;	// Just one shadow depth texture in games, more in tools
+	m_nMaxDepthTextureShadows = bTools ? 4 : 1;	// Original game/tools budget.
+#if defined( L4D2 )
+	if ( ShadowMapsDX12_ProjectedLightsAvailable() )
+		m_nMaxDepthTextureShadows = DX12_PBR_MAX_PROJECTED_LIGHTS;
+#endif
 
 	bool bLowEnd = ( g_pMaterialSystemHardwareConfig->GetDXSupportLevel() < 80 );
 
@@ -1676,6 +1683,7 @@ void CClientShadowMgr::LevelShutdownPostEntity()
 {
 #if defined( L4D2 )
 	ResetTerrorFlashlight();
+	ResetTerrorTeammateFlashlightsOnLevelShutdown();
 #endif
 
 	// All shadows *should* have been cleaned up when the entities went away
@@ -1964,6 +1972,7 @@ ClientShadowHandle_t CClientShadowMgr::CreateProjectedTexture( ClientEntityHandl
 	shadow.m_Flags = flags;
 	shadow.m_nRenderFrame = -1;
 	shadow.m_bVolumetric = false;
+	shadow.m_bFlashlightEffectOwned = false;
 	shadow.m_LastOrigin.Init( FLT_MAX, FLT_MAX, FLT_MAX );
 	shadow.m_LastAngles.Init( FLT_MAX, FLT_MAX, FLT_MAX );
 #if defined( L4D2 )
@@ -4220,6 +4229,8 @@ void CClientShadowMgr::ComputeShadowDepthTextures( const CViewSetup &viewSetup )
 	// Build list of active render-to-texture shadows
 	ClientShadowHandle_t pActiveDepthShadows[1024];
 	int nActiveDepthShadowCount = BuildActiveFlashlightList( viewSetup, true, ARRAYSIZE( pActiveDepthShadows ), pActiveDepthShadows );
+	if ( ShadowMapsDX12_ProjectedLightsAvailable() )
+		nActiveDepthShadowCount = SelectProjectedLights( viewSetup, nActiveDepthShadowCount, pActiveDepthShadows );
 
 	// Iterate over all existing textures and allocate shadow textures
 	bool bDebugFrustum = r_flashlightdrawfrustum.GetBool();
@@ -4289,6 +4300,36 @@ void CClientShadowMgr::ComputeShadowDepthTextures( const CViewSetup &viewSetup )
 // ComputeShadowDepthTextures ran for this view, so m_pFlashlightDepth is never a stale pointer. The volumetric bit does not
 // need a depth slot: the volume pass then marches the light unshadowed.
 //-----------------------------------------------------------------------------
+int CClientShadowMgr::SelectProjectedLights( const CViewSetup &viewSetup, int nActiveCount, ClientShadowHandle_t *pActiveFlashlights )
+{
+	// Ordinary cookie spots retain their nearest-eight budget; effect-owned
+	// survivor flashlights have their own four slots and cannot evict them.
+	ClientShadowHandle_t selected[DX12_PBR_MAX_PROJECTED_LIGHTS];
+	int selectedCount = 0;
+	for ( int group = 0; group < 2; ++group )
+	{
+		const bool effectOwned = group != 0;
+		const int limit = effectOwned ? DX12_PBR_RESERVED_FLASHLIGHTS : DX12_PBR_ORDINARY_PROJECTED_LIGHTS;
+		const int begin = selectedCount;
+		for ( int i = 0; i < nActiveCount; ++i )
+		{
+			const ClientShadowHandle_t handle = pActiveFlashlights[i];
+			if ( m_Shadows[handle].m_bFlashlightEffectOwned != effectOwned ) continue;
+			const float distance = viewSetup.origin.DistToSqr( shadowmgr->GetFlashlightState( m_Shadows[handle].m_ShadowHandle ).m_vecLightOrigin );
+			int position = selectedCount;
+			while ( position > begin && distance < viewSetup.origin.DistToSqr( shadowmgr->GetFlashlightState( m_Shadows[selected[position - 1]].m_ShadowHandle ).m_vecLightOrigin ) ) --position;
+			if ( position >= begin + limit ) continue;
+			const int end = MIN( selectedCount, begin + limit - 1 );
+			for ( int j = end; j > position; --j ) selected[j] = selected[j - 1];
+			selected[position] = handle;
+			if ( selectedCount < begin + limit ) ++selectedCount;
+		}
+	}
+	nActiveCount = selectedCount;
+	for ( int i = 0; i < nActiveCount; ++i ) pActiveFlashlights[i] = selected[i];
+	return nActiveCount;
+}
+
 void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup, bool depthRenderedThisView )
 {
 	if ( !ShadowMapsDX12_ProjectedLightsAvailable() )
@@ -4300,28 +4341,8 @@ void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup, bool
 	// The last packet stays current until the next one: after an empty packet, a view without lights has nothing to publish.
 	if ( nActiveCount == 0 && m_nPublishedLightCount == 0 )
 		return;
+	nActiveCount = SelectProjectedLights( viewSetup, nActiveCount, pActiveFlashlights );
 
-	// The packet holds DX12_PBR_MAX_PROJECTED_LIGHTS lights: keep the ones nearest the camera.
-	if ( nActiveCount > DX12_PBR_MAX_PROJECTED_LIGHTS )
-	{
-		auto DistanceSqr = [&]( ClientShadowHandle_t h )
-		{
-			return viewSetup.origin.DistToSqr( shadowmgr->GetFlashlightState( m_Shadows[h].m_ShadowHandle ).m_vecLightOrigin );
-		};
-		for ( int i = 0; i < DX12_PBR_MAX_PROJECTED_LIGHTS; ++i )
-		{
-			int nNearest = i;
-			for ( int j = i + 1; j < nActiveCount; ++j )
-			{
-				if ( DistanceSqr( pActiveFlashlights[j] ) < DistanceSqr( pActiveFlashlights[nNearest] ) )
-					nNearest = j;
-			}
-			ClientShadowHandle_t hNearest = pActiveFlashlights[nNearest];
-			pActiveFlashlights[nNearest] = pActiveFlashlights[i];
-			pActiveFlashlights[i] = hNearest;
-		}
-		nActiveCount = DX12_PBR_MAX_PROJECTED_LIGHTS;
-	}
 
 	if ( !m_PbrLights.IsValid() )
 		m_PbrLights.Init( "dx12/pbr_lights", new KeyValues( "DX12_PBRLights" ) );

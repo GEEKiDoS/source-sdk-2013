@@ -15,6 +15,11 @@ void SetTerrorFlashlightOwner( int entIndex );
 void TurnOnTerrorFlashlight( int entIndex, const char *texture, float fov, float farZ, float linear );
 void TurnOffTerrorFlashlight();
 void ResetTerrorFlashlight();
+void UpdateTerrorTeammateFlashlight( int entIndex, const Vector &origin, const Vector &forward,
+	const Vector &right, const Vector &up );
+void ResetTerrorTeammateFlashlightsOnLevelShutdown();
+void RemoveTerrorTeammateFlashlight( int entIndex );
+#include "shaderapi/projected_light_limits.h"
 void UpdateTerrorFlashlight( const Vector &origin, const Vector &forward, const Vector &right,
 	const Vector &up, float fov, bool shadows, float farZ, float linear, const char *texture );
 void TerrorViewmodelMuzzleFlash();

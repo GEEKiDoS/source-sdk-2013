@@ -713,8 +713,9 @@ single-style face, 12 tile taps (+3 dynamic) for a bumped one, +4 per plane for 
 Native logicals (`tools/pairs.py` slice `pbr`, `manifests/pbr.txt`): `pbr_world_vs51` (4), `pbr_world_ps51` (12), their
 `pbr_world_highres_vs51`/`_ps51`/`_earlydepth_ps51` twins selected by the backend on enhanced maps (4/12/12),
 `pbr_model_vs51` (48), `pbr_model_ps51` (24; `ENHANCED` adds the receiver lighting ABI and dense probes),
-`pbr_gbuffer_debug_cs51` (2). Register space 5 (`t0` 128-byte `PBRSpotGpu` records, `t1..t8` cookies, `t9..t16` depth,
-`s0`/`s1`) is backend-owned; space 4 carries the probe grid. All PBR includes are new files, so legacy payloads are
+`pbr_gbuffer_debug_cs51` (2). Register space 5 (`t0` 128-byte `PBRSpotGpu` records, `t1..t12` cookies, `t13..t24` depth,
+`s0`/`s1`) is backend-owned: eight ordinary projected lights plus four reserved survivor flashlights. Array capacities
+come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the probe grid. All PBR includes are new files, so legacy payloads are
 unchanged. `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
 parallax; `-case probegpu` the probe decode.
 

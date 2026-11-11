@@ -7,6 +7,8 @@
 #include "l4d2/effects/terror_flashlight.h"
 #include "flashlighteffect.h"
 #include "tier0/memdbgon.h"
+#include "shadowmaps_dx12.h"
+
 
 // Preserve original definitions/owners; input0 explicitly normalizes to2.
 ConVar r_flashlightmuzzleflash( "r_flashlightmuzzleflash", "1", 0x0000000A );
@@ -147,7 +149,84 @@ private:
 	bool m_bOverride;
 };
 
+static ConVar r_flashlight_teammate_max( "r_flashlight_teammate_max", "3", FCVAR_ARCHIVE,
+	"DX12: maximum projected flashlight spots for other survivors", true, 0, true, MAX_TERROR_TEAMMATE_FLASHLIGHTS );
+struct TerrorTeammateFlashlight_t
+{
+	CFlashlightEffect *m_pEffect;
+	int m_nEntIndex, m_nLastFrame;
+	float m_flDistanceSqr;
+	TerrorTeammateFlashlight_t() : m_pEffect( NULL ), m_nEntIndex( -1 ), m_nLastFrame( -1 ), m_flDistanceSqr( FLT_MAX ) {}
+};
+static TerrorTeammateFlashlight_t s_TeammateFlashlights[MAX_TERROR_TEAMMATE_FLASHLIGHTS];
+static int s_nLastTeammateDisabledResetFrame = -1;
+static void ResetTerrorTeammateFlashlights()
+{
+	for ( int i = 0; i < ARRAYSIZE( s_TeammateFlashlights ); ++i )
+	{
+		delete s_TeammateFlashlights[i].m_pEffect;
+		s_TeammateFlashlights[i] = TerrorTeammateFlashlight_t();
+	}
+}
+void UpdateTerrorTeammateFlashlight( int entIndex, const Vector &origin, const Vector &forward,
+	const Vector &right, const Vector &up )
+{
+	if ( !ShadowMapsDX12_ProjectedLightsAvailable() || r_flashlight_teammate_max.GetInt() <= 0 )
+	{
+		if ( s_nLastTeammateDisabledResetFrame != gpGlobals->framecount )
+		{
+			ResetTerrorTeammateFlashlights();
+			s_nLastTeammateDisabledResetFrame = gpGlobals->framecount;
+		}
+		return;
+	}
+	C_BasePlayer *local = C_BasePlayer::GetLocalPlayer();
+	if ( !local || local->entindex() == entIndex ) return;
+	s_nLastTeammateDisabledResetFrame = -1;
+	const int maxLights = r_flashlight_teammate_max.GetInt() < ARRAYSIZE( s_TeammateFlashlights )
+		? r_flashlight_teammate_max.GetInt() : ARRAYSIZE( s_TeammateFlashlights );
+	for ( int i = maxLights; i < ARRAYSIZE( s_TeammateFlashlights ); ++i )
+	{
+		delete s_TeammateFlashlights[i].m_pEffect;
+		s_TeammateFlashlights[i] = TerrorTeammateFlashlight_t();
+	}
+	const float distanceSqr = ( origin - local->EyePosition() ).LengthSqr();
+	int slot = -1;
+	for ( int i = 0; i < maxLights; ++i )
+		if ( s_TeammateFlashlights[i].m_nEntIndex == entIndex || s_TeammateFlashlights[i].m_nLastFrame != gpGlobals->framecount ) { slot = i; break; }
+	if ( slot < 0 )
+	{
+		slot = 0;
+		for ( int i = 1; i < maxLights; ++i )
+			if ( s_TeammateFlashlights[i].m_flDistanceSqr > s_TeammateFlashlights[slot].m_flDistanceSqr ) slot = i;
+		if ( distanceSqr >= s_TeammateFlashlights[slot].m_flDistanceSqr ) return;
+		delete s_TeammateFlashlights[slot].m_pEffect;
+		s_TeammateFlashlights[slot] = TerrorTeammateFlashlight_t();
+	}
+	TerrorTeammateFlashlight_t &light = s_TeammateFlashlights[slot];
+	if ( !light.m_pEffect )
+	{
+		light.m_pEffect = new CFlashlightEffect( entIndex, NULL, 53.0f, 750.0f, 100.0f );
+		if ( light.m_pEffect ) light.m_pEffect->TurnOn();
+	}
+	if ( light.m_pEffect ) light.m_pEffect->UpdateLight( entIndex, origin, forward, right, up, 53.0f, 750.0f, 100.0f, true, NULL );
+	light.m_nEntIndex = entIndex;
+	light.m_nLastFrame = gpGlobals->framecount;
+	light.m_flDistanceSqr = distanceSqr;
+}
+
+void RemoveTerrorTeammateFlashlight( int entIndex )
+{
+	for ( int i = 0; i < ARRAYSIZE( s_TeammateFlashlights ); ++i )
+		if ( s_TeammateFlashlights[i].m_nEntIndex == entIndex )
+		{
+			delete s_TeammateFlashlights[i].m_pEffect;
+			s_TeammateFlashlights[i] = TerrorTeammateFlashlight_t();
+		}
+}
+
 static CTerrorFlashlight s_TerrorFlashlight;
+void ResetTerrorTeammateFlashlightsOnLevelShutdown() { ResetTerrorTeammateFlashlights(); }
 void SetTerrorFlashlightOwner( int entIndex ) { s_TerrorFlashlight.SetOwner( entIndex ); }
 void TurnOnTerrorFlashlight( int entIndex, const char *texture, float fov, float farZ, float linear )
 {

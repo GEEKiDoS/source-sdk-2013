@@ -2,6 +2,7 @@
 #include "cbase.h"
 #include "l4d2/player/c_terrorplayer.h"
 #include "l4d2/player/terror_playeranimstate.h"
+#include "l4d2/effects/terror_flashlight.h"
 #include "l4d2/weapons/terror_weapon.h"
 #include "l4d2/effects/terror_fx_shared.h"
 #include "l4d2/weapons/terror_weapon_parse.h"
@@ -1674,6 +1675,7 @@ void C_TerrorPlayer::ClearTerrorLaserSightEffects( int user )
 
 C_TerrorPlayer::~C_TerrorPlayer()
 {
+	RemoveTerrorTeammateFlashlight( entindex() );
 	if ( C_BasePlayer::GetLocalPlayer() == this )
 	{
 		if ( SteamTimeline() )
@@ -4785,11 +4787,13 @@ void C_TerrorPlayer::UpdateFlashlightParticles()
 	}
 	if ( observer == this )
 	{
+		RemoveTerrorTeammateFlashlight( entindex() );
 		ClearFlashlightParticles();
 		return;
 	}
 	if ( !IsEffectActive( EF_DIMLIGHT ) || !r_draw_flashlight_3rd_person.GetBool() )
 	{
+		RemoveTerrorTeammateFlashlight( entindex() );
 		TurnOffFlashlight();
 		ClearFlashlightParticles();
 		return;
@@ -4797,6 +4801,7 @@ void C_TerrorPlayer::UpdateFlashlightParticles()
 	const int team = GetRenderTeamNumber();
 	if ( team != TEAM_SURVIVOR && team != TEAM_L4D1_SURVIVOR )
 	{
+		RemoveTerrorTeammateFlashlight( entindex() );
 		TurnOffFlashlight();
 		ClearFlashlightParticles();
 		return;
@@ -4805,12 +4810,14 @@ void C_TerrorPlayer::UpdateFlashlightParticles()
 	CTerrorWeapon *weapon = static_cast< CTerrorWeapon * >( GetActiveWeapon() );
 	if ( !weapon || !weapon->ShouldDrawWeapon() )
 	{
+		RemoveTerrorTeammateFlashlight( entindex() );
 		ClearFlashlightParticles();
 		return;
 	}
 	const int attachment = weapon->m_iLaserSightAttachment;
 	if ( attachment <= 0 )
 	{
+		RemoveTerrorTeammateFlashlight( entindex() );
 		ClearFlashlightParticles();
 		return;
 	}
@@ -4828,6 +4835,9 @@ void C_TerrorPlayer::UpdateFlashlightParticles()
 	end.z = forward.z * range + start.z;
 	trace_t trace;
 	UTIL_TraceLine( start, end, 0x06004003, this, COLLISION_GROUP_NONE, &trace );
+	// The native third-person beam's CP1 forward is attachment +Z (below),
+	// not the attachment +X used for its short obstruction trace.
+	UpdateTerrorTeammateFlashlight( entindex(), start, up, right, -forward );
 	if ( !m_hThirdPersonFlashlightParticles[user] )
 	{
 		m_hThirdPersonFlashlightParticles[user] = ParticleProp()->Create(

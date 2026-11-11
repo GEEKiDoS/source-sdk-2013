@@ -336,6 +336,19 @@ is deleted when its job finishes. Reusable external scripts stay under
 `C:/l4d2_work`. Do not create identity manifests, qualification receipts,
 build-log copies or source snapshot archives for the current pipeline.
 
+**DX12 teammate flashlights:** In DX12, up to three nearest other survivors project
+the real flashlight cookie onto world surfaces, while the existing third-person
+beam particles remain unchanged. `r_flashlight_teammate_max` (archived, default
+`3`) controls the number of projected teammate lights; set it to `0` to disable
+them. The path is DX12-only and does not require baked high-resolution shadowmap
+admission, so `-dx9` retains the original flashlight look.
+DX12 reserves four shadowed flashlight slots (one local and up to three
+teammates), separate from the nearest-eight ordinary projected-cookie lights.
+The depth pool covers both groups, so flashlights cannot evict another projected
+light or consume `r_shadowmap_max_realtime_lights`' runtime local-light budget.
+The teammate projector follows the attachment +Z axis used by the native
+third-person beam, not its perpendicular +X obstruction-trace axis.
+
 ### L4D2 source layout
 
 Game-owned sources remain in `src/game/{client,server,shared}/l4d2`, grouped

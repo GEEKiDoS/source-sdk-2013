@@ -45,6 +45,7 @@ if ($Native) {
                 $hlslFiles[$_.Name] = $_.FullName
             }
         }
+        $hlslFiles['projected_light_limits.h'] = (Resolve-Path (Join-Path $rootPath '..\..\public\shaderapi\projected_light_limits.h')).Path
         $outputs = @()
         foreach ($manifest in (Get-ChildItem (Join-Path $rootPath 'manifests') -Filter '*.txt' | Sort-Object Name)) {
             foreach ($line in (Get-Content $manifest.FullName)) {

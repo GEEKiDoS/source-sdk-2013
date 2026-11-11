@@ -3514,7 +3514,7 @@ bool CLightingDX12::PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input
 		records.Buffer.NumElements = p.count;
 		records.Buffer.StructureByteStride = sizeof( DX12ProjectedLightDesc );
 		device->CreateShaderResourceView( p.buffer, &records, table.cpu );
-		// t1..t8 cookies (sRGB view), t9..t16 depth (typed depth view; the comparison sampler is the root's static s1).
+		// t1..t12 cookies (sRGB), t13..t24 depth (typed depth view; the comparison sampler is the root's static s1).
 		// Unused slots, unshadowed lights' depth slots (the material leaves them on a stale or error texture) and handles that cannot be sampled bind the null view.
 		const auto bindTexture = [&]( UINT slot, ShaderAPITextureHandle_t handle, bool srgb, bool comparison )
 		{

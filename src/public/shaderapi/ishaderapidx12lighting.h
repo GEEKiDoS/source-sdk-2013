@@ -43,7 +43,7 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_010"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_011"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -117,14 +117,11 @@ static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipCon
 #define DX12_LIGHTING_B_PROP_DRAW				1		// DX12StaticPropDrawConstants
 
 // PBR projected-light (flashlight / env_projectedtexture) resources: pixel-stage space 5, every root signature.
-// One 17-descriptor table: t0 StructuredBuffer<PBRSpotGpu>, t1..t8 cookie Texture2D<float4>, t9..t16 depth Texture2D<float>.
-// s0 linear clamp, s1 comparison (linear, LESS_EQUAL, clamp) are static samplers of the root signature.
-#define DX12_PBR_MAX_PROJECTED_LIGHTS			8
+// Separate ordinary-cookie and survivor-flashlight slots; dimensions shared with HLSL.
+#include "shaderapi/projected_light_limits.h"
 #define DX12_PBR_REGISTER_SPACE					5
 #define DX12_PBR_T_LIGHTS						0		// StructuredBuffer<PBRSpotGpu>, stride sizeof( DX12ProjectedLightDesc )
-#define DX12_PBR_T_COOKIE_FIRST					1		// Texture2D<float4> g_ProjectedCookies[8]
-#define DX12_PBR_T_DEPTH_FIRST					9		// Texture2D<float> g_ProjectedDepth[8]
-#define DX12_PBR_TABLE_COUNT					17
+#define DX12_PBR_T_COOKIE_FIRST					1
 #define DX12_PBR_S_LINEAR						0
 #define DX12_PBR_S_COMPARISON					1
 #define DX12_PBR_LIGHT_WORLD					1		// DX12ProjectedLightDesc::flags: lights world receivers
