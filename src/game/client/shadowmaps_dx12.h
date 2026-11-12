@@ -282,8 +282,10 @@ bool ShadowMapsDX12_ReplaceSpotlightBeam( C_Beam *beam );
 // highres lightmaps and baked visibility, no sun cascades, local charts or depth copies. The main view and the
 // viewmodel keep runtime shadows. `viewSetup` is the receiver's actual CViewSetup (sky views pass the transformed
 // sky camera; viewmodels their own projection). Returns false for ordinary/shutdown views or an explicit failure;
-// CanDrawReceiverViews distinguishes ordinary rendering from rejected rendering.
-bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &viewSetup, ShadowMapReceiverViewKind_t kind );
+// CanDrawReceiverViews distinguishes ordinary rendering from rejected rendering. `maxReceiverDepth` bounds the
+// camera-forward distance of every receiver pixel the view will draw (viewmodels pass their renderables' bounds);
+// sun cascades starting beyond it are never sampled and are not rendered.
+bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &viewSetup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth = FLT_MAX );
 void ShadowMapsDX12_EndReceiverView();
 
 // Exact sprp ordinal/public renderable registration; no name or proximity lookup.

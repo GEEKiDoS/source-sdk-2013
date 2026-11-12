@@ -5,6 +5,9 @@
 #include "c_physicsprop.h"
 #include "c_props.h"
 #include "c_basedoor.h"
+#if defined( L4D2 )
+#include "l4d2/entities/c_terror_func_brush.h"
+#endif
 #include <typeinfo>
 #include "shadowmaps_dx12.h"
 #include "deferred/deferred_lights.h"
@@ -938,7 +941,7 @@ bool BoxInVolume( const ShadowCasterVolume_t &volume, const Vector &mins, const 
 class CShadowViewData : public CRefCounted<>
 {
 public:
-	CShadowViewData() : active(false), lastUsedFrame(0xffffffffu), hasDetails(false), shadowsEnabled(true), drawCandidateFirst(-1), drawCandidateCount(0), sunSkyRegion(-1)
+	CShadowViewData() : active(false), lastUsedFrame(0xffffffffu), hasDetails(false), shadowsEnabled(true), receiverMaxDepth(FLT_MAX), drawCandidateFirst(-1), drawCandidateCount(0), sunSkyRegion(-1)
 	{ memset(&packet,0,sizeof(packet)); }
 	~CShadowViewData()
 	{
@@ -982,6 +985,7 @@ public:
 	bool shadowsEnabled;
 	Vector detailMins,detailMaxs;
 	float spotShadowNear;
+	float receiverMaxDepth; // Camera-forward distance bound of every receiver pixel (FLT_MAX: unbounded).
 	DX12LightingViewPacket packet;
 	ShadowStats_t stats;
 	CUtlVector<RuntimeShadowLightGpu> lights;
@@ -1274,12 +1278,47 @@ struct ShadowRigidMaterialKey_t
 	int alphaTest, translucent, noCull, noDraw, frame, shader;
 	float alphaReference;
 };
+// Model-level half of clean-depth admission: rigid static-prop studio geometry with no flex, material proxy or
+// $treesway. Rereading every material each frame cost ~20 ms on c1m1, so it is cached per model across frames.
+// ShadowMapsDX12_InvalidateStatic advances g_StaticGeneration (revalidating every entry); level shutdown, which a
+// device restore also runs, purges the map.
+struct ShadowModelImmutability_t
+{
+	uint32 staticGeneration;
+	bool immutable;
+};
+CUtlMap<const model_t *, ShadowModelImmutability_t, int> g_ShadowModelImmutability( DefLessFunc(const model_t *) );
+bool ShadowModelImmutable( const model_t *model )
+{
+	if ( !model ) return false;
+	int index=g_ShadowModelImmutability.Find(model);
+	if ( index!=g_ShadowModelImmutability.InvalidIndex() && g_ShadowModelImmutability[index].staticGeneration==g_StaticGeneration )
+		return g_ShadowModelImmutability[index].immutable;
+	studiohdr_t *studio=modelinfo->GetModelType(model)==mod_studio ? modelinfo->GetStudiomodel(model) : NULL;
+	bool immutable=studio && (studio->flags&STUDIOHDR_FLAGS_STATIC_PROP) && studio->numflexdesc==0 && !modelinfo->ModelHasMaterialProxy(model);
+	if ( immutable )
+	{
+		static CUtlVector<IMaterial *> materials;
+		int count=modelinfo->GetModelMaterialCount(model);
+		materials.SetCount(count); modelinfo->GetModelMaterials(model,count,materials.Base());
+		for ( int i=0;i<count;++i )
+		{
+			IMaterial *material=materials[i];
+			bool found=false;
+			IMaterialVar *sway=material->FindVar("$treesway",&found,false);
+			if ( material->HasProxy() || (found && sway->GetIntValue()!=0) ) { immutable=false; break; }
+		}
+	}
+	if ( index==g_ShadowModelImmutability.InvalidIndex() ) index=g_ShadowModelImmutability.Insert(model);
+	g_ShadowModelImmutability[index].staticGeneration=g_StaticGeneration; g_ShadowModelImmutability[index].immutable=immutable;
+	return immutable;
+}
 template<class T> void AppendRigidKey( CUtlVector<unsigned char> &bytes, const T &key )
 {
 	int first=bytes.AddMultipleToTail(sizeof(key));
 	memcpy(bytes.Base()+first,&key,sizeof(key));
 }
-bool BuildRigidCasterContent( CShadowViewData &data, const ShadowMapSceneCaster_t &caster )
+bool BuildRigidCasterContent( CUtlVector<unsigned char> &content, const ShadowMapSceneCaster_t &caster )
 {
 	IClientRenderable *renderable=caster.renderable;
 	IClientUnknown *unknown=renderable->GetIClientUnknown();
@@ -1318,7 +1357,12 @@ bool BuildRigidCasterContent( CShadowViewData &data, const ShadowMapSceneCaster_
 		// except its sleep transition can reject the draw; never certify it then.
 		if ( type==typeid(C_PhysicsProp) && !static_cast<C_PhysicsProp *>(entity)->CanReuseRigidShadowDepth() ) return false;
 	}
-	else if ( modelType!=mod_brush || (type!=typeid(C_BaseEntity) && type!=typeid(C_BaseDoor)) )
+	// C_FuncBrush (L4D2) adds only physics-shadow updates to C_BaseEntity; its brush draw is the base draw.
+	else if ( modelType!=mod_brush || (type!=typeid(C_BaseEntity) && type!=typeid(C_BaseDoor)
+#if defined( L4D2 )
+		&& type!=typeid(C_FuncBrush)
+#endif
+		) )
 		return false;
 
 	ShadowRigidEntityKey_t key;
@@ -1338,7 +1382,7 @@ bool BuildRigidCasterContent( CShadowViewData &data, const ShadowMapSceneCaster_
 	// STATIC_PROP SetupBones copies only the render root (c_baseanimating.cpp).
 	// Sequence/cycle/pose/controllers/hitbox state cannot deform this geometry.
 	// Including those unrelated clocks would spuriously invalidate rigid depth.
-	AppendRigidKey(data.casterContent,key);
+	AppendRigidKey(content,key);
 	static CUtlVector<IMaterial *> modelMaterials;
 	int count=modelinfo->GetModelMaterialCount(model);
 	modelMaterials.SetCount(count);
@@ -1356,6 +1400,11 @@ bool BuildRigidCasterContent( CShadowViewData &data, const ShadowMapSceneCaster_
 		if ( !V_stricmp(shader,"VertexLitGeneric") ) m.shader=1;
 		else if ( !V_stricmp(shader,"LightmappedGeneric") ) m.shader=2;
 		else if ( !V_stricmp(shader,"UnlitGeneric") ) m.shader=3;
+		// DX12 routes these through the PBR shaders with the original parameters and geometry (l4d2_pbr_route.h).
+		// A distinct id keeps a route change from reusing depth certified under the other shader.
+		else if ( !V_stricmp(shader,"PBR_VertexLitGeneric") ) m.shader=4;
+		else if ( !V_stricmp(shader,"PBR_LightmappedGeneric") ) m.shader=5;
+		else if ( !V_stricmp(shader,"Black") ) m.shader=6; // Opaque flat black (tools/toolsblack); no deformation.
 		else return false; // Unversioned custom/deforming shader geometry.
 		m.alphaTest=material->IsAlphaTested(); m.translucent=material->IsTranslucent();
 		m.noCull=material->IsTwoSided(); m.noDraw=material->GetMaterialVarFlag(MATERIAL_VAR_NO_DRAW);
@@ -1368,7 +1417,7 @@ bool BuildRigidCasterContent( CShadowViewData &data, const ShadowMapSceneCaster_
 			IMaterialVar *reference=material->FindVar("$AlphaTestReference",&found,false);
 			if ( found ) m.alphaReference=reference->GetFloatValue();
 		}
-		AppendRigidKey(data.casterContent,m);
+		AppendRigidKey(content,m);
 		// Texture pixels have no public mutation revision (Download/SwapContents).
 		// Even equal texture/frame/reference cannot certify a cutout silhouette.
 		if ( m.alphaTest || m.translucent ) return false;
@@ -1381,7 +1430,7 @@ void CollectRigidCasterContent( CShadowViewData &data, ShadowMapSceneCaster_t &c
 	key.renderable=caster.renderable; key.immutable=caster.immutable; key.staticProp=caster.staticProp;
 	key.casterIndex=data.casters.Count();
 	key.contentFirst=data.casterContent.Count(); key.contentBytes=0;
-	key.certified=!caster.immutable && BuildRigidCasterContent(data,caster);
+	key.certified=!caster.immutable && BuildRigidCasterContent(data.casterContent,caster);
 	key.stableAtCommit=false; key.layerRigid=false; caster.rigid=false;
 	C_BaseEntity *entity=key.certified ? caster.renderable->GetIClientUnknown()->GetBaseEntity() : NULL;
 	key.entity=entity;
@@ -1408,30 +1457,13 @@ public:
 		renderable->GetRenderBoundsWorldspace(caster.mins,caster.maxs);
 		// Only engine static props with immutable geometry AND opacity can enter
 		// clean depth. Brush entities, skinned/morphed models and proxies always move.
-		const model_t *model=renderable->GetModel();
-		studiohdr_t *studio=model && modelinfo->GetModelType(model)==mod_studio ? modelinfo->GetStudiomodel(model) : NULL;
-		caster.immutable=isStaticProp && studio && (studio->flags&STUDIOHDR_FLAGS_STATIC_PROP) && studio->numflexdesc==0 && !modelinfo->ModelHasMaterialProxy(model);
-		if ( caster.immutable )
-		{
-			int count=modelinfo->GetModelMaterialCount(model);
-			m_Materials.SetCount(count); modelinfo->GetModelMaterials(model,count,m_Materials.Base());
-			for ( int i=0;i<count;++i )
-			{
-				IMaterial *material=m_Materials[i];
-				bool found=false;
-				IMaterialVar *sway=material->FindVar("$treesway",&found,false);
-				if ( material->HasProxy() || (found && sway->GetIntValue()!=0) ) { caster.immutable=false; break; }
-			}
-		}
+		caster.immutable=isStaticProp && ShadowModelImmutable(renderable->GetModel());
 		CollectRigidCasterContent(m_Data,caster);
 		m_Data.casters.AddToTail(caster);
 	}
 private:
 	CShadowViewData &m_Data;
-	// Shared by every caster query; no material array allocation per prop.
-	static CUtlVector<IMaterial *> m_Materials;
 };
-CUtlVector<IMaterial *> CCollectCasters::m_Materials;
 
 struct ShadowCasterSnapshot_t
 {
@@ -2694,6 +2726,9 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::BuildSun.Cascade", "Shadowmaps" );
 		float nearSlice=splits[i]-(i?blend[i-1]:0), farSlice=splits[i+1]+(i<3?blend[i]:0);
+		// The shader reaches cascade i only at camera-forward distances >= nearSlice; no receiver of this view lies
+		// there, so it is never sampled. Its cache stays untouched and its packet entry wholly zero (absent).
+		if ( nearSlice>data.receiverMaxDepth ) continue;
 		Vector corners[8]; ReceiverCorners(data.receiver,receiverClip,forward,nearSlice,farSlice,corners);
 		Vector sphereCenter(0,0,0); for ( int c=0;c<8;++c ) sphereCenter+=corners[c]; sphereCenter*=1.0f/8;
 		float sphereRadius=1; for ( int c=0;c<8;++c ) sphereRadius=MAX(sphereRadius,(corners[c]-sphereCenter).Length());
@@ -3551,6 +3586,7 @@ void ShadowMapsDX12_EndClientLevelShutdown()
 void ShadowMapsDX12_LevelShutdown()
 {
 	g_Admitted=false; CloseReceiverScopes();
+	g_ShadowModelImmutability.Purge(); // model_t pointers do not survive the map.
 	g_CasterSnapshot.frame=-1;
 	g_CasterSnapshot.casters.RemoveAll(); g_CasterSnapshot.keys.RemoveAll(); g_CasterSnapshot.content.RemoveAll();
 	if ( !g_ResourceResetInProgress ) DestroySpawnedRenderables();
@@ -3872,7 +3908,7 @@ void ShadowMapsDX12_PrepareMainView( const CViewSetup &setup )
 	UpdateDynamicShadowBudget(setup.origin);
 }
 
-bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind )
+bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth )
 {
 	VPROF_BUDGET( "ShadowMapsDX12_BeginReceiverView", "Shadowmaps" );
 	if ( g_ClientLevelShutdown || g_DeviceResetPending || !PollCompletedViews() ) return false;
@@ -3897,7 +3933,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 		return Fail(nativeError[0]?nativeError:"Highres lightmaps: receiver requires READY exact native generation/mode");
 	if ( !g_TransmitReady ) return Fail(SHADOWMAP_ERR_TRANSMIT_UNAVAILABLE);
 	if ( setup.width<=0 || setup.height<=0 ) return Fail(SHADOWMAP_ERR_INVALID_METADATA);
-	CShadowViewData *data=AcquireView(setup,kind); data->receiver=setup; data->kind=kind;
+	CShadowViewData *data=AcquireView(setup,kind); data->receiver=setup; data->kind=kind; data->receiverMaxDepth=maxReceiverDepth;
 	if ( g_SelectionFrame!=(uint32)gpGlobals->framecount ) { Fail("Shadowmaps: main-view hybrid selection was not prepared before receiver views"); return AbortView(*data); }
 	data->shadowsEnabled=g_FrameShadowsEnabled;
 	// Do not mutate targets retained by in-flight packets. Reenable invalidates

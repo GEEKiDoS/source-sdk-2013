@@ -2375,7 +2375,8 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 				const bool emptyRect = ShadowValuesZero( rect, 4 );
 				const bool emptyDepth = ShadowValuesZero( depth, 4 );
 				const bool emptyMatrix = ShadowValuesZero( v.constants.cSunWorldToClip[i], 16 );
-				if ( deferred && emptyRect && emptyDepth && emptyMatrix ) continue;
+				// Wholly zero is an absent cascade: a deferred warm-up chart, or one no receiver of the view reaches.
+				if ( emptyRect && emptyDepth && emptyMatrix ) continue;
 				if ( !csmSlot ) csmSlot = rect[2];
 				const uint32 atlas = csmSlot * 2;
 				if ( !csmValid || !csmSlot || emptyMatrix || rect[2] != csmSlot || rect[3] ||
