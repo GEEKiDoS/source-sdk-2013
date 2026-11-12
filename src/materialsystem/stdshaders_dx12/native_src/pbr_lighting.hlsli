@@ -208,9 +208,24 @@ bool PBR_IsUnbakedLight( uint2 range, uint selectedLightIndex )
 //    never take the r_shadowmap_skip_radiance shortcut. Realtime-weighted and style-overflow lights stay in the loop below.
 // Every specular term also joins specularSum at its light distance (the sun at PBR_SUN_DISTANCE) for the SSR
 // occlusion payload; d.specular is unchanged by that bookkeeping.
+// World specular cap membership: the per-tile top-N view-light indices built with the view packet
+// (r_world_local_specular; cap 0 = every light, the reference). Diffuse is never gated by this.
+bool PBR_TileSpecularMember( uint4 list, uint cap, uint index )
+{
+	return cap == 0u || index == list.x || ( cap > 1u && index == list.y ) || ( cap > 2u && index == list.z ) || ( cap > 3u && index == list.w );
+}
 ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSpecularSum specularSum )
 {
 	ShadowMapDirect d = ShadowMap_NoDirect();
+#if defined( PBR_WORLD_HIGHRES ) && PBR_WORLD_HIGHRES
+	uint specCap = uint( g_ModelLocalIndices.x );
+	uint4 specList = uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF );
+	[branch] if ( specCap != 0u && r.tile.x < cShadowView1.x && r.tile.y < cShadowView1.y )
+		specList = g_ShadowTileSpecular[r.tile.y * cShadowView1.x + r.tile.x];
+#else
+	uint specCap = 0u;
+	uint4 specList = uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF );
+#endif
 	ShadowMapBakedLookup bakedLookup = (ShadowMapBakedLookup)0;
 	bakedLookup.end = 0xFFFFFFFF; // Validated entry ranges cannot reach this sentinel.
 	bool bakedLocalDirect = r.bakedLocalDirect != 0;
@@ -417,9 +432,12 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			}
 			else if ( bakedDelta ) visibility = realtimeWeight;
 			d.diffuse += radiance * ( basis * diffuseVisibility + extra * visibility );
-			float3 lightSpecular = radiance * specular * specularVisibility;
-			d.specular += lightSpecular;
-			PBR_AddSpecular( specularSum, lightSpecular, lightRange.distance );
+			[branch] if ( PBR_TileSpecularMember( specList, specCap, index ) )
+			{
+				float3 lightSpecular = radiance * specular * specularVisibility;
+				d.specular += lightSpecular;
+				PBR_AddSpecular( specularSum, lightSpecular, lightRange.distance );
+			}
 		}
 	}
 	// Baked-only specular (see above): only the receiver's live entries are visited.
@@ -434,6 +452,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				live &= live - 1u;
 				uint index = ShadowMap_UnbakedViewIndex( entry.x );
 				[branch] if ( index == 0xFFFFFFFF ) continue; // Absent from the conservative per-view selection: irrelevant.
+				[branch] if ( !PBR_TileSpecularMember( specList, specCap, index ) ) continue; // Capped specular: skipped lights keep their exact diffuse (in the carriers/main loop).
 				// Reject from the hot fields before loading attenuation/cone/radiance rows.
 				float realtimeWeight = g_ShadowLights[index].realtimeWeight;
 				float3 origin = g_ShadowLights[index].origin;

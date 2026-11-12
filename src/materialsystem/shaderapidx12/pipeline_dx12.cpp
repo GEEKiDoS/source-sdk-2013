@@ -219,7 +219,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	if ( FAILED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) ) || options.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2 )
 		return true; // Ordinary rendering does not require the lighting signature.
 	// ABI 6 adds per-draw static-prop constants/triangles without coupling model draws to lightmap pages.
-	D3D12_DESCRIPTOR_RANGE lightingRanges[2]{};
+	D3D12_DESCRIPTOR_RANGE lightingRanges[3]{};
 	lightingRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	lightingRanges[0].NumDescriptors = DX12_LIGHTING_VIEW_TABLE_COUNT;
 	lightingRanges[0].BaseShaderRegister = DX12_LIGHTING_T_LOCAL_ATLAS_FIRST;
@@ -229,8 +229,13 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	lightingRanges[1].BaseShaderRegister = DX12_LIGHTING_T_VISIBILITY_FACES;
 	lightingRanges[1].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
 	lightingRanges[1].OffsetInDescriptorsFromTableStart = DX12_LIGHTING_T_VISIBILITY_FACES;
+	lightingRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	lightingRanges[2].NumDescriptors = 1;
+	lightingRanges[2].BaseShaderRegister = DX12_LIGHTING_T_TILE_SPECULAR;
+	lightingRanges[2].RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
+	lightingRanges[2].OffsetInDescriptorsFromTableStart = DX12_LIGHTING_T_TILE_SPECULAR;
 	params[kRootLightingView].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-	params[kRootLightingView].DescriptorTable.NumDescriptorRanges = 2;
+	params[kRootLightingView].DescriptorTable.NumDescriptorRanges = 3;
 	params[kRootLightingView].DescriptorTable.pDescriptorRanges = lightingRanges;
 	params[kRootLightingView].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	params[kRootLightingViewConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;

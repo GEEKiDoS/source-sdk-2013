@@ -1114,6 +1114,15 @@ bool LightingNullTable( ID3D12Device *device, Microsoft::WRL::ComPtr<ID3D12Descr
 		buffer.Buffer.StructureByteStride = i == DX12_LIGHTING_T_LIGHTS ? sizeof( RuntimeShadowLightGpu ) : i == DX12_LIGHTING_T_TILE_RANGES ? 8 : 4;
 		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), i, stride ) );
 	}
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC buffer{};
+		buffer.Format = DXGI_FORMAT_UNKNOWN;
+		buffer.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		buffer.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		buffer.Buffer.NumElements = 1;
+		buffer.Buffer.StructureByteStride = 16;
+		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), DX12_LIGHTING_T_TILE_SPECULAR, stride ) );
+	}
 	texture.Format = DXGI_FORMAT_R32_UINT;
 	device->CreateShaderResourceView( nullptr, &texture, Offset( table->GetCPUDescriptorHandleForHeapStart(), DX12_LIGHTING_T_SUN_VISIBILITY, stride ) );
 	for ( UINT i = DX12_LIGHTING_T_VISIBILITY_FACES; i <= DX12_LIGHTING_T_PROP_MESHES; ++i )
@@ -1257,7 +1266,7 @@ struct LightingPacketDX12 final : IRefCounted
 	std::string propModelName;
 	CUtlVector<DX12ShadowTarget_t> ids;
 	CUtlVector<RuntimeShadowLightGpu> lights;
-	CUtlVector<uint32> ranges, indices;
+	CUtlVector<uint32> ranges, indices, tileSpecular;
 	CUtlVector<DX12ProjectedLightDesc> projected;
 	CUtlVector<float> skyClipPositions; // Pass: float4 clip positions of the sky entry triangles (leases[1] = sky map)
 	float skyClipBias = 0.f;
@@ -1280,8 +1289,8 @@ struct LightingViewStateDX12
 	DescriptorRangeDX12 table{};
 	D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
-	ID3D12Resource *structured[3]{};
-	uint64_t structuredOffsets[3]{};
+	ID3D12Resource *structured[4]{};
+	uint64_t structuredOffsets[4]{};
 	bool highresScope = false;
 };
 
@@ -2162,13 +2171,14 @@ void CLightingDX12::BeginView( const DX12LightingViewPacket &view )
 	m_Impl->Status( view.mapGeneration, view.viewGeneration, DX12_LIGHTING_STATUS_PENDING );
 	LightingPacketDX12 *packet = Packet( View );
 	packet->view = view;
-	packet->valid = view.localTargetCount <= DX12_SHADOW_MAX_LOCAL_PAGES && view.lightCount <= 8192 && view.tileCount <= INT_MAX / 2 && view.tileIndexCount <= INT_MAX && ( !view.localTargetCount || view.localTargets ) && ( !view.lightCount || view.lights ) && ( !view.tileCount || view.tileRanges ) && ( !view.tileIndexCount || view.tileIndices );
+	packet->valid = view.localTargetCount <= DX12_SHADOW_MAX_LOCAL_PAGES && view.lightCount <= 8192 && view.tileCount <= INT_MAX / 2 && view.tileIndexCount <= INT_MAX && ( !view.localTargetCount || view.localTargets ) && ( !view.lightCount || view.lights ) && ( !view.tileCount || view.tileRanges ) && ( !view.tileIndexCount || view.tileIndices ) && (uint64) view.tileSpecularCount == (uint64) view.tileCount * 4u && ( !view.tileSpecularCount || view.tileSpecular );
 	if ( packet->valid )
 	{
 		packet->ids.CopyArray( view.localTargets, view.localTargetCount );
 		packet->lights.CopyArray( view.lights, view.lightCount );
 		packet->ranges.CopyArray( view.tileRanges, view.tileCount * 2 );
 		packet->indices.CopyArray( view.tileIndices, view.tileIndexCount );
+		packet->tileSpecular.CopyArray( view.tileSpecular, view.tileSpecularCount );
 		packet->leases.AddToTail( static_cast<ShadowTargetDX12 *>( RetainShadowDepthTarget( view.cascadeAtlasTarget ) ) );
 		packet->leases.AddToTail( static_cast<ShadowTargetDX12 *>( RetainShadowDepthTarget( view.staticSunTarget ) ) );
 		for ( DX12ShadowTarget_t id : packet->ids ) packet->leases.AddToTail( static_cast<ShadowTargetDX12 *>( RetainShadowDepthTarget( id ) ) );
@@ -2177,6 +2187,7 @@ void CLightingDX12::BeginView( const DX12LightingViewPacket &view )
 	packet->view.lights = packet->lights.Base();
 	packet->view.tileRanges = packet->ranges.Base();
 	packet->view.tileIndices = packet->indices.Base();
+	packet->view.tileSpecular = packet->tileSpecular.Base();
 	m_Impl->Status( view.mapGeneration, view.viewGeneration, DX12_LIGHTING_STATUS_PENDING );
 	Enqueue( packet );
 }
@@ -3473,8 +3484,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 	input.propDrawConstants = s.neutralPropConstants;
 	input.propTriangles = s.neutralPropTriangles->GetGPUVirtualAddress();
 	const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-	const uint32 counts[3] = { view.lightCount, view.tileCount, view.tileIndexCount };
-	const uint32 sizes[3] = { sizeof( RuntimeShadowLightGpu ), 8, 4 };
+	const uint32 counts[4] = { view.lightCount, view.tileCount, view.tileIndexCount, view.tileCount };
+	const uint32 sizes[4] = { sizeof( RuntimeShadowLightGpu ), 8, 4, 16 };
 	if ( scope.fence != fence || scope.heap != heapGeneration )
 	{
 		scope.table = pipeline.AllocateTransientResources( DX12_LIGHTING_RESOURCE_TABLE_COUNT, fence );
@@ -3482,8 +3493,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 		if ( scope.fence != fence )
 		{
 			if ( !pipeline.UploadTransient( &view.constants, sizeof( view.constants ), 768, 256, fence, scope.constants ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
-			const void *data[3] = { scope.packet->lights.Base(), scope.packet->ranges.Base(), scope.packet->indices.Base() };
-			for ( UINT i = 0; i < 3; ++i )
+			const void *data[4] = { scope.packet->lights.Base(), scope.packet->ranges.Base(), scope.packet->indices.Base(), scope.packet->tileSpecular.Base() };
+			for ( UINT i = 0; i < 4; ++i )
 			{
 				scope.structured[i] = nullptr;
 				scope.structuredOffsets[i] = 0;
@@ -3505,6 +3516,11 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 		{
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_UNKNOWN; srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; srv.Buffer.FirstElement = scope.structuredOffsets[i] / sizes[i]; srv.Buffer.NumElements = MAX( 1u, counts[i] ); srv.Buffer.StructureByteStride = sizes[i];
 			device->CreateShaderResourceView( scope.structured[i], &srv, Offset( scope.table.cpu, DX12_LIGHTING_T_LIGHTS + i, stride ) );
+		}
+		if ( counts[3] )
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_UNKNOWN; srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; srv.Buffer.FirstElement = scope.structuredOffsets[3] / sizes[3]; srv.Buffer.NumElements = counts[3]; srv.Buffer.StructureByteStride = sizes[3];
+			device->CreateShaderResourceView( scope.structured[3], &srv, Offset( scope.table.cpu, DX12_LIGHTING_T_TILE_SPECULAR, stride ) );
 		}
 		if ( receiverVisibility && s.highresMap && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 		scope.fence = fence; scope.heap = heapGeneration;

@@ -43,7 +43,7 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_012"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_013"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -109,7 +109,8 @@ static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipCon
 #define DX12_LIGHTING_T_VISIBILITY_PAYLOAD		1032	// ByteAddressBuffer: R8, prop RGBA16F direct/style overflow, world unbaked IDs
 #define DX12_LIGHTING_T_PROP_MESHES				1033	// StructuredBuffer<uint4>: entries/count/vertices/baked-direct flags
 #define DX12_LIGHTING_T_PROP_TRIANGLES			1034	// root StructuredBuffer<DX12StaticPropTriangleGpu>
-#define DX12_LIGHTING_RESOURCE_TABLE_COUNT		1034	// t1034 is a separate per-draw root SRV
+#define DX12_LIGHTING_T_TILE_SPECULAR			1035	// StructuredBuffer<uint4>: per-tile world-specular top-4 view-light indices
+#define DX12_LIGHTING_RESOURCE_TABLE_COUNT		1036	// t1034 is a separate per-draw root SRV
 #define DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE	0x1
 #define DX12_SHADOW_VISIBILITY_UNSHADOWED		0x2	// positive weight, zero face rects: no atlas sample
 #define DX12_LIGHTING_S_COMPARISON				0		// linear, LESS_EQUAL, clamp
@@ -354,6 +355,8 @@ struct DX12LightingViewPacket
 	uint32	tileCount;					// tileCountX * tileCountY
 	const uint32 *tileIndices;			// CSR prefix, then ascending GPU indices for every light with realtimeWeight > 0
 	uint32	tileIndexCount;				// includes resident tail; cSunIdentity.zw describes it (zero/zero allowed on ordinary views)
+	const uint32 *tileSpecular;			// 4 * tileCount view-light indices (0xFFFFFFFF padding): per-tile top-4 unshadowed-radiance lights for world specular
+	uint32	tileSpecularCount;			// == 4 * tileCount when tileSpecular is set, else 0
 };
 
 //-----------------------------------------------------------------------------

@@ -972,7 +972,7 @@ public:
 		spotShadowNear=r_shadowmap_spot_near.GetFloat();
 		spotShadowNear=ShadowMap_IsFiniteFloat(spotShadowNear) ? clamp(spotShadowNear,0.1f,64.0f) : 4.0f;
 		realtimeLocals.RemoveAll(); lightRanks.RemoveAll();
-		lights.RemoveAll(); targets.RemoveAll(); ranges.RemoveAll(); indices.RemoveAll(); rects.RemoveAll(); casters.RemoveAll(); volumes.RemoveAll(); relevant.RemoveAll();
+		lights.RemoveAll(); targets.RemoveAll(); ranges.RemoveAll(); indices.RemoveAll(); tileSpecular.RemoveAll(); rects.RemoveAll(); casters.RemoveAll(); volumes.RemoveAll(); relevant.RemoveAll();
 		casterRanges.RemoveAll(); casterIndices.RemoveAll(); drawCandidateFirst=-1; drawCandidateCount=0;
 		suppressedBeams.RemoveAll();
 	}
@@ -991,7 +991,7 @@ public:
 	CUtlVector<RuntimeShadowLightGpu> lights;
 	CUtlVector<DX12ShadowTarget_t> targets, leasedTargets;
 	CUtlVector<IRefCounted *> leases;
-	CUtlVector<uint32> ranges, indices, tileRunIndices;
+	CUtlVector<uint32> ranges, indices, tileRunIndices, tileSpecular;
 	CUtlVector<ShadowTileRect_t> rects;
 	CUtlVector<ShadowMapSceneCaster_t> casters;
 	CUtlVector<ShadowChartCaster_t> localFaceCasters;
@@ -2911,6 +2911,36 @@ ShadowTileRect_t ProjectInfluence( const LocalLight_t &local, const CShadowViewD
 	rect.x1=MIN((int)floorf(maxX/16)+1,tilesX); rect.y1=MIN((int)floorf(maxY/16)+1,tilesY);
 	return rect;
 }
+// Unshadowed radiance (luminance) of one view light at a world point: the scalar twin of the shader's
+// StandardLightRadianceInRange (attenuation/cap, spot cone, fade, radius), used only to rank a tile's
+// specular candidates. Diffuse is never ranked or dropped.
+float TileSpecularScore( const RuntimeShadowLightGpu &light, const Vector &point )
+{
+	Vector offset( light.origin[0] - point.x, light.origin[1] - point.y, light.origin[2] - point.z );
+	const float distance = offset.Length();
+	if ( distance <= 0.0f || ( light.attenuationRadius > 0.0f && distance > light.attenuationRadius ) ) return 0.0f;
+	const float clamped = MAX( distance, 1.0f );
+	const float evaluation = light.capDist > 0.0f ? MIN( clamped, light.capDist ) : clamped;
+	const float denominator = light.constantAttn + evaluation * light.linearAttn + evaluation * evaluation * light.quadraticAttn;
+	float falloff = denominator > 0.0f ? 1.0f / denominator : 0.0f;
+	if ( light.type == DX12_SHADOW_LIGHT_SPOT )
+	{
+		const float coneDot = -( offset.x * light.travelDirection[0] + offset.y * light.travelDirection[1] + offset.z * light.travelDirection[2] ) / distance;
+		float cone = 1.0f;
+		if ( coneDot <= light.innerConeCos )
+		{
+			cone = clamp( ( coneDot - light.outerConeCos ) / ( light.innerConeCos - light.outerConeCos ), 0.0f, 1.0f );
+			if ( light.exponent != 0.0f && light.exponent != 1.0f ) cone = powf( cone, light.exponent );
+		}
+		falloff = coneDot <= light.outerConeCos ? 0.0f : falloff * coneDot * cone;
+	}
+	if ( light.fadeEnd > light.fadeStart )
+	{
+		const float t = 1.0f - clamp( ( clamped - light.fadeStart ) / ( light.fadeEnd - light.fadeStart ), 0.0f, 1.0f );
+		falloff *= t * t * t * ( t * ( t * 6.0f - 15.0f ) + 10.0f );
+	}
+	return ( light.radiance[0] * 0.2126f + light.radiance[1] * 0.7152f + light.radiance[2] * 0.0722f ) * falloff;
+}
 bool BuildTiles( CShadowViewData &data, const VMatrix &clip, const Vector &forward )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::BuildTiles", "Shadowmaps" );
@@ -2972,8 +3002,56 @@ bool BuildTiles( CShadowViewData &data, const VMatrix &clip, const Vector &forwa
 		}
 	}
 	data.packet.constants.cShadowView1[0]=x; data.packet.constants.cShadowView1[1]=y;
+	// Per-tile world-specular top-4 (view-light indices, 0xFFFFFFFF padding): ranked by unshadowed
+	// radiance at the point of the tile-centre ray closest to each light. Built once per view packet;
+	// the shader only tests membership, diffuse is unaffected. See r_world_local_specular.
+	data.tileSpecular.SetCount( (int) tileCount * 4 );
+	{
+		VPROF_BUDGET( "ShadowMapsDX12::BuildTiles.Specular", "Shadowmaps" );
+		VMatrix inverse;
+		const bool haveInverse = MatrixInverseGeneral( clip, inverse );
+		const Vector eye = data.receiver.origin;
+		for ( int ty = 0; ty < y; ++ty )
+		{
+			for ( int tx = 0; tx < x; ++tx )
+			{
+				uint32 *out = data.tileSpecular.Base() + 4 * ( ty * x + tx );
+				out[0] = out[1] = out[2] = out[3] = 0xFFFFFFFFu;
+				if ( !haveInverse ) continue;
+				const float ndcX = ( ( tx + 0.5f ) / x ) * 2.0f - 1.0f;
+				const float ndcY = 1.0f - ( ( ty + 0.5f ) / y ) * 2.0f;
+				Vector a = Unproject( inverse, ndcX, ndcY, 0.0f ), b = Unproject( inverse, ndcX, ndcY, 1.0f );
+				Vector dir = b - a;
+				if ( dir.NormalizeInPlace() <= 0.0f ) continue;
+				float best[4] = {};
+				const uint32 first = data.ranges[2 * ( ty * x + tx )], count = data.ranges[2 * ( ty * x + tx ) + 1];
+				for ( uint32 k = 0; k < count; ++k )
+				{
+					const uint32 index = data.indices[first + k];
+					const RuntimeShadowLightGpu &light = data.lights[index];
+					const Vector origin( light.origin[0], light.origin[1], light.origin[2] );
+					const float t = MAX( DotProduct( origin - eye, dir ), 0.0f );
+					const float score = TileSpecularScore( light, eye + dir * t );
+					if ( score <= 0.0f ) continue;
+					float carryScore = score;
+					uint32 carryIndex = index;
+					for ( int slot = 0; slot < 4; ++slot )
+					{
+						if ( carryScore > best[slot] )
+						{
+							const float ts = best[slot];
+							const uint32 ti = out[slot];
+							best[slot] = carryScore; out[slot] = carryIndex;
+							carryScore = ts; carryIndex = ti;
+						}
+					}
+				}
+			}
+		}
+	}
 	data.packet.tileCount=(uint32)tileCount; data.packet.tileRanges=data.ranges.Base();
 	data.packet.tileIndices=data.indices.Base(); data.packet.tileIndexCount=data.indices.Count();
+	data.packet.tileSpecular=data.tileSpecular.Base(); data.packet.tileSpecularCount=(uint32)data.tileSpecular.Count();
 	data.stats.csrEntries=data.indices.Count(); return true;
 }
 
@@ -4117,6 +4195,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	Assert(constants.cSunIdentity[3]==data->stats.positiveWeightLocals);
 	// Appending may have reallocated; no packet pointer may keep the CSR's old base.
 	data->packet.tileIndices=data->indices.Base(); data->packet.tileIndexCount=data->indices.Count();
+	data->packet.tileSpecular=data->tileSpecular.Base(); data->packet.tileSpecularCount=(uint32)data->tileSpecular.Count();
 	DetailObjectSystem()->GetShadowReport(data->detailReport);
 	PublishSuppressedBeams(*data);
 	if ( constants.cShadowView0[3]==DX12_SHADOW_DEBUG_CASTER_BOUNDS )

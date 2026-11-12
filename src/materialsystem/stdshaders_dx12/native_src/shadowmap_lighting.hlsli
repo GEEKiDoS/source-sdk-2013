@@ -17,6 +17,7 @@ Texture2D<float> g_ShadowStaticSun : register(t1025, space2);
 StructuredBuffer<RuntimeShadowLightGpu> g_ShadowLights : register(t1026, space2);
 StructuredBuffer<uint2> g_ShadowTileRanges : register(t1027, space2);
 StructuredBuffer<uint> g_ShadowTileIndices : register(t1028, space2);
+StructuredBuffer<uint4> g_ShadowTileSpecular : register(t1035, space2);
 Texture2D<uint> g_ShadowSunVisibility : register(t1029, space2);
 // Immutable map-level visibility, independent of RGB pages and model lightmaps.
 StructuredBuffer<uint4> g_ShadowVisibilityFaces : register(t1030, space2);

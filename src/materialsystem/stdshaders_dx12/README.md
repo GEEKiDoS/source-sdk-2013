@@ -745,6 +745,18 @@ realtime-shadow branch that reads its matrices/rects. Same fields, same math, sa
 Static-sun copy-on-write also omits preservation only when a pending clean rebuild overwrites
 the entire replacement target before receiver use; cascade preservation remains unchanged.
 
+World local-light specular is capped per tile by `r_world_local_specular` (archived, default 4,
+range 1-4; 0 = every light, the reference). While building each view's tile CSR, the client ranks
+every light of a tile by its unshadowed radiance (attenuation/cap, spot cone and fade, as in
+`TileSpecularScore`) at the point of the tile-centre ray closest to the light, and publishes the
+top-4 view-light indices per tile (`tileSpecular` in the `_013` view packet, `g_ShadowTileSpecular`
+t1035 space2). `PBR_GatherDirect` evaluates the local-light specular lobe only for lights in the
+receiver tile's list; diffuse (including every baked delta) is evaluated for all lights exactly as
+before, and skipped specular is dropped, not folded. Selection is per tile on the CPU, never
+per-pixel in the shader (a per-pixel candidate pool measured 3-5 ms *slower* from register
+spills). Interface `ShaderAPIDX12Lighting_013` adds the packet field and table slot; both shader
+validators (`shader_precache_dx12`, `nativeshaderpack_dx12`) know the t1035 binding.
+
 `mat_pbr_showgbuffer 1|2|3` (cheat) shows normals, F0 or roughness of the opaque scene.
 
 ### PBR G-buffer contract

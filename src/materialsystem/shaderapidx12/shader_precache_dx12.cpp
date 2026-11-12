@@ -97,7 +97,7 @@ static bool ValidateLightingStructuredType( ID3D12ShaderReflection *reflection, 
 	if ( binding.BindPoint == DX12_LIGHTING_T_PROP_TRIANGLES )
 		return MatchStructuredMembers( elementType, type, "DX12StaticPropTriangleGpu", dx12native::kDX12StaticPropTriangleGpuMembers, UINT( ARRAYSIZE( dx12native::kDX12StaticPropTriangleGpuMembers ) ) );
 	const UINT columns = binding.BindPoint == DX12_LIGHTING_T_TILE_RANGES ? 2 :
-		binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_FACES || binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_ENTRIES || binding.BindPoint == DX12_LIGHTING_T_PROP_MESHES ? 4 : 1;
+		binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_FACES || binding.BindPoint == DX12_LIGHTING_T_VISIBILITY_ENTRIES || binding.BindPoint == DX12_LIGHTING_T_PROP_MESHES || binding.BindPoint == DX12_LIGHTING_T_TILE_SPECULAR ? 4 : 1;
 	return type.Type == D3D_SVT_UINT && type.Rows == 1 && type.Columns == columns &&
 	       type.Class == ( columns > 1 ? D3D_SVC_VECTOR : D3D_SVC_SCALAR );
 }
@@ -390,7 +390,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 			const bool comparison = ( binding.uFlags & D3D_SIF_COMPARISON_SAMPLER ) != 0;
 			const bool shadow = comparison && binding.BindPoint == DX12_LIGHTING_S_COMPARISON && !V_strcmp( binding.Name, "g_ShadowCmpSampler" );
 			valid = valid && binding.BindCount == 1 && shadow;
-			slot = 13;
+			slot = 15;
 		}
 		else
 		{
@@ -412,6 +412,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 				{ "g_ShadowVisibilityPayload", DX12_LIGHTING_T_VISIBILITY_PAYLOAD, 1, 0 },
 				{ "g_ShadowVisibilityPropMeshes", DX12_LIGHTING_T_PROP_MESHES, 1, 16 },
 				{ "g_ShadowPropTriangles", DX12_LIGHTING_T_PROP_TRIANGLES, 1, sizeof(DX12StaticPropTriangleGpu) },
+				{ "g_ShadowTileSpecular", DX12_LIGHTING_T_TILE_SPECULAR, 1, 16 },
 			};
 			const Resource *resource = nullptr;
 			for ( unsigned r = 0; r < sizeof( resources ) / sizeof( *resources ); ++r )

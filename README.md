@@ -122,6 +122,13 @@ the sun and lightmapped world are unchanged. `0` restores the full per-pixel lis
 The ambient fold is an approximation (like retail model lighting), not additional
 direct light stored in the dense ambient probes.
 
+World surfaces cap local-light specular per screen tile with
+`r_world_local_specular 4` by default: each view ranks a tile's lights by
+unshadowed radiance and only the strongest four contribute specular (retail
+L4D2 world surfaces have no per-light specular, only envmaps). Diffuse lighting
+is evaluated for every light exactly as before; `0` restores per-light specular
+for all lights.
+
 L4D2's **Options > Video > Graphics (DX12)...** opens a native options screen
 with Display, Lighting, Post-processing and Frame generation sections. It uses
 the mounted Video screen's hybrid buttons, flyouts, sliders, fonts and footer;
