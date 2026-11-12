@@ -307,6 +307,29 @@ CTransitionStatsPanel *GetTransitionStatsPanel()
 {
 	return gViewPortInterface ? dynamic_cast< CTransitionStatsPanel * >( gViewPortInterface->FindPanelByName( "transition_stats" ) ) : NULL;
 }
+bool IsTransitionStatsPanelVisible()
+{
+	CTransitionStatsPanel *panel = GetTransitionStatsPanel();
+	return panel && panel->IsVisible();
+}
+void MoveTransitionStatsPanelToLoadingParent( vgui::Panel *parent )
+{
+	// Retail GameUI does this in ShowLoadingBackgroundDialog: while the
+	// engine loads, only the GameUI panel tree is painted, so the stats
+	// panel must live there or the default loading image replaces it.
+	CTransitionStatsPanel *panel = GetTransitionStatsPanel();
+	if ( panel && parent ) { panel->SetParent( parent->GetVPanel() ); panel->MoveToFront(); }
+}
+void HideTransitionStatsPanel()
+{
+	CTransitionStatsPanel *panel = GetTransitionStatsPanel();
+	if ( panel ) { panel->RestoreLoadingParent(); panel->ShowPanel( false ); }
+}
+void CTransitionStatsPanel::RestoreLoadingParent()
+{
+	vgui::Panel *parent = m_PreviousParent.Get();
+	if ( parent && GetParent() != parent ) SetParent( parent->GetVPanel() );
+}
 CTransitionStatsPanel::CTransitionStatsPanel( IViewPort *viewport ) :
 	BaseClass( viewport, "transition_stats" ), m_flHideTime( 0.0f ), m_bFreezeFrame( false ),
 	m_pWorkingAnim( NULL ), m_pLoadingText( NULL ),
@@ -477,8 +500,7 @@ void CTransitionStatsPanel::OnDisconnectedFromGame() { ShowPanel( false ); }
 void CTransitionStatsPanel::OnLoadedIntoGame() { ShowPanel( false ); }
 void CTransitionStatsPanel::OnHideAsLoadingPanel()
 {
-	vgui::Panel *parent = m_PreviousParent.Get();
-	SetParent( parent ? parent->GetVPanel() : 0 );
+	RestoreLoadingParent();
 }
 
 class SimpleMouseoverButton : public vgui::Button

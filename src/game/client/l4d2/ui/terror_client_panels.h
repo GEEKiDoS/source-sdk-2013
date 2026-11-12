@@ -12,7 +12,7 @@
 class CSurvivorHighlightStatsPanel;
 class CTipPanel;
 class CVersusModeResults;
-namespace vgui { class ImagePanel; class Label; }
+namespace vgui { class Panel; class ImagePanel; class Label; }
 
 // Client 2EA100. Frame and viewport ownership remain separate, as in retail.
 class CTerrorViewportPanel : public vgui::Frame, public IViewPortPanel
@@ -50,6 +50,7 @@ public:
 	virtual bool HasInputElements() OVERRIDE { return false; }
 	virtual void ShowPanel( bool state ) OVERRIDE;
 	bool IsLoadingPanel() const { return m_bLoadingPanel; } // 2EB190.
+	void RestoreLoadingParent();
 	bool AdvanceLoadingAnimation(); // 2EB2B0, wall-clock, not an OnThink timer.
 	void AdvanceLoadingStats(); // 2EB1F0, called by actual loading-progress owner.
 protected:
@@ -116,6 +117,9 @@ private:
 };
 
 CTransitionStatsPanel *GetTransitionStatsPanel(); // 2EB040.
+bool IsTransitionStatsPanelVisible();
+void MoveTransitionStatsPanelToLoadingParent( vgui::Panel *parent );
+void HideTransitionStatsPanel();
 void SetTerrorLoadingScreenParent( vgui::Panel *parent );
 void UpdateTerrorLoadingScreenProgress( float fraction, const char *statusText );
 void SetTerrorLoadingScreenVisible( bool state );

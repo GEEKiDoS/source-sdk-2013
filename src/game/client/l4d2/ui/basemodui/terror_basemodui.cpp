@@ -367,6 +367,7 @@ public:
 		if ( !error ) return;
 		m_bLevelLoading = false;
 		::SetTerrorLoadingScreenVisible( false );
+		HideTransitionStatsPanel();
 		ShowRootMenu();
 		SetVisible( true );
 	}
@@ -379,6 +380,7 @@ protected:
 			m_bLoadingFinished = false;
 			m_bLevelLoading = false;
 			::SetTerrorLoadingScreenVisible( false );
+			HideTransitionStatsPanel();
 			CloseWindows();
 			SetVisible( false );
 		}
@@ -495,6 +497,17 @@ void CL4DBasePanel::OnCommand( const char *command )
 		m_bLevelLoading = true;
 		m_bLoadingFinished = false;
 		CloseWindows();
+		// Retail serves an in-campaign transition from CTransitionStatsPanel,
+		// registered with GameUI as the loading background. Only a load with
+		// no such panel gets the poster screen. Like GameUI's
+		// ShowLoadingBackgroundDialog, move the panel into this tree so it
+		// keeps painting while the engine loads.
+		if ( IsTransitionStatsPanelVisible() )
+		{
+			MoveTransitionStatsPanelToLoadingParent( this );
+			SetVisible( true );
+			return;
+		}
 		::SetTerrorLoadingScreenParent( this );
 		::PrepareTerrorLoadingScreen();
 		::SetTerrorLoadingScreenVisible( true );
