@@ -761,7 +761,8 @@ void CReSTIRVulkanDevice::Impl::ReallocateForReconstruct()
 	receiverPageReservoirs = fullReservoirs;
 	AllocateHeaps();
 	RefreshDescriptorSet();
-	Msg( "VRAD ReSTIR paging: final-lightmap heap rebound after transport pages were released\n" );
+	if ( verbose )
+		Msg( "VRAD ReSTIR paging: final-lightmap heap rebound after transport pages were released\n" );
 	push.flags = hardware ? RESTIR_PC_HARDWARE_RT : 0;
 	memset( push.pageBase, 0, sizeof( push.pageBase ) );
 }

@@ -34,6 +34,10 @@ static double SubmitDispatchChunks( CReSTIRVulkanDevice::Impl &gpu, ReSTIRPipeli
 	const unsigned int safetyLimit = pipeline == RESTIR_PIPE_SPATIAL ? RESTIR_SPATIAL_SAFE_ITEMS :
 		pipeline == RESTIR_PIPE_CANDIDATES ? RESTIR_CANDIDATE_SAFE_ITEMS : RESTIR_SUBMIT_MAX_ITEMS;
 	unsigned int chunkItems = MIN( MIN( RESTIR_SUBMIT_INITIAL_ITEMS, safetyLimit ), itemLimit );
+	// The start/end pair spans every chunk of this call; it owns the pool from here until it is read below. Per-face
+	// reconstruction issues thousands of calls, and nothing else resets the 64-entry pool between them.
+	if ( pMilliseconds && !verbose )
+		gpu.ResetQueries();
 	while ( first < firstBase + count )
 	{
 		const unsigned int chunk = MIN( chunkItems, firstBase + count - first );
@@ -206,8 +210,9 @@ static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<unsi
 		for ( int p = 0; p < gpu.pages.Count(); ++p )
 		{
 			const ReSTIRPage &page = gpu.pages[p];
-			Msg( "VRAD ReSTIR: visibility page=%d/%d light=%d luxels=%u\n",
-				p + 1, gpu.pages.Count(), light, page.luxelCount );
+			if ( verbose )
+				Msg( "VRAD ReSTIR: visibility page=%d/%d light=%d luxels=%u\n",
+					p + 1, gpu.pages.Count(), light, page.luxelCount );
 			UploadTransportPage( gpu, page );
 			pageOutput.SetCount( page.luxelCount );
 			gpu.push.flags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE;
@@ -364,9 +369,10 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	for ( int p = 0; p < gpu.pages.Count(); ++p )
 	{
 		const ReSTIRPage &page = gpu.pages[p];
-		Msg( "VRAD ReSTIR: transport page=%d/%d faces=%u samples=%u luxels=%u reservoirs=%u outputs=%u\n",
-			p + 1, gpu.pages.Count(), page.faceCount, page.sampleCount, page.luxelCount,
-			page.reservoirCount, page.outputCount );
+		if ( verbose )
+			Msg( "VRAD ReSTIR: transport page=%d/%d faces=%u samples=%u luxels=%u reservoirs=%u outputs=%u\n",
+				p + 1, gpu.pages.Count(), page.faceCount, page.sampleCount, page.luxelCount,
+				page.reservoirCount, page.outputCount );
 		UploadTransportPage( gpu, page );
 		gpu.push.flags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE;
 		gpu.push.pageBase[0] = page.firstReservoir;
@@ -393,9 +399,10 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 		for ( int p = 0; p < gpu.pages.Count(); ++p )
 		{
 			const ReSTIRPage &page = gpu.pages[p];
-			Msg( "VRAD ReSTIR: transport page=%d/%d faces=%u samples=%u luxels=%u reservoirs=%u outputs=%u iteration=%d\n",
-				p + 1, gpu.pages.Count(), page.faceCount, page.sampleCount, page.luxelCount,
-				page.reservoirCount, page.outputCount, iteration );
+			if ( verbose )
+				Msg( "VRAD ReSTIR: transport page=%d/%d faces=%u samples=%u luxels=%u reservoirs=%u outputs=%u iteration=%d\n",
+					p + 1, gpu.pages.Count(), page.faceCount, page.sampleCount, page.luxelCount,
+					page.reservoirCount, page.outputCount, iteration );
 			UploadTransportPage( gpu, page );
 			gpu.push.flags = iterationFlags | ( shadowSplit ? RESTIR_PC_RECEIVER_PAGE : 0 );
 			gpu.push.pageBase[0] = page.firstReservoir;
@@ -447,7 +454,6 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 		gpu.reservoirBindings[0] = gpu.reservoirBindings[2];
 		gpu.reservoirBindings[2] = previousBinding;
 		gpu.WriteReservoirDescriptors();
-		gpu.ResetQueries();
 		gpu.ReportProgress( "bake", ++progressDone, progressTotal );
 	}
 	CUtlVector<ReSTIRPage> reconstructionPages;
