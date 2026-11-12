@@ -222,9 +222,13 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	uint4 specList = uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF );
 	[branch] if ( specCap != 0u && r.tile.x < cShadowView1.x && r.tile.y < cShadowView1.y )
 		specList = g_ShadowTileSpecular[r.tile.y * cShadowView1.x + r.tile.x];
+	// r_world_baked_specular 0 (retail L4D2 world surfaces: envmaps only) drops the baked-only lights' specular;
+	// realtime-weighted lights keep theirs in the main loop.
+	bool bakedSpecular = g_ModelLocalIndices.y != 0.0;
 #else
 	uint specCap = 0u;
 	uint4 specList = uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF );
+	bool bakedSpecular = true;
 #endif
 	ShadowMapBakedLookup bakedLookup = (ShadowMapBakedLookup)0;
 	bakedLookup.end = 0xFFFFFFFF; // Validated entry ranges cannot reach this sentinel.
@@ -254,7 +258,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			entryFirst = bakedLookup.cursor;
 			entryCount = bakedLookup.end - bakedLookup.cursor;
 		}
-		firstLive = PBR_LiveEntries( entryFirst, entryCount );
+		[branch] if ( bakedSpecular ) firstLive = PBR_LiveEntries( entryFirst, entryCount );
 	}
 	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0 )
 	{
@@ -441,7 +445,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		}
 	}
 	// Baked-only specular (see above): only the receiver's live entries are visited.
-	[branch] if ( bakedLocalDirect && !modelSelection )
+	[branch] if ( bakedLocalDirect && !modelSelection && bakedSpecular )
 	{
 		[loop] for ( uint chunk = 0; chunk < entryCount; chunk += PBR_LIVE_BATCH )
 		{

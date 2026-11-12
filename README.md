@@ -129,6 +129,14 @@ L4D2 world surfaces have no per-light specular, only envmaps). Diffuse lighting
 is evaluated for every light exactly as before; `0` restores per-light specular
 for all lights.
 
+`r_world_baked_specular` (archived, default 0) controls per-light specular from
+baked-only (non-realtime) local lights on enhanced world surfaces. At 0 world
+surfaces match retail L4D2, which has no per-light specular on world surfaces,
+only envmaps; realtime-shadowed lights keep their specular and every light keeps
+its exact diffuse. At 1 the baked-only lights add specular again (still capped by
+`r_world_local_specular`). On c1m1 with a GTX 1050, 0 cut opaque world time from
+17.9 to 10.2 ms in the hotel corridor and from 9.8 to 7.7 ms on the roof.
+
 `r_csm_cascades` (archived, 1-4, default 2) sets how many dynamic sun cascades
 are rendered. Fewer cascades keep the nearest splits of `r_csm_distance` and
 end the dynamic range at the last kept split; beyond it receivers fade to the

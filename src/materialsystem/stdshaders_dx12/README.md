@@ -757,6 +757,15 @@ per-pixel in the shader (a per-pixel candidate pool measured 3-5 ms *slower* fro
 spills). Interface `ShaderAPIDX12Lighting_013` adds the packet field and table slot; both shader
 validators (`shader_precache_dx12`, `nativeshaderpack_dx12`) know the t1035 binding.
 
+`r_world_baked_specular` (archived, default 0) reaches world draws as c40.y. At 0
+`PBR_GatherDirect` skips the baked-only specular loop (and its first live-mask load) on baked-direct
+world receivers: baked-only lights keep their exact diffuse in the stored carriers, realtime-weighted
+lights keep their specular in the main loop. This matches retail L4D2 world surfaces (envmaps only).
+Even capped to four members, the loop walks every live receiver entry and resolves each one's view
+index by binary search, so in light-dense rooms it costs ~7-8 ms on a GTX 1050 (c1m1 corridor). A
+member-driven variant (binary search per tile member instead of per entry) was measured and rejected:
+-1.2 ms in the corridor, +3 ms on the roof.
+
 `mat_pbr_showgbuffer 1|2|3` (cheat) shows normals, F0 or roughness of the opaque scene.
 
 ### PBR G-buffer contract

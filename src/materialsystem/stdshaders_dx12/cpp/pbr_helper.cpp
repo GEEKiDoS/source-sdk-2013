@@ -43,6 +43,8 @@ ConVar r_model_local_lights( "r_model_local_lights", "4", FCVAR_ARCHIVE,
 	"Enhanced model per-pixel local lights (1-4); 0 evaluates every local light", true, 0, true, 4 );
 ConVar r_world_local_specular( "r_world_local_specular", "4", FCVAR_ARCHIVE,
 	"Enhanced world per-pixel local-light specular cap (1-4 strongest per tile); 0 evaluates specular for every local light. Diffuse is never capped", true, 0, true, 4 );
+ConVar r_world_baked_specular( "r_world_baked_specular", "0", FCVAR_ARCHIVE,
+	"Enhanced world surfaces add per-light specular from baked-only (non-realtime) local lights. 0 matches retail L4D2 world surfaces (envmap reflections only); realtime lights keep their specular", true, 0, true, 1 );
 
 bool DX12PbrOverride()
 {
@@ -914,7 +916,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 		}
 		else
 		{
-			const float specularCap[4] = { float( r_world_local_specular.GetInt() ), 0, 0, 0 };
+			const float specularCap[4] = { float( r_world_local_specular.GetInt() ), r_world_baked_specular.GetBool() ? 1.0f : 0.0f, 0, 0 };
 			DynamicCmdsOut.SetPixelShaderConstant( 40, specularCap, 1 );
 			DECLARE_DYNAMIC_VERTEX_SHADER( pbr_world_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, bWaterFog );

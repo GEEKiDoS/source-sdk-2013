@@ -62,7 +62,8 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	// L4D2 detail blend mode (world/model).
 	float4 g_L4D2World; // @legacy ps:c39
 	// Per-draw enhanced model local-light selection and folded directional irradiance; world draws
-	// reuse .x as the r_world_local_specular cap (the two draw classes never share a shader).
+	// reuse .x as the r_world_local_specular cap and .y as r_world_baked_specular (the two draw
+	// classes never share a shader).
 	float4 g_ModelLocalIndices; // @legacy ps:c40
 	float4 g_ModelLocalAmbient[6]; // @legacy ps:c41
 };
