@@ -30,6 +30,9 @@
 #include "vgui_controls/ProgressBar.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterial.h"
+#include "materialsystem/IMaterialVar.h"
+#include "materialsystem/itexture.h"
+#include "vtf/vtf.h"
 #include <float.h>
 #include "tier0/memdbgon.h"
 
@@ -330,8 +333,47 @@ void CTransitionStatsPanel::RestoreLoadingParent()
 	vgui::Panel *parent = m_PreviousParent.Get();
 	if ( parent && GetParent() != parent ) SetParent( parent->GetVPanel() );
 }
+
+#if defined( L4D2 )
+// The engine reloads all materials on every server spawn
+// (IMaterialSystem::ReloadMaterials), which releases and recreates every
+// render target, _rt_SmallFB0 included. Render targets have no persistence
+// contract across that cycle, so the frozen backdrop is held in a
+// procedural texture instead: its regenerator re-supplies the captured
+// pixels whenever the texture is reconstructed.
+class CTransitionFreezeRegenerator : public ITextureRegenerator
+{
+public:
+	CTransitionFreezeRegenerator() : m_Width( 0 ), m_Height( 0 ) {}
+	void SetPixels( int width, int height, const unsigned char *pixels )
+	{
+		m_Width = width; m_Height = height;
+		m_Pixels.SetCount( width * height * 4 );
+		memcpy( m_Pixels.Base(), pixels, width * height * 4 );
+	}
+	void ClearPixels() { m_Width = m_Height = 0; m_Pixels.RemoveAll(); }
+	bool HasPixels() const { return m_Width > 0 && m_Pixels.Count() > 0; }
+	virtual void RegenerateTextureBits( ITexture *pTexture, IVTFTexture *pVTFTexture, Rect_t *pSubRect ) OVERRIDE
+	{
+		if ( !m_Pixels.Count() || !pVTFTexture ) return;
+		unsigned char *dst = pVTFTexture->ImageData( 0, 0, 0 );
+		if ( !dst ) return;
+		const int rowBytes = pVTFTexture->RowSizeInBytes( 0 );
+		const int srcRow = m_Width * 4;
+		for ( int y = 0; y < m_Height; ++y )
+			memcpy( dst + y * rowBytes, m_Pixels.Base() + y * srcRow, MIN( rowBytes, srcRow ) );
+	}
+	virtual void Release() OVERRIDE {}
+private:
+	int m_Width, m_Height;
+	CUtlVector< unsigned char > m_Pixels;
+};
+#endif
 CTransitionStatsPanel::CTransitionStatsPanel( IViewPort *viewport ) :
 	BaseClass( viewport, "transition_stats" ), m_flHideTime( 0.0f ), m_bFreezeFrame( false ),
+#if defined( L4D2 )
+	m_pFreezeRegenerator( NULL ),
+#endif
 	m_pWorkingAnim( NULL ), m_pLoadingText( NULL ),
 	m_pVersusResults( NULL ), m_bUpdatedVersusResults( false ), m_bLoadingPanel( false ), m_iNormalStatsY( -1 )
 {
@@ -343,8 +385,15 @@ CTransitionStatsPanel::CTransitionStatsPanel( IViewPort *viewport ) :
 	m_pHighlightPanel->MoveToFront();
 	m_pTipPanel = new CTipPanel( this );
 	new CTerrorLoadingImagePanel( this, "WorkingAnim" );
+#if defined( L4D2 )
+	if ( materials )
+	{
+		ITexture *small = materials->FindTexture( "_rt_SmallFB0", TEXTURE_GROUP_RENDER_TARGET );
+		if ( small && !small->IsError() ) EnsureFreezeTexture( small->GetActualWidth(), small->GetActualHeight() );
+	}
+#endif
 	KeyValues *material = new KeyValues( "UnlitGeneric" );
-	material->SetString( "$basetexture", "_rt_SmallFB0" );
+	material->SetString( "$basetexture", "TransitionFreezeFrame" );
 	material->SetInt( "$nocull", 1 ); material->SetInt( "$nofog", 1 ); material->SetInt( "$ignorez", 1 );
 	material->SetInt( "$linearwrite", 1 ); material->SetInt( "$gammacolorread", 1 );
 	m_FreezeFrame.Init( "FreezeFrame_FullScreen", material );
@@ -352,7 +401,75 @@ CTransitionStatsPanel::CTransitionStatsPanel( IViewPort *viewport ) :
 	LoadControlSettings( "Resource/UI/TransitionStatsSurvivor.res" );
 	vgui::ivgui()->AddTickSignal( GetVPanel() );
 }
-CTransitionStatsPanel::~CTransitionStatsPanel() { vgui::ivgui()->RemoveTickSignal( GetVPanel() ); SetPostProcessingSuppressed( false ); }
+CTransitionStatsPanel::~CTransitionStatsPanel()
+{
+	vgui::ivgui()->RemoveTickSignal( GetVPanel() ); SetPostProcessingSuppressed( false );
+#if defined( L4D2 )
+	ShutdownFreezeTexture();
+	delete m_pFreezeRegenerator; m_pFreezeRegenerator = NULL;
+#endif
+}
+#if defined( L4D2 )
+bool CTransitionStatsPanel::EnsureFreezeTexture( int w, int h )
+{
+	if ( !materials || w <= 0 || h <= 0 ) return false;
+	if ( !m_pFreezeRegenerator ) m_pFreezeRegenerator = new CTransitionFreezeRegenerator;
+	if ( m_FreezeTexture.IsValid() && ( m_FreezeTexture->GetActualWidth() != w || m_FreezeTexture->GetActualHeight() != h ) )
+		ShutdownFreezeTexture();
+	if ( !m_FreezeTexture.IsValid() )
+	{
+		ITexture *texture = materials->CreateProceduralTexture( "TransitionFreezeFrame", TEXTURE_GROUP_VGUI, w, h,
+			IMAGE_FORMAT_BGRA8888, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD );
+		if ( !texture ) return false;
+		m_FreezeTexture.Init( texture );
+		texture->SetTextureRegenerator( m_pFreezeRegenerator );
+	}
+	return true;
+}
+void CTransitionStatsPanel::ShutdownFreezeTexture()
+{
+	if ( !m_FreezeTexture.IsValid() ) return;
+	m_FreezeTexture->SetTextureRegenerator( NULL );
+	m_FreezeTexture.Shutdown( true );
+}
+void CTransitionStatsPanel::CaptureFreezeFrame()
+{
+	if ( !materials ) return;
+	ITexture *small = materials->FindTexture( "_rt_SmallFB0", TEXTURE_GROUP_RENDER_TARGET );
+	if ( !small || small->IsError() ) return;
+	const int w = small->GetActualWidth(), h = small->GetActualHeight();
+	if ( w <= 0 || h <= 0 ) return;
+	if ( !EnsureFreezeTexture( w, h ) ) return;
+	if ( m_pFreezeRegenerator->HasPixels() ) return;
+	CUtlVector< unsigned char > pixels;
+	pixels.SetCount( w * h * 4 );
+	{
+		CMatRenderContextPtr context( materials );
+		context->PushRenderTargetAndViewport();
+		context->SetRenderTarget( small );
+		context->Viewport( 0, 0, w, h );
+		context->ReadPixels( 0, 0, w, h, pixels.Base(), IMAGE_FORMAT_BGRA8888 );
+		context->PopRenderTargetAndViewport();
+	}
+	m_pFreezeRegenerator->SetPixels( w, h, pixels.Base() );
+	m_FreezeTexture->Download();
+	IMaterialVar *var = m_FreezeFrame->FindVar( "$basetexture", NULL, false );
+	if ( var ) { var->SetTextureValue( m_FreezeTexture ); m_FreezeFrame->RecomputeStateSnapshots(); }
+}
+void CTransitionStatsPanel::ReleaseFreezeFrame()
+{
+	// The texture itself lives until panel shutdown so the backdrop
+	// material's $basetexture name always resolves to it; only the captured
+	// pixels are dropped, and the var is pointed back at _rt_SmallFB0.
+	if ( m_FreezeTexture.IsValid() )
+	{
+		IMaterialVar *var = m_FreezeFrame->FindVar( "$basetexture", NULL, false );
+		ITexture *small = materials ? materials->FindTexture( "_rt_SmallFB0", TEXTURE_GROUP_RENDER_TARGET ) : NULL;
+		if ( var && small ) { var->SetTextureValue( small ); m_FreezeFrame->RecomputeStateSnapshots(); }
+	}
+	if ( m_pFreezeRegenerator ) m_pFreezeRegenerator->ClearPixels();
+}
+#endif
 void CTransitionStatsPanel::SetPostProcessingSuppressed( bool state )
 {
 	s_bSuppressTransitionPostProcessing = state;
@@ -403,6 +520,9 @@ void CTransitionStatsPanel::ShowPanel( bool state )
 			Terror_RenderTransitionBlur( 1.0f, 0.0f );
 			view->FreezeFrame( 0.0f );
 		}
+#if defined( L4D2 )
+		CaptureFreezeFrame();
+#endif
 		if ( GetParent() ) m_PreviousParent = GetParent();
 		if ( m_bFreezeFrame ) SetPostProcessingSuppressed( true );
 		PrepareForShow(); m_pHighlightPanel->CapturePlayers(); m_pHighlightPanel->AdvanceCategory();
@@ -415,6 +535,9 @@ void CTransitionStatsPanel::ShowPanel( bool state )
 	else if ( !engine->IsDrawingLoadingImage() )
 	{
 		SetPostProcessingSuppressed( false ); m_bFreezeFrame = false;
+#if defined( L4D2 )
+		ReleaseFreezeFrame();
+#endif
 		SetTransitionLoadingBackground( false ); m_bLoadingPanel = false;
 		BaseClass::ShowPanel( state );
 	}
@@ -480,6 +603,11 @@ void CTransitionStatsPanel::OnTick()
 	// Synchronous engine loads may not tick VGUI: timing is NOT parity.
 	if ( !engine->IsDrawingLoadingImage() ) return;
 	AdvanceLoadingAnimation();
+#if defined( L4D2 )
+	// A materials reload releases every texture's hardware copy; reconstruct
+	// the procedural backdrop through its regenerator before it is painted.
+	if ( m_FreezeTexture.IsValid() && m_pFreezeRegenerator && m_pFreezeRegenerator->HasPixels() ) m_FreezeTexture->Download();
+#endif
 	if ( !s_bHighlightClockStarted ) { s_bHighlightClockStarted = true; s_flLastHighlightAdvance = (float)Plat_FloatTime(); }
 	bool humanInfected = false;
 	for ( int i = 1; i <= gpGlobals->maxClients; ++i )

@@ -12,6 +12,7 @@
 class CSurvivorHighlightStatsPanel;
 class CTipPanel;
 class CVersusModeResults;
+class CTransitionFreezeRegenerator;
 namespace vgui { class Panel; class ImagePanel; class Label; }
 
 // Client 2EA100. Frame and viewport ownership remain separate, as in retail.
@@ -65,7 +66,17 @@ protected:
 private:
 	void RefreshNextMap(); // 2EB5E0.
 	void SetPostProcessingSuppressed( bool state ); // 2EB1A0.
+#if defined( L4D2 )
+	void CaptureFreezeFrame();
+	void ReleaseFreezeFrame();
+	bool EnsureFreezeTexture( int w, int h );
+	void ShutdownFreezeTexture();
+#endif
 	CMaterialReference m_FreezeFrame;
+#if defined( L4D2 )
+	CTextureReference m_FreezeTexture;
+	CTransitionFreezeRegenerator *m_pFreezeRegenerator;
+#endif
 	float m_flHideTime;
 	bool m_bFreezeFrame;
 	vgui::ImagePanel *m_pWorkingAnim;
