@@ -48,6 +48,7 @@ ConVar r_shadowmap_enable( "r_shadowmap_enable", "1", FCVAR_ARCHIVE, "Enable run
 ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Chart-resident local-light cap: lights in front of the main camera first, then PVS-eligible lights behind it, nearest first within each; 0 has no budget limit; invalid values use 4; sun excluded" );
 ConVar r_shadowmap_realtime_fade_seconds( "r_shadowmap_realtime_fade_seconds", "0.5", FCVAR_ARCHIVE, "Real-time seconds for a full hybrid handoff: parallel fade-out then fade-in, half each; 0 switches immediately; invalid values use 0.5" );
 ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade receiver distance", true, 128, true, 32768 );
+ConVar r_csm_cascades( "r_csm_cascades", "2", FCVAR_ARCHIVE, "Dynamic sun cascades (1-4). Fewer cascades keep the nearest splits of r_csm_distance; receivers beyond them use the static sun map, which has no dynamic casters", true, 1, true, 4 );
 ConVar r_shadowmap_resolution( "r_shadowmap_resolution", "1", FCVAR_ARCHIVE, "Shadow map resolution: 0 low, 1 medium, 2 high, 3 ultra. High matches the original 2048 cascade slot, 512 local slot and 4096 static sun", true, 0, true, 3 );
 ConVar r_shadowmap_filter( "r_shadowmap_filter", "1", FCVAR_ARCHIVE, "Sun shadows: 0 four-tap PCF, 1 bounded contact-hardening PCSS; local lights always use four-tap PCF", true, 0, true, 1 );
 ConVar r_shadowmap_skip_radiance( "r_shadowmap_skip_radiance", "0.0009765625", FCVAR_ARCHIVE, "Skip local shadow sampling below this total unshadowed direct RGB contribution; retain all light energy, 0 samples exactly", true, 0.0f, false, 0.0f );
@@ -2712,8 +2713,17 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	const int cascadeOwner=data.kind==SHADOWMAP_VIEW_VIEWMODEL ? 1 : 0;
 	SunCascadeTargets_t &cascade=g_CascadeTargets[cascadeOwner];
 	float splits[5],blend[3],farDepth=MIN(data.receiver.zFar,r_csm_distance.GetFloat());
+	const bool haveSplits=ShadowMapScene_CascadeSplits(data.receiver.zNear,farDepth,splits,blend);
+	// Fewer cascades keep the near splits unchanged and end the dynamic range at the last kept split; the shader's
+	// existing coverage fade (0.9-1.0 of the far distance) then hands receivers over to the static sun map.
+	const int cascadeCount=r_csm_cascades.GetInt();
+	if ( haveSplits && cascadeCount<4 )
+	{
+		farDepth=splits[cascadeCount];
+		for ( int i=cascadeCount-1;i<3;++i ) blend[i]=0;
+	}
 	constants.cSunTravel[3]=farDepth; constants.cSunBasisX[3]=0.9f*farDepth;
-	if ( !ShadowMapScene_CascadeSplits(data.receiver.zNear,farDepth,splits,blend) )
+	if ( !haveSplits )
 	{
 		for ( int i=0;i<4;++i )
 		{
@@ -2727,7 +2737,7 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	if ( !CreateSunTarget(cascade.clean,kCascadeTargetNames[cascadeOwner][0],g_ShadowRes.atlas) || !CreateSunTarget(cascade.work,kCascadeTargetNames[cascadeOwner][1],g_ShadowRes.atlas) )
 		return Fail(SHADOWMAP_ERR_RESIDENCY);
 	bool anyCascade=false;
-	for ( int i=0;i<4;++i )
+	for ( int i=0;i<cascadeCount;++i )
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::BuildSun.Cascade", "Shadowmaps" );
 		float nearSlice=splits[i]-(i?blend[i-1]:0), farSlice=splits[i+1]+(i<3?blend[i]:0);

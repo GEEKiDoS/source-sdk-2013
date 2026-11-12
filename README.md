@@ -129,6 +129,14 @@ L4D2 world surfaces have no per-light specular, only envmaps). Diffuse lighting
 is evaluated for every light exactly as before; `0` restores per-light specular
 for all lights.
 
+`r_csm_cascades` (archived, 1-4, default 2) sets how many dynamic sun cascades
+are rendered. Fewer cascades keep the nearest splits of `r_csm_distance` and
+end the dynamic range at the last kept split; beyond it receivers fade to the
+cached whole-map static sun map, which holds no dynamic casters (characters and
+moving props cast no sun shadow there). With the default 2 cascades the dynamic
+range is about 900 units at the default 4096 distance (about 420 with 1); 4
+restores the full cascade range.
+
 L4D2's **Options > Video > Graphics (DX12)...** opens a native options screen
 with Display, Lighting, Post-processing and Frame generation sections. It uses
 the mounted Video screen's hybrid buttons, flyouts, sliders, fonts and footer;
