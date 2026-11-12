@@ -245,7 +245,13 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
     r.style0BaseRGB = base.rgb;
     bool bakedSun = bakedPose && (ownerRecord.z & 8) != 0;
     r.sun = bakedSun ? saturate(base.a) : 1;
+#if PBR_WORLD_HIGHRES
+    // Dilation is saturated to [0,1], so max(dilation,1) is exactly 1 without its four page samples.
+    r.sunDilated = 1;
+    [branch] if (bakedSun && r.sun != 1) r.sunDilated = max(HighresLightmap_SunDilated(baseTile, r.q), r.sun);
+#else
     r.sunDilated = bakedSun ? max(HighresLightmap_SunDilated(baseTile, r.q), r.sun) : 1;
+#endif
     return r;
 }
 float3 HighresLightmap_RGB(HlightReceiver r, uint plane)

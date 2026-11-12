@@ -28,8 +28,10 @@ struct alignas(16) PBRMaterialPS {
     float g_L4D2Controls[4]{};
     float g_L4D2Model[4]{};
     float g_L4D2World[4]{};
-    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 400;
-    static constexpr uint64_t kLayoutHash = 0x87880f0b8fb14c8eull;
+    float g_ModelLocalIndices[4]{};
+    float g_ModelLocalAmbient[6][4]{};
+    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 512;
+    static constexpr uint64_t kLayoutHash = 0x0e046613a7831a6eull;
     static const dx12native::NativeCBufferLegacyMapDX12 &LegacyMap() {
         static const dx12native::NativeCBufferLegacyEntryDX12 entries[] = {
             {0, 16, 1, 0, 0, 0, 0},
@@ -56,8 +58,10 @@ struct alignas(16) PBRMaterialPS {
             {352, 16, 1, 0, 0, 0, 37},
             {368, 16, 1, 0, 0, 0, 38},
             {384, 16, 1, 0, 0, 0, 39},
+            {400, 16, 1, 0, 0, 0, 40},
+            {416, 16, 6, 16, 0, 0, 41},
         };
-        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 24, entries };
+        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 26, entries };
         return map;
     }
 };
@@ -85,5 +89,7 @@ static_assert(offsetof(PBRMaterialPS, g_L4D2PhongRanges) == 336, "HLSL member of
 static_assert(offsetof(PBRMaterialPS, g_L4D2Controls) == 352, "HLSL member offset");
 static_assert(offsetof(PBRMaterialPS, g_L4D2Model) == 368, "HLSL member offset");
 static_assert(offsetof(PBRMaterialPS, g_L4D2World) == 384, "HLSL member offset");
-static_assert(sizeof(PBRMaterialPS) == 400, "HLSL cbuffer size");
+static_assert(offsetof(PBRMaterialPS, g_ModelLocalIndices) == 400, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_ModelLocalAmbient) == 416, "HLSL member offset");
+static_assert(sizeof(PBRMaterialPS) == 512, "HLSL cbuffer size");
 } // namespace dx12cb

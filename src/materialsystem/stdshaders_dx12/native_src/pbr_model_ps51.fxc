@@ -29,6 +29,7 @@
 #endif
 #undef TANGENT
 #include "common_ps_fxc.h"
+#define PBR_MODEL_LOCAL_SELECTION 1
 #include "pbr_lighting.hlsli"
 #if ENHANCED
 #include "pbr_probe.hlsli"
@@ -238,6 +239,14 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if ENHANCED
 	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
 	result += direct.diffuse + direct.specular;
+	if ( g_ModelLocalAmbient[0].w != 0.0 && direct.bakedLocalDirect == 0 )
+	{
+		float3 n2 = N * N;
+		float3 folded = n2.x * ( N.x >= 0.0 ? g_ModelLocalAmbient[0].rgb : g_ModelLocalAmbient[1].rgb ) +
+			n2.y * ( N.y >= 0.0 ? g_ModelLocalAmbient[2].rgb : g_ModelLocalAmbient[3].rgb ) +
+			n2.z * ( N.z >= 0.0 ? g_ModelLocalAmbient[4].rgb : g_ModelLocalAmbient[5].rgb );
+		result += s.diffuseColor * s.ao * folded;
+	}
 #endif
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );
 	if ( int( g_L4D2World.x + 0.5 ) == 5 )

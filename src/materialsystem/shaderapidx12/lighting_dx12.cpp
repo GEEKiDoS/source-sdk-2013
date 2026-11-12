@@ -2080,6 +2080,82 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	s.activeMap.store( map.mapGeneration );
 	s.statuses[status].state = DX12_LIGHTING_STATUS_READY;
 }
+void CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
+{
+	memset( rows, 0, 7 * 4 * sizeof( float ) );
+	for ( int i = 0; i < 4; ++i ) rows[0][i] = -1.0f;
+	Impl &s = *m_Impl;
+	if ( limit <= 0 || !s.views.Count() ) return;
+	limit = MIN( limit, 4 );
+	rows[1][3] = 1.0f;
+	const auto &lights = s.views.Tail()->packet->lights;
+	const Vector &origin = s.api->m_LightingOrigin;
+	float scores[4] = {};
+	auto sample = [&]( const RuntimeShadowLightGpu &light, Vector &direction ) -> Vector
+	{
+		direction.Init( light.origin[0] - origin.x, light.origin[1] - origin.y, light.origin[2] - origin.z );
+		const float distance = direction.NormalizeInPlace();
+		if ( distance <= 0.0f || ( light.attenuationRadius > 0.0f && distance > light.attenuationRadius ) ||
+			( light.fadeEnd > light.fadeStart && distance > light.fadeEnd ) ) return vec3_origin;
+		const float clamped = MAX( distance, 1.0f );
+		const float d = light.capDist > 0.0f ? MIN( clamped, light.capDist ) : clamped;
+		const float denominator = light.constantAttn + d * light.linearAttn + d * d * light.quadraticAttn;
+		float falloff = denominator > 0.0f ? 1.0f / denominator : 0.0f;
+		if ( light.type == DX12_SHADOW_LIGHT_SPOT )
+		{
+			const float coneDot = -( direction.x * light.travelDirection[0] + direction.y * light.travelDirection[1] + direction.z * light.travelDirection[2] );
+			float cone = 1.0f;
+			if ( coneDot <= light.innerConeCos )
+			{
+				cone = clamp( ( coneDot - light.outerConeCos ) / ( light.innerConeCos - light.outerConeCos ), 0.0f, 1.0f );
+				if ( light.exponent != 0.0f && light.exponent != 1.0f ) cone = powf( cone, light.exponent );
+			}
+			falloff = coneDot <= light.outerConeCos ? 0.0f : falloff * coneDot * cone;
+		}
+		if ( light.fadeEnd > light.fadeStart )
+		{
+			const float t = 1.0f - clamp( ( clamped - light.fadeStart ) / ( light.fadeEnd - light.fadeStart ), 0.0f, 1.0f );
+			falloff *= t * t * t * ( t * ( t * 6.0f - 15.0f ) + 10.0f );
+		}
+		return Vector( light.radiance[0], light.radiance[1], light.radiance[2] ) * falloff;
+	};
+	for ( int i = 0; i < lights.Count(); ++i )
+	{
+		Vector direction;
+		const Vector rgb = sample( lights[i], direction );
+		const float energy = rgb.x * 0.2126f + rgb.y * 0.7152f + rgb.z * 0.0722f;
+		if ( energy <= 0.0f ) continue;
+		// Resident realtime lights precede static-only lights, preserving moving shadow receivers.
+		const bool realtime = lights[i].realtimeWeight > 0.0f;
+		int slot = 0;
+		while ( slot < limit && rows[0][slot] >= 0.0f )
+		{
+			const bool previousRealtime = lights[int( rows[0][slot] )].realtimeWeight > 0.0f;
+			if ( ( realtime && !previousRealtime ) || ( realtime == previousRealtime && energy > scores[slot] ) ) break;
+			++slot;
+		}
+		if ( slot == limit ) continue;
+		for ( int j = limit - 1; j > slot; --j ) { scores[j] = scores[j-1]; rows[0][j] = rows[0][j-1]; }
+		scores[slot] = energy;
+		rows[0][slot] = float( i );
+	}
+	for ( int i = 0; i < lights.Count(); ++i )
+	{
+		bool selected = false;
+		for ( int slot = 0; slot < limit; ++slot ) selected |= rows[0][slot] == float( i );
+		if ( selected ) continue;
+		Vector direction;
+		const Vector rgb = sample( lights[i], direction );
+		// Retail's six-axis cosine projection, evaluated once at the lighting origin.
+		for ( int axis = 0; axis < 3; ++axis )
+		{
+			const int face = 1 + axis * 2 + ( direction[axis] < 0.0f ? 1 : 0 );
+			for ( int channel = 0; channel < 3; ++channel )
+				rows[face][channel] += rgb[channel] * fabsf( direction[axis] );
+		}
+	}
+}
+
 void CLightingDX12::BeginView( const DX12LightingViewPacket &view )
 {
 	// Acceptance establishes Pending before queue replay; unknown/consumed IDs are not pending work.

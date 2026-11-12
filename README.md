@@ -114,6 +114,14 @@ Motion blur on both renderers is the SDK/DX12 `DoImageSpaceMotionBlur` (DX12
 velocity blur, SDK camera blur on DX9); the former Terror motion blur and its
 shader were removed.
 
+On enhanced DX12 maps, PBR models and viewmodels use `r_model_local_lights 4`
+by default. The backend selects local lights at the engine's per-draw lighting
+origin, prioritizing realtime lights, and folds the remainder into a six-face
+ambient cube. Selected lights retain their baked visibility and runtime shadows;
+the sun and lightmapped world are unchanged. `0` restores the full per-pixel list.
+The ambient fold is an approximation (like retail model lighting), not additional
+direct light stored in the dense ambient probes.
+
 L4D2's **Options > Video > Graphics (DX12)...** opens a native options screen
 with Display, Lighting, Post-processing and Frame generation sections. It uses
 the mounted Video screen's hybrid buttons, flyouts, sliders, fonts and footer;

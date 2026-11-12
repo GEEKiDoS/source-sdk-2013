@@ -38,7 +38,7 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     member=cScreenViewport type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenControl type=19 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=PBRMaterialPS space=1 register=b1 size=400 layoutHash=0x87880f0b8fb14c8e material
+  cbuffer=PBRMaterialPS space=1 register=b1 size=512 layoutHash=0x0e046613a7831a6e material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_SpecularColor type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
@@ -63,6 +63,8 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     member=g_L4D2Controls type=3 class=1 offset=352 size=16 elements=0 arrayStride=0 legacy=ps:c37
     member=g_L4D2Model type=3 class=1 offset=368 size=16 elements=0 arrayStride=0 legacy=ps:c38
     member=g_L4D2World type=3 class=1 offset=384 size=16 elements=0 arrayStride=0 legacy=ps:c39
+    member=g_ModelLocalIndices type=3 class=1 offset=400 size=16 elements=0 arrayStride=0 legacy=ps:c40
+    member=g_ModelLocalAmbient type=3 class=1 offset=416 size=96 elements=6 arrayStride=16 legacy=ps:c41
     legacyEntry=0,16,1,0,0,0,0
     legacyEntry=16,16,1,0,0,0,1
     legacyEntry=32,16,1,0,0,0,2
@@ -87,4 +89,6 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     legacyEntry=352,16,1,0,0,0,37
     legacyEntry=368,16,1,0,0,0,38
     legacyEntry=384,16,1,0,0,0,39
+    legacyEntry=400,16,1,0,0,0,40
+    legacyEntry=416,16,6,16,0,0,41
     bridge=WriteNativeCBuffer(api, block)

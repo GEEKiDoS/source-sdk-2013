@@ -39,6 +39,9 @@ ConVar mat_pbr_override( "mat_pbr_override", "1", FCVAR_ARCHIVE,
 ConVar r_shadowmap_filter_quality( "r_shadowmap_filter_quality", "1", FCVAR_ARCHIVE,
 	"Soft (PCSS) sun shadow sample budget, blocker search / filter taps: 0 low 8/8, 1 medium 8/16, 2 high 16/32, 3 extra 32/64", true, 0, true, 3 );
 
+ConVar r_model_local_lights( "r_model_local_lights", "4", FCVAR_ARCHIVE,
+	"Enhanced model per-pixel local lights (1-4); 0 evaluates every local light", true, 0, true, 4 );
+
 bool DX12PbrOverride()
 {
 	IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
@@ -852,7 +855,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 	}
 	DYNAMIC_STATE
 	{
-		CCommandBufferBuilder< CFixedCommandStorageBuffer< 600 > > DynamicCmdsOut;
+		CCommandBufferBuilder< CFixedCommandStorageBuffer< 750 > > DynamicCmdsOut;
 		DynamicCmdsOut.Call( pContextData->m_SemiStaticCmdsOut.Base() );
 		const PBRSamplers &sm = pContextData->m_bModel ? kModelSamplers : kWorldSamplers;
 		if ( pContextData->m_bEnvmap )
@@ -883,6 +886,12 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			const float selfIllumTintAndLights[4] = { pContextData->m_SelfIllumTint[0], pContextData->m_SelfIllumTint[1],
 				pContextData->m_SelfIllumTint[2], float( lightState.m_nNumLights ) };
 			DynamicCmdsOut.SetPixelShaderConstant( 10, selfIllumTintAndLights, 1 );
+			if ( bEnhanced )
+			{
+				float modelLighting[7][4] = {};
+				DX12ShadowmapLighting()->ModelLocalLighting( r_model_local_lights.GetInt(), modelLighting );
+				DynamicCmdsOut.SetPixelShaderConstant( 40, modelLighting[0], 7 );
+			}
 
 			pShader->SetHWMorphVertexShaderState( VERTEX_SHADER_SHADER_SPECIFIC_CONST_10, VERTEX_SHADER_SHADER_SPECIFIC_CONST_11, SHADER_VERTEXTEXTURE_SAMPLER0 );
 

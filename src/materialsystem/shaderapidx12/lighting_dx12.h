@@ -86,6 +86,7 @@ public:
 	void SetProjectedLightTextures( const ShaderAPITextureHandle_t *cookies, const ShaderAPITextureHandle_t *depths, int count ) override;
 	void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) override;
 	void GetSunVisibilityStats( uint32 mapGeneration, DX12LightingSunVisibilityStats &stats ) override;
+	void ModelLocalLighting( int limit, float rows[7][4] ) override;
 	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );
 	void ForgetSunReceiverTexture( ShaderAPITextureHandle_t texture );
 	bool PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDrawDX12 &draw,

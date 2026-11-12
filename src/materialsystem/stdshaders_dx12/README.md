@@ -719,6 +719,32 @@ come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the probe
 unchanged. `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
 parallax; `-case probegpu` the probe decode.
 
+Enhanced PBR models use the archived `r_model_local_lights` budget (default 4, range 1–4; 0 selects
+the original full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` runs on the recording
+owner using `CShaderAPIDX12::m_LightingOrigin` and the current retained view packet, with fixed-size
+stack storage and no per-draw allocation. It ranks lights by linear irradiance after the authored
+radius, distance falloff, cap, fade and spot cone; positive realtime weights take precedence.
+Material registers c40–c46 carry four packet indices and six ambient-cube RGB rows. The selected
+lights still use the normal BRDF, baked visibility and realtime shadows. The sun, projected lights
+and world lightmapped receivers are unchanged. Other direct lights are projected onto the six cube
+axes at the draw origin (unshadowed retail-style approximation), then squared-normal weights add
+that cube to dynamic models' probe/engine ambient. Exact static-prop receivers retain their baked
+direct carrier instead, avoiding a second diffuse contribution. Dense probes themselves contain
+leaf ambient, not the omitted ordinary point/spot direct light.
+
+The highres PBR world route avoids native-lightmap samples whose RGB is immediately replaced
+by `.hlight` RGB; native-only owners keep the same gradients and native scale. Fully sunlit
+receivers (`sun == 1`) skip dilation samples because the saturated dilation cannot raise that
+bound. World baked-visibility interpolation is cached once per receiver, and an exactly-zero
+dense visibility sample rejects baked-only specular before attenuation/GGX evaluation. A bumped
+lightmap plane whose weight is exactly zero is not fetched (zero times finite RGB is zero).
+These do not change lighting quality. In `PBR_GatherDirect`, standard-light radiance is evaluated
+from individual `g_ShadowLights` member reads (`PBR_RadianceInRangeFields`) instead of
+materialising the 608-byte light per pixel; the full light is loaded only inside the
+realtime-shadow branch that reads its matrices/rects. Same fields, same math, same order.
+Static-sun copy-on-write also omits preservation only when a pending clean rebuild overwrites
+the entire replacement target before receiver use; cascade preservation remains unchanged.
+
 `mat_pbr_showgbuffer 1|2|3` (cheat) shows normals, F0 or roughness of the opaque scene.
 
 ### PBR G-buffer contract

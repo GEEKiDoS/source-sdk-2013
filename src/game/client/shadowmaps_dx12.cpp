@@ -2030,7 +2030,12 @@ bool WritableSunTarget( CShadowViewData &data, DX12ShadowTarget_t &work, int siz
 	}
 	if ( !next ) return false;
 	const DX12ShadowTarget_t previous=work;
-	CopyDepthRect(data,next,previous,0,0,size);
+	// The single-cache caller is the whole static-sun target. A pending clean
+	// rebuild overwrites every texel in RenderChart: either RenderDepth clears
+	// work directly, or its rebuilt clean target is restored over all of work.
+	// Preserve the old pixels for every other case (especially cascade atlases).
+	const bool overwriteWholeTarget=count==1 && caches[0].pending && !caches[0].pendingReady && !caches[0].pendingClean;
+	if ( !overwriteWholeTarget ) CopyDepthRect(data,next,previous,0,0,size);
 	if ( g_Error[0] ) { DestroyTarget(next); return false; }
 	for ( int c=0;c<count;++c )
 	{

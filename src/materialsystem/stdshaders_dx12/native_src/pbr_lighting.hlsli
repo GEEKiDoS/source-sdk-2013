@@ -86,11 +86,37 @@ float3 PBR_AmbientCube( float3 n )
 }
 
 #if defined( DX12_SHADOWMAPS )
-// A world face's entry range: the face directory entry, no sampling state (ShadowMap_BeginBakedLookup's face path).
-uint2 PBR_FaceEntries( ShadowMapReceiver r )
+// StandardLightRadianceInRange evaluated from individual g_ShadowLights member reads: the full
+// RuntimeShadowLightGpu is 608 bytes (six worldToClip matrices and face rects the radiance term never
+// touches), and materialising it per light per pixel is pure load traffic. Same fields, same math, same order.
+float3 PBR_RadianceInRangeFields( uint index, float3 offset, float distance, out float3 receiverToLight )
 {
-	uint4 face = g_ShadowVisibilityFaces[r.bakedFaceId];
-	return uint2( face.x, face.y );
+	receiverToLight = offset / distance;
+	float clampedDistance = max( distance, 1.0 );
+	float capDist = g_ShadowLights[index].capDist;
+	float evaluationDistance = capDist > 0.0 ? min( clampedDistance, capDist ) : clampedDistance;
+	float denominator = g_ShadowLights[index].constantAttn + evaluationDistance * g_ShadowLights[index].linearAttn + evaluationDistance * evaluationDistance * g_ShadowLights[index].quadraticAttn;
+	float falloff = denominator > 0.0 ? 1.0 / denominator : 0.0;
+	[branch] if ( g_ShadowLights[index].type == DX12_SHADOW_LIGHT_SPOT )
+	{
+		float coneDot = -dot( receiverToLight, g_ShadowLights[index].travelDirection );
+		float cone = 1.0;
+		if ( coneDot <= g_ShadowLights[index].innerConeCos )
+		{
+			cone = saturate( ( coneDot - g_ShadowLights[index].outerConeCos ) / ( g_ShadowLights[index].innerConeCos - g_ShadowLights[index].outerConeCos ) );
+			float exponent = g_ShadowLights[index].exponent;
+			if ( exponent != 0.0 && exponent != 1.0 ) cone = pow( cone, exponent );
+		}
+		falloff = coneDot <= g_ShadowLights[index].outerConeCos ? 0.0 : falloff * coneDot * cone;
+	}
+	float fadeStart = g_ShadowLights[index].fadeStart;
+	float fadeEnd = g_ShadowLights[index].fadeEnd;
+	[branch] if ( fadeEnd > fadeStart )
+	{
+		float t = 1.0 - saturate( ( clampedDistance - fadeStart ) / ( fadeEnd - fadeStart ) );
+		falloff *= t * t * t * ( t * ( t * 6.0 - 15.0 ) + 10.0 );
+	}
+	return g_ShadowLights[index].radiance * falloff;
 }
 
 // Baked visibility of a receiver entry: the stored constant, or the bilinear (world face) / barycentric (prop) R8 payload
@@ -111,19 +137,12 @@ float PBR_EntryVisibility( ShadowMapReceiver r, ShadowMapBakedLookup lookup, uin
 		}
 		else
 		{
-			uint4 face = g_ShadowVisibilityFaces[r.bakedFaceId];
-			uint2 last = face.zw - 1u;
-			float2 pixel = saturate( r.bakedQ ) * float2( last );
-			uint2 p0 = uint2( floor( pixel ) );
-			uint2 p1 = min( p0 + 1u, last );
-			float2 fraction = pixel - float2( p0 );
-			uint2 rows = uint2( p0.y, p1.y ) * face.z;
 			float4 taps = float4(
-				ShadowMap_VisibilityByte( entry.z + rows.x + p0.x ),
-				ShadowMap_VisibilityByte( entry.z + rows.x + p1.x ),
-				ShadowMap_VisibilityByte( entry.z + rows.y + p0.x ),
-				ShadowMap_VisibilityByte( entry.z + rows.y + p1.x ) );
-			visibility = lerp( lerp( taps.x, taps.y, fraction.x ), lerp( taps.z, taps.w, fraction.x ), fraction.y );
+				ShadowMap_VisibilityByte( entry.z + lookup.samples.x ),
+				ShadowMap_VisibilityByte( entry.z + lookup.samples.y ),
+				ShadowMap_VisibilityByte( entry.z + lookup.samples.z ),
+				ShadowMap_VisibilityByte( entry.z + lookup.samples.w ) );
+			visibility = lerp( lerp( taps.x, taps.y, lookup.fraction.x ), lerp( taps.z, taps.w, lookup.fraction.x ), lookup.fraction.y );
 		}
 	}
 	return visibility;
@@ -135,19 +154,10 @@ float PBR_BakedVisibility( ShadowMapReceiver r, inout ShadowMapBakedLookup looku
 {
 	float visibility = 1.0;
 	uint first = 0, end = 0;
-	[branch] if ( r.bakedPropPrimitive != 0xFFFFFFFF )
+	[branch] if ( ShadowMap_BeginBakedLookup( r, lookup ) )
 	{
-		[branch] if ( ShadowMap_BeginBakedLookup( r, lookup ) )
-		{
-			first = lookup.cursor;
-			end = lookup.end;
-		}
-	}
-	else
-	{
-		uint2 face = PBR_FaceEntries( r );
-		first = face.x;
-		end = face.x + face.y;
+		first = lookup.cursor;
+		end = lookup.end;
 	}
 	uint last = end;
 	[loop] while ( first < end )
@@ -225,9 +235,9 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		}
 		else
 		{
-			uint2 face = PBR_FaceEntries( r );
-			entryFirst = face.x;
-			entryCount = face.y;
+			ShadowMap_BeginBakedLookup( r, bakedLookup );
+			entryFirst = bakedLookup.cursor;
+			entryCount = bakedLookup.end - bakedLookup.cursor;
 		}
 		firstLive = PBR_LiveEntries( entryFirst, entryCount );
 	}
@@ -277,10 +287,16 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	uint2 range;
 	[branch] if ( bakedLocalDirect ) range = cSunIdentity.zw;
 	else range = ShadowMap_TileRange( r );
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+	bool modelSelection = g_ModelLocalAmbient[0].w != 0.0;
+	if ( modelSelection ) range = uint2( 0, 4 );
+#else
+	bool modelSelection = false;
+#endif
 	uint lowestId = 0xFFFFFFFF;
 	uint unbakedCursor = 0;
 	uint nextUnbaked = 0xFFFFFFFF;
-	bool hasUnbaked = bakedLocalDirect && unbakedLocalRange.y != 0;
+	bool hasUnbaked = !modelSelection && bakedLocalDirect && unbakedLocalRange.y != 0;
 	// Empty lists retain the resident-only path: no raw-list loads or searches.
 	[loop] for ( uint i = 0; i < range.y
 		|| ( hasUnbaked && ( unbakedCursor < unbakedLocalRange.y || nextUnbaked != 0xFFFFFFFF ) )
@@ -288,6 +304,16 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	{
 		uint index;
 		bool unbaked = false;
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+		if ( modelSelection )
+		{
+			int selected = int( g_ModelLocalIndices[i++] );
+			if ( selected < 0 ) continue;
+			index = uint( selected );
+			unbaked = !bakedLocalDirect || PBR_IsUnbakedLight( unbakedLocalRange, g_ShadowLights[index].bakedLightIndex );
+		}
+		else
+#endif
 		[branch] if ( hasUnbaked )
 		{
 			// Resolve the next present fallback once, retaining it while resident
@@ -321,14 +347,14 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		// The radius/fade test needs only the hot position/range rows; rejected lights never fetch the full header.
 		ShadowMapLightRange lightRange;
 		[branch] if ( !ShadowMap_LightInRange( index, r.positionWS, lightRange ) ) continue;
-		RuntimeShadowLightGpu light = g_ShadowLights[index];
-		light.origin = lightRange.origin;
-		light.attenuationRadius = lightRange.attenuationRadius;
-		light.fadeStart = lightRange.fade.x;
-		light.fadeEnd = lightRange.fade.y;
-		bool bakedDelta = bakedLocalDirect && !unbaked && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
+		// Only the member fields are loaded here; the 608-byte light (shadow matrices/rects) is materialised
+		// lazily inside the realtime-shadow branch, the only place that reads it.
+		uint visibilityFlags = g_ShadowLights[index].visibilityFlags;
+		float realtimeWeight = g_ShadowLights[index].realtimeWeight;
+		uint bakedLightIndex = g_ShadowLights[index].bakedLightIndex;
+		bool bakedDelta = bakedLocalDirect && !unbaked && ( visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
 		float3 L;
-		float3 radiance = ShadowMap_StandardLightRadianceInRange( light, lightRange.offset, lightRange.distance, L );
+		float3 radiance = PBR_RadianceInRangeFields( index, lightRange.offset, lightRange.distance, L );
 		[branch] if ( !any( radiance != 0.0 ) )
 			continue;
 		// Light-only lobes: the stored basis and subsurface extras for deltas, the Burley term otherwise. A branch, not a
@@ -349,22 +375,27 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			float specularVisibility = 1.0;
 			// Bound diffuse + specular visibility error: diffuse deltas scale with w, specular does not. A skipped delta
 			// is zero (both endpoints use V=1); skipped specular keeps the unshadowed stand-in.
-			float3 contribution = radiance * ( ( PBR_Max3( basis ) + PBR_Max3( extra ) ) * ( bakedDelta ? light.realtimeWeight : 1.0 ) + PBR_Max3( specular ) );
+			float3 contribution = radiance * ( ( PBR_Max3( basis ) + PBR_Max3( extra ) ) * ( bakedDelta ? realtimeWeight : 1.0 ) + PBR_Max3( specular ) );
 			bool sampleShadow = cSunBasisY.w <= 0.0 ||
 				max( contribution.r, max( contribution.g, contribution.b ) ) > cSunBasisY.w;
 			[branch] if ( sampleShadow )
 			{
 				float bakedVisibility = 1.0;
 				// Full hybrid skips baked loads at w=1; baked direct must subtract Vbaked even then.
-				[branch] if ( ( bakedDelta || light.realtimeWeight < 1.0 ) &&
+				[branch] if ( ( bakedDelta || realtimeWeight < 1.0 ) &&
 					( r.bakedFaceId != 0xFFFFFFFF || r.bakedPropPrimitive != 0xFFFFFFFF ) &&
-					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
-					bakedVisibility = PBR_BakedVisibility( r, bakedLookup, light.bakedLightIndex );
+					( visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
+					bakedVisibility = PBR_BakedVisibility( r, bakedLookup, bakedLightIndex );
 				float realtimeVisibility = bakedVisibility;
 				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
 				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).
-				[branch] if ( light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 )
+				[branch] if ( realtimeWeight > 0.0 && ( visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 )
 				{
+					RuntimeShadowLightGpu light = g_ShadowLights[index];
+					light.origin = lightRange.origin;
+					light.attenuationRadius = lightRange.attenuationRadius;
+					light.fadeStart = lightRange.fade.x;
+					light.fadeEnd = lightRange.fade.y;
 					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 					[branch] if ( chart.valid && realtimeVisibility > 0.0 )
@@ -372,11 +403,11 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, lightRange.offset, lightRange.distance - 0.25 );
 					}
 				}
-				specularVisibility = lerp( bakedVisibility, realtimeVisibility, light.realtimeWeight );
+				specularVisibility = lerp( bakedVisibility, realtimeVisibility, realtimeWeight );
 				if ( bakedDelta )
 				{
-					diffuseVisibility = ( realtimeVisibility - bakedVisibility ) * light.realtimeWeight;
-					visibility = realtimeVisibility * light.realtimeWeight;
+					diffuseVisibility = ( realtimeVisibility - bakedVisibility ) * realtimeWeight;
+					visibility = realtimeVisibility * realtimeWeight;
 				}
 				else
 				{
@@ -384,7 +415,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					diffuseVisibility = visibility;
 				}
 			}
-			else if ( bakedDelta ) visibility = light.realtimeWeight;
+			else if ( bakedDelta ) visibility = realtimeWeight;
 			d.diffuse += radiance * ( basis * diffuseVisibility + extra * visibility );
 			float3 lightSpecular = radiance * specular * specularVisibility;
 			d.specular += lightSpecular;
@@ -392,7 +423,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		}
 	}
 	// Baked-only specular (see above): only the receiver's live entries are visited.
-	[branch] if ( bakedLocalDirect )
+	[branch] if ( bakedLocalDirect && !modelSelection )
 	{
 		[loop] for ( uint chunk = 0; chunk < entryCount; chunk += PBR_LIVE_BATCH )
 		{
@@ -409,15 +440,25 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				// The resident tail evaluated the realtime-weighted lights, the unbaked stream the style-overflow ones.
 				[branch] if ( realtimeWeight != 0.0 || dot( s.N, origin - r.positionWS ) <= 0.0 ) continue;
 				[branch] if ( hasUnbaked && PBR_IsUnbakedLight( unbakedLocalRange, entry.x ) ) continue;
-				RuntimeShadowLightGpu light = g_ShadowLights[index];
-				light.origin = origin;
-				float3 L;
-				float3 radiance = ShadowMap_StandardLightRadiance( light, r.positionWS, L );
+				// The live mask proves only that some sample of a dense entry is lit. Reject this pixel's exact
+				// zero before fetching attenuation and evaluating GGX; zero visibility multiplies both outputs.
+				float bakedVisibility = PBR_EntryVisibility( r, bakedLookup, entry );
+				[branch] if ( bakedVisibility == 0.0 ) continue;
+				// Field radiance only (see PBR_RadianceInRangeFields); the original lit test is replicated here.
+				float3 offset = origin - r.positionWS;
+				float lightDistance = length( offset );
+				float3 L = float3( 0.0, 0.0, 0.0 );
+				float3 radiance = float3( 0.0, 0.0, 0.0 );
+				float attenuationRadius = g_ShadowLights[index].attenuationRadius;
+				float fadeStart = g_ShadowLights[index].fadeStart;
+				float fadeEnd = g_ShadowLights[index].fadeEnd;
+				if ( lightDistance > 0.0 && !( attenuationRadius > 0.0 && lightDistance > attenuationRadius ) && !( fadeEnd > fadeStart && lightDistance > fadeEnd ) )
+					radiance = PBR_RadianceInRangeFields( index, offset, lightDistance, L );
 				[branch] if ( any( radiance != 0.0 ) )
 				{
-					float3 lightSpecular = radiance * PBR_Specular( s, L ) * PBR_EntryVisibility( r, bakedLookup, entry );
+					float3 lightSpecular = radiance * PBR_Specular( s, L ) * bakedVisibility;
 					d.specular += lightSpecular;
-					PBR_AddSpecular( specularSum, lightSpecular, length( light.origin - r.positionWS ) );
+					PBR_AddSpecular( specularSum, lightSpecular, lightDistance );
 				}
 			}
 		}

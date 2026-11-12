@@ -86,7 +86,16 @@ struct DX12_PS_INPUT
 
 // One lightmap plane (0 flat, 1..3 bumped) in decoded linear units.
 #if PBR_WORLD_HIGHRES
-#define LIGHTMAP_PLANE( plane, uv ) HighresLightmap_NativeScalePlane( hlr, plane, LightmapTexture.Sample( LightmapSampler, uv ), LIGHT_MAP_SCALE ).rgb
+float3 PBR_WorldLightmapPlane( HlightReceiver r, uint plane, float2 uv )
+{
+	// Derivatives precede the owner-dependent branch. Highres RGB replaces the native sample completely;
+	// native-only owners retain exactly the original gradients and scale.
+	float2 dx = ddx( uv ), dy = ddy( uv );
+	[branch] if ( cHlightRoute.x == 0 || r.nativeOnly != 0 )
+		return LightmapTexture.SampleGrad( LightmapSampler, uv, dx, dy ).rgb * LIGHT_MAP_SCALE;
+	return HighresLightmap_RGB( r, plane );
+}
+#define LIGHTMAP_PLANE( plane, uv ) PBR_WorldLightmapPlane( hlr, plane, uv )
 #else
 #define LIGHTMAP_PLANE( plane, uv ) ( LightmapTexture.Sample( LightmapSampler, uv ).rgb * LIGHT_MAP_SCALE )
 #endif
@@ -203,15 +212,14 @@ PBR_PSOut main( DX12_PS_INPUT i )
 
 	float2 lightmapUV = i.lightmapUV.xy;
 	float2 planeStep = i.lightmapUV.zw;
-	// Keep the bumped-plane fetches independent: a serial plane loop lowers DXBC size but measured slower
-	// on the GPU. The weighted sum retains the stored plane order.
-	float3 lightmap;
+	// A plane with weight exactly zero contributes exactly zero (its RGB is finite), so its fetch is skipped;
+	// the remaining fetches stay independent and the weighted sum retains the stored plane order.
+	float3 lightmap = float3( 0.0, 0.0, 0.0 );
 	if ( hasBump && !flatDiffuse )
 	{
-		float3 plane1 = LIGHTMAP_PLANE( 1, lightmapUV + planeStep );
-		float3 plane2 = LIGHTMAP_PLANE( 2, lightmapUV + 2.0 * planeStep );
-		float3 plane3 = LIGHTMAP_PLANE( 3, lightmapUV + 3.0 * planeStep );
-		lightmap = planeWeights.x * plane1 + planeWeights.y * plane2 + planeWeights.z * plane3;
+		[branch] if ( planeWeights.x > 0.0 ) lightmap += planeWeights.x * LIGHTMAP_PLANE( 1, lightmapUV + planeStep );
+		[branch] if ( planeWeights.y > 0.0 ) lightmap += planeWeights.y * LIGHTMAP_PLANE( 2, lightmapUV + 2.0 * planeStep );
+		[branch] if ( planeWeights.z > 0.0 ) lightmap += planeWeights.z * LIGHTMAP_PLANE( 3, lightmapUV + 3.0 * planeStep );
 	}
 	else
 		lightmap = LIGHTMAP_PLANE( 0, lightmapUV );

@@ -43,7 +43,7 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_011"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_012"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -439,6 +439,8 @@ public:
 	// Queued like BeginView: copies the records now; the descriptor table is built lazily by the first PBR draw of each
 	// recording batch. The packet stays current until the next one. count 0 is valid.
 	virtual void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) = 0;
+	// Recording owner. Four packet indices followed by six ambient-cube rows; no allocation.
+	virtual void ModelLocalLighting( int limit, float rows[7][4] ) = 0;
 };
 
 #endif // ISHADERAPIDX12LIGHTING_H

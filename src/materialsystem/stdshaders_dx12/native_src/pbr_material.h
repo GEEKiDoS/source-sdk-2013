@@ -61,6 +61,9 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	float4 g_L4D2Model; // @legacy ps:c38
 	// L4D2 detail blend mode (world/model).
 	float4 g_L4D2World; // @legacy ps:c39
+	// Per-draw enhanced model local-light selection and folded directional irradiance.
+	float4 g_ModelLocalIndices; // @legacy ps:c40
+	float4 g_ModelLocalAmbient[6]; // @legacy ps:c41
 };
 #endif
 
