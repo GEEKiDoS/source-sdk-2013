@@ -4,9 +4,12 @@
 // march pair:
 //   t0 Texture2D<float4>  in-scattering (cVolumeOutputScale.x already applied)
 //   t1 Texture2D<float>   representative positive view depth, VOLUME_DEPTH_FAR for clear-only footprints
-// Per scene sample (SV_SampleIndex under MSAA, pixel centre otherwise), the own camera-forward distance and a 4x4
-// selected-resolution texel block are gathered with gaussian spatial and depth-similarity weights. This preserves
-// depth-edge rejection for the quarter-resolution quality0 path and removes the per-texel dither.
+// Per scene sample (SV_SampleIndex under MSAA, pixel centre otherwise), the own camera-forward distance weights the
+// surrounding march texels by depth similarity, which preserves depth-edge rejection. The half-resolution profiles
+// gather a 4x4 block with gaussian spatial weights. The quarter-resolution quality0 profile gathers the 2x2 block
+// around the sample with bilinear weights (8 loads instead of 32): the march alternates each footprint's nearest
+// and farthest depth in a checkerboard, so any 2x2 block holds both sides of a silhouette, and the temporal pass
+// has already integrated the per-step dither.
 // Static index = MSAA (0 single-sample, 1 multisampled): the only static combo.
 // STATIC: "MSAA" "0..1"
 // DYNAMIC: "QUARTER" "0..1"
@@ -44,27 +47,27 @@ float4 main( PS_INPUT i ) : SV_Target0
 #endif
 	float z = depth == cScreenDepth.x ? VOLUME_DEPTH_FAR : Screen_ViewDepth( Screen_PixelToWorld( scenePixel, depth ) );
 	float tolerance = 0.02 * z + 1.0;
-	float spatialScale = 1.0;
 
-	// Pixel centre in march texel space; the 4x4 depth-aware gather retains both sides of silhouettes.
+	// Pixel centre in march texel space.
 	const float footprint = QUARTER ? 4.0 : 2.0;
 	float2 halfPos = ( float2( pixel - origin ) + 0.5 ) / footprint;
 	int2 halfMax = ( size + int( footprint ) - 1 ) / int( footprint ) - 1;
-	int2 first = int2( floor( halfPos - 0.5 ) ) - 1;
 	float3 color = float3( 0.0, 0.0, 0.0 );
 	float weightSum = 0.0;
 	float3 nearestColor = float3( 0.0, 0.0, 0.0 );
 	float nearestDifference = VOLUME_DEPTH_FAR;
-	[unroll] for ( int ty = 0; ty < 4; ++ty )
+#if QUARTER
+	int2 first = int2( floor( halfPos - 0.5 ) );
+	float2 fraction = halfPos - 0.5 - float2( first );
+	[unroll] for ( int ty = 0; ty < 2; ++ty )
 	{
-		[unroll] for ( int tx = 0; tx < 4; ++tx )
+		[unroll] for ( int tx = 0; tx < 2; ++tx )
 		{
 			int2 tap = clamp( first + int2( tx, ty ), int2( 0, 0 ), halfMax );
 			float zh = g_VolumeDepth.Load( int3( tap, 0 ) );
 			float3 scatter = g_VolumeScatter.Load( int3( tap, 0 ) ).rgb;
-			float2 d = halfPos - ( float2( tap ) + 0.5 );
 			float difference = abs( z - zh );
-			float weight = exp( -0.5 * dot( d, d ) * spatialScale ) * exp( -difference / tolerance );
+			float weight = ( tx ? fraction.x : 1.0 - fraction.x ) * ( ty ? fraction.y : 1.0 - fraction.y ) * exp( -difference / tolerance );
 			color += scatter * weight;
 			weightSum += weight;
 			if ( difference < nearestDifference )
@@ -74,5 +77,28 @@ float4 main( PS_INPUT i ) : SV_Target0
 			}
 		}
 	}
+#else
+	// The 4x4 depth-aware gather retains both sides of silhouettes.
+	int2 first = int2( floor( halfPos - 0.5 ) ) - 1;
+	[unroll] for ( int ty = 0; ty < 4; ++ty )
+	{
+		[unroll] for ( int tx = 0; tx < 4; ++tx )
+		{
+			int2 tap = clamp( first + int2( tx, ty ), int2( 0, 0 ), halfMax );
+			float zh = g_VolumeDepth.Load( int3( tap, 0 ) );
+			float3 scatter = g_VolumeScatter.Load( int3( tap, 0 ) ).rgb;
+			float2 d = halfPos - ( float2( tap ) + 0.5 );
+			float difference = abs( z - zh );
+			float weight = exp( -0.5 * dot( d, d ) ) * exp( -difference / tolerance );
+			color += scatter * weight;
+			weightSum += weight;
+			if ( difference < nearestDifference )
+			{
+				nearestDifference = difference;
+				nearestColor = scatter;
+			}
+		}
+	}
+#endif
 	return float4( weightSum < VOLUME_WEIGHT_EPSILON ? nearestColor : color / weightSum, 0.0 );
 }

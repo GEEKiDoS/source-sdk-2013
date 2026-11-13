@@ -364,8 +364,14 @@ depth/motion sample in the footprint at silhouettes, rejects history when depth 
 the camera/resolution changes, and blends up to 0.9 history (reduced on motion). When no valid motion texture is available,
 the camera-only reprojection is used. The two quarter-resolution history targets are about 2 MiB total at 1920x1080
 (about 8 MiB for the half-resolution profile), reported under the `volumetric` dx12_memreport category.
-The depth-aware 4x4 composite remains unchanged and preserves the same depth-edge rejection, medium/strength/anisotropy/
-max-distance controls, opted-in local/projected lights, sun cascade/static-chart selection and four-tap sun PCF. The
+`volumetric_upsample_ps51` composites with depth-similarity weights, which preserve depth-edge rejection. The
+half-resolution profiles gather a 4x4 block of march texels with gaussian spatial weights. The quarter-resolution
+profile gathers the 2x2 block around the pixel with bilinear weights: the march alternates each footprint's nearest and
+farthest depth in a checkerboard, so any 2x2 block holds both sides of a silhouette, and the temporal pass has
+already integrated the dither the wider kernel used to hide. 8 loads per pixel instead of 32 took the pass from 0.47
+to 0.15 ms (GTX 1050, 1280x720). Medium/strength/anisotropy/max-distance controls, opted-in local/projected lights,
+sun cascade/static-chart selection and four-tap sun PCF are unchanged (taking one comparison footprint per step in
+the quarter-resolution march instead was measured and did not change its 0.4-0.5 ms). The
 quarter path reconstructs its representative camera-forward depth from the selected hardware-depth endpoint before ray
 marching, so wall blocking is preserved; its expected visual difference is modest extra softness. The CPU `SunProjection`
 is orthographic (w = 1), so the five named scalar ray start/step transforms and atlas dimensions are hoisted out of the
@@ -846,6 +852,14 @@ cares. Corridor renderables vary with what the launch happened to spawn (1.06-1.
 and dropped: reading the tile specular list at its test and starting the baked-only specular loop's entry range
 after the light loop (world listing peak 149 -> 154: the tile coordinates and view constants stay live instead; a
 runtime-conditional `ShadowMap_BeginBakedLookup` there also made fxc abort on the model shader).
+
+Also tried and dropped: the plane-path PCF taps (local and sun) through the comparison sampler, one sample per tap
+against the receiver plane's depth at the footprint texel nearest the light, instead of four loads compared with
+each texel's own plane depth. The listing lost 85 instructions and 8 temps (`dcl_temps` 92 -> 84, 85 -> 77 for
+the model shader) with the peak unchanged, and three alternated uncapped launches each gave opaque world 5.32 ->
+5.24 (roof) and 6.85 -> 7.07 (corridor), viewmodels 1.19 -> 1.30 and 1.16 -> 1.25: no gain for a shadow edge that
+gives up one texel of plane slope at contacts. In the earlier probe a comparison-only filter did save 0.55-0.85 ms,
+but that variant also dropped the plane preflight and the chart's plane terms.
 
 Tried on the same model and rejected: sampling the local PCF and the sun PCSS in a prepass before the material
 (`PBR_ShadowPrepass`-style, results read back by the gather). With the results in a 32-float local array
