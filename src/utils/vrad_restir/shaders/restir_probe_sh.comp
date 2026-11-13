@@ -79,7 +79,7 @@ void main()
 		for ( uint sampleIndex = 0u; sampleIndex < EMITTER_SAMPLES; ++sampleIndex )
 		{
 			vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( EMITTER_SAMPLES ), CandidateDimension( seed, sampleIndex, 1u ), CandidateDimension( seed, sampleIndex, 2u ) );
-			ReSTIRReservoir candidate;
+			ReSTIRLightSample candidate;
 			if ( !SampleLight( lightIndex, source, vec3( 0.0, 0.0, 1.0 ), uniformValue, candidate ) || candidate.sourcePdf <= 0.0 )
 				continue;
 			if ( !LightVisibility( lightIndex, source, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )

@@ -15,12 +15,12 @@ void main()
 		return;
 	if ( pc.pass == 0u )
 	{
-		ReSTIRReservoir empty = EmptyReservoir();
-		reservoirsPrev[ReservoirAddress( index )] = empty;
-		reservoirsCur[ReservoirAddress( index )] = empty;
-		reservoirsNext[ReservoirAddress( index )] = empty;
 		for ( uint channel = 0u; channel < RESTIR_MAX_CHANNELS; ++channel )
+		{
 			accumulation[AccumulationAddress( index ) + channel] = vec4( 0.0 );
+			if ( receiverAccumulation.length() > 1 )
+				receiverAccumulation[AccumulationAddress( index ) + channel] = vec4( 0.0 );
+		}
 	}
 	else if ( pc.pass == 1u )
 	{

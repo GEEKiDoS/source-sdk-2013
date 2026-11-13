@@ -62,7 +62,7 @@ vec3 PointDirectLight( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitI
 	for ( uint sampleIndex = 0u; sampleIndex < count; ++sampleIndex )
 	{
 		vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( count ), CandidateDimension( seed, sampleIndex, 1u ), CandidateDimension( seed, sampleIndex, 2u ) );
-		ReSTIRReservoir candidate;
+		ReSTIRLightSample candidate;
 		if ( !SampleLight( lightIndex, origin, query.normal.xyz, uniformValue, candidate ) || candidate.sourcePdf <= 0.0 )
 			continue;
 		if ( !LightVisibility( lightIndex, origin, candidate.samplePos.xyz, candidate.emitterTri, skipHitId ) )

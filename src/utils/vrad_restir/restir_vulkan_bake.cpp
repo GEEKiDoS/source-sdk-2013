@@ -8,10 +8,8 @@
 static const char *ReSTIRStageName( ReSTIRPipeline pipeline )
 {
 	return pipeline == RESTIR_PIPE_INIT ? "init" :
-		pipeline == RESTIR_PIPE_CANDIDATES ? "candidates" :
-		pipeline == RESTIR_PIPE_TEMPORAL ? "temporal" :
-		pipeline == RESTIR_PIPE_SPATIAL ? "spatial" :
-		pipeline == RESTIR_PIPE_ACCUMULATE ? "accumulate" :
+		pipeline == RESTIR_PIPE_DIRECT ? "direct" :
+		pipeline == RESTIR_PIPE_TRANSPORT ? "transport" :
 		pipeline == RESTIR_PIPE_RECONSTRUCT ? "reconstruct" :
 		pipeline == RESTIR_PIPE_SUN_VISIBILITY ? "sun-visibility" : "gpu";
 }
@@ -31,8 +29,8 @@ static double SubmitDispatchChunks( CReSTIRVulkanDevice::Impl &gpu, ReSTIRPipeli
 	double verboseGpuMilliseconds = 0.0;
 	double slowestItemSeconds = 0.0;
 	const unsigned int itemLimit = gpu.DispatchItemLimit();
-	const unsigned int safetyLimit = pipeline == RESTIR_PIPE_SPATIAL ? RESTIR_SPATIAL_SAFE_ITEMS :
-		pipeline == RESTIR_PIPE_CANDIDATES ? RESTIR_CANDIDATE_SAFE_ITEMS : RESTIR_SUBMIT_MAX_ITEMS;
+	const unsigned int safetyLimit = pipeline == RESTIR_PIPE_DIRECT ? RESTIR_DIRECT_SAFE_ITEMS :
+		pipeline == RESTIR_PIPE_TRANSPORT ? RESTIR_TRANSPORT_SAFE_ITEMS : RESTIR_SUBMIT_MAX_ITEMS;
 	unsigned int chunkItems = MIN( MIN( RESTIR_SUBMIT_INITIAL_ITEMS, safetyLimit ), itemLimit );
 	// The start/end pair spans every chunk of this call; it owns the pool from here until it is read below. Per-face
 	// reconstruction issues thousands of calls, and nothing else resets the 64-entry pool between them.
@@ -123,23 +121,36 @@ void CReSTIRVulkanDevice::PrintBakeSummary() const
 		m_pImpl->lastBakeSeconds, (unsigned long long)m_pImpl->lastBakeSubmits );
 }
 
-void CReSTIRVulkanDevice::Impl::WriteReservoirDescriptors()
+static void SetPagePush( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page, unsigned int flags )
 {
-	VkDescriptorBufferInfo info[3] = {};
-	VkWriteDescriptorSet writes[3] = {};
-	for ( unsigned int i = 0; i < 3; ++i )
-	{
-		info[i].buffer = buffers[reservoirBindings[i]].handle;
-		info[i].range = buffers[reservoirBindings[i]].size;
-		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[i].dstSet = descriptorSet;
-		writes[i].dstBinding = RESTIR_BIND_RESERVOIRS_PREV + i;
-		writes[i].descriptorCount = 1;
-		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		writes[i].pBufferInfo = &info[i];
-	}
-	vkUpdateDescriptorSets( device, 3, writes, 0, NULL );
+	gpu.push.flags = flags;
+	gpu.push.pageBase[0] = page.firstReservoir;
+	gpu.push.pageBase[1] = page.firstSample;
+	gpu.push.pageBase[2] = page.firstLuxel;
+	gpu.push.pageBase[3] = page.firstOutput;
 }
+
+// Paged bakes stream a page's running sums through the host; receiverAccumulation is empty unless split.
+static void UploadPageAccumulation( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page,
+	const CUtlVector<float> &accumulation, const CUtlVector<float> &receiverAccumulation )
+{
+	const size_t first = (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4;
+	const VkDeviceSize bytes = (VkDeviceSize)page.reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4;
+	gpu.Upload( RESTIR_BIND_ACCUMULATION, accumulation.Base() + first, bytes );
+	if ( receiverAccumulation.Count() )
+		gpu.Upload( RESTIR_BIND_RECEIVER_ACCUMULATION, receiverAccumulation.Base() + first, bytes );
+}
+
+static void DownloadPageAccumulation( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page,
+	CUtlVector<float> &accumulation, CUtlVector<float> &receiverAccumulation )
+{
+	const size_t first = (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4;
+	const VkDeviceSize bytes = (VkDeviceSize)page.reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4;
+	gpu.Download( RESTIR_BIND_ACCUMULATION, accumulation.Base() + first, bytes );
+	if ( receiverAccumulation.Count() )
+		gpu.Download( RESTIR_BIND_RECEIVER_ACCUMULATION, receiverAccumulation.Base() + first, bytes );
+}
+
 
 static void DownloadRadiance( CReSTIRVulkanDevice::Impl &gpu, int binding, CUtlVector<Vector> &radiance )
 {
@@ -213,7 +224,8 @@ static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<unsi
 			if ( verbose )
 				Msg( "VRAD ReSTIR: visibility page=%d/%d light=%d luxels=%u\n",
 					p + 1, gpu.pages.Count(), light, page.luxelCount );
-			UploadTransportPage( gpu, page );
+			if ( gpu.pages.Count() > 1 )
+				UploadTransportPage( gpu, page );
 			pageOutput.SetCount( page.luxelCount );
 			gpu.push.flags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE;
 			gpu.push.pageBase[0] = page.firstReservoir;
@@ -341,31 +353,33 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	memset( result.luxelValid.Base(), 0, result.luxelValid.Count() );
 	gpu.push.seed = options.seed;
 	gpu.push.candidates = options.candidates;
-	gpu.push.spatialRadius = options.spatialRadius;
 	gpu.push.maxBounces = options.maxBounces;
 	gpu.push.totalIterations = options.iterations;
 	const uint64_t submitsAtStart = gpu.submittedValue;
 	const double bakeStart = Plat_FloatTime();
-	gpu.timings.candidateMs = gpu.timings.reuseMs = gpu.timings.reconstructionMs = gpu.timings.compactionMs = 0;
+	gpu.timings.directMs = gpu.timings.transportMs = gpu.timings.reconstructionMs = gpu.timings.compactionMs = 0;
 	memset( gpu.stageStats, 0, sizeof( gpu.stageStats ) );
-	CUtlVector<ReSTIRReservoir> reservoirPrevHost, reservoirNextHost;
-	reservoirPrevHost.SetCount( gpu.fullReservoirs );
-	reservoirNextHost.SetCount( gpu.fullReservoirs );
-	memset( reservoirPrevHost.Base(), 0, reservoirPrevHost.Count() * sizeof( ReSTIRReservoir ) );
-	memset( reservoirNextHost.Base(), 0, reservoirNextHost.Count() * sizeof( ReSTIRReservoir ) );
-	CUtlVector<float> accumulationHost;
-	accumulationHost.SetCount( (int)gpu.fullReservoirs * RESTIR_MAX_CHANNELS * 4 );
-	memset( accumulationHost.Base(), 0, accumulationHost.Count() * sizeof( float ) );
-	CUtlVector<float> receiverAccumHost;
-	if ( shadowSplit )
+	// One page already holds every transport buffer, so its iterations run on resident GPU state.
+	// Only a paged bake keeps host copies and streams them through the staging ring.
+	const bool resident = gpu.pages.Count() == 1;
+	const unsigned int initFlags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE;
+	const unsigned int transportFlags = initFlags | ( shadowSplit ? RESTIR_PC_RECEIVER_PAGE : 0 );
+	CUtlVector<float> accumulationHost, receiverAccumHost;
+	if ( !resident )
 	{
-		receiverAccumHost.SetCount( accumulationHost.Count() );
-		memset( receiverAccumHost.Base(), 0, receiverAccumHost.Count() * sizeof( float ) );
+		accumulationHost.SetCount( (int)gpu.fullReservoirs * RESTIR_MAX_CHANNELS * 4 );
+		memset( accumulationHost.Base(), 0, accumulationHost.Count() * sizeof( float ) );
+		if ( shadowSplit )
+		{
+			receiverAccumHost.SetCount( accumulationHost.Count() );
+			memset( receiverAccumHost.Base(), 0, receiverAccumHost.Count() * sizeof( float ) );
+		}
 	}
 	unsigned int progressDone = 0;
 	const unsigned int progressTotal = (unsigned int)options.iterations + 2;
 	if ( selectedSun )
 		result.sunVisibility.SetCount( gpu.scene->luxels.Count() );
+	double stageMs = 0;
 	for ( int p = 0; p < gpu.pages.Count(); ++p )
 	{
 		const ReSTIRPage &page = gpu.pages[p];
@@ -374,11 +388,7 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 				p + 1, gpu.pages.Count(), page.faceCount, page.sampleCount, page.luxelCount,
 				page.reservoirCount, page.outputCount );
 		UploadTransportPage( gpu, page );
-		gpu.push.flags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE;
-		gpu.push.pageBase[0] = page.firstReservoir;
-		gpu.push.pageBase[1] = page.firstSample;
-		gpu.push.pageBase[2] = page.firstLuxel;
-		gpu.push.pageBase[3] = page.firstOutput;
+		SetPagePush( gpu, page, initFlags );
 		SubmitDispatchChunks( gpu, RESTIR_PIPE_INIT, page.reservoirCount, 0, NULL, page.firstReservoir );
 		SubmitDispatchChunks( gpu, RESTIR_PIPE_INIT, page.luxelCount, 1, NULL, page.firstLuxel );
 		SubmitDispatchChunks( gpu, RESTIR_PIPE_INIT, page.outputCount, 2, NULL, page.firstOutput );
@@ -388,14 +398,15 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 			gpu.Download( RESTIR_BIND_SUN_VISIBILITY, result.sunVisibility.Base() + page.firstLuxel,
 				(VkDeviceSize)page.luxelCount * sizeof( float ), 0, &gpu.timings.compactionMs );
 		}
+		// Exact point/spot direct light seeds the bounce feedback before the first iteration.
+		SubmitDispatchChunks( gpu, RESTIR_PIPE_DIRECT, page.reservoirCount, 0, &stageMs, page.firstReservoir );
+		gpu.timings.directMs += stageMs;
 	}
 	BakeLocalVisibility( gpu, result.localVisibility );
 	gpu.ReportProgress( "bake", ++progressDone, progressTotal );
 	for ( int iteration = 0; iteration < options.iterations; ++iteration )
 	{
 		gpu.push.iteration = iteration;
-		const unsigned int iterationFlags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) |
-			RESTIR_PC_RESERVOIR_PAGE | ( iteration + 1 == options.iterations ? RESTIR_PC_FINAL_ITERATION : 0 );
 		for ( int p = 0; p < gpu.pages.Count(); ++p )
 		{
 			const ReSTIRPage &page = gpu.pages[p];
@@ -403,119 +414,147 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 				Msg( "VRAD ReSTIR: transport page=%d/%d faces=%u samples=%u luxels=%u reservoirs=%u outputs=%u iteration=%d\n",
 					p + 1, gpu.pages.Count(), page.faceCount, page.sampleCount, page.luxelCount,
 					page.reservoirCount, page.outputCount, iteration );
-			UploadTransportPage( gpu, page );
-			gpu.push.flags = iterationFlags | ( shadowSplit ? RESTIR_PC_RECEIVER_PAGE : 0 );
-			gpu.push.pageBase[0] = page.firstReservoir;
-			gpu.push.pageBase[1] = page.firstSample;
-			gpu.push.pageBase[2] = page.firstLuxel;
-			gpu.push.pageBase[3] = page.firstOutput;
-			const VkDeviceSize reservoirBytes = (VkDeviceSize)page.reservoirCount * sizeof( ReSTIRReservoir );
-			const VkDeviceSize accumulationBytes = (VkDeviceSize)page.reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4;
-			gpu.Upload( gpu.reservoirBindings[0], reservoirPrevHost.Base() + page.firstReservoir, reservoirBytes );
-			gpu.Upload( RESTIR_BIND_ACCUMULATION, accumulationHost.Base() + (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4, accumulationBytes );
-			if ( shadowSplit )
-				gpu.Upload( RESTIR_BIND_RECEIVER_ACCUMULATION,
-					receiverAccumHost.Base() + (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4, accumulationBytes );
-			double stageMs = 0;
-			SubmitDispatchChunks( gpu, RESTIR_PIPE_CANDIDATES, page.reservoirCount, gpu.scene->faceNeighbors.Count(), &stageMs, page.firstReservoir );
-			gpu.timings.candidateMs += stageMs;
-			if ( iteration )
+			SetPagePush( gpu, page, transportFlags );
+			if ( !resident )
 			{
-				SubmitDispatchChunks( gpu, RESTIR_PIPE_TEMPORAL, page.reservoirCount, 0, &stageMs, page.firstReservoir );
-				gpu.timings.reuseMs += stageMs;
+				UploadTransportPage( gpu, page );
+				UploadPageAccumulation( gpu, page, accumulationHost, receiverAccumHost );
 			}
-			SubmitDispatchChunks( gpu, RESTIR_PIPE_SPATIAL, page.reservoirCount, 0, &stageMs, page.firstReservoir );
-			SubmitDispatchChunks( gpu, RESTIR_PIPE_ACCUMULATE, page.reservoirCount, 0, NULL, page.firstReservoir );
-			gpu.Download( gpu.reservoirBindings[2], reservoirNextHost.Base() + page.firstReservoir, reservoirBytes );
-			gpu.Download( RESTIR_BIND_ACCUMULATION,
-				accumulationHost.Base() + (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4, accumulationBytes );
-			if ( shadowSplit )
-				gpu.Download( RESTIR_BIND_RECEIVER_ACCUMULATION,
-					receiverAccumHost.Base() + (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4, accumulationBytes );
+			SubmitDispatchChunks( gpu, RESTIR_PIPE_TRANSPORT, page.reservoirCount, gpu.scene->faceNeighbors.Count(), &stageMs, page.firstReservoir );
+			gpu.timings.transportMs += stageMs;
+			if ( !resident )
+				DownloadPageAccumulation( gpu, page, accumulationHost, receiverAccumHost );
 		}
-		// Every page in this iteration must read the same previous-iteration state.
-		CUtlVector<float> previousIrradiance;
-		previousIrradiance.SetCount( gpu.scene->samples.Count() * 4 );
-		memset( previousIrradiance.Base(), 0, previousIrradiance.Count() * sizeof( float ) );
-		FOR_EACH_VEC( gpu.uploadedFaces, f )
+		// Publish the bounce feedback only after the whole iteration: every page, and every sample
+		// within a page, must read the same previous-iteration state.
+		if ( resident )
 		{
-			const ReSTIRGpuFace &face = gpu.uploadedFaces[f];
-			for ( int s = 0; s < face.numSamples; ++s )
-			{
-				const int reservoir = face.firstReservoir + s * face.numStyles;
-				memcpy( previousIrradiance.Base() + (size_t)( face.firstSample + s ) * 4,
-					accumulationHost.Base() + (size_t)reservoir * RESTIR_MAX_CHANNELS * 4, sizeof( float ) * 4 );
-			}
+			SetPagePush( gpu, gpu.pages[0], transportFlags | RESTIR_PC_PUBLISH_IRRADIANCE );
+			SubmitDispatchChunks( gpu, RESTIR_PIPE_TRANSPORT, gpu.pages[0].reservoirCount, 0, NULL, gpu.pages[0].firstReservoir );
 		}
-		gpu.Upload( RESTIR_BIND_PREVIOUS_IRRADIANCE, previousIrradiance.Base(),
-			(VkDeviceSize)previousIrradiance.Count() * sizeof( float ) );
-		reservoirPrevHost.Swap( reservoirNextHost );
-		unsigned int previousBinding = gpu.reservoirBindings[0];
-		gpu.reservoirBindings[0] = gpu.reservoirBindings[2];
-		gpu.reservoirBindings[2] = previousBinding;
-		gpu.WriteReservoirDescriptors();
+		else
+		{
+			CUtlVector<float> previousIrradiance;
+			previousIrradiance.SetCount( gpu.scene->samples.Count() * 4 );
+			memset( previousIrradiance.Base(), 0, previousIrradiance.Count() * sizeof( float ) );
+			FOR_EACH_VEC( gpu.uploadedFaces, f )
+			{
+				const ReSTIRGpuFace &face = gpu.uploadedFaces[f];
+				for ( int s = 0; s < face.numSamples; ++s )
+				{
+					// The same copy restir_transport.comp publishes on a resident page.
+					memcpy( previousIrradiance.Base() + (size_t)( face.firstSample + s ) * 4,
+						accumulationHost.Base() + (size_t)( face.firstReservoir + s * face.numStyles ) * RESTIR_MAX_CHANNELS * 4, sizeof( float ) * 4 );
+				}
+			}
+			gpu.Upload( RESTIR_BIND_PREVIOUS_IRRADIANCE, previousIrradiance.Base(),
+				(VkDeviceSize)previousIrradiance.Count() * sizeof( float ) );
+		}
 		gpu.ReportProgress( "bake", ++progressDone, progressTotal );
 	}
-	CUtlVector<ReSTIRPage> reconstructionPages;
-	unsigned int reconstructSamples = 0, reconstructLuxels = 0, reconstructReservoirs = 0;
-	for ( int faceIndex = 0; faceIndex < gpu.uploadedFaces.Count(); ++faceIndex )
+	// Add the exact direct light to the finished means.
+	for ( int p = 0; p < gpu.pages.Count(); ++p )
 	{
-		ReSTIRPage page;
-		const ReSTIRGpuFace &face = gpu.uploadedFaces[faceIndex];
-		page.firstFace = faceIndex;
-		page.faceCount = 1;
-		page.firstSample = face.firstSample;
-		page.sampleCount = face.numSamples;
-		page.firstLuxel = face.firstLuxel;
-		page.luxelCount = face.luxelW * face.luxelH;
-		page.firstReservoir = face.firstReservoir;
-		page.reservoirCount = face.numSamples * face.numStyles;
-		page.firstOutput = face.firstOutput;
-		page.outputCount = face.numStyles * face.numChannels * face.luxelW * face.luxelH;
-		CUtlVector<unsigned char> used;
-		used.SetCount( gpu.uploadedFaces.Count() );
-		memset( used.Base(), 0, used.Count() );
-		used[faceIndex] = 1;
-		for ( int n = 0; n < face.numNeighbors; ++n )
+		const ReSTIRPage &page = gpu.pages[p];
+		SetPagePush( gpu, page, transportFlags );
+		if ( !resident )
 		{
-			int neighbor = gpu.scene->faceNeighbors[face.firstNeighbor + n];
-			if ( neighbor >= 0 && neighbor < used.Count() )
-				used[neighbor] = 1;
+			UploadTransportPage( gpu, page );
+			UploadPageAccumulation( gpu, page, accumulationHost, receiverAccumHost );
 		}
-		unsigned int closureSamples = 0, closureLuxels = 0, closureReservoirs = 0;
-		for ( int f = 0; f < used.Count(); ++f )
-			if ( used[f] )
-			{
-				closureSamples += gpu.uploadedFaces[f].numSamples;
-				closureLuxels += gpu.uploadedFaces[f].luxelW * gpu.uploadedFaces[f].luxelH;
-				closureReservoirs += gpu.uploadedFaces[f].numSamples * gpu.uploadedFaces[f].numStyles;
-			}
-		reconstructSamples = MAX( reconstructSamples, closureSamples );
-		reconstructLuxels = MAX( reconstructLuxels, closureLuxels );
-		reconstructReservoirs = MAX( reconstructReservoirs, closureReservoirs );
-		reconstructionPages.AddToTail( page );
+		SubmitDispatchChunks( gpu, RESTIR_PIPE_DIRECT, page.reservoirCount, 1, &stageMs, page.firstReservoir );
+		gpu.timings.directMs += stageMs;
+		if ( !resident )
+			DownloadPageAccumulation( gpu, page, accumulationHost, receiverAccumHost );
 	}
-	gpu.PrepareReconstructionPages( reconstructSamples, reconstructReservoirs, reconstructLuxels );
-	gpu.push.flags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE |
-		( shadowSplit ? RESTIR_PC_RECEIVER_PAGE : 0 );
-	for ( int p = 0; p < reconstructionPages.Count(); ++p )
+	gpu.push.flags = transportFlags;
+	if ( resident )
 	{
-		const ReSTIRPage &page = reconstructionPages[p];
-		const unsigned int localLuxel = UploadReconstructPage( gpu, page, accumulationHost, receiverAccumHost );
-		gpu.push.pageBase[0] = 0;
-		gpu.push.pageBase[1] = 0;
-		gpu.push.pageBase[2] = 0;
+		// Reconstruct straight from the resident page. Each face stays its own dispatch call so the
+		// adaptive chunk sizer restarts small: the per-output cost grows with the face's closure.
+		const ReSTIRPage &page = gpu.pages[0];
+		gpu.push.pageBase[0] = page.firstReservoir;
+		gpu.push.pageBase[1] = page.firstSample;
+		gpu.push.pageBase[2] = page.firstLuxel;
 		gpu.push.pageBase[3] = page.firstOutput;
-		SubmitDispatchChunks( gpu, RESTIR_PIPE_RECONSTRUCT, page.outputCount, 0, &gpu.timings.reconstructionMs, page.firstOutput );
+		FOR_EACH_VEC( gpu.uploadedFaces, faceIndex )
+		{
+			const ReSTIRGpuFace &face = gpu.uploadedFaces[faceIndex];
+			double faceMs = 0;
+			SubmitDispatchChunks( gpu, RESTIR_PIPE_RECONSTRUCT,
+				face.numStyles * face.numChannels * face.luxelW * face.luxelH, 0, &faceMs, face.firstOutput );
+			gpu.timings.reconstructionMs += faceMs;
+		}
 		CopyRadiancePage( gpu, shadowSplit ? RESTIR_BIND_RECEIVER_OUTPUT : RESTIR_BIND_OUTPUT, page, result.radiance );
 		if ( shadowSplit )
 			CopyRadiancePage( gpu, RESTIR_BIND_OUTPUT, page, result.sourceRadiance );
 		CUtlVector<unsigned int> valid;
 		valid.SetCount( page.luxelCount );
-		gpu.Download( RESTIR_BIND_LUXEL_VALID, valid.Base(), (VkDeviceSize)valid.Count() * sizeof( unsigned int ),
-			(VkDeviceSize)localLuxel * sizeof( unsigned int ) );
+		gpu.Download( RESTIR_BIND_LUXEL_VALID, valid.Base(), (VkDeviceSize)valid.Count() * sizeof( unsigned int ) );
 		for ( unsigned int i = 0; i < page.luxelCount; ++i )
 			result.luxelValid[page.firstLuxel + i] = (unsigned char)MIN( valid[i], 255u );
+	}
+	else
+	{
+		CUtlVector<ReSTIRPage> reconstructionPages;
+		unsigned int reconstructSamples = 0, reconstructLuxels = 0, reconstructReservoirs = 0;
+		for ( int faceIndex = 0; faceIndex < gpu.uploadedFaces.Count(); ++faceIndex )
+		{
+			ReSTIRPage page;
+			const ReSTIRGpuFace &face = gpu.uploadedFaces[faceIndex];
+			page.firstFace = faceIndex;
+			page.faceCount = 1;
+			page.firstSample = face.firstSample;
+			page.sampleCount = face.numSamples;
+			page.firstLuxel = face.firstLuxel;
+			page.luxelCount = face.luxelW * face.luxelH;
+			page.firstReservoir = face.firstReservoir;
+			page.reservoirCount = face.numSamples * face.numStyles;
+			page.firstOutput = face.firstOutput;
+			page.outputCount = face.numStyles * face.numChannels * face.luxelW * face.luxelH;
+			CUtlVector<unsigned char> used;
+			used.SetCount( gpu.uploadedFaces.Count() );
+			memset( used.Base(), 0, used.Count() );
+			used[faceIndex] = 1;
+			for ( int n = 0; n < face.numNeighbors; ++n )
+			{
+				int neighbor = gpu.scene->faceNeighbors[face.firstNeighbor + n];
+				if ( neighbor >= 0 && neighbor < used.Count() )
+					used[neighbor] = 1;
+			}
+			unsigned int closureSamples = 0, closureLuxels = 0, closureReservoirs = 0;
+			for ( int f = 0; f < used.Count(); ++f )
+				if ( used[f] )
+				{
+					closureSamples += gpu.uploadedFaces[f].numSamples;
+					closureLuxels += gpu.uploadedFaces[f].luxelW * gpu.uploadedFaces[f].luxelH;
+					closureReservoirs += gpu.uploadedFaces[f].numSamples * gpu.uploadedFaces[f].numStyles;
+				}
+			reconstructSamples = MAX( reconstructSamples, closureSamples );
+			reconstructLuxels = MAX( reconstructLuxels, closureLuxels );
+			reconstructReservoirs = MAX( reconstructReservoirs, closureReservoirs );
+			reconstructionPages.AddToTail( page );
+		}
+		gpu.PrepareReconstructionPages( reconstructSamples, reconstructReservoirs, reconstructLuxels );
+		for ( int p = 0; p < reconstructionPages.Count(); ++p )
+		{
+			const ReSTIRPage &page = reconstructionPages[p];
+			const unsigned int localLuxel = UploadReconstructPage( gpu, page, accumulationHost, receiverAccumHost );
+			gpu.push.pageBase[0] = 0;
+			gpu.push.pageBase[1] = 0;
+			gpu.push.pageBase[2] = 0;
+			gpu.push.pageBase[3] = page.firstOutput;
+			SubmitDispatchChunks( gpu, RESTIR_PIPE_RECONSTRUCT, page.outputCount, 0, &gpu.timings.reconstructionMs, page.firstOutput );
+			CopyRadiancePage( gpu, shadowSplit ? RESTIR_BIND_RECEIVER_OUTPUT : RESTIR_BIND_OUTPUT, page, result.radiance );
+			if ( shadowSplit )
+				CopyRadiancePage( gpu, RESTIR_BIND_OUTPUT, page, result.sourceRadiance );
+			CUtlVector<unsigned int> valid;
+			valid.SetCount( page.luxelCount );
+			gpu.Download( RESTIR_BIND_LUXEL_VALID, valid.Base(), (VkDeviceSize)valid.Count() * sizeof( unsigned int ),
+				(VkDeviceSize)localLuxel * sizeof( unsigned int ) );
+			for ( unsigned int i = 0; i < page.luxelCount; ++i )
+				result.luxelValid[page.firstLuxel + i] = (unsigned char)MIN( valid[i], 255u );
+		}
 	}
 	gpu.ReallocateForReconstruct();
 	gpu.Upload( RESTIR_BIND_FACES, gpu.uploadedFaces.Base(),

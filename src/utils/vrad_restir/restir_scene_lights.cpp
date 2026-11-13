@@ -1598,23 +1598,28 @@ bool ReSTIR_SceneBuildLights( ReSTIRSceneBuildContext &context, ReSTIRScene &sce
 		scene.lights[i].styleSlot = scene.sceneStyles.Find( scene.lights[i].style );
 	}
 	// Header offsets and light indices share one buffer (restir_types.h styleLights contract).
-	// Iterate lights in ascending order within each style; sky has separate sampling paths.
+	// Within a style the point/spot lights come first, then the emit_surface lights, each in
+	// ascending order; sky has separate sampling paths.
 	scene.styleLights.RemoveAll();
 	const int numStyles = scene.sceneStyles.Count();
-	scene.styleLights.SetCount( numStyles + 1 );
-	scene.styleLights.EnsureCapacity( numStyles + 1 + scene.lights.Count() );
+	scene.styleLights.SetCount( 2 * numStyles + 1 );
+	scene.styleLights.EnsureCapacity( 2 * numStyles + 1 + scene.lights.Count() );
 	for ( int slot = 0; slot < numStyles; ++slot )
 	{
-		scene.styleLights[slot] = scene.styleLights.Count();
-		for ( int i = 0; i < scene.lights.Count(); ++i )
+		for ( int surface = 0; surface < 2; ++surface )
 		{
-			const ReSTIRGpuLight &light = scene.lights[i];
-			if ( light.styleSlot == slot && light.type != emit_skylight && light.type != emit_skyambient )
+			scene.styleLights[2 * slot + surface] = scene.styleLights.Count();
+			for ( int i = 0; i < scene.lights.Count(); ++i )
 			{
-				scene.styleLights.AddToTail( i );
+				const ReSTIRGpuLight &light = scene.lights[i];
+				if ( light.styleSlot == slot && light.type != emit_skylight && light.type != emit_skyambient &&
+					( light.type == emit_surface ) == ( surface != 0 ) )
+				{
+					scene.styleLights.AddToTail( i );
+				}
 			}
 		}
 	}
-	scene.styleLights[numStyles] = scene.styleLights.Count();
+	scene.styleLights[2 * numStyles] = scene.styleLights.Count();
 	return true;
 }

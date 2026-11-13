@@ -29,10 +29,10 @@
                                          //   = sample index whose (s,t) is that cell, or -1 (host-built; brush faces only,
                                          //   disp faces: sample k of face f lives at cell (k % (luxelW-1), k / (luxelW-1)) is NOT
                                          //   assumed — host fills from ReSTIRGpuSample::s/t for every face)
-#define RESTIR_BIND_RESERVOIRS_PREV  8   // ReSTIRReservoir[numReservoirs]  previous iteration (read only)
-#define RESTIR_BIND_RESERVOIRS_CUR   9   // ReSTIRReservoir[numReservoirs]  candidate + temporal result (owner writes)
-#define RESTIR_BIND_RESERVOIRS_NEXT  10  // ReSTIRReservoir[numReservoirs]  spatial result (owner writes); becomes PREV next iteration
-#define RESTIR_BIND_ACCUMULATION     11  // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: rgb = running sum, w = contributing iterations
+#define RESTIR_BIND_DIRECT_IRRADIANCE 8  // vec4[numSamples]: exact point/spot direct irradiance, style-0 base channel (resident)
+#define RESTIR_BIND_RESERVED_9       9   // 16-byte dummy
+#define RESTIR_BIND_RESERVED_10      10  // 16-byte dummy
+#define RESTIR_BIND_ACCUMULATION     11  // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: rgb = running sum of the sampled terms, w = contributing iterations
 #define RESTIR_BIND_OUTPUT           12  // vec4[numOutputValues] reconstructed luxel radiance (ReSTIRLightmapResult::radiance order)
 #define RESTIR_BIND_LUXEL_VALID      13  // uint[numLuxels]
 #define RESTIR_BIND_FINAL_LIGHTMAP   14  // vec4[numFaces * RESTIR_MAX_FACE_STYLES + numOutputValues]:
@@ -46,14 +46,14 @@
 #define RESTIR_BIND_HW_PRIM_MAP      21  // uint[]: hardware instanceCustomIndex + primitiveID -> scene triangle index (hardware-rt)
 #define RESTIR_BIND_SCENE_STYLES     22  // int[numStyles]
 #define RESTIR_BIND_EMITTER_TRIS     23  // ReSTIRGpuEmitterTriangle[] (ReSTIRScene::emitterTriangles)
-#define RESTIR_BIND_STYLE_LIGHTS     24  // int[] (ReSTIRScene::styleLights): numStyles+1 offsets, then light indices
-#define RESTIR_BIND_RECEIVER_ACCUMULATION 25 // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: as ACCUMULATION minus flagged non-PATH direct
-                                         //   non-PATH direct (shadowMaps bakes with selected lights only; else the 16-byte dummy)
+#define RESTIR_BIND_STYLE_LIGHTS     24  // int[] (ReSTIRScene::styleLights): per style first/surfaceFirst, the end, then light indices
+#define RESTIR_BIND_RECEIVER_ACCUMULATION 25 // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: as ACCUMULATION minus the direct light of
+                                         //   runtime-direct lights (shadowMaps bakes with selected lights only; else the 16-byte dummy)
 #define RESTIR_BIND_RECEIVER_OUTPUT  26  // vec4[numOutputValues] reconstructed receiver radiance (ReSTIRLightmapResult::radiance when split)
 #define RESTIR_BIND_SUN_ORIGINS      27  // vec4[numLuxels]: final origin xyz, w=1 valid / 0 blocked; any selected local/sun
 #define RESTIR_BIND_SUN_VISIBILITY   28  // float[numLuxels]: independent closest-sky cone fraction; selected sun only
 #define RESTIR_BIND_SELECTED_SOURCES 29 // vec4[shadowLights.Count()]: canonical origin/radius; sun w=-1
-#define RESTIR_BIND_PREVIOUS_IRRADIANCE 30 // vec4[numSamples]: previous style-0 irradiance RGB and weight per sample
+#define RESTIR_BIND_PREVIOUS_IRRADIANCE 30 // vec4[numSamples]: style-0 base sampled sums of earlier iterations (rgb, w = count) per sample
 #define RESTIR_BIND_SAMPLE_POSITIONS 31 // vec4[numSamples]: resident positions for exact cross-page nearest-sample lookup
 #define RESTIR_BIND_COVERAGE         32  // sampler2D[] unsized, partially bound; index = ReSTIRGpuMaterial::coverageTexture etc.
 #define RESTIR_BIND_TLAS             33  // accelerationStructureEXT (hardware-rt only); MUST stay the last binding
@@ -63,29 +63,12 @@
 #define RESTIR_WORKGROUP_SIZE        64
 
 //-----------------------------------------------------------------------------
-// Reservoir indexing: R(face f, sample k of f, slot) = faces[f].firstReservoir + k * faces[f].numStyles + slot
+// Transport records keep the name "reservoir": one per (sample, style slot).
+// R(face f, sample k of f, slot) = faces[f].firstReservoir + k * faces[f].numStyles + slot
 // (scene builder leaves firstReservoir = 0; the host assigns it as a prefix sum of numSamples*numStyles
 // in the uploaded copy of the faces buffer). numReservoirs = sum(numSamples*numStyles).
 // Accumulation index = R * RESTIR_MAX_CHANNELS + channel.
 //-----------------------------------------------------------------------------
-struct ReSTIRReservoir						// 64 bytes
-{
-	float		samplePos[4];			// xyz: direct -> point on the light (sky/sun: origin + dir*1e5); indirect -> path vertex. w: unused
-	float		radiance[4];			// rgb: unshadowed radiance arriving from samplePos EXCLUDING the receiver cosine
-										//      (direct: VRAD falloff*intensity incl. light-side cosine/cone; indirect: incoming
-										//      radiance estimate at the path vertex); w: target pdf p_hat (luminance of rgb)
-	float		wSum;					// RIS weight sum
-	float		M;						// candidate count (clamped for temporal reuse, e.g. 20 * candidates)
-	float		W;						// unbiased contribution weight = wSum / (M * p_hat), 0 when p_hat == 0
-	float		sourcePdf;				// pdf of the selected candidate in its generating distribution
-	unsigned int light;					// light index for direct samples, 0xFFFFFFFF for path samples
-	unsigned int flags;					// RESTIR_RES_*
-	unsigned int hitClass;				// hitId class of the path vertex (indirect) or 0
-	unsigned int emitterTri;			// direct emit_surface sample: index into ReSTIRScene::emitterTriangles of samplePos; else unused
-};
-#define RESTIR_RES_VALID        0x1
-#define RESTIR_RES_PATH         0x2   // indirect (slot 0 only)
-#define RESTIR_RES_VISIBLE      0x4   // visibility of samplePos from the owning sample has been traced and passed
 
 //-----------------------------------------------------------------------------
 // Compute-bvh node (Karras LBVH): numTriangles leaves, numTriangles-1 internal nodes.
@@ -109,8 +92,8 @@ struct ReSTIRPushConstants
 	unsigned int count;					// work items in this dispatch
 	unsigned int first;					// index of the first work item (batching)
 	unsigned int seed;					// options.seed
-	unsigned int candidates;			// options.candidates
-	unsigned int spatialRadius;			// options.spatialRadius (cells)
+	unsigned int candidates;			// options.candidates: hemisphere rays and emit_surface samples per sample per iteration
+	unsigned int reserved0;
 	unsigned int maxBounces;			// options.maxBounces
 	unsigned int numLights;
 	unsigned int numStyles;
@@ -133,6 +116,7 @@ COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 144 );
 #define RESTIR_PC_FINAL_ITERATION   0x1
 #define RESTIR_PC_HARDWARE_RT       0x2   // informative; shaders are compiled per backend anyway
 #define RESTIR_PC_RECEIVER_PAGE     0x4   // receiverAccumulation is addressed relative to pageBase.x
-#define RESTIR_PC_RESERVOIR_PAGE    0x8   // reservoir arrays are addressed relative to pageBase.x
+#define RESTIR_PC_RESERVOIR_PAGE    0x8   // transport arrays are addressed relative to pageBase.x
+#define RESTIR_PC_PUBLISH_IRRADIANCE 0x10 // restir_transport: publish previousIrradiance instead of sampling
 
 #endif // RESTIR_GPU_LAYOUT_H

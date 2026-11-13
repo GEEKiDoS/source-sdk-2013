@@ -15,8 +15,8 @@ static const unsigned int RESTIR_SUBMIT_MIN_ITEMS = 1024;
 // Ray-query cost varies sharply with page-local face/light distributions. The
 // adaptive sizer uses this as a watchdog safety ceiling, not as its target.
 static const unsigned int RESTIR_SUBMIT_MAX_ITEMS = 65536;
-static const unsigned int RESTIR_SPATIAL_SAFE_ITEMS = 8192;
-static const unsigned int RESTIR_CANDIDATE_SAFE_ITEMS = 16384;
+static const unsigned int RESTIR_DIRECT_SAFE_ITEMS = 8192;		// one shadow ray per point/spot light of the style
+static const unsigned int RESTIR_TRANSPORT_SAFE_ITEMS = 16384;
 
 enum ReSTIRPipeline
 {
@@ -25,10 +25,8 @@ enum ReSTIRPipeline
 	RESTIR_PIPE_HIERARCHY,
 	RESTIR_PIPE_REFIT,
 	RESTIR_PIPE_INIT,
-	RESTIR_PIPE_CANDIDATES,
-	RESTIR_PIPE_TEMPORAL,
-	RESTIR_PIPE_SPATIAL,
-	RESTIR_PIPE_ACCUMULATE,
+	RESTIR_PIPE_DIRECT,
+	RESTIR_PIPE_TRANSPORT,
 	RESTIR_PIPE_RECONSTRUCT,
 	RESTIR_PIPE_TRACE,
 	RESTIR_PIPE_AMBIENT,
@@ -163,7 +161,6 @@ struct CReSTIRVulkanDevice::Impl
 	VkDeviceSize scratchAlignment;
 	CUtlVector<unsigned int> hardwarePrimitiveMap;
 	CUtlVector<float> hardwareVertices;
-	unsigned int reservoirBindings[3];
 	unsigned int paddedTriangles;
 	const ReSTIRScene *scene;
 	ReSTIROptions options;
@@ -192,7 +189,6 @@ struct CReSTIRVulkanDevice::Impl
 	void RefreshDescriptorSet();
 	void ReallocateForReconstruct();
 	void CreateDescriptorsAndPipelines();
-	void WriteReservoirDescriptors();
 	VkCommandBuffer BeginCommands();
 	void Submit( VkCommandBuffer command );
 	void Wait();

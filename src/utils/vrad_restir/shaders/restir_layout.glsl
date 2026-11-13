@@ -51,16 +51,12 @@
 #define EMIT_QUAKELIGHT  4
 #define EMIT_SKYAMBIENT  5
 
-// Reservoir flags
-#define RESTIR_RES_VALID    0x1u
-#define RESTIR_RES_PATH     0x2u
-#define RESTIR_RES_VISIBLE  0x4u
-
 // Push-constant flags
 #define RESTIR_PC_FINAL_ITERATION 0x1u
 #define RESTIR_PC_HARDWARE_RT     0x2u
 #define RESTIR_PC_RECEIVER_PAGE   0x4u
 #define RESTIR_PC_RESERVOIR_PAGE  0x8u
+#define RESTIR_PC_PUBLISH_IRRADIANCE 0x10u
 
 //-----------------------------------------------------------------------------
 // Structs (restir_types.h / restir_gpu_layout.h)
@@ -209,18 +205,13 @@ struct ReSTIRGpuVisibilityQuery			// 32 bytes
 	uint reserved;
 };
 
-struct ReSTIRReservoir					// 64 bytes
+struct ReSTIRLightSample				// one sampled point on a light (shader-local, never stored)
 {
-	vec4 samplePos;
-	vec4 radiance;						// w = p_hat
-	float wSum;
-	float M;
-	float W;
-	float sourcePdf;
+	vec4 samplePos;						// xyz: point on the light (sky/sun: origin + direction * 1e5)
+	vec4 radiance;						// rgb: unshadowed radiance excluding the receiver cosine; w: luminance * base cosine
+	float sourcePdf;					// pdf of samplePos in its generating distribution
 	uint light;
-	uint flags;
-	uint hitClass;
-	uint emitterTri;					// direct EMIT_SURFACE: emitterTriangles index of samplePos
+	uint emitterTri;					// EMIT_SURFACE: emitterTriangles index of samplePos
 };
 
 struct ReSTIRBvhNode					// 48 bytes
@@ -244,7 +235,7 @@ layout( push_constant ) uniform ReSTIRPush
 	uint first;
 	uint seed;
 	uint candidates;
-	uint spatialRadius;
+	uint reserved0;
 	uint maxBounces;
 	uint numLights;
 	uint numStyles;
@@ -275,9 +266,8 @@ layout( std430, set = 0, binding = 4 )  readonly buffer SamplesBuf       { ReSTI
 layout( std430, set = 0, binding = 5 )  readonly buffer LuxelsBuf        { ReSTIRGpuLuxel luxels[]; };
 layout( std430, set = 0, binding = 6 )  readonly buffer FaceNeighborsBuf { int faceNeighbors[]; };
 layout( std430, set = 0, binding = 7 )  readonly buffer CellSamplesBuf   { int cellSamples[]; };
-layout( std430, set = 0, binding = 8 )  buffer ReservoirsPrevBuf         { ReSTIRReservoir reservoirsPrev[]; };  // written only by restir_init
-layout( std430, set = 0, binding = 9 )  buffer ReservoirsCurBuf          { ReSTIRReservoir reservoirsCur[]; };
-layout( std430, set = 0, binding = 10 ) buffer ReservoirsNextBuf         { ReSTIRReservoir reservoirsNext[]; };
+layout( std430, set = 0, binding = 8 )  buffer DirectIrradianceBuf       { vec4 directIrradiance[]; };	// exact point/spot direct, style-0 base channel, per sample
+// Bindings 9 and 10 are reserved 16-byte dummies.
 layout( std430, set = 0, binding = 11 ) buffer AccumulationBuf           { vec4 accumulation[]; };
 layout( std430, set = 0, binding = 12 ) buffer OutputBuf                 { vec4 outputRadiance[]; };
 layout( std430, set = 0, binding = 13 ) buffer LuxelValidBuf             { uint luxelValid[]; };
@@ -293,13 +283,13 @@ layout( std430, set = 0, binding = 20 ) readonly buffer AnormsBuf        { vec4 
 layout( std430, set = 0, binding = 21 ) readonly buffer HwPrimMapBuf     { uint hwPrimMap[]; };
 layout( std430, set = 0, binding = 22 ) readonly buffer SceneStylesBuf   { int sceneStyles[]; };
 layout( std430, set = 0, binding = 23 ) readonly buffer EmitterTrisBuf   { ReSTIRGpuEmitterTriangle emitterTriangles[]; };
-layout( std430, set = 0, binding = 24 ) readonly buffer StyleLightsBuf   { int styleLights[]; };	// numStyles+1 offsets, then light indices
-layout( std430, set = 0, binding = 25 ) buffer ReceiverAccumulationBuf   { vec4 receiverAccumulation[]; };	// as accumulation, minus flagged non-PATH direct
+layout( std430, set = 0, binding = 24 ) readonly buffer StyleLightsBuf   { int styleLights[]; };	// per style: first, surfaceFirst; then the end; then light indices
+layout( std430, set = 0, binding = 25 ) buffer ReceiverAccumulationBuf   { vec4 receiverAccumulation[]; };	// as accumulation, minus the direct light of runtime-direct lights
 layout( std430, set = 0, binding = 26 ) buffer ReceiverOutputBuf         { vec4 receiverRadiance[]; };		// as outputRadiance, receiver RGB
 layout( std430, set = 0, binding = 27 ) readonly buffer SunOriginsBuf   { vec4 sunVisibilityOrigins[]; };
 layout( std430, set = 0, binding = 28 ) buffer SunVisibilityBuf          { float sunVisibility[]; };
 layout( std430, set = 0, binding = 29 ) readonly buffer SelectedSourcesBuf { vec4 selectedSources[]; }; // canonical origin/radius; sun w=-1
-layout( std430, set = 0, binding = 30 ) readonly buffer PreviousIrradianceBuf { vec4 previousIrradiance[]; }; // style-0 RGB and weight per sample
+layout( std430, set = 0, binding = 30 ) buffer PreviousIrradianceBuf { vec4 previousIrradiance[]; }; // style-0 base sampled sums of earlier iterations (rgb, w = count) per sample
 layout( std430, set = 0, binding = 31 ) readonly buffer SamplePositionsBuf { vec4 samplePositions[]; };
 layout( set = 0, binding = 32 ) uniform sampler2D sceneTextures[];	// ReSTIRScene::textures: R8 coverage, RGBA8 albedo/emission
 #if RESTIR_HW_RAYQUERY

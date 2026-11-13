@@ -376,9 +376,8 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		(VkDeviceSize)scene.luxels.Count() * sizeof( ReSTIRGpuLuxel ),
 		(VkDeviceSize)( scene.faceNeighbors.Count() + scene.dfaceToFace.Count() ) * sizeof( int ),
 		(VkDeviceSize)scene.luxels.Count() * sizeof( int ),
-		reservoirCount * sizeof( ReSTIRReservoir ),
-		reservoirCount * sizeof( ReSTIRReservoir ),
-		reservoirCount * sizeof( ReSTIRReservoir ),
+		(VkDeviceSize)scene.samples.Count() * sizeof( float ) * 4,
+		16, 16,
 		reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4,
 		(VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4,
 		(VkDeviceSize)scene.luxels.Count() * sizeof( unsigned int ),
@@ -406,7 +405,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		if ( sizes[binding] > gpu.properties.limits.maxStorageBufferRange )
 			gpu.Fail( "scene buffer exceeds maxStorageBufferRange" );
 		bool sceneHeap = !gpu.IsPagedBinding( binding ) &&
-			( binding <= RESTIR_BIND_CELL_SAMPLES || binding >= RESTIR_BIND_ANORMS ||
+			( binding <= RESTIR_BIND_DIRECT_IRRADIANCE || binding >= RESTIR_BIND_ANORMS ||
 				( binding >= RESTIR_BIND_BVH_NODES && binding <= RESTIR_BIND_BVH_SCRATCH ) );
 		gpu.AddBuffer( sizes[binding], sceneHeap );
 	}
