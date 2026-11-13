@@ -164,6 +164,16 @@ viewmodel pass 1.36 to 0.59 / 1.30 to 0.58 ms, sun cascades 1.30 to 0.92 /
 0.95 to 0.64 ms, volumetric lighting 0.91 to 0.59 / 1.02 to 0.70 ms, GPU frame
 17.2 to 15.2 / 17.6 to 16.0 ms.
 
+`r_csm_eye_centered` (archived, default 1) fits each dynamic sun cascade around
+the camera position instead of around its view slice. The square is about a
+fifth larger, so sun shadow texels are that much coarser, but it no longer
+moves when the camera turns; a moved square re-renders the cascade's cached
+static and rigid depth, and a turning camera kept moving it. Sun cascade time
+while turning, roof / corridor on the same GPU: 2.32 / 1.85 ms before the
+changes above, 1.56 / 1.23 ms with the shared cascades, 0.93 / 0.61 ms (the
+standing cost) with this fit. With everything above, the GPU frame while
+turning went from 20.6 / 20.8 ms to 17.8 / 18.7 ms. 0 restores the tighter fit.
+
 `r_csm_cascades` (archived, 1-4, default 2) sets how many dynamic sun cascades
 are rendered. Fewer cascades keep the nearest splits of `r_csm_distance` and
 end the dynamic range at the last kept split; beyond it receivers fade to the

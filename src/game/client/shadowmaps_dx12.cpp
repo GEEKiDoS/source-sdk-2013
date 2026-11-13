@@ -49,6 +49,7 @@ ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", 
 ConVar r_shadowmap_realtime_fade_seconds( "r_shadowmap_realtime_fade_seconds", "0.5", FCVAR_ARCHIVE, "Real-time seconds for a full hybrid handoff: parallel fade-out then fade-in, half each; 0 switches immediately; invalid values use 0.5" );
 ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade receiver distance", true, 128, true, 32768 );
 ConVar r_csm_cascades( "r_csm_cascades", "2", FCVAR_ARCHIVE, "Dynamic sun cascades (1-4). Fewer cascades keep the nearest splits of r_csm_distance; receivers beyond them use the static sun map, which has no dynamic casters", true, 1, true, 4 );
+ConVar r_csm_eye_centered( "r_csm_eye_centered", "1", FCVAR_ARCHIVE, "Fit each dynamic sun cascade around the camera position instead of around its view slice: about a fifth coarser shadow texels, but turning the camera no longer re-renders the cascades", true, 0, true, 1 );
 ConVar r_shadowmap_resolution( "r_shadowmap_resolution", "1", FCVAR_ARCHIVE, "Shadow map resolution: 0 low, 1 medium, 2 high, 3 ultra. High matches the original 2048 cascade slot, 512 local slot and 4096 static sun", true, 0, true, 3 );
 ConVar r_shadowmap_filter( "r_shadowmap_filter", "1", FCVAR_ARCHIVE, "Sun shadows: 0 four-tap PCF, 1 bounded contact-hardening PCSS; local lights always use four-tap PCF", true, 0, true, 1 );
 ConVar r_shadowmap_skip_radiance( "r_shadowmap_skip_radiance", "0.0009765625", FCVAR_ARCHIVE, "Skip local shadow sampling below this total unshadowed direct RGB contribution; retain all light energy, 0 samples exactly", true, 0.0f, false, 0.0f );
@@ -2776,7 +2777,13 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		// there, so it is never sampled. Its cache stays untouched and its packet entry wholly zero (absent).
 		if ( nearSlice>data.receiverMaxDepth ) continue;
 		Vector corners[8]; ReceiverCorners(data.receiver,receiverClip,forward,nearSlice,farSlice,corners);
-		Vector sphereCenter(0,0,0); for ( int c=0;c<8;++c ) sphereCenter+=corners[c]; sphereCenter*=1.0f/8;
+		// The slice's bounding sphere, or (r_csm_eye_centered) the sphere around the eye that holds the slice. The
+		// second does not move when the camera turns, so turning never leaves a kept square: every refit re-renders
+		// the chart's static, rigid and overlay layers. It is about a fifth larger.
+		const bool eyeCentered=r_csm_eye_centered.GetBool();
+		Vector sphereCenter(0,0,0);
+		if ( eyeCentered ) sphereCenter=data.receiver.origin;
+		else { for ( int c=0;c<8;++c ) sphereCenter+=corners[c]; sphereCenter*=1.0f/8; }
 		float sphereRadius=1; for ( int c=0;c<8;++c ) sphereRadius=MAX(sphereRadius,(corners[c]-sphereCenter).Length());
 		sphereRadius=ceilf(sphereRadius*16)/16; sphereRadius+=2*sphereRadius/g_ShadowRes.csmUseful;
 		// The square keeps a margin around the slice sphere. Keep that square (and its chart) while the sphere and the
@@ -2794,7 +2801,10 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 				const ShadowMapSceneCaster_t &caster=data.casters[c];
 				if ( !caster.immutable && SunBoxOverlapsSquare(caster,center,halfExtent,basisX,basisY) ) AddBounds(mins,maxs,caster.mins,caster.maxs);
 			}
-			for ( int c=0;c<8;++c ) AddBounds(mins,maxs,corners[c],corners[c]);
+			// The eye sphere's own box, not the slice corners inside it: the depth range must not depend on the view direction either.
+			const Vector sphereExtent(sphereRadius,sphereRadius,sphereRadius);
+			if ( eyeCentered ) AddBounds(mins,maxs,sphereCenter-sphereExtent,sphereCenter+sphereExtent);
+			else for ( int c=0;c<8;++c ) AddBounds(mins,maxs,corners[c],corners[c]);
 		};
 		auto travelRange=[&]( const Vector &mins, const Vector &maxs, float &lo, float &hi )
 		{

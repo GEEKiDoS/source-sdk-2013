@@ -249,6 +249,19 @@ published splits, matrices, depth records and rectangles and leases the main atl
 `r_shadowmap_viewmodel_cascade 1` (archived, default 0) gives it its own atlas pair and
 a cascade fitted to the viewmodel again, which is sharper on the weapon and costs one
 chart render and depth restore per frame (0.3 + 0.1 ms on the GTX 1050 in c1m1).
+
+Each dynamic cascade is a light-space square that `BuildSun` keeps (with its cached static and rigid depth) while the
+sphere it must cover stays inside it, 1.2 times that sphere's radius. `r_csm_eye_centered` (archived, default 1)
+makes that sphere the one around the camera position that holds the cascade's view slice, instead of the slice's
+own bounding sphere: about a fifth larger (1.52 against 1.25 far distances at 90 degrees, 16:9), so shadow texels
+are that much coarser, but it does not move when the camera turns. The slice sphere's centre lies half the cascade's
+depth ahead of the eye, so a turning camera kept carrying it out of its square (by the margin's geometry about
+every 30 degrees), and each time the cascade's three layers were re-rendered. Sun cascade ms on the GTX 1050 in
+c1m1 at 1280x720 (`fps_max 60`, 2-3 launches each), standing /
+turning with `+right`: roof 0.93 / 1.56 -> 0.93 / 0.93, corridor 0.64 / 1.23 -> 0.64 / 0.61; GPU frame while
+turning 18.75 -> 17.83 and 19.47 -> 18.70. The depth range of a kept square uses the sphere's box rather than
+the slice corners, so it does not depend on the view direction either.
+
 A nested receiver gets a work-only
 copy-on-write target before writing a parent-sampled atlas, with queue ordering and
 resource leases preserving the older packet exactly. Local pages retain their
