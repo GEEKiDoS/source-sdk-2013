@@ -1012,10 +1012,15 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			ID3D12DescriptorHeap *heaps[] = { resourceHeap, samplerHeap };
 			pList->SetDescriptorHeaps( 2, heaps );
 			m_bGraphicsBindingsValid = false;
-			// Draws without space 4/5 skip those binds (also after a root change), so their cached handles must not survive it.
+			// Draws without space 4/5, a native space-1 stage, a receiver-visibility table or caster instance rows skip
+			// those binds (also after a root change or in a new list), which leaves the parameter unset there. Their
+			// cached handles must not survive it: a later draw naming the same handle again would not bind it.
 			m_BoundPbrSpots = {};
 			m_BoundProbeTable = {};
 			m_nBoundProbeConstants = 0;
+			m_BoundNativeTables[0] = m_BoundNativeTables[1] = {};
+			m_BoundLightingVisibilityTable = {};
+			m_BoundInstanceTransforms = 0;
 			m_BoundScreenSpaceTable = {};
 			m_nBoundScreenSpaceView = m_nBoundVolumetricConstants = 0;
 			m_pBoundResourceHeap = resourceHeap;

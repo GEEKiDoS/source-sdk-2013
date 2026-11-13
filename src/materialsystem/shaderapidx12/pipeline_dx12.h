@@ -382,7 +382,7 @@ private:
 	static constexpr size_t kRecentConstants = 64;
 	LastConstantSlot m_RecentConstants[10][kRecentConstants];
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundRootTables[4] = {};
-	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundNativeTables[2] = {};
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundNativeTables[2] = {}; // like m_BoundPbrSpots: only draws with a native stage bind its space-1 table
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundPbrSpots{}; // valid for the bound root only; cleared with every root/heap rebind in PrepareBindings
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundProbeTable{}; // like m_BoundPbrSpots: only probe draws bind the space-4 pair
 	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundProbeConstants = 0;
@@ -391,7 +391,7 @@ private:
 	DescriptorRangeDX12 m_ScreenSpaceNullTable{};
 	uint64_t m_nScreenSpaceNullTableFence = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingViewTable{};
-	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingVisibilityTable{};
+	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundLightingVisibilityTable{}; // like m_BoundPbrSpots: only receiver-visibility draws bind it
 	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundLightingViewConstants = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE m_BoundHighresTable{};
 	D3D12_GPU_VIRTUAL_ADDRESS m_nBoundHighresConstants = 0, m_nBoundHighresFailure = 0;
@@ -407,7 +407,8 @@ private:
 
 	NativeTableCache m_NativeTableCache[2];
 	D3D12_GPU_VIRTUAL_ADDRESS m_BoundRootConstants[kRootNativeVertex - kRootVertexConstants] = {};
-	D3D12_GPU_VIRTUAL_ADDRESS m_BoundPropDraw = 0, m_BoundPropTriangles = 0, m_BoundInstanceTransforms = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS m_BoundPropDraw = 0, m_BoundPropTriangles = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS m_BoundInstanceTransforms = 0; // like m_BoundPbrSpots: only instanced caster draws bind the space-7 rows
 	ID3D12DescriptorHeap *m_pBoundResourceHeap = nullptr, *m_pBoundSamplerHeap = nullptr;
 	ID3D12RootSignature *m_pBoundRoot = nullptr;
 	uint64_t m_nGraphicsBindingsFence = 0;
