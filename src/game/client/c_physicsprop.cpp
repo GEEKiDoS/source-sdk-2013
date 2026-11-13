@@ -98,6 +98,20 @@ void C_PhysicsProp::OnDataChanged( DataUpdateType_t type )
 	}
 }
 
+// OnInternalDrawModel rejects a draw only when the static-lighting bake of a sleep transition fails, which needs
+// r_PhysPropStaticLighting (and, in L4D2, a static-lighting model). Without them an awake prop draws like any
+// C_BaseAnimating and its rigid content key (transform included) decides reuse; the key records the cvar.
+bool C_PhysicsProp::CanReuseRigidShadowDepth() const
+{
+	if ( !r_PhysPropStaticLighting.GetBool() )
+		return true;
+#if defined( L4D2 )
+	if ( !m_bStaticLightingEligible )
+		return true;
+#endif
+	return !m_bAwake && !m_bAwakeLastTime;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------

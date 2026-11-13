@@ -35,7 +35,7 @@ public:
 
 	// Depth geometry is standard C_BaseAnimating drawing. Do not reuse while
 	// the sleep transition can still reject a draw during lighting recomputation.
-	bool CanReuseRigidShadowDepth() const { return !m_bAwake && !m_bAwakeLastTime; }
+	bool CanReuseRigidShadowDepth() const;
 #if defined( L4D2 )
 	int ObjectCaps() OVERRIDE;
 	bool IsGlowUseTarget() OVERRIDE;

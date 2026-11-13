@@ -160,6 +160,9 @@ static ConVar r_ropetranslucent( "r_ropetranslucent", "1"
 );
 static ConVar r_rope_holiday_light_scale( "r_rope_holiday_light_scale", "0.055", FCVAR_DEVELOPMENTONLY );
 static ConVar r_ropes_holiday_lights_allowed( "r_ropes_holiday_lights_allowed", "1", FCVAR_DEVELOPMENTONLY );
+// A SplineRope's shadow footprint bounds the shader's minimum-width expansion only up to rope_min_pixel_diameter 8
+// (the cvar belongs to the shader DLL). DrawRenderCache samples it on the main thread; the queued replay reads it.
+static bool s_bSplineRopeFootprintBounded = false;
 
 static ConVar rope_wind_dist( "rope_wind_dist", "1000", 
 #if defined( L4D2 )
@@ -407,7 +410,7 @@ private:
 	void RenderSolidRopes( IMatRenderContext *pRenderContext, IMaterial *pMaterial, int nVertCount, int nIndexCount, bool bRenderNonSolid, ShadowMapDepthFootprint_t *footprint = NULL );
 	void ProjectQueuedRopeBounds( CShadowMapRopeFootprint *record, C_RopeKeyframe *pRope );
 #ifdef L4D2
-	void RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRenderData_t &cache, bool bShadowDepth, C_RopeKeyframe::BuildRopeQueuedData_t *pQueuedData );
+	void RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRenderData_t &cache, bool bShadowDepth, C_RopeKeyframe::BuildRopeQueuedData_t *pQueuedData, ShadowMapDepthFootprint_t *footprint = NULL );
 #endif
 
 private:
@@ -562,7 +565,7 @@ void CRopeManager::AddToRenderCache( C_RopeKeyframe *pRope )
 // Retail client.dll RVA 0x92400: the shader expands a Catmull-Rom ribbon.
 // POSITION is the spline parameter/texture coordinate/side, not world position.
 // Keep the ordinary beam path for materials whose shader is not SplineRope.
-void CRopeManager::RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRenderData_t &cache, bool bShadowDepth, C_RopeKeyframe::BuildRopeQueuedData_t *pQueuedData )
+void CRopeManager::RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRenderData_t &cache, bool bShadowDepth, C_RopeKeyframe::BuildRopeQueuedData_t *pQueuedData, ShadowMapDepthFootprint_t *footprint )
 {
 	IMaterial *pMaterial = cache.m_pSolidMaterial;
 	if ( bShadowDepth )
@@ -577,6 +580,8 @@ void CRopeManager::RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRen
 	CMeshBuilder meshBuilder;
 	IMesh *pMesh = NULL;
 	int nBatchVertices = 0, nBatchIndices = 0;
+	if ( footprint && !s_bSplineRopeFootprintBounded )
+		footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE | SHADOWMAP_FOOTPRINT_UNKNOWN );
 
 	for ( int iRope = 0; iRope < cache.m_nCacheCount; ++iRope )
 	{
@@ -650,6 +655,24 @@ void CRopeManager::RenderSplineRopes( IMatRenderContext *pRenderContext, RopeRen
 					vLight0 = pData->m_pLightValues[iSpan] * pData->m_vColorMod;
 					vLight1 = pData->m_pLightValues[iSpan + 1] * pData->m_vColorMod;
 					iPreviousSpan = iSpan;
+					// Shadow overlay footprint: the vertex shader evaluates the Catmull-Rom span of these four control
+					// points, which lies inside the hull of its Bezier form (p1, p1 + (p2-p0)/6, p2 - (p3-p1)/6, p2), and
+					// offsets the ribbon half a width from it. A thin rope is widened to rope_min_pixel_diameter / 2
+					// pixels at most, a quarter of it per side, which AddBounds' two-pixel margin covers (checked above).
+					if ( footprint && !footprint->full )
+					{
+						const Vector vBezier1 = vControl[1] + ( vControl[2] - vControl[0] ) * ( 1.0f / 6.0f );
+						const Vector vBezier2 = vControl[2] - ( vControl[3] - vControl[1] ) * ( 1.0f / 6.0f );
+						Vector vMins = vControl[1], vMaxs = vControl[1];
+						VectorMin( vMins, vBezier1, vMins ); VectorMax( vMaxs, vBezier1, vMaxs );
+						VectorMin( vMins, vBezier2, vMins ); VectorMax( vMaxs, vBezier2, vMaxs );
+						VectorMin( vMins, vControl[2], vMins ); VectorMax( vMaxs, vControl[2], vMaxs );
+						const float flPad = MAX( pRope->m_Width, 1.0f );
+						const Vector vPad( flPad, flPad, flPad );
+						footprint->AddBounds( vMins - vPad, vMaxs + vPad );
+						if ( footprint->full )
+							footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE );
+					}
 				}
 				// Quantize once for both sides. Retail retains the previous
 				// color at the final pair, and at a duplicated buffer boundary.
@@ -751,10 +774,8 @@ void CRopeManager::DrawRenderCache_NonQueued( bool bShadowDepth, RopeRenderData_
 #ifdef L4D2
 		if ( !Q_stricmp( pRenderCache[iRenderCache].m_pSolidMaterial->GetShaderName(), "SplineRope" ) )
 		{
-			RenderSplineRopes( pRenderContext, pRenderCache[iRenderCache], bShadowDepth, pBuildRopeQueuedData );
-			// The shader expands the ribbon from control points; its silhouette is not known here.
-			if ( footprint )
-				footprint->SetFull( SHADOWMAP_FOOTPRINT_ROPE | SHADOWMAP_FOOTPRINT_UNKNOWN );
+			// The shader expands the ribbon from control points; each span adds the bound of its curve.
+			RenderSplineRopes( pRenderContext, pRenderCache[iRenderCache], bShadowDepth, pBuildRopeQueuedData, footprint );
 			if ( pBuildRopeQueuedData )
 				pBuildRopeQueuedData += nCacheCount;
 			continue;
@@ -851,6 +872,11 @@ void CRopeManager::DrawRenderCache( bool bShadowDepth, CShadowMapRopeFootprint *
 
 	if( iRenderCacheCount == 0 )
 		return;
+	if ( bShadowDepth && footprint )
+	{
+		static ConVarRef rope_min_pixel_diameter( "rope_min_pixel_diameter" );
+		s_bSplineRopeFootprintBounded = rope_min_pixel_diameter.IsValid() && rope_min_pixel_diameter.GetFloat() <= 8.0f;
+	}
 
 	Vector vForward = CurrentViewForward();
 	Vector vOrigin = CurrentViewOrigin();

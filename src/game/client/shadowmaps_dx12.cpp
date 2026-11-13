@@ -1327,8 +1327,12 @@ bool BuildRigidCasterContent( CUtlVector<unsigned char> &content, const ShadowMa
 	const model_t *model=renderable->GetModel();
 	// Engine static props not admitted to clean depth, custom renderables,
 	// ropes, particles and details have no certified standard entity draw.
+	// A plain move parent only composes the entity's own transform, which the key records (and whose change
+	// reaches this entity through the hierarchy's invalidation like its own movement). An attachment parent or a
+	// bone merge takes the pose from the parent's bones, which no key field covers.
 	if ( caster.staticProp || !entity || !model || renderable!=entity->GetClientRenderable() ||
-		renderable->GetRenderClipPlane() || entity->GetMoveParent() || entity->IsFollowingEntity() ||
+		renderable->GetRenderClipPlane() || entity->IsFollowingEntity() ||
+		( entity->GetMoveParent() && ( entity->GetParentAttachment() || entity->IsEffectActive(EF_BONEMERGE) ) ) ||
 		entity->m_nRenderFX!=kRenderFxNone || entity->GetRenderMode()!=kRenderNormal || entity->HasBBoxVisualization() ) return false;
 	// Handle resolution makes post-draw proof safe across arbitrary removal.
 	EHANDLE entityHandle(entity);

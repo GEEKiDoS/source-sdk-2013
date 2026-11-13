@@ -88,8 +88,10 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // projected render-bounds union (+2 texels), then draw every current overlay caster/card; no overlay is throttled.
 // Clean/rigid rebuilds, projection/depth/slot/source/work-target changes (including exact COW) and unknown
 // geometry force full restoration. Caster bounds, detail cards and rope triangles are clipped to the chart
-// near plane, so a vertex with w<=0 expands only the visible fragment. Detail cards and rope meshes report
-// actual emitted vertices. Rope replay owns a pooled, refcounted record and clip matrix; callback-local
+// near plane, so a vertex with w<=0 expands only the visible fragment. Detail cards and beam rope meshes report
+// actual emitted vertices; L4D2 SplineRope ribbons, which the vertex shader expands, report the Bezier hull of each
+// Catmull-Rom span padded by the rope width (the footprint's pixel margin covers the minimum-width expansion for
+// rope_min_pixel_diameter <= 8; larger values restore the full chart). Rope replay owns a pooled, refcounted record and clip matrix; callback-local
 // feedback ends when emission ends. Completed rope bounds merge with CPU caster/card bounds. A still-pending
 // rope restores the conservative centerline bound published on the main thread before the queue. No caller
 // stack pointer or cache-matrix pointer survives into the material queue.
@@ -114,9 +116,11 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // Existing same-frame LOCAL reuse retains its once-per-frame state boundary: identical projection/generations,
 // pointer-set/classification, per-face notifications and oriented-detail tuple. Across frames LOCAL faces and
 // physical sun cascades additionally require exact certified rigid content bytes and physical work identity.
-// Standard unparented, unscaled, single-root STUDIOHDR_FLAGS_STATIC_PROP entities and standard brush entities
-// with opaque proxy-free nondeforming materials are eligible; unknown/custom draws, animation, flex, ragdolls,
-// ropes/particles, clip planes, parents, cutout textures and oriented detail overlays redraw on every new frame.
+// Standard unscaled, single-root STUDIOHDR_FLAGS_STATIC_PROP entities and standard brush entities
+// with opaque proxy-free nondeforming materials are eligible, including plain move-parented ones (the key records
+// the composed transform) and awake C_PhysicsProp while r_PhysPropStaticLighting cannot reject its draw;
+// unknown/custom draws, animation, flex, ragdolls, ropes/particles, clip planes, attachment parents and bone
+// merges, cutout textures and oriented detail overlays redraw on every new frame.
 // Registration/removal/classification generations cannot be acknowledged by equal content keys.
 // Notification/key snapshots preceding collection/draw must still be valid at commit; no update throttling.
 // Depth-draw notifications remain dirty. Main CPU packet pooling no longer duplicates physical sun resources:
