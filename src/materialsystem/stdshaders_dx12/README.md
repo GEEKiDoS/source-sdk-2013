@@ -797,6 +797,45 @@ so a cvar A/B inside one process charges that penalty to whichever state is not 
 with. Compare two states that both differ from the start state, or separate launches, and repeat them: two
 identical launches minutes apart differed by 0.7 ms on this pass while other desktop processes held 8-10% of the GPU.
 
+Live state in the light loop (GTX 1050, c1m1, 1280x720; variants of one shader binary selected by a constant
+given on the command line, two launches each, opaque world ms roof / corridor). In the corridor view the loop runs
+two iterations per pixel and 1.5% of the pixels get past the radiance test, yet what the code *behind* that test
+contains decided the time of the pass:
+
+| variant | roof | corridor |
+|---|---|---|
+| reference | 6.48 | 8.29 |
+| stop every light after the radiance test (prelude and radiance fields still run) | 3.54 | 5.71 |
+| no realtime PCF behind the test | 5.16 | 7.13 |
+| no baked-visibility lookup behind the test | 5.37 | 6.52 |
+| realtime PCF through the comparison sampler only (no preflight, no manual texel loads) | 5.90 | 7.46 |
+| reference with the stateless face lookup (below) | 5.94 | 7.55 |
+| the same plus 24 dummy loop-carried floats | 6.29 | 8.15 |
+
+The loop prelude (17 structured loads per light on every pixel) costs nothing measurable; code that almost never
+runs costs milliseconds. The working model is that the driver sizes each pixel's register allocation by the
+largest set of values live at once, so state carried across the loop (and the size of what the loop can reach)
+slows every load in the shader. Adopted from this: `PBR_BakedFaceVisibility`, the world-face lookup that re-reads
+the face's directory row per queried light instead of carrying `ShadowMapBakedLookup` across the loop (identical
+arithmetic; an unrolled search instead of its `while` loop made no difference). As a dedicated build, opaque world
+ms before -> after over three five-view runs: roof 5.66 -> 5.52, city 4.18 -> 3.98, doorway 6.37 -> 6.32,
+corridor 7.97 -> 7.44, turning 8.57 -> 7.86.
+
+Tried on the same model and rejected: sampling the local PCF and the sun PCSS in a prepass before the material
+(`PBR_ShadowPrepass`-style, results read back by the gather). With the results in a 32-float local array
+(`dcl_indexableTemp x0[32], 4`) the pass went to 10 ms; packed eight bits per light into one `uint4` it rendered
+the same image but, as a dedicated build, only moved the corridor from 7.97 to 7.36 ms while the city view went
+from 4.18 to 5.37 and the turning view from 8.57 to 9.39: a prepass samples the map for every lit pixel in range,
+whereas the loop samples only after the BRDF and `r_shadowmap_skip_radiance` tests (city: 1.06 lit lights per
+pixel, 0.01 map samples). In a same-binary comparison the prepass variants were also slower than the in-loop one
+(roof 6.9-7.4 vs 6.4, corridor 8.4-8.5 vs 8.1). Variants selected inside one binary and dedicated builds of the
+same code did not always agree (8.4 vs 7.2 ms for the prepass), so a dedicated build measured over several
+launches decides; single launches of this pass vary by about 0.5 ms. Passes made of many small draws (opaque
+renderables, viewmodels, sun cascades, 3D skybox) are worse: with identical binaries they read 35-75% higher in
+some sittings than in others, while this pass moved 3-6% and the full-screen passes not at all. In the one high
+sitting that was checked a remote-desktop viewer was encoding the screen (13% of the GPU, with the compositor
+another 7%); the low sittings were not checked. Compare those passes only within one sitting.
+
 `mat_pbr_showgbuffer 1|2|3` (cheat) shows normals, F0 or roughness of the opaque scene.
 
 ### PBR G-buffer contract

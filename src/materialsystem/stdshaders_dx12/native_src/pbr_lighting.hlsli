@@ -181,6 +181,48 @@ float PBR_BakedVisibility( ShadowMapReceiver r, inout ShadowMapBakedLookup looku
 	return visibility;
 }
 
+// World-face twin of PBR_BakedVisibility that keeps no lookup state between lights: the face's directory row is read
+// again for each queried light (one load) and the taps are derived from it exactly as ShadowMap_BeginBakedLookup and
+// PBR_EntryVisibility derive them, so no ShadowMapBakedLookup stays live across the light loop. That state cost the
+// opaque world pass 0.4-0.8 ms on a GTX 1050 in views where 2-20% of the pixels look anything up (stdshaders_dx12
+// README, "live state"). The search keeps the last entry whose light is <= the query.
+float PBR_BakedFaceVisibility( ShadowMapReceiver r, uint selectedLightIndex )
+{
+	float visibility = 1.0;
+	uint4 face = g_ShadowVisibilityFaces[r.bakedFaceId];
+	uint base = face.x, n = face.y;
+	[loop] while ( n > 1u )
+	{
+		uint half = n >> 1u;
+		if ( g_ShadowVisibilityEntries[base + half].x <= selectedLightIndex ) base += half;
+		n -= half;
+	}
+	[branch] if ( n != 0u )
+	{
+		uint4 entry = g_ShadowVisibilityEntries[base];
+		[branch] if ( entry.x == selectedLightIndex )
+		{
+			visibility = float( entry.y ) * ( 1.0 / 255.0 );
+			[branch] if ( entry.y > 255u )
+			{
+				uint2 last = face.zw - 1u;
+				float2 pixel = saturate( r.bakedQ ) * float2( last );
+				uint2 p0 = uint2( floor( pixel ) );
+				uint2 p1 = min( p0 + 1u, last );
+				float2 fraction = pixel - float2( p0 );
+				uint2 rows = uint2( p0.y, p1.y ) * face.z;
+				float4 taps = float4(
+					ShadowMap_VisibilityByte( entry.z + rows.x + p0.x ),
+					ShadowMap_VisibilityByte( entry.z + rows.x + p1.x ),
+					ShadowMap_VisibilityByte( entry.z + rows.y + p0.x ),
+					ShadowMap_VisibilityByte( entry.z + rows.y + p1.x ) );
+				visibility = lerp( lerp( taps.x, taps.y, fraction.x ), lerp( taps.z, taps.w, fraction.x ), fraction.y );
+			}
+		}
+	}
+	return visibility;
+}
+
 #define PBR_LIVE_BATCH 32
 // The upload owner stores a live bitmask in .w of the first entry of each receiver-local 32-entry chunk.
 // It is derived from the immutable .y visibility (nonzero), including dense payload entries; disk data is unchanged.
@@ -412,7 +454,15 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				[branch] if ( ( bakedDelta || realtimeWeight < 1.0 ) &&
 					( r.bakedFaceId != 0xFFFFFFFF || r.bakedPropPrimitive != 0xFFFFFFFF ) &&
 					( visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
+				{
+					// A world receiver is a face and keeps no lookup state across the loop; a model's is a prop primitive,
+					// whose begun lookup is reused.
+#if defined( PBR_WORLD_HIGHRES ) && PBR_WORLD_HIGHRES
+					bakedVisibility = PBR_BakedFaceVisibility( r, bakedLightIndex );
+#else
 					bakedVisibility = PBR_BakedVisibility( r, bakedLookup, bakedLightIndex );
+#endif
+				}
 				float realtimeVisibility = bakedVisibility;
 				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
 				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).

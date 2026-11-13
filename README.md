@@ -144,7 +144,12 @@ flashlights are rejected from three matrix rows. With the ranking change above,
 the c1m1 GPU frame on a GTX 1050 at 1280x720 went from 19.5-25.2 ms to
 16.5-21.1 ms across the five test views (hotel corridor 21.1 to 18.0 ms, of
 which opaque world 10.2 to 8.0 ms), and the corridor is no longer CPU-bound at
-about 50 fps. Details: `src/materialsystem/stdshaders_dx12/README.md`.
+about 50 fps. A later change keeps no baked-visibility lookup state across the
+world shader's light loop (the face's directory row is re-read per light): on
+this GPU the state a shader carries costs time even where the code using it
+rarely runs, and dropping it took the opaque world pass from 8.0 to 7.4 ms in
+the corridor and from 8.6 to 7.9 ms while turning there, with the other views
+0.05-0.2 ms better. Details: `src/materialsystem/stdshaders_dx12/README.md`.
 
 `r_csm_cascades` (archived, 1-4, default 2) sets how many dynamic sun cascades
 are rendered. Fewer cascades keep the nearest splits of `r_csm_distance` and
