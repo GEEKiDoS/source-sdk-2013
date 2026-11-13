@@ -122,20 +122,29 @@ the sun and lightmapped world are unchanged. `0` restores the full per-pixel lis
 The ambient fold is an approximation (like retail model lighting), not additional
 direct light stored in the dense ambient probes.
 
-World surfaces cap local-light specular per screen tile with
-`r_world_local_specular 4` by default: each view ranks a tile's lights by
-unshadowed radiance and only the strongest four contribute specular (retail
-L4D2 world surfaces have no per-light specular, only envmaps). Diffuse lighting
-is evaluated for every light exactly as before; `0` restores per-light specular
-for all lights.
-
 `r_world_baked_specular` (archived, default 0) controls per-light specular from
 baked-only (non-realtime) local lights on enhanced world surfaces. At 0 world
 surfaces match retail L4D2, which has no per-light specular on world surfaces,
 only envmaps; realtime-shadowed lights keep their specular and every light keeps
-its exact diffuse. At 1 the baked-only lights add specular again (still capped by
-`r_world_local_specular`). On c1m1 with a GTX 1050, 0 cut opaque world time from
-17.9 to 10.2 ms in the hotel corridor and from 9.8 to 7.7 ms on the roof.
+its exact diffuse. On c1m1 with a GTX 1050 the hotel corridor's opaque world pass
+takes 8.0 ms at 0 and 11.4 ms at 1 (separate launches).
+
+At 1 the baked-only lights add specular, capped per screen tile by
+`r_world_local_specular 4` (archived, 1-4; `0` = every light): each view ranks a
+tile's lights by unshadowed radiance and only the strongest four contribute
+specular. Diffuse lighting is never capped. The ranking is CPU work for every
+tile and light of every world view (42% of the main thread in the c1m1
+corridor), so it only runs while `r_world_baked_specular` is 1.
+
+World-pass work with no setting behind it: bumped highres faces build their
+bicubic lightmap footprint once for the base tile and all three planes, the sun
+mask dilation is skipped where the mask is exactly zero, style-overflow lights
+are resolved through a per-view light map instead of a per-pixel search, and
+flashlights are rejected from three matrix rows. With the ranking change above,
+the c1m1 GPU frame on a GTX 1050 at 1280x720 went from 19.5-25.2 ms to
+16.5-21.1 ms across the five test views (hotel corridor 21.1 to 18.0 ms, of
+which opaque world 10.2 to 8.0 ms), and the corridor is no longer CPU-bound at
+about 50 fps. Details: `src/materialsystem/stdshaders_dx12/README.md`.
 
 `r_csm_cascades` (archived, 1-4, default 2) sets how many dynamic sun cascades
 are rendered. Fewer cascades keep the nearest splits of `r_csm_distance` and

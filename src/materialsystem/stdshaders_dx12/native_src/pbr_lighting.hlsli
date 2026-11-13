@@ -21,8 +21,15 @@ float3 PBR_ProjectedSpots( PBRSurface s, float3 P, uint receiverFlag, inout PBRS
 	float3 result = 0.0;
 	[loop] for ( uint i = 0; i < count; ++i )
 	{
-		// Receiver-class rejection touches only the flags, not the 128-byte spot.
+		// Receiver-class rejection touches only the flags, and cookie-window rejection only three matrix rows (the same
+		// projection and test as DX12_ProjectedSampleClip): the 128-byte spot loads for points it can light.
 		[branch] if ( ( uint( g_ProjectedLights[i].slotsFlags.z ) & receiverFlag ) == 0 )
+			continue;
+		float projectedW = dot( g_ProjectedLights[i].worldToTexture[3], float4( P, 1.0 ) );
+		[branch] if ( !( projectedW > 0.0 ) )
+			continue;
+		float2 projectedUV = float2( dot( g_ProjectedLights[i].worldToTexture[0], float4( P, 1.0 ) ), dot( g_ProjectedLights[i].worldToTexture[1], float4( P, 1.0 ) ) ) / projectedW;
+		[branch] if ( !( all( projectedUV >= 0.0 ) && all( projectedUV <= 1.0 ) ) )
 			continue;
 		PBRSpotGpu light = g_ProjectedLights[i];
 		float3 L, radiance;
@@ -190,6 +197,13 @@ bool PBR_IsUnbakedLight( uint2 range, uint selectedLightIndex )
 		found = g_ShadowVisibilityPayload.Load( range.x + 4u * j ) == selectedLightIndex;
 	return found;
 }
+// View light index of a canonical (manifest ordinal) light ID, 0xFFFFFFFF when the view did not select it: one load
+// of the view's canonical light map, published after the resident tail of t1028 as index + 1 (interface _014; the
+// zero of an absent light, or of an out-of-range read, wraps to the absent value).
+uint PBR_ViewLightIndex( uint selectedLightIndex )
+{
+	return g_ShadowTileIndices[cSunIdentity.z + cSunIdentity.w + selectedLightIndex] - 1u;
+}
 
 // Copy of ShadowMap_GatherDirect (shadowmap_lighting.hlsli) with the Phong lobe replaced by the PBR lobes.
 // d.diffuse and d.specular are outgoing radiance (albedo included), not irradiance.
@@ -243,22 +257,16 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		[branch] if ( bakedProp )
 			unbakedLocalRange = cPropDirect.zw;
 	}
-	// Baked-direct receivers start their entry reads here, ahead of the sun's shadow work that hides their latency.
+	// Only the baked-only specular loop walks the receiver's entries, so only it starts their reads here (ahead of the
+	// sun's shadow work that hides their latency). The main loop's PBR_BakedVisibility begins a world face's lookup
+	// lazily, for the first light that needs its baked endpoint.
 	uint entryFirst = 0, entryCount = 0, firstLive = 0;
-	[branch] if ( bakedLocalDirect )
+	[branch] if ( bakedLocalDirect && bakedSpecular )
 	{
-		[branch] if ( bakedProp )
-		{
-			entryFirst = bakedLookup.cursor;
-			entryCount = bakedLookup.end - bakedLookup.cursor;
-		}
-		else
-		{
-			ShadowMap_BeginBakedLookup( r, bakedLookup );
-			entryFirst = bakedLookup.cursor;
-			entryCount = bakedLookup.end - bakedLookup.cursor;
-		}
-		[branch] if ( bakedSpecular ) firstLive = PBR_LiveEntries( entryFirst, entryCount );
+		[branch] if ( !bakedProp ) ShadowMap_BeginBakedLookup( r, bakedLookup );
+		entryFirst = bakedLookup.cursor;
+		entryCount = bakedLookup.end - bakedLookup.cursor;
+		firstLive = PBR_LiveEntries( entryFirst, entryCount );
 	}
 	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0 )
 	{
@@ -341,7 +349,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			{
 				uint canonical = g_ShadowVisibilityPayload.Load( unbakedLocalRange.x + 4u * unbakedCursor );
 				++unbakedCursor;
-				nextUnbaked = ShadowMap_UnbakedViewIndex( canonical );
+				nextUnbaked = PBR_ViewLightIndex( canonical );
 			}
 			uint resident = 0xFFFFFFFF;
 			[branch] if ( i < range.y ) resident = g_ShadowTileIndices[range.x + i];
@@ -454,7 +462,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			{
 				uint4 entry = g_ShadowVisibilityEntries[entryFirst + chunk + firstbitlow( live )];
 				live &= live - 1u;
-				uint index = ShadowMap_UnbakedViewIndex( entry.x );
+				uint index = PBR_ViewLightIndex( entry.x );
 				[branch] if ( index == 0xFFFFFFFF ) continue; // Absent from the conservative per-view selection: irrelevant.
 				[branch] if ( !PBR_TileSpecularMember( specList, specCap, index ) ) continue; // Capped specular: skipped lights keep their exact diffuse (in the carriers/main loop).
 				// Reject from the hot fields before loading attenuation/cone/radiance rows.

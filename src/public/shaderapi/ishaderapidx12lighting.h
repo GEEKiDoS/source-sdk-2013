@@ -27,6 +27,8 @@
 //          Unknown or moved receivers explicitly use visibility 1.
 //          v4 baked-direct world/prop receivers merge the positive-weight resident
 //          t1028 tail (cSunIdentity.zw offset/count) with sparse style overflow.
+//          _014: the tail is followed by the view's canonical light map (manifest
+//          ordinal -> view light index + 1), which resolves those overflow IDs.
 //
 //===========================================================================//
 #ifndef ISHADERAPIDX12LIGHTING_H
@@ -43,7 +45,7 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_013"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_014"
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -353,8 +355,9 @@ struct DX12LightingViewPacket
 	uint32	lightCount;
 	const uint32 *tileRanges;			// 2 * tileCount entries: offset, count into the CSR prefix of tileIndices
 	uint32	tileCount;					// tileCountX * tileCountY
-	const uint32 *tileIndices;			// CSR prefix, then ascending GPU indices for every light with realtimeWeight > 0
-	uint32	tileIndexCount;				// includes resident tail; cSunIdentity.zw describes it (zero/zero allowed on ordinary views)
+	const uint32 *tileIndices;			// CSR prefix, then ascending GPU indices for every light with realtimeWeight > 0, then the canonical light map
+	uint32	tileIndexCount;				// includes resident tail and canonical map; cSunIdentity.zw describes the tail (zero/zero allowed on ordinary views)
+	uint32	canonicalMapCount;			// trailing tileIndices entries: per manifest light ordinal, view light index + 1 of its BAKED_AVAILABLE record, 0 when absent from the view
 	const uint32 *tileSpecular;			// 4 * tileCount view-light indices (0xFFFFFFFF padding): per-tile top-4 unshadowed-radiance lights for world specular
 	uint32	tileSpecularCount;			// == 4 * tileCount when tileSpecular is set, else 0
 };

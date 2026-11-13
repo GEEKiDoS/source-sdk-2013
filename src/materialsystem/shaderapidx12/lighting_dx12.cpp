@@ -2437,14 +2437,15 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			failure = kPacketError;
 		if ( !failure && ( ( v.cascadeAtlasTarget && !packet->leases[0] ) || ( v.staticSunTarget && !packet->leases[1] ) ) ) failure = kPacketError;
 		if ( !failure && ( ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_CSM_VALID ) && !v.cascadeAtlasTarget || ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_STATIC_SUN_VALID ) && !v.staticSunTarget ) ) failure = SHADOWMAP_ERR_RESIDENCY;
-		// The resident tail reuses t1028; ordinary legacy packets may omit it.
+		// The resident tail and the canonical light map reuse t1028; ordinary legacy packets may omit them.
 		const uint32 residentOffset = v.constants.cSunIdentity[2], residentCount = v.constants.cSunIdentity[3];
-		const bool residentTail = s.highresMap || residentOffset || residentCount;
+		const bool residentTail = s.highresMap || residentOffset || residentCount || v.canonicalMapCount;
 		uint32 csrIndexCount = v.tileIndexCount, residentOrdinal = 0;
 		if ( !failure && residentTail )
 		{
-			if ( residentOffset > v.tileIndexCount || residentCount > v.lightCount ||
-				residentCount != v.tileIndexCount - residentOffset ) failure = kPacketError;
+			// The canonical light map follows the tail.
+			if ( residentOffset > v.tileIndexCount || residentCount > v.lightCount || v.canonicalMapCount > v.tileIndexCount - residentOffset ||
+				residentCount != v.tileIndexCount - residentOffset - v.canonicalMapCount ) failure = kPacketError;
 			else csrIndexCount = residentOffset;
 		}
 		const float *viewFloats = v.constants.cShadowViewport;
@@ -2562,6 +2563,22 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			}
 		}
 		if ( !failure && residentTail && residentOrdinal != residentCount ) failure = kPacketError;
+		// The canonical light map holds exactly the BAKED_AVAILABLE records, each at its manifest ordinal as index + 1:
+		// the PBR kernel resolves style-overflow and receiver-entry light IDs through it without a search.
+		if ( !failure && residentTail )
+		{
+			const uint32 *map = packet->indices.Base() + residentOffset + residentCount;
+			uint32 baked = 0, mapped = 0;
+			for ( int i = 0; i < packet->lights.Count(); ++i )
+			{
+				const RuntimeShadowLightGpu &light = packet->lights[i];
+				if ( !( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) ) continue;
+				++baked;
+				if ( light.bakedLightIndex >= v.canonicalMapCount || map[light.bakedLightIndex] != uint32( i ) + 1 ) { failure = kPacketError; break; }
+			}
+			for ( uint32 i = 0; !failure && i < v.canonicalMapCount; ++i ) mapped += map[i] != 0;
+			if ( !failure && mapped != baked ) failure = kPacketError;
+		}
 		uint32 previousFirst = ~0u, previousCount = ~0u;
 		for ( uint32 i = 0; !failure && i < v.tileCount; ++i )
 		{
@@ -2575,7 +2592,9 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 					if ( packet->indices[first+j-1] >= packet->indices[first+j] ) { failure = kPacketError; break; }
 			previousFirst = first; previousCount = count;
 		}
-		for ( uint32 index : packet->indices ) if ( index >= v.lightCount ) failure = kPacketError;
+		// CSR and resident tail entries are view light indices; the canonical map (index + 1) was validated above.
+		for ( uint32 i = 0, checked = v.tileIndexCount - ( residentTail ? v.canonicalMapCount : 0 ); !failure && i < checked; ++i )
+			if ( packet->indices[i] >= v.lightCount ) failure = kPacketError;
 		if ( failure ) s.Fail( failure, v.mapGeneration, v.viewGeneration );
 		else
 		{

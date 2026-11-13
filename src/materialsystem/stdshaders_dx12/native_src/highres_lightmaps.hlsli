@@ -27,6 +27,17 @@ cbuffer DX12HighresDrawConstants : register(b0, space3)
     float4 cHlightModelToWorld[3];
     float4 cHlightStyles[16];
 };
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+// Cubic B-spline taps of one tile-local position. They depend only on the tile's texel extent, so the base tile and
+// the bumped planes of a face (same extent) build them once.
+struct HlightFootprint
+{
+    float2 extent; // texel extent the taps were built for
+    float2 tap0;   // the two bilinear tap positions per axis, in texels from the tile origin
+    float2 tap1;
+    float2 blend;  // weight of tap0 per axis (the pair weights sum to one)
+};
+#endif
 struct HlightReceiver
 {
     uint4 nativeRect;
@@ -43,6 +54,9 @@ struct HlightReceiver
     float sun;
     float sunDilated; // Continuous ~1-texel dilation of the baked sun alpha within the same tile (>= sun).
     float3 style0BaseRGB;
+    #if defined(HIGHRES_LIGHTMAP_BICUBIC)
+    HlightFootprint footprint; // of the base tile; zero extent until a valid owner is resolved
+    #endif
 };
 // Per-invocation state, not a UAV read. Report after material derivatives have run.
 static uint hlightRejected = 0;
@@ -101,47 +115,44 @@ void HighresLightmap_Page4(uint kind, float slice, float2 uv0, float2 uv1, float
     }
 }
 #if defined(HIGHRES_LIGHTMAP_BICUBIC)
-// Cubic B-spline (Sigg & Hadwiger): the 4x4 neighbourhood folded into four bilinear taps.
-// f in [0,1). weight is the two pair sums; offset is each tap's position relative to floor(pixel - 0.5).
-void HighresLightmap_BSpline(float f, out float2 weight, out float2 offset)
+// Cubic B-spline (Sigg & Hadwiger): the 4x4 neighbourhood folded into four bilinear taps, both axes at once.
+// With f the fraction of the tile-local texel position, the weights are w0 = (1-f)^3/6, w1 = 2/3 - f^2 + f^3/2,
+// w3 = f^3/6 and w2 the rest; each pair (w0,w1), (w2,w3) becomes one bilinear tap at its centroid. Taps are clamped
+// to the tile's texel centers, so the bilinear footprint cannot leave the tile.
+HlightFootprint HighresLightmap_Footprint(float2 extent, float2 q)
 {
-    float4 n = float4(1.0, 2.0, 3.0, 4.0) - f;
-    float4 s = n * n * n;
-    float x = s.x;
-    float y = s.y - 4.0 * s.x;
-    float z = s.z - 4.0 * s.y + 6.0 * s.x;
-    float w = 6.0 - x - y - z;
-    float4 c = float4(x, y, z, w) * (1.0 / 6.0);
-    weight = float2(c.x + c.y, c.z + c.w);
-    offset = float2(c.y / weight.x - 1.0, 1.0 + c.w / weight.y);
-}
-// Taps are clamped to the tile's texel centers, so the bilinear footprint cannot leave the tile.
-float4 HighresLightmap_Bicubic(HlightTileGpuDX12 tile, float2 pixel)
-{
-    float2 tex = pixel - 0.5;
+    HlightFootprint fp;
+    fp.extent = extent;
+    float2 tex = saturate(q) * (extent - 1.0);
     float2 base = floor(tex);
-    float2 weightX, weightY, offsetX, offsetY;
-    HighresLightmap_BSpline(frac(tex.x), weightX, offsetX);
-    HighresLightmap_BSpline(frac(tex.y), weightY, offsetY);
-    float2 lo = tile.address.zw + 0.5;
-    float2 hi = tile.address.zw + tile.size.xy - 0.5;
-    float2 tap0 = clamp(base + float2(offsetX.x, offsetY.x) + 0.5, lo, hi);
-    float2 tap1 = clamp(base + float2(offsetX.y, offsetY.y) + 0.5, lo, hi);
+    float2 f = tex - base;
+    float2 f2 = f * f;
+    float2 f3 = f2 * f;
+    float2 g = 1.0 - f;
+    float2 w0 = g * g * g * (1.0 / 6.0);
+    float2 w1 = f3 * 0.5 - f2 + (2.0 / 3.0);
+    float2 w3 = f3 * (1.0 / 6.0);
+    float2 pair0 = w0 + w1;
+    float2 hi = extent - 0.5;
+    fp.tap0 = clamp(base + w1 / pair0 - 0.5, 0.5, hi);
+    fp.tap1 = clamp(base + w3 / (1.0 - pair0) + 1.5, 0.5, hi);
+    fp.blend = pair0;
+    return fp;
+}
+float4 HighresLightmap_Taps(HlightTileGpuDX12 tile, HlightFootprint fp)
+{
     float2 invPage = 1.0 / tile.size.zw;
-    uint kind = tile.address.x;
-    float slice = tile.address.y;
+    float2 uv0 = (tile.address.zw + fp.tap0) * invPage;
+    float2 uv1 = (tile.address.zw + fp.tap1) * invPage;
     float4 c00, c10, c01, c11;
-    HighresLightmap_Page4(kind, slice, tap0 * invPage, float2(tap1.x, tap0.y) * invPage, float2(tap0.x, tap1.y) * invPage, tap1 * invPage, c00, c10, c01, c11);
-    float sx = weightX.x / (weightX.x + weightX.y);
-    float sy = weightY.x / (weightY.x + weightY.y);
-    return lerp(lerp(c11, c01, sx), lerp(c10, c00, sx), sy);
+    HighresLightmap_Page4(tile.address.x, tile.address.y, uv0, float2(uv1.x, uv0.y), float2(uv0.x, uv1.y), uv1, c00, c10, c01, c11);
+    return lerp(lerp(c11, c01, fp.blend.x), lerp(c10, c00, fp.blend.x), fp.blend.y);
 }
 #endif
 float4 HighresLightmap_TileLoaded(HlightTileGpuDX12 tile, float2 q)
 {
 #if defined(HIGHRES_LIGHTMAP_BICUBIC)
-    float2 pixel = tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5;
-    return HighresLightmap_Bicubic(tile, pixel);
+    return HighresLightmap_Taps(tile, HighresLightmap_Footprint(float2(tile.size.xy), q));
 #else
     float2 uv = (tile.address.zw + saturate(q) * (tile.size.xy - 1) + 0.5) / tile.size.zw;
     float3 location = float3(uv, tile.address.y);
@@ -226,7 +237,12 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
     if (r.baseTile >= count) { HighresLightmap_Reject(3, r.baseTile); r.valid = 0; return r; }
     // Reuse the base tile's unpacked address for its RGB/alpha and sun dilation.
     HlightTileGpuDX12 baseTile = HighresLightmap_LoadTile(r.baseTile);
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+    r.footprint = HighresLightmap_Footprint(float2(baseTile.size.xy), r.q);
+    float4 base = HighresLightmap_Taps(baseTile, r.footprint);
+#else
     float4 base = HighresLightmap_TileLoaded(baseTile, r.q);
+#endif
     bool bakedPose = (ownerRecord.w & 1) != 0;
     [branch] if ((ownerRecord.z & 32) != 0)
     {
@@ -246,9 +262,14 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
     bool bakedSun = bakedPose && (ownerRecord.z & 8) != 0;
     r.sun = bakedSun ? saturate(base.a) : 1;
 #if PBR_WORLD_HIGHRES
-    // Dilation is saturated to [0,1], so max(dilation,1) is exactly 1 without its four page samples.
+    // Dilation is saturated to [0,1], so max(dilation,1) is exactly 1 without its four page samples. Its taps read
+    // the texels of the bicubic footprint (all weights positive), so an exactly zero bicubic alpha has nothing to dilate.
     r.sunDilated = 1;
-    [branch] if (bakedSun && r.sun != 1) r.sunDilated = max(HighresLightmap_SunDilated(baseTile, r.q), r.sun);
+    [branch] if (bakedSun && r.sun != 1)
+    {
+        r.sunDilated = 0;
+        [branch] if (base.a > 0) r.sunDilated = max(HighresLightmap_SunDilated(baseTile, r.q), r.sun);
+    }
 #else
     r.sunDilated = bakedSun ? max(HighresLightmap_SunDilated(baseTile, r.q), r.sun) : 1;
 #endif
@@ -283,6 +304,54 @@ float3 HighresLightmap_RGB(HlightReceiver r, uint plane)
     }
     return rgb;
 }
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+// The weighted sum of a face's three bumped planes (weights.x .. z for planes 1 .. 3), equal to
+// sum( weights[i] * HighresLightmap_RGB( r, i + 1 ) ): the style slots are walked once for all planes, a plane with
+// weight exactly zero is not fetched, and tiles of the base tile's extent reuse its footprint.
+float3 HighresLightmap_BumpedRGB(HlightReceiver r, float3 weights)
+{
+    if (r.valid == 0) return 0; // rejected owner stays visibly dark; the UAV reports the actual failure.
+    float3 rgb = 0;
+    uint count, stride;
+    HlightTiles.GetDimensions(count, stride);
+    HlightFootprint fp = r.footprint;
+    [loop] for (uint styleSlot = 0; styleSlot < 4; ++styleSlot)
+    {
+        uint style = (r.styles >> (styleSlot * 8)) & 255;
+        if (style == 255) break;
+        if (style >= 64) { HighresLightmap_Reject(5, style); continue; }
+        uint4 slotTiles = HlightFaces[r.faceId].tiles[styleSlot];
+        float3 slotRGB = 0;
+        [loop] for (uint plane = 0; plane < 3; ++plane)
+        {
+            float weight = plane == 0 ? weights.x : plane == 1 ? weights.y : weights.z;
+            uint tile = plane == 0 ? slotTiles.y : plane == 1 ? slotTiles.z : slotTiles.w;
+            if (!(weight > 0.0) || tile == 0xffffffff) continue;
+            if (tile >= count) { HighresLightmap_Reject(3, tile); continue; }
+            HlightTileGpuDX12 loaded = HighresLightmap_LoadTile(tile);
+            [branch] if (any(float2(loaded.size.xy) != fp.extent)) fp = HighresLightmap_Footprint(float2(loaded.size.xy), r.q);
+            slotRGB += weight * HighresLightmap_Taps(loaded, fp).rgb;
+        }
+        rgb += slotRGB * cHlightStyles[style / 4][style % 4];
+    }
+    // Captured actual native dynamic additions use the native padded bumped stride, not highres coordinates.
+    [branch] if ((cHlightRoute.x & 2) != 0)
+    {
+        float2 dynamicPixel = r.nativeRect.xy + r.q * r.nativeRect.zw + 0.5;
+        uint dynamicWidth, dynamicHeight;
+        HlightDynamic.GetDimensions(dynamicWidth, dynamicHeight);
+        float2 invDynamic = 1.0 / float2(dynamicWidth, dynamicHeight);
+        [loop] for (uint plane = 0; plane < 3; ++plane)
+        {
+            float weight = plane == 0 ? weights.x : plane == 1 ? weights.y : weights.z;
+            if (!(weight > 0.0)) continue;
+            float2 planePixel = dynamicPixel + float2((plane + 1) * (r.nativeRect.z + 3), 0);
+            rgb += weight * HlightDynamic.SampleLevel(HlightLinear, planePixel * invDynamic, 0).rgb;
+        }
+    }
+    return rgb;
+}
+#endif
 float4 HighresLightmap_Plane(HlightReceiver r, uint plane, float4 original)
 {
     if (cHlightRoute.x != 0 && r.nativeOnly == 0) original.rgb = HighresLightmap_RGB(r, plane);

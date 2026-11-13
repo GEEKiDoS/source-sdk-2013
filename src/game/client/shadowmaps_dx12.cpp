@@ -4230,6 +4230,20 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 		if ( data->lights[l].realtimeWeight>0 ) data->indices.AddToTail((uint32)l);
 	constants.cSunIdentity[3]=(uint32)data->indices.Count()-constants.cSunIdentity[2];
 	Assert(constants.cSunIdentity[3]==data->stats.positiveWeightLocals);
+	// Canonical light map after the tail: manifest ordinal -> view light index + 1 (0: not in this view). The PBR
+	// kernel resolves a face's style-overflow IDs and a receiver's entry IDs with one load instead of searching
+	// the view's light records.
+	const int canonicalFirst=data->indices.Count();
+	if ( (int)g_State.lightCount>INT_MAX-canonicalFirst ) { Fail(SHADOWMAP_ERR_RESIDENCY); return AbortView(*data); }
+	data->indices.AddMultipleToTail((int)g_State.lightCount);
+	if ( g_State.lightCount ) memset(data->indices.Base()+canonicalFirst,0,g_State.lightCount*sizeof(uint32));
+	for ( int l=0;l<data->lights.Count();++l )
+	{
+		const RuntimeShadowLightGpu &light=data->lights[l];
+		if ( ( light.visibilityFlags&DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) && light.bakedLightIndex<g_State.lightCount )
+			data->indices[canonicalFirst+(int)light.bakedLightIndex]=(uint32)l+1;
+	}
+	data->packet.canonicalMapCount=g_State.lightCount;
 	// Appending may have reallocated; no packet pointer may keep the CSR's old base.
 	data->packet.tileIndices=data->indices.Base(); data->packet.tileIndexCount=data->indices.Count();
 	data->packet.tileSpecular=data->tileSpecular.Base(); data->packet.tileSpecularCount=(uint32)data->tileSpecular.Count();

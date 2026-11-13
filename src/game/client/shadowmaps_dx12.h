@@ -104,8 +104,11 @@ extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation;
 // Sun and every relevant resident local complete required clean/overlay updates before receiver draws; baked-only
 // locals keep radiance/CSR but acquire no slots, chart matrices, depth work or receiver target leases.
 // Baked-direct world receivers additionally use the positive-weight local list: ascending packet-local GPU
-// indices appended after the complete CSR prefix in t1028; cSunIdentity.zw hold tail offset/count.
-// tileIndexCount includes both spans. Models/detail/moved/non-highres receivers retain the full CSR unchanged.
+// indices appended after the complete CSR prefix in t1028; cSunIdentity.zw hold tail offset/count. The view's
+// canonical light map follows it (packet canonicalMapCount entries: manifest light ordinal -> packet-local GPU
+// index + 1, 0 when the view did not select the light), so the PBR kernel resolves style-overflow and receiver
+// entry IDs with one load. tileIndexCount includes all three spans. Models/detail/moved/non-highres receivers
+// retain the full CSR unchanged.
 // There is no update-rate budget. Whole-influence rejection may skip invisible lights, never off-screen emitters
 // whose influence reaches visible receivers. Cubes publish matching depth and all face cameras atomically.
 // Existing same-frame LOCAL reuse retains its once-per-frame state boundary: identical projection/generations,

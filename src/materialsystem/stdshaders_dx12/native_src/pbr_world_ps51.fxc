@@ -217,9 +217,23 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	float3 lightmap = float3( 0.0, 0.0, 0.0 );
 	if ( hasBump && !flatDiffuse )
 	{
+#if PBR_WORLD_HIGHRES
+		// Derivatives precede the owner-dependent branch. Highres RGB replaces the native samples completely;
+		// native-only owners retain exactly the original gradients and scale.
+		float2 uvDx = ddx( lightmapUV ), uvDy = ddy( lightmapUV ), stepDx = ddx( planeStep ), stepDy = ddy( planeStep );
+		[branch] if ( cHlightRoute.x == 0 || hlr.nativeOnly != 0 )
+		{
+			[branch] if ( planeWeights.x > 0.0 ) lightmap += planeWeights.x * LightmapTexture.SampleGrad( LightmapSampler, lightmapUV + planeStep, uvDx + stepDx, uvDy + stepDy ).rgb;
+			[branch] if ( planeWeights.y > 0.0 ) lightmap += planeWeights.y * LightmapTexture.SampleGrad( LightmapSampler, lightmapUV + 2.0 * planeStep, uvDx + 2.0 * stepDx, uvDy + 2.0 * stepDy ).rgb;
+			[branch] if ( planeWeights.z > 0.0 ) lightmap += planeWeights.z * LightmapTexture.SampleGrad( LightmapSampler, lightmapUV + 3.0 * planeStep, uvDx + 3.0 * stepDx, uvDy + 3.0 * stepDy ).rgb;
+			lightmap *= LIGHT_MAP_SCALE;
+		}
+		else lightmap = HighresLightmap_BumpedRGB( hlr, planeWeights );
+#else
 		[branch] if ( planeWeights.x > 0.0 ) lightmap += planeWeights.x * LIGHTMAP_PLANE( 1, lightmapUV + planeStep );
 		[branch] if ( planeWeights.y > 0.0 ) lightmap += planeWeights.y * LIGHTMAP_PLANE( 2, lightmapUV + 2.0 * planeStep );
 		[branch] if ( planeWeights.z > 0.0 ) lightmap += planeWeights.z * LIGHTMAP_PLANE( 3, lightmapUV + 3.0 * planeStep );
+#endif
 	}
 	else
 		lightmap = LIGHTMAP_PLANE( 0, lightmapUV );

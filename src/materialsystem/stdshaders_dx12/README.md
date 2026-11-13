@@ -314,9 +314,13 @@ Receiver shader scheduling keeps each sun entry's orthographic chart in affine c
 PCF/PCSS tap loops. Four-tap sun/local preflight and PCF loops reuse one chart/compare body; selected-local PBR
 lighting evaluates only the diffuse lobe required by the baked-direct domain. Continuous highres filter coordinates
 do not carry `precise` (discrete owner/address decisions are unchanged), allowing normal multiply-add contraction.
-The three bumped lightmap-plane filters remain independent: serializing them reduced DXBC size but slowed the
-measured stairwell world pass. At SHADOWQUALITY 1 the final enhanced world/model shaders use 5052/4392 DXBC
-instructions and 87/85 temps, down from 6616/6163 and 138/134. The 1080p d1_trainstation_02 comparison retains the
+The three bumped lightmap planes of a highres face share one bicubic footprint and one filter body
+(`HighresLightmap_BumpedRGB`): the cubic B-spline taps depend only on the tile's texel extent, which the base tile
+and the planes of a face have in common, so they are built once per pixel (both axes vectorised) and each plane
+costs its tile record and four taps; the style slots are walked once for all planes. An earlier attempt that merely
+serialized the three independent filters was slower in a stairwell view; this one measured 0.75-0.83 ms faster than
+per-plane filters on a GTX 1050 (c1m1 roof and corridor, separate launches). The enhanced world shader went from
+5011 to 4579 DXBC instructions (SHADOWQUALITY 0, range fog). The 1080p d1_trainstation_02 comparison retains the
 same lightmap reconstruction, local shadows and sun penumbrae; these scheduling changes do not alter quality defaults.
 Brush sun capping requires an explicit baked model pose equal to the draw transform.
 The cap has two endpoints, blended by the summed weight `W` of valid CSM entries that were actually sampled
@@ -327,7 +331,9 @@ tile's own texel centers, folded with the interpolated value. It is continuous (
 bound never steps at texel boundaries; a 2x2-max of raw texels did, and showed as pixelated sun patches wherever the
 cascade is lit slightly beyond the baked edge. Inside valid cascades, which already hold the static casters, the mask
 therefore only vetoes about a texel beyond any lit texel, and PCSS penumbrae and thin runtime occluders are not
-clipped to luxel shape. Legacy lightmap pages pass the scalar twice (exactly the scalar cap). Without a valid
+clipped to luxel shape. The PBR world shader skips the dilation taps where the bicubic base alpha is exactly zero: the
+dilation reads the texels of that footprint, whose B-spline weights are all positive, so a zero result leaves nothing
+to dilate (fully shadowed interiors pay no dilation). Legacy lightmap pages pass the scalar twice (exactly the scalar cap). Without a valid
 cascade chart (disabled, deferred/cold, outside range) the interpolated scalar caps exactly as before. Every producer
 sets both values through `ShadowMap_SetBakedSun`; a direct field write would leave `bakedSunDilated` at 1 and drop
 the leak veto inside the cascades.
@@ -496,9 +502,15 @@ The sparse disk face ranges and canonical light indices are validated with the v
 appends the canonical uint32 lists after the aligned R8 payload in the existing `t1032` raw buffer,
 without copying the CPU visibility planes. Owner metadata packs count into `dimensionsFlags.z`
 bits 16..31 and raw uint offset into `dimensionsFlags.w` bits 1..31 (bit 0 remains baked-pose-known).
-Empty lists need no additional directory/payload load or canonical-to-GPU search. Nonempty lists
-resolve only the rare fallback IDs into the canonically ordered view light array and merge them with
-the resident tail, evaluating overlap once. Delta-only lights retain the weight-scaled bound; unbaked
+Empty lists need no additional directory/payload load or canonical-to-GPU lookup. Nonempty lists
+resolve their fallback IDs to view lights and merge them with the resident tail, evaluating overlap once.
+The PBR kernel resolves an ID with one load of the view's canonical light map (`PBR_ViewLightIndex`): interface
+`ShaderAPIDX12Lighting_014` publishes, after the resident tail of `t1028`, `canonicalMapCount` entries holding
+view light index + 1 per manifest light ordinal (0 = not selected by this view; the backend validates that it
+holds exactly the view's `BAKED_AVAILABLE` records). Style-overflow lists are common in c1m1 (flickering
+fire-lit rooms exceed the four-style palette), where the previous per-ID binary search over the 608-byte view
+light records was a measurable part of the world pass; legacy receivers keep that search
+(`ShadowMap_UnbakedViewIndex`). Delta-only lights retain the weight-scaled bound; unbaked
 lights use the full-term bound. Debug blocker/radius modes bypass both skips and observe the union.
 Old asset layouts are rejected and require a rebake. Sun and non-baked receiver policy are unchanged.
 Early-depth twins add no new discard, depth or coverage output and preserve the late highres failure report.
@@ -708,7 +720,8 @@ bilinear taps, each clamped to the tile's texel-centre rectangle (no bleeding fr
 dynamic additions (`HlightDynamic`) stay bilinear, and legacy highres shaders are unchanged. The native lightmap path
 (ordinary maps, native-only faces) stays bilinear: native face allocations are `(extents+1)²` with no gutter
 (`engine/gl_matsysiface.cpp`), so a ±1.5-texel footprint would read neighbouring faces. Cost per pixel: 4 taps for a flat
-single-style face, 12 tile taps (+3 dynamic) for a bumped one, +4 per plane for each extra style.
+single-style face, 4 base + 12 plane taps (+3 dynamic) for a bumped one, +4 per plane for each extra style; the
+footprint arithmetic is paid once per pixel (again only for a tile whose extent differs from the base tile's).
 
 Native logicals (`tools/pairs.py` slice `pbr`, `manifests/pbr.txt`): `pbr_world_vs51` (4), `pbr_world_ps51` (12), their
 `pbr_world_highres_vs51`/`_ps51`/`_earlydepth_ps51` twins selected by the backend on enhanced maps (4/12/12),
@@ -745,26 +758,44 @@ realtime-shadow branch that reads its matrices/rects. Same fields, same math, sa
 Static-sun copy-on-write also omits preservation only when a pending clean rebuild overwrites
 the entire replacement target before receiver use; cascade preservation remains unchanged.
 
-World local-light specular is capped per tile by `r_world_local_specular` (archived, default 4,
+`r_world_baked_specular` (archived, default 0) reaches world draws as c40.y. At 0
+`PBR_GatherDirect` skips the baked-only specular loop (and its entry-list directory and live-mask loads) on
+baked-direct world receivers: baked-only lights keep their exact diffuse in the stored carriers, realtime-weighted
+lights keep their specular in the main loop. This matches retail L4D2 world surfaces (envmaps only). The loop
+walks every live receiver entry of the pixel's face; in light-dense rooms it cost about 7 ms on a GTX 1050
+(c1m1 corridor, measured by toggling the cvar in one process, so up to ~1 ms of that is the toggle penalty
+described below) while each entry's view index was still a binary search. With one `PBR_ViewLightIndex` load
+per entry it costs 3.4 ms there (world pass 8.0 ms at 0, 11.4 ms at 1, separate launches). A
+member-driven variant (binary search per tile member instead of per entry) was tried under the same toggle
+method and dropped: -1.2 ms in the corridor, +3 ms on the roof.
+
+While it is 1, world local-light specular is capped per tile by `r_world_local_specular` (archived, default 4,
 range 1-4; 0 = every light, the reference). While building each view's tile CSR, the client ranks
 every light of a tile by its unshadowed radiance (attenuation/cap, spot cone and fade, as in
 `TileSpecularScore`) at the point of the tile-centre ray closest to the light, and publishes the
-top-4 view-light indices per tile (`tileSpecular` in the `_013` view packet, `g_ShadowTileSpecular`
+top-4 view-light indices per tile (`tileSpecular` in the view packet, `g_ShadowTileSpecular`
 t1035 space2). `PBR_GatherDirect` evaluates the local-light specular lobe only for lights in the
 receiver tile's list; diffuse (including every baked delta) is evaluated for all lights exactly as
 before, and skipped specular is dropped, not folded. Selection is per tile on the CPU, never
 per-pixel in the shader (a per-pixel candidate pool measured 3-5 ms *slower* from register
-spills). Interface `ShaderAPIDX12Lighting_013` adds the packet field and table slot; both shader
+spills). Interface `ShaderAPIDX12Lighting_013` added the packet field and table slot; both shader
 validators (`shader_precache_dx12`, `nativeshaderpack_dx12`) know the t1035 binding.
+The ranking is tiles x lights on the main thread for every world view (42% of the frame's CPU time in the
+c1m1 corridor, which capped it at ~50 fps), so it runs only while `r_world_baked_specular` is 1: at 0 the
+client publishes the neutral list, the material sends cap 0 (c40.x) and the shader loads no tile list (main
+thread there: about 18 ms to under 10 ms per frame, from xperf samples over frames rendered). The
+cap was only ever needed for the baked-only loop; the few realtime-weighted lights of the main loop always
+keep their specular. The ranking itself reads a compact per-view copy of the ranked fields
+(`TileSpecularLight_t`) instead of the 608-byte light records, and skips viewmodel views.
 
-`r_world_baked_specular` (archived, default 0) reaches world draws as c40.y. At 0
-`PBR_GatherDirect` skips the baked-only specular loop (and its first live-mask load) on baked-direct
-world receivers: baked-only lights keep their exact diffuse in the stored carriers, realtime-weighted
-lights keep their specular in the main loop. This matches retail L4D2 world surfaces (envmaps only).
-Even capped to four members, the loop walks every live receiver entry and resolves each one's view
-index by binary search, so in light-dense rooms it costs ~7-8 ms on a GTX 1050 (c1m1 corridor). A
-member-driven variant (binary search per tile member instead of per entry) was measured and rejected:
--1.2 ms in the corridor, +3 ms on the roof.
+Timing changes in these shaders (GTX 1050): changing, inside a running process, any pixel-shader constant the
+world shader branches on made the opaque world pass 0.9-1.2 ms slower at once, and normal again the moment the
+old value returned. That included a constant bit that selects nothing and `r_world_local_specular 3` instead of
+4; a component the shader does not read had no effect, and launching with the changed value in place showed no
+penalty (7.98 vs 8.11 ms). The cause is below this code (the same shader and draw stream ran in both states),
+so a cvar A/B inside one process charges that penalty to whichever state is not the one the process started
+with. Compare two states that both differ from the start state, or separate launches, and repeat them: two
+identical launches minutes apart differed by 0.7 ms on this pass while other desktop processes held 8-10% of the GPU.
 
 `mat_pbr_showgbuffer 1|2|3` (cheat) shows normals, F0 or roughness of the opaque scene.
 
