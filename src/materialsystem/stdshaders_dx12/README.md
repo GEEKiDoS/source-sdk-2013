@@ -703,9 +703,10 @@ capture is present. No format precision or receiver filtering coordinates change
 
 Enhanced receiver traffic: the 608-byte runtime light records retain full float precision. Radius/fade rejection
 reads only the light ID, origin/radius and fade bounds (28 bytes), deferring the remaining header until the light
-passes; baked-only specular similarly checks weight/origin before attenuation and cone data. A local chart reuses
-its home-face matrix and rectangle when the unbiased receiver belongs to that face, rather than fetching that
-same matrix again. Projected lights reject receiver classes using just their flags.
+passes; baked-only specular similarly checks weight/origin before attenuation and cone data. A local chart takes
+the home face's answer for the unbiased receiver from the rows it has just read, and fetches another face's rows
+only when the receiver belongs to one; it keeps the home rectangle but no matrix (see "Live state" below).
+Projected lights reject receiver classes using just their flags.
 
 The immutable visibility upload keeps the disk data unchanged but uses the GPU-only entry `.w` lane for a live
 bitmask at the first entry of each receiver-local 32-entry chunk (faces and prop meshes separately). The mask
@@ -820,6 +821,31 @@ the face's directory row per queried light instead of carrying `ShadowMapBakedLo
 arithmetic; an unrolled search instead of its `while` loop made no difference). As a dedicated build, opaque world
 ms before -> after over three five-view runs: roof 5.66 -> 5.52, city 4.18 -> 3.98, doorway 6.37 -> 6.32,
 corridor 7.97 -> 7.44, turning 8.57 -> 7.86.
+
+Also adopted, found with a per-component liveness count of the temps in the fxc listing (`-Zi`, literal moves left
+out): the local shadow chart no longer holds a face matrix. `ShadowMapLocalChart` kept the home face's `float4x4`
+for the taps and `ShadowMap_MakeLocalChart` fetched a second one for the receiver's own face, which was the largest
+live set of both receiver shaders. The home rows are now consumed as they are loaded (same products), the home
+face's core test is taken while they are at hand, and a tap off the plane path reloads its face's rows instead of
+selecting a retained matrix. Listing peak, scalars: world 168 -> 149, model 155 -> 136; what remains there is the
+four rows fxc loads together, and reordering or re-reading them moved it by at most 2. Measured by alternating the
+two published shader sets, one launch each (ms before -> after):
+
+| pass | roof | corridor | launches |
+|---|---|---|---|
+| Opaque renderables (model shader) | 2.24 -> 1.81 | 1.54 -> 1.41 | 6 / 9 |
+| DrawViewModels (model shader) | 1.69 -> 1.34 | 1.64 -> 1.29 | 6 / 9 |
+| Opaque world | 5.77 -> 5.99 | 7.54 -> 7.67 | 14 / 11 |
+| Volumetric lighting | 0.90 -> 0.90 | 1.03 -> 1.03 | 6 / 9 |
+| GPU frame | 17.39 -> 16.83 | 18.04 -> 17.60 | 6 / 6 |
+
+The model passes gained 20% while the world pass, whose listing peak fell by the same 19 scalars, stayed inside
+its launch noise (standard error 0.16-0.18 ms; with only the world binaries exchanged over five rounds: roof 6.12
+-> 6.07, corridor 7.66 -> 7.78). The listing count shows where to look; only a build tells whether the driver
+cares. Corridor renderables vary with what the launch happened to spawn (1.06-1.92 with one binary). Tried with it
+and dropped: reading the tile specular list at its test and starting the baked-only specular loop's entry range
+after the light loop (world listing peak 149 -> 154: the tile coordinates and view constants stay live instead; a
+runtime-conditional `ShadowMap_BeginBakedLookup` there also made fxc abort on the model shader).
 
 Tried on the same model and rejected: sampling the local PCF and the sun PCSS in a prepass before the material
 (`PBR_ShadowPrepass`-style, results read back by the gather). With the results in a 32-float local array

@@ -659,12 +659,6 @@ bool ShadowMap_LocalFaceInitialized( RuntimeShadowLightGpu light, uint face, uin
 	return ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 && face < light.faceCount &&
 		rect.w > 0 && rect.x < DX12_SHADOW_MAX_LOCAL_PAGES;
 }
-// Index the structured buffer before loading the matrix. Indexing an array in a
-// copied light makes SM5.1 select between all six matrices inside every PCSS tap.
-float4x4 ShadowMap_LocalMatrix( uint lightIndex, uint face )
-{
-	return g_ShadowLights[lightIndex].worldToClip[face];
-}
 // Recover the physical basis from the exact CPU matrix, including narrow spots.
 // Cube matrices encode +/-X,+/-Y,+/-Z and up +Z,+Z,+Z,+Z,-Y,+Y.
 float3 ShadowMap_LocalRay( float4x4 worldToClip, float2 plane )
@@ -690,7 +684,6 @@ struct ShadowMapLocalChart
 	float centerDepth;
 	float2 centerPixel;
 	uint lightIndex;
-	float4x4 homeMatrix;
 	uint4 homeRect;
 	bool valid;
 };
@@ -716,51 +709,65 @@ ShadowMapLocalChart ShadowMap_MakeLocalChart( uint lightIndex, RuntimeShadowLigh
 		c.normal = normal;
 		c.planeNumerator = dot( normal, relative );
 		c.homeFace = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( relative ) : 0;
-		float4x4 homeMatrix = ShadowMap_LocalMatrix( lightIndex, c.homeFace );
-		c.homeMatrix = homeMatrix;
 		c.homeRect = g_ShadowLights[lightIndex].faces[c.homeFace];
-		float4 clip = mul( homeMatrix, float4( c.center, 1.0 ) );
+		// The home face's matrix is consumed row by row and is not kept in the chart: a face matrix held in registers
+		// (two while the original face's was fetched) was the largest live set of the receiver shaders (stdshaders_dx12
+		// README, "live state"). The products are exactly those of mul( matrix, float4( point, 1 ) ). Rows are read
+		// through the structured buffer's own index: indexing the array of a copied light makes SM5.1 select between
+		// all six matrices.
+		float4 centerPoint = float4( c.center, 1.0 ), originalPoint = float4( p, 1.0 );
+		float4 clip, originalClip;
+		float4 row = g_ShadowLights[lightIndex].worldToClip[c.homeFace][0];
+		float3 rightAxis = row.xyz;
+		clip.x = dot( row, centerPoint ); originalClip.x = dot( row, originalPoint );
+		row = g_ShadowLights[lightIndex].worldToClip[c.homeFace][1];
+		float3 upAxis = row.xyz;
+		clip.y = dot( row, centerPoint ); originalClip.y = dot( row, originalPoint );
+		row = g_ShadowLights[lightIndex].worldToClip[c.homeFace][2];
+		clip.z = dot( row, centerPoint ); originalClip.z = dot( row, originalPoint );
+		row = g_ShadowLights[lightIndex].worldToClip[c.homeFace][3];
+		float3 forwardAxis = row.xyz;
+		clip.w = dot( row, centerPoint ); originalClip.w = dot( row, originalPoint );
 		c.valid = clip.w > 0.0 && clip.z >= 0.0 && clip.z <= clip.w && c.radial > 0.0;
+		// The receiver itself may lie on another face than its offset center; that face's projection then decides
+		// whether it is inside the slot's core. The home face's answer is taken here, while its rows are at hand
+		// (left to the branch below, the compiler keeps all four rows live until then).
+		uint originalFace = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( p - light.origin ) : 0;
+		bool otherFace = originalFace != c.homeFace;
+		c.valid = c.valid && ( otherFace || ShadowMap_InCore( originalClip, c.homeRect.w ) );
 		if ( c.valid )
 		{
 			c.homePlane = clip.xy / clip.w * light.tanRenderedHalfFov;
 			c.centerDepth = clip.z / clip.w;
 			c.centerPixel = ShadowMap_ClipUV( clip ) * float( c.homeRect.w ) - 0.5;
-			c.forward = normalize( homeMatrix[3].xyz );
-			c.right = normalize( homeMatrix[0].xyz );
-			c.up = normalize( homeMatrix[1].xyz );
+			c.forward = normalize( forwardAxis );
+			c.right = normalize( rightAxis );
+			c.up = normalize( upAxis );
 			if ( c.planeNumerator != 0.0 )
 			{
 				c.planeDepthScale = -light.shadowNear / ( 1.0 - light.shadowNear / light.shadowFar ) / c.planeNumerator / light.planeToTexel;
 				c.homeDepthGradient = c.planeDepthScale * float2( dot( c.normal, c.right ), -dot( c.normal, c.up ) );
 			}
-			uint originalFace = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( p - light.origin ) : 0;
-			// An explicit branch keeps the common home-face matrix/rectangle resident. A ternary makes fxc
-			// fetch the original face's matrix even when it selects the already-loaded home matrix.
-			float4x4 originalMatrix = homeMatrix;
-			uint originalSize = c.homeRect.w;
-			[branch] if ( originalFace != c.homeFace )
+			[branch] if ( otherFace )
 			{
-				originalMatrix = ShadowMap_LocalMatrix( lightIndex, originalFace );
-				originalSize = g_ShadowLights[lightIndex].faces[originalFace].w;
+				float4 otherClip;
+				otherClip.x = dot( g_ShadowLights[lightIndex].worldToClip[originalFace][0], originalPoint );
+				otherClip.y = dot( g_ShadowLights[lightIndex].worldToClip[originalFace][1], originalPoint );
+				otherClip.z = dot( g_ShadowLights[lightIndex].worldToClip[originalFace][2], originalPoint );
+				otherClip.w = dot( g_ShadowLights[lightIndex].worldToClip[originalFace][3], originalPoint );
+				c.valid = ShadowMap_InCore( otherClip, g_ShadowLights[lightIndex].faces[originalFace].w );
 			}
-			c.valid = c.valid && ShadowMap_InCore( mul( originalMatrix, float4( p, 1.0 ) ), originalSize );
 		}
 	}
 	return c;
 }
-// Almost every tap stays on the home face. Retain its exact matrix/rectangle
-// across the loops instead of reloading five structured-buffer vectors per tap.
-// Seam crossings still select the neighbouring face's own camera and rectangle.
-bool ShadowMap_LocalTapFace( RuntimeShadowLightGpu light, ShadowMapLocalChart c, uint face, out float4x4 faceMatrix, out uint4 rect )
+// Almost every tap stays on the home face, whose rectangle the chart keeps. Seam crossings select the neighbouring
+// face's own rectangle (and, in ShadowMap_LocalCompare, its camera).
+bool ShadowMap_LocalTapFace( RuntimeShadowLightGpu light, ShadowMapLocalChart c, uint face, out uint4 rect )
 {
-	faceMatrix = c.homeMatrix;
 	rect = c.homeRect;
 	[branch] if ( face != c.homeFace )
-	{
-		faceMatrix = ShadowMap_LocalMatrix( c.lightIndex, face );
 		rect = g_ShadowLights[c.lightIndex].faces[face];
-	}
 	return ShadowMap_LocalFaceInitialized( light, face, rect );
 }
 float3 ShadowMap_LocalOffsetRay( RuntimeShadowLightGpu light, ShadowMapLocalChart c, float2 offset )
@@ -808,8 +815,7 @@ float ShadowMap_LocalCompare( RuntimeShadowLightGpu light, ShadowMapLocalChart c
 	uint face = light.faceCount == DX12_SHADOW_MAX_FACES ? ShadowMap_CubeFace( ray ) : 0;
 	float result = 1.0;
 	uint4 rect;
-	float4x4 faceMatrix;
-	if ( c.valid && ShadowMap_LocalTapFace( light, c, face, faceMatrix, rect ) )
+	if ( c.valid && ShadowMap_LocalTapFace( light, c, face, rect ) )
 	{
 		// One face: clip UV is the center plus the texel offset and perspective
 		// depth is affine in that offset, so the tap does not reproject.
@@ -827,13 +833,23 @@ float ShadowMap_LocalCompare( RuntimeShadowLightGpu light, ShadowMapLocalChart c
 		else
 		{
 			float3 q = ShadowMap_LocalPoint( light, c, ray, usePlane );
-			float4 clip = mul( faceMatrix, float4( q, 1.0 ) );
+			// This face's matrix, a row at a time (see ShadowMap_MakeLocalChart).
+			float4 point4 = float4( q, 1.0 );
+			float4 clip;
+			float4 row = g_ShadowLights[c.lightIndex].worldToClip[face][0];
+			float3 rightAxis = row.xyz;
+			clip.x = dot( row, point4 );
+			row = g_ShadowLights[c.lightIndex].worldToClip[face][1];
+			float3 upAxis = row.xyz;
+			clip.y = dot( row, point4 );
+			clip.z = dot( g_ShadowLights[c.lightIndex].worldToClip[face][2], point4 );
+			clip.w = dot( g_ShadowLights[c.lightIndex].worldToClip[face][3], point4 );
 			uint pageWidth, pageHeight;
 			g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].GetDimensions( pageWidth, pageHeight );
 			float2 atlasUV = ( float2( rect.yz ) + ShadowMap_ClipUV( clip ) * float( rect.w ) ) / float2( pageWidth, pageHeight );
 			if ( usePlane )
 			{
-				float2 gradient = c.planeDepthScale * float2( dot( c.normal, normalize( faceMatrix[0].xyz ) ), -dot( c.normal, normalize( faceMatrix[1].xyz ) ) );
+				float2 gradient = c.planeDepthScale * float2( dot( c.normal, normalize( rightAxis ) ), -dot( c.normal, normalize( upAxis ) ) );
 				float2 pixel = ShadowMap_ClipUV( clip ) * rect.w - 0.5;
 				int2 first = int2( floor( pixel ) ) + int2( rect.yz );
 				float4 stored = float4( g_ShadowLocalAtlas[NonUniformResourceIndex( rect.x )].Load( int3( first, 0 ) ),
