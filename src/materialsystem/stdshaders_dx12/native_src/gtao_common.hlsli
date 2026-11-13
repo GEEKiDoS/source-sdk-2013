@@ -16,6 +16,8 @@
 // HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
 // CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE.
 
+#include "viewmodel_depth.hlsli"
+
 #define XE_GTAO_PI 3.14159265358979323846
 #define XE_GTAO_PI_HALF 1.57079632679489661923
 #define XE_GTAO_DEPTH_MIP_LEVELS 5
@@ -45,10 +47,11 @@ cbuffer GtaoParams : register( b0, space1 )
 	float2 gDepthScale;
 };
 
+// Native scene depth -> view depth; the far value for the clear depth and for viewmodel depth (no occluder there).
 float ViewDepth( float z )
 {
 	float denominator = gDepthUnpackConsts.y - z;
-	return abs( denominator ) < 1e-6 ? 65504.0 : gDepthUnpackConsts.x / denominator;
+	return abs( denominator ) < 1e-6 || z < DX12_VIEWMODEL_DEPTH_MAX ? 65504.0 : gDepthUnpackConsts.x / denominator;
 }
 
 float3 ViewPosition( float2 uv, float depth )

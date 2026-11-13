@@ -429,6 +429,8 @@ public:
 
 	void			AddViewToScene( CRendering3dView *pView ) { m_SimpleExecutor.AddView( pView ); }
 	bool			DrawDeferredSkybox();
+	// Opaque viewmodel depth inside the main view's opaque depth prepass (see viewrender.cpp).
+	void			DrawViewModelDepthPrepass();
 protected:
 	// Sets up the view parameters for all views (left, middle and right eyes).
     void            SetUpViews();
@@ -653,6 +655,7 @@ private:
 
 	CBase3dView *m_pActiveRenderer;
 	CRendering3dView *m_pDeferredSkybox; // Non-owning; the RenderView stack retains the sky view.
+	const CViewSetup *m_pViewModelPrepassView; // The main scene's view while ViewDrawScene draws a scene whose viewmodels follow it; else NULL.
 	CSimpleRenderExecutor m_SimpleExecutor;
 
 	bool			m_rbTakeFreezeFrame[ STEREO_EYE_MAX ];

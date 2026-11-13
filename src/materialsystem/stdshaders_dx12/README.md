@@ -579,6 +579,26 @@ Default selection is performance-gated: compare both total GPU time and lit PS i
 `r_depth_prepass 0` / `1` in the same run; saving opaque color time alone does not justify enabling
 the extra geometry pass.
 
+`r_viewmodel_depth_prepass` (archived, default 1) adds the opaque first-person viewmodels to that prepass, ahead
+of the world: `CViewRender::DrawViewModelDepthPrepass` pushes the projection `DrawViewModels` uses after the scene
+(viewmodel field of view and depth planes, `DepthRange( 0, 0.1 )`) and submits the same renderables. The scene
+is then not shaded under them and their own colour pass has no overdraw. It is skipped when the viewmodels are
+not drawn, in tools mode, with a refracting viewmodel (it samples the scene behind it), under depth of field
+(filtered before the viewmodels are drawn) and in water-fog views (another vertex shader combo than the fog-free
+colour pass); a faded viewmodel is translucent and never admitted. The screen-space effects that read scene depth
+before the viewmodels are drawn must not take that compressed depth for geometry next to the camera, so GTAO
+(`ViewDepth`, gtao_common.hlsli) and SSR (`ssr_depth_cs51`, `SSR_LoadReceiver`) read native depth below
+`DX12_VIEWMODEL_DEPTH_MAX` (viewmodel_depth.hlsli, the depth range above) as "no geometry"; the volumetric march
+simply stops there. After the viewmodel view the scene's own view is pushed again (`VIEW_NO_DRAW`), because the
+engine's near/far metadata is not stacked. In the c1m1 views checked (a wall at arm's length, a sunlit doorway,
+a frame mid-turn) the weapon and the pixels around it look the same with and without it: no halo, no holes.
+Expected where it applies, not exercised:
+a light's halo sprite fades when the weapon covers the light (pixel-visibility queries now see the weapon), and
+refraction or rough reflections next to the weapon no longer pick up what was drawn behind it. GTX 1050, c1m1 at
+1280x720, alternated in one process, ms off -> on: viewmodels 1.05 -> 0.71 (roof), 1.08 -> 0.72 (corridor), 1.32
+-> 0.89 (corridor facing the lit lobby); the prepass itself +0.02 to +0.06; the opaque world pass did not move
+outside its noise (0.3 ms) under a pistol.
+
 ### Baking an enhanced map
 
 After VBSP/VVIS, run from `src` (PowerShell), using a game directory that resolves the map's assets:

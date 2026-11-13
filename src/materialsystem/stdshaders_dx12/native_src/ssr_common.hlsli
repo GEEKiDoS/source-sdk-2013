@@ -13,6 +13,7 @@
 #ifndef SSR_COMMON_HLSLI
 #define SSR_COMMON_HLSLI
 #include "pbr_oct.hlsli"
+#include "viewmodel_depth.hlsli"
 
 // Byte-identical to DX12SSRConstants (screenspace_ssr_dx12.cpp), 368 bytes.
 cbuffer DX12SSR : register( b0, space1 )
@@ -242,7 +243,7 @@ float SSR_LobeWeight( float3 N, float3 V, float3 L, float roughness )
 
 #if defined( SSR_RESPONSE_REGISTER )
 // The receiver of one full-resolution pixel. valid requires a fresh eligible PBR writer (stencil 0x80, fresh
-// response alpha, nonzero K, non-clear depth in front of the camera); every roughness is eligible.
+// response alpha, nonzero K, non-clear scene depth in front of the camera); every roughness is eligible.
 struct SSRReceiver
 {
 	bool valid;
@@ -265,7 +266,7 @@ SSRReceiver SSR_LoadReceiver( int2 localPixel )
 	float depth = gSSRSceneDepth.Load( scenePixel );
 	uint stencil = gSSRStencil.Load( scenePixel ).y;
 	float4 response = gSSRResponse.Load( scenePixel );
-	[branch] if ( depth != gSSRLimits.x && ( stencil & 0x80u ) != 0 && response.a > 0.0 && any( response.rgb != 0.0 ) )
+	[branch] if ( depth != gSSRLimits.x && depth >= DX12_VIEWMODEL_DEPTH_MAX && ( stencil & 0x80u ) != 0 && response.a > 0.0 && any( response.rgb != 0.0 ) )
 	{
 		r.P = SSR_LocalToWorld( float2( localPixel ) + 0.5, depth );
 		r.viewDepth = SSR_ViewDepth( r.P );

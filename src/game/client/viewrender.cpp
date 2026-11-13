@@ -214,6 +214,7 @@ ConVar r_drawviewmodel( "r_drawviewmodel","1",
 #endif
  );
 #endif
+static ConVar r_viewmodel_depth_prepass( "r_viewmodel_depth_prepass", "1", FCVAR_ARCHIVE, "DX12: draw the opaque first-person viewmodels into depth with the main view's opaque depth prepass (r_depth_prepass), so the scene is not shaded under them", true, 0, true, 1 );
 static ConVar r_drawtranslucentrenderables( "r_drawtranslucentrenderables", "1", 
 #if defined( L4D2 )
 	0x00004008
@@ -1247,6 +1248,7 @@ CViewRender::CViewRender()
 	m_BaseDrawFlags = 0;
 	m_pActiveRenderer = NULL;
 	m_pDeferredSkybox = NULL;
+	m_pViewModelPrepassView = NULL;
 	m_pCurrentlyDrawingEntity = NULL;
 
 	m_szCurrentScriptMaterialName[0] = '\0';
@@ -1440,6 +1442,81 @@ void CViewRender::DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtl
 
 
 
+// The projection the viewmodels are drawn with: the main view through their own field of view and depth planes.
+static CViewSetup ViewModelViewSetup( const CViewSetup &viewRender )
+{
+	CViewSetup viewModelSetup( viewRender );
+	viewModelSetup.zNear = viewRender.zNearViewmodel;
+	viewModelSetup.zFar = viewRender.zFarViewmodel;
+	viewModelSetup.fov = viewRender.fovViewmodel;
+	viewModelSetup.m_flAspectRatio = engine->GetScreenAspectRatio();
+	return viewModelSetup;
+}
+
+// Viewmodels are drawn into the front of the depth range so nothing of the scene intersects them. The screen-space
+// effects read native depth below this as "no geometry" (DX12_VIEWMODEL_DEPTH_MAX, viewmodel_depth.hlsli).
+static const float kViewModelDepthRangeMax = 0.1f;
+
+//-----------------------------------------------------------------------------
+// Purpose: Opaque viewmodel depth, drawn inside the main view's opaque depth prepass with the projection, depth
+//			range and submission DrawViewModels uses after the scene. Nothing of the 3D scene shows through an
+//			opaque viewmodel, so the world, renderables and translucents are then not shaded under it, and the
+//			viewmodels' own colour pass has no overdraw.
+//-----------------------------------------------------------------------------
+void CViewRender::DrawViewModelDepthPrepass()
+{
+#ifndef PORTAL // Near a portal the viewmodels clear depth instead of using the depth range this relies on.
+	if ( !m_pViewModelPrepassView || !r_viewmodel_depth_prepass.GetBool() || ToolsEnabled() || !ShouldDrawViewModel( true ) )
+		return;
+#if defined( L4D2 )
+	// Depth of field filters the scene before the viewmodels are drawn, so it needs the scene behind them.
+	if ( Terror_IsDepthOfFieldEnabled( view->GetViewSetup() ) )
+		return;
+	CUtlVector< ClientViewModelRenderable_t > opaqueViewModelList( 32 );
+	CUtlVector< ClientViewModelRenderable_t > translucentViewModelList( 32 );
+#else
+	CUtlVector< IClientRenderable * > opaqueViewModelList( 32 );
+	CUtlVector< IClientRenderable * > translucentViewModelList( 32 );
+#endif
+	ClientLeafSystem()->CollateViewModelRenderables( opaqueViewModelList, translucentViewModelList );
+	if ( opaqueViewModelList.Count() == 0 )
+		return;
+	// A refracting viewmodel samples the scene behind it (UpdateRefractIfNeededByList).
+	for ( int i = 0; i < opaqueViewModelList.Count(); ++i )
+	{
+		if ( ViewModelListRenderable( opaqueViewModelList[i] )->GetIClientUnknown()->GetClientRenderable()->UsesPowerOfTwoFrameBufferTexture() )
+			return;
+	}
+	for ( int i = 0; i < translucentViewModelList.Count(); ++i )
+	{
+		if ( ViewModelListRenderable( translucentViewModelList[i] )->GetIClientUnknown()->GetClientRenderable()->UsesPowerOfTwoFrameBufferTexture() )
+			return;
+	}
+
+	CMatRenderContextPtr pRenderContext( materials );
+	// Water fog selects another vertex shader combo than the fog-free colour pass; only identical vertex programs
+	// are relied on to reproduce the depth.
+	if ( pRenderContext->GetFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z )
+		return;
+	pRenderContext->MatrixMode( MATERIAL_PROJECTION );
+	pRenderContext->PushMatrix();
+	render->Push3DView( ViewModelViewSetup( *m_pViewModelPrepassView ), 0, NULL, GetFrustum() );
+	pRenderContext->DepthRange( 0.0f, kViewModelDepthRangeMax );
+	DrawRenderablesInList( opaqueViewModelList );
+	pRenderContext->DepthRange( 0.0f, 1.0f );
+	render->PopView( GetFrustum() );
+	// The engine's near/far metadata is not stacked (see DrawDeferredSkybox): push the scene's own again.
+	render->Push3DView( *m_pViewModelPrepassView, VIEW_NO_DRAW, NULL, NULL );
+	render->PopView( NULL );
+	pRenderContext->MatrixMode( MATERIAL_PROJECTION );
+	pRenderContext->PopMatrix();
+	// DrawRenderablesInList leaves a game-owned viewmodel alpha and colour modulation set.
+	float one[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	render->SetColorModulation( one );
+	render->SetBlend( 1.0f );
+#endif
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Actually draw the view model
 // Input  : drawViewModel - 
@@ -1464,11 +1541,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 	pRenderContext->MatrixMode( MATERIAL_PROJECTION );
 	pRenderContext->PushMatrix();
 
-	CViewSetup viewModelSetup( viewRender );
-	viewModelSetup.zNear = viewRender.zNearViewmodel;
-	viewModelSetup.zFar = viewRender.zFarViewmodel;
-	viewModelSetup.fov = viewRender.fovViewmodel;
-	viewModelSetup.m_flAspectRatio = engine->GetScreenAspectRatio();
+	CViewSetup viewModelSetup = ViewModelViewSetup( viewRender );
 
 	ITexture *pRTColor = NULL;
 	ITexture *pRTDepth = NULL;
@@ -1578,7 +1651,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 		// Nested shadow views reset the context depth range to 0..1.
 		// Apply the viewmodel override after their depth work has finished.
 		if( bUseDepthHack )
-			pRenderContext->DepthRange( 0.0f, 0.1f );
+			pRenderContext->DepthRange( 0.0f, kViewModelDepthRangeMax );
 
 		if ( shadowScope.CanDraw() )
 		{
@@ -1934,11 +2007,13 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 	ParticleMgr()->IncrementFrameCode();
 
 	ScreenSpaceDX12_BeginVolumetrics( viewRender );
+	m_pViewModelPrepassView = ( bDrawViewModel && viewID == VIEW_MAIN ) ? &viewRender : NULL;
 	DrawWorldAndEntities( drawSkybox, viewRender, nClearFlags, pCustomVisibility
 #if defined( L4D2 )
 		, pFogVolumeInfo, pWaterRenderInfo
 #endif
 		);
+	m_pViewModelPrepassView = NULL;
 	ScreenSpaceDX12_DrawVolumetrics();
 
 	// Disable fog for the rest of the stuff
@@ -7078,6 +7153,8 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		{
 			PIXEVENT( pDepthContext, "Opaque depth prepass" );
 			pDepthPrepass->BeginDepthPrepass();
+			// Viewmodels first: neither the rest of this prepass nor the scene then shades under them.
+			m_pMainView->DrawViewModelDepthPrepass();
 			if ( r_drawopaqueworld.GetBool() )
 			{
 				const unsigned long flags = BuildEngineDrawWorldListFlags( m_DrawFlags ) &
