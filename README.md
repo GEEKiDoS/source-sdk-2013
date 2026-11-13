@@ -151,6 +151,19 @@ rarely runs, and dropping it took the opaque world pass from 8.0 to 7.4 ms in
 the corridor and from 8.6 to 7.9 ms while turning there, with the other views
 0.05-0.2 ms better. Details: `src/materialsystem/stdshaders_dx12/README.md`.
 
+The first-person viewmodel, the sun cascades and the volumetric composite were
+the next costs on that GPU. The opaque viewmodels' depth is drawn with the main
+view's depth prepass (`r_viewmodel_depth_prepass`, archived, default 1), so
+their colour pass has no overdraw and the scene is not shaded under them. The
+viewmodel samples the main view's sun cascades instead of rendering one of its
+own every frame (`r_shadowmap_viewmodel_cascade`, archived, default 0; 1
+restores the separate cascade, which is sharper on the weapon). The low
+volumetric profile composites from the 2x2 march texels around a pixel instead
+of 4x4. Four alternated launches each with `fps_max 0`, roof / corridor:
+viewmodel pass 1.36 to 0.59 / 1.30 to 0.58 ms, sun cascades 1.30 to 0.92 /
+0.95 to 0.64 ms, volumetric lighting 0.91 to 0.59 / 1.02 to 0.70 ms, GPU frame
+17.2 to 15.2 / 17.6 to 16.0 ms.
+
 `r_csm_cascades` (archived, 1-4, default 2) sets how many dynamic sun cascades
 are rendered. Fewer cascades keep the nearest splits of `r_csm_distance` and
 end the dynamic range at the last kept split; beyond it receivers fade to the

@@ -58,6 +58,7 @@ ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 ca
 ConVar r_shadowmap_instancing( "r_shadowmap_instancing", "1", FCVAR_ARCHIVE, "Batch rigid opaque static-prop shadow casters into instanced draws (identical depth); 0 draws every caster separately for A/B comparison", true, 0, true, 1 );
 ConVar r_shadowmap_sky_clip( "r_shadowmap_sky_clip", "1", FCVAR_ARCHIVE, "Clip sun shadow casters that lie on the sun side of the nearest sky entry (the sky is the sun's emitter, as baked); 0 keeps every caster for A/B comparison", true, 0, true, 1 );
 ConVar r_shadowmap_dither( "r_shadowmap_dither", "1", FCVAR_ARCHIVE, "Rotate the sun PCF/PCSS, local PCF and projected-light PCF tap patterns per pixel: 0 fixed patterns, 1 dithered (animated in the main view under a temporal upscaler)", true, 0, true, 1 );
+ConVar r_shadowmap_viewmodel_cascade( "r_shadowmap_viewmodel_cascade", "0", FCVAR_ARCHIVE, "First-person viewmodel sun shadows: 0 samples the main view's sun cascades, 1 renders one more cascade fitted to the viewmodel every frame (sharper sun shadows on the weapon)", true, 0, true, 1 );
 ConVar r_editor_lights_max_shadowed( "r_editor_lights_max_shadowed", "8", FCVAR_ARCHIVE, "Nearest editor lights that receive shadow maps; the rest are unshadowed" );
 extern ConVar building_cubemaps;
 
@@ -168,7 +169,7 @@ struct ShadowCache_t
 	CViewSetup view, pendingView;
 	ShadowCasterVolume_t pendingVolume;
 	// Reuse names the last committed chart in this physical target, not a CPU packet's age.
-	// Sun content is shared across pooled main frames; viewmodel cascade projection stays separate.
+	// Sun content is shared across pooled main frames; a viewmodel cascade (r_shadowmap_viewmodel_cascade) stays separate.
 	uint64 notifications, pendingNotifications, committedNotifications;
 	int committedFrame;
 	DX12ShadowTarget_t workTarget, pendingWorkTarget;
@@ -241,13 +242,25 @@ struct SunCascadeTargets_t
 	SunCascadeFit_t fits[4];
 };
 // CPU view packets stay pooled/immutable. Physical sun depth and its LAST-WRITE
-// content proof are shared by main frames, with a separate viewmodel projection.
+// content proof are shared by main frames; the second set is the viewmodel's own
+// projection, used only with r_shadowmap_viewmodel_cascade 1.
 SunCascadeTargets_t g_CascadeTargets[2];
 const char *const kCascadeTargetNames[2][3]={
 	{"shadow_cascade_static_main","shadow_cascade_work_main","shadow_cascade_rigid_main"},
 	{"shadow_cascade_static_viewmodel","shadow_cascade_work_viewmodel","shadow_cascade_rigid_viewmodel"}
 };
 DX12ShadowTarget_t g_StaticSunClean=0, g_StaticSunWork=0;
+// What the main view published for its dynamic sun cascades this frame. The viewmodel receiver view that follows
+// it has the same eye and forward and a projection inside the main one, so its receivers lie inside these charts.
+struct MainSunCascades_t
+{
+	int frame;
+	DX12ShadowTarget_t target;	// 0: no valid cascade
+	float farDepth, splits[4], blend[4];
+	float depth[DX12_SHADOW_CSM_CASCADES][4], worldToClip[DX12_SHADOW_CSM_CASCADES][16];
+	uint32 rects[DX12_SHADOW_CSM_CASCADES][4];
+};
+MainSunCascades_t g_MainSunCascades={-1};
 ShadowCache_t g_StaticSunCache;
 struct SpareSunTarget_t { int size; DX12ShadowTarget_t target; };
 CUtlVector<SpareSunTarget_t> g_SunSpares;
@@ -2714,6 +2727,20 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		if ( !data.Lease(g_StaticSunWork) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 		data.packet.staticSunTarget=g_StaticSunWork; constants.cShadowView1[3]|=DX12_SHADOW_VIEW_STATIC_SUN_VALID;
 	}
+	if ( data.kind==SHADOWMAP_VIEW_VIEWMODEL && !r_shadowmap_viewmodel_cascade.GetBool() )
+	{
+		// No cascade of its own: one chart render and its depth restore less per frame. A receiver outside the main
+		// charts' cores (a viewmodel field of view wider than the main one) falls back to the static sun map.
+		const MainSunCascades_t &main=g_MainSunCascades;
+		if ( main.frame!=gpGlobals->framecount || !main.target ) return true;
+		constants.cSunTravel[3]=main.farDepth; constants.cSunBasisX[3]=0.9f*main.farDepth;
+		memcpy(constants.cCascadeSplits,main.splits,sizeof(main.splits)); memcpy(constants.cCascadeBlend,main.blend,sizeof(main.blend));
+		memcpy(constants.cShadowDepthRecords,main.depth,sizeof(main.depth));
+		memcpy(constants.cSunWorldToClip,main.worldToClip,sizeof(main.worldToClip)); memcpy(constants.cCascadeRects,main.rects,sizeof(main.rects));
+		if ( !data.Lease(main.target) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+		data.packet.cascadeAtlasTarget=main.target; constants.cShadowView1[3]|=DX12_SHADOW_VIEW_CSM_VALID;
+		return true;
+	}
 	const int cascadeOwner=data.kind==SHADOWMAP_VIEW_VIEWMODEL ? 1 : 0;
 	SunCascadeTargets_t &cascade=g_CascadeTargets[cascadeOwner];
 	float splits[5],blend[3],farDepth=MIN(data.receiver.zFar,r_csm_distance.GetFloat());
@@ -2859,6 +2886,15 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		if ( !data.Lease(cascade.work) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 		data.packet.cascadeAtlasTarget=cascade.work; constants.cShadowView1[3]|=DX12_SHADOW_VIEW_CSM_VALID;
 	}
+	if ( data.kind==SHADOWMAP_VIEW_MAIN )
+	{
+		MainSunCascades_t &main=g_MainSunCascades;
+		main.frame=gpGlobals->framecount; main.target=data.packet.cascadeAtlasTarget; main.farDepth=farDepth;
+		memcpy(main.splits,constants.cCascadeSplits,sizeof(main.splits)); memcpy(main.blend,constants.cCascadeBlend,sizeof(main.blend));
+		memcpy(main.depth,constants.cShadowDepthRecords,sizeof(main.depth));
+		memcpy(main.worldToClip,constants.cSunWorldToClip,sizeof(main.worldToClip)); memcpy(main.rects,constants.cCascadeRects,sizeof(main.rects));
+	}
+	return true;
 }
 
 ShadowTileRect_t ProjectInfluence( const LocalLight_t &local, const CShadowViewData &data, const VMatrix &clip, const Vector &forward, int tilesX, int tilesY )

@@ -240,9 +240,16 @@ re-render (`d1_trainstation_02`, RTX 4090); cached charts cost nothing.
 
 Shadow depth targets are retained by physical owner rather than duplicated for every
 pooled receiver packet. One shared static-sun work target (with a clean companion
-only when oriented detail needs an overlay) and one cascade atlas pair per shadowed
-receiver kind serve the main/viewmodel packet pools; unshadowed monitor, reflection,
-and sky receivers allocate no sun targets. A nested receiver gets a work-only
+only when oriented detail needs an overlay) and one cascade atlas pair serve the main
+packet pool; unshadowed monitor, reflection and sky receivers allocate no sun targets.
+The viewmodel receiver view samples the main view's cascades of the same frame (same
+eye and forward, a projection inside the main one, so its receivers lie inside those
+charts; one outside their cores falls back to the static sun map): it copies the
+published splits, matrices, depth records and rectangles and leases the main atlas.
+`r_shadowmap_viewmodel_cascade 1` (archived, default 0) gives it its own atlas pair and
+a cascade fitted to the viewmodel again, which is sharper on the weapon and costs one
+chart render and depth restore per frame (0.3 + 0.1 ms on the GTX 1050 in c1m1).
+A nested receiver gets a work-only
 copy-on-write target before writing a parent-sampled atlas, with queue ordering and
 resource leases preserving the older packet exactly. Local pages retain their
 4096-texel logical slot contract but allocate a power-of-two physical rectangle
