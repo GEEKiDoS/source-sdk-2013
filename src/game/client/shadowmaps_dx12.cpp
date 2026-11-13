@@ -2921,21 +2921,30 @@ ShadowTileRect_t ProjectInfluence( const LocalLight_t &local, const CShadowViewD
 	rect.x1=MIN((int)floorf(maxX/16)+1,tilesX); rect.y1=MIN((int)floorf(maxY/16)+1,tilesY);
 	return rect;
 }
+// The fields of a view light that rank it: the 608-byte RuntimeShadowLightGpu (shadow matrices, face rects) is
+// copied down once per view so the per-tile ranking walks a compact array.
+struct TileSpecularLight_t
+{
+	Vector origin, travelDirection;
+	float attenuationRadius, capDist, constantAttn, linearAttn, quadraticAttn;
+	float innerConeCos, outerConeCos, exponent, fadeStart, fadeEnd, luminance;
+	bool spot;
+};
 // Unshadowed radiance (luminance) of one view light at a world point: the scalar twin of the shader's
 // StandardLightRadianceInRange (attenuation/cap, spot cone, fade, radius), used only to rank a tile's
 // specular candidates. Diffuse is never ranked or dropped.
-float TileSpecularScore( const RuntimeShadowLightGpu &light, const Vector &point )
+float TileSpecularScore( const TileSpecularLight_t &light, const Vector &point )
 {
-	Vector offset( light.origin[0] - point.x, light.origin[1] - point.y, light.origin[2] - point.z );
+	const Vector offset = light.origin - point;
 	const float distance = offset.Length();
 	if ( distance <= 0.0f || ( light.attenuationRadius > 0.0f && distance > light.attenuationRadius ) ) return 0.0f;
 	const float clamped = MAX( distance, 1.0f );
 	const float evaluation = light.capDist > 0.0f ? MIN( clamped, light.capDist ) : clamped;
 	const float denominator = light.constantAttn + evaluation * light.linearAttn + evaluation * evaluation * light.quadraticAttn;
 	float falloff = denominator > 0.0f ? 1.0f / denominator : 0.0f;
-	if ( light.type == DX12_SHADOW_LIGHT_SPOT )
+	if ( light.spot )
 	{
-		const float coneDot = -( offset.x * light.travelDirection[0] + offset.y * light.travelDirection[1] + offset.z * light.travelDirection[2] ) / distance;
+		const float coneDot = -DotProduct( offset, light.travelDirection ) / distance;
 		float cone = 1.0f;
 		if ( coneDot <= light.innerConeCos )
 		{
@@ -2949,7 +2958,7 @@ float TileSpecularScore( const RuntimeShadowLightGpu &light, const Vector &point
 		const float t = 1.0f - clamp( ( clamped - light.fadeStart ) / ( light.fadeEnd - light.fadeStart ), 0.0f, 1.0f );
 		falloff *= t * t * t * ( t * ( t * 6.0f - 15.0f ) + 10.0f );
 	}
-	return ( light.radiance[0] * 0.2126f + light.radiance[1] * 0.7152f + light.radiance[2] * 0.0722f ) * falloff;
+	return light.luminance * falloff;
 }
 bool BuildTiles( CShadowViewData &data, const VMatrix &clip, const Vector &forward )
 {
@@ -3015,19 +3024,38 @@ bool BuildTiles( CShadowViewData &data, const VMatrix &clip, const Vector &forwa
 	// Per-tile world-specular top-4 (view-light indices, 0xFFFFFFFF padding): ranked by unshadowed
 	// radiance at the point of the tile-centre ray closest to each light. Built once per view packet;
 	// the shader only tests membership, diffuse is unaffected. See r_world_local_specular.
+	// Only the world shader's cap reads it, and stdshader applies the cap only while baked-only lights add
+	// specular (r_world_baked_specular): every other view publishes the neutral list and skips the
+	// tiles x lights ranking, which otherwise dominates the frame's CPU time in light-dense rooms.
 	data.tileSpecular.SetCount( (int) tileCount * 4 );
+	memset( data.tileSpecular.Base(), 0xFF, (size_t) data.tileSpecular.Count() * sizeof( uint32 ) );
+	static ConVarRef worldSpecularCap( "r_world_local_specular" ), worldBakedSpecular( "r_world_baked_specular" );
+	if ( data.kind != SHADOWMAP_VIEW_VIEWMODEL && worldSpecularCap.GetInt() != 0 && worldBakedSpecular.GetBool() )
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::BuildTiles.Specular", "Shadowmaps" );
+		static CUtlVector<TileSpecularLight_t> rankLights; // main-thread scratch, reused across views
+		rankLights.SetCount( data.lights.Count() );
+		for ( int l = 0; l < data.lights.Count(); ++l )
+		{
+			const RuntimeShadowLightGpu &source = data.lights[l];
+			TileSpecularLight_t &light = rankLights[l];
+			light.origin.Init( source.origin[0], source.origin[1], source.origin[2] );
+			light.travelDirection.Init( source.travelDirection[0], source.travelDirection[1], source.travelDirection[2] );
+			light.attenuationRadius = source.attenuationRadius; light.capDist = source.capDist;
+			light.constantAttn = source.constantAttn; light.linearAttn = source.linearAttn; light.quadraticAttn = source.quadraticAttn;
+			light.innerConeCos = source.innerConeCos; light.outerConeCos = source.outerConeCos; light.exponent = source.exponent;
+			light.fadeStart = source.fadeStart; light.fadeEnd = source.fadeEnd;
+			light.luminance = source.radiance[0] * 0.2126f + source.radiance[1] * 0.7152f + source.radiance[2] * 0.0722f;
+			light.spot = source.type == DX12_SHADOW_LIGHT_SPOT;
+		}
 		VMatrix inverse;
 		const bool haveInverse = MatrixInverseGeneral( clip, inverse );
 		const Vector eye = data.receiver.origin;
-		for ( int ty = 0; ty < y; ++ty )
+		for ( int ty = 0; haveInverse && ty < y; ++ty )
 		{
 			for ( int tx = 0; tx < x; ++tx )
 			{
 				uint32 *out = data.tileSpecular.Base() + 4 * ( ty * x + tx );
-				out[0] = out[1] = out[2] = out[3] = 0xFFFFFFFFu;
-				if ( !haveInverse ) continue;
 				const float ndcX = ( ( tx + 0.5f ) / x ) * 2.0f - 1.0f;
 				const float ndcY = 1.0f - ( ( ty + 0.5f ) / y ) * 2.0f;
 				Vector a = Unproject( inverse, ndcX, ndcY, 0.0f ), b = Unproject( inverse, ndcX, ndcY, 1.0f );
@@ -3038,9 +3066,8 @@ bool BuildTiles( CShadowViewData &data, const VMatrix &clip, const Vector &forwa
 				for ( uint32 k = 0; k < count; ++k )
 				{
 					const uint32 index = data.indices[first + k];
-					const RuntimeShadowLightGpu &light = data.lights[index];
-					const Vector origin( light.origin[0], light.origin[1], light.origin[2] );
-					const float t = MAX( DotProduct( origin - eye, dir ), 0.0f );
+					const TileSpecularLight_t &light = rankLights[index];
+					const float t = MAX( DotProduct( light.origin - eye, dir ), 0.0f );
 					const float score = TileSpecularScore( light, eye + dir * t );
 					if ( score <= 0.0f ) continue;
 					float carryScore = score;
