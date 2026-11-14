@@ -1,0 +1,83 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+#include "restir_lights.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// Point and spot lights are delta sources: their direct light at a sample is one radiance
+// evaluation and one shadow ray, with nothing to sample. Like VRAD (lightmap.cpp:1835-1977,
+// every light for every sample) this pass evaluates all of them exactly, once per bake.
+// Pass 0 (before the iterations): the style-0 base irradiance of each sample, which seeds the
+//   bounce feedback (directIrradiance); the sampled sums it is added to start at zero.
+// Pass 1 (after the iterations): add the exact sums to both accumulations, scaled by their
+//   iteration count so the reconstructed mean is exact direct + mean of the sampled terms.
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	uint faceIndex;
+	uint sampleIndex;
+	uint slot;
+	ResolveReservoir( index, faceIndex, sampleIndex, slot );
+	if ( pc.pass == 0u && slot != 0u )
+		return;
+	ReSTIRGpuFace face = faces[faceIndex];
+	ReSTIRGpuSample sampleRecord = samples[SampleAddress( sampleIndex )];
+	vec3 origin = ShadingOrigin( face, sampleRecord );
+	int numChannels = pc.pass == 0u ? 1 : face.numChannels;
+	precise vec3 full[RESTIR_MAX_CHANNELS];
+	precise vec3 receiver[RESTIR_MAX_CHANNELS];
+	for ( int channel = 0; channel < RESTIR_MAX_CHANNELS; ++channel )
+		full[channel] = receiver[channel] = vec3( 0.0 );
+	uint first;
+	uint surfaceFirst;
+	uint end;
+	StyleLights( face.styles[slot], first, surfaceFirst, end );
+	for ( uint entry = first; entry < surfaceFirst; ++entry )
+	{
+		uint lightIndex = uint( styleLights[entry] );
+		ReSTIRGpuLight light = lights[lightIndex];
+		vec3 radiance = StandardLightRadiance( light, origin, light.origin.xyz );
+		vec3 direction = SafeNormal( light.origin.xyz - origin );
+		// Same admission as a sampled light: the base normal must face it.
+		if ( Luminance( radiance ) * max( dot( sampleRecord.normal.xyz, direction ), 0.0 ) <= 0.0 )
+			continue;
+		if ( !LightVisibility( lightIndex, origin, light.origin.xyz, RESTIR_NO_HIT, RESTIR_NO_HIT ) )
+			continue;
+		bool runtimeDirect = ( light.lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0;
+		for ( int channel = 0; channel < numChannels; ++channel )
+		{
+			precise vec3 contribution = radiance * max( dot( ChannelNormal( sampleRecord, channel ), direction ), 0.0 );
+			full[channel] += contribution;
+			if ( !runtimeDirect )
+				receiver[channel] += contribution;
+		}
+	}
+	if ( pc.pass == 0u )
+	{
+		directIrradiance[sampleIndex] = vec4( full[0], 1.0 );
+		previousIrradiance[sampleIndex] = vec4( 0.0 );
+		return;
+	}
+	bool split = receiverAccumulation.length() > 1;
+	uint receiverIndex = ( pc.flags & RESTIR_PC_RECEIVER_PAGE ) != 0u ? index - pc.pageBase.x : index;
+	for ( int channel = 0; channel < numChannels; ++channel )
+	{
+		uint address = AccumulationAddress( index ) + uint( channel );
+		vec4 sum = accumulation[address];
+		accumulation[address] = vec4( sum.rgb + full[channel] * sum.w, sum.w );
+		if ( split )
+		{
+			uint receiverAddress = receiverIndex * RESTIR_MAX_CHANNELS + uint( channel );
+			vec4 receiverSum = receiverAccumulation[receiverAddress];
+			receiverAccumulation[receiverAddress] = vec4( receiverSum.rgb + receiver[channel] * receiverSum.w, receiverSum.w );
+		}
+	}
+}

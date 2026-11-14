@@ -98,11 +98,10 @@ struct ReSTIROptions
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
 	// an explicit -restir_* value always wins over the preset, whatever the argument order.
 	ReSTIRPreset preset;				// -fast / -final (default)
-	int			iterations;				// -restir_iterations (128; fast 32, final 512): ReSTIR iterations; bounce light is
+	int			iterations;				// -restir_iterations (128; fast 32, final 512): transport iterations; bounce light is
 										// fed back from previous iterations' irradiance, so this also bounds bounce depth
-	int			candidates;				// -restir_candidates (8; fast 4, final 16) local-light candidates per sample per
-										// iteration; the sun, sky ambient and the bounce path are one candidate each on top
-	int			spatialRadius;			// -restir_spatial_radius (2), in luxel cells
+	int			candidates;				// -restir_candidates (8; fast 4, final 16): per sample per iteration, hemisphere rays
+										// (sky ambient + bounce) and emit_surface light samples; the sun adds one sample
 	int			maxBounces;				// -restir_maxbounces (4; fast 2, final 6): 0 disables indirect light entirely
 	int			seed;					// -restir_seed (1)
 	int			gpuIndex;				// -restir_gpu, -1 = first discrete GPU
@@ -119,7 +118,7 @@ struct ReSTIROptions
 		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
 		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
 		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), preset( RESTIR_PRESET_DEFAULT ),
-		  iterations( 128 ), candidates( 8 ), spatialRadius( 2 ), maxBounces( 4 ),
+		  iterations( 128 ), candidates( 8 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
 		  denoiserDevice( RESTIR_DENOISER_DEVICE_DEFAULT ) {}
@@ -320,9 +319,10 @@ struct ReSTIRScene
 	// Lights
 	CUtlVector<ReSTIRGpuLight>			lights;			// GPU evaluation set
 	CUtlVector<ReSTIRGpuEmitterTriangle> emitterTriangles; // emit_surface geometry, referenced by lights[].firstTri/numTris
-	CUtlVector<int>						styleLights;	// per scene style slot s, the local (non-sky) lights of that style:
-														// indices [styleLights[s], styleLights[s+1]) of this same array hold
-														// light indices; the first sceneStyles.Count()+1 entries are offsets
+	CUtlVector<int>						styleLights;	// local (non-sky) lights per scene style slot s, in this same array:
+														// [styleLights[2s], styleLights[2s+1]) point/spot light indices,
+														// [styleLights[2s+1], styleLights[2s+2]) emit_surface light indices;
+														// the first 2*sceneStyles.Count()+1 entries are those offsets
 	CUtlVector<dworldlight_t>			exportLights;	// LUMP_WORLDLIGHTS entries (I2/I3/I13), flags = 0; same order as `lights` for
 														// point/spot/sky lights; surface emitters expand to one entry per fixed-chop patch.
 														// RESTIR_LIGHT_MATERIAL lights are never exported (they follow every exported light).
@@ -505,8 +505,8 @@ struct ReSTIRDeviceInfo
 struct ReSTIRGpuTimings
 {
 	double		sceneBuildMs;
-	double		candidateMs;
-	double		reuseMs;
+	double		directMs;
+	double		transportMs;
 	double		reconstructionMs;
 	double		compactionMs;
 	double		ambientMs;

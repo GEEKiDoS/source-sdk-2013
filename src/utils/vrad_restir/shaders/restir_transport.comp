@@ -1,0 +1,155 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#if RESTIR_HW_RAYQUERY
+#extension GL_EXT_ray_query : require
+#endif
+#include "restir_layout.glsl"
+#include "restir_common.glsl"
+#include "restir_trace.glsl"
+#include "restir_lights.glsl"
+layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
+
+// One iteration of the sampled light terms of a (sample, style slot) record. Every traced
+// sample is accumulated; nothing is resampled or reused, so iterations are independent and their
+// mean converges like a plain (quasi-)Monte Carlo estimate:
+//   hemisphere   pc.candidates cosine rays: sky ambient where they leave through the sky, bounce
+//                where they land on a lightmapped face (slot 0, pc.maxBounces > 0)
+//   sun          1 sample of the sun cone (exact when SunSpreadAngle is 0)
+//   surface      pc.candidates samples over the style's emit_surface lights, uniform light choice
+// Point and spot lights have no sampled term: restir_direct evaluates them exactly.
+// With RESTIR_PC_PUBLISH_IRRADIANCE the dispatch instead publishes the style-0 base sums for
+// the next iteration's bounce lookups (a plain copy, so a paged bake's host copy is identical). That is a separate dispatch because sampling reads
+// previousIrradiance of arbitrary samples while it runs. pc.pass is the dface-to-face table offset
+// (restir_lightmap.glsl SceneFaceFromHit), as in every pass that looks up a hit face.
+//
+// `precise` keeps the sums free of contraction and reassociation: the driver may swap in a
+// re-optimized build of a hot pipeline mid-bake, and the result must not depend on when.
+
+// `value` is radiance / pdf without the receiver cosine.
+void Deposit( inout vec3 full[RESTIR_MAX_CHANNELS], inout vec3 receiver[RESTIR_MAX_CHANNELS], ReSTIRGpuSample sampleRecord, int numChannels,
+	vec3 value, vec3 direction, bool skyAmbient, bool toReceiver )
+{
+	for ( int channel = 0; channel < numChannels; ++channel )
+	{
+		vec3 normal = ChannelNormal( sampleRecord, channel );
+		precise vec3 contribution = value * max( dot( normal, direction ), 0.0 );
+		// utils/vrad/lightmap.cpp:1825-1830: ambient bump normalization corrects
+		// the overlap of base and bump hemispheres, possibleHitCount[i]/[0].
+		if ( skyAmbient && channel != 0 )
+		{
+			float overlap = 1.0 - acos( clamp( dot( sampleRecord.normal.xyz, normal ), -1.0, 1.0 ) ) / RESTIR_PI;
+			contribution /= max( overlap, 1.0e-8 );
+		}
+		full[channel] += contribution;
+		if ( toReceiver )
+			receiver[channel] += contribution;
+	}
+}
+
+bool RuntimeDirect( uint lightIndex )
+{
+	return ( lights[lightIndex].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0;
+}
+
+void main()
+{
+	uint index = pc.first + gl_GlobalInvocationID.x;
+	if ( index >= pc.first + pc.count )
+		return;
+	uint faceIndex;
+	uint sampleIndex;
+	uint slot;
+	ResolveReservoir( index, faceIndex, sampleIndex, slot );
+	if ( ( pc.flags & RESTIR_PC_PUBLISH_IRRADIANCE ) != 0u )
+	{
+		if ( slot == 0u )
+			previousIrradiance[sampleIndex] = accumulation[AccumulationAddress( index )];
+		return;
+	}
+	ReSTIRGpuFace face = faces[faceIndex];
+	ReSTIRGpuSample sampleRecord = samples[SampleAddress( sampleIndex )];
+	vec3 origin = ShadingOrigin( face, sampleRecord );
+	vec3 normal = sampleRecord.normal.xyz;
+	int style = face.styles[slot];
+	uint sampleInFace = sampleIndex - uint( face.firstSample );
+	precise vec3 full[RESTIR_MAX_CHANNELS];
+	precise vec3 receiver[RESTIR_MAX_CHANNELS];
+	for ( int channel = 0; channel < RESTIR_MAX_CHANNELS; ++channel )
+		full[channel] = receiver[channel] = vec3( 0.0 );
+
+	// VRAD evaluates sun and sky ambient for EVERY sample (lightmap.cpp:1673-1831).
+	bool hasSun = pc.skyLight >= 0 && lights[pc.skyLight].style == style;
+	bool hasSkyAmbient = pc.skyAmbientLight >= 0 && lights[pc.skyAmbientLight].style == style;
+	bool gatherBounce = slot == 0u && pc.maxBounces > 0u;
+	if ( ( hasSkyAmbient || gatherBounce ) && pc.candidates != 0u )
+	{
+		uvec2 shift = uvec2( SampleStream( faceIndex, sampleInFace, slot, 0x48454D49u ), SampleStream( faceIndex, sampleInFace, slot, 0x48454D4Au ) );
+		bool skyReceiver = hasSkyAmbient && !RuntimeDirect( uint( pc.skyAmbientLight ) );
+		for ( uint ray = 0u; ray < pc.candidates; ++ray )
+		{
+			vec3 direction = CosineDirection( normal, SobolPoint( pc.iteration * pc.candidates + ray, shift ) );
+			float cosine = dot( normal, direction );
+			if ( cosine <= 0.0 )
+				continue;
+			vec3 value;
+			bool sky;
+			if ( HemisphereSample( origin, direction, hasSkyAmbient, gatherBounce, value, sky ) )
+				Deposit( full, receiver, sampleRecord, face.numChannels, value / ( cosine * float( pc.candidates ) ), direction, sky, !sky || skyReceiver );
+		}
+	}
+	if ( hasSun )
+	{
+		uvec2 shift = uvec2( SampleStream( faceIndex, sampleInFace, slot, 0x53554E49u ), SampleStream( faceIndex, sampleInFace, slot, 0x53554E4Au ) );
+		ReSTIRLightSample candidate;
+		// SampleLight folds the cone PDF into the sun's radiance: radiance / pdf is its cone irradiance.
+		if ( SampleLight( uint( pc.skyLight ), origin, normal, vec3( SobolPoint( pc.iteration, shift ), 0.0 ), candidate ) &&
+			candidate.radiance.w > 0.0 && candidate.sourcePdf > 0.0 &&
+			LightVisibility( uint( pc.skyLight ), origin, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )
+			Deposit( full, receiver, sampleRecord, face.numChannels, candidate.radiance.rgb / candidate.sourcePdf,
+				SafeNormal( candidate.samplePos.xyz - origin ), false, !RuntimeDirect( uint( pc.skyLight ) ) );
+	}
+	uint first;
+	uint surfaceFirst;
+	uint end;
+	StyleLights( style, first, surfaceFirst, end );
+	uint surfaceCount = end - surfaceFirst;
+	if ( surfaceCount != 0u && pc.candidates != 0u )
+	{
+		uint key = SampleSeed( faceIndex, sampleInFace, slot, 0u );
+		float lightPdfScale = float( surfaceCount ) / float( pc.candidates );
+		for ( uint candidateIndex = 0u; candidateIndex < pc.candidates; ++candidateIndex )
+		{
+			uint ordinal = min( uint( CandidateDimension( key, candidateIndex, 0u ) * float( surfaceCount ) ), surfaceCount - 1u );
+			uint lightIndex = uint( styleLights[surfaceFirst + ordinal] );
+			vec3 uniformValue = vec3( CandidateDimension( key, candidateIndex, 1u ), CandidateDimension( key, candidateIndex, 2u ), CandidateDimension( key, candidateIndex, 3u ) );
+			ReSTIRLightSample candidate;
+			if ( !SampleLight( lightIndex, origin, normal, uniformValue, candidate ) || candidate.radiance.w <= 0.0 || candidate.sourcePdf <= 0.0 )
+				continue;
+			if ( !LightVisibility( lightIndex, origin, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )
+				continue;
+			Deposit( full, receiver, sampleRecord, face.numChannels, candidate.radiance.rgb * ( lightPdfScale / candidate.sourcePdf ),
+				SafeNormal( candidate.samplePos.xyz - origin ), false, !RuntimeDirect( lightIndex ) );
+		}
+	}
+
+	bool restart = pc.iteration == FirstAveragedIteration();
+	bool split = receiverAccumulation.length() > 1;
+	uint receiverIndex = ( pc.flags & RESTIR_PC_RECEIVER_PAGE ) != 0u ? index - pc.pageBase.x : index;
+	for ( int channel = 0; channel < face.numChannels; ++channel )
+	{
+		uint address = AccumulationAddress( index ) + uint( channel );
+		if ( restart )
+			accumulation[address] = vec4( full[channel], 1.0 );
+		else
+			accumulation[address] += vec4( full[channel], 1.0 );
+		if ( split )
+		{
+			uint receiverAddress = receiverIndex * RESTIR_MAX_CHANNELS + uint( channel );
+			if ( restart )
+				receiverAccumulation[receiverAddress] = vec4( receiver[channel], 1.0 );
+			else
+				receiverAccumulation[receiverAddress] += vec4( receiver[channel], 1.0 );
+		}
+	}
+}

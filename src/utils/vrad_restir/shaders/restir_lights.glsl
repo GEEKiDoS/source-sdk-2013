@@ -133,12 +133,11 @@ bool LightVisibility( uint lightIndex, vec3 origin, vec3 source, uint emitterTri
 	return TraceVisibility( origin, direction, RESTIR_DIST_EPSILON, max( RESTIR_DIST_EPSILON, distanceToLight - RESTIR_DIST_EPSILON ), RESTIR_RAY_MASK_SHADOW, skipHitId );
 }
 
-bool SampleLight( uint lightIndex, vec3 origin, vec3 normal, vec3 uniformValue, out ReSTIRReservoir candidate )
+bool SampleLight( uint lightIndex, vec3 origin, vec3 normal, vec3 uniformValue, out ReSTIRLightSample candidate )
 {
-	candidate = EmptyReservoir();
+	candidate = EmptyLightSample();
 	ReSTIRGpuLight light = lights[lightIndex];
 	candidate.light = lightIndex;
-	candidate.flags = RESTIR_RES_VALID;
 	candidate.sourcePdf = 1.0;
 	vec3 source = light.origin.xyz;
 	vec2 emitterBarycentrics = vec2( 0.0 );
@@ -206,33 +205,24 @@ bool SampleLight( uint lightIndex, vec3 origin, vec3 normal, vec3 uniformValue, 
 	return true;
 }
 
-ReSTIRReservoir Reevaluate( ReSTIRReservoir source, vec3 origin, vec3 normal )
+// Local (non-sky) lights of a style: [first, surfaceFirst) are the point and spot lights,
+// [surfaceFirst, end) the emit_surface lights (restir_types.h styleLights contract).
+void StyleLights( int style, out uint first, out uint surfaceFirst, out uint end )
 {
-	if ( ( source.flags & RESTIR_RES_VALID ) == 0u )
-		return source;
-	if ( ( source.flags & RESTIR_RES_PATH ) == 0u )
+	first = surfaceFirst = end = 0u;
+	for ( uint sceneSlot = 0u; sceneSlot < pc.numStyles; ++sceneSlot )
 	{
-		float angularScale = 1.0;
-		if ( lights[source.light].type == EMIT_SKYLIGHT && lights[source.light].sunSpreadAngle > 0.0 )
-			angularScale = 1.0 / ( 2.0 * RESTIR_PI * ( 1.0 - cos( radians( lights[source.light].sunSpreadAngle ) ) ) );
-		source.radiance.rgb = EvaluateLight( source.light, origin, source.samplePos.xyz, source.emitterTri ) * angularScale;
+		if ( sceneStyles[sceneSlot] != style )
+			continue;
+		first = uint( styleLights[2u * sceneSlot] );
+		surfaceFirst = uint( styleLights[2u * sceneSlot + 1u] );
+		end = uint( styleLights[2u * sceneSlot + 2u] );
+		return;
 	}
-	source.radiance.w = Luminance( source.radiance.rgb ) * max( dot( normal, SafeNormal( source.samplePos.xyz - origin ) ), 0.0 );
-	source.flags &= ~RESTIR_RES_VISIBLE;
-	return source;
 }
 
-bool ReservoirVisibility( ReSTIRReservoir reservoir, vec3 origin )
-{
-	if ( ( reservoir.flags & RESTIR_RES_PATH ) == 0u )
-		return LightVisibility( reservoir.light, origin, reservoir.samplePos.xyz, reservoir.emitterTri, RESTIR_NO_HIT );
-	vec3 offset = reservoir.samplePos.xyz - origin;
-	float distanceToVertex = length( offset );
-	return TraceVisibility( origin, SafeNormal( offset ), RESTIR_DIST_EPSILON, max( RESTIR_DIST_EPSILON, distanceToVertex - RESTIR_DIST_EPSILON ), RESTIR_RAY_MASK_SHADOW, RESTIR_NO_HIT );
-}
-
-// Irradiance accumulated so far at the sample nearest to a lightmap hit (style 0, base channel).
-// Zero in iteration 0; afterwards the running mean of every previous iteration, i.e. direct plus
+// Irradiance resolved so far at the sample nearest to a lightmap hit (style 0, base channel):
+// exact point/spot direct light plus the running mean of the sampled terms, i.e. direct plus
 // the bounces already resolved — the progressive equivalent of VRAD's patch radiosity
 // (patch exitance = reflectivity * (direct + bounced), vrad.cpp BounceLight / radial.cpp:718-729).
 // Requires restir_lightmap.glsl (SceneFaceFromHit, LightmapCoord).
@@ -266,42 +256,41 @@ vec3 PreviousIrradianceAtHit( HitInfo hit, vec3 position, out vec3 reflectivity 
 	if ( sampleIndex < 0 )
 		return vec3( 0.0 );
 	vec4 value = previousIrradiance[uint( sampleIndex )];
-	return value.w > 0.0 ? value.rgb / value.w : vec3( 0.0 );
+	return directIrradiance[uint( sampleIndex )].rgb + ( value.w > 0.0 ? value.rgb / value.w : vec3( 0.0 ) );
 }
 
-// Indirect candidate (slot 0 only, I4): one cosine-distributed direction; the bounce surface is
-// the lightmapped face seen in that direction (TraceGatherRay: WORLDFACE, front faces), occluded
-// by the shadow geometry like every other ray. Its outgoing radiance is reflectivity * E / pi
-// with E the irradiance already resolved there (multi-bounce emerges over iterations, bounded by
-// pc.maxBounces iterations of feedback). Static props and sky do not bounce (VRAD radiosity has
-// no prop patches).
-ReSTIRReservoir GeneratePathCandidate( vec3 origin, vec3 normal, inout uint rng )
+// One cosine-distributed direction resolves both hemisphere terms, which have disjoint support:
+// it either leaves through the sky (sky ambient, lightmap.cpp:1745-1831) or lands on a
+// lightmapped face, whose outgoing radiance is reflectivity * E / pi with E the irradiance
+// already resolved there (TraceGatherRay: WORLDFACE, front faces, occluded by the shadow
+// geometry like every other ray). Static props and sky do not bounce (VRAD radiosity has no
+// prop patches). Returns radiance * pi, the estimate under the cosine PDF.
+bool HemisphereSample( vec3 origin, vec3 direction, bool skyAmbient, bool bounce, out vec3 value, out bool sky )
 {
-	ReSTIRReservoir candidate = EmptyReservoir();
-	vec3 direction = CosineDirection( normal, vec2( Random( rng ), Random( rng ) ) );
-	float cosine = max( dot( normal, direction ), 0.0 );
-	candidate.sourcePdf = cosine / RESTIR_PI;
-	if ( cosine <= 0.0 || pc.iteration == 0u )
-		return candidate;
+	value = vec3( 0.0 );
+	sky = false;
 	HitInfo occluder;
 	float occluderT = RESTIR_TRACE_LENGTH;
 	if ( TraceRay( origin, direction, RESTIR_DIST_EPSILON, RESTIR_TRACE_LENGTH, RESTIR_RAY_MASK_SHADOW, RESTIR_NO_HIT, occluder ) )
 	{
 		if ( ( occluder.flags & RESTIR_TRI_SKY ) != 0u )
-			return candidate;
+		{
+			if ( !skyAmbient )
+				return false;
+			sky = true;
+			value = lights[pc.skyAmbientLight].intensity.rgb;
+			return true;
+		}
 		occluderT = occluder.t;
 	}
+	if ( !bounce )
+		return false;
 	HitInfo surface;
 	if ( !TraceGatherRay( origin, direction, RESTIR_DIST_EPSILON, occluderT + 1.0, surface ) )
-		return candidate;
-	vec3 vertex = origin + direction * surface.t;
+		return false;
 	vec3 reflectivity;
-	vec3 irradiance = PreviousIrradianceAtHit( surface, vertex, reflectivity );
-	candidate.samplePos = vec4( vertex, 0.0 );
-	candidate.hitClass = surface.hitId;
-	candidate.flags = RESTIR_RES_VALID | RESTIR_RES_PATH | RESTIR_RES_VISIBLE;
-	vec3 radiance = reflectivity * irradiance / RESTIR_PI;
-	candidate.radiance = vec4( radiance, Luminance( radiance ) * cosine );
-	return candidate;
+	vec3 irradiance = PreviousIrradianceAtHit( surface, origin + direction * surface.t, reflectivity );
+	value = reflectivity * irradiance;
+	return true;
 }
 #endif

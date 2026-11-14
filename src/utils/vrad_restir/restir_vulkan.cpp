@@ -8,7 +8,7 @@
 static const char *s_pPipelineNames[RESTIR_PIPE_COUNT] =
 {
 	"bvh_morton", "bvh_sort", "bvh_hierarchy", "bvh_refit", "restir_init",
-	"restir_candidates", "restir_temporal", "restir_spatial", "restir_accumulate",
+	"restir_direct", "restir_transport",
 	"restir_reconstruct", "restir_trace_rays", "restir_gather_ambient", "restir_light_points",
 	"restir_sun_visibility", "restir_local_visibility", "restir_probe_sh"
 };
@@ -55,9 +55,6 @@ CReSTIRVulkanDevice::Impl::Impl()
 	info.vendorId = info.driverVersion = info.apiVersion = 0;
 	info.luidValid = false;
 	info.backend = RESTIR_BACKEND_COMPUTE_BVH;
-	reservoirBindings[0] = RESTIR_BIND_RESERVOIRS_PREV;
-	reservoirBindings[1] = RESTIR_BIND_RESERVOIRS_CUR;
-	reservoirBindings[2] = RESTIR_BIND_RESERVOIRS_NEXT;
 }
 
 void CReSTIRVulkanDevice::Impl::Fail( const char *message ) const
@@ -322,8 +319,7 @@ bool CReSTIRVulkanDevice::Impl::IsPagedBinding( int binding ) const
 	if ( receiverFullForReconstruct )
 		return false;
 	return binding == RESTIR_BIND_SAMPLES || binding == RESTIR_BIND_LUXELS ||
-		binding == RESTIR_BIND_RESERVOIRS_PREV || binding == RESTIR_BIND_RESERVOIRS_CUR ||
-		binding == RESTIR_BIND_RESERVOIRS_NEXT || binding == RESTIR_BIND_ACCUMULATION ||
+		binding == RESTIR_BIND_ACCUMULATION ||
 		binding == RESTIR_BIND_OUTPUT || binding == RESTIR_BIND_LUXEL_VALID ||
 		binding == RESTIR_BIND_FINAL_LIGHTMAP || binding == RESTIR_BIND_RECEIVER_ACCUMULATION ||
 		binding == RESTIR_BIND_RECEIVER_OUTPUT || binding == RESTIR_BIND_SUN_ORIGINS ||
@@ -334,7 +330,7 @@ static uint64_t PageBytes( const ReSTIRPage &page, bool shadowSplit )
 {
 	const uint64_t samples = (uint64_t)page.sampleCount * sizeof( ReSTIRGpuSample );
 	const uint64_t luxels = (uint64_t)page.luxelCount * ( sizeof( ReSTIRGpuLuxel ) + sizeof( Vector4D ) + sizeof( float ) + sizeof( unsigned int ) );
-	const uint64_t reservoirs = (uint64_t)page.reservoirCount * ( sizeof( ReSTIRReservoir ) * 3 + sizeof( float ) * RESTIR_MAX_CHANNELS * 4 +
+	const uint64_t reservoirs = (uint64_t)page.reservoirCount * ( sizeof( float ) * RESTIR_MAX_CHANNELS * 4 +
 		( shadowSplit ? sizeof( float ) * RESTIR_MAX_CHANNELS * 4 : 0 ) );
 	const uint64_t output = (uint64_t)page.outputCount * sizeof( float ) * 4 * ( shadowSplit ? 2 : 1 );
 	const uint64_t finalLightmap = (uint64_t)page.outputCount * sizeof( float ) * 4;
@@ -409,14 +405,11 @@ void CReSTIRVulkanDevice::Impl::RebuildPageBufferSizes()
 		return;
 	const VkDeviceSize samples = (VkDeviceSize)pageSamples * sizeof( ReSTIRGpuSample );
 	const VkDeviceSize luxels = (VkDeviceSize)pageLuxels * sizeof( ReSTIRGpuLuxel );
-	const VkDeviceSize reservoirs = (VkDeviceSize)pageReservoirs * sizeof( ReSTIRReservoir );
 	const VkDeviceSize accumulation = (VkDeviceSize)pageReservoirs * RESTIR_MAX_CHANNELS * sizeof( float ) * 4;
 	const VkDeviceSize output = (VkDeviceSize)pageOutputs * sizeof( float ) * 4;
 	const VkDeviceSize valid = (VkDeviceSize)pageLuxels * sizeof( unsigned int );
 	RecreateBuffer( RESTIR_BIND_SAMPLES, samples );
 	RecreateBuffer( RESTIR_BIND_LUXELS, luxels );
-	for ( int binding = RESTIR_BIND_RESERVOIRS_PREV; binding <= RESTIR_BIND_RESERVOIRS_NEXT; ++binding )
-		RecreateBuffer( binding, reservoirs );
 	RecreateBuffer( RESTIR_BIND_ACCUMULATION, accumulation );
 	RecreateBuffer( RESTIR_BIND_OUTPUT, output );
 	RecreateBuffer( RESTIR_BIND_LUXEL_VALID, valid );
@@ -456,8 +449,7 @@ void CReSTIRVulkanDevice::Impl::PrepareReconstructionPages( unsigned int sampleC
 			buffers[i].size = MAX( (VkDeviceSize)16, (VkDeviceSize)reservoirCapacity * RESTIR_MAX_CHANNELS * sizeof( float ) * 4 );
 		else if ( i == RESTIR_BIND_RECEIVER_ACCUMULATION )
 			buffers[i].size = 16;
-		else if ( i == RESTIR_BIND_RESERVOIRS_PREV || i == RESTIR_BIND_RESERVOIRS_CUR || i == RESTIR_BIND_RESERVOIRS_NEXT ||
-			i == RESTIR_BIND_FINAL_LIGHTMAP || i == RESTIR_BIND_SUN_ORIGINS || i == RESTIR_BIND_SUN_VISIBILITY )
+		else if ( i == RESTIR_BIND_FINAL_LIGHTMAP || i == RESTIR_BIND_SUN_ORIGINS || i == RESTIR_BIND_SUN_VISIBILITY )
 			buffers[i].size = 16;
 		VkBufferCreateInfo create = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 		create.size = buffers[i].size;

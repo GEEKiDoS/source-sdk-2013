@@ -378,7 +378,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 				return false;
 			if ( IsOption( pArg, "-restir_iterations" ) ) { options.iterations = value; explicitOptions.iterations = true; }
 			else if ( IsOption( pArg, "-restir_candidates" ) ) { options.candidates = value; explicitOptions.candidates = true; }
-			else if ( IsOption( pArg, "-restir_spatial_radius" ) ) options.spatialRadius = value;
+			else if ( IsOption( pArg, "-restir_spatial_radius" ) ) Msg( "Ignoring -restir_spatial_radius: lighting samples are not reused between luxels.\n" );
 			else if ( IsOption( pArg, "-restir_maxbounces" ) ) { options.maxBounces = value; explicitOptions.maxBounces = true; }
 			else if ( IsOption( pArg, "-restir_seed" ) ) options.seed = value;
 			else if ( IsOption( pArg, "-restir_vram_budget" ) ) options.vramBudgetMB = value;

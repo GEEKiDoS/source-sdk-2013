@@ -13,16 +13,25 @@ const float RESTIR_TRACE_LENGTH = 32768.0 * 1.732050807569;
 const float RESTIR_AMBIENT_LENGTH = 32768.0 * 1.74;
 const uint RESTIR_NO_HIT = 0xFFFFFFFFu;
 
-// Deterministic PCG hash + digitally scrambled base-2 radical inverse. The key
-// mixes seed, face, sample index WITHIN the face, style slot and iteration in
-// that order. Each dimension has an independent digital scramble and uses a
-// scrambled radical inverse of candidate+1. Reuse draws use separate streams.
-// No key contains a dispatch/global invocation index, so batching is invariant.
+// Deterministic PCG hash + digitally scrambled base-2 radical inverse. SampleStream mixes seed,
+// face, sample index WITHIN the face and style slot: it is the same in every iteration, so a
+// low-discrepancy sequence indexed by iteration stays one sequence per sample. SampleSeed adds
+// the iteration for draws that are independent per iteration. No key contains a dispatch or
+// global invocation index, so batching is invariant.
 uint Hash( uint value )
 {
 	uint state = value * 747796405u + 2891336453u;
 	uint word = ( ( state >> ( ( state >> 28u ) + 4u ) ) ^ state ) * 277803737u;
 	return ( word >> 22u ) ^ word;
+}
+
+uint SampleStream( uint face, uint sampleInFace, uint slot, uint stream )
+{
+	uint key = Hash( pc.seed ^ 0x9E3779B9u );
+	key = Hash( key ^ face );
+	key = Hash( key ^ sampleInFace );
+	key = Hash( key ^ slot );
+	return Hash( key ^ stream );
 }
 
 uint SampleSeed( uint face, uint sampleInFace, uint slot, uint stream )
@@ -33,6 +42,30 @@ uint SampleSeed( uint face, uint sampleInFace, uint slot, uint stream )
 	key = Hash( key ^ slot );
 	key = Hash( key ^ pc.iteration );
 	return Hash( key ^ stream );
+}
+
+// Point `index` of the base-2 (0,2)-sequence (van der Corput, Sobol' dimension 2) under a
+// per-sample digital shift. Every aligned block of 2^m consecutive indices is a (0,m,2)-net,
+// so the directions a sample draws over its iterations stratify the unit square.
+vec2 SobolPoint( uint index, uvec2 shift )
+{
+	uint x = bitfieldReverse( index );
+	uint y = 0u;
+	for ( uint direction = 0x80000000u; index != 0u; index >>= 1u, direction ^= direction >> 1u )
+	{
+		if ( ( index & 1u ) != 0u )
+			y ^= direction;
+	}
+	return vec2( float( ( x ^ shift.x ) >> 8u ), float( ( y ^ shift.y ) >> 8u ) ) * ( 1.0 / 16777216.0 );
+}
+
+// Bounce light is fed back from the irradiance already resolved on the hit face, so the first
+// iterations only deepen the bounce chain. The final mean restarts here, once every estimate
+// covers nearly the converged integrand; exact direct light seeds the feedback from iteration 0,
+// so a short burn-in is enough.
+uint FirstAveragedIteration()
+{
+	return max( 1u, min( pc.totalIterations / 4u, 8u ) );
 }
 
 float Random( inout uint state )
@@ -212,29 +245,22 @@ int FindStyle( ReSTIRGpuFace face, int style )
 	return -1;
 }
 
-ReSTIRReservoir EmptyReservoir()
+ReSTIRLightSample EmptyLightSample()
 {
-	return ReSTIRReservoir( vec4( 0.0 ), vec4( 0.0 ), 0.0, 0.0, 0.0, 0.0, RESTIR_NO_HIT, 0u, 0u, RESTIR_NO_HIT );
+	return ReSTIRLightSample( vec4( 0.0 ), vec4( 0.0 ), 0.0, RESTIR_NO_HIT, RESTIR_NO_HIT );
 }
 
-// Bitterli et al. 2020, weighted reservoir sampling; no floating-point atomics.
-void ReservoirUpdate( inout ReSTIRReservoir result, ReSTIRReservoir candidate, float weight, float count, inout uint rng )
+// utils/vrad/lightmap.cpp:1985-1993: bump channels share light visibility and source radiance
+// but evaluate their own cosine.
+vec3 ChannelNormal( ReSTIRGpuSample sampleRecord, int channel )
 {
-	result.M += count;
-	result.wSum += weight;
-	if ( weight > 0.0 && Random( rng ) * result.wSum < weight )
-	{
-		float sum = result.wSum;
-		float totalCount = result.M;
-		result = candidate;
-		result.wSum = sum;
-		result.M = totalCount;
-	}
-}
-
-void ReservoirNormalize( inout ReSTIRReservoir reservoir )
-{
-	reservoir.W = reservoir.M > 0.0 && reservoir.radiance.w > 0.0 ? reservoir.wSum / ( reservoir.M * reservoir.radiance.w ) : 0.0;
+	if ( channel == 1 )
+		return sampleRecord.bump0.xyz;
+	if ( channel == 2 )
+		return sampleRecord.bump1.xyz;
+	if ( channel == 3 )
+		return sampleRecord.bump2.xyz;
+	return sampleRecord.normal.xyz;
 }
 
 #endif
