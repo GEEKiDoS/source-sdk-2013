@@ -1,0 +1,206 @@
+// Left 4 Dead 2 SpriteCard pixel stage. Frame and sequence selection are those of the SDK spritecard_ps2x.fxc; the
+// colour paths below were recovered from the retail spritecard_ps20b.vcs (version 6, static IDs in brackets):
+//  - ADDSELF [576]: rgb = base * overbright * alpha * ( 1 + $addself ) * tint. The SDK instead scales the added
+//    term by overbright and vertex alpha, which makes L4D2's fire three to eight times brighter than authored.
+//  - MOD2X [960, 1344 with ADDSELF]: the colour is blended towards the modulate identity by alpha and is not
+//    exposure scaled; the material blends DST_COLOR, SRC_COLOR. The identity is 0.5 because this target blends
+//    linear values.
+// ADDSELF cards are the game's emissive cards: fire and explosions, authored up to 9.5 times overbright (times
+// the exposure scale) for retail's 8-bit target. That target clamped each card to display white before blending
+// it, clamped the sum again, and showed the result as it was. This target is linear HDR under the AgX tone curve
+// and a bloom fed by everything above its threshold: the unclamped card is a white blob, the clamped one comes
+// out pale, and layered cards add up past white into a haze. So under that curve an ADDSELF card
+//  - takes retail's clamp and is written as the scene colour the curve maps back to it (agx_curve.hlsli,
+//    g_vCardDisplayCurve), and
+//  - covers what is behind it by at least its brightest channel's share of that colour's ceiling. A card at
+//    the ceiling then replaces the destination, which is what retail's second clamp left of it, and layers
+//    cannot add up past the ceiling.
+// Without the curve the scene is presented clamped, as in retail, and the card is only clamped.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+// STATIC: "DUALSEQUENCE"			"0..1"
+// STATIC: "SEQUENCE_BLEND_MODE"	"0..2"
+// STATIC: "ADDBASETEXTURE2"		"0..1"
+// STATIC: "MAXLUMFRAMEBLEND1"		"0..1"
+// STATIC: "MAXLUMFRAMEBLEND2"		"0..1"
+// STATIC: "EXTRACTGREENALPHA"		"0..1"
+// STATIC: "COLORRAMP"				"0..1"
+// STATIC: "ANIMBLEND"				"0..1"
+// STATIC: "ADDSELF"				"0..1"
+// STATIC: "MOD2X"					"0..1"
+// STATIC: "DEPTHBLEND"				"0..1"
+// SKIP: !$DUALSEQUENCE && ( $SEQUENCE_BLEND_MODE || $MAXLUMFRAMEBLEND2 )
+// SKIP: $ADDBASETEXTURE2 && ( $ADDSELF || $MOD2X )
+
+#define COMBINE_MODE_AVERAGE							0
+#define COMBINE_MODE_USE_FIRST_AS_ALPHA_MASK_ON_SECOND	1
+#define COMBINE_MODE_USE_FIRST_OVER_SECOND				2
+
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+#include "agx_curve.hlsli"
+
+cbuffer l4d2_spritecard_ps : register( b1, space1 )
+{
+	float4 g_Parameters; // @legacy ps:c0
+	// x = the composite's AgX peak (0 while the scene is presented without that curve), y = its exposure bias in
+	// EV, z = AgXSceneFromDisplay's ceiling, w = that ceiling as a scene value (before the exposure bias).
+	float4 g_vCardDisplayCurve; // @legacy ps:c1
+	float4 g_vCardDepthFeathering; // @legacy ps:c2
+};
+
+#define fAdditiveBlendWeight		g_Parameters.x
+#define fOverbrightFactor			g_Parameters.y
+#define fAdditiveSelfBlendWeight	g_Parameters.z
+
+static const float g_flMod2xIdentity = 0.5f;
+
+// The paired vertex output (same types, order and interpolation), so the signatures link register-for-register.
+struct PS_INPUT
+{
+	float4 projPos : SV_Position;
+	float2 texCoord0 : TEXCOORD0;
+	float2 texCoord1 : TEXCOORD1;
+	float4 argbcolor : COLOR;
+	float4 blendfactor0 : TEXCOORD2;
+	float2 texCoord2 : TEXCOORD3;
+	float4 blendfactor1 : TEXCOORD4;
+	float2 vSeq2TexCoord0 : TEXCOORD5;
+	float2 vSeq2TexCoord1 : TEXCOORD6;
+	float4 vScreenPos : TEXCOORD7;
+};
+
+Texture2D BaseTextureSampler_Texture : register( t0 );
+SamplerState BaseTextureSampler_Sampler : register( s0 );
+static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+Texture2D ColorRampSampler_Texture : register( t1 );
+SamplerState ColorRampSampler_Sampler : register( s1 );
+static const DX12Sampler2D ColorRampSampler = { ColorRampSampler_Texture, ColorRampSampler_Sampler };
+Texture2D DepthSampler_Texture : register( t2 );
+SamplerState DepthSampler_Sampler : register( s2 );
+static const DX12Sampler2D DepthSampler = { DepthSampler_Texture, DepthSampler_Sampler };
+
+float4 main( PS_INPUT i ) : SV_Target0
+{
+	// Sample frames from texture 0
+	float4 baseTex0 = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.texCoord0 );
+	float4 baseTex1 = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.texCoord1 );
+
+	// Blend by default (may override with MAXLUMFRAMEBLEND1 or EXTRACTGREENALPHA)
+#if ANIMBLEND
+	float4 blended_rgb = lerp( baseTex0, baseTex1, i.blendfactor0.x );
+#else
+	float4 blended_rgb = baseTex0;
+#endif
+
+#if MAXLUMFRAMEBLEND1
+	{
+		// Blend between animation frames based upon max luminance
+		float lum0 = dot( float3(.3, .59, .11), baseTex0.rgb * (1-i.blendfactor0.x));
+		float lum1 = dot( float3(.3, .59, .11), baseTex1.rgb *    i.blendfactor0.x);
+
+		if ( lum0 > lum1 )
+			blended_rgb = baseTex0;
+		else
+			blended_rgb = baseTex1;
+	}
+#elif EXTRACTGREENALPHA
+	// Weight Green/Alphas from the two frames for a scalar result
+	blended_rgb = dot( baseTex0, i.blendfactor0 ) + dot( baseTex1, i.blendfactor1 );
+#endif
+
+#if DUALSEQUENCE
+	{
+		baseTex0 = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vSeq2TexCoord0 );
+		baseTex1 = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.vSeq2TexCoord1 );
+
+		// Blend by default (may override with MAXLUMFRAMEBLEND2)
+		float4 rgb2 = lerp( baseTex0, baseTex1, i.blendfactor0.z );
+
+#if MAXLUMFRAMEBLEND2
+		{
+			// blend between animation frames based upon max luminance
+			float tlum0 = dot( float3(.3, .59, .11), baseTex0.rgb * (1-i.blendfactor0.x));
+			float tlum1 = dot( float3(.3, .59, .11), baseTex1.rgb *    i.blendfactor0.x);
+
+			if ( tlum0 > tlum1 )
+				rgb2 = baseTex0;
+			else
+				rgb2 = baseTex1;
+		}
+#endif
+
+#if SEQUENCE_BLEND_MODE == COMBINE_MODE_AVERAGE
+		blended_rgb = 0.5 * ( blended_rgb + rgb2 );
+#elif SEQUENCE_BLEND_MODE == COMBINE_MODE_USE_FIRST_AS_ALPHA_MASK_ON_SECOND
+		blended_rgb.rgb = rgb2.rgb;
+#else // COMBINE_MODE_USE_FIRST_OVER_SECOND
+		blended_rgb.rgb = lerp( blended_rgb.rgb, rgb2.rgb, rgb2.a );
+#endif
+	}
+#endif
+
+	// Optional color ramp
+#if COLORRAMP
+	blended_rgb.rgb = ColorRampSampler.tex.Sample( ColorRampSampler.smp, float2( blended_rgb.r, blended_rgb.g ) ).rgb;
+#endif
+
+	// Overbright
+	blended_rgb.rgb *= fOverbrightFactor;
+
+	// Soft particles: an addition of this renderer. Retail's PC shader has no depth-blend variant.
+#if DEPTHBLEND
+	i.argbcolor.a *= DepthFeathering( DepthSampler, i.vScreenPos.xy / i.vScreenPos.w, i.vScreenPos.z, i.vScreenPos.w, g_vCardDepthFeathering );
+#endif
+
+#if ADDBASETEXTURE2
+	// Premultiply the alpha for a ONE:INVALPHA blend. No L4D2 material uses this path; it is the SDK's.
+	blended_rgb.a *= i.argbcolor.a;
+
+	// In this case, we don't really want to pre-multiply by alpha
+#if !COLORRAMP
+	blended_rgb.rgb *= blended_rgb.a;
+#endif
+
+#if EXTRACTGREENALPHA
+	blended_rgb.rgb += fAdditiveBlendWeight * i.argbcolor.a * blended_rgb.rgb;
+#else
+	blended_rgb.rgb += fOverbrightFactor * fAdditiveBlendWeight * i.argbcolor.a * BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.texCoord2 ).rgb;
+#endif
+
+	blended_rgb.rgb *= i.argbcolor.rgb;
+#elif ADDSELF
+	blended_rgb.a *= i.argbcolor.a;
+	blended_rgb.rgb *= blended_rgb.a;
+	blended_rgb.rgb += fAdditiveSelfBlendWeight * blended_rgb.rgb;
+	blended_rgb.rgb *= i.argbcolor.rgb;
+#if MOD2X
+	blended_rgb.rgb = ( blended_rgb.rgb - g_flMod2xIdentity ) * blended_rgb.a + g_flMod2xIdentity;
+#endif
+#else
+#if MOD2X
+	blended_rgb.rgb -= g_flMod2xIdentity;
+#endif
+	blended_rgb *= i.argbcolor;
+#if MOD2X
+	blended_rgb.rgb = blended_rgb.rgb * blended_rgb.a + g_flMod2xIdentity;
+#endif
+#endif
+
+#if MOD2X
+	// A multiplier of the destination: the 8-bit source range is 0..1, at most a doubling.
+	blended_rgb.rgb = saturate( blended_rgb.rgb );
+	return DX12FinishPixel( blended_rgb, 0.0f );
+#else
+	float4 result = FinalOutput( blended_rgb, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR );
+#if ADDSELF
+	result.rgb = saturate( result.rgb );
+	[branch] if ( g_vCardDisplayCurve.x > 0.0f )
+	{
+		result.rgb = AgXSceneFromDisplay( result.rgb, g_vCardDisplayCurve.x, g_vCardDisplayCurve.y, g_vCardDisplayCurve.z );
+		result.a = max( result.a, saturate( max( result.r, max( result.g, result.b ) ) / g_vCardDisplayCurve.w ) );
+	}
+#endif
+	return DX12FinishPixel( result, 0.0f );
+#endif
+}

@@ -111,6 +111,62 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   `patch` errors reduced from 16 each to zero. Evidence: `_train_door_stationary_{before,after}_runtime.log`
   and `screenshots/train_door_stationary_{before,after}*.jpg`; both runs exited 0.
 
+### Left 4 Dead 2 SpriteCard
+
+`L4D2_SpriteCard` (`cpp/l4d2_spritecard.cpp`, `native_src/l4d2_spritecard_{vs,ps}51.fxc`) is the retail L4D2
+shader's dialect of `SpriteCard`. The L4D2 client's material preparation renames `SpriteCard` to it on this renderer
+(`terror_materials.cpp`; the outlined-card and simple spline families stay `TerrorSpriteCard`), so other games keep
+the SDK shader. Sequences, the colour ramp, green/alpha extraction and the second texture are the SDK's. The rest was
+read from the retail `spritecard_vs20.vcs` / `spritecard_ps20b.vcs` (static IDs in brackets) and the draw function at
+`stdshader_dx9.dll` `0x33F60`:
+
+- `$addself` [ps 576, 579]: `rgb = base * overbright * alpha * (1 + $addself) * tint`. The SDK adds
+  `overbright * $addself * vertexAlpha` in place of `$addself`: 3 times brighter for `fire_molotov`, 7.8 times for
+  `fire_particle_4`.
+- `$mod2x` [ps 960, 1344]: blend `DST_COLOR, SRC_COLOR`; the colour is interpolated from the identity 0.5 by alpha
+  and is not exposure scaled. The SDK shader has no such parameter and drew the fire glows as grey quads.
+- `$cropfactor` [vs 96]: scales the card and takes the centred part of each sheet frame. It is a constant here; the
+  default `[1 1]` is the identity.
+- `$vertexfogamount` [vs 288]: alpha fades by the horizontal range-fog amount. Applied only while the scene fog is
+  linear range fog, because the vertex fog constants describe a range in every fog mode.
+- A card whose faded alpha is below one byte is zero-sized. `$orientationmatrix` is the plane of orientation 2.
+- Retail's PC shader has no depth blend (its `DEPTHBLEND` combo range is `0..0`); this one keeps the renderer's soft
+  particles.
+- Not reproduced: orientation 3, which needs the particle normal as a vertex stream and draws as orientation 2, and
+  `$vertexcolorlerp`, set by two materials no particle system references.
+
+ADDSELF cards are the emissive ones: 42 materials, fire and explosions and the `vistasmokev1_fire` smoke, authored
+up to 9.5 times overbright for an 8-bit target. That target clamped every card to display white, clamped the
+blended sum again and showed the result as it was. Here the target is linear HDR, AgX desaturates what is bright
+and the bloom takes everything above `mat_postfx_bloom_threshold`: unclamped fire is a white blob, clamped fire is
+pale, and layered flames add up into a haze. While the DX12 post stack is active
+(`VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM`, published every frame by `postprocess_dx12.cpp`: the AgX peak and the
+exposure bias) an ADDSELF card is therefore
+
+- clamped to display white and written as `AgXSceneFromDisplay()` of that colour (`native_src/agx_curve.hlsli`, the
+  inverse of the composite's curve: exact inside AgX's gamut, the nearest reachable colour outside it), limited to
+  `mat_l4d2_spritecard_ceiling` (archived, default 1.25, the bloom threshold's default; 16.29 reaches display white
+  and higher values let fire glow);
+- given at least its brightest channel's share of that ceiling as alpha. The blend is `ONE, ONE_MINUS_SRC_ALPHA`, so
+  a card at the ceiling replaces what is behind it, as retail's second clamp did, and layers cannot exceed the
+  ceiling.
+
+With `mat_postfx_dx12 0` the scene is presented clamped as in retail, and the card is only clamped.
+
+Measured on `c1m1_hotel` with the templated corridor fires `fire27`, `fire28` and `inferno02` spawned
+(`setpos 1280 5624 2468; setang 15 180 0`, 1280x720): mean colour and saturation `(max - min) / max` of the warm
+pixels, by the value of their largest channel. The fires are random, so these are distributions, not pixel matches.
+
+| largest channel | retail | SDK `SpriteCard` | `L4D2_SpriteCard` |
+|---|---|---|---|
+| 120..179 | 150,84,40 / 0.73 | 152,104,70 / 0.54 | 147,85,44 / 0.70 |
+| 180..229 | 203,129,64 / 0.68 | 205,163,120 / 0.42 | 212,161,95 / 0.56 |
+| 230..255 | 246,194,110 / 0.56 | 236,213,176 / 0.26 | 233,176,104 / 0.55 |
+
+Retail's brightest flame cores stay brighter than the default ceiling allows (display code 208 for a white card;
+223 at a ceiling of 2, with a visible glow). A thrown molotov on the roof, and another after
+`changelevel c1m2_streets`, look like retail's; that run exited 0. `-dx9` was not compared.
+
 ### CPU model facial flex
 
 CPU-flex model shaders consume position/normal/tangent deltas through stream 2 and

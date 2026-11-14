@@ -17,3 +17,7 @@ splinecard_vs51.fxc vs splinecard_vs51 20b splinecard_vsxx.fxc
 volume_clouds_vs51.fxc vs volume_clouds_vs51 20b volume_clouds_vs20.fxc
 volume_clouds_ps51.fxc ps volume_clouds_ps51 20b volume_clouds_ps2x.fxc
 # pair volume_clouds_vs51 volume_clouds_ps51
+l4d2_spritecard_vs51.fxc vs l4d2_spritecard_vs51 native -
+# noparity l4d2_spritecard_vs51 - native-only
+l4d2_spritecard_ps51.fxc ps l4d2_spritecard_ps51 native -
+# noparity l4d2_spritecard_ps51 - native-only

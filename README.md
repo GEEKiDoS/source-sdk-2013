@@ -82,6 +82,21 @@ Native DX12 SpriteCard uses retail's zero alpha-test reference; the SDK's
 0.01 reference cuts faint particle glow falloff into a visible hard-edged disc.
 The renderer's fast pipeline memo renews each reused PSO's retirement fence, so
 cache reclamation cannot release it while recorded or GPU work still references it.
+On DX12 the L4D2 client routes its remaining SpriteCard materials to the
+renderer's `L4D2_SpriteCard`, which draws the retail shader's colour paths
+rather than the SDK's. `$addself` adds `$addself` times the premultiplied
+colour; the SDK term is also multiplied by `$overbrightfactor` and vertex
+alpha, three to eight times brighter for the fire materials. `$mod2x`
+modulates the destination; the SDK shader drew those glow cards as grey quads.
+`$cropfactor` crops the card and its sheet frame, and `$vertexfogamount` fades
+it with the fog. ADDSELF cards (fire, explosions) are authored for retail's
+8-bit target: under the DX12 post stack each is clamped as that target clamped
+it, written as the scene colour AgX shows as that colour, and covers its
+background in proportion to its brightness, so layered flames keep their
+colour instead of adding up into the bloom. `mat_l4d2_spritecard_ceiling`
+(archived, default 1.25) limits that scene colour; values above
+`mat_postfx_bloom_threshold` let fire glow. `-dx9` keeps the stock SDK
+SpriteCard. Details: `src/materialsystem/stdshaders_dx12/README.md`.
 
 DX12 is the mod's default renderer; `-dx9` remains supported. The game-owned
 shaders in `game_shader_generic_l4d2` (LightmappedGeneric, WorldVertexTransition,

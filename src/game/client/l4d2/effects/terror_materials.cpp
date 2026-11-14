@@ -307,6 +307,17 @@ public:
 			}
 		}
 
+		// Remaining SpriteCard families: the DX12 renderer draws the retail shader's
+		// $addself weighting, $mod2x, $cropfactor and $vertexfogamount with its own
+		// L4D2 SpriteCard. The stock DX9 shader DLL has the SDK's SpriteCard only.
+		const char *pShaderDLL = pHardware->GetShaderDLLName();
+		if ( pShaderDLL && !Q_stricmp( pShaderDLL, "stdshader_dx12" ) &&
+			!Q_stricmp( values->GetName(), "SpriteCard" ) )
+		{
+			values->SetName( "L4D2_SpriteCard" );
+			bChanged = true;
+		}
+
 		if ( !Q_stricmp( values->GetName(), "Infected" ) )
 		{
 			KeyValues *pProxies = values->FindKey( "Proxies", true );

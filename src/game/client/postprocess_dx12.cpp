@@ -16,6 +16,7 @@
 #include "tier1/interface.h"
 #include "tier1/keyvalues.h"
 #include "fmtstr.h"
+#include "renderparm.h"
 
 #include <cmath>
 // memdbgon must be the last include file in a .cpp file!!!
@@ -257,6 +258,13 @@ static ConVar mat_hdr_output_max_nits( "mat_hdr_output_max_nits", "0", FCVAR_ARC
 static ConVar mat_hdr_output_world_nits( "mat_hdr_output_world_nits", "200", FCVAR_ARCHIVE, "HDR scene paper-white nits" );
 static ConVar mat_hdr_output_ui_nits( "mat_hdr_output_ui_nits", "200", FCVAR_ARCHIVE, "HDR UI paper-white nits" );
 
+// The composite's AgX peak relative to the scene's paper white.
+static float HdrPeak( bool bHdr )
+{
+	const float flWorldNits = MAX( mat_hdr_output_world_nits.GetFloat(), 1.f );
+	return bHdr ? MAX( mat_hdr_output_max_nits.GetFloat(), flWorldNits ) / flWorldNits : 1.f;
+}
+
 static void DetectHdrDisplay( const CCommand & )
 {
 	const int status = DisplayStatus();
@@ -389,7 +397,8 @@ void PostProcessDX12_ValidateConfig()
 	Msg( "DX12 post: config.cfg predates mat_postfx_dx12_set and had the post stack off; re-enabled mat_postfx_dx12\n" );
 }
 
-// Per-frame HDR output settings; a plain store in the renderer, so no render context is involved.
+// Per-frame settings read outside this file: the renderer's HDR output state (a plain store, no render context)
+// and the tone curve of this frame's composite for display-referred materials.
 void PostProcessDX12_SubmitFrameConfig()
 {
 	if ( !s_pShaderAPIDX12 )
@@ -403,6 +412,9 @@ void PostProcessDX12_SubmitFrameConfig()
 		Msg( "mat_hdr_output: detected display max %d nits\n", nits );
 	}
 	s_pShaderAPIDX12->SetHdrOutput( bHdr, MAX( mat_hdr_output_ui_nits.GetFloat(), 1.f ) );
+	CMatRenderContextPtr pRenderContext( materials );
+	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM,
+		Vector( PostProcessDX12_Active() ? HdrPeak( bHdr ) : 0.f, mat_postfx_exposure.GetFloat(), 0.f ) );
 }
 
 void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection )
@@ -517,7 +529,7 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	const bool bHdr = mat_hdr_output.GetBool() && SHADERAPIDX12_HDR_DISPLAY_TYPE( nStatus ) == SHADERAPIDX12_HDR_DISPLAY_HDR && s_pShaderAPIDX12->HdrOutputCapable();
 	const float flWorldNits = MAX( mat_hdr_output_world_nits.GetFloat(), 1.f );
 	const float flUiNits = MAX( mat_hdr_output_ui_nits.GetFloat(), 1.f );
-	const float flPeak = bHdr ? MAX( mat_hdr_output_max_nits.GetFloat(), flWorldNits ) / flWorldNits : 1.f;
+	const float flPeak = HdrPeak( bHdr );
 	const float flOutScale = bHdr ? flWorldNits / flUiNits : 1.f;
 	// Lens flare and glare are added to the HDR scene at a tenth of their intensity, the bloom weight that used to
 	// scale them. The bloom exposure already carries the division by the summed layer count.

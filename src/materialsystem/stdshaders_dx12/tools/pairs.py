@@ -175,6 +175,8 @@ NATIVE_ONLY = [
     native_only('pbr', 'pbr_world_depthprepass_ps51.fxc', 'ps', 'pbr_world_depthprepass_ps51'),
     native_only('pbr', 'pbr_model_depthprepass_ps51.fxc', 'ps', 'pbr_model_depthprepass_ps51'),
     native_only('pbr', 'pbr_gbuffer_debug_cs51.fxc', 'cs', 'pbr_gbuffer_debug_cs51'),
+    native_only('sprites_particles', 'l4d2_spritecard_vs51.fxc', 'vs', 'l4d2_spritecard_vs51'),
+    native_only('sprites_particles', 'l4d2_spritecard_ps51.fxc', 'ps', 'l4d2_spritecard_ps51'),
 ]
 ALL = SCREENSPACE + POSTFX + VERTEXLIT + WORLD_MISC + SPRITES + WATER + EYES + LIGHTMAPPED + MORPH + EFFECTS
 

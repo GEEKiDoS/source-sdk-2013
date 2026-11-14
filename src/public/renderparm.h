@@ -29,6 +29,10 @@ enum RenderParamVector_t
 	INT_RENDERPARM_DISTORTION_TYPE,
 	VECTOR_RENDERPARM_WIND_DIRECTION,
 	VECTOR_RENDERPARM_L4D2_WATER_FOG_RANGE = 11, // start, end, unused
+	// Published every frame by the DX12 post stack (postprocess_dx12.cpp) for materials whose colours are authored
+	// for the display rather than the scene: x = the tone curve's peak relative to paper white (0 while the scene
+	// is presented without that curve), y = the exposure bias in EV applied before it.
+	VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM = 12,
 
 	MAX_VECTOR_RENDER_PARMS = 20
 };
