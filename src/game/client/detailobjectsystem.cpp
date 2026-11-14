@@ -3128,6 +3128,7 @@ const ShadowMapDetailOrientation_t &CDetailObjectSystem::SnapshotShadowOrientati
 	m_ShadowOrientation.m_vecViewOrigin = origin;
 	m_ShadowOrientation.m_vecViewForward = forward;
 	m_ShadowOrientation.m_vecViewRight = right;
+	m_ShadowOrientation.m_nShadowSkyRegion = -1;
 	m_ShadowOrientation.m_vecViewUp = up;
 	m_ShadowOrientationHistory[m_nNextShadowOrientation] = m_ShadowOrientation;
 	m_nNextShadowOrientation = ( m_nNextShadowOrientation + 1 ) % SHADOW_ORIENTATION_HISTORY;
@@ -3346,8 +3347,9 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 			const QAngle savedAngles = model.m_Angles;
 			model.ComputeShadowAngles( orientation );
 			model.SetAlpha( 255 );
+			if ( orientation.m_nShadowSkyRegion >= 0 )
+				ShadowMapsDX12_SetShadowCasterSkyClipExempt( ShadowMapsDX12_IsSkyClipExempt( &model, orientation.m_nShadowSkyRegion ) );
 			model.DrawModel( STUDIO_RENDER | STUDIO_SHADOWDEPTHTEXTURE );
-			if ( footprint )
 			{
 				const model_t *renderModel = model.GetModel();
 				const int modelType = renderModel ? modelinfo->GetModelType( renderModel ) : mod_bad;
@@ -3403,6 +3405,16 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 		Error( "Runtime shadow maps: detail depth mesh cannot hold a shaped card\n" );
 	CMeshBuilder builder;
 	int batch = MIN( quads, capacity ), written = 0;
+	bool batchSkyExempt = false, batchSkyStateSet = false;
+	auto flushBatch = [&]()
+	{
+		builder.End();
+		mesh->Draw();
+		quads -= written;
+		batch = MIN( quads, capacity );
+		written = 0;
+		builder.Begin( mesh, MATERIAL_QUADS, batch );
+	};
 	builder.Begin( mesh, MATERIAL_QUADS, batch );
 	for ( int i = first; i < first + count; ++i )
 	{
@@ -3411,15 +3423,16 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 		if ( model.GetType() == DETAIL_PROP_TYPE_MODEL )
 			continue;
 		const int n = model.QuadsToDraw();
-		if ( written + n > batch )
+		const bool skyExempt = orientation.m_nShadowSkyRegion >= 0 &&
+			ShadowMapsDX12_IsSkyClipExempt( &model, orientation.m_nShadowSkyRegion );
+		if ( !batchSkyStateSet || ( skyExempt != batchSkyExempt && written ) )
 		{
-			builder.End();
-			mesh->Draw();
-			quads -= written;
-			batch = MIN( quads, capacity );
-			written = 0;
-			builder.Begin( mesh, MATERIAL_QUADS, batch );
+			if ( batchSkyStateSet && written ) flushBatch();
+			batchSkyExempt = skyExempt; batchSkyStateSet = true;
+			if ( orientation.m_nShadowSkyRegion >= 0 ) ShadowMapsDX12_SetShadowCasterSkyClipExempt( skyExempt );
 		}
+		if ( written + n > batch )
+			flushBatch();
 		QAngle savedAngles = model.m_Angles;
 		const unsigned char savedAlpha = model.GetAlpha();
 		model.ComputeShadowAngles( orientation );
@@ -3432,18 +3445,19 @@ void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrienta
 	}
 	for ( int i = 0; orientationDependent && data && i < data->m_nNumSprites; ++i )
 	{
-		if ( written == batch )
-		{
-			builder.End();
-			mesh->Draw();
-			quads -= written;
-			batch = MIN( quads, capacity );
-			written = 0;
-			builder.Begin( mesh, MATERIAL_QUADS, batch );
-		}
 		FastSpriteX4_t &sprite = data->m_pSprites[i >> 2];
 		const int sub = i & 3;
 		Vector origin( sprite.m_Pos.X( sub ), sprite.m_Pos.Y( sub ), sprite.m_Pos.Z( sub ) );
+		const bool skyExempt = orientation.m_nShadowSkyRegion >= 0 &&
+			ShadowMapsDX12_IsSkyClipExemptAtPoint( leaf, origin, orientation.m_nShadowSkyRegion );
+		if ( !batchSkyStateSet || ( skyExempt != batchSkyExempt && written ) )
+		{
+			if ( batchSkyStateSet && written ) flushBatch();
+			batchSkyExempt = skyExempt; batchSkyStateSet = true;
+			if ( orientation.m_nShadowSkyRegion >= 0 ) ShadowMapsDX12_SetShadowCasterSkyClipExempt( skyExempt );
+		}
+		if ( written == batch )
+			flushBatch();
 		Vector direction = origin - orientation.m_vecViewOrigin;
 		Vector right( -direction.y, direction.x, 0 );
 		if ( VectorNormalize( right ) < 1.0e-4f )

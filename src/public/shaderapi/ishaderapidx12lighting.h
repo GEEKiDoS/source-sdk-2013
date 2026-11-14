@@ -66,12 +66,13 @@ typedef intp ShaderAPITextureHandle_t;
 
 // Sun shadow-chart sky clip: pixel-stage space 6 beside the screen-space inputs (native_src/shadow_sky_clip.hlsli,
 // ishaderapidx12screenspace.h). t4 Texture2D<float> sky entry depth, b2 cbuffer DX12ShadowSkyClip (byte-identical twin
-// below). Backend-filled per sky-clipped pass; every other draw sees zero constants and a typed-null texture.
+// below). Backend-filled for clipped caster draws; playable-region exemptions retain the table but set enabled=0,
+// while every other draw sees zero constants and a typed-null texture.
 struct alignas( 16 ) DX12ShadowSkyClipConstants	// 16 bytes
 {
 	float	rectOrigin[2];			// chart rect origin in target texels (the sky map is chart-local, origin 0,0)
 	float	depthBias;				// chart depth units ([0,1] over cShadowDepthRecords near..far)
-	float	enabled;				// 1 while a sky map is bound, else 0
+	float	enabled;				// 1 while clipping is enabled, else 0 (including playable-region caster exemptions)
 };
 static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipConstants must match HLSL DX12ShadowSkyClip" );
 
@@ -131,11 +132,12 @@ static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipCon
 #define DX12_PBR_LIGHT_MODELS					2		// DX12ProjectedLightDesc::flags: lights model receivers
 // Ambient probe resources: pixel-stage space 4, lighting and highres root signatures only.
 #define DX12_PROBE_REGISTER_SPACE				4
-#define DX12_PROBE_TABLE_COUNT					9		// t0..t8
+#define DX12_PROBE_TABLE_COUNT					10		// t0..t9
 #define DX12_PROBE_T_INDIRECTION				0		// Texture3D<uint>: brick slot or hlight::kMissing
 #define DX12_PROBE_T_DC							1		// Texture3D<float3>: R11G11B10_FLOAT flat irradiance
 #define DX12_PROBE_T_BANDS_FIRST				2		// Texture3D<float4> ProbeBands[6]: RGBA8_SNORM, texture 2c + h = channel c bands 1..4 / 5..8
 #define DX12_PROBE_T_VALIDITY					8		// Texture3D<float>: R8_UNORM
+#define DX12_PROBE_T_FREE_DISTANCE				9		// Texture3D<uint>: six conservative 4-bit axis free distances
 #define DX12_PROBE_S_LINEAR						0		// static sampler s0 space4: linear, clamp
 #define DX12_PROBE_B_CONSTANTS					0		// DX12ProbeConstantsV1 (root CBV)
 
@@ -386,8 +388,9 @@ public:
 	// Synchronous. Prevents new leases; storage retires only after every lease and GPU use completed.
 	virtual void DestroyShadowDepthTarget( DX12ShadowTarget_t target ) = 0;
 	// Queued. Saves backend state, binds zero color targets + the private DSV, sets viewport/scissor to the rect, clears only it when asked.
-	// skyClip (sun charts only) rasterizes the sky entry depth into its target first and discards every caster fragment of the
-	// pass on the sun side of it (shadow_sky_clip.hlsli); NULL leaves caster depth unclipped (local charts).
+	// skyClip (sun charts only) rasterizes the sky entry depth into its target first and discards caster fragments of the
+	// pass on the sun side of it (shadow_sky_clip.hlsli); SetShadowCasterSkyClipExempt disables that discard for
+	// playable-region model/detail casters, while NULL leaves caster depth unclipped (local charts).
 	virtual void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear, const DX12ShadowSkyClip *skyClip ) = 0;
 	virtual void EndShadowPass() = 0;
 	// Queued; only inside Begin/EndShadowPass. Between the markers the backend defers every opaque rigid depthwrite
@@ -447,6 +450,10 @@ public:
 	virtual void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) = 0;
 	// Recording owner. Four packet indices followed by six ambient-cube rows; no allocation.
 	virtual void ModelLocalLighting( int limit, float rows[7][4] ) = 0;
+	// Queued, only inside Begin/EndShadowPass. Static/detail/model caster draws that belong to the
+	// receiver's playable sealed sky region set this around their draw; the backend keeps the draw
+	// in the sun chart but uploads cShadowSkyClip.w = 0. Instanced batches split on this state.
+	virtual void SetShadowCasterSkyClipExempt( bool exempt ) = 0;
 };
 
 #endif // ISHADERAPIDX12LIGHTING_H

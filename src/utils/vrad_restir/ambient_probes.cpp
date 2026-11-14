@@ -89,9 +89,9 @@ struct ProbeBuild
 	CUtlVector<uint64> keys;
 	CUtlVector<Vector> positions;
 	CUtlVector<uint8> state;
+	CUtlVector<uint32> freeDistance;			// six conservative 4-bit distances, +x,-x,+y,-y,+z,-z
 	CUtlVector<ProbeSh> sh;
 	int validCount, dilatedCount, deringedCount;
-
 	ProbeBuild( const ReSTIROptions &o, const ReSTIRScene &s, CReSTIRVulkanDevice &d )
 		: options( o ), scene( s ), device( d ), validCount( 0 ), dilatedCount( 0 ), deringedCount( 0 )
 	{
@@ -130,6 +130,7 @@ bool PlanGrid( ProbeBuild &b )
 	g.dcFormat = hprobe::kR11G11B10Float;
 	g.bandFormat = hprobe::kRGBA8Snorm;
 	g.validityFormat = hprobe::kR8Unorm;
+	g.freeDistanceFormat = hprobe::kR32Uint;
 	for ( int axis = 0; axis < 3; ++axis )
 	{
 		g.origin[axis] = floorf( dmodels[0].mins[axis] / brickEdge - 1.0f ) * brickEdge;
@@ -244,6 +245,8 @@ bool ComputeValidity( ProbeBuild &b )
 {
 	const int count = b.positions.Count();
 	b.state.SetCount( count );
+	b.freeDistance.SetCount( count );
+	memset( b.freeDistance.Base(), 0, b.freeDistance.Count() * sizeof( uint32 ) );
 	CUtlVector<ReSTIRGpuRay> rays;
 	CUtlVector<ReSTIRGpuHit> hits;
 	for ( int first = 0; first < count; first += PROBE_CHUNK )
@@ -266,9 +269,17 @@ bool ComputeValidity( ProbeBuild &b )
 		{
 			if ( b.state[i] == PROBE_INVALID )
 				continue;
+			uint32 packed = 0;
 			for ( int side = 0; side < 6; ++side, ++ray )
-				if ( ReSTIR_AmbientRayBlocked( b.scene, hits[ray], s_Axes[side] * b.grid.spacing ) )
+			{
+				const ReSTIRGpuHit &hit = hits[ray];
+				const float distance = ( hit.t >= 0.0f && hit.t < 1.0f ) ? MAX( 0.0f, MIN( hit.t, 1.0f ) ) * b.grid.spacing : b.grid.spacing;
+				const uint32 nibble = MIN( 15u, uint32( floorf( distance * 15.0f / b.grid.spacing ) ) );
+				packed |= nibble << ( side * 4 );
+				if ( ReSTIR_AmbientRayBlocked( b.scene, hit, s_Axes[side] * b.grid.spacing ) )
 					b.state[i] = PROBE_INVALID;
+			}
+			b.freeDistance[i] = packed;
 		}
 	}
 	for ( int i = 0; i < count; ++i )
@@ -430,30 +441,40 @@ int NeighborProbe( const ProbeBuild &b, uint64 key, int axis, bool positive )
 	return b.probeIds.IsValidHandle( handle ) ? b.probeIds.Element( handle ) : -1;
 }
 
-// Two passes of the mean of the valid 6-neighbours; invalid probes that gain a neighbour become valid.
+// Two passes of the mean of valid 6-neighbours, but only across a source probe's certified full-spacing
+// segment. A dilated probe advertises full distance only toward the neighbours that supplied it; all other
+// directions remain zero, so it cannot pull values through a wall.
 void DilateProbes( ProbeBuild &b )
 {
 	CUtlVector<int> filled;
 	CUtlVector<ProbeSh> means;
+	CUtlVector<uint32> distances;
 	for ( int pass = 0; pass < 2; ++pass )
 	{
 		filled.RemoveAll();
 		means.RemoveAll();
+		distances.RemoveAll();
 		for ( int i = 0; i < b.positions.Count(); ++i )
 		{
 			if ( b.state[i] != PROBE_INVALID )
 				continue;
 			ProbeSh sum;
 			memset( &sum, 0, sizeof( sum ) );
+			uint32 freeDistance = 0;
 			int neighbors = 0;
 			for ( int side = 0; side < 6; ++side )
 			{
 				const int neighbor = NeighborProbe( b, b.keys[i], side / 2, ( side & 1 ) == 0 );
 				if ( neighbor < 0 || b.state[neighbor] == PROBE_INVALID )
 					continue;
+				// The source's opposite ray must be free for a full spacing. Misses are encoded as 15.
+				const int sourceSide = side ^ 1;
+				if ( ( ( b.freeDistance[neighbor] >> ( sourceSide * 4 ) ) & 15u ) != 15u )
+					continue;
 				for ( int k = 0; k < 9; ++k )
 					for ( int c = 0; c < 3; ++c )
 						sum.e[k][c] += b.sh[neighbor].e[k][c];
+				freeDistance |= 15u << ( side * 4 );
 				++neighbors;
 			}
 			if ( !neighbors )
@@ -463,10 +484,12 @@ void DilateProbes( ProbeBuild &b )
 					sum.e[k][c] /= neighbors;
 			filled.AddToTail( i );
 			means.AddToTail( sum );
+			distances.AddToTail( freeDistance );
 		}
 		for ( int i = 0; i < filled.Count(); ++i )
 		{
 			b.sh[filled[i]] = means[i];
+			b.freeDistance[filled[i]] = distances[i];
 			b.state[filled[i]] = PROBE_DILATED;
 		}
 		b.dilatedCount += filled.Count();
@@ -474,7 +497,7 @@ void DilateProbes( ProbeBuild &b )
 }
 
 // Premultiplied by validity (stored 255) like the invalid zeros: DC = e_0 * Y_0; band s_k = clamp(e_k / DC * 0.25, -1, 1).
-void EncodeProbe( const ProbeSh &sh, uint32 texel, uint32 texels, ReSTIRAmbientProbeGrid &out )
+void EncodeProbe( const ProbeSh &sh, uint32 freeDistance, uint32 texel, uint32 texels, ReSTIRAmbientProbeGrid &out )
 {
 	float dc[3];
 	for ( int c = 0; c < 3; ++c )
@@ -489,6 +512,7 @@ void EncodeProbe( const ProbeSh &sh, uint32 texel, uint32 texels, ReSTIRAmbientP
 			out.bands[int( ( uint64( 2 * c + ( k - 1 ) / 4 ) * texels + texel ) * 4 + ( k - 1 ) % 4 )] = int8( ratio * 127.0f + ( ratio >= 0.0f ? 0.5f : -0.5f ) );
 		}
 	out.validity[texel] = hprobe::kValid;
+	out.freeDistance[texel] = freeDistance;
 }
 
 int FillGrid( ProbeBuild &b, ReSTIRAmbientProbeGrid &out )
@@ -499,9 +523,11 @@ int FillGrid( ProbeBuild &b, ReSTIRAmbientProbeGrid &out )
 	out.dc.SetCount( texels );
 	out.bands.SetCount( texels * hprobe::kBands * 4 );
 	out.validity.SetCount( texels );
+	out.freeDistance.SetCount( texels );
 	memset( out.dc.Base(), 0, out.dc.Count() * sizeof( uint32 ) );
 	memset( out.bands.Base(), 0, out.bands.Count() );
 	memset( out.validity.Base(), 0, out.validity.Count() );
+	memset( out.freeDistance.Base(), 0, out.freeDistance.Count() * sizeof( uint32 ) );
 	int written = 0;
 	for ( int entry = 0; entry < b.texelProbe.Count(); ++entry )
 	{
@@ -509,7 +535,7 @@ int FillGrid( ProbeBuild &b, ReSTIRAmbientProbeGrid &out )
 		if ( b.state[probe] == PROBE_INVALID )
 			continue;
 		const uint32 slot = entry / PROBES_PER_BRICK, local = entry % PROBES_PER_BRICK;
-		EncodeProbe( b.sh[probe], hprobe::TexelIndex( out.grid, slot, local % 5, ( local / 5 ) % 5, local / 25 ), texels, out );
+		EncodeProbe( b.sh[probe], b.freeDistance[probe], hprobe::TexelIndex( out.grid, slot, local % 5, ( local / 5 ) % 5, local / 25 ), texels, out );
 		++written;
 	}
 	return written;

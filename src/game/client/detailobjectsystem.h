@@ -34,6 +34,7 @@ struct ShadowMapDetailOrientation_t
 {
 	Vector	m_vecViewOrigin, m_vecViewForward, m_vecViewRight, m_vecViewUp;
 	uint32	m_nGeneration;		// 0 = none; increments whenever the orientation basis changes
+	int		m_nShadowSkyRegion; // receiver sealed region for per-detail caster exemption; -1 when sky clip is inactive
 };
 
 

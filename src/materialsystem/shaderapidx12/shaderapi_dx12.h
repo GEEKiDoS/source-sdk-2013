@@ -681,6 +681,7 @@ private:
 		VertexFormat_t format;
 		uint32_t first;                       // staging row offset assigned at flush
 		uint16_t head, tail, count;           // singly linked instance list (indices into rows[]/next[])
+		bool skyClipExempt;                   // key: per-draw playable-region exemption
 	};
 	static constexpr uint32_t kCasterGroups = 512, kCasterGroupSlots = 1024 /* 2x groups, open addressing */, kCasterInstances = 4096;
 	struct CasterBatchDX12

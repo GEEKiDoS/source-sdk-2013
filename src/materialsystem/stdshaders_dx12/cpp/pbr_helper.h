@@ -61,6 +61,17 @@
 	( v ).parallaxObb3 = ENVMAPPARALLAXOBB3; \
 	( v ).envmapOrigin = ENVMAPORIGIN
 
+// Legacy adapters only (LightmappedGeneric, VertexLitGeneric, WorldVertexTransition): $surfaceprop plus the internal state
+// CaptureLegacyAdapterState records at SHADER_INIT_PARAMS, before the legacy helper can rewrite $envmap.
+#define PBR_LEGACY_ADAPTER_PARAMS \
+	SHADER_PARAM( SURFACEPROP, SHADER_PARAM_TYPE_STRING, "", "Physics surface property; picks the default PBR roughness" ) \
+	SHADER_PARAM( PBR_LEGACY_ENVMAP_AUTHORED, SHADER_PARAM_TYPE_INTEGER, "0", "Internal legacy PBR adapter state" ) \
+	SHADER_PARAM( PBR_LEGACY_ROUGHNESS, SHADER_PARAM_TYPE_FLOAT, "0.6", "Internal legacy PBR adapter state" )
+#define PBR_FILL_LEGACY_ADAPTER_VARS( v ) \
+	( v ).surfaceProp = SURFACEPROP; \
+	( v ).legacyEnvmapAuthored = PBR_LEGACY_ENVMAP_AUTHORED; \
+	( v ).legacyRoughness = PBR_LEGACY_ROUGHNESS
+
 //-----------------------------------------------------------------------------
 // Material var indices, -1 = absent. Filled by every PBR shader / wrapper.
 //-----------------------------------------------------------------------------
@@ -97,6 +108,8 @@ struct PBR_Vars_t
 	int mrao, metalness, roughness, ambientOcclusion, specularTexture, specularColor, emissionTexture;
 	int subsurface, subsurfaceTint, backlight, backlightTint, thickness, thicknessTexture, anisotropy, anisotropyRotation;
 	int parallaxObb1, parallaxObb2, parallaxObb3, envmapOrigin;
+	// Legacy adapters only (PBR_LEGACY_ADAPTER_PARAMS); -1 elsewhere.
+	int surfaceProp, legacyEnvmapAuthored, legacyRoughness;
 
 	// Legacy features the PBR shaders still decline (read by PBR_LegacySupported)
 	int seamlessScale, lightWarp, outline, softEdges;
@@ -122,7 +135,9 @@ struct PBR_Vars_t
 // Legacy var tables -> PBR vars (world: LightmappedGeneric and WorldVertexTransition share one table).
 void PBR_FillWorldVars( PBR_Vars_t &v, const LightmappedGeneric_DX9_Vars_t &info );
 void PBR_FillModelVars( PBR_Vars_t &v, const VertexLitGeneric_DX9_Vars_t &info );
-
+// Legacy adapter SHADER_INIT_PARAMS, before the legacy helper runs: whether the VMT supplied $envmap (the helper can clear
+// or rewrite it) and the default roughness of the material's $surfaceprop class.
+void CaptureLegacyAdapterState( IMaterialVar **params, const PBR_Vars_t &v );
 // SHADER_INIT_PARAMS of every PBR-capable shader (the three wrappers, the adapters, PBR_Metalness / PBR_Specular): the
 // neutral values of the PBR keys. The default strings in SHADER_PARAM are editor help only; the engine initializes every
 // unset float / color / vector parameter to 0 / (1 1 1) / 0 right after SHADER_INIT_PARAMS, so "unset" is observable

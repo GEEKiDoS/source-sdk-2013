@@ -186,6 +186,39 @@ float PBR_BakedVisibility( ShadowMapReceiver r, inout ShadowMapBakedLookup looku
 // PBR_EntryVisibility derive them, so no ShadowMapBakedLookup stays live across the light loop. That state cost the
 // opaque world pass 0.4-0.8 ms on a GTX 1050 in views where 2-20% of the pixels look anything up (stdshaders_dx12
 // README, "live state"). The search keeps the last entry whose light is <= the query.
+#if defined( HIGHRES_LIGHTMAP_BICUBIC )
+float PBR_BakedFaceVisibilityBilinearTap( uint byteOffset, uint width, uint height, float2 texelCenter )
+{
+	float2 last = float2( width, height ) - 1.0;
+	float2 pixel = clamp( texelCenter - 0.5, 0.0, last );
+	uint2 p0 = uint2( floor( pixel ) );
+	uint2 p1 = min( p0 + 1u, uint2( width, height ) - 1u );
+	float2 fraction = pixel - float2( p0 );
+	uint2 rows = uint2( p0.y, p1.y ) * width;
+	float4 taps = float4(
+		ShadowMap_VisibilityByte( byteOffset + rows.x + p0.x ),
+		ShadowMap_VisibilityByte( byteOffset + rows.x + p1.x ),
+		ShadowMap_VisibilityByte( byteOffset + rows.y + p0.x ),
+		ShadowMap_VisibilityByte( byteOffset + rows.y + p1.x ) );
+	return lerp( lerp( taps.x, taps.y, fraction.x ), lerp( taps.z, taps.w, fraction.x ), fraction.y );
+}
+
+float PBR_BakedFaceVisibilityCubic( uint byteOffset, uint2 dimensions, float2 q )
+{
+	// Keep this footprint exactly in step with HighresLightmap_TileLoaded: the hlight
+	// RGB carrier and the R8 visibility endpoint use the same texel-center convention,
+	// B-spline weights and edge clamp.
+	HlightFootprint footprint = HighresLightmap_Footprint( float2( dimensions ), saturate( q ) );
+	float c00 = PBR_BakedFaceVisibilityBilinearTap( byteOffset, dimensions.x, dimensions.y, footprint.tap0 );
+	float c10 = PBR_BakedFaceVisibilityBilinearTap( byteOffset, dimensions.x, dimensions.y,
+		float2( footprint.tap1.x, footprint.tap0.y ) );
+	float c01 = PBR_BakedFaceVisibilityBilinearTap( byteOffset, dimensions.x, dimensions.y,
+		float2( footprint.tap0.x, footprint.tap1.y ) );
+	float c11 = PBR_BakedFaceVisibilityBilinearTap( byteOffset, dimensions.x, dimensions.y, footprint.tap1 );
+	return lerp( lerp( c11, c01, footprint.blend.x ), lerp( c10, c00, footprint.blend.x ), footprint.blend.y );
+}
+#endif
+
 float PBR_BakedFaceVisibility( ShadowMapReceiver r, uint selectedLightIndex )
 {
 	float visibility = 1.0;
@@ -205,6 +238,9 @@ float PBR_BakedFaceVisibility( ShadowMapReceiver r, uint selectedLightIndex )
 			visibility = float( entry.y ) * ( 1.0 / 255.0 );
 			[branch] if ( entry.y > 255u )
 			{
+#if defined( HIGHRES_LIGHTMAP_BICUBIC )
+				visibility = PBR_BakedFaceVisibilityCubic( entry.z, face.zw, r.bakedQ );
+#else
 				uint2 last = face.zw - 1u;
 				float2 pixel = saturate( r.bakedQ ) * float2( last );
 				uint2 p0 = uint2( floor( pixel ) );
@@ -217,6 +253,7 @@ float PBR_BakedFaceVisibility( ShadowMapReceiver r, uint selectedLightIndex )
 					ShadowMap_VisibilityByte( entry.z + rows.y + p0.x ),
 					ShadowMap_VisibilityByte( entry.z + rows.y + p1.x ) );
 				visibility = lerp( lerp( taps.x, taps.y, fraction.x ), lerp( taps.z, taps.w, fraction.x ), fraction.y );
+#endif
 			}
 		}
 	}

@@ -215,11 +215,14 @@ Local realtime-shadow residency culls locals the main camera is not facing
 first. The main view frustum is padded by 15 degrees of horizontal FOV per side so
 a light about to enter view is promoted before it reaches the screen edge. A
 light whose finite influence volume misses that frustum is never resident. Of
-the rest, lights whose emitter lies inside the padded frustum outrank every
-light behind the camera (most influences reach the view from anywhere, so the
-emitter test is what separates them); within each tier the main camera's BSP
-PVS and nearest emitter distance decide, with no radiance or contribution
-scoring. `r_shadowmap_max_realtime_lights` defaults to four locals, excluding the
+the rest, lights whose emitter, or for a static map spotlight whose aim point,
+lies inside the padded frustum outrank every light behind the camera (most
+influences reach the view from anywhere, so this test is what separates them).
+The aim point is the first world surface on the spot's axis, traced once at map
+admission: a wall-mounted spot whose source is just off-screen but whose cone lights
+the visible scene used to lose every slot to unrelated emitters in front of the camera.
+Within each tier the main camera's BSP PVS and the nearer of emitter and aim decide,
+with no radiance or contribution scoring. `r_shadowmap_max_realtime_lights` defaults to four locals, excluding the
 sun; zero removes the budget limit among eligible lights. Stable light IDs break
 ties and 25% priority hysteresis prevents churn within a tier.
 `r_shadowmap_realtime_fade_seconds` defaults to 0.5 seconds for the **complete**
@@ -281,18 +284,22 @@ cvar to 0 stops emitting the markers (the unbatched path). Both paths write iden
 invalidate cached charts; it applies to every depth scene rendered afterwards (cascades re-render as the view moves).
 
 Sun sky clip (`r_shadowmap_sky_clip`, `FCVAR_ARCHIVE` default 1): the sky is the sun's emitter, as in the vrad_restir
-bake, so nothing on the sun side of a sky face may cast. At admission the client reads the model-0 `SURF_SKY` faces
-(plane normal as stored, `dface_t::side` does not flip it) and tags each with its sealed region (areas joined through
-areaportals). Every sun chart (static sun and cascades; local charts pass no clip) hands `BeginShadowPass` a
-`DX12ShadowSkyClip`: the entry faces (`dot( normal, sunTravel ) > 0`) of the receiver's region, already in the chart's
-clip space. The backend rasterizes them with `shadow_sky_depth_vs51` (no pixel stage, `GREATER`, cleared to 0) into the
-shared sky target, keeping per texel the entry sky nearest the ground. Caster draws in such a pass discard fragments on
-the sun side of it (`native_src/shadow_sky_clip.hlsli`, bias 2 world units): opaque depth-only casters run
-`shadow_sky_clip_ps51` instead of no pixel stage, and `depthwrite_ps51` / `dx12_detailshadowlit_depth_ps51` call the
-same `ShadowSkyClip_Discard` (space 6 `t4` + `b2`). Brush `$alphatest` casters using their own pixel shader are not
-clipped. A receiver on the sun side of a deeper entry sky in its own column (a roof above a window's sky brush) keeps
-only the baked cap for casters above that sky. The extra pixel stage costs about 0.4 ms per frame while sun charts
-re-render (`d1_trainstation_02`, RTX 4090); cached charts cost nothing.
+bake, so world brushes and model casters on the sun side of a sky face may not cast. At admission the client reads
+the model-0 `SURF_SKY` faces (plane normal as stored, `dface_t::side` does not flip it) and tags each with its sealed
+region (areas joined through areaportals). Static props, detail props and other model casters whose origin is in an
+open leaf of the receiver's sealed region are exempt; world brushes and casters outside playable space remain clipped.
+The origin-region result is cached per static prop/detail leaf/entity and refreshed only when a caster moves. Every sun
+chart (static sun and cascades; local charts pass no clip) hands `BeginShadowPass` a `DX12ShadowSkyClip`: the entry
+faces (`dot( normal, sunTravel ) > 0`) of the receiver's region, already in chart clip space. The backend rasterizes
+them with `shadow_sky_depth_vs51` (no pixel stage, `GREATER`, cleared to 0) into the shared sky target, keeping per
+texel the entry sky nearest the ground. Caster draws in such a pass discard fragments on the sun side of it
+(`native_src/shadow_sky_clip.hlsli`, bias 2 world units): opaque depth-only casters run `shadow_sky_clip_ps51` instead
+of no pixel stage, and `depthwrite_ps51` / `dx12_detailshadowlit_depth_ps51` call the same `ShadowSkyClip_Discard`
+(space 6 `t4` + `b2`). Exempt draws keep the same pixel path but upload `cShadowSkyClip.w = 0`; instanced rigid
+groups are split by that bit so batching remains valid. Brush `$alphatest` casters using their own pixel shader are
+not clipped. A receiver on the sun side of a deeper entry sky in its own column (a roof above a window's sky brush)
+keeps only the baked cap for casters above that sky. The extra pixel stage costs about 0.4 ms per frame while sun
+charts re-render (`d1_trainstation_02`, RTX 4090); cached charts cost nothing.
 
 Shadow depth targets are retained by physical owner rather than duplicated for every
 pooled receiver packet. One shared static-sun work target (with a clean companion
@@ -491,6 +498,10 @@ plane depth, then bilinearly blends visibility. A single reference passed to har
 comparison can self-shadow a diagonal receiver despite having no blocker.
 Sun charts use an orthographic depth gradient; local charts use the perspective plane gradient,
 including remapped cube-face bases. Degenerate-plane fallback and caster bias remain unchanged.
+The sun plane path is admitted only while every preflight tap stays within `4 * max(footprint, 1)` texel world sizes
+of the receiver's center depth (`ShadowMap_SunPreflight`); a near-grazing triangle (`n . travel -> 0`) otherwise moved
+its tap references hundreds of units toward the light, past real blockers, and came out fully lit as whole-triangle
+holes (faceted viewmodel arms under a roof). Rejected triangles take the center compare.
 The production `shadowmaps` smoke on RTX 4090 passed PCF/PCSS diagonal-plane phase coverage:
 unblocked visibility was exactly 1 and real-blocker visibility exactly 0, with no debug-layer errors.
 
@@ -524,7 +535,11 @@ Read-only map visibility SRVs are model-neutral space2 bindings: `t1030` face
 `uint4 {firstEntry, entryCount, highWidth, highHeight}`, `t1031` sorted disk-form entry
 `uint4 {selectedLightIndex, encoding, payloadByteOffset, sampleCount}`, and `t1032`
 R8 `ByteAddressBuffer` payload. The shader lazily loads the face range and computes endpoint-clamped
-bilinear taps only after the first bounded-skip survivor needs baked visibility. A persistent ascending
+bilinear taps only after the first bounded-skip survivor needs baked visibility. Bicubic highres world shaders
+(`HIGHRES_LIGHTMAP_BICUBIC`) instead filter the dense R8 endpoint with the hlight RGB's own cubic B-spline footprint
+(`HighresLightmap_Footprint`; four bilinear taps, 16 byte loads per dense entry), so the realtime delta subtracts
+`Rr * K[Vb]` against the carrier's `K[Rb * Vb]`. A bilinear endpoint under a bicubic carrier left a faint image of the
+baked shadow (a soft band beside the sharp realtime edge). A persistent ascending
 merge cursor visits each encountered entry at most once for all queried canonical manifest indices.
 The highres packet validator requires canonical light order and ascending CSR runs; `BuildLocal` and
 `BuildTiles` already preserve both. Uniform encodings decode directly without reading payload bytes.
@@ -767,8 +782,17 @@ Phong warp, model `$lightmap`, rim lighting, distance alpha, seamless model mapp
 
 Conversion of legacy inputs: dielectric F0 0.04; roughness from explicit PBR inputs, else the Phong exponent
 (`exp = 1 + 149 * R` in `l4d2_phong_ps20b.fxc` / `skin_ps20b.fxc`, unless a nonzero `$phongexponent` overrides it,
-converted as `(2/(exp+2))^0.25`), else the envmap mask as gloss (roughness = 1 - mask, the mask no longer scales
-the reflection; `$envmaptint` does), else 0.6.
+converted as `(2/(exp+2))^0.25`), else an authored `$envmap`'s mask as gloss (roughness = 1 - mask, the mask no longer
+scales the reflection; `$envmaptint` does), else the `$surfaceprop` class default below. A legacy material without an
+authored `$envmap` still receives the adapter's fallback `env_cubemap`, but does not treat that synthetic cubemap as a
+gloss mask. The class comes from the engine's physics surface table (`IPhysicsSurfaceProps`, which resolves `base`
+inheritance and mod entries), read once at `SHADER_INIT_PARAMS` into the internal `$pbr_legacy_roughness`: masonry and
+ground (concrete, asphalt, brick, plaster, sheetrock, rock, dirt/gravel/sand/snow, mud) 0.85; grass, foliage, carpet,
+upholstery, cardboard/paper 0.95; rubber 0.8; wood 0.7; flesh 0.6; plastic, computer and every metal class 0.45; tile,
+porcelain (by name: retail files it under rock), clay 0.3; glass 0.1; water, wet, slime, puddle 0.15. Absent, unknown and
+`default` surface props keep 0.6. Metalness stays 0 for every class: most legacy "metal" textures are painted, with
+lighting baked into the albedo. Blends use `$surfaceprop` for both layers, and model materials rarely carry one (a
+model's surface prop lives in the .mdl), so most models keep 0.6.
 With an exponent texture and `$phongalbedotint`, G tints the Phong specular colour toward the linear albedo
 (`l4d2_phong_ps20b.fxc:121`, `skin_ps20b.fxc:271-276`); the legacy diffuse albedo is retained, not converted to metal.
 R remains the exponent channel, not a color channel; A remains the legacy rim mask only when rim lighting is enabled,
@@ -832,8 +856,12 @@ Native logicals (`tools/pairs.py` slice `pbr`, `manifests/pbr.txt`): `pbr_world_
 `pbr_model_vs51` (48), `pbr_model_ps51` (24; `ENHANCED` adds the receiver lighting ABI and dense probes),
 `pbr_gbuffer_debug_cs51` (2). Register space 5 (`t0` 128-byte `PBRSpotGpu` records, `t1..t12` cookies, `t13..t24` depth,
 `s0`/`s1`) is backend-owned: eight ordinary projected lights plus four reserved survivor flashlights. Array capacities
-come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the probe grid. All PBR includes are new files, so legacy payloads are
-unchanged. `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
+come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the v3 probe grid in ten descriptors: indirection
+`t0`, DC `t1`, six bands `t2..t7`, validity `t8`, and six-nibble R32_UINT free distance `t9`. `Probe_Decode` keeps
+the exact hardware-filtered path when all eight corners can see the biased sample point. If any corner is blocked, it
+manually filters only visible corners, multiplying trilinear weights by validity and renormalizing before SH decode;
+an empty visible weight falls back to the engine ambient cube. The hardware path retains the 0.25 coverage gate.
+`shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
 parallax; `-case probegpu` the probe decode.
 
 Enhanced PBR models use the archived `r_model_local_lights` budget (default 4, range 1–4; 0 selects

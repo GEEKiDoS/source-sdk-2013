@@ -306,6 +306,13 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable );
 void ShadowMapsDX12_OnCasterMoved( IClientRenderable *renderable, const Vector &oldMins, const Vector &oldMaxs, const Vector &newMins, const Vector &newMaxs );
 // Registration/removal/classification cannot be acknowledged by an equal rigid content key.
 void ShadowMapsDX12_InvalidateCasterRegistration( IClientRenderable *renderable = NULL );
+// Cached playable-region classification for model/detail casters. The first lookup is admission/draw-time
+// initialization; movement updates it, so ordinary shadow draws never walk the BSP.
+int ShadowMapsDX12_CasterSkyRegion( IClientRenderable *renderable );
+bool ShadowMapsDX12_IsSkyClipExempt( IClientRenderable *renderable, int receiverRegion );
+// Queued draw-state marker consumed by the DX12 caster path; only valid inside a depth pass.
+bool ShadowMapsDX12_IsSkyClipExemptAtPoint( int leaf, const Vector &point, int receiverRegion );
+void ShadowMapsDX12_SetShadowCasterSkyClipExempt( bool exempt );
 // Static geometry/material generation bump (model/material reload, static-prop changes): rebuilds static caches.
 void ShadowMapsDX12_InvalidateStatic();
 

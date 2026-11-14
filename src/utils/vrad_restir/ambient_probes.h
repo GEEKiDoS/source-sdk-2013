@@ -13,7 +13,7 @@ class CReSTIRVulkanDevice;
 struct ReSTIRAmbientProbeGrid
 {
 	hprobe::GridDisk grid;
-	CUtlVector<uint32> indirection, dc;
+	CUtlVector<uint32> indirection, dc, freeDistance;
 	CUtlVector<int8> bands;
 	CUtlVector<uint8> validity;
 
@@ -21,7 +21,7 @@ struct ReSTIRAmbientProbeGrid
 	{
 		memset( &grid, 0, sizeof( grid ) );
 		indirection.Purge();
-		dc.Purge();
+		freeDistance.Purge();
 		bands.Purge();
 		validity.Purge();
 	}

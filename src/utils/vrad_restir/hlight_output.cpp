@@ -162,7 +162,8 @@ bool AppendProbeGrid(CUtlVector<byte> &out, const ReSTIRAmbientProbeGrid &g, uin
     memcpy(at,g.indirection.Base(),g.indirection.Count()*sizeof(uint32)); at += g.indirection.Count()*sizeof(uint32);
     memcpy(at,g.dc.Base(),g.dc.Count()*sizeof(uint32)); at += g.dc.Count()*sizeof(uint32);
     memcpy(at,g.bands.Base(),g.bands.Count()); at += g.bands.Count();
-    memcpy(at,g.validity.Base(),g.validity.Count());
+    memcpy(at,g.validity.Base(),g.validity.Count()); at += g.validity.Count();
+    memcpy(at,g.freeDistance.Base(),g.freeDistance.Count()*sizeof(uint32));
     offset = start; return true;
 }
 // The .hprobe pak member: the grid of the single mode, bound to that exact .hlight by its CRC and the mode's identity.
@@ -436,7 +437,7 @@ bool ReadEngineLump(const char *path, int lump, CUtlVector<byte> &out)
     return true;
 }
 // Record indices of the map's own HDR worldlights that carry a selected light. The selected records were built from
-// the same entities, so type, style and origin identify them; a selected light without a counterpart removes nothing.
+// the same entities, so the complete worldlight identity is available; a selected light without a counterpart removes nothing.
 void MatchRemovedWorldlights(const CUtlVector<ShadowMapLightDisk> &lights, CUtlVector<uint32> &removed)
 {
     removed.RemoveAll();
@@ -449,8 +450,11 @@ void MatchRemovedWorldlights(const CUtlVector<ShadowMapLightDisk> &lights, CUtlV
         for (int i = 0; i < s_InputWorldlights.Count() && match < 0; ++i)
         {
             const dworldlight_t &have = s_InputWorldlights[i];
-            if (used[i] || have.type != want.type) continue;
-            if (want.type == emit_skylight || (have.style == want.style && have.origin.DistToSqr(want.origin) <= 0.25f))
+            if (used[i] || have.type != want.type || have.style != want.style) continue;
+            const float intensityScale = MAX(1.0f, want.intensity.LengthSqr());
+            if (have.origin.DistToSqr(want.origin) <= 0.25f &&
+                have.normal.DistToSqr(want.normal) <= 1e-6f &&
+                have.intensity.DistToSqr(want.intensity) <= 1e-8f * intensityScale)
                 match = i;
         }
         if (match < 0)

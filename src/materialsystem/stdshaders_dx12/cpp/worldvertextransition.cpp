@@ -69,6 +69,7 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 		SHADER_PARAM( SEAMLESS_SCALE, SHADER_PARAM_TYPE_FLOAT, "0", "Scale factor for 'seamless' texture mapping. 0 means to use ordinary mapping" )
 
 		PBR_SHADER_PARAMS
+		PBR_LEGACY_ADAPTER_PARAMS
 	END_SHADER_PARAMS
 
 	void SetupVars( WorldVertexTransitionEditor_DX8_Vars_t& info )
@@ -141,6 +142,7 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 			PBR_Vars_t v;
 			PBR_FillWorldVars( v, info );
 			PBR_FILL_EXTRA_VARS( v );
+			PBR_FILL_LEGACY_ADAPTER_VARS( v );
 			return v;
 		}();
 		return s_vars;
@@ -156,6 +158,7 @@ BEGIN_VS_SHADER( WorldVertexTransition_DX9, "Help for WorldVertexTransition" )
 	SHADER_INIT_PARAMS()
 	{
 		SetupVars( s_info );
+		CaptureLegacyAdapterState( params, PbrVars() );
 		InitParamsLightmappedGeneric_DX9( this, params, pMaterialName, s_info );
 		InitParamsPBRDefaults( params, PbrVars() );
 	}

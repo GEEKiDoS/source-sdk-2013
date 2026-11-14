@@ -139,8 +139,8 @@ static bool ValidatePbrSpotBinding( ID3D12ShaderReflection *reflection, const D3
 }
 
 // Space 4 (ambient probes, pixel stage): the DX12ProbeConstantsV1 block at b0, ProbeIndirection t0 (Texture3D<uint>), ProbeDC t1
-// (float3), ProbeBands t2..t7 (array of six float4), ProbeValidity t8 (float) and the non-comparison sampler ProbeLinear s0.
-// Unused textures may be absent, but every retained binding must match exactly. probeSeen collects one bit per name; bit 0 is the block.
+// (float3), ProbeBands t2..t7 (array of six float4), ProbeValidity t8 (float), ProbeFreeDistance t9 (uint) and the non-comparison
+// sampler ProbeLinear s0. Unused textures may be absent, but every retained binding must match exactly. probeSeen collects one bit per name.
 static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned &probeSeen )
 {
 	struct Texture
@@ -154,6 +154,7 @@ static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D1
 		{ "ProbeDC", DX12_PROBE_T_DC, 1, 3, D3D_RETURN_TYPE_FLOAT },
 		{ "ProbeBands", DX12_PROBE_T_BANDS_FIRST, DX12_PROBE_T_VALIDITY - DX12_PROBE_T_BANDS_FIRST, 4, D3D_RETURN_TYPE_FLOAT },
 		{ "ProbeValidity", DX12_PROBE_T_VALIDITY, 1, 1, D3D_RETURN_TYPE_FLOAT },
+		{ "ProbeFreeDistance", DX12_PROBE_T_FREE_DISTANCE, 1, 1, D3D_RETURN_TYPE_UINT },
 	};
 	unsigned bit = 0;
 	bool valid = false;
@@ -179,7 +180,7 @@ static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D1
 	}
 	else if ( !V_strcmp( binding.Name, "ProbeLinear" ) )
 	{
-		bit = 1u << 5;
+		bit = 1u << 6;
 		valid = binding.Type == D3D_SIT_SAMPLER && binding.BindPoint == DX12_PROBE_S_LINEAR && binding.BindCount == 1 &&
 		        !( binding.uFlags & D3D_SIF_COMPARISON_SAMPLER );
 	}

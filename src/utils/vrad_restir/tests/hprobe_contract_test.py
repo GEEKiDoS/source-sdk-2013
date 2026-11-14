@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Check the ambient probe asset of a real paired high-resolution BSP without invoking a bake.
 
-Locates the .hlight asset through the rshd manifest, derives maps/<name>.hprobe, parses it with the rules of
-public/hprobe_bsp.h, binds it to the .hlight bytes by CRC and per-mode identity and spot-checks the stored grids.
---hlight-reference additionally requires the .hlight pak member to be byte-identical to the one in a BSP baked
-from the same input before the probe stage existed (hlight_contract_test.py's unchanged() excludes that member).
+Locates the `.hlight`/`.hprobe` members directly in the `.light` pak (the current rshd manifest is v6), parses the
+probe member with the rules of public/hprobe_bsp.h, binds it to the `.hlight` bytes by CRC and per-mode identity and
+spot-checks the stored grids. `--hlight-reference` additionally requires the `.hlight` pak member to be byte-identical
+to the one in a BSP baked from the same input before the probe stage existed.
 """
 from __future__ import annotations
 import argparse
@@ -12,14 +12,14 @@ import math
 from pathlib import Path
 import struct
 import sys
-from hlight_contract_test import BSP, manifest, section, MISSING
+from hlight_contract_test import BSP, section, MISSING
 from shadowmap_contract_test import require, unpack, crc
 
-MAGIC, VERSION, ENDIAN = 0x42525048, 1, 0x01020304
-BYTES_PER_PROBE = 29
+MAGIC, VERSION, ENDIAN = 0x42525048, 3, 0x01020304
+BYTES_PER_PROBE = 33
 MAX_BRICKS = 1 << 18
-MAX_GRID_BYTES = 256 << 20
-FORMATS = (26, 31, 61)  # R11G11B10_FLOAT, RGBA8_SNORM, R8_UNORM
+MAX_GRID_BYTES = 1024 << 20
+FORMATS = (26, 31, 61, 42)  # R11G11B10_FLOAT, RGBA8_SNORM, R8_UNORM, R32_UINT
 SPOT_CHECKS = 64
 
 
@@ -45,9 +45,11 @@ def finite_dc(packed):
 
 
 def atlas_bricks(n):
-    x = min(n, 256)
-    y = min(-(-n // x), 256)
-    return x, y, -(-n // (x * y))
+    if n <= 256 * 256:
+        x = min(n, 256)
+        return x, -(-n // x), 1
+    z = -(-n // (256 * 256))
+    return 256, -(-n // (256 * z)), z
 
 
 def grid(data, cursor, record, identity):
@@ -55,14 +57,15 @@ def grid(data, cursor, record, identity):
     require(not any(reserved) and identity.get((face, lighting)) == (face_crc, lighting_crc, lighting_bytes),
             'probe mode identity does not match the hlight mode')
     require(grid_at == (cursor + 15) & ~15 and grid_at + 64 <= len(data), 'noncanonical grid section')
-    ox, oy, oz, spacing, bx, by, bz, count, ax, ay, az, reach, dc_format, band_format, validity_format, zero = \
-        unpack('<4f3II3II3II', data, grid_at)
+    ox, oy, oz, spacing, bx, by, bz, count, ax, ay, az, reach, dc_format, band_format, validity_format, free_distance_format = \
+        unpack('<4f4I3I5I', data, grid_at)
     require(all(math.isfinite(v) for v in (ox, oy, oz)) and spacing == math.floor(spacing) and 8 <= spacing <= 512,
             'grid origin/spacing')
     require(all(0 < d <= 1024 for d in (bx, by, bz)) and bx * by * bz <= 1 << 30, 'indirection extent')
     require(0 < bricks <= MAX_BRICKS and count == bricks <= bx * by * bz, 'brick count')
     require((ax, ay, az) == atlas_bricks(bricks), 'atlas brick formula')
-    require(reach <= 65536 and (dc_format, band_format, validity_format) == FORMATS and not zero, 'grid reach/formats/reserved')
+    require(reach <= 65536 and (dc_format, band_format, validity_format, free_distance_format) == FORMATS,
+            'grid reach/formats')
     cells, texels = bx * by * bz, ax * ay * az * 125
     size = 64 + 4 * cells + texels * BYTES_PER_PROBE
     require(size <= MAX_GRID_BYTES, 'grid exceeds the 256 MiB budget')
@@ -71,13 +74,12 @@ def grid(data, cursor, record, identity):
     dc_at = indirection_at + 4 * cells
     bands_at = dc_at + 4 * texels
     validity_at = bands_at + 24 * texels
+    free_distance_at = validity_at + texels
     slots = [v for v in memoryview(data)[indirection_at:dc_at].cast('I') if v != MISSING]
     require(len(slots) == bricks and len(set(slots)) == bricks and max(slots) < bricks, 'indirection slots')
     validity = data[validity_at:validity_at + texels]
-    # Unallocated atlas slots are all zero, so valid texels cannot outnumber the allocated probes.
+    free_distance = memoryview(data)[free_distance_at:free_distance_at + 4 * texels].cast('I')
     require(validity.count(0) + validity.count(255) == texels and 0 < validity.count(255) <= bricks * 125, 'validity texels')
-    # SPOT_CHECKS evenly spaced valid and invalid/unallocated texels (the first of each kind at or after the position),
-    # and the last atlas texel, which lies in the last, possibly unallocated, slot.
     for position in (*range(0, texels, max(1, texels // SPOT_CHECKS)), texels - 1):
         for value in (255, 0):
             texel = validity.find(value, position)
@@ -86,9 +88,11 @@ def grid(data, cursor, record, identity):
             dc = unpack('<I', data, dc_at + 4 * texel)[0]
             bands = [struct.unpack_from('<4b', data, bands_at + (band * texels + texel) * 4) for band in range(6)]
             if value:
-                require(finite_dc(dc) and all(v != -128 for row in bands for v in row), f'invalid valid texel {texel}')
+                require(finite_dc(dc) and all(v != -128 for row in bands for v in row) and free_distance[texel] < (1 << 24),
+                        f'invalid valid texel {texel}')
             else:
-                require(dc == 0 and not any(any(row) for row in bands), f'invalid/unallocated texel {texel} is not all zero')
+                require(dc == 0 and not any(any(row) for row in bands) and free_distance[texel] == 0,
+                        f'invalid/unallocated texel {texel} is not all zero')
     return end, dict(bricks=bricks, spacing=spacing, dims=(bx, by, bz), atlas=(ax, ay, az), reach=reach,
                      valid=validity.count(255), texels=texels)
 
@@ -112,6 +116,10 @@ def parse(data, hlight):
     require(cursor == len(data), 'trailing probe bytes')
     return grids
 
+def hlight_path(bsp):
+    candidates = sorted(path for path in bsp.pak if path.lower().endswith('.hlight'))
+    require(len(candidates) == 1, 'requires exactly one .hlight pak member')
+    return candidates[0]
 
 def asset(bsp, hlight_path):
     path = probe_path(hlight_path)
@@ -123,14 +131,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('bsp', type=Path)
     parser.add_argument('--hlight-reference', type=Path,
-                        help='BSP baked from the same input before the probe stage: its .hlight member must be byte-identical')
+                        help='a second .light pak from the same input whose .hlight member must be byte-identical')
     args = parser.parse_args()
     try:
         bsp = BSP(args.bsp)
-        hlight_path, _ = manifest(bsp)
-        path, data, grids = asset(bsp, hlight_path)
+        hlight_member = hlight_path(bsp)
+        path, data, grids = asset(bsp, hlight_member)
         if args.hlight_reference:
-            require(BSP(args.hlight_reference).pak.get(hlight_path) == bsp.pak[hlight_path], '.hlight member changed')
+            require(BSP(args.hlight_reference).pak.get(hlight_member) == bsp.pak[hlight_member], '.hlight member changed')
         print(f'PASS hprobe modes={len(grids)} path={path} asset-bytes={len(data)} ' +
               ' '.join(f"[bricks={g['bricks']} spacing={g['spacing']:g} dims={g['dims']} atlas={g['atlas']} "
                        f"reach={g['reach']} valid={g['valid']}/{g['texels']}]" for g in grids))

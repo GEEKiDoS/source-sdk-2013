@@ -101,7 +101,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 		m_nZeroConstantAddress = m_pZeroConstants->GetGPUVirtualAddress();
 	}
 	// Ranges: SRV t0-15, sampler s0-15, native CBV b0-b7 in register space 1; [4] lighting visibility, [5] highres, [6] PBR
-	// projected lights t0-16 space 5, [7] ambient probes t0-8 space 4, [8] screen-space depth t0-3 space 6.
+	// projected lights, [7] ambient probes t0-t9, [8] screen-space depth t0-t3.
 	D3D12_DESCRIPTOR_RANGE ranges[9]{};
 	ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	ranges[0].NumDescriptors = 16;

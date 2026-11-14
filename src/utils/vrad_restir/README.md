@@ -130,7 +130,7 @@ vrad_restir.exe -StaticPropLighting -TextureShadows -game <path to gameinfo dir>
 
 All of it is HDR: one mode, `(LUMP_FACES_HDR, LUMP_LIGHTING_HDR)`, in the manifest, the `.hlight` (v5) and the `.hprobe` (v2). Every identity binds to the map's own lumps exactly as the engine loads them: the twelve geometry lumps, the HDR faces and the HDR lighting (in the `.hlight`), and the HDR worldlights (in the manifest; on a BSP 21 map the stored 100-byte records). A `.light` beside a different or edited BSP is therefore rejected at load, and the map runs on its own lighting. The bake leaves the map's faces, lighting, leaf ambient, VHVs, detail lighting and entities alone, so it skips those stages; the probes and the static-prop visibility are computed as before.
 
-The selected (shadow-mapped) lights are still part of the map's own worldlights and VHVs. The manifest therefore lists, after the selected-light records, the indices of the map's HDR worldlights that carry a selected light (matched by type, style and origin; the sun by type; the log prints `Hlight: N of M selected lights matched to BSP worldlights`). While a map with a valid `.light` loads, the DX12 renderer's lump hook removes those records from the loaded worldlights and clears `LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_*` in the loaded map flags, so the engine lights models and static props from the remaining worldlights and the runtime shadow-mapped lights add the selected ones once. The file on disk is never changed.
+The selected (shadow-mapped) lights are still part of the map's own worldlights and VHVs. The manifest therefore lists, after the selected-light records, the indices of the map's HDR worldlights that carry a selected light (matched by type, style, origin, normal and intensity, so a second `emit_skylight` such as c1m2_streets' sky fill is never mistaken for the sun; the log prints `Hlight: N of M selected lights matched to BSP worldlights`). While a map with a valid `.light` loads, the DX12 renderer's lump hook removes those records from the loaded worldlights and clears `LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_*` in the loaded map flags, so the engine lights models and static props from the remaining worldlights and the runtime shadow-mapped lights add the selected ones once. The file on disk is never changed.
 
 ## BSP output
 
@@ -333,15 +333,17 @@ The paired-bake runner that asserted shared versus distinct LDR/HDR sets was rem
 ### Dense ambient probes (`.hprobe`)
 
 `-restir_shadowmaps` also writes `maps/<name>.hprobe` beside the `.hlight` in the `.light` pak: a sparse
-axis-aligned grid of SH L2 diffuse irradiance probes (`public/hprobe_bsp.h`, v2, one HDR grid) for the DX12 PBR model
+axis-aligned grid of SH L2 diffuse irradiance probes (`public/hprobe_bsp.h`, v3, one HDR grid) for the DX12 PBR model
 shaders. The native leaf ambient lumps and every old shader are unchanged. A probe holds the same quantity
 as a leaf ambient cube, `E/pi` in the engine's linear cube units (a uniform environment gives its cube side), with a
 directional basis. It folds in the full-source lightmap gather over 256 uniform sphere directions
 (`restir_probe_sh.comp`, the miss policy of `restir_gather_ambient.comp`), material emitters (the 16-sample scheme of
 `PointDirectLight`) and the map's `DWL_FLAGS_INAMBIENTCUBE` surface worldlights.
 
-Storage is 29 bytes per probe: R11G11B10F flat irradiance, six RGBA8_SNORM band textures (`s_k = e_k / DC * 0.25`,
-ratio range +-4) and an R8 validity, all premultiplied by validity so hardware filtering renormalises. Bricks are
+Storage is 33 bytes per probe: R11G11B10F flat irradiance, six RGBA8_SNORM band textures (`s_k = e_k / DC * 0.25`,
+ratio range +-4), an R8 validity, and an R32_UINT six-nibble free-distance texture. All lighting channels are
+premultiplied by validity so hardware filtering renormalises. Each nibble is a conservative floor of the front-face
+free distance along +x, -x, +y, -y, +z, or -z, in sixteenths of one probe spacing; a miss is 15. Bricks are
 4x4x4 cells (5x5x5 probes, edge probes duplicated) and are allocated sparsely; the file stores the indirection table
 and the brick atlas exactly as the runtime uploads them. Up to 65,536 bricks the atlas is `min(n,256)` by
 `ceil(n/x)` by 1 bricks; above that it is 256 by `ceil(n/(256*z))` by `z = ceil(n/65536)`, so no unused 256x256 layer
@@ -350,19 +352,20 @@ baker enforces `-restir_ambientgrid_budget` (1,024 MiB) and fails with `raise -r
 -restir_ambientgrid_reach or raise -restir_ambientgrid_budget` when the grid would exceed it; nothing is reduced
 silently. Once the grid is sized it logs `Ambient probes: N bricks, M MiB (spacing, reach, atlas)`. A grid the GPU cannot
 hold leaves the map on the engine ambient cube with a warning. Probes inside solid, inside an opaque leaf brush, or whose axis rays of
-one spacing start inside geometry or reach a displacement back face are invalid; invalid probes get two
-neighbour-mean dilation passes, and negative `l = 2` lobes are shrunk by 0.75/0.5/0.25/0 until the sphere no longer
-undershoots by more than 2% of its peak. The bake prints `Hlight: ambient probe grid: N bricks (...)` and fails
-with `ambient probe encoding/addressing self-check failed` if decoded strided probes disagree with the float
-coefficients.
+one spacing start inside geometry or reach a displacement back face are invalid. Dilation runs for two neighbour-mean passes,
+but only across a source's certified full-spacing free segment; a dilated probe advertises full distance only toward the
+admissible source neighbours and zero elsewhere. An embedded probe with no admissible neighbour remains invalid. Negative
+`l = 2` lobes are shrunk by 0.75/0.5/0.25/0 until the sphere no longer undershoots by more than 2% of its peak. The bake
+prints `Hlight: ambient probe grid: N bricks (...)` and fails with `ambient probe encoding/addressing self-check failed` if
+decoded strided probes disagree with the float coefficients.
 
 The `.hprobe` header carries the CRC32 of the exact `.hlight` it was baked with and the mode's face/lighting
-identity, so a stale or foreign grid is rejected.
+identity, so a stale or foreign grid is rejected. Runtime v2 files are rejected; rebake with `-restir_shadowmaps`.
 
-`tests/hprobe_contract_test.py <bsp> [--light <file>]` parses the member with the header's rules (one mode, the atlas
-rule above), binds it to the `.hlight` bytes by CRC and mode identity, requires at least one brick and spot-checks
-stored texels. `tests/hlight_contract_test.py <bsp> --light <file> --before <copy of the input> ...` checks the
-manifest, the removed-worldlight list and the `.hlight` against the map BSP and requires the BSP to be unchanged.
+`tests/hprobe_contract_test.py <file.light>` parses the `.hprobe` member in the current `.light` pak with the v3 header and atlas
+rule, binds it to the paired `.hlight` bytes by CRC and mode identity, requires at least one brick and spot-checks stored texels.
+`tests/hlight_contract_test.py <bsp> --light <file> --before <copy of the input> ...` checks the manifest, the removed-worldlight
+list and the `.hlight` against the map BSP and requires the BSP to be unchanged.
 
 ## Emissive materials
 

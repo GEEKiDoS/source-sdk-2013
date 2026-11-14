@@ -165,6 +165,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		SHADER_PARAM( TREESWAYSTATIC, SHADER_PARAM_TYPE_BOOL, "0", "" );
 
 		PBR_SHADER_PARAMS
+		PBR_LEGACY_ADAPTER_PARAMS
 
 	END_SHADER_PARAMS
 
@@ -276,6 +277,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 			PBR_Vars_t v;
 			PBR_FillModelVars( v, info );
 			PBR_FILL_EXTRA_VARS( v );
+			PBR_FILL_LEGACY_ADAPTER_VARS( v );
 			return v;
 		}();
 		return s_vars;
@@ -393,6 +395,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 	{
 		VertexLitGeneric_DX9_Vars_t vars;
 		SetupVars( vars );
+		CaptureLegacyAdapterState( params, PbrVars() );
 		InitParamsVertexLitGeneric_DX9( this, params, pMaterialName, true, vars );
 		InitParamsPBRDefaults( params, PbrVars() );
 

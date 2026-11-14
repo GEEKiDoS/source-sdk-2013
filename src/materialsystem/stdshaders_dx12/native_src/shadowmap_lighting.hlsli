@@ -440,18 +440,22 @@ float4 ShadowMap_SunClip( ShadowMapSunChart c, float2 offset, bool usePlane )
 	float4 stepY = usePlane ? c.clipPlaneY : c.clipAxisY;
 	return c.clipCenter + offset.x * stepX + offset.y * stepY;
 }
+// The receiver plane is admitted only while every footprint tap stays inside the cascade AND within a few checked
+// footprints of the center depth. Near-grazing triangles (n . travel -> 0) otherwise push plane taps hundreds of units
+// toward the light, past real blockers, and come out fully lit as whole-triangle holes; they take the center compare.
 bool ShadowMap_SunPreflight( ShadowMapSunChart c, float footprint )
 {
 	bool result = c.planeValid;
 	if ( result )
 	{
+		float planeAxialLimit = 4.0 * max( footprint, 1.0 ) * c.depth.z;
 		// Four taps as a loop: unrolled, every tap keeps its own copy of the chart math live at once.
 		[loop] for ( uint i = 0; i < 4; ++i )
 		{
 			float4 clip = ShadowMap_SunClip( c, g_ShadowPCFOffsets[i] * ( 2.0 * footprint ), true );
 			if ( clip.w <= 0.0 ) { result = false; break; }
 			float axial = c.depth.x + clip.z / clip.w * ( c.depth.y - c.depth.x );
-			if ( axial <= 0.0 || axial < c.depth.x || axial > c.depth.y ) { result = false; break; }
+			if ( axial <= 0.0 || axial < c.depth.x || axial > c.depth.y || abs( axial - c.centerAxial ) > planeAxialLimit ) { result = false; break; }
 		}
 	}
 	return result;

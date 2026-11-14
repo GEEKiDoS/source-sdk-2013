@@ -6559,8 +6559,16 @@ public:
 		modelrender->ForcedMaterialOverride( NULL, OVERRIDE_DEPTH_WRITE );
 		render->SetBlend( 1.0f );
 		static const float white[3] = { 1.0f, 1.0f, 1.0f };
-		IClientRenderable *statics[512];
-		int count = 0;
+		IClientRenderable *statics[512], *exemptStatics[512];
+		int count = 0, exemptCount = 0;
+		auto drawStaticBatch = [&]( IClientRenderable **props, int &batchCount, bool exempt )
+		{
+			if ( !batchCount ) return;
+			render->SetColorModulation( white );
+			if ( s.skyClip ) s.lighting->SetShadowCasterSkyClipExempt( exempt );
+			staticpropmgr->DrawStaticProps( props, batchCount, DEPTH_MODE_SHADOW, false );
+			batchCount = 0;
+		};
 		ShadowMapInfluenceVolume_t volume;
 		volume.mins = s.volume.m_vecMins; volume.maxs = s.volume.m_vecMaxs;
 		volume.planeCount = s.volume.m_nPlaneCount;
@@ -6592,27 +6600,28 @@ public:
 				}
 				if ( caster.staticProp )
 				{
-					statics[count++] = caster.renderable;
-					if ( count == ARRAYSIZE(statics) )
-					{
-						render->SetColorModulation( white );
-						staticpropmgr->DrawStaticProps( statics, count, DEPTH_MODE_SHADOW, false ); count = 0;
-					}
+					const bool skyExempt = s.skyClip && caster.skyRegion >= 0 && caster.skyRegion == s.skyRegion;
+					IClientRenderable **batch = skyExempt ? exemptStatics : statics;
+					int &batchCount = skyExempt ? exemptCount : count;
+					batch[batchCount++] = caster.renderable;
+					if ( batchCount == ARRAYSIZE(statics) )
+						drawStaticBatch( batch, batchCount, skyExempt );
 				}
 				else
 				{
+					const model_t *model = caster.renderable->GetModel();
+					const bool modelCaster = model && modelinfo->GetModelType( model ) == mod_studio;
+					if ( s.skyClip ) s.lighting->SetShadowCasterSkyClipExempt( modelCaster && caster.skyRegion >= 0 && caster.skyRegion == s.skyRegion );
 					DrawOpaqueRenderable( caster.renderable, modelinfo->IsTranslucentTwoPass(caster.renderable->GetModel()), DEPTH_MODE_SHADOW );
 					// SetupBones/custom draw callbacks can refresh bounds during drawing.
 					if ( s.overlayFootprint ) AddShadowOverlayCasterBounds(*s.overlayFootprint,caster);
 				}
 			}
-			if ( count )
-			{
-				render->SetColorModulation( white );
-				staticpropmgr->DrawStaticProps( statics, count, DEPTH_MODE_SHADOW, false );
-			}
+			drawStaticBatch( statics, count, false );
+			drawStaticBatch( exemptStatics, exemptCount, true );
 		}
 		if ( s.instanceCasters ) s.lighting->EndShadowCasterBatch();
+		if ( s.skyClip ) s.lighting->SetShadowCasterSkyClipExempt( false );
 		{
 			VPROF_BUDGET( "CFeatureShadowDepthView::Draw.DeferredCasters", "Shadowmaps" );
 			RopeManager()->DrawRenderCache( true, s.overlayRopeFootprint );

@@ -2927,8 +2927,9 @@ void CShaderAPIDX12::CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mes
 	if ( batch.instanceCount == kCasterInstances )
 		FlushShadowCasterBatch( false );
 	const int vsDynamicIndex = m_nVertexShaderIndex & 1;
+	const bool skyClipExempt = m_pDevice->Lighting().ShadowCasterSkyClipExempt();
 	const uint32_t hash = Mix32HashFunctor()( static_cast<uint32_t>( meshToken >> 4 ) ^ static_cast<uint32_t>( firstIndex ) * 0x9E3779B1u ^ static_cast<uint32_t>( indexCount ) * 0x85EBCA6Bu ^
-		( static_cast<uint32_t>( m_hActiveSnapshotId ) << 1 ) ^ static_cast<uint32_t>( vsDynamicIndex ) );
+		( static_cast<uint32_t>( m_hActiveSnapshotId ) << 1 ) ^ static_cast<uint32_t>( vsDynamicIndex ) ^ ( skyClipExempt ? 0xD1B54A35u : 0u ) );
 	CasterGroupDX12 *group = nullptr;
 	for ( ;; )
 	{
@@ -2936,7 +2937,7 @@ void CShaderAPIDX12::CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mes
 		for ( ; batch.slots[slot]; slot = ( slot + 1 ) & ( kCasterGroupSlots - 1 ) )
 		{
 			CasterGroupDX12 &candidate = batch.groups[batch.slots[slot] - 1];
-			if ( candidate.meshToken == meshToken && candidate.firstIndex == firstIndex && candidate.indexCount == indexCount && candidate.snapshot == m_hActiveSnapshotId && candidate.vsDynamicIndex == vsDynamicIndex )
+			if ( candidate.meshToken == meshToken && candidate.firstIndex == firstIndex && candidate.indexCount == indexCount && candidate.snapshot == m_hActiveSnapshotId && candidate.vsDynamicIndex == vsDynamicIndex && candidate.skyClipExempt == skyClipExempt )
 			{
 				group = &candidate;
 				break;
@@ -2957,6 +2958,7 @@ void CShaderAPIDX12::CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mes
 		group->indexCount = indexCount;
 		group->snapshot = m_hActiveSnapshotId;
 		group->vsDynamicIndex = vsDynamicIndex;
+		group->skyClipExempt = skyClipExempt;
 		group->mesh = mesh;
 		group->vertices = stream0.buffer;
 		group->indices = indices;
@@ -3011,11 +3013,13 @@ void CShaderAPIDX12::FlushShadowCasterBatch( bool close )
 			const bool savedNamed = m_bBoundVertexShaderIsNamed;
 			NamedShaderComboDX12 *const savedCombo = m_BoundNamedCombos[0];
 			const int savedVertexIndex = m_nVertexShaderIndex;
+			const bool savedSkyClipExempt = m_pDevice->Lighting().ShadowCasterSkyClipExempt();
 			m_CasterEmit.active = true;
 			VertexBindingDX12 streams[16];
 			for ( uint32_t g = 0; g < batch.groupCount; ++g )
 			{
 				const CasterGroupDX12 &group = batch.groups[g];
+				m_pDevice->Lighting().SetShadowCasterSkyClipExemptForDraw( group.skyClipExempt );
 				BeginPass( group.snapshot );
 				m_nVertexShaderIndex = group.vsDynamicIndex;
 				m_hBoundVS = reinterpret_cast<VertexShaderHandle_t>( batch.instancedVS[group.vsDynamicIndex & 1] );
@@ -3037,6 +3041,7 @@ void CShaderAPIDX12::FlushShadowCasterBatch( bool close )
 			m_nVertexShaderIndex = savedVertexIndex;
 			// The next ordinary draw re-resolves its named VS (same post-condition the Pass packet establishes).
 			m_bNamedVertexShaderDirty = true;
+			m_pDevice->Lighting().SetShadowCasterSkyClipExemptForDraw( savedSkyClipExempt );
 		}
 	}
 	batch.groupCount = batch.instanceCount = 0;

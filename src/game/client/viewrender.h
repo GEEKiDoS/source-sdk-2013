@@ -50,6 +50,7 @@ struct ShadowMapSceneCaster_t
 	bool staticProp;
 	bool immutable;
 	bool rigid; // Current chart's unchanged certified subset, not mere geometric rigidity.
+	int skyRegion; // cached origin region; compared with the receiver's sealed sky region for sun-chart exemption
 };
 
 enum ShadowMapDynamicLayer_t
@@ -128,6 +129,7 @@ struct ShadowMapDepthScene_t
 	ShadowMapDepthFootprint_t *overlayFootprint;
 	CShadowMapRopeFootprint *overlayRopeFootprint;
 	const DX12ShadowSkyClip *skyClip; // sun charts: BeginShadowPass sky clip, NULL for local charts
+	int skyRegion; // receiver's sealed region; only meaningful when skyClip is non-NULL
 };
 
 void ViewRender_DrawShadowMapScene( const ShadowMapDepthScene_t &scene );

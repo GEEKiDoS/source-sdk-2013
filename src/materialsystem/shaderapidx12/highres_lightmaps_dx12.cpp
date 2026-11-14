@@ -337,15 +337,17 @@ void BufferView(ID3D12Device *device, ID3D12Resource *resource, uint32 count, ui
     desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; desc.Buffer.NumElements = std::max(1u,count); desc.Buffer.StructureByteStride = stride;
     device->CreateShaderResourceView(resource, &desc, dst);
 }
-// Dense ambient probes: one-mip 3D textures in the order of the t0..t8 space-4 table (R32_UINT indirection, R11G11B10_FLOAT
-// DC, six RGBA8_SNORM band textures, R8_UNORM validity). The format literals of hprobe_bsp.h are DXGI_FORMAT values.
+// Dense ambient probes: one-mip 3D textures in the order of the t0..t9 space-4 table (R32_UINT indirection,
+// R11G11B10_FLOAT DC, six RGBA8_SNORM band textures, R8_UNORM validity, R32_UINT free distance). The format
+// literals of hprobe_bsp.h are DXGI_FORMAT values.
 COMPILE_TIME_ASSERT(hprobe::kR11G11B10Float == uint32(DXGI_FORMAT_R11G11B10_FLOAT) && hprobe::kRGBA8Snorm == uint32(DXGI_FORMAT_R8G8B8A8_SNORM) &&
-    hprobe::kR8Unorm == uint32(DXGI_FORMAT_R8_UNORM));
+    hprobe::kR8Unorm == uint32(DXGI_FORMAT_R8_UNORM) && hprobe::kR32Uint == uint32(DXGI_FORMAT_R32_UINT));
 COMPILE_TIME_ASSERT(DX12_PROBE_T_VALIDITY - DX12_PROBE_T_BANDS_FIRST == hprobe::kBands);
 const DXGI_FORMAT kProbeFormats[DX12_PROBE_TABLE_COUNT] = { DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R11G11B10_FLOAT,
     DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM,
-    DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8_UNORM };
-const uint32 kProbeTexelBytes[DX12_PROBE_TABLE_COUNT] = { 4, 4, 4, 4, 4, 4, 4, 4, 1 };
+    DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8_UNORM,
+    DXGI_FORMAT_R32_UINT };
+const uint32 kProbeTexelBytes[DX12_PROBE_TABLE_COUNT] = { 4, 4, 4, 4, 4, 4, 4, 4, 1, 4 };
 struct Texture3D
 {
     ComPtr<ID3D12Resource> resource;
@@ -623,6 +625,7 @@ struct CHighresLightmapsDX12::Impl
         const uint8 *sources[DX12_PROBE_TABLE_COUNT] = { reinterpret_cast<const uint8 *>(probeMode->indirection), reinterpret_cast<const uint8 *>(probeMode->dc) };
         for (uint32 b=0; b<hprobe::kBands; ++b) sources[DX12_PROBE_T_BANDS_FIRST+b] = reinterpret_cast<const uint8 *>(probeMode->bands)+uint64(b)*texels*4;
         sources[DX12_PROBE_T_VALIDITY] = probeMode->validity;
+        sources[DX12_PROBE_T_FREE_DISTANCE] = reinterpret_cast<const uint8 *>(probeMode->freeDistance);
         const char *failure = Heap(d3d,probeViews,DX12_PROBE_TABLE_COUNT) ? nullptr : "descriptor allocation failed";
         for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
         {

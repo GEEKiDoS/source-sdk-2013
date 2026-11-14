@@ -45,7 +45,7 @@
 
 
 ConVar r_shadowmap_enable( "r_shadowmap_enable", "1", FCVAR_ARCHIVE, "Enable runtime shadow maps; 0 retains selected direct lighting and all baked visibility", true, 0, true, 1 );
-ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Chart-resident local-light cap: lights in front of the main camera first, then PVS-eligible lights behind it, nearest first within each; 0 has no budget limit; invalid values use 4; sun excluded" );
+ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Chart-resident local-light cap: lights whose emitter or traced spot aim is in front of the main camera first, then PVS-eligible lights behind it, nearest anchor first within each; 0 has no budget limit; invalid values use 4; sun excluded" );
 ConVar r_shadowmap_realtime_fade_seconds( "r_shadowmap_realtime_fade_seconds", "0.5", FCVAR_ARCHIVE, "Real-time seconds for a full hybrid handoff: parallel fade-out then fade-in, half each; 0 switches immediately; invalid values use 0.5" );
 ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade receiver distance", true, 128, true, 32768 );
 ConVar r_csm_cascades( "r_csm_cascades", "2", FCVAR_ARCHIVE, "Dynamic sun cascades (1-4). Fewer cascades keep the nearest splits of r_csm_distance; receivers beyond them use the static sun map, which has no dynamic casters", true, 1, true, 4 );
@@ -57,7 +57,7 @@ ConVar r_shadowmap_spot_near( "r_shadowmap_spot_near", "4", FCVAR_ARCHIVE, "Spot
 ConVar r_shadowmap_autoexec( "r_shadowmap_autoexec", "", FCVAR_CHEAT, "Acceptance automation: cfg exec'd once per map after the first completed main receiver view" );
 ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 sun PCSS blockers, 6 sun PCSS radius; debug builds also check projection math", true, DX12_SHADOW_DEBUG_NONE, true, DX12_SHADOW_DEBUG_PCSS_RADIUS );
 ConVar r_shadowmap_instancing( "r_shadowmap_instancing", "1", FCVAR_ARCHIVE, "Batch rigid opaque static-prop shadow casters into instanced draws (identical depth); 0 draws every caster separately for A/B comparison", true, 0, true, 1 );
-ConVar r_shadowmap_sky_clip( "r_shadowmap_sky_clip", "1", FCVAR_ARCHIVE, "Clip sun shadow casters that lie on the sun side of the nearest sky entry (the sky is the sun's emitter, as baked); 0 keeps every caster for A/B comparison", true, 0, true, 1 );
+ConVar r_shadowmap_sky_clip( "r_shadowmap_sky_clip", "1", FCVAR_ARCHIVE, "Clip world and model casters on the sun side of the nearest sky entry; static props, detail props and model casters whose origin is in the receiver's playable sealed region are exempt, 0 keeps every caster for A/B comparison", true, 0, true, 1 );
 ConVar r_shadowmap_dither( "r_shadowmap_dither", "1", FCVAR_ARCHIVE, "Rotate the sun PCF/PCSS, local PCF and projected-light PCF tap patterns per pixel: 0 fixed patterns, 1 dithered (animated in the main view under a temporal upscaler)", true, 0, true, 1 );
 ConVar r_shadowmap_viewmodel_cascade( "r_shadowmap_viewmodel_cascade", "0", FCVAR_ARCHIVE, "First-person viewmodel sun shadows: 0 samples the main view's sun cascades, 1 renders one more cascade fitted to the viewmodel every frame (sharper sun shadows on the weapon)", true, 0, true, 1 );
 ConVar r_editor_lights_max_shadowed( "r_editor_lights_max_shadowed", "8", FCVAR_ARCHIVE, "Nearest editor lights that receive shadow maps; the rest are unshadowed" );
@@ -196,9 +196,11 @@ struct ShadowCache_t
 struct LocalLight_t
 {
 	LocalLight_t() : projectionNear(0), projectionFar(0), faceCount(0), relevant(false), shadowRelevant(false),
-		bakedLightIndex(0), realtimeWeight(0), score(0), resident(false), desired(false), dynamic(false), castShadow(false), volumetric(false)
+		bakedLightIndex(0), realtimeWeight(0), score(0), resident(false), desired(false), dynamic(false), castShadow(false), volumetric(false),
+		selectionAimValid(false)
 	{
 		memset(faceVolumes,0,sizeof(faceVolumes));
+		selectionAim.Init();
 		for ( int i=0;i<6;++i ) { page[i]=-1; slot[i]=-1; }
 	}
 	dworldlight_t world;
@@ -214,6 +216,8 @@ struct LocalLight_t
 	bool resident, desired; // Frame-global; weight-zero retirement may still own leased slots.
 	bool dynamic, castShadow;
 	bool volumetric;				// Editor-light opt-in (DeferredLight_t::volumetric); map lights use g_LightEntities.
+	Vector selectionAim;			// Static spot: first world surface on its axis (else the emitter); see BuildStaticSelectionAim.
+	bool selectionAimValid;
 	CHandle<C_Beam> volumeBeam;		// point_spotlight fake beam paired by ShadowMapsDX12_BeginVolumetrics (§9); map light_spot only.
 	CUtlVector<unsigned char> pvsClusters; // Precomputed influence/emitter clusters, never receiver-view dependent.
 };
@@ -286,6 +290,15 @@ struct StaticPropModelVisibility
 };
 CUtlMap<IClientRenderable *, StaticPropReceiverPose, int> g_StaticPropReceivers( DefLessFunc(IClientRenderable *) );
 CUtlMap<const model_t *, StaticPropModelVisibility *, int> g_StaticPropModels( DefLessFunc(const model_t *) );
+struct CasterSkyRegion_t
+{
+	Vector origin;
+	int region;
+	uint32 mapCounter;
+	CasterSkyRegion_t() : region(-1), mapCounter(0) {}
+};
+CUtlMap<IClientRenderable *, CasterSkyRegion_t, int> g_CasterSkyRegions( DefLessFunc(IClientRenderable *) );
+CUtlMap<int, int, int> g_DetailLeafSkyRegions( DefLessFunc(int) );
 uint32 g_StaticPropModelGeneration = 1;
 bool g_StaticPropRegistrationComplete = false;
 int g_StaticPropRegistrationRootLOD = -2147483647;
@@ -562,7 +575,7 @@ void ResetMapState()
 	// Invalidate every borrowed sidecar view before reusing its backing bytes.
 	g_State.lights=NULL; g_State.lightCount=0; g_State.sunLightIndex=-1; g_LightEntities.RemoveAll();
 	memset(&g_State.manifest,0,sizeof(g_State.manifest)); g_State.rshdBytes.RemoveAll();
-	g_CameraPvs.Clear(); g_SunSky.Clear(); g_FreeSlotSeconds.Purge();
+	g_CameraPvs.Clear(); g_SunSky.Clear(); g_CasterSkyRegions.Purge(); g_DetailLeafSkyRegions.Purge(); g_FreeSlotSeconds.Purge();
 	g_State.worldMins.Init(); g_State.worldMaxs.Init();
 }
 
@@ -779,6 +792,20 @@ int SunSkyRegionForPoint( const Vector &point )
 	}
 	const SunSkyLeaf_t &leaf=g_SunSky.leaves[-1-node];
 	return leaf.solid ? -1 : g_SunSky.Region(leaf.area);
+}
+int CacheCasterSkyRegion( IClientRenderable *renderable, const Vector &origin )
+{
+	if ( !renderable || !origin.IsValid() ) return -1;
+	int index = g_CasterSkyRegions.Find( renderable );
+	if ( index == g_CasterSkyRegions.InvalidIndex() ) index = g_CasterSkyRegions.Insert( renderable );
+	CasterSkyRegion_t &cached = g_CasterSkyRegions[index];
+	if ( cached.mapCounter != g_MapCounter || cached.origin != origin )
+	{
+		cached.origin = origin;
+		cached.mapCounter = g_MapCounter;
+		cached.region = SunSkyRegionForPoint( origin );
+	}
+	return cached.region;
 }
 
 bool ReadMapMetadata( const char *mapName, char *error, int errorBytes )
@@ -1000,9 +1027,9 @@ bool HybridCameraCut( const Vector &previous, const Vector &current )
 // Horizontal degrees added on each side of the main camera's FOV for residency: a light about to enter view is
 // promoted (and its shadow faded in) before it reaches the screen edge during an ordinary turn.
 static const float kSelectionFrustumPadDegrees=15.0f;
-// Score multiplier of a light whose emitter the camera faces. Scores are 1/max(distance,1) <= 1, so any faced light
-// outranks every unfaced one by far more than the 25% hysteresis, while ratios (and hysteresis) within each tier are
-// unchanged: when the budget is exceeded, lights behind the camera are culled first, then by PVS/distance as before.
+// A light whose influence reaches the padded view is faced when either its emitter or its one-time static spot
+// aim point is inside that view. The aim point prevents a wall-mounted spotlight whose source is just outside the
+// camera frustum from losing every chart slot to unrelated emitters that happen to be in front of the camera.
 static const float kSelectionFacedPriority=1.0e6f;
 
 bool SelectionFrustumVolume( const CViewSetup &setup, ShadowCasterVolume_t &volume )
@@ -1021,11 +1048,36 @@ bool LocalReachesView( const LocalLight_t &local, const ShadowCasterVolume_t *fr
 	return BoxInVolume(*frustum,local.influence.mins,local.influence.maxs) &&
 		ShadowMapScene_VolumeIntersectsBox(local.influence,frustum->m_vecMins,frustum->m_vecMaxs);
 }
-// The camera faces the emitter itself (origin inside the padded frustum). Most light influences are large enough to
-// reach the view from anywhere, so this, not the influence test, separates lights in front from lights behind.
+// Static selected spotlights trace their axis once at map admission. A point spot can be outside the view while
+// its first world blocker (the surface it actually illuminates) is inside it. Dynamic editor lights intentionally
+// leave this invalid and retain emitter-only selection.
+void BuildStaticSelectionAim( LocalLight_t &local )
+{
+	local.selectionAim=local.world.origin;
+	local.selectionAimValid=false;
+	if ( local.dynamic ) return;
+	local.selectionAimValid=true;
+	if ( local.world.type!=emit_spotlight ) return;
+	Vector direction=local.world.normal;
+	if ( !direction.IsValid() || VectorNormalize(direction)<=0 )
+	{
+		local.selectionAimValid=false;
+		return;
+	}
+	float distance=local.world.radius;
+	if ( !(distance>0) || !ShadowMap_IsFiniteFloat(distance) ) distance=4096.0f;
+	Vector end=local.world.origin+direction*distance;
+	trace_t trace;
+	CTraceFilterWorldOnly filter;
+	UTIL_TraceLine(local.world.origin,end,MASK_OPAQUE,&filter,&trace);
+	local.selectionAim=trace.fraction<1.0f ? trace.endpos : end;
+}
+// The camera faces the emitter or the first static world surface on a spotlight's axis. This preserves the existing
+// emitter tier for points and spots whose useful surface is not in the padded view.
 bool LocalEmitterFaced( const LocalLight_t &local, const ShadowCasterVolume_t *frustum )
 {
-	return !frustum || BoxInVolume(*frustum,local.world.origin,local.world.origin);
+	return !frustum || BoxInVolume(*frustum,local.world.origin,local.world.origin) ||
+		(local.selectionAimValid && BoxInVolume(*frustum,local.selectionAim,local.selectionAim));
 }
 
 void UpdateRealtimeSelection( const CViewSetup &setup )
@@ -1048,11 +1100,13 @@ void UpdateRealtimeSelection( const CViewSetup &setup )
 	{
 		LocalLight_t &local=g_Locals[i];
 		// Lights whose influence misses the view are culled outright; of the rest, the ones behind the camera rank
-		// below every faced light. PVS eligibility and emitter distance order each tier exactly as before.
+		// below every faced light. PVS eligibility gates; the nearer of emitter and static aim orders each tier.
+		const float styledRadiance=MAX(local.selected.radiance[0],MAX(local.selected.radiance[1],local.selected.radiance[2]))*
+			engine->LightStyleValue(local.selected.style);
 		const bool eligible=LocalReachesView(local,frustum) && g_CameraPvs.Eligible(local.pvsClusters);
-		local.score=ShadowLocalProximityScore(setup.origin,local.world.origin,eligible,
-			MAX(local.selected.radiance[0],MAX(local.selected.radiance[1],local.selected.radiance[2]))*
-			engine->LightStyleValue(local.selected.style));
+		local.score=local.selectionAimValid ?
+			ShadowLocalProximityScore(setup.origin,local.world.origin,local.selectionAim,eligible,styledRadiance) :
+			ShadowLocalProximityScore(setup.origin,local.world.origin,eligible,styledRadiance);
 		if ( LocalEmitterFaced(local,frustum) ) local.score*=kSelectionFacedPriority;
 		ShadowLightRank_t &rank=g_LightRanks[i];
 		rank.relevantIndex=i; rank.lightId=local.selected.lightId; rank.score=local.score;
@@ -1416,6 +1470,7 @@ public:
 	{
 		ShadowMapSceneCaster_t caster;
 		caster.renderable=renderable; caster.staticProp=isStaticProp;
+		caster.skyRegion=ShadowMapsDX12_CasterSkyRegion(renderable);
 		renderable->GetRenderBoundsWorldspace(caster.mins,caster.maxs);
 		// Only engine static props with immutable geometry AND opacity can enter
 		// clean depth. Brush entities, skinned/morphed models and proxies always move.
@@ -2050,7 +2105,7 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 	++g_FrameDepthRenders;
 	++data.stats.depthRenders;
 	ShadowMapDepthScene_t scene;
-	scene.lightView=lightView; scene.receiverView=data.receiver; scene.volume=volume; scene.detail=data.detail;
+	scene.lightView=lightView; scene.receiverView=data.receiver; scene.volume=volume; scene.detail=data.detail; scene.detail.m_nShadowSkyRegion=skyClip ? data.sunSkyRegion : -1;
 	scene.casters=&data.casters; scene.lighting=g_Lighting; scene.target=target;
 	scene.candidateIndices=data.drawCandidateFirst>=0 ? &data.casterIndices : NULL;
 	scene.candidateFirst=data.drawCandidateFirst; scene.candidateCount=data.drawCandidateCount;
@@ -2061,7 +2116,7 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 	if ( dynamicLayer==SHADOWMAP_DYNAMIC_RIGID ) scene.overlayCasterDraws=NULL;
 	scene.overlayFootprint=footprint;
 	scene.overlayRopeFootprint=ropeFootprint;
-	scene.skyClip=skyClip;
+	scene.skyClip=skyClip; scene.skyRegion=skyClip ? data.sunSkyRegion : -1;
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::RenderDepth.DrawScene", "Shadowmaps" );
 		ViewRender_DrawShadowMapScene(scene);
@@ -3633,6 +3688,7 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 				local.world.radius=ShadowMapScene_EffectiveRadius(record.light,g_State.selectedMode==SHADOWMAP_MODE_HDR);
 			local.selected=selected; local.selected.attenuationRadius=local.world.radius; local.bakedLightIndex=i;
 			ShadowMapScene_LocalInfluence(local.world,g_State.worldMins,g_State.worldMaxs,local.influence);
+			BuildStaticSelectionAim(local);
 			local.faceCount=local.influence.cube?6:1;
 			g_CameraPvs.BuildLightClusters(local.world.origin,local.world.cluster,local.influence.mins,local.influence.maxs,
 				local.world.radius>0,local.pvsClusters);
@@ -3785,6 +3841,7 @@ void ShadowMapsDX12_RegisterStaticPropReceiver( uint32 ordinal, ICollideable *pr
 	if ( !renderable || renderable->GetIClientUnknown() != unknown ) return;
 	StaticPropReceiverPose record = {};
 	record.ordinal = ordinal; record.authored = authored;
+	CacheCasterSkyRegion( renderable, authored.m_Origin );
 	g_StaticPropRegistrationComplete = false;
 	const int found = g_StaticPropReceivers.Find(renderable);
 	if ( found == g_StaticPropReceivers.InvalidIndex() ) g_StaticPropReceivers.Insert(renderable,record);
@@ -4288,6 +4345,8 @@ void ShadowMapsDX12_OnCasterMoved( IClientRenderable *renderable, const Vector &
 	IClientUnknown *unknown=renderable ? renderable->GetIClientUnknown() : NULL;
 	C_BaseEntity *entity=unknown ? unknown->GetBaseEntity() : NULL;
 	if ( entity && !entity->AdvanceShadowDepthRevision() ) ShadowMapsDX12_InvalidateCasterRegistration(renderable);
+	if ( renderable )
+		CacheCasterSkyRegion( renderable, entity ? entity->GetAbsOrigin() : renderable->GetRenderOrigin() );
 	++g_CasterContentGeneration;
 	if ( !g_CasterContentGeneration ) ShadowMapsDX12_InvalidateCasterRegistration();
 	for ( int l=0;l<g_Locals.Count();++l )
@@ -4347,6 +4406,11 @@ void ShadowMapsDX12_InvalidateCasterRegistration( IClientRenderable *renderable 
 	// Stamp from a global sequence, not a constructor-reset local counter:
 	// pointer/EHANDLE reuse cannot alias an older rigid registration key.
 	if ( entity ) entity->SetShadowDepthRegistrationRevision(g_CasterRegistrationGeneration);
+	if ( renderable )
+	{
+		int skyIndex = g_CasterSkyRegions.Find( renderable );
+		if ( skyIndex != g_CasterSkyRegions.InvalidIndex() ) g_CasterSkyRegions.RemoveAt( skyIndex );
+	}
 	if ( renderable && !wrapped ) return;
 	// Unspecified invalidation and theoretical wraps cannot be localized.
 	for ( int l=0;l<g_Locals.Count();++l ) for ( int f=0;f<g_Locals[l].faceCount;++f )
@@ -4374,6 +4438,36 @@ void ShadowMapsDX12_InvalidateStatic()
 	ClearStaticPropModelVisibility();
 	++g_CasterContentGeneration;
 	if ( !g_CasterContentGeneration ) ShadowMapsDX12_InvalidateCasterRegistration();
+}
+int ShadowMapsDX12_CasterSkyRegion( IClientRenderable *renderable )
+{
+	if ( !renderable ) return -1;
+	int index = g_CasterSkyRegions.Find( renderable );
+	if ( index != g_CasterSkyRegions.InvalidIndex() && g_CasterSkyRegions[index].mapCounter == g_MapCounter )
+		return g_CasterSkyRegions[index].region;
+	IClientUnknown *unknown = renderable->GetIClientUnknown();
+	C_BaseEntity *entity = unknown ? unknown->GetBaseEntity() : NULL;
+	const Vector &origin = entity ? entity->GetAbsOrigin() : renderable->GetRenderOrigin();
+	return CacheCasterSkyRegion( renderable, origin );
+}
+bool ShadowMapsDX12_IsSkyClipExempt( IClientRenderable *renderable, int receiverRegion )
+{
+	return receiverRegion >= 0 && ShadowMapsDX12_CasterSkyRegion( renderable ) == receiverRegion;
+}
+bool ShadowMapsDX12_IsSkyClipExemptAtPoint( int leaf, const Vector &point, int receiverRegion )
+{
+	if ( receiverRegion < 0 || !point.IsValid() ) return false;
+	int index = g_DetailLeafSkyRegions.Find( leaf );
+	if ( index == g_DetailLeafSkyRegions.InvalidIndex() )
+	{
+		index = g_DetailLeafSkyRegions.Insert( leaf );
+		g_DetailLeafSkyRegions[index] = SunSkyRegionForPoint( point );
+	}
+	return g_DetailLeafSkyRegions[index] == receiverRegion;
+}
+void ShadowMapsDX12_SetShadowCasterSkyClipExempt( bool exempt )
+{
+	if ( g_Lighting ) g_Lighting->SetShadowCasterSkyClipExempt( exempt );
 }
 
 namespace

@@ -32,7 +32,7 @@ namespace shaderapidx12
 {
 namespace
 {
-enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload, BeginProp, EndProp, Projected, BatchBegin, BatchEnd };
+enum LightingOp { View, Pass, EndPass, Restore, EndScope, Unload, BeginProp, EndProp, Projected, BatchBegin, BatchEnd, SkyClipExempt };
 const char *const kPacketError = "Shadowmaps: invalid lighting packet";
 D3D12_CPU_DESCRIPTOR_HANDLE Offset( D3D12_CPU_DESCRIPTOR_HANDLE handle, UINT index, UINT stride )
 {
@@ -1466,7 +1466,9 @@ struct CLightingDX12::Impl
 		DescriptorRangeDX12 skyClipTable{};
 		D3D12_GPU_VIRTUAL_ADDRESS skyClipConstants = 0;
 		uint64_t skyClipFence = 0, skyClipHeap = 0;
+		bool skyClipConstantsExempt = false;
 	};
+	bool shadowCasterSkyClipExempt = false;
 	CUtlVector<PassState> passes;
 	// PBR projected lights (recording owner only): the current packet, the texture handles its slots name, and the
 	// descriptor table the PBR draws bind. The table is rebuilt once per recording batch / heap generation / texture
@@ -2207,6 +2209,7 @@ void CLightingDX12::BeginShadowPass( DX12ShadowTarget_t target, int x, int y, in
 	Enqueue( packet );
 }
 void CLightingDX12::EndShadowPass() { Enqueue( Packet( EndPass ) ); }
+void CLightingDX12::SetShadowCasterSkyClipExempt( bool exempt ) { LightingPacketDX12 *packet = Packet( SkyClipExempt ); packet->flag = exempt; Enqueue( packet ); }
 void CLightingDX12::BeginShadowCasterBatch() { Enqueue( Packet( BatchBegin ) ); }
 void CLightingDX12::EndShadowCasterBatch() { Enqueue( Packet( BatchEnd ) ); }
 void CLightingDX12::CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height )
@@ -2393,6 +2396,12 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 	{
 		if ( !s.propScopes.Count() ) { s.Fail( kPacketError ); return; }
 		s.propScopes.Tail()->Release(); s.propScopes.RemoveMultipleFromTail( 1 );
+		return;
+	}
+	if ( packet->operation == SkyClipExempt )
+	{
+		if ( !s.passes.Count() ) { s.Fail( kPacketError ); return; }
+		s.shadowCasterSkyClipExempt = packet->flag;
 		return;
 	}
 	if ( packet->operation == BatchBegin )
@@ -2672,6 +2681,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		if ( !s.passes.Count() ) { s.Fail( kPacketError ); return; }
 		// A batch the client left open is emitted into the pass target that is still bound.
 		s.api->FlushShadowCasterBatch( true );
+		s.shadowCasterSkyClipExempt = false;
 		const Impl::PassState saved = s.passes.Tail();
 		s.passes.RemoveMultipleFromTail( 1 );
 		s.RestoreBackend( saved );
@@ -2714,6 +2724,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			saved.rect.bottom += packet->values[3];
 		}
 		s.passes.AddToTail( saved );
+		s.shadowCasterSkyClipExempt = false;
 		++s.api->m_nPipelineMemoEpoch;
 		s.api->m_bNamedVertexShaderDirty = true;
 		s.api->m_bNamedPixelShaderDirty = true;
@@ -2848,7 +2859,7 @@ bool CLightingDX12::PrepareShadowSkyClipDraw( CPipelineCacheDX12::BindingInputDX
 	const uint64_t fence = s.device->NextFenceValue();
 	// The table, a highres table (8), the neutral space-6 table and the ordinary per-draw tables (32 + 16) allocated after it must share one heap generation.
 	if ( !pipeline.ReserveResourceDescriptors( DX12_SCREENSPACE_TABLE_COUNT + 8 + DX12_PBR_TABLE_COUNT + DX12_PROBE_TABLE_COUNT + DX12_SCREENSPACE_TABLE_COUNT + 32 + 16, fence ) ) return false;
-	if ( pass.skyClipFence != fence || pass.skyClipHeap != pipeline.ResourceHeapGeneration() )
+	if ( pass.skyClipFence != fence || pass.skyClipHeap != pipeline.ResourceHeapGeneration() || pass.skyClipConstantsExempt != s.shadowCasterSkyClipExempt )
 	{
 		ID3D12Device *device = s.device->NativeDevice();
 		const DescriptorRangeDX12 table = pipeline.AllocateTransientResources( DX12_SCREENSPACE_TABLE_COUNT, fence );
@@ -2865,16 +2876,19 @@ bool CLightingDX12::PrepareShadowSkyClipDraw( CPipelineCacheDX12::BindingInputDX
 		}
 		DX12ShadowSkyClipConstants constants{};
 		constants.rectOrigin[0] = float( pass.rect.left ); constants.rectOrigin[1] = float( pass.rect.top );
-		constants.depthBias = pass.skyClipBias; constants.enabled = 1.f;
+		constants.depthBias = pass.skyClipBias; constants.enabled = s.shadowCasterSkyClipExempt ? 0.f : 1.f;
 		D3D12_GPU_VIRTUAL_ADDRESS address = 0;
 		if ( !pipeline.UploadTransient( &constants, sizeof( constants ), 256, 256, fence, address ) ) return false;
 		pass.skyClipTable = table; pass.skyClipConstants = address;
+		pass.skyClipConstantsExempt = s.shadowCasterSkyClipExempt;
 		pass.skyClipFence = fence; pass.skyClipHeap = pipeline.ResourceHeapGeneration();
 	}
 	input.screenSpaceTable = pass.skyClipTable;
 	input.shadowSkyClipConstants = pass.skyClipConstants;
 	return true;
 }
+bool CLightingDX12::ShadowCasterSkyClipExempt() const { return m_Impl->shadowCasterSkyClipExempt; }
+void CLightingDX12::SetShadowCasterSkyClipExemptForDraw( bool exempt ) { m_Impl->shadowCasterSkyClipExempt = exempt; }
 bool CLightingDX12::PresentationBlocked()
 {
 	// Client rejection handles the enhanced route; never latch its errors into old Present.

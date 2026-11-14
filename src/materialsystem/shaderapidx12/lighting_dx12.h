@@ -64,6 +64,7 @@ public:
 	void BeginShadowPass( DX12ShadowTarget_t target, int x, int y, int width, int height, bool clear, const DX12ShadowSkyClip *skyClip ) override;
 	void EndShadowPass() override;
 	void BeginShadowCasterBatch() override;
+	void SetShadowCasterSkyClipExempt( bool exempt ) override;
 	void EndShadowCasterBatch() override;
 	void CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height ) override;
 	void EndView() override;
@@ -98,6 +99,9 @@ public:
 	// runs (shadow_sky_clip_ps51) and the space-6 sky map table / constants of the pass; NULL / neutral otherwise.
 	ShaderRecordDX12 *ShadowSkyClipPixelShader() const;
 	bool PrepareShadowSkyClipDraw( CPipelineCacheDX12::BindingInputDX12 &input );
+	// Recording-owner state used by DrawBuffers to split/correctly replay instanced caster groups.
+	bool ShadowCasterSkyClipExempt() const;
+	void SetShadowCasterSkyClipExemptForDraw( bool exempt );
 	bool PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input );
 	// Recording owner, before PrepareBindings: the current projected-light descriptor table for a PS that reflects space 5.
 	bool PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input );

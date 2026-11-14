@@ -15,7 +15,7 @@
 namespace hprobe
 {
 static const uint32 kMagic = 0x42525048u; // HPRB, little endian
-static const uint32 kVersion = 2; // one HDR mode, tight atlas packing
+static const uint32 kVersion = 3; // one HDR mode, tight atlas packing with six-axis free distances
 static const uint32 kEndian = 0x01020304u;
 static const uint32 kBrickCells = 4;
 static const uint32 kBrickProbes = 5; // cells + 1: edge probes are duplicated so trilinear never crosses a brick
@@ -31,8 +31,9 @@ static const uint32 kMaxReach = 65536;
 static const uint32 kR11G11B10Float = 26; // DXGI_FORMAT_R11G11B10_FLOAT
 static const uint32 kRGBA8Snorm = 31; // DXGI_FORMAT_R8G8B8A8_SNORM
 static const uint32 kR8Unorm = 61; // DXGI_FORMAT_R8_UNORM
+static const uint32 kR32Uint = 42; // DXGI_FORMAT_R32_UINT
 static const uint8 kValid = 255;
-static const uint32 kBytesPerProbe = 29; // 4 DC + 6*4 bands + 1 validity
+static const uint32 kBytesPerProbe = 33; // 4 DC + 6*4 bands + 1 validity + 4 free distances
 // Canonical file order: header, modes, then per mode its grid section. Each section starts at the next
 // 16-byte boundary with zero padding. Modes are unique and ordered by (faceLump, lightingLump).
 // Real SH basis, k = 0..8: Y0=0.282095, Y1=0.488603 y, Y2=0.488603 z, Y3=0.488603 x, Y4=1.092548 xy,
@@ -65,8 +66,7 @@ struct GridDisk // first record of the grid section
     uint32 brickCount; // allocated bricks == ModeDisk::brickCount
     uint32 atlasBricks[3]; // see AtlasBricks
     uint32 reach; // 0 = unlimited
-    uint32 dcFormat, bandFormat, validityFormat;
-    uint32 reserved;
+    uint32 dcFormat, bandFormat, validityFormat, freeDistanceFormat;
 };
 #pragma pack(pop)
 
@@ -76,14 +76,15 @@ COMPILE_TIME_ASSERT(sizeof(GridDisk) == 64);
 COMPILE_TIME_ASSERT(offsetof(FileHeader, crc32) == offsetof(hlight::FileHeader, crc32));
 
 // Grid section: GridDisk; uint32 indirection[bx*by*bz] (x fastest; hlight::kMissing or a slot < brickCount, every
-// slot referenced once); uint32 dc[texels] (R11G11B10F); int8 bands[6][texels][4]; uint8 validity[texels].
+// slot referenced once); uint32 dc[texels] (R11G11B10F); int8 bands[6][texels][4]; uint8 validity[texels];
+// uint32 freeDistance[texels] (R32_UINT, six conservative 4-bit free-distance nibbles, +x,-x,+y,-y,+z,-z).
 // Texels are atlas probes, x fastest. Slot s occupies [a*5, a*5+5) per axis with
 // a = (s % abx, (s / abx) % aby, s / (abx*aby)); texels of unallocated slots are zero.
 struct ModeView
 {
     const ModeDisk *record;
     const GridDisk *grid;
-    const uint32 *indirection, *dc;
+    const uint32 *indirection, *dc, *freeDistance;
     const int8 *bands;
     const uint8 *validity;
 };
@@ -92,6 +93,7 @@ struct FileView
     const FileHeader *header;
     ModeView mode[4];
 };
+ 
 
 inline uint64 IndirectionCount(const GridDisk &g)
 {
@@ -162,7 +164,8 @@ inline bool ValidateGrid(const uint8 *base, uint32 count, uint64 &cursor, const 
         !g.brickDims[2] || g.brickDims[2] > kMaxBricksPerAxis || IndirectionCount(g) > (1u << 30) ||
         !g.brickCount || g.brickCount > kMaxBricks || g.brickCount != m.brickCount || g.brickCount > IndirectionCount(g) ||
         memcmp(g.atlasBricks, atlas, sizeof(atlas)) || g.reach > kMaxReach ||
-        g.dcFormat != kR11G11B10Float || g.bandFormat != kRGBA8Snorm || g.validityFormat != kR8Unorm || g.reserved)
+        g.dcFormat != kR11G11B10Float || g.bandFormat != kRGBA8Snorm || g.validityFormat != kR8Unorm ||
+        g.freeDistanceFormat != kR32Uint)
         return ValidationError(error, errorBytes, "invalid grid record");
     if (!hlight::Section(base, count, cursor, m.gridOffset, GridBytes(g)))
         return ValidationError(error, errorBytes, "grid section range");
@@ -172,6 +175,7 @@ inline bool ValidateGrid(const uint8 *base, uint32 count, uint64 &cursor, const 
     v.dc = v.indirection + cells;
     v.bands = reinterpret_cast<const int8 *>(v.dc + texels);
     v.validity = reinterpret_cast<const uint8 *>(v.bands) + texels * kBands * 4;
+    v.freeDistance = reinterpret_cast<const uint32 *>(v.validity + texels);
     std::vector<uint32> referenced(kMaxBricks / 32, 0u);
     uint32 slots = 0;
     for (uint64 i = 0; i < cells; ++i)
@@ -200,8 +204,8 @@ inline bool ValidateGrid(const uint8 *base, uint32 count, uint64 &cursor, const 
                         bandsRepresentable = bandsRepresentable && band != -128;
                     }
                 const bool valid = slot < g.brickCount && v.validity[t] == kValid;
-                if (valid ? (!FinitePackedDC(v.dc[t]) || !bandsRepresentable) :
-                    (v.validity[t] || v.dc[t] || !bandsZero))
+                if (valid ? (!FinitePackedDC(v.dc[t]) || !bandsRepresentable || v.freeDistance[t] >= (1u << 24)) :
+                    (v.validity[t] || v.dc[t] || !bandsZero || v.freeDistance[t]))
                     return ValidationError(error, errorBytes, "invalid probe texel");
             }
     return true;
@@ -217,7 +221,11 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
         return ValidationError(error, errorBytes, "invalid file buffer");
     const uint8 *base = static_cast<const uint8 *>(bytes);
     const FileHeader &h = *reinterpret_cast<const FileHeader *>(base);
-    if (h.magic != kMagic || h.version != kVersion || h.headerBytes != sizeof(h) || h.endian != kEndian ||
+    if (h.magic != kMagic)
+        return ValidationError(error, errorBytes, "header/version/CRC mismatch");
+    if (h.version == 2)
+        return ValidationError(error, errorBytes, "v2 is obsolete; rebake with -restir_shadowmaps");
+    if (h.version != kVersion || h.headerBytes != sizeof(h) || h.endian != kEndian ||
         h.fileBytes != count || h.modeCount != 1 || !hlight::ZeroBytes(h.reserved, sizeof(h.reserved)) ||
         h.crc32 != FileCRC32(bytes, count))
         return ValidationError(error, errorBytes, "header/version/CRC mismatch");

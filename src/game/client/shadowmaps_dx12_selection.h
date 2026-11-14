@@ -189,10 +189,22 @@ private:
 	unsigned int visitGeneration;
 };
 
+// Rank by the nearest useful light anchor. Static spots keep both their emitter and a
+// one-time world aim point, so an off-screen emitter whose cone hits the view is not
+// treated as distant merely because the source itself is behind a wall or camera turn.
 inline float ShadowLocalProximityScore( const Vector &camera, const Vector &emitter, bool eligible, float styledRadiance )
 {
 	if ( !eligible || !(styledRadiance>0) ) return 0;
 	const float distance=(camera-emitter).Length();
+	return ShadowMap_IsFiniteFloat(distance) ? 1.0f/MAX(distance,1.0f) : 0;
+}
+inline float ShadowLocalProximityScore( const Vector &camera, const Vector &emitter, const Vector &aim,
+	bool eligible, float styledRadiance )
+{
+	if ( !eligible || !(styledRadiance>0) ) return 0;
+	const float emitterDistance=(camera-emitter).Length();
+	const float aimDistance=(camera-aim).Length();
+	const float distance=MIN(emitterDistance,aimDistance);
 	return ShadowMap_IsFiniteFloat(distance) ? 1.0f/MAX(distance,1.0f) : 0;
 }
 

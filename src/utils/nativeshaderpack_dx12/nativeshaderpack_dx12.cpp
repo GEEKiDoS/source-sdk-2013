@@ -632,8 +632,8 @@ void validateProbeBlock(const Block &b) {
 	}
 }
 // Space 4: the DX12ProbeConstantsV1 block, ProbeIndirection t0 (Texture3D<uint>), ProbeDC t1 (float3), ProbeBands t2..t7
-// (array of six float4), ProbeValidity t8 (float), ProbeLinear s0 (non-comparison). Reflection contains only retained
-// resources, so any subset of the textures may appear, but each binding must match exactly and appear once. seen bit 0 is the block.
+// (array of six float4), ProbeValidity t8 (float), ProbeFreeDistance t9 (uint), ProbeLinear s0 (non-comparison). Reflection
+// contains only retained resources, so any subset of the textures may appear, but each binding must match exactly and appear once.
 void validateProbeBinding(const D3D12_SHADER_INPUT_BIND_DESC &b, const std::string &logical, unsigned &seen) {
 	struct Texture { const char *name; unsigned reg, count, components; D3D_RESOURCE_RETURN_TYPE returnType; };
 	static const Texture textures[] = {
@@ -641,6 +641,7 @@ void validateProbeBinding(const D3D12_SHADER_INPUT_BIND_DESC &b, const std::stri
 		{"ProbeDC", DX12_PROBE_T_DC, 1, 3, D3D_RETURN_TYPE_FLOAT},
 		{"ProbeBands", DX12_PROBE_T_BANDS_FIRST, DX12_PROBE_T_VALIDITY - DX12_PROBE_T_BANDS_FIRST, 4, D3D_RETURN_TYPE_FLOAT},
 		{"ProbeValidity", DX12_PROBE_T_VALIDITY, 1, 1, D3D_RETURN_TYPE_FLOAT},
+		{"ProbeFreeDistance", DX12_PROBE_T_FREE_DISTANCE, 1, 1, D3D_RETURN_TYPE_UINT},
 	};
 	unsigned bit = 0;
 	bool valid = false;
@@ -649,7 +650,7 @@ void validateProbeBinding(const D3D12_SHADER_INPUT_BIND_DESC &b, const std::stri
 		bit = 1;
 		valid = layout && b.BindPoint == layout->shaderRegister && b.BindCount == 1;
 	} else if (!strcmp(b.Name, "ProbeLinear")) {
-		bit = 1u << 5;
+		bit = 1u << 6;
 		valid = b.Type == D3D_SIT_SAMPLER && b.BindPoint == DX12_PROBE_S_LINEAR && b.BindCount == 1 && !(b.uFlags & D3D_SIF_COMPARISON_SAMPLER);
 	} else {
 		for (unsigned i = 0; i < sizeof(textures) / sizeof(*textures); ++i)

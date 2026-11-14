@@ -1,5 +1,5 @@
 // Dense ambient probe grid (public/hprobe_bsp.h) for pbr_model_ps51 ENHANCED (PBR-only; no legacy shader includes it).
-// Backend-owned pixel-stage space 4: DX12ProbeConstantsV1 plus the nine descriptors of DX12_PROBE_TABLE_COUNT
+// Backend-owned pixel-stage space 4: DX12ProbeConstantsV1 plus the ten descriptors of DX12_PROBE_TABLE_COUNT
 // (ishaderapidx12lighting.h). Probe_Decode runs once per pixel; Probe_Irradiance / Probe_IrradianceSoft then evaluate any
 // direction (N, -N for backlight, the subsurface-softened N) at the same normal-biased sample point.
 //
@@ -21,6 +21,7 @@ Texture3D<uint> ProbeIndirection : register( t0, space4 );
 Texture3D<float3> ProbeDC : register( t1, space4 );
 Texture3D<float4> ProbeBands[6] : register( t2, space4 );
 Texture3D<float> ProbeValidity : register( t8, space4 );
+Texture3D<uint> ProbeFreeDistance : register( t9, space4 );
 SamplerState ProbeLinear : register( s0, space4 );
 
 // E(n) = dc + sum_k band[k - 1] * Y_k(n), k = 1..8, with band[k - 1] = 4 * dc * s_k per color channel.
@@ -51,8 +52,22 @@ float3 Probe_IrradianceSoft( ProbeSH sh, float3 n )
 	return max( sh.dc + 0.5 * Probe_L1( sh, n ) + 0.25 * Probe_L2( sh, n ), 0.0 );
 }
 
-// DC and bands are stored premultiplied by validity, so the hardware-filtered values divide by the filtered validity.
-// The 5x5x5 probes of a brick duplicate their edges, so the clamped local coordinate never filters across bricks.
+// DC and bands are stored premultiplied by validity (invalid texels are zero), so the hardware-filtered values
+// divide by the filtered validity. The 5x5x5 probes of a brick duplicate their edges, so the clamped local
+// coordinate never filters across bricks.
+bool Probe_FreeVisible( uint packed, float3 delta )
+{
+	[unroll] for ( uint axis = 0; axis < 3; ++axis )
+	{
+		const float distance = abs( delta[axis] );
+		const uint side = axis * 2 + ( delta[axis] < 0.0 ? 1 : 0 );
+		const float freeDistance = float( ( packed >> ( side * 4 ) ) & 15u ) / 15.0;
+		if ( distance > freeDistance )
+			return false;
+	}
+	return true;
+}
+
 bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 {
 	sh = (ProbeSH)0;
@@ -66,23 +81,85 @@ bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 		{
 			uint3 atlasBricks = cProbeAtlasBricks.xyz;
 			uint3 atlasBrick = uint3( slot % atlasBricks.x, ( slot / atlasBricks.x ) % atlasBricks.y, slot / ( atlasBricks.x * atlasBricks.y ) );
-			float3 uvw = ( float3( atlasBrick * 5u ) + clamp( grid - brick * 4.0, 0.0, 4.0 ) + 0.5 ) * cProbeAtlas.xyz;
-			float validity = ProbeValidity.SampleLevel( ProbeLinear, uvw, 0 );
-			[branch] if ( validity >= 0.25 )
+			float3 local = clamp( grid - brick * 4.0, 0.0, 4.0 );
+			uint3 base = uint3( min( floor( local ), 3.0 ) );
+			float3 fraction = local - float3( base );
+			uint3 atlasBase = atlasBrick * 5u;
+			bool allVisible = true;
+			[unroll] for ( uint corner = 0; corner < 8; ++corner )
 			{
-				float scale = 1.0 / validity;
-				sh.dc = ProbeDC.SampleLevel( ProbeLinear, uvw, 0 ) * scale;
+				const uint3 offset = uint3( corner & 1u, ( corner >> 1u ) & 1u, corner >> 2u );
+				const float3 cornerGrid = brick * 4.0 + float3( base + offset );
+				const uint freeDistance = ProbeFreeDistance.Load( int4( atlasBase + base + offset, 0 ) );
+				allVisible = allVisible && Probe_FreeVisible( freeDistance, grid - cornerGrid );
+			}
+			float3 uvw = ( float3( atlasBase ) + local + 0.5 ) * cProbeAtlas.xyz;
+			[branch] if ( allVisible )
+			{
+				const float validity = ProbeValidity.SampleLevel( ProbeLinear, uvw, 0 );
+				[branch] if ( validity >= 0.25 )
+				{
+					const float scale = 1.0 / validity;
+					sh.dc = ProbeDC.SampleLevel( ProbeLinear, uvw, 0 ) * scale;
+					[unroll] for ( uint c = 0; c < 3; ++c )
+					{
+						float4 low = ProbeBands[2 * c].SampleLevel( ProbeLinear, uvw, 0 ) * scale;
+						float4 high = ProbeBands[2 * c + 1].SampleLevel( ProbeLinear, uvw, 0 ) * scale;
+						[unroll] for ( uint k = 0; k < 4; ++k )
+						{
+							sh.band[k][c] = 4.0 * sh.dc[c] * low[k];
+							sh.band[4 + k][c] = 4.0 * sh.dc[c] * high[k];
+						}
+					}
+					covered = true;
+				}
+			}
+			[branch] if ( !allVisible )
+			{
+				float weightSum = 0.0;
+				float3 dc = 0.0;
+				float4 low[3];
+				float4 high[3];
 				[unroll] for ( uint c = 0; c < 3; ++c )
 				{
-					float4 low = ProbeBands[2 * c].SampleLevel( ProbeLinear, uvw, 0 ) * scale;
-					float4 high = ProbeBands[2 * c + 1].SampleLevel( ProbeLinear, uvw, 0 ) * scale;
-					[unroll] for ( uint k = 0; k < 4; ++k )
+					low[c] = 0.0;
+					high[c] = 0.0;
+				}
+				[unroll] for ( uint corner = 0; corner < 8; ++corner )
+				{
+					const uint3 offset = uint3( corner & 1u, ( corner >> 1u ) & 1u, corner >> 2u );
+					const float3 weights = float3( offset ) * fraction + ( 1.0 - float3( offset ) ) * ( 1.0 - fraction );
+					const float trilinear = weights.x * weights.y * weights.z;
+					const uint3 coordinate = atlasBase + base + offset;
+					const uint freeDistance = ProbeFreeDistance.Load( int4( coordinate, 0 ) );
+					if ( trilinear == 0.0 || !Probe_FreeVisible( freeDistance, grid - ( brick * 4.0 + float3( base + offset ) ) ) )
+						continue;
+					const float weight = trilinear * ProbeValidity.Load( int4( coordinate, 0 ) );
+					if ( weight <= 0.0 )
+						continue;
+					weightSum += weight;
+					dc += ProbeDC.Load( int4( coordinate, 0 ) ) * weight;
+					[unroll] for ( uint c = 0; c < 3; ++c )
 					{
-						sh.band[k][c] = 4.0 * sh.dc[c] * low[k];
-						sh.band[4 + k][c] = 4.0 * sh.dc[c] * high[k];
+						low[c] += ProbeBands[2 * c].Load( int4( coordinate, 0 ) ) * weight;
+						high[c] += ProbeBands[2 * c + 1].Load( int4( coordinate, 0 ) ) * weight;
 					}
 				}
-				covered = true;
+				[branch] if ( weightSum > 1e-4 )
+				{
+					sh.dc = dc / weightSum;
+					[unroll] for ( uint c = 0; c < 3; ++c )
+					{
+						low[c] /= weightSum;
+						high[c] /= weightSum;
+						[unroll] for ( uint k = 0; k < 4; ++k )
+						{
+							sh.band[k][c] = 4.0 * sh.dc[c] * low[c][k];
+							sh.band[4 + k][c] = 4.0 * sh.dc[c] * high[c][k];
+						}
+					}
+					covered = true;
+				}
 			}
 		}
 	}

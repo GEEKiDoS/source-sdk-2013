@@ -7,8 +7,9 @@
 // whose light depth is smaller than that sky depth by more than the bias.
 //
 // Backend-owned register space 6 beside screenspace_view.hlsli; byte-identical twin DX12ShadowSkyClipConstants
-// in public/shaderapi/ishaderapidx12lighting.h. Ordinary draws, local-light charts and sun passes without a sky
-// map see zero constants (w = 0) and a typed-null texture, so the call is a no-op outside clipped sun passes.
+// in public/shaderapi/ishaderapidx12lighting.h. Ordinary draws, local-light charts and sun passes without a sky map
+// see zero constants (w = 0) and a typed-null texture; exempt playable-region caster draws keep the sky map but set
+// w = 0, so the call is a no-op outside clipped sun casters.
 #ifndef SHADOW_SKY_CLIP_HLSLI
 #define SHADOW_SKY_CLIP_HLSLI
 

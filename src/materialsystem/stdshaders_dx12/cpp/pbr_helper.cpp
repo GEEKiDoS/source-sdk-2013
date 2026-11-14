@@ -12,6 +12,7 @@
 #include "commandbuilder.h"
 #include "convar.h"
 #include "mathlib/mathlib.h"
+#include "vphysics_interface.h"
 
 #include "pbr_world_vs51.inc"
 #include "pbr_world_ps51.inc"
@@ -210,7 +211,8 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 		if ( GetIntParam( v.baseMapAlphaPhongMask, params ) != 0 )
 			s.phong |= 4;
 	}
-	s.glossFromMask = !s.explicitRoughness && s.hasEnvmap && ( s.phong & 1 ) == 0;
+	s.glossFromMask = !s.explicitRoughness && s.hasEnvmap && ( s.phong & 1 ) == 0 &&
+		v.legacyEnvmapAuthored != -1 && GetIntParam( v.legacyEnvmapAuthored, params, 0 ) != 0;
 
 	s.alphaTested = IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) != 0;
 	const int blendTexture = IsBoolSet( v.blendTintByBaseAlpha, params ) ? -1 : ( s.hasBase ? v.base : v.envmapMask );
@@ -337,9 +339,11 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	float ps[15][4] = {};
 
 	// c1: $metalness / $roughness / $ambientocclusion are the values, or the multipliers of $mraotexture's channels
-	// (InitParamsPBRDefaults made the unset ones 1 with an MRAO texture)
+	// (InitParamsPBRDefaults made the unset ones 1 with an MRAO texture). A legacy material without them takes its
+	// $surfaceprop class roughness (CaptureLegacyAdapterState); Phong and authored envmap masks override it below / in the PS.
 	ps[1][0] = params[v.metalness]->GetFloatValue();
-	ps[1][1] = s.explicitRoughness ? params[v.roughness]->GetFloatValue() : kDefaultRoughness;
+	ps[1][1] = s.explicitRoughness ? params[v.roughness]->GetFloatValue() :
+		( v.legacyRoughness != -1 ? params[v.legacyRoughness]->GetFloatValue() : kDefaultRoughness );
 	ps[1][2] = params[v.ambientOcclusion]->GetFloatValue();
 	ps[1][3] = v.specularWorkflow ? 1.0f : 0.0f;
 	if ( s.phong & 1 )
@@ -668,6 +672,69 @@ void PBR_FillModelVars( PBR_Vars_t &v, const VertexLitGeneric_DX9_Vars_t &info )
 	v.selfIllumMask = info.m_nSelfIllumMask;
 	v.lightmap = info.m_nLightmap;
 	v.ambientOnly = info.m_nAmbientOnly;
+}
+
+//-----------------------------------------------------------------------------
+// Legacy adapter setup
+//-----------------------------------------------------------------------------
+// The engine's physics surface table resolves $surfaceprop "base" inheritance (and a mod's own entries) to a game material
+// class; nothing in the material system does. Null until vphysics is up, so it is looked up again rather than cached as null.
+static IPhysicsSurfaceProps *PhysicsSurfaceProps()
+{
+	static IPhysicsSurfaceProps *s_props = NULL;
+	if ( !s_props )
+	{
+		CreateInterfaceFn factory = Sys_GetFactory( "vphysics" );
+		s_props = factory ? static_cast< IPhysicsSurfaceProps * >( factory( VPHYSICS_SURFACEPROPS_INTERFACE_VERSION, NULL ) ) : NULL;
+	}
+	return s_props;
+}
+
+// Default roughness of a legacy material by its $surfaceprop class (retail L4D2: scripts/surfaceproperties_left4dead.txt,
+// where a numeric gamematerial is the class number itself). Unknown, absent and "default" props keep kDefaultRoughness.
+static float SurfacePropRoughness( const char *surfaceProp )
+{
+	if ( !surfaceProp || !*surfaceProp || !V_stricmp( surfaceProp, "default" ) )
+		return kDefaultRoughness;
+	if ( V_stristr( surfaceProp, "porcelain" ) )
+		return 0.3f;	// retail files porcelain under the rock class
+	IPhysicsSurfaceProps *props = PhysicsSurfaceProps();
+	const int index = props ? props->GetSurfaceIndex( surfaceProp ) : -1;
+	const surfacedata_t *data = index >= 0 ? props->GetSurfaceData( index ) : NULL;
+	if ( !data )
+		return kDefaultRoughness;
+	switch ( data->game.material )
+	{
+	case 'C': case 'Q': case 'R': case 'D': case 'K': case 'N': case 2: case 3: case 5:
+		return 0.85f;	// concrete, asphalt, brick, dirt/gravel/sand/snow, mud, plaster, rock, sheetrock
+	case 'J': case 'O': case 'U': case 7: case 9:
+		return 0.95f;	// grass, foliage, cardboard/paper/ceiling tile, carpet, upholstery
+	case 4:
+		return 0.8f;	// rubber, tires
+	case 'W':
+		return 0.7f;	// wood
+	case 'F': case 'B': case 'H':
+		return 0.6f;	// flesh
+	case 'L': case 'P': case 'M': case 'G': case 'V':
+		return 0.45f;	// plastic, computer, metal, grate/chain, vent/metal panel (dielectric: legacy metal is mostly painted)
+	case 'T': case 1:
+		return 0.3f;	// tile, clay/pottery
+	case 'Y':
+		return 0.1f;	// glass
+	case 'S': case 10:
+		return 0.15f;	// water/wet/slime, puddle
+	default:
+		return kDefaultRoughness;
+	}
+}
+
+void CaptureLegacyAdapterState( IMaterialVar **params, const PBR_Vars_t &v )
+{
+	if ( v.legacyEnvmapAuthored != -1 )
+		params[v.legacyEnvmapAuthored]->SetIntValue( params[v.envmap]->IsDefined() ? 1 : 0 );
+	if ( v.legacyRoughness != -1 )
+		params[v.legacyRoughness]->SetFloatValue( SurfacePropRoughness(
+			v.surfaceProp != -1 && params[v.surfaceProp]->IsDefined() ? params[v.surfaceProp]->GetStringValue() : NULL ) );
 }
 
 //-----------------------------------------------------------------------------
