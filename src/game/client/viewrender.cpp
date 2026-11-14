@@ -3276,10 +3276,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		int viewActualHeight = viewRender.m_nUnscaledHeight;
 		int viewX = viewRender.m_nUnscaledX;
 		int viewY = viewRender.m_nUnscaledY;
+#if !defined( L4D2 )
 		int viewFramebufferX = 0;
 		int viewFramebufferY = 0;
 		int viewFramebufferWidth = viewWidth;
 		int viewFramebufferHeight = viewHeight;
+#endif
 		bool bClear = false;
 		bool bPaintMainMenu = false;
 		ITexture *pTexture = NULL;

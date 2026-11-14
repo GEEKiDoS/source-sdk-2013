@@ -1993,7 +1993,7 @@ void CBreakableProp::Break( CBaseEntity *pBreaker, const CTakeDamageInfo &info )
 #ifdef L4D2
 	// S19D150: mounted prop_data selects the genuine projectile/inferno owner.
 	const char *explosionType = NULL;
-	Vector explosionPosition;
+	Vector explosionPosition = vec3_origin;
 	if ( m_iExplosionType == 1 || ( m_iExplosionType != 2 && m_iExplosionType != 3 && ( m_explodeDamage > 0.0f || m_explodeRadius > 0.0f ) ) )
 	{
 		if ( m_iExplosionType == 1 && m_iszExplosionBuildup != NULL_STRING )

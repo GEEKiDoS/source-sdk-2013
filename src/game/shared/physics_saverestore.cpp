@@ -17,7 +17,7 @@
 #include "gamestringpool.h"
 #include "datacache/imdlcache.h"
 #if defined( _WIN64 )
-#include <windows.h>
+#include "winlite.h"
 #endif
 
 #if !defined( CLIENT_DLL )

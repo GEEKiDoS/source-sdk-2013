@@ -557,16 +557,12 @@ void CTerror_OP_RenderSprites::RenderSprite( CMeshBuilder &meshBuilder, TerrorSp
 
 	// Original C:3C9060/3CC770 transport Glow as raw floats in TEXCOORD5;
 	// only primary RGB/alpha are byte-quantized. Never substitute Tint here.
-	Vector glow;
-	if ( info.m_bWriteGlow )
+	Vector glow( 1.0f, 1.0f, 1.0f );
+	if ( info.m_bWriteGlow && m_bHasGlowRGBProducer )
 	{
-		glow.Init( 1.0f, 1.0f, 1.0f );
-		if ( m_bHasGlowRGBProducer )
-		{
-			glow.Init( info.Read( TerrorSpriteRenderInfo_t::GLOW_RED, nGroup, nLane ),
-				info.Read( TerrorSpriteRenderInfo_t::GLOW_GREEN, nGroup, nLane ),
-				info.Read( TerrorSpriteRenderInfo_t::GLOW_BLUE, nGroup, nLane ) );
-		}
+		glow.Init( info.Read( TerrorSpriteRenderInfo_t::GLOW_RED, nGroup, nLane ),
+			info.Read( TerrorSpriteRenderInfo_t::GLOW_GREEN, nGroup, nLane ),
+			info.Read( TerrorSpriteRenderInfo_t::GLOW_BLUE, nGroup, nLane ) );
 	}
 
 	const SheetSequenceSample_t *pSample = &s_TerrorDefaultSheetSample;

@@ -5,10 +5,10 @@
 //          hands level-loading progress to the game-owned loading screen (IGameUIMod).
 //
 //=============================================================================//
+#include <windows.h>
 #include "GameUI/IGameUI.h"
 #include "GameUI/IGameUIMod.h"
 #include "GameUI/IGameConsole.h"
-#include <windows.h>
 
 static HMODULE s_hRealModule;
 static CreateInterfaceFn s_pfnRealFactory;

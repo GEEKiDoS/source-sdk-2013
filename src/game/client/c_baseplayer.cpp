@@ -4267,8 +4267,8 @@ void C_BasePlayer::CheckForLocalPlayer( int slot )
 		return;
 
 	// Native659E7 writes s_pLocalPlayer[slot] BEFORE all following operations.
-	// Main: ignore ONLY the index−1 write; every index−1 read is NULL/0.
-	// DO NOT map−1 to0 or skip the local-flag/nonzero-slot branch below.
+	// Main: ignore ONLY the index-1 write; every index-1 read is NULL/0.
+	// DO NOT map-1 to0 or skip the local-flag/nonzero-slot branch below.
 	if ( slot != -1 )
 		s_pLocalPlayer[slot] = this;
 	m_bIsLocalPlayer = true;

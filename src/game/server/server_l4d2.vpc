@@ -44,16 +44,47 @@ $Project "Server (L4D2)"
 			$File "l4d2\bsp21\bsp21_adapter.h"
 			$File "l4d2\bsp21\bsp21_format.h"
 			$File "l4d2\bsp21\adapter.cpp" \
-				"l4d2\bsp21\third_party\minhook-1.3.4\src\buffer.c" \
-				"l4d2\bsp21\third_party\minhook-1.3.4\src\hook.c" \
-				"l4d2\bsp21\third_party\minhook-1.3.4\src\trampoline.c" \
-				"l4d2\bsp21\third_party\minhook-1.3.4\src\hde\hde64.c"
+				"l4d2\bsp21\third_party\minhook-1.3.4\src\buffer.c"
 			{
 				$Configuration
 				{
 					$Compiler
 					{
 						$Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+					}
+				}
+			}
+			// Vendored MinHook is compiled as shipped; its own warnings are silenced per file.
+			$File "l4d2\bsp21\third_party\minhook-1.3.4\src\hook.c"
+			{
+				$Configuration
+				{
+					$Compiler
+					{
+						$Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+						$DisableSpecificWarnings "$BASE;4310"
+					}
+				}
+			}
+			$File "l4d2\bsp21\third_party\minhook-1.3.4\src\trampoline.c"
+			{
+				$Configuration
+				{
+					$Compiler
+					{
+						$Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+						$DisableSpecificWarnings "$BASE;4244"
+					}
+				}
+			}
+			$File "l4d2\bsp21\third_party\minhook-1.3.4\src\hde\hde64.c"
+			{
+				$Configuration
+				{
+					$Compiler
+					{
+						$Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+						$DisableSpecificWarnings "$BASE;4701"
 					}
 				}
 			}

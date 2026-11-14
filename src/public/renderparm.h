@@ -103,7 +103,7 @@ enum RenderParamInt_t
 	// Object identity for bone history: CBaseHandle::ToInt() of the renderable; 0 = static (no history).
 	INT_RENDERPARM_DX12_MOTION_OBJECT,
 	// DX12 PBR G-buffer pass (shaderapidx12 only; other backends store and ignore): 1 = begin (PBR draws that write
-	// three SV_Targets append the normal / F0+roughness targets; no clear — validity is stencil bit 0x80), 0 = end
+	// three SV_Targets append the normal / F0+roughness targets; no clear - validity is stencil bit 0x80), 0 = end
 	// (targets become readable).
 	INT_RENDERPARM_DX12_PBR_GBUFFER_PASS,
 	// Backend-written status (read by the client through IShaderAPI, never through a render context):

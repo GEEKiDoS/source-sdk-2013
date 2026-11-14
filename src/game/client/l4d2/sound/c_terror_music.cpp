@@ -810,7 +810,7 @@ Music::Music() : m_me( NULL ), m_firstUpdate( true ), m_checkpointStarted( false
 
 Music::~Music()
 {
-	for ( int i = 0; i < m_tracks.Count(); ++i ) delete m_tracks[i];
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i ) delete m_tracks[i];
 	m_tracks.Purge();
 }
 
@@ -828,7 +828,7 @@ void Music::Reset()
 {
 	MusicDebug( "RESET: %s\n", m_me->GetPlayerName() );
 	StopCommand( "all", 1.0f, false );
-	for ( int i = 0; i < m_tracks.Count(); ++i ) delete m_tracks[i];
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i ) delete m_tracks[i];
 	m_tracks.Purge();
 	m_engaged = true;
 	m_splitEngaged = false;
@@ -873,18 +873,18 @@ bool Music::HasEvent( const char *event ) const
 void Music::SetEngaged( bool engaged )
 {
 	m_engaged = engaged;
-	for ( int i = 0; i < m_tracks.Count(); ++i ) m_tracks[i]->SetEngaged( engaged );
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i ) m_tracks[i]->SetEngaged( engaged );
 }
 
 void Music::SetSplitEngaged( bool engaged )
 {
 	m_splitEngaged = engaged;
-	for ( int i = 0; i < m_tracks.Count(); ++i ) m_tracks[i]->SetSplitEngaged( engaged );
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i ) m_tracks[i]->SetSplitEngaged( engaged );
 }
 
 bool Music::IsTrackDucked( const char *track ) const
 {
-	for ( int i = 0; i < m_tracks.Count(); ++i )
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i )
 	{
 		MusicMasterClip *clip = m_tracks[i]->m_active;
 		if ( clip && ( !Q_strcmp( clip->m_duckTracks, "all" ) || Q_stristr( clip->m_duckTracks, track ) ) ) return true;
@@ -894,7 +894,7 @@ bool Music::IsTrackDucked( const char *track ) const
 
 bool Music::IsTrackBlocked( const char *track ) const
 {
-	for ( int i = 0; i < m_tracks.Count(); ++i )
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i )
 	{
 		MusicMasterClip *clip = m_tracks[i]->m_active;
 		if ( clip && ( !Q_strcmp( clip->m_blockTracks, "all" ) || Q_stristr( clip->m_blockTracks, track ) ) ) return true;
@@ -906,7 +906,7 @@ void Music::StopTracksByList( const char *list )
 {
 	if ( !list[0] ) return;
 	const bool all = !Q_strcmp( list, "all" );
-	for ( int i = 0; i < m_tracks.Count(); ++i )
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i )
 	{
 		MusicMasterTrack *track = m_tracks[i];
 		if ( all || ( track->m_active && Q_stristr( list, track->m_name ) ) ) track->StopAll( -1.0f );
@@ -1011,7 +1011,7 @@ void Music::StopCommand( const char *event, float fade, bool byTrack )
 	}
 	if ( !Q_strcmp( event, "all" ) )
 	{
-		for ( int i = 0; i < m_tracks.Count(); ++i ) m_tracks[i]->StopAll( fade );
+		for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i ) m_tracks[i]->StopAll( fade );
 		return;
 	}
 	if ( Q_stristr( event, "Checkpoint" ) )
@@ -1068,13 +1068,13 @@ void Music::ReceiveGeneralCommand( const char *command, const char *arg1, const 
 void Music::UpdateTracks()
 {
 	// Native root performs duck traversal BEFORE servicing any track.
-	for ( int i = 0; i < m_tracks.Count(); ++i )
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i )
 	{
 		MusicMasterTrack *track = m_tracks[i];
 		if ( track->m_active && Q_strcmp( track->m_active->m_duckTracks, "all" ) )
 			track->m_active->m_duckVolume = IsTrackDucked( m_tracks.GetElementName( i ) ) ? 0.05f : 1.0f;
 	}
-	for ( int i = 0; i < m_tracks.Count(); ++i ) m_tracks[i]->Update();
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i ) m_tracks[i]->Update();
 }
 
 void Music::UpdateMix()
@@ -1110,7 +1110,7 @@ void Music::DrawDebug( bool viewOwner, int playerIndex ) const
 	MusicDebugColor( print, m_engaged, viewOwner );
 	engine->Con_NXPrintf( &print, "Player: %s", m_me->GetPlayerName() );
 	++print.index;
-	for ( int i = 0; i < m_tracks.Count(); ++i )
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i )
 	{
 		MusicMasterTrack *track = m_tracks[i];
 		engine->Con_NXPrintf( &print, "MasterMultiTrack:: %s", m_tracks.GetElementName( i ) );
@@ -1128,7 +1128,7 @@ void Music::DrawDebug( bool viewOwner, int playerIndex ) const
 
 void Music::DebugPrint() const
 {
-	for ( int i = 0; i < m_tracks.Count(); ++i )
+	for ( int i = 0; i < static_cast< int >( m_tracks.Count() ); ++i )
 	{
 		MusicDebug( "TRACK: %s\n", m_tracks.GetElementName( i ) );
 		m_tracks[i]->DebugPrint();

@@ -18,7 +18,7 @@
 #define SMOOTHING_GROUP_HARD_EDGE 0xff000000
 #endif
 
-// utils/vrad/lightmap.cpp:417-475 — CalcFaceVectors.
+// utils/vrad/lightmap.cpp:417-475 - CalcFaceVectors.
 void ReSTIR_SceneCalcFaceVectors( const dface_t *pFace, const Vector &origin, const Vector &normal,
 	Vector &luxelOrigin, Vector worldToLuxel[2], Vector luxelToWorld[2] )
 {
@@ -57,7 +57,7 @@ void ReSTIR_SceneCalcFaceVectors( const dface_t *pFace, const Vector &origin, co
 	VectorAdd( luxelOrigin, origin, luxelOrigin );
 }
 
-// utils/vrad/lightmap.cpp:151-325 — PairEdges vertexref/vertexface indices.
+// utils/vrad/lightmap.cpp:151-325 - PairEdges vertexref/vertexface indices.
 void ReSTIR_SceneBuildFaceNeighbors( ReSTIRSceneBuildContext &context, ReSTIRScene &scene )
 {
 	(void)scene;
@@ -84,7 +84,7 @@ void ReSTIR_SceneBuildFaceNeighbors( ReSTIRSceneBuildContext &context, ReSTIRSce
 		context.vertexNormals[faceIndex] = new CUtlVector<Vector>;
 		context.vertexNormals[faceIndex]->SetCount( face.numedges );
 		context.faceNormals[faceIndex] = dplanes[face.planenum].normal;
-		// utils/vrad/vrad.cpp:619-620 — face_centroids use WindingCenter (vertex average).
+		// utils/vrad/vrad.cpp:619-620 - face_centroids use WindingCenter (vertex average).
 		context.faceCentroids[faceIndex] = ReSTIR_SceneFaceCentroid( &face, vec3_origin );
 	}
 	for ( int faceIndex = 0; faceIndex < context.faceCount; ++faceIndex )
@@ -139,7 +139,7 @@ void ReSTIR_SceneBuildFaceNeighbors( ReSTIRSceneBuildContext &context, ReSTIRSce
 	delete[] vertexFaces;
 }
 
-// utils/vrad/lightmap.cpp:38-112 — CNormalList: exact-match dedup over an 8^3 grid.
+// utils/vrad/lightmap.cpp:38-112 - CNormalList: exact-match dedup over an 8^3 grid.
 class CReSTIRNormalList
 {
 public:
@@ -170,7 +170,7 @@ private:
 	CUtlVector<int> m_Grid[NUM_SUBDIVS + 1][NUM_SUBDIVS + 1][NUM_SUBDIVS + 1];
 };
 
-// utils/vrad/lightmap.cpp:328-373 — SaveVertexNormals: one index per face edge in
+// utils/vrad/lightmap.cpp:328-373 - SaveVertexNormals: one index per face edge in
 // face order, so the lumps must be regenerated whenever the face array changes.
 bool ReSTIR_SceneSaveVertexNormals( const ReSTIRSceneBuildContext &context )
 {
@@ -201,7 +201,7 @@ bool ReSTIR_SceneSaveVertexNormals( const ReSTIRSceneBuildContext &context )
 	return true;
 }
 
-// utils/vrad/lightmap.cpp:2118-2215 — center/edge barycentric interpolation.
+// utils/vrad/lightmap.cpp:2118-2215 - center/edge barycentric interpolation.
 Vector ReSTIR_ScenePhongNormal( const ReSTIRSceneBuildContext &context, int faceIndex,
 	const Vector &point, const Vector &faceNormal )
 {
@@ -235,7 +235,7 @@ Vector ReSTIR_ScenePhongNormal( const ReSTIRSceneBuildContext &context, int face
 	return faceNormal;
 }
 
-// utils/vrad/lightmap.cpp:1012-1039 — directlight_t PVS retained for the whole face pass.
+// utils/vrad/lightmap.cpp:1012-1039 - directlight_t PVS retained for the whole face pass.
 struct ReSTIRSceneLightVis
 {
 	int bytes;
@@ -264,7 +264,7 @@ struct ReSTIRSceneLightVis
 	}
 };
 
-// utils/vrad/lightmap.cpp:1012-1039,2308-2340 — SetDLightVis, MergeDLightVis, GetVisCache.
+// utils/vrad/lightmap.cpp:1012-1039,2308-2340 - SetDLightVis, MergeDLightVis, GetVisCache.
 // Share decompressed cluster PVS across lights; never decompress inside a face/sample loop.
 static const byte *GetCachedClusterVis( ReSTIRSceneLightVis &vis, int cluster )
 {
@@ -294,7 +294,7 @@ static const byte *GetCachedClusterVis( ReSTIRSceneLightVis &vis, int cluster )
 	return vis.clusterPVS[cluster]->Base();
 }
 
-// utils/vrad/lightmap.cpp:1022-1039 — MergeDLightVis.
+// utils/vrad/lightmap.cpp:1022-1039 - MergeDLightVis.
 static bool MergeCachedClusterVis( ReSTIRSceneLightVis &vis, byte *destination, int cluster )
 {
 	const byte *source = GetCachedClusterVis( vis, cluster );
@@ -309,7 +309,7 @@ static bool MergeCachedClusterVis( ReSTIRSceneLightVis &vis, byte *destination, 
 	return true;
 }
 
-// utils/vrad/lightmap.cpp:1344-1371 — sky-containing leaf PVS merges.
+// utils/vrad/lightmap.cpp:1344-1371 - sky-containing leaf PVS merges.
 // The later CanLeafTraceToSky CPU-ray heuristic is deliberately not part of this GPU baker.
 static bool BuildLightVis( const ReSTIRScene &scene, ReSTIRSceneLightVis &vis )
 {
@@ -395,7 +395,7 @@ static bool BuildLightVis( const ReSTIRScene &scene, ReSTIRSceneLightVis &vis )
 	return true;
 }
 
-// utils/vrad/vrad.h:372-383 — PVSCheck.
+// utils/vrad/vrad.h:372-383 - PVSCheck.
 static bool ClusterVisible( int cluster, const byte *pvs )
 {
 	return cluster < 0 || ( pvs[cluster >> 3] & ( 1 << ( cluster & 7 ) ) ) != 0;
@@ -500,7 +500,7 @@ static int FaceLightReachRays( const ReSTIRScene &scene, const ReSTIRGpuFace &fa
 	return reached;
 }
 
-// utils/vrad/lightmap.cpp:2495-2527 — a style slot is allocated only for a light that reaches
+// utils/vrad/lightmap.cpp:2495-2527 - a style slot is allocated only for a light that reaches
 // some sample. PVS uses every cluster the face touches; point/spot/quake lights are then tested
 // per sample (and per luxel on displacements, whose border reconstruction reads luxels) at the
 // GPU's direct-lighting origin. Surface and sky emitters keep the plane-side test.
@@ -543,14 +543,14 @@ static bool LightAffectsFace( const ReSTIRSceneBuildContext &context, const ReST
 	return FaceLightReachRays( scene, face, light, NULL ) > 0;
 }
 
-// utils/vrad/lightmap.cpp:2467-2481 — bump bases derived from the smoothed normal.
+// utils/vrad/lightmap.cpp:2467-2481 - bump bases derived from the smoothed normal.
 static void FillBumpNormals( const ReSTIRGpuFace &face, const Vector &normal, Vector *bumpNormals )
 {
 	GetBumpNormals( ReSTIR_SceneV4( face.textureS ), ReSTIR_SceneV4( face.textureT ),
 		ReSTIR_SceneV4( face.faceNormal ), normal, bumpNormals );
 }
 
-// utils/vrad/lightmap.cpp:709-729; vraddisps.cpp:1638-1644 — pack sample_t fields.
+// utils/vrad/lightmap.cpp:709-729; vraddisps.cpp:1638-1644 - pack sample_t fields.
 static void AddSample( ReSTIRScene &scene, int faceIndex,
 	int s, int t, const Vector &point, const Vector &worldPoint, const Vector &normal,
 	const Vector &mins, const Vector &maxs, float area, const Vector *bumpNormals )
@@ -618,7 +618,7 @@ static double PlanarSampleAreaAndBalancePoint( const winding_t *winding, Vector 
 	return fabs( twiceArea ) * 0.5;
 }
 
-// utils/vrad/lightmap.cpp:650-806 — BuildFacesamples; radial.cpp:27-35 — unpushed positions.
+// utils/vrad/lightmap.cpp:650-806 - BuildFacesamples; radial.cpp:27-35 - unpushed positions.
 static void BuildRegularFaceSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
 	int faceIndex, ReSTIRGpuFace &face )
 {
@@ -708,7 +708,7 @@ static void BuildRegularFaceSamples( ReSTIRSceneBuildContext &context, ReSTIRSce
 	}
 }
 
-// utils/vrad/vrad_dispcoll.cpp:214-264 — DispUVToSurf_TriTLToBR.
+// utils/vrad/vrad_dispcoll.cpp:214-264 - DispUVToSurf_TriTLToBR.
 static void DispUVToSurfTriTLToBR( const CCoreDispInfo &disp, Vector &point, float push,
 	float u, float v, int snapU, int snapV, int width, int height, bool *pValid )
 {
@@ -749,7 +749,7 @@ static void DispUVToSurfTriTLToBR( const CCoreDispInfo &disp, Vector &point, flo
 	}
 }
 
-// utils/vrad/vrad_dispcoll.cpp:269-319 — DispUVToSurf_TriBLToTR.
+// utils/vrad/vrad_dispcoll.cpp:269-319 - DispUVToSurf_TriBLToTR.
 static void DispUVToSurfTriBLToTR( const CCoreDispInfo &disp, Vector &point, float push,
 	float u, float v, int snapU, int snapV, int width, int height, bool *pValid )
 {
@@ -790,7 +790,7 @@ static void DispUVToSurfTriBLToTR( const CCoreDispInfo &disp, Vector &point, flo
 	}
 }
 
-// utils/vrad/vrad_dispcoll.cpp:178-209 — DispUVToSurfPoint.
+// utils/vrad/vrad_dispcoll.cpp:178-209 - DispUVToSurfPoint.
 static void DispUVToSurfPoint( const CCoreDispInfo &disp, const Vector2D &uv, Vector &point, float push,
 	bool *pValid = NULL )
 {
@@ -817,7 +817,7 @@ static void DispUVToSurfPoint( const CCoreDispInfo &disp, const Vector2D &uv, Ve
 	}
 }
 
-// utils/vrad/vrad_dispcoll.cpp:48-67,323-379 — Create copies core normals, then bilinear interpolation.
+// utils/vrad/vrad_dispcoll.cpp:48-67,323-379 - Create copies core normals, then bilinear interpolation.
 // Geometry owns the once-created, neighbor-smoothed core; no collision tree/ray data is rebuilt here.
 static void DispUVToSurfNormal( const CCoreDispInfo &disp, const Vector2D &uv, Vector &normal )
 {
@@ -854,7 +854,7 @@ static void DispUVToSurfNormal( const CCoreDispInfo &disp, const Vector2D &uv, V
 	VectorNormalize( normal );
 }
 
-// utils/vrad/vraddisps.cpp:1559-1665 — CVRadDispMgr::BuildDispSamples.
+// utils/vrad/vraddisps.cpp:1559-1665 - CVRadDispMgr::BuildDispSamples.
 static void BuildDisplacementSamples( const CCoreDispInfo &disp, ReSTIRScene &scene,
 	int faceIndex, ReSTIRGpuFace &face )
 {
@@ -950,7 +950,7 @@ static bool SunPointInsideFace( const CUtlVector<Vector> &polygon, float winding
 	return true;
 }
 
-// utils/vrad/radial.cpp — a luxel outside its face takes its light from the
+// utils/vrad/radial.cpp - a luxel outside its face takes its light from the
 // in-face sample cells around it. Its visibility origin is the nearest clipped
 // cell's balance point: strictly inside the face, so it never sits on a shared
 // edge or on a neighbouring plane, where the face-normal push plus the trace
@@ -988,7 +988,7 @@ static void ResolveExteriorVisibilityOrigins( ReSTIRScene &scene, const ReSTIRGp
 	}
 }
 
-// utils/vrad/lightmap.cpp:847-868; vraddisps.cpp:1670-1704 — BuildFaceLuxels/BuildDispLuxels.
+// utils/vrad/lightmap.cpp:847-868; vraddisps.cpp:1670-1704 - BuildFaceLuxels/BuildDispLuxels.
 static bool BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
 	ReSTIRGpuFace &face, const CCoreDispInfo *disp, const ReSTIRRendererDispFrames &rendererDisps )
 {
@@ -1113,7 +1113,7 @@ static bool BuildFaceLuxels( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 	return true;
 }
 
-// utils/vrad/vrad_dispcoll.cpp:84-109 — CalcSampleRadius2AndBox, direct-sample support.
+// utils/vrad/vrad_dispcoll.cpp:84-109 - CalcSampleRadius2AndBox, direct-sample support.
 static float DispSampleRadiusSquared( const texinfo_t &info )
 {
 	const Vector axis( info.lightmapVecsLuxelsPerWorldUnits[0][0],
@@ -1198,7 +1198,7 @@ static bool RestoreAuthoredFaceStyles( const ReSTIRScene &scene, const int *visi
 	return fits;
 }
 
-// utils/vrad/lightmap.cpp:2529-2541 — one overflow warning per face.
+// utils/vrad/lightmap.cpp:2529-2541 - one overflow warning per face.
 static void WarnFaceStyleOverflow( const ReSTIRScene &scene, const ReSTIRGpuFace &face )
 {
 	const Vector point = ReSTIR_SceneV4( scene.luxels[face.firstLuxel].position );
@@ -1233,7 +1233,7 @@ static void AssignFaceStyles( ReSTIRSceneBuildContext &context, ReSTIRScene &sce
 	scene.styleCandidateCount.AddToTail( count );
 }
 
-// utils/vrad/lightmap.cpp:2484-2485 — sample clusters use the stored, not illumination-pushed point.
+// utils/vrad/lightmap.cpp:2484-2485 - sample clusters use the stored, not illumination-pushed point.
 // Include displacement luxels too so border reconstruction cannot lose an affecting style.
 static void CacheDisplacementFaceClusters( ReSTIRSceneBuildContext &context,
 	const ReSTIRScene &scene, const ReSTIRGpuFace &face )
@@ -1262,8 +1262,8 @@ static void CacheDisplacementFaceClusters( ReSTIRSceneBuildContext &context,
 	}
 }
 
-// utils/vrad/lightmap.cpp:3096-3101 — TEX_SPECIAL/degenerate eligibility;
-// radial.cpp:676 — entity _minlight; PairEdges:151-325 — complete mapped neighbor lists.
+// utils/vrad/lightmap.cpp:3096-3101 - TEX_SPECIAL/degenerate eligibility;
+// radial.cpp:676 - entity _minlight; PairEdges:151-325 - complete mapped neighbor lists.
 bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &scene )
 {
 	// Build() resets the entire scene; also make direct sample rebuilds discard
@@ -1385,7 +1385,7 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 			// Host/GPU reconstruction contract: squared world-space displacement support.
 			face.reflectivity[3] = DispSampleRadiusSquared( info ) / ( (float)density * density );
 		}
-		// utils/vrad/lightmap.cpp:2473-2475,3047-3049 — bump bases use texture axes, not luxel axes.
+		// utils/vrad/lightmap.cpp:2473-2475,3047-3049 - bump bases use texture axes, not luxel axes.
 		// w carries the texel offset so the GPU can rebuild the brush texture UV at a hit.
 		ReSTIR_SceneSet4( face.textureS, Vector( info.textureVecsTexelsPerWorldUnits[0][0],
 			info.textureVecsTexelsPerWorldUnits[0][1], info.textureVecsTexelsPerWorldUnits[0][2] ),
@@ -1460,7 +1460,7 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 	return true;
 }
 
-// utils/vrad/lightmap.cpp:2512-2541 — overflowing faces keep only the candidates whose shadow
+// utils/vrad/lightmap.cpp:2512-2541 - overflowing faces keep only the candidates whose shadow
 // ray reaches the light from at least one point, in light order; a real overflow warns like VRAD.
 // Compact the output prefix after pruning so face-aligned pages have no gaps.
 bool ReSTIR_ResolveFaceStyles( ReSTIRScene &scene, CReSTIRVulkanDevice &device )

@@ -78,7 +78,7 @@ static bool MatchStructuredMembers( ID3D12ShaderReflectionType *elementType, con
 		D3D12_SHADER_TYPE_DESC memberDesc{};
 		if ( !name || V_strcmp( name, expected.name ) || !memberType ||
 		     FAILED( memberType->GetDesc( &memberDesc ) ) || memberDesc.Offset != expected.offset ||
-		     memberDesc.Class != expected.valueClass || memberDesc.Type != expected.scalarType ||
+		     UINT( memberDesc.Class ) != expected.valueClass || UINT( memberDesc.Type ) != expected.scalarType ||
 		     memberDesc.Rows != expected.rows || memberDesc.Columns != expected.columns ||
 		     memberDesc.Elements != expected.elements )
 			return false;
@@ -122,14 +122,14 @@ static bool ValidatePbrSpotBinding( ID3D12ShaderReflection *reflection, const D3
 		const bool depth = !V_strcmp( binding.Name, "g_ProjectedDepth" );
 		bit = depth ? 4 : 2;
 		valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == D3D_SRV_DIMENSION_TEXTURE2D && binding.ReturnType == D3D_RETURN_TYPE_FLOAT &&
-		        binding.BindPoint == ( depth ? DX12_PBR_T_DEPTH_FIRST : DX12_PBR_T_COOKIE_FIRST ) && binding.BindCount == DX12_PBR_MAX_PROJECTED_LIGHTS &&
+		        binding.BindPoint == UINT( depth ? DX12_PBR_T_DEPTH_FIRST : DX12_PBR_T_COOKIE_FIRST ) && binding.BindCount == DX12_PBR_MAX_PROJECTED_LIGHTS &&
 		        ( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS ) == ( depth ? 0u : UINT( D3D_SIF_TEXTURE_COMPONENTS ) );
 	}
 	else if ( !V_strcmp( binding.Name, "g_CookieSampler" ) || !V_strcmp( binding.Name, "g_ProjectedCmpSampler" ) )
 	{
 		const bool comparison = !V_strcmp( binding.Name, "g_ProjectedCmpSampler" );
 		bit = comparison ? 16 : 8;
-		valid = binding.Type == D3D_SIT_SAMPLER && binding.BindPoint == ( comparison ? DX12_PBR_S_COMPARISON : DX12_PBR_S_LINEAR ) &&
+		valid = binding.Type == D3D_SIT_SAMPLER && binding.BindPoint == UINT( comparison ? DX12_PBR_S_COMPARISON : DX12_PBR_S_LINEAR ) &&
 		        binding.BindCount == 1 && ( ( binding.uFlags & D3D_SIF_COMPARISON_SAMPLER ) != 0 ) == comparison;
 	}
 	if ( !valid || ( pbrSeen & bit ) )

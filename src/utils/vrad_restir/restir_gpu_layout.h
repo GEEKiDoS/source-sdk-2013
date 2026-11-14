@@ -28,7 +28,7 @@
 #define RESTIR_BIND_CELL_SAMPLES     7   // int[numLuxels]: for face f and cell (s,t): cellSamples[f.firstLuxel + s + t*f.luxelW]
                                          //   = sample index whose (s,t) is that cell, or -1 (host-built; brush faces only,
                                          //   disp faces: sample k of face f lives at cell (k % (luxelW-1), k / (luxelW-1)) is NOT
-                                         //   assumed — host fills from ReSTIRGpuSample::s/t for every face)
+                                         //   assumed - host fills from ReSTIRGpuSample::s/t for every face)
 #define RESTIR_BIND_DIRECT_IRRADIANCE 8  // vec4[numSamples]: exact point/spot direct irradiance, style-0 base channel (resident)
 #define RESTIR_BIND_RESERVED_9       9   // 16-byte dummy
 #define RESTIR_BIND_RESERVED_10      10  // 16-byte dummy

@@ -60,6 +60,7 @@ namespace
 				// an emulated garbage value or a new guarded red fallback.
 				int parsed = sscanf( value->GetString(), "%f %f %f %f", &channels[0], &channels[1], &channels[2], &channels[3] );
 				Assert( parsed == 4 );
+				NOTE_UNUSED( parsed );
 				for ( int i = 0; i < 4; ++i ) result[i] = (unsigned char)FInt( channels[i] );
 				break;
 			}

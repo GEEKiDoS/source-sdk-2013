@@ -292,6 +292,7 @@ void CPropMountedGun::Fire( CTerrorPlayer *pPlayer, const Vector &origin, const 
 	const Vector minimum( -3, -3, -3 );
 	const Vector maximum( 3, 3, 3 );
 	trace_t trace;
+	trace.m_pEnt = NULL;
 	if ( hasAim )
 	{
 		end = origin + direction * 16384.0f;

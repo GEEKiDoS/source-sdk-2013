@@ -350,7 +350,7 @@ void ZombieManager::AccumulateSpawnAreaCollection( const CUtlVector< TerrorNavAr
 		if ( m_nSpawnCompassMask != 0 && m_nSpawnCompassMask != 255 &&
 			!( ( 1 << ( ( spawn >> 24 ) & 7 ) ) & m_nSpawnCompassMask ) )
 			continue;
-		if ( excludedAreaID >= 0 && area->GetID() == excludedAreaID )
+		if ( excludedAreaID >= 0 && area->GetID() == static_cast< unsigned int >( excludedAreaID ) )
 			continue;
 		if ( ( spawn & TERROR_NAV_NO_MOBS ) && !tankRun )
 		{

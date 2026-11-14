@@ -1805,7 +1805,9 @@ void CHudCloseCaption::ComputeStreamWork( int available_width, CCloseCaptionItem
 	WorkUnitParams params;
 
 	const wchar_t *curpos = item->GetStream();
+#if !defined( L4D2 )
 	int streamlen = wcslen( curpos );
+#endif
 	CUtlVector< Color > colorStack;
 
 	const wchar_t *most_recent_space = NULL;

@@ -4,6 +4,25 @@ $Macro OUTBINDIR "$SRCDIR\..\game\bin"
 $Macro OUTBINNAME "vrad_restir"
 $Include "$SRCDIR\vpc_scripts\source_exe_con_base.vpc"
 
+// The DLL project lives in this folder too; keep the two build trees apart.
+$Configuration	"Debug"
+{
+	$General
+	{
+		$OutputDirectory			".\Debug_$OUTBINNAME$_SUBDIRSUFFIX"
+		$IntermediateDirectory	".\Debug_$OUTBINNAME$_SUBDIRSUFFIX"
+	}
+}
+
+$Configuration	"Release"
+{
+	$General
+	{
+		$OutputDirectory			".\Release_$OUTBINNAME$_SUBDIRSUFFIX"
+		$IntermediateDirectory	".\Release_$OUTBINNAME$_SUBDIRSUFFIX"
+	}
+}
+
 $Configuration
 {
 	$Compiler

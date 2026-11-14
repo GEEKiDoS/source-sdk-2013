@@ -298,7 +298,7 @@ bool CTerrorHudResources::PrepareFile( IFileSystem *pFileSystem, const char *pFi
 	}
 	CUtlBuffer check;
 	check.EnsureCapacity( nResolvedBytes );
-	const bool bPrepared = pFileSystem->Size( hPrepared ) == nResolvedBytes &&
+	const bool bPrepared = pFileSystem->Size( hPrepared ) == static_cast< unsigned int >( nResolvedBytes ) &&
 		pFileSystem->Read( check.Base(), nResolvedBytes, hPrepared ) == nResolvedBytes &&
 		!memcmp( check.Base(), resolved.Base(), nResolvedBytes );
 	pFileSystem->Close( hPrepared );

@@ -431,7 +431,7 @@ struct ReSTIRGpuHit						// 32 bytes
 										// Callers test orientation themselves (dot(direction, normal) > 0 == back face hit).
 };
 
-// Ambient gather at a point: 162 g_anorms rays, lightmap × reflectivity or sky at each hit,
+// Ambient gather at a point: 162 g_anorms rays, lightmap x reflectivity or sky at each hit,
 // cosine-weighted into the six g_BoxDirections (I6, leaf_ambient_lighting.cpp:139-180 and
 // vraddetailprops.cpp:579-617). Results are per scene style: result index = query*numStyles + styleSlot.
 struct ReSTIRGpuAmbientQuery			// 16 bytes

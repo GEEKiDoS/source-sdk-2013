@@ -3575,7 +3575,7 @@ void CTriggerCamera::FollowTarget( )
 		return;
 	}
 
-	QAngle goal;
+	QAngle goal = vec3_angle;
 	bool hasGoal = true;
 	if ( m_iAttachmentIndex != 0 )
 	{

@@ -18,7 +18,7 @@
 #include <setjmp.h>
 #include <stdio.h>
 #ifdef _WIN32
-#include "Windows.h"
+#include "winlite.h"
 #include <shellapi.h>
 #include "tier0/vcrmode.h"
 #endif

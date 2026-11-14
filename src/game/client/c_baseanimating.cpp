@@ -145,7 +145,7 @@ public:
 	}
 
 	// Whole3B8D0. GP+24 is TICKCOUNT, not framecount. Initial lastTick0 and
-	// buffer0 are real constructor stores; no synthetic initial−1/reset.
+	// buffer0 are real constructor stores; no synthetic initial-1/reset.
 	void Display()
 	{
 		if ( gpGlobals->tickcount == m_nLastTick )

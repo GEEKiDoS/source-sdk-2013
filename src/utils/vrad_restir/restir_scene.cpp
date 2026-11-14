@@ -39,7 +39,7 @@ struct ReSTIRCachedMaterialEmission
 };
 static CUtlDict<ReSTIRCachedMaterialEmission, unsigned short> s_MaterialEmissions;
 
-// utils/vrad/vradstaticprops.cpp:649-684, 859-872 — top mip of a VTF decoded to RGBA8888.
+// utils/vrad/vradstaticprops.cpp:649-684, 859-872 - top mip of a VTF decoded to RGBA8888.
 static bool LoadVTFRGBA( const char *pBaseTexture, int &width, int &height,
 	CUtlVector<unsigned char> &rgba, unsigned int &flags )
 {
@@ -129,7 +129,7 @@ static bool LoadAlbedoVTF( const char *pBaseTexture, ReSTIRSceneTexture &albedo,
 	return true;
 }
 
-// utils/vrad/vradstaticprops.cpp:688-740 (FindOrLoadIfValid) — cached base-texture coverage.
+// utils/vrad/vradstaticprops.cpp:688-740 (FindOrLoadIfValid) - cached base-texture coverage.
 static int LoadCoverageTexture( ReSTIRScene &scene, const char *pMaterialName, const char *pBaseTexture )
 {
 	if ( !pBaseTexture || !pBaseTexture[0] )
@@ -227,7 +227,7 @@ static void ReadMaterialVMTKeys( KeyValues *pBlock, ReSTIRParsedMaterial &materi
 	}
 }
 
-// utils/vrad/vradstaticprops.cpp:700-737 — no material system is initialized; use KeyValues.
+// utils/vrad/vradstaticprops.cpp:700-737 - no material system is initialized; use KeyValues.
 // VBSP cubemaps produce patch VMTs. Walk outer overrides before their includes, so the
 // outermost replace/insert value wins and the final non-patch root supplies the shader.
 static bool ReadParsedMaterialVMT( const char *pMaterialName, ReSTIRParsedMaterial &material )
@@ -313,7 +313,7 @@ static Vector MaterialColor( const ReSTIRParsedMaterial &material, ReSTIRMateria
 	return color;
 }
 
-// materialsystem/BaseVSShader.cpp:652-672 — overbright colour components stay linear.
+// materialsystem/BaseVSShader.cpp:652-672 - overbright colour components stay linear.
 static Vector LinearMaterialColor( const Vector &color )
 {
 	Vector linear;
@@ -361,7 +361,7 @@ bool ReSTIR_GetMaterialEmission( ReSTIRScene &scene, const ReSTIROptions &option
 		modulation *= MaterialFloat( material, RESTIR_MAT_HDRCOLORSCALE, 1.0f );
 	else
 	{
-		// materialsystem/stdshaders/vertexlitgeneric_dx9_helper.cpp:1214 — tint is already linear.
+		// materialsystem/stdshaders/vertexlitgeneric_dx9_helper.cpp:1214 - tint is already linear.
 		const Vector tint = MaterialColor( material, RESTIR_MAT_SELFILLUMTINT );
 		modulation.x *= tint.x;
 		modulation.y *= tint.y;
@@ -382,7 +382,7 @@ bool ReSTIR_GetMaterialEmission( ReSTIRScene &scene, const ReSTIROptions &option
 		}
 	}
 	const char *maskTexture = material.values[RESTIR_MAT_SELFILLUMMASK];
-	// materialsystem/stdshaders/vertexlitgeneric_dx9_helper.cpp:289-300 — no alpha means no SELFILLUM.
+	// materialsystem/stdshaders/vertexlitgeneric_dx9_helper.cpp:289-300 - no alpha means no SELFILLUM.
 	if ( !unlit && !maskTexture[0] && !( baseFlags & ( TEXTUREFLAGS_ONEBITALPHA | TEXTUREFLAGS_EIGHTBITALPHA ) ) )
 		return false;
 	int maskWidth = 1, maskHeight = 1;
@@ -407,7 +407,7 @@ bool ReSTIR_GetMaterialEmission( ReSTIRScene &scene, const ReSTIROptions &option
 	texels.SetCount( width * height * 4 );
 	bool uniformWhite = true;
 	bool emitting = false;
-	// materialsystem/stdshaders/vertexlit_and_unlit_generic_ps2x.fxc:365-445 — selfillum RGB mask
+	// materialsystem/stdshaders/vertexlit_and_unlit_generic_ps2x.fxc:365-445 - selfillum RGB mask
 	// stays linear; base RGB follows VBSP's 2.2 curve. Unlit transparency scales displayed colour.
 	for ( int y = 0; y < height; ++y )
 	{
@@ -481,7 +481,7 @@ Vector ReSTIR_EmissionTriangleMean( const ReSTIRScene &scene, int texture, const
 	return mean * ( 1.0f / 64.0f );
 }
 
-// utils/vrad/vradstaticprops.cpp:688-740 — material registry shared with props.
+// utils/vrad/vradstaticprops.cpp:688-740 - material registry shared with props.
 int ReSTIR_GetOrAddMaterial( ReSTIRScene &scene, const char *pMaterialName,
 	const Vector &reflectivity, bool textureShadows, bool *pOutAlphaTested )
 {
@@ -542,13 +542,13 @@ void ReSTIR_LoadMaterialAlbedo( ReSTIRScene &scene, int materialIndex, const cha
 		reflectivity.y * inverseAverage.y, reflectivity.z * inverseAverage.z ) );
 }
 
-// utils/vrad/vrad.cpp:2223-2236 — selected HDR/LDR face array.
+// utils/vrad/vrad.cpp:2223-2236 - selected HDR/LDR face array.
 int ReSTIR_SceneFaceCount()
 {
 	return g_pFaces == dfaces_hdr ? numfaces_hdr : numfaces;
 }
 
-// utils/vrad/lightmap.cpp:123-139 — EdgeVertex.
+// utils/vrad/lightmap.cpp:123-139 - EdgeVertex.
 int ReSTIR_SceneFaceVertex( const dface_t *pFace, int edge )
 {
 	if ( edge < 0 )
@@ -560,13 +560,13 @@ int ReSTIR_SceneFaceVertex( const dface_t *pFace, int edge )
 }
 
 
-// utils/vrad/vrad.cpp:1811-1856 — face_entity assignment, indexed once per model.
+// utils/vrad/vrad.cpp:1811-1856 - face_entity assignment, indexed once per model.
 entity_t *ReSTIR_SceneEntityForModel( int model )
 {
 	return model >= 0 && model < s_ModelEntities.Count() ? s_ModelEntities[model] : NULL;
 }
 
-// utils/vrad/vrad.cpp:703-717 — model entity origin copied to face_offset.
+// utils/vrad/vrad.cpp:703-717 - model entity origin copied to face_offset.
 void ReSTIR_SceneFaceOrigin( int model, Vector &origin )
 {
 	origin.Init();
@@ -585,7 +585,7 @@ const char *ReSTIR_SceneFaceMaterial( const dface_t *pFace )
 	return TexDataStringTable_GetString( dtexdata[info.texdata].nameStringTableID );
 }
 
-// utils/common/polylib.cpp:171-190 — WindingBounds without a temporary winding.
+// utils/common/polylib.cpp:171-190 - WindingBounds without a temporary winding.
 void ReSTIR_SceneFaceBounds( const dface_t *pFace, const Vector &origin, Vector &mins, Vector &maxs )
 {
 	ClearBounds( mins, maxs );
@@ -593,7 +593,7 @@ void ReSTIR_SceneFaceBounds( const dface_t *pFace, const Vector &origin, Vector 
 		AddPointToBounds( dvertexes[ReSTIR_SceneFaceVertex( pFace, edge )].point + origin, mins, maxs );
 }
 
-// utils/common/polylib.cpp:154-166 — WindingArea triangle fan.
+// utils/common/polylib.cpp:154-166 - WindingArea triangle fan.
 float ReSTIR_SceneFaceArea( const dface_t *pFace, const Vector &origin )
 {
 	if ( pFace->numedges < 3 )
@@ -610,7 +610,7 @@ float ReSTIR_SceneFaceArea( const dface_t *pFace, const Vector &origin )
 	return area;
 }
 
-// utils/common/polylib.cpp:197-209; utils/vrad/vrad.cpp:619-620 — WindingCenter.
+// utils/common/polylib.cpp:197-209; utils/vrad/vrad.cpp:619-620 - WindingCenter.
 Vector ReSTIR_SceneFaceCentroid( const dface_t *pFace, const Vector &origin )
 {
 	Vector centroid( 0, 0, 0 );
@@ -622,7 +622,7 @@ Vector ReSTIR_SceneFaceCentroid( const dface_t *pFace, const Vector &origin )
 	return centroid;
 }
 
-// utils/vrad/lightmap.cpp:205, 2125 — BSP face plane, not winding cross product.
+// utils/vrad/lightmap.cpp:205, 2125 - BSP face plane, not winding cross product.
 Vector ReSTIR_SceneFaceNormal( const dface_t *pFace, const Vector &origin )
 {
 	(void)origin;
@@ -721,13 +721,13 @@ void ReSTIR_SceneAddWindingTriangles( ReSTIRScene &scene, winding_t *pWinding, i
 }
 
 
-// utils/vrad/radial.cpp:27-35 — LuxelSpaceToWorld (s/t supplied in absolute luxels).
+// utils/vrad/radial.cpp:27-35 - LuxelSpaceToWorld (s/t supplied in absolute luxels).
 Vector ReSTIR_SceneLuxelToWorld( const Vector &luxelOrigin, const Vector luxelToWorld[2], float s, float t )
 {
 	return luxelOrigin + luxelToWorld[0] * s + luxelToWorld[1] * t;
 }
 
-// utils/vrad/trace.cpp:435-472 — PointLeafnum_r then leaf cluster.
+// utils/vrad/trace.cpp:435-472 - PointLeafnum_r then leaf cluster.
 int ReSTIR_SceneClusterFromPoint( const Vector &point )
 {
 	if ( numnodes <= 0 )
@@ -744,7 +744,7 @@ int ReSTIR_SceneClusterFromPoint( const Vector &point )
 	return leaf >= 0 && leaf < numleafs ? dleafs[leaf].cluster : -1;
 }
 
-// utils/vrad/vraddisps.cpp:349-421 — DispBuilderInit.
+// utils/vrad/vraddisps.cpp:349-421 - DispBuilderInit.
 static void InitDisplacement( int faceIndex, CCoreDispInfo &disp )
 {
 	const dface_t &face = g_pFaces[faceIndex];
@@ -775,7 +775,7 @@ static void InitDisplacement( int faceIndex, CCoreDispInfo &disp )
 		&g_DispVerts[dispInfo.m_iDispVertStart], &g_DispTris[dispInfo.m_iDispTriStart] );
 }
 
-// utils/vrad/disp_vrad.cpp:21-46 — corner lookup, including the 0.1-world-unit match.
+// utils/vrad/disp_vrad.cpp:21-46 - corner lookup, including the 0.1-world-unit match.
 static int FindDisplacementCorner( CCoreDispInfo *disp, const Vector &point )
 {
 	int closest = 0;
@@ -793,7 +793,7 @@ static int FindDisplacementCorner( CCoreDispInfo *disp, const Vector &point )
 	return distance <= 0.1f ? closest : -1;
 }
 
-// utils/vrad/disp_vrad.cpp:49-78 — corner neighbors then both edge sub-neighbors.
+// utils/vrad/disp_vrad.cpp:49-78 - corner neighbors then both edge sub-neighbors.
 static int GetDisplacementNeighbors( const CCoreDispInfo *disp, int (&neighbors)[512] )
 {
 	int count = 0;
@@ -818,7 +818,7 @@ static int GetDisplacementNeighbors( const CCoreDispInfo *disp, int (&neighbors)
 	return count;
 }
 
-// utils/vrad/disp_vrad.cpp:156-204 — blend T-junction midpoint and both corners.
+// utils/vrad/disp_vrad.cpp:156-204 - blend T-junction midpoint and both corners.
 static void BlendDisplacementTJunctions( CCoreDispInfo **list, int count )
 {
 	for ( int index = 0; index < count; ++index )
@@ -849,7 +849,7 @@ static void BlendDisplacementTJunctions( CCoreDispInfo **list, int count )
 	}
 }
 
-// utils/vrad/disp_vrad.cpp:81-153 — merge coincident corner normals in encounter order.
+// utils/vrad/disp_vrad.cpp:81-153 - merge coincident corner normals in encounter order.
 static void BlendDisplacementCorners( CCoreDispInfo **list, int count )
 {
 	CUtlVector<int> cornerVertices;
@@ -888,7 +888,7 @@ static void BlendDisplacementCorners( CCoreDispInfo **list, int count )
 	}
 }
 
-// utils/vrad/disp_vrad.cpp:207-276 — shared and in-between edge normal interpolation.
+// utils/vrad/disp_vrad.cpp:207-276 - shared and in-between edge normal interpolation.
 static void BlendDisplacementEdges( CCoreDispInfo **list, int count )
 {
 	for ( int index = 0; index < count; ++index )
@@ -939,7 +939,7 @@ static void BlendDisplacementEdges( CCoreDispInfo **list, int count )
 	}
 }
 
-// utils/vrad/vraddisps.cpp:426-469 — build all surfaces before edge smoothing.
+// utils/vrad/vraddisps.cpp:426-469 - build all surfaces before edge smoothing.
 static bool BuildDisplacements( ReSTIRSceneBuildContext &context )
 {
 	context.displacements.SetCount( g_dispinfo.Count() );
@@ -965,14 +965,14 @@ static bool BuildDisplacements( ReSTIRSceneBuildContext &context )
 			return false;
 		}
 	}
-	// utils/vrad/disp_vrad.cpp:317-329 — smoothing pass order is significant.
+	// utils/vrad/disp_vrad.cpp:317-329 - smoothing pass order is significant.
 	BlendDisplacementTJunctions( context.displacements.Base(), context.displacements.Count() );
 	BlendDisplacementCorners( context.displacements.Base(), context.displacements.Count() );
 	BlendDisplacementEdges( context.displacements.Base(), context.displacements.Count() );
 	return true;
 }
 
-// utils/vrad/trace.cpp:535-559 — leaf brush union, with an indexed membership set.
+// utils/vrad/trace.cpp:535-559 - leaf brush union, with an indexed membership set.
 static void CollectBrushes_r( int node, CUtlVector<int> &brushes, CUtlVector<unsigned char> &seen )
 {
 	if ( node < 0 )
@@ -1050,7 +1050,7 @@ static void AddBrushModelGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene
 	}
 }
 
-// utils/vrad/trace.cpp:612-652 — world-face gather triangles; other faces emit only.
+// utils/vrad/trace.cpp:612-652 - world-face gather triangles; other faces emit only.
 static void AddFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene, int faceIndex )
 {
 	const dface_t &face = g_pFaces[faceIndex];
@@ -1080,7 +1080,7 @@ static void AddFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scen
 	FreeWinding( winding );
 }
 
-// utils/vrad/trace.cpp:612-652 — sky dface triangle fan and TRACE_ID_SKY.
+// utils/vrad/trace.cpp:612-652 - sky dface triangle fan and TRACE_ID_SKY.
 static void AddSkyFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene, int faceIndex )
 {
 	const dface_t &face = g_pFaces[faceIndex];
@@ -1106,7 +1106,7 @@ static void AddSkyFaceGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 	FreeWinding( winding );
 }
 
-// utils/vrad/vrad_dispcoll.cpp:1064-1080 — indexed displacement ray geometry.
+// utils/vrad/vrad_dispcoll.cpp:1064-1080 - indexed displacement ray geometry.
 static void AddDisplacementGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene, int faceIndex )
 {
 	const dface_t &face = g_pFaces[faceIndex];
@@ -1142,10 +1142,10 @@ static void AddDisplacementGeometry( ReSTIRSceneBuildContext &context, ReSTIRSce
 	context.faceTriCount[faceIndex] = scene.triangles.Count() - context.faceTriFirst[faceIndex];
 }
 
-// utils/vrad/trace.cpp:578-653 — brush-entity shadow casters and world geometry.
+// utils/vrad/trace.cpp:578-653 - brush-entity shadow casters and world geometry.
 bool ReSTIR_SceneBuildGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &scene )
 {
-	// trace.cpp:492-532, 536-593 — world brushes first, then marked bmodels.
+	// trace.cpp:492-532, 536-593 - world brushes first, then marked bmodels.
 	VMatrix identity;
 	identity.Identity();
 	AddBrushModelGeometry( context, scene, 0, identity );
@@ -1204,7 +1204,7 @@ bool ReSTIR_SceneBuildGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 	return true;
 }
 
-// utils/vrad/vrad.cpp:667-736,2223-2279 — model/face records and geometry ordering.
+// utils/vrad/vrad.cpp:667-736,2223-2279 - model/face records and geometry ordering.
 bool CReSTIRSceneBuilder::Build( const ReSTIROptions &options, ReSTIRScene &scene )
 {
 	scene = ReSTIRScene();

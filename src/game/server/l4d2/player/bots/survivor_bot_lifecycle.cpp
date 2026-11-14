@@ -232,7 +232,7 @@ bool SurvivorBot::UpdatePerformanceCapture()
 {
 	const char *filter = sb_perf_dump_bots.GetString();
 	unsigned int character = static_cast< unsigned int >( GetSurvivorCharacter() );
-	if ( filter && *filter && ( character >= 4 || Q_strlen( filter ) <= character ||
+	if ( filter && *filter && ( character >= 4 || static_cast< unsigned int >( Q_strlen( filter ) ) <= character ||
 		strchr( "+1Xx", filter[character] ) == NULL ) )
 		return sb_perf_dump.GetBool();
 	if ( s_perfCrawlState == 0 )

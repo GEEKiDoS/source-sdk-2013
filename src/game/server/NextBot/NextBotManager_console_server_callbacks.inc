@@ -38,7 +38,7 @@ static void DrawConsoleStuckDump()
   return;
  }
  s_StuckDumpFilename[0] = 0;
- ConsoleStuckRecord record;
+ ConsoleStuckRecord record = {};
  unsigned int initialized = 0; // Only avoids native malformed-record uninitialized reads (ledger306).
  bool header = true;
  char line[256];

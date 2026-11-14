@@ -63,7 +63,7 @@ public:
 		ISteamUtils *utils = steamapicontext ? steamapicontext->SteamUtils() : NULL;
 		if ( !friends || !utils ) return;
 		m_FriendIdentity = identity;
-		const int expected = avatarSize == 0 ? 32 : avatarSize == 1 ? 64 : 184;
+		const uint32 expected = avatarSize == 0 ? 32 : avatarSize == 1 ? 64 : 184;
 		const int image = avatarSize == 0 ? friends->GetSmallFriendAvatar( identity ) : avatarSize == 1 ? friends->GetMediumFriendAvatar( identity ) : friends->GetLargeFriendAvatar( identity );
 		uint32 wide, tall;
 		if ( utils->GetImageSize( image, &wide, &tall ) )

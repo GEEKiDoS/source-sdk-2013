@@ -24,7 +24,7 @@ using namespace vgui;
 
 CVGUILightEditor *CVGUILightEditor::s_pInstance = NULL;
 
-static void NormalizeAngles( QAngle &angles )
+static void NormalizeEditorAngles( QAngle &angles )
 {
 	angles.x = AngleNormalize( angles.x );
 	angles.y = AngleNormalize( angles.y );
@@ -438,7 +438,7 @@ void CVGUILightEditor::OnCursorMoved_Internal( int &x, int &y )
 		Vector origin;
 		QAngle angles;
 		pEditor->GetEditorView( origin, angles );
-		NormalizeAngles( angles );
+		NormalizeEditorAngles( angles );
 		const float flTurnSpeed = 0.5f;
 		angles.x += deltaY * flTurnSpeed;
 		angles.y -= deltaX * flTurnSpeed;

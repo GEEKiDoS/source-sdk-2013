@@ -209,9 +209,7 @@ void CResponseQueueManager::DispatchToAny( const QueuedConcept_t &query, float m
 	float bestScore = 0.0f;
 	const float slop = rr_thenany_score_slop.GetFloat();
 	CBaseEntity *issuer = query.issuer.Get();
-	Vector issuerOrigin;
-	if ( issuer )
-		issuerOrigin = issuer->GetAbsOrigin();
+	const Vector issuerOrigin = issuer ? issuer->GetAbsOrigin() : vec3_origin;
 	// S028FB0 keeps the starting count, but reads each live registry entry.
 	// The selected expresser itself is retained as a raw pointer across queries.
 	const int registeredCount = m_Expressers.Count();
@@ -291,9 +289,7 @@ void CResponseQueueManager::Dispatch( const QueuedConcept_t &query )
 		return;
 
 	CBaseEntity *issuer = query.issuer.Get();
-	Vector issuerOrigin;
-	if ( issuer )
-		issuerOrigin = issuer->GetAbsOrigin();
+	const Vector issuerOrigin = issuer ? issuer->GetAbsOrigin() : vec3_origin;
 	// S029EC0 does not snapshot the handles: callbacks can change later entries,
 	// while entries appended beyond the starting count wait for a later pass.
 	const int registeredCount = m_Expressers.Count();

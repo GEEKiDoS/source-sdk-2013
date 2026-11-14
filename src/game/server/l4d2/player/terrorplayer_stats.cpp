@@ -29,7 +29,7 @@ bool CTerrorPlayer::IsInCheckpoint() const
 }
 void CTerrorPlayer::RemoveAward( int award )
 {
-	if ( (unsigned int)award < m_checkpointAwardCounts.Count() ) m_checkpointAwardCounts.Set( award, (int)( (unsigned int)m_checkpointAwardCounts[award] - 1u ) );
+	if ( (unsigned int)award < (unsigned int)m_checkpointAwardCounts.Count() ) m_checkpointAwardCounts.Set( award, (int)( (unsigned int)m_checkpointAwardCounts[award] - 1u ) );
 }
 void CTerrorPlayer::RecordPhysicsHit( int survivorCharacter )
 {
@@ -89,11 +89,11 @@ void CTerrorPlayer::RecordTankRockHit( int character )
 	m_checkpointPZTankThrows = static_cast< int >( static_cast< unsigned int >( m_checkpointPZTankThrows.Get() ) + 1u );
 }
 
-int CTerrorPlayer::GetZombieKillCount( int zombieClass ) const { return (unsigned int)zombieClass < m_missionZombieKills.Count() ? m_missionZombieKills[zombieClass] : 0; }
+int CTerrorPlayer::GetZombieKillCount( int zombieClass ) const { return (unsigned int)zombieClass < (unsigned int)m_missionZombieKills.Count() ? m_missionZombieKills[zombieClass] : 0; }
 int CTerrorPlayer::GetIncapacitatedZombieKillCount() const { return m_incapacitatedZombieKills; }
 void CTerrorPlayer::RecordZombieKilled( int zombieClass )
 {
-	if ( (unsigned int)zombieClass < m_checkpointZombieKills.Count() ) m_checkpointZombieKills.Set( zombieClass, (int)( (unsigned int)m_checkpointZombieKills[zombieClass] + 1u ) );
+	if ( (unsigned int)zombieClass < (unsigned int)m_checkpointZombieKills.Count() ) m_checkpointZombieKills.Set( zombieClass, (int)( (unsigned int)m_checkpointZombieKills[zombieClass] + 1u ) );
 	if ( IsIncapacitated() ) ++m_incapacitatedZombieKills;
 }
 
@@ -130,7 +130,7 @@ void CTerrorPlayer::RecordVomitExplosion( int survivorCharacter )
 // Award/fault response is independent of whether the game event was allocated.
 bool CTerrorPlayer::OnAwardEarned( int award, CBaseEntity *subject )
 {
-	if ( (unsigned int)award < m_checkpointAwardCounts.Count() ) m_checkpointAwardCounts.Set( award, (int)( (unsigned int)m_checkpointAwardCounts[award] + 1u ) );
+	if ( (unsigned int)award < (unsigned int)m_checkpointAwardCounts.Count() ) m_checkpointAwardCounts.Set( award, (int)( (unsigned int)m_checkpointAwardCounts[award] + 1u ) );
 	CTerrorPlayer *subjectPlayer = dynamic_cast< CTerrorPlayer * >( subject );
 	IGameEvent *event = gameeventmanager->CreateEvent( "award_earned" );
 	if ( event )

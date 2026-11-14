@@ -428,7 +428,7 @@ void validateLightingBlock(const Block &b) {
         if (m.name != expected.name || m.offset != expected.offset || m.size != expected.size)
             throw std::runtime_error("Lighting ABI 6 member mismatch: " + b.name + "." + m.name);
         if (b.reg == DX12_LIGHTING_B_PROP_DRAW &&
-            (m.kind != D3D_SVC_VECTOR || m.type != (i == 0 || i == 2 ? D3D_SVT_UINT : D3D_SVT_FLOAT) ||
+            (m.kind != D3D_SVC_VECTOR || m.type != unsigned(i == 0 || i == 2 ? D3D_SVT_UINT : D3D_SVT_FLOAT) ||
              m.rows != 1 || m.cols != 4 || m.elements != (i == 1 ? 3u : 0u) || m.stride != (i == 1 ? 16u : 0u)))
             throw std::runtime_error("Lighting ABI 6 static-prop member shape mismatch: " + b.name + "." + m.name);
     }
@@ -452,8 +452,8 @@ bool matchStructuredMembers(ID3D12ShaderReflectionType *elementType, const D3D12
         auto *memberType = elementType->GetMemberTypeByIndex(i);
         D3D12_SHADER_TYPE_DESC member{};
         if (!name || strcmp(name, expected.name) || !memberType || FAILED(memberType->GetDesc(&member)) ||
-            member.Offset != expected.offset || member.Class != expected.valueClass ||
-            member.Type != expected.scalarType || member.Rows != expected.rows ||
+            member.Offset != expected.offset || unsigned(member.Class) != expected.valueClass ||
+            unsigned(member.Type) != expected.scalarType || member.Rows != expected.rows ||
             member.Columns != expected.columns || member.Elements != expected.elements) return false;
     }
     return true;

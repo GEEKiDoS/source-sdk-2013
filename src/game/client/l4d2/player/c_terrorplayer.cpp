@@ -70,7 +70,7 @@
 #include "c_recipientfilter.h"
 #include "fx_impact.h"
 #include "physics_shared.h"
-#include <windows.h>
+#include "winlite.h"
 #undef CreateEvent
 #include <emmintrin.h>
 #include "tier0/memdbgon.h"
@@ -1578,7 +1578,7 @@ void C_TerrorPlayer::BuildTransformations( CStudioHdr *studio, Vector *pos, Quat
 }
 
 // Whole C256FF0. One genuine base nullsub then lazy current model / exact
-// case-insensitive pose lookup. Native NULL LookupPoseParameter returns−1;
+// case-insensitive pose lookup. Native NULL LookupPoseParameter returns-1;
 // constructor's initial0 bug remains until the real model callback executes.
 void C_TerrorPlayer::OnModelPoseParametersChanged()
 {
@@ -4135,7 +4135,7 @@ void C_TerrorPlayer::UpdateLowPerformanceReports()
 	const char *filter = sb_perf_dump_bots.GetString();
 	const unsigned int character = static_cast< unsigned int >( m_survivorCharacter );
 	if ( filter && *filter
-		&& !( character < 8 && Q_strlen( filter ) > character && strchr( "+1Xx", filter[character] ) ) )
+		&& !( character < 8 && static_cast< unsigned int >( Q_strlen( filter ) ) > character && strchr( "+1Xx", filter[character] ) ) )
 		return;
 	const int fps = TerrorPerf_AverageFPS();
 	if ( fps <= 0 || fps >= sb_perf_dump_low.GetInt() )
@@ -5182,7 +5182,7 @@ bool C_TerrorPlayer::Simulate()
 			else
 			{
 				m_vecFlashlightOffset = vec3_origin;
-				int attachment;
+				int attachment = -1;
 				bool fallback;
 				if ( static_cast< unsigned int >( weapon->GetSlot() ) > 1u )
 					fallback = true;

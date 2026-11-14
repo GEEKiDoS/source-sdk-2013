@@ -132,7 +132,7 @@ bool CTankClaw::OnSwingHit( trace_t &trace, const Vector &direction, bool newHit
 			CalculateMeleeDamageForce( &info, force, owner->Weapon_ShootPosition(), forceScale );
 			ClearMultiDamage();
 			target->DispatchTraceAttack( info, direction, &trace );
-			ApplyMultiDamage(); // actual Source TakeDamage→Tank32E7A0 and survivor incap/death chain
+			ApplyMultiDamage(); // actual Source TakeDamage->Tank32E7A0 and survivor incap/death chain
 			if ( physicsProp )
 			{
 				if ( CPhysicsProp *prop = dynamic_cast< CPhysicsProp * >( target ) )

@@ -721,7 +721,7 @@ int ReceiverDisplacementDecal( const ReceiverMapDX12 &map, const ReceiverPageDX1
 		if ( !planar ) continue;
 		applicable = true;
 		bool faceFound = false;
-		std::array<std::array<float, 2>, 3> candidate;
+		std::array<std::array<float, 2>, 3> candidate{};
 		// Prefer a common supporting triangle. Source also submits decals whose
 		// corners span noncoplanar triangles: reconstruct those corners on this
 		// same face, then let rectangular allocation ownership prove the UV
@@ -1174,7 +1174,7 @@ bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	if ( FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ) return false;
 	D3D12_SHADER_DESC shader{};
-	if ( FAILED( reflection->GetDesc( &shader ) ) || ( ( shader.Version >> 16 ) & 0xffffu ) != ( pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_VERTEX_SHADER ) ) return false;
+	if ( FAILED( reflection->GetDesc( &shader ) ) || D3D12_SHVER_GET_TYPE( shader.Version ) != UINT( pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_VERTEX_SHADER ) ) return false;
 	bool constants = false, source = !pixel;
 	for ( UINT i = 0; i < shader.BoundResources; ++i )
 	{
@@ -1236,7 +1236,7 @@ bool ValidateShadowSkyClipShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, boo
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	if ( FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ) return false;
 	D3D12_SHADER_DESC shader{};
-	if ( FAILED( reflection->GetDesc( &shader ) ) || ( ( shader.Version >> 16 ) & 0xffffu ) != ( pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_VERTEX_SHADER ) ) return false;
+	if ( FAILED( reflection->GetDesc( &shader ) ) || D3D12_SHVER_GET_TYPE( shader.Version ) != UINT( pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_VERTEX_SHADER ) ) return false;
 	bool constants = false, sky = false;
 	for ( UINT i = 0; i < shader.BoundResources; ++i )
 	{
@@ -1494,7 +1494,7 @@ struct CLightingDX12::Impl
 	{
 		AUTO_LOCK( mutex );
 		const uint64_t key = Key( map, view );
-		int index = statuses.Find( key );
+		uint32_t index = statuses.Find( key );
 		if ( index == statuses.InvalidIndex() ) index = statuses.Insert( key );
 		LightingStatusDX12 &entry = statuses[index];
 		if ( !view ) entry.completed = true;
@@ -1516,7 +1516,7 @@ struct CLightingDX12::Impl
 	bool Failed( uint32 map, uint32 view = 0 )
 	{
 		AUTO_LOCK( mutex );
-		int i = statuses.Find( Key( map, 0 ) );
+		uint32_t i = statuses.Find( Key( map, 0 ) );
 		if ( i != statuses.InvalidIndex() && statuses[i].state == DX12_LIGHTING_STATUS_FAILED ) return true;
 		i = statuses.Find( Key( map, view ) );
 		return i != statuses.InvalidIndex() && statuses[i].state == DX12_LIGHTING_STATUS_FAILED;
@@ -1758,7 +1758,7 @@ bool CLightingDX12::ValidateMap( const DX12LightingMapDesc &map, char *error, in
 		s.device->Highres().GetStatus( status, reason, sizeof( reason ) );
 		if ( map.highresRoute != 1 || !map.nativeMapGeneration || status.nativeMapGeneration != map.nativeMapGeneration ||
 			( status.state != DX12_HIGHRES_READY && status.state != DX12_HIGHRES_PENDING ) ||
-			status.lightingLump != ( map.mode == SHADOWMAP_MODE_HDR ? LUMP_LIGHTING_HDR : LUMP_LIGHTING ) ||
+			status.lightingLump != uint32( map.mode == SHADOWMAP_MODE_HDR ? LUMP_LIGHTING_HDR : LUMP_LIGHTING ) ||
 			( status.faceLump != LUMP_FACES && status.faceLump != LUMP_FACES_HDR ) ||
 			map.receiverFaceCount || map.receiverFaces || map.receiverTriangleCount || map.receiverTriangles ||
 			map.sunVisibilityCount || map.sunVisibility || map.receiverQuadCount || map.receiverQuads )
@@ -1800,11 +1800,11 @@ DX12LightingStatus CLightingDX12::GetStatus( uint32 map, uint32 view, char *erro
 {
 	Impl &s = *m_Impl;
 	AUTO_LOCK( s.mutex );
-	const int viewIndex = s.statuses.Find( s.Key( map, view ) );
-	int index = viewIndex;
+	const uint32_t viewIndex = s.statuses.Find( s.Key( map, view ) );
+	uint32_t index = viewIndex;
 	if ( view && index == s.statuses.InvalidIndex() )
 	{
-		const int mapIndex = s.statuses.Find( s.Key( map, 0 ) );
+		const uint32_t mapIndex = s.statuses.Find( s.Key( map, 0 ) );
 		const char *failure = mapIndex != s.statuses.InvalidIndex() && s.statuses[mapIndex].state == DX12_LIGHTING_STATUS_FAILED ?
 			s.statuses[mapIndex].error.Get() : SHADOWMAP_ERR_INVALID_METADATA;
 		if ( error && errorBytes > 0 ) V_strncpy( error, failure, errorBytes );
@@ -1815,7 +1815,7 @@ DX12LightingStatus CLightingDX12::GetStatus( uint32 map, uint32 view, char *erro
 		if ( error && errorBytes > 0 ) error[0] = 0;
 		return DX12_LIGHTING_STATUS_PENDING;
 	}
-	const int mapIndex = s.statuses.Find( s.Key( map, 0 ) );
+	const uint32_t mapIndex = s.statuses.Find( s.Key( map, 0 ) );
 	if ( mapIndex != s.statuses.InvalidIndex() && s.statuses[mapIndex].state == DX12_LIGHTING_STATUS_FAILED ) index = mapIndex;
 	if ( error && errorBytes > 0 ) V_strncpy( error, index != s.statuses.InvalidIndex() ? s.statuses[index].error.Get() : "", errorBytes );
 	const DX12LightingStatus result = index != s.statuses.InvalidIndex() ? s.statuses[index].state : DX12_LIGHTING_STATUS_PENDING;
@@ -2015,7 +2015,7 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	ID3D12Device *device = s.device->NativeDevice();
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
 	const bool success = SUCCEEDED( device->GetDeviceRemovedReason() ) && LightingNullTable( device, nullTable );
-	int status = s.statuses.Find( s.Key( map.mapGeneration, 0 ) );
+	uint32_t status = s.statuses.Find( s.Key( map.mapGeneration, 0 ) );
 	if ( status == s.statuses.InvalidIndex() ) status = s.statuses.Insert( s.Key( map.mapGeneration, 0 ) );
 	if ( s.statuses[status].state == DX12_LIGHTING_STATUS_FAILED ) return;
 	if ( s.activeMap.load() != map.mapGeneration )

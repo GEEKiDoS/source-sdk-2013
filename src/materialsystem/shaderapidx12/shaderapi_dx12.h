@@ -825,7 +825,7 @@ private:
 	void EnqueueScreenSpacePacket( ScreenSpacePacketDX12 *pPacket );
 	void ExecuteScreenSpacePacket( ScreenSpacePacketDX12 *pPacket );
 	void PurgeScreenSpacePackets();
-	// Private contact depth (§3): typeless R24G8 copy of the scene depth at the bracket's scene shape.
+	// Private contact depth (section 3): typeless R24G8 copy of the scene depth at the bracket's scene shape.
 	struct ContactDepthDX12
 	{
 		Microsoft::WRL::ComPtr<ID3D12Resource> resource;

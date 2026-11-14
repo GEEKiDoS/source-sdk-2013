@@ -59,7 +59,7 @@ struct ReSTIRSurfacePatch
 static CUtlVector<ReSTIRTexLight> s_TexLights;
 static CUtlString s_LevelName;
 
-// utils/vrad/lightmap.cpp:1056-1118 — lightscale is VRAD's default 1.
+// utils/vrad/lightmap.cpp:1056-1118 - lightscale is VRAD's default 1.
 static bool LightForString( const char *pLight, Vector &intensity )
 {
 	double r = 0.0;
@@ -212,7 +212,7 @@ static bool ReadLightFile( const char *pFilename )
 	return true;
 }
 
-// utils/vrad/vrad.cpp:300-350 — strip maps/<level>/ and three cubemap suffixes.
+// utils/vrad/vrad.cpp:300-350 - strip maps/<level>/ and three cubemap suffixes.
 static void LightForTexture( const char *pName, Vector &result )
 {
 	result.Init();
@@ -294,7 +294,7 @@ void ReSTIR_ScenePrepareLightFiles( const ReSTIROptions &options )
 	}
 }
 
-// utils/vrad/lightmap.cpp:941-954 — target names are case sensitive.
+// utils/vrad/lightmap.cpp:941-954 - target names are case sensitive.
 static entity_t *FindTargetEntity( const char *pTarget )
 {
 	for ( int i = 0; i < num_entities; ++i )
@@ -424,7 +424,7 @@ static void ReverseEmitterTriangle( ReSTIRGpuEmitterTriangle &triangle )
 	V_swap( triangle.uv[0], triangle.uv[2] );
 }
 
-// utils/vrad/lightmap.cpp:1557-1582 — keep the texlight's VRAD intensity and patch origin;
+// utils/vrad/lightmap.cpp:1557-1582 - keep the texlight's VRAD intensity and patch origin;
 // only its GPU sampling geometry moves out of the visibility triangle stream.
 static void AppendTexlightTriangles( const ReSTIRSceneBuildContext &context, ReSTIRScene &scene,
 	int face, ReSTIRGpuLight &light )
@@ -656,7 +656,7 @@ static bool ExportLight( ReSTIRScene &scene, const ReSTIRGpuLight &light, int gp
 	return true;
 }
 
-// utils/vrad/vrad.cpp:399-423 — reflectivityScale is the default 1.
+// utils/vrad/vrad.cpp:399-423 - reflectivityScale is the default 1.
 static void BaseLightForFace( const dface_t &face, Vector &light, float &area, Vector &reflectivity )
 {
 	const dtexdata_t &data = dtexdata[texinfo[face.texinfo].texdata];
@@ -685,7 +685,7 @@ static winding_t *WindingFromFace( const dface_t &face, const Vector &origin )
 	return pWinding;
 }
 
-// utils/vrad/vrad.cpp:502-664 — omit radiosity links/plane allocation, not emitter data.
+// utils/vrad/vrad.cpp:502-664 - omit radiosity links/plane allocation, not emitter data.
 static int MakePatchForFace( const ReSTIRSceneBuildContext &context, int faceIndex,
 	CUtlVector<ReSTIRSurfacePatch> &patches )
 {
@@ -789,7 +789,7 @@ static int CreateChildPatch( const ReSTIRSceneBuildContext &context,
 	return patches.AddToTail( child );
 }
 
-// utils/vrad/vrad.cpp:835-918 — including equality-at-chop and triangle splitting.
+// utils/vrad/vrad.cpp:835-918 - including equality-at-chop and triangle splitting.
 static void SubdividePatch( const ReSTIRSceneBuildContext &context,
 	CUtlVector<ReSTIRSurfacePatch> &patches, int patchIndex )
 {
@@ -904,7 +904,7 @@ static int CreateDispParentPatch( int faceIndex, CCoreDispInfo &disp,
 	return patches.AddToTail( patch );
 }
 
-// utils/vrad/vrad_dispcoll.cpp:904-1062 — only unused links/plane allocation omitted.
+// utils/vrad/vrad_dispcoll.cpp:904-1062 - only unused links/plane allocation omitted.
 static int InitDispPatch( CUtlVector<ReSTIRSurfacePatch> &patches, int parentIndex,
 	int childIndex, const Vector points[3], const int indices[3] )
 {
@@ -941,7 +941,7 @@ static int InitDispPatch( CUtlVector<ReSTIRSurfacePatch> &patches, int parentInd
 	return index;
 }
 
-// utils/vrad/vrad_dispcoll.cpp:649-764 — subdivisions below the authored grid.
+// utils/vrad/vrad_dispcoll.cpp:649-764 - subdivisions below the authored grid.
 static void CreateDispChildPatchesSub( CUtlVector<ReSTIRSurfacePatch> &patches,
 	int parentIndex, float sampleSize )
 {
@@ -1005,7 +1005,7 @@ static void CreateDispChildPatchesSub( CUtlVector<ReSTIRSurfacePatch> &patches,
 	CreateDispChildPatchesSub( patches, child2, sampleSize );
 }
 
-// utils/vrad/vrad_dispcoll.cpp:421-642 — root diagonal then indexed grid bisections.
+// utils/vrad/vrad_dispcoll.cpp:421-642 - root diagonal then indexed grid bisections.
 static void CreateDispChildPatches( CUtlVector<ReSTIRSurfacePatch> &patches,
 	int parentIndex, CCoreDispInfo &disp, int level, float sampleSize )
 {
@@ -1091,7 +1091,7 @@ static void CreateDispChildPatches( CUtlVector<ReSTIRSurfacePatch> &patches,
 	CreateDispChildPatches( patches, child2, disp, childLevel, sampleSize );
 }
 
-// utils/vrad/vrad.cpp:996-1012 — keep winding-point fallback for solid origins.
+// utils/vrad/vrad.cpp:996-1012 - keep winding-point fallback for solid origins.
 static int ClusterForPatch( const ReSTIRSurfacePatch &patch )
 {
 	int cluster = ReSTIR_SceneClusterFromPoint( patch.origin );
@@ -1296,7 +1296,7 @@ static bool BuildMaterialSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIR
 	return true;
 }
 
-// utils/vrad/lightmap.cpp:1465-1473 — distinguish absent from empty keys.
+// utils/vrad/lightmap.cpp:1465-1473 - distinguish absent from empty keys.
 static const char *ValueForKeyOrNull( entity_t *pEntity, const char *pKey )
 {
 	for ( epair_t *pair = pEntity->epairs; pair; pair = pair->next )
@@ -1415,7 +1415,7 @@ static bool ParseLightEnvironment( entity_t *pEntity, int entityIndex, bool shad
 	return true;
 }
 
-// utils/vrad/lightmap.cpp:1587-1618 — class names are case sensitive.
+// utils/vrad/lightmap.cpp:1587-1618 - class names are case sensitive.
 static bool BuildEntityLights( const ReSTIROptions &options, ReSTIRScene &scene )
 {
 	float sunSpreadAngle = 0.0f;
@@ -1474,7 +1474,7 @@ static bool BuildEntityLights( const ReSTIROptions &options, ReSTIRScene &scene 
 	return true;
 }
 
-// utils/vrad/lightmap.cpp:982-985,991-995,1633 — reverse leaf/entity allocation order.
+// utils/vrad/lightmap.cpp:982-985,991-995,1633 - reverse leaf/entity allocation order.
 // Face aggregates follow the first encounter of their leaves in that active list.
 static void FinishActiveLightOrder( ReSTIRScene &scene )
 {

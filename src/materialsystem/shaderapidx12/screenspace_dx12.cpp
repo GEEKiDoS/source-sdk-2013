@@ -1,6 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: Screen-space effect brackets of shaderapidx12.dll (plan §2-3): the IShaderAPIDX12ScreenSpace markers,
+// Purpose: Screen-space effect brackets of shaderapidx12.dll (plan sections 2-3): the IShaderAPIDX12ScreenSpace markers,
 //          their ordered replay on the recording owner, the per-bracket view constants / space-6 bindings of
 //          ordinary forward draws and the private contact-depth replay target.
 //          SSR lives in screenspace_ssr_dx12.cpp, volumetric lighting in screenspace_volumetric_dx12.cpp.
@@ -29,7 +29,7 @@ namespace
 {
 enum ScreenSpaceOpDX12 { ScreenSpaceBeginView, ScreenSpaceBeginContactDepth, ScreenSpaceEndContactDepth, ScreenSpaceDispatchSSR, ScreenSpaceEndView, ScreenSpaceBeginVolumetrics, ScreenSpaceDrawVolumetrics, ScreenSpaceBeginDepthPrepass, ScreenSpaceEndDepthPrepass, ScreenSpaceBeginSkybox, ScreenSpaceEndSkybox };
 
-// depth.yzw of DX12ScreenSpaceViewConstants (§2); depth.x is the native clear value: ClearBuffers always clears native
+// depth.yzw of DX12ScreenSpaceViewConstants (section 2); depth.x is the native clear value: ClearBuffers always clears native
 // depth to 1 (textures_dx12.cpp ClearDepthStencilView), so the clip-space far plane is the only "no geometry" depth.
 constexpr float kContactNormalBias = 0.25f, kContactFirstDistance = 0.5f, kContactEdgeFade = 8.f, kNativeDepthClear = 1.f;
 } // namespace

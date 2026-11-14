@@ -15,10 +15,14 @@
 #include <ShaderConv.h>
 #include "tracy/Tracy.hpp"
 #include <DxbcBuilder.hpp>
-// ShaderConv.h defines a function-like Check() macro that collides with CThreadEvent::Check() in tier0.
+// ShaderConv.h defines a function-like Check() macro that collides with CThreadEvent::Check() in tier0,
+// and ShaderConvCommon.h defines NO_DEFAULT, which tier0/platform.h defines differently.
 #pragma push_macro( "Check" )
+#pragma push_macro( "NO_DEFAULT" )
 #undef Check
+#undef NO_DEFAULT
 #include "shader_translate_dx12.h"
+#pragma pop_macro( "NO_DEFAULT" )
 #pragma pop_macro( "Check" )
 #include <exception>
 

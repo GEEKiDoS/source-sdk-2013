@@ -613,7 +613,7 @@ int C_BaseViewModel::DrawModel( int flags )
 	if ( owner && owner->IsPlayer() && static_cast< C_BasePlayer * >( owner )->IsThirdPersonCameraActive() )
 		return 0;
 
-	float blend;
+	float blend = 0.0f;
 	float color[3];
 	if ( flags & STUDIO_RENDER )
 	{

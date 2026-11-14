@@ -312,8 +312,10 @@ namespace
 		bool bLastLayer, bool &bSeenCharacter, Vector &vecNextStart, float &flRangeSpent, unsigned int nEntityMask,
 		TerrorTraceImpactCallback pImpactCallback, TerrorTraceImpactCallback pExitCallback, void *pContext )
 	{
+#ifndef CLIENT_DLL
 		CTerrorPlayer *pPlayer = shot.m_pShooter;
 		const CTerrorWeaponInfo &info = *shot.m_pInfo;
+#endif
 		trace_t &trace = hit.trace;
 		if ( trace.m_pEnt && hit.hEntity.Get() != trace.m_pEnt )
 		{

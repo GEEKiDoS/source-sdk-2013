@@ -422,7 +422,7 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 			padding = remainder ? nAlignment - remainder : 0;
 		}
 		else
-			padding = -page.used & ( nAlignment - 1 );
+			padding = ( nAlignment - ( page.used & ( nAlignment - 1 ) ) ) & ( nAlignment - 1 );
 		if ( page.used <= page.capacity && padding <= page.capacity - page.used && page.capacity - page.used - padding >= nAllocationBytes )
 		{
 			const size_t start = page.used + padding;

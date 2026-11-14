@@ -81,6 +81,7 @@ $Project "shaderapidx12"
                 $Compiler
                 {
                     $AdditionalOptions "/std:c17"
+                    $DisableSpecificWarnings "$BASE;4310"
                 }
             }
         }
@@ -101,6 +102,7 @@ $Project "shaderapidx12"
                 $Compiler
                 {
                     $AdditionalOptions "/std:c17"
+                    $DisableSpecificWarnings "$BASE;4244"
                 }
             }
         }
@@ -111,6 +113,7 @@ $Project "shaderapidx12"
                 $Compiler
                 {
                     $AdditionalOptions "/std:c17"
+                    $DisableSpecificWarnings "$BASE;4701"
                 }
             }
         }
