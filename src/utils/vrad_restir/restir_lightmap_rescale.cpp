@@ -545,9 +545,9 @@ bool ReSTIR_RescaleLightmaps( const ReSTIROptions &options )
 	if ( rescaled > 0 && !ReSTIR_InvalidateShadowMapTopology( options ) )
 		goto fail;
 
-	// 6. Write the new face arrays. Both modes share geometry, and the other mode's
-	//    lighting was laid out for the old extents, so it is invalidated (the
-	//    launcher's -both runs both passes; a single pass leaves the other mode unlit).
+	// 6. Write the new face arrays. Both face lumps share geometry, and the LDR
+	//    lighting was laid out for the old extents, so the LDR faces lose their
+	//    lighting (vrad_restir bakes HDR only; the map then has no LDR lighting).
 	{
 		CUtlVector<dface_t> otherFaces;
 		dface_t *other = g_pFaces == dfaces_hdr ? dfaces : dfaces_hdr;

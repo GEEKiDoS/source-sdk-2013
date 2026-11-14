@@ -159,12 +159,14 @@ namespace
 			const uint32 faceBytes = faces.uncompressedSize ? faces.uncompressedSize : faces.filelen;
 			const uint32 lightingBytes = lighting.uncompressedSize ? lighting.uncompressedSize : lighting.filelen;
 			const uint32 worldlightBytes = worldlights.uncompressedSize ? worldlights.uncompressedSize : worldlights.filelen;
+			// Version-1 worldlights (Left 4 Dead 2 BSP 21) are 100-byte records; the manifest binds to them as stored.
+			const uint32 worldlightRecord = worldlights.version == 1 ? 100u : (uint32)sizeof( dworldlight_t );
 			if ( faces.version != LUMP_FACES_VERSION || lighting.version != LUMP_LIGHTING_VERSION ||
 				!faceBytes || faceBytes % sizeof( dface_t ) || faceBytes / sizeof( dface_t ) > MAX_MAP_FACES ||
 				lightingBytes != mode.lightingBytes || lightingBytes > MAX_MAP_LIGHTING || ( lightingBytes & 3 ) ||
-				worldlightBytes % sizeof( dworldlight_t ) || worldlightBytes / sizeof( dworldlight_t ) > MAX_MAP_WORLDLIGHTS )
+				worldlightBytes % worldlightRecord || worldlightBytes / worldlightRecord > MAX_MAP_WORLDLIGHTS )
 			{
-				V_snprintf( error, errorBytes, "rshd v4 mode %d source version/size", m );
+				V_snprintf( error, errorBytes, "BSP lump version/size does not match the .light" );
 				return false;
 			}
 			const uint32 ids[] = { mode.faceLump, mode.lightingLump, mode.worldlightsLump };
@@ -182,14 +184,14 @@ namespace
 				{
 					if ( !CRC32ServerDecodedLump( context, source, decodedBytes[i], crc[id], scratch, sizeof( scratch ) ) )
 					{
-						V_snprintf( error, errorBytes, "rshd v4 mode %d lump %u source bounds/read/decoding", m, id );
+						V_snprintf( error, errorBytes, "BSP lump %u bounds/read/decoding", id );
 						return false;
 					}
 					crcReady[id] = true;
 				}
 				if ( crc[id] != expected[i] )
 				{
-					V_snprintf( error, errorBytes, "rshd v4 mode %d lump %u source CRC", m, id );
+					V_snprintf( error, errorBytes, "BSP lump %u differs from the one the .light was baked from", id );
 					return false;
 				}
 			}
@@ -197,26 +199,24 @@ namespace
 		return true;
 	}
 
-	bool ReadServerManifestPayload( ServerBspReadContext &context, const ShadowMapBspLumpInfo lumps[HEADER_LUMPS],
-		uint32 offset, uint32 bytes, uint32 levelFlags, CUtlVector< uint8 > &payload,
-		hlight::ManifestView &view, char *error, int errorBytes )
+	bool ReadServerManifestPayload( ServerBspReadContext &light, uint32 offset, uint32 bytes, uint32 levelFlags,
+		CUtlVector< uint8 > &payload, hlight::ManifestView &view, char *error, int errorBytes )
 	{
 		const uint64 maxManifestBytes = sizeof( hlight::ManifestDisk ) +
-			(uint64)SHADOWMAP_MODE_COUNT * MAX_MAP_WORLDLIGHTS * sizeof( ShadowMapLightDisk );
+			(uint64)MAX_MAP_WORLDLIGHTS * ( sizeof( ShadowMapLightDisk ) + sizeof( uint32 ) );
 		if ( bytes < sizeof( hlight::ManifestDisk ) || bytes > maxManifestBytes || bytes > INT_MAX ||
-			(uint64)offset + bytes > context.fileBytes )
+			(uint64)offset + bytes > light.fileBytes )
 		{
-			V_snprintf( error, errorBytes, "rshd v4 file range/size" );
+			V_snprintf( error, errorBytes, ".light manifest range/size" );
 			return false;
 		}
 		payload.SetCount( bytes );
-		if ( !ReadServerBsp( &context, offset, bytes, payload.Base() ) )
+		if ( !ReadServerBsp( &light, offset, bytes, payload.Base() ) )
 		{
-			V_snprintf( error, errorBytes, "rshd v4 data read" );
+			V_snprintf( error, errorBytes, ".light manifest read" );
 			return false;
 		}
-		return hlight::ValidateManifest( payload.Base(), bytes, levelFlags, view, error, errorBytes ) &&
-			ValidateServerManifestSources( context, lumps, view, error, errorBytes );
+		return hlight::ValidateManifest( payload.Base(), bytes, levelFlags, view, error, errorBytes );
 	}
 
 	bool ValidBounds( const Vector &mins, const Vector &maxs )
@@ -321,62 +321,61 @@ void ShadowMapTransmit_LevelInit()
 {
 	ShadowMapTransmit_LevelShutdown();
 
-	char mapPath[MAX_PATH];
-	V_snprintf( mapPath, sizeof( mapPath ), "maps/%s.bsp", STRING( gpGlobals->mapname ) );
-	ServerBspReadContext context;
-	context.file = g_pFullFileSystem->Open( mapPath, "rb", "GAME" );
-	if ( !context.file )
+	// The enhanced lighting of a map is its maps/<name>.light; without one the map is ordinary.
+	char lightPath[MAX_PATH];
+	if ( !hlight::SidecarPath( STRING( gpGlobals->mapname ), lightPath, sizeof( lightPath ) ) ||
+		!g_pFullFileSystem->FileExists( lightPath, "GAME" ) )
+		return;
+	g_bFeatureMap = true;
+	ServerBspReadContext light;
+	light.file = g_pFullFileSystem->Open( lightPath, "rb", "GAME" );
+	if ( !light.file )
 	{
-		Warning( "%s: cannot read %s\n", SHADOWMAP_ERR_TRANSMIT_UNAVAILABLE, mapPath );
+		Warning( "%s: cannot read %s\n", SHADOWMAP_ERR_TRANSMIT_UNAVAILABLE, lightPath );
 		return;
 	}
-	context.fileBytes = g_pFullFileSystem->Size( context.file );
-	ShadowMapBspLumpInfo lumps[HEADER_LUMPS];
+	light.fileBytes = g_pFullFileSystem->Size( light.file );
+	ShadowMapBspLumpInfo lightLumps[HEADER_LUMPS];
 	uint32 offset = 0, bytes = 0, version = 0, levelFlags = 0;
 	bool compressed = false;
-	const bool directoryRead = ShadowMap_ReadBspDirectory( ReadServerBsp, &context, lumps,
-		offset, bytes, version, compressed, levelFlags );
-	// A manifest or ownership flag identifies a feature candidate even when its
-	// payload is corrupt; no unsupported metadata can advertise readiness.
-	g_bFeatureMap = bytes != 0 || offset != 0 || version != 0 || compressed || ( levelFlags &
-		( LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_NONHDR | LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR ) ) != 0;
-	if ( !directoryRead || compressed || ( g_bFeatureMap && !bytes ) )
-	{
-		g_pFullFileSystem->Close( context.file );
-		Warning( "%s: BSP rshd directory/compression or orphan feature flags\n", SHADOWMAP_ERR_INVALID_METADATA );
-		return;
-	}
-	if ( !g_bFeatureMap )
-	{
-		bool orphanAsset = false;
-		if ( !hlight::FindPakAsset( ReadServerBsp, &context, lumps[LUMP_PAKFILE], orphanAsset ) || orphanAsset )
-		{
-			g_bFeatureMap = true;
-			Warning( "%s: unreadable pak directory or orphan high-resolution asset\n", SHADOWMAP_ERR_INVALID_METADATA );
-		}
-		g_pFullFileSystem->Close( context.file );
-		return;
-	}
-	if ( version != hlight::kManifestVersion )
-	{
-		g_pFullFileSystem->Close( context.file );
-		Warning( "%s: unsupported rshd version %u; rebake enhanced maps as manifest v%u\n",
-			SHADOWMAP_ERR_INVALID_METADATA, version, (unsigned)hlight::kManifestVersion );
-		return;
-	}
-
 	CUtlVector< uint8 > payload;
 	char error[256] = { 0 };
 	hlight::ManifestView view = {};
-	const bool valid = ReadServerManifestPayload( context, lumps, offset, bytes, levelFlags,
-		payload, view, error, sizeof( error ) );
-	g_pFullFileSystem->Close( context.file );
+	bool valid = ShadowMap_ReadBspDirectory( ReadServerBsp, &light, lightLumps, offset, bytes, version, compressed, levelFlags ) &&
+		!compressed && bytes;
+	if ( !valid )
+		V_strncpy( error, "unreadable .light manifest", sizeof( error ) );
+	else if ( version != hlight::kManifestVersion )
+	{
+		V_snprintf( error, sizeof( error ), ".light manifest v%u is outdated; rebake with -restir_shadowmaps", version );
+		valid = false;
+	}
+	else
+		valid = ReadServerManifestPayload( light, offset, bytes, levelFlags, payload, view, error, sizeof( error ) );
+	g_pFullFileSystem->Close( light.file );
+	if ( valid )
+	{
+		char mapPath[MAX_PATH];
+		V_snprintf( mapPath, sizeof( mapPath ), "maps/%s.bsp", STRING( gpGlobals->mapname ) );
+		ServerBspReadContext context;
+		context.file = g_pFullFileSystem->Open( mapPath, "rb", "GAME" );
+		context.fileBytes = context.file ? g_pFullFileSystem->Size( context.file ) : 0;
+		ShadowMapBspLumpInfo lumps[HEADER_LUMPS];
+		uint32 mapOffset, mapBytes, mapVersion, mapFlags;
+		bool mapCompressed;
+		valid = context.file && ShadowMap_ReadBspDirectory( ReadServerBsp, &context, lumps, mapOffset, mapBytes, mapVersion, mapCompressed, mapFlags );
+		if ( !valid )
+			V_snprintf( error, sizeof( error ), "cannot read %s", mapPath );
+		else
+			valid = ValidateServerManifestSources( context, lumps, view, error, sizeof( error ) );
+		if ( context.file )
+			g_pFullFileSystem->Close( context.file );
+	}
 	if ( !valid )
 	{
-		Warning( "%s: %s\n", SHADOWMAP_ERR_INVALID_METADATA, error[0] ? error : "rshd data read" );
+		Warning( "%s: %s\n", SHADOWMAP_ERR_INVALID_METADATA, error[0] ? error : ".light manifest" );
 		return;
 	}
-	g_bFeatureMap = view.header->runtimeModeMask != 0;
 
 	CWorld *pWorld = GetWorldEntity();
 	Vector worldMins, worldMaxs;

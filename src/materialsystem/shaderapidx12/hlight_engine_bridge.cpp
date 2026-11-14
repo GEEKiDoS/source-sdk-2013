@@ -808,11 +808,53 @@ void AfterAccumulator()
     if (t_Build && t_Build->valid && t_Build->first) CopyScratch(g.finalRGB, *t_Build);
 }
 
+// A validated .light drops the selected lights from the loaded HDR worldlights and turns off the BSP's baked
+// static-prop lighting (its VHVs still contain those lights), in the engine's helper buffer, after RecordLump has
+// fingerprinted the lump as stored. The file itself is never written.
+void PatchLump(void *helper, uint32 requested)
+{
+    if ((requested != LUMP_MAP_FLAGS && requested != LUMP_WORLDLIGHTS_HDR) || !ThreadInMainThread() || !g.sink) return;
+    const uintptr_t p = reinterpret_cast<uintptr_t>(helper);
+    if (!Readable(p, 44) || !Readable(g.engine + kMapName, sizeof(g.observedMap))) return;
+    const char *name = reinterpret_cast<const char *>(g.engine + kMapName);
+    if (!std::memchr(name, 0, sizeof(g.observedMap)) || Load<int>(p + 40) != static_cast<int>(requested)) return;
+    HlightSidecarPatch patch;
+    if (!g.sink->SidecarLumpPatch(name, patch)) return;
+    const int bytes = Load<int>(p), version = Load<int>(p + 8);
+    uint8 *data = reinterpret_cast<uint8 *>(Load<uintptr_t>(p + 24));
+    if (bytes < 0 || !Readable(reinterpret_cast<uintptr_t>(data), size_t(bytes))) return;
+    if (requested == LUMP_MAP_FLAGS)
+    {
+        if (bytes < int(sizeof(uint32))) return;
+        uint32 flags; std::memcpy(&flags, data, sizeof(flags));
+        flags &= ~uint32(LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR | LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR);
+        std::memcpy(data, &flags, sizeof(flags));
+        Msg("High-resolution lightmaps: %s: static props lit from the worldlights, not the BSP's VHVs\n", name);
+        return;
+    }
+    // Version-1 worldlights (Left 4 Dead 2 BSP 21) are 100-byte records; the adapter converts them after this.
+    const uint32 record = version == 1 ? 100u : uint32(sizeof(dworldlight_t));
+    if (uint32(bytes) % record || ShadowMap_CRC32(data, uint32(bytes)) != patch.worldlightsCRC32)
+    {
+        Warning("High-resolution lightmaps: %s worldlights differ from the .light's; selected lights stay in the engine's lighting\n", name);
+        return;
+    }
+    const uint32 count = uint32(bytes) / record;
+    uint32 kept = 0; size_t removed = 0;
+    for (uint32 i = 0; i < count; ++i)
+    {
+        if (removed < patch.removedWorldlights.size() && patch.removedWorldlights[removed] == i) { ++removed; continue; }
+        if (kept != i) std::memmove(data + size_t(kept) * record, data + size_t(i) * record, record);
+        ++kept;
+    }
+    *reinterpret_cast<int *>(p) = int(kept * record);
+    Msg("High-resolution lightmaps: %s: %u of %u worldlights handed to the runtime shadow-mapped lights\n", name, count - kept, count);
+}
 void *LumpHook(void *helper, uint32 lump)
 {
     const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
     void *result = reinterpret_cast<void *(*)(void *, uint32)>(g_Hooks[8].original)(helper, lump);
-    OwnedWork([&] { RecordLump(helper, lump, caller); return true; });
+    OwnedWork([&] { RecordLump(helper, lump, caller); PatchLump(helper, lump); return true; });
     return result;
 }
 void FaceLoadHook()

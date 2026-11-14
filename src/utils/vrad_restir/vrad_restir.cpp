@@ -4,7 +4,6 @@
 #include "vrad_restir.h"
 #include "restir_scene.h"
 #include "restir_vulkan.h"
-#include "restir_paired_scene.h"
 #include "restir_denoiser.h"
 #include "restir_staticprops.h"
 #include "ambient_cube.h"
@@ -31,7 +30,6 @@
 
 ReSTIROptions g_ReSTIROptions;
 static CUtlString s_ShadowMapDiagnosticsPath;
-static bool s_BakeBothModes = false;
 dface_t *g_pFaces = NULL;
 
 struct ReSTIRPhaseProgress
@@ -223,11 +221,9 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 {
 	options = ReSTIROptions();
 	s_ShadowMapDiagnosticsPath = "";
-	s_BakeBothModes = false;
 	ReSTIRExplicitOptions explicitOptions;
 	int mapArg = -1;
 	bool loggedIgnored = false;
-	bool explicitMode = false;
 
 	for ( int i = 1; i < argc; ++i )
 	{
@@ -246,19 +242,10 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			continue;
 		}
 
-		if ( IsOption( pArg, "-ldr" ) || IsOption( pArg, "-hdr" ) )
+		if ( IsOption( pArg, "-ldr" ) || IsOption( pArg, "-hdr" ) || IsOption( pArg, "-both" ) )
 		{
-			options.hdr = IsOption( pArg, "-hdr" );
-			explicitMode = true;
-			continue;
-		}
-		if ( IsOption( pArg, "-both" ) )
-		{
-			// Mode orchestration belongs to the DLL, including converted-input rebakes.
-			s_BakeBothModes = true;
-			options.hdr = false;
-			explicitMode = true;
-			continue;
+			Warning( "Error: '%s' was removed; vrad_restir bakes HDR lighting only\n", pArg );
+			return false;
 		}
 		if ( IsOption( pArg, "-fast" ) || IsOption( pArg, "-final" ) )
 		{
@@ -281,6 +268,16 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			s_ShadowMapDiagnosticsPath = argv[++i];
 			continue;
 		}
+		if ( IsOption( pArg, "-restir_lightdir" ) )
+		{
+			if ( i + 1 >= argc || !argv[i + 1] || !argv[i + 1][0] || argv[i + 1][0] == '-' )
+			{
+				Warning( "Error: expected a directory after '-restir_lightdir'\n" );
+				return false;
+			}
+			options.lightDir = argv[++i];
+			continue;
+		}
 		if ( IsOption( pArg, "-restir_hlight_density" ) )
 		{
 			if ( i + 1 >= argc || !ParseIntValue( pArg, argv[++i], 1, 16382, options.highresDensity ) )
@@ -296,6 +293,13 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 		if ( IsOption( pArg, "-restir_ambientgrid_reach" ) )
 		{
 			if ( i + 1 >= argc || !ParseIntValue( pArg, argv[++i], 0, hprobe::kMaxReach, options.ambientGridReach ) )
+				return false;
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_ambientgrid_budget" ) )
+		{
+			// One grid is one signed pak member, so 2047 MiB is the ceiling.
+			if ( i + 1 >= argc || !ParseIntValue( pArg, argv[++i], 1, 2047, options.ambientGridBudgetMB ) )
 				return false;
 			continue;
 		}
@@ -559,23 +563,20 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 		Warning( "Error: no BSP/map file was supplied\n" );
 		return false;
 	}
-	if ( !explicitMode )
-		options.hdr = false;
 	ApplyPreset( options, explicitOptions );
 	if ( options.shadowMaps )
 	{
-		options.staticPropLighting = true;
 		options.textureShadows = true;
-		s_BakeBothModes = true;
-		Msg( "Shadowmaps: implies -both\n" );
-		Msg( "Shadowmaps: implies -StaticPropLighting=true\n" );
 		Msg( "Shadowmaps: implies -TextureShadows=true\n" );
+		if ( options.staticPropLighting )
+			Msg( "Shadowmaps: -StaticPropLighting ignored; with a .light the engine lights static props from the BSP's worldlights\n" );
+		options.staticPropLighting = false;
 		if ( options.lightmapScale != 1.0f )
 		{
 			Warning( "Hlight: -restir_shadowmaps retains the native BSP grid; use -restir_hlight_density, not -restir_lightmapscale\n" );
 			return false;
 		}
-		Msg( "Hlight: independent interval density=%d; native BSP grid unchanged\n", options.highresDensity );
+		Msg( "Hlight: independent interval density=%d; output <map>.light, BSP unchanged\n", options.highresDensity );
 	}
 
 	char mapPath[MAX_PATH];
@@ -585,13 +586,13 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 	return true;
 }
 
-// Per-pass pre-denoise evidence: <path>.ldr.json / <path>.hdr.json; ordinary RGB is also the full source.
+// Pre-denoise evidence: <path>.hdr.json; ordinary RGB is also the full source.
 static bool WriteShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLightmapResult &result )
 {
 	if ( !s_ShadowMapDiagnosticsPath.Length() )
 		return true;
 	CUtlString diagnosticPath( s_ShadowMapDiagnosticsPath.String() );
-	diagnosticPath += g_ReSTIROptions.hdr ? ".hdr.json" : ".ldr.json";
+	diagnosticPath += ".hdr.json";
 	FILE *file = fopen( diagnosticPath.String(), "wb" );
 	if ( !file )
 	{
@@ -600,7 +601,7 @@ static bool WriteShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLig
 	}
 	const int sunLightIndex = scene.shadowLights.Count() && scene.shadowLights[0].light.type == emit_skylight ? 0 : -1;
 	fprintf( file, "{\"mode\":\"%s\",\"split\":%s,\"sunLightIndex\":%d,\"shadowSunAngularRadius\":%.9g,\"selectedLightCount\":%d",
-		g_ReSTIROptions.hdr ? "hdr" : "ldr", result.sourceRadiance.Count() ? "true" : "false",
+		"hdr", result.sourceRadiance.Count() ? "true" : "false",
 		sunLightIndex, scene.shadowSunAngularRadius, scene.shadowLights.Count() );
 	fprintf(file,",\"hlightDensity\":%d,\"sampleCellCount\":%d,\"highGridCount\":%d,\"assetRGBScale\":%.9g",
 		g_ReSTIROptions.shadowMaps ? g_ReSTIROptions.highresDensity : 1,scene.samples.Count(),scene.luxels.Count(),1.0/255.0);
@@ -700,20 +701,6 @@ static bool WriteShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLig
 		Warning( "Shadowmaps: cannot write diagnostics %s\n", diagnosticPath.String() );
 	return written && closed;
 }
-static bool WritePairedShadowMapDiagnostics( const ReSTIRScene &scene, const ReSTIRLightmapResult &result, bool reuse )
-{
-	if ( !WriteShadowMapDiagnostics( scene, result ) )
-		return false;
-	if ( !reuse )
-		return true;
-	// Both diagnostic files promise pre-denoise data. Write the admitted
-	// equivalent HDR evidence now, not after the shared denoiser mutates RGB.
-	g_ReSTIROptions.hdr = true;
-	const bool written = WriteShadowMapDiagnostics( scene, result );
-	g_ReSTIROptions.hdr = false;
-	return written;
-}
-
 // -restir_probe diagnostic: GPU direct/indirect at one point, plus the light table the GPU sees.
 static void RunProbe( const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 {
@@ -750,45 +737,15 @@ static void RunProbe( const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 	}
 }
 
-// Port of the selected-mode face setup in utils/vrad/vrad.cpp:2223-2236.
-static void SelectFaceArrayForMode( bool bHDR )
+// Port of the HDR face setup in utils/vrad/vrad.cpp:2223-2236: an input without HDR faces lights a copy of its LDR faces.
+static void SelectHDRFaces()
 {
-	if ( bHDR )
+	g_pFaces = dfaces_hdr;
+	if ( numfaces_hdr == 0 )
 	{
-		g_pFaces = dfaces_hdr;
-		if ( numfaces_hdr == 0 )
-		{
-			numfaces_hdr = numfaces;
-			memcpy( dfaces_hdr, dfaces, numfaces * sizeof( dfaces[0] ) );
-		}
+		numfaces_hdr = numfaces;
+		memcpy( dfaces_hdr, dfaces, numfaces * sizeof( dfaces[0] ) );
 	}
-	else
-	{
-		g_pFaces = dfaces;
-	}
-}
-// Resolve both authored modes before solving ordinary paired bakes. Dense
-// shadow-map domains are intentionally solved per mode: retaining both dense
-// receiver domains resident would exceed low-VRAM heaps before paging begins.
-static bool BuildPairedScene( CReSTIRSceneBuilder &builder, ReSTIRScene &scene, bool &reuse )
-{
-	reuse = false;
-	if ( !s_BakeBothModes || g_ReSTIROptions.hdr || g_ReSTIROptions.shadowMaps )
-		return builder.Build( g_ReSTIROptions, scene );
-	ReSTIRScene hdrScene;
-	ReSTIROptions hdrOptions = g_ReSTIROptions;
-	hdrOptions.hdr = true;
-	SetHDRMode( true );
-	SelectFaceArrayForMode( true );
-	const bool hdrBuilt = builder.Build( hdrOptions, hdrScene );
-	SetHDRMode( false );
-	SelectFaceArrayForMode( false );
-	if ( !hdrBuilt || !builder.Build( g_ReSTIROptions, scene ) )
-		return false;
-	reuse = ReSTIR_PairedScenesEqual( scene, hdrScene );
-	Msg( "VRAD ReSTIR: paired effective inputs/sampling domains %s; %s GPU transport solution%s\n",
-		reuse ? "equal" : "different", reuse ? "one" : "two", reuse ? "" : "s" );
-	return true;
 }
 
 CVRadRestirDLL::CVRadRestirDLL()
@@ -803,6 +760,7 @@ CVRadRestirDLL::~CVRadRestirDLL()
 }
 
 // Lifecycle port based on utils/vrad/vrad.cpp:2133-2242.
+static void FreeEntities();
 bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 {
 	if ( !m_bFileSystemInitialized )
@@ -811,7 +769,7 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 		m_bFileSystemInitialized = true;
 	}
 
-	const char *bspPath = options.transactionPath.Length() ? options.transactionPath.String() : options.mapPath.String();
+	const char *bspPath = options.mapPath.String();
 	Msg( "Loading %s\n", bspPath );
 	ReSTIRPhaseProgress phase = { NULL, 0, 0, 0.0, false };
 	ReSTIRPhaseBegin( phase, "BSP load/v21 canonicalize" );
@@ -819,9 +777,16 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 	ParseEntities();
 	phase.done = phase.total = 1;
 	ReSTIRPhaseEnd( phase );
-	SetHDRMode( options.hdr );
-	VRadRestirDetailProps_SetHDRMode( options.hdr );
-	SelectFaceArrayForMode( options.hdr );
+	// The .light binds to the BSP's own HDR faces and lighting, which the engine must load as they are.
+	if ( options.shadowMaps && ( !numfaces_hdr || !dlightdataHDR.Count() ) )
+	{
+		Warning( "Error: -restir_shadowmaps needs a BSP with HDR faces and HDR lighting; bake it without -restir_shadowmaps first\n" );
+		UnloadBSPFile();
+		FreeEntities();
+		return false;
+	}
+	SetHDRMode( true );
+	SelectHDRFaces();
 
 	if ( g_pFullFileSystem )
 	{
@@ -835,14 +800,12 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 		}
 	}
 
-	// VRAD never initializes the material system (VMTs are parsed with KeyValues, vradstaticprops.cpp:700);
-	// doing so here would break the -both BSP reload with "Cannot set the shader API twice!".
+	// VRAD never initializes the material system (VMTs are parsed with KeyValues, vradstaticprops.cpp:700).
 	m_bBSPLoaded = true;
 	return true;
 }
 
-// ParseEntities pushes onto each entity's existing epair list, so the entities of a finished load must be dropped
-// before the next paired-pass load or UnparseEntities would write every key twice.
+// ParseEntities pushes onto each entity's existing epair list, so the entities of a load must be dropped with it.
 static void FreeEntities()
 {
 	for ( int i = 0; i < num_entities; ++i )
@@ -902,76 +865,20 @@ int CVRadRestirDLL::main( int argc, char **argv )
 		m_bFileSystemInitialized = false;
 		return 1;
 	}
-	if ( !g_ReSTIROptions.shadowMaps &&
-		g_GameLumps.GetGameLumpHandle( GAMELUMP_RESTIR_SHADOWMAPS ) != g_GameLumps.InvalidGameLump() )
-	{
-		s_BakeBothModes = true;
-		g_ReSTIROptions.staticPropLighting = true;
-		Msg( "Shadowmaps: converted BSP rebaked in both modes\n" );
-		Msg( "Shadowmaps: converted BSP rebake implies -StaticPropLighting=true\n" );
-	}
-	if ( s_BakeBothModes )
-	{
-		// Neither completed mode is published if its paired bake fails. Keep
-		// the original basename for macro/asset identity, and reload only this
-		// owned sibling BSP between passes.
-		char workPath[MAX_PATH * 2];
-		V_snprintf(workPath,sizeof(workPath),"%s.restir-paired.%lu.bsp",
-			g_ReSTIROptions.mapPath.String(),(unsigned long)GetCurrentProcessId());
-		if (!CopyFileA(g_ReSTIROptions.mapPath.String(),workPath,TRUE))
-		{
-			Warning("Hlight: cannot create paired-bake transaction (Windows error %lu)\n",(unsigned long)GetLastError());
-			UnloadSelectedBSP(); CmdLib_Cleanup(); m_bFileSystemInitialized = false;
-			DeleteCmdLine(argc,argv); return 1;
-		}
-		g_ReSTIROptions.transactionPath = workPath;
-		g_ReSTIROptions.hdr = false;
-	}
-	SetHDRMode( g_ReSTIROptions.hdr );
-	VRadRestirDetailProps_SetHDRMode( g_ReSTIROptions.hdr );
-	SelectFaceArrayForMode( g_ReSTIROptions.hdr );
-	int exitCode = 0;
-	for ( int pass = 0; pass < ( s_BakeBothModes ? 2 : 1 ); ++pass )
-	{
-		if ( pass )
-		{
-			g_ReSTIROptions.hdr = true;
-			if ( !LoadSelectedBSP( g_ReSTIROptions ) )
-			{
-				exitCode = 1;
-				break;
-			}
-		}
-		Msg( "VRAD ReSTIR: baking %s mode\n", g_ReSTIROptions.hdr ? "HDR" : "LDR" );
-		bool pairedComplete = false;
-		exitCode = BakeSelectedMode( pairedComplete );
-		if ( exitCode || pairedComplete )
-			break;
-	}
+	Msg( "VRAD ReSTIR: baking HDR lighting into %s\n", g_ReSTIROptions.shadowMaps ? "<map>.light (BSP unchanged)" : "the BSP" );
+	const int exitCode = Bake();
 	UnloadSelectedBSP();
 	CmdLib_Cleanup();
 	m_bFileSystemInitialized = false;
-	if (g_ReSTIROptions.transactionPath.Length())
-	{
-		if (!exitCode && !MoveFileExA(g_ReSTIROptions.transactionPath.String(),
-			g_ReSTIROptions.mapPath.String(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
-		{
-			Warning("Hlight: paired-bake atomic publication failed (Windows error %lu)\n",(unsigned long)GetLastError());
-			exitCode = 1;
-		}
-		if (exitCode) DeleteFileA(g_ReSTIROptions.transactionPath.String());
-		g_ReSTIROptions.transactionPath = "";
-	}
 	if ( exitCode )
 		m_bBakeComplete = false;
 	DeleteCmdLine( argc, argv );
 	return exitCode;
 }
 
-int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
+int CVRadRestirDLL::Bake()
 {
 	m_bBakeComplete = false;
-	pairedComplete = false;
 	m_flProgress = 0.0f;
 
 	const double startTime = Plat_FloatTime();
@@ -982,7 +889,6 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 	ReSTIRLightmapResult result;
 	bool staticPropsInitialized = false;
 	bool success = false;
-	bool reusePaired = false;
 	const char *pFailedStage = NULL;
 	ReSTIRPhaseProgress phase = { NULL, 0, 0, 0.0, false };
 
@@ -995,7 +901,7 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 	ReSTIR_EnableStaticPropDirectDiagnostics( s_ShadowMapDiagnosticsPath.Length() != 0 );
 	m_flProgress = 0.10f;
 	RESTIR_STAGE( "rescaling lightmaps", ReSTIR_RescaleLightmaps( g_ReSTIROptions ) );
-	RESTIR_STAGE( "building effective paired scene", BuildPairedScene( sceneBuilder, scene, reusePaired ) );
+	RESTIR_STAGE( "building scene", sceneBuilder.Build( g_ReSTIROptions, scene ) );
 	{
 		int coverageCount = 0;
 		int albedoCount = 0;
@@ -1034,7 +940,7 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 	ReSTIRPhaseEnd( phase );
 	device.PrintBakeStageSummaries();
 	device.PrintBakeSummary();
-	RESTIR_STAGE( "writing shadowmap diagnostics", WritePairedShadowMapDiagnostics( scene, result, reusePaired ) );
+	RESTIR_STAGE( "writing shadowmap diagnostics", WriteShadowMapDiagnostics( scene, result ) );
 	m_flProgress = 0.65f;
 
 	device.SetProgressCallback( NULL, NULL );
@@ -1059,56 +965,43 @@ int CVRadRestirDLL::BakeSelectedMode( bool &pairedComplete )
 		device.SetProgressCallback( ReSTIRPhaseCallback, &phase );
 		if ( g_ReSTIROptions.probeEnabled )
 			RunProbe( scene, device );
-		RESTIR_STAGE( "computing leaf ambient lighting", ReSTIR_ComputeLeafAmbientLighting( g_ReSTIROptions, scene, device, result ) );
+		// The .light keeps the BSP's leaf ambient, detail lighting and worldlight flags: the probes fold in the
+		// INAMBIENTCUBE surface lights exactly as the engine does with the flags it loads.
+		if ( !g_ReSTIROptions.shadowMaps )
+		{
+			RESTIR_STAGE( "computing leaf ambient lighting", ReSTIR_ComputeLeafAmbientLighting( g_ReSTIROptions, scene, device, result ) );
+		}
 		RESTIR_STAGE( "capturing ambient probe grid", ReSTIR_CaptureAmbientProbes( g_ReSTIROptions, scene, device ) );
 		RESTIR_STAGE( "computing static prop lighting", ReSTIR_ComputeStaticPropLighting( g_ReSTIROptions, scene, device ) );
 		if ( g_ReSTIROptions.shadowMaps && s_ShadowMapDiagnosticsPath.Length() )
 		{
 			CUtlString path( s_ShadowMapDiagnosticsPath.String() );
-			path += g_ReSTIROptions.hdr ? ".props.hdr.json" : ".props.ldr.json";
-			RESTIR_STAGE( "writing static prop direct diagnostics", ReSTIR_WriteStaticPropDirectDiagnostics( path.String(), g_ReSTIROptions.hdr ) );
+			path += ".props.hdr.json";
+			RESTIR_STAGE( "writing static prop direct diagnostics", ReSTIR_WriteStaticPropDirectDiagnostics( path.String() ) );
 		}
-		RESTIR_STAGE( "computing detail prop lighting", ReSTIR_ComputeDetailPropLighting( g_ReSTIROptions, scene, device ) );
+		if ( !g_ReSTIROptions.shadowMaps )
+		{
+			RESTIR_STAGE( "computing detail prop lighting", ReSTIR_ComputeDetailPropLighting( g_ReSTIROptions, scene, device ) );
+		}
 		ReSTIRPhaseEnd( phase );
 		device.SetProgressCallback( NULL, NULL );
 
 		ReSTIRPhaseBegin( phase, "write" );
-		RESTIR_STAGE( "encoding lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
-		RESTIR_STAGE( "validating output", output.Validate( g_ReSTIROptions ) );
-		ReSTIR_WriteSkyAmbientMatch( g_ReSTIROptions, scene );
-		RESTIR_STAGE( "writing BSP", output.Write( g_ReSTIROptions ) );
-		if ( reusePaired )
+		if ( g_ReSTIROptions.shadowMaps )
 		{
-			// LDR has only reached the owned transaction. Retain the solved
-			// source/receiver/style transport and prop meshes, but encode HDR
-			// afresh so native lump tags, highres records and CRCs are correct.
-			Msg( "VRAD ReSTIR: reusing LDR solved transport and secondary lighting for HDR; skipping second GPU transport\n" );
-			g_ReSTIROptions.hdr = true;
-			SetHDRMode( true );
-			VRadRestirDetailProps_SetHDRMode( true );
-			SelectFaceArrayForMode( true );
-			RESTIR_STAGE( "preparing reused HDR storage", ReSTIR_RescaleLightmaps( g_ReSTIROptions ) );
-			RESTIR_STAGE( "encoding reused HDR lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
-			RESTIR_STAGE( "reusing leaf ambient lighting", ReSTIR_ReusePairedLeafAmbientLighting() );
-			RESTIR_STAGE( "reusing ambient probe grid", ReSTIR_ReusePairedAmbientProbes( g_ReSTIROptions ) );
-			RESTIR_STAGE( "serializing reused HDR static prop lighting", ReSTIR_ReuseStaticPropLighting( g_ReSTIROptions ) );
-			if ( g_ReSTIROptions.shadowMaps && s_ShadowMapDiagnosticsPath.Length() )
-			{
-				CUtlString path( s_ShadowMapDiagnosticsPath.String() );
-				path += ".props.hdr.json";
-				RESTIR_STAGE( "writing reused static prop direct diagnostics", ReSTIR_WriteStaticPropDirectDiagnostics( path.String(), true ) );
-			}
-			RESTIR_STAGE( "serializing reused HDR detail prop lighting", ReSTIR_ReuseDetailPropLighting() );
-			if ( g_ReSTIROptions.shadowMaps )
-				RESTIR_STAGE( "sharing proven paired visibility", ReSTIR_MarkPairedVisibilityReuse() );
-			RESTIR_STAGE( "validating reused HDR output", output.Validate( g_ReSTIROptions ) );
+			RESTIR_STAGE( "capturing high-resolution lightmaps", output.CaptureHighres( g_ReSTIROptions, scene, result ) );
+			RESTIR_STAGE( "writing the .light sidecar", ReSTIR_WriteLightSidecar( g_ReSTIROptions ) );
+		}
+		else
+		{
+			RESTIR_STAGE( "encoding lightmaps", output.EncodeLightmaps( g_ReSTIROptions, scene, result ) );
+			RESTIR_STAGE( "validating output", output.Validate( g_ReSTIROptions ) );
 			ReSTIR_WriteSkyAmbientMatch( g_ReSTIROptions, scene );
-			RESTIR_STAGE( "writing reused HDR BSP", output.Write( g_ReSTIROptions ) );
-			pairedComplete = true;
+			RESTIR_STAGE( "writing BSP", output.Write( g_ReSTIROptions ) );
+			output.PrintWriteSummary();
 		}
 		phase.done = phase.total;
 		ReSTIRPhaseEnd( phase );
-		output.PrintWriteSummary();
 	}
 	#undef RESTIR_STAGE
 	m_flProgress = 1.0f;
@@ -1131,13 +1024,13 @@ cleanup:
 	}
 	else
 	{
-		Warning( "VRAD ReSTIR: FAILED while %s; %s lighting mode was not written to %s.\n",
-			pFailedStage ? pFailedStage : "starting", g_ReSTIROptions.hdr ? "HDR" : "LDR", g_ReSTIROptions.mapPath.String() );
+		Warning( "VRAD ReSTIR: FAILED while %s; nothing was written for %s.\n",
+			pFailedStage ? pFailedStage : "starting", g_ReSTIROptions.mapPath.String() );
 	}
 	denoiser.Shutdown();
 	device.Shutdown();
 	UnloadSelectedBSP();
-	// Reopen the BSP's pak mount for the next mode without running process cleanup callbacks twice.
+	// Close the BSP's pak mount without running process cleanup callbacks twice.
 	CmdLib_TermFileSystem();
 	m_bFileSystemInitialized = false;
 	return success ? 0 : 1;

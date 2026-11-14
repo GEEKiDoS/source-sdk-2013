@@ -101,15 +101,15 @@ struct BspFile
         return f.fs->Read(out, count, f.file) == int(count);
     }
 };
-bool MapPath(const char *map, char path[260])
+// The map's enhanced lighting file (maps/<name>.light, a BSP-format container of the rshd manifest and the
+// .hlight/.hprobe pak). The map's own lumps reach this renderer only through the native bridge identities.
+bool LightPath(const char *map, char path[260])
 {
-    if (!map || !*map || V_strlen(map) >= 240) return false;
-    char name[260]; V_strncpy(name, map, sizeof(name)); V_FixSlashes(name, '/');
-    if (name[0] == '/' || V_strstr(name, "..") || V_strchr(name, ':')) return false;
-    V_StripExtension(name, name, sizeof(name));
-    if (!V_strnicmp(name, "maps/", 5)) V_snprintf(path, 260, "%s.bsp", name);
-    else V_snprintf(path, 260, "maps/%s.bsp", name);
-    return true;
+    return hlight::SidecarPath(map, path, 260);
+}
+bool LightExists(IFileSystem *fs, const char *path)
+{
+    return fs && fs->FileExists(path, "GAME");
 }
 // One central-directory entry. Content identity is (method, CRC, sizes); dataOffset is absolute within the BSP and
 // follows the engine pack-file and CZipFile rule: local header + central-directory name/extra lengths.
@@ -206,7 +206,7 @@ std::shared_ptr<const MapAssets> BuildAssets(BspFile &bsp, const PakMember (&mem
     assets->valid = true;
     if (!*probePath) V_strncpy(assets->probeReason, "the lightmap asset path is not an .hlight", sizeof(assets->probeReason));
     else if (!ReadPakMember(bsp, members[1], assets->probeBytes))
-        V_snprintf(assets->probeReason, sizeof(assets->probeReason), "%s is missing from the BSP pak; rebake with -restir_shadowmaps", probePath);
+        V_snprintf(assets->probeReason, sizeof(assets->probeReason), "%s is missing from the .light pak; rebake with -restir_shadowmaps", probePath);
     else assets->probeValid = hprobe::ValidateFile(assets->probeBytes.get(), members[1].uncompressedBytes, assets->probeFile, assets->probeReason, sizeof(assets->probeReason)) &&
         hprobe::ValidatePair(assets->probeFile, assets->file, assets->probeReason, sizeof(assets->probeReason));
     if (!assets->probeValid) { assets->probeBytes.reset(); assets->probeFile = {}; }
@@ -418,6 +418,10 @@ struct CHighresLightmapsDX12::Impl
     std::vector<uint8> scratch;
     std::vector<ViewStyles> views;
     uint64 nextViewSerial = 1, commonRetainedFence = 0, polledFence = ~uint64(0);
+    // The current load's .light lump patch (SidecarLumpPatch), read once per map name.
+    char patchMap[260] = {};
+    bool patchValid = false;
+    HlightSidecarPatch patch;
     // Dense ambient probes (maps/<name>.hprobe beside the .hlight in the pak): the selected mode's CPU asset lives with the
     // map; the nine textures become resident on the first PBR probe consumer draw and are dropped with the device.
     hprobe::FileView probeFile{};
@@ -788,13 +792,43 @@ void CHighresLightmapsDX12::Shutdown()
 void CHighresLightmapsDX12::OnNativeMapLoad(const char *mapName)
 {
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    s.patchMap[0]=0; // a rebaked .light of the same map is re-read
     char path[260];
     IFileSystem *fs=g_pShaderDeviceMgrDX12?g_pShaderDeviceMgrDX12->HostFileSystem():nullptr;
-    if (!fs || !MapPath(mapName,path)) return;
+    if (!LightPath(mapName,path) || !LightExists(fs,path)) return;
     s.JoinPrefetch(); s.prefetched.reset();
     // Decoding and validating hundreds of MB overlaps the engine's collision/model loading on the main thread.
     try { s.prefetch=std::thread([&s,fs,held=s.assets,mapPath=std::string(path)]() mutable { s.prefetched=PrefetchAssets(fs,mapPath.c_str(),std::move(held)); }); }
     catch (const std::system_error &) {} // No worker: OnNativeDomain reads synchronously.
+}
+bool CHighresLightmapsDX12::SidecarLumpPatch(const char *mapName, HlightSidecarPatch &out)
+{
+    Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (!mapName || V_stricmp(mapName,s.patchMap))
+    {
+        V_strncpy(s.patchMap,mapName?mapName:"",sizeof(s.patchMap)); s.patchValid=false; s.patch={};
+        IFileSystem *fs=g_pShaderDeviceMgrDX12?g_pShaderDeviceMgrDX12->HostFileSystem():nullptr; char path[260];
+        if (mapName && LightPath(mapName,path) && LightExists(fs,path))
+        {
+            BspFile light(fs,path); ShadowMapBspLumpInfo lumps[HEADER_LUMPS]; uint32 offset,bytes,version,flags; bool compressed;
+            std::vector<uint8> manifest; hlight::ManifestView view{}; char error[256];
+            if (ShadowMap_ReadBspDirectory(BspFile::Read,&light,lumps,offset,bytes,version,compressed,flags) && !compressed &&
+                version==hlight::kManifestVersion && bytes && bytes<=hlight::kMaxFileBytes)
+            {
+                manifest.resize(bytes);
+                if (BspFile::Read(&light,offset,bytes,manifest.data()) &&
+                    hlight::ValidateManifest(manifest.data(),bytes,flags,view,error,sizeof(error)))
+                {
+                    const hlight::ManifestModeView &mode=view.mode[SHADOWMAP_MODE_HDR];
+                    s.patch.worldlightsCRC32=mode.record->worldlightsCRC32;
+                    s.patch.removedWorldlights.assign(mode.removedWorldlights,mode.removedWorldlights+mode.removedWorldlightCount);
+                    s.patchValid=true;
+                }
+            }
+        }
+    }
+    if (s.patchValid) out=s.patch;
+    return s.patchValid;
 }
 bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDomain> domain)
 {
@@ -806,25 +840,17 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         s.ClearGpu(); s.ClearProbes(); s.atlas.reset(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0;
         s.enhancedRequired=false;
         s.domain=std::move(domain);
-        if (!s.domain || !s.domain->mapGeneration || !MapPath(s.domain->mapName,s.mapPath)) { s.Fail("Highres lightmaps: invalid native map domain"); return false; }
+        if (!s.domain || !s.domain->mapGeneration || !LightPath(s.domain->mapName,s.mapPath)) { s.Fail("Highres lightmaps: invalid native map domain"); return false; }
         s.status.nativeMapGeneration=s.domain->mapGeneration;
         s.status.faceLump=s.domain->faceLump; s.status.lightingLump=s.domain->lightingLump;
         IFileSystem *fs=g_pShaderDeviceMgrDX12?g_pShaderDeviceMgrDX12->HostFileSystem():nullptr;
-        BspFile bsp(fs,s.mapPath); ShadowMapBspLumpInfo lumps[HEADER_LUMPS]; uint32 offset,bytes,version,flags; bool compressed;
-        if (!ShadowMap_ReadBspDirectory(BspFile::Read,&bsp,lumps,offset,bytes,version,compressed,flags)) { s.Fail("Highres lightmaps: unreadable BSP directory"); return false; }
-        if (version != hlight::kManifestVersion)
-        {
-            if (compressed || (!bytes && (flags&(LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR|LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_NONHDR)))) s.Fail("Highres lightmaps: missing or compressed lighting manifest");
-            else if (!bytes)
-            {
-                bool orphanAsset=false;
-                if (!hlight::FindPakAsset(BspFile::Read,&bsp,lumps[LUMP_PAKFILE],orphanAsset) || orphanAsset)
-                    s.Fail("Highres lightmaps: unreadable pak directory or orphan high-resolution asset");
-            }
-            return false; // Old enhanced manifests are rejected; baked local direct requires a rebake.
-        }
+        if (!LightExists(fs,s.mapPath)) return false; // No .light: the map runs on its own lighting.
         s.status.state=DX12_HIGHRES_PENDING;
         s.enhancedRequired=true;
+        BspFile bsp(fs,s.mapPath); ShadowMapBspLumpInfo lumps[HEADER_LUMPS]; uint32 offset,bytes,version,flags; bool compressed;
+        if (!ShadowMap_ReadBspDirectory(BspFile::Read,&bsp,lumps,offset,bytes,version,compressed,flags) || compressed)
+        { s.Fail("Highres lightmaps: unreadable .light directory"); return false; }
+        if (version != hlight::kManifestVersion) { s.Fail("Highres lightmaps: outdated .light; rebake with -restir_shadowmaps"); return false; }
         if (!bytes || bytes>hlight::kMaxFileBytes) { s.Fail("Highres lightmaps: invalid manifest range"); return false; }
         std::vector<uint8> manifest(bytes);
         if (!BspFile::Read(&bsp,offset,bytes,manifest.data())) { s.Fail("Highres lightmaps: cannot read manifest"); return false; }
@@ -835,15 +861,16 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         if (nativeMode==SHADOWMAP_MODE_COUNT) { s.Fail("Highres lightmaps: unknown selected native lighting lump"); return false; }
         if (!manifestView.mode[nativeMode].runtime)
         {
+            Warning("Highres lightmaps: %s holds HDR lighting only; the engine selected LDR, so the map keeps its own lighting\n",s.mapPath);
             s.enhancedRequired=false; s.status.state=DX12_HIGHRES_ORDINARY;
-            return false; // This mode retains ordinary real BSP lighting and has no selected omission.
+            return false;
         }
         if (!HlightEngineBridge::Supported()) { s.Fail(HlightEngineBridge::CompatibilityError()); return false; }
         const auto &pak=lumps[LUMP_PAKFILE];
-        if (pak.uncompressedSize || !pak.filelen || pak.filelen>hlight::kMaxFileBytes) { s.Fail("Highres lightmaps: invalid BSP pak range"); return false; }
+        if (pak.uncompressedSize || !pak.filelen || pak.filelen>hlight::kMaxFileBytes) { s.Fail("Highres lightmaps: invalid .light pak range"); return false; }
         PakMember members[2]; char probePath[260];
-        if (!LocateAssets(bsp,pak,manifestView.header->assetPath,probePath,members)) { s.Fail("Highres lightmaps: unreadable BSP pak directory"); return false; }
-        if (!members[0].found) { s.Fail("Highres lightmaps: manifest-named BSP pak asset missing"); return false; }
+        if (!LocateAssets(bsp,pak,manifestView.header->assetPath,probePath,members)) { s.Fail("Highres lightmaps: unreadable .light pak directory"); return false; }
+        if (!members[0].found) { s.Fail("Highres lightmaps: manifest-named .light pak asset missing"); return false; }
         // The worker started at this load's first native lump normally finished during collision/model loading.
         COM_TimestampedLog("Highres lightmaps: assets - start");
         s.JoinPrefetch();
@@ -905,13 +932,13 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
                 (face.styleCount && (((face.flags^native.flags)&hlight::kFaceDisplacement) ||
                 ((native.flags&hlight::kFaceBumped) && !(face.flags&hlight::kFaceBumped)))))
             { s.Fail("Highres lightmaps: immutable face metadata mismatch or missing required bump planes"); return false; }
-            // Native styles may be RGBExp-pruned; every remaining native style must
-            // occur in authored order in the retained unpruned asset style list.
-            uint32 authored=0;
+            // Every native style must be one of the asset's authored styles. Their order may differ: a .light can sit
+            // beside a BSP compiled by another VRAD, and only the asset's style list drives the high-resolution page.
             for (uint32 n=0;face.styleCount && n<4 && native.styles[n]!=255;++n)
             {
+                uint32 authored=0;
                 while (authored<face.styleCount && face.styles[authored]!=native.styles[n]) ++authored;
-                if (authored==face.styleCount) { s.Fail("Highres lightmaps: native authored-style mismatch"); return false; } ++authored;
+                if (authored==face.styleCount) { s.Fail("Highres lightmaps: native style missing from the asset"); return false; }
             }
         }
         s.SelectProbes();
@@ -1208,14 +1235,12 @@ void CHighresLightmapsDX12::GetStatus(DX12HighresMapStatus &out,char *error,int 
 bool CHighresLightmapsDX12::RequireMap(const char *map,DX12HighresMapStatus &out,char *error,int bytes)
 {
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex); char path[260];
-    if (!MapPath(map,path)) s.Fail("Highres lightmaps: invalid requested map name");
+    if (!LightPath(map,path)) s.Fail("Highres lightmaps: invalid requested map name");
     else if (!s.domain || V_stricmp(path,s.mapPath))
     {
         // Inspect only admission metadata. Never synthesize a domain or attach late.
         IFileSystem *fs=g_pShaderDeviceMgrDX12?g_pShaderDeviceMgrDX12->HostFileSystem():nullptr;
-        BspFile bsp(fs,path); ShadowMapBspLumpInfo lumps[HEADER_LUMPS]; uint32 offset,count,version,flags; bool compressed;
-        if (!ShadowMap_ReadBspDirectory(BspFile::Read,&bsp,lumps,offset,count,version,compressed,flags)) s.Fail("Highres lightmaps: requested BSP unreadable");
-        else if (version==hlight::kManifestVersion)
+        if (LightExists(fs,path))
         {
             s.enhancedRequired=true;
             s.Fail(HlightEngineBridge::Supported()?"Highres lightmaps: native startup metadata unavailable; reload map":HlightEngineBridge::CompatibilityError());

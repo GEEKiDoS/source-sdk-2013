@@ -554,8 +554,6 @@ void DestroySpawnedRenderables()
 	Msg( "ShadowMapSpawnRenderables: destroyed=%d\n", destroyed );
 }
 
-CUtlVector<DX12LightingReceiverQuad> g_ReceiverQuads;
-
 void ResetMapState()
 {
 	g_State.mapGeneration=0; g_State.featureMap=false; g_State.runtimeActive=false; g_State.failed=false;
@@ -564,7 +562,6 @@ void ResetMapState()
 	// Invalidate every borrowed sidecar view before reusing its backing bytes.
 	g_State.lights=NULL; g_State.lightCount=0; g_State.sunLightIndex=-1; g_LightEntities.RemoveAll();
 	memset(&g_State.manifest,0,sizeof(g_State.manifest)); g_State.rshdBytes.RemoveAll();
-	g_ReceiverQuads.RemoveAll();
 	g_CameraPvs.Clear(); g_SunSky.Clear(); g_FreeSlotSeconds.Purge();
 	g_State.worldMins.Init(); g_State.worldMaxs.Init();
 }
@@ -649,14 +646,6 @@ bool ReadBspBytes( void *context, uint32 offset, uint32 bytes, void *out )
 	if ( file.handle==FILESYSTEM_INVALID_HANDLE || offset>INT_MAX || bytes>INT_MAX || (uint64)offset+bytes>file.bytes ) return false;
 	g_pFullFileSystem->Seek(file.handle,(int)offset,FILESYSTEM_SEEK_HEAD);
 	return g_pFullFileSystem->Read(out,(int)bytes,file.handle)==(int)bytes;
-}
-
-template<class T>
-bool ReadReceiverBspRecord( CShadowBspFile &file, const ShadowMapBspLumpInfo &lump, uint32 index, T &out )
-{
-	const uint64 offset=uint64(lump.fileofs)+uint64(index)*sizeof(T);
-	return !lump.uncompressedSize && lump.filelen%sizeof(T)==0 && index<lump.filelen/sizeof(T) &&
-		offset<=0xFFFFFFFFu && ReadBspBytes(&file,uint32(offset),uint32(sizeof(T)),&out);
 }
 
 template<class T>
@@ -792,80 +781,34 @@ int SunSkyRegionForPoint( const Vector &point )
 	return leaf.solid ? -1 : g_SunSky.Region(leaf.area);
 }
 
-bool ReadReceiverQuads( CShadowBspFile &file, const ShadowMapBspLumpInfo *lumps, const ShadowMapModeView &mode )
-{
-	for ( uint32 i=0;i<mode.receiverFaceCount;++i )
-	{
-		const ShadowMapReceiverFaceDisk &receiver=mode.receiverFaces[i];
-		if ( receiver.modelIndex || !(receiver.flags&SHADOWMAP_RECEIVER_DISPLACEMENT) ) continue;
-		dface_t face; ddispinfo_t disp;
-		if ( !ReadReceiverBspRecord(file,lumps[g_State.selectedMode==SHADOWMAP_MODE_HDR?LUMP_FACES_HDR:LUMP_FACES],receiver.dfaceIndex,face) ||
-			face.dispinfo<0 || face.numedges!=4 || face.firstedge<0 ||
-			!ReadReceiverBspRecord(file,lumps[LUMP_DISPINFO],face.dispinfo,disp) || disp.power<2 || disp.power>4 ) return false;
-		Vector points[4];
-		int start=-1; float closest=999999999.0f;
-		for ( int v=0;v<4;++v )
-		{
-			int surfedge; dedge_t edge; dvertex_t vertex;
-			if ( !ReadReceiverBspRecord(file,lumps[LUMP_SURFEDGES],uint32(face.firstedge)+v,surfedge) || surfedge==INT_MIN ||
-				!ReadReceiverBspRecord(file,lumps[LUMP_EDGES],surfedge<0?-surfedge:surfedge,edge) ||
-				!ReadReceiverBspRecord(file,lumps[LUMP_VERTEXES],edge.v[surfedge<0?1:0],vertex) ) return false;
-			points[v]=vertex.point;
-			// Same authored start-corner selection as CCoreDispSurface; this
-			// does not identify a receiver or project onto nearby geometry.
-			const float distance=(disp.startPosition-points[v]).LengthSqr();
-			if ( distance<closest ) { closest=distance; start=v; }
-		}
-		if ( start<0 ) return false;
-		DX12LightingReceiverQuad quad={};
-		quad.faceIndex=i; quad.gridSize=(1u<<disp.power)+1;
-		for ( int v=0;v<4;++v ) for ( int a=0;a<3;++a )
-			quad.position[v][a]=points[(start+4-v)%4][a];
-		g_ReceiverQuads.AddToTail(quad);
-	}
-	return true;
-}
-
 bool ReadMapMetadata( const char *mapName, char *error, int errorBytes )
 {
-	int size=engine->GameLumpSize(GAMELUMP_RESTIR_SHADOWMAPS);
-	g_State.featureMap=size!=0;
-	char name[MAX_PATH],path[MAX_PATH];
+	char name[MAX_PATH],path[MAX_PATH],lightPath[MAX_PATH];
 	V_strncpy(name,mapName && *mapName ? mapName : engine->GetLevelName(),sizeof(name));
 	V_FixSlashes(name,'/'); V_StripExtension(name,name,sizeof(name));
 	if ( !V_strnicmp(name,"maps/",5) ) V_snprintf(path,sizeof(path),"%s.bsp",name);
 	else V_snprintf(path,sizeof(path),"maps/%s.bsp",name);
-	if ( !g_pFullFileSystem ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
+	if ( !g_pFullFileSystem || !hlight::SidecarPath(name,lightPath,sizeof(lightPath)) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
+	// The enhanced lighting of a map is its maps/<name>.light; without one the map runs on its own lighting.
+	g_State.featureMap=g_pFullFileSystem->FileExists(lightPath,"GAME");
+	if ( !g_State.featureMap ) return true;
+	CShadowBspFile light(lightPath);
+	ShadowMapBspLumpInfo lightLumps[HEADER_LUMPS];
+	uint32 offset,bytes,version,flags; bool compressed;
+	if ( !ShadowMap_ReadBspDirectory(ReadBspBytes,&light,lightLumps,offset,bytes,version,compressed,flags) || compressed || !bytes ||
+		bytes>hlight::kMaxFileBytes || (uint64)offset+bytes>light.bytes ) return Fail(SHADOWMAP_ERR_INVALID_METADATA ": unreadable .light manifest",error,errorBytes);
+	if ( version!=hlight::kManifestVersion )
+		return Fail(SHADOWMAP_ERR_INVALID_METADATA ": outdated .light; rebake with -restir_shadowmaps",error,errorBytes);
+	g_State.rshdBytes.SetCount(int(bytes));
+	if ( !ReadBspBytes(&light,offset,bytes,g_State.rshdBytes.Base()) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
+	char reason[256]={0};
+	if ( !hlight::ValidateManifest(g_State.rshdBytes.Base(),bytes,flags,g_State.manifest,reason,sizeof(reason)) )
+		return Fail(reason,error,errorBytes);
 	CShadowBspFile file(path);
 	ShadowMapBspLumpInfo lumps[HEADER_LUMPS];
-	uint32 offset,bytes,version,flags; bool compressed;
-	if ( !ShadowMap_ReadBspDirectory(ReadBspBytes,&file,lumps,offset,bytes,version,compressed,flags) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
-	if ( size==0 )
-	{
-		// A stripped BSP cannot fall back to ordinary receiver shaders when a
-		// hand edit removed its sidecar. Inspect pak names, not lighting data.
-		if ( flags & (LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_NONHDR|LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR) )
-		{
-			g_State.featureMap=true;
-			return Fail(SHADOWMAP_ERR_INVALID_METADATA ": orphan level flag",error,errorBytes);
-		}
-		bool orphanAsset=false;
-		if ( !hlight::FindPakAsset(ReadBspBytes,&file,lumps[LUMP_PAKFILE],orphanAsset) || orphanAsset )
-		{
-			g_State.featureMap=true;
-			return Fail(SHADOWMAP_ERR_INVALID_METADATA ": unreadable pak directory or orphan high-resolution asset",error,errorBytes);
-		}
-		return true;
-	}
-	if ( size<0 || compressed || bytes!=(uint32)size || version!=(uint32)engine->GameLumpVersion(GAMELUMP_RESTIR_SHADOWMAPS) ||
-		(uint64)offset+bytes>file.bytes ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
-	g_State.rshdBytes.SetCount(size);
-	if ( !engine->LoadGameLump(GAMELUMP_RESTIR_SHADOWMAPS,g_State.rshdBytes.Base(),size) ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);
-	if ( version!=hlight::kManifestVersion )
-		return Fail(SHADOWMAP_ERR_INVALID_METADATA ": legacy enhanced map; rebake with high-resolution lightmaps",error,errorBytes);
-	char reason[256]={0};
-	if ( !hlight::ValidateManifest(g_State.rshdBytes.Base(),(uint32)size,flags,g_State.manifest,reason,sizeof(reason)) )
-		return Fail(reason,error,errorBytes);
+	uint32 mapOffset,mapBytes,mapVersion,mapFlags; bool mapCompressed;
+	if ( !ShadowMap_ReadBspDirectory(ReadBspBytes,&file,lumps,mapOffset,mapBytes,mapVersion,mapCompressed,mapFlags) )
+		return Fail(SHADOWMAP_ERR_INVALID_METADATA ": unreadable BSP directory",error,errorBytes);
 	int modelIndex=modelinfo->GetModelIndex(path);
 	const model_t *world=modelIndex>=0 ? modelinfo->GetModel(modelIndex) : NULL;
 	if ( !world || modelinfo->GetModelType(world)!=mod_brush ) return Fail(SHADOWMAP_ERR_INVALID_METADATA,error,errorBytes);

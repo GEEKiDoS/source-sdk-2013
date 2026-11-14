@@ -22,6 +22,7 @@
 #include "tier1/utllinkedlist.h"
 #include "tier1/utlmap.h"
 #include "gamebspfile.h"
+#include "bsp21_format.h"
 #include "datacache/imdlcache.h"
 #include "view.h"
 #include "viewrender.h"
@@ -692,8 +693,11 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 	// SDK engine promotes v7 to v10; both use this SDK's widened flags layout.
 	case 7:
 	case 10: stride = sizeof( StaticPropLump_t ); break;
+	// An unmodified Left 4 Dead 2 BSP 21 (lit by a .light): the adapter serves its original records here.
+	case 8: stride = BSP21_STATIC_PROP_V8_BYTES; break;
+	case 9: stride = BSP21_STATIC_PROP_V9_BYTES; break;
 	default:
-		return SHADOWMAP_ERR_INVALID_METADATA ": unsupported sprp version for authored caster policy (supported: 4, 5, 6, 7, 10)";
+		return SHADOWMAP_ERR_INVALID_METADATA ": unsupported sprp version for authored caster policy (supported: 4-10)";
 	}
 
 	CUtlMemory< uint8 > bytes;
@@ -722,6 +726,14 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 		case 6: ReadShadowStaticPropRecord< StaticPropLumpV6_t >( record, prop ); break;
 		case 7:
 		case 10: ReadShadowStaticPropRecord< StaticPropLump_t >( record, prop ); break;
+		case 8:
+		{
+			StaticPropLumpV6_t sdk;
+			Bsp21StaticPropV8ToSdkV6( &sdk, record );
+			prop = sdk;
+			break;
+		}
+		case 9: Bsp21StaticPropV9ToSdkV10( &prop, record ); break;
 		}
 		if ( prop.m_PropType >= dictCount || prop.m_FirstLeaf > leafCount ||
 			prop.m_LeafCount > leafCount - prop.m_FirstLeaf )

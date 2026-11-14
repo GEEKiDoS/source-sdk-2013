@@ -62,12 +62,11 @@ struct ReSTIRPropVisibilityData
 		directMeshes = directFallbackLights = 0;
 	}
 };
-// Null until the requested mode has completed successfully. Whole-scene paired
-// reuse aliases the retained LDR data; unequal modes never share visibility.
-const ReSTIRPropVisibilityData *ReSTIR_GetStaticPropVisibility( bool hdr );
+// Null until the static-prop stage has completed successfully.
+const ReSTIRPropVisibilityData *ReSTIR_GetStaticPropVisibility();
 void ReSTIR_EnableStaticPropDirectDiagnostics( bool enabled );
-bool ReSTIR_WriteStaticPropDirectDiagnostics( const char *path, bool hdr );
-void ReSTIR_LogStaticPropDirectSummary( bool hdr );
+bool ReSTIR_WriteStaticPropDirectDiagnostics( const char *path );
+void ReSTIR_LogStaticPropDirectSummary();
 
 class CReSTIRStaticPropMgr
 {
@@ -77,7 +76,7 @@ public:
 	int Count() const;
 	bool AppendTriangles( ReSTIRScene &scene, bool textureShadows );
 	bool AppendEmitters( ReSTIRScene &scene, const ReSTIROptions &options );
-	const ReSTIRPropVisibilityData *GetVisibility( bool hdr ) const;
+	const ReSTIRPropVisibilityData *GetVisibility() const;
 	// Loaded model peer data. mstudiomodel_t::CacheVertexData receives a pointer to this struct
 	// (passed as GetVertexData's pModelData) because studiohdr_t::SetVertexBase is a no-op on
 	// PLATFORM_64BITS for models without a studiohdr2_t.
@@ -103,9 +102,8 @@ private:
 	};
 	CUtlVector<Model *> m_Models;
 	CUtlVector<Prop *> m_Props;
-	ReSTIRPropVisibilityData m_Visibility[2];
-	bool m_VisibilityComplete[2] = { false, false };
-	bool m_VisibilitySharedHDR = false;
+	ReSTIRPropVisibilityData m_Visibility;
+	bool m_VisibilityComplete = false;
 	int m_nVerticesLit = 0;			// vertices lit at their own position
 	int m_nVerticesInSolid = 0;		// vertices inside solid, relit from the crawled position (vradstaticprops.cpp:1434-1499)
 	bool UnserializeModelDict( CUtlBuffer &buffer );
@@ -115,8 +113,7 @@ private:
 	bool ComputeLighting( Prop &prop, int propIndex, const ReSTIRScene &scene, CReSTIRVulkanDevice &device, bool rgbLighting, bool enhancedLighting );
 	bool SerializeLighting();
 	friend bool ReSTIR_ComputeStaticPropLighting( const ReSTIROptions &, const ReSTIRScene &, CReSTIRVulkanDevice & );
-	friend bool ReSTIR_ReuseStaticPropLighting( const ReSTIROptions & );
-	friend void ReSTIR_LogStaticPropDirectSummary( bool hdr );
+	friend void ReSTIR_LogStaticPropDirectSummary();
 };
 extern CReSTIRStaticPropMgr g_ReSTIRStaticPropMgr;
 #endif

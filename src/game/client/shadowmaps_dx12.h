@@ -166,7 +166,7 @@ struct ShadowMapClientMapState
 	bool						failed;					// feature map rejected with an explicit error
 	int							selectedMode;			// SHADOWMAP_MODE_* actually rendered (engine HDR selection)
 	char						error[256];
-	CUtlVector<uint8>			rshdBytes;				// owned copy of the sidecar payload (engine->LoadGameLump)
+	CUtlVector<uint8>			rshdBytes;				// owned copy of the manifest read from maps/<name>.light
 	hlight::ManifestView			manifest;				// selected-light metadata borrowing rshdBytes; no receiver geometry
 	const ShadowMapLightDisk	*lights;				// selected mode's records (sun first when present)
 	uint32						lightCount;

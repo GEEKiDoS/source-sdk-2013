@@ -1,7 +1,7 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// Purpose: Encode ordinary ReSTIR lighting and mode-owned shadow receivers,
-//          staging rshd and pak payloads in the atomic BSP replacement.
+// Purpose: Encode ordinary HDR ReSTIR lighting into the BSP and capture the
+//          -restir_shadowmaps receivers for the .light sidecar.
 //
 //=============================================================================//
 
@@ -23,26 +23,9 @@
 #include <limits.h>
 #include <string.h>
 
-extern int numworldlightsLDR;
-extern int numworldlightsHDR;
-extern dworldlight_t dworldlightsLDR[MAX_MAP_WORLDLIGHTS];
-extern dworldlight_t dworldlightsHDR[MAX_MAP_WORLDLIGHTS];
-extern CUtlVector<dleafambientindex_t> g_LeafAmbientIndexLDR;
 extern CUtlVector<dleafambientindex_t> g_LeafAmbientIndexHDR;
-extern CUtlVector<dleafambientlighting_t> g_LeafAmbientLightingLDR;
 extern CUtlVector<dleafambientlighting_t> g_LeafAmbientLightingHDR;
 
-bool ReSTIR_ReusePairedLeafAmbientLighting()
-{
-	if ( !g_bHDR || numworldlightsHDR != numworldlightsLDR )
-		return false;
-	g_LeafAmbientIndexHDR.CopyArray( g_LeafAmbientIndexLDR.Base(), g_LeafAmbientIndexLDR.Count() );
-	g_LeafAmbientLightingHDR.CopyArray( g_LeafAmbientLightingLDR.Base(), g_LeafAmbientLightingLDR.Count() );
-	// ComputeLeafAmbientLighting marks small native lights as INAMBIENTCUBE.
-	// Copy that completed native record, not the pre-gather exportLights.
-	memcpy( dworldlightsHDR, dworldlightsLDR, numworldlightsLDR * sizeof( dworldlight_t ) );
-	return true;
-}
 namespace
 {
 	// Ported from utils/vrad/macro_texture.cpp:17-30. The output module owns
@@ -207,9 +190,7 @@ namespace
 
 	static int SelectedFaceCount()
 	{
-		if ( g_bHDR && numfaces_hdr > 0 )
-			return numfaces_hdr;
-		return numfaces;
+		return numfaces_hdr;
 	}
 
 
@@ -408,11 +389,19 @@ namespace
 		}
 		return rgb;
 	}
-	static bool ShadowStorageError()
+}
+
+bool CReSTIRBSPOutput::CaptureHighres( const ReSTIROptions &options, const ReSTIRScene &scene, const ReSTIRLightmapResult &result )
+{
+	if ( scene.faces.Count() != scene.faceMinLight.Count() || scene.dfaceToFace.Count() < SelectedFaceCount() )
 	{
-		Warning("ReSTIR: inconsistent selected-light export metadata\n");
+		Warning( "ReSTIR: scene face/minlight/dface arrays are inconsistent\n" );
 		return false;
 	}
+	CMacroTextureState macroTextures;
+	macroTextures.Init( options.mapPath.String(), scene, SelectedFaceCount() );
+	HighresColorContext highres = { &scene, &result, &macroTextures };
+	return ReSTIR_CaptureHighres( options, scene, result, HighresColor, &highres );
 }
 
 bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReSTIRScene &scene, const ReSTIRLightmapResult &result )
@@ -436,9 +425,6 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 
 	CMacroTextureState macroTextures;
 	macroTextures.Init( options.mapPath.String(), scene, SelectedFaceCount() );
-	HighresColorContext highres = { &scene, &result, &macroTextures };
-	if (!ReSTIR_CaptureHighres(options,scene,result,HighresColor,&highres))
-		return false;
 
 	CUtlVector<NativeFaceStyles> nativeStyles;
 	nativeStyles.SetCount( scene.faces.Count() );
@@ -548,7 +534,6 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 		int active = styles.count;
 		int luxels = LuxelCount(face);
 		const int highLuxels = sceneFace.luxelW * sceneFace.luxelH;
-		const int density = options.shadowMaps ? options.highresDensity : 1;
 		const int nativeWidth = face.m_LightmapTextureSizeInLuxels[0] + 1;
 		int channels = sceneFace.numChannels;
 		Vector minLight( 0, 0, 0 );
@@ -566,7 +551,7 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 			{
 				for ( int luxel = 0; luxel < luxels; ++luxel )
 				{
-					const int highLuxel = (luxel / nativeWidth) * density * sceneFace.luxelW + (luxel % nativeWidth) * density;
+					const int highLuxel = (luxel / nativeWidth) * sceneFace.luxelW + luxel % nativeWidth;
 					int sourceIndex = sceneFace.firstOutput + ( sourceSlot * channels + channel ) * highLuxels + highLuxel;
 					int destIndex = face.lightofs + ( outStyle * channels + channel ) * luxels * 4 + luxel * 4;
 					if ( sourceIndex < 0 || sourceIndex >= result.radiance.Count() || destIndex < 0 || destIndex + 4 > pdlightdata->Count() )
@@ -641,32 +626,19 @@ bool CReSTIRBSPOutput::EncodeLightmaps( const ReSTIROptions &options, const ReST
 		return false;
 	}
 	if ( scene.exportLightToGpuLight.Count() != scene.exportLights.Count() )
-		return ShadowStorageError();
-	int retained = 0, selected = 0;
-	for ( int i = 0; i < scene.exportLights.Count(); ++i )
 	{
-		const int gpu = scene.exportLightToGpuLight[i];
-		if ( gpu < 0 || gpu >= scene.lights.Count() )
-			return ShadowStorageError();
-		if ( options.shadowMaps && ( scene.lights[gpu].lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) )
-		{
-			++selected;
-			continue;
-		}
-		// No marker flags or engine hook: selected analytic lights exist only
-		// in rshd; every unselected worldlight keeps its ordinary fields.
-		dworldlights[retained++] = scene.exportLights[i];
+		Warning( "ReSTIR: inconsistent worldlight export metadata\n" );
+		return false;
 	}
-	if ( selected != ReSTIR_SelectedLightCount() )
-		return ShadowStorageError();
-	*pNumworldlights = retained;
-	return ReSTIR_FinishSelectedLighting(options,selected);
+	for ( int i = 0; i < scene.exportLights.Count(); ++i )
+		dworldlights[i] = scene.exportLights[i];
+	*pNumworldlights = scene.exportLights.Count();
+	return true;
 }
 
 bool CReSTIRBSPOutput::Validate( const ReSTIROptions &options )
 {
-	if ( !ReSTIR_WriteShadowMapSidecar( options ) )
-		return false;
+	(void)options;
 	if ( !pdlightdata || !g_pFaces || !pNumworldlights || !dworldlights )
 	{
 		Warning( "ReSTIR: cannot validate uninitialized BSP output globals\n" );
@@ -677,13 +649,7 @@ bool CReSTIRBSPOutput::Validate( const ReSTIROptions &options )
 		Warning( "ReSTIR: worldlight count %d exceeds MAX_MAP_WORLDLIGHTS\n", *pNumworldlights );
 		return false;
 	}
-	if ( !ValidateFaceArray( g_pFaces, SelectedFaceCount(), *pdlightdata, g_bHDR ? "HDR" : "LDR" ) )
-		return false;
-	if ( dlightdataLDR.Count() > 0 && !ValidateFaceArray( dfaces, numfaces, dlightdataLDR, "LDR" ) )
-		return false;
-	if ( dlightdataHDR.Count() > 0 && numfaces_hdr > 0 && !ValidateFaceArray( dfaces_hdr, numfaces_hdr, dlightdataHDR, "HDR" ) )
-		return false;
-	if ( !ValidateAmbient( g_LeafAmbientIndexLDR, g_LeafAmbientLightingLDR, "LDR" ) ||
+	if ( !ValidateFaceArray( dfaces_hdr, numfaces_hdr, dlightdataHDR, "HDR" ) ||
 		 !ValidateAmbient( g_LeafAmbientIndexHDR, g_LeafAmbientLightingHDR, "HDR" ) )
 		return false;
 
@@ -712,7 +678,7 @@ bool CReSTIRBSPOutput::Write( const ReSTIROptions &options )
 	if ( !Validate( options ) )
 		return false;
 
-	const char *sourcePath = options.transactionPath.Length() ? options.transactionPath.String() : options.mapPath.String();
+	const char *sourcePath = options.mapPath.String();
 	if ( !sourcePath || !sourcePath[0] )
 	{
 		Warning( "ReSTIR: no BSP path was supplied\n" );

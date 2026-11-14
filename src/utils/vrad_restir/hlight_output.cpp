@@ -8,14 +8,19 @@
 #include "ambient_probes.h"
 #include "vrad_restir.h"
 #include "bsplib.h"
+#include "bsp21_format.h"
 #include "tier1/utlbuffer.h"
+#include "tier1/lzmaDecoder.h"
+#include "zip_utils.h"
 #include "gamebspfile.h"
+#include <windows.h>
 #include <float.h>
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
-extern int numworldlightsLDR, numworldlightsHDR;
-extern dworldlight_t dworldlightsLDR[MAX_MAP_WORLDLIGHTS], dworldlightsHDR[MAX_MAP_WORLDLIGHTS];
+extern int numworldlightsHDR;
+extern dworldlight_t dworldlightsHDR[MAX_MAP_WORLDLIGHTS];
 
 namespace
 {
@@ -38,7 +43,7 @@ struct ModeStorage
     CUtlVector<hlight::UnbakedFaceDisk> unbakedFaces;
     CUtlVector<uint32> unbakedLightIndices;
     CUtlVector<byte> visibilityPayload, faceSupport;
-    bool visibilityPropsCaptured, visibilityShared;
+    bool visibilityPropsCaptured;
     ReSTIRAmbientProbeGrid probes; bool probesCaptured;
     void Clear(bool preserveProbes = false)
     {
@@ -48,37 +53,27 @@ struct ModeStorage
         memset(&visibility,0,sizeof(visibility)); visibility.sunLightIndex = -1;
         visibilityFaces.Purge(); visibilityEntries.Purge(); visibilityProps.Purge(); visibilityMeshes.Purge();
         unbakedFaces.Purge(); unbakedLightIndices.Purge();
-        visibilityPayload.Purge(); faceSupport.Purge(); visibilityPropsCaptured = visibilityShared = false;
+        visibilityPayload.Purge(); faceSupport.Purge(); visibilityPropsCaptured = false;
         if (!preserveProbes) { probes.Purge(); probesCaptured = false; }
     }
 };
-ModeStorage s_Mode[2];
+ModeStorage s_Storage; // the single HDR mode of the .light
 uint32 s_Density = 0;
 char s_AssetPath[256];
-bool s_Prepared = false, s_Finalized = false;
-int SelectedMode() { return g_bHDR ? 1 : 0; }
-int SelectedFaces() { return g_bHDR && numfaces_hdr ? numfaces_hdr : numfaces; }
+bool s_Prepared = false;
+// The map's own HDR worldlights as loaded, before the ambient stage edits their flags: the selected lights are matched
+// against these records, and the manifest binds to the CRC of the lump bytes exactly as the engine loads them.
+CUtlVector<dworldlight_t> s_InputWorldlights;
+uint32 s_InputWorldlightsCRC32 = 0;
 bool Fail(const char *why)
 {
-    Warning("Hlight: %s (%s mode)\n",why,g_bHDR ? "HDR" : "LDR"); return false;
+    Warning("Hlight: %s\n",why); return false;
 }
 // maps/<name>.hprobe: the ambient probe grids paired to the .hlight asset. s_AssetPath is a manifest-validated or
 // generated maps/<name>.hlight, so the suffix swap cannot fail.
 void ProbePath(char (&out)[256])
 {
     hprobe::ProbeAssetPath(s_AssetPath,out,sizeof(out));
-}
-// The .hlight and its paired .hprobe leave the pak together.
-void RemoveAssets()
-{
-    char probe[256]; ProbePath(probe);
-    RemoveFileFromPak(GetPakFile(),s_AssetPath);
-    RemoveFileFromPak(GetPakFile(),probe);
-}
-void DeleteManifest()
-{
-    GameLumpHandle_t h = g_GameLumps.GetGameLumpHandle(GAMELUMP_RESTIR_SHADOWMAPS);
-    if (h != g_GameLumps.InvalidGameLump()) g_GameLumps.DestroyGameLump(h);
 }
 void Identity(ModeStorage &m, uint32 lump, const void *data, uint32 bytes, uint32 version = 0)
 {
@@ -100,20 +95,16 @@ void GeometryIdentities(ModeStorage &m)
     Identity(m,44,g_TexDataStringTable.Base(),g_TexDataStringTable.Count()*sizeof(int));
     Identity(m,48,g_DispTris.Base(),g_DispTris.Count()*sizeof(CDispTri));
 }
-void FinalIdentities(ModeStorage &m, int mode)
+void FinalIdentities(ModeStorage &m)
 {
     m.identities.RemoveAll(); GeometryIdentities(m);
-    const dface_t *faces = mode ? (numfaces_hdr ? dfaces_hdr : dfaces) : dfaces;
-    const int count = mode && numfaces_hdr ? numfaces_hdr : numfaces;
-    const CUtlVector<byte> &lighting = mode ? dlightdataHDR : dlightdataLDR;
-    m.record.faceLump = mode && numfaces_hdr ? LUMP_FACES_HDR : LUMP_FACES;
-    m.record.lightingLump = mode ? LUMP_LIGHTING_HDR : LUMP_LIGHTING;
+    m.record.faceLump = LUMP_FACES_HDR; m.record.lightingLump = LUMP_LIGHTING_HDR;
     m.record.faceVersion = LUMP_FACES_VERSION; m.record.lightingVersion = LUMP_LIGHTING_VERSION;
-    m.record.faceBytes = count*sizeof(dface_t); m.record.lightingBytes = lighting.Count();
-    m.record.facesCRC32 = ShadowMap_CRC32(faces,(uint32)m.record.faceBytes);
-    m.record.lightingCRC32 = ShadowMap_CRC32(lighting.Base(),lighting.Count());
-    Identity(m,m.record.faceLump,faces,(uint32)m.record.faceBytes,m.record.faceVersion);
-    Identity(m,m.record.lightingLump,lighting.Base(),lighting.Count(),m.record.lightingVersion);
+    m.record.faceBytes = numfaces_hdr*sizeof(dface_t); m.record.lightingBytes = dlightdataHDR.Count();
+    m.record.facesCRC32 = ShadowMap_CRC32(dfaces_hdr,(uint32)m.record.faceBytes);
+    m.record.lightingCRC32 = ShadowMap_CRC32(dlightdataHDR.Base(),dlightdataHDR.Count());
+    Identity(m,m.record.faceLump,dfaces_hdr,(uint32)m.record.faceBytes,m.record.faceVersion);
+    Identity(m,m.record.lightingLump,dlightdataHDR.Base(),dlightdataHDR.Count(),m.record.lightingVersion);
     for (int i = 1; i < m.identities.Count(); ++i)
     {
         hlight::LumpIdentity id = m.identities[i]; int j = i;
@@ -158,7 +149,7 @@ bool Append(CUtlVector<byte> &out, const void *data, uint64 count, uint64 &offse
     if (count) memcpy(out.Base()+start,data,(size_t)count);
     offset = start; return true;
 }
-// The grid section is written straight from the vectors: one aligned section, no staging copy of up to 256 MiB.
+// The grid section is written straight from the vectors: one aligned section, no staging copy of the grid.
 bool AppendProbeGrid(CUtlVector<byte> &out, const ReSTIRAmbientProbeGrid &g, uint64 &offset)
 {
     const uint64 start = (uint64(out.Count())+15)&~uint64(15), bytes = hprobe::GridBytes(g.grid);
@@ -174,52 +165,34 @@ bool AppendProbeGrid(CUtlVector<byte> &out, const ReSTIRAmbientProbeGrid &g, uin
     memcpy(at,g.validity.Base(),g.validity.Count());
     offset = start; return true;
 }
-// The .hprobe pak member: one grid per hlight mode, bound to that exact .hlight by its CRC and each mode's identity.
-bool BuildProbeAsset(const hlight::FileView &lightmaps, const int modeOrder[2], CUtlVector<byte> &file)
+// The .hprobe pak member: the grid of the single mode, bound to that exact .hlight by its CRC and the mode's identity.
+bool BuildProbeAsset(const hlight::FileView &lightmaps, CUtlVector<byte> &file)
 {
-    const uint32 modeCount = lightmaps.header->modeCount;
+    const ModeStorage &m = s_Storage;
+    if (!m.probesCaptured) return Fail("ambient probe grid was not captured");
     uint64 fileBytes = sizeof(hprobe::FileHeader);
-    if (!ReSTIR_AddByteSectionSize(fileBytes,uint64(modeCount)*sizeof(hprobe::ModeDisk)))
-        return Fail("probe asset exceeds signed BSP-pak buffer limit");
-    for (uint32 i = 0; i < modeCount; ++i)
-    {
-        const ModeStorage &m = s_Mode[modeOrder[i]];
-        if (!m.probesCaptured) return Fail("mode lacks ambient probe grid; rebake with -restir_shadowmaps");
-        if (!ReSTIR_AddByteSectionSize(fileBytes,hprobe::GridBytes(m.probes.grid)))
-            return Fail("probe asset exceeds signed BSP-pak buffer limit");
-    }
+    if (!ReSTIR_AddByteSectionSize(fileBytes,sizeof(hprobe::ModeDisk)) ||
+        !ReSTIR_AddByteSectionSize(fileBytes,hprobe::GridBytes(m.probes.grid)))
+        return Fail("probe asset exceeds the signed pak member limit");
     hprobe::FileHeader header; memset(&header,0,sizeof(header));
     header.magic = hprobe::kMagic; header.version = hprobe::kVersion; header.headerBytes = sizeof(header);
-    header.endian = hprobe::kEndian; header.hlightCRC32 = lightmaps.header->crc32; header.modeCount = modeCount;
+    header.endian = hprobe::kEndian; header.hlightCRC32 = lightmaps.header->crc32; header.modeCount = 1;
     file.EnsureCapacity(int(fileBytes));
     file.SetCount(sizeof(header)); memset(file.Base(),0,file.Count());
-    hprobe::ModeDisk records[2]; memset(records,0,sizeof(records));
-    if (!Append(file,records,uint64(modeCount)*sizeof(hprobe::ModeDisk),header.modesOffset)) return false;
-    for (uint32 i = 0; i < modeCount; ++i)
-    {
-        const hlight::ModeDisk &identity = *lightmaps.mode[i].record; hprobe::ModeDisk &r = records[i];
-        const ReSTIRAmbientProbeGrid &grid = s_Mode[modeOrder[i]].probes;
-        r.faceLump = identity.faceLump; r.lightingLump = identity.lightingLump;
-        r.facesCRC32 = identity.facesCRC32; r.lightingCRC32 = identity.lightingCRC32;
-        r.lightingBytes = identity.lightingBytes; r.brickCount = grid.grid.brickCount;
-        if (!AppendProbeGrid(file,grid,r.gridOffset)) return false;
-    }
-    memcpy(file.Base()+header.modesOffset,records,modeCount*sizeof(hprobe::ModeDisk));
+    hprobe::ModeDisk record; memset(&record,0,sizeof(record));
+    if (!Append(file,&record,sizeof(record),header.modesOffset)) return false;
+    const hlight::ModeDisk &identity = *lightmaps.mode[0].record;
+    record.faceLump = identity.faceLump; record.lightingLump = identity.lightingLump;
+    record.facesCRC32 = identity.facesCRC32; record.lightingCRC32 = identity.lightingCRC32;
+    record.lightingBytes = identity.lightingBytes; record.brickCount = m.probes.grid.brickCount;
+    if (!AppendProbeGrid(file,m.probes,record.gridOffset)) return false;
+    memcpy(file.Base()+header.modesOffset,&record,sizeof(record));
     header.fileBytes = file.Count(); memcpy(file.Base(),&header,sizeof(header));
     reinterpret_cast<hprobe::FileHeader *>(file.Base())->crc32 = hprobe::FileCRC32(file.Base(),file.Count());
     hprobe::FileView probes; char error[256];
     if (!hprobe::ValidateFile(file.Base(),file.Count(),probes,error,sizeof(error)) ||
         !hprobe::ValidatePair(probes,lightmaps,error,sizeof(error))) return Fail(error);
     return true;
-}
-void CopyProbeGrid(const hprobe::ModeView &v, ReSTIRAmbientProbeGrid &out)
-{
-    const uint64 texels = hprobe::AtlasTexels(*v.grid);
-    out.grid = *v.grid;
-    out.indirection.CopyArray(v.indirection,int(hprobe::IndirectionCount(*v.grid)));
-    out.dc.CopyArray(v.dc,int(texels));
-    out.bands.CopyArray(v.bands,int(texels*hprobe::kBands*4));
-    out.validity.CopyArray(v.validity,int(texels));
 }
 bool AddVisibilityPlane(ModeStorage &m, uint32 light, const byte *values, uint32 count)
 {
@@ -273,8 +246,8 @@ bool BuildFaceDirect(const ReSTIRScene &scene, const ReSTIRLightmapResult &resul
         if (!scene.IsReceiverStyle(face.styles[s])) continue;
         if (out.count == MAXLIGHTMAPS)
         {
-            Warning("Hlight: receiver style overflow face=%d styles=%d,%d,%d,%d + %d (%s)\n",
-                face.dface,out.styles[0],out.styles[1],out.styles[2],out.styles[3],face.styles[s],g_bHDR ? "HDR" : "LDR");
+            Warning("Hlight: receiver style overflow face=%d styles=%d,%d,%d,%d + %d\n",
+                face.dface,out.styles[0],out.styles[1],out.styles[2],out.styles[3],face.styles[s]);
             return Fail("dense face exceeds four receiver styles");
         }
         out.styles[out.count] = face.styles[s]; out.sourceSlots[out.count++] = s;
@@ -394,10 +367,10 @@ bool CaptureWorldVisibility(ModeStorage &m, const ReSTIRScene &scene, const ReST
     }
     return true;
 }
-bool CapturePropVisibility(ModeStorage &m, int mode)
+bool CapturePropVisibility(ModeStorage &m)
 {
     if (m.visibilityPropsCaptured) return true;
-    const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility(mode != 0);
+    const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility();
     if (!data || data->selectedLightCount != uint32(m.lights.Count())) return Fail("static prop visibility missing or selected-light mismatch");
     m.visibilityProps.AddVectorToTail(data->props);
     m.visibilityMeshes.AddVectorToTail(data->meshes);
@@ -431,181 +404,105 @@ bool CapturePropVisibility(ModeStorage &m, int mode)
     m.visibility.propCount = m.visibilityProps.Count(); m.visibility.meshCount = m.visibilityMeshes.Count();
     return true;
 }
-bool LoadAsset(const hlight::ManifestView &manifest, uint32 previousVersion = 0)
+// One lump of a v19-v21 BSP file exactly as the engine's lump loader hands it to its consumers: the stored bytes,
+// LZMA-decoded when the lump is compressed. Version-21 worldlights stay 100-byte records here.
+bool ReadEngineLump(const char *path, int lump, CUtlVector<byte> &out)
 {
-    CUtlBuffer asset;
-    if (!ReadFileFromPak(GetPakFile(),manifest.header->assetPath,false,asset)) return Fail("manifest pak asset is missing");
-    if (previousVersion)
+    out.RemoveAll();
+    FILE *file = fopen(path,"rb");
+    if (!file) return Fail("cannot reopen the input BSP");
+    Bsp21Header header; bool read = fread(&header,sizeof(header),1,file) == 1;
+    uint32 offset = 0, stored = 0, length = 0;
+    if (read && header.ident == BSP21_IDENT && header.version == BSP21_VERSION)
     {
-        if (asset.TellPut() < int(sizeof(hlight::FileHeader))) return Fail("previous visibility asset truncated");
-        hlight::FileHeader &h = *static_cast<hlight::FileHeader *>(asset.Base());
-        if (h.version != previousVersion || (previousVersion != 2 && previousVersion != 3) || h.crc32 != hlight::FileCRC32(asset.Base(),asset.TellPut()) ||
-            !h.modeCount || h.modeCount > 4 || (h.modesOffset & 3) || h.modesOffset > uint32(asset.TellPut()) ||
-            uint64(h.modeCount)*sizeof(hlight::ModeDisk) > uint32(asset.TellPut())-h.modesOffset)
-            return Fail("previous visibility asset version/CRC/range mismatch");
-        hlight::ModeDisk *modes = reinterpret_cast<hlight::ModeDisk *>(static_cast<byte *>(asset.Base())+h.modesOffset);
-        for (uint32 mi = 0; mi < h.modeCount; ++mi)
-        {
-            if ((modes[mi].facesOffset & 3) || modes[mi].facesOffset > uint32(asset.TellPut()) ||
-                uint64(modes[mi].faceCount)*sizeof(hlight::FaceDisk) > uint32(asset.TellPut())-modes[mi].facesOffset)
-                return Fail("previous visibility face directory range");
-            hlight::FaceDisk *faces = reinterpret_cast<hlight::FaceDisk *>(static_cast<byte *>(asset.Base())+modes[mi].facesOffset);
-            for (uint32 fi = 0; fi < modes[mi].faceCount; ++fi)
-            {
-                if (faces[fi].flags & ~(previousVersion == 2 ? 15u : 31u)) return Fail("previous visibility face flags");
-                if (previousVersion == 2 && faces[fi].styleCount) faces[fi].flags |= hlight::kFaceHasBakedLocalDirect;
-            }
-        }
-        if (h.visibilitySetsOffset > uint32(asset.TellPut()) ||
-            uint64(h.visibilitySetCount)*sizeof(hlight::VisibilitySetDisk) > uint32(asset.TellPut())-h.visibilitySetsOffset)
-            return Fail("previous visibility set directory range");
-        hlight::VisibilitySetDisk *sets = reinterpret_cast<hlight::VisibilitySetDisk *>(static_cast<byte *>(asset.Base())+h.visibilitySetsOffset);
-        for (uint32 si = 0; si < h.visibilitySetCount; ++si)
-        {
-            if (previousVersion == 2)
-            {
-                if (!hlight::ZeroBytes(reinterpret_cast<byte *>(&sets[si])+104,24))
-                    return Fail("previous visibility set reserved tail");
-                sets[si].unbakedFacesOffset = sets[si].unbakedLightIndicesOffset = sets[si].payloadOffset;
-            }
-            if ((sets[si].meshesOffset & 3) || sets[si].meshesOffset > uint32(asset.TellPut()) ||
-                uint64(sets[si].meshCount)*sizeof(hlight::PropMeshVisibilityDisk) > uint32(asset.TellPut())-sets[si].meshesOffset)
-                return Fail("previous visibility prop mesh range");
-            const hlight::PropMeshVisibilityDisk *meshes = reinterpret_cast<const hlight::PropMeshVisibilityDisk *>(static_cast<const byte *>(asset.Base())+sets[si].meshesOffset);
-            for (uint32 mesh = 0; mesh < sets[si].meshCount; ++mesh)
-                if (meshes[mesh].directPayloadByteOffset || meshes[mesh].directPayloadBytes)
-                    return Fail("previous visibility prop mesh reserved fields");
-        }
-        h.version = hlight::kVersion; h.crc32 = hlight::FileCRC32(asset.Base(),asset.TellPut());
+        offset = header.lumps[lump].offset; stored = header.lumps[lump].length; length = header.lumps[lump].uncompressedLength;
     }
-    hlight::FileView file; char error[256];
-    if (!hlight::ValidateFile(asset.Base(),asset.TellPut(),file,error,sizeof(error))) return Fail(error);
-    if (!hlight::ValidateManifestAsset(file,manifest,error,sizeof(error))) return Fail(error);
-    s_Density = file.header->density; V_strncpy(s_AssetPath,manifest.header->assetPath,sizeof(s_AssetPath));
-    if (previousVersion)
+    else if (read && header.ident == BSP21_IDENT && header.version >= 19 && header.version <= 20)
     {
-        // Admission above checked identities/CRC/ranges. A complete rebake must
-        // not allocate and copy gigabytes of old RGB/visibility only to discard it.
-        for (int mi = 0; mi < 2; ++mi) s_Mode[mi].Clear();
-        s_Density = 0;
-        Msg("Hlight: checked v%u input; discarding previous RGB for complete v4 prop-direct rebake\n",previousVersion);
-        return true;
+        const lump_t &l = reinterpret_cast<const dheader_t &>(header).lumps[lump];
+        offset = uint32(l.fileofs); stored = uint32(l.filelen); length = uint32(l.uncompressedSize);
     }
-    // The ambient probe grids ride a separate pak member paired to this asset. A mode without a valid paired grid
-    // cannot be carried into a rewritten asset, so it is not retained: the paired rebake replaces it.
-    CUtlBuffer probeAsset; hprobe::FileView probes; char probePath[256]; ProbePath(probePath); error[0] = 0;
-    const bool paired = ReadFileFromPak(GetPakFile(),probePath,false,probeAsset) &&
-        hprobe::ValidateFile(probeAsset.Base(),probeAsset.TellPut(),probes,error,sizeof(error)) &&
-        hprobe::ValidatePair(probes,file,error,sizeof(error));
-    if (!paired) Msg("Hlight: no valid paired ambient probe asset (%s); retained modes are rebaked\n",error[0] ? error : "missing");
-    for (int mi = 0; mi < 2; ++mi)
-    {
-        if (!manifest.mode[mi].runtime) continue;
-        const hlight::ManifestModeDisk &mm = *manifest.mode[mi].record;
-        if (mm.assetMode >= file.header->modeCount) return Fail("manifest asset mode is absent");
-        const hlight::ModeView &v = file.mode[mm.assetMode]; const hlight::ModeDisk &r = *v.record;
-        if (r.faceLump != mm.faceLump || r.lightingLump != mm.lightingLump || r.facesCRC32 != mm.facesCRC32 ||
-            r.lightingBytes != mm.lightingBytes || r.lightingCRC32 != mm.lightingCRC32) return Fail("manifest/asset identity mismatch");
-        const CUtlVector<byte> &rgb = mi ? dlightdataHDR : dlightdataLDR;
-        const int faces = mi && numfaces_hdr ? numfaces_hdr : numfaces;
-        if (rgb.Count() != r.lightingBytes || ShadowMap_CRC32(rgb.Base(),rgb.Count()) != r.lightingCRC32 ||
-            uint32(faces) != r.faceCount || ShadowMap_CRC32(mi && numfaces_hdr ? dfaces_hdr : dfaces,faces*sizeof(dface_t)) != r.facesCRC32)
-            return Fail("converted mode does not match loaded BSP lighting/face bytes");
-        const int lights = mi ? numworldlightsHDR : numworldlightsLDR;
-        if (ShadowMap_CRC32(mi ? dworldlightsHDR : dworldlightsLDR,lights*sizeof(dworldlight_t)) != mm.worldlightsCRC32)
-            return Fail("converted worldlights CRC mismatch");
-        ModeStorage &m = s_Mode[mi];
-        GeometryIdentities(m);
-        for (int i = 0; i < m.identities.Count(); ++i)
-        {
-            uint32 j = 0; while (j < r.identityCount && v.identities[j].lump != m.identities[i].lump) ++j;
-            if (j == r.identityCount || memcmp(&m.identities[i],&v.identities[j],sizeof(hlight::LumpIdentity)))
-                return Fail("effective geometry identity mismatch");
-        }
-        m.identities.RemoveAll();
-        const hprobe::ModeView *probeMode = paired ? hprobe::FindMode(probes,r.faceLump,r.lightingLump) : NULL;
-        if (!probeMode) continue;
-        m.record = r; m.active = true;
-        m.identities.AddMultipleToTail(r.identityCount,v.identities);
-        m.models.AddMultipleToTail(r.modelCount,v.models); m.faces.AddMultipleToTail(r.faceCount,v.faces);
-        m.tiles.AddMultipleToTail(r.tileCount,v.tiles); m.pages.AddMultipleToTail(r.pageCount,v.pages);
-        for (uint32 p = 0; p < r.pageCount; ++p)
-        {
-            m.pages[p].pixelsOffset = m.pixels.Count();
-            m.pixels.AddMultipleToTail((int)v.pages[p].pixelsBytes,file.base+v.pages[p].pixelsOffset);
-        }
-        m.lights.AddMultipleToTail(manifest.mode[mi].lightCount,manifest.mode[mi].lights);
-        m.visibility = *v.visibility.record;
-        m.visibilityFaces.AddMultipleToTail(m.visibility.faceCount,v.visibility.faces);
-        m.visibilityEntries.AddMultipleToTail(m.visibility.entryCount,v.visibility.entries);
-        m.visibilityProps.AddMultipleToTail(m.visibility.propCount,v.visibility.props);
-        m.unbakedFaces.AddMultipleToTail(m.visibility.unbakedFaceCount,v.visibility.unbakedFaces);
-        m.unbakedLightIndices.AddMultipleToTail(m.visibility.unbakedLightIndexCount,v.visibility.unbakedLightIndices);
-        m.visibilityMeshes.AddMultipleToTail(m.visibility.meshCount,v.visibility.meshes);
-        m.visibilityPayload.AddMultipleToTail(int(m.visibility.payloadBytes),v.visibility.payload);
-        m.faceSupport.AddMultipleToTail(int(m.visibility.faceSupportBytes),v.visibility.faceSupport);
-        m.visibilityPropsCaptured = true;
-        CopyProbeGrid(*probeMode,m.probes); m.probesCaptured = true;
-    }
+    else read = false;
+    CUtlVector<byte> bytes; bytes.SetCount(int(MIN(stored,uint32(INT_MAX))));
+    read = read && stored <= uint32(INT_MAX) && length <= uint32(INT_MAX) && !fseek(file,long(offset),SEEK_SET) &&
+        (!stored || fread(bytes.Base(),stored,1,file) == 1);
+    fclose(file);
+    if (!read) return Fail("unreadable input BSP lump");
+    if (!length) { out.Swap(bytes); return true; }
+    if (stored < sizeof(lzma_header_t) || !CLZMA::IsCompressed(bytes.Base()) || CLZMA::GetActualSize(bytes.Base()) != length)
+        return Fail("malformed compressed input BSP lump");
+    out.SetCount(int(length));
+    if (CLZMA::Uncompress(bytes.Base(),out.Base()) != length) return Fail("input BSP lump LZMA decode failed");
     return true;
 }
-// Previous enhanced assets are accepted solely as checked paired-rebake inputs.
-// No old receiver pixels or visibility survive this import, and runtime validation
-// remains strictly v2/v5. The old file CRC and exact native identities are checked.
-bool ImportPreviousEnhanced(GameLumpHandle_t handle)
+// Record indices of the map's own HDR worldlights that carry a selected light. The selected records were built from
+// the same entities, so type, style and origin identify them; a selected light without a counterpart removes nothing.
+void MatchRemovedWorldlights(const CUtlVector<ShadowMapLightDisk> &lights, CUtlVector<uint32> &removed)
 {
-    const int manifestBytes = g_GameLumps.GameLumpSize(handle);
-    if (manifestBytes < int(sizeof(hlight::ManifestDisk))) return Fail("previous manifest truncated");
-    CUtlVector<byte> normalized; normalized.AddMultipleToTail(manifestBytes,static_cast<const byte *>(g_GameLumps.GetGameLump(handle)));
-    hlight::ManifestDisk &old = *reinterpret_cast<hlight::ManifestDisk *>(normalized.Base());
-    if (old.assetVersion != 1) return Fail("previous manifest asset version mismatch");
-    old.assetVersion = hlight::kVersion;
-    hlight::ManifestView manifest; char error[256];
-    if (!hlight::ValidateManifest(normalized.Base(),normalized.Count(),g_LevelFlags,manifest,error,sizeof(error))) return Fail(error);
-    CUtlBuffer asset;
-    if (!ReadFileFromPak(GetPakFile(),old.assetPath,false,asset) || asset.TellPut() < 64) return Fail("previous asset missing/truncated");
-    const byte *base = static_cast<const byte *>(asset.Base());
-    const hlight::FileHeader &header = *reinterpret_cast<const hlight::FileHeader *>(base);
-    if (header.magic != hlight::kMagic || header.version != 1 || header.headerBytes != 64 ||
-        header.endian != hlight::kEndian || header.fileBytes != uint32(asset.TellPut()) ||
-        !header.modeCount || header.modeCount > 4 || !header.density ||
-        !hlight::ZeroBytes(base+44,20) || header.crc32 != hlight::FileCRC32(base,asset.TellPut()) ||
-        header.modesOffset != 64 || uint64(header.modeCount)*112 > uint32(asset.TellPut())-64)
-        return Fail("previous asset header/version/CRC mismatch");
-    ModeStorage geometry; geometry.Clear(); GeometryIdentities(geometry);
-    uint32 admitted = 0;
-    for (int mi = 0; mi < 2; ++mi)
+    removed.RemoveAll();
+    CUtlVector<bool> used; used.SetCount(s_InputWorldlights.Count());
+    for (int i = 0; i < used.Count(); ++i) used[i] = false;
+    for (int li = 0; li < lights.Count(); ++li)
     {
-        if (!manifest.mode[mi].runtime) continue;
-        const hlight::ManifestModeDisk &mm = *manifest.mode[mi].record;
-        if (mm.assetMode >= header.modeCount || (admitted & (1u<<mm.assetMode))) return Fail("previous asset mode duplicate/range");
-        hlight::ModeDisk mode; memset(&mode,0,sizeof(mode));
-        memcpy(&mode,base+64+mm.assetMode*112,112);
-        const CUtlVector<byte> &rgb = mi ? dlightdataHDR : dlightdataLDR;
-        const dface_t *faces = mi && numfaces_hdr ? dfaces_hdr : dfaces;
-        const int faceCount = mi && numfaces_hdr ? numfaces_hdr : numfaces;
-        if (mode.faceLump != mm.faceLump || mode.lightingLump != mm.lightingLump ||
-            mode.faceCount != uint32(faceCount) || mode.faceBytes != uint64(faceCount)*sizeof(dface_t) ||
-            mode.lightingBytes != uint32(rgb.Count()) || mm.lightingBytes != mode.lightingBytes ||
-            mode.facesCRC32 != mm.facesCRC32 || mode.facesCRC32 != ShadowMap_CRC32(faces,faceCount*sizeof(dface_t)) ||
-            mode.lightingCRC32 != mm.lightingCRC32 || mode.lightingCRC32 != ShadowMap_CRC32(rgb.Base(),rgb.Count()) ||
-            mm.worldlightsCRC32 != ShadowMap_CRC32(mi ? dworldlightsHDR : dworldlightsLDR,
-                (mi ? numworldlightsHDR : numworldlightsLDR)*sizeof(dworldlight_t)) ||
-            mode.identityCount != 14 || mode.identitiesOffset > uint32(asset.TellPut()) ||
-            uint64(mode.identityCount)*sizeof(hlight::LumpIdentity) > uint32(asset.TellPut())-mode.identitiesOffset)
-            return Fail("previous asset/native mode identities mismatch");
-        const hlight::LumpIdentity *ids = reinterpret_cast<const hlight::LumpIdentity *>(base+mode.identitiesOffset);
-        for (int i = 0; i < geometry.identities.Count(); ++i)
+        const dworldlight_t &want = lights[li].light;
+        int match = -1;
+        for (int i = 0; i < s_InputWorldlights.Count() && match < 0; ++i)
         {
-            uint32 j = 0; while (j < mode.identityCount && ids[j].lump != geometry.identities[i].lump) ++j;
-            if (j == mode.identityCount || memcmp(&ids[j],&geometry.identities[i],sizeof(ids[j])))
-                return Fail("previous asset effective geometry mismatch");
+            const dworldlight_t &have = s_InputWorldlights[i];
+            if (used[i] || have.type != want.type) continue;
+            if (want.type == emit_skylight || (have.style == want.style && have.origin.DistToSqr(want.origin) <= 0.25f))
+                match = i;
         }
-        admitted |= 1u<<mm.assetMode;
+        if (match < 0)
+        {
+            Warning("Hlight: selected light %d (type %d, style %d) has no counterpart in the BSP's worldlights\n",li,want.type,want.style);
+            continue;
+        }
+        used[match] = true;
     }
-    if (admitted != (1u<<header.modeCount)-1) return Fail("previous asset unreferenced mode");
-    V_strncpy(s_AssetPath,old.assetPath,sizeof(s_AssetPath));
-    Msg("Hlight: checked v1/rshd v4 input; discarding old enhanced data for a complete hybrid rebake\n");
+    for (int i = 0; i < used.Count(); ++i) if (used[i]) removed.AddToTail(uint32(i));
+    Msg("Hlight: %d of %d selected lights matched to BSP worldlights (dropped from the engine's lump at load)\n",removed.Count(),lights.Count());
+}
+// <map>.light: a BSP v20 container holding only LUMP_MAP_FLAGS, the rshd game lump and the pak of the two assets.
+// Written to a temporary sibling and renamed over the previous file, so a failed bake leaves the old one in place.
+bool WriteLightFile(const char *path, const CUtlVector<byte> &manifest, const CUtlVector<byte> &asset,
+    const char *probePath, const CUtlVector<byte> &probes)
+{
+    IZip *zip = IZip::CreateZip(NULL,true);
+    zip->AddBufferToZip(s_AssetPath,const_cast<byte *>(asset.Base()),asset.Count(),false,IZip::eCompressionType_LZMA);
+    zip->AddBufferToZip(probePath,const_cast<byte *>(probes.Base()),probes.Count(),false,IZip::eCompressionType_LZMA);
+    CUtlBuffer pak; zip->SaveToBuffer(pak);
+    IZip::ReleaseZip(zip);
+    dheader_t header; memset(&header,0,sizeof(header));
+    header.ident = IDBSPHEADER; header.version = 20; header.mapRevision = g_MapRevision;
+    const uint32 flags = LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR;
+    const int gameLumpBytes = int(sizeof(int)+sizeof(dgamelump_t));
+    header.lumps[LUMP_MAP_FLAGS].fileofs = sizeof(header); header.lumps[LUMP_MAP_FLAGS].filelen = sizeof(flags);
+    header.lumps[LUMP_GAME_LUMP].fileofs = header.lumps[LUMP_MAP_FLAGS].fileofs+sizeof(flags);
+    header.lumps[LUMP_GAME_LUMP].filelen = gameLumpBytes+manifest.Count();
+    const int64 pakOffset = (int64(header.lumps[LUMP_GAME_LUMP].fileofs)+header.lumps[LUMP_GAME_LUMP].filelen+3)&~int64(3);
+    if (pakOffset+pak.TellPut() > INT_MAX) return Fail(".light exceeds the 2 GiB BSP limit");
+    header.lumps[LUMP_PAKFILE].fileofs = int(pakOffset); header.lumps[LUMP_PAKFILE].filelen = pak.TellPut();
+    dgamelump_t entry; memset(&entry,0,sizeof(entry));
+    entry.id = GAMELUMP_RESTIR_SHADOWMAPS; entry.version = (unsigned short)hlight::kManifestVersion;
+    entry.fileofs = header.lumps[LUMP_GAME_LUMP].fileofs+gameLumpBytes; entry.filelen = manifest.Count();
+    char temporary[MAX_PATH*2]; V_snprintf(temporary,sizeof(temporary),"%s.restir.tmp",path);
+    FILE *file = fopen(temporary,"wb");
+    if (!file) return Fail("cannot create the temporary .light file");
+    const int count = 1; const uint32 zero = 0;
+    const int padding = int(pakOffset-(header.lumps[LUMP_GAME_LUMP].fileofs+header.lumps[LUMP_GAME_LUMP].filelen));
+    bool written = fwrite(&header,sizeof(header),1,file) == 1 && fwrite(&flags,sizeof(flags),1,file) == 1 &&
+        fwrite(&count,sizeof(count),1,file) == 1 && fwrite(&entry,sizeof(entry),1,file) == 1 &&
+        fwrite(manifest.Base(),manifest.Count(),1,file) == 1 && (!padding || fwrite(&zero,padding,1,file) == 1) &&
+        fwrite(pak.Base(),pak.TellPut(),1,file) == 1;
+    written = !fclose(file) && written;
+    if (!written || !MoveFileExA(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+    {
+        DeleteFileA(temporary);
+        return Fail("cannot write the .light file");
+    }
+    Msg("Hlight: wrote %s (%s %d bytes, %s %d bytes, rshd v%u %d bytes, file %lld bytes)\n",path,s_AssetPath,asset.Count(),
+        probePath,probes.Count(),hlight::kManifestVersion,manifest.Count(),(long long)(pakOffset+pak.TellPut()));
     return true;
 }
 }
@@ -622,69 +519,20 @@ bool ReSTIR_BakedLocalDirectFace(const ReSTIRScene &scene, const ReSTIRLightmapR
 
 bool ReSTIR_PrepareShadowMapStorage(const ReSTIROptions &options)
 {
-    s_Prepared = false; s_Finalized = false; s_Density = 0; memset(s_AssetPath,0,sizeof(s_AssetPath));
-    for (int i = 0; i < 2; ++i) s_Mode[i].Clear();
-    GameLumpHandle_t h = g_GameLumps.GetGameLumpHandle(GAMELUMP_RESTIR_SHADOWMAPS);
-    if (h != g_GameLumps.InvalidGameLump())
-    {
-        char error[256]; const uint32 version = g_GameLumps.GetGameLumpVersion(h);
-        if (version == hlight::kManifestVersion)
-        {
-            const int count = g_GameLumps.GameLumpSize(h);
-            if (count < int(sizeof(hlight::ManifestDisk))) return Fail("enhanced manifest truncated");
-            const hlight::ManifestDisk *disk = static_cast<const hlight::ManifestDisk *>(g_GameLumps.GetGameLump(h));
-            if (disk->assetVersion == 2 || disk->assetVersion == 3)
-            {
-                if (!options.shadowMaps) return Fail("previous enhanced input requires a complete -restir_shadowmaps rebake");
-                CUtlVector<byte> normalized; normalized.AddMultipleToTail(count,reinterpret_cast<const byte *>(disk));
-                reinterpret_cast<hlight::ManifestDisk *>(normalized.Base())->assetVersion = hlight::kVersion;
-                hlight::ManifestView manifest;
-                if (!hlight::ValidateManifest(normalized.Base(),normalized.Count(),g_LevelFlags,manifest,error,sizeof(error)) ||
-                    !LoadAsset(manifest,disk->assetVersion)) return false;
-            }
-            else
-            {
-                hlight::ManifestView manifest;
-                if (!hlight::ValidateManifest(disk,count,g_LevelFlags,manifest,error,sizeof(error))) return Fail(error);
-                if (!LoadAsset(manifest)) return false;
-            }
-        }
-        else if (version == 4)
-        {
-            if (!options.shadowMaps) return Fail("v1 enhanced input requires a complete -restir_shadowmaps rebake");
-            if (!ImportPreviousEnhanced(h)) return false;
-        }
-        else if (version == GAMELUMP_RESTIR_SHADOWMAPS_VERSION)
-        {
-            // Frozen v3 is admitted only as an input for a clean rebake. It is
-            // never exported, extended or used by the new lighting route.
-            ShadowMapValidateInput in; in.lump = g_GameLumps.GetGameLump(h); in.lumpBytes = g_GameLumps.GameLumpSize(h);
-            in.lumpVersion = version; in.levelFlags = g_LevelFlags; in.checkMask = SHADOWMAP_CHECK_ALL;
-            in.models = dmodels; in.modelCount = nummodels;
-            in.texinfos = texinfo.Base(); in.texinfoCount = texinfo.Count();
-            for (int mi = 0; mi < 2; ++mi)
-            {
-                const CUtlVector<byte> &rgb = mi ? dlightdataHDR : dlightdataLDR;
-                ShadowMapValidateMode &vm = in.mode[mi]; vm.available = rgb.Count() > 0;
-                vm.faces = mi && numfaces_hdr ? dfaces_hdr : dfaces;
-                vm.faceCount = mi && numfaces_hdr ? numfaces_hdr : numfaces;
-                vm.lightingBytes = rgb.Count(); vm.lightingCRC32 = ShadowMap_CRC32(rgb.Base(),rgb.Count());
-                vm.facesCRC32 = ShadowMap_CRC32(vm.faces,vm.faceCount*sizeof(dface_t));
-                vm.worldlightsCRC32 = ShadowMap_CRC32(mi ? dworldlightsHDR : dworldlightsLDR,
-                    (mi ? numworldlightsHDR : numworldlightsLDR)*sizeof(dworldlight_t));
-            }
-            ShadowMapLumpView old;
-            if (!ShadowMap_ValidateLump(in,old,error,sizeof(error))) return Fail(error);
-        }
-        else return Fail("unsupported existing selected-light manifest version");
-    }
-    else if (g_LevelFlags & (ShadowMap_LevelFlagDirect(0)|ShadowMap_LevelFlagDirect(1))) return Fail("selected-direct flags have no manifest");
-    // Every conversion/reconversion is paired. Drop the preexisting opposite
-    // enhanced mode rather than retain an asset at a different requested density.
+    s_Prepared = false; s_Density = 0; memset(s_AssetPath,0,sizeof(s_AssetPath));
+    s_Storage.Clear(); s_InputWorldlights.Purge(); s_InputWorldlightsCRC32 = 0;
+    // Enhanced lighting lives only in <map>.light; a BSP rewritten by an older vrad_restir is not a valid input.
+    if (g_GameLumps.GetGameLumpHandle(GAMELUMP_RESTIR_SHADOWMAPS) != g_GameLumps.InvalidGameLump() ||
+        (g_LevelFlags & (LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR|LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_NONHDR)))
+        return Fail("the input BSP carries an in-BSP enhanced bake of an older vrad_restir; bake from the original BSP");
     if (options.shadowMaps)
     {
-        s_Mode[SelectedMode()].Clear();
-        if (s_Density && s_Density != uint32(options.highresDensity)) s_Mode[1-SelectedMode()].Clear();
+        CUtlVector<byte> raw;
+        if (!ReadEngineLump(options.mapPath.String(),LUMP_WORLDLIGHTS_HDR,raw)) return false;
+        const int recordBytes = raw.Count() == numworldlightsHDR*int(BSP21_WORLDLIGHT_BYTES) ? int(BSP21_WORLDLIGHT_BYTES) : int(sizeof(dworldlight_t));
+        if (raw.Count() != numworldlightsHDR*recordBytes) return Fail("loaded HDR worldlights do not match the BSP lump");
+        s_InputWorldlights.CopyArray(dworldlightsHDR,numworldlightsHDR);
+        s_InputWorldlightsCRC32 = ShadowMap_CRC32(raw.Base(),raw.Count());
         s_Density = options.highresDensity;
     }
     s_Prepared = true; return true;
@@ -694,10 +542,7 @@ bool ReSTIR_InvalidateShadowMapTopology(const ReSTIROptions &options)
 {
     (void)options;
     if (!s_Prepared) return Fail("storage not prepared before topology change");
-    // An ordinary rebake replaces both selected-direct modes. Their metadata
-    // must not survive a change in the face/grid topology.
-    for (int i = 0; i < 2; ++i) s_Mode[i].Clear();
-    s_Finalized = false; return true;
+    s_Storage.Clear(); return true;
 }
 
 bool ReSTIR_StageReceiverPakFile(const char *name, const void *data, int bytes, bool compress)
@@ -715,18 +560,17 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
     ReSTIRHighresColorFn color, void *context)
 {
     if (!s_Prepared) return Fail("capture without prepared storage");
-    s_Finalized = false;
     if (!options.shadowMaps)
     {
-        for (int i = 0; i < 2; ++i) s_Mode[i].Clear();
+        s_Storage.Clear();
         return true;
     }
-    // The gather stage has already captured this mode's probes. Receiver capture
-    // replaces only RGB/visibility storage, not the paired ambient grid.
-    ModeStorage &m = s_Mode[SelectedMode()]; m.Clear(true); m.active = true; m.lights.AddVectorToTail(scene.shadowLights);
-    const int faceCount = SelectedFaces();
+    // The gather stage has already captured the probes. Receiver capture
+    // replaces only RGB/visibility storage, not the ambient grid.
+    ModeStorage &m = s_Storage; m.Clear(true); m.active = true; m.lights.AddVectorToTail(scene.shadowLights);
+    const int faceCount = numfaces_hdr;
     if (nummodels <= 0 || nummodels > MAX_MAP_MODELS || faceCount <= 0 || faceCount > MAX_MAP_FACES ||
-        scene.dfaceToFace.Count() != faceCount || !color) return Fail("invalid model/face capture domain");
+        g_pFaces != dfaces_hdr || scene.dfaceToFace.Count() != faceCount || !color) return Fail("invalid model/face capture domain");
     m.faces.SetCount(faceCount); m.models.SetCount(nummodels);
     int next = 0;
     for (int i = 0; i < nummodels; ++i)
@@ -855,8 +699,7 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
     m.record.faceCount = m.faces.Count(); m.record.modelCount = m.models.Count();
     m.record.tileCount = m.tiles.Count(); m.record.pageCount = m.pages.Count(); m.record.identityCount = 14;
     if (!CaptureWorldVisibility(m,scene,result)) return false;
-    Msg("Hlight: baked local direct fallback faces=%d faceLights=%d (%s)\n",
-        m.unbakedFaces.Count(),m.unbakedLightIndices.Count(),g_bHDR ? "HDR" : "LDR");
+    Msg("Hlight: baked local direct fallback faces=%d faceLights=%d\n",m.unbakedFaces.Count(),m.unbakedLightIndices.Count());
     if (!s_AssetPath[0])
     {
         char basename[256]; V_FileBase(options.mapPath.String(),basename,sizeof(basename)); V_strlower(basename);
@@ -872,204 +715,102 @@ bool ReSTIR_CaptureAmbientProbes(const ReSTIROptions &options, const ReSTIRScene
 {
     if (!options.shadowMaps) return true;
     if (!s_Prepared) return Fail("probe capture without prepared storage");
-    ModeStorage &m = s_Mode[SelectedMode()];
-    if (!ReSTIR_BuildAmbientProbeGrid(options,scene,device,m.probes)) return false;
-    m.probesCaptured = true; return true;
-}
-bool ReSTIR_ReusePairedAmbientProbes(const ReSTIROptions &options)
-{
-    if (!options.shadowMaps) return true;
-    if (!s_Prepared || !s_Mode[0].probesCaptured) return Fail("paired probe reuse lacks the captured LDR grid");
-    s_Mode[1].probes = s_Mode[0].probes; s_Mode[1].probesCaptured = true; return true;
+    if (!ReSTIR_BuildAmbientProbeGrid(options,scene,device,s_Storage.probes)) return false;
+    s_Storage.probesCaptured = true; return true;
 }
 
-int ReSTIR_SelectedLightCount() { return s_Mode[SelectedMode()].lights.Count(); }
-bool ReSTIR_FinishSelectedLighting(const ReSTIROptions &options, int selected)
+bool ReSTIR_WriteLightSidecar(const ReSTIROptions &options)
 {
-    if (selected != ReSTIR_SelectedLightCount()) return Fail("selected light export/capture count mismatch");
-    const int mode = SelectedMode(); g_LevelFlags &= ~ShadowMap_LevelFlagDirect(mode);
-    if (s_Mode[mode].active) g_LevelFlags |= ShadowMap_LevelFlagDirect(mode);
-    if (!options.shadowMaps)
-    {
-        g_LevelFlags &= ~(ShadowMap_LevelFlagDirect(0)|ShadowMap_LevelFlagDirect(1));
-        if (s_AssetPath[0]) RemoveAssets();
-    }
-    return true;
-}
-bool ReSTIR_MarkPairedVisibilityReuse()
-{
-    if (!s_Mode[0].active || !s_Mode[1].active) return Fail("paired visibility reuse lacks a captured mode");
-    s_Mode[0].visibilityShared = s_Mode[1].visibilityShared = true;
-    return true;
-}
-
-bool ReSTIR_WriteShadowMapSidecar(const ReSTIROptions &options)
-{
-    (void)options;
-    if (s_Finalized) return true;
-    uint32 mask = 0; for (int mi = 0; mi < 2; ++mi) if (s_Mode[mi].active) mask |= 1u<<mi;
-    // Clear stale flags for modes dropped by a clean cutover.
-    g_LevelFlags &= ~(ShadowMap_LevelFlagDirect(0)|ShadowMap_LevelFlagDirect(1));
-    for (int mi = 0; mi < 2; ++mi) if (mask & (1u<<mi)) g_LevelFlags |= ShadowMap_LevelFlagDirect(mi);
-    if (!mask)
-    {
-        DeleteManifest();
-        if (s_AssetPath[0]) RemoveAssets();
-        s_Finalized = true; return true;
-    }
+    ModeStorage &m = s_Storage;
+    if (!s_Prepared || !m.active) return Fail("sidecar write without captured lighting");
+    FinalIdentities(m);
+    if (!CapturePropVisibility(m)) return false;
     hlight::FileHeader header; memset(&header,0,sizeof(header));
     header.magic = hlight::kMagic; header.version = hlight::kVersion; header.headerBytes = sizeof(header);
-    header.endian = hlight::kEndian; header.density = s_Density;
-    int modeOrder[2]; for (int mi = 0; mi < 2; ++mi) if (mask & (1u<<mi)) { FinalIdentities(s_Mode[mi],mi); modeOrder[header.modeCount++] = mi; }
-    if (header.modeCount == 2 && (s_Mode[modeOrder[0]].record.faceLump > s_Mode[modeOrder[1]].record.faceLump ||
-        (s_Mode[modeOrder[0]].record.faceLump == s_Mode[modeOrder[1]].record.faceLump &&
-         s_Mode[modeOrder[0]].record.lightingLump > s_Mode[modeOrder[1]].record.lightingLump))) V_swap(modeOrder[0],modeOrder[1]);
+    header.endian = hlight::kEndian; header.density = s_Density; header.modeCount = 1; header.visibilitySetCount = 1;
+    m.visibility.entryCount = m.visibilityEntries.Count();
+    m.visibility.payloadBytes = m.visibilityPayload.Count();
+    m.visibility.payloadCRC32 = ShadowMap_CRC32(m.visibilityPayload.Base(),m.visibilityPayload.Count());
+    m.visibility.faceSupportBytes = m.faceSupport.Count();
+    m.visibility.unbakedFaceCount = m.unbakedFaces.Count();
+    m.visibility.unbakedLightIndexCount = m.unbakedLightIndices.Count();
     // Reserve the complete canonical file once. Apart from eliminating copies,
     // exact EnsureCapacity bypasses CUtlMemory's signed 1-GiB doubling overflow.
     uint64 fileBytes = sizeof(header);
-    if (!ReSTIR_AddByteSectionSize(fileBytes,uint64(header.modeCount)*sizeof(hlight::ModeDisk)))
-        return Fail("asset exceeds signed BSP-pak buffer limit");
-    for (uint32 i = 0; i < header.modeCount; ++i)
-    {
-        ModeStorage &m = s_Mode[modeOrder[i]];
-        if (!CapturePropVisibility(m,modeOrder[i])) return false;
-        if (!ReSTIR_AddByteSectionSize(fileBytes,uint64(m.identities.Count())*sizeof(hlight::LumpIdentity)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.models.Count())*sizeof(hlight::ModelDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.faces.Count())*sizeof(hlight::FaceDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.tiles.Count())*sizeof(hlight::TileDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.pages.Count())*sizeof(hlight::PageDisk)))
-            return Fail("asset exceeds signed BSP-pak buffer limit");
-        for (int p = 0; p < m.pages.Count(); ++p)
-            if (!ReSTIR_AddByteSectionSize(fileBytes,m.pages[p].pixelsBytes))
-                return Fail("asset exceeds signed BSP-pak buffer limit");
-    }
-    uint32 plannedSets = 1;
-    if (header.modeCount == 2 && !s_Mode[modeOrder[1]].visibilityShared) ++plannedSets;
-    if (!ReSTIR_AddByteSectionSize(fileBytes,uint64(plannedSets)*sizeof(hlight::VisibilitySetDisk)))
-        return Fail("asset exceeds signed BSP-pak buffer limit");
-    for (uint32 i = 0; i < plannedSets; ++i)
-    {
-        const ModeStorage &m = s_Mode[modeOrder[i]];
-        if (!ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityFaces.Count())*sizeof(hlight::FaceVisibilityDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityEntries.Count())*sizeof(hlight::VisibilityEntryDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityProps.Count())*sizeof(hlight::PropVisibilityDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityMeshes.Count())*sizeof(hlight::PropMeshVisibilityDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,m.faceSupport.Count()) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.unbakedFaces.Count())*sizeof(hlight::UnbakedFaceDisk)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,uint64(m.unbakedLightIndices.Count())*sizeof(uint32)) ||
-            !ReSTIR_AddByteSectionSize(fileBytes,m.visibilityPayload.Count()))
-            return Fail("asset exceeds signed BSP-pak buffer limit");
-    }
+    bool fits = ReSTIR_AddByteSectionSize(fileBytes,sizeof(hlight::ModeDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.identities.Count())*sizeof(hlight::LumpIdentity)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.models.Count())*sizeof(hlight::ModelDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.faces.Count())*sizeof(hlight::FaceDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.tiles.Count())*sizeof(hlight::TileDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.pages.Count())*sizeof(hlight::PageDisk));
+    for (int p = 0; fits && p < m.pages.Count(); ++p) fits = ReSTIR_AddByteSectionSize(fileBytes,m.pages[p].pixelsBytes);
+    fits = fits && ReSTIR_AddByteSectionSize(fileBytes,sizeof(hlight::VisibilitySetDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityFaces.Count())*sizeof(hlight::FaceVisibilityDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityEntries.Count())*sizeof(hlight::VisibilityEntryDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityProps.Count())*sizeof(hlight::PropVisibilityDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityMeshes.Count())*sizeof(hlight::PropMeshVisibilityDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,m.faceSupport.Count()) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.unbakedFaces.Count())*sizeof(hlight::UnbakedFaceDisk)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.unbakedLightIndices.Count())*sizeof(uint32)) &&
+        ReSTIR_AddByteSectionSize(fileBytes,m.visibilityPayload.Count());
+    if (!fits) return Fail("asset exceeds the signed pak member limit");
     CUtlVector<byte> file; file.EnsureCapacity(int(fileBytes));
     file.SetCount(sizeof(header)); memset(file.Base(),0,file.Count());
-    hlight::ModeDisk records[2]; memset(records,0,sizeof(records));
-    if (!Append(file,records,uint64(header.modeCount)*sizeof(hlight::ModeDisk),header.modesOffset)) return false;
-    for (uint32 i = 0; i < header.modeCount; ++i)
+    hlight::ModeDisk record = m.record;
+    if (!Append(file,&record,sizeof(record),header.modesOffset) ||
+        !Append(file,m.identities.Base(),uint64(m.identities.Count())*sizeof(hlight::LumpIdentity),record.identitiesOffset) ||
+        !Append(file,m.models.Base(),uint64(m.models.Count())*sizeof(hlight::ModelDisk),record.modelsOffset) ||
+        !Append(file,m.faces.Base(),uint64(m.faces.Count())*sizeof(hlight::FaceDisk),record.facesOffset) ||
+        !Append(file,m.tiles.Base(),uint64(m.tiles.Count())*sizeof(hlight::TileDisk),record.tilesOffset) ||
+        !Append(file,m.pages.Base(),uint64(m.pages.Count())*sizeof(hlight::PageDisk),record.pagesOffset)) return false;
+    for (int p = 0; p < m.pages.Count(); ++p)
     {
-        ModeStorage &m = s_Mode[modeOrder[i]]; hlight::ModeDisk &r = records[i]; r = m.record;
-        if (!Append(file,m.identities.Base(),uint64(m.identities.Count())*sizeof(hlight::LumpIdentity),r.identitiesOffset) ||
-            !Append(file,m.models.Base(),uint64(m.models.Count())*sizeof(hlight::ModelDisk),r.modelsOffset) ||
-            !Append(file,m.faces.Base(),uint64(m.faces.Count())*sizeof(hlight::FaceDisk),r.facesOffset) ||
-            !Append(file,m.tiles.Base(),uint64(m.tiles.Count())*sizeof(hlight::TileDisk),r.tilesOffset) ||
-            !Append(file,m.pages.Base(),uint64(m.pages.Count())*sizeof(hlight::PageDisk),r.pagesOffset)) return false;
-        for (int p = 0; p < m.pages.Count(); ++p)
-        {
-            hlight::PageDisk page = m.pages[p];
-            if (!Append(file,m.pixels.Base()+page.pixelsOffset,page.pixelsBytes,page.pixelsOffset)) return false;
-            memcpy(file.Base()+r.pagesOffset+p*sizeof(page),&page,sizeof(page));
-        }
+        hlight::PageDisk page = m.pages[p];
+        if (!Append(file,m.pixels.Base()+page.pixelsOffset,page.pixelsBytes,page.pixelsOffset)) return false;
+        memcpy(file.Base()+record.pagesOffset+p*sizeof(page),&page,sizeof(page));
     }
-    hlight::VisibilitySetDisk visibilityRecords[2]; memset(visibilityRecords,0,sizeof(visibilityRecords));
-    int visibilityModes[2];
-    for (uint32 i = 0; i < header.modeCount; ++i)
-    {
-        ModeStorage &m = s_Mode[modeOrder[i]];
-        m.visibility.entryCount = m.visibilityEntries.Count();
-        m.visibility.payloadBytes = m.visibilityPayload.Count();
-        m.visibility.payloadCRC32 = ShadowMap_CRC32(m.visibilityPayload.Base(),m.visibilityPayload.Count());
-        m.visibility.faceSupportBytes = m.faceSupport.Count();
-        m.visibility.unbakedFaceCount = m.unbakedFaces.Count();
-        m.visibility.unbakedLightIndexCount = m.unbakedLightIndices.Count();
-        bool shared = false;
-        if (i && m.visibilityShared)
-        {
-            const ModeStorage &previous = s_Mode[visibilityModes[0]];
-            shared = m.visibility.selectedLightsCRC32 == previous.visibility.selectedLightsCRC32 &&
-                m.visibility.faceCount == previous.visibility.faceCount &&
-                m.visibilityEntries.Count() == previous.visibilityEntries.Count() &&
-                m.visibilityPayload.Count() == previous.visibilityPayload.Count() &&
-                m.visibilityProps.Count() == previous.visibilityProps.Count() &&
-                m.visibilityMeshes.Count() == previous.visibilityMeshes.Count() &&
-                m.faceSupport.Count() == previous.faceSupport.Count() &&
-                m.unbakedFaces.Count() == previous.unbakedFaces.Count() &&
-                m.unbakedLightIndices.Count() == previous.unbakedLightIndices.Count() &&
-                !memcmp(m.visibilityFaces.Base(),previous.visibilityFaces.Base(),m.visibilityFaces.Count()*sizeof(hlight::FaceVisibilityDisk)) &&
-                !memcmp(m.visibilityEntries.Base(),previous.visibilityEntries.Base(),m.visibilityEntries.Count()*sizeof(hlight::VisibilityEntryDisk)) &&
-                !memcmp(m.visibilityProps.Base(),previous.visibilityProps.Base(),m.visibilityProps.Count()*sizeof(hlight::PropVisibilityDisk)) &&
-                !memcmp(m.visibilityMeshes.Base(),previous.visibilityMeshes.Base(),m.visibilityMeshes.Count()*sizeof(hlight::PropMeshVisibilityDisk)) &&
-                !memcmp(m.faceSupport.Base(),previous.faceSupport.Base(),m.faceSupport.Count()) &&
-                !memcmp(m.unbakedFaces.Base(),previous.unbakedFaces.Base(),m.unbakedFaces.Count()*sizeof(hlight::UnbakedFaceDisk)) &&
-                !memcmp(m.unbakedLightIndices.Base(),previous.unbakedLightIndices.Base(),m.unbakedLightIndices.Count()*sizeof(uint32)) &&
-                !memcmp(m.visibilityPayload.Base(),previous.visibilityPayload.Base(),m.visibilityPayload.Count());
-            if (!shared) return Fail("paired equality visibility reuse disagrees with serialized inputs");
-        }
-        if (shared) records[i].visibilitySetIndex = 0;
-        else
-        {
-            records[i].visibilitySetIndex = header.visibilitySetCount;
-            visibilityModes[header.visibilitySetCount++] = modeOrder[i];
-        }
-    }
-    if (!Append(file,visibilityRecords,uint64(header.visibilitySetCount)*sizeof(hlight::VisibilitySetDisk),header.visibilitySetsOffset)) return false;
-    for (uint32 si = 0; si < header.visibilitySetCount; ++si)
-    {
-        ModeStorage &m = s_Mode[visibilityModes[si]]; hlight::VisibilitySetDisk &v = visibilityRecords[si]; v = m.visibility;
-        if (!Append(file,m.visibilityFaces.Base(),uint64(m.visibilityFaces.Count())*sizeof(hlight::FaceVisibilityDisk),v.facesOffset) ||
-            !Append(file,m.visibilityEntries.Base(),uint64(m.visibilityEntries.Count())*sizeof(hlight::VisibilityEntryDisk),v.entriesOffset) ||
-            !Append(file,m.visibilityProps.Base(),uint64(m.visibilityProps.Count())*sizeof(hlight::PropVisibilityDisk),v.propsOffset) ||
-            !Append(file,m.visibilityMeshes.Base(),uint64(m.visibilityMeshes.Count())*sizeof(hlight::PropMeshVisibilityDisk),v.meshesOffset) ||
-            !Append(file,m.faceSupport.Base(),m.faceSupport.Count(),v.faceSupportOffset) ||
-            !Append(file,m.unbakedFaces.Base(),uint64(m.unbakedFaces.Count())*sizeof(hlight::UnbakedFaceDisk),v.unbakedFacesOffset) ||
-            !Append(file,m.unbakedLightIndices.Base(),uint64(m.unbakedLightIndices.Count())*sizeof(uint32),v.unbakedLightIndicesOffset) ||
-            !Append(file,m.visibilityPayload.Base(),m.visibilityPayload.Count(),v.payloadOffset)) return false;
-    }
-    memcpy(file.Base()+header.visibilitySetsOffset,visibilityRecords,header.visibilitySetCount*sizeof(hlight::VisibilitySetDisk));
-    memcpy(file.Base()+header.modesOffset,records,header.modeCount*sizeof(hlight::ModeDisk));
+    hlight::VisibilitySetDisk visibility = m.visibility;
+    if (!Append(file,&visibility,sizeof(visibility),header.visibilitySetsOffset) ||
+        !Append(file,m.visibilityFaces.Base(),uint64(m.visibilityFaces.Count())*sizeof(hlight::FaceVisibilityDisk),visibility.facesOffset) ||
+        !Append(file,m.visibilityEntries.Base(),uint64(m.visibilityEntries.Count())*sizeof(hlight::VisibilityEntryDisk),visibility.entriesOffset) ||
+        !Append(file,m.visibilityProps.Base(),uint64(m.visibilityProps.Count())*sizeof(hlight::PropVisibilityDisk),visibility.propsOffset) ||
+        !Append(file,m.visibilityMeshes.Base(),uint64(m.visibilityMeshes.Count())*sizeof(hlight::PropMeshVisibilityDisk),visibility.meshesOffset) ||
+        !Append(file,m.faceSupport.Base(),m.faceSupport.Count(),visibility.faceSupportOffset) ||
+        !Append(file,m.unbakedFaces.Base(),uint64(m.unbakedFaces.Count())*sizeof(hlight::UnbakedFaceDisk),visibility.unbakedFacesOffset) ||
+        !Append(file,m.unbakedLightIndices.Base(),uint64(m.unbakedLightIndices.Count())*sizeof(uint32),visibility.unbakedLightIndicesOffset) ||
+        !Append(file,m.visibilityPayload.Base(),m.visibilityPayload.Count(),visibility.payloadOffset)) return false;
+    memcpy(file.Base()+header.visibilitySetsOffset,&visibility,sizeof(visibility));
+    memcpy(file.Base()+header.modesOffset,&record,sizeof(record));
     header.fileBytes = file.Count(); memcpy(file.Base(),&header,sizeof(header));
     reinterpret_cast<hlight::FileHeader *>(file.Base())->crc32 = hlight::FileCRC32(file.Base(),file.Count());
     hlight::FileView verified; char error[256];
     if (!hlight::ValidateFile(file.Base(),file.Count(),verified,error,sizeof(error))) return Fail(error);
+
+    CUtlVector<uint32> removed; MatchRemovedWorldlights(m.lights,removed);
     hlight::ManifestDisk manifest; memset(&manifest,0,sizeof(manifest));
-    manifest.runtimeModeMask = mask; manifest.assetVersion = hlight::kVersion; V_strncpy(manifest.assetPath,s_AssetPath,sizeof(manifest.assetPath));
-    uint64 total = sizeof(manifest); for (int mi = 0; mi < 2; ++mi) total += uint64(s_Mode[mi].lights.Count())*sizeof(ShadowMapLightDisk);
-    if (total > hlight::kMaxFileBytes) return Fail("selected-light manifest size overflow");
-    CUtlVector<byte> bytes; bytes.SetCount((int)total); memset(bytes.Base(),0,bytes.Count());
-    uint32 cursor = sizeof(manifest);
-    for (int mi = 0; mi < 2; ++mi)
-    {
-        hlight::ManifestModeDisk &mm = manifest.mode[mi]; mm.sunLightIndex = -1;
-        if (!(mask & (1u<<mi))) continue;
-        uint32 ai = 0; while (modeOrder[ai] != mi) ++ai;
-        const hlight::ModeDisk &r = records[ai];
-        mm.faceLump = r.faceLump; mm.lightingLump = r.lightingLump; mm.worldlightsLump = mi ? LUMP_WORLDLIGHTS_HDR : LUMP_WORLDLIGHTS;
-        mm.lightingBytes = (uint32)r.lightingBytes; mm.lightingCRC32 = r.lightingCRC32; mm.facesCRC32 = r.facesCRC32;
-        mm.worldlightsCRC32 = ShadowMap_CRC32(mi ? dworldlightsHDR : dworldlightsLDR,(mi ? numworldlightsHDR : numworldlightsLDR)*sizeof(dworldlight_t));
-        mm.assetMode = ai; mm.lightsOffset = cursor; mm.lightCount = s_Mode[mi].lights.Count();
-        mm.sunLightIndex = mm.lightCount && s_Mode[mi].lights[0].light.type == emit_skylight ? 0 : -1;
-        if (mm.lightCount) memcpy(bytes.Base()+cursor,s_Mode[mi].lights.Base(),mm.lightCount*sizeof(ShadowMapLightDisk));
-        cursor += mm.lightCount*sizeof(ShadowMapLightDisk);
-    }
+    manifest.runtimeModeMask = 1u << SHADOWMAP_MODE_HDR; manifest.assetVersion = hlight::kVersion;
+    V_strncpy(manifest.assetPath,s_AssetPath,sizeof(manifest.assetPath));
+    manifest.mode[SHADOWMAP_MODE_LDR].sunLightIndex = -1;
+    hlight::ManifestModeDisk &mm = manifest.mode[SHADOWMAP_MODE_HDR];
+    const uint64 lightBytes = uint64(m.lights.Count())*sizeof(ShadowMapLightDisk), removedBytes = uint64(removed.Count())*sizeof(uint32);
+    CUtlVector<byte> bytes; bytes.SetCount(int(sizeof(manifest)+lightBytes+removedBytes)); memset(bytes.Base(),0,bytes.Count());
+    mm.faceLump = record.faceLump; mm.lightingLump = record.lightingLump; mm.worldlightsLump = LUMP_WORLDLIGHTS_HDR;
+    mm.lightingBytes = uint32(record.lightingBytes); mm.lightingCRC32 = record.lightingCRC32; mm.facesCRC32 = record.facesCRC32;
+    mm.worldlightsCRC32 = s_InputWorldlightsCRC32;
+    mm.lightsOffset = sizeof(manifest); mm.lightCount = m.lights.Count();
+    mm.sunLightIndex = mm.lightCount && m.lights[0].light.type == emit_skylight ? 0 : -1;
+    mm.removedWorldlightsOffset = uint32(sizeof(manifest)+lightBytes); mm.removedWorldlightCount = removed.Count();
+    if (lightBytes) memcpy(bytes.Base()+mm.lightsOffset,m.lights.Base(),size_t(lightBytes));
+    if (removedBytes) memcpy(bytes.Base()+mm.removedWorldlightsOffset,removed.Base(),size_t(removedBytes));
     manifest.byteSize = bytes.Count(); memcpy(bytes.Base(),&manifest,sizeof(manifest));
     hlight::ManifestView mv;
-    if (!hlight::ValidateManifest(bytes.Base(),bytes.Count(),g_LevelFlags,mv,error,sizeof(error))) return Fail(error);
-    if (!hlight::ValidateManifestAsset(verified,mv,error,sizeof(error))) return Fail(error);
+    if (!hlight::ValidateManifest(bytes.Base(),bytes.Count(),LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR,mv,error,sizeof(error)) ||
+        !hlight::ValidateManifestAsset(verified,mv,error,sizeof(error))) return Fail(error);
     CUtlVector<byte> probeFile; char probePath[256]; ProbePath(probePath);
-    if (!BuildProbeAsset(verified,modeOrder,probeFile)) return false;
-    if (!ReSTIR_StageReceiverPakFile(s_AssetPath,file.Base(),file.Count(),true) ||
-        !ReSTIR_StageReceiverPakFile(probePath,probeFile.Base(),probeFile.Count(),true)) return false;
-    DeleteManifest(); GameLumpHandle_t h = g_GameLumps.CreateGameLump(GAMELUMP_RESTIR_SHADOWMAPS,bytes.Count(),0,hlight::kManifestVersion);
-    if (h == g_GameLumps.InvalidGameLump() || !g_GameLumps.GetGameLump(h)) return Fail("cannot allocate native selected-light manifest");
-    memcpy(g_GameLumps.GetGameLump(h),bytes.Base(),bytes.Count()); s_Finalized = true;
-    Msg("Hlight: checked pak asset %s (%d bytes), probes %s (%d bytes), rshd v5 (%d bytes), explicit mode mask=%u\n",s_AssetPath,file.Count(),probePath,probeFile.Count(),bytes.Count(),mask);
-    return true;
+    if (!BuildProbeAsset(verified,probeFile)) return false;
+    char lightPath[MAX_PATH*2], basename[MAX_PATH]; V_FileBase(options.mapPath.String(),basename,sizeof(basename));
+    if (options.lightDir.Length()) V_ComposeFileName(options.lightDir.String(),basename,lightPath,sizeof(lightPath));
+    else V_strncpy(lightPath,options.mapPath.String(),sizeof(lightPath));
+    V_SetExtension(lightPath,".light",sizeof(lightPath));
+    return WriteLightFile(lightPath,bytes,file,probePath,probeFile);
 }

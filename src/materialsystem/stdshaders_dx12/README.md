@@ -329,9 +329,10 @@ coordinates remain unchanged.
 
 The `Sky` shaders (`sky_dx12.cpp` for LDR `Sky_DX9`, `sky_hdr_dx12.cpp` for `Sky_HDR_DX9`; compressed HDR multiplies `$color`
 by 8 first) stage `$color` as pixel constant c0 and multiply the decoded sky by it in linear space, so a scalar on `$color`
-scales the sky's luminance without changing its hue. No shader, wrapper or generated source changed. `vrad_restir` bakes the
-factor into worldspawn (`_skyscale_ldr` / `_skyscale_hdr`; `utils/vrad_restir/README.md`, "Sky ambient match") and
-`game/client/sky_ambientmatch_dx12.cpp` applies it. At `LevelInitPostEntity` it reads `skyname` and the key for the current
+scales the sky's luminance without changing its hue. No shader, wrapper or generated source changed. An ordinary (in-BSP)
+`vrad_restir` bake writes the factor into worldspawn as `_skyscale_hdr` (older bakes also wrote `_skyscale_ldr`;
+`utils/vrad_restir/README.md`, "Sky ambient match"); a `-restir_shadowmaps` bake leaves the entity lump alone, so a map lit by a
+`.light` has no key. At `LevelInitPostEntity` `game/client/sky_ambientmatch_dx12.cpp` reads `skyname` and the key for the current
 mode (`GetHDRType() != HDR_TYPE_NONE` selects `_skyscale_hdr`) from `engine->GetMapEntitiesString()`, holds the six
 `skybox/<skyname>{rt,lf,bk,ft,up,dn}` materials and remembers their authored `$color`. Every frame it writes
 `authored * factor` when `r_sky_ambientmatch` (`FCVAR_ARCHIVE`, default 1) is nonzero and the authored colour when it is 0,
@@ -339,8 +340,8 @@ touching a material only when its colour differs, so the cvar and a full materia
 re-reads the VMT) need no hook. `LevelShutdownPostEntity` restores the authored colours and drops the references. The feature
 does nothing when the material shader DLL is not `stdshader_dx12` (`-dx9` is unchanged), when the map has no key (no
 `light_environment`, an `UnlitGeneric` sky, ...), and after one Warning when a face material is missing or has no vector
-`$color`. 3D skybox geometry is not a sky face and is unaffected. The renderer pins `mat_hdr_level` to 2, so
-`_skyscale_ldr` applies on LDR-only maps.
+`$color`. 3D skybox geometry is not a sky face and is unaffected. The renderer pins `mat_hdr_level` to 2, so an older map's
+`_skyscale_ldr` applies only on LDR-only maps.
 
 Verification (isolated runs of `d1_trainstation_02` copies baked with `vrad_restir`; screenshots of the same sky view with the
 cvar off/on/off, `mat_force_tonemap_scale 1`, camera `setpos -500 -3000 100`, `setang -80 0 0`): the `-restir_shadowmaps` copy

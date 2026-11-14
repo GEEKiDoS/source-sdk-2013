@@ -54,6 +54,14 @@ struct HlightNativeAtlas
     std::vector<HlightNativePlacement> placements; // indexed by exact native face ordinal
     std::vector<HlightNativeModelRange> models;
 };
+// What a validated maps/<name>.light asks of the map's own lumps while the engine loads them: the selected lights
+// leave the HDR worldlights (they are drawn by the runtime shadow-mapped lights instead), and static props are lit
+// from those worldlights rather than from the BSP's VHVs, which still contain the selected lights.
+struct HlightSidecarPatch
+{
+    uint32 worldlightsCRC32 = 0; // CRC of LUMP_WORLDLIGHTS_HDR as loaded; any other bytes are left alone
+    std::vector<uint32> removedWorldlights; // sorted record indices
+};
 
 // All data is copied/owned. No engine surface, helper-buffer, vector, or overlay pointer
 // crosses this boundary. Lifecycle notifications execute on the controlling thread after
@@ -65,6 +73,9 @@ public:
     // Main thread, once per native map load at its first effective lump, long before the face domain exists. May only
     // start asynchronous preparation; it never rejects, admits or fails the map.
     virtual void OnNativeMapLoad(const char *mapName) = 0;
+    // Main thread, from the native lump loader, for LUMP_MAP_FLAGS and LUMP_WORLDLIGHTS_HDR of the loading map. Fills
+    // the patch and returns true only when the map has a valid .light; may read and cache that file's manifest.
+    virtual bool SidecarLumpPatch(const char *mapName, HlightSidecarPatch &out) = 0;
     // Called after face construction, before initial native lightmap builds. Return true
     // only when an enhanced asset needs dynamic capture. An ordinary map returns false.
     virtual bool OnNativeDomain(std::shared_ptr<const HlightNativeDomain> domain) = 0;

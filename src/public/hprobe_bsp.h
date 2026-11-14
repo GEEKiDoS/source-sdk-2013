@@ -10,22 +10,24 @@
 #include "hlight_bsp.h"
 #include <math.h>
 #include <string.h>
+#include <vector>
 
 namespace hprobe
 {
 static const uint32 kMagic = 0x42525048u; // HPRB, little endian
-static const uint32 kVersion = 1;
+static const uint32 kVersion = 2; // one HDR mode, tight atlas packing
 static const uint32 kEndian = 0x01020304u;
 static const uint32 kBrickCells = 4;
 static const uint32 kBrickProbes = 5; // cells + 1: edge probes are duplicated so trilinear never crosses a brick
 static const uint32 kBands = 6; // RGBA8_SNORM textures: two per color channel, bands k = 1..4 and 5..8
 static const uint32 kMaxBricksPerAxis = 1024;
 static const uint32 kMaxAtlasBricksPerAxis = 256; // atlas side <= 1280 <= the D3D12 3D texture limit
-static const uint32 kMaxBricks = 1u << 18;
+static const uint32 kMaxBricks = 1u << 20;
 static const uint32 kMinSpacing = 8;
 static const uint32 kMaxSpacing = 512;
 static const uint32 kMaxReach = 65536;
-static const uint32 kMaxGridBytes = 256u << 20; // padded atlas plus indirection: the baker's and the runtime's budget
+// No size budget lives in the format: the baker enforces -restir_ambientgrid_budget, the runtime degrades to the
+// engine ambient cube when the grid cannot be made resident. A whole asset is still one signed pak member.
 static const uint32 kR11G11B10Float = 26; // DXGI_FORMAT_R11G11B10_FLOAT
 static const uint32 kRGBA8Snorm = 31; // DXGI_FORMAT_R8G8B8A8_SNORM
 static const uint32 kR8Unorm = 61; // DXGI_FORMAT_R8_UNORM
@@ -95,13 +97,21 @@ inline uint64 IndirectionCount(const GridDisk &g)
 {
     return uint64(g.brickDims[0]) * g.brickDims[1] * g.brickDims[2];
 }
-// x = min(n, 256), y = min(ceil(n/x), 256), z = ceil(n/(x*y)); n >= 1.
+// n <= 65536: x = min(n, 256), y = ceil(n/x), z = 1. n > 65536: x = 256, z = ceil(n/65536), y = ceil(n/(256*z)),
+// so the atlas never pays for a whole unused 256x256 layer. n >= 1.
 inline void AtlasBricks(uint32 brickCount, uint32 out[3])
 {
-    out[0] = brickCount < kMaxAtlasBricksPerAxis ? brickCount : kMaxAtlasBricksPerAxis;
-    const uint32 rows = (brickCount + out[0] - 1) / out[0];
-    out[1] = rows < kMaxAtlasBricksPerAxis ? rows : kMaxAtlasBricksPerAxis;
-    out[2] = (brickCount + out[0] * out[1] - 1) / (out[0] * out[1]);
+    const uint32 layer = kMaxAtlasBricksPerAxis * kMaxAtlasBricksPerAxis;
+    if (brickCount <= layer)
+    {
+        out[0] = brickCount < kMaxAtlasBricksPerAxis ? brickCount : kMaxAtlasBricksPerAxis;
+        out[1] = (brickCount + out[0] - 1) / out[0];
+        out[2] = 1;
+        return;
+    }
+    out[0] = kMaxAtlasBricksPerAxis;
+    out[2] = (brickCount + layer - 1) / layer;
+    out[1] = (brickCount + kMaxAtlasBricksPerAxis * out[2] - 1) / (kMaxAtlasBricksPerAxis * out[2]);
 }
 inline uint64 AtlasTexels(const GridDisk &g)
 {
@@ -154,7 +164,6 @@ inline bool ValidateGrid(const uint8 *base, uint32 count, uint64 &cursor, const 
         memcmp(g.atlasBricks, atlas, sizeof(atlas)) || g.reach > kMaxReach ||
         g.dcFormat != kR11G11B10Float || g.bandFormat != kRGBA8Snorm || g.validityFormat != kR8Unorm || g.reserved)
         return ValidationError(error, errorBytes, "invalid grid record");
-    if (GridBytes(g) > kMaxGridBytes) return ValidationError(error, errorBytes, "grid exceeds the 256 MiB budget");
     if (!hlight::Section(base, count, cursor, m.gridOffset, GridBytes(g)))
         return ValidationError(error, errorBytes, "grid section range");
     const uint64 cells = IndirectionCount(g), texels = AtlasTexels(g);
@@ -163,7 +172,7 @@ inline bool ValidateGrid(const uint8 *base, uint32 count, uint64 &cursor, const 
     v.dc = v.indirection + cells;
     v.bands = reinterpret_cast<const int8 *>(v.dc + texels);
     v.validity = reinterpret_cast<const uint8 *>(v.bands) + texels * kBands * 4;
-    uint32 referenced[kMaxBricks / 32]; memset(referenced, 0, sizeof(referenced));
+    std::vector<uint32> referenced(kMaxBricks / 32, 0u);
     uint32 slots = 0;
     for (uint64 i = 0; i < cells; ++i)
     {
@@ -209,7 +218,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
     const uint8 *base = static_cast<const uint8 *>(bytes);
     const FileHeader &h = *reinterpret_cast<const FileHeader *>(base);
     if (h.magic != kMagic || h.version != kVersion || h.headerBytes != sizeof(h) || h.endian != kEndian ||
-        h.fileBytes != count || !h.modeCount || h.modeCount > 4 || !hlight::ZeroBytes(h.reserved, sizeof(h.reserved)) ||
+        h.fileBytes != count || h.modeCount != 1 || !hlight::ZeroBytes(h.reserved, sizeof(h.reserved)) ||
         h.crc32 != FileCRC32(bytes, count))
         return ValidationError(error, errorBytes, "header/version/CRC mismatch");
     FileView candidate; memset(&candidate, 0, sizeof(candidate));
@@ -221,11 +230,9 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
     for (uint32 mi = 0; mi < h.modeCount; ++mi)
     {
         const ModeDisk &m = modes[mi];
-        if (!hlight::ValidPair(m.faceLump, m.lightingLump) || m.lightingBytes > MAX_MAP_LIGHTING ||
-            !hlight::ZeroBytes(m.reserved, sizeof(m.reserved)) ||
-            (mi && (m.faceLump < modes[mi - 1].faceLump ||
-                (m.faceLump == modes[mi - 1].faceLump && m.lightingLump <= modes[mi - 1].lightingLump))))
-            return ValidationError(error, errorBytes, "mode identity/order mismatch");
+        if (!hlight::AssetPair(m.faceLump, m.lightingLump) || m.lightingBytes > MAX_MAP_LIGHTING ||
+            !hlight::ZeroBytes(m.reserved, sizeof(m.reserved)))
+            return ValidationError(error, errorBytes, "mode identity mismatch");
         ModeView &v = candidate.mode[mi]; v.record = &m;
         if (!ValidateGrid(base, count, cursor, m, v, error, errorBytes)) return false;
     }

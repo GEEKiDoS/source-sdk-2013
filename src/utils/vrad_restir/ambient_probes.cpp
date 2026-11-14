@@ -33,7 +33,7 @@ struct ProbeSh
 
 bool Fail( const char *why )
 {
-	Warning( "Hlight: %s (%s mode)\n", why, g_bHDR ? "HDR" : "LDR" );
+	Warning( "Hlight: %s\n", why );
 	return false;
 }
 
@@ -99,6 +99,15 @@ struct ProbeBuild
 	}
 };
 
+bool OverBudget( const ProbeBuild &b, uint64 bytes )
+{
+	if ( bytes <= uint64( b.options.ambientGridBudgetMB ) << 20 )
+		return false;
+	Warning( "Hlight: ambient grid needs %.1f MiB, over the -restir_ambientgrid_budget of %d MiB; raise -restir_ambientgrid, "
+		"lower -restir_ambientgrid_reach or raise -restir_ambientgrid_budget\n", double( bytes ) / ( 1 << 20 ), b.options.ambientGridBudgetMB );
+	return true;
+}
+
 // Inclusion-exclusion corners of the inclusive brick box [lo, hi] in a 3D difference array.
 void AddBox( CUtlVector<int> &delta, int sx, int sy, const int lo[3], const int hi[3] )
 {
@@ -129,8 +138,8 @@ bool PlanGrid( ProbeBuild &b )
 			return Fail( "ambient grid exceeds 1024 bricks per axis; raise -restir_ambientgrid" );
 		g.brickDims[axis] = (uint32)bricks;
 	}
-	if ( hprobe::IndirectionCount( g ) * 4 > hprobe::kMaxGridBytes )
-		return Fail( "ambient grid exceeds 256 MiB; raise -restir_ambientgrid or lower -restir_ambientgrid_reach" );
+	if ( OverBudget( b, hprobe::IndirectionCount( g ) * 4 ) )
+		return false;
 	return true;
 }
 
@@ -187,10 +196,14 @@ bool AllocateBricks( ProbeBuild &b )
 					( g.reach == 0 || covered[x + sx * ( y + sy * z )] > 0 ) ? slots++ : hlight::kMissing;
 	if ( !slots )
 		return Fail( "ambient grid covers no lit geometry" );
+	if ( slots > hprobe::kMaxBricks )
+		return Fail( "ambient grid exceeds 1048576 bricks; raise -restir_ambientgrid or lower -restir_ambientgrid_reach" );
 	g.brickCount = slots;
 	hprobe::AtlasBricks( g.brickCount, g.atlasBricks );
-	if ( hprobe::GridBytes( g ) > hprobe::kMaxGridBytes )
-		return Fail( "ambient grid exceeds 256 MiB; raise -restir_ambientgrid or lower -restir_ambientgrid_reach" );
+	if ( OverBudget( b, hprobe::GridBytes( g ) ) )
+		return false;
+	Msg( "Ambient probes: %u bricks, %.1f MiB (spacing %g, reach %u, atlas %ux%ux%u bricks)\n", g.brickCount,
+		double( hprobe::GridBytes( g ) ) / ( 1 << 20 ), g.spacing, g.reach, g.atlasBricks[0], g.atlasBricks[1], g.atlasBricks[2] );
 	return true;
 }
 

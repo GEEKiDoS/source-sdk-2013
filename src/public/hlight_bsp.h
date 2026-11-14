@@ -12,9 +12,9 @@
 namespace hlight
 {
 static const uint32 kMagic = 0x54494c48u; // HLIT, little endian
-static const uint32 kVersion = 4;
+static const uint32 kVersion = 5; // one HDR mode
 static const uint32 kEndian = 0x01020304u;
-static const uint32 kManifestVersion = 5; // hybrid visibility; older enhanced assets require a rebake
+static const uint32 kManifestVersion = 6; // one HDR mode, removed retail worldlights; carried by maps/<name>.light
 static const uint32 kMissing = 0xffffffffu;
 static const uint32 kDefaultDensity = 4;
 static const uint32 kDefaultPageSize = 2048;
@@ -139,9 +139,10 @@ struct PropDirectDisk
     uint32 flags, styleCount, styles[kMaxStyles], vertexCount, angularPlaneCount;
     uint32 radianceBytes, unbakedLightCount, reserved[2];
 };
-// The small native game-lump manifest retains selected-light transport metadata without
-// shipping or invoking the abandoned receiver geometry/mask representation. assetPath
-// names the exact BSP-pak member, so renaming a BSP does not change its embedded identity.
+// The selected-light manifest ('rshd' game lump of maps/<name>.light). The .light is a BSP v20 container written by
+// vrad_restir -restir_shadowmaps beside the untouched map: LUMP_MAP_FLAGS (LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR),
+// LUMP_GAME_LUMP (this manifest only) and LUMP_PAKFILE (assetPath and its .hprobe); every other lump is empty.
+// Geometry and native lumps are always read from the map's own BSP, to whose lumps the identities below bind.
 struct ManifestModeDisk
 {
     uint32 faceLump, lightingLump, worldlightsLump;
@@ -149,7 +150,10 @@ struct ManifestModeDisk
     uint32 lightsOffset, lightCount;
     int32 sunLightIndex;
     uint32 assetMode;
-    uint32 reserved[5];
+    // Sorted, unique record indices of the BSP's own worldlights lump that carry a selected light. The runtime drops
+    // them from the loaded lump so the engine's model/static-prop lighting does not add them a second time.
+    uint32 removedWorldlightsOffset, removedWorldlightCount;
+    uint32 reserved[3];
 };
 struct ManifestDisk
 {
@@ -227,6 +231,8 @@ struct ManifestModeView
     const ShadowMapLightDisk *lights;
     uint32 lightCount;
     int32 sunLightIndex;
+    const uint32 *removedWorldlights;
+    uint32 removedWorldlightCount;
     bool runtime;
 };
 struct ManifestView
@@ -272,6 +278,11 @@ inline bool ValidPair(uint32 face, uint32 lighting)
 {
     return (face == LUMP_FACES || face == LUMP_FACES_HDR) &&
         (lighting == LUMP_LIGHTING || lighting == LUMP_LIGHTING_HDR);
+}
+// Every enhanced asset holds exactly one mode: HDR faces with HDR lighting.
+inline bool AssetPair(uint32 face, uint32 lighting)
+{
+    return face == LUMP_FACES_HDR && lighting == LUMP_LIGHTING_HDR;
 }
 inline bool PageSide(uint32 n)
 {
@@ -340,7 +351,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
     const FileHeader &h = *reinterpret_cast<const FileHeader *>(base);
     if (h.magic != kMagic || h.version != kVersion || h.headerBytes != sizeof(h) ||
         h.endian != kEndian || h.fileBytes != count || !h.density || h.density > kMaxPageSize ||
-        !h.modeCount || h.modeCount > 4 || !h.visibilitySetCount || h.visibilitySetCount > h.modeCount ||
+        h.modeCount != 1 || h.visibilitySetCount != 1 ||
         !ZeroBytes(h.reserved, sizeof(h.reserved)) ||
         h.crc32 != FileCRC32(bytes, count))
         return ValidationError(error, errorBytes, "header/version/density/CRC mismatch");
@@ -354,15 +365,13 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
     for (uint32 mi = 0; mi < h.modeCount; ++mi)
     {
         const ModeDisk &m = modes[mi];
-        if (!ValidPair(m.faceLump, m.lightingLump) || m.faceVersion != LUMP_FACES_VERSION ||
+        if (!AssetPair(m.faceLump, m.lightingLump) || m.faceVersion != LUMP_FACES_VERSION ||
             m.lightingVersion != LUMP_LIGHTING_VERSION || !m.faceCount || m.faceCount > MAX_MAP_FACES ||
             !m.modelCount || m.modelCount > MAX_MAP_MODELS || m.faceBytes != uint64(m.faceCount) * sizeof(dface_t) ||
             (!m.lightingBytes && m.tileCount) || m.lightingBytes > MAX_MAP_LIGHTING || (m.lightingBytes & 3) ||
             m.identityCount != ARRAYSIZE(geometry) + 2 || m.reserved || m.reserved2 ||
-            m.visibilitySetIndex >= h.visibilitySetCount || !ZeroBytes(m.reserved3,sizeof(m.reserved3)) ||
-            (mi && (m.faceLump < modes[mi-1].faceLump ||
-                (m.faceLump == modes[mi-1].faceLump && m.lightingLump <= modes[mi-1].lightingLump))))
-            return ValidationError(error, errorBytes, "mode identity/count/order mismatch");
+            m.visibilitySetIndex || !ZeroBytes(m.reserved3,sizeof(m.reserved3)))
+            return ValidationError(error, errorBytes, "mode identity/count mismatch");
         ModeView &v = candidate.mode[mi]; v.record = &m;
         if (!Section(base,count,cursor,m.identitiesOffset,uint64(m.identityCount)*sizeof(LumpIdentity)))
             return ValidationError(error,errorBytes,"identity section range");
@@ -386,25 +395,8 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
                     return ValidationError(error,errorBytes,"lighting identity mismatch");
                 lightSeen = true;
             }
-            else
-            {
-                if (geometryIndex >= ARRAYSIZE(geometry) || id.lump != geometry[geometryIndex++])
-                    return ValidationError(error,errorBytes,"missing geometry identity");
-                if (mi)
-                {
-                    const ModeView &previous = candidate.mode[0];
-                    uint32 j = 0; while (j < previous.record->identityCount && previous.identities[j].lump != id.lump) ++j;
-                    if (j == previous.record->identityCount || memcmp(&id, &previous.identities[j], sizeof(id)))
-                        return ValidationError(error,errorBytes,"paired geometry identities disagree");
-                }
-            }
-            for (uint32 previousMode = 0; previousMode < mi; ++previousMode)
-            {
-                const ModeView &previous = candidate.mode[previousMode];
-                for (uint32 j = 0; j < previous.record->identityCount; ++j)
-                    if (previous.identities[j].lump == id.lump && memcmp(&id,&previous.identities[j],sizeof(id)))
-                        return ValidationError(error,errorBytes,"paired effective lump identities disagree");
-            }
+            else if (geometryIndex >= ARRAYSIZE(geometry) || id.lump != geometry[geometryIndex++])
+                return ValidationError(error,errorBytes,"missing geometry identity");
         }
         if (!faceSeen || !lightSeen || geometryIndex != ARRAYSIZE(geometry))
             return ValidationError(error,errorBytes,"incomplete effective domain");
@@ -550,28 +542,10 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
     if (!Section(base,count,cursor,h.visibilitySetsOffset,uint64(h.visibilitySetCount)*sizeof(VisibilitySetDisk)))
         return ValidationError(error,errorBytes,"visibility set section");
     const VisibilitySetDisk *sets = reinterpret_cast<const VisibilitySetDisk *>(base+h.visibilitySetsOffset);
-    uint32 setMask = 0;
     for (uint32 si = 0; si < h.visibilitySetCount; ++si)
     {
         const VisibilitySetDisk &s = sets[si]; VisibilityView &v = candidate.visibility[si]; v.record = &s;
-        const ModeView *owner = NULL;
-        for (uint32 mi = 0; mi < h.modeCount; ++mi)
-            if (modes[mi].visibilitySetIndex == si)
-            {
-                if (!owner) owner = &candidate.mode[mi];
-                else if (modes[mi].faceCount != owner->record->faceCount)
-                    return ValidationError(error,errorBytes,"shared visibility face domain mismatch");
-                if (owner != &candidate.mode[mi])
-                    for (uint32 fi = 0; fi < modes[mi].faceCount; ++fi)
-                    {
-                        const FaceDisk &a = owner->faces[fi], &b = candidate.mode[mi].faces[fi];
-                        if (a.highWidth != b.highWidth || a.highHeight != b.highHeight ||
-                            a.styleCount != b.styleCount || memcmp(a.styles,b.styles,sizeof(a.styles)) || a.modelIndex != b.modelIndex ||
-                            memcmp(&owner->models[a.modelIndex],&candidate.mode[mi].models[b.modelIndex],sizeof(ModelDisk)))
-                            return ValidationError(error,errorBytes,"shared visibility receiver domains disagree");
-                    }
-                setMask |= 1u << si;
-            }
+        const ModeView *owner = &candidate.mode[0];
         if (!owner || s.faceCount != owner->record->faceCount || s.selectedLightCount > MAX_MAP_WORLDLIGHTS ||
             (s.sunLightIndex != -1 && (s.sunLightIndex != 0 || !s.selectedLightCount)) ||
             s.reserved || s.reserved2 || s.unbakedFaceCount > s.faceCount ||
@@ -702,9 +676,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
         if (nextEntry != s.entryCount || nextMesh != s.meshCount || payloadCursor != s.payloadBytes)
             return ValidationError(error,errorBytes,"orphan visibility entry/mesh/payload");
     }
-    if (setMask != (1u << h.visibilitySetCount)-1) return ValidationError(error,errorBytes,"unreferenced visibility set");
-    for (uint32 mi = 0; mi < h.modeCount; ++mi)
-        candidate.mode[mi].visibility = candidate.visibility[modes[mi].visibilitySetIndex];
+    candidate.mode[0].visibility = candidate.visibility[0];
     if (cursor != count) return ValidationError(error,errorBytes,"trailing file bytes");
     out = candidate; return true;
 }
@@ -805,7 +777,7 @@ inline bool ValidateManifest(const void *bytes, uint32 count, uint32 levelFlags,
     const ManifestDisk &h = *static_cast<const ManifestDisk *>(bytes);
     const uint32 mask = (levelFlags & ShadowMap_LevelFlagDirect(0) ? 1u : 0u) |
         (levelFlags & ShadowMap_LevelFlagDirect(1) ? 2u : 0u);
-    if (h.byteSize != count || !h.runtimeModeMask || (h.runtimeModeMask & ~3u) ||
+    if (h.byteSize != count || h.runtimeModeMask != (1u << SHADOWMAP_MODE_HDR) ||
         h.runtimeModeMask != mask || h.assetVersion != kVersion || h.reserved)
         return ValidationError(error,errorBytes,"manifest version/flags mismatch");
     uint32 pathLength = 0; while (pathLength < sizeof(h.assetPath) && h.assetPath[pathLength]) ++pathLength;
@@ -828,10 +800,9 @@ inline bool ValidateManifest(const void *bytes, uint32 count, uint32 levelFlags,
             if (memcmp(&m,&empty,sizeof(m))) return ValidationError(error,errorBytes,"noncanonical absent manifest mode");
             continue;
         }
-        if (!ValidPair(m.faceLump,m.lightingLump) || m.lightingLump != uint32(mi ? LUMP_LIGHTING_HDR : LUMP_LIGHTING) ||
-            m.worldlightsLump != uint32(mi ? LUMP_WORLDLIGHTS_HDR : LUMP_WORLDLIGHTS) ||
+        if (!AssetPair(m.faceLump,m.lightingLump) || m.worldlightsLump != uint32(LUMP_WORLDLIGHTS_HDR) ||
             m.lightingBytes > MAX_MAP_LIGHTING || (m.lightingBytes & 3) || (!m.lightingBytes && m.lightingCRC32) ||
-            m.lightCount > MAX_MAP_WORLDLIGHTS || m.assetMode >= 4 ||
+            m.lightCount > MAX_MAP_WORLDLIGHTS || m.assetMode ||
             (m.sunLightIndex != -1 && (m.sunLightIndex != 0 || !m.lightCount)) || !ZeroBytes(m.reserved,sizeof(m.reserved)) ||
             m.lightsOffset != cursor || uint64(m.lightCount)*sizeof(ShadowMapLightDisk) > count-cursor)
             return ValidationError(error,errorBytes,"manifest mode/range");
@@ -851,6 +822,15 @@ inline bool ValidateManifest(const void *bytes, uint32 count, uint32 levelFlags,
                     l.shadowSunAngularRadius != 0 || l.capDist <= 0)))
                 return ValidationError(error,errorBytes,"invalid selected-light record");
         }
+        if (m.removedWorldlightsOffset != cursor || m.removedWorldlightCount > m.lightCount ||
+            uint64(m.removedWorldlightCount)*sizeof(uint32) > count-cursor)
+            return ValidationError(error,errorBytes,"manifest removed-worldlight range");
+        v.removedWorldlights = reinterpret_cast<const uint32 *>(static_cast<const uint8 *>(bytes)+cursor);
+        v.removedWorldlightCount = m.removedWorldlightCount;
+        cursor += uint64(m.removedWorldlightCount)*sizeof(uint32);
+        for (uint32 i = 0; i < m.removedWorldlightCount; ++i)
+            if (v.removedWorldlights[i] >= MAX_MAP_WORLDLIGHTS || (i && v.removedWorldlights[i] <= v.removedWorldlights[i-1]))
+                return ValidationError(error,errorBytes,"manifest removed-worldlight order");
     }
     if (cursor != count) return ValidationError(error,errorBytes,"manifest trailing bytes");
     out = candidate; return true;
@@ -927,6 +907,16 @@ inline bool ValidateManifestAsset(const FileView &file, const ManifestView &mani
     if (admitted != file.header->modeCount)
         return ValidationError(error,errorBytes,"unreferenced asset mode");
     return true;
+}
+// Map name ("c1m1_hotel", "maps/c1m1_hotel", "maps/c1m1_hotel.bsp") -> "maps/c1m1_hotel.light" (GAME path).
+inline bool SidecarPath(const char *map, char *out, int bytes)
+{
+    if (!map || !*map || !out || bytes <= 0 || V_strlen(map) >= 240) return false;
+    char name[260]; V_strncpy(name, map, sizeof(name)); V_FixSlashes(name, '/');
+    if (name[0] == '/' || V_strstr(name, "..") || V_strchr(name, ':')) return false;
+    V_StripExtension(name, name, sizeof(name));
+    const int written = V_snprintf(out, bytes, V_strnicmp(name, "maps/", 5) ? "maps/%s.light" : "%s.light", name);
+    return written > 0 && written < bytes;
 }
 } // namespace hlight
 #endif

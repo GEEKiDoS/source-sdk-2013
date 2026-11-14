@@ -1,9 +1,10 @@
 @echo off
 setlocal
-rem Runs vrad_restir without installing anything into the SDK Base folders.
+rem Runs vrad_restir without installing anything into the SDK Base folders. Lighting is HDR only;
+rem with -restir_shadowmaps the BSP is left untouched and <map>.light is written beside it.
 rem   vrad_restir.bat [vrad_restir options] <map.bsp | map name under mod_episodic\maps>
 rem Example:
-rem   vrad_restir.bat -both -StaticPropLighting -TextureShadows -final ep2_outland_09
+rem   vrad_restir.bat -StaticPropLighting -TextureShadows -final ep2_outland_09
 rem
 rem Override the content roots by setting these before calling (or edit the defaults):
 set "SDK_MP=%SDK_MP%"

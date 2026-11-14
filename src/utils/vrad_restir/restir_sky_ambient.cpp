@@ -272,7 +272,7 @@ double SkyLuminance( const SkyFace faces[6] )
 
 bool ComputeScale( const ReSTIROptions &options, const ReSTIRScene &scene, entity_t *world, float &scale )
 {
-	const char *mode = ModeName( options.hdr );
+	const char *mode = ModeName( true );
 	if ( scene.skyAmbientLight < 0 )
 	{
 		if ( verbose )
@@ -290,7 +290,7 @@ bool ComputeScale( const ReSTIROptions &options, const ReSTIRScene &scene, entit
 	SkyFace faces[6];
 	for ( int face = 0; face < 6; ++face )
 	{
-		if ( face != DOWN_FACE && !LoadFace( options.hdr, skyName, face, faces[face] ) )
+		if ( face != DOWN_FACE && !LoadFace( true, skyName, face, faces[face] ) )
 			return false;
 	}
 
@@ -332,7 +332,7 @@ void ReSTIR_WriteSkyAmbientMatch( const ReSTIROptions &options, const ReSTIRScen
 		return;
 	entity_t *world = &entities[0];
 	char key[32];
-	V_snprintf( key, sizeof( key ), "_skyscale_%s", ModeName( options.hdr ) );
+	V_snprintf( key, sizeof( key ), "_skyscale_%s", ModeName( true ) );
 
 	bool changed = RemoveKey( world, key );
 	float scale;

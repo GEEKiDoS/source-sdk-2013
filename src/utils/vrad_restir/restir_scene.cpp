@@ -358,10 +358,7 @@ bool ReSTIR_GetMaterialEmission( ReSTIRScene &scene, const ReSTIROptions &option
 	Vector color2 = LinearMaterialColor( MaterialColor( material, RESTIR_MAT_COLOR2 ) );
 	Vector modulation( color.x * color2.x, color.y * color2.y, color.z * color2.z );
 	if ( unlit )
-	{
-		if ( options.hdr )
-			modulation *= MaterialFloat( material, RESTIR_MAT_HDRCOLORSCALE, 1.0f );
-	}
+		modulation *= MaterialFloat( material, RESTIR_MAT_HDRCOLORSCALE, 1.0f );
 	else
 	{
 		// materialsystem/stdshaders/vertexlitgeneric_dx9_helper.cpp:1214 — tint is already linear.

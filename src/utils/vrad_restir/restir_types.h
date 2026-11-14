@@ -76,9 +76,7 @@ enum ReSTIRPreset         { RESTIR_PRESET_DEFAULT = 0, RESTIR_PRESET_FAST, RESTI
 
 struct ReSTIROptions
 {
-	CUtlString	mapPath;				// full path, ".bsp" appended
-	CUtlString	transactionPath;		// internal paired-bake work BSP; mapPath stays the authored identity
-	bool		hdr;					// this pass bakes HDR lumps (false = LDR)
+	CUtlString	mapPath;				// full path, ".bsp" appended. Every bake is HDR-only (g_bHDR is always true).
 	bool		staticPropLighting;		// -StaticPropLighting
 	bool		textureShadows;			// -TextureShadows
 	float		smoothingThreshold;		// cos(-smooth deg); VRAD default cos(45deg); 1.0 disables Phong
@@ -89,11 +87,14 @@ struct ReSTIROptions
 										// to the material's reflectivity); -restir_notexturealbedo restores VRAD's one colour per material
 	float		emissiveScale;			// -restir_emissivescale (1.0): multiplier on material emission (UnlitGeneric, $selfillum);
 										// 0 disables material emitters
-	bool		shadowMaps;				// -restir_shadowmaps: selected runtime direct + independently dense linear lightmaps
-										// Implies both modes, staticPropLighting and textureShadows; .hlight v4 + rshd v5
+	bool		shadowMaps;				// -restir_shadowmaps: selected runtime direct + independently dense linear lightmaps,
+										// written only to <map>.light (the BSP is not touched); implies textureShadows and
+										// disables staticPropLighting; .hlight v5 + rshd v6
+	CUtlString	lightDir;				// -restir_lightdir <dir>: where <map>.light goes (default: beside the input BSP)
 	int			highresDensity;			// -restir_hlight_density, independent intervals; shadowmap conversion only
 	int			ambientGridSpacing;		// -restir_ambientgrid (32): dense ambient probe spacing in units; shadowmap conversion only
 	int			ambientGridReach;		// -restir_ambientgrid_reach (512): probe bricks within this distance of lit geometry, 0 = all
+	int			ambientGridBudgetMB;	// -restir_ambientgrid_budget (1024): largest probe grid in MiB (atlas plus indirection)
 
 	// Quality knobs. -fast / -final set all of them at once (see ApplyPreset in vrad_restir.cpp);
 	// an explicit -restir_* value always wins over the preset, whatever the argument order.
@@ -115,9 +116,9 @@ struct ReSTIROptions
 	ReSTIRDenoiserDevice		denoiserDevice;		// -restir_denoiser_device (default)
 
 	ReSTIROptions()
-		: hdr( false ), staticPropLighting( false ), textureShadows( false ),
+		: staticPropLighting( false ), textureShadows( false ),
 		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
-		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), preset( RESTIR_PRESET_DEFAULT ),
+		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), ambientGridBudgetMB( 1024 ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),

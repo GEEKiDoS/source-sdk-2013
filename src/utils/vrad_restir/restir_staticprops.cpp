@@ -277,30 +277,25 @@ void CReSTIRStaticPropMgr::Shutdown()
 	}
 	m_Models.RemoveAll();
 	m_Props.PurgeAndDeleteElements();
-	m_Visibility[0].Clear();
-	m_Visibility[1].Clear();
-	m_VisibilityComplete[0] = m_VisibilityComplete[1] = false;
-	m_VisibilitySharedHDR = false;
+	m_Visibility.Clear();
+	m_VisibilityComplete = false;
 }
 int CReSTIRStaticPropMgr::Count() const
 {
 	return m_Props.Count();
 }
-const ReSTIRPropVisibilityData *CReSTIRStaticPropMgr::GetVisibility( bool hdr ) const
+const ReSTIRPropVisibilityData *CReSTIRStaticPropMgr::GetVisibility() const
 {
-	const int mode = hdr ? 1 : 0;
-	if ( !m_VisibilityComplete[mode] )
-		return NULL;
-	return &m_Visibility[hdr && m_VisibilitySharedHDR ? 0 : mode];
+	return m_VisibilityComplete ? &m_Visibility : NULL;
 }
-const ReSTIRPropVisibilityData *ReSTIR_GetStaticPropVisibility( bool hdr )
+const ReSTIRPropVisibilityData *ReSTIR_GetStaticPropVisibility()
 {
-	return g_ReSTIRStaticPropMgr.GetVisibility( hdr );
+	return g_ReSTIRStaticPropMgr.GetVisibility();
 }
 
-void ReSTIR_LogStaticPropDirectSummary( bool hdr )
+void ReSTIR_LogStaticPropDirectSummary()
 {
-	const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility( hdr );
+	const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility();
 	if ( !data ) return;
 	for ( int propIndex = 0; propIndex < g_ReSTIRStaticPropMgr.m_Props.Count(); ++propIndex )
 	{
@@ -310,24 +305,23 @@ void ReSTIR_LogStaticPropDirectSummary( bool hdr )
 			( prop.lump.m_Flags & STATIC_PROP_NO_PER_VERTEX_LIGHTING ) ? "NO_PER_VERTEX_LIGHTING" :
 			!( prop.lump.m_Flags & STATIC_PROP_NO_PER_TEXEL_LIGHTING ) ? "active pertexel lighting" : NULL;
 		if ( reason )
-			Msg( "VRAD ReSTIR: %s prop %d selected-local direct skipped: %s (full runtime local direct)\n",
-				hdr ? "HDR" : "LDR", propIndex, reason );
+			Msg( "VRAD ReSTIR: prop %d selected-local direct skipped: %s (full runtime local direct)\n", propIndex, reason );
 	}
-	Msg( "VRAD ReSTIR: %s prop selected-local direct: %u eligible props, %u hardware meshes, %u fallback local/mesh pairs; skipped %u NO_PER_VERTEX, %u active pertexel, %u missing geometry\n",
-		hdr ? "HDR" : "LDR", data->directEligibleProps, data->directMeshes, data->directFallbackLights,
+	Msg( "VRAD ReSTIR: prop selected-local direct: %u eligible props, %u hardware meshes, %u fallback local/mesh pairs; skipped %u NO_PER_VERTEX, %u active pertexel, %u missing geometry\n",
+		data->directEligibleProps, data->directMeshes, data->directFallbackLights,
 		data->directNoVertexProps, data->directPerTexelProps, data->directMissingGeometryProps );
 }
 
 // Independent oracle inputs only: geometry is authored, source IDs are the
 // shared VHV scatter domain, and visibility is the quantized traced R8 plane.
 // Do not emit production direct RGB as the diagnostic's reference radiance.
-bool ReSTIR_WriteStaticPropDirectDiagnostics( const char *path, bool hdr )
+bool ReSTIR_WriteStaticPropDirectDiagnostics( const char *path )
 {
-	const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility( hdr );
+	const ReSTIRPropVisibilityData *data = ReSTIR_GetStaticPropVisibility();
 	if ( !data || ( data->props.Count() && !data->diagnosticsCaptured ) ||
 		data->diagnosticProps.Count() != data->props.Count() || data->diagnosticMeshes.Count() != data->meshes.Count() )
 	{
-		Warning( "VRAD ReSTIR: %s prop direct diagnostics were not captured\n", hdr ? "HDR" : "LDR" );
+		Warning( "VRAD ReSTIR: prop direct diagnostics were not captured\n" );
 		return false;
 	}
 	FILE *file = fopen( path, "wb" );
@@ -968,7 +962,7 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 	Model &model = *m_Models[prop.lump.m_PropType];
 	studiohdr_t *hdr = model.header;
 	OptimizedModel::FileHeader_t *vtx = (OptimizedModel::FileHeader_t *)model.vtx.Base();
-	ReSTIRPropVisibilityData &visibility = m_Visibility[g_bHDR ? 1 : 0];
+	ReSTIRPropVisibilityData &visibility = m_Visibility;
 	const bool withVertex = rgbLighting && !( prop.lump.m_Flags & STATIC_PROP_NO_PER_VERTEX_LIGHTING );
 	const bool withTexel = rgbLighting && !( prop.lump.m_Flags & STATIC_PROP_NO_PER_TEXEL_LIGHTING );
 	const int directSkipReason = !hdr || !vtx ? 3 :

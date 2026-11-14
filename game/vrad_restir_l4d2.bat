@@ -1,12 +1,13 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 rem Runs vrad_restir against extracted L4D2 content without installing anything into SDK Base.
-rem Shipped BSP v21 maps are accepted; vrad_restir writes standard BSP v20 output and
-rem carries each v21 static-prop RGBA tint through the v20 ptnt game lump (version 1).
+rem Lighting is HDR only. With -restir_shadowmaps the map (shipped v21 or v20) is left untouched and the
+rem result is written to mod_l4d2\maps\<map>.light; without it, a v21 input is rewritten as a standard
+rem BSP v20 map whose v21 static-prop RGBA tints ride the v20 ptnt game lump (version 1).
 rem GPU submissions adapt toward about 250 ms per fence wait to avoid Windows TDR on slow GPUs.
-rem   vrad_restir_l4d2.bat [vrad_restir options] <map.bsp | map name under mod_l4d2\maps>
+rem   vrad_restir_l4d2.bat [vrad_restir options] <map.bsp | map name under mod_l4d2\maps or the retail maps>
 rem Example:
-rem   vrad_restir_l4d2.bat -both -StaticPropLighting -fast c1m1_hotel.bsp
+rem   vrad_restir_l4d2.bat -restir_shadowmaps -fast c1m1_hotel
 rem
 rem Override the content roots by setting these before calling:
 set "SDK_MP=%SDK_MP%"
@@ -102,10 +103,13 @@ if "!MAP!"=="" (
 )
 if not exist "!MAP!" if exist "!MOD!\maps\!MAP!.bsp" set "MAP=!MOD!\maps\!MAP!.bsp"
 if not exist "!MAP!" if exist "!MOD!\maps\!MAP!" set "MAP=!MOD!\maps\!MAP!"
+if not exist "!MAP!" if exist "!L4D2_ROOT!\left4dead2\maps\!MAP!.bsp" set "MAP=!L4D2_ROOT!\left4dead2\maps\!MAP!.bsp"
+if not exist "!MAP!" if exist "!L4D2_ROOT!\left4dead2\maps\!MAP!" set "MAP=!L4D2_ROOT!\left4dead2\maps\!MAP!"
 if not exist "!MAP!" (
     echo map not found: !MAP!
     exit /b 1
 )
 
-"!TOOLRUN!\vrad_restir.exe"!ARGS! -game "!TOOLGAME!" "!MAP!"
+rem A .light always lands in the mod's maps folder, never next to a retail BSP.
+"!TOOLRUN!\vrad_restir.exe"!ARGS! -restir_lightdir "!MOD!\maps" -game "!TOOLGAME!" "!MAP!"
 exit /b %ERRORLEVEL%

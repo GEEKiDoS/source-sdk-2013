@@ -1,18 +1,11 @@
 # VRAD ReSTIR
 
-VRAD ReSTIR is the Win64 Vulkan-compute light baker for Source BSP files. It is a separate tool from the legacy `vrad` implementation and is invoked through `vrad_restir.exe`. The launcher loads the adjacent `vrad_restir_dll.dll`; `-both` preserves authored LDR and HDR output.
+VRAD ReSTIR is the Win64 Vulkan-compute light baker for Source BSP files. It is a separate tool from the legacy `vrad` implementation and is invoked through `vrad_restir.exe`. The launcher loads the adjacent `vrad_restir_dll.dll`. It bakes HDR lighting only, in one pass; `-ldr`, `-hdr` and `-both` were removed and are rejected. LDR lumps of the input are left as they are.
 
-Paired bakes resolve both effective scenes before GPU transport. Only exact agreement of geometry/occlusion, decoded material textures/emission, lights, styles and receiver sampling domains admits one shared solution. HDR entity scales/overrides, eight-component light values, `$hdrcolorscale` and mode-filtered RAD directives therefore still produce separate solutions whenever they change effective inputs. Equal scenes log `skipping second GPU transport` and reuse the solved full-source/receiver lighting, ambient gather, prop meshes and detail lighting; each mode still uses its own native encoding, VHV names/flags, highres records and CRC identities. Shared PPL/detail payloads retain HDR-final semantics. Both modes remain in the owned paired transaction until success; genuine ordinary `-ldr` remains single-mode.
+There are two outputs:
 
-Behavioral paired-bake acceptance (real baker, isolated fixtures; no shipping BSP writes):
-
-```powershell
-python utils/vrad_restir/tests/paired_bake_test.py --fixture-dir <temporary-fixtures> --tool-game <temporary-tool-game>
-```
-
-This exercises equivalent inputs against separate ordinary mode controls, HDR sentinel/default/zero/scale boundaries, eight-component and mode-filtered RAD emission/occlusion, HDR-scaled materials, highres native identities, and paired failure rollback.
-
-Equivalence is based on resolved lighting, not different key text: for example, two RAD values below the existing texlight admission threshold can legitimately share a solution. An occlusion regression fixture must enable its static props' shadows; `noshadow` cannot change an already non-shadow-casting prop.
+- **Ordinary** (no `-restir_shadowmaps`): HDR face lightmaps, worldlights, leaf ambient, static/detail prop lighting and the sky scale are written into the BSP (see "BSP output"). This is the path for the stock-engine mods.
+- **`-restir_shadowmaps`**: only the high-resolution lightmaps (`.hlight`), the dense ambient probes (`.hprobe`) and the selected-light manifest (`rshd`) are baked, and they go to `<map>.light`. The BSP is not written, whatever its version, so a retail Left 4 Dead 2 map stays byte-identical (see "The .light sidecar").
 
 ## Prerequisites
 
@@ -50,7 +43,8 @@ The default options are:
 
 | Option | Default | Meaning |
 |---|---:|---|
-| `-ldr`, `-hdr`, `-both` | `-ldr` | Select the output lighting mode; `-both` is handled as two launcher passes. |
+| `-restir_shadowmaps` | off | Bake runtime shadow-mapped lights, `.hlight` and `.hprobe` into `<map>.light`; the BSP is not modified. Implies `-TextureShadows`; `-StaticPropLighting` is ignored. The input needs HDR faces and HDR lighting (every retail L4D2 map has them). See "The .light sidecar". |
+| `-restir_lightdir DIR` | input's folder | `-restir_shadowmaps` only: directory that receives `<map>.light`. `game\vrad_restir_l4d2.bat` passes `mod_l4d2\maps`. |
 | `-fast`, `-final` | neither | Quality presets, mutually exclusive. `-fast`: 32 iterations, 4 candidates, 2 bounces, fast denoiser. `-final`: 512 iterations, 16 candidates, 6 bounces, high denoiser. Any explicit `-restir_iterations`, `-restir_candidates`, `-restir_maxbounces` or `-restir_denoiser_quality` overrides the preset regardless of argument order. |
 | `-restir_iterations N` | `128` | Transport iterations; `1..65535`. Bounce light is fed back from the irradiance resolved by earlier iterations, so this also bounds the effective bounce depth; the final estimate is the mean of the iterations after a short burn-in (a quarter of them, at most 8). |
 | `-restir_candidates N` | `8` | Samples per lightmap sample per iteration, `1..4096`: that many hemisphere rays (sky ambient where a ray reaches the sky, bounce where it lands on a lightmapped face) and that many samples over the `emit_surface` lights. The sun adds one sample. Point and spot lights take none: they are evaluated exactly, once per bake. |
@@ -67,6 +61,7 @@ The default options are:
 | `-restir_emissivescale F` | `1.0` | Material-emission multiplier, `0..1000`; `0` disables material emitters without affecting `.rad` texlights. |
 | `-restir_ambientgrid N` | `32` | `-restir_shadowmaps` only: ambient probe spacing in units, `8..512`. See "Dense ambient probes". |
 | `-restir_ambientgrid_reach N` | `512` | `-restir_shadowmaps` only: a probe brick exists within this distance of lit world/static-prop geometry, `0..65536`; `0` allocates every brick. |
+| `-restir_ambientgrid_budget MB` | `1024` | `-restir_shadowmaps` only: largest probe grid (atlas plus indirection) in MiB, `1..2047`; over it the bake fails naming the three probe options. |
 | `-restir_notexturealbedo` | albedo on | Disable per-texel bounce albedo. By default bounce light picks up each material's `$basetexture` per texel instead of VRAD's single reflectivity per material: the texture is linearized (2.2) and scaled so its average equals the material's reflectivity, so total bounced energy matches VRAD and only its spatial distribution changes (a dark stripe on a wall bounces less than its light neighbour). Applies to lightmap bounces, leaf ambient cubes and static/detail prop gathers; materials whose base texture cannot be loaded use their reflectivity. `-restir_texturealbedo` is accepted as the explicit default. |
 | `-StaticPropLighting` | off | Bake static-prop vertex and texel lighting. |
 | `-TextureShadows` | off | Evaluate alpha coverage for shadows. Every static-prop mesh whose material has `$alphatest`/`$translucent` casts its alpha cutout (chain-link fences, foliage); stock VRAD restricts this to models flagged `$casttextureshadows` or listed by `forcetextureshadow`, which this baker accepts and ignores. |
@@ -95,7 +90,7 @@ Measured on `ep2_outland_09` with the earlier reservoir-reuse estimator and not 
 The simplest way to run it is `game\vrad_restir.bat`, which needs nothing copied into the SDK Base folders: it puts the SDK Base 2013 Multiplayer `bin\x64` runtime on `PATH` for the call, writes a tool-readable `gameinfo.txt` under `%TEMP%\vrad_restir_game` from the configured content roots, and forwards every other argument. A bare map name resolves under `mod_episodic\maps`:
 
 ```bat
-game\vrad_restir.bat -both -StaticPropLighting -TextureShadows -final ep2_outland_09
+game\vrad_restir.bat -StaticPropLighting -TextureShadows -final ep2_outland_09
 ```
 
 Content roots default to the local Steam library; override with `SDK_MP`, `SDK_SP` and `HL2_DIR` environment variables (or edit the defaults at the top of the script).
@@ -113,8 +108,10 @@ The following verification predates the current estimator.
 Verification on GTX 1050 (2 GB), c1m1 density 1 with `-both -restir_shadowmaps -restir_iterations 2 -restir_candidates 1 -restir_maxbounces 1 -restir_denoiser none`: the unpaged reference completed in 4,523.39 s with one transport page after style resolution; heap-0 peaks were 1,445,454,816 B (LDR) and 1,466,754,016 B (HDR). A forced-paged `-restir_vram_budget 1400` counterpart completed in 3,797.59 s with three pages after style resolution and heap-0 peaks of 1,004,970,944 B (LDR) and 940,166,592 B (HDR). BSP LDR/HDR lighting lumps and the 286,255,488-byte embedded `.hlight` asset were byte-identical (decoded RGBExp32 and hlight pixel max/mean absolute differences 0/0). The complete density-2 `-fast` bake (default fast quality: 32 iterations, 4 candidates, 2 bounces, OIDN fast) also completed on the GTX 1050: wall 13,090.58 s; LDR 6,283.047 s and HDR 6,806.585 s; seven transport pages after style resolution; maximum heap-0 peaks 1,369,162,864 B (LDR) and 1,263,715,808 B (HDR). The validated density-2 assets are `.hlight` 283,490,920 B (LDR) / 566,981,784 B paired, `.hprobe` 105,111,040 B / 210,222,016 B paired, and `rshd` 8,520 B / 16,640 B paired; both modes were written successfully.
 
 ```bat
-game\vrad_restir_l4d2.bat -both -StaticPropLighting -TextureShadows -fast C:\path\to\c1m1_hotel.bsp
+game\vrad_restir_l4d2.bat -restir_shadowmaps -fast c1m1_hotel
 ```
+
+A bare map name resolves under `mod_l4d2\maps` first, then under the retail `left4dead2\maps`; the `.light` is always written to `mod_l4d2\maps`, never beside a retail BSP.
 
 The L4D2 wrapper stages the executable, shaders, and SDK `filesystem_stdio.dll` under `%TEMP%` so the SDK Base installation and repository tool directory are not modified. If OIDN DLLs are present beside `game\bin\x64\vrad_restir.exe`, they are staged too and the bake summary reports `denoiser=oidn device=...`; otherwise it reports the bilateral fallback.
 
@@ -122,14 +119,22 @@ The L4D2 wrapper stages the executable, shaders, and SDK `filesystem_stdio.dll` 
 Running the executable directly from `game\bin\x64`:
 
 ```bat
-vrad_restir.exe -both -StaticPropLighting -TextureShadows -game <path to gameinfo dir> <path>\ep2_outland_09.bsp
+vrad_restir.exe -StaticPropLighting -TextureShadows -game <path to gameinfo dir> <path>\ep2_outland_09.bsp
 ```
 
 `gameinfo.txt` must be a tool-readable one: the engine-only `|appid_NNN|` search-path mounts are not resolved by the tool file system, so list the content directories and `.vpk` files explicitly (quote paths containing spaces). `tier0.dll`, `vstdlib.dll` and `filesystem_stdio.dll` must be beside the executable or on `PATH`.
 
+## The .light sidecar
+
+`-restir_shadowmaps` writes `<map>.light` and nothing else. It is a BSP v20 container with three non-empty lumps: `LUMP_MAP_FLAGS` (`LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR`), `LUMP_GAME_LUMP` holding only the `rshd` v6 manifest, and `LUMP_PAKFILE` holding `maps/<map>.hlight` and `maps/<map>.hprobe` (LZMA). The file is written to `<map>.light.restir.tmp` and renamed over the previous one, so a failed bake leaves the old file. The bake log ends with `Hlight: wrote <path> (...)`.
+
+All of it is HDR: one mode, `(LUMP_FACES_HDR, LUMP_LIGHTING_HDR)`, in the manifest, the `.hlight` (v5) and the `.hprobe` (v2). Every identity binds to the map's own lumps exactly as the engine loads them: the twelve geometry lumps, the HDR faces and the HDR lighting (in the `.hlight`), and the HDR worldlights (in the manifest; on a BSP 21 map the stored 100-byte records). A `.light` beside a different or edited BSP is therefore rejected at load, and the map runs on its own lighting. The bake leaves the map's faces, lighting, leaf ambient, VHVs, detail lighting and entities alone, so it skips those stages; the probes and the static-prop visibility are computed as before.
+
+The selected (shadow-mapped) lights are still part of the map's own worldlights and VHVs. The manifest therefore lists, after the selected-light records, the indices of the map's HDR worldlights that carry a selected light (matched by type, style and origin; the sun by type; the log prints `Hlight: N of M selected lights matched to BSP worldlights`). While a map with a valid `.light` loads, the DX12 renderer's lump hook removes those records from the loaded worldlights and clears `LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_*` in the loaded map flags, so the engine lights models and static props from the remaining worldlights and the runtime shadow-mapped lights add the selected ones once. The file on disk is never changed.
+
 ## BSP output
 
-The result remains an ordinary Source BSP. The selected mode's face lightmaps, face style/offset arrays, worldlights, per-leaf ambient index/lighting lumps, static-prop pak entries (`sp_N.vhv` / `sp_hdr_N.vhv`), and detail-prop game lump are written using the existing Source contracts. LDR and HDR data coexist after `-both`; a single-mode pass does not replace the opposite mode's lighting data. Output is staged as `<map>.bsp.restir.tmp` and validated before the original BSP is replaced.
+Without `-restir_shadowmaps` the result remains an ordinary Source BSP. The HDR face lightmaps, face style/offset arrays, worldlights, per-leaf ambient index/lighting lumps, static-prop pak entries (`sp_hdr_N.vhv`), and HDR detail-prop game lump are written using the existing Source contracts; LDR lumps of the input are unchanged. Output is staged as `<map>.bsp.restir.tmp` and validated before the original BSP is replaced. An input that carries an `rshd` game lump or selected-direct level flags from an older vrad_restir is rejected: bake from the original BSP.
 
 Invalid luxels follow VRAD's defaults: a face with no samples at all is written as `(255,0,0)`; a brush luxel that no sample cell reaches is reconstructed from the surrounding samples with VRAD's bounce-radial kernel and excluded from the face average; a luxel nothing reaches is black (`bRed2Black`). Displacement luxels without coverage are black.
 
@@ -137,7 +142,7 @@ Ordinary bakes follow VRAD's switchable-light rule: a face gets at most `MAXLIGH
 
 With `-restir_shadowmaps`, full-source transport retains up to 64 styles for ambient/detail gathers. Native BSP receiver lightmaps retain four slots and omit selected-local direct/styles exclusively used by selected lights. The active `.hlight` v4 world RGB retains v3's selected-local diffuse and Source styles. Receiver styles are admitted first, then nonzero selected-local styles in canonical light-index order; an existing style (including style 0) always fits. If a local cannot fit the four-slot palette, its RGB is not baked on that face; its selected index is recorded for full runtime diffuse/specular with immutable visibility. No light is dropped. Native receiver-style overflow still rejects. Selected sun direct remains runtime-only.
 
-Regression fixtures `source-style-overflow` and `baked-direct-style-overflow` require successful publication with exact per-face unbaked lists and independently checked RGB exclusion; the latter uses styles 0,32,33,34,35. `receiver-style-overflow` remains a native-style rejection with byte-exact rollback. `baked-direct-styles` fits four selected styles without fallback. `paired_bake_test.py` compares output against independent runtime direct equations, validates per-mode fallback summaries and checks unchanged native/VHV policies against ordinary controls.
+Regression fixtures `source-style-overflow` and `baked-direct-style-overflow` require successful publication with exact per-face unbaked lists and independently checked RGB exclusion; the latter uses styles 0,32,33,34,35. `receiver-style-overflow` remains a native-style rejection. `baked-direct-styles` fits four selected styles without fallback. (The paired LDR/HDR acceptance runner that exercised these was removed with the LDR transport.)
 
 ### Hybrid local visibility and baked direct (`.hlight` v4 / `rshd` v5)
 
@@ -323,42 +328,41 @@ Prepared real-map variants include `hybrid-prop-no-per-vertex` and
 `hybrid-prop-no-self`. The former must retain all visibility mesh/LOD blocks even
 when no VHV files are emitted. `hlight_contract_test.visibility_stats` reports
 open/blocked/fractional world and prop receivers once per unique visibility set.
-`paired_bake_test.py` additionally asserts shared versus distinct sets under the
-same whole-scene reuse decision, along with rollback of invalid paired output.
+The paired-bake runner that asserted shared versus distinct LDR/HDR sets was removed with the LDR transport.
 
 ### Dense ambient probes (`.hprobe`)
 
-`-restir_shadowmaps` also writes `maps/<name>.hprobe` beside the `.hlight` pak member: per lighting mode, a sparse
-axis-aligned grid of SH L2 diffuse irradiance probes (`public/hprobe_bsp.h`) for the DX12 PBR model shaders. The
-`.hlight` bytes, the native leaf ambient lumps and every old shader are unchanged. A probe holds the same quantity
+`-restir_shadowmaps` also writes `maps/<name>.hprobe` beside the `.hlight` in the `.light` pak: a sparse
+axis-aligned grid of SH L2 diffuse irradiance probes (`public/hprobe_bsp.h`, v2, one HDR grid) for the DX12 PBR model
+shaders. The native leaf ambient lumps and every old shader are unchanged. A probe holds the same quantity
 as a leaf ambient cube, `E/pi` in the engine's linear cube units (a uniform environment gives its cube side), with a
 directional basis. It folds in the full-source lightmap gather over 256 uniform sphere directions
 (`restir_probe_sh.comp`, the miss policy of `restir_gather_ambient.comp`), material emitters (the 16-sample scheme of
-`PointDirectLight`) and the `DWL_FLAGS_INAMBIENTCUBE` surface worldlights flagged by the leaf ambient stage.
+`PointDirectLight`) and the map's `DWL_FLAGS_INAMBIENTCUBE` surface worldlights.
 
 Storage is 29 bytes per probe: R11G11B10F flat irradiance, six RGBA8_SNORM band textures (`s_k = e_k / DC * 0.25`,
 ratio range +-4) and an R8 validity, all premultiplied by validity so hardware filtering renormalises. Bricks are
 4x4x4 cells (5x5x5 probes, edge probes duplicated) and are allocated sparsely; the file stores the indirection table
-and the padded brick atlas exactly as the runtime uploads them. The grid is capped at 256 MiB of padded atlas plus
-indirection per mode and the bake fails with `raise -restir_ambientgrid or lower -restir_ambientgrid_reach` when it
-would exceed that; nothing is reduced silently. Probes inside solid, inside an opaque leaf brush, or whose axis rays of
+and the brick atlas exactly as the runtime uploads them. Up to 65,536 bricks the atlas is `min(n,256)` by
+`ceil(n/x)` by 1 bricks; above that it is 256 by `ceil(n/(256*z))` by `z = ceil(n/65536)`, so no unused 256x256 layer
+is paid for. There is no size cap in the format: up to 2^20 bricks, one signed pak member, 1,024 bricks per axis. The
+baker enforces `-restir_ambientgrid_budget` (1,024 MiB) and fails with `raise -restir_ambientgrid, lower
+-restir_ambientgrid_reach or raise -restir_ambientgrid_budget` when the grid would exceed it; nothing is reduced
+silently. Once the grid is sized it logs `Ambient probes: N bricks, M MiB (spacing, reach, atlas)`. A grid the GPU cannot
+hold leaves the map on the engine ambient cube with a warning. Probes inside solid, inside an opaque leaf brush, or whose axis rays of
 one spacing start inside geometry or reach a displacement back face are invalid; invalid probes get two
 neighbour-mean dilation passes, and negative `l = 2` lobes are shrunk by 0.75/0.5/0.25/0 until the sphere no longer
 undershoots by more than 2% of its peak. The bake prints `Hlight: ambient probe grid: N bricks (...)` and fails
 with `ambient probe encoding/addressing self-check failed` if decoded strided probes disagree with the float
 coefficients.
 
-The `.hprobe` header carries the CRC32 of the exact `.hlight` it was baked with and each mode's face/lighting
-identity, so a stale or foreign grid is rejected. A mode whose existing `.hlight` has no valid paired `.hprobe`
-(maps baked before this stage) is not retained when the asset is rewritten: both modes of a `-restir_shadowmaps`
-bake are replaced anyway, so such an input never fails the bake. The paired HDR reuse branch copies the LDR grid,
-because it reuses the LDR transport, leaf cubes and worldlight flags. Without `-restir_shadowmaps` the `.hprobe`
-member is removed together with the `.hlight`.
+The `.hprobe` header carries the CRC32 of the exact `.hlight` it was baked with and the mode's face/lighting
+identity, so a stale or foreign grid is rejected.
 
-`tests/hprobe_contract_test.py <bsp>` parses the member with the header's rules, binds it to the `.hlight` bytes by
-CRC and per-mode identity, requires at least one brick per mode and spot-checks stored texels;
-`--hlight-reference <bsp>` additionally requires the `.hlight` member to be byte-identical to a bake of the same
-input made before this stage. `hlight_contract_test.py` is unchanged.
+`tests/hprobe_contract_test.py <bsp> [--light <file>]` parses the member with the header's rules (one mode, the atlas
+rule above), binds it to the `.hlight` bytes by CRC and mode identity, requires at least one brick and spot-checks
+stored texels. `tests/hlight_contract_test.py <bsp> --light <file> --before <copy of the input> ...` checks the
+manifest, the removed-worldlight list and the `.hlight` against the map BSP and requires the BSP to be unchanged.
 
 ## Emissive materials
 
@@ -376,7 +380,7 @@ Limits: `LUMP_LIGHTING` is capped at 16 MB per mode (`MAX_MAP_LIGHTING`); the st
 
 ## Sky ambient match
 
-Every bake also stores the factor that gives the map's 2D skybox the brightness of its `light_environment` ambient, as worldspawn keys `_skyscale_ldr` / `_skyscale_hdr` (one per baked mode, e.g. `"_skyscale_hdr" "0.911622"`). The DX12 client's `r_sky_ambientmatch` applies it (see `materialsystem/stdshaders_dx12/README.md`); no other tool reads the keys. `restir_sky_ambient.cpp` writes the key for the pass's mode just before the BSP is staged (`UnparseEntities`), replaces an earlier value and removes a stale key when the mode cannot be matched. The entity lump is not part of any `.hlight` identity (`hlight_output.cpp` `GeometryIdentities` hashes planes, texdata, vertexes, texinfo, edges, surfedges, models, the displacement lumps and the texdata string lumps, plus the mode's faces and lighting), so an `-restir_shadowmaps` bake stays admitted: the baked `d1_trainstation_02` copy loads in game with `Highres: state=2 ... error=""`.
+An ordinary (in-BSP) bake also stores the factor that gives the map's 2D skybox the brightness of its `light_environment` ambient, as the worldspawn key `_skyscale_hdr` (e.g. `"_skyscale_hdr" "0.911622"`). The DX12 client's `r_sky_ambientmatch` applies it (see `materialsystem/stdshaders_dx12/README.md`); no other tool reads the key. `restir_sky_ambient.cpp` writes it just before the BSP is staged (`UnparseEntities`), replaces an earlier value and removes a stale key when the sky cannot be matched. A `-restir_shadowmaps` bake does not touch the entity lump, so a map lit by a `.light` has no sky scale and `r_sky_ambientmatch` leaves its sky alone. Earlier bakes also wrote `_skyscale_ldr`; the numbers below were measured then.
 
 **Definition.** The ambient is the scene's `emit_skyambient` intensity (the stock rules the scene builder already applies: `_ambientHDR` in HDR when valid, else `_ambient`, else half the sun; HDR multiplies `_AmbientScaleHDR`; first `light_environment` only; `-lightscale` included) divided by 255, i.e. the engine's linear units — the same value `restir_lightmap.glsl` returns for a ray that escapes to the sky — reduced to Rec.709 luminance. VRAD weights its sky ambient by cosine (`GatherSampleAmbientSkySSE`), so an unoccluded up-facing surface receives exactly that value. The sky it stands for is the uniform dome of the same cosine-weighted integral, so the sky luminance is the cosine-weighted mean over the upper hemisphere, `1/pi * integral(z > 0) Y(sky(w)) * w.z dw` with `Y` the luminance of the colour the sky shader writes, and the stored factor is `ambient / sky`. A single scalar, so the hue is untouched; no clamp is applied.
 
@@ -386,4 +390,4 @@ Every bake also stores the factor that gives the map's 2D skybox the brightness 
 
 Each baked mode logs `VRAD ReSTIR: sky ambient match (ldr): ambient luminance A, sky luminance S, _skyscale_ldr F`. `d1_trainstation_02` (`skyname sky_day01_01_hdr`, `_ambient 190 201 220 100`): ambient luminance 0.23026 in both modes; sky luminance 0.24910 (LDR) / 0.25259 (HDR); factors 0.924396 / 0.911622. For comparison, a plain texel mean over the six face textures would give 0.640 / 0.631, the solid-angle mean of the upper hemisphere 0.757 / 0.747: the cosine weighting is what ties the factor to the lightmap's ambient. A `-both -fast` bake of a copy with `_ambient 190 201 220 255` gives 2.35721 / 2.32464, and LDR screenshots (`mat_hdr_level` is enforced to >= 2 by the DX12 renderer, so LDR runs on LDR-only maps; HDR lumps zeroed in the copy) measure on/off 2.358 in sRGB-decoded linear luminance.
 
-Paired passes reload the transaction BSP between modes. `ParseEntities` pushes onto each entity's existing epair list, so `UnloadSelectedBSP` now frees the parsed entities; without that, the second pass's `UnparseEntities` wrote every key twice.
+`UnloadSelectedBSP` frees the parsed entities with the BSP; `ParseEntities` pushes onto each entity's existing epair list, so a reload without that would write every key twice.

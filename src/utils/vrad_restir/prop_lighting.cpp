@@ -14,20 +14,9 @@
 #include "bitmap/imageformat.h"
 #include <string.h>
 
-extern bool g_bHDR;
-
-static CUtlVector<DetailPropLightstylesLump_t> s_DetailPropLightStyleLumpLDR;
-static CUtlVector<DetailPropLightstylesLump_t> s_DetailPropLightStyleLumpHDR;
-static CUtlVector<DetailPropLightstylesLump_t> *s_pDetailPropLightStyleLump = &s_DetailPropLightStyleLumpLDR;
+static CUtlVector<DetailPropLightstylesLump_t> s_DetailPropLightStyleLump;
 static CUtlVector<Vector> s_ModelCenterOffset;
 static CUtlVector<Vector> s_SpriteCenterOffset;
-
-void VRadRestirDetailProps_SetHDRMode( bool bHDR )
-{
-	// Port of vraddetailprops.cpp:89-99; this hook is explicit because this
-	// DLL does not define VRAD (I8).
-	s_pDetailPropLightStyleLump = bHDR ? &s_DetailPropLightStyleLumpHDR : &s_DetailPropLightStyleLumpLDR;
-}
 
 static bool UnserializeDetailProps( DetailObjectLump_t *&props, int &count )
 {
@@ -98,53 +87,27 @@ static void ComputeWorldCenter( const DetailObjectLump_t &prop, Vector &center, 
 	}
 }
 
-static bool ReadOppositeDetailLighting()
+static bool WriteDetailLighting()
 {
-	CUtlVector<DetailPropLightstylesLump_t> &dst = g_bHDR ? s_DetailPropLightStyleLumpLDR : s_DetailPropLightStyleLumpHDR;
-	int id = g_bHDR ? GAMELUMP_DETAIL_PROP_LIGHTING : GAMELUMP_DETAIL_PROP_LIGHTING_HDR;
-	int version = g_bHDR ? GAMELUMP_DETAIL_PROP_LIGHTING_VERSION : GAMELUMP_DETAIL_PROP_LIGHTING_HDR_VERSION;
-	GameLumpHandle_t h = g_GameLumps.GetGameLumpHandle( id );
-	if ( h == g_GameLumps.InvalidGameLump() || g_GameLumps.GetGameLumpVersion( h ) != version )
-		return true;
-	int size = g_GameLumps.GameLumpSize( h );
-	if ( size < (int)sizeof( int ) )
-		return false;
-	CUtlBuffer b( g_GameLumps.GetGameLump( h ), size, CUtlBuffer::READ_ONLY );
-	int count = b.GetInt();
-	if ( count < 0 || (int)sizeof( int ) + count * (int)sizeof( DetailPropLightstylesLump_t ) > size )
-		return false;
-	dst.SetCount( count );
-	if ( count )
-		b.Get( dst.Base(), count * sizeof( DetailPropLightstylesLump_t ) );
-	return true;
-}
-
-static bool WriteSelectedDetailLighting()
-{
-	int id = g_bHDR ? GAMELUMP_DETAIL_PROP_LIGHTING_HDR : GAMELUMP_DETAIL_PROP_LIGHTING;
-	int version = g_bHDR ? GAMELUMP_DETAIL_PROP_LIGHTING_HDR_VERSION : GAMELUMP_DETAIL_PROP_LIGHTING_VERSION;
-	GameLumpHandle_t h = g_GameLumps.GetGameLumpHandle( id );
+	GameLumpHandle_t h = g_GameLumps.GetGameLumpHandle( GAMELUMP_DETAIL_PROP_LIGHTING_HDR );
 	if ( h != g_GameLumps.InvalidGameLump() )
 		g_GameLumps.DestroyGameLump( h );
-	CUtlVector<DetailPropLightstylesLump_t> &src = *s_pDetailPropLightStyleLump;
-	int bytes = src.Count() * sizeof( DetailPropLightstylesLump_t );
-	h = g_GameLumps.CreateGameLump( id, sizeof( int ) + bytes, 0, version );
+	int bytes = s_DetailPropLightStyleLump.Count() * sizeof( DetailPropLightstylesLump_t );
+	h = g_GameLumps.CreateGameLump( GAMELUMP_DETAIL_PROP_LIGHTING_HDR, sizeof( int ) + bytes, 0, GAMELUMP_DETAIL_PROP_LIGHTING_HDR_VERSION );
 	if ( h == g_GameLumps.InvalidGameLump() )
 		return false;
 	CUtlBuffer b( g_GameLumps.GetGameLump( h ), sizeof( int ) + bytes );
-	b.PutInt( src.Count() );
+	b.PutInt( s_DetailPropLightStyleLump.Count() );
 	if ( bytes )
-		b.Put( src.Base(), bytes );
+		b.Put( s_DetailPropLightStyleLump.Base(), bytes );
 	return true;
 }
 
 bool ReSTIR_ComputeStaticPropLighting( const ReSTIROptions &options, const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 {
-	const int mode = g_bHDR ? 1 : 0;
-	g_ReSTIRStaticPropMgr.m_Visibility[mode].Clear();
-	g_ReSTIRStaticPropMgr.m_Visibility[mode].selectedLightCount = scene.shadowLights.Count();
-	g_ReSTIRStaticPropMgr.m_VisibilityComplete[mode] = false;
-	g_ReSTIRStaticPropMgr.m_VisibilitySharedHDR = false;
+	g_ReSTIRStaticPropMgr.m_Visibility.Clear();
+	g_ReSTIRStaticPropMgr.m_Visibility.selectedLightCount = scene.shadowLights.Count();
+	g_ReSTIRStaticPropMgr.m_VisibilityComplete = false;
 	// Visibility belongs to every static receiver, not to the RGB/VHV option
 	// or NO_PER_VERTEX_LIGHTING. Preserve those controls only for native RGB.
 	for ( int i = 0; i < g_ReSTIRStaticPropMgr.m_Props.Count(); ++i )
@@ -158,51 +121,13 @@ bool ReSTIR_ComputeStaticPropLighting( const ReSTIROptions &options, const ReSTI
 	{
 		if ( !g_ReSTIRStaticPropMgr.SerializeLighting() )
 			return false;
-		g_LevelFlags |= g_bHDR ? LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR : LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR;
-	}
-	else
-		g_LevelFlags &= ~( g_bHDR ? LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR : LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR );
-	g_ReSTIRStaticPropMgr.m_VisibilityComplete[mode] = true;
-	if ( options.shadowMaps ) ReSTIR_LogStaticPropDirectSummary( options.hdr );
-	return true;
-}
-bool ReSTIR_ReuseStaticPropLighting( const ReSTIROptions &options )
-{
-	if ( !options.hdr || !g_ReSTIRStaticPropMgr.m_VisibilityComplete[0] )
-		return false;
-	if ( !options.staticPropLighting )
-		g_LevelFlags &= ~LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR;
-	else
-	{
-		// Serialize the retained full-precision meshes through the normal HDR
-		// VHV filename/flags and shared PPL contract; never copy an identity header.
-		if ( !g_ReSTIRStaticPropMgr.SerializeLighting() )
-			return false;
 		g_LevelFlags |= LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR;
 	}
-	// The caller has proved exact whole-scene paired equality. Retain the
-	// complete original-vertex visibility alongside RGB, with no lossy copy.
-	g_ReSTIRStaticPropMgr.m_VisibilitySharedHDR = true;
-	g_ReSTIRStaticPropMgr.m_VisibilityComplete[1] = true;
-	if ( options.shadowMaps ) ReSTIR_LogStaticPropDirectSummary( options.hdr );
+	else if ( !options.shadowMaps )
+		g_LevelFlags &= ~LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR;
+	g_ReSTIRStaticPropMgr.m_VisibilityComplete = true;
+	if ( options.shadowMaps ) ReSTIR_LogStaticPropDirectSummary();
 	return true;
-}
-
-bool ReSTIR_ReuseDetailPropLighting()
-{
-	if ( !g_bHDR )
-		return false;
-	DetailObjectLump_t *props;
-	int count;
-	if ( !UnserializeDetailProps( props, count ) )
-		return false;
-	if ( !count )
-		return true;
-	if ( !ReadOppositeDetailLighting() )
-		return false;
-	s_DetailPropLightStyleLumpHDR.CopyArray( s_DetailPropLightStyleLumpLDR.Base(), s_DetailPropLightStyleLumpLDR.Count() );
-	// The shared dprp lighting/style indices are already the equal HDR result.
-	return WriteSelectedDetailLighting();
 }
 
 bool ReSTIR_ComputeDetailPropLighting( const ReSTIROptions &, const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
@@ -213,9 +138,7 @@ bool ReSTIR_ComputeDetailPropLighting( const ReSTIROptions &, const ReSTIRScene 
 		return false;
 	if ( !count )
 		return true;
-	if ( !ReadOppositeDetailLighting() )
-		return false;
-	s_pDetailPropLightStyleLump->RemoveAll();
+	s_DetailPropLightStyleLump.RemoveAll();
 	CUtlVector<ReSTIRGpuPointQuery> queries;
 	queries.SetCount( count );
 	for ( int i = 0; i < count; ++i )
@@ -272,12 +195,12 @@ bool ReSTIR_ComputeDetailPropLighting( const ReSTIROptions &, const ReSTIRScene 
 			if ( c.LengthSqr() <= 0.0f )
 				continue;
 			if ( prop.m_LightStyleCount == 0 )
-				prop.m_LightStyles = s_pDetailPropLightStyleLump->Count();
-			int at = s_pDetailPropLightStyleLump->AddToTail();
-			VectorToColorRGBExp32( c, ( *s_pDetailPropLightStyleLump )[at].m_Lighting );
-			( *s_pDetailPropLightStyleLump )[at].m_Style = (unsigned char)scene.sceneStyles[slot];
+				prop.m_LightStyles = s_DetailPropLightStyleLump.Count();
+			int at = s_DetailPropLightStyleLump.AddToTail();
+			VectorToColorRGBExp32( c, s_DetailPropLightStyleLump[at].m_Lighting );
+			s_DetailPropLightStyleLump[at].m_Style = (unsigned char)scene.sceneStyles[slot];
 			++prop.m_LightStyleCount;
 		}
 	}
-	return WriteSelectedDetailLighting();
+	return WriteDetailLighting();
 }

@@ -44,6 +44,7 @@ public:
     void ReleaseDevice(); // GPU-idle reset boundary; retain installed bridge and owned map CPU state.
     void Shutdown();
     void OnNativeMapLoad(const char *mapName) override;
+    bool SidecarLumpPatch(const char *mapName, HlightSidecarPatch &out) override;
     bool OnNativeDomain(std::shared_ptr<const HlightNativeDomain> domain) override;
     void OnNativeLevelInit(IMaterialSystem *materials) override;
     void OnNativeAtlas(std::shared_ptr<const HlightNativeAtlas> atlas) override;
