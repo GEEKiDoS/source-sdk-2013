@@ -254,11 +254,14 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 
 	SHADER_FALLBACK
 	{
-		const bool hasUnsupportedPass = params[SHINYBLOOD]->GetIntValue() != 0 ||
-			params[EMISSIVEBLENDENABLED]->GetIntValue() != 0 || params[CLOAKPASSENABLED]->GetIntValue() != 0 ||
+		const bool hasUnsupportedPass = params[EMISSIVEBLENDENABLED]->GetIntValue() != 0 || params[CLOAKPASSENABLED]->GetIntValue() != 0 ||
 			params[FLESHINTERIORENABLED]->GetIntValue() != 0 || params[ENABLEWOUNDCUTOUT]->GetIntValue() != 0;
-		if ( !hasUnsupportedPass && L4D2PbrRoute( params, true, DETAILBLENDMODE, LIGHTWARPTEXTURE, PHONGWARPTEXTURE, RIMLIGHT, -1,
-			SEAMLESS_BASE, SEAMLESS_DETAIL, -1, SELFILLUMFRESNEL, VERTEXFOG ) )
+		// Stylized lighting controls ($lightwarptexture, $phongwarptexture, $rimlight) and triplanar $seamless_detail are
+		// dropped by the PBR model path rather than keeping the material legacy (the special infected use them), and
+		// $shinyblood is a PBR Phong bit; $vertexfog only selects the legacy per-vertex fog evaluation, PBR models fog per
+		// pixel (L4D2 foliage sets it).
+		if ( !hasUnsupportedPass && L4D2PbrRoute( params, true, DETAILBLENDMODE, -1, -1, -1, -1,
+			SEAMLESS_BASE, -1, -1, SELFILLUMFRESNEL, -1 ) )
 			return "PBR_VertexLitGeneric";
 		return NULL;
 	}

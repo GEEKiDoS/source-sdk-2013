@@ -1115,7 +1115,12 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		( ( !m_hBoundVS && !m_ActiveSnapshot.vertexShaderName.empty() ) ||
 		  ( !m_hBoundPS && !m_ActiveSnapshot.pixelShaderName.empty() ) ) )
 	{
-		m_pDevice->Highres().OnNativeFailure( "required native highres named shader unavailable" );
+		// A receiver that needs a highres variant was already rejected in ResolveActiveNamedShader. Anything else that
+		// failed to resolve (decode failure, missing combo) loses only this draw, as on an ordinary map.
+		static unsigned unresolved = 0;
+		if ( unresolved++ < 32 )
+			Warning( "ShaderAPIDX12: draw skipped, named shader unavailable vs=%s ps=%s material=%s\n", m_ActiveSnapshot.vertexShaderName.c_str(),
+				m_ActiveSnapshot.pixelShaderName.c_str(), m_pBoundMaterial ? m_pBoundMaterial->GetName() : "<none>" );
 		return;
 	}
 	if ( !shadowPass &&
@@ -1526,7 +1531,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	bindingInput.retireFence = m_pDevice->NextFenceValue();
 	const uint64_t retireFence = bindingInput.retireFence;
 	CCommandRecorderDX12 *list = m_pDevice->CommandList();
-	bool pipelineBound = false;
+	bool pipelineBound = false, pipelineCreationFailed = false;
 	RenderTargetBindingDX12 target; // PrepareRenderTargets assigns it before any use
 	bool gbufferTargets = false, ssrPayloadTargets = false;
 	{
@@ -2787,6 +2792,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			ZoneNamedN( ___tracy_scoped_zone, "DX12 GetOrCreatePSO", DX12_DRAW_ZONES_ACTIVE );
 			pso = m_Pipeline.GetOrCreate( key, vs->Bytecode(), ps ? ps->Bytecode() : D3D12_SHADER_BYTECODE{}, geometryCode, input, retireFence );
 		}
+		pipelineCreationFailed = !pso;
 		if ( pso )
 		{
 			m_Pipeline.BindPipelineState( list, pso, stencilReference, retireFence );
@@ -2809,10 +2815,22 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			}
 		}
 	}
+	if ( !pipelineBound && pipelineCreationFailed )
+	{
+		// The shaders exist; the driver refused this one PSO (the cache remembers the refusal until eviction). Only this
+		// draw is lost: rejecting the map here would disconnect the player over one model's material combination.
+		static unsigned refusedPipelines = 0;
+		if ( refusedPipelines++ < 32 )
+			Warning( "ShaderAPIDX12: draw skipped, pipeline refused for materialVS=%s (static %d, variant 0x%llx) materialPS=%s (static %d, variant 0x%llx) material=%s\n",
+				m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.staticVertexIndex, static_cast<unsigned long long>( vsRecord->activeVariantKey ),
+				m_ActiveSnapshot.pixelShaderName.c_str(), m_ActiveSnapshot.staticPixelIndex, static_cast<unsigned long long>( psRecord ? psRecord->activeVariantKey : 0 ),
+				m_pBoundMaterial ? m_pBoundMaterial->GetName() : "<none>" );
+		return;
+	}
 	if ( !pipelineBound )
 	{
-		if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres draw pipeline unavailable" );
-		else if ( shadowPass || bindingInput.lightingAbi ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
+		// Enhanced maps lose only this draw; ordinary maps keep failing the shadow recording as before.
+		if ( !highresMap && ( shadowPass || bindingInput.lightingAbi ) ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 		static unsigned invalidShaders = 0;
 		if ( invalidShaders++ < 10 )
 			Warning( "ShaderAPIDX12: shaders unavailable vs=%p ps=%p materialVS=%s materialPS=%s\n", reinterpret_cast<void *>( m_hBoundVS ), reinterpret_cast<void *>( m_hBoundPS ), m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.pixelShaderName.c_str() );

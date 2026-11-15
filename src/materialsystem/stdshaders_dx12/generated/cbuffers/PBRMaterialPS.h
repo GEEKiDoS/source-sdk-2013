@@ -30,8 +30,17 @@ struct alignas(16) PBRMaterialPS {
     float g_L4D2World[4]{};
     float g_ModelLocalIndices[4]{};
     float g_ModelLocalAmbient[6][4]{};
-    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 512;
-    static constexpr uint64_t kLayoutHash = 0x0e046613a7831a6eull;
+    float g_PbrInfectedGrad[4]{};
+    float g_PbrInfectedBlood[4]{};
+    float g_PbrInfectedPalette[4]{};
+    float g_PbrInfectedEyeGlow[4]{};
+    float g_PbrInfectedFeatures[4]{};
+    float g_PbrInfectedWoundUV1[4]{};
+    float g_PbrInfectedWoundUV2[4]{};
+    float g_PbrInfectedSpecPowers[4]{};
+    float g_PbrInfectedShiny[4]{};
+    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 656;
+    static constexpr uint64_t kLayoutHash = 0x06423d2c95bb4240ull;
     static const dx12native::NativeCBufferLegacyMapDX12 &LegacyMap() {
         static const dx12native::NativeCBufferLegacyEntryDX12 entries[] = {
             {0, 16, 1, 0, 0, 0, 0},
@@ -60,8 +69,17 @@ struct alignas(16) PBRMaterialPS {
             {384, 16, 1, 0, 0, 0, 39},
             {400, 16, 1, 0, 0, 0, 40},
             {416, 16, 6, 16, 0, 0, 41},
+            {512, 16, 1, 0, 0, 0, 47},
+            {528, 16, 1, 0, 0, 0, 48},
+            {544, 16, 1, 0, 0, 0, 49},
+            {560, 16, 1, 0, 0, 0, 50},
+            {576, 16, 1, 0, 0, 0, 51},
+            {592, 16, 1, 0, 0, 0, 52},
+            {608, 16, 1, 0, 0, 0, 53},
+            {624, 16, 1, 0, 0, 0, 54},
+            {640, 16, 1, 0, 0, 0, 55},
         };
-        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 26, entries };
+        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 35, entries };
         return map;
     }
 };
@@ -91,5 +109,14 @@ static_assert(offsetof(PBRMaterialPS, g_L4D2Model) == 368, "HLSL member offset")
 static_assert(offsetof(PBRMaterialPS, g_L4D2World) == 384, "HLSL member offset");
 static_assert(offsetof(PBRMaterialPS, g_ModelLocalIndices) == 400, "HLSL member offset");
 static_assert(offsetof(PBRMaterialPS, g_ModelLocalAmbient) == 416, "HLSL member offset");
-static_assert(sizeof(PBRMaterialPS) == 512, "HLSL cbuffer size");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedGrad) == 512, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedBlood) == 528, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedPalette) == 544, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedEyeGlow) == 560, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedFeatures) == 576, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedWoundUV1) == 592, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedWoundUV2) == 608, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedSpecPowers) == 624, "HLSL member offset");
+static_assert(offsetof(PBRMaterialPS, g_PbrInfectedShiny) == 640, "HLSL member offset");
+static_assert(sizeof(PBRMaterialPS) == 656, "HLSL cbuffer size");
 } // namespace dx12cb

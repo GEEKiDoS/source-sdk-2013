@@ -354,12 +354,17 @@ struct Texture3D
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
     uint32 width = 0, height = 0, depth = 0;
 };
-bool MakeTexture3D(ID3D12Device *device, Texture3D &out, uint32 width, uint32 height, uint32 depth, DXGI_FORMAT format)
+D3D12_RESOURCE_DESC Texture3DDesc(uint32 width, uint32 height, uint32 depth, DXGI_FORMAT format)
 {
-    D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
     desc.Width = width; desc.Height = height; desc.DepthOrArraySize = UINT16(depth); desc.MipLevels = 1;
     desc.Format = format; desc.SampleDesc.Count = 1;
+    return desc;
+}
+bool MakeTexture3D(ID3D12Device *device, Texture3D &out, uint32 width, uint32 height, uint32 depth, DXGI_FORMAT format)
+{
+    D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    const D3D12_RESOURCE_DESC desc = Texture3DDesc(width, height, depth, format);
     if (FAILED(CreateCommittedResourceDX12(device, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&out.resource), "highres lightmap", "Highres volume"))) return false;
     out.width = width; out.height = height; out.depth = depth; return true;
 }
@@ -616,8 +621,10 @@ struct CHighresLightmapsDX12::Impl
         }
         V_strncpy(status.probeError,assets->probeValid?"the asset has no grid for the selected lighting mode":assets->probeReason,sizeof(status.probeError));
     }
-    // Creates the nine textures and their CPU descriptors and uploads the selected grid once, on the draw's command list.
+    // Creates the textures and their CPU descriptors and uploads the selected grid once, on the draw's command list.
     // A failure latches the reason (cleared with the device) and leaves every probe draw on the fallback table.
+    // The grid is admitted only if the process stays within 3/4 of the adapter's LOCAL budget with it: a dense grid
+    // that oversubscribes a small card (c1m2: 873 MB on 2 GB) makes WDDM page the frame until the device hangs.
     bool MakeProbesResident()
     {
         const hprobe::GridDisk &g = *probeMode->grid; ID3D12Device *d3d = device->NativeDevice();
@@ -626,14 +633,23 @@ struct CHighresLightmapsDX12::Impl
         for (uint32 b=0; b<hprobe::kBands; ++b) sources[DX12_PROBE_T_BANDS_FIRST+b] = reinterpret_cast<const uint8 *>(probeMode->bands)+uint64(b)*texels*4;
         sources[DX12_PROBE_T_VALIDITY] = probeMode->validity;
         sources[DX12_PROBE_T_FREE_DISTANCE] = reinterpret_cast<const uint8 *>(probeMode->freeDistance);
-        const char *failure = Heap(d3d,probeViews,DX12_PROBE_TABLE_COUNT) ? nullptr : "descriptor allocation failed";
-        for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
+        uint32 extents[DX12_PROBE_TABLE_COUNT][3]; uint64 required = 0;
+        for (uint32 i=0; i<DX12_PROBE_TABLE_COUNT; ++i)
         {
             // The indirection has the brick extent; every other texture is the padded 5x5x5-per-brick atlas.
             const bool indirection = i == DX12_PROBE_T_INDIRECTION;
-            uint32 extent[3];
-            for (uint32 axis=0; axis<3; ++axis) extent[axis] = indirection ? g.brickDims[axis] : g.atlasBricks[axis]*hprobe::kBrickProbes;
-            if (!MakeTexture3D(d3d,probeTextures[i],extent[0],extent[1],extent[2],kProbeFormats[i])) failure = "texture allocation failed";
+            for (uint32 axis=0; axis<3; ++axis) extents[i][axis] = indirection ? g.brickDims[axis] : g.atlasBricks[axis]*hprobe::kBrickProbes;
+            const D3D12_RESOURCE_DESC desc = Texture3DDesc(extents[i][0],extents[i][1],extents[i][2],kProbeFormats[i]);
+            required += d3d->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
+        }
+        char budgetFailure[160] = {}; uint64_t usage = 0, budget = 0;
+        if (device->QueryLocalVideoMemory(usage,budget) && usage+required > budget/4*3)
+            V_snprintf(budgetFailure,sizeof(budgetFailure),"%.0f MiB grid does not fit the adapter budget (%.0f of %.0f MiB in use)",
+                required/1048576.0,usage/1048576.0,budget/1048576.0);
+        const char *failure = budgetFailure[0] ? budgetFailure : Heap(d3d,probeViews,DX12_PROBE_TABLE_COUNT) ? nullptr : "descriptor allocation failed";
+        for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
+        {
+            if (!MakeTexture3D(d3d,probeTextures[i],extents[i][0],extents[i][1],extents[i][2],kProbeFormats[i])) failure = "texture allocation failed";
             else Texture3DView(d3d,probeTextures[i].resource.Get(),kProbeFormats[i],Slot(d3d,probeViews.Get(),i));
         }
         for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)

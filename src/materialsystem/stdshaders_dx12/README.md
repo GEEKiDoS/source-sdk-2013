@@ -73,6 +73,12 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   SM2/SM3 centroid interpolation is declared in the VCS header (centroid mask), not in the bytecode; the backend
   carries that mask to the legacy translator, matching the native sources' `centroid` inputs.
 - `-dx12shaderlog` prints which VCS file each named shader was loaded from.
+- A single draw's failure never rejects an enhanced map (which disconnects the client): a named shader that does not
+  resolve (missing VCS, combo decode failure) or a PSO the driver refuses (`graphics pipeline creation failed 0x...`)
+  skips only that draw, with a rate-limited `draw skipped, named shader unavailable` / `draw skipped, pipeline refused`
+  warning naming the material, shaders and combo indices. The pipeline cache remembers a refusal as a null entry until
+  eviction, so the driver is not asked again on every draw. Only a receiver whose required highres or early-depth
+  variant is missing still rejects the map, since its lighting would otherwise be wrong for the whole map.
 - `shader_precache <logical> [static] [dynamic] | all` (cheat) validates/reflects published VCS payloads on the render
   thread; it never writes VCS files.
 - Legacy VCS centroid masks are carried into deferred translation. SM2 shaders declare centroid TEXCOORDs in
@@ -130,10 +136,11 @@ read from the retail `spritecard_vs20.vcs` / `spritecard_ps20b.vcs` (static IDs 
 - `$vertexfogamount` [vs 288]: alpha fades by the horizontal range-fog amount. Applied only while the scene fog is
   linear range fog, because the vertex fog constants describe a range in every fog mode.
 - A card whose faded alpha is below one byte is zero-sized. `$orientationmatrix` is the plane of orientation 2.
+- Orientation 3 uses the particle normal vertex stream to build a perpendicular card basis, matching the retail
+  normal-oriented path; the L4D2 particle renderer supplies that stream for every ordinary card vertex.
 - Retail's PC shader has no depth blend (its `DEPTHBLEND` combo range is `0..0`); this one keeps the renderer's soft
   particles.
-- Not reproduced: orientation 3, which needs the particle normal as a vertex stream and draws as orientation 2, and
-  `$vertexcolorlerp`, set by two materials no particle system references.
+- `$vertexcolorlerp`, set by two materials no particle system references, is not reproduced.
 
 ADDSELF cards are the emissive ones: 42 materials, fire and explosions and the `vistasmokev1_fire` smoke, authored
 up to 9.5 times overbright for an 8-bit target. That target clamped every card to display white, clamped the
@@ -762,23 +769,40 @@ Material shaders (`cpp/pbr_dx12.cpp`, the `PBR_*` adapters at the end of `cpp/li
 | `PBR_Metalness` | `$basetexture`, `$bumpmap`/`$normaltexture`, `$mraotexture` (R metalness, G roughness, B AO; `$metalness`/`$roughness`/`$ambientocclusion` multiply it, or are absolute without it), `$emissiontexture`, `$envmap` (write `"$envmap" "env_cubemap"` in the VMT so VBSP patches it), `$envmapmask`, `$detail` |
 | `PBR_Specular` | same, F0 from `$speculartexture` (sRGB) or `$specularcolor` instead of metalness |
 | `PBR_LightmappedGeneric`, `PBR_VertexLitGeneric`, `PBR_WorldVertexTransition`, `PBR_Skin` (fallback to VertexLitGeneric) | the original shader's parameters, always drawn with PBR |
+| `PBR_Infected` (`cpp/pbr_dx12.cpp`; the L4D2 game shader `Infected_DX9` falls back to it under the PBR route, except depth-only `$rttshadowbuild` materials) | the Infected parameters: palette variation (`$basetexture` mask sheet, `$gradienttexture` rows from the actor proxies, blood pattern quadrant), `$bloodcolor`/`$bloodmaskrange`, `$detail` dirt, `$burning`/`$burndetailtexture`, wound cutouts (`$wounded`, the per-instance wound packets, `$woundcutouttexture`), `$eyeglow`, and the `$disablevariation` path (`$bumpmap`, `$shinyblood`) |
 
 All of them, and the original wrappers, also accept `$subsurface`/`$subsurfacetint`, `$backlight`/`$backlighttint`,
 `$thickness`/`$thicknesstexture`, `$anisotropy`/`$anisotropyrotation` (degrees) and the VBSP parallax keys
 `$envmapparallaxobb1..3`/`$envmaporigin`. Studio models with `PBR_Metalness`/`PBR_Specular` need the usual `$model 1`.
 
-`mat_pbr_override 1` (`FCVAR_ARCHIVE`, default 1, in this DLL) routes LightmappedGeneric, VertexLitGeneric and
-WorldVertexTransition through the PBR path at runtime when `PBR_LegacySupported` accepts the material. The backend's
-committed state starts at the default, so materials load with it from the first frame; a changed value is a request
-committed by the client at `FRAME_START` inside a material transaction, followed by a preserving refresh of loaded
-materials; draws read only the committed value.
+`mat_pbr_override 1` (`FCVAR_ARCHIVE`, default 1, in this DLL) routes LightmappedGeneric, VertexLitGeneric,
+WorldVertexTransition and the L4D2 Infected shader through the PBR path at runtime when `PBR_LegacySupported` accepts the
+material. The backend's committed state starts at the default, so materials load with it from the first frame; a changed
+value is a request committed by the client at `FRAME_START` inside a material transaction, followed by a preserving
+refresh of loaded materials; draws read only the committed value.
+
+`PBR_Infected` draws through `pbr_model_vs51`/`pbr_model_ps51` `INFECTED`: the vertex shader projects the unskinned
+model-space position into the two wound ellipsoids (`g_PbrInfectedWound*`, vs c222..c231), and the pixel shader evaluates the
+`infected_ps20b.fxc` material terms (albedo, specular mask, Phong exponent, eye glow; `g_PbrInfected*`, ps c47..c55,
+textures t11 palette, t12 wound atlas, t13 burn map), then the ordinary PBR model lighting: engine ambient cube or dense
+probes, local lights and, on enhanced maps, the runtime shadow-mapped lights the legacy shader never received. The Phong
+exponent becomes GGX roughness and the mask, `$phongtint`, `$phongboost` and the three-point infected Fresnel a bounded
+reflectance, as the legacy Phong adapter converts them. Wound cutouts discard in the color and depth-prepass variants;
+opaque shadow-map casters draw without a pixel shader, so wounds do not cut shadows.
 
 The L4D2 compatibility adapter preserves decals, `$vertexcolor`, `$ssbump` and `$ssbumpmathfix`, blend tint,
 Phong tint/boost/Fresnel ranges, self-illumination masks, flashlight-no-Lambert, tree sway, linear-write and
 diffuse-modulation controls, `$diffuseexp`, and the authored detail blend modes (world 0..12, model 0..9).
-The original shader keeps ownership when the adapter cannot reproduce a feature: spherical envmaps, lightwarp or
-Phong warp, model `$lightmap`, rim lighting, distance alpha, seamless model mapping, `$selfillumfresnel`,
-`$shinyblood`, world seamless mapping, outline/soft edges, vertex fog, or an out-of-range detail mode.
+The original shader keeps ownership when the adapter cannot reproduce a feature: spherical envmaps, model `$lightmap`,
+distance alpha, a seamless model base, `$selfillumfresnel`, the VertexLitGeneric multi-pass effects (cloak, flesh
+interior, emissive blend, wound cutout), world lightwarp, world seamless mapping, outline/soft edges, world vertex fog, or
+an out-of-range detail mode. Every other lit model is PBR: a model's `$lightwarptexture`, `$phongwarptexture` and
+`$rimlight` are stylized lighting controls the physical diffuse/specular replace, and a triplanar `$seamless_detail`
+layer is skipped (all special infected carry a lightwarp; the tank and witch a seamless detail). `$shinyblood` (the
+hunter and boomer gore materials of the update VPK) is Phong bit 8: full mask, the front-facing Fresnel endpoint scaled by
+the red-over-green blood mask and `$phongexponent` scaled by the inverse-luminance term with `$shinybloodexponent`, as
+`l4d2_phong_ps20b.fxc` SHINYBLOOD. Model `$vertexfog` (set by every L4D2 foliage material through `tree_include.vmt`) only
+selects the legacy per-vertex fog evaluation, so those models take the PBR path and fog per pixel.
 
 Conversion of legacy inputs: dielectric F0 0.04; roughness from explicit PBR inputs, else the Phong exponent
 (`exp = 1 + 149 * R` in `l4d2_phong_ps20b.fxc` / `skin_ps20b.fxc`, unless a nonzero `$phongexponent` overrides it,
@@ -795,8 +819,8 @@ lighting baked into the albedo. Blends use `$surfaceprop` for both layers, and m
 model's surface prop lives in the .mdl), so most models keep 0.6.
 With an exponent texture and `$phongalbedotint`, G tints the Phong specular colour toward the linear albedo
 (`l4d2_phong_ps20b.fxc:121`, `skin_ps20b.fxc:271-276`); the legacy diffuse albedo is retained, not converted to metal.
-R remains the exponent channel, not a color channel; A remains the legacy rim mask only when rim lighting is enabled,
-and rim-lit materials stay on the legacy shader. `$envmapmask`, `$basealphaenvmapmask`, and `$normalmapalphaenvmapmask`
+R remains the exponent channel, not a color channel; A (the legacy rim mask when rim lighting is enabled) is unused,
+since the PBR path drops rim lighting. `$envmapmask`, `$basealphaenvmapmask`, and `$normalmapalphaenvmapmask`
 continue to select the legacy environment mask in the opt-in adapter. For legacy L4D2 Phong materials, `$envmap`
 uses the authored mask and `$envmapfresnel`/Phong Fresnel ranges as in `l4d2_phong_ps20b.fxc`; it is not attenuated
 by the dielectric PBR EnvBRDF. `$phongboost` is folded into bounded F0 (rather than multiplying a normalized GGX lobe),
@@ -853,7 +877,8 @@ footprint arithmetic is paid once per pixel (again only for a tile whose extent 
 
 Native logicals (`tools/pairs.py` slice `pbr`, `manifests/pbr.txt`): `pbr_world_vs51` (4), `pbr_world_ps51` (12), their
 `pbr_world_highres_vs51`/`_ps51`/`_earlydepth_ps51` twins selected by the backend on enhanced maps (4/12/12),
-`pbr_model_vs51` (48), `pbr_model_ps51` (24; `ENHANCED` adds the receiver lighting ABI and dense probes),
+`pbr_model_vs51` (14 static x 32 dynamic combos; `INFECTED` adds the wound projection), `pbr_model_ps51` (16 static x 12
+dynamic; `ENHANCED` adds the receiver lighting ABI and dense probes, `INFECTED` the `PBR_Infected` material terms),
 `pbr_gbuffer_debug_cs51` (2). Register space 5 (`t0` 128-byte `PBRSpotGpu` records, `t1..t12` cookies, `t13..t24` depth,
 `s0`/`s1`) is backend-owned: eight ordinary projected lights plus four reserved survivor flashlights. Array capacities
 come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the v3 probe grid in ten descriptors: indirection
@@ -863,6 +888,13 @@ manually filters only visible corners, multiplying trilinear weights by validity
 an empty visible weight falls back to the engine ambient cube. The hardware path retains the 0.25 coverage gate.
 `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
 parallax; `-case probegpu` the probe decode.
+
+The grid becomes resident at the first probe consumer draw only if the process's DXGI LOCAL usage plus the ten textures'
+`GetResourceAllocationInfo` sizes stays within 3/4 of the adapter's LOCAL budget. Otherwise the reason is logged once
+(`ambient probe grid unavailable (GPU residency: N MiB grid does not fit the adapter budget ...)`, also in `Highres:`
+status) and PBR models use the engine ambient cube. The padded atlas is larger than the stored asset (c1m2 at spacing
+28: 873 MB on disk, 1334 MiB resident), and on a 2 GB GTX 1050 the process is already over its 985 MiB budget before
+the grid, so uploading it made WDDM page the frame until the device hung (`0x887a0006`).
 
 Enhanced PBR models use the archived `r_model_local_lights` budget (default 4, range 1–4; 0 selects
 the original full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` runs on the recording

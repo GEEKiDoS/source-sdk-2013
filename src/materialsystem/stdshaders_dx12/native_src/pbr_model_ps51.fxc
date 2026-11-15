@@ -18,6 +18,7 @@
 // STATIC: "TANGENT" "0..1"
 // STATIC: "ENHANCED" "0..1"
 // STATIC: "ALPHATEST" "0..1"
+// STATIC: "INFECTED" "0..1"
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
 // DYNAMIC: "SHADOWQUALITY" "0..3"
 // SKIP: ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
@@ -57,6 +58,29 @@ Texture2D PhongExponentTexture : register( t9 );
 SamplerState PhongExponentSampler : register( s9 );
 Texture2D SelfIllumMaskTexture : register( t10 );
 SamplerState SelfIllumMaskSampler : register( s10 );
+#if INFECTED
+// INFECTED: palette (sRGB), wound cutout atlas and burn map (sRGB).
+Texture2D GradientTexture : register( t11 );
+SamplerState GradientSampler : register( s11 );
+Texture2D WoundTexture : register( t12 );
+SamplerState WoundSampler : register( s12 );
+Texture2D BurnTexture : register( t13 );
+SamplerState BurnSampler : register( s13 );
+
+// infected_ps20b.fxc InfectedFresnel: three-point Fresnel whose front-facing endpoint is itself scaled by the mask.
+float PBR_InfectedFresnel( float nDotV, float specularMask )
+{
+	float fresnel = 1.0 - nDotV;
+	fresnel *= fresnel;
+	return fresnel <= 0.5 ? lerp( specularMask * g_L4D2PhongRanges.x, g_L4D2PhongRanges.y, 2.0 * fresnel ) :
+		lerp( g_L4D2PhongRanges.y, g_L4D2PhongRanges.z, 2.0 * fresnel - 1.0 );
+}
+
+float3 PBR_SrgbToLinear3( float3 c )
+{
+	return float3( SrgbGammaToLinear( c.r ), SrgbGammaToLinear( c.g ), SrgbGammaToLinear( c.b ) );
+}
+#endif
 
 // Exact mirror of the paired vertex output (same types, order and interpolation).
 struct DX12_PS_INPUT
@@ -75,6 +99,10 @@ struct DX12_PS_INPUT
 	float3 staticLight : TEXCOORD6;
 #endif
 	float4 vertexColor : TEXCOORD7;
+#if INFECTED
+	float4 woundUV : TEXCOORD8;
+	float woundCull : TEXCOORD9;
+#endif
 #if ENHANCED
 	uint primitiveId : SV_PrimitiveID;
 #endif
@@ -174,20 +202,106 @@ PBR_PSOut main( DX12_PS_INPUT i )
 			if ( g_L4D2Model.w != 0.0 )
 				specularF0 = lerp( specularF0, baseColor, saturate( phongMap.g ) );
 		}
+		// Legacy $shinyblood (bit 8, l4d2_phong_ps20b.fxc SHINYBLOOD): full mask, the front-facing Fresnel endpoint scaled
+		// by the red-over-green blood mask, and $phongexponent scaled by the inverse-luminance blood term (g_L4D2World.z
+		// is $shinybloodexponent).
+		float fresnelMin = g_L4D2PhongRanges.x;
+		if ( ( phongBits & 8u ) != 0 )
+		{
+			phongMask = 1.0;
+			fresnelMin *= saturate( base.r - 1.1 * base.g );
+			const float bloodExponent = g_L4D2PhongRanges.w * pow( saturate( 1.0 - dot( base.rgb, float3( 0.3, 0.59, 0.11 ) ) ) + 0.5, g_L4D2World.z );
+			if ( bloodExponent > 0.0 )
+				surface.y = sqrt( sqrt( 2.0 / ( bloodExponent + 2.0 ) ) );
+		}
 		// Legacy $phongboost is represented as bounded reflectance, not a post-GGX intensity multiplier.
 		specularF0 *= phongMask * g_L4D2Phong.rgb * max( g_L4D2Phong.w, 0.0 );
 		float fresnel = pow( 1.0 - saturate( dot( normalize( i.toEye ), N ) ), max( g_L4D2PhongRanges.z, 0.0 ) );
-		specularF0 *= lerp( g_L4D2PhongRanges.x, g_L4D2PhongRanges.y, fresnel );
+		specularF0 *= lerp( fresnelMin, g_L4D2PhongRanges.y, fresnel );
 		specularF0 = saturate( specularF0 );
 	}
+#if INFECTED
+	// infected_ps20b.fxc material terms; the lighting below stays the ordinary PBR model lighting. The base texture is
+	// read raw: with variation it is a mask/luminance sheet, without it gamma-coded albedo decoded here as the original.
+	const float2 woundUV1 = saturate( i.woundUV.xy ) * g_PbrInfectedWoundUV1.xy + g_PbrInfectedWoundUV1.zw;
+	const float2 woundUV2 = saturate( i.woundUV.zw ) * g_PbrInfectedWoundUV2.xy + g_PbrInfectedWoundUV2.zw;
+	const float wound = g_PbrInfectedBlood.w != 0.0 ?
+		max( WoundTexture.Sample( WoundSampler, woundUV1 ).r, WoundTexture.Sample( WoundSampler, woundUV2 ).r ) : 0.0;
+	float3 infectedAlbedo;
+	float infectedSpecularMask, infectedExponent, eyeMask = 0.0;
+	if ( g_PbrInfectedGrad.w != 0.0 )
+	{
+		const float4 atlas = BaseTexture.Sample( BaseSampler, baseUV * 0.5 + g_PbrInfectedPalette.xy );
+		const float3 masks = float3( atlas.rg, base.b ) * 2.0 - 1.0;
+		const float skinMask = saturate( masks.z ), clothingMask = saturate( -masks.z ), detailMask = saturate( masks.x );
+		const float luminance = base.a * base.a;
+		const float3 skin = GradientTexture.Sample( GradientSampler, float2( base.a, g_PbrInfectedPalette.z ) ).rgb;
+		const float3 clothing = GradientTexture.Sample( GradientSampler, float2( base.a, g_PbrInfectedPalette.w ) ).rgb;
+		infectedAlbedo = lerp( lerp( luminance.xxx, skin, skinMask ), clothing, clothingMask );
+		infectedSpecularMask = saturate( -masks.x );
+		float skinExponent = g_PbrInfectedSpecPowers.y;
+		// Detail and burn deliberately use opposite coordinate orders (detailUV is the original's .zw).
+		const float4 detailSample = DetailTexture.Sample( DetailSampler, i.detailUV.yx );
+		if ( g_PbrInfectedFeatures.z != 0.0 )
+		{
+			infectedAlbedo = lerp( infectedAlbedo, 2.0 * detailSample.rgb * luminance, detailMask );
+			infectedSpecularMask = saturate( lerp( infectedSpecularMask, detailSample.a, detailMask ) );
+			skinExponent = lerp( g_PbrInfectedSpecPowers.y, g_PbrInfectedSpecPowers.x, detailMask );
+		}
+		float blood = saturate( ( saturate( masks.y ) + wound - g_PbrInfectedGrad.x ) / ( g_PbrInfectedGrad.y - g_PbrInfectedGrad.x ) );
+		blood = blood * blood * ( 3.0 - 2.0 * blood );
+		infectedAlbedo *= lerp( float3( 1.0, 1.0, 1.0 ), g_PbrInfectedBlood.rgb, blood );
+		infectedExponent = lerp( lerp( g_PbrInfectedSpecPowers.z, skinExponent, skinMask ), g_PbrInfectedSpecPowers.w, blood );
+		if ( g_PbrInfectedFeatures.z != 0.0 )
+			infectedSpecularMask = lerp( infectedSpecularMask, g_PbrInfectedEyeGlow.w, detailSample.a * blood );
+		const float4 burn = BurnTexture.Sample( BurnSampler, i.detailUV.xy );
+		if ( g_PbrInfectedFeatures.y != 0.0 )
+			infectedAlbedo = lerp( infectedAlbedo, burn.rgb,
+				saturate( burn.a + 2.0 * g_PbrInfectedFeatures.x - ( skinMask * g_PbrInfectedFeatures.x + 1.0 ) ) );
+		if ( g_PbrInfectedFeatures.w != 0.0 )
+			eyeMask = saturate( -1.1 * masks.y - 0.1 );
+	}
+	else
+	{
+		infectedAlbedo = PBR_SrgbToLinear3( base.rgb );
+		infectedSpecularMask = max( base.a, 0.0 );
+		infectedExponent = g_PbrInfectedSpecPowers.z;
+#if PBR_HAS_TANGENT
+		// The original bumped program takes the exponent from the normal map alpha, unscaled.
+		if ( g_Flags0.y != 0.0 )
+			infectedExponent = normalAlpha;
+#endif
+		if ( g_PbrInfectedShiny.x != 0.0 )
+		{
+			infectedSpecularMask = saturate( ( base.r - 1.1 * base.g ) * 10.0 );
+			infectedExponent = pow( saturate( 1.0 - dot( base.rgb, float3( 0.3, 0.59, 0.11 ) ) ) + 0.5, g_PbrInfectedShiny.y ) * g_PbrInfectedSpecPowers.z;
+		}
+		const float woundBlood = wound * g_PbrInfectedEyeGlow.w;
+#if PBR_HAS_TANGENT
+		if ( g_Flags0.y != 0.0 )
+			infectedExponent = lerp( infectedExponent, g_PbrInfectedSpecPowers.w, woundBlood );
+#endif
+		infectedSpecularMask = max( infectedSpecularMask, woundBlood * dot( base.rgb, float3( 0.3, 0.59, 0.11 ) ) );
+		infectedAlbedo *= lerp( float3( 1.0, 1.0, 1.0 ), g_PbrInfectedBlood.rgb, saturate( woundBlood ) );
+	}
+	baseColor = infectedAlbedo * modColor * i.vertexColor.rgb;
+	// The Phong lobe becomes GGX roughness and a bounded reflectance, as the legacy Phong adapter converts it.
+	surface.y = sqrt( sqrt( 2.0 / ( max( infectedExponent, 1.0 ) + 2.0 ) ) );
+	specularF0 = saturate( g_SpecularColor.rgb * infectedSpecularMask * g_L4D2Phong.rgb * max( g_L4D2Phong.w, 0.0 ) *
+		PBR_InfectedFresnel( saturate( dot( V, N ) ), infectedSpecularMask ) );
+#endif
 	float thickness = g_Options.z;
 	if ( g_SubsurfaceTint.w != 0.0 && ( g_Options.x > 0.0 || g_Options.y > 0.0 ) )
 		thickness = ThicknessTexture.Sample( ThicknessSampler, baseUV ).r;
 	PBRSurface s = PBR_MakeSurface( N, V, frameT, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, g_Misc.y != 0.0 ? 1 : 0 );
 
 	float alpha = g_BaseTint.a * i.vertexColor.a;
+#if INFECTED
+	// Base alpha is luminance / the specular mask, never coverage.
+#else
 	if ( g_Flags1.y != 2.0 && g_Flags0.w != 1.0 && ( phongBits & 4u ) == 0 )
 		alpha *= base.a;
+#endif
 	float3 emission = 0.0;
 	if ( g_Flags0.w == 1.0 )
 	{
@@ -196,6 +310,13 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	else if ( g_Flags0.w == 2.0 )
 		emission = EmissionTexture.Sample( EmissionSampler, baseUV ).rgb * g_EmissionTint.rgb;
+#if INFECTED
+	emission = eyeMask * g_PbrInfectedEyeGlow.rgb;
+	// Wound cutouts, after every implicit-derivative sample: the cutout atlas threshold and the inside of the second
+	// (culling) ellipsoid.
+	if ( g_PbrInfectedBlood.w != 0.0 )
+		clip( min( g_PbrInfectedGrad.z - wound, i.woundCull - 1.0 ) );
+#endif
 	// Alpha-tested fragments that fail are killed before the light loops (DX12FinishPixel repeats the same test on the
 	// unchanged alpha). Every implicit-derivative sample happens above this line.
 	DX12AlphaTest( alpha );

@@ -148,6 +148,16 @@ void CShaderDeviceDX12::PrintMemoryReport()
 	}
 }
 
+bool CShaderDeviceDX12::QueryLocalVideoMemory( uint64_t &nUsage, uint64_t &nBudget ) const
+{
+	DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+	if ( !m_pMemoryReportAdapter || FAILED( m_pMemoryReportAdapter->QueryVideoMemoryInfo( 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info ) ) )
+		return false;
+	nUsage = info.CurrentUsage;
+	nBudget = info.Budget;
+	return true;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Marks the device failed, logs DRED data and stops with a fatal error
 //-----------------------------------------------------------------------------

@@ -17,8 +17,12 @@ struct alignas(16) PBRMaterialVS {
     float g_TreeSwayParams2[4]{};
     float g_TreeSwayParams3[4]{};
     float g_TreeSwayParams4[4]{};
-    static constexpr uint32_t kStage = 0, kRegister = 2, kSize = 256;
-    static constexpr uint64_t kLayoutHash = 0x09987fb527498007ull;
+    float g_PbrInfectedWound1[4][4]{};
+    float g_PbrInfectedWound2[4][4]{};
+    float g_PbrInfectedWoundUVScale[4]{};
+    float g_PbrInfectedWoundUVBias[4]{};
+    static constexpr uint32_t kStage = 0, kRegister = 2, kSize = 416;
+    static constexpr uint64_t kLayoutHash = 0x9f7639f703680d3aull;
     static const dx12native::NativeCBufferLegacyMapDX12 &LegacyMap() {
         static const dx12native::NativeCBufferLegacyEntryDX12 entries[] = {
             {0, 16, 2, 16, 0, 0, 48},
@@ -33,8 +37,12 @@ struct alignas(16) PBRMaterialVS {
             {208, 16, 1, 0, 0, 0, 219},
             {224, 16, 1, 0, 0, 0, 220},
             {240, 16, 1, 0, 0, 0, 221},
+            {256, 16, 4, 16, 0, 0, 222},
+            {320, 16, 4, 16, 0, 0, 226},
+            {384, 16, 1, 0, 0, 0, 230},
+            {400, 16, 1, 0, 0, 0, 231},
         };
-        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 12, entries };
+        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 16, entries };
         return map;
     }
 };
@@ -50,5 +58,9 @@ static_assert(offsetof(PBRMaterialVS, g_TreeSwayParams1) == 192, "HLSL member of
 static_assert(offsetof(PBRMaterialVS, g_TreeSwayParams2) == 208, "HLSL member offset");
 static_assert(offsetof(PBRMaterialVS, g_TreeSwayParams3) == 224, "HLSL member offset");
 static_assert(offsetof(PBRMaterialVS, g_TreeSwayParams4) == 240, "HLSL member offset");
-static_assert(sizeof(PBRMaterialVS) == 256, "HLSL cbuffer size");
+static_assert(offsetof(PBRMaterialVS, g_PbrInfectedWound1) == 256, "HLSL member offset");
+static_assert(offsetof(PBRMaterialVS, g_PbrInfectedWound2) == 320, "HLSL member offset");
+static_assert(offsetof(PBRMaterialVS, g_PbrInfectedWoundUVScale) == 384, "HLSL member offset");
+static_assert(offsetof(PBRMaterialVS, g_PbrInfectedWoundUVBias) == 400, "HLSL member offset");
+static_assert(sizeof(PBRMaterialVS) == 416, "HLSL cbuffer size");
 } // namespace dx12cb

@@ -31,7 +31,7 @@ BEGIN_VS_SHADER_FLAGS( L4D2_SpriteCard, "Left 4 Dead 2 SpriteCard", SHADER_NOT_E
 BEGIN_SHADER_PARAMS
 SHADER_PARAM( DEPTHBLEND, SHADER_PARAM_TYPE_INTEGER, "0", "fade at intersection boundaries" )
 SHADER_PARAM( DEPTHBLENDSCALE, SHADER_PARAM_TYPE_FLOAT, "50.0", "Amplify or reduce DEPTHBLEND fading. Lower values make harder edges." )
-SHADER_PARAM( ORIENTATION, SHADER_PARAM_TYPE_INTEGER, "0", "0 = always face camera, 1 = rotate around z, 2= parallel to ground" )
+	SHADER_PARAM( ORIENTATION, SHADER_PARAM_TYPE_INTEGER, "0", "0 = always face camera, 1 = rotate around z, 2= parallel to ground, 3 = particle normal" )
 SHADER_PARAM( ORIENTATIONMATRIX, SHADER_PARAM_TYPE_MATRIX, "center .5 .5 scale 1 1 rotate 0 translate 0 0", "plane of orientation 2" )
 SHADER_PARAM( ADDBASETEXTURE2, SHADER_PARAM_TYPE_FLOAT, "0.0", "amount to blend second texture into frame by" )
 SHADER_PARAM( OVERBRIGHTFACTOR, SHADER_PARAM_TYPE_FLOAT, "1.0", "overbright factor for texture. For HDR effects.")
@@ -181,6 +181,8 @@ SHADER_DRAW
 		}
 
 		unsigned int flags = VERTEX_POSITION | VERTEX_COLOR;
+		if ( !nSplineType )
+			flags |= VERTEX_NORMAL;
 		static int s_TexCoordSize[8]={4,				// 0 = sheet bounding uvs, frame0
 			4,				// 1 = sheet bounding uvs, frame 1
 			4,				// 2 = frame blend, rot, radius, ???
@@ -253,11 +255,7 @@ SHADER_DRAW
 			pShaderAPI->BindStandardTexture( SHADER_SAMPLER2, TEXTURE_FRAME_BUFFER_FULL_DEPTH );
 		}
 
-		LoadViewportTransformScaledIntoVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_10 );
-
-		// Retail's orientation 3 (the particle's normal) needs a vertex stream the particle renderers here do
-		// not write; it draws as orientation 2.
-		int nOrientation = clamp( params[ORIENTATION]->GetIntValue(), 0, 2 );
+		int nOrientation = clamp( params[ORIENTATION]->GetIntValue(), 0, 3 );
 
 		if ( nOrientation == 0 )
 		{

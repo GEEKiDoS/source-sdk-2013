@@ -80,7 +80,7 @@ struct PBR_Vars_t
 	PBR_Vars_t()
 	{
 		memset( this, 0xFF, sizeof( *this ) );
-		model = standalone = specularWorkflow = false;
+		model = standalone = specularWorkflow = infected = false;
 	}
 
 	// Shared with the legacy helpers
@@ -100,7 +100,7 @@ struct PBR_Vars_t
 	// Model: legacy Phong adapter and the unbumped $ambientonly debug mode
 	int phong, phongExponent, phongExponentTexture, baseMapAlphaPhongMask, ambientOnly;
 	int phongTint, phongAlbedoTint, phongBoost, phongFresnelRanges, envmapFresnel, baseMapLuminancePhongMask, diffuseExponent;
-	int phongWarp, rimLight, shinyBlood, flashlightNoLambert, blendTintByBaseAlpha, linearWrite, allowDiffuseModulation;
+	int phongWarp, rimLight, shinyBlood, shinyBloodExponent, flashlightNoLambert, blendTintByBaseAlpha, linearWrite, allowDiffuseModulation;
 	// PBR_Metalness / PBR_Specular only
 	int normalTexture;
 
@@ -127,9 +127,19 @@ struct PBR_Vars_t
 	int treeSwayScrumbleSpeed, treeSwayScrumbleStrength, treeSwayScrumbleFrequency;
 	int treeSwayFalloffExp, treeSwayScrumbleFalloffExp, treeSwaySpeedLerpStart, treeSwaySpeedLerpEnd;
 	int treeSwayStatic;
+
+	// L4D2 Infected (PBR_Infected; the infected_dx9.cpp vocabulary). Palette rows, burn strength and the wound packets
+	// are rewritten by the actor proxies before every draw and are staged per draw.
+	int infDisableVariation, infGradient, infBurning, infBurnTexture, infBurnStrength, infBloodColor, infBloodMaskRange;
+	int infEyeGlow, infEyeGlowColor, infDefaultExponent, infSkinExponent, infDetailExponent, infBloodExponent;
+	int infBloodSpecBoost, infSheetIndex, infSkinTint, infColorTint, infWounded, infWoundTexture;
+	int infCutoutBias, infMappingScale, infDebugEllipsoids, infEllipsoid2CullType;
+	int infEllipsoidCenter[2], infEllipsoidLookAt[2], infEllipsoidUp[2], infEllipsoidScale[2];
+	int infWoundEnabled[2], infWoundUVMapping[2], infWoundUVScale[2];
 	bool model;				// studio-model draw (pbr_model_*); PBR_Metalness / PBR_Specular take it from the $model material flag
 	bool standalone;		// no legacy helper initializes the material (PBR_Metalness / PBR_Specular)
 	bool specularWorkflow;	// F0 from $speculartexture / $specularcolor instead of $metalness
+	bool infected;			// PBR_Infected: pbr_model_* INFECTED variants (infected albedo, wound cutouts, eye glow)
 };
 
 // Legacy var tables -> PBR vars (world: LightmappedGeneric and WorldVertexTransition share one table).

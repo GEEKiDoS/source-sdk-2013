@@ -1,5 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #include "BaseVSShader.h"
+#include "l4d2_pbr_route.h"
 #include "infected_vs20.inc"
 #include "infected_ps20b.inc"
 
@@ -118,6 +119,10 @@ BEGIN_VS_SHADER( Infected_DX9, "L4D2 infected" )
 
 	SHADER_FALLBACK
 	{
+		// While the DX12 PBR route is on, lit infected draw through stdshader_dx12's PBR_Infected (same parameters, the
+		// infected albedo/cutout math in pbr_model_* INFECTED). The depth-only $rttshadowbuild material stays here.
+		if ( !params[RTTSHADOWBUILD]->GetIntValue() && L4D2PbrRoute( params, true, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 ) )
+			return "PBR_Infected";
 		return NULL;
 	}
 

@@ -1,4 +1,4 @@
-logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=8 dynamic=12 present=60
+logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=16 dynamic=12 present=120
   cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
     member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
@@ -44,7 +44,7 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
     member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
     member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=PBRMaterialPS space=1 register=b1 size=512 layoutHash=0x0e046613a7831a6e material
+  cbuffer=PBRMaterialPS space=1 register=b1 size=656 layoutHash=0x06423d2c95bb4240 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_SpecularColor type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
@@ -71,6 +71,15 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     member=g_L4D2World type=3 class=1 offset=384 size=16 elements=0 arrayStride=0 legacy=ps:c39
     member=g_ModelLocalIndices type=3 class=1 offset=400 size=16 elements=0 arrayStride=0 legacy=ps:c40
     member=g_ModelLocalAmbient type=3 class=1 offset=416 size=96 elements=6 arrayStride=16 legacy=ps:c41
+    member=g_PbrInfectedGrad type=3 class=1 offset=512 size=16 elements=0 arrayStride=0 legacy=ps:c47
+    member=g_PbrInfectedBlood type=3 class=1 offset=528 size=16 elements=0 arrayStride=0 legacy=ps:c48
+    member=g_PbrInfectedPalette type=3 class=1 offset=544 size=16 elements=0 arrayStride=0 legacy=ps:c49
+    member=g_PbrInfectedEyeGlow type=3 class=1 offset=560 size=16 elements=0 arrayStride=0 legacy=ps:c50
+    member=g_PbrInfectedFeatures type=3 class=1 offset=576 size=16 elements=0 arrayStride=0 legacy=ps:c51
+    member=g_PbrInfectedWoundUV1 type=3 class=1 offset=592 size=16 elements=0 arrayStride=0 legacy=ps:c52
+    member=g_PbrInfectedWoundUV2 type=3 class=1 offset=608 size=16 elements=0 arrayStride=0 legacy=ps:c53
+    member=g_PbrInfectedSpecPowers type=3 class=1 offset=624 size=16 elements=0 arrayStride=0 legacy=ps:c54
+    member=g_PbrInfectedShiny type=3 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=ps:c55
     legacyEntry=0,16,1,0,0,0,0
     legacyEntry=16,16,1,0,0,0,1
     legacyEntry=32,16,1,0,0,0,2
@@ -97,4 +106,13 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     legacyEntry=384,16,1,0,0,0,39
     legacyEntry=400,16,1,0,0,0,40
     legacyEntry=416,16,6,16,0,0,41
+    legacyEntry=512,16,1,0,0,0,47
+    legacyEntry=528,16,1,0,0,0,48
+    legacyEntry=544,16,1,0,0,0,49
+    legacyEntry=560,16,1,0,0,0,50
+    legacyEntry=576,16,1,0,0,0,51
+    legacyEntry=592,16,1,0,0,0,52
+    legacyEntry=608,16,1,0,0,0,53
+    legacyEntry=624,16,1,0,0,0,54
+    legacyEntry=640,16,1,0,0,0,55
     bridge=WriteNativeCBuffer(api, block)

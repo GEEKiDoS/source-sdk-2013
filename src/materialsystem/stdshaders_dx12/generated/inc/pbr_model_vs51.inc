@@ -1,5 +1,6 @@
 // ALL SKIP STATEMENTS THAT AFFECT THIS SHADER!!!
 // $STATIC_LIGHT_VERTEX && $TANGENT
+// $INFECTED && ( $TREESWAY || $VERTEXCOLOR )
 // defined $LIGHTING_PREVIEW && defined $FASTPATH && $LIGHTING_PREVIEW && $FASTPATH
 
 #pragma once
@@ -12,10 +13,12 @@ class pbr_model_vs51_Static_Index
 	unsigned int m_nTANGENT : 2;
 	unsigned int m_nVERTEXCOLOR : 2;
 	unsigned int m_nTREESWAY : 2;
+	unsigned int m_nINFECTED : 2;
 #ifdef _DEBUG
 	bool m_bTANGENT : 1;
 	bool m_bVERTEXCOLOR : 1;
 	bool m_bTREESWAY : 1;
+	bool m_bINFECTED : 1;
 #endif	// _DEBUG
 public:
 	void SetTANGENT( int i )
@@ -45,26 +48,38 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetINFECTED( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nINFECTED = i;
+#ifdef _DEBUG
+		m_bINFECTED = true;
+#endif	// _DEBUG
+	}
+
 	pbr_model_vs51_Static_Index(  )
 	{
 		m_nTANGENT = 0;
 		m_nVERTEXCOLOR = 0;
 		m_nTREESWAY = 0;
+		m_nINFECTED = 0;
 #ifdef _DEBUG
 		m_bTANGENT = false;
 		m_bVERTEXCOLOR = false;
 		m_bTREESWAY = false;
+		m_bINFECTED = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bTANGENT && m_bVERTEXCOLOR && m_bTREESWAY );
-		return ( 32 * m_nTANGENT ) + ( 64 * m_nVERTEXCOLOR ) + ( 128 * m_nTREESWAY ) + 0;
+		Assert( m_bTANGENT && m_bVERTEXCOLOR && m_bTREESWAY && m_bINFECTED );
+		AssertMsg( !( m_nINFECTED && ( m_nTREESWAY || m_nVERTEXCOLOR ) ), "Invalid combo combination ( INFECTED && ( TREESWAY || VERTEXCOLOR ) )" );
+		return ( 32 * m_nTANGENT ) + ( 64 * m_nVERTEXCOLOR ) + ( 128 * m_nTREESWAY ) + ( 384 * m_nINFECTED ) + 0;
 	}
 };
 
-#define shaderStaticTest_pbr_model_vs51 vsh_forgot_to_set_static_TANGENT + vsh_forgot_to_set_static_VERTEXCOLOR + vsh_forgot_to_set_static_TREESWAY
+#define shaderStaticTest_pbr_model_vs51 vsh_forgot_to_set_static_TANGENT + vsh_forgot_to_set_static_VERTEXCOLOR + vsh_forgot_to_set_static_TREESWAY + vsh_forgot_to_set_static_INFECTED
 
 
 class pbr_model_vs51_Dynamic_Index

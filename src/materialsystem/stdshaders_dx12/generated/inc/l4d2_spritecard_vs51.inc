@@ -59,7 +59,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bZOOM_ANIMATE_SEQ2 && m_bDUALSEQUENCE && m_bEXTRACTGREENALPHA );
-		return ( 3 * m_nZOOM_ANIMATE_SEQ2 ) + ( 6 * m_nDUALSEQUENCE ) + ( 12 * m_nEXTRACTGREENALPHA ) + 0;
+		return ( 4 * m_nZOOM_ANIMATE_SEQ2 ) + ( 8 * m_nDUALSEQUENCE ) + ( 16 * m_nEXTRACTGREENALPHA ) + 0;
 	}
 };
 
@@ -68,14 +68,14 @@ public:
 
 class l4d2_spritecard_vs51_Dynamic_Index
 {
-	unsigned int m_nORIENTATION : 2;
+	unsigned int m_nORIENTATION : 3;
 #ifdef _DEBUG
 	bool m_bORIENTATION : 1;
 #endif	// _DEBUG
 public:
 	void SetORIENTATION( int i )
 	{
-		Assert( i >= 0 && i <= 2 );
+		Assert( i >= 0 && i <= 3 );
 		m_nORIENTATION = i;
 #ifdef _DEBUG
 		m_bORIENTATION = true;

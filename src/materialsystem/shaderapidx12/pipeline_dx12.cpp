@@ -1492,10 +1492,8 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 	HRESULT hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
 	if ( FAILED( hr ) )
-	{
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
-		return nullptr;
-	}
+	// A refusal is cached as a null entry, so the driver is not asked again on every draw; eviction retries it.
 	Entry &entry = *m_Entries.AddToTailGetPtr();
 	entry.key = key;
 	entry.pso = std::move( pso );

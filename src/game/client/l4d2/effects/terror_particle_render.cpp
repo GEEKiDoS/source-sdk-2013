@@ -162,6 +162,9 @@ struct TerrorSpriteRenderInfo_t
 		GLOW_RED,
 		GLOW_GREEN,
 		GLOW_BLUE,
+		NORMAL_X,
+		NORMAL_Y,
+		NORMAL_Z,
 		ATTRIBUTE_COUNT
 	};
 
@@ -173,6 +176,7 @@ struct TerrorSpriteRenderInfo_t
 	float m_flAgeScale;
 	float m_flAgeScale2;
 	bool m_bWriteGlow;
+	bool m_bWriteNormal;
 	bool m_bDualSequence;
 
 	void InitAttribute( CParticleCollection *pParticles, Attribute_t nSlot, int nAttribute )
@@ -187,7 +191,7 @@ struct TerrorSpriteRenderInfo_t
 		m_flAgeScale2 = _mm_cvtss_f32( _mm_mul_ss( _mm_set_ss( flRate2 ), _mm_set_ss( TERROR_SHEET_SAMPLE_COUNT ) ) );
 	}
 
-	void Init( CParticleCollection *pParticles, int nVertexOffset, bool bReadGlow, bool bWriteGlow, bool bDualSequence )
+	void Init( CParticleCollection *pParticles, int nVertexOffset, bool bReadGlow, bool bWriteGlow, bool bDualSequence, bool bWriteNormal, bool bReadNormal )
 	{
 		InitAttribute( pParticles, XYZ, PARTICLE_ATTRIBUTE_XYZ );
 		InitAttribute( pParticles, TINT, PARTICLE_ATTRIBUTE_TINT_RGB );
@@ -203,10 +207,17 @@ struct TerrorSpriteRenderInfo_t
 			InitAttribute( pParticles, GLOW_GREEN, TERROR_PARTICLE_GLOW_GREEN );
 			InitAttribute( pParticles, GLOW_BLUE, TERROR_PARTICLE_GLOW_BLUE );
 		}
+		if ( bReadNormal )
+		{
+			InitAttribute( pParticles, NORMAL_X, TERROR_PARTICLE_NORMAL_X );
+			InitAttribute( pParticles, NORMAL_Y, TERROR_PARTICLE_NORMAL_Y );
+			InitAttribute( pParticles, NORMAL_Z, TERROR_PARTICLE_NORMAL_Z );
+		}
 		m_pSheet = pParticles->m_Sheet();
 		m_pParticles = pParticles;
 		m_nVertexOffset = nVertexOffset;
 		m_bWriteGlow = bWriteGlow;
+		m_bWriteNormal = bWriteNormal;
 		m_bDualSequence = bDualSequence;
 	}
 
@@ -401,6 +412,8 @@ uint32 CTerror_OP_RenderSprites::GetReadAttributes() const
 		nMask |= PARTICLE_ATTRIBUTE_SEQUENCE_NUMBER1_MASK;
 	if ( m_bHasGlowRGBProducer )
 		nMask |= TERROR_PARTICLE_GLOW_RGB_MASK;
+	if ( clamp( m_nOrientationType, 0, 3 ) == 3 )
+		nMask |= TERROR_PARTICLE_NORMAL_MASK;
 	return nMask;
 }
 
@@ -446,7 +459,9 @@ bool CTerror_OP_RenderSprites::UsesLocalCardRenderer( IMaterial *pMaterial, bool
 		*pDualSequence = false;
 	if ( !Q_stricmp( pMaterial->GetShaderName(), "TerrorSpriteCard" ) )
 		return TexCoordSize( 3, pMaterial->GetVertexFormat() ) == 2;
-	if ( VisibilityInputs.m_nCPin < 0 || !pMaterial->IsSpriteCard() )
+	bool bL4D2NormalCard = clamp( m_nOrientationType, 0, 3 ) == 3 && !Q_stricmp( pMaterial->GetShaderName(), "L4D2_SpriteCard" );
+	if ( ( !pMaterial->IsSpriteCard() && !bL4D2NormalCard ) ||
+		( VisibilityInputs.m_nCPin < 0 && !bL4D2NormalCard ) )
 		return false;
 	// Spline cards have a four-component corner. Ordinary cards use either
 	// five coordinates or all eight for the native dual-sequence packet.
@@ -554,6 +569,13 @@ void CTerror_OP_RenderSprites::RenderSprite( CMeshBuilder &meshBuilder, TerrorSp
 	unsigned char b = FastFToC( info.Read( TerrorSpriteRenderInfo_t::TINT, nGroup, nLane, 2 ) );
 	float flRotation = info.Read( TerrorSpriteRenderInfo_t::ROTATION, nGroup, nLane );
 	float flYaw = info.Read( TerrorSpriteRenderInfo_t::YAW, nGroup, nLane );
+	Vector normal( 0.0f, 0.0f, 1.0f );
+	if ( clamp( m_nOrientationType, 0, 3 ) == 3 )
+	{
+		normal.Init( info.Read( TerrorSpriteRenderInfo_t::NORMAL_X, nGroup, nLane ),
+			info.Read( TerrorSpriteRenderInfo_t::NORMAL_Y, nGroup, nLane ),
+			info.Read( TerrorSpriteRenderInfo_t::NORMAL_Z, nGroup, nLane ) );
+	}
 
 	// Original C:3C9060/3CC770 transport Glow as raw floats in TEXCOORD5;
 	// only primary RGB/alpha are byte-quantized. Never substitute Tint here.
@@ -594,6 +616,8 @@ void CTerror_OP_RenderSprites::RenderSprite( CMeshBuilder &meshBuilder, TerrorSp
 	for ( int i = 0; i < 4; ++i )
 	{
 		meshBuilder.Position3fv( position.Base() );
+		if ( info.m_bWriteNormal )
+			meshBuilder.Normal3f( normal.x, normal.y, normal.z );
 		meshBuilder.Color4ub( r, g, b, renderData.m_nAlpha );
 		meshBuilder.TexCoord4f( 0, sample.m_fLeft_U0, sample.m_fTop_V0, sample.m_fRight_U0, sample.m_fBottom_V0 );
 		meshBuilder.TexCoord4f( 1, sample.m_fLeft_U1, sample.m_fTop_V1, sample.m_fRight_U1, sample.m_fBottom_V1 );
@@ -649,7 +673,9 @@ void CTerror_OP_RenderSprites::Render( IMatRenderContext *pRenderContext, CParti
 	int nMaxParticles = min( pRenderContext->GetMaxVerticesToRender( pMaterial ) / 4, pRenderContext->GetMaxIndicesToRender() / 6 );
 	// Native C3C9870 batches without a capacity guard, even at zero.
 
-	info.Init( pParticles, 0, m_bHasGlowRGBProducer, bWriteGlow, bDualSequence );
+	info.Init( pParticles, 0, m_bHasGlowRGBProducer, bWriteGlow, bDualSequence,
+		!Q_stricmp( pMaterial->GetShaderName(), "L4D2_SpriteCard" ),
+		clamp( m_nOrientationType, 0, 3 ) == 3 && !Q_stricmp( pMaterial->GetShaderName(), "L4D2_SpriteCard" ) );
 	while ( nParticles )
 	{
 		int nBatchCount = min( nMaxParticles, nParticles );
@@ -695,7 +721,9 @@ void CTerror_OP_RenderSprites::RenderUnsorted( CParticleCollection *pParticles, 
 	int nParticles;
 	const ParticleRenderData_t *pEnd = pParticles->GetRenderList( pRenderContext, false, &nParticles, &pCtx->m_VisibilityData );
 	const ParticleRenderData_t *pRenderList = pEnd - nParticles + nFirstParticle;
-	info.Init( pParticles, nVertexOffset, m_bHasGlowRGBProducer, bWriteGlow, bDualSequence );
+	info.Init( pParticles, nVertexOffset, m_bHasGlowRGBProducer, bWriteGlow, bDualSequence,
+		!Q_stricmp( pMaterial->GetShaderName(), "L4D2_SpriteCard" ),
+		clamp( m_nOrientationType, 0, 3 ) == 3 && !Q_stricmp( pMaterial->GetShaderName(), "L4D2_SpriteCard" ) );
 	for ( int i = 0; i < nParticleCount; ++i )
 	{
 		// Batch callers reserve four vertices per particle. Keep even zero-alpha

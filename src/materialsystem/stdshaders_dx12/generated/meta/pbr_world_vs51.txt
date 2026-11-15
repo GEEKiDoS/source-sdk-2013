@@ -19,7 +19,7 @@ logical=pbr_world_vs51 stage=vs source=pbr_world_vs51.fxc legacy=- legacyName=- 
     member=cViewportScale type=3 class=1 offset=752 size=16 elements=0 arrayStride=0 legacy=none
     member=cClipPlanes type=3 class=1 offset=768 size=96 elements=6 arrayStride=16 legacy=none
     member=cClipMask type=19 class=1 offset=864 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=PBRMaterialVS space=1 register=b2 size=256 layoutHash=0x09987fb527498007 material
+  cbuffer=PBRMaterialVS space=1 register=b2 size=416 layoutHash=0x9f7639f703680d3a material
     member=g_BaseTransform type=3 class=1 offset=0 size=32 elements=2 arrayStride=16 legacy=vs:c48
     member=g_BumpTransform type=3 class=1 offset=32 size=32 elements=2 arrayStride=16 legacy=vs:c50
     member=g_DetailTransform type=3 class=1 offset=64 size=32 elements=2 arrayStride=16 legacy=vs:c52
@@ -32,6 +32,10 @@ logical=pbr_world_vs51 stage=vs source=pbr_world_vs51.fxc legacy=- legacyName=- 
     member=g_TreeSwayParams2 type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=vs:c219
     member=g_TreeSwayParams3 type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=vs:c220
     member=g_TreeSwayParams4 type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=vs:c221
+    member=g_PbrInfectedWound1 type=3 class=1 offset=256 size=64 elements=4 arrayStride=16 legacy=vs:c222
+    member=g_PbrInfectedWound2 type=3 class=1 offset=320 size=64 elements=4 arrayStride=16 legacy=vs:c226
+    member=g_PbrInfectedWoundUVScale type=3 class=1 offset=384 size=16 elements=0 arrayStride=0 legacy=vs:c230
+    member=g_PbrInfectedWoundUVBias type=3 class=1 offset=400 size=16 elements=0 arrayStride=0 legacy=vs:c231
     legacyEntry=0,16,2,16,0,0,48
     legacyEntry=32,16,2,16,0,0,50
     legacyEntry=64,16,2,16,0,0,52
@@ -44,4 +48,8 @@ logical=pbr_world_vs51 stage=vs source=pbr_world_vs51.fxc legacy=- legacyName=- 
     legacyEntry=208,16,1,0,0,0,219
     legacyEntry=224,16,1,0,0,0,220
     legacyEntry=240,16,1,0,0,0,221
+    legacyEntry=256,16,4,16,0,0,222
+    legacyEntry=320,16,4,16,0,0,226
+    legacyEntry=384,16,1,0,0,0,230
+    legacyEntry=400,16,1,0,0,0,231
     bridge=WriteNativeCBuffer(api, block)

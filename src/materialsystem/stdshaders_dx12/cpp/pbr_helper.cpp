@@ -65,6 +65,13 @@ struct PBRSamplers
 };
 const PBRSamplers kWorldSamplers = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, -1, 13, -1 };
 const PBRSamplers kModelSamplers = { 0, 1, 2, -1, 3, 4, 5, 6, 7, 8, -1, -1, -1, 9, -1, 10 };
+// pbr_model_ps51 INFECTED textures: palette, wound cutout atlas, burn map.
+const int kInfectedGradientSampler = 11;
+const int kInfectedWoundSampler = 12;
+const int kInfectedBurnSampler = 13;
+// PBRMaterialPS g_PbrInfected* (ps c47..c55) and PBRMaterialVS g_PbrInfectedWound* (vs c222..c231).
+const int kInfectedPixelRegister = 47;
+const int kInfectedVertexRegister = 222;
 
 // SetPixelShaderStateAmbientLightCube / CommitPixelShaderLighting / SetPixelShaderFogParams feed the DX12PSEngine
 // block whatever register they are given; these only mirror into the legacy register file, outside c0..c14.
@@ -93,6 +100,9 @@ public:
 	bool m_bAmbientOnly = false;
 	bool m_bAllowDiffuseModulation = true;
 	int m_nTreeSway = 0;
+	// PBR_Infected: static feature flags of g_PbrInfectedFeatures (yzw); x (burn strength) is per draw.
+	bool m_bInfected = false;
+	float m_InfectedFeatures[3] = {};
 };
 
 //-----------------------------------------------------------------------------
@@ -155,6 +165,8 @@ struct PBRState
 	bool explicitRoughness;	// $mraotexture or $roughness authored (or a native PBR shader): beats Phong and environment-mask gloss
 	bool glossFromMask;		// legacy replacement without explicit roughness or Phong: roughness = 1 - environment mask (g_PbrFlags2.y)
 	BlendType_t blendType;
+	// PBR_Infected: palette variation, its detail / burn layers, wound cutouts
+	bool infected, infectedVariation, infectedDetail, infectedBurn, infectedWounded;
 };
 
 PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_Vars_t &v )
@@ -175,7 +187,8 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	s.hasSpecular = v.specularWorkflow && IsTextureSet( v.specularTexture, params );
 	// A sphere map is a 2D texture; the shaders only sample cubemaps.
 	s.hasEnvmap = IsTextureSet( v.envmap, params ) && !IS_FLAG_SET( MATERIAL_VAR_ENVMAPSPHERE );
-	s.hasDetail = IsTextureSet( v.detail, params ) && GetIntParam( v.detailBlendMode, params ) != 12;
+	// A model's triplanar $seamless_detail has no UV carrier in pbr_model_*: that layer is skipped.
+	s.hasDetail = IsTextureSet( v.detail, params ) && GetIntParam( v.detailBlendMode, params ) != 12 && !( s.model && IsBoolSet( v.seamlessDetail, params ) );
 	// $bumpmask (static mask normal over two scrolling ones) excludes the layers the legacy helper excludes it from.
 	s.hasBumpMask = s.hasBump2 && !s.ssBump && IsTextureSet( v.bumpMask, params ) && !IS_FLAG_SET( MATERIAL_VAR_SELFILLUM ) && !s.hasDetail && !s.hasBase2 &&
 		GetIntParam( v.baseTextureNoEnvmap, params ) == 0;
@@ -188,6 +201,20 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	s.vertexColor = IS_FLAG_SET( MATERIAL_VAR_VERTEXCOLOR );
 	// $nodiffusebumplighting: diffuse from the flat lightmap plane and the vertex normal; the normal map still shades reflections.
 	s.noDiffuseBump = !s.model && s.hasBump && IsBoolSet( v.noDiffuseBumpLighting, params );
+	s.infected = v.infected;
+	if ( s.infected )
+	{
+		// infected_dx9.cpp DrawInfected: the normal map belongs to $disablevariation materials only; detail, burn and eye
+		// glow to the palette path. The infected shader samples its own detail layer (g_PbrInfectedFeatures), never the
+		// generic detail blend, and has no $vertexcolor stream.
+		s.infectedVariation = !IsBoolSet( v.infDisableVariation, params );
+		s.hasBump = s.hasBump && !s.infectedVariation;
+		s.infectedDetail = s.infectedVariation && IsTextureSet( v.detail, params );
+		s.infectedBurn = s.infectedVariation && IsBoolSet( v.infBurning, params ) && IsTextureSet( v.infBurnTexture, params );
+		s.infectedWounded = IsBoolSet( v.infWounded, params ) && IsTextureSet( v.infWoundTexture, params );
+		s.hasDetail = false;
+		s.vertexColor = false;
+	}
 
 	if ( s.hasEnvmap )
 	{
@@ -210,6 +237,9 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 			s.phong |= 2;
 		if ( GetIntParam( v.baseMapAlphaPhongMask, params ) != 0 )
 			s.phong |= 4;
+		// VertexLitGeneric $shinyblood (l4d2_phong SHINYBLOOD); PBR_Infected's own $shinyblood is the INFECTED path's.
+		if ( !v.infected && IsBoolSet( v.shinyBlood, params ) )
+			s.phong |= 8;
 	}
 	s.glossFromMask = !s.explicitRoughness && s.hasEnvmap && ( s.phong & 1 ) == 0 &&
 		v.legacyEnvmapAuthored != -1 && GetIntParam( v.legacyEnvmapAuthored, params, 0 ) != 0;
@@ -241,15 +271,16 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		pShaderShadow->EnableTexture( Sampler_t( sampler ), true );
 		pShaderShadow->EnableSRGBRead( Sampler_t( sampler ), srgb );
 	};
-	enable( sm.base, true );
+	// PBR_Infected reads its base texture raw: a palette mask sheet, or gamma albedo the shader decodes as the original.
+	enable( sm.base, !s.infected );
 	if ( !s.model )
 		enable( sm.lightmap, hdrNone );
 	if ( s.hasBump )
 		enable( sm.bump, false );
 	if ( s.hasEnvmap )
 		enable( sm.envmap, hdrNone );
-	if ( s.hasDetail )
-		enable( sm.detail, s.detailAdditive );
+	if ( s.hasDetail || s.infectedDetail )
+		enable( sm.detail, s.detailAdditive && !s.infected );
 	if ( s.envmapMask == 1 )
 		enable( sm.envmapMask, false );
 	if ( s.hasMrao )
@@ -272,6 +303,12 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		enable( sm.bumpMask, false );
 	if ( s.phong & 2 )
 		enable( sm.phongExponent, false );
+	if ( s.infected )
+	{
+		enable( kInfectedGradientSampler, true );
+		enable( kInfectedWoundSampler, false );
+		enable( kInfectedBurnSampler, true );
+	}
 	if ( s.model )
 	{
 		// Same stream layout as the legacy bump vertex shader: compressed vertices, tangent as user data, vertex id for morphing.
@@ -281,12 +318,14 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		DECLARE_STATIC_VERTEX_SHADER( pbr_model_vs51 );
 		SET_STATIC_VERTEX_SHADER_COMBO( TANGENT, s.hasBump );
 		SET_STATIC_VERTEX_SHADER_COMBO( VERTEXCOLOR, s.vertexColor );
-		SET_STATIC_VERTEX_SHADER_COMBO( TREESWAY, clamp( GetIntParam( v.treeSway, params ), 0, 2 ) );
+		SET_STATIC_VERTEX_SHADER_COMBO( TREESWAY, s.infected ? 0 : clamp( GetIntParam( v.treeSway, params ), 0, 2 ) );
+		SET_STATIC_VERTEX_SHADER_COMBO( INFECTED, s.infected );
 		SET_STATIC_VERTEX_SHADER( pbr_model_vs51 );
 		DECLARE_STATIC_PIXEL_SHADER( pbr_model_ps51 );
 		SET_STATIC_PIXEL_SHADER_COMBO( TANGENT, s.hasBump );
 		SET_STATIC_PIXEL_SHADER_COMBO( ENHANCED, bEnhanced );
 		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, s.alphaTested );
+		SET_STATIC_PIXEL_SHADER_COMBO( INFECTED, s.infected );
 		SET_STATIC_PIXEL_SHADER( pbr_model_ps51 );
 	}
 	else
@@ -422,8 +461,9 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	l4d2[3][2] = max( 0.0f, GetFloatParam( v.diffuseExponent, params, 0.0f ) );
 	// $phongalbedotint opts into the exponent texture's G channel as a specular-albedo tint.
 	l4d2[3][3] = ( s.phong & 2 ) != 0 && GetIntParam( v.phongAlbedoTint, params, 0 ) != 0 ? 1.0f : 0.0f;
+	// z: $shinybloodexponent for the Phong shiny-blood bit (the legacy initializer's 13).
 	float l4d2World[4] = { float( GetIntParam( v.detailBlendMode, params ) ),
-		GetFloatParam( v.envmapFresnel, params, 0.0f ), 0.0f, 0.0f };
+		GetFloatParam( v.envmapFresnel, params, 0.0f ), ( s.phong & 8 ) ? GetFloatParam( v.shinyBloodExponent, params, 13.0f ) : 0.0f, 0.0f };
 	LinearColor( params, v.selfIllumTint, 1.0f, ps[10] );
 	memcpy( ctx.m_SelfIllumTint, ps[10], sizeof( ctx.m_SelfIllumTint ) );
 
@@ -493,6 +533,34 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 		treeSway[4][1] = GetFloatParam( v.treeSwaySpeedLerpEnd, params, 6.0f );
 	}
 
+	// PBRMaterialPS c47/c48/c50/c54/c55 (g_PbrInfected*): the infected_dx9.cpp registers c3, c4, c0, c27 and c26 / the
+	// $shinyblood switch. c49, c51 (x) and c52/c53 are per draw (DrawPBR).
+	float infected[9][4] = {};
+	if ( s.infected )
+	{
+		float bloodRange[2] = { 0.0f, 1.0f };
+		if ( IS_PARAM_DEFINED( v.infBloodMaskRange ) )
+			params[v.infBloodMaskRange]->GetVecValue( bloodRange, 2 );
+		infected[0][0] = bloodRange[0];
+		infected[0][1] = bloodRange[1];
+		infected[0][2] = GetFloatParam( v.infCutoutBias, params, 0.9f );
+		infected[0][3] = s.infectedVariation ? 1.0f : 0.0f;
+		params[v.infBloodColor]->GetVecValue( infected[1], 3 );
+		infected[1][3] = s.infectedWounded ? 1.0f : 0.0f;
+		params[v.infEyeGlowColor]->GetVecValue( infected[3], 3 );
+		infected[3][3] = GetFloatParam( v.infBloodSpecBoost, params, 1.0f );
+		infected[7][0] = GetFloatParam( v.infDetailExponent, params, 5.0f );
+		infected[7][1] = GetFloatParam( v.infSkinExponent, params, 5.0f );
+		infected[7][2] = GetFloatParam( v.infDefaultExponent, params, 5.0f );
+		infected[7][3] = GetFloatParam( v.infBloodExponent, params, 5.0f );
+		infected[8][0] = !s.infectedVariation && IsBoolSet( v.shinyBlood, params ) ? 1.0f : 0.0f;
+		infected[8][1] = GetFloatParam( v.shinyBloodExponent, params, 13.0f );
+	}
+	ctx.m_bInfected = s.infected;
+	ctx.m_InfectedFeatures[0] = s.infectedBurn ? 1.0f : 0.0f;
+	ctx.m_InfectedFeatures[1] = s.infectedDetail ? 1.0f : 0.0f;
+	ctx.m_InfectedFeatures[2] = s.infectedVariation && IsBoolSet( v.infEyeGlow, params ) ? 1.0f : 0.0f;
+
 	ctx.m_bModel = s.model;
 	ctx.m_bEnvmap = s.hasEnvmap;
 	ctx.m_bBump = s.hasBump;
@@ -512,6 +580,12 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0 + 8, vertexColor, 1 );
 	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_13, treeSway[0], 5 );
 	cmds.SetPixelShaderFogParams( kFogRegister );
+	if ( s.infected )
+	{
+		cmds.SetPixelShaderConstant( kInfectedPixelRegister, infected[0], 2 );
+		cmds.SetPixelShaderConstant( kInfectedPixelRegister + 3, infected[3], 1 );
+		cmds.SetPixelShaderConstant( kInfectedPixelRegister + 7, infected[7], 2 );
+	}
 
 	// Textures
 	if ( s.hasBase )
@@ -556,6 +630,24 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 		cmds.BindTexture( pShader, sampler( sm.bumpMask ), v.bumpMask, -1 );
 	if ( s.phong & 2 )
 		cmds.BindTexture( pShader, sampler( sm.phongExponent ), v.phongExponentTexture, -1 );
+	if ( s.infected )
+	{
+		// infected_dx9.cpp binds white for an absent palette, black for an absent wound atlas.
+		if ( s.infectedDetail )
+			cmds.BindTexture( pShader, sampler( sm.detail ), v.detail, v.detailFrame );
+		if ( IsTextureSet( v.infGradient, params ) )
+			cmds.BindTexture( pShader, sampler( kInfectedGradientSampler ), v.infGradient, -1 );
+		else
+			cmds.BindStandardTexture( sampler( kInfectedGradientSampler ), TEXTURE_WHITE );
+		if ( IsTextureSet( v.infWoundTexture, params ) )
+			cmds.BindTexture( pShader, sampler( kInfectedWoundSampler ), v.infWoundTexture, -1 );
+		else
+			cmds.BindStandardTexture( sampler( kInfectedWoundSampler ), TEXTURE_BLACK );
+		if ( s.infectedBurn )
+			cmds.BindTexture( pShader, sampler( kInfectedBurnSampler ), v.infBurnTexture, -1 );
+		else
+			cmds.BindStandardTexture( sampler( kInfectedBurnSampler ), TEXTURE_WHITE );
+	}
 
 	// mat_fullbright 2: lighting only, grey albedo and no reflections (envmap tint already zeroed above)
 	if ( s.lightingOnly )
@@ -642,6 +734,7 @@ void PBR_FillModelVars( PBR_Vars_t &v, const VertexLitGeneric_DX9_Vars_t &info )
 	v.baseMapLuminancePhongMask = info.m_nBaseMapLuminancePhongMask;
 	v.diffuseExponent = info.m_nDiffuseExponent;
 	v.shinyBlood = info.m_nShinyBlood;
+	v.shinyBloodExponent = info.m_nShinyBloodExponent;
 	v.flashlightNoLambert = info.m_nFlashlightNoLambert;
 	v.blendTintByBaseAlpha = info.m_nBlendTintByBaseAlpha;
 	v.linearWrite = info.m_nLinearWrite;
@@ -861,13 +954,12 @@ bool PBR_LegacySupported( IMaterialVar **params, const PBR_Vars_t &v )
 		// A prop lit by a $lightmap texture (STATIC_LIGHT_LIGHTMAP) has no carrier in the PBR model shaders.
 		if ( IsTextureSet( v.lightmap, params ) )
 			return false;
-		if ( IsTextureSet( v.lightWarp, params ) || IsTextureSet( v.phongWarp, params ) || IsBoolSet( v.rimLight, params ) )
-			return false;
-		if ( IsBoolSet( v.shinyBlood, params ) )
-			return false;
+		// $lightwarptexture / $phongwarptexture / $rimlight are dropped (physical diffuse and specular replace them),
+		// $seamless_detail skips the detail layer (Evaluate) and $shinyblood is a Phong bit; only a triplanar base has no
+		// PBR model carrier.
 		if ( IsBoolSet( v.distanceAlpha, params ) )
 			return false;
-		if ( IsBoolSet( v.seamlessBase, params ) || IsBoolSet( v.seamlessDetail, params ) )
+		if ( IsBoolSet( v.seamlessBase, params ) )
 			return false;
 		if ( flags & MATERIAL_VAR_SELFILLUM && IsBoolSet( v.selfIllumFresnel, params ) )
 			return false;
@@ -939,6 +1031,74 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 				pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_WIND_DIRECTION );
 			float treeTime[4] = { pShaderAPI->GetFloatRenderingParameter( FLOAT_RENDERPARM_L4D2_CURRENT_TIME ), wind.x, wind.y, 0.0f };
 			DynamicCmdsOut.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_13, treeTime, 1 );
+		}
+		if ( pContextData->m_bInfected )
+		{
+			// The actor proxies rewrite these vars before every draw (infected_dx9.cpp dynamic state).
+			ITexture *gradient = IsTextureSet( v.infGradient, params ) ? params[v.infGradient]->GetTextureValue() : NULL;
+			const float gradientHeight = gradient ? float( gradient->GetActualHeight() ) : 1.0f;
+			const int sheet = GetIntParam( v.infSheetIndex, params );
+			const float palette[4] = { float( sheet / 2 ) * 0.5f, float( sheet % 2 ) * 0.5f,
+				( float( GetIntParam( v.infSkinTint, params ) ) + 0.5f ) / gradientHeight,
+				( float( GetIntParam( v.infColorTint, params ) ) + 0.5f ) / gradientHeight };
+			DynamicCmdsOut.SetPixelShaderConstant( kInfectedPixelRegister + 2, palette, 1 );
+			const float features[4] = { GetFloatParam( v.infBurnStrength, params ) * 2.0f, pContextData->m_InfectedFeatures[0],
+				pContextData->m_InfectedFeatures[1], pContextData->m_InfectedFeatures[2] };
+			DynamicCmdsOut.SetPixelShaderConstant( kInfectedPixelRegister + 4, features, 1 );
+
+			// infected_dx9.cpp SetWoundConstants: model-space ellipsoid frames scaled by the inverse radii. Without a wound
+			// packet (or $debugellipsoids) the centers move far away, so nothing is cut.
+			const bool debug = IsBoolSet( v.infDebugEllipsoids, params );
+			const bool packet = IsBoolSet( v.infWoundEnabled[0], params ) || IsBoolSet( v.infWoundEnabled[1], params );
+			const bool cullType = IsBoolSet( v.infEllipsoid2CullType, params );
+			const float cull = debug ? ( cullType ? 1.0f : 0.0f ) : ( cullType ? 0.0f : 1.0f );
+			float wound[10][4] = {};
+			for ( int i = 0; i < 2; ++i )
+			{
+				Vector look( 1.0f, 0.0f, 0.0f ), up( 0.0f, 0.0f, 1.0f ), scale( 10.0f, 10.0f, 10.0f ), side;
+				params[v.infEllipsoidLookAt[i]]->GetVecValue( look.Base(), 3 );
+				params[v.infEllipsoidUp[i]]->GetVecValue( up.Base(), 3 );
+				params[v.infEllipsoidScale[i]]->GetVecValue( scale.Base(), 3 );
+				VectorNormalize( look );
+				VectorNormalize( up );
+				CrossProduct( look, up, side );
+				CrossProduct( side, look, up );
+				side *= 1.0f / scale.x;
+				up *= 1.0f / scale.y;
+				look *= 1.0f / scale.z;
+				float ( *frame )[4] = wound + i * 4;
+				params[v.infEllipsoidCenter[i]]->GetVecValue( frame[0], 3 );
+				if ( !debug && !packet )
+				{
+					frame[0][0] = 1000000.0f;
+					frame[0][1] = frame[0][2] = 0.0f;
+				}
+				VectorCopy( look.Base(), frame[1] );
+				frame[1][3] = GetFloatParam( v.infMappingScale, params, 1.0f );
+				VectorCopy( up.Base(), frame[2] );
+				VectorCopy( side.Base(), frame[3] );
+			}
+			wound[7][3] = cull;
+			float region[2][4] = { { 1.0f, 1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.0f, 0.0f } };
+			float bias[4] = { 0.5f, 0.5f, 0.5f, 0.5f };
+			float uvScale[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+			if ( packet && !debug )
+			{
+				params[v.infWoundUVMapping[0]]->GetVecValue( region[0], 4 );
+				params[v.infWoundUVMapping[1]]->GetVecValue( region[1], 4 );
+				params[v.infWoundUVScale[0]]->GetVecValue( bias, 2 );
+				params[v.infWoundUVScale[1]]->GetVecValue( bias + 2, 2 );
+				ITexture *atlas = IsTextureSet( v.infWoundTexture, params ) ? params[v.infWoundTexture]->GetTextureValue() : NULL;
+				const float aspect = atlas ? float( atlas->GetActualWidth() ) / float( atlas->GetActualHeight() ) : 1.0f;
+				// The original adjusts only the first pair, from the SECOND region (shaderapidx9.dll:0x227C3).
+				const float a = region[1][0] * aspect, b = region[1][1];
+				uvScale[0] = b > a ? 1.0f : a / b;
+				uvScale[1] = b > a ? b / a : 1.0f;
+			}
+			memcpy( wound[8], uvScale, sizeof( uvScale ) );
+			memcpy( wound[9], bias, sizeof( bias ) );
+			DynamicCmdsOut.SetVertexShaderConstant( kInfectedVertexRegister, wound[0], 10 );
+			DynamicCmdsOut.SetPixelShaderConstant( kInfectedPixelRegister + 5, region[0], 2 );
 		}
 		if ( pContextData->m_bModel )
 		{

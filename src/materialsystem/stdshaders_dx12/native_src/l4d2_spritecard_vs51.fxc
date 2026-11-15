@@ -11,7 +11,7 @@
 //  STATIC: "ZOOM_ANIMATE_SEQ2"		"0..1"
 //  STATIC: "DUALSEQUENCE"			"0..1"
 //  STATIC: "EXTRACTGREENALPHA"		"0..1"
-//  DYNAMIC: "ORIENTATION"			"0..2"
+//  DYNAMIC: "ORIENTATION"			"0..3"
 
 #include "common_vs_fxc.h"
 
@@ -44,6 +44,7 @@ struct VS_INPUT
 {
 	float4 vTint : COLOR;
 	float4 vPos : POSITION;
+	float3 vNormal : NORMAL;
 	float4 vTexCoord0 : TEXCOORD0;
 	float4 vTexCoord1 : TEXCOORD1;
 	float4 vParms : TEXCOORD2;   // frame blend, rot, radius, yaw
@@ -201,6 +202,23 @@ VS_OUTPUT main( const VS_INPUT v )
 	// unmodified, as in retail and the SDK.
 	float3 wpos = v.vPos.xyz + RADIUS * mul3x3( float3( y1, x1, 0 ), ( float3x3 )cModelView );
 	projPos  = mul( float4(wpos, 1.0f), cModelViewProj );
+#endif
+
+#if ORIENTATION == 3
+	// Orient the card to the particle's normal, using the same near-camera fade as z-aligned cards.
+	if (l > rad/2)
+	{
+		float3 normal = v.vNormal;
+		float3 axis = ( abs( normal.z ) > 0.9f ) ? float3( 1, 0, 0 ) : float3( 0, 0, 1 );
+		float3 right = normalize( cross( normal, axis ) );
+		float3 up = cross( normal, right );
+		worldPos += rad * ( x1 * up + y1 * right );
+		if (l < rad*2 )
+		{
+			tint *= smoothstep(rad/2,rad,l);
+		}
+	}
+	projPos  = mul( float4(worldPos, 1.0f), cViewProj );
 #endif
 
 	o.blendfactor0 = float4( v.vParms.x, 0, 0, 0 );

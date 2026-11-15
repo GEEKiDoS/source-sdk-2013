@@ -36,7 +36,7 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	float4 g_SubsurfaceTint; // @legacy ps:c12
 	// rgb backlight tint, w anisotropy rotation cos
 	float4 g_BacklightTint; // @legacy ps:c13
-	// x anisotropy rotation sin, y halfLambert (model), z legacy Phong bits (1 Phong, 2 exponent texture, 4 mask = base alpha), w $blendmodulatetexture present (world)
+	// x anisotropy rotation sin, y halfLambert (model), z legacy Phong bits (1 Phong, 2 exponent texture, 4 mask = base alpha, 8 $shinyblood), w $blendmodulatetexture present (world)
 	float4 g_Misc; // @legacy ps:c14
 	// rgb $detailtint (world: raw, models: linear), w $detailblendfactor
 	float4 g_PbrDetail; // @legacy ps:c30
@@ -59,13 +59,31 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	float4 g_L4D2Controls; // @legacy ps:c37
 	// L4D2 luminance Phong mask, flashlight-no-Lambert, model diffuse exponent and albedo-tint opt-in.
 	float4 g_L4D2Model; // @legacy ps:c38
-	// L4D2 detail blend mode (world/model).
+	// L4D2 detail blend mode (world/model), y $envmapfresnel, z $shinybloodexponent (model Phong bit 8).
 	float4 g_L4D2World; // @legacy ps:c39
 	// Per-draw enhanced model local-light selection and folded directional irradiance; world draws
 	// reuse .x as the r_world_local_specular cap and .y as r_world_baked_specular (the two draw
 	// classes never share a shader).
 	float4 g_ModelLocalIndices; // @legacy ps:c40
 	float4 g_ModelLocalAmbient[6]; // @legacy ps:c41
+	// INFECTED (L4D2 Infected materials, infected_ps20b.fxc semantics). x/y $bloodmaskrange, z $cutouttexturebias,
+	// w 1 = palette variation (0 = $disablevariation)
+	float4 g_PbrInfectedGrad; // @legacy ps:c47
+	// rgb $bloodcolor, w 1 = wound cutouts enabled
+	float4 g_PbrInfectedBlood; // @legacy ps:c48
+	// xy blood-pattern sheet quadrant offset, zw skin / clothing palette row v coordinates (per draw)
+	float4 g_PbrInfectedPalette; // @legacy ps:c49
+	// rgb $eyeglowcolor, w $bloodspecboost
+	float4 g_PbrInfectedEyeGlow; // @legacy ps:c50
+	// x 2 * burn strength (per draw), y 1 = burn map, z 1 = detail map, w 1 = eye glow
+	float4 g_PbrInfectedFeatures; // @legacy ps:c51
+	// wound atlas regions (scale xy, bias zw) of the two wound packets (per draw)
+	float4 g_PbrInfectedWoundUV1; // @legacy ps:c52
+	float4 g_PbrInfectedWoundUV2; // @legacy ps:c53
+	// Phong exponents: x detail, y skin, z default, w blood
+	float4 g_PbrInfectedSpecPowers; // @legacy ps:c54
+	// x 1 = $shinyblood, y $shinybloodexponent
+	float4 g_PbrInfectedShiny; // @legacy ps:c55
 };
 #endif
 
@@ -90,6 +108,12 @@ cbuffer PBRMaterialVS : register( b2, space1 )
 	float4 g_TreeSwayParams2; // @legacy vs:c219
 	float4 g_TreeSwayParams3; // @legacy vs:c220
 	float4 g_TreeSwayParams4; // @legacy vs:c221
+	// INFECTED wound ellipsoids in model space (infected_vs20.fxc): center, look (w mapping scale), up, side (w on the
+	// second packet: cull type) per packet, then the wound UV scale and bias (per draw).
+	float4 g_PbrInfectedWound1[4]; // @legacy vs:c222
+	float4 g_PbrInfectedWound2[4]; // @legacy vs:c226
+	float4 g_PbrInfectedWoundUVScale; // @legacy vs:c230
+	float4 g_PbrInfectedWoundUVBias; // @legacy vs:c231
 };
 #endif
 
