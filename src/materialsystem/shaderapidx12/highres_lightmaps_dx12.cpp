@@ -348,6 +348,12 @@ const DXGI_FORMAT kProbeFormats[DX12_PROBE_TABLE_COUNT] = { DXGI_FORMAT_R32_UINT
     DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8_UNORM,
     DXGI_FORMAT_R32_UINT };
 const uint32 kProbeTexelBytes[DX12_PROBE_TABLE_COUNT] = { 4, 4, 4, 4, 4, 4, 4, 4, 1, 4 };
+// Probe streaming (Impl::StreamProbes): the camera neighbourhood scanned for wanted bricks (24 bricks = 2304 units at
+// spacing 24), the bricks uploaded per submission (about 1 MiB of staging over the nine atlas tables) and the smallest
+// useful atlas.
+const int32 kProbeStreamRadiusBricks = 24;
+const size_t kProbeStreamBricksPerSubmission = 256;
+const uint32 kProbeStreamMinBricks = 512;
 struct Texture3D
 {
     ComPtr<ID3D12Resource> resource;
@@ -439,6 +445,22 @@ struct CHighresLightmapsDX12::Impl
     DescriptorRangeDX12 probeTable{};
     uint64 probeTableFence = 0, probeRetainedFence = 0, probeConstantsFence = 0;
     D3D12_GPU_VIRTUAL_ADDRESS probeConstantsAddress = 0;
+    // Atlas bricks of the GPU textures: the asset's layout, or the capacity-limited streaming atlas.
+    uint32 probeGpuAtlas[3] = {};
+    // Streaming (the whole grid does not fit the adapter budget): the indirection keeps the full brick extent and maps each
+    // brick to its GPU atlas slot or hlight::kMissing (Probe_Decode then uses the engine ambient cube). Each submission
+    // uploads a bounded number of the bricks nearest the camera into slots whose bricks are no longer wanted.
+    bool probeStreaming = false;
+    std::vector<uint32> probeCellOf;    // asset slot -> indirection cell
+    std::vector<uint32> probeGpuSlotOf; // asset slot -> GPU slot or kMissing
+    std::vector<uint32> probeDiskOf;    // GPU slot -> asset slot or kMissing
+    std::vector<uint32> probeWanted;    // asset slot -> epoch of the last wanted set that contained it
+    std::vector<std::pair<uint32,uint32>> probeOrder; // wanted set: (squared brick distance, asset slot), nearest first
+    std::vector<std::pair<uint32,uint32>> probeMoves, probeCellUpdates;
+    std::vector<uint8> probeStaging;
+    uint32 probeEpoch = 0, probeOrderNext = 0, probeEvictCursor = 0;
+    int32 probeCameraBrick[3] = {INT_MIN, INT_MIN, INT_MIN};
+    uint64 probeStreamFence = 0;
     // Recent highres receiver draws, oldest overwritten first; a rejection is attributed to those of its window (BreakOnHighresFailure).
     std::array<DrawNote,kDrawRing> draws = {};
     uint64 drawCount = 0, cleanFence = 0; // cleanFence: the newest readback that carried no failure
@@ -480,6 +502,10 @@ struct CHighresLightmapsDX12::Impl
         for (auto &texture : probeTextures) texture = {};
         probeViews.Reset(); probeNullViews.Reset(); probeResident = false;
         probeTable = {}; probeTableFence = probeRetainedFence = probeConstantsFence = 0; probeConstantsAddress = 0;
+        probeStreaming = false;
+        probeCellOf.clear(); probeGpuSlotOf.clear(); probeDiskOf.clear(); probeWanted.clear(); probeOrder.clear();
+        probeEpoch = probeOrderNext = probeEvictCursor = 0; probeStreamFence = 0;
+        probeCameraBrick[0] = probeCameraBrick[1] = probeCameraBrick[2] = INT_MIN;
         status.probeBytes = 0;
         if (probeMode) status.probeError[0] = 0; // a validated asset's only runtime failure is residency, retried on the next device
     }
@@ -621,47 +647,226 @@ struct CHighresLightmapsDX12::Impl
         }
         V_strncpy(status.probeError,assets->probeValid?"the asset has no grid for the selected lighting mode":assets->probeReason,sizeof(status.probeError));
     }
-    // Creates the textures and their CPU descriptors and uploads the selected grid once, on the draw's command list.
-    // A failure latches the reason (cleared with the device) and leaves every probe draw on the fallback table.
-    // The grid is admitted only if the process stays within 3/4 of the adapter's LOCAL budget with it: a dense grid
-    // that oversubscribes a small card (c1m2: 873 MB on 2 GB) makes WDDM page the frame until the device hangs.
-    bool MakeProbesResident()
+    // The asset arrays of each probe texture in DX12_PROBE_T_* order (indirection, DC, six bands, validity, free distance).
+    void ProbeSources(const uint8 *(&sources)[DX12_PROBE_TABLE_COUNT]) const
     {
-        const hprobe::GridDisk &g = *probeMode->grid; ID3D12Device *d3d = device->NativeDevice();
-        const uint64 texels = hprobe::AtlasTexels(g);
-        const uint8 *sources[DX12_PROBE_TABLE_COUNT] = { reinterpret_cast<const uint8 *>(probeMode->indirection), reinterpret_cast<const uint8 *>(probeMode->dc) };
+        const uint64 texels = hprobe::AtlasTexels(*probeMode->grid);
+        sources[DX12_PROBE_T_INDIRECTION] = reinterpret_cast<const uint8 *>(probeMode->indirection);
+        sources[DX12_PROBE_T_DC] = reinterpret_cast<const uint8 *>(probeMode->dc);
         for (uint32 b=0; b<hprobe::kBands; ++b) sources[DX12_PROBE_T_BANDS_FIRST+b] = reinterpret_cast<const uint8 *>(probeMode->bands)+uint64(b)*texels*4;
         sources[DX12_PROBE_T_VALIDITY] = probeMode->validity;
         sources[DX12_PROBE_T_FREE_DISTANCE] = reinterpret_cast<const uint8 *>(probeMode->freeDistance);
-        uint32 extents[DX12_PROBE_TABLE_COUNT][3]; uint64 required = 0;
-        for (uint32 i=0; i<DX12_PROBE_TABLE_COUNT; ++i)
+    }
+    // Creates the textures and their CPU descriptors on the first probe consumer draw. A grid that fits within 3/4 of the
+    // adapter's LOCAL budget is uploaded whole; a larger one (c1m2: 1334 MiB resident, while a 2 GB card is already at
+    // its budget) streams through an atlas of what fits under 7/8 of the budget, clamped to 32..256 MiB (StreamProbes).
+    // A failure latches the reason (cleared with the device) and leaves every probe draw on the fallback table.
+    bool MakeProbesResident()
+    {
+        const hprobe::GridDisk &g = *probeMode->grid; ID3D12Device *d3d = device->NativeDevice();
+        const auto textureBytes = [&](uint32 i, const uint32 atlas[3])
         {
             // The indirection has the brick extent; every other texture is the padded 5x5x5-per-brick atlas.
             const bool indirection = i == DX12_PROBE_T_INDIRECTION;
-            for (uint32 axis=0; axis<3; ++axis) extents[i][axis] = indirection ? g.brickDims[axis] : g.atlasBricks[axis]*hprobe::kBrickProbes;
-            const D3D12_RESOURCE_DESC desc = Texture3DDesc(extents[i][0],extents[i][1],extents[i][2],kProbeFormats[i]);
-            required += d3d->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
+            uint32 e[3]; for (uint32 axis=0; axis<3; ++axis) e[axis] = indirection ? g.brickDims[axis] : atlas[axis]*hprobe::kBrickProbes;
+            const D3D12_RESOURCE_DESC desc = Texture3DDesc(e[0],e[1],e[2],kProbeFormats[i]);
+            return uint64(d3d->GetResourceAllocationInfo(0,1,&desc).SizeInBytes);
+        };
+        const auto gridBytes = [&](const uint32 atlas[3]) { uint64 sum = 0; for (uint32 i=0; i<DX12_PROBE_TABLE_COUNT; ++i) sum += textureBytes(i,atlas); return sum; };
+        uint32 atlas[3] = { g.atlasBricks[0], g.atlasBricks[1], g.atlasBricks[2] };
+        const uint64 required = gridBytes(atlas);
+        uint64_t usage = 0, budget = 0;
+        const bool known = device->QueryLocalVideoMemory(usage,budget);
+        uint32 capacity = g.brickCount;
+        char failureText[192] = {}; const char *failure = nullptr;
+        if (known && usage+required > budget/4*3)
+        {
+            const uint64 minimum = uint64(32) << 20, maximum = uint64(256) << 20, target = budget/8*7;
+            const uint64 pool = std::min(maximum, std::max(minimum, target > usage ? target-usage : 0));
+            capacity = uint32(std::min<uint64>(g.brickCount, pool/(uint64(hprobe::kBrickProbes*hprobe::kBrickProbes*hprobe::kBrickProbes)*hprobe::kBytesPerProbe)));
+            for (;;)
+            {
+                if (capacity) hprobe::AtlasBricks(capacity,atlas);
+                if (!capacity || gridBytes(atlas) <= pool) break;
+                capacity = capacity/10*9;
+            }
+            if (capacity < kProbeStreamMinBricks)
+            {
+                V_snprintf(failureText,sizeof(failureText),"%.0f MiB grid does not fit the adapter budget and its %.0f MiB indirection leaves no streaming pool (%.0f of %.0f MiB in use)",
+                    required/1048576.0,textureBytes(DX12_PROBE_T_INDIRECTION,atlas)/1048576.0,usage/1048576.0,budget/1048576.0);
+                failure = failureText;
+            }
+            probeStreaming = true;
         }
-        char budgetFailure[160] = {}; uint64_t usage = 0, budget = 0;
-        if (device->QueryLocalVideoMemory(usage,budget) && usage+required > budget/4*3)
-            V_snprintf(budgetFailure,sizeof(budgetFailure),"%.0f MiB grid does not fit the adapter budget (%.0f of %.0f MiB in use)",
-                required/1048576.0,usage/1048576.0,budget/1048576.0);
-        const char *failure = budgetFailure[0] ? budgetFailure : Heap(d3d,probeViews,DX12_PROBE_TABLE_COUNT) ? nullptr : "descriptor allocation failed";
+        if (!failure && !Heap(d3d,probeViews,DX12_PROBE_TABLE_COUNT)) failure = "descriptor allocation failed";
         for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
         {
-            if (!MakeTexture3D(d3d,probeTextures[i],extents[i][0],extents[i][1],extents[i][2],kProbeFormats[i])) failure = "texture allocation failed";
+            const bool indirection = i == DX12_PROBE_T_INDIRECTION;
+            uint32 e[3]; for (uint32 axis=0; axis<3; ++axis) e[axis] = indirection ? g.brickDims[axis] : atlas[axis]*hprobe::kBrickProbes;
+            if (!MakeTexture3D(d3d,probeTextures[i],e[0],e[1],e[2],kProbeFormats[i])) failure = "texture allocation failed";
             else Texture3DView(d3d,probeTextures[i].resource.Get(),kProbeFormats[i],Slot(d3d,probeViews.Get(),i));
         }
-        for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
-            if (!Upload3D(probeTextures[i],kProbeFormats[i],kProbeTexelBytes[i],sources[i])) failure = "upload failed";
+        const uint8 *sources[DX12_PROBE_TABLE_COUNT]; ProbeSources(sources);
+        if (!failure && !probeStreaming)
+        {
+            for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
+                if (!Upload3D(probeTextures[i],kProbeFormats[i],kProbeTexelBytes[i],sources[i])) failure = "upload failed";
+        }
+        else if (!failure)
+        {
+            // Every brick starts unloaded; the atlas textures are filled slot by slot.
+            const uint64 cells = uint64(g.brickDims[0])*g.brickDims[1]*g.brickDims[2];
+            const std::vector<uint32> missing(size_t(cells), hlight::kMissing);
+            if (!Upload3D(probeTextures[DX12_PROBE_T_INDIRECTION],kProbeFormats[DX12_PROBE_T_INDIRECTION],4,reinterpret_cast<const uint8 *>(missing.data())))
+                failure = "upload failed";
+            auto *list = device->CommandList();
+            for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
+                if (i != DX12_PROBE_T_INDIRECTION) Transition(list,probeTextures[i].resource.Get(),probeTextures[i].state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            probeCellOf.assign(g.brickCount,hlight::kMissing);
+            for (uint64 cell=0; cell<cells; ++cell)
+                if (probeMode->indirection[cell] != hlight::kMissing) probeCellOf[probeMode->indirection[cell]] = uint32(cell);
+            probeGpuSlotOf.assign(g.brickCount,hlight::kMissing);
+            probeDiskOf.assign(capacity,hlight::kMissing);
+            probeWanted.assign(g.brickCount,0);
+        }
         if (failure)
         {
             ClearProbeGpu(); V_snprintf(status.probeError,sizeof(status.probeError),"GPU residency: %s",failure);
             Warning("Highres lightmaps: ambient probe grid unavailable (%s); PBR models use the engine ambient cube\n",status.probeError);
             return false;
         }
+        memcpy(probeGpuAtlas,atlas,sizeof(probeGpuAtlas));
         for (const auto &texture : probeTextures) status.probeBytes += CommittedBytes(d3d,texture.resource.Get());
+        if (probeStreaming)
+            Msg("Highres lightmaps: ambient probe grid streams %u of %u bricks near the camera (%.0f MiB resident; the whole grid needs %.0f MiB, %.0f of %.0f MiB in use)\n",
+                capacity,g.brickCount,status.probeBytes/1048576.0,required/1048576.0,usage/1048576.0,budget/1048576.0);
         probeResident = true; return true;
+    }
+    // Streaming residency, once per submission on the first probe consumer draw: when the camera enters another brick the
+    // wanted set becomes the valid bricks within kProbeStreamRadiusBricks, nearest first, up to the atlas capacity; then up
+    // to kProbeStreamBricksPerSubmission missing wanted bricks are copied into slots whose bricks are no longer wanted and
+    // the indirection cells of both bricks are rewritten. The copies precede every probe draw of the submission, and the
+    // queue orders them after the draws of earlier submissions that sampled the evicted slots.
+    void StreamProbes(uint64 fence)
+    {
+        if (probeStreamFence == fence) return;
+        probeStreamFence = fence;
+        const hprobe::GridDisk &g = *probeMode->grid;
+        float eye[3]; api->GetWorldSpaceCameraPosition(eye);
+        const float brickSize = g.spacing*float(hprobe::kBrickCells);
+        int32 camera[3];
+        for (uint32 axis=0; axis<3; ++axis) camera[axis] = int32(floorf((eye[axis]-g.origin[axis])/brickSize));
+        if (memcmp(camera,probeCameraBrick,sizeof(camera)))
+        {
+            memcpy(probeCameraBrick,camera,sizeof(camera));
+            probeOrder.clear(); probeOrderNext = 0; ++probeEpoch;
+            int32 lo[3], hi[3];
+            for (uint32 axis=0; axis<3; ++axis)
+            {
+                lo[axis] = std::max(0, camera[axis]-kProbeStreamRadiusBricks);
+                hi[axis] = std::min(int32(g.brickDims[axis])-1, camera[axis]+kProbeStreamRadiusBricks);
+            }
+            for (int32 z=lo[2]; z<=hi[2]; ++z) for (int32 y=lo[1]; y<=hi[1]; ++y) for (int32 x=lo[0]; x<=hi[0]; ++x)
+            {
+                const uint32 slot = probeMode->indirection[uint64(x)+uint64(g.brickDims[0])*(uint64(y)+uint64(g.brickDims[1])*uint64(z))];
+                if (slot == hlight::kMissing) continue;
+                const int32 dx = x-camera[0], dy = y-camera[1], dz = z-camera[2];
+                probeOrder.emplace_back(uint32(dx*dx+dy*dy+dz*dz),slot);
+            }
+            if (probeOrder.size() > probeDiskOf.size())
+            {
+                std::nth_element(probeOrder.begin(),probeOrder.begin()+probeDiskOf.size(),probeOrder.end());
+                probeOrder.resize(probeDiskOf.size());
+            }
+            std::sort(probeOrder.begin(),probeOrder.end());
+            for (const auto &wanted : probeOrder) probeWanted[wanted.second] = probeEpoch;
+        }
+        probeMoves.clear(); probeCellUpdates.clear();
+        while (probeOrderNext < probeOrder.size() && probeMoves.size() < kProbeStreamBricksPerSubmission)
+        {
+            const uint32 disk = probeOrder[probeOrderNext++].second;
+            if (probeGpuSlotOf[disk] != hlight::kMissing) continue;
+            // The wanted set never exceeds the capacity, so a slot holding an unwanted (or no) brick always exists.
+            uint32 gpu = hlight::kMissing;
+            for (size_t n=0; n<probeDiskOf.size() && gpu==hlight::kMissing; ++n)
+            {
+                const uint32 candidate = probeEvictCursor; probeEvictCursor = uint32((probeEvictCursor+1)%probeDiskOf.size());
+                const uint32 owner = probeDiskOf[candidate];
+                if (owner == hlight::kMissing || probeWanted[owner] != probeEpoch) gpu = candidate;
+            }
+            if (gpu == hlight::kMissing) break;
+            const uint32 old = probeDiskOf[gpu];
+            if (old != hlight::kMissing) { probeGpuSlotOf[old] = hlight::kMissing; probeCellUpdates.emplace_back(probeCellOf[old],hlight::kMissing); }
+            probeDiskOf[gpu] = disk; probeGpuSlotOf[disk] = gpu;
+            probeCellUpdates.emplace_back(probeCellOf[disk],gpu);
+            probeMoves.emplace_back(disk,gpu);
+        }
+        if (probeMoves.empty()) return;
+
+        auto *list = device->CommandList();
+        for (auto &texture : probeTextures)
+        {
+            api->m_Pipeline.RetainExternalResource(texture.resource.Get(),fence);
+            Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_COPY_DEST);
+        }
+        const uint8 *sources[DX12_PROBE_TABLE_COUNT]; ProbeSources(sources);
+        // Each table's moved bricks sit side by side in one placed footprint (width 5 per brick, at most 1280 texels) and
+        // each copy selects its brick with a source box; the cell updates likewise form one row. UploadStructured takes
+        // whole multiples of its stride, so the staging is padded to the placement alignment.
+        constexpr uint32 kSide = hprobe::kBrickProbes;
+        const auto pitch = [](size_t bytes) { return uint32((bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT-1) & ~size_t(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT-1)); };
+        const auto placed = [](size_t bytes) { return (bytes + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT-1) & ~size_t(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT-1); };
+        const uint32 width = uint32(probeMoves.size())*kSide;
+        bool ok = true;
+        for (uint32 i=0; ok && i<DX12_PROBE_TABLE_COUNT; ++i)
+        {
+            if (i == DX12_PROBE_T_INDIRECTION) continue;
+            const uint32 bytes = kProbeTexelBytes[i], rowPitch = pitch(size_t(width)*bytes);
+            probeStaging.assign(placed(size_t(rowPitch)*kSide*kSide),0);
+            for (size_t k=0; k<probeMoves.size(); ++k)
+                for (uint32 z=0; z<kSide; ++z) for (uint32 y=0; y<kSide; ++y) for (uint32 x=0; x<kSide; ++x)
+                    memcpy(probeStaging.data()+(size_t(z)*kSide+y)*rowPitch+(k*kSide+x)*bytes,
+                        sources[i]+size_t(hprobe::TexelIndex(g,probeMoves[k].first,x,y,z))*bytes,bytes);
+            ID3D12Resource *upload = nullptr; uint64 offset = 0;
+            if (!api->m_Pipeline.UploadStructured(probeStaging.data(),probeStaging.size(),D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,fence,&upload,&offset)) { ok = false; break; }
+            D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
+            src.pResource = upload; src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src.PlacedFootprint.Offset = offset; src.PlacedFootprint.Footprint = {kProbeFormats[i],width,kSide,kSide,rowPitch};
+            dst.pResource = probeTextures[i].resource.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
+            for (size_t k=0; k<probeMoves.size(); ++k)
+            {
+                const uint32 slot = probeMoves[k].second;
+                const D3D12_BOX box = { uint32(k)*kSide, 0, 0, uint32(k+1)*kSide, kSide, kSide };
+                list->CopyTextureRegion(&dst,(slot%probeGpuAtlas[0])*kSide,((slot/probeGpuAtlas[0])%probeGpuAtlas[1])*kSide,
+                    (slot/(probeGpuAtlas[0]*probeGpuAtlas[1]))*kSide,&src,&box);
+            }
+        }
+        if (ok)
+        {
+            const uint32 cells = uint32(probeCellUpdates.size()), rowPitch = pitch(size_t(cells)*4);
+            probeStaging.assign(placed(rowPitch),0);
+            for (uint32 k=0; k<cells; ++k) memcpy(probeStaging.data()+size_t(k)*4,&probeCellUpdates[k].second,4);
+            ID3D12Resource *upload = nullptr; uint64 offset = 0;
+            ok = api->m_Pipeline.UploadStructured(probeStaging.data(),probeStaging.size(),D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,fence,&upload,&offset);
+            D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
+            src.pResource = upload; src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src.PlacedFootprint.Offset = offset; src.PlacedFootprint.Footprint = {kProbeFormats[DX12_PROBE_T_INDIRECTION],cells,1,1,rowPitch};
+            dst.pResource = probeTextures[DX12_PROBE_T_INDIRECTION].resource.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
+            for (uint32 k=0; ok && k<cells; ++k)
+            {
+                const uint32 cell = probeCellUpdates[k].first;
+                const D3D12_BOX box = { k, 0, 0, k+1, 1, 1 };
+                list->CopyTextureRegion(&dst,cell%g.brickDims[0],(cell/g.brickDims[0])%g.brickDims[1],cell/(g.brickDims[0]*g.brickDims[1]),&src,&box);
+            }
+        }
+        for (auto &texture : probeTextures)
+            Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if (!ok)
+        {
+            // The CPU maps already describe this submission's moves; without their uploads the grid cannot be trusted.
+            ClearProbeGpu(); V_strncpy(status.probeError,"GPU residency: probe streaming upload failed",sizeof(status.probeError));
+            Warning("Highres lightmaps: ambient probe grid unavailable (%s); PBR models use the engine ambient cube\n",status.probeError);
+        }
     }
     bool InitializeUploads()
     {
@@ -1427,6 +1632,7 @@ bool CHighresLightmapsDX12::PrepareProbeDraw(CPipelineCacheDX12::BindingInputDX1
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     auto &pipeline=s.api->m_Pipeline; ID3D12Device *device=s.device->NativeDevice(); const uint64 fence=s.device->NextFenceValue();
     if (s.probeMode && !s.probeResident && !s.status.probeError[0]) s.MakeProbesResident();
+    if (s.probeResident && s.probeStreaming) s.StreamProbes(fence);
     const bool grid=s.probeResident;
     ComPtr<ID3D12DescriptorHeap> &views=grid?s.probeViews:s.probeNullViews;
     if (!views && Heap(device,views,DX12_PROBE_TABLE_COUNT))
@@ -1452,7 +1658,7 @@ bool CHighresLightmapsDX12::PrepareProbeDraw(CPipelineCacheDX12::BindingInputDX1
             for (uint32 axis=0;axis<3;++axis)
             {
                 constants.cProbeOrigin[axis]=g.origin[axis]; constants.cProbeBricks[axis]=g.brickDims[axis];
-                constants.cProbeAtlas[axis]=1.f/float(g.atlasBricks[axis]*hprobe::kBrickProbes); constants.cProbeAtlasBricks[axis]=g.atlasBricks[axis];
+                constants.cProbeAtlas[axis]=1.f/float(s.probeGpuAtlas[axis]*hprobe::kBrickProbes); constants.cProbeAtlasBricks[axis]=s.probeGpuAtlas[axis];
             }
             constants.cProbeOrigin[3]=1.f/g.spacing; constants.cProbeBricks[3]=1; constants.cProbeAtlas[3]=0.25f*g.spacing;
         }

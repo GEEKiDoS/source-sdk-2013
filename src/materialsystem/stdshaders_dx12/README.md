@@ -886,15 +886,27 @@ come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the v3 pr
 the exact hardware-filtered path when all eight corners can see the biased sample point. If any corner is blocked, it
 manually filters only visible corners, multiplying trilinear weights by validity and renormalizing before SH decode;
 an empty visible weight falls back to the engine ambient cube. The hardware path retains the 0.25 coverage gate.
+Where `Probe_Decode` covers a pixel of an unbumped static prop (`STATIC_LIGHT_VERTEX`), the probe irradiance replaces the
+engine's per-vertex prop lighting instead of adding to it. That COLOR1 stream is generated at runtime by the closed engine
+when the map ships no VHV, and it leaks light onto shadowed props (c1m1's `conduit_128` pipes). Uncovered pixels, and
+every pixel on maps without probes, keep the vertex lighting.
 `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
 parallax; `-case probegpu` the probe decode.
 
-The grid becomes resident at the first probe consumer draw only if the process's DXGI LOCAL usage plus the ten textures'
-`GetResourceAllocationInfo` sizes stays within 3/4 of the adapter's LOCAL budget. Otherwise the reason is logged once
-(`ambient probe grid unavailable (GPU residency: N MiB grid does not fit the adapter budget ...)`, also in `Highres:`
-status) and PBR models use the engine ambient cube. The padded atlas is larger than the stored asset (c1m2 at spacing
-28: 873 MB on disk, 1334 MiB resident), and on a 2 GB GTX 1050 the process is already over its 985 MiB budget before
-the grid, so uploading it made WDDM page the frame until the device hung (`0x887a0006`).
+The grid becomes resident at the first probe consumer draw. If the process's DXGI LOCAL usage plus the ten textures'
+`GetResourceAllocationInfo` sizes stays within 3/4 of the adapter's LOCAL budget, the whole grid is uploaded once.
+Otherwise it streams: the atlas textures are sized to what fits under 7/8 of the budget (clamped to 32–256 MiB, at
+least 512 bricks), the indirection keeps the full brick extent, and every brick starts `kMissing`. On the first probe
+draw of each submission `StreamProbes` rebuilds the wanted set when the camera enters another brick (valid bricks
+within 24 bricks, nearest first, at most the atlas capacity), copies up to 256 missing wanted bricks into slots whose
+bricks are no longer wanted, and rewrites the indirection cells of the loaded and evicted bricks. Unloaded bricks decode
+as `kMissing`, so those models use the engine ambient cube until their brick arrives. The copies precede every probe
+draw of their submission. The log names the split once (`ambient probe grid streams N of M
+bricks near the camera ...`). Only when even the indirection leaves no 512-brick pool is the grid refused
+(`ambient probe grid unavailable (GPU residency: ...)`, also in `Highres:` status). The padded atlas is larger than the
+stored asset (c1m2 at spacing 28: 873 MB on disk, 1334 MiB resident), and on a 2 GB GTX 1050 the process is already
+over its 985 MiB budget before the grid, so uploading it whole made WDDM page the frame until the device hung
+(`0x887a0006`).
 
 Enhanced PBR models use the archived `r_model_local_lights` budget (default 4, range 1–4; 0 selects
 the original full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` runs on the recording

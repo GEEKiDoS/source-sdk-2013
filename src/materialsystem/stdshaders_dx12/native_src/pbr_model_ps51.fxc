@@ -330,11 +330,15 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// Ambient. ENHANCED decodes the baked probe grid once at the vertex-normal-biased point and evaluates it for N (and -N / the
 	// softened N below); where no probe covers the point, or no grid is bound, the engine ambient cube takes over.
 	// Subsurface softens toward the opposite hemisphere; backlight adds that hemisphere.
+	// A covered point also drops the static prop vertex lighting (COLOR1): the probes already carry the baked ambient, and
+	// the engine's runtime-generated prop colors leak light onto shadowed props (c1m1's conduit_128 pipes, which ship no VHV).
 	float3 ambient;
+	bool probeCovered = false;
 #if ENHANCED
 	ProbeSH probe;
 	[branch] if ( Probe_Decode( P, vertexNormal, probe ) )
 	{
+		probeCovered = true;
 		ambient = Probe_Irradiance( probe, N );
 		[branch] if ( s.sss != 0.0 || s.back != 0.0 )
 			ambient = lerp( ambient, Probe_IrradianceSoft( probe, N ) * s.subsurfaceTint, s.sss ) * ( 1.0 - s.back ) +
@@ -353,7 +357,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	float3 result = s.diffuseColor * s.ao * ambient;
 #if !PBR_HAS_TANGENT
-	result += s.diffuseColor * s.ao * i.staticLight;
+	if ( !probeCovered )
+		result += s.diffuseColor * s.ao * i.staticLight;
 #endif
 	PBRSpecularSum specularSum = PBR_NoSpecularSum();
 	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten, specularSum );
