@@ -118,15 +118,15 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	rgba.b = dot( c, tob );
 	rgba.a = 1.0f;
 
+	// Bink frames are gamma-space video. The DX12 scene/UI target is linear and gets the exact sRGB
+	// encode only at presentation, so decode here (as the 360's sRGB write did); a gamma value stored
+	// as linear is encoded twice and washes the movie out.
+	rgba.r = SrgbGammaToLinear( rgba.r );
+	rgba.g = SrgbGammaToLinear( rgba.g );
+	rgba.b = SrgbGammaToLinear( rgba.b );
+
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos_SpecExponent.z, i.worldPos_projPosZ.z, i.worldPos_projPosZ.w );
 	float4 result = FinalOutput( rgba, fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_NONE );
-
-	// The 360 will do an sRGB write to put the linear values into 360 gamma space, but the PC just outputs gamma values directly
-	#if defined( _X360 )
-		result.r = SrgbGammaToLinear( result.r );
-		result.g = SrgbGammaToLinear( result.g );
-		result.b = SrgbGammaToLinear( result.b );
-	#endif
 
 	return DX12FinishPixel( result.rgba, dx12In.fog );
 }

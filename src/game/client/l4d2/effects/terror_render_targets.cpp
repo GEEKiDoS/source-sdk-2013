@@ -29,7 +29,7 @@ public:
 		CreateInterfaceFn factory = pFileSystemModule ? Sys_GetFactory( pFileSystemModule ) : NULL;
 		IFileSystem *pFileSystem = factory ?
 			static_cast<IFileSystem *>( factory( FILESYSTEM_INTERFACE_VERSION, NULL ) ) : NULL;
-		if ( !pFileSystem || !PrepareTerrorHudBootstrap( pFileSystem ) )
+		if ( !pFileSystem || !PrepareTerrorHudBootstrap( pFileSystem, pMaterialSystem ) )
 		{
 			Error( "Unable to prepare the mounted original L4D2 default scheme\n" );
 		}

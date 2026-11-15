@@ -1,0 +1,80 @@
+//-----------------------------------------------------------------------------
+//	BINKDEC.VPC
+//
+//	libbinkdec (LGPL-2.1, see COPYING): Bink 1 video decoder derived from FFmpeg.
+//	Built as its own binkdec.dll so it stays a separately replaceable library;
+//	the client loads it at runtime through the C interface in interface/.
+//-----------------------------------------------------------------------------
+
+$Macro SRCDIR		"..\.."
+$Macro OUTBINDIR	"$SRCDIR\..\game\bin"
+$Macro OUTBINNAME	"binkdec"
+
+$Conditional THIRDPARTYPROJECT "true"
+
+$Include "$SRCDIR\vpc_scripts\source_dll_base.vpc"
+
+$Configuration
+{
+	$Compiler
+	{
+		$Create/UsePrecompiledHeader	"Not Using Precompiled Headers"
+		$ForceIncludes					" "
+		$AdditionalIncludeDirectories	"$BASE;include;interface"
+		$PreprocessorDefinitions		"$BASE;BINKDEC_EXPORT"
+		// constinit, std::bit_cast and designated initializers (interface.cpp).
+		$AdditionalOptions				"$BASE /std:c++20"
+		// The FFmpeg-derived transforms are C with C linkage; the extension picks the language.
+		$CompileAs						"Default"
+		$TreatWarningsAsErrors			"No"
+	}
+}
+
+$Project "binkdec"
+{
+	$Folder "Source Files"
+	{
+		-$File "$SRCDIR\public\tier0\memoverride.cpp"
+		$File "src\avfft.c"
+		$File "src\BinkAudio.cpp"
+		$File "src\BinkDecoder.cpp"
+		$File "src\BinkVideo.cpp"
+		$File "src\BitReader.cpp"
+		$File "src\dct.c"
+		$File "src\dct32.c"
+		$File "src\fft.c"
+		$File "src\FileStream.cpp"
+		$File "src\HuffmanVLC.cpp"
+		$File "src\interface.cpp"
+		$File "src\mdct.c"
+		$File "src\rdft.c"
+		$File "src\Util.cpp"
+	}
+	$Folder "Header Files"
+	{
+		$File "interface\binkdec_interface.h"
+		$File "include\avfft.h"
+		$File "include\bd_mem.h"
+		$File "include\BinkAudio.h"
+		$File "include\binkdata.h"
+		$File "include\BinkDecoder.h"
+		$File "include\BinkVideo.h"
+		$File "include\BitReader.h"
+		$File "include\dct.h"
+		$File "include\dct32.h"
+		$File "include\FFmpeg_includes.h"
+		$File "include\fft.h"
+		$File "include\fft-internal.h"
+		$File "include\FileStream.h"
+		$File "include\HuffmanVLC.h"
+		$File "include\LogError.h"
+		$File "include\rdft.h"
+		$File "include\Util.h"
+	}
+	$Folder "Link Libraries"
+	{
+		-$Implib "$LIBPUBLIC\tier0"
+		-$Lib "$LIBPUBLIC\tier1"
+		-$Implib "$LIBPUBLIC\vstdlib"
+	}
+}

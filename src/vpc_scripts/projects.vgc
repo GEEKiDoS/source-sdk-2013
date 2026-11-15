@@ -8,6 +8,11 @@
 // Project definitions //
 /////////////////////////
 
+$Project "binkdec"
+{
+	"thirdparty\libbinkdec\binkdec.vpc" [$WIN64]
+}
+
 $Project "captioncompiler"
 {
 	"utils\captioncompiler\captioncompiler.vpc" [$WINDOWS]

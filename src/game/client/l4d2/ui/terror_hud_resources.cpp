@@ -20,9 +20,54 @@
 namespace
 {
 
-// Original client 0x3E01D0: unrecognized names are resolved by the shared
-// KeyValues symbol system. In particular, do not invent a resolution threshold
-// for WIN32HIDEF or reinterpret X360 resource conditions as desktop conditions.
+// Answers for the expression symbols the L4D2 resources use beyond the platform names. Retail
+// resolved them in modules this port replaces, and the SDK 2013 vstdlib cannot take them: its
+// SetKeyValuesExpressionSymbol inserts into a map that has no compare function (a null call).
+// Captured by PrepareBootstrap, which precedes every resolution.
+IMaterialSystem *g_pTerrorResolutionSource;
+uint64 g_nTerrorInstalledDlcs; // bit N: DLCN_INSTALLED
+
+// Retail gameui sets DLC1..62_INSTALLED from its installed-DLC mask (sub_10016C80). Here a DLC is
+// installed when its left4dead2_dlcN directory is on the GAME search path (gameinfo mounts them).
+uint64 FindInstalledDlcs( IFileSystem *pFileSystem )
+{
+	// GetSearchPath returns the length it needs (terminator included); retry once when it was truncated.
+	CUtlVector<char> searchPath;
+	searchPath.SetCount( 4096 );
+	const int nNeeded = pFileSystem->GetSearchPath( "GAME", false, searchPath.Base(), searchPath.Count() );
+	if ( nNeeded > searchPath.Count() )
+	{
+		searchPath.SetCount( nNeeded );
+		pFileSystem->GetSearchPath( "GAME", false, searchPath.Base(), searchPath.Count() );
+	}
+	searchPath[searchPath.Count() - 1] = '\0';
+	Q_strlower( searchPath.Base() );
+	uint64 nInstalled = 0;
+	for ( int nDLC = 1; nDLC < 63; ++nDLC )
+	{
+		char szDirectory[32];
+		Q_snprintf( szDirectory, sizeof( szDirectory ), "left4dead2_dlc%d", nDLC );
+		const int nDirectory = Q_strlen( szDirectory );
+		for ( const char *pMatch = Q_strstr( searchPath.Base(), szDirectory ); pMatch; pMatch = Q_strstr( pMatch + 1, szDirectory ) )
+		{
+			const char chAfter = pMatch[nDirectory];
+			if ( chAfter == '/' || chAfter == '\\' || chAfter == ';' || chAfter == '\0' )
+			{
+				nInstalled |= uint64( 1 ) << nDLC;
+				break;
+			}
+		}
+	}
+	return nInstalled;
+}
+
+// Original client 0x3E01D0: unrecognized names are resolved by the shared KeyValues symbol
+// system, which still answers the languages and CVAR_ names. The rest are answered as retail did:
+// - its vstdlib answers X360HIDEF/LODEF/WIDE/SPLITSCREEN/GUEST false;
+// - its shaderapidx9 publishes WIN32WIDE (aspect >= 1.5999), WIN32HIDEF (height >= 720) and
+//   WIN32LODEF (below 720) for the back buffer of each mode it sets (sub_10029A90);
+// - its gameui publishes DLCn_INSTALLED (above);
+// - [$DECK] is the Steam Deck resource variant.
 bool TerrorConditionalSymbol( const char *pName )
 {
 	if ( *pName == '$' )
@@ -31,9 +76,30 @@ bool TerrorConditionalSymbol( const char *pName )
 	if ( !Q_stricmp( pName, "WIN32" ) )
 		return true;
 	if ( !Q_stricmp( pName, "OSX" ) || !Q_stricmp( pName, "POSIX" ) ||
-		 !Q_stricmp( pName, "LINUX" ) || !Q_stricmp( pName, "X360" ) ||
+		 !Q_stricmp( pName, "LINUX" ) || !Q_strnicmp( pName, "X360", 4 ) ||
 		 !Q_stricmp( pName, "DEMO" ) )
 		return false;
+	if ( !Q_stricmp( pName, "DECK" ) )
+		return IsSteamDeck();
+	if ( !Q_strnicmp( pName, "WIN32", 5 ) )
+	{
+		int nWidth = 0, nHeight = 0;
+		if ( g_pTerrorResolutionSource )
+			g_pTerrorResolutionSource->GetBackBufferDimensions( nWidth, nHeight );
+		if ( !Q_stricmp( pName, "WIN32WIDE" ) )
+			return nHeight > 0 && float( nWidth ) / float( nHeight ) >= 1.5999f;
+		if ( !Q_stricmp( pName, "WIN32HIDEF" ) )
+			return nHeight >= 720;
+		if ( !Q_stricmp( pName, "WIN32LODEF" ) )
+			return nHeight < 720;
+	}
+	if ( !Q_strnicmp( pName, "DLC", 3 ) )
+	{
+		char *pEnd = NULL;
+		const long nDLC = strtol( pName + 3, &pEnd, 10 );
+		if ( pEnd != pName + 3 && !Q_stricmp( pEnd, "_INSTALLED" ) && nDLC > 0 && nDLC < 63 )
+			return ( g_nTerrorInstalledDlcs & ( uint64( 1 ) << nDLC ) ) != 0;
+	}
 
 	return KeyValuesSystem()->GetKeyValuesExpressionSymbol( pName );
 }
@@ -161,7 +227,7 @@ public:
 		// Also cover an early render-target initialization failure before DLL Init.
 		Shutdown();
 	}
-	bool PrepareBootstrap( IFileSystem *pFileSystem );
+	bool PrepareBootstrap( IFileSystem *pFileSystem, IMaterialSystem *pMaterialSystem );
 	bool Prepare();
 	virtual void Shutdown() OVERRIDE;
 
@@ -311,13 +377,15 @@ bool CTerrorHudResources::PrepareFile( IFileSystem *pFileSystem, const char *pFi
 	return true;
 }
 
-bool CTerrorHudResources::PrepareBootstrap( IFileSystem *pFileSystem )
+bool CTerrorHudResources::PrepareBootstrap( IFileSystem *pFileSystem, IMaterialSystem *pMaterialSystem )
 {
 	if ( m_bBootstrapPrepared )
 	{
 		return true;
 	}
 
+	g_pTerrorResolutionSource = pMaterialSystem;
+	g_nTerrorInstalledDlcs = FindInstalledDlcs( pFileSystem );
 	if ( !InstallTerrorMemoryFontBridge( m_Fonts ) ||
 		!PrepareFile( pFileSystem, "resource/sourcescheme.res" ) )
 	{
@@ -338,7 +406,7 @@ bool CTerrorHudResources::Prepare()
 		return m_bPrepared;
 	}
 
-	if ( !PrepareBootstrap( filesystem ) )
+	if ( !PrepareBootstrap( filesystem, materials ) )
 	{
 		Warning( "Unable to prepare original HUD native memory-font consumer\n" );
 		return false;
@@ -436,9 +504,9 @@ CTerrorHudResources g_TerrorHudResources;
 
 } // namespace
 
-bool PrepareTerrorHudBootstrap( IFileSystem *pFileSystem )
+bool PrepareTerrorHudBootstrap( IFileSystem *pFileSystem, IMaterialSystem *pMaterialSystem )
 {
-	return g_TerrorHudResources.PrepareBootstrap( pFileSystem );
+	return g_TerrorHudResources.PrepareBootstrap( pFileSystem, pMaterialSystem );
 }
 
 bool PrepareTerrorHudResources()

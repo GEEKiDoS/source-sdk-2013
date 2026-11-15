@@ -108,6 +108,10 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   again. The DX9 8-bit framebuffer blended these sprites in gamma space, which a linear target cannot reproduce, so
   additive glows can be slightly dimmer than `-dx9` over bright backgrounds. sRGB-writing sprites (`$nosrgb 0`,
   `SpriteCard`, additive `UnlitGeneric`) are unchanged.
+- `Bik` (the menu's Bink movie, decoded by `binkdec.dll` from `thirdparty/libbinkdec` and drawn by
+  `l4d2/ui/basemodui/terror_bink_movie.cpp`) converts its BT.601 result with the exact sRGB decode before output.
+  The legacy PC shader wrote the gamma colour without sRGB write; on the linear target that encoded the movie twice
+  and washed it out.
 - Content mounts must cover the map's VMT dependencies independently of shader publication. Half-Life 2: Update
   maps require `|appid_290930|hl2/hl2_pak.vpk`, not only the loose `hl2` folder. The episodic runtime mounts
   this archive after the SDK VPKs, retaining engine-matched shader priority. Missing Update-only `*_nocubbed`

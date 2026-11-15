@@ -993,6 +993,15 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 			pLan->SetValue( 1 );
 		}
 	}
+
+	// Retail L4D2's engine registers snd_async_spew_blocking with "0"; the SDK 2013 engine's "1"
+	// prints every on-demand load of a not-yet-cached UI or voice sound under -steam.
+	// Startup configs and stuffcmds run after Init and may still enable it.
+	if ( ConVar *pSpew = g_pCVar->FindVar( "snd_async_spew_blocking" ) )
+	{
+		pSpew->SetDefault( "0" );
+		pSpew->SetValue( 0 );
+	}
 #endif
 #ifdef L4D2
 	// Optional genuine tools interface; absence is not a client Init failure.

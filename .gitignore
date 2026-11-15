@@ -566,6 +566,9 @@ FodyWeavers.xsd
 !/game/mod_l4d2/materials/effects/
 /game/mod_l4d2/materials/effects/*
 !/game/mod_l4d2/materials/effects/lensdirt.vtf
+!/game/mod_l4d2/materials/vgui/
+/game/mod_l4d2/materials/vgui/*
+!/game/mod_l4d2/materials/vgui/servers/
 !/game/mod_l4d2/resource/deferred/
 !/game/mod_l4d2/resource/graphicsoptions_english.txt
 !/game/mod_l4d2/resource/graphicsoptions_schinese.txt

@@ -14,6 +14,7 @@ $Configuration
 	$Compiler
 	{
 		$PreprocessorDefinitions			"$BASE;L4D2;NEXT_BOT"
+		$AdditionalIncludeDirectories		"$BASE;$SRCDIR\thirdparty\libbinkdec\interface"
 	}
 	$Linker
 	{
@@ -76,6 +77,17 @@ $Project "Client (L4D2)"
 			$File	"l4d2\ui\basemodui\terror_basemodui_footer.h"
 			$File	"l4d2\ui\basemodui\terror_basemodui_background.cpp"
 			$File	"l4d2\ui\basemodui\terror_basemodui_background.h"
+			$File	"l4d2\ui\basemodui\terror_bink_movie.cpp"
+			{
+				$Configuration
+				{
+					$Compiler
+					{
+						$Create/UsePrecompiledHeader	"Not Using Precompiled Headers"
+					}
+				}
+			}
+			$File	"l4d2\ui\basemodui\terror_bink_movie.h"
 			$File	"l4d2\ui\basemodui\terror_basemodui_addons.cpp"
 			$File	"l4d2\ui\basemodui\terror_basemodui_addons.h"
 			$File	"l4d2\ui\basemodui\terror_basemodui_panellist.cpp"

@@ -11,9 +11,11 @@
 #endif
 
 class IFileSystem;
+class IMaterialSystem;
 
-// Called by the existing render-target startup before EngineVGUI loads schemes.
-bool PrepareTerrorHudBootstrap( IFileSystem *pFileSystem );
+// Called by the existing render-target startup before EngineVGUI loads schemes. The material
+// system answers the [$WIN32WIDE/HIDEF/LODEF] resource conditions from its back buffer.
+bool PrepareTerrorHudBootstrap( IFileSystem *pFileSystem, IMaterialSystem *pMaterialSystem );
 
 // Call before the first L4D2 viewport is constructed. Failure is not a request
 // to use a substitute scheme or an installed system font.
