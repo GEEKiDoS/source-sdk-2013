@@ -86,6 +86,88 @@ static void DX12MemoryReportCommand( const CCommand &args )
 static ConCommand dx12_memreport( "dx12_memreport", DX12MemoryReportCommand,
     "Development only: report live DX12 resource allocations and DXGI process usage/budget at the next render-owner Present", FCVAR_CHEAT );
 
+// -dx12pix: loads the newest installed PIX GPU capturer (%ProgramFiles%\Microsoft PIX\<version>\WinPixGpuCapturer.dll)
+// before any DXGI/D3D12 object exists, so `dx12_pix_capture <file.wpix>` can take a programmatic GPU capture
+// (PIXGpuCaptureNextFrames) for per-draw GPU timing in PIX or `pixtool open-capture ... save-event-list`.
+typedef HRESULT( WINAPI *PIXGpuCaptureNextFramesFnDX12 )( PCWSTR, UINT32 );
+static PIXGpuCaptureNextFramesFnDX12 s_pfnPixGpuCaptureNextFrames = nullptr;
+
+static void LoadPixGpuCapturerDX12()
+{
+	static bool s_bTried = false;
+	if ( s_bTried || !CommandLine() || !CommandLine()->CheckParm( "-dx12pix" ) )
+		return;
+	s_bTried = true;
+	HMODULE hCapturer = GetModuleHandleW( L"WinPixGpuCapturer.dll" );
+	if ( !hCapturer )
+	{
+		wchar_t root[MAX_PATH];
+		const DWORD rootLength = GetEnvironmentVariableW( L"ProgramFiles", root, ARRAYSIZE( root ) );
+		if ( !rootLength || rootLength >= ARRAYSIZE( root ) )
+			return;
+		wchar_t pattern[MAX_PATH], newest[MAX_PATH] = L"";
+		V_snwprintf( pattern, ARRAYSIZE( pattern ), L"%s\\Microsoft PIX\\*", root );
+		WIN32_FIND_DATAW find;
+		HANDLE hFind = FindFirstFileW( pattern, &find );
+		if ( hFind != INVALID_HANDLE_VALUE )
+		{
+			// Version folders are YYMM.DD[.N]; the greatest name is the newest install.
+			do
+			{
+				if ( ( find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY ) && find.cFileName[0] != L'.' && wcscmp( find.cFileName, newest ) > 0 )
+					wcscpy_s( newest, find.cFileName );
+			} while ( FindNextFileW( hFind, &find ) );
+			FindClose( hFind );
+		}
+		if ( !newest[0] )
+		{
+			Warning( "ShaderAPIDX12: -dx12pix: no PIX installation under %ls\\Microsoft PIX\n", root );
+			return;
+		}
+		wchar_t path[MAX_PATH];
+		V_snwprintf( path, ARRAYSIZE( path ), L"%s\\Microsoft PIX\\%s\\WinPixGpuCapturer.dll", root, newest );
+		hCapturer = LoadLibraryW( path );
+		if ( !hCapturer )
+		{
+			Warning( "ShaderAPIDX12: -dx12pix: could not load %ls (error %lu)\n", path, GetLastError() );
+			return;
+		}
+		Msg( "ShaderAPIDX12: PIX GPU capturer loaded from %ls\n", path );
+	}
+	// pix3_win.h's PIXGpuCaptureNextFrames is this export.
+	s_pfnPixGpuCaptureNextFrames = reinterpret_cast<PIXGpuCaptureNextFramesFnDX12>( GetProcAddress( hCapturer, "CaptureNextFrame" ) );
+	if ( !s_pfnPixGpuCaptureNextFrames )
+		Warning( "ShaderAPIDX12: -dx12pix: WinPixGpuCapturer.dll has no CaptureNextFrame export\n" );
+}
+
+static void DX12PixCaptureCommand( const CCommand &args )
+{
+	// The console tokenizer splits on ':', so the path is the whole argument string ("C:/..." stays intact).
+	if ( args.ArgC() < 2 )
+	{
+		Msg( "usage: dx12_pix_capture <file.wpix>\n" );
+		return;
+	}
+	if ( !s_pfnPixGpuCaptureNextFrames )
+	{
+		Warning( "dx12_pix_capture: the PIX GPU capturer is not loaded (launch with -dx12pix)\n" );
+		return;
+	}
+	char file[MAX_PATH];
+	V_strncpy( file, args.ArgS(), sizeof( file ) );
+	V_StripTrailingWhitespace( file );
+	wchar_t path[MAX_PATH];
+	V_UTF8ToUnicode( file, path, sizeof( path ) );
+	const HRESULT hr = s_pfnPixGpuCaptureNextFrames( path, 1 );
+	if ( FAILED( hr ) )
+		Warning( "dx12_pix_capture: PIXGpuCaptureNextFrames failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+	else
+		Msg( "dx12_pix_capture: capturing the next frame to %s\n", file );
+}
+
+static ConCommand dx12_pix_capture( "dx12_pix_capture", DX12PixCaptureCommand,
+    "Development only: take a PIX GPU capture of the next frame to <file.wpix> (requires -dx12pix)", FCVAR_CHEAT );
+
 //-----------------------------------------------------------------------------
 // Purpose: Recomputes g_bTracyZonesActiveDX12 (once per presented frame)
 //-----------------------------------------------------------------------------
@@ -3477,6 +3559,8 @@ InitReturnVal_t CShaderDeviceMgrDX12::Init()
 	m_AdapterInfo.RemoveAll();
 	m_AdapterCaps.RemoveAll();
 	m_AdapterModes.RemoveAll();
+	// Before the first DXGI factory: PIX must hook DXGI/D3D12 creation.
+	LoadPixGpuCapturerDX12();
 	const bool bAllowWarp = CommandLine() && CommandLine()->CheckParm( "-dx12warp" );
 	// CMaterialSystem::Init reads -forceallmips right after this Init returns; PBR IBL needs the full cubemap mip chain.
 	if ( CommandLine() && !CommandLine()->CheckParm( "-forceallmips" ) )

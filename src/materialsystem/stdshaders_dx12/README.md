@@ -79,6 +79,10 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   SM2/SM3 centroid interpolation is declared in the VCS header (centroid mask), not in the bytecode; the backend
   carries that mask to the legacy translator, matching the native sources' `centroid` inputs.
 - `-dx12shaderlog` prints which VCS file each named shader was loaded from.
+- `-dx12pix` loads the newest installed PIX GPU capturer (`%ProgramFiles%\Microsoft PIX\<version>\WinPixGpuCapturer.dll`)
+  before the first DXGI factory; `dx12_pix_capture <file.wpix>` (cheat) then captures the next frame. Per-event GPU
+  timings come from `pixtool open-capture <file.wpix> save-event-list <out.csv> --counters=...`, which replays the
+  capture and needs Windows Developer Mode on the analysis machine.
 - A single draw's failure never rejects an enhanced map (which disconnects the client): a named shader that does not
   resolve (missing VCS, combo decode failure) or a PSO the driver refuses (`graphics pipeline creation failed 0x...`)
   skips only that draw, with a rate-limited `draw skipped, named shader unavailable` / `draw skipped, pipeline refused`
