@@ -17,6 +17,8 @@
 #include "texture_group_names.h"
  
 #include "tracy_dx12.h"
+#include "tier1/convar.h"
+#include <atomic>
 #include <d3dcompiler.h>
 #include <climits>
 
@@ -748,7 +750,7 @@ void CShaderAPIDX12::ReleaseTextureDeviceResources()
 	memset( m_TextureTypeHandles, 0, sizeof( m_TextureTypeHandles ) );
 	m_DrawBindingNull = {};
 	++m_nPipelineMemoEpoch;
-	m_PreparedSamplerTable = {};
+	m_PreparedSamplerTables = {};
 	m_nPreparedSamplerFence = 0;
 	m_ResolveTextures.PurgeAndDeleteElements();
 	m_ClearPasses.RemoveAll();
@@ -1095,9 +1097,33 @@ void CShaderAPIDX12::ProcessPendingTextureDeletes()
 //          subresource are all resident behind a single command list: about three times the texture
 //          set, twice the video memory budget of a 2 GB adapter, which is then removed as hung.
 //-----------------------------------------------------------------------------
-void CShaderAPIDX12::PinTextureMemory( size_t nBytes )
+// dx12_texture_upload_report [frames]: the console thread only stores the request; the recording thread starts the
+// window at its next frame end (TickTextureUploadReport).
+static std::atomic<int> s_nTextureUploadReportRequest{ 0 };
+static void DX12TextureUploadReportCommand( const CCommand &args )
+{
+	const int frames = args.ArgC() > 1 ? atoi( args[1] ) : 100;
+	s_nTextureUploadReportRequest = clamp( frames, 1, 100000 );
+	Msg( "dx12_texture_upload_report: recording texture uploads and deletions for %d frames\n", s_nTextureUploadReportRequest.load() );
+}
+static ConCommand dx12_texture_upload_report( "dx12_texture_upload_report", DX12TextureUploadReportCommand,
+	"Development only: list texture uploads and deletions by texture name over the next [frames] (default 100)" );
+
+void CShaderAPIDX12::PinTextureMemory( size_t nBytes, const char *pName, bool bDeletion )
 {
 	m_DrawStats.textureUploadBytes += nBytes;
+	if ( m_nTextureUploadReportFrames )
+	{
+		const char *pKey = pName && pName[0] ? pName : "(unnamed)";
+		int nEntry = 0;
+		while ( nEntry < m_TextureUploadReport.Count() && V_strcmp( m_TextureUploadReport[nEntry].name.Get(), pKey ) )
+			++nEntry;
+		if ( nEntry == m_TextureUploadReport.Count() )
+			m_TextureUploadReport[m_TextureUploadReport.AddToTail()].name = pKey;
+		TextureUploadReportEntryDX12 &entry = m_TextureUploadReport[nEntry];
+		( bDeletion ? entry.deletedBytes : entry.uploadBytes ) += nBytes;
+		++( bDeletion ? entry.deletions : entry.uploads );
+	}
 	const uint64_t nFence = m_pDevice->NextFenceValue();
 	if ( m_nPinnedTextureFence != nFence )
 	{
@@ -1106,6 +1132,34 @@ void CShaderAPIDX12::PinTextureMemory( size_t nBytes )
 	}
 	// Every staging buffer and texture copy is its own committed allocation of at least one 64 KiB page.
 	m_nPinnedTextureBytes += ( static_cast<uint64_t>( nBytes ) + 65535 ) & ~static_cast<uint64_t>( 65535 );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Frame end on the recording thread: opens a requested report window, or counts one down and prints it
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::TickTextureUploadReport()
+{
+	static uint32_t s_nWindowFrames = 0;
+	if ( const int request = s_nTextureUploadReportRequest.exchange( 0 ) )
+	{
+		m_TextureUploadReport.RemoveAll();
+		m_nTextureUploadReportFrames = s_nWindowFrames = static_cast<uint32_t>( request );
+		return;
+	}
+	if ( !m_nTextureUploadReportFrames || --m_nTextureUploadReportFrames )
+		return;
+	m_TextureUploadReport.Sort( []( const TextureUploadReportEntryDX12 *a, const TextureUploadReportEntryDX12 *b ) {
+		const uint64_t x = a->uploadBytes + a->deletedBytes, y = b->uploadBytes + b->deletedBytes;
+		return x > y ? -1 : x < y ? 1 : 0; } );
+	const double n = static_cast<double>( s_nWindowFrames );
+	Msg( "dx12_texture_upload_report: %u frames, %d textures\n", s_nWindowFrames, m_TextureUploadReport.Count() );
+	for ( int i = 0; i < m_TextureUploadReport.Count() && i < 40; ++i )
+	{
+		const TextureUploadReportEntryDX12 &e = m_TextureUploadReport[i];
+		Msg( "  %8.3f MiB/frame uploaded (%6.2f uploads/frame)  %8.3f MiB/frame deleted (%6.2f/frame)  %s\n",
+		    e.uploadBytes / n / ( 1024.0 * 1024.0 ), e.uploads / n, e.deletedBytes / n / ( 1024.0 * 1024.0 ), e.deletions / n, e.name.Get() );
+	}
+	m_TextureUploadReport.RemoveAll();
 }
 
 void CShaderAPIDX12::RelieveTextureMemoryPressure()
@@ -1184,7 +1238,7 @@ void CShaderAPIDX12::DeleteTexture( ShaderAPITextureHandle_t handle )
 			if ( pRecord->resources[i].resource )
 				m_pDevice->RetainResource( pRecord->resources[i].resource.Get() );
 		}
-		PinTextureMemory( pRecord->bytesPerCopy * pRecord->copies );
+		PinTextureMemory( pRecord->bytesPerCopy * pRecord->copies, pRecord->name.Get(), true );
 	}
 	for ( int i = 0; i < ARRAYSIZE( pRecord->m_SrvSources ); ++i )
 		m_Pipeline.ReleaseResourceDescriptor( pRecord->m_SrvSources[i], m_pDevice ? m_pDevice->NextFenceValue() : 0 );
@@ -1320,20 +1374,81 @@ void CShaderAPIDX12::TexSubImage2D( int level, int face, int x, int y, int z, in
 	}
 	t.gpuAuthoritativeSubresources[nSubresource] = 0;
 	const UINT nSub = static_cast<UINT>( face * t.mipLevels + level );
+	// A subresource already dirty (an upload deferred while not resident) or rotated to another copy needs every texel.
+	const bool bRegion = !bCompressed && t.copies == 1 && !t.dirtySubresources[nSubresource];
 	t.dirtySubresources[nSubresource] = 1;
 	t.initializedSubresources[nSubresource] = 1;
 	t.gpuDirty = true;
 	if ( !EnsureTextureResident( t ) || !m_pDevice || !m_pDevice->CommandList() )
 		return;
+	if ( bRegion && t.resource && UploadTextureRegion( t, nSubresource, face, level, x, y, z, width, height ) )
+	{
+		t.dirtySubresources[nSubresource] = 0;
+		t.gpuDirty = HasDirtySubresource( t );
+		return;
+	}
 	const size_t nFullBytes = MipBytes( nMipWidth, nMipHeight, Faces( t ) == 1 ? MAX( 1, t.depth >> level ) : 1, t.format );
 	if ( CreateUpload( m_pDevice->NativeDevice(), m_pDevice->CommandList(), t.resource.Get(), t.pixels.Base() + nBase, nFullBytes, nSub, t.subresourceStates[nSubresource], m_pDevice ) )
 	{
 		t.dirtySubresources[nSubresource] = 0;
-		PinTextureMemory( nFullBytes );
+		PinTextureMemory( nFullBytes, t.name.Get(), false );
 	}
 	t.gpuDirty = HasDirtySubresource( t );
 	// Last: the submit also retires queued deletions, which may include this texture.
 	RelieveTextureMemoryPressure();
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Copies an uncompressed rectangle of one subresource slice from the CPU staging copy into the texture
+//          through the pooled transient upload pages (retained through the recording's fence)
+//-----------------------------------------------------------------------------
+bool CShaderAPIDX12::UploadTextureRegion( TextureRecord &t, int nSubresource, int nFace, int nLevel, int x, int y, int z, int width, int height )
+{
+	CCommandRecorderDX12 *pList = m_pDevice ? m_pDevice->CommandList() : nullptr;
+	const size_t nBpp = BytesPerPixel( t.format );
+	if ( !pList || !t.resource || !nBpp )
+		return false;
+	const int nMipWidth = MAX( 1, t.width >> nLevel ), nMipHeight = MAX( 1, t.height >> nLevel );
+	const size_t nRowBytes = static_cast<size_t>( width ) * nBpp;
+	const size_t nPitch = ( nRowBytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1 ) & ~static_cast<size_t>( D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1 );
+	const size_t nBytes = nPitch * static_cast<size_t>( height );
+	m_TextureRegionScratch.SetCountNonDestructively( static_cast<int>( nBytes ) );
+	const unsigned char *pSource = t.pixels.Base() + SubresourceOffset( t, nFace, nLevel ) +
+		( ( static_cast<size_t>( z ) * nMipHeight + y ) * nMipWidth + x ) * nBpp;
+	for ( int nRow = 0; nRow < height; ++nRow )
+		memcpy( m_TextureRegionScratch.Base() + static_cast<size_t>( nRow ) * nPitch, pSource + static_cast<size_t>( nRow ) * nMipWidth * nBpp, nRowBytes );
+	const uint64_t nFence = m_pDevice->NextFenceValue();
+	ID3D12Resource *pUpload = nullptr;
+	uint64_t nOffset = 0;
+	if ( !m_Pipeline.UploadStructured( m_TextureRegionScratch.Base(), nBytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, nFence, &pUpload, &nOffset ) )
+		return false;
+	const UINT nSub = static_cast<UINT>( nFace * t.mipLevels + nLevel );
+	D3D12_RESOURCE_STATES &state = t.subresourceStates[nSubresource];
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = t.resource.Get();
+	barrier.Transition.Subresource = nSub;
+	if ( state != D3D12_RESOURCE_STATE_COPY_DEST )
+	{
+		barrier.Transition.StateBefore = state;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		pList->ResourceBarrier( 1, &barrier );
+	}
+	D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
+	src.pResource = pUpload;
+	src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	src.PlacedFootprint.Offset = nOffset;
+	src.PlacedFootprint.Footprint = { t.resource->GetDesc().Format, static_cast<UINT>( width ), static_cast<UINT>( height ), 1u, static_cast<UINT>( nPitch ) };
+	dst.pResource = t.resource.Get();
+	dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dst.SubresourceIndex = nSub;
+	pList->CopyTextureRegion( &dst, static_cast<UINT>( x ), static_cast<UINT>( y ), static_cast<UINT>( z ), &src, nullptr );
+	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	pList->ResourceBarrier( 1, &barrier );
+	state = barrier.Transition.StateAfter;
+	PinTextureMemory( nRowBytes * static_cast<size_t>( height ), t.name.Get(), false );
+	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -1396,7 +1511,7 @@ void CShaderAPIDX12::TexImageFromVTF( IVTFTexture *vtf, int frame )
 			if ( !CreateUpload( m_pDevice->NativeDevice(), m_pDevice->CommandList(), texture.resource.Get(), pDest, nDestBytes, nSubresource, texture.subresourceStates[nIndex], m_pDevice ) )
 				return;
 			texture.dirtySubresources[nIndex] = 0;
-			PinTextureMemory( nDestBytes );
+			PinTextureMemory( nDestBytes, texture.name.Get(), false );
 		}
 	}
 	texture.gpuDirty = HasDirtySubresource( texture );
@@ -1443,7 +1558,8 @@ bool CShaderAPIDX12::TexLock( int level, int face, int x, int y, int width, int 
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Uploads the region written since TexLock
+// Purpose: Uploads the rows written since TexLock. Source locks whole lightmap pages and rewrites only the surfaces a
+//          dynamic light touches, so only the band of rows that differ from the staging copy is uploaded.
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::TexUnlock()
 {
@@ -1451,7 +1567,27 @@ void CShaderAPIDX12::TexUnlock()
 	if ( pRecord == nullptr || pRecord->lockLevel < 0 )
 		return;
 	TextureRecord &t = *pRecord;
-	TexSubImage2D( t.lockLevel, t.lockFace, t.lockX, t.lockY, 0, t.lockWidth, t.lockHeight, t.format, t.lockPitch, false, t.lockData.Base() );
+	const int nMipWidth = MAX( 1, t.width >> t.lockLevel );
+	const size_t nPixelBytes = BytesPerPixel( t.format ), nRowBytes = static_cast<size_t>( t.lockWidth ) * nPixelBytes;
+	const int nSubresource = t.currentCopy * Faces( t ) * t.mipLevels + t.lockFace * t.mipLevels + t.lockLevel;
+	int nFirst = 0, nLast = t.lockHeight - 1;
+	// The lock copied the staging rows (TexLock); a row that still matches them was not written. Only meaningful while
+	// the staging copy is what the GPU holds (single copy, nothing pending).
+	if ( t.copies == 1 && !t.dirtySubresources[nSubresource] && !t.gpuAuthoritativeSubresources[nSubresource] )
+	{
+		const unsigned char *pStaging = t.pixels.Base() + SubresourceOffset( t, t.lockFace, t.lockLevel ) +
+			( static_cast<size_t>( t.lockY ) * nMipWidth + t.lockX ) * nPixelBytes;
+		auto same = [&]( int nRow ) {
+			return !memcmp( t.lockData.Base() + static_cast<size_t>( nRow ) * t.lockPitch, pStaging + static_cast<size_t>( nRow ) * nMipWidth * nPixelBytes, nRowBytes );
+		};
+		while ( nFirst <= nLast && same( nFirst ) )
+			++nFirst;
+		while ( nLast >= nFirst && same( nLast ) )
+			--nLast;
+	}
+	if ( nFirst <= nLast )
+		TexSubImage2D( t.lockLevel, t.lockFace, t.lockX, t.lockY + nFirst, 0, t.lockWidth, nLast - nFirst + 1, t.format, t.lockPitch, false,
+			t.lockData.Base() + static_cast<size_t>( nFirst ) * t.lockPitch );
 	t.lockLevel = -1;
 	t.lockData.RemoveAll();
 }

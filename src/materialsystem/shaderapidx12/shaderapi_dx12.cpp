@@ -1319,7 +1319,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			}
 	if ( m_nPreparedSamplerMask != sampledMask )
 	{
-		m_PreparedSamplerTable.count = 0;
+		m_PreparedSamplerTables = {};
 		m_nPreparedSamplerMask = sampledMask;
 	}
 	// Resolve the scalar companion before ordinary texture-set reuse. CPU data is read
@@ -1467,7 +1467,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				if ( !PrepareSampledTexture( handle, srgb, &resource, srv, sampler, &source, comparison ) )
 				{
 					cached.valid = false;
-					m_PreparedSamplerTable.count = 0;
+					m_PreparedSamplerTables = {};
 					clearSlot( slot );
 					return;
 				}
@@ -1476,7 +1476,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				// Interned ids are process-stable, so an unchanged description keeps its id without a lookup.
 				if ( !cached.valid || memcmp( &cached.sampler, &sampler, sizeof( sampler ) ) )
 				{
-					m_PreparedSamplerTable.count = 0;
+					m_PreparedSamplerTables = {};
 					cached.samplerId = m_Pipeline.InternSampler( sampler );
 				}
 				cached.handle = handle;
@@ -1509,7 +1509,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	// Field-wise compare against the previous prepared set; the key is written only when the set is re-prepared.
 	const uint64_t textureFence = m_pDevice->NextFenceValue();
 	const TextureSetKeyDX12 &lastSet = m_LastTextureSet;
-	bool textureSetReused = m_bTextureSetValid && m_PreparedSamplerTable.count == 32 && m_nPreparedSamplerFence == textureFence && lastSet.fence == textureFence && lastSet.epoch == m_nTextureStateEpoch &&
+	bool textureSetReused = m_bTextureSetValid && m_PreparedSamplerTables.Valid() && m_nPreparedSamplerFence == textureFence && lastSet.fence == textureFence && lastSet.epoch == m_nTextureStateEpoch &&
 	    lastSet.sampledMask == sampledMask && lastSet.srgbMask == m_ActiveSnapshot.srgbReadMask && lastSet.comparisonMask == m_ActiveSnapshot.comparisonSamplerMask && lastSet.nullView == m_DrawBindingNull.ptr &&
 	    !memcmp( lastSet.pixel, m_BoundTextures, sizeof( m_BoundTextures ) ) && !memcmp( lastSet.vertex, m_VertexTextures, sizeof( m_VertexTextures ) );
 	if ( !textureSetReused )
@@ -1517,17 +1517,18 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	bindingInput.texturesUnchanged = textureSetReused;
 	// Completed-fence reclamation runs at submission/frame boundaries; a failed sampler reservation
 	// first retries after reclaiming, and only then forces a GPU wait.
-	bindingInput.samplerTable = m_PreparedSamplerTable.count == 32 && m_nPreparedSamplerFence == m_pDevice->NextFenceValue() ? m_PreparedSamplerTable : m_Pipeline.PrepareSamplerTable( bindingInput.samplerDescs, bindingInput.samplerIds, m_pDevice->NextFenceValue() );
-	if ( bindingInput.samplerTable.count != 32 )
+	bindingInput.samplerTables = m_PreparedSamplerTables.Valid() && m_nPreparedSamplerFence == m_pDevice->NextFenceValue() ? m_PreparedSamplerTables : m_Pipeline.PrepareSamplerTables( bindingInput.samplerDescs, bindingInput.samplerIds, m_pDevice->NextFenceValue() );
+	if ( !bindingInput.samplerTables.Valid() )
 	{
 		m_Pipeline.Reclaim( m_pDevice->CompletedFenceValue() );
-		bindingInput.samplerTable = m_Pipeline.PrepareSamplerTable( bindingInput.samplerDescs, bindingInput.samplerIds, m_pDevice->NextFenceValue() );
+		bindingInput.samplerTables = m_Pipeline.PrepareSamplerTables( bindingInput.samplerDescs, bindingInput.samplerIds, m_pDevice->NextFenceValue() );
 	}
-	if ( bindingInput.samplerTable.count != 32 )
+	if ( !bindingInput.samplerTables.Valid() )
 	{
 		// Sampler exhaustion is fence pressure, not a permanent lighting failure. The
 		// active view/pass and resolved carrier are CPU-owned across Submit; their
 		// descriptors, uploads and target bindings are prepared below for the new fence.
+		++m_DrawStats.samplerStalls;
 		if ( !m_pDevice->Submit( true ) )
 			return;
 		m_Pipeline.InvalidateGraphicsBindings();
@@ -1535,8 +1536,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		bindingInput.texturesUnchanged = false;
 		m_Pipeline.Reclaim( m_pDevice->CompletedFenceValue() );
 		prepareTextures();
-		bindingInput.samplerTable = m_Pipeline.PrepareSamplerTable( bindingInput.samplerDescs, bindingInput.samplerIds, m_pDevice->NextFenceValue() );
-		if ( bindingInput.samplerTable.count != 32 )
+		bindingInput.samplerTables = m_Pipeline.PrepareSamplerTables( bindingInput.samplerDescs, bindingInput.samplerIds, m_pDevice->NextFenceValue() );
+		if ( !bindingInput.samplerTables.Valid() )
 		{
 			if ( shadowPass || m_pDevice->Lighting().ReceiverFeatureGeneration() )
 				m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
@@ -1545,7 +1546,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		}
 	}
 	// Reuse only within this recording fence: the cache reservation already protects its lifetime.
-	m_PreparedSamplerTable = bindingInput.samplerTable;
+	m_PreparedSamplerTables = bindingInput.samplerTables;
 	m_nPreparedSamplerFence = m_pDevice->NextFenceValue();
 	// Recompute the key: the retry path may have submitted (new fence) and re-prepared slots.
 	if ( !textureSetReused )
@@ -5367,6 +5368,7 @@ void CShaderAPIDX12::FlushHardware()
 {
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 FlushHardware", DX12_ZONES_ACTIVE );
 	++m_nFrameFlushCount;
+	++m_DrawStats.hardwareFlushes;
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 	{
 		ProcessPendingTextureDeletes();
@@ -5437,6 +5439,7 @@ void CShaderAPIDX12::EndFrame()
 		TracyPlot( "DX12 forced syncs/frame", static_cast<int64_t>( m_nFrameSyncCount ) );
 	}
 #endif
+	TickTextureUploadReport();
 	// -dx12statsframes permits brief captures; ordinary -dx12stats retains its 1000-frame window.
 	{
 		static const bool s_bStatsEnabled = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
@@ -5464,7 +5467,13 @@ void CShaderAPIDX12::EndFrame()
 			    static_cast<unsigned long long>( p.uploadAllocations ), static_cast<unsigned long long>( p.uploadBytes ), static_cast<unsigned long long>( p.uploadPeakFrameBytes ),
 			    static_cast<unsigned long long>( p.uploadPagesCreated ), static_cast<unsigned long long>( p.uploadPagesTrimmed ), static_cast<unsigned long long>( p.uploadBufferBytesTrimmed ),
 			    static_cast<unsigned long long>( p.uploadFrameAllocations ), static_cast<unsigned long long>( p.uploadFrameBytes ), static_cast<unsigned long long>( p.uploadFramePagesCreated ) );
-			Msg( "ShaderAPIDX12 barriers/frame: %.1f\n", ( m_pDevice ? m_pDevice->RecordedBarriers() - m_nBarrierStatsBase : 0 ) / n );
+			Msg( "ShaderAPIDX12 barriers/frame: %.1f | hardwareFlushes %.2f forcedSyncs %.2f occlusionFlushes %.2f samplerStalls %.2f | samplerTables created %.1f recycled %.1f cached %d\n",
+			    ( m_pDevice ? m_pDevice->RecordedBarriers() - m_nBarrierStatsBase : 0 ) / n,
+			    m_DrawStats.hardwareFlushes / n, m_DrawStats.forcedSyncs / n, m_DrawStats.occlusionFlushes / n, m_DrawStats.samplerStalls / n,
+			    ( m_Pipeline.Bindings().SamplerTablesCreated() - m_nSamplerTablesCreatedBase ) / n,
+			    ( m_Pipeline.Bindings().SamplerTablesRecycled() - m_nSamplerTablesRecycledBase ) / n, m_Pipeline.Bindings().SamplerTablesCached() );
+			m_nSamplerTablesCreatedBase = m_Pipeline.Bindings().SamplerTablesCreated();
+			m_nSamplerTablesRecycledBase = m_Pipeline.Bindings().SamplerTablesRecycled();
 			m_nBarrierStatsBase = m_pDevice ? m_pDevice->RecordedBarriers() : 0;
 			CShaderDeviceDX12::GpuEventStatsDX12 gpuEvents;
 			const bool bGpuEvents = m_pDevice && m_pDevice->ConsumeGpuEventStats( gpuEvents );
@@ -5584,6 +5593,7 @@ void CShaderAPIDX12::ForceHardwareSync()
 {
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 ForceHardwareSync", DX12_ZONES_ACTIVE );
 	++m_nFrameSyncCount;
+	++m_DrawStats.forcedSyncs;
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 	{
 		ProcessPendingTextureDeletes();
@@ -5929,6 +5939,7 @@ int CShaderAPIDX12::OcclusionQuery_GetNumPixelsRendered( ShaderAPIOcclusionQuery
 		if ( flush )
 		{
 			TracyPlot( "DX12 occlusion flush", static_cast<int64_t>( 1 ) );
+			++m_DrawStats.occlusionFlushes;
 			if ( m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 			{
 				ProcessPendingTextureDeletes();

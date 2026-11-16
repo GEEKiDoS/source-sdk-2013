@@ -233,8 +233,8 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 		input.geometryStage = false;
 		for ( int i = 0; i < ARRAYSIZE( input.samplerDescs ); ++i )
 			input.samplerDescs[i] = CPipelineCacheDX12::DefaultSamplerDesc();
-		input.samplerTable = m_Pipeline.PrepareSamplerTable( input.samplerDescs, input.samplerIds, fence );
-		return input.samplerTable.count == 32;
+		input.samplerTables = m_Pipeline.PrepareSamplerTables( input.samplerDescs, input.samplerIds, fence );
+		return input.samplerTables.Valid();
 	};
 	const auto transitionRecord = [&]( TextureRecord &record, D3D12_RESOURCE_STATES desired )
 	{

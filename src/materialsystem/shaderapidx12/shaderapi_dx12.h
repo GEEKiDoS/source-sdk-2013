@@ -440,7 +440,17 @@ public:
 	// Texture staging buffers and deleted textures stay pinned until the recording that retained them completes
 	// (textures_dx12.cpp). Texture downloads submit once a recording pins kPinnedTextureSubmitBytes.
 	static constexpr uint64_t kPinnedTextureSubmitBytes = 64ull * 1024 * 1024;
-	void PinTextureMemory( size_t nBytes );
+	// bDeletion: a deleted texture's resources (retained, not uploaded). pName feeds dx12_texture_upload_report.
+	void PinTextureMemory( size_t nBytes, const char *pName, bool bDeletion );
+	// dx12_texture_upload_report: per-texture upload and deletion totals over a frame window, printed at its end.
+	struct TextureUploadReportEntryDX12
+	{
+		CUtlString name;
+		uint64_t uploadBytes = 0, uploads = 0, deletedBytes = 0, deletions = 0;
+	};
+	CUtlVector<TextureUploadReportEntryDX12> m_TextureUploadReport;
+	uint32_t m_nTextureUploadReportFrames = 0;
+	void TickTextureUploadReport();
 	void RelieveTextureMemoryPressure();
 	enum class BlitEncodeDX12 : uint8_t { None, Gamma, HdrScale };
 	// Presentation encode of the scene into a scene-sized FP16 or R8G8B8A8_UNORM texture (textures_dx12.cpp).
@@ -584,7 +594,7 @@ public:
 		TextureRecord *depth = nullptr;
 	} m_RenderTargetCache;
 
-	DescriptorRangeDX12 m_PreparedSamplerTable{};
+	SamplerTablesDX12 m_PreparedSamplerTables{};
 	uint64_t m_nPreparedSamplerFence = 0;
 	uint32_t m_nPreparedSamplerMask = 0;
 
@@ -645,10 +655,16 @@ public:
 		uint64_t submits = 0, maxFrameSubmits = 0, textureUploadBytes = 0, prepassReadOnlyDraws = 0;
 		// Depth-prepass draws that ran without a pixel stage / with their material pixel stage.
 		uint64_t prepassNullPSDraws = 0, prepassShadedDraws = 0;
+		// Mid-frame submits requested by the engine (FlushHardware), CPU-waits on the GPU (ForceHardwareSync) and
+		// occlusion results fetched with flush=true before their fence completed (submit + wait).
+		uint64_t hardwareFlushes = 0, forcedSyncs = 0, occlusionFlushes = 0;
+		// Draws that ran out of shader-visible sampler tables and submitted + waited for the GPU to recycle them.
+		uint64_t samplerStalls = 0;
 	} m_DrawStats;
 
 	uint32_t m_nDrawStatsFrames = 0;
 	uint64_t m_nBarrierStatsBase = 0;
+	uint64_t m_nSamplerTablesCreatedBase = 0, m_nSamplerTablesRecycledBase = 0;
 	uint64_t m_nFrameStartFence = 0;
 	// Direct-mapped pipeline memo. Entries are valid for the current epoch, which is bumped whenever
 	// shader records, snapshots or the device go away; PSO lifetime is tracked by the pipeline epoch.
@@ -1009,6 +1025,11 @@ private:
 	bool AllocateNativeTexture( TextureRecord &texture );
 	bool RefreshTextureStaging( TextureRecord &texture, int nFace, int nMip );
 	void AdvanceTextureCopy( TextureRecord &texture );
+	// Uploads one uncompressed rectangle (one slice) of a subresource from the texture's CPU staging copy through the
+	// pooled transient upload pages: the engine rewrites small parts of whole-page locks every frame (dynamic lightmaps),
+	// where a committed full-subresource staging buffer per update costs the recording thread milliseconds.
+	bool UploadTextureRegion( TextureRecord &texture, int nSubresource, int nFace, int nLevel, int x, int y, int z, int width, int height );
+	CUtlVector<unsigned char> m_TextureRegionScratch;
 
 	struct Snapshot
 	{

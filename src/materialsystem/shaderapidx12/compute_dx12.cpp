@@ -277,7 +277,7 @@ bool CShaderAPIDX12::PromoteRenderTarget( TextureRecord &texture, bool bUav, int
 	for ( PreparedTextureSlot &slot : m_PreparedTextureSlots )
 		slot.valid = false;
 	m_bTextureSetValid = false;
-	m_PreparedSamplerTable = {};
+	m_PreparedSamplerTables = {};
 	m_nPreparedSamplerFence = 0;
 
 	texture.uavCapable = texture.uavCapable || bUav;
@@ -374,7 +374,7 @@ bool CShaderAPIDX12::DiscardResizeComputeTarget( TextureRecord &texture, int nWi
 	for ( PreparedTextureSlot &slot : m_PreparedTextureSlots )
 		slot.valid = false;
 	m_bTextureSetValid = false;
-	m_PreparedSamplerTable = {};
+	m_PreparedSamplerTables = {};
 	m_nPreparedSamplerFence = 0;
 	m_Pipeline.InvalidateGraphicsBindings();
 

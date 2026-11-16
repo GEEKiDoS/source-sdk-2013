@@ -104,7 +104,7 @@ public:
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDescs[32];
 		D3D12_SAMPLER_DESC samplerDescs[32] = {};
 		uint16_t samplerIds[32] = {};
-		DescriptorRangeDX12 samplerTable{};
+		SamplerTablesDX12 samplerTables{};
 		bool lightingAbi = false;
 		bool lightingVisibilityRequired = true;
 		DescriptorRangeDX12 lightingViewTable{};
@@ -275,6 +275,7 @@ public:
 	ID3D12DescriptorHeap *ResourceDescriptorHeap() { return m_Bindings.ResourceHeap().Heap(); }
 
 	ID3D12DescriptorHeap *SamplerDescriptorHeap() { return m_Bindings.SamplerHeap().Heap(); }
+	const CBindingCacheDX12 &Bindings() const { return m_Bindings; }
 
 	void BindPipelineState( CCommandRecorderDX12 *pList, ID3D12PipelineState *pPipeline, UINT nStencilReference, uint64_t nRetireFence )
 	{
@@ -297,7 +298,8 @@ public:
 	// Unset descriptions (AddressU==0) canonicalize to the default sampler, id 0.
 	uint16_t InternSampler( const D3D12_SAMPLER_DESC &desc ) { return desc.AddressU == 0 ? 0 : m_Bindings.InternSampler( desc ); }
 
-	DescriptorRangeDX12 PrepareSamplerTable( const D3D12_SAMPLER_DESC ( &samplers )[32], const uint16_t ( &ids )[32], uint64_t nRetireFence );
+	// samplers/ids [0, 16) are the pixel stage's, [16, 32) the vertex stage's.
+	SamplerTablesDX12 PrepareSamplerTables( const D3D12_SAMPLER_DESC ( &samplers )[32], const uint16_t ( &ids )[32], uint64_t nRetireFence );
 	D3D12_CPU_DESCRIPTOR_HANDLE AcquireResourceDescriptor( uint64_t nLastUseFence );
 	void ReleaseResourceDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE descriptor, uint64_t nRetireFence );
 	void NotifyShaderDestroyed( uint64_t nShaderIdentity );

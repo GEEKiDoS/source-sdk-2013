@@ -234,10 +234,10 @@ uint16_t CBindingCacheDX12::InternSampler( const D3D12_SAMPLER_DESC &desc )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Finds or creates a shader-visible 32-sampler table; least recently
+// Purpose: Finds or creates a shader-visible kSamplerTableSize-sampler table; least recently
 //          touched completed entries are recycled when the heap is full
 //-----------------------------------------------------------------------------
-DescriptorRangeDX12 CBindingCacheDX12::AcquireSamplerTable( const D3D12_SAMPLER_DESC ( &samplers )[32], const uint16_t ( &ids )[32], uint64_t nFence )
+DescriptorRangeDX12 CBindingCacheDX12::AcquireSamplerTable( const D3D12_SAMPLER_DESC ( &samplers )[kSamplerTableSize], const uint16_t ( &ids )[kSamplerTableSize], uint64_t nFence )
 {
 	const auto touch = [&]( int nIndex )
 	{
@@ -247,7 +247,7 @@ DescriptorRangeDX12 CBindingCacheDX12::AcquireSamplerTable( const D3D12_SAMPLER_
 		m_nLastSamplerIndex = nIndex;
 		return entry.range;
 	};
-	// Interned ids identify each descriptor exactly; a 64-byte id table replaces hashing 32 descriptions.
+	// Interned ids identify each descriptor exactly; a 32-byte id table replaces hashing 16 descriptions.
 	bool bInterned = true;
 	for ( int i = 0; i < ARRAYSIZE( ids ); ++i )
 		if ( ids[i] == kUninternedSampler )
@@ -301,9 +301,9 @@ DescriptorRangeDX12 CBindingCacheDX12::AcquireSamplerTable( const D3D12_SAMPLER_
 	for ( int i = 0; i < m_SamplerCache.Count(); ++i )
 		if ( i != m_nLastSamplerIndex && m_SamplerCache[i].hash == nHash && !memcmp( m_SamplerCache[i].samplers, samplers, sizeof( samplers ) ) )
 			return remember( i );
-	DescriptorRangeDX12 range = m_Samplers.AllocatePersistent( 32, nFence );
+	DescriptorRangeDX12 range = m_Samplers.AllocatePersistent( kSamplerTableSize, nFence );
 	int nIndex = -1;
-	if ( range.count != 32 )
+	if ( range.count != kSamplerTableSize )
 	{
 		for ( int i = 0; i < m_SamplerCache.Count(); ++i )
 			if ( m_SamplerCache[i].lastUseFence <= m_nCompletedFence && ( nIndex < 0 || m_SamplerCache[i].lastTouch < m_SamplerCache[nIndex].lastTouch ) )
@@ -311,9 +311,11 @@ DescriptorRangeDX12 CBindingCacheDX12::AcquireSamplerTable( const D3D12_SAMPLER_
 		if ( nIndex < 0 )
 			return {};
 		range = m_SamplerCache[nIndex].range;
+		++m_nSamplerTablesRecycled;
 	}
 	else
 		nIndex = m_SamplerCache.AddToTail();
+	++m_nSamplerTablesCreated;
 	SamplerEntry &entry = m_SamplerCache[nIndex];
 	memcpy( entry.samplers, samplers, sizeof( samplers ) );
 	entry.range = range;
@@ -323,7 +325,7 @@ DescriptorRangeDX12 CBindingCacheDX12::AcquireSamplerTable( const D3D12_SAMPLER_
 	entry.generation = ++m_nGenerationClock;
 	const UINT nStride = m_pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
 	D3D12_CPU_DESCRIPTOR_HANDLE cpu = range.cpu;
-	for ( unsigned i = 0; i < 32; ++i )
+	for ( unsigned i = 0; i < kSamplerTableSize; ++i )
 	{
 		m_pDevice->CreateSampler( &samplers[i], cpu );
 		cpu.ptr += nStride;

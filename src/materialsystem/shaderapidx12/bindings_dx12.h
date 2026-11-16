@@ -25,6 +25,14 @@ struct DescriptorRangeDX12
 	uint64_t generation = 0;
 };
 
+// A draw's sampler tables: s0-s15 for the pixel stage and s0-s15 for the vertex stage (root tables 1 and 3), each a
+// CBindingCacheDX12 16-sampler table.
+struct SamplerTablesDX12
+{
+	DescriptorRangeDX12 pixel, vertex;
+	bool Valid() const { return pixel.count == 16 && vertex.count == 16; }
+};
+
 // Recording-thread owned (see CPipelineCacheDX12); no internal locking.
 class CDescriptorAllocatorDX12
 {
@@ -100,21 +108,30 @@ public:
 	}
 
 	uint16_t InternSampler( const D3D12_SAMPLER_DESC &desc );
+	// One stage's sampler table (s0-s15). A draw takes a pixel and a vertex table separately: the 2048-descriptor heap
+	// then holds 128 tables, and the vertex halves (almost always default) are shared by nearly every draw. A frame at
+	// c1m2's safe-room exit needs ~65 distinct 32-sampler tables (heap capacity 64, a submit-and-wait every frame) but
+	// ~62 pixel + 2 vertex 16-sampler tables.
+	static constexpr uint32_t kSamplerTableSize = 16;
 	// ids[i] must be InternSampler(samplers[i]) or kUninternedSampler.
-	DescriptorRangeDX12 AcquireSamplerTable( const D3D12_SAMPLER_DESC ( &samplers )[32], const uint16_t ( &ids )[32], uint64_t nFence );
+	DescriptorRangeDX12 AcquireSamplerTable( const D3D12_SAMPLER_DESC ( &samplers )[kSamplerTableSize], const uint16_t ( &ids )[kSamplerTableSize], uint64_t nFence );
 	void Reclaim( uint64_t nCompletedFence );
+	// -dx12stats: tables created (cache misses), tables whose descriptors were recycled, cached table count.
+	uint64_t SamplerTablesCreated() const { return m_nSamplerTablesCreated; }
+	uint64_t SamplerTablesRecycled() const { return m_nSamplerTablesRecycled; }
+	int SamplerTablesCached() const { return m_SamplerCache.Count(); }
 
 private:
 	struct SamplerEntry
 	{
-		D3D12_SAMPLER_DESC samplers[32] = {};
+		D3D12_SAMPLER_DESC samplers[kSamplerTableSize] = {};
 		DescriptorRangeDX12 range{};
 		uint64_t lastUseFence = 0, lastTouch = 0, hash = 0, generation = 0;
 	};
 
 	struct SamplerIdEntry
 	{
-		uint16_t ids[32] = {};
+		uint16_t ids[kSamplerTableSize] = {};
 		int index = -1;
 		uint64_t generation = 0;
 	};
@@ -126,7 +143,7 @@ private:
 	int m_nLastSamplerIndex = -1;
 	CDescriptorAllocatorDX12 m_Resources, m_PersistentResources, m_Samplers;
 	ID3D12Device *m_pDevice = nullptr;
-	uint64_t m_nCompletedFence = 0, m_nTouchClock = 0;
+	uint64_t m_nCompletedFence = 0, m_nTouchClock = 0, m_nSamplerTablesCreated = 0, m_nSamplerTablesRecycled = 0;
 };
 } // namespace shaderapidx12
 

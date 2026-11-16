@@ -683,13 +683,20 @@ bool CPipelineCacheDX12::EnsureIndexBuffer( CCommandRecorderDX12 *pList, CIndexB
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Shader-visible 32-sampler table for this draw
+// Purpose: Shader-visible pixel and vertex 16-sampler tables for this draw
 //-----------------------------------------------------------------------------
-DescriptorRangeDX12 CPipelineCacheDX12::PrepareSamplerTable( const D3D12_SAMPLER_DESC ( &samplers )[32], const uint16_t ( &ids )[32], uint64_t nRetireFence )
+SamplerTablesDX12 CPipelineCacheDX12::PrepareSamplerTables( const D3D12_SAMPLER_DESC ( &samplers )[32], const uint16_t ( &ids )[32], uint64_t nRetireFence )
 {
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 SamplerDescriptorAllocation", DX12_DRAW_ZONES_ACTIVE );
 	// Callers supply canonical descriptions: unused slots hold DefaultSamplerDesc with id 0.
-	return m_Bindings.AcquireSamplerTable( samplers, ids, nRetireFence );
+	constexpr uint32_t kTable = CBindingCacheDX12::kSamplerTableSize;
+	static_assert( 2 * kTable == 32, "pixel and vertex sampler tables" );
+	SamplerTablesDX12 tables;
+	// The pixel table acquired first is touched at nRetireFence, so acquiring the vertex table cannot recycle it.
+	tables.pixel = m_Bindings.AcquireSamplerTable( reinterpret_cast<const D3D12_SAMPLER_DESC ( & )[kTable]>( samplers[0] ), reinterpret_cast<const uint16_t ( & )[kTable]>( ids[0] ), nRetireFence );
+	if ( tables.pixel.count == kTable )
+		tables.vertex = m_Bindings.AcquireSamplerTable( reinterpret_cast<const D3D12_SAMPLER_DESC ( & )[kTable]>( samplers[kTable] ), reinterpret_cast<const uint16_t ( & )[kTable]>( ids[kTable] ), nRetireFence );
+	return tables;
 }
 
 //-----------------------------------------------------------------------------
@@ -720,8 +727,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 {
 	if ( !pList )
 		return false;
-	const DescriptorRangeDX12 &samplerTable = input.samplerTable;
-	if ( samplerTable.count != 32 || !m_nZeroConstantAddress )
+	if ( !input.samplerTables.Valid() || !m_nZeroConstantAddress )
 		return false;
 	// Reserve every ordinary draw table before consulting generation-keyed caches. A later SRV
 	// allocation must not roll the heap after either stage has captured its native CBV table.
@@ -750,7 +756,6 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	     input.probeTable.generation != ResourceHeapGeneration() || !input.probeConstants ) )
 		return false;
 	const SIZE_T resourceStride = m_nResourceStride;
-	const SIZE_T samplerStride = m_nSamplerStride;
 	// Constant uploads are fence-scoped: an unchanged (version, shader, extent) slot keeps its address, and a
 	// small per-bank table catches versions revisited within the same recording fence (A/B/A material
 	// alternation). Uploads come from fence-retired transient pages, so no cross-fence pinning is needed.
@@ -1031,9 +1036,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		}
 		D3D12_GPU_DESCRIPTOR_HANDLE vertexSrvs = srvs;
 		vertexSrvs.ptr += 16 * resourceStride;
-		D3D12_GPU_DESCRIPTOR_HANDLE vertexSamplers = samplerTable.gpu;
-		vertexSamplers.ptr += 16 * samplerStride;
-		const D3D12_GPU_DESCRIPTOR_HANDLE rootTables[] = { srvs, samplerTable.gpu, vertexSrvs, vertexSamplers };
+		const D3D12_GPU_DESCRIPTOR_HANDLE rootTables[] = { srvs, input.samplerTables.pixel.gpu, vertexSrvs, input.samplerTables.vertex.gpu };
 		// Parameters a draw's shaders never read may stay stale; *Current_ records whether they match this draw.
 		if ( !m_bGraphicsBindingsValid )
 		{
@@ -1050,7 +1053,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			}
 		if ( input.vertexTextures )
 			m_bVertexTablesCurrent = true;
-		else if ( m_BoundRootTables[2].ptr != vertexSrvs.ptr || m_BoundRootTables[3].ptr != vertexSamplers.ptr )
+		else if ( m_BoundRootTables[2].ptr != vertexSrvs.ptr || m_BoundRootTables[3].ptr != input.samplerTables.vertex.gpu.ptr )
 			m_bVertexTablesCurrent = false;
 		for ( unsigned stage = 0; stage < 2; ++stage )
 			if ( input.nativeStage[stage] )

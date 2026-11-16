@@ -89,7 +89,7 @@ private:
 	void InitAverages()
 	{
 		m_AverageFPS = -1;
-		m_AverageCPUFrameMS = -1;
+		m_AverageFrameMS = -1;
 		m_lastRealTime = -1;
 		m_high = -1;
 		m_low = -1;
@@ -97,7 +97,7 @@ private:
 
 	vgui::HFont		m_hFont;
 	float			m_AverageFPS;
-	float			m_AverageCPUFrameMS;
+	float			m_AverageFrameMS;	// wall-clock frame time (CPU work, GPU waits and fps_max sleep together)
 	float			m_lastRealTime;
 	int				m_high;
 	int				m_low;
@@ -384,11 +384,11 @@ void CFPSPanel::Paint()
 			if ( nShowFpsMode == 3 )
 			{
 				const int lineHeight = vgui::surface()->GetFontTall( m_hFont ) + 2;
-				const float cpuFrameMs = realFrameTime * 1000.0f;
-				if ( m_AverageCPUFrameMS < 0.0f )
-					m_AverageCPUFrameMS = cpuFrameMs;
+				const float frameMs = realFrameTime * 1000.0f;
+				if ( m_AverageFrameMS < 0.0f )
+					m_AverageFrameMS = frameMs;
 				else
-					m_AverageCPUFrameMS = m_AverageCPUFrameMS * 0.9f + cpuFrameMs * 0.1f;
+					m_AverageFrameMS = m_AverageFrameMS * 0.9f + frameMs * 0.1f;
 
 				// Adapter description and CPU brand string, as reported (fixed for the session).
 				static char s_szGpuName[128], s_szCpuName[128];
@@ -409,7 +409,8 @@ void CFPSPanel::Paint()
 				const bool bTiming = pShaderAPIDX12 && pShaderAPIDX12->GetGpuTiming( timing ) && timing.available;
 				if ( bTiming )
 				{
-					V_snprintf( szLine, sizeof( szLine ), "GPU total %.2f ms | CPU %.2f ms", timing.gpuFrameMs, m_AverageCPUFrameMS );
+					// GPU total is the GPU's begin-to-end span of a frame; a frame much longer than it is not GPU-bound.
+					V_snprintf( szLine, sizeof( szLine ), "GPU total %.2f ms | frame %.2f ms", timing.gpuFrameMs, m_AverageFrameMS );
 					g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2 + i * lineHeight, 255, 255, 255, 255, "%s", szLine );
 					++i;
 					V_strncpy( szLine, "GPU passes (inclusive; ~0.5s):", sizeof( szLine ) );

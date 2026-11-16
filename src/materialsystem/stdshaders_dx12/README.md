@@ -1320,10 +1320,29 @@ page creations/trims and current pool buffer bytes, so a steady scene should sho
 Per-pass GPU times: launch with `-dx12stats -dx12statsframes 300 -condebug`; every 300 frames the console log lists the
 GPU frame time and each PIX event's ms/frame. For a live compact view, set `cl_showfps 3`: the normal FPS line is followed
 by the latest approximately 0.5-second inclusive GPU pass timings, emitted in tree order (nested passes are indented),
-plus GPU and CPU frame milliseconds. The overlay's timing queries and readbacks stay disabled while `cl_showfps` is below
-3 (apart from explicitly requested `-dx12stats` captures), so mode 0 adds no overlay timing-collection work. Event timestamps
-use one batched resolve per submitted command list; the remaining cost is GPU-dependent. A representative 1080p RTX 4070S
-capture measured about 0.2 ms (6%) of additional GPU time with mode 3.
+plus `GPU total` (the GPU's begin-to-end span of a frame) and `frame` (wall-clock frame time). A frame much longer than
+GPU total is not GPU-bound; frame ≈ CPU + GPU (instead of max) means something serialized them. The overlay's timing
+queries and readbacks stay disabled while `cl_showfps` is below 3 (apart from explicitly requested `-dx12stats`
+captures), so mode 0 adds no overlay timing-collection work. Event timestamps use one batched resolve per submitted
+command list; the remaining cost is GPU-dependent. A representative 1080p RTX 4070S capture measured about 0.2 ms (6%)
+of additional GPU time with mode 3.
+
+The `-dx12stats` barriers line also counts per frame what can serialize CPU and GPU: `hardwareFlushes`
+(engine `FlushHardware` submits), `forcedSyncs` (engine `ForceHardwareSync`, normally 1: it waits for the previous frame
+only), `occlusionFlushes` (occlusion results fetched with flush before completion: submit + wait) and `samplerStalls`
+(draws that found no free sampler table: submit + wait for the whole recording), plus sampler tables created/recycled
+per frame and the number cached. Sampler tables (`CBindingCacheDX12::AcquireSamplerTable`) are interned 16-sampler
+tables, one for the pixel and one for the vertex stage of a draw (root tables 1 and 3), so the 2048-descriptor
+shader-visible sampler heap holds 128. With a single 32-sampler table per draw it held 64, while c1m2's safe-room exit
+with the director running needs ~65 distinct sets per frame (from only 18 distinct samplers): every frame stalled
+once, and CPU and GPU ran back to back (GTX 1660 Ti: 15.6 ms GPU in a 41 ms frame). The split needs ~62 pixel and 2
+vertex tables there, and they stay cached across frames.
+
+`dx12_texture_upload_report [frames]` lists texture uploads and deletions by texture name over the next frames
+(default 100). Source locks whole lightmap pages for dynamic lights (`TexLock` of the page, then `TexUnlock`) and
+rewrites only the surfaces a light touches; `TexUnlock` uploads only the band of rows that differ from the staging copy,
+and `TexSubImage2D` uploads the written rectangle of a single-copy uncompressed texture through the pooled upload pages
+(`UploadTextureRegion`) instead of the whole subresource through a new committed staging buffer.
 
 ## Native resource memory
 
