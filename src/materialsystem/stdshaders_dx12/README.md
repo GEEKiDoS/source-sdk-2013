@@ -314,20 +314,22 @@ charts; it applies to every depth scene rendered afterwards (cascades re-render 
 
 Hordes: L4D2 ships every common infected with four identical LODs (the `.vtx` triangle count is the same at each), so
 distance never reduces their geometry and their cost is per pixel and per vertex in every pass (PIX, c1m2 at 200
-commons). `r_flashlight_infected_shadow_dist` (client, `FCVAR_ARCHIVE` default 400, 0 keeps every caster): infected and
-their attached wound models farther than this from the local player's own flashlight do not draw into its shadow depth
-texture. That light starts at the eye, so an infected's flashlight shadow falls behind the infected itself (PIX: the
-flashlight depth pass at 200 commons drops from 2.5 to 0.2 ms).
-
-Their main-pass vertex cost is the interpolant volume on tiny triangles (PIX: ~9 ns per vertex there against ~0.3 ns in
-the depth prepass with the same skinning), so the INFECTED `pbr_model_vs51`/`pbr_model_ps51` pair interpolates no world
-position (the pixel stage rebuilds it as `g_PbrInfectedEyePos` (c56, `StoreEyePosInPixelShaderConstant`) − `toEye`) and
-no vertex color (INFECTED has no `$vertexcolor`). The dynamic combo `LOCAL_LIGHTS` (both stages, only INFECTED selects
-0) compiles the four engine-light attenuations, their interpolant and the pixel loop out when
-`IShaderAPIDX12Lighting::ModelLocalLighting` reports no contributing engine light slot (every slot a blacked-out
-duplicate of a runtime light) or the draw has none. pbr_model_ps51 now has 24 dynamic combos, so the backend's static
-strides are 24·TANGENT + 48·ENHANCED + 96·ALPHATEST + 192·INFECTED. Measured: 6.2 instead of 8.7–10.2 ns per vertex,
-main pass 19.2 → 18.3 ms at 200 commons (c1m2, GTX 1050).
+commons). Two measures apply to every model, not just infected:
+- `r_flashlight_shadow_caster_dist` (client, `FCVAR_ARCHIVE` default 400, 0 keeps every caster): while the local
+  player's own flashlight depth texture renders, models and static props whose world bounds are entirely farther than
+  the cutoff (and than 16× the flashlight's offset from the eye) do not draw into it. That light starts a few units
+  from the eye, so any caster's flashlight shadow falls behind the caster itself; the 16× bound keeps the shadow's
+  parallax from the eye under ~3.6°. Other projected lights keep every caster (PIX: the flashlight depth pass at 200
+  commons drops from 2.5 to 0.2 ms).
+- Model vertex outputs: main-pass vertex cost is the interpolant volume on small triangles (PIX: ~9 ns per vertex
+  there against ~0.3 ns in the depth prepass with the same skinning). `pbr_model_vs51` interpolates no world position
+  (the pixel stage rebuilds it as `g_PbrModelEyePos` (c56, `StoreEyePosInPixelShaderConstant`) − `toEye`) and a vertex
+  color only under `VERTEXCOLOR` (`$vertexcolor`; now a pixel static too). The dynamic combo `LOCAL_LIGHTS` (both
+  stages) compiles the four engine-light attenuations, their interpolant and the pixel loop out when the draw has no
+  engine model light or `IShaderAPIDX12Lighting::ModelLocalLighting` reports every slot a blacked-out duplicate of a
+  runtime light. pbr_model_ps51 has 24 dynamic combos and static strides 24·TANGENT + 48·ENHANCED + 96·ALPHATEST +
+  192·INFECTED + 384·VERTEXCOLOR. Measured on the infected-only first version: 6.2 instead of 8.7–10.2 ns per vertex,
+  main pass 19.2 → 18.3 ms at 200 commons (c1m2, GTX 1050).
 
 Sun sky clip (`r_shadowmap_sky_clip`, `FCVAR_ARCHIVE` default 1): the sky is the sun's emitter, as in the vrad_restir
 bake, so world brushes and model casters on the sun side of a sky face may not cast. At admission the client reads

@@ -72,6 +72,8 @@ const int kInfectedBurnSampler = 13;
 // PBRMaterialPS g_PbrInfected* (ps c47..c55) and PBRMaterialVS g_PbrInfectedWound* (vs c222..c231).
 const int kInfectedPixelRegister = 47;
 const int kInfectedVertexRegister = 222;
+// PBRMaterialPS g_PbrModelEyePos (ps c56): the eye pbr_model_vs51 measured toEye from.
+const int kModelEyePosRegister = 56;
 
 // SetPixelShaderStateAmbientLightCube / CommitPixelShaderLighting / SetPixelShaderFogParams feed the DX12PSEngine
 // block whatever register they are given; these only mirror into the legacy register file, outside c0..c14.
@@ -326,6 +328,7 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		SET_STATIC_PIXEL_SHADER_COMBO( ENHANCED, bEnhanced );
 		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, s.alphaTested );
 		SET_STATIC_PIXEL_SHADER_COMBO( INFECTED, s.infected );
+		SET_STATIC_PIXEL_SHADER_COMBO( VERTEXCOLOR, s.vertexColor );
 		SET_STATIC_PIXEL_SHADER( pbr_model_ps51 );
 	}
 	else
@@ -1124,12 +1127,10 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 				liveLights = MIN( liveLights, DX12ShadowmapLighting()->ModelLocalLighting( r_model_local_lights.GetInt(), modelLighting ) );
 				DynamicCmdsOut.SetPixelShaderConstant( 40, modelLighting[0], 7 );
 			}
-			// INFECTED interpolates no world position (pbr_model_vs51 INFECTED); the pixel stage rebuilds it from this eye.
-			if ( pContextData->m_bInfected )
-				DynamicCmdsOut.StoreEyePosInPixelShaderConstant( kInfectedPixelRegister + 9 );
-			// Horde draws: compile the engine light attenuation and its interpolant out when no slot contributes. Other
-			// models keep the single LOCAL_LIGHTS=1 variant (the 0 combos are skipped for them).
-			const bool localLights = !pContextData->m_bInfected || liveLights > 0;
+			// pbr_model_vs51 interpolates no world position; the pixel stage rebuilds it from this eye (PBRMaterialPS c56).
+			DynamicCmdsOut.StoreEyePosInPixelShaderConstant( kModelEyePosRegister );
+			// Compile the engine light attenuation, its interpolant and the pixel loop out when no slot contributes.
+			const bool localLights = liveLights > 0;
 
 			pShader->SetHWMorphVertexShaderState( VERTEX_SHADER_SHADER_SPECIFIC_CONST_10, VERTEX_SHADER_SHADER_SPECIFIC_CONST_11, SHADER_VERTEXTEXTURE_SAMPLER0 );
 

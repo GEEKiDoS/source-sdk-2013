@@ -1,6 +1,6 @@
 // ALL SKIP STATEMENTS THAT AFFECT THIS SHADER!!!
+// $INFECTED && $VERTEXCOLOR
 // ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
-// !$INFECTED && !$LOCAL_LIGHTS
 // defined $HDRTYPE && defined $HDRENABLED && !$HDRTYPE && $HDRENABLED
 // defined $PIXELFOGTYPE && defined $WRITEWATERFOGTODESTALPHA && ( $PIXELFOGTYPE != 1 ) && $WRITEWATERFOGTODESTALPHA
 // defined $LIGHTING_PREVIEW && defined $HDRTYPE && $LIGHTING_PREVIEW && $HDRTYPE != 0
@@ -27,11 +27,13 @@ class pbr_model_depthprepass_ps51_Static_Index
 	unsigned int m_nENHANCED : 2;
 	unsigned int m_nALPHATEST : 2;
 	unsigned int m_nINFECTED : 2;
+	unsigned int m_nVERTEXCOLOR : 2;
 #ifdef _DEBUG
 	bool m_bTANGENT : 1;
 	bool m_bENHANCED : 1;
 	bool m_bALPHATEST : 1;
 	bool m_bINFECTED : 1;
+	bool m_bVERTEXCOLOR : 1;
 #endif	// _DEBUG
 public:
 	void SetTANGENT( int i )
@@ -70,28 +72,40 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetVERTEXCOLOR( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nVERTEXCOLOR = i;
+#ifdef _DEBUG
+		m_bVERTEXCOLOR = true;
+#endif	// _DEBUG
+	}
+
 	pbr_model_depthprepass_ps51_Static_Index(  )
 	{
 		m_nTANGENT = 0;
 		m_nENHANCED = 0;
 		m_nALPHATEST = 0;
 		m_nINFECTED = 0;
+		m_nVERTEXCOLOR = 0;
 #ifdef _DEBUG
 		m_bTANGENT = false;
 		m_bENHANCED = false;
 		m_bALPHATEST = false;
 		m_bINFECTED = false;
+		m_bVERTEXCOLOR = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bTANGENT && m_bENHANCED && m_bALPHATEST && m_bINFECTED );
-		return ( 24 * m_nTANGENT ) + ( 48 * m_nENHANCED ) + ( 96 * m_nALPHATEST ) + ( 192 * m_nINFECTED ) + 0;
+		Assert( m_bTANGENT && m_bENHANCED && m_bALPHATEST && m_bINFECTED && m_bVERTEXCOLOR );
+		AssertMsg( !( m_nINFECTED && m_nVERTEXCOLOR ), "Invalid combo combination ( INFECTED && VERTEXCOLOR )" );
+		return ( 24 * m_nTANGENT ) + ( 48 * m_nENHANCED ) + ( 96 * m_nALPHATEST ) + ( 192 * m_nINFECTED ) + ( 384 * m_nVERTEXCOLOR ) + 0;
 	}
 };
 
-#define shaderStaticTest_pbr_model_depthprepass_ps51 psh_forgot_to_set_static_TANGENT + psh_forgot_to_set_static_ENHANCED + psh_forgot_to_set_static_ALPHATEST + psh_forgot_to_set_static_INFECTED
+#define shaderStaticTest_pbr_model_depthprepass_ps51 psh_forgot_to_set_static_TANGENT + psh_forgot_to_set_static_ENHANCED + psh_forgot_to_set_static_ALPHATEST + psh_forgot_to_set_static_INFECTED + psh_forgot_to_set_static_VERTEXCOLOR
 
 
 class pbr_model_depthprepass_ps51_Dynamic_Index

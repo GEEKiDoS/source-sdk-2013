@@ -231,28 +231,35 @@ static ConVar r_drawopaquerenderables( "r_drawopaquerenderables", "1",
  );
 static ConVar r_threaded_renderables( "r_threaded_renderables", "0" );
 #if defined( L4D2 )
-// A horde is hundreds of casters for the local flashlight's depth texture. Seen from the eye that light starts at, an
-// infected's flashlight shadow falls behind the infected itself; beyond this distance only a sliver could show.
-static ConVar r_flashlight_infected_shadow_dist( "r_flashlight_infected_shadow_dist", "400", FCVAR_ARCHIVE,
-	"Infected (and their attached wound models) farther than this from the local player's flashlight do not cast into its shadow depth texture; 0 keeps every infected caster" );
+// The local flashlight starts a few units from the eye (r_flashlightoffset*: ~7 high, ~19 low), so seen from that eye
+// any caster's flashlight shadow falls almost exactly behind the caster itself: the visible sliver is the light-to-eye
+// offset projected across the caster's distance. Far casters only cost depth-pass work (a horde, a street of props).
+static ConVar r_flashlight_shadow_caster_dist( "r_flashlight_shadow_caster_dist", "400", FCVAR_ARCHIVE,
+	"Models and static props whose bounds are all farther than this (and than 16x the flashlight's offset from the eye) "
+	"from the local player's flashlight do not cast into its shadow depth texture; 0 keeps every caster" );
 
-// True for an infected caster (or a model attached to one) beyond r_flashlight_infected_shadow_dist while the local
-// player's own flashlight depth texture is rendering (other projected lights are seen from the side and keep them).
-static bool SkipFlashlightInfectedCaster( IClientRenderable *pRenderable )
+// True while the local player's own flashlight depth texture is rendering (other projected lights are seen from the
+// side and keep every caster) for a caster whose nearest bounds point is beyond the cutoff.
+static bool SkipFlashlightCaster( IClientRenderable *pRenderable )
 {
-	const float maxDistance = r_flashlight_infected_shadow_dist.GetFloat();
-	if ( maxDistance <= 0.0f || CurrentViewID() != VIEW_SHADOW_DEPTH_TEXTURE )
-		return false;
-	C_BaseEntity *pEntity = pRenderable->GetIClientUnknown()->GetBaseEntity();
-	if ( !pEntity )
-		return false;
-	C_BaseEntity *pOwner = pEntity->MyInfectedPointer() ? pEntity : pEntity->GetMoveParent();
-	if ( !pOwner || !pOwner->MyInfectedPointer() )
+	const float cutoff = r_flashlight_shadow_caster_dist.GetFloat();
+	if ( cutoff <= 0.0f || CurrentViewID() != VIEW_SHADOW_DEPTH_TEXTURE )
 		return false;
 	C_BasePlayer *pLocal = C_BasePlayer::GetLocalPlayer();
-	if ( !pLocal || CurrentViewOrigin().DistToSqr( pLocal->EyePosition() ) > 128.0f * 128.0f )
+	if ( !pLocal )
 		return false;
-	return pOwner->GetRenderOrigin().DistToSqr( CurrentViewOrigin() ) > maxDistance * maxDistance;
+	const Vector &light = CurrentViewOrigin();
+	const float offset = light.DistTo( pLocal->EyePosition() );
+	if ( offset > 128.0f )
+		return false;
+	// 16x the offset keeps the shadow's parallax from the eye under ~3.6 degrees past the cutoff.
+	const float maxDistance = MAX( cutoff, 16.0f * offset );
+	Vector mins, maxs;
+	pRenderable->GetRenderBoundsWorldspace( mins, maxs );
+	Vector nearest;
+	for ( int axis = 0; axis < 3; ++axis )
+		nearest[axis] = clamp( light[axis], mins[axis], maxs[axis] );
+	return nearest.DistToSqr( light ) > maxDistance * maxDistance;
 }
 #endif
 
@@ -5083,6 +5090,10 @@ static void DrawOpaqueRenderables_DrawStaticProps( CClientRenderablesList::CEntr
 			continue;
 		}
 
+#if defined( L4D2 )
+		if ( DepthMode == DEPTH_MODE_SHADOW && SkipFlashlightCaster( itEntity->m_pRenderable ) )
+			continue;
+#endif
 		if ( DepthMode != DEPTH_MODE_SHADOW && DepthMode != DEPTH_MODE_SSA0 )
 			ShadowMapsDX12_PrepareStaticPropReceiver( itEntity->m_pRenderable );
 		pStatics[ numScheduled ++ ] = itEntity->m_pRenderable;
@@ -5111,7 +5122,7 @@ static void DrawOpaqueRenderables_Range( CClientRenderablesList::CEntry *pEntiti
 				continue;
 		}
 #if defined( L4D2 )
-		if ( DepthMode == DEPTH_MODE_SHADOW && SkipFlashlightInfectedCaster( itEntity->m_pRenderable ) )
+		if ( DepthMode == DEPTH_MODE_SHADOW && SkipFlashlightCaster( itEntity->m_pRenderable ) )
 			continue;
 		DrawOpaqueRenderable( *itEntity, DepthMode );
 #else
