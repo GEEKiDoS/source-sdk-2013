@@ -1,0 +1,66 @@
+$Macro SRCDIR "..\.."
+$Macro OUTBINDIR "$SRCDIR\devtools\bin"
+$Macro OUTBINNAME "ShaderCompiler3"
+$Include "$SRCDIR\vpc_scripts\source_exe_con_base.vpc"
+$Configuration
+{
+    $General
+    {
+        $AdditionalProjectDependencies "tier1"
+    }
+    // The shared exe publish step copies into $OUTBINDIR without creating it; devtools\bin\x64 is not in the tree.
+    $PreBuildEvent
+    {
+        $CommandLine "$BASE" "\n" "if not exist $QUOTE$OUTBINDIR$QUOTE mkdir $QUOTE$OUTBINDIR$QUOTE" "\n"
+    }
+    $Compiler
+    {
+        $AdditionalIncludeDirectories "$BASE;$SRCDIR;$SRCDIR\materialsystem\shaderapidx12;$SRCDIR\thirdparty\bzip2;$SRCDIR\utils\lzma\C"
+        $AdditionalOptions "$BASE /std:c++17"
+        $EnableC++Exceptions "Yes (/EHsc)"
+        $Create/UsePrecompiledHeader "Not Using Precompiled Headers"
+        $ForceIncludes " "
+        $PreprocessorDefinitions "$BASE;NOMINMAX;_7ZIP_ST"
+    }
+    $Linker
+    {
+        $AdditionalDependencies "$BASE d3dcompiler.lib bcrypt.lib"
+    }
+// dxcompiler.dll compiles and reflects the SM 6.0 shaders; dxil.dll validates and signs them. Both sit beside the exe.
+$PostBuildEvent
+{
+    $CommandLine "$BASE" "\n" \
+        "if not exist $QUOTE$OUTBINDIR$QUOTE mkdir $QUOTE$OUTBINDIR$QUOTE" "\n" \
+        "copy /y $QUOTE$SRCDIR\\thirdparty\\dxc\\dxcompiler.dll$QUOTE $QUOTE$SRCDIR\\devtools\\bin\\x64\\dxcompiler.dll$QUOTE" "\n" \
+        "if errorlevel 1 exit /b 1" "\n" \
+        "copy /y $QUOTE$SRCDIR\\thirdparty\\dxc\\dxil.dll$QUOTE $QUOTE$SRCDIR\\devtools\\bin\\x64\\dxil.dll$QUOTE" "\n" \
+        "if errorlevel 1 exit /b 1" "\n" \
+        "copy /y $QUOTE$SRCDIR\\devtools\\bin\\tier0.dll$QUOTE $QUOTE$SRCDIR\\devtools\\bin\\x64\\tier0.dll$QUOTE" "\n" \
+        "copy /y $QUOTE$SRCDIR\\devtools\\bin\\vstdlib.dll$QUOTE $QUOTE$SRCDIR\\devtools\\bin\\x64\\vstdlib.dll$QUOTE" "\n"
+}
+}
+$Project "shadercompiler3"
+{
+    $Folder "Source Files"
+    {
+        $File "shadercompiler3.cpp"
+        $File "packer.cpp"
+        $File "$SRCDIR\materialsystem\shaderapidx12\shader_vcs_dx12.cpp"
+        $File "$SRCDIR\materialsystem\shaderapidx12\shader_reflect_dx12.cpp"
+    }
+    // VCS blocks are LZMA-compressed (single-threaded encoder of the in-tree LZMA SDK).
+    $Folder "LZMA"
+    {
+        $File "$SRCDIR\utils\lzma\C\LzmaLib.c"
+        $File "$SRCDIR\utils\lzma\C\LzmaEnc.c"
+        $File "$SRCDIR\utils\lzma\C\LzmaDec.c"
+        $File "$SRCDIR\utils\lzma\C\LzFind.c"
+        $File "$SRCDIR\utils\lzma\C\Alloc.c"
+    }
+    $Folder "Link Libraries"
+    {
+        $Lib "$LIBCOMMON\bzip2"
+        $Lib tier1
+        $Lib tier2
+    }
+}

@@ -65,22 +65,22 @@ static const HALF g_OverbrightFactor = 2.0f;
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D LightmapSampler_Texture : register( t1 );
 SamplerState LightmapSampler_Sampler : register( s1 );
-static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+static DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
 Texture2D FlashlightSampler_Texture : register( t2 );
 SamplerState FlashlightSampler_Sampler : register( s2 );
-static const DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
+static DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
 Texture2D DetailSampler_Texture : register( t3 );
 SamplerState DetailSampler_Sampler : register( s3 );
-static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+static DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
 Texture2D BumpmapSampler_Texture : register( t4 );
 SamplerState BumpmapSampler_Sampler : register( s4 );
-static const DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
+static DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
 Texture2D NormalizeSampler_Texture : register( t6 );
 SamplerState NormalizeSampler_Sampler : register( s6 );
-static const DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+static DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
 
 struct PS_INPUT
 {

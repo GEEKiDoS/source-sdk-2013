@@ -61,17 +61,17 @@ cbuffer compositor_ps2x : register( b1, space1 )
 
 Texture2D InSampler0_Texture : register( t0 );
 SamplerState InSampler0_Sampler : register( s0 );
-static const DX12Sampler2D InSampler0 = { InSampler0_Texture, InSampler0_Sampler };
+static DX12Sampler2D InSampler0 = { InSampler0_Texture, InSampler0_Sampler };
 Texture2D InSampler1_Texture : register( t1 );
 SamplerState InSampler1_Sampler : register( s1 );
-static const DX12Sampler2D InSampler1 = { InSampler1_Texture, InSampler1_Sampler };
+static DX12Sampler2D InSampler1 = { InSampler1_Texture, InSampler1_Sampler };
 #if ( ALLOW_FOUR_TEX_LOOKUPS_PER_STAGE )
 	Texture2D InSampler2_Texture : register( t2 );
 	SamplerState InSampler2_Sampler : register( s2 );
-	static const DX12Sampler2D InSampler2 = { InSampler2_Texture, InSampler2_Sampler };
+	static DX12Sampler2D InSampler2 = { InSampler2_Texture, InSampler2_Sampler };
 	Texture2D InSampler3_Texture : register( t3 );
 	SamplerState InSampler3_Sampler : register( s3 );
-	static const DX12Sampler2D InSampler3 = { InSampler3_Texture, InSampler3_Sampler };
+	static DX12Sampler2D InSampler3 = { InSampler3_Texture, InSampler3_Sampler };
 #endif
 
 #define texCoord0	texCoord01.xy

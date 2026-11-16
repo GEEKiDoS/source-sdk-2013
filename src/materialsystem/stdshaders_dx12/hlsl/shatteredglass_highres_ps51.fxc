@@ -40,23 +40,23 @@ cbuffer ShatteredGlass_ps2x : register( b1, space1 )
 	    
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D LightmapSampler_Texture : register( t1 );
 SamplerState LightmapSampler_Sampler : register( s1 );
-static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+static DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
 TextureCube EnvmapSampler_Texture : register( t2 );
 SamplerState EnvmapSampler_Sampler : register( s2 );
-static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+static DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
 Texture2D DetailSampler_Texture : register( t3 );
 SamplerState DetailSampler_Sampler : register( s3 );
-static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+static DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
 Texture2D EnvmapMaskSampler_Texture : register( t5 );
 SamplerState EnvmapMaskSampler_Sampler : register( s5 );
-static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
+static DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
 
 TextureCube NormalizeSampler_Texture : register( t6 );
 SamplerState NormalizeSampler_Sampler : register( s6 );
-static const DX12SamplerCube NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+static DX12SamplerCube NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
 
 struct PS_INPUT
 {

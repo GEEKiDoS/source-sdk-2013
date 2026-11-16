@@ -7,7 +7,7 @@
 
 Texture2D FilmGrainSampler_Texture : register( t0 );
 SamplerState FilmGrainSampler_Sampler : register( s0 );
-static const DX12Sampler2D FilmGrainSampler = { FilmGrainSampler_Texture, FilmGrainSampler_Sampler };
+static DX12Sampler2D FilmGrainSampler = { FilmGrainSampler_Texture, FilmGrainSampler_Sampler };
 
 
 cbuffer filmgrain_ps20 : register( b1, space1 )

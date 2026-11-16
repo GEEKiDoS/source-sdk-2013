@@ -10,10 +10,10 @@
 
 Texture2D FBSampler_Texture : register( t0 );
 SamplerState FBSampler_Sampler : register( s0 );
-static const DX12Sampler2D FBSampler = { FBSampler_Texture, FBSampler_Sampler };
+static DX12Sampler2D FBSampler = { FBSampler_Texture, FBSampler_Sampler };
 Texture2D BloomSampler_Texture : register( t1 );
 SamplerState BloomSampler_Sampler : register( s1 );
-static const DX12Sampler2D BloomSampler = { BloomSampler_Texture, BloomSampler_Sampler };
+static DX12Sampler2D BloomSampler = { BloomSampler_Texture, BloomSampler_Sampler };
 
 
 cbuffer floatcombine_ps2x : register( b1, space1 )

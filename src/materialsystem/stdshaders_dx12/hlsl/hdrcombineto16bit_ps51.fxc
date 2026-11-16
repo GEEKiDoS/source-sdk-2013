@@ -9,10 +9,10 @@
 
 Texture2D LowSampler_Texture : register( t0 );
 SamplerState LowSampler_Sampler : register( s0 );
-static const DX12Sampler2D LowSampler = { LowSampler_Texture, LowSampler_Sampler };
+static DX12Sampler2D LowSampler = { LowSampler_Texture, LowSampler_Sampler };
 Texture2D HiSampler_Texture : register( t1 );
 SamplerState HiSampler_Sampler : register( s1 );
-static const DX12Sampler2D HiSampler = { HiSampler_Texture, HiSampler_Sampler };
+static DX12Sampler2D HiSampler = { HiSampler_Texture, HiSampler_Sampler };
 
 struct PS_INPUT
 {

@@ -28,17 +28,17 @@ cbuffer teeth_bump_ps2x : register( b1, space1 )
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D BumpTextureSampler_Texture : register( t1 );
 SamplerState BumpTextureSampler_Sampler : register( s1 );
-static const DX12Sampler2D BumpTextureSampler = { BumpTextureSampler_Texture, BumpTextureSampler_Sampler };
+static DX12Sampler2D BumpTextureSampler = { BumpTextureSampler_Texture, BumpTextureSampler_Sampler };
 Texture2D NormalizeSampler_Texture : register( t2 );
 SamplerState NormalizeSampler_Sampler : register( s2 );
-static const DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+static DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
 Texture2D NormalizeSampler_Texture1D : register( t2 );
-static const DX12Sampler1D NormalizeSampler_1D = { NormalizeSampler_Texture1D, NormalizeSampler_Sampler };
+static DX12Sampler1D NormalizeSampler_1D = { NormalizeSampler_Texture1D, NormalizeSampler_Sampler };
 TextureCube NormalizeSampler_TextureCUBE : register( t2 );
-static const DX12SamplerCube NormalizeSampler_CUBE = { NormalizeSampler_TextureCUBE, NormalizeSampler_Sampler };
+static DX12SamplerCube NormalizeSampler_CUBE = { NormalizeSampler_TextureCUBE, NormalizeSampler_Sampler };
 
 struct PS_INPUT
 {

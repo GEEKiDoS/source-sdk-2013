@@ -262,13 +262,14 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	ranges[7].RegisterSpace = DX12_PROBE_REGISTER_SPACE;
 	params[kRootProbeTable].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[kRootProbeTable].DescriptorTable = { 1, &ranges[7] };
-	params[kRootProbeTable].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	// Probes: pixel shaders of PBR models and the per-sprite gather of the detail vertex shader.
+	params[kRootProbeTable].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	params[kRootProbeConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[kRootProbeConstants].Descriptor.RegisterSpace = DX12_PROBE_REGISTER_SPACE;
-	params[kRootProbeConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootProbeConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	addSampler( D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_LESS_EQUAL, DX12_LIGHTING_S_COMPARISON, DX12_LIGHTING_REGISTER_SPACE,
 	            D3D12_SHADER_VISIBILITY_ALL );
-	addSampler( D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_ALWAYS, 0, DX12_PROBE_REGISTER_SPACE );
+	addSampler( D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_COMPARISON_FUNC_ALWAYS, 0, DX12_PROBE_REGISTER_SPACE, D3D12_SHADER_VISIBILITY_ALL );
 	desc.NumParameters = kLightingRootParameterCount;
 	desc.NumStaticSamplers = samplerCount;
 	blob.Reset();
@@ -1002,6 +1003,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		if ( !m_bGraphicsBindingsValid || m_nGraphicsBindingsFence != input.retireFence || m_pBoundRoot != root )
 		{
 			pList->SetGraphicsRootSignature( root );
+			++m_Stats.rootSignatureBinds;
 			m_pBoundRoot = root;
 			// SetGraphicsRootSignature invalidates every root argument, including ordinary ones.
 			m_bGraphicsBindingsValid = false;
@@ -1011,6 +1013,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		{
 			ID3D12DescriptorHeap *heaps[] = { resourceHeap, samplerHeap };
 			pList->SetDescriptorHeaps( 2, heaps );
+			++m_Stats.descriptorHeapBinds;
 			m_bGraphicsBindingsValid = false;
 			// Draws without space 4/5, a native space-1 stage, a receiver-visibility table or caster instance rows skip
 			// those binds (also after a root change or in a new list), which leaves the parameter unset there. Their
@@ -1491,6 +1494,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 	HRESULT hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
+	++m_Stats.pipelinesCreated;
 	if ( FAILED( hr ) )
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
 	// A refusal is cached as a null entry, so the driver is not asked again on every draw; eviction retries it.

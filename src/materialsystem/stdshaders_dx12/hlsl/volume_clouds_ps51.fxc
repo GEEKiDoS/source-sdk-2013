@@ -12,13 +12,13 @@
 // Texture Samplers ===============================================================================
 Texture2D g_tInnerSampler_Texture : register( t0 );
 SamplerState g_tInnerSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tInnerSampler = { g_tInnerSampler_Texture, g_tInnerSampler_Sampler };
+static DX12Sampler2D g_tInnerSampler = { g_tInnerSampler_Texture, g_tInnerSampler_Sampler };
 Texture2D g_tMiddleSampler_Texture : register( t1 );
 SamplerState g_tMiddleSampler_Sampler : register( s1 );
-static const DX12Sampler2D g_tMiddleSampler = { g_tMiddleSampler_Texture, g_tMiddleSampler_Sampler };
+static DX12Sampler2D g_tMiddleSampler = { g_tMiddleSampler_Texture, g_tMiddleSampler_Sampler };
 Texture2D g_tOuterSampler_Texture : register( t2 );
 SamplerState g_tOuterSampler_Sampler : register( s2 );
-static const DX12Sampler2D g_tOuterSampler = { g_tOuterSampler_Texture, g_tOuterSampler_Sampler };
+static DX12Sampler2D g_tOuterSampler = { g_tOuterSampler_Texture, g_tOuterSampler_Sampler };
 
 // Shaders Constants and Globals ==================================================================
 //const float4 g_vPackedConst6		: register( c6 );

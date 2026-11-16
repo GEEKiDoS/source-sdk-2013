@@ -1488,7 +1488,7 @@ void CTerrorGun::UpdateOnRemove()
 	BaseClass::UpdateOnRemove();
 	if ( m_laserSightWorldmodelEffect )
 	{
-		ParticleProp()->StopEmission( m_laserSightWorldmodelEffect );
+		ParticleProp()->StopEmissionAndDestroyImmediately( m_laserSightWorldmodelEffect );
 		m_laserSightWorldmodelEffect = NULL;
 	}
 }
@@ -1499,7 +1499,7 @@ void CTerrorGun::UpdateWorldLaserSight()
 	{
 		if ( m_laserSightWorldmodelEffect )
 		{
-			ParticleProp()->StopEmission( m_laserSightWorldmodelEffect );
+			ParticleProp()->StopEmissionAndDestroyImmediately( m_laserSightWorldmodelEffect );
 			m_laserSightWorldmodelEffect = NULL;
 		}
 		return;

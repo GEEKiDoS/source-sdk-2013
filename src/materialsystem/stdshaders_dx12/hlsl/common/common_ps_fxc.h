@@ -310,7 +310,7 @@ float3 BlendPixelFog( const float3 vShaderColor, float pixelFogFactor, const flo
 #if ((defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)) && ( CONVERT_TO_SRGB != 0 ) )
 Texture2D GammaTableSampler_Texture : register( t15 );
 SamplerState GammaTableSampler_Sampler : register( s15 );
-static const DX12Sampler1D GammaTableSampler = { GammaTableSampler_Texture, GammaTableSampler_Sampler };
+static DX12Sampler1D GammaTableSampler = { GammaTableSampler_Texture, GammaTableSampler_Sampler };
 
 float3 SRGBOutput( const float3 vShaderColor )
 {	

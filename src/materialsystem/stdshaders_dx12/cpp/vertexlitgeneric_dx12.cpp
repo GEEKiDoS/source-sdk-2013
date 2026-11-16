@@ -397,6 +397,15 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		SetupVars( vars );
 		CaptureLegacyAdapterState( params, PbrVars() );
 		InitParamsVertexLitGeneric_DX9( this, params, pMaterialName, true, vars );
+		// $surfaceprop "foliage" models are thin and backlit: sun, local lights and probes from behind a leaf show through
+		// it, tinted by its albedo. Authored $backlight / $thickness win.
+		if ( params[SURFACEPROP]->IsDefined() && !V_stricmp( params[SURFACEPROP]->GetStringValue(), "foliage" ) )
+		{
+			if ( !params[BACKLIGHT]->IsDefined() )
+				params[BACKLIGHT]->SetFloatValue( 0.3f );
+			if ( !params[THICKNESS]->IsDefined() )
+				params[THICKNESS]->SetFloatValue( 0.0f );
+		}
 		InitParamsPBRDefaults( params, PbrVars() );
 
 		// Cloak Pass

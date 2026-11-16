@@ -42,7 +42,7 @@ cbuffer teeth_bump_vs20 : register( b2, space1 )
 
 Texture2D morphSampler_Texture : register( t0 );
 SamplerState morphSampler_Sampler : register( s0 );
-static const DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
+static DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler };
 #endif
 
 struct VS_INPUT

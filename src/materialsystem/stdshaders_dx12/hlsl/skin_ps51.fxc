@@ -93,51 +93,51 @@ cbuffer skin_ps20b : register( b1, space1 )
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );	// Base map, selfillum in alpha
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D SpecularWarpSampler_Texture : register( t1 );
 SamplerState SpecularWarpSampler_Sampler : register( s1 );	// Specular warp sampler
-static const DX12Sampler2D SpecularWarpSampler = { SpecularWarpSampler_Texture, SpecularWarpSampler_Sampler };
+static DX12Sampler2D SpecularWarpSampler = { SpecularWarpSampler_Texture, SpecularWarpSampler_Sampler };
 Texture2D DiffuseWarpSampler_Texture : register( t2 );
 SamplerState DiffuseWarpSampler_Sampler : register( s2 );	// Diffuse lighting warp sampler
-static const DX12Sampler1D DiffuseWarpSampler = { DiffuseWarpSampler_Texture, DiffuseWarpSampler_Sampler };
+static DX12Sampler1D DiffuseWarpSampler = { DiffuseWarpSampler_Texture, DiffuseWarpSampler_Sampler };
 Texture2D NormalMapSampler_Texture : register( t3 );
 SamplerState NormalMapSampler_Sampler : register( s3 );	// Normal map, specular mask in alpha
-static const DX12Sampler2D NormalMapSampler = { NormalMapSampler_Texture, NormalMapSampler_Sampler };
+static DX12Sampler2D NormalMapSampler = { NormalMapSampler_Texture, NormalMapSampler_Sampler };
 Texture2D ShadowDepthSampler_Texture : register( t4 );
 SamplerComparisonState ShadowDepthSampler_Sampler : register( s4 );	// Flashlight shadow depth map
-static const DX12ShadowSampler ShadowDepthSampler = { ShadowDepthSampler_Texture, ShadowDepthSampler_Sampler };
+static DX12ShadowSampler ShadowDepthSampler = { ShadowDepthSampler_Texture, ShadowDepthSampler_Sampler };
 Texture2D NormalizeRandRotSampler_Texture : register( t5 );
 SamplerState NormalizeRandRotSampler_Sampler : register( s5 );	// Normalization / RandomRotation samplers
-static const DX12Sampler2D NormalizeRandRotSampler = { NormalizeRandRotSampler_Texture, NormalizeRandRotSampler_Sampler };
+static DX12Sampler2D NormalizeRandRotSampler = { NormalizeRandRotSampler_Texture, NormalizeRandRotSampler_Sampler };
 TextureCube NormalizeRandRotSampler_TextureCUBE : register( t5 );
-static const DX12SamplerCube NormalizeRandRotSampler_CUBE = { NormalizeRandRotSampler_TextureCUBE, NormalizeRandRotSampler_Sampler };
+static DX12SamplerCube NormalizeRandRotSampler_CUBE = { NormalizeRandRotSampler_TextureCUBE, NormalizeRandRotSampler_Sampler };
 Texture2D FlashlightSampler_Texture : register( t6 );
 SamplerState FlashlightSampler_Sampler : register( s6 );	// Flashlight cookie
-static const DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
+static DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
 Texture2D SpecExponentSampler_Texture : register( t7 );
 SamplerState SpecExponentSampler_Sampler : register( s7 );	// Specular exponent map
-static const DX12Sampler2D SpecExponentSampler = { SpecExponentSampler_Texture, SpecExponentSampler_Sampler };
+static DX12Sampler2D SpecExponentSampler = { SpecExponentSampler_Texture, SpecExponentSampler_Sampler };
 TextureCube EnvmapSampler_Texture : register( t8 );
 SamplerState EnvmapSampler_Sampler : register( s8 );	// Cubic environment map
-static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+static DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
 Texture2D WrinkleSampler_Texture : register( t9 );
 SamplerState WrinkleSampler_Sampler : register( s9 );	// Compression base
-static const DX12Sampler2D WrinkleSampler = { WrinkleSampler_Texture, WrinkleSampler_Sampler };
+static DX12Sampler2D WrinkleSampler = { WrinkleSampler_Texture, WrinkleSampler_Sampler };
 Texture2D StretchSampler_Texture : register( t10 );
 SamplerState StretchSampler_Sampler : register( s10 );	// Expansion base
-static const DX12Sampler2D StretchSampler = { StretchSampler_Texture, StretchSampler_Sampler };
+static DX12Sampler2D StretchSampler = { StretchSampler_Texture, StretchSampler_Sampler };
 Texture2D NormalWrinkleSampler_Texture : register( t11 );
 SamplerState NormalWrinkleSampler_Sampler : register( s11 );	// Compression normal
-static const DX12Sampler2D NormalWrinkleSampler = { NormalWrinkleSampler_Texture, NormalWrinkleSampler_Sampler };
+static DX12Sampler2D NormalWrinkleSampler = { NormalWrinkleSampler_Texture, NormalWrinkleSampler_Sampler };
 Texture2D NormalStretchSampler_Texture : register( t12 );
 SamplerState NormalStretchSampler_Sampler : register( s12 );	// Expansion normal
-static const DX12Sampler2D NormalStretchSampler = { NormalStretchSampler_Texture, NormalStretchSampler_Sampler };
+static DX12Sampler2D NormalStretchSampler = { NormalStretchSampler_Texture, NormalStretchSampler_Sampler };
 Texture2D DetailSampler_Texture : register( t13 );
 SamplerState DetailSampler_Sampler : register( s13 );	// Detail texture
-static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+static DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
 Texture2D SelfIllumMaskSampler_Texture : register( t14 );
 SamplerState SelfIllumMaskSampler_Sampler : register( s14 );	// Selfillum mask
-static const DX12Sampler2D SelfIllumMaskSampler = { SelfIllumMaskSampler_Texture, SelfIllumMaskSampler_Sampler };
+static DX12Sampler2D SelfIllumMaskSampler = { SelfIllumMaskSampler_Texture, SelfIllumMaskSampler_Sampler };
 
 struct PS_INPUT
 {

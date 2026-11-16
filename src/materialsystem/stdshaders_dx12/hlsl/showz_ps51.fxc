@@ -16,7 +16,7 @@ cbuffer showz_ps2x : register( b1, space1 )
 
 Texture2D DepthTextureSampler_Texture : register( t0 );
 SamplerState DepthTextureSampler_Sampler : register( s0 );	// Scalar shadow depth map
-static const DX12Sampler2D DepthTextureSampler = { DepthTextureSampler_Texture, DepthTextureSampler_Sampler };
+static DX12Sampler2D DepthTextureSampler = { DepthTextureSampler_Texture, DepthTextureSampler_Sampler };
 
 struct DX12_LEGACY_PS_INPUT
 {

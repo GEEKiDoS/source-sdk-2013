@@ -153,6 +153,9 @@ public:
 	struct StatsDX12
 	{
 		uint64_t srvTableHits = 0, srvTableCopies = 0, constantHits = 0, constantUploads = 0, transientConstants = 0, rootCbvSets = 0, rootTableSets = 0, rootSrvSets = 0;
+		uint64_t pipelinesCreated = 0;
+		// Command-list state switches actually issued (SetPipelineState, SetGraphicsRootSignature, SetDescriptorHeaps).
+		uint64_t pipelineBinds = 0, rootSignatureBinds = 0, descriptorHeapBinds = 0;
 		// Window counters; aligned demand includes reserved bytes and inter-allocation padding.
 		uint64_t uploadAllocations = 0, uploadBytes = 0, uploadPeakFrameBytes = 0;
 		uint64_t uploadPagesCreated = 0, uploadPagesTrimmed = 0, uploadBufferBytesTrimmed = 0;
@@ -277,7 +280,10 @@ public:
 	{
 		const bool reset = !m_pBoundPipeline || m_nBoundPipelineFence != nRetireFence;
 		if ( reset || m_pBoundPipeline != pPipeline )
+		{
 			pList->SetPipelineState( pPipeline );
+			++m_Stats.pipelineBinds;
+		}
 		if ( reset || m_nBoundStencilReference != nStencilReference )
 			pList->OMSetStencilRef( nStencilReference );
 		m_pBoundPipeline = pPipeline;

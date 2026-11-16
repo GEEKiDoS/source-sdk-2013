@@ -36,21 +36,21 @@ cbuffer eyes_flashlight_ps2x : register( b1, space1 )
 
 Texture2D SpotSampler_Texture : register( t0 );
 SamplerState SpotSampler_Sampler : register( s0 );
-static const DX12Sampler2D SpotSampler = { SpotSampler_Texture, SpotSampler_Sampler };
+static DX12Sampler2D SpotSampler = { SpotSampler_Texture, SpotSampler_Sampler };
 Texture2D BaseTextureSampler_Texture : register( t1 );
 SamplerState BaseTextureSampler_Sampler : register( s1 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D IrisSampler_Texture : register( t3 );
 SamplerState IrisSampler_Sampler : register( s3 );
-static const DX12Sampler2D IrisSampler = { IrisSampler_Texture, IrisSampler_Sampler };
+static DX12Sampler2D IrisSampler = { IrisSampler_Texture, IrisSampler_Sampler };
 
 #if FLASHLIGHTSHADOWS && (!SHADER_MODEL_PS_1_1) && (!SHADER_MODEL_PS_1_4) && (!DX12_LEGACY_PS20)
 Texture2D FlashlightDepthSampler_Texture : register( t4 );
 SamplerComparisonState FlashlightDepthSampler_Sampler : register( s4 );
-static const DX12ShadowSampler FlashlightDepthSampler = { FlashlightDepthSampler_Texture, FlashlightDepthSampler_Sampler };
+static DX12ShadowSampler FlashlightDepthSampler = { FlashlightDepthSampler_Texture, FlashlightDepthSampler_Sampler };
 Texture2D RandomRotationSampler_Texture : register( t5 );
 SamplerState RandomRotationSampler_Sampler : register( s5 );
-static const DX12Sampler2D RandomRotationSampler = { RandomRotationSampler_Texture, RandomRotationSampler_Sampler };
+static DX12Sampler2D RandomRotationSampler = { RandomRotationSampler_Texture, RandomRotationSampler_Sampler };
 #endif
 
 #if defined( SHADER_MODEL_PS_1_1 ) || defined ( SHADER_MODEL_PS_1_4 )

@@ -47,9 +47,10 @@ struct FailureDump
     struct { char vertexShader[48], pixelShader[48]; uint32 draws; } pairs[kDumpPairs]; // distinct shader pairs of those draws
     struct { char vertexShader[48], pixelShader[48]; uint64 meshToken; uint32 firstIndex, indexCount; } draws[kDumpDraws]; // newest first
 };
-// The single place a rejection breaks. Unconditional, debugger or not: an unhandled breakpoint reaches the process crash
-// handler, which writes the minidump. `dump` holds the decoded record and the failing page's draws between the previous clean
-// readback and the failing one; the break stays live through the volatile read. Continuing runs the existing fatal rejection.
+// The single place a rejection breaks: under a debugger, or with -dx12highresbreak so that the unhandled breakpoint reaches
+// the process crash handler and writes a minidump. `dump` holds the decoded record and the failing page's draws between the
+// previous clean readback and the failing one; the break stays live through the volatile read. Otherwise the existing
+// rejection runs alone (a release build must not die on a validation report).
 __declspec(noinline) void BreakOnHighresFailure(const char *message, const uint32 *record, uint64 fence, uint64 windowAfterFence,
     uint64 mapGeneration, const DrawNote *ring, uint64 ringCount)
 {
@@ -80,7 +81,8 @@ __declspec(noinline) void BreakOnHighresFailure(const char *message, const uint3
         if (pair < kDumpPairs) ++dump.pairs[pair].draws;
     }
     const volatile FailureDump *keep = &dump;
-    DebuggerBreak();
+    if (Plat_IsInDebugSession() || (CommandLine() && CommandLine()->FindParm("-dx12highresbreak")))
+        DebuggerBreak();
     (void)keep->drawCount;
 }
 struct BspFile
@@ -609,6 +611,9 @@ struct CHighresLightmapsDX12::Impl
         if (finalize) Transition(device->CommandList(),buffer,state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         return true;
     }
+    // Probe volumes are read by pixel shaders (models) and vertex shaders (per-sprite detail gather).
+    static constexpr D3D12_RESOURCE_STATES kProbeReadState =
+        D3D12_RESOURCE_STATES(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     // One-mip 3D upload in slice groups of at most 8 MiB: rows are padded to the 256-byte pitch, a slice is pitch * height.
     bool Upload3D(Texture3D &texture, DXGI_FORMAT format, uint32 pixelBytes, const uint8 *source)
     {
@@ -632,7 +637,7 @@ struct CHighresLightmapsDX12::Impl
             dst.pResource = texture.resource.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
             list->CopyTextureRegion(&dst,0,0,z,&src,nullptr);
         }
-        Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Transition(list,texture.resource.Get(),texture.state,kProbeReadState);
         return true;
     }
     // Selects the optional probe grid paired with the admitted .hlight for the selected mode. Failure only records the
@@ -721,7 +726,7 @@ struct CHighresLightmapsDX12::Impl
                 failure = "upload failed";
             auto *list = device->CommandList();
             for (uint32 i=0; !failure && i<DX12_PROBE_TABLE_COUNT; ++i)
-                if (i != DX12_PROBE_T_INDIRECTION) Transition(list,probeTextures[i].resource.Get(),probeTextures[i].state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                if (i != DX12_PROBE_T_INDIRECTION) Transition(list,probeTextures[i].resource.Get(),probeTextures[i].state,kProbeReadState);
             probeCellOf.assign(g.brickCount,hlight::kMissing);
             for (uint64 cell=0; cell<cells; ++cell)
                 if (probeMode->indirection[cell] != hlight::kMissing) probeCellOf[probeMode->indirection[cell]] = uint32(cell);
@@ -860,7 +865,7 @@ struct CHighresLightmapsDX12::Impl
             }
         }
         for (auto &texture : probeTextures)
-            Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            Transition(list,texture.resource.Get(),texture.state,kProbeReadState);
         if (!ok)
         {
             // The CPU maps already describe this submission's moves; without their uploads the grid cannot be trusted.

@@ -20,7 +20,7 @@ cbuffer shadow_ps2x : register( b1, space1 )
 
 Texture2D ShadowSampler_Texture : register( t0 );
 SamplerState ShadowSampler_Sampler : register( s0 );
-static const DX12Sampler2D ShadowSampler = { ShadowSampler_Texture, ShadowSampler_Sampler };
+static DX12Sampler2D ShadowSampler = { ShadowSampler_Texture, ShadowSampler_Sampler };
 
 // CENTROID: TEXCOORD0
 // CENTROID: TEXCOORD1

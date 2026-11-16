@@ -43,41 +43,41 @@ cbuffer flashlight_ps2x : register( b1, space1 )
 
 Texture2D SpotSampler_Texture : register( t0 );
 SamplerState SpotSampler_Sampler : register( s0 );
-static const DX12Sampler2D SpotSampler = { SpotSampler_Texture, SpotSampler_Sampler };
+static DX12Sampler2D SpotSampler = { SpotSampler_Texture, SpotSampler_Sampler };
 Texture2D BaseTextureSampler_Texture : register( t1 );
 SamplerState BaseTextureSampler_Sampler : register( s1 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 TextureCube NormalizingCubemapSampler_Texture : register( t2 );
 SamplerState NormalizingCubemapSampler_Sampler : register( s2 );
-static const DX12SamplerCube NormalizingCubemapSampler = { NormalizingCubemapSampler_Texture, NormalizingCubemapSampler_Sampler };
+static DX12SamplerCube NormalizingCubemapSampler = { NormalizingCubemapSampler_Texture, NormalizingCubemapSampler_Sampler };
 
 // use a normalizing cube map here if we aren't normal mapping
 Texture2D BumpMapSampler_Texture : register( t3 );
 SamplerState BumpMapSampler_Sampler : register( s3 );
-static const DX12Sampler2D BumpMapSampler = { BumpMapSampler_Texture, BumpMapSampler_Sampler };
+static DX12Sampler2D BumpMapSampler = { BumpMapSampler_Texture, BumpMapSampler_Sampler };
 Texture2D BaseTextureSampler2_Texture : register( t4 );
 SamplerState BaseTextureSampler2_Sampler : register( s4 );
-static const DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
+static DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
 
 #ifdef WORLDVERTEXTRANSITION
 Texture2D NormalMap2Sampler_Texture : register( t6 );
 SamplerState NormalMap2Sampler_Sampler : register( s6 );
-static const DX12Sampler2D NormalMap2Sampler = { NormalMap2Sampler_Texture, NormalMap2Sampler_Sampler };
+static DX12Sampler2D NormalMap2Sampler = { NormalMap2Sampler_Texture, NormalMap2Sampler_Sampler };
 #endif
 
 #if DETAILTEXTURE
 Texture2D DetailSampler_Texture : register( t8 );
 SamplerState DetailSampler_Sampler : register( s8 );
-static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+static DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
 #endif
 
 #if FLASHLIGHTSHADOWS && ( defined( DX12_LEGACY_PS20B ) || defined( DX12_LEGACY_PS30 ) )
 Texture2D RandomRotationSampler_Texture : register( t5 );
 SamplerState RandomRotationSampler_Sampler : register( s5 );	//  Random rotation sampler
-static const DX12Sampler2D RandomRotationSampler = { RandomRotationSampler_Texture, RandomRotationSampler_Sampler };
+static DX12Sampler2D RandomRotationSampler = { RandomRotationSampler_Texture, RandomRotationSampler_Sampler };
 Texture2D FlashlightDepthSampler_Texture : register( t7 );
 SamplerComparisonState FlashlightDepthSampler_Sampler : register( s7 );
-static const DX12ShadowSampler FlashlightDepthSampler = { FlashlightDepthSampler_Texture, FlashlightDepthSampler_Sampler };
+static DX12ShadowSampler FlashlightDepthSampler = { FlashlightDepthSampler_Texture, FlashlightDepthSampler_Sampler };
 #endif
 
 struct PS_INPUT

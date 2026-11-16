@@ -19,24 +19,24 @@
 
 Texture2D BaseSampler_Texture : register( t0 );
 SamplerState BaseSampler_Sampler : register( s0 );	// Base map
-static const DX12Sampler2D BaseSampler = { BaseSampler_Texture, BaseSampler_Sampler };
+static DX12Sampler2D BaseSampler = { BaseSampler_Texture, BaseSampler_Sampler };
 Texture2D DiffuseWarpSampler_Texture : register( t1 );
 SamplerState DiffuseWarpSampler_Sampler : register( s1 );	// 1D texture for diffuse lighting modification
-static const DX12Sampler1D DiffuseWarpSampler = { DiffuseWarpSampler_Texture, DiffuseWarpSampler_Sampler };
+static DX12Sampler1D DiffuseWarpSampler = { DiffuseWarpSampler_Texture, DiffuseWarpSampler_Sampler };
 Texture2D RefractSampler_Texture : register( t2 );
 SamplerState RefractSampler_Sampler : register( s2 );	// Refraction map copied from back buffer
-static const DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+static DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
 Texture2D NormalSampler_Texture : register( t3 );
 SamplerState NormalSampler_Sampler : register( s3 );	// Normal map
-static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+static DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
 Texture2D SpecExponentSampler_Texture : register( t4 );
 SamplerState SpecExponentSampler_Sampler : register( s4 );	// Flashlight cookie
-static const DX12Sampler2D SpecExponentSampler = { SpecExponentSampler_Texture, SpecExponentSampler_Sampler };
+static DX12Sampler2D SpecExponentSampler = { SpecExponentSampler_Texture, SpecExponentSampler_Sampler };
 Texture2D NormalizeSampler_Texture : register( t5 );
 SamplerState NormalizeSampler_Sampler : register( s5 );	// Normalization cube map
-static const DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+static DX12Sampler2D NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
 TextureCube NormalizeSampler_TextureCUBE : register( t5 );
-static const DX12SamplerCube NormalizeSampler_CUBE = { NormalizeSampler_TextureCUBE, NormalizeSampler_Sampler };
+static DX12SamplerCube NormalizeSampler_CUBE = { NormalizeSampler_TextureCUBE, NormalizeSampler_Sampler };
 
 
 cbuffer cloak_ps2x : register( b1, space1 )

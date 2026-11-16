@@ -277,23 +277,23 @@ void DrawWater( in DrawWater_params_t i,
 
 Texture2D RefractSampler_Texture : register( t0 );
 SamplerState RefractSampler_Sampler : register( s0 );
-static const DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+static DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
 #if BASETEXTURE && REFLECT && !REFRACT
 Texture2D BaseTextureSampler_Texture : register( t1 );
 SamplerState BaseTextureSampler_Sampler : register( s1 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 #endif
 Texture2D ReflectSampler_Texture : register( t2 );
 SamplerState ReflectSampler_Sampler : register( s2 );
-static const DX12Sampler2D ReflectSampler = { ReflectSampler_Texture, ReflectSampler_Sampler };
+static DX12Sampler2D ReflectSampler = { ReflectSampler_Texture, ReflectSampler_Sampler };
 #if BASETEXTURE && REFLECT && !REFRACT
 Texture2D LightmapSampler_Texture : register( t3 );
 SamplerState LightmapSampler_Sampler : register( s3 );
-static const DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+static DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
 #endif
 Texture2D NormalSampler_Texture : register( t4 );
 SamplerState NormalSampler_Sampler : register( s4 );
-static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+static DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
 
 
 cbuffer water_ps2x : register( b1, space1 )

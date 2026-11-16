@@ -12,11 +12,11 @@
 #if ISCUBEMAP
 TextureCube g_tSampler_Texture : register( t0 );
 SamplerState g_tSampler_Sampler : register( s0 );
-static const DX12SamplerCube g_tSampler = { g_tSampler_Texture, g_tSampler_Sampler };
+static DX12SamplerCube g_tSampler = { g_tSampler_Texture, g_tSampler_Sampler };
 #else
 Texture2D g_tSampler_Texture : register( t0 );
 SamplerState g_tSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tSampler = { g_tSampler_Texture, g_tSampler_Sampler };
+static DX12Sampler2D g_tSampler = { g_tSampler_Texture, g_tSampler_Sampler };
 #endif
 
 struct PS_INPUT

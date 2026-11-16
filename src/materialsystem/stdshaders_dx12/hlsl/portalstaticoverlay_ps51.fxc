@@ -24,17 +24,17 @@ cbuffer portalstaticoverlay_ps2x : register( b1, space1 )
 #if( HASSTATICTEXTURE )
 	Texture2D StaticTextureSampler_Texture : register( t0 );
 	SamplerState StaticTextureSampler_Sampler : register( s0 );
-	static const DX12Sampler2D StaticTextureSampler = { StaticTextureSampler_Texture, StaticTextureSampler_Sampler };
+	static DX12Sampler2D StaticTextureSampler = { StaticTextureSampler_Texture, StaticTextureSampler_Sampler };
 #	if( HASALPHAMASK )
 		Texture2D AlphaMaskSampler_Texture : register( t1 );
 		SamplerState AlphaMaskSampler_Sampler : register( s1 );
-		static const DX12Sampler2D AlphaMaskSampler = { AlphaMaskSampler_Texture, AlphaMaskSampler_Sampler };
+		static DX12Sampler2D AlphaMaskSampler = { AlphaMaskSampler_Texture, AlphaMaskSampler_Sampler };
 #	endif
 #else
 #	if( HASALPHAMASK )
 		Texture2D AlphaMaskSampler_Texture : register( t0 );
 		SamplerState AlphaMaskSampler_Sampler : register( s0 );
-		static const DX12Sampler2D AlphaMaskSampler = { AlphaMaskSampler_Texture, AlphaMaskSampler_Sampler };
+		static DX12Sampler2D AlphaMaskSampler = { AlphaMaskSampler_Texture, AlphaMaskSampler_Sampler };
 #	endif
 #endif
 

@@ -12,7 +12,7 @@
 
 Texture2D RGBSTextureSampler_Texture : register( t0 );
 SamplerState RGBSTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D RGBSTextureSampler = { RGBSTextureSampler_Texture, RGBSTextureSampler_Sampler };
+static DX12Sampler2D RGBSTextureSampler = { RGBSTextureSampler_Texture, RGBSTextureSampler_Sampler };
 
 cbuffer sky_hdr_compressed_rgbs_ps2x : register( b1, space1 )
 {

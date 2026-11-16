@@ -1161,7 +1161,16 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 		DX12ExecuteCommandBuffer( pShaderAPI, DynamicCmdsOut.Base() );
 
 		// c0 sits inside the semi-static c0..c14 block: stage it after the replay.
-		if ( pContextData->m_bAllowDiffuseModulation )
+		if ( pContextData->m_bInfected )
+		{
+			// Common infected render colour is a random spawn palette (Infected::Spawn, darkened by burn damage) the infected
+			// shader never applies as a tint: palette rows come from the material proxy. Only the alpha (ragdoll fade) is used.
+			float color[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+			pShader->ComputeModulationColor( color );
+			color[0] = color[1] = color[2] = 1.0f;
+			DX12SetPixelShaderConstant( 0, color, 1 );
+		}
+		else if ( pContextData->m_bAllowDiffuseModulation )
 			pShader->SetModulationPixelShaderDynamicState_LinearColorSpace( 0 );
 		else
 		{

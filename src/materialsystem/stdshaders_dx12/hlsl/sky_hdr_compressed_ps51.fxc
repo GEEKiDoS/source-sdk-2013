@@ -12,13 +12,13 @@
 
 Texture2D ExposureTextureSampler0_Texture : register( t0 );
 SamplerState ExposureTextureSampler0_Sampler : register( s0 );
-static const DX12Sampler2D ExposureTextureSampler0 = { ExposureTextureSampler0_Texture, ExposureTextureSampler0_Sampler };
+static DX12Sampler2D ExposureTextureSampler0 = { ExposureTextureSampler0_Texture, ExposureTextureSampler0_Sampler };
 Texture2D ExposureTextureSampler1_Texture : register( t1 );
 SamplerState ExposureTextureSampler1_Sampler : register( s1 );
-static const DX12Sampler2D ExposureTextureSampler1 = { ExposureTextureSampler1_Texture, ExposureTextureSampler1_Sampler };
+static DX12Sampler2D ExposureTextureSampler1 = { ExposureTextureSampler1_Texture, ExposureTextureSampler1_Sampler };
 Texture2D ExposureTextureSampler2_Texture : register( t2 );
 SamplerState ExposureTextureSampler2_Sampler : register( s2 );
-static const DX12Sampler2D ExposureTextureSampler2 = { ExposureTextureSampler2_Texture, ExposureTextureSampler2_Sampler };
+static DX12Sampler2D ExposureTextureSampler2 = { ExposureTextureSampler2_Texture, ExposureTextureSampler2_Sampler };
 
 struct PS_INPUT
 {

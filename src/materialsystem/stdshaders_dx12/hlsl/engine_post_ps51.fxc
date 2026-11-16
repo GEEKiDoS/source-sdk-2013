@@ -80,22 +80,22 @@
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D FBTextureSampler_Texture : register( t1 );
 SamplerState FBTextureSampler_Sampler : register( s1 );
-static const DX12Sampler2D FBTextureSampler = { FBTextureSampler_Texture, FBTextureSampler_Sampler };
+static DX12Sampler2D FBTextureSampler = { FBTextureSampler_Texture, FBTextureSampler_Sampler };
 Texture3D ColorCorrectionVolumeTexture0_Texture : register( t2 );
 SamplerState ColorCorrectionVolumeTexture0_Sampler : register( s2 );
-static const DX12Sampler3D ColorCorrectionVolumeTexture0 = { ColorCorrectionVolumeTexture0_Texture, ColorCorrectionVolumeTexture0_Sampler };
+static DX12Sampler3D ColorCorrectionVolumeTexture0 = { ColorCorrectionVolumeTexture0_Texture, ColorCorrectionVolumeTexture0_Sampler };
 Texture3D ColorCorrectionVolumeTexture1_Texture : register( t3 );
 SamplerState ColorCorrectionVolumeTexture1_Sampler : register( s3 );
-static const DX12Sampler3D ColorCorrectionVolumeTexture1 = { ColorCorrectionVolumeTexture1_Texture, ColorCorrectionVolumeTexture1_Sampler };
+static DX12Sampler3D ColorCorrectionVolumeTexture1 = { ColorCorrectionVolumeTexture1_Texture, ColorCorrectionVolumeTexture1_Sampler };
 Texture3D ColorCorrectionVolumeTexture2_Texture : register( t4 );
 SamplerState ColorCorrectionVolumeTexture2_Sampler : register( s4 );
-static const DX12Sampler3D ColorCorrectionVolumeTexture2 = { ColorCorrectionVolumeTexture2_Texture, ColorCorrectionVolumeTexture2_Sampler };
+static DX12Sampler3D ColorCorrectionVolumeTexture2 = { ColorCorrectionVolumeTexture2_Texture, ColorCorrectionVolumeTexture2_Sampler };
 Texture3D ColorCorrectionVolumeTexture3_Texture : register( t5 );
 SamplerState ColorCorrectionVolumeTexture3_Sampler : register( s5 );
-static const DX12Sampler3D ColorCorrectionVolumeTexture3 = { ColorCorrectionVolumeTexture3_Texture, ColorCorrectionVolumeTexture3_Sampler };
+static DX12Sampler3D ColorCorrectionVolumeTexture3 = { ColorCorrectionVolumeTexture3_Texture, ColorCorrectionVolumeTexture3_Sampler };
 
 
 cbuffer Engine_Post_ps2x : register( b1, space1 )

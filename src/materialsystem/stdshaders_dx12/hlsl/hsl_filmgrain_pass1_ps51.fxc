@@ -9,10 +9,10 @@
 
 Texture2D InputSampler_Texture : register( t0 );
 SamplerState InputSampler_Sampler : register( s0 );
-static const DX12Sampler2D InputSampler = { InputSampler_Texture, InputSampler_Sampler };
+static DX12Sampler2D InputSampler = { InputSampler_Texture, InputSampler_Sampler };
 Texture2D FilmGrain_Texture : register( t1 );
 SamplerState FilmGrain_Sampler : register( s1 );
-static const DX12Sampler2D FilmGrain = { FilmGrain_Texture, FilmGrain_Sampler };
+static DX12Sampler2D FilmGrain = { FilmGrain_Texture, FilmGrain_Sampler };
 
 
 cbuffer hsl_filmgrain_pass1_ps2x : register( b1, space1 )

@@ -77,6 +77,8 @@ public:
 	AcquireChunkFnDX12 m_pfnAcquireChunk = nullptr;
 	FlushChunkFnDX12 m_pfnFlushChunk = nullptr;
 	void *m_pChunkContext = nullptr;
+	// ResourceBarrier calls recorded (each is a potential GPU synchronization point); monotonic, for -dx12stats.
+	uint64_t m_nBarrierCalls = 0;
 
 	void Flush()
 	{
@@ -230,6 +232,7 @@ public:
 
 	void ResourceBarrier( UINT count, const D3D12_RESOURCE_BARRIER *barriers )
 	{
+		++m_nBarrierCalls;
 		unsigned char *p = Begin( Op::ResourceBarrier, 4 + count * sizeof( D3D12_RESOURCE_BARRIER ) );
 		Put( p, count );
 		PutArray( p, barriers, count );

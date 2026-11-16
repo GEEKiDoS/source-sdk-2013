@@ -168,9 +168,11 @@ def convert(text, known):
         dim = dim or primary.get(name) or '2D'
         primary[name] = dim
         if arr: raise ValueError('sampler arrays need manual translation: ' + name)
+        # `static`, not `static const`: DXC rejects copying a const global resource struct into a helper parameter
+        # ("local resource not guaranteed to map to unique global resource"); the struct is never written.
         out = (f'{indent}{TEXTURE[dim]} {name}_Texture : register( t{reg} );\n'
                f'{indent}{STATE.get(dim, "SamplerState")} {name}_Sampler : register( s{reg} );{tail}\n'
-               f'{indent}static const {STRUCT[dim]} {name} = {{ {name}_Texture, {name}_Sampler }};')
+               f'{indent}static {STRUCT[dim]} {name} = {{ {name}_Texture, {name}_Sampler }};')
         if dim == 'SHADOW' and len(needs.get(name, {})) > 1:
             raise ValueError('depth sampler also passed as a colour sampler: ' + name)
         # an explicitly typed declaration (sampler2D / samplerCUBE, e.g. declared per combo branch) is only read as
@@ -183,7 +185,7 @@ def convert(text, known):
             smp = f'{name}_Sampler' if state == STATE.get(dim, 'SamplerState') else f'{name}_Sampler{other}'
             if smp != f'{name}_Sampler': out += f'\n{indent}{state} {smp} : register( s{reg} );'
             out += (f'\n{indent}{TEXTURE[other]} {name}_Texture{other} : register( t{reg} );'
-                    f'\n{indent}static const {STRUCT[other]} {name}_{other} = {{ {name}_Texture{other}, {smp} }};')
+                    f'\n{indent}static {STRUCT[other]} {name}_{other} = {{ {name}_Texture{other}, {smp} }};')
         return out
     text = SAMPLER_DECL.sub(decl, text)
 

@@ -4,6 +4,7 @@
 //
 //=============================================================================//
 #include "shaderapi_dx12.h"
+#include "shader_reflect_dx12.h"
 #include "shaderdevice_dx12.h"
 #include "command_recorder_dx12.h"
 #include "tier0/dbg.h"
@@ -129,7 +130,7 @@ bool AddTransition( ComputeReplayPayloadDX12 &payload, ID3D12Resource *resource,
 uint32_t ReflectedConstantBytes( const D3D12_SHADER_BYTECODE &bytecode )
 {
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
-	if ( !bytecode.pShaderBytecode || FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) )
+	if ( !bytecode.pShaderBytecode || FAILED( ReflectShaderDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, &reflection ) ) )
 		return UINT_MAX;
 	D3D12_SHADER_DESC shader{};
 	if ( FAILED( reflection->GetDesc( &shader ) ) )

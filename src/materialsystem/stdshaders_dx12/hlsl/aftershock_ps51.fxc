@@ -12,10 +12,10 @@
 // Texture Samplers ===============================================================================
 Texture2D g_tRefractionSampler_Texture : register( t0 );
 SamplerState g_tRefractionSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tRefractionSampler = { g_tRefractionSampler_Texture, g_tRefractionSampler_Sampler };
+static DX12Sampler2D g_tRefractionSampler = { g_tRefractionSampler_Texture, g_tRefractionSampler_Sampler };
 Texture2D g_tBumpSampler_Texture : register( t1 );
 SamplerState g_tBumpSampler_Sampler : register( s1 );
-static const DX12Sampler2D g_tBumpSampler = { g_tBumpSampler_Texture, g_tBumpSampler_Sampler };
+static DX12Sampler2D g_tBumpSampler = { g_tBumpSampler_Texture, g_tBumpSampler_Sampler };
 
 // Shaders Constants and Globals ==================================================================
 

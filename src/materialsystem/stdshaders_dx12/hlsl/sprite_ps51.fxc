@@ -27,7 +27,7 @@ cbuffer sprite_ps2x : register( b1, space1 )
 
 Texture2D TexSampler_Texture : register( t0 );
 SamplerState TexSampler_Sampler : register( s0 );
-static const DX12Sampler2D TexSampler = { TexSampler_Texture, TexSampler_Sampler };
+static DX12Sampler2D TexSampler = { TexSampler_Texture, TexSampler_Sampler };
 
 struct PS_INPUT
 {

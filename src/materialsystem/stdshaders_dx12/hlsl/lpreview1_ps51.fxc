@@ -10,16 +10,16 @@
 
 Texture2D AlbedoSampler_Texture : register( t0 );
 SamplerState AlbedoSampler_Sampler : register( s0 );
-static const DX12Sampler2D AlbedoSampler = { AlbedoSampler_Texture, AlbedoSampler_Sampler };
+static DX12Sampler2D AlbedoSampler = { AlbedoSampler_Texture, AlbedoSampler_Sampler };
 Texture2D NormalSampler_Texture : register( t1 );
 SamplerState NormalSampler_Sampler : register( s1 );
-static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+static DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
 Texture2D PositionSampler_Texture : register( t2 );
 SamplerState PositionSampler_Sampler : register( s2 );
-static const DX12Sampler2D PositionSampler = { PositionSampler_Texture, PositionSampler_Sampler };
+static DX12Sampler2D PositionSampler = { PositionSampler_Texture, PositionSampler_Sampler };
 Texture2D AccBuf_In_Texture : register( t3 );
 SamplerState AccBuf_In_Sampler : register( s3 );
-static const DX12Sampler2D AccBuf_In = { AccBuf_In_Texture, AccBuf_In_Sampler };
+static DX12Sampler2D AccBuf_In = { AccBuf_In_Texture, AccBuf_In_Sampler };
 
 
 cbuffer lpreview1_ps2x : register( b1, space1 )

@@ -13,21 +13,21 @@
 // Texture Samplers ===============================================================================
 Texture2D g_tRefractionSampler_Texture : register( t0 );
 SamplerState g_tRefractionSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tRefractionSampler = { g_tRefractionSampler_Texture, g_tRefractionSampler_Sampler };
+static DX12Sampler2D g_tRefractionSampler = { g_tRefractionSampler_Texture, g_tRefractionSampler_Sampler };
 #if BUMPMAP
 	Texture2D g_tBumpSampler_Texture : register( t1 );
 	SamplerState g_tBumpSampler_Sampler : register( s1 );
-	static const DX12Sampler2D g_tBumpSampler = { g_tBumpSampler_Texture, g_tBumpSampler_Sampler };
+	static DX12Sampler2D g_tBumpSampler = { g_tBumpSampler_Texture, g_tBumpSampler_Sampler };
 #endif
 
 Texture2D EnvmapSampler_Texture : register( t2 );
 SamplerState EnvmapSampler_Sampler : register( s2 );
-static const DX12Sampler2D EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+static DX12Sampler2D EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
 TextureCube EnvmapSampler_TextureCUBE : register( t2 );
-static const DX12SamplerCube EnvmapSampler_CUBE = { EnvmapSampler_TextureCUBE, EnvmapSampler_Sampler };
+static DX12SamplerCube EnvmapSampler_CUBE = { EnvmapSampler_TextureCUBE, EnvmapSampler_Sampler };
 Texture2D EnvmapMaskSampler_Texture : register( t3 );
 SamplerState EnvmapMaskSampler_Sampler : register( s3 );
-static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
+static DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
 
 // Shaders Constants and Globals ==================================================================
 

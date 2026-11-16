@@ -76,34 +76,34 @@ cbuffer vertexlit_and_unlit_generic_bump_ps2x : register( b1, space1 )
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 TextureCube EnvmapSampler_Texture : register( t1 );
 SamplerState EnvmapSampler_Sampler : register( s1 );
-static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+static DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
 Texture2D DetailSampler_Texture : register( t2 );
 SamplerState DetailSampler_Sampler : register( s2 );
-static const DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
+static DX12Sampler2D DetailSampler = { DetailSampler_Texture, DetailSampler_Sampler };
 Texture2D BumpmapSampler_Texture : register( t3 );
 SamplerState BumpmapSampler_Sampler : register( s3 );
-static const DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
+static DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
 Texture2D EnvmapMaskSampler_Texture : register( t4 );
 SamplerState EnvmapMaskSampler_Sampler : register( s4 );
-static const DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
+static DX12Sampler2D EnvmapMaskSampler = { EnvmapMaskSampler_Texture, EnvmapMaskSampler_Sampler };
 TextureCube NormalizeSampler_Texture : register( t5 );
 SamplerState NormalizeSampler_Sampler : register( s5 );
-static const DX12SamplerCube NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+static DX12SamplerCube NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
 Texture2D RandRotSampler_Texture : register( t6 );
 SamplerState RandRotSampler_Sampler : register( s6 );
-static const DX12Sampler2D RandRotSampler = { RandRotSampler_Texture, RandRotSampler_Sampler };
+static DX12Sampler2D RandRotSampler = { RandRotSampler_Texture, RandRotSampler_Sampler };
 Texture2D FlashlightSampler_Texture : register( t7 );
 SamplerState FlashlightSampler_Sampler : register( s7 );
-static const DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
+static DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
 Texture2D ShadowDepthSampler_Texture : register( t8 );
 SamplerComparisonState ShadowDepthSampler_Sampler : register( s8 );
-static const DX12ShadowSampler ShadowDepthSampler = { ShadowDepthSampler_Texture, ShadowDepthSampler_Sampler };
+static DX12ShadowSampler ShadowDepthSampler = { ShadowDepthSampler_Texture, ShadowDepthSampler_Sampler };
 Texture2D DiffuseWarpSampler_Texture : register( t9 );
 SamplerState DiffuseWarpSampler_Sampler : register( s9 );
-static const DX12Sampler1D DiffuseWarpSampler = { DiffuseWarpSampler_Texture, DiffuseWarpSampler_Sampler };
+static DX12Sampler1D DiffuseWarpSampler = { DiffuseWarpSampler_Texture, DiffuseWarpSampler_Sampler };
 
 struct PS_INPUT
 {

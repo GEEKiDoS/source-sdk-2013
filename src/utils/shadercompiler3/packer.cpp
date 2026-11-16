@@ -1,5 +1,6 @@
 #include "shader_vcs_dx12.h"
 #include "native_engine_cbuffers_dx12.h"
+#include "shader_reflect_dx12.h"
 #include <d3dcompiler.h>
 #include <d3d12shader.h>
 #include <wrl/client.h>
@@ -225,6 +226,27 @@ std::string foldDescription(const Shader &sh) {
 	}
 	out << "end\n";
 	return out.str();
+}
+// Native metadata trailer appended to a published VCS (layout in shader_vcs_dx12.h): sampler roles, highres ABI,
+// early-depth twin admission and the shader's combo-fold table, so no side file or registry accompanies it.
+std::string nativeMetadata(const Shader &sh) {
+	const std::string fold = foldDescription(sh);
+	uint32_t flags = 0;
+	if (sh.highresAbi) flags |= kVcsNativeHighresAbi;
+	if (sh.lightmapSamplerMask || sh.highresAbi) flags |= kVcsNativeSamplerRoles;
+	if (sh.earlyDepthTwin) flags |= kVcsNativeEarlyDepthTwin;
+	const uint32_t padded = uint32_t((fold.size() + 3) & ~size_t(3));
+	const uint32_t header[6] = {kVcsNativeMetadataMagic, 1u, 24u + padded, flags, sh.lightmapSamplerMask, uint32_t(fold.size())};
+	std::string out(reinterpret_cast<const char *>(header), sizeof(header));
+	out += fold;
+	out.resize(24u + padded, '\0');
+	return out;
+}
+// Publish-list name for one destination directory.
+std::string destinationKey(const fs::path &game) {
+	std::ostringstream key;
+	key << std::hex << std::setw(16) << std::setfill('0') << std::hash<std::string>{}(lower(fs::absolute(game).lexically_normal().string()));
+	return key.str();
 }
 std::string ordinaryLogical(const std::string &logical) {
 	return tokenRename(tokenRename(tokenRename(logical, "_earlydepth_", "_"), "_shadowmap_", "_"), "_highres_", "_");
@@ -617,10 +639,11 @@ const dx12native::EngineCBufferLayoutDX12 *probeLayout(const std::string &name) 
 		if (name == layout.name) return &layout;
 	return nullptr;
 }
-// DX12ProbeConstantsV1: b0 space4, four vectors (float4, uint4, float4, uint4).
+// DX12ProbeConstantsV1: b0 space4, four vectors (float4, uint4, float4, uint4). Pixel or vertex stage (see
+// validateProbePbrResources), so the layout's stage is not compared.
 void validateProbeBlock(const Block &b) {
 	const auto *layout = probeLayout(b.name);
-	if (!layout || b.stage != layout->stage || b.reg != layout->shaderRegister || b.space != DX12_PROBE_REGISTER_SPACE ||
+	if (!layout || b.reg != layout->shaderRegister || b.space != DX12_PROBE_REGISTER_SPACE ||
 	    b.size != layout->byteSize || b.members.size() != layout->memberCount)
 		throw std::runtime_error("Probe ABI cbuffer mismatch: " + b.name);
 	for (size_t i = 0; i < b.members.size(); ++i) {
@@ -664,7 +687,8 @@ void validateProbeBinding(const D3D12_SHADER_INPUT_BIND_DESC &b, const std::stri
 	if (!valid || (seen & bit)) throw std::runtime_error("Probe resource contract mismatch: " + logical + "." + b.Name);
 	seen |= bit;
 }
-// Spaces 4 and 5 are backend-owned and pixel-stage only; space-4 bindings go through validateProbeBinding.
+// Spaces 4 and 5 are backend-owned; space 5 is pixel-stage only, space 4 (probes) may also be read by a vertex shader.
+// Space-4 bindings go through validateProbeBinding.
 // Space 5: StructuredBuffer<PBRSpotGpu> g_ProjectedLights t0, g_ProjectedCookies[8] t1..t8 (Texture2D<float4>),
 // g_ProjectedDepth[8] t9..t16 (Texture2D<float>), g_CookieSampler s0, g_ProjectedCmpSampler s1 (comparison).
 // Reflection contains only retained resources, so any subset may appear, but every retained binding must match.
@@ -674,8 +698,8 @@ void validateProbePbrResources(ID3D12ShaderReflection *reflection, const D3D12_S
 		D3D12_SHADER_INPUT_BIND_DESC b{};
 		if (FAILED(reflection->GetResourceBindingDesc(i, &b))) throw std::runtime_error("PBR binding reflection failed");
 		if (b.Space != DX12_PROBE_REGISTER_SPACE && b.Space != DX12_PBR_REGISTER_SPACE) continue;
-		if (stage != VcsStage::Pixel)
-			throw std::runtime_error("Space-" + std::to_string(b.Space) + " resource outside pixel stage: " + logical + "." + b.Name);
+		if (stage != VcsStage::Pixel && !(stage == VcsStage::Vertex && b.Space == DX12_PROBE_REGISTER_SPACE))
+			throw std::runtime_error("Space-" + std::to_string(b.Space) + " resource outside its stage: " + logical + "." + b.Name);
 		if (b.Space == DX12_PROBE_REGISTER_SPACE) { validateProbeBinding(b, logical, probeSeen); continue; }
 		if (b.Type == D3D_SIT_CBUFFER) throw std::runtime_error("Space-5 cbuffer rejected: " + logical + "." + b.Name);
 		const bool lights = !strcmp(b.Name, "g_ProjectedLights"), cookies = !strcmp(b.Name, "g_ProjectedCookies"),
@@ -1089,7 +1113,9 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 		stripIncludes(readText(root / "native_src" / "shadow_dither.hlsli")) +
 		stripIncludes(readText(root / "native_src" / "shadow_pcss_disks.hlsli")) +
 		stripIncludes(readText(root / "native_src" / "shadowmap_lighting.hlsli")));
-    std::vector<std::pair<fs::path, fs::path>> publish;
+    // Staged VCS -> published VCS with its native metadata trailer appended.
+    struct Publication { fs::path source, target; std::string trailer; };
+    std::vector<Publication> publish;
     std::ostringstream report;
     struct RegistryEntry { std::string logical, stage, block; };
     std::vector<RegistryEntry> registry;
@@ -1148,13 +1174,13 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
                 ++sh.present;
                 sh.presentCombos.insert(uint64_t(index) * sh.dynamicCount + dynamic);
                 ComPtr<ID3D12ShaderReflection> reflection;
-                HRESULT hr = D3DReflect(payload->tokens.Base(), payload->tokens.Count(), IID_PPV_ARGS(&reflection));
-                if (FAILED(hr)) throw std::runtime_error("D3DReflect rejected DXBC: " + sh.logical);
+                HRESULT hr = ReflectShaderDX12(payload->tokens.Base(), payload->tokens.Count(), &reflection);
+                if (FAILED(hr)) throw std::runtime_error("Shader reflection rejected payload: " + sh.logical);
                 D3D12_SHADER_DESC desc{};
                 const unsigned expectedStage = stage == VcsStage::Vertex ? D3D12_SHVER_VERTEX_SHADER :
                                                stage == VcsStage::Pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_COMPUTE_SHADER;
                 if (FAILED(reflection->GetDesc(&desc)) || static_cast<unsigned>(D3D12_SHVER_GET_TYPE(desc.Version)) != expectedStage)
-                    throw std::runtime_error("DXBC stage mismatch: " + sh.logical);
+                    throw std::runtime_error("Shader stage mismatch: " + sh.logical);
                 validateLightingResources(reflection.Get(), desc, stage, sh.logical);
 				validateHighresResources(reflection.Get(), desc, stage, sh);
 				validateProbePbrResources(reflection.Get(), desc, stage, sh.logical);
@@ -1226,7 +1252,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
 					throw std::runtime_error("Folded shader does not reflect its combo-fold cbuffer: " + sh.logical);
             }
         }
-        if (!sh.present) throw std::runtime_error("No present DXBC payloads: " + sh.logical);
+        if (!sh.present) throw std::runtime_error("No present shader payloads: " + sh.logical);
         // Native-only logicals have no legacy runtime record or combo-ABI comparison.
         const fs::path legacyVcs = game / "shaders" / "fxc" / (sh.legacyName + ".vcs");
         if (!nativeOnly && !sh.fold.enabled && fs::exists(legacyVcs)) {
@@ -1285,19 +1311,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         output["meta/" + sh.logical + ".txt"] = detail;
         report << detail;
         const char *directory = sh.stage == "vs" ? "vsh" : sh.stage == "ps" ? "psh" : "csh";
-        publish.emplace_back(nativeVcs, game / "shaders" / directory / (sh.logical + ".vcs"));
-		if (sh.lightmapSamplerMask || sh.highresAbi) {
-			const uint32_t metadata[4] = {0x544c484eu, 1u, sh.lightmapSamplerMask, sh.highresAbi};
-			const fs::path sidecar = sh.artifactRoot / "hlight" / (sh.logical + ".hlight");
-			writeText(sidecar, std::string(reinterpret_cast<const char *>(metadata), sizeof(metadata)));
-			publish.emplace_back(sidecar, game / "shaders" / directory / (sh.logical + ".hlight"));
-		}
-		if (sh.earlyDepthTwin) {
-			const uint32_t metadata[2] = {0x59445245u, 1u};
-			const fs::path sidecar = sh.artifactRoot / "earlydepth" / (sh.logical + ".earlydepth");
-			writeText(sidecar, std::string(reinterpret_cast<const char *>(metadata), sizeof(metadata)));
-			publish.emplace_back(sidecar, game / "shaders" / directory / (sh.logical + ".earlydepth"));
-		}
+        publish.push_back({nativeVcs, game / "shaders" / directory / (sh.logical + ".vcs"), nativeMetadata(sh)});
     }
 	// A declaration grants backend early-depth admission; publish it only with an
 	// output/combo-compatible native twin from this same pack, never a stale GAME file.
@@ -1329,7 +1343,7 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
         // Set*ShaderIndex), e.g. screenspace_general's $pixshader. Sorted for binary search.
         std::sort(registry.begin(), registry.end(), [](const RegistryEntry &a, const RegistryEntry &b) { return lower(a.logical) < lower(b.logical); });
         std::ostringstream r;
-        r << "// generated by nativeshaderpack_dx12: every native logical shader and its material block writer\n";
+        r << "// generated by ShaderCompiler3: every native logical shader and its material block writer\n";
         std::set<std::string> included;
         for (const auto &e : registry) if (!e.block.empty() && included.insert(e.block).second) r << "#include \"" << e.block << ".h\"\n";
         r << "static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {\n";
@@ -1377,58 +1391,36 @@ void run(const fs::path &root, const fs::path &staging, const fs::path &game) {
     const fs::path generated = root / "generated";
     for (const char *dir : {"inc", "cbuffers", "meta"}) fs::remove_all(generated / dir);
     for (const auto &[name, contents] : output) writeText(generated / name, contents);
-    const fs::path owned = game / "shaders" / "native_dx12_published.txt";
+    // The files published into a destination are remembered in the staging tree (one list per destination), so the
+    // next publish there removes what is no longer produced. The legacy in-game list of the former packer, and the
+    // registries and side files it published (folded into the VCS metadata trailer now), are migrated away once.
+    const fs::path owned = staging / ("published-" + destinationKey(game) + ".txt");
+    const fs::path legacyOwned = game / "shaders" / "native_dx12_published.txt";
     std::set<fs::path> targets;
-    for (const auto &[source, target] : publish) targets.insert(target);
-    if (fs::exists(owned)) {
-        std::istringstream previous(readText(owned)); std::string line;
+    for (const auto &p : publish) targets.insert(p.target);
+    for (const fs::path &list : {owned, legacyOwned}) {
+        if (!fs::exists(list)) continue;
+        std::istringstream previous(readText(list)); std::string line;
         while (std::getline(previous, line)) {
             line = trim(line);
             if (!line.empty() && !targets.count(game / line)) fs::remove(game / line);
         }
     }
+    fs::remove(legacyOwned);
     std::ostringstream ownedList;
-    for (const auto &[source, target] : publish) {
-        fs::create_directories(target.parent_path());
-        fs::copy_file(source, target, fs::copy_options::overwrite_existing);
-        ownedList << fs::relative(target, game).generic_string() << '\n';
-        std::cout << "published " << target.string() << '\n';
+    for (const auto &p : publish) {
+        fs::create_directories(p.target.parent_path());
+        const auto bytes = readBytes(p.source);
+        writeText(p.target, std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size()) + p.trailer);
+        ownedList << fs::relative(p.target, game).generic_string() << '\n';
+        std::cout << "published " << p.target.string() << '\n';
     }
-    // Native logical -> legacy DX9 logical for fallback. Native-only logicals get a two-column
-    // marker so runtime can fail closed without attempting a shaders/fxc fallback.
-    std::ostringstream legacyNames;
-    for (const auto &sh : shaders) {
-        if (sh.profile == "native") legacyNames << sh.logical << ' ' << sh.stage << '\n';
-        else legacyNames << sh.logical << ' ' << sh.stage << ' ' << sh.legacyName << '\n';
-    }
-    const fs::path legacyNamesPath = game / "shaders" / "native_dx12_legacy_names.txt";
-    writeText(legacyNamesPath, legacyNames.str());
-    ownedList << fs::relative(legacyNamesPath, game).generic_string() << '\n';
-	std::ostringstream comboFolds;
-	for (const auto &sh : shaders) comboFolds << foldDescription(sh);
-	const fs::path comboFoldsPath = game / "shaders" / "native_dx12_combo_fold.txt";
-	writeText(comboFoldsPath, comboFolds.str());
-	ownedList << fs::relative(comboFoldsPath, game).generic_string() << '\n';
     writeText(owned, ownedList.str());
     std::cout << "validated " << shaders.size() << " shaders, " << shared.size() << " cbuffers; generated " << generated.string() << '\n';
 }
 } // namespace
-int main(int argc, char **argv) {
-    try {
-        fs::path root, staging, game;
-        for (int i = 1; i < argc; i += 2) {
-            if (i + 1 == argc) throw std::runtime_error("Usage: nativeshaderpack_dx12 -root <dir> -staging <dir> -game <dir>");
-            const std::string key = argv[i];
-            if (key == "-root") root = argv[i + 1];
-            else if (key == "-staging") staging = argv[i + 1];
-            else if (key == "-game") game = argv[i + 1];
-            else throw std::runtime_error("Unknown option " + key);
-        }
-        if (root.empty() || staging.empty() || game.empty()) throw std::runtime_error("Missing -root/-staging/-game");
-        run(root, staging, game);
-        return 0;
-    } catch (const std::exception &e) {
-        std::cerr << "nativeshaderpack_dx12: " << e.what() << '\n';
-        return 1;
-    }
+
+namespace sc3 {
+// Validation and publication of the staged artifacts (formerly nativeshaderpack_dx12).
+void PackAndPublish(const fs::path &root, const fs::path &staging, const fs::path &game) { run(root, staging, game); }
 }

@@ -9,6 +9,7 @@
 #include "hardwareconfig_dx12.h"
 #include "resources_dx12.h"
 #include "shader_translate_dx12.h"
+#include "shader_reflect_dx12.h"
 #include "tracy_dx12.h"
 #include "filesystem.h"
 #include "icvar.h"
@@ -281,6 +282,21 @@ bool CShaderDeviceDX12::Initialize( void *hWnd, int nAdapter, const ShaderDevice
 	if ( !LoadDxbcSigner( m_hSignerModule, m_pfnSigner ) )
 	{
 		Warning( "ShaderAPIDX12: required dxbcSigner.dll/SignDxbc missing beside renderer\n" );
+		ShutdownDevice();
+		return false;
+	}
+	// Native shaders are SM 6.0 DXIL (ShaderCompiler3): the device must run them and dxcompiler.dll must reflect them.
+	D3D12_FEATURE_DATA_SHADER_MODEL shaderModel{ D3D_SHADER_MODEL_6_0 };
+	if ( FAILED( m_pDevice->CheckFeatureSupport( D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof( shaderModel ) ) ) ||
+	     shaderModel.HighestShaderModel < D3D_SHADER_MODEL_6_0 )
+	{
+		Warning( "ShaderAPIDX12: the adapter driver does not support shader model 6.0, required by the native shaders\n" );
+		ShutdownDevice();
+		return false;
+	}
+	if ( !DxilReflectionAvailableDX12() )
+	{
+		Warning( "ShaderAPIDX12: required dxcompiler.dll missing beside renderer\n" );
 		ShutdownDevice();
 		return false;
 	}
@@ -3072,12 +3088,18 @@ IShaderBuffer *CShaderDeviceDX12::CompileShader( const char *pProgram, size_t nB
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Reads the SM5 DCL_GLOBAL_FLAGS token from a native DXBC program. A
-//          force-early-depth shader has been audited by its source compiler to
-//          preserve coverage before the backend removes its pixel stage.
+// Purpose: Reads the forced-early-depth flag of a native program: the SM5 DCL_GLOBAL_FLAGS token of DXBC, the
+//          reflected requirement flags of DXIL. A force-early-depth shader has been audited by its source
+//          compiler to preserve coverage before the backend removes its pixel stage.
 //-----------------------------------------------------------------------------
 static bool NativeShaderForcesEarlyDepth( const unsigned char *pBits, size_t nBytes )
 {
+	if ( ClassifyShaderBytecodeDX12( pBits, nBytes ) == ShaderBytecodeKindDX12::Dxil )
+	{
+		Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
+		return SUCCEEDED( ReflectShaderDX12( pBits, nBytes, &reflection ) ) &&
+		       ( reflection->GetRequiresFlags() & D3D_SHADER_REQUIRES_EARLY_DEPTH_STENCIL ) != 0;
+	}
 	if ( !pBits || nBytes < 36 || memcmp( pBits, "DXBC", 4 ) )
 		return false;
 	auto u32 = [&]( size_t offset, uint32_t &value )

@@ -31,31 +31,31 @@
 
 Texture2D NormalSampler2_Texture : register( t1 );
 SamplerState NormalSampler2_Sampler : register( s1 );
-static const DX12Sampler2D NormalSampler2 = { NormalSampler2_Texture, NormalSampler2_Sampler };
+static DX12Sampler2D NormalSampler2 = { NormalSampler2_Texture, NormalSampler2_Sampler };
 Texture2D RefractSampler_Texture : register( t2 );
 SamplerState RefractSampler_Sampler : register( s2 );
-static const DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+static DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
 Texture2D NormalSampler_Texture : register( t3 );
 SamplerState NormalSampler_Sampler : register( s3 );
-static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+static DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
 #if CUBEMAP
 TextureCube EnvmapSampler_Texture : register( t4 );
 SamplerState EnvmapSampler_Sampler : register( s4 );
-static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+static DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
 #endif
 #if REFRACTTINTTEXTURE
 Texture2D RefractTintSampler_Texture : register( t5 );
 SamplerState RefractTintSampler_Sampler : register( s5 );
-static const DX12Sampler2D RefractTintSampler = { RefractTintSampler_Texture, RefractTintSampler_Sampler };
+static DX12Sampler2D RefractTintSampler = { RefractTintSampler_Texture, RefractTintSampler_Sampler };
 #endif
 
 #if NORMAL_DECODE_MODE == NORM_DECODE_ATI2N_ALPHA
 Texture2D AlphaMapSampler_Texture : register( t6 );
 SamplerState AlphaMapSampler_Sampler : register( s6 );	// alpha
-static const DX12Sampler2D AlphaMapSampler = { AlphaMapSampler_Texture, AlphaMapSampler_Sampler };
+static DX12Sampler2D AlphaMapSampler = { AlphaMapSampler_Texture, AlphaMapSampler_Sampler };
 Texture2D AlphaMapSampler2_Texture : register( t7 );
 SamplerState AlphaMapSampler2_Sampler : register( s7 );
-static const DX12Sampler2D AlphaMapSampler2 = { AlphaMapSampler2_Texture, AlphaMapSampler2_Sampler };
+static DX12Sampler2D AlphaMapSampler2 = { AlphaMapSampler2_Texture, AlphaMapSampler2_Sampler };
 #else
 #define AlphaMapSampler2			NormalSampler
 #define AlphaMapSampler				NormalSampler2

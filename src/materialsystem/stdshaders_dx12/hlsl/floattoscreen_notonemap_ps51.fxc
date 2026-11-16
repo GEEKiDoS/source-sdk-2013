@@ -10,7 +10,7 @@
 
 Texture2D FBSampler_Texture : register( t0 );
 SamplerState FBSampler_Sampler : register( s0 );
-static const DX12Sampler2D FBSampler = { FBSampler_Texture, FBSampler_Sampler };
+static DX12Sampler2D FBSampler = { FBSampler_Texture, FBSampler_Sampler };
 
 struct PS_INPUT
 {

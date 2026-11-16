@@ -386,6 +386,7 @@ public:
 	SignDxbcFnDX12 Signer() const { return m_pfnSigner; }
 
 	uint64_t NextFenceValue() const { return m_nFenceValue + 1; }
+	uint64_t RecordedBarriers() const { return m_Recorder.m_nBarrierCalls; }
 
 	uint64_t CompletedFenceValue() const { return m_pFence ? m_pFence->GetCompletedValue() : 0; }
 

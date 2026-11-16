@@ -253,6 +253,9 @@ BEGIN_VS_SHADER( PBR_Infected, "L4D2 Infected through the PBR model shaders" )
 			v.infWoundUVScale[0] = TERRORWOUNDUVSCALE;
 			v.infWoundUVScale[1] = TERRORWOUNDUVSCALE2;
 			PBR_FILL_EXTRA_VARS( v );
+			// The INFECTED pixel path builds F0 from the infected specular mask / Phong boost / Fresnel; the metalness
+			// workflow would replace it with a flat 0.04 everywhere.
+			v.specularWorkflow = true;
 			return v;
 		}();
 		return s_vars;

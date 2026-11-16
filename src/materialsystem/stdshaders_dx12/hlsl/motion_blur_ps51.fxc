@@ -19,7 +19,7 @@
 // Texture Samplers ===============================================================================
 Texture2D g_tTexSampler_Texture : register( t0 );
 SamplerState g_tTexSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tTexSampler = { g_tTexSampler_Texture, g_tTexSampler_Sampler };
+static DX12Sampler2D g_tTexSampler = { g_tTexSampler_Texture, g_tTexSampler_Sampler };
 
 // Shaders Constants and Globals ==================================================================
 

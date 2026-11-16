@@ -26,7 +26,7 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 
 Texture2D MorphAccumulator_Texture : register( t0 );
 SamplerState MorphAccumulator_Sampler : register( s0 );
-static const DX12Sampler2D MorphAccumulator = { MorphAccumulator_Texture, MorphAccumulator_Sampler };
+static DX12Sampler2D MorphAccumulator = { MorphAccumulator_Texture, MorphAccumulator_Sampler };
 
 HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 {

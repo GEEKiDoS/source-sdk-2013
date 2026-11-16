@@ -7,10 +7,10 @@
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D CloudAlphaSampler_Texture : register( t1 );
 SamplerState CloudAlphaSampler_Sampler : register( s1 );
-static const DX12Sampler2D CloudAlphaSampler = { CloudAlphaSampler_Texture, CloudAlphaSampler_Sampler };
+static DX12Sampler2D CloudAlphaSampler = { CloudAlphaSampler_Texture, CloudAlphaSampler_Sampler };
 
 struct PS_INPUT
 {

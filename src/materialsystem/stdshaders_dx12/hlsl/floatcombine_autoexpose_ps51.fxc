@@ -10,13 +10,13 @@
 
 Texture2D FBSampler_Texture : register( t0 );
 SamplerState FBSampler_Sampler : register( s0 );
-static const DX12Sampler2D FBSampler = { FBSampler_Texture, FBSampler_Sampler };
+static DX12Sampler2D FBSampler = { FBSampler_Texture, FBSampler_Sampler };
 Texture2D BloomSampler_Texture : register( t1 );
 SamplerState BloomSampler_Sampler : register( s1 );
-static const DX12Sampler2D BloomSampler = { BloomSampler_Texture, BloomSampler_Sampler };
+static DX12Sampler2D BloomSampler = { BloomSampler_Texture, BloomSampler_Sampler };
 Texture2D Exposure_Sampler_Texture : register( t2 );
 SamplerState Exposure_Sampler_Sampler : register( s2 );
-static const DX12Sampler2D Exposure_Sampler = { Exposure_Sampler_Texture, Exposure_Sampler_Sampler };
+static DX12Sampler2D Exposure_Sampler = { Exposure_Sampler_Texture, Exposure_Sampler_Sampler };
 
 
 cbuffer floatcombine_autoexpose_ps2x : register( b1, space1 )

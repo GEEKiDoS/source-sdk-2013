@@ -26,16 +26,16 @@ cbuffer portal_ps2x : register( b1, space1 )
 
 Texture2D PortalSampler_Texture : register( t0 );
 SamplerState PortalSampler_Sampler : register( s0 );
-static const DX12Sampler2D PortalSampler = { PortalSampler_Texture, PortalSampler_Sampler };
+static DX12Sampler2D PortalSampler = { PortalSampler_Texture, PortalSampler_Sampler };
 
 #if( (HASALPHAMASK == 1) || (USESTATICTEXTURE == 1) )
 	Texture2D SecondarySampler_Texture : register( t1 );
 	SamplerState SecondarySampler_Sampler : register( s1 );
-	static const DX12Sampler2D SecondarySampler = { SecondarySampler_Texture, SecondarySampler_Sampler };
+	static DX12Sampler2D SecondarySampler = { SecondarySampler_Texture, SecondarySampler_Sampler };
 #	if( (HASALPHAMASK == 1) && (USESTATICTEXTURE == 1) )
 		Texture2D TertiarySampler_Texture : register( t2 );
 		SamplerState TertiarySampler_Sampler : register( s2 );
-		static const DX12Sampler2D TertiarySampler = { TertiarySampler_Texture, TertiarySampler_Sampler };
+		static DX12Sampler2D TertiarySampler = { TertiarySampler_Texture, TertiarySampler_Sampler };
 #	endif
 #endif
 

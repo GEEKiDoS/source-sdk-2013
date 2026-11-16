@@ -102,12 +102,16 @@ private:
 	int				m_high;
 	int				m_low;
 	bool			m_bLastDraw;
+	// Lines drawn by the last Paint; mode 3's GPU pass list plus cl_showpos outgrow the fixed height.
+	int				m_nPaintedLines;
 	bool			m_bGpuTimingRequested;
 	int				m_BatteryPercent;
 	float			m_lastBatteryPercent;
 };
 
 #define FPS_PANEL_WIDTH 300
+// cl_showfps 3 right-aligns the fps line and the GPU / CPU names, whose brand strings can be wider than the panel.
+#define FPS_PANEL_WIDTH_MODE3 640
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -123,6 +127,7 @@ CFPSPanel::CFPSPanel( vgui::VPANEL parent ) : BaseClass( NULL, "CFPSPanel" )
 	SetPaintBackgroundEnabled( false );
 
 	m_hFont = 0;
+	m_nPaintedLines = 0;
 	m_BatteryPercent = -1;
 	m_lastBatteryPercent = -1.0f;
 	m_bGpuTimingRequested = false;
@@ -174,7 +179,8 @@ void CFPSPanel::ComputeSize( void )
 	int wide, tall;
 	vgui::ipanel()->GetSize(GetVParent(), wide, tall );
 
-	int x = wide - FPS_PANEL_WIDTH;
+	const int panelWide = cl_showfps.GetInt() == 3 ? FPS_PANEL_WIDTH_MODE3 : FPS_PANEL_WIDTH;
+	int x = wide - panelWide;
 	int y = 0;
 	if ( IsX360() )
 	{
@@ -182,7 +188,9 @@ void CFPSPanel::ComputeSize( void )
 		y += XBOX_MINBORDERSAFE * tall;
 	}
 	SetPos( x, y );
-	SetSize( FPS_PANEL_WIDTH, ( cl_showfps.GetInt() == 3 ? 24 : 5 ) * vgui::surface()->GetFontTall( m_hFont ) + 8 );
+	const int fontTall = vgui::surface()->GetFontTall( m_hFont );
+	const int fixedTall = ( cl_showfps.GetInt() == 3 ? 24 : 5 ) * fontTall + 8;
+	SetSize( panelWide, MAX( fixedTall, 2 + m_nPaintedLines * ( fontTall + 2 ) + 4 ) );
 }
 
 void CFPSPanel::ApplySchemeSettings(vgui::IScheme *pScheme)
@@ -296,7 +304,8 @@ void CFPSPanel::Paint()
 {
 	UpdateGpuTimingState();
 	int i = 0;
-	int x = 2;
+	// Left-aligned lines keep their place at the right of the screen when mode 3 widens the panel.
+	int x = 2 + MAX( 0, GetWide() - FPS_PANEL_WIDTH );
 	if ( g_bDisplayParticlePerformance )
 	{
 		int nPerf = GetParticlePerformance();
@@ -311,6 +320,12 @@ void CFPSPanel::Paint()
 	}
 	float realFrameTime = gpGlobals->realtime - m_lastRealTime;
 	const int nShowFpsMode = cl_showfps.GetInt();
+	// Mode 3: the header lines end at the panel's right edge.
+	const auto headerX = [&]( const char *pszText )
+	{
+		return nShowFpsMode == 3 ? MAX( 2, GetWide() - 2 - g_pMatSystemSurface->DrawTextLen( m_hFont, "%s", pszText ) ) : x;
+	};
+	char szLine[256];
 
 	if ( nShowFpsMode && realFrameTime > 0.0 )
 	{
@@ -346,22 +361,24 @@ void CFPSPanel::Paint()
 				nFps = static_cast<int>( m_AverageFPS );
 				float frameMS = realFrameTime * 1000.0f;
 				GetFPSColor( nFps, ucColor );
-				g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2, ucColor[0], ucColor[1], ucColor[2], 255, "%3i fps (%3i, %3i) %.1f ms on %s", nFps, m_low, m_high, frameMS, pszMapName );
+				V_snprintf( szLine, sizeof( szLine ), "%3i fps (%3i, %3i) %.1f ms on %s", nFps, m_low, m_high, frameMS, pszMapName );
+				g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2, ucColor[0], ucColor[1], ucColor[2], 255, "%s", szLine );
 			} 
 			else
 			{
 				m_AverageFPS = -1;
 				nFps = static_cast<int>( 1.0f / realFrameTime );
 				GetFPSColor( nFps, ucColor );
-				g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2, ucColor[0], ucColor[1], ucColor[2], 255, "%3i fps on %s", nFps, pszMapName );
+				V_snprintf( szLine, sizeof( szLine ), "%3i fps on %s", nFps, pszMapName );
+				g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2, ucColor[0], ucColor[1], ucColor[2], 255, "%s", szLine );
 			}
 
 			// Frame generation: the host rate above is what the game renders; this line is what the display receives.
 			if ( const char *pszFrameGen = FrameGenDX12_ActiveName() )
 			{
 				const float flShown = FrameGenDX12_ShownPerFrame();
-				g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * ( vgui::surface()->GetFontTall( m_hFont ) + 2 ), ucColor[0], ucColor[1], ucColor[2], 255,
-					"%3i fps shown (%s x%.1f)", static_cast<int>( nFps * flShown ), pszFrameGen, flShown );
+				V_snprintf( szLine, sizeof( szLine ), "%3i fps shown (%s x%.1f)", static_cast<int>( nFps * flShown ), pszFrameGen, flShown );
+				g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2 + i * ( vgui::surface()->GetFontTall( m_hFont ) + 2 ), ucColor[0], ucColor[1], ucColor[2], 255, "%s", szLine );
 				i++;
 			}
 			if ( nShowFpsMode == 3 )
@@ -373,29 +390,44 @@ void CFPSPanel::Paint()
 				else
 					m_AverageCPUFrameMS = m_AverageCPUFrameMS * 0.9f + cpuFrameMs * 0.1f;
 
+				// Adapter description and CPU brand string, as reported (fixed for the session).
+				static char s_szGpuName[128], s_szCpuName[128];
+				if ( !s_szGpuName[0] )
+				{
+					MaterialAdapterInfo_t adapter;
+					materials->GetDisplayAdapterInfo( materials->GetCurrentAdapter(), adapter );
+					V_strncpy( s_szGpuName, adapter.m_pDriverName, sizeof( s_szGpuName ) );
+					const CPUInformation *pCpu = GetCPUInformation();
+					V_strncpy( s_szCpuName, pCpu && pCpu->m_szProcessorBrand ? pCpu->m_szProcessorBrand : "", sizeof( s_szCpuName ) );
+				}
+				g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( s_szGpuName ), 2 + i * lineHeight, 0, 255, 255, 255, "%s", s_szGpuName );
+				++i;
+				g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( s_szCpuName ), 2 + i * lineHeight, 0, 255, 255, 255, "%s", s_szCpuName );
+				++i;
 				ShaderAPIDX12GpuTiming_t timing{};
 				IShaderAPIDX12 *pShaderAPIDX12 = GetShaderAPIDX12ForFPS();
 				const bool bTiming = pShaderAPIDX12 && pShaderAPIDX12->GetGpuTiming( timing ) && timing.available;
 				if ( bTiming )
 				{
-					g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
-						"GPU total %.2f ms | CPU %.2f ms", timing.gpuFrameMs, m_AverageCPUFrameMS );
+					V_snprintf( szLine, sizeof( szLine ), "GPU total %.2f ms | CPU %.2f ms", timing.gpuFrameMs, m_AverageCPUFrameMS );
+					g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2 + i * lineHeight, 255, 255, 255, 255, "%s", szLine );
 					++i;
-					g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
-						"GPU passes (inclusive; ~0.5s):" );
+					V_strncpy( szLine, "GPU passes (inclusive; ~0.5s):", sizeof( szLine ) );
+					g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2 + i * lineHeight, 255, 255, 255, 255, "%s", szLine );
 					++i;
 					for ( unsigned int event = 0; event < timing.count; ++event )
 					{
+						// Right-aligned: a nested pass ends two characters short of its parent.
 						const int indent = MIN( static_cast<int>( timing.events[event].depth ), 8 ) * 2;
-						g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
-							"%*s%s %.2f ms", indent, "", timing.events[event].name, timing.events[event].ms );
+						V_snprintf( szLine, sizeof( szLine ), "%s %.2f ms%*s", timing.events[event].name, timing.events[event].ms, indent, "" );
+						g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2 + i * lineHeight, 255, 255, 255, 255, "%s", szLine );
 						++i;
 					}
 				}
 				else
 				{
-					g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2 + i * lineHeight, 255, 255, 255, 255,
-						"GPU passes (inclusive; ~0.5s): waiting for samples" );
+					V_strncpy( szLine, "GPU passes (inclusive; ~0.5s): waiting for samples", sizeof( szLine ) );
+					g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), 2 + i * lineHeight, 255, 255, 255, 255, "%s", szLine );
 					++i;
 				}
 			}
@@ -409,7 +441,10 @@ void CFPSPanel::Paint()
 				const int frequencyY = nShowFpsMode == 3 ? 2 + i * ( fontTall + 2 ) : fontTall + 2;
 				// Optionally print out the CPU frequency monitoring data.
 				GetCPUColor( frequency.m_percentage, ucColor );
-				g_pMatSystemSurface->DrawColoredText( m_hFont, x, frequencyY, ucColor[0], ucColor[1], ucColor[2], 255, "CPU frequency percent: %3.1f%%   Min percent: %3.1f%%", frequency.m_percentage, frequency.m_lowestPercentage );
+				V_snprintf( szLine, sizeof( szLine ), "CPU frequency percent: %3.1f%%   Min percent: %3.1f%%", frequency.m_percentage, frequency.m_lowestPercentage );
+				g_pMatSystemSurface->DrawColoredText( m_hFont, headerX( szLine ), frequencyY, ucColor[0], ucColor[1], ucColor[2], 255, "%s", szLine );
+				if ( nShowFpsMode == 3 )
+					++i;
 			}
 		}
 	}
@@ -453,6 +488,7 @@ void CFPSPanel::Paint()
 											  255, 255, 255, 255, 
 											  "vel:  %.2f", 
 											  vel.Length() );
+		i++;
 	}
 	
 	if ( cl_showbattery.GetInt() > 0 )
@@ -476,8 +512,10 @@ void CFPSPanel::Paint()
 				g_pMatSystemSurface->DrawColoredText( m_hFont, x, 2+ i * ( vgui::surface()->GetFontTall( m_hFont ) + 2 ), 
 											 255, 255, 255, 255,  "battery:  %d%%",m_BatteryPercent );	
 			}
+			i++;
 		}
 	}
+	m_nPaintedLines = i;
 }
 
 class CFPS : public IFPSPanel

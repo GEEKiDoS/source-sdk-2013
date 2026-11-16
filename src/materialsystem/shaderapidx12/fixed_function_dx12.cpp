@@ -9,8 +9,8 @@
 #include "tier1/utlbuffer.h"
 #include "tier1/strtools.h"
 #include <d3d12.h>
-#include <d3dcompiler.h>
-#include <d3d11shader.h>
+#include "shader_reflect_dx12.h"
+#include <wrl/client.h>
 #include "../stdshaders_dx12/generated/inc/highres_lightmaps_hlsl.inc"
 #include "../stdshaders_dx12/generated/inc/shadowmap_lighting_hlsl.inc"
 
@@ -451,15 +451,15 @@ ShaderRecordDX12 *CompileNativeShaderRecordDX12( CShaderDeviceDX12 *pDevice, con
 	pBuffer->Release();
 	if ( !bPixel )
 	{
-		Microsoft::WRL::ComPtr<ID3D11ShaderReflection> pReflection;
-		if ( SUCCEEDED( D3DReflect( pRecord->bytecode.Base(), static_cast<SIZE_T>( pRecord->bytecode.Count() ), IID_PPV_ARGS( &pReflection ) ) ) )
+		Microsoft::WRL::ComPtr<ID3D12ShaderReflection> pReflection;
+		if ( SUCCEEDED( ReflectShaderDX12( pRecord->bytecode.Base(), static_cast<size_t>( pRecord->bytecode.Count() ), &pReflection ) ) )
 		{
-			D3D11_SHADER_DESC desc{};
+			D3D12_SHADER_DESC desc{};
 			if ( SUCCEEDED( pReflection->GetDesc( &desc ) ) )
 			{
 				for ( UINT i = 0; i < desc.OutputParameters; ++i )
 				{
-					D3D11_SIGNATURE_PARAMETER_DESC parameter{};
+					D3D12_SIGNATURE_PARAMETER_DESC parameter{};
 					if ( FAILED( pReflection->GetOutputParameterDesc( i, &parameter ) ) )
 						continue;
 					uint32_t nUsage = 5;

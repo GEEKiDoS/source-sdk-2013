@@ -58,14 +58,14 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 
 Texture2D MorphTarget_Texture : register( t0 );
 SamplerState MorphTarget_Sampler : register( s0 );
-static const DX12Sampler2D MorphTarget = { MorphTarget_Texture, MorphTarget_Sampler };
+static DX12Sampler2D MorphTarget = { MorphTarget_Texture, MorphTarget_Sampler };
 Texture2D SideSpeedMap_Texture : register( t1 );
 SamplerState SideSpeedMap_Sampler : register( s1 );
-static const DX12Sampler2D SideSpeedMap = { SideSpeedMap_Texture, SideSpeedMap_Sampler };
+static DX12Sampler2D SideSpeedMap = { SideSpeedMap_Texture, SideSpeedMap_Sampler };
 #if !CONSTANTBASEDMORPH
 Texture2D MorphWeights_Texture : register( t2 );
 SamplerState MorphWeights_Sampler : register( s2 );
-static const DX12Sampler2D MorphWeights = { MorphWeights_Texture, MorphWeights_Sampler };
+static DX12Sampler2D MorphWeights = { MorphWeights_Texture, MorphWeights_Sampler };
 #endif
 
 

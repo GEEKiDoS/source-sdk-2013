@@ -216,7 +216,8 @@ static constexpr EngineCBufferLayoutDX12 kLightingCBufferLayouts[] = {
     { "DX12LightingViewConstantsV1", kStagePixel, DX12_LIGHTING_B_VIEW, sizeof( DX12LightingViewConstantsV1 ), sizeof( kDX12LightingViewConstantsV1Members ) / sizeof( *kDX12LightingViewConstantsV1Members ), kDX12LightingViewConstantsV1Members },
 	{ "DX12StaticPropDrawConstants", kStagePixel, DX12_LIGHTING_B_PROP_DRAW, sizeof( DX12StaticPropDrawConstants ), sizeof( kDX12StaticPropDrawConstantsMembers ) / sizeof( *kDX12StaticPropDrawConstantsMembers ), kDX12StaticPropDrawConstantsMembers },
 };
-// Space-4 ambient probe block (pixel stage). shaderRegister is the register inside DX12_PROBE_REGISTER_SPACE.
+// Space-4 ambient probe block (pixel stage; also the detail-sprite vertex shader). shaderRegister is the register inside
+// DX12_PROBE_REGISTER_SPACE.
 static constexpr EngineCBufferLayoutDX12 kProbeCBufferLayouts[] = {
 	{ "DX12ProbeConstantsV1", kStagePixel, DX12_PROBE_B_CONSTANTS, sizeof( DX12ProbeConstantsV1 ), sizeof( kDX12ProbeConstantsV1Members ) / sizeof( *kDX12ProbeConstantsV1Members ), kDX12ProbeConstantsV1Members },
 };

@@ -49,13 +49,20 @@ struct ComboFoldProjectionDX12
 bool ProjectComboFoldDX12( const ComboFoldTableDX12 &table, int64_t staticIndex,
 	int64_t dynamicIndex, ComboFoldProjectionDX12 &projection );
 
-// Parser shared by the process-lifetime GAME loader and CPU-only smoke fixtures.
+// Parser for combo-fold descriptions (the native metadata trailer carries its shader's table in this text form).
 // Tables are heap-owned to keep returned pointers stable; caller owns the vector's contents.
 bool ParseComboFoldTextDX12( const char *text, CUtlVector<ComboFoldTableDX12 *> &tables, CUtlString &error );
-const ComboFoldTableDX12 *FindComboFoldTableDX12( IFileSystem &filesystem, const char *name, VcsStage stage );
 
-// LegacyShaderName() result for a native-only logical: it has no shaders/fxc record to fall back to.
-inline constexpr const char *kNativeOnlyMarker = "-";
+// Native metadata trailer (ShaderCompiler3) appended to a v6 VCS after its last static block. All fields are uint32.
+//   magic kVcsNativeMetadataMagic, version 1, byte size (multiple of 4, includes this header), flags,
+//   lightmap sampler mask, fold-text byte count, then the fold text (empty or one "fold ... end" table), zero-padded.
+inline constexpr uint32_t kVcsNativeMetadataMagic = 0x4d334353u; // "SC3M"
+enum : uint32_t
+{
+	kVcsNativeHighresAbi = 1u << 0,		// highres lightmap receiver ABI
+	kVcsNativeSamplerRoles = 1u << 1,	// lightmap sampler roles are declared (the mask may still be 0)
+	kVcsNativeEarlyDepthTwin = 1u << 2,	// a forced-early-depth PS twin is published beside this shader
+};
 
 struct VcsPayload
 {
@@ -72,12 +79,9 @@ public:
 	ShaderVcsFile( const ShaderVcsFile & ) = delete;
 	ShaderVcsFile &operator=( const ShaderVcsFile & ) = delete;
 
-	// The first existing GAME path is authoritative; an invalid file is an error,
-	// not a reason to search a different shader in fxc. Native-only map markers
-	// fail closed when their native record is missing.
+	// The first existing GAME path is authoritative (shaders/vsh|psh|csh, then shaders/fxc for vertex/pixel names);
+	// an invalid file is an error, not a reason to search the other location.
 	bool Open( IFileSystem &filesystem, const char *pszName, VcsStage stage, CUtlString &error );
-	// Legacy DX9 logical for a native name, kNativeOnlyMarker for a native-only logical, else name.
-	static CUtlString LegacyShaderName( IFileSystem &filesystem, const char *pszName, VcsStage stage );
 
 	// Also usable for deterministic byte-for-byte fixtures without a filesystem.
 	bool OpenBytes( const uint8_t *pBytes, size_t nLength, VcsStage stage,
@@ -106,6 +110,8 @@ public:
 	bool NativeCasterTwin() const { return m_bNativeCasterTwin; }
 	// Optional safe PS twin, named by inserting "_earlydepth" before "_ps51".
 	bool EarlyDepthTwin() const { return m_bEarlyDepthTwin; }
+	// Combo fold of a folded native shader (from its metadata trailer), else nullptr.
+	const ComboFoldTableDX12 *ComboFold() const { return m_ComboFold.Count() ? m_ComboFold[0] : nullptr; }
 
 	const char *Path() const { return m_Path.Get(); }
 
@@ -142,6 +148,7 @@ private:
 	    size_t nEnd, StaticCombos &combos, CUtlString &error ) const;
 	bool ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage stage,
 	    const char *pszLabel, CUtlString &error );
+	bool ParseNativeMetadata( const uint8_t *pBytes, size_t nStart, size_t nLength, CUtlString &error );
 	bool ValidateTokens( const uint8_t *pData, size_t nSize, CUtlString &error ) const;
 	bool Fail( const char *pszMessage, CUtlString &error ) const;
 
@@ -164,6 +171,8 @@ private:
 	bool m_bHighresAbi = false, m_bSamplerRolesReady = false;
 	bool m_bNativeCasterTwin = false;
 	bool m_bEarlyDepthTwin = false;
+	bool m_bNativeMetadata = false;
+	CUtlVector<ComboFoldTableDX12 *> m_ComboFold;
 	size_t m_nPayloadStart = 0;
 	size_t m_nHeaderBytes = 28;
 };

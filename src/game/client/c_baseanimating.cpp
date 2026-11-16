@@ -1002,6 +1002,10 @@ C_BaseAnimating::C_BaseAnimating() :
 //-----------------------------------------------------------------------------
 C_BaseAnimating::~C_BaseAnimating()
 {
+	// UpdateOnRemove normally unregisters; an entity freed on another path (level-shutdown teardown) must not leave a
+	// dangling entry for the next UpdateClientSideAnimations. No-op when already removed.
+	RemoveFromClientSideAnimationList( true );
+
 	int i = g_PreviousBoneSetups.Find( this );
 	if ( i != -1 )
 		g_PreviousBoneSetups.FastRemove( i );

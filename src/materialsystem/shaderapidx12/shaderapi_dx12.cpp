@@ -5,6 +5,7 @@
 //=============================================================================//
 
 #include "shaderapi_dx12.h"
+#include "shader_reflect_dx12.h"
 #include "shadershadow_dx12.h"
 #include "hardwareconfig_dx12.h"
 #include "lighting_dx12.h"
@@ -217,7 +218,7 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 		return true;
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	const D3D12_SHADER_BYTECODE bytecode = record->Bytecode();
-	if ( !bytecode.pShaderBytecode || FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) )
+	if ( !bytecode.pShaderBytecode || FAILED( ReflectShaderDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, &reflection ) ) )
 		return false;
 	D3D12_SHADER_DESC shader{};
 	if ( FAILED( reflection->GetDesc( &shader ) ) )
@@ -663,7 +664,31 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 	if ( hFound != m_NamedShaderCombos.InvalidHandle() )
 		return m_NamedShaderCombos[hFound] ? m_NamedShaderCombos[hFound]->Record() : nullptr;
 	hFound = m_NamedShaderCombos.Insert( key, nullptr );
-	const ComboFoldTableDX12 *foldTable = FindComboFoldTableDX12( *g_pShaderDeviceMgrDX12->HostFileSystem(), pszName, bPixel ? VcsStage::Pixel : VcsStage::Vertex );
+	CUtlString fileKey( bPixel ? "p:" : "v:" );
+	fileKey.Append( pszName );
+	UtlHashHandle_t hShaderFile = m_NamedShaderFiles.Find( fileKey.String() );
+	if ( hShaderFile == m_NamedShaderFiles.InvalidHandle() )
+	{
+		ShaderVcsFile *pNewFile = new ShaderVcsFile;
+		CUtlString error;
+		if ( !pNewFile->Open( *g_pShaderDeviceMgrDX12->HostFileSystem(), pszName, bPixel ? VcsStage::Pixel : VcsStage::Vertex, error ) )
+		{
+			Warning( "ShaderAPIDX12: unable to load named shader %s: %s\n", pszName, error.Get() );
+			delete pNewFile;
+			m_NamedShaderFiles.Insert( fileKey.String(), nullptr );
+			return nullptr;
+		}
+		// -dx12shaderlog: one line per named shader file, stating which VCS path won (shaders/vsh|psh native or
+		// shaders/fxc legacy). Development diagnostic; files open once, so this never runs per draw.
+		static const bool s_bLogNamedShaders = CommandLine() && CommandLine()->CheckParm( "-dx12shaderlog" );
+		if ( s_bLogNamedShaders )
+			Msg( "ShaderAPIDX12: %s shader %s from %s\n", bPixel ? "pixel" : "vertex", pszName, pNewFile->Path() );
+		hShaderFile = m_NamedShaderFiles.Insert( fileKey.String(), pNewFile );
+	}
+	ShaderVcsFile *pFile = m_NamedShaderFiles[hShaderFile];
+	if ( !pFile )
+		return nullptr;
+	const ComboFoldTableDX12 *foldTable = pFile->ComboFold();
 	const int nDynamic = foldTable ? nDynamicIndex : MAX( 0, nDynamicIndex );
 	ComboFoldProjectionDX12 projection{};
 	if ( foldTable && !ProjectComboFoldDX12( *foldTable, nStaticIndex, nDynamicIndex, projection ) )
@@ -687,30 +712,6 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 	const UtlHashHandle_t existingRecord = m_NamedShaderRecords.Find( nativeKey );
 	if ( existingRecord != m_NamedShaderRecords.InvalidHandle() )
 		return remember( m_NamedShaderRecords[existingRecord] );
-	CUtlString fileKey( bPixel ? "p:" : "v:" );
-	fileKey.Append( pszName );
-	UtlHashHandle_t hShaderFile = m_NamedShaderFiles.Find( fileKey.String() );
-	if ( hShaderFile == m_NamedShaderFiles.InvalidHandle() )
-	{
-		ShaderVcsFile *pNewFile = new ShaderVcsFile;
-		CUtlString error;
-		if ( !pNewFile->Open( *g_pShaderDeviceMgrDX12->HostFileSystem(), pszName, bPixel ? VcsStage::Pixel : VcsStage::Vertex, error ) )
-		{
-			Warning( "ShaderAPIDX12: unable to load named shader %s: %s\n", pszName, error.Get() );
-			delete pNewFile;
-			m_NamedShaderFiles.Insert( fileKey.String(), nullptr );
-			return nullptr;
-		}
-		// -dx12shaderlog: one line per named shader file, stating which VCS path won (shaders/vsh|psh native DXBC or
-		// shaders/fxc legacy). Development diagnostic; files open once, so this never runs per draw.
-		static const bool s_bLogNamedShaders = CommandLine() && CommandLine()->CheckParm( "-dx12shaderlog" );
-		if ( s_bLogNamedShaders )
-			Msg( "ShaderAPIDX12: %s shader %s from %s\n", bPixel ? "pixel" : "vertex", pszName, pNewFile->Path() );
-		hShaderFile = m_NamedShaderFiles.Insert( fileKey.String(), pNewFile );
-	}
-	ShaderVcsFile *pFile = m_NamedShaderFiles[hShaderFile];
-	if ( !pFile )
-		return nullptr;
 	if ( nStaticIndex < 0 || nativeDynamic >= pFile->DynamicComboCount() ||
 		( foldTable && ( pFile->DynamicComboCount() != foldTable->nativeDynamicCount ||
 			uint64_t( foldTable->nativeStaticCount ) * foldTable->nativeDynamicCount != pFile->TotalComboCount() ||
@@ -1131,8 +1132,9 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		else m_pDevice->Lighting().RejectUnsupportedLitShader( m_ActiveSnapshot.pixelShaderName.c_str() );
 		return;
 	}
-	// Batched shadow casters: an opaque rigid depthwrite draw of a static mesh inside an open caster batch is captured
-	// (its cModel[0] rows only) and emitted later as one instanced draw per mesh range; see FlushShadowCasterBatch.
+	// Batched shadow casters: an opaque depthwrite draw of a static mesh inside an open caster batch is captured (its
+	// cModel[0] rows, or the whole bone palette when skinned) and emitted later as one instanced draw per mesh range;
+	// see FlushShadowCasterBatch.
 	if ( m_CasterBatch.active && !m_CasterEmit.active && shadowPass && opaqueCaster && meshStreams && indexed && primitive == MATERIAL_TRIANGLES && m_hActiveSnapshotId >= 0 )
 	{
 		if ( m_hActiveSnapshotId != m_CasterBatch.lastSnapshot )
@@ -1142,10 +1144,10 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			m_CasterBatch.lastSnapshotEligible = m_ActiveSnapshot.staticVertexIndex == 0 && m_ActiveSnapshot.polyFront == SHADER_POLYMODE_FILL &&
 				!V_strcmp( m_ActiveSnapshot.vertexShaderName.c_str(), "depthwrite_vs51" );
 		}
-		// Dynamic index COMPRESSED_VERTS + 2*SKINNING + 4*MORPHING: no skinning (cModel[0] only) and no morph (zero flex
-		// stream). The record must be the native VCS (a translated fallback reads DX9 register banks); no colour/flex
-		// stream; static buffers only (dynamic ones are re-uploaded per content version); no explicit repetition.
-		if ( m_CasterBatch.lastSnapshotEligible && ( m_nVertexShaderIndex & 6 ) == 0 &&
+		// Dynamic index COMPRESSED_VERTS + 2*SKINNING + 4*MORPHING: no morph (zero flex stream). The record must be the
+		// native VCS (a translated fallback reads DX9 register banks); no colour/flex stream; static buffers only (dynamic
+		// ones are re-uploaded per content version); no explicit repetition.
+		if ( m_CasterBatch.lastSnapshotEligible && ( m_nVertexShaderIndex & 4 ) == 0 &&
 			m_bBoundVertexShaderIsNamed && m_hBoundVS != VERTEX_SHADER_HANDLE_INVALID && reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS )->legacyBytecode.IsEmpty() &&
 			m_hBoundGS == GEOMETRY_SHADER_HANDLE_INVALID && !bindings[1].buffer && !bindings[2].buffer &&
 			!bindings[0].buffer->IsDynamic() && !indices->IsDynamic() && bindings[0].repetitions == 1 )
@@ -1237,7 +1239,37 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		return;
 	ShaderRecordDX12 *vsRecord = motionActive ? MotionVertexShader( format ) : ( m_hBoundVS == VERTEX_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS ) );
 	ShaderRecordDX12 *psRecord = opaqueCaster ? nullptr : motionActive ? m_pMotionPS : ( m_hBoundPS == PIXEL_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS ) );
-	if ( depthPrepass && ( m_ActiveSnapshot.alphaTest || m_ActiveSnapshot.alphaToCoverage || m_bAlphaToCoverage ) )
+	// pbr_model_ps51 static index: 12 * TANGENT + 24 * ENHANCED + 48 * ALPHATEST + 96 * INFECTED.
+	constexpr int kModelAlphaTestStride = 48, kModelInfectedStride = 96;
+	const bool modelPixelShader = psRecord && !V_strcmp( m_ActiveSnapshot.pixelShaderName.c_str(), "pbr_model_ps51" );
+	// Coverage that depends on the pixel shader: the alpha test, A2C, and the INFECTED wound cutout clip().
+	const bool coverageKill = m_ActiveSnapshot.alphaTest || m_ActiveSnapshot.alphaToCoverage || m_bAlphaToCoverage ||
+		( modelPixelShader && ( m_ActiveSnapshot.staticPixelIndex / kModelInfectedStride ) % 2 == 1 );
+	// After the main view's depth prepass, a cutout opaque depth writer into the scene depth already has its exact
+	// visible depth (same VS, same coverage expression). The color pass tests it EQUAL and read-only: fragments in front
+	// of a farther surface seen through this draw's own cutout holes fail before shading. A discard with depth writes on
+	// would force a late depth test, so pbr_model_ps51 is bound in its ALPHATEST=0 combo (kill compiled away): under
+	// EQUAL the prepass already decided coverage. The wound clip stays, but with depth writes off it no longer blocks
+	// early depth. Fixed-coverage opaque draws keep early depth as they are and are left alone.
+	const bool prepassReadOnly = m_bDepthPrepassResolved && !depthPrepass && !shadowPass && !motionActive && !contactReplay &&
+		!skyboxDraw && !m_bSkyboxPass && !m_ActiveSnapshot.translucent && m_ActiveSnapshot.depthTest && m_ActiveSnapshot.depthWrite &&
+		coverageKill && m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER;
+	if ( prepassReadOnly )
+	{
+		++m_DrawStats.prepassReadOnlyDraws;
+		if ( modelPixelShader && ( m_ActiveSnapshot.staticPixelIndex / kModelAlphaTestStride ) % 2 == 1 )
+		{
+			ShaderRecordDX12 *noKill = ResolveNamedShader( "pbr_model_ps51", true, m_ActiveSnapshot.staticPixelIndex - kModelAlphaTestStride, m_nPixelShaderIndex );
+			if ( noKill && noKill->legacyBytecode.IsEmpty() )
+			{
+				psRecord = noKill;
+				m_BoundNamedCombos[1] = m_NamedShaderCombos[m_NamedComboHints[1]];
+				// The bound PS handle still names the ordinary combo: the next draw re-resolves it.
+				m_bNamedPixelShaderDirty = true;
+			}
+		}
+	}
+	if ( depthPrepass && coverageKill )
 	{
 		// Select coverage only AFTER resolving the ordinary VS: pixel metadata must not change its highres
 		// routing or vertex program. These twins compile the exact original alpha expression and combo ABI.
@@ -1700,7 +1732,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		signature.instanceCount = bindings[0].repetitions;
 		signature.primitive = static_cast<uint32_t>( primitive );
 		signature.streamFlags = meshStreamFlags;
-		signature.motionPass = ( motionActive ? 1u : 0u ) | ( highresMap ? 2u : 0u ) | ( depthPrepass ? 4u : 0u );
+		signature.motionPass = ( motionActive ? 1u : 0u ) | ( highresMap ? 2u : 0u ) | ( depthPrepass ? 4u : 0u ) | ( prepassReadOnly ? 8u : 0u );
 		signature.clipMask = drawClipMask;
 		memcpy( signature.colorFormats, target.colorFormats, sizeof( signature.colorFormats ) );
 		signature.depthFormat = target.depthFormat;
@@ -1763,6 +1795,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		generatedVS = memoSlot->generatedVS;
 		generatedPS = memoSlot->generatedPS;
 		zeroInput = memoSlot->zeroInput;
+		if ( depthPrepass )
+			++( depthOnly ? m_DrawStats.prepassNullPSDraws : m_DrawStats.prepassShadedDraws );
 	}
 	else
 	{
@@ -1776,6 +1810,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		raster.fillMode = m_bRasterOverride ? ( m_RasterState.m_FillMode == SHADER_FILL_WIREFRAME ? 2 : 3 ) : ( m_ActiveSnapshot.polyFront == SHADER_POLYMODE_POINT ? 1 : ( m_ActiveSnapshot.polyFront == SHADER_POLYMODE_LINE ? 2 : 3 ) );
 		raster.primitiveType = primitive == MATERIAL_POINTS ? 1 : ( primitive == MATERIAL_LINES ? 2 : ( primitive == MATERIAL_LINE_STRIP ? 3 : ( primitive == MATERIAL_TRIANGLE_STRIP ? 5 : 4 ) ) );
 		depthOnly = !motionActive && target.depth && ( shadowPass || prepassNullPS || ( !( m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites ) && !( m_bAlphaWriteOverride ? m_bAlphaWriteOverrideValue : m_ActiveSnapshot.alphaWrites ) ) ) && !m_ActiveSnapshot.alphaTest;
+		if ( depthPrepass )
+			++( depthOnly ? m_DrawStats.prepassNullPSDraws : m_DrawStats.prepassShadedDraws );
 		if ( depthOnly )
 			psRecord = nullptr;
 		generatedVS = !vsRecord;
@@ -2482,10 +2518,10 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			psRecord->lightmapSamplerMask, unsigned(shadowPass), unsigned(motionActive) );
 		return;
 	}
-	// A PS reflecting space 4 always has the lighting ABI (the validator requires the view block beside it). Missing probe data
-	// binds the fallback pair inside PrepareProbeDraw; only residency failure rejects the draw.
+	// A stage reflecting space 4 always has the lighting ABI (the validator requires the view block beside it). Missing probe
+	// data binds the fallback pair inside PrepareProbeDraw; only residency failure rejects the draw.
 	bindingInput.probeAbi = false;
-	if ( !shadowPass && psRecord && psRecord->probeAbi && !m_pDevice->Highres().PrepareProbeDraw( bindingInput ) )
+	if ( !shadowPass && ( ( psRecord && psRecord->probeAbi ) || ( vsRecord && vsRecord->probeAbi ) ) && !m_pDevice->Highres().PrepareProbeDraw( bindingInput ) )
 	{
 		Warning( "Probe draw rejected: vertex=%s pixel=%s\n", m_ActiveSnapshot.vertexShaderName.c_str(), m_ActiveSnapshot.pixelShaderName.c_str() );
 		return;
@@ -2517,6 +2553,31 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		ShaderRecordDX12 *vs = vsRecord;
 		// Opaque casters have no material pixel stage; a sky-clipped sun pass runs shadow_sky_clip_ps51 instead.
 		ShaderRecordDX12 *ps = depthOnly ? m_pDevice->Lighting().ShadowSkyClipPixelShader() : psRecord;
+		// D3D12 cannot pair DXBC and DXIL stages in one pipeline. Native shaders are DXIL; translated DX9 shaders and
+		// the runtime-generated fixed-function stages are DXBC. A translated caster (spline ropes) therefore draws
+		// depth-only without the sky clip.
+		const auto isDxil = []( const ShaderRecordDX12 *record )
+		{
+			return record && record->legacyBytecode.IsEmpty() &&
+				ClassifyShaderBytecodeDX12( record->bytecode.Base(), size_t( record->bytecode.Count() ) ) == ShaderBytecodeKindDX12::Dxil;
+		};
+		if ( ps && isDxil( vs ) != isDxil( ps ) )
+		{
+			if ( depthOnly )
+				ps = nullptr;
+			else
+			{
+				static bool s_bReported = false;
+				if ( !s_bReported )
+				{
+					s_bReported = true;
+					Warning( "ShaderAPIDX12: draw skipped, %s VS %s cannot pair with %s PS %s in one pipeline\n",
+						isDxil( vs ) ? "DXIL" : "DXBC", m_ActiveSnapshot.vertexShaderName.c_str(),
+						isDxil( ps ) ? "DXIL" : "DXBC", m_ActiveSnapshot.pixelShaderName.c_str() );
+				}
+				return;
+			}
+		}
 		D3D12_INPUT_ELEMENT_DESC elements[MAX_VERTEX_INPUTS_DX12];
 		if ( vs->inputSignature.Count() > static_cast<int>( ARRAYSIZE( elements ) ) )
 			return;
@@ -2643,8 +2704,11 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		key.blendAlphaOperation = m_ActiveSnapshot.blendAlphaOperation;
 		key.depthState = m_ActiveSnapshot.depthWrite ? 1 : 0;
 		key.depthTest = m_bOverrideDepthEnable ? m_bOverrideDepthValue : m_ActiveSnapshot.depthTest;
-		key.depthWrite = m_ActiveSnapshot.depthWrite;
-		key.depthFunction = m_bForceDepthEquals ? SHADER_DEPTHFUNC_EQUAL : m_ActiveSnapshot.depthFunction;
+		key.depthWrite = m_ActiveSnapshot.depthWrite && !prepassReadOnly;
+		// The prepass resolved exactly which fragments of this surface are visible: EQUAL passes those and rejects, before
+		// shading, the fragments in front of a farther surface seen through this draw's own cutout holes. Under <= those
+		// would shade and discard, keeping every warp with a surviving leaf pixel running the full lighting.
+		key.depthFunction = m_bForceDepthEquals || prepassReadOnly ? SHADER_DEPTHFUNC_EQUAL : m_ActiveSnapshot.depthFunction;
 		const bool reverseDepth = !shadowPass && m_pShaderUtil && m_pShaderUtil->GetConfig().bReverseDepth;
 		if ( reverseDepth )
 		{
@@ -2918,17 +2982,17 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Opens a shadow-caster batch scope (BatchBegin replay). Resolves the instanced depthwrite VS for both
-//          dynamic indices the captured draws can carry (COMPRESSED_VERTS 0/1); false when either is unavailable.
+// Purpose: Opens a shadow-caster batch scope (BatchBegin replay). Resolves the instanced depthwrite VS for every
+//          dynamic index the captured draws can carry (COMPRESSED_VERTS + 2*SKINNING); false when any is unavailable.
 //-----------------------------------------------------------------------------
 bool CShaderAPIDX12::BeginShadowCasterBatch()
 {
 	CasterBatchDX12 &batch = m_CasterBatch;
 	batch.active = false;
-	batch.groupCount = batch.instanceCount = 0;
+	batch.groupCount = batch.instanceCount = batch.paletteCount = 0;
 	batch.lastSnapshot = static_cast<StateSnapshot_t>( -1 );
 	memset( batch.slots, 0, sizeof( batch.slots ) );
-	for ( int dynamic = 0; dynamic < 2; ++dynamic )
+	for ( int dynamic = 0; dynamic < ARRAYSIZE( batch.instancedVS ); ++dynamic )
 		if ( !( batch.instancedVS[dynamic] = ResolveNamedShader( "depthwrite_instanced_vs51", false, 0, dynamic ) ) )
 			return false;
 	batch.active = true;
@@ -2936,15 +3000,16 @@ bool CShaderAPIDX12::BeginShadowCasterBatch()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Defers one eligible caster draw: the exact cModel[0] rows CommitTransforms wrote, linked onto the group
-//          keyed by (mesh, index range, snapshot, VS dynamic index). Capacity overflow emits and keeps the scope open.
+// Purpose: Defers one eligible caster draw: the exact cModel rows CommitTransforms wrote (cModel[0], or every loaded
+//          bone when skinned), linked onto the group keyed by (mesh, index range, snapshot, VS dynamic index).
+//          Capacity overflow emits and keeps the scope open.
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mesh, const VertexBindingDX12 &stream0, CIndexBufferDX12 *indices, int firstIndex, int indexCount )
 {
 	CasterBatchDX12 &batch = m_CasterBatch;
 	if ( batch.instanceCount == kCasterInstances )
 		FlushShadowCasterBatch( false );
-	const int vsDynamicIndex = m_nVertexShaderIndex & 1;
+	const int vsDynamicIndex = m_nVertexShaderIndex & 3;
 	const bool skyClipExempt = m_pDevice->Lighting().ShadowCasterSkyClipExempt();
 	const uint32_t hash = Mix32HashFunctor()( static_cast<uint32_t>( meshToken >> 4 ) ^ static_cast<uint32_t>( firstIndex ) * 0x9E3779B1u ^ static_cast<uint32_t>( indexCount ) * 0x85EBCA6Bu ^
 		( static_cast<uint32_t>( m_hActiveSnapshotId ) << 1 ) ^ static_cast<uint32_t>( vsDynamicIndex ) ^ ( skyClipExempt ? 0xD1B54A35u : 0u ) );
@@ -2989,7 +3054,18 @@ void CShaderAPIDX12::CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mes
 		break;
 	}
 	const uint16_t instance = static_cast<uint16_t>( batch.instanceCount++ );
-	memcpy( batch.rows[instance], m_VsFloat[VERTEX_SHADER_MODEL], sizeof( batch.rows[instance] ) );
+	if ( vsDynamicIndex & 2 )
+	{
+		COMPILE_TIME_ASSERT( kCasterPaletteBones == NUM_MODEL_TRANSFORMS );
+		// The bones a non-batched draw would upload (CommitTransforms); the rest of the palette is never indexed.
+		const int bones = clamp( MAX( m_nMaxBoneLoaded + 1, m_nMotionBoneRows ), 1, int( kCasterPaletteBones ) );
+		if ( batch.palettes.Count() < int( ( batch.paletteCount + 1 ) * kCasterPaletteFloats ) )
+			batch.palettes.SetCount( ( batch.paletteCount + 1 ) * kCasterPaletteFloats );
+		memcpy( &batch.palettes[batch.paletteCount * kCasterPaletteFloats], m_VsFloat[VERTEX_SHADER_MODEL], bones * 12 * sizeof( float ) );
+		batch.palette[instance] = static_cast<uint16_t>( batch.paletteCount++ );
+	}
+	else
+		memcpy( batch.rows[instance], m_VsFloat[VERTEX_SHADER_MODEL], sizeof( batch.rows[instance] ) );
 	batch.next[instance] = 0xFFFF;
 	if ( group->tail == 0xFFFF )
 		group->head = instance;
@@ -3000,27 +3076,41 @@ void CShaderAPIDX12::CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mes
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Emits every captured group as one instanced draw: one transient upload of the group-contiguous rows bound
-//          as the VS space-7 root SRV, then an ordinary DrawBuffers per group with its snapshot re-activated, the
-//          instanced VS record bound and the m_CasterEmit override supplying instance count + rows. Caller-visible
-//          shader state is restored afterwards. close=false keeps the scope open (capacity overflow inside capture).
+// Purpose: Emits every captured group as one instanced draw: one transient upload each of the group-contiguous rigid
+//          rows and skinned palettes, bound as the VS space-7 root SRV, then an ordinary DrawBuffers per group with its
+//          snapshot re-activated, the instanced VS record bound and the m_CasterEmit override supplying instance count
+//          + rows. Caller-visible shader state is restored afterwards. close=false keeps the scope open (capacity
+//          overflow inside capture).
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::FlushShadowCasterBatch( bool close )
 {
 	CasterBatchDX12 &batch = m_CasterBatch;
 	if ( batch.instanceCount )
 	{
-		uint32_t cursor = 0;
+		uint32_t rigid = 0, skinned = 0;
+		if ( batch.paletteStaging.Count() < int( batch.paletteCount * kCasterPaletteFloats ) )
+			batch.paletteStaging.SetCount( batch.paletteCount * kCasterPaletteFloats );
 		for ( uint32_t g = 0; g < batch.groupCount; ++g )
 		{
 			CasterGroupDX12 &group = batch.groups[g];
-			group.first = cursor;
-			for ( uint16_t i = group.head; i != 0xFFFF; i = batch.next[i] )
-				memcpy( batch.staging[cursor++], batch.rows[i], sizeof( batch.rows[i] ) );
+			if ( group.vsDynamicIndex & 2 )
+			{
+				group.first = skinned;
+				for ( uint16_t i = group.head; i != 0xFFFF; i = batch.next[i] )
+					memcpy( &batch.paletteStaging[skinned++ * kCasterPaletteFloats], &batch.palettes[batch.palette[i] * kCasterPaletteFloats], kCasterPaletteFloats * sizeof( float ) );
+			}
+			else
+			{
+				group.first = rigid;
+				for ( uint16_t i = group.head; i != 0xFFFF; i = batch.next[i] )
+					memcpy( batch.staging[rigid++], batch.rows[i], sizeof( batch.rows[i] ) );
+			}
 		}
-		const size_t bytes = static_cast<size_t>( batch.instanceCount ) * sizeof( batch.staging[0] );
-		D3D12_GPU_VIRTUAL_ADDRESS base = 0;
-		if ( !m_Pipeline.UploadTransient( batch.staging, bytes, bytes, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, m_pDevice->NextFenceValue(), base ) )
+		const size_t rigidBytes = static_cast<size_t>( rigid ) * sizeof( batch.staging[0] );
+		const size_t paletteBytes = kCasterPaletteFloats * sizeof( float ), skinnedBytes = static_cast<size_t>( skinned ) * paletteBytes;
+		D3D12_GPU_VIRTUAL_ADDRESS rigidBase = 0, skinnedBase = 0;
+		if ( ( rigid && !m_Pipeline.UploadTransient( batch.staging, rigidBytes, rigidBytes, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, m_pDevice->NextFenceValue(), rigidBase ) ) ||
+			( skinned && !m_Pipeline.UploadTransient( batch.paletteStaging.Base(), skinnedBytes, skinnedBytes, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, m_pDevice->NextFenceValue(), skinnedBase ) ) )
 		{
 			m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 		}
@@ -3040,12 +3130,13 @@ void CShaderAPIDX12::FlushShadowCasterBatch( bool close )
 				m_pDevice->Lighting().SetShadowCasterSkyClipExemptForDraw( group.skyClipExempt );
 				BeginPass( group.snapshot );
 				m_nVertexShaderIndex = group.vsDynamicIndex;
-				m_hBoundVS = reinterpret_cast<VertexShaderHandle_t>( batch.instancedVS[group.vsDynamicIndex & 1] );
+				m_hBoundVS = reinterpret_cast<VertexShaderHandle_t>( batch.instancedVS[group.vsDynamicIndex] );
 				m_bBoundVertexShaderIsNamed = true;
 				m_BoundNamedCombos[0] = nullptr;
 				m_bNamedVertexShaderDirty = false;
 				m_CasterEmit.instances = group.count;
-				m_CasterEmit.transforms = base + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( group.first ) * sizeof( batch.staging[0] );
+				m_CasterEmit.transforms = ( group.vsDynamicIndex & 2 ) ? skinnedBase + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( group.first ) * paletteBytes :
+					rigidBase + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( group.first ) * sizeof( batch.staging[0] );
 				streams[0] = { group.vertices, group.byteOffset, group.firstVertex, group.vertexCount, 1, group.format };
 				DrawBuffers( streams, group.indices, 0, MATERIAL_TRIANGLES, group.firstIndex, group.indexCount, true, group.meshToken, group.mesh );
 				++m_DrawStats.casterInstancedDraws;
@@ -3062,7 +3153,7 @@ void CShaderAPIDX12::FlushShadowCasterBatch( bool close )
 			m_pDevice->Lighting().SetShadowCasterSkyClipExemptForDraw( savedSkyClipExempt );
 		}
 	}
-	batch.groupCount = batch.instanceCount = 0;
+	batch.groupCount = batch.instanceCount = batch.paletteCount = 0;
 	batch.lastSnapshot = static_cast<StateSnapshot_t>( -1 );
 	memset( batch.slots, 0, sizeof( batch.slots ) );
 	if ( close )
@@ -5291,6 +5382,8 @@ void CShaderAPIDX12::BeginFrame()
 	ProcessShaderPrecacheRequests();
 	m_nFrameDrawCount = 0;
 	m_nFrameFlushCount = 0;
+	m_nFrameStartFence = m_pDevice ? m_pDevice->NextFenceValue() : 0;
+	m_bDepthPrepassResolved = false;
 	m_nFrameSyncCount = 0;
 	m_bFrameActive = true;
 	if ( m_pDevice )
@@ -5347,6 +5440,12 @@ void CShaderAPIDX12::EndFrame()
 	{
 		static const bool s_bStatsEnabled = CommandLine() && CommandLine()->CheckParm( "-dx12stats" );
 		static const uint32_t s_nStatsFrames = static_cast<uint32_t>( MAX( 1, CommandLine() ? CommandLine()->ParmValue( "-dx12statsframes", 1000 ) : 1000 ) );
+		if ( s_bStatsEnabled && m_pDevice && m_nFrameStartFence )
+		{
+			const uint64_t frameSubmits = m_pDevice->NextFenceValue() - m_nFrameStartFence;
+			m_DrawStats.submits += frameSubmits;
+			m_DrawStats.maxFrameSubmits = MAX( m_DrawStats.maxFrameSubmits, frameSubmits );
+		}
 		if ( s_bStatsEnabled && ++m_nDrawStatsFrames >= s_nStatsFrames )
 		{
 			const CPipelineCacheDX12::StatsDX12 &p = m_Pipeline.Stats();
@@ -5354,11 +5453,18 @@ void CShaderAPIDX12::EndFrame()
 			Msg( "ShaderAPIDX12 stats/frame: draws %.1f memoHits %.1f srvTableHits %.1f srvTableCopies %.1f constHits %.1f constUploads %.1f transientConst %.1f rootCbvSets %.1f rootTableSets %.1f rootSrvSets %.1f shadowDraws %.1f casterInstances %.1f casterInstancedDraws %.1f\n",
 			    m_DrawStats.draws / n, m_DrawStats.memoHits / n, p.srvTableHits / n, p.srvTableCopies / n, p.constantHits / n, p.constantUploads / n, p.transientConstants / n, p.rootCbvSets / n, p.rootTableSets / n, p.rootSrvSets / n,
 			    m_DrawStats.shadowDraws / n, m_DrawStats.casterInstances / n, m_DrawStats.casterInstancedDraws / n );
+			Msg( "ShaderAPIDX12 frame sync/frame: submits %.2f (max %llu) psoCreates %.2f textureUploadMiB %.2f prepassReadOnlyDraws %.1f prepassNullPS %.1f prepassShaded %.1f psoBinds %.1f rootSigBinds %.1f heapBinds %.1f\n",
+			    m_DrawStats.submits / n, static_cast<unsigned long long>( m_DrawStats.maxFrameSubmits ), p.pipelinesCreated / n,
+			    m_DrawStats.textureUploadBytes / n / ( 1024.0 * 1024.0 ), m_DrawStats.prepassReadOnlyDraws / n,
+			    m_DrawStats.prepassNullPSDraws / n, m_DrawStats.prepassShadedDraws / n,
+			    p.pipelineBinds / n, p.rootSignatureBinds / n, p.descriptorHeapBinds / n );
 			Msg( "ShaderAPIDX12 upload pool: pages %llu capacityBytes %llu bufferBytes %llu | window allocations %llu alignedBytes %llu peakFrameAlignedBytes %llu newPages %llu trimmedPages %llu trimmedBufferBytes %llu | newestFrame allocations %llu alignedBytes %llu newPages %llu\n",
 			    static_cast<unsigned long long>( p.uploadPoolPages ), static_cast<unsigned long long>( p.uploadPoolCapacityBytes ), static_cast<unsigned long long>( p.uploadPoolBufferBytes ),
 			    static_cast<unsigned long long>( p.uploadAllocations ), static_cast<unsigned long long>( p.uploadBytes ), static_cast<unsigned long long>( p.uploadPeakFrameBytes ),
 			    static_cast<unsigned long long>( p.uploadPagesCreated ), static_cast<unsigned long long>( p.uploadPagesTrimmed ), static_cast<unsigned long long>( p.uploadBufferBytesTrimmed ),
 			    static_cast<unsigned long long>( p.uploadFrameAllocations ), static_cast<unsigned long long>( p.uploadFrameBytes ), static_cast<unsigned long long>( p.uploadFramePagesCreated ) );
+			Msg( "ShaderAPIDX12 barriers/frame: %.1f\n", ( m_pDevice ? m_pDevice->RecordedBarriers() - m_nBarrierStatsBase : 0 ) / n );
+			m_nBarrierStatsBase = m_pDevice ? m_pDevice->RecordedBarriers() : 0;
 			CShaderDeviceDX12::GpuEventStatsDX12 gpuEvents;
 			const bool bGpuEvents = m_pDevice && m_pDevice->ConsumeGpuEventStats( gpuEvents );
 			double gpuMs = 0.0;

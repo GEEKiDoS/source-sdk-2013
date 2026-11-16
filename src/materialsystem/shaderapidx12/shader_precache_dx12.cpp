@@ -8,6 +8,7 @@
 //
 //=============================================================================//
 #include "shaderapi_dx12.h"
+#include "shader_reflect_dx12.h"
 #include "shaderdevice_dx12.h"
 #include "shader_vcs_dx12.h"
 #include "vertex_layout_dx12.h"
@@ -298,7 +299,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	D3D12_SHADER_DESC desc{};
 	if ( !bytecode.pShaderBytecode || !bytecode.BytecodeLength ||
-	     FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ||
+	     FAILED( ReflectShaderDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, &reflection ) ) ||
 	     FAILED( reflection->GetDesc( &desc ) ) )
 	{
 		error = "lighting shader reflection failed";
@@ -331,10 +332,12 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		}
 		if ( binding.Space == DX12_PBR_REGISTER_SPACE || binding.Space == DX12_PROBE_REGISTER_SPACE )
 		{
-			// Backend-owned pixel-stage spaces, never material data. Space 4 (ambient probes) exists only beside the
-			// lighting view block and selects the lighting root signature; space 5 alone keeps the ordinary signature.
-			if ( !pixel || !( binding.Space == DX12_PBR_REGISTER_SPACE ? ValidatePbrSpotBinding( reflection.Get(), binding, pbrSeen ) :
-			                                                              ValidateProbeBinding( reflection.Get(), binding, probeSeen ) ) )
+			// Backend-owned spaces, never material data. Space 5 is pixel-only; space 4 (ambient probes) may also be read by
+			// a vertex shader, exists only beside the lighting view block and selects the lighting root signature; space 5
+			// alone keeps the ordinary signature.
+			const bool stageOk = pixel || ( vertex && binding.Space == DX12_PROBE_REGISTER_SPACE );
+			if ( !stageOk || !( binding.Space == DX12_PBR_REGISTER_SPACE ? ValidatePbrSpotBinding( reflection.Get(), binding, pbrSeen ) :
+			                                                               ValidateProbeBinding( reflection.Get(), binding, probeSeen ) ) )
 			{
 				error = CUtlString( "PBR/probe resource binding/layout mismatch: " ) + binding.Name;
 				return false;
@@ -519,9 +522,9 @@ static bool ValidateDepthRestoreConstants( ID3D12ShaderReflection *reflection, c
 static bool ReflectNative( const VcsPayload &payload, VcsStage stage, const char *logical, CUtlString &error )
 {
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
-	if ( FAILED( D3DReflect( payload.tokens.Base(), payload.tokens.Count(), IID_PPV_ARGS( &reflection ) ) ) )
+	if ( FAILED( ReflectShaderDX12( payload.tokens.Base(), payload.tokens.Count(), &reflection ) ) )
 	{
-		error = "D3DReflect failed";
+		error = "shader reflection failed";
 		return false;
 	}
 	D3D12_SHADER_DESC desc{};

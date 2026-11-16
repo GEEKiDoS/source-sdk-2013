@@ -9,10 +9,10 @@
 
 Texture2D TexSampler0_Texture : register( t0 );
 SamplerState TexSampler0_Sampler : register( s0 );
-static const DX12Sampler2D TexSampler0 = { TexSampler0_Texture, TexSampler0_Sampler };
+static DX12Sampler2D TexSampler0 = { TexSampler0_Texture, TexSampler0_Sampler };
 Texture2D TexSampler1_Texture : register( t1 );
 SamplerState TexSampler1_Sampler : register( s1 );
-static const DX12Sampler2D TexSampler1 = { TexSampler1_Texture, TexSampler1_Sampler };
+static DX12Sampler2D TexSampler1 = { TexSampler1_Texture, TexSampler1_Sampler };
 
 struct PS_INPUT
 {

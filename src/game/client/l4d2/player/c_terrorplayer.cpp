@@ -1658,17 +1658,18 @@ void ResetClientTerrorPlayerPerformanceStats( int reason, int result )
 }
 
 // Whole25DCE0. Native callers use bounded real slots0/1; no added clamp/guard.
-// StopEmission can invoke deletion callbacks before the explicit reference clear.
+// Native 1523E0 per handle: unlink from the particle property and StopEmission( false, true, false ), i.e.
+// StopEmissionAndDestroyImmediately. A plain stop leaves the beam's live particles drawing after the handle is dropped.
 void C_TerrorPlayer::ClearTerrorLaserSightEffects( int user )
 {
 	if ( m_hThirdPersonLaserSightParticles[user] )
 	{
-		ParticleProp()->StopEmission( m_hThirdPersonLaserSightParticles[user] );
+		ParticleProp()->StopEmissionAndDestroyImmediately( m_hThirdPersonLaserSightParticles[user] );
 		m_hThirdPersonLaserSightParticles[user] = NULL;
 	}
 	if ( m_hFirstPersonLaserSightParticles[user] )
 	{
-		ParticleProp()->StopEmission( m_hFirstPersonLaserSightParticles[user] );
+		ParticleProp()->StopEmissionAndDestroyImmediately( m_hFirstPersonLaserSightParticles[user] );
 		m_hFirstPersonLaserSightParticles[user] = NULL;
 	}
 }
@@ -4539,7 +4540,7 @@ void C_TerrorPlayer::UpdateLaserSightParticles()
 	{
 		if ( m_hThirdPersonLaserSightParticles[user] )
 		{
-			ParticleProp()->StopEmission( m_hThirdPersonLaserSightParticles[user] );
+			ParticleProp()->StopEmissionAndDestroyImmediately( m_hThirdPersonLaserSightParticles[user] );
 			m_hThirdPersonLaserSightParticles[user] = NULL;
 		}
 		if ( IsThirdPersonCameraActive() || input->CAM_IsThirdPerson() ||
@@ -4660,7 +4661,7 @@ void C_TerrorPlayer::UpdateLaserSightParticles()
 	{
 		if ( m_hFirstPersonLaserSightParticles[user] )
 		{
-			ParticleProp()->StopEmission( m_hFirstPersonLaserSightParticles[user] );
+			ParticleProp()->StopEmissionAndDestroyImmediately( m_hFirstPersonLaserSightParticles[user] );
 			m_hFirstPersonLaserSightParticles[user] = NULL;
 		}
 		if ( !r_draw_lasersight_3rd_person.GetBool() ) goto cleanup;
@@ -4710,7 +4711,7 @@ void C_TerrorPlayer::UpdateLaserSightParticles()
 		return;
 	}
 cleanup:
-	ClearTerrorLaserSightEffects( user ); // B sole25DCE0 NORMAL StopEmission, not flashlight immediate cleanup.
+	ClearTerrorLaserSightEffects( user ); // B sole 25DCE0: immediate destroy of both handles.
 }
 
 static ConVar r_draw_flashlight_3rd_person( "r_draw_flashlight_3rd_person", "1", 0x0000000A, "Draw flashlight beams for other players" ); // C10510580 raw0 ->2.

@@ -41,29 +41,29 @@
 // Texture Samplers ===============================================================================
 Texture2D g_tCorneaSampler_Texture : register( t0 );
 SamplerState g_tCorneaSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tCorneaSampler = { g_tCorneaSampler_Texture, g_tCorneaSampler_Sampler };
+static DX12Sampler2D g_tCorneaSampler = { g_tCorneaSampler_Texture, g_tCorneaSampler_Sampler };
 Texture2D g_tIrisSampler_Texture : register( t1 );
 SamplerState g_tIrisSampler_Sampler : register( s1 );
-static const DX12Sampler2D g_tIrisSampler = { g_tIrisSampler_Texture, g_tIrisSampler_Sampler };
+static DX12Sampler2D g_tIrisSampler = { g_tIrisSampler_Texture, g_tIrisSampler_Sampler };
 TextureCube g_tEyeReflectionCubemapSampler_Texture : register( t2 );
 SamplerState g_tEyeReflectionCubemapSampler_Sampler : register( s2 );
-static const DX12SamplerCube g_tEyeReflectionCubemapSampler = { g_tEyeReflectionCubemapSampler_Texture, g_tEyeReflectionCubemapSampler_Sampler };
+static DX12SamplerCube g_tEyeReflectionCubemapSampler = { g_tEyeReflectionCubemapSampler_Texture, g_tEyeReflectionCubemapSampler_Sampler };
 Texture2D g_tEyeAmbientOcclSampler_Texture : register( t3 );
 SamplerState g_tEyeAmbientOcclSampler_Sampler : register( s3 );
-static const DX12Sampler2D g_tEyeAmbientOcclSampler = { g_tEyeAmbientOcclSampler_Texture, g_tEyeAmbientOcclSampler_Sampler };
+static DX12Sampler2D g_tEyeAmbientOcclSampler = { g_tEyeAmbientOcclSampler_Texture, g_tEyeAmbientOcclSampler_Sampler };
 Texture2D g_tLightwarpSampler_Texture : register( t4 );
 SamplerState g_tLightwarpSampler_Sampler : register( s4 ); // 1D texture for TF NPR lighting
-static const DX12Sampler1D g_tLightwarpSampler = { g_tLightwarpSampler_Texture, g_tLightwarpSampler_Sampler };
+static DX12Sampler1D g_tLightwarpSampler = { g_tLightwarpSampler_Texture, g_tLightwarpSampler_Sampler };
 
 Texture2D g_tFlashlightCookieSampler_Texture : register( t5 );
 SamplerState g_tFlashlightCookieSampler_Sampler : register( s5 );
-static const DX12Sampler2D g_tFlashlightCookieSampler = { g_tFlashlightCookieSampler_Texture, g_tFlashlightCookieSampler_Sampler };
+static DX12Sampler2D g_tFlashlightCookieSampler = { g_tFlashlightCookieSampler_Texture, g_tFlashlightCookieSampler_Sampler };
 Texture2D g_tFlashlightDepthSampler_Texture : register( t6 );
 SamplerComparisonState g_tFlashlightDepthSampler_Sampler : register( s6 );
-static const DX12ShadowSampler g_tFlashlightDepthSampler = { g_tFlashlightDepthSampler_Texture, g_tFlashlightDepthSampler_Sampler };
+static DX12ShadowSampler g_tFlashlightDepthSampler = { g_tFlashlightDepthSampler_Texture, g_tFlashlightDepthSampler_Sampler };
 Texture2D g_tRandomRotationSampler_Texture : register( t7 );
 SamplerState g_tRandomRotationSampler_Sampler : register( s7 );
-static const DX12Sampler2D g_tRandomRotationSampler = { g_tRandomRotationSampler_Texture, g_tRandomRotationSampler_Sampler };
+static DX12Sampler2D g_tRandomRotationSampler = { g_tRandomRotationSampler_Texture, g_tRandomRotationSampler_Sampler };
 
 // Shaders Constants and Globals ==================================================================
 

@@ -20,10 +20,10 @@ cbuffer particlesphere_ps2x : register( b1, space1 )
 
 Texture2D BumpmapSampler_Texture : register( t0 );
 SamplerState BumpmapSampler_Sampler : register( s0 );
-static const DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
+static DX12Sampler2D BumpmapSampler = { BumpmapSampler_Texture, BumpmapSampler_Sampler };
 Texture2D DepthSampler_Texture : register( t1 );
 SamplerState DepthSampler_Sampler : register( s1 );
-static const DX12Sampler2D DepthSampler = { DepthSampler_Texture, DepthSampler_Sampler };
+static DX12Sampler2D DepthSampler = { DepthSampler_Texture, DepthSampler_Sampler };
 
 struct PS_INPUT
 {

@@ -118,13 +118,13 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D ColorRampSampler_Texture : register( t1 );
 SamplerState ColorRampSampler_Sampler : register( s1 );
-static const DX12Sampler2D ColorRampSampler = { ColorRampSampler_Texture, ColorRampSampler_Sampler };
+static DX12Sampler2D ColorRampSampler = { ColorRampSampler_Texture, ColorRampSampler_Sampler };
 Texture2D DepthSampler_Texture : register( t2 );
 SamplerState DepthSampler_Sampler : register( s2 );
-static const DX12Sampler2D DepthSampler = { DepthSampler_Texture, DepthSampler_Sampler };
+static DX12Sampler2D DepthSampler = { DepthSampler_Texture, DepthSampler_Sampler };
 
 float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 {

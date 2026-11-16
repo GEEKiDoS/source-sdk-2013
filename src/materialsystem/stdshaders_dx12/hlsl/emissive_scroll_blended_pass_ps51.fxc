@@ -11,13 +11,13 @@
 // Texture Samplers ===============================================================================
 Texture2D g_tBaseSampler_Texture : register( t0 );
 SamplerState g_tBaseSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tBaseSampler = { g_tBaseSampler_Texture, g_tBaseSampler_Sampler };
+static DX12Sampler2D g_tBaseSampler = { g_tBaseSampler_Texture, g_tBaseSampler_Sampler };
 Texture2D g_tFlowSampler_Texture : register( t1 );
 SamplerState g_tFlowSampler_Sampler : register( s1 );
-static const DX12Sampler2D g_tFlowSampler = { g_tFlowSampler_Texture, g_tFlowSampler_Sampler };
+static DX12Sampler2D g_tFlowSampler = { g_tFlowSampler_Texture, g_tFlowSampler_Sampler };
 Texture2D g_tSelfIllumSampler_Texture : register( t2 );
 SamplerState g_tSelfIllumSampler_Sampler : register( s2 );
-static const DX12Sampler2D g_tSelfIllumSampler = { g_tSelfIllumSampler_Texture, g_tSelfIllumSampler_Sampler };
+static DX12Sampler2D g_tSelfIllumSampler = { g_tSelfIllumSampler_Texture, g_tSelfIllumSampler_Sampler };
 
 // Shaders Constants and Globals ==================================================================
 

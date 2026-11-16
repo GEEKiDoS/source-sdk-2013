@@ -33,7 +33,7 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 
 Texture2D FrameSampler_Texture : register( t4 );
 SamplerState FrameSampler_Sampler : register( s4 );
-static const DX12Sampler2D FrameSampler = { FrameSampler_Texture, FrameSampler_Sampler };
+static DX12Sampler2D FrameSampler = { FrameSampler_Texture, FrameSampler_Sampler };
 
 
 cbuffer color_projection_ps2x : register( b1, space1 )

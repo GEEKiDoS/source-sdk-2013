@@ -161,38 +161,6 @@ static int FindRecord( const T *pRecords, int nCount, uint32_t nId )
 	return nLow < nCount && pRecords[nLow].m_nId == nId ? nLow : -1;
 }
 
-// One line of shaders/native_dx12_legacy_names.txt; m_Key is "<vs|ps>:<native lowercase>".
-struct LegacyNameDX12
-{
-	CUtlString m_Key;
-	CUtlString m_Legacy;
-};
-
-static int __cdecl CompareLegacyNames( const LegacyNameDX12 *pLeft, const LegacyNameDX12 *pRight )
-{
-	const int nKey = V_strcmp( pLeft->m_Key.Get(), pRight->m_Key.Get() );
-	return nKey ? nKey : V_strcmp( pLeft->m_Legacy.Get(), pRight->m_Legacy.Get() );
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Binary search over the sorted legacy-name table; returns the first
-//          entry whose key equals pszKey, or -1.
-//-----------------------------------------------------------------------------
-static int FindLegacyName( const CUtlVector<LegacyNameDX12> &names, const char *pszKey )
-{
-	int nLow = 0;
-	int nHigh = names.Count();
-	while ( nLow < nHigh )
-	{
-		const int nMid = nLow + ( nHigh - nLow ) / 2;
-		if ( V_strcmp( names[nMid].m_Key.Get(), pszKey ) < 0 )
-			nLow = nMid + 1;
-		else
-			nHigh = nMid;
-	}
-	return nLow < names.Count() && !V_strcmp( names[nLow].m_Key.Get(), pszKey ) ? nLow : -1;
-}
-
 bool ProjectComboFoldDX12( const ComboFoldTableDX12 &table, int64_t staticIndex,
 	int64_t dynamicIndex, ComboFoldProjectionDX12 &projection )
 {
@@ -337,41 +305,6 @@ bool ParseComboFoldTextDX12( const char *text, CUtlVector<ComboFoldTableDX12 *> 
 	return true;
 }
 
-const ComboFoldTableDX12 *FindComboFoldTableDX12( IFileSystem &filesystem, const char *name, VcsStage stage )
-{
-	static CThreadFastMutex mutex;
-	static bool loaded = false;
-	static CUtlVector<ComboFoldTableDX12 *> tables;
-	AUTO_LOCK( mutex );
-	if ( !loaded )
-	{
-		loaded = true;
-		FileHandle_t file = filesystem.Open( "shaders/native_dx12_combo_fold.txt", "rb", "GAME" );
-		if ( file != FILESYSTEM_INVALID_HANDLE )
-		{
-			const unsigned size = filesystem.Size( file );
-			CUtlVector<char> text;
-			CUtlString error;
-			if ( size > INT_MAX - 1 )
-				error = "combo fold file is too large";
-			else
-			{
-				text.SetCount( int( size ) + 1 );
-				const int read = filesystem.Read( text.Base(), int( size ), file );
-				text[int( size )] = 0;
-				if ( read != int( size ) ) error = "short combo fold file read";
-				else ParseComboFoldTextDX12( text.Base(), tables, error );
-			}
-			filesystem.Close( file );
-			if ( error.Length() ) Warning( "ShaderAPIDX12: %s\n", error.Get() );
-		}
-	}
-	for ( const ComboFoldTableDX12 *table : tables )
-		if ( table->stage == stage && !V_stricmp( table->name.Get(), name ) )
-			return table;
-	return nullptr;
-}
-
 //-----------------------------------------------------------------------------
 // Purpose: Constructor / destructor
 //-----------------------------------------------------------------------------
@@ -384,6 +317,7 @@ ShaderVcsFile::~ShaderVcsFile()
 {
 	m_LoadedStatics.Purge();
 	m_Cache.PurgeAndDeleteElements();
+	m_ComboFold.PurgeAndDeleteElements();
 }
 
 //-----------------------------------------------------------------------------
@@ -397,66 +331,8 @@ bool ShaderVcsFile::Fail( const char *pszMessage, CUtlString &error ) const
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Parsed once per process from GAME shaders/native_dx12_legacy_names.txt:
-//          "<native> <vs|ps|cs> <legacy>" per line, or "<native> <vs|ps|cs>" for a
-//          native-only logical, which maps to kNativeOnlyMarker (no shaders/fxc fallback).
-//-----------------------------------------------------------------------------
-CUtlString ShaderVcsFile::LegacyShaderName( IFileSystem &filesystem, const char *pszName, VcsStage stage )
-{
-	static CThreadFastMutex s_Mutex;
-	static bool s_bLoaded = false;
-	static CUtlVector<LegacyNameDX12> s_Names;
-	{
-		AUTO_LOCK( s_Mutex );
-		if ( !s_bLoaded )
-		{
-			s_bLoaded = true;
-			FileHandle_t hFile = filesystem.Open( "shaders/native_dx12_legacy_names.txt", "rb", "GAME" );
-			if ( hFile != FILESYSTEM_INVALID_HANDLE )
-			{
-				const unsigned int nSize = filesystem.Size( hFile );
-				CUtlVector<char> text;
-				text.SetCount( static_cast<int>( nSize ) + 1 );
-				memset( text.Base(), 0, nSize + 1 );
-				filesystem.Read( text.Base(), static_cast<int>( nSize ), hFile );
-				filesystem.Close( hFile );
-				char *pText = text.Base();
-				char *pTextEnd = pText + nSize;
-				for ( char *pLine = pText; pLine < pTextEnd; )
-				{
-					char *pLineEnd = static_cast<char *>( memchr( pLine, '\n', static_cast<size_t>( pTextEnd - pLine ) ) );
-					if ( !pLineEnd )
-						pLineEnd = pTextEnd;
-					*pLineEnd = '\0';
-					char szLogical[256] = {};
-					char szStage[8] = {};
-					char szLegacy[256] = {};
-					const int nFields = sscanf( pLine, "%255s %7s %255s", szLogical, szStage, szLegacy );
-					if ( nFields >= 2 )
-					{
-						char szKey[sizeof( szStage ) + sizeof( szLogical ) + 1];
-						V_snprintf( szKey, sizeof( szKey ), "%s:%s", szStage, szLogical );
-						V_strlower( szKey );
-						const int i = s_Names.AddToTail();
-						s_Names[i].m_Key = szKey;
-						s_Names[i].m_Legacy = nFields == 3 ? szLegacy : kNativeOnlyMarker;
-					}
-					pLine = pLineEnd + 1;
-				}
-				s_Names.Sort( CompareLegacyNames );
-			}
-		}
-	}
-	CUtlString key( stage == VcsStage::Vertex ? "vs:" : stage == VcsStage::Pixel ? "ps:" : "cs:" );
-	key += pszName;
-	V_strlower( key.GetForModify() );
-	const int nFound = FindLegacyName( s_Names, key.Get() );
-	return nFound >= 0 ? s_Names[nFound].m_Legacy : CUtlString( pszName );
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Opens shaders/<vsh|psh|csh>/<name>.vcs, falling back to the legacy
-//          shaders/fxc logical for vertex/pixel names unless the name is native-only.
+// Purpose: Opens shaders/<vsh|psh|csh>/<name>.vcs, or for a vertex/pixel name without a native record
+//          shaders/fxc/<name>.vcs (legacy-only logicals). Native records carry their metadata trailer.
 //-----------------------------------------------------------------------------
 bool ShaderVcsFile::Open( IFileSystem &filesystem, const char *pszName, VcsStage stage, CUtlString &error )
 {
@@ -467,23 +343,14 @@ bool ShaderVcsFile::Open( IFileSystem &filesystem, const char *pszName, VcsStage
 		m_Stage = stage;
 		return Fail( "invalid shader name", error );
 	}
-	const bool bCompute = stage == VcsStage::Compute;
-	const CUtlString filename = CUtlString( "shaders/" ) +
-	    ( stage == VcsStage::Vertex ? "vsh/" : stage == VcsStage::Pixel ? "psh/" : "csh/" ) + pszName + ".vcs";
-	// A native logical whose native record is absent normally resolves to its legacy DX9 logical.
-	// Compute logicals are always native-only and never fall back to shaders/fxc.
-	const CUtlString legacyName = bCompute ? CUtlString( kNativeOnlyMarker ) : LegacyShaderName( filesystem, pszName, stage );
-	const bool bNativeOnly = !V_strcmp( legacyName.Get(), kNativeOnlyMarker );
-	const CUtlString fallback = CUtlString( "shaders/fxc/" ) + legacyName + ".vcs";
+	const char *pszDirectory = stage == VcsStage::Vertex ? "vsh/" : stage == VcsStage::Pixel ? "psh/" : "csh/";
+	const CUtlString filename = CUtlString( "shaders/" ) + pszDirectory + pszName + ".vcs";
+	const CUtlString fallback = CUtlString( "shaders/fxc/" ) + pszName + ".vcs";
 	FileHandle_t hFile = filesystem.Open( filename.Get(), "rb", "GAME" );
-	if ( hFile == FILESYSTEM_INVALID_HANDLE && bNativeOnly )
-	{
-		m_Path = filename;
-		m_Stage = stage;
-		return Fail( "native-only shader file not found in GAME", error );
-	}
-	const CUtlString &selected = hFile == FILESYSTEM_INVALID_HANDLE ? fallback : filename;
-	if ( hFile == FILESYSTEM_INVALID_HANDLE )
+	// Compute logicals are always native.
+	const bool bNative = hFile != FILESYSTEM_INVALID_HANDLE || stage == VcsStage::Compute;
+	const CUtlString &selected = bNative ? filename : fallback;
+	if ( !bNative )
 		hFile = filesystem.Open( fallback.Get(), "rb", "GAME" );
 	m_Path = selected;
 	m_Stage = stage;
@@ -504,67 +371,42 @@ bool ShaderVcsFile::Open( IFileSystem &filesystem, const char *pszName, VcsStage
 	if ( !ParseBytes( bytes.Base(), nSize, stage, selected.Get(), error ) )
 		return false;
 	m_File.Swap( bytes );
-	if ( selected == filename )
+	if ( !bNative )
+		return true;
+	if ( !m_bNativeMetadata )
+		return Fail( "native shader without ShaderCompiler3 metadata", error );
+	if ( V_strstr( pszName, "_highres_" ) && !m_bSamplerRolesReady )
+		return Fail( "required native lightmap sampler-role metadata missing", error );
+	if ( const ComboFoldTableDX12 *fold = ComboFold() )
+		if ( V_stricmp( fold->name.Get(), pszName ) || fold->stage != stage )
+			return Fail( "combo fold metadata names another shader", error );
+	if ( m_bEarlyDepthTwin )
 	{
-		const CUtlString rolesPath = CUtlString( "shaders/" ) +
-			( stage == VcsStage::Vertex ? "vsh/" : stage == VcsStage::Pixel ? "psh/" : "csh/" ) + pszName + ".hlight";
-		FileHandle_t roles = filesystem.Open( rolesPath.Get(), "rb", "GAME" );
-		if ( roles != FILESYSTEM_INVALID_HANDLE )
+		const int nameLength = V_strlen( pszName );
+		if ( stage != VcsStage::Pixel || !m_bHighresAbi || nameLength < 5 || V_strcmp( pszName + nameLength - 5, "_ps51" ) ||
+			V_strstr( pszName, "_earlydepth_" ) )
+			return Fail( "invalid native early-depth twin metadata", error );
+		char twinName[256];
+		const int length = V_snprintf( twinName, sizeof( twinName ), "%.*s_earlydepth_ps51", nameLength - 5, pszName );
+		if ( length <= 0 || length >= int( sizeof( twinName ) ) )
+			return Fail( "native early-depth twin name too long", error );
+		const CUtlString twin = CUtlString( "shaders/psh/" ) + twinName + ".vcs";
+		if ( !filesystem.FileExists( twin.Get(), "GAME" ) )
+			return Fail( "declared native early-depth twin missing", error );
+	}
+	const char *highres = V_strstr( pszName, "_highres_" );
+	if ( highres && stage != VcsStage::Compute )
+	{
+		char ordinary[256];
+		const char *ordinarySuffix = highres + sizeof( "_highres_" ) - 1;
+		if ( !V_strncmp( ordinarySuffix, "earlydepth_", sizeof( "earlydepth_" ) - 1 ) )
+			ordinarySuffix += sizeof( "earlydepth_" ) - 1;
+		const int length = V_snprintf( ordinary, sizeof( ordinary ), "%.*s_%s", int( highres - pszName ), pszName,
+			ordinarySuffix );
+		if ( length > 0 && length < int( sizeof( ordinary ) ) )
 		{
-			uint8 data[16]{};
-			const bool complete = filesystem.Size( roles ) == sizeof( data ) &&
-				filesystem.Read( data, sizeof( data ), roles ) == sizeof( data );
-			filesystem.Close( roles );
-			uint32_t magic = 0, version = 0, mask = 0, abi = 0;
-			if ( !complete || !U32( data, sizeof( data ), 0, magic ) || !U32( data, sizeof( data ), 4, version ) ||
-				!U32( data, sizeof( data ), 8, mask ) || !U32( data, sizeof( data ), 12, abi ) ||
-				magic != 0x544c484eu || version != 1 || ( mask & ~0xffffu ) || abi > 1 ||
-				( stage != VcsStage::Pixel && mask ) || ( stage == VcsStage::Compute && abi ) )
-				return Fail( "invalid native lightmap sampler-role metadata", error );
-			m_nLightmapSamplerMask = mask;
-			m_bHighresAbi = abi != 0;
-			m_bSamplerRolesReady = true;
-		}
-		else if ( V_strstr( pszName, "_highres_" ) )
-			return Fail( "required native lightmap sampler-role metadata missing", error );
-		const CUtlString earlyPath = CUtlString( "shaders/" ) +
-			( stage == VcsStage::Vertex ? "vsh/" : stage == VcsStage::Pixel ? "psh/" : "csh/" ) + pszName + ".earlydepth";
-		FileHandle_t early = filesystem.Open( earlyPath.Get(), "rb", "GAME" );
-		if ( early != FILESYSTEM_INVALID_HANDLE )
-		{
-			uint8 data[8]{};
-			const bool complete = filesystem.Size( early ) == sizeof( data ) &&
-				filesystem.Read( data, sizeof( data ), early ) == sizeof( data );
-			filesystem.Close( early );
-			uint32_t magic = 0, version = 0;
-			const int nameLength = V_strlen( pszName );
-			if ( !complete || !U32( data, sizeof( data ), 0, magic ) || !U32( data, sizeof( data ), 4, version ) ||
-				magic != 0x59445245u || version != 1 || stage != VcsStage::Pixel || !m_bHighresAbi ||
-				nameLength < 5 || V_strcmp( pszName + nameLength - 5, "_ps51" ) || V_strstr( pszName, "_earlydepth_" ) )
-				return Fail( "invalid native early-depth twin metadata", error );
-			char twinName[256];
-			const int length = V_snprintf( twinName, sizeof( twinName ), "%.*s_earlydepth_ps51", nameLength - 5, pszName );
-			if ( length <= 0 || length >= int( sizeof( twinName ) ) )
-				return Fail( "native early-depth twin name too long", error );
-			const CUtlString twin = CUtlString( "shaders/psh/" ) + twinName + ".vcs";
-			if ( !filesystem.FileExists( twin.Get(), "GAME" ) )
-				return Fail( "declared native early-depth twin missing", error );
-			m_bEarlyDepthTwin = true;
-		}
-		const char *highres = V_strstr( pszName, "_highres_" );
-		if ( highres && stage != VcsStage::Compute )
-		{
-			char ordinary[256];
-			const char *ordinarySuffix = highres + sizeof( "_highres_" ) - 1;
-			if ( !V_strncmp( ordinarySuffix, "earlydepth_", sizeof( "earlydepth_" ) - 1 ) )
-				ordinarySuffix += sizeof( "earlydepth_" ) - 1;
-			const int length = V_snprintf( ordinary, sizeof( ordinary ), "%.*s_%s", int( highres - pszName ), pszName,
-				ordinarySuffix );
-			if ( length > 0 && length < int( sizeof( ordinary ) ) )
-			{
-				const CUtlString twin = CUtlString( "shaders/" ) + ( stage == VcsStage::Vertex ? "vsh/" : "psh/" ) + ordinary + ".vcs";
-				m_bNativeCasterTwin = filesystem.FileExists( twin.Get(), "GAME" );
-			}
+			const CUtlString twin = CUtlString( "shaders/" ) + pszDirectory + ordinary + ".vcs";
+			m_bNativeCasterTwin = filesystem.FileExists( twin.Get(), "GAME" );
 		}
 	}
 	return true;
@@ -595,6 +437,8 @@ bool ShaderVcsFile::ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage 
 	m_bHighresAbi = m_bSamplerRolesReady = false;
 	m_bNativeCasterTwin = false;
 	m_bEarlyDepthTwin = false;
+	m_bNativeMetadata = false;
+	m_ComboFold.PurgeAndDeleteElements();
 	m_nPayloadStart = 0;
 	m_nHeaderBytes = 28;
 	m_LoadedStatics.Purge();
@@ -716,7 +560,8 @@ bool ShaderVcsFile::ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage 
 			U32( pBytes, nLength, 28 + i * 8 + 4, nOffset );
 			if ( i + 1 == nField )
 			{
-				if ( nId != 0xffffffffu || nOffset != nLength )
+				// v6 may end with the native metadata trailer after the last static block.
+				if ( nId != 0xffffffffu || nOffset > nLength || ( nOffset != nLength && nVersion != 6 ) )
 					return Fail( "invalid static sentinel/end offset", error );
 			}
 			else if ( nId >= nStaticCount || nOffset < m_nPayloadStart || nOffset >= nLength ||
@@ -729,6 +574,8 @@ bool ShaderVcsFile::ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage 
 			return Fail( "empty last static span", error );
 		if ( m_Records.Head().m_nOffset != m_nPayloadStart )
 			return Fail( "unreferenced bytes before static payloads", error );
+		if ( m_Records.Tail().m_nOffset != nLength && !ParseNativeMetadata( pBytes, m_Records.Tail().m_nOffset, nLength, error ) )
+			return false;
 		// The trailing sentinel record is not a static combo.
 		const int nCanonicalCount = m_Records.Count() - 1;
 		for ( int i = 0; i < m_Aliases.Count(); ++i )
@@ -763,8 +610,42 @@ bool ShaderVcsFile::ParseBytes( const uint8_t *pBytes, size_t nLength, VcsStage 
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Checks a payload is either a well-formed SM5 DXBC container of this
-//          stage or a legacy SM1-3 token stream of this stage.
+// Purpose: Reads the ShaderCompiler3 metadata trailer occupying [nStart, nLength).
+//-----------------------------------------------------------------------------
+bool ShaderVcsFile::ParseNativeMetadata( const uint8_t *pBytes, size_t nStart, size_t nLength, CUtlString &error )
+{
+	uint32_t magic = 0, version = 0, size = 0, flags = 0, mask = 0, foldBytes = 0;
+	if ( !U32( pBytes, nLength, nStart, magic ) || !U32( pBytes, nLength, nStart + 4, version ) ||
+		!U32( pBytes, nLength, nStart + 8, size ) || !U32( pBytes, nLength, nStart + 12, flags ) ||
+		!U32( pBytes, nLength, nStart + 16, mask ) || !U32( pBytes, nLength, nStart + 20, foldBytes ) ||
+		magic != kVcsNativeMetadataMagic || version != 1 || size != nLength - nStart || ( size & 3 ) ||
+		foldBytes > size - 24 || ( ( foldBytes + 3 ) & ~3u ) != size - 24 )
+		return Fail( "invalid native metadata trailer", error );
+	const uint32_t known = kVcsNativeHighresAbi | kVcsNativeSamplerRoles | kVcsNativeEarlyDepthTwin;
+	if ( ( flags & ~known ) || ( mask & ~0xffffu ) || ( mask && !( flags & kVcsNativeSamplerRoles ) ) ||
+		( m_Stage != VcsStage::Pixel && mask ) || ( m_Stage == VcsStage::Compute && ( flags & ~kVcsNativeSamplerRoles ) ) )
+		return Fail( "invalid native metadata flags", error );
+	if ( foldBytes )
+	{
+		const CUtlString text( reinterpret_cast<const char *>( pBytes + nStart + 24 ), int( foldBytes ) );
+		CUtlString foldError;
+		if ( !ParseComboFoldTextDX12( text.Get(), m_ComboFold, foldError ) || m_ComboFold.Count() != 1 || m_Stage == VcsStage::Compute )
+		{
+			m_ComboFold.PurgeAndDeleteElements();
+			return Fail( foldError.Length() ? foldError.Get() : "native metadata fold table must describe exactly this shader", error );
+		}
+	}
+	m_nLightmapSamplerMask = mask;
+	m_bHighresAbi = ( flags & kVcsNativeHighresAbi ) != 0;
+	m_bSamplerRolesReady = ( flags & kVcsNativeSamplerRoles ) != 0;
+	m_bEarlyDepthTwin = ( flags & kVcsNativeEarlyDepthTwin ) != 0;
+	m_bNativeMetadata = true;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Checks a payload is either a well-formed SM5 DXBC or SM6 DXIL container of
+//          this stage, or a legacy SM1-3 token stream of this stage.
 //-----------------------------------------------------------------------------
 bool ShaderVcsFile::ValidateTokens( const uint8_t *pData, size_t nSize, CUtlString &error ) const
 {
@@ -789,23 +670,24 @@ bool ShaderVcsFile::ValidateTokens( const uint8_t *pData, size_t nSize, CUtlStri
 			if ( ( nOffset & 3 ) || nOffset < 32 + nChunks * 4 || nOffset > nSize - 8 ||
 			    !U32( pData, nSize, nOffset + 4, nLength ) || nLength > nSize - nOffset - 8 )
 				return Fail( "truncated or misaligned DXBC chunk", error );
-			if ( !memcmp( pData + nOffset, "SHDR", 4 ) || !memcmp( pData + nOffset, "SHEX", 4 ) )
+			const bool bDxil = !memcmp( pData + nOffset, "DXIL", 4 );
+			if ( bDxil || !memcmp( pData + nOffset, "SHDR", 4 ) || !memcmp( pData + nOffset, "SHEX", 4 ) )
 			{
-				// SM4+ version token: program type in bits 16-31 (0 = pixel, 1 = vertex, 5 = compute),
-				// major in bits 4-7, minor in bits 0-3; the second token is the length in DWORDs.
+				// SM4+ version token (SHDR/SHEX) or DXIL program header: program type in bits 16-31 (0 = pixel,
+				// 1 = vertex, 5 = compute), major in bits 4-7, minor in bits 0-3; the second word is the length in DWORDs.
 				uint32_t nWords = 0;
 				const uint32_t expectedType = m_Stage == VcsStage::Vertex ? 1u : m_Stage == VcsStage::Pixel ? 0u : 5u;
 				if ( bProgram || nLength < 8 || ( nLength & 3 ) ||
 				    !U32( pData, nSize, nOffset + 8, nToken ) || !U32( pData, nSize, nOffset + 12, nWords ) ||
 				    nWords < 2 || nWords > nLength / 4 ||
 				    ( nToken >> 16 ) != expectedType ||
-				    ( ( nToken >> 4 ) & 0xfu ) != 5u || ( nToken & 0xfu ) > 1u )
-					return Fail( "invalid or wrong-stage DXBC shader program", error );
+				    ( ( nToken >> 4 ) & 0xfu ) != ( bDxil ? 6u : 5u ) || ( nToken & 0xfu ) > ( bDxil ? 8u : 1u ) )
+					return Fail( "invalid or wrong-stage shader program", error );
 				bProgram = true;
 			}
 		}
 		if ( !bProgram )
-			return Fail( "DXBC has no SHDR/SHEX shader program", error );
+			return Fail( "container has no SHDR/SHEX/DXIL shader program", error );
 		return true;
 	}
 	uint32_t nProfile, nEnd;

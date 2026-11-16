@@ -641,9 +641,15 @@ public:
 	struct DrawStatsDX12
 	{
 		uint64_t draws = 0, memoHits = 0, shadowDraws = 0, casterInstances = 0, casterInstancedDraws = 0;
+		// Queue submissions inside BeginFrame..EndFrame (sum and per-frame maximum) and texture upload bytes.
+		uint64_t submits = 0, maxFrameSubmits = 0, textureUploadBytes = 0, prepassReadOnlyDraws = 0;
+		// Depth-prepass draws that ran without a pixel stage / with their material pixel stage.
+		uint64_t prepassNullPSDraws = 0, prepassShadedDraws = 0;
 	} m_DrawStats;
 
 	uint32_t m_nDrawStatsFrames = 0;
+	uint64_t m_nBarrierStatsBase = 0;
+	uint64_t m_nFrameStartFence = 0;
 	// Direct-mapped pipeline memo. Entries are valid for the current epoch, which is bumped whenever
 	// shader records, snapshots or the device go away; PSO lifetime is tracked by the pipeline epoch.
 	PipelineMemoDX12 m_PipelineMemos[256];
@@ -673,29 +679,37 @@ private:
 		uint64 meshToken;                     // key: IMesh identity (DrawMesh passes the CMeshDX12 pointer)
 		int firstIndex, indexCount;           // key: index range
 		StateSnapshot_t snapshot;             // key: DepthWrite snapshot id (material/pass state)
-		int vsDynamicIndex;                   // key: COMPRESSED_VERTS bit (0 or 1)
+		int vsDynamicIndex;                   // key: COMPRESSED_VERTS + 2*SKINNING (0..3)
 		const CMeshDX12 *mesh;                // emit arguments (identical to the captured DrawMesh call)
 		CVertexBufferDX12 *vertices;
 		CIndexBufferDX12 *indices;
 		uint32_t byteOffset, firstVertex, vertexCount;
 		VertexFormat_t format;
-		uint32_t first;                       // staging row offset assigned at flush
-		uint16_t head, tail, count;           // singly linked instance list (indices into rows[]/next[])
+		uint32_t first;                       // staging offset assigned at flush (rows: rigid; palettes: skinned)
+		uint16_t head, tail, count;           // singly linked instance list (indices into rows[]/palette[]/next[])
 		bool skyClipExempt;                   // key: per-draw playable-region exemption
 	};
 	static constexpr uint32_t kCasterGroups = 512, kCasterGroupSlots = 1024 /* 2x groups, open addressing */, kCasterInstances = 4096;
+	// Skinned casters carry the whole cModel palette (DX12VSBones.cModel[53]); depthwrite_instanced_vs51 SKINNING
+	// indexes it with the same stride.
+	static constexpr uint32_t kCasterPaletteBones = 53, kCasterPaletteFloats = kCasterPaletteBones * 12;
 	struct CasterBatchDX12
 	{
 		bool active = false;
 		uint32_t groupCount = 0, instanceCount = 0;
 		StateSnapshot_t lastSnapshot = -1;    // DrawBuffers eligibility memo of the snapshot test
 		bool lastSnapshotEligible = false;
-		ShaderRecordDX12 *instancedVS[2] = {}; // depthwrite_instanced_vs51 dynamic index 0/1, resolved at BeginShadowCasterBatch
+		ShaderRecordDX12 *instancedVS[4] = {}; // depthwrite_instanced_vs51 dynamic index 0..3, resolved at BeginShadowCasterBatch
 		CasterGroupDX12 groups[kCasterGroups];
 		uint16_t slots[kCasterGroupSlots];    // group index + 1, 0 = empty
-		float rows[kCasterInstances][12];     // cModel[0] rows, arrival order
+		float rows[kCasterInstances][12];     // rigid: cModel[0] rows, arrival order
+		uint16_t palette[kCasterInstances];   // skinned: index of the instance's palette in palettes
 		uint16_t next[kCasterInstances];
 		float staging[kCasterInstances][12];  // group-contiguous copy for one UploadTransient
+		// Skinned palettes (kCasterPaletteFloats each) in arrival order and their group-contiguous staging copy;
+		// capacity persists across batches.
+		CUtlVector<float> palettes, paletteStaging;
+		uint32_t paletteCount = 0;
 	} m_CasterBatch;
 	struct
 	{
@@ -800,6 +814,8 @@ private:
 	void ReleaseScreenSpaceResources();
 	void ReplayDepthPrepass( bool bBegin );
 	bool m_bDepthPrepass = false; // ordered normal-geometry replay into scene depth; independent of SSR/contact enable
+	// From the end of that prepass to the main view's screen-space EndView: alpha-tested opaque scene draws test depth read-only.
+	bool m_bDepthPrepassResolved = false;
 	void ReplaySkybox( bool bBegin );
 	static constexpr uint8_t kSkyboxStencilBit = 0x40;
 	bool m_bSkyboxPass = false; // ordered ordinary-sky draws through main-view far-depth pixels

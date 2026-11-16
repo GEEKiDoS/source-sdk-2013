@@ -1,5 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #include "lighting_dx12.h"
+#include "shader_reflect_dx12.h"
 #include "shaderapi_dx12.h"
 #include "shaderdevice_dx12.h"
 #include "hardwareconfig_dx12.h"
@@ -1172,7 +1173,7 @@ bool NativeLogicalAvailable( IFileSystem &filesystem, const char *name, bool pix
 bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixel )
 {
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
-	if ( FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ) return false;
+	if ( FAILED( ReflectShaderDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, &reflection ) ) ) return false;
 	D3D12_SHADER_DESC shader{};
 	if ( FAILED( reflection->GetDesc( &shader ) ) || D3D12_SHVER_GET_TYPE( shader.Version ) != UINT( pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_VERTEX_SHADER ) ) return false;
 	bool constants = false, source = !pixel;
@@ -1211,7 +1212,7 @@ bool ValidateShadowDepthRestoreShaderDX12( const D3D12_SHADER_BYTECODE &bytecode
 bool ValidateInstancedCasterShaderDX12( const D3D12_SHADER_BYTECODE &bytecode )
 {
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
-	if ( FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ) return false;
+	if ( FAILED( ReflectShaderDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, &reflection ) ) ) return false;
 	D3D12_SHADER_DESC shader{};
 	if ( FAILED( reflection->GetDesc( &shader ) ) || ( ( shader.Version >> 16 ) & 0xffffu ) != D3D12_SHVER_VERTEX_SHADER ) return false;
 	bool rows = false;
@@ -1234,7 +1235,7 @@ bool ValidateInstancedCasterShaderDX12( const D3D12_SHADER_BYTECODE &bytecode )
 bool ValidateShadowSkyClipShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pixel )
 {
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
-	if ( FAILED( D3DReflect( bytecode.pShaderBytecode, bytecode.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) ) return false;
+	if ( FAILED( ReflectShaderDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, &reflection ) ) ) return false;
 	D3D12_SHADER_DESC shader{};
 	if ( FAILED( reflection->GetDesc( &shader ) ) || D3D12_SHVER_GET_TYPE( shader.Version ) != UINT( pixel ? D3D12_SHVER_PIXEL_SHADER : D3D12_SHVER_VERTEX_SHADER ) ) return false;
 	bool constants = false, sky = false;
@@ -2096,10 +2097,48 @@ void CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	memset( rows, 0, 7 * 4 * sizeof( float ) );
 	for ( int i = 0; i < 4; ++i ) rows[0][i] = -1.0f;
 	Impl &s = *m_Impl;
-	if ( limit <= 0 || !s.views.Count() ) return;
+	if ( !s.views.Count() ) return;
+	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	const auto &lights = packet.lights;
+	// Every prop is lit by the same carriers: probes (or the ambient cube) plus the runtime light table, which holds
+	// every map light and the sun. The engine's per-model light list repeats the static worldlights (and the sun as a
+	// directional light), unshadowed, on dynamic models only; those slots are blacked out in the pixel engine block
+	// after CommitPixelShaderLighting. Slots stay in place: the VS attenuation follows the same order. Engine dynamic
+	// lights (muzzle flashes, fire) match no runtime light and remain.
+	{
+		CShaderAPIDX12 &api = *s.api;
+		const bool runtimeSun = ( packet.view.constants.cShadowView1[3] & DX12_SHADOW_VIEW_HAS_SUN ) != 0;
+		int indices[4] = {};
+		const int count = api.SortLocalLights( indices );
+		bool changed = false;
+		for ( int i = 0; i < count; ++i )
+		{
+			const LightDesc_t &light = api.m_Lights[indices[i]];
+			bool duplicate = light.m_Type == MATERIAL_LIGHT_DIRECTIONAL && runtimeSun;
+			for ( int j = 0; !duplicate && light.m_Type != MATERIAL_LIGHT_DIRECTIONAL && j < lights.Count(); ++j )
+			{
+				const float dx = lights[j].origin[0] - light.m_Position.x, dy = lights[j].origin[1] - light.m_Position.y,
+					dz = lights[j].origin[2] - light.m_Position.z;
+				duplicate = dx * dx + dy * dy + dz * dz < 1.0f;
+			}
+			if ( !duplicate )
+				continue;
+			float ( &info )[6][4] = api.m_NativePSEngine.cLightInfo;
+			for ( int channel = 0; channel < 3; ++channel )
+			{
+				if ( i < 3 )
+					info[i * 2][channel] = 0.0f;
+				else
+					info[channel][3] = 0.0f;
+			}
+			changed = true;
+		}
+		if ( changed )
+			++api.m_nNativePSEngineVersion;
+	}
+	if ( limit <= 0 ) return;
 	limit = MIN( limit, 4 );
 	rows[1][3] = 1.0f;
-	const auto &lights = s.views.Tail()->packet->lights;
 	const Vector &origin = s.api->m_LightingOrigin;
 	float scores[4] = {};
 	auto sample = [&]( const RuntimeShadowLightGpu &light, Vector &direction ) -> Vector
@@ -2937,7 +2976,7 @@ bool CLightingDX12::ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, Sun
 		Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 		D3D12_SHADER_DESC desc{};
 		const auto bytes = draw.pixelShader->Bytecode();
-		if ( FAILED( D3DReflect( bytes.pShaderBytecode, bytes.BytecodeLength, IID_PPV_ARGS( &reflection ) ) ) || FAILED( reflection->GetDesc( &desc ) ) )
+		if ( FAILED( ReflectShaderDX12( bytes.pShaderBytecode, bytes.BytecodeLength, &reflection ) ) || FAILED( reflection->GetDesc( &desc ) ) )
 		{ s.Fail( SHADOWMAP_ERR_SHADER_UNAVAILABLE ); return false; }
 		bool carrier = false;
 		for ( UINT i = 0; i < desc.BoundResources; ++i )

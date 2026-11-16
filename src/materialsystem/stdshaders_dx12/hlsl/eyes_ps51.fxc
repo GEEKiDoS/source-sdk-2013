@@ -16,13 +16,13 @@
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D IrisSampler_Texture : register( t1 );
 SamplerState IrisSampler_Sampler : register( s1 );
-static const DX12Sampler2D IrisSampler = { IrisSampler_Texture, IrisSampler_Sampler };
+static DX12Sampler2D IrisSampler = { IrisSampler_Texture, IrisSampler_Sampler };
 Texture2D GlintSampler_Texture : register( t2 );
 SamplerState GlintSampler_Sampler : register( s2 );
-static const DX12Sampler2D GlintSampler = { GlintSampler_Texture, GlintSampler_Sampler };
+static DX12Sampler2D GlintSampler = { GlintSampler_Texture, GlintSampler_Sampler };
 
 cbuffer eyes_ps2x : register( b1, space1 )
 {

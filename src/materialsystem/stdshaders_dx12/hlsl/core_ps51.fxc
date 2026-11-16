@@ -21,25 +21,25 @@
 
 Texture2D RefractSampler_Texture : register( t2 );
 SamplerState RefractSampler_Sampler : register( s2 );
-static const DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+static DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
 Texture2D NormalSampler_Texture : register( t3 );
 SamplerState NormalSampler_Sampler : register( s3 );
-static const DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+static DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
 #if CUBEMAP
 TextureCube EnvmapSampler_Texture : register( t4 );
 SamplerState EnvmapSampler_Sampler : register( s4 );
-static const DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+static DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
 #endif
 #if FLOWMAP
 Texture2D FlowmapSampler_Texture : register( t6 );
 SamplerState FlowmapSampler_Sampler : register( s6 );
-static const DX12Sampler2D FlowmapSampler = { FlowmapSampler_Texture, FlowmapSampler_Sampler };
+static DX12Sampler2D FlowmapSampler = { FlowmapSampler_Texture, FlowmapSampler_Sampler };
 #endif
 
 #if CORECOLORTEXTURE
 Texture2D CoreColorSampler_Texture : register( t7 );
 SamplerState CoreColorSampler_Sampler : register( s7 );
-static const DX12Sampler2D CoreColorSampler = { CoreColorSampler_Texture, CoreColorSampler_Sampler };
+static DX12Sampler2D CoreColorSampler = { CoreColorSampler_Texture, CoreColorSampler_Sampler };
 #endif
 
 

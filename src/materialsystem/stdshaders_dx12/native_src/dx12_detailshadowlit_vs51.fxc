@@ -1,8 +1,10 @@
 // Feature-only detail layout: prelit gamma color, UV, baked gather point,
 // authored gather normal/orientation. Card geometry may turn; these do not.
-// SHADOWLIT=1 (the lit material) gathers the runtime direct light once per sprite here, at the gather point all four
-// card vertices share, and hands the pixel stage a flat interpolant; the sprite's projected origin stands in for the
-// pixel position (local-light tile, dither rotation). SHADOWLIT=0 (the caster cutout material) stays resource-free.
+// SHADOWLIT=1 (the lit material) lights each sprite once here, at the gather point all four card vertices share, and
+// hands the pixel stage the flat linear light: where the ambient probe grid covers that point, probe irradiance (soft
+// lobe around the authored up vector, like thin foliage) plus the runtime direct light; elsewhere the original baked
+// detail color, which already contains its baked direct light. The sprite's projected origin stands in for the pixel
+// position (local-light tile, dither rotation). SHADOWLIT=0 (the caster cutout material) stays resource-free.
 #define DX12_LEGACY_VS20 1
 // STATIC: "SHADOWLIT" "0..1"
 // DYNAMIC: "DOWATERFOG" "0..1"
@@ -13,6 +15,9 @@
 #endif
 #include "dx12_preamble.h"
 #include "common_vs_fxc.h"
+#if SHADOWLIT
+#include "pbr_probe.hlsli"
+#endif
 
 struct VS_INPUT
 {
@@ -27,7 +32,7 @@ struct VS_OUTPUT
 	float4 position : SV_Position;
 	float4 color : COLOR0;
 	float2 uv : TEXCOORD0;
-	nointerpolation float3 direct : TEXCOORD1;
+	nointerpolation float3 light : TEXCOORD1;
 	nointerpolation float3 eyePosition : TEXCOORD2;
 	float4 worldPositionZ : TEXCOORD3;
 	float fog : FOG;
@@ -50,7 +55,12 @@ VS_OUTPUT main( VS_INPUT i )
 	float2 ndc = originClip.xy / originClip.w;
 	float2 pixel = cShadowViewport.xy + float2( ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5 ) / cShadowViewport.zw;
 	pixel = clamp( pixel, cShadowViewport.xy, cShadowViewport.xy + 1.0 / cShadowViewport.zw - 1.0 );
-	o.direct = ShadowMap_DetailDirect( i.lightingOrigin.xyz, i.lightingNormal.xyz, pixel );
+	const float3 direct = ShadowMap_DetailDirect( i.lightingOrigin.xyz, i.lightingNormal.xyz, pixel );
+	const float3 up = dot( i.lightingNormal.xyz, i.lightingNormal.xyz ) > 1e-8 ? normalize( i.lightingNormal.xyz ) : float3( 0, 0, 1 );
+	// Probes are sampled half a probe spacing above the gather point: the blade's air, not the ground boundary.
+	const float3 probePoint = i.lightingOrigin.xyz + up * ( cProbeBricks.w != 0 ? 0.5 / cProbeOrigin.w : 0.0 );
+	ProbeSH probe;
+	o.light = Probe_Decode( probePoint, up, probe ) ? Probe_IrradianceSoft( probe, up ) + direct : GammaToLinear( i.color.rgb );
 #endif
 	o.eyePosition = cEyePos;
 	o.worldPositionZ = float4( worldPosition, dot( float4( worldPosition, 1 ), cViewProjZ ) );

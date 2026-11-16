@@ -7,9 +7,7 @@
 
 #include "vertex_layout_dx12.h"
 #include "shader_translate_dx12.h"
-#include <d3dcompiler.h>
-#include <d3d11shader.h>
-#include <d3d12shader.h>
+#include "shader_reflect_dx12.h"
 #include <wrl/client.h>
 
 namespace shaderapidx12
@@ -24,10 +22,10 @@ bool ReadShaderInputSignatureDX12( const void *pBytecode, size_t nBytes,
     CUtlVector<ShaderLinkageDX12> *pOutputs )
 {
 	inputs.RemoveAll();
-	Microsoft::WRL::ComPtr<ID3D11ShaderReflection> pReflection;
-	if ( !pBytecode || !nBytes || FAILED( D3DReflect( pBytecode, nBytes, IID_PPV_ARGS( &pReflection ) ) ) )
+	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> pReflection;
+	if ( !pBytecode || !nBytes || FAILED( ReflectShaderDX12( pBytecode, nBytes, &pReflection ) ) )
 		return false;
-	D3D11_SHADER_DESC shader = {};
+	D3D12_SHADER_DESC shader = {};
 	if ( FAILED( pReflection->GetDesc( &shader ) ) )
 		return false;
 	if ( pConstantRegisters )
@@ -35,9 +33,7 @@ bool ReadShaderInputSignatureDX12( const void *pBytecode, size_t nBytes,
 		// Only register space 0 carries the legacy root-CBV register counts; space-1 blocks (engine and material
 		// named cbuffers) are bound through the space-1 descriptor tables.
 		memset( *pConstantRegisters, 0, sizeof( *pConstantRegisters ) );
-		Microsoft::WRL::ComPtr<ID3D12ShaderReflection> pSpaces;
-		if ( FAILED( D3DReflect( pBytecode, nBytes, IID_PPV_ARGS( &pSpaces ) ) ) )
-			return false;
+		ID3D12ShaderReflection *pSpaces = pReflection.Get();
 		for ( UINT i = 0; i < shader.BoundResources; ++i )
 		{
 			D3D12_SHADER_INPUT_BIND_DESC binding = {};
@@ -56,7 +52,7 @@ bool ReadShaderInputSignatureDX12( const void *pBytecode, size_t nBytes,
 		pOutputs->RemoveAll();
 		for ( UINT i = 0; i < shader.OutputParameters; ++i )
 		{
-			D3D11_SIGNATURE_PARAMETER_DESC parameter = {};
+			D3D12_SIGNATURE_PARAMETER_DESC parameter = {};
 			if ( FAILED( pReflection->GetOutputParameterDesc( i, &parameter ) ) )
 				return false;
 			uint32_t nUsage;
@@ -81,7 +77,7 @@ bool ReadShaderInputSignatureDX12( const void *pBytecode, size_t nBytes,
 	inputs.EnsureCapacity( static_cast<int>( shader.InputParameters ) );
 	for ( UINT i = 0; i < shader.InputParameters; ++i )
 	{
-		D3D11_SIGNATURE_PARAMETER_DESC parameter = {};
+		D3D12_SIGNATURE_PARAMETER_DESC parameter = {};
 		if ( FAILED( pReflection->GetInputParameterDesc( i, &parameter ) ) )
 			return false;
 		if ( parameter.SystemValueType != D3D_NAME_UNDEFINED )

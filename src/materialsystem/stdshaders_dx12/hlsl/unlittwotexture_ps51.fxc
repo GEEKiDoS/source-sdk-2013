@@ -37,10 +37,10 @@ cbuffer unlittwotexture_ps2x : register( b1, space1 )
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D BaseTextureSampler2_Texture : register( t1 );
 SamplerState BaseTextureSampler2_Sampler : register( s1 );
-static const DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
+static DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
 
 struct PS_INPUT
 {

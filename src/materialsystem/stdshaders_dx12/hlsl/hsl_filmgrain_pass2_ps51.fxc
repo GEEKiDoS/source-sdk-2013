@@ -9,7 +9,7 @@
 
 Texture2D InputSampler_Texture : register( t0 );
 SamplerState InputSampler_Sampler : register( s0 );
-static const DX12Sampler2D InputSampler = { InputSampler_Texture, InputSampler_Sampler };
+static DX12Sampler2D InputSampler = { InputSampler_Texture, InputSampler_Sampler };
 
 struct PS_INPUT
 {

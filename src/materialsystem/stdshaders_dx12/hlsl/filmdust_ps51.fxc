@@ -7,7 +7,7 @@
 
 Texture2D FilmDustSampler_Texture : register( t0 );
 SamplerState FilmDustSampler_Sampler : register( s0 );
-static const DX12Sampler2D FilmDustSampler = { FilmDustSampler_Texture, FilmDustSampler_Sampler };
+static DX12Sampler2D FilmDustSampler = { FilmDustSampler_Texture, FilmDustSampler_Sampler };
 
 
 cbuffer filmdust_ps20 : register( b1, space1 )

@@ -9,10 +9,10 @@
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D DistortMapTextureSampler_Texture : register( t1 );
 SamplerState DistortMapTextureSampler_Sampler : register( s1 );
-static const DX12Sampler2D DistortMapTextureSampler = { DistortMapTextureSampler_Texture, DistortMapTextureSampler_Sampler };
+static DX12Sampler2D DistortMapTextureSampler = { DistortMapTextureSampler_Texture, DistortMapTextureSampler_Sampler };
 
 
 cbuffer vr_distort_hud_ps2x : register( b1, space1 )

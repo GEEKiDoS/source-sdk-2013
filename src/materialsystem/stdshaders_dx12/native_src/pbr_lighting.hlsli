@@ -487,9 +487,10 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			[branch] if ( sampleShadow )
 			{
 				float bakedVisibility = 1.0;
-				// Full hybrid skips baked loads at w=1; baked direct must subtract Vbaked even then.
-				[branch] if ( ( bakedDelta || realtimeWeight < 1.0 ) &&
-					( r.bakedFaceId != 0xFFFFFFFF || r.bakedPropPrimitive != 0xFFFFFFFF ) &&
+				// A baked light's realtime visibility never exceeds its stored visibility: the bake traced the static
+				// geometry exactly, so the map only adds what moves. The PCF footprint otherwise reads through holes in
+				// static occluders (c1m1 stair risers are NO_SHADOW props) at contacts, and a stored 0 skips the PCF.
+				[branch] if ( ( r.bakedFaceId != 0xFFFFFFFF || r.bakedPropPrimitive != 0xFFFFFFFF ) &&
 					( visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
 				{
 					// A world receiver is a face and keeps no lookup state across the loop; a model's is a prop primitive,
@@ -503,7 +504,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				float realtimeVisibility = bakedVisibility;
 				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
 				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).
-				[branch] if ( realtimeWeight > 0.0 && ( visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 )
+				[branch] if ( realtimeWeight > 0.0 && ( visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 && bakedVisibility > 0.0 )
 				{
 					RuntimeShadowLightGpu light = g_ShadowLights[index];
 					light.origin = lightRange.origin;
@@ -516,6 +517,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					{
 						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, lightRange.offset, lightRange.distance - 0.25 );
 					}
+					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}
 				specularVisibility = lerp( bakedVisibility, realtimeVisibility, realtimeWeight );
 				if ( bakedDelta )

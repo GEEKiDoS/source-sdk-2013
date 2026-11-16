@@ -13,16 +13,16 @@
 
 Texture2D BaseTextureSampler_Texture : register( t0 );
 SamplerState BaseTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
 Texture2D LightMap0Sampler_Texture : register( t1 );
 SamplerState LightMap0Sampler_Sampler : register( s1 );
-static const DX12Sampler2D LightMap0Sampler = { LightMap0Sampler_Texture, LightMap0Sampler_Sampler };
+static DX12Sampler2D LightMap0Sampler = { LightMap0Sampler_Texture, LightMap0Sampler_Sampler };
 Texture2D LightMap1Sampler_Texture : register( t2 );
 SamplerState LightMap1Sampler_Sampler : register( s2 );
-static const DX12Sampler2D LightMap1Sampler = { LightMap1Sampler_Texture, LightMap1Sampler_Sampler };
+static DX12Sampler2D LightMap1Sampler = { LightMap1Sampler_Texture, LightMap1Sampler_Sampler };
 Texture2D LightMap2Sampler_Texture : register( t3 );
 SamplerState LightMap2Sampler_Sampler : register( s3 );
-static const DX12Sampler2D LightMap2Sampler = { LightMap2Sampler_Texture, LightMap2Sampler_Sampler };
+static DX12Sampler2D LightMap2Sampler = { LightMap2Sampler_Texture, LightMap2Sampler_Sampler };
 
 
 cbuffer lightmappedgeneric_decal_ps2x : register( b1, space1 )

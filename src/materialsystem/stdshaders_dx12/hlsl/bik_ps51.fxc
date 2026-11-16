@@ -19,13 +19,13 @@ cbuffer bik_ps2x : register( b1, space1 )
 
 Texture2D YTextureSampler_Texture : register( t0 );
 SamplerState YTextureSampler_Sampler : register( s0 );
-static const DX12Sampler2D YTextureSampler = { YTextureSampler_Texture, YTextureSampler_Sampler };
+static DX12Sampler2D YTextureSampler = { YTextureSampler_Texture, YTextureSampler_Sampler };
 Texture2D cRTextureSampler_Texture : register( t1 );
 SamplerState cRTextureSampler_Sampler : register( s1 );
-static const DX12Sampler2D cRTextureSampler = { cRTextureSampler_Texture, cRTextureSampler_Sampler };
+static DX12Sampler2D cRTextureSampler = { cRTextureSampler_Texture, cRTextureSampler_Sampler };
 Texture2D cBTextureSampler_Texture : register( t2 );
 SamplerState cBTextureSampler_Sampler : register( s2 );
-static const DX12Sampler2D cBTextureSampler = { cBTextureSampler_Texture, cBTextureSampler_Sampler };
+static DX12Sampler2D cBTextureSampler = { cBTextureSampler_Texture, cBTextureSampler_Sampler };
 //sampler ATextureSampler		: register( s3 );
 
 struct PS_INPUT

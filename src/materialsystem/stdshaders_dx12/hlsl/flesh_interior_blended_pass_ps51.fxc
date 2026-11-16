@@ -10,22 +10,22 @@
 // Texture Samplers ===============================================================================
 Texture2D g_tBaseSampler_Texture : register( t0 );
 SamplerState g_tBaseSampler_Sampler : register( s0 );
-static const DX12Sampler2D g_tBaseSampler = { g_tBaseSampler_Texture, g_tBaseSampler_Sampler };
+static DX12Sampler2D g_tBaseSampler = { g_tBaseSampler_Texture, g_tBaseSampler_Sampler };
 Texture2D g_tNoiseSampler_Texture : register( t1 );
 SamplerState g_tNoiseSampler_Sampler : register( s1 );
-static const DX12Sampler2D g_tNoiseSampler = { g_tNoiseSampler_Texture, g_tNoiseSampler_Sampler };
+static DX12Sampler2D g_tNoiseSampler = { g_tNoiseSampler_Texture, g_tNoiseSampler_Sampler };
 Texture2D g_tBorder1DSampler_Texture : register( t2 );
 SamplerState g_tBorder1DSampler_Sampler : register( s2 );
-static const DX12Sampler2D g_tBorder1DSampler = { g_tBorder1DSampler_Texture, g_tBorder1DSampler_Sampler };
+static DX12Sampler2D g_tBorder1DSampler = { g_tBorder1DSampler_Texture, g_tBorder1DSampler_Sampler };
 Texture2D g_tNormalSampler_Texture : register( t3 );
 SamplerState g_tNormalSampler_Sampler : register( s3 );
-static const DX12Sampler2D g_tNormalSampler = { g_tNormalSampler_Texture, g_tNormalSampler_Sampler };
+static DX12Sampler2D g_tNormalSampler = { g_tNormalSampler_Texture, g_tNormalSampler_Sampler };
 Texture2D g_tSubsurfaceSampler_Texture : register( t4 );
 SamplerState g_tSubsurfaceSampler_Sampler : register( s4 );
-static const DX12Sampler2D g_tSubsurfaceSampler = { g_tSubsurfaceSampler_Texture, g_tSubsurfaceSampler_Sampler };
+static DX12Sampler2D g_tSubsurfaceSampler = { g_tSubsurfaceSampler_Texture, g_tSubsurfaceSampler_Sampler };
 TextureCube g_tCubeSampler_Texture : register( t5 );
 SamplerState g_tCubeSampler_Sampler : register( s5 );
-static const DX12SamplerCube g_tCubeSampler = { g_tCubeSampler_Texture, g_tCubeSampler_Sampler };
+static DX12SamplerCube g_tCubeSampler = { g_tCubeSampler_Texture, g_tCubeSampler_Sampler };
 
 // Shaders Constants and Globals ==================================================================
 

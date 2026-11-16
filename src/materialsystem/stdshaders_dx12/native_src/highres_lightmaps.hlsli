@@ -214,7 +214,10 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
     int2 owner = int2(floor(vertexPixel));
     hlightNativeUV = vertexUV;
     hlightLocation = uint4(cHlightRoute.w, asuint(owner), 0);
-    if (any(owner < 0) || any(owner >= int2(cHlightRoute.yz))) { HighresLightmap_Reject(1); return r; }
+    // A provoking UV outside the page addresses no native cell at all: the draw carries no lightmap of its own (a decal
+    // quad on a surface without one, for example). It keeps the native lighting the legacy shader produced there, as an
+    // explicitly unlit owner does; only in-page addressing failures are atlas faults.
+    if (any(owner < 0) || any(owner >= int2(cHlightRoute.yz))) { r.nativeOnly = 1; return r; }
     uint faceId = HlightFaceIds.Load(int3(owner, 0));
     hlightLocation.w = faceId;
     uint count, stride;

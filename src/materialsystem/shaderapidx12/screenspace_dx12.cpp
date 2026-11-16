@@ -193,6 +193,7 @@ void CShaderAPIDX12::ReplayDepthPrepass( bool bBegin )
 	// The preceding buffered draws belong to the old pass, including at END.
 	FlushBufferedPrimitives();
 	m_bDepthPrepass = bBegin;
+	m_bDepthPrepassResolved = !bBegin;
 	// Coverage twins use a different native material block binding; restore ordinary PS metadata on the
 	// first draw of the next pass even when the last material/dynamic index happens to be unchanged.
 	m_bNamedPixelShaderDirty = !m_ActiveSnapshot.pixelShaderName.empty();
@@ -450,6 +451,7 @@ void CShaderAPIDX12::ReplayEndContactDepth()
 void CShaderAPIDX12::ReplayScreenSpaceEndView()
 {
 	FlushBufferedPrimitives();
+	m_bDepthPrepassResolved = false;
 	ScreenSpaceViewStateDX12 &state = m_ScreenSpace;
 	ContactDepthDX12 &contact = m_ContactDepth;
 	if ( state.contactReplay )
@@ -537,6 +539,7 @@ void CShaderAPIDX12::ReleaseScreenSpaceResources()
 	m_ContactDepth = ContactDepthDX12{};
 	m_ScreenSpace = ScreenSpaceViewStateDX12{};
 	m_bDepthPrepass = false;
+	m_bDepthPrepassResolved = false;
 	m_bSkyboxPass = false;
 }
 } // namespace shaderapidx12

@@ -1097,6 +1097,7 @@ void CShaderAPIDX12::ProcessPendingTextureDeletes()
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::PinTextureMemory( size_t nBytes )
 {
+	m_DrawStats.textureUploadBytes += nBytes;
 	const uint64_t nFence = m_pDevice->NextFenceValue();
 	if ( m_nPinnedTextureFence != nFence )
 	{

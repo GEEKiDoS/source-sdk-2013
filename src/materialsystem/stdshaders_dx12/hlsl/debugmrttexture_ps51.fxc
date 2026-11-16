@@ -29,10 +29,10 @@ PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 
 Texture2D BaseTextureSampler1_Texture : register( t0 );
 SamplerState BaseTextureSampler1_Sampler : register( s0 );
-static const DX12Sampler2D BaseTextureSampler1 = { BaseTextureSampler1_Texture, BaseTextureSampler1_Sampler };
+static DX12Sampler2D BaseTextureSampler1 = { BaseTextureSampler1_Texture, BaseTextureSampler1_Sampler };
 Texture2D BaseTextureSampler2_Texture : register( t1 );
 SamplerState BaseTextureSampler2_Sampler : register( s1 );
-static const DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
+static DX12Sampler2D BaseTextureSampler2 = { BaseTextureSampler2_Texture, BaseTextureSampler2_Sampler };
 
 float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 {
