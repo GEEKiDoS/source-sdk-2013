@@ -22,6 +22,9 @@
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
 // DYNAMIC: "SHADOWQUALITY" "0..3"
 // SKIP: ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
+// LOCAL_LIGHTS: pbr_model_vs51's combo of the same name (the paired stages must agree); 0 drops the engine light loop.
+// DYNAMIC: "LOCAL_LIGHTS" "0..1"
+// SKIP: !$INFECTED && !$LOCAL_LIGHTS
 // The TANGENT combo name collides with the TANGENT vertex semantic: capture the value, then release the macro.
 #if TANGENT
 #define PBR_HAS_TANGENT 1
@@ -89,8 +92,14 @@ struct DX12_PS_INPUT
 	float fog : FOG;
 	float4 baseBumpUV : TEXCOORD0;
 	float2 detailUV : TEXCOORD1;
+#if LOCAL_LIGHTS
 	float4 lightAtten : TEXCOORD2;
+#endif
+#if INFECTED
+	float projPosZ : TEXCOORD3;
+#else
 	float4 worldPos_projPosZ : TEXCOORD3;
+#endif
 	float3 toEye : TEXCOORD4;
 	float3 worldNormal : TEXCOORD5;
 #if PBR_HAS_TANGENT
@@ -98,7 +107,9 @@ struct DX12_PS_INPUT
 #else
 	float3 staticLight : TEXCOORD6;
 #endif
+#if !INFECTED
 	float4 vertexColor : TEXCOORD7;
+#endif
 #if INFECTED
 	float4 woundUV : TEXCOORD8;
 	float woundCull : TEXCOORD9;
@@ -110,7 +121,16 @@ struct DX12_PS_INPUT
 
 PBR_PSOut main( DX12_PS_INPUT i )
 {
+#if INFECTED
+	// pbr_model_vs51 INFECTED interpolates no world position or vertex color (see its output struct).
+	float3 P = g_PbrInfectedEyePos.xyz - i.toEye;
+	const float projPosZ = i.projPosZ;
+	const float4 vertexColor = float4( 1.0, 1.0, 1.0, 1.0 );
+#else
 	float3 P = i.worldPos_projPosZ.xyz;
+	const float projPosZ = i.worldPos_projPosZ.w;
+	const float4 vertexColor = i.vertexColor;
+#endif
 #if ENHANCED
 	// Derivatives occur here, before any divergent work, on the camera-relative -toEye (world positions far from the
 	// origin are too coarse to differentiate). The primitive identity is a pure value carrier.
@@ -184,7 +204,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( glossFromMask )
 		surface.y = 1.0 - saturate( dot( envMask, float3( 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0 ) ) );
 	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( float3( 1.0, 1.0, 1.0 ), g_BaseTint.rgb, base.a ) : g_BaseTint.rgb;
-	float3 baseColor = base.rgb * modColor * i.vertexColor.rgb;
+	float3 baseColor = base.rgb * modColor * vertexColor.rgb;
 	float3 specularF0 = g_SpecularColor.rgb;
 	if ( g_Flags0.z != 0.0 )
 		specularF0 = SpecularTexture.Sample( SpecularSampler, baseUV ).rgb;
@@ -284,7 +304,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		infectedSpecularMask = max( infectedSpecularMask, woundBlood * dot( base.rgb, float3( 0.3, 0.59, 0.11 ) ) );
 		infectedAlbedo *= lerp( float3( 1.0, 1.0, 1.0 ), g_PbrInfectedBlood.rgb, saturate( woundBlood ) );
 	}
-	baseColor = infectedAlbedo * modColor * i.vertexColor.rgb;
+	baseColor = infectedAlbedo * modColor * vertexColor.rgb;
 	// The Phong lobe becomes GGX roughness and a bounded reflectance, as the legacy Phong adapter converts it.
 	surface.y = sqrt( sqrt( 2.0 / ( max( infectedExponent, 1.0 ) + 2.0 ) ) );
 	specularF0 = saturate( g_SpecularColor.rgb * infectedSpecularMask * g_L4D2Phong.rgb * max( g_L4D2Phong.w, 0.0 ) *
@@ -295,7 +315,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		thickness = ThicknessTexture.Sample( ThicknessSampler, baseUV ).r;
 	PBRSurface s = PBR_MakeSurface( N, V, frameT, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, g_Misc.y != 0.0 ? 1 : 0 );
 
-	float alpha = g_BaseTint.a * i.vertexColor.a;
+	float alpha = g_BaseTint.a * vertexColor.a;
 #if INFECTED
 	// Base alpha is luminance / the specular mask, never coverage.
 #else
@@ -361,7 +381,9 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		result += s.diffuseColor * s.ao * i.staticLight;
 #endif
 	PBRSpecularSum specularSum = PBR_NoSpecularSum();
+#if LOCAL_LIGHTS
 	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten, specularSum );
+#endif
 #if ENHANCED
 	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
 	result += direct.diffuse + direct.specular;
@@ -399,7 +421,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	result += emission;
 
 	float3 eyePosition = P + i.toEye;
-	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, projPosZ );
 	float4 color = DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), i.fog );
 	float reflectionValid = 0.0, specularDistance = 0.0;
 	float3 environmentScene = 0.0, reflectionResponse = 0.0, directSpecular = 0.0;

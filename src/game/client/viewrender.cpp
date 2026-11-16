@@ -230,6 +230,31 @@ static ConVar r_drawopaquerenderables( "r_drawopaquerenderables", "1",
 #endif
  );
 static ConVar r_threaded_renderables( "r_threaded_renderables", "0" );
+#if defined( L4D2 )
+// A horde is hundreds of casters for the local flashlight's depth texture. Seen from the eye that light starts at, an
+// infected's flashlight shadow falls behind the infected itself; beyond this distance only a sliver could show.
+static ConVar r_flashlight_infected_shadow_dist( "r_flashlight_infected_shadow_dist", "400", FCVAR_ARCHIVE,
+	"Infected (and their attached wound models) farther than this from the local player's flashlight do not cast into its shadow depth texture; 0 keeps every infected caster" );
+
+// True for an infected caster (or a model attached to one) beyond r_flashlight_infected_shadow_dist while the local
+// player's own flashlight depth texture is rendering (other projected lights are seen from the side and keep them).
+static bool SkipFlashlightInfectedCaster( IClientRenderable *pRenderable )
+{
+	const float maxDistance = r_flashlight_infected_shadow_dist.GetFloat();
+	if ( maxDistance <= 0.0f || CurrentViewID() != VIEW_SHADOW_DEPTH_TEXTURE )
+		return false;
+	C_BaseEntity *pEntity = pRenderable->GetIClientUnknown()->GetBaseEntity();
+	if ( !pEntity )
+		return false;
+	C_BaseEntity *pOwner = pEntity->MyInfectedPointer() ? pEntity : pEntity->GetMoveParent();
+	if ( !pOwner || !pOwner->MyInfectedPointer() )
+		return false;
+	C_BasePlayer *pLocal = C_BasePlayer::GetLocalPlayer();
+	if ( !pLocal || CurrentViewOrigin().DistToSqr( pLocal->EyePosition() ) > 128.0f * 128.0f )
+		return false;
+	return pOwner->GetRenderOrigin().DistToSqr( CurrentViewOrigin() ) > maxDistance * maxDistance;
+}
+#endif
 
 // FIXME: This is not static because we needed to turn it off for TF2 playtests
 ConVar r_DrawDetailProps( "r_DrawDetailProps", "1", 
@@ -5086,6 +5111,8 @@ static void DrawOpaqueRenderables_Range( CClientRenderablesList::CEntry *pEntiti
 				continue;
 		}
 #if defined( L4D2 )
+		if ( DepthMode == DEPTH_MODE_SHADOW && SkipFlashlightInfectedCaster( itEntity->m_pRenderable ) )
+			continue;
 		DrawOpaqueRenderable( *itEntity, DepthMode );
 #else
 		DrawOpaqueRenderable( itEntity->m_pRenderable, ( itEntity->m_TwoPass != 0 ), DepthMode );

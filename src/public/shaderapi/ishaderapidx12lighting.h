@@ -448,8 +448,9 @@ public:
 	// Queued like BeginView: copies the records now; the descriptor table is built lazily by the first PBR draw of each
 	// recording batch. The packet stays current until the next one. count 0 is valid.
 	virtual void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) = 0;
-	// Recording owner. Four packet indices followed by six ambient-cube rows; no allocation.
-	virtual void ModelLocalLighting( int limit, float rows[7][4] ) = 0;
+	// Recording owner. Four packet indices followed by six ambient-cube rows; no allocation. Returns how many of the
+	// draw's engine model lights (cLightInfo slots) still contribute after the duplicates of runtime lights are blacked out.
+	virtual int ModelLocalLighting( int limit, float rows[7][4] ) = 0;
 	// Queued, only inside Begin/EndShadowPass. Static/detail/model caster draws that belong to the
 	// receiver's playable sealed sky region set this around their draw; the backend keeps the draw
 	// in the sun chart but uploads cShadowSkyClip.w = 0. Instanced batches split on this state.

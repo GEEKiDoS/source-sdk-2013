@@ -84,6 +84,9 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	float4 g_PbrInfectedSpecPowers; // @legacy ps:c54
 	// x 1 = $shinyblood, y $shinybloodexponent
 	float4 g_PbrInfectedShiny; // @legacy ps:c55
+	// xyz the camera position the vertex stage measured toEye from (INFECTED reconstructs the world position as
+	// eye - toEye instead of interpolating it)
+	float4 g_PbrInfectedEyePos; // @legacy ps:c56
 };
 #endif
 

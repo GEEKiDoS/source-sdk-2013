@@ -1239,8 +1239,9 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		return;
 	ShaderRecordDX12 *vsRecord = motionActive ? MotionVertexShader( format ) : ( m_hBoundVS == VERTEX_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS ) );
 	ShaderRecordDX12 *psRecord = opaqueCaster ? nullptr : motionActive ? m_pMotionPS : ( m_hBoundPS == PIXEL_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS ) );
-	// pbr_model_ps51 static index: 12 * TANGENT + 24 * ENHANCED + 48 * ALPHATEST + 96 * INFECTED.
-	constexpr int kModelAlphaTestStride = 48, kModelInfectedStride = 96;
+	// pbr_model_ps51 static index (24 dynamic combos: PIXELFOGTYPE x SHADOWQUALITY x LOCAL_LIGHTS):
+	// 24 * TANGENT + 48 * ENHANCED + 96 * ALPHATEST + 192 * INFECTED.
+	constexpr int kModelAlphaTestStride = 96, kModelInfectedStride = 192;
 	const bool modelPixelShader = psRecord && !V_strcmp( m_ActiveSnapshot.pixelShaderName.c_str(), "pbr_model_ps51" );
 	// Coverage that depends on the pixel shader: the alpha test, A2C, and the INFECTED wound cutout clip().
 	const bool coverageKill = m_ActiveSnapshot.alphaTest || m_ActiveSnapshot.alphaToCoverage || m_bAlphaToCoverage ||

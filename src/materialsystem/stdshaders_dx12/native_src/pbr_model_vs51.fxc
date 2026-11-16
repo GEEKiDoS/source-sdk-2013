@@ -15,11 +15,15 @@
 // DYNAMIC: "MORPHING" "0..1"
 // DYNAMIC: "DOWATERFOG" "0..1"
 // DYNAMIC: "STATIC_LIGHT_VERTEX" "0..1"
+// LOCAL_LIGHTS 0: no engine model light reaches the draw (none, or every slot is an enhanced-path duplicate of a runtime
+// light); the attenuation, its interpolant and the pixel loop are compiled out. Only INFECTED selects it.
+// DYNAMIC: "LOCAL_LIGHTS" "0..1"
 // Static per-vertex prop lighting (COLOR1) exists only in the unbumped legacy VS; the bumped legacy VS and its
 // shadowmap twin never read it, so the bumped PBR variant has no such combo.
 // SKIP: $STATIC_LIGHT_VERTEX && $TANGENT
 // INFECTED (L4D2 Infected materials) has no tree sway or $vertexcolor.
 // SKIP: $INFECTED && ( $TREESWAY || $VERTEXCOLOR )
+// SKIP: !$INFECTED && !$LOCAL_LIGHTS
 // The TANGENT combo name collides with the TANGENT vertex semantic: capture the value, then release the macro.
 #if TANGENT
 #define PBR_HAS_TANGENT 1
@@ -93,8 +97,16 @@ struct VS_OUTPUT
 	float fog : FOG;
 	float4 baseBumpUV : TEXCOORD0;    // xy base, zw bump
 	float2 detailUV : TEXCOORD1;
+#if LOCAL_LIGHTS
 	float4 lightAtten : TEXCOORD2;    // draw-local lights 0..3
+#endif
+#if INFECTED
+	// Horde draws are tiny triangles: every interpolant costs. The pixel stage rebuilds the world position from toEye
+	// (g_PbrInfectedEyePos - toEye) and takes vertexColor as 1 (INFECTED has no $vertexcolor).
+	float projPosZ : TEXCOORD3;
+#else
 	float4 worldPos_projPosZ : TEXCOORD3;
+#endif
 	float3 toEye : TEXCOORD4;
 	float3 worldNormal : TEXCOORD5;
 #if PBR_HAS_TANGENT
@@ -102,7 +114,9 @@ struct VS_OUTPUT
 #else
 	float3 staticLight : TEXCOORD6; // decoded linear static vertex irradiance, zero without STATIC_LIGHT_VERTEX
 #endif
+#if !INFECTED
 	float4 vertexColor : TEXCOORD7;
+#endif
 #if INFECTED
 	float4 woundUV : TEXCOORD8;       // wound atlas UVs of the two packets (before the per-packet region)
 	float woundCull : TEXCOORD9;      // second-packet ellipsoid distance + cull type; < 1 inside it
@@ -160,17 +174,24 @@ VS_OUTPUT main( const DX12_VS_INPUT v )
 	o.dx12Clip = DX12UserClipDistances( projPos );
 	o.projPos = DX12Position( projPos );
 	projPos.z = dot( float4( worldPos, 1 ), cViewProjZ );
+#if INFECTED
+	o.projPosZ = projPos.z;
+#else
 	o.worldPos_projPosZ = float4( worldPos, projPos.z );
+#endif
 	o.toEye = cEyePos - worldPos;
 	o.fog = CalcFog( worldPos, projPos.xyz, DOWATERFOG );
 
+#if LOCAL_LIGHTS
 	o.lightAtten = float4( GetVertexAttenForLight( worldPos, 0, true ), GetVertexAttenForLight( worldPos, 1, true ),
 		GetVertexAttenForLight( worldPos, 2, true ), GetVertexAttenForLight( worldPos, 3, true ) );
+#endif
 	o.baseBumpUV = float4( PBR_TransformUV( v.vTexCoord0.xy, g_BaseTransform ), PBR_TransformUV( v.vTexCoord0.xy, g_BumpTransform ) );
 	o.detailUV = PBR_TransformUV( v.vTexCoord0.xy, g_DetailTransform );
-	o.vertexColor = float4( 1.0, 1.0, 1.0, 1.0 );
 #if VERTEXCOLOR
 	o.vertexColor = v.vColor;
+#elif !INFECTED
+	o.vertexColor = float4( 1.0, 1.0, 1.0, 1.0 );
 #endif
 #if !PBR_HAS_TANGENT && STATIC_LIGHT_VERTEX
 	// DoLighting's static term: the carrier arrives in gamma space, scaled by 1 / cOverbright.

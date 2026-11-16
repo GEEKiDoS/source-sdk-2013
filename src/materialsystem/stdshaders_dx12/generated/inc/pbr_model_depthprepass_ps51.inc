@@ -1,5 +1,6 @@
 // ALL SKIP STATEMENTS THAT AFFECT THIS SHADER!!!
 // ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
+// !$INFECTED && !$LOCAL_LIGHTS
 // defined $HDRTYPE && defined $HDRENABLED && !$HDRTYPE && $HDRENABLED
 // defined $PIXELFOGTYPE && defined $WRITEWATERFOGTODESTALPHA && ( $PIXELFOGTYPE != 1 ) && $WRITEWATERFOGTODESTALPHA
 // defined $LIGHTING_PREVIEW && defined $HDRTYPE && $LIGHTING_PREVIEW && $HDRTYPE != 0
@@ -86,7 +87,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bTANGENT && m_bENHANCED && m_bALPHATEST && m_bINFECTED );
-		return ( 12 * m_nTANGENT ) + ( 24 * m_nENHANCED ) + ( 48 * m_nALPHATEST ) + ( 96 * m_nINFECTED ) + 0;
+		return ( 24 * m_nTANGENT ) + ( 48 * m_nENHANCED ) + ( 96 * m_nALPHATEST ) + ( 192 * m_nINFECTED ) + 0;
 	}
 };
 
@@ -97,9 +98,11 @@ class pbr_model_depthprepass_ps51_Dynamic_Index
 {
 	unsigned int m_nPIXELFOGTYPE : 2;
 	unsigned int m_nSHADOWQUALITY : 3;
+	unsigned int m_nLOCAL_LIGHTS : 2;
 #ifdef _DEBUG
 	bool m_bPIXELFOGTYPE : 1;
 	bool m_bSHADOWQUALITY : 1;
+	bool m_bLOCAL_LIGHTS : 1;
 #endif	// _DEBUG
 public:
 	void SetPIXELFOGTYPE( int i )
@@ -120,23 +123,34 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetLOCAL_LIGHTS( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nLOCAL_LIGHTS = i;
+#ifdef _DEBUG
+		m_bLOCAL_LIGHTS = true;
+#endif	// _DEBUG
+	}
+
 	pbr_model_depthprepass_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< pbr_model_depthprepass_ps51_Block >( dx12native::kStagePixel );
 		m_nPIXELFOGTYPE = 0;
 		m_nSHADOWQUALITY = 0;
+		m_nLOCAL_LIGHTS = 0;
 #ifdef _DEBUG
 		m_bPIXELFOGTYPE = false;
 		m_bSHADOWQUALITY = false;
+		m_bLOCAL_LIGHTS = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bPIXELFOGTYPE && m_bSHADOWQUALITY );
-		return ( 1 * m_nPIXELFOGTYPE ) + ( 3 * m_nSHADOWQUALITY ) + 0;
+		Assert( m_bPIXELFOGTYPE && m_bSHADOWQUALITY && m_bLOCAL_LIGHTS );
+		return ( 1 * m_nPIXELFOGTYPE ) + ( 3 * m_nSHADOWQUALITY ) + ( 12 * m_nLOCAL_LIGHTS ) + 0;
 	}
 };
 
-#define shaderDynamicTest_pbr_model_depthprepass_ps51 psh_forgot_to_set_dynamic_PIXELFOGTYPE + psh_forgot_to_set_dynamic_SHADOWQUALITY
+#define shaderDynamicTest_pbr_model_depthprepass_ps51 psh_forgot_to_set_dynamic_PIXELFOGTYPE + psh_forgot_to_set_dynamic_SHADOWQUALITY + psh_forgot_to_set_dynamic_LOCAL_LIGHTS
 

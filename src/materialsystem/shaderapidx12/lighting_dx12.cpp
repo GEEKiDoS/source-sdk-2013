@@ -2092,12 +2092,13 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	s.activeMap.store( map.mapGeneration );
 	s.statuses[status].state = DX12_LIGHTING_STATUS_READY;
 }
-void CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
+int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 {
 	memset( rows, 0, 7 * 4 * sizeof( float ) );
 	for ( int i = 0; i < 4; ++i ) rows[0][i] = -1.0f;
 	Impl &s = *m_Impl;
-	if ( !s.views.Count() ) return;
+	// Without a view packet nothing is blacked out: every engine slot may contribute.
+	if ( !s.views.Count() ) return 4;
 	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
 	const auto &lights = packet.lights;
 	// Every prop is lit by the same carriers: probes (or the ambient cube) plus the runtime light table, which holds
@@ -2105,11 +2106,13 @@ void CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	// directional light), unshadowed, on dynamic models only; those slots are blacked out in the pixel engine block
 	// after CommitPixelShaderLighting. Slots stay in place: the VS attenuation follows the same order. Engine dynamic
 	// lights (muzzle flashes, fire) match no runtime light and remain.
+	int live = 0;
 	{
 		CShaderAPIDX12 &api = *s.api;
 		const bool runtimeSun = ( packet.view.constants.cShadowView1[3] & DX12_SHADOW_VIEW_HAS_SUN ) != 0;
 		int indices[4] = {};
 		const int count = api.SortLocalLights( indices );
+		live = count;
 		bool changed = false;
 		for ( int i = 0; i < count; ++i )
 		{
@@ -2123,6 +2126,7 @@ void CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 			}
 			if ( !duplicate )
 				continue;
+			--live;
 			float ( &info )[6][4] = api.m_NativePSEngine.cLightInfo;
 			for ( int channel = 0; channel < 3; ++channel )
 			{
@@ -2136,7 +2140,7 @@ void CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		if ( changed )
 			++api.m_nNativePSEngineVersion;
 	}
-	if ( limit <= 0 ) return;
+	if ( limit <= 0 ) return live;
 	limit = MIN( limit, 4 );
 	rows[1][3] = 1.0f;
 	const Vector &origin = s.api->m_LightingOrigin;
@@ -2204,6 +2208,7 @@ void CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 				rows[face][channel] += rgb[channel] * fabsf( direction[axis] );
 		}
 	}
+	return live;
 }
 
 void CLightingDX12::BeginView( const DX12LightingViewPacket &view )

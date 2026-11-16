@@ -1117,12 +1117,19 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			const float selfIllumTintAndLights[4] = { pContextData->m_SelfIllumTint[0], pContextData->m_SelfIllumTint[1],
 				pContextData->m_SelfIllumTint[2], float( lightState.m_nNumLights ) };
 			DynamicCmdsOut.SetPixelShaderConstant( 10, selfIllumTintAndLights, 1 );
+			int liveLights = lightState.m_nNumLights;
 			if ( bEnhanced )
 			{
 				float modelLighting[7][4] = {};
-				DX12ShadowmapLighting()->ModelLocalLighting( r_model_local_lights.GetInt(), modelLighting );
+				liveLights = MIN( liveLights, DX12ShadowmapLighting()->ModelLocalLighting( r_model_local_lights.GetInt(), modelLighting ) );
 				DynamicCmdsOut.SetPixelShaderConstant( 40, modelLighting[0], 7 );
 			}
+			// INFECTED interpolates no world position (pbr_model_vs51 INFECTED); the pixel stage rebuilds it from this eye.
+			if ( pContextData->m_bInfected )
+				DynamicCmdsOut.StoreEyePosInPixelShaderConstant( kInfectedPixelRegister + 9 );
+			// Horde draws: compile the engine light attenuation and its interpolant out when no slot contributes. Other
+			// models keep the single LOCAL_LIGHTS=1 variant (the 0 combos are skipped for them).
+			const bool localLights = !pContextData->m_bInfected || liveLights > 0;
 
 			pShader->SetHWMorphVertexShaderState( VERTEX_SHADER_SHADER_SPECIFIC_CONST_10, VERTEX_SHADER_SHADER_SPECIFIC_CONST_11, SHADER_VERTEXTEXTURE_SAMPLER0 );
 
@@ -1134,11 +1141,13 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			// COLOR1 (static prop vertex lighting) exists only in the unbumped variant; the backend binds the mesh's color
 			// stream because the variant's input signature declares it.
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( STATIC_LIGHT_VERTEX, !pContextData->m_bBump && lightState.m_bStaticLightVertex );
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( LOCAL_LIGHTS, localLights );
 			SET_DYNAMIC_VERTEX_SHADER_CMD( DynamicCmdsOut, pbr_model_vs51 );
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( pbr_model_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, bEnhanced ? r_shadowmap_filter_quality.GetInt() : 0 );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( LOCAL_LIGHTS, localLights );
 			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, pbr_model_ps51 );
 		}
 		else
