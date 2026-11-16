@@ -340,7 +340,8 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.push.numLuxels = scene.luxels.Count();
 	gpu.push.skyLight = scene.skyLight;
 	gpu.push.skyAmbientLight = scene.skyAmbientLight;
-	gpu.push.flags = gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0;
+	gpu.skyEnvironment = scene.skyEnvironment.Count() == RESTIR_SKY_ENV_WIDTH * RESTIR_SKY_ENV_HEIGHT && scene.skyAmbientLight >= 0;
+	gpu.push.flags = gpu.BaseFlags();
 	const bool selectedSun = gpu.HasSelectedSun();
 	const bool selectedVisibility = gpu.options.shadowMaps && scene.shadowLights.Count() != 0;
 	if ( selectedVisibility && scene.sunVisibilityOrigins.Count() != scene.luxels.Count() )
@@ -377,7 +378,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		(VkDeviceSize)( scene.faceNeighbors.Count() + scene.dfaceToFace.Count() ) * sizeof( int ),
 		(VkDeviceSize)scene.luxels.Count() * sizeof( int ),
 		(VkDeviceSize)scene.samples.Count() * sizeof( float ) * 4,
-		16, 16,
+		gpu.skyEnvironment ? (VkDeviceSize)scene.skyEnvironment.Count() * sizeof( Vector4D ) : 16, 16,
 		reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4,
 		(VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4,
 		(VkDeviceSize)scene.luxels.Count() * sizeof( unsigned int ),
@@ -404,8 +405,10 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	{
 		if ( sizes[binding] > gpu.properties.limits.maxStorageBufferRange )
 			gpu.Fail( "scene buffer exceeds maxStorageBufferRange" );
+		// Scene-heap buffers survive ReallocateForReconstruct (the work heap is released after transport); the sky
+		// environment is read by the post-bake services (points, ambient cubes, probes) as well.
 		bool sceneHeap = !gpu.IsPagedBinding( binding ) &&
-			( binding <= RESTIR_BIND_DIRECT_IRRADIANCE || binding >= RESTIR_BIND_ANORMS ||
+			( binding <= RESTIR_BIND_SKY_ENVIRONMENT || binding >= RESTIR_BIND_ANORMS ||
 				( binding >= RESTIR_BIND_BVH_NODES && binding <= RESTIR_BIND_BVH_SCRATCH ) );
 		gpu.AddBuffer( sizes[binding], sceneHeap );
 	}
@@ -505,6 +508,8 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	gpu.Upload( RESTIR_BIND_SCENE_STYLES, scene.sceneStyles.Base(), sizes[RESTIR_BIND_SCENE_STYLES] );
 	gpu.Upload( RESTIR_BIND_EMITTER_TRIS, scene.emitterTriangles.Base(), sizes[RESTIR_BIND_EMITTER_TRIS] );
 	gpu.Upload( RESTIR_BIND_STYLE_LIGHTS, scene.styleLights.Base(), sizes[RESTIR_BIND_STYLE_LIGHTS] );
+	if ( gpu.skyEnvironment )
+		gpu.Upload( RESTIR_BIND_SKY_ENVIRONMENT, scene.skyEnvironment.Base(), sizes[RESTIR_BIND_SKY_ENVIRONMENT] );
 	gpu.UploadTextures();
 	if ( gpu.hardware )
 	{

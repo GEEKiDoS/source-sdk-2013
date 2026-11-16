@@ -87,6 +87,13 @@ struct ReSTIROptions
 										// to the material's reflectivity); -restir_notexturealbedo restores VRAD's one colour per material
 	float		emissiveScale;			// -restir_emissivescale (1.0): multiplier on material emission (UnlitGeneric, $selfillum);
 										// 0 disables material emitters
+	float		skyAmbientScale;		// -restir_skyambientscale (1.0): multiplier on the light_environment sky ambient
+										// (_ambient/_ambientHDR x _AmbientScaleHDR) for every output; the 2D skybox match
+										// (_skyscale_hdr) keeps using the unscaled ambient
+	bool		skyAmbientIbl;			// -restir_skyibl: an HDR skybox composited into ReSTIRScene::skyEnvironment is the
+										// sky ambient radiance per direction (normalized to the ambient luminance, so the
+										// sky ambient scale still applies); otherwise, or when the sky has no HDR faces, the
+										// sky ambient is the uniform light_environment colour
 	bool		shadowMaps;				// -restir_shadowmaps: selected runtime direct + independently dense linear lightmaps,
 										// written only to <map>.light (the BSP is not touched); implies textureShadows and
 										// disables staticPropLighting; .hlight v5 + rshd v6
@@ -117,7 +124,7 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), skyAmbientScale( 1.0f ), skyAmbientIbl( false ), shadowMaps( false ), highresDensity( 4 ),
 		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), ambientGridBudgetMB( 1024 ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), maxBounces( 4 ),
 		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), forceComputeBvh( false ), probeEnabled( false ),
@@ -331,6 +338,9 @@ struct ReSTIRScene
 	CUtlVector<int>						sceneStyles;	// distinct light styles present, sceneStyles[0] == 0 always
 	int									skyAmbientLight;// index into `lights` of the emit_skyambient entry, -1 if none
 	int									skyLight;		// index into `lights` of the emit_skylight entry, -1 if none
+	CUtlVector<Vector4D>				skyEnvironment;	// -restir_skyibl: RESTIR_SKY_ENV_WIDTH x RESTIR_SKY_ENV_HEIGHT equirect (row 0 at the
+														// zenith, u = 0 at -x going through +y), rgb sky ambient radiance in the
+														// emit_skyambient intensity's units; empty = uniform intensity
 	uint64								receiverStyleMask; // enhanced receiver styles: 0 plus styles with any nonselected light
 
 	// Lightmapped faces

@@ -57,6 +57,10 @@
 #define RESTIR_PC_RECEIVER_PAGE   0x4u
 #define RESTIR_PC_RESERVOIR_PAGE  0x8u
 #define RESTIR_PC_PUBLISH_IRRADIANCE 0x10u
+#define RESTIR_PC_SKY_ENVIRONMENT 0x20u	// sky ambient radiance comes from skyEnvironment (-restir_skyibl)
+// restir_gpu_layout.h: sky ambient IBL equirect size (row 0 at the zenith).
+#define RESTIR_SKY_ENV_WIDTH  128
+#define RESTIR_SKY_ENV_HEIGHT 64
 
 //-----------------------------------------------------------------------------
 // Structs (restir_types.h / restir_gpu_layout.h)
@@ -267,7 +271,8 @@ layout( std430, set = 0, binding = 5 )  readonly buffer LuxelsBuf        { ReSTI
 layout( std430, set = 0, binding = 6 )  readonly buffer FaceNeighborsBuf { int faceNeighbors[]; };
 layout( std430, set = 0, binding = 7 )  readonly buffer CellSamplesBuf   { int cellSamples[]; };
 layout( std430, set = 0, binding = 8 )  buffer DirectIrradianceBuf       { vec4 directIrradiance[]; };	// exact point/spot direct, style-0 base channel, per sample
-// Bindings 9 and 10 are reserved 16-byte dummies.
+// Binding 9: the -restir_skyibl equirect (RESTIR_PC_SKY_ENVIRONMENT), else a 16-byte dummy. Binding 10 is a reserved dummy.
+layout( std430, set = 0, binding = 9 )  readonly buffer SkyEnvironmentBuf { vec4 skyEnvironment[]; };
 layout( std430, set = 0, binding = 11 ) buffer AccumulationBuf           { vec4 accumulation[]; };
 layout( std430, set = 0, binding = 12 ) buffer OutputBuf                 { vec4 outputRadiance[]; };
 layout( std430, set = 0, binding = 13 ) buffer LuxelValidBuf             { uint luxelValid[]; };

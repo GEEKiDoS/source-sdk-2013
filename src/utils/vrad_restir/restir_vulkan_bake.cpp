@@ -227,7 +227,7 @@ static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<unsi
 			if ( gpu.pages.Count() > 1 )
 				UploadTransportPage( gpu, page );
 			pageOutput.SetCount( page.luxelCount );
-			gpu.push.flags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE;
+			gpu.push.flags = gpu.BaseFlags() | RESTIR_PC_RESERVOIR_PAGE;
 			gpu.push.pageBase[0] = page.firstReservoir;
 			gpu.push.pageBase[1] = page.firstSample;
 			gpu.push.pageBase[2] = page.firstLuxel;
@@ -362,7 +362,7 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	// One page already holds every transport buffer, so its iterations run on resident GPU state.
 	// Only a paged bake keeps host copies and streams them through the staging ring.
 	const bool resident = gpu.pages.Count() == 1;
-	const unsigned int initFlags = ( gpu.hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | RESTIR_PC_RESERVOIR_PAGE;
+	const unsigned int initFlags = gpu.BaseFlags() | RESTIR_PC_RESERVOIR_PAGE;
 	const unsigned int transportFlags = initFlags | ( shadowSplit ? RESTIR_PC_RECEIVER_PAGE : 0 );
 	CUtlVector<float> accumulationHost, receiverAccumHost;
 	if ( !resident )

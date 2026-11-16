@@ -416,6 +416,22 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 				return false;
 			continue;
 		}
+		if ( IsOption( pArg, "-restir_skyambientscale" ) )
+		{
+			if ( i + 1 >= argc )
+			{
+				Warning( "Error: expected a value after '%s'\n", pArg );
+				return false;
+			}
+			if ( !ParseFloatValue( pArg, argv[++i], 0.0f, 100.0f, options.skyAmbientScale ) )
+				return false;
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_skyibl" ) )
+		{
+			options.skyAmbientIbl = true;
+			continue;
+		}
 		if ( IsOption( pArg, "-restir_probe" ) )
 		{
 			// Diagnostic: evaluate LightPoints at a world point/normal after the bake and print it.
@@ -928,6 +944,7 @@ int CVRadRestirDLL::Bake()
 		}
 	}
 	m_flProgress = 0.25f;
+	ReSTIR_BuildSkyEnvironment( g_ReSTIROptions, scene );
 	RESTIR_STAGE( "initializing Vulkan", device.Init( g_ReSTIROptions ) );
 	device.SetProgressCallback( ReSTIRPhaseCallback, &phase );
 	ReSTIRPhaseBegin( phase, "textures/albedo" );

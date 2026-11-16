@@ -2,6 +2,29 @@
 #ifndef RESTIR_LIGHTMAP_GLSL
 #define RESTIR_LIGHTMAP_GLSL
 
+vec3 SkyEnvironmentTexel( int x, int y )
+{
+	return skyEnvironment[y * RESTIR_SKY_ENV_WIDTH + x].rgb;
+}
+
+// Sky ambient radiance arriving from `direction` (unit, pointing at the sky) in the emit_skyambient intensity's units:
+// the uniform light_environment ambient, or with -restir_skyibl the bilinear sky environment (u wraps, v clamps).
+vec3 SkyAmbientRadiance( vec3 direction )
+{
+	if ( ( pc.flags & RESTIR_PC_SKY_ENVIRONMENT ) == 0u )
+		return lights[pc.skyAmbientLight].intensity.rgb;
+	float u = ( atan( direction.y, direction.x ) / ( 2.0 * RESTIR_PI ) + 0.5 ) * float( RESTIR_SKY_ENV_WIDTH ) - 0.5;
+	float v = acos( clamp( direction.z, -1.0, 1.0 ) ) / RESTIR_PI * float( RESTIR_SKY_ENV_HEIGHT ) - 0.5;
+	float u0 = floor( u ), v0 = floor( v );
+	vec2 f = vec2( u - u0, v - v0 );
+	int x0 = ( int( u0 ) + RESTIR_SKY_ENV_WIDTH ) % RESTIR_SKY_ENV_WIDTH;
+	int x1 = ( x0 + 1 ) % RESTIR_SKY_ENV_WIDTH;
+	int y0 = clamp( int( v0 ), 0, RESTIR_SKY_ENV_HEIGHT - 1 );
+	int y1 = clamp( int( v0 ) + 1, 0, RESTIR_SKY_ENV_HEIGHT - 1 );
+	return mix( mix( SkyEnvironmentTexel( x0, y0 ), SkyEnvironmentTexel( x1, y0 ), f.x ),
+		mix( SkyEnvironmentTexel( x0, y1 ), SkyEnvironmentTexel( x1, y1 ), f.x ), f.y );
+}
+
 int SceneFaceFromHit( HitInfo hit )
 {
 	return hit.face >= 0 ? faceNeighbors[pc.pass + uint( hit.face )] : -1;
@@ -73,7 +96,7 @@ vec3 LightmapPointSample( ReSTIRGpuFace face, uint slot, HitInfo hit, vec3 posit
 vec3 RayAmbientColor( HitInfo hit, vec3 origin, vec3 direction, int style )
 {
 	if ( ( hit.flags & RESTIR_TRI_SKY ) != 0u )
-		return style == 0 && pc.skyAmbientLight >= 0 ? lights[pc.skyAmbientLight].intensity.rgb / 255.0 : vec3( 0.0 );
+		return style == 0 && pc.skyAmbientLight >= 0 ? SkyAmbientRadiance( direction ) / 255.0 : vec3( 0.0 );
 	int faceIndex = SceneFaceFromHit( hit );
 	if ( faceIndex < 0 )
 		return vec3( 0.0 );

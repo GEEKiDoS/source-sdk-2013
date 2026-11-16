@@ -16,4 +16,10 @@
 // Never fails the bake: an unsupported sky only warns and leaves the map without a key.
 void ReSTIR_WriteSkyAmbientMatch( const ReSTIROptions &options, const ReSTIRScene &scene );
 
+// -restir_skyibl: composites the HDR skybox faces into scene.skyEnvironment (restir_types.h), normalized so an up-facing
+// unoccluded surface receives the emit_skyambient luminance (which includes -restir_skyambientscale), with texels
+// clamped to 8x the sphere's mean luminance so an HDR sun disc does not add a second sun. Leaves it empty (uniform
+// ambient) with a warning when the sky has no HDR faces or cannot be read. Never fails the bake.
+void ReSTIR_BuildSkyEnvironment( const ReSTIROptions &options, ReSTIRScene &scene );
+
 #endif // RESTIR_SKY_AMBIENT_H

@@ -121,6 +121,7 @@ struct CReSTIRVulkanDevice::Impl
 	bool stagingCoherent;
 	bool memoryBudget;
 	bool hardware;
+	bool skyEnvironment;		// UploadScene uploaded ReSTIRScene::skyEnvironment (-restir_skyibl)
 	bool finalUploaded;
 	bool receiverFullForReconstruct;
 	bool transportPaged;
@@ -204,6 +205,8 @@ struct CReSTIRVulkanDevice::Impl
 	void PlanAcceleration();
 	void BuildAcceleration();
 	bool HasSelectedSun() const;
+	// Push-constant flags every dispatch carries: the backend and the sky ambient source.
+	unsigned int BaseFlags() const { return ( hardware ? RESTIR_PC_HARDWARE_RT : 0 ) | ( skyEnvironment ? RESTIR_PC_SKY_ENVIRONMENT : 0 ); }
 	void RunService( ReSTIRPipeline pipeline, const void *input, unsigned int inputStride, void *output, unsigned int outputStride, unsigned int count, unsigned int styles, unsigned int mask );
 	unsigned int Timestamp( VkCommandBuffer command );
 	double TimestampMs( unsigned int first, unsigned int last );

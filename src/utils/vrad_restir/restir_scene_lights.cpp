@@ -1363,14 +1363,14 @@ static bool SelectShadowLight( entity_t *entity, int entityIndex, bool shadowMap
 }
 
 // utils/vrad/lightmap.cpp:1475-1520. Ambient has calloc defaults, not sun fields.
-static bool ParseLightEnvironment( entity_t *pEntity, int entityIndex, bool shadowMaps, ReSTIRScene &scene, float &sunSpreadAngle )
+static bool ParseLightEnvironment( entity_t *pEntity, int entityIndex, const ReSTIROptions &options, ReSTIRScene &scene, float &sunSpreadAngle )
 {
 	Vector origin;
 	GetVectorForKey( pEntity, "origin", origin );
 	ReSTIRGpuLight light = AllocLight( origin );
 	ParseLightGeneric( pEntity, light );
 	light.type = emit_skylight;
-	if ( !SelectShadowLight( pEntity, entityIndex, shadowMaps, light ) )
+	if ( !SelectShadowLight( pEntity, entityIndex, options.shadowMaps, light ) )
 		return false;
 	const char *angle = ValueForKeyOrNull( pEntity, "SunSpreadAngle" );
 	if ( angle )
@@ -1404,6 +1404,12 @@ static bool ParseLightEnvironment( entity_t *pEntity, int entityIndex, bool shad
 		if ( g_bHDR )
 		{
 			VectorScale( intensity, FloatForKeyWithDefault( pEntity, "_AmbientScaleHDR", 1.0 ), intensity );
+		}
+		// -restir_skyambientscale: one sky ambient for lightmaps, probes, props, leaf ambient and the runtime manifest.
+		if ( options.skyAmbientScale != 1.0f )
+		{
+			VectorScale( intensity, options.skyAmbientScale, intensity );
+			Msg( "VRAD ReSTIR: sky ambient scaled by %g (-restir_skyambientscale)\n", options.skyAmbientScale );
 		}
 		ReSTIR_SceneSet4( ambient.intensity, intensity );
 		scene.skyAmbientLight = scene.lights.AddToTail( ambient );
@@ -1439,7 +1445,7 @@ static bool BuildEntityLights( const ReSTIROptions &options, ReSTIRScene &scene 
 					return false;
 				shadowSunAngle = authoredAngle;
 			}
-			if ( !ParseLightEnvironment( pEntity, i, options.shadowMaps, scene, sunSpreadAngle ) )
+			if ( !ParseLightEnvironment( pEntity, i, options, scene, sunSpreadAngle ) )
 			{
 				return false;
 			}

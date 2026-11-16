@@ -22,6 +22,7 @@
 //=============================================================================//
 
 #include "restir_sky_ambient.h"
+#include "restir_gpu_layout.h"
 #include "bsplib.h"
 #include "cmdlib.h"
 #include "filesystem.h"
@@ -53,7 +54,7 @@ struct SkyFace
 	int					width, height;
 	bool				clampS, clampT;
 	float				transform[2][3];	// $basetexturetransform rows 0 and 1 applied to ( u, v, 0, 1 ): columns 0, 1, 3
-	CUtlVector<float>	luminance;			// per texel, of the colour the sky shader writes
+	CUtlVector<Vector>	color;				// per texel, the linear colour the sky shader writes
 
 	static int Texel( float coord, int size, bool clamped )
 	{
@@ -61,11 +62,11 @@ struct SkyFace
 		return clamped ? clamp( texel, 0, size - 1 ) : ( texel % size + size ) % size;
 	}
 
-	float Sample( float u, float v ) const
+	const Vector &Sample( float u, float v ) const
 	{
 		const float s = transform[0][0] * u + transform[0][1] * v + transform[0][2];
 		const float t = transform[1][0] * u + transform[1][1] * v + transform[1][2];
-		return luminance[Texel( t, height, clampT ) * width + Texel( s, width, clampS )];
+		return color[Texel( t, height, clampT ) * width + Texel( s, width, clampS )];
 	}
 };
 
@@ -79,9 +80,23 @@ float Luminance( float r, float g, float b )
 	return 0.2126f * r + 0.7152f * g + 0.0722f * b;
 }
 
+float Luminance( const Vector &color )
+{
+	return Luminance( color.x, color.y, color.z );
+}
+
+// Unsupported-sky warnings name what falls back: the sky match writes no key, the IBL keeps the uniform ambient.
+// s_bQuietSkip: the IBL's optional down face is reported once by its caller instead.
+bool s_bIblSkip = false, s_bQuietSkip = false;
+
 bool Skip( bool hdr, const char *path, const char *why )
 {
-	Warning( "Sky ambient match (%s): %s: %s; no _skyscale_%s written\n", ModeName( hdr ), path, why, ModeName( hdr ) );
+	if ( s_bQuietSkip )
+		return false;
+	if ( s_bIblSkip )
+		Warning( "Sky ambient IBL: %s: %s; sky ambient stays uniform\n", path, why );
+	else
+		Warning( "Sky ambient match (%s): %s: %s; no _skyscale_%s written\n", ModeName( hdr ), path, why, ModeName( hdr ) );
 	return false;
 }
 
@@ -196,12 +211,12 @@ bool BuildFace( bool hdr, const char *path, KeyValues &vmt, SkyFace &out )
 	float linear[256];
 	for ( int i = 0; i < 256; ++i )
 		linear[i] = decode == SKY_DECODE_SRGB ? SrgbGammaToLinear( i / 255.0f ) : i / 255.0f;
-	out.luminance.SetCount( out.width * out.height );
-	for ( int i = 0; i < out.luminance.Count(); ++i )
+	out.color.SetCount( out.width * out.height );
+	for ( int i = 0; i < out.color.Count(); ++i )
 	{
 		const unsigned char *texel = &rgba[i * 4];
 		const float alpha = decode == SKY_DECODE_RGBS ? texel[3] / 255.0f : 1.0f;
-		out.luminance[i] = Luminance( linear[texel[0]] * modulation.x, linear[texel[1]] * modulation.y, linear[texel[2]] * modulation.z ) * alpha;
+		out.color[i].Init( linear[texel[0]] * modulation.x * alpha, linear[texel[1]] * modulation.y * alpha, linear[texel[2]] * modulation.z * alpha );
 	}
 
 	VMatrix transform;
@@ -262,12 +277,102 @@ double SkyLuminance( const SkyFace faces[6] )
 				// engine/gl_warp.cpp MakeSkyVec: texcoords stay half a texel of a 512 face off the seam; t is flipped.
 				const float u = clamp( ( s + 1.0f ) * 0.5f, 1.0f / 512.0f, 511.0f / 512.0f );
 				const float v = 1.0f - clamp( ( t + 1.0f ) * 0.5f, 1.0f / 512.0f, 511.0f / 512.0f );
-				sum += w * faces[face].Sample( u, v );
+				sum += w * Luminance( faces[face].Sample( u, v ) );
 				weight += w;
 			}
 		}
 	}
 	return sum / weight;
+}
+
+// engine/gl_warp.cpp MakeSkyVec: the (unnormalized) world direction of face coordinate ( s, t ) in [-1, 1].
+Vector FaceDirection( int face, float s, float t )
+{
+	const float axes[3] = { s, t, 1.0f };
+	Vector direction;
+	for ( int k = 0; k < 3; ++k )
+	{
+		const int axis = s_StToVec[face][k];
+		direction[k] = axis < 0 ? -axes[-axis - 1] : axes[axis - 1];
+	}
+	return direction;
+}
+
+const int ENV_FACE_GRID = 512;	// face samples per edge composited into the IBL equirect (>= 4 per polar texel)
+const float ENV_CLAMP = 8.0f;	// IBL texels are clamped to this multiple of the sphere's mean luminance (sun disc)
+
+// Composites the loaded faces into the RESTIR_SKY_ENV_WIDTH x RESTIR_SKY_ENV_HEIGHT equirect (row 0 at the zenith,
+// u = 0 at -x through +y, matching restir_lightmap.glsl SkyAmbientRadiance): each face sample (solid angle
+// ds dt / r^3) is averaged into the texel holding its direction. A texel no sample reached (a missing down face)
+// repeats the nearest filled texel of its column. Returns the count of such texels.
+int CompositeEnvironment( const SkyFace faces[6], const bool loaded[6], CUtlVector<Vector4D> &out )
+{
+	const int W = RESTIR_SKY_ENV_WIDTH, H = RESTIR_SKY_ENV_HEIGHT;
+	CUtlVector<double> sum, weight;
+	sum.SetCount( W * H * 3 );
+	weight.SetCount( W * H );
+	for ( int i = 0; i < sum.Count(); ++i )
+		sum[i] = 0.0;
+	for ( int i = 0; i < weight.Count(); ++i )
+		weight[i] = 0.0;
+	for ( int face = 0; face < 6; ++face )
+	{
+		if ( !loaded[face] )
+			continue;
+		for ( int j = 0; j < ENV_FACE_GRID; ++j )
+		{
+			const float t = ( j + 0.5f ) / ENV_FACE_GRID * 2.0f - 1.0f;
+			for ( int i = 0; i < ENV_FACE_GRID; ++i )
+			{
+				const float s = ( i + 0.5f ) / ENV_FACE_GRID * 2.0f - 1.0f;
+				const float r2 = 1.0f + s * s + t * t, r = sqrtf( r2 );
+				const Vector direction = FaceDirection( face, s, t ) / r;
+				// The texcoords SkyLuminance (and the engine) sample this face coordinate at.
+				const float u = clamp( ( s + 1.0f ) * 0.5f, 1.0f / 512.0f, 511.0f / 512.0f );
+				const float v = 1.0f - clamp( ( t + 1.0f ) * 0.5f, 1.0f / 512.0f, 511.0f / 512.0f );
+				const Vector &color = faces[face].Sample( u, v );
+				const int x = Min( (int)( ( atan2f( direction.y, direction.x ) / ( 2.0f * (float)M_PI ) + 0.5f ) * W ), W - 1 );
+				const int y = Min( (int)( acosf( clamp( direction.z, -1.0f, 1.0f ) ) / (float)M_PI * H ), H - 1 );
+				const double w = 1.0 / ( r2 * r );
+				const int texel = y * W + x;
+				for ( int c = 0; c < 3; ++c )
+					sum[texel * 3 + c] += color[c] * w;
+				weight[texel] += w;
+			}
+		}
+	}
+	out.SetCount( W * H );
+	int empty = 0;
+	for ( int x = 0; x < W; ++x )
+	{
+		int lastFilled = -1;
+		for ( int y = 0; y < H; ++y )
+		{
+			const int texel = y * W + x;
+			if ( weight[texel] > 0.0 )
+			{
+				out[texel].Init( (float)( sum[texel * 3] / weight[texel] ), (float)( sum[texel * 3 + 1] / weight[texel] ), (float)( sum[texel * 3 + 2] / weight[texel] ), 0.0f );
+				lastFilled = y;
+			}
+			else if ( lastFilled >= 0 )
+			{
+				out[texel] = out[lastFilled * W + x];
+				++empty;
+			}
+			else
+				out[texel].Init( -1.0f, 0.0f, 0.0f, 0.0f );
+		}
+		// Texels above the first filled one (no face reached the zenith side) take it.
+		int firstFilled = 0;
+		while ( firstFilled < H && out[firstFilled * W + x].x < 0.0f )
+			++firstFilled;
+		for ( int y = 0; y < firstFilled; ++y )
+		{
+			out[y * W + x] = firstFilled < H ? out[firstFilled * W + x] : Vector4D( 0.0f, 0.0f, 0.0f, 0.0f );
+			++empty;
+		}
+	}
+	return empty;
 }
 
 bool ComputeScale( const ReSTIROptions &options, const ReSTIRScene &scene, entity_t *world, float &scale )
@@ -294,8 +399,9 @@ bool ComputeScale( const ReSTIROptions &options, const ReSTIRScene &scene, entit
 			return false;
 	}
 
+	// The 2D sky matches the map's own ambient: -restir_skyambientscale lifts the baked fill light, not the skybox.
 	const float *intensity = scene.lights[scene.skyAmbientLight].intensity;
-	const double ambient = Luminance( intensity[0], intensity[1], intensity[2] ) / 255.0;
+	const double ambient = options.skyAmbientScale > 0.0f ? Luminance( intensity[0], intensity[1], intensity[2] ) / 255.0 / options.skyAmbientScale : 0.0;
 	const double sky = SkyLuminance( faces );
 	if ( ambient <= 0.0 || sky <= 0.0 )
 	{
@@ -345,4 +451,98 @@ void ReSTIR_WriteSkyAmbientMatch( const ReSTIROptions &options, const ReSTIRScen
 	}
 	if ( changed )
 		UnparseEntities();
+}
+
+void ReSTIR_BuildSkyEnvironment( const ReSTIROptions &options, ReSTIRScene &scene )
+{
+	scene.skyEnvironment.RemoveAll();
+	if ( !options.skyAmbientIbl )
+		return;
+	if ( scene.skyAmbientLight < 0 || num_entities <= 0 )
+	{
+		Warning( "Sky ambient IBL: no light_environment; no sky ambient to replace\n" );
+		return;
+	}
+	const char *skyName = ValueForKey( &entities[0], "skyname" );
+	if ( !skyName[0] )
+	{
+		Warning( "Sky ambient IBL: worldspawn has no skyname; sky ambient stays uniform\n" );
+		return;
+	}
+
+	// The HDR faces the HDR sky shader draws ($hdrcompressedtexture, else $hdrbasetexture); an LDR-only sky has neither.
+	SkyFace faces[6];
+	bool loaded[6] = {};
+	bool complete = true;
+	s_bIblSkip = true;
+	for ( int face = 0; face < 6 && complete; ++face )
+	{
+		s_bQuietSkip = face == DOWN_FACE;
+		loaded[face] = LoadFace( true, skyName, face, faces[face] );
+		complete = loaded[face] || face == DOWN_FACE;
+	}
+	s_bIblSkip = s_bQuietSkip = false;
+	if ( !complete )
+		return;
+
+	CUtlVector<Vector4D> environment;
+	const int repeated = CompositeEnvironment( faces, loaded, environment );
+	const int W = RESTIR_SKY_ENV_WIDTH, H = RESTIR_SKY_ENV_HEIGHT;
+	// Texel solid angle by row: (2 pi / W) * ( cos theta0 - cos theta1 ).
+	CUtlVector<double> rowSolidAngle;
+	rowSolidAngle.SetCount( H );
+	for ( int y = 0; y < H; ++y )
+		rowSolidAngle[y] = 2.0 * M_PI / W * ( cos( M_PI * y / H ) - cos( M_PI * ( y + 1 ) / H ) );
+
+	// An HDR sun disc would add a second sun on top of the light_environment one and make hemisphere rays noisy.
+	double sphere = 0.0, sphereWeight = 0.0;
+	for ( int y = 0; y < H; ++y )
+		for ( int x = 0; x < W; ++x )
+		{
+			const Vector4D &c = environment[y * W + x];
+			sphere += Luminance( c.x, c.y, c.z ) * rowSolidAngle[y];
+			sphereWeight += rowSolidAngle[y];
+		}
+	const float limit = (float)( ENV_CLAMP * sphere / sphereWeight );
+	int clamped = 0;
+	for ( int i = 0; i < environment.Count(); ++i )
+	{
+		Vector4D &c = environment[i];
+		const float y = Luminance( c.x, c.y, c.z );
+		if ( y > limit && y > 0.0f )
+		{
+			c *= limit / y;
+			++clamped;
+		}
+	}
+
+	// A uniform sky of the ambient intensity I gives an up-facing surface I (cosine-weighted mean over z > 0); scale
+	// the environment so it gives the same luminance there. The intensity already carries -restir_skyambientscale.
+	double cosine = 0.0, cosineWeight = 0.0;
+	for ( int y = 0; y < H / 2; ++y )
+	{
+		const double c = cos( M_PI * ( y + 0.5 ) / H );
+		for ( int x = 0; x < W; ++x )
+		{
+			const Vector4D &texel = environment[y * W + x];
+			cosine += Luminance( texel.x, texel.y, texel.z ) * c * rowSolidAngle[y];
+			cosineWeight += c * rowSolidAngle[y];
+		}
+	}
+	const float *intensity = scene.lights[scene.skyAmbientLight].intensity;
+	const double target = Luminance( intensity[0], intensity[1], intensity[2] );
+	const double skyMean = cosine / cosineWeight;
+	if ( target <= 0.0 || skyMean <= 0.0 )
+	{
+		Warning( "Sky ambient IBL: ambient luminance %g, sky luminance %g; sky ambient stays uniform\n", target, skyMean );
+		return;
+	}
+	const float factor = (float)( target / skyMean );
+	for ( int i = 0; i < environment.Count(); ++i )
+		environment[i] *= factor;
+	scene.skyEnvironment.Swap( environment );
+	Msg( "VRAD ReSTIR: sky ambient IBL from skybox/%s (%dx%d equirect): normalized x%.6g to ambient luminance %.4g, %d texels clamped (sun), %s\n",
+		skyName, W, H, factor, target, clamped, loaded[DOWN_FACE] ? "down face included" : "no HDR down face: the lower hemisphere repeats the horizon" );
+	if ( repeated && verbose )
+		Msg( "VRAD ReSTIR: sky ambient IBL: %d texels repeated from their column\n", repeated );
 }

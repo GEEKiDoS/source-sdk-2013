@@ -30,7 +30,8 @@
                                          //   disp faces: sample k of face f lives at cell (k % (luxelW-1), k / (luxelW-1)) is NOT
                                          //   assumed - host fills from ReSTIRGpuSample::s/t for every face)
 #define RESTIR_BIND_DIRECT_IRRADIANCE 8  // vec4[numSamples]: exact point/spot direct irradiance, style-0 base channel (resident)
-#define RESTIR_BIND_RESERVED_9       9   // 16-byte dummy
+#define RESTIR_BIND_SKY_ENVIRONMENT  9   // vec4[RESTIR_SKY_ENV_WIDTH * RESTIR_SKY_ENV_HEIGHT] ReSTIRScene::skyEnvironment
+                                         //   (RESTIR_PC_SKY_ENVIRONMENT), else the 16-byte dummy
 #define RESTIR_BIND_RESERVED_10      10  // 16-byte dummy
 #define RESTIR_BIND_ACCUMULATION     11  // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: rgb = running sum of the sampled terms, w = contributing iterations
 #define RESTIR_BIND_OUTPUT           12  // vec4[numOutputValues] reconstructed luxel radiance (ReSTIRLightmapResult::radiance order)
@@ -118,5 +119,10 @@ COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 144 );
 #define RESTIR_PC_RECEIVER_PAGE     0x4   // receiverAccumulation is addressed relative to pageBase.x
 #define RESTIR_PC_RESERVOIR_PAGE    0x8   // transport arrays are addressed relative to pageBase.x
 #define RESTIR_PC_PUBLISH_IRRADIANCE 0x10 // restir_transport: publish previousIrradiance instead of sampling
+#define RESTIR_PC_SKY_ENVIRONMENT   0x20  // sky ambient radiance comes from RESTIR_BIND_SKY_ENVIRONMENT (-restir_skyibl)
+// Sky ambient IBL equirect (ReSTIRScene::skyEnvironment): 2.8 degree texels; ambient light is low frequency, and the
+// coarse texels spread an HDR sun disc that the light_environment sun already provides.
+#define RESTIR_SKY_ENV_WIDTH        128
+#define RESTIR_SKY_ENV_HEIGHT       64
 
 #endif // RESTIR_GPU_LAYOUT_H

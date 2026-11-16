@@ -14,12 +14,13 @@ layout( std430, set = 0, binding = 16 ) buffer ServiceOut { ReSTIRGpuPointResult
 layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
 
 // utils/vrad/lightmap.cpp:1745-1831. Exact finite-sample normalization for
-// -extrasky-free sky ambient: visible cosine sum / all eligible cosine sum.
+// -extrasky-free sky ambient: visible cosine-weighted sky radiance / all eligible cosine sum
+// (with a uniform sky: intensity * visible cosine sum / all cosine sum).
 // vradstaticprops.cpp:1173-1196: the vertex is pushed 4 units towards the light (sky ambient: along
 // the normal) before tracing so a vertex on the prop's own surface does not shadow itself.
 vec3 PointSkyAmbient( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitId )
 {
-	float visibleCosines = 0.0;
+	vec3 visibleRadiance = vec3( 0.0 );
 	float allCosines = 0.0;
 	bool ignoreNormals = ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u;
 	vec3 origin = query.position.xyz + 4.0 * query.normal.xyz;
@@ -31,9 +32,9 @@ vec3 PointSkyAmbient( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitId
 			continue;
 		allCosines += cosine;
 		if ( LightVisibility( lightIndex, origin, origin + direction * 100000.0, RESTIR_NO_HIT, skipHitId ) )
-			visibleCosines += cosine;
+			visibleRadiance += cosine * SkyAmbientRadiance( direction );
 	}
-	return allCosines > 0.0 ? lights[lightIndex].intensity.rgb * visibleCosines / allCosines : vec3( 0.0 );
+	return allCosines > 0.0 ? visibleRadiance / allCosines : vec3( 0.0 );
 }
 
 // utils/vrad/lightmap.cpp:1673-1742,1835-1995,2003-2035 GatherSampleLightSSE.

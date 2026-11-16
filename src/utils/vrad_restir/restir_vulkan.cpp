@@ -32,7 +32,7 @@ CReSTIRVulkanDevice::Impl::Impl()
 	: instance( VK_NULL_HANDLE ), physical( VK_NULL_HANDLE ), device( VK_NULL_HANDLE ), queue( VK_NULL_HANDLE ),
 	queueFamily( 0 ), timestampBits( 0 ), sceneMemory( VK_NULL_HANDLE ), workMemory( VK_NULL_HANDLE ),
 	stagingMemory( VK_NULL_HANDLE ), staging( VK_NULL_HANDLE ), mappedStaging( NULL ), stagingCoherent( false ),
-	memoryBudget( false ), hardware( false ), finalUploaded( false ), receiverFullForReconstruct( false ),
+	memoryBudget( false ), hardware( false ), skyEnvironment( false ), finalUploaded( false ), receiverFullForReconstruct( false ),
 	transportPaged( false ), receiverPageReservoirs( 0 ), fullReservoirs( 0 ), pageSamples( 0 ), pageLuxels( 0 ),
 	pageReservoirs( 0 ), pageOutputs( 0 ), pageCount( 0 ), reconstructSampleCapacity( 0 ), reconstructReservoirCapacity( 0 ),
 	commandPool( VK_NULL_HANDLE ),
@@ -755,7 +755,7 @@ void CReSTIRVulkanDevice::Impl::ReallocateForReconstruct()
 	RefreshDescriptorSet();
 	if ( verbose )
 		Msg( "VRAD ReSTIR paging: final-lightmap heap rebound after transport pages were released\n" );
-	push.flags = hardware ? RESTIR_PC_HARDWARE_RT : 0;
+	push.flags = BaseFlags();
 	memset( push.pageBase, 0, sizeof( push.pageBase ) );
 }
 

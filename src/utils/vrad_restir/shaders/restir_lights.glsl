@@ -104,7 +104,7 @@ vec3 EvaluateLight( uint lightIndex, vec3 origin, vec3 source, uint emitterTri )
 	if ( light.type == EMIT_SKYLIGHT )
 		return light.intensity.rgb;
 	if ( light.type == EMIT_SKYAMBIENT )
-		return light.intensity.rgb / RESTIR_PI;
+		return SkyAmbientRadiance( SafeNormal( source - origin ) ) / RESTIR_PI;
 	return StandardLightRadiance( light, origin, source );
 }
 
@@ -278,7 +278,7 @@ bool HemisphereSample( vec3 origin, vec3 direction, bool skyAmbient, bool bounce
 			if ( !skyAmbient )
 				return false;
 			sky = true;
-			value = lights[pc.skyAmbientLight].intensity.rgb;
+			value = SkyAmbientRadiance( direction );
 			return true;
 		}
 		occluderT = occluder.t;
