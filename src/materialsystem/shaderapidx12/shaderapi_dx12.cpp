@@ -286,9 +286,9 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	}
 	if ( record->stagePixel )
 	{
-		// One SV_Target is the ordinary scene output; exactly six also write the PBR G-buffer (normal, F0 + roughness,
-		// environment contribution + specular distance, SSR response, direct specular). The last three are attached only
-		// while SSR captures (gbuffer_dx12.cpp).
+		// One SV_Target is the ordinary scene output; exactly seven also write the PBR G-buffer (normal, F0 + roughness,
+		// environment contribution + specular distance, SSR response, direct specular, specular distance). The last
+		// three (four at r_color_precision 1) are attached only while SSR captures (gbuffer_dx12.cpp).
 		// Exactly two is a backend-owned MRT pass (the half-resolution volumetric march: in-scattering + view depth);
 		// an ordinary draw binding such a shader simply discards the unbound second output.
 		UINT targets = 0;
@@ -299,12 +299,12 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 				return false;
 			targets += output.SystemValueType == D3D_NAME_TARGET;
 		}
-		if ( targets > 1 && targets != 2 && targets != 6 )
+		if ( targets > 1 && targets != 2 && targets != 7 )
 		{
-			Warning( "ShaderAPIDX12: native PS declares %u render targets; expected 1, 2 or 6\n", targets );
+			Warning( "ShaderAPIDX12: native PS declares %u render targets; expected 1, 2 or 7\n", targets );
 			return false;
 		}
-		record->gbuffer = targets == 6;
+		record->gbuffer = targets == 7;
 	}
 	record->nativeReflectionReady = true;
 	return true;
@@ -1591,21 +1591,21 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			target.dsv = m_ContactDepth.dsv;
 			target.depthFormat = m_pDevice->SceneDepthFormat();
 		}
-		// PBR G-buffer: only an opaque main-view draw whose native PS declares six SV_Targets gets the extra targets; every
-		// other draw (and every PSO) keeps its single render target. Legacy draws never write them (see gbuffer_dx12.cpp).
-		// Targets 3/4/5 (environment + specular distance, SSR response, direct specular) attach only while the bracket
-		// captures SSR; the contact-depth replay binds no G-buffer target at all. Unbound PS outputs are discarded.
+		// PBR G-buffer: only an opaque main-view draw whose native PS declares seven SV_Targets gets the extra targets;
+		// every other draw (and every PSO) keeps its single render target. Legacy draws never write them (see gbuffer_dx12.cpp).
+		// Targets 3/4/5 (environment + specular distance, SSR response, direct specular; plus 6, the distance, when the
+		// payload is R11G11B10) attach only while the bracket captures SSR; the contact-depth replay binds no G-buffer
+		// target at all. Unbound PS outputs are discarded.
 		if ( m_bGBufferPass && psRecord && psRecord->gbuffer && !shadowPass && !motionActive && !m_ScreenSpace.contactReplay && !depthPrepass && target.colorCount == 1 &&
 		     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && !m_ActiveSnapshot.translucent )
 		{
 			const bool ssrPayload = m_ScreenSpace.ssrCapture && m_pGBufferEnvironment;
-			const int gbufferCount = static_cast<int>( ssrPayload ? kGBufferSsrTargets : kGBufferBaseTargets );
-			ID3D12Resource *const gbufferResources[kGBufferSsrTargets] = { m_pGBufferNormal.Get(), m_pGBufferSpec.Get(), m_pGBufferEnvironment.Get(), m_pGBufferResponse.Get(), m_pGBufferSpecular.Get() };
+			const int gbufferCount = static_cast<int>( ssrPayload ? GBufferPayloadTargets() : kGBufferBaseTargets );
 			for ( int i = 0; i < gbufferCount; ++i )
 			{
-				target.colors[1 + i] = gbufferResources[i];
+				target.colors[1 + i] = GBufferTarget( i );
 				target.rtvs[1 + i] = m_GBufferRtv[i];
-				target.colorFormats[1 + i] = kGBufferFormats[i];
+				target.colorFormats[1 + i] = GBufferFormat( i );
 			}
 			target.colorCount = 1 + gbufferCount;
 			gbufferTargets = true;

@@ -333,12 +333,14 @@ float PBR_FogTransmission( int pixelFogType, float fogFactor, float vertexFog )
 // Scene colour plus the G-buffer: world-space shading normal (PBR_PackNormal, octahedral [0,1]), F0.rgb + roughness,
 // and the SSR payload: environmentScene is the environment term as it reached the scene (E, final scene units),
 // reflectionResponse what a sampled scene radiance must be multiplied by to replace it (K); reflectionValid is 1 for
-// a fresh eligible writer. directSpecular is the pixel's direct GGX specular in the same final scene units (S) and
-// specularDistance its specular-luminance-weighted light distance (D, target 3 alpha), so a screen-space hit closer
-// than D along the reflection removes S. Targets 3/4/5 are attached only while the bracket captures SSR; every
-// unbound target is discarded by the pipeline. Non-envmapped writers suppress targets 3/5 but still zero
-// target 4, so stale E/D/S are rejected by response alpha. Validity of normal/F0 is stencil bit 0x80,
-// forced on every depth-writing draw in the pass (a PBR writer sets it, anything else clears it).
+// a fresh eligible writer and also scales K, so K = 0 marks a non-writer in alpha-less (R11G11B10) payloads.
+// directSpecular is the pixel's direct GGX specular in the same final scene units (S) and specularDistance its
+// specular-luminance-weighted light distance (D: target 3 alpha, and target 6 for the R11G11B10 payload of
+// r_color_precision 1), so a screen-space hit closer than D along the reflection removes S. Targets 3/4/5(/6) are
+// attached only while the bracket captures SSR; every unbound target is discarded by the pipeline. Non-envmapped
+// writers suppress targets 3/5/6 but still zero target 4, so stale E/D/S are rejected by the response. Validity of
+// normal/F0 is stencil bit 0x80, forced on every depth-writing draw in the pass (a PBR writer sets it, anything else
+// clears it).
 struct PBR_PSOut
 {
 	float4 color : SV_Target0;
@@ -347,6 +349,7 @@ struct PBR_PSOut
 	float4 environment : SV_Target3;
 	float4 response : SV_Target4;
 	float4 specular : SV_Target5;
+	float distance : SV_Target6;
 };
 PBR_PSOut PBR_Output( float4 color, PBRSurface s, float3 environmentScene, float3 reflectionResponse, float reflectionValid,
 	float3 directSpecular, float specularDistance )
@@ -356,8 +359,9 @@ PBR_PSOut PBR_Output( float4 color, PBRSurface s, float3 environmentScene, float
 	o.normal = PBR_PackNormal( s.N );
 	o.spec = float4( s.F0, s.roughness );
 	o.environment = float4( environmentScene, specularDistance );
-	o.response = float4( reflectionResponse, reflectionValid );
+	o.response = float4( reflectionResponse * reflectionValid, reflectionValid );
 	o.specular = float4( directSpecular, 0.0 );
+	o.distance = specularDistance;
 	return o;
 }
 

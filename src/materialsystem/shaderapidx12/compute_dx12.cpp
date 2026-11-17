@@ -41,7 +41,7 @@ struct ComputeReplayPayloadDX12
 	D3D12_RESOURCE_STATES sceneDepthBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	bool restoreSceneDepth = false;
 	// PBR G-buffer targets moved to gbufferRead for this dispatch and restored to gbufferBefore afterwards.
-	static constexpr UINT kGBufferTargets = 5;
+	static constexpr UINT kGBufferTargets = 6; // CShaderAPIDX12::kGBufferTargets (asserted where the payload is filled)
 	ID3D12Resource *gbuffer[kGBufferTargets] = {};
 	D3D12_RESOURCE_STATES gbufferBefore[kGBufferTargets] = {}, gbufferRead = D3D12_RESOURCE_STATE_COMMON;
 };
@@ -601,14 +601,20 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 		}
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ||
 		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE ||
-		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR )
+		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_DISTANCE )
 		{
+			static_assert( ComputeReplayPayloadDX12::kGBufferTargets == kGBufferTargets, "payload G-buffer slots" );
+			// D is E's alpha in the FP16 payload; the R11G11B10 payload keeps it in its own R16F target, read as .a.
+			const bool distanceTarget = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_DISTANCE && m_bGBufferReducedPayload;
 			const UINT target = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS ? 0 : resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ? 1 :
-				resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT ? 2 : resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE ? 3 : 4;
+				resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE ? 3 : resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR ? 4 :
+				distanceTarget ? kGBufferDistanceTarget : 2;
 			ID3D12Resource *native = GBufferTarget( target );
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-			srv.Format = kGBufferFormats[target];
-			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.Format = GBufferFormat( target );
+			srv.Shader4ComponentMapping = distanceTarget ? D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING( D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0,
+				D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0, D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0 ) :
+				D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 			if ( ( native ? m_nGBufferSamples : static_cast<UINT>( m_pDevice->SceneSampleCount() ) ) > 1 )
 			{
 				srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;

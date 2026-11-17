@@ -8,8 +8,10 @@
 // accumulates the resolve temporally and writes the scene correction.
 //
 // Register slots of the G-buffer inputs shared by trace, resolve and composite: normal t2, specular t3, stencil t4.
-// The including pass defines SSR_RESPONSE_REGISTER / SSR_SCENE_DEPTH_REGISTER and, when it needs E, D and S
-// (SSR_HAS_ENVIRONMENT 1), SSR_ENVIRONMENT_REGISTER / SSR_SPECULAR_REGISTER.
+// The including pass defines SSR_RESPONSE_REGISTER / SSR_SCENE_DEPTH_REGISTER and, when it needs E and S
+// (SSR_HAS_ENVIRONMENT 1), SSR_ENVIRONMENT_REGISTER / SSR_SPECULAR_REGISTER; a pass that needs D also defines
+// SSR_DISTANCE_REGISTER (PBR_SSR_DISTANCE: D in .a whatever the payload precision). The response's K is zero for a
+// non-writer; its alpha (1 for a writer) exists only in the FP16 payload and reads 1 otherwise.
 #ifndef SSR_COMMON_HLSLI
 #define SSR_COMMON_HLSLI
 #include "pbr_oct.hlsli"
@@ -48,6 +50,9 @@ Texture2D<float> gSSRSceneDepth : register( SSR_SCENE_DEPTH_REGISTER, space0 );
 #if SSR_HAS_ENVIRONMENT
 Texture2D<float4> gSSREnvironment : register( SSR_ENVIRONMENT_REGISTER, space0 );
 Texture2D<float4> gSSRSpecular : register( SSR_SPECULAR_REGISTER, space0 );
+#if defined( SSR_DISTANCE_REGISTER )
+Texture2D<float4> gSSRDistance : register( SSR_DISTANCE_REGISTER, space0 );
+#endif
 #endif
 #endif
 
@@ -276,7 +281,9 @@ SSRReceiver SSR_LoadReceiver( int2 localPixel )
 #if SSR_HAS_ENVIRONMENT
 		float4 environment = gSSREnvironment.Load( scenePixel );
 		r.E = environment.rgb;
-		r.D = environment.a;
+#if defined( SSR_DISTANCE_REGISTER )
+		r.D = gSSRDistance.Load( scenePixel ).a;
+#endif
 		r.S = gSSRSpecular.Load( scenePixel ).rgb;
 #endif
 		r.valid = r.viewDepth > 0.0;

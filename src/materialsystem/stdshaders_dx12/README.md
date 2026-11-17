@@ -360,6 +360,14 @@ published splits, matrices, depth records and rectangles and leases the main atl
 `r_shadowmap_viewmodel_cascade 1` (archived, default 0) gives it its own atlas pair and
 a cascade fitted to the viewmodel again, which is sharper on the weapon and costs one
 chart render and depth restore per frame (0.3 + 0.1 ms on the GTX 1050 in c1m1).
+The viewmodel is no caster of the main view's charts, so it never shadows the world (the third-person body already
+does). `r_shadowmap_viewmodel_self` (archived, default 1) gives it sun self-shadowing instead, and then overrides
+`r_shadowmap_viewmodel_cascade`: in the main charts the whole weapon covers about ten texels (c1m2, low tier), so the
+viewmodel view renders its own atlas pair with a single cascade over `[zNear, maxReceiverDepth / 0.9]`. After that
+chart, `AddViewModelSelfShadow` copies the texels the viewmodel receivers can read (their bounds' footprint plus twice
+the chart guard, which holds the PCSS reach) into the private `shadow_cascade_viewmodel_self` atlas, draws the opaque
+studio viewmodels (weapon, arms) over that copy with the chart's committed light view, and points only the viewmodel
+packet at it. No cached chart ever holds viewmodel depth. Local lights and the flashlight keep their world-only maps.
 
 Each dynamic cascade is a light-space square that `BuildSun` keeps (with its cached static and rigid depth) while the
 sphere it must cover stays inside it, 1.2 times that sphere's radius. `r_csm_eye_centered` (archived, default 1)
@@ -1124,9 +1132,10 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
 | normals | `R16G16_UNORM` | world-space shading normal, `PBR_PackNormal( N )` (octahedral coordinates in [0,1], `pbr_oct.hlsli`) |
 | specular | `R8G8B8A8_UNORM` | `F0.rgb`, roughness in alpha |
 | stencil | scene `D24S8`, bit `0x80` | set on a PBR depth write, cleared by any other depth-writing draw in the pass |
-| environment (SSR brackets only) | `R16G16B16A16_FLOAT` | `E.rgb`, the cubemap term in final scene units; alpha `D`, the specular-luminance-weighted light distance of the direct specular (sun 60000, 0 when it is zero) |
-| response (SSR brackets only) | `R16G16B16A16_FLOAT` | `K.rgb`, what a sampled scene radiance is multiplied by to replace `E`; alpha 1 for a fresh eligible writer |
-| direct specular (SSR brackets only) | `R16G16B16A16_FLOAT` | `S.rgb`, the direct GGX specular (sun, shadowmap locals, projected spots, draw-local lights) in final scene units; `ssr_composite_cs51` subtracts `O * S`, `O` the confidence-weighted soft `[hitDistance < D]` |
+| environment (SSR brackets only) | `R16G16B16A16_FLOAT` (`R11G11B10_FLOAT` at `r_color_precision 1`) | `E.rgb`, the cubemap term in final scene units; FP16 alpha `D`, the specular-luminance-weighted light distance of the direct specular (sun 60000, 0 when it is zero) |
+| response (SSR brackets only) | as environment | `K.rgb`, what a sampled scene radiance is multiplied by to replace `E`, zero unless a fresh eligible writer; FP16 alpha 1 for such a writer |
+| direct specular (SSR brackets only) | as environment | `S.rgb`, the direct GGX specular (sun, shadowmap locals, projected spots, draw-local lights) in final scene units; `ssr_composite_cs51` subtracts `O * S`, `O` the confidence-weighted soft `[hitDistance < D]` |
+| distance (SSR brackets at `r_color_precision 1` only) | `R16_FLOAT` | `D`, which the alpha-less environment target cannot hold; `ssr_resolve_cs51` reads `D` through `PBR_SSR_DISTANCE` (a red-to-alpha view here, the environment alpha at FP16) |
 
 - **A pixel holds PBR data only while stencil bit `0x80` is set.** The backend forces that bit on every depth-writing draw
   inside the pass. Consumers read the stencil plane (`X24_TYPELESS_G8_UINT`, plane 1) as `Texture2D<uint2>` /
@@ -1159,12 +1168,15 @@ published to SSR, preserving AO on both receivers and reflected hits.
 `shaderapidx12/screenspace_ssr_dx12.cpp` runs stochastic SSR on single-sample scenes (MSAA scenes skip it) over the
 receivers above, every roughness included; misses and low-confidence pixels keep the cubemap term `E`.
 
-SSR payload writes remain RGBA16F, with no precision reduction. While a bracket captures SSR, non-envmapped
-PBR materials suppress the E+D and direct-specular MRT writes but still write K+valid as zero. Existing response
-alpha rejection makes retained E/D/S behind those pixels unread, including the trace's hit-normal guard.
-This reduces their total scene/G-buffer writes from 40 to 24 bytes per shaded fragment (16 bytes saved);
-envmapped writers retain all six outputs. Outside SSR capture (including `r_ssr 0`) the three payload targets
-are not attached, so the base scene/normal/F0 writes remain 16 bytes per fragment.
+`r_color_precision` (archived, default 0) selects the SSR payload precision: 0 RGBA16F; 1 R11G11B10_FLOAT plus an
+R16F `D` target (12 + 2 instead of 24 bytes per capturing fragment; `PBR_Output` folds the valid flag into `K`, so
+`K = 0` rejects a pixel without the response alpha). On the GTX 1050 at c1m2 mode 1 measured about 0.1 ms, within
+noise; an R11G11B10 scene colour was tried as well and gave no gain, so scene colour stays RGBA16F (it also keeps the
+destination alpha the soft-particle depth feathering reads). While a bracket captures SSR, non-envmapped PBR materials
+suppress the E+D, direct-specular and distance MRT writes but still write K+valid as zero, so retained E/D/S behind
+those pixels are unread, including the trace's hit-normal guard. This reduces their FP16 scene/G-buffer writes from
+40 to 24 bytes per shaded fragment; envmapped writers retain all outputs. Outside SSR capture (including `r_ssr 0`)
+the payload targets are not attached, so the base scene/normal/F0 writes remain 16 bytes per fragment.
 
 `r_ssr_quality 0/1/2` retains the 24/48/96-step quality profiles and their half/half/full trace sizes (default 1).
 Archived `r_ssr_resolution` scales that profile's trace size independently on both axes: 1 is the original output,

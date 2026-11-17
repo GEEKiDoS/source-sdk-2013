@@ -1339,17 +1339,23 @@ private:
 	// Bits the renderer owns (G-buffer validity, skybox hidden-pixel mask). Engine/material stencil masks never see them, so
 	// game stencil tests (e.g. L4D2's glow composite, EQUAL 0 under mask 0xFA) and clears behave as on DX9.
 	static constexpr uint8_t kGameStencilMask = uint8_t( ~( kGBufferStencilBit | kSkyboxStencilBit ) );
-	static constexpr UINT kGBufferBaseTargets = 2, kGBufferSsrTargets = 5;
-	static constexpr DXGI_FORMAT kGBufferFormats[kGBufferSsrTargets] = { DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT };
+	// Targets 0/1 base (normal, F0 + roughness); 2-4 the SSR payload (E, K, S); 5 the payload's light distance D, which
+	// exists only at r_color_precision 1, where 2-4 are R11G11B10_FLOAT and E has no alpha to carry it.
+	static constexpr UINT kGBufferBaseTargets = 2, kGBufferSsrTargets = 5, kGBufferTargets = 6, kGBufferDistanceTarget = 5;
 	static constexpr D3D12_RESOURCE_STATES kGBufferReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGBufferNormal, m_pGBufferSpec, m_pGBufferEnvironment, m_pGBufferResponse, m_pGBufferSpecular;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pGBufferNormal, m_pGBufferSpec, m_pGBufferEnvironment, m_pGBufferResponse, m_pGBufferSpecular, m_pGBufferDistance;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_pGBufferRtvHeap;
-	D3D12_CPU_DESCRIPTOR_HANDLE m_GBufferRtv[kGBufferSsrTargets]{};
-	D3D12_RESOURCE_STATES m_GBufferState[kGBufferSsrTargets] = { D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET };
+	D3D12_CPU_DESCRIPTOR_HANDLE m_GBufferRtv[kGBufferTargets]{};
+	D3D12_RESOURCE_STATES m_GBufferState[kGBufferTargets] = { D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET };
 	UINT m_nGBufferWidth = 0, m_nGBufferHeight = 0, m_nGBufferSamples = 0, m_nGBufferQuality = 0;
 	bool m_bGBufferPass = false, m_bGBufferWarned = false, m_bGBufferSsrWarned = false;
+	// The SSR payload was created reduced (R11G11B10 E/K/S + R16F D).
+	bool m_bGBufferReducedPayload = false;
 	bool EnsureGBufferSsrResources();
 	ID3D12Resource *GBufferTarget( UINT nTarget ) const;
+	DXGI_FORMAT GBufferFormat( UINT nTarget ) const;
+	// Targets a capturing pass binds: the base two, E/K/S, and D when reduced.
+	UINT GBufferPayloadTargets() const { return m_bGBufferReducedPayload ? kGBufferTargets : kGBufferSsrTargets; }
 	// Native-AA upscaler. Every field is owned by the recording thread; replay results arrive through m_UpscalerReplay.
 	static constexpr uint64_t kUpscalerReplaySlots = 4;
 	CUpscalerDX12 m_Upscaler;

@@ -8,11 +8,12 @@
 // u1 = ( confidence * o, mean hit distance, 0, 0 ), o the soft [hitDistance < D] occlusion of the direct specular.
 // Zero for an invalid receiver. No static combos (index 0).
 // Inputs: t0 trace radiance, t1 trace ray, t2 normal, t3 specular, t4 stencil, t5 response (K), t6 native scene depth,
-// t7 E + D, t8 direct specular S.
+// t7 E, t8 direct specular S, t9 D (in .a).
 #define SSR_RESPONSE_REGISTER t5
 #define SSR_SCENE_DEPTH_REGISTER t6
 #define SSR_ENVIRONMENT_REGISTER t7
 #define SSR_SPECULAR_REGISTER t8
+#define SSR_DISTANCE_REGISTER t9
 #define SSR_HAS_ENVIRONMENT 1
 #include "ssr_common.hlsli"
 Texture2D<float4> gTrace : register( t0, space0 );

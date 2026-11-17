@@ -328,6 +328,7 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 		resolve.m_Srv[6] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH );
 		resolve.m_Srv[7] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT );
 		resolve.m_Srv[8] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR );
+		resolve.m_Srv[9] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_DISTANCE );
 		resolve.m_Uav[0] = SSRTexture( m_SSR.resolve.handle, 0, 1 );
 		resolve.m_Uav[1] = SSRTexture( m_SSR.resolveAux.handle, 0, 1 );
 		if ( !Dispatch( resolve ) )

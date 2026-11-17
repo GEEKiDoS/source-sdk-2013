@@ -5,15 +5,18 @@
 //          Render target 2 = F0.rgb + roughness, R8G8B8A8_UNORM.
 //          Render target 3 = E.rgb, the material's environment (cubemap) contribution in final scene units; alpha D,
 //                            the specular-luminance-weighted light distance of target 5 (0 when it is zero).
-//          Render target 4 = K.rgb, the sampled-scene reflection response; alpha 1 for a fresh eligible writer.
+//          Render target 4 = K.rgb, the sampled-scene reflection response, zero unless a fresh eligible writer;
+//                            alpha 1 for such a writer.
 //          Render target 5 = S.rgb, the direct GGX specular in final scene units, alpha 0.
-//          Targets 3/4/5 exist only once an SSR bracket asked for them and are attached only while
+//          Targets 3/4/5 are R16G16B16A16_FLOAT, or R11G11B10_FLOAT at r_color_precision 1 (no alphas; render
+//          target 6 = D, R16_FLOAT, then carries the distance). The format is chosen when the payload is created.
+//          Targets 3/4/5(/6) exist only once an SSR bracket asked for them and are attached only while
 //          m_ScreenSpace.ssrCapture is set; BEGIN clears exactly those three so only this bracket's fresh
 //          PBR writers carry a response (water issues several main brackets per frame).
 //          Validity is stencil bit 0x80 of the scene depth: every depth-writing draw in the pass sets it
 //          for a PBR writer and clears it otherwise. Consumers read that plane, sample 0.
 //          INT_RENDERPARM_DX12_PBR_GBUFFER_PASS brackets the opaque pass. BEGIN does not clear targets 1/2.
-//          DrawBuffers appends the targets to every native PS that declares six SV_Targets.
+//          DrawBuffers appends the targets to every native PS that declares seven SV_Targets.
 //          Lifecycle mirrors the private motion target (motion_vectors_dx12.cpp).
 //
 //=============================================================================//
@@ -22,9 +25,13 @@
 #include "shaderdevice_dx12.h"
 #include "renderparm.h"
 #include "tier0/dbg.h"
+#include "tier1/convar.h"
 
 namespace shaderapidx12
 {
+static ConVar r_color_precision( "r_color_precision", "0", FCVAR_ARCHIVE,
+	"SSR payload G-buffer precision: 0 RGBA16F environment/response/specular targets, 1 R11G11B10F (plus an R16F light-distance target)",
+	true, 0, true, 1 );
 namespace
 {
 //-----------------------------------------------------------------------------
@@ -57,7 +64,8 @@ bool CreateGBufferTarget( ID3D12Device *pNative, const D3D12_RESOURCE_DESC &scen
 } // namespace
 
 //-----------------------------------------------------------------------------
-// Purpose: Resource of G-buffer target nTarget (0 normal, 1 F0/roughness, 2 environment, 3 SSR response, 4 direct specular); null when absent
+// Purpose: Resource of G-buffer target nTarget (0 normal, 1 F0/roughness, 2 environment, 3 SSR response, 4 direct
+//          specular, 5 light distance); null when absent
 //-----------------------------------------------------------------------------
 ID3D12Resource *CShaderAPIDX12::GBufferTarget( UINT nTarget ) const
 {
@@ -68,7 +76,19 @@ ID3D12Resource *CShaderAPIDX12::GBufferTarget( UINT nTarget ) const
 	case 2: return m_pGBufferEnvironment.Get();
 	case 3: return m_pGBufferResponse.Get();
 	case 4: return m_pGBufferSpecular.Get();
+	case kGBufferDistanceTarget: return m_pGBufferDistance.Get();
 	default: return nullptr;
+	}
+}
+
+DXGI_FORMAT CShaderAPIDX12::GBufferFormat( UINT nTarget ) const
+{
+	switch ( nTarget )
+	{
+	case 0: return DXGI_FORMAT_R16G16_UNORM;
+	case 1: return DXGI_FORMAT_R8G8B8A8_UNORM;
+	case kGBufferDistanceTarget: return DXGI_FORMAT_R16_FLOAT;
+	default: return m_bGBufferReducedPayload ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
 	}
 }
 
@@ -83,7 +103,7 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 	const D3D12_RESOURCE_DESC scene = m_pDevice->SceneColor()->GetDesc();
 	if ( m_pGBufferNormal && scene.Width == m_nGBufferWidth && scene.Height == m_nGBufferHeight && scene.SampleDesc.Count == m_nGBufferSamples && scene.SampleDesc.Quality == m_nGBufferQuality )
 		return true;
-	if ( !m_pDevice->SupportsMSAAFormat( kGBufferFormats[0], scene.SampleDesc.Count, scene.SampleDesc.Quality ) || !m_pDevice->SupportsMSAAFormat( kGBufferFormats[1], scene.SampleDesc.Count, scene.SampleDesc.Quality ) )
+	if ( !m_pDevice->SupportsMSAAFormat( GBufferFormat( 0 ), scene.SampleDesc.Count, scene.SampleDesc.Quality ) || !m_pDevice->SupportsMSAAFormat( GBufferFormat( 1 ), scene.SampleDesc.Count, scene.SampleDesc.Quality ) )
 	{
 		if ( !m_bGBufferWarned )
 		{
@@ -93,22 +113,23 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 		return false;
 	}
 	m_pDevice->DrainRecording();
-	for ( UINT i = 0; i < kGBufferSsrTargets; ++i )
+	for ( UINT i = 0; i < kGBufferTargets; ++i )
 		if ( ID3D12Resource *pOld = GBufferTarget( i ) )
 			m_pDevice->RetainResource( pOld );
 	m_pGBufferEnvironment.Reset();
 	m_pGBufferResponse.Reset();
 	m_pGBufferSpecular.Reset();
+	m_pGBufferDistance.Reset();
 	ID3D12Device *pNative = m_pDevice->NativeDevice();
 	if ( !m_pGBufferRtvHeap )
 	{
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-		heapDesc.NumDescriptors = kGBufferSsrTargets;
+		heapDesc.NumDescriptors = kGBufferTargets;
 		if ( FAILED( pNative->CreateDescriptorHeap( &heapDesc, IID_PPV_ARGS( &m_pGBufferRtvHeap ) ) ) )
 			return false;
 		const UINT rtvStride = pNative->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
-		for ( UINT i = 0; i < kGBufferSsrTargets; ++i )
+		for ( UINT i = 0; i < kGBufferTargets; ++i )
 		{
 			m_GBufferRtv[i] = m_pGBufferRtvHeap->GetCPUDescriptorHandleForHeapStart();
 			m_GBufferRtv[i].ptr += SIZE_T( i ) * rtvStride;
@@ -117,7 +138,7 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 	// Optimized clear value is 0. The pass does not clear these two; stencil bit 0x80 is the validity mark.
 	Microsoft::WRL::ComPtr<ID3D12Resource> resources[kGBufferBaseTargets];
 	for ( UINT i = 0; i < kGBufferBaseTargets; ++i )
-		if ( !CreateGBufferTarget( pNative, scene, kGBufferFormats[i], m_GBufferRtv[i], resources[i] ) )
+		if ( !CreateGBufferTarget( pNative, scene, GBufferFormat( i ), m_GBufferRtv[i], resources[i] ) )
 			return false;
 	m_pGBufferNormal = std::move( resources[0] );
 	m_pGBufferSpec = std::move( resources[1] );
@@ -131,17 +152,21 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Lazily creates the SSR payload targets (E + D, K, S) matching the base targets' shape. Requires
-//			EnsureGBufferResources to have succeeded for the current scene shape.
+// Purpose: Lazily creates the SSR payload targets (E + D, K, S; or E, K, S and D at r_color_precision 1) matching
+//			the base targets' shape, again when the precision changes. Requires EnsureGBufferResources to have
+//			succeeded for the current scene shape.
 //-----------------------------------------------------------------------------
 bool CShaderAPIDX12::EnsureGBufferSsrResources()
 {
-	if ( m_pGBufferEnvironment )
+	const bool bReduced = r_color_precision.GetBool();
+	if ( m_pGBufferEnvironment && m_bGBufferReducedPayload == bReduced )
 		return true;
 	if ( !m_pGBufferNormal )
 		return false;
 	const D3D12_RESOURCE_DESC scene = m_pDevice->SceneColor()->GetDesc();
-	if ( !m_pDevice->SupportsMSAAFormat( kGBufferFormats[2], scene.SampleDesc.Count, scene.SampleDesc.Quality ) )
+	const DXGI_FORMAT payloadFormat = bReduced ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+	if ( !m_pDevice->SupportsMSAAFormat( payloadFormat, scene.SampleDesc.Count, scene.SampleDesc.Quality ) ||
+	     ( bReduced && !m_pDevice->SupportsMSAAFormat( DXGI_FORMAT_R16_FLOAT, scene.SampleDesc.Count, scene.SampleDesc.Quality ) ) )
 	{
 		if ( !m_bGBufferSsrWarned )
 		{
@@ -151,15 +176,26 @@ bool CShaderAPIDX12::EnsureGBufferSsrResources()
 		return false;
 	}
 	m_pDevice->DrainRecording();
+	for ( UINT i = kGBufferBaseTargets; i < kGBufferTargets; ++i )
+		if ( ID3D12Resource *pOld = GBufferTarget( i ) )
+			m_pDevice->RetainResource( pOld );
+	m_pGBufferEnvironment.Reset();
+	m_pGBufferResponse.Reset();
+	m_pGBufferSpecular.Reset();
+	m_pGBufferDistance.Reset();
+	m_bGBufferReducedPayload = bReduced;
 	ID3D12Device *pNative = m_pDevice->NativeDevice();
-	Microsoft::WRL::ComPtr<ID3D12Resource> resources[kGBufferSsrTargets - kGBufferBaseTargets];
-	for ( UINT i = 0; i < ARRAYSIZE( resources ); ++i )
-		if ( !CreateGBufferTarget( pNative, scene, kGBufferFormats[kGBufferBaseTargets + i], m_GBufferRtv[kGBufferBaseTargets + i], resources[i] ) )
+	Microsoft::WRL::ComPtr<ID3D12Resource> resources[kGBufferTargets - kGBufferBaseTargets];
+	const UINT nPayload = GBufferPayloadTargets() - kGBufferBaseTargets;
+	for ( UINT i = 0; i < nPayload; ++i )
+		if ( !CreateGBufferTarget( pNative, scene, GBufferFormat( kGBufferBaseTargets + i ), m_GBufferRtv[kGBufferBaseTargets + i], resources[i] ) )
 			return false;
 	m_pGBufferEnvironment = std::move( resources[0] );
 	m_pGBufferResponse = std::move( resources[1] );
 	m_pGBufferSpecular = std::move( resources[2] );
-	m_GBufferState[2] = m_GBufferState[3] = m_GBufferState[4] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	m_pGBufferDistance = std::move( resources[3] );
+	for ( UINT i = kGBufferBaseTargets; i < kGBufferTargets; ++i )
+		m_GBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	return true;
 }
 
@@ -168,9 +204,9 @@ bool CShaderAPIDX12::EnsureGBufferSsrResources()
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::TransitionGBuffer( D3D12_RESOURCE_STATES desiredState )
 {
-	D3D12_RESOURCE_BARRIER barriers[kGBufferSsrTargets]{};
+	D3D12_RESOURCE_BARRIER barriers[kGBufferTargets]{};
 	UINT count = 0;
-	for ( UINT i = 0; i < kGBufferSsrTargets; ++i )
+	for ( UINT i = 0; i < kGBufferTargets; ++i )
 	{
 		ID3D12Resource *pResource = GBufferTarget( i );
 		if ( !pResource || m_GBufferState[i] == desiredState )
@@ -216,7 +252,7 @@ void CShaderAPIDX12::SetGBufferPass( int nMode )
 	{
 		static constexpr float kZero[4] = { 0.f, 0.f, 0.f, 0.f };
 		CCommandRecorderDX12 *pList = m_pDevice->CommandList();
-		for ( UINT i = kGBufferBaseTargets; i < kGBufferSsrTargets; ++i )
+		for ( UINT i = kGBufferBaseTargets; i < GBufferPayloadTargets(); ++i )
 			pList->ClearRenderTargetView( m_GBufferRtv[i], kZero, 0, nullptr );
 	}
 	m_bGBufferPass = true;
@@ -236,5 +272,6 @@ void CShaderAPIDX12::ReleaseGBufferResources()
 	m_pGBufferEnvironment.Reset();
 	m_pGBufferResponse.Reset();
 	m_pGBufferSpecular.Reset();
+	m_pGBufferDistance.Reset();
 }
 } // namespace shaderapidx12

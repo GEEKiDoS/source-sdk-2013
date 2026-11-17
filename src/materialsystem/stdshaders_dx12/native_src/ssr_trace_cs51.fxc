@@ -162,9 +162,11 @@ void main( uint3 id : SV_DispatchThreadID )
 				{
 					float3 hitWorld = SSR_RayWorld( ray, hitU );
 					int3 hitScenePixel = int3( hitPixel + int2( gSSRViewport.xy ), 0 );
-					// Only a fresh PBR writer validates its stored normal; any other hit is depth-only.
+					// Only a fresh PBR writer (non-zero K; alpha 1 where the payload has one) validates its stored normal;
+					// any other hit is depth-only.
 					bool backface = false;
-					if ( ( gSSRStencil.Load( hitScenePixel ).y & 0x80u ) != 0 && gSSRResponse.Load( hitScenePixel ).a > 0.0 )
+					const float4 hitResponse = gSSRResponse.Load( hitScenePixel );
+					if ( ( gSSRStencil.Load( hitScenePixel ).y & 0x80u ) != 0 && hitResponse.a > 0.0 && any( hitResponse.rgb != 0.0 ) )
 						backface = dot( PBR_UnpackNormal( gSSRNormal.Load( hitScenePixel ) ), -R ) <= 0.0;
 					[branch] if ( !backface )
 					{

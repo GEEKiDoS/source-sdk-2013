@@ -1465,14 +1465,15 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.RasterizerState.DepthClipEnable = TRUE;
 	desc.BlendState.AlphaToCoverageEnable = key.alphaToCoverage && key.samples > 1;
 	static constexpr D3D12_BLEND_OP blendOps[] = { D3D12_BLEND_OP_ADD, D3D12_BLEND_OP_SUBTRACT, D3D12_BLEND_OP_REV_SUBTRACT, D3D12_BLEND_OP_MIN, D3D12_BLEND_OP_MAX };
-	const bool nonEnvmapSsrPayload = key.gbuffer && key.colorCount == 6 && key.nonEnvmapSsrPayload;
+	const bool nonEnvmapSsrPayload = key.gbuffer && key.colorCount >= 6 && key.nonEnvmapSsrPayload;
 	for ( UINT i = 0; i < key.colorCount && i < ARRAYSIZE( key.colorFormats ); ++i )
 	{
 		D3D12_RENDER_TARGET_BLEND_DESC &target = desc.BlendState.RenderTarget[i];
 		const bool gbufferTarget = key.gbuffer && i > 0;
 		target.RenderTargetWriteMask = gbufferTarget ? D3D12_COLOR_WRITE_ENABLE_ALL : ( key.colorWrites ? D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE : 0 ) | ( key.alphaWrites ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0 );
-		// Keep RTV4 (K/valid) fully writable: K.a=0 rejects any stale E/S retained in RTV3/5.
-		if ( nonEnvmapSsrPayload && ( i == 3 || i == 5 ) )
+		// Keep RTV4 (K/valid) fully writable: K = 0 (and K.a = 0 where it exists) rejects any stale E/S/D retained in
+		// RTV3/5/6.
+		if ( nonEnvmapSsrPayload && ( i == 3 || i == 5 || i == 6 ) )
 			target.RenderTargetWriteMask = 0;
 		target.BlendEnable = key.blend != 0 && !gbufferTarget;
 		target.SrcBlend = BlendFactorDX12( key.blendSource );
