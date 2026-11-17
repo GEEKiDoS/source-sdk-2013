@@ -25,6 +25,7 @@ static ConVar r_ssr_quality( "r_ssr_quality", "1", FCVAR_ARCHIVE, "SSR quality: 
 static ConVar r_ssr_resolution( "r_ssr_resolution", "1", FCVAR_ARCHIVE, "SSR trace resolution per axis relative to the quality profile: 1 unchanged, 0.5 half, 0.25 quarter; ray quality stays unchanged", true, 0.25f, true, 1.f );
 static ConVar r_ssr_max_distance( "r_ssr_max_distance", "1024", FCVAR_ARCHIVE, "SSR ray distance in Source units", true, 16.f, true, 2048.f );
 static ConVar r_ssr_thickness( "r_ssr_thickness", "2", FCVAR_ARCHIVE, "SSR depth thickness in Source units", true, 0.1f, true, 16.f );
+static ConVar r_ssr_forward_steps( "r_ssr_forward_steps", "16", FCVAR_ARCHIVE, "SSR of translucents (car glass, windows) and viewmodels, traced in their own shaders: march steps, 0 off", true, 0, true, 32 );
 static ConVar r_contactshadows( "r_contactshadows", "0", FCVAR_ARCHIVE, "DX12: screen-space contact shadows for shadowmapped direct lights", true, 0, true, 1 );
 static ConVar r_contactshadows_quality( "r_contactshadows_quality", "1", FCVAR_ARCHIVE, "Contact-shadow quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
 static ConVar r_contactshadows_length( "r_contactshadows_length", "16", FCVAR_ARCHIVE, "Contact-shadow ray distance in Source units", true, 1.f, true, 64.f );
@@ -127,6 +128,7 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 	view.ssr.maxDistance = r_ssr_max_distance.GetFloat();
 	view.ssr.thickness = r_ssr_thickness.GetFloat();
 	view.ssr.resolutionScale = r_ssr_resolution.GetFloat();
+	view.ssr.forwardSteps = static_cast<uint32>( r_ssr_forward_steps.GetInt() );
 	// Matrices, sample count and depth clear are filled on ordered backend replay.
 	// Submit zero-sized views too: a rejected latest main bracket must invalidate a volume capture.
 	s_pScreenSpace->BeginView( view );

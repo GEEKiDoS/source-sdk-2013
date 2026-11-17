@@ -68,6 +68,8 @@ bool Probe_FreeVisible( uint packed, float3 delta )
 	return true;
 }
 
+// Both corner walks are loops, not unrolled: unrolled, the fallback's 8 x 9 loads were hoisted together and set the
+// model shader's register peak (GTX 1050, c1m2 foliage: about 2 ms of the opaque renderables, same result).
 bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 {
 	sh = (ProbeSH)0;
@@ -85,14 +87,17 @@ bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 			uint3 base = uint3( min( floor( local ), 3.0 ) );
 			float3 fraction = local - float3( base );
 			uint3 atlasBase = atlasBrick * 5u;
-			bool allVisible = true;
-			[unroll] for ( uint corner = 0; corner < 8; ++corner )
+			// One free-distance read per corner; the fallback reuses the mask instead of reloading.
+			uint visibleMask = 0;
+			[loop] for ( uint corner = 0; corner < 8; ++corner )
 			{
 				const uint3 offset = uint3( corner & 1u, ( corner >> 1u ) & 1u, corner >> 2u );
 				const float3 cornerGrid = brick * 4.0 + float3( base + offset );
 				const uint freeDistance = ProbeFreeDistance.Load( int4( atlasBase + base + offset, 0 ) );
-				allVisible = allVisible && Probe_FreeVisible( freeDistance, grid - cornerGrid );
+				if ( Probe_FreeVisible( freeDistance, grid - cornerGrid ) )
+					visibleMask |= 1u << corner;
 			}
+			const bool allVisible = visibleMask == 0xFFu;
 			float3 uvw = ( float3( atlasBase ) + local + 0.5 ) * cProbeAtlas.xyz;
 			[branch] if ( allVisible )
 			{
@@ -125,14 +130,16 @@ bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 					low[c] = 0.0;
 					high[c] = 0.0;
 				}
-				[unroll] for ( uint corner = 0; corner < 8; ++corner )
+				uint remaining = visibleMask;
+				[loop] while ( remaining != 0 )
 				{
+					const uint corner = firstbitlow( remaining );
+					remaining &= remaining - 1u;
 					const uint3 offset = uint3( corner & 1u, ( corner >> 1u ) & 1u, corner >> 2u );
 					const float3 weights = float3( offset ) * fraction + ( 1.0 - float3( offset ) ) * ( 1.0 - fraction );
 					const float trilinear = weights.x * weights.y * weights.z;
 					const uint3 coordinate = atlasBase + base + offset;
-					const uint freeDistance = ProbeFreeDistance.Load( int4( coordinate, 0 ) );
-					if ( trilinear == 0.0 || !Probe_FreeVisible( freeDistance, grid - ( brick * 4.0 + float3( base + offset ) ) ) )
+					if ( trilinear == 0.0 )
 						continue;
 					const float weight = trilinear * ProbeValidity.Load( int4( coordinate, 0 ) );
 					if ( weight <= 0.0 )
@@ -165,4 +172,121 @@ bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 	}
 	return covered;
 }
+
+#if defined( PBR_PROBE_QUAD )
+// Pixel stage: one decode per 2x2 quad. The probe field is far lower frequency than a pixel and the four lanes of a quad
+// lie on one triangle, so the quad samples it once at its centre; each lane still evaluates the SH for its own normal.
+// Every per-corner step is split across the lanes (lane q takes corners 2q and 2q + 1) and recombined with quad
+// operations: the free-distance test reads 2 corners per lane instead of 8, and the !allVisible fallback accumulates 2
+// corners per lane (9 loads each) instead of 8. The filtered allVisible samples come from seven different textures and
+// stay per lane (splitting them would only diverge). All branches below are quad-uniform (same brick, cell and mask).
+float3 Probe_QuadSum( float3 v ) { v += QuadReadAcrossX( v ); return v + QuadReadAcrossY( v ); }
+float4 Probe_QuadSum( float4 v ) { v += QuadReadAcrossX( v ); return v + QuadReadAcrossY( v ); }
+float Probe_QuadSum( float v ) { v += QuadReadAcrossX( v ); return v + QuadReadAcrossY( v ); }
+uint Probe_QuadOr( uint v ) { v |= QuadReadAcrossX( v ); return v | QuadReadAcrossY( v ); }
+// quadLane: ( x & 1 ) | ( ( y & 1 ) << 1 ) of the pixel's SV_Position, the D3D quad lane order.
+bool Probe_DecodeQuad( float3 positionWS, float3 normalWS, uint quadLane, out ProbeSH sh )
+{
+	sh = (ProbeSH)0;
+	bool covered = false;
+	const float3 position = Probe_QuadSum( positionWS ) * 0.25;
+	const float3 normal = Probe_QuadSum( normalWS ) * 0.25;
+	float3 grid = ( position + normal * cProbeAtlas.w - cProbeOrigin.xyz ) * cProbeOrigin.w;
+	float3 brick = floor( grid * 0.25 );
+	[branch] if ( cProbeBricks.w != 0 && all( brick >= 0.0 ) && all( brick < float3( cProbeBricks.xyz ) ) )
+	{
+		uint slot = ProbeIndirection.Load( int4( int3( brick ), 0 ) );
+		[branch] if ( slot != 0xffffffffu )
+		{
+			uint3 atlasBricks = cProbeAtlasBricks.xyz;
+			uint3 atlasBrick = uint3( slot % atlasBricks.x, ( slot / atlasBricks.x ) % atlasBricks.y, slot / ( atlasBricks.x * atlasBricks.y ) );
+			float3 local = clamp( grid - brick * 4.0, 0.0, 4.0 );
+			uint3 base = uint3( min( floor( local ), 3.0 ) );
+			float3 fraction = local - float3( base );
+			uint3 atlasBase = atlasBrick * 5u;
+			uint laneMask = 0;
+			[unroll] for ( uint k = 0; k < 2; ++k )
+			{
+				const uint corner = 2u * quadLane + k;
+				const uint3 offset = uint3( corner & 1u, ( corner >> 1u ) & 1u, corner >> 2u );
+				const float3 cornerGrid = brick * 4.0 + float3( base + offset );
+				const uint freeDistance = ProbeFreeDistance.Load( int4( atlasBase + base + offset, 0 ) );
+				if ( Probe_FreeVisible( freeDistance, grid - cornerGrid ) )
+					laneMask |= 1u << k;
+			}
+			const uint visibleMask = Probe_QuadOr( laneMask << ( 2u * quadLane ) );
+			float3 uvw = ( float3( atlasBase ) + local + 0.5 ) * cProbeAtlas.xyz;
+			[branch] if ( visibleMask == 0xFFu )
+			{
+				const float validity = ProbeValidity.SampleLevel( ProbeLinear, uvw, 0 );
+				[branch] if ( validity >= 0.25 )
+				{
+					const float scale = 1.0 / validity;
+					sh.dc = ProbeDC.SampleLevel( ProbeLinear, uvw, 0 ) * scale;
+					[unroll] for ( uint c = 0; c < 3; ++c )
+					{
+						float4 low = ProbeBands[2 * c].SampleLevel( ProbeLinear, uvw, 0 ) * scale;
+						float4 high = ProbeBands[2 * c + 1].SampleLevel( ProbeLinear, uvw, 0 ) * scale;
+						[unroll] for ( uint k = 0; k < 4; ++k )
+						{
+							sh.band[k][c] = 4.0 * sh.dc[c] * low[k];
+							sh.band[4 + k][c] = 4.0 * sh.dc[c] * high[k];
+						}
+					}
+					covered = true;
+				}
+			}
+			else
+			{
+				float weightSum = 0.0;
+				float3 dc = 0.0;
+				float4 low[3];
+				float4 high[3];
+				[unroll] for ( uint c = 0; c < 3; ++c )
+				{
+					low[c] = 0.0;
+					high[c] = 0.0;
+				}
+				[loop] for ( uint k = 0; k < 2; ++k )
+				{
+					const uint corner = 2u * quadLane + k;
+					const uint3 offset = uint3( corner & 1u, ( corner >> 1u ) & 1u, corner >> 2u );
+					const float3 weights = float3( offset ) * fraction + ( 1.0 - float3( offset ) ) * ( 1.0 - fraction );
+					const float trilinear = weights.x * weights.y * weights.z;
+					const uint3 coordinate = atlasBase + base + offset;
+					if ( ( laneMask & ( 1u << k ) ) == 0 || trilinear == 0.0 )
+						continue;
+					const float weight = trilinear * ProbeValidity.Load( int4( coordinate, 0 ) );
+					if ( weight <= 0.0 )
+						continue;
+					weightSum += weight;
+					dc += ProbeDC.Load( int4( coordinate, 0 ) ) * weight;
+					[unroll] for ( uint c = 0; c < 3; ++c )
+					{
+						low[c] += ProbeBands[2 * c].Load( int4( coordinate, 0 ) ) * weight;
+						high[c] += ProbeBands[2 * c + 1].Load( int4( coordinate, 0 ) ) * weight;
+					}
+				}
+				weightSum = Probe_QuadSum( weightSum );
+				[branch] if ( weightSum > 1e-4 )
+				{
+					sh.dc = Probe_QuadSum( dc ) / weightSum;
+					[unroll] for ( uint c = 0; c < 3; ++c )
+					{
+						low[c] = Probe_QuadSum( low[c] ) / weightSum;
+						high[c] = Probe_QuadSum( high[c] ) / weightSum;
+						[unroll] for ( uint k = 0; k < 4; ++k )
+						{
+							sh.band[k][c] = 4.0 * sh.dc[c] * low[c][k];
+							sh.band[4 + k][c] = 4.0 * sh.dc[c] * high[c][k];
+						}
+					}
+					covered = true;
+				}
+			}
+		}
+	}
+	return covered;
+}
+#endif
 #endif

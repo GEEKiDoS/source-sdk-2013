@@ -433,6 +433,9 @@ public:
 	bool			DrawDeferredSkybox();
 	// Opaque viewmodel depth inside the main view's opaque depth prepass (see viewrender.cpp).
 	void			DrawViewModelDepthPrepass();
+	// The viewmodels' view when this scene's depth prepass drew their depth (their pixels then hold real depth in the
+	// front DX12_VIEWMODEL_DEPTH_MAX of the range, which GTAO reads); else NULL.
+	const CViewSetup *ViewModelDepthInScene() const { return m_bViewModelDepthInScene ? &m_ViewModelDepthSetup : NULL; }
 protected:
 	// Sets up the view parameters for all views (left, middle and right eyes).
     void            SetUpViews();
@@ -658,6 +661,8 @@ private:
 	CBase3dView *m_pActiveRenderer;
 	CRendering3dView *m_pDeferredSkybox; // Non-owning; the RenderView stack retains the sky view.
 	const CViewSetup *m_pViewModelPrepassView; // The main scene's view while ViewDrawScene draws a scene whose viewmodels follow it; else NULL.
+	bool m_bViewModelDepthInScene; // DrawViewModelDepthPrepass drew into the current scene (m_ViewModelDepthSetup)
+	CViewSetup m_ViewModelDepthSetup;
 	CSimpleRenderExecutor m_SimpleExecutor;
 
 	bool			m_rbTakeFreezeFrame[ STEREO_EYE_MAX ];

@@ -1383,7 +1383,7 @@ void CUpscalerDX12::WriteDescriptors( const UpscalerDispatchDX12 &d ) const
 		smaaPass( base, d.color, color, nullptr, color, nullptr, color, nullptr, color, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, nullptr );
 		smaaPass( base + 1, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, m_pSmaa->area.Get(), DXGI_FORMAT_R8G8_UNORM,
 		    m_pSmaa->search.Get(), DXGI_FORMAT_R8_UNORM, nullptr, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr );
-		smaaPass( base + 2, d.color, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT,
+		smaaPass( base + 2, d.color, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr, color,
 		    nullptr, color, m_pSmaa->spatial.Get(), color, nullptr );
 		smaaPass( base + 3, m_pSmaa->spatial.Get(), color, m_pSmaa->history[write ^ 1u].Get(), color, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT,
 		    d.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS, d.output, color, m_pSmaa->history[write].Get() );

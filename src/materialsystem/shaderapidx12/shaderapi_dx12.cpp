@@ -194,7 +194,9 @@ static bool ValidateHighresShaderDX12( ID3D12ShaderReflection *reflection, const
 		}
 	}
 	highresAbi = seen != 0;
-	return seen == 0 || seen == 0x7ffu;
+	// HlightDynamic (slot 3) holds the captured native dynamic lightmap additions; a receiver that reads no lightmap RGB
+	// (the additive realtime pass of the two-pass PBR split) never samples it. Every other binding is required.
+	return seen == 0 || ( seen | ( 1u << 3 ) ) == 0x7ffu;
 }
 
 bool shaderapidx12::ValidateHighresShaderResourcesDX12( ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &shader, bool pixelStage, bool *highresAbi, CUtlString &error )
@@ -1041,6 +1043,10 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		m_ActiveSnapshot.polygonOffset == SHADER_POLYOFFSET_DECAL ||
 		( m_pBoundMaterial && m_pBoundMaterial->GetMaterialVarFlag( MATERIAL_VAR_DECAL ) ) ) )
 		return;
+	// A relight pass has no caster, motion or depth-replay contribution: in a shadow pass it would lose its EQUAL test
+	// and its cutout (it never alpha tests).
+	if ( ( shadowPass || MotionPassActive() ) && AdditiveRelightSnapshot() )
+		return;
 	const bool opaqueCaster = shadowPass && !m_ActiveSnapshot.alphaTest;
 	const bool highresMap = m_pDevice->Highres().EnhancedMap();
 	if ( highresMap && m_pDevice->Highres().Rejected() )
@@ -1159,6 +1165,14 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	VertexFormat_t format = bindings[0].format;
 	const bool motionActive = !shadowPass && MotionPassActive();
+	// A motion draw whose previous model/bone rows equal its current ones writes exactly the camera reprojection the
+	// pass began with (same surface depth, same matrices): its history is recorded and the draw is dropped. Parked cars,
+	// closed doors and resting physics props otherwise redraw every frame (c1m2: 0.8 ms for one truck).
+	if ( motionActive && FillMotionBlock( bindings[0], indices, indexOffset, firstIndex, indexCount ) )
+	{
+		++m_DrawStats.motionStaticSkips;
+		return;
+	}
 	const bool bDrawLodBiasEligible = m_bUpscalerLodBiasMaterialEligible && !shadowPass && !motionActive;
 	if ( bDrawLodBiasEligible != m_bUpscalerLodBiasDrawEligible )
 	{
@@ -1240,7 +1254,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	ShaderRecordDX12 *vsRecord = motionActive ? MotionVertexShader( format ) : ( m_hBoundVS == VERTEX_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundVS ) );
 	ShaderRecordDX12 *psRecord = opaqueCaster ? nullptr : motionActive ? m_pMotionPS : ( m_hBoundPS == PIXEL_SHADER_HANDLE_INVALID ? nullptr : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS ) );
 	// pbr_model_ps51 static index (24 dynamic combos: PIXELFOGTYPE x SHADOWQUALITY x LOCAL_LIGHTS):
-	// 24 * TANGENT + 48 * ENHANCED + 96 * ALPHATEST + 192 * INFECTED + 384 * VERTEXCOLOR.
+	// 24 * TANGENT + 48 * ENHANCED + 96 * ALPHATEST + 192 * INFECTED + 384 * VERTEXCOLOR + 768 * LIGHTPASS.
 	constexpr int kModelAlphaTestStride = 96, kModelInfectedStride = 192;
 	const bool modelPixelShader = psRecord && !V_strcmp( m_ActiveSnapshot.pixelShaderName.c_str(), "pbr_model_ps51" );
 	// Coverage that depends on the pixel shader: the alpha test, A2C, and the INFECTED wound cutout clip().
@@ -1595,9 +1609,12 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		// every other draw (and every PSO) keeps its single render target. Legacy draws never write them (see gbuffer_dx12.cpp).
 		// Targets 3/4/5 (environment + specular distance, SSR response, direct specular; plus 6, the distance, when the
 		// payload is R11G11B10) attach only while the bracket captures SSR; the contact-depth replay binds no G-buffer
-		// target at all. Unbound PS outputs are discarded.
+		// target at all. Unbound PS outputs are discarded. The additive realtime pass of the two-pass PBR lighting owns
+		// the payload's direct specular (its baked pass gathers none): it attaches the payload targets while SSR
+		// captures, and its PSO writes only S and D (relightPayload).
+		const bool relightPayload = AdditiveRelightSnapshot() && m_ScreenSpace.ssrCapture && m_pGBufferEnvironment;
 		if ( m_bGBufferPass && psRecord && psRecord->gbuffer && !shadowPass && !motionActive && !m_ScreenSpace.contactReplay && !depthPrepass && target.colorCount == 1 &&
-		     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && !m_ActiveSnapshot.translucent )
+		     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && ( !m_ActiveSnapshot.translucent || relightPayload ) )
 		{
 			const bool ssrPayload = m_ScreenSpace.ssrCapture && m_pGBufferEnvironment;
 			const int gbufferCount = static_cast<int>( ssrPayload ? GBufferPayloadTargets() : kGBufferBaseTargets );
@@ -2405,7 +2422,6 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			}
 		if ( motionActive )
 		{
-			FillMotionBlock( bindings[0], indices, indexOffset, firstIndex, indexCount );
 			bindingInput.nativeData[7] = &m_MotionBlock;
 			bindingInput.nativeSizes[7] = sizeof( m_MotionBlock );
 			bindingInput.nativeVersions[7] = m_nMotionBlockVersion;
@@ -2483,13 +2499,19 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		return;
 	}
 	// Space 6: ordinary scene draws of a bracket that reads contacts or captures the SSR payload see the bracket's view
-	// block (and, with contacts, the private depth copy); every other draw (shadow, motion, sky, the replay itself,
+	// block (and, with contacts, the private depth copy); translucent scene draws after a bracket whose SSR succeeded see
+	// its scene copy and view depth (translucent reflections); every other draw (shadow, motion, sky, the replay itself,
 	// off-scene targets, brackets with neither effect) keeps the neutral bindings.
 	bindingInput.screenSpaceTable = {};
 	bindingInput.screenSpaceView = bindingInput.volumetricConstants = bindingInput.shadowSkyClipConstants = 0;
-	if ( !shadowPass && !motionActive && !contactReplay && !skyboxDraw && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ) &&
-	     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER && !PrepareScreenSpaceBinding( bindingInput ) )
+	const bool sceneTarget = !shadowPass && !motionActive && !contactReplay && !skyboxDraw &&
+		m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER;
+	if ( sceneTarget && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ) && !PrepareScreenSpaceBinding( bindingInput ) )
 		return;
+	// Viewmodels draw through the front of the depth range (DepthRange( 0, DX12_VIEWMODEL_DEPTH_MAX ), viewrender.cpp).
+	const bool viewModelDraw = m_nViewportCount > 0 && m_Viewports[0].m_flMaxZ <= 0.1f;
+	if ( sceneTarget && !m_ScreenSpace.active && ( m_ActiveSnapshot.translucent || viewModelDraw ) )
+		PrepareForwardScreenSpaceBinding( bindingInput, viewModelDraw );
 	// Sky-clipped sun chart passes bind their sky map / constants (t4, b2 space 6) to every caster draw.
 	if ( shadowPass && !m_pDevice->Lighting().PrepareShadowSkyClipDraw( bindingInput ) )
 	{
@@ -2682,6 +2704,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		key.highresAbi = bindingInput.highresAbi;
 		key.gbuffer = gbufferTargets;
 		key.nonEnvmapSsrPayload = nonEnvmapSsrPayload;
+		key.relightPayload = ssrPayloadTargets && AdditiveRelightSnapshot();
 		key.vs = vs->identity;
 		key.ps = ps ? ps->identity : 0;
 		key.vsVariant = vs->activeVariantKey;
@@ -5457,10 +5480,10 @@ void CShaderAPIDX12::EndFrame()
 			Msg( "ShaderAPIDX12 stats/frame: draws %.1f memoHits %.1f srvTableHits %.1f srvTableCopies %.1f constHits %.1f constUploads %.1f transientConst %.1f rootCbvSets %.1f rootTableSets %.1f rootSrvSets %.1f shadowDraws %.1f casterInstances %.1f casterInstancedDraws %.1f\n",
 			    m_DrawStats.draws / n, m_DrawStats.memoHits / n, p.srvTableHits / n, p.srvTableCopies / n, p.constantHits / n, p.constantUploads / n, p.transientConstants / n, p.rootCbvSets / n, p.rootTableSets / n, p.rootSrvSets / n,
 			    m_DrawStats.shadowDraws / n, m_DrawStats.casterInstances / n, m_DrawStats.casterInstancedDraws / n );
-			Msg( "ShaderAPIDX12 frame sync/frame: submits %.2f (max %llu) psoCreates %.2f textureUploadMiB %.2f prepassReadOnlyDraws %.1f prepassNullPS %.1f prepassShaded %.1f psoBinds %.1f rootSigBinds %.1f heapBinds %.1f\n",
+			Msg( "ShaderAPIDX12 frame sync/frame: submits %.2f (max %llu) psoCreates %.2f textureUploadMiB %.2f prepassReadOnlyDraws %.1f prepassNullPS %.1f prepassShaded %.1f motionStaticSkips %.1f psoBinds %.1f rootSigBinds %.1f heapBinds %.1f\n",
 			    m_DrawStats.submits / n, static_cast<unsigned long long>( m_DrawStats.maxFrameSubmits ), p.pipelinesCreated / n,
 			    m_DrawStats.textureUploadBytes / n / ( 1024.0 * 1024.0 ), m_DrawStats.prepassReadOnlyDraws / n,
-			    m_DrawStats.prepassNullPSDraws / n, m_DrawStats.prepassShadedDraws / n,
+			    m_DrawStats.prepassNullPSDraws / n, m_DrawStats.prepassShadedDraws / n, m_DrawStats.motionStaticSkips / n,
 			    p.pipelineBinds / n, p.rootSignatureBinds / n, p.descriptorHeapBinds / n );
 			Msg( "ShaderAPIDX12 upload pool: pages %llu capacityBytes %llu bufferBytes %llu | window allocations %llu alignedBytes %llu peakFrameAlignedBytes %llu newPages %llu trimmedPages %llu trimmedBufferBytes %llu | newestFrame allocations %llu alignedBytes %llu newPages %llu\n",
 			    static_cast<unsigned long long>( p.uploadPoolPages ), static_cast<unsigned long long>( p.uploadPoolCapacityBytes ), static_cast<unsigned long long>( p.uploadPoolBufferBytes ),

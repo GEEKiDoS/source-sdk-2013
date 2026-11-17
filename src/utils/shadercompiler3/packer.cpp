@@ -626,7 +626,9 @@ void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SH
 		if (!valid || (seen & (1u << slot))) throw std::runtime_error("Highres resource contract mismatch: " + std::string(b.Name));
 		seen |= 1u << slot;
 	}
-	if (seen && seen != 0x7ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
+	// HlightDynamic (slot 3) holds the captured native dynamic lightmap additions; a receiver that reads no lightmap RGB
+	// (the additive realtime pass of the two-pass PBR split) never samples it.
+	if (seen && (seen | (1u << 3)) != 0x7ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
 }
 bool pbrSpotGpuType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
 	D3D12_SHADER_TYPE_DESC type{};
@@ -723,7 +725,9 @@ void validateProbePbrResources(ID3D12ShaderReflection *reflection, const D3D12_S
 // Space 6 is backend-owned and pixel-stage only: cbuffer DX12ScreenSpaceView b0 (208 bytes) and DX12Volumetric b1
 // (64 bytes), byte-identical to ishaderapidx12screenspace.h, plus the four depth planes g_ScreenContactDepth t0
 // (Texture2D<float>), g_ScreenContactDepthMS t1 (Texture2DMS<float>), g_ScreenSceneDepth t2, g_ScreenSceneDepthMS t3,
-// and the sun shadow-chart sky clip: DX12ShadowSkyClip b2 (16 bytes, ishaderapidx12lighting.h) with g_ShadowSkyClip t4.
+// the sun shadow-chart sky clip: DX12ShadowSkyClip b2 (16 bytes, ishaderapidx12lighting.h) with g_ShadowSkyClip t4,
+// and the forward screen-space inputs of the draws after the opaque bracket (native_src/pbr_forward_screenspace.hlsli):
+// g_ScreenSSRScene t5 (Texture2D<float4>), g_ScreenSSRDepth t6 and g_ScreenAO t7 (Texture2D<float>).
 // Reflection contains only retained resources, so any subset may appear, but every retained binding must match and
 // nothing else may live in the space.
 constexpr unsigned kScreenSpaceRegisterSpace = 6;
@@ -763,7 +767,7 @@ void validateScreenSpaceBlock(const Block &b) {
 	}
 }
 void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
-	static const char *const depthNames[5] = {"g_ScreenContactDepth", "g_ScreenContactDepthMS", "g_ScreenSceneDepth", "g_ScreenSceneDepthMS", "g_ShadowSkyClip"};
+	static const char *const textureNames[8] = {"g_ScreenContactDepth", "g_ScreenContactDepthMS", "g_ScreenSceneDepth", "g_ScreenSceneDepthMS", "g_ShadowSkyClip", "g_ScreenSSRScene", "g_ScreenSSRDepth", "g_ScreenAO"};
 	unsigned seen = 0;
 	for (unsigned i = 0; i < desc.BoundResources; ++i) {
 		D3D12_SHADER_INPUT_BIND_DESC b{};
@@ -780,10 +784,11 @@ void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D1
 			D3D12_SHADER_BUFFER_DESC bd{};
 			valid = valid && buffer && SUCCEEDED(buffer->GetDesc(&bd)) && bd.Type == D3D_CT_CBUFFER && bd.Name;
 			if (valid) validateScreenSpaceBlock(reflectBlock(reflection, buffer, bd, b, dx12native::kStagePixel));
-			slot = valid ? 5 + layout->shaderRegister : 0;
-		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 5 && !strcmp(b.Name, depthNames[b.BindPoint])) {
-			const bool multisampled = (b.BindPoint & 1) != 0;
-			valid = valid && b.ReturnType == D3D_RETURN_TYPE_FLOAT && !(b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) &&
+			slot = valid ? 8 + layout->shaderRegister : 0;
+		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 8 && !strcmp(b.Name, textureNames[b.BindPoint])) {
+			const bool multisampled = (b.BindPoint & 1) != 0 && b.BindPoint < 5;
+			const bool colour = b.BindPoint == 5;
+			valid = valid && b.ReturnType == D3D_RETURN_TYPE_FLOAT && ((b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) == (colour ? D3D_SIF_TEXTURE_COMPONENTS : 0)) &&
 				b.Dimension == (multisampled ? D3D_SRV_DIMENSION_TEXTURE2DMS : D3D_SRV_DIMENSION_TEXTURE2D);
 			slot = b.BindPoint;
 		} else valid = false;

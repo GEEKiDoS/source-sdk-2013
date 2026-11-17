@@ -353,7 +353,12 @@ void TerrorGlow_Composite( const CViewSetup &view, float blurScale, float compos
 	pComposite->FindVar( "$C0_X", NULL, true )->SetFloatValue( compositeScale );
 	pComposite->FindVar( "$C0_Y", NULL, true )->SetFloatValue( 0.8f );
 
-	if ( PostProcessDX12_Active() )
+	// Under a temporal upscaler's render scale the scene depth/stencil holds the 3D view at render size (view.x/y/
+	// width/height, the unscaled rect times the scale) while the composite runs over the reconstructed, unscaled
+	// viewport. The interior mask is then built at render size and sampled scaled; a direct stencil test at output
+	// size would read the wrong texels and halo every interior.
+	const bool viewScaled = view.width != viewportWidth || view.height != viewportHeight;
+	if ( PostProcessDX12_Active() || viewScaled )
 	{
 		ITexture *pCoverage = g_TerrorGlowMaterials.GetGlowCoverage();
 		Assert( pCoverage && !pCoverage->IsError() );
@@ -365,7 +370,7 @@ void TerrorGlow_Composite( const CViewSetup &view, float blurScale, float compos
 		SetTargetViewport( pContext, pCoverage, pCoverage->GetActualWidth(), pCoverage->GetActualHeight() );
 		pContext->ClearColor4ub( 255, 255, 255, 255 );
 		pContext->ClearBuffers( true, false, false );
-		pContext->Viewport( viewportX, viewportY, viewportWidth, viewportHeight );
+		pContext->Viewport( view.x, view.y, view.width, view.height );
 		pContext->SetStencilEnable( true );
 		pContext->SetStencilFailOperation( STENCILOPERATION_KEEP );
 		pContext->SetStencilZFailOperation( STENCILOPERATION_KEEP );
@@ -375,18 +380,19 @@ void TerrorGlow_Composite( const CViewSetup &view, float blurScale, float compos
 		pContext->SetStencilTestMask( 0xfa );
 		pContext->SetStencilWriteMask( 0 );
 		pContext->DrawScreenSpaceRectangle( g_TerrorGlowMaterials.GetGlowCoverageMaterial( true ),
-			0, 0, viewportWidth, viewportHeight, 0, 0, viewportWidth - 1, viewportHeight - 1,
-			viewportWidth, viewportHeight );
+			0, 0, view.width, view.height, 0, 0, view.width - 1, view.height - 1,
+			view.width, view.height );
 		TerrorGlow_EndStencilMask();
 		pContext->PopRenderTargetAndViewport();
 
 		IMaterial *pGlowComposite = g_TerrorGlowMaterials.GetGlowCoverageMaterial( false );
 		pGlowComposite->FindVar( "$C0_X", NULL, true )->SetFloatValue( compositeScale );
-		// The native VMT samples SmallFB0, the final Y-blur output (not SmallFB1).
+		// Coverage UV per output pixel: output pixel p reads coverage texel p * render/output scale.
+		const float scaleX = (float)view.width / viewportWidth, scaleY = (float)view.height / viewportHeight;
 		pGlowComposite->FindVar( "$coveragesize", NULL, true )->SetVecValue(
-			1.0f / pCoverage->GetActualWidth(), 1.0f / pCoverage->GetActualHeight(), 0.0f, 0.0f );
+			scaleX / pCoverage->GetActualWidth(), scaleY / pCoverage->GetActualHeight(), 0.0f, 0.0f );
 		// Preserve the native quarter-buffer UVs (including its -0.5 Y offset).
-		// Coverage uses physical full-frame pixel coordinates, not those UVs.
+		// Coverage uses physical output pixel coordinates, not those UVs.
 		pContext->DrawScreenSpaceRectangle( pGlowComposite, 0, 0, viewportWidth, viewportHeight,
 			0.0f, -0.5f, width - 1.0f, height - 1.0f,
 			pSmall1->GetActualWidth(), pSmall1->GetActualHeight() );

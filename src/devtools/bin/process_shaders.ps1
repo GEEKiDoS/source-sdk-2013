@@ -10,7 +10,8 @@ param (
     [Parameter(ParameterSetName='Native')][string]$Game,
     [Parameter(ParameterSetName='Native')][string]$Stage,
     # Comma-separated logicals to compile; every other logical republishes its existing staged artifacts unchanged.
-    [Parameter(ParameterSetName='Native')][string]$Only
+    # PowerShell turns "-Only a,b" into an array, so the names are rejoined with commas for ShaderCompiler3.
+    [Parameter(ParameterSetName='Native')][string[]]$Only
 )
 
 if ($Native) {
@@ -23,7 +24,7 @@ if ($Native) {
     $arguments = @(if ($Game) { '-game', $Game } else { '-stage', $Stage })
     if ($Root) { $arguments += '-root', $Root }
     if ($LegacyRoot) { $arguments += '-legacyroot', $LegacyRoot }
-    if ($Only) { $arguments += '-only', $Only }
+    if ($Only) { $arguments += '-only', ($Only -join ',') }
     & $compiler @arguments
     if ($LASTEXITCODE -ne 0) { throw "ShaderCompiler3 failed ($LASTEXITCODE)" }
     return

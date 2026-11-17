@@ -28,8 +28,8 @@ SamplerState LinearSampler : register(s0);
 #define SMAA_MAX_SEARCH_STEPS 16
 #define SMAA_MAX_SEARCH_STEPS_DIAG 8
 #define SMAA_THRESHOLD 0.1
-#define SMAA_REPROJECTION 1
-#define SMAA_REPROJECTION_WEIGHT_SCALE 30.0
+// The temporal resolve clips history to the neighborhood instead of the reference's velocity-alpha weighting.
+#define SMAA_REPROJECTION 0
 #define SMAATexture2D(tex) Texture2D<float4> tex
 #define SMAATexturePass2D(tex) tex
 #define SMAASampleLevelZero(tex, coord) tex.SampleLevel(LinearSampler, coord, 0)
@@ -108,10 +108,38 @@ void CSNeighborhood(uint3 id : SV_DispatchThreadID)
     float2 uv = (id.xy + 0.5) * gMetrics.xy;
     float4 offset;
     SMAANeighborhoodBlendingVS(uv, offset);
-    Output[id.xy] = SMAANeighborhoodBlendingPS(uv, offset, Input0, Input1, Input2);
+    Output[id.xy] = SMAANeighborhoodBlendingPS(uv, offset, Input0, Input1);
+}
+
+// Catmull-Rom history fetch from five bilinear taps (the four corner taps of the 4x4 kernel dropped): reprojection
+// under motion stays sharp instead of losing a bilinear blur every frame.
+float4 SampleHistoryCatmullRom(Texture2D<float4> history, float2 uv)
+{
+    float2 position = uv * gMetrics.zw;
+    float2 center = floor(position - 0.5) + 0.5;
+    float2 f = position - center;
+    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    float2 w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 uv0 = (center - 1.0) * gMetrics.xy;
+    float2 uv3 = (center + 2.0) * gMetrics.xy;
+    float2 uv12 = (center + w2 / w12) * gMetrics.xy;
+    float4 result = history.SampleLevel(LinearSampler, float2(uv12.x, uv0.y), 0) * (w12.x * w0.y)
+                  + history.SampleLevel(LinearSampler, float2(uv0.x, uv12.y), 0) * (w0.x * w12.y)
+                  + history.SampleLevel(LinearSampler, uv12, 0) * (w12.x * w12.y)
+                  + history.SampleLevel(LinearSampler, float2(uv3.x, uv12.y), 0) * (w3.x * w12.y)
+                  + history.SampleLevel(LinearSampler, float2(uv12.x, uv3.y), 0) * (w12.x * w3.y);
+    float weight = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    return result / weight;
 }
 
 groupshared float4 SpatialTile[100];
+// Filmic T2x resolve: the output is the equal average of this frame's SMAA 1x result and the previous phase
+// reprojected onto it, i.e. two jittered subsamples per pixel. The current phase is used as rendered (its +-0.25 px
+// jitter IS the second subsample; resampling it away blurred every frame). History is fetched Catmull-Rom and clipped
+// to the current 3x3 neighborhood, which removes ghosting/disocclusion without switching temporal AA off under motion.
 [numthreads(8, 8, 1)]
 void CSTemporal(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                 uint3 local : SV_GroupThreadID, uint lane : SV_GroupIndex)
@@ -125,33 +153,30 @@ void CSTemporal(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     if (any(id.xy >= uint2(gMetrics.zw))) return;
     uint p = (local.y + 1) * 10 + local.x + 1;
     float2 uv = (id.xy + 0.5) * gMetrics.xy;
-    // Remove exactly the raster-space camera jitter before resolving the two phases.
-    int2 base = int2(local.xy) + 1 + int2(floor(gJitter));
-    uint tileIndex = uint(base.y * 10 + base.x);
-    float2 fraction = frac(gJitter);
-    float4 current = lerp(lerp(SpatialTile[tileIndex], SpatialTile[tileIndex + 1], fraction.x),
-                          lerp(SpatialTile[tileIndex + 10], SpatialTile[tileIndex + 11], fraction.x), fraction.y);
-    float3 neighbors = SpatialTile[p - 1].rgb + SpatialTile[p + 1].rgb
-                     + SpatialTile[p - 10].rgb + SpatialTile[p + 10].rgb;
-    float3 limit = 0.08 * max(current.rgb, 0.02);
-    current.rgb = max(current.rgb + clamp(0.1 * (current.rgb - 0.25 * neighbors), -limit, limit), 0);
+    float4 current = SpatialTile[p];
     float4 motion = Input2.Load(int3(id.xy, 0));
     float velocityPixels = length(motion.xy * gMetrics.zw);
     float2 previousUV = uv - motion.xy; // unjittered current-minus-previous UV
-    float4 result = current;
+    float3 result = current.rgb;
     if (!gReset && all(previousUV >= 0.5 * gMetrics.xy) && all(previousUV <= 1.0 - 0.5 * gMetrics.xy))
     {
-        // Static pixels use an exact texel fetch and equal two-phase weight. The
-        // velocity alpha can differ at a jittered silhouette even when the camera
-        // and object are static; using it would make A/B order visible.
-        float4 previous = velocityPixels < 1e-3 ? Input1.Load(int3(id.xy, 0)) : Input1.SampleLevel(LinearSampler, previousUV, 0);
-        float delta = abs(current.a * current.a - previous.a * previous.a) / 5.0;
-        float weight = velocityPixels < 1e-3 ? 0.5 : 0.5 * saturate(1.0 - sqrt(delta) * SMAA_REPROJECTION_WEIGHT_SCALE);
-        result = lerp(current, previous, weight);
+        // Static pixels read the previous phase exactly.
+        float3 previous = velocityPixels < 1e-3 ? Input1.Load(int3(id.xy, 0)).rgb : max(SampleHistoryCatmullRom(Input1, previousUV).rgb, 0);
+        float3 low = current.rgb, high = current.rgb;
+        [unroll] for (int y = -1; y <= 1; ++y)
+        {
+            [unroll] for (int x = -1; x <= 1; ++x)
+            {
+                float3 neighbor = SpatialTile[p + y * 10 + x].rgb;
+                low = min(low, neighbor);
+                high = max(high, neighbor);
+            }
+        }
+        result = 0.5 * (current.rgb + clamp(previous, low, high));
     }
     // T2x history is the raw previous phase, never a recursive moving average.
     HistoryOutput[id.xy] = current;
-    Output[id.xy] = float4(max(result.rgb, 0), 1);
+    Output[id.xy] = float4(max(result, 0), 1);
 }
 )HLSL";
 } // namespace shaderapidx12

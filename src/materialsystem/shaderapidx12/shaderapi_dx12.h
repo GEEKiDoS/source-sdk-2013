@@ -655,6 +655,8 @@ public:
 		uint64_t submits = 0, maxFrameSubmits = 0, textureUploadBytes = 0, prepassReadOnlyDraws = 0;
 		// Depth-prepass draws that ran without a pixel stage / with their material pixel stage.
 		uint64_t prepassNullPSDraws = 0, prepassShadedDraws = 0;
+		// Motion-pass draws dropped because their previous transform rows equal the current ones.
+		uint64_t motionStaticSkips = 0;
 		// Mid-frame submits requested by the engine (FlushHardware), CPU-waits on the GPU (ForceHardwareSync) and
 		// occlusion results fetched with flush=true before their fence completed (submit + wait).
 		uint64_t hardwareFlushes = 0, forcedSyncs = 0, occlusionFlushes = 0;
@@ -742,9 +744,18 @@ private:
 	void DrawMotionReprojection();
 	void ResolveMotionTarget();
 	ShaderRecordDX12 *MotionVertexShader( VertexFormat_t vertexFormat );
-	void FillMotionBlock( const VertexBindingDX12 &vertexBinding, CIndexBufferDX12 *pIndexBuffer, size_t nIndexOffset, int nFirstIndex, int nIndexCount );
+	// Fills m_MotionBlock (previous transform rows from the history) and records this draw's rows; true when the
+	// previous rows equal the current ones, i.e. the draw would only rewrite the camera reprojection.
+	bool FillMotionBlock( const VertexBindingDX12 &vertexBinding, CIndexBufferDX12 *pIndexBuffer, size_t nIndexOffset, int nFirstIndex, int nIndexCount );
 	void MarkMotionTargetStale();
 
+	// An additive EQUAL-depth relight pass (pbr_helper.cpp's two-pass PBR lighting, Source's flashlight pass) adds light
+	// to a surface an earlier pass of the same material already drew, writing no depth.
+	bool AdditiveRelightSnapshot() const
+	{
+		return m_ActiveSnapshot.translucent && !m_ActiveSnapshot.depthWrite && m_ActiveSnapshot.depthFunction == SHADER_DEPTHFUNC_EQUAL &&
+			m_ActiveSnapshot.blendSource == SHADER_BLEND_ONE && m_ActiveSnapshot.blendDestination == SHADER_BLEND_ONE;
+	}
 	bool MotionPassActive() const { return m_MotionPassState == MotionPassStateDX12::Active; }
 	// The frame's resolved motion target is a stationary candidate (INT_RENDERPARM_DX12_MOTION_BLUR_STATIC). Only the
 	// recording owner with a closed pass may read it: a queued client frame would otherwise certify the previous frame.
@@ -805,7 +816,7 @@ private:
 	int AdapterPerformanceTier() override;
 	bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) override;
 	int SceneSampleCount() override;
-	void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked ) override;
+	void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked, bool bViewModel ) override;
 	void SampleUpscalerJitter();
 
 	// IShaderAPIDX12ScreenSpace (screenspace_dx12.cpp): ordered markers; each queues an immutable pooled packet that
@@ -844,7 +855,26 @@ private:
 		bool contactReplay = false;   // between BeginContactDepth / EndContactDepth: draws write private depth only (or are dropped)
 		bool contactsEnabled = false; // private depth is shader-readable; forward draws bind it with control.x = 1
 		bool ssrCapture = false;      // control.w: fresh PBR writers attach G-buffer targets 3/4/5 in this bracket
+		// Forward screen-space inputs (native_src/pbr_forward_screenspace.hlsli) of the draws that follow the bracket's SSR
+		// and GTAO: translucents and the first-person viewmodels. forwardSSRFrame is the frame whose bracket SSR
+		// succeeded; until the next BeginView of that frame such draws bind the SSR scene copy (t5, from mip 1: mip 0 holds
+		// the delta) and view depth (t6) with forwardConstants: the bracket camera, control.z the trace
+		// (0x10000 | refinements << 8 | steps; contacts and capture off), eyeLength.w the max distance and
+		// forwardThickness.w the thickness. Viewmodel draws (viewport depth range ending at DX12_VIEWMODEL_DEPTH_MAX) also
+		// bind this frame's GTAO term (t7) when GTAO saw viewmodel depth (m_SSR.aoViewModel), flagged in control.z with
+		// its working size in control.y. The table and both constant blocks ([0] translucent, [1] viewmodel) are built
+		// once per recording fence.
+		bool forwardSSR = false;
+		uint64_t forwardSSRFrame = ~0ull;
+		DX12ScreenSpaceViewConstants forwardConstants{};
+		DescriptorRangeDX12 forwardTable{};
+		uint64_t forwardTableFence = 0, forwardConstantsFence[2] = {};
+		D3D12_GPU_VIRTUAL_ADDRESS forwardConstantsAddress[2] = {};
+		bool forwardTableSSR = false, forwardTableAO = false;
 	} m_ScreenSpace;
+	// Binds them for one translucent (viewModel false) or viewmodel draw; on any failure the draw keeps the neutral
+	// bindings (its cubemap reflection, no AO) and the frame's forward inputs are dropped.
+	void PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::BindingInputDX12 &input, bool viewModel );
 	// Ordered-marker packets (screenspace_dx12.cpp): pooled, refcounted, immutable once queued.
 	struct ScreenSpacePacketDX12;
 	struct ScreenSpacePacketPoolDX12
@@ -903,7 +933,7 @@ private:
 		// SetAmbientOcclusionTerm: the frame's AO term, used to occlude reflected hits when aoFrame is the current frame.
 		ShaderAPITextureHandle_t aoTerm = 0;
 		int aoWidth = 0, aoHeight = 0;
-		bool aoPacked = false;
+		bool aoPacked = false, aoViewModel = false;
 		uint64_t aoFrame = ~0ull;
 		bool warned = false, msaaWarned = false;
 	} m_SSR;

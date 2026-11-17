@@ -1,4 +1,5 @@
 // ALL SKIP STATEMENTS THAT AFFECT THIS SHADER!!!
+// ( $LIGHTPASS == 2 ) && ( $ALPHATEST == 1 )
 // defined $HDRTYPE && defined $HDRENABLED && !$HDRTYPE && $HDRENABLED
 // defined $PIXELFOGTYPE && defined $WRITEWATERFOGTODESTALPHA && ( $PIXELFOGTYPE != 1 ) && $WRITEWATERFOGTODESTALPHA
 // defined $LIGHTING_PREVIEW && defined $HDRTYPE && $LIGHTING_PREVIEW && $HDRTYPE != 0
@@ -23,9 +24,11 @@ class pbr_world_depthprepass_ps51_Static_Index
 {
 	unsigned int m_nLAYERED : 2;
 	unsigned int m_nALPHATEST : 2;
+	unsigned int m_nLIGHTPASS : 2;
 #ifdef _DEBUG
 	bool m_bLAYERED : 1;
 	bool m_bALPHATEST : 1;
+	bool m_bLIGHTPASS : 1;
 #endif	// _DEBUG
 public:
 	void SetLAYERED( int i )
@@ -46,24 +49,36 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetLIGHTPASS( int i )
+	{
+		Assert( i >= 0 && i <= 2 );
+		m_nLIGHTPASS = i;
+#ifdef _DEBUG
+		m_bLIGHTPASS = true;
+#endif	// _DEBUG
+	}
+
 	pbr_world_depthprepass_ps51_Static_Index(  )
 	{
 		m_nLAYERED = 0;
 		m_nALPHATEST = 0;
+		m_nLIGHTPASS = 0;
 #ifdef _DEBUG
 		m_bLAYERED = false;
 		m_bALPHATEST = false;
+		m_bLIGHTPASS = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bLAYERED && m_bALPHATEST );
-		return ( 12 * m_nLAYERED ) + ( 24 * m_nALPHATEST ) + 0;
+		Assert( m_bLAYERED && m_bALPHATEST && m_bLIGHTPASS );
+		AssertMsg( !( ( m_nLIGHTPASS == 2 ) && ( m_nALPHATEST == 1 ) ), "Invalid combo combination ( ( LIGHTPASS == 2 ) && ( ALPHATEST == 1 ) )" );
+		return ( 12 * m_nLAYERED ) + ( 24 * m_nALPHATEST ) + ( 48 * m_nLIGHTPASS ) + 0;
 	}
 };
 
-#define shaderStaticTest_pbr_world_depthprepass_ps51 psh_forgot_to_set_static_LAYERED + psh_forgot_to_set_static_ALPHATEST
+#define shaderStaticTest_pbr_world_depthprepass_ps51 psh_forgot_to_set_static_LAYERED + psh_forgot_to_set_static_ALPHATEST + psh_forgot_to_set_static_LIGHTPASS
 
 
 class pbr_world_depthprepass_ps51_Dynamic_Index

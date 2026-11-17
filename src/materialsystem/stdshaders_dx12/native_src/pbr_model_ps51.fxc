@@ -22,6 +22,14 @@
 // VERTEXCOLOR: pbr_model_vs51's static of the same name (the vertex color is interpolated only with $vertexcolor).
 // STATIC: "VERTEXCOLOR" "0..1"
 // SKIP: $INFECTED && $VERTEXCOLOR
+// LIGHTPASS: 0 the single pass; 1 the baked/material pass and 2 the additive realtime pass of the two-pass forward
+// split (pbr_helper.cpp DrawPBR, drawn like Source's flashlight pass), ENHANCED only. Pass 1 keeps the probe/ambient,
+// static vertex light, environment, emission and every G-buffer target; pass 2 adds only the engine local lights,
+// PBR_GatherDirect with its folded local ambient, and the projected lights, depth EQUAL over pass 1, through the same
+// fog transmission. Pass 2 never alpha tests: the depth pass 1 left already decided coverage.
+// STATIC: "LIGHTPASS" "0..2"
+// SKIP: ( $ENHANCED == 0 ) && ( $LIGHTPASS != 0 )
+// SKIP: ( $LIGHTPASS == 2 ) && ( $ALPHATEST == 1 )
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
 // DYNAMIC: "SHADOWQUALITY" "0..3"
 // SKIP: ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
@@ -37,7 +45,9 @@
 #include "common_ps_fxc.h"
 #define PBR_MODEL_LOCAL_SELECTION 1
 #include "pbr_lighting.hlsli"
+#include "pbr_forward_screenspace.hlsli"
 #if ENHANCED
+#define PBR_PROBE_QUAD 1
 #include "pbr_probe.hlsli"
 #endif
 
@@ -117,6 +127,21 @@ struct DX12_PS_INPUT
 #endif
 };
 
+// Engine-selected local ambient (r_model_local_lights): the lights the selection left out, folded into an ambient cube,
+// unless the prop's baked direct already carries them.
+#if ENHANCED
+float3 PBR_FoldedLocalAmbient( PBRSurface s, float3 N, ShadowMapDirect direct )
+{
+	if ( g_ModelLocalAmbient[0].w == 0.0 || direct.bakedLocalDirect != 0 )
+		return 0.0;
+	float3 n2 = N * N;
+	float3 folded = n2.x * ( N.x >= 0.0 ? g_ModelLocalAmbient[0].rgb : g_ModelLocalAmbient[1].rgb ) +
+		n2.y * ( N.y >= 0.0 ? g_ModelLocalAmbient[2].rgb : g_ModelLocalAmbient[3].rgb ) +
+		n2.z * ( N.z >= 0.0 ? g_ModelLocalAmbient[4].rgb : g_ModelLocalAmbient[5].rgb );
+	return s.diffuseColor * s.ao * folded;
+}
+#endif
+
 PBR_PSOut main( DX12_PS_INPUT i )
 {
 	// pbr_model_vs51 interpolates no world position (see its output struct): eye - toEye rebuilds it.
@@ -127,7 +152,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #else
 	const float4 vertexColor = float4( 1.0, 1.0, 1.0, 1.0 );
 #endif
-#if ENHANCED
+#if ENHANCED && LIGHTPASS != 1
 	// Derivatives occur here, before any divergent work, on the camera-relative -toEye (world positions far from the
 	// origin are too coarse to differentiate). The primitive identity is a pure value carrier.
 	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( P, -i.toEye, i.worldNormal, i.svPos.xy );
@@ -311,6 +336,12 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		thickness = ThicknessTexture.Sample( ThicknessSampler, baseUV ).r;
 	PBRSurface s = PBR_MakeSurface( N, V, frameT, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, g_Misc.y != 0.0 ? 1 : 0 );
 
+#if ENHANCED && !PBR_DEPTH_PREPASS && LIGHTPASS != 2
+	// The probe grid is decoded once per 2x2 quad (Probe_DecodeQuad): its quad operations need every lane of the quad
+	// alive, so it runs here, in uniform control flow before the wound clip and the alpha-test kill.
+	ProbeSH probe;
+	const bool probeDecoded = Probe_DecodeQuad( P, vertexNormal, ( uint( i.svPos.x ) & 1u ) | ( ( uint( i.svPos.y ) & 1u ) << 1u ), probe );
+#endif
 	float alpha = g_BaseTint.a * vertexColor.a;
 #if INFECTED
 	// Base alpha is luminance / the specular mask, never coverage.
@@ -341,18 +372,39 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	PBR_PSOut coverage = (PBR_PSOut)0;
 	coverage.color.a = alpha;
 	return coverage;
+#elif LIGHTPASS == 2
+
+	// Additive realtime pass: only what the realtime lights add, through this pixel's fog transmission (the colour the
+	// fog blends toward was already added by pass 1). The engine alpha-test state is off and ALPHATEST=0: under EQUAL
+	// the depth pass 1 left already selected exactly its surviving fragments.
+	float3 result = 0.0;
+	PBRSpecularSum specularSum = PBR_NoSpecularSum();
+#if LOCAL_LIGHTS
+	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten, specularSum );
+#endif
+	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
+	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, direct );
+	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );
+	result *= PBR_ForwardAO( i.svPos.xy );
+	float3 eyePosition = P + i.toEye;
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, projPosZ );
+	// S and D in the units pass 1 writes E: only a capturing bracket over an envmapped material uses them.
+	const float transmission = PBR_FogTransmission( PIXELFOGTYPE, fogFactor, i.fog );
+	const bool ssrPayload = cScreenControl.w != 0 && g_Flags1.x != 0.0;
+	return PBR_OutputLight( result * ( LINEAR_LIGHT_SCALE * transmission ),
+		ssrPayload ? specularSum.radiance * ( LINEAR_LIGHT_SCALE * transmission ) : 0.0, ssrPayload ? PBR_SpecularDistance( specularSum ) : 0.0 );
 #else
 
-	// Ambient. ENHANCED decodes the baked probe grid once at the vertex-normal-biased point and evaluates it for N (and -N / the
-	// softened N below); where no probe covers the point, or no grid is bound, the engine ambient cube takes over.
+	// Ambient. ENHANCED decodes the baked probe grid once per pixel quad at the vertex-normal-biased point (above) and
+	// evaluates it for N (and -N / the softened N below); where no probe covers the point, or no grid is bound, the engine
+	// ambient cube takes over.
 	// Subsurface softens toward the opposite hemisphere; backlight adds that hemisphere.
 	// A covered point also drops the static prop vertex lighting (COLOR1): the probes already carry the baked ambient, and
 	// the engine's runtime-generated prop colors leak light onto shadowed props (c1m1's conduit_128 pipes, which ship no VHV).
 	float3 ambient;
 	bool probeCovered = false;
 #if ENHANCED
-	ProbeSH probe;
-	[branch] if ( Probe_Decode( P, vertexNormal, probe ) )
+	[branch] if ( probeDecoded )
 	{
 		probeCovered = true;
 		ambient = Probe_Irradiance( probe, N );
@@ -377,22 +429,16 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		result += s.diffuseColor * s.ao * i.staticLight;
 #endif
 	PBRSpecularSum specularSum = PBR_NoSpecularSum();
+#if LIGHTPASS == 0
 #if LOCAL_LIGHTS
 	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten, specularSum );
 #endif
 #if ENHANCED
 	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
-	result += direct.diffuse + direct.specular;
-	if ( g_ModelLocalAmbient[0].w != 0.0 && direct.bakedLocalDirect == 0 )
-	{
-		float3 n2 = N * N;
-		float3 folded = n2.x * ( N.x >= 0.0 ? g_ModelLocalAmbient[0].rgb : g_ModelLocalAmbient[1].rgb ) +
-			n2.y * ( N.y >= 0.0 ? g_ModelLocalAmbient[2].rgb : g_ModelLocalAmbient[3].rgb ) +
-			n2.z * ( N.z >= 0.0 ? g_ModelLocalAmbient[4].rgb : g_ModelLocalAmbient[5].rgb );
-		result += s.diffuseColor * s.ao * folded;
-	}
+	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, direct );
 #endif
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );
+#endif
 	if ( int( g_L4D2World.x + 0.5 ) == 5 )
 		result += g_PbrDetail.w * detail.rgb;
 	else if ( int( g_L4D2World.x + 0.5 ) == 6 )
@@ -412,9 +458,22 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	{
 		environment = PBR_Environment( EnvmapTexture, EnvmapSampler, s, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask, environmentResponse );
 		result += environment;
+#if !PBR_DEPTH_PREPASS && LIGHTPASS != 2
+		// Translucent receivers (car glass) and the viewmodels are drawn after the opaque bracket's SSR: they trace its
+		// scene copy themselves (only they see it bound).
+		[branch] if ( PBR_ForwardSSREnabled() && any( environmentResponse > PBR_FORWARD_MIN_RESPONSE ) )
+		{
+			const float4 hit = PBR_ForwardSSR( P, s.N, normalize( i.toEye ), s.roughness, i.svPos.xy );
+			result += hit.rgb * environmentResponse * ( hit.a / LINEAR_LIGHT_SCALE ) - hit.a * environment;
+		}
+#endif
 	}
 
 	result += emission;
+#if !PBR_DEPTH_PREPASS
+	// Viewmodels are drawn after the scene's GTAO apply: their own term darkens them like it darkened the scene.
+	result *= PBR_ForwardAO( i.svPos.xy );
+#endif
 
 	float3 eyePosition = P + i.toEye;
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, projPosZ );
@@ -430,7 +489,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		directSpecular = specularSum.radiance * ( LINEAR_LIGHT_SCALE * transmission );
 		specularDistance = PBR_SpecularDistance( specularSum );
 	}
-#if ENHANCED
+#if ENHANCED && LIGHTPASS == 0
 	color = ShadowMap_Debug( receiver, direct, color );
 	if ( ShadowMap_DebugReplacesColor() ) reflectionValid = 0.0;
 #endif

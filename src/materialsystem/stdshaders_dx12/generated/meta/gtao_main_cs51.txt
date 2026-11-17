@@ -1,5 +1,5 @@
 logical=gtao_main_cs51 stage=cs source=gtao_main_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
-  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+  cbuffer=GtaoParams space=1 register=b0 size=144 layoutHash=0x6a03d70d5c88b54f material
     member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
     member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
@@ -21,3 +21,4 @@ logical=gtao_main_cs51 stage=cs source=gtao_main_cs51.fxc legacy=- legacyName=- 
     member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
     member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewModelDepth type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=

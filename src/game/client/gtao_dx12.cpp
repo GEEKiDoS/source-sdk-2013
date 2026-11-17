@@ -15,6 +15,7 @@
 #include "rendertexture.h"
 #include "fmtstr.h"
 #include "view_shared.h"
+#include "ivrenderview.h"
 #include "mathlib/vmatrix.h"
 #include <cmath>
 
@@ -109,7 +110,7 @@ static bool MaterialValid( IMaterial *pMaterial )
 
 static void SetGtaoConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, int fullWidth, int fullHeight,
 	const VMatrix &projection, float radius, float power, int noiseIndex, int slices, int steps, int denoiseFinal,
-	int originX, int originY )
+	int originX, int originY, const float *viewModelDepth )
 {
 	const float projectionDepth = projection[3][2];
 	const float depthUnpack[4] = { projection[2][3] / projectionDepth, projection[2][2] / projectionDepth, 0.f, 0.f };
@@ -139,6 +140,7 @@ static void SetGtaoConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, i
 	const float depthScale[4] = { fullWidth / static_cast<float>( aoWidth ), fullHeight / static_cast<float>( aoHeight ), 0.f, 0.f };
 	SetVector4( pMaterial, "$sceneorigin", sceneOrigin );
 	SetVector4( pMaterial, "$depthscale", depthScale );
+	SetVector4( pMaterial, "$viewmodeldepth", viewModelDepth );
 }
 static void SetGtaoTemporalConstants( IMaterial *pMaterial, int aoWidth, int aoHeight, int fullWidth, int fullHeight,
 	int originX, int originY, const VMatrix &worldToClip, const VMatrix &clipToWorld,
@@ -312,7 +314,7 @@ bool GTAODX12_Enabled()
 
 // The AO term is computed from depth alone, so it runs as soon as the opaque depth is complete: before the SSR
 // marker, which occludes reflected hits with it. The apply darkens the scene after SSR added its correction.
-void GTAODX12_Compute( IMatRenderContext *pRenderContext )
+void GTAODX12_Compute( IMatRenderContext *pRenderContext, const CViewSetup *pViewModel )
 {
 	if ( !GTAODX12_Enabled() || s_nComputedFrame == gpGlobals->framecount )
 		return;
@@ -334,6 +336,24 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext )
 		return;
 	const Vector eye = cameraToWorld.GetTranslation();
 	const Vector forward = cameraToWorld.GetForward();
+	// Viewmodel pixels hold native depth z = 0.1 * ndc of their own projection (DepthRange( 0, 0.1 )): view depth
+	// 0.1 * P23 / P32 / ( 0.1 * P22 / P32 - z ). It is scaled by tan( viewmodel half FOV ) / tan( scene half FOV ) so the
+	// scene projection GTAO reconstructs with puts the pixel at its true lateral position (its depth is compressed by
+	// that ratio: the term is the viewmodel's own occlusion, not an exact one).
+	float viewModelDepth[4] = { 0.f, 0.f, 0.f, 0.f };
+	if ( pViewModel )
+	{
+		VMatrix vmWorldToView, vmProjection, vmWorldToProjection, vmWorldToPixels;
+		render->GetMatricesForView( *pViewModel, &vmWorldToView, &vmProjection, &vmWorldToProjection, &vmWorldToPixels );
+		const float vmDepth = vmProjection[3][2];
+		if ( vmDepth != 0.f && vmProjection[0][0] != 0.f && vmProjection[3][3] == 0.f )
+		{
+			viewModelDepth[0] = 0.1f * vmProjection[2][3] / vmDepth;
+			viewModelDepth[1] = 0.1f * vmProjection[2][2] / vmDepth;
+			viewModelDepth[2] = fabsf( projection[0][0] / vmProjection[0][0] );
+			viewModelDepth[3] = 1.f;
+		}
+	}
 	const float scale = Clamp( r_gtao_resolution.GetFloat(), 0.25f, 1.f );
 	const int aoWidth = MAX( 1, static_cast<int>( ceilf( fullWidth * scale ) ) );
 	const int aoHeight = MAX( 1, static_cast<int>( ceilf( fullHeight * scale ) ) );
@@ -392,12 +412,12 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext )
 	SetTexture( pApply, "$viewdepth", s_GtaoViewDepth );
 	SetTexture( pApply, "$depthmips", s_GtaoDepth );
 
-	SetGtaoConstants( s_Prefilter.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY );
-	SetGtaoConstants( s_ViewDepth.m_pMaterial, fullWidth, fullHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY );
-	SetGtaoConstants( s_Main.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY );
+	SetGtaoConstants( s_Prefilter.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY, viewModelDepth );
+	SetGtaoConstants( s_ViewDepth.m_pMaterial, fullWidth, fullHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY, viewModelDepth );
+	SetGtaoConstants( s_Main.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, 0, viewportX, viewportY, viewModelDepth );
 	for ( int i = 0; i < denoisePasses; ++i )
-		SetGtaoConstants( s_Denoise[i].m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, i + 1 == denoisePasses, viewportX, viewportY );
-	SetGtaoConstants( s_Temporal.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, denoisePasses > 0, viewportX, viewportY );
+		SetGtaoConstants( s_Denoise[i].m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, i + 1 == denoisePasses, viewportX, viewportY, viewModelDepth );
+	SetGtaoConstants( s_Temporal.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, projection, radius, power, noiseIndex, slices, steps, denoisePasses > 0, viewportX, viewportY, viewModelDepth );
 	const float temporalDepthUnpack[4] = { projection[2][3] / projectionDepth, projection[2][2] / projectionDepth, 0.f, 0.f };
 	const VMatrix &previousWorldToClip = s_bTemporalValid ? s_TemporalPreviousWorldToClip : worldToClip;
 	SetGtaoTemporalConstants( s_Temporal.m_pMaterial, aoWidth, aoHeight, fullWidth, fullHeight, viewportX, viewportY,

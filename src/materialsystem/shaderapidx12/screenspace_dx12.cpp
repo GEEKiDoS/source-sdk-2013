@@ -259,7 +259,7 @@ void CShaderAPIDX12::ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &
 	ScreenSpaceViewStateDX12 &state = m_ScreenSpace;
 	state.constants = view.constants;
 	state.ssr = view.ssr;
-	state.active = state.contactReplay = state.contactsEnabled = state.ssrCapture = false;
+	state.active = state.contactReplay = state.contactsEnabled = state.ssrCapture = state.forwardSSR = false;
 	m_ContactDepth.replayDraws = false;
 	++m_ContactDepth.constantsVersion;
 	DX12ScreenSpaceViewConstants &constants = state.constants;
@@ -527,6 +527,109 @@ bool CShaderAPIDX12::PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInput
 	input.screenSpaceTable = bContacts ? contact.table : DescriptorRangeDX12{};
 	input.screenSpaceView = contact.constants;
 	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Space-6 inputs of a translucent or viewmodel scene draw after the opaque bracket
+//			(native_src/pbr_forward_screenspace.hlsli). Once the bracket's SSR succeeded this frame: b0 its camera with the
+//			trace in control.z / eyeLength.w / forwardThickness.w, t5 the SSR scene copy's mip 1 (mip 0 now holds the
+//			composite's delta) and t6 its positive view depth (opaque only: translucents, the sky and the viewmodel read
+//			as far). Viewmodel draws also get t7, this frame's GTAO term, when it was computed with their depth. The table
+//			and both constant blocks are built once per recording fence; the textures stay readable until the next
+//			frame's compute passes write them.
+//-----------------------------------------------------------------------------
+void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::BindingInputDX12 &input, bool viewModel )
+{
+	ScreenSpaceViewStateDX12 &state = m_ScreenSpace;
+	CPipelineCacheDX12 &pipeline = m_Pipeline;
+	const uint64_t fence = m_pDevice->NextFenceValue();
+	const bool ssr = state.forwardSSR && state.forwardSSRFrame == m_nFrameCounter && m_SSR.scene.handle && m_SSR.scene.mipLevels >= 2 &&
+		m_SSR.depth[m_SSR.current ^ 1].handle;
+	const bool aoAvailable = m_SSR.aoTerm && m_SSR.aoFrame == m_nFrameCounter && m_SSR.aoViewModel && m_SSR.aoWidth > 0 && m_SSR.aoHeight > 0;
+	if ( !( viewModel ? ssr || aoAvailable : ssr ) )
+		return;
+	auto fail = [&]()
+	{
+		state.forwardSSR = false;
+		m_SSR.aoViewModel = false;
+		input.screenSpaceTable = {};
+		input.screenSpaceView = 0;
+	};
+	// Same reservation as the bracket's own table: the tables allocated after this one must not roll the heap.
+	if ( !pipeline.ReserveResourceDescriptors( 2 * DX12_SCREENSPACE_TABLE_COUNT + DX12_LIGHTING_RESOURCE_TABLE_COUNT + 1 + 8 + DX12_PBR_TABLE_COUNT + DX12_PROBE_TABLE_COUNT + 32 + 16, fence ) )
+		return fail();
+	if ( state.forwardTableFence != fence || state.forwardTable.generation != pipeline.ResourceHeapGeneration() ||
+	     state.forwardTableSSR != ssr || state.forwardTableAO != aoAvailable )
+	{
+		ID3D12Resource *pScene = nullptr, *pDepth = nullptr, *pAO = nullptr;
+		D3D12_SHADER_RESOURCE_VIEW_DESC sceneSrv{}, depthSrv{}, aoSrv{};
+		D3D12_SAMPLER_DESC unusedSampler{};
+		// Transitions SSR scene mip 1, the SSR depth and the AO term to shader-readable; the views are this table's own.
+		if ( ssr && ( !PrepareSampledTexture( m_SSR.scene.handle, false, &pScene, sceneSrv, unusedSampler, nullptr, false, 1, 1 ) || !pScene ||
+		     !PrepareSampledTexture( m_SSR.depth[m_SSR.current ^ 1].handle, false, &pDepth, depthSrv, unusedSampler, nullptr, false, -1, 0 ) || !pDepth ) )
+			return fail();
+		if ( aoAvailable && ( !PrepareSampledTexture( m_SSR.aoTerm, false, &pAO, aoSrv, unusedSampler, nullptr, false, -1, 0 ) || !pAO ) )
+			return fail();
+		const DescriptorRangeDX12 table = pipeline.AllocateTransientResources( DX12_SCREENSPACE_TABLE_COUNT, fence );
+		if ( table.count != DX12_SCREENSPACE_TABLE_COUNT )
+			return fail();
+		ID3D12Device *pNative = m_pDevice->NativeDevice();
+		const UINT stride = pNative->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		for ( UINT slot = 0; slot < DX12_SCREENSPACE_TABLE_COUNT; ++slot )
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv = CPipelineCacheDX12::ScreenSpaceNullSrvDesc( slot );
+			ID3D12Resource *pResource = nullptr;
+			if ( slot == DX12_SCREENSPACE_T_SSR_SCENE && pScene )
+			{
+				srv.Format = sceneSrv.Format;
+				srv.Texture2D.MostDetailedMip = 1;
+				pResource = pScene;
+			}
+			else if ( slot == DX12_SCREENSPACE_T_SSR_DEPTH && pDepth )
+			{
+				srv.Format = depthSrv.Format;
+				pResource = pDepth;
+			}
+			else if ( slot == DX12_SCREENSPACE_T_AO && pAO )
+			{
+				srv.Format = aoSrv.Format;
+				pResource = pAO;
+			}
+			D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
+			cpu.ptr += SIZE_T( slot ) * stride;
+			pNative->CreateShaderResourceView( pResource, &srv, cpu );
+		}
+		state.forwardTable = table;
+		state.forwardTableFence = fence;
+		state.forwardTableSSR = ssr;
+		state.forwardTableAO = aoAvailable;
+		state.forwardConstantsFence[0] = state.forwardConstantsFence[1] = 0;
+	}
+	const int kind = viewModel ? 1 : 0;
+	if ( state.forwardConstantsFence[kind] != fence )
+	{
+		DX12ScreenSpaceViewConstants constants{};
+		if ( ssr )
+			constants = state.forwardConstants;
+		else if ( m_nViewportCount > 0 )
+		{
+			// AO alone needs only the viewport the term covers: the viewmodel view shares the scene's.
+			constants.viewport[0] = static_cast<float>( m_Viewports[0].m_nTopLeftX );
+			constants.viewport[1] = static_cast<float>( m_Viewports[0].m_nTopLeftY );
+			constants.viewport[2] = static_cast<float>( MAX( 1, m_Viewports[0].m_nWidth ) );
+			constants.viewport[3] = static_cast<float>( MAX( 1, m_Viewports[0].m_nHeight ) );
+		}
+		if ( viewModel && aoAvailable )
+		{
+			constants.control[1] = static_cast<uint32>( m_SSR.aoWidth ) | ( static_cast<uint32>( m_SSR.aoHeight ) << 16 );
+			constants.control[2] |= DX12_SCREENSPACE_FORWARD_AO | ( m_SSR.aoPacked ? DX12_SCREENSPACE_FORWARD_AO_PACKED : 0u );
+		}
+		if ( !pipeline.UploadTransient( &constants, sizeof( constants ), 256, 256, fence, state.forwardConstantsAddress[kind] ) )
+			return fail();
+		state.forwardConstantsFence[kind] = fence;
+	}
+	input.screenSpaceTable = state.forwardTable;
+	input.screenSpaceView = state.forwardConstantsAddress[kind];
 }
 
 //-----------------------------------------------------------------------------

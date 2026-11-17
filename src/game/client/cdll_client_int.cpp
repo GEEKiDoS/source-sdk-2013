@@ -1766,8 +1766,9 @@ void CHLClient::View_Fade( ScreenFade_t *pSF )
 
 //-----------------------------------------------------------------------------
 // Purpose: Once per rendering adapter, a low-tier DX12 adapter (ShaderAPIDX12AdapterTier_t) gets cheaper defaults:
-//          SMAA T2x instead of a provider AA, half-resolution SSR, and the low settings of GTAO, shadow maps, bloom and
-//          motion blur. The 3D view stays at native resolution (r_upscaler_scale stays opt-in). A
+//          SMAA T2x instead of a provider AA, SSR and volumetric lighting off (about 2.5-3.5 ms on a GTX 1050 at 720p),
+//          and the low settings of GTAO, shadow maps, bloom and motion blur. SSR keeps a half-resolution trace for
+//          whoever re-enables it. The 3D view stays at native resolution (r_upscaler_scale stays opt-in). A
 //          high-tier adapter keeps the shipped defaults. Runs after config.cfg is loaded (first level init) and only
 //          when the adapter differs from the one recorded in r_quality_tier_adapter, so later user changes stick.
 //-----------------------------------------------------------------------------
@@ -1792,7 +1793,8 @@ static void ApplyAdapterQualityTier()
 	static const char *const s_ppLowTier[][2] =
 	{
 		{ "r_upscaler", "5" },
-		{ "r_ssr", "1" },
+		{ "r_ssr", "0" },
+		{ "r_volumetric", "0" },
 		{ "r_ssr_quality", "1" },
 		{ "r_ssr_resolution", "0.5" },
 		{ "r_gtao_resolution", "0.5" },

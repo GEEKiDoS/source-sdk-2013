@@ -46,6 +46,10 @@ ConVar r_world_local_specular( "r_world_local_specular", "4", FCVAR_ARCHIVE,
 	"Enhanced world per-pixel local-light specular cap while r_world_baked_specular is 1 (1-4 strongest per tile); 0 evaluates specular for every local light. Diffuse is never capped", true, 0, true, 4 );
 ConVar r_world_baked_specular( "r_world_baked_specular", "0", FCVAR_ARCHIVE,
 	"Enhanced world surfaces add per-light specular from baked-only (non-realtime) local lights. 0 matches retail L4D2 world surfaces (envmap reflections only); realtime lights keep their specular", true, 0, true, 1 );
+ConVar r_pbr_light_passes( "r_pbr_light_passes", "1", FCVAR_ARCHIVE,
+	"Opaque enhanced PBR surfaces shade in two forward passes, like Source's flashlight pass: the baked/material pass, then an "
+	"additive depth-EQUAL pass for the sun, realtime local lights and projected lights. Each pass keeps far fewer registers "
+	"live than the single pass. 0 = single pass. r_shadowmap_debug views always use the single pass", true, 0, true, 1 );
 
 bool DX12PbrOverride()
 {
@@ -105,6 +109,7 @@ public:
 	// PBR_Infected: static feature flags of g_PbrInfectedFeatures (yzw); x (burn strength) is per draw.
 	bool m_bInfected = false;
 	float m_InfectedFeatures[3] = {};
+	bool m_bOpaqueBlend = false; // BT_NONE: the snapshot carries the two-pass lighting passes as well
 };
 
 //-----------------------------------------------------------------------------
@@ -253,17 +258,29 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	return s;
 }
 
+// The material records the two-pass lighting snapshots after its single pass: an opaque (or alpha-tested) blend, and for a
+// model the ENHANCED receiver variant (the only one with realtime lighting to split off).
+bool LightPassesEligible( const PBRState &s, bool bEnhanced )
+{
+	return s.blendType == BT_NONE && ( !s.model || bEnhanced );
+}
+
 //-----------------------------------------------------------------------------
 // Snapshot
 //-----------------------------------------------------------------------------
-void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow *pShaderShadow, const PBR_Vars_t &v, const PBRState &s, bool bEnhanced )
+// lightPass: the LIGHTPASS combo. 0 the single pass, 1 the baked/material pass, 2 the additive realtime pass, which draws
+// like Source's flashlight pass (ONE/ONE, no depth or alpha writes, fog to black) and tests EQUAL against the depth pass 1
+// left, so it never alpha tests.
+void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow *pShaderShadow, const PBR_Vars_t &v, const PBRState &s, bool bEnhanced,
+	int lightPass )
 {
 	const PBRSamplers &sm = s.model ? kModelSamplers : kWorldSamplers;
 	const bool hdrNone = g_pHardwareConfig->GetHDRType() == HDR_TYPE_NONE;
+	const bool alphaTested = s.alphaTested && lightPass != 2;
 
 	// The kill itself is the engine alpha-test state (cAlphaTest through DX12FinishPixel); ALPHATEST selects the variant.
-	pShaderShadow->EnableAlphaTest( s.alphaTested );
-	if ( v.alphaTestReference != -1 && params[v.alphaTestReference]->GetFloatValue() > 0.0f )
+	pShaderShadow->EnableAlphaTest( alphaTested );
+	if ( alphaTested && v.alphaTestReference != -1 && params[v.alphaTestReference]->GetFloatValue() > 0.0f )
 		pShaderShadow->AlphaFunc( SHADER_ALPHAFUNC_GEQUAL, params[v.alphaTestReference]->GetFloatValue() );
 
 	pShader->SetBlendingShadowState( s.blendType );
@@ -326,9 +343,10 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		DECLARE_STATIC_PIXEL_SHADER( pbr_model_ps51 );
 		SET_STATIC_PIXEL_SHADER_COMBO( TANGENT, s.hasBump );
 		SET_STATIC_PIXEL_SHADER_COMBO( ENHANCED, bEnhanced );
-		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, s.alphaTested );
+		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, alphaTested );
 		SET_STATIC_PIXEL_SHADER_COMBO( INFECTED, s.infected );
 		SET_STATIC_PIXEL_SHADER_COMBO( VERTEXCOLOR, s.vertexColor );
+		SET_STATIC_PIXEL_SHADER_COMBO( LIGHTPASS, lightPass );
 		SET_STATIC_PIXEL_SHADER( pbr_model_ps51 );
 	}
 	else
@@ -342,13 +360,23 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 
 		DECLARE_STATIC_PIXEL_SHADER( pbr_world_ps51 );
 		SET_STATIC_PIXEL_SHADER_COMBO( LAYERED, s.layered );
-		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, s.alphaTested );
+		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, alphaTested );
+		SET_STATIC_PIXEL_SHADER_COMBO( LIGHTPASS, lightPass );
 		SET_STATIC_PIXEL_SHADER( pbr_world_ps51 );
 	}
 
 	pShaderShadow->EnableAlphaWrites( s.fullyOpaque );
 	pShaderShadow->EnableSRGBWrite( !IsBoolSet( v.linearWrite, params ) );
 	pShader->DefaultFog();
+	if ( lightPass == 2 )
+	{
+		pShaderShadow->EnableBlending( true );
+		pShaderShadow->BlendFunc( SHADER_BLEND_ONE, SHADER_BLEND_ONE );
+		pShaderShadow->EnableDepthWrites( false );
+		pShaderShadow->DepthFunc( SHADER_DEPTHFUNC_EQUAL );
+		pShaderShadow->EnableAlphaWrites( false );
+		pShader->FogToBlack();
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -565,6 +593,7 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ctx.m_InfectedFeatures[2] = s.infectedVariation && IsBoolSet( v.infEyeGlow, params ) ? 1.0f : 0.0f;
 
 	ctx.m_bModel = s.model;
+	ctx.m_bOpaqueBlend = s.blendType == BT_NONE;
 	ctx.m_bEnvmap = s.hasEnvmap;
 	ctx.m_bBump = s.hasBump;
 	ctx.m_bAmbientOnly = IsBoolSet( v.ambientOnly, params );
@@ -1012,7 +1041,22 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 		}
 		const PBRState s = Evaluate( pShader, params, v );
 		if ( pShaderShadow )
-			Snapshot( pShader, params, pShaderShadow, v, s, bEnhanced );
+		{
+			// Snapshot A: the single pass. Eligible materials then record the two-pass lighting snapshots B (baked/material)
+			// and C (additive realtime); each draw renders A alone or B then C (see the end of the dynamic state).
+			Snapshot( pShader, params, pShaderShadow, v, s, bEnhanced, 0 );
+			pShader->Draw();
+			if ( LightPassesEligible( s, bEnhanced ) )
+			{
+				pShader->SetInitialShadowState();
+				Snapshot( pShader, params, pShaderShadow, v, s, bEnhanced, 1 );
+				pShader->Draw();
+				pShader->SetInitialShadowState();
+				Snapshot( pShader, params, pShaderShadow, v, s, bEnhanced, 2 );
+				pShader->Draw();
+			}
+			return;
+		}
 		if ( pShaderAPI && pContextData->m_bMaterialVarsChanged )
 		{
 			pContextData->m_bMaterialVarsChanged = false;
@@ -1192,5 +1236,17 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 		if ( bEnhanced )
 			g_DX12Constants.shadowmapPassAdmitted = true;
 	}
-	pShader->Draw();
+	if ( !pContextData->m_bOpaqueBlend || ( pContextData->m_bModel && !bEnhanced ) )
+	{
+		pShader->Draw();
+		return;
+	}
+	// Two-pass lighting needs the enhanced receivers (the world's highres twin is chosen per map at draw time). The
+	// shadow-map debug views replace the single pass's colour. Under SSR the realtime pass writes the payload's S and D.
+	static ConVarRef r_shadowmap_debug( "r_shadowmap_debug" );
+	const bool lightPasses = r_pbr_light_passes.GetBool() && ( pContextData->m_bModel || DX12HighresMap() ) &&
+		!( r_shadowmap_debug.IsValid() && r_shadowmap_debug.GetInt() != 0 );
+	pShader->Draw( !lightPasses );
+	pShader->Draw( lightPasses );
+	pShader->Draw( lightPasses );
 }

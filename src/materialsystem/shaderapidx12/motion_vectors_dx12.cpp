@@ -802,10 +802,11 @@ void CShaderAPIDX12::SetMotionPass( int nMode )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Fills the DX12MotionVS block for the next draw, looking up the
-//			object's previous-frame bone rows in the motion history
+// Purpose: Fills the DX12MotionVS block for the next draw, looking up the object's previous-frame bone rows in the
+//			motion history. Returns true when those rows equal the current ones: the draw's velocity is then exactly
+//			the camera reprojection already in the target.
 //-----------------------------------------------------------------------------
-void CShaderAPIDX12::FillMotionBlock( const VertexBindingDX12 &vertexBinding, CIndexBufferDX12 *pIndexBuffer, size_t nIndexOffset, int nFirstIndex, int nIndexCount )
+bool CShaderAPIDX12::FillMotionBlock( const VertexBindingDX12 &vertexBinding, CIndexBufferDX12 *pIndexBuffer, size_t nIndexOffset, int nFirstIndex, int nIndexCount )
 {
 	const int nRows = Clamp( m_nMotionBoneRows, 1, NUM_MODEL_TRANSFORMS );
 	const char *pszShaderName = m_ActiveSnapshot.vertexShaderName.c_str();
@@ -873,12 +874,13 @@ void CShaderAPIDX12::FillMotionBlock( const VertexBindingDX12 &vertexBinding, CI
 		}
 	}
 	// Any draw whose previous VP or model rows differ from the current ones (or are not finite) can emit velocity.
+	const bool bStaticRows = MotionTransformsIdentical( &m_MotionBlock.cPrevModel[0][0], pCurrent, nRows * 12 );
 	if ( m_bMotionQuietCandidate &&
-		( !MotionTransformsIdentical( m_MotionBlock.cPrevViewProj, m_VsFloat[VERTEX_SHADER_VIEWPROJ], 16 ) ||
-		  !MotionTransformsIdentical( &m_MotionBlock.cPrevModel[0][0], pCurrent, nRows * 12 ) ) )
+		( !MotionTransformsIdentical( m_MotionBlock.cPrevViewProj, m_VsFloat[VERTEX_SHADER_VIEWPROJ], 16 ) || !bStaticRows ) )
 		m_bMotionQuietCandidate = false;
 	++m_nMotionBlockVersion;
 	++m_nMotionPassDraws;
+	return bStaticRows;
 }
 
 //-----------------------------------------------------------------------------

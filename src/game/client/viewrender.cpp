@@ -1282,6 +1282,7 @@ CViewRender::CViewRender()
 	m_pActiveRenderer = NULL;
 	m_pDeferredSkybox = NULL;
 	m_pViewModelPrepassView = NULL;
+	m_bViewModelDepthInScene = false;
 	m_pCurrentlyDrawingEntity = NULL;
 
 	m_szCurrentScriptMaterialName[0] = '\0';
@@ -1533,9 +1534,11 @@ void CViewRender::DrawViewModelDepthPrepass()
 		return;
 	pRenderContext->MatrixMode( MATERIAL_PROJECTION );
 	pRenderContext->PushMatrix();
-	render->Push3DView( ViewModelViewSetup( *m_pViewModelPrepassView ), 0, NULL, GetFrustum() );
+	m_ViewModelDepthSetup = ViewModelViewSetup( *m_pViewModelPrepassView );
+	render->Push3DView( m_ViewModelDepthSetup, 0, NULL, GetFrustum() );
 	pRenderContext->DepthRange( 0.0f, kViewModelDepthRangeMax );
 	DrawRenderablesInList( opaqueViewModelList );
+	m_bViewModelDepthInScene = true;
 	pRenderContext->DepthRange( 0.0f, 1.0f );
 	render->PopView( GetFrustum() );
 	// The engine's near/far metadata is not stacked (see DrawDeferredSkybox): push the scene's own again.
@@ -2052,12 +2055,14 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 
 	ScreenSpaceDX12_BeginVolumetrics( viewRender );
 	m_pViewModelPrepassView = ( bDrawViewModel && viewID == VIEW_MAIN ) ? &viewRender : NULL;
+	m_bViewModelDepthInScene = false;
 	DrawWorldAndEntities( drawSkybox, viewRender, nClearFlags, pCustomVisibility
 #if defined( L4D2 )
 		, pFogVolumeInfo, pWaterRenderInfo
 #endif
 		);
 	m_pViewModelPrepassView = NULL;
+	m_bViewModelDepthInScene = false;
 	ScreenSpaceDX12_DrawVolumetrics();
 
 	// Disable fog for the rest of the stuff
@@ -7319,7 +7324,7 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		{
 			CMatRenderContextPtr pGtaoContext( materials );
 			PIXEVENT( pGtaoContext, "GTAO compute" );
-			GTAODX12_Compute( pGtaoContext );
+			GTAODX12_Compute( pGtaoContext, m_pMainView->ViewModelDepthInScene() );
 		}
 		if ( pScreenSpace )
 		{

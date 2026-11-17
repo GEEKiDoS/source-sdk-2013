@@ -1080,7 +1080,7 @@ logical=teeth_shadowmap_ps51 stage=ps source=teeth_shadowmap_ps51.fxc legacy=- l
     legacyEntry=0,16,1,0,0,0,11
     bridge=WriteNativeCBuffer(api, block)
 logical=gtao_prefilter_cs51 stage=cs source=gtao_prefilter_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
-  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+  cbuffer=GtaoParams space=1 register=b0 size=144 layoutHash=0x6a03d70d5c88b54f material
     member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
     member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
@@ -1102,8 +1102,9 @@ logical=gtao_prefilter_cs51 stage=cs source=gtao_prefilter_cs51.fxc legacy=- leg
     member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
     member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewModelDepth type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
 logical=gtao_viewdepth_cs51 stage=cs source=gtao_viewdepth_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
-  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+  cbuffer=GtaoParams space=1 register=b0 size=144 layoutHash=0x6a03d70d5c88b54f material
     member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
     member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
@@ -1125,8 +1126,9 @@ logical=gtao_viewdepth_cs51 stage=cs source=gtao_viewdepth_cs51.fxc legacy=- leg
     member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
     member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewModelDepth type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
 logical=gtao_main_cs51 stage=cs source=gtao_main_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
-  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+  cbuffer=GtaoParams space=1 register=b0 size=144 layoutHash=0x6a03d70d5c88b54f material
     member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
     member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
@@ -1148,8 +1150,9 @@ logical=gtao_main_cs51 stage=cs source=gtao_main_cs51.fxc legacy=- legacyName=- 
     member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
     member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewModelDepth type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
 logical=gtao_denoise_cs51 stage=cs source=gtao_denoise_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
-  cbuffer=GtaoParams space=1 register=b0 size=128 layoutHash=0x5c55dd9a1b20a1f7 material
+  cbuffer=GtaoParams space=1 register=b0 size=144 layoutHash=0x6a03d70d5c88b54f material
     member=gViewportSize type=2 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
     member=gViewportPixelSize type=3 class=1 offset=8 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthUnpackConsts type=3 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
@@ -1171,6 +1174,7 @@ logical=gtao_denoise_cs51 stage=cs source=gtao_denoise_cs51.fxc legacy=- legacyN
     member=gDenoiseFinal type=2 class=0 offset=100 size=4 elements=0 arrayStride=0 legacy=
     member=gSceneOrigin type=2 class=1 offset=104 size=8 elements=0 arrayStride=0 legacy=
     member=gDepthScale type=3 class=1 offset=112 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewModelDepth type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
 logical=gtao_apply_ps51 stage=ps source=gtao_apply_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
@@ -2641,7 +2645,7 @@ logical=pbr_world_vs51 stage=vs source=pbr_world_vs51.fxc legacy=- legacyName=- 
     legacyEntry=384,16,1,0,0,0,230
     legacyEntry=400,16,1,0,0,0,231
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_ps51 stage=ps source=pbr_world_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=12 present=48
+logical=pbr_world_ps51 stage=ps source=pbr_world_ps51.fxc legacy=- legacyName=- profile=native static=10 dynamic=12 present=120
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
@@ -2788,7 +2792,7 @@ logical=pbr_world_highres_vs51 stage=vs source=pbr_world_highres_vs51.fxc legacy
     legacyEntry=384,16,1,0,0,0,230
     legacyEntry=400,16,1,0,0,0,231
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=12 present=48
+logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy=- legacyName=- profile=native static=10 dynamic=12 present=120
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -2902,7 +2906,7 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     legacyEntry=640,16,1,0,0,0,55
     legacyEntry=656,16,1,0,0,0,56
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=12 present=48
+logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=10 dynamic=12 present=120
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -3071,7 +3075,7 @@ logical=pbr_model_vs51 stage=vs source=pbr_model_vs51.fxc legacy=- legacyName=- 
     legacyEntry=384,16,1,0,0,0,230
     legacyEntry=400,16,1,0,0,0,231
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=24 dynamic=24 present=360
+logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=42 dynamic=24 present=792
   cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
     member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
@@ -3191,7 +3195,7 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     legacyEntry=640,16,1,0,0,0,55
     legacyEntry=656,16,1,0,0,0,56
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=4 dynamic=12 present=48
+logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=10 dynamic=12 present=120
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
@@ -3275,7 +3279,7 @@ logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.
     legacyEntry=640,16,1,0,0,0,55
     legacyEntry=656,16,1,0,0,0,56
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_model_depthprepass_ps51 stage=ps source=pbr_model_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=24 dynamic=24 present=360
+logical=pbr_model_depthprepass_ps51 stage=ps source=pbr_model_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=42 dynamic=24 present=792
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none

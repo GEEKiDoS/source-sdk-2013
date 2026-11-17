@@ -1415,7 +1415,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 			return entry.pso.Get();
 		}
 	}
-	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull ) ^ ( key.contactReplay ? 0x94D049BB133111EBull : 0ull ) ^ ( key.nonEnvmapSsrPayload ? 0xD6E8FEB86659FD93ull : 0ull );
+	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull ) ^ ( key.contactReplay ? 0x94D049BB133111EBull : 0ull ) ^ ( key.nonEnvmapSsrPayload ? 0xD6E8FEB86659FD93ull : 0ull ) ^ ( key.relightPayload ? 0xA0761D6478BD642Full : 0ull );
 	const unsigned hint = Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & static_cast<unsigned>( ARRAYSIZE( m_PipelineHints ) - 1 );
 	if ( m_PipelineHints[hint] )
 	{
@@ -1466,11 +1466,15 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.BlendState.AlphaToCoverageEnable = key.alphaToCoverage && key.samples > 1;
 	static constexpr D3D12_BLEND_OP blendOps[] = { D3D12_BLEND_OP_ADD, D3D12_BLEND_OP_SUBTRACT, D3D12_BLEND_OP_REV_SUBTRACT, D3D12_BLEND_OP_MIN, D3D12_BLEND_OP_MAX };
 	const bool nonEnvmapSsrPayload = key.gbuffer && key.colorCount >= 6 && key.nonEnvmapSsrPayload;
+	const bool relightPayload = key.gbuffer && key.colorCount >= 6 && key.relightPayload;
 	for ( UINT i = 0; i < key.colorCount && i < ARRAYSIZE( key.colorFormats ); ++i )
 	{
 		D3D12_RENDER_TARGET_BLEND_DESC &target = desc.BlendState.RenderTarget[i];
 		const bool gbufferTarget = key.gbuffer && i > 0;
 		target.RenderTargetWriteMask = gbufferTarget ? D3D12_COLOR_WRITE_ENABLE_ALL : ( key.colorWrites ? D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE : 0 ) | ( key.alphaWrites ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0 );
+		// The relight pass owns S and D only: the baked pass already wrote normal, F0, E and K on exactly these pixels.
+		if ( relightPayload && gbufferTarget )
+			target.RenderTargetWriteMask = i == 5 || i == 6 ? D3D12_COLOR_WRITE_ENABLE_ALL : i == 3 ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0;
 		// Keep RTV4 (K/valid) fully writable: K = 0 (and K.a = 0 where it exists) rejects any stale E/S/D retained in
 		// RTV3/5/6.
 		if ( nonEnvmapSsrPayload && ( i == 3 || i == 5 || i == 6 ) )

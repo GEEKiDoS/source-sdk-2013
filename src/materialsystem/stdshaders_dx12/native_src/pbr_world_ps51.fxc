@@ -29,10 +29,17 @@
 #include "dx12_preamble.h"
 // STATIC: "LAYERED" "0..1"
 // STATIC: "ALPHATEST" "0..1"
+// LIGHTPASS: 0 the single pass; 1 the baked/material pass and 2 the additive realtime pass of the two-pass forward
+// split (pbr_helper.cpp DrawPBR, drawn like Source's flashlight pass). Pass 1 keeps the lightmap, environment, emission
+// and every G-buffer target; pass 2 adds only PBR_GatherDirect and the projected lights, depth EQUAL over pass 1,
+// through the same fog transmission. Pass 2 never alpha tests: the depth pass 1 left already decided coverage.
+// STATIC: "LIGHTPASS" "0..2"
+// SKIP: ( $LIGHTPASS == 2 ) && ( $ALPHATEST == 1 )
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
 // DYNAMIC: "SHADOWQUALITY" "0..3"
 #include "common_ps_fxc.h"
 #include "pbr_lighting.hlsli"
+#include "pbr_forward_screenspace.hlsli"
 
 Texture2D BaseTexture : register( t0 );
 SamplerState BaseSampler : register( s0 );
@@ -109,10 +116,14 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if PBR_WORLD_HIGHRES
 	// Derivatives occur here, before any divergent work (HighresLightmap_Begin returns early for rejected owners), on the
 	// camera-relative -toEye (world positions far from the origin are too coarse to differentiate).
+#if LIGHTPASS != 1
 	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( P, -i.toEye, i.worldNormal, i.svPos.xy );
+#endif
 	HlightReceiver hlr = HighresLightmap_Begin( i.lightmapUV.xy, i.lightmapVertexUV );
+#if LIGHTPASS != 1
 	ShadowMap_SetBakedSun( receiver, hlr.sun, hlr.sunDilated );
 	ShadowMap_SetBakedFace( receiver, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
+#endif
 #endif
 	float2 baseUV = i.baseBumpUV.xy;
 	float2 bumpUV = i.baseBumpUV.zw;
@@ -210,11 +221,12 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( int( g_L4D2World.x + 0.5 ) == 10 && hasBump )
 		planeWeights *= 2.0 * detail.rgb;
 
-	float2 lightmapUV = i.lightmapUV.xy;
-	float2 planeStep = i.lightmapUV.zw;
 	// A plane with weight exactly zero contributes exactly zero (its RGB is finite), so its fetch is skipped;
 	// the remaining fetches stay independent and the weighted sum retains the stored plane order.
 	float3 lightmap = float3( 0.0, 0.0, 0.0 );
+#if LIGHTPASS != 2
+	float2 lightmapUV = i.lightmapUV.xy;
+	float2 planeStep = i.lightmapUV.zw;
 	if ( hasBump && !flatDiffuse )
 	{
 #if PBR_WORLD_HIGHRES
@@ -239,6 +251,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		lightmap = LIGHTMAP_PLANE( 0, lightmapUV );
 	if ( g_Flags0.y == 2.0 )
 		lightmap *= g_L4D2Controls.z;
+#endif
 
 	float3 vertexNormal = normalize( i.worldNormal );
 	float3 N = vertexNormal;
@@ -312,12 +325,37 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	PBR_PSOut coverage = (PBR_PSOut)0;
 	coverage.color.a = alpha;
 	return coverage;
+#elif LIGHTPASS == 2
+
+	// Additive realtime pass: only what the realtime lights add, through this pixel's fog transmission (the colour the
+	// fog blends toward was already added by pass 1). The engine alpha-test state is off and ALPHATEST=0: under EQUAL
+	// the depth pass 1 left already selected exactly its surviving fragments.
+	float3 result = 0.0;
+	PBRSpecularSum specularSum = PBR_NoSpecularSum();
+#if PBR_WORLD_HIGHRES
+	[branch] if ( hlr.valid != 0 )
+	{
+		ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
+		result += direct.diffuse + direct.specular;
+	}
+#endif
+	result += PBR_ProjectedSpots( sBump, P, PBR_RECEIVER_WORLD, specularSum );
+	float3 eyePosition = P + i.toEye;
+	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
+	// S and D in the units pass 1 writes E: only a capturing bracket over an envmapped material uses them.
+	const float transmission = PBR_FogTransmission( PIXELFOGTYPE, fogFactor, i.fog );
+	const bool ssrPayload = cScreenControl.w != 0 && g_Flags1.x != 0.0;
+#if PBR_WORLD_HIGHRES
+	HighresLightmap_Report();
+#endif
+	return PBR_OutputLight( result * ( LINEAR_LIGHT_SCALE * transmission ),
+		ssrPayload ? specularSum.radiance * ( LINEAR_LIGHT_SCALE * transmission ) : 0.0, ssrPayload ? PBR_SpecularDistance( specularSum ) : 0.0 );
 #else
 
 	// Baked lightmap diffuse; backlight reuses the front value (a lightmap holds no back-facing term).
 	float3 result = s.diffuseColor * s.ao * lightmap * ( ( 1.0 - s.back ) + s.backlightTint * s.back );
 	PBRSpecularSum specularSum = PBR_NoSpecularSum();
-#if PBR_WORLD_HIGHRES
+#if PBR_WORLD_HIGHRES && LIGHTPASS == 0
 	// Unknown/neutral owners add no selected direct. Only debug views need their diagnostic gather.
 	ShadowMapDirect direct = ShadowMap_NoDirect();
 	[branch] if ( hlr.valid != 0 || cShadowView0.w != 0 )
@@ -335,8 +373,18 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	{
 		environment = PBR_Environment( EnvmapTexture, EnvmapSampler, sBump, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask, environmentResponse );
 		result += environment;
+#if !PBR_DEPTH_PREPASS && LIGHTPASS == 0
+		// Translucent receivers (windows) trace the opaque bracket's SSR scene themselves; only they see it bound.
+		[branch] if ( PBR_ForwardSSREnabled() && any( environmentResponse > PBR_FORWARD_MIN_RESPONSE ) )
+		{
+			const float4 hit = PBR_ForwardSSR( P, sBump.N, V, sBump.roughness, i.svPos.xy );
+			result += hit.rgb * environmentResponse * ( hit.a / LINEAR_LIGHT_SCALE ) - hit.a * environment;
+		}
+#endif
 	}
+#if LIGHTPASS == 0
 	result += PBR_ProjectedSpots( sBump, P, PBR_RECEIVER_WORLD, specularSum );
+#endif
 
 	if ( int( g_L4D2World.x + 0.5 ) == 5 )
 		result += g_PbrDetail.w * detail.rgb;
@@ -363,9 +411,11 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		directSpecular = specularSum.radiance * ( LINEAR_LIGHT_SCALE * transmission );
 		specularDistance = PBR_SpecularDistance( specularSum );
 	}
-#if PBR_WORLD_HIGHRES
+#if PBR_WORLD_HIGHRES && LIGHTPASS == 0
 	color = HighresLightmap_Finish( ShadowMap_Debug( receiver, direct, color ) );
 	if ( ShadowMap_DebugReplacesColor() ) reflectionValid = 0.0;
+#elif PBR_WORLD_HIGHRES
+	color = HighresLightmap_Finish( color );
 #endif
 	return PBR_Output( color, sBump, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
 #endif

@@ -364,5 +364,18 @@ PBR_PSOut PBR_Output( float4 color, PBRSurface s, float3 environmentScene, float
 	o.distance = specularDistance;
 	return o;
 }
+// The additive realtime pass of the two-pass split (LIGHTPASS 2): its colour is added ONE/ONE with the alpha write masked
+// off. It owns the SSR payload's S and D (the baked pass gathers no direct specular); the backend binds its G-buffer
+// targets only while SSR captures, writing just target 5, target 6 and target 3's alpha (relightPayload). The other
+// outputs are never stored.
+PBR_PSOut PBR_OutputLight( float3 light, float3 directSpecular, float specularDistance )
+{
+	PBR_PSOut o = (PBR_PSOut)0;
+	o.color = float4( light, 0.0 );
+	o.environment = float4( 0.0, 0.0, 0.0, specularDistance );
+	o.specular = float4( directSpecular, 0.0 );
+	o.distance = specularDistance;
+	return o;
+}
 
 #endif

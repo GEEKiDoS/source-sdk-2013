@@ -13,7 +13,7 @@ BEGIN_VS_SHADER( DX12_GlowComposite, "L4D2 spatially antialiased halo" )
 		SHADER_PARAM( LINEARREAD_BASETEXTURE, SHADER_PARAM_TYPE_INTEGER, "0", "Native linear read" )
 		SHADER_PARAM( LINEARWRITE, SHADER_PARAM_TYPE_INTEGER, "0", "Native linear write" )
 		SHADER_PARAM( COVERAGETEXTURE, SHADER_PARAM_TYPE_TEXTURE, "", "Full-frame R8 exterior coverage" )
-		SHADER_PARAM( COVERAGESIZE, SHADER_PARAM_TYPE_VEC4, "[1 1 0 0]", "Inverse full-frame size" )
+		SHADER_PARAM( COVERAGESIZE, SHADER_PARAM_TYPE_VEC4, "[1 1 0 0]", "Coverage UV per output pixel: render/output scale over the coverage size" )
 		SHADER_PARAM( MASKWRITE, SHADER_PARAM_TYPE_INTEGER, "0", "Write zero to stencil-selected interior" )
 	END_SHADER_PARAMS
 	SHADER_FALLBACK { return NULL; }

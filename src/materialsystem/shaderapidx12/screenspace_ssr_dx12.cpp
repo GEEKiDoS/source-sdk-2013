@@ -377,15 +377,19 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Records this frame's AO term (called with the GTAO compute passes, before the SSR marker replays)
+// Purpose: Records this frame's AO term (called with the GTAO compute passes, before the SSR marker replays). The
+//			viewmodel draws later in the frame bind it when it carries their depth (PrepareForwardScreenSpaceBinding).
 //-----------------------------------------------------------------------------
-void CShaderAPIDX12::SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked )
+void CShaderAPIDX12::SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked, bool bViewModel )
 {
 	m_SSR.aoTerm = hTerm;
 	m_SSR.aoWidth = nWidth;
 	m_SSR.aoHeight = nHeight;
 	m_SSR.aoPacked = bPacked;
+	m_SSR.aoViewModel = bViewModel;
 	m_SSR.aoFrame = hTerm ? m_nFrameCounter : ~0ull;
+	m_ScreenSpace.forwardTableFence = 0;
+	m_ScreenSpace.forwardConstantsFence[0] = m_ScreenSpace.forwardConstantsFence[1] = 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -417,7 +421,27 @@ void CShaderAPIDX12::ReplayDispatchSSR()
 		m_SSR.prevFrame = ~0ull;
 		// The capture may have left the scene colour readable; forward drawing resumes on a render target.
 		m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
+		return;
 	}
+	// The translucents and viewmodels after this bracket trace the same scene copy and view depth in their PBR shaders
+	// (pbr_forward_screenspace.hlsli): one linear march of ssr.forwardSteps (r_ssr_forward_steps, 0 off) steps, each
+	// crossing refined three times more than the profile refines, no reuse or history. control.x (contacts) and
+	// control.w (payload capture) stay 0; control.z carries the trace (DX12_SCREENSPACE_FORWARD_SSR | refinements << 8 |
+	// steps), which an opaque bracket never sets.
+	const uint32 nForwardSteps = MIN( m_ScreenSpace.ssr.forwardSteps, 32u );
+	if ( !nForwardSteps )
+		return;
+	const SSRProfileDX12 &profile = kSSRProfiles[MIN( m_ScreenSpace.ssr.quality, 2u )];
+	DX12ScreenSpaceViewConstants &forward = m_ScreenSpace.forwardConstants;
+	forward = m_ScreenSpace.constants;
+	forward.control[0] = forward.control[1] = forward.control[3] = 0;
+	forward.control[2] = DX12_SCREENSPACE_FORWARD_SSR | ( ( profile.refinements + 3u ) << 8 ) | nForwardSteps;
+	forward.eyeLength[3] = m_ScreenSpace.ssr.maxDistance;
+	forward.forwardThickness[3] = m_ScreenSpace.ssr.thickness;
+	m_ScreenSpace.forwardSSR = true;
+	m_ScreenSpace.forwardSSRFrame = m_nFrameCounter;
+	m_ScreenSpace.forwardTableFence = 0;
+	m_ScreenSpace.forwardConstantsFence[0] = m_ScreenSpace.forwardConstantsFence[1] = 0;
 }
 
 //-----------------------------------------------------------------------------

@@ -328,8 +328,40 @@ commons). Two measures apply to every model, not just infected:
   stages) compiles the four engine-light attenuations, their interpolant and the pixel loop out when the draw has no
   engine model light or `IShaderAPIDX12Lighting::ModelLocalLighting` reports every slot a blacked-out duplicate of a
   runtime light. pbr_model_ps51 has 24 dynamic combos and static strides 24·TANGENT + 48·ENHANCED + 96·ALPHATEST +
-  192·INFECTED + 384·VERTEXCOLOR. Measured on the infected-only first version: 6.2 instead of 8.7–10.2 ns per vertex,
+  192·INFECTED + 384·VERTEXCOLOR + 768·LIGHTPASS. Measured on the infected-only first version: 6.2 instead of 8.7–10.2 ns per vertex,
   main pass 19.2 → 18.3 ms at 200 commons (c1m2, GTX 1050).
+
+Two-pass forward lighting (`r_pbr_light_passes`, `FCVAR_ARCHIVE` default 1): one shader holding the baked reconstruction
+(highres lightmap / probe grid, environment, emission, G-buffer) and the realtime gather (sun PCSS, resident local
+lights and their baked visibility, projected lights) keeps both sets of state live at once; that, not either half,
+was most of the enhanced cost (c1m2 split probe: baked alone +2.2 ms, realtime alone +2.9 ms, together +8.8 ms over
+neither). An opaque PBR material (`BT_NONE` blend; for models the ENHANCED receiver) therefore records three snapshots,
+like Source's flashlight pass: A the single pass, B the baked/material pass, C the realtime pass, selected by the last
+static combo `LIGHTPASS` 0/1/2 of `pbr_model_ps51` / `pbr_world_ps51` (and its highres, early-depth and prepass twins).
+Each draw renders A, or B then C (`Draw( false )` skips the others, so the cvar applies per draw without a re-snapshot):
+- B is the single pass without `PBR_GatherDirect`, `PBR_LocalLights`, the folded local ambient and `PBR_ProjectedSpots`,
+  and writes every target A writes (depth, alpha, G-buffer, stencil).
+- C draws ONE/ONE, `DepthFunc( EQUAL )`, no depth or alpha writes, `FogToBlack`, never alpha tested (ALPHATEST=0): the
+  depth B (or the prepass) left already selected exactly B's fragments. Its colour is the realtime terms times
+  `LINEAR_LIGHT_SCALE · PBR_FogTransmission`, so B + C equals A up to rounding: fog and the linear tone scale are linear
+  in the light, and C adds no fog colour.
+- SSR: B gathers no direct specular, so C owns the payload's S and D (`PBR_OutputLight`). C keeps the seven-target
+  `PBR_PSOut`; while SSR captures the backend attaches the payload targets to this one translucent draw kind
+  (`AdditiveRelightSnapshot`) and its PSO (`PipelineKeyDX12::relightPayload`) writes only target 5, target 6 and target
+  3's alpha, unblended. Normal, F0, E and K stay as B wrote them; non-envmapped materials still mask 3/5/6.
+- The backend drops such additive EQUAL draws from shadow and motion passes (the prepass and the contact replay already
+  skip non-depth-writing draws); B samples the probes without the lighting view block, so space 4 alone selects the
+  lighting root signature, and C reads no lightmap RGB, so `HlightDynamic` is optional in the highres contract
+  (runtime and packer).
+- `CBaseVSShaderDX12::Draw( false )` keeps the selected native blocks for a later real pass of the same
+  `DrawElements`; `DrawElements` clears them afterwards.
+- `r_shadowmap_debug` views use the single pass (they replace its colour); translucent materials and non-enhanced
+  models have only snapshot A.
+
+GTX 1050, c1m2, 720p, SSR/volumetrics off, same session (single → two-pass GPU ms): street 22.2 → 18.9, north
+22.8 → 20.9, 200 commons 30.1 → 25.9, commons around the player 37 → 28 (flashlight on) and 105 → 58 without the depth
+prepass. Screenshots differ from the single pass only by repeat noise. Draws rise about 30% and PSO binds 2.5–3× (B and
+C alternate per material).
 
 Sun sky clip (`r_shadowmap_sky_clip`, `FCVAR_ARCHIVE` default 1): the sky is the sun's emitter, as in the vrad_restir
 bake, so world brushes and model casters on the sun side of a sky face may not cast. At admission the client reads
@@ -747,10 +779,13 @@ is then not shaded under them and their own colour pass has no overdraw. It is s
 not drawn, in tools mode, with a refracting viewmodel (it samples the scene behind it), under depth of field
 (filtered before the viewmodels are drawn) and in water-fog views (another vertex shader combo than the fog-free
 colour pass); a faded viewmodel is translucent and never admitted. The screen-space effects that read scene depth
-before the viewmodels are drawn must not take that compressed depth for geometry next to the camera, so GTAO
-(`ViewDepth`, gtao_common.hlsli) and SSR (`ssr_depth_cs51`, `SSR_LoadReceiver`) read native depth below
-`DX12_VIEWMODEL_DEPTH_MAX` (viewmodel_depth.hlsli, the depth range above) as "no geometry"; the volumetric march
-simply stops there. After the viewmodel view the scene's own view is pushed again (`VIEW_NO_DRAW`), because the
+before the viewmodels are drawn must not take that compressed depth for geometry next to the camera, so SSR
+(`ssr_depth_cs51`, `SSR_LoadReceiver`) reads native depth below `DX12_VIEWMODEL_DEPTH_MAX` (viewmodel_depth.hlsli, the
+depth range above) as "no geometry" and the volumetric march simply stops there. GTAO (`ViewDepth`, gtao_common.hlsli)
+unpacks it with the viewmodel projection instead when this scene's prepass drew it (`ViewModelDepthInScene`,
+`$viewmodeldepth`), so the term covers the viewmodels too (see "Forward screen-space effects"); world pixels next to
+them stay unaffected because the falloff rejects taps that far in front. After the viewmodel view the scene's own
+view is pushed again (`VIEW_NO_DRAW`), because the
 engine's near/far metadata is not stacked. In the c1m1 views checked (a wall at arm's length, a sunlit doorway,
 a frame mid-turn) the weapon and the pixels around it look the same with and without it: no halo, no holes.
 Expected where it applies, not exercised:
@@ -1202,6 +1237,41 @@ GTAO is split around SSR: its term is computed after the motion vectors and befo
 denoise passes publish it through `IShaderAPIDX12Compute::SetAmbientOcclusionTerm`), and applied after SSR's
 correction, so receivers and reflected hits both carry AO.
 
+### Forward screen-space effects
+
+Translucents are outside the G-buffer pass, and the first-person viewmodels are drawn after SSR and the GTAO apply, so
+neither effect above reaches them (c1m2's sedan glass, `4carz1024_glass` and `cara_95sedan_glass_alarm`, is `$translucent`
+VertexLitGeneric and had cubemap reflections only; the police cars' `police_cab_city_glass` is opaque in the shipped
+material and is an ordinary G-buffer receiver).
+Their PBR shaders apply both themselves (`native_src/pbr_forward_screenspace.hlsli`), from space-6 inputs the backend
+binds to scene draws after the bracket that are translucent or viewmodel (viewport depth range ending at
+`DX12_VIEWMODEL_DEPTH_MAX`) (`PrepareForwardScreenSpaceBinding`, screenspace_dx12.cpp):
+
+| Slot | Content | When |
+|---|---|---|
+| t5 | SSR scene copy, from mip 1 (mip 0 holds the composite's delta by then): opaque colour before SSR, GTAO and translucents | the frame's bracket SSR succeeded |
+| t6 | its positive view depth (sky, viewmodel and clear pixels far) | same |
+| t7 | the frame's GTAO term (`SetAmbientOcclusionTerm`), working size in `cScreenControl.y` | viewmodel draws, when GTAO ran on viewmodel depth |
+
+The view block keeps the bracket's camera, `cScreenControl.z` carries `DX12_SCREENSPACE_FORWARD_SSR / _AO / _AO_PACKED`
+with the march steps (`r_ssr_forward_steps`, archived, default 16, at most 32; 0 turns the forward reflections off) and
+the refinements (the profile's plus three), `cScreenEyeLength.w` / `cScreenForwardThickness.w` `r_ssr_max_distance` /
+`r_ssr_thickness`; contacts and payload capture stay off. Neutral constants disable both.
+
+- Reflection (`PBR_ForwardSSR`, envmapped materials with a response above 0.004, LIGHTPASS 0/1): one mirror ray per
+  pixel, a jittered linear clip-space march that, like `ssr_trace_cs51`, binary-refines each front-to-back crossing of
+  t6 and accepts it within the thickness; faded by roughness (0.3..0.5), the viewport edge and the last fifth of the
+  ray. A hit replaces the cubemap term like the composite does, `C * K / LINEAR_LIGHT_SCALE - confidence * E` before fog.
+  No reuse or history: it is the glossy mirror image, the cubemap stays for rough lobes and misses. Like every
+  screen-space reflection it only finds what is on screen. In c1m2 the car windows reflect the sky or what is behind
+  the camera, so they keep the cubemap: a confidence view of the composite at the police cars showed the glass as a
+  valid receiver with no hits, while the lower body panels hit the street.
+- Occlusion (`PBR_ForwardAO`, model shader only): the viewmodel's colour before fog times the term at its pixel, the
+  same product `gtao_apply_ps51` gives the scene. GTAO computes it from the viewmodel depth the depth prepass left
+  (`r_viewmodel_depth_prepass`), unpacked with the viewmodel projection and scaled by tan( viewmodel half FOV ) / tan(
+  scene half FOV ) so the scene projection puts each pixel at its true lateral position (its depth axis is compressed by
+  that ratio). Without that prepass the viewmodel gets no term (`bViewModel` false).
+
 ## Verification
 
 `shaderapidx12_smoke -case nativeparity` renders every `# pair` twice — native VCS vs the SDK's DX9 VCS through the
@@ -1275,6 +1345,9 @@ The two reductions run only when glare is demanded, including `mat_postfx_debug 
 `r_upscaler_scale` (default 1 = native; opt-in 0.77 / 0.667 / 0.58 / 0.5, never set by a preset) shrinks the main 3D viewport the way `mat_viewportscale` does
 (`view.cpp`); the temporal upscaler (`r_upscaler` modes 1-4: auto / DLSS / FSR / XeSS) then reconstructs the unscaled frame.
 Mode 5 selects vendor-independent, native-resolution **SMAA T2x**, combining two-phase jitter with an HDR temporal resolve.
+The resolve is the filmic form: each frame's reference SMAA 1x result is used at its own jitter phase (no resampling),
+the previous phase is reprojected with a 5-tap Catmull-Rom fetch and clipped to the current 3x3 neighborhood, and the
+two are averaged equally, so temporal AA stays on under motion without the reference's velocity-weight cut-off.
 SMAA T2x ignores `r_upscaler_scale` without changing its saved value; the backend rejects scaled SMAA T2x inputs.
 Auto remains provider-only (DLSS / FSR / XeSS), never SMAA T2x.
 `r_upscaler_lod_bias` (archived, default -1) controls material texture sharpness without disabling mipmaps.
@@ -1308,8 +1381,8 @@ and frame generation keeps the native render size. A scale whose provider featur
 `IShaderAPIDX12::AdapterPerformanceTier` classifies the adapter at device creation: integrated/UMA, software, under
 ~6 GB, or without mesh shaders or DXR 1.1 (Pascal, Maxwell, GTX 16, RDNA1) is low. On the first level load for a new
 adapter (`r_quality_tier_adapter` records it) a low-tier adapter gets the low preset in `cdll_client_int.cpp`
-(`ApplyAdapterQualityTier`, native resolution: SMAA T2x anti-aliasing (`r_upscaler 5`), quarter-resolution 8-step
-volumetrics stay on, SSR traces at half resolution, low GTAO, PCF sun shadows at low resolution, two realtime local
+(`ApplyAdapterQualityTier`, native resolution: SMAA T2x anti-aliasing (`r_upscaler 5`), SSR and volumetric lighting
+off (SSR keeps a half-resolution trace if re-enabled), low GTAO, PCF sun shadows at low resolution, two realtime local
 lights, low bloom and 4-tap motion blur).
 High-tier adapters keep the defaults. `-dx12adaptertier 0|1` forces the class.
 A config.cfg saved before `mat_postfx_dx12_set` existed gets `mat_postfx_dx12 1` once on the first level load

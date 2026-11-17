@@ -45,13 +45,20 @@ cbuffer GtaoParams : register( b0, space1 )
 	int gDenoiseFinal;
 	int2 gSceneOrigin;
 	float2 gDepthScale;
+	// Viewmodel depth (native z < DX12_VIEWMODEL_DEPTH_MAX, the viewmodel depth prepass): x, y its DepthRange-compressed
+	// unpack, z tan( viewmodel half FOV ) / tan( scene half FOV ), w enabled (gtao_dx12.cpp).
+	float4 gViewModelDepth;
 };
 
-// Native scene depth -> view depth; the far value for the clear depth and for viewmodel depth (no occluder there).
+// Native scene depth -> view depth; the far value for the clear depth. Viewmodel depth is the far value too unless its
+// unpack is supplied: then its view depth times gViewModelDepth.z, which puts the pixel at its true lateral position
+// under the scene projection ViewPosition uses (and compresses its depth by that ratio).
 float ViewDepth( float z )
 {
+	if ( z < DX12_VIEWMODEL_DEPTH_MAX )
+		return gViewModelDepth.w != 0.0 ? gViewModelDepth.z * gViewModelDepth.x / max( gViewModelDepth.y - z, 1e-6 ) : 65504.0;
 	float denominator = gDepthUnpackConsts.y - z;
-	return abs( denominator ) < 1e-6 || z < DX12_VIEWMODEL_DEPTH_MAX ? 65504.0 : gDepthUnpackConsts.x / denominator;
+	return abs( denominator ) < 1e-6 ? 65504.0 : gDepthUnpackConsts.x / denominator;
 }
 
 float3 ViewPosition( float2 uv, float depth )

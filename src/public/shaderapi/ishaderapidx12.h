@@ -113,7 +113,8 @@ struct ShaderAPIDX12ComputeDispatch_t
 
 // _002: SHADERAPIDX12_COMPUTE_MAX_SRVS 8 -> 16 (ShaderAPIDX12ComputeDispatch_t layout), PBR_SSR_SPECULAR resource.
 // _003: SetAmbientOcclusionTerm.
-#define SHADERAPIDX12_COMPUTE_INTERFACE_VERSION "ShaderAPIDX12Compute_003"
+// _004: SetAmbientOcclusionTerm bViewModel.
+#define SHADERAPIDX12_COMPUTE_INTERFACE_VERSION "ShaderAPIDX12Compute_004"
 
 // SetFrameGeneration modes.
 enum ShaderAPIDX12FrameGenMode_t
@@ -212,8 +213,10 @@ public:
 	virtual int SceneSampleCount() = 0;
 	// The main view's ambient-occlusion term for this frame, in call order with Dispatch: viewport-local texels
 	// [0, nWidth) x [0, nHeight) of hTerm cover the scene viewport; bPacked when the stored value is ao / 1.5 (the
-	// GTAO main pass without a denoise pass). SSR darkens reflected hits with it; the last call of a frame wins.
-	virtual void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked ) = 0;
+	// GTAO main pass without a denoise pass); bViewModel when it was computed with the first-person viewmodels' depth
+	// (their pixels then carry their own term, which the viewmodel draws apply). SSR darkens reflected hits with it;
+	// the last call of a frame wins.
+	virtual void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked, bool bViewModel ) = 0;
 };
 
 #endif // ISHADERAPIDX12_H

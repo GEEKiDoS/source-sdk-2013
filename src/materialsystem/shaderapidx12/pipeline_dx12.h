@@ -22,10 +22,17 @@ namespace shaderapidx12
 // Register space 6: backend-owned screen-space inputs (ishaderapidx12screenspace.h, native_src/screenspace_view.hlsli).
 // t0 Texture2D<float> / t1 Texture2DMS<float> private contact depth, t2 / t3 final scene depth; b0 DX12ScreenSpaceView (208 B),
 // b1 DX12Volumetric (64 B). The sun shadow-chart sky clip (ishaderapidx12lighting.h, native_src/shadow_sky_clip.hlsli)
-// adds t4 Texture2D<float> sky entry depth and b2 DX12ShadowSkyClip (16 B). No sampler.
+// adds t4 Texture2D<float> sky entry depth and b2 DX12ShadowSkyClip (16 B). Forward screen-space effects of the draws
+// after the opaque bracket (screenspace_dx12.cpp, native_src/pbr_forward_screenspace.hlsli) add t5 Texture2D<float4>
+// SSR scene colour (from its mip 1), t6 Texture2D<float> SSR view depth and t7 Texture2D<float> GTAO term, with the
+// DX12_SCREENSPACE_FORWARD_* flags in the view block's control.z. No sampler.
 constexpr UINT DX12_SCREENSPACE_REGISTER_SPACE = 6;
-constexpr UINT DX12_SCREENSPACE_TABLE_COUNT = 5;
+constexpr UINT DX12_SCREENSPACE_TABLE_COUNT = 8;
 constexpr UINT DX12_SCREENSPACE_T_SHADOW_SKY_CLIP = 4;
+constexpr UINT DX12_SCREENSPACE_T_SSR_SCENE = 5;
+constexpr UINT DX12_SCREENSPACE_T_SSR_DEPTH = 6;
+constexpr UINT DX12_SCREENSPACE_T_AO = 7;
+constexpr uint32_t DX12_SCREENSPACE_FORWARD_SSR = 0x10000u, DX12_SCREENSPACE_FORWARD_AO = 0x20000u, DX12_SCREENSPACE_FORWARD_AO_PACKED = 0x40000u;
 constexpr UINT DX12_SCREENSPACE_B_VIEW = 0;
 constexpr UINT DX12_SCREENSPACE_B_VOLUMETRIC = 1;
 constexpr UINT DX12_SCREENSPACE_B_SHADOW_SKY_CLIP = 2;
@@ -50,11 +57,14 @@ struct PipelineKeyDX12
 	bool gbuffer = false;
 	// Non-envmapped SSR capture suppresses E/S writes; response alpha still invalidates those payloads.
 	bool nonEnvmapSsrPayload = false;
+	// The additive realtime pass of the two-pass PBR lighting with the SSR payload attached: of the G-buffer it writes
+	// only the direct specular S (target 5) and its distance D (target 3 alpha, target 6); see pbr_brdf.hlsli.
+	bool relightPayload = false;
 	// Depth-writing draw inside the G-buffer pass: forced stencil, a second PSO from the material's usual one.
 	bool gbufferPass = false;
 	// Contact-depth replay (section 3): private DSV, RTV0 kept with zero write masks; an ordinary cached PSO must not match.
 	bool contactReplay = false;
-	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi && gbuffer == o.gbuffer && nonEnvmapSsrPayload == o.nonEnvmapSsrPayload && gbufferPass == o.gbufferPass && contactReplay == o.contactReplay; }
+	bool operator==( const PipelineKeyDX12 &o ) const { return vs == o.vs && ps == o.ps && gs == o.gs && vsVariant == o.vsVariant && psVariant == o.psVariant && gsVariant == o.gsVariant && input == o.input && color == o.color && !memcmp( colorFormats, o.colorFormats, sizeof( colorFormats ) ) && colorCount == o.colorCount && sampleQuality == o.sampleQuality && depth == o.depth && samples == o.samples && topology == o.topology && blend == o.blend && depthState == o.depthState && raster == o.raster && blendSource == o.blendSource && blendDestination == o.blendDestination && blendAlphaSource == o.blendAlphaSource && blendAlphaDestination == o.blendAlphaDestination && blendOperation == o.blendOperation && blendAlphaOperation == o.blendAlphaOperation && separateAlpha == o.separateAlpha && depthFunction == o.depthFunction && stencilFunction == o.stencilFunction && stencilFail == o.stencilFail && stencilDepthFail == o.stencilDepthFail && stencilPass == o.stencilPass && stencilReadMask == o.stencilReadMask && stencilWriteMask == o.stencilWriteMask && depthTest == o.depthTest && depthWrite == o.depthWrite && culling == o.culling && colorWrites == o.colorWrites && alphaWrites == o.alphaWrites && alphaToCoverage == o.alphaToCoverage && stencil == o.stencil && frontCounterClockwise == o.frontCounterClockwise && wireframe == o.wireframe && scissor == o.scissor && depthBias == o.depthBias && depthBiasValue == o.depthBiasValue && slopeScaledDepthBias == o.slopeScaledDepthBias && lightingAbi == o.lightingAbi && highresAbi == o.highresAbi && gbuffer == o.gbuffer && nonEnvmapSsrPayload == o.nonEnvmapSsrPayload && relightPayload == o.relightPayload && gbufferPass == o.gbufferPass && contactReplay == o.contactReplay; }
 };
 
 // Owned by the recording thread, like the command list it fills: every entry point runs on the current
@@ -138,14 +148,16 @@ public:
 
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
 
-	// Typed null view matching the space-6 declaration of slot t0..t4 (Texture2D<float> even slots, Texture2DMS<float> odd).
+	// Typed null view matching the space-6 declaration of slot t0..t7: Texture2D<float> even slots below the SSR pair,
+	// Texture2DMS<float> odd ones, Texture2D<float4> SSR scene colour, Texture2D<float> SSR depth and AO term.
 	static D3D12_SHADER_RESOURCE_VIEW_DESC ScreenSpaceNullSrvDesc( UINT nSlot )
 	{
 		D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-		srv.Format = DXGI_FORMAT_R32_FLOAT;
+		srv.Format = nSlot == DX12_SCREENSPACE_T_SSR_SCENE ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R32_FLOAT;
 		srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-		srv.ViewDimension = ( nSlot & 1 ) ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
-		if ( !( nSlot & 1 ) )
+		const bool multisampled = ( nSlot & 1 ) && nSlot < DX12_SCREENSPACE_T_SSR_SCENE;
+		srv.ViewDimension = multisampled ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
+		if ( !multisampled )
 			srv.Texture2D.MipLevels = 1;
 		return srv;
 	}

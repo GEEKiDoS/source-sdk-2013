@@ -24,7 +24,7 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_004"
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_005"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
 struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 208 bytes
@@ -38,12 +38,13 @@ struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 208 bytes
 	float	depth[4];				// depth-clear value (backend), normal bias 0.25, first ray distance 0.5, edge fade 8 pixels
 };
 
-struct DX12SSRSettings				// 16 bytes
+struct DX12SSRSettings				// 20 bytes
 {
 	uint32	quality;				// 0 low, 1 balanced, 2 high
 	float	maxDistance;			// Source units
 	float	thickness;				// Source units
 	float	resolutionScale;		// trace scale per axis relative to the quality profile, [0.25, 1]
+	uint32	forwardSteps;			// march steps of the forward reflections of translucents and viewmodels, [0, 32]; 0 off
 };
 
 struct DX12ScreenSpaceViewDesc
@@ -68,7 +69,7 @@ struct alignas( 16 ) DX12VolumetricConstants	// 64 bytes, HLSL cbuffer DX12Volum
 };
 
 static_assert( sizeof( DX12ScreenSpaceViewConstants ) == 208, "DX12ScreenSpaceViewConstants must match HLSL DX12ScreenSpaceView" );
-static_assert( sizeof( DX12SSRSettings ) == 16, "DX12SSRSettings layout" );
+static_assert( sizeof( DX12SSRSettings ) == 20, "DX12SSRSettings layout" );
 static_assert( sizeof( DX12VolumetricSettings ) == 48, "DX12VolumetricSettings layout" );
 static_assert( sizeof( DX12VolumetricConstants ) == 64, "DX12VolumetricConstants must match HLSL DX12Volumetric" );
 

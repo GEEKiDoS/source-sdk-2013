@@ -34,8 +34,11 @@ struct GtaoConstantsDX12
 	int32 noiseIndex, sliceCount, stepsPerSlice, denoiseFinal;
 	int32 sceneOrigin[2];
 	float depthScale[2];
+	float pad[2];
+	// Viewmodel depth (z < 0.1): x, y its DepthRange-compressed unpack, z the lateral-consistency scale, w enabled.
+	float viewModelDepth[4];
 };
-static_assert( sizeof( GtaoConstantsDX12 ) == 30 * sizeof( float ), "GTAO cbuffer layout mismatch" );
+static_assert( sizeof( GtaoConstantsDX12 ) == 36 * sizeof( float ), "GTAO cbuffer layout mismatch" );
 struct GtaoTemporalConstantsDX12
 {
 	float prevWorldToClip[16];
@@ -79,6 +82,7 @@ BEGIN_VS_SHADER( DX12_GTAO, "DX12 GTAO compute passes" )
 		SHADER_PARAM( NOISE, SHADER_PARAM_TYPE_VEC4, "[0 3 3 0]", "Noise index, slices, steps, final denoise" )
 		SHADER_PARAM( SCENEORIGIN, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Viewport origin in scene pixels" )
 		SHADER_PARAM( DEPTHSCALE, SHADER_PARAM_TYPE_VEC4, "[1 1 0 0]", "Scene pixels per working pixel" )
+		SHADER_PARAM( VIEWMODELDEPTH, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Viewmodel depth unpack x/y, depth scale, enabled" )
 		SHADER_PARAM( TEMPORAL0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Previous world-to-clip matrix row 0" )
 		SHADER_PARAM( TEMPORAL1, SHADER_PARAM_TYPE_VEC4, "[0 1 0 0]", "Previous world-to-clip matrix row 1" )
 		SHADER_PARAM( TEMPORAL2, SHADER_PARAM_TYPE_VEC4, "[0 0 1 0]", "Previous world-to-clip matrix row 2" )
@@ -126,7 +130,7 @@ BEGIN_VS_SHADER( DX12_GTAO, "DX12 GTAO compute passes" )
 			const float *pTemporalViewport = params[TEMPORALVIEWPORT]->GetVecValue();
 			const float *pTemporalOriginScale = params[TEMPORALORIGINSCALE]->GetVecValue();
 			const float *pTemporalDepth = params[TEMPORALDEPTH]->GetVecValue();
-			GtaoConstantsDX12 constants;
+			GtaoConstantsDX12 constants = {};
 			constants.viewportSize[0] = static_cast<int32>( pViewport[0] );
 			constants.viewportSize[1] = static_cast<int32>( pViewport[1] );
 			constants.viewportPixelSize[0] = pViewport[2];
@@ -157,6 +161,7 @@ BEGIN_VS_SHADER( DX12_GTAO, "DX12 GTAO compute passes" )
 			constants.sceneOrigin[1] = static_cast<int32>( pOrigin[1] );
 			constants.depthScale[0] = pScale[0];
 			constants.depthScale[1] = pScale[1];
+			memcpy( constants.viewModelDepth, params[VIEWMODELDEPTH]->GetVecValue(), sizeof( constants.viewModelDepth ) );
 			GtaoTemporalConstantsDX12 temporalConstants = {};
 			for ( int i = 0; i < 4; ++i )
 			{
@@ -267,7 +272,8 @@ BEGIN_VS_SHADER( DX12_GTAO, "DX12 GTAO compute passes" )
 			{
 				const ShaderAPITextureHandle_t hPublished = nPass == 4 ?
 					GetShaderAPITextureBindHandle( HISTORYOUT, -1 ) : GetShaderAPITextureBindHandle( AOOUT, -1 );
-				pCompute->SetAmbientOcclusionTerm( hPublished, constants.viewportSize[0], constants.viewportSize[1], nPass == 2 || ( nPass == 4 && constants.denoiseFinal == 0 ) );
+				pCompute->SetAmbientOcclusionTerm( hPublished, constants.viewportSize[0], constants.viewportSize[1], nPass == 2 || ( nPass == 4 && constants.denoiseFinal == 0 ),
+					constants.viewModelDepth[3] != 0.f );
 			}
 		}
 		Draw( false );

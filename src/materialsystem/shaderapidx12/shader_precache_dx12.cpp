@@ -205,8 +205,9 @@ static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D1
 
 // Space 6 (screen-space effects, pixel stage): cbuffer DX12ScreenSpaceView b0 (208 B, 7 members), cbuffer DX12Volumetric b1
 // (64 B, 4 members), cbuffer DX12ShadowSkyClip b2 (16 B, 1 member), g_ScreenContactDepth t0 / g_ScreenSceneDepth t2 /
-// g_ShadowSkyClip t4 (Texture2D<float>) and g_ScreenContactDepthMS t1 / g_ScreenSceneDepthMS t3 (Texture2DMS<float>).
-// Unknown space-6 resources are rejected. screenSeen collects one bit per name.
+// g_ShadowSkyClip t4 / g_ScreenSSRDepth t6 / g_ScreenAO t7 (Texture2D<float>), g_ScreenContactDepthMS t1 /
+// g_ScreenSceneDepthMS t3 (Texture2DMS<float>) and g_ScreenSSRScene t5 (Texture2D<float4>). Unknown space-6 resources
+// are rejected. screenSeen collects one bit per name.
 static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned &screenSeen )
 {
 	struct Block
@@ -232,13 +233,17 @@ static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, cons
 		const char *name;
 		UINT reg;
 		D3D_SRV_DIMENSION dimension;
+		UINT components; // D3D_SIF_TEXTURE_COMPONENTS bits: 0 for float, all for float4
 	};
 	static const Texture textures[] = {
-		{ "g_ScreenContactDepth", 0, D3D_SRV_DIMENSION_TEXTURE2D },
-		{ "g_ScreenContactDepthMS", 1, D3D_SRV_DIMENSION_TEXTURE2DMS },
-		{ "g_ScreenSceneDepth", 2, D3D_SRV_DIMENSION_TEXTURE2D },
-		{ "g_ScreenSceneDepthMS", 3, D3D_SRV_DIMENSION_TEXTURE2DMS },
-		{ "g_ShadowSkyClip", DX12_SCREENSPACE_T_SHADOW_SKY_CLIP, D3D_SRV_DIMENSION_TEXTURE2D },
+		{ "g_ScreenContactDepth", 0, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenContactDepthMS", 1, D3D_SRV_DIMENSION_TEXTURE2DMS, 0 },
+		{ "g_ScreenSceneDepth", 2, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenSceneDepthMS", 3, D3D_SRV_DIMENSION_TEXTURE2DMS, 0 },
+		{ "g_ShadowSkyClip", DX12_SCREENSPACE_T_SHADOW_SKY_CLIP, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenSSRScene", DX12_SCREENSPACE_T_SSR_SCENE, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SIF_TEXTURE_COMPONENTS },
+		{ "g_ScreenSSRDepth", DX12_SCREENSPACE_T_SSR_DEPTH, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenAO", DX12_SCREENSPACE_T_AO, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
 	};
 	unsigned bit = 0;
 	bool valid = false;
@@ -267,7 +272,7 @@ static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, cons
 			continue;
 		bit = 8u << i;
 		valid = binding.Type == D3D_SIT_TEXTURE && binding.Dimension == texture.dimension && binding.ReturnType == D3D_RETURN_TYPE_FLOAT &&
-		        binding.BindPoint == texture.reg && binding.BindCount == 1 && !( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS );
+		        binding.BindPoint == texture.reg && binding.BindCount == 1 && ( binding.uFlags & D3D_SIF_TEXTURE_COMPONENTS ) == texture.components;
 	}
 	if ( !valid || ( screenSeen & bit ) )
 		return false;
@@ -451,10 +456,12 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		error = "space-2 resources require DX12LightingViewConstantsV1";
 		return false;
 	}
-	// Probe textures and the sampler read the block's enable word; the block alone (a shader that never samples) is legal.
-	if ( probeSeen && ( !( probeSeen & 1 ) || !marker ) )
+	// Probe textures and the sampler read the probe block's enable word; the block alone (a shader that never samples) is
+	// legal. Space 4 selects the lighting root signature by itself: the baked pass of the two-pass PBR split
+	// (LIGHTPASS 1) samples the probes but no longer references the view block.
+	if ( probeSeen && !( probeSeen & 1 ) )
 	{
-		error = "space-4 resources require DX12ProbeConstantsV1 and DX12LightingViewConstantsV1";
+		error = "space-4 resources require DX12ProbeConstantsV1";
 		return false;
 	}
 	// World requires face/entries/payload; models require mesh/triangle/draw CB plus entries/payload.
@@ -480,7 +487,7 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 	if ( propVisibility ) *propVisibility = (seen&propGroup)==propGroup;
 	if ( sunVisibility ) *sunVisibility = ( seen & ( 1u << 7 ) ) != 0;
 	if ( lightingAbi )
-		*lightingAbi = marker;
+		*lightingAbi = marker || probeSeen != 0;
 	if ( pbrSpots )
 		*pbrSpots = pbrSeen != 0;
 	if ( probeAbi )

@@ -297,11 +297,8 @@ void CBaseVSShaderDX12::Draw( bool bMakeActualDrawCall )
 		}
 		DX12FlushNativeBlocks( s_pShaderAPI );
 	}
-	else
-	{
-		DX12SelectNativeBlockWriter( dx12native::kStageVertex, nullptr );
-		DX12SelectNativeBlockWriter( dx12native::kStagePixel, nullptr );
-	}
+	// A skipped dynamic pass keeps the selected native blocks: a later real pass of the same DrawElements writes them
+	// (pbr_helper.cpp records single-pass and two-pass snapshots and draws one set). DrawElements clears what is left.
 	CBaseShader::Draw( bMakeActualDrawCall );
 }
 
@@ -314,6 +311,9 @@ void CBaseVSShaderDX12::DrawElements( IMaterialVar **params, int nModulationFlag
 	g_DX12Constants.shadowmapPassAdmitted = false;
 	CBaseShader::DrawElements( params, nModulationFlags, pShaderShadow, pShaderAPI, vertexCompression, pContext );
 	g_DX12Constants.shadowmapPassAdmitted = false;
+	// Blocks selected for a pass that never drew must not reach the next material's draw.
+	DX12SelectNativeBlockWriter( dx12native::kStageVertex, nullptr );
+	DX12SelectNativeBlockWriter( dx12native::kStagePixel, nullptr );
 }
 
 static ConVar mat_fullbright( "mat_fullbright","0", FCVAR_CHEAT );
