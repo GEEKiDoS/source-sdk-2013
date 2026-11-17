@@ -622,25 +622,31 @@ int C_BaseViewModel::DrawModel( int flags )
 			return 0;
 	}
 
-	Vector cameraOrigin;
-	QAngle cameraAngles;
-	if ( vm_camera.GetInt() != 0 && m_iCameraAttachment > 0 )
+	// A sun shadow-depth draw (viewmodel self-shadowing) precedes the visible draw each frame: only the visible draw
+	// advances the camera-attachment interpolation, the animation parity and the vm_debug output.
+	const bool shadowDepth = ( flags & STUDIO_SHADOWDEPTHTEXTURE ) != 0;
+	if ( !shadowDepth )
 	{
-		if ( !GetAttachmentLocal( m_iCameraAttachment, cameraOrigin, cameraAngles ) )
+		Vector cameraOrigin;
+		QAngle cameraAngles;
+		if ( vm_camera.GetInt() != 0 && m_iCameraAttachment > 0 )
 		{
-			// Main decision:2DA40 leaves outputs unwritten on failure;6B960/B4CF0
-			// otherwise read uninitialized angles. Use existing zero-angle arm only.
+			if ( !GetAttachmentLocal( m_iCameraAttachment, cameraOrigin, cameraAngles ) )
+			{
+				// Main decision:2DA40 leaves outputs unwritten on failure;6B960/B4CF0
+				// otherwise read uninitialized angles. Use existing zero-angle arm only.
+				cameraAngles.Init();
+			}
+		}
+		else
+		{
 			cameraAngles.Init();
 		}
+		const float cameraRate = vm_camera_interp_speed.GetFloat();
+		UpdateOriginalViewModelCameraAngle( cameraAngles.x, cameraRate, &m_angViewModelCamera.x );
+		UpdateOriginalViewModelCameraAngle( cameraAngles.y, cameraRate, &m_angViewModelCamera.y );
+		UpdateOriginalViewModelCameraAngle( cameraAngles.z, cameraRate, &m_angViewModelCamera.z );
 	}
-	else
-	{
-		cameraAngles.Init();
-	}
-	const float cameraRate = vm_camera_interp_speed.GetFloat();
-	UpdateOriginalViewModelCameraAngle( cameraAngles.x, cameraRate, &m_angViewModelCamera.x );
-	UpdateOriginalViewModelCameraAngle( cameraAngles.y, cameraRate, &m_angViewModelCamera.y );
-	UpdateOriginalViewModelCameraAngle( cameraAngles.z, cameraRate, &m_angViewModelCamera.z );
 
 	CMatRenderContextPtr pRenderContext( materials );
 	if ( ShouldFlipViewModel() )
@@ -649,7 +655,7 @@ int C_BaseViewModel::DrawModel( int flags )
 	// virtual bridge. Strip ONLY native skip-stencil0x800 at this SDK boundary.
 	const int result = BaseClass::DrawModel( flags & ~0x800 );
 	pRenderContext->CullMode( MATERIAL_CULLMODE_CCW );
-	if ( flags & STUDIO_RENDER )
+	if ( ( flags & STUDIO_RENDER ) && !shadowDepth )
 	{
 		if ( m_nOldAnimationParity != m_nAnimationParity )
 			m_nOldAnimationParity = m_nAnimationParity;

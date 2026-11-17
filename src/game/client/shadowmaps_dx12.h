@@ -291,8 +291,18 @@ bool ShadowMapsDX12_ReplaceSpotlightBeam( C_Beam *beam );
 // sky camera; viewmodels their own projection). Returns false for ordinary/shutdown views or an explicit failure;
 // CanDrawReceiverViews distinguishes ordinary rendering from rejected rendering. `maxReceiverDepth` bounds the
 // camera-forward distance of every receiver pixel the view will draw (viewmodels pass their renderables' bounds);
-// sun cascades starting beyond it are never sampled and are not rendered.
-bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &viewSetup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth = FLT_MAX );
+// sun cascades starting beyond it are never sampled and are not rendered. A viewmodel view passes `viewModel`: its opaque
+// studio renderables are drawn only into a private copy of the sun cascades this view samples (r_shadowmap_viewmodel_self),
+// so the viewmodel shadows itself and never the world. Only the receivers' footprint (plus the filter reach) is copied.
+class IClientRenderable;
+struct ShadowMapViewModelCasters_t
+{
+	IClientRenderable *const *casters;	// opaque studio viewmodels (weapon, arms)
+	int casterCount;
+	Vector receiverMins, receiverMaxs;	// world bounds of every viewmodel the view draws
+};
+bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &viewSetup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth = FLT_MAX,
+	const ShadowMapViewModelCasters_t *viewModel = NULL );
 void ShadowMapsDX12_EndReceiverView();
 
 // Exact sprp ordinal/public renderable registration; no name or proximity lookup.

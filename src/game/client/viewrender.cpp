@@ -119,10 +119,11 @@ public:
 	CShadowMapReceiverScope( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind )
 		: m_bBegun( false ) { Begin( setup, kind ); }
 	~CShadowMapReceiverScope() { Finish(); }
-	void Begin( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth = FLT_MAX )
+	void Begin( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth = FLT_MAX,
+		const ShadowMapViewModelCasters_t *viewModel = NULL )
 	{
 		Finish();
-		m_bBegun = ShadowMapsDX12_BeginReceiverView( setup, kind, maxReceiverDepth );
+		m_bBegun = ShadowMapsDX12_BeginReceiverView( setup, kind, maxReceiverDepth, viewModel );
 		if ( m_bBegun )
 		{
 			// PopView restores matrices, but not the engine's cached near/far
@@ -1658,15 +1659,23 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 		bool hasReceiver = false;
 		// Camera-forward extent of the drawn viewmodels: no viewmodel pixel lies beyond it.
 		float maxReceiverDepth = 0.0f;
+		// Opaque studio viewmodels (weapon, arms) cast sun shadows onto the viewmodel only.
+		CUtlVector< IClientRenderable * > selfCasters( 0, 8 );
+		Vector receiverMins( FLT_MAX, FLT_MAX, FLT_MAX ), receiverMaxs( -FLT_MAX, -FLT_MAX, -FLT_MAX );
 		Vector viewForward;
 		AngleVectors( viewModelSetup.angles, &viewForward );
-		auto addReceiver = [&]( IClientRenderable *pRenderable )
+		auto addReceiver = [&]( IClientRenderable *pRenderable, bool opaque )
 		{
 			if ( !pRenderable->GetIClientUnknown()->GetClientRenderable()->ShouldDraw() )
 				return;
 			hasReceiver = true;
+			const model_t *model = pRenderable->GetModel();
+			if ( opaque && model && modelinfo->GetModelType( model ) == mod_studio )
+				selfCasters.AddToTail( pRenderable );
 			Vector mins, maxs;
 			pRenderable->GetRenderBoundsWorldspace( mins, maxs );
+			VectorMin( receiverMins, mins, receiverMins );
+			VectorMax( receiverMaxs, maxs, receiverMaxs );
 			for ( int c = 0; c < 8; ++c )
 			{
 				const Vector corner( ( c & 1 ) ? maxs.x : mins.x, ( c & 2 ) ? maxs.y : mins.y, ( c & 4 ) ? maxs.z : mins.z );
@@ -1674,11 +1683,14 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			}
 		};
 		for ( int i = 0; i < opaqueViewModelList.Count(); ++i )
-			addReceiver( ViewModelListRenderable( opaqueViewModelList[i] ) );
+			addReceiver( ViewModelListRenderable( opaqueViewModelList[i] ), true );
 		for ( int i = 0; i < translucentViewModelList.Count(); ++i )
-			addReceiver( ViewModelListRenderable( translucentViewModelList[i] ) );
+			addReceiver( ViewModelListRenderable( translucentViewModelList[i] ), false );
 		if ( hasReceiver )
-			shadowScope.Begin( viewModelSetup, SHADOWMAP_VIEW_VIEWMODEL, maxReceiverDepth );
+		{
+			const ShadowMapViewModelCasters_t viewModel = { selfCasters.Base(), selfCasters.Count(), receiverMins, receiverMaxs };
+			shadowScope.Begin( viewModelSetup, SHADOWMAP_VIEW_VIEWMODEL, maxReceiverDepth, &viewModel );
+		}
 
 		// Nested shadow views reset the context depth range to 0..1.
 		// Apply the viewmodel override after their depth work has finished.
