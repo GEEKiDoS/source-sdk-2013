@@ -323,6 +323,10 @@ casterInstancedDraws`. Setting the cvar to 0 stops emitting the markers (the unb
 same vertices with the same rows (skinned blends may differ in the last ulp), so the toggle does not invalidate cached
 charts; it applies to every depth scene rendered afterwards (cascades re-render as the view moves).
 
+The reusable clean depth chart contains only the world, immutable casters and static detail. Dynamic casters go into
+the rigid or overlay pass, not both the clean and working charts. Queuing them twice on a cold chart rebuild can
+exhaust the material call queue before the render thread gets to instance the draws.
+
 Hordes: L4D2 ships every common infected with four identical LODs (the `.vtx` triangle count is the same at each), so
 distance never reduces their geometry and their cost is per pixel and per vertex in every pass (PIX, c1m2 at 200
 commons). Two measures apply to every model, not just infected:

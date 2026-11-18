@@ -2315,7 +2315,8 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::RenderChart.CleanDepth", "Shadowmaps" );
 		cache.rigidValid=false;
-		if ( !RenderDepth(data,clean,x,y,size,cache.pendingView,cache.pendingVolume,true,true,true,true,
+		// Moving casters belong to the work overlay, never to its reusable clean source.
+		if ( !RenderDepth(data,clean,x,y,size,cache.pendingView,cache.pendingVolume,true,true,true,false,
 			DetailObjectSystem()->HasShadowCasters(cache.pendingVolume,false),false,SHADOWMAP_DYNAMIC_ALL,NULL,NULL,sunSkyClip) ) return false;
 		cache.pendingClean=true;
 	}
