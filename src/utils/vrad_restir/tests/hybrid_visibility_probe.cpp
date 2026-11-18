@@ -94,7 +94,7 @@ int main(int argc, char **argv)
     char fileError[256] = {}, manifestError[256] = {}, pairError[256] = {};
     const bool fileValid = hlight::ValidateFile(fileBytes.data(), fileCount, file, fileError, sizeof(fileError));
     const uint32 flags = argc == 4 ? uint32(std::strtoul(argv[3], nullptr, 0)) :
-        ShadowMap_LevelFlagDirect(0) | ShadowMap_LevelFlagDirect(1);
+        ShadowMap_LevelFlagDirect(SHADOWMAP_MODE_HDR);
     const bool manifestValid = hlight::ValidateManifest(manifestBytes.data(), manifestCount,
         flags, manifest, manifestError, sizeof(manifestError));
     const bool pairValid = fileValid && manifestValid && hlight::ValidateManifestAsset(file, manifest, pairError, sizeof(pairError));

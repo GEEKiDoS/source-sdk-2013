@@ -50,19 +50,18 @@ def light_record(index, sun, hdr=False, style=0):
                              0 if is_sun else 1, 0)
 
 
-def fixture(*, shared=True, sun=0, locals_count=3, mode_count=2, world=False,
+def fixture(*, sun=0, locals_count=3, world=False,
             lit_second=False, baked_styles=(0,), light_styles=None, unbaked_faces=(), unbaked_light_indices=(),
-            prop_direct=False, prop_palette=(0, 32, 33, 34)):
-    """Canonical v4 byte fixture, including inline prop direct and all prop LODs."""
+            prop_direct=False, prop_palette=(0, 32, 33, 34), removed_worldlights=()):
+    """Canonical v5 byte fixture (one HDR mode), including inline prop direct and all prop LODs."""
     light_styles = light_styles or {}
     light_count = locals_count+(sun >= 0)
     local_indices = [i for i in range(light_count) if i != sun]
-    set_count = 1 if shared else mode_count
+    mode_count = set_count = 1
     data = bytearray(64+mode_count*128)
     locations = {'modes': [], 'sets': []}
     parsed_modes, manifests = [], []
-    selected = [b''.join(light_record(i, sun, not shared and mi == 1, light_styles.get(i, 0))
-                         for i in range(light_count)) for mi in range(mode_count)]
+    selected = [b''.join(light_record(i, sun, True, light_styles.get(i, 0)) for i in range(light_count))]
 
     def section(raw):
         data.extend(bytes((-len(data)) % 16))
@@ -71,7 +70,7 @@ def fixture(*, shared=True, sun=0, locals_count=3, mode_count=2, world=False,
         return at
 
     for mi in range(mode_count):
-        face_lump, lighting_lump = 7, (8, 53)[mi]
+        face_lump, lighting_lump = 58, 53
         lighting_bytes, lighting_crc = (4, 0x55667788) if world else (0, 0)
         identities = bytearray()
         for lump in sorted((*GEOMETRY, face_lump, lighting_lump)):
@@ -109,10 +108,10 @@ def fixture(*, shared=True, sun=0, locals_count=3, mode_count=2, world=False,
         struct.pack_into('<4I2Q4I5Q4IQ4I', data, mode_at,
                          face_lump, lighting_lump, 1, 1, 112, lighting_bytes,
                          0x11223344, lighting_crc, 2, 1, faces_at, model_at, tiles_at, pages_at, identity_at,
-                         len(tiles), int(world), 14, 0, 0, 0 if shared else mi, 0, 0, 0)
+                         len(tiles), int(world), 14, 0, 0, 0, 0, 0, 0)
         locations['modes'].append(dict(record=mode_at, faces=faces_at, pages=pages_at,
                                       pixels=pixel_at if world else None))
-        parsed_modes.append(dict(visibility_set=0 if shared else mi, faces=faces))
+        parsed_modes.append(dict(visibility_set=0, faces=faces))
         manifests.append(dict(asset=mi, lights=light_count, sun=sun, selected_crc=crc(selected[mi]), selected_bytes=selected[mi]))
 
     sets_at = section(bytes(128*set_count))
@@ -129,7 +128,7 @@ def fixture(*, shared=True, sun=0, locals_count=3, mode_count=2, world=False,
 
         support = bytearray((2*light_count+7)//8)
         visibility_faces = []
-        for fi, face in enumerate(parsed_modes[0 if shared else si]['faces']):
+        for fi, face in enumerate(parsed_modes[0]['faces']):
             first = len(entries)
             if face[9]:
                 for li in local_indices[:2]:
@@ -171,7 +170,7 @@ def fixture(*, shared=True, sun=0, locals_count=3, mode_count=2, world=False,
         unbaked_indices_at = section(b''.join(struct.pack('<I', li) for li in unbaked_light_indices))
         payload_at = section(payload)
         record_at = sets_at+si*128
-        struct.pack_into('<6IiI6Q2I4Q2I', data, record_at, light_count, crc(selected[0 if shared else si]),
+        struct.pack_into('<6IiI6Q2I4Q2I', data, record_at, light_count, crc(selected[0]),
                          2, len(entries), 1, len(meshes), sun, 0,
                          faces_at, entries_at, props_at, meshes_at, payload_at, len(payload), crc(payload), 0,
                          support_at, len(support), unbaked_faces_at, unbaked_indices_at,
@@ -181,26 +180,21 @@ def fixture(*, shared=True, sun=0, locals_count=3, mode_count=2, world=False,
                                       unbaked_faces=unbaked_faces_at, unbaked_light_indices=unbaked_indices_at,
                                       payload=payload_at, payload_bytes=len(payload), face_entries=face_entries,
                                       direct=direct_locations))
-    struct.pack_into('<4IQ2IQ2IQ2I', data, 0, 0x54494c48, 4, 64, 0x01020304, len(data),
+    struct.pack_into('<4IQ2IQ2IQ2I', data, 0, 0x54494c48, 5, 64, 0x01020304, len(data),
                      2, mode_count, 64, 0, set_count, sets_at, 0, 0)
     seal(data)
+    removed = b''.join(struct.pack('<I', i) for i in removed_worldlights)
     manifest = bytearray(400)
-    mask = (1 << mode_count)-1
-    struct.pack_into('<4I', manifest, 0, 400+sum(map(len, selected)), mask, 4, 0)
+    struct.pack_into('<4I', manifest, 0, 400+len(selected[0])+len(removed), 2, 5, 0)
     path = b'maps/hybrid_fixture.hlight\0'
     manifest[144:144+len(path)] = path
-    cursor = 400
-    for mi in range(2):
-        if mi < mode_count:
-            struct.pack_into('<9Ii6I', manifest, 16+mi*64, 7, (8, 53)[mi], (15, 54)[mi],
-                             4 if world else 0, 0x55667788 if world else 0, 0x11223344, 0,
-                             cursor, light_count, sun, mi, *([0]*5))
-            cursor += len(selected[mi])
-        else:
-            struct.pack_into('<i', manifest, 16+mi*64+36, -1)
-    for raw in selected:
-        manifest.extend(raw)
-    return dict(data=data, manifest=manifest, flags=mask << 18, locations=locations,
+    struct.pack_into('<i', manifest, 16+36, -1)
+    struct.pack_into('<9Ii6I', manifest, 16+64, 58, 53, 54,
+                     4 if world else 0, 0x55667788 if world else 0, 0x11223344, 0,
+                     400, light_count, sun, 0, 400+len(selected[0]), len(removed_worldlights), 0, 0, 0)
+    manifest.extend(selected[0])
+    manifest.extend(removed)
+    return dict(data=data, manifest=manifest, flags=1 << 19, locations=locations,
                 modes=parsed_modes, manifests=manifests, sets_at=sets_at, set_count=set_count)
 
 
@@ -377,17 +371,13 @@ def main():
             return inspect
 
         base = fixture()
-        run('paired_shared_sun_props_all_lods', base, inspect=inspect_fixture(base))
-        for name, kwargs in [('paired_nonshared', dict(shared=False)), ('no_sun_locals', dict(sun=-1)),
-                             ('zero_selected_lights', dict(sun=-1, locals_count=0)), ('sun_only', dict(locals_count=0))]:
+        run('hdr_sun_props_all_lods', base, inspect=inspect_fixture(base))
+        for name, kwargs in [('no_sun_locals', dict(sun=-1)), ('zero_selected_lights', dict(sun=-1, locals_count=0)),
+                             ('sun_only', dict(locals_count=0)), ('removed_worldlights', dict(removed_worldlights=(0, 2, 5)))]:
             f = fixture(**kwargs)
             run(name, f, inspect=inspect_fixture(f))
-        for name, kwargs in [('prop_direct_nonshared', dict(shared=False, locals_count=6,
-                              light_styles={1: 0, 2: 32, 3: 33, 4: 34, 5: 35, 6: 36})),
-                             ('prop_direct_no_sun', dict(sun=-1, locals_count=5,
-                              light_styles={0: 0, 1: 32, 2: 33, 3: 34, 4: 35}))]:
-            positive = fixture(prop_direct=True, **kwargs)
-            run(name, positive, inspect=inspect_fixture(positive))
+        positive = fixture(prop_direct=True, sun=-1, locals_count=5, light_styles={0: 0, 1: 32, 2: 33, 3: 34, 4: 35})
+        run('prop_direct_no_sun', positive, inspect=inspect_fixture(positive))
         f = fixture(prop_direct=True, locals_count=6,
                     light_styles={1: 0, 2: 32, 3: 33, 4: 34, 5: 35, 6: 36})
         run('prop_direct_positive_all_lods', f, inspect=inspect_fixture(f))
@@ -450,8 +440,12 @@ def main():
             ('old_hlight_v1', 4, '<I', 1, 'header/version'),
             ('old_hlight_v2', 4, '<I', 2, 'header/version'),
             ('old_hlight_v3', 4, '<I', 3, 'header/version'),
+            ('old_hlight_v4', 4, '<I', 4, 'header/version'),
+            ('two_modes', 28, '<I', 2, 'header/version'),
             ('missing_visibility_sets', 44, '<I', 0, 'header/version'),
             ('invalid_mode_set', 64+112, '<I', 1, 'mode identity'),
+            ('ldr_faces', 64, '<I', 7, 'mode identity'),
+            ('ldr_lighting', 64+4, '<I', 8, 'mode identity'),
             ('overflow_set_offset', 48, '<Q', 0xfffffffffffffff0, 'visibility set section'),
             ('fallback_face_section_offset', s['record']+104, '<Q', 1, 'visibility section'),
             ('fallback_face_count_out_of_domain', s['record']+120, '<I', 3, 'visibility identity'),
@@ -486,13 +480,17 @@ def main():
             pair_only = name == 'manifest_selected_crc'
             run(name, f, (True, True, False) if pair_only else (False, True, False), reason)
         for name, at, fmt, value in [('old_manifest_asset_v1', 8, '<I', 1),
-                                     ('old_manifest_asset_v2', 8, '<I', 2),
-                                     ('old_manifest_asset_v3', 8, '<I', 3),
-                                     ('manifest_wrong_sun', 16+36, '<i', -1),
-                                     ('manifest_out_of_range_lights', 16+32, '<I', 8193)]:
+                                     ('old_manifest_asset_v4', 8, '<I', 4),
+                                     ('manifest_ldr_mode', 4, '<I', 1),
+                                     ('manifest_both_modes', 4, '<I', 3),
+                                     ('manifest_wrong_sun', 16+64+36, '<i', -1),
+                                     ('manifest_out_of_range_lights', 16+64+32, '<I', 8193),
+                                     ('manifest_removed_count_overflow', 16+64+48, '<I', 1)]:
             f = dict(base, manifest=bytearray(base['manifest']))
             struct.pack_into(fmt, f['manifest'], at, value)
             run(name, f, (True, False, False))
+        f = fixture(removed_worldlights=(3, 1))
+        run('manifest_removed_order', f, (True, False, False), 'removed-worldlight order')
         run('manifest_level_flag_mismatch', base, (True, False, False), flags=1 << 18)
         f = dict(base, data=bytearray(base['data']))
         f['data'][s['payload']] ^= 1
@@ -509,22 +507,13 @@ def main():
         struct.pack_into('<I', f['data'], s['record']+80, crc(f['data'][s['payload']:s['payload']+s['payload_bytes']]))
         seal(f['data'])
         run('dense_nonzero_alignment_padding', f, (False, True, False), 'prop mesh visibility')
-        f = fixture(shared=False)
-        second = f['locations']['sets'][1]
-        struct.pack_into('<I', f['data'], second['record']+4, crc(light_record(0, 0)))
-        seal(f['data'])
-        run('paired_nonshared_wrong_selected_crc', f, (True, True, False), 'visibility/manifest selected lights')
         f = dict(base, manifest=bytearray(base['manifest']))
         hdr_lights = struct.unpack_from('<I', f['manifest'], 16+64+28)[0]
-        struct.pack_into('<f', f['manifest'], hdr_lights+2*116+12, 2)
-        run('paired_shared_hdr_manifest_changed', f, (True, True, False), 'visibility/manifest selected lights')
-        f = fixture(shared=False)
-        struct.pack_into('<I', f['data'], 64+128+112, 0)
-        seal(f['data'])
-        run('unreferenced_visibility_set', f, (False, True, False), 'visibility identity')
+        struct.pack_into('<f', f['manifest'], hdr_lights+2*116+12, 3)
+        run('hdr_manifest_changed', f, (True, True, False), 'visibility/manifest selected lights')
         # A real RGB page is necessary to admit required world visibility. Keep
         # the many prop corruption cases above small; only these need 32 MiB.
-        f = fixture(mode_count=1, world=True)
+        f = fixture(world=True)
         run('world_uniform_dense_omitted_support', f, inspect=inspect_fixture(f))
         s = f['locations']['sets'][0]
         for name, at, fmt, value in [
@@ -546,7 +535,7 @@ def main():
         seal(damaged['data'])
         run('unbounded_world_local_cannot_be_omitted', damaged, (True, True, False), 'unbounded local visibility omitted')
         palette = (0, 32, 33, 34)
-        fallback = fixture(mode_count=1, world=True, baked_styles=palette, light_styles={2: 35},
+        fallback = fixture(world=True, baked_styles=palette, light_styles={2: 35},
                            unbaked_faces=((0, 0, 1),), unbaked_light_indices=(2,))
 
         def inspect_fallback(observed):
@@ -590,13 +579,13 @@ def main():
             ('fallback_absent_index_list', ((0, 0, 1),), (), 'unbaked face partition'),
             ('fallback_orphan_indices', (), (2,), 'orphan unbaked light indices'),
         ]:
-            damaged = fixture(mode_count=1, world=True, baked_styles=palette, light_styles={2: 35},
+            damaged = fixture(world=True, baked_styles=palette, light_styles={2: 35},
                               unbaked_faces=records, unbaked_light_indices=indices)
             run(name, damaged, (False, True, False), reason)
-        damaged = fixture(mode_count=1, world=True, baked_styles=palette[:3], light_styles={2: 35},
+        damaged = fixture(world=True, baked_styles=palette[:3], light_styles={2: 35},
                           unbaked_faces=((0, 0, 1),), unbaked_light_indices=(2,))
         run('fallback_palette_has_free_slot', damaged, (False, True, False), 'unbaked face partition')
-        two_indices = fixture(mode_count=1, world=True, baked_styles=palette, light_styles={1: 35, 2: 36},
+        two_indices = fixture(world=True, baked_styles=palette, light_styles={1: 35, 2: 36},
                               unbaked_faces=((0, 0, 2),), unbaked_light_indices=(1, 2))
         run('world_multiple_sorted_unbaked_locals', two_indices, inspect=inspect_fixture(two_indices))
         index_at = two_indices['locations']['sets'][0]['unbaked_light_indices']
@@ -605,7 +594,7 @@ def main():
             struct.pack_into('<2I', damaged['data'], index_at, *indices)
             seal(damaged['data'])
             run(name, damaged, (False, True, False), 'unbaked selected-local range/order/support')
-        two_faces = fixture(mode_count=1, world=True, lit_second=True, baked_styles=palette, light_styles={2: 35},
+        two_faces = fixture(world=True, lit_second=True, baked_styles=palette, light_styles={2: 35},
                             unbaked_faces=((0, 0, 1), (1, 1, 1)), unbaked_light_indices=(2, 2))
         run('world_sorted_sparse_face_ranges', two_faces, inspect=inspect_fixture(two_faces))
         face_at = two_faces['locations']['sets'][0]['unbaked_faces']

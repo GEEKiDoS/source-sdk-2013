@@ -138,6 +138,9 @@ class BSP:
         self.version = unpack("<I", self.raw, 4)[0]
         require(self.version in (20, 21), f"unsupported BSP version {self.version}")
         self.directory = [unpack("<4i", self.raw, 8 + i * 16) for i in range(64)]
+        if self.version == 21:
+            # Left 4 Dead 2 stores {version, offset, length, uncompressed}; normalize to the v20 field order.
+            self.directory = [(offset, length, version, expanded) for version, offset, length, expanded in self.directory]
         self.lumps = []
         for offset, length, version, expanded in self.directory:
             require(offset >= 0 and length >= 0 and offset + length <= len(self.raw), "BSP lump range")
@@ -177,6 +180,10 @@ class BSP:
 
     def worldlights(self, mode):
         raw = self.lumps[MODE_LUMPS[mode][2]]
+        if self.directory[MODE_LUMPS[mode][2]][2] == 1:
+            # Version-1 (BSP 21) records insert 12 bytes after the first 36; the rest is the SDK layout.
+            require(len(raw) % 100 == 0, "v1 worldlight stride")
+            raw = b"".join(raw[at:at + 36] + raw[at + 48:at + 100] for at in range(0, len(raw), 100))
         require(len(raw) % 88 == 0, "dworldlight_t stride")
         return [worldlight_record(raw,at) for at in range(0,len(raw),88)]
 

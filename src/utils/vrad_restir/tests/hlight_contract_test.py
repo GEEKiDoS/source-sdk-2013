@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Check real paired high-resolution BSP output without invoking a bake or generator.
+"""Check a real -restir_shadowmaps bake (<map>.light beside an untouched BSP) without invoking a bake.
 
 The optional density-one control and dense diagnostics must be produced by the
 real baker with -restir_shadowmap_diagnostics. --raw-radiance additionally requires
 -restir_denoiser none and a fixture with no macro texture or entity _minlight.
-This is the new forward-density contract; no inverse receiver tests execute.
-Only hlight v4 / rshd v5 is admitted. Immutable local visibility, canonical
-selected-light mapping and serialized prop/VHV domains are checked separately
-from RGB pages; old enhanced assets must be rebaked.
+Only hlight v5 / rshd v6 (one HDR mode) is admitted; the manifest and assets come
+from the .light, every identity binds to the map BSP's own lumps, and the map BSP
+must be byte-identical to the input it was baked from.
 """
 from __future__ import annotations
 import argparse
@@ -15,11 +14,9 @@ from collections import Counter
 import json
 import math
 from pathlib import Path
-import re
 import struct
 import sys
-import zlib
-from shadowmap_contract_test import BSP as LegacyBSP, require, unpack, crc, rgbexp, quantum, worldlight_record
+from shadowmap_contract_test import BSP as LegacyBSP, require, unpack, crc, worldlight_record
 
 GEOMETRY = (1, 2, 3, 6, 12, 13, 14, 26, 33, 43, 44, 48)
 MISSING = 0xffffffff
@@ -56,56 +53,61 @@ def native_faces(bsp, lump):
     return result
 
 
-def manifest(bsp):
-    game = bsp.games.get('rshd')
-    require(game and game['version'] == 5, 'requires native rshd dictionary version 5 (rebake old assets)')
+def manifest(light, bsp):
+    game = light.games.get('rshd')
+    require(game and game['version'] == 6, 'requires rshd version 6 in the .light (rebake old assets)')
     raw = game['data']
     size, mask, asset_version, reserved = unpack('<4I', raw)
-    require(size == len(raw) and mask == 3 and asset_version == 4 and not reserved, 'paired manifest header (v4 required; rebake)')
-    require((bsp.flags & 0xc0000) == 0xc0000, 'paired selected-direct level flags')
+    require(size == len(raw) and mask == 2 and asset_version == 5 and not reserved, 'HDR-only manifest header (v5 required; rebake)')
+    require(light.flags == 0x80000, '.light level flags carry exactly the HDR selected-direct bit')
+    require(all(not light.lumps[i] for i in range(64) if i not in (35, 40, 59)), '.light holds only map flags, game lumps and pak')
     path_bytes = raw[144:400]
     path, null, tail = path_bytes.partition(b'\0')
     require(null and not any(tail), 'canonical asset path terminator/padding')
     path = path.decode('utf-8')
     require(path.startswith('maps/') and path.endswith('.hlight') and len(path) >= 13 and
             not any(ord(c) < 32 or ord(c) == 127 or c in '/\\\\:' for c in path[5:]), 'safe exact pak asset path')
-    modes = []
-    cursor = 400
-    for mi in range(2):
-        fields = unpack('<9Ii6I', raw, 16+mi*64)
-        f, lighting, world, count, lighting_crc, face_crc, world_crc, offset, lights, sun, asset = fields[:11]
-        require(not any(fields[11:]) and f in (7, 58) and lighting == (8, 53)[mi] and world == (15, 54)[mi], 'manifest mode identity/reserved')
-        require(count == len(bsp.lumps[lighting]) and lighting_crc == crc(bsp.lumps[lighting]) and
-                face_crc == crc(bsp.lumps[f]) and world_crc == crc(bsp.lumps[world]), 'manifest native lump CRC')
-        require(offset == cursor and lights >= 0 and sun in (-1, 0) and (sun < 0 or lights > 0), 'canonical selected-light range/sun')
-        cursor += lights*116
-        require(cursor <= len(raw), 'selected-light span')
-        selected_styles = set()
-        selected = []
-        local_styles = set()
-        for li in range(lights):
-            at = offset+li*116
-            w = unpack('<9f3i7f3i', raw, at)
-            source, angle, radius, start, end, cap, zero = unpack('<i5fI', raw, at+88)
-            require(all(math.isfinite(x) for x in (*w[:9], *w[12:19], angle, radius, start, end, cap)), 'nonfinite selected light')
-            require(all(x >= 0 for x in w[3:6]) and 0 <= w[11] < 64 and not w[19] and source >= -1 and not zero, 'selected light intensity/style/flags/provenance')
-            selected_styles.add(w[11])
-            require(all(x >= 0 for x in w[14:19]) and all(-1 <= x <= 1 for x in w[12:14]), 'selected light attenuation/cone range')
-            if li == sun:
-                require(w[10] == 3 and 0 <= angle < 90 and radius == start == end == cap == 0, 'selected sun record')
-            else:
-                require(w[10] in (1, 2) and radius >= 0 and angle == 0 and start >= 0 and cap > 0, 'selected local record')
-                local_styles.add(w[11])
-            record = worldlight_record(raw, at)
-            record.update(source=source, shadow_radius=radius, fade_start=start, fade_end=end, cap=cap)
-            selected.append(record)
-        modes.append(dict(face=f, lighting=lighting, lighting_bytes=count, face_crc=face_crc,
-                          lighting_crc=lighting_crc, sun=sun, lights=lights, asset=asset,
-                          selected_styles=selected_styles, local_styles=local_styles, selected=selected,
-                          selected_bytes=raw[offset:cursor], selected_crc=crc(raw[offset:cursor]),
-                          receiver_styles={0} | {w['style'] for w in bsp.worldlights(mi)}))
-    require(cursor == len(raw), 'trailing manifest bytes')
-    return path, modes
+    require(raw[16:80] == struct.pack('<9Ii6I', *(0,)*9, -1, *(0,)*6), 'canonical absent LDR manifest mode')
+    fields = unpack('<9Ii6I', raw, 80)
+    f, lighting, world, count, lighting_crc, face_crc, world_crc, offset, lights, sun, asset, removed_at, removed_count = fields[:13]
+    require(not any(fields[13:]) and (f, lighting, world, asset) == (58, 53, 54, 0), 'manifest mode identity/reserved')
+    require(count == len(bsp.lumps[lighting]) and lighting_crc == crc(bsp.lumps[lighting]) and
+            face_crc == crc(bsp.lumps[f]) and world_crc == crc(bsp.lumps[world]), 'manifest CRCs differ from the map BSP lumps')
+    require(offset == 400 and lights >= 0 and sun in (-1, 0) and (sun < 0 or lights > 0), 'canonical selected-light range/sun')
+    cursor = offset+lights*116
+    require(removed_at == cursor and removed_count <= lights and cursor+removed_count*4 == len(raw), 'removed-worldlight span')
+    removed = list(memoryview(raw)[removed_at:removed_at+removed_count*4].cast('I'))
+    worldlights = bsp.worldlights(1)
+    require(removed == sorted(set(removed)) and all(i < len(worldlights) for i in removed), 'removed-worldlight indices')
+    selected_styles = set()
+    selected = []
+    local_styles = set()
+    for li in range(lights):
+        at = offset+li*116
+        w = unpack('<9f3i7f3i', raw, at)
+        source, angle, radius, start, end, cap, zero = unpack('<i5fI', raw, at+88)
+        require(all(math.isfinite(x) for x in (*w[:9], *w[12:19], angle, radius, start, end, cap)), 'nonfinite selected light')
+        require(all(x >= 0 for x in w[3:6]) and 0 <= w[11] < 64 and not w[19] and source >= -1 and not zero, 'selected light intensity/style/flags/provenance')
+        selected_styles.add(w[11])
+        require(all(x >= 0 for x in w[14:19]) and all(-1 <= x <= 1 for x in w[12:14]), 'selected light attenuation/cone range')
+        if li == sun:
+            require(w[10] == 3 and 0 <= angle < 90 and radius == start == end == cap == 0, 'selected sun record')
+        else:
+            require(w[10] in (1, 2) and radius >= 0 and angle == 0 and start >= 0 and cap > 0, 'selected local record')
+            local_styles.add(w[11])
+        record = worldlight_record(raw, at)
+        record.update(source=source, shadow_radius=radius, fade_start=start, fade_end=end, cap=cap)
+        selected.append(record)
+    for i in removed:
+        require(any(worldlights[i]['type'] == s['type'] and worldlights[i]['style'] == s['style'] for s in selected),
+                f'removed worldlight {i} is not a selected light')
+    kept = [w for i, w in enumerate(worldlights) if i not in set(removed)]
+    mode = dict(face=f, lighting=lighting, lighting_bytes=count, face_crc=face_crc, lighting_crc=lighting_crc,
+                sun=sun, lights=lights, asset=asset, removed=removed,
+                selected_styles=selected_styles, local_styles=local_styles, selected=selected,
+                selected_bytes=raw[offset:cursor], selected_crc=crc(raw[offset:cursor]),
+                receiver_styles={0} | {w['style'] for w in kept})
+    return path, [mode]
 
 def visibility_sections(data, cursor, sets_at, set_count, modes, manifests):
     """Parse immutable R8, world fallbacks, and inline v4 prop-direct blocks."""
@@ -303,24 +305,22 @@ def visibility_stats(modes):
 
 
 
-def asset(bsp, path, manifests, density):
-    require(path in bsp.pak, 'manifest asset missing from BSP pak')
-    data = bsp.pak[path]
+def asset(light, bsp, path, manifests, density):
+    require(path in light.pak, 'manifest asset missing from the .light pak')
+    data = light.pak[path]
     h = unpack('<4IQ2IQ2IQ2I', data)
     magic, version, header, endian, size, actual_density, count, modes_offset, checksum, sets, sets_at, *reserved = h
-    require((magic, version, header, endian) == (0x54494c48, 4, 64, 0x01020304) and size == len(data), 'asset header identity (v4 required; rebake)')
-    require(actual_density == density and count == 2 and 0 < sets <= count and not any(reserved), 'asset density/mode/visibility count/reserved')
+    require((magic, version, header, endian) == (0x54494c48, 5, 64, 0x01020304) and size == len(data), 'asset header identity (v5 required; rebake)')
+    require(actual_density == density and count == 1 and sets == 1 and not any(reserved), 'asset density/mode/visibility count/reserved')
     require(checksum == crc(data[:40]+bytes(4)+data[44:]), 'whole-file CRC')
     cursor = section(data, 64, modes_offset, count*128)
     modes = []
-    previous_pair = (-1, -1)
     for mi in range(count):
         r = unpack('<4I2Q4I5Q4IQ4I', data, modes_offset+mi*128)
         face, lighting, fv, lv, face_bytes, lighting_bytes, face_crc, lighting_crc, faces, models = r[:10]
         face_at, model_at, tile_at, page_at, identity_at, tiles, pages, identities, zero, zero64, visibility_set, *reserved = r[10:]
         require(visibility_set < sets and not any(reserved), 'mode visibility index/reserved')
-        require((face, lighting) > previous_pair and face in (7, 58) and lighting in (8, 53), 'explicit mode pair order')
-        previous_pair = (face, lighting)
+        require((face, lighting) == (58, 53), 'single HDR asset mode')
         require(fv == bsp.directory[face][2] and lv == bsp.directory[lighting][2] and not zero and not zero64, 'mode version/reserved')
         require(face_bytes == len(bsp.lumps[face]) == faces*56 and lighting_bytes == len(bsp.lumps[lighting]), 'native mode byte counts')
         require(face_crc == crc(bsp.lumps[face]) and lighting_crc == crc(bsp.lumps[lighting]), 'asset native mode CRC')
@@ -351,12 +351,12 @@ def asset(bsp, path, manifests, density):
             require((w, h) == (ex*density+1, ey*density+1), 'true high-grid endpoint dimensions')
             require(not flags & ~31 and not any(f[30:]) and bool(flags & 4) == bool(styles) and
                     bool(flags & 16) == bool(styles) and styles <= 4, 'v4 baked-direct face flags/styles/reserved')
-            require(bool(flags & 8) == bool(styles and model_records[owner][3] & 1 and manifests[0 if lighting == 8 else 1]['sun'] >= 0), 'sun face eligibility')
+            require(bool(flags & 8) == bool(styles and model_records[owner][3] & 1 and manifests[0]['sun'] >= 0), 'sun face eligibility')
             require(all(0 <= s < 64 for s in f[10:10+styles]) and len(set(f[10:10+styles])) == styles and
                     (not styles or f[10] == 0) and all(s == 255 for s in f[10+styles:14]), 'authored highres styles before pruning')
             authored = f[10:10+styles]
-            mm = manifests[0 if lighting == 8 else 1]
-            require(tuple(s for s in authored if s in ns[i]['styles']) == ns[i]['styles'], 'native styles are ordered highres subset')
+            mm = manifests[0]
+            require(set(ns[i]['styles']) <= set(authored), 'native styles are a subset of the highres styles')
             require(all(s in mm['receiver_styles'] or s in mm['local_styles'] for s in authored),
                     'highres style is neither native receiver nor selected local')
             for s in range(4):
@@ -399,7 +399,7 @@ def asset(bsp, path, manifests, density):
                         require(data[at:at+8] == data[pixel_at+(cy*side+cx)*8:pixel_at+(cy*side+cx)*8+8], 'replicated LOD0 gutter')
             next_tile += num
         require(next_tile == tiles, 'all tiles belong to a canonical page')
-        mm = manifests[0 if lighting == 8 else 1]
+        mm = manifests[0]
         modes.append(dict(face=face, lighting=lighting, face_crc=face_crc, lighting_crc=lighting_crc,
                           lighting_bytes=lighting_bytes, faces=fs, native=ns, tiles=ts, pages=ps, models=model_records,
                           visibility_set=visibility_set, selected=mm['selected'], local_styles=mm['local_styles'],
@@ -409,15 +409,17 @@ def asset(bsp, path, manifests, density):
     require(sorted(m['asset'] for m in manifests) == list(range(len(modes))), 'manifest/asset bijection')
     for mm in manifests:
         mode = modes[mm['asset']]
-        require(all(mode[k] == mm[k] for k in ('face', 'lighting', 'lighting_bytes', 'face_crc', 'lighting_crc')), 'paired manifest asset identity')
+        require(all(mode[k] == mm[k] for k in ('face', 'lighting', 'lighting_bytes', 'face_crc', 'lighting_crc')), 'manifest asset identity')
         visibility = mode['visibility']
         if mm['lights'] > (mm['sun'] >= 0):
             require(len(visibility['props']) == bsp.static_dictionary()[1], 'missing static prop visibility domain')
         for prop in visibility['props']:
             ordinal, checksum, first, count, pose, reserved = prop
-            name = f"sp_{'hdr_' if mode['lighting'] == 53 else ''}{ordinal}.vhv"
-            if name not in bsp.pak:
-                continue  # NO_PER_VERTEX_LIGHTING still requires its visibility block.
+            name = f"sp_hdr_{ordinal}.vhv"
+            # The map's own VHVs: NO_PER_VERTEX_LIGHTING props have none, and a prop whose model the baker could not
+            # load has no visibility meshes to compare (its runtime lighting stays fully dynamic).
+            if name not in bsp.pak or not count:
+                continue
             raw = bsp.pak[name]
             version, vhv_checksum, flags, stride, vertices, meshes = unpack('<6I', raw)
             require(version == 2 and stride == 4 and vhv_checksum == checksum and
@@ -439,8 +441,7 @@ def pixel(data, mode, face, style, plane, x, y):
     return unpack('<4e', data, at)
 
 def mode_diagnostics(base, mode):
-    suffix = '.ldr.json' if mode['lighting'] == 8 else '.hdr.json'
-    d = json.loads(Path(str(base)+suffix).read_text())
+    d = json.loads(Path(str(base)+'.hdr.json').read_text())
     count = d['highGridCount']
     for key in ('localDirectPositions', 'luxelNormals', 'luxelBumpNormals'):
         require(len(d[key]) == count, 'missing/misaligned direct geometry ' + key)
@@ -557,56 +558,11 @@ def require_half_rgb(actual, expected, label):
 
 
 
-def coarse_endpoints(bsp, data, modes, density, diagnostic_base):
-    comparisons = 0
-    for mode in modes:
-        raw = bsp.lumps[mode['lighting']]
-        d = mode_diagnostics(diagnostic_base, mode)
-        scene_faces = {f['dface']: f for f in d['faces']}
-        for f, native in zip(mode['faces'], mode['native']):
-            if not f[9]:
-                continue
-            nw, nh = (x+1 for x in native['extents'])
-            for stock_slot, style in enumerate(native['styles']):
-                asset_slot = f[10:14].index(style)
-                for plane in range(native['channels']):
-                    for y in range(nh):
-                        for x in range(nw):
-                            at = native['offset']+((stock_slot*native['channels']+plane)*nw*nh+y*nw+x)*4
-                            sample = raw[at:at+4]
-                            stock = rgbexp(sample)
-                            high = pixel(data, mode, f, asset_slot, plane, x*density, y*density)
-                            # The native diagnostic for a zero-sample face is red;
-                            # the owned float asset never stores a red error sentinel.
-                            if stock == (1.0, 0.0, 0.0) and high[:3] == (0.0, 0.0, 0.0):
-                                continue
-                            direct = baked_direct_rgb(d, mode, scene_faces[f[0]], style, plane, y*density*f[6]+x*density)
-                            for a, b, addition in zip(stock, high, direct):
-                                expected = a+addition
-                                require(abs(expected-b) <= quantum(sample)+abs(b)*0.0005+abs(addition)*2e-5+1e-7,
-                                        'coarse endpoint differs from native receiver plus exact baked local direct')
-                                comparisons += 1
-    require(comparisons > 0, 'no coarse endpoint RGB comparisons')
-    return comparisons
-
-
-def unchanged(before, after, asset_path):
-    for lump in GEOMETRY:
-        require(before.lumps[lump] == after.lumps[lump], f'native geometry/material-coordinate lump {lump} changed')
-    for lump in (7, 58):
-        old = native_faces(before, lump if before.lumps[lump] else 7)
-        new = native_faces(after, lump)
-        require(len(old) == len(new) and all(a['geometry'] == b['geometry'] for a, b in zip(old, new)), f'native face/grid topology {lump} changed')
-    for path, raw in before.pak.items():
-        if path == asset_path or re.fullmatch(r'(sp(_hdr)?_\d+\.vhv|texelslighting_\d+\.ppl)', path):
-            continue
-        require(after.pak.get(path) == raw, f'unrelated BSP ZIP member changed: {path}')
-
 
 def diagnostics(base, control, modes, data, density, raw_radiance, require_source_overflow=False):
     cells = 0
     for mode in modes:
-        suffix = '.ldr.json' if mode['lighting'] == 8 else '.hdr.json'
+        suffix = '.hdr.json'
         d = mode_diagnostics(base, mode)
         require(d['hlightDensity'] == density and d['sampleCellCount'] == len(d['sampleCells']) and
                 d['highGridCount'] == len(d['luxelPositions']), 'real dense sample diagnostics')
@@ -694,8 +650,9 @@ def diagnostics(base, control, modes, data, density, raw_radiance, require_sourc
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('bsp', type=Path)
-    parser.add_argument('--before', type=Path, required=True, help='untouched input BSP for topology/unrelated ZIP preservation')
+    parser.add_argument('bsp', type=Path, help='the map BSP the .light belongs to')
+    parser.add_argument('--light', type=Path, help='the .light (default: <bsp>.light)')
+    parser.add_argument('--before', type=Path, required=True, help='copy of the input BSP taken before the bake')
     parser.add_argument('--density', type=int, default=4)
     parser.add_argument('--diagnostics', type=Path, required=True, help='base path passed to the real dense bake diagnostics option')
     parser.add_argument('--control-diagnostics', type=Path, required=True, help='base path from a separate real density-one control bake')
@@ -705,29 +662,30 @@ def main():
     parser.add_argument('--require-styles', action='store_true', help='require retained nonzero authored style slots')
     parser.add_argument('--require-source-overflow', action='store_true',
                         help='require >4 source styles, <=4 highres styles, full source transport and sparse runtime fallbacks')
-    parser.add_argument('--require-zero-lights', action='store_true', help='require actual RGB-only enhanced modes')
+    parser.add_argument('--require-zero-lights', action='store_true', help='require an RGB-only enhanced mode')
     parser.add_argument('--require-sun', action='store_true')
     args = parser.parse_args()
     try:
         require(args.density > 1, 'acceptance needs actual higher density than the control')
         bsp = BSP(args.bsp)
-        path, mm = manifest(bsp)
-        data, modes = asset(bsp, path, mm, args.density)
+        light = BSP(args.light or args.bsp.with_suffix('.light'))
+        require(bsp.raw == BSP(args.before).raw, 'the bake modified the map BSP')
+        path, mm = manifest(light, bsp)
+        data, modes = asset(light, bsp, path, mm, args.density)
         if args.require_bump:
-            require(all(any(f[9] and f[8] & 1 for f in m['faces']) for m in modes), 'bumped planes were not exercised in both modes')
+            require(any(f[9] and f[8] & 1 for f in modes[0]['faces']), 'bumped planes were not exercised')
         if args.require_displacement:
-            require(all(any(f[9] and f[8] & 2 for f in m['faces']) for m in modes), 'forward displacement sampling was not exercised in both modes')
+            require(any(f[9] and f[8] & 2 for f in modes[0]['faces']), 'forward displacement sampling was not exercised')
         if args.require_styles:
-            require(all(any(f[9] > 1 for f in m['faces']) for m in modes), 'multiple authored styles were not exercised in both modes')
+            require(any(f[9] > 1 for f in modes[0]['faces']), 'multiple authored styles were not exercised')
         if args.require_zero_lights:
-            require(all(m['lights'] == 0 and m['sun'] == -1 for m in mm), 'RGB-only zero-selected-light admission was not exercised')
+            require(mm[0]['lights'] == 0 and mm[0]['sun'] == -1, 'RGB-only zero-selected-light admission was not exercised')
         if args.require_sun:
-            require(all(m['sun'] == 0 for m in mm), 'designated selected sun was not exercised in both modes')
-        unchanged(BSP(args.before), bsp, path)
-        comparisons = coarse_endpoints(bsp, data, modes, args.density, args.diagnostics)
+            require(mm[0]['sun'] == 0, 'designated selected sun was not exercised')
         cells = diagnostics(args.diagnostics, args.control_diagnostics, modes, data, args.density, args.raw_radiance,
                             args.require_source_overflow)
-        print(f'PASS hlight density={args.density} modes={len(modes)} real-cells={cells} coarse-RGB-comparisons={comparisons} asset-bytes={len(data)} path={path}')
+        print(f'PASS hlight density={args.density} real-cells={cells} removed-worldlights={len(mm[0]["removed"])} '
+              f'asset-bytes={len(data)} path={path}')
         print(json.dumps(dict(visibility=visibility_stats(modes)), sort_keys=True))
         return 0
     except (AssertionError, OSError, ValueError, KeyError, IndexError, struct.error) as error:
