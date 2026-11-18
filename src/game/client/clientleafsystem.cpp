@@ -70,6 +70,26 @@ static void ShadowPhysicsPolicyChanged( IConVar *pConVar, const char *pOldString
 static ConVar r_shadowmap_force_physics_shadows( "r_shadowmap_force_physics_shadows", "0", FCVAR_ARCHIVE,
 	"Allow solid ordinary physics props to cast native shadowmaps despite authored DisableShadow (does not change entity effects).",
 	ShadowPhysicsPolicyChanged );
+static ConVar r_shadowmap_cutout_noshadow_props( "r_shadowmap_cutout_noshadow_props", "1", FCVAR_ARCHIVE,
+	"Static props authored with disableshadows still cast native shadowmaps when a material is alpha-tested (chain-link fences, "
+	"razor wire, vines); retail kept them shadowless. Applies at the next map load." );
+static ConVar r_shadowmap_force_door_shadows( "r_shadowmap_force_door_shadows", "1", FCVAR_ARCHIVE,
+	"Doors (prop_door_rotating) cast native shadowmaps despite authored disableshadows, so a closed door blocks the light "
+	"behind it (does not change entity effects).",
+	ShadowPhysicsPolicyChanged );
+bool IsClientPropDoor( C_BaseEntity *pEntity ); // c_props.cpp
+
+// Native shadowmap casters may ignore an authored EF_NOSHADOW: solid physics props (r_shadowmap_force_physics_shadows)
+// and doors (r_shadowmap_force_door_shadows).
+static bool ShadowMapOverridesNoShadow( C_BaseEntity *pEntity, bool bPhysicsProp )
+{
+	if ( !ShadowMapsDX12_Active() )
+		return false;
+	if ( r_shadowmap_force_physics_shadows.GetBool() && bPhysicsProp &&
+		static_cast<C_PhysicsProp *>( pEntity )->CanOverrideShadowMapNoShadow() )
+		return true;
+	return r_shadowmap_force_door_shadows.GetBool() && IsClientPropDoor( pEntity );
+}
 
 
 DEFINE_FIXEDSIZE_ALLOCATOR( CClientRenderablesList, 1, CUtlMemoryPool::GROW_SLOW );
@@ -519,11 +539,12 @@ void CClientLeafSystem::OnShadowPhysicsPolicyChanged()
 		return;
 	for ( ClientRenderHandle_t handle = m_Renderables.Head(); handle != m_Renderables.InvalidIndex(); handle = m_Renderables.Next( handle ) )
 	{
-		if ( !( m_Renderables[handle].m_Flags & RENDER_FLAGS_PHYSICS_PROP ) )
-			continue;
 		IClientRenderable *pRenderable = m_Renderables[handle].m_pRenderable;
-		C_PhysicsProp *pPhysicsProp = static_cast<C_PhysicsProp *>( pRenderable->GetIClientUnknown()->GetBaseEntity() );
-		if ( !pPhysicsProp->CanOverrideShadowMapNoShadow() || !pPhysicsProp->IsEffectActive( EF_NOSHADOW ) )
+		C_BaseEntity *pEntity = pRenderable && pRenderable->GetIClientUnknown() ? pRenderable->GetIClientUnknown()->GetBaseEntity() : NULL;
+		if ( !pEntity || !pEntity->IsEffectActive( EF_NOSHADOW ) )
+			continue;
+		const bool bPhysics = ( m_Renderables[handle].m_Flags & RENDER_FLAGS_PHYSICS_PROP ) && static_cast<C_PhysicsProp *>( pEntity )->CanOverrideShadowMapNoShadow();
+		if ( !bPhysics && !IsClientPropDoor( pEntity ) )
 			continue;
 		// Invalidate membership and both rigid/overlay depth at the existing bounds,
 		// even when an already-loaded/restored prop has not moved this frame.
@@ -670,6 +691,28 @@ static void ReadShadowStaticPropRecord( const uint8 *bytes, StaticPropLump_t &pr
 	prop = record;
 }
 
+// True when a static prop model has an alpha-tested (cutout) material that draws: those depth-write through their
+// cutout like every other alpha-tested caster (r_shadowmap_cutout_noshadow_props).
+static bool ShadowStaticPropModelHasCutout( const char *pModelName )
+{
+	const int nModelIndex = modelinfo->GetModelIndex( pModelName );
+	const model_t *pModel = nModelIndex >= 0 ? modelinfo->GetModel( nModelIndex ) : NULL;
+	if ( !pModel )
+		return false;
+	static CUtlVector< IMaterial * > s_Materials;
+	const int nMaterials = modelinfo->GetModelMaterialCount( pModel );
+	s_Materials.SetCount( nMaterials );
+	if ( nMaterials )
+		modelinfo->GetModelMaterials( pModel, nMaterials, s_Materials.Base() );
+	for ( int i = 0; i < nMaterials; ++i )
+	{
+		IMaterial *pMaterial = s_Materials[i];
+		if ( pMaterial && !pMaterial->GetMaterialVarFlag( MATERIAL_VAR_NO_DRAW ) && pMaterial->IsAlphaTested() )
+			return true;
+	}
+	return false;
+}
+
 const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 {
 	if ( !staticpropmgr )
@@ -706,8 +749,8 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 		return SHADOWMAP_ERR_INVALID_METADATA ": cannot load engine-resolved sprp caster policy";
 
 	int offset = 0, dictCount, leafCount, propCount;
-	const uint8 *records;
-	if ( !ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropDictLump_t ), dictCount, records ) ||
+	const uint8 *dictRecords, *records;
+	if ( !ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropDictLump_t ), dictCount, dictRecords ) ||
 		!ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropLeafLump_t ), leafCount, records ) ||
 		!ReadShadowStaticPropArray( bytes.Base(), size, offset, stride, propCount, records ) || offset != size )
 		return SHADOWMAP_ERR_INVALID_METADATA ": malformed sprp arrays for authored caster policy";
@@ -745,7 +788,15 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 		ICollideable *pProp = staticpropmgr->GetStaticPropByIndex( i );
 		if ( !pProp || pProp != props[i] || m_ShadowStaticPropPolicy.Find( pProp ) != m_ShadowStaticPropPolicy.InvalidIndex() )
 			return SHADOWMAP_ERR_INVALID_METADATA ": public static-prop caster identity mismatch";
-		m_ShadowStaticPropPolicy.Insert( pProp, ( prop.m_Flags & STATIC_PROP_NO_SHADOW ) == 0 );
+		bool bCasts = ( prop.m_Flags & STATIC_PROP_NO_SHADOW ) == 0;
+		if ( !bCasts && r_shadowmap_cutout_noshadow_props.GetBool() )
+		{
+			StaticPropDictLump_t dict;
+			memcpy( &dict, dictRecords + prop.m_PropType * sizeof( StaticPropDictLump_t ), sizeof( dict ) );
+			dict.m_Name[sizeof( dict.m_Name ) - 1] = 0;
+			bCasts = ShadowStaticPropModelHasCutout( dict.m_Name );
+		}
+		m_ShadowStaticPropPolicy.Insert( pProp, bCasts );
 		ShadowMapsDX12_RegisterStaticPropReceiver( i, pProp, prop );
 	}
 	return NULL;
@@ -1810,10 +1861,7 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 	C_BaseEntity *pEntity = pUnknown ? pUnknown->GetBaseEntity() : NULL;
 	if ( pEntity && pEntity->IsEffectActive( EF_NODRAW ) )
 		return false;
-	if ( pEntity && pEntity->IsEffectActive( EF_NOSHADOW ) &&
-		!( ShadowMapsDX12_Active() && r_shadowmap_force_physics_shadows.GetBool() &&
-		   ( flags & RENDER_FLAGS_PHYSICS_PROP ) &&
-		   static_cast<C_PhysicsProp *>( pEntity )->CanOverrideShadowMapNoShadow() ) )
+	if ( pEntity && pEntity->IsEffectActive( EF_NOSHADOW ) && !ShadowMapOverridesNoShadow( pEntity, ( flags & RENDER_FLAGS_PHYSICS_PROP ) != 0 ) )
 		return false;
 
 	if ( ( flags & RENDER_FLAGS_STATIC_PROP ) && ShadowMapsDX12_MapState().featureMap )

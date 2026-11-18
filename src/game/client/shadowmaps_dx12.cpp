@@ -12,6 +12,7 @@
 #include "shadowmaps_dx12.h"
 #include "deferred/deferred_lights.h"
 #include "shaderapi/ishaderapidx12highres.h"
+#include "shaderapi/ishaderapidx12.h"
 #include "shadowmap_scene.h"
 #include "viewrender.h"
 #include "view.h"
@@ -51,14 +52,17 @@ ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade rec
 ConVar r_csm_cascades( "r_csm_cascades", "2", FCVAR_ARCHIVE, "Dynamic sun cascades (1-4). Fewer cascades keep the nearest splits of r_csm_distance; receivers beyond them use the static sun map, which has no dynamic casters", true, 1, true, 4 );
 ConVar r_csm_eye_centered( "r_csm_eye_centered", "1", FCVAR_ARCHIVE, "Fit each dynamic sun cascade around the camera position instead of around its view slice: about a fifth coarser shadow texels, but turning the camera no longer re-renders the cascades", true, 0, true, 1 );
 ConVar r_shadowmap_resolution( "r_shadowmap_resolution", "1", FCVAR_ARCHIVE, "Shadow map resolution: 0 low, 1 medium, 2 high, 3 ultra. High matches the original 2048 cascade slot, 512 local slot and 4096 static sun", true, 0, true, 3 );
-ConVar r_shadowmap_filter( "r_shadowmap_filter", "1", FCVAR_ARCHIVE, "Sun shadows: 0 four-tap PCF, 1 bounded contact-hardening PCSS; local lights always use four-tap PCF", true, 0, true, 1 );
+ConVar r_shadowmap_filter( "r_shadowmap_filter", "1", FCVAR_ARCHIVE, "Sun shadows: 0 four-tap PCF, 1 bounded contact-hardening PCSS (local lights: r_shadowmap_local_filter)", true, 0, true, 1 );
+ConVar r_shadowmap_local_filter( "r_shadowmap_local_filter", "1", FCVAR_ARCHIVE, "Local light shadows: 0 four bilinear taps (dithered), 1 hard edge along a smooth contour (sharpened cubic 4x4 PCF, same 16 texels, no texel staircase)", true, 0, true, 1 );
+ConVar r_shadowmap_vram_limit( "r_shadowmap_vram_limit", "0.9", FCVAR_ARCHIVE, "Share of the adapter's dedicated video memory the game may need with its shadow maps. While the requested r_shadowmap_resolution would exceed it, a lower level is used (the setting is kept and retried when it changes or a map loads). Over the smaller OS budget, Windows moves textures and buffers to system memory before render targets. 0 disables the check", true, 0.0f, true, 1.0f );
+ConVar r_shadowmap_sun_angle( "r_shadowmap_sun_angle", "0.27", FCVAR_ARCHIVE, "Minimum sun angular radius in degrees for the PCSS sun filter (r_shadowmap_filter 1) when the map's light_environment authors a smaller SunSpreadAngle (0 makes PCSS behave like PCF); the bake is unchanged", true, 0.0f, true, 5.0f );
 ConVar r_shadowmap_skip_radiance( "r_shadowmap_skip_radiance", "0.0009765625", FCVAR_ARCHIVE, "Skip local shadow sampling below this total unshadowed direct RGB contribution; retain all light energy, 0 samples exactly", true, 0.0f, false, 0.0f );
 ConVar r_shadowmap_spot_near( "r_shadowmap_spot_near", "4", FCVAR_ARCHIVE, "Spotlight shadow-camera near distance in Source units (including six-face spots); does not change illumination", true, 0.1f, true, 64.0f );
 ConVar r_shadowmap_autoexec( "r_shadowmap_autoexec", "", FCVAR_CHEAT, "Acceptance automation: cfg exec'd once per map after the first completed main receiver view" );
 ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 sun PCSS blockers, 6 sun PCSS radius; debug builds also check projection math", true, DX12_SHADOW_DEBUG_NONE, true, DX12_SHADOW_DEBUG_PCSS_RADIUS );
 ConVar r_shadowmap_instancing( "r_shadowmap_instancing", "1", FCVAR_ARCHIVE, "Batch rigid opaque static-prop shadow casters into instanced draws (identical depth); 0 draws every caster separately for A/B comparison", true, 0, true, 1 );
 ConVar r_shadowmap_sky_clip( "r_shadowmap_sky_clip", "1", FCVAR_ARCHIVE, "Clip world and model casters on the sun side of the nearest sky entry; static props, detail props and model casters whose origin is in the receiver's playable sealed region are exempt, 0 keeps every caster for A/B comparison", true, 0, true, 1 );
-ConVar r_shadowmap_dither( "r_shadowmap_dither", "1", FCVAR_ARCHIVE, "Rotate the sun PCF/PCSS, local PCF and projected-light PCF tap patterns per pixel: 0 fixed patterns, 1 dithered (animated in the main view under a temporal upscaler)", true, 0, true, 1 );
+ConVar r_shadowmap_dither( "r_shadowmap_dither", "1", FCVAR_ARCHIVE, "Rotate the sun PCF/PCSS, local PCF and projected-light PCF tap patterns per pixel (the local cubic filter is offset half a texel instead): 0 fixed patterns, 1 dithered (animated in the main view under a temporal upscaler)", true, 0, true, 1 );
 ConVar r_shadowmap_viewmodel_cascade( "r_shadowmap_viewmodel_cascade", "0", FCVAR_ARCHIVE, "First-person viewmodel sun shadows with r_shadowmap_viewmodel_self 0: 0 samples the main view's sun cascades, 1 renders one more cascade fitted to the viewmodel every frame (sharper sun shadows on the weapon)", true, 0, true, 1 );
 ConVar r_shadowmap_viewmodel_self( "r_shadowmap_viewmodel_self", "1", FCVAR_ARCHIVE, "First-person viewmodel sun self-shadowing: the viewmodel gets one sun cascade of its own fitted to its depth range, and is drawn into a private copy of it, so it shadows itself but never the world (overrides r_shadowmap_viewmodel_cascade)", true, 0, true, 1 );
 ConVar r_editor_lights_max_shadowed( "r_editor_lights_max_shadowed", "8", FCVAR_ARCHIVE, "Nearest editor lights that receive shadow maps; the rest are unshadowed" );
@@ -83,6 +87,9 @@ static const ShadowMapResolution_t kShadowResolution[4] = {
 ShadowMapResolution_t g_ShadowRes = kShadowResolution[2];
 int PageSlotCount() { return g_ShadowRes.slots * g_ShadowRes.slots; }
 int g_ShadowResLevel = 2;
+// The r_shadowmap_resolution value last evaluated against video memory, and the level it allows (-1: not yet).
+int g_RequestedResLevel = -1, g_AllowedResLevel = 2;
+IShaderAPIDX12 *g_ShaderAPIDX12 = NULL;
 void ApplyShadowResolution();
 struct ShadowFullRestoreReasons_t
 {
@@ -241,22 +248,25 @@ struct SunCascadeFit_t
 };
 struct SunCascadeTargets_t
 {
-	SunCascadeTargets_t() : clean(0), work(0), rigid(0) {}
+	SunCascadeTargets_t() : clean(0), work(0), rigid(0), size(0) {}
 	DX12ShadowTarget_t clean, work, rigid;
+	int size; // Side of clean/work/rigid (and their spares); 0 until created.
 	ShadowCache_t caches[4];
 	ShadowCasterVolume_t volumes[4];
 	SunCascadeFit_t fits[4];
 };
 // CPU view packets stay pooled/immutable. Physical sun depth and its LAST-WRITE
 // content proof are shared by main frames; the second set is the viewmodel's own
-// projection, used only with r_shadowmap_viewmodel_cascade 1.
+// projection: one cascade (one csm square, not the four-cascade atlas) for r_shadowmap_viewmodel_self, four with
+// r_shadowmap_viewmodel_cascade 1 and self-shadowing off.
 SunCascadeTargets_t g_CascadeTargets[2];
 const char *const kCascadeTargetNames[2][3]={
 	{"shadow_cascade_static_main","shadow_cascade_work_main","shadow_cascade_rigid_main"},
 	{"shadow_cascade_static_viewmodel","shadow_cascade_work_viewmodel","shadow_cascade_rigid_viewmodel"}
 };
 DX12ShadowTarget_t g_StaticSunClean=0, g_StaticSunWork=0;
-// Per-frame private copy of the sun cascades a viewmodel samples, with the viewmodel drawn over them (r_shadowmap_viewmodel_self).
+// Per-frame private copy of the viewmodel's one self-shadow cascade, with the viewmodel drawn over it
+// (r_shadowmap_viewmodel_self); one csm square.
 DX12ShadowTarget_t g_ViewModelSelfSun=0;
 // What the main view published for its dynamic sun cascades this frame. The viewmodel receiver view that follows
 // it has the same eye and forward and a projection inside the main one, so its receivers lie inside these charts.
@@ -580,6 +590,7 @@ void ResetMapState()
 	memset(&g_State.manifest,0,sizeof(g_State.manifest)); g_State.rshdBytes.RemoveAll();
 	g_CameraPvs.Clear(); g_SunSky.Clear(); g_CasterSkyRegions.Purge(); g_DetailLeafSkyRegions.Purge(); g_FreeSlotSeconds.Purge();
 	g_State.worldMins.Init(); g_State.worldMaxs.Init();
+	g_RequestedResLevel=-1;
 }
 
 class CShadowViewData;
@@ -607,6 +618,7 @@ void ResolveLightingInterface()
 	CreateInterfaceFn factory=Sys_GetFactory("shaderapidx12");
 	g_Lighting=factory?static_cast<IShaderAPIDX12Lighting *>(factory(SHADERAPIDX12_LIGHTING_INTERFACE_VERSION,NULL)):NULL;
 	g_Highres=factory?static_cast<IShaderAPIDX12HighresLightmaps *>(factory(SHADERAPIDX12_HIGHRES_INTERFACE_VERSION,NULL)):NULL;
+	g_ShaderAPIDX12=factory?static_cast<IShaderAPIDX12 *>(factory(SHADERAPIDX12_INTERFACE_VERSION,NULL)):NULL;
 }
 
 // Re-snapshots every loaded material without touching VMT variables or native geometry (ReloadMaterials would release/restore).
@@ -1675,23 +1687,59 @@ bool ShadowResolutionTargetsIdle()
 	if ( !TargetIdle(g_SunSkyTarget) ) return false;
 	return true;
 }
+void ResetCascadeTargets( SunCascadeTargets_t &sun )
+{
+	DestroyTarget(sun.clean); DestroyTarget(sun.work); DestroyTarget(sun.rigid); sun.size=0;
+	for ( int c=0;c<4;++c ) { sun.caches[c]=ShadowCache_t(); sun.fits[c]=SunCascadeFit_t(); sun.volumes[c]=ShadowCasterVolume_t(); }
+}
 void ResetSunTargets()
 {
-	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v )
-	{
-		SunCascadeTargets_t &sun=g_CascadeTargets[v];
-		DestroyTarget(sun.clean); DestroyTarget(sun.work); DestroyTarget(sun.rigid);
-		for ( int c=0;c<4;++c ) { sun.caches[c]=ShadowCache_t(); sun.fits[c]=SunCascadeFit_t(); sun.volumes[c]=ShadowCasterVolume_t(); }
-	}
+	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v ) ResetCascadeTargets(g_CascadeTargets[v]);
 	DestroyTarget(g_StaticSunClean); DestroyTarget(g_StaticSunWork); DestroyTarget(g_ViewModelSelfSun);
 	g_StaticSunCache=ShadowCache_t();
 	for ( int s=0;s<g_SunSpares.Count();++s ) DestroyTarget(g_SunSpares[s].target);
 	g_SunSpares.RemoveAll();
 }
+// D32 bytes of the shadow targets a resolution level keeps: the main cascade atlas (clean, work, rigid), the viewmodel's
+// set, the static sun pair, and clean, work and rigid local slots for the realtime-light cap at six faces each.
+uint64 ShadowLevelBytes( int level )
+{
+	const ShadowMapResolution_t &r=kShadowResolution[level];
+	const uint64 atlas=uint64(r.atlas)*r.atlas, csm=uint64(r.csm)*r.csm, sun=uint64(r.sun)*r.sun, local=uint64(r.local)*r.local;
+	const uint64 viewModel=r_shadowmap_viewmodel_self.GetBool() ? 4*csm : r_shadowmap_viewmodel_cascade.GetBool() ? 3*atlas : 0;
+	const float cap=HybridNonnegativeSetting(r_shadowmap_max_realtime_lights.GetString(),4.0f);
+	const uint64 lights=cap==0 || cap>8 ? 8 : MAX((uint64)cap,(uint64)1);
+	return 4*( 3*atlas+viewModel+2*sun+3*lights*6*local );
+}
+// The highest level up to the requested one whose shadow targets fit r_shadowmap_vram_limit of the dedicated video
+// memory, given what the process uses without them. Over that the frame cannot be held in video memory at all, and a
+// GTX 1050 (2 GB) was removed as hung on the first Ultra frame (2.4 GB). Under it but over the OS budget, Windows pages.
+int AllowedShadowResolution( int requested )
+{
+	uint64 usage=0, budget=0, dedicated=0;
+	const float limit=r_shadowmap_vram_limit.GetFloat();
+	if ( limit<=0 || !g_ShaderAPIDX12 || !g_ShaderAPIDX12->GetVideoMemory(usage,budget,dedicated) || !dedicated ) return requested;
+	bool allocated=g_CascadeTargets[0].work!=0;
+	for ( int p=0;!allocated && p<g_Pages.Count();++p ) allocated=g_Pages[p].work!=0;
+	const uint64 current=allocated ? ShadowLevelBytes(g_ShadowResLevel) : 0;
+	const uint64 base=usage>current ? usage-current : 0, available=(uint64)( limit*(double)dedicated );
+	int level=requested;
+	while ( level>0 && base+ShadowLevelBytes(level)>available ) --level;
+	if ( level!=requested )
+		Warning( "Shadowmaps: r_shadowmap_resolution %d needs about %llu MiB of shadow maps; %llu MiB of %llu MiB video memory are in use without them (r_shadowmap_vram_limit %.2f). Using %d.\n",
+			requested, ShadowLevelBytes(requested)>>20, base>>20, dedicated>>20, limit, level );
+	return level;
+}
 void ApplyShadowResolution()
 {
-	int level=r_shadowmap_resolution.GetInt();
-	if ( level<0 || level>3 ) level=2;
+	int requested=r_shadowmap_resolution.GetInt();
+	if ( requested<0 || requested>3 ) requested=2;
+	if ( requested!=g_RequestedResLevel )
+	{
+		g_RequestedResLevel=requested;
+		g_AllowedResLevel=AllowedShadowResolution(requested);
+	}
+	const int level=g_AllowedResLevel;
 	if ( level==g_ShadowResLevel ) return;
 	if ( !ShadowResolutionTargetsIdle() ) return;
 	for ( int p=0;p<g_Pages.Count();++p ) if ( g_Pages[p].work ) EvictPage(p);
@@ -2661,7 +2709,7 @@ bool AddViewModelSelfShadow( CShadowViewData &data, const SunCascadeTargets_t &s
 	DX12LightingViewConstantsV1 &constants=data.packet.constants;
 	if ( !data.selfCasters.Count() || !r_shadowmap_viewmodel_self.GetBool() ||
 		!(constants.cShadowView1[3]&DX12_SHADOW_VIEW_CSM_VALID) || !data.packet.cascadeAtlasTarget ) return true;
-	if ( !CreateSunTarget(g_ViewModelSelfSun,"shadow_cascade_viewmodel_self",g_ShadowRes.atlas) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+	if ( !CreateSunTarget(g_ViewModelSelfSun,"shadow_cascade_viewmodel_self",g_ShadowRes.csm) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 	const DX12ShadowTarget_t shared=data.packet.cascadeAtlasTarget;
 	CMatRenderContextPtr pRenderContext( materials );
 	PIXEVENT( pRenderContext, "Viewmodel self shadow" );
@@ -2713,7 +2761,9 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	constants.cShadowView1[3]|=DX12_SHADOW_VIEW_HAS_SUN;
 	float style=data.packet.styles[sun.style];
 	for ( int i=0;i<3;++i ) constants.cSunRadiance[i]=sun.radiance[i]*style;
-	constants.cSunRadiance[3]=tanf(DEG2RAD(sun.shadowSunAngularRadius));
+	// Maps that author SunSpreadAngle 0 (c1m2, c1m3) record a zero angular radius, which turns the PCSS filter into PCF
+	// (r_shadowmap_filter did nothing). Realtime shadows use at least r_shadowmap_sun_angle.
+	constants.cSunRadiance[3]=tanf(DEG2RAD(MAX(sun.shadowSunAngularRadius,r_shadowmap_sun_angle.GetFloat())));
 	CopyVector3(travel,constants.cSunTravel); CopyVector3(basisX,constants.cSunBasisX); CopyVector3(basisY,constants.cSunBasisY);
 	constants.cSunIdentity[0]=sun.lightId; constants.cSunIdentity[1]=sun.style;
 	if ( !data.shadowsEnabled ) return true;
@@ -2783,7 +2833,9 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	}
 	// Self-shadowing needs texels of a fraction of a unit; the main charts give the whole weapon a few texels.
 	const bool viewModelSelf=data.kind==SHADOWMAP_VIEW_VIEWMODEL && data.selfCasters.Count() && r_shadowmap_viewmodel_self.GetBool();
-	if ( data.kind==SHADOWMAP_VIEW_VIEWMODEL && !viewModelSelf && !r_shadowmap_viewmodel_cascade.GetBool() )
+	// r_shadowmap_viewmodel_self overrides r_shadowmap_viewmodel_cascade: its own set holds one cascade, so a frame
+	// without viewmodel casters samples the main cascades instead.
+	if ( data.kind==SHADOWMAP_VIEW_VIEWMODEL && !viewModelSelf && ( !r_shadowmap_viewmodel_cascade.GetBool() || r_shadowmap_viewmodel_self.GetBool() ) )
 	{
 		// No cascade of its own: one chart render and its depth restore less per frame. A receiver outside the main
 		// charts' cores (a viewmodel field of view wider than the main one) falls back to the static sun map.
@@ -2799,6 +2851,14 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	}
 	const int cascadeOwner=data.kind==SHADOWMAP_VIEW_VIEWMODEL ? 1 : 0;
 	SunCascadeTargets_t &cascade=g_CascadeTargets[cascadeOwner];
+	// The self-shadow set renders cascade 0 only (rect 0,0): one csm square, a quarter of the four-cascade atlas.
+	const int atlasSize=viewModelSelf ? g_ShadowRes.csm : g_ShadowRes.atlas;
+	if ( cascade.size && cascade.size!=atlasSize )
+	{
+		// r_shadowmap_viewmodel_self toggled: replace the set once no packet leases it; meanwhile the static sun map.
+		if ( !TargetIdle(cascade.clean) || !TargetIdle(cascade.work) || !TargetIdle(cascade.rigid) ) return true;
+		ResetCascadeTargets(cascade);
+	}
 	float splits[5],blend[3],farDepth=MIN(data.receiver.zFar,r_csm_distance.GetFloat());
 	const bool haveSplits=ShadowMapScene_CascadeSplits(data.receiver.zNear,farDepth,splits,blend);
 	// Fewer cascades keep the near splits unchanged and end the dynamic range at the last kept split; the shader's
@@ -2829,8 +2889,9 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 	}
 	for ( int i=0;i<4;++i ) constants.cCascadeSplits[i]=splits[i+1];
 	for ( int i=0;i<3;++i ) constants.cCascadeBlend[i]=blend[i];
-	if ( !CreateSunTarget(cascade.clean,kCascadeTargetNames[cascadeOwner][0],g_ShadowRes.atlas) || !CreateSunTarget(cascade.work,kCascadeTargetNames[cascadeOwner][1],g_ShadowRes.atlas) )
+	if ( !CreateSunTarget(cascade.clean,kCascadeTargetNames[cascadeOwner][0],atlasSize) || !CreateSunTarget(cascade.work,kCascadeTargetNames[cascadeOwner][1],atlasSize) )
 		return Fail(SHADOWMAP_ERR_RESIDENCY);
+	cascade.size=atlasSize;
 	bool anyCascade=false;
 	for ( int i=0;i<cascadeCount;++i )
 	{
@@ -2930,13 +2991,13 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		{
 			StartChart(cache,matrix,depth,lightView,volume,rebuild,dynamic,billboards,detailGeneration,0);
 			cache.pendingSkyRegion=data.sunSkyRegion;
-			if ( !WritableSunTarget(data,cascade.work,g_ShadowRes.atlas,cascade.caches,4) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+			if ( !WritableSunTarget(data,cascade.work,atlasSize,cascade.caches,4) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 			CaptureChartContent(data,cache,cascade.work);
 		}
 		{
 			CMatRenderContextPtr pRenderContext( materials );
 			PIXEVENT( pRenderContext, "Sun cascade" );
-			if ( !RenderChart(data,cache,cascade.clean,cascade.work,x,y,g_ShadowRes.csm,&cascade.rigid,g_ShadowRes.atlas,g_ShadowRes.atlas,kCascadeTargetNames[cascadeOwner][2],-1-i) ) return false;
+			if ( !RenderChart(data,cache,cascade.clean,cascade.work,x,y,g_ShadowRes.csm,&cascade.rigid,atlasSize,atlasSize,kCascadeTargetNames[cascadeOwner][2],-1-i) ) return false;
 		}
 		if ( cache.pending && cache.pendingReady )
 		{
@@ -4226,6 +4287,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	constants.cShadowViewport[2]=1.0f/setup.width; constants.cShadowViewport[3]=1.0f/setup.height;
 	constants.cSunIdentity[0]=0xffffffffu;
 	if ( !data->shadowsEnabled ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_UNSHADOWED;
+	if ( r_shadowmap_local_filter.GetBool() ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_LOCAL_SMOOTH;
 	Vector forward,right,up; AngleVectors(setup.angles,&forward,&right,&up);
 	CopyVector3(setup.origin,constants.cEyePosition); constants.cEyePosition[3]=setup.zNear;
 	CopyVector3(forward,constants.cViewForward);

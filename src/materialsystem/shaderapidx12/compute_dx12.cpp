@@ -704,7 +704,12 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 			return false;
 		}
 	}
+	char breadcrumb[96];
+	if ( m_pDevice->GpuBreadcrumbsEnabled() )
+		V_snprintf( breadcrumb, sizeof( breadcrumb ), "compute %s %dx%dx%d", name, dispatch.m_nGroupsX, dispatch.m_nGroupsY, dispatch.m_nGroupsZ );
+	const uint32_t nBreadcrumb = m_pDevice->GpuBreadcrumbsEnabled() ? m_pDevice->GpuBreadcrumbBegin( breadcrumb ) : 0;
 	list->ExternalCommand( &ComputeReplayThunk, payload );
+	m_pDevice->GpuBreadcrumbEnd( nBreadcrumb );
 	m_Pipeline.InvalidateGraphicsBindings();
 	for ( int i = 0; i < retainedCount; ++i )
 		m_pDevice->RetainResource( retained[i] );

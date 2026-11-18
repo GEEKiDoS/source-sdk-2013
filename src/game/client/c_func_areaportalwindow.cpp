@@ -93,8 +93,13 @@ int C_FuncAreaPortalWindow::DrawModel( int flags )
 	if( modelType != mod_brush )
 		return 0;
 
-	// Draw the fading version.
-	render->SetBlend( GetDistanceBlend() );
+	// Draw the fading version. A window closer than FadeStartDist is fully transparent (TranslucencyLimit, usually 0):
+	// the engine drew that blend as an opaque brush, so the fade brush (often TOOLSBLACK) became a black wall over the
+	// open areaportal (c1m3's portal windows). Nothing to draw at zero blend.
+	const float flBlend = GetDistanceBlend();
+	if ( flBlend <= 0.0f )
+		return 0;
+	render->SetBlend( flBlend );
 
 	DrawBrushModelMode_t mode = DBM_DRAW_ALL;
 	if ( flags & STUDIO_TWOPASS )

@@ -21,7 +21,8 @@
 #include "shaderapi/ishaderapi.h"
 
 // _004: frame generation, reflex, HDR output, adapter performance tier and runtime GPU timing.
-#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_004"
+// _005: GetVideoMemory.
+#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_005"
 
 static constexpr int SHADERAPIDX12_GPU_TIMING_MAX_EVENTS = 16;
 static constexpr int SHADERAPIDX12_GPU_TIMING_NAME_LENGTH = 64;
@@ -204,6 +205,9 @@ public:
 	virtual bool GetGpuTiming( ShaderAPIDX12GpuTiming_t &timing ) = 0;
 	// See ShaderAPIDX12AdapterTier_t.
 	virtual int AdapterPerformanceTier() = 0;
+	// This process's use of the adapter's local video memory and the OS budget for it (DXGI QueryVideoMemoryInfo),
+	// and the adapter's dedicated video memory, in bytes. False when unavailable. Callable from any thread.
+	virtual bool GetVideoMemory( uint64 &nUsage, uint64 &nBudget, uint64 &nDedicated ) = 0;
 
 };
 abstract_class IShaderAPIDX12Compute

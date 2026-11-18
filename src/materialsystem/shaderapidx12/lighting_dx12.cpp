@@ -2506,7 +2506,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			if ( !ShadowMap_IsFiniteFloat( viewFloats[i] ) ) failure = kPacketError;
 		const bool csmValid = ( v.constants.cShadowView1[3] & DX12_SHADOW_VIEW_CSM_VALID ) != 0;
 		uint32 initializedCascades = 0;
-		uint32 csmSlot = 0;
+		uint32 csmSlot = 0, csmExtent = 0;
 		if ( !failure && ( csmValid || deferred ) )
 		{
 			for ( uint32 i = 0; !failure && i < DX12_SHADOW_CSM_CASCADES; ++i )
@@ -2524,7 +2524,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 					( rect[0] != 0 && rect[0] != csmSlot ) || ( rect[1] != 0 && rect[1] != csmSlot ) ||
 					!RectFits( rect[0], rect[1], rect[2], rect[2], atlas, atlas ) ||
 					depth[1] <= depth[0] || depth[2] <= 0 || depth[3] ) failure = kPacketError;
-				else ++initializedCascades;
+				else { ++initializedCascades; csmExtent = MAX( csmExtent, MAX( rect[0], rect[1] ) + rect[2] ); }
 			}
 			if ( !failure && csmValid && !initializedCascades ) failure = kPacketError;
 		}
@@ -2554,8 +2554,11 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			if ( !target ) { if ( i >= 2 && packet->ids[i - 2] ) failure = kPacketError; continue; }
 			if ( i < 2 )
 			{
-				const int required = i == 0 ? int( csmSlot * 2 ) : int( staticSize );
-				if ( !required || target->width != required || target->height != required ) failure = kPacketError;
+				// The cascade atlas holds four csm squares, or one (a viewmodel self-shadow set renders cascade 0 only).
+				const bool sizeValid = i == 0 ?
+					csmSlot && target->width == target->height && ( target->width == int( csmSlot ) || target->width == int( csmSlot * 2 ) ) && target->width >= int( csmExtent ) :
+					staticSize && target->width == int( staticSize ) && target->height == int( staticSize );
+				if ( !sizeValid ) failure = kPacketError;
 			}
 			else if ( !localSlot || target->width < int( localSlot ) || target->height < int( localSlot ) ||
 				target->width > DX12_SHADOW_LOCAL_PAGE_SIZE || target->height > DX12_SHADOW_LOCAL_PAGE_SIZE ||

@@ -34,6 +34,7 @@ public:
 	bool DisableShaderOptimizations() const { return m_bDisableShaderOptimizations; }
 
 	const MaterialAdapterInfo_t &Adapter() const { return m_Adapter; }
+	uint64_t DedicatedVideoMemory() const { return m_nDedicatedVideoMemory; }
 
 	const char *GetHWSpecificShaderDLLName() const override { return "stdshader_dx12.dll"; }
 

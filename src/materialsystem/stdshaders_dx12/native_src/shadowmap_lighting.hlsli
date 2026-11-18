@@ -32,6 +32,7 @@ SamplerState g_CookieSampler : register(s0, space5);
 #endif
 // Packet-only policy, deliberately independent of material/snapshot variants.
 static const uint DX12_SHADOW_VIEW_UNSHADOWED = 0x8;
+static const uint DX12_SHADOW_VIEW_LOCAL_SMOOTH = 0x20;
 
 static const float2 g_ShadowPCFOffsets[4] =
 {
@@ -867,16 +868,81 @@ float ShadowMap_LocalCompare( RuntimeShadowLightGpu light, ShadowMapLocalChart c
 	}
 	return result;
 }
+// Four texel centers of the home face's slot starting at atlas texel first, ordered top-left, top-right, bottom-left,
+// bottom-right (as ShadowMap_SunDepthFootprint).
+float4 ShadowMap_LocalDepthFootprint( uint page, int2 first, float2 invPageSize )
+{
+#if defined( DX12_PBR_SHADOW_GATHER )
+	// D3D gather4 returns (-,+),(+,+),(+,-),(-,-): bottom-left, bottom-right, top-right, top-left.
+	return g_ShadowLocalAtlas[NonUniformResourceIndex( page )].GatherRed( g_CookieSampler, ( float2( first ) + 1.0 ) * invPageSize ).wzxy;
+#else
+	return float4( g_ShadowLocalAtlas[NonUniformResourceIndex( page )].Load( int3( first, 0 ) ),
+		g_ShadowLocalAtlas[NonUniformResourceIndex( page )].Load( int3( first + int2( 1, 0 ), 0 ) ),
+		g_ShadowLocalAtlas[NonUniformResourceIndex( page )].Load( int3( first + int2( 0, 1 ), 0 ) ),
+		g_ShadowLocalAtlas[NonUniformResourceIndex( page )].Load( int3( first + int2( 1, 1 ), 0 ) ) );
+#endif
+}
+// Hard-edged local shadows without the texel staircase: the 4x4 texel compares around the receiver weighted by a cubic
+// B-spline. The filtered visibility is smooth in the receiver position, so its 0.5 iso-line, where the edge is drawn,
+// is a smooth curve through the staircase instead of the staircase; LOCAL_CUBIC_SHARPNESS then narrows the ramp
+// around that line to about 0.6 texel, a hard edge. A shallow caster edge still leaves a texel-scale wobble in that
+// line (its steps are longer than the kernel); with r_shadowmap_dither the kernel is moved by LOCAL_CUBIC_JITTER texels
+// in the dither's direction, which the temporal upscaler integrates into a straight edge. Each texel gets its own
+// receiver-plane reference. Sixteen texels in four gathers, against sixteen loads for the four bilinear plane taps.
+// Every texel lies within 2 + LOCAL_CUBIC_JITTER texels of the receiver, inside the home face's rendered guard.
+static const float LOCAL_CUBIC_SHARPNESS = 2.0;
+static const float LOCAL_CUBIC_JITTER = 0.5;
+float ShadowMap_LocalCubicPCF( ShadowMapLocalChart c )
+{
+	float2 jitter = g_ShadowDitherActive ? ShadowDither_Rotate( float2( LOCAL_CUBIC_JITTER, 0.0 ) ) : 0.0;
+	float2 pixel = c.centerPixel + jitter;
+	float2 base = floor( pixel );
+	float2 f = pixel - base;
+	float2 g = 1.0 - f;
+	float2 f2 = f * f;
+	float2 f3 = f2 * f;
+	float2 w0 = g * g * g * ( 1.0 / 6.0 );
+	float2 w1 = f3 * 0.5 - f2 + ( 2.0 / 3.0 );
+	float2 w3 = f3 * ( 1.0 / 6.0 );
+	float2 w2 = 1.0 - w0 - w1 - w3;
+	float4 wx = float4( w0.x, w1.x, w2.x, w3.x );
+	float4 wy = float4( w0.y, w1.y, w2.y, w3.y );
+	uint pageWidth, pageHeight;
+	g_ShadowLocalAtlas[NonUniformResourceIndex( c.homeRect.x )].GetDimensions( pageWidth, pageHeight );
+	float2 invPageSize = 1.0 / float2( pageWidth, pageHeight );
+	int2 origin = int2( base ) + int2( c.homeRect.yz ) - 1;
+	// Reference at the texel base - 1 + (column, row): centerDepth + gradient . ( texel - centerPixel ), where
+	// texel - centerPixel = (column, row) - 1 - f + jitter.
+	float4 columnReference = ( c.centerDepth + dot( c.homeDepthGradient, jitter - f - 1.0 ) ) + c.homeDepthGradient.x * float4( 0.0, 1.0, 2.0, 3.0 );
+	float visibility = 0.0;
+	[unroll] for ( uint row = 0; row < 4; row += 2 )
+	{
+		float4 left = ShadowMap_LocalDepthFootprint( c.homeRect.x, origin + int2( 0, row ), invPageSize );
+		float4 right = ShadowMap_LocalDepthFootprint( c.homeRect.x, origin + int2( 2, row ), invPageSize );
+		float4 top = columnReference + c.homeDepthGradient.y * row;
+		float4 bottom = top + c.homeDepthGradient.y;
+		visibility += wy[row] * dot( wx, float4( top <= float4( left.xy, right.xy ) ) );
+		visibility += wy[row + 1] * dot( wx, float4( bottom <= float4( left.zw, right.zw ) ) );
+	}
+	return saturate( ( visibility - 0.5 ) * LOCAL_CUBIC_SHARPNESS + 0.5 );
+}
 float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart c )
 {
 	float result = 1.0;
 	if ( c.valid )
 	{
-		bool usePlane = ShadowMap_LocalPreflight( light, c, 0.5 * ShadowDither_PCFPreflightScale() );
-		float visibility = 0.0;
-		// One instance of the three-way compare (home face plane, other face plane, comparison sample), not four.
-		[loop] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_LocalCompare( light, c, ShadowDither_Rotate( g_ShadowPCFOffsets[i] ), usePlane );
-		result = visibility * 0.25;
+		// The cubic kernel (r_shadowmap_local_filter 1) needs the receiver plane to hold over its whole footprint (the
+		// preflight also rejects a plane through the light); otherwise the bilinear taps with their own preflight.
+		[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_LOCAL_SMOOTH ) != 0 && ShadowMap_LocalPreflight( light, c, 2.0 + LOCAL_CUBIC_JITTER ) )
+			result = ShadowMap_LocalCubicPCF( c );
+		else
+		{
+			bool usePlane = ShadowMap_LocalPreflight( light, c, 0.5 * ShadowDither_PCFPreflightScale() );
+			float visibility = 0.0;
+			// One instance of the three-way compare (home face plane, other face plane, comparison sample), not four.
+			[loop] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_LocalCompare( light, c, ShadowDither_Rotate( g_ShadowPCFOffsets[i] ), usePlane );
+			result = visibility * 0.25;
+		}
 	}
 	return result;
 }

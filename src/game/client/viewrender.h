@@ -596,11 +596,11 @@ private:
 
 #if defined( L4D2 )
 	bool UpdateRefractIfNeededByList( CUtlVector< ClientViewModelRenderable_t > &list );
-	void DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< ClientViewModelRenderable_t > &list );
+	void DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< ClientViewModelRenderable_t > &list, bool bDepthHack );
 	void DrawRenderablesInList( CUtlVector< ClientViewModelRenderable_t > &list, int flags = 0 );
 #else
 	bool			UpdateRefractIfNeededByList( CUtlVector< IClientRenderable * > &list );
-	void			DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< IClientRenderable * > &list );
+	void			DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< IClientRenderable * > &list, bool bDepthHack );
 	void			DrawRenderablesInList( CUtlVector< IClientRenderable * > &list, int flags = 0 );
 #endif
 

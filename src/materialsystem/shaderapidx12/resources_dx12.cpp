@@ -221,18 +221,33 @@ void TrackResourceMemoryDX12( ID3D12Device *device, ID3D12Resource *resource, co
 		Warning( "ShaderAPIDX12 memory: attaching lifetime sentinel failed (0x%08x)\n", static_cast<unsigned>( hr ) );
 }
 
+// Residency priority. Over the OS video memory budget, Windows moves allocations of this process to system memory
+// (the GPU then reads them over PCIe) and keeps the higher-priority ones in video memory. Every allocation stays
+// movable; render, depth and UAV targets, written every frame, are HIGH so that sampled textures and buffers
+// (NORMAL, the default) leave video memory first.
+static void SetResidencyPriorityDX12( ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heap, const D3D12_RESOURCE_DESC *desc, ID3D12Resource *resource )
+{
+	const D3D12_RESOURCE_FLAGS written = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	if ( !heap || heap->Type != D3D12_HEAP_TYPE_DEFAULT || !desc || !( desc->Flags & written ) )
+		return;
+	Microsoft::WRL::ComPtr<ID3D12Device1> device1;
+	if ( FAILED( device->QueryInterface( IID_PPV_ARGS( &device1 ) ) ) )
+		return;
+	ID3D12Pageable *pageable = resource;
+	const D3D12_RESIDENCY_PRIORITY priority = D3D12_RESIDENCY_PRIORITY_HIGH;
+	device1->SetResidencyPriority( 1, &pageable, &priority );
+}
+
 HRESULT CreateCommittedResourceDX12( ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heap, D3D12_HEAP_FLAGS flags, const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE *clear, REFIID iid, void **out, const char *category, const char *name )
 {
 	const HRESULT hr = device->CreateCommittedResource( heap, flags, desc, state, clear, iid, out );
 	if ( SUCCEEDED( hr ) && out && *out )
 	{
-		if ( iid == __uuidof( ID3D12Resource ) )
-			TrackResourceMemoryDX12( device, static_cast<ID3D12Resource *>( *out ), category, name );
-		else
+		Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+		if ( SUCCEEDED( static_cast<IUnknown *>( *out )->QueryInterface( IID_PPV_ARGS( &resource ) ) ) )
 		{
-			Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-			if ( SUCCEEDED( static_cast<IUnknown *>( *out )->QueryInterface( IID_PPV_ARGS( &resource ) ) ) )
-				TrackResourceMemoryDX12( device, resource.Get(), category, name );
+			TrackResourceMemoryDX12( device, resource.Get(), category, name );
+			SetResidencyPriorityDX12( device, heap, desc, resource.Get() );
 		}
 	}
 	return hr;

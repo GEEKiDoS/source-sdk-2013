@@ -194,6 +194,12 @@ C_BasePropDoor::~C_BasePropDoor( void )
 {
 }
 
+// Shadowmap caster policy (clientleafsystem.cpp): doors cast despite an authored EF_NOSHADOW.
+bool IsClientPropDoor( C_BaseEntity *pEntity )
+{
+	return dynamic_cast< C_BasePropDoor * >( pEntity ) != NULL;
+}
+
 #if defined( L4D2 )
 int C_BasePropDoor::ObjectCaps()
 {

@@ -49,7 +49,8 @@ ConVar r_world_baked_specular( "r_world_baked_specular", "0", FCVAR_ARCHIVE,
 ConVar r_pbr_light_passes( "r_pbr_light_passes", "1", FCVAR_ARCHIVE,
 	"Opaque enhanced PBR surfaces shade in two forward passes, like Source's flashlight pass: the baked/material pass, then an "
 	"additive depth-EQUAL pass for the sun, realtime local lights and projected lights. Each pass keeps far fewer registers "
-	"live than the single pass. 0 = single pass. r_shadowmap_debug views always use the single pass", true, 0, true, 1 );
+	"live than the single pass. 0 = single pass, 1 = models and world, 2 = models only, 3 = world only. r_shadowmap_debug "
+	"views always use the single pass", true, 0, true, 3 );
 
 bool DX12PbrOverride()
 {
@@ -109,7 +110,11 @@ public:
 	// PBR_Infected: static feature flags of g_PbrInfectedFeatures (yzw); x (burn strength) is per draw.
 	bool m_bInfected = false;
 	float m_InfectedFeatures[3] = {};
-	bool m_bOpaqueBlend = false; // BT_NONE: the snapshot carries the two-pass lighting passes as well
+	// EvaluateBlendRequirements inputs: snapshots exist per modulation (alpha-modulated draws such as fading props and
+	// areaportal windows get a BT_BLEND snapshot without the two-pass lighting passes), so every draw re-evaluates the
+	// blend type under its own modulation instead of trusting the one the material was staged with.
+	int m_nBlendTexture = -1;
+	bool m_bBlendIsBase = false;
 };
 
 //-----------------------------------------------------------------------------
@@ -172,6 +177,7 @@ struct PBRState
 	bool explicitRoughness;	// $mraotexture or $roughness authored (or a native PBR shader): beats Phong and environment-mask gloss
 	bool glossFromMask;		// legacy replacement without explicit roughness or Phong: roughness = 1 - environment mask (g_PbrFlags2.y)
 	BlendType_t blendType;
+	int blendTexture;		// EvaluateBlendRequirements' texture (-1 with $blendtintbybasealpha)
 	// PBR_Infected: palette variation, its detail / burn layers, wound cutouts
 	bool infected, infectedVariation, infectedDetail, infectedBurn, infectedWounded;
 };
@@ -252,8 +258,8 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 		v.legacyEnvmapAuthored != -1 && GetIntParam( v.legacyEnvmapAuthored, params, 0 ) != 0;
 
 	s.alphaTested = IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) != 0;
-	const int blendTexture = IsBoolSet( v.blendTintByBaseAlpha, params ) ? -1 : ( s.hasBase ? v.base : v.envmapMask );
-	s.blendType = pShader->EvaluateBlendRequirements( blendTexture, s.hasBase );
+	s.blendTexture = IsBoolSet( v.blendTintByBaseAlpha, params ) ? -1 : ( s.hasBase ? v.base : v.envmapMask );
+	s.blendType = pShader->EvaluateBlendRequirements( s.blendTexture, s.hasBase );
 	s.fullyOpaque = s.blendType != BT_BLENDADD && s.blendType != BT_BLEND && !s.alphaTested;
 	return s;
 }
@@ -593,7 +599,8 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ctx.m_InfectedFeatures[2] = s.infectedVariation && IsBoolSet( v.infEyeGlow, params ) ? 1.0f : 0.0f;
 
 	ctx.m_bModel = s.model;
-	ctx.m_bOpaqueBlend = s.blendType == BT_NONE;
+	ctx.m_nBlendTexture = s.blendTexture;
+	ctx.m_bBlendIsBase = s.hasBase;
 	ctx.m_bEnvmap = s.hasEnvmap;
 	ctx.m_bBump = s.hasBump;
 	ctx.m_bAmbientOnly = IsBoolSet( v.ambientOnly, params );
@@ -1236,7 +1243,9 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 		if ( bEnhanced )
 			g_DX12Constants.shadowmapPassAdmitted = true;
 	}
-	if ( !pContextData->m_bOpaqueBlend || ( pContextData->m_bModel && !bEnhanced ) )
+	// The same condition LightPassesEligible applied when this modulation's snapshot was recorded.
+	if ( pShader->EvaluateBlendRequirements( pContextData->m_nBlendTexture, pContextData->m_bBlendIsBase ) != BT_NONE ||
+		( pContextData->m_bModel && !bEnhanced ) )
 	{
 		pShader->Draw();
 		return;
@@ -1244,7 +1253,8 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 	// Two-pass lighting needs the enhanced receivers (the world's highres twin is chosen per map at draw time). The
 	// shadow-map debug views replace the single pass's colour. Under SSR the realtime pass writes the payload's S and D.
 	static ConVarRef r_shadowmap_debug( "r_shadowmap_debug" );
-	const bool lightPasses = r_pbr_light_passes.GetBool() && ( pContextData->m_bModel || DX12HighresMap() ) &&
+	const int mode = r_pbr_light_passes.GetInt();
+	const bool lightPasses = ( pContextData->m_bModel ? mode == 1 || mode == 2 : ( mode == 1 || mode == 3 ) && DX12HighresMap() ) &&
 		!( r_shadowmap_debug.IsValid() && r_shadowmap_debug.GetInt() != 0 );
 	pShader->Draw( !lightPasses );
 	pShader->Draw( lightPasses );

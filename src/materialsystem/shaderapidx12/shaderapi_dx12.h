@@ -814,6 +814,7 @@ private:
 	void SetGpuTimingEnabled( bool bEnabled ) override;
 	bool GetGpuTiming( ShaderAPIDX12GpuTiming_t &timing ) override;
 	int AdapterPerformanceTier() override;
+	bool GetVideoMemory( uint64 &nUsage, uint64 &nBudget, uint64 &nDedicated ) override;
 	bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) override;
 	int SceneSampleCount() override;
 	void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked, bool bViewModel ) override;

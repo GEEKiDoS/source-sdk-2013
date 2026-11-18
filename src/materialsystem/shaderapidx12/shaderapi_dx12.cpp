@@ -2982,6 +2982,21 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 IndexUploadAndDraw", DX12_DRAW_ZONES_ACTIVE );
+		// Development: name every draw in a PIX capture (material | pixel shader | instances | indices), and with
+		// -dx12breadcrumbs bracket it with GPU hang breadcrumbs carrying the same description plus its shader combos.
+		static ConVarRef dx12_pix_draw_markers( "dx12_pix_draw_markers" );
+		const bool bMarker = dx12_pix_draw_markers.IsValid() && dx12_pix_draw_markers.GetBool();
+		uint32_t nBreadcrumb = 0;
+		if ( bMarker || m_pDevice->GpuBreadcrumbsEnabled() )
+		{
+			char marker[320];
+			V_snprintf( marker, sizeof( marker ), "%s | %s s%d d%d | %s | x%u | %u%s%s", m_pBoundMaterial ? m_pBoundMaterial->GetName() : "?",
+				m_ActiveSnapshot.pixelShaderName.text, m_ActiveSnapshot.staticPixelIndex, m_nPixelShaderIndex, m_ActiveSnapshot.vertexShaderName.text,
+				m_CasterEmit.active ? m_CasterEmit.instances : instanceCount, indexCount, shadowPass ? " shadow" : "", depthPrepass ? " prepass" : "" );
+			if ( bMarker )
+				m_pDevice->SetGpuPIXMarker( marker );
+			nBreadcrumb = m_pDevice->GpuBreadcrumbBegin( marker );
+		}
 		if ( indexed )
 		{
 			D3D12_GPU_VIRTUAL_ADDRESS address = 0;
@@ -3003,6 +3018,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			m_pDevice->GpuReceiverDraw( !depthOnly && bindingInput.lightingAbi && bindingInput.lightingViewTable.count != 0 );
 			list->DrawInstanced( indexCount, instanceCount, firstIndex, 0 );
 		}
+		m_pDevice->GpuBreadcrumbEnd( nBreadcrumb );
 	}
 }
 
@@ -6587,6 +6603,17 @@ bool CShaderAPIDX12::GetGpuTiming( ShaderAPIDX12GpuTiming_t &timing )
 int CShaderAPIDX12::AdapterPerformanceTier()
 {
 	return m_pDevice ? m_pDevice->PerformanceTier() : SHADERAPIDX12_ADAPTER_TIER_UNKNOWN;
+}
+
+bool CShaderAPIDX12::GetVideoMemory( uint64 &nUsage, uint64 &nBudget, uint64 &nDedicated )
+{
+	uint64_t usage = 0, budget = 0;
+	if ( !m_pDevice || !m_pDevice->QueryLocalVideoMemory( usage, budget ) )
+		return false;
+	nUsage = usage;
+	nBudget = budget;
+	nDedicated = g_pHardwareConfigDX12 ? g_pHardwareConfigDX12->DedicatedVideoMemory() : 0;
+	return true;
 }
 
 //-----------------------------------------------------------------------------

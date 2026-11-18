@@ -1426,14 +1426,18 @@ void CViewRender::DrawRenderablesInList( CUtlVector< IClientRenderable * > &list
 	m_pCurrentlyDrawingEntity = NULL;
 }
 
+// Viewmodels are drawn into the front of the depth range so nothing of the scene intersects them. The screen-space
+// effects read native depth below this as "no geometry" (DX12_VIEWMODEL_DEPTH_MAX, viewmodel_depth.hlsli).
+static const float kViewModelDepthRangeMax = 0.1f;
+
 // The L4D2 collation carries game-owned alpha beside each viewmodel renderable.
 static inline IClientRenderable *ViewModelListRenderable( IClientRenderable *pRenderable ) { return pRenderable; }
 #if defined( L4D2 )
 static inline IClientRenderable *ViewModelListRenderable( const ClientViewModelRenderable_t &entry ) { return entry.m_pRenderable; }
 
-void CViewRender::DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< ClientViewModelRenderable_t > &list )
+void CViewRender::DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< ClientViewModelRenderable_t > &list, bool bDepthHack )
 #else
-void CViewRender::DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< IClientRenderable * > &list )
+void CViewRender::DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtlVector< IClientRenderable * > &list, bool bDepthHack )
 #endif
 {
 	VPROF_BUDGET( "CViewRender::DrawViewModelMotionVectors", VPROF_BUDGETGROUP_OTHER_UNACCOUNTED );
@@ -1447,6 +1451,12 @@ void CViewRender::DrawViewModelMotionVectors( const CViewSetup &viewRender, CUtl
 
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->PushRenderTargetAndViewport( pRT, viewRender.x, viewRender.y, viewRender.width, viewRender.height );
+	// The pushed viewport is 0..1 deep. The viewmodels were drawn (and, with r_viewmodel_depth_prepass, put into the
+	// depth buffer) through DepthRange( 0, kViewModelDepthRangeMax ): their velocity draws must land on that same depth
+	// or the LEQUAL test rejects them, leaving the camera reprojection of their compressed depth (a large bogus velocity
+	// that motion blur smears the weapon with).
+	if ( bDepthHack )
+		pRenderContext->DepthRange( 0.0f, kViewModelDepthRangeMax );
 	static ConVarRef motionMode( "r_motionvectors" );
 	const int nMotionPass = list.Count() == 0 && motionMode.GetInt() < 2 ?
 		DX12_MOTION_PASS_HISTORY_VIEWMODEL : DX12_MOTION_PASS_BEGIN_VIEWMODEL;
@@ -1486,10 +1496,6 @@ static CViewSetup ViewModelViewSetup( const CViewSetup &viewRender )
 	viewModelSetup.m_flAspectRatio = engine->GetScreenAspectRatio();
 	return viewModelSetup;
 }
-
-// Viewmodels are drawn into the front of the depth range so nothing of the scene intersects them. The screen-space
-// effects read native depth below this as "no geometry" (DX12_VIEWMODEL_DEPTH_MAX, viewmodel_depth.hlsli).
-static const float kViewModelDepthRangeMax = 0.1f;
 
 //-----------------------------------------------------------------------------
 // Purpose: Opaque viewmodel depth, drawn inside the main view's opaque depth prepass with the projection, depth
@@ -1709,7 +1715,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 
 			DrawRenderablesInList( opaqueViewModelList );
 			if ( MotionVectorsDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() )
-				DrawViewModelMotionVectors( viewRender, opaqueViewModelList );
+				DrawViewModelMotionVectors( viewRender, opaqueViewModelList, bUseDepthHack );
 			DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
 		}
 	}
@@ -7211,6 +7217,10 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 
 	// Use the normal world/model submission, never the flashlight shadow list or shadow-LOD studio path.
 	// The backend changes only pixel coverage/color writes, so vertex transforms, skinning, flex and LOD match.
+	// The backend keeps alpha-tested opaque draws on depth-EQUAL from the end of the prepass to the screen-space EndView.
+	// Without a bracket (no contacts, SSR or volumetrics) the prepass alone must close that scope before translucency,
+	// or alpha-tested materials drawn in the translucent pass (fences) fail EQUAL against depth they never wrote.
+	IShaderAPIDX12ScreenSpace *pPrepassScope = nullptr;
 	if ( bMainSceneView )
 	{
 		IShaderAPIDX12ScreenSpace *pDepthPrepass = ScreenSpaceDX12_DepthPrepass();
@@ -7230,6 +7240,7 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 			if ( bDrawEntities )
 				DrawOpaqueRenderables( DEPTH_MODE_NORMAL, true );
 			pDepthPrepass->EndDepthPrepass();
+			pPrepassScope = pDepthPrepass;
 		}
 	}
 
@@ -7332,6 +7343,8 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 				pScreenSpace->DispatchSSR();
 			pScreenSpace->EndView();
 		}
+		else if ( pPrepassScope )
+			pPrepassScope->EndView();
 		if ( bGtao )
 		{
 			CMatRenderContextPtr pGtaoContext( materials );

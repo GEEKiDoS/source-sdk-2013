@@ -163,6 +163,7 @@ static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipCon
 #define DX12_SHADOW_VIEW_STATIC_SUN_VALID		0x4
 #define DX12_SHADOW_VIEW_UNSHADOWED			0x8		// selected direct active; skip runtime depth sampling (baked world sun cap remains)
 #define DX12_SHADOW_VIEW_DEFERRED				0x10	// budgeted warm-up: missing charts are wholly zero; direct lighting remains active
+#define DX12_SHADOW_VIEW_LOCAL_SMOOTH			0x20	// local lights use the sharpened cubic 4x4 PCF instead of four bilinear taps
 
 // RuntimeShadowLightGpu::reserved0 and DX12ProjectedLightDesc::reserved: the light opted into volumetric
 // in-scattering (ishaderapidx12screenspace.h). Set only when that interface is available; the only known bit.

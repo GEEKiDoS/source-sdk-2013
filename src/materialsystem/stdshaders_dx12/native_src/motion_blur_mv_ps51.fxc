@@ -106,8 +106,16 @@ float4 main( PS_INPUT i ) : SV_Target0
 		return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
 	}
 
+	// Velocity alpha 2 marks the first-person viewmodel (DX12 motion pass: its own draws, and the camera reprojection
+	// of the viewmodel depth the depth prepass left). The two layers blur independently: a viewmodel pixel never adopts
+	// a world neighbour's longer blur and only gathers viewmodel taps, and the world never gathers or adopts the
+	// viewmodel (without depth, a fast background turning behind the weapon would otherwise smear across it and the
+	// weapon across the world). g_vVelocityRegion.z scales the viewmodel's blur (mat_motion_blur_viewmodel_strength)
+	// when .w is set.
+	const bool centerViewModel = centerVelocity.w >= 1.5f;
+	const float viewModelStrength = g_vVelocityRegion.w > 0.0f ? g_vVelocityRegion.z : 1.0f;
 	float maxBlurLength = max( g_vMotionBlurInternal.y, 0.0f );
-	float2 centerV = ClampBlurVector( centerVelocity.xy * blurMultiplier, maxBlurLength );
+	float2 centerV = ClampBlurVector( centerVelocity.xy * blurMultiplier * ( centerViewModel ? viewModelStrength : 1.0f ), maxBlurLength );
 
 #if QUALITY == 0
 	return DX12FinishPixel( FinalOutput( float4( centerColor.rgb, 1.0f ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
@@ -160,10 +168,10 @@ float4 main( PS_INPUT i ) : SV_Target0
 		}
 		float2 searchUv = saturate( uv + searchOffset );
 		float4 searchVelocity = LoadVelocityPointClamp( searchUv );
-		if ( searchVelocity.w >= 0.5f )
+		if ( searchVelocity.w >= 0.5f && ( searchVelocity.w >= 1.5f ) == centerViewModel )
 		{
 			float2 candidateV = ClampBlurVector(
-				searchVelocity.xy * blurMultiplier, maxBlurLength );
+				searchVelocity.xy * blurMultiplier * ( centerViewModel ? viewModelStrength : 1.0f ), maxBlurLength );
 			float candidateLength = length( candidateV );
 			if ( length( searchOffset ) <= 0.5f * candidateLength &&
 				candidateLength > blurVLength )
@@ -174,15 +182,19 @@ float4 main( PS_INPUT i ) : SV_Target0
 		}
 	}
 
+	// The taps are stratified along the blur segment with a per-pixel offset (interleaved gradient noise, decorrelated
+	// from the dilation pattern): at 4-8 taps fixed positions show the blurred image as discrete ghost copies, jittered
+	// ones turn them into fine noise. The middle tap stays on the pixel itself.
+	const float tapJitter = frac( interleavedNoise + 0.61803399f );
 	float4 accumulatedColor = float4( 0.0f, 0.0f, 0.0f, 0.0f );
 	float accumulatedWeight = 0.0f;
 	for ( int tap = 0; tap < kNumSamples; ++tap )
 	{
-		float t = (float)tap / (float)( kNumSamples - 1 );
+		float t = tap == kNumSamples / 2 ? 0.5f : ( (float)tap + tapJitter ) / (float)kNumSamples;
 		float2 tapUv = saturate( uv + blurV * ( t - 0.5f ) );
 		float4 tapColor = SampleSceneClamp( tapUv );
 		float4 tapVelocity = LoadVelocityPointClamp( tapUv );
-		float2 tapBlur = ClampBlurVector( tapVelocity.xy * blurMultiplier, maxBlurLength );
+		float2 tapBlur = ClampBlurVector( tapVelocity.xy * blurMultiplier * ( centerViewModel ? viewModelStrength : 1.0f ), maxBlurLength );
 		float distanceInUv = blurVLength * abs( t - 0.5f );
 		float tapWeight = saturate( length( tapBlur ) / max( distanceInUv, 0.00001f ) );
 
@@ -193,7 +205,7 @@ float4 main( PS_INPUT i ) : SV_Target0
 		{
 			tapWeight = 1.0f;
 		}
-		else if ( tapVelocity.w < 0.5f )
+		else if ( tapVelocity.w < 0.5f || ( tapVelocity.w >= 1.5f ) != centerViewModel )
 		{
 			tapWeight = 0.0f;
 		}

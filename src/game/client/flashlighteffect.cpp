@@ -658,6 +658,7 @@ void CHeadlightEffect::UpdateLight( const Vector &vecPos, const Vector &vecDir, 
 extern "C" double L4D2_GlowNormalize( Vector *value ); // Sole actual1035F4C0, no SDK approximation.
 extern ConVar r_visualizetraces;
 extern ConVar r_flashlightmuzzleflashfov;
+extern ConVar r_flashlightmuzzleflash_shadows;
 extern ConVar r_flashlightnearoffsetscale;
 extern ConVar r_flashlightbacktraceoffset;
 extern ConVar r_flashlighttracedistcutoff;
@@ -913,7 +914,9 @@ bool CFlashlightEffect::UpdateDefaultFlashlightState( FlashlightState_t &state,
 	state.m_FarZ = m_flFlashlightFarZ > 0.0f ? m_flFlashlightFarZ : r_flashlightfar.GetFloat();
 	// Main-approved engine-ABI gap: native also writes extra FLOAT+56=farZ.
 	// TARGET has no member; do not overwrite its Color[0] or invent FarZAtten.
-	state.m_bEnableShadows = shadows && r_flashlightdepthtexture.GetBool();
+	// A muzzle flash renders its own wide (r_flashlightmuzzleflashfov) shadow depth only with r_flashlightmuzzleflash_shadows:
+	// every caster in a 120-degree cone, every shot, was the shotgun's frame drop.
+	state.m_bEnableShadows = shadows && r_flashlightdepthtexture.GetBool() && ( !m_bMuzzleFlash || r_flashlightmuzzleflash_shadows.GetBool() );
 	state.m_flShadowMapResolution = static_cast< float >( r_flashlightdepthres.GetInt() );
 	if ( m_bMuzzleFlash )
 	{

@@ -1028,6 +1028,11 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			m_nBoundProbeConstants = 0;
 			m_BoundNativeTables[0] = m_BoundNativeTables[1] = {};
 			m_BoundLightingVisibilityTable = {};
+			// The highres root can first be used by a baked-only world pass, which skips space 2.
+			// Its following realtime pass must bind these even if their values match the previous root's.
+			m_BoundLightingViewTable = {};
+			m_nBoundLightingViewConstants = 0;
+			m_BoundPropDraw = m_BoundPropTriangles = 0;
 			m_BoundInstanceTransforms = 0;
 			m_BoundScreenSpaceTable = {};
 			m_nBoundScreenSpaceView = m_nBoundVolumetricConstants = 0;

@@ -70,6 +70,7 @@ public:
 		BeginEvent,
 		EndEvent,
 		SetMarker,
+		WriteBufferImmediate,
 	};
 	static constexpr size_t kChunkBytes = 256 * 1024;
 
@@ -374,6 +375,14 @@ public:
 	void BeginEvent( const char *name ) { WriteEvent( Op::BeginEvent, name ); }
 	void EndEvent() { Begin( Op::EndEvent, 0 ); }
 	void SetMarker( const char *name ) { WriteEvent( Op::SetMarker, name ); }
+	// GPU hang breadcrumbs (CShaderDeviceDX12::GpuBreadcrumbBegin): one 32-bit write into a CPU-readable buffer.
+	void WriteBufferImmediate( D3D12_GPU_VIRTUAL_ADDRESS address, UINT value, D3D12_WRITEBUFFERIMMEDIATE_MODE mode )
+	{
+		unsigned char *p = Begin( Op::WriteBufferImmediate, sizeof( D3D12_WRITEBUFFERIMMEDIATE_PARAMETER ) + sizeof( mode ) );
+		const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER parameter{ address, value };
+		Put( p, parameter );
+		Put( p, mode );
+	}
 
 
 	template <class T>

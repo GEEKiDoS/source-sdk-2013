@@ -13,6 +13,8 @@
 // Preserve original definitions/owners; input0 explicitly normalizes to2.
 ConVar r_flashlightmuzzleflash( "r_flashlightmuzzleflash", "1", 0x0000000A );
 ConVar r_flashlightmuzzleflashfov( "r_flashlightmuzzleflashfov", "120", 0x00004008 );
+ConVar r_flashlightmuzzleflash_shadows( "r_flashlightmuzzleflash_shadows", "0", FCVAR_ARCHIVE,
+	"The muzzle-flash projected light casts shadows (a 120-degree shadow depth render per shot)" );
 ConVar r_flashlight_attach_to_viewmodel( "r_flashlight_attach_to_viewmodel", "1", 0x00004008, "Attach the flashlight effect to the viewmodel" );
 ConVar r_flashlightnearoffsetscale( "r_flashlightnearoffsetscale", "0.3", 0x00004008 );
 ConVar r_flashlightbacktraceoffset( "r_flashlightbacktraceoffset", "0.4", 0x00004008 );
@@ -149,8 +151,8 @@ private:
 	bool m_bOverride;
 };
 
-static ConVar r_flashlight_teammate_max( "r_flashlight_teammate_max", "3", FCVAR_ARCHIVE,
-	"DX12: maximum projected flashlight spots for other survivors", true, 0, true, MAX_TERROR_TEAMMATE_FLASHLIGHTS );
+static ConVar r_flashlight_teammate_max( "r_flashlight_teammate_max", "0", FCVAR_ARCHIVE,
+	"DX12: maximum projected flashlight spots for other survivors; 0 = off (their beams and glows stay)", true, 0, true, MAX_TERROR_TEAMMATE_FLASHLIGHTS );
 struct TerrorTeammateFlashlight_t
 {
 	CFlashlightEffect *m_pEffect;

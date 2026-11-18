@@ -167,6 +167,17 @@ static void DX12PixCaptureCommand( const CCommand &args )
 
 static ConCommand dx12_pix_capture( "dx12_pix_capture", DX12PixCaptureCommand,
     "Development only: take a PIX GPU capture of the next frame to <file.wpix> (requires -dx12pix)", FCVAR_CHEAT );
+static ConVar dx12_pix_draw_markers( "dx12_pix_draw_markers", "0", FCVAR_CHEAT,
+    "Development only: precede every draw with a PIX marker naming its material, pixel shader, instances and indices" );
+static void DX12BreadcrumbsDumpCommand( const CCommand & )
+{
+	if ( g_pShaderDeviceDX12 && g_pShaderDeviceDX12->GpuBreadcrumbsEnabled() )
+		g_pShaderDeviceDX12->LogGpuBreadcrumbs();
+	else
+		Msg( "dx12_breadcrumbs_dump: launch with -dx12breadcrumbs\n" );
+}
+static ConCommand dx12_breadcrumbs_dump( "dx12_breadcrumbs_dump", DX12BreadcrumbsDumpCommand,
+    "Development only: log the GPU hang breadcrumbs (requires -dx12breadcrumbs)" );
 
 //-----------------------------------------------------------------------------
 // Purpose: Recomputes g_bTracyZonesActiveDX12 (once per presented frame)
@@ -251,6 +262,7 @@ void CShaderDeviceDX12::FailDevice( const char *pszOperation, HRESULT hr )
 	m_bFailed = true;
 	const HRESULT reason = m_pDevice ? m_pDevice->GetDeviceRemovedReason() : S_OK;
 	Warning( "ShaderAPIDX12: %s failed (0x%08x), device removal reason 0x%08x\n", pszOperation, static_cast<unsigned>( hr ), static_cast<unsigned>( reason ) );
+	DumpBreadcrumbs();
 	Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
 	if ( m_pDevice && SUCCEEDED( m_pDevice.As( &dred ) ) )
 	{
@@ -530,6 +542,7 @@ bool CShaderDeviceDX12::CreateFrameObjects()
 	m_hFenceEvent = CreateEventW( nullptr, FALSE, FALSE, nullptr );
 	if ( !m_hFenceEvent )
 		return false;
+	InitBreadcrumbs();
 	// The first list is created open; it does not pass through BeginRecording.
 	if ( ( m_bShadowTimingEnabled || m_bGpuEventTiming ) && EnsureGpuTiming() )
 		GpuTimingAfterSubmit();
@@ -1253,6 +1266,7 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 {
 	ZoneNamedN( replayZone, "DX12 CommandReplay", DX12_ZONES_ACTIVE );
 	size_t offset = 0;
+	ID3D12GraphicsCommandList2 *list2 = nullptr; // queried on the first breadcrumb of this replay
 	while ( offset < size )
 	{
 		Header header;
@@ -1600,8 +1614,21 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			fn( list, device, p );
 			break;
 		}
+		case Op::WriteBufferImmediate:
+		{
+			D3D12_WRITEBUFFERIMMEDIATE_PARAMETER parameter;
+			D3D12_WRITEBUFFERIMMEDIATE_MODE mode;
+			get( parameter );
+			get( mode );
+			if ( !list2 && FAILED( list->QueryInterface( IID_PPV_ARGS( &list2 ) ) ) )
+				break;
+			list2->WriteBufferImmediate( 1, &parameter, &mode );
+			break;
+		}
 		}
 	}
+	if ( list2 )
+		list2->Release();
 }
 
 //-----------------------------------------------------------------------------
@@ -1918,6 +1945,12 @@ void CShaderDeviceDX12::ShutdownDevice()
 	}
 	ReportDebugMessages();
 	m_pInfoQueue.Reset();
+	if ( m_pBreadcrumbs )
+		m_pBreadcrumbs->Unmap( 0, nullptr );
+	m_pBreadcrumbData = nullptr;
+	m_pBreadcrumbs.Reset();
+	delete[] m_pBreadcrumbText;
+	m_pBreadcrumbText = nullptr;
 	m_pFence.Reset();
 	m_pQueue.Reset();
 	m_pDevice.Reset();
@@ -2619,6 +2652,12 @@ void CShaderDeviceDX12::BeginGpuPIXEvent( const char *szName )
 		if ( !m_nGpuPixDepth )
 			m_bGpuEventCoverOpen = BeginGpuEventSpan( kGpuEventCover, m_nGpuEventCoverSlot );
 	}
+	if ( m_pBreadcrumbData )
+	{
+		char text[kBreadcrumbText];
+		V_snprintf( text, sizeof( text ), "event %s", name );
+		GpuBreadcrumbEnd( GpuBreadcrumbBegin( text ) );
+	}
 	m_Recorder.BeginEvent( name );
 	GpuPixScopeDX12 &scope = m_GpuPixStack[m_nGpuPixDepth++];
 	V_strncpy( scope.name, name, sizeof( scope.name ) );
@@ -2672,6 +2711,70 @@ void CShaderDeviceDX12::ResetGpuTimingOverlay()
 		m_GpuEventNames[i].overlaySumMs = 0.0;
 		m_GpuEventNames[i].overlayCount = 0;
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: -dx12breadcrumbs: a persistently mapped readback buffer the queue writes sequence numbers into
+//			(WriteBufferImmediate, ID3D12GraphicsCommandList2). Readback heaps stay in COPY_DEST, the state the
+//			write requires.
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::InitBreadcrumbs()
+{
+	if ( m_pBreadcrumbData || !CommandLine() || !CommandLine()->CheckParm( "-dx12breadcrumbs" ) )
+		return;
+	D3D12_HEAP_PROPERTIES heap{};
+	heap.Type = D3D12_HEAP_TYPE_READBACK;
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = 256;
+	desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	void *pData = nullptr;
+	if ( FAILED( m_pDevice->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &m_pBreadcrumbs ) ) ) ||
+	     FAILED( m_pBreadcrumbs->Map( 0, nullptr, &pData ) ) )
+	{
+		Warning( "ShaderAPIDX12: -dx12breadcrumbs: readback buffer unavailable\n" );
+		m_pBreadcrumbs.Reset();
+		return;
+	}
+	m_pBreadcrumbData = static_cast<volatile uint32_t *>( pData );
+	m_pBreadcrumbData[0] = m_pBreadcrumbData[1] = 0;
+	m_pBreadcrumbText = new char[kBreadcrumbRing][kBreadcrumbText]();
+	Msg( "ShaderAPIDX12: -dx12breadcrumbs: GPU hang breadcrumbs on every draw and GPU event\n" );
+}
+
+uint32_t CShaderDeviceDX12::GpuBreadcrumbBegin( const char *szText )
+{
+	if ( !m_pBreadcrumbData || !m_bRecording || !IsRecordingOwner() || m_bFailed )
+		return 0;
+	const uint32_t nSequence = ++m_nBreadcrumbSequence;
+	V_strncpy( m_pBreadcrumbText[nSequence % kBreadcrumbRing], szText ? szText : "", kBreadcrumbText );
+	m_Recorder.WriteBufferImmediate( m_pBreadcrumbs->GetGPUVirtualAddress(), nSequence, D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_IN );
+	return nSequence;
+}
+
+void CShaderDeviceDX12::GpuBreadcrumbEnd( uint32_t nSequence )
+{
+	if ( !nSequence || !m_pBreadcrumbData || !m_bRecording || !IsRecordingOwner() || m_bFailed )
+		return;
+	m_Recorder.WriteBufferImmediate( m_pBreadcrumbs->GetGPUVirtualAddress() + 4, nSequence, D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Logs where the queue stopped: the last breadcrumb whose top-of-pipe write landed (started) and the last
+//			whose bottom-of-pipe write landed (completed), with the descriptions of everything in between.
+//-----------------------------------------------------------------------------
+void CShaderDeviceDX12::DumpBreadcrumbs()
+{
+	if ( !m_pBreadcrumbData )
+		return;
+	const uint32_t nStarted = m_pBreadcrumbData[0], nCompleted = m_pBreadcrumbData[1];
+	Warning( "ShaderAPIDX12 breadcrumbs: recorded %u, last started %u, last completed %u\n", m_nBreadcrumbSequence, nStarted, nCompleted );
+	const uint32_t nFirst = nCompleted > 8 ? nCompleted - 8 : 1;
+	const uint32_t nLast = MIN( MAX( nStarted, nCompleted ) + 8, m_nBreadcrumbSequence );
+	for ( uint32_t n = nFirst; n <= nLast && n - nFirst < 64; ++n )
+		Warning( "  %s %u: %s\n", n <= nCompleted ? "done   " : n <= nStarted ? "STARTED" : "pending", n, m_pBreadcrumbText[n % kBreadcrumbRing] );
 }
 
 void CShaderDeviceDX12::SetGpuTimingEnabled( bool bEnabled )

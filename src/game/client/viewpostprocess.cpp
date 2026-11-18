@@ -3615,6 +3615,8 @@ ConVar mat_motion_blur_strength( "mat_motion_blur_strength", "1.0"
 #endif
  );
 ConVar mat_motion_blur_shutter_time( "mat_motion_blur_shutter_time", "0.016667", FCVAR_ARCHIVE, "DX12 velocity motion blur exposure time in seconds.", true, 0.0f, false, 0.0f );
+ConVar mat_motion_blur_viewmodel_strength( "mat_motion_blur_viewmodel_strength", "1", FCVAR_ARCHIVE,
+	"DX12 velocity motion blur: scale of the first-person viewmodel's own blur (0 keeps it sharp); the world and the viewmodel blur as separate layers", true, 0.0f, true, 2.0f );
 ConVar mat_motion_blur_static_skip( "mat_motion_blur_static_skip", "1", FCVAR_CHEAT, "Skip CPU-certified stationary DX12 velocity blur; 0 retains the reference pass for comparisons." );
 
 // pVelocityRegion (DX12 velocity blur): the valid motion-vector region in texels, {width, height, 0, 0}; it differs from
@@ -3702,7 +3704,8 @@ static void DrawVelocityMotionBlurDX12( MotionBlurReplayDX12 blur )
 			flValues[3] = static_cast<float>( nTileY );
 		}
 	}
-	const float flVelocityRegion[4] = { static_cast<float>( blur.nVelocityWidth ), static_cast<float>( blur.nVelocityHeight ), 0.f, 0.f };
+	const float flVelocityRegion[4] = { static_cast<float>( blur.nVelocityWidth ), static_cast<float>( blur.nVelocityHeight ),
+		MAX( mat_motion_blur_viewmodel_strength.GetFloat(), 0.f ), 1.f };
 	const float *pSavedValues = s_pMotionBlurReplayValues;
 	s_pMotionBlurReplayValues = flValues;
 	DrawMotionBlurQuad( PPMAT_MOTION_BLUR_MV, blur.x, blur.y, blur.w, blur.h, flVelocityRegion );

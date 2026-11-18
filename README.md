@@ -127,7 +127,12 @@ scene or retaining moving teammates. DX9 and `mat_postfx_dx12 0` keep the origin
 glow composite unchanged.
 Motion blur on both renderers is the SDK/DX12 `DoImageSpaceMotionBlur` (DX12
 velocity blur, SDK camera blur on DX9); the former Terror motion blur and its
-shader were removed.
+shader were removed. The DX12 velocity blur treats the first-person viewmodel as
+its own layer: the motion pass tags its velocities (alpha 2), so a turning
+background never smears across the weapon and the weapon never smears onto the
+world. `mat_motion_blur_viewmodel_strength` (archived, default 1, 0 keeps the
+weapon sharp) scales the viewmodel's own blur. The gather's taps are jittered per
+pixel, which turns the ghost copies of the low tap counts into fine noise.
 
 On enhanced DX12 maps, PBR models and viewmodels use `r_model_local_lights 4`
 by default. The backend selects local lights at the engine's per-draw lighting
@@ -423,12 +428,15 @@ is deleted when its job finishes. Reusable external scripts stay under
 `C:/l4d2_work`. Do not create identity manifests, qualification receipts,
 build-log copies or source snapshot archives for the current pipeline.
 
-**DX12 teammate flashlights:** In DX12, up to three nearest other survivors project
-the real flashlight cookie onto world surfaces, while the existing third-person
-beam particles remain unchanged. `r_flashlight_teammate_max` (archived, default
-`3`) controls the number of projected teammate lights; set it to `0` to disable
-them. The path is DX12-only and does not require baked high-resolution shadowmap
-admission, so `-dx9` retains the original flashlight look.
+**DX12 teammate flashlights:** In DX12, up to three nearest other survivors can
+project the real flashlight cookie onto world surfaces, while the existing
+third-person beam particles remain unchanged. `r_flashlight_teammate_max`
+(archived, default `0` = off) sets the number of projected teammate lights; set it
+to `1`..`3` to enable them. The path is DX12-only and does not require baked
+high-resolution shadowmap admission, so `-dx9` retains the original flashlight look.
+The local muzzle flash reuses the flashlight projector; it casts shadows (a
+120-degree depth render on every shot) only with `r_flashlightmuzzleflash_shadows 1`
+(archived, default `0`).
 DX12 reserves four shadowed flashlight slots (one local and up to three
 teammates), separate from the nearest-eight ordinary projected-cookie lights.
 The depth pool covers both groups, so flashlights cannot evict another projected

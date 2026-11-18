@@ -232,6 +232,13 @@ public:
 	void BeginGpuPIXEvent( const char *szName );
 	void EndGpuPIXEvent();
 	void SetGpuPIXMarker( const char *szName );
+	// GPU hang breadcrumbs (-dx12breadcrumbs): GpuBreadcrumbBegin records a top-of-pipe write of a new sequence number
+	// (described by szText) and returns it; GpuBreadcrumbEnd records the bottom-of-pipe write of the same number. A fence
+	// timeout or device removal logs the last started and last completed numbers and the work between them.
+	bool GpuBreadcrumbsEnabled() const { return m_pBreadcrumbData != nullptr; }
+	uint32_t GpuBreadcrumbBegin( const char *szText );
+	void GpuBreadcrumbEnd( uint32_t nSequence );
+	void LogGpuBreadcrumbs() { DumpBreadcrumbs(); }
 	bool ConsumeGpuEventStats( GpuEventStatsDX12 &stats );
 
 	// Replays every recorded command before returning; required before rewriting or freeing CPU RTV/DSV descriptors
@@ -559,6 +566,15 @@ private:
 	uint32_t m_nGpuEventResolveStartSlot = 0, m_nGpuEventResolveCount = 0;
 	uint32_t m_nGpuPixDepth = 0, m_nGpuPixOverflow = 0, m_nGpuPixOverflowClosed = 0;
 	GpuPixScopeDX12 m_GpuPixStack[kGpuEventStack] = {};
+	// GPU hang breadcrumbs: a readback buffer of two words ([0] last started, [1] last completed sequence) and the
+	// descriptions of the last kBreadcrumbRing sequences. Created at device init with -dx12breadcrumbs only.
+	static constexpr uint32_t kBreadcrumbRing = 16384, kBreadcrumbText = 112;
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pBreadcrumbs;
+	volatile uint32_t *m_pBreadcrumbData = nullptr;
+	char ( *m_pBreadcrumbText )[kBreadcrumbText] = nullptr;
+	uint32_t m_nBreadcrumbSequence = 0;
+	void InitBreadcrumbs();
+	void DumpBreadcrumbs();
 	GpuEventAccumDX12 m_GpuEventNames[kGpuEventNames] = {};
 	uint32_t m_nGpuEventNames = 0;
 	double m_flGpuEventCoveredMs = 0, m_flGpuEventOtherMs = 0;

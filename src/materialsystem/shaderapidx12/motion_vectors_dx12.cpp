@@ -117,7 +117,8 @@ float4 main(PSIn i):SV_Target0 {
   if (!passes) discard;
  }
  float2 c = i.cur.xy / i.cur.w, p = i.prev.xy / i.prev.w;
- return float4((c - p) * float2(0.5, -0.5), 0, 1);
+ // Alpha 2 tags the first-person viewmodel, drawn through DepthRange( 0, DX12_VIEWMODEL_DEPTH_MAX ) (motion_blur_mv_ps51).
+ return float4((c - p) * float2(0.5, -0.5), 0, i.pos.z < 0.1 ? 2 : 1);
 }
 )HLSL";
 
@@ -134,6 +135,9 @@ float4 main(float4 pos:SV_Position):SV_Target { float d = depthTex.Load(int3(pos
 #endif
  float2 ndc = float2((pos.x - vp.z) * vp.x * 2 - 1, 1 - (pos.y - vp.w) * vp.y * 2);
  float4 prev = mul(float4(ndc, d, 1), clipToPrevClip); prev.xy /= prev.w;
+ // Viewmodel depth (the depth prepass draws it into the front 0.1 of the range) is not scene geometry: no camera
+ // velocity, tagged as viewmodel (alpha 2) for the velocity blur.
+ if (d < 0.1) return float4(0, 0, 0, 2);
  return float4((ndc - prev.xy) * float2(0.5, -0.5), 0, 1); }
 )HLSL";
 

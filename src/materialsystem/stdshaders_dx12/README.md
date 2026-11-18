@@ -282,6 +282,17 @@ The computed ordinary-physics identity adds a `DT_PhysicsProp` bit, requiring
 matching client/server DLLs. The user waived additional board-shadow fixtures;
 no independent visible board-shadow proof is claimed.
 
+Archived `r_shadowmap_cutout_noshadow_props` (default 1, read when the map's static-prop caster policy is built, so it
+applies at the next map load) lets static props authored with `disableshadows` (`STATIC_PROP_NO_SHADOW`) still cast
+native shadowmaps when one of their drawn materials is alpha-tested. Retail L4D2 maps flag every chain-link fence,
+razor wire and vine that way (c1m2: 790 of 2193 static props are NO_SHADOW, ~150 of them cutout models), which left
+fences shadowless under the sun. Opaque NO_SHADOW props keep the authored policy.
+
+Archived `r_shadowmap_force_door_shadows` (default 1) lets doors (`C_BasePropDoor`: `prop_door_rotating` and the
+checkpoint doors) cast native shadowmaps despite an authored `disableshadows` (EF_NOSHADOW). Retail maps disable door
+shadows (c1m3's `metal_door_112` doors), so a closed door let the realtime light of the room behind it through. The bake
+never sees doors (they are entities), so the light behind a closed door is the bake's minus its direct: dark.
+
 Alpha-cutout casters: the engine renders prop/model shadow depth (and the flashlight depth texture) with its
 `DepthWrite` override materials, whose cutout is the pixel shader's `clip` against `$alphatestreference`. The backend
 drops the pixel stage of every depth-only or shadow-caster draw whose snapshot is not alpha tested, so `DepthWrite`
@@ -353,6 +364,9 @@ Each draw renders A, or B then C (`Draw( false )` skips the others, so the cvar 
   skip non-depth-writing draws); B samples the probes without the lighting view block, so space 4 alone selects the
   lighting root signature, and C reads no lightmap RGB, so `HlightDynamic` is optional in the highres contract
   (runtime and packer).
+- The baked world pass uses the highres root without space-2 lighting. Root/list/heap resets clear the cached lighting
+  view table, view constants and prop arguments even when that first draw skips them; the following realtime pass must
+  bind them again. Matching GPU addresses from a previous root do not make its invalidated arguments usable.
 - `CBaseVSShaderDX12::Draw( false )` keeps the selected native blocks for a later real pass of the same
   `DrawElements`; `DrawElements` clears them afterwards.
 - `r_shadowmap_debug` views use the single pass (they replace its colour); translucent materials and non-enhanced
@@ -395,11 +409,24 @@ chart render and depth restore per frame (0.3 + 0.1 ms on the GTX 1050 in c1m1).
 The viewmodel is no caster of the main view's charts, so it never shadows the world (the third-person body already
 does). `r_shadowmap_viewmodel_self` (archived, default 1) gives it sun self-shadowing instead, and then overrides
 `r_shadowmap_viewmodel_cascade`: in the main charts the whole weapon covers about ten texels (c1m2, low tier), so the
-viewmodel view renders its own atlas pair with a single cascade over `[zNear, maxReceiverDepth / 0.9]`. After that
-chart, `AddViewModelSelfShadow` copies the texels the viewmodel receivers can read (their bounds' footprint plus twice
-the chart guard, which holds the PCSS reach) into the private `shadow_cascade_viewmodel_self` atlas, draws the opaque
-studio viewmodels (weapon, arms) over that copy with the chart's committed light view, and points only the viewmodel
+viewmodel view renders its own targets with a single cascade over `[zNear, maxReceiverDepth / 0.9]`. That set and
+the `shadow_cascade_viewmodel_self` copy are one cascade square (`csm`), not the four-cascade atlas: 4 x 16 instead of
+4 x 64 MiB at High, 4 x 64 instead of 4 x 256 MiB at Ultra. A frame without viewmodel casters samples the main
+cascades. After that chart, `AddViewModelSelfShadow` copies the texels the viewmodel receivers can read (their
+bounds' footprint plus twice the chart guard, which holds the PCSS reach) into the private copy, draws the opaque
+studio viewmodels (weapon, arms) over it with the chart's committed light view, and points only the viewmodel
 packet at it. No cached chart ever holds viewmodel depth. Local lights and the flashlight keep their world-only maps.
+
+Video memory. Every committed render, depth and UAV target is created with `D3D12_RESIDENCY_PRIORITY_HIGH`
+(`CreateCommittedResourceDX12`); textures and buffers keep the default NORMAL. Over the OS budget Windows moves this
+process's allocations to system memory, and the priority makes it move sampled textures before the targets written
+every frame. That cannot help when one frame needs more than the adapter holds: switching a GTX 1050 (2 GB) to Ultra
+shadows (about 1.4 GB of shadow targets, 2.4 GB in all) removed the device as hung on the first frame in 6 of 8 runs,
+and neither the priorities nor splitting the frame into two submissions prevented it. `r_shadowmap_vram_limit` (client,
+archived, default 0.9) therefore steps the used shadow resolution down while the requested level's shadow targets
+(`ShadowLevelBytes`) plus what the process uses without them would exceed that share of the dedicated video memory
+(`IShaderAPIDX12::GetVideoMemory`, `ShaderAPIDX12_005`). The setting itself is kept and re-evaluated when it changes
+or a map loads; the console names the level used.
 
 Each dynamic cascade is a light-space square that `BuildSun` keeps (with its cached static and rigid depth) while the
 sphere it must cover stays inside it, 1.2 times that sphere's radius. `r_csm_eye_centered` (archived, default 1)
@@ -556,6 +583,18 @@ every shader without the combo compiles), Extra 32/64. `pbr_model_ps51` skips th
 variants. Low and Medium also skip the screen-space contact ray toward the sun (`DX12_SUN_CONTACT_SHADOWS`; local and
 projected contact rays keep running), which cost more than their whole PCSS kernel at the bollards reference spot. The
 graphics options expose it as the Shadows row: Off (`r_shadowmap_enable 0`), Low, Medium, High, Extra.
+The PCSS kernel uses the map's sun angular radius (`light_environment` SunSpreadAngle, recorded in the `.light` sidecar).
+Maps authoring 0 (c1m2, c1m3) made the PCSS path fall back to PCF, so `r_shadowmap_filter` did nothing there and thin
+casters showed texel stair-steps. `r_shadowmap_sun_angle` (client, archived, default 0.27 degrees, the real sun) is the
+minimum radius the realtime filter uses; the bake is unchanged.
+Local-light shadows (`r_shadowmap_local_filter`, client, archived, default 1) are hard but without the texel
+staircase: `ShadowMap_LocalCubicPCF` weights the 4x4 texel compares around the receiver with a cubic B-spline (four
+gathers, each texel with its own receiver-plane reference), so the edge drawn at the 0.5 iso-line follows a smooth
+curve; `LOCAL_CUBIC_SHARPNESS` 2 narrows the ramp around it to about 0.6 texel. A shallow caster edge still leaves a
+texel-scale wobble in that curve, so with `r_shadowmap_dither` the kernel is offset half a texel in the dither's
+direction and the temporal upscaler integrates it. No blocker search: PCSS on every local light was too expensive.
+Receivers whose plane does not hold over the 5-texel footprint (`ShadowMap_LocalPreflight`), and
+`r_shadowmap_local_filter 0`, keep the dithered four bilinear taps.
 Measured at the two d1_trainstation_02 spots (PCSS, dither, DLSS) before the Low/Medium contact skip: Low 2.89 / 4.11,
 Medium 2.84 / 4.03, High 3.11 / 4.35, Extra 3.57 / 5.12, Off 2.30 / 2.89 ms GPU. One bollards run after the skip (same
 machine state, Off 3.31 vs 3.29 ms) measured Low 4.41 and Medium 4.36 ms against Medium 4.55 ms before (about -0.2 ms).
@@ -632,7 +671,10 @@ bilinear taps only after the first bounded-skip survivor needs baked visibility.
 (`HIGHRES_LIGHTMAP_BICUBIC`) instead filter the dense R8 endpoint with the hlight RGB's own cubic B-spline footprint
 (`HighresLightmap_Footprint`; four bilinear taps, 16 byte loads per dense entry), so the realtime delta subtracts
 `Rr * K[Vb]` against the carrier's `K[Rb * Vb]`. A bilinear endpoint under a bicubic carrier left a faint image of the
-baked shadow (a soft band beside the sharp realtime edge). A persistent ascending
+baked shadow (a soft band beside the sharp realtime edge). The delta's stored basis also carries the scale the world
+shader applies to the reconstructed lightmap: an ssbump material's `$SSBumpMathFix` (0.577), as plane weights for a bumped
+receiver or a single-plane basis for a flat one. Without it the delta removed up to 1.73 times the light's baked share,
+more than the whole lightmap, and every realtime shadow on c1m3's ssbump walls was pitch black. A persistent ascending
 merge cursor visits each encountered entry at most once for all queried canonical manifest indices.
 The highres packet validator requires canonical light order and ascending CSR runs; `BuildLocal` and
 `BuildTiles` already preserve both. Uniform encodings decode directly without reading payload bytes.

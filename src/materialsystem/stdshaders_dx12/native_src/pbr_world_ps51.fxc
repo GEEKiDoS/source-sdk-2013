@@ -297,11 +297,17 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	sBump.N = N;
 	sBump.NdotV = max( dot( N, V ), 1e-4 );
 #if PBR_WORLD_HIGHRES
-	// Baked-direct deltas must use the stored reconstruction of the bumped planes (legacy ShadowMap_ShadeBumped).
+	// Baked-direct deltas must use the stored reconstruction of the bumped planes (legacy ShadowMap_ShadeBumped), with
+	// the same scale the lightmap gets: an ssbump material's $SSBumpMathFix multiplies the reconstructed lightmap (above),
+	// and a delta without it removed up to 1/0.577 of the light's baked share, more than the whole lightmap (c1m3's
+	// cinder-block walls went pitch black in realtime shadows).
+	const float lightmapScale = g_Flags0.y == 2.0 ? g_L4D2Controls.z : 1.0;
 	if ( hasBump && !flatDiffuse )
 		PBR_SetBumpedBasis( s, mul( bumpBasis[0], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ),
 			mul( bumpBasis[1], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ),
-			mul( bumpBasis[2], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ), planeWeights );
+			mul( bumpBasis[2], float3x3( i.tangentS, i.tangentT, i.worldNormal ) ), planeWeights * lightmapScale );
+	else if ( lightmapScale != 1.0 )
+		PBR_SetBumpedBasis( s, s.N, s.N, s.N, float3( lightmapScale, 0.0, 0.0 ) );
 #endif
 
 	float alpha = g_BaseTint.a;
