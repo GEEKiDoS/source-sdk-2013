@@ -1294,15 +1294,21 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Components under vendor SDK licenses (headers/import libraries/tools in the source tree; runtimes are not included)
+Components under vendor SDK licenses
 ------------------------------------------------------------------------------
-- Microsoft DirectX DXBC signer (dxbcSigner.dll): src/thirdparty/dx12_shaderconv/dxbcsigner/LICENSE.md, LICENSE-CODE.txt
-- Windows Driver Kit headers: src/thirdparty/dx12_shaderconv/wdk/LICENSE.txt
-- NVIDIA RTX SDKs (DLSS/NGX, DLSS-NR headers): src/thirdparty/upscalers/ngx/LICENSE.txt, src/thirdparty/upscalers/dlssnr/LICENSE.txt and NOTICE.txt
-- AMD FidelityFX SDK 2.3: src/thirdparty/upscalers/fidelityfx2/LICENSE.md
-- Intel XeSS SDK: src/thirdparty/upscalers/xess/LICENSE.txt
-- LunarG Vulkan SDK subset (Vulkan-Headers, Vulkan-Loader import library, shaderc, SPIRV-Tools; Apache-2.0 OR MIT): src/thirdparty/vulkan_sdk/LICENSE.txt
-- Intel Open Image Denoise (optional vrad_restir runtime, Apache-2.0; not distributed): see src/utils/vrad_restir/README.md
+The source tree carries their headers, import libraries and tools. Player test packages also ship the runtime DLLs
+listed below in bin\x64, with the license texts in the package's licenses folder (path in brackets).
+- Microsoft DirectX DXBC signer (dxbcSigner.dll): src/thirdparty/dx12_shaderconv/dxbcsigner/LICENSE.md, LICENSE-CODE.txt [licenses/dxbcsigner_*]
+- Microsoft DirectX Shader Compiler (dxcompiler.dll; University of Illinois/NCSA Open Source License): src/thirdparty/dxc [licenses/dxc_LICENSE.TXT]
+- Windows Driver Kit headers: src/thirdparty/dx12_shaderconv/wdk/LICENSE.txt [licenses/wdk_LICENSE.txt]
+- NVIDIA RTX SDKs (DLSS/NGX, DLSS-NR; nvngx_dlss.dll, nvngx_dlssg.dll, nvngx_dlssnr.dll): src/thirdparty/upscalers/ngx/LICENSE.txt, src/thirdparty/upscalers/dlssnr/LICENSE.txt and NOTICE.txt [licenses/upscalers/ngx_LICENSE.txt, dlssnr_*]
+- NVIDIA Streamline (sl.*.dll): see above [licenses/upscalers/streamline_LICENSE.txt]
+- AMD FidelityFX SDK 2.3 (amd_fidelityfx_*.dll): src/thirdparty/upscalers/fidelityfx2/LICENSE.md [licenses/upscalers/fidelityfx_LICENSE.md]
+- Intel XeSS SDK (libxess.dll, libxess_fg.dll, libxell.dll): src/thirdparty/upscalers/xess/LICENSE.txt [licenses/upscalers/xess_LICENSE.txt]
+- libbinkdec (binkdec.dll, LGPL-2.1): src/thirdparty/libbinkdec/COPYING [licenses/binkdec_COPYING.txt, bin/x64/binkdec_COPYING.txt]
+- LunarG Vulkan SDK subset (Vulkan-Headers, Vulkan-Loader import library, shaderc, SPIRV-Tools; Apache-2.0 OR MIT): src/thirdparty/vulkan_sdk/LICENSE.txt [licenses/vulkan_sdk_LICENSE.txt]
+- Intel Open Image Denoise 2.5.1 with oneTBB (vrad_restir denoiser runtime: OpenImageDenoise*.dll, tbb12.dll, tbbbind_2_5.dll; Apache-2.0): see src/utils/vrad_restir/README.md [licenses/oidn/]
+- Steamworks API (steam_api64.dll), redistributed under the Steamworks SDK terms
 
 Bend Studio screen-space shadows (DX12 renderer)
 ------------------------------------------------------------------------------
