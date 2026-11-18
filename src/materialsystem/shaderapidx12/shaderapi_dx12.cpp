@@ -343,6 +343,7 @@ static uint64_t TranslationStateKey( uint64_t key, const ShaderRasterStateDX12 &
 	mix( raster.pointSize );
 	mix( raster.pointSprite );
 	mix( raster.transformedVertices );
+	mix( raster.stabilizeSkyAlpha );
 	return key;
 }
 
@@ -1822,6 +1823,10 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		raster.clipPlaneMask = drawClipMask;
 		raster.alphaTest = m_ActiveSnapshot.alphaTest;
 		raster.alphaFunction = static_cast<uint32_t>( m_ActiveSnapshot.alphaFunction ) + 1;
+		// HDR sky behind nearly opaque, 8-bit legacy horizon fades can make a one-code alpha error visible.
+		// Only straight-alpha translucency in the skybox needs the opaque endpoint restored.
+		raster.stabilizeSkyAlpha = skyboxDraw && !raster.alphaTest && m_ActiveSnapshot.translucent &&
+			m_ActiveSnapshot.blendSource == SHADER_BLEND_SRC_ALPHA && m_ActiveSnapshot.blendDestination == SHADER_BLEND_ONE_MINUS_SRC_ALPHA;
 		raster.shadeMode = m_ShadeMode == SHADER_FLAT ? 1 : 2;
 		raster.fog = m_ActiveSnapshot.fogMode != SHADER_FOGMODE_DISABLED && m_FogMode != MATERIAL_FOG_NONE && !ShouldUsePixelFog();
 		raster.fogTableMode = 0;
@@ -1915,7 +1920,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		{
 			const uint64_t layoutTranslationKey = meshStreams ? m_nSourceLayoutTranslationKey : TranslationLayoutKey( sourceLayout );
 			// Compare only declared bytes; tail padding is indeterminate and would merely cause a recompute.
-			constexpr size_t rasterBytes = offsetof( ShaderRasterStateDX12, transformedVertices ) + sizeof( bool );
+			constexpr size_t rasterBytes = offsetof( ShaderRasterStateDX12, stabilizeSkyAlpha ) + sizeof( bool );
 			if ( m_bTranslationKeyMemoValid && m_nTranslationKeyMemoLayout == layoutTranslationKey && !memcmp( &m_TranslationKeyMemoRaster, &raster, rasterBytes ) )
 				translationStateKey = m_nTranslationKeyMemo;
 			else

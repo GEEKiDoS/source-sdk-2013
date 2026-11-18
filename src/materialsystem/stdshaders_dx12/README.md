@@ -474,6 +474,16 @@ factor 2.32464, measures 2.455), which is why the LDR run is the exact one. With
 (pixel-identical) and no sky is acquired. The enhanced copy loads with `Highres: state=2`. The runs' temporary maps, cfgs and
 screenshots were deleted and the archived cvars they touched were restored in `config.cfg`.
 
+In the deferred DX12 3D skybox, the translated straight-alpha shaders restore the opaque end of 8-bit horizon fades.
+The mall's `skybox/urban_horizon_even` alpha varies between 254 and 255 on its near-opaque plateau; that one code
+lets enough of the bright HDR sky through to form a fixed speckle band. The translation leaves the fade through
+252/255 unchanged and ramps to full opacity at 254/255 before blending. Opaque sky faces, world cutouts and shadow
+casters do not use this variant. At the c1m3 mall repro pose the band disappears with FSR, SMAA T2x and no upscaler.
+
+Above-water L4D2 views distinguish an already-drawn 3D sky from `DF_DRAWSKYBOX`, which requests a 2D sky draw.
+The main depth still clears before the water scene; it must not clear the color already written by the sky-first view.
+In `c6m1_riverbank`, looking toward visible water switches to that path without blanking the sky.
+
 ## Explicit high-resolution BSP replacement
 
 `tools/genhighres.py` catalogs actual RGB lightmap consumers: LightmappedGeneric/WorldVertexTransition,

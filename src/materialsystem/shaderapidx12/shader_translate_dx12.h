@@ -50,6 +50,7 @@ struct ShaderRasterStateDX12
 	uint32_t fogTableMode = 0, comparisonPixelSamplers = 0, comparisonVertexSamplers = 0;
 	bool alphaTest = false, fog = false, wFog = false;
 	bool pointSize = false, pointSprite = false, transformedVertices = false;
+	bool stabilizeSkyAlpha = false;
 };
 
 struct ShaderTranslationRequestDX12

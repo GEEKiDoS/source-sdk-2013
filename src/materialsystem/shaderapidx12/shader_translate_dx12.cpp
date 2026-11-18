@@ -226,6 +226,7 @@ ShaderConv::RasterStates Raster( const ShaderRasterStateDX12 &state )
 	result.PrimitiveType = state.primitiveType;
 	result.AlphaFunc = state.alphaFunction;
 	result.AlphaTestEnable = state.alphaTest;
+	result.StabilizeSkyAlpha = state.stabilizeSkyAlpha;
 	result.FogEnable = state.fog;
 	result.FogTableMode = state.fogTableMode;
 	result.WFogEnable = state.wFog;

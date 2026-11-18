@@ -303,20 +303,23 @@ struct RasterStates
     };
 
     UINT SamplerSwizzleMask;
+    UINT StabilizeSkyAlpha;
 
     RasterStates() :
         TCIMapping( 0 ),
         Flags1( 0 ),
         Flags2( 0 ),
         Flags3( 0 ),
-        SamplerSwizzleMask( 0 )
+        SamplerSwizzleMask( 0 ),
+        StabilizeSkyAlpha( 0 )
     {
         static_assert( sizeof( RasterStates ) == sizeof( PSSamplers ) +
                                                  sizeof( TCIMapping ) +
                                                  sizeof( Flags1 ) +
                                                  sizeof( Flags2 ) +
                                                  sizeof( Flags3 ) +
-                                                 sizeof( SamplerSwizzleMask ), "Struct packing broke." );
+                                                 sizeof( SamplerSwizzleMask ) +
+                                                 sizeof( StabilizeSkyAlpha ), "Struct packing broke." );
     }
 };
 

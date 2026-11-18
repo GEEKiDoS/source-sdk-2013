@@ -890,7 +890,11 @@ public:
 		m_IntersectionView( pMainView )
 	{}
 
-	void Setup(  const CViewSetup &view, bool bDrawSkybox, const VisibleFogVolumeInfo_t &fogInfo, const WaterRenderInfo_t& waterInfo );
+	void Setup( const CViewSetup &view, bool bDrawSkybox, const VisibleFogVolumeInfo_t &fogInfo, const WaterRenderInfo_t &waterInfo
+#if defined( L4D2 )
+		, bool bPreserveSkyColor
+#endif
+		);
 	void			Draw();
 #if defined( L4D2 )
 	void			DrawL4D2Water();
@@ -2064,7 +2068,7 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 	m_bViewModelDepthInScene = false;
 	DrawWorldAndEntities( drawSkybox, viewRender, nClearFlags, pCustomVisibility
 #if defined( L4D2 )
-		, pFogVolumeInfo, pWaterRenderInfo
+		, pFogVolumeInfo, pWaterRenderInfo, bDrew3dSkybox && ScreenSpaceDX12_Available()
 #endif
 		);
 	m_pViewModelPrepassView = NULL;
@@ -3686,7 +3690,7 @@ void CViewRender::DetermineWaterRenderInfo( const VisibleFogVolumeInfo_t &fogVol
 //-----------------------------------------------------------------------------
 void CViewRender::DrawWorldAndEntities( bool bDrawSkybox, const CViewSetup &viewIn, int nClearFlags, ViewCustomVisibility_t *pCustomVisibility
 #if defined( L4D2 )
-	, const VisibleFogVolumeInfo_t *pFogVolumeInfo, const WaterRenderInfo_t *pWaterRenderInfo
+	, const VisibleFogVolumeInfo_t *pFogVolumeInfo, const WaterRenderInfo_t *pWaterRenderInfo, bool bPreserveSkyColor
 #endif
 	)
 {
@@ -3758,7 +3762,11 @@ void CViewRender::DrawWorldAndEntities( bool bDrawSkybox, const CViewSetup &view
 	{
 		tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "CAboveWaterView" );
 		CRefPtr<CAboveWaterView> pAboveWaterView = new CAboveWaterView( this );
-		pAboveWaterView->Setup( viewIn, bDrawSkybox, fogVolumeInfo, info );
+		pAboveWaterView->Setup( viewIn, bDrawSkybox, fogVolumeInfo, info
+#if defined( L4D2 )
+			, bPreserveSkyColor
+#endif
+			);
 		AddViewToScene( pAboveWaterView );
 	}
 	else
@@ -3951,7 +3959,11 @@ void CViewRender::ViewDrawScene_PortalStencil( const CViewSetup &viewIn, ViewCus
 		if ( !fogInfo.m_bEyeInFogVolume )
 		{
 			CRefPtr<CAboveWaterView> pAboveWaterView = new CAboveWaterView( this );
-			pAboveWaterView->Setup( viewIn, drawSkybox, fogInfo, waterInfo );
+			pAboveWaterView->Setup( viewIn, drawSkybox, fogInfo, waterInfo
+#if defined( L4D2 )
+				, false
+#endif
+				);
 			AddViewToScene( pAboveWaterView );
 		}
 		else
@@ -7698,7 +7710,11 @@ void CBaseWaterView::CSoftwareIntersectionView::Draw()
 //-----------------------------------------------------------------------------
 // Draws the scene when the view point is above the level of the water
 //-----------------------------------------------------------------------------
-void CAboveWaterView::Setup( const CViewSetup &viewRender, bool bDrawSkybox, const VisibleFogVolumeInfo_t &fogInfo, const WaterRenderInfo_t& waterInfo )
+void CAboveWaterView::Setup( const CViewSetup &viewRender, bool bDrawSkybox, const VisibleFogVolumeInfo_t &fogInfo, const WaterRenderInfo_t &waterInfo
+#if defined( L4D2 )
+	, bool bPreserveSkyColor
+#endif
+	)
 {
 	BaseClass::Setup( viewRender );
 
@@ -7718,6 +7734,11 @@ void CAboveWaterView::Setup( const CViewSetup &viewRender, bool bDrawSkybox, con
 		m_DrawFlags |= DF_RENDER_UNDERWATER;
 #endif
 	m_ClearFlags = VIEW_CLEAR_DEPTH;
+#if defined( L4D2 )
+	// A sky-first 3D view has already written the scene color. DF_DRAWSKYBOX only asks for another 2D sky draw.
+	if ( engine->GetDXSupportLevel() >= 92 && !waterInfo.m_bRefract && !bDrawSkybox && !bPreserveSkyColor )
+		m_ClearFlags |= VIEW_CLEAR_COLOR;
+#endif
 
 #ifdef PORTAL
 	if( g_pPortalRender->ShouldObeyStencilForClears() )

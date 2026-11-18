@@ -1185,6 +1185,23 @@ CPSContext::WriteOutputs()
         this->ComputeFogBlend();
     }
 
+    if ( m_rasterStates.StabilizeSkyAlpha && m_outputRegs.oC[0] != INVALID_INDEX )
+    {
+        // Leave the authored fade through code 252 untouched. Map 254 to fully opaque so the last
+        // code's worth of transmission cannot reveal a bright HDR sky through the dark horizon.
+        const UINT color = m_outputRegs.oC[0];
+        m_pShaderAsm->EmitInstruction(
+            CInstructionEx( D3D10_SB_OPCODE_MAD, true,
+                            CTempOperandDst( SREG_TMP0, D3D10_SB_OPERAND_4_COMPONENT_MASK_W ),
+                            CTempOperand4( color, __SWIZZLE_W ),
+                            COperand( 1.5f ), COperand( -126.0f / 255.0f ) ) );
+        m_pShaderAsm->EmitInstruction(
+            CInstruction( D3D10_SB_OPCODE_MAX,
+                          CTempOperandDst( color, D3D10_SB_OPERAND_4_COMPONENT_MASK_W ),
+                          CTempOperand4( color, __SWIZZLE_W ),
+                          CTempOperand4( SREG_TMP0, __SWIZZLE_W ) ) );
+    }
+
     //
     // Output color registers
     //

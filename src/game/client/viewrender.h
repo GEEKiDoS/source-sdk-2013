@@ -579,7 +579,8 @@ private:
 	// Water-related methods
 	void DrawWorldAndEntities( bool drawSkybox, const CViewSetup &view, int nClearFlags, ViewCustomVisibility_t *pCustomVisibility = NULL
 #if defined( L4D2 )
-		, const VisibleFogVolumeInfo_t *pFogVolumeInfo = NULL, const WaterRenderInfo_t *pWaterRenderInfo = NULL
+		, const VisibleFogVolumeInfo_t *pFogVolumeInfo = NULL, const WaterRenderInfo_t *pWaterRenderInfo = NULL,
+		bool bPreserveSkyColor = false
 #endif
 		);
 

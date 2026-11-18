@@ -175,8 +175,6 @@ void CAboveWaterView::DrawL4D2Water()
 		m_ReflectionView.Setup( m_waterInfo.m_bReflectEntities, m_waterInfo.m_bReflect2DSkybox );
 		m_pMainView->AddViewToScene( &m_ReflectionView );
 	}
-	if ( !m_waterInfo.m_bRefract && !(m_DrawFlags & DF_DRAWSKYBOX) )
-		m_ClearFlags |= VIEW_CLEAR_COLOR;
 
 	DrawSetup( m_waterHeight, m_DrawFlags, m_waterZAdjust );
 	EnableWorldFog();
