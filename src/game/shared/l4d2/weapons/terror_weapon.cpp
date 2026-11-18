@@ -714,6 +714,9 @@ void CTerrorWeapon::Swing( float interval, float duration, float range ) // S:3F
 		player->m_flLastShoveTime = gpGlobals->curtime; // C311620 ->actual client7344, human survivor path ONLY
 #endif
 	}
+	// A reload-time attack may be buffered by the generic weapon frame. A shove
+	// takes priority over that buffered press; do not replay it after the shove.
+	SetQueuedAttack( 0 );
 	m_swingTimer.Start( duration );
 	m_attackTimer.Start( interval );
 	m_bSwingInProgress = true;
