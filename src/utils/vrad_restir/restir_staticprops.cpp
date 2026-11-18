@@ -78,6 +78,7 @@ void ReSTIR_EnableStaticPropDirectDiagnostics( bool enabled )
 
 static bool ReadFile( const char *name, CUtlBuffer &buf )
 {
+	buf.Purge();
 	return g_pFullFileSystem && g_pFullFileSystem->ReadFile( name, NULL, buf );
 }
 
@@ -101,11 +102,11 @@ static bool LoadVtx( const char *name, const studiohdr_t *hdr, CUtlBuffer &buf )
 {
 	char file[MAX_PATH];
 	Q_StripExtension( name, file, sizeof( file ) );
-	Q_strncat( file, ".dx80.vtx", sizeof( file ), COPY_ALL_CHARACTERS );
+	Q_strncat( file, ".dx90.vtx", sizeof( file ), COPY_ALL_CHARACTERS );
 	if ( !ReadFile( file, buf ) )
 	{
 		Q_StripExtension( name, file, sizeof( file ) );
-		Q_strncat( file, ".dx90.vtx", sizeof( file ), COPY_ALL_CHARACTERS );
+		Q_strncat( file, ".dx80.vtx", sizeof( file ), COPY_ALL_CHARACTERS );
 		if ( !ReadFile( file, buf ) )
 			return false;
 	}
@@ -146,13 +147,38 @@ bool CReSTIRStaticPropMgr::LoadModel( Model &m, const char *name )
 	Q_strncpy( cleanName, name, sizeof( cleanName ) );
 	Q_RemoveDotSlashes( cleanName );
 	name = cleanName;
+	m.loadFailure[0] = 0;
 	if ( !ReSTIR_LoadStudioModel( name, m.mdl ) )
+	{
+		Q_strncpy( m.loadFailure, "missing/invalid MDL", sizeof( m.loadFailure ) );
 		return false;
+	}
 	m.header = (studiohdr_t *)m.mdl.Base();
 	if ( !( m.header->flags & STUDIOHDR_FLAGS_STATIC_PROP ) )
+	{
+		Q_strncpy( m.loadFailure, "MDL is not flagged static-prop", sizeof( m.loadFailure ) );
 		return false;
-	if ( !LoadVtx( name, m.header, m.vtx ) || !LoadVvd( name, m.header, &m.vertexBase ) )
+	}
+	if ( !LoadVtx( name, m.header, m.vtx ) )
+	{
+		if ( m.vtx.TellPut() >= (int)sizeof( OptimizedModel::FileHeader_t ) )
+		{
+			const OptimizedModel::FileHeader_t *v = (const OptimizedModel::FileHeader_t *)m.vtx.Base();
+			Q_snprintf( m.loadFailure, sizeof( m.loadFailure ),
+				"VTX version/checksum mismatch (got %d/%d, expected %d/%d)",
+				v->version, v->checkSum, OPTIMIZED_MODEL_FILE_VERSION, m.header->checksum );
+		}
+		else
+		{
+			Q_strncpy( m.loadFailure, "missing DX80/DX90 VTX", sizeof( m.loadFailure ) );
+		}
 		return false;
+	}
+	if ( !LoadVvd( name, m.header, &m.vertexBase ) )
+	{
+		Q_strncpy( m.loadFailure, "missing/invalid VVD or checksum/version mismatch", sizeof( m.loadFailure ) );
+		return false;
+	}
 	return true;
 }
 bool CReSTIRStaticPropMgr::UnserializeModelDict( CUtlBuffer &buf )
@@ -164,6 +190,7 @@ bool CReSTIRStaticPropMgr::UnserializeModelDict( CUtlBuffer &buf )
 		return false;
 	}
 	int missingCount = 0;
+	int reportedMissing = 0;
 	for ( int i = 0; i < count; ++i )
 	{
 		StaticPropDictLump_t l;
@@ -171,15 +198,20 @@ bool CReSTIRStaticPropMgr::UnserializeModelDict( CUtlBuffer &buf )
 		Model *m = new Model;
 		if ( !LoadModel( *m, l.m_Name ) )
 		{
-			if ( verbose )
-				Warning( "VRAD ReSTIR: unable to load static prop model %s\n", l.m_Name );
+			if ( reportedMissing < 5 )
+			{
+				Warning( "VRAD ReSTIR: static prop model %s skipped: %s\n", l.m_Name,
+					m->loadFailure[0] ? m->loadFailure : "unknown loader failure" );
+				++reportedMissing;
+			}
 			++missingCount;
 			m->header = NULL;
 		}
 		m_Models.AddToTail( m );
 	}
 	if ( missingCount )
-		Warning( "VRAD ReSTIR: %d static prop models could not be loaded; their instances are skipped\n", missingCount );
+		Warning( "VRAD ReSTIR: %d static prop models could not be loaded; first %d listed above; their instances are skipped\n",
+			missingCount, MIN( missingCount, 5 ) );
 	return true;
 }
 // The engine accepts static prop lump versions 4..6 and 10 through the conversion operators in
@@ -500,7 +532,11 @@ bool CReSTIRStaticPropMgr::AppendTriangles( ReSTIRScene &scene, bool textureShad
 						{
 							OptimizedModel::StripHeader_t *strip = sg->pStrip( si );
 							if ( !( strip->flags & OptimizedModel::STRIP_IS_TRILIST ) )
-								return false;
+							{
+								Warning( "VRAD ReSTIR: static prop non-triangle strip skipped (prop %d, model %d, mesh %d, strip %d; stock VRAD ignores it)\n",
+									pi, p.lump.m_PropType, meshId, si );
+								continue;
+							}
 							for ( int k = 0; k < strip->numIndices; k += 3 )
 							{
 								int at = strip->indexOffset + k;
@@ -606,8 +642,9 @@ bool CReSTIRStaticPropMgr::AppendEmitters( ReSTIRScene &scene, const ReSTIROptio
 							OptimizedModel::StripHeader_t *strip = sg->pStrip( si );
 							if ( !( strip->flags & OptimizedModel::STRIP_IS_TRILIST ) )
 							{
-								emitters.PurgeAndDeleteElements();
-								return false;
+								Warning( "VRAD ReSTIR: emissive static prop non-triangle strip skipped (prop %d, model %d, mesh %d, strip %d; stock VRAD ignores it)\n",
+									pi, p.lump.m_PropType, meshId, si );
+								continue;
 							}
 							for ( int k = 0; k < strip->numIndices; k += 3 )
 							{
@@ -646,8 +683,9 @@ bool CReSTIRStaticPropMgr::AppendEmitters( ReSTIRScene &scene, const ReSTIROptio
 		for ( int i = 0; i < emitters.Count(); ++i )
 		{
 			const ReSTIRPropEmitter &emitter = *emitters[i];
-			ReSTIR_AddSurfaceEmitter( scene, emitter.triangles.Base(), emitter.triangles.Count(),
-				emitter.emission.intensity, emitter.emission.texture, RESTIR_LIGHT_MATERIAL );
+			if ( emitter.triangles.Count() > 0 )
+				ReSTIR_AddSurfaceEmitter( scene, emitter.triangles.Base(), emitter.triangles.Count(),
+					emitter.emission.intensity, emitter.emission.texture, RESTIR_LIGHT_MATERIAL );
 		}
 		emitters.PurgeAndDeleteElements();
 	}

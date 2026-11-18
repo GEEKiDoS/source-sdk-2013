@@ -27,6 +27,7 @@
 static CUtlDict<int, unsigned short> s_MaterialNames;
 static CUtlDict<int, unsigned short> s_CoverageTextureNames;
 static CUtlDict<int, unsigned short> s_AlbedoTextureNames;
+static CUtlDict<int, unsigned short> s_MaterialParseWarnings;
 static CUtlVector<unsigned char> s_MaterialCoverageLoaded;
 static CUtlVector<unsigned char> s_MaterialAlbedoLoaded;
 static CUtlVector<Vector> s_AlbedoInverseAverage;			// per scene.textures index (albedo entries only)
@@ -244,8 +245,16 @@ static bool ReadParsedMaterialVMT( const char *pMaterialName, ReSTIRParsedMateri
 	{
 		KeyValues *pVMT = new KeyValues( "vmt" );
 		CUtlBuffer buf( 0, 0, CUtlBuffer::TEXT_BUFFER );
-		if ( !g_pFullFileSystem->ReadFile( vmtPath, NULL, buf ) || !pVMT->LoadFromBuffer( vmtPath, buf ) )
+		const bool read = g_pFullFileSystem->ReadFile( vmtPath, NULL, buf );
+		const bool parsed = read && pVMT->LoadFromBuffer( vmtPath, buf );
+		if ( !parsed )
 		{
+			if ( read && s_MaterialParseWarnings.Find( pMaterialName ) == s_MaterialParseWarnings.InvalidIndex() )
+			{
+				s_MaterialParseWarnings.Insert( pMaterialName, 1 );
+				Warning( "ReSTIR: material %s has an unreadable VMT; using non-emissive/default reflectivity\n",
+					pMaterialName );
+			}
 			pVMT->deleteThis();
 			break;
 		}
@@ -1186,8 +1195,10 @@ bool ReSTIR_SceneBuildGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 	}
 
 	if ( !g_ReSTIRStaticPropMgr.AppendTriangles( scene, context.options->textureShadows ) )
+	{
+		Warning( "ReSTIR: scene build failed while appending static-prop triangles\n" );
 		return false;
-
+	}
 	if ( scene.triangles.Count() > 0 )
 	{
 		Vector mins( FLT_MAX, FLT_MAX, FLT_MAX );
@@ -1211,6 +1222,7 @@ bool CReSTIRSceneBuilder::Build( const ReSTIROptions &options, ReSTIRScene &scen
 	s_MaterialNames.RemoveAll();
 	s_CoverageTextureNames.RemoveAll();
 	s_AlbedoTextureNames.RemoveAll();
+	s_MaterialParseWarnings.RemoveAll();
 	s_MaterialCoverageLoaded.RemoveAll();
 	s_MaterialAlbedoLoaded.RemoveAll();
 	s_AlbedoInverseAverage.RemoveAll();
@@ -1280,13 +1292,30 @@ bool CReSTIRSceneBuilder::Build( const ReSTIROptions &options, ReSTIRScene &scen
 	}
 
 	if ( !BuildDisplacements( context ) )
+	{
+		Warning( "ReSTIR: scene build failed while building displacements\n" );
 		return false;
+	}
 	if ( !ReSTIR_SceneBuildGeometry( context, scene ) )
+	{
+		Warning( "ReSTIR: scene build failed while building geometry\n" );
 		return false;
+	}
 	ReSTIR_SceneBuildFaceNeighbors( context, scene );
 	if ( !ReSTIR_SceneSaveVertexNormals( context ) )
+	{
+		Warning( "ReSTIR: scene build failed while saving vertex normals\n" );
 		return false;
+	}
 	if ( !ReSTIR_SceneBuildLights( context, scene ) )
+	{
+		Warning( "ReSTIR: scene build failed while building lights\n" );
 		return false;
-	return ReSTIR_SceneBuildSamples( context, scene );
+	}
+	if ( !ReSTIR_SceneBuildSamples( context, scene ) )
+	{
+		Warning( "ReSTIR: scene build failed while building samples\n" );
+		return false;
+	}
+	return true;
 }

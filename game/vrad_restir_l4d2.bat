@@ -9,9 +9,12 @@ rem   vrad_restir_l4d2.bat [vrad_restir options] <map.bsp | map name under mod_l
 rem Example:
 rem   vrad_restir_l4d2.bat -restir_shadowmaps -fast c1m1_hotel
 rem
-rem Override the content roots by setting these before calling:
+rem The content roots default to the Steam library that holds each app (found by
+rem vrad_restir_steamapp.ps1 from Steam's libraryfolders.vdf). Override them by setting these before calling:
 set "SDK_MP=%SDK_MP%"
 set "L4D2_ROOT=%L4D2_ROOT%"
+if "%SDK_MP%"=="" for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0vrad_restir_steamapp.ps1" "Source SDK Base 2013 Multiplayer"`) do set "SDK_MP=%%P"
+if "%L4D2_ROOT%"=="" for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0vrad_restir_steamapp.ps1" "Left 4 Dead 2"`) do set "L4D2_ROOT=%%P"
 if "%SDK_MP%"=="" set "SDK_MP=C:\Program Files (x86)\Steam\steamapps\common\Source SDK Base 2013 Multiplayer"
 if "%L4D2_ROOT%"=="" set "L4D2_ROOT=C:\Program Files (x86)\Steam\steamapps\common\Left 4 Dead 2"
 
@@ -53,7 +56,8 @@ if not exist "!TOOLRUN!\bin\x64\filesystem_stdio.dll" (
     exit /b 1
 )
 
-rem The engine gameinfo uses |appid_NNN| mounts; the tool filesystem needs explicit paths.
+rem The engine gameinfo uses |appid_NNN| mounts; the tool filesystem needs explicit paths. L4D2_ADDON_PATH (set by
+rem vrad_restir_l4d2_addons.ps1 to an extracted add-on) is mounted ahead of everything, as the game mounts add-ons.
 if not exist "!TOOLGAME!" mkdir "!TOOLGAME!"
 (
     echo "GameInfo"
@@ -65,6 +69,7 @@ if not exist "!TOOLGAME!" mkdir "!TOOLGAME!"
     echo         SteamAppId 243750
     echo         SearchPaths
     echo         {
+    if defined L4D2_ADDON_PATH echo             game "!L4D2_ADDON_PATH!"
     echo             game+mod "!MOD!"
     echo             game "!L4D2_ROOT!\update\pak01_dir.vpk"
     echo             game "!L4D2_ROOT!\update"
@@ -86,7 +91,8 @@ if not exist "!TOOLGAME!" mkdir "!TOOLGAME!"
     echo }
 ) > "!TOOLGAME!\gameinfo.txt"
 
-rem Last argument is the map; a bare name resolves under mod_l4d2\maps.
+rem Last argument is the map; a bare name resolves under mod_l4d2\maps, then the retail map folders in
+rem mount order (update, DLC3..1, base).
 set "MAP="
 set "ARGS="
 :collect
@@ -103,8 +109,10 @@ if "!MAP!"=="" (
 )
 if not exist "!MAP!" if exist "!MOD!\maps\!MAP!.bsp" set "MAP=!MOD!\maps\!MAP!.bsp"
 if not exist "!MAP!" if exist "!MOD!\maps\!MAP!" set "MAP=!MOD!\maps\!MAP!"
-if not exist "!MAP!" if exist "!L4D2_ROOT!\left4dead2\maps\!MAP!.bsp" set "MAP=!L4D2_ROOT!\left4dead2\maps\!MAP!.bsp"
-if not exist "!MAP!" if exist "!L4D2_ROOT!\left4dead2\maps\!MAP!" set "MAP=!L4D2_ROOT!\left4dead2\maps\!MAP!"
+for %%D in (update left4dead2_dlc3 left4dead2_dlc2 left4dead2_dlc1 left4dead2) do (
+    if not exist "!MAP!" if exist "!L4D2_ROOT!\%%D\maps\!MAP!.bsp" set "MAP=!L4D2_ROOT!\%%D\maps\!MAP!.bsp"
+    if not exist "!MAP!" if exist "!L4D2_ROOT!\%%D\maps\!MAP!" set "MAP=!L4D2_ROOT!\%%D\maps\!MAP!"
+)
 if not exist "!MAP!" (
     echo map not found: !MAP!
     exit /b 1

@@ -97,7 +97,7 @@ game\vrad_restir.bat -StaticPropLighting -TextureShadows -final ep2_outland_09
 ```
 
 Content roots default to the local Steam library; override with `SDK_MP`, `SDK_SP` and `HL2_DIR` environment variables (or edit the defaults at the top of the script).
-For the L4D2 port use `game\vrad_restir_l4d2.bat`. It expands the retail L4D2 layers (`update`, `left4dead2_dlc3`, `left4dead2_dlc2`, `left4dead2_dlc1`, and `left4dead2`) plus the SDK Base 2013 Multiplayer `hl2`/`platform` fallbacks into a private tool-readable gameinfo. The roots default to `L4D2_ROOT=C:\Program Files (x86)\Steam\steamapps\common\Left 4 Dead 2` and `SDK_MP=C:\Program Files (x86)\Steam\steamapps\common\Source SDK Base 2013 Multiplayer`; set those environment variables to override them.
+For the L4D2 port use `game\vrad_restir_l4d2.bat`. It expands the retail L4D2 layers (`update`, `left4dead2_dlc3`, `left4dead2_dlc2`, `left4dead2_dlc1`, and `left4dead2`) plus the SDK Base 2013 Multiplayer `hl2`/`platform` fallbacks into a private tool-readable gameinfo. `L4D2_ROOT` and `SDK_MP` default to the Steam library that holds each app, found by `game\vrad_restir_steamapp.ps1` from the registry `SteamPath` and `steamapps\libraryfolders.vdf`, then to `C:\Program Files (x86)\Steam\steamapps\common\...`; set those environment variables to override them.
 
 Shipped L4D2 BSP v21 maps are accepted directly. The loader decodes v21 lump headers, LZMA payloads (including independently compressed game-lump payloads), 100-byte worldlights, and v8/v9 static-prop records into the ordinary SDK v20 tool representation. Output is written as a standard BSP v20 map: rewritten lighting/worldlights/ambient and ReSTIR data use SDK layouts, and converted static props are emitted as SDK v6 (v8 input) or SDK v10 (v9 input) records. Because those SDK records have no diffuse-modulation field, a v21 bake with static props also writes the `ptnt` game lump (version 1), one RGBA tint entry per prop in `sprp` order. The L4D2 engine adapter consumes `ptnt` on v20 maps and uses the same existing draw hooks as v21; v21 sources keep their original tint path. A v20 source without `ptnt` receives no tint lump.
 GPU work is submitted in adaptive, per-stage chunks. Each completed fence wait steers the next chunk toward a roughly 250 ms interval, clamped to the dispatch limit and the resident page's item count, so the compute-BVH backend remains below the Windows TDR threshold on slow GPUs without changing deterministic lighting results. This includes selected-light world-visibility pages; each chunk addresses its page-local service output before readback. Pacifier phases report exact canonicalization, upload, scene/BVH, bake-iteration, denoise, gather, and write work; verbose `-v` additionally prints resident/page heap peaks, page dimensions, and per-submit GPU/queue milliseconds. Bake stage submit/chunk summaries are emitted once after the bake instead of interleaving with the pacifier.
@@ -114,7 +114,7 @@ Verification on GTX 1050 (2 GB), c1m1 density 1 with `-both -restir_shadowmaps -
 game\vrad_restir_l4d2.bat -restir_shadowmaps -fast c1m1_hotel
 ```
 
-A bare map name resolves under `mod_l4d2\maps` first, then under the retail `left4dead2\maps`; the `.light` is always written to `mod_l4d2\maps`, never beside a retail BSP.
+A bare map name resolves under `mod_l4d2\maps` first, then under the retail `update`, `left4dead2_dlc3`..`left4dead2_dlc1` and `left4dead2` map folders; the `.light` is always written to `mod_l4d2\maps`, never beside a retail BSP.
 
 The L4D2 wrapper stages the executable, shaders, and SDK `filesystem_stdio.dll` under `%TEMP%` so the SDK Base installation and repository tool directory are not modified. If OIDN DLLs are present beside `game\bin\x64\vrad_restir.exe`, they are staged too and the bake summary reports `denoiser=oidn device=...`; otherwise it reports the bilateral fallback.
 
@@ -377,6 +377,8 @@ Every `UnlitGeneric` material emits light. Other shaders emit when `$selfillum` 
 `UnlitGeneric` emission honours `$color`, `$color2`, `$hdrcolorscale` in HDR, `$alphatest` coverage and non-additive `$translucent` alpha. Self-illumination uses linear `$selfillumtint` and the mask's stored RGB values without gamma conversion; it ignores `$translucent`, `$alphatest` and `$hdrcolorscale`, matching the shader's self-illumination path. `$nocull` makes either type emit from both sides.
 
 A displayed linear colour D emits D*255/pi radiance per unit area in VRAD light units, multiplied by `-restir_emissivescale`. Emitters cover world and brush-entity faces, displacements and all static props, including no-shadow props, with the prop's skin applied. Material emitters are not exported to `LUMP_WORLDLIGHTS`; their light is baked into face lightmaps, static/detail prop lighting and leaf ambient cubes.
+Malformed or unreadable VMTs are warned about and treated as non-emissive materials while retaining the BSP's default reflectivity and coverage behavior; one bad add-on material does not abort a scene build. Static-prop VTX strips that are not triangle lists are skipped like stock VRAD rather than failing the whole bake. Missing or invalid MDL/VTX/VVD files are reported by model name (the first few names are listed when the aggregate static-prop warning is emitted), and instances using those models are skipped.
+
 
 ## Lightmap density
 

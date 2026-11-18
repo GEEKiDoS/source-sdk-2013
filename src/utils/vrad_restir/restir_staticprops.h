@@ -85,7 +85,8 @@ public:
 		CUtlBuffer mdl, vtx, vvd;
 		studiohdr_t *header;
 		void *vertexBase;
-		Model() : header( NULL ), vertexBase( NULL ) {}
+		char loadFailure[128];
+		Model() : header( NULL ), vertexBase( NULL ) { loadFailure[0] = 0; }
 	};
 private:
 	struct MeshLighting
