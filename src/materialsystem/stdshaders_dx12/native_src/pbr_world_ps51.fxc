@@ -422,6 +422,12 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( ShadowMap_DebugReplacesColor() ) reflectionValid = 0.0;
 #elif PBR_WORLD_HIGHRES
 	color = HighresLightmap_Finish( color );
+#elif LIGHTPASS == 0
+	if ( Contact_DebugEnabled() )
+	{
+		color = Contact_DebugColor( color.a );
+		reflectionValid = 0.0;
+	}
 #endif
 	return PBR_Output( color, sBump, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
 #endif

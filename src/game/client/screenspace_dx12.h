@@ -21,6 +21,8 @@ void ScreenSpaceDX12_Shutdown();
 bool ScreenSpaceDX12_Available();
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_GetAPI();
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_DepthPrepass();
+IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelContacts();
+bool ScreenSpaceDX12_ContactDebug();
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRenderContext, const Vector &eye, const Vector &forward, bool &contacts, bool &ssr );
 void ScreenSpaceDX12_BeginVolumetrics( const CViewSetup &view );
 void ScreenSpaceDX12_DrawVolumetrics();

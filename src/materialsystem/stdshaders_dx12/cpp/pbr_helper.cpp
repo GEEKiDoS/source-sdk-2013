@@ -1253,9 +1253,11 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 	// Two-pass lighting needs the enhanced receivers (the world's highres twin is chosen per map at draw time). The
 	// shadow-map debug views replace the single pass's colour. Under SSR the realtime pass writes the payload's S and D.
 	static ConVarRef r_shadowmap_debug( "r_shadowmap_debug" );
+	static ConVarRef r_contactshadows_debug( "r_contactshadows_debug" );
 	const int mode = r_pbr_light_passes.GetInt();
 	const bool lightPasses = ( pContextData->m_bModel ? mode == 1 || mode == 2 : ( mode == 1 || mode == 3 ) && DX12HighresMap() ) &&
-		!( r_shadowmap_debug.IsValid() && r_shadowmap_debug.GetInt() != 0 );
+		!( r_shadowmap_debug.IsValid() && r_shadowmap_debug.GetInt() != 0 ) &&
+		!( r_contactshadows_debug.IsValid() && r_contactshadows_debug.GetBool() );
 	pShader->Draw( !lightPasses );
 	pShader->Draw( lightPasses );
 	pShader->Draw( lightPasses );

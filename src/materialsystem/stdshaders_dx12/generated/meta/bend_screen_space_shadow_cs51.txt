@@ -1,0 +1,8 @@
+logical=bend_screen_space_shadow_cs51 stage=cs source=bend_screen_space_shadow_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=2 present=2
+  cbuffer=BendScreenSpaceShadow space=1 register=b0 size=80 layoutHash=0x5888cef1ee026d60 material
+    member=gLightCoordinate type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
+    member=gWaveOffset type=2 class=1 offset=16 size=8 elements=0 arrayStride=0 legacy=
+    member=gViewportOrigin type=2 class=1 offset=24 size=8 elements=0 arrayStride=0 legacy=
+    member=gVisual type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=gDepth type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=gDimensions type=2 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=

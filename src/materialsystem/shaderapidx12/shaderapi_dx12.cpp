@@ -2511,7 +2511,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	bindingInput.screenSpaceView = bindingInput.volumetricConstants = bindingInput.shadowSkyClipConstants = 0;
 	const bool sceneTarget = !shadowPass && !motionActive && !contactReplay && !skyboxDraw &&
 		m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER;
-	if ( sceneTarget && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ) && !PrepareScreenSpaceBinding( bindingInput ) )
+	if ( sceneTarget && m_ScreenSpace.active && ( m_ScreenSpace.contactsEnabled || m_ScreenSpace.ssrCapture ||
+	     m_ScreenSpace.constants.contactControl[3] != 0 ) && !PrepareScreenSpaceBinding( bindingInput ) )
 		return;
 	// Viewmodels draw through the front of the depth range (DepthRange( 0, DX12_VIEWMODEL_DEPTH_MAX ), viewrender.cpp).
 	const bool viewModelDraw = m_nViewportCount > 0 && m_Viewports[0].m_flMaxZ <= 0.1f;

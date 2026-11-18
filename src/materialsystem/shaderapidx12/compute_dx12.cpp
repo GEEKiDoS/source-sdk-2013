@@ -359,7 +359,7 @@ bool CShaderAPIDX12::DiscardResizeComputeTarget( TextureRecord &texture, int nWi
 		!( texture.flags & TEXTURE_CREATE_RENDERTARGET ) || ( texture.flags & ( TEXTURE_CREATE_DEPTHBUFFER | TEXTURE_CREATE_CUBEMAP ) ) ||
 		texture.copies != 1 || texture.depth != 1 || texture.mipLevels != 1 )
 		return false;
-	if ( texture.width == nWidth && texture.height == nHeight )
+	if ( texture.width == nWidth && texture.height == nHeight && texture.uavCapable )
 		return EnsureTextureResident( texture );
 
 	m_pDevice->DrainRecording();
@@ -568,6 +568,21 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 	{
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_NONE )
 			return true;
+		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCREEN_CONTACT_DEPTH )
+		{
+			// EndContactDepth transitions once for the whole list of independent wave dispatches.
+			if ( !m_ContactDepth.resource || m_ContactDepth.state != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE )
+				return false;
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+			srv.ViewDimension = m_ContactDepth.samples > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			if ( m_ContactDepth.samples == 1 )
+				srv.Texture2D.MipLevels = 1;
+			m_pDevice->NativeDevice()->CreateShaderResourceView( m_ContactDepth.resource.Get(), &srv, Offset( range.cpu, slot, stride ) );
+			retain( m_ContactDepth.resource.Get() );
+			return true;
+		}
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL )
 		{
 			if ( !m_pDevice->SceneDepth() )

@@ -24,18 +24,21 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_005"
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_007"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
-struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 208 bytes
+struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 256 bytes
 {
 	float	worldToClip[16];		// row-major, clip = mul( worldToClip, float4( P, 1 ) ); backend-filled (native raster epilogue + jitter)
-	float	clipToWorld[16];		// inverse of worldToClip; backend-filled
-	float	eyeLength[4];			// eye xyz, contact length (Source units)
-	float	forwardThickness[4];	// unit camera forward xyz, contact thickness (Source units)
+	float	clipToWorld[16];		// inverse of worldToClip; forward viewmodel contacts reuse this lane for their projection
+	float	eyeLength[4];			// eye xyz; forward SSR ray length
+	float	forwardThickness[4];	// camera forward xyz; forward SSR depth thickness
 	float	viewport[4];			// scene-pixel x, y, width, height
-	uint32	control[4];				// contact enabled, scene sample count, contact steps, SSR capture enabled; backend-authoritative x/y/w
+	uint32	control[4];				// reserved; scene samples or forward AO size; forward flags; SSR capture
 	float	depth[4];				// depth-clear value (backend), normal bias 0.25, first ray distance 0.5, edge fade 8 pixels
+	float	contactParams[4];		// Bend surface thickness (relative depth), edge threshold, contrast, reserved
+	float	contactDepth[4];		// depth projection and valid raw range for the current receiver layer
+	uint32	contactControl[4];		// mask scope: 0 off, 1 world, 2 viewmodel; samples; trace pixels; debug
 };
 
 struct DX12SSRSettings				// 20 bytes
@@ -68,7 +71,7 @@ struct alignas( 16 ) DX12VolumetricConstants	// 64 bytes, HLSL cbuffer DX12Volum
 	float	outputScale[4];			// native LINEAR_LIGHT_SCALE (m_ToneScale.x), 0, 0, 0
 };
 
-static_assert( sizeof( DX12ScreenSpaceViewConstants ) == 208, "DX12ScreenSpaceViewConstants must match HLSL DX12ScreenSpaceView" );
+static_assert( sizeof( DX12ScreenSpaceViewConstants ) == 256, "DX12ScreenSpaceViewConstants must match HLSL DX12ScreenSpaceView" );
 static_assert( sizeof( DX12SSRSettings ) == 20, "DX12SSRSettings layout" );
 static_assert( sizeof( DX12VolumetricSettings ) == 48, "DX12VolumetricSettings layout" );
 static_assert( sizeof( DX12VolumetricConstants ) == 64, "DX12VolumetricConstants must match HLSL DX12Volumetric" );
@@ -76,13 +79,11 @@ static_assert( sizeof( DX12VolumetricConstants ) == 64, "DX12VolumetricConstants
 abstract_class IShaderAPIDX12ScreenSpace
 {
 public:
-	// Starts an opaque bracket of an eligible mono main view. Client supplies eye/forward, contact length/thickness,
-	// viewport, control.x contact enable, control.z contact steps, control.w SSR capture and the SSR settings; the
-	// backend fills both matrices, the actual sample count and depth-clear value. An ineligible/zero-sized view or a
-	// failed inversion disables every effect of the bracket.
+	// Starts an opaque bracket of an eligible mono main view. Client supplies eye/forward, viewport, contact and
+	// SSR settings; the backend fills the matrices, sample count and depth clear. An invalid camera disables the bracket.
 	virtual void BeginView( const DX12ScreenSpaceViewDesc &view ) = 0;
-	// Private normal-geometry depth replay for contact rays; draws between the two markers write only private depth.
-	virtual void BeginContactDepth() = 0;
+	// Copy the current scene depth; if there was no opaque prepass, replay normal geometry into the private copy.
+	virtual void BeginContactDepth( bool hasViewModelDepth ) = 0;
 	virtual void EndContactDepth() = 0;
 	// After the G-buffer pass and motion vectors: trace and add the signed SSR correction to the scene.
 	virtual void DispatchSSR() = 0;
@@ -100,6 +101,10 @@ public:
 	// End restores their far depth and removes the mask; main scene depth and stencil bit 0x80 stay intact.
 	virtual void BeginSkybox() = 0;
 	virtual void EndSkybox() = 0;
+	// After the viewmodel projection and depth range are set, reuse its opaque prepass or replay it in private.
+	// EndContactDepth makes the result readable; EndViewModelContacts closes the receiver scope.
+	virtual void BeginViewModelContacts( bool reuseMainDepth ) = 0;
+	virtual void EndViewModelContacts() = 0;
 };
 
 #endif // ISHADERAPIDX12SCREENSPACE_H

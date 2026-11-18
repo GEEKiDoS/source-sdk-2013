@@ -26,10 +26,13 @@ static ConVar r_ssr_resolution( "r_ssr_resolution", "1", FCVAR_ARCHIVE, "SSR tra
 static ConVar r_ssr_max_distance( "r_ssr_max_distance", "1024", FCVAR_ARCHIVE, "SSR ray distance in Source units", true, 16.f, true, 2048.f );
 static ConVar r_ssr_thickness( "r_ssr_thickness", "2", FCVAR_ARCHIVE, "SSR depth thickness in Source units", true, 0.1f, true, 16.f );
 static ConVar r_ssr_forward_steps( "r_ssr_forward_steps", "16", FCVAR_ARCHIVE, "SSR of translucents (car glass, windows) and viewmodels, traced in their own shaders: march steps, 0 off", true, 0, true, 32 );
-static ConVar r_contactshadows( "r_contactshadows", "0", FCVAR_ARCHIVE, "DX12: screen-space contact shadows for shadowmapped direct lights", true, 0, true, 1 );
-static ConVar r_contactshadows_quality( "r_contactshadows_quality", "1", FCVAR_ARCHIVE, "Contact-shadow quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
-static ConVar r_contactshadows_length( "r_contactshadows_length", "16", FCVAR_ARCHIVE, "Contact-shadow ray distance in Source units", true, 1.f, true, 64.f );
-static ConVar r_contactshadows_thickness( "r_contactshadows_thickness", "1", FCVAR_ARCHIVE, "Contact-shadow depth thickness in Source units", true, 0.1f, true, 8.f );
+static ConVar r_contactshadows( "r_contactshadows", "0", FCVAR_ARCHIVE, "DX12: Bend screen-space contact shadows for the shadowmapped sun", true, 0, true, 1 );
+static ConVar r_contactshadows_debug( "r_contactshadows_debug", "0", FCVAR_CHEAT,
+	"Show sun contact visibility on supported receivers: white is unoccluded. Does not enable contact shadows.", true, 0, true, 1 );
+static ConVar r_contactshadows_quality( "r_contactshadows_quality", "1", FCVAR_ARCHIVE, "Sun contact-shadow samples: 0 = 16, 1 = 32, 2 = 60", true, 0, true, 2 );
+static ConVar r_contactshadows_surface_thickness( "r_contactshadows_surface_thickness", "0.005", FCVAR_ARCHIVE, "Assumed surface thickness as a fraction of the remaining device-depth range", true, 0.0001f, true, 0.1f );
+static ConVar r_contactshadows_edge_threshold( "r_contactshadows_edge_threshold", "0.02", FCVAR_ARCHIVE, "Relative device-depth threshold for rejecting interpolation across edges", true, 0.f, true, 1.f );
+static ConVar r_contactshadows_contrast( "r_contactshadows_contrast", "4", FCVAR_ARCHIVE, "Bend sun contact-shadow contrast", true, 1.f, true, 8.f );
 static ConVar r_depth_prepass( "r_depth_prepass", "1", FCVAR_ARCHIVE, "DX12: replay normal main-view opaque geometry into depth before shading (same LOD and alpha coverage)", true, 0, true, 1 );
 
 static ConVar r_volumetric( "r_volumetric", "1", FCVAR_ARCHIVE, "DX12: additive volumetric lighting from opted-in shadowmapped lights", true, 0, true, 1 );
@@ -50,7 +53,7 @@ namespace
 IShaderAPIDX12ScreenSpace *s_pScreenSpace = nullptr;
 bool s_bVolumetricScope = false;
 DX12VolumetricSettings s_VolumetricSettings = {};
-const uint32 kContactSteps[3] = { 8, 12, 24 };
+const uint32 kContactSteps[3] = { 16, 32, 60 };
 const uint32 kVolumetricSteps[3] = { 8, 16, 32 };
 }
 
@@ -91,6 +94,16 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_DepthPrepass()
 	return r_depth_prepass.GetBool() ? s_pScreenSpace : nullptr;
 }
 
+IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelContacts()
+{
+	return r_contactshadows.GetBool() ? s_pScreenSpace : nullptr;
+}
+
+bool ScreenSpaceDX12_ContactDebug()
+{
+	return s_pScreenSpace && r_contactshadows_debug.GetBool();
+}
+
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRenderContext, const Vector &eye, const Vector &forward, bool &contacts, bool &ssr )
 {
 	contacts = false;
@@ -99,8 +112,9 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 		return nullptr;
 
 	contacts = r_contactshadows.GetBool();
-	ssr = r_ssr.GetBool();
-	if ( !contacts && !ssr && !s_bVolumetricScope )
+	const bool debugContacts = ScreenSpaceDX12_ContactDebug();
+	ssr = !debugContacts && r_ssr.GetBool();
+	if ( !contacts && !debugContacts && !ssr && !s_bVolumetricScope )
 		return nullptr;
 
 	int x, y, width, height;
@@ -109,21 +123,24 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 	view.constants.eyeLength[0] = eye.x;
 	view.constants.eyeLength[1] = eye.y;
 	view.constants.eyeLength[2] = eye.z;
-	view.constants.eyeLength[3] = r_contactshadows_length.GetFloat();
+	// The legacy eye/forward .w lanes are reserved for the backend's forward SSR settings.
 	view.constants.forwardThickness[0] = forward.x;
 	view.constants.forwardThickness[1] = forward.y;
 	view.constants.forwardThickness[2] = forward.z;
-	view.constants.forwardThickness[3] = r_contactshadows_thickness.GetFloat();
+	view.constants.contactParams[0] = r_contactshadows_surface_thickness.GetFloat();
+	view.constants.contactParams[1] = r_contactshadows_edge_threshold.GetFloat();
+	view.constants.contactParams[2] = r_contactshadows_contrast.GetFloat();
 	view.constants.viewport[0] = static_cast<float>( x );
 	view.constants.viewport[1] = static_cast<float>( y );
 	view.constants.viewport[2] = static_cast<float>( width );
 	view.constants.viewport[3] = static_cast<float>( height );
-	view.constants.control[0] = contacts ? 1u : 0u;
-	view.constants.control[2] = kContactSteps[r_contactshadows_quality.GetInt()];
 	view.constants.control[3] = ssr ? 1u : 0u;
 	view.constants.depth[1] = 0.25f;
 	view.constants.depth[2] = 0.5f;
 	view.constants.depth[3] = 8.f;
+	view.constants.contactControl[0] = contacts ? 1u : 0u;
+	view.constants.contactControl[2] = kContactSteps[r_contactshadows_quality.GetInt()];
+	view.constants.contactControl[3] = debugContacts ? 1u : 0u;
 	view.ssr.quality = static_cast<uint32>( r_ssr_quality.GetInt() );
 	view.ssr.maxDistance = r_ssr_max_distance.GetFloat();
 	view.ssr.thickness = r_ssr_thickness.GetFloat();
@@ -137,7 +154,7 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 
 void ScreenSpaceDX12_BeginVolumetrics( const CViewSetup &view )
 {
-	if ( !s_pScreenSpace || !r_volumetric.GetBool() || CurrentViewID() != VIEW_MAIN ||
+	if ( !s_pScreenSpace || ScreenSpaceDX12_ContactDebug() || !r_volumetric.GetBool() || CurrentViewID() != VIEW_MAIN ||
 		view.m_eStereoEye != STEREO_EYE_MONO || building_cubemaps.GetBool() || g_pIntroData )
 		return;
 

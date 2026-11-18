@@ -1121,3 +1121,12 @@ adapted to L4D2 behavior and SDK 2013 interfaces under the project's SDK-license
 distribution conditions. Preserve the original copyright and the root LICENSE.
 Public source provenance:
 https://github.com/ReactiveDrop/reactivedrop_public_src/tree/9231d40422194dfecca8b698698df4af7e0d99f1/src/game/client/swarm/vgui
+
+************************************************************************************
+Bend Studio screen-space shadows
+************************************************************************************
+
+Copyright 2023 Sony Interactive Entertainment. Licensed under the Apache License,
+Version 2.0. The renderer adapts the CPU dispatch partitioner and GPU wavefront
+shadow algorithm for Source's DX12 depth and lighting passes. See the license
+in game/thirdpartylegalnotices.txt.

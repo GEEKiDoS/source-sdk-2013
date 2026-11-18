@@ -57,6 +57,7 @@ public:
 	bool ValidateMap( const DX12LightingMapDesc &map, char *error, int errorBytes ) override;
 	void PrepareMap( const DX12LightingMapDesc &map ) override;
 	DX12LightingStatus GetStatus( uint32 mapGeneration, uint32 viewGeneration, char *error, int errorBytes ) override;
+	void GetSunVisibilityStats( uint32 mapGeneration, DX12LightingSunVisibilityStats &stats ) override;
 	void BeginView( const DX12LightingViewPacket &view ) override;
 	DX12ShadowTarget_t CreateShadowDepthTarget( const char *name, int width, int height ) override;
 	IRefCounted *RetainShadowDepthTarget( DX12ShadowTarget_t target ) override;
@@ -86,7 +87,7 @@ public:
 	void EndMaterialTransaction() override;
 	void SetProjectedLightTextures( const ShaderAPITextureHandle_t *cookies, const ShaderAPITextureHandle_t *depths, int count ) override;
 	void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) override;
-	void GetSunVisibilityStats( uint32 mapGeneration, DX12LightingSunVisibilityStats &stats ) override;
+	bool GetSunContactDirection( float out[4] );
 	int ModelLocalLighting( int limit, float rows[7][4] ) override;
 	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );
 	void ForgetSunReceiverTexture( ShaderAPITextureHandle_t texture );

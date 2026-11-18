@@ -147,6 +147,7 @@ NATIVE_ONLY = [
     native_only('postfx', 'postfx_glare_cs51.fxc', 'cs', 'postfx_glare_cs51'),
     native_only('postfx', 'postfx_composite_ps51.fxc', 'ps', 'postfx_composite_ps51'),
     native_only('postfx', 'postfx_rcas_ps51.fxc', 'ps', 'postfx_rcas_ps51'),
+    native_only('postfx', 'bend_screen_space_shadow_cs51.fxc', 'cs', 'bend_screen_space_shadow_cs51'),
     native_only('postfx', 'ssr_depth_cs51.fxc', 'cs', 'ssr_depth_cs51'),
     native_only('postfx', 'ssr_reduce_color_cs51.fxc', 'cs', 'ssr_reduce_color_cs51'),
     native_only('postfx', 'ssr_trace_cs51.fxc', 'cs', 'ssr_trace_cs51'),

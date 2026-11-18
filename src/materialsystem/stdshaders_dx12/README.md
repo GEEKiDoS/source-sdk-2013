@@ -590,8 +590,7 @@ Sun PCSS sample budget: the PBR pixel shaders carry a `SHADOWQUALITY` dynamic co
 `r_shadowmap_filter_quality` (stdshader_dx12, archived, default 1) and selecting the Vogel tables of
 `native_src/shadow_pcss_disks.hlsli`: Low 8 blocker / 8 filter taps, Medium 8/16, High 16/32 (the original budget, and what
 every shader without the combo compiles), Extra 32/64. `pbr_model_ps51` skips the combo outside its ENHANCED receiver
-variants. Low and Medium also skip the screen-space contact ray toward the sun (`DX12_SUN_CONTACT_SHADOWS`; local and
-projected contact rays keep running), which cost more than their whole PCSS kernel at the bollards reference spot. The
+variants. Sun screen-space contact visibility is independent of this filter budget. The
 graphics options expose it as the Shadows row: Off (`r_shadowmap_enable 0`), Low, Medium, High, Extra.
 The PCSS kernel uses the map's sun angular radius (`light_environment` SunSpreadAngle, recorded in the `.light` sidecar).
 Maps authoring 0 (c1m2, c1m3) made the PCSS path fall back to PCF, so `r_shadowmap_filter` did nothing there and thin
@@ -1301,6 +1300,7 @@ binds to scene draws after the bracket that are translucent or viewmodel (viewpo
 
 | Slot | Content | When |
 |---|---|---|
+| t0 | viewport-local Bend sun visibility | after successful contact dispatch for the current receiver layer |
 | t5 | SSR scene copy, from mip 1 (mip 0 holds the composite's delta by then): opaque colour before SSR, GTAO and translucents | the frame's bracket SSR succeeded |
 | t6 | its positive view depth (sky, viewmodel and clear pixels far) | same |
 | t7 | the frame's GTAO term (`SetAmbientOcclusionTerm`), working size in `cScreenControl.y` | viewmodel draws, when GTAO ran on viewmodel depth |
@@ -1308,7 +1308,24 @@ binds to scene draws after the bracket that are translucent or viewmodel (viewpo
 The view block keeps the bracket's camera, `cScreenControl.z` carries `DX12_SCREENSPACE_FORWARD_SSR / _AO / _AO_PACKED`
 with the march steps (`r_ssr_forward_steps`, archived, default 16, at most 32; 0 turns the forward reflections off) and
 the refinements (the profile's plus three), `cScreenEyeLength.w` / `cScreenForwardThickness.w` `r_ssr_max_distance` /
-`r_ssr_thickness`; contacts and payload capture stay off. Neutral constants disable both.
+`r_ssr_thickness`; payload capture stays off. Translucent draws reuse the SSR camera but not the opaque
+sun contact mask. Only a viewmodel draw with its own mask bound at t0 enables contacts after the opaque pass.
+
+**Sun contact shadows** (`r_contactshadows 1`, off by default) supplement a valid sun shadow chart.
+The backend projects the direction toward the sun with the current raster camera and runs Bend Studio's
+`BuildDispatchList` over the viewport. Each 64-thread group loads depth along a shared light ray and
+compares the samples in group-shared memory. The result is a visibility mask; material shaders read it
+once for the sun, before applying the baked visibility cap. It does not affect ambient light, local lights,
+projected lights or flashlights. Screen-space shadows cannot see offscreen casters.
+
+World and viewmodels use their respective projection and depth layer. `r_contactshadows_quality` selects
+16, 32 or 60 screen-pixel samples (0/1/2). The old length and thickness in Source units no longer apply.
+`r_contactshadows_surface_thickness` (0.005) and `r_contactshadows_edge_threshold` (0.02) are fractions
+of the remaining device-depth range, and `r_contactshadows_contrast` defaults to 4.
+
+`r_contactshadows_debug 1` (`sv_cheats 1`) displays the sun contact visibility on supported receivers:
+white is neutral, darker is more occluded. It does not enable the effect.
+The debug view uses single-pass PBR lighting and bypasses SSR, GTAO, and volumetrics. Sky and HUD are not receivers.
 
 - Reflection (`PBR_ForwardSSR`, envmapped materials with a response above 0.004, LIGHTPASS 0/1): one mirror ray per
   pixel, a jittered linear clip-space march that, like `ssr_trace_cs51`, binary-refines each front-to-back crossing of

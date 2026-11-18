@@ -10,9 +10,6 @@
 #define COMMON_FLASHLIGHT_FXC_H_
 
 #include "common_ps_fxc.h"
-#if defined(DX12_STAGE_PIXEL)
-#include "screenspace_contact.hlsli"
-#endif
 
 
 // JasonM - TODO: remove this simpleton version
@@ -1288,7 +1285,6 @@ void DoSpecularFlashlight( float3 flashlightPos, float3 worldPos, float4 flashli
 	if ( bDoShadows )
 	{
 		float flShadow = DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, nShadowLevel, vShadowTweaks, bAllowHighQuality, cFlashlightScreenScale );
-		flShadow *= DX12_ContactVisibility( worldPos, worldNormal, flashlightPos - worldPos, dist - 0.25f );
 		float flAttenuated = lerp( flShadow, 1.0f, vShadowTweaks.y );	// Blend between fully attenuated and not attenuated
 		flShadow = saturate( lerp( flAttenuated, flShadow, fAtten ) );	// Blend between shadow and above, according to light attenuation
 		flashlightColor *= flShadow;									// Shadow term
@@ -1360,7 +1356,6 @@ void DoSpecularFlashlight( float3 flashlightPos, float3 worldPos, float4 flashli
 	if ( bDoShadows )
 	{
 		float flShadow = DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, nShadowLevel, vShadowTweaks, bAllowHighQuality, cFlashlightScreenScale );
-		flShadow *= DX12_ContactVisibility( worldPos, worldNormal, flashlightPos - worldPos, dist - 0.25f );
 		float flAttenuated = lerp( flShadow, 1.0f, vShadowTweaks.y );	// Blend between fully attenuated and not attenuated
 		flShadow = saturate( lerp( flAttenuated, flShadow, fAtten ) );	// Blend between shadow and above, according to light attenuation
 		flashlightColor *= flShadow;									// Shadow term
@@ -1437,7 +1432,6 @@ float3 DoFlashlight( float3 flashlightPos, float3 worldPos, float4 flashlightSpa
 	if ( bDoShadows )
 	{
 		float flShadow = DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, nShadowLevel, vShadowTweaks, bAllowHighQuality, cFlashlightScreenScale );
-		flShadow *= DX12_ContactVisibility( worldPos, ( bHasNormal ? worldNormal : float3( 0.0f, 0.0f, 0.0f ) ), flashlightPos - worldPos, dist - 0.25f );
 		float flAttenuated = lerp( flShadow, 1.0f, vShadowTweaks.y );	// Blend between fully attenuated and not attenuated
 		flShadow = saturate( lerp( flAttenuated, flShadow, fAtten ) );	// Blend between shadow and above, according to light attenuation
 		flashlightColor *= flShadow;									// Shadow term
@@ -1523,7 +1517,6 @@ float3 DoFlashlight( float3 flashlightPos, float3 worldPos, float4 flashlightSpa
 	if ( bDoShadows )
 	{
 		float flShadow = DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, nShadowLevel, vShadowTweaks, bAllowHighQuality, cFlashlightScreenScale );
-		flShadow *= DX12_ContactVisibility( worldPos, ( bHasNormal ? worldNormal : float3( 0.0f, 0.0f, 0.0f ) ), flashlightPos - worldPos, dist - 0.25f );
 		float flAttenuated = lerp( flShadow, 1.0f, vShadowTweaks.y );	// Blend between fully attenuated and not attenuated
 		flShadow = saturate( lerp( flAttenuated, flShadow, fAtten ) );	// Blend between shadow and above, according to light attenuation
 		flashlightColor *= flShadow;									// Shadow term

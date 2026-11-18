@@ -722,20 +722,21 @@ void validateProbePbrResources(ID3D12ShaderReflection *reflection, const D3D12_S
 	}
 	if (probeSeen && !(probeSeen & 1)) throw std::runtime_error("Space-4 resources require DX12ProbeConstantsV1: " + logical);
 }
-// Space 6 is backend-owned and pixel-stage only: cbuffer DX12ScreenSpaceView b0 (208 bytes) and DX12Volumetric b1
-// (64 bytes), byte-identical to ishaderapidx12screenspace.h, plus the four depth planes g_ScreenContactDepth t0
-// (Texture2D<float>), g_ScreenContactDepthMS t1 (Texture2DMS<float>), g_ScreenSceneDepth t2, g_ScreenSceneDepthMS t3,
-// the sun shadow-chart sky clip: DX12ShadowSkyClip b2 (16 bytes, ishaderapidx12lighting.h) with g_ShadowSkyClip t4,
+// Space 6 is backend-owned and pixel-stage only: cbuffer DX12ScreenSpaceView b0 (256 bytes) and DX12Volumetric b1
+// (64 bytes), byte-identical to ishaderapidx12screenspace.h, plus the viewport-local sun visibility g_ScreenContactShadow
+// t0 (Texture2D<float>), final scene depth g_ScreenSceneDepth t2 / g_ScreenSceneDepthMS t3, and the sun shadow-chart
+// sky clip: DX12ShadowSkyClip b2 (16 bytes, ishaderapidx12lighting.h) with g_ShadowSkyClip t4.
 // and the forward screen-space inputs of the draws after the opaque bracket (native_src/pbr_forward_screenspace.hlsli):
 // g_ScreenSSRScene t5 (Texture2D<float4>), g_ScreenSSRDepth t6 and g_ScreenAO t7 (Texture2D<float>).
-// Reflection contains only retained resources, so any subset may appear, but every retained binding must match and
-// nothing else may live in the space.
+// Private contact prepass depth is compute-only; t1 is reserved. Reflection contains only retained resources, so
+// any subset may appear, but every retained binding must match and nothing else may live in the space.
 constexpr unsigned kScreenSpaceRegisterSpace = 6;
 struct ScreenSpaceMember { const char *name; unsigned offset, size; };
 struct ScreenSpaceLayout { const char *name; unsigned shaderRegister, byteSize, memberCount; const ScreenSpaceMember *members; };
 const ScreenSpaceMember kScreenSpaceViewMembers[] = {
 	{"cScreenWorldToClip", 0, 64}, {"cScreenClipToWorld", 64, 64}, {"cScreenEyeLength", 128, 16},
 	{"cScreenForwardThickness", 144, 16}, {"cScreenViewport", 160, 16}, {"cScreenControl", 176, 16}, {"cScreenDepth", 192, 16},
+	{"cScreenContactParams", 208, 16}, {"cScreenContactDepth", 224, 16}, {"cScreenContactControl", 240, 16},
 };
 const ScreenSpaceMember kVolumetricMembers[] = {
 	{"cVolumeMedium", 0, 16}, {"cVolumeSunMedium", 16, 16}, {"cVolumeControl", 32, 16}, {"cVolumeOutputScale", 48, 16},
@@ -745,7 +746,7 @@ const ScreenSpaceMember kShadowSkyClipMembers[] = {
 	{"cShadowSkyClip", 0, 16},
 };
 const ScreenSpaceLayout kScreenSpaceLayouts[] = {
-	{"DX12ScreenSpaceView", 0, 208, 7, kScreenSpaceViewMembers},
+	{"DX12ScreenSpaceView", 0, 256, 10, kScreenSpaceViewMembers},
 	{"DX12Volumetric", 1, 64, 4, kVolumetricMembers},
 	{"DX12ShadowSkyClip", 2, 16, 1, kShadowSkyClipMembers},
 };
@@ -767,7 +768,7 @@ void validateScreenSpaceBlock(const Block &b) {
 	}
 }
 void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const std::string &logical) {
-	static const char *const textureNames[8] = {"g_ScreenContactDepth", "g_ScreenContactDepthMS", "g_ScreenSceneDepth", "g_ScreenSceneDepthMS", "g_ShadowSkyClip", "g_ScreenSSRScene", "g_ScreenSSRDepth", "g_ScreenAO"};
+	static const char *const textureNames[8] = {"g_ScreenContactShadow", nullptr, "g_ScreenSceneDepth", "g_ScreenSceneDepthMS", "g_ShadowSkyClip", "g_ScreenSSRScene", "g_ScreenSSRDepth", "g_ScreenAO"};
 	unsigned seen = 0;
 	for (unsigned i = 0; i < desc.BoundResources; ++i) {
 		D3D12_SHADER_INPUT_BIND_DESC b{};
@@ -785,8 +786,8 @@ void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D1
 			valid = valid && buffer && SUCCEEDED(buffer->GetDesc(&bd)) && bd.Type == D3D_CT_CBUFFER && bd.Name;
 			if (valid) validateScreenSpaceBlock(reflectBlock(reflection, buffer, bd, b, dx12native::kStagePixel));
 			slot = valid ? 8 + layout->shaderRegister : 0;
-		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 8 && !strcmp(b.Name, textureNames[b.BindPoint])) {
-			const bool multisampled = (b.BindPoint & 1) != 0 && b.BindPoint < 5;
+		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 8 && textureNames[b.BindPoint] && !strcmp(b.Name, textureNames[b.BindPoint])) {
+			const bool multisampled = b.BindPoint == 3;
 			const bool colour = b.BindPoint == 5;
 			valid = valid && b.ReturnType == D3D_RETURN_TYPE_FLOAT && ((b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) == (colour ? D3D_SIF_TEXTURE_COMPONENTS : 0)) &&
 				b.Dimension == (multisampled ? D3D_SRV_DIMENSION_TEXTURE2DMS : D3D_SRV_DIMENSION_TEXTURE2D);

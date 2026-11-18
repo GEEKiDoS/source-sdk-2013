@@ -22,16 +22,41 @@
 #include "tier0/dbg.h"
 #include <atomic>
 #include <cstring>
+#include "../stdshaders_dx12/native_src/bend_sss_cpu.h"
 
 namespace shaderapidx12
 {
 namespace
 {
-enum ScreenSpaceOpDX12 { ScreenSpaceBeginView, ScreenSpaceBeginContactDepth, ScreenSpaceEndContactDepth, ScreenSpaceDispatchSSR, ScreenSpaceEndView, ScreenSpaceBeginVolumetrics, ScreenSpaceDrawVolumetrics, ScreenSpaceBeginDepthPrepass, ScreenSpaceEndDepthPrepass, ScreenSpaceBeginSkybox, ScreenSpaceEndSkybox };
+enum ScreenSpaceOpDX12 { ScreenSpaceBeginView, ScreenSpaceBeginContactDepth, ScreenSpaceEndContactDepth, ScreenSpaceDispatchSSR, ScreenSpaceEndView, ScreenSpaceBeginVolumetrics, ScreenSpaceDrawVolumetrics, ScreenSpaceBeginDepthPrepass, ScreenSpaceEndDepthPrepass, ScreenSpaceBeginSkybox, ScreenSpaceEndSkybox, ScreenSpaceBeginViewModelContacts, ScreenSpaceEndViewModelContacts };
 
 // depth.yzw of DX12ScreenSpaceViewConstants (section 2); depth.x is the native clear value: ClearBuffers always clears native
 // depth to 1 (textures_dx12.cpp ClearDepthStencilView), so the clip-space far plane is the only "no geometry" depth.
 constexpr float kContactNormalBias = 0.25f, kContactFirstDistance = 0.5f, kContactEdgeFade = 8.f, kNativeDepthClear = 1.f;
+constexpr float kViewModelContactDepthMax = 0.1f;
+
+// With perspective clip W = projection[3][2] * view Z, device depth is a + b / clip W.
+bool ContactDepthProjection( const VMatrix &projection, float range, float minimum, float maximum, float *out )
+{
+	if ( projection[3][3] != 0.f || projection[3][2] == 0.f || projection[2][0] != 0.f || projection[2][1] != 0.f ||
+	     projection[2][3] == 0.f )
+		return false;
+	out[0] = range * projection[2][2] / projection[3][2];
+	out[1] = range * projection[2][3];
+	out[2] = minimum;
+	out[3] = maximum;
+	return true;
+}
+struct alignas( 16 ) BendShadowConstantsDX12
+{
+	float lightCoordinate[4];
+	int waveOffset[2];
+	int viewportOrigin[2];
+	float visual[4];
+	float depth[4];
+	int dimensions[4];
+};
+static_assert( sizeof( BendShadowConstantsDX12 ) == 80, "Bend screen-shadow constants layout" );
 } // namespace
 
 //-----------------------------------------------------------------------------
@@ -42,6 +67,7 @@ struct CShaderAPIDX12::ScreenSpacePacketDX12 final : IRefCounted
 	CShaderAPIDX12 *owner = nullptr;
 	std::atomic<int> references{ 1 };
 	int operation = 0;
+	bool flag = false;
 	DX12ScreenSpaceViewDesc view{};
 	DX12VolumetricSettings settings{};
 	int AddRef() override { return ++references; }
@@ -71,6 +97,7 @@ CShaderAPIDX12::ScreenSpacePacketDX12 *CShaderAPIDX12::ScreenSpacePacket( int nO
 	}
 	packet->owner = this;
 	packet->operation = nOperation;
+	packet->flag = false;
 	packet->view = {};
 	packet->settings = {};
 	return packet;
@@ -122,7 +149,7 @@ void CShaderAPIDX12::ExecuteScreenSpacePacket( ScreenSpacePacketDX12 *pPacket )
 	switch ( pPacket->operation )
 	{
 	case ScreenSpaceBeginView: ReplayScreenSpaceBeginView( pPacket->view ); break;
-	case ScreenSpaceBeginContactDepth: ReplayBeginContactDepth(); break;
+	case ScreenSpaceBeginContactDepth: ReplayBeginContactDepth( pPacket->flag ); break;
 	case ScreenSpaceEndContactDepth: ReplayEndContactDepth(); break;
 	case ScreenSpaceDispatchSSR: ReplayDispatchSSR(); break;
 	case ScreenSpaceEndView: ReplayScreenSpaceEndView(); break;
@@ -132,6 +159,8 @@ void CShaderAPIDX12::ExecuteScreenSpacePacket( ScreenSpacePacketDX12 *pPacket )
 	case ScreenSpaceEndDepthPrepass: ReplayDepthPrepass( false ); break;
 	case ScreenSpaceBeginSkybox: ReplaySkybox( true ); break;
 	case ScreenSpaceEndSkybox: ReplaySkybox( false ); break;
+	case ScreenSpaceBeginViewModelContacts: ReplayBeginViewModelContacts( pPacket->flag ); break;
+	case ScreenSpaceEndViewModelContacts: ReplayEndViewModelContacts(); break;
 	default: break;
 	}
 }
@@ -146,9 +175,23 @@ void CShaderAPIDX12::BeginView( const DX12ScreenSpaceViewDesc &view )
 	EnqueueScreenSpacePacket( packet );
 }
 
-void CShaderAPIDX12::BeginContactDepth()
+void CShaderAPIDX12::BeginContactDepth( bool hasViewModelDepth )
 {
-	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceBeginContactDepth ) );
+	ScreenSpacePacketDX12 *packet = ScreenSpacePacket( ScreenSpaceBeginContactDepth );
+	packet->flag = hasViewModelDepth;
+	EnqueueScreenSpacePacket( packet );
+}
+
+void CShaderAPIDX12::BeginViewModelContacts( bool reuseMainDepth )
+{
+	ScreenSpacePacketDX12 *packet = ScreenSpacePacket( ScreenSpaceBeginViewModelContacts );
+	packet->flag = reuseMainDepth;
+	EnqueueScreenSpacePacket( packet );
+}
+
+void CShaderAPIDX12::EndViewModelContacts()
+{
+	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceEndViewModelContacts ) );
 }
 
 void CShaderAPIDX12::EndContactDepth()
@@ -261,9 +304,14 @@ void CShaderAPIDX12::ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &
 	state.ssr = view.ssr;
 	state.active = state.contactReplay = state.contactsEnabled = state.ssrCapture = state.forwardSSR = false;
 	m_ContactDepth.replayDraws = false;
+	m_ContactDepth.prepared = false;
+	state.viewFrame = state.contactFrame = ~0ull;
+	state.viewModelContacts = state.contactHasViewModelDepth = false;
+	state.forwardConstantsFence[1] = 0;
 	++m_ContactDepth.constantsVersion;
 	DX12ScreenSpaceViewConstants &constants = state.constants;
 	constants.control[0] = 0;
+	constants.contactControl[0] = 0;
 	const float flViewportWidth = constants.viewport[2], flViewportHeight = constants.viewport[3];
 	if ( m_pDevice && m_pDevice->CommandList() && m_pDevice->SceneColor() && m_pDevice->SceneDepth() &&
 	     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER &&
@@ -296,6 +344,8 @@ void CShaderAPIDX12::ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &
 			constants.depth[2] = kContactFirstDistance;
 			constants.depth[3] = kContactEdgeFade;
 			state.active = true;
+			state.viewFrame = m_nFrameCounter;
+			constants.contactControl[1] = constants.control[1];
 			state.ssrCapture = constants.control[3] != 0;
 		}
 	}
@@ -388,12 +438,101 @@ void CShaderAPIDX12::TransitionContactDepth( D3D12_RESOURCE_STATES desiredState 
 	contact.state = desiredState;
 }
 
+bool CShaderAPIDX12::EnsureSunContactTexture( int nWidth, int nHeight )
+{
+	TextureRecord *record = m_SunContact.handle ? FindTexture( m_SunContact.handle ) : nullptr;
+	if ( !record )
+	{
+		m_SunContact.handle = CreateTexture( nWidth, nHeight, 1, IMAGE_FORMAT_R32F, 1, 1,
+			TEXTURE_CREATE_RENDERTARGET, "DX12_SunContactShadow", "RenderTargets" );
+		record = m_SunContact.handle ? FindTexture( m_SunContact.handle ) : nullptr;
+	}
+	return record && DiscardResizeComputeTarget( *record, nWidth, nHeight );
+}
+
+bool CShaderAPIDX12::RunSunContactShadowPass()
+{
+	if ( !m_pDevice || !m_pDevice->CommandList() || !m_ContactDepth.resource ||
+		!( m_ScreenSpace.active || m_ScreenSpace.viewModelContacts ) )
+		return false;
+	const int width = static_cast<int>( m_ScreenSpace.constants.viewport[2] );
+	const int height = static_cast<int>( m_ScreenSpace.constants.viewport[3] );
+	float sunTravel[4];
+	if ( width <= 0 || height <= 0 || !m_pDevice->Lighting().GetSunContactDirection( sunTravel ) ||
+		!EnsureSunContactTexture( width, height ) )
+		return false;
+	VMatrix worldToClip;
+	MatrixMultiply( m_Matrices[MATERIAL_PROJECTION], m_Matrices[MATERIAL_VIEW], worldToClip );
+	const bool jitter = UpscalerJitterActive( false );
+	const float jitterX = ( 1.f + 2.f * ( jitter ? m_UpscalerJitter[0] : 0.f ) ) / width;
+	const float jitterY = ( 1.f + 2.f * ( jitter ? m_UpscalerJitter[1] : 0.f ) ) / height;
+	for ( int column = 0; column < 4; ++column )
+	{
+		worldToClip[0][column] += jitterX * worldToClip[3][column];
+		worldToClip[1][column] -= jitterY * worldToClip[3][column];
+	}
+	// cSunTravel points from the sun; Bend marches toward the light.
+	Vector4D lightDirection( -sunTravel[0], -sunTravel[1], -sunTravel[2], 0.f ), lightProjection;
+	Vector4DMultiply( worldToClip, lightDirection, lightProjection );
+	// Use the same limiting homogeneous coordinate for XY and Z at the horizon.
+	const float minimumW = 0.000002f * 64.f;
+	if ( fabsf( lightProjection.w ) < minimumW )
+		lightProjection.w = lightProjection.w < 0.f ? -minimumW : minimumW;
+	const int viewport[2] = { width, height };
+	const int minBounds[2] = { 0, 0 };
+	const int maxBounds[2] = { width, height };
+	const Bend::DispatchList list = Bend::BuildDispatchList( lightProjection.Base(), viewport, minBounds, maxBounds, false, 64 );
+	if ( list.DispatchCount <= 0 )
+		return false;
+	BendShadowConstantsDX12 constants{};
+	memcpy( constants.lightCoordinate, list.LightCoordinate_Shader, sizeof( constants.lightCoordinate ) );
+	constants.viewportOrigin[0] = static_cast<int>( m_ScreenSpace.constants.viewport[0] );
+	constants.viewportOrigin[1] = static_cast<int>( m_ScreenSpace.constants.viewport[1] );
+	memcpy( constants.visual, m_ScreenSpace.constants.contactParams, 3 * sizeof( float ) );
+	constants.visual[3] = static_cast<float>( m_ScreenSpace.constants.contactControl[2] );
+	const float *depth = m_ScreenSpace.viewModelContacts ? m_ScreenSpace.viewModelContactDepth : m_ScreenSpace.constants.contactDepth;
+	constants.depth[0] = depth[2];
+	constants.depth[1] = depth[3];
+	constants.depth[2] = 1.0f;
+	constants.depth[3] = 0.0f;
+	constants.dimensions[0] = width;
+	constants.dimensions[1] = height;
+	constants.dimensions[2] = static_cast<int>( m_ContactDepth.samples );
+
+	ShaderAPIDX12ComputeDispatch_t dispatch{};
+	dispatch.m_pShaderName = "bend_screen_space_shadow_cs51";
+	dispatch.m_nDynamicIndex = m_ContactDepth.samples > 1 ? 1 : 0;
+	dispatch.m_pConstants = &constants;
+	dispatch.m_nConstantBytes = sizeof( constants );
+	dispatch.m_Srv[0].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_SCREEN_CONTACT_DEPTH;
+	dispatch.m_Uav[0].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE;
+	dispatch.m_Uav[0].m_hTexture = m_SunContact.handle;
+	dispatch.m_Uav[0].m_nMipCount = 1;
+	for ( int i = 0; i < list.DispatchCount; ++i )
+	{
+		memcpy( constants.waveOffset, list.Dispatch[i].WaveOffset_Shader, sizeof( constants.waveOffset ) );
+		dispatch.m_nGroupsX = list.Dispatch[i].WaveCount[0];
+		dispatch.m_nGroupsY = list.Dispatch[i].WaveCount[1];
+		dispatch.m_nGroupsZ = list.Dispatch[i].WaveCount[2];
+		if ( !Dispatch( dispatch ) )
+			return false;
+	}
+	return true;
+}
+
+void CShaderAPIDX12::ReleaseSunContactResources()
+{
+	if ( m_SunContact.handle )
+		DeleteTexture( m_SunContact.handle );
+	m_SunContact = {};
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Enters the private replay. The bracket is entered even when ineligible so that every replayed draw is
 //			dropped rather than duplicated into the scene. Eligible: the current scene depth/stencil (earlier water
 //			subviews included) is copied into the private target, which then receives the replayed geometry.
 //-----------------------------------------------------------------------------
-void CShaderAPIDX12::ReplayBeginContactDepth()
+void CShaderAPIDX12::ReplayBeginContactDepth( bool hasViewModelDepth )
 {
 	// Buffered draws belong to the pass before the marker.
 	FlushBufferedPrimitives();
@@ -402,7 +541,12 @@ void CShaderAPIDX12::ReplayBeginContactDepth()
 	state.contactReplay = true;
 	state.contactsEnabled = false;
 	contact.replayDraws = false;
-	if ( !state.active || !m_pDevice || !m_pDevice->CommandList() )
+	contact.prepared = false;
+	state.contactHasViewModelDepth = hasViewModelDepth && m_bDepthPrepassResolved;
+	state.contactFrame = ~0ull;
+	if ( !state.active || !m_pDevice || !m_pDevice->CommandList() ||
+	     !ContactDepthProjection( m_Matrices[MATERIAL_PROJECTION], 1.f, state.contactHasViewModelDepth ? kViewModelContactDepthMax : 0.f,
+	         kNativeDepthClear, state.constants.contactDepth ) )
 		return;
 	m_pDevice->BeginGpuPIXEvent( "Contact depth" );
 	contact.eventOpen = true;
@@ -414,13 +558,57 @@ void CShaderAPIDX12::ReplayBeginContactDepth()
 	TransitionContactDepth( D3D12_RESOURCE_STATE_COPY_DEST );
 	pList->CopyResource( contact.resource.Get(), m_pDevice->SceneDepth() );
 	m_pDevice->TransitionSceneDepth( sceneDepthState );
-	TransitionContactDepth( D3D12_RESOURCE_STATE_DEPTH_WRITE );
-	contact.replayDraws = true;
+	// The prepass already used the original material coverage and selected geometry. Do not shade it a third time.
+	contact.replayDraws = !m_bDepthPrepassResolved;
+	contact.prepared = true;
+	if ( contact.replayDraws )
+		TransitionContactDepth( D3D12_RESOURCE_STATE_DEPTH_WRITE );
+}
+
+void CShaderAPIDX12::ReplayBeginViewModelContacts( bool reuseMainDepth )
+{
+	FlushBufferedPrimitives();
+	ScreenSpaceViewStateDX12 &state = m_ScreenSpace;
+	ContactDepthDX12 &contact = m_ContactDepth;
+	state.contactReplay = true;
+	state.viewModelContacts = state.contactsEnabled = false;
+	contact.replayDraws = contact.prepared = false;
+	if ( state.active || !m_pDevice || !m_pDevice->CommandList() || state.viewFrame != m_nFrameCounter ||
+	     m_RenderTargets[0] != SHADER_RENDERTARGET_BACKBUFFER || m_hDepthTarget != SHADER_RENDERTARGET_DEPTHBUFFER ||
+	     m_nViewportCount == 0 || m_Viewports[0].m_flMinZ != 0.f || m_Viewports[0].m_flMaxZ != kViewModelContactDepthMax ||
+	     m_Viewports[0].m_nWidth <= 0 || m_Viewports[0].m_nHeight <= 0 )
+		return;
+	const VMatrix &projection = m_Matrices[MATERIAL_PROJECTION];
+	if ( !ContactDepthProjection( projection, kViewModelContactDepthMax, 0.f, kViewModelContactDepthMax, state.viewModelContactDepth ) )
+		return;
+	if ( reuseMainDepth )
+	{
+		if ( state.contactFrame != m_nFrameCounter || !state.contactHasViewModelDepth || !contact.resource )
+			return;
+	}
+	else
+	{
+		if ( !EnsureContactDepthResources() )
+			return;
+		m_pDevice->BeginGpuPIXEvent( "Viewmodel contact depth" );
+		contact.eventOpen = true;
+		TransitionContactDepth( D3D12_RESOURCE_STATE_DEPTH_WRITE );
+		m_pDevice->CommandList()->ClearDepthStencilView( contact.dsv,
+		    D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, kNativeDepthClear, 0, 0, nullptr );
+		contact.replayDraws = true;
+	}
+	state.viewModelContacts = contact.prepared = true;
+}
+
+void CShaderAPIDX12::ReplayEndViewModelContacts()
+{
+	FlushBufferedPrimitives();
+	m_ScreenSpace.viewModelContacts = m_ScreenSpace.contactsEnabled = false;
+	m_ScreenSpace.forwardConstantsFence[1] = 0;
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Leaves the private replay: flushes the replayed geometry, makes the private depth shader-readable and
-//			enables contacts (control.x = 1) for the forward draws of this bracket. A failed replay leaves them off.
+// Purpose: Publish private depth for the world or viewmodel receivers, even after a copy-only pass.
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReplayEndContactDepth()
 {
@@ -428,20 +616,29 @@ void CShaderAPIDX12::ReplayEndContactDepth()
 	FlushBufferedPrimitives();
 	ScreenSpaceViewStateDX12 &state = m_ScreenSpace;
 	ContactDepthDX12 &contact = m_ContactDepth;
-	const bool bReplayed = state.contactReplay && contact.replayDraws && m_pDevice && m_pDevice->CommandList();
+	const bool bPrepared = state.contactReplay && contact.prepared && m_pDevice && m_pDevice->CommandList();
 	state.contactReplay = false;
-	contact.replayDraws = false;
+	contact.replayDraws = contact.prepared = false;
 	if ( contact.eventOpen )
 	{
 		m_pDevice->EndGpuPIXEvent();
 		contact.eventOpen = false;
 	}
-	if ( !bReplayed )
+	if ( !bPrepared )
 		return;
-	TransitionContactDepth( D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-	state.constants.control[0] = 1;
-	++contact.constantsVersion;
-	state.contactsEnabled = true;
+	TransitionContactDepth( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+	const bool sunReady = RunSunContactShadowPass();
+	contact.tableFence = 0;
+	state.forwardTableFence = 0;
+	state.contactsEnabled = sunReady;
+	state.contactFrame = m_nFrameCounter;
+	if ( state.viewModelContacts )
+		state.forwardConstantsFence[1] = 0;
+	else
+	{
+		state.constants.contactControl[0] = sunReady ? 1u : 0u;
+		++contact.constantsVersion;
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -459,6 +656,7 @@ void CShaderAPIDX12::ReplayScreenSpaceEndView()
 		// Unbalanced BeginContactDepth: close the replay without enabling contacts.
 		state.contactReplay = false;
 		contact.replayDraws = false;
+		contact.prepared = false;
 		if ( contact.eventOpen )
 		{
 			m_pDevice->EndGpuPIXEvent();
@@ -467,15 +665,15 @@ void CShaderAPIDX12::ReplayScreenSpaceEndView()
 	}
 	VolumetricBracketEnd( state.active ? &state.constants : nullptr );
 	state.active = state.contactsEnabled = state.ssrCapture = false;
-	state.constants.control[0] = 0;
+	state.constants.contactControl[0] = 0;
 	++contact.constantsVersion;
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: Space-6 inputs of an ordinary scene draw inside an active bracket that reads contacts or captures SSR:
 //			b0 is the bracket's completed view block (control.x contacts, control.w SSR payload). While contacts are
-//			enabled t0 (single-sample) or t1 (MSAA) is the private depth and the other slots are typed nulls; otherwise
-//			the table stays neutral. Table and constants are built once per recording fence and reused by every draw.
+//			enabled t0 is the viewport-local sun visibility mask; other slots remain typed nulls.
+//			Table and constants are built once per recording fence and reused by every draw.
 //-----------------------------------------------------------------------------
 bool CShaderAPIDX12::PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInputDX12 &input )
 {
@@ -483,7 +681,7 @@ bool CShaderAPIDX12::PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInput
 	CPipelineCacheDX12 &pipeline = m_Pipeline;
 	const uint64_t fence = m_pDevice->NextFenceValue();
 	const bool bContacts = m_ScreenSpace.contactsEnabled;
-	if ( bContacts && ( !contact.resource || contact.state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ) )
+	if ( bContacts && !m_SunContact.handle )
 		return false;
 	// Every draw reserves before reusing the cached table: the lighting, highres, projected-light, probe and ordinary
 	// tables allocated after it reserve again, and a rollover there would leave this table in a stale heap generation.
@@ -498,15 +696,15 @@ bool CShaderAPIDX12::PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInput
 			return false;
 		ID3D12Device *pNative = m_pDevice->NativeDevice();
 		const UINT stride = pNative->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-		const UINT depthSlot = contact.samples > 1 ? 1u : 0u;
+		D3D12_SAMPLER_DESC sunSampler{};
 		for ( UINT slot = 0; slot < DX12_SCREENSPACE_TABLE_COUNT; ++slot )
 		{
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv = CPipelineCacheDX12::ScreenSpaceNullSrvDesc( slot );
 			ID3D12Resource *pResource = nullptr;
-			if ( slot == depthSlot )
+			if ( slot == 0 )
 			{
-				srv.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-				pResource = contact.resource.Get();
+				if ( !PrepareSampledTexture( m_SunContact.handle, false, &pResource, srv, sunSampler, nullptr, false, 0, 1 ) )
+					return false;
 			}
 			D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
 			cpu.ptr += SIZE_T( slot ) * stride;
@@ -546,7 +744,9 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 	const bool ssr = state.forwardSSR && state.forwardSSRFrame == m_nFrameCounter && m_SSR.scene.handle && m_SSR.scene.mipLevels >= 2 &&
 		m_SSR.depth[m_SSR.current ^ 1].handle;
 	const bool aoAvailable = m_SSR.aoTerm && m_SSR.aoFrame == m_nFrameCounter && m_SSR.aoViewModel && m_SSR.aoWidth > 0 && m_SSR.aoHeight > 0;
-	if ( !( viewModel ? ssr || aoAvailable : ssr ) )
+	const bool contacts = viewModel && state.viewModelContacts && state.contactsEnabled && m_SunContact.handle;
+	const bool debugContacts = viewModel && state.viewFrame == m_nFrameCounter && state.constants.contactControl[3] != 0;
+	if ( !( ssr || ( viewModel && aoAvailable ) || contacts || debugContacts ) )
 		return;
 	auto fail = [&]()
 	{
@@ -559,7 +759,7 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 	if ( !pipeline.ReserveResourceDescriptors( 2 * DX12_SCREENSPACE_TABLE_COUNT + DX12_LIGHTING_RESOURCE_TABLE_COUNT + 1 + 8 + DX12_PBR_TABLE_COUNT + DX12_PROBE_TABLE_COUNT + 32 + 16, fence ) )
 		return fail();
 	if ( state.forwardTableFence != fence || state.forwardTable.generation != pipeline.ResourceHeapGeneration() ||
-	     state.forwardTableSSR != ssr || state.forwardTableAO != aoAvailable )
+	     state.forwardTableSSR != ssr || state.forwardTableAO != aoAvailable || state.forwardTableContacts != contacts )
 	{
 		ID3D12Resource *pScene = nullptr, *pDepth = nullptr, *pAO = nullptr;
 		D3D12_SHADER_RESOURCE_VIEW_DESC sceneSrv{}, depthSrv{}, aoSrv{};
@@ -579,7 +779,12 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 		{
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv = CPipelineCacheDX12::ScreenSpaceNullSrvDesc( slot );
 			ID3D12Resource *pResource = nullptr;
-			if ( slot == DX12_SCREENSPACE_T_SSR_SCENE && pScene )
+			if ( contacts && slot == 0 )
+			{
+				if ( !PrepareSampledTexture( m_SunContact.handle, false, &pResource, srv, unusedSampler, nullptr, false, 0, 1 ) )
+					return fail();
+			}
+			else if ( slot == DX12_SCREENSPACE_T_SSR_SCENE && pScene )
 			{
 				srv.Format = sceneSrv.Format;
 				srv.Texture2D.MostDetailedMip = 1;
@@ -603,6 +808,7 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 		state.forwardTableFence = fence;
 		state.forwardTableSSR = ssr;
 		state.forwardTableAO = aoAvailable;
+		state.forwardTableContacts = contacts;
 		state.forwardConstantsFence[0] = state.forwardConstantsFence[1] = 0;
 	}
 	const int kind = viewModel ? 1 : 0;
@@ -624,6 +830,10 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 			constants.control[1] = static_cast<uint32>( m_SSR.aoWidth ) | ( static_cast<uint32>( m_SSR.aoHeight ) << 16 );
 			constants.control[2] |= DX12_SCREENSPACE_FORWARD_AO | ( m_SSR.aoPacked ? DX12_SCREENSPACE_FORWARD_AO_PACKED : 0u );
 		}
+		// The SSR camera snapshot comes from the opaque bracket. Publish a contact scope only
+		// when *this* draw's table has a mask at t0; a null SRV would read as fully shadowed.
+		constants.contactControl[0] = contacts ? 2u : 0u;
+		constants.contactControl[3] = debugContacts ? 1u : 0u;
 		if ( !pipeline.UploadTransient( &constants, sizeof( constants ), 256, 256, fence, state.forwardConstantsAddress[kind] ) )
 			return fail();
 		state.forwardConstantsFence[kind] = fence;
@@ -639,6 +849,7 @@ void CShaderAPIDX12::ReleaseScreenSpaceResources()
 {
 	if ( m_ContactDepth.eventOpen && m_pDevice )
 		m_pDevice->EndGpuPIXEvent();
+	ReleaseSunContactResources();
 	m_ContactDepth = ContactDepthDX12{};
 	m_ScreenSpace = ScreenSpaceViewStateDX12{};
 	m_bDepthPrepass = false;

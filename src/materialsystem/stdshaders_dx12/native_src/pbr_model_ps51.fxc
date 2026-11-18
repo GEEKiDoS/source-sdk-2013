@@ -492,6 +492,12 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if ENHANCED && LIGHTPASS == 0
 	color = ShadowMap_Debug( receiver, direct, color );
 	if ( ShadowMap_DebugReplacesColor() ) reflectionValid = 0.0;
+#elif LIGHTPASS == 0
+	if ( Contact_DebugEnabled() )
+	{
+		color = Contact_DebugColor( color.a );
+		reflectionValid = 0.0;
+	}
 #endif
 	return PBR_Output( color, s, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
 #endif

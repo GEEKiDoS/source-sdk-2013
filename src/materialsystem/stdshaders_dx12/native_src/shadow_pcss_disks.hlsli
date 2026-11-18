@@ -8,9 +8,6 @@
 #ifndef SHADOWQUALITY
 #define SHADOWQUALITY 2
 #endif
-// Low and Medium skip the screen-space contact ray toward the sun (it costs more than their PCSS kernel; local-light
-// and projected contact rays are unaffected). High and Extra, and every shader without the combo, keep it.
-#define DX12_SUN_CONTACT_SHADOWS ( SHADOWQUALITY >= 2 )
 #if SHADOWQUALITY == 0 // Low: 8 blocker / 8 filter taps
 #define DX12_SUN_PCSS_BLOCKER_TAPS 8
 #define DX12_SUN_PCSS_FILTER_TAPS 8

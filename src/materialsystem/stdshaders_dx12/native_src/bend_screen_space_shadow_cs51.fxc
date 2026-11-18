@@ -1,0 +1,69 @@
+// Bend Studio wavefront screen-space shadows for the directional sun.
+// DYNAMIC: "MSAA" "0..1"
+// Copyright 2023 Sony Interactive Entertainment; see bend_sss_gpu.h for Apache-2.0 notice.
+
+#define WAVE_SIZE 64
+#define SAMPLE_COUNT 60
+#define HARD_SHADOW_SAMPLES 4
+#define FADE_OUT_SAMPLES 8
+
+// Byte-identical to BendShadowConstantsDX12 (80 bytes).
+cbuffer BendScreenSpaceShadow : register( b0, space1 )
+{
+	float4 gLightCoordinate;
+	int2 gWaveOffset;
+	int2 gViewportOrigin;
+	float4 gVisual;       // thickness fraction, bilinear threshold, contrast, max sample count
+	float4 gDepth;        // min valid raw depth, exclusive max/far raw depth, normalized far, normalized near
+	int4 gDimensions;    // viewport width, viewport height, depth samples, unused
+};
+
+#if MSAA
+Texture2DMS<float> gDepthTexture : register( t0, space0 );
+#else
+Texture2D<float> gDepthTexture : register( t0, space0 );
+#endif
+RWTexture2D<float> gOutputTexture : register( u0, space0 );
+
+#include "bend_sss_gpu.h"
+
+[numthreads( WAVE_SIZE, 1, 1 )]
+void main( uint3 groupID : SV_GroupID, uint groupThreadID : SV_GroupIndex )
+{
+	DispatchParameters p;
+	p.SurfaceThickness = gVisual.x;
+	p.BilinearThreshold = gVisual.y;
+	p.ShadowContrast = gVisual.z;
+	p.MaxSampleCount = clamp( int( gVisual.w ), HARD_SHADOW_SAMPLES + FADE_OUT_SAMPLES, SAMPLE_COUNT );
+	p.IgnoreEdgePixels = false;
+	p.UsePrecisionOffset = false;
+	p.BilinearSamplingOffsetMode = false;
+	p.DebugOutputEdgeMask = false;
+	p.DebugOutputThreadIndex = false;
+	p.DebugOutputWaveIndex = false;
+	p.RawDepthBounds = gDepth.xy;
+	p.DepthBounds = float2( gDepth.x / gDepth.y, gDepth.z );
+	p.UseEarlyOut = true;
+	p.LightCoordinate = gLightCoordinate;
+	p.WaveOffset = gWaveOffset;
+	p.FarDepthValue = gDepth.z;
+	p.NearDepthValue = gDepth.w;
+	p.ViewportOrigin = gViewportOrigin;
+	p.ViewportSize = gDimensions.xy;
+	uint depthWidth, depthHeight;
+#if MSAA
+	uint depthSamples;
+	gDepthTexture.GetDimensions( depthWidth, depthHeight, depthSamples );
+	p.DepthSamples = min( uint( max( gDimensions.z, 0 ) ), depthSamples );
+#else
+	gDepthTexture.GetDimensions( depthWidth, depthHeight );
+	p.DepthSamples = 1;
+#endif
+	p.DepthTextureSize = int2( depthWidth, depthHeight );
+	uint outputWidth, outputHeight;
+	gOutputTexture.GetDimensions( outputWidth, outputHeight );
+	p.OutputTextureSize = int2( outputWidth, outputHeight );
+	p.DepthTexture = gDepthTexture;
+	p.OutputTexture = gOutputTexture;
+	WriteScreenSpaceShadow( p, int3( groupID ), int( groupThreadID ) );
+}

@@ -36,8 +36,6 @@ float3 PBR_ProjectedSpots( PBRSurface s, float3 P, uint receiverFlag, inout PBRS
 		float distance, rawVisibility;
 		if ( !DX12_ProjectedSample( light, P, L, distance, radiance, rawVisibility ) )
 			continue;
-		[branch] if ( light.slotsFlags.y >= 0 && rawVisibility > 0.0 )
-			rawVisibility *= DX12_ContactVisibility( P, s.N, L, distance - 0.25 );
 		float shadow = lerp( rawVisibility, 1.0, light.attnShadow.z );
 		float3 specular;
 		float3 diffuse = PBR_DiffuseBurley( s, L );
@@ -366,11 +364,11 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			sunResult = float3( 1.0, 0.0, 0.0 );
 			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )
 			{
-				// Runtime visibility only: the contact ray needs a valid runtime chart and precedes the baked cap.
+				// The precomputed sun contact mask affects runtime direct visibility before the baked cap.
 				bool charted;
 				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted, csmWeight );
-				[branch] if ( DX12_SUN_CONTACT_SHADOWS && charted && sunResult.x > 0.0 )
-					sunResult.x *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, -cSunTravel.xyz, cScreenEyeLength.w );
+				[branch] if ( charted && sunResult.x > 0.0 )
+					sunResult.x *= DX12_SunContactVisibility( r.screenPos );
 			}
 		}
 		d.sunVisibility = min( saturate( sunResult.x ), ShadowMap_SunCap( r, csmWeight ) );
@@ -513,10 +511,6 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					light.fadeEnd = lightRange.fade.y;
 					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
-					[branch] if ( chart.valid && realtimeVisibility > 0.0 )
-					{
-						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, lightRange.offset, lightRange.distance - 0.25 );
-					}
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}
 				specularVisibility = lerp( bakedVisibility, realtimeVisibility, realtimeWeight );

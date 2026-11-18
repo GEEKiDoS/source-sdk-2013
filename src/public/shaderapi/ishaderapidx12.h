@@ -77,13 +77,14 @@ enum ShaderAPIDX12ComputeResourceKind_t
 	// SSR payload G-buffer targets (scene-sized/multisampled like the PBR targets; R16G16B16A16_FLOAT, or
 	// R11G11B10_FLOAT at r_color_precision 1): environment contribution E (rgb), sampled-scene reflection response
 	// K (rgb; zero for a non-writer, alpha 1 for a fresh writer when the format has one) and direct GGX specular S (rgb).
-	// Null before the first SSR-capturing G-buffer pass.
 	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT,
 	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE,
 	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR,
 	// The direct-specular light distance D in .a: E's alpha at r_color_precision 0, else an R16_FLOAT target read
 	// through a red-to-alpha view.
 	SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_DISTANCE,
+	// Private contact replay depth; Texture2D or Texture2DMS matching the scene.
+	SHADERAPIDX12_COMPUTE_RESOURCE_SCREEN_CONTACT_DEPTH,
 };
 
 struct ShaderAPIDX12ComputeResource_t

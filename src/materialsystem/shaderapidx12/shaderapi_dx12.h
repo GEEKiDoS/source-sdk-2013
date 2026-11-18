@@ -823,7 +823,7 @@ private:
 	// IShaderAPIDX12ScreenSpace (screenspace_dx12.cpp): ordered markers; each queues an immutable pooled packet that
 	// replays the matching Replay* method below on the recording owner.
 	void BeginView( const DX12ScreenSpaceViewDesc &view ) override;
-	void BeginContactDepth() override;
+	void BeginContactDepth( bool hasViewModelDepth ) override;
 	void EndContactDepth() override;
 	void DispatchSSR() override;
 	void EndView() override;
@@ -833,10 +833,14 @@ private:
 	void EndDepthPrepass() override;
 	void BeginSkybox() override;
 	void EndSkybox() override;
+	void BeginViewModelContacts( bool reuseMainDepth ) override;
+	void EndViewModelContacts() override;
 
 	// ---- Screen-space view + contact depth (screenspace_dx12.cpp), recording owner ----
 	void ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &view );
-	void ReplayBeginContactDepth();
+	void ReplayBeginContactDepth( bool hasViewModelDepth );
+	void ReplayBeginViewModelContacts( bool reuseMainDepth );
+	void ReplayEndViewModelContacts();
 	void ReplayEndContactDepth();
 	void ReplayScreenSpaceEndView();
 	void ReleaseScreenSpaceResources();
@@ -854,8 +858,12 @@ private:
 		DX12SSRSettings ssr{};
 		bool active = false;          // between a valid BeginView replay and its EndView
 		bool contactReplay = false;   // between BeginContactDepth / EndContactDepth: draws write private depth only (or are dropped)
-		bool contactsEnabled = false; // private depth is shader-readable; forward draws bind it with control.x = 1
+		bool contactsEnabled = false; // the current receiver scope has a completed sun visibility mask
 		bool ssrCapture = false;      // control.w: fresh PBR writers attach G-buffer targets 3/4/5 in this bracket
+		uint64_t viewFrame = ~0ull, contactFrame = ~0ull;
+		bool contactHasViewModelDepth = false;
+		bool viewModelContacts = false;
+		float viewModelContactDepth[4]{};
 		// Forward screen-space inputs (native_src/pbr_forward_screenspace.hlsli) of the draws that follow the bracket's SSR
 		// and GTAO: translucents and the first-person viewmodels. forwardSSRFrame is the frame whose bracket SSR
 		// succeeded; until the next BeginView of that frame such draws bind the SSR scene copy (t5, from mip 1: mip 0 holds
@@ -872,6 +880,7 @@ private:
 		uint64_t forwardTableFence = 0, forwardConstantsFence[2] = {};
 		D3D12_GPU_VIRTUAL_ADDRESS forwardConstantsAddress[2] = {};
 		bool forwardTableSSR = false, forwardTableAO = false;
+		bool forwardTableContacts = false;
 	} m_ScreenSpace;
 	// Binds them for one translucent (viewModel false) or viewmodel draw; on any failure the draw keeps the neutral
 	// bindings (its cubemap reflection, no AO) and the frame's forward inputs are dropped.
@@ -897,15 +906,23 @@ private:
 		D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 		UINT width = 0, height = 0, samples = 0, quality = 0;
 		bool replayDraws = false; // replay draws target the private depth; false drops them until EndContactDepth
+		bool prepared = false; // even a copy-only pass needs its EndContactDepth to publish the depth
 		bool warned = false;
 		bool eventOpen = false;   // "Contact depth" GPU event spans BeginContactDepth..EndContactDepth of an active bracket
-		// Forward-draw bindings of the current bracket: the t0/t1 table and the 208-byte view block are built once per
+		// Forward-draw bindings of the current bracket: the sun mask table and view block are built once per
 		// recording fence (or heap generation / bracket version) and reused by every draw.
 		DescriptorRangeDX12 table{};
 		uint64_t tableFence = 0;
 		D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
 		uint64_t constantsFence = 0, constantsVersion = 0, uploadedVersion = 0;
 	} m_ContactDepth;
+	struct SunContactShadowDX12
+	{
+		ShaderAPITextureHandle_t handle = 0;
+	} m_SunContact;
+	bool EnsureSunContactTexture( int nWidth, int nHeight );
+	bool RunSunContactShadowPass();
+	void ReleaseSunContactResources();
 	bool EnsureContactDepthResources();
 	void TransitionContactDepth( D3D12_RESOURCE_STATES desiredState );
 	bool PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInputDX12 &input );

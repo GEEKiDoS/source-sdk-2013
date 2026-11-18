@@ -1242,12 +1242,12 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 			sunResult = float3( 1.0, 0.0, 0.0 );
 			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )
 			{
-				// Runtime visibility only: the contact ray needs a valid runtime chart and precedes the baked cap.
-				// Detail point receivers have no surface to trace from (their own cut-out quad is the first blocker).
+				// The precomputed sun contact mask affects runtime direct visibility before the baked cap.
+				// Detail point receivers have no per-pixel surface and do not consume the mask.
 				bool charted;
 				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted, csmWeight );
-				[branch] if ( DX12_SUN_CONTACT_SHADOWS && charted && sunResult.x > 0.0 && s.mode != 4 )
-					sunResult.x *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, -cSunTravel.xyz, cScreenEyeLength.w );
+				[branch] if ( charted && sunResult.x > 0.0 && s.mode != 4 )
+					sunResult.x *= DX12_SunContactVisibility( r.screenPos );
 			}
 		}
 		d.sunVisibility = min( saturate( sunResult.x ), ShadowMap_SunCap( r, csmWeight ) );
@@ -1357,16 +1357,11 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
 					bakedVisibility = ShadowMap_BakedLocalVisibility( r, light.bakedLightIndex, bakedLookup );
 				float realtimeVisibility = bakedVisibility;
-				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
-				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).
+				// Local lights use only their shadow-map visibility; Bend contact shadows are sun-only.
 				[branch] if ( light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 && bakedVisibility > 0.0 )
 				{
 					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
-					[branch] if ( chart.valid && realtimeVisibility > 0.0 && s.mode != 4 )
-					{
-						realtimeVisibility *= DX12_ContactVisibility( r.positionWS, r.planeNormalWS, lightRange.offset, lightRange.distance - 0.25 );
-					}
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}
 				if ( bakedDelta )
@@ -1417,7 +1412,7 @@ float3 ShadowMap_DetailDirect( float3 lightingOriginWS, float3 orientationNormal
 bool ShadowMap_DebugReplacesColor()
 {
 	uint mode = cShadowView0.w;
-	return mode == 1 || mode == 2 || mode == 3 || mode == 5 || mode == 6;
+	return Contact_DebugEnabled() || mode == 1 || mode == 2 || mode == 3 || mode == 5 || mode == 6;
 }
 float3 ShadowMap_DebugCascadeColor( uint cascade )
 {
@@ -1430,6 +1425,7 @@ float3 ShadowMap_DebugCascadeColor( uint cascade )
 }
 float4 ShadowMap_Debug( ShadowMapReceiver r, ShadowMapDirect d, float4 lit )
 {
+	if ( Contact_DebugEnabled() ) return Contact_DebugColor( lit.a );
 	uint mode = cShadowView0.w;
 	float3 color = lit.rgb;
 	bool hasSun = ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0;

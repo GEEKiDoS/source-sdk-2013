@@ -1670,6 +1670,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 		// Collation may contain hidden or model-less viewmodels. Match the draw
 		// predicate before preparing shadows for a receiver that will not exist.
 		bool hasReceiver = false;
+		bool hasOpaqueReceiver = false;
 		// Camera-forward extent of the drawn viewmodels: no viewmodel pixel lies beyond it.
 		float maxReceiverDepth = 0.0f;
 		// Opaque studio viewmodels (weapon, arms) cast sun shadows onto the viewmodel only.
@@ -1682,6 +1683,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			if ( !pRenderable->GetIClientUnknown()->GetClientRenderable()->ShouldDraw() )
 				return;
 			hasReceiver = true;
+			hasOpaqueReceiver |= opaque;
 			const model_t *model = pRenderable->GetModel();
 			if ( opaque && model && modelinfo->GetModelType( model ) == mod_studio )
 				selfCasters.AddToTail( pRenderable );
@@ -1717,10 +1719,35 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 				UpdateRefractIfNeededByList( translucentViewModelList );
 			}
 
+			// Contacts need the viewmodel projection and compressed depth, not the world bracket's depth.
+			// Refraction captures the scene first; the optional replay uses the exact colour-pass list.
+			IShaderAPIDX12ScreenSpace *pViewModelContacts = nullptr;
+			if ( bShouldDrawPlayerViewModel && hasOpaqueReceiver && bUseDepthHack && !bShouldDrawToolViewModels &&
+				CurrentViewID() == VIEW_MAIN && viewRender.m_eStereoEye == STEREO_EYE_MONO && !viewRender.m_bOrtho &&
+				!building_cubemaps.GetBool() && !g_pIntroData && pRenderContext->GetRenderTarget() == nullptr )
+			{
+				pViewModelContacts = ScreenSpaceDX12_ViewModelContacts();
+				if ( pViewModelContacts )
+				{
+					const bool reuseMainDepth = m_bViewModelDepthInScene;
+					pViewModelContacts->BeginViewModelContacts( reuseMainDepth );
+					if ( !reuseMainDepth )
+					{
+						DrawRenderablesInList( opaqueViewModelList );
+						// Game-owned alpha/modulation from the replay must not leak into its first colour draw.
+						render->SetColorModulation( one );
+						render->SetBlend( 1.0f );
+					}
+					pViewModelContacts->EndContactDepth();
+				}
+			}
+
 			DrawRenderablesInList( opaqueViewModelList );
 			if ( MotionVectorsDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() )
 				DrawViewModelMotionVectors( viewRender, opaqueViewModelList, bUseDepthHack );
 			DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
+			if ( pViewModelContacts )
+				pViewModelContacts->EndViewModelContacts();
 		}
 	}
 
@@ -1734,6 +1761,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 	// Restore the matrices
 	pRenderContext->MatrixMode( MATERIAL_PROJECTION );
 	pRenderContext->PopMatrix();
+	m_bViewModelDepthInScene = false;
 }
 
 
@@ -2072,7 +2100,6 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 #endif
 		);
 	m_pViewModelPrepassView = NULL;
-	m_bViewModelDepthInScene = false;
 	ScreenSpaceDX12_DrawVolumetrics();
 
 	// Disable fog for the rest of the stuff
@@ -2894,6 +2921,8 @@ const char *COM_GetModDirectory();
 // This renders the entire 3D view.
 void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int whatToDraw )
 {
+	// Special/intro/frozen views must never inherit a previous main view's depth-prepass result.
+	m_bViewModelDepthInScene = false;
 	m_UnderWaterOverlayMaterial.Shutdown();					// underwater view will set
 
 	m_CurrentView = viewRender;
@@ -7271,9 +7300,12 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	}
 	if ( pScreenSpace && bContacts )
 	{
-		pScreenSpace->BeginContactDepth();
-		DrawWorld( waterZAdjust );
-		DrawOpaqueRenderables( DEPTH_MODE_NORMAL, true );
+		pScreenSpace->BeginContactDepth( m_pMainView->ViewModelDepthInScene() );
+		if ( !pPrepassScope )
+		{
+			DrawWorld( waterZAdjust );
+			DrawOpaqueRenderables( DEPTH_MODE_NORMAL, true );
+		}
 		pScreenSpace->EndContactDepth();
 	}
 
@@ -7342,7 +7374,8 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	{
 		// GTAO over the complete opaque scene, before any translucency; the client latches repeats within a frame. The
 		// AO term is computed before SSR, which occludes its reflected hits with it, and applied after SSR's correction.
-		const bool bGtao = viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() && GTAODX12_Enabled();
+		const bool bGtao = viewID == VIEW_MAIN && m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() &&
+			!ScreenSpaceDX12_ContactDebug() && GTAODX12_Enabled();
 		if ( bGtao )
 		{
 			CMatRenderContextPtr pGtaoContext( materials );
@@ -7364,7 +7397,7 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 			GTAODX12_Apply( pGtaoContext );
 		}
 		// mat_pbr_showgbuffer replaces the opaque scene color with the selected G-buffer channel (after GTAO, so AO does not tint it).
-		if ( bGBuffer )
+		if ( bGBuffer && !ScreenSpaceDX12_ContactDebug() )
 			PBRDebugDX12_Dispatch();
 
 #ifdef TF_CLIENT_DLL

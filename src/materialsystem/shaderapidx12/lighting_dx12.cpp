@@ -2092,6 +2092,18 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	s.activeMap.store( map.mapGeneration );
 	s.statuses[status].state = DX12_LIGHTING_STATUS_READY;
 }
+bool CLightingDX12::GetSunContactDirection( float out[4] )
+{
+	Impl &s = *m_Impl;
+	if ( !s.views.Count() ) return false;
+	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	if ( s.Failed( packet.view.mapGeneration, packet.view.viewGeneration ) ) return false;
+	const uint32 flags = packet.view.constants.cShadowView1[3];
+	if ( !( flags & DX12_SHADOW_VIEW_HAS_SUN ) || ( flags & DX12_SHADOW_VIEW_UNSHADOWED ) ) return false;
+	memcpy( out, packet.view.constants.cSunTravel, sizeof( packet.view.constants.cSunTravel ) );
+	return true;
+}
+
 int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 {
 	memset( rows, 0, 7 * 4 * sizeof( float ) );
