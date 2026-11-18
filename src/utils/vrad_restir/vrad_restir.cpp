@@ -169,37 +169,33 @@ static bool ConsumeIgnoredValue( int argc, char **argv, int &i, const char *pOpt
 }
 
 // Preset values are measured on ep2_outland_09 (RTX 4070 SUPER, 920k luxels, per mode):
-//   fast    32 it / 4 cand / 2 bounces:  ~9 s, p10 face ratio vs VRAD 0.71 (previews, iteration)
-//   default 128 it / 8 cand / 4 bounces: ~14 s, p10 0.83
-//   final   512 it / 16 cand / 6 bounces: ~34 s, p10 0.88, lowest residual noise before denoising
-// Only knobs the user did not set explicitly are touched.
+//   fast    32 it / 4 cand:   ~9 s, p10 face ratio vs VRAD 0.71 (previews, iteration)
+//   default 128 it / 8 cand:  ~14 s, p10 0.83
+//   final   512 it / 16 cand: ~34 s, p10 0.88, lowest residual noise before denoising
+// Presets leave the bounce depth unlimited. Only knobs the user did not set explicitly are touched.
 struct ReSTIRExplicitOptions
 {
 	bool iterations;
 	bool candidates;
-	bool maxBounces;
 	bool denoiserQuality;
-	ReSTIRExplicitOptions() : iterations( false ), candidates( false ), maxBounces( false ), denoiserQuality( false ) {}
+	ReSTIRExplicitOptions() : iterations( false ), candidates( false ), denoiserQuality( false ) {}
 };
 
 static void ApplyPreset( ReSTIROptions &options, const ReSTIRExplicitOptions &explicitOptions )
 {
 	int iterations = options.iterations;
 	int candidates = options.candidates;
-	int maxBounces = options.maxBounces;
 	ReSTIRDenoiserQuality quality = options.denoiserQuality;
 	switch ( options.preset )
 	{
 	case RESTIR_PRESET_FAST:
 		iterations = 32;
 		candidates = 4;
-		maxBounces = 2;
 		quality = RESTIR_DENOISER_QUALITY_FAST;
 		break;
 	case RESTIR_PRESET_FINAL:
 		iterations = 512;
 		candidates = 16;
-		maxBounces = 6;
 		quality = RESTIR_DENOISER_QUALITY_HIGH;
 		break;
 	default:
@@ -209,8 +205,6 @@ static void ApplyPreset( ReSTIROptions &options, const ReSTIRExplicitOptions &ex
 		options.iterations = iterations;
 	if ( !explicitOptions.candidates )
 		options.candidates = candidates;
-	if ( !explicitOptions.maxBounces )
-		options.maxBounces = maxBounces;
 	if ( !explicitOptions.denoiserQuality )
 		options.denoiserQuality = quality;
 }
@@ -383,7 +377,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			if ( IsOption( pArg, "-restir_iterations" ) ) { options.iterations = value; explicitOptions.iterations = true; }
 			else if ( IsOption( pArg, "-restir_candidates" ) ) { options.candidates = value; explicitOptions.candidates = true; }
 			else if ( IsOption( pArg, "-restir_spatial_radius" ) ) Msg( "Ignoring -restir_spatial_radius: lighting samples are not reused between luxels.\n" );
-			else if ( IsOption( pArg, "-restir_maxbounces" ) ) { options.maxBounces = value; explicitOptions.maxBounces = true; }
+			else if ( IsOption( pArg, "-restir_maxbounces" ) ) options.maxBounces = value;
 			else if ( IsOption( pArg, "-restir_seed" ) ) options.seed = value;
 			else if ( IsOption( pArg, "-restir_vram_budget" ) ) options.vramBudgetMB = value;
 			else options.gpuIndex = value;
@@ -430,6 +424,17 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 		if ( IsOption( pArg, "-restir_skyibl" ) )
 		{
 			options.skyAmbientIbl = true;
+			continue;
+		}
+		if ( IsOption( pArg, "-restir_bouncescale" ) )
+		{
+			if ( i + 1 >= argc )
+			{
+				Warning( "Error: expected a value after '%s'\n", pArg );
+				return false;
+			}
+			if ( !ParseFloatValue( pArg, argv[++i], 0.0f, 10.0f, options.bounceScale ) )
+				return false;
 			continue;
 		}
 		if ( IsOption( pArg, "-restir_probe" ) )
@@ -580,6 +585,12 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 		return false;
 	}
 	ApplyPreset( options, explicitOptions );
+	if ( options.maxBounces > 0 && options.iterations < options.maxBounces + 1 )
+	{
+		Warning( "Error: -restir_maxbounces %d needs at least %d iterations (one per bounce generation)\n",
+			options.maxBounces, options.maxBounces + 1 );
+		return false;
+	}
 	if ( options.shadowMaps )
 	{
 		options.textureShadows = true;
@@ -751,6 +762,38 @@ static void RunProbe( const ReSTIRScene &scene, CReSTIRVulkanDevice &device )
 		Msg( "probe: style %d direct (%.2f %.2f %.2f) indirect (%.2f %.2f %.2f)\n", scene.sceneStyles[s],
 			r.direct[0], r.direct[1], r.direct[2], r.indirect[0], r.indirect[1], r.indirect[2] );
 	}
+}
+
+// -restir_bouncescale: scales what every bounce surface reflects (GPU HitAlbedo reads face.reflectivity, or the
+// material's albedoScale times the linear texel, which the shader already caps at 0.99 per channel). Face
+// reflectivity is capped at 0.99 by its largest channel so the hue is kept and each bounce still loses energy.
+// The OIDN albedo guide reads the same face.reflectivity, so it sees the boosted value.
+static void ApplyBounceScale( const ReSTIROptions &options, ReSTIRScene &scene )
+{
+	const float scale = options.bounceScale;
+	if ( scale == 1.0f )
+		return;
+	int capped = 0;
+	for ( int i = 0; i < scene.faces.Count(); ++i )
+	{
+		float *reflectivity = scene.faces[i].reflectivity;
+		const float largest = scale * Max( reflectivity[0], Max( reflectivity[1], reflectivity[2] ) );
+		float factor = scale;
+		if ( largest > 0.99f )
+		{
+			factor *= 0.99f / largest;
+			++capped;
+		}
+		for ( int c = 0; c < 3; ++c )
+			reflectivity[c] *= factor;
+	}
+	for ( int i = 0; i < scene.materials.Count(); ++i )
+	{
+		for ( int c = 0; c < 3; ++c )
+			scene.materials[i].albedoScale[c] *= scale;
+	}
+	Msg( "VRAD ReSTIR: bounce reflectivity scaled by %g (-restir_bouncescale), %d of %d faces capped at 0.99\n",
+		scale, capped, scene.faces.Count() );
 }
 
 // Port of the HDR face setup in utils/vrad/vrad.cpp:2223-2236: an input without HDR faces lights a copy of its LDR faces.
@@ -945,6 +988,7 @@ int CVRadRestirDLL::Bake()
 	}
 	m_flProgress = 0.25f;
 	ReSTIR_BuildSkyEnvironment( g_ReSTIROptions, scene );
+	ApplyBounceScale( g_ReSTIROptions, scene );
 	RESTIR_STAGE( "initializing Vulkan", device.Init( g_ReSTIROptions ) );
 	device.SetProgressCallback( ReSTIRPhaseCallback, &phase );
 	ReSTIRPhaseBegin( phase, "textures/albedo" );
@@ -1035,9 +1079,14 @@ cleanup:
 		const char *pBackend = info.backend == RESTIR_BACKEND_HARDWARE_RT ? "hardware-rt" : "compute-bvh";
 		const char *pDenoiser = g_ReSTIROptions.denoiser == RESTIR_DENOISER_NONE ? "disabled" : denoiser.GetModeString();
 		const char *pPreset = g_ReSTIROptions.preset == RESTIR_PRESET_FAST ? "fast" : ( g_ReSTIROptions.preset == RESTIR_PRESET_FINAL ? "final" : "default" );
-		Msg( "VRAD ReSTIR: gpu=%s backend=%s luxels=%d ambient-samples=%d preset=%s iterations=%d candidates=%d bounces=%d denoiser=%s elapsed=%.3f s\n",
+		char bounces[16];
+		if ( g_ReSTIROptions.maxBounces < 0 )
+			Q_strncpy( bounces, "unlimited", sizeof( bounces ) );
+		else
+			Q_snprintf( bounces, sizeof( bounces ), "%d", g_ReSTIROptions.maxBounces );
+		Msg( "VRAD ReSTIR: gpu=%s backend=%s luxels=%d ambient-samples=%d preset=%s iterations=%d candidates=%d bounces=%s denoiser=%s elapsed=%.3f s\n",
 			info.deviceName.String(), pBackend, scene.luxels.Count(), g_pLeafAmbientLighting ? g_pLeafAmbientLighting->Count() : 0,
-			pPreset, g_ReSTIROptions.iterations, g_ReSTIROptions.candidates, g_ReSTIROptions.maxBounces, pDenoiser, Plat_FloatTime() - startTime );
+			pPreset, g_ReSTIROptions.iterations, g_ReSTIROptions.candidates, bounces, pDenoiser, Plat_FloatTime() - startTime );
 	}
 	else
 	{

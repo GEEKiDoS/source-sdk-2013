@@ -95,7 +95,7 @@ struct ReSTIRPushConstants
 	unsigned int seed;					// options.seed
 	unsigned int candidates;			// options.candidates: hemisphere rays and emit_surface samples per sample per iteration
 	unsigned int reserved0;
-	unsigned int maxBounces;			// options.maxBounces
+	unsigned int maxBounces;			// 0: no bounce gather (-restir_maxbounces 0, or generation 0 of a limited bake)
 	unsigned int numLights;
 	unsigned int numStyles;
 	unsigned int numTriangles;

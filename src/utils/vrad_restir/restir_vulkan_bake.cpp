@@ -353,7 +353,16 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	memset( result.luxelValid.Base(), 0, result.luxelValid.Count() );
 	gpu.push.seed = options.seed;
 	gpu.push.candidates = options.candidates;
-	gpu.push.maxBounces = options.maxBounces;
+	// -restir_maxbounces N > 0 splits the iterations into N + 1 generations. Generation 0 gathers no bounce;
+	// generation g bounces off the converged mean of generation g - 1, published once at its end, so the
+	// last generation carries exactly N bounces. Unlimited (-1) publishes after every iteration instead:
+	// each iteration then bounces off the running mean, and the bounce depth grows with the iterations.
+	const bool limitedBounces = options.maxBounces > 0;
+	const int generations = limitedBounces ? options.maxBounces + 1 : 1;
+	gpu.push.maxBounces = options.maxBounces < 0 ? UINT_MAX : 0u;	// limited: generation 0 gathers no bounce
+	if ( limitedBounces )
+		Msg( "VRAD ReSTIR: %d bounces: %d generations of about %d iterations\n", options.maxBounces, generations,
+			options.iterations / generations );
 	gpu.push.totalIterations = options.iterations;
 	const uint64_t submitsAtStart = gpu.submittedValue;
 	const double bakeStart = Plat_FloatTime();
@@ -407,6 +416,23 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	for ( int iteration = 0; iteration < options.iterations; ++iteration )
 	{
 		gpu.push.iteration = iteration;
+		const int generation = iteration * generations / options.iterations;
+		if ( limitedBounces && iteration > 0 && generation != ( iteration - 1 ) * generations / options.iterations )
+		{
+			// A new generation starts its own mean; the previous one stays published for its bounce lookups.
+			gpu.push.maxBounces = (unsigned int)options.maxBounces;
+			if ( resident )
+			{
+				SetPagePush( gpu, gpu.pages[0], initFlags );
+				SubmitDispatchChunks( gpu, RESTIR_PIPE_INIT, gpu.pages[0].reservoirCount, 0, NULL, gpu.pages[0].firstReservoir );
+			}
+			else
+			{
+				memset( accumulationHost.Base(), 0, accumulationHost.Count() * sizeof( float ) );
+				if ( receiverAccumHost.Count() )
+					memset( receiverAccumHost.Base(), 0, receiverAccumHost.Count() * sizeof( float ) );
+			}
+		}
 		for ( int p = 0; p < gpu.pages.Count(); ++p )
 		{
 			const ReSTIRPage &page = gpu.pages[p];
@@ -426,13 +452,16 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 				DownloadPageAccumulation( gpu, page, accumulationHost, receiverAccumHost );
 		}
 		// Publish the bounce feedback only after the whole iteration: every page, and every sample
-		// within a page, must read the same previous-iteration state.
-		if ( resident )
+		// within a page, must read the same previous-iteration state. A limited bake publishes only at the
+		// end of each generation but the last (nothing reads it after the final generation).
+		const bool publish = limitedBounces ?
+			( iteration + 1 < options.iterations && ( iteration + 1 ) * generations / options.iterations != generation ) : true;
+		if ( publish && resident )
 		{
 			SetPagePush( gpu, gpu.pages[0], transportFlags | RESTIR_PC_PUBLISH_IRRADIANCE );
 			SubmitDispatchChunks( gpu, RESTIR_PIPE_TRANSPORT, gpu.pages[0].reservoirCount, 0, NULL, gpu.pages[0].firstReservoir );
 		}
-		else
+		else if ( publish )
 		{
 			CUtlVector<float> previousIrradiance;
 			previousIrradiance.SetCount( gpu.scene->samples.Count() * 4 );

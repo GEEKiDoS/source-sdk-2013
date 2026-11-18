@@ -94,6 +94,9 @@ struct ReSTIROptions
 										// sky ambient radiance per direction (normalized to the ambient luminance, so the
 										// sky ambient scale still applies); otherwise, or when the sky has no HDR faces, the
 										// sky ambient is the uniform light_environment colour
+	float		bounceScale;			// -restir_bouncescale (1.0): multiplier on every bounce surface's reflectivity (face
+										// reflectivity and per-texel albedo), capped below 1 so the series still converges;
+										// bounce order n gains up to bounceScale^n, so indirect light falls off more slowly
 	bool		shadowMaps;				// -restir_shadowmaps: selected runtime direct + independently dense linear lightmaps,
 										// written only to <map>.light (the BSP is not touched); implies textureShadows and
 										// disables staticPropLighting; .hlight v5 + rshd v6
@@ -110,7 +113,8 @@ struct ReSTIROptions
 										// fed back from previous iterations' irradiance, so this also bounds bounce depth
 	int			candidates;				// -restir_candidates (8; fast 4, final 16): per sample per iteration, hemisphere rays
 										// (sky ambient + bounce) and emit_surface light samples; the sun adds one sample
-	int			maxBounces;				// -restir_maxbounces (4; fast 2, final 6): 0 disables indirect light entirely
+	int			maxBounces;				// -restir_maxbounces (-1 = unlimited: bounce depth grows with the iterations); 0 disables
+										// indirect light; N > 0 runs N + 1 bounce generations so light bounces at most N times
 	int			seed;					// -restir_seed (1)
 	int			gpuIndex;				// -restir_gpu, -1 = first discrete GPU
 	int			vramBudgetMB;			// -restir_vram_budget (0 = queried Vulkan budget)
@@ -124,9 +128,9 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), skyAmbientScale( 1.0f ), skyAmbientIbl( false ), shadowMaps( false ), highresDensity( 4 ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), skyAmbientScale( 1.0f ), skyAmbientIbl( false ), bounceScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
 		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), ambientGridBudgetMB( 1024 ), preset( RESTIR_PRESET_DEFAULT ),
-		  iterations( 128 ), candidates( 8 ), maxBounces( 4 ),
+		  iterations( 128 ), candidates( 8 ), maxBounces( -1 ),
 		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
 		  denoiserDevice( RESTIR_DENOISER_DEVICE_DEFAULT ) {}
