@@ -3,6 +3,7 @@
 #include "cmdlib.h"
 #include <float.h>
 #include <limits.h>
+#include "restir_byte_buffer.h"
 
 
 static const char *ReSTIRStageName( ReSTIRPipeline pipeline )
@@ -130,77 +131,38 @@ static void SetPagePush( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page,
 	gpu.push.pageBase[3] = page.firstOutput;
 }
 
+// Keep the vector domain in reservoirs, not scalar components: a legal scene can
+// exceed INT_MAX floats without exceeding its signed reservoir/sample indices.
+struct ReSTIRHostAccumulation
+{
+	float channels[RESTIR_MAX_CHANNELS][4];
+};
+
 // Paged bakes stream a page's running sums through the host; receiverAccumulation is empty unless split.
 static void UploadPageAccumulation( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page,
-	const CUtlVector<float> &accumulation, const CUtlVector<float> &receiverAccumulation )
+	const CUtlVector<ReSTIRHostAccumulation> &accumulation, const CUtlVector<ReSTIRHostAccumulation> &receiverAccumulation )
 {
-	const size_t first = (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4;
-	const VkDeviceSize bytes = (VkDeviceSize)page.reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4;
+	const unsigned int first = page.firstReservoir;
+	const VkDeviceSize bytes = (VkDeviceSize)page.reservoirCount * sizeof( ReSTIRHostAccumulation );
 	gpu.Upload( RESTIR_BIND_ACCUMULATION, accumulation.Base() + first, bytes );
 	if ( receiverAccumulation.Count() )
 		gpu.Upload( RESTIR_BIND_RECEIVER_ACCUMULATION, receiverAccumulation.Base() + first, bytes );
 }
 
 static void DownloadPageAccumulation( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page,
-	CUtlVector<float> &accumulation, CUtlVector<float> &receiverAccumulation )
+	CUtlVector<ReSTIRHostAccumulation> &accumulation, CUtlVector<ReSTIRHostAccumulation> &receiverAccumulation )
 {
-	const size_t first = (size_t)page.firstReservoir * RESTIR_MAX_CHANNELS * 4;
-	const VkDeviceSize bytes = (VkDeviceSize)page.reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4;
+	const unsigned int first = page.firstReservoir;
+	const VkDeviceSize bytes = (VkDeviceSize)page.reservoirCount * sizeof( ReSTIRHostAccumulation );
 	gpu.Download( RESTIR_BIND_ACCUMULATION, accumulation.Base() + first, bytes );
 	if ( receiverAccumulation.Count() )
 		gpu.Download( RESTIR_BIND_RECEIVER_ACCUMULATION, receiverAccumulation.Base() + first, bytes );
 }
 
 
-static void DownloadRadiance( CReSTIRVulkanDevice::Impl &gpu, int binding, CUtlVector<Vector> &radiance )
-{
-	radiance.SetCount( gpu.scene->numOutputValues );
-	CUtlVector<float> values;
-	const unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / ( sizeof( float ) * 4 ) );
-	for ( unsigned int first = 0; first < (unsigned int)radiance.Count(); )
-	{
-		unsigned int count = MIN( capacity, (unsigned int)radiance.Count() - first );
-		values.SetCount( count * 4 );
-		gpu.Download( binding, values.Base(), (VkDeviceSize)count * sizeof( float ) * 4,
-			(VkDeviceSize)first * sizeof( float ) * 4, &gpu.timings.compactionMs );
-		for ( unsigned int i = 0; i < count; ++i )
-		{
-			for ( int channel = 0; channel < 3; ++channel )
-			{
-				float value = values[i * 4 + channel];
-				radiance[first + i][channel] = _finite( value ) && value >= 0 ? value : 0;
-			}
-		}
-		first += count;
-	}
-}
-
-static bool DownloadSunVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<float> &visibility )
-{
-	visibility.SetCount( gpu.scene->luxels.Count() );
-	const unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / sizeof( float ) );
-	for ( unsigned int first = 0; first < (unsigned int)visibility.Count(); )
-	{
-		const unsigned int count = MIN( capacity, (unsigned int)visibility.Count() - first );
-		gpu.Download( RESTIR_BIND_SUN_VISIBILITY, visibility.Base() + first, (VkDeviceSize)count * sizeof( float ),
-			(VkDeviceSize)first * sizeof( float ), &gpu.timings.compactionMs );
-		for ( unsigned int i = 0; i < count; ++i )
-		{
-			const float value = visibility[first + i];
-			if ( !_finite( value ) || value < 0.0f || value > 1.0f )
-			{
-				visibility.RemoveAll();
-				gpu.Fail( "sun visibility readback contains a nonfinite or out-of-range scalar" );
-				return false;
-			}
-		}
-		first += count;
-	}
-	return true;
-}
 
 static void UploadTransportPage( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page );
-static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<unsigned char> &visibility )
+static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector< CUtlVector<unsigned char> > &visibility )
 {
 	int localCount = 0;
 	for ( int light = 0; light < gpu.scene->shadowLights.Count(); ++light )
@@ -208,40 +170,45 @@ static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector<unsi
 			++localCount;
 	if ( !gpu.options.shadowMaps || !localCount )
 		return;
-	const uint64_t valueCount = (uint64_t)gpu.scene->shadowLights.Count() * gpu.scene->luxels.Count();
-	if ( valueCount > INT_MAX )
-		gpu.Fail( "canonical local visibility result exceeds signed 32-bit indexing" );
-	visibility.SetCount( (int)valueCount );
+	visibility.SetCount( gpu.scene->shadowLights.Count() );
 	const double visibilityStart = Plat_FloatTime();
-	CUtlVector<float> pageOutput;
+	const unsigned int capacity = (unsigned int)( gpu.buffers[RESTIR_BIND_SERVICE_OUT].size / sizeof( float ) );
+	CUtlVector<float> output;
 	for ( int light = 0; light < gpu.scene->shadowLights.Count(); ++light )
 	{
 		if ( gpu.scene->shadowLights[light].light.type == emit_skylight )
 			continue;
+		CUtlVector<unsigned char> &plane = visibility[light];
+		if ( !ReSTIR_EnsureByteCapacity( plane, (uint64)gpu.scene->luxels.Count() ) )
+			gpu.Fail( "local visibility plane exceeds signed geometric luxel indexing" );
+		plane.SetCount( gpu.scene->luxels.Count() );
 		for ( int p = 0; p < gpu.pages.Count(); ++p )
 		{
 			const ReSTIRPage &page = gpu.pages[p];
 			if ( verbose )
-				Msg( "VRAD ReSTIR: visibility page=%d/%d light=%d luxels=%u\n",
-					p + 1, gpu.pages.Count(), light, page.luxelCount );
+				Msg( "VRAD ReSTIR: visibility page=%d/%d light=%d luxels=%u readback-capacity=%u\n",
+					p + 1, gpu.pages.Count(), light, page.luxelCount, capacity );
 			if ( gpu.pages.Count() > 1 )
 				UploadTransportPage( gpu, page );
-			pageOutput.SetCount( page.luxelCount );
-			gpu.push.flags = gpu.BaseFlags() | RESTIR_PC_RESERVOIR_PAGE;
-			gpu.push.pageBase[0] = page.firstReservoir;
-			gpu.push.pageBase[1] = page.firstSample;
-			gpu.push.pageBase[2] = page.firstLuxel;
-			gpu.push.pageBase[3] = page.firstOutput;
-			SubmitDispatchChunks( gpu, RESTIR_PIPE_LOCAL_VISIBILITY, page.luxelCount, (unsigned int)light,
-				NULL, page.firstLuxel );
-			gpu.Download( RESTIR_BIND_SERVICE_OUT, pageOutput.Base(), (VkDeviceSize)page.luxelCount * sizeof( float ),
-				0, &gpu.timings.compactionMs );
-			for ( unsigned int i = 0; i < page.luxelCount; ++i )
+			SetPagePush( gpu, page, gpu.BaseFlags() | RESTIR_PC_RESERVOIR_PAGE );
+			// The transport page can exceed the service output allocation. Keep receiver addressing
+			// page-local, but rebase the output independently for each bounded readback batch.
+			for ( unsigned int first = 0; first < page.luxelCount; )
 			{
-				if ( !_finite( pageOutput[i] ) || pageOutput[i] < 0.0f || pageOutput[i] > 1.0f )
-					gpu.Fail( "world local visibility readback contains a nonfinite or out-of-range scalar" );
-				visibility[light * gpu.scene->luxels.Count() + page.firstLuxel + i] =
-					(unsigned char)floorf( pageOutput[i] * 255.0f + 0.5f );
+				const unsigned int count = MIN( capacity, page.luxelCount - first );
+				output.SetCount( count );
+				gpu.push.iteration = page.firstLuxel + first;
+				SubmitDispatchChunks( gpu, RESTIR_PIPE_LOCAL_VISIBILITY, count, (unsigned int)light,
+					NULL, gpu.push.iteration );
+				gpu.Download( RESTIR_BIND_SERVICE_OUT, output.Base(), (VkDeviceSize)count * sizeof( float ),
+					0, &gpu.timings.compactionMs );
+				for ( unsigned int i = 0; i < count; ++i )
+				{
+					if ( !_finite( output[i] ) || output[i] < 0.0f || output[i] > 1.0f )
+						gpu.Fail( "world local visibility readback contains a nonfinite or out-of-range scalar" );
+					plane[page.firstLuxel + first + i] = (unsigned char)floorf( output[i] * 255.0f + 0.5f );
+				}
+				first += count;
 			}
 		}
 	}
@@ -266,14 +233,21 @@ static void CopyRadiancePage( CReSTIRVulkanDevice::Impl &gpu, int binding, const
 	CUtlVector<Vector> &result )
 {
 	CUtlVector<float> values;
-	values.SetCount( page.outputCount * 4 );
-	gpu.Download( binding, values.Base(), (VkDeviceSize)values.Count() * sizeof( float ) );
-	for ( unsigned int i = 0; i < page.outputCount; ++i )
-		result[page.firstOutput + i] = Vector( values[i * 4], values[i * 4 + 1], values[i * 4 + 2] );
+	const unsigned int capacity = (unsigned int)( RESTIR_STAGING_BYTES / ( sizeof( float ) * 4 ) );
+	for ( unsigned int first = 0; first < page.outputCount; )
+	{
+		const unsigned int count = MIN( capacity, page.outputCount - first );
+		values.SetCount( count * 4 );
+		gpu.Download( binding, values.Base(), (VkDeviceSize)count * sizeof( float ) * 4,
+			(VkDeviceSize)first * sizeof( float ) * 4, &gpu.timings.compactionMs );
+		for ( unsigned int i = 0; i < count; ++i )
+			result[page.firstOutput + first + i] = Vector( values[i * 4], values[i * 4 + 1], values[i * 4 + 2] );
+		first += count;
+	}
 }
 
 static unsigned int UploadReconstructPage( CReSTIRVulkanDevice::Impl &gpu, const ReSTIRPage &page,
-	const CUtlVector<float> &accumulation, const CUtlVector<float> &receiverAccumulation )
+	const CUtlVector<ReSTIRHostAccumulation> &accumulation, const CUtlVector<ReSTIRHostAccumulation> &receiverAccumulation )
 {
 	CUtlVector<unsigned char> used;
 	used.SetCount( gpu.scene->faces.Count() );
@@ -294,7 +268,7 @@ static unsigned int UploadReconstructPage( CReSTIRVulkanDevice::Impl &gpu, const
 	faces.CopyArray( gpu.uploadedFaces.Base(), gpu.uploadedFaces.Count() );
 	CUtlVector<ReSTIRGpuSample> samples;
 	CUtlVector<ReSTIRGpuLuxel> luxels;
-	CUtlVector<float> pageAccum, pageReceiver;
+	CUtlVector<ReSTIRHostAccumulation> pageAccum, pageReceiver;
 	int localSample = 0, localLuxel = 0, localReservoir = 0;
 	for ( int f = 0; f < faces.Count(); ++f )
 	{
@@ -311,11 +285,9 @@ static unsigned int UploadReconstructPage( CReSTIRVulkanDevice::Impl &gpu, const
 		for ( int l = 0; l < luxelCount; ++l )
 			luxels.AddToTail( gpu.scene->luxels[source.firstLuxel + l] );
 		const int reservoirCount = source.numSamples * source.numStyles;
-		pageAccum.AddMultipleToTail( reservoirCount * RESTIR_MAX_CHANNELS * 4,
-			accumulation.Base() + (size_t)source.firstReservoir * RESTIR_MAX_CHANNELS * 4 );
+		pageAccum.AddMultipleToTail( reservoirCount, accumulation.Base() + source.firstReservoir );
 		if ( receiverAccumulation.Count() )
-			pageReceiver.AddMultipleToTail( reservoirCount * RESTIR_MAX_CHANNELS * 4,
-				receiverAccumulation.Base() + (size_t)source.firstReservoir * RESTIR_MAX_CHANNELS * 4 );
+			pageReceiver.AddMultipleToTail( reservoirCount, receiverAccumulation.Base() + source.firstReservoir );
 		localSample += source.numSamples;
 		localLuxel += luxelCount;
 		localReservoir += reservoirCount;
@@ -325,10 +297,10 @@ static unsigned int UploadReconstructPage( CReSTIRVulkanDevice::Impl &gpu, const
 	gpu.Upload( RESTIR_BIND_FACES, faces.Base(), (VkDeviceSize)faces.Count() * sizeof( ReSTIRGpuFace ) );
 	gpu.Upload( RESTIR_BIND_SAMPLES, samples.Base(), (VkDeviceSize)samples.Count() * sizeof( ReSTIRGpuSample ) );
 	gpu.Upload( RESTIR_BIND_LUXELS, luxels.Base(), (VkDeviceSize)luxels.Count() * sizeof( ReSTIRGpuLuxel ) );
-	gpu.Upload( RESTIR_BIND_ACCUMULATION, pageAccum.Base(), (VkDeviceSize)pageAccum.Count() * sizeof( float ) );
+	gpu.Upload( RESTIR_BIND_ACCUMULATION, pageAccum.Base(), (VkDeviceSize)pageAccum.Count() * sizeof( ReSTIRHostAccumulation ) );
 	if ( receiverAccumulation.Count() )
 		gpu.Upload( RESTIR_BIND_RECEIVER_ACCUMULATION, pageReceiver.Base(),
-			(VkDeviceSize)pageReceiver.Count() * sizeof( float ) );
+			(VkDeviceSize)pageReceiver.Count() * sizeof( ReSTIRHostAccumulation ) );
 	return (unsigned int)faces[page.firstFace].firstLuxel;
 }
 
@@ -373,15 +345,15 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	const bool resident = gpu.pages.Count() == 1;
 	const unsigned int initFlags = gpu.BaseFlags() | RESTIR_PC_RESERVOIR_PAGE;
 	const unsigned int transportFlags = initFlags | ( shadowSplit ? RESTIR_PC_RECEIVER_PAGE : 0 );
-	CUtlVector<float> accumulationHost, receiverAccumHost;
+	CUtlVector<ReSTIRHostAccumulation> accumulationHost, receiverAccumHost;
 	if ( !resident )
 	{
-		accumulationHost.SetCount( (int)gpu.fullReservoirs * RESTIR_MAX_CHANNELS * 4 );
-		memset( accumulationHost.Base(), 0, accumulationHost.Count() * sizeof( float ) );
+		accumulationHost.SetCount( (int)gpu.fullReservoirs );
+		memset( accumulationHost.Base(), 0, accumulationHost.Count() * sizeof( ReSTIRHostAccumulation ) );
 		if ( shadowSplit )
 		{
 			receiverAccumHost.SetCount( accumulationHost.Count() );
-			memset( receiverAccumHost.Base(), 0, receiverAccumHost.Count() * sizeof( float ) );
+			memset( receiverAccumHost.Base(), 0, receiverAccumHost.Count() * sizeof( ReSTIRHostAccumulation ) );
 		}
 	}
 	unsigned int progressDone = 0;
@@ -406,6 +378,12 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 			SubmitDispatchChunks( gpu, RESTIR_PIPE_SUN_VISIBILITY, page.luxelCount, 0, NULL, page.firstLuxel );
 			gpu.Download( RESTIR_BIND_SUN_VISIBILITY, result.sunVisibility.Base() + page.firstLuxel,
 				(VkDeviceSize)page.luxelCount * sizeof( float ), 0, &gpu.timings.compactionMs );
+			for ( unsigned int i = 0; i < page.luxelCount; ++i )
+			{
+				const float value = result.sunVisibility[page.firstLuxel + i];
+				if ( !_finite( value ) || value < 0.0f || value > 1.0f )
+					gpu.Fail( "sun visibility readback contains a nonfinite or out-of-range scalar" );
+			}
 		}
 		// Exact point/spot direct light seeds the bounce feedback before the first iteration.
 		SubmitDispatchChunks( gpu, RESTIR_PIPE_DIRECT, page.reservoirCount, 0, &stageMs, page.firstReservoir );
@@ -428,9 +406,9 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 			}
 			else
 			{
-				memset( accumulationHost.Base(), 0, accumulationHost.Count() * sizeof( float ) );
+				memset( accumulationHost.Base(), 0, accumulationHost.Count() * sizeof( ReSTIRHostAccumulation ) );
 				if ( receiverAccumHost.Count() )
-					memset( receiverAccumHost.Base(), 0, receiverAccumHost.Count() * sizeof( float ) );
+					memset( receiverAccumHost.Base(), 0, receiverAccumHost.Count() * sizeof( ReSTIRHostAccumulation ) );
 			}
 		}
 		for ( int p = 0; p < gpu.pages.Count(); ++p )
@@ -463,21 +441,21 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 		}
 		else if ( publish )
 		{
-			CUtlVector<float> previousIrradiance;
-			previousIrradiance.SetCount( gpu.scene->samples.Count() * 4 );
-			memset( previousIrradiance.Base(), 0, previousIrradiance.Count() * sizeof( float ) );
+			CUtlVector<Vector4D> previousIrradiance;
+			previousIrradiance.SetCount( gpu.scene->samples.Count() );
+			memset( previousIrradiance.Base(), 0, previousIrradiance.Count() * sizeof( Vector4D ) );
 			FOR_EACH_VEC( gpu.uploadedFaces, f )
 			{
 				const ReSTIRGpuFace &face = gpu.uploadedFaces[f];
 				for ( int s = 0; s < face.numSamples; ++s )
 				{
 					// The same copy restir_transport.comp publishes on a resident page.
-					memcpy( previousIrradiance.Base() + (size_t)( face.firstSample + s ) * 4,
-						accumulationHost.Base() + (size_t)( face.firstReservoir + s * face.numStyles ) * RESTIR_MAX_CHANNELS * 4, sizeof( float ) * 4 );
+					memcpy( &previousIrradiance[face.firstSample + s],
+						accumulationHost[face.firstReservoir + s * face.numStyles].channels[0], sizeof( Vector4D ) );
 				}
 			}
 			gpu.Upload( RESTIR_BIND_PREVIOUS_IRRADIANCE, previousIrradiance.Base(),
-				(VkDeviceSize)previousIrradiance.Count() * sizeof( float ) );
+				(VkDeviceSize)previousIrradiance.Count() * sizeof( Vector4D ) );
 		}
 		gpu.ReportProgress( "bake", ++progressDone, progressTotal );
 	}

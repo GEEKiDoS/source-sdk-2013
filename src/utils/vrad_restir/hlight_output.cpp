@@ -69,6 +69,12 @@ bool Fail(const char *why)
 {
     Warning("Hlight: %s\n",why); return false;
 }
+bool FailSize(const char *section, uint64 required)
+{
+    Warning("Hlight: %s requires %llu bytes; signed BSP-pak limit is %llu bytes (0x7fffffff)\n",
+        section,(unsigned long long)required,(unsigned long long)hlight::kMaxFileBytes);
+    return false;
+}
 // maps/<name>.hprobe: the ambient probe grids paired to the .hlight asset. s_AssetPath is a manifest-validated or
 // generated maps/<name>.hlight, so the suffix swap cannot fail.
 void ProbePath(char (&out)[256])
@@ -142,7 +148,7 @@ bool Half(float value, uint16 &out)
 bool Append(CUtlVector<byte> &out, const void *data, uint64 count, uint64 &offset)
 {
     const uint64 start = (uint64(out.Count())+15)&~uint64(15);
-    if (start+count > hlight::kMaxFileBytes) return Fail("asset exceeds signed BSP-pak buffer limit");
+    if (start+count > hlight::kMaxFileBytes) return FailSize("asset",start+count);
     if (!ReSTIR_EnsureByteCapacity(out,start+count)) return Fail("asset byte capacity exceeds signed limit");
     const int old = out.Count(); out.SetCount((int)(start+count));
     memset(out.Base()+old,0,(size_t)(start-old));
@@ -153,7 +159,7 @@ bool Append(CUtlVector<byte> &out, const void *data, uint64 count, uint64 &offse
 bool AppendProbeGrid(CUtlVector<byte> &out, const ReSTIRAmbientProbeGrid &g, uint64 &offset)
 {
     const uint64 start = (uint64(out.Count())+15)&~uint64(15), bytes = hprobe::GridBytes(g.grid);
-    if (start+bytes > hlight::kMaxFileBytes) return Fail("probe asset exceeds signed BSP-pak buffer limit");
+    if (start+bytes > hlight::kMaxFileBytes) return FailSize("probe asset",start+bytes);
     if (!ReSTIR_EnsureByteCapacity(out,start+bytes)) return Fail("probe asset byte capacity exceeds signed limit");
     const int old = out.Count(); out.SetCount((int)(start+bytes));
     memset(out.Base()+old,0,(size_t)(start-old));
@@ -204,7 +210,7 @@ bool AddVisibilityPlane(ModeStorage &m, uint32 light, const byte *values, uint32
     if (!uniform)
     {
         const uint64 at = (uint64(m.visibilityPayload.Count())+3)&~uint64(3);
-        if (at+count > hlight::kMaxFileBytes) return Fail("visibility payload exceeds signed BSP-pak limit");
+        if (at+count > hlight::kMaxFileBytes) return FailSize("visibility payload",at+count);
         if (!ReSTIR_EnsureByteCapacity(m.visibilityPayload,at+count)) return Fail("visibility byte capacity exceeds signed limit");
         const int old = m.visibilityPayload.Count(); m.visibilityPayload.SetCount(int(at+count));
         memset(m.visibilityPayload.Base()+old,0,size_t(at-old));
@@ -253,6 +259,23 @@ bool BuildFaceDirect(const ReSTIRScene &scene, const ReSTIRLightmapResult &resul
         }
         out.styles[out.count] = face.styles[s]; out.sourceSlots[out.count++] = s;
     }
+    // The native BSP remains untouched for shadow-map bakes, so its authored style
+    // slots are still the renderer's domain. Keep every native style in the asset
+    // palette even when it has no receiver RGB; selected-only slots may therefore
+    // carry only baked direct data (or an empty tile), but are never absent.
+    if (face.dface < 0 || face.dface >= numfaces_hdr) return Fail("dense face native style domain invalid");
+    const dface_t &native = g_pFaces[face.dface];
+    for (int nativeSlot = 0; nativeSlot < MAXLIGHTMAPS && native.styles[nativeSlot] != 255; ++nativeSlot)
+    {
+        const int style = native.styles[nativeSlot];
+        int slot = 0; while (slot < out.count && out.styles[slot] != style) ++slot;
+        if (slot < out.count) continue;
+        if (out.count == MAXLIGHTMAPS) return Fail("native face styles exceed dense palette");
+        int source = -1;
+        for (int s = 0; s < face.numStyles; ++s)
+            if (face.styles[s] == style) { source = s; break; }
+        out.styles[out.count] = style; out.sourceSlots[out.count++] = source;
+    }
     out.values.SetCount(out.count*planeValues);
     if (out.values.Count()) memset(out.values.Base(),0,out.values.Count()*sizeof(Vector));
     if (!scene.shadowLights.Count()) return true;
@@ -265,13 +288,14 @@ bool BuildFaceDirect(const ReSTIRScene &scene, const ReSTIRLightmapResult &resul
     {
         const ShadowMapLightDisk &light = scene.shadowLights[li];
         if (light.light.type == emit_skylight) continue;
-        if (uint64(result.localVisibility.Count()) != uint64(scene.shadowLights.Count())*scene.luxels.Count())
+        if (result.localVisibility.Count() != scene.shadowLights.Count() ||
+            result.localVisibility[li].Count() != scene.luxels.Count())
             return Fail("local direct requires complete baked visibility");
         bool nonzero = false;
         for (int j = 0; j < samples; ++j)
         {
             const int luxel = face.firstLuxel+j;
-            const byte visibility = result.localVisibility[li*scene.luxels.Count()+luxel];
+            const byte visibility = result.localVisibility[li][luxel];
             if (!visibility)
             {
                 for (int p = 0; p < face.numChannels; ++p) contribution[p*samples+j] = vec3_origin;
@@ -308,15 +332,18 @@ bool BuildFaceDirect(const ReSTIRScene &scene, const ReSTIRLightmapResult &resul
 }
 bool CaptureWorldVisibility(ModeStorage &m, const ReSTIRScene &scene, const ReSTIRLightmapResult &result)
 {
-    const uint64 samples = uint64(scene.luxels.Count())*m.lights.Count();
     const bool locals = m.lights.Count() > int(m.visibility.sunLightIndex >= 0);
-    if ((locals && (samples > INT_MAX || result.localVisibility.Count() != samples)) ||
+    if ((locals && result.localVisibility.Count() != m.lights.Count()) ||
         (!locals && result.localVisibility.Count())) return Fail("local visibility incomplete geometric grid");
+    if (locals)
+        for (int li = 0; li < m.lights.Count(); ++li)
+            if (result.localVisibility[li].Count() != (li == m.visibility.sunLightIndex ? 0 : scene.luxels.Count()))
+                return Fail("local visibility incomplete light plane");
     m.visibility.selectedLightCount = m.lights.Count();
     m.visibility.selectedLightsCRC32 = ShadowMap_CRC32(m.lights.Base(),m.lights.Count()*sizeof(ShadowMapLightDisk));
     m.visibility.faceCount = m.faces.Count();
     const uint64 supportBytes = (uint64(m.faces.Count())*m.lights.Count()+7)/8;
-    if (supportBytes > hlight::kMaxFileBytes) return Fail("visibility support directory exceeds signed limit");
+    if (supportBytes > hlight::kMaxFileBytes) return FailSize("visibility support directory",supportBytes);
     m.faceSupport.SetCount(int(supportBytes));
     if (supportBytes) memset(m.faceSupport.Base(),0,size_t(supportBytes));
     CUtlVector<Vector> faceMins, faceMaxs; faceMins.SetCount(m.faces.Count()); faceMaxs.SetCount(m.faces.Count());
@@ -358,7 +385,7 @@ bool CaptureWorldVisibility(ModeStorage &m, const ReSTIRScene &scene, const ReST
                     for (uint32 j = 0; j < fallback->lightCount; ++j)
                         if (m.unbakedLightIndices[fallback->firstLightIndex+j] == uint32(li)) { unbaked = true; break; }
                 if (li == m.visibility.sunLightIndex || (!unbaked && !FaceSupportsLight(m.lights[li],mins,maxs))) continue;
-                const byte *plane = result.localVisibility.Base()+li*scene.luxels.Count()+f.firstLuxel;
+                const byte *plane = result.localVisibility[li].Base()+f.firstLuxel;
                 if (!AddVisibilityPlane(m,li,plane,count)) return false;
                 const uint64 bit = uint64(i)*m.lights.Count()+li;
                 m.faceSupport[int(bit>>3)] |= byte(1u<<(bit&7)); ++fd.entryCount;
@@ -485,7 +512,7 @@ bool WriteLightFile(const char *path, const CUtlVector<byte> &manifest, const CU
     header.lumps[LUMP_GAME_LUMP].fileofs = header.lumps[LUMP_MAP_FLAGS].fileofs+sizeof(flags);
     header.lumps[LUMP_GAME_LUMP].filelen = gameLumpBytes+manifest.Count();
     const int64 pakOffset = (int64(header.lumps[LUMP_GAME_LUMP].fileofs)+header.lumps[LUMP_GAME_LUMP].filelen+3)&~int64(3);
-    if (pakOffset+pak.TellPut() > INT_MAX) return Fail(".light exceeds the 2 GiB BSP limit");
+    if (pakOffset+pak.TellPut() > INT_MAX) return FailSize(".light container",uint64(pakOffset)+pak.TellPut());
     header.lumps[LUMP_PAKFILE].fileofs = int(pakOffset); header.lumps[LUMP_PAKFILE].filelen = pak.TellPut();
     dgamelump_t entry; memset(&entry,0,sizeof(entry));
     entry.id = GAMELUMP_RESTIR_SHADOWMAPS; entry.version = (unsigned short)hlight::kManifestVersion;
@@ -656,7 +683,8 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
                 if (x+w > pageSide) { x = 0; y += rowHeight; rowHeight = 0; }
                 if (page < 0 || y+h > pageSide)
                 {
-                    if (uint64(m.pixels.Count())+pageBytes > hlight::kMaxFileBytes) return Fail("dense page payload exceeds BSP-pak signed limit");
+                    if (uint64(m.pixels.Count())+pageBytes > hlight::kMaxFileBytes)
+                        return FailSize("dense page payload",uint64(m.pixels.Count())+pageBytes);
                     if (!ReSTIR_EnsureByteCapacity(m.pixels,uint64(m.pixels.Count())+pageBytes)) return Fail("dense pixel byte capacity exceeds signed limit");
                     hlight::PageDisk record; memset(&record,0,sizeof(record));
                     record.width = record.height = pageSide; record.format = hlight::kRGBA16Float;
@@ -741,23 +769,26 @@ bool ReSTIR_WriteLightSidecar(const ReSTIROptions &options)
     // Reserve the complete canonical file once. Apart from eliminating copies,
     // exact EnsureCapacity bypasses CUtlMemory's signed 1-GiB doubling overflow.
     uint64 fileBytes = sizeof(header);
-    bool fits = ReSTIR_AddByteSectionSize(fileBytes,sizeof(hlight::ModeDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.identities.Count())*sizeof(hlight::LumpIdentity)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.models.Count())*sizeof(hlight::ModelDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.faces.Count())*sizeof(hlight::FaceDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.tiles.Count())*sizeof(hlight::TileDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.pages.Count())*sizeof(hlight::PageDisk));
-    for (int p = 0; fits && p < m.pages.Count(); ++p) fits = ReSTIR_AddByteSectionSize(fileBytes,m.pages[p].pixelsBytes);
-    fits = fits && ReSTIR_AddByteSectionSize(fileBytes,sizeof(hlight::VisibilitySetDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityFaces.Count())*sizeof(hlight::FaceVisibilityDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityEntries.Count())*sizeof(hlight::VisibilityEntryDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityProps.Count())*sizeof(hlight::PropVisibilityDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.visibilityMeshes.Count())*sizeof(hlight::PropMeshVisibilityDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,m.faceSupport.Count()) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.unbakedFaces.Count())*sizeof(hlight::UnbakedFaceDisk)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,uint64(m.unbakedLightIndices.Count())*sizeof(uint32)) &&
-        ReSTIR_AddByteSectionSize(fileBytes,m.visibilityPayload.Count());
-    if (!fits) return Fail("asset exceeds the signed pak member limit");
+    const uint64 prefixSections[] = {sizeof(hlight::ModeDisk),
+        uint64(m.identities.Count())*sizeof(hlight::LumpIdentity),
+        uint64(m.models.Count())*sizeof(hlight::ModelDisk),
+        uint64(m.faces.Count())*sizeof(hlight::FaceDisk),
+        uint64(m.tiles.Count())*sizeof(hlight::TileDisk),
+        uint64(m.pages.Count())*sizeof(hlight::PageDisk)};
+    for (int i = 0; i < ARRAYSIZE(prefixSections); ++i)
+        fileBytes = ((fileBytes+15)&~uint64(15))+prefixSections[i];
+    for (int p = 0; p < m.pages.Count(); ++p)
+        fileBytes = ((fileBytes+15)&~uint64(15))+m.pages[p].pixelsBytes;
+    const uint64 visibilitySections[] = {sizeof(hlight::VisibilitySetDisk),
+        uint64(m.visibilityFaces.Count())*sizeof(hlight::FaceVisibilityDisk),
+        uint64(m.visibilityEntries.Count())*sizeof(hlight::VisibilityEntryDisk),
+        uint64(m.visibilityProps.Count())*sizeof(hlight::PropVisibilityDisk),
+        uint64(m.visibilityMeshes.Count())*sizeof(hlight::PropMeshVisibilityDisk),
+        uint64(m.faceSupport.Count()),uint64(m.unbakedFaces.Count())*sizeof(hlight::UnbakedFaceDisk),
+        uint64(m.unbakedLightIndices.Count())*sizeof(uint32),uint64(m.visibilityPayload.Count())};
+    for (int i = 0; i < ARRAYSIZE(visibilitySections); ++i)
+        fileBytes = ((fileBytes+15)&~uint64(15))+visibilitySections[i];
+    if (fileBytes > hlight::kMaxFileBytes) return FailSize("asset",fileBytes);
     CUtlVector<byte> file; file.EnsureCapacity(int(fileBytes));
     file.SetCount(sizeof(header)); memset(file.Base(),0,file.Count());
     hlight::ModeDisk record = m.record;

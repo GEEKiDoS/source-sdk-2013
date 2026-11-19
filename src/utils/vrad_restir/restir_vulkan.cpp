@@ -982,8 +982,12 @@ void CReSTIRVulkanDevice::Impl::Dispatch( VkCommandBuffer command, ReSTIRPipelin
 
 void CReSTIRVulkanDevice::Impl::Upload( int buffer, const void *data, VkDeviceSize bytes, VkDeviceSize offset )
 {
-	if ( bytes + offset > buffers[buffer].size )
+	if ( offset > buffers[buffer].size || bytes > buffers[buffer].size - offset )
+	{
+		Warning( "VRAD ReSTIR: upload binding=%d bytes=%llu offset=%llu allocation=%llu\n", buffer,
+			(unsigned long long)bytes, (unsigned long long)offset, (unsigned long long)buffers[buffer].size );
 		Fail( "buffer upload exceeds allocation" );
+	}
 	for ( VkDeviceSize done = 0; done < bytes; )
 	{
 		Wait();
@@ -1016,8 +1020,12 @@ void CReSTIRVulkanDevice::Impl::Upload( int buffer, const void *data, VkDeviceSi
 
 void CReSTIRVulkanDevice::Impl::Download( int buffer, void *data, VkDeviceSize bytes, VkDeviceSize offset, double *pTransferMs )
 {
-	if ( bytes + offset > buffers[buffer].size )
+	if ( offset > buffers[buffer].size || bytes > buffers[buffer].size - offset )
+	{
+		Warning( "VRAD ReSTIR: readback binding=%d bytes=%llu offset=%llu allocation=%llu\n", buffer,
+			(unsigned long long)bytes, (unsigned long long)offset, (unsigned long long)buffers[buffer].size );
 		Fail( "buffer readback exceeds allocation" );
+	}
 	for ( VkDeviceSize done = 0; done < bytes; )
 	{
 		if ( pTransferMs )

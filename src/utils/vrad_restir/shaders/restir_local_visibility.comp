@@ -77,6 +77,6 @@ void main()
 		query.flags = 0u;
 		query.reserved = 0u;
 	}
-	uint outputIndex = pc.pass == RESTIR_NO_HIT ? index : LuxelAddress( index );
+	uint outputIndex = pc.pass == RESTIR_NO_HIT ? index : index - pc.iteration;
 	localVisibility[outputIndex] = ComputeVisibility( query );
 }

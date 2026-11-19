@@ -410,9 +410,9 @@ struct ReSTIRLightmapResult
 	CUtlVector<float>			sunVisibility;	// EMPTY without a selected runtime sun, else one finite [0,1] scalar per
 												// geometric luxel (firstLuxel+s+t*luxelW). Closest-sky ray fraction only:
 												// independent of RGB, cosine, intensity, styles, bumps and denoising.
-	CUtlVector<unsigned char>	localVisibility; // EMPTY without selected locals; otherwise shadowLights.Count()*luxels.Count().
-												// Light-major rounded R8 planes indexed by the exact canonical selected-light index.
-												// Sun plane unused/zero; quantized once on bounded-ring readback, independent of RGB.
+	CUtlVector< CUtlVector<unsigned char> > localVisibility; // EMPTY without selected locals; otherwise one vector per
+												// canonical selected-light index, each local owning luxels.Count() rounded R8 values.
+												// Sun slot empty. Separate planes avoid a signed 32-bit lights*luxels index.
 };
 
 //-----------------------------------------------------------------------------

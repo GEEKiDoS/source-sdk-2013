@@ -111,10 +111,12 @@ The following verification predates the current estimator.
 Verification on GTX 1050 (2 GB), c1m1 density 1 with `-both -restir_shadowmaps -restir_iterations 2 -restir_candidates 1 -restir_maxbounces 1 -restir_denoiser none`: the unpaged reference completed in 4,523.39 s with one transport page after style resolution; heap-0 peaks were 1,445,454,816 B (LDR) and 1,466,754,016 B (HDR). A forced-paged `-restir_vram_budget 1400` counterpart completed in 3,797.59 s with three pages after style resolution and heap-0 peaks of 1,004,970,944 B (LDR) and 940,166,592 B (HDR). BSP LDR/HDR lighting lumps and the 286,255,488-byte embedded `.hlight` asset were byte-identical (decoded RGBExp32 and hlight pixel max/mean absolute differences 0/0). The complete density-2 `-fast` bake (default fast quality: 32 iterations, 4 candidates, 2 bounces, OIDN fast) also completed on the GTX 1050: wall 13,090.58 s; LDR 6,283.047 s and HDR 6,806.585 s; seven transport pages after style resolution; maximum heap-0 peaks 1,369,162,864 B (LDR) and 1,263,715,808 B (HDR). The validated density-2 assets are `.hlight` 283,490,920 B (LDR) / 566,981,784 B paired, `.hprobe` 105,111,040 B / 210,222,016 B paired, and `rshd` 8,520 B / 16,640 B paired; both modes were written successfully.
 
 ```bat
-game\vrad_restir_l4d2.bat -restir_shadowmaps -fast c1m1_hotel
+game\vrad_restir_l4d2.bat -fast c1m1_hotel
 ```
 
 A bare map name resolves under `mod_l4d2\maps` first, then under the retail `update`, `left4dead2_dlc3`..`left4dead2_dlc1` and `left4dead2` map folders; the `.light` is always written to `mod_l4d2\maps`, never beside a retail BSP.
+
+The wrapper always passes `-restir_shadowmaps` and adds its defaults for every option not given: `-final -restir_skyibl -restir_skyambientscale 2 -restir_bouncescale 1.5 -restir_maxbounces 2 -restir_hlight_density 2 -restir_ambientgrid 28` (`-fast` or `-final` replaces `-final`); it prints the final list as `Options: ...`. The wrapper-only switch `-restir_bsp` drops `-restir_shadowmaps` and writes a lit BSP instead of a `.light`. `game\vrad_restir_l4d2_addons.bat [options] [addon.vpk ...]` bakes every map of add-on VPKs (default: all of `mod_l4d2\addons`) through the wrapper, with the VPK's maps, materials and models extracted to `%TEMP%`, and retries a probe grid over budget with wider spacing.
 
 The L4D2 wrapper stages the executable, shaders, and SDK `filesystem_stdio.dll` under `%TEMP%` so the SDK Base installation and repository tool directory are not modified. If OIDN DLLs are present beside `game\bin\x64\vrad_restir.exe`, they are staged too and the bake summary reports `denoiser=oidn device=...`; otherwise it reports the bilateral fallback.
 
@@ -143,7 +145,7 @@ Invalid luxels follow VRAD's defaults: a face with no samples at all is written 
 
 Ordinary bakes follow VRAD's switchable-light rule: a face gets at most `MAXLIGHTMAPS` = 4 styles, including style 0. The scene build tests PVS, radius, hard fade, spot cone and cosine; faces with more than four candidate styles are resolved after upload with GPU shadow rays. A remaining ordinary overflow warns and retains the first four styles, as VRAD does.
 
-With `-restir_shadowmaps`, full-source transport retains up to 64 styles for ambient/detail gathers. Native BSP receiver lightmaps retain four slots and omit selected-local direct/styles exclusively used by selected lights. The active `.hlight` v4 world RGB retains v3's selected-local diffuse and Source styles. Receiver styles are admitted first, then nonzero selected-local styles in canonical light-index order; an existing style (including style 0) always fits. If a local cannot fit the four-slot palette, its RGB is not baked on that face; its selected index is recorded for full runtime diffuse/specular with immutable visibility. No light is dropped. Native receiver-style overflow still rejects. Selected sun direct remains runtime-only.
+With `-restir_shadowmaps`, full-source transport retains up to 64 styles for ambient/detail gathers. Native BSP receiver lightmaps retain four slots and omit selected-local direct/styles exclusively used by selected lights. The `.hlight` authored palette nevertheless retains every native BSP style so the untouched BSP face domain is admitted; selected-only styles have no receiver transport RGB and carry only baked selected direct where nonzero (or an empty tile). Receiver styles are admitted first, then any missing native styles, then nonzero selected-local styles in canonical light-index order. If a local cannot fit the four-slot palette, its RGB is not baked on that face; its selected index is recorded for full runtime diffuse/specular with immutable visibility. No light is dropped. Native receiver-style overflow still rejects. Selected sun direct remains runtime-only.
 
 Regression fixtures `source-style-overflow` and `baked-direct-style-overflow` require successful publication with exact per-face unbaked lists and independently checked RGB exclusion; the latter uses styles 0,32,33,34,35. `receiver-style-overflow` remains a native-style rejection. `baked-direct-styles` fits four selected styles without fallback. (The paired LDR/HDR acceptance runner that exercised these was removed with the LDR transport.)
 
@@ -164,6 +166,16 @@ pushed one unit along the face normal; the grid of a thin VBSP split can lie ent
 outside the face except for its middle column, and a point clamped onto a shared edge
 would sit on the neighbouring plane. No luxel is blocked for being outside its face.
 
+World visibility is gathered before transport pages are reused. Sun values are copied
+from each page into their scene-global luxel range. Local-light tracing additionally
+splits a transport page into batches that fit the 64 MiB service output buffer; each
+batch has an independent output base, so adaptive GPU dispatch chunks cannot write
+past that allocation. Host local visibility uses a separate R8 vector per canonical
+local light (the sun slot is empty), rather than a single `lights*luxels` vector.
+The aggregate may exceed `INT_MAX`; only each geometric luxel plane retains the
+scene's signed 32-bit indexing. Radiance readback also uses bounded staging-sized
+batches with 64-bit GPU byte offsets.
+
 The sidecar stores rounded R8 visibility in sorted canonical selected-manifest order
 (including the manifest sun slot in indices, but never a local entry for that slot).
 Each complete face directory contains explicit uniform values or tightly packed dense
@@ -174,8 +186,11 @@ lights are never omitted. Cone/fade-only rejection is deliberately not attempted
 All offsets are bounded and canonical, sections align to 16 bytes and dense payload
 starts align to four bytes. The shared validator rejects incomplete required entries,
 old runtime versions, malformed ordering/counts/padding and manifest/payload CRC mismatch.
-The signed BSP-pak limit (`0x7fffffff`) is checked explicitly; density is never reduced
-silently to make an oversized asset fit.
+The signed BSP-pak limit (`0x7fffffff`, 2,147,483,647 bytes) still applies to each
+serialized asset and the complete `.light` container, not to aggregate uncompressed
+host visibility planes. Uniform elision and proven finite-radius support determine
+the serialized visibility size. Oversized payloads/assets report the required and
+maximum byte counts; density is never reduced silently to make them fit.
 
 Static prop visibility is independent of VHV RGB production, including
 `STATIC_PROP_NO_PER_VERTEX_LIGHTING` props. Original/recovered receiver positions are
