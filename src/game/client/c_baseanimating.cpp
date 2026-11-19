@@ -1218,6 +1218,14 @@ void C_BaseAnimating::LockStudioHdr()
 		m_hStudioHdr = MDLHANDLE_INVALID;
 		return;
 	}
+	if ( pStudioHdr->numbones > MAXSTUDIOBONES )
+	{
+		Warning( "C_BaseAnimating::LockStudioHdr: rejecting %s with %d bones (maximum supported is %d)\n",
+			pStudioHdr->pszName(), pStudioHdr->numbones, MAXSTUDIOBONES );
+		mdlcache->UnlockStudioHdr( m_hStudioHdr );
+		m_hStudioHdr = MDLHANDLE_INVALID;
+		return;
+	}
 
 	CStudioHdr *pNewWrapper = new CStudioHdr;
 	pNewWrapper->Init( pStudioHdr, mdlcache );
