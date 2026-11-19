@@ -3053,6 +3053,9 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 #endif
 
 	CMatRenderContextPtr pRenderContext( materials );
+	const CViewSetup *pPostView = view ? view->GetViewSetup() : NULL;
+	const float flPostFov = pPostView ? pPostView->fov : 90.f;
+	const float flPostAspect = pPostView && pPostView->m_flAspectRatio > 0.f ? pPostView->m_flAspectRatio : static_cast<float>( w ) / MAX( h, 1 );
 
 	if ( g_bDumpRenderTargets )
 	{
@@ -3107,7 +3110,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 	if ( bPostProcessDX12 )
 	{
 		pRenderContext->SetRenderTarget( NULL );
-		PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, false );
+		PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, false, flPostFov, flPostAspect );
 		s_bScreenEffectTextureIsUpdated = false;
 	}
 	if ( mat_postprocess_enable.GetBool() )
@@ -3197,7 +3200,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 			if ( bPostProcessDX12 )
 			{
 				pRenderContext->SetRenderTarget( NULL );
-				PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, bPerformColCorrect );
+				PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, bPerformColCorrect, flPostFov, flPostAspect );
 			}
 			else
 			{
@@ -3502,7 +3505,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 			{
 				static ConVarRef mat_colorcorrection( "mat_colorcorrection" );
 				PostProcessDX12_Render( pRenderContext, 0, 0, dest_width, dest_height, flBloomScale,
-					g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights() && mat_colorcorrection.GetInt() );
+					g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights() && mat_colorcorrection.GetInt(), flPostFov, flPostAspect );
 			}
 			if ( mat_show_histogram.GetInt() && (engine->GetDXSupportLevel()>=90))
 				g_HDR_HistogramSystem.DisplayHistogram();

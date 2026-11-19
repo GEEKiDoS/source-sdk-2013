@@ -23,12 +23,17 @@
 #include "shaderapi_dx12.h"
 #include "shaderdevice_dx12.h"
 #include "tier0/dbg.h"
+#include "tier1/convar.h"
 #include <cstring>
 
 namespace shaderapidx12
 {
 namespace
 {
+ConVar r_ssr_debug( "r_ssr_debug", "0", FCVAR_CHEAT,
+	"DX12 SSR confidence: black = no receiver, red = miss, green = full replacement", true, 0, true, 1 );
+constexpr uint32 kForwardSSRDebug = 0x80000u; // PBR_FORWARD_SSR_DEBUG
+
 // Byte-identical to HLSL cbuffer DX12SSR ( b0, space1 ) in native_src/ssr_common.hlsli.
 struct alignas( 16 ) DX12SSRConstants
 {
@@ -238,6 +243,7 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 	constants.limits[0] = view.depth[0];
 	constants.limits[1] = kSSRNormalBias;
 	constants.limits[2] = kSSREdgeFade;
+	constants.limits[3] = r_ssr_debug.GetBool() ? 1.f : 0.f;
 	constants.temporal[0] = bHistory ? 1.f : 0.f;
 	constants.temporal[1] = kSSRMaxHistory;
 	constants.temporal[2] = static_cast<float>( nSceneWidth );
@@ -363,7 +369,7 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 
 		D3D12_RESOURCE_STATES sceneState = m_pDevice->SceneColorState();
 		const Rect_t localRect{ 0, 0, nWidth, nHeight };
-		if ( !BlitTexture( pDelta->resource.Get(), pDelta->subresourceStates[0], false, pDelta->format, m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, localRect, sceneRect, false, false, nullptr, BlitEncodeDX12::None, true ) )
+		if ( !BlitTexture( pDelta->resource.Get(), pDelta->subresourceStates[0], false, pDelta->format, m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, localRect, sceneRect, false, false, nullptr, BlitEncodeDX12::None, constants.limits[3] == 0.f ) )
 			return false;
 		pDelta->sampledStateValid = false;
 		++m_nTextureStateEpoch;
@@ -424,10 +430,8 @@ void CShaderAPIDX12::ReplayDispatchSSR()
 		return;
 	}
 	// The translucents and viewmodels after this bracket trace the same scene copy and view depth in their PBR shaders
-	// (pbr_forward_screenspace.hlsli): one linear march of ssr.forwardSteps (r_ssr_forward_steps, 0 off) steps, each
-	// crossing refined three times more than the profile refines, no reuse or history. control.x (contacts) and
-	// control.w (payload capture) stay 0; control.z carries the trace (DX12_SCREENSPACE_FORWARD_SSR | refinements << 8 |
-	// steps), which an opaque bracket never sets.
+	// (pbr_forward_screenspace.hlsli): a clipped screen-space march with additional crossing refinements, no reuse
+	// or history. control.w (payload capture) stays zero. control.z carries the flags and step counts.
 	const uint32 nForwardSteps = MIN( m_ScreenSpace.ssr.forwardSteps, 32u );
 	if ( !nForwardSteps )
 		return;
@@ -436,6 +440,8 @@ void CShaderAPIDX12::ReplayDispatchSSR()
 	forward = m_ScreenSpace.constants;
 	forward.control[0] = forward.control[1] = forward.control[3] = 0;
 	forward.control[2] = DX12_SCREENSPACE_FORWARD_SSR | ( ( profile.refinements + 3u ) << 8 ) | nForwardSteps;
+	if ( r_ssr_debug.GetBool() )
+		forward.control[2] |= kForwardSSRDebug;
 	forward.eyeLength[3] = m_ScreenSpace.ssr.maxDistance;
 	forward.forwardThickness[3] = m_ScreenSpace.ssr.thickness;
 	m_ScreenSpace.forwardSSR = true;

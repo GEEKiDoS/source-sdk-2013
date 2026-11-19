@@ -327,10 +327,11 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	uint2 unbakedLocalRange = r.unbakedLocalRange;
 	// Both PBR angular bases (Lambert, squared half-Lambert) have exact per-vertex prop planes.
 	bool bakedProp = false;
-	[branch] if ( r.bakedPropPrimitive != 0xFFFFFFFF && cPropDirect.x != 0xFFFFFFFF )
+	[branch] if ( r.bakedPropPrimitive != 0xFFFFFFFF )
 	{
-		bakedLocalDirect = ShadowMap_BeginBakedLookup( r, bakedLookup ) && ( bakedLookup.propFlags & 1u ) != 0;
-		bakedProp = bakedLocalDirect;
+		const bool mapped = ShadowMap_BeginBakedLookup( r, bakedLookup );
+		bakedProp = mapped && cPropDirect.x != 0xFFFFFFFF && ( bakedLookup.propFlags & 1u ) != 0;
+		bakedLocalDirect = bakedProp;
 		[branch] if ( bakedProp )
 			unbakedLocalRange = cPropDirect.zw;
 	}
@@ -338,9 +339,15 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	// sun's shadow work that hides their latency). The main loop's PBR_BakedVisibility begins a world face's lookup
 	// lazily, for the first light that needs its baked endpoint.
 	uint entryFirst = 0, entryCount = 0, firstLive = 0;
-	[branch] if ( bakedLocalDirect && bakedSpecular )
+	bool exactPropLocals = false;
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+	// Some authored props carry visibility but no baked RGB (e.g. NO_PER_VERTEX_LIGHTING). Their full
+	// direct term must come from the immutable receiver entries, not the view-ranked model approximation.
+	exactPropLocals = !bakedProp && r.bakedPropPrimitive != 0xFFFFFFFF && bakedLookup.valid != 0;
+#endif
+	[branch] if ( ( bakedLocalDirect && bakedSpecular ) || exactPropLocals )
 	{
-		[branch] if ( !bakedProp ) ShadowMap_BeginBakedLookup( r, bakedLookup );
+		ShadowMap_BeginBakedLookup( r, bakedLookup );
 		entryFirst = bakedLookup.cursor;
 		entryCount = bakedLookup.end - bakedLookup.cursor;
 		firstLive = PBR_LiveEntries( entryFirst, entryCount );
@@ -389,10 +396,10 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	d.bakedLocalDirect = bakedLocalDirect ? 1 : 0;
 	// Select the short resident tail BEFORE touching the full tile CSR.
 	uint2 range;
-	[branch] if ( bakedLocalDirect ) range = cSunIdentity.zw;
+	[branch] if ( bakedLocalDirect || exactPropLocals ) range = cSunIdentity.zw;
 	else range = ShadowMap_TileRange( r );
 #if defined( PBR_MODEL_LOCAL_SELECTION )
-	bool modelSelection = g_ModelLocalAmbient[0].w != 0.0;
+	bool modelSelection = g_ModelLocalAmbient[0].w != 0.0 && ( r.bakedPropPrimitive == 0xFFFFFFFF || bakedLookup.valid == 0 );
 	if ( modelSelection ) range = uint2( 0, 4 );
 #else
 	bool modelSelection = false;
@@ -401,14 +408,41 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	uint unbakedCursor = 0;
 	uint nextUnbaked = 0xFFFFFFFF;
 	bool hasUnbaked = !modelSelection && bakedLocalDirect && unbakedLocalRange.y != 0;
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+	uint propChunk = 0;
+	uint propLive = firstLive;
+#endif
 	// Empty lists retain the resident-only path: no raw-list loads or searches.
 	[loop] for ( uint i = 0; i < range.y
 		|| ( hasUnbaked && ( unbakedCursor < unbakedLocalRange.y || nextUnbaked != 0xFFFFFFFF ) )
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+		|| ( exactPropLocals && propChunk < entryCount )
+#endif
 		; )
 	{
 		uint index;
 		bool unbaked = false;
 #if defined( PBR_MODEL_LOCAL_SELECTION )
+		float propVisibility = 1.0;
+		bool fromProp = false;
+		if ( exactPropLocals && propChunk < entryCount )
+		{
+			if ( propLive == 0 )
+			{
+				propChunk += PBR_LIVE_BATCH;
+				if ( propChunk < entryCount ) propLive = PBR_LiveEntries( entryFirst + propChunk, entryCount - propChunk );
+				continue;
+			}
+			const uint4 propEntry = g_ShadowVisibilityEntries[entryFirst + propChunk + firstbitlow( propLive )];
+			propLive &= propLive - 1u;
+			index = PBR_ViewLightIndex( propEntry.x );
+			if ( index == 0xFFFFFFFF ) continue;
+			propVisibility = PBR_EntryVisibility( r, bakedLookup, propEntry );
+			if ( propVisibility == 0.0 ) continue;
+			fromProp = true;
+			unbaked = true;
+		}
+		else
 		if ( modelSelection )
 		{
 			int selected = int( g_ModelLocalIndices[i++] );
@@ -440,6 +474,8 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		{
 			index = g_ShadowTileIndices[range.x + i];
 			++i;
+			// On visibility-only props, the resident tail adds editor lights only; map lights were covered above.
+			if ( exactPropLocals && g_ShadowLights[index].bakedLightIndex != 0xFFFFFFFF ) continue;
 		}
 		uint lightId = g_ShadowLights[index].lightId;
 		bool lowest = lightId < lowestId;
@@ -482,9 +518,19 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			float3 contribution = radiance * ( ( PBR_Max3( basis ) + PBR_Max3( extra ) ) * ( bakedDelta ? realtimeWeight : 1.0 ) + PBR_Max3( specular ) );
 			bool sampleShadow = cSunBasisY.w <= 0.0 ||
 				max( contribution.r, max( contribution.g, contribution.b ) ) > cSunBasisY.w;
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+			// The sparse walk already loaded the R8 entry. The radiance cutoff only skips PCF,
+			// never its baked static occlusion.
+			[branch] if ( sampleShadow || fromProp )
+#else
 			[branch] if ( sampleShadow )
+#endif
 			{
 				float bakedVisibility = 1.0;
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+				[branch] if ( fromProp ) bakedVisibility = propVisibility;
+				else
+#endif
 				// A baked light's realtime visibility never exceeds its stored visibility: the bake traced the static
 				// geometry exactly, so the map only adds what moves. The PCF footprint otherwise reads through holes in
 				// static occluders (c1m1 stair risers are NO_SHADOW props) at contacts, and a stored 0 skips the PCF.
@@ -502,7 +548,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				float realtimeVisibility = bakedVisibility;
 				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
 				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).
-				[branch] if ( realtimeWeight > 0.0 && ( visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 && bakedVisibility > 0.0 )
+				[branch] if ( sampleShadow && realtimeWeight > 0.0 && ( visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 && bakedVisibility > 0.0 )
 				{
 					RuntimeShadowLightGpu light = g_ShadowLights[index];
 					light.origin = lightRange.origin;

@@ -375,16 +375,18 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// supplies it; non-envmapped materials write K/valid zero while the backend masks E/D/S stores.
 	const bool hasEnvmap = g_Flags1.x != 0.0;
 	float3 environment = 0.0, environmentResponse = 0.0;
+	float forwardConfidence = 0.0;
 	if ( hasEnvmap )
 	{
 		environment = PBR_Environment( EnvmapTexture, EnvmapSampler, sBump, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask, environmentResponse );
 		result += environment;
 #if !PBR_DEPTH_PREPASS && LIGHTPASS == 0
 		// Translucent receivers (windows) trace the opaque bracket's SSR scene themselves; only they see it bound.
-		[branch] if ( PBR_ForwardSSREnabled() && any( environmentResponse > PBR_FORWARD_MIN_RESPONSE ) )
+		[branch] if ( PBR_ForwardSSREnabled() && any( environmentResponse > 0.0 ) )
 		{
 			const float4 hit = PBR_ForwardSSR( P, sBump.N, V, sBump.roughness, i.svPos.xy );
 			result += hit.rgb * environmentResponse * ( hit.a / LINEAR_LIGHT_SCALE ) - hit.a * environment;
+			forwardConfidence = hit.a;
 		}
 #endif
 	}
@@ -406,6 +408,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	float3 eyePosition = P + i.toEye;
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, i.worldPos_projPosZ.w );
 	float4 color = DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), i.fog );
+	color.rgb = PBR_ForwardSSRDebug( color.rgb, environmentResponse, forwardConfidence );
 	float reflectionValid = 0.0, specularDistance = 0.0;
 	float3 environmentScene = 0.0, reflectionResponse = 0.0, directSpecular = 0.0;
 	[branch] if ( cScreenControl.w != 0 && hasEnvmap )

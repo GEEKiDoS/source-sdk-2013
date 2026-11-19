@@ -106,6 +106,13 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   SSR remains after the completed sky color and restored main depth. Evidence: `_agent_tools/out/sky_1080*`
   and `sky_exact*` (the latter screenshots predate the harness DPI correction).
 
+- Integer-HDR `buildcubemaps` leaves the engine's exposure bracket active instead of applying player exposure.
+  Its RGBA8888 readback uses a capture-only blit: `pow(saturate(sceneRGB), 1 / 2.2)` into a linear UNORM
+  target. The native engine raises those bytes to `2.2` and divides by the bracket when merging the PFM for
+  VTEX. The extra `/16` previously applied in the DX12 readback made recaptured cubemaps about 16x too dark.
+  Texture upload, runtime envmap decoding, and ordinary sRGB readbacks are unchanged. Previously overbright
+  or dark captures need to be rebuilt.
+
 - Feature detail sprites (`DX12_DetailShadowLit`) are lit once per sprite in the vertex shader, at the authored
   gather point all four card vertices share. Where the ambient probe grid covers that point, the light is the soft
   probe lobe around the authored up vector (`Probe_IrradianceSoft`, as for thin foliage) plus the runtime direct
@@ -1050,9 +1057,25 @@ vocabulary. Detail blend factor/tint, `$vertexcolor` (world), `$nodiffusebumplig
 Lighting (all PBR materials alike): GGX with height-correlated Smith visibility, pre-multiplied by pi so units match the
 legacy `albedo * NdotL * C`; Lambert diffuse where the term must match stored baked data (lightmaps, ambient cube,
 probes, the signed baked deltas), Burley for realtime-only lights. Direct specular comes from every light: realtime
-lights use `lerp(Vbaked, Vrt, weight)` visibility, baked-only lights their stored baked visibility. IBL samples the
-cubemap mip `roughness * (mips-1)` (the DX12 renderer adds `-forceallmips` so mip tails exist) with Karis'
-`EnvBRDFApprox`, optionally parallax-corrected by the VBSP box. Lightmaps, the ambient cube and the dense probes are
+lights use `lerp(Vbaked, Vrt, weight)` visibility, baked-only lights their stored baked visibility. IBL uses Karis'
+`EnvBRDFApprox`, with the usual `roughness * (mips - 1)` cubemap mip (`-forceallmips` keeps the tail) and optional
+VBSP box parallax correction. For local `$envmap env_cubemap` on PBR models, DX12 indexes the BSP sample textures
+the engine already downloads (`maps/<map>/c<x>_<y>_<z>[.hdr]` from `LUMP_CUBEMAPS`), scoped to the original binding's
+map and HDR/LDR variant. It selects up to three from the engine's lighting origin, or the current camera for the
+viewmodel depth range. It binds cubes at `t2`, `t14`, `t15` (sharing the `s2` sampler) and blends decoded radiance
+before material response and SSR. The normalized weights fall off quadratically out to the nearer of the fourth
+sample or 128 units beyond the nearest one, so a changing third slot fades to zero. Explicit envmaps, authored
+parallax boxes, map defaults and maps without alternatives keep the engine's single binding.
+
+Small (4-128 texels/face) cubes on smooth surfaces use a mip-0 bicubic B-spline in four bilinear direction taps.
+The dominant face sets the texel grid, but each offset remains a cube lookup; a one-texel transition at a face edge
+uses the hardware seamless filtering to avoid a discontinuity when the dominant face changes. The cubic contribution
+also fades out toward mip 1 or PBR roughness 0.20. The blend back costs one additional ordinary sample only during
+the transition; rough/minified lobes keep one sample per cube. Legacy DX12 glass (including ShatteredGlass highres),
+Refract, model/world envmaps and cubemap-only reflections in water use the same reconstruction with a gradient-based
+mip gate instead of roughness. Planar reflections, spheremaps and normalization cubes are not resampled.
+
+Lightmaps, the ambient cube and the dense probes are
 diffuse-only carriers multiplied by the diffuse colour once. Flashlight and `env_projectedtexture` (at most 8 per main
 view, nearest first) are cookie spotlights inside the same pass; the engine's additive flashlight pass draws nothing
 for PBR materials.
@@ -1103,12 +1126,12 @@ dynamic; `ENHANCED` adds the receiver lighting ABI and dense probes, `INFECTED` 
 come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the v3 probe grid in ten descriptors: indirection
 `t0`, DC `t1`, six bands `t2..t7`, validity `t8`, and six-nibble R32_UINT free distance `t9`. `Probe_Decode` keeps
 the exact hardware-filtered path when all eight corners can see the biased sample point. If any corner is blocked, it
-manually filters only visible corners, multiplying trilinear weights by validity and renormalizing before SH decode;
-an empty visible weight falls back to the engine ambient cube. The hardware path retains the 0.25 coverage gate.
-Where `Probe_Decode` covers a pixel of an unbumped static prop (`STATIC_LIGHT_VERTEX`), the probe irradiance replaces the
-engine's per-vertex prop lighting instead of adding to it. That COLOR1 stream is generated at runtime by the closed engine
-when the map ships no VHV, and it leaks light onto shadowed props (c1m1's `conduit_128` pipes). Uncovered pixels, and
-every pixel on maps without probes, keep the vertex lighting.
+manually filters only visible corners, multiplying trilinear weights by validity and renormalizing before SH decode.
+The hardware path retains the 0.25 coverage gate.
+On models a resident brick with no admissible corner contributes no indirect light. Falling back there to the engine
+ambient cube or vertex lighting would undo the occlusion: on c1m1 thin pipes the result looked like dashed white highlights
+where the normal-biased lookup approaches the wall. The engine cube and vertex stream remain the fallback when the brick is
+absent or no grid is bound. The detail-sprite vertex shader still uses its authored color wherever probe decode fails.
 `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
 parallax; `-case probegpu` the probe decode.
 
@@ -1127,8 +1150,8 @@ stored asset (c1m2 at spacing 28: 873 MB on disk, 1334 MiB resident), and on a 2
 over its 985 MiB budget before the grid, so uploading it whole made WDDM page the frame until the device hung
 (`0x887a0006`).
 
-Enhanced PBR models use the archived `r_model_local_lights` budget (default 4, range 1–4; 0 selects
-the original full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` runs on the recording
+Enhanced PBR models without a validated static-prop receiver use the archived `r_model_local_lights` budget
+(default 4, range 1–4; 0 selects the full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` runs on the recording
 owner using `CShaderAPIDX12::m_LightingOrigin` and the current retained view packet, with fixed-size
 stack storage and no per-draw allocation. It ranks lights by linear irradiance after the authored
 radius, distance falloff, cap, fade and spot cone; positive realtime weights take precedence.
@@ -1136,9 +1159,12 @@ Material registers c40–c46 carry four packet indices and six ambient-cube RGB 
 lights still use the normal BRDF, baked visibility and realtime shadows. The sun, projected lights
 and world lightmapped receivers are unchanged. Other direct lights are projected onto the six cube
 axes at the draw origin (unshadowed retail-style approximation), then squared-normal weights add
-that cube to dynamic models' probe/engine ambient. Exact static-prop receivers retain their baked
-direct carrier instead, avoiding a second diffuse contribution. Dense probes themselves contain
-leaf ambient, not the omitted ordinary point/spot direct light.
+that cube to those models' probe/engine ambient. Validated static props do not use the draw-local budget or its
+unshadowed ambient fold. A prop with baked direct RGB uses that carrier and the normal realtime deltas and style
+exceptions. A visibility-only prop walks the mesh's sparse nonzero R8 entries, resolves each light against the view
+packet and applies its baked visibility even without a chart. Realtime charts only refine that visibility, and
+editor lights are still evaluated from the runtime tail. This prevents an omitted or folded map light from making a
+prop pop as the view changes. Dense probes carry indirect lighting, not the ordinary point/spot direct term.
 
 Static and dynamic props are therefore lit by the same carriers: probes (or the ambient cube) plus the
 runtime light table, which holds every map light and the sun. The engine's per-model light list
@@ -1317,10 +1343,24 @@ intentionally not exposed in the Graphics tab because it is a debugging/tuning
 control rather than a quality tier. The final temporal output remains the term
 published to SSR, preserving AO on both receivers and reflected hits.
 
+At depth silhouettes the horizon pass reconstructs its normal from triangles on the
+receiver's surface, before biasing the ray origin. If no triangle survives the edge
+test it uses the direction toward the eye, not the depth behind the silhouette.
+The spatial filter does not reopen rejected edges. The bilateral upsample returns
+unoccluded visibility if none of its four depths represents the full-resolution pixel.
+This avoids dark fringes on undersampled cutout foliage without a material exclusion
+or reducing the GTAO radius. Detail sprites drawn after GTAO still appear over its
+debug view; their visible blade colour is not the AO term.
+
 ### Screen-space reflections
 
 `shaderapidx12/screenspace_ssr_dx12.cpp` runs stochastic SSR on single-sample scenes (MSAA scenes skip it) over the
-receivers above, every roughness included; misses and low-confidence pixels keep the cubemap term `E`.
+receivers above, every roughness included. A miss keeps the cubemap term `E`; partial confidence interpolates
+between `E` and the reflected scene radiance.
+
+`r_ssr_debug 1` (`sv_cheats 1`, SSR must be enabled) shows the resolved replacement confidence on both paths:
+black means no eligible PBR receiver, red is a miss, and green means full replacement. Later passes such as
+translucency, fog, volumetrics and tonemapping still run.
 
 `r_color_precision` (archived, default 0) selects the SSR payload precision: 0 RGBA16F; 1 R11G11B10_FLOAT plus an
 R16F `D` target (12 + 2 instead of 24 bytes per capturing fragment; `PBR_Output` folds the valid flag into `K`, so
@@ -1369,7 +1409,7 @@ binds to scene draws after the bracket that are translucent or viewmodel (viewpo
 | Slot | Content | When |
 |---|---|---|
 | t0 | viewport-local Bend sun visibility | after successful contact dispatch for the current receiver layer |
-| t5 | SSR scene copy, from mip 1 (mip 0 holds the composite's delta by then): opaque colour before SSR, GTAO and translucents | the frame's bracket SSR succeeded |
+| t5 | SSR scene colour mips 1 and coarser (mip 0 holds the composite's delta by then): opaque colour before SSR, GTAO and translucents | the frame's bracket SSR succeeded |
 | t6 | its positive view depth (sky, viewmodel and clear pixels far) | same |
 | t7 | the frame's GTAO term (`SetAmbientOcclusionTerm`), working size in `cScreenControl.y` | viewmodel draws, when GTAO ran on viewmodel depth |
 
@@ -1395,14 +1435,14 @@ of the remaining device-depth range, and `r_contactshadows_contrast` defaults to
 white is neutral, darker is more occluded. It does not enable the effect.
 The debug view uses single-pass PBR lighting and bypasses SSR, GTAO, and volumetrics. Sky and HUD are not receivers.
 
-- Reflection (`PBR_ForwardSSR`, envmapped materials with a response above 0.004, LIGHTPASS 0/1): one mirror ray per
-  pixel, a jittered linear clip-space march that, like `ssr_trace_cs51`, binary-refines each front-to-back crossing of
-  t6 and accepts it within the thickness; faded by roughness (0.3..0.5), the viewport edge and the last fifth of the
-  ray. A hit replaces the cubemap term like the composite does, `C * K / LINEAR_LIGHT_SCALE - confidence * E` before fog.
-  No reuse or history: it is the glossy mirror image, the cubemap stays for rough lobes and misses. Like every
-  screen-space reflection it only finds what is on screen. In c1m2 the car windows reflect the sky or what is behind
-  the camera, so they keep the cubemap: a confidence view of the composite at the police cars showed the glass as a
-  valid receiver with no hits, while the lower body panels hit the street.
+- Reflection (`PBR_ForwardSSR`, envmapped materials with nonzero response, LIGHTPASS 0/1): one mirror ray per pixel
+  clipped to the opaque world camera, then marched across its visible pixels with perspective-correct view depth.
+  The viewmodel's raster FOV and compressed device depth are not inputs to that depth test. Clipping first keeps
+  the step budget on on-screen content instead of skipping nearby surfaces with a long world-unit stride.
+  The shader refines front-to-back depth crossings and accepts them within `r_ssr_thickness`, then fades confidence
+  at screen edges and at the end of the distance budget. Roughness chooses a wider colour mip rather than fading
+  back to the cubemap on a valid hit. No ray reuse or history: the filtered mirror hit is a rough-lobe approximation.
+  Before fog, it applies `confidence * ( radiance * K / LINEAR_LIGHT_SCALE - E )`; misses leave `E` unchanged.
 - Occlusion (`PBR_ForwardAO`, model shader only): the viewmodel's colour before fog times the term at its pixel, the
   same product `gtao_apply_ps51` gives the scene. GTAO computes it from the viewmodel depth the depth prepass left
   (`r_viewmodel_depth_prepass`), unpacked with the viewmodel projection and scaled by tan( viewmodel half FOV ) / tan(
@@ -1461,6 +1501,60 @@ flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead o
 `bloomT = screen( bloomT, dirt * bloomT )`. Lens flare and glare are added to the HDR scene at
 `mat_postfx_lensflare * 0.1` before AgX; the output is `peak * screen( AgX( scene ) / peak, saturate( bloomT ) )`
 ahead of the LUT, dither and HDR scale. Debug view 1 shows `bloomT`.
+
+## Optical lens, auto white balance and CMOS capture
+
+**Advanced Graphics > Post-processing** exposes five independent, archived toggles. All default to off.
+The `CAMERA_MODEL=0` composite permutation has no camera instructions or reads, and AWB never dispatches.
+Camera optics run on the temporally reconstructed scene, with the existing bloom and flare inputs already
+available. The scene and bloom use the same green-channel geometry; the lens dirt and internal lens reflections
+are not part of the scene projection. HUD/VGUI are drawn later, unwarped. The camera pass does not run for
+the cubemap, reflection, refraction or monitor subviews.
+
+* `mat_postfx_lensdistortion 1` enables Brown-Conrady distortion. Incoming rays use focal-length-normalized
+  image-plane coordinates, `q = NDC * tan(FOV/2)` per axis. The radial forward projection is
+  `q * (1 + k1*r^2 + k2*r^4)`, where `r = |q|`. The shader inverts it to sample the image. The dimensionless
+  `mat_postfx_lensdistortion_k1` and `mat_postfx_lensdistortion_k2` default to `-0.05` (barrel) and `0`.
+  The client limits coefficients that could fold the projection and derives an inscribed zoom-to-fill
+  from the corner radius (also checking the radial polynomial's interior minimum). Barrel distortion compresses
+  the margins toward the center; filling the frame enlarges the center and reduces the usable frustum. The
+  crop preserves as much as the original corner ray for the barrel-only case while narrowing the mid-edge FOV.
+* `mat_postfx_chromatic 1` enables lateral CA. `mat_postfx_chromatic_strength` defaults to `0.003`,
+  a red-to-blue magnification difference of 0.3% relative to green. Red and blue solve the same projection
+  with magnifications `1 - strength/2` and `1 + strength/2`; the optical center remains registered.
+  Distortion needs one bilinear scene sample, CA needs three, and both share the composite.
+* `mat_postfx_vignette 1` applies `cos(theta)^4 = 1 / (1 + |q|^2)^2` in linear radiance before exposure.
+  The angle is that of the incoming green ray after inverting the lens. `mat_postfx_vignette_strength`
+  blends toward the physical falloff (`0.65` by default). Optional `mat_postfx_vignette_radius` is a
+  field-stop cutoff in tan-space: it approximates off-axis pupil occlusion and defaults to `0` (no field stop).
+* `mat_postfx_sensor 1` simulates a generic small CMOS sensor, not a profile of a specific camera.
+  A response matrix represents overlapping spectral sensitivities; each photosite clips independently at
+  `mat_postfx_sensor_fullwell` (`8` in exposed scene units). The correction matrix recovers unclipped
+  colors but amplifies noise and color error after clipping. `mat_postfx_sensor_blacklevel` adds a residual
+  pedestal (`0.001`); `mat_postfx_sensor_noise` scales optional read/shot variance (`0` disables it).
+  `mat_postfx_sensor_jpeg` (`1`) uses a compact camera picture curve with hard clipping in the Rec.709
+  container instead of the AgX gamut map (`0`).
+* `mat_postfx_awb 1` meters a 32x32 grid from the plain exposed bloom/flare mip when available, or sparsely
+  samples HDR directly when bloom and flare are off. Weighted gray-world favors midtones and discounts
+  near-clipped highlights and strongly colored surfaces. It projects the estimate onto a 2500–10000 K
+  illuminant locus in CIE 1960 UCS and attenuates fits far from the locus. A single compute group smooths
+  the Bradford LMS gains over `mat_postfx_awb_adaptation` seconds (`2`), storing them in two ping-ponged
+  1x1 FP32 textures. `mat_postfx_awb_strength` (`0.5`) sets partial adaptation toward D65. The heuristic
+  cannot uniquely recover the illuminant from a single dominant surface or mixed lighting.
+
+The scene order is lens/CA, optical transmission, exposure and sensor capture, linear Bradford adaptation,
+AgX or the camera picture curve, the existing bloom screen/LUT/dither/output scaling, and HUD. Only AWB needs
+an additional dispatch; no effect adds a full-screen pass. The bloom path is still the game's display-space
+bloom, not a simulated sensor artifact.
+
+In-game verification on `c1m1_hotel` (1920x1080, RTX 4070 SUPER): the same rooftop view was captured with
+all effects off, then distortion (`k1=-0.20`), CA (`0.025`) and vignette (`1.0`) separately, and with subtle
+settings (`k1=-0.05`, CA `0.003`, vignette `0.4`) together. A DLAA + one-layer DLSS-NR capture kept the HUD
+unwarped. Separate daylight and warm-hallway captures show AWB at strength `1.0`, including the transition
+and settled result. Lobby captures demonstrate sensor clipping/noise (`fullwell=1`, `blacklevel=0.004`,
+`noise=0.08`). The timing overlay reported `Composite` at 0.07 ms off / 0.16 ms all on, and
+`DoEnginePostProcessing` at 0.35 ms off / 0.46 ms all on. These are short-window GPU timing samples,
+not a cross-hardware benchmark.
 
 ## Exact glare reach bound
 

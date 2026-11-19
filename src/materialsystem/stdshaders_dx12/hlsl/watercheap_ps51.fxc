@@ -2,6 +2,7 @@
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
 #define DX12_LEGACY_PS20B 1
 #include "dx12_preamble.h"
+#include "envmap_filter.hlsli"
 // STATIC: "CONVERT_TO_SRGB"		"0..1"	[= g_pHardwareConfig->NeedsShaderSRGBConversion()]
 // STATIC: "MULTITEXTURE"			"0..1"
 // STATIC: "FRESNEL"				"0..1"
@@ -146,7 +147,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 #endif
 	
 	HALF3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, worldSpaceEye );
-	HALF3 specularLighting = ENV_MAP_SCALE * EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+	HALF3 specularLighting = ENV_MAP_SCALE * Envmap_SampleLegacy( EnvmapSampler.tex, EnvmapSampler.smp, reflectVect );
 	specularLighting *= g_ReflectTint;
 	
 #if FRESNEL

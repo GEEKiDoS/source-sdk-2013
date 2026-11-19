@@ -26,7 +26,7 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	float4 g_Parallax0; // @legacy ps:c6
 	float4 g_Parallax1; // @legacy ps:c7
 	float4 g_Parallax2; // @legacy ps:c8
-	// xyz cubemap capture origin
+	// xyz cubemap capture origin; on models without a box, w=1 repurposes xyz as local-probe blend weights
 	float4 g_EnvmapOrigin; // @legacy ps:c9
 	// rgb emission tint, w draw-local light count (model)
 	float4 g_EmissionTint; // @legacy ps:c10

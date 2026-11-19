@@ -15,7 +15,8 @@ bool PostProcessDX12_Active();
 // First level init (config.cfg loaded): re-enables mat_postfx_dx12 once for a config saved before it was validated.
 void PostProcessDX12_ValidateConfig();
 void PostProcessDX12_SubmitFrameConfig();
-void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection );
+void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection,
+	float flHorizontalFov, float flAspectRatio );
 int PostProcessDX12_Status();
 
 #endif

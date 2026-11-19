@@ -230,7 +230,10 @@ void main( uint3 id : SV_DispatchThreadID )
 		}
 		delta = color.rgb * r.K - color.a * r.E - occlusion * r.S;
 	}
-	gDeltaOut[id.xy] = float4( delta, 0.0 );
+	// In debug mode the backend replaces RGB instead of adding the signed delta.
+	gDeltaOut[id.xy] = gSSRLimits.w != 0.0
+		? float4( r.valid ? float3( 1.0 - color.a, color.a, 0.0 ) : 0.0, 1.0 )
+		: float4( delta, 0.0 );
 	gHistoryOut[id.xy] = color;
 	gHistoryAuxOut[id.xy] = float4( occlusion, historyLength, 0.0, 0.0 );
 }

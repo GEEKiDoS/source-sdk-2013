@@ -29,7 +29,6 @@ void main( uint3 dispatchID : SV_DispatchThreadID )
 		gAoOut[pix] = 1.0 / 1.5;
 		return;
 	}
-	centerZ *= 0.99920;
 	float2 uv = ( float2( pix ) + 0.5 ) * gViewportPixelSize;
 	float3 center = ViewPosition( uv, centerZ );
 	float3 left = ViewPosition( uv + float2( -1, 0 ) * gViewportPixelSize, leftZ );
@@ -38,6 +37,8 @@ void main( uint3 dispatchID : SV_DispatchThreadID )
 	float3 bottom = ViewPosition( uv + float2( 0, 1 ) * gViewportPixelSize, bottomZ );
 	float3 normal = CalculateNormal( edges, center, left, right, top, bottom );
 	float3 viewVec = normalize( -center );
+	// Offset horizon rays, not the vertex shared by the normal's four triangles.
+	center *= 0.99920;
 	float effectRadius = gEffectRadius * gRadiusMultiplier;
 	float falloffRange = max( gEffectFalloffRange * effectRadius, 1e-4 );
 	float falloffFrom = effectRadius * ( 1.0 - gEffectFalloffRange );

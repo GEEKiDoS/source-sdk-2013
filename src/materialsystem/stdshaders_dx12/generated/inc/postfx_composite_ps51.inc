@@ -30,17 +30,35 @@ public:
 
 class postfx_composite_ps51_Dynamic_Index
 {
+	unsigned int m_nCAMERA_MODEL : 2;
+#ifdef _DEBUG
+	bool m_bCAMERA_MODEL : 1;
+#endif	// _DEBUG
 public:
+	void SetCAMERA_MODEL( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nCAMERA_MODEL = i;
+#ifdef _DEBUG
+		m_bCAMERA_MODEL = true;
+#endif	// _DEBUG
+	}
+
 	postfx_composite_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< postfx_composite_ps51_Block >( dx12native::kStagePixel );
+		m_nCAMERA_MODEL = 0;
+#ifdef _DEBUG
+		m_bCAMERA_MODEL = false;
+#endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		return 0;
+		Assert( m_bCAMERA_MODEL );
+		return ( 1 * m_nCAMERA_MODEL ) + 0;
 	}
 };
 
-#define shaderDynamicTest_postfx_composite_ps51 1
+#define shaderDynamicTest_postfx_composite_ps51 psh_forgot_to_set_dynamic_CAMERA_MODEL
 

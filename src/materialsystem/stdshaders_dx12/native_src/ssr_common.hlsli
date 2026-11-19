@@ -30,7 +30,7 @@ cbuffer DX12SSR : register( b0, space1 )
 	float4 gSSRTrace;                       // maxDistance, thickness, resolve radius (trace texels at roughness 1), startDistance
 	uint4 gSSRControl;                      // steps, refinements, colorMipCount, frame index
 	uint4 gSSRMip;                          // sourceMip, destinationMip, sourceWidth, sourceHeight (reduce pass)
-	float4 gSSRLimits;                      // depthClear, normalBias, edgeFade (pixels), 0
+	float4 gSSRLimits;                      // depthClear, normalBias, edgeFade (pixels), confidence debug
 	float4 gSSRTemporal;                    // history valid (0/1), max history frames (rough lobes), scene width, scene height
 	uint4 gSSRResolve;                      // resolve neighbour taps, motion vectors valid (0/1), reduced trace grid (0/1), resolution scale float bits
 	float4 gSSRAmbient;                     // AO term uv per local pixel x, y, value scale, valid (0/1) (trace)

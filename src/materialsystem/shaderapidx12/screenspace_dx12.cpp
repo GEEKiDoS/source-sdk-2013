@@ -764,8 +764,8 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 		ID3D12Resource *pScene = nullptr, *pDepth = nullptr, *pAO = nullptr;
 		D3D12_SHADER_RESOURCE_VIEW_DESC sceneSrv{}, depthSrv{}, aoSrv{};
 		D3D12_SAMPLER_DESC unusedSampler{};
-		// Transitions SSR scene mip 1, the SSR depth and the AO term to shader-readable; the views are this table's own.
-		if ( ssr && ( !PrepareSampledTexture( m_SSR.scene.handle, false, &pScene, sceneSrv, unusedSampler, nullptr, false, 1, 1 ) || !pScene ||
+		// Leave mip 0 (the signed delta) out of the forward radiance view.
+		if ( ssr && ( !PrepareSampledTexture( m_SSR.scene.handle, false, &pScene, sceneSrv, unusedSampler, nullptr, false, 1, 0 ) || !pScene ||
 		     !PrepareSampledTexture( m_SSR.depth[m_SSR.current ^ 1].handle, false, &pDepth, depthSrv, unusedSampler, nullptr, false, -1, 0 ) || !pDepth ) )
 			return fail();
 		if ( aoAvailable && ( !PrepareSampledTexture( m_SSR.aoTerm, false, &pAO, aoSrv, unusedSampler, nullptr, false, -1, 0 ) || !pAO ) )
@@ -788,6 +788,7 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 			{
 				srv.Format = sceneSrv.Format;
 				srv.Texture2D.MostDetailedMip = 1;
+				srv.Texture2D.MipLevels = m_SSR.scene.mipLevels - 1;
 				pResource = pScene;
 			}
 			else if ( slot == DX12_SCREENSPACE_T_SSR_DEPTH && pDepth )

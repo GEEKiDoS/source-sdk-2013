@@ -10,12 +10,13 @@
 // r_ssr_thickness). Contacts (control.x) and payload capture (control.w) are off. Every other draw sees neutral
 // constants, so both features are off.
 //
-// Reflection: one mirror ray per pixel, a linear march in clip space (linear along the 3D ray) with interleaved-gradient
-// jitter, then binary refinement. A hit replaces the cubemap term like ssr_composite_cs51 does: C * K - confidence * E.
+// Reflection: one ray per pixel, clipped to the opaque camera and marched in screen pixels with perspective-correct
+// depth, then binary-refined. A hit replaces the cubemap term like ssr_composite_cs51 does: C * K - confidence * E.
 // Occlusion: the term multiplies the pixel's lit colour before fog, exactly what gtao_apply_ps51 does to the scene.
 #ifndef PBR_FORWARD_SCREENSPACE_HLSLI
 #define PBR_FORWARD_SCREENSPACE_HLSLI
 #include "screenspace_view.hlsli"
+#include "ssr_ray.hlsli"
 
 Texture2D<float4> g_ScreenSSRScene : register( t5, space6 );
 Texture2D<float> g_ScreenSSRDepth : register( t6, space6 );
@@ -25,88 +26,98 @@ Texture2D<float> g_ScreenAO : register( t7, space6 );
 static const uint PBR_FORWARD_SSR = 0x10000u;
 static const uint PBR_FORWARD_AO = 0x20000u;
 static const uint PBR_FORWARD_AO_PACKED = 0x40000u; // the term is stored / 1.5 (gtao_main_cs51)
+static const uint PBR_FORWARD_SSR_DEBUG = 0x80000u;
 
 bool PBR_ForwardSSREnabled()
 {
 	return cScreenControl.x == 0u && ( cScreenControl.z & PBR_FORWARD_SSR ) != 0u;
 }
 
-static const float SSR_FORWARD_FAR = 1e30; // view depth of sky, viewmodel and clear pixels in t6
-// Below this response (K, what a sampled radiance is multiplied by) the reflection is invisible: no trace.
-static const float PBR_FORWARD_MIN_RESPONSE = 0.004;
+float3 PBR_ForwardSSRDebug( float3 color, float3 response, float confidence )
+{
+	return ( cScreenControl.z & PBR_FORWARD_SSR_DEBUG ) != 0u
+		? ( any( response > 0.0 ) ? float3( 1.0 - confidence, confidence, 0.0 ) : 0.0 )
+		: color;
+}
+
+float SSR_ForwardSeparation( float2 local, float invW )
+{
+	const int2 texel = clamp( int2( floor( local ) ), 0, int2( cScreenViewport.zw ) - 1 );
+	return rcp( invW ) - g_ScreenSSRDepth.Load( int3( texel, 0 ) );
+}
 
 // Scene radiance at the reflection hit (final scene units, rgb) and its confidence (a); a = 0 is a miss.
 float4 PBR_ForwardSSR( float3 P, float3 N, float3 V, float roughness, float2 svPos )
 {
-	// Rough lobes would need the stochastic resolve; past 0.5 the cubemap stays.
-	const float roughFade = 1.0 - smoothstep( 0.3, 0.5, roughness );
-	[branch] if ( roughFade <= 0.0 )
-		return 0.0;
 	const uint steps = max( cScreenControl.z & 0xffu, 1u );
 	const uint refinements = ( cScreenControl.z >> 8u ) & 0xffu;
 	const float maxDistance = cScreenEyeLength.w, thickness = cScreenForwardThickness.w;
 	const float3 R = reflect( -V, N );
 	const float3 start = P + N * cScreenDepth.y + R * cScreenDepth.z;
-	float3 end = start + R * maxDistance;
-	// Keep the ray in front of the camera so its clip w stays positive.
-	const float nearDepth = 1.0;
-	const float startDepth = Screen_ViewDepth( start ), endDepth = Screen_ViewDepth( end );
-	if ( endDepth < nearDepth )
-		end = lerp( start, end, saturate( ( startDepth - nearDepth ) / max( startDepth - endDepth, 1e-4 ) ) );
+	// P and R are in world space, even for a viewmodel. Its raster FOV and compressed device depth are
+	// irrelevant here: trace with the opaque projection and compare to opaque linear view depth.
 	const float4 clipStart = mul( cScreenWorldToClip, float4( start, 1.0 ) );
-	const float4 clipEnd = mul( cScreenWorldToClip, float4( end, 1.0 ) );
-	const float jitter = frac( 52.9829189 * frac( dot( svPos, float2( 0.06711056, 0.00583715 ) ) ) );
+	const float4 clipEnd = mul( cScreenWorldToClip, float4( start + R * maxDistance, 1.0 ) );
+	float t0, t1;
+	if ( !SSR_ClipSegment( clipStart, clipEnd, t0, t1 ) )
+		return 0.0;
+	const float4 q0 = lerp( clipStart, clipEnd, t0 ), q1 = lerp( clipStart, clipEnd, t1 );
 	const float2 viewport = cScreenViewport.zw;
-	// Like ssr_trace_cs51: find a front-to-back crossing of the scene depth, binary-refine it keeping the behind-side
-	// end, and accept it only within the thickness (a thin occluder the ray passes behind does not stop the march).
-	float previousT = 0.0, previousSeparation = -SSR_FORWARD_FAR, hitT = -1.0;
+	const float2 pixel0 = SSR_ClipToPixel( q0, viewport ), pixel1 = SSR_ClipToPixel( q1, viewport );
+	const float invW0 = rcp( q0.w ), invW1 = rcp( q1.w );
+	const float2 span = abs( pixel1 - pixel0 );
+	const uint count = min( steps, max( 1u, uint( ceil( max( span.x, span.y ) ) ) ) );
+	const float jitter = frac( 52.9829189 * frac( dot( svPos, float2( 0.06711056, 0.00583715 ) ) ) );
+	// Keep an actual front-side sample. A clipped entry may be behind the first opaque surface.
+	float previousU = 0.0, previousSeparation = SSR_ForwardSeparation( pixel0, invW0 ), hitU = -1.0;
 	float2 hitLocal = 0.0;
-	[loop] for ( uint step = 1u; step <= steps && hitT < 0.0; ++step )
+	[loop] for ( uint step = 1u; step <= count && hitU < 0.0; ++step )
 	{
-		const float t = ( float( step ) - jitter ) / float( steps );
-		const float4 clip = lerp( clipStart, clipEnd, t );
-		if ( clip.w <= 0.0 )
-			break;
-		const float2 local = float2( clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5 ) * viewport;
-		if ( any( local < 0.0 ) || any( local >= viewport ) )
-			break;
-		const float separation = clip.w - g_ScreenSSRDepth.Load( int3( local, 0 ) );
-		[branch] if ( previousSeparation < 0.0 && separation >= 0.0 )
+		// Spend the step budget on the visible part of the ray, not on world units behind the near
+		// receiver. Include the interval endpoint so subpixel rays still test the complete depth span.
+		const float u = step == count ? 1.0 : ( float( step ) - jitter ) / float( count );
+		const float2 local = lerp( pixel0, pixel1, u );
+		const float separation = SSR_ForwardSeparation( local, lerp( invW0, invW1, u ) );
+		[branch] if ( previousSeparation <= 0.0 && separation > 0.0 )
 		{
-			float lo = previousT, hi = t, hiSeparation = separation;
-			float2 hiLocal = local;
+			float lo = previousU, hi = u, hiSeparation = separation;
 			[loop] for ( uint r = 0u; r < refinements; ++r )
 			{
 				const float mid = 0.5 * ( lo + hi );
-				const float4 midClip = lerp( clipStart, clipEnd, mid );
-				const float2 midLocal = clamp( float2( midClip.x / midClip.w * 0.5 + 0.5, 0.5 - midClip.y / midClip.w * 0.5 ) * viewport, 0.0, viewport - 1.0 );
-				const float midSeparation = midClip.w - g_ScreenSSRDepth.Load( int3( midLocal, 0 ) );
-				if ( midSeparation >= 0.0 )
+				const float midSeparation = SSR_ForwardSeparation( lerp( pixel0, pixel1, mid ), lerp( invW0, invW1, mid ) );
+				if ( midSeparation > 0.0 )
 				{
 					hi = mid;
 					hiSeparation = midSeparation;
-					hiLocal = midLocal;
 				}
 				else
 					lo = mid;
 			}
 			if ( hiSeparation <= thickness )
 			{
-				hitT = hi;
-				hitLocal = hiLocal;
+				hitU = hi;
+				hitLocal = lerp( pixel0, pixel1, hi );
 			}
 		}
-		previousT = t;
+		previousU = u;
 		previousSeparation = separation;
 	}
-	[branch] if ( hitT < 0.0 )
+	[branch] if ( hitU < 0.0 )
 		return 0.0;
-	uint mipWidth, mipHeight;
-	g_ScreenSSRScene.GetDimensions( mipWidth, mipHeight );
-	const float3 radiance = g_ScreenSSRScene.Load( int3( min( uint2( hitLocal * 0.5 ), uint2( mipWidth, mipHeight ) - 1u ), 0 ) ).rgb;
+	// A wider lobe sees a larger footprint around the same mirror hit. t5 starts at scene mip 1;
+	// mip 0 of the underlying texture has already been reused for the opaque composite delta.
+	const float hitInvW = lerp( invW0, invW1, hitU );
+	const float hitT = lerp( t0 * invW0, t1 * invW1, hitU ) / hitInvW;
+	const float footprint = roughness * roughness * hitT * maxDistance * hitInvW * viewport.y;
+	uint mipWidth, mipHeight, mipCount;
+	g_ScreenSSRScene.GetDimensions( 0, mipWidth, mipHeight, mipCount );
+	const uint mip = uint( clamp( log2( max( footprint * 0.5, 1.0 ) ), 0.0, float( mipCount - 1u ) ) + 0.5 );
+	const uint2 mipSize = max( uint2( mipWidth, mipHeight ) >> mip, 1u );
+	const uint2 texel = min( uint2( max( hitLocal, 0.0 ) ) >> ( mip + 1u ), mipSize - 1u );
+	const float3 radiance = g_ScreenSSRScene.Load( int3( texel, mip ) ).rgb;
 	// Fade at the viewport edge (cScreenDepth.w pixels) and over the last fifth of the ray, as the compute trace does.
 	const float edge = min( min( hitLocal.x, hitLocal.y ), min( viewport.x - hitLocal.x, viewport.y - hitLocal.y ) );
-	const float confidence = roughFade * saturate( edge / max( cScreenDepth.w, 1.0 ) ) * ( 1.0 - smoothstep( 0.8, 1.0, hitT ) );
+	const float confidence = saturate( edge / max( cScreenDepth.w, 1.0 ) ) * ( 1.0 - smoothstep( 0.8, 1.0, hitT ) );
 	return float4( radiance, confidence );
 }
 

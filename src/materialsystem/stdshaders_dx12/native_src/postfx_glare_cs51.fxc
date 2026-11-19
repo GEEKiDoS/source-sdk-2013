@@ -4,10 +4,97 @@
 // same star instead: every output texel walks the three lines through itself, rotated by its own screen x, and adds
 // each source texel whose quad reaches it. gSrc is the eighth-resolution step of the thresholded flare input (one
 // texel per 2x2 output block), gDst the quarter-resolution glare. p0 = glare intensity, p1 = luminance divider.
-// STATIC: "REDUCE" "0..1"
+// STATIC: "REDUCE" "0..2"
 #include "postfx_common.hlsli"
 
-#if REDUCE
+#if REDUCE == 2
+// Budgeted gray-world metering over the active view. Prefer usable midtones and reject
+// clipped highlights and strongly colored surfaces; luminance-normalize every accepted sample.
+groupshared float4 gWhite[64];
+
+float2 UniformChromaticity( float3 xyz )
+{
+	return float2( 4.0 * xyz.x, 6.0 * xyz.y ) / dot( xyz, float3( 1, 15, 3 ) );
+}
+
+float3 IlluminantGains( float3 rgb )
+{
+	const float3x3 rgbToXyz = float3x3( 0.4124564, 0.3575761, 0.1804375, 0.2126729, 0.7151522, 0.0721750, 0.0193339, 0.1191920, 0.9503041 );
+	const float3x3 bradford = float3x3( 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296 );
+	const float3 d65 = float3( 0.95047, 1.0, 1.08883 );
+	// Project onto a sampled illuminant locus in CIE 1960 UCS (warm Planckian to cool
+	// daylight via D65). Closest-segment interpolation bounds the correction to 2500-10000 K.
+	const float2 locus[6] = {
+		float2( 0.2718, 0.3540 ), float2( 0.2503, 0.3476 ),
+		float2( 0.2252, 0.3344 ), float2( 0.2114, 0.3231 ),
+		float2( 0.1978, 0.3122 ), float2( 0.1876, 0.2906 )
+	};
+	float2 measured = UniformChromaticity( mul( rgbToXyz, rgb ) );
+	float2 fitted = locus[4];
+	float best = 1.0;
+	[unroll]
+	for ( int i = 0; i < 5; ++i )
+	{
+		float2 segment = locus[i + 1] - locus[i];
+		float t = saturate( dot( measured - locus[i], segment ) / dot( segment, segment ) );
+		float2 projected = locus[i] + t * segment;
+		float2 error = measured - projected;
+		float distance2 = dot( error, error );
+		if ( distance2 < best )
+		{
+			best = distance2;
+			fitted = projected;
+		}
+	}
+	float3 white = float3( 1.5 * fitted.x / fitted.y, 1.0, ( 2.0 - 0.5 * fitted.x ) / fitted.y - 5.0 );
+	// A strongly off-locus frame is a poor illuminant estimate.
+	float confidence = 1.0 - smoothstep( 0.0001, 0.0036, best );
+	return lerp( 1.0, mul( bradford, d65 ) / mul( bradford, white ), confidence );
+}
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 lane : SV_GroupThreadID )
+{
+	float4 accum = 0;
+	[unroll]
+	for ( uint y = 0; y < 4; ++y )
+	{
+		[unroll]
+		for ( uint x = 0; x < 4; ++x )
+		{
+			float2 cell = ( lane.xy + uint2( x, y ) * 8 + 0.5 ) / 32.0;
+			float2 uv = float2( p2, pad0 ) + float2( pad1, pad2 ) * cell;
+			float3 c = max( gSrc.SampleLevel( gLinearClamp, uv, 0 ).rgb * p0, 0.0 );
+			float high = max( c.r, max( c.g, c.b ) );
+			float low = min( c.r, min( c.g, c.b ) );
+			float luma = dot( c, float3( 0.2126, 0.7152, 0.0722 ) );
+			float weight = smoothstep( 0.015, 0.05, luma ) * ( 1.0 - smoothstep( 0.6 * p1, p1, high ) );
+			weight *= smoothstep( 0.08, 0.45, low / max( high, 1e-4 ) );
+			accum += weight * float4( c / max( luma, 1e-4 ), 1 );
+		}
+	}
+	uint index = lane.y * 8 + lane.x;
+	gWhite[index] = accum;
+	GroupMemoryBarrierWithGroupSync();
+	[unroll]
+	for ( uint stride = 32; stride > 0; stride >>= 1 )
+	{
+		if ( index < stride )
+			gWhite[index] += gWhite[index + stride];
+		GroupMemoryBarrierWithGroupSync();
+	}
+	if ( index == 0 )
+	{
+		float3 prior = 1.0;
+		if ( texelX < 1.0 )
+			prior = gSrc2.Load( int3( 0, 0, 0 ) ).rgb;
+		float3 gains = prior;
+		if ( gWhite[0].w > 4.0 )
+			gains = lerp( prior, IlluminantGains( gWhite[0].rgb ), texelX );
+		gDst[uint2( 0, 0 )] = float4( gains, 1.0 );
+	}
+}
+#elif REDUCE == 1
 // Each group covers one disjoint source rectangle, including the odd-sized edge.
 // Component maxima remain exactly representable in the FP16 bounds target; summing
 // them later also bounds any bilinear sample, unlike storing a rounded FP16 luma.

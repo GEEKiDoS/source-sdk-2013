@@ -287,6 +287,22 @@ float3 PBR_EnvironmentResponse( PBRSurface s, float3 effectiveMask )
 	return g_ReflectionTint.rgb * effectiveMask * s.ao * PBR_EnvBRDF( s.F0, s.roughness, s.NdotV );
 }
 
+#include "envmap_filter.hlsli"
+
+#if defined( PBR_MODEL_ENVMAP_BLEND )
+TextureCube EnvmapBlend1 : register( t14 );
+TextureCube EnvmapBlend2 : register( t15 );
+#endif
+
+float3 PBR_EnvironmentRadiance( TextureCube cube, SamplerState smp, float3 R, float roughness )
+{
+	uint width, height, mips;
+	cube.GetDimensions( 0, width, height, mips );
+	float lod = roughness * ( max( mips, 1u ) - 1u );
+	float cubic = ( 1.0 - smoothstep( 0.12, 0.20, roughness ) ) * ( 1.0 - smoothstep( 0.35, 1.0, lod ) );
+	return Envmap_SampleSmooth( cube, smp, R, width, lod, cubic ).rgb;
+}
+
 // Parallax-corrected cubemap reflection (box rows map world to the unit cube; g_ReflectionTint.w enables),
 // sampled at roughness * (mips - 1). mask is the envmap mask; response receives PBR_EnvironmentResponse( s, mask ).
 float3 PBR_Environment( TextureCube cube, SamplerState smp, PBRSurface s, float3 P, float3 mask, out float3 response )
@@ -305,9 +321,19 @@ float3 PBR_Environment( TextureCube cube, SamplerState smp, PBRSurface s, float3
 			R = ( P + tMin * R ) - g_EnvmapOrigin.xyz;
 		}
 	}
-	uint width, height, mips;
-	cube.GetDimensions( 0, width, height, mips );
-	float3 radiance = cube.SampleLevel( smp, R, s.roughness * ( mips - 1 ) ).rgb;
+	float3 radiance = PBR_EnvironmentRadiance( cube, smp, R, s.roughness );
+#if defined( PBR_MODEL_ENVMAP_BLEND )
+	// A local probe set has no authored parallax box, so its draw weights reuse g_EnvmapOrigin.xyz.
+	// Blend decoded radiance before tint/BRDF/SSR and skip unused probes.
+	[branch] if ( g_EnvmapOrigin.w != 0.0 )
+	{
+		radiance *= g_EnvmapOrigin.x;
+		[branch] if ( g_EnvmapOrigin.y > 0.0 )
+			radiance += g_EnvmapOrigin.y * PBR_EnvironmentRadiance( EnvmapBlend1, smp, R, s.roughness );
+		[branch] if ( g_EnvmapOrigin.z > 0.0 )
+			radiance += g_EnvmapOrigin.z * PBR_EnvironmentRadiance( EnvmapBlend2, smp, R, s.roughness );
+	}
+#endif
 	response = PBR_EnvironmentResponse( s, mask );
 	return radiance * ENV_MAP_SCALE * response;
 }

@@ -3,6 +3,7 @@
 #define DX12_LEGACY_PS30 1
 #define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
+#include "envmap_filter.hlsli"
 //========= Copyright Valve Corporation, All rights reserved. ============//
 // Runtime-uniform material combinations; flashlight remains structural.
 // FOLD: "CUBEMAP" "0..1" STATIC slot=0
@@ -257,7 +258,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	if( bCubemap )
 	{
 		float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz );
-		specularLighting = ENV_MAP_SCALE * EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+		specularLighting = ENV_MAP_SCALE * Envmap_SampleLegacy( EnvmapSampler.tex, EnvmapSampler.smp, reflectVect );
 		specularLighting *= specularFactor;
 		specularLighting *= g_EnvmapTint_TintReplaceFactor.rgb;
 		float3 specularLightingSquared = specularLighting * specularLighting;

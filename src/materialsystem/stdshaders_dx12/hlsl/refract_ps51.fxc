@@ -2,6 +2,7 @@
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
 #define DX12_LEGACY_PS20B 1
 #include "dx12_preamble.h"
+#include "envmap_filter.hlsli"
 //====== Copyright � 1996-2007, Valve Corporation, All rights reserved. =======
 //
 //=============================================================================
@@ -293,7 +294,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	float3 worldSpaceNormal = Vec3TangentToWorld( vNormal.xyz, i.vWorldNormal, i.vWorldTangent, i.vWorldBinormal );
 
 	float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, i.vTangentVertToEyeVector );
-	float3 specularLighting = EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+	float3 specularLighting = Envmap_SampleLegacy( EnvmapSampler.tex, EnvmapSampler.smp, reflectVect );
 	specularLighting *= specularFactor;
 	specularLighting *= g_EnvmapTint;
 	float3 specularLightingSquared = specularLighting * specularLighting;

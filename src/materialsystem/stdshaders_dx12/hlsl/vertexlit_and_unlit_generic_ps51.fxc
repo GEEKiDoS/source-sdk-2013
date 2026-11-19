@@ -3,6 +3,7 @@
 #define DX12_LEGACY_PS30 1
 #define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
+#include "envmap_filter.hlsli"
 //========= Copyright Valve Corporation, All rights reserved. ============//
 // Runtime-uniform material combinations; structural combinations remain static.
 // FOLD: "DETAILTEXTURE" "0..1" STATIC slot=0
@@ -424,7 +425,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 		specularLighting = 0.5 * EnvmapSampler.tex.Sample( EnvmapSampler.smp, float2( reflectVect.x, reflectVect.y ) ) * g_DiffuseModulation.rgb * diffuseLighting;
 #else
 		HALF3 reflectVect = CalcReflectionVectorUnnormalized( i.worldSpaceNormal, i.worldVertToEyeVector.xyz );
-		specularLighting = ENV_MAP_SCALE * EnvmapSampler_CUBE.tex.Sample( EnvmapSampler_CUBE.smp, reflectVect );
+		specularLighting = ENV_MAP_SCALE * Envmap_SampleLegacy( EnvmapSampler_CUBE.tex, EnvmapSampler_CUBE.smp, reflectVect );
 		specularLighting *= specularFactor;
 		specularLighting *= g_EnvmapTint_TintReplaceFactor.rgb;
 		HALF3 specularLightingSquared = specularLighting * specularLighting;

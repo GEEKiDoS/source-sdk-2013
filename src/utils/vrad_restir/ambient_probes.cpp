@@ -239,6 +239,39 @@ void CollectProbes( ProbeBuild &b )
 			}
 }
 
+// The BSP point walk chooses the front leaf on an exact split. A grid aligned to a
+// floor or wall can therefore be classified as air while lying on the solid face.
+// The gather starts a small distance down each ray, past that face for rays aimed
+// into the solid, so those rays can pick up light from the far side of the brush.
+bool ProbeInOpenSpace( const Vector &point )
+{
+	// Match the gather ray's minimum distance (RESTIR_DIST_EPSILON).
+	const float epsilon = 0.03125f;
+	int node = 0;
+	bool nearSplit = false;
+	while ( node >= 0 )
+	{
+		const dnode_t &split = dnodes[node];
+		const dplane_t &plane = dplanes[split.planenum];
+		const float distance = DotProduct( plane.normal, point ) - plane.dist;
+		nearSplit |= fabsf( distance ) <= epsilon;
+		node = split.children[distance < 0.0f ? 1 : 0];
+	}
+	const int leaf = -node - 1;
+	if ( ( dleafs[leaf].contents & CONTENTS_SOLID ) || ReSTIR_PointInOpaqueLeafBrush( leaf, point ) )
+		return false;
+	if ( nearSplit )
+	{
+		for ( int side = 0; side < 6; ++side )
+		{
+			const int nearby = ReSTIR_PointLeaf( point + s_Axes[side] * epsilon );
+			if ( dleafs[nearby].contents & CONTENTS_SOLID )
+				return false;
+		}
+	}
+	return true;
+}
+
 // Invalid: inside solid or an opaque leaf brush, or a +-axis ray of one spacing starts inside geometry or reaches a
 // displacement back face; the BuildLeafCandidates tests of the leaf cube.
 bool ComputeValidity( ProbeBuild &b )
@@ -255,8 +288,7 @@ bool ComputeValidity( ProbeBuild &b )
 		rays.RemoveAll();
 		for ( int i = first; i < end; ++i )
 		{
-			const int leaf = ReSTIR_PointLeaf( b.positions[i] );
-			const bool open = !( dleafs[leaf].contents & CONTENTS_SOLID ) && !ReSTIR_PointInOpaqueLeafBrush( leaf, b.positions[i] );
+			const bool open = ProbeInOpenSpace( b.positions[i] );
 			b.state[i] = open ? PROBE_VALID : PROBE_INVALID;
 			if ( open )
 				for ( int side = 0; side < 6; ++side )

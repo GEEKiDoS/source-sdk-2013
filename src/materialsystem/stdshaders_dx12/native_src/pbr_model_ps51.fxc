@@ -44,6 +44,7 @@
 #undef TANGENT
 #include "common_ps_fxc.h"
 #define PBR_MODEL_LOCAL_SELECTION 1
+#define PBR_MODEL_ENVMAP_BLEND 1
 #include "pbr_lighting.hlsli"
 #include "pbr_forward_screenspace.hlsli"
 #if ENHANCED
@@ -127,12 +128,12 @@ struct DX12_PS_INPUT
 #endif
 };
 
-// Engine-selected local ambient (r_model_local_lights): the lights the selection left out, folded into an ambient cube,
-// unless the prop's baked direct already carries them.
+// Only unproven models use the draw-local ambient approximation. An authored prop
+// has its own visibility for map lights, whether or not it also carries baked RGB.
 #if ENHANCED
-float3 PBR_FoldedLocalAmbient( PBRSurface s, float3 N, ShadowMapDirect direct )
+float3 PBR_FoldedLocalAmbient( PBRSurface s, float3 N, ShadowMapReceiver receiver )
 {
-	if ( g_ModelLocalAmbient[0].w == 0.0 || direct.bakedLocalDirect != 0 )
+	if ( g_ModelLocalAmbient[0].w == 0.0 || receiver.bakedPropPrimitive != 0xFFFFFFFF )
 		return 0.0;
 	float3 n2 = N * N;
 	float3 folded = n2.x * ( N.x >= 0.0 ? g_ModelLocalAmbient[0].rgb : g_ModelLocalAmbient[1].rgb ) +
@@ -340,7 +341,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// The probe grid is decoded once per 2x2 quad (Probe_DecodeQuad): its quad operations need every lane of the quad
 	// alive, so it runs here, in uniform control flow before the wound clip and the alpha-test kill.
 	ProbeSH probe;
-	const bool probeDecoded = Probe_DecodeQuad( P, vertexNormal, ( uint( i.svPos.x ) & 1u ) | ( ( uint( i.svPos.y ) & 1u ) << 1u ), probe );
+	bool probeBrickResident;
+	const bool probeDecoded = Probe_DecodeQuad( P, vertexNormal, ( uint( i.svPos.x ) & 1u ) | ( ( uint( i.svPos.y ) & 1u ) << 1u ), probe, probeBrickResident );
 #endif
 	float alpha = g_BaseTint.a * vertexColor.a;
 #if INFECTED
@@ -383,7 +385,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten, specularSum );
 #endif
 	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
-	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, direct );
+	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, receiver );
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );
 	result *= PBR_ForwardAO( i.svPos.xy );
 	float3 eyePosition = P + i.toEye;
@@ -395,18 +397,15 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		ssrPayload ? specularSum.radiance * ( LINEAR_LIGHT_SCALE * transmission ) : 0.0, ssrPayload ? PBR_SpecularDistance( specularSum ) : 0.0 );
 #else
 
-	// Ambient. ENHANCED decodes the baked probe grid once per pixel quad at the vertex-normal-biased point (above) and
-	// evaluates it for N (and -N / the softened N below); where no probe covers the point, or no grid is bound, the engine
-	// ambient cube takes over.
-	// Subsurface softens toward the opposite hemisphere; backlight adds that hemisphere.
-	// A covered point also drops the static prop vertex lighting (COLOR1): the probes already carry the baked ambient, and
-	// the engine's runtime-generated prop colors leak light onto shadowed props (c1m1's conduit_128 pipes, which ship no VHV).
-	float3 ambient;
-	bool probeCovered = false;
+	// A loaded brick with no admissible corner is not missing probe data: its visibility/validity rejected this
+	// sample. Do not replace that occlusion with the engine ambient cube or runtime-generated static-prop vertex
+	// light. A genuinely absent brick (including unloaded streaming bricks) still needs the old fallback.
+	float3 ambient = 0.0;
+	bool useEngineAmbient = true;
 #if ENHANCED
+	useEngineAmbient = !probeBrickResident;
 	[branch] if ( probeDecoded )
 	{
-		probeCovered = true;
 		ambient = Probe_Irradiance( probe, N );
 		[branch] if ( s.sss != 0.0 || s.back != 0.0 )
 			ambient = lerp( ambient, Probe_IrradianceSoft( probe, N ) * s.subsurfaceTint, s.sss ) * ( 1.0 - s.back ) +
@@ -414,6 +413,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	else
 #endif
+	[branch] if ( useEngineAmbient )
 	{
 		ambient = PBR_AmbientCube( N );
 		[branch] if ( s.sss != 0.0 || s.back != 0.0 )
@@ -425,7 +425,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	float3 result = s.diffuseColor * s.ao * ambient;
 #if !PBR_HAS_TANGENT
-	if ( !probeCovered )
+	if ( useEngineAmbient )
 		result += s.diffuseColor * s.ao * i.staticLight;
 #endif
 	PBRSpecularSum specularSum = PBR_NoSpecularSum();
@@ -435,7 +435,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #endif
 #if ENHANCED
 	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
-	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, direct );
+	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, receiver );
 #endif
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );
 #endif
@@ -454,6 +454,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// supplies it; non-envmapped materials write K/valid zero while the backend masks E/D/S stores.
 	const bool hasEnvmap = g_Flags1.x != 0.0;
 	float3 environment = 0.0, environmentResponse = 0.0;
+	float forwardConfidence = 0.0;
 	if ( hasEnvmap )
 	{
 		environment = PBR_Environment( EnvmapTexture, EnvmapSampler, s, P, glossFromMask ? float3( 1.0, 1.0, 1.0 ) : envMask, environmentResponse );
@@ -461,10 +462,11 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if !PBR_DEPTH_PREPASS && LIGHTPASS != 2
 		// Translucent receivers (car glass) and the viewmodels are drawn after the opaque bracket's SSR: they trace its
 		// scene copy themselves (only they see it bound).
-		[branch] if ( PBR_ForwardSSREnabled() && any( environmentResponse > PBR_FORWARD_MIN_RESPONSE ) )
+		[branch] if ( PBR_ForwardSSREnabled() && any( environmentResponse > 0.0 ) )
 		{
 			const float4 hit = PBR_ForwardSSR( P, s.N, normalize( i.toEye ), s.roughness, i.svPos.xy );
 			result += hit.rgb * environmentResponse * ( hit.a / LINEAR_LIGHT_SCALE ) - hit.a * environment;
+			forwardConfidence = hit.a;
 		}
 #endif
 	}
@@ -478,6 +480,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	float3 eyePosition = P + i.toEye;
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, eyePosition, P, projPosZ );
 	float4 color = DX12FinishPixel( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), i.fog );
+	color.rgb = PBR_ForwardSSRDebug( color.rgb, environmentResponse, forwardConfidence );
 	float reflectionValid = 0.0, specularDistance = 0.0;
 	float3 environmentScene = 0.0, reflectionResponse = 0.0, directSpecular = 0.0;
 	[branch] if ( cScreenControl.w != 0 && hasEnvmap )

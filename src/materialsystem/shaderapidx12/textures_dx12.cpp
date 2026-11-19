@@ -7,6 +7,7 @@
 #include "pixelwriter.h"
 #include "materialsystem/shaderapidx12/shaderapi_dx12.h"
 #include "materialsystem/shaderapidx12/shaderdevice_dx12.h"
+#include "hardwareconfig_dx12.h"
 #include "lighting_dx12.h"
 #include "highres_lightmaps_dx12.h"
 #include "shaderapi/ishaderutil.h"
@@ -996,6 +997,120 @@ bool CShaderAPIDX12::AllocateNativeTexture( TextureRecord &texture )
 	return true;
 }
 
+// The retail BSP world loader resolves LUMP_CUBEMAPS into named map textures before rendering.
+// Register those normal material-system downloads, including sidecar overrides, without loading
+// VTFs again or taking a reference that could keep the old level's textures alive.
+void CShaderAPIDX12::RegisterMapCubemap( TextureRecord &texture )
+{
+	if ( !( texture.flags & TEXTURE_CREATE_CUBEMAP ) || ( texture.flags & TEXTURE_CREATE_RENDERTARGET ) ||
+	     texture.copies != 1 || texture.name.Length() >= MAX_PATH )
+		return;
+	char path[MAX_PATH];
+	V_strncpy( path, texture.name.Get(), sizeof( path ) );
+	V_FixSlashes( path, '/' );
+	char *folder = path;
+	if ( !V_strnicmp( folder, "materials/", 10 ) )
+		folder += 10;
+	if ( V_strnicmp( folder, "maps/", 5 ) )
+		return;
+	char *slash = strrchr( folder + 5, '/' );
+	if ( !slash || slash == folder + 5 || ( slash[1] != 'c' && slash[1] != 'C' ) )
+		return;
+	const char *p = slash + 2;
+	Vector origin;
+	for ( int axis = 0; axis < 3; ++axis )
+	{
+		const bool negative = *p == '-';
+		if ( negative ) ++p;
+		if ( *p < '0' || *p > '9' ) return;
+		int value = 0;
+		do
+		{
+			value = value * 10 + ( *p++ - '0' );
+			if ( value > 131072 ) return; // well outside the BSP coordinate limit
+		} while ( *p >= '0' && *p <= '9' );
+		origin[axis] = float( negative ? -value : value );
+		if ( axis != 2 && *p++ != '_' ) return;
+	}
+	const bool hdr = !V_stricmp( p, ".hdr" ) || !V_stricmp( p, ".hdr.vtf" );
+	if ( !hdr && *p && V_stricmp( p, ".vtf" ) )
+		return;
+	*slash = '\0';
+	texture.cubemapMap = folder;
+	texture.cubemapOrigin = origin;
+	texture.cubemapHDR = hdr;
+	m_MapCubemaps.AddToTail( &texture );
+}
+
+void CShaderAPIDX12::SelectMapCubemaps( ShaderAPITextureHandle_t original, const Vector &position,
+	ShaderAPITextureHandle_t ( &handles )[3], float ( &weights )[4] )
+{
+	MapCubemapSelection &last = m_LastMapCubemapSelection;
+	if ( last.textureEpoch == m_nTextureStateEpoch && last.original == original && last.position == position )
+	{
+		memcpy( handles, last.handles, sizeof( handles ) );
+		memcpy( weights, last.weights, sizeof( weights ) );
+		return;
+	}
+	const TextureRecord *base = FindTexture( original );
+	if ( !base || base->cubemapMap.IsEmpty() || m_MapCubemaps.Count() < 2 || !position.IsValid() )
+		return;
+
+	// Four distances, three textures. Using the fourth distance as a support bound makes
+	// a probe reach zero weight *before* its descriptor can be replaced by the next one.
+	struct Candidate { const TextureRecord *texture; float d2; };
+	Candidate nearest[4]{};
+	for ( const TextureRecord *cube : m_MapCubemaps )
+	{
+		if ( cube->cubemapHDR != base->cubemapHDR || V_stricmp( cube->cubemapMap.Get(), base->cubemapMap.Get() ) )
+			continue;
+		// Allocation can precede download; do not select an uninitialized face.
+		bool complete = true;
+		for ( int face = 0; face < 6; ++face )
+			complete = complete && cube->initializedSubresources[face * cube->mipLevels] != 0;
+		if ( !complete )
+			continue;
+		const float d2 = position.DistToSqr( cube->cubemapOrigin );
+		unsigned i = 0;
+		while ( i < ARRAYSIZE( nearest ) && nearest[i].texture && nearest[i].d2 <= d2 )
+		{
+			if ( nearest[i].texture->cubemapOrigin == cube->cubemapOrigin )
+				break;
+			++i;
+		}
+		if ( i == ARRAYSIZE( nearest ) || ( nearest[i].texture && nearest[i].texture->cubemapOrigin == cube->cubemapOrigin ) )
+			continue;
+		for ( unsigned j = ARRAYSIZE( nearest ) - 1; j > i; --j )
+			nearest[j] = nearest[j - 1];
+		nearest[i] = { cube, d2 };
+	}
+	if ( !nearest[1].texture )
+		return;
+
+	const float closest = sqrtf( nearest[0].d2 );
+	// A probe up to 128 units farther than the closest has a smooth (quadratic) falloff.
+	// Work in distances relative to the closest to avoid loss of precision far from all probes.
+	const float span = nearest[3].texture ? MIN( 128.0f, sqrtf( nearest[3].d2 ) - closest ) : 128.0f;
+	if ( span <= 0.001f )
+		return; // 4-way equidistance: no room for a three-texture support interval
+	float sum = 0.0f;
+	for ( unsigned i = 0; i < ARRAYSIZE( handles ); ++i )
+	{
+		const float t = nearest[i].texture ? MAX( 0.0f, 1.0f - ( sqrtf( nearest[i].d2 ) - closest ) / span ) : 0.0f;
+		weights[i] = t * t;
+		handles[i] = t > 0.0f ? nearest[i].texture->id : nearest[0].texture->id;
+		sum += weights[i];
+	}
+	const float scale = 1.0f / sum;
+	for ( unsigned i = 0; i < ARRAYSIZE( handles ); ++i )
+		weights[i] *= scale;
+	last.textureEpoch = m_nTextureStateEpoch;
+	last.original = original;
+	last.position = position;
+	memcpy( last.handles, handles, sizeof( handles ) );
+	memcpy( last.weights, weights, sizeof( weights ) );
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Creates a texture: CPU staging copies plus the native resources
 //-----------------------------------------------------------------------------
@@ -1053,6 +1168,7 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	}
 	const ShaderAPITextureHandle_t hTexture = pRecord->id;
 	m_Textures.Insert( hTexture, pRecord );
+	RegisterMapCubemap( *pRecord );
 	return hTexture;
 }
 
@@ -1256,6 +1372,8 @@ void CShaderAPIDX12::DeleteTexture( ShaderAPITextureHandle_t handle )
 		if ( cached.handle == handle )
 			cached = {};
 	}
+	if ( !pRecord->cubemapMap.IsEmpty() )
+		m_MapCubemaps.FindAndFastRemove( pRecord );
 	m_Textures.Remove( handle );
 	delete pRecord;
 	++m_nTextureIdentityEpoch;
@@ -2371,9 +2489,18 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 	D3D12_RESOURCE_STATES *pState = pRecord ? &pRecord->subresourceStates[pRecord->currentCopy * Faces( *pRecord ) * pRecord->mipLevels] : &sceneState;
 	Microsoft::WRL::ComPtr<ID3D12Resource> pTemporary;
 	Rect_t readRect = *srcRect;
-	// FP16 targets hold linear scRGB; 8-bit readers get sRGB bytes from a hardware-encoded blit, not a raw conversion.
-	const bool bEncodeSRGB = pSource->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT && format != IMAGE_FORMAT_RGBA16161616F;
-	if ( bEncodeSRGB || pSource->GetDesc().SampleDesc.Count > 1 || srcRect->width != dstRect->width || srcRect->height != dstRect->height )
+	// The integer-HDR cubemap merger decodes the RGBA8888 readback with gamma 2.2
+	// and divides out the exposure bracket. Invert its gamma only: separately
+	// rescaling RGB here changes the stored HDR radiance. Other readers use sRGB.
+	const bool bFP16Conversion = pSource->GetDesc().Format == DXGI_FORMAT_R16G16B16A16_FLOAT && format != IMAGE_FORMAT_RGBA16161616F;
+	bool bHDRCubemap = false;
+	if ( bScene && bFP16Conversion && format == IMAGE_FORMAT_RGBA8888 &&
+		g_pHardwareConfigDX12 && g_pHardwareConfigDX12->GetHDRType() == HDR_TYPE_INTEGER )
+	{
+		const ConVarRef buildingCubemaps( "building_cubemaps", true );
+		bHDRCubemap = buildingCubemaps.GetBool();
+	}
+	if ( bFP16Conversion || pSource->GetDesc().SampleDesc.Count > 1 || srcRect->width != dstRect->width || srcRect->height != dstRect->height )
 	{
 		D3D12_RESOURCE_DESC desc = pSource->GetDesc();
 		desc.Width = dstRect->width;
@@ -2384,7 +2511,7 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 		desc.SampleDesc.Quality = 0;
 		desc.Alignment = 0;
 		desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-		if ( bEncodeSRGB )
+		if ( bFP16Conversion )
 			desc.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
 		D3D12_HEAP_PROPERTIES heap{};
 		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -2395,12 +2522,14 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 			return;
 		}
 		const Rect_t region{ 0, 0, dstRect->width, dstRect->height };
-		const bool bBlitted = BlitTexture( pSource, *pState, bScene, sourceFormat, pTemporary.Get(), temporaryState, false, bEncodeSRGB ? IMAGE_FORMAT_BGRA8888 : sourceFormat, *srcRect, region, false, bEncodeSRGB, nullptr );
+		const bool bBlitted = BlitTexture( pSource, *pState, bScene, sourceFormat, pTemporary.Get(), temporaryState, false,
+			bFP16Conversion ? IMAGE_FORMAT_BGRA8888 : sourceFormat, *srcRect, region, false, bFP16Conversion && !bHDRCubemap,
+			nullptr, bHDRCubemap ? BlitEncodeDX12::HDRCubemap : BlitEncodeDX12::None );
 		if ( bScene )
 			m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
 		if ( !bBlitted )
 		{
-			Warning( "ShaderAPIDX12: ReadPixels resolve, scaling or sRGB encode blit failed\n" );
+			Warning( "ShaderAPIDX12: ReadPixels resolve, scaling or format conversion blit failed\n" );
 			return;
 		}
 		m_pDevice->RetainResource( pTemporary.Get() );
@@ -2712,10 +2841,11 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 	if ( !pPSO )
 	{
 		static const char vsSource[] = "float4 main(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p*float2(2,-2)+float2(-1,1),0,1); }";
-		static const char psSource[] = "Texture2D image:register(t0); SamplerState sampleState:register(s0); cbuffer Region:register(b0){float4 uv;\n#if defined(PRESENT_GAMMA)||defined(PRESENT_HDR_SCALE)\nfloat4 gamma;\n#endif\n} float4 main(float4 pos:SV_Position):SV_Target {float4 color=image.SampleLevel(sampleState, pos.xy*uv.xy+uv.zw,0);\n#ifdef PRESENT_GAMMA\ncolor.rgb=pow(saturate(color.rgb),gamma.xxx); color.rgb=pow(saturate(color.rgb),gamma.yyy); color.rgb=saturate(color.rgb*gamma.z+gamma.w);\n#endif\n#ifdef PRESENT_HDR_SCALE\ncolor.rgb*=gamma.x;\n#endif\nreturn color;}";
+		static const char psSource[] = "Texture2D image:register(t0); SamplerState sampleState:register(s0); cbuffer Region:register(b0){float4 uv;\n#if defined(PRESENT_GAMMA)||defined(PRESENT_HDR_SCALE)\nfloat4 gamma;\n#endif\n} float4 main(float4 pos:SV_Position):SV_Target {float4 color=image.SampleLevel(sampleState, pos.xy*uv.xy+uv.zw,0);\n#ifdef PRESENT_GAMMA\ncolor.rgb=pow(saturate(color.rgb),gamma.xxx); color.rgb=pow(saturate(color.rgb),gamma.yyy); color.rgb=saturate(color.rgb*gamma.z+gamma.w);\n#endif\n#ifdef PRESENT_HDR_SCALE\ncolor.rgb*=gamma.x;\n#endif\n#ifdef HDR_CUBEMAP\ncolor.rgb=pow(saturate(color.rgb),1.0/2.2);\n#endif\nreturn color;}";
 		Microsoft::WRL::ComPtr<ID3DBlob> pVS, pPS, pError;
 		const D3D_SHADER_MACRO gammaDefines[] = { { "PRESENT_GAMMA", "1" }, { nullptr, nullptr } };
 		const D3D_SHADER_MACRO hdrDefines[] = { { "PRESENT_HDR_SCALE", "1" }, { nullptr, nullptr } };
+		const D3D_SHADER_MACRO cubemapDefines[] = { { "HDR_CUBEMAP", "1" }, { nullptr, nullptr } };
 		HRESULT hr = D3DCompile( vsSource, sizeof( vsSource ) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pVS, &pError );
 		if ( FAILED( hr ) )
 		{
@@ -2723,7 +2853,9 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 			return false;
 		}
 		pError.Reset();
-		hr = D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, encode == BlitEncodeDX12::Gamma ? gammaDefines : encode == BlitEncodeDX12::HdrScale ? hdrDefines : nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pPS, &pError );
+		const D3D_SHADER_MACRO *pDefines = encode == BlitEncodeDX12::Gamma ? gammaDefines :
+			encode == BlitEncodeDX12::HdrScale ? hdrDefines : encode == BlitEncodeDX12::HDRCubemap ? cubemapDefines : nullptr;
+		hr = D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, pDefines, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pPS, &pError );
 		if ( FAILED( hr ) )
 		{
 			Warning( "ShaderAPIDX12: native blit PS compile failed (0x%08x): %s\n", static_cast<unsigned>( hr ), pError ? static_cast<const char *>( pError->GetBufferPointer() ) : "unknown" );

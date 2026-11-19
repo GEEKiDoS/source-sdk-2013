@@ -9,7 +9,7 @@ class postfx_glare_cs51_Static_Index
 public:
 	void SetREDUCE( int i )
 	{
-		Assert( i >= 0 && i <= 1 );
+		Assert( i >= 0 && i <= 2 );
 		m_nREDUCE = i;
 #ifdef _DEBUG
 		m_bREDUCE = true;

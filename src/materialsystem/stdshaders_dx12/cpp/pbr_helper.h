@@ -37,7 +37,8 @@
 	SHADER_PARAM( ENVMAPPARALLAXOBB1, SHADER_PARAM_TYPE_VEC4, "", "Parallax box row 0 (world to unit box), written by VBSP" ) \
 	SHADER_PARAM( ENVMAPPARALLAXOBB2, SHADER_PARAM_TYPE_VEC4, "", "Parallax box row 1, written by VBSP" ) \
 	SHADER_PARAM( ENVMAPPARALLAXOBB3, SHADER_PARAM_TYPE_VEC4, "", "Parallax box row 2, written by VBSP" ) \
-	SHADER_PARAM( ENVMAPORIGIN, SHADER_PARAM_TYPE_VEC3, "", "Cubemap capture origin, written by VBSP" )
+	SHADER_PARAM( ENVMAPORIGIN, SHADER_PARAM_TYPE_VEC3, "", "Cubemap capture origin, written by VBSP" ) \
+	SHADER_PARAM( PBR_LOCAL_ENVMAP, SHADER_PARAM_TYPE_INTEGER, "0", "Internal model env_cubemap routing state" )
 
 // Expand inside a shader class (the parameter names are per-shader statics) to fill the PBR_SHADER_PARAMS indices.
 #define PBR_FILL_EXTRA_VARS( v ) \
@@ -59,7 +60,8 @@
 	( v ).parallaxObb1 = ENVMAPPARALLAXOBB1; \
 	( v ).parallaxObb2 = ENVMAPPARALLAXOBB2; \
 	( v ).parallaxObb3 = ENVMAPPARALLAXOBB3; \
-	( v ).envmapOrigin = ENVMAPORIGIN
+	( v ).envmapOrigin = ENVMAPORIGIN; \
+	( v ).localEnvmap = PBR_LOCAL_ENVMAP
 
 // Legacy adapters only (LightmappedGeneric, VertexLitGeneric, WorldVertexTransition): $surfaceprop plus the internal state
 // CaptureLegacyAdapterState records at SHADER_INIT_PARAMS, before the legacy helper can rewrite $envmap.
@@ -107,7 +109,7 @@ struct PBR_Vars_t
 	// PBR_SHADER_PARAMS
 	int mrao, metalness, roughness, ambientOcclusion, specularTexture, specularColor, emissionTexture;
 	int subsurface, subsurfaceTint, backlight, backlightTint, thickness, thicknessTexture, anisotropy, anisotropyRotation;
-	int parallaxObb1, parallaxObb2, parallaxObb3, envmapOrigin;
+	int parallaxObb1, parallaxObb2, parallaxObb3, envmapOrigin, localEnvmap;
 	// Legacy adapters only (PBR_LEGACY_ADAPTER_PARAMS); -1 elsewhere.
 	int surfaceProp, legacyEnvmapAuthored, legacyRoughness;
 

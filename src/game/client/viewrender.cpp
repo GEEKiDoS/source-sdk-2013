@@ -3001,11 +3001,18 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		render->SceneBegin();
 
 		pRenderContext.GetFrom( materials );
+		// The native integer-HDR capture sets an exposure bracket before each view and divides by it
+		// when merging the readbacks. Don't replace it with the player camera's exposure.
+		const bool bDX12HDRCubemap = building_cubemaps.GetBool() && ScreenSpaceDX12_Available() &&
+			g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_INTEGER;
+		if ( !bDX12HDRCubemap )
+		{
 #if defined( L4D2 )
-		Terror_ApplyToneMapping( pRenderContext );
+			Terror_ApplyToneMapping( pRenderContext );
 #else
-		pRenderContext->TurnOnToneMapping();
+			pRenderContext->TurnOnToneMapping();
 #endif
+		}
 		// Native-AA latch for this RenderView: the mode (or 0) is submitted before the skybox and every 3D draw, so
 		// monitor/intro/loading/stereo/render-target views never leave a provider armed for later draws.
 		const bool bMainTemporalViewEligible = UpscalerDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO &&

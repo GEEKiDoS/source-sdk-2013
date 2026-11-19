@@ -53,6 +53,7 @@ enum CompositeVar_t
 	COMPOSITE_FLARE,
 	COMPOSITE_GLARE,
 	COMPOSITE_DIRT,
+	COMPOSITE_AWB,
 	COMPOSITE_BLOOM_ENABLED,
 	COMPOSITE_FLARE_ENABLED,
 	COMPOSITE_GLARE_ENABLED,
@@ -62,15 +63,22 @@ enum CompositeVar_t
 	COMPOSITE_DEBUG_VIEW,
 	COMPOSITE_PARAMS0,
 	COMPOSITE_PARAMS1,
+	COMPOSITE_LENS,
+	COMPOSITE_CAMERA,
+	COMPOSITE_SENSOR,
+	COMPOSITE_AWB_PARAMS,
+	COMPOSITE_VIEW_RECT,
 	COMPOSITE_OUTPUT,
 	COMPOSITE_VAR_COUNT
 };
 
 static const char *const s_CompositeVarNames[COMPOSITE_VAR_COUNT] =
 {
-	"$scene", "$bloom", "$flare", "$glare", "$dirt", "$bloomenabled", "$flareenabled", "$glareenabled",
-	"$dirtenabled", "$outscale", "$peak", "$debugview", "$params0", "$params1", "$output"
+	"$scene", "$bloom", "$flare", "$glare", "$dirt", "$awb", "$bloomenabled", "$flareenabled", "$glareenabled",
+	"$dirtenabled", "$outscale", "$peak", "$debugview", "$params0", "$params1", "$lens", "$camera", "$sensor",
+	"$awbparams", "$viewrect", "$output"
 };
+
 
 enum RcasVar_t
 {
@@ -110,6 +118,9 @@ static CTextureReference s_FlareInput;
 static CTextureReference s_Flare;
 static CTextureReference s_Glare;
 static CTextureReference s_GlareBounds;
+static CTextureReference s_AwbState[2];
+static int s_nAwbState = 0;
+static bool s_bAwbStateValid = false;
 static CTextureReference s_Composite;
 static CTextureReference s_LensDirt;
 static PostMaterial_t s_BloomFirst;
@@ -123,6 +134,7 @@ static PostMaterial_t s_FlareBlurDown;
 static PostMaterial_t s_FlareBlurUp;
 static PostMaterial_t s_GlareMaterial;
 static PostMaterial_t s_GlareReduce;
+static PostMaterial_t s_AwbReduce;
 static PostMaterial_t s_CompositeMaterial;
 static PostMaterial_t s_RcasMaterial;
 static IShaderAPIDX12 *s_pShaderAPIDX12 = nullptr;
@@ -252,6 +264,22 @@ static ConVar mat_postfx_lensflare_threshold_range( "mat_postfx_lensflare_thresh
 static ConVar mat_postfx_glare( "mat_postfx_glare", "0.02", FCVAR_ARCHIVE, "DX12 post lens flare glare (star) intensity" );
 static ConVar mat_postfx_glare_divider( "mat_postfx_glare_divider", "60", FCVAR_ARCHIVE, "DX12 post lens flare glare: summed RGB at which a star reaches full length" );
 static ConVar mat_postfx_sharpen( "mat_postfx_sharpen", "0.5", FCVAR_ARCHIVE, "DX12 post RCAS sharpness 0..1" );
+static ConVar mat_postfx_lensdistortion( "mat_postfx_lensdistortion", "0", FCVAR_ARCHIVE, "Physical Brown-Conrady barrel distortion: 0 off, 1 on", true, 0.f, true, 1.f );
+static ConVar mat_postfx_lensdistortion_k1( "mat_postfx_lensdistortion_k1", "-0.05", FCVAR_ARCHIVE, "Brown-Conrady first radial coefficient in normalized tan-space", true, -1.f, true, 1.f );
+static ConVar mat_postfx_lensdistortion_k2( "mat_postfx_lensdistortion_k2", "0", FCVAR_ARCHIVE, "Brown-Conrady second radial coefficient in normalized tan-space", true, -1.f, true, 1.f );
+static ConVar mat_postfx_chromatic( "mat_postfx_chromatic", "0", FCVAR_ARCHIVE, "Physical lateral chromatic aberration: 0 off, 1 on", true, 0.f, true, 1.f );
+static ConVar mat_postfx_chromatic_strength( "mat_postfx_chromatic_strength", "0.003", FCVAR_ARCHIVE, "Red/blue focal-length difference as a fraction of green (0.01 = 1 percent)", true, 0.f, true, 0.05f );
+static ConVar mat_postfx_vignette( "mat_postfx_vignette", "0", FCVAR_ARCHIVE, "Cosine-fourth optical vignetting: 0 off, 1 on", true, 0.f, true, 1.f );
+static ConVar mat_postfx_vignette_strength( "mat_postfx_vignette_strength", "0.65", FCVAR_ARCHIVE, "Blend toward physical cos(theta)^4 falloff", true, 0.f, true, 1.f );
+static ConVar mat_postfx_vignette_radius( "mat_postfx_vignette_radius", "0", FCVAR_ARCHIVE, "Optional aperture cutoff in tan-space; 0 leaves only natural vignetting", true, 0.f, true, 4.f );
+static ConVar mat_postfx_awb( "mat_postfx_awb", "0", FCVAR_ARCHIVE, "Scene-estimated camera auto white balance: 0 off, 1 on", true, 0.f, true, 1.f );
+static ConVar mat_postfx_awb_strength( "mat_postfx_awb_strength", "0.5", FCVAR_ARCHIVE, "Partial Bradford chromatic adaptation strength", true, 0.f, true, 1.f );
+static ConVar mat_postfx_awb_adaptation( "mat_postfx_awb_adaptation", "2", FCVAR_ARCHIVE, "Auto white balance adaptation time in seconds", true, 0.05f, true, 10.f );
+static ConVar mat_postfx_sensor( "mat_postfx_sensor", "0", FCVAR_ARCHIVE, "Small CMOS sensor capture model: 0 off, 1 on", true, 0.f, true, 1.f );
+static ConVar mat_postfx_sensor_fullwell( "mat_postfx_sensor_fullwell", "8", FCVAR_ARCHIVE, "Sensor full-well radiance before per-channel clipping", true, 0.1f, true, 100.f );
+static ConVar mat_postfx_sensor_blacklevel( "mat_postfx_sensor_blacklevel", "0.001", FCVAR_ARCHIVE, "Sensor black/read floor in linear radiance", true, 0.f, true, 0.1f );
+static ConVar mat_postfx_sensor_noise( "mat_postfx_sensor_noise", "0", FCVAR_ARCHIVE, "Sensor photon/read noise amplitude; 0 disables noise", true, 0.f, true, 0.1f );
+static ConVar mat_postfx_sensor_jpeg( "mat_postfx_sensor_jpeg", "1", FCVAR_ARCHIVE, "Use a camera picture curve and hard Rec.709 gamut rather than AgX when simulating a CMOS sensor", true, 0.f, true, 1.f );
 static ConVar mat_postfx_debug( "mat_postfx_debug", "0", FCVAR_CHEAT, "DX12 post debug view: 0 off, 1 bloom, 2 flare, 3 glare, 4 dirt mask" );
 static ConVar mat_hdr_output( "mat_hdr_output", "0", FCVAR_ARCHIVE, "1 = HDR display output when the display reports HDR" );
 static ConVar mat_hdr_output_max_nits( "mat_hdr_output_max_nits", "0", FCVAR_ARCHIVE, "0 = detect display max nits on first HDR activation" );
@@ -290,6 +318,8 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 {
 	s_bRenderTargetsReady = false;
 	s_bMaterialsReady = false;
+	s_nAwbState = 0;
+	s_bAwbStateValid = false;
 	const char *shaderDLL = pHardwareConfig ? pHardwareConfig->GetShaderDLLName() : nullptr;
 	if ( !pMaterialSystem || !shaderDLL || V_stricmp( shaderDLL, "stdshader_dx12" ) )
 		return;
@@ -307,6 +337,9 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
 	s_GlareBounds.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXGlareBounds", kGlareBoundsSize, kGlareBoundsSize, RT_SIZE_LITERAL,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+	for ( int i = 0; i < ARRAYSIZE( s_AwbState ); ++i )
+		s_AwbState[i].Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( CFmtStr( "_rt_PostFXAwbState%d", i ), 1, 1, RT_SIZE_LITERAL,
+			IMAGE_FORMAT_RGBA32323232F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
 	s_Composite.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXComposite", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
 	s_LensDirt.Init( pMaterialSystem->FindTexture( "effects/lensdirt", TEXTURE_GROUP_OTHER, true ) );
@@ -333,6 +366,7 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	CreatePassMaterial( s_FlareBlurUp, pMaterialSystem, "dx12/postfx_flare_blur_up", 5 );
 	CreatePassMaterial( s_GlareMaterial, pMaterialSystem, "dx12/postfx_glare", 6 );
 	CreatePassMaterial( s_GlareReduce, pMaterialSystem, "dx12/postfx_glare_reduce", 8 );
+	CreatePassMaterial( s_AwbReduce, pMaterialSystem, "dx12/postfx_awb_reduce", 9 );
 	CreateMaterial( s_CompositeMaterial, pMaterialSystem, "dx12/postfx_composite", new KeyValues( "DX12_PostFXComposite" ),
 		s_CompositeVarNames, ARRAYSIZE( s_CompositeVarNames ) );
 	CreateMaterial( s_RcasMaterial, pMaterialSystem, "dx12/postfx_rcas", new KeyValues( "DX12_PostFXRcas" ),
@@ -364,6 +398,7 @@ void PostProcessDX12_Shutdown()
 	s_FlareBlurUp.m_Material.Shutdown();
 	s_GlareMaterial.m_Material.Shutdown();
 	s_GlareReduce.m_Material.Shutdown();
+	s_AwbReduce.m_Material.Shutdown();
 	s_CompositeMaterial.m_Material.Shutdown();
 	s_RcasMaterial.m_Material.Shutdown();
 	s_PostScene.Shutdown();
@@ -373,8 +408,12 @@ void PostProcessDX12_Shutdown()
 	s_Flare.Shutdown();
 	s_Glare.Shutdown();
 	s_GlareBounds.Shutdown();
+	for ( int i = 0; i < ARRAYSIZE( s_AwbState ); ++i )
+		s_AwbState[i].Shutdown();
 	s_Composite.Shutdown();
 	s_LensDirt.Shutdown();
+	s_nAwbState = 0;
+	s_bAwbStateValid = false;
 	s_pShaderAPIDX12 = nullptr;
 	s_bMaterialsReady = false;
 	s_bRenderTargetsReady = false;
@@ -417,7 +456,8 @@ void PostProcessDX12_SubmitFrameConfig()
 		Vector( PostProcessDX12_Active() ? HdrPeak( bHdr ) : 0.f, mat_postfx_exposure.GetFloat(), 0.f ) );
 }
 
-void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection )
+void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection,
+	float flHorizontalFov, float flAspectRatio )
 {
 	if ( !PostProcessDX12_Active() || w <= 0 || h <= 0 )
 		return;
@@ -440,6 +480,8 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	const bool bBloom = ( bComposite && flBloomExposure != 0.f ) || nDebugView == 1;
 	const bool bFlare = ( bComposite || nDebugView == 2 ) && flFlareIntensity != 0.f;
 	const bool bGlare = ( bComposite || nDebugView == 3 ) && flFlareIntensity != 0.f && flGlareIntensity != 0.f;
+	const bool bAwb = bComposite && mat_postfx_awb.GetBool() && mat_postfx_awb_strength.GetFloat() > 0.f &&
+		s_AwbState[0].IsValid() && s_AwbState[1].IsValid() && MaterialValid( s_AwbReduce );
 	const bool bFlareInput = bFlare || bGlare;
 	const bool bDirt = ( bBloom || nDebugView == 4 ) && s_LensDirt.IsValid() && mat_postfx_lensdirt_enable.GetBool() && mat_postfx_lensdirt.GetFloat() > 0.f;
 
@@ -467,6 +509,30 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 			DrawCompute( pRenderContext, material );
 		}
 	}
+
+	if ( bAwb )
+	{
+		PIXEVENT( pRenderContext, "Auto white balance estimate" );
+		const int nCurrent = s_nAwbState ^ 1;
+		const float flFrameTime = gpGlobals ? Clamp( gpGlobals->absoluteframetime, 0.f, 0.1f ) : ( 1.f / 60.f );
+		const float flAdaptation = s_bAwbStateValid ? 1.f - expf( -flFrameTime / mat_postfx_awb_adaptation.GetFloat() ) : 1.f;
+		// Use the plain bloom/flare mip when it already exists. Otherwise meter sparsely straight from HDR.
+		const bool bMeterMip = bBloom || bFlareInput;
+		ITexture *pMeterSource = bMeterMip ? static_cast<ITexture *>( s_BloomUp ) : static_cast<ITexture *>( s_PostScene );
+		SetPostPass( s_AwbReduce, pMeterSource, bMeterMip ? nFirstMip : 0, s_AwbState[nCurrent], 0,
+			bMeterMip ? 1.f : flExposure, mat_postfx_sensor.GetBool() ? mat_postfx_sensor_fullwell.GetFloat() : 1.5f );
+		const float meterRect[4] = { (float)x / s_PostScene->GetActualWidth(), (float)y / s_PostScene->GetActualHeight(),
+			(float)w / s_PostScene->GetActualWidth(), (float)h / s_PostScene->GetActualHeight() };
+		SetVector4( s_AwbReduce, POST_PARAMS1, meterRect );
+		const float adaptation[4] = { flAdaptation, 0.f, bMeterMip ? 1.f : flExposure,
+			mat_postfx_sensor.GetBool() ? mat_postfx_sensor_fullwell.GetFloat() : 1.5f };
+		SetVector4( s_AwbReduce, POST_PARAMS0, adaptation );
+		SetTexture( s_AwbReduce, POST_SRC_TEXTURE2, s_AwbState[s_nAwbState] );
+		SetInt( s_AwbReduce, POST_SRC_MIP2, 0 );
+		DrawCompute( pRenderContext, s_AwbReduce );
+		s_nAwbState = nCurrent;
+	}
+	s_bAwbStateValid = bAwb;
 
 	// Lens flare (Froyok): the plain first bloom level is thresholded into the flare input and stabilised by one
 	// dual Kawase step through its mip 1. Ghosts and halo are built from it and softened by another
@@ -531,8 +597,38 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	const float flUiNits = MAX( mat_hdr_output_ui_nits.GetFloat(), 1.f );
 	const float flPeak = HdrPeak( bHdr );
 	const float flOutScale = bHdr ? flWorldNits / flUiNits : 1.f;
-	// Lens flare and glare are added to the HDR scene at a tenth of their intensity, the bloom weight that used to
-	// scale them. The bloom exposure already carries the division by the summed layer count.
+	// D(r) = r * (1 + k1*r^2 + k2*r^4). Bound its derivative away from zero over the source frustum
+	// before inverting it. The smallest radial factor over the frustum gives a conservative inscribed crop.
+	const float flAspect = MAX( flAspectRatio > 0.f ? flAspectRatio : static_cast<float>( w ) / h, 0.1f );
+	const float flTanHalfH = tanf( Clamp( flHorizontalFov, 1.f, 179.f ) * ( M_PI_F / 360.f ) );
+	const float flTanHalfV = flTanHalfH / flAspect;
+	const float flR2 = flTanHalfH * flTanHalfH + flTanHalfV * flTanHalfV;
+	float flK1 = mat_postfx_lensdistortion.GetBool() ? mat_postfx_lensdistortion_k1.GetFloat() : 0.f;
+	float flK2 = mat_postfx_lensdistortion.GetBool() ? mat_postfx_lensdistortion_k2.GetFloat() : 0.f;
+	const float flCa = mat_postfx_chromatic.GetBool() ? mat_postfx_chromatic_strength.GetFloat() : 0.f;
+	const float flNegativeSlope = -( 3.f * MIN( flK1, 0.f ) + 5.f * MIN( flK2, 0.f ) * flR2 ) * flR2;
+	if ( flNegativeSlope > 0.75f )
+	{
+		// Preserve positive terms; only negative terms can fold the lens.
+		if ( flK1 < 0.f ) flK1 *= 0.75f / flNegativeSlope;
+		if ( flK2 < 0.f ) flK2 *= 0.75f / flNegativeSlope;
+	}
+	float flCrop = MIN( 1.f, 1.f + ( flK1 + flK2 * flR2 ) * flR2 );
+	if ( flK2 > 0.f && flK1 < 0.f )
+	{
+		const float flMinimum = Clamp( -flK1 / ( 2.f * flK2 ), 0.f, flR2 );
+		flCrop = MIN( flCrop, 1.f + ( flK1 + flK2 * flMinimum ) * flMinimum );
+	}
+	const float lens[4] = { flK1, flK2, flCa, flCrop * ( 1.f - 0.5f * flCa ) };
+	const float camera[4] = { flTanHalfH, flTanHalfV,
+		mat_postfx_vignette.GetBool() ? mat_postfx_vignette_strength.GetFloat() : 0.f,
+		mat_postfx_vignette_radius.GetFloat() };
+	const float sensor[4] = { mat_postfx_sensor.GetFloat() > 0.f ? mat_postfx_sensor.GetFloat() : 0.f,
+		MAX( mat_postfx_sensor_fullwell.GetFloat(), 0.1f ), mat_postfx_sensor_blacklevel.GetFloat(),
+		mat_postfx_sensor_noise.GetFloat() };
+	const float framePhase = gpGlobals ? static_cast<float>( gpGlobals->framecount & 0xffff ) : 0.f;
+	const float awbParams[4] = { bAwb ? mat_postfx_awb_strength.GetFloat() : 0.f, framePhase, mat_postfx_sensor_jpeg.GetFloat(), 0.f };
+	const float viewRect[4] = { static_cast<float>( x ), static_cast<float>( y ), static_cast<float>( w ), static_cast<float>( h ) };
 	const float composite0[4] = { flExposure, flBloomExposure / nLayers, flFlareIntensity * 0.1f, 0.f };
 	const float composite1[4] = { mat_postfx_lensdirt.GetFloat(), 0.f, 0.f, 0.f };
 	const float output[4] = { static_cast<float>( bHdr ? 1 : 0 ), 0.f, 0.f, 0.f };
@@ -542,6 +638,8 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	SetTexture( composite, COMPOSITE_FLARE, s_Flare );
 	SetTexture( composite, COMPOSITE_GLARE, s_Glare );
 	SetTexture( composite, COMPOSITE_DIRT, s_LensDirt );
+	if ( bAwb )
+		SetTexture( composite, COMPOSITE_AWB, s_AwbState[s_nAwbState] );
 	SetInt( composite, COMPOSITE_BLOOM_ENABLED, bBloom );
 	SetInt( composite, COMPOSITE_FLARE_ENABLED, bFlare );
 	SetInt( composite, COMPOSITE_GLARE_ENABLED, bGlare );
@@ -551,6 +649,11 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	SetInt( composite, COMPOSITE_DEBUG_VIEW, nDebugView );
 	SetVector4( composite, COMPOSITE_PARAMS0, composite0 );
 	SetVector4( composite, COMPOSITE_PARAMS1, composite1 );
+	SetVector4( composite, COMPOSITE_LENS, lens );
+	SetVector4( composite, COMPOSITE_CAMERA, camera );
+	SetVector4( composite, COMPOSITE_SENSOR, sensor );
+	SetVector4( composite, COMPOSITE_AWB_PARAMS, awbParams );
+	SetVector4( composite, COMPOSITE_VIEW_RECT, viewRect );
 	SetVector4( composite, COMPOSITE_OUTPUT, output );
 
 	// RCAS sharpens the temporal upscaler's output, so it only runs on frames the upscaler dispatched.

@@ -452,7 +452,7 @@ public:
 	uint32_t m_nTextureUploadReportFrames = 0;
 	void TickTextureUploadReport();
 	void RelieveTextureMemoryPressure();
-	enum class BlitEncodeDX12 : uint8_t { None, Gamma, HdrScale };
+	enum class BlitEncodeDX12 : uint8_t { None, Gamma, HdrScale, HDRCubemap };
 	// Presentation encode of the scene into a scene-sized FP16 or R8G8B8A8_UNORM texture (textures_dx12.cpp).
 	bool EncodeSceneTo( ID3D12Resource *pDestination, D3D12_RESOURCE_STATES &destinationState );
 	float PresentOutputScale() const;
@@ -515,6 +515,9 @@ public:
 		ImageFormat format = IMAGE_FORMAT_UNKNOWN, requestedFormat = IMAGE_FORMAT_UNKNOWN;
 		int flags = 0, priority = 0, binds = 0;
 		CUtlString name;
+		CUtlString cubemapMap; // non-empty for a named BSP sample, excluding cubemapdefault
+		Vector cubemapOrigin{ 0.0f, 0.0f, 0.0f };
+		bool cubemapHDR = false;
 		CUtlVector<unsigned char> pixels;
 		Microsoft::WRL::ComPtr<ID3D12Resource> resource;
 		bool uavCapable = false; // created with ALLOW_UNORDERED_ACCESS (render targets promoted by compute)
@@ -550,6 +553,20 @@ public:
 		int lodClamp = 0;
 		bool gpuDirty = true;
 	};
+
+	CUtlVector<TextureRecord *> m_MapCubemaps;
+	// Adjacent material batches (especially the viewmodel's) share the same query.
+	struct MapCubemapSelection
+	{
+		uint64_t textureEpoch = 0;
+		ShaderAPITextureHandle_t original = 0;
+		Vector position{ 0.0f, 0.0f, 0.0f };
+		ShaderAPITextureHandle_t handles[3]{};
+		float weights[4]{};
+	} m_LastMapCubemapSelection;
+	void RegisterMapCubemap( TextureRecord &texture );
+	void SelectMapCubemaps( ShaderAPITextureHandle_t original, const Vector &position,
+		ShaderAPITextureHandle_t ( &handles )[3], float ( &weights )[4] );
 
 	struct PreparedTextureSlot
 	{

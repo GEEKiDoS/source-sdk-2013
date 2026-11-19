@@ -5,6 +5,7 @@
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
 #define DX12_LEGACY_PS20B 1
 #include "dx12_preamble.h"
+#include "envmap_filter.hlsli"
 //========= Copyright Valve Corporation, All rights reserved. ============//
 // Reconstructed from the native Water/WaterCheap PS2b programs. The SDK
 // flashlight is a separate additive pass; it must not add the base twice.
@@ -1150,7 +1151,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	float3 eye = NormalizeSampler.tex.Sample( NormalizeSampler.smp, i.eye ).xyz;
 	float ndotv = dot( worldNormal, eye );
 	float3 reflectionVector = 2.0f * ndotv * worldNormal - dot( worldNormal, worldNormal ) * eye;
-	float3 reflection = EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectionVector ).rgb * ENV_MAP_SCALE * g_ReflectTint.rgb;
+	float3 reflection = Envmap_SampleLegacy( EnvmapSampler.tex, EnvmapSampler.smp, reflectionVector ).rgb * ENV_MAP_SCALE * g_ReflectTint.rgb;
 	float3 fogColor = g_WaterFogColor.rgb;
 #if HDRENABLED
 	fogColor = pow( fogColor, 2.2f );

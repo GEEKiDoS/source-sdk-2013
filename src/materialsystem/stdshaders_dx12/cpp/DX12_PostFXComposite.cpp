@@ -30,12 +30,18 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( FLARE, SHADER_PARAM_TYPE_TEXTURE, "", "Lens flare ghosts and halo" )
 		SHADER_PARAM( GLARE, SHADER_PARAM_TYPE_TEXTURE, "", "Lens flare glare" )
 		SHADER_PARAM( DIRT, SHADER_PARAM_TYPE_TEXTURE, "", "Lens dirt" )
+		SHADER_PARAM( AWB, SHADER_PARAM_TYPE_TEXTURE, "", "Temporally smoothed white-patch estimate" )
 		SHADER_PARAM( DIRTENABLED, SHADER_PARAM_TYPE_INTEGER, "0", "Lens dirt enabled" )
 		SHADER_PARAM( BLOOMENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Bloom producer active" )
 		SHADER_PARAM( FLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Flare producer active" )
 		SHADER_PARAM( GLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Glare producer active" )
 		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Scene scale, bloom exposure / summed layers and lens flare scale" )
 		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Lens dirt intensity (screened into the bloom)" )
+		SHADER_PARAM( LENS, SHADER_PARAM_TYPE_VEC4, "[0 0 0 1]", "Brown-Conrady k1, k2, lateral CA, zoom-to-fill" )
+		SHADER_PARAM( CAMERA, SHADER_PARAM_TYPE_VEC4, "[1 1 0 1]", "Tan half FOV x/y, vignette strength, radius" )
+		SHADER_PARAM( SENSOR, SHADER_PARAM_TYPE_VEC4, "[0 8 0.001 0]", "Sensor strength, full well, black level and noise" )
+		SHADER_PARAM( AWBPARAMS, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "AWB strength, frame phase" )
+		SHADER_PARAM( VIEWRECT, SHADER_PARAM_TYPE_VEC4, "[0 0 1 1]", "Source view rectangle in scene texels" )
 		SHADER_PARAM( OUTPUT, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: 1 when writing HDR output" )
 		SHADER_PARAM( OUTSCALE, SHADER_PARAM_TYPE_FLOAT, "1", "Output scale (world nits / UI nits in HDR)" )
 		SHADER_PARAM( PEAK, SHADER_PARAM_TYPE_FLOAT, "1", "AgX peak relative to paper white" )
@@ -66,7 +72,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			pShaderShadow->EnableDepthTest( false );
 			pShaderShadow->EnableDepthWrites( false );
 			pShaderShadow->EnableSRGBWrite( false );
-			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER4 + kMaxColorCorrectionLookups; ++nSampler )
+			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER9; ++nSampler )
 				pShaderShadow->EnableTexture( static_cast<Sampler_t>( nSampler ), true );
 			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION, 1, nullptr, 0 );
 			DECLARE_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
@@ -84,6 +90,14 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			if ( params[GLAREENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER3, GLARE, -1 );
 			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER3, TEXTURE_BLACK );
 			BindTexture( SHADER_SAMPLER4, DIRT, -1 );
+			const float *pLens = params[LENS]->GetVecValue();
+			const float *pCamera = params[CAMERA]->GetVecValue();
+			const float *pSensor = params[SENSOR]->GetVecValue();
+			const float *pAwb = params[AWBPARAMS]->GetVecValue();
+			const bool bAwb = pAwb[0] > 0.f;
+			const bool bCamera = pLens[0] != 0.f || pLens[1] != 0.f || pLens[2] != 0.f || pCamera[2] > 0.f || pSensor[0] > 0.f || bAwb;
+			if ( bAwb )
+				BindTexture( SHADER_SAMPLER9, AWB, -1 );
 
 			ShaderColorCorrectionInfo_t info;
 			pShaderAPI->GetCurrentColorCorrection( &info );
@@ -107,10 +121,19 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			DX12SetPixelShaderConstant( 2, output );
 			DX12SetPixelShaderConstant( 3, lutWeights );
 			DX12SetPixelShaderConstant( 4, lutWeight4 );
+			if ( bCamera )
+			{
+				DX12SetPixelShaderConstant( 5, pLens );
+				DX12SetPixelShaderConstant( 6, pCamera );
+				DX12SetPixelShaderConstant( 7, pSensor );
+				DX12SetPixelShaderConstant( 8, pAwb );
+				DX12SetPixelShaderConstant( 9, params[VIEWRECT]->GetVecValue() );
+			}
 
 			DECLARE_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
 			DECLARE_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( CAMERA_MODEL, bCamera );
 			SET_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
 		}
 		Draw();

@@ -6,6 +6,7 @@
 #define DX12_LEGACY_PS20B 1
 #define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
+#include "envmap_filter.hlsli"
 //========= Copyright Valve Corporation, All rights reserved. ============//
 // FOLD: "MASKEDBLENDING" "0..1" STATIC slot=0
 // FOLD: "BASETEXTURE2" "0..1" STATIC slot=1
@@ -443,7 +444,7 @@ else
 {
 			float3 eye = g_EyePos - i.world.xyz;
 			float3 reflection = 2 * worldNormal * dot( worldNormal, eye ) - eye * dot( worldNormal, worldNormal );
-			float3 environment = EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflection ).rgb * ENV_MAP_SCALE;
+			float3 environment = Envmap_SampleLegacy( EnvmapSampler.tex, EnvmapSampler.smp, reflection ).rgb * ENV_MAP_SCALE;
 			environment *= specularMask;
 			environment *= g_EnvmapTint;
 		if ( !FANCY_BLENDING )

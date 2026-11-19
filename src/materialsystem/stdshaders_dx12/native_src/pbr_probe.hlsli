@@ -3,8 +3,8 @@
 // (ishaderapidx12lighting.h). Probe_Decode runs once per pixel; Probe_Irradiance / Probe_IrradianceSoft then evaluate any
 // direction (N, -N for backlight, the subsurface-softened N) at the same normal-biased sample point.
 //
-// A point is "covered" when a grid is bound (cProbeBricks.w), it lies inside an allocated brick and the filtered
-// validity is at least 0.25. Otherwise Probe_Decode returns false and the caller uses the engine ambient cube.
+// Coverage means the resident brick provided enough visible, valid interpolation weight. The quad variant
+// also distinguishes an absent brick from a covered domain that rejected all usable corners.
 // Irradiance is the normalized diffuse E / pi in the engine's linear cube units, exactly what the ambient cube holds:
 // multiply by the diffuse color only.
 #ifndef PBR_PROBE_HLSLI
@@ -185,9 +185,10 @@ float4 Probe_QuadSum( float4 v ) { v += QuadReadAcrossX( v ); return v + QuadRea
 float Probe_QuadSum( float v ) { v += QuadReadAcrossX( v ); return v + QuadReadAcrossY( v ); }
 uint Probe_QuadOr( uint v ) { v |= QuadReadAcrossX( v ); return v | QuadReadAcrossY( v ); }
 // quadLane: ( x & 1 ) | ( ( y & 1 ) << 1 ) of the pixel's SV_Position, the D3D quad lane order.
-bool Probe_DecodeQuad( float3 positionWS, float3 normalWS, uint quadLane, out ProbeSH sh )
+bool Probe_DecodeQuad( float3 positionWS, float3 normalWS, uint quadLane, out ProbeSH sh, out bool brickResident )
 {
 	sh = (ProbeSH)0;
+	brickResident = false;
 	bool covered = false;
 	const float3 position = Probe_QuadSum( positionWS ) * 0.25;
 	const float3 normal = Probe_QuadSum( normalWS ) * 0.25;
@@ -198,6 +199,7 @@ bool Probe_DecodeQuad( float3 positionWS, float3 normalWS, uint quadLane, out Pr
 		uint slot = ProbeIndirection.Load( int4( int3( brick ), 0 ) );
 		[branch] if ( slot != 0xffffffffu )
 		{
+			brickResident = true;
 			uint3 atlasBricks = cProbeAtlasBricks.xyz;
 			uint3 atlasBrick = uint3( slot % atlasBricks.x, ( slot / atlasBricks.x ) % atlasBricks.y, slot / ( atlasBricks.x * atlasBricks.y ) );
 			float3 local = clamp( grid - brick * 4.0, 0.0, 4.0 );

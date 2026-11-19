@@ -1362,6 +1362,16 @@ def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None
     if highres: head = '#define DX12_HIGHRES_LIGHTMAPS 1\n#define DX12_SHADOWMAPS 1\n' + head
     if logical in SKY_CLIP_CASTERS: head += '#include "shadow_sky_clip.hlsli"\n'
     if stage == 'ps':
+        if logical.startswith(('shatteredglass_', 'refract_', 'vertexlit_and_unlit_generic_', 'skin_',
+                               'lightmappedgeneric_', 'l4d2_lightmappedgeneric_', 'l4d2_water_',
+                               'watercheap_', 'windowimposter_', 'vortwarp_')):
+            # The unbumped legacy shader has both a cube and a 2D spheremap. Rewrite only the cube lookup.
+            text, envmap_samples = re.subn(
+                r'\b(EnvmapSampler(?:_CUBE)?)\.tex\.Sample\(\s*\1\.smp,\s*'
+                r'(reflectVect|reflection|reflectionVector|vReflect|i\.eyeToVertVector)\s*\)',
+                r'Envmap_SampleLegacy( \1.tex, \1.smp, \2 )', text)
+            if envmap_samples:
+                head += '#include "envmap_filter.hlsli"\n'
         import genhighres
         role = genhighres.SAMPLER_ROLES.get(logical, 0)
         if role: head = f'// HIGHLIGHT_SAMPLERS: {role}\n' + head

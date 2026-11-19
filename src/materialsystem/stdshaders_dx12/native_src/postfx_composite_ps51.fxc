@@ -1,5 +1,6 @@
 // Native SM5.1 HDR composite: MagicBloom's layered bloom screened over the Minimal AgX scene, Froyok's lens flare and
 // glare added to the HDR scene, and four Source 32^3 LUT lookups.
+// DYNAMIC: "CAMERA_MODEL" "0..1"
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 #ifdef HDRTYPE
@@ -16,6 +17,11 @@ cbuffer PostComposite : register( b1, space1 )
 	float4 gOutput; // @legacy ps:c2
 	float4 gLutWeights; // @legacy ps:c3
 	float4 gLutWeight4; // @legacy ps:c4
+	float4 gLens; // @legacy ps:c5
+	float4 gCamera; // @legacy ps:c6
+	float4 gSensor; // @legacy ps:c7
+	float4 gAwbParams; // @legacy ps:c8
+	float4 gViewRect; // @legacy ps:c9
 };
 Texture2D<float4> gScene : register( t0 );
 Texture2D<float4> gBloom : register( t1 );
@@ -26,6 +32,7 @@ Texture3D<float4> gLut0 : register( t5 );
 Texture3D<float4> gLut1 : register( t6 );
 Texture3D<float4> gLut2 : register( t7 );
 Texture3D<float4> gLut3 : register( t8 );
+Texture2D<float4> gAwb : register( t9 );
 // One sampler per texture slot: each takes its texture's filtering (the scene copy is point-sampled 1:1, everything
 // else is linear).
 SamplerState gSceneSampler : register( s0 );
@@ -84,21 +91,135 @@ float3 SampleMip( Texture2D<float4> tex, float2 uv, uint mip )
 	return lerp( lerp( a, b, f.x ), lerp( c, d, f.x ), f.y );
 }
 
+#if CAMERA_MODEL
+// Safeguarded Newton solve of the forward Brown-Conrady radius.
+float2 LensRay( float2 q, float magnification, float rMax )
+{
+	q *= gLens.w / magnification;
+	[branch] if ( all( gLens.xy == 0 ) )
+		return q;
+	float radius = length( q );
+	float lo = 0.0;
+	float hi = rMax;
+	float r = min( radius, hi );
+	[unroll]
+	for ( int i = 0; i < 8; ++i )
+	{
+		float r2 = r * r;
+		float value = r * ( 1.0 + r2 * ( gLens.x + r2 * gLens.y ) ) - radius;
+		float slope = 1.0 + r2 * ( 3.0 * gLens.x + r2 * 5.0 * gLens.y );
+		lo = value < 0.0 ? r : lo;
+		hi = value > 0.0 ? r : hi;
+		float nextR = r - value / slope;
+		r = nextR < lo || nextR > hi ? 0.5 * ( lo + hi ) : nextR;
+	}
+	return q * ( r / max( radius, 1e-7 ) );
+}
+
+float3 SampleLensScene( float2 uv, float2 sceneSize, out float2 greenRay, out float2 sceneUv )
+{
+	float2 viewPixel = uv * sceneSize - gViewRect.xy;
+	float2 q = ( 2.0 * viewPixel / gViewRect.zw - 1.0 ) * gCamera.xy;
+	greenRay = q;
+	sceneUv = uv;
+	[branch] if ( all( gLens.xyz == 0 ) )
+		return gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb;
+	float rMax = length( gCamera.xy );
+	float2 uvMin = ( gViewRect.xy + 0.5 ) / sceneSize;
+	float2 uvMax = ( gViewRect.xy + gViewRect.zw - 0.5 ) / sceneSize;
+	float2 uvCenter = ( gViewRect.xy + 0.5 * gViewRect.zw ) / sceneSize;
+	float2 rayToUv = 0.5 * gViewRect.zw / ( gCamera.xy * sceneSize );
+	greenRay = LensRay( q, 1.0, rMax );
+	sceneUv = clamp( uvCenter + greenRay * rayToUv, uvMin, uvMax );
+	float3 rgb = SampleMip( gScene, sceneUv, 0 );
+	[branch] if ( gLens.z != 0.0 )
+	{
+		float2 uvR = uvCenter + LensRay( q, 1.0 - 0.5 * gLens.z, rMax ) * rayToUv;
+		float2 uvB = uvCenter + LensRay( q, 1.0 + 0.5 * gLens.z, rMax ) * rayToUv;
+		rgb.r = SampleMip( gScene, clamp( uvR, uvMin, uvMax ), 0 ).r;
+		rgb.b = SampleMip( gScene, clamp( uvB, uvMin, uvMax ), 0 ).b;
+	}
+	return rgb;
+}
+
+float VignetteTransmission( float2 ray )
+{
+	float cosTheta2 = rcp( 1.0 + dot( ray, ray ) );
+	// Optional field stop: gCamera.w is its clear angular radius in tan-space, zero disables it.
+	float aperture = gCamera.w > 0.0 ? 1.0 - smoothstep( 0.85 * gCamera.w, gCamera.w, length( ray ) ) : 1.0;
+	return lerp( 1.0, cosTheta2 * cosTheta2 * aperture, gCamera.z );
+}
+
+float3 SensorNoise( uint2 pixel, uint frame )
+{
+	uint3 h = pixel.x * 747796405u + pixel.y * 2891336453u + frame * 277803737u + uint3( 1, 997, 1999 );
+	h = ( ( h >> ( ( h >> 28 ) + 4 ) ) ^ h ) * 277803737u;
+	return float3( ( ( h >> 22 ) ^ h ) >> 8 ) * ( 1.0 / 16777216.0 ) - 0.5;
+}
+
+float3 CaptureSensor( float3 radiance, float2 pixel )
+{
+	// Generic overlapping RGB responses and a calibrated CCM. Its negative lobes recover color in
+	// unsaturated signals, but amplify errors once a photosite clips.
+	const float3x3 response = float3x3( 0.84, 0.12, 0.04, 0.08, 0.86, 0.06, 0.05, 0.15, 0.80 );
+	const float3x3 ccm = float3x3( 1.208, -0.160, -0.048, -0.108, 1.193, -0.085, -0.055, -0.214, 1.269 );
+	float3 signal = clamp( mul( response, max( radiance, 0.0 ) ), 0.0, gSensor.y );
+	[branch] if ( gSensor.w > 0.0 )
+	{
+		// Independent read noise plus signal-dependent Poisson shot variance.
+		float3 sigma = gSensor.w * sqrt( gSensor.z * gSensor.z + 0.01 * signal );
+		signal = clamp( signal + 3.464102 * sigma * SensorNoise( (uint2)pixel, (uint)gAwbParams.y ), 0.0, gSensor.y );
+	}
+	return mul( ccm, signal + gSensor.z );
+}
+
+float3 ApplyAwb( float3 c )
+{
+	[branch] if ( gAwbParams.x <= 0.0 )
+		return c;
+	const float3x3 rgbToXyz = float3x3( 0.4124564, 0.3575761, 0.1804375, 0.2126729, 0.7151522, 0.0721750, 0.0193339, 0.1191920, 0.9503041 );
+	const float3x3 xyzToRgb = float3x3( 3.2404542, -1.5371385, -0.4985314, -0.9692660, 1.8760108, 0.0415560, 0.0556434, -0.2040259, 1.0572252 );
+	const float3x3 bradford = float3x3( 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296 );
+	const float3x3 invBradford = float3x3( 0.9869929, -0.1470543, 0.1599627, 0.4323053, 0.5183603, 0.0492912, -0.0085287, 0.0400428, 0.9684867 );
+	float3 gains = lerp( 1.0, gAwb.Load( int3( 0, 0, 0 ) ).rgb, gAwbParams.x );
+	return mul( mul( xyzToRgb, invBradford ), mul( mul( bradford, rgbToXyz ), c ) * gains );
+}
+
+// Camera JPEG-style shoulder and explicit hard bounds in the Rec.709 container.
+float3 CameraEncoded( float3 c )
+{
+	float3 v = saturate( c / gSensor.y );
+	return sqrt( v ) * ( 1.5 - 0.5 * v );
+}
+#endif
+
 float4 main( PS_INPUT input ) : SV_Target0
 {
 	float2 uv = input.vUv0;
 	uint flags = (uint)gOutput.y;
+	float2 sceneUv = uv;
+#if CAMERA_MODEL
+	float2 sceneSize;
+	gScene.GetDimensions( sceneSize.x, sceneSize.y );
+	float2 ray;
+	float3 scene = SampleLensScene( uv, sceneSize, ray, sceneUv );
+	float transmission = VignetteTransmission( ray );
+	scene = ( scene * transmission ) * gSceneBloomFlare.x;
+#else
 	float3 scene = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb * gSceneBloomFlare.x;
+#endif
 	float3 bloom = 0;
-	[branch] if ( ( flags & 8 ) == 0 ) bloom = SampleMip( gBloom, uv, 1 );
+	[branch] if ( ( flags & 8 ) == 0 ) bloom = SampleMip( gBloom, sceneUv, 1 );
 	// MagicBloom: the layer average (mip 1 holds the layer sum; gSceneBloomFlare.y already divides by the layer count)
 	// is exposed and filmic-tonemapped into display space, and the lens dirt rides on the bloom alone.
 	float3 bloomT = BloomTonemap( max( bloom, 0 ) * gSceneBloomFlare.y );
 	float3 dirt = ( flags & 2 ) != 0 ? gDirt.SampleLevel( gDirtSampler, uv, 0 ).rgb * gDirtPeak.x : 0;
 	bloomT = Screen( bloomT, dirt * bloomT );
 	// The glare buffer is quarter resolution; four diagonal taps one half-resolution texel apart soften its quads.
+#if !CAMERA_MODEL
 	float2 sceneSize;
 	gScene.GetDimensions( sceneSize.x, sceneSize.y );
+#endif
 	float2 glareStep = 2.0 / sceneSize;
 	float3 glare = 0.25 * ( gGlare.SampleLevel( gGlareSampler, uv + glareStep * float2( -1, 1 ), 0 ).rgb +
 		gGlare.SampleLevel( gGlareSampler, uv + glareStep, 0 ).rgb +
@@ -108,14 +229,21 @@ float4 main( PS_INPUT input ) : SV_Target0
 	float3 lens = ( flare + glare ) * kFlareTint * gSceneBloomFlare.z;
 	uint debugView = (uint)gOutput.z;
 	uint lutCount = (uint)gOutput.w;
-	// Flare and glare join the HDR scene before its tonemap. The bloom is screened over the tonemapped scene in display
-	// code values (MagicBloom blends after its tonemaps), normalised by the peak so HDR output keeps the same blend.
 	float3 c = scene + lens;
+#if CAMERA_MODEL
+	[branch] if ( gSensor.x > 0.0 )
+		c = CaptureSensor( c, input.projPos.xy );
+	c = ApplyAwb( c );
+#endif
 	if ( debugView == 2 ) c = flare * kFlareTint * gSceneBloomFlare.z;
 	else if ( debugView == 3 ) c = glare * kFlareTint * gSceneBloomFlare.z;
 	else if ( debugView == 4 ) c = dirt;
 	float peak = max( gDirtPeak.y, 1e-4 );
 	float3 e = AgXEncoded( max( c, 0 ), peak );
+#if CAMERA_MODEL
+	[branch] if ( gSensor.x > 0.0 && gAwbParams.z > 0.0 )
+		e = CameraEncoded( c );
+#endif
 	if ( debugView == 1 ) e = saturate( bloomT );
 	else if ( debugView == 0 || debugView > 4 ) e = Screen( e, saturate( bloomT ) );
 	if ( ( flags & 4 ) != 0 && lutCount != 0 )

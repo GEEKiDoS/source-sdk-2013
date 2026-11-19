@@ -26,8 +26,6 @@ void main( uint3 dispatchID : SV_DispatchThreadID )
 		float4 topEdges = UnpackEdges( gEdgesIn.Load( int3( topP, 0 ) ) );
 		float4 bottomEdges = UnpackEdges( gEdgesIn.Load( int3( bottomP, 0 ) ) );
 		centerEdges *= float4( leftEdges.y, rightEdges.x, topEdges.w, bottomEdges.z );
-		float edginess = saturate( 4.0 - 2.5 - dot( centerEdges, 1.0.xxxx ) ) / 1.5 * 0.5;
-		centerEdges = saturate( centerEdges + edginess );
 		float weightTL = diagonalWeight * ( centerEdges.x * leftEdges.z + centerEdges.z * topEdges.x );
 		float weightTR = diagonalWeight * ( centerEdges.z * topEdges.y + centerEdges.y * rightEdges.z );
 		float weightBL = diagonalWeight * ( centerEdges.w * bottomEdges.x + centerEdges.x * leftEdges.w );

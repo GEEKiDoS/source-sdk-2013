@@ -303,7 +303,14 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 	if ( s.hasBump )
 		enable( sm.bump, false );
 	if ( s.hasEnvmap )
+	{
 		enable( sm.envmap, hdrNone );
+		if ( s.model && lightPass != 2 )
+		{
+			enable( 14, hdrNone );
+			enable( 15, hdrNone );
+		}
+	}
 	if ( s.hasDetail || s.infectedDetail )
 		enable( sm.detail, s.detailAdditive && !s.infected );
 	if ( s.envmapMask == 1 )
@@ -467,6 +474,10 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 			memcpy( ps[6], box, sizeof( box ) );
 			params[v.envmapOrigin]->GetVecValue( ps[9], 3 );
 		}
+		// An explicit texture or authored parallax box must keep the original cubemap.
+		ps[9][3] = s.model && !hasBox && GetIntParam( v.localEnvmap, params, 0 ) != 0 ? 1.0f : 0.0f;
+		if ( ps[9][3] != 0.0f )
+			ps[9][0] = 1.0f; // one original cube until the draw backend resolves the local set
 	}
 
 	float l4d2[4][4] = {};
@@ -860,8 +871,19 @@ static float SurfacePropRoughness( const char *surfaceProp )
 	}
 }
 
+static void CaptureLocalEnvmap( IMaterialVar **params, const PBR_Vars_t &v )
+{
+	if ( v.localEnvmap == -1 )
+		return;
+	const IMaterialVar *envmap = params[v.envmap];
+	const bool local = !envmap->IsDefined() || ( envmap->GetType() == MATERIAL_VAR_TYPE_STRING &&
+		!V_stricmp( envmap->GetStringValue(), "env_cubemap" ) );
+	params[v.localEnvmap]->SetIntValue( local );
+}
+
 void CaptureLegacyAdapterState( IMaterialVar **params, const PBR_Vars_t &v )
 {
+	CaptureLocalEnvmap( params, v );
 	if ( v.legacyEnvmapAuthored != -1 )
 		params[v.legacyEnvmapAuthored]->SetIntValue( params[v.envmap]->IsDefined() ? 1 : 0 );
 	if ( v.legacyRoughness != -1 )
@@ -887,6 +909,7 @@ void InitParamsPBRDefaults( IMaterialVar **params, const PBR_Vars_t &v )
 
 void InitParamsPBR( IMaterialVar **params, const PBR_Vars_t &v )
 {
+	CaptureLocalEnvmap( params, v );
 	InitParamsPBRDefaults( params, v );
 	InitFloatParam( v.detailScale, params, 4.0f );
 

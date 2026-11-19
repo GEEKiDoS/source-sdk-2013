@@ -20,31 +20,7 @@ SamplerState gLinearClamp : register( s1, space0 );
 RWTexture2D<float4> gTraceOut : register( u0, space0 );
 RWTexture2D<float4> gRayOut : register( u1, space0 );
 
-// Homogeneous segment c0 -> c1 against w > 0 and the D3D clip volume (|x|,|y| <= w, 0 <= z <= w); every bound is
-// linear in the segment parameter. Returns false for an empty range.
-bool SSR_ClipSegment( float4 c0, float4 c1, out float s0, out float s1 )
-{
-	s0 = 0.0;
-	s1 = 1.0;
-	float4 d = c1 - c0;
-	float a[7] = { c0.w - 1e-4, c0.w - c0.x, c0.w + c0.x, c0.w - c0.y, c0.w + c0.y, c0.z, c0.w - c0.z };
-	float b[7] = { d.w, d.w - d.x, d.w + d.x, d.w - d.y, d.w + d.y, d.z, d.w - d.z };
-	bool inside = true;
-	[unroll] for ( uint i = 0; i < 7; ++i )
-	{
-		if ( b[i] == 0.0 )
-		{
-			if ( a[i] < 0.0 ) inside = false;
-		}
-		else
-		{
-			float s = -a[i] / b[i];
-			if ( b[i] > 0.0 ) s0 = max( s0, s );
-			else s1 = min( s1, s );
-		}
-	}
-	return inside && s0 < s1;
-}
+#include "ssr_ray.hlsli"
 
 // The screen-linear parameterization of the clipped segment: pixel, 1/w and world/w are linear in u.
 struct SSRRay

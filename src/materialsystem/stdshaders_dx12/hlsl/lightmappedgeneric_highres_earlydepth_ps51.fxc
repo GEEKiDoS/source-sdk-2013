@@ -7,6 +7,7 @@
 #define DX12_LEGACY_PS20B 1
 #define DX12_COMBO_FOLD 1
 #include "dx12_preamble.h"
+#include "envmap_filter.hlsli"
 // Feature receivers are lit, non-flashlight, non-preview passes only.
 // SKIP: $LIGHTING_PREVIEW != 0
 //========= Copyright Valve Corporation, All rights reserved. ============//
@@ -575,7 +576,7 @@ HALF4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 		HALF fresnel = 1.0f - dot( worldSpaceNormal, eyeVect );
 		fresnel = pow( fresnel, 5.0f );
 		fresnel = fresnel * oneMinusFresnelReflection + fresnelReflection;
-		specularLighting = ENV_MAP_SCALE * EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectVect );
+		specularLighting = ENV_MAP_SCALE * Envmap_SampleLegacy( EnvmapSampler.tex, EnvmapSampler.smp, reflectVect );
 		specularLighting *= specularFactor;
 		specularLighting *= g_EnvmapTint;
 		if ( FANCY_BLENDING == 0 )

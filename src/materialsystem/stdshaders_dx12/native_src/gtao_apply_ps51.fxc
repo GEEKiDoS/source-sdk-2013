@@ -97,13 +97,15 @@ float4 main( PS_INPUT input ) : SV_Target0
 				int2 tap = clamp( base + int2( x, y ), int2( 0, 0 ), gAoSize - 1 );
 				float bilerp = ( x == 0 ? 1.0 - f.x : f.x ) * ( y == 0 ? 1.0 - f.y : f.y );
 				float tapDepth = gAoDepth.Load( int3( tap, 0 ) );
-				float depthWeight = saturate( 1.0 - abs( tapDepth - sceneDepth ) / max( sceneDepth * gDepthTolerance, 1e-4 ) ) + 1e-4;
+				float depthWeight = saturate( 1.0 - abs( tapDepth - sceneDepth ) / max( sceneDepth * gDepthTolerance, 1e-4 ) );
 				float weight = bilerp * depthWeight;
 				sum += gAo.Load( int3( tap, 0 ) ) * weight;
 				weightSum += weight;
 			}
 		}
-		ao = sum / max( weightSum, 1e-4 );
+		// No working-resolution tap represents this surface. Borrowing even a tiny
+		// weight from the background becomes full-strength AO after normalization.
+		ao = weightSum > 1e-4 ? sum / weightSum : 1.0;
 	}
 	if ( gRestorePackedScale != 0 ) ao *= 1.5;
 	ao = saturate( ao );

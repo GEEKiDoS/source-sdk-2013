@@ -1336,6 +1336,48 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	};
 	const uint32_t pixelSamplers = opaqueCaster ? 0u : samplerMask( psRecord, 0xffff ), vertexSamplers = samplerMask( vsRecord, 0xf );
 	const uint32_t sampledMask = pixelSamplers | ( vertexSamplers << 16 );
+	// Only the native PBR model environment pass owns these two extra SRVs. Keep the existing
+	// engine binding as fallback, and do not mutate the material system's current texture state.
+	constexpr unsigned kCubeSlots[] = { 2, 14, 15 };
+	constexpr uint32_t kCubeMask = ( 1u << 2 ) | ( 1u << 14 ) | ( 1u << 15 );
+	const bool modelCubeBlend = modelPixelShader && psRecord->legacyBytecode.IsEmpty() && ( pixelSamplers & kCubeMask ) == kCubeMask;
+	NativeCBufferSlotDX12 &modelMaterial = m_NativePSBlocks[0];
+	unsigned char *cubeWeightData = nullptr;
+	if ( modelCubeBlend && m_PsFloat[9][3] != 0.0f )
+		for ( const auto &block : psRecord->nativeCBuffers )
+		{
+			if ( block.name != "PBRMaterialPS" || block.registerSpace != 1 || block.shaderRegister != 1 ||
+			     !modelMaterial.written || modelMaterial.layoutHash != block.layoutHash )
+				continue;
+			for ( const auto &member : block.members )
+				if ( member.name == "g_EnvmapOrigin" && member.byteSize == 4 * sizeof( float ) &&
+				     size_t( member.offset ) + member.byteSize <= modelMaterial.byteSize )
+				{
+					cubeWeightData = modelMaterial.bytes.Base() + member.offset;
+					break;
+				}
+			break;
+		}
+	ShaderAPITextureHandle_t blendedTextures[ARRAYSIZE( m_BoundTextures )];
+	const ShaderAPITextureHandle_t *drawPixelTextures = m_BoundTextures;
+	float cubemapWeights[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+	if ( modelCubeBlend )
+	{
+		const ShaderAPITextureHandle_t original = m_PsFloat[4][0] != 0.0f ? m_BoundTextures[2] : 0;
+		ShaderAPITextureHandle_t handles[3] = { original, original, original };
+		if ( original && cubeWeightData && !shadowPass && !contactReplay && !depthPrepass && !skyboxDraw )
+		{
+			// The studio lighting origin can be stale on viewmodels. Use the current camera in
+			// the same viewport-depth bracket the renderer uses for its viewmodel passes.
+			const bool viewModel = m_nViewportCount > 0 && m_Viewports[0].m_flMaxZ <= 0.1f;
+			if ( !viewModel || m_bCachedCameraValid )
+				SelectMapCubemaps( original, viewModel ? m_CameraPosition : m_LightingOrigin, handles, cubemapWeights );
+		}
+		memcpy( blendedTextures, m_BoundTextures, sizeof( blendedTextures ) );
+		for ( unsigned i = 0; i < ARRAYSIZE( kCubeSlots ); ++i )
+			blendedTextures[kCubeSlots[i]] = handles[i];
+		drawPixelTextures = blendedTextures;
+	}
 	if ( highresMap && !shadowPass && !motionActive && psRecord && !psRecord->samplerRolesReady )
 		for ( unsigned sampler = 0; sampler < 16; ++sampler )
 			if ( ( pixelSamplers & ( 1u << sampler ) ) && m_ActiveSnapshot.fixed.textureEnabled[sampler] )
@@ -1532,7 +1574,21 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		};
 		for ( size_t i = 0; i < ARRAYSIZE( m_BoundTextures ); ++i )
 			if ( pixelSamplers & ( 1u << i ) )
-				prepareSlot( i, m_BoundTextures[i], ( m_ActiveSnapshot.srgbReadMask & ( 1u << i ) ) != 0, ( m_ActiveSnapshot.comparisonSamplerMask & ( 1u << i ) ) != 0 );
+				prepareSlot( i, drawPixelTextures[i], ( m_ActiveSnapshot.srgbReadMask & ( 1u << i ) ) != 0, ( m_ActiveSnapshot.comparisonSamplerMask & ( 1u << i ) ) != 0 );
+		if ( modelCubeBlend && m_PsFloat[4][0] != 0.0f &&
+		     ( !bindingInput.textures[2] || ( cubemapWeights[1] > 0.0f && !bindingInput.textures[14] ) ||
+		       ( cubemapWeights[2] > 0.0f && !bindingInput.textures[15] ) ) )
+		{
+			const auto original = m_BoundTextures[2];
+			const bool srgb = ( m_ActiveSnapshot.srgbReadMask & ( 1u << 2 ) ) != 0;
+			for ( unsigned slot : kCubeSlots )
+			{
+				blendedTextures[slot] = original;
+				prepareSlot( slot, original, srgb, false );
+			}
+			cubemapWeights[0] = 1.0f;
+			cubemapWeights[1] = cubemapWeights[2] = 0.0f;
+		}
 		for ( size_t i = 0; i < ARRAYSIZE( m_VertexTextures ); ++i )
 			if ( vertexSamplers & ( 1u << i ) )
 				prepareSlot( 16 + i, m_VertexTextures[i], false, false );
@@ -1544,7 +1600,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	const TextureSetKeyDX12 &lastSet = m_LastTextureSet;
 	bool textureSetReused = m_bTextureSetValid && m_PreparedSamplerTables.Valid() && m_nPreparedSamplerFence == textureFence && lastSet.fence == textureFence && lastSet.epoch == m_nTextureStateEpoch &&
 	    lastSet.sampledMask == sampledMask && lastSet.srgbMask == m_ActiveSnapshot.srgbReadMask && lastSet.comparisonMask == m_ActiveSnapshot.comparisonSamplerMask && lastSet.nullView == m_DrawBindingNull.ptr &&
-	    !memcmp( lastSet.pixel, m_BoundTextures, sizeof( m_BoundTextures ) ) && !memcmp( lastSet.vertex, m_VertexTextures, sizeof( m_VertexTextures ) );
+	    !memcmp( lastSet.pixel, drawPixelTextures, sizeof( lastSet.pixel ) ) && !memcmp( lastSet.vertex, m_VertexTextures, sizeof( m_VertexTextures ) );
 	if ( !textureSetReused )
 		prepareTextures();
 	bindingInput.texturesUnchanged = textureSetReused;
@@ -1585,7 +1641,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	if ( !textureSetReused )
 	{
 		TextureSetKeyDX12 &key = m_LastTextureSet;
-		memcpy( key.pixel, m_BoundTextures, sizeof( key.pixel ) );
+		memcpy( key.pixel, drawPixelTextures, sizeof( key.pixel ) );
 		memcpy( key.vertex, m_VertexTextures, sizeof( key.vertex ) );
 		key.sampledMask = sampledMask;
 		key.srgbMask = m_ActiveSnapshot.srgbReadMask;
@@ -1595,6 +1651,14 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	m_LastTextureSet.fence = m_pDevice->NextFenceValue();
 	m_LastTextureSet.epoch = m_nTextureStateEpoch;
 	m_bTextureSetValid = true;
+	// Update only the xyz of the reflected cbuffer member. Its w is the local-probe mode flag;
+	// explicitly authored boxes keep the original capture origin and never enter this path.
+	constexpr size_t kCubeWeightBytes = ARRAYSIZE( kCubeSlots ) * sizeof( float );
+	if ( cubeWeightData && memcmp( cubeWeightData, cubemapWeights, kCubeWeightBytes ) )
+	{
+		memcpy( cubeWeightData, cubemapWeights, kCubeWeightBytes );
+		modelMaterial.version = ++m_nNativePSVersion;
+	}
 	bindingInput.retireFence = m_pDevice->NextFenceValue();
 	const uint64_t retireFence = bindingInput.retireFence;
 	CCommandRecorderDX12 *list = m_pDevice->CommandList();

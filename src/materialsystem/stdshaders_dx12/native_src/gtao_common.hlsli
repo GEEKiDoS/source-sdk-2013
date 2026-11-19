@@ -90,12 +90,15 @@ float4 UnpackEdges( float packed )
 
 float3 CalculateNormal( float4 edges, float3 center, float3 left, float3 right, float3 top, float3 bottom )
 {
-	float4 accepted = saturate( float4( edges.x * edges.z, edges.z * edges.y, edges.y * edges.w, edges.w * edges.x ) + 0.01 );
+	float4 accepted = float4( edges.x * edges.z, edges.z * edges.y, edges.y * edges.w, edges.w * edges.x );
 	left = normalize( left - center );
 	right = normalize( right - center );
 	top = normalize( top - center );
 	bottom = normalize( bottom - center );
-	return normalize( accepted.x * cross( left, top ) + accepted.y * cross( top, right ) + accepted.z * cross( right, bottom ) + accepted.w * cross( bottom, left ) );
+	float3 n = accepted.x * cross( left, top ) + accepted.y * cross( top, right ) + accepted.z * cross( right, bottom ) + accepted.w * cross( bottom, left );
+	// An isolated depth sample has no local surface triangle. Do not reconstruct its
+	// normal from the unrelated surface behind it.
+	return dot( n, n ) > 1e-8 ? normalize( n ) : normalize( -center );
 }
 
 float FastSqrt( float x )

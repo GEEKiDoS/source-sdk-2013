@@ -374,8 +374,12 @@ is paid for. There is no size cap in the format: up to 2^20 bricks, one signed p
 baker enforces `-restir_ambientgrid_budget` (1,024 MiB) and fails with `raise -restir_ambientgrid, lower
 -restir_ambientgrid_reach or raise -restir_ambientgrid_budget` when the grid would exceed it; nothing is reduced
 silently. Once the grid is sized it logs `Ambient probes: N bricks, M MiB (spacing, reach, atlas)`. A grid the GPU cannot
-hold leaves the map on the engine ambient cube with a warning. Probes inside solid, inside an opaque leaf brush, or whose axis rays of
-one spacing start inside geometry or reach a displacement back face are invalid. Dilation runs for two neighbour-mean passes,
+hold leaves the map on the engine ambient cube with a warning. Probes inside solid, inside an opaque leaf brush, on a
+solid BSP boundary, or whose axis rays of one spacing start inside geometry or reach a displacement back face are
+invalid. On an exact split the BSP point walk can choose the open leaf even though the gather ray's minimum distance
+steps past the boundary into the solid. Test both sides with small axial offsets before projecting SH, so such a point
+can only receive light by the visibility-gated dilation below. Existing sidecars with this leak must be rebaked.
+Dilation runs for two neighbour-mean passes,
 but only across a source's certified full-spacing free segment; a dilated probe advertises full distance only toward the
 admissible source neighbours and zero elsewhere. An embedded probe with no admissible neighbour remains invalid. Negative
 `l = 2` lobes are shrunk by 0.75/0.5/0.25/0 until the sphere no longer undershoots by more than 2% of its peak. The bake
