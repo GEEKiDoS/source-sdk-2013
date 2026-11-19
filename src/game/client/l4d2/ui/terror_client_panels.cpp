@@ -341,6 +341,21 @@ void CTransitionStatsPanel::RestoreLoadingParent()
 // contract across that cycle, so the frozen backdrop is held in a
 // procedural texture instead: its regenerator re-supplies the captured
 // pixels whenever the texture is reconstructed.
+//
+// The material system rebuilds procedural bits in a shared per-thread
+// scratch VTF. Its Init rejects any dimension that is not a multiple of 4
+// ("Image dimensions must be multiple of 4!") and then leaves the scratch
+// with the previous texture's size and format, so the texture is created at
+// the capture size rounded up to a multiple of 4 and the regenerator only
+// writes into a VTF that matches the texture.
+static int FreezeTextureDimension( int size ) { return ( size + 3 ) & ~3; }
+// The backdrop keeps the render target's values exactly as retail samples
+// _rt_SmallFB0 ($gammacolorread/$linearwrite: no conversion either way).
+// DX12 render targets are linear FP16 and an 8-bit ReadPixels gets sRGB-
+// encoded bytes, which this material would then show gamma-brightened, so
+// the capture and the texture are FP16 (an 8-bit target converts losslessly).
+static const ImageFormat FREEZE_TEXTURE_FORMAT = IMAGE_FORMAT_RGBA16161616F;
+static const int FREEZE_PIXEL_BYTES = 8;
 class CTransitionFreezeRegenerator : public ITextureRegenerator
 {
 public:
@@ -348,20 +363,27 @@ public:
 	void SetPixels( int width, int height, const unsigned char *pixels )
 	{
 		m_Width = width; m_Height = height;
-		m_Pixels.SetCount( width * height * 4 );
-		memcpy( m_Pixels.Base(), pixels, width * height * 4 );
+		m_Pixels.SetCount( width * height * FREEZE_PIXEL_BYTES );
+		memcpy( m_Pixels.Base(), pixels, width * height * FREEZE_PIXEL_BYTES );
 	}
 	void ClearPixels() { m_Width = m_Height = 0; m_Pixels.RemoveAll(); }
 	bool HasPixels() const { return m_Width > 0 && m_Pixels.Count() > 0; }
 	virtual void RegenerateTextureBits( ITexture *pTexture, IVTFTexture *pVTFTexture, Rect_t *pSubRect ) OVERRIDE
 	{
-		if ( !m_Pixels.Count() || !pVTFTexture ) return;
+		if ( !m_Pixels.Count() || !pTexture || !pVTFTexture || pVTFTexture->Format() != FREEZE_TEXTURE_FORMAT ) return;
+		const int width = pVTFTexture->Width(), height = pVTFTexture->Height();
+		if ( width != pTexture->GetActualWidth() || height != pTexture->GetActualHeight() ) return;
 		unsigned char *dst = pVTFTexture->ImageData( 0, 0, 0 );
 		if ( !dst ) return;
 		const int rowBytes = pVTFTexture->RowSizeInBytes( 0 );
-		const int srcRow = m_Width * 4;
-		for ( int y = 0; y < m_Height; ++y )
-			memcpy( dst + y * rowBytes, m_Pixels.Base() + y * srcRow, MIN( rowBytes, srcRow ) );
+		for ( int y = 0; y < height; ++y )
+		{
+			const unsigned char *src = m_Pixels.Base() + ( y * m_Height / height ) * m_Width * FREEZE_PIXEL_BYTES;
+			unsigned char *row = dst + y * rowBytes;
+			if ( width == m_Width ) { memcpy( row, src, width * FREEZE_PIXEL_BYTES ); continue; }
+			for ( int x = 0; x < width; ++x )
+				memcpy( row + x * FREEZE_PIXEL_BYTES, src + ( x * m_Width / width ) * FREEZE_PIXEL_BYTES, FREEZE_PIXEL_BYTES );
+		}
 	}
 	virtual void Release() OVERRIDE {}
 private:
@@ -414,12 +436,13 @@ bool CTransitionStatsPanel::EnsureFreezeTexture( int w, int h )
 {
 	if ( !materials || w <= 0 || h <= 0 ) return false;
 	if ( !m_pFreezeRegenerator ) m_pFreezeRegenerator = new CTransitionFreezeRegenerator;
+	w = FreezeTextureDimension( w ); h = FreezeTextureDimension( h );
 	if ( m_FreezeTexture.IsValid() && ( m_FreezeTexture->GetActualWidth() != w || m_FreezeTexture->GetActualHeight() != h ) )
 		ShutdownFreezeTexture();
 	if ( !m_FreezeTexture.IsValid() )
 	{
 		ITexture *texture = materials->CreateProceduralTexture( "TransitionFreezeFrame", TEXTURE_GROUP_VGUI, w, h,
-			IMAGE_FORMAT_BGRA8888, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD );
+			FREEZE_TEXTURE_FORMAT, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD );
 		if ( !texture ) return false;
 		m_FreezeTexture.Init( texture );
 		texture->SetTextureRegenerator( m_pFreezeRegenerator );
@@ -442,13 +465,13 @@ void CTransitionStatsPanel::CaptureFreezeFrame()
 	if ( !EnsureFreezeTexture( w, h ) ) return;
 	if ( m_pFreezeRegenerator->HasPixels() ) return;
 	CUtlVector< unsigned char > pixels;
-	pixels.SetCount( w * h * 4 );
+	pixels.SetCount( w * h * FREEZE_PIXEL_BYTES );
 	{
 		CMatRenderContextPtr context( materials );
 		context->PushRenderTargetAndViewport();
 		context->SetRenderTarget( small );
 		context->Viewport( 0, 0, w, h );
-		context->ReadPixels( 0, 0, w, h, pixels.Base(), IMAGE_FORMAT_BGRA8888 );
+		context->ReadPixels( 0, 0, w, h, pixels.Base(), FREEZE_TEXTURE_FORMAT );
 		context->PopRenderTargetAndViewport();
 	}
 	m_pFreezeRegenerator->SetPixels( w, h, pixels.Base() );
