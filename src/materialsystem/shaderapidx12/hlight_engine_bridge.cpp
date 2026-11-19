@@ -10,6 +10,7 @@
 #include <intrin.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -149,13 +150,11 @@ struct OverlayFragment
 struct PreservedVertex
 {
     double local[2];
-    uint32 originalUV[2], currentUV[2];
+    uint32 currentUV[2];
 };
 struct PreservedFragment
 {
     FragmentKey key;
-    HlightNativePlacement originalPlacement;
-    uint32 originalPageSize[2];
     std::vector<PreservedVertex> vertices;
 };
 struct ThreadState
@@ -573,43 +572,112 @@ bool SnapshotOverlays(const HlightNativeAtlas &atlas, std::vector<OverlayFragmen
     for (size_t i = 1; i < out.size(); ++i) if (out[i - 1].key == out[i].key) return false;
     return true;
 }
+// Brush overlays clip in the decal plane and then project back to the parent plane.
+// Native lightmap UV generation clamps to the page, not to the parent allocation.
+// Prove an outlier came from the declared parent's projection before correcting it.
+bool CheckBrushOverlayProjection(uint32 faceIndex, const HlightNativeFace &face, const HlightNativePlacement &place,
+    const HlightNativePage &page, const OverlayVertex &vertex, const double (&pixel)[2])
+{
+    if (face.flags & hlight::kFaceDisplacement) return false; // Displacement UVs are interpolated, not planar.
+    const uintptr_t brush = Load<uintptr_t>(g.engine + kWorldBrush);
+    const uintptr_t surface = Load<uintptr_t>(brush + 232) + size_t(faceIndex) * 64;
+    if (Load<uint32>(surface) & 1) return false; // Native constant white UV, not a projection.
+    const int index = Load<uint16>(surface + 26) >> 1;
+    const uintptr_t texinfos = Load<uintptr_t>(brush + 176);
+    if (!texinfos || index >= Load<int>(brush + 168)) return false;
+    const uintptr_t texinfo = texinfos + size_t(index) * 88;
+    if (!Readable(texinfo, 64)) return false;
+
+    float position[3], normal[3];
+    std::memcpy(position, vertex.nonUV.data(), sizeof(position));
+    std::memcpy(normal, vertex.nonUV.data() + 12, sizeof(normal));
+    for (int k = 0; k != 3; ++k)
+    {
+        if (!ShadowMap_IsFiniteFloat(position[k]) || !ShadowMap_IsFiniteFloat(normal[k])) return false;
+        position[k] -= 0.1f * normal[k]; // Native adds this depth bias after calculating the UV.
+    }
+    for (int a = 0; a != 2; ++a)
+    {
+        const uintptr_t vec = texinfo + 32 + a * 16;
+        const float s = face.extents[0] ?
+            ((position[1] * Load<float>(vec + 4) + position[0] * Load<float>(vec)) +
+             position[2] * Load<float>(vec + 8)) + Load<float>(vec + 12) - face.mins[a] + 0.5f : 0.5f;
+        const double dimension = a ? page.height : page.width;
+        if (!ShadowMap_IsFiniteFloat(s) || pixel[a] < 0.0 || pixel[a] > dimension) return false;
+        const double expected = std::clamp(double(s) + place.origin[a], 0.0, dimension);
+        // Allow float roundoff undoing the bias and scaling from/to page UV.
+        if (std::abs(pixel[a] - expected) > 1.0 / 256.0) return false;
+    }
+    return true;
+}
+
 bool PreserveInitialOverlays(const HlightNativeAtlas &atlas)
 {
     std::vector<OverlayFragment> current;
     if (!SnapshotOverlays(atlas, current)) return false;
     std::vector<PreservedFragment> saved;
     saved.reserve(current.size());
+    size_t corrected = 0;
     for (const auto &fragment : current)
     {
         PreservedFragment f; f.key = fragment.key;
-        f.originalPlacement = atlas.placements[f.key.face];
-        f.originalPageSize[0] = f.originalPageSize[1] = 0;
-        if (f.originalPlacement.page >= 0)
-        {
-            const auto &page = atlas.pages[f.originalPlacement.page];
-            f.originalPageSize[0] = page.width; f.originalPageSize[1] = page.height;
-        }
+        const auto &place = atlas.placements[f.key.face];
+        const auto &face = atlas.domain->faces[f.key.face];
+        const auto *page = place.page >= 0 ? &atlas.pages[place.page] : nullptr;
         f.vertices.resize(fragment.vertices.size());
         for (size_t v = 0; v < f.vertices.size(); ++v)
         {
             auto &vertex = f.vertices[v];
+            const auto &source = fragment.vertices[v];
+            double pixel[2];
+            bool outside[2] = {};
             for (int a = 0; a != 2; ++a)
             {
-                vertex.originalUV[a] = vertex.currentUV[a] = fragment.vertices[v].uv[a];
-                const float uv = Load<float>(reinterpret_cast<uintptr_t>(&vertex.originalUV[a]));
+                vertex.currentUV[a] = source.uv[a];
+                float uv;
+                std::memcpy(&uv, &source.uv[a], sizeof(uv));
                 if (!ShadowMap_IsFiniteFloat(uv)) return false;
-                vertex.local[a] = double(uv) * f.originalPageSize[a] - f.originalPlacement.origin[a] - 0.5;
-                if (f.originalPlacement.page >= 0)
+                pixel[a] = page ? double(uv) * (a ? page->height : page->width) : 0;
+                outside[a] = page && (pixel[a] < double(place.origin[a]) - 1.0 ||
+                    pixel[a] >= double(place.origin[a]) + face.extents[a] + 2.0);
+            }
+            if (outside[0] || outside[1])
+            {
+                if (!CheckBrushOverlayProjection(f.key.face, face, place, *page, source, pixel)) return false;
+                ++corrected;
+                for (int a = 0; a != 2; ++a)
                 {
-                    const double pixel = double(uv) * f.originalPageSize[a];
-                    const double left = double(f.originalPlacement.origin[a]) - 1.0;
-                    const double right = double(f.originalPlacement.origin[a]) + atlas.domain->faces[f.key.face].extents[a] + 2.0;
-                    if (pixel < left || pixel >= right) return false;
+                    if (!outside[a]) continue;
+                    // Use the edge luxel center, not the allocation boundary: the
+                    // provoking vertex must name the parent even after a repack.
+                    const double first = place.origin[a] + 0.5;
+                    pixel[a] = std::clamp(pixel[a], first, first + face.extents[a]);
+                    const float uv = static_cast<float>(pixel[a] / (a ? page->height : page->width));
+                    std::memcpy(&vertex.currentUV[a], &uv, sizeof(uv));
                 }
             }
+            for (int a = 0; a != 2; ++a)
+                vertex.local[a] = pixel[a] - place.origin[a] - 0.5;
         }
         saved.push_back(std::move(f));
     }
+    // The transaction keeps native spans stable between validation and commit.
+    if (corrected && !VisitOverlays(atlas, [&](const FragmentKey &key, uintptr_t vertices, uint32 count)
+    {
+        const auto it = std::lower_bound(saved.begin(), saved.end(), key,
+            [](const PreservedFragment &f, const FragmentKey &k) { return f.key < k; });
+        if (it == saved.end() || !(it->key == key) || it->vertices.size() != count) return false;
+        const auto &before = current[size_t(it - saved.begin())];
+        for (uint32 v = 0; v < count; ++v)
+        {
+            const auto &uv = it->vertices[v].currentUV;
+            if (std::memcmp(before.vertices[v].uv, uv, sizeof(uv)) != 0)
+                std::memcpy(reinterpret_cast<void *>(vertices + size_t(v) * 52 + 40), uv, sizeof(uv));
+        }
+        return true;
+    })) return false;
+    if (corrected)
+        Msg("High-resolution lightmaps: kept %zu projected overlay vertices inside their parent lightmaps\n", corrected);
     g.overlays.swap(saved);
     return true;
 }
