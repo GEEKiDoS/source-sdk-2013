@@ -43,7 +43,7 @@ void main()
 		return;
 	vec3 direction = -sun.normal.xyz;
 	float directionLengthSquared = dot( direction, direction );
-	float angularRadius = pc.shadowSun.x;
+	float angularRadius = pc.shadowSunAngularRadius;
 	if ( any( isnan( direction ) ) || any( isinf( direction ) ) ||
 		directionLengthSquared <= 0.0 || isinf( directionLengthSquared ) ||
 		isnan( angularRadius ) || isinf( angularRadius ) || angularRadius < 0.0 || angularRadius > RESTIR_PI )

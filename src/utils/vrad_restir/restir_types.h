@@ -118,6 +118,7 @@ struct ReSTIROptions
 	int			seed;					// -restir_seed (1)
 	int			gpuIndex;				// -restir_gpu, -1 = first discrete GPU
 	int			vramBudgetMB;			// -restir_vram_budget (0 = queried Vulkan budget)
+	int			pushConstantLimit;		// -restir_push_constant_limit (0 = device limit)
 	bool		forceComputeBvh;		// -restir_force_compute_bvh
 	bool		probeEnabled;			// -restir_probe x y z nx ny nz (diagnostic: prints LightPoints at that point)
 	float		probe[6];
@@ -131,7 +132,7 @@ struct ReSTIROptions
 		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), skyAmbientScale( 1.0f ), skyAmbientIbl( false ), bounceScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
 		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), ambientGridBudgetMB( 1024 ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), maxBounces( -1 ),
-		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), forceComputeBvh( false ), probeEnabled( false ),
+		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), pushConstantLimit( 0 ), forceComputeBvh( false ), probeEnabled( false ),
 		  denoiser( RESTIR_DENOISER_OIDN ), denoiserQuality( RESTIR_DENOISER_QUALITY_BALANCED ),
 		  denoiserDevice( RESTIR_DENOISER_DEVICE_DEFAULT ) {}
 };

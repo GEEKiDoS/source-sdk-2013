@@ -346,9 +346,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 	const bool selectedVisibility = gpu.options.shadowMaps && scene.shadowLights.Count() != 0;
 	if ( selectedVisibility && scene.sunVisibilityOrigins.Count() != scene.luxels.Count() )
 		gpu.Fail( "selected local/sun visibility origins must match the geometric luxel count" );
-	memset( gpu.push.shadowSun, 0, sizeof( gpu.push.shadowSun ) );
-	if ( selectedSun )
-		gpu.push.shadowSun[0] = DEG2RAD( scene.shadowSunAngularRadius );
+	gpu.push.shadowSunAngularRadius = selectedSun ? DEG2RAD( scene.shadowSunAngularRadius ) : 0.0f;
 	for ( int axis = 0; axis < 3; ++axis )
 	{
 		gpu.push.worldMins[axis] = scene.worldMins[axis];

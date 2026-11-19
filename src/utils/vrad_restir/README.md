@@ -26,7 +26,7 @@ devtools\bin\vpc.exe /2022 /win64 /episodic /define:SOURCESDK +vrad_restir /mksl
 
 The generated projects are `VRAD ReSTIR (DLL)` and `VRAD ReSTIR (Launcher)`. Outputs are placed in `game\bin\x64` as `vrad_restir_dll.dll` and `vrad_restir.exe`; generated SPIR-V is copied to `game\bin\x64\vrad_restir_shaders`.
 
-Regenerate and validate shader variants after changing a `.comp` file:
+Regenerate and validate shader variants after changing a `.comp` file or a shared GLSL include:
 
 ```bat
 utils\vrad_restir\shaders\buildshaders.bat
@@ -38,6 +38,8 @@ for %f in (game\bin\x64\vrad_restir_shaders\*.spv) do thirdparty\vulkan_sdk\Bin\
 ## Runtime selection
 
 The default backend is `hardware-rt` when the selected Vulkan adapter exposes the required ray-query and acceleration-structure extensions. Otherwise, or when `-restir_force_compute_bvh` is supplied, the backend is `compute-bvh`. Both backends execute the lighting workloads as Vulkan compute passes.
+
+All passes on both backends use one 128-byte push-constant layout (the Vulkan guaranteed minimum), including when transport is paged. Deploy the baker DLL and shader modules together because they share this layout.
 
 The default options are:
 
@@ -52,6 +54,7 @@ The default options are:
 | `-restir_maxbounces N` | unlimited | Bounce depth limit, `0..128`. `0` disables indirect light. `N > 0` splits the iterations into `N + 1` generations (at least one iteration each): generation 0 gathers no bounce, and each later generation starts a fresh mean that bounces off the converged mean of the previous one, published once at its end, so the lightmaps carry exactly `N` bounces. Probes, leaf ambient cubes and prop lighting gather from the finished lightmaps as in VRAD, so they carry `N + 1`. Every generation gets `1/(N + 1)` of the iterations, so the final mean is noisier than an unlimited bake with the same count. Unset, every iteration bounces off the running mean of the earlier ones and the depth grows with the iterations. |
 | `-restir_seed N` | `1` | Deterministic sequence seed; `0..2147483647`. Same inputs and seed give byte-identical lighting. |
 | `-restir_gpu N` | first discrete GPU | Vulkan adapter index; `0..255`. |
+| `-restir_push_constant_limit N` | device limit | Diagnostic cap in bytes (`1..2147483647`): validate the dispatch layout against the lesser of `N` and the device limit. Use `128` with `-restir_vram_budget` to test the paged path at Vulkan's minimum; the cap does not change dispatches or lighting. |
 | `-restir_vram_budget MB` | queried budget | Optional per-process heap cap. The baker keeps geometry/BVH, the compact nearest-sample, exact-direct and previous-irradiance state resident. A scene whose transport state fits runs every iteration on resident GPU buffers with no host round trip. Otherwise it streams contiguous face-aligned sample/luxel/origin/accumulation/output/valid buffers through the 64 MiB staging ring: each iteration processes every page and refreshes previous irradiance from paged accumulation, and reconstruction releases transport pages before the final-lightmap/service phase. Pages never split a face, and a sample reads only its own records plus the resident tables, so paging cannot change the result. `-v` logs resident bytes, page capacity/count and heap peaks. |
 | `-restir_denoiser oidn\|none` | `oidn` | Select OIDN (bilateral fallback when the DLL is absent) or disable denoising. |
 | `-restir_denoiser_quality fast\|balanced\|high` | `balanced` | OIDN quality setting. |

@@ -229,7 +229,7 @@ struct ReSTIRBvhNode					// 48 bytes
 };
 
 //-----------------------------------------------------------------------------
-// Push constants (144 bytes)
+// Push constants (128 bytes, the Vulkan guaranteed minimum)
 //-----------------------------------------------------------------------------
 layout( push_constant ) uniform ReSTIRPush
 {
@@ -239,7 +239,7 @@ layout( push_constant ) uniform ReSTIRPush
 	uint first;
 	uint seed;
 	uint candidates;
-	uint reserved0;
+	float shadowSunAngularRadius;		// resolved shadow sun angular radius, radians
 	uint maxBounces;
 	uint numLights;
 	uint numStyles;
@@ -255,7 +255,6 @@ layout( push_constant ) uniform ReSTIRPush
 	uint numReservoirs;
 	vec4 worldMins;
 	vec4 worldMaxs;
-	vec4 shadowSun;
 	uvec4 pageBase;						// reservoir, sample, luxel, output page bases
 } pc;
 
