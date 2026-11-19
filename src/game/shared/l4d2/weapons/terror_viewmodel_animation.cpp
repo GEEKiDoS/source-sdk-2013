@@ -114,7 +114,7 @@ void CBaseViewModel::AdvanceTerrorLayers( float currentTime, CStudioHdr *pHdr, C
 	{
 		CAnimationLayer *layer = GetAnimOverlay( i );
 		float elapsed = currentTime - layer->m_flLayerAnimtime;
-		if ( IsClientCreated() )
+		if ( IsClientCreated() || GetModelPtr() )
 		{
 			const float now = player ? player->GetFinalPredictedTime() : currentTime;
 			elapsed = now - layer->m_flLayerAnimtime;

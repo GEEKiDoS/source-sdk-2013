@@ -382,7 +382,7 @@ bool C_BaseViewModel::Interpolate( float currentTime )
 	C_BaseEntity *owner = GetOwner();
 	C_BasePlayer *player = owner && owner->IsPlayer() ? static_cast< C_BasePlayer * >( owner ) : NULL;
 	float elapsed;
-	if ( IsClientCreated() )
+	if ( IsClientCreated() || GetModelPtr() )
 	{
 		const float now = player ? player->GetFinalPredictedTime() : currentTime;
 		elapsed = now - m_flAnimTime;
@@ -932,8 +932,8 @@ void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 		C_BaseEntity *owner = GetOwner();
 		C_BasePlayer *player = owner && owner->IsPlayer() ? static_cast< C_BasePlayer * >( owner ) : NULL;
 		float now = gpGlobals->curtime;
-		// Original primary12043070 is purefalse for all3 concrete VM classes.
-		if ( IsClientCreated() )
+		// Retail uses the predicted clock when either client-created state OR a model is loaded.
+		if ( IsClientCreated() || GetModelPtr() )
 		{
 			if ( player )
 				now = player->GetFinalPredictedTime();
