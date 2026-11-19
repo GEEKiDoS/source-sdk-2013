@@ -1,6 +1,6 @@
 // Native SM5.1 HDR composite: MagicBloom's layered bloom screened over the Minimal AgX scene, Froyok's lens flare and
 // glare added to the HDR scene, and four Source 32^3 LUT lookups.
-// DYNAMIC: "CAMERA_MODEL" "0..1"
+// DYNAMIC: "CAMERA_MODEL" "0..2"
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 #ifdef HDRTYPE
@@ -22,6 +22,7 @@ cbuffer PostComposite : register( b1, space1 )
 	float4 gSensor; // @legacy ps:c7
 	float4 gAwbParams; // @legacy ps:c8
 	float4 gViewRect; // @legacy ps:c9
+	float4 gBodycam; // @legacy ps:c10
 };
 Texture2D<float4> gScene : register( t0 );
 Texture2D<float4> gBloom : register( t1 );
@@ -33,6 +34,7 @@ Texture3D<float4> gLut1 : register( t6 );
 Texture3D<float4> gLut2 : register( t7 );
 Texture3D<float4> gLut3 : register( t8 );
 Texture2D<float4> gAwb : register( t9 );
+Texture2D<float4> gPrefilter : register( t10 );
 // One sampler per texture slot: each takes its texture's filtering (the scene copy is point-sampled 1:1, everything
 // else is linear).
 SamplerState gSceneSampler : register( s0 );
@@ -44,6 +46,7 @@ SamplerState gLut0Sampler : register( s5 );
 SamplerState gLut1Sampler : register( s6 );
 SamplerState gLut2Sampler : register( s7 );
 SamplerState gLut3Sampler : register( s8 );
+SamplerState gBodycamLinear : register( s10 );
 
 #include "agx_curve.hlsli"
 
@@ -118,8 +121,8 @@ float2 LensRay( float2 q, float magnification, float rMax )
 
 float3 SampleLensScene( float2 uv, float2 sceneSize, out float2 greenRay, out float2 sceneUv )
 {
-	float2 viewPixel = uv * sceneSize - gViewRect.xy;
-	float2 q = ( 2.0 * viewPixel / gViewRect.zw - 1.0 ) * gCamera.xy;
+	float2 n = 2.0 * ( uv * sceneSize - gViewRect.xy ) / gViewRect.zw - 1.0;
+	float2 q = n * gCamera.xy;
 	greenRay = q;
 	sceneUv = uv;
 	[branch] if ( all( gLens.xyz == 0 ) )
@@ -145,7 +148,6 @@ float3 SampleLensScene( float2 uv, float2 sceneSize, out float2 greenRay, out fl
 float VignetteTransmission( float2 ray )
 {
 	float cosTheta2 = rcp( 1.0 + dot( ray, ray ) );
-	// Optional field stop: gCamera.w is its clear angular radius in tan-space, zero disables it.
 	float aperture = gCamera.w > 0.0 ? 1.0 - smoothstep( 0.85 * gCamera.w, gCamera.w, length( ray ) ) : 1.0;
 	return lerp( 1.0, cosTheta2 * cosTheta2 * aperture, gCamera.z );
 }
@@ -170,19 +172,27 @@ float3 CaptureSensor( float3 radiance, float2 pixel )
 		float3 sigma = gSensor.w * sqrt( gSensor.z * gSensor.z + 0.01 * signal );
 		signal = clamp( signal + 3.464102 * sigma * SensorNoise( (uint2)pixel, (uint)gAwbParams.y ), 0.0, gSensor.y );
 	}
+#if CAMERA_MODEL == 2
+	return lerp( signal + gSensor.z, mul( ccm, signal + gSensor.z ), gAwbParams.w );
+#else
 	return mul( ccm, signal + gSensor.z );
+#endif
+}
+
+float3 BradfordBalance( float3 c, float3 gains )
+{
+	const float3x3 rgbToXyz = float3x3( 0.4124564, 0.3575761, 0.1804375, 0.2126729, 0.7151522, 0.0721750, 0.0193339, 0.1191920, 0.9503041 );
+	const float3x3 xyzToRgb = float3x3( 3.2404542, -1.5371385, -0.4985314, -0.9692660, 1.8760108, 0.0415560, 0.0556434, -0.2040259, 1.0572252 );
+	const float3x3 bradford = float3x3( 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296 );
+	const float3x3 invBradford = float3x3( 0.9869929, -0.1470543, 0.1599627, 0.4323053, 0.5183603, 0.0492912, -0.0085287, 0.0400428, 0.9684867 );
+	return mul( mul( xyzToRgb, invBradford ), mul( mul( bradford, rgbToXyz ), c ) * gains );
 }
 
 float3 ApplyAwb( float3 c )
 {
 	[branch] if ( gAwbParams.x <= 0.0 )
 		return c;
-	const float3x3 rgbToXyz = float3x3( 0.4124564, 0.3575761, 0.1804375, 0.2126729, 0.7151522, 0.0721750, 0.0193339, 0.1191920, 0.9503041 );
-	const float3x3 xyzToRgb = float3x3( 3.2404542, -1.5371385, -0.4985314, -0.9692660, 1.8760108, 0.0415560, 0.0556434, -0.2040259, 1.0572252 );
-	const float3x3 bradford = float3x3( 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296 );
-	const float3x3 invBradford = float3x3( 0.9869929, -0.1470543, 0.1599627, 0.4323053, 0.5183603, 0.0492912, -0.0085287, 0.0400428, 0.9684867 );
-	float3 gains = lerp( 1.0, gAwb.Load( int3( 0, 0, 0 ) ).rgb, gAwbParams.x );
-	return mul( mul( xyzToRgb, invBradford ), mul( mul( bradford, rgbToXyz ), c ) * gains );
+	return BradfordBalance( c, lerp( 1.0, gAwb.Load( int3( 0, 0, 0 ) ).rgb, gAwbParams.x ) );
 }
 
 // Camera JPEG-style shoulder and explicit hard bounds in the Rec.709 container.
@@ -193,8 +203,199 @@ float3 CameraEncoded( float3 c )
 }
 #endif
 
+#if CAMERA_MODEL == 2
+float3 BodycamLinear( float2 uv, float2 lo, float2 hi )
+{
+	return gScene.SampleLevel( gBodycamLinear, clamp( uv, lo, hi ), 0 ).rgb;
+}
+
+
+float3 BodycamLinearChroma( float2 uv, float2 offsetR, float2 offsetB, float2 lo, float2 hi )
+{
+	float3 c = BodycamLinear( uv, lo, hi );
+	[branch] if ( gLens.z > 0.0 )
+	{
+		c.r = BodycamLinear( uv + offsetR, lo, hi ).r;
+		c.b = BodycamLinear( uv + offsetB, lo, hi ).b;
+	}
+	return c;
+}
+
+float3 BodycamEdgeOptics( float2 sceneSize, float2 center, float2 outputRay, float3 sourceScale, float field,
+	float stretch, float2 uvMin, float2 uvMax, float2 pixel, out float2 sceneUv )
+{
+	float2 uvScale = outputRay / sceneSize;
+	sceneUv = center + uvScale * sourceScale.g;
+	float2 offsetR = uvScale * ( sourceScale.r - sourceScale.g );
+	float2 offsetB = uvScale * ( sourceScale.b - sourceScale.g );
+	float3 c = BodycamLinearChroma( sceneUv, offsetR, offsetB, uvMin, uvMax );
+	float band = saturate( ( field - 0.70 ) / 0.30 );
+	float halfShortAxis = 0.5 * min( gViewRect.z, gViewRect.w );
+	float2 psf = band * band * float2( gLens.x + gLens.y, gLens.x ) * halfShortAxis;
+	float2 margin = min( sceneUv - uvMin, uvMax - sceneUv ) * sceneSize -
+		max( abs( offsetR ), abs( offsetB ) ) * sceneSize;
+	float availablePx = max( 0.0, min( margin.x, margin.y ) );
+	psf *= min( 1.0, availablePx / max( psf.x, 1e-5 ) );
+	float radiusPx = psf.x;
+	[branch] if ( radiusPx > 0.75 )
+	{
+		float2 dir = normalize( outputRay );
+		float2 radial = dir * psf.x / sceneSize;
+		float2 tangent = float2( -dir.y, dir.x ) * psf.y / sceneSize;
+		float s, t;
+		sincos( 6.2831853 * InterleavedGradientNoise( floor( pixel ) ), s, t );
+		float2 a = 0.65 * ( t * radial + s * tangent );
+		float2 b = 0.65 * ( -s * radial + t * tangent );
+		float3 blurred = 0.25 * (
+			BodycamLinearChroma( sceneUv + a, offsetR, offsetB, uvMin, uvMax ) +
+			BodycamLinearChroma( sceneUv - a, offsetR, offsetB, uvMin, uvMax ) +
+			BodycamLinearChroma( sceneUv + b, offsetR, offsetB, uvMin, uvMax ) +
+			BodycamLinearChroma( sceneUv - b, offsetR, offsetB, uvMin, uvMax ) );
+		c = lerp( c, blurred, 0.78 * smoothstep( 0.75, 2.0, radiusPx ) );
+	}
+
+	// Share one prefiltered sample for minification; apply its luma footprint continuously
+	// to all channels so the subpixel spectral separation survives the blend.
+	float mipBlend = saturate( log2( stretch ) ) * smoothstep( 0.0, 2.0, availablePx );
+	[branch] if ( mipBlend > 0.0 )
+	{
+		float3 prefiltered = SampleMip( gPrefilter, sceneUv, 1 ) / max( gSceneBloomFlare.x, 1e-6 );
+		const float3 lumaWeights = float3( 0.2126, 0.7152, 0.0722 );
+		c = max( 0.0, c + ( dot( prefiltered, lumaWeights ) - dot( c, lumaWeights ) ) * mipBlend );
+	}
+	return c;
+}
+
+float3 BodycamPictureCurve( float3 c )
+{
+	// Small black crush, raised midtones and a smooth, bounded shoulder.
+	float3 v = saturate( ( c / gSensor.y - 0.006 ) / 0.994 );
+	return pow( v, 0.70 ) * ( 1.32 - 0.32 * v );
+}
+
+float3 BodycamPupil( float field )
+{
+	const float3 offsets = gSceneBloomFlare.z * float3( -1.0, 0.0, 1.0 );
+	const float3 widths = gBodycam.w * float3( 1.0, 1.04, 1.20 );
+	float3 signedDistance = clamp( ( 1.0 + offsets - field ) / widths, -1.0, 1.0 );
+	// Integral of a uniform defocus disk across the pupil edge (positive is inside).
+	return saturate( 0.5 + ( asin( signedDistance ) + signedDistance * sqrt( saturate( 1.0 - signedDistance * signedDistance ) ) ) / 3.14159265 );
+}
+
+float4 BodycamStageOutput( float3 c )
+{
+	return DX12FinishPixel( FinalOutput( float4( saturate( c / gSensor.y ) * gOutput.x, 1 ),
+		0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}
+
+float4 BodycamComposite( PS_INPUT input )
+{
+	float2 sceneSize;
+	gScene.GetDimensions( sceneSize.x, sceneSize.y );
+	float2 viewPixel = input.vUv0 * sceneSize - gViewRect.xy;
+	float halfShortAxis = 0.5 * min( gViewRect.z, gViewRect.w );
+	float2 outputRay = viewPixel - 0.5 * gViewRect.zw;
+	// Pixel aspect defines the aperture and edge onset, never the central scene geometry.
+	float2 sensor = outputRay / ( halfShortAxis * float2( gDirtPeak.x, 1.0 ) );
+	float radius = length( sensor );
+	float circle = gCamera.w;
+	float field = radius / circle;
+	[branch] if ( field >= 1.0 + gSceneBloomFlare.z + 1.20 * gBodycam.w )
+		return float4( 0, 0, 0, 1 );
+	float3 aperture = 1.0;
+	[branch] if ( field > 1.0 - gSceneBloomFlare.z - 1.20 * gBodycam.w )
+		aperture = BodycamPupil( field );
+
+	const uint stage = (uint)gOutput.z;
+	float3 raw;
+	[branch] if ( stage == 4 )
+		return BodycamStageOutput( gScene.SampleLevel( gSceneSampler, input.vUv0, 0 ).rgb * gSceneBloomFlare.x );
+	const float rho0 = 0.68;
+	float2 sceneUv = input.vUv0;
+	float sourceScaleG = 1.0;
+	[branch] if ( field <= rho0 )
+	{
+		// Exactly the ordinary composite's point lookup: no CA, reconstruction or zoom.
+		raw = gScene.SampleLevel( gSceneSampler, input.vUv0, 0 ).rgb;
+	}
+	else
+	{
+		float3 k = -gLens.w - 1.0 + gLens.z * float3( 0.5, 0.0, -0.5 );
+		float invBand = rcp( 1.0 - rho0 );
+		float band = ( field - rho0 ) * invBand;
+		float band2 = band * band;
+		float3 bend = k * band2 * band;
+		float stretch = 1.0 + k.r * ( band2 * band + 3.0 * field * band2 * invBand );
+
+		// Limit the displacement, not the output. Every color maps to a valid source
+		// sample, and only the elliptical pupil controls the black silhouette.
+		float2 room = ( 0.5 * gViewRect.zw - 0.5 ) / max( abs( outputRay ), 1e-5 ) - 1.0;
+		float headroom = max( 0.0, min( room.x, room.y ) );
+		float coverage = headroom / max( headroom + bend.r, 1e-5 );
+		float3 sourceScale = 1.0 + coverage * bend;
+		sourceScaleG = sourceScale.g;
+		float2 uvMin = ( gViewRect.xy + 0.5 ) / sceneSize;
+		float2 uvMax = ( gViewRect.xy + gViewRect.zw - 0.5 ) / sceneSize;
+		raw = BodycamEdgeOptics( sceneSize, ( gViewRect.xy + 0.5 * gViewRect.zw ) / sceneSize,
+			outputRay, sourceScale, field, lerp( 1.0, stretch, coverage ), uvMin, uvMax, input.projPos.xy, sceneUv );
+	}
+	float2 tanPerRadius = ( 2.0 * outputRay / gViewRect.zw ) * gCamera.xy * sourceScaleG;
+	float cosTheta2 = rcp( 1.0 + dot( tanPerRadius, tanPerRadius ) );
+	float3 transmission = lerp( 1.0, cosTheta2 * cosTheta2, gCamera.z );
+	float3 c = raw * gSceneBloomFlare.x;
+	[branch] if ( field > rho0 && ( (uint)gOutput.y & 8 ) == 0 )
+	{
+		// The mip contains a sum of unit-gain blur levels. Split direct and scattered energy.
+		float3 scatter = SampleMip( gBloom, sceneUv, 1 );
+		float weight = gDirtPeak.z * smoothstep( rho0, 0.86, field );
+		c = c * ( 1.0 - weight * gSceneBloomFlare.w ) + scatter * weight;
+	}
+	[branch] if ( stage == 1 )
+		return BodycamStageOutput( raw * gSceneBloomFlare.x );
+	float pupilClear = smoothstep( 0.80, 1.0, min( aperture.r, min( aperture.g, aperture.b ) ) );
+	// The defocused stop admixes diffuse, low-chroma light. Keep local luminance,
+	// but let the pupil's spectral transmission, not the scene's hue, define the fringe.
+	[branch] if ( pupilClear < 1.0 )
+	{
+		float scatterLuma = dot( c, float3( 0.2126, 0.7152, 0.0722 ) );
+		c = lerp( scatterLuma.xxx, c, lerp( 0.20, 1.0, pupilClear ) );
+	}
+	c = CaptureSensor( c * transmission * aperture, input.projPos.xy );
+	[branch] if ( stage == 2 )
+		return BodycamStageOutput( c );
+	float3 gains = gBodycam.rgb;
+	[branch] if ( gAwbParams.x > 0.0 )
+	{
+		float4 estimate = gAwb.Load( int3( 0, 0, 0 ) );
+		gains = lerp( gains, estimate.rgb, estimate.a );
+	}
+	c = BradfordBalance( c, gains );
+	[branch] if ( stage == 3 )
+		return BodycamStageOutput( c );
+	float luma = dot( max( c, 0 ), float3( 0.2126, 0.7152, 0.0722 ) );
+	// Leave the calibrated spectral pupil intact where it blocks light. Saturation and
+	// highlight recovery operate on the image interior, not the wavelength-dependent stop.
+	float y = luma / gSensor.y;
+	// At low signal, chroma has poorer SNR than luma. Compress it without lifting black.
+	float chromaSNR = lerp( 0.44, 1.0, smoothstep( 0.07, 0.24, y ) );
+	c = lerp( luma.xxx, c, lerp( 1.0, gSceneBloomFlare.y * chromaSNR, pupilClear ) );
+	c = lerp( c, gSensor.y * saturate( 1.12 * y ).xxx, pupilClear * gAwbParams.z * smoothstep( 0.46, 0.90, y ) );
+	float3 encoded = BodycamPictureCurve( c );
+	// Fade the electronic pedestal and dither only at the end of the disk tail.
+	float tail = smoothstep( 0.0, 0.015, max( aperture.r, max( aperture.g, aperture.b ) ) );
+	encoded *= tail;
+	if ( ( (uint)gOutput.y & 1 ) == 0 )
+		encoded += tail * ( InterleavedGradientNoise( input.projPos.xy ) - 0.5 ) / 255.0;
+	return DX12FinishPixel( FinalOutput( float4( SRGBToLinear( encoded ) * gOutput.x, 1 ),
+		0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+}
+#endif
+
 float4 main( PS_INPUT input ) : SV_Target0
 {
+#if CAMERA_MODEL == 2
+	return BodycamComposite( input );
+#else
 	float2 uv = input.vUv0;
 	uint flags = (uint)gOutput.y;
 	float2 sceneUv = uv;
@@ -263,4 +464,5 @@ float4 main( PS_INPUT input ) : SV_Target0
 	float3 d = SRGBToLinear( e ) * peak;
 	d *= gOutput.x;
 	return DX12FinishPixel( FinalOutput( float4( d, 1 ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+#endif
 }

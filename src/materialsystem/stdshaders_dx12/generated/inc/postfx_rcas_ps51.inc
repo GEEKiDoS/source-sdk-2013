@@ -30,17 +30,35 @@ public:
 
 class postfx_rcas_ps51_Dynamic_Index
 {
+	unsigned int m_nCOPY_ONLY : 2;
+#ifdef _DEBUG
+	bool m_bCOPY_ONLY : 1;
+#endif	// _DEBUG
 public:
+	void SetCOPY_ONLY( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nCOPY_ONLY = i;
+#ifdef _DEBUG
+		m_bCOPY_ONLY = true;
+#endif	// _DEBUG
+	}
+
 	postfx_rcas_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< postfx_rcas_ps51_Block >( dx12native::kStagePixel );
+		m_nCOPY_ONLY = 0;
+#ifdef _DEBUG
+		m_bCOPY_ONLY = false;
+#endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		return 0;
+		Assert( m_bCOPY_ONLY );
+		return ( 1 * m_nCOPY_ONLY ) + 0;
 	}
 };
 
-#define shaderDynamicTest_postfx_rcas_ps51 1
+#define shaderDynamicTest_postfx_rcas_ps51 psh_forgot_to_set_dynamic_COPY_ONLY
 

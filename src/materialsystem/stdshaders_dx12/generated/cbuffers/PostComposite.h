@@ -14,8 +14,9 @@ struct alignas(16) PostComposite {
     float gSensor[4]{};
     float gAwbParams[4]{};
     float gViewRect[4]{};
-    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 160;
-    static constexpr uint64_t kLayoutHash = 0x4be81a038291adacull;
+    float gBodycam[4]{};
+    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 176;
+    static constexpr uint64_t kLayoutHash = 0x81f4a3dbc690804full;
     static const dx12native::NativeCBufferLegacyMapDX12 &LegacyMap() {
         static const dx12native::NativeCBufferLegacyEntryDX12 entries[] = {
             {0, 16, 1, 0, 0, 0, 0},
@@ -28,8 +29,9 @@ struct alignas(16) PostComposite {
             {112, 16, 1, 0, 0, 0, 7},
             {128, 16, 1, 0, 0, 0, 8},
             {144, 16, 1, 0, 0, 0, 9},
+            {160, 16, 1, 0, 0, 0, 10},
         };
-        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 10, entries };
+        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 11, entries };
         return map;
     }
 };
@@ -43,5 +45,6 @@ static_assert(offsetof(PostComposite, gCamera) == 96, "HLSL member offset");
 static_assert(offsetof(PostComposite, gSensor) == 112, "HLSL member offset");
 static_assert(offsetof(PostComposite, gAwbParams) == 128, "HLSL member offset");
 static_assert(offsetof(PostComposite, gViewRect) == 144, "HLSL member offset");
-static_assert(sizeof(PostComposite) == 160, "HLSL cbuffer size");
+static_assert(offsetof(PostComposite, gBodycam) == 160, "HLSL member offset");
+static_assert(sizeof(PostComposite) == 176, "HLSL cbuffer size");
 } // namespace dx12cb

@@ -75,6 +75,8 @@ motion_blur_tile_dilate_cs51.fxc cs motion_blur_tile_dilate_cs51 native -
 # noparity motion_blur_tile_dilate_cs51 - native-only
 postfx_downsample_cs51.fxc cs postfx_downsample_cs51 native -
 # noparity postfx_downsample_cs51 - native-only
+postfx_jpeg_cs51.fxc cs postfx_jpeg_cs51 native -
+# noparity postfx_jpeg_cs51 - native-only
 postfx_upsample_cs51.fxc cs postfx_upsample_cs51 native -
 # noparity postfx_upsample_cs51 - native-only
 postfx_flare_cs51.fxc cs postfx_flare_cs51 native -

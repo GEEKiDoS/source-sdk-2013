@@ -16,6 +16,7 @@
 #include "viewrender.h"
 #include "motionvectors_dx12.h"
 #include "upscaler_dx12.h"
+#include "postprocess_dx12.h"
 #include "gtao_dx12.h"
 #include "pbr_debug_dx12.h"
 #include "screenspace_dx12.h"
@@ -3026,7 +3027,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			!g_pIntroData && !engine->IsDrawingLoadingImage() && !engine->IsPaused() && !engine->IsLevelMainMenuBackground() &&
 			!enginevgui->IsGameUIVisible();
 		FrameGenDX12_BeginFrame( pRenderContext, bFrameGenEligible );
-		const bool bDoMotionBlur = !building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping; // We probably should use a different view. variable here
+		const bool bDoMotionBlur = !building_cubemaps.GetBool() && viewRender.m_bDoBloomAndToneMapping && !PostProcessDX12_BodycamActive();
 		static ConVarRef mat_motion_blur_enabled( "mat_motion_blur_enabled" );
 		const bool bMotionBlurAllowed = bDoMotionBlur && mat_motion_blur_enabled.GetInt() && g_pMaterialSystemHardwareConfig->GetDXSupportLevel() >= 90;
 		MotionVectorsDX12_BeginFrame( bMotionBlurAllowed && viewRender.m_eStereoEye == STEREO_EYE_MONO );

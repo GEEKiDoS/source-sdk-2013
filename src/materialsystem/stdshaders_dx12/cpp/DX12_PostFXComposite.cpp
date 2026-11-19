@@ -31,6 +31,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( GLARE, SHADER_PARAM_TYPE_TEXTURE, "", "Lens flare glare" )
 		SHADER_PARAM( DIRT, SHADER_PARAM_TYPE_TEXTURE, "", "Lens dirt" )
 		SHADER_PARAM( AWB, SHADER_PARAM_TYPE_TEXTURE, "", "Temporally smoothed white-patch estimate" )
+		SHADER_PARAM( PREFILTER, SHADER_PARAM_TYPE_TEXTURE, "", "Bodycam unthresholded scene pyramid" )
 		SHADER_PARAM( DIRTENABLED, SHADER_PARAM_TYPE_INTEGER, "0", "Lens dirt enabled" )
 		SHADER_PARAM( BLOOMENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Bloom producer active" )
 		SHADER_PARAM( FLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Flare producer active" )
@@ -42,6 +43,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( SENSOR, SHADER_PARAM_TYPE_VEC4, "[0 8 0.001 0]", "Sensor strength, full well, black level and noise" )
 		SHADER_PARAM( AWBPARAMS, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "AWB strength, frame phase" )
 		SHADER_PARAM( VIEWRECT, SHADER_PARAM_TYPE_VEC4, "[0 0 1 1]", "Source view rectangle in scene texels" )
+		SHADER_PARAM( BODYCAM, SHADER_PARAM_TYPE_VEC4, "[1 1 1 0.045]", "Fixed Bradford gains and image-circle penumbra" )
 		SHADER_PARAM( OUTPUT, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: 1 when writing HDR output" )
 		SHADER_PARAM( OUTSCALE, SHADER_PARAM_TYPE_FLOAT, "1", "Output scale (world nits / UI nits in HDR)" )
 		SHADER_PARAM( PEAK, SHADER_PARAM_TYPE_FLOAT, "1", "AgX peak relative to paper white" )
@@ -72,7 +74,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			pShaderShadow->EnableDepthTest( false );
 			pShaderShadow->EnableDepthWrites( false );
 			pShaderShadow->EnableSRGBWrite( false );
-			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER9; ++nSampler )
+			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER10; ++nSampler )
 				pShaderShadow->EnableTexture( static_cast<Sampler_t>( nSampler ), true );
 			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION, 1, nullptr, 0 );
 			DECLARE_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
@@ -90,21 +92,25 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			if ( params[GLAREENABLED]->GetIntValue() ) BindTexture( SHADER_SAMPLER3, GLARE, -1 );
 			else pShaderAPI->BindStandardTexture( SHADER_SAMPLER3, TEXTURE_BLACK );
 			BindTexture( SHADER_SAMPLER4, DIRT, -1 );
+			const bool bBodycam = params[LENS]->GetVecValue()[3] < 0.f;
 			const float *pLens = params[LENS]->GetVecValue();
 			const float *pCamera = params[CAMERA]->GetVecValue();
 			const float *pSensor = params[SENSOR]->GetVecValue();
 			const float *pAwb = params[AWBPARAMS]->GetVecValue();
 			const bool bAwb = pAwb[0] > 0.f;
-			const bool bCamera = pLens[0] != 0.f || pLens[1] != 0.f || pLens[2] != 0.f || pCamera[2] > 0.f || pSensor[0] > 0.f || bAwb;
+			const bool bCamera = pLens[3] < 0.f || pLens[0] != 0.f || pLens[1] != 0.f || pLens[2] != 0.f || pCamera[2] > 0.f || pSensor[0] > 0.f || bAwb;
 			if ( bAwb )
 				BindTexture( SHADER_SAMPLER9, AWB, -1 );
+			if ( bBodycam )
+				BindTexture( SHADER_SAMPLER10, PREFILTER, -1 );
 
 			ShaderColorCorrectionInfo_t info;
 			pShaderAPI->GetCurrentColorCorrection( &info );
 			const int nLookups = info.m_bIsEnabled ? MIN( info.m_nLookupCount, kMaxColorCorrectionLookups ) : 0;
 			for ( int i = 0; i < nLookups; ++i )
 				pShaderAPI->BindStandardTexture( static_cast<Sampler_t>( SHADER_SAMPLER5 + i ), static_cast<StandardTextureId_t>( TEXTURE_COLOR_CORRECTION_VOLUME_0 + i ) );
-
+			const float *pPost = params[PARAMS1]->GetVecValue();
+			const float dirtPeak[4] = { pPost[0], params[PEAK]->GetFloatValue(), pPost[1], pPost[2] };
 			int nFlags = static_cast<int>( params[OUTPUT]->GetVecValue()[0] );
 			if ( params[DIRTENABLED]->GetIntValue() )
 				nFlags |= kFlagDirt;
@@ -112,7 +118,6 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 				nFlags |= kFlagColorCorrection;
 			if ( !params[BLOOMENABLED]->GetIntValue() )
 				nFlags |= kFlagSkipBloom;
-			const float dirtPeak[4] = { params[PARAMS1]->GetVecValue()[0], params[PEAK]->GetFloatValue(), 0.0f, 0.0f };
 			const float output[4] = { params[OUTSCALE]->GetFloatValue(), static_cast<float>( nFlags ), static_cast<float>( params[DEBUGVIEW]->GetIntValue() ), static_cast<float>( nLookups ) };
 			const float lutWeights[4] = { info.m_flDefaultWeight, info.m_pLookupWeights[0], info.m_pLookupWeights[1], info.m_pLookupWeights[2] };
 			const float lutWeight4[4] = { info.m_pLookupWeights[3], 0.0f, 0.0f, 0.0f };
@@ -128,12 +133,14 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 				DX12SetPixelShaderConstant( 7, pSensor );
 				DX12SetPixelShaderConstant( 8, pAwb );
 				DX12SetPixelShaderConstant( 9, params[VIEWRECT]->GetVecValue() );
+				if ( bBodycam )
+					DX12SetPixelShaderConstant( 10, params[BODYCAM]->GetVecValue() );
 			}
 
 			DECLARE_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
 			DECLARE_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
-			SET_DYNAMIC_PIXEL_SHADER_COMBO( CAMERA_MODEL, bCamera );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( CAMERA_MODEL, bBodycam ? 2 : bCamera ? 1 : 0 );
 			SET_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
 		}
 		Draw();

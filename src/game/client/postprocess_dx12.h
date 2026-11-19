@@ -12,6 +12,7 @@ void PostProcessDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig );
 void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMaterialSystemHardwareConfig *pHardwareConfig );
 void PostProcessDX12_Shutdown();
 bool PostProcessDX12_Active();
+bool PostProcessDX12_BodycamActive();
 // First level init (config.cfg loaded): re-enables mat_postfx_dx12 once for a config saved before it was validated.
 void PostProcessDX12_ValidateConfig();
 void PostProcessDX12_SubmitFrameConfig();

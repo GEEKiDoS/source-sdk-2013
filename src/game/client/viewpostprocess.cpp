@@ -485,6 +485,8 @@ static void Terror_PrepareTransitionBlur( IMatRenderContext *context )
 }
 void Terror_RenderTransitionBlur( float alpha, float desaturation )
 {
+	if ( PostProcessDX12_BodycamActive() )
+		return;
 	//COMISS/JB: unordered alpha skips, exactly like values below 1e-4.
 	if ( !( alpha >= 0.000099999997f ) ) return;
 	const CViewSetup *setup = view->GetViewSetup();
@@ -1030,6 +1032,12 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	{
 		exposure_width_scale = ( 0.5f * ( 1.0f - mat_exposure_center_region_x.GetFloat() ) );
 		exposure_height_scale = ( 0.5f * ( 1.0f - mat_exposure_center_region_y.GetFloat() ) );
+	}
+	if ( PostProcessDX12_BodycamActive() )
+	{
+		// Center-weight the existing HDR histogram for the bodycam's circular field.
+		exposure_width_scale = MAX( exposure_width_scale, 0.15f );
+		exposure_height_scale = MAX( exposure_height_scale, 0.10f );
 	}
 	int skip_edgex = ( 1 + scrx_max - scrx_min ) * exposure_width_scale;
 	int skip_edgey = ( 1 + scry_max - scry_min ) * exposure_height_scale;
@@ -3113,7 +3121,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 		PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, false, flPostFov, flPostAspect );
 		s_bScreenEffectTextureIsUpdated = false;
 	}
-	if ( mat_postprocess_enable.GetBool() )
+	if ( mat_postprocess_enable.GetBool() && !PostProcessDX12_BodycamActive() )
 		Terror_RenderEnginePost( pRenderContext, x, y, w, h, bPostVGui, bPostProcessDX12 ? 0.0f : flBloomScale, !bPostProcessDX12 );
 	if ( hdrType != HDR_TYPE_NONE )
 		DoPostBloomTonemapping( pRenderContext, x, y, w, h, flAutoExposureMin, flAutoExposureMax );

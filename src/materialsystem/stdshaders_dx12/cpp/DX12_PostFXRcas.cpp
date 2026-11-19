@@ -47,11 +47,13 @@ BEGIN_VS_SHADER( DX12_PostFXRcas, "DX12 post-processing RCAS sharpen" )
 			BindTexture( SHADER_SAMPLER0, BASETEXTURE, -1 );
 			// FSR1: sharpness 1 -> 0 stops of attenuation, 0 -> 2 stops.
 			const float *pTexel = params[TEXELSIZE]->GetVecValue();
-			const float constants[4] = { 2.0f * ( 1.0f - params[SHARPNESS]->GetFloatValue() ), params[NORMSCALE]->GetFloatValue(), pTexel[0], pTexel[1] };
+			const float flSharpness = params[SHARPNESS]->GetFloatValue();
+			const float constants[4] = { 2.0f * ( 1.0f - flSharpness ), params[NORMSCALE]->GetFloatValue(), pTexel[0], pTexel[1] };
 			DX12SetPixelShaderConstant( 0, constants );
 			DECLARE_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
 			SET_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
 			DECLARE_DYNAMIC_PIXEL_SHADER( postfx_rcas_ps51 );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( COPY_ONLY, flSharpness < 0.f );
 			SET_DYNAMIC_PIXEL_SHADER( postfx_rcas_ps51 );
 		}
 		Draw();

@@ -37,7 +37,7 @@ class postfx_composite_ps51_Dynamic_Index
 public:
 	void SetCAMERA_MODEL( int i )
 	{
-		Assert( i >= 0 && i <= 1 );
+		Assert( i >= 0 && i <= 2 );
 		m_nCAMERA_MODEL = i;
 #ifdef _DEBUG
 		m_bCAMERA_MODEL = true;

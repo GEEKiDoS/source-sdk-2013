@@ -1581,6 +1581,67 @@ and settled result. Lobby captures demonstrate sensor clipping/noise (`fullwell=
 `DoEnginePostProcessing` at 0.35 ms off / 0.46 ms all on. These are short-window GPU timing samples,
 not a cross-hardware benchmark.
 
+### Axon body camera preset
+
+`mat_postfx_bodycam 1` (default `0`) or **Advanced Graphics > Post-processing > Axon body camera**
+enables the preset without changing the standalone camera settings. The existing HDR histogram
+meters the center of the game frame; `mat_postfx_bodycam_exposure` adds +1.5 EV.
+The preset bypasses the L4D2 engine grade, grain, local contrast, vignette, depth of field, screen
+blur and motion blur. HUD/VGUI remain outside the camera chain.
+
+The game and viewmodel FOVs stay unchanged. The scene geometry is deliberately artistic, not a
+physical projection: the inner 68% of the elliptical field uses exactly the existing 1:1 scene
+point fetch, and the outer band samples radially outward with scale
+`1 + k * max( (rho - 0.68) / 0.32, 0 )^3`, where `mat_postfx_bodycam_distortion` sets `k` (0.050).
+The join matches both slope and curvature; there is no global zoom or overscan.
+`mat_postfx_bodycam_pixel_aspect` (1.18) shapes the pupil and edge-onset bands, not scene scale.
+The default mid-transmission pupil has semi-axes of 1055 by 894 pixels at 1920x1080.
+The outer displacement rolls off smoothly against the available source distance, and its
+filter footprint tapers with the remaining margin. Source coverage never dims the image;
+only the elliptical pupil defines the visible silhouette.
+
+`mat_postfx_bodycam_penumbra` (0.022) sets the pupil-edge disk PSF radius relative to the pupil.
+The disk integral gives a smooth 10-90% transmission change over about 27 optical pixels at
+1080p, wider along the stretched axis. `mat_postfx_bodycam_pupil_ca` (0.006) offsets the pupil
+projection by -5.4, 0 and +5.4 optical pixels for red, green and blue; blue has a 20% wider
+defocus disk. A luminance-preserving diffuse component at the defocused stop keeps warm
+scene light from masking the extended blue tail. The pupil acts before sensor capture;
+the ISP does not neutralize its rim as a highlight. `mat_postfx_bodycam_ca` (0.0015) splits the red and blue
+scale coefficients in the same cubic edge lookup, so scene detail has a thin lateral fringe near
+the edges and none in the identity region. Cosine-fourth falloff complements the stop.
+
+Only the outer field uses hardware bilinear sampling, with a continuous luma-footprint blend
+to mip 1 where the warp minifies. Additional optical defocus begins beyond 70% of pupil radius.
+`mat_postfx_bodycam_field_curvature` (0.006) and `mat_postfx_bodycam_astigmatism` (0.003)
+shape four wavelength-separated taps in that band only. Their spatial rotation is stable after
+temporal reconstruction. `mat_postfx_bodycam_veiling` (0.12) also fades in outside the identity
+region, using the existing unthresholded pyramid before sensor clipping.
+
+The CMOS response applies per-photosite full-well clipping (`mat_postfx_bodycam_fullwell`, 2), a
+residual black pedestal and independent read/shot noise. The CCM, white balance, Rec.709 saturation
+(0.70), low-signal chroma attenuation and highlight neutralization precede a bounded picture
+curve with crushed blacks and lifted midtones. `mat_postfx_bodycam_cct 0` uses center-weighted
+metering with sky/clipping and saturated
+color rejection. It estimates bounded green-magenta tint as well as temperature, then applies
+Bradford gains. It initializes from the first confident estimate (5200 K fallback), then follows a
+20-second time constant and a small gain deadband.
+A fixed value in kelvin bypasses the estimator. `mat_postfx_bodycam_debug` displays the lens
+sample (1), sensor CCM output (2), white balance output (3), or the unwarped point reference (4)
+as linear values normalized to full well. `0` restores the normal ISP output.
+
+Optional `mat_postfx_bodycam_jpeg_quality` (0 off; try 18) runs at output resolution after the ISP
+and before HUD/VGUI. It simulates JPEG reconstruction, not a file encoder: full-range JFIF BT.601
+Y'CbCr, 2x2 chroma pooling, separable 8x8 DCT/IDCT, standard JPEG quantization tables scaled by
+IJG quality (1-100), and 4:2:0 chroma reconstruction. The 16x16 MCU grid is stable in output pixels.
+It uses existing post textures and dispatches no work at quality 0. The bodycam composite is a
+separate shader permutation; disabling the master toggle restores normal rendering.
+
+At 1080p on the `c1m1_hotel` rooftop, an RTX 4070 SUPER measured 0.09 ms for the identity-center
+composite and 0.27 ms for inclusive engine post, versus 0.40 and 0.59 ms for the earlier
+full-frame bicubic version (short-window GPU overlays, JPEG off). The optional
+quality-18 JPEG dispatch measured 0.16 ms in the lobby. HUD composition was also checked with
+DLSS reconstructing 1280x720 to 1920x1080.
+
 ## Exact glare reach bound
 
 `DX12_PostFX` pass 8 (`postfx_glare_cs51` `REDUCE 1`) reduces the glare input to

@@ -17,7 +17,7 @@ float2 UniformChromaticity( float3 xyz )
 	return float2( 4.0 * xyz.x, 6.0 * xyz.y ) / dot( xyz, float3( 1, 15, 3 ) );
 }
 
-float3 IlluminantGains( float3 rgb )
+float3 IlluminantGains( float3 rgb, bool bodycam )
 {
 	const float3x3 rgbToXyz = float3x3( 0.4124564, 0.3575761, 0.1804375, 0.2126729, 0.7151522, 0.0721750, 0.0193339, 0.1191920, 0.9503041 );
 	const float3x3 bradford = float3x3( 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296 );
@@ -46,6 +46,13 @@ float3 IlluminantGains( float3 rgb )
 			fitted = projected;
 		}
 	}
+	// Meter green-magenta tint as well as temperature. Forcing the illuminant onto
+	// the locus left its measured perpendicular tint uncorrected.
+	if ( bodycam )
+	{
+		float2 tint = measured - fitted;
+		fitted += tint * min( 1.0, 0.018 / max( length( tint ), 1e-5 ) );
+	}
 	float3 white = float3( 1.5 * fitted.x / fitted.y, 1.0, ( 2.0 - 0.5 * fitted.x ) / fitted.y - 5.0 );
 	// A strongly off-locus frame is a poor illuminant estimate.
 	float confidence = 1.0 - smoothstep( 0.0001, 0.0036, best );
@@ -64,13 +71,22 @@ void main( uint3 lane : SV_GroupThreadID )
 		{
 			float2 cell = ( lane.xy + uint2( x, y ) * 8 + 0.5 ) / 32.0;
 			float2 uv = float2( p2, pad0 ) + float2( pad1, pad2 ) * cell;
+			// Bodycam favors the center and excludes the top of the frustum (usually sky).
+			float meter = texelY > 0.0 ? ( 1.0 - smoothstep( 0.35, 0.75, length( cell - 0.5 ) ) ) * smoothstep( 0.12, 0.32, cell.y ) : 1.0;
 			float3 c = max( gSrc.SampleLevel( gLinearClamp, uv, 0 ).rgb * p0, 0.0 );
 			float high = max( c.r, max( c.g, c.b ) );
 			float low = min( c.r, min( c.g, c.b ) );
 			float luma = dot( c, float3( 0.2126, 0.7152, 0.0722 ) );
 			float weight = smoothstep( 0.015, 0.05, luma ) * ( 1.0 - smoothstep( 0.6 * p1, p1, high ) );
 			weight *= smoothstep( 0.08, 0.45, low / max( high, 1e-4 ) );
-			accum += weight * float4( c / max( luma, 1e-4 ), 1 );
+			if ( texelY > 0.0 )
+			{
+				// Favor gray surfaces; discount strongly colored materials and green foliage.
+				float saturation = 1.0 - low / max( high, 1e-4 );
+				weight *= 1.0 - 0.90 * smoothstep( 0.24, 0.62, saturation );
+				weight *= 1.0 - 0.85 * smoothstep( 0.07, 0.19, ( c.g - max( c.r, c.b ) ) / max( luma, 1e-4 ) );
+			}
+			accum += ( weight * meter ) * float4( c / max( luma, 1e-4 ), 1 );
 		}
 	}
 	uint index = lane.y * 8 + lane.x;
@@ -85,13 +101,20 @@ void main( uint3 lane : SV_GroupThreadID )
 	}
 	if ( index == 0 )
 	{
-		float3 prior = 1.0;
-		if ( texelX < 1.0 )
-			prior = gSrc2.Load( int3( 0, 0, 0 ) ).rgb;
-		float3 gains = prior;
-		if ( gWhite[0].w > 4.0 )
-			gains = lerp( prior, IlluminantGains( gWhite[0].rgb ), texelX );
-		gDst[uint2( 0, 0 )] = float4( gains, 1.0 );
+		const bool bodycam = texelY > 0.0;
+		const bool reset = texelX >= 1.0;
+		float4 prior = float4( 1.0, 1.0, 1.0, bodycam ? 0.0 : 1.0 );
+		if ( !reset )
+			prior = gSrc2.Load( int3( 0, 0, 0 ) );
+		float4 result = prior;
+		if ( gWhite[0].w > ( bodycam ? 18.0 : 4.0 ) )
+		{
+			float3 target = IlluminantGains( gWhite[0].rgb, bodycam );
+			// Hold small changes and allow the full locus-based correction to converge slowly.
+			if ( !bodycam || prior.a < 1.0 || any( abs( target - prior.rgb ) > 0.015 ) )
+				result = lerp( prior, float4( target, 1.0 ), texelX );
+		}
+		gDst[uint2( 0, 0 )] = result;
 	}
 }
 #elif REDUCE == 1

@@ -1,4 +1,5 @@
 // Native SM5.1 FSR1 RCAS sharpening pass.
+// DYNAMIC: "COPY_ONLY" "0..1"
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 #ifdef HDRTYPE
@@ -17,6 +18,10 @@ struct PS_INPUT { float4 projPos : SV_Position; float2 vUv0 : TEXCOORD0; };
 
 float4 main( PS_INPUT input ) : SV_Target0
 {
+#if COPY_ONLY
+	float3 decoded = gBaseTexture.Load( int3( (int2)input.projPos.xy, 0 ) ).rgb;
+	return DX12FinishPixel( FinalOutput( float4( decoded, 1 ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+#else
 	float2 uv = input.vUv0;
 	float2 step = gRcasParams.zw;
 	float norm = max( gRcasParams.y, 1e-4 );
@@ -40,4 +45,5 @@ float4 main( PS_INPUT input ) : SV_Target0
 	float lobe = max( -0.1875, min( max( max( lobeRGB.r, lobeRGB.g ), lobeRGB.b ), 0.0 ) ) * exp2( -gRcasParams.x );
 	float3 result = ( lobe * ( b + d + h + f ) + e ) / ( 1.0 + 4.0 * lobe );
 	return DX12FinishPixel( FinalOutput( float4( result * norm, 1 ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
+#endif
 }

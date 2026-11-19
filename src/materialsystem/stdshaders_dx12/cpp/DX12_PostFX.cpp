@@ -17,6 +17,7 @@
 #include "postfx_kawase_down_cs51.inc"
 #include "postfx_kawase_up_cs51.inc"
 #include "postfx_glare_cs51.inc"
+#include "postfx_jpeg_cs51.inc"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -89,7 +90,7 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 			constants.p1 = pParams0[3];
 			const float *pParams1 = params[PARAMS1]->GetVecValue();
 			constants.p2 = pParams1[0];
-			if ( nPass == 9 )
+			if ( nPass == 9 || nPass == 10 )
 			{
 				constants.pad0 = pParams1[1];
 				constants.pad1 = pParams1[2];
@@ -133,6 +134,11 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 				break;
 			case 5:
 				SelectShader< postfx_kawase_up_cs51_Static_Index, postfx_kawase_up_cs51_Dynamic_Index >( dispatch, "postfx_kawase_up_cs51" );
+				break;
+			case 10:
+				SelectShader< postfx_jpeg_cs51_Static_Index, postfx_jpeg_cs51_Dynamic_Index >( dispatch, "postfx_jpeg_cs51" );
+				dispatch.m_nGroupsX = ( constants.dstWidth + 15 ) / 16;
+				dispatch.m_nGroupsY = ( constants.dstHeight + 15 ) / 16;
 				break;
 			case 6:
 			case 8:

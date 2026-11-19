@@ -1,0 +1,243 @@
+// Native SM5.1 body-camera JPEG simulation.
+//
+// One 16x16 group owns four luma 8x8 blocks and one pooled chroma block.  Each
+// block is transformed cooperatively: one thread per coefficient performs the
+// horizontal and vertical DCT, quantizes/dequantizes it, and the same threads
+// perform the transposed inverse.  The source and destination grids are global,
+// so adjacent groups never share a JPEG block.
+#include "postfx_common.hlsli"
+
+static const int kLumaQuant[64] =
+{
+    16, 11, 10, 16, 24, 40, 51, 61,
+    12, 12, 14, 19, 26, 58, 60, 55,
+    14, 13, 16, 24, 40, 57, 69, 56,
+    14, 17, 22, 29, 51, 87, 80, 62,
+    18, 22, 37, 56, 68,109,103, 77,
+    24, 35, 55, 64, 81,104,113, 92,
+    49, 64, 78, 87,103,121,120,101,
+    72, 92, 95, 98,112,100,103, 99
+};
+
+static const int kChromaQuant[64] =
+{
+     17, 18, 24, 47, 99, 99, 99, 99,
+     18, 21, 26, 66, 99, 99, 99, 99,
+     24, 26, 56, 99, 99, 99, 99, 99,
+     47, 66, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99
+};
+
+// Orthonormal DCT-II basis, indexed [frequency][sample].  Keeping the basis
+// explicit avoids trig work for every coefficient and makes the transpose used
+// by the IDCT exact.
+static const float kDctBasis[64] =
+{
+     0.35355339,  0.35355339,  0.35355339,  0.35355339,  0.35355339,  0.35355339,  0.35355339,  0.35355339,
+     0.49039264,  0.41573481,  0.27778512,  0.09754516, -0.09754516, -0.27778512, -0.41573481, -0.49039264,
+     0.46193977,  0.19134172, -0.19134172, -0.46193977, -0.46193977, -0.19134172,  0.19134172,  0.46193977,
+     0.41573481, -0.09754516, -0.49039264, -0.27778512,  0.27778512,  0.49039264,  0.09754516, -0.41573481,
+     0.35355339, -0.35355339, -0.35355339,  0.35355339,  0.35355339, -0.35355339, -0.35355339,  0.35355339,
+     0.27778512, -0.49039264,  0.09754516,  0.41573481, -0.41573481, -0.09754516,  0.49039264, -0.27778512,
+     0.19134172, -0.46193977,  0.46193977, -0.19134172, -0.19134172,  0.46193977, -0.46193977,  0.19134172,
+     0.09754516, -0.27778512,  0.41573481, -0.49039264,  0.49039264, -0.41573481,  0.27778512, -0.09754516
+};
+
+groupshared float gLuma[256];
+groupshared float2 gChroma[256];
+groupshared float2 gChromaWork[64];
+groupshared float2 gChromaFrequency[64];
+groupshared float gWork[256];
+groupshared float gFrequency[256];
+
+float3 LinearToSrgb( float3 rgb )
+{
+    rgb = saturate( rgb );
+    return lerp( 12.92 * rgb, 1.055 * pow( rgb, 1.0 / 2.4 ) - 0.055, step( 0.0031308, rgb ) );
+}
+
+float3 SrgbToLinear( float3 srgb )
+{
+    srgb = saturate( srgb );
+    return lerp( srgb / 12.92, pow( ( srgb + 0.055 ) / 1.055, 2.4 ), step( 0.04045, srgb ) );
+}
+
+int QualityFromP0()
+{
+    return clamp( (int)floor( p0 + 0.5 ), 1, 100 );
+}
+
+int QuantTableValue( bool luma, uint u, uint v, int quality )
+{
+    int base = luma ? kLumaQuant[v * 8 + u] : kChromaQuant[v * 8 + u];
+    int scale = quality < 50 ? 5000 / quality : 200 - 2 * quality;
+    return clamp( ( base * scale + 50 ) / 100, 1, 255 );
+}
+
+float QuantizeDequantize( float coefficient, int quant )
+{
+    float scaled = coefficient / quant;
+    float rounded = scaled >= 0.0 ? floor( scaled + 0.5 ) : ceil( scaled - 0.5 );
+    return rounded * quant;
+}
+
+[numthreads( 16, 16, 1 )]
+void main( uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 localId : SV_GroupThreadID )
+{
+    if ( dstWidth == 0 || dstHeight == 0 || srcWidth == 0 || srcHeight == 0 )
+        return;
+
+    uint2 pixel = id.xy;
+    bool validOutput = pixel.x < dstWidth && pixel.y < dstHeight;
+    uint2 safePixel = min( pixel, uint2( dstWidth - 1, dstHeight - 1 ) );
+    uint sourceX = min( ( safePixel.x * srcWidth ) / max( dstWidth, 1u ), max( srcWidth, 1u ) - 1u );
+    uint sourceY = min( ( safePixel.y * srcHeight ) / max( dstHeight, 1u ), max( srcHeight, 1u ) - 1u );
+    int2 sourcePixel = int2( sourceX, sourceY );
+
+    // p0 <= 0 is the disabled path: it is a true copy, not a JPEG pass.
+    if ( p0 <= 0.0 )
+    {
+        if ( validOutput )
+            gDst[pixel] = gSrc.Load( int3( sourcePixel, 0 ) );
+        return;
+    }
+
+    float paperWhite = p1 > 0.0 ? p1 : 1.0;
+    bool hasView = pad1 > 0.0 && pad2 > 0.0;
+    int2 viewMin = int2( floor( float2( p2, pad0 ) + 0.5 ) );
+    int2 viewMax = viewMin + int2( floor( float2( pad1, pad2 ) + 0.5 ) ) - 1;
+    viewMin = clamp( viewMin, int2( 0, 0 ), int2( max( srcWidth, 1u ) - 1, max( srcHeight, 1u ) - 1 ) );
+    viewMax = clamp( viewMax, viewMin, int2( max( srcWidth, 1u ) - 1, max( srcHeight, 1u ) - 1 ) );
+    bool inView = !hasView || ( all( sourcePixel >= viewMin ) && all( sourcePixel <= viewMax ) );
+
+    // Keep the original value for untouched crop pixels and alpha.  The value
+    // transformed below is clamped to the active view, which prevents a JPEG
+    // block on the crop edge from sampling the unrelated surrounding image.
+    float4 original = gSrc.Load( int3( sourcePixel, 0 ) );
+    int2 transformPixel = hasView ? clamp( sourcePixel, viewMin, viewMax ) : sourcePixel;
+    float3 rgb = ( inView ? original.rgb : gSrc.Load( int3( transformPixel, 0 ) ).rgb ) / paperWhite;
+    float3 srgb = LinearToSrgb( rgb );
+
+    // JFIF full-range BT.601 with 8-bit code values and chroma centered at code 128.
+    float3 code = round( 255.0 * srgb );
+    float y = dot( code, float3( 0.299, 0.587, 0.114 ) );
+    float cb = dot( code, float3( -0.168736, -0.331264, 0.5 ) );
+    float cr = dot( code, float3( 0.5, -0.418688, -0.081312 ) );
+    uint localIndex = localId.y * 16 + localId.x;
+    gLuma[localIndex] = round( y ) - 128.0;
+    gChroma[localIndex] = float2( cb, cr );
+    GroupMemoryBarrierWithGroupSync();
+
+    int quality = QualityFromP0();
+    uint blockX = ( localId.x >> 3 ) << 3;
+    uint blockY = ( localId.y >> 3 ) << 3;
+    uint sampleX = localId.x & 7;
+    uint sampleY = localId.y & 7;
+    uint blockIndex = blockY * 16 + blockX;
+
+    // Four luma blocks in parallel.  First pass is horizontal DCT.
+    float horizontal = 0.0;
+    [unroll]
+    for ( uint x = 0; x < 8; ++x )
+        horizontal += kDctBasis[sampleX * 8 + x] * gLuma[blockIndex + sampleY * 16 + x];
+    gWork[localIndex] = horizontal;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Vertical DCT followed by IJG quality-scaled quantize/dequantize.
+    float coefficient = 0.0;
+    [unroll]
+    for ( uint yIndex = 0; yIndex < 8; ++yIndex )
+        coefficient += kDctBasis[sampleY * 8 + yIndex] * gWork[blockIndex + yIndex * 16 + sampleX];
+    int lumaQuant = QuantTableValue( true, sampleX, sampleY, quality );
+    gFrequency[blockIndex + sampleY * 16 + sampleX] = QuantizeDequantize( coefficient, lumaQuant );
+    GroupMemoryBarrierWithGroupSync();
+
+    // Transposed horizontal IDCT.  Every thread writes one x/frequency row.
+    float inverse = 0.0;
+    [unroll]
+    for ( uint u = 0; u < 8; ++u )
+        inverse += kDctBasis[u * 8 + sampleX] * gFrequency[blockIndex + sampleY * 16 + u];
+    gWork[localIndex] = inverse;
+    GroupMemoryBarrierWithGroupSync();
+
+    float reconstructedLuma = 0.0;
+    [unroll]
+    for ( uint v = 0; v < 8; ++v )
+        reconstructedLuma += kDctBasis[v * 8 + sampleY] * gWork[blockIndex + v * 16 + sampleX];
+    gLuma[localIndex] = clamp( round( reconstructedLuma + 128.0 ), 0.0, 255.0 ) / 255.0;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Pool each 2x2 region. A separate shared array avoids overwriting unpooled chroma.
+    bool chromaLane = blockX == 0 && blockY == 0;
+    uint chromaLaneIndex = sampleY * 8 + sampleX;
+    if ( chromaLane )
+    {
+        uint base = sampleY * 32 + sampleX * 2;
+        float2 pooled = 0.25 * ( gChroma[base] + gChroma[base + 1] + gChroma[base + 16] + gChroma[base + 17] );
+        gChromaFrequency[chromaLaneIndex] = clamp( round( pooled ), -128.0, 127.0 );
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( chromaLane )
+    {
+        float2 row = 0.0;
+        [unroll]
+        for ( uint x = 0; x < 8; ++x )
+            row += kDctBasis[sampleX * 8 + x] * gChromaFrequency[sampleY * 8 + x];
+        gChromaWork[chromaLaneIndex] = row;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( chromaLane )
+    {
+        float2 frequency = 0.0;
+        [unroll]
+        for ( uint yi = 0; yi < 8; ++yi )
+            frequency += kDctBasis[sampleY * 8 + yi] * gChromaWork[yi * 8 + sampleX];
+        int quant = QuantTableValue( false, sampleX, sampleY, quality );
+        gChromaFrequency[chromaLaneIndex] = float2( QuantizeDequantize( frequency.x, quant ), QuantizeDequantize( frequency.y, quant ) );
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( chromaLane )
+    {
+        float2 row = 0.0;
+        [unroll]
+        for ( uint u = 0; u < 8; ++u )
+            row += kDctBasis[u * 8 + sampleX] * gChromaFrequency[sampleY * 8 + u];
+        gChromaWork[chromaLaneIndex] = row;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( chromaLane )
+    {
+        float2 decoded = 0.0;
+        [unroll]
+        for ( uint v = 0; v < 8; ++v )
+            decoded += kDctBasis[v * 8 + sampleY] * gChromaWork[v * 8 + sampleX];
+        gChromaFrequency[chromaLaneIndex] = clamp( round( decoded ), -128.0, 127.0 ) / 255.0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( validOutput )
+    {
+        float4 result = original;
+        if ( inView )
+        {
+            float yOut = gLuma[localIndex];
+            uint chromaIndex = ( localId.y >> 1 ) * 8 + ( localId.x >> 1 );
+            float2 chroma = gChromaFrequency[chromaIndex];
+            float cbOut = chroma.x;
+            float crOut = chroma.y;
+            float3 encoded = saturate( float3(
+                yOut + 1.402 * crOut,
+                yOut - 0.344136 * cbOut - 0.714136 * crOut,
+                yOut + 1.772 * cbOut ) );
+            result.rgb = SrgbToLinear( encoded ) * paperWhite;
+        }
+        gDst[pixel] = result;
+    }
+}

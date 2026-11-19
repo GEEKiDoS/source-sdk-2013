@@ -12,6 +12,8 @@ static ConVar mat_dof_quality( "mat_dof_quality", "0", 0x0000000A );
 
 bool Terror_IsDepthOfFieldEnabled( const CViewSetup *viewSetup )
 {
+	if ( PostProcessDX12_BodycamActive() )
+		return false;
 	if ( !viewSetup || g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT || g_pMaterialSystemHardwareConfig->GetDXSupportLevel() < 92 ) return false;
 	// Original engine/SFM view overrides are unavailable on this engine ABI.
 	return mat_dof_enabled.GetInt() != 0 && ( mat_dof_override.GetInt() != 0 || g_TerrorDOFState.enabled );
