@@ -34,6 +34,8 @@ public:
 	virtual bool IsPredicted() const OVERRIDE { return true; }
 	virtual const unsigned char *GetEncryptionKey() OVERRIDE { return NULL; }
 	virtual void ItemPostFrame() OVERRIDE;
+	// Retail S2502A0 dispatches attack2 through this virtual (+0x46C).
+	virtual void Attack2();
 	virtual void SecondaryAttack() OVERRIDE;
 	virtual bool CanPerformSecondaryAttack() const OVERRIDE { return true; } // S40524D640/C399230DC0.
 	virtual void UpdateShieldPostFrame(); // S40424EDA0/C3982317E0, fresh owner resolution.

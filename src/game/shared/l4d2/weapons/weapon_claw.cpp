@@ -158,6 +158,11 @@ void CClaw::PrimaryAttack()
 	Swing( claw_swing_interval.GetFloat(), claw_swing_duration.GetFloat(), range );
 }
 
+// Retail S3CBB80 is the +0x46C attack2 thunk to S3CBA00 (PrimaryAttack).
+void CClaw::Attack2()
+{
+	PrimaryAttack();
+}
 // S3CB800/810, C2F88B0/C0 are genuine empty weapon-idle/secondary slots.
 void CClaw::SecondaryAttack() {}
 void CClaw::WeaponIdle() {}

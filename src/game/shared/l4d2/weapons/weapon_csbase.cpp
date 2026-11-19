@@ -387,7 +387,7 @@ void CWeaponCSBase::ItemPostFrame()
 			CWeaponCSBase::SecondaryAttack(); // deliberately QUALIFIED.
 		else
 #endif
-			SecondaryAttack();
+			Attack2();
 		pPlayer->m_nButtons &= ~IN_ATTACK2;
 		return;
 	}
@@ -522,6 +522,12 @@ void CWeaponCSBase::UpdateShieldPostFrame()
 
 // S28324FA80: the shield gate surrounds ALL side effects. Client271231720
 // is a genuine native null override. Shield methods are native constants/null.
+// S2502A0's +0x46C virtual defaults to the ordinary secondary action.
+void CWeaponCSBase::Attack2()
+{
+	SecondaryAttack();
+}
+
 void CWeaponCSBase::SecondaryAttack()
 {
 #ifndef CLIENT_DLL

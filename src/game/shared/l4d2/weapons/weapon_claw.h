@@ -22,6 +22,7 @@ public:
 	virtual void Spawn() OVERRIDE;
 	virtual void Precache() OVERRIDE;
 	virtual void PrimaryAttack() OVERRIDE;
+	virtual void Attack2() OVERRIDE;
 	virtual void SecondaryAttack() OVERRIDE;
 	virtual void WeaponIdle() OVERRIDE;
 #ifdef CLIENT_DLL
