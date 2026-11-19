@@ -1010,7 +1010,10 @@ bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeig
 		Warning( "ShaderAPIDX12: frame generation could not adopt the swap chain: %s\n", m_FrameGen.LastError() );
 		return false;
 	}
-	if ( !m_bWindowed && !CheckDevice( "SetFullscreenState", view.swap->SetFullscreenState( TRUE, nullptr ) ) )
+	// Flip-model chains must ResizeBuffers after every fullscreen transition before presenting; no back buffer
+	// has been acquired yet, so the chain is resized in place at its creation size.
+	if ( !m_bWindowed && ( !CheckDevice( "SetFullscreenState", view.swap->SetFullscreenState( TRUE, nullptr ) ) ||
+		!CheckDevice( "ResizeBuffers", view.swap->ResizeBuffers( kBackBufferCount, nWidth, nHeight, m_PresentFormat, desc.Flags ) ) ) )
 		return false;
 	const bool bTargetsCreated = CreateViewTargets( view );
 	if ( bTargetsCreated )
@@ -1021,7 +1024,7 @@ bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeig
 //-----------------------------------------------------------------------------
 // Purpose: Resizes a view's swap chain and recreates its targets (notifies mode-change listeners)
 //-----------------------------------------------------------------------------
-bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight )
+bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight, bool bForceBuffers )
 {
 	FlushSubmissions();
 	if ( nWidth <= 0 || nHeight <= 0 )
@@ -1029,7 +1032,7 @@ bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight )
 		view.suspended = true;
 		return true;
 	}
-	if ( view.swap && !view.suspended && nWidth == view.width && nHeight == view.height )
+	if ( view.swap && !view.suspended && !bForceBuffers && nWidth == view.width && nHeight == view.height )
 		return true;
 	if ( !m_bChangingMode && g_pShaderDeviceDX12 == this && view.swap && ( nWidth != view.width || nHeight != view.height ) )
 	{
@@ -1112,10 +1115,16 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 			return false;
 	}
 	const bool bFullscreen = !info.m_bWindowed;
+	const bool bFullscreenChanged = m_bWindowed != info.m_bWindowed;
 	for ( View *pView : m_Views )
-		if ( pView->swap && m_bWindowed != info.m_bWindowed && !CheckDevice( "SetFullscreenState", pView->swap->SetFullscreenState( bFullscreen, nullptr ) ) )
+		if ( pView->swap && bFullscreenChanged && !CheckDevice( "SetFullscreenState", pView->swap->SetFullscreenState( bFullscreen, nullptr ) ) )
 			return false;
 	m_bWindowed = info.m_bWindowed;
+	// Flip-model chains must ResizeBuffers after a fullscreen transition even when the size is unchanged.
+	if ( bFullscreenChanged )
+		for ( View *pView : m_Views )
+			if ( pView != m_pCurrentView && pView->swap && !ResizeView( *pView, pView->width, pView->height, true ) )
+				return false;
 	m_bWaitForVsync = info.m_bWaitForVSync;
 	const int nSamples = MAX( 1, info.m_nAASamples ), nQuality = info.m_nAAQuality;
 	if ( nSamples != m_nSampleCount || nQuality != m_nSampleQuality )
@@ -1131,7 +1140,7 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		GetClientRect( m_pCurrentView->hwnd, &rect );
 		const int nWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : rect.right - rect.left;
 		const int nHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : rect.bottom - rect.top;
-		if ( !ResizeView( *m_pCurrentView, nWidth, nHeight ) )
+		if ( !ResizeView( *m_pCurrentView, nWidth, nHeight, bFullscreenChanged ) )
 			return false;
 		m_nWidth = m_pCurrentView->width;
 		m_nHeight = m_pCurrentView->height;

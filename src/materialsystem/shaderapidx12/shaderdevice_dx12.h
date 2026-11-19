@@ -629,7 +629,7 @@ private:
 	SubmitOpDX12 m_SubmitOps[16];
 	bool CreateView( View &view, HWND hWnd, int nWidth, int nHeight );
 	void QueryDisplayHdr( View &view );
-	bool ResizeView( View &view, int nWidth, int nHeight );
+	bool ResizeView( View &view, int nWidth, int nHeight, bool bForceBuffers = false );
 	bool CreateViewTargets( View &view );
 	bool CreateFrameObjects();
 	bool BeginRecording();
