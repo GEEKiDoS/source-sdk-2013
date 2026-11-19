@@ -240,7 +240,7 @@ static ConVar mat_postfx_dx12( "mat_postfx_dx12", "1", FCVAR_ARCHIVE, "DX12 post
 // afterwards the archived mat_postfx_dx12 is the user's choice.
 static ConVar mat_postfx_dx12_set( "mat_postfx_dx12_set", "0", FCVAR_ARCHIVE | FCVAR_HIDDEN, "Set once the DX12 post stack was validated for this config" );
 static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap" );
-static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "100", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (MagicBloom's 100; 0 off, 25..400 useful)" );
+static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "300", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (default 300; MagicBloom's 100; 0 off, 25..400 useful)" );
 static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
 static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_ARCHIVE, "DX12 post bloom extraction boost: maximum weight (luma - threshold) multiplying an extracted bright pixel (MagicBloom uses 10)", true, 0.f, true, 100.f );
 static ConVar mat_postfx_bloom_quality( "mat_postfx_bloom_quality", "2", FCVAR_ARCHIVE, "DX12 post bloom quality: 0 low (drops the two finest levels), 1 medium (drops the half-resolution level), 2 high (8 levels)", true, 0.f, true, 2.f );
