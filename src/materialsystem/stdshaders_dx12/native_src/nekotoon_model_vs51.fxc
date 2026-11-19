@@ -1,0 +1,37 @@
+// STATIC: "BUMP" "0..1"
+// STATIC: "HULL" "0..1"
+// DYNAMIC: "COMPRESSED_VERTS" "0..1"
+// DYNAMIC: "SKINNING" "0..1"
+// DYNAMIC: "MORPHING" "0..1"
+// DYNAMIC: "DOWATERFOG" "0..1"
+#define TANGENT BUMP
+#define LOCAL_LIGHTS 1
+#define VERTEXCOLOR 0
+#define STATIC_LIGHT_VERTEX 0
+#define INFECTED 0
+#define TREESWAY 0
+#define main SkinModel
+#define DX12_LEGACY_VS30 1
+#define DECAL 0
+#include "dx12_preamble.h"
+#include "studio_model_vertex.hlsli"
+#undef main
+
+VS_OUTPUT main( DX12_VS_INPUT v )
+{
+	VS_OUTPUT o = SkinModel( v );
+#if HULL
+	// The model stage doesn't use the world blend-transform rows. Hull row 0:
+	// thickness, fixed width, depth offset, aspect ratio. Extrude after skin/flex.
+	float4 h = g_BlendTransform[0];
+	float4 clipNormal = mul( float4( o.worldNormal, 0 ), cViewProj );
+	float2 projected = clipNormal.xy - o.projPos.xy * (clipNormal.w / max(o.projPos.w, 0.001));
+	float2 aspect = float2(h.w, 1);
+	float2 screenNormal = projected * aspect;
+	float2 direction = screenNormal * rsqrt(max(dot(screenNormal, screenNormal), 1e-8)) / aspect;
+	float width = h.y != 0 ? h.x * 0.1 * o.projPos.w : h.x * length(screenNormal);
+	o.projPos.xy += direction * clamp(width, 0, max(o.projPos.w, 0.0) * 0.012);
+	o.projPos.z += h.z * 0.0001 * o.projPos.w;
+#endif
+	return o;
+}

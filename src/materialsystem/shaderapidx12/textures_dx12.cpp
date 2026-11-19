@@ -1323,6 +1323,11 @@ void CShaderAPIDX12::DeleteTexture( ShaderAPITextureHandle_t handle )
 		}
 		// Leave the shared owner handle set: a deleted alias is not a private cache.
 	}
+	if ( handle == m_hInverseColorCorrection )
+	{
+		m_hInverseColorCorrection = INVALID_SHADERAPI_TEXTURE_HANDLE;
+		m_nInverseCorrectionKey = 0;
+	}
 	if ( m_pDevice ) m_pDevice->Highres().ForgetTexture( handle, pRecord->allocationSerial );
 	pRecord->highresPage = 0xffffffffu;
 	pRecord->highresLayoutGeneration = 0;
@@ -1493,6 +1498,8 @@ void CShaderAPIDX12::TexSubImage2D( int level, int face, int x, int y, int z, in
 	t.gpuAuthoritativeSubresources[nSubresource] = 0;
 	const UINT nSub = static_cast<UINT>( face * t.mipLevels + level );
 	// A subresource already dirty (an upload deferred while not resident) or rotated to another copy needs every texel.
+	if ( t.depth > 1 )
+		++t.volumeUploadVersion;
 	const bool bRegion = !bCompressed && t.copies == 1 && !t.dirtySubresources[nSubresource];
 	t.dirtySubresources[nSubresource] = 1;
 	t.initializedSubresources[nSubresource] = 1;
@@ -1583,6 +1590,8 @@ void CShaderAPIDX12::TexImageFromVTF( IVTFTexture *vtf, int frame )
 	if ( ( vtf->FaceCount() != nFaces && !( nFaces == 6 && vtf->FaceCount() == CUBEMAP_FACE_COUNT ) ) || vtf->MipCount() < texture.mipLevels || vtf->Format() == IMAGE_FORMAT_UNKNOWN )
 		return;
 	AdvanceTextureCopy( texture );
+	if ( texture.depth > 1 )
+		++texture.volumeUploadVersion;
 	texture.sampledStateValid = false;
 	++m_nTextureStateEpoch;
 	const int nCount = Faces( texture ) * texture.mipLevels;
@@ -1792,6 +1801,97 @@ void CShaderAPIDX12::BindTexture( Sampler_t sampler, ShaderAPITextureHandle_t h 
 		if ( pRecord )
 			++pRecord->binds;
 	}
+}
+
+// The composite blends forward LUTs in display-code space. Invert that blend,
+// not the individual volumes: interpolation and inversion do not commute.
+void CShaderAPIDX12::BindInverseColorCorrection( Sampler_t sampler )
+{
+	constexpr int kSide = 32;
+	constexpr int kCells = kSide * kSide * kSide;
+	ShaderColorCorrectionInfo_t state{};
+	GetCurrentColorCorrection( &state );
+	constexpr int kMaxColorCorrectionLookups = 4;
+	const int count = state.m_bIsEnabled ? MIN( state.m_nLookupCount, kMaxColorCorrectionLookups ) : 0;
+	TextureRecord *volumes[kMaxColorCorrectionLookups]{};
+	uint64 key = dx12native::HashBytes( reinterpret_cast<const char *>( &state.m_flDefaultWeight ), sizeof( float ), dx12native::kFnvOffset );
+	for ( int i = 0; i < count; ++i )
+	{
+		BindStandardTexture( sampler, static_cast<StandardTextureId_t>( TEXTURE_COLOR_CORRECTION_VOLUME_0 + i ) );
+		TextureRecord *volume = FindTexture( m_BoundTextures[sampler] );
+		if ( !volume || volume->width != kSide || volume->height != kSide || volume->depth != kSide )
+			continue;
+		volumes[i] = volume;
+		key = dx12native::HashBytes( reinterpret_cast<const char *>( &volume->allocationSerial ), sizeof( volume->allocationSerial ), key );
+		key = dx12native::HashBytes( reinterpret_cast<const char *>( &volume->volumeUploadVersion ), sizeof( volume->volumeUploadVersion ), key );
+		key = dx12native::HashBytes( reinterpret_cast<const char *>( &state.m_pLookupWeights[i] ), sizeof( float ), key );
+	}
+	if ( key != m_nInverseCorrectionKey || m_hInverseColorCorrection == INVALID_SHADERAPI_TEXTURE_HANDLE )
+	{
+		CUtlVector<Vector> forward;
+		forward.SetCount( kCells );
+		for ( int i = 0; i < kCells; ++i )
+		{
+			const Vector code( i % kSide, i / kSide % kSide, i / ( kSide * kSide ) );
+			forward[i] = code * ( state.m_flDefaultWeight / ( kSide - 1 ) );
+		}
+		CUtlVector<unsigned char> rgba;
+		rgba.SetCount( 4 * kCells );
+		for ( int i = 0; i < count; ++i )
+		{
+			TextureRecord *volume = volumes[i];
+			if ( !volume || !m_pShaderUtil->ConvertImageFormat( volume->pixels.Base() + SubresourceOffset( *volume, 0, 0 ),
+				volume->format, rgba.Base(), IMAGE_FORMAT_RGBA8888, kSide, kSide * kSide, 0, 0 ) )
+				continue;
+			const float scale = state.m_pLookupWeights[i] / 255.0f;
+			for ( int j = 0; j < kCells; ++j )
+				forward[j] += scale * Vector( rgba[j * 4], rgba[j * 4 + 1], rgba[j * 4 + 2] );
+		}
+		// Search the sampled forward lattice coarse to fine. Clipped grades have
+		// no unique inverse; use the closest code reached by the search.
+		for ( int i = 0; i < kCells; ++i )
+		{
+			int coord[3] = { i % kSide, i / kSide % kSide, i / ( kSide * kSide ) };
+			const Vector target = Vector( coord[0], coord[1], coord[2] ) / float( kSide - 1 );
+			float best = ( forward[i] - target ).LengthSqr();
+			for ( int step = kSide / 4; step; step /= 2 )
+			{
+				for ( int axis = 0; axis < 3; ++axis )
+				{
+					const int start = coord[axis];
+					int closest = start;
+					for ( int dir = -1; dir <= 1; dir += 2 )
+					{
+						coord[axis] = clamp( start + dir * step, 0, kSide - 1 );
+						const int j = coord[0] + kSide * ( coord[1] + kSide * coord[2] );
+						const float error = ( forward[j] - target ).LengthSqr();
+						if ( error < best )
+						{
+							best = error;
+							closest = coord[axis];
+						}
+					}
+					coord[axis] = closest;
+				}
+			}
+			for ( int channel = 0; channel < 3; ++channel )
+				rgba[4 * i + channel] = static_cast<unsigned char>( ( coord[channel] * 255 + 15 ) / ( kSide - 1 ) );
+			rgba[4 * i + 3] = 255;
+		}
+		if ( m_hInverseColorCorrection == INVALID_SHADERAPI_TEXTURE_HANDLE )
+			m_hInverseColorCorrection = CreateTexture( kSide, kSide, kSide, IMAGE_FORMAT_RGBA8888, 1, 1, 0, "InverseColorCorrection", "Other" );
+		if ( TextureRecord *inverse = FindTexture( m_hInverseColorCorrection ) )
+		{
+			memcpy( inverse->pixels.Base(), rgba.Base(), rgba.Count() );
+			inverse->initializedSubresources[0] = 1;
+			inverse->dirtySubresources[0] = 1;
+			inverse->gpuDirty = true;
+			inverse->sampledStateValid = false;
+			++m_nTextureStateEpoch;
+			m_nInverseCorrectionKey = key;
+		}
+	}
+	BindTexture( sampler, m_hInverseColorCorrection );
 }
 
 //-----------------------------------------------------------------------------

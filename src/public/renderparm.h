@@ -33,6 +33,8 @@ enum RenderParamVector_t
 	// for the display rather than the scene: x = the tone curve's peak relative to paper white (0 while the scene
 	// is presented without that curve), y = the exposure bias in EV applied before it.
 	VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM = 12,
+	// Read-only on DX12: the studio lighting origin shared by all surfaces of this draw.
+	VECTOR_RENDERPARM_DX12_MODEL_LIGHTING_ORIGIN = 13,
 
 	MAX_VECTOR_RENDER_PARMS = 20
 };

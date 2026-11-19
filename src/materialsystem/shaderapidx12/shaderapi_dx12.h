@@ -105,6 +105,8 @@ protected:
 	float m_RenderingFloats[64]{};
 	int m_RenderingInts[64]{};
 	ShaderAPITextureHandle_t m_StandardTextures[TEXTURE_MAX_STD_TEXTURES]{};
+	ShaderAPITextureHandle_t m_hInverseColorCorrection = INVALID_SHADERAPI_TEXTURE_HANDLE;
+	uint64 m_nInverseCorrectionKey = 0;
 	VMatrix m_Matrices[MATERIAL_MODEL_MAX + 1];
 	MaterialMatrixMode_t m_MatrixMode = MATERIAL_MODEL;
 	Vector m_Color{ 1, 1, 1 };
@@ -190,6 +192,7 @@ public:
 	bool InEditorMode() const override;
 	MorphFormat_t GetBoundMorphFormat() override;
 	void BindStandardTexture( Sampler_t sampler, StandardTextureId_t id ) override;
+	void BindInverseColorCorrection( Sampler_t sampler );
 	ITexture *GetRenderTargetEx( int nRenderTargetID ) override;
 	void SetToneMappingScaleLinear( const Vector &scale ) override;
 	const Vector &GetToneMappingScaleLinear( void ) const override;
@@ -506,6 +509,7 @@ public:
 	{
 		ShaderAPITextureHandle_t id = 0;
 		uint64 allocationSerial = 0;
+		uint32 volumeUploadVersion = 0;
 		uint32 highresPage = 0xffffffffu;
 		uint64 highresLayoutGeneration = 0;
 		int width = 0, height = 0, depth = 1, mipLevels = 1, copies = 1;

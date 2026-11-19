@@ -110,6 +110,9 @@ enum StandardTextureId_t
 	// Equivalent to the debug material for mat_luxels, in convenient texture form.
 	TEXTURE_DEBUG_LUXELS,
 
+	// Private DX12 display-authoring lookup; never forwarded to the stock material system.
+	TEXTURE_DX12_INVERSE_COLOR_CORRECTION,
+
 	TEXTURE_MAX_STD_TEXTURES = 32
 };
 

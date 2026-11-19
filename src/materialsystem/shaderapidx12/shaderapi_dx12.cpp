@@ -4319,6 +4319,11 @@ void CShaderAPIDX12::BindStandardTexture( Sampler_t sampler, StandardTextureId_t
 {
 	if ( id < 0 || id >= TEXTURE_MAX_STD_TEXTURES || sampler < 0 || sampler >= static_cast<int>( ARRAYSIZE( m_BoundTextures ) ) )
 		return;
+	if ( id == TEXTURE_DX12_INVERSE_COLOR_CORRECTION )
+	{
+		BindInverseColorCorrection( sampler );
+		return;
+	}
 	const ShaderAPITextureHandle_t handle = m_StandardTextures[id];
 	if ( handle != INVALID_SHADERAPI_TEXTURE_HANDLE )
 		BindTexture( sampler, handle );
@@ -6289,6 +6294,8 @@ int CShaderAPIDX12::GetIntRenderingParameter( int parm_number ) const
 
 Vector CShaderAPIDX12::GetVectorRenderingParameter( int parm_number ) const
 {
+	if ( parm_number == VECTOR_RENDERPARM_DX12_MODEL_LIGHTING_ORIGIN )
+		return m_LightingOrigin;
 	return parm_number >= 0 && parm_number < (int)ARRAYSIZE( m_RenderingVectors ) ? m_RenderingVectors[parm_number] : Vector( 0, 0, 0 );
 }
 

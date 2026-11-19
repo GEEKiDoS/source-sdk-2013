@@ -1,0 +1,269 @@
+// NekoToon model lighting: resolve visibility before ramp mapping, then shade the authored paint.
+// STATIC: "ENHANCED" "0..1"
+// STATIC: "BUMP" "0..1"
+// STATIC: "HULL" "0..1"
+// DYNAMIC: "PIXELFOGTYPE" "0..2"
+// DYNAMIC: "SHADOWQUALITY" "0..3"
+// SKIP: !$ENHANCED && $SHADOWQUALITY
+#define DX12_NATIVE_PS 1
+#if ENHANCED
+#define DX12_SHADOWMAPS 1
+#endif
+#include "dx12_preamble.h"
+#include "common_ps_fxc.h"
+#include "projected_lighting.hlsli"
+#if ENHANCED
+#define PBR_PROBE_QUAD 1
+#include "pbr_probe.hlsli"
+#endif
+#include "pbr_oct.hlsli"
+#include "agx_curve.hlsli"
+Texture3D InverseGrade : register( t8 );
+SamplerState InverseGradeSampler : register( s8 );
+Texture2D Base : register( t0 );
+SamplerState SBase : register( s0 );
+Texture2D NormalMap : register( t1 );
+SamplerState SNormal : register( s1 );
+Texture2D Warp : register( t2 );
+SamplerState SWarp : register( s2 );
+Texture2D Cap : register( t3 );
+SamplerState SCap : register( s3 );
+Texture2D Mask1 : register( t4 );
+SamplerState SMask1 : register( s4 );
+Texture2D Mask2 : register( t5 );
+SamplerState SMask2 : register( s5 );
+Texture2D OutlineMask : register( t6 );
+SamplerState SOutline : register( s6 );
+Texture2D Emission : register( t7 );
+SamplerState SEmission : register( s7 );
+
+cbuffer NekoModelPS : register(b1, space1 )
+{
+	float4 g_NekoColor;	   // @legacy ps:c0
+	float4 g_NekoEye;	   // @legacy ps:c1
+	float4 g_NekoLighting; // @legacy ps:c2
+	float4 g_NekoWarp;	   // @legacy ps:c3
+	float4 g_NekoRim;	   // @legacy ps:c4
+	float4 g_NekoCap;	   // @legacy ps:c5
+	float4 g_NekoCapTint;  // @legacy ps:c6
+	float4 g_NekoOutline;  // @legacy ps:c7
+	float4 g_NekoSurface;  // @legacy ps:c8
+	float4 g_NekoEmit;	   // @legacy ps:c9
+	float4 g_NekoRight;	   // @legacy ps:c10
+	float4 g_NekoUp;	   // @legacy ps:c11
+	float4 g_NekoDisplay; // @legacy ps:c12
+	float4 g_NekoProbeOrigin; // @legacy ps:c13
+};
+// Compress irradiance before multiplying the painted surface: the floor keeps it
+// readable indoors, while the shoulder prevents an HDR sun bleaching the paint.
+static const float kLightingShoulder = 0.5;
+static const float kPaperWhite = 1.1;
+static const float kCelTerminator = 0.36;
+static const float kMinimumTransition = 0.025;
+static const float3 kCelShadowTint = float3( 0.78, 0.76, 0.88 );
+struct NekoPixelInput
+{
+	float4 pos : SV_Position;
+	float fog : FOG;
+	float4 uv : TEXCOORD0;
+	// Must occupy the same packed register components as the shared studio VS.
+	float2 detailUV : TEXCOORD1;
+	float4 attenuation : TEXCOORD2;
+	float z : TEXCOORD3;
+	float3 eye : TEXCOORD4;
+	float3 normal : TEXCOORD5;
+#if BUMP
+	float4 tangent : TEXCOORD6;
+#else
+	float3 staticLight : TEXCOORD6;
+#endif
+#if ENHANCED
+	uint primitive : SV_PrimitiveID;
+#endif
+	bool front : SV_IsFrontFace;
+};
+struct NekoPixelOutput
+{
+	float4 color : SV_Target0;
+	float2 normal : SV_Target1;
+	float4 spec : SV_Target2;
+	float4 environment : SV_Target3;
+	float4 response : SV_Target4;
+	float4 directSpecular : SV_Target5;
+	float specularDistance : SV_Target6;
+};
+float HalfLambert( float coordinate )
+{
+	return saturate( coordinate * 0.5 + 0.5 );
+}
+// The hemispherical mean is independent of the skinned vertex normal.
+float3 AmbientCubeMean()
+{
+	return ( cAmbientCube[0] + cAmbientCube[1] + cAmbientCube[2] +
+		cAmbientCube[3] + cAmbientCube[4] + cAmbientCube[5] ) / 6.0;
+}
+NekoPixelOutput main( NekoPixelInput input )
+{
+	float3 worldNormal = normalize( input.normal );
+	float3 viewDirection = normalize( input.eye );
+	float3 worldPosition = g_NekoEye.xyz - input.eye;
+	float4 base = Base.Sample( SBase, input.uv.xy );
+	float4 mask1 = Mask1.Sample( SMask1, input.uv.xy );
+	float4 mask2 = Mask2.Sample( SMask2, input.uv.xy );
+#if BUMP
+	float3 bump = NormalMap.Sample( SNormal, input.uv.zw ).xyz * 2 - 1;
+	float3 worldTangent = normalize( input.tangent.xyz );
+	worldNormal =
+		normalize( bump.z * worldNormal + g_NekoSurface.z * ( bump.x * worldTangent +
+															  bump.y * cross( worldNormal, worldTangent ) * input.tangent.w ) );
+#endif
+	const float3 luma = float3( 0.2126, 0.7152, 0.0722 );
+	float3 probeDirection = float3( dot( cAmbientCube[0] - cAmbientCube[1], luma ),
+		dot( cAmbientCube[2] - cAmbientCube[3], luma ), dot( cAmbientCube[4] - cAmbientCube[5], luma ) );
+	float3 ambient = AmbientCubeMean();
+	float3 direct = 0.0;
+#if ENHANCED
+	ProbeSH sh;
+	bool resident;
+	// All costume parts sample the actor's lighting origin, not the changing
+	// skinned position or bump normal. Direct visibility stays per pixel below.
+	if ( Probe_DecodeQuad( g_NekoProbeOrigin.xyz, 0.0, ( uint( input.pos.x ) & 1 ) | ( ( uint( input.pos.y ) & 1 ) << 1 ),
+						   sh, resident ) )
+	{
+		// The real L1 basis in pbr_probe is ordered Y, Z, X. Its luminance
+		// gradient points toward the brightest hemisphere, even between lamps.
+		probeDirection = float3( dot( sh.band[2], luma ), dot( sh.band[0], luma ), dot( sh.band[1], luma ) );
+		ambient = max( sh.dc + Probe_L1( sh, normalize( probeDirection ) ), 0.0 );
+	}
+	else if ( resident )
+	{
+		ambient = 0.0;
+		probeDirection = 0.0;
+	}
+	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( worldPosition, -input.eye, input.normal, input.pos.xy );
+	ShadowMap_SetBakedProp( receiver, input.primitive );
+	direct = ShadowMap_GatherDirect( receiver, ShadowMap_ShadeHalfLambert( worldNormal, true ) ).diffuse;
+#else
+	[loop] for ( int lightIndex = 0; lightIndex < int( g_NekoEye.w ); ++lightIndex )
+	{
+		float3 lightDirection = lightIndex == 3 ? float3( cLightInfo[1].pos.w, cLightInfo[2].color.w, cLightInfo[2].pos.w )
+												: cLightInfo[lightIndex].pos.xyz;
+		float3 lightColor = lightIndex == 3 ? float3( cLightInfo[0].color.w, cLightInfo[0].pos.w, cLightInfo[1].color.w )
+											: cLightInfo[lightIndex].color.rgb;
+		direct += input.attenuation[lightIndex] * lightColor *
+				  HalfLambert( dot( normalize( lightDirection - worldPosition ), worldNormal ) );
+	}
+#endif
+	uint count, stride;
+	g_ProjectedLights.GetDimensions( count, stride );
+	[loop] for ( uint spotIndex = 0; spotIndex < count; ++spotIndex )
+	{
+		PBRSpotGpu light = g_ProjectedLights[spotIndex];
+		float3 lightDirection, incident;
+		float distanceToLight, visibility;
+		if ( ( uint( light.slotsFlags.z ) & 2 ) != 0 &&
+			 DX12_ProjectedSample( light, worldPosition, lightDirection, distanceToLight, incident, visibility ) )
+			direct += incident * lerp( visibility, 1, light.attnShadow.z ) *
+					  saturate( ( dot( worldNormal, lightDirection ) + g_NekoLighting.w ) / ( 1 + g_NekoLighting.w ) );
+	}
+	// Compress irradiance, never the painted albedo. All direct visibility, including the
+	// Bend contact mask, enters the same ramp; avoid quantizing the filtered outlines of textures.
+	float directLuminance = max( dot( direct, luma ) * g_NekoLighting.x, 0.0 );
+	float ambientLuminance = max( dot( ambient, luma ) * g_NekoLighting.x, 0.0 );
+	float rampCoordinate = directLuminance / ( kLightingShoulder + directLuminance );
+	// Only the terminator should follow fine changes in irradiance. In particular,
+	// do not multiply an authored cel ramp by a continuous N.L or ambient gradient.
+	float transition = max( kMinimumTransition, min( fwidth( rampCoordinate ), 0.08 ) );
+	float litBand = smoothstep( kCelTerminator - transition, kCelTerminator + transition, rampCoordinate );
+	// Use the smooth skinned normal rather than the bump texture for the probe
+	// terminator. Quantize its incidence once; no SH gradient within either band.
+	float directionStrength = length( probeDirection );
+	float incidence = dot( normalize( input.normal ), probeDirection / max( directionStrength, 1e-5 ) );
+	float edgeWidth = clamp( fwidth( incidence ), 0.012, 0.055 );
+	float probeBand = smoothstep( 0.10 - edgeWidth, 0.10 + edgeWidth, incidence );
+	float directionalWeight = saturate( directionStrength / max( dot( ambient, luma ) * 0.2, 1e-4 ) );
+	litBand = max( litBand, probeBand * directionalWeight * saturate( ambientLuminance * 4.0 ) );
+	float3 ramp = lerp( kCelShadowTint, 1.0, litBand );
+	if ( g_NekoWarp.x != 0 )
+	{
+		float bandCoordinate = lerp( 0.16, 0.72, litBand );
+		float coordinate = g_NekoWarp.w != 0 ? 2 * bandCoordinate : bandCoordinate;
+		ramp =
+			coordinate >= 1
+				? 1
+				: pow( max( Warp.SampleLevel( SWarp, float2( saturate( coordinate ), saturate( mask1.g + g_NekoWarp.y ) ), 0 ).rgb *
+								g_NekoWarp.x,
+							0 ),
+					   g_NekoWarp.zzz );
+	}
+	// Probe colour is shared across the actor, not discarded. Separate chroma
+	// from brightness without boosting the red channel in a warm room.
+	float roomFill = ambientLuminance / ( kLightingShoulder + ambientLuminance );
+	float readableFloor = saturate( g_NekoLighting.z / 0.45 ) * 0.60;
+	float fill = lerp( readableFloor, 0.82, roomFill ) * mask1.a;
+	float3 keyLight = max( direct, 0.0 ) + ambient;
+	float peakKey = max( keyLight.r, max( keyLight.g, keyLight.b ) );
+	float3 directTint = peakKey > 1e-4 ? lerp( 1.0, keyLight / peakKey, saturate( g_NekoLighting.y ) ) : 1.0;
+	float peakAmbient = max( ambient.r, max( ambient.g, ambient.b ) );
+	float3 roomTint = peakAmbient > 1e-4 ? lerp( 1.0, ambient / peakAmbient, saturate( g_NekoLighting.y ) ) : 1.0;
+	float3 lighting = lerp( fill * roomTint, 0.86 * directTint, litBand );
+	// Keep the authored shadow hue, but don't multiply a dark ramp into an
+	// already-shadowed face a second time.
+	lighting *= lerp( 1.0, ramp, lerp( 0.32, 1.0, litBand ) );
+	if ( g_NekoRim.w != 0 )
+		lighting *= lerp( 0.8, 1.0, saturate( length( input.eye ) / 28.0 ) );
+	float3 albedo = base.rgb * g_NekoColor.rgb;
+	float alpha = base.a * g_NekoColor.a * g_NekoSurface.x;
+	float3 rgb = albedo * lighting;
+#if HULL
+	clip( input.front ? -1 : 1 );
+	float4 mask = OutlineMask.Sample( SOutline, input.uv.xy );
+	clip( ( g_NekoSurface.y != 0 ? mask.r : mask.a ) - .01 );
+	rgb = g_NekoOutline.rgb * lerp( 1, lighting, g_NekoOutline.w ) * lerp( 1, albedo, g_NekoSurface.w );
+#else
+	float edge = pow( 1 - saturate( dot( worldNormal, viewDirection ) ), g_NekoRim.y ) * g_NekoRim.x * mask2.r;
+	// A painted silhouette needs an accent, not a second fully lit albedo.
+	const float kRimReflectance = 0.20;
+	rgb += kRimReflectance * edge * lerp( 1, albedo, g_NekoRim.z ) * lighting;
+	if ( g_NekoCap.x > 0 )
+	{
+		float2 uv = float2( dot( worldNormal, g_NekoRight.xyz ), -dot( worldNormal, g_NekoUp.xyz ) ) * .5 + .5;
+		float4 matcapSample = Cap.Sample( SCap, uv ) * g_NekoCapTint;
+		float3 matcapColor = matcapSample.rgb * lerp( 1, lighting, g_NekoCap.y );
+		float3 blend = g_NekoCap.x == 1   ? rgb * matcapColor
+					   : g_NekoCap.x == 2 ? rgb + matcapColor
+					   : g_NekoCap.x == 3 ? matcapColor
+												   : 1 - ( 1 - rgb ) * ( 1 - matcapColor );
+		rgb = lerp( rgb, blend, saturate( mask1.r * matcapSample.a ) );
+	}
+	float3 emissionColor = g_NekoEmit.w != 0 ? Emission.Sample( SEmission, input.uv.xy ).rgb : albedo;
+	rgb = min( rgb, kPaperWhite ) + emissionColor * g_NekoEmit.rgb;
+#endif
+	// The paint, matcap and outline are display-authored. Undo the grade in
+	// encoded space before undoing the filmic curve. Limit luminance rather
+	// than clipping RGB channels: pale hair should keep its lavender tint.
+	if ( g_NekoDisplay.x > 0.0 )
+	{
+		const float peak = g_NekoDisplay.x;
+		const float3 displayLinear = min( max( rgb, 0.0 ), 0.90 * peak );
+		float3 ungraded = displayLinear;
+		if ( g_NekoDisplay.z != 0.0 )
+		{
+			float3 relative = displayLinear / peak;
+			float3 code = lerp( 12.92 * relative, 1.055 * pow( relative, 1.0 / 2.4 ) - 0.055, step( 0.0031308, relative ) );
+			code = InverseGrade.SampleLevel( InverseGradeSampler, ( code * 31.0 + 0.5 ) / 32.0, 0 ).rgb;
+			ungraded = peak * lerp( code / 12.92, pow( ( code + 0.055 ) / 1.055, 2.4 ), step( 0.04045, code ) );
+		}
+		const float kBloomSafeLuminance = 1.15; // Just below the default bloom threshold of 1.25.
+		float3 scene = AgXSceneFromDisplay( ungraded, peak, 0.0, 4.0 * peak );
+		float luminance = dot( scene, float3( 0.2126, 0.7152, 0.0722 ) );
+		scene *= min( 1.0, kBloomSafeLuminance * peak / max( luminance, 1e-4 ) );
+		rgb = scene * exp2( -g_NekoDisplay.y ) / max( LINEAR_LIGHT_SCALE, 1e-4 );
+	}
+	float fog = CalcPixelFogFactor( PIXELFOGTYPE, cPixelFogParams, g_NekoEye.xyz, worldPosition, input.z );
+	NekoPixelOutput output = (NekoPixelOutput)0;
+	output.color = DX12FinishPixel( FinalOutput( float4( rgb, alpha ), fog, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), input.fog );
+	output.normal = PBR_PackNormal( worldNormal );
+	output.spec = float4( 0, 0, 0, 1 );
+	return output;
+}

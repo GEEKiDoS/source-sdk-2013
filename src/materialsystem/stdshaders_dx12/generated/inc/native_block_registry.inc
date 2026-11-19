@@ -66,10 +66,11 @@
 #include "morphaccumulate_vs30.h"
 #include "motion_blur_mv.h"
 #include "motion_blur_ps2x.h"
+#include "NekoModelPS.h"
+#include "PBRMaterialVS.h"
 #include "particlesphere_ps2x.h"
 #include "particlesphere_vs20.h"
 #include "PBRMaterialPS.h"
-#include "PBRMaterialVS.h"
 #include "portal_ps2x.h"
 #include "portal_refract_ps2x.h"
 #include "portal_refract_vs20.h"
@@ -256,6 +257,8 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "motion_blur_mv_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::motion_blur_mv > },
 	{ "motion_blur_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::motion_blur_ps2x > },
 	{ "motion_blur_vs51", dx12native::kStageVertex, nullptr },
+	{ "nekotoon_model_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::NekoModelPS > },
+	{ "nekotoon_model_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialVS > },
 	{ "particlesphere_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::particlesphere_ps2x > },
 	{ "particlesphere_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::particlesphere_vs20 > },
 	{ "pbr_model_depthprepass_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PBRMaterialPS > },

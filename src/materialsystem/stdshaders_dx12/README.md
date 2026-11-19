@@ -979,6 +979,31 @@ Compute includes intentionally contain no graphics native-cbuffer block writer. 
 and calls `Draw( false )` for material bookkeeping. The runtime loader opens `VcsStage::Compute`, which reads from
 `shaders/csh/` and rejects non-compute programs.
 
+## NekoToon studio materials
+
+`NekoToon` is a separate DX12 material shader, not a `mat_pbr_override` adapter. The native pair shares the studio
+skinning/flex vertex body with PBR. The pixel shader samples the probe at the actor's studio lighting origin.
+DC supplies fill; the luminance gradient of the three L1 coefficients supplies a common key direction. The smooth
+skinned normal selects one of two bands about that direction. The bands retain the sampled room colour without a
+continuous SH gradient over the face. Without a probe, opposite ambient cube faces supply the key direction.
+Direct light enters the same ramp after sun/local shadow-map and contact visibility. `$lightwarptexture` is linear; `$lightwarpsrgbtexture`
+overrides it with an sRGB texture. Without either, the shader supplies a two-band tinted ramp.
+
+Mask1 provides matcap strength (R), lightwarp row (G) and AO (A); Mask2 R masks the rim. Matcap supports multiply,
+add, normal and screen blending. Source Phong parameters are accepted but intentionally do not produce a second
+specular lobe. The optional outline draws a skinned hull, rejects its front faces, tests the authored mask (ATI1N R,
+otherwise A), and does not write depth. The surface supplies normal/roughness with zero SSR response.
+
+With the AgX post stack active, the material shades in display-linear space, looks up the cached inverse of the
+blended color grade in encoded space, and undoes AgX and exposure before fog. The requested display value is bounded
+at 0.90 of peak; the reconstructed highlight is limited to a luminance of 1.15 times peak so white paint does not
+become a bloom emitter. These are ceilings, not a guarantee that every saturated code is reachable through a
+non-invertible LUT or the AgX gamut. Fog, bloom from adjacent pixels and camera effects still affect the final image.
+
+The Salt addon expects `part_selfillum.vmt`, `part_emiss.vmt` and `tpp_salt/warp.vtf` beyond its three VPKs.
+Verification uses a separate search-path fixture for these missing inputs, not modifications to the addon. The
+external Left4Neko `PlayerAttachment` proxy, eyebrow-through-hair overlay, and secondary matcap are not implemented.
+
 ## PBR shader set (`mat_pbr_override`)
 
 Plan and design record: `src/DX12_PBR_SHADER_SET_PLAN.md` (probe phase: `src/AMBIENT_PROBE_GRID_PLAN.md`).
