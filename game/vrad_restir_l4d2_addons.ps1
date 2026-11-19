@@ -1,21 +1,17 @@
 # Bakes enhanced lighting (<map>.light) for every map inside L4D2 add-on VPKs.
 #   vrad_restir_l4d2_addons.bat [vrad_restir options] [addon.vpk ...]
 # Without .vpk arguments every mod_l4d2\addons\*.vpk is processed (the folder the game mounts add-ons from).
-# Without options the Dead Center settings are used; -restir_shadowmaps is always added.
+# Options are passed to vrad_restir_l4d2.bat, which supplies its defaults for every option not given and prints the
+# final option list.
 # Each add-on's maps, materials and models are extracted to %TEMP% (the add-on itself is not modified) and every map is
 # baked through vrad_restir_l4d2.bat with that folder mounted ahead of the game content, so the add-on's own materials
 # and models are found. Results go to mod_l4d2\maps; the extracted files are deleted afterwards.
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$defaults = @('-final', '-restir_skyibl', '-restir_skyambientscale', '4', '-restir_bouncescale', '2.5', '-restir_maxbounces', '2',
-              '-restir_hlight_density', '2', '-restir_ambientgrid', '28')
-
 $options = @(); $vpks = @()
 foreach ($a in $args) {
     if ("$a" -like '*.vpk') { $vpks += (Resolve-Path -LiteralPath $a).ProviderPath } else { $options += "$a" }
 }
-if (-not $options.Count) { $options = $defaults }
-if ($options -notcontains '-restir_shadowmaps') { $options = @('-restir_shadowmaps') + $options }
 if (-not $vpks.Count) {
     $vpks = @(Get-ChildItem -LiteralPath (Join-Path $here 'mod_l4d2\addons') -Filter *.vpk -File -ErrorAction SilentlyContinue |
               ForEach-Object FullName)
@@ -85,12 +81,15 @@ foreach ($vpk in $vpks) {
             # A large map can need a probe grid over -restir_ambientgrid_budget. Retry with wider probe spacing (the
             # baker never coarsens on its own) up to 64 units; a bigger budget would cost the same VRAM in game.
             if ($code -eq 0 -or -not ($lines -match 'over the -restir_ambientgrid_budget')) { break }
-            $i = [Array]::IndexOf($mapOptions, '-restir_ambientgrid')
-            $spacing = if ($i -ge 0) { [int]$mapOptions[$i + 1] } else { 32 }
-            if ($spacing -ge 64) { break }
+            # The wrapper prints the options it actually used; continue from that spacing.
+            $used = @(($lines | Select-String '^Options:' | Select-Object -Last 1).Line -split '\s+')
+            $i = [Array]::IndexOf($used, '-restir_ambientgrid')
+            $spacing = if ($i -ge 0) { [int]$used[$i + 1] } else { 0 }
+            if ($spacing -le 0 -or $spacing -ge 64) { break }
             $next = [Math]::Min(64, $spacing + 8)
             Write-Host "$map`: probe grid over budget at spacing $spacing; retrying with -restir_ambientgrid $next"
-            if ($i -ge 0) { $mapOptions[$i + 1] = "$next" } else { $mapOptions += @('-restir_ambientgrid', "$next") }
+            $j = [Array]::IndexOf($mapOptions, '-restir_ambientgrid')
+            if ($j -ge 0) { $mapOptions[$j + 1] = "$next" } else { $mapOptions += @('-restir_ambientgrid', "$next") }
         }
         if ($code -ne 0) { $failed += $map } else { $baked += $map }
     }

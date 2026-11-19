@@ -24,6 +24,7 @@
 
 #include <errno.h>
 #include <float.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <windows.h>
@@ -355,7 +356,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 		if ( IsOption( pArg, "-restir_iterations" ) || IsOption( pArg, "-restir_candidates" ) ||
 			IsOption( pArg, "-restir_spatial_radius" ) || IsOption( pArg, "-restir_maxbounces" ) ||
 			IsOption( pArg, "-restir_seed" ) || IsOption( pArg, "-restir_gpu" ) ||
-			IsOption( pArg, "-restir_vram_budget" ) )
+			IsOption( pArg, "-restir_vram_budget" ) || IsOption( pArg, "-restir_push_constant_limit" ) )
 		{
 			if ( i + 1 >= argc )
 			{
@@ -371,6 +372,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			else if ( IsOption( pArg, "-restir_maxbounces" ) ) { minValue = 0; maxValue = 128; }
 			else if ( IsOption( pArg, "-restir_seed" ) ) { minValue = 0; maxValue = 0x7fffffff; }
 			else if ( IsOption( pArg, "-restir_vram_budget" ) ) { minValue = 256; maxValue = 262144; }
+			else if ( IsOption( pArg, "-restir_push_constant_limit" ) ) { minValue = 1; maxValue = INT_MAX; }
 			else { minValue = 0; maxValue = 255; }
 			if ( !ParseIntValue( pArg, argv[++i], minValue, maxValue, value ) )
 				return false;
@@ -380,6 +382,7 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 			else if ( IsOption( pArg, "-restir_maxbounces" ) ) options.maxBounces = value;
 			else if ( IsOption( pArg, "-restir_seed" ) ) options.seed = value;
 			else if ( IsOption( pArg, "-restir_vram_budget" ) ) options.vramBudgetMB = value;
+			else if ( IsOption( pArg, "-restir_push_constant_limit" ) ) options.pushConstantLimit = value;
 			else options.gpuIndex = value;
 			continue;
 		}

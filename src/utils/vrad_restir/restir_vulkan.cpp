@@ -137,8 +137,13 @@ bool CReSTIRVulkanDevice::Init( const ReSTIROptions &options )
 	identity.pNext = &subgroup;
 	vkGetPhysicalDeviceProperties2( gpu.physical, &properties2 );
 	gpu.properties = properties2.properties;
-	if ( gpu.properties.limits.maxPushConstantsSize < sizeof( ReSTIRPushConstants ) )
-		gpu.Fail( "GPU push-constant range is smaller than the paging layout" );
+	const uint32_t devicePushLimit = gpu.properties.limits.maxPushConstantsSize;
+	const uint32_t pushLimit = options.pushConstantLimit > 0 ? MIN( devicePushLimit, (uint32_t)options.pushConstantLimit ) : devicePushLimit;
+	if ( options.pushConstantLimit > 0 || pushLimit < sizeof( ReSTIRPushConstants ) )
+		Msg( "VRAD ReSTIR: push constants: %u B required, %u B effective limit (%u B device limit)\n",
+			(unsigned int)sizeof( ReSTIRPushConstants ), pushLimit, devicePushLimit );
+	if ( pushLimit < sizeof( ReSTIRPushConstants ) )
+		gpu.Fail( "push-constant limit is smaller than the dispatch layout" );
 	vkGetPhysicalDeviceMemoryProperties( gpu.physical, &gpu.memoryProperties );
 	uint32_t familyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties( gpu.physical, &familyCount, NULL );
@@ -846,7 +851,6 @@ void CReSTIRVulkanDevice::Impl::CreateDescriptorsAndPipelines()
 	}
 	vkUpdateDescriptorSets( device, bindingCount, writes, 0, NULL );
 	VkPushConstantRange range = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( ReSTIRPushConstants ) };
-	COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 144 );
 	VkPipelineLayoutCreateInfo pipelineInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	pipelineInfo.setLayoutCount = 1;
 	pipelineInfo.pSetLayouts = &setLayout;
@@ -982,8 +986,12 @@ void CReSTIRVulkanDevice::Impl::Dispatch( VkCommandBuffer command, ReSTIRPipelin
 
 void CReSTIRVulkanDevice::Impl::Upload( int buffer, const void *data, VkDeviceSize bytes, VkDeviceSize offset )
 {
-	if ( bytes + offset > buffers[buffer].size )
+	if ( offset > buffers[buffer].size || bytes > buffers[buffer].size - offset )
+	{
+		Warning( "VRAD ReSTIR: upload binding=%d bytes=%llu offset=%llu allocation=%llu\n", buffer,
+			(unsigned long long)bytes, (unsigned long long)offset, (unsigned long long)buffers[buffer].size );
 		Fail( "buffer upload exceeds allocation" );
+	}
 	for ( VkDeviceSize done = 0; done < bytes; )
 	{
 		Wait();
@@ -1016,8 +1024,12 @@ void CReSTIRVulkanDevice::Impl::Upload( int buffer, const void *data, VkDeviceSi
 
 void CReSTIRVulkanDevice::Impl::Download( int buffer, void *data, VkDeviceSize bytes, VkDeviceSize offset, double *pTransferMs )
 {
-	if ( bytes + offset > buffers[buffer].size )
+	if ( offset > buffers[buffer].size || bytes > buffers[buffer].size - offset )
+	{
+		Warning( "VRAD ReSTIR: readback binding=%d bytes=%llu offset=%llu allocation=%llu\n", buffer,
+			(unsigned long long)bytes, (unsigned long long)offset, (unsigned long long)buffers[buffer].size );
 		Fail( "buffer readback exceeds allocation" );
+	}
 	for ( VkDeviceSize done = 0; done < bytes; )
 	{
 		if ( pTransferMs )

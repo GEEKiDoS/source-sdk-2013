@@ -13,6 +13,8 @@
 
 #include "restir_types.h"
 
+#include <stddef.h>
+
 //-----------------------------------------------------------------------------
 // Descriptor set 0 bindings (one set, one layout, every pass). Storage buffers
 // unless noted. Buffers that a pass does not use are still bound (never
@@ -86,6 +88,7 @@ struct ReSTIRBvhNode						// 48 bytes
 };
 
 // Push constants (identical for every pipeline; 128 bytes, the guaranteed minimum)
+// The shadow sun uses one scalar in the former padding word, leaving room for pageBase.
 struct ReSTIRPushConstants
 {
 	unsigned int pass;					// pass-specific sub-id (e.g. sort bit, refit level)
@@ -94,7 +97,7 @@ struct ReSTIRPushConstants
 	unsigned int first;					// index of the first work item (batching)
 	unsigned int seed;					// options.seed
 	unsigned int candidates;			// options.candidates: hemisphere rays and emit_surface samples per sample per iteration
-	unsigned int reserved0;
+	float		shadowSunAngularRadius;	// resolved shadow sun angular radius, radians
 	unsigned int maxBounces;			// 0: no bounce gather (-restir_maxbounces 0, or generation 0 of a limited bake)
 	unsigned int numLights;
 	unsigned int numStyles;
@@ -110,10 +113,13 @@ struct ReSTIRPushConstants
 	unsigned int numReservoirs;
 	float		worldMins[4];			// scene bounds (morton codes)
 	float		worldMaxs[4];
-	float		shadowSun[4];			// x: resolved shadowSunAngularRadius
 	unsigned int pageBase[4];			// reservoir, sample, luxel and output page bases
 };
-COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 144 );
+COMPILE_TIME_ASSERT( sizeof( ReSTIRPushConstants ) == 128 );
+COMPILE_TIME_ASSERT( offsetof( ReSTIRPushConstants, shadowSunAngularRadius ) == 24 );
+COMPILE_TIME_ASSERT( offsetof( ReSTIRPushConstants, worldMins ) == 80 );
+COMPILE_TIME_ASSERT( offsetof( ReSTIRPushConstants, worldMaxs ) == 96 );
+COMPILE_TIME_ASSERT( offsetof( ReSTIRPushConstants, pageBase ) == 112 );
 #define RESTIR_PC_FINAL_ITERATION   0x1
 #define RESTIR_PC_HARDWARE_RT       0x2   // informative; shaders are compiled per backend anyway
 #define RESTIR_PC_RECEIVER_PAGE     0x4   // receiverAccumulation is addressed relative to pageBase.x

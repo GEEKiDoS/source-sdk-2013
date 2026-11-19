@@ -577,6 +577,12 @@ and extrapolates the UV far outside the triangle, which previously addressed uno
 "unowned native lightmap cell" rejections (`reason=owner ID`, `face=0`; also the earlier `ep2_outland_06` `coordinate bounds`
 capture whose UV `1.00039` lay past the page edge).
 It is not specific to the PBR shaders. Unknown owners are still rejected, now at the provoking vertex.
+Native brush overlays are an exception at generation time: the engine clips in the
+decal plane and projects back to the surface, then clamps UVs to the atlas page,
+not the parent face. Before publishing the atlas, the bridge checks any escaped UV
+against that parent's native planar projection and moves it to the edge luxel center.
+The provoking vertex still selects the real parent; unverified UVs still reject,
+and repacks use the corrected face-local coordinate.
 `native_src/highres_lightmaps.hlsli` translates the integer owner atlas into explicit face/style/plane tiles,
 adds captured native dynamic planes, and preserves native sampled alpha. Material lighting retains its
 existing bump/SSBump weights, two-material blend, tint and fog/output ordering; selected direct lighting
