@@ -253,6 +253,8 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 			continue;
 		ShaderRecordDX12::NativeCBufferBindingDX12 reflected;
 		reflected.name = binding.Name;
+		if ( reflected.name == ( record->stagePixel ? "DX12GameRegistersPS" : "DX12GameRegistersVS" ) )
+			record->gameRegisters = true;
 		reflected.shaderRegister = binding.BindPoint;
 		reflected.registerSpace = binding.Space;
 		ID3D12ShaderReflectionConstantBuffer *pBuffer = reflection->GetConstantBufferByName( binding.Name );
@@ -794,18 +796,31 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 	m_BoundNamedCombos[bPixel ? 1 : 0] = nullptr;
 	const char *pszName = ( bPixel ? m_ActiveSnapshot.pixelShaderName : m_ActiveSnapshot.vertexShaderName ).c_str();
 	const int nStaticIndex = bPixel ? m_ActiveSnapshot.staticPixelIndex : m_ActiveSnapshot.staticVertexIndex;
-	if ( m_pDevice && m_pDevice->Highres().EnhancedMap() && !m_pDevice->Lighting().ShadowPassActive() )
+	if ( m_pDevice && m_pDevice->Highres().EnhancedMap() && !m_pDevice->Lighting().ShadowPassActive() &&
+		!( m_RenderingInts[INT_RENDERPARM_DX12_VIEW_FLAGS] & DX12_VIEW_FLAG_REFLECTION ) )
 	{
 		ShaderRecordDX12 *record = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
 		char highresName[256];
 		const ShaderRecordDX12 *pixel = bPixel ? record : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS );
-		const bool needsHighres = pixel && ( pixel->lightmapSamplerMask || pixel->highresAbi );
+		const bool l4d2LegacyReceiver = bPixel &&
+			( !V_strcmp( pszName, "l4d2_lightmappedgeneric_ps20b" ) ||
+			  ( !V_strcmp( pszName, "l4d2_water_ps20b" ) && m_ActiveSnapshot.fixed.textureEnabled[3] ) );
+		const bool needsHighres = l4d2LegacyReceiver || ( pixel && ( pixel->lightmapSamplerMask || pixel->highresAbi ) );
 		if ( needsHighres && record && !record->highresAbi )
 		{
 			const char *marker = V_strstr( pszName, "_shadowmap_" );
 			const char *stage = marker ? marker + sizeof( "_shadowmap_" ) - 1 : V_strrchr( pszName, '_' );
-			const int length = marker ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres_%s", int( marker - pszName ), pszName, stage ) :
-				stage ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres%s", int( stage - pszName ), pszName, stage ) : -1;
+			int length = -1;
+			if ( l4d2LegacyReceiver || ( !bPixel &&
+				( !V_strcmp( pszName, "l4d2_lightmappedgeneric_vs20" ) || !V_strcmp( pszName, "l4d2_water_vs20" ) ) ) )
+			{
+				const char *suffix = bPixel ? "_ps51" : "_vs51";
+				length = V_snprintf( highresName, sizeof( highresName ), "%.*s_highres%s",
+					int( stage ? stage - pszName : V_strlen( pszName ) ), pszName, suffix );
+			}
+			else
+				length = marker ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres_%s", int( marker - pszName ), pszName, stage ) :
+					stage ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres%s", int( stage - pszName ), pszName, stage ) : -1;
 			record = length > 0 && length < int( sizeof( highresName ) ) ? ResolveNamedShader( highresName, bPixel, nStaticIndex, nDynamicIndex ) : nullptr;
 			pszName = highresName;
 			if ( !record || !record->highresAbi || !record->legacyBytecode.IsEmpty() )
@@ -1049,7 +1064,12 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	if ( ( shadowPass || MotionPassActive() ) && AdditiveRelightSnapshot() )
 		return;
 	const bool opaqueCaster = shadowPass && !m_ActiveSnapshot.alphaTest;
-	const bool highresMap = m_pDevice->Highres().EnhancedMap();
+	const int nViewFlags = m_RenderingInts[INT_RENDERPARM_DX12_VIEW_FLAGS];
+	const bool cheapAuxiliary = ( nViewFlags & DX12_VIEW_FLAG_REFLECTION ) != 0;
+	// Auxiliary water views deliberately use the original BSP lightmap route.
+	// Their native highres receiver would pay for the full baked/probe/shadow
+	// path a second time and would not improve the reflection image.
+	const bool highresMap = m_pDevice->Highres().EnhancedMap() && !cheapAuxiliary;
 	if ( highresMap && m_pDevice->Highres().Rejected() )
 		return;
 	if ( m_bHighresNamedRoute != highresMap )
@@ -1316,8 +1336,6 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	};
 	const uint32_t pixelSamplers = opaqueCaster ? 0u : samplerMask( psRecord, 0xffff ), vertexSamplers = samplerMask( vsRecord, 0xf );
 	const uint32_t sampledMask = pixelSamplers | ( vertexSamplers << 16 );
-	// Folded native variants retain reflection entries for disabled material samplers.
-	// A stale page binding on such a slot is not a lightmap read by this draw.
 	if ( highresMap && !shadowPass && !motionActive && psRecord && !psRecord->samplerRolesReady )
 		for ( unsigned sampler = 0; sampler < 16; ++sampler )
 			if ( ( pixelSamplers & ( 1u << sampler ) ) && m_ActiveSnapshot.fixed.textureEnabled[sampler] )
@@ -2464,6 +2482,18 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				bindingInput.nativeVersions[9 + slot] = m_NativePSBlocks[slot].version;
 			}
 	}
+	if ( nativeVS && vsRecord->gameRegisters )
+	{
+		bindingInput.nativeData[4] = m_VsFloat;
+		bindingInput.nativeSizes[4] = sizeof( dx12native::DX12GameRegistersVS );
+		bindingInput.nativeVersions[4] = ( uint64_t( 1 ) << 63 ) | m_ConstantVersions[0];
+	}
+	if ( nativePS && psRecord->gameRegisters )
+	{
+		bindingInput.nativeData[12] = m_PsFloat;
+		bindingInput.nativeSizes[12] = sizeof( dx12native::DX12GameRegistersPS );
+		bindingInput.nativeVersions[12] = ( uint64_t( 1 ) << 63 ) | m_ConstantVersions[3];
+	}
 	// Payload identity is per original key, not per projected shader record. The existing
 	// engine upload ring reuses these bytes until the entry or submission fence changes.
 	for ( unsigned stage = 0; stage < 2; ++stage )
@@ -2491,7 +2521,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		bindingInput.constantVersions[6 + bank] = m_ExtensionVersions[bank];
 	bindingInput.vertexTextures = vertexSamplers != 0;
 	bindingInput.geometryStage = geometryStage;
-	bindingInput.lightingVisibilityRequired = !highresMap;
+	bindingInput.lightingVisibilityRequired = !highresMap && !cheapAuxiliary;
 	if ( highresMap && !shadowPass && psRecord && psRecord->sunVisibilityAbi )
 	{
 		m_pDevice->Highres().OnNativeFailure( "new highres receiver shader retains the abandoned sun carrier" );
@@ -2524,7 +2554,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 		return;
 	}
-	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && ( ( psRecord && psRecord->lightingAbi ) || ( vsRecord && vsRecord->lightingAbi ) ), bindingInput ) )
+	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && ( ( psRecord && psRecord->lightingAbi ) || ( vsRecord && vsRecord->lightingAbi ) ), bindingInput, cheapAuxiliary ) )
 		return;
 	if ( bindingInput.lightingAbi && psRecord && psRecord->propVisibilityAbi &&
 		!m_pDevice->Lighting().PrepareStaticPropDraw( meshToken, sunDraw, m_VsFloat[VERTEX_SHADER_MODEL], bindingInput ) )

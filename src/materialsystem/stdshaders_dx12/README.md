@@ -98,12 +98,14 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   `0x80`). Sky draws retain their own depth/blend/fog but can shade only marked pixels; the end marker restores
   those pixels to far depth and removes `0x40`. Main contact/SSR bindings stay neutral during the sky draw.
   Water/fog-volume, reflective-glass, solid-space, stereo, cubemap, intro, Portal and offscreen views retain sky-first ordering.
+
   On the RTX 4070S at 1080p, paired `d1_trainstation_02` measurements reduced the sky event from 0.380 to 0.061 ms
   in the alley and 0.164 to 0.051 ms in the stairwell. Fixed-exposure, frozen-scene screenshots with GTAO/contact
   shadows enabled matched exactly for the open citadel view; alley/stair residuals were at most 1 code value,
   also present in unchanged-path repeats. SSR's frame-indexed GGX noise has the same A/A and A/B variance;
   SSR remains after the completed sky color and restored main depth. Evidence: `_agent_tools/out/sky_1080*`
   and `sky_exact*` (the latter screenshots predate the harness DPI correction).
+
 - Feature detail sprites (`DX12_DetailShadowLit`) are lit once per sprite in the vertex shader, at the authored
   gather point all four card vertices share. Where the ambient probe grid covers that point, the light is the soft
   probe lobe around the authored up vector (`Probe_IrradianceSoft`, as for thin foliage) plus the runtime direct
@@ -134,6 +136,59 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   closed/open door captures show opaque metal and transparent windows, with failed includes and unknown
   `patch` errors reduced from 16 each to zero. Evidence: `_train_door_stationary_{before,after}_runtime.log`
   and `screenshots/train_door_stationary_{before,after}*.jpg`; both runs exited 0.
+
+### Water reflection/refraction views
+
+The client marks planar water reflection and refraction views with `INT_RENDERPARM_DX12_VIEW_FLAGS`
+(`CBaseWorldView::DrawExecute`); the DX12 backend reads these explicit bits instead of guessing from the camera or
+target. Reflection views are cheap: world surfaces take the original BSP lightmap route instead of the
+high-resolution receiver path, and the lighting constants carry `DX12_SHADOW_VIEW_UNSHADOWED`, so runtime-light
+visibility is one with no shadow-map or contact-ray sampling while the selected runtime lights still light models
+and props. They stay outside the main view's PBR G-buffer/two-pass bracket, and screen-space contacts, GTAO, SSR and
+volumetrics run only in the main scene bracket, so SSR never replaces a water surface's planar reflection.
+Refraction views keep the full-quality path because they are seen almost directly through shallow water.
+
+The game-owned L4D2 water pixel shader (`l4d2_water_ps20b`, `stdshaders/l4d2_water.cpp`) now has an explicit
+native high-resolution twin (`l4d2_water_highres_{vs,ps}51`). Its sampler 3 remains the lightmap role, while the
+three reflection-with-base samples join the enhanced atlas and selected direct-light receiver. Cheap, refraction-only,
+flashlight and `LIGHTMAPWATERFOG` branches retain their original policy. The DX12 backend aliases the legacy
+`l4d2_water_{vs20,ps20b}` names to these native twins on enhanced maps; no legacy water exemption or retail-lightmap
+fallback remains.
+
+`LightmappedGeneric` and `WorldVertexTransition` in the game shader DLL share
+`l4d2_lightmappedgeneric_{vs20,ps20b}`. `pairs.HIGHRES_ONLY` emits just a VS,
+PS and audited early-depth PS for that pair and for water. Each manifest row
+names the game-owned legacy ABI directly; there is no ordinary or shadowmap
+native copy. The lightmapped pair retains `SEAMLESS` (it changes TEXCOORD0's
+width) and reads the other original combo digits from the existing fold block.
+The first RGB fetch uses plane 0 for a flat lightmap and plane 1 for a bumped
+lightmap; bumped lighting uses planes 1–3. Water retains its compile-time
+sampler/interpolator variants and legacy SKIPs.
+
+Unlike materials implemented in `stdshader_dx12`, the game DLL writes legacy
+registers even when the backend substitutes a native program. The twins read
+the API's current float-register prefix through `DX12GameRegistersVS/PS`
+(b4 space1), validated as an engine block and bound only when reflected.
+The explicit plane roles, owner lookup and missing-twin rejection still apply.
+
+L4D2 x64 acceptance: ShaderCompiler3 validated 268 logicals and 135 cbuffers
+in 53 s (28,261 present combos, 8,106 compiled and 16,894 cache hits; the
+remaining combos reused programs within the run). Of those, the new receivers
+account for 670: lightmapped VS / PS / early-depth PS = 2 / 2 / 2, water =
+8 / 328 / 328. ShaderCompiler3, shaderapidx12, game_shader_l4d2 (using
+`skip_custombuild`), client and server built in 20.3 s together; the post-pack
+stdshader_dx12 build took 10.3 s (incremental Release win64, v145).
+
+The five deployed DLL/PDB pairs and the native pack (98 vsh, 150 psh, 20 csh)
+were hash-checked after copying; `fxc` was not replaced. Rollback files are in
+`F:\l4d2_scratch\deploy_backup\pre_l4d2native` (server.pdb was new). On the
+deployed build, `zc1_m3` and `zc1_m5` both reported `Highres: state=2` with
+empty errors; the first screenshot showed lit interior world surfaces and
+the second showed rippled, reflecting water under the bridge. The latter
+run loaded the native water VS, PS and early-depth PS from `vsh`/`psh`.
+`c1m1_hotel`, `c1m2_streets`, `c1m3_mall` and `c1m4_atrium` then reached
+state 2 with empty errors in one process. Neither run logged a missing
+sampler role, highres draw rejection or unexpected disconnect.
 
 ### Left 4 Dead 2 SpriteCard
 
@@ -492,13 +547,16 @@ In `c6m1_riverbank`, looking toward visible water switches to that path without 
 
 `tools/genhighres.py` catalogs actual RGB lightmap consumers: LightmappedGeneric/WorldVertexTransition,
 WorldTwoTextureBlend, LightmappedReflective, the bumped decal pass, Water's base-texture pass,
-ShatteredGlass, and PyroVision's world-lightmapped effects. `genmat.py` independently emits their
-`*_highres_vs51`/`*_highres_ps51` twins alongside ordinary and old `*_shadowmap_*` shaders.
-The decal self-illumination second pass samples only its base texture; cheap water/refraction-only passes
-do not consume BSP irradiance. WorldVertexAlpha's DX9 draw is unreachable through its DX8 fallback;
-DX8 fixed-function consumers are backend paths. The actual WorldVertexTransition editor assembly pass
-uses authored `worldvertextransition_editor_highres_*` native replacements on enhanced maps, retaining its
-texture transforms, two-material vertex-alpha blend and original sampled lightmap alpha.
+ShatteredGlass, PyroVision's world-lightmapped effects, and the game-owned L4D2 LightmappedGeneric/WorldVertexTransition
+and Water shaders. `genmat.py` independently emits their `*_highres_vs51`/`*_highres_ps51` twins alongside ordinary and old
+`*_shadowmap_*` shaders. The L4D2 world pair shares the game shader's `l4d2_lightmappedgeneric_ps20b` contract (including
+the WorldVertexTransition combo), while the native twin adds owner UVs, sampler-role metadata, and selected direct
+receiver ABI. The backend aliases legacy L4D2 names to those native twins on enhanced maps; it does not bind an enhanced
+atlas to a converted legacy DXBC shader. The decal self-illumination second pass samples only its base texture; cheap
+water/refraction-only passes do not consume BSP irradiance. WorldVertexAlpha's DX9 draw is unreachable through its DX8
+fallback; DX8 fixed-function consumers are backend paths. The actual WorldVertexTransition editor assembly pass uses
+authored `worldvertextransition_editor_highres_*` native replacements on enhanced maps, retaining its texture transforms,
+two-material vertex-alpha blend and original sampled lightmap alpha.
 
 Runtime `.hlight` ZIP readback can exceed 1 GiB while remaining below the file-size limit.
 `CUtlBuffer::PutOverflow` must request the complete pending write (including representable trailing-NUL

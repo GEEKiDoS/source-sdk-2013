@@ -118,6 +118,13 @@ LIGHTMAPPED = [
     pair('lightmapped', 'lightmappedreflective_vs20', 'lightmappedreflective_ps20b', ['lightmappedreflective.cpp'], shadowmaps=True),
     pair('lightmapped', LMG + '_vs20', 'worldtwotextureblend_ps20b', ['worldtwotextureblend.cpp'], shadowmaps=True),
 ]
+# The game shader DLL owns the ordinary passes and their legacy registers.
+HIGHRES_ONLY = [
+    pair('lightmapped', 'l4d2_lightmappedgeneric_vs20', 'l4d2_lightmappedgeneric_ps20b',
+         ['l4d2_lightmappedgeneric_dx9_helper.cpp']),
+    pair('water_refract', 'l4d2_water_vs20', 'l4d2_water_ps20b',
+         ['l4d2_water.cpp']),
+]
 MORPH = [
     pair('morph_debug', 'debugmorphaccumulator_vs30', 'debugmorphaccumulator_ps30', ['debugmorphaccumulator_dx9.cpp']),
     pair('morph_debug', 'morphaccumulate_vs30', 'morphaccumulate_ps30', ['morphaccumulate_dx9.cpp']),

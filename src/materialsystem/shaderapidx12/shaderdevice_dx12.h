@@ -80,6 +80,7 @@ struct ShaderRecordDX12
 	bool pbrSpots = false, gbuffer = false, probeAbi = false;
 	uint32_t lightmapSamplerMask = 0, nativeSamplerMask = 0;
 	bool highresAbi = false, samplerRolesReady = false, nativeCasterTwin = false;
+	bool gameRegisters = false;
 	bool nativeEarlyDepthTwin = false;
 	// Native PS declares DCL_GLOBAL_FLAGS forceEarlyDepthStencil; safe for depth-only PS removal.
 	bool forceEarlyDepth = false;

@@ -130,6 +130,13 @@ static constexpr EngineCBufferMemberDX12 kDX12ComboFoldMembers[] = {
 	DX12_ENGINE_MEMBER( DX12ComboFold, cComboFold, 0 ),
 };
 
+// Game shader DLLs use Set*ShaderConstant, not the native material bridge.
+// Their highres receivers bind the prefix of the actual API float bank.
+struct DX12GameRegistersVS { float gameRegisters[64][4]; };
+struct DX12GameRegistersPS { float gameRegisters[32][4]; };
+static constexpr EngineCBufferMemberDX12 kGameRegistersVS[] = { DX12_ENGINE_MEMBER( DX12GameRegistersVS, gameRegisters, 0 ) };
+static constexpr EngineCBufferMemberDX12 kGameRegistersPS[] = { DX12_ENGINE_MEMBER( DX12GameRegistersPS, gameRegisters, 0 ) };
+
 struct alignas( 16 ) DX12MotionVS
 {
 	float cPrevViewProj[16];
@@ -207,6 +214,8 @@ static constexpr EngineCBufferLayoutDX12 kEngineCBufferLayouts[] = {
     { "DX12VSEngine", kStageVertex, 0, sizeof( DX12VSEngine ), sizeof( kDX12VSEngineMembers ) / sizeof( *kDX12VSEngineMembers ), kDX12VSEngineMembers },
     { "DX12VSBones", kStageVertex, 1, sizeof( DX12VSBones ), sizeof( kDX12VSBonesMembers ) / sizeof( *kDX12VSBonesMembers ), kDX12VSBonesMembers },
     { "DX12PSEngine", kStagePixel, 0, sizeof( DX12PSEngine ), sizeof( kDX12PSEngineMembers ) / sizeof( *kDX12PSEngineMembers ), kDX12PSEngineMembers },
+    { "DX12GameRegistersVS", kStageVertex, 4, sizeof( DX12GameRegistersVS ), 1, kGameRegistersVS },
+    { "DX12GameRegistersPS", kStagePixel, 4, sizeof( DX12GameRegistersPS ), 1, kGameRegistersPS },
 	{ "DX12ComboFoldPS", kStagePixel, 2, sizeof( DX12ComboFold ), 1, kDX12ComboFoldMembers },
 	{ "DX12ComboFoldVS", kStageVertex, 3, sizeof( DX12ComboFold ), 1, kDX12ComboFoldMembers },
     { "DX12MotionVS", kStageVertex, 7, sizeof( DX12MotionVS ), sizeof( kDX12MotionVSMembers ) / sizeof( *kDX12MotionVSMembers ), kDX12MotionVSMembers },

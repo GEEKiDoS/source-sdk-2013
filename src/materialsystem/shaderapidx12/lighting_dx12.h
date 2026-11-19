@@ -103,7 +103,7 @@ public:
 	// Recording-owner state used by DrawBuffers to split/correctly replay instanced caster groups.
 	bool ShadowCasterSkyClipExempt() const;
 	void SetShadowCasterSkyClipExemptForDraw( bool exempt );
-	bool PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input );
+	bool PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input, bool cheapAuxiliary = false );
 	// Recording owner, before PrepareBindings: the current projected-light descriptor table for a PS that reflects space 5.
 	bool PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input );
 	bool PresentationBlocked();
@@ -122,7 +122,7 @@ public:
 private:
 	LightingPacketDX12 *Packet( int operation );
 	void Enqueue( LightingPacketDX12 *packet );
-	bool PrepareViewTables( LightingViewStateDX12 &scope, bool receiverVisibility, CPipelineCacheDX12::BindingInputDX12 &input );
+	bool PrepareViewTables( LightingViewStateDX12 &scope, bool receiverVisibility, bool cheapAuxiliary, CPipelineCacheDX12::BindingInputDX12 &input );
 	struct Impl;
 	Impl *m_Impl;
 };

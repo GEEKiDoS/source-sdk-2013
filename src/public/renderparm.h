@@ -132,12 +132,21 @@ enum RenderParamInt_t
 	// transforms (view-projection and model rows) were bit-identical to its current ones (history misses and static
 	// objects reuse the current transforms). 0 for stale, failed, suppressed or moving frames.
 	INT_RENDERPARM_DX12_MOTION_BLUR_STATIC,
-	// Backend-written (shaderapidx12 only): the backend's current frame counter (31 bits) as seen by the recording owner,
-	// -1 when queried off the recording owner (queued client frames may run ahead of the frame being recorded).
+	// Backend-written (shaderapidx12 only): current recording frame epoch.
 	INT_RENDERPARM_DX12_FRAME_EPOCH,
-
-	MAX_INT_RENDER_PARMS = 27
+	// Auxiliary scene view classification. The client sets this before a reflection
+	// or refraction view is submitted; shaderapidx12 consumes it instead of
+	// inferring quality from a camera or target.
+	INT_RENDERPARM_DX12_VIEW_FLAGS,
+	// Backend-owned view flags are transient and must be cleared after each view.
+	MAX_INT_RENDER_PARMS = 29
 };
+enum DX12ViewFlags_t
+{
+	DX12_VIEW_FLAG_REFLECTION = 1 << 0,
+	DX12_VIEW_FLAG_REFRACTION = 1 << 1,
+};
+
 
 // for INT_RENDERPARM_BACK_BUFFER_INDEX
 #define BACK_BUFFER_INDEX_DEFAULT	0

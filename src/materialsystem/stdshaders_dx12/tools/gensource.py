@@ -207,6 +207,32 @@ def resolve_register(name, defs, depth=0):
     return resolve_register(defs[name][-1], defs, depth + 1)
 
 
+def game_register_block(text, stage, members):
+    """These twins are selected behind a game DLL's back: it writes the API
+    register file, never a stdshader_dx12 material block. Expose its prefix
+    through one validated engine block; retain the original column layout."""
+    count = 64 if stage == 'vs' else 32
+    block = [f'cbuffer DX12GameRegisters{stage.upper()} : register( b4, space1 )', '{',
+             f'\tfloat4 gameRegisters[{count}]; // @legacy none', '};']
+    for name, (typ, reg, arr, _) in members:
+        index = int(reg[1:])
+        assert reg[0] == 'c' and 0 <= index < count
+        if arr:
+            length = int(arr.strip('[] '))
+            assert typ == 'float4' and index + length <= count
+            value = '{ ' + ', '.join(f'gameRegisters[{index+i}]' for i in range(length)) + ' }'
+            block.append(f'static const float4 {name}[{length}] = {value};')
+        elif typ == 'float4x4':
+            assert index + 4 <= count
+            cols = ', '.join(f'gameRegisters[{index+i}]' for i in range(4))
+            block.append(f'#define {name} transpose(float4x4({cols}))')
+        else:
+            swizzle = {'float': '.x', 'float3': '.xyz', 'float4': ''}[typ]
+            block.append(f'#define {name} gameRegisters[{index}]{swizzle}')
+    return re.sub(r'cbuffer \w+ : register\( b[12], space1 \)\n\{[^}]*\};',
+                  lambda m: '\n'.join(block), text, count=1)
+
+
 def hoist_constants(text, stage, cbname, defs, extra_members=(), engine_regs=None):
     members, order = {}, []
     by_reg = {}
@@ -483,6 +509,7 @@ def vertex_entry(text, profile, centroid_semantics=(), flatten=frozenset()):
     path, counter, keyed = [], [0], set()   # kept-conditional branch path of every member (duplicate detection)
     conds = []   # parallel to path: [expression, taken-branch polarity] of each kept conditional
     member_conds = {}
+    branch_tests = []
     for line in text[b0:b1].split('\n'):
         st_ = line.strip()
         if st_.startswith('#'):
@@ -497,16 +524,23 @@ def vertex_entry(text, profile, centroid_semantics=(), flatten=frozenset()):
                     if kind == 'ifdef': expr = f'defined({expr})'
                     if kind == 'ifndef': expr = f'!defined({expr})'
                     conds.append([expr, True])
+                    branch_tests.append(expr)
                 else: continue
             elif flat_stack and flat_stack[-1]:
                 if kind == 'endif': flat_stack.pop()
                 continue
             elif kind in ('else', 'elif') and path:
                 path[-1] = (path[-1][0], path[-1][1] + 1)
-                conds[-1] = [conds[-1][0], False] if kind == 'else' else [None, None]
+                previous = branch_tests[-1]
+                if kind == 'else':
+                    conds[-1] = [previous, False]
+                else:
+                    expr = re.sub(r'//.*', '', pm.group(2)).strip()
+                    conds[-1] = [f'!({previous}) && ({expr})', True]
+                    branch_tests[-1] = f'({previous}) || ({expr})'
             elif kind == 'endif':
                 if flat_stack: flat_stack.pop()
-                if path: path.pop(); conds.pop()
+                if path: path.pop(); conds.pop(); branch_tests.pop()
             lines.append(line); fin_body.append(line); interp_lines.append(line); continue
         mm = MEMBER.match(line)
         if not mm:
@@ -887,7 +921,8 @@ def engine_regs_from_cpp(cpp_texts):
 # Feature-only receiver transformations. These run on a second source translation, never on ordinary text.
 # The whitelist describes lit passes, NOT similarly named flashlight/selfillum/refraction replay passes.
 SHADOW_LIGHTMAPPED = {
-    'lightmappedgeneric_ps20b', 'worldtwotextureblend_ps20b',
+    'lightmappedgeneric_ps20b', 'l4d2_lightmappedgeneric_ps20b',
+    'worldtwotextureblend_ps20b',
     'lightmappedreflective_ps20b', 'lightmappedgeneric_decal_ps20b',
 }
 # Original VS INPUT (not interpolated bumped PS coordinates): every member below is TEXCOORD1.xy.
@@ -895,6 +930,7 @@ SHADOW_LIGHTMAPPED = {
 # TEXTURE_LIGHTMAP_BUMPED at sampler 1 (its three color samples use samplers 1/2/3).
 SHADOW_BASE_LIGHTMAP_INPUT = {
     'lightmappedgeneric_vs20': 'vLightmapTexCoord',
+    'l4d2_lightmappedgeneric_vs20': 'lightmap',
     'lightmappedreflective_vs20': 'vLightmapTexCoord',
     'lightmappedgeneric_decal_vs20': 'vTexCoord1',
 }
@@ -941,6 +977,7 @@ def shadow_vertex(text, logical, highres=False):
     """
     sources = {
         'lightmappedgeneric_vs20': ('worldPos', 'worldNormal'),
+        'l4d2_lightmappedgeneric_vs20': ('o.world.xyz', 'normal'),
         'lightmappedgeneric_decal_vs20': ('worldPos', 'shadowWorldNormal'),
         'lightmappedreflective_vs20': ('vWorldPos', 'shadowWorldNormal'),
         'vertexlit_and_unlit_generic_vs30': ('worldPos', 'worldNormal'),
@@ -956,8 +993,9 @@ def shadow_vertex(text, logical, highres=False):
     }
     if logical not in sources: raise RuntimeError('unknown shadow-map vertex logical: ' + logical)
     pos, normal = sources[logical]
-    tangent = logical in {'lightmappedgeneric_vs20', 'lightmappedgeneric_decal_vs20',
-                          'lightmappedreflective_vs20', 'cable_vs20'}
+    tangent = logical in {'lightmappedgeneric_vs20', 'l4d2_lightmappedgeneric_vs20',
+                          'lightmappedgeneric_decal_vs20', 'lightmappedreflective_vs20', 'cable_vs20'}
+    tangent_inputs = ('tangentS', 'tangentT') if logical == 'l4d2_lightmappedgeneric_vs20' else ('vTangentS', 'vTangentT')
     if logical == 'vertexlit_and_unlit_generic_vs30':
         # Selected runtime light can be the ONLY light: legacy STATIC/DYNAMIC_LIGHT both zero is not unlit.
         text = shadow_replace(text,
@@ -1025,8 +1063,9 @@ def shadow_vertex(text, logical, highres=False):
     dark = 'fIllumFactor * saturate( dot( worldNormal, vForward ) )' if logical == 'teeth_vs30' else '1.0f'
     assignments = before + f'o.worldPos = {pos};\n\to.worldNormal = normalize( {normal} );\n\to.shadowResponse = float2( {half}, {dark} );\n\t'
     if tangent:
-        assignments += (f'o.shadowTangentS = normalize( mul( {in_name}.vTangentS, (float3x3)cModel[0] ) );\n\t'
-                        f'o.shadowTangentT = normalize( mul( {in_name}.vTangentT, (float3x3)cModel[0] ) );\n\t')
+        tangent_s, tangent_t = tangent_inputs
+        assignments += (f'o.shadowTangentS = normalize( mul( {in_name}.{tangent_s}, (float3x3)cModel[0] ) );\n\t'
+                        f'o.shadowTangentT = normalize( mul( {in_name}.{tangent_t}, (float3x3)cModel[0] ) );\n\t')
     if base_lightmap_input:
         assignments += (f'o.shadowBaseLightmapUV = {in_name}.{base_lightmap_input}.xy;\n\to.shadowVertexLightmapUV = {in_name}.{base_lightmap_input}.xy;\n\t' if highres else
                         f'o.shadowBaseLightmapUV = {in_name}.vShadowCarrierUV.w != 0 ? '
@@ -1296,7 +1335,13 @@ def convert(source, profile, logical, interp=None, centroid=(), engine_regs=None
     # Twins that add a receiver-only member (g_ShadowDirectTint) are a different layout; the packer's
     # shared-cbuffer check is keyed by block name, and the C++ writer is selected per logical anyway.
     if 'g_ShadowDirectTint : register( c223 )' in text: cbname += '_shadowmap'
+    game_owned = highres and logical.startswith('l4d2_')
+    if game_owned:
+        # Read exactly the registers this pass writes (the flashlight pass
+        # reuses the world's tint register for fog).
+        engine_regs = {}
     text, members = hoist_constants(text, stage, cbname, defs, extra, engine_regs if stage == 'ps' else None)
+    if game_owned: text = game_register_block(text, stage, members)
     text = hp.convert(text, known)
     text = gc.insert_params(text, need)
     if stage == 'vs':

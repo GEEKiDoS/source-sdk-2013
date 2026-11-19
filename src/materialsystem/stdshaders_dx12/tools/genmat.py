@@ -246,7 +246,13 @@ def run(only_slices=None):
     import gencommon
     earlydepth_common, _, _ = gencommon.translate_all()
     highres_vs = {}
-    for slice_, vsrc, vprof, vlog, psrc, pprof, plog, cpps in entries:
+    receiver_only = [e for e in _pairs.HIGHRES_ONLY if not only_slices or e[0] in only_slices]
+    for entry in entries + receiver_only:
+        slice_, vsrc, vprof, vlog, psrc, pprof, plog, cpps = entry
+        # An aliased game-owned shader has no ordinary native sibling from
+        # which the packer could inherit the original combo ABI.
+        vs_ref = f'{MANIFEST_PROFILE[vprof]} {vsrc}' if entry in receiver_only else 'native -'
+        ps_ref = f'{MANIFEST_PROFILE[pprof]} {psrc}' if entry in receiver_only else 'native -'
         if plog not in genhighres.SAMPLER_ROLES: continue
         try:
             fv = shadowmap_logical(vlog).replace('_shadowmap_', '_highres_')
@@ -257,7 +263,7 @@ def run(only_slices=None):
                 highres_vs[fv] = (text, interp)
                 generated[fv] = text
                 manifests.setdefault(slice_, []).extend([
-                    f'{native_name(fv)}.fxc vs {native_name(fv)} native -',
+                    f'{native_name(fv)}.fxc vs {native_name(fv)} {vs_ref}',
                     f'# noparity {native_name(fv)} - highres-feature-variant'])
             cpp_texts = [open(os.path.join(LEGACY, c), encoding='latin-1').read() for c in cpps]
             text, _, _ = gs.convert(psrc, pprof, plog, interp=highres_vs[fv][1],
@@ -267,7 +273,7 @@ def run(only_slices=None):
             if fp not in generated:
                 generated[fp] = text
                 manifests.setdefault(slice_, []).extend([
-                    f'{native_name(fp)}.fxc ps {native_name(fp)} native -',
+                    f'{native_name(fp)}.fxc ps {native_name(fp)} {ps_ref}',
                     f'# noparity {native_name(fp)} - highres-feature-variant'])
                 hazards = genhighres.earlydepth_hazards(text, native_name(fp), earlydepth_common, ROOT)
                 if hazards:
@@ -277,7 +283,7 @@ def run(only_slices=None):
                     early = fp.replace('_highres_', '_highres_earlydepth_')
                     generated[early] = genhighres.earlydepth_pixels(text)
                     manifests.setdefault(slice_, []).extend([
-                        f'{native_name(early)}.fxc ps {native_name(early)} native -',
+                        f'{native_name(early)}.fxc ps {native_name(early)} {ps_ref}',
                         f'# noparity {native_name(early)} - highres-earlydepth-feature-variant',
                         f'# earlydepth {native_name(fp)} {native_name(early)}'])
         except Exception as e:

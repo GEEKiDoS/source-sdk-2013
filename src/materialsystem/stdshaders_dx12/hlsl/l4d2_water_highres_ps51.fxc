@@ -1,0 +1,1243 @@
+// HIGHLIGHT_SAMPLERS: 8
+#define DX12_HIGHRES_LIGHTMAPS 1
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/l4d2_water_ps20b.fxc for logical l4d2_water_ps20b (legacy profile ps20b);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
+#define DX12_LEGACY_PS20B 1
+#include "dx12_preamble.h"
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// Reconstructed from the native Water/WaterCheap PS2b programs. The SDK
+// flashlight is a separate additive pass; it must not add the base twice.
+// STATIC: "CHEAP" "0..1"
+// STATIC: "BASETEXTURE" "0..1"
+// STATIC: "MULTITEXTURE" "0..1"
+// STATIC: "REFLECT" "0..1"
+// STATIC: "REFRACT" "0..1"
+// STATIC: "ABOVEWATER" "0..1"
+// STATIC: "FLOWMAP" "0..1"
+// STATIC: "FLOW_DEBUG" "0..2"
+// STATIC: "FLASHLIGHT" "0..1"
+// STATIC: "LIGHTMAPWATERFOG" "0..1"
+// STATIC: "NORMAL_DECODE_MODE" "0..1"
+// STATIC: "FRESNEL" "0..1"
+// DYNAMIC: "FLASHLIGHTSHADOWS" "0..1"
+// DYNAMIC: "HDRENABLED" "0..1"
+// SKIP: $CHEAP && ($BASETEXTURE || $REFLECT || $REFRACT || $FLASHLIGHT || $LIGHTMAPWATERFOG || !$ABOVEWATER)
+// SKIP: !$CHEAP && !$FRESNEL
+// SKIP: $BASETEXTURE && ($MULTITEXTURE || $FLOWMAP || $FLASHLIGHT || $LIGHTMAPWATERFOG)
+// SKIP: $MULTITEXTURE && ($FLOWMAP || $FLASHLIGHT || $LIGHTMAPWATERFOG)
+// SKIP: !$FLOWMAP && $FLOW_DEBUG
+// SKIP: !$FLASHLIGHT && $FLASHLIGHTSHADOWS
+// SKIP: !$CHEAP && $HDRENABLED
+// SKIP: $FLASHLIGHT && $FLOW_DEBUG
+
+// ---- inlined l4d2_model_flashlight_fxc.h ----
+//========= Copyright Valve Corporation, All rights reserved. ============//
+//
+// Purpose: Common pixel shader code specific to flashlights
+//
+// $NoKeywords: $
+//
+//=============================================================================//
+#ifndef COMMON_FLASHLIGHT_FXC_H_
+#define COMMON_FLASHLIGHT_FXC_H_
+
+#include "common_ps_fxc.h"
+
+
+// JasonM - TODO: remove this simpleton version
+float DoShadow( DX12ShadowSampler DepthSampler, float4 texCoord )
+{
+	const float g_flShadowBias = 0.0005f;
+	float2 uoffset = float2( 0.5f/512.f, 0.0f );
+	float2 voffset = float2( 0.0f, 0.5f/512.f );
+	float3 projTexCoord = texCoord.xyz / texCoord.w;
+	float4 flashlightDepth = float4(	DX12ShadowRaw( DepthSampler, projTexCoord + uoffset + voffset ).x,
+										DX12ShadowRaw( DepthSampler, projTexCoord + uoffset - voffset ).x,
+										DX12ShadowRaw( DepthSampler, projTexCoord - uoffset + voffset ).x,
+										DX12ShadowRaw( DepthSampler, projTexCoord - uoffset - voffset ).x	);
+
+#	if ( defined( REVERSE_DEPTH_ON_X360 ) )
+	{
+		flashlightDepth = 1.0f - flashlightDepth;
+	}
+#	endif
+
+	float shadowed = 0.0f;
+	float z = texCoord.z/texCoord.w;
+	float4 dz = float4(z,z,z,z) - (flashlightDepth + float4( g_flShadowBias, g_flShadowBias, g_flShadowBias, g_flShadowBias));
+	float4 shadow = float4(0.25f,0.25f,0.25f,0.25f);
+
+	if( dz.x <= 0.0f )
+		shadowed += shadow.x;
+	if( dz.y <= 0.0f )
+		shadowed += shadow.y;
+	if( dz.z <= 0.0f )
+		shadowed += shadow.z;
+	if( dz.w <= 0.0f )
+		shadowed += shadow.w;
+
+	return shadowed;
+}
+
+
+float DoShadowNvidiaRAWZOneTap( DX12ShadowSampler DepthSampler, const float4 shadowMapPos )
+{
+	float ooW = 1.0f / shadowMapPos.w;								// 1 / w
+	float3 shadowMapCenter_objDepth = shadowMapPos.xyz * ooW;		// Do both projections at once
+
+	float2 shadowMapCenter = shadowMapCenter_objDepth.xy;			// Center of shadow filter
+	float objDepth = shadowMapCenter_objDepth.z;					// Object depth in shadow space
+
+	float fDepth = dot(DX12ShadowRaw(DepthSampler, shadowMapCenter).arg, float3(0.996093809371817670572857294849, 0.0038909914428586627756752238080039, 1.5199185323666651467481343000015e-5));
+
+	return fDepth > objDepth;
+}
+
+
+float DoShadowNvidiaRAWZ( DX12ShadowSampler DepthSampler, const float4 shadowMapPos )
+{
+	float fE = 1.0f / 512.0f;	 // Epsilon
+
+	float ooW = 1.0f / shadowMapPos.w;								// 1 / w
+	float3 shadowMapCenter_objDepth = shadowMapPos.xyz * ooW;		// Do both projections at once
+
+	float2 shadowMapCenter = shadowMapCenter_objDepth.xy;			// Center of shadow filter
+	float objDepth = shadowMapCenter_objDepth.z;					// Object depth in shadow space
+
+	float4 vDepths;
+	vDepths.x = dot(DX12ShadowRaw(DepthSampler, shadowMapCenter + float2(  fE,  fE )).arg, float3(0.996093809371817670572857294849, 0.0038909914428586627756752238080039, 1.5199185323666651467481343000015e-5));
+	vDepths.y = dot(DX12ShadowRaw(DepthSampler, shadowMapCenter + float2( -fE,  fE )).arg, float3(0.996093809371817670572857294849, 0.0038909914428586627756752238080039, 1.5199185323666651467481343000015e-5));
+	vDepths.z = dot(DX12ShadowRaw(DepthSampler, shadowMapCenter + float2(  fE, -fE )).arg, float3(0.996093809371817670572857294849, 0.0038909914428586627756752238080039, 1.5199185323666651467481343000015e-5));
+	vDepths.w = dot(DX12ShadowRaw(DepthSampler, shadowMapCenter + float2( -fE, -fE )).arg, float3(0.996093809371817670572857294849, 0.0038909914428586627756752238080039, 1.5199185323666651467481343000015e-5));
+
+	return dot(vDepths > objDepth.xxxx, float4(0.25, 0.25, 0.25, 0.25));
+}
+
+
+float DoShadowNvidiaCheap( DX12ShadowSampler DepthSampler, const float4 shadowMapPos )
+{
+	float fTexelEpsilon = 1.0f / 1024.0f;
+
+	float ooW = 1.0f / shadowMapPos.w;								// 1 / w
+	float3 shadowMapCenter_objDepth = shadowMapPos.xyz * ooW;		// Do both projections at once
+
+	float2 shadowMapCenter = shadowMapCenter_objDepth.xy;			// Center of shadow filter
+	float objDepth = shadowMapCenter_objDepth.z;					// Object depth in shadow space
+
+	float4 vTaps;
+	vTaps.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTexelEpsilon,  fTexelEpsilon), objDepth, 1 ) ).x;
+	vTaps.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTexelEpsilon,  fTexelEpsilon), objDepth, 1 ) ).x;
+	vTaps.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTexelEpsilon, -fTexelEpsilon), objDepth, 1 ) ).x;
+	vTaps.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTexelEpsilon, -fTexelEpsilon), objDepth, 1 ) ).x;
+
+	return dot(vTaps, float4(0.25, 0.25, 0.25, 0.25));
+}
+
+float DoShadowNvidiaPCF3x3Box( DX12ShadowSampler DepthSampler, const float4 shadowMapPos )
+{
+	float fTexelEpsilon = 1.0f / 1024.0f;
+
+	float ooW = 1.0f / shadowMapPos.w;								// 1 / w
+	float3 shadowMapCenter_objDepth = shadowMapPos.xyz * ooW;		// Do both projections at once
+
+	float2 shadowMapCenter = shadowMapCenter_objDepth.xy;			// Center of shadow filter
+	float objDepth = shadowMapCenter_objDepth.z;					// Object depth in shadow space
+
+	float4 vOneTaps;
+	vOneTaps.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTexelEpsilon,  fTexelEpsilon ), objDepth, 1 ) ).x;
+	vOneTaps.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTexelEpsilon,  fTexelEpsilon ), objDepth, 1 ) ).x;
+	vOneTaps.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTexelEpsilon, -fTexelEpsilon ), objDepth, 1 ) ).x;
+	vOneTaps.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTexelEpsilon, -fTexelEpsilon ), objDepth, 1 ) ).x;
+	float flOneTaps = dot( vOneTaps, float4(1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f));
+
+	float4 vTwoTaps;
+	vTwoTaps.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTexelEpsilon,  0 ), objDepth, 1 ) ).x;
+	vTwoTaps.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTexelEpsilon,  0 ), objDepth, 1 ) ).x;
+	vTwoTaps.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  0, -fTexelEpsilon ), objDepth, 1 ) ).x;
+	vTwoTaps.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  0, -fTexelEpsilon ), objDepth, 1 ) ).x;
+	float flTwoTaps = dot( vTwoTaps, float4(1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f));
+
+	float flCenterTap = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter, objDepth, 1 ) ).x * (1.0f / 9.0f);
+
+	// Sum all 9 Taps
+	return flOneTaps + flTwoTaps + flCenterTap;
+}
+
+
+//
+//	1	4	7	4	1
+//	4	20	33	20	4
+//	7	33	55	33	7
+//	4	20	33	20	4
+//	1	4	7	4	1
+//
+float DoShadowNvidiaPCF5x5Gaussian( DX12ShadowSampler DepthSampler, const float4 shadowMapPos )
+{
+	float fEpsilon    = 1.0f / 512.0f;
+	float fTwoEpsilon = 2.0f * fEpsilon;
+
+	float ooW = 1.0f / shadowMapPos.w;								// 1 / w
+	float3 shadowMapCenter_objDepth = shadowMapPos.xyz * ooW;		// Do both projections at once
+
+	float2 shadowMapCenter = shadowMapCenter_objDepth.xy;			// Center of shadow filter
+	float objDepth = shadowMapCenter_objDepth.z;					// Object depth in shadow space
+
+	float4 vOneTaps;
+	vOneTaps.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTwoEpsilon,  fTwoEpsilon ), objDepth, 1 ) ).x;
+	vOneTaps.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTwoEpsilon,  fTwoEpsilon ), objDepth, 1 ) ).x;
+	vOneTaps.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTwoEpsilon, -fTwoEpsilon ), objDepth, 1 ) ).x;
+	vOneTaps.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTwoEpsilon, -fTwoEpsilon ), objDepth, 1 ) ).x;
+	float flOneTaps = dot( vOneTaps, float4(1.0f / 331.0f, 1.0f / 331.0f, 1.0f / 331.0f, 1.0f / 331.0f));
+
+	float4 vSevenTaps;
+	vSevenTaps.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTwoEpsilon,  0 ), objDepth, 1 ) ).x;
+	vSevenTaps.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTwoEpsilon,  0 ), objDepth, 1 ) ).x;
+	vSevenTaps.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  0, -fTwoEpsilon ), objDepth, 1 ) ).x;
+	vSevenTaps.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  0, -fTwoEpsilon ), objDepth, 1 ) ).x;
+	float flSevenTaps = dot( vSevenTaps, float4( 7.0f / 331.0f, 7.0f / 331.0f, 7.0f / 331.0f, 7.0f / 331.0f ) );
+
+	float4 vFourTapsA, vFourTapsB;
+	vFourTapsA.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTwoEpsilon,  fEpsilon    ), objDepth, 1 ) ).x;
+	vFourTapsA.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fEpsilon,     fTwoEpsilon ), objDepth, 1 ) ).x;
+	vFourTapsA.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fEpsilon,     fTwoEpsilon ), objDepth, 1 ) ).x;
+	vFourTapsA.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTwoEpsilon,  fEpsilon    ), objDepth, 1 ) ).x;
+	vFourTapsB.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fTwoEpsilon, -fEpsilon    ), objDepth, 1 ) ).x;
+	vFourTapsB.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fEpsilon,    -fTwoEpsilon ), objDepth, 1 ) ).x;
+	vFourTapsB.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fEpsilon,    -fTwoEpsilon ), objDepth, 1 ) ).x;
+	vFourTapsB.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fTwoEpsilon, -fEpsilon    ), objDepth, 1 ) ).x;
+	float flFourTapsA = dot( vFourTapsA, float4( 4.0f / 331.0f, 4.0f / 331.0f, 4.0f / 331.0f, 4.0f / 331.0f ) );
+	float flFourTapsB = dot( vFourTapsB, float4( 4.0f / 331.0f, 4.0f / 331.0f, 4.0f / 331.0f, 4.0f / 331.0f ) );
+
+	float4 v20Taps;
+	v20Taps.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fEpsilon,  fEpsilon ), objDepth, 1 ) ).x;
+	v20Taps.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fEpsilon,  fEpsilon ), objDepth, 1 ) ).x;
+	v20Taps.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fEpsilon, -fEpsilon ), objDepth, 1 ) ).x;
+	v20Taps.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fEpsilon, -fEpsilon ), objDepth, 1 ) ).x;
+	float fl20Taps = dot( v20Taps, float4(20.0f / 331.0f, 20.0f / 331.0f, 20.0f / 331.0f, 20.0f / 331.0f));
+
+	float4 v33Taps;
+	v33Taps.x = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  fEpsilon,  0 ), objDepth, 1 ) ).x;
+	v33Taps.y = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2( -fEpsilon,  0 ), objDepth, 1 ) ).x;
+	v33Taps.z = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  0, -fEpsilon ), objDepth, 1 ) ).x;
+	v33Taps.w = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter + float2(  0, -fEpsilon ), objDepth, 1 ) ).x;
+	float fl33Taps = dot( v33Taps, float4(33.0f / 331.0f, 33.0f / 331.0f, 33.0f / 331.0f, 33.0f / 331.0f));
+
+	float flCenterTap = DX12ShadowCompareProj( DepthSampler, float4( shadowMapCenter, objDepth, 1 ) ).x * (55.0f / 331.0f);
+
+	// Sum all 25 Taps
+	return flOneTaps + flSevenTaps + +flFourTapsA + flFourTapsB + fl20Taps + fl33Taps + flCenterTap;
+}
+
+
+float DoShadowATICheap( DX12ShadowSampler DepthSampler, const float4 shadowMapPos )
+{
+    float2 shadowMapCenter = shadowMapPos.xy/shadowMapPos.w;
+	float objDepth = shadowMapPos.z / shadowMapPos.w;
+	float fSampleDepth = DX12ShadowRaw( DepthSampler, shadowMapCenter ).x;
+
+	objDepth = min( objDepth, 0.99999 ); //HACKHACK: On 360, surfaces at or past the far flashlight plane have an abrupt cutoff. This is temp until a smooth falloff is implemented
+
+	return fSampleDepth > objDepth;
+}
+
+
+// Poisson disc, randomly rotated at different UVs
+float DoShadowPoisson16Sample( DX12ShadowSampler DepthSampler, DX12Sampler2D RandomRotationSampler, const float3 vProjCoords, const float2 vScreenPos, const float4 vShadowTweaks, bool bNvidiaHardwarePCF, bool bFetch4, float4 cFlashlightScreenScale )
+{
+	float2 vPoissonOffset[8] = { float2(  0.3475f,  0.0042f ),
+								 float2(  0.8806f,  0.3430f ),
+								 float2( -0.0041f, -0.6197f ),
+								 float2(  0.0472f,  0.4964f ),
+								 float2( -0.3730f,  0.0874f ),
+								 float2( -0.9217f, -0.3177f ),
+								 float2( -0.6289f,  0.7388f ),
+								 float2(  0.5744f, -0.7741f ) };
+
+	float flScaleOverMapSize = vShadowTweaks.x * 2;		// Tweak parameters to shader
+	float2 vNoiseOffset = vShadowTweaks.zw;
+	float4 vLightDepths = 0, accum = 0.0f;
+	float2 rotOffset = 0;
+
+	float2 shadowMapCenter = vProjCoords.xy;			// Center of shadow filter
+	float objDepth = min( vProjCoords.z, 0.99999 );		// Object depth in shadow space
+
+	// 2D Rotation Matrix setup
+	float3 RMatTop = 0, RMatBottom = 0;
+#if defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+	RMatTop.xy = RandomRotationSampler.tex.Sample( RandomRotationSampler.smp, cFlashlightScreenScale.xy * (vScreenPos * 0.5 + 0.5) + vNoiseOffset ) * 2.0 - 1.0;
+	RMatBottom.xy = float2(-1.0, 1.0) * RMatTop.yx;	// 2x2 rotation matrix in 4-tuple
+#endif
+
+	RMatTop *= flScaleOverMapSize;				// Scale up kernel while accounting for texture resolution
+	RMatBottom *= flScaleOverMapSize;
+
+	RMatTop.z = shadowMapCenter.x;				// To be added in d2adds generated below
+	RMatBottom.z = shadowMapCenter.y;
+	
+	float fResult = 0.0f;
+
+	if ( bNvidiaHardwarePCF )
+	{
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[0].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[0].xy) + RMatBottom.z;
+		vLightDepths.x += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[1].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[1].xy) + RMatBottom.z;
+		vLightDepths.y += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[2].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[2].xy) + RMatBottom.z;
+		vLightDepths.z += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[3].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[3].xy) + RMatBottom.z;
+		vLightDepths.w += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[4].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[4].xy) + RMatBottom.z;
+		vLightDepths.x += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[5].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[5].xy) + RMatBottom.z;
+		vLightDepths.y += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[6].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[6].xy) + RMatBottom.z;
+		vLightDepths.z += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[7].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[7].xy) + RMatBottom.z;
+		vLightDepths.w += DX12ShadowCompareProj( DepthSampler, float4(rotOffset, objDepth, 1) ).x;
+
+		// Native retail PCF averages eight taps, not the SDK's factor-of-two sum.
+		fResult = dot( vLightDepths, float4( 0.125, 0.125, 0.125, 0.125 ) );
+	}
+	else if ( bFetch4 )
+	{
+/*
+
+TODO: Fix this contact hardening stuff
+
+		float flNumCloserSamples = 1;
+		float flAccumulatedCloserSamples = objDepth;
+		float4 vBlockerDepths;
+
+		// First, search for blockers
+		for( int j=0; j<8; j++ )
+		{
+			rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[j].xy) + RMatTop.z;
+			rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[j].xy) + RMatBottom.z;
+			vBlockerDepths = DX12ShadowRaw( DepthSampler, rotOffset.xy );
+
+			// Which samples are closer than the pixel we're rendering?
+			float4 vCloserSamples = (vBlockerDepths < objDepth.xxxx );				// Binary comparison results
+			flNumCloserSamples += dot( vCloserSamples, float4(1, 1, 1, 1) );		// How many samples are closer than receiver?
+			flAccumulatedCloserSamples += dot (vCloserSamples, vBlockerDepths );	// Total depths from samples closer than receiver
+		}
+
+		float flBlockerDepth = flAccumulatedCloserSamples / flNumCloserSamples;
+		float flContactHardeningScale = (objDepth - flBlockerDepth) / flBlockerDepth;
+
+		// Scale the kernel
+		RMatTop.xy    *= flContactHardeningScale;
+		RMatBottom.xy *= flContactHardeningScale;
+*/
+
+		for( int i=0; i<8; i++ )
+		{
+			rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[i].xy) + RMatTop.z;
+			rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[i].xy) + RMatBottom.z;
+			vLightDepths = DX12ShadowRaw( DepthSampler, rotOffset.xy );
+			accum += (vLightDepths > objDepth.xxxx);
+		}
+
+		fResult = dot( accum, float4( 1.0f/32.0f, 1.0f/32.0f, 1.0f/32.0f, 1.0f/32.0f) );
+	}
+	else	// ATI vanilla hardware shadow mapping
+	{
+		for( int i=0; i<2; i++ )
+		{
+			rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[4*i+0].xy) + RMatTop.z;
+			rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[4*i+0].xy) + RMatBottom.z;
+			vLightDepths.x = DX12ShadowRaw( DepthSampler, rotOffset.xy ).x;
+
+			rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[4*i+1].xy) + RMatTop.z;
+			rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[4*i+1].xy) + RMatBottom.z;
+			vLightDepths.y = DX12ShadowRaw( DepthSampler, rotOffset.xy ).x;
+
+			rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[4*i+2].xy) + RMatTop.z;
+			rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[4*i+2].xy) + RMatBottom.z;
+			vLightDepths.z = DX12ShadowRaw( DepthSampler, rotOffset.xy ).x;
+
+			rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[4*i+3].xy) + RMatTop.z;
+			rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[4*i+3].xy) + RMatBottom.z;
+			vLightDepths.w = DX12ShadowRaw( DepthSampler, rotOffset.xy ).x;
+
+			accum += (vLightDepths > objDepth.xxxx);
+		}
+
+		fResult = dot( accum, float4( 0.125, 0.125, 0.125, 0.125) );
+	}
+
+	return fResult;
+}
+
+#if defined( _X360 )
+
+// Poisson disc, randomly rotated at different UVs
+float DoShadow360Simple( DX12ShadowSampler DepthSampler, const float3 vProjCoords )
+{
+	float fLOD;
+	float2 shadowMapCenter = vProjCoords.xy;			// Center of shadow filter
+	float objDepth = min( vProjCoords.z, 0.99999 );		// Object depth in shadow space
+
+#if defined( REVERSE_DEPTH_ON_X360 )
+	objDepth = 1.0f - objDepth;
+#endif	
+
+	float4 vSampledDepths, vWeights;
+
+	asm {
+		getCompTexLOD2D fLOD.x, shadowMapCenter.xy, DepthSampler, AnisoFilter=max16to1
+			setTexLOD fLOD.x
+
+			tfetch2D vSampledDepths.x___, shadowMapCenter, DepthSampler, OffsetX = -0.5, OffsetY = -0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths._x__, shadowMapCenter, DepthSampler, OffsetX =  0.5, OffsetY = -0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths.__x_, shadowMapCenter, DepthSampler, OffsetX = -0.5, OffsetY =  0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths.___x, shadowMapCenter, DepthSampler, OffsetX =  0.5, OffsetY =  0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+
+			getWeights2D vWeights, shadowMapCenter.xy, DepthSampler, MagFilter=linear, MinFilter=linear, UseComputedLOD=false, UseRegisterLOD=true
+	};
+
+	vWeights = float4( (1-vWeights.x)*(1-vWeights.y), vWeights.x*(1-vWeights.y), (1-vWeights.x)*vWeights.y, vWeights.x*vWeights.y );
+
+#if defined( REVERSE_DEPTH_ON_X360 )
+	float4 vCompare = (vSampledDepths < objDepth.xxxx);
+#else
+	float4 vCompare = (vSampledDepths > objDepth.xxxx);
+#endif
+
+	return dot( vCompare, vWeights );
+}
+
+
+float Do360PCFFetch( DX12ShadowSampler DepthSampler, float2 tc, float objDepth )
+{
+	float fLOD;
+	float4 vSampledDepths, vWeights;
+
+	asm {
+			getCompTexLOD2D fLOD.x, tc.xy, DepthSampler, AnisoFilter=max16to1
+			setTexLOD fLOD.x
+
+			tfetch2D vSampledDepths.x___, tc, DepthSampler, OffsetX = -0.5, OffsetY = -0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths._x__, tc, DepthSampler, OffsetX =  0.5, OffsetY = -0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths.__x_, tc, DepthSampler, OffsetX = -0.5, OffsetY =  0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths.___x, tc, DepthSampler, OffsetX =  0.5, OffsetY =  0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+
+			getWeights2D vWeights, tc.xy, DepthSampler, MagFilter=linear, MinFilter=linear, UseComputedLOD=false, UseRegisterLOD=true
+	};
+
+	vWeights = float4( (1-vWeights.x)*(1-vWeights.y), vWeights.x*(1-vWeights.y), (1-vWeights.x)*vWeights.y, vWeights.x*vWeights.y );
+
+#if defined( REVERSE_DEPTH_ON_X360 )
+	float4 vCompare = (vSampledDepths < objDepth.xxxx);
+#else
+	float4 vCompare = (vSampledDepths > objDepth.xxxx);
+#endif
+
+	return dot( vCompare, vWeights );
+}
+
+
+float Do360NearestFetch( DX12ShadowSampler DepthSampler, float2 tc, float objDepth )
+{
+	float fLOD;
+	float4 vSampledDepth;
+
+	asm {
+		getCompTexLOD2D fLOD.x, tc.xy, DepthSampler, AnisoFilter=max16to1
+		setTexLOD fLOD.x
+
+		tfetch2D vSampledDepth.x___, tc, DepthSampler, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+	};
+
+#if defined( REVERSE_DEPTH_ON_X360 )
+	return (vSampledDepth.x < objDepth.x);
+#else
+	return (vSampledDepth.x > objDepth.x);
+#endif
+
+}
+
+
+float AmountShadowed_8Tap_360( DX12ShadowSampler DepthSampler, float2 tc, float objDepth )
+{
+	float fLOD;
+	float4 vSampledDepthsA, vSampledDepthsB;
+
+	// Optimal 8 rooks pattern to get an idea about whether we're at a penumbra or not
+	// From [Kallio07] "Scanline Edge-Flag Algorithm for Antialiasing" 
+	//
+	//        +---+---+---+---+---+---+---+---+
+	//        |   |   |   |   |   | o |   |   |
+	//        +---+---+---+---+---+---+---+---+
+	//        | o |   |   |   |   |   |   |   |
+	//        +---+---+---+---+---+---+---+---+
+	//        |   |   |   | o |   |   |   |   |
+	//        +---+---+---+---+---+---+---+---+
+	//        |   |   |   |   |   |   | o |   |
+	//        +---+---+---+---+---+---+---+---+
+	//        |   | o |   |   |   |   |   |   |
+	//        +---+---+---+---+---+---+---+---+
+	//        |   |   |   |   | o |   |   |   |
+	//        +---+---+---+---+---+---+---+---+
+	//        |   |   |   |   |   |   |   | o |
+	//        +---+---+---+---+---+---+---+---+
+	//        |   |   | o |   |   |   |   |   |
+	//        +---+---+---+---+---+---+---+---+
+	//
+	asm {
+			getCompTexLOD2D fLOD.x, tc.xy, DepthSampler, AnisoFilter=max16to1
+			setTexLOD fLOD.x
+
+			tfetch2D vSampledDepthsA.x___, tc, DepthSampler, OffsetX = -2.0, OffsetY = -1.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepthsA._x__, tc, DepthSampler, OffsetX = -1.5, OffsetY =  0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepthsA.__x_, tc, DepthSampler, OffsetX = -1.0, OffsetY =  2.0, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepthsA.___x, tc, DepthSampler, OffsetX = -0.5, OffsetY = -1.0, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+
+			tfetch2D vSampledDepthsB.x___, tc, DepthSampler, OffsetX =  0.5, OffsetY =  1.0, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepthsB._x__, tc, DepthSampler, OffsetX =  1.0, OffsetY = -2.0, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepthsB.__x_, tc, DepthSampler, OffsetX =  1.5, OffsetY = -0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepthsB.___x, tc, DepthSampler, OffsetX =  2.0, OffsetY =  1.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+	};
+
+#if defined( REVERSE_DEPTH_ON_X360 )
+	float4 vCompareA = (vSampledDepthsA < objDepth.xxxx);
+	float4 vCompareB = (vSampledDepthsB < objDepth.xxxx);
+#else
+	float4 vCompareA = (vSampledDepthsA > objDepth.xxxx);
+	float4 vCompareB = (vSampledDepthsB > objDepth.xxxx);
+#endif
+
+	return dot( vCompareA, float4(0.125,0.125,0.125,0.125) ) + dot( vCompareB, float4(0.125,0.125,0.125,0.125) );
+}
+
+
+float AmountShadowed_4Tap_360( DX12ShadowSampler DepthSampler, float2 tc, float objDepth )
+{
+	float fLOD;
+	float4 vSampledDepths;
+
+	// Rotated grid pattern to get an idea about whether we're at a penumbra or not
+	asm {
+		getCompTexLOD2D fLOD.x, tc.xy, DepthSampler, AnisoFilter=max16to1
+			setTexLOD fLOD.x
+
+			tfetch2D vSampledDepths.x___, tc, DepthSampler, OffsetX = -1.0, OffsetY =  0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths._x__, tc, DepthSampler, OffsetX = -0.5, OffsetY = -1.0, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths.__x_, tc, DepthSampler, OffsetX =  0.5, OffsetY =  1.0, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+			tfetch2D vSampledDepths.___x, tc, DepthSampler, OffsetX =  1.0, OffsetY = -0.5, UseComputedLOD=false, UseRegisterLOD=true, MagFilter = point, MinFilter = point
+	};
+
+#if defined( REVERSE_DEPTH_ON_X360 )
+	float4 vCompare = (vSampledDepths < objDepth.xxxx);
+#else
+	float4 vCompare = (vSampledDepths > objDepth.xxxx);
+#endif
+
+	return dot( vCompare, float4(0.25,0.25,0.25,0.25) );
+}
+
+// Poisson disc, randomly rotated at different UVs
+float DoShadowPoisson360( DX12ShadowSampler DepthSampler, DX12Sampler2D RandomRotationSampler, const float3 vProjCoords, const float2 vScreenPos, const float4 vShadowTweaks, float4 cFlashlightScreenScale )
+{
+	float2 vPoissonOffset[8] = { float2(  0.3475f,  0.0042f ), float2(  0.8806f,  0.3430f ),
+								 float2( -0.0041f, -0.6197f ), float2(  0.0472f,  0.4964f ),
+								 float2( -0.3730f,  0.0874f ), float2( -0.9217f, -0.3177f ),
+								 float2( -0.6289f,  0.7388f ), float2(  0.5744f, -0.7741f ) };
+
+	float2 shadowMapCenter = vProjCoords.xy;		// Center of shadow filter
+	float objDepth = min( vProjCoords.z, 0.99999 );	// Object depth in shadow space
+
+#if defined( REVERSE_DEPTH_ON_X360 )
+	objDepth = 1.0f - objDepth;
+#endif
+
+	float fAmountShadowed = AmountShadowed_4Tap_360( DepthSampler, shadowMapCenter, objDepth );
+
+	if ( fAmountShadowed >= 1.0f )			// Fully in light
+	{
+		return 1.0f;
+	}
+	else	// Do the expensive filtering since we're at least partially shadowed
+	{
+		float flScaleOverMapSize = 1.7f / 512.0f;		// Tweak parameters to shader
+
+		// 2D Rotation Matrix setup
+		float3 RMatTop = 0, RMatBottom = 0;
+#if defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+		RMatTop.xy = RandomRotationSampler.tex.Sample( RandomRotationSampler.smp, cFlashlightScreenScale.xy * (vScreenPos * 0.5 + 0.5) ) * 2.0 - 1.0;
+		RMatBottom.xy = float2(-1.0, 1.0) * RMatTop.yx;	// 2x2 rotation matrix in 4-tuple
+#endif
+
+		RMatTop *= flScaleOverMapSize;					// Scale up kernel while accounting for texture resolution
+		RMatBottom *= flScaleOverMapSize;
+		RMatTop.z = shadowMapCenter.x;					// To be added in d2adds generated below
+		RMatBottom.z = shadowMapCenter.y;
+		float2 rotOffset = float2(0,0);
+		float4 vAccum = 0;
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[0].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[0].xy) + RMatBottom.z;
+		vAccum.x  = Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[1].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[1].xy) + RMatBottom.z;
+		vAccum.y  = Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[2].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[2].xy) + RMatBottom.z;
+		vAccum.z  = Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[3].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[3].xy) + RMatBottom.z;
+		vAccum.w  = Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[4].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[4].xy) + RMatBottom.z;
+		vAccum.x += Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[5].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[5].xy) + RMatBottom.z;
+		vAccum.y += Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[6].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[6].xy) + RMatBottom.z;
+		vAccum.z += Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		rotOffset.x = dot (RMatTop.xy,    vPoissonOffset[7].xy) + RMatTop.z;
+		rotOffset.y = dot (RMatBottom.xy, vPoissonOffset[7].xy) + RMatBottom.z;
+		vAccum.w += Do360NearestFetch( DepthSampler, rotOffset, objDepth );
+
+		return dot( vAccum, float4( 0.25, 0.25, 0.25, 0.25) );
+	}
+}
+
+#endif // _X360
+
+
+float DoFlashlightShadow( DX12ShadowSampler DepthSampler, DX12Sampler2D RandomRotationSampler, float3 vProjCoords, float2 vScreenPos, int nShadowLevel, float4 vShadowTweaks, bool bAllowHighQuality, float4 cFlashlightScreenScale )
+{
+	float flShadow = 1.0f;
+
+#if !defined( _X360 ) //PC
+	if( nShadowLevel == NVIDIA_PCF_POISSON )
+		flShadow = DoShadowPoisson16Sample( DepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, vShadowTweaks, true, false, cFlashlightScreenScale );
+	else if( nShadowLevel == ATI_NOPCF )
+		flShadow = DoShadowPoisson16Sample( DepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, vShadowTweaks, false, false, cFlashlightScreenScale );
+	else if( nShadowLevel == ATI_NO_PCF_FETCH4 )
+		flShadow = DoShadowPoisson16Sample( DepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, vShadowTweaks, false, true, cFlashlightScreenScale );
+
+	return flShadow;
+#else
+
+	// Compile-time switch for shaders which allow high quality modes on 360
+	if ( bAllowHighQuality )
+	{
+		// Static control flow switch for shadow quality.  Some non-interactive sequences use the high quality path
+		if ( g_bHighQualityShadows )
+		{
+			flShadow = DoShadowPoisson360( DepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, vShadowTweaks, cFlashlightScreenScale );
+		}
+		else
+		{
+			flShadow = DoShadow360Simple( DepthSampler, vProjCoords );
+		}
+	}
+	else
+	{
+		flShadow = DoShadow360Simple( DepthSampler, vProjCoords );
+	}
+
+	return flShadow;
+
+#endif
+}
+
+float3 SpecularLight( const float3 vWorldNormal, const float3 vLightDir, const float fSpecularExponent,
+					  const float3 vEyeDir, const bool bDoSpecularWarp, DX12Sampler2D specularWarpSampler, float fFresnel )
+{
+	float3 result = float3(0.0f, 0.0f, 0.0f);
+
+	//float3 vReflect = reflect( -vEyeDir, vWorldNormal );
+	float3 vReflect = 2 * vWorldNormal * dot( vWorldNormal , vEyeDir ) - vEyeDir; // Reflect view through normal
+	float3 vSpecular = saturate(dot( vReflect, vLightDir ));		// L.R	(use half-angle instead?)
+	vSpecular = pow( vSpecular.x, fSpecularExponent );				// Raise to specular power
+
+	// Optionally warp as function of scalar specular and fresnel
+	if ( bDoSpecularWarp )
+		vSpecular *= specularWarpSampler.tex.Sample( specularWarpSampler.smp, float2(vSpecular.x, fFresnel) ); // Sample at { (L.R)^k, fresnel }
+
+	return vSpecular;
+}
+
+void DoSpecularFlashlight( float3 flashlightPos, float3 worldPos, float4 flashlightSpacePosition, float3 worldNormal, float3 attenuationFactors, float farZ, DX12Sampler2D FlashlightSampler, DX12ShadowSampler FlashlightDepthSampler, DX12Sampler2D RandomRotationSampler, int nShadowLevel, bool bDoShadows, bool bAllowHighQuality, const float2 vScreenPos, const float fSpecularExponent, const float3 vEyeDir, const bool bDoSpecularWarp, DX12Sampler2D specularWarpSampler, float fFresnel, float4 vShadowTweaks, // Outputs of this shader...separate shadowed diffuse and specular from the flashlight
+					out float3 diffuseLighting, out float3 specularLighting, float4 cFlashlightColor, float4 cFlashlightScreenScale )
+{
+	float3 vProjCoords = flashlightSpacePosition.xyz / flashlightSpacePosition.w;
+	float3 flashlightColor = float3(1,1,1);
+
+#if ( defined( _X360 ) )
+
+	float3 ltz = vProjCoords.xyz < float3( 0.0f, 0.0f, 0.0f );
+	float3 gto = vProjCoords.xyz > float3( 1.0f, 1.0f, 1.0f );
+
+	[branch]
+	if ( dot(ltz + gto, float3(1,1,1)) > 0 )
+	{
+		clip(-1);
+		diffuseLighting = specularLighting = float3(0,0,0);
+		return;
+	}
+	else
+	{
+		flashlightColor = FlashlightSampler.tex.Sample( FlashlightSampler.smp, vProjCoords );
+
+		[branch]
+		if ( dot(flashlightColor.xyz, float3(1,1,1)) <= 0 )
+		{
+			clip(-1);
+			diffuseLighting = specularLighting = float3(0,0,0);
+			return;
+		}
+	}
+#else
+	flashlightColor = FlashlightSampler.tex.Sample( FlashlightSampler.smp, vProjCoords );
+#endif
+
+
+#if defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+	flashlightColor *= cFlashlightColor.xyz;						// Flashlight color
+#endif
+
+	float3 delta = flashlightPos - worldPos;
+	float3 L = normalize( delta );
+	float distSquared = dot( delta, delta );
+	float dist = sqrt( distSquared );
+
+	float endFalloffFactor = RemapValClamped( dist, farZ, 0.6f * farZ, 0.0f, 1.0f );
+
+	// Attenuation for light and to fade out shadow over distance
+	float fAtten = saturate( dot( attenuationFactors, float3( 1.0f, 1.0f/dist, 1.0f/distSquared ) ) );
+
+	// Shadowing and coloring terms
+#if (defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30))
+	if ( bDoShadows )
+	{
+		float flShadow = DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, nShadowLevel, vShadowTweaks, bAllowHighQuality, cFlashlightScreenScale );
+		float flAttenuated = lerp( flShadow, 1.0f, vShadowTweaks.y );	// Blend between fully attenuated and not attenuated
+		flShadow = saturate( lerp( flAttenuated, flShadow, fAtten ) );	// Blend between shadow and above, according to light attenuation
+		flashlightColor *= flShadow;									// Shadow term
+	}
+#endif
+
+	diffuseLighting = fAtten;
+#if defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+		diffuseLighting *= saturate( dot( L.xyz, worldNormal.xyz ) + flFlashlightNoLambertValue ); // Lambertian term
+#else
+		diffuseLighting *= saturate( dot( L.xyz, worldNormal.xyz ) ); // Lambertian (not Half-Lambert) term
+#endif
+	diffuseLighting *= flashlightColor;
+	diffuseLighting *= endFalloffFactor;
+
+	// Specular term (masked by diffuse)
+	specularLighting = diffuseLighting * SpecularLight ( worldNormal, L, fSpecularExponent, vEyeDir, bDoSpecularWarp, specularWarpSampler, fFresnel );
+}
+
+// Diffuse only version
+float3 DoFlashlight( float3 flashlightPos, float3 worldPos, float4 flashlightSpacePosition, float3 worldNormal, float3 attenuationFactors, float farZ, DX12Sampler2D FlashlightSampler, DX12ShadowSampler FlashlightDepthSampler, DX12Sampler2D RandomRotationSampler, int nShadowLevel, bool bDoShadows, bool bAllowHighQuality, const float2 vScreenPos, bool bClip, float4 cFlashlightColor, float4 cFlashlightScreenScale, float4 vShadowTweaks = float4(3/1024.0f, 0.0005f, 0.0f, 0.0f), bool bHasNormal = true )
+{
+	float3 vProjCoords = flashlightSpacePosition.xyz / flashlightSpacePosition.w;
+	float3 flashlightColor = float3(1,1,1);
+
+#if ( defined( _X360 ) )
+
+	float3 ltz = vProjCoords.xyz < float3( 0.0f, 0.0f, 0.0f );
+	float3 gto = vProjCoords.xyz > float3( 1.0f, 1.0f, 1.0f );
+
+	[branch]
+	if ( dot(ltz + gto, float3(1,1,1)) > 0 )
+	{
+		if ( bClip )
+		{
+			clip(-1);
+		}
+		return float3(0,0,0);
+	}
+	else
+	{
+		flashlightColor = FlashlightSampler.tex.Sample( FlashlightSampler.smp, vProjCoords );
+
+		[branch]
+		if ( dot(flashlightColor.xyz, float3(1,1,1)) <= 0 )
+		{
+			if ( bClip )
+			{
+				clip(-1);
+			}
+			return float3(0,0,0);
+		}
+	}
+#else
+	flashlightColor = FlashlightSampler.tex.Sample( FlashlightSampler.smp, vProjCoords );
+#endif
+
+#if defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+	flashlightColor *= cFlashlightColor.xyz;						// Flashlight color
+#endif
+
+	float3 delta = flashlightPos - worldPos;
+	float3 L = normalize( delta );
+	float distSquared = dot( delta, delta );
+	float dist = sqrt( distSquared );
+
+	float endFalloffFactor = RemapValClamped( dist, farZ, 0.6f * farZ, 0.0f, 1.0f );
+
+	// Attenuation for light and to fade out shadow over distance
+	float fAtten = saturate( dot( attenuationFactors, float3( 1.0f, 1.0f/dist, 1.0f/distSquared ) ) );
+
+	// Shadowing and coloring terms
+#if (defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30))
+	if ( bDoShadows )
+	{
+		float flShadow = DoFlashlightShadow( FlashlightDepthSampler, RandomRotationSampler, vProjCoords, vScreenPos, nShadowLevel, vShadowTweaks, bAllowHighQuality, cFlashlightScreenScale );
+		float flAttenuated = lerp( flShadow, 1.0f, vShadowTweaks.y );	// Blend between fully attenuated and not attenuated
+		flShadow = saturate( lerp( flAttenuated, flShadow, fAtten ) );	// Blend between shadow and above, according to light attenuation
+		flashlightColor *= flShadow;									// Shadow term
+	}
+#endif
+
+	float3 diffuseLighting = fAtten;
+
+	float flLDotWorldNormal;
+	if ( bHasNormal )
+	{
+		flLDotWorldNormal = dot( L.xyz, worldNormal.xyz );
+	}
+	else
+	{
+		flLDotWorldNormal = 1.0f;
+	}
+
+#if defined(DX12_LEGACY_PS20) || defined(DX12_LEGACY_PS20B) || defined(DX12_LEGACY_PS30)
+	diffuseLighting *= saturate( flLDotWorldNormal + flFlashlightNoLambertValue ); // Lambertian term
+#else
+	diffuseLighting *= saturate( flLDotWorldNormal ); // Lambertian (not Half-Lambert) term
+#endif
+
+	diffuseLighting *= flashlightColor;
+	diffuseLighting *= endFalloffFactor;
+
+	return diffuseLighting;
+}
+
+#endif //#ifndef COMMON_FLASHLIGHT_FXC_H_
+
+// ---- end l4d2_model_flashlight_fxc.h ----
+
+
+#if CHEAP
+TextureCube EnvmapSampler_Texture : register( t0 );
+SamplerState EnvmapSampler_Sampler : register( s0 );
+static DX12SamplerCube EnvmapSampler = { EnvmapSampler_Texture, EnvmapSampler_Sampler };
+TextureCube NormalizeSampler_Texture : register( t6 );
+SamplerState NormalizeSampler_Sampler : register( s6 );
+static DX12SamplerCube NormalizeSampler = { NormalizeSampler_Texture, NormalizeSampler_Sampler };
+#else
+Texture2D RefractSampler_Texture : register( t0 );
+SamplerState RefractSampler_Sampler : register( s0 );
+static DX12Sampler2D RefractSampler = { RefractSampler_Texture, RefractSampler_Sampler };
+Texture2D ReflectSampler_Texture : register( t1 );
+SamplerState ReflectSampler_Sampler : register( s1 );
+static DX12Sampler2D ReflectSampler = { ReflectSampler_Texture, ReflectSampler_Sampler };
+Texture2D LightmapSampler_Texture : register( t3 );
+SamplerState LightmapSampler_Sampler : register( s3 );
+static DX12Sampler2D LightmapSampler = { LightmapSampler_Texture, LightmapSampler_Sampler };
+#if BASETEXTURE
+Texture2D BaseTextureSampler_Texture : register( t4 );
+SamplerState BaseTextureSampler_Sampler : register( s4 );
+static DX12Sampler2D BaseTextureSampler = { BaseTextureSampler_Texture, BaseTextureSampler_Sampler };
+#endif
+#endif
+Texture2D NormalSampler_Texture : register( t2 );
+SamplerState NormalSampler_Sampler : register( s2 );
+static DX12Sampler2D NormalSampler = { NormalSampler_Texture, NormalSampler_Sampler };
+#if FLOWMAP
+Texture2D FlowmapSampler_Texture : register( t4 );
+SamplerState FlowmapSampler_Sampler : register( s4 );
+static DX12Sampler2D FlowmapSampler = { FlowmapSampler_Texture, FlowmapSampler_Sampler };
+Texture2D FlowNoiseSampler_Texture : register( t5 );
+SamplerState FlowNoiseSampler_Sampler : register( s5 );
+static DX12Sampler2D FlowNoiseSampler = { FlowNoiseSampler_Texture, FlowNoiseSampler_Sampler };
+#endif
+#if FLASHLIGHT
+Texture2D FlashlightSampler_Texture : register( t6 );
+SamplerState FlashlightSampler_Sampler : register( s6 );
+static DX12Sampler2D FlashlightSampler = { FlashlightSampler_Texture, FlashlightSampler_Sampler };
+Texture2D FlashlightDepthSampler_Texture : register( t7 );
+SamplerComparisonState FlashlightDepthSampler_Sampler : register( s7 );
+static DX12ShadowSampler FlashlightDepthSampler = { FlashlightDepthSampler_Texture, FlashlightDepthSampler_Sampler };
+Texture2D RandomRotationSampler_Texture : register( t8 );
+SamplerState RandomRotationSampler_Sampler : register( s8 );
+static DX12Sampler2D RandomRotationSampler = { RandomRotationSampler_Texture, RandomRotationSampler_Sampler };
+#endif
+
+
+cbuffer DX12GameRegistersPS : register( b4, space1 )
+{
+	float4 gameRegisters[32]; // @legacy none
+};
+#define g_RefractTint gameRegisters[1]
+#define g_ReflectTint gameRegisters[4]
+#define g_ReflectRefractScale gameRegisters[5]
+#define g_WaterFogColor gameRegisters[6]
+#define g_WaterFogParams gameRegisters[7]
+#define g_Time gameRegisters[8]
+#define g_FlashlightTint gameRegisters[10].xyz
+#define g_EyePos gameRegisters[11].xyz
+#define g_PixelFogParams gameRegisters[12]
+#define g_FlowParams1 gameRegisters[13]
+#define g_FlowParams2 gameRegisters[14].xyz
+#define g_FlashlightAttenuation gameRegisters[15]
+#define g_FlashlightPos gameRegisters[16].xyz
+#define g_ShadowTweaks gameRegisters[21]
+#define g_WorldToViewWater0 gameRegisters[22].xyz
+#define g_WorldToViewWater1 gameRegisters[23].xyz
+#define g_InvViewportTransform gameRegisters[24]
+#define cFlashlightColor gameRegisters[28]
+#define cFlashlightScreenScale gameRegisters[31]
+
+
+struct PS_INPUT
+{
+	float2 bump;
+	float3 eye;
+#if CHEAP
+	float3 tangentS;
+	float3 tangentT;
+	float3 normal;
+	float4 extraBump;
+	float3 world;
+#else
+	float4 reflectRefract;
+	float4 projected;
+	float3 world;
+#if FLASHLIGHT
+	float4 flashlight;
+#elif MULTITEXTURE
+	float4 extraBump;
+#elif BASETEXTURE
+	float4 lightmap12;
+	float2 lightmap3;
+#endif
+#if LIGHTMAPWATERFOG
+	float2 lightmap;
+#endif
+#endif
+};
+// Exact mirror of the paired vertex output (same types, order and interpolation) so the signatures
+// link register-for-register.
+struct DX12_PS_INPUT
+{
+	float4 position : SV_Position;
+	float fog : FOG;
+	float2 bump : TEXCOORD0;
+	float3 eye : TEXCOORD1;
+#if CHEAP
+	float3 tangentS : TEXCOORD2;
+	float3 tangentT : TEXCOORD3;
+	float3 normal : TEXCOORD4;
+	float4 extraBump : TEXCOORD5;
+	float3 world : TEXCOORD7;
+#else
+	float4 reflectRefract : TEXCOORD2;
+	float4 projected : TEXCOORD3;
+	float3 world : TEXCOORD4;
+#if FLASHLIGHT
+	float4 flashlight : TEXCOORD5;
+#elif MULTITEXTURE
+	float4 extraBump : TEXCOORD5;
+#elif BASETEXTURE
+	float4 lightmap12 : TEXCOORD5;
+	float2 lightmap3 : TEXCOORD6;
+#endif
+#if LIGHTMAPWATERFOG
+	float2 lightmap : TEXCOORD7;
+#endif
+#endif
+	centroid float2 shadowBaseLightmapUV : TEXCOORD8;
+	nointerpolation float2 shadowVertexLightmapUV : TEXCOORD9;
+	float3 highresPosition : TEXCOORD10;
+	float3 highresNormal : TEXCOORD11;
+	float3 highresTangentS : TEXCOORD12;
+	float3 highresTangentT : TEXCOORD13;
+};
+PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
+{
+	PS_INPUT l = (PS_INPUT)0;
+	l.bump = dx12In.bump;
+	l.eye = dx12In.eye;
+#if CHEAP
+#if ( ( CHEAP ) )
+	l.tangentS = dx12In.tangentS;
+#endif
+#if ( !( CHEAP ) )
+	l.tangentS = ( dx12In.reflectRefract ).xyz;
+#endif
+#if ( ( CHEAP ) )
+	l.tangentT = dx12In.tangentT;
+#endif
+#if ( !( CHEAP ) )
+	l.tangentT = ( dx12In.projected ).xyz;
+#endif
+#if ( ( CHEAP ) )
+	l.normal = dx12In.normal;
+#endif
+#if ( !( CHEAP ) )
+	l.normal = dx12In.world;
+#endif
+#if ( ( CHEAP ) ) || ( !( CHEAP ) && ( !(FLASHLIGHT) && (MULTITEXTURE) ) )
+	l.extraBump = dx12In.extraBump;
+#endif
+#if ( !( CHEAP ) && ( FLASHLIGHT ) )
+	l.extraBump = dx12In.flashlight;
+#endif
+#if ( !( CHEAP ) && ( !((FLASHLIGHT) || (MULTITEXTURE)) && (BASETEXTURE) ) )
+	l.extraBump = dx12In.lightmap12;
+#endif
+#if ( ( CHEAP ) )
+	l.world = dx12In.world;
+#endif
+#if ( !( CHEAP ) && ( LIGHTMAPWATERFOG ) )
+	l.world.xy = dx12In.lightmap;
+#endif
+#else
+#if ( ( CHEAP ) )
+	l.reflectRefract.xyz = dx12In.tangentS;
+#endif
+#if ( !( CHEAP ) )
+	l.reflectRefract = dx12In.reflectRefract;
+#endif
+#if ( ( CHEAP ) )
+	l.projected.xyz = dx12In.tangentT;
+#endif
+#if ( !( CHEAP ) )
+	l.projected = dx12In.projected;
+#endif
+#if ( ( CHEAP ) )
+	l.world = dx12In.normal;
+#endif
+#if ( !( CHEAP ) )
+	l.world = dx12In.world;
+#endif
+#if FLASHLIGHT
+#if ( ( CHEAP ) ) || ( !( CHEAP ) && ( !(FLASHLIGHT) && (MULTITEXTURE) ) )
+	l.flashlight = dx12In.extraBump;
+#endif
+#if ( !( CHEAP ) && ( FLASHLIGHT ) )
+	l.flashlight = dx12In.flashlight;
+#endif
+#if ( !( CHEAP ) && ( !((FLASHLIGHT) || (MULTITEXTURE)) && (BASETEXTURE) ) )
+	l.flashlight = dx12In.lightmap12;
+#endif
+#elif MULTITEXTURE
+#if ( ( CHEAP ) ) || ( !( CHEAP ) && ( !(FLASHLIGHT) && (MULTITEXTURE) ) )
+	l.extraBump = dx12In.extraBump;
+#endif
+#if ( !( CHEAP ) && ( FLASHLIGHT ) )
+	l.extraBump = dx12In.flashlight;
+#endif
+#if ( !( CHEAP ) && ( !((FLASHLIGHT) || (MULTITEXTURE)) && (BASETEXTURE) ) )
+	l.extraBump = dx12In.lightmap12;
+#endif
+#elif BASETEXTURE
+#if ( ( CHEAP ) ) || ( !( CHEAP ) && ( !(FLASHLIGHT) && (MULTITEXTURE) ) )
+	l.lightmap12 = dx12In.extraBump;
+#endif
+#if ( !( CHEAP ) && ( FLASHLIGHT ) )
+	l.lightmap12 = dx12In.flashlight;
+#endif
+#if ( !( CHEAP ) && ( !((FLASHLIGHT) || (MULTITEXTURE)) && (BASETEXTURE) ) )
+	l.lightmap12 = dx12In.lightmap12;
+#endif
+#if ( !( CHEAP ) && ( !((FLASHLIGHT) || (MULTITEXTURE)) && (BASETEXTURE) ) )
+	l.lightmap3 = dx12In.lightmap3;
+#endif
+#endif
+#if LIGHTMAPWATERFOG
+#if ( ( CHEAP ) )
+	l.lightmap = ( dx12In.world ).xy;
+#endif
+#if ( !( CHEAP ) && ( LIGHTMAPWATERFOG ) )
+	l.lightmap = dx12In.lightmap;
+#endif
+#endif
+#endif
+	return l;
+}
+
+
+float4 WaterNormal( PS_INPUT i )
+{
+#if FLOWMAP
+	float2 worldUV = i.world.xy * float2( 1.0f, -1.0f );
+	float noise = FlowNoiseSampler.tex.Sample( FlowNoiseSampler.smp, worldUV * g_FlowParams2.z ).g;
+	float2 flow = FlowmapSampler.tex.Sample( FlowmapSampler.smp, i.bump * g_FlowParams1.x ).xy * 2.0f - 1.0f;
+	float phase = (g_Time.x * g_FlowParams1.w + noise) / (2.0f * g_FlowParams2.x);
+	float phase0 = frac( phase );
+	float phase1 = frac( phase + 0.5f );
+	float2 uv = worldUV * g_FlowParams1.y;
+	float2 scroll = flow * g_FlowParams2.y;
+	float2 uv0 = uv + floor( phase ) * 0.311f + phase0 * scroll;
+	float2 uv1 = uv + floor( phase + 0.5f ) * 0.311f + 0.5f + phase1 * scroll;
+	float2 normalXY = lerp( NormalSampler.tex.Sample( NormalSampler.smp, uv0 ).xy,
+		NormalSampler.tex.Sample( NormalSampler.smp, uv1 ).xy, abs( 2.0f * phase0 - 1.0f ) ) * 2.0f - 1.0f;
+	float strength = (dot( flow, flow ) + (CHEAP ? 0.05f : 0.1f)) * g_FlowParams1.z;
+	normalXY *= strength;
+	return float4( normalXY, sqrt( saturate( 1.0f - dot( normalXY, normalXY ) ) ), 1.0f );
+#elif MULTITEXTURE
+	float3 normal = NormalSampler.tex.Sample( NormalSampler.smp, i.bump ).rgb + NormalSampler.tex.Sample( NormalSampler.smp, i.extraBump.xy ).rgb;
+#if CHEAP
+	normal = NormalSampler.tex.Sample( NormalSampler.smp, i.extraBump.zw ).rgb + normal;
+#else
+	normal += NormalSampler.tex.Sample( NormalSampler.smp, i.extraBump.zw ).rgb;
+#endif
+	normal.xy = normal.xy * 0.66f - 1.0f;
+#if NORMAL_DECODE_MODE == NORM_DECODE_ATI2N
+	normal.z = sqrt( 1.0f - dot( normal.xy, normal.xy ) );
+#else
+	normal.z = normal.z * 0.66f - 1.0f;
+#endif
+	return float4( normal, 1.0f );
+#else
+	return DecompressNormal( NormalSampler, i.bump, NORMAL_DECODE_MODE );
+#endif
+}
+
+float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
+{
+	PS_INPUT i = DX12ConvertInput( dx12In );
+#if BASETEXTURE && REFLECT && !REFRACT
+ HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );
+ ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.position.xy );
+ ShadowMap_SetBakedSun( hls, hlr.sun, hlr.sunDilated );
+ ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
+#endif
+
+#if FLOWMAP && FLOW_DEBUG == 1
+	return HighresLightmap_Finish( DX12FinishPixel( float4( FlowmapSampler.tex.Sample( FlowmapSampler.smp, i.bump * g_FlowParams1.x ).rgb, 1.0f ), dx12In.fog ) );
+#elif FLOWMAP && FLOW_DEBUG == 2
+	float noise = FlowNoiseSampler.tex.Sample( FlowNoiseSampler.smp, i.world.xy * float2( 1.0f, -1.0f ) * g_FlowParams2.z ).g;
+	return HighresLightmap_Finish( DX12FinishPixel( float4( noise, noise, noise, 1.0f ), dx12In.fog ) );
+#endif
+	float4 normal = WaterNormal( i );
+	float3 result;
+#if CHEAP
+	float3 worldNormal = normal.x * i.tangentS + normal.y * i.tangentT + normal.z * i.normal;
+	float3 eye = NormalizeSampler.tex.Sample( NormalizeSampler.smp, i.eye ).xyz;
+	float ndotv = dot( worldNormal, eye );
+	float3 reflectionVector = 2.0f * ndotv * worldNormal - dot( worldNormal, worldNormal ) * eye;
+	float3 reflection = EnvmapSampler.tex.Sample( EnvmapSampler.smp, reflectionVector ).rgb * ENV_MAP_SCALE * g_ReflectTint.rgb;
+	float3 fogColor = g_WaterFogColor.rgb;
+#if HDRENABLED
+	fogColor = pow( fogColor, 2.2f );
+#endif
+#if FRESNEL
+	float fresnel = 1.0f - max( ndotv, 0.0f );
+	float fresnel2 = fresnel * fresnel;
+	fresnel *= fresnel2 * fresnel2;
+#else
+	float fresnel = g_ReflectTint.a;
+#endif
+	result = lerp( fogColor, reflection, fresnel ) * LINEAR_LIGHT_SCALE;
+#else
+	float4 screenUV = i.reflectRefract / i.projected.w;
+	float2 distortion = float2( dot( g_WorldToViewWater0, normal.xyz ), dot( g_WorldToViewWater1, normal.xyz ) ) * normal.a;
+	float depth = 1.0f;
+#if REFRACT && ABOVEWATER
+	float4 unwarped = RefractSampler.tex.Sample( RefractSampler.smp, screenUV.wz * g_InvViewportTransform.xy + g_InvViewportTransform.zw );
+	depth = unwarped.a;
+#endif
+	float4 scales = g_ReflectRefractScale;
+#if REFRACT && !BASETEXTURE
+	scales *= depth;
+#endif
+	float4 warpedUV = screenUV + distortion.xyyx * scales;
+	float tintRamp = 1.0f;
+#if REFRACT
+	float4 refraction = RefractSampler.tex.Sample( RefractSampler.smp, warpedUV.wz * g_InvViewportTransform.xy + g_InvViewportTransform.zw );
+#if ABOVEWATER
+	// Reject distortion across the shore instead of pulling unfogged objects
+	// over the water. The native shader falls back to the unwarped sample.
+	refraction = refraction.a >= 0.05f ? refraction : unwarped;
+	depth = refraction.a;
+	tintRamp = saturate( depth * 3.5f );
+	float3 refractedColor = lerp( refraction.rgb, refraction.rgb * g_RefractTint.rgb, tintRamp );
+	float3 fogColor = g_WaterFogColor.rgb;
+#if LIGHTMAPWATERFOG
+	fogColor *= LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap ).rgb * LIGHT_MAP_SCALE * LINEAR_LIGHT_SCALE;
+#endif
+	result = lerp( refractedColor, fogColor, depth );
+#else
+	float waterFog = saturate( (i.projected.z - g_WaterFogParams.x) / g_WaterFogParams.y );
+	result = lerp( refraction.rgb, g_WaterFogColor.rgb, waterFog );
+#endif
+#else
+	result = g_WaterFogColor.rgb;
+#endif
+#if REFLECT && !FLASHLIGHT
+	float3 reflection = ReflectSampler.tex.Sample( ReflectSampler.smp, warpedUV.xy ).rgb * g_ReflectTint.rgb;
+	float fresnel = 1.0f - saturate( dot( normalize( i.eye ), normal.xyz ) );
+	fresnel *= fresnel;
+	fresnel *= fresnel;
+#if REFRACT
+#if !BASETEXTURE
+	fresnel *= saturate( (depth - 0.05f) * 20.0f );
+#endif
+	reflection *= saturate( depth * 2.0f );
+	result += reflection * fresnel;
+#elif BASETEXTURE && !REFRACT
+	float4 base = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.bump );
+	float3 dp = saturate( float3( dot( normal.xyz, bumpBasis[0] ),
+		dot( normal.xyz, bumpBasis[1] ), dot( normal.xyz, bumpBasis[2] ) ) );
+	dp *= dp;
+	float3 lighting = HighresLightmap_Plane( hlr, 1, LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap12.xy ) ).rgb * dp.x +
+		HighresLightmap_Plane( hlr, 2, LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap12.wz ) ).rgb * dp.y + HighresLightmap_Plane( hlr, 3, LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap3 ) ).rgb * dp.z;
+	float sum = dot(dp, float3(1,1,1));
+ ShadowMapDirect hld = ShadowMap_GatherDirect(hls, ShadowMap_ShadeBumped(mul(bumpBasis[0], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal)), mul(bumpBasis[1], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal)), mul(bumpBasis[2], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal)), dp / sum));
+ result = base.rgb * (lighting * ((cHlightRoute.x && !hlr.nativeOnly ? 1 : LIGHT_MAP_SCALE) / sum) + (hld.diffuse * hlr.valid)) + reflection * fresnel * base.a;
+#else
+	result = lerp( g_WaterFogColor.rgb, reflection, fresnel );
+#endif
+#endif
+#if FLASHLIGHT
+	float2 screenPos = (i.projected.xy / i.projected.w) * 0.5f + 0.5f;
+	float3 flashlight = DoFlashlight( g_FlashlightPos, i.world, i.flashlight, normal.xyz, g_FlashlightAttenuation.xyz, g_FlashlightAttenuation.w, FlashlightSampler, FlashlightDepthSampler, RandomRotationSampler, 0, FLASHLIGHTSHADOWS != 0, true, screenPos, false, cFlashlightColor, cFlashlightScreenScale, g_ShadowTweaks );
+	flashlight *= i.flashlight.w > 0.0f ? 1.0f : 0.0f;
+	result = flashlight * tintRamp * g_WaterFogColor.rgb * g_FlashlightTint * LINEAR_LIGHT_SCALE;
+#endif
+#endif
+	// SDK SetPixelShaderFogParams stores +start/range; native stores its
+	// negative. Both yield the native horizontal radial, squared fog blend.
+	float fog = min( g_PixelFogParams.z,
+		saturate( length( g_EyePos.xy - i.world.xy ) * g_PixelFogParams.w - g_PixelFogParams.x ) );
+#if FLASHLIGHT
+	result *= 1.0f - fog * fog;
+	return HighresLightmap_Finish( DX12FinishPixel( float4( result, 0.0f ), dx12In.fog ) );
+#else
+	return HighresLightmap_Finish( DX12FinishPixel( float4( lerp( result, g_LinearFogColor.rgb, fog * fog ), 1.0f ), dx12In.fog ) );
+#endif
+}

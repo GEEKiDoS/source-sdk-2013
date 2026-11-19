@@ -1,0 +1,246 @@
+#define DX12_HIGHRES_LIGHTMAPS 1
+#define DX12_SHADOWMAPS 1
+// Native SM5.1 rewrite of materialsystem/stdshaders/l4d2_lightmappedgeneric_vs20.fxc for logical l4d2_lightmappedgeneric_vs20 (legacy profile vs20);
+// generated mechanically by gensource.py, then reviewed. Combo directives are the vs20 set.
+#define DX12_LEGACY_VS20 1
+#define DX12_COMBO_FOLD 1
+#include "dx12_preamble.h"
+//========= Copyright Valve Corporation, All rights reserved. ============//
+// FOLD: "ENVMAP_MASK" "0..1" STATIC slot=0
+// FOLD: "TANGENTSPACE" "0..1" STATIC slot=1
+// FOLD: "BUMPMAP" "0..1" STATIC slot=2
+// FOLD: "DETAILTEXTURE" "0..1" STATIC slot=3
+// FOLD: "DIFFUSEBUMPMAP" "0..1" STATIC slot=4
+// FOLD: "VERTEXCOLOR" "0..1" STATIC slot=5
+// FOLD: "VERTEXALPHATEXBLENDFACTOR" "0..1" STATIC slot=6
+// STATIC: "SEAMLESS" "0..1"
+// FOLD: "BUMPMASK" "0..1" STATIC slot=7
+// FOLD: "FANCY_BLENDING" "0..1" STATIC slot=8
+// FOLD: "SELFILLUM" "0..1" STATIC slot=9
+// FOLD: "LIGHTING_PREVIEW" "0..3" DYNAMIC slot=11
+// FOLD: "PIXELFOG" "0..1" STATIC slot=10
+// FOLD: "FASTPATH" "0..1" DYNAMIC slot=12
+
+#define ENVMAP_MASK ( cComboFold[0].x )
+#define TANGENTSPACE ( cComboFold[0].y )
+#define BUMPMAP ( cComboFold[0].z )
+#define DETAILTEXTURE ( cComboFold[0].w )
+#define DIFFUSEBUMPMAP ( cComboFold[1].x )
+#define VERTEXCOLOR ( cComboFold[1].y )
+#define VERTEXALPHATEXBLENDFACTOR ( cComboFold[1].z )
+#define BUMPMASK ( cComboFold[1].w )
+#define FANCY_BLENDING ( cComboFold[2].x )
+#define SELFILLUM ( cComboFold[2].y )
+#define PIXELFOG ( cComboFold[2].z )
+#define LIGHTING_PREVIEW ( cComboFold[2].w )
+#define FASTPATH ( cComboFold[3].x )
+
+
+#include "common_vs_fxc.h"
+
+
+cbuffer DX12GameRegistersVS : register( b4, space1 )
+{
+	float4 gameRegisters[64]; // @legacy none
+};
+#define cPreviewDirection gameRegisters[12]
+static const float4 cSecondaryTransform[2] = { gameRegisters[14], gameRegisters[15] };
+#define cModulationColor gameRegisters[47]
+static const float4 cBaseTransform[2] = { gameRegisters[48], gameRegisters[49] };
+static const float4 cDetailOrBumpTransform[2] = { gameRegisters[50], gameRegisters[51] };
+static const float4 cMaskTransform[2] = { gameRegisters[52], gameRegisters[53] };
+
+
+struct VS_INPUT
+{
+	float3 position;
+	float4 normal;
+	float2 base;
+	float2 lightmap;
+	float2 lightmapOffset;
+	float3 tangentS;
+	float3 tangentT;
+	float4 color;
+};
+// Entry input as the DX12 input layout delivers it (vertex_layout_dx12.cpp): integer compressed
+// streams and D3DCOLOR byte order are converted exactly like the D3D9 declaration types.
+struct DX12_VS_INPUT
+{
+	float3 position : POSITION;
+#if COMPRESSED_VERTS
+	uint4 normal : NORMAL;
+#else
+	float4 normal : NORMAL;
+#endif
+	float2 base : TEXCOORD0;
+	float2 lightmap : TEXCOORD1;
+	float2 lightmapOffset : TEXCOORD2;
+#if COMPRESSED_VERTS
+	uint4 tangentS : TANGENT;
+#else
+	float3 tangentS : TANGENT;
+#endif
+	float3 tangentT : BINORMAL;
+	float4 color : COLOR0;
+};
+VS_INPUT DX12ConvertInput( DX12_VS_INPUT i )
+{
+	VS_INPUT l = (VS_INPUT)0;
+	l.position = i.position;
+#if COMPRESSED_VERTS
+	l.normal = (float4)i.normal;
+#else
+	l.normal = i.normal;
+#endif
+	l.base = i.base;
+	l.lightmap = i.lightmap;
+	l.lightmapOffset = i.lightmapOffset;
+#if COMPRESSED_VERTS
+	l.tangentS = ( (float4)i.tangentS ).xyz;
+#else
+	l.tangentS = i.tangentS;
+#endif
+	l.tangentT = i.tangentT;
+	l.color = i.color;
+	return l;
+}
+
+
+struct VS_OUTPUT
+{
+	float4 position : SV_Position;
+	float fog : FOG;
+#if SEAMLESS
+	float4 base : TEXCOORD0;
+#else
+	float3 base : TEXCOORD0;
+#endif
+	float4 detailBumpMask : TEXCOORD1;
+	float4 lightmap12 : TEXCOORD2;
+	float4 lightmap3 : TEXCOORD3;
+	float4 world : TEXCOORD4;
+	float3 tangentX : TEXCOORD5;
+	float3 tangentY : TEXCOORD6;
+	float3 tangentZ : TEXCOORD7;
+	float4 color : COLOR0;
+	float blend : COLOR1;
+	float3 worldPos : TEXCOORD8;
+	float3 worldNormal : TEXCOORD9;
+	float2 shadowResponse : TEXCOORD10;
+	float3 shadowTangentS : TEXCOORD11;
+	float3 shadowTangentT : TEXCOORD12;
+	centroid float2 shadowBaseLightmapUV : TEXCOORD13;
+	nointerpolation float2 shadowVertexLightmapUV : TEXCOORD14;
+	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
+};
+VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
+{
+	o.dx12Clip = DX12UserClipDistances( o.position );
+	o.position = DX12Position( o.position );
+#if SEAMLESS
+#else
+#endif
+	o.color = saturate( o.color );	// vs_2_0 oD# clamp (vsconv.cpp:1033-1035)
+	o.blend = saturate( o.blend );	// vs_2_0 oD# clamp (vsconv.cpp:1033-1035)
+	return o;
+}
+
+
+VS_OUTPUT main( const DX12_VS_INPUT dx12In )
+{
+	const VS_INPUT v = DX12ConvertInput( dx12In );
+	VS_OUTPUT o = (VS_OUTPUT)0;
+	float4 position = float4( v.position, 1 );
+	o.position = mul( position, cModelViewProj );
+	o.world = float4( mul( position, cModel[0] ), o.position.z );
+	float3 normal;
+	DecompressVertex_Normal( v.normal, normal );
+	normal = mul( normal, (float3x3)cModel[0] );
+if ( TANGENTSPACE || LIGHTING_PREVIEW )
+{
+		float3 tangentS = mul( v.tangentS, (float3x3)cModel[0] );
+		float3 tangentT = mul( v.tangentT, (float3x3)cModel[0] );
+		o.tangentX = float3( tangentS.x, tangentT.x, normal.x );
+		o.tangentY = float3( tangentS.y, tangentT.y, normal.y );
+		o.tangentZ = float3( tangentS.z, tangentT.z, normal.z );
+}
+#if SEAMLESS
+	o.base.xyz = o.world.xyz * cBaseTransform[0].x;
+	normal = normalize( normal );
+	o.color.rgb = normal * normal;
+	o.color.a = cModulationColor.a;
+#else
+if ( FASTPATH )
+{
+		o.base.xy = v.base;
+		o.detailBumpMask.xy = v.base;
+		o.lightmap3.wz = v.base;
+}
+else
+{
+		o.base.xy = float2( dot( v.base, cBaseTransform[0].xy ) + cBaseTransform[0].w,
+			dot( v.base, cBaseTransform[1].xy ) + cBaseTransform[1].w );
+		o.detailBumpMask.xy = float2( dot( v.base, cDetailOrBumpTransform[0].xy ) + cDetailOrBumpTransform[0].w,
+			dot( v.base, cDetailOrBumpTransform[1].xy ) + cDetailOrBumpTransform[1].w );
+		o.lightmap3.wz = float2( dot( v.base, cSecondaryTransform[0].xy ) + cSecondaryTransform[0].w,
+			dot( v.base, cSecondaryTransform[1].xy ) + cSecondaryTransform[1].w );
+}
+	o.color = float4( 1, 1, 1, cModulationColor.a );
+if ( VERTEXCOLOR )
+{
+		o.color.rgb = v.color.rgb;
+	if ( !VERTEXALPHATEXBLENDFACTOR )
+{
+			o.color.a *= v.color.a;
+	}
+}
+#endif
+if ( ENVMAP_MASK || BUMPMASK )
+{
+	if ( FASTPATH )
+{
+			o.detailBumpMask.wz = v.base;
+	}
+else
+{
+			o.detailBumpMask.wz = float2( dot( v.base, cMaskTransform[0].xy ) + cMaskTransform[0].w,
+				dot( v.base, cMaskTransform[1].xy ) + cMaskTransform[1].w );
+	}
+}
+if ( BUMPMAP && DIFFUSEBUMPMAP )
+{
+		o.lightmap12.xy = v.lightmap + v.lightmapOffset;
+		o.lightmap12.wz = o.lightmap12.xy + v.lightmapOffset;
+		o.lightmap3.xy = o.lightmap12.wz + v.lightmapOffset;
+}
+else
+{
+		o.lightmap12.xy = v.lightmap;
+}
+if ( VERTEXALPHATEXBLENDFACTOR )
+{
+		o.blend = v.color.a;
+}
+if ( !PIXELFOG )
+{
+		// SDK vertex fog constants encode visibility, not native fog amount.
+		float fog = min( saturate( 1 - cFogParams.x + length( cEyePos.xy - o.world.xy ) * cFogParams.w ), 1 - cFogParams.z );
+#if SEAMLESS
+		o.base.w = fog;
+#else
+		o.base.z = fog;
+#endif
+}
+if ( LIGHTING_PREVIEW == 3 )
+{
+		o.world.w = dot( cPreviewDirection.xyz, o.world.xyz - cEyePos );
+}
+	o.worldPos = o.world.xyz;
+	o.worldNormal = normalize( normal );
+	o.shadowResponse = float2( 0, 1.0f );
+	o.shadowTangentS = normalize( mul( v.tangentS, (float3x3)cModel[0] ) );
+	o.shadowTangentT = normalize( mul( v.tangentT, (float3x3)cModel[0] ) );
+	o.shadowBaseLightmapUV = v.lightmap.xy;
+	o.shadowVertexLightmapUV = v.lightmap.xy;
+	return DX12FinishVertex( o );
+}

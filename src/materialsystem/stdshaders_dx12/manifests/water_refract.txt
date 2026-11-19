@@ -35,3 +35,10 @@ water_highres_ps51.fxc ps water_highres_ps51 native -
 water_highres_earlydepth_ps51.fxc ps water_highres_earlydepth_ps51 native -
 # noparity water_highres_earlydepth_ps51 - highres-earlydepth-feature-variant
 # earlydepth water_highres_ps51 water_highres_earlydepth_ps51
+l4d2_water_highres_vs51.fxc vs l4d2_water_highres_vs51 20b l4d2_water_vs20.fxc
+# noparity l4d2_water_highres_vs51 - highres-feature-variant
+l4d2_water_highres_ps51.fxc ps l4d2_water_highres_ps51 20b l4d2_water_ps20b.fxc
+# noparity l4d2_water_highres_ps51 - highres-feature-variant
+l4d2_water_highres_earlydepth_ps51.fxc ps l4d2_water_highres_earlydepth_ps51 20b l4d2_water_ps20b.fxc
+# noparity l4d2_water_highres_earlydepth_ps51 - highres-earlydepth-feature-variant
+# earlydepth l4d2_water_highres_ps51 l4d2_water_highres_earlydepth_ps51

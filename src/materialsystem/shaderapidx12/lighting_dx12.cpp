@@ -1292,7 +1292,7 @@ struct LightingViewStateDX12
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
 	ID3D12Resource *structured[4]{};
 	uint64_t structuredOffsets[4]{};
-	bool highresScope = false;
+	bool highresScope = false, cheapAuxiliary = false;
 };
 
 struct CLightingDX12::Impl
@@ -2668,7 +2668,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		{
 			CPipelineCacheDX12::BindingInputDX12 input( s.api->m_Pipeline.NullShaderResourceView() );
 			input.retireFence = fence;
-			PrepareReceiverDraw( true, input );
+			PrepareReceiverDraw( true, input, false );
 		}
 		Reclaim();
 		return;
@@ -3549,7 +3549,7 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 // Space-2 tables, view constants and structured buffers of one view state, rebuilt per recording fence / heap
 // generation. receiverVisibility adds the highres receiver-visibility descriptors, which exist only inside that
 // view's highres scope; the volume draw passes false (its state may be drawn after the scope ended).
-bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiverVisibility, CPipelineCacheDX12::BindingInputDX12 &input )
+bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiverVisibility, bool cheapAuxiliary, CPipelineCacheDX12::BindingInputDX12 &input )
 {
 	Impl &s = *m_Impl;
 	const DX12LightingViewPacket &view = scope.packet->view;
@@ -3578,13 +3578,17 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 	const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	const uint32 counts[4] = { view.lightCount, view.tileCount, view.tileIndexCount, view.tileCount };
 	const uint32 sizes[4] = { sizeof( RuntimeShadowLightGpu ), 8, 4, 16 };
-	if ( scope.fence != fence || scope.heap != heapGeneration )
+	if ( scope.fence != fence || scope.heap != heapGeneration || scope.cheapAuxiliary != cheapAuxiliary )
 	{
+		scope.cheapAuxiliary = cheapAuxiliary;
 		scope.table = pipeline.AllocateTransientResources( DX12_LIGHTING_RESOURCE_TABLE_COUNT, fence );
 		if ( scope.table.count != DX12_LIGHTING_RESOURCE_TABLE_COUNT ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		DX12LightingViewConstantsV1 viewConstants = view.constants;
+		if ( cheapAuxiliary )
+			viewConstants.cShadowView1[3] |= DX12_SHADOW_VIEW_UNSHADOWED;
+		if ( !pipeline.UploadTransient( &viewConstants, sizeof( viewConstants ), 768, 256, fence, scope.constants ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 		if ( scope.fence != fence )
 		{
-			if ( !pipeline.UploadTransient( &view.constants, sizeof( view.constants ), 768, 256, fence, scope.constants ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 			const void *data[4] = { scope.packet->lights.Base(), scope.packet->ranges.Base(), scope.packet->indices.Base(), scope.packet->tileSpecular.Base() };
 			for ( UINT i = 0; i < 4; ++i )
 			{
@@ -3595,14 +3599,16 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 		}
 		const Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> &nullTable = scope.nullTable;
 		if ( !nullTable ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
-		device->CopyDescriptorsSimple( DX12_LIGHTING_RESOURCE_TABLE_COUNT, scope.table.cpu, nullTable->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-		for ( int i = 0; i < scope.packet->leases.Count(); ++i )
+		if ( !cheapAuxiliary )
 		{
-			ShadowTargetDX12 *target = scope.packet->leases[i];
-			if ( !target ) continue;
-			s.Use( target, true );
-			const UINT slot = i == 0 ? DX12_LIGHTING_T_CASCADE_ATLAS : i == 1 ? DX12_LIGHTING_T_STATIC_SUN : i - 2;
-			device->CopyDescriptorsSimple( 1, Offset( scope.table.cpu, slot, stride ), target->srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+			for ( int i = 0; i < scope.packet->leases.Count(); ++i )
+			{
+				ShadowTargetDX12 *target = scope.packet->leases[i];
+				if ( !target ) continue;
+				s.Use( target, true );
+				const UINT slot = i == 0 ? DX12_LIGHTING_T_CASCADE_ATLAS : i == 1 ? DX12_LIGHTING_T_STATIC_SUN : i - 2;
+				device->CopyDescriptorsSimple( 1, Offset( scope.table.cpu, slot, stride ), target->srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+			}
 		}
 		for ( UINT i = 0; i < 3; ++i )
 		{
@@ -3624,7 +3630,7 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 	input.lightingViewConstants = scope.constants;
 	return true;
 }
-bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input )
+bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input, bool cheapAuxiliary )
 {
 	Impl &s = *m_Impl;
 	input.lightingAbi = lightingAbi;
@@ -3636,7 +3642,7 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 	}
 	const DX12LightingViewPacket &view = scope.packet->view;
 	if ( s.views.Count() && s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
-	if ( !PrepareViewTables( scope, true, input ) ) return false;
+	if ( !PrepareViewTables( scope, !cheapAuxiliary, cheapAuxiliary, input ) ) return false;
 	if ( s.highresMap ) return !s.device->Highres().Rejected();
 	ID3D12Device *device = s.device->NativeDevice();
 	CPipelineCacheDX12 &pipeline = s.api->m_Pipeline;
@@ -3755,12 +3761,12 @@ bool CLightingDX12::PrepareVolumetricDraw( CPipelineCacheDX12::BindingInputDX12 
 	if ( !captured )
 	{
 		if ( !s.neutral.nullTable && !LightingNullTable( s.device->NativeDevice(), s.neutral.nullTable ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
-		return PrepareViewTables( s.neutral, false, input );
+		return PrepareViewTables( s.neutral, false, false, input );
 	}
 	// A rejected or unloaded packet skips the draw; neutral tables never stand in for it.
 	const DX12LightingViewPacket &view = captured->packet->view;
 	if ( view.mapGeneration != s.activeMap || s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
-	return PrepareViewTables( *captured, false, input );
+	return PrepareViewTables( *captured, false, false, input );
 }
 void CLightingDX12::EndVolumetrics()
 {

@@ -464,6 +464,11 @@ def colour_depth_overloads(text):
 
 
 
+def shadow_sampler_reads(text):
+    text = re.sub(r'\btex2Dproj(\s*\(\s*DepthSampler\b)', r'DX12ShadowCompareProj\1', text)
+    return re.sub(r'\btex2D(\s*\(\s*DepthSampler\b)', r'DX12ShadowRaw\1', text)
+
+
 def translate_all(texts=None):
     texts = texts or {c: open(os.path.join(SRC, c), encoding='latin-1').read() for c in COMMONS}
     known = {}
@@ -474,10 +479,7 @@ def translate_all(texts=None):
                 if re.search(r'\bsampler\s+\w*DepthSampler\s*$', prm.strip()) and c == 'common_flashlight_fxc.h':
                     known.setdefault(name, {})[i] = 'SHADOW'
     if 'common_flashlight_fxc.h' in texts:
-        t = texts['common_flashlight_fxc.h']
-        t = re.sub(r'\btex2Dproj(\s*\(\s*DepthSampler\b)', r'DX12ShadowCompareProj\1', t)
-        t = re.sub(r'\btex2D(\s*\(\s*DepthSampler\b)', r'DX12ShadowRaw\1', t)
-        texts = dict(texts, **{'common_flashlight_fxc.h': t})
+        texts = dict(texts, **{'common_flashlight_fxc.h': shadow_sampler_reads(texts['common_flashlight_fxc.h'])})
     for _ in range(3):
         for t in texts.values(): hp.function_sampler_params(t, known)
     need = material_params(texts)

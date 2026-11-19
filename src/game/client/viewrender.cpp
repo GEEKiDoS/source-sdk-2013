@@ -7207,6 +7207,18 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 {
 	int savedViewID = g_CurrentViewID;
 
+	// Publish the view classification before shadow preparation and any material
+	// draw. DX12 uses these explicit bits for the reduced auxiliary path.
+	int iDrawFlagsBackup = m_DrawFlags;
+	const int nDX12DrawFlags = m_DrawFlags | m_pMainView->GetBaseDrawFlags();
+	int nDX12ViewFlags = 0;
+	if ( nDX12DrawFlags & DF_RENDER_REFLECTION )
+		nDX12ViewFlags |= DX12_VIEW_FLAG_REFLECTION;
+	if ( nDX12DrawFlags & DF_RENDER_REFRACTION )
+		nDX12ViewFlags |= DX12_VIEW_FLAG_REFRACTION;
+	CMatRenderContextPtr pRenderContext( materials );
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_VIEW_FLAGS, nDX12ViewFlags );
+
 	// @MULTICORE (toml 8/16/2006): rethink how, where, and when this is done...
 	g_CurrentViewID = VIEW_SHADOW_DEPTH_TEXTURE;
 	MaybeInvalidateLocalPlayerAnimation();
@@ -7217,15 +7229,11 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	engine->Sound_ExtraUpdate();
 
 	g_CurrentViewID = viewID;
-
-	// Update our render view flags.
-	int iDrawFlagsBackup = m_DrawFlags;
 	m_DrawFlags |= m_pMainView->GetBaseDrawFlags();
+
 
 	PushView( waterHeight );
 	CShadowMapReceiverScope &shadowScope = m_ShadowReceiverScope;
-
-	CMatRenderContextPtr pRenderContext( materials );
 
 #if defined( _X360 )
 	pRenderContext->PushVertexShaderGPRAllocation( 32 );
@@ -7453,6 +7461,7 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	pRenderContext->SetFrameBufferCopyTexture( pSaveFrameBufferCopyTexture );
 	shadowScope.Finish();
 	PopView();
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_VIEW_FLAGS, 0 );
 
 	m_DrawFlags = iDrawFlagsBackup;
 

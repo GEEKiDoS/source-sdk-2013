@@ -472,7 +472,11 @@ struct CHighresLightmapsDX12::Impl
     }
     void Fail(const char *reason)
     {
-        if (status.state != DX12_HIGHRES_REJECTED) V_strncpy(error, reason && *reason ? reason : "Highres lightmaps: native boundary failed", sizeof(error));
+        if (status.state != DX12_HIGHRES_REJECTED)
+        {
+            V_strncpy(error, reason && *reason ? reason : "Highres lightmaps: native boundary failed", sizeof(error));
+            Warning("Highres lightmaps: map rejected before client disconnect: %s\n", error);
+        }
         status.state = DX12_HIGHRES_REJECTED;
     }
     void Detach()

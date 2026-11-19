@@ -8,13 +8,15 @@ import gensource as gs
 
 SAMPLER_ROLES = {
     'lightmappedgeneric_ps20b': 2,
+    'l4d2_lightmappedgeneric_ps20b': 2,
     'worldtwotextureblend_ps20b': 2,
     'lightmappedreflective_ps20b': 8,
     'lightmappedgeneric_decal_ps20b': 14,
     'water_ps20b': 8,
+    'l4d2_water_ps20b': 8,
     'shatteredglass_ps20b': 2,
 }
-EXTRA_VERTEX = {'water_vs20', 'shatteredglass_vs20'}
+EXTRA_VERTEX = {'water_vs20', 'l4d2_water_vs20', 'shatteredglass_vs20'}
 # Safety is checked across every include, retaining every combo-dependent branch.
 # Console flashlight helpers contain kills, but their _X360 branches are absent on PC.
 EARLY_DEPTH_MACROS = {'_X360': 0, 'DX12_EARLY_DEPTH': 1,
@@ -83,7 +85,8 @@ def earlydepth_hazards(text, label, common, root, seen=None):
         if name in common:
             included = common[name]
         else:
-            candidates = [os.path.join(root, 'native_src', name), os.path.join(root, 'hlsl', 'common', name)]
+            candidates = [os.path.join(root, 'native_src', name), os.path.join(root, 'hlsl', 'common', name),
+                          os.path.join(root, '..', '..', 'public', 'shaderapi', name)]
             path = next((p for p in candidates if os.path.isfile(p)), None)
             if path is None: raise RuntimeError(f'early-depth include missing: {label}: {name}')
             with open(path, encoding='latin-1') as source: included = source.read()
@@ -127,16 +130,22 @@ def extra_vertex(text, logical):
         interpolation = {'shadowBaseLightmapUV': 'centroid ', 'shadowVertexLightmapUV': 'nointerpolation '}.get(name, '')
         decl.append(f'\t{interpolation}{typ} {name} : TEXCOORD{slot};')
     text = text[:st[2]] + '\n' + '\n'.join(decl) + '\n' + text[st[2]:]
+    retail_water = logical == 'l4d2_water_vs20'
     for headers, bs, be in reversed(gs.main_defs(text)):
         arg = gs.param_parts(headers[0][1][0])[2]
-        pos = f'float4( {arg}.vPos.xyz, 1 )'
-        code = f'o.shadowBaseLightmapUV = {arg}.vLightmapTexCoord.xy;\no.shadowVertexLightmapUV = {arg}.vLightmapTexCoord.xy;\n'
-        code += f'float3 hlightObjectNormal; DecompressVertex_Normal( {arg}.vNormal, hlightObjectNormal );\n'
-        code += f'o.highresPosition = mul( {pos}, cModel[0] );\no.highresNormal = normalize( mul( hlightObjectNormal, (float3x3)cModel[0] ) );\n'
+        uv = 'lightmap' if retail_water else 'vLightmapTexCoord'
+        pos = 'position' if retail_water else 'vPos'
+        code = f'o.shadowBaseLightmapUV = {arg}.{uv}.xy;\no.shadowVertexLightmapUV = {arg}.{uv}.xy;\n'
+        if retail_water:
+            code += f'float3 hlightObjectNormal = {arg}.normal;\n'
+        else:
+            code += f'float3 hlightObjectNormal; DecompressVertex_Normal( {arg}.vNormal, hlightObjectNormal );\n'
+        code += f'o.highresPosition = mul( float4( {arg}.{pos}.xyz, 1 ), cModel[0] );\no.highresNormal = normalize( mul( hlightObjectNormal, (float3x3)cModel[0] ) );\n'
         if logical == 'shatteredglass_vs20':
             code += 'o.highresTangentS = 0; o.highresTangentT = 0;\n'
         else:
-            code += f'o.highresTangentS = normalize( mul( {arg}.vTangentS, (float3x3)cModel[0] ) );\no.highresTangentT = normalize( mul( {arg}.vTangentT, (float3x3)cModel[0] ) );\n'
+            ts, tt = ('tangentS', 'tangentT') if retail_water else ('vTangentS', 'vTangentT')
+            code += f'o.highresTangentS = normalize( mul( {arg}.{ts}, (float3x3)cModel[0] ) );\no.highresTangentT = normalize( mul( {arg}.{tt}, (float3x3)cModel[0] ) );\n'
         body = text[bs + 1:be]
         returns = list(re.finditer(r'\breturn\s+o\s*;', gs.mask(body)))
         if len(returns) != 1: raise RuntimeError('highres vertex needs final o return: ' + logical)
@@ -146,15 +155,23 @@ def extra_vertex(text, logical):
     return text
 
 
+
 def replace_samples(text, logical):
-    # Original sampling is retained as the alpha argument, even on HDR/native alpha consumers.
     calls = list(re.finditer(r'\b(LightMapSample|tex2D)\s*\(\s*(LightmapSampler|LightMap[012]Sampler)\s*,\s*([^()]+?)\s*\)', text))
-    expected = {'lightmappedgeneric_ps20b': 4, 'worldtwotextureblend_ps20b': 4,
-                'lightmappedreflective_ps20b': 3, 'lightmappedgeneric_decal_ps20b': 3,
-                'water_ps20b': 3, 'shatteredglass_ps20b': 1}[logical]
+    if logical == 'l4d2_water_ps20b':
+        # LIGHTMAPWATERFOG is the refraction-only fog branch and is deliberately
+        # outside the enhanced receiver guard. Keep that retail sample; only the
+        # three BASETEXTURE reflection samples join the enhanced atlas.
+        calls = [m for m in calls if 'fogColor *=' not in text[text.rfind('\n', 0, m.start()) + 1:m.start()]]
+    expected = {'lightmappedgeneric_ps20b': 4, 'l4d2_lightmappedgeneric_ps20b': 3,
+                'worldtwotextureblend_ps20b': 4, 'lightmappedreflective_ps20b': 3,
+                'lightmappedgeneric_decal_ps20b': 3, 'water_ps20b': 3,
+                'l4d2_water_ps20b': 3, 'shatteredglass_ps20b': 1}[logical]
     if len(calls) != expected: raise RuntimeError(f'highres sample contract drift: {logical}: {len(calls)} != {expected}')
     for index, match in reversed(list(enumerate(calls))):
         plane = index + 1 if index < 3 and logical != 'shatteredglass_ps20b' else 0
+        if logical == 'l4d2_lightmappedgeneric_ps20b' and index == 0:
+            plane = '(BUMPMAP && DIFFUSEBUMPMAP ? 1 : 0)'
         original = match.group(0)
         if match.group(1) == 'LightMapSample':
             # PC LightMapSample returns ordinary decoded RGB; use original tex2D only to preserve A.
@@ -166,7 +183,8 @@ def replace_samples(text, logical):
 
 
 def transform(text, logical, stage, folded_names):
-    text = gs.shadow_feature_skips(text, logical)
+    if not logical.startswith('l4d2_'):
+        text = gs.shadow_feature_skips(text, logical)
     if stage == 'vs':
         if logical in EXTRA_VERTEX: return extra_vertex(text, logical)
         return gs.shadow_vertex(text, logical, highres=True)
@@ -182,6 +200,28 @@ def transform(text, logical, stage, folded_names):
         text = gs.shadow_replace(text, 'diffuseLighting *= LIGHT_MAP_SCALE / sum;', 'diffuseLighting *= (cHlightRoute.x != 0 ? 1.0f : LIGHT_MAP_SCALE) / sum;')
     elif logical == 'shatteredglass_ps20b':
         text = gs.shadow_replace(text, 'diffuseLighting *= LIGHT_MAP_SCALE;', 'diffuseLighting *= cHlightRoute.x != 0 ? 1.0f : LIGHT_MAP_SCALE;\n diffuseLighting += hld.diffuse * g_DiffuseModulation;')
+    elif logical == 'l4d2_lightmappedgeneric_ps20b':
+        # c12.a is the legacy lightmap scale (not a tint channel); c12.rgb
+        # includes that scale. Enhanced baked and runtime direct are linear.
+        anchor = 'if ( BLENDTINTBYBASEALPHA )'
+        text = gs.shadow_replace(text, anchor,
+            'smd = ShadowMap_GatherDirect( smr, sms );\n'
+            ' if (cHlightRoute.x != 0 && hlr.nativeOnly == 0)\n'
+            '     lightmap = (lightmap + smd.diffuse) / g_TintTimesLightmapScale.a;\n ' + anchor)
+        basis = ', '.join(f'mul(g_L4D2BumpBasis[{i}], float3x3(dx12In.shadowTangentS, dx12In.shadowTangentT, dx12In.worldNormal))' for i in range(3))
+        anchor = 'lightmap = weights.x * lightmap'
+        text = gs.shadow_replace(text, anchor, 'sms = ShadowMap_ShadeBumped(' + basis +
+            ', BUMPMAP == 2 ? weights * g_SsBumpMathFix : weights / dot(weights, float3(1,1,1)));\n ' + anchor)
+    elif logical == 'l4d2_water_ps20b':
+        # Inlined retail flashlight helper: retain its eight-tap weights, but
+        # translate its raw/compare depth reads as for the common helper.
+        text = gs.gc.shadow_sampler_reads(text)
+        anchor = 'result = base.rgb * lighting * (LIGHT_MAP_SCALE / dot( dp, float3( 1, 1, 1 ) ))'
+        basis = ', '.join(f'mul(bumpBasis[{i}], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal))' for i in range(3))
+        text = gs.shadow_replace(text, anchor,
+            'float sum = dot(dp, float3(1,1,1));\n'
+            ' ShadowMapDirect hld = ShadowMap_GatherDirect(hls, ShadowMap_ShadeBumped(' + basis + ', dp / sum));\n'
+            ' result = base.rgb * (lighting * ((cHlightRoute.x && !hlr.nativeOnly ? 1 : LIGHT_MAP_SCALE) / sum) + hld.diffuse)')
     if logical == 'water_ps20b':
         text = gs.shadow_replace(text, 'struct DrawWater_params_t\n{',
             'struct DrawWater_params_t\n{\n#if BASETEXTURE\n HlightReceiver hlightReceiver;\n ShadowMapReceiver hlightShadow;\n float3 hlightTangentS, hlightTangentT, hlightNormal;\n#endif')
@@ -235,7 +275,9 @@ def pixel_entry(text, logical, folded_names):
                     ' ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );')
             text = text[:match.start()] + code + text[match.end():]
         return finish_pixels(text)
-    guard = {'water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT', 'shatteredglass_ps20b': '1'}[logical]
+    guard = {'water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT',
+             'l4d2_water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT',
+             'shatteredglass_ps20b': '1'}[logical]
     for headers, bs, be in reversed(gs.main_defs(text)):
         body = text[bs + 1:be]
         conv = re.search(r'\bDX12ConvertInput\s*\([^;]+;', body)
@@ -244,7 +286,7 @@ def pixel_entry(text, logical, folded_names):
                 f' ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.{position}.xy );\n'
                 ' ShadowMap_SetBakedSun( hls, hlr.sun, hlr.sunDilated );\n'
                 ' ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );\n')
-        if logical != 'water_ps20b':
+        if logical not in {'water_ps20b', 'l4d2_water_ps20b'}:
             code += ' ShadowMapDirect hld = ShadowMap_GatherDirect( hls, ShadowMap_ShadeLambert( dx12In.highresNormal ) );\n'
         code += '#endif\n'
         body = body[:conv.end()] + code + body[conv.end():]
