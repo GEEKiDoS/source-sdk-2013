@@ -68,14 +68,18 @@ static __declspec(noreturn) void Fail( const char *reason )
 	Plat_FatalError( "BSP21 adapter: %s\n", reason );
 }
 static void (*g_AbortServer)();
+static void ResetCubemapBuild();
+static void CubemapRuntimeClear();
 static __declspec(noreturn) void AbortServer()
 {
 	HookCall call;
 	if(!ThreadInMainThread()) Fail("native host abort outside serialized owner thread");
+	CubemapRuntimeClear();
 	LONG abandoned=g_ThreadCalls;
 	g_ThreadCalls=0;
 	++g_HookEpoch;
 	InterlockedExchangeAdd(&g_InFlight,-abandoned);
+	ResetCubemapBuild();
 	BspLog("HOST_ABORT abandoned wrapper calls=%ld; native nonlocal exit retained",abandoned);
 	// The pinned body increments the native abort counter and longjmps. No
 	// abandoned adapter frame can return normally; removal is main-thread only.
@@ -110,6 +114,11 @@ static Bsp21Reader MountedReader( void *file )
 	Bsp21Reader reader = { file, FileSystem()->Size( file ), ReadMountedAt };
 	return reader;
 }
+
+#include "cubemap_sidecar.cpp"
+#include "cubemap_runtime.cpp"
+#include "cubemap_build.cpp"
+
 static ValidFn g_Valid;
 static bool MapValid( void *self, const char *name, bool quiet )
 {
@@ -777,8 +786,15 @@ static Hook g_Hooks[]={
 	HOOK(0x101E60,GameLoad,g_GameLoad,"\x40\x55\x41\x55\x48\x83\xec\x38\x44\x8b\x1d\x31\xce\x59\x00\x4c"),
 	HOOK(0x19FF20,AbortServer,g_AbortServer,"\x48\x83\xec\x28\xff\x05\xd6\x24\x5b\x00\x48\x8d\x0d\x4f\x27\x5b"),
 	HOOK(0x205D50,PropsShutdown,g_PropsShutdown,"\x40\x53\x48\x83\xec\x20\x80\xb9\x98\x00\x00\x00\x00\x48\x8b\xd9"),
+	CLIENT_HOOK(0x6B670,BuildCubemaps,g_BuildCubemaps,"\x89\x4c\x24\x08\x55\x53\x48\x8d\xac\x24\xf8\xf8\xff\xff\x48\x81"),
+	CLIENT_HOOK(0x280470,GetCubemapPackFactory,g_GetPackFactory,"\x48\x85\xc9\x75\x03\x33\xc0\xc3\x48\x8d\x15\xa1\x40\x15\x00\x48"),
+	CLIENT_HOOK(0xFFC40,CubemapRuntimeLoad,g_CubemapLoad,"\x48\x8b\xc4\x48\x89\x58\x20\x48\x89\x50\x10\x48\x89\x48\x08\x55"),
 	CLIENT_HOOK(0x203420,Draw,g_Draw,"\x4c\x8b\xdc\x49\x89\x5b\x10\x49\x89\x6b\x18\x49\x89\x73\x20\x57"),
 	CLIENT_HOOK(0x203B90,DrawArray,g_DrawArray,"\x4c\x8b\xdc\x49\x89\x5b\x08\x49\x89\x6b\x10\x49\x89\x73\x18\x57"),
+	{0xA740,0,reinterpret_cast<void *>(CubemapWritable),reinterpret_cast<void **>(&g_CubemapWritable),true,true,"\x48\x89\x5c\x24\x08\x48\x89\x74\x24\x18\x48\x89\x54\x24\x10\x55"},
+	{0xD980,0,reinterpret_cast<void *>(CubemapFullPath),reinterpret_cast<void **>(&g_CubemapFullPath),true,true,"\x48\x8b\xc4\x48\x89\x48\x08\x55\x41\x56\x48\x8d\xa8\x88\xfb\xff"},
+	{0xB850,0,reinterpret_cast<void *>(CubemapRuntimeOpen),reinterpret_cast<void **>(&g_CubemapOpen),true,true,"\x48\x89\x5c\x24\x18\x44\x89\x4c\x24\x20\x48\x89\x4c\x24\x08\x55"},
+	{0xE2F0,0,reinterpret_cast<void *>(CubemapRuntimeUnmount),reinterpret_cast<void **>(&g_CubemapUnmount),true,true,"\x40\x53\x56\x57\x41\x56\x48\x81\xec\x38\x03\x00\x00\x48\x8b\x01"},
 	{0x19970,0x1D4B0,reinterpret_cast<void *>(PakRead),reinterpret_cast<void **>(&g_Fread),true,false,"\x4c\x8b\xdc\x49\x89\x5b\x08\x49\x89\x6b\x10\x49\x89\x73\x18\x49"},
 	{0x194D0,0x1D010,reinterpret_cast<void *>(MountedOpen),reinterpret_cast<void **>(&g_Fopen),true,false,"\x48\x89\x5c\x24\x10\x57\x48\x81\xec\x70\x02\x00\x00\x49\x8b\xd8"},
 	{0x5D300,0xC2AB0,reinterpret_cast<void *>(PackedRead),reinterpret_cast<void **>(&g_PackedRead),true,false,"\x4c\x89\x44\x24\x18\x48\x89\x4c\x24\x08\x55\x56\x41\x54\x41\x55"},
@@ -849,6 +865,12 @@ static bool ReleaseHooks()
 		Sleep(1);
 	} while(GetTickCount64()<deadline);
 	if(status!=MH_OK) { HookFailure("MH_Uninitialize/drain",status); return false; }
+	CubemapRuntimeClear();
+	if ( !CubemapRuntimeCanRetire() )
+	{
+		BspLog( "REJECT retirement with live sidecar cubemap handles; owner retained" );
+		return false;
+	}
 	// MountedOpen can publish a raw-file object until its last wrapper returns.
 	// Check the retained vtables only after no-new-entries and the owner-IP drain.
 	if ( InterlockedCompareExchange( &g_MountedFiles, 0, 0 ) )
@@ -901,6 +923,15 @@ bool L4D2_BSP21Install()
 		memcmp(reinterpret_cast<void *>(g_Engine+0x2058E0),"\xe8\x7b\xc5\xef\xff",5))
 	{
 		BspLog("REJECT native sprp consumer callsite bytes"); return false;
+	}
+	if ( !dedicated &&
+		( memcmp( reinterpret_cast<void *>( g_Engine + kBuildWritableReturn - 3 ), "\xff\x50\x58", 3 ) ||
+		  memcmp( reinterpret_cast<void *>( g_Engine + kBuildPackFactoryReturn - 5 ), "\xe8\x24\x4a\x21\x00", 5 ) ||
+		  memcmp( reinterpret_cast<void *>( g_Engine + kBuildWritePathReturn - 3 ), "\xff\x50\x60", 3 ) ||
+		  memcmp( reinterpret_cast<void *>( g_Engine + kCubemapUnmountReturn - 4 ), "\x41\xff\x51\x40", 4 ) ) )
+	{
+		BspLog( "REJECT cubemap pack or map unmount callsite bytes" );
+		return false;
 	}
 	for(const Hook &hook:g_Hooks)
 	{
