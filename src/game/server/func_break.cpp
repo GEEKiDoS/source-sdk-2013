@@ -316,9 +316,13 @@ void CBreakable::Spawn( void )
 	SetSolid( SOLID_BSP );
     SetMoveType( MOVETYPE_PUSH );
 	
-	// this is a hack to shoot the gibs in a specific yaw/direction
+	// Cache the original yaw for the gib direction.
 	m_angle = GetLocalAngles().y;
+	// Retail L4D2 CBreakable::Spawn (server.dll 0x100DE730) keeps the
+	// authored angles for SetModel and VPhysics: brush vertices can be local.
+#ifndef L4D2
 	SetLocalAngles( vec3_angle );
+#endif
 	
 	SetModel( STRING( GetModelName() ) );//set size and link into world.
 
