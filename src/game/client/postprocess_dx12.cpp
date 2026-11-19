@@ -246,7 +246,7 @@ static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_A
 static ConVar mat_postfx_bloom_quality( "mat_postfx_bloom_quality", "2", FCVAR_ARCHIVE, "DX12 post bloom quality: 0 low (drops the two finest levels), 1 medium (drops the half-resolution level), 2 high (8 levels)", true, 0.f, true, 2.f );
 static ConVar mat_postfx_lensdirt( "mat_postfx_lensdirt", "0.5", FCVAR_ARCHIVE, "DX12 post lens dirt intensity (screens the dirt into the bloom)" );
 static ConVar mat_postfx_lensdirt_enable( "mat_postfx_lensdirt_enable", "1", FCVAR_ARCHIVE, "DX12 post lens dirt: 0 off, 1 on. Intensity stays mat_postfx_lensdirt.", true, 0.f, true, 1.f );
-static ConVar mat_postfx_lensflare( "mat_postfx_lensflare", "1.0", FCVAR_ARCHIVE, "DX12 post lens flare (ghosts, halo, glare) intensity" );
+static ConVar mat_postfx_lensflare( "mat_postfx_lensflare", "0", FCVAR_ARCHIVE, "DX12 post lens flare (ghosts, halo, glare) intensity; 0 (default) skips the flare and glare passes" );
 static ConVar mat_postfx_lensflare_threshold( "mat_postfx_lensflare_threshold", "1.0", FCVAR_ARCHIVE, "DX12 post lens flare: summed RGB where bright content starts to flare" );
 static ConVar mat_postfx_lensflare_threshold_range( "mat_postfx_lensflare_threshold_range", "1.0", FCVAR_ARCHIVE, "DX12 post lens flare: summed RGB range over which flaring fades in" );
 static ConVar mat_postfx_glare( "mat_postfx_glare", "0.02", FCVAR_ARCHIVE, "DX12 post lens flare glare (star) intensity" );
