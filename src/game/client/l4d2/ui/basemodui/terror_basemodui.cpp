@@ -169,7 +169,6 @@ public:
 			InvalidateLayout( false, true );
 		}
 		BaseClass::OnOpen(); UpdateFooter();
-		if ( CheckBaseModAddonAssociation( this ) && GetParent() ) GetParent()->OnCommand( "AddonAssociation" );
 	}
 	virtual void OnThink() OVERRIDE
 	{
@@ -578,6 +577,8 @@ void CL4DBasePanel::OpenGraphicsOptions( int section )
 	graphics->OnOpen();
 }
 
+static void AcceptQuitGame() { engine->ClientCmd_Unrestricted( "quit\n" ); }
+
 void MainMenu::OnCommand( const char *command )
 {
 	const char *value;
@@ -590,6 +591,20 @@ void MainMenu::OnCommand( const char *command )
 	}
 	if ( !Q_stricmp( command, "PlayChallenge" ) ) { OnCommand( GetBaseModChallengeFlyout() ); return; }
 	if ( !Q_stricmp( command, "ChooseChallengeMode" ) ) { FlyoutMenu::CloseActiveMenu(); OpenBaseModMutationPicker( GetParent(), this ); return; }
+	if ( !Q_stricmp( command, "QuitGame" ) )
+	{
+		// Retail mainmenu.res BtnQuit sends QuitGame; confirm, then quit the engine.
+		GenericConfirmation *confirm = new GenericConfirmation( GetParent() );
+		if ( !confirm->LoadLayout( "resource/ui/l4d360ui/genericconfirmation.res" ) ) { delete confirm; return; }
+		GenericConfirmation::UsageData_t usage;
+		usage.pWindowTitle = "#L4D360UI_MainMenu_Quit_Confirm";
+		usage.pMessageText = "#L4D360UI_MainMenu_Quit_ConfirmMsg";
+		usage.bOkButtonEnabled = usage.bCancelButtonEnabled = true;
+		usage.pfnOkCallback = AcceptQuitGame;
+		confirm->SetNavBack( this );
+		confirm->SetUsageData( usage ); confirm->OnOpen();
+		return;
+	}
 	if ( !Q_stricmp( command, "VersusSoftLock" ) ) command = "FlmVersusFlyout";
 	else if ( !Q_stricmp( command, "SurvivalCheck" ) ) command = "FlmSurvivalFlyout";
 	else if ( !Q_stricmp( command, "ScavengeCheck" ) ) command = "FlmScavengeFlyout";

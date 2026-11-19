@@ -20,7 +20,6 @@
 #ifdef _WIN32
 #include "winlite.h"
 #include <shellapi.h>
-#include "tier0/vcrmode.h"
 #endif
 extern "C" {
 #include "jpeglib/jpeglib.h"
@@ -29,13 +28,8 @@ extern "C" {
 
 namespace L4D360UI
 {
-// Native G15A720/G15A750. Preserve the original misspelling; the correctly
-// spelled Addons checkbox is a distinct ConVarRef, not a new alias.
-static ConVar cl_ignore_vpk_assocation( "cl_ignore_vpk_assocation", "0", FCVAR_ARCHIVE, "Do not ask to set vpk assocation" );
 static ConVar addons_hide_conflict_dialog( "addons_hide_conflict_dialog", "0", FCVAR_ARCHIVE );
-static bool s_AssociationRead, s_AssociationAttempted;
 static bool s_AddonPathsChanged;
-static int s_AssociationState;
 
 static void Visible( vgui::Panel *panel, const char *name, bool visible )
 {
@@ -69,98 +63,18 @@ static void BrowseWorkshop()
 	steamapicontext->SteamFriends()->ActivateGameOverlayToWebPage( url );
 }
 
-static void ShowAddonNotice( vgui::Panel *parent, bool association )
+static void ShowConflictNotice( vgui::Panel *parent )
 {
 	GenericConfirmation::UsageData_t data;
-	data.pWindowTitle = association ? "#L4D360UI_AddonAssociation_Failure_Title" : "#L4D_PLUGIN_WARNING_TITLE";
-	data.pMessageText = association ? "#L4D360UI_AddonAssociation_Failure_Description" : "#L4D360UI_ADDON_CONFLICT_WARNING";
+	data.pWindowTitle = "#L4D_PLUGIN_WARNING_TITLE";
+	data.pMessageText = "#L4D360UI_ADDON_CONFLICT_WARNING";
 	data.bOkButtonEnabled = true; data.bCancelButtonEnabled = false;
-	data.bCheckBoxEnabled = association;
-	data.pCheckBoxText = association ? "#L4D360UI_AddonAssociation_Failure_DoNotAsk" : NULL;
-	data.pCheckBoxCvarName = association ? "cl_ignore_vpk_assocation" : NULL;
 	CL4DFrame *caller = dynamic_cast<CL4DFrame *>( parent );
 	GenericConfirmation *dialog = new GenericConfirmation( caller && caller->GetParent() ? caller->GetParent() : parent );
 	if ( !dialog->LoadLayout( "resource/ui/l4d360ui/genericconfirmation.res" ) ) { delete dialog; return; }
 	dialog->SetNavBack( caller );
 	dialog->SetUsageData( data ); dialog->OnOpen();
 }
-
-AddonAssociation::AddonAssociation( vgui::Panel *parent, const char *name ) : BaseClass( parent, name, true, false, false, true ), m_bLayoutReady( false )
-{
-	m_pIgnore = new vgui::CheckButton( this, "CheckButtonAddonAssociation", "#L4D360UI_Cloud_KeepInSync_Tip" );
-	SetFooterEnabled( false );
-	m_bLayoutReady = LoadLayout( "resource/ui/l4d360ui/addonassociation.res" );
-}
-vgui::Panel *AddonAssociation::CreateControlByName( const char *name )
-{
-	if ( !Q_stricmp( name, "CvarToggleCheckButton_GameUI" ) ) return new vgui::CheckButton( this, "", "" );
-	return BaseClass::CreateControlByName( name );
-}
-void AddonAssociation::OnOpen()
-{
-	if ( !m_bLayoutReady ) return;
-	m_pIgnore->SetSelected( cl_ignore_vpk_assocation.GetBool() ); BaseClass::OnOpen();
-}
-int AddonAssociation::GetAssociationState()
-{
-	if ( cl_ignore_vpk_assocation.GetBool() ) return 2;
-	if ( s_AssociationRead ) return s_AssociationState;
-	s_AssociationRead = true; s_AssociationState = 0;
-#ifdef _WIN32
-	HKEY key = NULL;
-	if ( VCRHook_RegOpenKeyEx( HKEY_CLASSES_ROOT, ".vpk", 0, KEY_READ, &key ) == ERROR_SUCCESS )
-	{
-		char value[MAX_PATH] = {}; DWORD bytes = sizeof( value );
-		if ( VCRHook_RegQueryValueEx( key, NULL, NULL, NULL, reinterpret_cast<BYTE *>( value ), &bytes ) == ERROR_SUCCESS )
-		{
-			value[ARRAYSIZE( value ) - 1] = 0;
-			s_AssociationState = Q_stricmp( value, "sourceaddonfile" ) ? 1 : 2;
-		}
-		VCRHook_RegCloseKey( key );
-	}
-#endif
-	return s_AssociationState;
-}
-bool AddonAssociation::RegisterAssociation( vgui::Panel *parent )
-{
-#ifdef _WIN32
-	char installer[MAX_PATH], command[MAX_PATH];
-	GetModuleFileNameA( GetModuleHandleA( NULL ), installer, sizeof( installer ) );
-	V_FixSlashes( installer, '\\' ); V_StripFilename( installer );
-	Q_strncat( installer, "\\bin\\addoninstaller.exe", sizeof( installer ) );
-	Q_snprintf( command, sizeof( command ), "\"%s\" /register", installer );
-	STARTUPINFOA startup = {}; PROCESS_INFORMATION process = {}; startup.cb = sizeof( startup );
-	bool launched = CreateProcessA( NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process ) != FALSE;
-	DWORD error = launched ? ERROR_SUCCESS : GetLastError();
-	if ( launched ) { CloseHandle( process.hThread ); CloseHandle( process.hProcess ); }
-	if ( !launched && error == ERROR_ELEVATION_REQUIRED )
-	{
-		SHELLEXECUTEINFOA execute = {}; execute.cbSize = sizeof( execute ); execute.lpVerb = "runas";
-		execute.lpFile = installer; execute.lpParameters = "/register"; execute.nShow = SW_SHOWMAXIMIZED;
-		launched = ShellExecuteExA( &execute ) != FALSE; error = launched ? ERROR_SUCCESS : GetLastError();
-	}
-	if ( launched || error == ERROR_SUCCESS ) { s_AssociationState = 2; return true; }
-	char *message = NULL;
-	FormatMessageA( FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-		NULL, error, MAKELANGID( LANG_NEUTRAL, SUBLANG_DEFAULT ), reinterpret_cast<char *>( &message ), 0, NULL );
-	Msg( "Failed to execute addoninstaller(%lu): %s\n", error, message ? message : "" );
-	if ( message ) LocalFree( message );
-#endif
-	ShowAddonNotice( parent, true ); return false;
-}
-void AddonAssociation::OnCommand( const char *command )
-{
-	if ( !Q_stricmp( command, "Yes" ) || !Q_stricmp( command, "No" ) )
-	{
-		if ( m_pIgnore->IsSelected() ) cl_ignore_vpk_assocation.SetValue( 1 );
-		CL4DFrame *caller = GetNavBack();
-		NavigateBack();
-		if ( !Q_stricmp( command, "Yes" ) ) RegisterAssociation( caller );
-		return;
-	}
-	BaseClass::OnCommand( command );
-}
-
 AddonListItem::AddonListItem( GenericPanelList *parent, Addons *owner, int index, const AddonInfo_t &info ) : BaseClass( parent, "AddonListItem" ),
 	m_pOwner( owner ), m_Index( index ), m_Font( 0 ), m_bSelected( false ), m_bConflict( info.conflict ), m_bInitialized( false )
 {
@@ -556,7 +470,7 @@ void Addons::BuildConflictMap( bool warn )
 	{
 		AddonListItem *row = dynamic_cast<AddonListItem *>( m_pList->GetPanelItem( i ) ); if ( row ) row->SetConflict( m_Addons[row->GetAddonIndex()].conflict );
 	}
-	if ( collision && warn && !m_bConflictWarned && !addons_hide_conflict_dialog.GetBool() ) { m_bConflictWarned = true; ShowAddonNotice( this, false ); }
+	if ( collision && warn && !m_bConflictWarned && !addons_hide_conflict_dialog.GetBool() ) { m_bConflictWarned = true; ShowConflictNotice( this ); }
 }
 bool RefreshBaseModAddonPaths()
 {
@@ -567,25 +481,11 @@ bool RefreshBaseModAddonPaths()
 	engine->ClientCmd_Unrestricted( "update_addon_paths; mission_reload" ); // Real native commands; M7Addons owns their target bodies.
 	return true;
 }
-bool CheckBaseModAddonAssociation( vgui::Panel *parent )
-{
-	// G67BB0 -> G19340, once per process; this is a main-menu open check,
-	// not an artificial gate on Addons or CustomCampaigns.
-	if ( s_AssociationAttempted ) return false;
-	s_AssociationAttempted = true;
-	const int state = AddonAssociation::GetAssociationState();
-	if ( state == 0 ) { Msg( "Executing addoninstaller to register with vpk files\n" ); AddonAssociation::RegisterAssociation( parent ); }
-	return state == 1; // G19340 lets the real window manager open window42.
-}
 CL4DFrame *CreateBaseModAddonsWindow( vgui::Panel *parent, const char *name )
 {
 	if ( !Q_stricmp( name, "Addons" ) )
 	{
 		Addons *window = new Addons( parent ); if ( window->IsLayoutReady() ) return window; delete window; return NULL;
-	}
-	if ( !Q_stricmp( name, "AddonAssociation" ) )
-	{
-		AddonAssociation *window = new AddonAssociation( parent ); if ( window->IsLayoutReady() ) return window; delete window; return NULL;
 	}
 	return NULL;
 }

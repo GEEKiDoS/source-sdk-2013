@@ -44,21 +44,6 @@ private:
 	vgui::HFont m_Font;
 	bool m_bSelected, m_bConflict, m_bInitialized;
 };
-class AddonAssociation : public CL4DFrame
-{
-	DECLARE_CLASS_SIMPLE( AddonAssociation, CL4DFrame );
-public:
-	AddonAssociation( vgui::Panel *parent, const char *name = "AddonAssociation" );
-	virtual void OnOpen() OVERRIDE;
-	virtual void OnCommand( const char *command ) OVERRIDE;
-	virtual vgui::Panel *CreateControlByName( const char *name ) OVERRIDE;
-	static int GetAssociationState();
-	static bool RegisterAssociation( vgui::Panel *parent );
-	bool IsLayoutReady() const { return m_bLayoutReady; }
-private:
-	vgui::CheckButton *m_pIgnore;
-	bool m_bLayoutReady;
-};
 class Addons : public CL4DFrame
 {
 	DECLARE_CLASS_SIMPLE( Addons, CL4DFrame );
@@ -102,8 +87,6 @@ CL4DFrame *CreateBaseModAddonsWindow( vgui::Panel *parent, const char *name );
 // G19900/G67BB0: invoke before main-menu BaseClass::OnOpen. True means the
 // native changed bit was consumed, not a successful filesystem/service result.
 bool RefreshBaseModAddonPaths();
-// G19340, called from native main-menu OnOpen G67BB0 only.
-bool CheckBaseModAddonAssociation( vgui::Panel *parent );
 // G1B250 real mounted-buffer JPEG decoder; caller owns returned texture.
 bool LoadBaseModJpegTexture( const void *data, int bytes, int &texture, bool &square );
 }
