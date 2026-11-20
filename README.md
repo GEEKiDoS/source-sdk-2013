@@ -385,6 +385,8 @@ MSBuild.exe l4d2.sln /t:game_shader_l4d2_win64_l4d2 %ROLE% /p:SelectedFiles=skip
 MSBuild.exe l4d2.sln /t:shaderapidx12_win64 %ROLE%
 MSBuild.exe l4d2.sln /t:nvngx_forwarder_dx12_win64 %ROLE%
 MSBuild.exe l4d2.sln /t:unicode_win64 %ROLE%
+rem menu background movies (media/l4d2_background*.bik) need game\bin\x64\binkdec.dll
+MSBuild.exe l4d2.sln /t:binkdec_win64 %ROLE%
 MSBuild.exe l4d2.sln /t:nativeshaderpack_dx12_win64 %ROLE%
 rem publish the DX12 shader pack (devtools\bin\buildshaders_dx12.bat -game ..\game\mod_l4d2) before stdshader_dx12
 MSBuild.exe l4d2.sln /t:stdshader_dx12_win64 %ROLE%

@@ -302,13 +302,13 @@ bool CTerrorHudResources::PrepareFile( IFileSystem *pFileSystem, const char *pFi
 			const char *pExtension = Q_GetFileExtension( pPath );
 			if ( pExtension && !Q_stricmp( pExtension, "vfont" ) )
 			{
-				if ( !RegisterFont( pFileSystem, pPath ) )
-				{
-					pFileSystem->Close( hSource );
-					return false;
-				}
+				// A custom font that cannot be loaded is not fatal in retail: the scheme keeps
+				// resolving and the font falls back to a system face. HUD mods installed in the
+				// L4D2 directory can reference VFONTs they do not ship (seen with
+				// resource/stratum2medium.vfont), so a failure here only warns.
+				RegisterFont( pFileSystem, pPath );
 				// The target AddCustomFontFile accepts native TTF filenames, not
-				// encrypted VFONT data. The real face is now private to this process.
+				// encrypted VFONT data. A decoded face is now private to this process.
 				pFonts->RemoveSubKey( pFont );
 				pFont->deleteThis();
 			}

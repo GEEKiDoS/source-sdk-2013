@@ -10,6 +10,16 @@ $Configuration
 	{
 		$PreprocessorDefinitions	"$BASE;L4D2;MOD_APPID=243750" // Replace with your appid if you ship on Steam.
 	}
+
+	$Linker [$WINDOWS]
+	{
+		// Threads created with a zero stack size (including the closed engine's) inherit this reserve.
+		// 1 MiB is the 32-bit retail value; x64 frames are larger, the SDK studiorender
+		// alloca-sizes some per-model buffers, and addon content or plugins may place large
+		// blobs on the stack, so reserve 16 MiB. Only address space is reserved; commit still
+		// grows a page at a time.
+		$StackReserveSize			"16777216"
+	}
 }
 
 $Project "Launcher Main (Mod L4D2)"
