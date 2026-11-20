@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -34,6 +35,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -55,17 +57,37 @@ std::string ReadFile( const fs::path &path )
 	return text.str();
 }
 
-void WriteFile( const fs::path &path, const std::string &bytes )
+// Writes bytes to a temporary beside path. The name is unique per thread, so concurrent writers never share (and
+// truncate) one temporary file.
+fs::path WriteTemp( const fs::path &path, const std::string &bytes )
 {
 	fs::create_directories( path.parent_path() );
-	const fs::path temp = path.string() + ".tmp";
+	const fs::path temp = path.string() + "." + std::to_string( GetCurrentThreadId() ) + ".tmp";
+	std::ofstream out( temp, std::ios::binary | std::ios::trunc );
+	if ( !out ) throw std::runtime_error( "Cannot write " + temp.string() );
+	out.write( bytes.data(), std::streamsize( bytes.size() ) );
+	out.close();
+	if ( !out ) throw std::runtime_error( "Cannot write " + temp.string() );
+	return temp;
+}
+
+void WriteFile( const fs::path &path, const std::string &bytes )
+{
+	fs::rename( WriteTemp( path, bytes ), path );
+}
+
+// Cache entries are content-addressed: if another writer (another process sharing -cache, or a reader holding the
+// file open) wins the rename, the entry already holds the same bytes, so losing the race is not an error.
+void WriteCacheFile( const fs::path &path, const std::string &bytes )
+{
+	const fs::path temp = WriteTemp( path, bytes );
+	std::error_code error;
+	fs::rename( temp, path, error );
+	if ( error )
 	{
-		std::ofstream out( temp, std::ios::binary | std::ios::trunc );
-		if ( !out ) throw std::runtime_error( "Cannot write " + temp.string() );
-		out.write( bytes.data(), std::streamsize( bytes.size() ) );
-		if ( !out ) throw std::runtime_error( "Cannot write " + temp.string() );
+		fs::remove( temp, error );
+		if ( !fs::exists( path ) ) throw std::runtime_error( "Cannot store cache entry " + path.string() );
 	}
-	fs::rename( temp, path );
 }
 
 std::string Lower( std::string text )
@@ -866,18 +888,28 @@ public:
 					return;
 				}
 				TreeIncludeHandler includes( m_Tree, utils.Get() );
-				for ( size_t i; ( i = next++ ) < tasks.size(); )
+				// An exception escaping a std::thread terminates the process (0xC0000409 with no message), so I/O and
+				// allocation failures are recorded and reported by Run instead.
+				try
 				{
-					ShaderWork &shader = work[tasks[i].first];
-					CompileCombo( utils.Get(), compiler.Get(), &includes, shader, shader.combos[tasks[i].second] );
-					const size_t finished = ++done;
-					if ( finished % 1000 == 0 || finished == tasks.size() )
+					for ( size_t i; ( i = next++ ) < tasks.size(); )
 					{
-						const double seconds = std::chrono::duration<double>( std::chrono::steady_clock::now() - start ).count();
-						std::lock_guard<std::mutex> lock( m_Mutex );
-						std::cout << "ShaderCompiler3: " << finished << "/" << tasks.size() << " combos, " << m_Compiled << " compiled, "
-						          << m_CacheHits << " cached, " << int( seconds ) << " s\n" << std::flush;
+						ShaderWork &shader = work[tasks[i].first];
+						CompileCombo( utils.Get(), compiler.Get(), &includes, shader, shader.combos[tasks[i].second] );
+						const size_t finished = ++done;
+						if ( finished % 1000 == 0 || finished == tasks.size() )
+						{
+							const double seconds = std::chrono::duration<double>( std::chrono::steady_clock::now() - start ).count();
+							std::lock_guard<std::mutex> lock( m_Mutex );
+							std::cout << "ShaderCompiler3: " << finished << "/" << tasks.size() << " combos, " << m_Compiled << " compiled, "
+							          << m_CacheHits << " cached, " << int( seconds ) << " s\n" << std::flush;
+						}
 					}
+				}
+				catch ( const std::exception &e )
+				{
+					std::lock_guard<std::mutex> lock( m_Mutex );
+					if ( m_Fatal.empty() ) m_Fatal = e.what();
 				}
 			} );
 		for ( auto &thread : threads ) thread.join();
@@ -917,44 +949,52 @@ private:
 		const std::string key = Sha256( m_Dxc.version + '\n' + profile + '\n' + kFlags + '\n' + text );
 		const std::string *program = nullptr;
 		{
-			std::lock_guard<std::mutex> lock( m_Mutex );
+			// Many combos expand to identical text. The first thread to reach a key loads or compiles it; the others
+			// wait for that result instead of compiling the same program and racing on its cache file.
+			std::unique_lock<std::mutex> lock( m_Mutex );
+			m_ProgramReady.wait( lock, [&] { return !m_PendingPrograms.count( key ); } );
 			auto it = m_Programs.find( key );
 			if ( it != m_Programs.end() ) program = it->second.get();
-		}
-		const fs::path cached = m_Options.cache / key.substr( 0, 2 ) / ( key + ".dxil" );
-		if ( !program && fs::exists( cached ) )
-		{
-			program = Store( key, ReadFile( cached ) );
-			++m_CacheHits;
+			else m_PendingPrograms.insert( key );
 		}
 		if ( !program )
 		{
-			// 2. Compile the expanded text (its #line directives keep the original file names in diagnostics).
-			const std::wstring wideProfile = Widen( profile );
-			LPCWSTR compileArgs[] = { sourceName.c_str(), L"-T", wideProfile.c_str(), L"-E", L"main", L"-O3", L"-HV", L"2016", L"-Gec" };
-			const DxcBuffer expandedSource = { text.data(), text.size(), DXC_CP_UTF8 };
-			ComPtr<IDxcResult> compiled;
-			ComPtr<IDxcBlob> object;
-			status = E_FAIL;
-			if ( FAILED( compiler->Compile( &expandedSource, compileArgs, UINT32( std::size( compileArgs ) ), nullptr, IID_PPV_ARGS( &compiled ) ) ) ||
-			     FAILED( compiled->GetStatus( &status ) ) || FAILED( status ) ||
-			     FAILED( compiled->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &object ), nullptr ) ) || !object || !object->GetBufferSize() )
+			const ProgramClaim claim( *this, key );
+			const fs::path cached = m_Options.cache / key.substr( 0, 2 ) / ( key + ".dxil" );
+			if ( fs::exists( cached ) )
 			{
-				Fail( shader, combo, "compile", compiled ? ResultErrors( compiled.Get() ) : std::string() );
-				return;
+				program = Store( key, ReadFile( cached ) );
+				++m_CacheHits;
 			}
-			std::string bytes( static_cast<const char *>( object->GetBufferPointer() ), object->GetBufferSize() );
-			// A signed container has a nonzero digest (bytes 4..19); the runtime rejects unsigned DXIL.
-			bool signedContainer = false;
-			for ( size_t i = 4; i < 20 && i < bytes.size(); ++i ) signedContainer |= bytes[i] != 0;
-			if ( bytes.size() < 32 || memcmp( bytes.data(), "DXBC", 4 ) || !signedContainer )
+			else
 			{
-				Fail( shader, combo, "sign", "dxcompiler produced an unsigned or malformed container (is dxil.dll beside ShaderCompiler3.exe?)" );
-				return;
+				// 2. Compile the expanded text (its #line directives keep the original file names in diagnostics).
+				const std::wstring wideProfile = Widen( profile );
+				LPCWSTR compileArgs[] = { sourceName.c_str(), L"-T", wideProfile.c_str(), L"-E", L"main", L"-O3", L"-HV", L"2016", L"-Gec" };
+				const DxcBuffer expandedSource = { text.data(), text.size(), DXC_CP_UTF8 };
+				ComPtr<IDxcResult> compiled;
+				ComPtr<IDxcBlob> object;
+				status = E_FAIL;
+				if ( FAILED( compiler->Compile( &expandedSource, compileArgs, UINT32( std::size( compileArgs ) ), nullptr, IID_PPV_ARGS( &compiled ) ) ) ||
+				     FAILED( compiled->GetStatus( &status ) ) || FAILED( status ) ||
+				     FAILED( compiled->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( &object ), nullptr ) ) || !object || !object->GetBufferSize() )
+				{
+					Fail( shader, combo, "compile", compiled ? ResultErrors( compiled.Get() ) : std::string() );
+					return;
+				}
+				std::string bytes( static_cast<const char *>( object->GetBufferPointer() ), object->GetBufferSize() );
+				// A signed container has a nonzero digest (bytes 4..19); the runtime rejects unsigned DXIL.
+				bool signedContainer = false;
+				for ( size_t i = 4; i < 20 && i < bytes.size(); ++i ) signedContainer |= bytes[i] != 0;
+				if ( bytes.size() < 32 || memcmp( bytes.data(), "DXBC", 4 ) || !signedContainer )
+				{
+					Fail( shader, combo, "sign", "dxcompiler produced an unsigned or malformed container (is dxil.dll beside ShaderCompiler3.exe?)" );
+					return;
+				}
+				WriteCacheFile( cached, bytes );
+				program = Store( key, std::move( bytes ) );
+				++m_Compiled;
 			}
-			WriteFile( cached, bytes );
-			program = Store( key, std::move( bytes ) );
-			++m_Compiled;
 		}
 		combo.program = program;
 		combo.programKey = key;
@@ -967,6 +1007,24 @@ private:
 		if ( !slot ) slot = std::make_unique<std::string>( std::move( bytes ) );
 		return slot.get();
 	}
+
+	// Releases a claimed program key on every exit path (success, failure or exception) and wakes its waiters.
+	class ProgramClaim
+	{
+	public:
+		ProgramClaim( Compiler &compiler, const std::string &key ) : m_Compiler( compiler ), m_Key( key ) {}
+		~ProgramClaim()
+		{
+			{
+				std::lock_guard<std::mutex> lock( m_Compiler.m_Mutex );
+				m_Compiler.m_PendingPrograms.erase( m_Key );
+			}
+			m_Compiler.m_ProgramReady.notify_all();
+		}
+	private:
+		Compiler &m_Compiler;
+		const std::string &m_Key;
+	};
 
 	void Fail( ShaderWork &shader, const ShaderWork::Combo &combo, const char *step, const std::string &errors )
 	{
@@ -984,6 +1042,8 @@ private:
 	const DxcApi &m_Dxc;
 	std::mutex m_Mutex;
 	std::unordered_map<std::string, std::unique_ptr<std::string>> m_Programs;
+	std::unordered_set<std::string> m_PendingPrograms;	// keys a thread is loading or compiling right now
+	std::condition_variable m_ProgramReady;
 	std::atomic<size_t> m_Compiled{ 0 }, m_CacheHits{ 0 };
 	std::string m_Fatal;
 };
