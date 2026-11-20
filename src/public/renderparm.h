@@ -179,6 +179,25 @@ enum DX12ViewFlags_t
 #define DX12_UPSCALE_DISPATCH_RESET 2
 #define DX12_FRAMEGEN_DISPATCH_RUN   1
 #define DX12_FRAMEGEN_DISPATCH_RESET 2
+
+enum UpscalerDX12NrAvailability_t
+{
+	DX12_NR_READY,
+	DX12_NR_NEEDS_TEMPORAL_AA,
+	DX12_NR_NEEDS_NATIVE_SCALE
+};
+
+// Shared policy for dispatch and settings. A native temporal result has
+// matching color, depth and motion inputs for every NR layer.
+inline UpscalerDX12NrAvailability_t DX12NrInputAvailability( bool bTemporalProvider, bool bScaled )
+{
+	if ( !bTemporalProvider )
+		return DX12_NR_NEEDS_TEMPORAL_AA;
+	if ( bScaled )
+		return DX12_NR_NEEDS_NATIVE_SCALE;
+	return DX12_NR_READY;
+}
+
 // INT_RENDERPARM_DX12_NR_CONFIG bit fields.
 #define DX12_NR_MAX_LAYERS                8
 #define DX12_NR_CONFIG_LAYERS_SHIFT       0	// 4 bits, 0..DX12_NR_MAX_LAYERS

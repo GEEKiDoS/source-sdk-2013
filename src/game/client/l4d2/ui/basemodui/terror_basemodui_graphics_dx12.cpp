@@ -4,7 +4,7 @@
 #include "l4d2/ui/basemodui/terror_basemodui_footer.h"
 #include "l4d2/ui/terror_hud_resources.h"
 #include "tier1/fmtstr.h"
-#include "upscaler_dx12.h"
+#include "vgui/IInput.h"
 #include "vgui/ILocalize.h"
 #include "vgui/IScheme.h"
 #include "vgui/ISurface.h"
@@ -73,6 +73,13 @@ class GraphicsSlider : public SliderControl
 	DECLARE_CLASS_SIMPLE( GraphicsSlider, SliderControl );
 public:
 	explicit GraphicsSlider( vgui::Panel *parent ) : BaseClass( parent, "" ), m_flDisplayedValue( 0.0f ) {}
+	void SetEnabled( bool enabled ) OVERRIDE
+	{
+		if ( !enabled && vgui::input()->GetMouseCapture() == GetVPanel() )
+			OnMouseReleased( MOUSE_LEFT );
+		BaseClass::SetEnabled( enabled );
+	}
+
 	void NavigateTo() OVERRIDE
 	{
 		if ( GraphicsScrollViewport *viewport = dynamic_cast<GraphicsScrollViewport *>( GetParent() ) )
@@ -124,7 +131,8 @@ static KeyValues *CopyGraphicsControl( KeyValues *layout, KeyValues *source, con
 
 GraphicsDX12::GraphicsDX12( vgui::Panel *parent, const char *name ) :
 	BaseClass( parent, name, "#GraphicsOptions_Title" ), m_nSection( TAB_DISPLAY ), m_nCapabilities( 0 ),
-	m_nContentHeight( 0 ), m_nScrollTarget( 0 ), m_flScroll( 0 ), m_flLastThink( 0 ), m_bLivePreview( false ), m_bDirty( false )
+	m_nContentHeight( 0 ), m_nScrollTarget( 0 ), m_flScroll( 0 ), m_flLastThink( 0 ),
+	m_bLivePreview( false ), m_bDirty( false ), m_NrAvailability( DX12_NR_NEEDS_TEMPORAL_AA )
 {
 	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_%language%.txt", NULL, false );
 	m_pViewport = new GraphicsScrollViewport( this );
@@ -136,6 +144,12 @@ GraphicsDX12::GraphicsDX12( vgui::Panel *parent, const char *name ) :
 		m_pHeaders[section]->SetMouseInputEnabled( false );
 		m_pHeaders[section]->SetPaintBackgroundEnabled( false );
 	}
+	m_pNrRequirement = new vgui::Label( m_pViewport, "GraphicsNrRequirement", "" );
+	m_pNrRequirement->SetMouseInputEnabled( false );
+	m_pNrRequirement->SetPaintBackgroundEnabled( false );
+	m_pNrRequirement->SetContentAlignment( vgui::Label::a_northwest );
+	m_pNrRequirement->SetWrap( true );
+	m_pNrRequirement->SetVisible( false );
 }
 
 vgui::Panel *GraphicsDX12::CreateControlByName( const char *name )
@@ -354,6 +368,10 @@ void GraphicsDX12::LayoutRows()
 	vgui::Panel *previous = NULL;
 	vgui::Panel *first = NULL;
 	vgui::IScheme *uiScheme = vgui::scheme()->GetIScheme( GetScheme() );
+	m_NrAvailability = UpscalerDX12_NrAvailability();
+	const bool bNrEnabled = m_NrAvailability == DX12_NR_READY;
+	m_pNrRequirement->SetVisible( false );
+	bool bMoveFocusToDone = false;
 	int y = 0;
 	for ( int order = 0; order < ARRAYSIZE( s_SectionOrder ); ++order )
 	{
@@ -381,6 +399,24 @@ void GraphicsDX12::LayoutRows()
 				header->SetFont( uiScheme->GetFont( "DefaultBold", true ) );
 				header->SetFgColor( Color( 224, 215, 188, 255 ) );
 				y += header->GetTall();
+				if ( section == TAB_NEURAL && !bNrEnabled )
+				{
+					const char *note = m_NrAvailability == DX12_NR_NEEDS_NATIVE_SCALE ?
+						"#GraphicsOptions_NrRequiresNative" : "#GraphicsOptions_NrRequiresTemporalAA";
+					const vgui::HFont font = uiScheme->GetFont( "DefaultMedium", true );
+					int textWide, textTall;
+					wchar_t text[256];
+					m_pNrRequirement->SetText( note );
+					m_pNrRequirement->GetText( text, sizeof( text ) );
+					vgui::surface()->GetTextSize( font, text, textWide, textTall );
+					if ( textWide > m_pViewport->GetWide() )
+						textTall *= 2;
+					m_pNrRequirement->SetSize( m_pViewport->GetWide(), textTall + Scale( 5 ) );
+					m_pNrRequirement->SetFont( font );
+					m_pNrRequirement->SetFgColor( Color( 190, 190, 190, 255 ) );
+					m_pNrRequirement->SetVisible( true );
+					y += m_pNrRequirement->GetTall();
+				}
 			}
 			widget.y = y;
 			row->SetWide( m_pViewport->GetWide() );
@@ -392,6 +428,36 @@ void GraphicsDX12::LayoutRows()
 				button->SetDefaultTextColor( Color( 210, 210, 210, 255 ) );
 			}
 			y += MAX( Scale( 21 ), row->GetTall() + Scale( 3 ) );
+			if ( widget.row->flags & ROWF_DLSS_NR )
+			{
+				if ( !bNrEnabled )
+				{
+					FlyoutMenu *menu = FlyoutMenu::GetActiveMenu();
+					if ( menu && menu->GetParentButton() && menu->GetParentButton()->GetParent() == row )
+						menu->CloseMenu();
+					if ( m_hLastFocus.Get() == row )
+					{
+						row->NavigateFrom();
+						m_hLastFocus = NULL;
+						bMoveFocusToDone = true;
+					}
+				}
+				row->SetEnabled( bNrEnabled );
+				row->SetMouseInputEnabled( bNrEnabled );
+				row->SetKeyBoardInputEnabled( bNrEnabled );
+				if ( vgui::Panel *button = row->FindChildByName( "BtnDropButton" ) )
+				{
+					// The hybrid disabled font blurs away thin glyphs. Dim the
+					// normal text with the row while suppressing both inputs.
+					button->SetEnabled( true );
+					button->SetMouseInputEnabled( bNrEnabled && widget.row->kind != ROW_SLIDER );
+					button->SetKeyBoardInputEnabled( bNrEnabled );
+				}
+				const int kDisabledNrRowAlpha = 135;
+				row->SetAlpha( bNrEnabled ? 255 : kDisabledNrRowAlpha );
+				if ( !bNrEnabled )
+					continue;
+			}
 			row->SetNavUp( previous );
 			if ( vgui::Panel *button = row->FindChildByName( "BtnDropButton" ) )
 				button->SetNavUp( previous );
@@ -422,6 +488,8 @@ void GraphicsDX12::LayoutRows()
 			if ( vgui::Panel *button = first->FindChildByName( "BtnDropButton" ) )
 				button->SetNavUp( done );
 		}
+		if ( bMoveFocusToDone )
+			done->NavigateTo();
 	}
 	m_nContentHeight = y;
 	const int view = m_pViewport->GetTall();
@@ -439,6 +507,7 @@ void GraphicsDX12::PositionRows()
 	const int offset = (int)( m_flScroll + 0.5f );
 	for ( int section = 0; section < TAB_COUNT; ++section )
 		m_pHeaders[section]->SetPos( 0, m_nHeaderY[section] - offset );
+	m_pNrRequirement->SetPos( 0, m_nHeaderY[TAB_NEURAL] + m_pHeaders[TAB_NEURAL]->GetTall() - offset );
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
 		if ( m_Widgets[i].control.Get() )
@@ -462,6 +531,10 @@ void GraphicsDX12::OnThink()
 	{
 		FlyoutMenu::CloseActiveMenu();
 		ReadSettings();
+		LayoutRows();
+	}
+	else if ( m_NrAvailability != UpscalerDX12_NrAvailability() )
+	{
 		LayoutRows();
 	}
 	const double now = Plat_FloatTime();
@@ -516,9 +589,10 @@ void GraphicsDX12::FocusSection()
 		m_hLastFocus->NavigateFrom();
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
-		if ( m_Widgets[i].row->tab == section && m_Widgets[i].control.Get() && m_Widgets[i].control->IsVisible() )
+		vgui::Panel *row = m_Widgets[i].control.Get();
+		if ( m_Widgets[i].row->tab == section && row && row->IsVisible() && row->IsEnabled() )
 		{
-			m_Widgets[i].control->NavigateTo();
+			row->NavigateTo();
 			return;
 		}
 	}
@@ -571,12 +645,16 @@ void GraphicsDX12::OnCommand( const char *command )
 		if ( rowIndex < 0 || rowIndex >= count || choice < 0 ) return;
 		const RowDef_t &row = rows[rowIndex];
 		if ( !IsRowAvailable( row ) || !IsChoiceAvailable( row, choice ) ) return;
+		if ( ( row.flags & ROWF_DLSS_NR ) && UpscalerDX12_NrAvailability() != DX12_NR_READY )
+			return;
 		int cvars = RowCvarCount( row );
 		if ( ( row.flags & ROWF_OFF_ENABLE_ONLY ) && choice == 0 ) cvars = 1;
 		for ( int c = 0; c < cvars; ++c )
 			cvar->FindVar( row.cvars[c] )->SetValue( row.kind == ROW_CHECK ? (float)choice : row.choices[choice].v[c] );
 		m_bDirty = true;
 		Select( CFmtStr( "GraphicsRow%d", rowIndex ), command );
+		if ( m_NrAvailability != UpscalerDX12_NrAvailability() )
+			LayoutRows();
 		return;
 	}
 	BaseClass::OnCommand( command );

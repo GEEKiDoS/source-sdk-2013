@@ -209,6 +209,9 @@ scrolls to a section. The upscaler choices use the renderer's provider probe
 for the active device; an unavailable saved mode shows its native, unfiltered
 fallback without replacing the saved preference. The DLSS Neural Rendering
 section appears only if the required NGX runtime and NR snippet initialize.
+Its controls require an available temporal AA provider and native render
+resolution. When either is missing, the list explains why and keeps the saved
+NR settings intact.
 In a map, the list occupies the left side and the uncovered scene stays live
 and unblurred on the right. Changes take effect immediately where the renderer
 supports live changes. Done / Escape / controller B returns to Video, saving

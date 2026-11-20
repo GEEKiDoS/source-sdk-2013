@@ -9,6 +9,8 @@
 #pragma once
 #endif
 
+#include "renderparm.h"
+
 class IMaterialSystemHardwareConfig;
 class IMatRenderContext;
 class CViewSetup;
@@ -36,6 +38,8 @@ int UpscalerDX12_Status();
 int UpscalerDX12_Capabilities();
 void UpscalerDX12_RequestCapabilityProbe();
 bool UpscalerDX12_IsTechniqueAvailable( int mode );
+// Configuration-level availability. Individual frames still have to pass dispatch validation.
+UpscalerDX12NrAvailability_t UpscalerDX12_NrAvailability();
 // Turns mat_antialias off (temporal AA and frame generation both need a single-sample scene); shared with framegen_dx12.cpp.
 void UpscalerDX12_ReconcileMSAA();
 

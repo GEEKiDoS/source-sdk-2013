@@ -315,6 +315,18 @@ bool UpscalerDX12_IsTechniqueAvailable( int mode )
 	}
 }
 
+UpscalerDX12NrAvailability_t UpscalerDX12_NrAvailability()
+{
+	// Use the backend probe, not the last dispatch status: the latter can lag
+	// behind a menu selection or be unset when no map is loaded.
+	const bool bTemporalProvider = UpscalerDX12_Enabled() && UpscalerDX12_IsTechniqueAvailable( r_upscaler.GetInt() );
+	// As in CViewRender::Render, use the effective viewport scale. SMAA and
+	// frame generation can force native rendering despite a saved lower scale.
+	extern ConVar mat_viewportscale;
+	const bool bScaled = bTemporalProvider && mat_viewportscale.GetFloat() * UpscalerDX12_RenderScale() < 1.0f;
+	return DX12NrInputAvailability( bTemporalProvider, bScaled );
+}
+
 int UpscalerDX12_Status()
 {
 	return s_pShaderAPI ? s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_STATUS ) : 0;

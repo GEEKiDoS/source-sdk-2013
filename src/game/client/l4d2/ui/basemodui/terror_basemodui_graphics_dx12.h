@@ -6,6 +6,7 @@
 #endif
 
 #include "l4d2/ui/basemodui/terror_basemodui_options.h"
+#include "upscaler_dx12.h"
 #include "vgui_graphics_options.h"
 
 namespace vgui { class Label; class ScrollBar; }
@@ -56,11 +57,13 @@ private:
 	GraphicsScrollViewport *m_pViewport;
 	vgui::ScrollBar *m_pScroll;
 	vgui::Label *m_pHeaders[GraphicsOptions::TAB_COUNT];
+	vgui::Label *m_pNrRequirement;
 	int m_nSection, m_nCapabilities, m_nContentHeight, m_nScrollTarget;
 	int m_nHeaderY[GraphicsOptions::TAB_COUNT];
 	float m_flScroll;
 	double m_flLastThink;
 	bool m_bLivePreview, m_bDirty;
+	UpscalerDX12NrAvailability_t m_NrAvailability;
 };
 }
 #endif // TERROR_BASEMODUI_GRAPHICS_DX12_H
