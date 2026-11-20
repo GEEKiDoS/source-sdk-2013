@@ -152,7 +152,15 @@ void L4D360HybridButton::ApplyStyle( IScheme *uiScheme )
 }
 void L4D360HybridButton::ApplySettings( KeyValues *data )
 {
+	// Retail hybrid buttons use tooltiptext as footer/carousel help, not a
+	// stock mouse popup. Keep it out of Panel::ApplySettings, which otherwise
+	// creates a TextTooltip even for a hint that cannot be rendered.
+	KeyValues *hint = data->FindKey( "tooltiptext" );
+	if ( hint )
+		data->RemoveSubKey( hint );
 	BaseClass::ApplySettings( data );
+	if ( hint )
+		data->AddSubKey( hint );
 	m_Style = data->GetString( "Style", "DefaultButton" );
 	m_nOriginalTall = GetTall();
 	m_nWideAtOpen = scheme()->GetProportionalScaledValue( data->GetInt( "wideatopen", 0 ) );
