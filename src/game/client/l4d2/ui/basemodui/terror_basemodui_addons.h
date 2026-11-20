@@ -53,7 +53,7 @@ public:
 	virtual void OnOpen() OVERRIDE;
 	virtual void OnCommand( const char *command ) OVERRIDE;
 	virtual void OnKeyCodePressed( vgui::KeyCode code ) OVERRIDE;
-	virtual vgui::Panel *CreateControlByName( const char *name ) OVERRIDE;
+	virtual void LoadControlSettings( const char *resource, const char *pathID = NULL, KeyValues *preloaded = NULL, KeyValues *conditions = NULL ) OVERRIDE;
 	void SetAddonEnabled( int index, bool enabled );
 	KeyValues *GetRowLayout() const { return m_pRowLayout; }
 	bool IsLayoutReady() const { return m_bLayoutReady; }
@@ -69,17 +69,15 @@ private:
 	void UpdateFooter();
 	bool SaveAddonList();
 	void ClearImage();
-	static void ImageReadComplete( const FileAsyncRequest_t &request, int bytes, FSAsyncStatus_t status );
-	void LoadImageData( const void *data, int bytes );
+	void LoadPreview( const AddonInfo_t &info );
 	GenericPanelList *m_pList;
 	vgui::ImagePanel *m_pIcon, *m_pIconSpinner;
-	vgui::CheckButton *m_pIgnoreAssociation;
+	vgui::Label *m_pName, *m_pType, *m_pAuthor, *m_pDescription, *m_pNoAddons;
 	KeyValues *m_pAddonList, *m_pRowLayout;
 	CUtlVector<AddonInfo_t> m_Addons;
 	CUtlDict<bool,int> m_EnabledSnapshot;
 	char m_Mod[MAX_PATH], m_ListPath[MAX_PATH], m_Filter[32];
-	int m_Texture, m_DefaultTexture;
-	FSAsyncControl_t m_ImageRead;
+	int m_Texture, m_DefaultTexture, m_SelectedAddon;
 	float m_ImageFade;
 	bool m_bSquareImage, m_bLayoutReady, m_bReady, m_bClosing, m_bConflictWarned;
 };

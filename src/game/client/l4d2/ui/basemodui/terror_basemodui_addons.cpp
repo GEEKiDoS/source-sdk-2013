@@ -33,11 +33,9 @@ static bool s_AddonPathsChanged;
 
 static void Visible( vgui::Panel *panel, const char *name, bool visible )
 {
-	vgui::Panel *child = panel->FindChildByName( name, true ); if ( child ) child->SetVisible( visible );
-}
-static void Text( vgui::Panel *panel, const char *name, const wchar_t *text )
-{
-	vgui::Label *label = dynamic_cast<vgui::Label *>( panel->FindChildByName( name, true ) ); if ( label ) label->SetText( text );
+	vgui::Panel *child = panel->FindChildByName( name, false );
+	if ( child )
+		child->SetVisible( visible );
 }
 static void Localized( const char *token, wchar_t *out, int bytes )
 {
@@ -156,23 +154,49 @@ static void MetadataText( KeyValues *info, const char *key, wchar_t *out, int by
 }
 
 Addons::Addons( vgui::Panel *parent, const char *name ) : BaseClass( parent, name, false, true, true, true ),
-	m_pAddonList( NULL ), m_pRowLayout( new KeyValues( "" ) ), m_Texture( -1 ), m_DefaultTexture( -1 ), m_ImageRead( NULL ), m_ImageFade( 0 ), m_bSquareImage( true ), m_bLayoutReady( false ), m_bReady( false ), m_bClosing( false ), m_bConflictWarned( false )
+	m_pAddonList( NULL ), m_pRowLayout( new KeyValues( "" ) ), m_Texture( -1 ), m_DefaultTexture( -1 ), m_SelectedAddon( -1 ), m_ImageFade( 0 ), m_bSquareImage( true ), m_bLayoutReady( false ), m_bReady( false ), m_bClosing( false ), m_bConflictWarned( false )
 {
 	m_Filter[0] = 0; m_Mod[0] = 0; m_ListPath[0] = 0;
 	m_pList = new GenericPanelList( this, "GplAddons" );
 	m_pList->SetScrollBarVisible( true ); m_pList->SetScrollProgressVisible( true );
-	m_pIgnoreAssociation = new vgui::CheckButton( this, "CheckButtonAssociation", "" );
+	// Bind the dialog's labels, not the identically named labels in list rows.
+	m_pName = new vgui::Label( this, "LblName", "" );
+	m_pType = new vgui::Label( this, "LblType", "" );
+	m_pAuthor = new vgui::Label( this, "LblAuthor", "" );
+	m_pDescription = new vgui::Label( this, "LblDescription", "" );
+	m_pNoAddons = new vgui::Label( this, "LblNoAddons", "#L4D360UI_No_Addons_Installed" );
 	m_pIcon = new vgui::ImagePanel( this, "ImgAddonIcon" );
+	m_pIcon->SetPaintEnabled( false ); // Bounds anchor; PaintBackground draws the JPEG.
 	m_pIconSpinner = new vgui::ImagePanel( this, "ImgAddonIconSpinner" );
 	SetFooterEnabled( true ); // The real window manager supplies the caller separately.
 	m_bLayoutReady = LoadLayout( "resource/ui/l4d360ui/addons.res" ) && LoadTerrorUiResource( m_pRowLayout, "resource/ui/l4d360ui/addonlistitem.res" );
 }
 Addons::~Addons() { ClearImage(); if ( m_pAddonList ) m_pAddonList->deleteThis(); m_pRowLayout->deleteThis(); }
-vgui::Panel *Addons::CreateControlByName( const char *name )
+void Addons::LoadControlSettings( const char *resource, const char *pathID, KeyValues *preloaded, KeyValues *conditions )
 {
-	if ( !Q_stricmp( name, "GenericPanelList" ) ) return new GenericPanelList( this, "" );
-	if ( !Q_stricmp( name, "CvarToggleCheckButton_GameUI" ) ) return new vgui::CheckButton( this, "", "" );
-	return BaseClass::CreateControlByName( name );
+	KeyValues::AutoDelete owned( preloaded ? NULL : new KeyValues( "" ) );
+	KeyValues *layout = preloaded ? preloaded : static_cast<KeyValues *>( owned );
+	if ( !preloaded && !LoadTerrorUiResource( layout, resource ) )
+		return;
+
+	const char *obsolete[] = { "CheckButtonAssociation", "LblCheckNoAssociation" };
+	for ( int i = 0; i < ARRAYSIZE( obsolete ); ++i )
+	{
+		if ( KeyValues *control = layout->FindKey( obsolete[i] ) )
+		{
+			layout->RemoveSubKey( control );
+			control->deleteThis();
+		}
+	}
+
+	BaseClass::LoadControlSettings( resource, pathID, layout, conditions );
+	// The resource also reloads during scheme application, restoring its
+	// default visibility. Reapply selection and empty state on every load.
+	Visible( this, "AddonSupportRequiredPanel", false );
+	Visible( this, "InstallingAddonSupportPanel", false );
+	Visible( this, "BtnInstallSupport", false );
+	Visible( this, "IconInstallSupport", false );
+	UpdateDetails();
 }
 void Addons::OnOpen()
 {
@@ -181,13 +205,6 @@ void Addons::OnOpen()
 	if ( firstOpen )
 	{
 		ModRoot( m_Mod, sizeof( m_Mod ) ); Q_snprintf( m_ListPath, sizeof( m_ListPath ), "%saddonlist.txt", m_Mod );
-		ConVarRef ignore( "cl_ignore_vpk_association", true );
-		m_pIgnoreAssociation->SetSelected( ignore.IsValid() && ignore.GetBool() );
-		m_pIgnoreAssociation->SetVisible( ignore.IsValid() && ignore.GetBool() ); Visible( this, "LblCheckNoAssociation", m_pIgnoreAssociation->IsVisible() );
-		// G5AA20 is literal false in this native build. Local add-ons are
-		// supported; no install state or metadata dependency gate is invented.
-		Visible( this, "AddonSupportRequiredPanel", false ); Visible( this, "InstallingAddonSupportPanel", false );
-		Visible( this, "BtnInstallSupport", false ); Visible( this, "IconInstallSupport", false );
 		m_DefaultTexture = vgui::surface()->DrawGetTextureId( "vgui/menu_mode_campaign" );
 		if ( m_DefaultTexture == -1 ) { m_DefaultTexture = vgui::surface()->CreateNewTextureID(); vgui::surface()->DrawSetTextureFile( m_DefaultTexture, "vgui/menu_mode_campaign", true, false ); }
 	}
@@ -214,7 +231,12 @@ void Addons::OnOpen()
 }
 void Addons::PopulateAddonInfo()
 {
-	m_pList->RemoveAllPanelItems(); m_Addons.RemoveAll(); if ( m_pAddonList ) m_pAddonList->deleteThis();
+	m_pList->RemoveAllPanelItems();
+	m_SelectedAddon = -1;
+	ClearImage();
+	m_Addons.RemoveAll();
+	if ( m_pAddonList )
+		m_pAddonList->deleteThis();
 	m_pAddonList = new KeyValues( "AddonList" );
 	CUtlBuffer bytes;
 	if ( !filesystem->ReadFile( m_ListPath, NULL, bytes ) ) { RebuildRows(); return; }
@@ -263,13 +285,13 @@ void Addons::PopulateAddonInfo()
 void Addons::RebuildRows()
 {
 	if ( !m_bReady ) return;
-	m_pList->RemoveAllPanelItems(); int mask = 1;
+	m_pList->RemoveAllPanelItems();
+	int mask = 1;
 	for ( int i = 0; i < ARRAYSIZE( s_Content ); ++i ) if ( !Q_stricmp( m_Filter, s_Content[i].tag ) ) mask = s_Content[i].bit;
 	FOR_EACH_VEC( m_Addons, i ) if ( mask & m_Addons[i].content ) m_pList->AddPanelItem( new AddonListItem( m_pList, this, i, m_Addons[i] ) );
-	m_pList->InvalidateLayout( true ); if ( m_pList->GetPanelItemCount() ) m_pList->SelectPanelItem( 0 );
-	Visible( this, "LblNoAddons", m_Addons.Count() == 0 );
-	wchar_t noAddons[128]; Localized( "#L4D360UI_No_Addons_Installed", noAddons, sizeof( noAddons ) ); Text( this, "LblNoAddons", noAddons );
-	Visible( this, "LblNoAddonsFiltered", m_Addons.Count() > 0 && !m_pList->GetPanelItemCount() );
+	m_pList->InvalidateLayout( true );
+	if ( m_pList->GetPanelItemCount() )
+		m_pList->SelectPanelItem( 0 );
 	vgui::Panel *filter = FindChildByName( "DrpFilterTags", true ); if ( filter ) filter->SetEnabled( m_Addons.Count() > 0 );
 	UpdateDetails();
 }
@@ -291,31 +313,64 @@ void Addons::UpdateDetails()
 {
 	AddonListItem *row = dynamic_cast<AddonListItem *>( m_pList->GetSelectedPanelItem() );
 	const bool selected = row && m_Addons.IsValidIndex( row->GetAddonIndex() );
-	const char *details[] = { "LblName", "LblType", "LblAuthor", "LblDescription", "ImgAddonIcon" };
-	for ( int i = 0; i < ARRAYSIZE( details ); ++i ) Visible( this, details[i], selected );
-	Visible( this, "ImgAddonIconOverlay", false ); m_pIconSpinner->SetVisible( selected ); Visible( this, "ImgGlobalAddonIconSpinner", false );
-	Visible( this, "BtnVisitWorkshop", false ); Visible( this, "IconVisitWorkshop", false );
-	if ( !selected ) { ClearImage(); return; }
-	const AddonInfo_t &info = m_Addons[row->GetAddonIndex()];
-	Text( this, "LblName", info.title ); Text( this, "LblType", info.types ); Text( this, "LblDescription", info.description );
-	wchar_t author[260]; Localized( "#L4D360UI_Addon_By", author, sizeof( author ) ); V_wcsncat( author, info.author, ARRAYSIZE( author ) ); Text( this, "LblAuthor", author );
+	const int index = selected ? row->GetAddonIndex() : -1;
+
+	m_pNoAddons->SetVisible( m_bReady && m_Addons.Count() == 0 );
+	Visible( this, "LblNoAddonsFiltered", m_bReady && m_Addons.Count() > 0 && !selected );
+	Visible( this, "ImgAddonIconOverlay", false );
+	Visible( this, "ImgGlobalAddonIconSpinner", false );
+	Visible( this, "BtnVisitWorkshop", false );
+	Visible( this, "IconVisitWorkshop", false );
+	m_pName->SetVisible( selected );
+	m_pType->SetVisible( selected );
+	m_pAuthor->SetVisible( selected );
+	m_pDescription->SetVisible( selected );
+	m_pIcon->SetVisible( selected );
+	m_pIconSpinner->SetVisible( selected && Plat_FloatTime() < m_ImageFade + 0.3f );
+
+	if ( index == m_SelectedAddon )
+		return;
+
+	m_SelectedAddon = index;
 	ClearImage();
-	char root[MAX_PATH]; Q_snprintf( root, sizeof( root ), "%saddons\\%s", m_Mod, info.filename );
-	if ( info.archive ) filesystem->AddSearchPath( root, "ADDONINFO", PATH_ADD_TO_HEAD );
-	FileAsyncRequest_t request; request.pszFilename = info.image; request.pfnCallback = ImageReadComplete; request.pContext = this;
-	request.flags = FSASYNC_FLAGS_SYNC | FSASYNC_FLAGS_FREEDATAPTR;
-	filesystem->AsyncRead( request, &m_ImageRead );
-	if ( info.archive ) filesystem->RemoveSearchPath( root, "ADDONINFO" );
+	if ( !selected )
+		return;
+
+	const AddonInfo_t &info = m_Addons[index];
+	m_pName->SetText( info.title );
+	m_pType->SetText( info.types );
+	m_pDescription->SetText( info.description );
+	wchar_t author[260];
+	Localized( "#L4D360UI_Addon_By", author, sizeof( author ) );
+	V_wcsncat( author, info.author, ARRAYSIZE( author ) );
+	m_pAuthor->SetText( author );
+	LoadPreview( info );
+}
+void Addons::LoadPreview( const AddonInfo_t &info )
+{
+	char root[MAX_PATH];
+	Q_snprintf( root, sizeof( root ), "%saddons\\%s", m_Mod, info.filename );
+	if ( info.archive )
+		filesystem->AddSearchPath( root, "ADDONINFO", PATH_ADD_TO_HEAD );
+
+	CUtlBuffer bytes;
+	const bool read = filesystem->ReadFile( info.image, NULL, bytes );
+	if ( info.archive )
+		filesystem->RemoveSearchPath( root, "ADDONINFO" );
+
+	if ( read )
+		LoadBaseModJpegTexture( bytes.Base(), bytes.TellPut(), m_Texture, m_bSquareImage );
+	m_ImageFade = Plat_FloatTime() + 0.25f;
+	m_pIconSpinner->SetVisible( true );
 }
 void Addons::ClearImage()
 {
-	if ( m_ImageRead ) { filesystem->AsyncFinish( m_ImageRead, true ); filesystem->AsyncRelease( m_ImageRead ); m_ImageRead = NULL; }
-	if ( m_Texture != -1 ) { vgui::surface()->DestroyTextureID( m_Texture ); m_Texture = -1; }
+	if ( m_Texture != -1 )
+	{
+		vgui::surface()->DestroyTextureID( m_Texture );
+		m_Texture = -1;
+	}
 	m_ImageFade = 0;
-}
-void Addons::ImageReadComplete( const FileAsyncRequest_t &request, int bytes, FSAsyncStatus_t status )
-{
-	if ( status == FSASYNC_OK ) static_cast<Addons *>( request.pContext )->LoadImageData( request.pData, bytes );
 }
 struct AddonJpegError_t { jpeg_error_mgr error; jmp_buf jump; };
 static void JpegError( j_common_ptr jpeg )
@@ -357,14 +412,12 @@ bool LoadBaseModJpegTexture( const void *data, int bytes, int &texture, bool &sq
 		for ( int x = width - 1; x >= 0; --x ) { row[x * 4 + 3] = 255; row[x * 4 + 2] = row[x * 3 + 2]; row[x * 4 + 1] = row[x * 3 + 1]; row[x * 4] = row[x * 3]; }
 	}
 	jpeg_finish_decompress( &jpeg ); jpeg_destroy_decompress( &jpeg );
-	texture = vgui::surface()->CreateNewTextureID( true ); vgui::surface()->DrawSetTextureRGBA( texture, rgba.Base(), width, height, 1, false );
-	square = width == height; return true;
-}
-void Addons::LoadImageData( const void *data, int bytes )
-{
-	LoadBaseModJpegTexture( data, bytes, m_Texture, m_bSquareImage );
-	// G1E1B0 starts the fade after successful I/O even when decoding fails.
-	m_ImageFade = Plat_FloatTime() + 0.25f;
+	// The SDK surface pads procedural textures to power-of-two dimensions.
+	// RGBAEx sets the UV bounds to the uploaded pixels; RGBA samples the padding.
+	texture = vgui::surface()->CreateNewTextureID( true );
+	vgui::surface()->DrawSetTextureRGBAEx( texture, rgba.Base(), width, height, IMAGE_FORMAT_RGBA8888 );
+	square = width == height;
+	return true;
 }
 void Addons::PaintBackground()
 {
@@ -373,23 +426,27 @@ void Addons::PaintBackground()
 	int x, y; image->GetPos( x, y ); int wide = image->GetWide(), tall = image->GetTall();
 	vgui::surface()->DrawSetColor( 0, 0, 0, 255 ); vgui::surface()->DrawFilledRectFade( x, y, x + wide, y + tall, 128, 0, true );
 	if ( m_bSquareImage || m_Texture == -1 ) { x += ( wide - tall ) / 2; wide = tall; }
-	vgui::surface()->DrawSetTexture( m_Texture == -1 ? m_DefaultTexture : m_Texture );
+	const int texture = m_Texture == -1 ? m_DefaultTexture : m_Texture;
 	const float fade = m_ImageFade ? RemapValClamped( static_cast<float>( Plat_FloatTime() ), m_ImageFade, m_ImageFade + 0.3f, 0.0f, 1.0f ) : 0.0f;
-	vgui::surface()->DrawSetColor( 255, 255, 255, static_cast<int>( fade * 255 ) ); vgui::surface()->DrawTexturedRect( x, y, x + wide, y + tall );
+	if ( texture != -1 )
+	{
+		vgui::surface()->DrawSetTexture( texture );
+		vgui::surface()->DrawSetColor( 255, 255, 255, static_cast<int>( fade * 255 ) );
+		vgui::surface()->DrawTexturedRect( x, y, x + wide, y + tall );
+	}
 	m_pIconSpinner->SetAlpha( static_cast<int>( ( 1.0f - fade ) * 255 ) );
 }
 void Addons::OnThink()
 {
 	BaseClass::OnThink();
 	m_pIconSpinner->SetFrame( static_cast<int>( Plat_FloatTime() * 10.0 ) );
-	m_pIconSpinner->SetVisible( m_pList->GetPanelItemCount() != 0 );
+	m_pIconSpinner->SetVisible( m_SelectedAddon != -1 && Plat_FloatTime() < m_ImageFade + 0.3f );
 }
 bool Addons::SaveAddonList()
 {
 	if ( !m_pAddonList ) return false;
 	FOR_EACH_VEC( m_Addons, i ) m_pAddonList->SetInt( m_Addons[i].filename, m_Addons[i].enabled ? 1 : 0 );
 	bool saved = m_pAddonList->SaveToFile( filesystem, m_ListPath, NULL );
-	ConVarRef ignore( "cl_ignore_vpk_association", true ); if ( ignore.IsValid() ) ignore.SetValue( m_pIgnoreAssociation->IsSelected() ? 1 : 0 );
 	// G1EC70 sets the changed bit even when SaveToFile fails. The real owner
 	// later re-reads the actual disk bytes, never this unsaved UI proposal.
 	s_AddonPathsChanged = true;
