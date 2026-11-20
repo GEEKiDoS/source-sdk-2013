@@ -446,6 +446,7 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 #if defined( _WIN64 )
 	// Native DX12 is the default renderer. -dx9 (or another explicit legacy backend) keeps the stock shaderapi.
 	bool bLegacyRendererRequested = false;
+	bool bIvpPhysicsRequested = false;
 	int nArgs = 0;
 	LPWSTR *pArgs = CommandLineToArgvW( GetCommandLineW(), &nArgs );
 	if ( !pArgs )
@@ -459,6 +460,8 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 		if ( wcscmp( pArg, L"-dx9" ) == 0 || wcscmp( pArg, L"-gl" ) == 0 ||
 			wcscmp( pArg, L"-vulkan" ) == 0 || wcscmp( pArg, L"-noshaderapi" ) == 0 )
 			bLegacyRendererRequested = true;
+		else if ( wcscmp( pArg, L"-ivpphysics" ) == 0 )
+			bIvpPhysicsRequested = true;
 	}
 	LocalFree( pArgs );
 	const bool bDx12Requested = !bLegacyRendererRequested;
@@ -536,6 +539,15 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 			{
 				bRedirected = AddModuleRedirect( L"GameUI", sGameUIMod.c_str(), error, sizeof( error ) / sizeof( error[0] ) );
 			}
+		}
+		// An EXE-local bin\x64\vphysics.dll (VPhysics-Box3D in player packages) replaces the SDK's IVP physics; it
+		// exports the same VPhysics031 / VPhysicsCollision007 interfaces. -ivpphysics keeps the SDK module.
+		if ( bRedirected && !bIvpPhysicsRequested )
+		{
+			const std::wstring sExePath = GetExePath();
+			const std::wstring sPhysics = sExePath.substr( 0, sExePath.find_last_of( L"\\/" ) + 1 ) + L"bin\\x64\\vphysics.dll";
+			if ( FileExists( sPhysics.c_str() ) )
+				bRedirected = AddModuleRedirect( L"vphysics", sPhysics.c_str(), error, sizeof( error ) / sizeof( error[0] ) );
 		}
 #endif
 		if ( !bRedirected || !InstallModuleRedirects( error, sizeof( error ) / sizeof( error[0] ) ) )
