@@ -10,6 +10,7 @@ struct Vertex
 	nointerpolation float4 light : TEXCOORD0;
 	nointerpolation float4 color : TEXCOORD1;
 	nointerpolation float3 hitCenter : TEXCOORD2;
+	nointerpolation float3 hitNormal : TEXCOORD3;
 };
 
 Vertex main( uint id : SV_VertexID )
@@ -19,6 +20,7 @@ Vertex main( uint id : SV_VertexID )
 	v.light = bounce.positionValid;
 	v.color = bounce.colorDebug;
 	v.hitCenter = bounce.hitCenter;
+	v.hitNormal = bounce.hitNormal;
 	float4 rect = float4( -1, -1, 1, 1 );
 #if !VIEWMODEL
 	float4x4 projection = float4x4( measurement.Load( int3( 3, 3, 0 ) ), measurement.Load( int3( 4, 3, 0 ) ), measurement.Load( int3( 5, 3, 0 ) ), measurement.Load( int3( 6, 3, 0 ) ) );

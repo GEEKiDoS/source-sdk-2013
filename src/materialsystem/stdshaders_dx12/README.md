@@ -701,6 +701,8 @@ the measured centre. Albedo is material-tinted linear base colour, before lighti
 by the RTV and decoded by the SRV. `mat_pbr_showgbuffer 4` displays it while bounce is enabled.
 The opaque viewmodel colour draw writes the same attachment with its own projection; it participates only
 as a receiver. Translucents never write or receive the effect.
+A softened hit-plane test and six depth taps towards the measured light reduce through-wall leaks.
+The trace samples the world projection even for hands. Off-screen or hidden blockers cannot be inferred.
 
 `volumetric_ps51` runtime contract (screen-space volumetric march): the low-quality profile (`r_volumetric_quality 0`,
 8 light-segment samples) runs the march at quarter resolution (one texel per 4x4 full-resolution footprint), while

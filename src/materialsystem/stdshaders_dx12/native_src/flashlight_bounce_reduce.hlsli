@@ -6,6 +6,7 @@ struct BounceLight
 	float4 positionValid;
 	float4 colorDebug;
 	float3 hitCenter;
+	float3 hitNormal;
 };
 
 BounceLight ReduceBounce( Texture2D<float4> sums )
@@ -23,6 +24,7 @@ BounceLight ReduceBounce( Texture2D<float4> sums )
 	BounceLight light;
 	float invWeight = rcp( max( radiance.w + legacy.w, 1e-6 ) );
 	light.hitCenter = center.xyz * invWeight;
+	light.hitNormal = normal.xyz / max( length( normal.xyz ), 1e-5 );
 	float3 toLight = originScale.xyz - light.hitCenter;
 	float3 pos = light.hitCenter + normal.xyz * ( 16 / max( length( normal.xyz ), 1e-5 ) ) + toLight * ( 12 / max( length( toLight ), 1 ) );
 	float4 tintDebug = sums.Load( int3( 7, 3, 0 ) );

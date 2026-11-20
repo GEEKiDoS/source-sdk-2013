@@ -121,7 +121,7 @@ void CShaderAPIDX12::ApplyBounce( bool viewModel )
 		}
 		if ( !MatrixInverseGeneral( forward, inverse ) )
 			return;
-		memcpy( camera.worldToClip, forward.Base(), sizeof( camera.worldToClip ) );
+		// Preserve the world projection for sampling scene depth during the visibility trace.
 		memcpy( camera.clipToWorld, inverse.Base(), sizeof( camera.clipToWorld ) );
 	}
 	// A private copy of the camera block: these unused contact lanes carry scene fog, independent of GTAO.
@@ -137,6 +137,11 @@ void CShaderAPIDX12::ApplyBounce( bool viewModel )
 	camera.contactDepth[1] = m_flFogZ;
 	camera.contactDepth[2] = density;
 	camera.contactDepth[3] = invRange;
+	// Convert device Z to homogeneous W along the main perspective view: z = A + B / W.
+	const float *zRow = camera.worldToClip + 8, *wRow = camera.worldToClip + 12;
+	const float norm = wRow[0] * wRow[0] + wRow[1] * wRow[1] + wRow[2] * wRow[2];
+	camera.depth[1] = norm > 0.f ? ( zRow[0] * wRow[0] + zRow[1] * wRow[1] + zRow[2] * wRow[2] ) / norm : 0.f;
+	camera.depth[2] = zRow[3] - camera.depth[1] * wRow[3];
 	const bool msaa = target.sampleCount > 1;
 	auto *vs = ResolveNamedShader( "flashlight_bounce_vs51", false, viewModel, 0 );
 	auto *ps = ResolveNamedShader( "flashlight_bounce_ps51", true, msaa, 0 );
