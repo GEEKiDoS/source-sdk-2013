@@ -636,8 +636,9 @@ private:
 	void FailDevice( const char *pszOperation, HRESULT hr );
 	bool CheckDevice( const char *pszOperation, HRESULT hr );
 	void ReleaseViews();
-	// Releases every view's targets and provider chain and creates them again (mode/kind changes; GPU idle).
-	bool RecreateViews();
+	// A provider owns its swap chains until they are released at a GPU-idle boundary.
+	void ReleaseViewResources();
+	bool CreateViewResources();
 	// Switches the frame-generation kind on the provider, adopting its queue and present format (GPU idle, no
 	// swap chain alive). Returns the provider's result.
 	bool SelectFrameGen( FrameGenKindDX12 kind, uint32_t nMultiplier, bool bHudless );

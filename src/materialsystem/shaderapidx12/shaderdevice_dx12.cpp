@@ -1142,11 +1142,13 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 			return false;
 	// Frame generation is windowed/borderless only: leave it (natively re-created chains) before going fullscreen.
 	// A pending request from this frame is dropped with it; the shader API re-requests when windowed again.
+	if ( !info.m_bWindowed )
+		m_PendingSelect.valid = false;
 	if ( bDropFrameGen )
 	{
-		m_PendingSelect.valid = false;
+		ReleaseViewResources();
 		SelectFrameGen( FrameGenKindDX12::None, 2, false );
-		if ( !RecreateViews() )
+		if ( !CreateViewResources() )
 			return false;
 	}
 	const bool bFullscreen = !info.m_bWindowed;
@@ -1155,27 +1157,28 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		if ( pView->swap && bFullscreenChanged && !CheckDevice( "SetFullscreenState", pView->swap->SetFullscreenState( bFullscreen, nullptr ) ) )
 			return false;
 	m_bWindowed = info.m_bWindowed;
-	// Flip-model chains must ResizeBuffers after a fullscreen transition even when the size is unchanged.
-	if ( bFullscreenChanged )
-		for ( View *pView : m_Views )
-			if ( pView != m_pCurrentView && pView->swap && !ResizeView( *pView, pView->width, pView->height, true ) )
-				return false;
 	m_bWaitForVsync = info.m_bWaitForVSync;
 	const int nSamples = MAX( 1, info.m_nAASamples ), nQuality = info.m_nAAQuality;
-	if ( nSamples != m_nSampleCount || nQuality != m_nSampleQuality )
+	const bool bSamplesChanged = nSamples != m_nSampleCount || nQuality != m_nSampleQuality;
+	if ( bSamplesChanged )
 	{
 		m_nSampleCount = nSamples;
 		m_nSampleQuality = nQuality;
-		if ( !RecreateViews() )
-			return false;
 	}
+	// The swap chain is always single-sampled. Rebuild the scene targets on the
+	// existing chain rather than creating a second flip chain for the same HWND.
+	const bool bForceBuffers = bFullscreenChanged || bSamplesChanged;
+	if ( bForceBuffers )
+		for ( View *pView : m_Views )
+			if ( pView != m_pCurrentView && pView->swap && !ResizeView( *pView, pView->width, pView->height, true ) )
+				return false;
 	if ( m_pCurrentView )
 	{
 		RECT rect{};
 		GetClientRect( m_pCurrentView->hwnd, &rect );
 		const int nWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : rect.right - rect.left;
 		const int nHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : rect.bottom - rect.top;
-		if ( !ResizeView( *m_pCurrentView, nWidth, nHeight, bFullscreenChanged ) )
+		if ( !ResizeView( *m_pCurrentView, nWidth, nHeight, bForceBuffers ) )
 			return false;
 		m_nWidth = m_pCurrentView->width;
 		m_nHeight = m_pCurrentView->height;
@@ -1184,9 +1187,9 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Releases every view's targets and provider chain and creates them again (GPU idle)
+// Purpose: Releases targets and swap chains while the owning provider is still selected
 //-----------------------------------------------------------------------------
-bool CShaderDeviceDX12::RecreateViews()
+void CShaderDeviceDX12::ReleaseViewResources()
 {
 	for ( View *pView : m_Views )
 	{
@@ -1198,6 +1201,10 @@ bool CShaderDeviceDX12::RecreateViews()
 		pView->sceneDSVHeap.Reset();
 		m_FrameGen.ReleaseSwapChain( pView->swap );
 	}
+}
+
+bool CShaderDeviceDX12::CreateViewResources()
+{
 	for ( View *pView : m_Views )
 		if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
 			return false;
@@ -1241,43 +1248,16 @@ void CShaderDeviceDX12::ApplyFrameGenSelect()
 	// does not change the window's display mode. The engine's mode callback
 	// mutates the HWND and deadlocks here when Present runs on the material
 	// worker while the window thread waits for that worker to finish.
-	for ( View *pView : m_Views )
-	{
-		pView->sceneColor.Reset();
-		pView->sceneDepth.Reset();
-		pView->ReleaseBackBuffers();
-		pView->rtvHeap.Reset();
-		pView->sceneRTVHeap.Reset();
-		pView->sceneDSVHeap.Reset();
-		m_FrameGen.ReleaseSwapChain( pView->swap );
-	}
+	ReleaseViewResources();
 	bool bOk = SelectFrameGen( request.kind, request.multiplier, request.hudless );
-	bool bViews = true;
-	for ( View *pView : m_Views )
-		if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
-		{
-			bViews = false;
-			break;
-		}
+	bool bViews = CreateViewResources();
 	if ( bOk && !bViews )
 	{
 		// Adoption failed: back to the native chain so the frame keeps presenting.
 		bOk = false;
-		for ( View *pView : m_Views )
-		{
-			pView->ReleaseBackBuffers();
-			pView->rtvHeap.Reset();
-			pView->sceneRTVHeap.Reset();
-			pView->sceneDSVHeap.Reset();
-			pView->sceneColor.Reset();
-			pView->sceneDepth.Reset();
-			m_FrameGen.ReleaseSwapChain( pView->swap );
-		}
+		ReleaseViewResources();
 		SelectFrameGen( FrameGenKindDX12::None, 2, false );
-		bViews = true;
-		for ( View *pView : m_Views )
-			if ( !CreateView( *pView, pView->hwnd, pView->width, pView->height ) )
-				bViews = false;
+		bViews = CreateViewResources();
 	}
 	if ( !bViews )
 	{
