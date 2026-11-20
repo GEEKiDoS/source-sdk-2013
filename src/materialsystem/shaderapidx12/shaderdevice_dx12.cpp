@@ -66,6 +66,7 @@ CInterlockedInt g_bTracyZonesActiveDX12;
 // Console callbacks only touch atomics, never the device/adapter while the render owner is active.
 static std::atomic<bool> s_bMemoryReportAccepting{ false };
 static std::atomic<bool> s_bMemoryReportRequested{ false };
+static std::atomic<bool> s_bMapMemoryReportRequested{ false };
 
 static void DX12MemoryReportCommand( const CCommand &args )
 {
@@ -206,7 +207,12 @@ CShaderDeviceDX12::~CShaderDeviceDX12()
 //-----------------------------------------------------------------------------
 // Purpose: Reports owned allocation metadata and the selected adapter's process memory usage
 //-----------------------------------------------------------------------------
-void CShaderDeviceDX12::PrintMemoryReport()
+void CShaderDeviceDX12::RequestMapMemoryReport()
+{
+	s_bMapMemoryReportRequested.store( true, std::memory_order_release );
+}
+
+void CShaderDeviceDX12::PrintMemoryReport( bool detailed )
 {
 	if ( !IsRecordingOwner() )
 	{
@@ -216,7 +222,7 @@ void CShaderDeviceDX12::PrintMemoryReport()
 	}
 	if ( !IsInitialized() )
 		return;
-	PrintResourceMemoryReportDX12( m_pDevice.Get() );
+	PrintResourceMemoryReportDX12( m_pDevice.Get(), detailed );
 	if ( !m_pMemoryReportAdapter )
 	{
 		Msg( "  DXGI process memory: IDXGIAdapter3 unavailable for the selected adapter\n" );
@@ -239,6 +245,8 @@ void CShaderDeviceDX12::PrintMemoryReport()
 		    static_cast<unsigned long long>( info.Budget ), info.Budget / mib,
 		    static_cast<unsigned long long>( info.CurrentReservation ), info.CurrentReservation / mib,
 		    static_cast<unsigned long long>( info.AvailableForReservation ), info.AvailableForReservation / mib );
+		if ( info.CurrentUsage > info.Budget )
+			Warning( "ShaderAPIDX12 memory: DXGI %s usage exceeds budget by %.3f MiB\n", names[i], ( info.CurrentUsage - info.Budget ) / mib );
 	}
 }
 
@@ -1892,6 +1900,7 @@ void CShaderDeviceDX12::ShutdownDevice()
 {
 	s_bMemoryReportAccepting.store( false, std::memory_order_release );
 	s_bMemoryReportRequested.store( false, std::memory_order_release );
+	s_bMapMemoryReportRequested.store( false, std::memory_order_release );
 	m_bStatsMemoryReportPrinted = false;
 	// The final Submit may reset a list, but must not record new queries referencing soon-to-be-released heaps.
 	m_bGpuTimingStopping = true;
@@ -2987,8 +2996,10 @@ void CShaderDeviceDX12::Present()
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 Present", DX12_ZONES_ACTIVE );
 	if ( !IsRecordingOwner() || !m_pCurrentView || !CommandList() )
 		return;
-	if ( s_bMemoryReportRequested.exchange( false, std::memory_order_acq_rel ) )
-		PrintMemoryReport();
+	const bool mapReport = s_bMapMemoryReportRequested.exchange( false, std::memory_order_acq_rel );
+	const bool detailedReport = s_bMemoryReportRequested.exchange( false, std::memory_order_acq_rel );
+	if ( mapReport || detailedReport )
+		PrintMemoryReport( detailedReport );
 	m_Lighting.Reclaim();
 	if ( m_Lighting.PresentationBlocked() )
 	{

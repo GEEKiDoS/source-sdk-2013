@@ -176,7 +176,8 @@ public:
 	bool ConsumeGpuTimingOverlay( ShaderAPIDX12GpuTiming_t &stats );
 	// Prints immediately on the recording owner; other threads queue a coalesced request for Present.
 	// Includes the lifetime-tracked allocation snapshot and selected adapter's DXGI process usage/budget.
-	void PrintMemoryReport();
+	void PrintMemoryReport( bool detailed = true );
+	void RequestMapMemoryReport();
 	// The selected adapter's LOCAL segment usage and OS budget for this process; false when IDXGIAdapter3 is unavailable.
 	bool QueryLocalVideoMemory( uint64_t &nUsage, uint64_t &nBudget ) const;
 

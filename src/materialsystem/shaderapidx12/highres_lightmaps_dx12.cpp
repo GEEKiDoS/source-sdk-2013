@@ -373,7 +373,7 @@ bool MakeTexture3D(ID3D12Device *device, Texture3D &out, uint32 width, uint32 he
 {
     D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     const D3D12_RESOURCE_DESC desc = Texture3DDesc(width, height, depth, format);
-    if (FAILED(CreateCommittedResourceDX12(device, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&out.resource), "highres lightmap", "Highres volume"))) return false;
+    if (FAILED(CreateCommittedResourceDX12(device, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&out.resource), "probe grid", "Probe volume"))) return false;
     out.width = width; out.height = height; out.depth = depth; return true;
 }
 // resource == nullptr creates the typed null view the fallback table binds.
@@ -1205,6 +1205,7 @@ void CHighresLightmapsDX12::OnNativeLevelInit(IMaterialSystem *materials)
     Impl &s=*m_Impl;
     {
         std::lock_guard<std::recursive_mutex> lock(s.mutex);
+        if (s.device) s.device->RequestMapMemoryReport();
         // Same predicate the material DLL snapshots with (DX12ShadowmapSnapshot::Select). The engine cached this load's
         // materials before the domain existed (ordinary); materials kept from a receiver map carry receiver snapshots.
         const bool receiver = s.status.state==DX12_HIGHRES_PENDING || s.status.state==DX12_HIGHRES_READY ||
