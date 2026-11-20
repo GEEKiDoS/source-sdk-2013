@@ -1122,6 +1122,7 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		GetClientRect( m_pCurrentView->hwnd, &newRect );
 	const int nNewWidth = info.m_DisplayMode.m_nWidth > 0 ? info.m_DisplayMode.m_nWidth : newRect.right - newRect.left;
 	const int nNewHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : newRect.bottom - newRect.top;
+	const bool bResize = m_pCurrentView && ( nNewWidth != m_nWidth || nNewHeight != m_nHeight );
 	const bool bDropFrameGen = !info.m_bWindowed && m_FrameGen.Kind() != FrameGenKindDX12::None;
 	const bool bChangesResources = bDropFrameGen || info.m_bWindowed != m_bWindowed || MAX( 1, info.m_nAASamples ) != m_nSampleCount || info.m_nAAQuality != m_nSampleQuality || ( m_pCurrentView && ( nNewWidth != m_pCurrentView->width || nNewHeight != m_pCurrentView->height ) );
 	m_bChangingMode = true;
@@ -1133,8 +1134,6 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		~ChangeScope() { m_bFlag = false; }
 	} changeScope{ m_bChangingMode };
 
-	if ( bChangesResources && g_pShaderDeviceMgrDX12 )
-		g_pShaderDeviceMgrDX12->NotifyModeChange();
 	if ( m_bRecording && !Submit( true ) )
 		return false;
 	for ( View *pView : m_Views )
@@ -1157,6 +1156,21 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		if ( pView->swap && bFullscreenChanged && !CheckDevice( "SetFullscreenState", pView->swap->SetFullscreenState( bFullscreen, nullptr ) ) )
 			return false;
 	m_bWindowed = info.m_bWindowed;
+	// ResizeBuffers does not change the exclusive output mode. Resize the
+	// output before the buffers so Present does not resize the window back.
+	if ( bFullscreen && bResize && m_pCurrentView->swap )
+	{
+		DXGI_MODE_DESC target{};
+		target.Width = nNewWidth;
+		target.Height = nNewHeight;
+		target.Format = DXGI_FORMAT_UNKNOWN;
+		const HRESULT hr = m_pCurrentView->swap->ResizeTarget( &target );
+		if ( FAILED( hr ) )
+		{
+			Warning( "ShaderAPIDX12: ResizeTarget(%dx%d) failed (0x%08x)\n", nNewWidth, nNewHeight, static_cast<unsigned>( hr ) );
+			return false;
+		}
+	}
 	m_bWaitForVsync = info.m_bWaitForVSync;
 	const int nSamples = MAX( 1, info.m_nAASamples ), nQuality = info.m_nAAQuality;
 	const bool bSamplesChanged = nSamples != m_nSampleCount || nQuality != m_nSampleQuality;
@@ -1183,6 +1197,16 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		m_nWidth = m_pCurrentView->width;
 		m_nHeight = m_pCurrentView->height;
 	}
+	// RT_SIZE_* textures belong to the material system. Rebuild them against
+	// the published framebuffer size, not the dimensions of the old swap chain.
+	if ( bResize && g_pShaderDeviceMgrDX12 && g_pShaderDeviceMgrDX12->HostShaderUtil() )
+	{
+		IShaderUtil *pShaderUtil = g_pShaderDeviceMgrDX12->HostShaderUtil();
+		pShaderUtil->ReleaseShaderObjects();
+		pShaderUtil->RestoreShaderObjects( Sys_GetFactoryThis() );
+	}
+	if ( bChangesResources && g_pShaderDeviceMgrDX12 )
+		g_pShaderDeviceMgrDX12->NotifyModeChange();
 	return true;
 }
 
