@@ -690,6 +690,16 @@ control: 0 off (fixed patterns, the smoke fixtures), 1 + n with n = `framecount 
 temporal upscaler and 0 otherwise (the GTAO/volumetric convention). Rotated 4-tap PCF has radius sqrt(0.5) texels, so its
 plane preflight checks a +-0.75 square instead of +-0.5. Measured at the two d1_trainstation_02 spots with PCSS:
 +0.06 / +0.12 ms GPU.
+The DX12 flashlight bounce measures the native HDR scene on an 8-pixel lattice before SSR and GTAO apply.
+Only effect-owned, view-selected projectors participate. The shader divides lit RGB by an unshadowed cookie,
+attenuation and cosine estimate in scene units. A fixed ambient reference discounts weakly illuminated samples;
+this is not a recovered material base texture. Sixteen groups write partial sums, reduced in the light rectangle's
+vertices. Ping-pong history smooths nearby hits but rejects jumps beyond 72 units. No render-target readback or
+new G-buffer attachment is needed. Opaque viewmodels receive a separate compressed-depth draw, never contribute
+to the measurement, and translucents do not receive it. `r_flashlight_bounce` gates dispatch and `r_flashlight_bounce_scale`
+controls the strength. For comparison, cheat `r_flashlight_bounce_blend` selects additive (0), scene-proportional (1),
+or soft screen (2); `r_flashlight_bounce_debug` marks the measured surface center.
+
 `volumetric_ps51` runtime contract (screen-space volumetric march): the low-quality profile (`r_volumetric_quality 0`,
 8 light-segment samples) runs the march at quarter resolution (one texel per 4x4 full-resolution footprint), while
 balanced/high profiles retain the half-resolution march. Every provider receives the same rotating per-step IGN sequence:

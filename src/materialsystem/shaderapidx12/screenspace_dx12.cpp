@@ -28,7 +28,7 @@ namespace shaderapidx12
 {
 namespace
 {
-enum ScreenSpaceOpDX12 { ScreenSpaceBeginView, ScreenSpaceBeginContactDepth, ScreenSpaceEndContactDepth, ScreenSpaceDispatchSSR, ScreenSpaceEndView, ScreenSpaceBeginVolumetrics, ScreenSpaceDrawVolumetrics, ScreenSpaceBeginDepthPrepass, ScreenSpaceEndDepthPrepass, ScreenSpaceBeginSkybox, ScreenSpaceEndSkybox, ScreenSpaceBeginViewModelContacts, ScreenSpaceEndViewModelContacts };
+enum ScreenSpaceOpDX12 { ScreenSpaceBounce, ScreenSpaceViewModelBounce, ScreenSpaceBeginView, ScreenSpaceBeginContactDepth, ScreenSpaceEndContactDepth, ScreenSpaceDispatchSSR, ScreenSpaceEndView, ScreenSpaceBeginVolumetrics, ScreenSpaceDrawVolumetrics, ScreenSpaceBeginDepthPrepass, ScreenSpaceEndDepthPrepass, ScreenSpaceBeginSkybox, ScreenSpaceEndSkybox, ScreenSpaceBeginViewModelContacts, ScreenSpaceEndViewModelContacts };
 
 // depth.yzw of DX12ScreenSpaceViewConstants (section 2); depth.x is the native clear value: ClearBuffers always clears native
 // depth to 1 (textures_dx12.cpp ClearDepthStencilView), so the clip-space far plane is the only "no geometry" depth.
@@ -152,6 +152,16 @@ void CShaderAPIDX12::ExecuteScreenSpacePacket( ScreenSpacePacketDX12 *pPacket )
 	case ScreenSpaceBeginContactDepth: ReplayBeginContactDepth( pPacket->flag ); break;
 	case ScreenSpaceEndContactDepth: ReplayEndContactDepth(); break;
 	case ScreenSpaceDispatchSSR: ReplayDispatchSSR(); break;
+	case ScreenSpaceBounce:
+		if ( m_ScreenSpace.active && m_flBounceScale > 0.f && m_nBounceFrame != m_nFrameCounter )
+		{
+			FlushBufferedPrimitives();
+			m_nBounceFrame = m_nFrameCounter;
+			MeasureBounce();
+			ApplyBounce( false );
+		}
+		break;
+	case ScreenSpaceViewModelBounce: ApplyBounce( true ); break;
 	case ScreenSpaceEndView: ReplayScreenSpaceEndView(); break;
 	case ScreenSpaceBeginVolumetrics: ReplayBeginVolumetrics( pPacket->settings ); break;
 	case ScreenSpaceDrawVolumetrics: ReplayDrawVolumetrics(); break;
@@ -180,6 +190,16 @@ void CShaderAPIDX12::BeginContactDepth( bool hasViewModelDepth )
 	ScreenSpacePacketDX12 *packet = ScreenSpacePacket( ScreenSpaceBeginContactDepth );
 	packet->flag = hasViewModelDepth;
 	EnqueueScreenSpacePacket( packet );
+}
+
+void CShaderAPIDX12::DrawBounce()
+{
+	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceBounce ) );
+}
+
+void CShaderAPIDX12::DrawViewModelBounce()
+{
+	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceViewModelBounce ) );
 }
 
 void CShaderAPIDX12::BeginViewModelContacts( bool reuseMainDepth )
@@ -302,6 +322,9 @@ void CShaderAPIDX12::ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &
 	ScreenSpaceViewStateDX12 &state = m_ScreenSpace;
 	state.constants = view.constants;
 	state.ssr = view.ssr;
+	m_flBounceScale = view.bounceScale;
+	m_bBounceDebug = view.bounceDebug != 0;
+	m_nBounceBlend = view.bounceBlend;
 	state.active = state.contactReplay = state.contactsEnabled = state.ssrCapture = state.forwardSSR = false;
 	m_ContactDepth.replayDraws = false;
 	m_ContactDepth.prepared = false;

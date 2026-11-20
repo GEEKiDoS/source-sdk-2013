@@ -1346,6 +1346,8 @@ static D3D12_BLEND BlendFactorDX12( uint32_t nFactor )
 		return D3D12_BLEND_ONE;
 	case SHADER_BLEND_DST_COLOR:
 		return D3D12_BLEND_DEST_COLOR;
+	case kBlendSecondSourceColor:
+		return D3D12_BLEND_SRC1_COLOR;
 	case SHADER_BLEND_ONE_MINUS_DST_COLOR:
 		return D3D12_BLEND_INV_DEST_COLOR;
 	case SHADER_BLEND_SRC_ALPHA:

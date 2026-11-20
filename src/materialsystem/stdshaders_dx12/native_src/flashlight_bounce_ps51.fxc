@@ -1,0 +1,82 @@
+// STATIC: "MSAA" "0..1"
+// DYNAMIC: "BLEND" "0..2"
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#ifdef HDRTYPE
+#undef HDRTYPE
+#endif
+#define HDRTYPE HDR_TYPE_NONE
+#include "common_ps_fxc.h"
+#include "scene_fog.hlsli"
+#include "screenspace_view.hlsli"
+#include "viewmodel_depth.hlsli"
+#include "pbr_oct.hlsli"
+#if MSAA
+#define SCENE Texture2DMS
+#define FETCH( t ) t.Load( p, sampleIndex )
+#else
+#define SCENE Texture2D
+#define FETCH( t ) t.Load( int3( p, 0 ) )
+#endif
+SCENE<float> rawDepth : register( t0 );
+SCENE<float2> normals : register( t1 );
+SCENE<uint2> stencil : register( t2 );
+
+struct BounceOutput
+{
+	float4 source : SV_Target0;
+#if BLEND == 2
+	float4 multiplier : SV_Target1;
+#endif
+};
+[earlydepthstencil] BounceOutput main( float4 sv : SV_Position, nointerpolation float4 light : TEXCOORD0, nointerpolation float4 color : TEXCOORD1, nointerpolation float3 hitCenter : TEXCOORD2
+#if MSAA
+    ,
+    uint sampleIndex : SV_SampleIndex
+#endif
+)
+{
+	int2 p = int2( sv.xy );
+	float depth = FETCH( rawDepth );
+	bool vm = light.w != 0;
+	float2 pixel = p + 0.5;
+#if MSAA
+	pixel += GetRenderTargetSamplePosition( sampleIndex );
+#endif
+	float3 P = Screen_PixelToWorld( pixel, vm ? depth / DX12_VIEWMODEL_DEPTH_MAX : depth );
+	float3 n = cross( ddy( P ), ddx( P ) );
+	n *= rsqrt( max( dot( n, n ), 1e-12 ) );
+	n = faceforward( n, P - cScreenEyeLength.xyz, n );
+	if ( depth >= cScreenDepth.x || ( depth < DX12_VIEWMODEL_DEPTH_MAX ) != vm )
+		discard;
+	float3 delta = light.xyz - P;
+	float d2 = dot( delta, delta );
+	if ( d2 >= 40000 )
+		discard;
+	// The viewmodel colour pass does not write RT1. Its own depth gives the geometric normal.
+	if ( !vm && ( FETCH( stencil ).y & 128 ) != 0 )
+		n = PBR_UnpackNormal( FETCH( normals ) );
+	float atten = saturate( 1 - d2 / 40000 );
+	float3 rgb = color.rgb * ( saturate( dot( n, delta ) * rsqrt( max( 1e-6, d2 ) ) ) * atten * atten );
+	if ( color.w && distance( P, hitCenter ) < 8 )
+		rgb = 4 * color.rgb;
+	float clipZ = dot( cScreenWorldToClip[2], float4( P, 1 ) );
+	float fog = SceneFog( clipZ, P, cScreenEyeLength.xyz, cScreenControl.x != 0, int( cScreenControl.z ), cScreenContactParams, cScreenContactDepth );
+	BounceOutput result;
+	rgb *= 1 - fog;
+#if BLEND == 1
+	// Destination RGB is the existing reflected light, not bare albedo. Normalize by a constant
+	// ambient reference in exposed scene units and bound the fractional lift of every channel.
+	result.source = float4( min( rgb / ( 0.20 * cScreenEyeLength.w ), 0.35 ), 0 );
+#elif BLEND == 2
+	// Screen in a soft-shoulder display coordinate T(x)=x/(x+W). Converting the screen result
+	// back to HDR gives D*(1+g)+W*g; dual-source blending evaluates it without sampling RT0.
+	float white = 0.18 * cScreenEyeLength.w;
+	float3 gain = min( rgb / max( cScreenEyeLength.w, 0.01 ), 0.18 );
+	result.source = float4( white * gain, 0 );
+	result.multiplier = float4( 1 + gain, 1 );
+#else
+	result.source = float4( rgb, 0 );
+#endif
+	return result;
+}

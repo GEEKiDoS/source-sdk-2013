@@ -37,6 +37,9 @@ constexpr UINT DX12_SCREENSPACE_B_VIEW = 0;
 constexpr UINT DX12_SCREENSPACE_B_VOLUMETRIC = 1;
 constexpr UINT DX12_SCREENSPACE_B_SHADOW_SKY_CLIP = 2;
 
+// Backend-only factor for the second pixel output of a single-target dual-source blend.
+constexpr uint32_t kBlendSecondSourceColor = 0x100;
+
 struct PipelineKeyDX12
 {
 	uint64_t vs = 0, ps = 0, gs = 0, input = 0, vsVariant = 0, psVariant = 0, gsVariant = 0;

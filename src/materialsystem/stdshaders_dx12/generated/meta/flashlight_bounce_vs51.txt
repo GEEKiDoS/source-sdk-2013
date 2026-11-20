@@ -1,0 +1,1 @@
+logical=flashlight_bounce_vs51 stage=vs source=flashlight_bounce_vs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2

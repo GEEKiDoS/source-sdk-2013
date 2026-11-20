@@ -24,7 +24,7 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_007"
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_008"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
 struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 256 bytes
@@ -54,6 +54,9 @@ struct DX12ScreenSpaceViewDesc
 {
 	DX12ScreenSpaceViewConstants constants;
 	DX12SSRSettings ssr;
+	float bounceScale;
+	uint32 bounceDebug;
+	uint32 bounceBlend;
 };
 
 // Snapshot of the volumetric controls for one main camera view. 48 bytes; the first 48 bytes of HLSL cbuffer
@@ -93,6 +96,8 @@ public:
 	virtual void BeginVolumetrics( const DX12VolumetricSettings &settings ) = 0;
 	// After the last bracket of that view: adds in-scattering over the completed scene depth, then ends the scope.
 	virtual void DrawVolumetrics() = 0;
+	virtual void DrawBounce() = 0;
+	virtual void DrawViewModelBounce() = 0;
 	// Replays the ordinary main-view opaque draws into scene depth, retaining their VS/LOD/alpha coverage.
 	// Only opaque depth writers are admitted; the backend masks color and removes the PS only when coverage is fixed.
 	virtual void BeginDepthPrepass() = 0;

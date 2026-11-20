@@ -35,6 +35,11 @@ static ConVar r_contactshadows_edge_threshold( "r_contactshadows_edge_threshold"
 static ConVar r_contactshadows_contrast( "r_contactshadows_contrast", "4", FCVAR_ARCHIVE, "Bend sun contact-shadow contrast", true, 1.f, true, 8.f );
 static ConVar r_depth_prepass( "r_depth_prepass", "1", FCVAR_ARCHIVE, "DX12: replay normal main-view opaque geometry into depth before shading (same LOD and alpha coverage)", true, 0, true, 1 );
 
+static ConVar r_flashlight_bounce( "r_flashlight_bounce", "1", FCVAR_ARCHIVE, "Screen-space flashlight bounce lighting", true, 0, true, 1 );
+static ConVar r_flashlight_bounce_scale( "r_flashlight_bounce_scale", "0.18", FCVAR_ARCHIVE, "Reflected flashlight radiance multiplier", true, 0.f, true, 4.f );
+static ConVar r_flashlight_bounce_blend( "r_flashlight_bounce_blend", "1", FCVAR_CHEAT, "Compare flashlight bounce: 0 additive, 1 scene proportional, 2 soft screen", true, 0, true, 2 );
+static ConVar r_flashlight_bounce_debug( "r_flashlight_bounce_debug", "0", FCVAR_CHEAT, "Show measured flashlight colour at the weighted centroid", true, 0, true, 1 );
+
 static ConVar r_volumetric( "r_volumetric", "1", FCVAR_ARCHIVE, "DX12: additive volumetric lighting from opted-in shadowmapped lights", true, 0, true, 1 );
 static ConVar r_volumetric_quality( "r_volumetric_quality", "0", FCVAR_ARCHIVE, "Volumetric quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
 static ConVar r_volumetric_density( "r_volumetric_density", "0.00025", FCVAR_ARCHIVE, "Volumetric scattering coefficient in inverse Source units", true, 0.f, true, 0.01f );
@@ -99,6 +104,11 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelContacts()
 	return r_contactshadows.GetBool() ? s_pScreenSpace : nullptr;
 }
 
+IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelBounce()
+{
+	return r_flashlight_bounce.GetBool() && r_flashlight_bounce_scale.GetFloat() > 0.f ? s_pScreenSpace : nullptr;
+}
+
 bool ScreenSpaceDX12_ContactDebug()
 {
 	return s_pScreenSpace && r_contactshadows_debug.GetBool();
@@ -114,7 +124,8 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 	contacts = r_contactshadows.GetBool();
 	const bool debugContacts = ScreenSpaceDX12_ContactDebug();
 	ssr = !debugContacts && r_ssr.GetBool();
-	if ( !contacts && !debugContacts && !ssr && !s_bVolumetricScope )
+	const bool bounce = r_flashlight_bounce.GetBool() && !debugContacts;
+	if ( !contacts && !debugContacts && !ssr && !s_bVolumetricScope && !bounce )
 		return nullptr;
 
 	int x, y, width, height;
@@ -141,6 +152,9 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 	view.constants.contactControl[0] = contacts ? 1u : 0u;
 	view.constants.contactControl[2] = kContactSteps[r_contactshadows_quality.GetInt()];
 	view.constants.contactControl[3] = debugContacts ? 1u : 0u;
+	view.bounceScale = bounce ? r_flashlight_bounce_scale.GetFloat() : 0.f;
+	view.bounceDebug = bounce && r_flashlight_bounce_debug.GetBool();
+	view.bounceBlend = r_flashlight_bounce_blend.GetInt();
 	view.ssr.quality = static_cast<uint32>( r_ssr_quality.GetInt() );
 	view.ssr.maxDistance = r_ssr_max_distance.GetFloat();
 	view.ssr.thickness = r_ssr_thickness.GetFloat();

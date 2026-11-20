@@ -568,6 +568,22 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 	{
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_NONE )
 			return true;
+		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_COLOR )
+		{
+			// Caller brackets this dispatch with native scene colour transitions.
+			ID3D12Resource *scene = m_pDevice->SceneColor();
+			if ( !scene || m_pDevice->SceneColorState() != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE )
+				return false;
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.Format = m_pDevice->SceneColorFormat();
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.ViewDimension = m_pDevice->SceneSampleCount() > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
+			if ( srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D )
+				srv.Texture2D.MipLevels = 1;
+			m_pDevice->NativeDevice()->CreateShaderResourceView( scene, &srv, Offset( range.cpu, slot, stride ) );
+			retain( scene );
+			return true;
+		}
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_SCREEN_CONTACT_DEPTH )
 		{
 			// EndContactDepth transitions once for the whole list of independent wave dispatches.
@@ -663,7 +679,7 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 		ID3D12Resource *native = nullptr;
 		D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
 		D3D12_SAMPLER_DESC sampler{};
-		if ( !PrepareSampledTexture( handle, false, &native, srv, sampler, nullptr, false, mip, mipCount ) || !native )
+		if ( !PrepareSampledTexture( handle, resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE_SRGB, &native, srv, sampler, nullptr, false, mip, mipCount ) || !native )
 			return false;
 		if ( srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D )
 		{

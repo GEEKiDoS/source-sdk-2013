@@ -3689,6 +3689,20 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 	input.lightingVisibilityTable = carrier.table;
 	return true;
 }
+int CLightingDX12::GetBounceSpots( DX12ProjectedLightDesc *lights, ShaderAPITextureHandle_t *cookies ) const
+{
+	const Impl::ProjectedLights &p = m_Impl->projected;
+	int count = 0;
+	for ( uint32 i = 0; i < p.count && count < DX12_PBR_RESERVED_FLASHLIGHTS; ++i )
+	{
+		if ( !( p.lights[i].flags >> 8 ) )
+			continue;
+		lights[count] = p.lights[i];
+		cookies[count++] = p.cookies[i];
+	}
+	return count;
+}
+
 bool CLightingDX12::PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input )
 {
 	Impl &s = *m_Impl;

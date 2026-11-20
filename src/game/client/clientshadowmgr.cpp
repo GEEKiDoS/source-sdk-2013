@@ -4380,6 +4380,9 @@ void CClientShadowMgr::PublishProjectedLights( const CViewSetup &viewSetup, bool
 		light.cookieSlot = i;
 		light.depthSlot = pDepth ? i : -1;
 		light.flags = ( ( shadow.m_Flags & SHADOW_FLAGS_LIGHT_WORLD ) ? DX12_PBR_LIGHT_WORLD : 0 ) | nModelFlag;
+		// Low two bits are receiver flags. Upper bits identify the effect across packet reordering.
+		if ( shadow.m_bFlashlightEffectOwned )
+			light.flags |= ( uint32( pActiveFlashlights[i] ) + 1u ) << 8;
 		light.reserved = ( shadow.m_bVolumetric && bVolumetricCapable ) ? DX12_VOLUMETRIC_LIGHT_ENABLED : 0;
 
 		// An unshadowed slot keeps its previous depth texture bound; the shader never samples it (depthSlot -1).

@@ -1723,11 +1723,13 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			// Contacts need the viewmodel projection and compressed depth, not the world bracket's depth.
 			// Refraction captures the scene first; the optional replay uses the exact colour-pass list.
 			IShaderAPIDX12ScreenSpace *pViewModelContacts = nullptr;
+			IShaderAPIDX12ScreenSpace *pViewModelBounce = nullptr;
 			if ( bShouldDrawPlayerViewModel && hasOpaqueReceiver && bUseDepthHack && !bShouldDrawToolViewModels &&
 				CurrentViewID() == VIEW_MAIN && viewRender.m_eStereoEye == STEREO_EYE_MONO && !viewRender.m_bOrtho &&
 				!building_cubemaps.GetBool() && !g_pIntroData && pRenderContext->GetRenderTarget() == nullptr )
 			{
 				pViewModelContacts = ScreenSpaceDX12_ViewModelContacts();
+				pViewModelBounce = ScreenSpaceDX12_ViewModelBounce();
 				if ( pViewModelContacts )
 				{
 					const bool reuseMainDepth = m_bViewModelDepthInScene;
@@ -1744,6 +1746,8 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			}
 
 			DrawRenderablesInList( opaqueViewModelList );
+			if ( pViewModelBounce )
+				pViewModelBounce->DrawViewModelBounce();
 			if ( MotionVectorsDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() )
 				DrawViewModelMotionVectors( viewRender, opaqueViewModelList, bUseDepthHack );
 			DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
@@ -7406,6 +7410,8 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		}
 		if ( pScreenSpace )
 		{
+			if ( ScreenSpaceDX12_ViewModelBounce() )
+				pScreenSpace->DrawBounce();
 			if ( bSSR )
 				pScreenSpace->DispatchSSR();
 			pScreenSpace->EndView();

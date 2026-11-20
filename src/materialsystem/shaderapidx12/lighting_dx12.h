@@ -106,6 +106,7 @@ public:
 	void SetShadowCasterSkyClipExemptForDraw( bool exempt );
 	bool PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::BindingInputDX12 &input, bool cheapAuxiliary = false );
 	// Recording owner, before PrepareBindings: the current projected-light descriptor table for a PS that reflects space 5.
+	int GetBounceSpots( DX12ProjectedLightDesc *lights, ShaderAPITextureHandle_t *cookies ) const;
 	bool PreparePbrSpots( CPipelineCacheDX12::BindingInputDX12 &input );
 	bool PresentationBlocked();
 	void FailRecording( const char *error );

@@ -744,6 +744,7 @@ void CShaderAPIDX12::ReleaseTextureDeviceResources()
 	ReleaseScreenSpaceResources();
 	ReleaseSSRResources();
 	ReleaseVolumetricResources();
+	ReleaseBounce();
 	for ( int i = 0; i < ARRAYSIZE( m_PreparedTextureSlots ); ++i )
 		m_PreparedTextureSlots[i].valid = false;
 	m_bTextureSetValid = false;

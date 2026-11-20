@@ -199,6 +199,8 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "filmdust_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::filmdust_ps20 > },
 	{ "filmgrain_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::filmgrain_ps20 > },
 	{ "filmgrain_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::filmgrain_vs20 > },
+	{ "flashlight_bounce_ps51", dx12native::kStagePixel, nullptr },
+	{ "flashlight_bounce_vs51", dx12native::kStageVertex, nullptr },
 	{ "flashlight_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::flashlight_ps2x > },
 	{ "flesh_interior_blended_pass_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::flesh_interior_blended_pass_ps2x > },
 	{ "flesh_interior_blended_pass_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::flesh_interior_blended_pass_vs20 > },

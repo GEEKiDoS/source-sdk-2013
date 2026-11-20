@@ -1,0 +1,45 @@
+// STATIC: "VIEWMODEL" "0..1"
+#define DX12_LEGACY_VS30 1
+#include "dx12_preamble.h"
+#include "flashlight_bounce_reduce.hlsli"
+Texture2D<float4> measurement : register( t0 );
+
+struct Vertex
+{
+	float4 position : SV_Position;
+	nointerpolation float4 light : TEXCOORD0;
+	nointerpolation float4 color : TEXCOORD1;
+	nointerpolation float3 hitCenter : TEXCOORD2;
+};
+
+Vertex main( uint id : SV_VertexID )
+{
+	Vertex v;
+	BounceLight bounce = ReduceBounce( measurement );
+	v.light = bounce.positionValid;
+	v.color = bounce.colorDebug;
+	v.hitCenter = bounce.hitCenter;
+	float4 rect = float4( -1, -1, 1, 1 );
+#if !VIEWMODEL
+	float4x4 projection = float4x4( measurement.Load( int3( 3, 3, 0 ) ), measurement.Load( int3( 4, 3, 0 ) ), measurement.Load( int3( 5, 3, 0 ) ), measurement.Load( int3( 6, 3, 0 ) ) );
+	rect = float4( 1, 1, -1, -1 );
+	[unroll] for ( uint i = 0; i < 8; ++i )
+	{
+		float3 corner = float3( i & 1, ( i >> 1 ) & 1, ( i >> 2 ) & 1 ) * 400 - 200;
+		float4 clip = mul( projection, float4( v.light.xyz + corner, 1 ) );
+		if ( clip.w <= 0 )
+		{
+			rect = float4( -1, -1, 1, 1 );
+			break;
+		}
+		float2 ndc = clamp( clip.xy / clip.w, -1, 1 );
+		rect.xy = min( rect.xy, ndc );
+		rect.zw = max( rect.zw, ndc );
+	}
+#endif
+	if ( !v.light.w )
+		rect = 0;
+	v.position = float4( lerp( rect.xy, rect.zw, float2( id & 1, id >> 1 ) ), 0.1, 1 );
+	v.light.w = VIEWMODEL;
+	return v;
+}

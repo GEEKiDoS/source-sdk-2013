@@ -852,6 +852,8 @@ private:
 	void EndView() override;
 	void BeginVolumetrics( const DX12VolumetricSettings &settings ) override;
 	void DrawVolumetrics() override;
+	void DrawBounce() override;
+	void DrawViewModelBounce() override;
 	void BeginDepthPrepass() override;
 	void EndDepthPrepass() override;
 	void BeginSkybox() override;
@@ -962,6 +964,21 @@ private:
 		ShaderAPITextureHandle_t handle = 0;
 		int width = 0, height = 0, mipLevels = 1;
 	};
+	struct BounceSlotDX12
+	{
+		SSRTextureDX12 history[2];
+		uint32 identity = 0;
+		uint64_t frame = ~0ull;
+		int current = 0;
+	};
+	BounceSlotDX12 m_BounceSlots[DX12_PBR_RESERVED_FLASHLIGHTS];
+	uint64_t m_nBounceFrame = ~0ull;
+	float m_flBounceScale = 0;
+	bool m_bBounceDebug = false;
+	uint32 m_nBounceBlend = 1;
+	void MeasureBounce();
+	void ApplyBounce( bool viewModel );
+	void ReleaseBounce();
 	struct SSRResourcesDX12
 	{
 		SSRTextureDX12 scene, trace, ray, resolve, resolveAux;

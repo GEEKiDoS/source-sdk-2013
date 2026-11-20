@@ -330,6 +330,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_ContactShadows", TAB_LIGHTING, ROW_COMBO, { "r_contactshadows", "r_contactshadows_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_SSR", TAB_LIGHTING, ROW_COMBO, { "r_ssr", "r_ssr_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_SSRResolution", TAB_LIGHTING, ROW_COMBO, { "r_ssr_resolution", NULL, NULL, NULL, NULL }, kSsrResolution, ARRAYSIZE( kSsrResolution ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_FlashlightBounce", TAB_LIGHTING, ROW_CHECK, { "r_flashlight_bounce", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Volumetric", TAB_LIGHTING, ROW_COMBO, { "r_volumetric", "r_volumetric_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 
 	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
