@@ -979,7 +979,10 @@ bool CServerGameDLL::ReplayInit( CreateInterfaceFn fnReplayFactory )
 float CServerGameDLL::GetTickInterval( void ) const
 {
 #if defined( L4D2 )
-	float tickinterval = 1.0f / 30.0f;
+	// Retail ships 30 ticks per second; the port defaults to 60 for smoother movement and hit registration.
+	// -tickrate below still overrides it, as in retail.
+	const float kL4D2DefaultTickRate = 60.0f;
+	float tickinterval = 1.0f / kL4D2DefaultTickRate;
 #else
 	float tickinterval = DEFAULT_TICK_INTERVAL;
 #endif
