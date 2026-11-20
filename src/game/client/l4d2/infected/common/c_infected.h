@@ -92,6 +92,7 @@ public:
 	virtual bool Simulate() OVERRIDE;
 	virtual ShadowType_t ShadowCastType() OVERRIDE;
 	virtual C_BaseAnimating *BecomeRagdollOnClient( int category );
+	virtual int GetSkin() OVERRIDE;
 	virtual void FireEvent( const Vector &origin, const QAngle &angles, int event, const char *options ) OVERRIDE;
 	virtual const char *GetTerrorFootstepSoundName( const char *surfaceSound, bool rightFoot, float speed, bool force ) OVERRIDE;
 	virtual const char *DamageDecal( int bitsDamageType, int gameMaterial ) OVERRIDE;

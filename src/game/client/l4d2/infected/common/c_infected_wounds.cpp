@@ -62,6 +62,14 @@ void C_Infected::ReleaseWoundModels()
 	}
 }
 
+int C_Infected::GetSkin()
+{
+	// Common skins come in sets of four: normal, wounded, burning, both.
+	// Keep the replicated skin intact so an update (e.g. ignition) cannot erase the wound bit.
+	const int nWoundedSkinBit = 1;
+	return BaseClass::GetSkin() | ( m_RenderState.m_iWound[0] != -1 ? nWoundedSkinBit : 0 );
+}
+
 void C_Infected::UpdateWounds()
 {
 	if ( UTIL_IsLowViolence() || !m_allowWounds || z_wound_client_disabled.GetBool() )
@@ -81,7 +89,6 @@ void C_Infected::UpdateWounds()
 			m_RenderState.m_iWound[1] = -1;
 			m_RenderState.m_Wound[1].m_bEnabled = false;
 			ReleaseWoundModels();
-			--m_nBody;
 		}
 
 		m_RenderState.m_iWound[0] = nWound;
@@ -89,7 +96,7 @@ void C_Infected::UpdateWounds()
 		const InfectedDamageCutout_t &cutout = pSet->m_Cutout[nWound];
 		for ( int i = 0; i < cutout.m_nRegionCount; ++i )
 			SetInfectedWoundRegion( m_RenderState.m_Wound[i], cutout.m_Region[i], ( cutout.m_nDamageType & INFECTED_CUTOUT_SLASH ) != 0 );
-		++m_nBody;
+		UpdateModelTranslucencyType();
 
 		C_BaseAnimating *pModel = new C_Guts;
 		pModel->AddEffects( EF_NOSHADOW | EF_NORECEIVESHADOW );

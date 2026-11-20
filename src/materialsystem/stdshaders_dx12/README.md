@@ -1112,6 +1112,9 @@ reflectance, as the legacy Phong adapter converts them; `PBR_Infected` runs the 
 surface F0 (the metalness workflow would replace it with a flat 0.04). The entity render colour of a common infected is a
 random spawn palette (`Infected::Spawn`), not a tint: c0 keeps only its alpha (ragdoll fade). Wound cutouts discard in the
 color and depth-prepass variants; opaque shadow-map casters draw without a pixel shader, so wounds do not cut shadows.
+The live infected selects the wounded skin variant from its applied wound state, preserving the server's palette and
+burning skin selection. The client ragdoll copies that skin as well as the per-entity ellipsoid data. Both are necessary:
+the wounded skin enables `$wounded` on the material, and the ellipsoids tell the shader what to cut.
 
 The L4D2 compatibility adapter preserves decals, `$vertexcolor`, `$ssbump` and `$ssbumpmathfix`, blend tint,
 Phong tint/boost/Fresnel ranges, self-illumination masks, flashlight-no-Lambert, tree sway, linear-write and
