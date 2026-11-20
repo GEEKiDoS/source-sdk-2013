@@ -1,4 +1,5 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
+#include <DirectXPackedVector.h> // before the Source min/max macros
 #include "hlight_output.h"
 #include "bsp_output.h"
 #include "restir_scene_internal.h"
@@ -34,6 +35,7 @@ struct ModeStorage
     CUtlVector<hlight::TileDisk> tiles;
     CUtlVector<hlight::PageDisk> pages;
     CUtlVector<byte> pixels;
+    CUtlVector<byte> directionalPixels; // packed directions for faces whose BSP lightmap was flat
     CUtlVector<ShadowMapLightDisk> lights;
     hlight::VisibilitySetDisk visibility;
     CUtlVector<hlight::FaceVisibilityDisk> visibilityFaces;
@@ -50,6 +52,7 @@ struct ModeStorage
         active = false;
         memset(&record,0,sizeof(record)); identities.Purge(); models.Purge(); faces.Purge();
         tiles.Purge(); pages.Purge(); pixels.Purge(); lights.Purge();
+        directionalPixels.Purge();
         memset(&visibility,0,sizeof(visibility)); visibility.sunLightIndex = -1;
         visibilityFaces.Purge(); visibilityEntries.Purge(); visibilityProps.Purge(); visibilityMeshes.Purge();
         unbakedFaces.Purge(); unbakedLightIndices.Purge();
@@ -631,8 +634,15 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
         while (pageSide < uint32(f.luxelW+2) || pageSide < uint32(f.luxelH+2)) pageSide *= 2;
         if (pageSide > hlight::kMaxPageSize) return Fail("requested dense tile exceeds maximum supported page");
     }
-    const uint64 pageBytes = uint64(pageSide)*pageSide*8;
-    uint32 x = 0, y = 0, rowHeight = 0; int page = -1, owner = 0;
+    struct Shelf
+    {
+        uint32 x = 0, y = 0, rowHeight = 0;
+        int page = -1;
+    };
+    Shelf shelves[2];
+    CUtlVector<hlight::TileDisk> directionalTiles;
+    CUtlVector<hlight::PageDisk> directionalPages;
+    int owner = 0;
     for (int i = 0; i < faceCount; ++i)
     {
         const dface_t &native = g_pFaces[i]; hlight::FaceDisk &out = m.faces[i]; memset(&out,0,sizeof(out));
@@ -652,7 +662,7 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
         if (sf >= scene.faces.Count()) return Fail("invalid dense dface mapping");
         const ReSTIRGpuFace &f = scene.faces[sf];
         if (f.dface != i || f.numStyles < 1 || f.numStyles > RESTIR_MAX_FACE_STYLES || f.styles[0] != 0 ||
-            (f.numChannels != 1 && f.numChannels != 4) || out.highWidth != uint32(f.luxelW) || out.highHeight != uint32(f.luxelH))
+            f.numChannels != hlight::kPlaneSlots || out.highWidth != uint32(f.luxelW) || out.highHeight != uint32(f.luxelH))
             return Fail("dense face style/plane/grid mismatch");
         const int64 luxels = (int64)f.luxelW*f.luxelH;
         if (f.firstOutput < 0 || f.firstLuxel < 0 || (int64)f.firstOutput+luxels*f.numStyles*f.numChannels > result.radiance.Count() ||
@@ -669,7 +679,7 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
             m.unbakedLightIndices.AddMultipleToTail(direct.unbaked.Count(),direct.unbaked.Base());
         }
         const int receiverCount = direct.count;
-        out.flags = hlight::kFaceHasLighting | hlight::kFaceHasBakedLocalDirect | (f.numChannels == 4 ? hlight::kFaceBumped : 0) |
+        out.flags = hlight::kFaceHasLighting | hlight::kFaceHasBakedLocalDirect | hlight::kFaceBumped |
             (f.flags & RESTIR_FACE_DISP ? hlight::kFaceDisplacement : 0) | (sun ? hlight::kFaceHasSun : 0);
         out.styleCount = receiverCount;
         for (int receiverSlot = 0; receiverSlot < receiverCount; ++receiverSlot)
@@ -679,22 +689,34 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
             out.styles[receiverSlot] = style;
             for (int p = 0; p < f.numChannels; ++p)
             {
+                const bool packed = p && !(texinfo[native.texinfo].flags & SURF_BUMPLIGHT);
+                const uint32 format = packed ? hlight::kR11G11B10Float : hlight::kRGBA16Float;
+                const uint32 pixelBytes = hlight::PagePixelBytes(format);
+                const uint64 pageBytes = uint64(pageSide)*pageSide*pixelBytes;
+                auto &pixels = packed ? m.directionalPixels : m.pixels;
+                auto &pages = packed ? directionalPages : m.pages;
+                auto &tiles = packed ? directionalTiles : m.tiles;
+                auto &shelf = shelves[packed];
+                uint32 &x = shelf.x, &y = shelf.y, &rowHeight = shelf.rowHeight;
+                int &page = shelf.page;
                 const uint32 w = f.luxelW+2, h = f.luxelH+2;
                 if (x+w > pageSide) { x = 0; y += rowHeight; rowHeight = 0; }
                 if (page < 0 || y+h > pageSide)
                 {
-                    if (uint64(m.pixels.Count())+pageBytes > hlight::kMaxFileBytes)
-                        return FailSize("dense page payload",uint64(m.pixels.Count())+pageBytes);
-                    if (!ReSTIR_EnsureByteCapacity(m.pixels,uint64(m.pixels.Count())+pageBytes)) return Fail("dense pixel byte capacity exceeds signed limit");
+                    const uint64 total = uint64(m.pixels.Count())+m.directionalPixels.Count()+pageBytes;
+                    if (total > hlight::kMaxFileBytes) return FailSize("dense page payload",total);
+                    if (!ReSTIR_EnsureByteCapacity(pixels,uint64(pixels.Count())+pageBytes)) return Fail("dense pixel byte capacity exceeds signed limit");
                     hlight::PageDisk record; memset(&record,0,sizeof(record));
-                    record.width = record.height = pageSide; record.format = hlight::kRGBA16Float;
-                    record.firstTile = m.tiles.Count(); record.pixelsOffset = m.pixels.Count(); record.pixelsBytes = pageBytes;
-                    const int old = m.pixels.Count(); m.pixels.SetCount(old+(int)pageBytes); memset(m.pixels.Base()+old,0,(size_t)pageBytes);
-                    page = m.pages.AddToTail(record); x = y = rowHeight = 0;
+                    record.width = record.height = pageSide; record.format = format;
+                    record.firstTile = tiles.Count(); record.pixelsOffset = pixels.Count(); record.pixelsBytes = pageBytes;
+                    const int old = pixels.Count(); pixels.SetCount(old+(int)pageBytes); memset(pixels.Base()+old,0,(size_t)pageBytes);
+                    page = pages.AddToTail(record); x = y = rowHeight = 0;
                 }
                 hlight::TileDisk tile = {uint32(i),uint32(receiverSlot),uint32(p),uint32(page),x+1,y+1,uint32(f.luxelW),uint32(f.luxelH)};
-                out.tiles[receiverSlot*4+p] = m.tiles.AddToTail(tile); ++m.pages[page].tileCount;
-                uint16 *pixels = reinterpret_cast<uint16 *>(m.pixels.Base()+m.pages[page].pixelsOffset);
+                const int tileIndex = tiles.AddToTail(tile);
+                if (!packed) out.tiles[receiverSlot*4+p] = tileIndex;
+                ++pages[page].tileCount;
+                byte *pagePixels = pixels.Base()+pages[page].pixelsOffset;
                 for (uint32 yy = 1; yy < h-1; ++yy)
                 for (uint32 xx = 1; xx < w-1; ++xx)
                 {
@@ -708,8 +730,17 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
                     }
                     rgb = (rgb+direct.values[(receiverSlot*f.numChannels+p)*(int)luxels+local])/255.0f;
                     const float alpha = receiverSlot == 0 && p == 0 ? (sun ? result.sunVisibility[f.firstLuxel+local] : 1.0f) : 0.0f;
-                    uint16 *dest = pixels+(uint64(y+yy)*pageSide+x+xx)*4;
-                    if (alpha < 0 || alpha > 1 || !Half(rgb.x,dest[0]) || !Half(rgb.y,dest[1]) || !Half(rgb.z,dest[2]) || !Half(alpha,dest[3]))
+                    byte *dest = pagePixels+(uint64(y+yy)*pageSide+x+xx)*pixelBytes;
+                    if (packed && rgb.IsValid() && rgb.x >= 0 && rgb.y >= 0 && rgb.z >= 0 &&
+                        rgb.x <= 65024.0f && rgb.y <= 65024.0f && rgb.z <= 64512.0f)
+                    {
+                        DirectX::PackedVector::XMFLOAT3PK value;
+                        DirectX::PackedVector::XMStoreFloat3PK(&value,DirectX::XMVectorSet(rgb.x,rgb.y,rgb.z,0));
+                        memcpy(dest,&value,sizeof(value));
+                        continue;
+                    }
+                    uint16 *rgba = reinterpret_cast<uint16 *>(dest);
+                    if (packed || alpha < 0 || alpha > 1 || !Half(rgb.x,rgba[0]) || !Half(rgb.y,rgba[1]) || !Half(rgb.z,rgba[2]) || !Half(alpha,rgba[3]))
                     {
                         Warning("Hlight: face=%d style=%d plane=%d dense=(%d,%d) RGBA=(%g,%g,%g,%g) is not representable\n",
                             i,style,p,local%f.luxelW,local/f.luxelW,rgb.x,rgb.y,rgb.z,alpha);
@@ -718,15 +749,30 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
                 }
                 for (uint32 yy = 1; yy < h-1; ++yy)
                 {
-                    uint16 *row = pixels+(uint64(y+yy)*pageSide+x)*4;
-                    memcpy(row,row+4,8);
-                    memcpy(row+(w-1)*4,row+(w-2)*4,8);
+                    byte *row = pagePixels+(uint64(y+yy)*pageSide+x)*pixelBytes;
+                    memcpy(row,row+pixelBytes,pixelBytes);
+                    memcpy(row+(w-1)*pixelBytes,row+(w-2)*pixelBytes,pixelBytes);
                 }
-                memcpy(pixels+(uint64(y)*pageSide+x)*4,pixels+(uint64(y+1)*pageSide+x)*4,w*8);
-                memcpy(pixels+(uint64(y+h-1)*pageSide+x)*4,pixels+(uint64(y+h-2)*pageSide+x)*4,w*8);
+                const uint64 pitch = uint64(pageSide)*pixelBytes;
+                byte *top = pagePixels+uint64(y)*pitch+x*pixelBytes;
+                memcpy(top,top+pitch,w*pixelBytes);
+                memcpy(top+(h-1)*pitch,top+(h-2)*pitch,w*pixelBytes);
                 x += w; rowHeight = MAX(rowHeight,h);
             }
         }
+    }
+    const uint32 firstDirectionalPage = m.pages.Count(), firstDirectionalTile = m.tiles.Count();
+    for (int p = 0; p < directionalPages.Count(); ++p)
+    {
+        auto &page = directionalPages[p];
+        page.firstTile += firstDirectionalTile;
+        m.pages.AddToTail(page);
+    }
+    for (int t = 0; t < directionalTiles.Count(); ++t)
+    {
+        auto &tile = directionalTiles[t];
+        tile.page += firstDirectionalPage;
+        m.faces[tile.faceOrdinal].tiles[tile.styleSlot*4+tile.plane] = m.tiles.AddToTail(tile);
     }
     m.record.faceCount = m.faces.Count(); m.record.modelCount = m.models.Count();
     m.record.tileCount = m.tiles.Count(); m.record.pageCount = m.pages.Count(); m.record.identityCount = 14;
@@ -739,7 +785,7 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
         V_snprintf(s_AssetPath,sizeof(s_AssetPath),"maps/%s.hlight",basename);
     }
     Msg("Hlight: density=%u independent cells=%d grid samples=%d styles/planes=%d pages=%d page-side=%u GPU/pixel-bytes=%d\n",
-        s_Density,scene.samples.Count(),scene.luxels.Count(),m.tiles.Count(),m.pages.Count(),pageSide,m.pixels.Count());
+        s_Density,scene.samples.Count(),scene.luxels.Count(),m.tiles.Count(),m.pages.Count(),pageSide,m.pixels.Count()+m.directionalPixels.Count());
     return true;
 }
 
@@ -801,7 +847,8 @@ bool ReSTIR_WriteLightSidecar(const ReSTIROptions &options)
     for (int p = 0; p < m.pages.Count(); ++p)
     {
         hlight::PageDisk page = m.pages[p];
-        if (!Append(file,m.pixels.Base()+page.pixelsOffset,page.pixelsBytes,page.pixelsOffset)) return false;
+        const auto &pixels = page.format == hlight::kR11G11B10Float ? m.directionalPixels : m.pixels;
+        if (!Append(file,pixels.Base()+page.pixelsOffset,page.pixelsBytes,page.pixelsOffset)) return false;
         memcpy(file.Base()+record.pagesOffset+p*sizeof(page),&page,sizeof(page));
     }
     hlight::VisibilitySetDisk visibility = m.visibility;

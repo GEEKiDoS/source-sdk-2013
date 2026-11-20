@@ -417,6 +417,7 @@ struct CHighresLightmapsDX12::Impl
     std::vector<HlightFaceGpuDX12> faces;
     std::vector<HlightTileGpuDX12> tiles;
     Texture groups[4];
+    DXGI_FORMAT groupFormats[4] = {};
     Texture zeroDynamic; // Shared 1x1 exact zero; native pages materialize a companion only when needed.
     std::vector<uint32> pageGroup, pageSlice;
     ComPtr<ID3D12Resource> faceBuffer, tileBuffer, failureBuffer;
@@ -478,6 +479,20 @@ struct CHighresLightmapsDX12::Impl
             Warning("Highres lightmaps: map rejected before client disconnect: %s\n", error);
         }
         status.state = DX12_HIGHRES_REJECTED;
+    }
+    void Disable(const char *reason)
+    {
+        V_strncpy(error, reason && *reason ? reason : "Highres lightmaps: enhanced sidecar is incompatible with native materials", sizeof(error));
+        Warning("Highres lightmaps: enhanced sidecar disabled; continuing with native lighting: %s\n", error);
+        ClearGpu();
+        ClearProbes();
+        atlas.reset();
+        dynamics.clear();
+        mode = nullptr;
+        enhancedRequired = false;
+        status.state = DX12_HIGHRES_ORDINARY;
+        status.layoutGeneration = 0;
+        status.pageCount = 0;
     }
     void Detach()
     {
@@ -922,10 +937,12 @@ struct CHighresLightmapsDX12::Impl
             Transition(device->CommandList(),visibilityBuffers[i].Get(),visibilityStates[i],D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (uint32 p=0;p<mode->record->pageCount;++p)
         {
+            if (pageGroup[p]==kNoPage) continue; // no native bumped receiver uses this optional page
             const auto &record=mode->pages[p]; auto &group=groups[pageGroup[p]];
             const uint32 copyWidth=std::min(record.width,group.width), copyHeight=std::min(record.height,group.height);
-            if (!Upload(group,pageSlice[p],0,0,copyWidth,copyHeight,DXGI_FORMAT_R16G16B16A16_FLOAT,8,
-                file.base+record.pixelsOffset,size_t(record.width)*8)) return false;
+            const uint32 pixelBytes=hlight::PagePixelBytes(record.format);
+            if (!Upload(group,pageSlice[p],0,0,copyWidth,copyHeight,DXGI_FORMAT(record.format),pixelBytes,
+                file.base+record.pixelsOffset,size_t(record.width)*pixelBytes)) return false;
         }
         for (auto &group : groups) if (group.resource) Transition(device->CommandList(),group.resource.Get(),group.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (auto &page : pages)
@@ -962,10 +979,13 @@ struct CHighresLightmapsDX12::Impl
             const auto &face = domain->faces[f]; const uint32 width = face.extents[0]+1, height = face.extents[1]+1;
             const uint32 paddedWidth=width+2, paddedHeight=height+2;
             const uint32 pitch=(paddedWidth*16+255)&~255u;
-            // Each plane's own replicated border is updated together with its entire interior.
-            for (uint32 plane=0;plane<placement.planeCount;++plane)
+            // The capture can execute only the base plane even on a bumped allocation.
+            // Uncaptured tail planes have never been written and stay zero.
+            const size_t samples=size_t(width)*height*3;
+            const uint32 capturedPlanes=uint32(dynamic.rgb.size()/samples);
+            for (uint32 plane=0;plane<std::min(placement.planeCount,capturedPlanes);++plane)
             {
-                const float *rgb=dynamic.rgb.data()+size_t(plane)*width*height*3;
+                const float *rgb=dynamic.rgb.data()+size_t(plane)*samples;
                 for (uint32 row=0;row<paddedHeight;row+=128)
                 {
                     const uint32 rows=std::min(128u,paddedHeight-row); const size_t bytes=(size_t(pitch)*rows+511)&~size_t(511);
@@ -1162,9 +1182,8 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
                 matchingExtents=matchingExtents && face.nativeExtents[axis]==extent;
             }
             if (face.faceOrdinal!=f || memcmp(face.nativeMins,native.mins,sizeof(native.mins)) || !matchingExtents ||
-                (face.styleCount && (((face.flags^native.flags)&hlight::kFaceDisplacement) ||
-                ((native.flags&hlight::kFaceBumped) && !(face.flags&hlight::kFaceBumped)))))
-            { s.Fail("Highres lightmaps: immutable face metadata mismatch or missing required bump planes"); return false; }
+                (face.styleCount && ((face.flags^native.flags)&hlight::kFaceDisplacement)))
+            { s.Fail("Highres lightmaps: immutable face metadata mismatch"); return false; }
             // Every native style must be one of the asset's authored styles. Their order may differ: a .light can sit
             // beside a BSP compiled by another VRAD, and only the asset's style list drives the high-resolution page.
             for (uint32 n=0;face.styleCount && n<4 && native.styles[n]!=255;++n)
@@ -1266,10 +1285,19 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             memcpy(gpu.tiles,face.tiles,sizeof(gpu.tiles)); memcpy(gpu.bakedModelToWorld,model.bakedModelToWorld,sizeof(gpu.bakedModelToWorld));
             if (place.page<0) { if (place.planeCount) { s.Fail("Highres lightmaps: native special page has an allocation"); return; } continue; }
             const bool baked=(face.flags&hlight::kFaceHasLighting)!=0;
-            if ((!baked && native.styles[0]!=255) || uint32(place.page)>=s.pages.size() ||
-                (place.planeCount!=1 && place.planeCount!=4) ||
-                (baked && place.planeCount==4 && !(face.flags&hlight::kFaceBumped)) ||
-                !place.origin[0] || !place.origin[1]) { s.Fail("Highres lightmaps: invalid native face placement or missing required bump planes"); return; }
+            if (uint32(place.page)>=s.pages.size() || (place.planeCount!=1 && place.planeCount!=4) ||
+                !place.origin[0] || !place.origin[1]) { s.Fail("Highres lightmaps: invalid native face placement"); return; }
+            if (!baked && native.styles[0]!=255)
+            { s.Disable("Highres lightmaps: native lit face has no baked lightmap"); return; }
+            if (baked && (place.planeCount==1 || !(face.flags&hlight::kFaceBumped)))
+            {
+                // Flat native allocations use the base plane. For legacy assets with no baked
+                // directional tiles, a bumped allocation uses the same base irradiance in
+                // every direction. Sun and selected-light visibility always use their own data.
+                for (uint32 style=0;style<face.styleCount;++style)
+                    for (uint32 plane=1;plane<hlight::kPlaneSlots;++plane)
+                        gpu.tiles[style*hlight::kPlaneSlots+plane]=gpu.tiles[style*hlight::kPlaneSlots];
+            }
             auto &page=s.pages[place.page]; const uint32 w=native.extents[0]+3,h=native.extents[1]+3,x=place.origin[0]-1,y=place.origin[1]-1;
             if (uint64(x)+uint64(w)*place.planeCount>page.ids.width || uint64(y)+h>page.ids.height) { s.Fail("Highres lightmaps: padded native allocation out of bounds"); return; }
             for (uint32 row=y;row<y+h;++row) for (uint32 column=x;column<x+w*place.planeCount;++column)
@@ -1285,34 +1313,52 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             }
         }
         uint32 counts[4]={}, widths[4]={}, heights[4]={}, kinds=0;
-        std::vector<std::array<uint32,2>> hdrUsed(s.mode->record->pageCount,{{1,1}});
-        s.pageGroup.resize(s.mode->record->pageCount); s.pageSlice.resize(s.mode->record->pageCount);
+        auto &formats=s.groupFormats;
+        std::fill(std::begin(formats),std::end(formats),DXGI_FORMAT_R16G16B16A16_FLOAT);
+        std::vector<std::array<uint32,2>> hdrUsed(s.mode->record->pageCount,{{0,0}});
+        s.pageGroup.assign(s.mode->record->pageCount,kNoPage); s.pageSlice.resize(s.mode->record->pageCount);
         for (uint32 t=0;t<s.mode->record->tileCount;++t)
         {
             const auto &tile=s.mode->tiles[t]; auto &used=hdrUsed[tile.page];
+            // The compact shelf is only needed where the runtime material actually asks
+            // for directions. Preserve other pages (including the legacy layout) as before.
+            if (s.mode->pages[tile.page].format==hlight::kR11G11B10Float &&
+                s.atlas->placements[tile.faceOrdinal].planeCount!=4) continue;
             used[0]=std::max(used[0],tile.x+tile.width+1); used[1]=std::max(used[1],tile.y+tile.height+1);
         }
         bool grouped=true;
         for (uint32 p=0;p<s.mode->record->pageCount;++p)
         {
-            auto &used=hdrUsed[p]; used[0]=PowerOfTwoExtent(used[0]); used[1]=PowerOfTwoExtent(used[1]);
-            uint32 group=0; while (group<kinds && (widths[group]!=used[0] || heights[group]!=used[1])) ++group;
+            auto &used=hdrUsed[p];
+            if (!used[0]) continue;
+            used[0]=PowerOfTwoExtent(used[0]); used[1]=PowerOfTwoExtent(used[1]);
+            const DXGI_FORMAT format=DXGI_FORMAT(s.mode->pages[p].format);
+            uint32 group=0; while (group<kinds && (formats[group]!=format || widths[group]!=used[0] || heights[group]!=used[1])) ++group;
             if (group==kinds)
             {
                 if (kinds==4) { grouped=false; break; }
-                widths[group]=used[0]; heights[group]=used[1]; ++kinds;
+                formats[group]=format; widths[group]=used[0]; heights[group]=used[1]; ++kinds;
             }
             s.pageGroup[p]=group; s.pageSlice[p]=counts[group]++;
             if (counts[group]>D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION) { grouped=false; break; }
         }
-        // More than four distinct cropped extents: keep the original four page classes, trimming only their common unused edge.
+        // Collapse cropped extents if necessary. Legacy pages can mix four page sides;
+        // v6 uses one side and at most two formats.
         if (!grouped)
         {
             memset(counts,0,sizeof(counts)); memset(widths,0,sizeof(widths)); memset(heights,0,sizeof(heights));
             for (uint32 p=0;p<s.mode->record->pageCount;++p)
             {
-                const auto &page=s.mode->pages[p]; uint32 group=0; while (group<4 && (2048u<<group)!=page.width) ++group;
-                if (group==4 || page.height!=page.width) { s.Fail("Highres lightmaps: invalid atlas page group"); return; }
+                if (!hdrUsed[p][0]) continue;
+                const auto &page=s.mode->pages[p]; uint32 group=0;
+                if (s.file.header->version==hlight::kLegacyVersion)
+                {
+                    while (group<4 && (2048u<<group)!=page.width) ++group;
+                }
+                else group=page.format==hlight::kR11G11B10Float ? 1 : 0;
+                if (group==4 || counts[group]>=D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION)
+                { s.Fail("Highres lightmaps: invalid atlas page group"); return; }
+                formats[group]=DXGI_FORMAT(page.format);
                 s.pageGroup[p]=group; s.pageSlice[p]=counts[group]++;
                 widths[group]=std::max(widths[group],PowerOfTwoExtent(hdrUsed[p][0]));
                 heights[group]=std::max(heights[group],PowerOfTwoExtent(hdrUsed[p][1]));
@@ -1321,14 +1367,15 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
         uint32 widthLog[4]={}, heightLog[4]={};
         for (uint32 g=0;g<4;++g) if (counts[g])
         {
-            if (!MakeTexture(device,s.groups[g],widths[g],heights[g],counts[g],DXGI_FORMAT_R16G16B16A16_FLOAT)) { s.Fail("Highres lightmaps: HDR atlas residency failed"); return; }
+            if (!MakeTexture(device,s.groups[g],widths[g],heights[g],counts[g],formats[g])) { s.Fail("Highres lightmaps: HDR atlas residency failed"); return; }
             widthLog[g]=ExtentLog2(widths[g]); heightLog[g]=ExtentLog2(heights[g]);
-            scratchBytes=std::max(scratchBytes,size_t(widths[g])*8*128+512);
+            scratchBytes=std::max(scratchBytes,size_t(widths[g])*hlight::PagePixelBytes(formats[g])*128+512);
         }
         s.tiles.resize(s.mode->record->tileCount);
         for (uint32 t=0;t<s.tiles.size();++t)
         {
             const auto &tile=s.mode->tiles[t]; auto &gpu=s.tiles[t]; const uint32 group=s.pageGroup[tile.page];
+            if (group==kNoPage) continue; // No published GPU face references this optional tile.
             gpu.address=group|(s.pageSlice[tile.page]<<2)|(widthLog[group]<<16)|(heightLog[group]<<20);
             gpu.origin=tile.x|(tile.y<<16); gpu.extent=tile.width|(tile.height<<16);
         }
@@ -1382,7 +1429,7 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             BufferView(device,s.faceBuffer.Get(),uint32(s.faces.size()),sizeof(HlightFaceGpuDX12),Slot(device,page.descriptors.Get(),1));
             BufferView(device,s.tileBuffer.Get(),uint32(s.tiles.size()),sizeof(HlightTileGpuDX12),Slot(device,page.descriptors.Get(),2));
             TextureView(device,s.zeroDynamic.resource.Get(),DXGI_FORMAT_R32G32B32A32_FLOAT,false,1,Slot(device,page.descriptors.Get(),3));
-            for (uint32 g=0;g<4;++g) TextureView(device,s.groups[g].resource.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,true,s.groups[g].layers,Slot(device,page.descriptors.Get(),4+g));
+            for (uint32 g=0;g<4;++g) TextureView(device,s.groups[g].resource.Get(),formats[g],true,s.groups[g].layers,Slot(device,page.descriptors.Get(),4+g));
         }
         if (!Heap(device,s.neutral.descriptors,8)) { s.Fail("Highres lightmaps: neutral descriptor allocation failed"); return; }
         s.neutral.ids.width=s.neutral.ids.height=1;
@@ -1406,8 +1453,13 @@ void CHighresLightmapsDX12::OnNativeDynamic(uint64 generation,uint32 face,uint32
     // Explicitly unlit owners use the untouched native samples, including any
     // executed legacy dynamics. They have no owned RGB planes to update.
     if (!(s.mode->faces[face].flags&hlight::kFaceHasLighting)) return;
-    auto &dynamic=s.dynamics[face]; const uint32 planes=(s.mode->faces[face].flags&hlight::kFaceBumped)?4:1; const size_t samples=size_t(width)*height*3;
-    if ((!dynamic.rgb.empty() && dynamic.rgb.size()!=samples*planes) || mask&~((1u<<planes)-1)) { s.Fail("Highres lightmaps: invalid dynamic plane mask"); return; }
+    auto &dynamic=s.dynamics[face];
+    const size_t samples=size_t(width)*height*3;
+    // Capture executed native planes, not the authored tile count. Storage only grows
+    // so that a subsequent base-only build can zero directional planes previously uploaded.
+    const uint32 planes=(mask&14u) || dynamic.rgb.size()==samples*4 ? 4 : 1;
+    if ((mask&~15u) || (!dynamic.rgb.empty() && dynamic.rgb.size()!=samples && dynamic.rgb.size()!=samples*4))
+    { s.Fail("Highres lightmaps: invalid dynamic plane mask or storage"); return; }
     bool nonzero=false;
     for (uint32 plane=0;plane<planes;++plane) if (mask&(1u<<plane))
     {
@@ -1418,10 +1470,10 @@ void CHighresLightmapsDX12::OnNativeDynamic(uint64 generation,uint32 face,uint32
             nonzero=nonzero || rgb[plane][i]!=0.f;
         }
     }
-    if (dynamic.rgb.empty())
+    if (dynamic.rgb.size()!=samples*planes)
     {
-        if (!nonzero) return;
-        try { dynamic.rgb.assign(samples*planes,0.f); }
+        if (dynamic.rgb.empty() && !nonzero) return;
+        try { dynamic.rgb.resize(samples*planes); }
         catch (const std::bad_alloc &) { s.Fail("Highres lightmaps: insufficient dynamic CPU memory"); return; }
     }
     for (uint32 plane=0;plane<planes;++plane)

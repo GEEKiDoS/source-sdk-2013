@@ -1373,7 +1373,9 @@ bool ReSTIR_SceneBuildSamples( ReSTIRSceneBuildContext &context, ReSTIRScene &sc
 		face.luxelW = dface.m_LightmapTextureSizeInLuxels[0] * density + 1;
 		face.luxelH = dface.m_LightmapTextureSizeInLuxels[1] * density + 1;
 		face.flags = dface.dispinfo >= 0 ? RESTIR_FACE_DISP : 0;
-		if ( info.flags & SURF_BUMPLIGHT )
+		// Enhanced output must also serve materials that acquire a normal map after baking.
+		// The ordinary BSP write still follows its authored SURF_BUMPLIGHT sample layout.
+		if ( context.options->shadowMaps || ( info.flags & SURF_BUMPLIGHT ) )
 		{
 			face.flags |= RESTIR_FACE_BUMPED;
 		}

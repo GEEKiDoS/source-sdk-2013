@@ -4,7 +4,7 @@
 The optional density-one control and dense diagnostics must be produced by the
 real baker with -restir_shadowmap_diagnostics. --raw-radiance additionally requires
 -restir_denoiser none and a fixture with no macro texture or entity _minlight.
-Only hlight v5 / rshd v6 (one HDR mode) is admitted; the manifest and assets come
+Both hlight v5 and v6 / rshd v6 (one HDR mode) are admitted; the manifest and assets come
 from the .light, every identity binds to the map BSP's own lumps, and the map BSP
 must be byte-identical to the input it was baked from.
 """
@@ -58,7 +58,7 @@ def manifest(light, bsp):
     require(game and game['version'] == 6, 'requires rshd version 6 in the .light (rebake old assets)')
     raw = game['data']
     size, mask, asset_version, reserved = unpack('<4I', raw)
-    require(size == len(raw) and mask == 2 and asset_version == 5 and not reserved, 'HDR-only manifest header (v5 required; rebake)')
+    require(size == len(raw) and mask == 2 and asset_version in (5, 6) and not reserved, 'HDR-only manifest header')
     require(light.flags == 0x80000, '.light level flags carry exactly the HDR selected-direct bit')
     require(all(not light.lumps[i] for i in range(64) if i not in (35, 40, 59)), '.light holds only map flags, game lumps and pak')
     path_bytes = raw[144:400]
@@ -104,6 +104,7 @@ def manifest(light, bsp):
     kept = [w for i, w in enumerate(worldlights) if i not in set(removed)]
     mode = dict(face=f, lighting=lighting, lighting_bytes=count, face_crc=face_crc, lighting_crc=lighting_crc,
                 sun=sun, lights=lights, asset=asset, removed=removed,
+                asset_version=asset_version,
                 selected_styles=selected_styles, local_styles=local_styles, selected=selected,
                 selected_bytes=raw[offset:cursor], selected_crc=crc(raw[offset:cursor]),
                 receiver_styles={0} | {w['style'] for w in kept})
@@ -310,7 +311,8 @@ def asset(light, bsp, path, manifests, density):
     data = light.pak[path]
     h = unpack('<4IQ2IQ2IQ2I', data)
     magic, version, header, endian, size, actual_density, count, modes_offset, checksum, sets, sets_at, *reserved = h
-    require((magic, version, header, endian) == (0x54494c48, 5, 64, 0x01020304) and size == len(data), 'asset header identity (v5 required; rebake)')
+    require((magic, version, header, endian) == (0x54494c48, manifests[0]['asset_version'], 64, 0x01020304)
+            and size == len(data), 'asset header/manifest identity')
     require(actual_density == density and count == 1 and sets == 1 and not any(reserved), 'asset density/mode/visibility count/reserved')
     require(checksum == crc(data[:40]+bytes(4)+data[44:]), 'whole-file CRC')
     cursor = section(data, 64, modes_offset, count*128)
@@ -327,8 +329,8 @@ def asset(light, bsp, path, manifests, density):
         cursor = section(data, cursor, identity_at, identities*24)
         ids = [unpack('<IIQII', data, identity_at+i*24) for i in range(identities)]
         require([x[0] for x in ids] == sorted((*GEOMETRY, face, lighting)), 'complete sorted effective identity set')
-        for lump, version, length, checksum, reserved in ids:
-            require(not reserved and version == bsp.directory[lump][2] and length == len(bsp.lumps[lump]) and
+        for lump, lump_version, length, checksum, reserved in ids:
+            require(not reserved and lump_version == bsp.directory[lump][2] and length == len(bsp.lumps[lump]) and
                     checksum == crc(bsp.lumps[lump]), f'effective lump identity {lump}')
         cursor = section(data, cursor, model_at, models*64)
         model_records = [unpack('<4I12f', data, model_at+i*64) for i in range(models)]
@@ -351,6 +353,7 @@ def asset(light, bsp, path, manifests, density):
             require((w, h) == (ex*density+1, ey*density+1), 'true high-grid endpoint dimensions')
             require(not flags & ~31 and not any(f[30:]) and bool(flags & 4) == bool(styles) and
                     bool(flags & 16) == bool(styles) and styles <= 4, 'v4 baked-direct face flags/styles/reserved')
+            require(version != 6 or bool(flags & 1) == bool(styles), 'v6 lit faces must all store directions')
             require(bool(flags & 8) == bool(styles and model_records[owner][3] & 1 and manifests[0]['sun'] >= 0), 'sun face eligibility')
             require(all(0 <= s < 64 for s in f[10:10+styles]) and len(set(f[10:10+styles])) == styles and
                     (not styles or f[10] == 0) and all(s == 255 for s in f[10+styles:14]), 'authored highres styles before pruning')
@@ -370,8 +373,11 @@ def asset(light, bsp, path, manifests, density):
         next_tile = 0
         for pi, page in enumerate(ps):
             side, height, fmt, zero, first, num, r0, r1, pixel_at, pixel_bytes = page
-            require(side in (2048, 4096, 8192, 16384) and side == height and fmt == 10 and not (zero or r0 or r1), 'RGBA16F page format')
-            require(first == next_tile and num > 0 and first+num <= tiles and pixel_bytes == side*side*8, 'canonical page tile prefix/byte count')
+            pixel_stride = 4 if fmt == 26 else 8
+            require(side in (2048, 4096, 8192, 16384) and side == height and not (zero or r0 or r1) and
+                    (fmt == 10 or version == 6 and fmt == 26) and (version == 5 or side == ps[0][0]), 'page format/side')
+            require(first == next_tile and num > 0 and first+num <= tiles and pixel_bytes == side*side*pixel_stride,
+                    'canonical page tile prefix/byte count')
             cursor = section(data, cursor, pixel_at, pixel_bytes)
             row_y = row_end = next_x = 0
             for ti in range(first, first+num):
@@ -379,6 +385,7 @@ def asset(light, bsp, path, manifests, density):
                 require(fi < faces and style < fs[fi][9] and plane < 4 and owner == pi and
                         fs[fi][14+style*4+plane] == ti and (width, height) == fs[fi][6:8], 'tile backlink/dimensions')
                 require(x >= 1 and y >= 1 and x+width < side and y+height < side, 'padded tile bounds')
+                require(fmt != 26 or plane != 0, 'packed directional tile has no base alpha channel')
                 if y-1 != row_y:
                     require(y-1 == row_end and x == 1, 'canonical shelf row transition')
                     row_y, next_x = y-1, 0
@@ -387,16 +394,21 @@ def asset(light, bsp, path, manifests, density):
                 row_end = max(row_end, y+height+1)
                 for yy in range(y-1, y+height+1):
                     for xx in range(x-1, x+width+1):
-                        at = pixel_at+(yy*side+xx)*8
-                        rgb = unpack('<4e', data, at)
-                        require(all(math.isfinite(v) and v >= 0 for v in rgb[:3]), 'finite nonnegative retained half RGB')
-                        expected_sun = style == plane == 0
-                        require(0 <= rgb[3] <= 1 if expected_sun else rgb[3] == 0, 'designated base alpha/reserved alpha')
-                        if expected_sun and not fs[fi][8] & 8:
-                            require(rgb[3] == 1, 'neutral sun alpha without eligible sun')
+                        at = pixel_at+(yy*side+xx)*pixel_stride
+                        if fmt == 26:
+                            bits, = unpack('<I', data, at)
+                            require(all(bits & mask != mask for mask in (0x7c0, 0x3e0000, 0xf8000000)), 'finite packed RGB')
+                        else:
+                            rgb = unpack('<4e', data, at)
+                            require(all(math.isfinite(v) and v >= 0 for v in rgb[:3]), 'finite nonnegative retained half RGB')
+                            expected_sun = style == plane == 0
+                            require(0 <= rgb[3] <= 1 if expected_sun else rgb[3] == 0, 'designated base alpha/reserved alpha')
+                            if expected_sun and not fs[fi][8] & 8:
+                                require(rgb[3] == 1, 'neutral sun alpha without eligible sun')
                         cx = min(max(xx, x), x+width-1)
                         cy = min(max(yy, y), y+height-1)
-                        require(data[at:at+8] == data[pixel_at+(cy*side+cx)*8:pixel_at+(cy*side+cx)*8+8], 'replicated LOD0 gutter')
+                        gutter_at = pixel_at+(cy*side+cx)*pixel_stride
+                        require(data[at:at+pixel_stride] == data[gutter_at:gutter_at+pixel_stride], 'replicated LOD0 gutter')
             next_tile += num
         require(next_tile == tiles, 'all tiles belong to a canonical page')
         mm = manifests[0]
@@ -434,10 +446,22 @@ def asset(light, bsp, path, manifests, density):
     return data, modes
 
 
+def packed_rgb(bits):
+    def component(value, fraction_bits):
+        exponent, fraction = divmod(value, 1 << fraction_bits)
+        if exponent == 0:
+            return math.ldexp(fraction, -14-fraction_bits)
+        return math.ldexp((1 << fraction_bits)+fraction, exponent-15-fraction_bits)
+    return (component(bits & 0x7ff, 6), component(bits >> 11 & 0x7ff, 6), component(bits >> 22, 5))
+
+
 def pixel(data, mode, face, style, plane, x, y):
     tile = mode['tiles'][face[14+style*4+plane]]
     page = mode['pages'][tile[3]]
-    at = page[8]+((tile[5]+y)*page[0]+tile[4]+x)*8
+    stride = 4 if page[2] == 26 else 8
+    at = page[8]+((tile[5]+y)*page[0]+tile[4]+x)*stride
+    if stride == 4:
+        return (*packed_rgb(unpack('<I', data, at)[0]), 0)
     return unpack('<4e', data, at)
 
 def mode_diagnostics(base, mode):
@@ -634,6 +658,15 @@ def diagnostics(base, control, modes, data, density, raw_radiance, require_sourc
                                     value = d['receiverRadiance'][at]
                                 addition = direct.get((style, plane, local), (0, 0, 0))
                                 receiver = tuple(f32(f32(v)*f32(1/255)) for v in value)
+                                tile = mode['tiles'][disk[14+asset_slot*4+plane]]
+                                if mode['pages'][tile[3]][2] == 26:
+                                    for channel, (actual, expected) in enumerate(zip(high, (v+a for v, a in zip(receiver, addition)))):
+                                        fraction_bits = 6 if channel < 2 else 5
+                                        exponent = math.frexp(expected)[1] if expected else -13
+                                        quantum = 2.0**(max(-13, exponent)-1-fraction_bits)
+                                        require(abs(actual-expected) <= quantum*.55+abs(expected)*2e-5+1e-8,
+                                                'packed directional RGB differs from bake radiance')
+                                    continue
                                 if any(addition):
                                     require_half_rgb(high[:3], tuple(v+a for v, a in zip(receiver, addition)),
                                                      'dense receiver plus independent baked local RGB/style/bump')

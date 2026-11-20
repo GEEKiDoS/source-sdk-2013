@@ -1214,6 +1214,16 @@ bool PollCompletedViews()
 		g_Highres->GetStatus(native,error,sizeof(error));
 		if ( native.state==DX12_HIGHRES_REJECTED || native.nativeMapGeneration!=g_State.nativeMapGeneration )
 			Fail(error[0]?error:"Highres lightmaps: active native generation changed");
+		else if ( native.state==DX12_HIGHRES_ORDINARY )
+		{
+			if ( error[0] )
+				Warning("Highres lightmaps: enhanced sidecar disabled; continuing map with native lighting (%s)\n",error);
+			else
+				Warning("Highres lightmaps: enhanced sidecar disabled; continuing map with native lighting\n");
+			g_Lighting->SetReceiverFeatureGeneration(0);
+			g_State.runtimeActive=false;
+			g_Admitted=false;
+		}
 	}
 	{
 		VPROF_BUDGET( "ShadowMapsDX12::PollCompletedViews.MapStatus", "Shadowmaps" );

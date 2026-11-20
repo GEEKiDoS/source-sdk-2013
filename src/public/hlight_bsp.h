@@ -12,7 +12,9 @@
 namespace hlight
 {
 static const uint32 kMagic = 0x54494c48u; // HLIT, little endian
-static const uint32 kVersion = 5; // one HDR mode
+static const uint32 kLegacyVersion = 5; // directional planes only on authored bumped faces
+static const uint32 kVersion = 6; // directional planes on every lit face
+inline bool SupportedVersion(uint32 version) { return version == kLegacyVersion || version == kVersion; }
 static const uint32 kEndian = 0x01020304u;
 static const uint32 kManifestVersion = 6; // one HDR mode, removed retail worldlights; carried by maps/<name>.light
 static const uint32 kMissing = 0xffffffffu;
@@ -24,6 +26,11 @@ static const uint32 kMaxStyles = 4;
 static const uint32 kLightstyleCount = 64; // native engine LightStyleValue domain
 static const uint32 kPlaneSlots = 4;
 static const uint32 kRGBA16Float = 10; // DXGI_FORMAT_R16G16B16A16_FLOAT
+static const uint32 kR11G11B10Float = 26; // RGB-only directional planes; no sun mask
+inline uint32 PagePixelBytes(uint32 format)
+{
+    return format == kRGBA16Float ? 8 : format == kR11G11B10Float ? 4 : 0;
+}
 static const uint32 kFaceBumped = 1;
 static const uint32 kFaceDisplacement = 2;
 static const uint32 kFaceHasLighting = 4;
@@ -349,7 +356,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
         return ValidationError(error, errorBytes, "invalid file buffer");
     const uint8 *base = static_cast<const uint8 *>(bytes);
     const FileHeader &h = *reinterpret_cast<const FileHeader *>(base);
-    if (h.magic != kMagic || h.version != kVersion || h.headerBytes != sizeof(h) ||
+    if (h.magic != kMagic || !SupportedVersion(h.version) || h.headerBytes != sizeof(h) ||
         h.endian != kEndian || h.fileBytes != count || !h.density || h.density > kMaxPageSize ||
         h.modeCount != 1 || h.visibilitySetCount != 1 ||
         !ZeroBytes(h.reserved, sizeof(h.reserved)) ||
@@ -439,6 +446,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
                 !f.highWidth || !f.highHeight ||
                 (f.styleCount && (f.highWidth > kMaxPageSize-2 || f.highHeight > kMaxPageSize-2)) ||
                 bool(f.flags & kFaceHasLighting) != bool(f.styleCount) ||
+                (h.version == kVersion && bool(f.flags & kFaceBumped) != bool(f.styleCount)) ||
                 bool(f.flags & kFaceHasBakedLocalDirect) != bool(f.styleCount) ||
                 ((f.flags & kFaceHasBakedLocalDirect) && !(v.models[modelIndex].flags & kModelBakedPoseKnown)) ||
                 ((f.flags & kFaceHasSun) && (!f.styleCount || !(v.models[modelIndex].flags & kModelBakedPoseKnown))))
@@ -469,15 +477,22 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
             return ValidationError(error,errorBytes,"page section range");
         v.pages = reinterpret_cast<const PageDisk *>(base + m.pagesOffset);
         uint32 nextTile = 0;
+        uint32 pageSide = 0;
         for (uint32 pi = 0; pi < m.pageCount; ++pi)
         {
             const PageDisk &page = v.pages[pi];
-            if (!PageSide(page.width) || page.height != page.width || page.format != kRGBA16Float ||
+            const uint32 pixelBytes = PagePixelBytes(page.format);
+            const bool packed = page.format == kR11G11B10Float;
+            if (!PageSide(page.width) || page.height != page.width || !pixelBytes ||
+                (h.version == kLegacyVersion && packed) ||
+                (h.version == kVersion && pageSide && page.width != pageSide) ||
                 page.reserved || !ZeroBytes(page.reserved2,sizeof(page.reserved2)) || page.firstTile != nextTile ||
                 !page.tileCount || page.tileCount > m.tileCount-nextTile ||
-                page.pixelsBytes != uint64(page.width)*page.height*8 ||
+                page.pixelsBytes != uint64(page.width)*page.height*pixelBytes ||
                 !Section(base,count,cursor,page.pixelsOffset,page.pixelsBytes))
                 return ValidationError(error,errorBytes,"invalid page/pixel range");
+            pageSide = page.width; // v6 uses one common page side for both formats.
+            const uint8 *pixels = base+page.pixelsOffset;
             uint32 rowY = 0, rowEnd = 0, nextX = 0;
             for (uint32 ti = nextTile; ti < nextTile+page.tileCount; ++ti)
             {
@@ -496,28 +511,38 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
                 }
                 if (x != nextX) return ValidationError(error,errorBytes,"overlapping/noncanonical shelf");
                 nextX = x+t.width+2; rowEnd = MAX(rowEnd,y+t.height+2);
-                const uint16 *pixels = reinterpret_cast<const uint16 *>(base+page.pixelsOffset);
+                if (packed && !t.plane) return ValidationError(error,errorBytes,"base tile has no alpha channel");
                 for (uint32 yy = 0; yy < t.height+2; ++yy)
                 for (uint32 xx = 0; xx < t.width+2; ++xx)
                 {
-                    const uint64 at = (uint64(y+yy)*page.width+x+xx)*4;
-                    for (uint32 c = 0; c < 3; ++c)
-                        if ((pixels[at+c] & 0x8000) || (pixels[at+c] & 0x7c00) == 0x7c00)
-                            return ValidationError(error,errorBytes,"nonfinite/negative half RGB");
-                    const uint16 a = pixels[at+3];
-                    if (t.styleSlot == 0 && t.plane == 0)
+                    const uint8 *at = pixels+(uint64(y+yy)*page.width+x+xx)*pixelBytes;
+                    if (packed)
                     {
-                        if (a > 0x3c00 || (!(f.flags & kFaceHasSun) && a != 0x3c00))
-                            return ValidationError(error,errorBytes,"invalid/unnormalized sun alpha");
+                        const uint32 rgb = *reinterpret_cast<const uint32 *>(at);
+                        if ((rgb & 0x000007c0u) == 0x000007c0u || (rgb & 0x003e0000u) == 0x003e0000u ||
+                            (rgb & 0xf8000000u) == 0xf8000000u)
+                            return ValidationError(error,errorBytes,"nonfinite packed directional RGB");
                     }
-                    else if (a) return ValidationError(error,errorBytes,"reserved alpha is nonzero");
+                    else
+                    {
+                        const uint16 *rgba = reinterpret_cast<const uint16 *>(at);
+                        for (uint32 c = 0; c < 3; ++c)
+                            if ((rgba[c] & 0x8000) || (rgba[c] & 0x7c00) == 0x7c00)
+                                return ValidationError(error,errorBytes,"nonfinite/negative half RGB");
+                        const uint16 a = rgba[3];
+                        if (t.styleSlot == 0 && t.plane == 0)
+                        {
+                            if (a > 0x3c00 || (!(f.flags & kFaceHasSun) && a != 0x3c00))
+                                return ValidationError(error,errorBytes,"invalid/unnormalized sun alpha");
+                        }
+                        else if (a) return ValidationError(error,errorBytes,"reserved alpha is nonzero");
+                    }
                     const uint32 cx = MAX(1u,MIN(t.width,xx)), cy = MAX(1u,MIN(t.height,yy));
-                    if ((cx != xx || cy != yy) && memcmp(pixels+at,pixels+(uint64(y+cy)*page.width+x+cx)*4,8))
+                    if ((cx != xx || cy != yy) && memcmp(at,pixels+(uint64(y+cy)*page.width+x+cx)*pixelBytes,pixelBytes))
                         return ValidationError(error,errorBytes,"nonreplicated tile gutter");
                 }
             }
             // Empty shelf/page pixels must not carry undeclared payload.
-            const uint16 *pixels = reinterpret_cast<const uint16 *>(base+page.pixelsOffset);
             uint32 tile = nextTile;
             for (uint32 y = 0; y < page.height; ++y)
             {
@@ -527,11 +552,11 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
                 {
                     const TileDisk &rect = v.tiles[t];
                     if (y >= rect.y-1+rect.height+2) continue;
-                    if (!ZeroBytes(pixels+(uint64(y)*page.width+x)*4,uint64(rect.x-1-x)*8))
+                    if (!ZeroBytes(pixels+(uint64(y)*page.width+x)*pixelBytes,uint64(rect.x-1-x)*pixelBytes))
                         return ValidationError(error,errorBytes,"nonzero unused page pixels");
                     x = rect.x+rect.width+1;
                 }
-                if (!ZeroBytes(pixels+(uint64(y)*page.width+x)*4,uint64(page.width-x)*8))
+                if (!ZeroBytes(pixels+(uint64(y)*page.width+x)*pixelBytes,uint64(page.width-x)*pixelBytes))
                     return ValidationError(error,errorBytes,"nonzero unused page pixels");
             }
             nextTile += page.tileCount;
@@ -778,7 +803,7 @@ inline bool ValidateManifest(const void *bytes, uint32 count, uint32 levelFlags,
     const uint32 mask = (levelFlags & ShadowMap_LevelFlagDirect(0) ? 1u : 0u) |
         (levelFlags & ShadowMap_LevelFlagDirect(1) ? 2u : 0u);
     if (h.byteSize != count || h.runtimeModeMask != (1u << SHADOWMAP_MODE_HDR) ||
-        h.runtimeModeMask != mask || h.assetVersion != kVersion || h.reserved)
+        h.runtimeModeMask != mask || !SupportedVersion(h.assetVersion) || h.reserved)
         return ValidationError(error,errorBytes,"manifest version/flags mismatch");
     uint32 pathLength = 0; while (pathLength < sizeof(h.assetPath) && h.assetPath[pathLength]) ++pathLength;
     if (pathLength < 13 || pathLength == sizeof(h.assetPath) || strncmp(h.assetPath,"maps/",5) ||
@@ -848,6 +873,8 @@ inline bool ValidateManifestAsset(const FileView &file, const ManifestView &mani
     char *error, int errorBytes)
 {
     if (!file.header || !manifest.header) return ValidationError(error,errorBytes,"unvalidated manifest/asset pair");
+    if (file.header->version != manifest.header->assetVersion)
+        return ValidationError(error,errorBytes,"manifest/asset version mismatch");
     uint32 admitted = 0, assetMask = 0;
     for (uint32 mi = 0; mi < SHADOWMAP_MODE_COUNT; ++mi)
     {

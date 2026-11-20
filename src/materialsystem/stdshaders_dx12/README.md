@@ -836,8 +836,8 @@ without copying the CPU visibility planes. Owner metadata packs count into `dime
 bits 16..31 and raw uint offset into `dimensionsFlags.w` bits 1..31 (bit 0 remains baked-pose-known).
 Empty lists need no additional directory/payload load or canonical-to-GPU lookup. Nonempty lists
 resolve their fallback IDs to view lights and merge them with the resident tail, evaluating overlap once.
-The PBR kernel resolves an ID with one load of the view's canonical light map (`PBR_ViewLightIndex`): interface
-`ShaderAPIDX12Lighting_014` publishes, after the resident tail of `t1028`, `canonicalMapCount` entries holding
+The PBR kernel resolves an ID with one load of the view's canonical light map (`PBR_ViewLightIndex`): the lighting
+interface publishes, after the resident tail of `t1028`, `canonicalMapCount` entries holding
 view light index + 1 per manifest light ordinal (0 = not selected by this view; the backend validates that it
 holds exactly the view's `BAKED_AVAILABLE` records). Style-overflow lists are common in c1m1 (flickering
 fire-lit rooms exceed the four-style palette), where the previous per-ID binary search over the 608-byte view
@@ -1120,11 +1120,19 @@ diffuse-only carriers multiplied by the diffuse colour once. Flashlight and `env
 view, nearest first) are cookie spotlights inside the same pass; the engine's additive flashlight pass draws nothing
 for PBR materials.
 
-High-resolution receiver residency keeps the baked pixels lossless while trimming unused allocation edges. HDR pages are
+High-resolution receiver residency trims unused allocation edges. HDR pages are
 uploaded into cropped power-of-two array classes (the 2048/4096/8192/16384 bindings remain ABI names; their dimensions
 come from the selected class). Native R32 owner pages remain full-size because owner lookup uses full native UV dimensions;
 only the HDR payload arrays are cropped. Native RGBA32F dynamic companions are lazy: a shared 1x1 zero page is bound until
 a captured nonzero dynamic plane is published, so maps with no executed dynamic contribution do not reserve companion pages.
+
+The native allocation determines whether a face samples one flat plane or three directional planes. A material
+replacement may change that choice without changing face ordinals or the BSP lightmap grid. In `.hlight` v6, every
+lit face has directional tiles, so a newly bumped material resolves real directional irradiance. The extra tiles for
+faces baked from flat materials are stored as filterable R11G11B10F, separate from RGBA16F base/sun and original bump
+tiles. A packed page unused by the current materials is not resident on the GPU. Legacy v5 faces without directional
+tiles alias all three slots to the corresponding style's base tile. Native dynamic updates capture the planes the
+engine actually writes, independent of the authored plane count.
 
 The GPU face directory is 132 bytes (`owner`, packed style IDs, four tile indices, and the three baked model rows), down
 from the former 160-byte record. Tile records are packed to three uints (12 bytes), down from 32 bytes; page kind/slice,
