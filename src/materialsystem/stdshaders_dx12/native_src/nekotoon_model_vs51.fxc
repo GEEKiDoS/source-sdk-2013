@@ -1,5 +1,6 @@
 // STATIC: "BUMP" "0..1"
 // STATIC: "HULL" "0..1"
+// STATIC: "DEPTHOFFSET" "0..1"
 // DYNAMIC: "COMPRESSED_VERTS" "0..1"
 // DYNAMIC: "SKINNING" "0..1"
 // DYNAMIC: "MORPHING" "0..1"
@@ -32,6 +33,14 @@ VS_OUTPUT main( DX12_VS_INPUT v )
 	float width = h.y != 0 ? h.x * 0.1 * o.projPos.w : h.x * length(screenNormal);
 	o.projPos.xy += direction * clamp(width, 0, max(o.projPos.w, 0.0) * 0.012);
 	o.projPos.z += h.z * 0.0001 * o.projPos.w;
+#endif
+#if DEPTHOFFSET
+	// Move coverage in depth only. Moving the projected XY would detach the
+	// eyebrow from the face in profile. The offset is in world units, not NDC.
+	float3 eyeRay = normalize( o.toEye );
+	float4 offsetClip = mul( float4( -eyeRay * g_BlendTransform[1].x, 0.0 ), cViewProj );
+	float offsetW = max( o.projPos.w + offsetClip.w, 1e-4 );
+	o.projPos.z = ( o.projPos.z + offsetClip.z ) * ( o.projPos.w / offsetW );
 #endif
 	return o;
 }

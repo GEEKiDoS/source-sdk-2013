@@ -10,9 +10,11 @@ class nekotoon_model_vs51_Static_Index
 {
 	unsigned int m_nBUMP : 2;
 	unsigned int m_nHULL : 2;
+	unsigned int m_nDEPTHOFFSET : 2;
 #ifdef _DEBUG
 	bool m_bBUMP : 1;
 	bool m_bHULL : 1;
+	bool m_bDEPTHOFFSET : 1;
 #endif	// _DEBUG
 public:
 	void SetBUMP( int i )
@@ -33,24 +35,35 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetDEPTHOFFSET( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nDEPTHOFFSET = i;
+#ifdef _DEBUG
+		m_bDEPTHOFFSET = true;
+#endif	// _DEBUG
+	}
+
 	nekotoon_model_vs51_Static_Index(  )
 	{
 		m_nBUMP = 0;
 		m_nHULL = 0;
+		m_nDEPTHOFFSET = 0;
 #ifdef _DEBUG
 		m_bBUMP = false;
 		m_bHULL = false;
+		m_bDEPTHOFFSET = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bBUMP && m_bHULL );
-		return ( 16 * m_nBUMP ) + ( 32 * m_nHULL ) + 0;
+		Assert( m_bBUMP && m_bHULL && m_bDEPTHOFFSET );
+		return ( 16 * m_nBUMP ) + ( 32 * m_nHULL ) + ( 64 * m_nDEPTHOFFSET ) + 0;
 	}
 };
 
-#define shaderStaticTest_nekotoon_model_vs51 vsh_forgot_to_set_static_BUMP + vsh_forgot_to_set_static_HULL
+#define shaderStaticTest_nekotoon_model_vs51 vsh_forgot_to_set_static_BUMP + vsh_forgot_to_set_static_HULL + vsh_forgot_to_set_static_DEPTHOFFSET
 
 
 class nekotoon_model_vs51_Dynamic_Index

@@ -66,6 +66,9 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 		SHADER_PARAM( MATCAPTINT, SHADER_PARAM_TYPE_VEC4, "[1 1 1 1]", "NekoToon matcaptint" )
 		SHADER_PARAM( PHONGFRESNELRANGES, SHADER_PARAM_TYPE_VEC3, "[0 .5 1]", "Legacy VMT compatibility only; NekoToon uses matcap rather than Source Phong" )
 		SHADER_PARAM( BUMPTRANSFORM, SHADER_PARAM_TYPE_MATRIX, "center .5 .5 scale 1 1 rotate 0 translate 0 0", "NekoToon bumptransform" )
+		SHADER_PARAM( ZOFFSET, SHADER_PARAM_TYPE_FLOAT, "0", "Depth displacement in world units" )
+		SHADER_PARAM( EMISSIONFRAME, SHADER_PARAM_TYPE_INTEGER, "0", "Frame of the emission texture" )
+		SHADER_PARAM( MULTIPLY, SHADER_PARAM_TYPE_BOOL, "0", "Multiply destination colour" )
 	END_SHADER_PARAMS
 
 	SHADER_FALLBACK
@@ -78,6 +81,15 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 		SET_FLAGS2( MATERIAL_VAR2_LIGHTING_VERTEX_LIT );
 		SET_FLAGS2( MATERIAL_VAR2_USES_VERTEXID );
 		SET_FLAGS( MATERIAL_VAR_SUPPRESS_DECALS );
+		if ( params[EYEBROW]->GetIntValue() || params[MULTIPLY]->GetIntValue() || params[ALPHA]->IsDefined() )
+			SET_FLAGS( MATERIAL_VAR_TRANSLUCENT );
+		if ( params[ALPHA2]->IsDefined() && !IS_FLAG_SET( MATERIAL_VAR_TRANSLUCENT ) )
+		{
+			SET_FLAGS( MATERIAL_VAR_ALPHATEST );
+			SET_FLAGS( MATERIAL_VAR_ALLOWALPHATOCOVERAGE );
+		}
+		if ( !params[EMISSIONTINT]->IsDefined() )
+			params[EMISSIONTINT]->SetVecValue( 0.005f, 0.005f, 0.005f );
 		if ( !params[LIGHTINGSCALE]->IsDefined() )
 			params[LIGHTINGSCALE]->SetFloatValue( .6f );
 		if ( !params[CAMERAAO]->IsDefined() )
@@ -168,6 +180,8 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 			return;
 		const bool bump = HasTexture( params, BUMPMAP );
 		const int warp = HasTexture( params, LIGHTWARPSRGBTEXTURE ) ? LIGHTWARPSRGBTEXTURE : LIGHTWARPTEXTURE;
+		const bool eyebrow = params[EYEBROW]->GetIntValue() != 0;
+		const bool depthOffset = eyebrow || params[ZOFFSET]->GetFloatValue() != 0.0f;
 
 		for ( int pass = 0; pass < 1 + ( params[OUTLINE]->GetIntValue() != 0 ); ++pass )
 		{
@@ -178,6 +192,12 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 				pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION | VERTEX_NORMAL | VERTEX_FORMAT_COMPRESSED, 1, 0,
 														 bump ? 4 : 0 );
 				SetBlendingShadowState( EvaluateBlendRequirements( BASETEXTURE, true ) );
+				if ( params[MULTIPLY]->GetIntValue() )
+				{
+					pShaderShadow->EnableBlending( true );
+					pShaderShadow->BlendFunc( SHADER_BLEND_DST_COLOR, SHADER_BLEND_ZERO );
+					pShaderShadow->EnableDepthWrites( false );
+				}
 				if ( hull )
 				{
 					pShaderShadow->EnableCulling( false );
@@ -204,6 +224,7 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 				DECLARE_STATIC_VERTEX_SHADER( nekotoon_model_vs51 );
 				SET_STATIC_VERTEX_SHADER_COMBO( BUMP, bump );
 				SET_STATIC_VERTEX_SHADER_COMBO( HULL, hull );
+				SET_STATIC_VERTEX_SHADER_COMBO( DEPTHOFFSET, depthOffset );
 				SET_STATIC_VERTEX_SHADER( nekotoon_model_vs51 );
 				DECLARE_STATIC_PIXEL_SHADER( nekotoon_model_ps51 );
 				SET_STATIC_PIXEL_SHADER_COMBO( BUMP, bump );
@@ -225,7 +246,7 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 				BindMaterialTexture( params, pShaderAPI, SHADER_SAMPLER4, MASK1, -1 );
 				BindMaterialTexture( params, pShaderAPI, SHADER_SAMPLER5, MASK2, -1 );
 				BindMaterialTexture( params, pShaderAPI, SHADER_SAMPLER6, OUTLINETEXTURE, -1 );
-				BindMaterialTexture( params, pShaderAPI, SHADER_SAMPLER7, EMISSIONTEXTURE, -1 );
+				BindMaterialTexture( params, pShaderAPI, SHADER_SAMPLER7, EMISSIONTEXTURE, EMISSIONFRAME );
 				SetVertexShaderTextureTransform( kBaseTransformRegister, BASETEXTURETRANSFORM );
 				SetVertexShaderTextureTransform( kBumpTransformRegister, BUMPTRANSFORM );
 				SetHWMorphVertexShaderState( VERTEX_SHADER_SHADER_SPECIFIC_CONST_10, VERTEX_SHADER_SHADER_SPECIFIC_CONST_11,
@@ -235,6 +256,13 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 				float extrusion[] = { params[OUTLINETHICKNESS]->GetFloatValue(), params[OUTLINEFIXEDTHICKNESS]->GetFloatValue(),
 									  params[OUTLINEZOFFSET]->GetFloatValue(), float( w ) / h };
 				DX12SetVertexShaderConstant( kHullRegister, extrusion );
+				if ( depthOffset )
+				{
+					float offset[4] = { params[ZOFFSET]->GetFloatValue(), 0.0f, 0.0f, 0.0f };
+					if ( eyebrow )
+						offset[0] += params[EYEBROWZOFFSET]->GetFloatValue();
+					DX12SetVertexShaderConstant( kHullRegister + 1, offset );
+				}
 				LightState_t state = {};
 				pShaderAPI->GetDX9LightState( &state );
 				pShaderAPI->SetPixelShaderStateAmbientLightCube( kAmbientCubeRegister, !state.m_bAmbientLight );
@@ -265,6 +293,8 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 				params[OUTLINECOLOR]->GetVecValue( material.g_NekoOutline, 3 );
 				material.g_NekoOutline[3] = params[OUTLINELIGHTING]->GetFloatValue();
 				material.g_NekoSurface[0] = clamp( params[ALPHA2]->GetFloatValue(), 0.0f, 1.0f );
+				if ( eyebrow )
+					material.g_NekoSurface[0] *= clamp( params[EYEBROWALPHA]->GetFloatValue(), 0.0f, 1.0f );
 				material.g_NekoSurface[1] = HasTexture( params, OUTLINETEXTURE ) &&
 											params[OUTLINETEXTURE]->GetTextureValue()->GetImageFormat() == IMAGE_FORMAT_ATI1N;
 				material.g_NekoSurface[2] = params[BUMPSTRENGTH]->GetFloatValue();

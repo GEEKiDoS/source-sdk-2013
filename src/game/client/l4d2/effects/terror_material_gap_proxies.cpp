@@ -5,6 +5,9 @@
 #include "proxyentity.h"
 #include "l4d2/effects/terror_glow_policy.h"
 #include "materialsystem/imaterial.h"
+#include "c_baseanimatingoverlay.h"
+#include "c_baseviewmodel.h"
+#include "view.h"
 #include <math.h>
 
 #include "tier0/memdbgon.h"
@@ -48,6 +51,16 @@ private:
 };
 EXPOSE_INTERFACE( CConVarMaterialProxy, IMaterialProxy, "ConVar" IMATERIAL_PROXY_INTERFACE_VERSION );
 
+static C_AnimationLayer *MaterialAnimationLayer( C_BaseAnimating *pAnimating, int index )
+{
+	if ( index < 0 )
+		return NULL;
+	C_BaseAnimatingOverlay *pOverlay = dynamic_cast<C_BaseAnimatingOverlay *>( pAnimating );
+	if ( !pOverlay || index >= pOverlay->GetNumAnimOverlays() )
+		return NULL;
+	return pOverlay->GetAnimOverlay( index );
+}
+
 // C0DC9C0/C0DCAD0/C4FE300. CEntityMaterialProxy is the native bind dispatcher.
 class CCycleMaterialProxy : public CEntityMaterialProxy
 {
@@ -56,6 +69,7 @@ public:
 	virtual bool Init( IMaterial *pMaterial, KeyValues *pKeys ) OVERRIDE
 	{
 		m_pMaterial = pMaterial;
+		m_nLayer = pKeys->GetInt( "layer", -1 );
 		const char *pResult = pKeys->GetString( "resultVar", NULL );
 		if ( !pResult ) return false;
 		bool bFound;
@@ -75,7 +89,8 @@ protected:
 	{
 		C_BaseAnimating *pAnimating = pEntity ? pEntity->GetBaseAnimating() : NULL;
 		if ( !pAnimating ) return;
-		const float cycle = pAnimating->GetCycle();
+		C_AnimationLayer *pLayer = MaterialAnimationLayer( pAnimating, m_nLayer );
+		const float cycle = pLayer ? pLayer->m_flCycle : pAnimating->GetCycle();
 		float value = m_flStart == m_flEnd ? ( cycle >= m_flEnd ? 1.0f : 0.0f ) : ( cycle - m_flStart ) / ( m_flEnd - m_flStart );
 		if ( value < 0.0f ) value = 0.0f;
 		else if ( value > 1.0f ) value = 1.0f;
@@ -95,6 +110,7 @@ protected:
 private:
 	IMaterial *m_pMaterial;
 	IMaterialVar *m_pResult;
+	int m_nLayer;
 	bool m_bEaseIn, m_bEaseOut;
 	float m_flStart, m_flEnd;
 };
@@ -172,5 +188,181 @@ private:
 	int m_nClass;
 };
 EXPOSE_INTERFACE( CPlayerZombieClassProxy, IMaterialProxy, "ZombiePlayerClass" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+// Inputs can be literals or material variables. Resolve the names once but
+// read their values at bind time: an earlier proxy can write this bind's input.
+class CRemapValClampProxy : public CResultProxy
+{
+public:
+	bool Init( IMaterial *pMaterial, KeyValues *pKeys ) OVERRIDE
+	{
+		return CResultProxy::Init( pMaterial, pKeys ) &&
+			m_Source.Init( pMaterial, pKeys, "srcVar1" ) &&
+			m_InputMin.Init( pMaterial, pKeys, "range_in_min" ) &&
+			m_InputMax.Init( pMaterial, pKeys, "range_in_max", 1.0f ) &&
+			m_OutputMin.Init( pMaterial, pKeys, "range_out_min" ) &&
+			m_OutputMax.Init( pMaterial, pKeys, "range_out_max", 1.0f );
+	}
+
+	void OnBind( void *pRenderable ) OVERRIDE
+	{
+		SetFloatResult( RemapValClamped( m_Source.GetFloat(), m_InputMin.GetFloat(), m_InputMax.GetFloat(),
+			m_OutputMin.GetFloat(), m_OutputMax.GetFloat() ) );
+	}
+
+private:
+	CFloatInput m_Source;
+	CFloatInput m_InputMin, m_InputMax;
+	CFloatInput m_OutputMin, m_OutputMax;
+};
+EXPOSE_INTERFACE( CRemapValClampProxy, IMaterialProxy, "RemapValClamp" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+class CPlayerAttachmentProxy : public CResultProxy
+{
+public:
+	bool Init( IMaterial *pMaterial, KeyValues *pKeys ) OVERRIDE
+	{
+		m_Name = pKeys->GetString( "name", "" );
+		m_nAxis = pKeys->GetInt( "axis", 1 ) - 1;
+		return m_Name.Length() && m_nAxis >= 0 && m_nAxis < 3 && CResultProxy::Init( pMaterial, pKeys );
+	}
+
+	void OnBind( void *pRenderable ) OVERRIDE
+	{
+		C_BaseEntity *pEntity = BindArgToEntity( pRenderable );
+		C_BaseAnimating *pAnimating = pEntity ? pEntity->GetBaseAnimating() : NULL;
+		matrix3x4_t attachment;
+		const int index = pAnimating ? pAnimating->LookupAttachment( m_Name.Get() ) : 0;
+		float facing = 0.0f;
+		if ( index > 0 && pAnimating->GetAttachment( index, attachment ) )
+		{
+			Vector origin, axis;
+			MatrixGetColumn( attachment, 3, origin );
+			MatrixGetColumn( attachment, m_nAxis, axis );
+			Vector towardsModel = origin - CurrentViewOrigin();
+			VectorNormalize( towardsModel );
+			VectorNormalize( axis );
+			facing = DotProduct( towardsModel, axis );
+		}
+		SetFloatResult( facing );
+	}
+
+private:
+	CUtlString m_Name;
+	int m_nAxis;
+};
+EXPOSE_INTERFACE( CPlayerAttachmentProxy, IMaterialProxy, "PlayerAttachment" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+class CModuloMaterialProxy : public CResultProxy
+{
+public:
+	bool Init( IMaterial *pMaterial, KeyValues *pKeys ) OVERRIDE
+	{
+		return CResultProxy::Init( pMaterial, pKeys ) &&
+			m_Dividend.Init( pMaterial, pKeys, "srcVar1" ) && m_Divisor.Init( pMaterial, pKeys, "srcVar2" );
+	}
+
+	void OnBind( void *pRenderable ) OVERRIDE
+	{
+		const float divisor = m_Divisor.GetFloat();
+		SetFloatResult( divisor != 0.0f ? fmodf( m_Dividend.GetFloat(), divisor ) : 0.0f );
+	}
+
+private:
+	CFloatInput m_Dividend, m_Divisor;
+};
+EXPOSE_INTERFACE( CModuloMaterialProxy, IMaterialProxy, "Modulo" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+class CMaterialSequenceProxy : public CResultProxy
+{
+public:
+	bool Init( IMaterial *pMaterial, KeyValues *pKeys ) OVERRIDE
+	{
+		m_nLayer = pKeys->GetInt( "layer", -1 );
+		return CResultProxy::Init( pMaterial, pKeys );
+	}
+
+	void OnBind( void *pRenderable ) OVERRIDE
+	{
+		C_BaseEntity *pEntity = BindArgToEntity( pRenderable );
+		C_BaseAnimating *pAnimating = pEntity ? pEntity->GetBaseAnimating() : NULL;
+		C_AnimationLayer *pLayer = MaterialAnimationLayer( pAnimating, m_nLayer );
+		int sequence = 0;
+		if ( pLayer )
+			sequence = pLayer->m_nSequence;
+		else if ( pAnimating )
+			sequence = pAnimating->GetSequence();
+		SetFloatResult( sequence );
+	}
+
+private:
+	int m_nLayer;
+};
+EXPOSE_INTERFACE( CMaterialSequenceProxy, IMaterialProxy, "Sequence" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+// Use the bound weapon, not the local inventory. A spectator can see the
+// same material on another player's weapon.
+static C_BaseCombatWeapon *MaterialWeapon( C_BaseEntity *pEntity )
+{
+	if ( !pEntity )
+		return NULL;
+	C_BaseViewModel *pViewModel = dynamic_cast<C_BaseViewModel *>( pEntity );
+	if ( pViewModel )
+		return pViewModel->GetOwningWeapon();
+	C_BaseCombatCharacter *pCharacter = pEntity->MyCombatCharacterPointer();
+	if ( pCharacter )
+		return pCharacter->GetActiveWeapon();
+	return pEntity->MyCombatWeaponPointer();
+}
+
+class CClipAmmoMaterialProxy : public CResultProxy
+{
+public:
+	void OnBind( void *pRenderable ) OVERRIDE
+	{
+		C_BaseCombatWeapon *pWeapon = MaterialWeapon( BindArgToEntity( pRenderable ) );
+		SetFloatResult( pWeapon ? pWeapon->Clip1() : 0 );
+	}
+};
+EXPOSE_INTERFACE( CClipAmmoMaterialProxy, IMaterialProxy, "ClipAmmo" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+class CRemainingAmmoMaterialProxy : public CResultProxy
+{
+public:
+	void OnBind( void *pRenderable ) OVERRIDE
+	{
+		C_BaseCombatWeapon *pWeapon = MaterialWeapon( BindArgToEntity( pRenderable ) );
+		int ammo = 0;
+		if ( pWeapon && pWeapon->GetOwner() && pWeapon->GetPrimaryAmmoType() >= 0 )
+			ammo = pWeapon->GetOwner()->GetAmmoCount( pWeapon->GetPrimaryAmmoType() );
+		SetFloatResult( ammo );
+	}
+};
+EXPOSE_INTERFACE( CRemainingAmmoMaterialProxy, IMaterialProxy, "RemainingAmmo" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+class CPlayerBottomProxy : public CResultProxy
+{
+public:
+	void OnBind( void *pRenderable ) OVERRIDE
+	{
+		C_BaseEntity *pEntity = BindArgToEntity( pRenderable );
+		C_BaseAnimating *pAnimating = pEntity ? pEntity->GetBaseAnimating() : NULL;
+		float facing = 0.0f;
+		if ( pAnimating && pAnimating->GetModelPtr() && pAnimating->GetModelPtr()->numbones() )
+		{
+			matrix3x4_t root;
+			pAnimating->GetBoneTransform( 0, root );
+			Vector origin, axis;
+			MatrixGetColumn( root, 3, origin );
+			MatrixGetColumn( root, 0, axis );
+			Vector towardsModel = origin - CurrentViewOrigin();
+			VectorNormalize( towardsModel );
+			VectorNormalize( axis );
+			facing = DotProduct( towardsModel, axis );
+		}
+		SetFloatResult( facing );
+	}
+};
+EXPOSE_INTERFACE( CPlayerBottomProxy, IMaterialProxy, "PlayerBottom" IMATERIAL_PROXY_INTERFACE_VERSION );
 
 #pragma float_control( pop )
