@@ -663,6 +663,7 @@ private:
 	bool m_bRecording = false, m_bFailed = false;
 	bool m_bChangingMode = false;
 	bool m_bStatsMemoryReportPrinted = false;
+	unsigned m_nMapMemoryFramesLeft = 0;
 	CInterlockedUInt m_nOwnerThread; // thread id
 	CThreadFastMutex m_TextureDeletionMutex;
 	CUtlVector<uintptr_t> m_PendingTextureDeletions;
