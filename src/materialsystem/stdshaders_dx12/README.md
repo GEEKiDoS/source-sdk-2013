@@ -1144,9 +1144,11 @@ With an exponent texture and `$phongalbedotint`, G tints the Phong specular colo
 (`l4d2_phong_ps20b.fxc:121`, `skin_ps20b.fxc:271-276`); the legacy diffuse albedo is retained, not converted to metal.
 R remains the exponent channel, not a color channel; A (the legacy rim mask when rim lighting is enabled) is unused,
 since the PBR path drops rim lighting. `$envmapmask`, `$basealphaenvmapmask`, and `$normalmapalphaenvmapmask`
-continue to select the legacy environment mask in the opt-in adapter. For legacy L4D2 Phong materials, `$envmap`
-uses the authored mask and `$envmapfresnel`/Phong Fresnel ranges as in `l4d2_phong_ps20b.fxc`; it is not attenuated
-by the dielectric PBR EnvBRDF. `$phongboost` is folded into bounded F0 (rather than multiplying a normalized GGX lobe),
+continue to select the legacy environment mask in the adapter. In legacy L4D2 Phong materials, `$basemapluminancephongmask`
+overrides both alpha sources for the Phong lobe. With `$normalmapalphaenvmapmask`, that evaluated luminance mask
+also masks the cubemap: the Uzi uses an opaque `flat_normal`, whose alpha would otherwise reflect at full strength.
+The authored reflection uses `$envmapfresnel`/Phong Fresnel ranges as in `l4d2_phong_ps20b.fxc`, not the dielectric
+PBR EnvBRDF. `$phongboost` is folded into bounded F0 (rather than multiplying a normalized GGX lobe),
 while diffuse albedo remains energy-conserving. There is no `$phongalbedoboost` parameter in the retail/source shader
 vocabulary. Detail blend factor/tint, `$vertexcolor` (world), `$nodiffusebumplighting`, `$alpha2`, `$envmapmasktransform`,
 `$bumptransform2`/`$bumpmask` follow the legacy LightmappedGeneric math.

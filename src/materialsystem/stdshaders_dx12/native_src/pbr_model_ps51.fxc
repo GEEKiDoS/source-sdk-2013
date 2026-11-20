@@ -272,8 +272,13 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		specularF0 = SpecularTexture.Sample( SpecularSampler, baseUV ).rgb;
 	if ( ( phongBits & 1u ) != 0 )
 	{
-		// Legacy Phong mask and Fresnel range. $basemapluminancephongmask replaces the base-alpha mask.
-		float phongMask = ( phongBits & 4u ) != 0 ? ( g_L4D2Model.x != 0.0 ? dot( base.rgb, float3( 0.299, 0.587, 0.114 ) ) : base.a ) : normalAlpha;
+		// L4D2's luminance mask replaces either alpha source, even without $basemapalphaphongmask.
+		const bool luminancePhongMask = g_L4D2Model.x != 0.0;
+		float phongMask = luminancePhongMask ? dot( base.rgb, float3( 0.299, 0.587, 0.114 ) ) :
+			( ( phongBits & 4u ) != 0 ? base.a : normalAlpha );
+		// In L4D2 Phong, $normalmapalphaenvmapmask selects the evaluated Phong mask, not raw normal alpha.
+		if ( luminancePhongMask && g_Flags1.y == 3.0 )
+			envMask = phongMask;
 		if ( ( phongBits & 2u ) != 0 )
 		{
 			float4 phongMap = PhongExponentTexture.Sample( PhongExponentSampler, baseUV );
