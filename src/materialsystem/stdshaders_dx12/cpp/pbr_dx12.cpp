@@ -51,6 +51,51 @@
 	( v ).alphaTestReference = ALPHATESTREFERENCE; \
 	( v ).standalone = true
 
+BEGIN_VS_SHADER( PBR, "Left4Neko/Momentum-style PBR (world and models)" )
+	BEGIN_SHADER_PARAMS
+		PBR_STANDALONE_SHADER_PARAMS
+		PBR_L4N_SHADER_PARAMS
+		PBR_SHADER_PARAMS
+	END_SHADER_PARAMS
+
+	const PBR_Vars_t &Vars()
+	{
+		static const PBR_Vars_t s_vars = []
+		{
+			PBR_Vars_t v;
+			PBR_FILL_STANDALONE_VARS( v );
+			PBR_FILL_EXTRA_VARS( v );
+			PBR_FILL_L4N_VARS( v );
+			v.selfIllumTint = EMISSIONTINT;
+			v.allowDiffuseModulation = ALLOWDIFFUSEMODULATION;
+			v.l4n = true;
+			v.dynamicSpecularWorkflow = true;
+			return v;
+		}();
+		return s_vars;
+	}
+
+	SHADER_FALLBACK
+	{
+		return 0;
+	}
+
+	SHADER_INIT_PARAMS()
+	{
+		InitParamsPBR( params, Vars() );
+	}
+
+	SHADER_INIT
+	{
+		InitPBR( this, params, Vars() );
+	}
+
+	SHADER_DRAW
+	{
+		DrawPBR( this, params, pShaderAPI, pShaderShadow, Vars(), vertexCompression, pContextDataPtr );
+	}
+END_SHADER
+
 BEGIN_VS_SHADER( PBR_Metalness, "Metalness/roughness PBR (world and models)" )
 	BEGIN_SHADER_PARAMS
 		PBR_STANDALONE_SHADER_PARAMS

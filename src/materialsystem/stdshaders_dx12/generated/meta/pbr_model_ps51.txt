@@ -1,4 +1,4 @@
-logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=42 dynamic=24 present=792
+logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=168 dynamic=24 present=3168
   cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
     member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
@@ -47,7 +47,7 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
     member=cPropDirect type=19 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
     member=cPropStyles type=3 class=1 offset=80 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=PBRMaterialPS space=1 register=b1 size=672 layoutHash=0x9aee51069f289c1e material
+  cbuffer=PBRMaterialPS space=1 register=b1 size=688 layoutHash=0xf5572d9fdd68e0b9 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_SpecularColor type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
@@ -84,6 +84,7 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     member=g_PbrInfectedSpecPowers type=3 class=1 offset=624 size=16 elements=0 arrayStride=0 legacy=ps:c54
     member=g_PbrInfectedShiny type=3 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=ps:c55
     member=g_PbrModelEyePos type=3 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=ps:c56
+    member=g_PbrNMS type=3 class=1 offset=672 size=16 elements=0 arrayStride=0 legacy=ps:c57
     legacyEntry=0,16,1,0,0,0,0
     legacyEntry=16,16,1,0,0,0,1
     legacyEntry=32,16,1,0,0,0,2
@@ -120,4 +121,5 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     legacyEntry=624,16,1,0,0,0,54
     legacyEntry=640,16,1,0,0,0,55
     legacyEntry=656,16,1,0,0,0,56
+    legacyEntry=672,16,1,0,0,0,57
     bridge=WriteNativeCBuffer(api, block)

@@ -28,6 +28,8 @@
 #endif
 #include "dx12_preamble.h"
 // STATIC: "LAYERED" "0..1"
+// STATIC: "NMS" "0..1"
+// STATIC: "L4N" "0..1"
 // STATIC: "ALPHATEST" "0..1"
 // LIGHTPASS: 0 the single pass; 1 the baked/material pass and 2 the additive realtime pass of the two-pass forward
 // split (pbr_helper.cpp DrawPBR, drawn like Source's flashlight pass). Pass 1 keeps the lightmap, environment, emission
@@ -113,10 +115,29 @@ float3 PBR_WorldLightmapPlane( HlightReceiver r, uint plane, float2 uv )
 PBR_PSOut main( DX12_PS_INPUT i )
 {
 	float3 P = i.worldPos_projPosZ.xyz;
+	float2 baseUV = i.baseBumpUV.xy;
+	float2 bumpUV = i.baseBumpUV.zw;
+	bool hasBump = g_Flags0.y != 0.0;
+	bool hasDetail = g_Flags1.z != 0.0;
+	bool flatDiffuse = g_PbrFlags2.x != 0.0; // $nodiffusebumplighting
+	PBRNMSInput nmsInput = (PBRNMSInput)0;
+#if NMS
+	nmsInput.enabled = hasBump && g_Flags0.y != 2.0 ? 1.0 : 0.0;
+	nmsInput.uv = baseUV;
+	nmsInput.toEye = i.toEye;
+	[branch] if ( nmsInput.enabled != 0.0 )
+	{
+		nmsInput.uvDx = ddx( baseUV );
+		nmsInput.uvDy = ddy( baseUV );
+		nmsInput.positionDx = ddx( P );
+		nmsInput.positionDy = ddy( P );
+		nmsInput.tangent = normalize( i.tangentS );
+		nmsInput.binormal = normalize( i.tangentT );
+	}
+#endif
 #if PBR_WORLD_HIGHRES
-	// Derivatives occur here, before any divergent work (HighresLightmap_Begin returns early for rejected owners), on the
-	// camera-relative -toEye (world positions far from the origin are too coarse to differentiate).
 #if LIGHTPASS != 1
+	// Derivative receiver setup is kept before any material-dependent branch.
 	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( P, -i.toEye, i.worldNormal, i.svPos.xy );
 #endif
 	HlightReceiver hlr = HighresLightmap_Begin( i.lightmapUV.xy, i.lightmapVertexUV );
@@ -125,11 +146,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	ShadowMap_SetBakedFace( receiver, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
 #endif
 #endif
-	float2 baseUV = i.baseBumpUV.xy;
-	float2 bumpUV = i.baseBumpUV.zw;
-	bool hasBump = g_Flags0.y != 0.0;
-	bool hasDetail = g_Flags1.z != 0.0;
-	bool flatDiffuse = g_PbrFlags2.x != 0.0; // $nodiffusebumplighting
+	// The highres receiver setup above intentionally precedes material sampling. Bump and base coordinates are
+	// already captured in nmsInput so its derivatives remain valid across the later uniform branches.
 
 	float4 base = BaseTexture.Sample( BaseSampler, baseUV );
 	// hlsl/lightmappedgeneric_ps51.fxc reads the first normal map on the base coordinates; $bumptransform places the second one.
@@ -159,8 +177,13 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( g_PbrBlend.w != 0.0 )
 	{
 		// $bumpmask: both normal maps, each on its own transform, add; the static mask normal takes over where its alpha falls.
+	#if L4N
+		float3 normal1 = PBR_DecodeNormal( BumpTexture.Sample( BumpSampler, bumpUV ) );
+		float3 normal2 = PBR_DecodeNormal( Bump2Texture.Sample( Bump2Sampler, PBR_TransformUV( i.rawUV, g_PbrMaskTransform ) ) );
+	#else
 		float3 normal1 = BumpTexture.Sample( BumpSampler, bumpUV ).xyz * 2.0 - 1.0;
 		float3 normal2 = Bump2Texture.Sample( Bump2Sampler, PBR_TransformUV( i.rawUV, g_PbrMaskTransform ) ).xyz * 2.0 - 1.0;
+	#endif
 		float4 mask = BumpMaskTexture.Sample( BumpMaskSampler, baseUV );
 		bumpTexel.xyz = lerp( mask.xyz * 2.0 - 1.0, normalize( normal1 + normal2 ), mask.a ) * 0.5 + 0.5;
 		bumpMaskFactor = mask.a;
@@ -212,7 +235,11 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		}
 		else
 		{
+			#if L4N
+			tangentNormal = PBR_DecodeNormal( bumpTexel );
+			#else
 			tangentNormal = normalize( bumpTexel.xyz * 2.0 - 1.0 );
+			#endif
 			planeWeights = saturate( float3( dot( tangentNormal, bumpBasis[0] ), dot( tangentNormal, bumpBasis[1] ), dot( tangentNormal, bumpBasis[2] ) ) );
 			planeWeights *= planeWeights;
 			planeWeights /= max( planeWeights.x + planeWeights.y + planeWeights.z, 1e-4 );
@@ -258,6 +285,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( hasBump )
 		N = normalize( tangentNormal.x * i.tangentS + tangentNormal.y * i.tangentT + tangentNormal.z * vertexNormal );
 	float3 V = normalize( i.toEye );
+	// The NMS ray rises from the base surface plane; the bumped normal is what the trace integrates.
+	nmsInput.normal = vertexNormal;
 
 	// Environment mask with the legacy channel semantics: $envmapmask rgb on $envmapmasktransform (independent of the base
 	// transform; the sampler is shared with the second normal map, so a material with one has no texture mask), 1 - blended
@@ -275,8 +304,18 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	envMask *= bumpMaskFactor;
 
 	float3 surface = g_Surface.xyz;
+#if L4N
+	float mraoAlpha = 1.0;
+	if ( g_Flags0.x != 0.0 )
+	{
+		float4 mrao = MraoTexture.Sample( DataSampler, baseUV );
+		surface *= mrao.rgb;
+		mraoAlpha = mrao.a;
+	}
+#else
 	if ( g_Flags0.x != 0.0 )
 		surface *= MraoTexture.Sample( DataSampler, baseUV ).rgb;
+#endif
 	// Legacy-replacement materials without explicit PBR roughness take it from the environment mask: a reflection mask is a gloss
 	// map, so roughness = 1 - mask, and the mask no longer scales the reflection itself ($envmaptint does).
 	const bool glossFromMask = g_PbrFlags2.y != 0.0;
@@ -289,7 +328,11 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( g_SubsurfaceTint.w != 0.0 && ( g_Options.x > 0.0 || g_Options.y > 0.0 ) )
 		thickness = ThicknessTexture.Sample( DataSampler, baseUV ).r;
 
+#if L4N
+	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( float3( 1.0, 1.0, 1.0 ), g_BaseTint.rgb, mraoAlpha ) : g_BaseTint.rgb;
+#else
 	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( float3( 1.0, 1.0, 1.0 ), g_BaseTint.rgb, blendedAlpha ) : g_BaseTint.rgb;
+#endif
 	float3 baseColor = base.rgb * modColor;
 	PBRSurface s = PBR_MakeSurface( flatDiffuse ? vertexNormal : N, V, i.tangentS, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, 0 );
 	// Reflections, projected lights and the G-buffer use the normal map even when the diffuse is flat.
@@ -322,6 +365,9 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		emission = baseColor * g_EmissionTint.rgb * opacity;
 	else if ( g_Flags0.w == 2.0 )
 		emission = EmissionTexture.Sample( DataSampler, baseUV ).rgb * g_EmissionTint.rgb;
+#if L4N
+	emission *= pow( saturate( 1.0 - dot( N, V ) ), max( g_L4D2World.w, 0.0 ) );
+#endif
 	// Alpha-tested fragments that fail are killed before the light loops (DX12FinishPixel repeats the same test on the
 	// unchanged alpha). Every implicit-derivative sample happens above this line.
 	DX12AlphaTest( alpha );
@@ -341,7 +387,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if PBR_WORLD_HIGHRES
 	[branch] if ( hlr.valid != 0 )
 	{
-		ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
+		ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum, nmsInput, BumpTexture, BumpSampler );
 		result += direct.diffuse + direct.specular;
 	}
 #endif
@@ -364,8 +410,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if PBR_WORLD_HIGHRES && LIGHTPASS == 0
 	// Unknown/neutral owners add no selected direct. Only debug views need their diagnostic gather.
 	ShadowMapDirect direct = ShadowMap_NoDirect();
-	[branch] if ( hlr.valid != 0 || cShadowView0.w != 0 )
-		direct = PBR_GatherDirect( receiver, s, specularSum );
+	direct = PBR_GatherDirect( receiver, s, specularSum, nmsInput, BumpTexture, BumpSampler );
 	result += ( direct.diffuse + direct.specular ) * float( hlr.valid );
 	if ( hlr.valid == 0 ) specularSum = PBR_NoSpecularSum(); // the gather is the first specular contributor
 #endif

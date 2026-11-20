@@ -465,10 +465,34 @@ Each draw renders A, or B then C (`Draw( false )` skips the others, so the cvar 
 - `r_shadowmap_debug` views use the single pass (they replace its colour); translucent materials and non-enhanced
   models have only snapshot A.
 
+When publishing a new `pbr_model_ps51` combo layout, rebuild `shaderapidx12` as well as `stdshader_dx12`.
+The backend's depth prepass decodes the model coverage bits using the material DLL's generated static index.
+
 GTX 1050, c1m2, 720p, SSR/volumetrics off, same session (single → two-pass GPU ms): street 22.2 → 18.9, north
 22.8 → 20.9, 200 commons 30.1 → 25.9, commons around the player 37 → 28 (flashlight on) and 105 → 58 without the depth
 prepass. Screenshots differ from the single pass only by repeat noise. Draws rise about 30% and PSO binds 2.5–3× (B and
 C alternate per material).
+
+Normal Mapping Shadows (`r_pbr_nms`, default 1) add micro-surface self-shadowing to bumped PBR world and model
+materials, after Vorontsov's slope trace: walking from the pixel toward the sun, the tangent-space normals give the
+surface slope (`-dot(n.xy, dir) / n.z`), so summing them rebuilds the height profile along the ray in world units; where
+it rises above the ray (which climbs `dot(L, geometric normal) / |L.xy|` per unit), the pixel is occluded, fully at
+0.25 units above it. UV derivatives turn the world trace length into transformed UV, so the result does not depend on
+texture resolution or `$basetexturetransform`. Samples read the normal prefiltered to the step footprint, and the step
+positions carry a texture-space interleaved-gradient offset, so long traces resolve to a soft edge instead of speckle or
+stairs. It multiplies only the runtime sun's direct term after CSM/baked visibility (on enhanced maps the world sun is
+runtime, so it reaches brushes too); ambient probes, lightmaps, local lights and projected flashlight lights are
+unchanged. SSBump materials are skipped: their texture already carries baked self-shadowing. `r_pbr_nms_length`
+(default 4 world units) and `r_pbr_nms_steps` (default 8, capped at 16) control the trace; the cvars live in the client
+(`shadowmaps_dx12.cpp`) and `pbr_helper.cpp` binds them on first use, since the client registers them after the shader
+DLL loads. Cost on the c1m1 rooftop with a fully normal-mapped floor (RTX 4070 SUPER, 1080p): about +0.08-0.10 ms GPU
+frame at the defaults, +0.19 ms at length 32 / 16 steps. Materials without a bump map and views without a visible sun
+take a uniform zero-cost branch. The UV-island edge artifact described by the NMS paper remains possible for non-tiling
+textures.
+The legacy PBR permutations retain byte-identical instruction streams when compiled with the static `NMS=0` combo.
+The shared `PBRMaterialPS` ABI necessarily carries one additional `float4` (`g_PbrNMS`, legacy ps c57), so DXIL
+reflection metadata reports 688 bytes instead of the old 672; no NMS branch, normal-map fetch, or arithmetic remains
+in the `NMS=0` instruction stream. The generated PBR combo projection maps old entries to `NMS=0`.
 
 Sun sky clip (`r_shadowmap_sky_clip`, `FCVAR_ARCHIVE` default 1): the sky is the sun's emitter, as in the vrad_restir
 bake, so world brushes and model casters on the sun side of a sky face may not cast. At admission the client reads
@@ -1038,12 +1062,33 @@ Plan and design record: `src/DX12_PBR_SHADER_SET_PLAN.md` (probe phase: `src/AMB
 Material shaders (`cpp/pbr_dx12.cpp`, the `PBR_*` adapters at the end of `cpp/lightmappedgeneric_dx12.cpp`,
 `cpp/vertexlitgeneric_dx12.cpp` and `cpp/worldvertextransition.cpp`, shared code `cpp/pbr_helper.*`):
 
-| Shader | Inputs |
-|---|---|
+| `PBR` | L4N/Momentum-compatible world and studio materials; metalness by default, specular workflow when `$speculartexture` is present |
 | `PBR_Metalness` | `$basetexture`, `$bumpmap`/`$normaltexture`, `$mraotexture` (R metalness, G roughness, B AO; `$metalness`/`$roughness`/`$ambientocclusion` multiply it, or are absolute without it), `$emissiontexture`, `$envmap` (write `"$envmap" "env_cubemap"` in the VMT so VBSP patches it), `$envmapmask`, `$detail` |
 | `PBR_Specular` | same, F0 from `$speculartexture` (sRGB) or `$specularcolor` instead of metalness |
 | `PBR_LightmappedGeneric`, `PBR_VertexLitGeneric`, `PBR_WorldVertexTransition`, `PBR_Skin` (fallback to VertexLitGeneric) | the original shader's parameters, always drawn with PBR |
 | `PBR_Infected` (`cpp/pbr_dx12.cpp`; the L4D2 game shader `Infected_DX9` falls back to it under the PBR route, except depth-only `$rttshadowbuild` materials) | the Infected parameters: palette variation (`$basetexture` mask sheet, `$gradienttexture` rows from the actor proxies, blood pattern quadrant), `$bloodcolor`/`$bloodmaskrange`, `$detail` dirt, `$burning`/`$burndetailtexture`, wound cutouts (`$wounded`, the per-instance wound packets, `$woundcutouttexture`), `$eyeglow`, and the `$disablevariation` path (`$bumpmap`, `$shinyblood`) |
+
+`PBR` maps the L4N contract onto `DrawPBR` for both world brushes (no `$model`) and studio models (`$model 1`):
+
+| L4N parameter | DX12 mapping |
+|---|---|
+| `$basetexture`, `$frame`, `$basetexturetransform` | `$basetexture`, `$frame`, `$basetexturetransform` |
+| `$mraotexture`, `$mraoframe`, `$mraoscale` | MRAO texture and frame; RGB scalar strengths are applied to metalness/roughness/AO |
+| `$speculartexture` | Enables the specular workflow; metalness is ignored |
+| `$F0` | Dielectric F0 in the metalness workflow |
+| `$bumpmap`, `$bumpframe` | DirectX normal map; ATI2N R/G normals reconstruct Z |
+| `$emissiontexture`, `$emissionframe`, `$emissiontint`, `$emissionfresnel` | Emission texture/frame, tint, and view-edge Fresnel shaping |
+| `$alphatest`, `$alphatestreference`, `$allowalphatocoverage`, `$additive`, `$translucent` | Engine material flags and alpha-test state |
+| `$envmap`, `$envmapframe` | DX12 cubemap and frame |
+| `$basetexture2`, `$frame2`, `$bumpmap2`, `$bumpframe2` | Existing world second albedo/normal layer |
+| `$allowdiffusemodulation`, `$blendtintbymraoalpha` | Per-instance modulation gate and MRAO-alpha tint |
+| `$envmapparallaxobb1..3`, `$envmaporigin` | Existing VBSP parallax-box mapping |
+
+The following accepted L4N keys are parsed but not implemented by the shared PBR shaders: `$emissionflashlighttint`,
+height `$parallax`/`$parallaxdepth`/`$parallaxcenter`/`$parallaxscale`/`$parallaxdither`, `$texture2blendshift`,
+`$mraotexture2`/`$mraoframe2`/`$mraoscale2`, `$emissiontexture2`/`$emissionframe2`/`$emissiontint2`,
+`$basetexture2tint`, `$outline`, and the VLG `$emissiveblend*` keys. They are intentionally ignored rather than treated as
+material errors; use the existing `$envmapparallaxobb*` feature for reflection parallax.
 
 All of them, and the original wrappers, also accept `$subsurface`/`$subsurfacetint`, `$backlight`/`$backlighttint`,
 `$thickness`/`$thicknesstexture`, `$anisotropy`/`$anisotropyrotation` (degrees) and the VBSP parallax keys

@@ -90,6 +90,16 @@ float3 PBR_DerivativeTangent( float3 N, float3 P, float2 uv )
 }
 
 // Metalness or specular workflow from g_Surface.w. T is the (unnormalized) world tangent, or zero.
+float3 PBR_DecodeNormal( float4 texel )
+{
+	float3 normal = texel.xyz * 2.0 - 1.0;
+#if L4N
+	if ( g_L4D2Model.w != 0.0 )
+		normal.z = sqrt( saturate( 1.0 - dot( normal.xy, normal.xy ) ) );
+#endif
+	return normalize( normal );
+}
+
 PBRSurface PBR_MakeSurface( float3 N, float3 V, float3 T, float3 baseColor, float metalness, float roughness, float ao, float3 specularF0, float thickness, uint angular )
 {
 	PBRSurface s;
@@ -97,7 +107,11 @@ PBRSurface PBR_MakeSurface( float3 N, float3 V, float3 T, float3 baseColor, floa
 	float3 diffuse = baseColor;
 	if ( g_Surface.w == 0.0 )
 	{
+#if L4N
+		F0 = lerp( g_SpecularColor.rgb, baseColor, metalness );
+#else
 		F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, metalness );
+#endif
 		diffuse = baseColor * ( 1.0 - metalness );
 	}
 	s.N = N;

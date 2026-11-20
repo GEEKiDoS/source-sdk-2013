@@ -51,6 +51,34 @@ ConVar r_pbr_light_passes( "r_pbr_light_passes", "1", FCVAR_ARCHIVE,
 	"additive depth-EQUAL pass for the sun, realtime local lights and projected lights. Each pass keeps far fewer registers "
 	"live than the single pass. 0 = single pass, 1 = models and world, 2 = models only, 3 = world only. r_shadowmap_debug "
 	"views always use the single pass", true, 0, true, 3 );
+// Runtime NMS controls are owned by the client so changing them follows the same material
+// transaction and static-combo refresh path as mat_pbr_override. client.dll registers them
+// after this DLL is loaded, so a reference bound during static initialization would stay on
+// the missing-cvar placeholder forever; bind on use and retry until the client has registered.
+static const ConVarRef &PbrNmsConVar( ConVarRef &ref, const char *pName )
+{
+	if ( !ref.IsValid() )
+		ref.Init( pName, true );
+	return ref;
+}
+
+static bool PbrNmsEnabled()
+{
+	static ConVarRef s_Ref( "r_pbr_nms", true );
+	return PbrNmsConVar( s_Ref, "r_pbr_nms" ).GetBool();
+}
+
+static float PbrNmsLength()
+{
+	static ConVarRef s_Ref( "r_pbr_nms_length", true );
+	return PbrNmsConVar( s_Ref, "r_pbr_nms_length" ).GetFloat();
+}
+
+static float PbrNmsSteps()
+{
+	static ConVarRef s_Ref( "r_pbr_nms_steps", true );
+	return PbrNmsConVar( s_Ref, "r_pbr_nms_steps" ).GetFloat();
+}
 
 bool DX12PbrOverride()
 {
@@ -79,6 +107,8 @@ const int kInfectedPixelRegister = 47;
 const int kInfectedVertexRegister = 222;
 // PBRMaterialPS g_PbrModelEyePos (ps c56): the eye pbr_model_vs51 measured toEye from.
 const int kModelEyePosRegister = 56;
+// PBRMaterialPS g_PbrNMS (ps c57): runtime NMS enable, world-space trace length and sample count.
+const int kPbrNMSRegister = 57;
 
 // SetPixelShaderStateAmbientLightCube / CommitPixelShaderLighting / SetPixelShaderFogParams feed the DX12PSEngine
 // block whatever register they are given; these only mirror into the legacy register file, outside c0..c14.
@@ -197,7 +227,7 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	s.hasBlendModulate = s.hasBase2 && IsTextureSet( v.blendModulate, params );
 	s.maskedBlending = s.layered && GetIntParam( v.maskedBlending, params ) != 0;
 	s.hasMrao = IsTextureSet( v.mrao, params );
-	s.hasSpecular = v.specularWorkflow && IsTextureSet( v.specularTexture, params );
+	s.hasSpecular = ( v.specularWorkflow || v.dynamicSpecularWorkflow ) && IsTextureSet( v.specularTexture, params );
 	// A sphere map is a 2D texture; the shaders only sample cubemaps.
 	s.hasEnvmap = IsTextureSet( v.envmap, params ) && !IS_FLAG_SET( MATERIAL_VAR_ENVMAPSPHERE );
 	// A model's triplanar $seamless_detail has no UV carrier in pbr_model_*: that layer is skipped.
@@ -357,6 +387,8 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		SET_STATIC_PIXEL_SHADER_COMBO( TANGENT, s.hasBump );
 		SET_STATIC_PIXEL_SHADER_COMBO( ENHANCED, bEnhanced );
 		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, alphaTested );
+		SET_STATIC_PIXEL_SHADER_COMBO( L4N, v.l4n );
+		SET_STATIC_PIXEL_SHADER_COMBO( NMS, PbrNmsEnabled() );
 		SET_STATIC_PIXEL_SHADER_COMBO( INFECTED, s.infected );
 		SET_STATIC_PIXEL_SHADER_COMBO( VERTEXCOLOR, s.vertexColor );
 		SET_STATIC_PIXEL_SHADER_COMBO( LIGHTPASS, lightPass );
@@ -374,6 +406,8 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		DECLARE_STATIC_PIXEL_SHADER( pbr_world_ps51 );
 		SET_STATIC_PIXEL_SHADER_COMBO( LAYERED, s.layered );
 		SET_STATIC_PIXEL_SHADER_COMBO( ALPHATEST, alphaTested );
+		SET_STATIC_PIXEL_SHADER_COMBO( L4N, v.l4n );
+		SET_STATIC_PIXEL_SHADER_COMBO( NMS, PbrNmsEnabled() );
 		SET_STATIC_PIXEL_SHADER_COMBO( LIGHTPASS, lightPass );
 		SET_STATIC_PIXEL_SHADER( pbr_world_ps51 );
 	}
@@ -428,7 +462,15 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ps[1][1] = s.explicitRoughness ? params[v.roughness]->GetFloatValue() :
 		( v.legacyRoughness != -1 ? params[v.legacyRoughness]->GetFloatValue() : kDefaultRoughness );
 	ps[1][2] = params[v.ambientOcclusion]->GetFloatValue();
-	ps[1][3] = v.specularWorkflow ? 1.0f : 0.0f;
+	if ( v.l4n && s.hasMrao )
+	{
+		float mraoScale[3] = { 1.0f, 1.0f, 1.0f };
+		params[v.mraoScale]->GetVecValue( mraoScale, 3 );
+		ps[1][0] *= mraoScale[0];
+		ps[1][1] *= mraoScale[1];
+		ps[1][2] *= mraoScale[2];
+	}
+	ps[1][3] = v.dynamicSpecularWorkflow ? ( s.hasSpecular ? 1.0f : 0.0f ) : ( v.specularWorkflow ? 1.0f : 0.0f );
 	if ( s.phong & 1 )
 	{
 		// Legacy l4d2_phong_dx9_helper binds TEXTURE_WHITE when no exponent map exists, so an unset exponent evaluates to 1 + 149 * 1 = 150.
@@ -442,6 +484,8 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 
 	// c2: F0 without $speculartexture (linear); w is unused (the alpha test is engine state)
 	LinearColor( params, v.specularColor, kDielectricF0, ps[2] );
+	if ( v.l4n && !s.hasSpecular )
+		ps[2][0] = ps[2][1] = ps[2][2] = GetFloatParam( v.f0, params, kDielectricF0 );
 
 	ps[3][0] = s.hasMrao ? 1.0f : 0.0f;
 	ps[3][1] = s.ssBump ? 2.0f : ( s.hasBump ? 1.0f : 0.0f );
@@ -497,7 +541,8 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	}
 	// Legacy l4d2_phong_ps20b uses this explicit exponent when nonzero; otherwise it evaluates 1 + 149 * map.R.
 	l4d2[1][3] = max( 0.0f, GetFloatParam( v.phongExponent, params, 0.0f ) );
-	l4d2[2][0] = IsBoolSet( v.blendTintByBaseAlpha, params ) ? 1.0f : 0.0f;
+	l4d2[2][0] = v.l4n ? ( IsBoolSet( v.blendTintByMraoAlpha, params ) ? 1.0f : 0.0f ) :
+		( IsBoolSet( v.blendTintByBaseAlpha, params ) ? 1.0f : 0.0f );
 	const bool allowDiffuseModulation = GetIntParam( v.allowDiffuseModulation, params, 1 ) != 0;
 	l4d2[2][1] = allowDiffuseModulation ? 1.0f : 0.0f;
 	l4d2[2][2] = GetFloatParam( v.ssBumpMathFix, params, 0.0f ) * 0.57735026f;
@@ -509,10 +554,25 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	l4d2[3][2] = max( 0.0f, GetFloatParam( v.diffuseExponent, params, 0.0f ) );
 	// $phongalbedotint opts into the exponent texture's G channel as a specular-albedo tint.
 	l4d2[3][3] = ( s.phong & 2 ) != 0 && GetIntParam( v.phongAlbedoTint, params, 0 ) != 0 ? 1.0f : 0.0f;
+	if ( v.l4n && s.hasBump && params[v.bump]->GetTextureValue() &&
+		params[v.bump]->GetTextureValue()->GetImageFormat() == IMAGE_FORMAT_ATI2N )
+		l4d2[3][3] = 1.0f;
+	if ( v.l4n && s.hasBump2 && params[v.bump2]->GetTextureValue() &&
+		params[v.bump2]->GetTextureValue()->GetImageFormat() == IMAGE_FORMAT_ATI2N )
+		l4d2[3][3] = 1.0f;
 	// z: $shinybloodexponent for the Phong shiny-blood bit (the legacy initializer's 13).
 	float l4d2World[4] = { float( GetIntParam( v.detailBlendMode, params ) ),
 		GetFloatParam( v.envmapFresnel, params, 0.0f ), ( s.phong & 8 ) ? GetFloatParam( v.shinyBloodExponent, params, 13.0f ) : 0.0f, 0.0f };
 	LinearColor( params, v.selfIllumTint, 1.0f, ps[10] );
+	if ( v.l4n )
+	{
+		float emissionFresnel[4] = { 1.0f, 1.0f, 1.0f, 2.0f };
+		params[v.emissionFresnel]->GetVecValue( emissionFresnel, 4 );
+		ps[10][0] *= emissionFresnel[0];
+		ps[10][1] *= emissionFresnel[1];
+		ps[10][2] *= emissionFresnel[2];
+		l4d2World[3] = max( emissionFresnel[3], 0.0f );
+	}
 	memcpy( ctx.m_SelfIllumTint, ps[10], sizeof( ctx.m_SelfIllumTint ) );
 
 	const float anisotropyRotation = DEG2RAD( params[v.anisotropyRotation]->GetFloatValue() );
@@ -656,11 +716,12 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	if ( s.envmapMask == 1 )
 		cmds.BindTexture( pShader, sampler( sm.envmapMask ), v.envmapMask, v.envmapMaskFrame );
 	if ( s.hasMrao )
-		cmds.BindTexture( pShader, sampler( sm.mrao ), v.mrao, -1 );
+		cmds.BindTexture( pShader, sampler( sm.mrao ), v.mrao, v.mraoFrame != -1 ? GetIntParam( v.mraoFrame, params ) : -1 );
 	if ( s.hasSpecular )
 		cmds.BindTexture( pShader, sampler( sm.specular ), v.specularTexture, -1 );
 	if ( s.hasEmission )
-		cmds.BindTexture( pShader, sampler( sm.emission ), v.emissionTexture, -1 );
+		cmds.BindTexture( pShader, sampler( sm.emission ), v.emissionTexture,
+			v.emissionFrame != -1 ? GetIntParam( v.emissionFrame, params ) : -1 );
 	if ( s.hasSelfIllumMask )
 		cmds.BindTexture( pShader, sampler( sm.selfIllumMask ), v.selfIllumMask, -1 );
 	if ( s.hasThickness )
@@ -905,6 +966,14 @@ void InitParamsPBRDefaults( IMaterialVar **params, const PBR_Vars_t &v )
 	// $specularcolor is authored like $color (gamma coded); the default is the linear dielectric F0.
 	if ( !params[v.specularColor]->IsDefined() )
 		params[v.specularColor]->SetVecValue( LinearToGamma( kDielectricF0 ), LinearToGamma( kDielectricF0 ), LinearToGamma( kDielectricF0 ) );
+	if ( v.l4n )
+	{
+		if ( !params[v.mraoScale]->IsDefined() )
+			params[v.mraoScale]->SetVecValue( 1.0f, 0.5f, 1.0f );
+		if ( !params[v.emissionFresnel]->IsDefined() )
+			params[v.emissionFresnel]->SetVecValue( 1.0f, 1.0f, 1.0f, 2.0f );
+		InitFloatParam( v.f0, params, kDielectricF0 );
+	}
 }
 
 void InitParamsPBR( IMaterialVar **params, const PBR_Vars_t &v )
@@ -1097,6 +1166,12 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 	{
 		CCommandBufferBuilder< CFixedCommandStorageBuffer< 750 > > DynamicCmdsOut;
 		DynamicCmdsOut.Call( pContextData->m_SemiStaticCmdsOut.Base() );
+		float nms[4] = {
+			pContextData->m_bBump && PbrNmsEnabled() ? 1.0f : 0.0f,
+			PbrNmsLength(),
+			PbrNmsSteps(),
+			0.0f };
+		DynamicCmdsOut.SetPixelShaderConstant( kPbrNMSRegister, nms, 1 );
 		const PBRSamplers &sm = pContextData->m_bModel ? kModelSamplers : kWorldSamplers;
 		if ( pContextData->m_bEnvmap )
 			DynamicCmdsOut.BindTexture( pShader, Sampler_t( sm.envmap ), v.envmap, v.envmapFrame );

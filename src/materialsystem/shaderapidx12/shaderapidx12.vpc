@@ -53,6 +53,15 @@ $Project "shaderapidx12"
         $File "pipeline_dx12.cpp"
         $File "textures_dx12.cpp"
         $File "shaderapi_dx12.cpp"
+        {
+            $Configuration
+            {
+                $Compiler
+                {
+                    $AdditionalIncludeDirectories "$BASE;$(IntDir)"
+                }
+            }
+        }
         $File "shadershadow_dx12.cpp"
         $File "fixed_function_dx12.cpp"
         $File "shader_state_dx12.cpp"
@@ -124,6 +133,20 @@ $Project "shaderapidx12"
     }
     $Folder "Header Files"
     {
+        $File "model_coverage_strides.py"
+        $File "$SRCDIR\materialsystem\stdshaders_dx12\generated\inc\pbr_model_ps51.inc"
+        {
+            $Configuration
+            {
+                $CustomBuildStep
+                {
+                    $Description "Extracting PBR depth coverage strides from the material shader ABI"
+                    $CommandLine "python $QUOTE$(ProjectDir)model_coverage_strides.py$QUOTE $QUOTE$(InputPath)$QUOTE $QUOTE$(IntDir)\model_coverage_strides.h$QUOTE"
+                    $AdditionalDependencies "$(ProjectDir)model_coverage_strides.py"
+                    $Outputs "$(IntDir)\model_coverage_strides.h"
+                }
+            }
+        }
         $File "shaderdevice_dx12.h"
         $File "hardwareconfig_dx12.h"
         $File "dxsupport_dx12.h"

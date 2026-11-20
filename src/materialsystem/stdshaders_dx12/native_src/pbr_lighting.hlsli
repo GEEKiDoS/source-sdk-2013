@@ -4,6 +4,7 @@
 #ifndef PBR_LIGHTING_HLSLI
 #define PBR_LIGHTING_HLSLI
 #include "pbr_brdf.hlsli"
+#include "nms.hlsli"
 #include "projected_lighting.hlsli"
 #include "screenspace_contact.hlsli"
 
@@ -305,7 +306,8 @@ bool PBR_TileSpecularMember( uint4 list, uint cap, uint index )
 {
 	return cap == 0u || index == list.x || ( cap > 1u && index == list.y ) || ( cap > 2u && index == list.z ) || ( cap > 3u && index == list.w );
 }
-ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSpecularSum specularSum )
+ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSpecularSum specularSum,
+	PBRNMSInput nmsInput, Texture2D bumpTexture, SamplerState bumpSampler )
 {
 	ShadowMapDirect d = ShadowMap_NoDirect();
 #if defined( PBR_WORLD_HIGHRES ) && PBR_WORLD_HIGHRES
@@ -384,7 +386,14 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		[branch] if ( d.sunVisibility > 0.0 )
 		{
 			float3 L = -cSunTravel.xyz;
+#if NMS
+			float nmsVisibility = 1.0;
+			[branch] if ( nmsInput.enabled != 0.0 && dot( s.N, L ) > 0.0 )
+				nmsVisibility = PBR_NMSVisibility( bumpTexture, bumpSampler, nmsInput, L );
+			float3 radiance = cSunRadiance.rgb * d.sunVisibility * nmsVisibility;
+#else
 			float3 radiance = cSunRadiance.rgb * d.sunVisibility;
+#endif
 			d.diffuse += radiance * PBR_DiffuseBurley( s, L );
 			float3 specular = radiance * PBR_Specular( s, L );
 			d.specular += specular;

@@ -87,6 +87,8 @@ cbuffer PBRMaterialPS : register( b1, space1 )
 	// xyz the camera position pbr_model_vs51 measured toEye from: the pixel stage rebuilds the world position as
 	// eye - toEye instead of interpolating it
 	float4 g_PbrModelEyePos; // @legacy ps:c56
+	// x enabled, y world-space trace length, z maximum trace steps (runtime r_pbr_nms controls)
+	float4 g_PbrNMS; // @legacy ps:c57
 };
 #endif
 

@@ -26,6 +26,8 @@ typedef dx12cb::PBRMaterialPS pbr_model_depthprepass_ps51_Block;
 class pbr_model_depthprepass_ps51_Static_Index
 {
 	unsigned int m_nTANGENT : 2;
+	unsigned int m_nNMS : 2;
+	unsigned int m_nL4N : 2;
 	unsigned int m_nENHANCED : 2;
 	unsigned int m_nALPHATEST : 2;
 	unsigned int m_nINFECTED : 2;
@@ -33,6 +35,8 @@ class pbr_model_depthprepass_ps51_Static_Index
 	unsigned int m_nLIGHTPASS : 2;
 #ifdef _DEBUG
 	bool m_bTANGENT : 1;
+	bool m_bNMS : 1;
+	bool m_bL4N : 1;
 	bool m_bENHANCED : 1;
 	bool m_bALPHATEST : 1;
 	bool m_bINFECTED : 1;
@@ -46,6 +50,24 @@ public:
 		m_nTANGENT = i;
 #ifdef _DEBUG
 		m_bTANGENT = true;
+#endif	// _DEBUG
+	}
+
+	void SetNMS( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nNMS = i;
+#ifdef _DEBUG
+		m_bNMS = true;
+#endif	// _DEBUG
+	}
+
+	void SetL4N( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nL4N = i;
+#ifdef _DEBUG
+		m_bL4N = true;
 #endif	// _DEBUG
 	}
 
@@ -97,6 +119,8 @@ public:
 	pbr_model_depthprepass_ps51_Static_Index(  )
 	{
 		m_nTANGENT = 0;
+		m_nNMS = 0;
+		m_nL4N = 0;
 		m_nENHANCED = 0;
 		m_nALPHATEST = 0;
 		m_nINFECTED = 0;
@@ -104,6 +128,8 @@ public:
 		m_nLIGHTPASS = 0;
 #ifdef _DEBUG
 		m_bTANGENT = false;
+		m_bNMS = false;
+		m_bL4N = false;
 		m_bENHANCED = false;
 		m_bALPHATEST = false;
 		m_bINFECTED = false;
@@ -114,15 +140,15 @@ public:
 
 	int GetIndex() const
 	{
-		Assert( m_bTANGENT && m_bENHANCED && m_bALPHATEST && m_bINFECTED && m_bVERTEXCOLOR && m_bLIGHTPASS );
+		Assert( m_bTANGENT && m_bNMS && m_bL4N && m_bENHANCED && m_bALPHATEST && m_bINFECTED && m_bVERTEXCOLOR && m_bLIGHTPASS );
 		AssertMsg( !( m_nINFECTED && m_nVERTEXCOLOR ), "Invalid combo combination ( INFECTED && VERTEXCOLOR )" );
 		AssertMsg( !( ( m_nENHANCED == 0 ) && ( m_nLIGHTPASS != 0 ) ), "Invalid combo combination ( ( ENHANCED == 0 ) && ( LIGHTPASS != 0 ) )" );
 		AssertMsg( !( ( m_nLIGHTPASS == 2 ) && ( m_nALPHATEST == 1 ) ), "Invalid combo combination ( ( LIGHTPASS == 2 ) && ( ALPHATEST == 1 ) )" );
-		return ( 24 * m_nTANGENT ) + ( 48 * m_nENHANCED ) + ( 96 * m_nALPHATEST ) + ( 192 * m_nINFECTED ) + ( 384 * m_nVERTEXCOLOR ) + ( 768 * m_nLIGHTPASS ) + 0;
+		return ( 24 * m_nTANGENT ) + ( 48 * m_nNMS ) + ( 96 * m_nL4N ) + ( 192 * m_nENHANCED ) + ( 384 * m_nALPHATEST ) + ( 768 * m_nINFECTED ) + ( 1536 * m_nVERTEXCOLOR ) + ( 3072 * m_nLIGHTPASS ) + 0;
 	}
 };
 
-#define shaderStaticTest_pbr_model_depthprepass_ps51 psh_forgot_to_set_static_TANGENT + psh_forgot_to_set_static_ENHANCED + psh_forgot_to_set_static_ALPHATEST + psh_forgot_to_set_static_INFECTED + psh_forgot_to_set_static_VERTEXCOLOR + psh_forgot_to_set_static_LIGHTPASS
+#define shaderStaticTest_pbr_model_depthprepass_ps51 psh_forgot_to_set_static_TANGENT + psh_forgot_to_set_static_NMS + psh_forgot_to_set_static_L4N + psh_forgot_to_set_static_ENHANCED + psh_forgot_to_set_static_ALPHATEST + psh_forgot_to_set_static_INFECTED + psh_forgot_to_set_static_VERTEXCOLOR + psh_forgot_to_set_static_LIGHTPASS
 
 
 class pbr_model_depthprepass_ps51_Dynamic_Index

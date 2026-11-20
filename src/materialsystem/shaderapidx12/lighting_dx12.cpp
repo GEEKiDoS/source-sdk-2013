@@ -1302,8 +1302,8 @@ struct CLightingDX12::Impl
 	CThreadFastMutex mutex;
 	std::atomic<uint32> receiverGeneration{ 0 };
 	// Starts at mat_pbr_override's default (1, stdshader_dx12) so the first materials load with it; only a changed
-	// value arrives later as a request.
-	std::atomic<bool> pbrRequested{ true }, pbrCommitted{ true };
+	// value arrives later as a request. A refresh request with the same value re-snapshots static shader combos.
+	std::atomic<bool> pbrRequested{ true }, pbrCommitted{ true }, pbrRefreshRequested{ false };
 	CUtlVector<ShadowTargetDX12 *> targets;
 	uint32 nextTargetGeneration = 1;
 	CUtlVector<LightingPacketDX12 *> freePackets;
@@ -1837,12 +1837,21 @@ void CLightingDX12::RejectUnsupportedLitShader( const char *name )
 	const uint32 generation = ReceiverFeatureGeneration();
 	if ( generation ) m_Impl->Status( generation, 0, DX12_LIGHTING_STATUS_FAILED, error );
 }
-void CLightingDX12::RequestPbrOverride( bool enabled ) { m_Impl->pbrRequested.store( enabled, std::memory_order_relaxed ); }
-bool CLightingDX12::PbrOverridePending() { return m_Impl->pbrRequested.load( std::memory_order_relaxed ) != m_Impl->pbrCommitted.load( std::memory_order_relaxed ); }
+void CLightingDX12::RequestPbrOverride( bool enabled )
+{
+	m_Impl->pbrRequested.store( enabled, std::memory_order_relaxed );
+	m_Impl->pbrRefreshRequested.store( true, std::memory_order_relaxed );
+}
+bool CLightingDX12::PbrOverridePending()
+{
+	return m_Impl->pbrRefreshRequested.load( std::memory_order_relaxed ) ||
+		m_Impl->pbrRequested.load( std::memory_order_relaxed ) != m_Impl->pbrCommitted.load( std::memory_order_relaxed );
+}
 bool CLightingDX12::CommitPbrOverride()
 {
 	const bool requested = m_Impl->pbrRequested.load( std::memory_order_relaxed );
-	return m_Impl->pbrCommitted.exchange( requested, std::memory_order_relaxed ) != requested;
+	const bool refresh = m_Impl->pbrRefreshRequested.exchange( false, std::memory_order_relaxed );
+	return m_Impl->pbrCommitted.exchange( requested, std::memory_order_relaxed ) != requested || refresh;
 }
 bool CLightingDX12::PbrOverride() { return m_Impl->pbrCommitted.load( std::memory_order_relaxed ); }
 bool CLightingDX12::BeginMaterialTransaction() { return HlightEngineBridge::BeginMaterialTransaction(); }

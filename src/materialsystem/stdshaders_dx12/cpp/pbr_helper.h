@@ -40,6 +40,63 @@
 	SHADER_PARAM( ENVMAPORIGIN, SHADER_PARAM_TYPE_VEC3, "", "Cubemap capture origin, written by VBSP" ) \
 	SHADER_PARAM( PBR_LOCAL_ENVMAP, SHADER_PARAM_TYPE_INTEGER, "0", "Internal model env_cubemap routing state" )
 
+#define PBR_L4N_SHADER_PARAMS \
+	SHADER_PARAM( MRAOFRAME, SHADER_PARAM_TYPE_INTEGER, "0", "$mraotexture frame" ) \
+	SHADER_PARAM( MRAOSCALE, SHADER_PARAM_TYPE_VEC3, "[1 0.5 1]", "Per-channel MRAO strength" ) \
+	SHADER_PARAM( EMISSIONFRAME, SHADER_PARAM_TYPE_INTEGER, "0", "$emissiontexture frame" ) \
+	SHADER_PARAM( EMISSIONTINT, SHADER_PARAM_TYPE_COLOR, "[1 1 1]", "Emission color and strength" ) \
+	SHADER_PARAM( EMISSIONFLASHLIGHTTINT, SHADER_PARAM_TYPE_COLOR, "[1 1 1]", "Emission tint under the flashlight (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIONFRESNEL, SHADER_PARAM_TYPE_VEC4, "[1 1 1 2]", "Emission fresnel RGB multiplier and exponent" ) \
+	SHADER_PARAM( ALLOWDIFFUSEMODULATION, SHADER_PARAM_TYPE_BOOL, "1", "Allow per-instance diffuse modulation" ) \
+	SHADER_PARAM( BLENDTINTBYMRAOALPHA, SHADER_PARAM_TYPE_BOOL, "0", "Tint by MRAO alpha" ) \
+	SHADER_PARAM( BASETEXTURE2, SHADER_PARAM_TYPE_TEXTURE, "", "Second albedo layer" ) \
+	SHADER_PARAM( FRAME2, SHADER_PARAM_TYPE_INTEGER, "0", "$basetexture2 frame" ) \
+	SHADER_PARAM( TEXTURE2BLENDSHIFT, SHADER_PARAM_TYPE_FLOAT, "0.0", "Second layer blend shift (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( MRAOTEXTURE2, SHADER_PARAM_TYPE_TEXTURE, "", "Second MRAO layer (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( MRAOFRAME2, SHADER_PARAM_TYPE_INTEGER, "0", "$mraotexture2 frame" ) \
+	SHADER_PARAM( MRAOSCALE2, SHADER_PARAM_TYPE_VEC3, "[1 0.5 1]", "Second MRAO strength (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIONTEXTURE2, SHADER_PARAM_TYPE_TEXTURE, "", "Second emission layer (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIONFRAME2, SHADER_PARAM_TYPE_INTEGER, "0", "$emissiontexture2 frame" ) \
+	SHADER_PARAM( EMISSIONTINT2, SHADER_PARAM_TYPE_COLOR, "[1 1 1]", "Second emission tint (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( BUMPMAP2, SHADER_PARAM_TYPE_TEXTURE, "", "Second normal layer" ) \
+	SHADER_PARAM( BUMPFRAME2, SHADER_PARAM_TYPE_INTEGER, "0", "$bumpmap2 frame" ) \
+	SHADER_PARAM( BASETEXTURE2TINT, SHADER_PARAM_TYPE_COLOR, "[1 1 1 1]", "Second albedo tint (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( PARALLAX, SHADER_PARAM_TYPE_BOOL, "0", "Height parallax (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( PARALLAXDEPTH, SHADER_PARAM_TYPE_FLOAT, "0.003", "Height parallax depth (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( PARALLAXCENTER, SHADER_PARAM_TYPE_FLOAT, "0.5", "Height parallax center (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( PARALLAXSCALE, SHADER_PARAM_TYPE_FLOAT, "1", "Height parallax sample count (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( PARALLAXDITHER, SHADER_PARAM_TYPE_BOOL, "1", "Height parallax dithering (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( OUTLINE, SHADER_PARAM_TYPE_BOOL, "0", "NekoToon outline (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIVEBLENDENABLED, SHADER_PARAM_TYPE_BOOL, "0", "VLG emissive blend (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIVEBLENDTEXTURE, SHADER_PARAM_TYPE_TEXTURE, "", "VLG emissive blend (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIVEBLENDBASETEXTURE, SHADER_PARAM_TYPE_TEXTURE, "", "VLG emissive blend (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIVEBLENDFLOWTEXTURE, SHADER_PARAM_TYPE_TEXTURE, "", "VLG emissive blend (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIVEBLENDTINT, SHADER_PARAM_TYPE_COLOR, "[1 1 1]", "VLG emissive blend (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIVEBLENDSTRENGTH, SHADER_PARAM_TYPE_FLOAT, "1", "VLG emissive blend (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( EMISSIVEBLENDSCROLLVECTOR, SHADER_PARAM_TYPE_VEC2, "[0 0]", "VLG emissive blend (not supported by DX12 PBR)" ) \
+	SHADER_PARAM( F0, SHADER_PARAM_TYPE_FLOAT, "0.04", "Dielectric F0 for the metalness workflow" )
+
+#define PBR_FILL_L4N_VARS( v ) \
+	( v ).mraoFrame = MRAOFRAME; \
+	( v ).mraoScale = MRAOSCALE; \
+	( v ).emissionFrame = EMISSIONFRAME; \
+	( v ).emissionTint = EMISSIONTINT; \
+	( v ).emissionFlashlightTint = EMISSIONFLASHLIGHTTINT; \
+	( v ).emissionFresnel = EMISSIONFRESNEL; \
+	( v ).blendTintByMraoAlpha = BLENDTINTBYMRAOALPHA; \
+	( v ).base2 = BASETEXTURE2; \
+	( v ).base2Frame = FRAME2; \
+	( v ).mrao2 = MRAOTEXTURE2; \
+	( v ).mrao2Frame = MRAOFRAME2; \
+	( v ).mrao2Scale = MRAOSCALE2; \
+	( v ).emission2 = EMISSIONTEXTURE2; \
+	( v ).emission2Frame = EMISSIONFRAME2; \
+	( v ).emission2Tint = EMISSIONTINT2; \
+	( v ).bump2 = BUMPMAP2; \
+	( v ).bump2Frame = BUMPFRAME2; \
+	( v ).base2Tint = BASETEXTURE2TINT; \
+	( v ).f0 = F0
+
 // Expand inside a shader class (the parameter names are per-shader statics) to fill the PBR_SHADER_PARAMS indices.
 #define PBR_FILL_EXTRA_VARS( v ) \
 	( v ).mrao = MRAOTEXTURE; \
@@ -82,15 +139,14 @@ struct PBR_Vars_t
 	PBR_Vars_t()
 	{
 		memset( this, 0xFF, sizeof( *this ) );
-		model = standalone = specularWorkflow = infected = false;
+		model = standalone = specularWorkflow = infected = l4n = dynamicSpecularWorkflow = false;
 	}
-
 	// Shared with the legacy helpers
 	int base, baseFrame, baseTransform;
 	int bump, bumpFrame, bumpTransform;
 	int envmap, envmapFrame, envmapMask, envmapMaskFrame, envmapTint;
 	int detail, detailFrame, detailTransform, detailScale, detailBlendMode, detailBlendFactor, detailTint;
-	int selfIllumTint;
+	int selfIllumTint, emissionTint, emissionFlashlightTint, emissionFresnel;
 	int alphaTestReference;
 
 	// World: second layer ($basetexture2 / $bumpmap2 blended by vertex alpha or $blendmodulatetexture), $ssbump, $nodiffusebumplighting,
@@ -107,9 +163,10 @@ struct PBR_Vars_t
 	int normalTexture;
 
 	// PBR_SHADER_PARAMS
-	int mrao, metalness, roughness, ambientOcclusion, specularTexture, specularColor, emissionTexture;
+	int mrao, mraoFrame, mraoScale, mrao2, mrao2Frame, mrao2Scale, metalness, roughness, ambientOcclusion, specularTexture, specularColor, emissionTexture, emissionFrame, emission2, emission2Frame, emission2Tint;
 	int subsurface, subsurfaceTint, backlight, backlightTint, thickness, thicknessTexture, anisotropy, anisotropyRotation;
 	int parallaxObb1, parallaxObb2, parallaxObb3, envmapOrigin, localEnvmap;
+	int base2Tint, f0, blendTintByMraoAlpha;
 	// Legacy adapters only (PBR_LEGACY_ADAPTER_PARAMS); -1 elsewhere.
 	int surfaceProp, legacyEnvmapAuthored, legacyRoughness;
 
@@ -142,6 +199,8 @@ struct PBR_Vars_t
 	bool standalone;		// no legacy helper initializes the material (PBR_Metalness / PBR_Specular)
 	bool specularWorkflow;	// F0 from $speculartexture / $specularcolor instead of $metalness
 	bool infected;			// PBR_Infected: pbr_model_* INFECTED variants (infected albedo, wound cutouts, eye glow)
+	bool l4n;				// Left4Neko/Momentum-style PBR parameter contract
+	bool dynamicSpecularWorkflow;	// L4N switches to specular workflow when $speculartexture is present
 };
 
 // Legacy var tables -> PBR vars (world: LightmappedGeneric and WorldVertexTransition share one table).

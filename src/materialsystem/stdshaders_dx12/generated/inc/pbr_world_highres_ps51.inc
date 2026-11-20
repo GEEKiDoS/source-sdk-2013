@@ -23,10 +23,14 @@ typedef dx12cb::PBRMaterialPS pbr_world_highres_ps51_Block;
 class pbr_world_highres_ps51_Static_Index
 {
 	unsigned int m_nLAYERED : 2;
+	unsigned int m_nNMS : 2;
+	unsigned int m_nL4N : 2;
 	unsigned int m_nALPHATEST : 2;
 	unsigned int m_nLIGHTPASS : 2;
 #ifdef _DEBUG
 	bool m_bLAYERED : 1;
+	bool m_bNMS : 1;
+	bool m_bL4N : 1;
 	bool m_bALPHATEST : 1;
 	bool m_bLIGHTPASS : 1;
 #endif	// _DEBUG
@@ -37,6 +41,24 @@ public:
 		m_nLAYERED = i;
 #ifdef _DEBUG
 		m_bLAYERED = true;
+#endif	// _DEBUG
+	}
+
+	void SetNMS( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nNMS = i;
+#ifdef _DEBUG
+		m_bNMS = true;
+#endif	// _DEBUG
+	}
+
+	void SetL4N( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nL4N = i;
+#ifdef _DEBUG
+		m_bL4N = true;
 #endif	// _DEBUG
 	}
 
@@ -61,10 +83,14 @@ public:
 	pbr_world_highres_ps51_Static_Index(  )
 	{
 		m_nLAYERED = 0;
+		m_nNMS = 0;
+		m_nL4N = 0;
 		m_nALPHATEST = 0;
 		m_nLIGHTPASS = 0;
 #ifdef _DEBUG
 		m_bLAYERED = false;
+		m_bNMS = false;
+		m_bL4N = false;
 		m_bALPHATEST = false;
 		m_bLIGHTPASS = false;
 #endif	// _DEBUG
@@ -72,13 +98,13 @@ public:
 
 	int GetIndex() const
 	{
-		Assert( m_bLAYERED && m_bALPHATEST && m_bLIGHTPASS );
+		Assert( m_bLAYERED && m_bNMS && m_bL4N && m_bALPHATEST && m_bLIGHTPASS );
 		AssertMsg( !( ( m_nLIGHTPASS == 2 ) && ( m_nALPHATEST == 1 ) ), "Invalid combo combination ( ( LIGHTPASS == 2 ) && ( ALPHATEST == 1 ) )" );
-		return ( 12 * m_nLAYERED ) + ( 24 * m_nALPHATEST ) + ( 48 * m_nLIGHTPASS ) + 0;
+		return ( 12 * m_nLAYERED ) + ( 24 * m_nNMS ) + ( 48 * m_nL4N ) + ( 96 * m_nALPHATEST ) + ( 192 * m_nLIGHTPASS ) + 0;
 	}
 };
 
-#define shaderStaticTest_pbr_world_highres_ps51 psh_forgot_to_set_static_LAYERED + psh_forgot_to_set_static_ALPHATEST + psh_forgot_to_set_static_LIGHTPASS
+#define shaderStaticTest_pbr_world_highres_ps51 psh_forgot_to_set_static_LAYERED + psh_forgot_to_set_static_NMS + psh_forgot_to_set_static_L4N + psh_forgot_to_set_static_ALPHATEST + psh_forgot_to_set_static_LIGHTPASS
 
 
 class pbr_world_highres_ps51_Dynamic_Index

@@ -145,6 +145,7 @@ NATIVE_ONLY = [
     native_only('gtao', 'gtao_viewdepth_cs51.fxc', 'cs', 'gtao_viewdepth_cs51'),
     native_only('gtao', 'gtao_main_cs51.fxc', 'cs', 'gtao_main_cs51'),
     native_only('gtao', 'gtao_denoise_cs51.fxc', 'cs', 'gtao_denoise_cs51'),
+    native_only('gtao', 'gtao_temporal_cs51.fxc', 'cs', 'gtao_temporal_cs51'),
     native_only('gtao', 'gtao_apply_ps51.fxc', 'ps', 'gtao_apply_ps51'),
     native_only('postfx', 'postfx_downsample_cs51.fxc', 'cs', 'postfx_downsample_cs51'),
     native_only('postfx', 'postfx_jpeg_cs51.fxc', 'cs', 'postfx_jpeg_cs51'),

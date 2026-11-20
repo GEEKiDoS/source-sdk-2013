@@ -45,11 +45,25 @@
 #include "tier0/memdbgon.h"
 
 
+static void OnPbrNmsChanged( IConVar *, const char *, float )
+{
+	CreateInterfaceFn factory = Sys_GetFactory( "shaderapidx12" );
+	IShaderAPIDX12Lighting *lighting = factory ?
+		static_cast< IShaderAPIDX12Lighting * >( factory( SHADERAPIDX12_LIGHTING_INTERFACE_VERSION, NULL ) ) : NULL;
+	if ( lighting )
+		lighting->RequestPbrOverride( lighting->PbrOverride() );
+}
 ConVar r_shadowmap_enable( "r_shadowmap_enable", "1", FCVAR_ARCHIVE, "Enable runtime shadow maps; 0 retains selected direct lighting and all baked visibility", true, 0, true, 1 );
 ConVar r_shadowmap_max_realtime_lights( "r_shadowmap_max_realtime_lights", "4", FCVAR_ARCHIVE, "Chart-resident local-light cap: lights whose emitter or traced spot aim is in front of the main camera first, then PVS-eligible lights behind it, nearest anchor first within each; 0 has no budget limit; invalid values use 4; sun excluded" );
 ConVar r_shadowmap_realtime_fade_seconds( "r_shadowmap_realtime_fade_seconds", "0.5", FCVAR_ARCHIVE, "Real-time seconds for a full hybrid handoff: parallel fade-out then fade-in, half each; 0 switches immediately; invalid values use 0.5" );
 ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade receiver distance", true, 128, true, 32768 );
 ConVar r_csm_cascades( "r_csm_cascades", "2", FCVAR_ARCHIVE, "Dynamic sun cascades (1-4). Fewer cascades keep the nearest splits of r_csm_distance; receivers beyond them use the static sun map, which has no dynamic casters", true, 1, true, 4 );
+ConVar r_pbr_nms( "r_pbr_nms", "1", FCVAR_ARCHIVE,
+	"Normal Mapping Shadows for the directional sun on bumped PBR materials; 0 off, 1 on", true, 0, true, 1, OnPbrNmsChanged );
+ConVar r_pbr_nms_length( "r_pbr_nms_length", "4", FCVAR_ARCHIVE,
+	"Normal Mapping Shadows world-space trace length", true, 0, true, 32 );
+ConVar r_pbr_nms_steps( "r_pbr_nms_steps", "8", FCVAR_ARCHIVE,
+	"Normal Mapping Shadows maximum normal-map trace samples", true, 1, true, 16 );
 ConVar r_csm_eye_centered( "r_csm_eye_centered", "1", FCVAR_ARCHIVE, "Fit each dynamic sun cascade around the camera position instead of around its view slice: about a fifth coarser shadow texels, but turning the camera no longer re-renders the cascades", true, 0, true, 1 );
 ConVar r_shadowmap_resolution( "r_shadowmap_resolution", "1", FCVAR_ARCHIVE, "Shadow map resolution: 0 low, 1 medium, 2 high, 3 ultra. High matches the original 2048 cascade slot, 512 local slot and 4096 static sun", true, 0, true, 3 );
 ConVar r_shadowmap_filter( "r_shadowmap_filter", "1", FCVAR_ARCHIVE, "Sun shadows: 0 four-tap PCF, 1 bounded contact-hardening PCSS (local lights: r_shadowmap_local_filter)", true, 0, true, 1 );

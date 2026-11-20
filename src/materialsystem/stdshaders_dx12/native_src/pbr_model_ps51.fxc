@@ -16,6 +16,8 @@
 #endif
 #include "dx12_preamble.h"
 // STATIC: "TANGENT" "0..1"
+// STATIC: "NMS" "0..1"
+// STATIC: "L4N" "0..1"
 // STATIC: "ENHANCED" "0..1"
 // STATIC: "ALPHATEST" "0..1"
 // STATIC: "INFECTED" "0..1"
@@ -42,6 +44,7 @@
 #define PBR_HAS_TANGENT 0
 #endif
 #undef TANGENT
+#include "pbr_material.h"
 #include "common_ps_fxc.h"
 #define PBR_MODEL_LOCAL_SELECTION 1
 #define PBR_MODEL_ENVMAP_BLEND 1
@@ -148,6 +151,24 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// pbr_model_vs51 interpolates no world position (see its output struct): eye - toEye rebuilds it.
 	float3 P = g_PbrModelEyePos.xyz - i.toEye;
 	const float projPosZ = i.projPosZ;
+	float2 baseUV = i.baseBumpUV.xy;
+	PBRNMSInput nmsInput = (PBRNMSInput)0;
+#if NMS
+	nmsInput.enabled = PBR_HAS_TANGENT && g_Flags0.y != 0.0 ? 1.0 : 0.0;
+	nmsInput.uv = i.baseBumpUV.zw;
+	nmsInput.toEye = i.toEye;
+#if PBR_HAS_TANGENT
+	[branch] if ( nmsInput.enabled != 0.0 )
+	{
+		nmsInput.uvDx = ddx( nmsInput.uv );
+		nmsInput.uvDy = ddy( nmsInput.uv );
+		nmsInput.positionDx = ddx( P );
+		nmsInput.positionDy = ddy( P );
+		nmsInput.tangent = normalize( i.worldTangent.xyz );
+		nmsInput.binormal = cross( normalize( i.worldNormal ), nmsInput.tangent ) * i.worldTangent.w;
+	}
+#endif
+#endif
 #if VERTEXCOLOR
 	const float4 vertexColor = i.vertexColor;
 #else
@@ -159,7 +180,6 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( P, -i.toEye, i.worldNormal, i.svPos.xy );
 	ShadowMap_SetBakedProp( receiver, i.primitiveId );
 #endif
-	float2 baseUV = i.baseBumpUV.xy;
 	uint phongBits = uint( g_Misc.z );
 
 	float4 base = BaseTexture.Sample( BaseSampler, baseUV );
@@ -196,7 +216,11 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( g_Flags0.y != 0.0 )
 	{
 		float4 bumpTexel = BumpTexture.Sample( BumpSampler, i.baseBumpUV.zw );
+		#if L4N
+		float3 tangentNormal = PBR_DecodeNormal( bumpTexel );
+		#else
 		float3 tangentNormal = normalize( bumpTexel.xyz * 2.0 - 1.0 );
+		#endif
 		float3 binormal = cross( vertexNormal, tangent ) * i.worldTangent.w;
 		N = normalize( tangentNormal.x * tangent + tangentNormal.y * binormal + tangentNormal.z * vertexNormal );
 		normalAlpha = bumpTexel.a;
@@ -206,6 +230,8 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		frameT = PBR_DerivativeTangent( vertexNormal, -i.toEye, baseUV );
 #endif
 	float3 V = normalize( i.toEye );
+	// The NMS ray rises from the base surface plane; the bumped normal is what the trace integrates.
+	nmsInput.normal = vertexNormal;
 
 	// Environment mask with the legacy channel semantics: $envmapmask rgb, 1 - base alpha ($basealphaenvmapmask), normal map alpha.
 	float3 envMask = float3( 1.0, 1.0, 1.0 );
@@ -218,14 +244,28 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( ( phongBits & 4u ) != 0 )
 		envMask = base.a;
 	float3 surface = g_Surface.xyz;
+#if L4N
+	float mraoAlpha = 1.0;
+	if ( g_Flags0.x != 0.0 )
+	{
+		float4 mrao = MraoTexture.Sample( MraoSampler, baseUV );
+		surface *= mrao.rgb;
+		mraoAlpha = mrao.a;
+	}
+#else
 	if ( g_Flags0.x != 0.0 )
 		surface *= MraoTexture.Sample( MraoSampler, baseUV ).rgb;
+#endif
 	// Legacy-replacement materials without explicit PBR roughness or Phong take it from the environment mask: a reflection mask is
 	// a gloss map, so roughness = 1 - mask, and the mask no longer scales the reflection itself ($envmaptint does).
 	const bool glossFromMask = g_PbrFlags2.y != 0.0;
 	if ( glossFromMask )
 		surface.y = 1.0 - saturate( dot( envMask, float3( 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0 ) ) );
+#if L4N
+	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( float3( 1.0, 1.0, 1.0 ), g_BaseTint.rgb, mraoAlpha ) : g_BaseTint.rgb;
+#else
 	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( float3( 1.0, 1.0, 1.0 ), g_BaseTint.rgb, base.a ) : g_BaseTint.rgb;
+#endif
 	float3 baseColor = base.rgb * modColor * vertexColor.rgb;
 	float3 specularF0 = g_SpecularColor.rgb;
 	if ( g_Flags0.z != 0.0 )
@@ -359,6 +399,9 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	else if ( g_Flags0.w == 2.0 )
 		emission = EmissionTexture.Sample( EmissionSampler, baseUV ).rgb * g_EmissionTint.rgb;
+#if L4N
+	emission *= pow( saturate( 1.0 - dot( N, V ) ), max( g_L4D2World.w, 0.0 ) );
+#endif
 #if INFECTED
 	emission = eyeMask * g_PbrInfectedEyeGlow.rgb;
 	// Wound cutouts, after every implicit-derivative sample: the cutout atlas threshold and the inside of the second
@@ -384,7 +427,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 #if LOCAL_LIGHTS
 	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten, specularSum );
 #endif
-	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
+	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum, nmsInput, BumpTexture, BumpSampler );
 	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, receiver );
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );
 	result *= PBR_ForwardAO( i.svPos.xy );
@@ -434,7 +477,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	result += PBR_LocalLights( s, P, int( g_EmissionTint.w ), i.lightAtten, specularSum );
 #endif
 #if ENHANCED
-	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum );
+	ShadowMapDirect direct = PBR_GatherDirect( receiver, s, specularSum, nmsInput, BumpTexture, BumpSampler );
 	result += direct.diffuse + direct.specular + PBR_FoldedLocalAmbient( s, N, receiver );
 #endif
 	result += PBR_ProjectedSpots( s, P, PBR_RECEIVER_MODEL, specularSum );

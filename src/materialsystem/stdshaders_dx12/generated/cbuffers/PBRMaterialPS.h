@@ -40,8 +40,9 @@ struct alignas(16) PBRMaterialPS {
     float g_PbrInfectedSpecPowers[4]{};
     float g_PbrInfectedShiny[4]{};
     float g_PbrModelEyePos[4]{};
-    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 672;
-    static constexpr uint64_t kLayoutHash = 0x9aee51069f289c1eull;
+    float g_PbrNMS[4]{};
+    static constexpr uint32_t kStage = 1, kRegister = 1, kSize = 688;
+    static constexpr uint64_t kLayoutHash = 0xf5572d9fdd68e0b9ull;
     static const dx12native::NativeCBufferLegacyMapDX12 &LegacyMap() {
         static const dx12native::NativeCBufferLegacyEntryDX12 entries[] = {
             {0, 16, 1, 0, 0, 0, 0},
@@ -80,8 +81,9 @@ struct alignas(16) PBRMaterialPS {
             {624, 16, 1, 0, 0, 0, 54},
             {640, 16, 1, 0, 0, 0, 55},
             {656, 16, 1, 0, 0, 0, 56},
+            {672, 16, 1, 0, 0, 0, 57},
         };
-        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 36, entries };
+        static const dx12native::NativeCBufferLegacyMapDX12 map = { kLayoutHash, 37, entries };
         return map;
     }
 };
@@ -121,5 +123,6 @@ static_assert(offsetof(PBRMaterialPS, g_PbrInfectedWoundUV2) == 608, "HLSL membe
 static_assert(offsetof(PBRMaterialPS, g_PbrInfectedSpecPowers) == 624, "HLSL member offset");
 static_assert(offsetof(PBRMaterialPS, g_PbrInfectedShiny) == 640, "HLSL member offset");
 static_assert(offsetof(PBRMaterialPS, g_PbrModelEyePos) == 656, "HLSL member offset");
-static_assert(sizeof(PBRMaterialPS) == 672, "HLSL cbuffer size");
+static_assert(offsetof(PBRMaterialPS, g_PbrNMS) == 672, "HLSL member offset");
+static_assert(sizeof(PBRMaterialPS) == 688, "HLSL cbuffer size");
 } // namespace dx12cb
