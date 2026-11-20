@@ -12,6 +12,7 @@
 #include <vector>
 
 class IMaterialSystem;
+class IMatRenderContext;
 
 namespace shaderapidx12
 {
@@ -113,6 +114,8 @@ void EndClientResourceReadmission();
 // only; nests with the transactions above. Returns false when the bridge is unsupported or the queue did not drain.
 bool BeginMaterialTransaction();
 void EndMaterialTransaction();
+// Main-thread producer, only between complete shadow caster submissions with no mesh locked.
+void DrainShadowQueueIfNeeded(IMatRenderContext *context);
 }
 }
 #endif

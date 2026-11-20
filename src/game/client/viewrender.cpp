@@ -6635,6 +6635,7 @@ public:
 			render->Push3DView( *this, 0, NULL, GetFrustum() );
 		}
 		CMatRenderContextPtr context( materials );
+		s.lighting->DrainShadowQueueIfNeeded( context );
 		MaterialHeightClipMode_t savedHeightClip = context->GetHeightClipMode();
 		MaterialFogMode_t savedFog = context->GetFogMode();
 		bool savedClipping = context->EnableClipping( false );
@@ -6665,6 +6666,7 @@ public:
 			{
 				VPROF_BUDGET( "CFeatureShadowDepthView::Draw.DrawWorldLists", "Shadowmaps" );
 				render->DrawWorldLists( m_pWorldRenderList, BuildEngineDrawWorldListFlags(m_DrawFlags), 0 );
+				s.lighting->DrainShadowQueueIfNeeded( context );
 				DrawTranslucentWorldInLeaves( true );
 			}
 		}
@@ -6676,6 +6678,7 @@ public:
 		auto drawStaticBatch = [&]( IClientRenderable **props, int &batchCount, bool exempt )
 		{
 			if ( !batchCount ) return;
+			s.lighting->DrainShadowQueueIfNeeded( context );
 			render->SetColorModulation( white );
 			if ( s.skyClip ) s.lighting->SetShadowCasterSkyClipExempt( exempt );
 			staticpropmgr->DrawStaticProps( props, batchCount, DEPTH_MODE_SHADOW, false );
@@ -6721,6 +6724,7 @@ public:
 				}
 				else
 				{
+					s.lighting->DrainShadowQueueIfNeeded( context );
 					const model_t *model = caster.renderable->GetModel();
 					const bool modelCaster = model && modelinfo->GetModelType( model ) == mod_studio;
 					if ( s.skyClip ) s.lighting->SetShadowCasterSkyClipExempt( modelCaster && caster.skyRegion >= 0 && caster.skyRegion == s.skyRegion );
@@ -6736,11 +6740,13 @@ public:
 		if ( s.skyClip ) s.lighting->SetShadowCasterSkyClipExempt( false );
 		{
 			VPROF_BUDGET( "CFeatureShadowDepthView::Draw.DeferredCasters", "Shadowmaps" );
+			s.lighting->DrainShadowQueueIfNeeded( context );
 			RopeManager()->DrawRenderCache( true, s.overlayRopeFootprint );
 			g_pParticleSystemMgr->DrawRenderCache( true );
 		}
 		if ( s.drawDetail )
 		{
+			s.lighting->DrainShadowQueueIfNeeded( context );
 			VPROF_BUDGET( "CFeatureShadowDepthView::Draw.DetailCasters", "Shadowmaps" );
 			DetailObjectSystem()->DrawShadowCasters( s.volume, s.detail, s.orientedDetail, s.overlayFootprint );
 		}

@@ -67,6 +67,7 @@ public:
 	void BeginShadowCasterBatch() override;
 	void SetShadowCasterSkyClipExempt( bool exempt ) override;
 	void EndShadowCasterBatch() override;
+	void DrainShadowQueueIfNeeded( IMatRenderContext *context ) override;
 	void CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height ) override;
 	void EndView() override;
 	void UnloadMap( uint32 mapGeneration ) override;

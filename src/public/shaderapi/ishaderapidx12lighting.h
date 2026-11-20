@@ -45,7 +45,9 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_014"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_015"
+
+class IMatRenderContext;
 
 //-----------------------------------------------------------------------------
 // Fixed contract literals (HLSL twins are emitted by gencommon / declared in shadowmap_lighting.hlsli)
@@ -456,6 +458,9 @@ public:
 	// receiver's playable sealed sky region set this around their draw; the backend keeps the draw
 	// in the sun chart but uploads cShadowSkyClip.w = 0. Instanced batches split on this state.
 	virtual void SetShadowCasterSkyClipExempt( bool exempt ) = 0;
+	// Main-thread producer at a complete shadow draw boundary with no mesh locked.
+	// Replays pending native calls only under command-arena pressure; preserves pass and batching state.
+	virtual void DrainShadowQueueIfNeeded( IMatRenderContext *context ) = 0;
 };
 
 #endif // ISHADERAPIDX12LIGHTING_H

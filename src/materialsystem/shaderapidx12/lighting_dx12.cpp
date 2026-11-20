@@ -2268,6 +2268,10 @@ void CLightingDX12::EndShadowPass() { Enqueue( Packet( EndPass ) ); }
 void CLightingDX12::SetShadowCasterSkyClipExempt( bool exempt ) { LightingPacketDX12 *packet = Packet( SkyClipExempt ); packet->flag = exempt; Enqueue( packet ); }
 void CLightingDX12::BeginShadowCasterBatch() { Enqueue( Packet( BatchBegin ) ); }
 void CLightingDX12::EndShadowCasterBatch() { Enqueue( Packet( BatchEnd ) ); }
+void CLightingDX12::DrainShadowQueueIfNeeded( IMatRenderContext *context )
+{
+	HlightEngineBridge::DrainShadowQueueIfNeeded( context );
+}
 void CLightingDX12::CopyShadowDepthRect( DX12ShadowTarget_t dst, DX12ShadowTarget_t src, int dstX, int dstY, int srcX, int srcY, int width, int height )
 {
 	LightingPacketDX12 *packet = Packet( Restore );

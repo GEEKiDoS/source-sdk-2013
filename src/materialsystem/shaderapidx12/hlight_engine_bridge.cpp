@@ -25,6 +25,20 @@ constexpr uintptr_t kMapName = 0x69F310, kSortInfo = 0x69E530, kSortCount = 0x69
 constexpr uintptr_t kModelLoader = 0x470748, kOverlayManager = 0x470FC0;
 constexpr uintptr_t kNativeBspHeader = 0x69EDF0, kNativeLumpOverrides = 0x69F420;
 constexpr uintptr_t kNativeQueueReplay = 0x2AAE0;
+constexpr uintptr_t kQueuedCallArena = 0x2D0, kQueuedRenderDepth = 0x320;
+constexpr uintptr_t kMaterialSystem = 0xF1550, kMaterialSystemVtable = 0xB6470;
+constexpr uintptr_t kQueuedContexts[] = {0x27A0, 0x2B50};
+constexpr uintptr_t kQueuedContextVtable = 0xB5C28, kQueuedContextCallQueueVtable = 0xB6398;
+constexpr uintptr_t kPendingRenderJob = 0x3080, kNewContextInitReturn = 0xE097;
+constexpr uint32 kStockQueueReserve = 8u << 20, kExpandedQueueReserve = 32u << 20;
+constexpr uint32 kQueueCommitStep = 64u << 10, kQueueInitialCommit = 256u << 10, kQueueAlignment = 4;
+
+struct QueuedCallArena
+{
+    uintptr_t next, committedEnd, reservedEnd, base;
+    uint32 capacity, alignment, commitStep, initialCommit;
+};
+static_assert(sizeof(QueuedCallArena) == 0x30 && offsetof(QueuedCallArena, capacity) == 0x20);
 constexpr uintptr_t kScratch[4] = { 0x598280, 0x5D8280, 0x618280, 0x658280 };
 constexpr uint32 kMaxLuxels = 16384;
 constexpr uint32 kNativeBump = 8, kNativeDisplacement = 0x800;
@@ -49,6 +63,7 @@ void BumpedHook(void *, void *, const float *, float, float, const float *, cons
 void DisplacementHook(void *, void *, uint32);
 void *LumpHook(void *, uint32);
 void QueuedMeshLockHook(void *, int, int, MeshDesc_t &);
+bool QueuedCallArenaInitHook(QueuedCallArena *, uint32, uint32, uint32, uint32);
 Hook g_Hooks[] = {
     {0x101850, "405355565741544155415641574881ec98010000488b0de5626a00bb07000000", reinterpret_cast<void *>(&FaceLoadHook)},
     {0xD9030, "4883ec28488d0db5422b00ff15cff92700488d0dc8422b00ff1532f82700660f", reinterpret_cast<void *>(&LevelInitHook)},
@@ -59,8 +74,10 @@ Hook g_Hooks[] = {
     {0xCF130, "488bc4f30f11582053555657415441564881ecb80000004c8b0dea3468004c8d", reinterpret_cast<void *>(&BumpedHook)},
     {0xC30B0, "40555741574883ec204883b9f001000000418bf84c8bfa488be9747348897424", reinterpret_cast<void *>(&DisplacementHook)},
     {0xFC790, "405356415641574883ec384863f2488bd983fe3f761441b83f000000488d0d65", reinterpret_cast<void *>(&LumpHook)},
-    {0x2CC70, "48895c240848896c24104889742418574883ec2033ed8bc248396970498bd941", reinterpret_cast<void *>(&QueuedMeshLockHook), true}
+    {0x2CC70, "48895c240848896c24104889742418574883ec2033ed8bc248396970498bd941", reinterpret_cast<void *>(&QueuedMeshLockHook), true},
+    {0x772D0, "48895c24084889742410574883ec508b842480000000418bf183c00389512083", reinterpret_cast<void *>(&QueuedCallArenaInitHook), true}
 };
+Hook &g_QueuedCallArenaInit = g_Hooks[ARRAYSIZE(g_Hooks) - 1];
 
 template<class T> T Load(uintptr_t address)
 {
@@ -187,11 +204,139 @@ struct State
     ThreadState threading;
     std::atomic<bool> capture{false};
     std::atomic_flag buildBusy = ATOMIC_FLAG_INIT;
+    const char *builtinArenaFailure = nullptr;
+    bool builtinArenasExpanded = false, builtinArenaReported = false;
 } g;
 
 uintptr_t HookTarget(const Hook &hook)
 {
     return (hook.material ? g.materialModule : g.engine) + hook.rva;
+}
+
+void QueueArenaWarningOnce(const char *reason)
+{
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed))
+        Warning("ShaderAPIDX12: render-call arena enlargement: %s\n", reason);
+}
+
+bool CreateExpandedCallArena(QueuedCallArena &arena)
+{
+    void *base = VirtualAlloc(nullptr, kExpandedQueueReserve, MEM_RESERVE, PAGE_NOACCESS);
+    if (!base) return false;
+    if (VirtualAlloc(base, kQueueInitialCommit, MEM_COMMIT, PAGE_READWRITE) != base)
+    {
+        VirtualFree(base, 0, MEM_RELEASE);
+        return false;
+    }
+    const uintptr_t start = reinterpret_cast<uintptr_t>(base);
+    arena = {start, start + kQueueInitialCommit, start + kExpandedQueueReserve, start,
+        kExpandedQueueReserve, kQueueAlignment, kQueueCommitStep, kQueueInitialCommit};
+    return true;
+}
+
+bool QueuedCallArenaInitHook(QueuedCallArena *arena, uint32 capacity, uint32 commitStep, uint32 initialCommit, uint32 alignment)
+{
+    // Only the constructor used by CreateRenderContext(MATERIAL_QUEUED_CONTEXT).
+    // This allocator is shared with the unrelated render-data and geometry arenas.
+    if (reinterpret_cast<uintptr_t>(_ReturnAddress()) == g.materialModule + kNewContextInitReturn &&
+        capacity == kStockQueueReserve && commitStep == kQueueCommitStep &&
+        initialCommit == kQueueInitialCommit && alignment == kQueueAlignment)
+    {
+        QueuedCallArena replacement;
+        if (CreateExpandedCallArena(replacement))
+        {
+            std::memcpy(arena, &replacement, sizeof(replacement));
+            return true;
+        }
+        QueueArenaWarningOnce("new queued context could not reserve 32 MiB; using the SDK's 8 MiB");
+    }
+    using Init = bool (*)(QueuedCallArena *, uint32, uint32, uint32, uint32);
+    return reinterpret_cast<Init>(g_QueuedCallArenaInit.original)(arena, capacity, commitStep, initialCommit, alignment);
+}
+
+const char *InspectEmptyCallArena(uintptr_t context, QueuedCallArena &arena)
+{
+    const uintptr_t address = context + kQueuedCallArena;
+    if (!Readable(context, kQueuedRenderDepth + sizeof(int)) ||
+        Load<uintptr_t>(context) != g.materialModule + kQueuedContextVtable ||
+        Load<uintptr_t>(context + 8) != g.materialModule + kQueuedContextCallQueueVtable ||
+        Load<uintptr_t>(context + 0x300) != address)
+        return "queued-context vtable or embedded call-arena link differs";
+    if (Load<uintptr_t>(context + 0x2C0) || Load<uintptr_t>(context + 0x2C8) ||
+        Load<int>(context + kQueuedRenderDepth))
+        return "a built-in queue still has pending calls or an open render scope";
+
+    // Native Init can attach a persistent queued mesh before SetMode. Only
+    // an in-progress mesh allocation, not the mesh object itself, blocks us.
+    const uintptr_t mesh = Load<uintptr_t>(context + 0x310);
+    if (mesh && (!Readable(mesh, 0x60) || Load<uintptr_t>(mesh + 0x28) != context ||
+        Load<uintptr_t>(mesh + 0x50) || Load<uintptr_t>(mesh + 0x58)))
+        return "a built-in queued mesh is busy or has an unexpected owner";
+
+    arena = Load<QueuedCallArena>(address);
+    MEMORY_BASIC_INFORMATION committed = {}, reserved = {};
+    if (!arena.base || arena.capacity != kStockQueueReserve || arena.alignment != kQueueAlignment ||
+        arena.commitStep != kQueueCommitStep || arena.initialCommit != kQueueInitialCommit ||
+        arena.reservedEnd - arena.base != kStockQueueReserve ||
+        arena.committedEnd <= arena.base || arena.committedEnd >= arena.reservedEnd)
+        return "built-in call-arena metadata differs from the pinned profile";
+    if (arena.next != arena.base)
+        return "a built-in call arena still contains allocations";
+    if (!(VirtualQuery(reinterpret_cast<void *>(arena.base), &committed, sizeof(committed)) &&
+        reinterpret_cast<uintptr_t>(committed.AllocationBase) == arena.base &&
+        reinterpret_cast<uintptr_t>(committed.BaseAddress) == arena.base &&
+        committed.State == MEM_COMMIT && committed.Protect == PAGE_READWRITE && committed.Type == MEM_PRIVATE &&
+        committed.RegionSize == arena.committedEnd - arena.base &&
+        VirtualQuery(reinterpret_cast<void *>(arena.committedEnd), &reserved, sizeof(reserved)) &&
+        reserved.AllocationBase == committed.AllocationBase && reserved.State == MEM_RESERVE &&
+        reinterpret_cast<uintptr_t>(reserved.BaseAddress) == arena.committedEnd &&
+        reserved.RegionSize == arena.reservedEnd - arena.committedEnd))
+        return "the live committed/reserved page layout differs from the arena metadata";
+    return nullptr;
+}
+
+const char *EnlargeBuiltinCallArenas()
+{
+    // Caller is the main thread, either before the first queued frame at
+    // SetMode or in the existing level-init material transaction.
+    const uintptr_t material = reinterpret_cast<uintptr_t>(g.materials);
+    if (!Readable(material, kPendingRenderJob + sizeof(uintptr_t)) ||
+        material != g.materialModule + kMaterialSystem ||
+        Load<uintptr_t>(material) != g.materialModule + kMaterialSystemVtable)
+        return "material-system singleton or vtable differs from the pinned profile";
+    if (g.materials->GetThreadMode() != MATERIAL_SINGLE_THREADED)
+        return "material system is not in single-threaded mode";
+    if (Load<uintptr_t>(material + kPendingRenderJob))
+        return "material system still holds a render job";
+    if (!EntryMatches(g.materialModule + 0xE4F5, "498dbfa0270000488bcfe88c0b0200488d051d770a00488d9fd0020000488907") ||
+        !EntryMatches(g.materialModule + 0xE5C1, "488d8fb003000066898745030000888747030000e8b60a0200488d0547760a00") ||
+        !EntryMatches(g.materialModule + 0xE5E8, "488d9f80060000488bcb4c89afb8030000e8f28a0600ba00008000c744242004"))
+        return "built-in queue constructor differs from the pinned profile";
+
+    QueuedCallArena old[ARRAYSIZE(kQueuedContexts)], replacement[ARRAYSIZE(kQueuedContexts)] = {};
+    for (size_t i = 0; i < ARRAYSIZE(kQueuedContexts); ++i)
+        if (const char *failure = InspectEmptyCallArena(material + kQueuedContexts[i], old[i]))
+            return failure;
+    for (auto &arena : replacement)
+    {
+        if (CreateExpandedCallArena(arena)) continue;
+        for (const auto &staged : replacement)
+            if (staged.base) VirtualFree(reinterpret_cast<void *>(staged.base), 0, MEM_RELEASE);
+        return "could not reserve and initially commit both replacements";
+    }
+    // No live functors or list nodes point inside the old reservations. Keep
+    // the embedded arena objects (and the SDK's pointers to them) in place.
+    for (size_t i = 0; i < ARRAYSIZE(kQueuedContexts); ++i)
+        std::memcpy(reinterpret_cast<void *>(material + kQueuedContexts[i] + kQueuedCallArena),
+            &replacement[i], sizeof(replacement[i]));
+    for (const auto &arena : old)
+        if (!VirtualFree(reinterpret_cast<void *>(arena.base), 0, MEM_RELEASE))
+            QueueArenaWarningOnce("could not release a detached 8 MiB reservation");
+    // The SDK owns the new reservations and releases them with the contexts,
+    // including after the DX12 bridge has been shut down.
+    g.builtinArenasExpanded = true;
+    return nullptr;
 }
 
 uint64 QueuedAllocationSize(uintptr_t arena, uint64 bytes)
@@ -207,6 +352,21 @@ uintptr_t QueuedCommitEnd(uintptr_t arena)
     // be reserved yet uncommittable; admitting it still triggers native failure.
     const uint32 commitSize = Load<uint32>(arena + 0x28);
     return Load<uintptr_t>(arena + 0x10) & ~uintptr_t(commitSize - 1);
+}
+
+void ReplayQueuedContext(IMatRenderContext *context)
+{
+    // Match native synchronous ReadPixels: close all producer render scopes,
+    // then wait for the previous CPU render job and select the hardware context.
+    const uintptr_t owner = reinterpret_cast<uintptr_t>(context);
+    const int renderDepth = Load<int>(owner + kQueuedRenderDepth);
+    for (int i = 0; i < renderDepth; ++i) context->EndRender();
+    const MaterialLock_t lock = g.materials->Lock();
+    // false retains context/render-data state and releases only consumed calls
+    // and geometry. Unlock restores this queue; there is no GPU wait or mode change.
+    reinterpret_cast<void (*)(void *, bool)>(g.materialModule + kNativeQueueReplay)(context, false);
+    g.materials->Unlock(lock);
+    for (int i = 0; i < renderDepth; ++i) context->BeginRender();
 }
 
 void QueuedMeshLockHook(void *mesh, int vertices, int indices, MeshDesc_t &desc)
@@ -236,22 +396,7 @@ void QueuedMeshLockHook(void *mesh, int vertices, int indices, MeshDesc_t &desc)
         {
             CMatRenderContextPtr context(g.materials);
             if (context == reinterpret_cast<IMatRenderContext *>(owner) && context->GetCallQueue())
-            {
-                // Like native synchronous ReadPixels, close the queued hardware
-                // render scope before replay. Preserve ALL caller nesting: leaving
-                // a BeginRender unmatched would strand its mutex on this thread.
-                const int renderDepth = Load<int>(owner + 0x320);
-                for (int i = 0; i < renderDepth; ++i) context->EndRender();
-                // Lock waits for the previous CPU render job and selects the
-                // hardware context. CallQueued(false) preserves context state and
-                // render data, releasing only consumed calls and geometry arenas.
-                // Unlock restores this same queue; no GPU wait or mode change.
-                const MaterialLock_t lock = g.materials->Lock();
-                reinterpret_cast<void (*)(void *, bool)>(g.materialModule + kNativeQueueReplay)(
-                    reinterpret_cast<void *>(owner), false);
-                g.materials->Unlock(lock);
-                for (int i = 0; i < renderDepth; ++i) context->BeginRender();
-            }
+                ReplayQueuedContext(context);
         }
     }
     original(mesh, vertices, indices, desc);
@@ -939,6 +1084,21 @@ void FaceLoadHook()
 void LevelInitHook()
 {
     const bool transaction = BeginTransaction();
+    if (!g.builtinArenaReported && ThreadInMainThread())
+    {
+        g.builtinArenaReported = true;
+        // Console logging is not yet active at the first startup SetMode.
+        // If it was not quiescent, this pre-draw transaction is our fallback.
+        const char *startupFailure = g.builtinArenaFailure;
+        if (!g.builtinArenasExpanded && transaction)
+            g.builtinArenaFailure = EnlargeBuiltinCallArenas();
+        if (g.builtinArenasExpanded)
+            Msg("ShaderAPIDX12: queued call arenas: 8 MiB -> 32 MiB (2/2); initial commit 256 KiB each\n");
+        else
+            Warning("ShaderAPIDX12: queued call arenas left at 8 MiB: %s\n", g.builtinArenaFailure);
+        if (startupFailure && transaction)
+            DevMsg("ShaderAPIDX12: startup arena enlargement deferred: %s\n", startupFailure);
+    }
     if (transaction && !g.domain && (g.pendingDomain || g.lastDomain) &&
         !OwnedWork([&] { return PublishDomain(Load<uintptr_t>(g.engine + kWorldBrush), !g.pendingDomain); }))
         Failure("High-resolution lightmaps: complete native domain publication failed");
@@ -1115,26 +1275,41 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
     { V_strncpy(g.compatibility, "High-resolution lightmaps: unsupported engine/material-system build", sizeof(g.compatibility)); return false; }
     g.engine = reinterpret_cast<uintptr_t>(engine); g.materialModule = reinterpret_cast<uintptr_t>(material);
     for (const auto &hook : g_Hooks)
-        if (!EntryMatches(HookTarget(hook), hook.bytes))
+        if (&hook != &g_QueuedCallArenaInit && !EntryMatches(HookTarget(hook), hook.bytes))
         { V_strncpy(g.compatibility, "High-resolution lightmaps: native entry signature differs from the supported profile", sizeof(g.compatibility)); return false; }
     if (!EntryMatches(g.materialModule + kNativeQueueReplay, "405356415641574883ec38488b0586fe0c004c8db17803000033db48897c2468"))
     { V_strncpy(g.compatibility, "High-resolution lightmaps: native queue replay signature differs from the supported profile", sizeof(g.compatibility)); return false; }
     const uintptr_t currentBrush = Load<uintptr_t>(g.engine + kWorldBrush);
     const bool lateAttach = Readable(currentBrush, 256) && Load<int>(currentBrush + 216) != 0;
+    const bool canHookQueueArena = EntryMatches(HookTarget(g_QueuedCallArenaInit), g_QueuedCallArenaInit.bytes) &&
+        EntryMatches(g.materialModule + 0xE076, "ba00008000c74424200400000041b90000040041b800000100488bcbe8399206");
+    if (!canHookQueueArena) QueueArenaWarningOnce("queued-context factory signature differs; new contexts keep the SDK size");
     const MH_STATUS init = MH_Initialize();
     if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED)
     { V_strncpy(g.compatibility, "High-resolution lightmaps: entry-hook initialization failed", sizeof(g.compatibility)); return false; }
     g.ownsMinHook = init == MH_OK; g.materials = materials; g.sink = sink;
     for (auto &hook : g_Hooks)
     {
+        if (&hook == &g_QueuedCallArenaInit && !canHookQueueArena) continue;
         if (MH_CreateHook(reinterpret_cast<void *>(HookTarget(hook)), hook.detour, &hook.original) != MH_OK)
-        { RemoveHooks(); V_strncpy(g.compatibility, "High-resolution lightmaps: entry-hook creation failed", sizeof(g.compatibility)); return false; }
+        {
+            if (&hook == &g_QueuedCallArenaInit)
+            {
+                QueueArenaWarningOnce("could not install the queued-context initializer hook");
+                continue;
+            }
+            RemoveHooks();
+            V_strncpy(g.compatibility, "High-resolution lightmaps: entry-hook creation failed", sizeof(g.compatibility));
+            return false;
+        }
         hook.created = true;
     }
     bool queued = true;
-    for (const auto &hook : g_Hooks) queued = (MH_QueueEnableHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK) && queued;
+    for (const auto &hook : g_Hooks)
+        if (hook.created) queued = (MH_QueueEnableHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK) && queued;
     if (!queued || MH_ApplyQueued() != MH_OK)
     { RemoveHooks(); V_strncpy(g.compatibility, "High-resolution lightmaps: atomic entry-hook activation failed", sizeof(g.compatibility)); return false; }
+    g.builtinArenaFailure = lateAttach ? "world already loaded during device initialization" : EnlargeBuiltinCallArenas();
     g.supported = true; g.compatibility[0] = 0;
     if (lateAttach) V_strncpy(g.compatibility, "High-resolution lightmaps: existing world was not observed; clean map reload required", sizeof(g.compatibility));
     return true;
@@ -1183,6 +1358,21 @@ bool BeginMaterialTransaction()
 void EndMaterialTransaction()
 {
     EndTransaction();
+}
+void DrainShadowQueueIfNeeded(IMatRenderContext *context)
+{
+    if (!g.supported || !ThreadInMainThread() || !context->GetCallQueue()) return;
+
+    // Functors and their list nodes share the render-call arena. Leave half
+    // free for the next complete caster submission and the commands needed
+    // to suspend and reopen the producer render scope.
+    // This is independent of high-resolution lightmap capture.
+    const uintptr_t arena = reinterpret_cast<uintptr_t>(context) + kQueuedCallArena;
+    const uintptr_t first = Load<uintptr_t>(arena + 0x18);
+    const uintptr_t next = Load<uintptr_t>(arena);
+    const uintptr_t end = QueuedCommitEnd(arena);
+    if (first && first < end && next > first && next - first >= (end - first) / 2)
+        ReplayQueuedContext(context);
 }
 }
 }

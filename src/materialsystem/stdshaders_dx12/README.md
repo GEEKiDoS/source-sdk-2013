@@ -371,6 +371,13 @@ everything and the shader's threshold stays the only one). Before this, every al
 (chain-link fences, grates, foliage) was a solid shadow caster: `-dx12shaderlog` listed `depthwrite_vs51` but never
 `depthwrite_ps51` on `d1_trainstation_02`. Brush `$alphatest` casters already carried the flag through their own wrappers.
 
+Queued caster submission: the SDK's render-call arenas hold both queued commands and their list nodes. At quiescent
+DX12 startup the pinned native bridge increases both built-in arenas from 8 MiB to 32 MiB, retaining the 256 KiB
+initial commit and 64 KiB commit steps. A single filtered allocator hook gives new queued render contexts the same
+capacity without changing other native arenas. Feature shadow views check usage between complete draw submissions.
+At half capacity the bridge replays pending calls in order and reuses the arena without ending the shadow pass,
+changing `mat_queue_mode`, or waiting on the GPU. The check does not depend on high-resolution lightmap capture.
+
 Batched opaque casters: between `IShaderAPIDX12Lighting::BeginShadowCasterBatch` / `EndShadowCasterBatch` (queued
 markers the client emits around the caster block of `CFeatureShadowDepthView::Draw` while `r_shadowmap_instancing`,
 `FCVAR_ARCHIVE` default 1, is on) the backend does not record an opaque (`MORPHING` 0), fill-mode, native `depthwrite_vs51`
