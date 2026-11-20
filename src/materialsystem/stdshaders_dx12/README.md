@@ -162,6 +162,14 @@ flashlight and `LIGHTMAPWATERFOG` branches retain their original policy. The DX1
 `l4d2_water_{vs20,ps20b}` names to these native twins on enhanced maps; no legacy water exemption or retail-lightmap
 fallback remains.
 
+The above-water refraction shader uses the opaque framebuffer copy's alpha as
+normalized water depth. Sky/background pixels can carry alpha above one in the
+DX12 FP16 scene buffer. Clamp both depth reads, as the retail normalized target
+did, before scaling the distortion and blending toward the water fog color.
+Without this clamp the playable water extrapolated toward black behind the sky
+silhouette in `c5m1_waterfront`; the flow distortion broke that black band into
+speckles. The sky water's reflection-only draw is unchanged.
+
 `LightmappedGeneric` and `WorldVertexTransition` in the game shader DLL share
 `l4d2_lightmappedgeneric_{vs20,ps20b}`. `pairs.HIGHRES_ONLY` emits just a VS,
 PS and audited early-depth PS for that pair and for water. Each manifest row

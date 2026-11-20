@@ -1170,7 +1170,9 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	float depth = 1.0f;
 #if REFRACT && ABOVEWATER
 	float4 unwarped = RefractSampler.tex.Sample( RefractSampler.smp, screenUV.wz * g_InvViewportTransform.xy + g_InvViewportTransform.zw );
-	depth = unwarped.a;
+	// The FP16 scene copy can contain alpha above one where the background
+	// did not write water depth. Retail's normalized target clamps it.
+	depth = saturate( unwarped.a );
 #endif
 	float4 scales = g_ReflectRefractScale;
 #if REFRACT && !BASETEXTURE
@@ -1184,7 +1186,7 @@ float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 	// Reject distortion across the shore instead of pulling unfogged objects
 	// over the water. The native shader falls back to the unwarped sample.
 	refraction = refraction.a >= 0.05f ? refraction : unwarped;
-	depth = refraction.a;
+	depth = saturate( refraction.a );
 	tintRamp = saturate( depth * 3.5f );
 	float3 refractedColor = lerp( refraction.rgb, refraction.rgb * g_RefractTint.rgb, tintRamp );
 	float3 fogColor = g_WaterFogColor.rgb;
