@@ -1357,6 +1357,15 @@ static bool SelectShadowLight( entity_t *entity, int entityIndex, bool shadowMap
 			selected = digit == '1';
 		}
 	}
+	// VRAD's _fifty_percent_distance/_zero_percent_distance solve can produce a negative quadratic or linear term
+	// (c5m5_bridge: _fifty_percent_distance 1, _zero_percent_distance 2000/4000). Such a falloff has a pole inside
+	// its range, which the runtime light manifest rejects, so the light stays baked like an ordinary VRAD light.
+	if ( selected && ( light.attenuation[0] < 0.0f || light.attenuation[1] < 0.0f || light.attenuation[2] < 0.0f ) )
+	{
+		Msg( "Shadowmaps: light entity %d has a negative attenuation term (%g %g %g); baked, not shadow-mapped\n",
+			entityIndex, light.attenuation[0], light.attenuation[1], light.attenuation[2] );
+		selected = false;
+	}
 	if ( selected )
 		light.lightFlags |= RESTIR_LIGHT_RUNTIME_DIRECT;
 	return true;
