@@ -4,3 +4,5 @@ nekotoon_model_vs51.fxc vs nekotoon_model_vs51 native -
 # noparity nekotoon_model_vs51 - native-only
 nekotoon_model_ps51.fxc ps nekotoon_model_ps51 native -
 # noparity nekotoon_model_ps51 - native-only
+l4n_digits_ps51.fxc ps l4n_digits_ps51 native -
+# noparity l4n_digits_ps51 - native-only

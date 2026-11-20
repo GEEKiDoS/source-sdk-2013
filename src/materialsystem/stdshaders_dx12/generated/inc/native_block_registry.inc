@@ -50,6 +50,7 @@
 #include "GlowParams.h"
 #include "l4d2_spritecard_ps.h"
 #include "l4d2_spritecard_vs.h"
+#include "L4NDigitsPS.h"
 #include "lightmappedgeneric_decal_ps2x.h"
 #include "lightmappedgeneric_decal_vs20.h"
 #include "lightmappedgeneric_flashlight_vs20.h"
@@ -223,6 +224,7 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "l4d2_water_highres_earlydepth_ps51", dx12native::kStagePixel, nullptr },
 	{ "l4d2_water_highres_ps51", dx12native::kStagePixel, nullptr },
 	{ "l4d2_water_highres_vs51", dx12native::kStageVertex, nullptr },
+	{ "l4n_digits_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::L4NDigitsPS > },
 	{ "lightmappedgeneric_decal_highres_earlydepth_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_ps2x > },
 	{ "lightmappedgeneric_decal_highres_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_ps2x > },
 	{ "lightmappedgeneric_decal_highres_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::lightmappedgeneric_decal_vs20 > },

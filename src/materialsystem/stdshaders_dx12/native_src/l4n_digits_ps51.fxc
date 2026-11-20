@@ -1,0 +1,27 @@
+// DigitalDisplay uses one row of ten glyphs. Share the skinned NekoToon VS;
+// the packed layout preceding TEXCOORD3 must agree even for unused inputs.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+#include "common_ps_fxc.h"
+Texture2D DigitAtlas : register( t0 );
+SamplerState DigitSampler : register( s0 );
+cbuffer L4NDigitsPS : register( b1, space1 )
+{
+	float4 g_DigitModulation; // @legacy ps:c0
+	float4 g_DigitValues; // @legacy ps:c1
+	float4 g_DigitLayout; // @legacy ps:c2
+};
+struct DigitInput
+{
+	float4 position : SV_Position;
+	float fog : FOG;
+	float4 uv : TEXCOORD0;
+};
+float4 main( DigitInput input ) : SV_Target0
+{
+	float cell = min( saturate( input.uv.x ) * g_DigitLayout.x, g_DigitLayout.x - 1e-5 );
+	float digit = g_DigitValues[(uint)cell];
+	float2 atlasUV = float2( ( digit + frac( cell ) ) * 0.1, input.uv.y );
+	float4 paint = DigitAtlas.Sample( DigitSampler, atlasUV ) * g_DigitModulation;
+	return DX12FinishPixel( FinalOutput( paint, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR ), input.fog );
+}

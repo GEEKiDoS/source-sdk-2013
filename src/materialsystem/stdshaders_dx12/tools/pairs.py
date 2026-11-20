@@ -184,6 +184,7 @@ NATIVE_ONLY = [
     native_only('pbr', 'pbr_model_ps51.fxc', 'ps', 'pbr_model_ps51'),
     native_only('nekotoon', 'nekotoon_model_vs51.fxc', 'vs', 'nekotoon_model_vs51'),
     native_only('nekotoon', 'nekotoon_model_ps51.fxc', 'ps', 'nekotoon_model_ps51'),
+    native_only('nekotoon', 'l4n_digits_ps51.fxc', 'ps', 'l4n_digits_ps51'),
     native_only('pbr', 'pbr_world_depthprepass_ps51.fxc', 'ps', 'pbr_world_depthprepass_ps51'),
     native_only('pbr', 'pbr_model_depthprepass_ps51.fxc', 'ps', 'pbr_model_depthprepass_ps51'),
     native_only('pbr', 'pbr_gbuffer_debug_cs51.fxc', 'cs', 'pbr_gbuffer_debug_cs51'),

@@ -4,6 +4,7 @@
 #include "lightmappedgeneric_dx9_helper.h"
 #include "nekotoon_model_vs51.inc"
 #include "nekotoon_model_ps51.inc"
+#include "l4n_digits_ps51.inc"
 #include "tier0/memdbgon.h"
 extern ConVar r_shadowmap_filter_quality;
 namespace {
@@ -344,5 +345,108 @@ BEGIN_VS_SHADER( NekoToon, "Stylized model with probe and shadow-map lighting" )
 			}
 			Draw();
 		}
+	}
+END_SHADER
+
+// These are material roots registered by game_shader_generic_neko.dll, not
+// filenames of the SM3 stages. Let the destination shader own its normal
+// parameter parsing, vertex format, flashlight and map-generation snapshots.
+DEFINE_FALLBACK_SHADER( NekoRefract, Refract )
+DEFINE_FALLBACK_SHADER( NekoSprite, Sprite )
+DEFINE_FALLBACK_SHADER( NekoSky, Sky )
+DEFINE_FALLBACK_SHADER( NekoGlowColor, UnlitGeneric )
+DEFINE_FALLBACK_SHADER( NekoBlurFilterX, BlurFilterX )
+DEFINE_FALLBACK_SHADER( NekoBlurFilterY, BlurFilterY )
+DEFINE_FALLBACK_SHADER( Neko_Downsample_nohdr, Downsample_nohdr )
+DEFINE_FALLBACK_SHADER( Neko_Engine_Post, Engine_Post )
+
+// The DX12 post stack owns exposure, bloom and tone mapping. Keep the
+// input image for L4N private passes rather than evaluating another display
+// curve or trying to execute a foreign $pixshader from the material.
+DEFINE_FALLBACK_SHADER( NekoBloom, UnlitGeneric )
+DEFINE_FALLBACK_SHADER( NekoTonemap, UnlitGeneric )
+DEFINE_FALLBACK_SHADER( neko_luminance_compare, UnlitGeneric )
+DEFINE_FALLBACK_SHADER( neko_screenspace_general, UnlitGeneric )
+
+BEGIN_VS_SHADER( DigitalDisplay, "Left4Neko four-cell numeric atlas" )
+	BEGIN_SHADER_PARAMS
+		SHADER_PARAM( NUMBER, SHADER_PARAM_TYPE_INTEGER, "0", "Value to display" )
+		SHADER_PARAM( NUMBITS, SHADER_PARAM_TYPE_INTEGER, "4", "Number of decimal digits" )
+		SHADER_PARAM( ALPHATESTREFERENCE, SHADER_PARAM_TYPE_FLOAT, ".5", "Glyph cutout threshold" )
+	END_SHADER_PARAMS
+
+	SHADER_FALLBACK
+	{
+		return 0;
+	}
+
+	SHADER_INIT_PARAMS()
+	{
+		SET_FLAGS2( MATERIAL_VAR2_SUPPORTS_HW_SKINNING );
+		SET_FLAGS2( MATERIAL_VAR2_USES_VERTEXID );
+		if ( !params[NUMBITS]->IsDefined() )
+			params[NUMBITS]->SetIntValue( 4 );
+		INIT_FLOAT_PARM( ALPHATESTREFERENCE, 0.5f );
+	}
+
+	SHADER_INIT
+	{
+		if ( params[BASETEXTURE]->IsDefined() )
+			LoadTexture( BASETEXTURE, TEXTUREFLAGS_SRGB );
+	}
+
+	SHADER_DRAW
+	{
+		SHADOW_STATE
+		{
+			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION | VERTEX_NORMAL | VERTEX_FORMAT_COMPRESSED, 1, 0, 0 );
+			SetBlendingShadowState( EvaluateBlendRequirements( BASETEXTURE, true ) );
+			pShaderShadow->EnableAlphaTest( IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) );
+			if ( IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) )
+				pShaderShadow->AlphaFunc( SHADER_ALPHAFUNC_GEQUAL, params[ALPHATESTREFERENCE]->GetFloatValue() );
+			pShaderShadow->EnableTexture( SHADER_SAMPLER0, true );
+			pShaderShadow->EnableSRGBRead( SHADER_SAMPLER0, true );
+			pShaderShadow->EnableSRGBWrite( true );
+			DefaultFog();
+			DECLARE_STATIC_VERTEX_SHADER( nekotoon_model_vs51 );
+			SET_STATIC_VERTEX_SHADER_COMBO( BUMP, false );
+			SET_STATIC_VERTEX_SHADER_COMBO( HULL, false );
+			SET_STATIC_VERTEX_SHADER_COMBO( DEPTHOFFSET, false );
+			SET_STATIC_VERTEX_SHADER( nekotoon_model_vs51 );
+			DECLARE_STATIC_PIXEL_SHADER( l4n_digits_ps51 );
+			SET_STATIC_PIXEL_SHADER( l4n_digits_ps51 );
+		}
+		DYNAMIC_STATE
+		{
+			if ( params[BASETEXTURE]->IsTexture() && !params[BASETEXTURE]->GetTextureValue()->IsError() )
+				BindTexture( SHADER_SAMPLER0, BASETEXTURE, FRAME );
+			else
+				pShaderAPI->BindStandardTexture( SHADER_SAMPLER0, TEXTURE_WHITE );
+			SetVertexShaderTextureTransform( kBaseTransformRegister, BASETEXTURETRANSFORM );
+			SetHWMorphVertexShaderState( VERTEX_SHADER_SHADER_SPECIFIC_CONST_10, VERTEX_SHADER_SHADER_SPECIFIC_CONST_11,
+				SHADER_VERTEXTEXTURE_SAMPLER0 );
+			DECLARE_DYNAMIC_VERTEX_SHADER( nekotoon_model_vs51 );
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( COMPRESSED_VERTS, (int)vertexCompression );
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( SKINNING, pShaderAPI->GetCurrentNumBones() > 0 );
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() );
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, false );
+			SET_DYNAMIC_VERTEX_SHADER( nekotoon_model_vs51 );
+			DECLARE_DYNAMIC_PIXEL_SHADER( l4n_digits_ps51 );
+			SET_DYNAMIC_PIXEL_SHADER( l4n_digits_ps51 );
+			dx12cb::L4NDigitsPS display{};
+			ComputeModulationColor( display.g_DigitModulation );
+			static const int limits[] = { 9, 99, 999, 9999 };
+			const int count = clamp( params[NUMBITS]->GetIntValue(), 1, 4 );
+			int value = clamp( params[NUMBER]->GetIntValue(), 0, limits[count - 1] );
+			for ( int i = count - 1; i >= 0; --i )
+			{
+				display.g_DigitValues[i] = float( value % 10 );
+				value /= 10;
+			}
+			display.g_DigitLayout[0] = float( count );
+			DX12SetPixelShaderConstant( 0, display.g_DigitModulation, 3 );
+			g_DX12Constants.shadowmapPassAdmitted = true; // Authored emissive LCD; not a light receiver.
+		}
+		Draw();
 	}
 END_SHADER
