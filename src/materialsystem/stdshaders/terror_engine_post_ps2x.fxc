@@ -43,6 +43,7 @@ float4 ViewportTransform : register( c13 );
 float4 InvViewportTransform : register( c14 );
 float4 ViewFadeColor : register( c15 );
 float2 DesaturationAndFade : register( c16 );
+float HDRPeak : register( c17 );
 
 float3 RetailLinearToSRGB( float3 color )
 {
@@ -72,7 +73,7 @@ float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
 {
 	float2 fbUV = bloomUV * uvTransform.wz + uvTransform.xy;
 	float4 bloom;
-	float3 color;
+	float hdrPeak = max( HDRPeak, 1.0f );
 #if VOMIT_ENABLE
 	float4 screen = tex2D( BaseTextureSampler, bloomUV );
 	float2 refract = ( screen.rg - 0.5f ) * VomitColor1.w;
@@ -87,7 +88,7 @@ float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
 #endif
 	color = tex2D( FBTextureSampler, fbUV ).rgb;
 #if CONVERT_FROM_LINEAR
-	color = RetailLinearToSRGB( color );
+	color = RetailLinearToSRGB( color / hdrPeak );
 #endif
 	bloom = tex2D( BaseTextureSampler, refractedBloomUV );
 	float3 vomitColor = screen.b * ( VomitColor2.rgb - VomitColor1.rgb ) + VomitColor1.rgb;
@@ -98,7 +99,7 @@ float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
 #else
 	color = tex2D( FBTextureSampler, fbUV ).rgb;
 #if CONVERT_FROM_LINEAR
-	color = RetailLinearToSRGB( color );
+	color = RetailLinearToSRGB( color / hdrPeak );
 #endif
 	bloom = tex2D( BaseTextureSampler, bloomUV );
 #endif
@@ -151,9 +152,8 @@ float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
 	// Native pre-bloom tonemapping owns exposure. Retail static 0/8 does not
 	// call SDK FinalOutput or apply another tone-map / output sRGB transform.
 #if LINEAR_OUTPUT
-	// Effects above operate in the same display-sRGB domain as DX9. Return to DX12's scRGB framebuffer
-	// without applying another tone curve; adding grain directly in linear space amplifies dark noise.
-	color = RetailSRGBToLinear( color );
+	// Effects above operate in normalized display-sRGB; restore the HDR scene scale for scRGB.
+	color = RetailSRGBToLinear( color ) * hdrPeak;
 #endif
 	return float4( color, 1.0f );
 }

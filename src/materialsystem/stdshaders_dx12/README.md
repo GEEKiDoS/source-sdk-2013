@@ -112,6 +112,18 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   VTEX. The extra `/16` previously applied in the DX12 readback made recaptured cubemaps about 16x too dark.
   Texture upload, runtime envmap decoding, and ordinary sRGB readbacks are unchanged. Previously overbright
   or dark captures need to be rebuilt.
+- HDR display output is a linear-scRGB presentation path, not an SDR image multiplied after clipping. The scene and
+  post intermediates remain FP16 linear radiance. `postprocess_dx12.cpp` publishes the detected display peak relative
+  to `mat_hdr_output_world_nits`; `postfx_composite_ps51.fxc` applies AgX in display-referred space, screens bloom,
+  flare and glare there, applies the colour-correction LUT to the encoded display value, then decodes to linear
+  scRGB. The presentation blit scales world-paper-white to `mat_hdr_output_ui_nits` and the DXGI scRGB transfer
+  maps 1.0 to 80 nits. The legacy L4D2 engine post (`terror_engine_post_ps2x.fxc`) normalises that peak before
+  vignette, local contrast, fade, LUT and grain, and restores it on output; its bloom preparation uses the same
+  normalisation. Thus these display-referred effects do not clamp HDR highlights or treat HDR scRGB as 0..1.
+  `nekotoon_model_ps51.fxc` uses the same AgX inverse for display-authored paint and matcaps. Normal 8-bit
+  `ReadPixels` captures undo the peak/paper-white scale through `VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM` before
+  the SDR sRGB blit; FP16 readback remains available for HDR diagnostics. DLSS-G and XeFG use 8-bit presentation
+  chains and therefore cannot carry this HDR output path; FSR frame generation retains FP16.
 
 - Feature detail sprites (`DX12_DetailShadowLit`) are lit once per sprite in the vertex shader, at the authored
   gather point all four card vertices share. Where the ambient probe grid covers that point, the light is the soft

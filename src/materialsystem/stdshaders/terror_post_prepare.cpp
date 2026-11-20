@@ -62,6 +62,9 @@ BEGIN_VS_SHADER_FLAGS( TerrorPostPrepare, "L4D2 EnginePost render-target prepara
 		{
 			BindTexture( SHADER_SAMPLER0, BASETEXTURE, -1 );
 			float value[4] = { 0, 0, 0, 0 };
+			const Vector display = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM );
+			value[0] = MAX( display.x, 1.0f );
+			pShaderAPI->SetPixelShaderConstant( 1, value );
 			if ( nPass == 0 || nPass == 3 )
 			{
 				static ConVarRef r_bloomtintr( "r_bloomtintr" );

@@ -506,9 +506,11 @@ void PostProcessDX12_SubmitFrameConfig()
 		Msg( "mat_hdr_output: detected display max %d nits\n", nits );
 	}
 	s_pShaderAPIDX12->SetHdrOutput( bHdr, MAX( mat_hdr_output_ui_nits.GetFloat(), 1.f ) );
+	const float flWorldNits = MAX( mat_hdr_output_world_nits.GetFloat(), 1.f );
+	const float flUiNits = MAX( mat_hdr_output_ui_nits.GetFloat(), 1.f );
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM,
-		Vector( PostProcessDX12_Active() ? HdrPeak( bHdr ) : 0.f, mat_postfx_exposure.GetFloat(), 0.f ) );
+		Vector( PostProcessDX12_Active() ? HdrPeak( bHdr ) : 0.f, mat_postfx_exposure.GetFloat(), bHdr ? flWorldNits / flUiNits : 1.f ) );
 }
 
 void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection,

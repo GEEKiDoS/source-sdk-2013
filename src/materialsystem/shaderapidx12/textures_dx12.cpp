@@ -6,6 +6,7 @@
 
 #include "pixelwriter.h"
 #include "materialsystem/shaderapidx12/shaderapi_dx12.h"
+#include "renderparm.h"
 #include "materialsystem/shaderapidx12/shaderdevice_dx12.h"
 #include "hardwareconfig_dx12.h"
 #include "lighting_dx12.h"
@@ -2600,6 +2601,21 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 		const ConVarRef buildingCubemaps( "building_cubemaps", true );
 		bHDRCubemap = buildingCubemaps.GetBool();
 	}
+	// Normal screenshot readback must undo the composite's HDR display scale before the destination sRGB encode.
+	// Cubemap capture is deliberately excluded: its exposure-bracket contract is independent.
+	const bool bSdrReadback = bScene && bFP16Conversion && !bHDRCubemap;
+	float flCaptureScale[4] = { 1.f, 0.f, 0.f, 0.f };
+	BlitEncodeDX12 captureEncode = BlitEncodeDX12::None;
+	if ( bSdrReadback )
+	{
+		const Vector display = GetVectorRenderingParameter( VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM );
+		const float flDisplayScale = MAX( display.x, 1.f ) * MAX( display.z, 1.f );
+		if ( flDisplayScale > 1.f )
+		{
+			flCaptureScale[0] = 1.f / flDisplayScale;
+			captureEncode = BlitEncodeDX12::HdrScale;
+		}
+	}
 	if ( bFP16Conversion || pSource->GetDesc().SampleDesc.Count > 1 || srcRect->width != dstRect->width || srcRect->height != dstRect->height )
 	{
 		D3D12_RESOURCE_DESC desc = pSource->GetDesc();
@@ -2624,7 +2640,8 @@ void CShaderAPIDX12::ReadPixels( Rect_t *srcRect, Rect_t *dstRect, unsigned char
 		const Rect_t region{ 0, 0, dstRect->width, dstRect->height };
 		const bool bBlitted = BlitTexture( pSource, *pState, bScene, sourceFormat, pTemporary.Get(), temporaryState, false,
 			bFP16Conversion ? IMAGE_FORMAT_BGRA8888 : sourceFormat, *srcRect, region, false, bFP16Conversion && !bHDRCubemap,
-			nullptr, bHDRCubemap ? BlitEncodeDX12::HDRCubemap : BlitEncodeDX12::None );
+			bHDRCubemap ? nullptr : ( captureEncode != BlitEncodeDX12::None ? flCaptureScale : nullptr ),
+			bHDRCubemap ? BlitEncodeDX12::HDRCubemap : captureEncode );
 		if ( bScene )
 			m_pDevice->TransitionSceneColor( D3D12_RESOURCE_STATE_RENDER_TARGET );
 		if ( !bBlitted )

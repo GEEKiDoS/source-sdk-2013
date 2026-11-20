@@ -207,6 +207,9 @@ BEGIN_VS_SHADER_FLAGS( TerrorEnginePost, "L4D2 EnginePost composition", SHADER_N
 			value[0] = 0.0f; value[1] = params[FADE]->GetIntValue() == 2 ? 1.0f : 0.0f;
 			value[2] = value[3] = 0.0f;
 			pShaderAPI->SetPixelShaderConstant( 16, value );
+			const Vector display = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM );
+			value[0] = MAX( display.x, 1.0f ); value[1] = value[2] = value[3] = 0.0f;
+			pShaderAPI->SetPixelShaderConstant( 17, value );
 			DECLARE_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs20 );
 			SET_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs20 );
 			if ( bPS2b )

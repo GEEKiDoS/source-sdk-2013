@@ -31,7 +31,8 @@ enum RenderParamVector_t
 	VECTOR_RENDERPARM_L4D2_WATER_FOG_RANGE = 11, // start, end, unused
 	// Published every frame by the DX12 post stack (postprocess_dx12.cpp) for materials whose colours are authored
 	// for the display rather than the scene: x = the tone curve's peak relative to paper white (0 while the scene
-	// is presented without that curve), y = the exposure bias in EV applied before it.
+	// is presented without that curve), y = the exposure bias in EV applied before it, z = world paper-white nits
+	// over UI paper-white nits while HDR output is active (1 in SDR); 8-bit readback divides by x * z.
 	VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM = 12,
 	// Read-only on DX12: the studio lighting origin shared by all surfaces of this draw.
 	VECTOR_RENDERPARM_DX12_MODEL_LIGHTING_ORIGIN = 13,

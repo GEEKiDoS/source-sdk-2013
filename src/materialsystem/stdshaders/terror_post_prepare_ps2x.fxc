@@ -8,6 +8,7 @@
 sampler2D TexSampler : register( s0 );
 float4 BloomTint : register( c0 );
 float2 TexelSize : register( c4 );
+float HDRPeak : register( c1 );
 
 float3 LinearToRetailSRGB( float3 color )
 {
@@ -22,7 +23,7 @@ float3 DownsampleTap( float2 uv )
 {
 	float3 color = tex2D( TexSampler, uv ).rgb;
 #if FLOAT_BACK_BUFFER
-	color = LinearToRetailSRGB( color );
+	color = LinearToRetailSRGB( color / max( HDRPeak, 1.0f ) );
 #endif
 	return color;
 }

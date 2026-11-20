@@ -692,6 +692,8 @@ private:
 	DXGI_FORMAT m_PresentFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	CInterlockedInt m_nPresentFormat = static_cast<int>( DXGI_FORMAT_R16G16B16A16_FLOAT );
 	CInterlockedInt m_nHdrDisplayStatus;
+	int m_nHdrLogFormat = -1, m_nHdrLogColorSpace = -1, m_nHdrLogStatus = -1;
+	float m_flHdrLogPresentScale = -1.f;
 	// Frame generation (F5): pending kind switch applied at Present's tail, present ids/serials for the providers.
 	CFrameGenDX12 m_FrameGen;
 	CLightingDX12 m_Lighting;

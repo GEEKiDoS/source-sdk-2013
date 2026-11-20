@@ -933,6 +933,24 @@ bool CShaderDeviceDX12::CreateViewTargets( View &view )
 }
 
 //-----------------------------------------------------------------------------
+static const char *ShaderApiDX12ColorSpaceName( DXGI_COLOR_SPACE_TYPE colorSpace )
+{
+	switch ( colorSpace )
+	{
+	case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709: return "scRGB";
+	case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709: return "sRGB";
+	case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020: return "PQ/P2020";
+	default: return "other";
+	}
+}
+
+static const char *ShaderApiDX12FormatName( DXGI_FORMAT format )
+{
+	return format == DXGI_FORMAT_R16G16B16A16_FLOAT ? "R16G16B16A16_FLOAT" :
+		format == DXGI_FORMAT_R8G8B8A8_UNORM ? "R8G8B8A8_UNORM" : "other";
+}
+
+//-----------------------------------------------------------------------------
 void CShaderDeviceDX12::QueryDisplayHdr( View &view )
 {
 	m_nHdrDisplayStatus = 0;
@@ -948,6 +966,23 @@ void CShaderDeviceDX12::QueryDisplayHdr( View &view )
 	const bool bHdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 	const int nits = clamp( static_cast<int>( desc.MaxLuminance + 0.5f ), 80, 10000 );
 	m_nHdrDisplayStatus = ( bHdr ? SHADERAPIDX12_HDR_DISPLAY_HDR : SHADERAPIDX12_HDR_DISPLAY_SDR ) | ( nits << 8 );
+	DXGI_SWAP_CHAIN_DESC1 swapDesc{};
+	view.swap->GetDesc1( &swapDesc );
+	DXGI_COLOR_SPACE_TYPE swapColorSpace = swapDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ?
+		DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+	const int nStatus = bHdr ? SHADERAPIDX12_HDR_DISPLAY_HDR : SHADERAPIDX12_HDR_DISPLAY_SDR;
+	const float flPresentScale = g_pShaderAPIDX12 ? g_pShaderAPIDX12->PresentOutputScale() : 1.f;
+	if ( m_nHdrLogFormat != static_cast<int>( swapDesc.Format ) || m_nHdrLogColorSpace != static_cast<int>( swapColorSpace ) ||
+		m_nHdrLogStatus != nStatus || fabsf( m_flHdrLogPresentScale - flPresentScale ) > 0.0001f )
+	{
+		m_nHdrLogFormat = static_cast<int>( swapDesc.Format );
+		m_nHdrLogColorSpace = static_cast<int>( swapColorSpace );
+		m_nHdrLogStatus = nStatus;
+		m_flHdrLogPresentScale = flPresentScale;
+		Msg( "ShaderAPIDX12: HDR chain format=%s colorSpace=%s display=%s maxNits=%d presentScale=%.4f\n",
+			ShaderApiDX12FormatName( swapDesc.Format ), ShaderApiDX12ColorSpaceName( swapColorSpace ),
+			nStatus == SHADERAPIDX12_HDR_DISPLAY_HDR ? "HDR" : "SDR", nits, flPresentScale );
+	}
 }
 
 //-----------------------------------------------------------------------------
