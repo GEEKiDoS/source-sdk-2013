@@ -7,6 +7,7 @@
 #include "l4d2/ui/basemodui/terror_basemodui_ingame.h"
 #include "l4d2/ui/terror_hud_resources.h"
 #include "vgui_controls/CheckButton.h"
+#include "vgui_controls/ComboBox.h"
 #include "vgui_controls/Label.h"
 #include "vgui_controls/ImagePanel.h"
 #include "vgui/ISurface.h"
@@ -15,6 +16,9 @@
 #include "tier1/utlbuffer.h"
 #include "tier1/utldict.h"
 #include "steam/steam_api.h"
+#include <algorithm>
+#include <wctype.h>
+#include <time.h>
 #include <setjmp.h>
 #include <stdio.h>
 #ifdef _WIN32
@@ -30,6 +34,63 @@ namespace L4D360UI
 {
 static ConVar addons_hide_conflict_dialog( "addons_hide_conflict_dialog", "0", FCVAR_ARCHIVE );
 static bool s_AddonPathsChanged;
+enum AddonSort_t
+{
+	ADDON_SORT_CUSTOM,
+	ADDON_SORT_NAME_ASC, ADDON_SORT_NAME_DESC,
+	ADDON_SORT_SIZE_ASC, ADDON_SORT_SIZE_DESC,
+	ADDON_SORT_DATE_ASC, ADDON_SORT_DATE_DESC,
+	ADDON_SORT_COUNT
+};
+static ConVar addons_sort( "addons_sort", "0", FCVAR_ARCHIVE, "Add-ons list view: custom, name, size, or date.", true, 0, true, ADDON_SORT_COUNT - 1 );
+
+static int CompareAddonText( const wchar_t *left, const wchar_t *right, int count = -1 )
+{
+#ifdef _WIN32
+	return CompareStringOrdinal( left, count, right, count, TRUE ) - CSTR_EQUAL;
+#else
+	for ( int i = 0; count < 0 || i < count; ++i )
+	{
+		int diff = towlower( left[i] ) - towlower( right[i] );
+		if ( diff || !left[i] )
+			return diff;
+	}
+	return 0;
+#endif
+}
+
+static bool MatchesAddonText( const wchar_t *text, const wchar_t *query, int length )
+{
+	for ( int i = static_cast<int>( wcslen( text ) ) - length; i >= 0; --i )
+		if ( !CompareAddonText( text + i, query, length ) )
+			return true;
+	return false;
+}
+
+struct AddonViewItem_t
+{
+	int index;
+	const AddonInfo_t *info;
+};
+
+struct CompareAddonView
+{
+	int sort;
+	bool operator()( const AddonViewItem_t &left, const AddonViewItem_t &right ) const
+	{
+		const AddonInfo_t &a = *left.info, &b = *right.info;
+		int order;
+		if ( sort == ADDON_SORT_NAME_ASC || sort == ADDON_SORT_NAME_DESC )
+			order = CompareAddonText( a.title, b.title );
+		else if ( sort == ADDON_SORT_SIZE_ASC || sort == ADDON_SORT_SIZE_DESC )
+			order = ( a.size > b.size ) - ( a.size < b.size );
+		else
+			order = ( a.modified > b.modified ) - ( a.modified < b.modified );
+
+		const bool descending = sort == ADDON_SORT_NAME_DESC || sort == ADDON_SORT_SIZE_DESC || sort == ADDON_SORT_DATE_DESC;
+		return order ? ( descending ? order > 0 : order < 0 ) : left.index < right.index;
+	}
+};
 
 static void Visible( vgui::Panel *panel, const char *name, bool visible )
 {
@@ -154,7 +215,9 @@ static void MetadataText( KeyValues *info, const char *key, wchar_t *out, int by
 }
 
 Addons::Addons( vgui::Panel *parent, const char *name ) : BaseClass( parent, name, false, true, true, true ),
-	m_pAddonList( NULL ), m_pRowLayout( new KeyValues( "" ) ), m_Texture( -1 ), m_DefaultTexture( -1 ), m_SelectedAddon( -1 ), m_ImageFade( 0 ), m_bSquareImage( true ), m_bLayoutReady( false ), m_bReady( false ), m_bClosing( false ), m_bConflictWarned( false )
+	m_pManagementStrings( new KeyValues( "AddonManagement" ) ), m_pAddonList( NULL ), m_pRowLayout( new KeyValues( "" ) ),
+	m_Texture( -1 ), m_DefaultTexture( -1 ), m_SelectedAddon( -1 ), m_ImageFade( 0 ), m_bSquareImage( true ),
+	m_bLayoutReady( false ), m_bReady( false ), m_bClosing( false ), m_bConflictWarned( false ), m_bOrderChanged( false )
 {
 	m_Filter[0] = 0; m_Mod[0] = 0; m_ListPath[0] = 0;
 	m_pList = new GenericPanelList( this, "GplAddons" );
@@ -168,10 +231,90 @@ Addons::Addons( vgui::Panel *parent, const char *name ) : BaseClass( parent, nam
 	m_pIcon = new vgui::ImagePanel( this, "ImgAddonIcon" );
 	m_pIcon->SetPaintEnabled( false ); // Bounds anchor; PaintBackground draws the JPEG.
 	m_pIconSpinner = new vgui::ImagePanel( this, "ImgAddonIconSpinner" );
+	char language[64];
+	engine->GetUILanguage( language, sizeof( language ) );
+	const char *translated = "resource/addons_management_schinese.txt";
+	if ( Q_stricmp( language, "schinese" ) || !m_pManagementStrings->LoadFromFile( filesystem, translated, "MOD" ) )
+		m_pManagementStrings->LoadFromFile( filesystem, "resource/addons_management_english.txt", "MOD" );
+
+	m_pSearchLabel = new vgui::Label( this, "LblSearchAddons", ManagementText( "Search" ) );
+	m_pSearchEmpty = new vgui::Label( this, "LblSearchEmpty", ManagementText( "NoMatches" ) );
+	m_pSearch = new vgui::TextEntry( this, "TxtSearchAddons" );
+	m_pSearch->SetKeyBoardInputEnabled( true );
+	m_pSearch->SetTabPosition( 2 );
+	m_pSearch->SetAllowNonAsciiCharacters( true );
+	m_pSearch->SetMaximumCharCount( MAX_PATH - 1 );
+	m_pSearch->AddActionSignalTarget( this );
+	m_pSort = new vgui::ComboBox( this, "CmbAddonSort", ADDON_SORT_COUNT, false );
+	const char *sorts[] = { "Custom", "NameAsc", "NameDesc", "SizeAsc", "SizeDesc", "DateAsc", "DateDesc" };
+	COMPILE_TIME_ASSERT( ARRAYSIZE( sorts ) == ADDON_SORT_COUNT );
+	for ( int i = 0; i < ADDON_SORT_COUNT; ++i )
+		m_pSort->AddItem( ManagementText( sorts[i] ), NULL );
+	m_pSort->SilentActivateItemByRow( addons_sort.GetInt() );
+	m_pSort->AddActionSignalTarget( this );
+	m_pMoveUp = new vgui::Button( this, "BtnMoveAddonUp", ManagementText( "MoveUp" ), this, "MoveAddonUp" );
+	m_pMoveDown = new vgui::Button( this, "BtnMoveAddonDown", ManagementText( "MoveDown" ), this, "MoveAddonDown" );
+	m_pFileInfo = new vgui::Label( this, "LblAddonFileInfo", "" );
+	m_pOrderHint = new vgui::Label( this, "LblAddonOrderHint", ManagementText( "OrderHint" ) );
+	m_pOrderHint->SetWrap( true );
+	m_pOrderHint->SetContentAlignment( vgui::Label::a_northwest );
 	SetFooterEnabled( true ); // The real window manager supplies the caller separately.
 	m_bLayoutReady = LoadLayout( "resource/ui/l4d360ui/addons.res" ) && LoadTerrorUiResource( m_pRowLayout, "resource/ui/l4d360ui/addonlistitem.res" );
 }
-Addons::~Addons() { ClearImage(); if ( m_pAddonList ) m_pAddonList->deleteThis(); m_pRowLayout->deleteThis(); }
+Addons::~Addons()
+{
+	ClearImage();
+	if ( m_pAddonList )
+		m_pAddonList->deleteThis();
+	m_pRowLayout->deleteThis();
+	m_pManagementStrings->deleteThis();
+}
+
+const wchar_t *Addons::ManagementText( const char *key ) const
+{
+	return m_pManagementStrings->GetWString( key, L"" );
+}
+
+void Addons::ApplySchemeSettings( vgui::IScheme *scheme )
+{
+	BaseClass::ApplySchemeSettings( scheme );
+	const vgui::HFont font = scheme->GetFont( "DefaultMedium", true );
+	m_pSearch->SetFont( font );
+	m_pSort->SetFont( font );
+	m_pMoveUp->SetFont( font );
+	m_pMoveDown->SetFont( font );
+	m_pSearchLabel->SetFont( font );
+	m_pSearchEmpty->SetFont( font );
+	m_pOrderHint->SetFont( font );
+	m_pFileInfo->SetFont( scheme->GetFont( "Default", true ) );
+}
+
+void Addons::PerformLayout()
+{
+	BaseClass::PerformLayout();
+	const vgui::HScheme scheme = GetScheme();
+	int x, y, wide, tall;
+	m_pList->GetBounds( x, y, wide, tall );
+	const int gap = vgui::scheme()->GetProportionalScaledValueEx( scheme, 4 );
+	const int line = vgui::scheme()->GetProportionalScaledValueEx( scheme, 18 );
+	const int searchLabel = vgui::scheme()->GetProportionalScaledValueEx( scheme, 70 );
+	const int detailsX = m_pIcon->GetXPos();
+	const int detailsWide = vgui::scheme()->GetProportionalScaledValueEx( scheme, 290 );
+	const int sortWide = vgui::scheme()->GetProportionalScaledValueEx( scheme, 168 );
+	const int buttonWide = vgui::scheme()->GetProportionalScaledValueEx( scheme, 76 );
+	const int top = y - line - 2 * gap;
+	const int bottom = y + tall + line + 2 * gap;
+	m_pSearchLabel->SetBounds( x, top, searchLabel, line );
+	m_pSearch->SetBounds( x + searchLabel + gap, top, MAX( 1, wide - searchLabel - gap ), line );
+	m_pSort->SetBounds( detailsX, top, sortWide, line );
+	m_pSearchEmpty->SetBounds( x + gap, y + gap, MAX( 1, wide - 2 * gap ), line );
+	m_pMoveUp->SetBounds( detailsX, bottom, buttonWide, line );
+	m_pMoveDown->SetBounds( detailsX + buttonWide + gap, bottom, buttonWide, line );
+	m_pOrderHint->SetBounds( detailsX, bottom + line + gap, detailsWide, 2 * line );
+	int descriptionX, descriptionY;
+	m_pDescription->GetPos( descriptionX, descriptionY );
+	m_pFileInfo->SetBounds( descriptionX, descriptionY + m_pDescription->GetTall(), detailsWide, line );
+}
 void Addons::LoadControlSettings( const char *resource, const char *pathID, KeyValues *preloaded, KeyValues *conditions )
 {
 	KeyValues::AutoDelete owned( preloaded ? NULL : new KeyValues( "" ) );
@@ -208,7 +351,7 @@ void Addons::OnOpen()
 		m_DefaultTexture = vgui::surface()->DrawGetTextureId( "vgui/menu_mode_campaign" );
 		if ( m_DefaultTexture == -1 ) { m_DefaultTexture = vgui::surface()->CreateNewTextureID(); vgui::surface()->DrawSetTextureFile( m_DefaultTexture, "vgui/menu_mode_campaign", true, false ); }
 	}
-	else
+	else if ( !m_bOrderChanged )
 	{
 		// G1FFD0/G1EA50 preserve unsaved enables through modal OnOpen.
 		// The native key is the ANSI title, deliberately not a new file-ID key.
@@ -222,7 +365,12 @@ void Addons::OnOpen()
 		}
 	}
 	CenterDialogOnScreen(); BaseClass::OnOpen();
-	m_bReady = true; PopulateAddonInfo(); UpdateFooter();
+	m_bReady = true;
+	if ( m_bOrderChanged )
+		RebuildRows( m_SelectedAddon );
+	else
+		PopulateAddonInfo();
+	UpdateFooter();
 	if ( firstOpen )
 	{
 		DropDownMenu *filter = dynamic_cast<DropDownMenu *>( FindChildByName( "DrpFilterTags", true ) );
@@ -253,11 +401,18 @@ void Addons::PopulateAddonInfo()
 		info.archive = Q_stristr( info.filename, ".vpk" ) != NULL; info.enabled = entry->GetInt() != 0;
 		char root[MAX_PATH], path[MAX_PATH]; Q_snprintf( root, sizeof( root ), "%saddons\\%s", m_Mod, info.filename );
 		Q_snprintf( path, sizeof( path ), "%s\\addoninfo.txt", root );
+		if ( info.archive )
+		{
+			info.size = filesystem->Size( root, NULL );
+			info.modified = filesystem->GetFileTime( root, NULL );
+		}
 		if ( info.archive ) filesystem->AddSearchPath( root, "ADDONINFO", PATH_ADD_TO_HEAD );
 		KeyValues::AutoDelete metadata( new KeyValues( "AddonInfo" ) );
-		if ( metadata->LoadFromFile( filesystem, path, NULL ) )
+		if ( metadata->LoadFromFile( filesystem, path, NULL ) || info.archive )
 		{
-			MetadataText( metadata, "addontitle", info.title, sizeof( info.title ), none );
+			MetadataText( metadata, "addontitle", info.title, sizeof( info.title ), L"" );
+			if ( !info.title[0] )
+				V_UTF8ToUnicode( info.filename, info.title, sizeof( info.title ) );
 			MetadataText( metadata, "addonauthor", info.author, sizeof( info.author ), none );
 			MetadataText( metadata, "addonDescription", info.description, sizeof( info.description ), none );
 			MetadataText( metadata, "addonversion", info.version, sizeof( info.version ), L"0.0" );
@@ -282,18 +437,142 @@ void Addons::PopulateAddonInfo()
 	}
 	BuildConflictMap( true ); RebuildRows();
 }
-void Addons::RebuildRows()
+void Addons::RebuildRows( int preferred )
 {
-	if ( !m_bReady ) return;
+	if ( !m_bReady )
+		return;
+
 	m_pList->RemoveAllPanelItems();
 	int mask = 1;
-	for ( int i = 0; i < ARRAYSIZE( s_Content ); ++i ) if ( !Q_stricmp( m_Filter, s_Content[i].tag ) ) mask = s_Content[i].bit;
-	FOR_EACH_VEC( m_Addons, i ) if ( mask & m_Addons[i].content ) m_pList->AddPanelItem( new AddonListItem( m_pList, this, i, m_Addons[i] ) );
+	for ( int i = 0; i < ARRAYSIZE( s_Content ); ++i )
+		if ( !Q_stricmp( m_Filter, s_Content[i].tag ) )
+			mask = s_Content[i].bit;
+
+	wchar_t query[MAX_PATH];
+	m_pSearch->GetText( query, sizeof( query ) );
+	const int length = static_cast<int>( wcslen( query ) );
+	CUtlVector<AddonViewItem_t> view;
+	view.EnsureCapacity( m_Addons.Count() );
+	FOR_EACH_VEC( m_Addons, i )
+	{
+		const AddonInfo_t &info = m_Addons[i];
+		if ( !( mask & info.content ) )
+			continue;
+		if ( length && !MatchesAddonText( info.title, query, length ) )
+		{
+			wchar_t filename[MAX_PATH];
+			V_UTF8ToUnicode( info.filename, filename, sizeof( filename ) );
+			if ( !MatchesAddonText( filename, query, length ) )
+				continue;
+		}
+		AddonViewItem_t item = { i, &info };
+		view.AddToTail( item );
+	}
+	const int sort = addons_sort.GetInt();
+	if ( sort != ADDON_SORT_CUSTOM && view.Count() > 1 )
+	{
+		CompareAddonView compare = { sort };
+		std::sort( view.Base(), view.Base() + view.Count(), compare );
+	}
+
+	int selected = 0;
+	FOR_EACH_VEC( view, i )
+	{
+		const AddonViewItem_t &entry = view[i];
+		m_pList->AddPanelItem( new AddonListItem( m_pList, this, entry.index, *entry.info ) );
+		if ( entry.index == preferred )
+			selected = i;
+	}
 	m_pList->InvalidateLayout( true );
 	if ( m_pList->GetPanelItemCount() )
-		m_pList->SelectPanelItem( 0 );
-	vgui::Panel *filter = FindChildByName( "DrpFilterTags", true ); if ( filter ) filter->SetEnabled( m_Addons.Count() > 0 );
+		m_pList->SelectPanelItem( selected );
+
+	vgui::Panel *filter = FindChildByName( "DrpFilterTags", true );
+	if ( filter )
+		filter->SetEnabled( m_Addons.Count() > 0 );
 	UpdateDetails();
+}
+
+int Addons::SelectedRow() const
+{
+	const vgui::Panel *selected = m_pList->GetSelectedPanelItem();
+	if ( selected )
+		for ( int i = 0; i < m_pList->GetPanelItemCount(); ++i )
+			if ( m_pList->GetPanelItem( i ) == selected )
+				return i;
+	return -1;
+}
+
+void Addons::UpdateMoveButtons()
+{
+	const bool custom = addons_sort.GetInt() == ADDON_SORT_CUSTOM;
+	const int row = SelectedRow();
+	m_pMoveUp->SetEnabled( custom && row > 0 );
+	m_pMoveDown->SetEnabled( custom && row >= 0 && row + 1 < m_pList->GetPanelItemCount() );
+	m_pOrderHint->SetVisible( custom );
+}
+
+void Addons::MoveAddon( int step )
+{
+	const int selected = SelectedRow();
+	if ( addons_sort.GetInt() != ADDON_SORT_CUSTOM || selected < 0 )
+		return;
+	AddonListItem *from = static_cast<AddonListItem *>( m_pList->GetPanelItem( selected ) );
+	AddonListItem *to = static_cast<AddonListItem *>( m_pList->GetPanelItem( selected + step ) );
+	if ( !to )
+		return;
+
+	const int a = from->GetAddonIndex(), b = to->GetAddonIndex();
+	KeyValues *first = m_pAddonList->FindKey( m_Addons[a].filename );
+	KeyValues *second = m_pAddonList->FindKey( m_Addons[b].filename );
+	if ( !first || !second )
+		return;
+
+	// Keep filtered/hidden entries in their original slots. The real remount
+	// consumes these ordered keys, adding each enabled archive at GAME head.
+	CUtlVector<KeyValues *> entries;
+	entries.EnsureCapacity( m_Addons.Count() );
+	while ( KeyValues *entry = m_pAddonList->GetFirstSubKey() )
+	{
+		m_pAddonList->RemoveSubKey( entry );
+		entries.AddToTail( entry );
+	}
+	KeyValues *tail = NULL;
+	FOR_EACH_VEC( entries, i )
+	{
+		KeyValues *entry = entries[i];
+		if ( entry == first )
+			entry = second;
+		else if ( entry == second )
+			entry = first;
+		if ( tail )
+			tail->SetNextKey( entry );
+		else
+			m_pAddonList->AddSubKey( entry );
+		tail = entry;
+	}
+	std::swap( m_Addons[a], m_Addons[b] );
+	m_bOrderChanged = true;
+	m_SelectedAddon = -1;
+	ClearImage();
+	RebuildRows( b );
+}
+
+void Addons::OnTextChanged( vgui::Panel *panel )
+{
+	if ( panel == m_pSort )
+	{
+		const int sort = m_pSort->GetActiveItem();
+		if ( sort < 0 || sort >= ADDON_SORT_COUNT || sort == addons_sort.GetInt() )
+			return;
+		addons_sort.SetValue( sort );
+	}
+	else if ( panel != m_pSearch )
+	{
+		return;
+	}
+	if ( m_bReady )
+		RebuildRows( m_SelectedAddon );
 }
 void Addons::SetAddonEnabled( int index, bool enabled )
 {
@@ -316,7 +595,13 @@ void Addons::UpdateDetails()
 	const int index = selected ? row->GetAddonIndex() : -1;
 
 	m_pNoAddons->SetVisible( m_bReady && m_Addons.Count() == 0 );
-	Visible( this, "LblNoAddonsFiltered", m_bReady && m_Addons.Count() > 0 && !selected );
+	wchar_t query[2];
+	m_pSearch->GetText( query, sizeof( query ) );
+	const bool empty = m_bReady && m_Addons.Count() > 0 && !selected;
+	m_pSearchEmpty->SetVisible( empty && query[0] );
+	Visible( this, "LblNoAddonsFiltered", empty && !query[0] );
+	m_pFileInfo->SetVisible( selected && m_Addons[index].archive );
+	UpdateMoveButtons();
 	Visible( this, "ImgAddonIconOverlay", false );
 	Visible( this, "ImgGlobalAddonIconSpinner", false );
 	Visible( this, "BtnVisitWorkshop", false );
@@ -344,6 +629,18 @@ void Addons::UpdateDetails()
 	Localized( "#L4D360UI_Addon_By", author, sizeof( author ) );
 	V_wcsncat( author, info.author, ARRAYSIZE( author ) );
 	m_pAuthor->SetText( author );
+	if ( info.archive )
+	{
+		wchar_t size[32], date[32], fileInfo[128];
+		V_snwprintf( size, ARRAYSIZE( size ), L"%.2f", info.size / ( 1024.0 * 1024.0 ) );
+		const time_t modified = info.modified;
+		const struct tm *local = info.modified ? localtime( &modified ) : NULL;
+		V_wcsncpy( date, L"-", sizeof( date ) );
+		if ( local )
+			wcsftime( date, ARRAYSIZE( date ), L"%Y-%m-%d %H:%M", local );
+		g_pVGuiLocalize->ConstructString( fileInfo, sizeof( fileInfo ), ManagementText( "FileInfo" ), 2, size, date );
+		m_pFileInfo->SetText( fileInfo );
+	}
 	LoadPreview( info );
 }
 void Addons::LoadPreview( const AddonInfo_t &info )
@@ -458,6 +755,11 @@ void Addons::OnCommand( const char *command )
 	{
 		if ( !m_bClosing ) { m_bClosing = true; SaveAddonList(); }
 		if ( GetNavBack() ) NavigateBack(); else { SetVisible( false ); if ( GetParent() ) GetParent()->OnCommand( "Back" ); }
+		return;
+	}
+	if ( !Q_stricmp( command, "MoveAddonUp" ) || !Q_stricmp( command, "MoveAddonDown" ) )
+	{
+		MoveAddon( !Q_stricmp( command, "MoveAddonUp" ) ? -1 : 1 );
 		return;
 	}
 	if ( !Q_stricmp( command, "BrowseWorkshop" ) ) { BrowseWorkshop(); return; }

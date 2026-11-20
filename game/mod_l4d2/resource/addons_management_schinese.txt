@@ -1,0 +1,16 @@
+"AddonManagement"
+{
+	"Search" "搜索附件"
+	"NoMatches" "没有符合搜索条件的附件。"
+	"Custom" "自定义加载顺序"
+	"NameAsc" "名称（升序）"
+	"NameDesc" "名称（降序）"
+	"SizeAsc" "大小（从小到大）"
+	"SizeDesc" "大小（从大到小）"
+	"DateAsc" "修改时间（从旧到新）"
+	"DateDesc" "修改时间（从新到旧）"
+	"FileInfo" "大小：%s1 MiB　修改时间：%s2"
+	"MoveUp" "上移"
+	"MoveDown" "下移"
+	"OrderHint" "发生文件冲突时，排在最后的已启用附件优先。选择“完成”后应用。"
+}

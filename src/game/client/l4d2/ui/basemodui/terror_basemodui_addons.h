@@ -9,7 +9,7 @@
 #include "tier1/utldict.h"
 #include "tier1/utlvector.h"
 #include "filesystem.h"
-namespace vgui { class CheckButton; class Label; class ImagePanel; }
+namespace vgui { class Button; class CheckButton; class ComboBox; class Label; class ImagePanel; class TextEntry; }
 namespace L4D360UI
 {
 class GenericPanelList;
@@ -18,6 +18,8 @@ struct AddonInfo_t
 {
 	char filename[MAX_PATH], image[MAX_PATH];
 	wchar_t title[128], author[120], description[1024], version[32], types[128];
+	long modified;
+	unsigned int size;
 	int content;
 	bool enabled, conflict, archive;
 };
@@ -58,12 +60,19 @@ public:
 	KeyValues *GetRowLayout() const { return m_pRowLayout; }
 	bool IsLayoutReady() const { return m_bLayoutReady; }
 protected:
+	virtual void ApplySchemeSettings( vgui::IScheme *scheme ) OVERRIDE;
+	virtual void PerformLayout() OVERRIDE;
 	virtual void PaintBackground() OVERRIDE;
 	virtual void OnThink() OVERRIDE;
 	MESSAGE_FUNC( OnItemSelected, "OnItemSelected" );
+	MESSAGE_FUNC_PTR( OnTextChanged, "TextChanged", panel );
 private:
 	void PopulateAddonInfo();
-	void RebuildRows();
+	void RebuildRows( int preferred = -1 );
+	void MoveAddon( int step );
+	void UpdateMoveButtons();
+	int SelectedRow() const;
+	const wchar_t *ManagementText( const char *key ) const;
 	void BuildConflictMap( bool warn );
 	void UpdateDetails();
 	void UpdateFooter();
@@ -73,6 +82,11 @@ private:
 	GenericPanelList *m_pList;
 	vgui::ImagePanel *m_pIcon, *m_pIconSpinner;
 	vgui::Label *m_pName, *m_pType, *m_pAuthor, *m_pDescription, *m_pNoAddons;
+	vgui::TextEntry *m_pSearch;
+	vgui::ComboBox *m_pSort;
+	vgui::Button *m_pMoveUp, *m_pMoveDown;
+	vgui::Label *m_pSearchLabel, *m_pSearchEmpty, *m_pFileInfo, *m_pOrderHint;
+	KeyValues *m_pManagementStrings;
 	KeyValues *m_pAddonList, *m_pRowLayout;
 	CUtlVector<AddonInfo_t> m_Addons;
 	CUtlDict<bool,int> m_EnabledSnapshot;
@@ -80,6 +94,7 @@ private:
 	int m_Texture, m_DefaultTexture, m_SelectedAddon;
 	float m_ImageFade;
 	bool m_bSquareImage, m_bLayoutReady, m_bReady, m_bClosing, m_bConflictWarned;
+	bool m_bOrderChanged;
 };
 CL4DFrame *CreateBaseModAddonsWindow( vgui::Panel *parent, const char *name );
 // G19900/G67BB0: invoke before main-menu BaseClass::OnOpen. True means the

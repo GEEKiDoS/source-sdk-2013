@@ -1,0 +1,16 @@
+"AddonManagement"
+{
+	"Search" "Search add-ons"
+	"NoMatches" "No add-ons match your search."
+	"Custom" "Custom load order"
+	"NameAsc" "Name (A–Z)"
+	"NameDesc" "Name (Z–A)"
+	"SizeAsc" "Size (smallest first)"
+	"SizeDesc" "Size (largest first)"
+	"DateAsc" "Modified (oldest first)"
+	"DateDesc" "Modified (newest first)"
+	"FileInfo" "Size: %s1 MiB   Modified: %s2"
+	"MoveUp" "Move up"
+	"MoveDown" "Move down"
+	"OrderHint" "Last enabled add-on wins conflicts. Changes apply when you select Done."
+}
