@@ -48,7 +48,7 @@ public:
 	int GetOriginalTall() const { return m_nOriginalTall; }
 	int GetWideAtOpen() const { return m_nWideAtOpen; }
 	void SetCurrentSelection( const char *text );
-	const char *GetCurrentSelection() const { return m_Selection.String(); }
+	void SetCurrentSelection( const wchar_t *text );
 	void SetUsablePlayerIndex( int index ) { m_nUsablePlayerIndex = index; }
 	void SetDefaultTextColor( Color color ) { m_DefaultTextColor = color; }
 	int GetStyle() const { return m_nStyle; }
@@ -62,7 +62,8 @@ private:
 	void ApplyStyle( vgui::IScheme *scheme );
 	void BroadcastSiblingOpened();
 	void UpdateFooter();
-	CUtlString m_Style, m_Tooltip, m_DisabledTooltip, m_Selection;
+	CUtlString m_Style, m_Tooltip, m_DisabledTooltip;
+	CUtlConstWideString m_Selection;
 	int m_nStyle, m_nOriginalTall, m_nTextInsetX, m_nTextInsetY, m_nWideAtOpen;
 	int m_nUsablePlayerIndex, m_nEnableCondition, m_nIndicatorSize;
 	vgui::HFont m_hFont, m_hBlurFont, m_hHintFont, m_hSelectionFont, m_hSelectionBlurFont;

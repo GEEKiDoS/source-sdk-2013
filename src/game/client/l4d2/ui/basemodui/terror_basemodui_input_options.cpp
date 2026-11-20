@@ -110,13 +110,35 @@ KeyboardMouse::KeyboardMouse(vgui::Panel *parent,const char *name) : BaseClass(p
 void KeyboardMouse::Refresh()
 {
 	RefreshChoices(s_Keyboard,ARRAYSIZE(s_Keyboard));
+	// The SDK also implements acceleration modes 1 and 2. Display them as
+	// enabled without normalizing the user's cvar to retail's menu preset (3).
+	const bool acceleration = OptionInt( "m_customaccel" ) != 0;
+	Select( "DrpMouseAcceleration", acceleration ? "MouseAccelerationEnabled" : "MouseAccelerationDisabled" );
 	ConVar *pitch=cvar->FindVar("m_pitch"); Select("DrpMouseYInvert",pitch && pitch->GetFloat()<0 ? "MouseYInvertEnabled" : "MouseYInvertDisabled");
-	SetControlEnabled("SldMouseAcceleration",OptionInt("m_customaccel")!=0,true);
+	SetControlEnabled( "SldMouseAcceleration", acceleration, true );
 	static const char *controls[]={ "SldGamepadHSensitivity","SldGamepadVSensitivity","DrpGamepadYInvert","DrpGamepadSwapSticks","DrpGamepadAutoAim","DrpGamepadVibration" };
 	for ( int i=0;i<ARRAYSIZE(controls);++i ) SetControlEnabled(controls[i],OptionInt("joystick")!=0,true);
 	ResetSliders(this);
 }
-void KeyboardMouse::OnOpen() { if ( !LoadLayout("resource/ui/l4d360ui/keyboardmouse.res") ) { NavigateBack(); return; } BaseClass::OnOpen(); CenterDialogOnScreen(); Refresh(); }
+void KeyboardMouse::OnOpen()
+{
+	if ( !LoadLayout( "resource/ui/l4d360ui/keyboardmouse.res" ) )
+	{
+		NavigateBack();
+		return;
+	}
+	BaseClass::OnOpen();
+	CenterDialogOnScreen();
+	Refresh();
+}
+void KeyboardMouse::ApplySchemeSettings( vgui::IScheme *scheme )
+{
+	BaseClass::ApplySchemeSettings( scheme );
+	// CL4DFrame reloads the retail .res during scheme application, replacing
+	// the centered bounds and restoring the resource's enabled states.
+	CenterDialogOnScreen();
+	Refresh();
+}
 void KeyboardMouse::OnCommand(const char *command)
 {
 	if ( m_bRefreshing ) return;

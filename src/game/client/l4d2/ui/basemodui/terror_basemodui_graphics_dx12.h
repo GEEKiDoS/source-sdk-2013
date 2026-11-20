@@ -8,8 +8,10 @@
 #include "l4d2/ui/basemodui/terror_basemodui_options.h"
 #include "vgui_graphics_options.h"
 
+namespace vgui { class Label; class ScrollBar; }
 namespace L4D360UI
 {
+class GraphicsScrollViewport;
 class GraphicsDX12 : public NativeOptionsFrame, public FlyoutMenuListener
 {
 	DECLARE_CLASS_SIMPLE( GraphicsDX12, NativeOptionsFrame );
@@ -19,28 +21,46 @@ public:
 	void OnClose() OVERRIDE;
 	void OnCommand( const char *command ) OVERRIDE;
 	void LoadControlSettings( const char *resource, const char *pathID = NULL, KeyValues *preloaded = NULL, KeyValues *conditions = NULL ) OVERRIDE;
+	vgui::Panel *CreateControlByName( const char *name ) OVERRIDE;
 	void SetSection( int section );
+	bool HasLivePreview() const { return m_bLivePreview; }
+	void OnMouseWheeled( int delta ) OVERRIDE;
 	void OnNotifyChildFocus( vgui::Panel *child ) OVERRIDE {}
 	void OnFlyoutMenuClosed( vgui::Panel *returnTo ) OVERRIDE;
 	void OnFlyoutMenuCancelled() OVERRIDE {}
 protected:
 	void PaintBackground() OVERRIDE;
+	void PerformLayout() OVERRIDE;
+	void OnThink() OVERRIDE;
 private:
+	friend class GraphicsScrollViewport;
 	MESSAGE_FUNC_PARAMS( OnSliderMoved, "SliderMoved", data );
 	struct Widget_t
 	{
 		const GraphicsOptions::RowDef_t *row;
 		vgui::DHANDLE<vgui::Panel> control;
 		int rowIndex;
+		int y;
 	};
-	void ReadSettings();
-	void RefreshPage( bool focusSection = false );
+	void ReadSettings( bool rebuildChoices = false );
+	void LayoutRows();
+	void PositionRows();
+	void FocusSection();
+	void RevealRow( vgui::Panel *row );
+	void SetScroll( int value );
 	void UpdateFooter();
-	int SectionRowCount( int section ) const;
+	int Scale( int value );
+	static void PositionFlyout( DropDownMenu *drop, FlyoutMenu *flyout );
 	void SaveSettings();
 	CUtlVector<Widget_t> m_Widgets;
-	int m_nSection, m_nPage, m_nRowX, m_nRowY, m_nRowPitch;
-	bool m_bDirty;
+	GraphicsScrollViewport *m_pViewport;
+	vgui::ScrollBar *m_pScroll;
+	vgui::Label *m_pHeaders[GraphicsOptions::TAB_COUNT];
+	int m_nSection, m_nCapabilities, m_nContentHeight, m_nScrollTarget;
+	int m_nHeaderY[GraphicsOptions::TAB_COUNT];
+	float m_flScroll;
+	double m_flLastThink;
+	bool m_bLivePreview, m_bDirty;
 };
 }
 #endif // TERROR_BASEMODUI_GRAPHICS_DX12_H

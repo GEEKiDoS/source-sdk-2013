@@ -2071,6 +2071,50 @@ void CShaderAPIDX12::SetUpscalerLodBias( float bias )
 	++m_nTextureStateEpoch;
 }
 
+void CShaderAPIDX12::ProbeUpscalerCapabilities()
+{
+	if ( m_bUpscalerInitialized )
+		return;
+	m_bUpscalerInitialized = true;
+	MaterialAdapterInfo_t adapter{};
+	if ( g_pShaderDeviceMgrDX12 )
+		g_pShaderDeviceMgrDX12->GetAdapterInfo( m_pDevice->GetCurrentAdapter(), adapter );
+	// Provider DLLs live beside this module.
+	wchar_t szModuleDir[MAX_PATH] = {};
+	HMODULE hSelf = nullptr;
+	GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>( &UpscalerKindNameDX12 ), &hSelf );
+	if ( hSelf && GetModuleFileNameW( hSelf, szModuleDir, MAX_PATH ) )
+	{
+		if ( wchar_t *pszSlash = wcsrchr( szModuleDir, L'\\' ) )
+			pszSlash[1] = 0;
+	}
+	if ( !m_Upscaler.Initialize( m_pDevice->NativeDevice(), adapter, szModuleDir, CommandLine() && CommandLine()->CheckParm( "-dx12upscalerlog" ) ) )
+	{
+		m_bUpscalerInitialized = false;
+		return;
+	}
+	int caps = DX12_UPSCALE_CAP_READY;
+	if ( m_Upscaler.Resolve( 2 ) == UpscalerKindDX12::DLSS )
+		caps |= DX12_UPSCALE_CAP_DLSS;
+	if ( m_Upscaler.Resolve( 3 ) == UpscalerKindDX12::FSR )
+		caps |= DX12_UPSCALE_CAP_FSR;
+	if ( m_Upscaler.Resolve( 4 ) == UpscalerKindDX12::XeSS )
+		caps |= DX12_UPSCALE_CAP_XESS;
+	m_UpscalerCapabilities = caps;
+}
+
+void CShaderAPIDX12::ProbeUpscalerNrCapability()
+{
+	const int caps = m_UpscalerCapabilities;
+	if ( !( caps & DX12_UPSCALE_CAP_READY ) || ( caps & DX12_UPSCALE_CAP_NR_CHECKED ) )
+		return;
+	const double start = Plat_FloatTime();
+	const bool supported = m_Upscaler.ProbeNrRuntime();
+	m_UpscalerCapabilities = caps | DX12_UPSCALE_CAP_NR_CHECKED | ( supported ? DX12_UPSCALE_CAP_NR : 0 );
+	DevMsg( "ShaderAPIDX12 upscaler: DLSS-NR probe %.2f ms: %s\n", ( Plat_FloatTime() - start ) * 1000.0,
+		supported ? "available" : m_Upscaler.NrReason().Get() );
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Arms (nMode 1-5) or disarms (0) the upscaler for the view being begun; loads providers on first use
 //-----------------------------------------------------------------------------
@@ -2104,23 +2148,7 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 		m_nUpscalerSelectedMode = nMode;
 		m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = true;
 	}
-	if ( !m_bUpscalerInitialized )
-	{
-		m_bUpscalerInitialized = true;
-		MaterialAdapterInfo_t adapter{};
-		if ( g_pShaderDeviceMgrDX12 )
-			g_pShaderDeviceMgrDX12->GetAdapterInfo( m_pDevice->GetCurrentAdapter(), adapter );
-		// Provider DLLs live beside this module.
-		wchar_t szModuleDir[MAX_PATH] = {};
-		HMODULE hSelf = nullptr;
-		GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>( &UpscalerKindNameDX12 ), &hSelf );
-		if ( hSelf && GetModuleFileNameW( hSelf, szModuleDir, MAX_PATH ) )
-		{
-			if ( wchar_t *pszSlash = wcsrchr( szModuleDir, L'\\' ) )
-				pszSlash[1] = 0;
-		}
-		m_Upscaler.Initialize( m_pDevice->NativeDevice(), adapter, szModuleDir, CommandLine() && CommandLine()->CheckParm( "-dx12upscalerlog" ) );
-	}
+	ProbeUpscalerCapabilities();
 	const UpscalerKindDX12 kind = m_Upscaler.Resolve( nMode );
 	if ( kind != m_UpscalerKind )
 	{
@@ -2355,6 +2383,7 @@ void CShaderAPIDX12::ReleaseIdleUpscaler()
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReleaseUpscalerResources()
 {
+	m_UpscalerCapabilities = 0;
 	if ( m_Upscaler.Initialized() || m_pUpscalerOutput || m_nUpscalerPendingSerial != m_nUpscalerConsumedSerial )
 	{
 		// No callback may run after the provider modules unload: replay everything and wait for the GPU.

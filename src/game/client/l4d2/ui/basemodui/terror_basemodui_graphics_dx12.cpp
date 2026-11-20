@@ -4,19 +4,113 @@
 #include "l4d2/ui/basemodui/terror_basemodui_footer.h"
 #include "l4d2/ui/terror_hud_resources.h"
 #include "tier1/fmtstr.h"
+#include "upscaler_dx12.h"
 #include "vgui/ILocalize.h"
 #include "vgui/IScheme.h"
+#include "vgui/ISurface.h"
 #include "vgui_controls/Label.h"
+#include "vgui_controls/ScrollBar.h"
 #include "tier0/memdbgon.h"
 
 namespace L4D360UI
 {
 using namespace GraphicsOptions;
-static const int GRAPHICS_ROWS_PER_PAGE = 7;
-static const char *s_SectionTitles[TAB_COUNT] =
+static const char *const s_SectionTitles[TAB_COUNT] =
 {
-	"#GraphicsOptions_TabDisplay", "#GraphicsOptions_TabLighting",
-	"#GraphicsOptions_TabPost", "#GraphicsOptions_TabFramegen"
+	"#GraphicsOptions_TabDisplay", "#GraphicsOptions_TabLighting", "#GraphicsOptions_TabPost",
+	"#GraphicsOptions_TabFramegen", "#GraphicsOptions_TabUpscaling", "#GraphicsOptions_TabNeural"
+};
+static const int s_SectionOrder[] = { TAB_DISPLAY, TAB_UPSCALING, TAB_LIGHTING, TAB_POST, TAB_FRAMEGEN, TAB_NEURAL };
+
+// Clip rows independently of flyouts, which stay on the frame.
+class GraphicsScrollViewport : public vgui::EditablePanel
+{
+	DECLARE_CLASS_SIMPLE( GraphicsScrollViewport, vgui::EditablePanel );
+public:
+	explicit GraphicsScrollViewport( GraphicsDX12 *owner ) : BaseClass( owner, "GraphicsScrollViewport" ), m_pOwner( owner )
+	{
+		SetPaintBackgroundEnabled( true );
+		SetKeyBoardInputEnabled( true );
+		SetPaintBorderEnabled( false );
+	}
+	void OnCommand( const char *command ) OVERRIDE { m_pOwner->OnCommand( command ); }
+	void OnMouseWheeled( int delta ) OVERRIDE { m_pOwner->OnMouseWheeled( delta ); }
+	void OnMousePressed( vgui::MouseCode code ) OVERRIDE { m_pOwner->OnMousePressed( code ); }
+	void NavigateToChild( vgui::Panel *row ) OVERRIDE
+	{
+		// A dropdown's button already focused itself on cursor entry. Do not
+		// snap the scroll position as different rows pass under the pointer.
+		if ( m_pOwner->m_hLastFocus.Get() && m_pOwner->m_hLastFocus.Get() != row )
+			m_pOwner->m_hLastFocus->NavigateFrom();
+		m_pOwner->m_hLastFocus = row;
+	}
+	void ApplySchemeSettings( vgui::IScheme *uiScheme ) OVERRIDE
+	{
+		BaseClass::ApplySchemeSettings( uiScheme );
+		SetBgColor( Color( 0, 0, 0, 155 ) );
+	}
+	void RevealRow( vgui::Panel *row ) { m_pOwner->RevealRow( row ); }
+private:
+	GraphicsDX12 *m_pOwner;
+};
+
+class GraphicsDropDown : public DropDownMenu
+{
+	DECLARE_CLASS_SIMPLE( GraphicsDropDown, DropDownMenu );
+public:
+	explicit GraphicsDropDown( vgui::Panel *parent ) : BaseClass( parent, "" ) {}
+	void OnMouseWheeled( int delta ) OVERRIDE { vgui::Panel::OnMouseWheeled( delta ); }
+	void NavigateTo() OVERRIDE
+	{
+		if ( GraphicsScrollViewport *viewport = dynamic_cast<GraphicsScrollViewport *>( GetParent() ) )
+			viewport->RevealRow( this );
+		BaseClass::NavigateTo();
+	}
+};
+
+class GraphicsSlider : public SliderControl
+{
+	DECLARE_CLASS_SIMPLE( GraphicsSlider, SliderControl );
+public:
+	explicit GraphicsSlider( vgui::Panel *parent ) : BaseClass( parent, "" ), m_flDisplayedValue( 0.0f ) {}
+	void NavigateTo() OVERRIDE
+	{
+		if ( GraphicsScrollViewport *viewport = dynamic_cast<GraphicsScrollViewport *>( GetParent() ) )
+			viewport->RevealRow( this );
+		BaseClass::NavigateTo();
+	}
+protected:
+	void PerformLayout() OVERRIDE
+	{
+		BaseClass::PerformLayout();
+		vgui::Label *value = static_cast<vgui::Label *>( FindChildByName( "LblSliderText" ) );
+		vgui::Panel *bar = FindChildByName( "PrgValue" );
+		if ( !value || !bar )
+			return;
+		int x, y;
+		bar->GetPos( x, y );
+		const int width = vgui::scheme()->GetProportionalScaledValueEx( GetScheme(), 56 );
+		value->SetBounds( x - width, 0, width - 5, GetTall() );
+		value->SetContentAlignment( vgui::Label::a_east );
+		value->SetFont( vgui::scheme()->GetIScheme( GetScheme() )->GetFont( "DefaultMedium", true ) );
+		value->SetFgColor( Color( 216, 216, 216, 255 ) );
+		RefreshValue( value );
+	}
+	void OnThink() OVERRIDE
+	{
+		BaseClass::OnThink();
+		if ( GetValue() != m_flDisplayedValue )
+			RefreshValue( static_cast<vgui::Label *>( FindChildByName( "LblSliderText" ) ) );
+	}
+private:
+	void RefreshValue( vgui::Label *label )
+	{
+		if ( !label )
+			return;
+		m_flDisplayedValue = GetValue();
+		label->SetText( CFmtStr( "%.3g", m_flDisplayedValue ) );
+	}
+	float m_flDisplayedValue;
 };
 
 static KeyValues *CopyGraphicsControl( KeyValues *layout, KeyValues *source, const char *name )
@@ -29,10 +123,33 @@ static KeyValues *CopyGraphicsControl( KeyValues *layout, KeyValues *source, con
 }
 
 GraphicsDX12::GraphicsDX12( vgui::Panel *parent, const char *name ) :
-	BaseClass( parent, name, "#GraphicsOptions_Title" ), m_nSection( TAB_DISPLAY ), m_nPage( 0 ),
-	m_nRowX( 0 ), m_nRowY( 0 ), m_nRowPitch( 0 ), m_bDirty( false )
+	BaseClass( parent, name, "#GraphicsOptions_Title" ), m_nSection( TAB_DISPLAY ), m_nCapabilities( 0 ),
+	m_nContentHeight( 0 ), m_nScrollTarget( 0 ), m_flScroll( 0 ), m_flLastThink( 0 ), m_bLivePreview( false ), m_bDirty( false )
 {
 	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_%language%.txt", NULL, false );
+	m_pViewport = new GraphicsScrollViewport( this );
+	m_pScroll = new vgui::ScrollBar( this, "GraphicsScrollBar", true );
+	for ( int section = 0; section < TAB_COUNT; ++section )
+	{
+		m_nHeaderY[section] = -1;
+		m_pHeaders[section] = new vgui::Label( m_pViewport, CFmtStr( "GraphicsHeader%d", section ), s_SectionTitles[section] );
+		m_pHeaders[section]->SetMouseInputEnabled( false );
+		m_pHeaders[section]->SetPaintBackgroundEnabled( false );
+	}
+}
+
+vgui::Panel *GraphicsDX12::CreateControlByName( const char *name )
+{
+	if ( !Q_stricmp( name, "DropDownMenu" ) )
+		return new GraphicsDropDown( this );
+	if ( !Q_stricmp( name, "SliderControl" ) )
+		return new GraphicsSlider( this );
+	return BaseClass::CreateControlByName( name );
+}
+
+int GraphicsDX12::Scale( int value )
+{
+	return vgui::scheme()->GetProportionalScaledValueEx( GetScheme(), value );
 }
 
 void GraphicsDX12::LoadControlSettings( const char *resource, const char *pathID, KeyValues *preloaded, KeyValues *conditions )
@@ -43,9 +160,8 @@ void GraphicsDX12::LoadControlSettings( const char *resource, const char *pathID
 	KeyValues *drop = native->FindKey( "DrpFiltering" );
 	KeyValues *slider = native->FindKey( "SldFilmGrain" );
 	KeyValues *flyout = native->FindKey( "FlmFiltering" );
-	KeyValues *button = native->FindKey( "BtnAdvanced" );
 	KeyValues *done = native->FindKey( "BtnDone" );
-	if ( !frame || !drop || !slider || !flyout || !button || !done ) return;
+	if ( !frame || !drop || !slider || !flyout || !done ) return;
 
 	// Use the mounted Video screen's evaluated geometry and nested controls.
 	// Only the row table supplies bindings and choices; no retail .res is copied
@@ -53,24 +169,25 @@ void GraphicsDX12::LoadControlSettings( const char *resource, const char *pathID
 	KeyValues::AutoDelete layout( new KeyValues( "GraphicsDX12" ) );
 	CopyGraphicsControl( layout, frame, GetName() );
 	if ( KeyValues *background = native->FindKey( "ImgBackground" ) )
-		CopyGraphicsControl( layout, background, "ImgBackground" );
-	KeyValues *section = CopyGraphicsControl( layout, drop, "DrpSection" );
-	section->SetInt( "ypos", 110 );
-	section->SetInt( "visible", 1 );
-	section->SetString( "BtnDropButton/labelText", "#GraphicsOptions_Section" );
-	section->SetString( "BtnDropButton/tooltiptext", "#GraphicsOptions_Title" );
-	section->SetString( "BtnDropButton/command", "FlmSection" );
-	CopyGraphicsControl( layout, flyout, "FlmSection" );
+		CopyGraphicsControl( layout, background, "ImgBackground" )->SetInt( "visible", !m_bLivePreview );
 
 	int count;
 	const RowDef_t *rows = GetRows( count );
 	for ( int i = 0; i < count; ++i )
 	{
 		const RowDef_t &row = rows[i];
-		if ( !IsRowAvailable( row ) ) continue;
+		if ( !IsRowAvailable( row ) && !( IsDX12Renderer() && ( row.flags & ROWF_DLSS_NR ) ) )
+			continue;
 		KeyValues *control = CopyGraphicsControl( layout, row.kind == ROW_SLIDER ? slider : drop, CFmtStr( "GraphicsRow%d", i ) );
-		control->SetInt( "ypos", 140 );
+		control->SetInt( "xpos", 0 );
+		control->SetInt( "ypos", 0 );
 		control->SetInt( "visible", 0 );
+		control->SetInt( "autoResize", 0 );
+		control->SetInt( "BtnDropButton/tabPosition", 0 );
+		control->SetInt( "BtnDropButton/wideatopen", 0 );
+		control->SetInt( "BtnDropButton/autoResize", 0 );
+		control->SetString( "navUp", "" );
+		control->SetString( "navDown", "" );
 		control->SetString( "BtnDropButton/labelText", row.label );
 		control->SetString( "BtnDropButton/tooltiptext", row.note ? row.note : "" );
 		control->SetString( "BtnDropButton/disabled_tooltiptext", "" );
@@ -88,93 +205,78 @@ void GraphicsDX12::LoadControlSettings( const char *resource, const char *pathID
 			CopyGraphicsControl( layout, flyout, flyoutName );
 		}
 	}
-	const char *names[] = { "BtnPreviousPage", "BtnNextPage", "BtnGraphicsBack" };
-	const char *labels[] = { "#GraphicsOptions_PreviousPage", "#GraphicsOptions_NextPage", "#L4D360UI_Done" };
-	const char *commands[] = { "GraphicsPreviousPage", "GraphicsNextPage", "Back" };
-	for ( int i = 0; i < ARRAYSIZE( names ); ++i )
-	{
-		KeyValues *control = CopyGraphicsControl( layout, i == 2 ? done : button, names[i] );
-		control->SetInt( "ypos", 300 + i * 20 );
-		control->SetString( "labelText", labels[i] );
-		control->SetString( "tooltiptext", "" );
-		control->SetString( "command", commands[i] );
-	}
+	KeyValues *back = CopyGraphicsControl( layout, done, "BtnGraphicsBack" );
+	back->SetInt( "xpos", 0 );
+	back->SetInt( "ypos", 0 );
+	back->SetInt( "autoResize", 0 );
+	back->SetString( "tooltiptext", "" );
+	back->SetString( "navUp", "" );
+	back->SetString( "navDown", "" );
 
-	KeyValues *status = new KeyValues( "LblGraphicsPage" );
-	status->SetString( "ControlName", "Label" );
-	status->SetString( "fieldName", "LblGraphicsPage" );
-	status->SetString( "xpos", drop->GetString( "xpos" ) );
-	status->SetInt( "ypos", 280 );
-	status->SetInt( "wide", drop->GetInt( "wide" ) );
-	status->SetInt( "tall", 30 );
-	status->SetInt( "wrap", 1 );
-	status->SetString( "font", "DefaultMedium" );
-	status->SetString( "labelText", "" );
-	layout->AddSubKey( status );
+	FlyoutMenu::CloseActiveMenu();
 	const bool refreshing = m_bRefreshing;
 	m_bRefreshing = true;
+	// Resource reloads bind direct children; reuse the existing clipped rows.
+	for ( int i = 0; i < m_Widgets.Count(); ++i )
+	{
+		if ( m_Widgets[i].control.Get() )
+			m_Widgets[i].control->SetParent( this );
+	}
 	BaseClass::LoadControlSettings( resource, pathID, layout, conditions );
 	m_Widgets.RemoveAll();
 	for ( int i = 0; i < count; ++i )
 	{
-		if ( !IsRowAvailable( rows[i] ) ) continue;
 		vgui::Panel *control = FindChildByName( CFmtStr( "GraphicsRow%d", i ) );
-		if ( !control ) continue;
-		Widget_t widget;
+		if ( !control )
+			continue;
+		Widget_t &widget = m_Widgets[m_Widgets.AddToTail()];
 		widget.row = &rows[i];
 		widget.rowIndex = i;
 		widget.control = control;
-		m_Widgets.AddToTail( widget );
-		control->GetPos( m_nRowX, m_nRowY );
+		widget.y = 0;
+		control->SetParent( m_pViewport );
+		if ( DropDownMenu *dropdown = dynamic_cast<DropDownMenu *>( control ) )
+		{
+			dropdown->SetFlyoutHost( this );
+			dropdown->SetFlyoutOpenCallback( PositionFlyout );
+		}
 	}
-	m_nRowPitch = vgui::scheme()->GetProportionalScaledValueEx( GetScheme(), 20 );
 	m_bRefreshing = refreshing;
-	ReadSettings();
-	RefreshPage();
+	ReadSettings( true );
+	InvalidateLayout();
 }
 
 void GraphicsDX12::OnOpen()
 {
 	FlyoutMenu::CloseActiveMenu();
+	m_bLivePreview = IsDX12Renderer() && engine->IsInGame() && !engine->IsLevelMainMenuBackground();
+	SetFooterEnabled( !m_bLivePreview );
+	UpscalerDX12_RequestCapabilityProbe();
 	if ( !LoadLayout( "resource/ui/l4d360ui/video.res" ) ) { NavigateBack(); return; }
 	ReadSettings();
 	BaseClass::OnOpen();
-	RefreshPage( true );
-	CenterDialogOnScreen();
-}
-
-int GraphicsDX12::SectionRowCount( int section ) const
-{
-	int count = 0;
-	for ( int i = 0; i < m_Widgets.Count(); ++i )
-		if ( m_Widgets[i].row->tab == section ) ++count;
-	return count;
+	PerformLayout();
+	FocusSection();
+	UpdateFooter();
 }
 
 void GraphicsDX12::SetSection( int section )
 {
 	m_nSection = clamp( section, 0, TAB_COUNT - 1 );
-	m_nPage = 0;
 }
 
-void GraphicsDX12::ReadSettings()
+void GraphicsDX12::ReadSettings( bool rebuildChoices )
 {
 	const bool refreshing = m_bRefreshing;
 	m_bRefreshing = true;
-	DropDownMenu *sections = dynamic_cast<DropDownMenu *>( FindChildByName( "DrpSection" ) );
-	FlyoutMenu *sectionMenu = sections ? sections->GetFlyout() : NULL;
-	if ( sectionMenu )
-	{
-		sectionMenu->BeginDynamicRows();
-		for ( int tab = 0; tab < TAB_COUNT; ++tab )
-			if ( SectionRowCount( tab ) ) sectionMenu->AddDynamicRow( CFmtStr( "BtnSection%d", tab ), s_SectionTitles[tab], CFmtStr( "GraphicsSection_%d", tab ) );
-		sectionMenu->EndDynamicRows();
-		sectionMenu->SetFlyoutMenuListener( this );
-	}
+	const int previousCapabilities = m_nCapabilities;
+	m_nCapabilities = UpscalerDX12_Capabilities();
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
 		Widget_t &widget = m_Widgets[i];
 		const RowDef_t &row = *widget.row;
+		if ( !IsRowAvailable( row ) )
+			continue;
 		if ( SliderControl *slider = dynamic_cast<SliderControl *>( widget.control.Get() ) )
 		{
 			slider->Reset();
@@ -183,98 +285,268 @@ void GraphicsDX12::ReadSettings()
 		DropDownMenu *drop = dynamic_cast<DropDownMenu *>( widget.control.Get() );
 		FlyoutMenu *menu = drop ? drop->GetFlyout() : NULL;
 		if ( !menu ) continue;
-		menu->BeginDynamicRows();
-		const int choices = row.kind == ROW_CHECK ? 2 : row.nChoices;
-		for ( int choice = 0; choice < choices; ++choice )
+		const int selected = row.kind == ROW_CHECK ? ( cvar->FindVar( row.cvars[0] )->GetBool() ? 1 : 0 ) : FindChoice( row );
+		const CFmtStr selectedCommand( "GraphicsChoice_%d_%d", widget.rowIndex, selected );
+		const bool providerChoicesChanged = previousCapabilities != m_nCapabilities && ( row.flags & ( ROWF_UPSCALER | ROWF_DLSS_NR ) );
+		if ( rebuildChoices || providerChoicesChanged || !menu->FindChildButtonByCommand( selectedCommand ) )
 		{
-			const char *label = row.kind == ROW_CHECK ? ( choice ? "#GraphicsOptions_On" : "#GraphicsOptions_Off" ) : row.choices[choice].label;
-			L4D360HybridButton *item = menu->AddDynamicRow( CFmtStr( "BtnChoice%d", choice ), label, CFmtStr( "GraphicsChoice_%d_%d", widget.rowIndex, choice ) );
-			if ( item )
+			menu->BeginDynamicRows();
+			const int choices = row.kind == ROW_CHECK ? 2 : row.nChoices;
+			for ( int choice = 0; choice < choices; ++choice )
 			{
-				item->SetTooltip( row.note ? row.note : "" );
-				item->SetWide( vgui::scheme()->GetProportionalScaledValueEx( GetScheme(), 210 ) );
+				if ( !IsChoiceAvailable( row, choice ) )
+					continue;
+				const char *label = row.kind == ROW_CHECK ? ( choice ? "#GraphicsOptions_On" : "#GraphicsOptions_Off" ) : row.choices[choice].label;
+				L4D360HybridButton *item = menu->AddDynamicRow( CFmtStr( "BtnChoice%d", choice ), label, CFmtStr( "GraphicsChoice_%d_%d", widget.rowIndex, choice ) );
+				if ( item )
+				{
+					item->SetTooltip( row.note ? row.note : "" );
+					item->SetWide( Scale( 210 ) );
+				}
 			}
+			if ( selected < 0 )
+				menu->AddDynamicRow( "BtnCustom", "#GraphicsOptions_Custom", selectedCommand, false );
+			if ( vgui::Panel *background = menu->FindChildByName( "PnlBackground" ) )
+				background->SetWide( Scale( 216 ) );
+			menu->EndDynamicRows();
+			menu->SetFlyoutMenuListener( this );
 		}
-		int selected = row.kind == ROW_CHECK ? ( cvar->FindVar( row.cvars[0] )->GetBool() ? 1 : 0 ) : FindChoice( row );
-		if ( selected < 0 ) menu->AddDynamicRow( "BtnCustom", "#GraphicsOptions_Custom", CFmtStr( "GraphicsChoice_%d_-1", widget.rowIndex ), false );
-		if ( vgui::Panel *background = menu->FindChildByName( "PnlBackground" ) )
-			background->SetWide( vgui::scheme()->GetProportionalScaledValueEx( GetScheme(), 216 ) );
-		menu->EndDynamicRows();
-		menu->SetFlyoutMenuListener( this );
-		drop->SetCurrentSelection( CFmtStr( "GraphicsChoice_%d_%d", widget.rowIndex, selected ) );
+		drop->SetCurrentSelection( selectedCommand );
 	}
 	m_bRefreshing = refreshing;
 }
 
-void GraphicsDX12::RefreshPage( bool focusSection )
+void GraphicsDX12::PerformLayout()
 {
-	if ( !SectionRowCount( m_nSection ) )
-		for ( int tab = 0; tab < TAB_COUNT; ++tab ) if ( SectionRowCount( tab ) ) { m_nSection = tab; break; }
-	const int pageCount = MAX( 1, ( SectionRowCount( m_nSection ) + GRAPHICS_ROWS_PER_PAGE - 1 ) / GRAPHICS_ROWS_PER_PAGE );
-	m_nPage = clamp( m_nPage, 0, pageCount - 1 );
-	DropDownMenu *section = dynamic_cast<DropDownMenu *>( FindChildByName( "DrpSection" ) );
-	if ( !section ) return;
-	Select( "DrpSection", CFmtStr( "GraphicsSection_%d", m_nSection ) );
-	section->SetVisible( m_Widgets.Count() > 0 );
-	vgui::Panel *navigation[GRAPHICS_ROWS_PER_PAGE + 4];
-	int navigationCount = 0;
-	if ( m_Widgets.Count() ) navigation[navigationCount++] = section;
-	int ordinal = 0, visible = 0;
+	int wide, tall;
+	vgui::surface()->GetScreenSize( wide, tall );
+	if ( m_bLivePreview )
+	{
+		// The frame ends at the left pane edge; no UI texture covers the right.
+		wide = clamp( Scale( 382 ), wide * 2 / 5, wide * 3 / 5 );
+		SetBounds( 0, 0, wide, tall );
+		m_nContentTall = tall;
+	}
+	else
+	{
+		m_nContentTall = MIN( tall, Scale( 448 ) );
+		CenterDialogOnScreen();
+	}
+	BaseClass::PerformLayout();
+	const int margin = Scale( 18 );
+	const int listWide = MIN( GetWide() - 2 * margin, Scale( 428 ) );
+	const int x = m_bLivePreview ? margin : ( GetWide() - listWide ) / 2;
+	const int top = Scale( m_bLivePreview ? 64 : 98 );
+	const int bottom = MAX( top + 1, m_nContentTall - Scale( 41 ) );
+	const int barWide = Scale( 12 );
+	m_pViewport->SetBounds( x, top, MAX( 1, listWide - barWide - Scale( 6 ) ), bottom - top );
+	m_pScroll->SetBounds( x + listWide - barWide, top, barWide, bottom - top );
+	m_pScroll->SetButtonPressedScrollValue( Scale( 21 ) );
+	if ( vgui::Panel *done = FindChildByName( "BtnGraphicsBack" ) )
+		done->SetPos( x, bottom + Scale( 9 ) );
+	if ( vgui::Panel *background = FindChildByName( "ImgBackground" ) )
+		background->SetVisible( !m_bLivePreview );
+	LayoutRows();
+}
+
+void GraphicsDX12::LayoutRows()
+{
+	vgui::Panel *previous = NULL;
+	vgui::Panel *first = NULL;
+	vgui::IScheme *uiScheme = vgui::scheme()->GetIScheme( GetScheme() );
+	int y = 0;
+	for ( int order = 0; order < ARRAYSIZE( s_SectionOrder ); ++order )
+	{
+		const int section = s_SectionOrder[order];
+		vgui::Label *header = m_pHeaders[section];
+		header->SetVisible( false );
+		m_nHeaderY[section] = -1;
+		for ( int i = 0; i < m_Widgets.Count(); ++i )
+		{
+			Widget_t &widget = m_Widgets[i];
+			vgui::Panel *row = widget.control.Get();
+			if ( widget.row->tab != section || !row )
+				continue;
+			const bool show = IsRowAvailable( *widget.row );
+			row->SetVisible( show );
+			if ( !show )
+				continue;
+			if ( m_nHeaderY[section] < 0 )
+			{
+				if ( y > 0 )
+					y += Scale( 9 );
+				m_nHeaderY[section] = y;
+				header->SetVisible( true );
+				header->SetSize( m_pViewport->GetWide(), Scale( 22 ) );
+				header->SetFont( uiScheme->GetFont( "DefaultBold", true ) );
+				header->SetFgColor( Color( 224, 215, 188, 255 ) );
+				y += header->GetTall();
+			}
+			widget.y = y;
+			row->SetWide( m_pViewport->GetWide() );
+			if ( L4D360HybridButton *button = dynamic_cast<L4D360HybridButton *>( row->FindChildByName( "BtnDropButton" ) ) )
+			{
+				button->SetWide( row->GetWide() );
+				// Native enabled text is gray, not disabled; improve contrast
+				// over the main-menu artwork without changing the focus style.
+				button->SetDefaultTextColor( Color( 210, 210, 210, 255 ) );
+			}
+			y += MAX( Scale( 21 ), row->GetTall() + Scale( 3 ) );
+			row->SetNavUp( previous );
+			if ( vgui::Panel *button = row->FindChildByName( "BtnDropButton" ) )
+				button->SetNavUp( previous );
+			if ( previous )
+			{
+				previous->SetNavDown( row );
+				if ( vgui::Panel *button = previous->FindChildByName( "BtnDropButton" ) )
+					button->SetNavDown( row );
+			}
+			else
+				first = row;
+			previous = row;
+		}
+	}
+	if ( vgui::Panel *done = FindChildByName( "BtnGraphicsBack" ) )
+	{
+		done->SetNavUp( previous );
+		done->SetNavDown( first );
+		if ( previous )
+		{
+			previous->SetNavDown( done );
+			if ( vgui::Panel *button = previous->FindChildByName( "BtnDropButton" ) )
+				button->SetNavDown( done );
+		}
+		if ( first )
+		{
+			first->SetNavUp( done );
+			if ( vgui::Panel *button = first->FindChildByName( "BtnDropButton" ) )
+				button->SetNavUp( done );
+		}
+	}
+	m_nContentHeight = y;
+	const int view = m_pViewport->GetTall();
+	m_pScroll->SetRange( 0, MAX( view, y ) );
+	m_pScroll->SetRangeWindow( view );
+	m_pScroll->SetVisible( y > view );
+	m_nScrollTarget = clamp( m_nScrollTarget, 0, MAX( 0, y - view ) );
+	m_pScroll->SetValue( m_nScrollTarget );
+	m_flScroll = MIN( m_flScroll, float( MAX( 0, y - view ) ) );
+	PositionRows();
+}
+
+void GraphicsDX12::PositionRows()
+{
+	const int offset = (int)( m_flScroll + 0.5f );
+	for ( int section = 0; section < TAB_COUNT; ++section )
+		m_pHeaders[section]->SetPos( 0, m_nHeaderY[section] - offset );
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
-		Widget_t &widget = m_Widgets[i];
-		const bool inSection = widget.row->tab == m_nSection;
-		const bool show = inSection && ordinal / GRAPHICS_ROWS_PER_PAGE == m_nPage;
-		if ( inSection ) ++ordinal;
-		if ( !widget.control.Get() ) continue;
-		widget.control->SetVisible( show );
-		if ( show )
+		if ( m_Widgets[i].control.Get() )
+			m_Widgets[i].control->SetPos( 0, m_Widgets[i].y - offset );
+	}
+}
+
+void GraphicsDX12::OnMouseWheeled( int delta )
+{
+	FlyoutMenu::CloseActiveMenu();
+	m_nScrollTarget = clamp( m_pScroll->GetValue() - delta * Scale( 42 ), 0, MAX( 0, m_nContentHeight - m_pViewport->GetTall() ) );
+	m_pScroll->SetValue( m_nScrollTarget );
+}
+
+void GraphicsDX12::OnThink()
+{
+	BaseClass::OnThink();
+	if ( !IsVisible() )
+		return;
+	if ( m_nCapabilities != UpscalerDX12_Capabilities() )
+	{
+		FlyoutMenu::CloseActiveMenu();
+		ReadSettings();
+		LayoutRows();
+	}
+	const double now = Plat_FloatTime();
+	const float dt = clamp( float( now - m_flLastThink ), 0.0f, 0.05f );
+	m_flLastThink = now;
+	if ( m_pScroll->GetValue() != m_nScrollTarget )
+	{
+		FlyoutMenu::CloseActiveMenu();
+		SetScroll( m_pScroll->GetValue() );
+	}
+	else if ( m_flScroll != m_nScrollTarget )
+	{
+		m_flScroll += ( m_nScrollTarget - m_flScroll ) * MIN( 1.0f, dt * 18.0f );
+		if ( fabsf( m_flScroll - m_nScrollTarget ) < 0.5f )
+			m_flScroll = m_nScrollTarget;
+		PositionRows();
+	}
+}
+
+void GraphicsDX12::SetScroll( int value )
+{
+	m_nScrollTarget = clamp( value, 0, MAX( 0, m_nContentHeight - m_pViewport->GetTall() ) );
+	m_pScroll->SetValue( m_nScrollTarget );
+	m_flScroll = m_nScrollTarget;
+	PositionRows();
+}
+
+void GraphicsDX12::RevealRow( vgui::Panel *row )
+{
+	m_hLastFocus = row;
+	for ( int i = 0; i < m_Widgets.Count(); ++i )
+	{
+		if ( m_Widgets[i].control.Get() != row )
+			continue;
+		const int y = m_Widgets[i].y;
+		const int bottom = y + row->GetTall();
+		if ( y < m_flScroll )
+			SetScroll( y );
+		else if ( bottom > m_flScroll + m_pViewport->GetTall() )
+			SetScroll( bottom - m_pViewport->GetTall() );
+		else
+			SetScroll( (int)m_flScroll );
+		break;
+	}
+}
+
+void GraphicsDX12::FocusSection()
+{
+	const int section = m_nHeaderY[m_nSection] >= 0 ? m_nSection : TAB_DISPLAY;
+	SetScroll( MAX( 0, m_nHeaderY[section] ) );
+	if ( m_hLastFocus.Get() )
+		m_hLastFocus->NavigateFrom();
+	for ( int i = 0; i < m_Widgets.Count(); ++i )
+	{
+		if ( m_Widgets[i].row->tab == section && m_Widgets[i].control.Get() && m_Widgets[i].control->IsVisible() )
 		{
-			widget.control->SetPos( m_nRowX, m_nRowY + visible++ * m_nRowPitch );
-			navigation[navigationCount++] = widget.control.Get();
+			m_Widgets[i].control->NavigateTo();
+			return;
 		}
 	}
-	const char *buttons[] = { "BtnPreviousPage", "BtnNextPage", "BtnGraphicsBack" };
-	for ( int i = 0; i < ARRAYSIZE( buttons ); ++i )
-	{
-		vgui::Panel *button = FindChildByName( buttons[i] );
-		const bool show = i == 2 || ( i == 0 ? m_nPage > 0 : m_nPage + 1 < pageCount );
-		if ( button ) { button->SetVisible( show ); if ( show ) navigation[navigationCount++] = button; }
-	}
-	for ( int i = 0; i < navigationCount; ++i )
-	{
-		navigation[i]->SetNavUp( navigation[( i + navigationCount - 1 ) % navigationCount] );
-		navigation[i]->SetNavDown( navigation[( i + 1 ) % navigationCount] );
-	}
-	if ( vgui::Label *status = dynamic_cast<vgui::Label *>( FindChildByName( "LblGraphicsPage" ) ) )
-	{
-		if ( !m_Widgets.Count() ) status->SetText( "#GraphicsOptions_Empty" );
-		else if ( pageCount > 1 )
-		{
-			wchar_t page[16], total[16], text[64];
-			g_pVGuiLocalize->ConvertANSIToUnicode( CFmtStr( "%d", m_nPage + 1 ), page, sizeof( page ) );
-			g_pVGuiLocalize->ConvertANSIToUnicode( CFmtStr( "%d", pageCount ), total, sizeof( total ) );
-			g_pVGuiLocalize->ConstructString( text, sizeof( text ), g_pVGuiLocalize->Find( "#GraphicsOptions_Page" ), 2, page, total );
-			status->SetText( text );
-		}
-		else status->SetText( "" );
-	}
-	UpdateFooter();
-	if ( focusSection )
-	{
-		if ( m_hLastFocus.Get() ) m_hLastFocus->NavigateFrom();
-		navigation[0]->NavigateTo();
-		m_hLastFocus = navigation[0];
-	}
+	if ( vgui::Panel *done = FindChildByName( "BtnGraphicsBack" ) )
+		done->NavigateTo();
+}
+
+void GraphicsDX12::PositionFlyout( DropDownMenu *, FlyoutMenu *flyout )
+{
+	GraphicsDX12 *frame = static_cast<GraphicsDX12 *>( flyout->GetParent() );
+	int x, y;
+	flyout->GetPos( x, y );
+	if ( x + flyout->GetWide() > frame->GetWide() || frame->m_bLivePreview )
+		x = frame->GetWide() - flyout->GetWide() - frame->Scale( 18 );
+	const int minY = frame->Scale( 54 );
+	y = clamp( y, minY, MAX( minY, frame->m_nContentTall - flyout->GetTall() - frame->Scale( 12 ) ) );
+	flyout->SetPos( MAX( 0, x ), y );
 }
 
 void GraphicsDX12::PaintBackground()
 {
-	DrawDialogBackground( "#GraphicsOptions_Title", NULL, "#L4D360UI_AudioVideo_Desc", NULL, NULL );
+	DrawDialogBackground( "#GraphicsOptions_Title", NULL, m_bLivePreview ? NULL : "#L4D360UI_AudioVideo_Desc" );
 }
 
 void GraphicsDX12::UpdateFooter()
 {
+	if ( m_bLivePreview )
+		return;
 	if ( CL4DFooterPanel *footer = GetL4DFooterPanel( this ) )
 	{
 		footer->SetButtons( FB_BUTTON_A | FB_BUTTON_B, 4, true );
@@ -288,18 +560,6 @@ void GraphicsDX12::OnFlyoutMenuClosed( vgui::Panel *returnTo ) { UpdateFooter();
 void GraphicsDX12::OnCommand( const char *command )
 {
 	if ( m_bRefreshing ) return;
-	if ( const char *section = StringAfterPrefix( command, "GraphicsSection_" ) )
-	{
-		SetSection( atoi( section ) );
-		RefreshPage( true );
-		return;
-	}
-	if ( !Q_stricmp( command, "GraphicsPreviousPage" ) || !Q_stricmp( command, "GraphicsNextPage" ) )
-	{
-		m_nPage += !Q_stricmp( command, "GraphicsNextPage" ) ? 1 : -1;
-		RefreshPage( true );
-		return;
-	}
 	if ( const char *selection = StringAfterPrefix( command, "GraphicsChoice_" ) )
 	{
 		const int rowIndex = atoi( selection );
@@ -310,7 +570,7 @@ void GraphicsDX12::OnCommand( const char *command )
 		const RowDef_t *rows = GetRows( count );
 		if ( rowIndex < 0 || rowIndex >= count || choice < 0 ) return;
 		const RowDef_t &row = rows[rowIndex];
-		if ( !IsRowAvailable( row ) || choice >= ( row.kind == ROW_CHECK ? 2 : row.nChoices ) ) return;
+		if ( !IsRowAvailable( row ) || !IsChoiceAvailable( row, choice ) ) return;
 		int cvars = RowCvarCount( row );
 		if ( ( row.flags & ROWF_OFF_ENABLE_ONLY ) && choice == 0 ) cvars = 1;
 		for ( int c = 0; c < cvars; ++c )

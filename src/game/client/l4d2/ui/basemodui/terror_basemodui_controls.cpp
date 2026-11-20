@@ -83,7 +83,16 @@ const char *L4D360HybridButton::Command() const
 	KeyValues *command = const_cast<L4D360HybridButton *>( this )->GetCommand();
 	return command ? command->GetString( "command", "" ) : "";
 }
-void L4D360HybridButton::SetCurrentSelection( const char *text ) { m_Selection = text ? text : ""; Repaint(); }
+void L4D360HybridButton::SetCurrentSelection( const char *text )
+{
+	wchar_t buffer[512];
+	SetCurrentSelection( LocalizeText( text, buffer, sizeof( buffer ) ) );
+}
+void L4D360HybridButton::SetCurrentSelection( const wchar_t *text )
+{
+	m_Selection.Set( text );
+	Repaint();
+}
 void L4D360HybridButton::SetDropDownIndicator( bool show ) { m_bShowIndicator = show; Repaint(); }
 void L4D360HybridButton::SetDropDownIndicatorOpen( bool open ) { m_bIndicatorOpen = open; Repaint(); }
 void L4D360HybridButton::SetTooltip( const char *text, bool enabled )
@@ -439,8 +448,12 @@ void L4D360HybridButton::Paint()
 		const wchar_t *hint = *tooltip == '#' ? g_pVGuiLocalize->Find( tooltip ) : NULL;
 		if ( !hint )
 		{
-			g_pVGuiLocalize->ConvertANSIToUnicode( *tooltip == '#' ? m_Selection.String() : tooltip, hintBuffer, sizeof( hintBuffer ) );
-			hint = hintBuffer;
+			if ( *tooltip == '#' ) hint = m_Selection.Get();
+			else
+			{
+				g_pVGuiLocalize->ConvertANSIToUnicode( tooltip, hintBuffer, sizeof( hintBuffer ) );
+				hint = hintBuffer;
+			}
 		}
 		DrawText( m_hHintFont, x, top + m_nTextInsetY + m_nFontTall, textColor, hint, Q_wcslen( hint ) );
 	}
@@ -449,8 +462,7 @@ void L4D360HybridButton::Paint()
 		solidText ? Color( 255, 255, 255, blurAlpha ) : textColor, text, drawn );
 	if ( m_nStyle == 3 && state != STATE_OPEN )
 	{
-		wchar_t selectionBuffer[512];
-		const wchar_t *selection = LocalizeText( m_Selection.String(), selectionBuffer, sizeof( selectionBuffer ) );
+		const wchar_t *selection = m_Selection.Get();
 		int sw, sh; surface()->GetTextSize( m_hSelectionFont, selection, sw, sh );
 		const int sx = wide - sw - inset, sy = ( tall - sh ) / 2;
 		DrawText( m_hSelectionFont, sx, sy, textColor, selection, Q_wcslen( selection ) );

@@ -794,6 +794,8 @@ private:
 	void TransitionGBuffer( D3D12_RESOURCE_STATES desiredState );
 	void ReleaseGBufferResources();
 	// Temporal AA / render-resolution upscaler (upscaler_dx12.cpp); contract U1-U4 of the upscaler plan.
+	void ProbeUpscalerCapabilities();
+	void ProbeUpscalerNrCapability();
 	void SetUpscalerMode( int nMode );
 	void SetUpscalerLodBias( float bias );
 	void DispatchUpscaler( int nFlags );
@@ -1429,6 +1431,8 @@ private:
 	static constexpr uint64_t kUpscalerReplaySlots = 4;
 	CUpscalerDX12 m_Upscaler;
 	bool m_bUpscalerInitialized = false;
+	CInterlockedInt m_UpscalerProbeRequested{ 0 };
+	CInterlockedInt m_UpscalerCapabilities{ 0 };
 	int m_nUpscalerMode = 0, m_nUpscalerSelectedMode = 0;
 	uint64_t m_nUpscalerEnabledFrame = ~0ull;
 	UpscalerKindDX12 m_UpscalerKind = UpscalerKindDX12::None;

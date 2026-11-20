@@ -186,6 +186,7 @@ class KeyboardMouse : public NativeOptionsFrame
 public:
 	KeyboardMouse( vgui::Panel *parent, const char *name );
 	void OnOpen() OVERRIDE;
+	void ApplySchemeSettings( vgui::IScheme *scheme ) OVERRIDE;
 	void OnCommand( const char *command ) OVERRIDE;
 private:
 	void Refresh();

@@ -150,6 +150,8 @@ public:
 
 	// DLSS-NR: availability is decided at Initialize from the installed files; the snippet itself loads on first use.
 	bool NrAvailable() const { return m_Nr.available; }
+	// Reuses the lazy runtime initialization without creating a model feature.
+	bool ProbeNrRuntime() { return InitNrSnippet(); }
 
 	const CUtlString &NrReason() const { return m_Nr.reason; }
 

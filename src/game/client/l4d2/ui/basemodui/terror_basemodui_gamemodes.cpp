@@ -98,6 +98,7 @@ namespace
 // G15ACC0: a real native UI ConVar, not an invented profile/session store.
 ConVar ui_mainmenu_challenge( "ui_mainmenu_challenge", "mutation1", FCVAR_HIDDEN );
 CUtlString s_LastGameMode;
+constexpr float kModeCardAngle = -3.0f;
 
 int LoadModeTexture( const char *name )
 {
@@ -124,6 +125,17 @@ void DrawSmearEdge( CGameModesPaint &paint, int texture, int x0, int y0, int x1,
 bool PointInModeRect( int x, int y, int left, int top, int wide, int tall )
 {
 	return x >= left && x <= left + wide && y >= top && y <= top + tall;
+}
+
+bool PointInMainCard( int x, int y, int left, int wide, int tall )
+{
+	// Undo the paint rotation about the card center before testing its bounds.
+	const float dx = x - left - wide * 0.5f;
+	const float dy = y - tall * 0.5f;
+	const float angle = DEG2RAD( kModeCardAngle );
+	const float cosine = cosf( angle ), sine = sinf( angle );
+	return fabsf( dx * cosine + dy * sine ) <= wide * 0.5f &&
+		fabsf( dy * cosine - dx * sine ) <= tall * 0.5f;
 }
 
 class GameModeButton : public L4D360HybridButton
@@ -312,14 +324,15 @@ void GameModes::OnKeyCodePressed( vgui::KeyCode code )
 
 void GameModes::OnMousePressed( vgui::MouseCode code )
 {
-	if ( code != MOUSE_LEFT || m_flScrollStart != 0 || !m_nSubPics ) return;
+	if ( code != MOUSE_LEFT || m_flScrollStart != 0 ) return;
 	int x, y; vgui::input()->GetCursorPos( x, y ); ScreenToLocal( x, y );
-	if ( PointInModeRect( x, y, m_nPicX, 0, m_nPicWide, m_nPicTall ) )
+	if ( PointInMainCard( x, y, m_nPicX, m_nPicWide, m_nPicTall ) )
 	{
 		L4D360HybridButton *button = GetActiveButton();
-		if ( button && !button->IsOpen() && button->IsEnabled() ) button->DoClick();
+		if ( button && button->IsEnabled() ) button->DoClick();
 		return;
 	}
+	if ( !m_nSubPics ) return;
 	if ( PointInModeRect( x, y, m_nLeftX, m_nLeftY, m_nArrowWide, m_nArrowTall ) ) { L4D360UI::FlyoutMenu::CloseActiveMenu(); ScrollLeft(); return; }
 	if ( PointInModeRect( x, y, m_nRightX, m_nRightY, m_nArrowWide, m_nArrowTall ) ) { L4D360UI::FlyoutMenu::CloseActiveMenu(); ScrollRight(); return; }
 	for ( int i = 1; i <= m_nSubPics; ++i )
@@ -428,8 +441,8 @@ void GameModes::Paint()
 		{
 			if ( !scrolling )
 			{
-				DrawModeTexture( paint, m_Modes[mode].texture, m_nPicX, 0, m_nPicWide, m_nPicTall, Color( 255, 255, 255, 255 ), -3 );
-				DrawModeTexture( paint, m_nBorderTexture, m_nPicX, 0, m_nPicWide, m_nPicTall, focus || open ? Color( 255, 255, 255, 255 ) : Color( 0, 0, 0, 255 ), -3 );
+				DrawModeTexture( paint, m_Modes[mode].texture, m_nPicX, 0, m_nPicWide, m_nPicTall, Color( 255, 255, 255, 255 ), kModeCardAngle );
+				DrawModeTexture( paint, m_nBorderTexture, m_nPicX, 0, m_nPicWide, m_nPicTall, focus || open ? Color( 255, 255, 255, 255 ) : Color( 0, 0, 0, 255 ), kModeCardAngle );
 			}
 			else
 			{

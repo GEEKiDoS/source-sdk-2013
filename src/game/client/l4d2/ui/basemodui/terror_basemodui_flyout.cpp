@@ -251,9 +251,11 @@ void FlyoutMenu::OpenMenu( vgui::Panel *parentButton, vgui::Panel *initialFocus,
 	if ( anchor )
 	{
 		int x, y, wide, tall; anchor->GetBounds( x, y, wide, tall );
-		if ( anchor->GetParent() && !m_bStandalonePositioning )
+		if ( !m_bStandalonePositioning && GetParent() )
 		{
-			int px, py; anchor->GetParent()->GetPos( px, py ); x += px; y += py;
+			x = y = 0;
+			anchor->LocalToScreen( x, y );
+			GetParent()->ScreenToLocal( x, y );
 		}
 		int center = 0;
 		L4D360HybridButton *hybrid = dynamic_cast<L4D360HybridButton *>( anchor );
@@ -404,7 +406,8 @@ L4D360HybridButton *DropDownMenu::GetButton()
 }
 FlyoutMenu *DropDownMenu::GetFlyout()
 {
-	if ( !m_Flyout.Get() && GetButton() && GetParent() ) m_Flyout = dynamic_cast<FlyoutMenu *>( GetParent()->FindChildByName( ButtonCommand( m_Button.Get() ) ) );
+	if ( !m_Flyout.Get() && GetButton() && GetFlyoutHost() )
+		m_Flyout = dynamic_cast<FlyoutMenu *>( GetFlyoutHost()->FindChildByName( ButtonCommand( m_Button.Get() ) ) );
 	return m_Flyout.Get();
 }
 void DropDownMenu::ApplySettings( KeyValues *data )
@@ -425,7 +428,7 @@ void DropDownMenu::ApplySettings( KeyValues *data )
 void DropDownMenu::SetFlyout( const char *name )
 {
 	if ( GetButton() ) m_Button->SetCommand( name );
-	m_Flyout = GetParent() ? dynamic_cast<FlyoutMenu *>( GetParent()->FindChildByName( name ) ) : NULL;
+	m_Flyout = GetFlyoutHost() ? dynamic_cast<FlyoutMenu *>( GetFlyoutHost()->FindChildByName( name ) ) : NULL;
 }
 void DropDownMenu::SetShowSelectedText( bool show )
 {
@@ -436,18 +439,32 @@ const char *DropDownMenu::GetCurrentSelection() const { return *m_SelectedComman
 void DropDownMenu::SetCurrentSelection( const char *command )
 {
 	if ( !command ) return;
-	char source[260], text[260]; Q_strncpy( source, command, sizeof( source ) );
-	FlyoutMenu *flyout = GetFlyout();
-	vgui::Button *selected = flyout ? flyout->FindChildButtonByCommand( source ) : NULL;
-	if ( selected ) selected->GetText( text, sizeof( text ) );
-	else Q_strncpy( text, source, sizeof( text ) );
+	char source[260];
+	Q_strncpy( source, command, sizeof( source ) );
 	Q_strncpy( m_SelectedCommand, source, sizeof( m_SelectedCommand ) );
-	if ( GetButton() && m_bShowSelectedText ) m_Button->SetCurrentSelection( text );
+	if ( L4D360HybridButton *button = GetButton() )
+	{
+		if ( m_bShowSelectedText )
+		{
+			FlyoutMenu *flyout = GetFlyout();
+			vgui::Button *selected = flyout ? flyout->FindChildButtonByCommand( source ) : NULL;
+			if ( selected )
+			{
+				// VGUI already localized the row. Narrowing it to ANSI loses
+				// characters on systems using a different code page.
+				wchar_t text[512];
+				selected->GetText( text, sizeof( text ) );
+				text[ARRAYSIZE( text ) - 1] = 0;
+				button->SetCurrentSelection( text );
+			}
+			else button->SetCurrentSelection( source );
+		}
+	}
 	if ( GetParent() ) GetParent()->OnCommand( source );
 }
 void DropDownMenu::OnCommand( const char *command )
 {
-	if ( command ) m_Flyout = GetParent() ? dynamic_cast<FlyoutMenu *>( GetParent()->FindChildByName( command ) ) : NULL;
+	if ( command ) m_Flyout = GetFlyoutHost() ? dynamic_cast<FlyoutMenu *>( GetFlyoutHost()->FindChildByName( command ) ) : NULL;
 	FlyoutMenu *flyout = command ? m_Flyout.Get() : GetFlyout();
 	if ( !flyout ) { if ( command ) SetCurrentSelection( command ); return; }
 	if ( flyout->IsVisible() ) flyout->CloseMenu( GetButton() );

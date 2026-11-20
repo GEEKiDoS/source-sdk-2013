@@ -5541,6 +5541,12 @@ void CShaderAPIDX12::BeginFrame()
 	m_UpscalerFrameJitter[0] = m_UpscalerFrameJitter[1] = 0.f;
 	if ( m_pDevice && m_pDevice->IsRecordingOwner() && m_pDevice->CommandList() )
 	{
+		if ( m_UpscalerProbeRequested )
+		{
+			m_UpscalerProbeRequested = 0;
+			ProbeUpscalerCapabilities();
+			ProbeUpscalerNrCapability();
+		}
 		ReleaseIdleUpscaler();
 		// Frame generation: sync the device's kind (switches apply at the previous Present's tail), publish the
 		// presented count and any provider runtime error, then take over the IShaderAPIDX12 requests.
@@ -6238,13 +6244,18 @@ void CShaderAPIDX12::SetFullScreenTextureHandle( ShaderAPITextureHandle_t h )
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetIntRenderingParameter( int parm_number, int value )
 {
+	if ( parm_number == INT_RENDERPARM_DX12_UPSCALE_PROBE )
+	{
+		m_UpscalerProbeRequested = 1;
+		return;
+	}
 	if ( m_pDevice && m_pDevice->Lighting().ShadowPassActive() &&
 		( parm_number == INT_RENDERPARM_DX12_MOTION_PASS || parm_number == INT_RENDERPARM_DX12_MOTION_OBJECT ||
 		  parm_number == INT_RENDERPARM_DX12_UPSCALE_MODE || parm_number == INT_RENDERPARM_DX12_UPSCALE_DISPATCH ||
 		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_VIEW || parm_number == INT_RENDERPARM_DX12_FRAMEGEN_DISPATCH ||
 		  parm_number == INT_RENDERPARM_DX12_FRAMEGEN_FRAME || parm_number == INT_RENDERPARM_DX12_PBR_GBUFFER_PASS ) )
 		return;
-	if ( parm_number == INT_RENDERPARM_DX12_MOTION_STATUS || parm_number == INT_RENDERPARM_DX12_UPSCALE_STATUS || parm_number == INT_RENDERPARM_DX12_NR_STATUS ||
+	if ( parm_number == INT_RENDERPARM_DX12_MOTION_STATUS || parm_number == INT_RENDERPARM_DX12_UPSCALE_STATUS || parm_number == INT_RENDERPARM_DX12_UPSCALE_CAPS || parm_number == INT_RENDERPARM_DX12_NR_STATUS ||
 	     parm_number == INT_RENDERPARM_DX12_MOTION_BLUR_STATIC || parm_number == INT_RENDERPARM_DX12_FRAME_EPOCH )
 		return;
 	if ( parm_number >= 0 && parm_number < (int)ARRAYSIZE( m_RenderingInts ) )
@@ -6285,6 +6296,8 @@ float CShaderAPIDX12::GetFloatRenderingParameter( int parm_number ) const
 
 int CShaderAPIDX12::GetIntRenderingParameter( int parm_number ) const
 {
+	if ( parm_number == INT_RENDERPARM_DX12_UPSCALE_CAPS )
+		return m_UpscalerCapabilities;
 	if ( parm_number == INT_RENDERPARM_DX12_MOTION_BLUR_STATIC )
 		return MotionQuiet() ? 1 : 0;
 	if ( parm_number == INT_RENDERPARM_DX12_FRAME_EPOCH )

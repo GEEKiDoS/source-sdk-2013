@@ -272,8 +272,47 @@ float UpscalerDX12_RenderScale()
 	// SMAA T2x is native-only; frame generation also needs scene-sized motion vectors and depth.
 	if ( !UpscalerDX12_Enabled() || r_upscaler.GetInt() == 5 || s_bScaleFailed || FrameGenDX12_Enabled() )
 		return 1.f;
+	// A known-unavailable explicit provider (or empty Auto) resolves to no AA.
+	// Render that fallback at native resolution without changing the saved cvar.
+	if ( ( UpscalerDX12_Capabilities() & DX12_UPSCALE_CAP_READY ) && !UpscalerDX12_IsTechniqueAvailable( r_upscaler.GetInt() ) )
+		return 1.f;
 	const float flScale = r_upscaler_scale.GetFloat();
 	return flScale < 0.995f ? Clamp( flScale, 0.5f, 1.f ) : 1.f;
+}
+
+int UpscalerDX12_Capabilities()
+{
+	if ( !s_bDX12 || !s_pShaderAPI )
+		return 0;
+	return s_pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_CAPS );
+}
+
+void UpscalerDX12_RequestCapabilityProbe()
+{
+	if ( s_bDX12 && s_pShaderAPI && !( UpscalerDX12_Capabilities() & DX12_UPSCALE_CAP_NR_CHECKED ) )
+		s_pShaderAPI->SetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_PROBE, 1 );
+}
+
+bool UpscalerDX12_IsTechniqueAvailable( int mode )
+{
+	const int caps = UpscalerDX12_Capabilities();
+	switch ( mode )
+	{
+	case 0:
+		return true;
+	case 1:
+		return ( caps & ( DX12_UPSCALE_CAP_DLSS | DX12_UPSCALE_CAP_FSR | DX12_UPSCALE_CAP_XESS ) ) != 0;
+	case 2:
+		return ( caps & DX12_UPSCALE_CAP_DLSS ) != 0;
+	case 3:
+		return ( caps & DX12_UPSCALE_CAP_FSR ) != 0;
+	case 4:
+		return ( caps & DX12_UPSCALE_CAP_XESS ) != 0;
+	case 5:
+		return true;
+	default:
+		return false;
+	}
 }
 
 int UpscalerDX12_Status()

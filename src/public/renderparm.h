@@ -142,7 +142,21 @@ enum RenderParamInt_t
 	// inferring quality from a camera or target.
 	INT_RENDERPARM_DX12_VIEW_FLAGS,
 	// Backend-owned view flags are transient and must be cleared after each view.
-	MAX_INT_RENDER_PARMS = 29
+	MAX_INT_RENDER_PARMS = 29,
+
+	// DX12-only commands through IShaderAPI, not stored render context parameters.
+	INT_RENDERPARM_DX12_UPSCALE_CAPS = MAX_INT_RENDER_PARMS,
+	INT_RENDERPARM_DX12_UPSCALE_PROBE
+};
+
+enum DX12UpscalerCaps_t
+{
+	DX12_UPSCALE_CAP_DLSS = 1 << 0,
+	DX12_UPSCALE_CAP_FSR = 1 << 1,
+	DX12_UPSCALE_CAP_XESS = 1 << 2,
+	DX12_UPSCALE_CAP_NR = 1 << 3,
+	DX12_UPSCALE_CAP_READY = 1 << 4,
+	DX12_UPSCALE_CAP_NR_CHECKED = 1 << 5
 };
 enum DX12ViewFlags_t
 {

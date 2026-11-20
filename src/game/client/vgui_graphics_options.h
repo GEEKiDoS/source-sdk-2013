@@ -19,6 +19,10 @@ enum
 	TAB_LIGHTING,
 	TAB_POST,
 	TAB_FRAMEGEN,
+#ifdef L4D2
+	TAB_UPSCALING,
+	TAB_NEURAL,
+#endif
 	TAB_COUNT
 };
 
@@ -34,7 +38,9 @@ enum
 	ROWF_NONE = 0,
 	ROWF_OFF_ENABLE_ONLY = 1,	// choice 0 matches and writes only the enable cvar, keeping the remembered quality cvars
 	ROWF_LEGACY_ONLY = 2,	// native DX12 has no reduced-fillrate shader quality tier
-	ROWF_DX12_ONLY = 4		// L4D2 hides renderer-specific options on legacy renderers
+	ROWF_DX12_ONLY = 4,		// L4D2 hides renderer-specific options on legacy renderers
+	ROWF_DLSS_NR = 8,
+	ROWF_UPSCALER = 16
 };
 
 struct Choice_t
@@ -61,6 +67,7 @@ struct RowDef_t
 const RowDef_t *GetRows( int &count );
 int RowCvarCount( const RowDef_t &row );
 bool IsRowAvailable( const RowDef_t &row );
+bool IsChoiceAvailable( const RowDef_t &row, int choice );
 // Matches current cvars; -1 means a custom value. Off choices match only the enable cvar when flagged.
 int FindChoice( const RowDef_t &row );
 bool IsDX12Renderer();

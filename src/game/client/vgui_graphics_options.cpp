@@ -9,6 +9,8 @@
 
 #ifdef L4D2
 #include "l4d2/ui/basemodui/terror_basemodui.h"
+#include "upscaler_dx12.h"
+#include "renderparm.h"
 #else
 #include "ienginevgui.h"
 #include "GameEventListener.h"
@@ -259,13 +261,55 @@ static const Choice_t kReflex[] =
 	{ "#GraphicsOptions_Boost", { 2, 0, 0, 0, 0 } },
 };
 
+#ifdef L4D2
+static const Choice_t kNrLayers[] =
+{
+	{ "#GraphicsOptions_Off", { 0 } },
+	{ "1", { 1 } },
+	{ "2", { 2 } },
+	{ "3", { 3 } },
+	{ "4", { 4 } },
+	{ "5", { 5 } },
+	{ "6", { 6 } },
+	{ "7", { 7 } },
+	{ "8", { 8 } },
+};
+static_assert( ARRAYSIZE( kNrLayers ) == DX12_NR_MAX_LAYERS + 1, "List every supported DLSS-NR layer count" );
+
+static const Choice_t kNrPreset[] =
+{
+	{ "#GraphicsOptions_Default", { 0 } },
+	{ "1", { 1 } },
+	{ "2", { 2 } },
+	{ "3", { 3 } },
+};
+
+static const Choice_t kNrStyle[] =
+{
+	{ "#GraphicsOptions_NrStandard", { 0 } },
+	{ "#GraphicsOptions_NrNatural", { 1 } },
+	{ "#GraphicsOptions_NrCinematic", { 2 } },
+};
+
+static const Choice_t kNrCurve[] =
+{
+	{ "#GraphicsOptions_NrSoftKnee", { 0 } },
+	{ "#GraphicsOptions_NrNeutwoComposed", { 1 } },
+	{ "#GraphicsOptions_NrNeutwoReplace", { 2 } },
+	{ "#GraphicsOptions_NrHybridComposed", { 3 } },
+	{ "#GraphicsOptions_NrHybridReplace", { 4 } },
+};
+#endif
+
 static const RowDef_t g_Rows[] =
 {
 	{ "#GraphicsOptions_Model", TAB_DISPLAY, ROW_COMBO, { "r_rootlod", NULL, NULL, NULL, NULL }, kModel, ARRAYSIZE( kModel ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Texture", TAB_DISPLAY, ROW_COMBO, { "mat_picmip", NULL, NULL, NULL, NULL }, kTexture, ARRAYSIZE( kTexture ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Filtering", TAB_DISPLAY, ROW_COMBO, { "mat_trilinear", "mat_forceaniso", NULL, NULL, NULL }, kFilter, ARRAYSIZE( kFilter ), 0, 0, 0, NULL, ROWF_NONE },
+#ifndef L4D2
 	{ "#GraphicsOptions_AA", TAB_DISPLAY, ROW_COMBO, { "r_upscaler", NULL, NULL, NULL, NULL }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_RenderScale", TAB_DISPLAY, ROW_COMBO, { "r_upscaler_scale", NULL, NULL, NULL, NULL }, kRenderScale, ARRAYSIZE( kRenderScale ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+#endif
 	{ "#GraphicsOptions_Water", TAB_DISPLAY, ROW_COMBO, { "r_waterforceexpensive", "r_waterforcereflectentities", NULL, NULL, NULL }, kWater, ARRAYSIZE( kWater ), 0, 0, 0, NULL, ROWF_NONE },
 	{ "#GraphicsOptions_Shader", TAB_DISPLAY, ROW_COMBO, { "mat_reducefillrate", NULL, NULL, NULL, NULL }, kShader, ARRAYSIZE( kShader ), 0, 0, 0, NULL, ROWF_LEGACY_ONLY },
 	{ "#GraphicsOptions_Color", TAB_DISPLAY, ROW_CHECK, { "mat_colorcorrection", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_NONE },
@@ -309,6 +353,26 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Framegen", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen", NULL, NULL, NULL, NULL }, kFramegen, ARRAYSIZE( kFramegen ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_FramegenRate", TAB_FRAMEGEN, ROW_COMBO, { "r_framegen_multiplier", NULL, NULL, NULL, NULL }, kMultiplier, ARRAYSIZE( kMultiplier ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Reflex", TAB_FRAMEGEN, ROW_COMBO, { "r_reflex", NULL, NULL, NULL, NULL }, kReflex, ARRAYSIZE( kReflex ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+#ifdef L4D2
+	{ "#GraphicsOptions_AA", TAB_UPSCALING, ROW_COMBO, { "r_upscaler" }, kUpscaler, ARRAYSIZE( kUpscaler ), 0, 0, 0, NULL, ROWF_DX12_ONLY | ROWF_UPSCALER },
+	{ "#GraphicsOptions_RenderScale", TAB_UPSCALING, ROW_COMBO, { "r_upscaler_scale" }, kRenderScale, ARRAYSIZE( kRenderScale ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
+
+	{ "#GraphicsOptions_NrLayers", TAB_NEURAL, ROW_COMBO, { "r_dlss_nr_layers" }, kNrLayers, ARRAYSIZE( kNrLayers ), 0, 0, 0, "#GraphicsOptions_NrLayersNote", ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrPreset", TAB_NEURAL, ROW_COMBO, { "r_dlss_nr_preset" }, kNrPreset, ARRAYSIZE( kNrPreset ), 0, 0, 0, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrStyle", TAB_NEURAL, ROW_COMBO, { "r_dlss_nr_style" }, kNrStyle, ARRAYSIZE( kNrStyle ), 0, 0, 0, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrIntensity", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_intensity" }, NULL, 0, 0, 2, 0.05f, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrStructure", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_local_structure" }, NULL, 0, 0, 2, 0.05f, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrTone", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_local_tone" }, NULL, 0, 0, 2, 0.05f, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrSkin", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_skin_structure" }, NULL, 0, -1, 2, 0.05f, "#GraphicsOptions_NrSkinNote", ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrMask", TAB_NEURAL, ROW_CHECK, { "r_dlss_nr_auto_mask" }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrUi", TAB_NEURAL, ROW_CHECK, { "r_dlss_nr_ui_correction" }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrWhite", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_white_point" }, NULL, 0, 0.01f, 64, 0.1f, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrDetail", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_transfer_strength" }, NULL, 0, 0, 2, 0.05f, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrColour", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_colour_strength" }, NULL, 0, 0, 4, 0.05f, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrHighlight", TAB_NEURAL, ROW_SLIDER, { "r_dlss_nr_max_ratio" }, NULL, 0, 1, 8, 0.1f, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrCurve", TAB_NEURAL, ROW_COMBO, { "r_dlss_nr_reversible_mode" }, kNrCurve, ARRAYSIZE( kNrCurve ), 0, 0, 0, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+	{ "#GraphicsOptions_NrApply", TAB_NEURAL, ROW_CHECK, { "r_dlss_nr_apply_model" }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY | ROWF_DLSS_NR },
+#endif
 };
 
 const RowDef_t *GetRows( int &count )
@@ -337,6 +401,8 @@ bool IsRowAvailable( const RowDef_t &row )
 #ifdef L4D2
 	if ( !IsDX12Renderer() && ( row.flags & ROWF_DX12_ONLY ) )
 		return false;
+	if ( ( row.flags & ROWF_DLSS_NR ) && !( UpscalerDX12_Capabilities() & DX12_UPSCALE_CAP_NR ) )
+		return false;
 	const int nCvars = RowCvarCount( row );
 	for ( int i = 0; i < nCvars; ++i )
 	{
@@ -344,6 +410,17 @@ bool IsRowAvailable( const RowDef_t &row )
 		if ( !pCvar || pCvar->IsFlagSet( FCVAR_DEVELOPMENTONLY | FCVAR_HIDDEN ) )
 			return false;
 	}
+#endif
+	return true;
+}
+
+bool IsChoiceAvailable( const RowDef_t &row, int choice )
+{
+	if ( choice < 0 || choice >= ( row.kind == ROW_CHECK ? 2 : row.nChoices ) )
+		return false;
+#ifdef L4D2
+	if ( row.flags & ROWF_UPSCALER )
+		return UpscalerDX12_IsTechniqueAvailable( (int)row.choices[choice].v[0] );
 #endif
 	return true;
 }
@@ -410,6 +487,12 @@ int FindChoice( const RowDef_t &row )
 	float values[5];
 	for ( int i = 0; i < nCvars; ++i )
 		values[i] = ReadCvar( row.cvars[i] );
+#ifdef L4D2
+	// Resolve() returns None for an unavailable explicit provider or empty Auto.
+	// Show that native/unfiltered fallback without losing the saved preference.
+	if ( ( row.flags & ROWF_UPSCALER ) && !UpscalerDX12_IsTechniqueAvailable( (int)values[0] ) )
+		return 0;
+#endif
 	return MatchChoice( row, values, nCvars );
 }
 

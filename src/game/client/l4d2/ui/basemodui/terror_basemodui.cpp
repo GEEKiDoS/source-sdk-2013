@@ -30,6 +30,7 @@
 #include "materialsystem/materialsystem_config.h"
 #include "tier1/fmtstr.h"
 #include "vgui/ILocalize.h"
+#include "vgui/IPanel.h"
 #include "vgui/IScheme.h"
 #include "vgui/ISurface.h"
 #include "vgui/IVGui.h"
@@ -307,7 +308,7 @@ class CL4DBasePanel : public vgui::Frame, public IGameUIModClient
 	DECLARE_CLASS_SIMPLE( CL4DBasePanel, vgui::Frame );
 public:
 	CL4DBasePanel() : BaseClass( NULL, "L4D2BasePanel" ), m_bInGame( false ), m_bGameUIWasVisible( enginevgui->IsGameUIVisible() ),
-		m_bPauseGameUIWasVisible( enginevgui->IsGameUIVisible() ), m_bLevelLoading( false ), m_bLoadingFinished( false ), m_flBlurScale( 0.0f ), m_flLastBlurTime( 0.0f )
+		m_bPauseGameUIWasVisible( enginevgui->IsGameUIVisible() ), m_bLevelLoading( false ), m_bLoadingFinished( false ), m_hHiddenStockBackdrop( 0 ), m_flBlurScale( 0.0f ), m_flLastBlurTime( 0.0f )
 	{
 		SetParent( enginevgui->GetPanel( PANEL_GAMEUIDLL ) );
 		SetAutoDelete( false ); SetDeleteSelfOnClose( false );
@@ -327,6 +328,7 @@ public:
 	}
 	virtual ~CL4DBasePanel()
 	{
+		UpdateStockBackdrop( false );
 		::SetTerrorLoadingScreenVisible( false );
 		vgui::ivgui()->RemoveTickSignal( GetVPanel() );
 		static_cast< ClientModeTerrorNormal * >( GetClientModeNormal() )->SetBlurScale( 0.0f );
@@ -340,7 +342,12 @@ public:
 	virtual void PaintBackground() OVERRIDE { m_Background.PaintBackground( GetWide(), GetTall() ); }
 	virtual void SetVisible( bool visible ) OVERRIDE
 	{
-		BaseClass::SetVisible( visible || m_bLevelLoading ); if ( !visible ) m_Background.OnGameUIHidden();
+		BaseClass::SetVisible( visible || m_bLevelLoading );
+		if ( !visible )
+		{
+			UpdateStockBackdrop( false );
+			m_Background.OnGameUIHidden();
+		}
 	}
 	virtual void OnThink() OVERRIDE
 	{
@@ -393,10 +400,72 @@ protected:
 			if ( engine->IsInGame() && !engine->IsLevelMainMenuBackground() )
 				engine->ServerCmd( visible ? "l4d2_gameui_pause 1\n" : "l4d2_gameui_pause 0\n" );
 		}
-		UpdateBlur( visible && engine->IsInGame() &&
-			!engine->IsLevelMainMenuBackground() && !engine->IsDrawingLoadingImage() );
+		const bool inMap = visible && engine->IsInGame() &&
+			!engine->IsLevelMainMenuBackground() && !engine->IsDrawingLoadingImage();
+		if ( inMap )
+			RefreshCurrentWindow();
+		GraphicsDX12 *graphics = inMap ? dynamic_cast<GraphicsDX12 *>( m_hWindow.Get() ) : NULL;
+		const bool preview = graphics && graphics->HasLivePreview();
+		UpdateStockBackdrop( preview );
+		if ( preview )
+		{
+			if ( m_flBlurScale != 0.0f )
+			{
+				m_flBlurScale = 0.0f;
+				static_cast<ClientModeTerrorNormal *>( GetClientModeNormal() )->SetBlurScale( 0.0f );
+			}
+		}
+		else
+			UpdateBlur( inMap );
 	}
 private:
+	void UpdateStockBackdrop( bool hide )
+	{
+		vgui::IPanel *panels = vgui::ipanel();
+		vgui::VPANEL stock = m_hHiddenStockBackdrop ? vgui::ivgui()->HandleToPanel( m_hHiddenStockBackdrop ) : 0;
+		if ( !hide )
+		{
+			if ( stock )
+			{
+				panels->SetVisible( stock, true );
+				if ( m_bPreviewReparented )
+					SetParent( stock );
+			}
+			m_hHiddenStockBackdrop = 0;
+			m_bPreviewReparented = false;
+			return;
+		}
+		if ( !stock )
+		{
+			// GameUI011 can parent its native override to the stock backdrop.
+			// Temporarily make the override a sibling so hiding only the
+			// backdrop never hides the preview or the engine's other popups.
+			const vgui::VPANEL parent = GetVParent();
+			if ( parent && !Q_stricmp( panels->GetName( parent ), "BaseGameUIPanel" ) && panels->GetParent( parent ) )
+			{
+				stock = parent;
+				SetParent( panels->GetParent( parent ) );
+				m_bPreviewReparented = true;
+			}
+			else
+			{
+				for ( int i = 0; parent && i < panels->GetChildCount( parent ); ++i )
+				{
+					const vgui::VPANEL child = panels->GetChild( parent, i );
+					if ( !Q_stricmp( panels->GetName( child ), "BaseGameUIPanel" ) && panels->IsVisible( child ) )
+					{
+						stock = child;
+						break;
+					}
+				}
+			}
+			if ( stock )
+				m_hHiddenStockBackdrop = vgui::ivgui()->PanelToHandle( stock );
+		}
+		if ( stock && panels->IsVisible( stock ) )
+			panels->SetVisible( stock, false );
+	}
+
 	void RefreshCurrentWindow()
 	{
 		if ( m_hWindow.Get() && m_hWindow->IsVisible() && !m_hWindow->IsMarkedForDeletion() ) return;
@@ -409,6 +478,7 @@ private:
 	}
 	void CloseWindows()
 	{
+		UpdateStockBackdrop( false );
 		FlyoutMenu::CloseActiveMenu(); m_hWindow = NULL;
 		for ( int i = GetChildCount() - 1; i >= 0; --i )
 		{
@@ -437,6 +507,8 @@ private:
 	vgui::DHANDLE<CL4DFrame> m_hWindow; // Root parent owns deletion; never a second registry.
 	bool m_bInGame, m_bGameUIWasVisible, m_bPauseGameUIWasVisible;
 	bool m_bLevelLoading, m_bLoadingFinished;
+	vgui::HPanel m_hHiddenStockBackdrop;
+	bool m_bPreviewReparented = false;
 	float m_flBlurScale, m_flLastBlurTime;
 };
 
@@ -554,6 +626,8 @@ void CL4DBasePanel::OnCommand( const char *command )
 
 void CL4DBasePanel::OpenGraphicsOptions( int section )
 {
+	if ( ( engine->IsInGame() && !engine->IsLevelMainMenuBackground() ) != m_bInGame )
+		ShowRootMenu();
 	RefreshCurrentWindow();
 	if ( GraphicsDX12 *graphics = dynamic_cast<GraphicsDX12 *>( m_hWindow.Get() ) )
 	{

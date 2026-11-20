@@ -99,9 +99,12 @@ public:
 	void SetFlyout( const char *name );
 	void SetShowSelectedText( bool show );
 	void SetFlyoutOpenCallback( FlyoutOpenCallback callback ) { m_pOpenCallback = callback; }
+	void SetFlyoutHost( vgui::Panel *host ) { m_FlyoutHost = host; }
 	void CloseDropDown();
 	void ChangeSelection( bool forward );
 private:
+	vgui::Panel *GetFlyoutHost() { return m_FlyoutHost.Get() ? m_FlyoutHost.Get() : GetParent(); }
+	vgui::DHANDLE<vgui::Panel> m_FlyoutHost;
 	vgui::DHANDLE<L4D360HybridButton> m_Button;
 	vgui::DHANDLE<FlyoutMenu> m_Flyout;
 	char m_SelectedCommand[260];

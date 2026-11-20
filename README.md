@@ -202,15 +202,18 @@ moving props cast no sun shadow there). With the default 2 cascades the dynamic
 range is about 900 units at the default 4096 distance (about 420 with 1); 4
 restores the full cascade range.
 
-L4D2's **Options > Video > Graphics (DX12)...** opens a native options screen
-with Display, Lighting, Post-processing and Frame generation sections. It uses
-the mounted Video screen's hybrid buttons, flyouts, sliders, fonts and footer;
-`graphics_options [section]` opens the same screen. Its bindings and choices
-come from the shared graphics row table, while rows with missing, hidden or
-development-only ConVars are omitted (including DX12-only rows under `-dx9`).
-Changes take effect immediately and Done / Escape / controller B returns to
-Video, saving through `mat_savechanges` and `host_writeconfig`. Other SDK games
-retain their four-tab GameUI advanced graphics dialog.
+L4D2's **Options > Video > Graphics (DX12)...** opens one scrollable list,
+with Display, Upscaling, Lighting, Post-processing and Frame Generation
+headers. `graphics_options [section]` opens the same list and optionally
+scrolls to a section. The upscaler choices use the renderer's provider probe
+for the active device; an unavailable saved mode shows its native, unfiltered
+fallback without replacing the saved preference. The DLSS Neural Rendering
+section appears only if the required NGX runtime and NR snippet initialize.
+In a map, the list occupies the left side and the uncovered scene stays live
+and unblurred on the right. Changes take effect immediately where the renderer
+supports live changes. Done / Escape / controller B returns to Video, saving
+through `mat_savechanges` and `host_writeconfig`. DX12-only rows are omitted
+under `-dx9`; other SDK games retain the four-tab GameUI dialog.
 
 Dedicated hosting uses `srcds_win64.exe -console -game <absolute mod_l4d2 path>
 +sv_pure 0 +mp_gamemode coop +map c5m1_waterfront`. Preserve its native console
