@@ -222,6 +222,39 @@ static const char *CubemapFullPath( void *self, const char *name, const char *pa
 	return NULL;
 }
 
+// Each sample is captured as maps/<map>/cX_Y_Z(.hdr).vtf, named by its origin alone, so env_cubemaps sharing an
+// origin (c1m3_mall has two such pairs) produce one VTF and the engine packs it once. Returns -1 if unreadable.
+static int CountCubemapSampleNames( const char *bsp, const Bsp21Header &header )
+{
+	const Bsp21Lump &lump = header.lumps[LUMP_CUBEMAPS];
+	CUtlVector< unsigned char > data;
+	void *file = Open( bsp );
+	if ( !file ) return -1;
+	const Bsp21Reader reader = MountedReader( file );
+	bool read;
+	if ( header.version == BSP21_VERSION )
+		read = Bsp21ReadLump( reader, lump, data );
+	else
+	{
+		// The v20 on-disk order is offset, length, version, fourCC.
+		Bsp21Resize( data, static_cast< int >( lump.offset ) );
+		read = Bsp21ReadAt( reader, lump.version, data.Base(), lump.offset );
+	}
+	Close( file );
+	if ( !read || data.Count() % sizeof( dcubemapsample_t ) ) return -1;
+	const dcubemapsample_t *samples = reinterpret_cast< const dcubemapsample_t * >( data.Base() );
+	const int count = data.Count() / sizeof( dcubemapsample_t );
+	int names = 0;
+	for ( int i = 0; i < count; ++i )
+	{
+		bool repeated = false;
+		for ( int j = 0; j < i && !repeated; ++j )
+			repeated = !memcmp( samples[i].origin, samples[j].origin, sizeof( samples[i].origin ) );
+		if ( !repeated ) ++names;
+	}
+	return names;
+}
+
 typedef void ( *BuildCubemapsFn )( int );
 static BuildCubemapsFn g_BuildCubemaps;
 static void BuildCubemaps( int bounces )
@@ -264,7 +297,13 @@ static void BuildCubemaps( int bounces )
 		ResetCubemapBuild();
 		return;
 	}
-	build.expectedSamples = sampleBytes / sizeof( dcubemapsample_t );
+	build.expectedSamples = CountCubemapSampleNames( bsp, header );
+	if ( build.expectedSamples < 0 )
+	{
+		BspLog( "buildcubemaps refused: cannot read the cubemap sample lump of %s", bsp );
+		ResetCubemapBuild();
+		return;
+	}
 	BspLog( "buildcubemaps: redirect %s -> %s", build.bsp, build.sidecar.path );
 	g_BuildCubemaps( bounces );
 	ResetCubemapBuild();
