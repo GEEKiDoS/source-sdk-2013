@@ -31,7 +31,7 @@
 //
 // The OkLab matrices are Bjorn Ottosson's published constants; the sRGB transfer is standard.
 //
-// Root signature: b0 = NrConstantsDX12 (14 dwords), t0..t3 SRV table, u0..u1 UAV table, s0 static linear clamp.
+// Root signature: b0 = NrConstantsDX12, t0..t3 SRV table, u0..u1 UAV table, s0 static linear clamp.
 
 namespace shaderapidx12
 {
@@ -46,9 +46,11 @@ struct NrConstantsDX12
 	uint32_t reversibleMode, applyModel, compareMode;
 	float compareSplit, compareZoom;
 	uint32_t compareSwap;
+	uint32_t renderWidth, renderHeight;
+	float jitterX, jitterY;
 };
 
-static_assert( sizeof( NrConstantsDX12 ) == 14 * 4, "root constants must match the HLSL cbuffer" );
+static_assert( sizeof( NrConstantsDX12 ) == 18 * 4, "root constants must match the HLSL cbuffer" );
 
 static const char kNrShaderSourceDX12[] = R"HLSL(
 cbuffer Params : register(b0)
@@ -67,6 +69,8 @@ cbuffer Params : register(b0)
     float gCompareSplit;
     float gCompareZoom;
     uint  gCompareSwap;
+    uint2 gRenderSize;
+    float2 gJitter;
 };
 
 Texture2D<float4>   gSource   : register(t0); // encode: the layer input. resolve: the proxy. depth: scene depth.
@@ -203,6 +207,16 @@ float3 HybridDecode(float3 y)
 void CSDepth(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gWidth || id.y >= gHeight) return;
+    if (gRenderSize.x != 0)
+    {
+        // Output pixel centre -> jittered render texel. Keep depth and velocity from the same
+        // surface; bilinear interpolation across silhouettes invents depths and motion.
+        float2 p = (id.xy + 0.5) * gRenderSize / float2(gWidth, gHeight) + gJitter;
+        int2 src = clamp(int2(floor(p)), 0, int2(gRenderSize) - 1);
+        gDepthOut[id.xy] = gSource.Load(int3(src, 0)).r;
+        gTarget[id.xy] = gModel.Load(int3(src, 0));
+        return;
+    }
     gDepthOut[id.xy] = gSource.Load(int3(id.xy, 0)).r;
 }
 

@@ -1,9 +1,5 @@
 Upscaler and frame generation runtimes for shaderapidx12 (DLSS/DLAA, FSR, XeSS, DLSS-NR, DLSS-G, FSR FG, XeSS-FG)
 ==========================================================================================================
-  NR runs on the temporal provider's anti-aliased output, before the HUD. Each layer encodes a display-referred
-  proxy and composes the result back onto the HDR scene. For scaled DLSS, FSR and XeSS, a single compute pass
-  maps the jittered render viewport's depth and UV motion onto the output grid for all layers. At native scale
-  (including SMAA T2x) no alignment pass or alignment textures are needed.
 
 The repository contains only the headers and licenses; shaderapidx12 builds against them without any runtime present.
 The runtime DLLs are not included. The renderer loads each one with LoadLibrary when an upscaler is first enabled; a
@@ -41,6 +37,10 @@ DLSS / DLAA
 DLSS-NR
   Not publicly distributed. The build that runs on RTX 40 series is a modified third-party build that must not be
   committed; see dlssnr/NOTICE.txt. Calls go through nvngx.dll_dlssnr_dx12.dll, which the shaderapidx12 build produces.
+  NR runs on the temporal provider's anti-aliased output, before the HUD. Each layer encodes a display-referred
+  proxy and composes the result back onto the HDR scene. For scaled DLSS, FSR and XeSS, a single compute pass
+  maps the jittered render viewport's depth and UV motion onto the output grid for all layers. At native scale
+  (including SMAA T2x) no alignment pass or alignment textures are needed.
 
 Verified builds
 ---------------
