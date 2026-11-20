@@ -6,11 +6,11 @@ rem mod_l4d2\maps\<map>.light (-restir_shadowmaps, always passed). The wrapper-o
 rem rewrites a v21 input as a standard BSP v20 map whose v21 static-prop RGBA tints ride the v20 ptnt game lump.
 rem GPU submissions adapt toward about 250 ms per fence wait to avoid Windows TDR on slow GPUs.
 rem   vrad_restir_l4d2.bat [vrad_restir options] <map.bsp | map name under mod_l4d2\maps or the retail maps>
-rem Defaults (-final -restir_skyibl -restir_skyambientscale 2 -restir_bouncescale 1.5 -restir_maxbounces 2
+rem Defaults (-final -restir_skyibl -restir_skyambientscale 1 -restir_bouncescale 1.5 -restir_maxbounces 8
 rem -restir_hlight_density 2 -restir_ambientgrid 28) apply to every option not given; an option you give overrides
 rem the matching default (-fast or -final replaces -final) and the rest stay. Examples:
 rem   vrad_restir_l4d2.bat c1m1_hotel
-rem   vrad_restir_l4d2.bat -fast -restir_skyambientscale 2 c1m1_hotel
+rem   vrad_restir_l4d2.bat -fast -restir_skyambientscale 3 c1m2_streets
 rem
 rem The content roots default to the Steam library that holds each app (found by
 rem vrad_restir_steamapp.ps1 from Steam's libraryfolders.vdf). Override them by setting these before calling:
@@ -132,9 +132,9 @@ if "!PADDED: -restir_bsp =!"=="!PADDED!" (
 )
 if "!PADDED: -final =!"=="!PADDED!" if "!PADDED: -fast =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -final"
 if "!PADDED: -restir_skyibl =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_skyibl"
-if "!PADDED: -restir_skyambientscale =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_skyambientscale 2"
+if "!PADDED: -restir_skyambientscale =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_skyambientscale 1"
 if "!PADDED: -restir_bouncescale =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_bouncescale 1.5"
-if "!PADDED: -restir_maxbounces =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_maxbounces 2"
+if "!PADDED: -restir_maxbounces =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_maxbounces 8"
 if "!PADDED: -restir_hlight_density =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_hlight_density 2"
 if "!PADDED: -restir_ambientgrid =!"=="!PADDED!" set "DEFAULTS=!DEFAULTS! -restir_ambientgrid 28"
 set "ARGS=!DEFAULTS!!ARGS!"
