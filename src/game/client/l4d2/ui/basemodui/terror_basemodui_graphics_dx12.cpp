@@ -401,8 +401,7 @@ void GraphicsDX12::LayoutRows()
 				y += header->GetTall();
 				if ( section == TAB_NEURAL && !bNrEnabled )
 				{
-					const char *note = m_NrAvailability == DX12_NR_NEEDS_NATIVE_SCALE ?
-						"#GraphicsOptions_NrRequiresNative" : "#GraphicsOptions_NrRequiresTemporalAA";
+					const char *note = "#GraphicsOptions_NrRequiresTemporalAA";
 					const vgui::HFont font = uiScheme->GetFont( "DefaultMedium", true );
 					int textWide, textTall;
 					wchar_t text[256];

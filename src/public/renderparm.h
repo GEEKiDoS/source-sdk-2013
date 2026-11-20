@@ -183,8 +183,7 @@ enum DX12ViewFlags_t
 enum UpscalerDX12NrAvailability_t
 {
 	DX12_NR_READY,
-	DX12_NR_NEEDS_TEMPORAL_AA,
-	DX12_NR_NEEDS_NATIVE_SCALE
+	DX12_NR_NEEDS_TEMPORAL_AA
 };
 
 // NR consumes the temporal provider's output. Scaled frames align guides in the backend.
