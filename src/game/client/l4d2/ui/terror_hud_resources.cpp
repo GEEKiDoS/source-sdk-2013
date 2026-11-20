@@ -247,7 +247,7 @@ bool CTerrorHudResources::RegisterFont( IFileSystem *pFileSystem, const char *pF
 	CUtlBuffer data;
 	if ( !pFileSystem->ReadFile( pFilename, "GAME", data ) )
 	{
-		Warning( "Unable to read original HUD font %s\n", pFilename );
+		Warning( "Custom font file %s not found; skipped, as retail does\n", pFilename );
 		return false;
 	}
 	int nFontBytes = 0;
@@ -303,9 +303,10 @@ bool CTerrorHudResources::PrepareFile( IFileSystem *pFileSystem, const char *pFi
 			if ( pExtension && !Q_stricmp( pExtension, "vfont" ) )
 			{
 				// A custom font that cannot be loaded is not fatal in retail: the scheme keeps
-				// resolving and the font falls back to a system face. HUD mods installed in the
-				// L4D2 directory can reference VFONTs they do not ship (seen with
-				// resource/stratum2medium.vfont), so a failure here only warns.
+				// resolving and the font falls back to a system face. HUD mods can list VFONTs they
+				// do not ship: 20HUD Menu v9's sourcescheme.res names resource/stratum2medium.vfont
+				// and stratum2bold.vfont, which neither the mod nor L4D2 contains, and ships the face
+				// as resource/20HUD_Stratum2Medium_MM.vfont through l4d360uischeme.res instead.
 				RegisterFont( pFileSystem, pPath );
 				// The target AddCustomFontFile accepts native TTF filenames, not
 				// encrypted VFONT data. A decoded face is now private to this process.
