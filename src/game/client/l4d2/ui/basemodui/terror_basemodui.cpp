@@ -140,7 +140,32 @@ public:
 	}
 	virtual void LoadControlSettings( const char *resource, const char *pathID = NULL, KeyValues *preloaded = NULL, KeyValues *conditions = NULL ) OVERRIDE
 	{
-		BaseClass::LoadControlSettings( resource, pathID, preloaded, conditions );
+		KeyValues::AutoDelete owned( preloaded ? NULL : new KeyValues( "" ) );
+		KeyValues *layout = preloaded ? preloaded : static_cast<KeyValues *>( owned );
+		if ( !preloaded && !LoadTerrorUiResource( layout, resource ) )
+			return;
+
+		// Keep the actual Add-ons dialog; drop the unused Extras and news UI
+		// before VGUI creates it, including on a scheme reload.
+		const char *unused[] = { "BtnExtras", "BtnBlogPost", "IconBlogPost", "FlmExtrasFlyout_Simple", "FlmExtrasFlyout_Live" };
+		for ( int i = 0; i < ARRAYSIZE( unused ); ++i )
+		{
+			if ( KeyValues *control = layout->FindKey( unused[i] ) )
+			{
+				layout->RemoveSubKey( control );
+				control->deleteThis();
+			}
+		}
+		KeyValues *addons = layout->FindKey( "BtnAddons" );
+		KeyValues *quit = layout->FindKey( "BtnQuit" );
+		if ( addons && quit )
+		{
+			quit->SetInt( "ypos", addons->GetInt( "ypos" ) + addons->GetInt( "tall" ) );
+			addons->SetString( "navDown", "BtnQuit" );
+			quit->SetString( "navUp", "BtnAddons" );
+		}
+
+		BaseClass::LoadControlSettings( resource, pathID, layout, conditions );
 		// G69840: actual remote-storage quota gates the native Cloud row.
 		FlyoutMenu *options = dynamic_cast<FlyoutMenu *>( FindChildByName( "FlmOptionsFlyout", true ) );
 		if ( options )
@@ -150,9 +175,6 @@ public:
 			const bool cloud = storage && storage->GetQuota( &total, &available ) && total != 0;
 			options->SetControlEnabled( "BtnCloud", cloud, true );
 		}
-		// G67470's absent-timestamp arm. Main approved the missing blog/news
-		// service, not a synthetic timestamp, blog window or news result.
-		SetControlVisible( "BtnBlogPost", false, true );
 	}
 	virtual void OnOpen() OVERRIDE
 	{
@@ -682,7 +704,6 @@ void MainMenu::OnCommand( const char *command )
 	if ( !Q_stricmp( command, "VersusSoftLock" ) ) command = "FlmVersusFlyout";
 	else if ( !Q_stricmp( command, "SurvivalCheck" ) ) command = "FlmSurvivalFlyout";
 	else if ( !Q_stricmp( command, "ScavengeCheck" ) ) command = "FlmScavengeFlyout";
-	else if ( !Q_stricmp( command, "FlmExtrasFlyoutCheck" ) ) command = "FlmExtrasFlyout_Simple";
 	FlyoutMenu *flyout = dynamic_cast<FlyoutMenu *>( FindChildByName( command, true ) );
 	if ( flyout )
 	{
