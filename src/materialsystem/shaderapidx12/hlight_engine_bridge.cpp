@@ -32,6 +32,12 @@ constexpr uintptr_t kQueuedContextVtable = 0xB5C28, kQueuedContextCallQueueVtabl
 constexpr uintptr_t kPendingRenderJob = 0x3080, kNewContextInitReturn = 0xE097;
 constexpr uint32 kStockQueueReserve = 8u << 20, kExpandedQueueReserve = 32u << 20;
 constexpr uint32 kQueueCommitStep = 64u << 10, kQueueInitialCommit = 256u << 10, kQueueAlignment = 4;
+// LockRenderData uses two frame-lifetime pools, not the per-context call queue.
+// Feature shadow views can submit many scenes before either pool is recycled.
+constexpr uintptr_t kRenderDataPools = 0xFAA30, kRenderDataLocks = 0xFAA1C;
+constexpr uint32 kRenderDataRequest = 0x44C000, kDataCommitStep = 0x8000;
+constexpr uint32 kStockDataReserve = (kRenderDataRequest + kDataCommitStep - 1) & ~(kDataCommitStep - 1);
+constexpr uint32 kExpandedDataReserve = 256u << 20, kDataAlignment = 32;
 
 struct QueuedCallArena
 {
@@ -206,6 +212,7 @@ struct State
     std::atomic_flag buildBusy = ATOMIC_FLAG_INIT;
     const char *builtinArenaFailure = nullptr;
     bool builtinArenasExpanded = false, builtinArenaReported = false;
+    bool dataPoolsReported = false;
 } g;
 
 uintptr_t HookTarget(const Hook &hook)
@@ -237,8 +244,19 @@ bool CreateExpandedCallArena(QueuedCallArena &arena)
 
 bool QueuedCallArenaInitHook(QueuedCallArena *arena, uint32 capacity, uint32 commitStep, uint32 initialCommit, uint32 alignment)
 {
-    // Only the constructor used by CreateRenderContext(MATERIAL_QUEUED_CONTEXT).
-    // This allocator is shared with the unrelated render-data and geometry arenas.
+    using Init = bool (*)(QueuedCallArena *, uint32, uint32, uint32, uint32);
+    const Init init = reinterpret_cast<Init>(g_QueuedCallArenaInit.original);
+    const uintptr_t address = reinterpret_cast<uintptr_t>(arena);
+    const uintptr_t first = g.materialModule + kRenderDataPools;
+    if ((address == first || address == first + sizeof(*arena)) && capacity == kRenderDataRequest &&
+        commitStep == kDataCommitStep && !initialCommit && alignment == kDataAlignment)
+    {
+        if (init(arena, kExpandedDataReserve, commitStep, initialCommit, alignment))
+            return true;
+        // No initial commit: a failed reserve holds no pages to release.
+        return init(arena, capacity, commitStep, initialCommit, alignment);
+    }
+
     if (reinterpret_cast<uintptr_t>(_ReturnAddress()) == g.materialModule + kNewContextInitReturn &&
         capacity == kStockQueueReserve && commitStep == kQueueCommitStep &&
         initialCommit == kQueueInitialCommit && alignment == kQueueAlignment)
@@ -251,8 +269,7 @@ bool QueuedCallArenaInitHook(QueuedCallArena *arena, uint32 capacity, uint32 com
         }
         QueueArenaWarningOnce("new queued context could not reserve 32 MiB; using the SDK's 8 MiB");
     }
-    using Init = bool (*)(QueuedCallArena *, uint32, uint32, uint32, uint32);
-    return reinterpret_cast<Init>(g_QueuedCallArenaInit.original)(arena, capacity, commitStep, initialCommit, alignment);
+    return init(arena, capacity, commitStep, initialCommit, alignment);
 }
 
 const char *InspectEmptyCallArena(uintptr_t context, QueuedCallArena &arena)
@@ -336,6 +353,46 @@ const char *EnlargeBuiltinCallArenas()
     // The SDK owns the new reservations and releases them with the contexts,
     // including after the DX12 bridge has been shut down.
     g.builtinArenasExpanded = true;
+    return nullptr;
+}
+
+// Called before queued frames start or in the pre-draw level-init transaction.
+// An empty pool has no queued draw or render-data client pointing into it.
+const char *SizeRenderDataPools()
+{
+    const uintptr_t material = reinterpret_cast<uintptr_t>(g.materials);
+    if (material != g.materialModule + kMaterialSystem || Load<uintptr_t>(material + kPendingRenderJob) ||
+        g.materials->GetThreadMode() != MATERIAL_SINGLE_THREADED || Load<int>(g.materialModule + kRenderDataLocks))
+        return "material system not quiescent";
+    auto *pools = reinterpret_cast<QueuedCallArena *>(g.materialModule + kRenderDataPools);
+    if (pools[0].capacity == kExpandedDataReserve && pools[1].capacity == kExpandedDataReserve)
+        return nullptr;
+    for (int i = 0; i < 2; ++i)
+    {
+        const QueuedCallArena &pool = pools[i];
+        if (!pool.base || pool.next != pool.base || pool.capacity != kStockDataReserve ||
+            pool.reservedEnd - pool.base != pool.capacity || pool.alignment != kDataAlignment ||
+            pool.commitStep != kDataCommitStep || pool.initialCommit)
+            return "render-data pool not empty or layout differs";
+    }
+    void *bases[2] = {};
+    for (int i = 0; i < 2; ++i)
+    {
+        bases[i] = VirtualAlloc(nullptr, kExpandedDataReserve, MEM_RESERVE, PAGE_NOACCESS);
+        if (!bases[i])
+        {
+            if (bases[0]) VirtualFree(bases[0], 0, MEM_RELEASE);
+            return "could not reserve both frame pools";
+        }
+    }
+    for (int i = 0; i < 2; ++i)
+    {
+        const uintptr_t old = pools[i].base;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(bases[i]);
+        pools[i] = {base, base, base + kExpandedDataReserve, base,
+            kExpandedDataReserve, kDataAlignment, kDataCommitStep, 0};
+        VirtualFree(reinterpret_cast<void *>(old), 0, MEM_RELEASE);
+    }
     return nullptr;
 }
 
@@ -1084,6 +1141,15 @@ void FaceLoadHook()
 void LevelInitHook()
 {
     const bool transaction = BeginTransaction();
+    if (transaction && !g.dataPoolsReported)
+    {
+        const char *failure = SizeRenderDataPools();
+        if (failure)
+            Warning("ShaderAPIDX12: frame render-data pools unchanged: %s\n", failure);
+        else
+            Msg("ShaderAPIDX12: frame render-data pools: 256 MiB x 2, committed on demand\n");
+        g.dataPoolsReported = true;
+    }
     if (!g.builtinArenaReported && ThreadInMainThread())
     {
         g.builtinArenaReported = true;
@@ -1310,6 +1376,8 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
     if (!queued || MH_ApplyQueued() != MH_OK)
     { RemoveHooks(); V_strncpy(g.compatibility, "High-resolution lightmaps: atomic entry-hook activation failed", sizeof(g.compatibility)); return false; }
     g.builtinArenaFailure = lateAttach ? "world already loaded during device initialization" : EnlargeBuiltinCallArenas();
+    if (!lateAttach)
+        SizeRenderDataPools();
     g.supported = true; g.compatibility[0] = 0;
     if (lateAttach) V_strncpy(g.compatibility, "High-resolution lightmaps: existing world was not observed; clean map reload required", sizeof(g.compatibility));
     return true;

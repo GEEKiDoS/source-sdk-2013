@@ -389,6 +389,9 @@ initial commit and 64 KiB commit steps. A single filtered allocator hook gives n
 capacity without changing other native arenas. Feature shadow views check usage between complete draw submissions.
 At half capacity the bridge replays pending calls in order and reuses the arena without ending the shadow pass,
 changing `mat_queue_mode`, or waiting on the GPU. The check does not depend on high-resolution lightmap capture.
+Draw payloads (including studio flex weights) instead live in a double-buffered render-data pool until frame end.
+Replaying the call queue does not reclaim them. The bridge reserves 256 MiB per frame pool for multi-view shadow
+submission; the SDK still commits only on demand in 32 KiB steps. Live allocations are never moved.
 
 Batched opaque casters: between `IShaderAPIDX12Lighting::BeginShadowCasterBatch` / `EndShadowCasterBatch` (queued
 markers the client emits around the caster block of `CFeatureShadowDepthView::Draw` while `r_shadowmap_instancing`,
