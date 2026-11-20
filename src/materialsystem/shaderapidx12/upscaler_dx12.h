@@ -163,13 +163,14 @@ public:
 	void ReleaseNr();
 
 	// Shader-visible blocks for the depth clone/NR and the native SMAA passes.
-	bool NeedsDescriptors( const UpscalerDispatchDX12 &d ) const { return NeedsDepthClone( d ) || m_Feature.kind == UpscalerKindDX12::SmaaT2x; }
+	bool NeedsDescriptors( const UpscalerDispatchDX12 &d ) const { return d.nrLayers || NeedsDepthClone( d ) || m_Feature.kind == UpscalerKindDX12::SmaaT2x; }
 
 	uint32_t DescriptorCount( uint32_t nNrLayers ) const
 	{
 		const bool smaa = m_Feature.kind == UpscalerKindDX12::SmaaT2x;
 		// Native SMAA without NR has no depth-clone pass.
-		return 6u * ( 2u * nNrLayers + ( !smaa || nNrLayers ? 1u : 0u ) + ( smaa ? 4u : 0u ) );
+		const uint32_t align = nNrLayers && m_Feature.Scaled() ? 1u : 0u;
+		return 6u * ( 2u * nNrLayers + align + ( !smaa || nNrLayers ? 1u : 0u ) + ( smaa ? 4u : 0u ) );
 	}
 
 private:
@@ -210,7 +211,7 @@ private:
 	// render region in every replay.
 	bool NeedsDepthClone( const UpscalerDispatchDX12 &d ) const
 	{
-		return m_Feature.kind == UpscalerKindDX12::DLSS || ( m_Feature.kind == UpscalerKindDX12::XeSS && m_Feature.Scaled() ) || d.nrLayers;
+		return m_Feature.kind == UpscalerKindDX12::DLSS || ( m_Feature.kind == UpscalerKindDX12::XeSS && m_Feature.Scaled() ) || ( d.nrLayers && !m_Feature.Scaled() );
 	}
 
 	bool EnsureDepthClone( uint32_t nWidth, uint32_t nHeight );

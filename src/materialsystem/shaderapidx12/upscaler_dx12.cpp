@@ -223,6 +223,7 @@ struct CUpscalerDX12::NrChain
 	ID3D12Resource *source = nullptr;
 	// proxy: NON_PIXEL_SHADER_RESOURCE between replays; answer and out[]: UNORDERED_ACCESS.
 	Microsoft::WRL::ComPtr<ID3D12Resource> proxy, answer, out[2];
+	Microsoft::WRL::ComPtr<ID3D12Resource> alignedDepth, alignedMotion;
 	void *handles[kNrMaxLayersDX12] = {};
 };
 
@@ -1237,7 +1238,7 @@ bool CUpscalerDX12::PrepareNr( const DlssNrTuningDX12 &tuning, uint32_t nLayers,
 		Warning( "ShaderAPIDX12 upscaler: DLSS-NR needs at least %ux%u (scene is %ux%u)\n", kNrMinWidth, kNrMinHeight, nWidth, nHeight );
 		return false;
 	}
-	if ( !EnsureDepthClone( nWidth, nHeight ) )
+	if ( !m_Feature.Scaled() && !EnsureDepthClone( nWidth, nHeight ) )
 		return false;
 	NrChain *pChain = new NrChain;
 	pChain->tuning = tuning;
@@ -1251,6 +1252,16 @@ bool CUpscalerDX12::PrepareNr( const DlssNrTuningDX12 &tuning, uint32_t nLayers,
 	pChain->out[0] = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav, "DX12 DLSS-NR output 0" );
 	if ( nLayers > 1 )
 		pChain->out[1] = CreateTexture( m_pDevice, nWidth, nHeight, sourceDesc.Format, kUav, "DX12 DLSS-NR output 1" );
+	if ( m_Feature.Scaled() )
+	{
+		pChain->alignedDepth = CreateTexture( m_pDevice, nWidth, nHeight, DXGI_FORMAT_R32_FLOAT, kNpsr, "DX12 DLSS-NR aligned depth" );
+		pChain->alignedMotion = CreateTexture( m_pDevice, nWidth, nHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, kNpsr, "DX12 DLSS-NR aligned motion" );
+		if ( !pChain->alignedDepth || !pChain->alignedMotion )
+		{
+			delete pChain;
+			return false;
+		}
+	}
 	if ( !pChain->proxy || !pChain->answer || !pChain->out[0] || ( nLayers > 1 && !pChain->out[1] ) )
 	{
 		Warning( "ShaderAPIDX12 upscaler: DLSS-NR chain textures %ux%u failed\n", nWidth, nHeight );
@@ -1365,6 +1376,16 @@ void CUpscalerDX12::WriteDescriptors( const UpscalerDispatchDX12 &d ) const
 		ID3D12Resource *output = m_pNrChain->out[layer & 1].Get();
 		pass( 1 + layer * 2, input, color, nullptr, nullptr, m_pNrChain->proxy.Get(), nullptr );                 // encode
 		pass( 2 + layer * 2, m_pNrChain->proxy.Get(), color, m_pNrChain->answer.Get(), input, output, nullptr ); // resolve
+	}
+	if ( d.nrLayers && m_Feature.Scaled() )
+	{
+		const uint32_t index = 1 + 2 * d.nrLayers;
+		srv( index, 0, d.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS );
+		srv( index, 1, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT );
+		srv( index, 2, nullptr, color );
+		srv( index, 3, nullptr, color );
+		uav( index, 4, m_pNrChain->alignedMotion.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT );
+		uav( index, 5, m_pNrChain->alignedDepth.Get(), DXGI_FORMAT_R32_FLOAT );
 	}
 	if ( m_pSmaa )
 	{
@@ -1505,6 +1526,21 @@ uint32_t CUpscalerDX12::ExecuteNr( ID3D12GraphicsCommandList *pList, const Upsca
 		return kReplayNoContext;
 	NVSDK_NGX_Parameter *p = m_pNgxApi->caps;
 	const NrChain &chain = *m_pNrChain;
+	if ( chain.alignedDepth )
+	{
+		NrConstantsDX12 align{};
+		align.width = d.width;
+		align.height = d.height;
+		align.renderWidth = d.renderWidth;
+		align.renderHeight = d.renderHeight;
+		align.jitterX = d.jitter[0];
+		align.jitterY = d.jitter[1];
+		Transition( pList, chain.alignedDepth.Get(), kNpsr, kUav );
+		Transition( pList, chain.alignedMotion.Get(), kNpsr, kUav );
+		BindCompute( pList, d, m_pDepthPso.Get(), 1 + 2 * d.nrLayers, align );
+		Transition( pList, chain.alignedMotion.Get(), kUav, kNpsr );
+		Transition( pList, chain.alignedDepth.Get(), kUav, kNpsr );
+	}
 	// Layer N reads layer N-1's output (layer 0 reads the temporal-AA output). Every resource returns to its resting
 	// state -- proxy NON_PIXEL_SHADER_RESOURCE, the rest UNORDERED_ACCESS -- before an evaluate failure returns.
 	for ( uint32_t nLayer = 0; nLayer < chain.layers; ++nLayer )
@@ -1535,8 +1571,8 @@ uint32_t CUpscalerDX12::ExecuteNr( ID3D12GraphicsCommandList *pList, const Upsca
 		Transition( pList, chain.proxy.Get(), kUav, kNpsr );
 		// The model: proxy + depth clone + motion -> answer.
 		p->Set( "DLSSNR.Color", chain.proxy.Get() );
-		p->Set( "DLSSNR.Depth", m_pDepthClone.Get() );
-		p->Set( "DLSSNR.MVec", d.motion );
+		p->Set( "DLSSNR.Depth", chain.alignedDepth ? chain.alignedDepth.Get() : m_pDepthClone.Get() );
+		p->Set( "DLSSNR.MVec", chain.alignedMotion ? chain.alignedMotion.Get() : d.motion );
 		p->Set( "DLSSNR.Output", chain.answer.Get() );
 		p->Set( "DLSSNR.Enabled", 1u );
 		p->Set( "DLSSNR.Width", d.width );
@@ -1556,8 +1592,8 @@ uint32_t CUpscalerDX12::ExecuteNr( ID3D12GraphicsCommandList *pList, const Upsca
 			V_snprintf( szName, sizeof( szName ), "%sSubrectHeight", pszPrefixes[i] );
 			p->Set( szName, d.height );
 		}
-		p->Set( "DLSSNR.MVecScaleX", d.motionScale[0] );
-		p->Set( "DLSSNR.MVecScaleY", d.motionScale[1] );
+		p->Set( "DLSSNR.MVecScaleX", -static_cast<float>( d.width ) );
+		p->Set( "DLSSNR.MVecScaleY", -static_cast<float>( d.height ) );
 		const DlssNrTuningDX12 &t = chain.tuning;
 		p->Set( "DLSSNR.Intensity", t.intensity );
 		p->Set( "DLSSNR.Style", t.style );
@@ -2218,7 +2254,7 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	if ( !pMotion || !( pMotion->flags & TEXTURE_CREATE_RENDERTARGET ) || pMotion->format != IMAGE_FORMAT_RGBA16161616F || pMotion->width != static_cast<int>( nWidth ) ||
 	    pMotion->height != static_cast<int>( nHeight ) || !EnsureTextureResident( *pMotion ) || !pMotion->resource )
 		return reject( -5, "no scene-sized motion-vector resolve this frame" );
-	if ( m_UpscalerKind == UpscalerKindDX12::None )
+	if ( DX12NrInputAvailability( m_UpscalerKind != UpscalerKindDX12::None ) != DX12_NR_READY )
 		return reject( -1, "no provider for the selected mode" );
 	if ( bScaled && m_UpscalerKind == UpscalerKindDX12::SmaaT2x )
 		return reject( -2, "SMAA T2x requires native resolution" );
@@ -2235,15 +2271,7 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	if ( !m_Upscaler.PrepareFeature( desc, m_pDevice->Queue() ) )
 		return reject( -2, "provider feature creation failed" );
 	DlssNrComposeDX12 compose;
-	uint32_t nNrLayers = 0;
-	if ( bScaled )
-	{
-		// DLSS-NR reads scene-sized depth and motion vectors beside the output; a scaled frame has neither.
-		nNrStatus = Field( m_RenderingInts[INT_RENDERPARM_DX12_NR_CONFIG], DX12_NR_CONFIG_LAYERS_SHIFT, 4 ) ? -3 : 0;
-		m_bUpscalerNrHistoryGap = true;
-	}
-	else
-		nNrLayers = PrepareUpscalerNr( compose );
+	const uint32_t nNrLayers = PrepareUpscalerNr( compose );
 	FlushBufferedPrimitives();
 	CommitTransforms();
 	CCommandRecorderDX12 *pList = m_pDevice->CommandList();

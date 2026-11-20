@@ -187,14 +187,11 @@ enum UpscalerDX12NrAvailability_t
 	DX12_NR_NEEDS_NATIVE_SCALE
 };
 
-// Shared policy for dispatch and settings. A native temporal result has
-// matching color, depth and motion inputs for every NR layer.
-inline UpscalerDX12NrAvailability_t DX12NrInputAvailability( bool bTemporalProvider, bool bScaled )
+// NR consumes the temporal provider's output. Scaled frames align guides in the backend.
+inline UpscalerDX12NrAvailability_t DX12NrInputAvailability( bool bTemporalProvider )
 {
 	if ( !bTemporalProvider )
 		return DX12_NR_NEEDS_TEMPORAL_AA;
-	if ( bScaled )
-		return DX12_NR_NEEDS_NATIVE_SCALE;
 	return DX12_NR_READY;
 }
 
