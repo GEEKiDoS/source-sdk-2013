@@ -18,6 +18,15 @@ Vertex main( uint id : SV_VertexID )
 	BounceLight bounce = ReduceBounce( measurement );
 	v.light = bounce.positionValid;
 	v.color = bounce.colorDebug;
+	// Keep saturation out of history: repeatedly boosting yesterday's tint would shift the hue.
+	const float luma = dot( v.color.rgb, float3( 0.2126, 0.7152, 0.0722 ) );
+	const float3 chroma = v.color.rgb - luma;
+	const float saturation = measurement.Load( int3( 7, 3, 0 ) ).y;
+	// Shorten the chroma vector uniformly at the HDR clamp or zero; channel clipping changes luma.
+	const float peak = max( chroma.r, max( chroma.g, chroma.b ) );
+	const float trough = -min( chroma.r, min( chroma.g, chroma.b ) );
+	const float gain = min( saturation, min( max( 0.8 - luma, 0 ) / max( peak, 1e-8 ), luma / max( trough, 1e-8 ) ) );
+	v.color.rgb = max( luma + gain * chroma, 0 );
 	v.hitCenter = bounce.hitCenter;
 	float4 rect = float4( -1, -1, 1, 1 );
 #if !VIEWMODEL

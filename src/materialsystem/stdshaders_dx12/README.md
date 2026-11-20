@@ -691,9 +691,10 @@ temporal upscaler and 0 otherwise (the GTAO/volumetric convention). Rotated 4-ta
 plane preflight checks a +-0.75 square instead of +-0.5. Measured at the two d1_trainstation_02 spots with PCSS:
 +0.06 / +0.12 ms GPU.
 The DX12 flashlight bounce measures the native HDR scene on an 8-pixel lattice before SSR and GTAO apply.
-Only effect-owned, view-selected projectors participate. The shader divides lit RGB by an unshadowed cookie,
-attenuation and cosine estimate in scene units. A fixed ambient reference discounts weakly illuminated samples;
-this is not a recovered material base texture. Sixteen groups write partial sums, reduced in the light rectangle's
+Only effect-owned, view-selected projectors participate. The shader averages pre-bounce HDR colour weighted by
+cookie, attenuation and surface cosine. `r_flashlight_bounce_saturation` scales chroma about Rec.709 luma after
+temporal smoothing, without accumulating the boost or changing luminance at the brightness clamp.
+Sixteen groups write partial sums, reduced in the light rectangle's
 vertices. Ping-pong history smooths nearby hits but rejects jumps beyond 72 units. No render-target readback or
 new G-buffer attachment is needed. Opaque viewmodels receive a separate compressed-depth draw, never contribute
 to the measurement, and translucents do not receive it. `r_flashlight_bounce` gates dispatch and `r_flashlight_bounce_scale`

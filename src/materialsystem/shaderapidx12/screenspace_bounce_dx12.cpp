@@ -11,7 +11,7 @@ struct BounceMeasureConstants
 {
 	float clipToWorld[16], worldToClip[16];
 	float worldToLight[16], originFar[4], colorConst[4], attenuation[4];
-	float viewport[4], eyeExposure[4], settings[4];
+	float viewport[4], eyeSaturation[4], settings[4];
 };
 
 void BindBounceTexture( CPipelineCacheDX12::BindingInputDX12 &input, int slot, ID3D12Resource *resource,
@@ -59,8 +59,8 @@ void CShaderAPIDX12::MeasureBounce()
 		cb.attenuation[0] = spots[i].linearAttn;
 		cb.attenuation[1] = spots[i].quadraticAttn;
 		memcpy( cb.viewport, camera.viewport, sizeof( cb.viewport ) );
-		memcpy( cb.eyeExposure, camera.eyeLength, 3 * sizeof( float ) );
-		cb.eyeExposure[3] = MAX( 0.01f, m_ToneScale.x );
+		memcpy( cb.eyeSaturation, camera.eyeLength, 3 * sizeof( float ) );
+		cb.eyeSaturation[3] = m_flBounceSaturation;
 		cb.settings[0] = m_flBounceScale;
 		cb.settings[1] = slot.identity == spots[i].flags && slot.frame + 1 == m_nFrameCounter;
 		cb.settings[2] = camera.depth[0];

@@ -1,5 +1,5 @@
 logical=flashlight_bounce_cs51 stage=cs source=flashlight_bounce_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
-  cbuffer=BounceMeasure space=1 register=b0 size=288 layoutHash=0x6255d147e12ebe19 material
+  cbuffer=BounceMeasure space=1 register=b0 size=288 layoutHash=0xae2fd2a37ef7233c material
     member=clipToWorld type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=worldToClip type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=worldToLight type=3 class=2 offset=128 size=64 elements=0 arrayStride=0 legacy=
@@ -7,5 +7,5 @@ logical=flashlight_bounce_cs51 stage=cs source=flashlight_bounce_cs51.fxc legacy
     member=colorConst type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=attn type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
     member=viewport type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
-    member=eyeExposure type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
+    member=eyeSaturation type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
     member=settings type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=

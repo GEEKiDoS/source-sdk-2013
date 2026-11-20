@@ -974,6 +974,7 @@ private:
 	BounceSlotDX12 m_BounceSlots[DX12_PBR_RESERVED_FLASHLIGHTS];
 	uint64_t m_nBounceFrame = ~0ull;
 	float m_flBounceScale = 0;
+	float m_flBounceSaturation = 1.f;
 	bool m_bBounceDebug = false;
 	uint32 m_nBounceBlend = 1;
 	void MeasureBounce();
