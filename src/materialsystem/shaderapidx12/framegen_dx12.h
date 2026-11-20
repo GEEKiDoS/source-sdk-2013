@@ -65,6 +65,7 @@ struct FrameGenCameraDX12
 struct FrameGenDispatchDX12
 {
 	ID3D12Resource *depth = nullptr, *motion = nullptr, *hudless = nullptr;
+	IDXGISwapChain3 *swap = nullptr; // borrowed like the input textures; the device drains replay before release
 	D3D12_RESOURCE_STATES depthBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE, motionBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	uint32_t width = 0, height = 0;
 	uint32_t frameId = 0;      // client frame id (latency markers, XeFG present id, Streamline frame token)
@@ -180,7 +181,7 @@ private:
 	};
 
 	static void ReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device *pDevice, const void *pPayload ) noexcept;
-	uint32_t Execute( ID3D12GraphicsCommandList *pList, const FrameGenDispatchDX12 &d ) const noexcept;
+	uint32_t Execute( ID3D12GraphicsCommandList *pList, const FrameGenDispatchDX12 &d ) noexcept;
 	void Fail( const char *pszFormat, ... );
 
 	void LoadFfx();
@@ -195,6 +196,7 @@ private:
 	void DestroyXefgContext();
 	void DestroyFfxContexts();
 	bool CreateFfxFgContext( uint32_t nWidth, uint32_t nHeight, bool bInverted );
+	bool ConfigureFfxFrame( IDXGISwapChain3 *pSwap, ID3D12Resource *pHudless, uint64_t serial, uint32_t width, uint32_t height, bool active );
 	bool RecreateNativeQueue( ID3D12CommandQueue *&pQueue );
 	void ApplyReflex();
 	void ApplyXellSleepMode();

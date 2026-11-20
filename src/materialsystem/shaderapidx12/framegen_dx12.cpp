@@ -11,6 +11,7 @@
 #include "provider_module_dx12.h"
 #include "materialsystem/imaterialsystem.h"
 #include "tier0/dbg.h"
+#include "tier1/convar.h"
 #include "tier1/strtools.h"
 #include "tier0/icommandline.h"
 #include <stdarg.h>
@@ -52,6 +53,10 @@ const char *FrameGenKindNameDX12( FrameGenKindDX12 kind )
 
 namespace
 {
+ConVar r_framegen_debug( "r_framegen_debug", "0", FCVAR_CHEAT,
+	"FSR frame generation diagnostics: 0 off, 1 mark interpolated frames and resets, 2 also show the interpolation debug view",
+	true, 0, true, 2 );
+
 constexpr uint32_t kFrameIdMask = 0x0FFFFFFFu;
 constexpr float kViewSpaceToMeters = 0.0254f; // Source units are inches
 constexpr D3D12_RESOURCE_STATES kNpsr = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -61,7 +66,7 @@ constexpr uint32_t kReplayNoContext = 0x10002u;
 
 struct FrameGenReplayPayloadDX12
 {
-	const CFrameGenDX12 *owner;
+	CFrameGenDX12 *owner;
 	FrameGenDispatchDX12 dispatch;
 };
 
@@ -1309,13 +1314,17 @@ void CFrameGenDX12::ReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device 
 	d.result->serial = d.serial;
 }
 
-uint32_t CFrameGenDX12::Execute( ID3D12GraphicsCommandList *pList, const FrameGenDispatchDX12 &d ) const noexcept
+uint32_t CFrameGenDX12::Execute( ID3D12GraphicsCommandList *pList, const FrameGenDispatchDX12 &d ) noexcept
 {
 	switch ( m_Kind )
 	{
 	case FrameGenKindDX12::FSR:
 	{
 		if ( !m_pFfxFgContext )
+			return kReplayNoContext;
+		// Configure and prepare this frame together, in submission order with the
+		// preceding Present. The recorder can replay before the next Present call.
+		if ( !ConfigureFfxFrame( d.swap, d.hudless, d.presentSerial, d.width, d.height, true ) )
 			return kReplayNoContext;
 		Transition( pList, d.depth, d.depthBefore, kRead );
 		Transition( pList, d.motion, d.motionBefore, kRead );
@@ -1395,6 +1404,43 @@ uint32_t CFrameGenDX12::Execute( ID3D12GraphicsCommandList *pList, const FrameGe
 }
 
 //-----------------------------------------------------------------------------
+bool CFrameGenDX12::ConfigureFfxFrame( IDXGISwapChain3 *pSwap, ID3D12Resource *pHudless, uint64_t serial, uint32_t width, uint32_t height, bool active )
+{
+	ffxConfigureDescFrameGeneration config{};
+	config.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+	config.swapChain = pSwap;
+	config.frameGenerationCallback = []( ffxDispatchDescFrameGeneration *pParams, void *pUserContext ) -> ffxReturnCode_t
+	{
+		const CFrameGenDX12 *pSelf = static_cast<const CFrameGenDX12 *>( pUserContext );
+		ffxContext context = pSelf->m_pFfxFgContext;
+		return context ? pSelf->m_pFfx->dispatch( &context, &pParams->header ) : FFX_API_RETURN_ERROR;
+	};
+	config.frameGenerationCallbackUserContext = this;
+	config.frameGenerationEnabled = active;
+	config.allowAsyncWorkloads = false;
+	if ( pHudless )
+		config.HUDLessColor = ffxApiGetResourceDX12( pHudless, FFX_API_RESOURCE_STATE_COMPUTE_READ );
+	const int debug = r_framegen_debug.GetInt();
+	if ( debug )
+	{
+		config.flags = FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_TEAR_LINES | FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_RESET_INDICATORS;
+		if ( debug == 2 )
+			config.flags |= FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_VIEW;
+	}
+	config.generationRect = { 0, 0, static_cast<int32_t>( width ), static_cast<int32_t>( height ) };
+	config.frameID = serial;
+	const ffxReturnCode_t rc = m_pFfx->configure( &m_pFfxFgContext, &config.header );
+	if ( rc != FFX_API_RETURN_OK )
+	{
+		m_nRuntimeError = 1;
+		Warning( "ShaderAPIDX12 framegen: ffxConfigure(framegeneration) failed (%u)\n", rc );
+		return false;
+	}
+	m_bFfxEnabled = active;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: Per-present protocol on the recording owner (worker drained, Present op not yet enqueued)
 //-----------------------------------------------------------------------------
 void CFrameGenDX12::PrepareFrame( bool bActive, uint32_t nFrameId, uint64_t nPresentSerial, uint32_t nWidth, uint32_t nHeight, IDXGISwapChain3 *pSwap )
@@ -1426,34 +1472,8 @@ void CFrameGenDX12::PrepareFrame( bool bActive, uint32_t nFrameId, uint64_t nPre
 		// unpredictably; the count reported is what this configure asks the chain to show.
 		const bool bInterpolate = bActive && m_pFfxFgContext;
 		m_nPresented += bInterpolate ? 1u + m_nGenerated : 1u;
-		if ( !m_pFfxFgContext )
-			return;
-		ffxConfigureDescFrameGeneration config{};
-		config.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
-		config.swapChain = pSwap;
-		config.presentCallback = nullptr;
-		config.presentCallbackUserContext = nullptr;
-		config.frameGenerationCallback = []( ffxDispatchDescFrameGeneration *pParams, void *pUserContext ) -> ffxReturnCode_t
-		{
-			const CFrameGenDX12 *pSelf = static_cast<const CFrameGenDX12 *>( pUserContext );
-			ffxContext context = pSelf->m_pFfxFgContext;
-			return context ? pSelf->m_pFfx->dispatch( &context, &pParams->header ) : FFX_API_RETURN_ERROR;
-		};
-		config.frameGenerationCallbackUserContext = this;
-		config.frameGenerationEnabled = bActive;
-		config.allowAsyncWorkloads = false;
-		config.HUDLessColor = bActive && m_bHudless && m_pHudless ? ffxApiGetResourceDX12( m_pHudless.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ ) : FfxApiResource{};
-		config.flags = 0;
-		config.onlyPresentGenerated = false;
-		config.generationRect = { 0, 0, static_cast<int32_t>( nWidth ), static_cast<int32_t>( nHeight ) };
-		config.frameID = nPresentSerial;
-		const ffxReturnCode_t rc = m_pFfx->configure( &m_pFfxFgContext, &config.header );
-		if ( rc != FFX_API_RETURN_OK )
-		{
-			m_nRuntimeError = 1;
-			Warning( "ShaderAPIDX12 framegen: ffxConfigure(framegeneration) failed (%u)\n", rc );
-		}
-		m_bFfxEnabled = bActive;
+		if ( !bInterpolate && m_pFfxFgContext )
+			ConfigureFfxFrame( pSwap, nullptr, nPresentSerial, nWidth, nHeight, false );
 		break;
 	}
 	default:
