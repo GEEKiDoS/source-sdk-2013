@@ -27,7 +27,7 @@ bool ValidateHighresShaderResourcesDX12( ID3D12ShaderReflection *reflection, con
 HRESULT CreateCommittedResourceDX12( ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heap, D3D12_HEAP_FLAGS flags, const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE *clear, REFIID iid, void **out, const char *category, const char *name = nullptr );
 void TrackResourceMemoryDX12( ID3D12Device *device, ID3D12Resource *resource, const char *category, const char *name = nullptr, bool placed = false );
 // Snapshots owned metadata only; never dereferences registered resource pointers.
-void PrintResourceMemoryReportDX12( ID3D12Device *device );
+void PrintResourceMemoryReportDX12( ID3D12Device *device, bool detailed );
 
 template <typename T>
 struct ByteSpanDX12

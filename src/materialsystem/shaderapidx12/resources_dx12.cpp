@@ -253,7 +253,7 @@ HRESULT CreateCommittedResourceDX12( ID3D12Device *device, const D3D12_HEAP_PROP
 	return hr;
 }
 
-void PrintResourceMemoryReportDX12( ID3D12Device *device )
+void PrintResourceMemoryReportDX12( ID3D12Device *device, bool detailed )
 {
 	CUtlVector<ResourceMemoryEntryDX12> snapshot;
 	AcquireSRWLockShared( &s_ResourceMemoryMutex );
@@ -303,11 +303,16 @@ void PrintResourceMemoryReportDX12( ID3D12Device *device )
 	for ( int first = 0; first < snapshot.Count(); )
 	{
 		int end = first;
-		uint64_t bytes = 0;
+		uint64_t committed = 0, placed = 0;
 		while ( end < snapshot.Count() && snapshot[end].category == snapshot[first].category )
-			bytes += snapshot[end++].allocation.SizeInBytes;
-		Msg( "  category %s: %d resources, %llu allocation bytes (%.3f MiB)\n", snapshot[first].category.Get(), end - first, static_cast<unsigned long long>( bytes ), bytes / mib );
-		for ( int i = first; i < end; ++i )
+		{
+			const ResourceMemoryEntryDX12 &entry = snapshot[end++];
+			( entry.placed ? placed : committed ) += entry.allocation.SizeInBytes;
+		}
+		Msg( "  category %s: %d resources, committed %llu bytes (%.3f MiB), placed %llu bytes (%.3f MiB)\n",
+		    snapshot[first].category.Get(), end - first, static_cast<unsigned long long>( committed ), committed / mib,
+		    static_cast<unsigned long long>( placed ), placed / mib );
+		for ( int i = first; detailed && i < end; ++i )
 		{
 			const ResourceMemoryEntryDX12 &entry = snapshot[i];
 			const D3D12_RESOURCE_DESC &desc = entry.desc;
@@ -320,6 +325,8 @@ void PrintResourceMemoryReportDX12( ID3D12Device *device )
 		}
 		first = end;
 	}
+	if ( !detailed )
+		return;
 	if ( snapshot.Count() )
 		std::sort( snapshot.Base(), snapshot.Base() + snapshot.Count(), []( const ResourceMemoryEntryDX12 &a, const ResourceMemoryEntryDX12 &b )
 		{
