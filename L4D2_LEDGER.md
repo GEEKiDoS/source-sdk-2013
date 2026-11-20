@@ -3034,3 +3034,9 @@ The BSP21 adapter admitted only the 62 hash-pinned shipped maps. The native engi
     No port defect.
   - The 1913 UNEXPLAINED fields remain native-proof/epoch coverage gaps.
   - NET: pairs qualified in both games. The competition JPEG gap is tooling. The changelevel bot-connect failure is not reproduced (2 humans / 0 bots). The atomic lifecycle reconnect stage hit a native-reader JSON decode error (tooling). The HitReg 50 HP case is native-shared (HitReg124). sv_unlag/cl_showerror are dev-only natively.
+
+## Survivor death HUD after respawn
+
+- `CTerrorSpectatorGUI` (`specgui`) draws the survivor skull and `DeathMessage` from `SpectatorSurvivor.res`. On a spawn, retail server `0x103269D0` sends `VGUIMenu("specgui", false)`; retail client `0x100C3A40` dispatches it to the viewport. Retail's spectator and base `ShowPanel` implementations (`0x102CBF90` / `0x102E9F20`) both compare the actual VGUI visibility, not the menu-filtered spectator `IsVisible` (`0x102CC860`). Retail also closes the viewport panels on `game_newmap` (`0x101E0E30`).
+- The port's base `ShowPanel` used the virtual `IsVisible`. With the pause menu open, the spectator override returned false even though the panel's VGUI visibility was still true. The spawn's hide was thus skipped. The base now compares `vgui::Panel::IsVisible()`, so the existing hide runs even while GameUI is open.
+- Verified in the Release x64 client with one local survivor and bots on `c1m1_hotel`: `kill`, then `callvote RestartGame` with the pause menu open through respawn. The baseline retained the death banner at full health; the fix removes it and still shows it while dead. Also verified the stock hotel rescue closet opened through entity I/O and a `changelevel c1m2_streets` while dead.

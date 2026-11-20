@@ -114,7 +114,9 @@ void CTerrorViewportPanel::ApplySchemeSettings( vgui::IScheme *scheme )
 }
 void CTerrorViewportPanel::ShowPanel( bool state )
 {
-	if ( state == IsVisible() ) return;
+	// A derived panel may report itself hidden while the pause menu is open.
+	// ShowPanel must still change the underlying VGUI visibility.
+	if ( state == vgui::Panel::IsVisible() ) return;
 	if ( state ) engine->CheckPoint( GetName() ); // Native engine308 CheckPoint.
 	if ( HasInputElements() )
 	{
