@@ -10,3 +10,6 @@
 bool AddModuleRedirect( const wchar_t *pModuleBaseName, const wchar_t *pReplacementDll, wchar_t *pError, size_t errorChars );
 // Installs the LoadLibrary hooks serving every redirect added so far. Call once, after AddModuleRedirect.
 bool InstallModuleRedirects( wchar_t *pError, size_t errorChars );
+#if defined( L4D2 )
+bool InstallAudioCacheRedirect( const char *sdk );
+#endif

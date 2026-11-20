@@ -240,8 +240,11 @@ and their real loose-content directories in that order, with SDK base game conte
 below them. The read-only original platform directory follows the SDK platform
 archive and loose directory, supplying missing VGUI localization while preserving
 the SDK GameUI and ServerBrowser resource layouts. No bulk assets are copied
-and no content views are created. Mod configuration, caches, and logs use the
-normal in-place game write paths. Prepared HUD resources retain authored empty
+and no content views are created. Configuration and logs use the mod write paths.
+The x64 launcher keeps the engine's per-search-path audio repositories in
+`mod_l4d2/soundcache/`, including caches for mounted DLC and VPKs. Only the cache
+location changes; sound files are still read from their original mounts.
+Prepared HUD resources retain authored empty
 strings, including the console's deliberately empty frame icons.
 
 Deployment copies `cfg/valve.rc` and `cfg/config_default.cfg` from the original

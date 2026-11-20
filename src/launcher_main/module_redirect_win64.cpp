@@ -317,3 +317,63 @@ bool InstallModuleRedirects( wchar_t *pError, size_t errorChars )
 	s_bHooksInstalled = true;
 	return true;
 }
+
+#if defined( L4D2 )
+// SearchPathCache takes separate names for the repository and the content
+// mount. Change only the former, before IsUpToDate/Init can delete or open it.
+typedef void *(*AudioCacheCtor_t)( void *, const char *, const char *, int );
+static AudioCacheCtor_t s_AudioCacheCtor;
+
+// SDK 2013 MP x64 engine.dll this hook is pinned to, and the
+// CUtlCachedFileData<CAudioSourceCachedInfo> constructor inside it.
+static const DWORD kEngineTimeDateStamp = 0x67b40fc5;
+static const DWORD kEngineSizeOfImage = 0x81f000;
+static const size_t kAudioCacheCtorRva = 0x4f920;
+static const unsigned char kAudioCacheCtorPrologue[] =
+{
+	0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x30
+};
+static const unsigned long long kFnvOffsetBasis = 14695981039346656037ULL;
+static const unsigned long long kFnvPrime = 1099511628211ULL;
+
+static void *ModAudioCache( void *self, const char *repository, const char *searchPath, int freshnessMethod )
+{
+	// Keep loose and packed mounts distinct without embedding absolute Steam
+	// paths (or running up against MAX_PATH) in the mod-relative filename.
+	unsigned long long key = kFnvOffsetBasis;
+	for ( const unsigned char *p = (const unsigned char *)repository; *p; ++p )
+	{
+		unsigned char c = *p == '/' ? '\\' : *p;
+		if ( c >= 'A' && c <= 'Z' )
+			c += 'a' - 'A';
+		key ^= c;
+		key *= kFnvPrime;
+	}
+	char local[64];
+	sprintf_s( local, "soundcache\\%016llx.cache", key );
+	return s_AudioCacheCtor( self, local, searchPath, freshnessMethod );
+}
+
+bool InstallAudioCacheRedirect( const char *sdk )
+{
+	char path[MAX_PATH];
+	if ( sprintf_s( path, "%s\\bin\\x64\\engine.dll", sdk ) < 0 )
+		return false;
+	HMODULE engine = LoadLibraryExA( path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH );
+	if ( !engine )
+		return false;
+	const BYTE *base = reinterpret_cast<const BYTE *>( engine );
+	const IMAGE_DOS_HEADER *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>( base );
+	const IMAGE_NT_HEADERS64 *nt = reinterpret_cast<const IMAGE_NT_HEADERS64 *>( base + dos->e_lfanew );
+	if ( nt->FileHeader.TimeDateStamp != kEngineTimeDateStamp || nt->OptionalHeader.SizeOfImage != kEngineSizeOfImage )
+		return false;
+	void *ctor = reinterpret_cast<BYTE *>( engine ) + kAudioCacheCtorRva;
+	if ( memcmp( ctor, kAudioCacheCtorPrologue, sizeof( kAudioCacheCtorPrologue ) ) )
+		return false;
+	if ( !InitializeMinHook( NULL, 0 ) )
+		return false;
+	if ( MH_CreateHook( ctor, reinterpret_cast<void *>( ModAudioCache ), reinterpret_cast<void **>( &s_AudioCacheCtor ) ) != MH_OK )
+		return false;
+	return MH_EnableHook( ctor ) == MH_OK;
+}
+#endif

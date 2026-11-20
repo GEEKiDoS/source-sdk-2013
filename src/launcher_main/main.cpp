@@ -558,6 +558,14 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 	}
 #endif
 
+#if defined( _WIN64 ) && defined( L4D2 )
+	if ( !InstallAudioCacheRedirect( szGameInstallDir ) )
+	{
+		MessageBoxA( 0, "Unsupported SDK audio cache implementation. Not launching with writable Steam content.", "Launcher Error", MB_OK );
+		return 1;
+	}
+#endif
+
 	// Assemble the full path to our "launcher.dll"
 	_snprintf( szBuffer, sizeof( szBuffer ), LAUNCHER_DLL_PATH, pBinaryGameDir );
 	szBuffer[sizeof( szBuffer ) - 1] = '\0';
