@@ -109,6 +109,8 @@ static ConVar mat_tonemapping_occlusion_use_stencil( "mat_tonemapping_occlusion_
 #else
 static ConVar mat_tonemapping_occlusion_use_stencil( "mat_tonemapping_occlusion_use_stencil", "0" );
 #endif
+static ConVar mat_postfx_meter_stride( "mat_postfx_meter_stride", "1", FCVAR_ARCHIVE,
+	"DX12 exposure sampling interval in output pixels (1 = full resolution)", true, 1.f, true, 4.f );
 ConVar mat_debug_autoexposure("mat_debug_autoexposure","0", FCVAR_CHEAT);
 #if defined( L4D2 )
 static ConVar mat_autoexposure_max( "mat_autoexposure_max", "8", 
@@ -920,6 +922,7 @@ public:
 	int m_frame_queued;										// when this query was last queued
 	int m_npixels;										   // # of pixels this histogram represents
 	int m_npixels_in_range;
+	float m_flPixelsPerSample;
 	float m_min_lum, m_max_lum;					 // the luminance range this entry was queried with
 	float m_minx, m_miny, m_maxx, m_maxy;				// range is 0..1 in fractions of the screen
 
@@ -1092,10 +1095,18 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 #else
 	xl = yl = 0;
 #endif
+	// Keep the metered source rectangle, but rasterize fewer samples. Convert counts
+	// back to pixel units per query, including bins in flight across a setting change.
+	const int nStride = PostProcessDX12_Active() && !mat_tonemapping_occlusion_use_stencil.GetBool() ?
+		mat_postfx_meter_stride.GetInt() : 1;
+	const int nWidth = 1 + scrx_max - scrx_min;
+	const int nHeight = 1 + scry_max - scry_min;
+	const int nSamplesX = MAX( 1, ( nWidth + nStride - 1 ) / nStride );
+	const int nSamplesY = MAX( 1, ( nHeight + nStride - 1 ) / nStride );
+	m_flPixelsPerSample = (float)( nWidth * nHeight ) / ( nSamplesX * nSamplesY );
 	pRenderContext->DrawScreenSpaceRectangle( test_mat,
 											  scrx_min - xl, scry_min - yl,
-											  1 + scrx_max - scrx_min,
-											  1 + scry_max - scry_min,
+											  nSamplesX, nSamplesY,
 											  scrx_min, scry_min,
 											  scrx_max, scry_max,
 											  source_width, source_height );
@@ -1196,7 +1207,7 @@ void CLuminanceHistogramSystem::Update( void )
 					if ( np !=- 1 ) 						// -1=query not finished. wait until
 						// next time
 					{
-						CurHistogram[i].m_npixels_in_range = np;
+						CurHistogram[i].m_npixels_in_range = RoundFloatToInt( np * CurHistogram[i].m_flPixelsPerSample );
 						// 						    if (mat_debug_autoexposure.GetInt())
 						// 								Warning("min=%f max=%f np = %d\n",CurHistogram[i].m_min_lum,CurHistogram[i].m_max_lum,np);
 						CurHistogram[i].m_state = HESTATE_QUERY_DONE;
@@ -2374,6 +2385,7 @@ static void DoPreBloomTonemapping( IMatRenderContext *pRenderContext, int nX, in
 
 		if ( s_bScreenEffectTextureIsUpdated == false )
 		{
+			PIXEVENT( pRenderContext, "Exposure copy" );
 			// FIXME: nX/nY/nWidth/nHeight are used here, but the equivalent parameters are ignored in Generate8BitBloomTexture
 			if ( !AcquireBoundFrameCopy( pRenderContext, nX, nY, nWidth, nHeight ) )
 #if defined( L4D2 )
@@ -2384,7 +2396,10 @@ static void DoPreBloomTonemapping( IMatRenderContext *pRenderContext, int nX, in
 			s_bScreenEffectTextureIsUpdated = true;
 		}
 
-		g_HDR_HistogramSystem.Update();
+		{
+			PIXEVENT( pRenderContext, "Exposure histogram" );
+			g_HDR_HistogramSystem.Update();
+		}
 		if ( mat_dynamic_tonemapping.GetInt() || mat_show_histogram.GetInt() )
 		{
 			float flTargetScalar = g_HDR_HistogramSystem.GetTargetTonemapScalar();
@@ -3016,8 +3031,45 @@ static ConVar mat_postprocess_y( "mat_postprocess_y", "1" );
 #endif
 
 #if defined( L4D2 )
+// Only fold the ordinary gameplay grade. The full pass still owns particle
+// refraction, fades and blurred vignettes, including controller transitions.
+static bool Terror_GetCompactGrade( PostGradeDX12_t &grade, int height )
+{
+	const float *values = static_cast<ClientModeTerrorNormal *>( GetClientModeNormal() )->GetPostProcessValues();
+	if ( g_TerrorPostFadeType || values[4] != 0.f || values[5] != 0.f || Terror_HasVomitScreenSpaceParticles() )
+		return false;
+	IMaterial *post = g_TerrorPostMaterials.GetEnginePost();
+	if ( post->IsErrorMaterial() || V_stricmp( post->GetShaderName(), "TerrorEnginePost" ) )
+		return false;
+	static ConVarRef contrastScale( "mat_local_contrast_scale_override" );
+	static ConVarRef edgeScale( "mat_local_contrast_edge_scale_override" );
+	static ConVarRef vignetteStart( "mat_local_contrast_vignette_start_override" );
+	static ConVarRef vignetteEnd( "mat_local_contrast_vignette_end_override" );
+	static ConVarRef grainScale( "mat_grain_scale_override" );
+	const bool local = post->FindVar( "$allowlocalcontrast", NULL )->GetIntValue() &&
+		post->FindVar( "$localcontrastenable", NULL )->GetIntValue();
+	grade.contrast[0] = local ? ( contrastScale.GetFloat() == 0.f ? values[0] : contrastScale.GetFloat() ) : 0.f;
+	grade.contrast[1] = local ? ( edgeScale.GetFloat() < -1.f ? values[1] : edgeScale.GetFloat() ) : 0.f;
+	grade.contrast[2] = local ? ( vignetteStart.GetFloat() < 0.f ? values[2] : vignetteStart.GetFloat() ) : 0.f;
+	grade.contrast[3] = local ? ( vignetteEnd.GetFloat() < 0.f ? values[3] : vignetteEnd.GetFloat() ) : 1.f;
+	if ( local && ( !mat_local_contrast_enable.GetBool() || grade.contrast[3] <= grade.contrast[2] ) )
+		return false;
+	const bool noise = height >= 720 && post->FindVar( "$allownoise", NULL )->GetIntValue() &&
+		post->FindVar( "$noiseenable", NULL )->GetIntValue();
+	const bool vignette = post->FindVar( "$allowvignette", NULL )->GetIntValue() &&
+		post->FindVar( "$vignetteenable", NULL )->GetIntValue();
+	grade.finish[0] = noise ? values[6] * ( grainScale.GetFloat() == -1.f ? 1.f : grainScale.GetFloat() ) : 0.f;
+	grade.finish[1] = fmodf( gpGlobals->curtime, 1000.f );
+	grade.finish[2] = vignette ? values[7] : 0.f;
+	grade.finish[3] = 1.f;
+	grade.pNoise = grade.finish[0] > 0.f ? post->FindVar( "$noisetexture", NULL )->GetTextureValue() : NULL;
+	grade.pVignette = grade.finish[2] != 0.f ? post->FindVar( "$internal_vignettetexture", NULL )->GetTextureValue() : NULL;
+	return ( grade.finish[0] <= 0.f || grade.pNoise ) && ( grade.finish[2] == 0.f || grade.pVignette );
+}
+
 static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int h,bool postVGui,float bloomScale,bool engineBloom)
 {
+ PIXEVENT( ctx, "Terror engine post" );
  static ConVarRef mat_colorcorrection("mat_colorcorrection");
  const bool cc=!postVGui && g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights() && mat_colorcorrection.GetBool();
  ctx->EnableColorCorrection(cc);
@@ -3027,11 +3079,13 @@ static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int
  const bool vomit=Terror_HasVomitScreenSpaceParticles();
  if(!s_bScreenEffectTextureIsUpdated)
  {
+  PIXEVENT( ctx, "Terror copy" );
   UpdateScreenEffectTexture(0,x,y,w,h,false);
   s_bScreenEffectTextureIsUpdated=true;
  }
  if((!postVGui && bloomScale>0.0f) || local || vomit)
  {
+  PIXEVENT( ctx, "Terror prepare" );
   Terror_PrepareEnginePost(ctx);
   if(vomit) Terror_RenderVomitScreenSpaceParticles(ctx);
  }
@@ -3044,6 +3098,7 @@ static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int
  static bool firstFrame=true;
  if(!firstFrame || !cc)
  {
+  PIXEVENT( ctx, "Terror composite" );
   CEnginePostMaterialProxy::SetupEnginePostMaterial(bloomUV,fbUV,texSize,false,false,cc,0.0f);
   ctx->DrawScreenSpaceRectangle(post,0,0,w,h,bloomUV.x,bloomUV.y,bloomUV.z,bloomUV.w,
    small->GetActualWidth(),small->GetActualHeight(),GetClientWorldEntity()->GetClientRenderable(),
@@ -3053,7 +3108,7 @@ static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int
 }
 #endif
 
-void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, bool bPostVGui )
+void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, bool bPostVGui, PostMotionDX12_t motion )
 {
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 #if defined( L4D2 )
@@ -3088,7 +3143,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 		ICallQueue *pCallQueue = pRenderContext->GetCallQueue();
 		if ( pCallQueue )
 		{
-			pCallQueue->QueueCall( DoEnginePostProcessing, x, y, w, h, bFlashlightIsOn, bPostVGui );
+			pCallQueue->QueueCall( DoEnginePostProcessing, x, y, w, h, bFlashlightIsOn, bPostVGui, motion );
 			return;
 		}
 	}
@@ -3115,13 +3170,39 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 	// The DX12 post stack owns bloom, lens effects and the final tone curve. The L4D2 engine post then
 	// applies colour correction, vignette, grain, local contrast, vomit and fade to its composite.
 	const bool bPostProcessDX12 = !bPostVGui && PostProcessDX12_Active();
+	PostGradeDX12_t grade = {};
+	const bool bFuseGrade = bPostProcessDX12 && mat_postprocess_enable.GetBool() &&
+		PostProcessDX12_CanFuseGrade( x, y, w, h, flBloomScale ) && Terror_GetCompactGrade( grade, h );
 	if ( bPostProcessDX12 )
 	{
+		// For a full-size view, write the native result straight into the legacy
+		// pass's source instead of drawing it to the scene and copying it back.
+		static ConVarRef compact( "mat_postfx_compact" );
+		static bool bPresentedNativeFrame = false;
+		ITexture *pOutput = NULL;
+		if ( !bFuseGrade && bPresentedNativeFrame && compact.GetBool() && mat_postprocess_enable.GetBool() &&
+			!PostProcessDX12_BodycamActive() && !x && !y )
+		{
+			ITexture *pFrame = GetFullFrameFrameBufferTexture( 0 );
+			if ( pFrame && !pFrame->IsError() && w == pFrame->GetActualWidth() && h == pFrame->GetActualHeight() )
+				pOutput = pFrame;
+		}
+		ITexture *pExposureCopy = bFuseGrade && s_bScreenEffectTextureIsUpdated && !pRenderContext->GetRenderTarget() ?
+			GetFullFrameFrameBufferTexture( 0 ) : NULL;
 		pRenderContext->SetRenderTarget( NULL );
-		PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, false, flPostFov, flPostAspect );
-		s_bScreenEffectTextureIsUpdated = false;
+		static ConVarRef colorCorrection( "mat_colorcorrection" );
+		const bool cc = bFuseGrade && colorCorrection.GetBool() && g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights();
+		PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, cc, flPostFov, flPostAspect,
+			pOutput, bFuseGrade ? &grade : NULL, &motion, pExposureCopy );
+		if ( pOutput )
+		{
+			pRenderContext->SetRenderTarget( NULL );
+			pRenderContext->SetFrameBufferCopyTexture( pOutput, 0 );
+		}
+		s_bScreenEffectTextureIsUpdated = pOutput != NULL;
+		bPresentedNativeFrame = !bFuseGrade && mat_postprocess_enable.GetBool() && !PostProcessDX12_BodycamActive();
 	}
-	if ( mat_postprocess_enable.GetBool() && !PostProcessDX12_BodycamActive() )
+	if ( !bFuseGrade && mat_postprocess_enable.GetBool() && !PostProcessDX12_BodycamActive() )
 		Terror_RenderEnginePost( pRenderContext, x, y, w, h, bPostVGui, bPostProcessDX12 ? 0.0f : flBloomScale, !bPostProcessDX12 );
 	if ( hdrType != HDR_TYPE_NONE )
 		DoPostBloomTonemapping( pRenderContext, x, y, w, h, flAutoExposureMin, flAutoExposureMax );
@@ -3614,6 +3695,7 @@ ConVar mat_motion_blur_falling_intensity( "mat_motion_blur_falling_intensity", "
 	, 0x0000000A
 #endif
  );
+
 //ConVar mat_motion_blur_roll_intensity( "mat_motion_blur_roll_intensity", "1.0" );
 ConVar mat_motion_blur_rotation_intensity( "mat_motion_blur_rotation_intensity", "1.0"
 #if defined( L4D2 )
@@ -3630,6 +3712,26 @@ ConVar mat_motion_blur_viewmodel_strength( "mat_motion_blur_viewmodel_strength",
 	"DX12 velocity motion blur: scale of the first-person viewmodel's own blur (0 keeps it sharp); the world and the viewmodel blur as separate layers", true, 0.0f, true, 2.0f );
 ConVar mat_motion_blur_static_skip( "mat_motion_blur_static_skip", "1", FCVAR_CHEAT, "Skip CPU-certified stationary DX12 velocity blur; 0 retains the reference pass for comparisons." );
 
+bool PreparePostMotionDX12( const CViewSetup &view, int x, int y, int w, int h, PostMotionDX12_t &motion )
+{
+#if defined( L4D2 )
+	static ConVarRef quality( "mat_motion_blur_quality" );
+	static ConVarRef maxLength( "mat_motion_blur_percent_of_screen_max" );
+	float delta = 0.f;
+	if ( !PostProcessDX12_Active() || !PostProcessDX12_CanFuseGrade( x, y, w, h, 1.f ) ||
+		quality.GetInt() != -1 || IsTransitionStatsPostProcessingSuppressed() ||
+		!MotionVectorsDX12_FrameValid( &delta ) || delta <= 0.f || delta > ( 1.f / 15.f ) )
+		return false;
+	motion.region[0] = static_cast<float>( view.width );
+	motion.region[1] = static_cast<float>( view.height );
+	motion.region[2] = mat_motion_blur_strength.GetFloat() * mat_motion_blur_shutter_time.GetFloat() / delta;
+	motion.region[3] = MAX( 0.f, maxLength.GetFloat() / 100.f );
+	motion.viewModelScale = MAX( 0.f, mat_motion_blur_viewmodel_strength.GetFloat() );
+	return true;
+#else
+	return false;
+#endif
+}
 // pVelocityRegion (DX12 velocity blur): the valid motion-vector region in texels, {width, height, 0, 0}; it differs from
 // the target under a temporal render scale, where the blur runs on the upscaled frame.
 static void DrawMotionBlurQuad( PostProcessMaterialId material, int x, int y, int w, int h, const float *pVelocityRegion = NULL )

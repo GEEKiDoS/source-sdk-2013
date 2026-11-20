@@ -5,6 +5,7 @@
 // the plain exposed level goes to gDst2 for the lens flare, so one pass feeds both chains.
 // STATIC: "THRESHOLD" "0..2"
 #include "postfx_common.hlsli"
+#include "agx_curve.hlsli"
 
 static const float2 kTaps[13] =
 {
@@ -42,6 +43,8 @@ void main( uint3 id : SV_DispatchThreadID )
 		plain += kWeights[i] * tap;
 		c += kWeights[i] * tap * clamp( dot( tap, kLuma601 ) - p1, 0.0, p2 );
 	}
+	[branch] if ( pad0 != 0 )
+		plain = dot( AgXEncoded( max( plain, 0 ), 1.0 ), kLuma601 ).xxx;
 	gDst2[id.xy] = float4( plain, 1 );
 #else
 	[unroll]

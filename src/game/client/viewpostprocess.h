@@ -10,11 +10,13 @@
 #if defined( _WIN32 )
 #pragma once
 #endif
+#include "postprocess_dx12.h"
 
 // Prime material references and FindVarFast tokens before postprocessing is queued.
 void PrepareViewPostProcessMaterials();
 
-void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, bool bPostVGui = false );
+void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, bool bPostVGui = false, PostMotionDX12_t motion = {} );
+bool PreparePostMotionDX12( const CViewSetup &view, int x, int y, int w, int h, PostMotionDX12_t &motion );
 void DoImageSpaceMotionBlur( const CViewSetup &view, int x, int y, int w, int h );
 void DumpTGAofRenderTarget( const int width, const int height, const char *pFilename );
 
