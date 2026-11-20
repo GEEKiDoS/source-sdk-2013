@@ -73,6 +73,7 @@ float4 main( float2 bloomUV : TEXCOORD0 ) : COLOR
 {
 	float2 fbUV = bloomUV * uvTransform.wz + uvTransform.xy;
 	float4 bloom;
+	float3 color;
 	float hdrPeak = max( HDRPeak, 1.0f );
 #if VOMIT_ENABLE
 	float4 screen = tex2D( BaseTextureSampler, bloomUV );
