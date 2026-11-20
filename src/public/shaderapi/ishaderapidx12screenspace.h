@@ -24,7 +24,7 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_009"
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_010"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
 struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 256 bytes
@@ -55,9 +55,7 @@ struct DX12ScreenSpaceViewDesc
 	DX12ScreenSpaceViewConstants constants;
 	DX12SSRSettings ssr;
 	float bounceScale;
-	float bounceSaturation;
 	uint32 bounceDebug;
-	uint32 bounceBlend;
 };
 
 // Snapshot of the volumetric controls for one main camera view. 48 bytes; the first 48 bytes of HLSL cbuffer

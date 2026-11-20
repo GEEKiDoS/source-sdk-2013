@@ -1,5 +1,4 @@
 // STATIC: "MSAA" "0..1"
-// DYNAMIC: "BLEND" "0..2"
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 #ifdef HDRTYPE
@@ -21,13 +20,12 @@
 SCENE<float> rawDepth : register( t0 );
 SCENE<float2> normals : register( t1 );
 SCENE<uint2> stencil : register( t2 );
+SCENE<float4> albedo : register( t3 );
 
 struct BounceOutput
 {
 	float4 source : SV_Target0;
-#if BLEND == 2
 	float4 multiplier : SV_Target1;
-#endif
 };
 [earlydepthstencil] BounceOutput main( float4 sv : SV_Position, nointerpolation float4 light : TEXCOORD0, nointerpolation float4 color : TEXCOORD1, nointerpolation float3 hitCenter : TEXCOORD2
 #if MSAA
@@ -53,8 +51,8 @@ struct BounceOutput
 	float d2 = dot( delta, delta );
 	if ( d2 >= 40000 )
 		discard;
-	// The viewmodel colour pass does not write RT1. Its own depth gives the geometric normal.
-	if ( !vm && ( FETCH( stencil ).y & 128 ) != 0 )
+	bool pbr = ( FETCH( stencil ).y & 128 ) != 0;
+	if ( pbr )
 		n = PBR_UnpackNormal( FETCH( normals ) );
 	float atten = saturate( 1 - d2 / 40000 );
 	float3 rgb = color.rgb * ( saturate( dot( n, delta ) * rsqrt( max( 1e-6, d2 ) ) ) * atten * atten );
@@ -64,19 +62,10 @@ struct BounceOutput
 	float fog = SceneFog( clipZ, P, cScreenEyeLength.xyz, cScreenControl.x != 0, int( cScreenControl.z ), cScreenContactParams, cScreenContactDepth );
 	BounceOutput result;
 	rgb *= 1 - fog;
-#if BLEND == 1
-	// Destination RGB is the existing reflected light, not bare albedo. Normalize by a constant
-	// ambient reference in exposed scene units and bound the fractional lift of every channel.
-	result.source = float4( min( rgb / ( 0.20 * cScreenEyeLength.w ), 0.35 ), 0 );
-#elif BLEND == 2
-	// Screen in a soft-shoulder display coordinate T(x)=x/(x+W). Converting the screen result
-	// back to HDR gives D*(1+g)+W*g; dual-source blending evaluates it without sampling RT0.
-	float white = 0.18 * cScreenEyeLength.w;
-	float3 gain = min( rgb / max( cScreenEyeLength.w, 0.01 ), 0.18 );
-	result.source = float4( white * gain, 0 );
+	float4 material = pbr ? FETCH( albedo ) : 0;
+	// Dual-source blending reads destination RGB only for opaque non-writers.
+	result.source = float4( rgb * material.rgb, 0 );
+	float3 gain = material.a > 0 ? 0 : min( rgb / ( 0.20 * cScreenEyeLength.w ), 0.35 );
 	result.multiplier = float4( 1 + gain, 1 );
-#else
-	result.source = float4( rgb, 0 );
-#endif
 	return result;
 }

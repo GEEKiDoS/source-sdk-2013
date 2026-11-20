@@ -291,7 +291,7 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	}
 	if ( record->stagePixel )
 	{
-		// One SV_Target is the ordinary scene output; exactly seven also write the PBR G-buffer (normal, F0 + roughness,
+		// One SV_Target is the ordinary scene output; exactly eight also write the PBR G-buffer (normal, F0 + roughness,
 		// environment contribution + specular distance, SSR response, direct specular, specular distance). The last
 		// three (four at r_color_precision 1) are attached only while SSR captures (gbuffer_dx12.cpp).
 		// Exactly two is a backend-owned MRT pass (the half-resolution volumetric march: in-scattering + view depth);
@@ -304,12 +304,12 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 				return false;
 			targets += output.SystemValueType == D3D_NAME_TARGET;
 		}
-		if ( targets > 1 && targets != 2 && targets != 7 )
+		if ( targets > 1 && targets != 2 && targets != 8 )
 		{
-			Warning( "ShaderAPIDX12: native PS declares %u render targets; expected 1, 2 or 7\n", targets );
+			Warning( "ShaderAPIDX12: native PS declares %u render targets; expected 1, 2 or 8\n", targets );
 			return false;
 		}
-		record->gbuffer = targets == 7;
+		record->gbuffer = targets == 8;
 	}
 	record->nativeReflectionReady = true;
 	return true;
@@ -1686,7 +1686,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			target.dsv = m_ContactDepth.dsv;
 			target.depthFormat = m_pDevice->SceneDepthFormat();
 		}
-		// PBR G-buffer: only an opaque main-view draw whose native PS declares seven SV_Targets gets the extra targets;
+		// PBR G-buffer: only an opaque main-view draw whose native PS declares eight SV_Targets gets the extra targets;
 		// every other draw (and every PSO) keeps its single render target. Legacy draws never write them (see gbuffer_dx12.cpp).
 		// Targets 3/4/5 (environment + specular distance, SSR response, direct specular; plus 6, the distance, when the
 		// payload is R11G11B10) attach only while the bracket captures SSR; the contact-depth replay binds no G-buffer
@@ -1706,6 +1706,20 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				target.colorFormats[1 + i] = GBufferFormat( i );
 			}
 			target.colorCount = 1 + gbufferCount;
+			// The split additive relight owns only SSR specular/distance, never material colour.
+			if ( m_pGBufferAlbedo && !relightPayload )
+			{
+				for ( UINT i = target.colorCount; i <= kGBufferAlbedoTarget; ++i )
+				{
+					target.rtvs[i] = m_GBufferNullRtv;
+					target.colors[i] = nullptr;
+					target.colorFormats[i] = DXGI_FORMAT_R8G8B8A8_UNORM;
+				}
+				target.rtvs[7] = m_GBufferRtv[kGBufferAlbedoTarget];
+				target.colors[7] = m_pGBufferAlbedo.Get();
+				target.colorFormats[7] = GBufferFormat( kGBufferAlbedoTarget );
+				target.colorCount = 8;
+			}
 			gbufferTargets = true;
 			ssrPayloadTargets = ssrPayload;
 		}

@@ -550,6 +550,6 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		reflectionValid = 0.0;
 	}
 #endif
-	return PBR_Output( color, s, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
+	return PBR_Output( color, s, baseColor, environmentScene, reflectionResponse, reflectionValid, directSpecular, specularDistance );
 #endif
 }

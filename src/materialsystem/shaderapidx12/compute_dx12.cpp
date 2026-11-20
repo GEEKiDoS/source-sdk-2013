@@ -41,7 +41,7 @@ struct ComputeReplayPayloadDX12
 	D3D12_RESOURCE_STATES sceneDepthBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	bool restoreSceneDepth = false;
 	// PBR G-buffer targets moved to gbufferRead for this dispatch and restored to gbufferBefore afterwards.
-	static constexpr UINT kGBufferTargets = 6; // CShaderAPIDX12::kGBufferTargets (asserted where the payload is filled)
+	static constexpr UINT kGBufferTargets = 7; // asserted against the backend where slots are bound
 	ID3D12Resource *gbuffer[kGBufferTargets] = {};
 	D3D12_RESOURCE_STATES gbufferBefore[kGBufferTargets] = {}, gbufferRead = D3D12_RESOURCE_STATE_COMMON;
 };
@@ -631,6 +631,7 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 			return true;
 		}
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ||
+		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ALBEDO ||
 		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE ||
 		     resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR || resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_DISTANCE )
 		{
@@ -639,6 +640,7 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 			const bool distanceTarget = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_DISTANCE && m_bGBufferReducedPayload;
 			const UINT target = resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS ? 0 : resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR ? 1 :
 				resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_RESPONSE ? 3 : resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR ? 4 :
+				resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ALBEDO ? kGBufferAlbedoTarget :
 				distanceTarget ? kGBufferDistanceTarget : 2;
 			ID3D12Resource *native = GBufferTarget( target );
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};

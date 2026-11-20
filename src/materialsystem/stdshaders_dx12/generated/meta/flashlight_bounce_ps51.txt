@@ -1,4 +1,4 @@
-logical=flashlight_bounce_ps51 stage=ps source=flashlight_bounce_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=3 present=6
+logical=flashlight_bounce_ps51 stage=ps source=flashlight_bounce_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
   cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=

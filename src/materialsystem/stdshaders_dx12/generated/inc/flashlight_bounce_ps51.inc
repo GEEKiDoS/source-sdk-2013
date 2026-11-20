@@ -38,7 +38,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bMSAA );
-		return ( 3 * m_nMSAA ) + 0;
+		return ( 1 * m_nMSAA ) + 0;
 	}
 };
 
@@ -47,35 +47,17 @@ public:
 
 class flashlight_bounce_ps51_Dynamic_Index
 {
-	unsigned int m_nBLEND : 2;
-#ifdef _DEBUG
-	bool m_bBLEND : 1;
-#endif	// _DEBUG
 public:
-	void SetBLEND( int i )
-	{
-		Assert( i >= 0 && i <= 2 );
-		m_nBLEND = i;
-#ifdef _DEBUG
-		m_bBLEND = true;
-#endif	// _DEBUG
-	}
-
 	flashlight_bounce_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< flashlight_bounce_ps51_Block >( dx12native::kStagePixel );
-		m_nBLEND = 0;
-#ifdef _DEBUG
-		m_bBLEND = false;
-#endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bBLEND );
-		return ( 1 * m_nBLEND ) + 0;
+		return 0;
 	}
 };
 
-#define shaderDynamicTest_flashlight_bounce_ps51 psh_forgot_to_set_dynamic_BLEND
+#define shaderDynamicTest_flashlight_bounce_ps51 1
 

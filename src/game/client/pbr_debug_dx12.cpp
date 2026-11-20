@@ -15,7 +15,7 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-ConVar mat_pbr_showgbuffer( "mat_pbr_showgbuffer", "0", FCVAR_CHEAT, "DX12 PBR G-buffer debug view: 0 off, 1 world normals, 2 F0, 3 roughness", true, 0, true, 3 );
+ConVar mat_pbr_showgbuffer( "mat_pbr_showgbuffer", "0", FCVAR_CHEAT, "DX12 PBR G-buffer debug view: 0 off, 1 world normals, 2 F0, 3 roughness, 4 albedo (requires flashlight bounce)", true, 0, true, 4 );
 
 namespace
 {

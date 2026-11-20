@@ -16,7 +16,7 @@
 //          Validity is stencil bit 0x80 of the scene depth: every depth-writing draw in the pass sets it
 //          for a PBR writer and clears it otherwise. Consumers read that plane, sample 0.
 //          INT_RENDERPARM_DX12_PBR_GBUFFER_PASS brackets the opaque pass. BEGIN does not clear targets 1/2.
-//          DrawBuffers appends the targets to every native PS that declares seven SV_Targets.
+//          DrawBuffers appends the targets to every native PS that declares eight SV_Targets.
 //          Lifecycle mirrors the private motion target (motion_vectors_dx12.cpp).
 //
 //=============================================================================//
@@ -77,6 +77,7 @@ ID3D12Resource *CShaderAPIDX12::GBufferTarget( UINT nTarget ) const
 	case 3: return m_pGBufferResponse.Get();
 	case 4: return m_pGBufferSpecular.Get();
 	case kGBufferDistanceTarget: return m_pGBufferDistance.Get();
+	case kGBufferAlbedoTarget: return m_pGBufferAlbedo.Get();
 	default: return nullptr;
 	}
 }
@@ -88,6 +89,7 @@ DXGI_FORMAT CShaderAPIDX12::GBufferFormat( UINT nTarget ) const
 	case 0: return DXGI_FORMAT_R16G16_UNORM;
 	case 1: return DXGI_FORMAT_R8G8B8A8_UNORM;
 	case kGBufferDistanceTarget: return DXGI_FORMAT_R16_FLOAT;
+	case kGBufferAlbedoTarget: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 	default: return m_bGBufferReducedPayload ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
 	}
 }
@@ -120,12 +122,13 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 	m_pGBufferResponse.Reset();
 	m_pGBufferSpecular.Reset();
 	m_pGBufferDistance.Reset();
+	m_pGBufferAlbedo.Reset();
 	ID3D12Device *pNative = m_pDevice->NativeDevice();
 	if ( !m_pGBufferRtvHeap )
 	{
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-		heapDesc.NumDescriptors = kGBufferTargets;
+		heapDesc.NumDescriptors = kGBufferTargets + 1;
 		if ( FAILED( pNative->CreateDescriptorHeap( &heapDesc, IID_PPV_ARGS( &m_pGBufferRtvHeap ) ) ) )
 			return false;
 		const UINT rtvStride = pNative->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
@@ -135,6 +138,12 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 			m_GBufferRtv[i].ptr += SIZE_T( i ) * rtvStride;
 		}
 	}
+	// A real null RTV lets the optional SV_Target7 coexist with absent SSR outputs 3..6.
+	m_GBufferNullRtv.ptr = m_GBufferRtv[kGBufferAlbedoTarget].ptr + pNative->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
+	D3D12_RENDER_TARGET_VIEW_DESC nullRtv{};
+	nullRtv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	nullRtv.ViewDimension = scene.SampleDesc.Count > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
+	pNative->CreateRenderTargetView( nullptr, &nullRtv, m_GBufferNullRtv );
 	// Optimized clear value is 0. The pass does not clear these two; stencil bit 0x80 is the validity mark.
 	Microsoft::WRL::ComPtr<ID3D12Resource> resources[kGBufferBaseTargets];
 	for ( UINT i = 0; i < kGBufferBaseTargets; ++i )
@@ -152,10 +161,26 @@ bool CShaderAPIDX12::EnsureGBufferResources()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Lazily creates the SSR payload targets (E + D, K, S; or E, K, S and D at r_color_precision 1) matching
-//			the base targets' shape, again when the precision changes. Requires EnsureGBufferResources to have
-//			succeeded for the current scene shape.
+// Purpose: The optional albedo target lives only while the main camera requests it.
 //-----------------------------------------------------------------------------
+void CShaderAPIDX12::SetGBufferAlbedoEnabled( bool enabled )
+{
+	if ( enabled && !m_pGBufferAlbedo )
+	{
+		const D3D12_RESOURCE_DESC scene = m_pDevice->SceneColor()->GetDesc();
+		const DXGI_FORMAT format = GBufferFormat( kGBufferAlbedoTarget );
+		if ( m_pDevice->SupportsMSAAFormat( format, scene.SampleDesc.Count, scene.SampleDesc.Quality ) &&
+		     CreateGBufferTarget( m_pDevice->NativeDevice(), scene, format, m_GBufferRtv[kGBufferAlbedoTarget], m_pGBufferAlbedo ) )
+			m_GBufferState[kGBufferAlbedoTarget] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
+	else if ( !enabled && m_pGBufferAlbedo )
+	{
+		m_pDevice->RetainResource( m_pGBufferAlbedo.Get() );
+		m_pGBufferAlbedo.Reset();
+	}
+}
+
+// Recreate the optional SSR attachments independently of bounce albedo.
 bool CShaderAPIDX12::EnsureGBufferSsrResources()
 {
 	const bool bReduced = r_color_precision.GetBool();
@@ -176,7 +201,7 @@ bool CShaderAPIDX12::EnsureGBufferSsrResources()
 		return false;
 	}
 	m_pDevice->DrainRecording();
-	for ( UINT i = kGBufferBaseTargets; i < kGBufferTargets; ++i )
+	for ( UINT i = kGBufferBaseTargets; i < kGBufferAlbedoTarget; ++i )
 		if ( ID3D12Resource *pOld = GBufferTarget( i ) )
 			m_pDevice->RetainResource( pOld );
 	m_pGBufferEnvironment.Reset();
@@ -185,7 +210,7 @@ bool CShaderAPIDX12::EnsureGBufferSsrResources()
 	m_pGBufferDistance.Reset();
 	m_bGBufferReducedPayload = bReduced;
 	ID3D12Device *pNative = m_pDevice->NativeDevice();
-	Microsoft::WRL::ComPtr<ID3D12Resource> resources[kGBufferTargets - kGBufferBaseTargets];
+	Microsoft::WRL::ComPtr<ID3D12Resource> resources[kGBufferAlbedoTarget - kGBufferBaseTargets];
 	const UINT nPayload = GBufferPayloadTargets() - kGBufferBaseTargets;
 	for ( UINT i = 0; i < nPayload; ++i )
 		if ( !CreateGBufferTarget( pNative, scene, GBufferFormat( kGBufferBaseTargets + i ), m_GBufferRtv[kGBufferBaseTargets + i], resources[i] ) )
@@ -194,7 +219,7 @@ bool CShaderAPIDX12::EnsureGBufferSsrResources()
 	m_pGBufferResponse = std::move( resources[1] );
 	m_pGBufferSpecular = std::move( resources[2] );
 	m_pGBufferDistance = std::move( resources[3] );
-	for ( UINT i = kGBufferBaseTargets; i < kGBufferTargets; ++i )
+	for ( UINT i = kGBufferBaseTargets; i < kGBufferAlbedoTarget; ++i )
 		m_GBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	return true;
 }
@@ -242,12 +267,21 @@ void CShaderAPIDX12::SetGBufferPass( int nMode )
 		return;
 	}
 	FlushBufferedPrimitives();
+	const bool viewModel = nMode == DX12_GBUFFER_PASS_VIEWMODEL;
+	if ( viewModel && ( !m_pGBufferAlbedo || m_nBounceFrame != m_nFrameCounter ) )
+		return;
 	if ( !EnsureGBufferResources() )
 		return;
 	// A failed payload allocation keeps the pass at three targets; DrawBuffers checks the resource, and the SSR
 	// dispatch skips a bracket whose payload never existed.
+	SetGBufferAlbedoEnabled( nMode != DX12_GBUFFER_PASS_BEGIN );
 	const bool bSsrPayload = m_ScreenSpace.ssrCapture && EnsureGBufferSsrResources();
 	TransitionGBuffer( D3D12_RESOURCE_STATE_RENDER_TARGET );
+	if ( m_pGBufferAlbedo )
+	{
+		static constexpr float clear[4] = {};
+		m_pDevice->CommandList()->ClearRenderTargetView( m_GBufferRtv[kGBufferAlbedoTarget], clear, 0, nullptr );
+	}
 	if ( bSsrPayload )
 	{
 		static constexpr float kZero[4] = { 0.f, 0.f, 0.f, 0.f };
@@ -267,6 +301,7 @@ void CShaderAPIDX12::ReleaseGBufferResources()
 	m_bGBufferWarned = false;
 	m_bGBufferSsrWarned = false;
 	m_pGBufferRtvHeap.Reset();
+	m_pGBufferAlbedo.Reset();
 	m_pGBufferNormal.Reset();
 	m_pGBufferSpec.Reset();
 	m_pGBufferEnvironment.Reset();

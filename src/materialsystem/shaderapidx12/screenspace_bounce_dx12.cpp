@@ -11,7 +11,7 @@ struct BounceMeasureConstants
 {
 	float clipToWorld[16], worldToClip[16];
 	float worldToLight[16], originFar[4], colorConst[4], attenuation[4];
-	float viewport[4], eyeSaturation[4], settings[4];
+	float viewport[4], eyeExposure[4], settings[4];
 };
 
 void BindBounceTexture( CPipelineCacheDX12::BindingInputDX12 &input, int slot, ID3D12Resource *resource,
@@ -47,8 +47,8 @@ void CShaderAPIDX12::MeasureBounce()
 	{
 		BounceSlotDX12 &slot = m_BounceSlots[i];
 		const int write = slot.current ^ 1;
-		if ( !EnsureSSRTexture( slot.history[write], 16, 4, IMAGE_FORMAT_RGBA32323232F, false, "DX12_BounceMeasurement" ) ||
-		    !EnsureSSRTexture( slot.history[slot.current], 16, 4, IMAGE_FORMAT_RGBA32323232F, false, "DX12_BounceHistory" ) )
+		if ( !EnsureSSRTexture( slot.history[write], 16, 5, IMAGE_FORMAT_RGBA32323232F, false, "DX12_BounceMeasurement" ) ||
+		    !EnsureSSRTexture( slot.history[slot.current], 16, 5, IMAGE_FORMAT_RGBA32323232F, false, "DX12_BounceHistory" ) )
 			continue;
 		BounceMeasureConstants cb{};
 		memcpy( cb.clipToWorld, camera.clipToWorld, sizeof( cb.clipToWorld ) );
@@ -59,8 +59,8 @@ void CShaderAPIDX12::MeasureBounce()
 		cb.attenuation[0] = spots[i].linearAttn;
 		cb.attenuation[1] = spots[i].quadraticAttn;
 		memcpy( cb.viewport, camera.viewport, sizeof( cb.viewport ) );
-		memcpy( cb.eyeSaturation, camera.eyeLength, 3 * sizeof( float ) );
-		cb.eyeSaturation[3] = m_flBounceSaturation;
+		memcpy( cb.eyeExposure, camera.eyeLength, 3 * sizeof( float ) );
+		cb.eyeExposure[3] = MAX( 0.01f, m_ToneScale.x );
 		cb.settings[0] = m_flBounceScale;
 		cb.settings[1] = slot.identity == spots[i].flags && slot.frame + 1 == m_nFrameCounter;
 		cb.settings[2] = camera.depth[0];
@@ -78,6 +78,7 @@ void CShaderAPIDX12::MeasureBounce()
 		dispatch.m_Srv[3].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL;
 		dispatch.m_Srv[4] = { SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE_SRGB, cookies[i] };
 		dispatch.m_Srv[5] = { SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE, slot.history[slot.current].handle };
+		dispatch.m_Srv[6].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ALBEDO;
 		dispatch.m_Uav[0] = { SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE, slot.history[write].handle };
 		if ( Dispatch( dispatch ) )
 		{
@@ -138,7 +139,7 @@ void CShaderAPIDX12::ApplyBounce( bool viewModel )
 	camera.contactDepth[3] = invRange;
 	const bool msaa = target.sampleCount > 1;
 	auto *vs = ResolveNamedShader( "flashlight_bounce_vs51", false, viewModel, 0 );
-	auto *ps = ResolveNamedShader( "flashlight_bounce_ps51", true, msaa, m_nBounceBlend );
+	auto *ps = ResolveNamedShader( "flashlight_bounce_ps51", true, msaa, 0 );
 	if ( !ps || !vs )
 		return;
 	const uint64_t fence = m_pDevice->NextFenceValue();
@@ -154,8 +155,8 @@ void CShaderAPIDX12::ApplyBounce( bool viewModel )
 	key.samples = target.sampleCount;
 	key.sampleQuality = target.sampleQuality;
 	key.blend = 1;
-	key.blendSource = m_nBounceBlend == 1 ? SHADER_BLEND_DST_COLOR : SHADER_BLEND_ONE;
-	key.blendDestination = m_nBounceBlend == 2 ? kBlendSecondSourceColor : SHADER_BLEND_ONE;
+	key.blendSource = SHADER_BLEND_ONE;
+	key.blendDestination = kBlendSecondSourceColor;
 	key.separateAlpha = true;
 	key.blendAlphaSource = SHADER_BLEND_ZERO;
 	key.blendAlphaDestination = SHADER_BLEND_ONE;
@@ -182,6 +183,7 @@ void CShaderAPIDX12::ApplyBounce( bool viewModel )
 	BindBounceTexture( input, 0, target.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS, msaa );
 	BindBounceTexture( input, 1, GBufferTarget( 0 ), GBufferFormat( 0 ), msaa );
 	BindBounceTexture( input, 2, target.depth, DXGI_FORMAT_X24_TYPELESS_G8_UINT, msaa, 1 );
+	BindBounceTexture( input, 3, GBufferTarget( kGBufferAlbedoTarget ), GBufferFormat( kGBufferAlbedoTarget ), msaa );
 	const D3D12_VIEWPORT viewport{ camera.viewport[0], camera.viewport[1], camera.viewport[2], camera.viewport[3], 0.f, 1.f };
 	const D3D12_RECT scissor{ LONG( viewport.TopLeftX ), LONG( viewport.TopLeftY ), LONG( viewport.TopLeftX + viewport.Width ), LONG( viewport.TopLeftY + viewport.Height ) };
 	const auto readOnlyDSV = m_pDevice->SceneReadOnlyDSV();

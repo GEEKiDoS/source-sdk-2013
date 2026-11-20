@@ -323,9 +323,7 @@ void CShaderAPIDX12::ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &
 	state.constants = view.constants;
 	state.ssr = view.ssr;
 	m_flBounceScale = view.bounceScale;
-	m_flBounceSaturation = view.bounceSaturation;
 	m_bBounceDebug = view.bounceDebug != 0;
-	m_nBounceBlend = view.bounceBlend;
 	state.active = state.contactReplay = state.contactsEnabled = state.ssrCapture = state.forwardSSR = false;
 	m_ContactDepth.replayDraws = false;
 	m_ContactDepth.prepared = false;

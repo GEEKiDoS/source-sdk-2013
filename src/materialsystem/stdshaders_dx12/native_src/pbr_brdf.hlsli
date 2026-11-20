@@ -390,14 +390,16 @@ struct PBR_PSOut
 	float4 response : SV_Target4;
 	float4 specular : SV_Target5;
 	float distance : SV_Target6;
+	float4 albedo : SV_Target7;
 };
-PBR_PSOut PBR_Output( float4 color, PBRSurface s, float3 environmentScene, float3 reflectionResponse, float reflectionValid,
+PBR_PSOut PBR_Output( float4 color, PBRSurface s, float3 baseColor, float3 environmentScene, float3 reflectionResponse, float reflectionValid,
 	float3 directSpecular, float specularDistance )
 {
 	PBR_PSOut o;
 	o.color = color;
 	o.normal = PBR_PackNormal( s.N );
 	o.spec = float4( s.F0, s.roughness );
+	o.albedo = float4( baseColor, 1 );
 	o.environment = float4( environmentScene, specularDistance );
 	o.response = float4( reflectionResponse * reflectionValid, reflectionValid );
 	o.specular = float4( directSpecular, 0.0 );

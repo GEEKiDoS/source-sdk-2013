@@ -1745,9 +1745,14 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 				}
 			}
 
+			if ( pViewModelBounce )
+				pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_VIEWMODEL );
 			DrawRenderablesInList( opaqueViewModelList );
 			if ( pViewModelBounce )
+			{
+				pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_END );
 				pViewModelBounce->DrawViewModelBounce();
+			}
 			if ( MotionVectorsDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() )
 				DrawViewModelMotionVectors( viewRender, opaqueViewModelList, bUseDepthHack );
 			DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
@@ -7340,7 +7345,7 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 	if ( bGBuffer )
 	{
 		CMatRenderContextPtr pGBufferContext( materials );
-		pGBufferContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_BEGIN );
+		pGBufferContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, ScreenSpaceDX12_ViewModelBounce() ? DX12_GBUFFER_PASS_BOUNCE : DX12_GBUFFER_PASS_BEGIN );
 	}
 	if ( viewID == VIEW_MAIN )
 	{

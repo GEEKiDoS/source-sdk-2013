@@ -1486,6 +1486,8 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		// RTV3/5/6.
 		if ( nonEnvmapSsrPayload && ( i == 3 || i == 5 || i == 6 ) )
 			target.RenderTargetWriteMask = 0;
+		if ( key.gbuffer && i >= 3 && i <= 6 && key.colorFormats[i] == DXGI_FORMAT_R8G8B8A8_UNORM )
+			target.RenderTargetWriteMask = 0;
 		target.BlendEnable = key.blend != 0 && !gbufferTarget;
 		target.SrcBlend = BlendFactorDX12( key.blendSource );
 		target.DestBlend = BlendFactorDX12( key.blendDestination );

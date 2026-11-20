@@ -691,15 +691,16 @@ temporal upscaler and 0 otherwise (the GTAO/volumetric convention). Rotated 4-ta
 plane preflight checks a +-0.75 square instead of +-0.5. Measured at the two d1_trainstation_02 spots with PCSS:
 +0.06 / +0.12 ms GPU.
 The DX12 flashlight bounce measures the native HDR scene on an 8-pixel lattice before SSR and GTAO apply.
-Only effect-owned, view-selected projectors participate. The shader averages pre-bounce HDR colour weighted by
-cookie, attenuation and surface cosine. `r_flashlight_bounce_saturation` scales chroma about Rec.709 luma after
-temporal smoothing, without accumulating the boost or changing luminance at the brightness clamp.
-Sixteen groups write partial sums, reduced in the light rectangle's
-vertices. Ping-pong history smooths nearby hits but rejects jumps beyond 72 units. No render-target readback or
-new G-buffer attachment is needed. Opaque viewmodels receive a separate compressed-depth draw, never contribute
-to the measurement, and translucents do not receive it. `r_flashlight_bounce` gates dispatch and `r_flashlight_bounce_scale`
-controls the strength. For comparison, cheat `r_flashlight_bounce_blend` selects additive (0), scene-proportional (1),
-or soft screen (2); `r_flashlight_bounce_debug` marks the measured surface center.
+Only effect-owned, view-selected projectors participate. Valid material pixels contribute their weighted mean
+linear base colour times flashlight tint and mean incident flux; non-writers contribute pre-bounce RT0 in
+proportion to their weight. The receiver multiplies irradiance by its own albedo; the scene-proportional
+fallback is used only for opaque non-writers. The 200-unit light uses smoothed hit geometry, snapping at
+72-unit jumps. No readback is required. `r_flashlight_bounce` gates the dispatch and the optional sRGB8
+albedo attachment (RT7). `r_flashlight_bounce_scale` controls strength and `r_flashlight_bounce_debug` marks
+the measured centre. Albedo is material-tinted linear base colour, before lighting or fog, encoded to sRGB
+by the RTV and decoded by the SRV. `mat_pbr_showgbuffer 4` displays it while bounce is enabled.
+The opaque viewmodel colour draw writes the same attachment with its own projection; it participates only
+as a receiver. Translucents never write or receive the effect.
 
 `volumetric_ps51` runtime contract (screen-space volumetric march): the low-quality profile (`r_volumetric_quality 0`,
 8 light-segment samples) runs the march at quarter resolution (one texel per 4x4 full-resolution footprint), while
@@ -1421,13 +1422,14 @@ some sittings than in others, while this pass moved 3-6% and the full-screen pas
 sitting that was checked a remote-desktop viewer was encoding the screen (13% of the GPU, with the compositor
 another 7%); the low sittings were not checked. Compare those passes only within one sitting.
 
-`mat_pbr_showgbuffer 1|2|3` (cheat) shows normals, F0 or roughness of the opaque scene.
+`mat_pbr_showgbuffer 1|2|3|4` (cheat) shows normals, F0, roughness or bounce albedo of the opaque scene.
 
 ### PBR G-buffer contract
 
 The opaque main view (`VIEW_MAIN`, mono, not cubemap capture; `INT_RENDERPARM_DX12_PBR_GBUFFER_PASS` BEGIN/END around
-`DrawWorld` + `DrawOpaqueRenderables`) keeps two scene-sized, scene-multisampled targets next to scene color. Viewmodel,
-3D sky, water, monitors and cubemap capture do not. Every PBR pixel shader (`PBR_Output`) writes the targets. Consumers
+`DrawWorld` + `DrawOpaqueRenderables`) keeps two scene-sized, scene-multisampled targets next to scene color.
+When bounce is enabled the opaque viewmodel colour pass reuses the base targets and albedo. The 3D sky,
+water, monitors and cubemap captures do not participate. PBR pixel shaders (`PBR_Output`) write the targets. Consumers
 read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, and validity through
 `DX12MaterialSceneStencil()`:
 
@@ -1435,6 +1437,7 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
 |---|---|---|
 | normals | `R16G16_UNORM` | world-space shading normal, `PBR_PackNormal( N )` (octahedral coordinates in [0,1], `pbr_oct.hlsli`) |
 | specular | `R8G8B8A8_UNORM` | `F0.rgb`, roughness in alpha |
+| albedo (bounce brackets only) | `R8G8B8A8_UNORM_SRGB` | tinted base RGB, alpha 1 for a fresh material writer; RT7 is independent of the SSR payload |
 | stencil | scene `D24S8`, bit `0x80` | set on a PBR depth write, cleared by any other depth-writing draw in the pass |
 | environment (SSR brackets only) | `R16G16B16A16_FLOAT` (`R11G11B10_FLOAT` at `r_color_precision 1`) | `E.rgb`, the cubemap term in final scene units; FP16 alpha `D`, the specular-luminance-weighted light distance of the direct specular (sun 60000, 0 when it is zero) |
 | response (SSR brackets only) | as environment | `K.rgb`, what a sampled scene radiance is multiplied by to replace `E`, zero unless a fresh eligible writer; FP16 alpha 1 for such a writer |

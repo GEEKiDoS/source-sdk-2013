@@ -36,9 +36,7 @@ static ConVar r_contactshadows_contrast( "r_contactshadows_contrast", "4", FCVAR
 static ConVar r_depth_prepass( "r_depth_prepass", "1", FCVAR_ARCHIVE, "DX12: replay normal main-view opaque geometry into depth before shading (same LOD and alpha coverage)", true, 0, true, 1 );
 
 static ConVar r_flashlight_bounce( "r_flashlight_bounce", "1", FCVAR_ARCHIVE, "Screen-space flashlight bounce lighting", true, 0, true, 1 );
-static ConVar r_flashlight_bounce_scale( "r_flashlight_bounce_scale", "0.18", FCVAR_ARCHIVE, "Reflected flashlight radiance multiplier", true, 0.f, true, 4.f );
-static ConVar r_flashlight_bounce_saturation( "r_flashlight_bounce_saturation", "1.5", FCVAR_ARCHIVE, "Saturation of the smoothed flashlight bounce colour; 1 preserves the measured tint", true, 0.f, true, 4.f );
-static ConVar r_flashlight_bounce_blend( "r_flashlight_bounce_blend", "1", FCVAR_CHEAT, "Compare flashlight bounce: 0 additive, 1 scene proportional, 2 soft screen", true, 0, true, 2 );
+static ConVar r_flashlight_bounce_scale( "r_flashlight_bounce_scale", "0.12", FCVAR_ARCHIVE, "Reflected flashlight radiance multiplier", true, 0.f, true, 4.f );
 static ConVar r_flashlight_bounce_debug( "r_flashlight_bounce_debug", "0", FCVAR_CHEAT, "Show measured flashlight colour at the weighted centroid", true, 0, true, 1 );
 
 static ConVar r_volumetric( "r_volumetric", "1", FCVAR_ARCHIVE, "DX12: additive volumetric lighting from opted-in shadowmapped lights", true, 0, true, 1 );
@@ -154,9 +152,7 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 	view.constants.contactControl[2] = kContactSteps[r_contactshadows_quality.GetInt()];
 	view.constants.contactControl[3] = debugContacts ? 1u : 0u;
 	view.bounceScale = bounce ? r_flashlight_bounce_scale.GetFloat() : 0.f;
-	view.bounceSaturation = r_flashlight_bounce_saturation.GetFloat();
 	view.bounceDebug = bounce && r_flashlight_bounce_debug.GetBool();
-	view.bounceBlend = r_flashlight_bounce_blend.GetInt();
 	view.ssr.quality = static_cast<uint32>( r_ssr_quality.GetInt() );
 	view.ssr.maxDistance = r_ssr_max_distance.GetFloat();
 	view.ssr.thickness = r_ssr_thickness.GetFloat();

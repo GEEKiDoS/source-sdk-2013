@@ -91,6 +91,7 @@ struct NekoPixelOutput
 	float4 response : SV_Target4;
 	float4 directSpecular : SV_Target5;
 	float specularDistance : SV_Target6;
+	float4 albedo : SV_Target7;
 };
 float HalfLambert( float coordinate )
 {
@@ -265,5 +266,6 @@ NekoPixelOutput main( NekoPixelInput input )
 	output.color = DX12FinishPixel( FinalOutput( float4( rgb, alpha ), fog, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ), input.fog );
 	output.normal = PBR_PackNormal( worldNormal );
 	output.spec = float4( 0, 0, 0, 1 );
+	output.albedo = float4( albedo, 1 );
 	return output;
 }
