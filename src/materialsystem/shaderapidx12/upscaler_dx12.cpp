@@ -2728,6 +2728,7 @@ void CShaderAPIDX12::DispatchFrameGen( int nFlags )
 	// Every provider reads depth in DEPTH_WRITE (the tagged/transitioned state) from here to the present.
 	m_pDevice->TransitionSceneDepth( D3D12_RESOURCE_STATE_DEPTH_WRITE );
 	FrameGenDispatchDX12 d;
+	d.swap = m_pDevice->CurrentSwapChain();
 	if ( frameGen.Hudless() )
 	{
 		if ( !frameGen.EnsureHudless( nWidth, nHeight ) )

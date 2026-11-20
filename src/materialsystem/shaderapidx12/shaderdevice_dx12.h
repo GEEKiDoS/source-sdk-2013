@@ -317,6 +317,7 @@ public:
 	// Frame generation (framegen_dx12.h). The shader API requests a kind; the device applies it at the tail of the
 	// next Present (the recorder is empty there) by recreating every view's swap chain through the provider.
 	CFrameGenDX12 &FrameGen() { return m_FrameGen; }
+	IDXGISwapChain3 *CurrentSwapChain() const { return m_pCurrentView ? m_pCurrentView->swap.Get() : nullptr; }
 
 	IDXGIFactory6 *Factory() const { return m_pFactory.Get(); }
 

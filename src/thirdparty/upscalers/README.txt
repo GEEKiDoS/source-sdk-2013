@@ -78,6 +78,8 @@ DLSS-G
 FSR frame generation
   AMD FidelityFX SDK v2.3.0 signedbin (same link as above), file amd_fidelityfx_framegeneration_dx12.dll next to the
   loader. Runs on any DX12 GPU; always one generated frame.
+  For a display capture, use sv_cheats 1 and r_framegen_debug 1 to mark interpolated frames and resets.
+  Mode 2 adds the FidelityFX debug view. Return to 0 (the default) for normal output.
 
 XeSS-FG
   Intel XeSS SDK 3.0.2 (same link as above), files bin/libxess_fg.dll and bin/libxell.dll. One generated frame on
