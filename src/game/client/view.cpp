@@ -726,6 +726,10 @@ float CViewRender::GetZFar()
 }
 
 #if defined( L4D2 )
+// A rectilinear projection cannot cover 180 degrees: tan(FOV/2) is singular.
+// Leave headroom below the shadow receiver's 179-degree frustum limit.
+static constexpr float kTerrorMaxViewModelFOV = 178.0f;
+
 #pragma float_control( precise, on, push )
 // C1BAADB..C1BAB3B. Keep the raw local player's default FOV here; the mode
 // getter independently resolves an IN_EYE target for its class/camera tests.
@@ -734,7 +738,7 @@ static float Terror_CalcViewModelFOV( C_BasePlayer *player, float fov, float &fo
 	fovOffset = player ? static_cast< float >( player->GetDefaultFOV() ) - fov : 0.0f;
 	const double viewModelFOV = static_cast< double >( g_pClientMode->GetViewModelFOV() ) - fovOffset;
 	// FCOMIP/JBE takes the 5-degree arm on unordered, not just on <= 5.
-	return viewModelFOV > 5.0 ? static_cast< float >( viewModelFOV ) : 5.0f;
+	return viewModelFOV > 5.0 ? MIN( static_cast< float >( viewModelFOV ), kTerrorMaxViewModelFOV ) : 5.0f;
 }
 #pragma float_control( pop )
 #endif
@@ -1232,6 +1236,10 @@ void CViewRender::Render( vrect_t *rect )
 
 		viewEye.fov = ScaleFOVByWidthRatio( viewEye.fov, limitedAspectRatio );
 		viewEye.fovViewmodel = ScaleFOVByWidthRatio( viewEye.fovViewmodel, aspectRatio );
+#if defined( L4D2 )
+		// Aspect scaling can push a valid input back beyond the frustum limit.
+		viewEye.fovViewmodel = MIN( viewEye.fovViewmodel, kTerrorMaxViewModelFOV );
+#endif
 
 	    // Let the client mode hook stuff.
 	    g_pClientMode->PreRender(&viewEye );

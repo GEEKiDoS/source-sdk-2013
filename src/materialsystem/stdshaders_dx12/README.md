@@ -354,6 +354,10 @@ Apply the viewmodel `DepthRange(0,0.1)` **after** receiver preparation, since
 nested shadow views reset that range to `0..1`. The user verified the weapon
 wall-clipping correction; additional viewmodel fixtures were stopped.
 
+L4D2 clamps the effective viewmodel FOV below the 179-degree shadow frustum
+limit, before and after aspect scaling. A saved value of 180 remains a valid
+console setting but cannot reach the rectilinear projection at its singularity.
+
 Client-local archived `r_shadowmap_force_physics_shadows` defaults to zero.
 At one, native enhanced-map caster queries override authored `EF_NOSHADOW`
 only for ordinary non-gib solid physics props. Hidden/nonsolid entities,
@@ -1167,6 +1171,10 @@ since the PBR path drops rim lighting. `$envmapmask`, `$basealphaenvmapmask`, an
 continue to select the legacy environment mask in the adapter. In legacy L4D2 Phong materials, `$basemapluminancephongmask`
 overrides both alpha sources for the Phong lobe. With `$normalmapalphaenvmapmask`, that evaluated luminance mask
 also masks the cubemap: the Uzi uses an opaque `flat_normal`, whose alpha would otherwise reflect at full strength.
+Legacy Phong materials without an explicit mask use base alpha, as in the retail
+Phong shader. The model adapter also honors retail's `$basemapalphaenvmapmask`:
+its alpha attenuates reflection rather than selecting gloss, even if the host's
+material parser skips an unsupported `GPU>=2?$phong` condition.
 The authored reflection uses `$envmapfresnel`/Phong Fresnel ranges as in `l4d2_phong_ps20b.fxc`, not the dielectric
 PBR EnvBRDF. `$phongboost` is folded into bounded F0 (rather than multiplying a normalized GGX lobe),
 while diffuse albedo remains energy-conserving. There is no `$phongalbedoboost` parameter in the retail/source shader
@@ -1809,6 +1817,9 @@ High-tier adapters keep the defaults. `-dx12adaptertier 0|1` forces the class.
 A config.cfg saved before `mat_postfx_dx12_set` existed gets `mat_postfx_dx12 1` once on the first level load
 (`PostProcessDX12_ValidateConfig`); later changes to `mat_postfx_dx12` stick. When the post stack cannot create its
 render targets or materials, the console says so and the legacy engine post runs.
+The high-resolution lightmap role check runs after legacy shader
+translation, so disabled color-correction LUT slots in the engine post are
+not mistaken for lightmap reads when those slots still hold previous draw state.
 
 Swap chains always have three flip buffers (`mat_triplebuffered` is ignored): with two, a vsynced frame that misses a
 vblank stalls the queue on the back-buffer copy, so the frame rate snaps to 60/30.

@@ -31,6 +31,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 		SHADER_PARAM( ENVMAPMASK, SHADER_PARAM_TYPE_TEXTURE, "shadertest/shadertest_envmask", "envmap mask" )
 		SHADER_PARAM( ENVMAPMASKFRAME, SHADER_PARAM_TYPE_INTEGER, "0", "" )
 		SHADER_PARAM( ENVMAPMASKTRANSFORM, SHADER_PARAM_TYPE_MATRIX, "center .5 .5 scale 1 1 rotate 0 translate 0 0", "$envmapmask texcoord transform" )
+		SHADER_PARAM( BASEMAPALPHAENVMAPMASK, SHADER_PARAM_TYPE_BOOL, "0", "Use base texture alpha to attenuate model reflections" )
 		SHADER_PARAM( ENVMAPTINT, SHADER_PARAM_TYPE_COLOR, "[1 1 1]", "envmap tint" )
 		SHADER_PARAM( BUMPMAP, SHADER_PARAM_TYPE_TEXTURE, "models/shadertest/shader1_normal", "bump map" )
 		SHADER_PARAM( BUMPCOMPRESS, SHADER_PARAM_TYPE_TEXTURE, "models/shadertest/shader3_normal", "compression bump map" )
@@ -278,6 +279,7 @@ BEGIN_VS_SHADER( VertexLitGeneric, "Help for VertexLitGeneric" )
 			PBR_FillModelVars( v, info );
 			PBR_FILL_EXTRA_VARS( v );
 			PBR_FILL_LEGACY_ADAPTER_VARS( v );
+			v.baseMapAlphaEnvmapMask = BASEMAPALPHAENVMAPMASK;
 			return v;
 		}();
 		return s_vars;

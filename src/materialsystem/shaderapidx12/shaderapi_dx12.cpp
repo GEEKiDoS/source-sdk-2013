@@ -1376,20 +1376,6 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			blendedTextures[kCubeSlots[i]] = handles[i];
 		drawPixelTextures = blendedTextures;
 	}
-	if ( highresMap && !shadowPass && !motionActive && psRecord && !psRecord->samplerRolesReady )
-		for ( unsigned sampler = 0; sampler < 16; ++sampler )
-			if ( ( pixelSamplers & ( 1u << sampler ) ) && m_ActiveSnapshot.fixed.textureEnabled[sampler] )
-			{
-				const TextureRecord *texture = FindTexture( m_BoundTextures[sampler] );
-				if ( texture && texture->highresPage != 0xffffffffu )
-				{
-					char reason[256];
-					V_snprintf( reason, sizeof(reason), "native lightmap shader %s sampler %u lacks explicit sampler-role metadata",
-						m_ActiveSnapshot.pixelShaderName.c_str(), sampler );
-					m_pDevice->Highres().OnNativeFailure( reason );
-					return;
-				}
-			}
 	if ( m_nPreparedSamplerMask != sampledMask )
 	{
 		m_PreparedSamplerTables = {};
@@ -2172,6 +2158,28 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			else if ( m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
 		}
+	}
+	// Validate roles only for samplers used by the actual pixel program. Before
+	// first translation the binding mask conservatively includes every slot;
+	// e.g. a post combo with one LUT must not inspect a previous draw's lightmap
+	// handle in an unused LUT slot.
+	if ( highresMap && !shadowPass && !motionActive && psRecord && !psRecord->samplerRolesReady )
+	{
+		const uint32_t usedSamplers = psRecord->legacyBytecode.IsEmpty() ? psRecord->nativeSamplerMask :
+			psRecord->translated.usedSamplerMask;
+		for ( unsigned sampler = 0; sampler < 16; ++sampler )
+			if ( ( usedSamplers & ( 1u << sampler ) ) && m_ActiveSnapshot.fixed.textureEnabled[sampler] )
+			{
+				const TextureRecord *texture = FindTexture( m_BoundTextures[sampler] );
+				if ( texture && texture->highresPage != 0xffffffffu )
+				{
+					char reason[256];
+					V_snprintf( reason, sizeof( reason ), "lightmap shader %s sampler %u lacks explicit sampler-role metadata",
+						m_ActiveSnapshot.pixelShaderName.c_str(), sampler );
+					m_pDevice->Highres().OnNativeFailure( reason );
+					return;
+				}
+			}
 	}
 	// c3 belongs to CPU flex only for a VS consuming POSITION1; postprocess/custom shaders may
 	// legitimately use the same register for material data. Classification is cached at legacy

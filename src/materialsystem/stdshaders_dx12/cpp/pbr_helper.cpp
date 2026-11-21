@@ -259,11 +259,14 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 		s.vertexColor = false;
 	}
 
+	// Some retail model VMTs spell their reflection-strength parameter
+	// $basemapalphaenvmapmask. Unlike a roughness input it attenuates the cubemap.
+	const bool baseMapAlphaEnvmapMask = s.hasBase && IsBoolSet( v.baseMapAlphaEnvmapMask, params );
 	if ( s.hasEnvmap )
 	{
 		if ( s.hasBump && IS_FLAG_SET( MATERIAL_VAR_NORMALMAPALPHAENVMAPMASK ) )
 			s.envmapMask = 3;
-		else if ( s.hasBase && IS_FLAG_SET( MATERIAL_VAR_BASEALPHAENVMAPMASK ) )
+		else if ( s.hasBase && ( IS_FLAG_SET( MATERIAL_VAR_BASEALPHAENVMAPMASK ) || baseMapAlphaEnvmapMask ) )
 			s.envmapMask = 2;
 		else if ( IsTextureSet( v.envmapMask, params ) )
 			s.envmapMask = 1;
@@ -283,8 +286,14 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 		// VertexLitGeneric $shinyblood (l4d2_phong SHINYBLOOD); PBR_Infected's own $shinyblood is the INFECTED path's.
 		if ( !v.infected && IsBoolSet( v.shinyBlood, params ) )
 			s.phong |= 8;
+		// The legacy Phong shader masks its cubemap with base alpha by default,
+		// even without $basealphaenvmapmask. An unmasked cubemap can wash out
+		// the diffuse texture on both the viewmodel and the world model.
+		if ( s.hasEnvmap && s.hasBase && s.envmapMask == 0 )
+			s.envmapMask = 2;
 	}
-	s.glossFromMask = !s.explicitRoughness && s.hasEnvmap && ( s.phong & 1 ) == 0 &&
+	s.glossFromMask = !s.explicitRoughness && s.envmapMask != 0 && ( s.phong & 1 ) == 0 &&
+		!( s.envmapMask == 2 && baseMapAlphaEnvmapMask ) &&
 		v.legacyEnvmapAuthored != -1 && GetIntParam( v.legacyEnvmapAuthored, params, 0 ) != 0;
 
 	s.alphaTested = IS_FLAG_SET( MATERIAL_VAR_ALPHATEST ) != 0;

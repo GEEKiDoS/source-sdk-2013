@@ -158,6 +158,7 @@ struct PBR_Vars_t
 	// Model: legacy Phong adapter and the unbumped $ambientonly debug mode
 	int phong, phongExponent, phongExponentTexture, baseMapAlphaPhongMask, ambientOnly;
 	int phongTint, phongAlbedoTint, phongBoost, phongFresnelRanges, envmapFresnel, baseMapLuminancePhongMask, diffuseExponent;
+	int baseMapAlphaEnvmapMask;
 	int phongWarp, rimLight, shinyBlood, shinyBloodExponent, flashlightNoLambert, blendTintByBaseAlpha, linearWrite, allowDiffuseModulation;
 	// PBR_Metalness / PBR_Specular only
 	int normalTexture;
