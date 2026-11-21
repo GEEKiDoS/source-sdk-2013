@@ -24,6 +24,9 @@ cbuffer PostComposite : register( b1, space1 )
 	float4 gAwbParams; // @legacy ps:c8
 	float4 gViewRect; // @legacy ps:c9
 	float4 gBodycam; // @legacy ps:c10
+	float4 gContrast; // @legacy ps:c11
+	float4 gFinish; // @legacy ps:c12
+	float4 gMotion; // @legacy ps:c13
 };
 Texture2D<float4> gScene : register( t0 );
 Texture2D<float4> gBloom : register( t1 );
@@ -48,6 +51,17 @@ SamplerState gLut1Sampler : register( s6 );
 SamplerState gLut2Sampler : register( s7 );
 SamplerState gLut3Sampler : register( s8 );
 SamplerState gBodycamLinear : register( s10 );
+Texture2D<float4> gNoise : register( t11 );
+Texture2D<float4> gVignette : register( t12 );
+SamplerState gNoiseSampler : register( s11 );
+SamplerState gVignetteSampler : register( s12 );
+Texture2D<float4> gVelocity : register( t13 );
+
+float4 CompactVelocity( float2 uv )
+{
+	int2 p = clamp( int2( uv * gMotion.xy ), 0, int2( gMotion.xy ) - 1 );
+	return gVelocity.Load( int3( p, 0 ) );
+}
 
 #include "agx_curve.hlsli"
 
@@ -410,11 +424,70 @@ float4 main( PS_INPUT input ) : SV_Target0
 #else
 	float3 scene = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb * gSceneBloomFlare.x;
 #endif
-	float3 bloom = 0;
-	[branch] if ( ( flags & 8 ) == 0 ) bloom = SampleMip( gBloom, sceneUv, (int)gDirtPeak.w );
-	// MagicBloom: the finest level holds the layer sum; gSceneBloomFlare.y already divides by the layer count.
-	// is exposed and filmic-tonemapped into display space, and the lens dirt rides on the bloom alone.
-	float3 bloomT = BloomTonemap( max( bloom, 0 ) * gSceneBloomFlare.y );
+	// Eligible sharpen views map one scene texel to one pixel. Each pixel's
+	// two in-quad neighbors have already read their centers. Exchange before
+	// the velocity branch so moving lanes also supply their unblurred colors.
+	float3 center = 0, inner = 0;
+	[branch] if ( gLutWeight4.z > 0 )
+	{
+		center = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb;
+		inner = QuadReadAcrossX( center ) + QuadReadAcrossY( center );
+	}
+	bool moving = false;
+	[branch] if ( ( flags & 32 ) != 0 )
+	{
+		float4 v = CompactVelocity( uv );
+		bool weapon = v.w >= 1.5;
+		float scale = gMotion.z * ( weapon ? gLutWeight4.y : 1.0 );
+		float2 velocity = v.xy * scale;
+		float speed = length( velocity );
+		velocity *= min( 1.0, gMotion.w / max( speed, 1e-6 ) );
+		speed = min( speed, gMotion.w );
+		moving = v.w >= 0.5 && speed * max( gMotion.x, gMotion.y ) > 0.5;
+		[branch] if ( moving )
+		{
+			// Keep the center tap and the velocity/layer rejection of the very-low
+			// gather. Use the center trajectory instead of building dilated tiles.
+			float weight = 1.0;
+			float jitter = frac( InterleavedGradientNoise( input.projPos.xy ) + 0.61803399 );
+			[unroll] for ( int i = 0; i < 4; ++i )
+			{
+				if ( i == 2 ) continue;
+				float t = ( i + jitter ) * 0.25 - 0.5;
+				float2 sampleUv = saturate( uv + t * velocity );
+				float4 neighbor = CompactVelocity( sampleUv );
+				float w = neighbor.w >= 0.5 && ( neighbor.w >= 1.5 ) == weapon ?
+					saturate( length( neighbor.xy * scale ) / max( speed * abs( t ), 1e-5 ) ) : 0;
+				scene += w * gScene.SampleLevel( gSceneSampler, sampleUv, 0 ).rgb * gSceneBloomFlare.x;
+				weight += w;
+			}
+			scene /= weight;
+		}
+	}
+	// Sharpen scene detail once, before the nonlinear curve. Bound the correction
+	// relative to the center to avoid a bright neighbor ringing into a dark pixel.
+	[branch] if ( !moving && gLutWeight4.z > 0 )
+	{
+		int2 pixel = int2( input.projPos.xy );
+		uint w, h;
+		gScene.GetDimensions( w, h );
+		int2 edge = int2( w, h ) - 1;
+		int2 outer = ( pixel & 1 ) * 2 - 1;
+		float3 ring = inner + gScene.Load( int3( clamp( pixel + int2( outer.x, 0 ), 0, edge ), 0 ) ).rgb +
+			gScene.Load( int3( clamp( pixel + int2( 0, outer.y ), 0, edge ), 0 ) ).rgb;
+		float3 detail = clamp( center - 0.25 * ring, -0.5 * center, 0.5 * center );
+		scene += detail * gLutWeight4.z * gSceneBloomFlare.x;
+	}
+	float3 bloomT = 0;
+	float base = 0;
+	[branch] if ( ( flags & 16 ) != 0 )
+	{
+		float4 field = gFlare.SampleLevel( gFlareSampler, uv, 0 );
+		bloomT = field.rgb;
+		base = field.a;
+	}
+	else if ( ( flags & 8 ) == 0 )
+		bloomT = BloomTonemap( max( SampleMip( gBloom, sceneUv, (uint)gDirtPeak.w ), 0 ) * gSceneBloomFlare.y );
 	float3 dirt = ( flags & 2 ) != 0 ? gDirt.SampleLevel( gDirtSampler, uv, 0 ).rgb * gDirtPeak.x : 0;
 	bloomT = Screen( bloomT, dirt * bloomT );
 	// The glare buffer is quarter resolution; four diagonal taps one half-resolution texel apart soften its quads.
@@ -423,11 +496,16 @@ float4 main( PS_INPUT input ) : SV_Target0
 	gScene.GetDimensions( sceneSize.x, sceneSize.y );
 #endif
 	float2 glareStep = 2.0 / sceneSize;
-	float3 glare = 0.25 * ( gGlare.SampleLevel( gGlareSampler, uv + glareStep * float2( -1, 1 ), 0 ).rgb +
-		gGlare.SampleLevel( gGlareSampler, uv + glareStep, 0 ).rgb +
-		gGlare.SampleLevel( gGlareSampler, uv - glareStep, 0 ).rgb +
-		gGlare.SampleLevel( gGlareSampler, uv + glareStep * float2( 1, -1 ), 0 ).rgb );
-	float3 flare = gFlare.SampleLevel( gFlareSampler, uv, 0 ).rgb;
+	float3 glare = 0;
+	float3 flare = 0;
+	[branch] if ( gSceneBloomFlare.z != 0 )
+	{
+		glare = 0.25 * ( gGlare.SampleLevel( gGlareSampler, uv + glareStep * float2( -1, 1 ), 0 ).rgb +
+			gGlare.SampleLevel( gGlareSampler, uv + glareStep, 0 ).rgb +
+			gGlare.SampleLevel( gGlareSampler, uv - glareStep, 0 ).rgb +
+			gGlare.SampleLevel( gGlareSampler, uv + glareStep * float2( 1, -1 ), 0 ).rgb );
+		flare = gFlare.SampleLevel( gFlareSampler, uv, 0 ).rgb;
+	}
 	float3 lens = ( flare + glare ) * kFlareTint * gSceneBloomFlare.z;
 	uint debugView = (uint)gOutput.z;
 	uint lutCount = (uint)gOutput.w;
@@ -448,6 +526,14 @@ float4 main( PS_INPUT input ) : SV_Target0
 #endif
 	if ( debugView == 1 ) e = saturate( bloomT );
 	else if ( debugView == 0 || debugView > 4 ) e = Screen( e, saturate( bloomT ) );
+	[branch] if ( ( flags & 16 ) != 0 )
+	{
+		const float3 luma = float3( 0.299, 0.587, 0.114 );
+		base = lerp( base, 1.0, dot( saturate( bloomT ), luma ) );
+		float radial = smoothstep( gContrast.z, gContrast.w, length( uv * 2 - 1 ) );
+		float contrast = lerp( gContrast.x, gContrast.y, radial );
+		e += max( ( dot( e, luma ) - base ) * contrast, contrast >= 0 ? 0 : -1 );
+	}
 	if ( ( flags & 4 ) != 0 && lutCount != 0 )
 	{
 		float3 lutUv = e * ( 31.0 / 32.0 ) + ( 0.5 / 32.0 );
@@ -457,6 +543,22 @@ float4 main( PS_INPUT input ) : SV_Target0
 		if ( lutCount > 2 ) corrected += gLut2.SampleLevel( gLut2Sampler, lutUv, 0 ).rgb * gLutWeights.w;
 		if ( lutCount > 3 ) corrected += gLut3.SampleLevel( gLut3Sampler, lutUv, 0 ).rgb * gLutWeight4.x;
 		e = corrected;
+	}
+	[branch] if ( ( flags & 16 ) != 0 )
+	{
+		if ( gFinish.z != 0 )
+		{
+			float v = gVignette.SampleLevel( gVignetteSampler, uv * ( 31.0 / 32.0 ) + 0.5 / 32.0, 0 ).r;
+			e *= lerp( 1.0, saturate( v * 0.55 + 0.46 ), gFinish.z );
+		}
+		if ( gFinish.x > 0 )
+		{
+			float n0 = gNoise.SampleLevel( gNoiseSampler, uv * 10.0 + gFinish.y, 0 ).g;
+			float n1 = gNoise.SampleLevel( gNoiseSampler, uv.yx * 20.0 - gFinish.y, 0 ).g;
+			float n = gNoise.SampleLevel( gNoiseSampler, float2( n0, n1 ), 0 ).g;
+			float shadow = pow( 1.0 - saturate( dot( e, float3( 0.2125, 0.7154, 0.0721 ) ) ), 12.0 );
+			e += ( n * 0.3 - 0.15 ) * gFinish.x * ( 0.8 * shadow + 0.2 );
+		}
 	}
 	// SDR leaves through an 8-bit swap chain: one code value of noise breaks the smooth bloom and flare gradients into
 	// grain instead of bands. The HDR swap chain is FP16 and needs none.

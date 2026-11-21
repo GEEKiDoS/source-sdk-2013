@@ -8,7 +8,7 @@ logical=postfx_composite_ps51 stage=ps source=postfx_composite_ps51.fxc legacy=-
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=PostComposite space=1 register=b1 size=176 layoutHash=0x81f4a3dbc690804f material
+  cbuffer=PostComposite space=1 register=b1 size=224 layoutHash=0x09fc40998cc05930 material
     member=gSceneBloomFlare type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=gDirtPeak type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=gOutput type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=ps:c2
@@ -20,6 +20,9 @@ logical=postfx_composite_ps51 stage=ps source=postfx_composite_ps51.fxc legacy=-
     member=gAwbParams type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=ps:c8
     member=gViewRect type=3 class=1 offset=144 size=16 elements=0 arrayStride=0 legacy=ps:c9
     member=gBodycam type=3 class=1 offset=160 size=16 elements=0 arrayStride=0 legacy=ps:c10
+    member=gContrast type=3 class=1 offset=176 size=16 elements=0 arrayStride=0 legacy=ps:c11
+    member=gFinish type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=ps:c12
+    member=gMotion type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=ps:c13
     legacyEntry=0,16,1,0,0,0,0
     legacyEntry=16,16,1,0,0,0,1
     legacyEntry=32,16,1,0,0,0,2
@@ -31,4 +34,7 @@ logical=postfx_composite_ps51 stage=ps source=postfx_composite_ps51.fxc legacy=-
     legacyEntry=128,16,1,0,0,0,8
     legacyEntry=144,16,1,0,0,0,9
     legacyEntry=160,16,1,0,0,0,10
+    legacyEntry=176,16,1,0,0,0,11
+    legacyEntry=192,16,1,0,0,0,12
+    legacyEntry=208,16,1,0,0,0,13
     bridge=WriteNativeCBuffer(api, block)

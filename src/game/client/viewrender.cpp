@@ -3173,6 +3173,9 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			bTemporalUpscaled = UpscalerDX12_Dispatch( pRenderContext, viewRender, !MotionVectorsDX12_FrameValid( NULL ) );
 			pRenderContext.SafeRelease();
 		}
+		pRenderContext.GetFrom( materials );
+		pRenderContext->BeginPIXEvent( PIX_VALVE_ORANGE, "Output post" );
+		pRenderContext.SafeRelease();
 
 		// A scaled main view now holds the full-size reconstruction: velocity blur, overlays, post-processing and frame
 		// generation run on the unscaled viewport. viewRender keeps the 3D render size (the valid motion-vector region).
@@ -3189,9 +3192,15 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			pRenderContext.SafeRelease();
 		}
 
+		PostMotionDX12_t postMotion = {};
 		if ( bMotionBlurAllowed && bDX12VelocityBlur )
 		{
 			pRenderContext.GetFrom( materials );
+			// An overlay must not be swept by the scene's velocities. Preserve
+			// the standalone blur whenever anything composites between the passes.
+			if ( !bMainTemporalViewEligible || UpscalerDX12_Status() <= 0 || m_ScreenOverlayMaterial || m_UnderWaterOverlayMaterial ||
+				g_SmokeFogOverlayAlpha != 0.f ||
+				!PreparePostMotionDX12( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height, postMotion ) )
 			{
 				PIXEVENT( pRenderContext, "DoImageSpaceMotionBlur" );
 				DoImageSpaceMotionBlur( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height );
@@ -3246,7 +3255,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 				{
 					bFlashlightIsOn = pLocal->IsEffectActive( EF_DIMLIGHT );
 				}
-				DoEnginePostProcessing( viewPost.x, viewPost.y, viewPost.width, viewPost.height, bFlashlightIsOn );
+				DoEnginePostProcessing( viewPost.x, viewPost.y, viewPost.width, viewPost.height, bFlashlightIsOn, false, postMotion );
 			}
 			pRenderContext.SafeRelease();
 		}
@@ -3273,7 +3282,13 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		}
 
 #if defined( L4D2 )
+		pRenderContext.GetFrom( materials );
+		pRenderContext->BeginPIXEvent( PIX_VALVE_ORANGE, "Client post effects" );
+		pRenderContext.SafeRelease();
 		GetClientModeNormal()->DoPostScreenSpaceEffects( &viewRender );
+		pRenderContext.GetFrom( materials );
+		pRenderContext->EndPIXEvent();
+		pRenderContext.SafeRelease();
 #else
 		if ( g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_INTEGER )
 		{
@@ -3284,6 +3299,9 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 #endif
 
 		CleanupMain3DView( viewRender );
+		pRenderContext.GetFrom( materials );
+		pRenderContext->EndPIXEvent();
+		pRenderContext.SafeRelease();
 
 		if ( m_rbTakeFreezeFrame[viewRender.m_eStereoEye ] )
 		{

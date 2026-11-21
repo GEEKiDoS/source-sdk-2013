@@ -31,6 +31,55 @@ static ConVar cl_glow_blur_scale( "cl_glow_blur_scale", "3", 0x00004008,
 namespace
 {
 int s_GlowDrawDepth = 0;
+// Screen-space union of actual color submissions, not all registered glows.
+// These bounds do not use depth or PVS: outlines can be visible through walls.
+struct GlowRegion_t
+{
+	float left, top, right, bottom;
+};
+static GlowRegion_t *s_pColorRegion;
+
+static void IncludeGlowBounds( C_BaseEntity *pEntity )
+{
+	GlowRegion_t &region = *s_pColorRegion;
+	Vector lo, hi;
+	pEntity->GetRenderBoundsWorldspace( lo, hi );
+	if ( engine->CullBox( lo, hi ) )
+		return;
+	const VMatrix &matrix = engine->WorldToScreenMatrix();
+	for ( int i = 0; i < 8; ++i )
+	{
+		Vector4D corner( ( i & 1 ) ? hi.x : lo.x, ( i & 2 ) ? hi.y : lo.y, ( i & 4 ) ? hi.z : lo.z, 1.f );
+		Vector4D clip;
+		matrix.V4Mul( corner, clip );
+		if ( !( clip.w > 0.001f ) )
+		{
+			// A near-plane crossing cannot be bounded by projected corners.
+			region.left = region.top = 0.f;
+			region.right = region.bottom = 1.f;
+			return;
+		}
+		const float x = Clamp( 0.5f + 0.5f * clip.x / clip.w, 0.f, 1.f );
+		const float y = Clamp( 0.5f - 0.5f * clip.y / clip.w, 0.f, 1.f );
+		region.left = MIN( region.left, x );
+		region.top = MIN( region.top, y );
+		region.right = MAX( region.right, x );
+		region.bottom = MAX( region.bottom, y );
+	}
+}
+
+static void ScissorGlow( IMatRenderContext *ctx, int w, int h, int renderWidth, int renderHeight )
+{
+	if ( !s_pColorRegion )
+		return;
+	// Downsample + the separable 13-tap quarter-size blur reach at most
+	// 12 quarter texels per axis. Include linear footprints and jitter.
+	const float dx = 64.f / renderWidth, dy = 64.f / renderHeight;
+	ctx->SetScissorRect( MAX( 0, Floor2Int( ( s_pColorRegion->left - dx ) * w ) ),
+		MAX( 0, Floor2Int( ( s_pColorRegion->top - dy ) * h ) ),
+		MIN( w, Ceil2Int( ( s_pColorRegion->right + dx ) * w ) ),
+		MIN( h, Ceil2Int( ( s_pColorRegion->bottom + dy ) * h ) ), true );
+}
 // Native flags are carried through game-owned submission, not an engine ABI
 // extension. Nested explicit submissions restore the previous metadata only.
 bool s_SkipEntityStencil = false;
@@ -221,6 +270,8 @@ void TerrorGlow_DrawModel( C_BaseEntity *pEntity, unsigned char instanceAlpha, i
 	if ( pEntity->GetModel() && modelinfo->GetModelType( pEntity->GetModel() ) == mod_brush )
 		render->SetBlend( ( nativeFlags & 0x40000000 ) ? 1.0f : instanceAlpha * 0.0039215689f );
 	++s_GlowDrawDepth;
+	if ( s_pColorRegion )
+		IncludeGlowBounds( pEntity );
 	pEntity->DrawModel( STUDIO_RENDER | ( nativeFlags & STUDIO_WIREFRAME ) );
 	--s_GlowDrawDepth;
 	if ( stencil ) TerrorGlow_EndStencilMask();
@@ -379,9 +430,12 @@ void TerrorGlow_Composite( const CViewSetup &view, float blurScale, float compos
 		pContext->SetStencilReferenceValue( 0 );
 		pContext->SetStencilTestMask( 0xfa );
 		pContext->SetStencilWriteMask( 0 );
+		ScissorGlow( pContext, view.width, view.height, view.width, view.height );
 		pContext->DrawScreenSpaceRectangle( g_TerrorGlowMaterials.GetGlowCoverageMaterial( true ),
 			0, 0, view.width, view.height, 0, 0, view.width - 1, view.height - 1,
 			view.width, view.height );
+		if ( s_pColorRegion )
+			pContext->SetScissorRect( -1, -1, -1, -1, false );
 		TerrorGlow_EndStencilMask();
 		pContext->PopRenderTargetAndViewport();
 
@@ -393,9 +447,12 @@ void TerrorGlow_Composite( const CViewSetup &view, float blurScale, float compos
 			scaleX / pCoverage->GetActualWidth(), scaleY / pCoverage->GetActualHeight(), 0.0f, 0.0f );
 		// Preserve the native quarter-buffer UVs (including its -0.5 Y offset).
 		// Coverage uses physical output pixel coordinates, not those UVs.
+		ScissorGlow( pContext, viewportWidth, viewportHeight, view.width, view.height );
 		pContext->DrawScreenSpaceRectangle( pGlowComposite, 0, 0, viewportWidth, viewportHeight,
 			0.0f, -0.5f, width - 1.0f, height - 1.0f,
 			pSmall1->GetActualWidth(), pSmall1->GetActualHeight() );
+		if ( s_pColorRegion )
+			pContext->SetScissorRect( -1, -1, -1, -1, false );
 	}
 	else
 	{
@@ -444,13 +501,19 @@ void TerrorGlow_Render( const CViewSetup &view, int slot )
 				render->GetColorModulation( color.Base() );
 				const float blend = render->GetBlend();
 				TerrorGlow_BeginColorBuffer( view );
+				static ConVarRef compact( "mat_postfx_compact" );
+				GlowRegion_t region = { 1.f, 1.f, 0.f, 0.f };
+				if ( compact.GetBool() && PostProcessDX12_Active() && !view.x && !view.y )
+					s_pColorRegion = &region;
 				TerrorGlow_DrawColor( slot, true );
 				g_pStudioRender->ForcedMaterialOverride( NULL );
 				render->SetColorModulation( color.Base() );
 				render->SetBlend( blend );
 				TerrorGlow_EndColorBuffer();
 				render->PopView( frustum );
-				TerrorGlow_Composite( view, cl_glow_blur_scale.GetFloat(), scale );
+				if ( !s_pColorRegion || ( region.left < region.right && region.top < region.bottom ) )
+					TerrorGlow_Composite( view, cl_glow_blur_scale.GetFloat(), scale );
+				s_pColorRegion = NULL;
 			}
 			else render->PopView( frustum );
 		}

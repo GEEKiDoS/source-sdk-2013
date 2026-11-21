@@ -6,6 +6,23 @@
 class IMaterialSystem;
 class IMaterialSystemHardwareConfig;
 class IMatRenderContext;
+class ITexture;
+
+struct PostMotionDX12_t
+{
+	float region[4]; // render width, height, shutter scale, maximum UV length
+	float viewModelScale;
+};
+
+struct PostGradeDX12_t
+{
+	float contrast[4]; // center, edge, vignette start and end
+	float finish[4]; // grain, phase, top vignette, enabled
+	ITexture *pNoise;
+	ITexture *pVignette;
+};
+
+bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScale );
 
 void PostProcessDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig );
 // Main-thread initialization retains all post materials and primes their variable tokens before queued rendering.
@@ -17,7 +34,8 @@ bool PostProcessDX12_BodycamActive();
 void PostProcessDX12_ValidateConfig();
 void PostProcessDX12_SubmitFrameConfig();
 void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection,
-	float flHorizontalFov, float flAspectRatio );
+	float flHorizontalFov, float flAspectRatio, ITexture *pOutput = nullptr, const PostGradeDX12_t *pGrade = nullptr,
+	const PostMotionDX12_t *pMotion = nullptr, ITexture *pExposureCopy = nullptr );
 int PostProcessDX12_Status();
 
 #endif
