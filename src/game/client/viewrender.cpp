@@ -3198,7 +3198,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			pRenderContext.GetFrom( materials );
 			// An overlay must not be swept by the scene's velocities. Preserve
 			// the standalone blur whenever anything composites between the passes.
-			if ( !bTemporalUpscaled || m_ScreenOverlayMaterial || m_UnderWaterOverlayMaterial ||
+			if ( !bMainTemporalViewEligible || UpscalerDX12_Status() <= 0 || m_ScreenOverlayMaterial || m_UnderWaterOverlayMaterial ||
 				g_SmokeFogOverlayAlpha != 0.f ||
 				!PreparePostMotionDX12( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height, postMotion ) )
 			{
