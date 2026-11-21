@@ -615,15 +615,6 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 			DrawCompute( pRenderContext, material );
 		}
 	}
-	if ( pGrade )
-	{
-		// While the plain extraction mip is still live, filter display luma into
-		// the unused flare target. This replaces a full-size readback and the
-		// legacy quarter-size downsample and two wide Gaussian passes.
-		PIXEVENT( pRenderContext, "Local contrast base" );
-		SetPostPass( s_FlareInputBlurDown, s_BloomUp, nFirstMip, s_Flare, 0, 4.f, 0.f );
-		DrawCompute( pRenderContext, s_FlareInputBlurDown );
-	}
 
 	if ( bAwb )
 	{
@@ -712,6 +703,16 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 			SetInt( material, POST_SRC_MIP2, nMip + 1 );
 			DrawCompute( pRenderContext, material );
 		}
+	}
+	if ( pGrade )
+	{
+		// Pack the two smooth fields at quarter size. Sampling mip zero of this
+		// texture lets the final draw use the hardware bilinear filter for both.
+		PIXEVENT( pRenderContext, "Local contrast base" );
+		SetPostPass( s_FlareInputBlurDown, s_BloomDown, nFirstMip, s_Flare, 0, 4.f, flBloomExposure / nLayers );
+		SetTexture( s_FlareInputBlurDown, POST_SRC_TEXTURE2, s_BloomUp );
+		SetInt( s_FlareInputBlurDown, POST_SRC_MIP2, nFirstMip );
+		DrawCompute( pRenderContext, s_FlareInputBlurDown );
 	}
 	const int nStatus = DisplayStatus();
 	const bool bHdr = mat_hdr_output.GetBool() && SHADERAPIDX12_HDR_DISPLAY_TYPE( nStatus ) == SHADERAPIDX12_HDR_DISPLAY_HDR && s_pShaderAPIDX12->HdrOutputCapable();

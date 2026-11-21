@@ -423,6 +423,15 @@ float4 main( PS_INPUT input ) : SV_Target0
 #else
 	float3 scene = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb * gSceneBloomFlare.x;
 #endif
+	// Eligible sharpen views map one scene texel to one pixel. Each pixel's
+	// two in-quad neighbors have already read their centers. Exchange before
+	// the velocity branch so moving lanes also supply their unblurred colors.
+	float3 center = 0, inner = 0;
+	[branch] if ( gDirtPeak.w > 0 )
+	{
+		center = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb;
+		inner = QuadReadAcrossX( center ) + QuadReadAcrossY( center );
+	}
 	bool moving = false;
 	[branch] if ( ( flags & 32 ) != 0 )
 	{
@@ -458,19 +467,26 @@ float4 main( PS_INPUT input ) : SV_Target0
 	// relative to the center to avoid a bright neighbor ringing into a dark pixel.
 	[branch] if ( !moving && gDirtPeak.w > 0 )
 	{
-		float3 ring = gScene.SampleLevel( gSceneSampler, uv, 0, int2( -1, 0 ) ).rgb +
-			gScene.SampleLevel( gSceneSampler, uv, 0, int2( 1, 0 ) ).rgb +
-			gScene.SampleLevel( gSceneSampler, uv, 0, int2( 0, -1 ) ).rgb +
-			gScene.SampleLevel( gSceneSampler, uv, 0, int2( 0, 1 ) ).rgb;
-		float3 center = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb;
+		int2 pixel = int2( input.projPos.xy );
+		uint w, h;
+		gScene.GetDimensions( w, h );
+		int2 edge = int2( w, h ) - 1;
+		int2 outer = ( pixel & 1 ) * 2 - 1;
+		float3 ring = inner + gScene.Load( int3( clamp( pixel + int2( outer.x, 0 ), 0, edge ), 0 ) ).rgb +
+			gScene.Load( int3( clamp( pixel + int2( 0, outer.y ), 0, edge ), 0 ) ).rgb;
 		float3 detail = clamp( center - 0.25 * ring, -0.5 * center, 0.5 * center );
 		scene += detail * gDirtPeak.w * gSceneBloomFlare.x;
 	}
-	float3 bloom = 0;
-	[branch] if ( ( flags & 8 ) == 0 ) bloom = SampleMip( gBloom, sceneUv, (uint)gSceneBloomFlare.w );
-	// MagicBloom: the layer average (mip 1 holds the layer sum; gSceneBloomFlare.y already divides by the layer count)
-	// is exposed and filmic-tonemapped into display space, and the lens dirt rides on the bloom alone.
-	float3 bloomT = BloomTonemap( max( bloom, 0 ) * gSceneBloomFlare.y );
+	float3 bloomT = 0;
+	float base = 0;
+	[branch] if ( ( flags & 16 ) != 0 )
+	{
+		float4 field = gFlare.SampleLevel( gFlareSampler, uv, 0 );
+		bloomT = field.rgb;
+		base = field.a;
+	}
+	else if ( ( flags & 8 ) == 0 )
+		bloomT = BloomTonemap( max( SampleMip( gBloom, sceneUv, (uint)gSceneBloomFlare.w ), 0 ) * gSceneBloomFlare.y );
 	float3 dirt = ( flags & 2 ) != 0 ? gDirt.SampleLevel( gDirtSampler, uv, 0 ).rgb * gDirtPeak.x : 0;
 	bloomT = Screen( bloomT, dirt * bloomT );
 	// The glare buffer is quarter resolution; four diagonal taps one half-resolution texel apart soften its quads.
@@ -512,7 +528,6 @@ float4 main( PS_INPUT input ) : SV_Target0
 	[branch] if ( ( flags & 16 ) != 0 )
 	{
 		const float3 luma = float3( 0.299, 0.587, 0.114 );
-		float base = gFlare.SampleLevel( gFlareSampler, uv, 0 ).r;
 		base = lerp( base, 1.0, dot( saturate( bloomT ), luma ) );
 		float radial = smoothstep( gContrast.z, gContrast.w, length( uv * 2 - 1 ) );
 		float contrast = lerp( gContrast.x, gContrast.y, radial );

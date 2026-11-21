@@ -34,6 +34,7 @@ void main( uint3 id : SV_DispatchThreadID )
 	float2 uv = DstUv( id.xy );
 	float2 size = float2( srcWidth, srcHeight );
 	float3 c = 0;
+	float alpha = 1.0;
 #if THRESHOLD == 2
 	float3 plain = 0;
 	[unroll]
@@ -44,7 +45,7 @@ void main( uint3 id : SV_DispatchThreadID )
 		c += kWeights[i] * tap * clamp( dot( tap, kLuma601 ) - p1, 0.0, p2 );
 	}
 	[branch] if ( pad0 != 0 )
-		plain = dot( AgXEncoded( max( plain, 0 ), 1.0 ), kLuma601 ).xxx;
+		alpha = dot( AgXEncoded( max( plain, 0 ), 1.0 ), kLuma601 );
 	gDst2[id.xy] = float4( plain, 1 );
 #else
 	[unroll]
@@ -56,5 +57,5 @@ void main( uint3 id : SV_DispatchThreadID )
 	c *= p0;
 #endif
 #endif
-	gDst[id.xy] = float4( c, 1 );
+	gDst[id.xy] = float4( c, alpha );
 }

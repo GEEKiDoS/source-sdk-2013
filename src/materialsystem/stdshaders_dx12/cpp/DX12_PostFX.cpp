@@ -130,6 +130,8 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 				SelectShader< postfx_flare_cs51_Static_Index, postfx_flare_cs51_Dynamic_Index >( dispatch, "postfx_flare_cs51" );
 				break;
 			case 4:
+				if ( constants.p1 > 0.f )
+					dispatch.m_Srv[1] = DX12MaterialTexture( GetShaderAPITextureBindHandle( SRCTEXTURE2, -1 ), params[SRCMIP2]->GetIntValue(), 1 );
 				SelectShader< postfx_kawase_down_cs51_Static_Index, postfx_kawase_down_cs51_Dynamic_Index >( dispatch, "postfx_kawase_down_cs51" );
 				break;
 			case 5:
