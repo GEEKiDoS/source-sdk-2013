@@ -561,9 +561,11 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
     if (space2 && !marker) throw std::runtime_error("Space-2 resources require DX12LightingViewConstantsV1");
     constexpr unsigned sharedVisibility = (1u << 9) | (1u << 10);
     constexpr unsigned propVisibility = (1u << 11) | (1u << 12) | (1u << 14);
+    const bool vertexProp = logical == "pbr_model_vs51" && (seen & propVisibility) == (1u << 14) &&
+        (seen & sharedVisibility) == sharedVisibility;
     if (((seen & sharedVisibility) && (seen & sharedVisibility) != sharedVisibility) ||
         ((seen & (1u << 8)) && (seen & sharedVisibility) != sharedVisibility) ||
-        ((seen & propVisibility) && ((seen & propVisibility) != propVisibility || (seen & sharedVisibility) != sharedVisibility)))
+        ((seen & propVisibility) && ((seen & propVisibility) != propVisibility || (seen & sharedVisibility) != sharedVisibility) && !vertexProp))
         throw std::runtime_error("Lighting ABI 6 incomplete visibility resource group: " + logical);
     static const char *const propReceivers[] = {
         "vertexlit_and_unlit_generic_shadowmap_ps51", "vertexlit_and_unlit_generic_bump_shadowmap_ps51",
@@ -580,10 +582,10 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
             D3D12_SIGNATURE_PARAMETER_DESC input{};
             if (FAILED(reflection->GetInputParameterDesc(i, &input)))
                 throw std::runtime_error("Cannot reflect static-prop primitive identity: " + logical);
-            if (input.SystemValueType == D3D_NAME_PRIMITIVE_ID && input.ComponentType == D3D_REGISTER_COMPONENT_UINT32 &&
+            if (input.SystemValueType == (vertexProp ? D3D_NAME_VERTEX_ID : D3D_NAME_PRIMITIVE_ID) && input.ComponentType == D3D_REGISTER_COMPONENT_UINT32 &&
                 input.Mask == 1) primitiveId = true;
         }
-        if (!primitiveId) throw std::runtime_error("Static-prop visibility requires uint SV_PrimitiveID: " + logical);
+        if (!primitiveId) throw std::runtime_error("Static-prop visibility requires checked vertex or primitive ID: " + logical);
     }
     const bool carrier = logical == "lightmappedgeneric_shadowmap_ps51" || logical == "worldtwotextureblend_shadowmap_ps51" ||
                          logical == "lightmappedreflective_shadowmap_ps51" || logical == "lightmappedgeneric_decal_shadowmap_ps51";

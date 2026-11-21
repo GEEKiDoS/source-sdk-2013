@@ -650,6 +650,7 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 		treeSway[3][3] = GetFloatParam( v.treeSwayScrumbleStrength, params, 10.0f );
 		treeSway[4][0] = GetFloatParam( v.treeSwaySpeedLerpStart, params, 3.0f );
 		treeSway[4][1] = GetFloatParam( v.treeSwaySpeedLerpEnd, params, 6.0f );
+		treeSway[4][2] = ps[14][1]; // Angular basis for vertex-frequency leaf local lighting.
 	}
 
 	// PBRMaterialPS c47/c48/c50/c54/c55 (g_PbrInfected*): the infected_dx9.cpp registers c3, c4, c0, c27 and c26 / the

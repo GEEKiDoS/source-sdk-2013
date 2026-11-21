@@ -466,8 +466,11 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 	}
 	// World requires face/entries/payload; models require mesh/triangle/draw CB plus entries/payload.
 	const unsigned propGroup = (1u<<11)|(1u<<12)|(1u<<14), lookup = (1u<<9)|(1u<<10);
+	// The leaf VS reads the checked mesh vertex directly: it needs the prop constants and
+	// visibility payload, not the triangle-to-vertex indirection required by the pixel ABI.
+	const bool vertexProp = vertex && ( seen & propGroup ) == ( 1u << 14 ) && ( seen & lookup ) == lookup;
 	if ( ((seen&(1u<<8)) && (seen&lookup)!=lookup) ||
-		((seen&propGroup) && ((seen&propGroup)!=propGroup || (seen&lookup)!=lookup)) )
+		( ( seen & propGroup ) && ( ( seen & propGroup ) != propGroup || ( seen & lookup ) != lookup ) && !vertexProp ) )
 	{
 		error = "lighting ABI 6 incomplete visibility resource group";
 		return false;
@@ -479,12 +482,12 @@ bool ValidateLightingShaderDX12( const D3D12_SHADER_BYTECODE &bytecode, bool pix
 		{
 			D3D12_SIGNATURE_PARAMETER_DESC parameter{};
 			if ( SUCCEEDED(reflection->GetInputParameterDesc(i,&parameter)) &&
-				parameter.SystemValueType == D3D_NAME_PRIMITIVE_ID && parameter.ComponentType == D3D_REGISTER_COMPONENT_UINT32 &&
-				parameter.Mask == 1 ) primitiveId = true;
+				parameter.SystemValueType == ( vertexProp ? D3D_NAME_VERTEX_ID : D3D_NAME_PRIMITIVE_ID ) &&
+				parameter.ComponentType == D3D_REGISTER_COMPONENT_UINT32 && parameter.Mask == 1 ) primitiveId = true;
 		}
-		if ( !primitiveId ) { error = "lighting ABI 6 prop lookup requires uint SV_PrimitiveID"; return false; }
+		if ( !primitiveId ) { error = "lighting ABI 6 prop lookup requires checked vertex or primitive ID"; return false; }
 	}
-	if ( propVisibility ) *propVisibility = (seen&propGroup)==propGroup;
+	if ( propVisibility ) *propVisibility = vertexProp || (seen&propGroup)==propGroup;
 	if ( sunVisibility ) *sunVisibility = ( seen & ( 1u << 7 ) ) != 0;
 	if ( lightingAbi )
 		*lightingAbi = marker || probeSeen != 0;

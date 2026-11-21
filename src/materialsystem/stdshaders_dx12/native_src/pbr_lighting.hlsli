@@ -310,6 +310,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	PBRNMSInput nmsInput, Texture2D bumpTexture, SamplerState bumpSampler )
 {
 	ShadowMapDirect d = ShadowMap_NoDirect();
+#if !defined( PBR_MATTE_LEAF )
 #if defined( PBR_WORLD_HIGHRES ) && PBR_WORLD_HIGHRES && !defined( PBR_LEAN )
 	uint specCap = uint( g_ModelLocalIndices.x );
 	uint4 specList = uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF );
@@ -358,6 +359,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		entryCount = bakedLookup.end - bakedLookup.cursor;
 		firstLive = PBR_LiveEntries( entryFirst, entryCount );
 	}
+#endif
 	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0 )
 	{
 		// Receivers facing away from the sun skip the map (silhouette taps can read "lit"). The gate must not cut a lobe
@@ -404,6 +406,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			PBR_AddSpecular( specularSum, specular, PBR_SUN_DISTANCE );
 		}
 	}
+#if !defined( PBR_MATTE_LEAF )
 	[branch] if ( bakedProp )
 		d.diffuse += s.diffuseColor * s.ao * ShadowMap_BakedPropDirect( s.angular, bakedLookup );
 	d.bakedLocalDirect = bakedLocalDirect ? 1 : 0;
@@ -636,6 +639,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 			}
 		}
 	}
+#endif
 	return d;
 }
 #endif

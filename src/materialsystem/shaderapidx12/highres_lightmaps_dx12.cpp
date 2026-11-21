@@ -934,7 +934,8 @@ struct CHighresLightmapsDX12::Impl
         if (!UploadBuffer(visibilityBuffers[2].Get(),visibilityStates[2],visibility.unbakedLightIndices,
             size_t(visibility.record->unbakedLightIndexCount)*sizeof(uint32),unbakedOffset,false)) return false;
         for (uint32 i=0;i<4;++i)
-            Transition(device->CommandList(),visibilityBuffers[i].Get(),visibilityStates[i],D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            Transition(device->CommandList(),visibilityBuffers[i].Get(),visibilityStates[i],
+                (i==1 || i==2) ? kProbeReadState : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (uint32 p=0;p<mode->record->pageCount;++p)
         {
             if (pageGroup[p]==kNoPage) continue; // no native bumped receiver uses this optional page

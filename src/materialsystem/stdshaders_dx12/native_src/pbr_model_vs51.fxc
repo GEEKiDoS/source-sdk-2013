@@ -5,6 +5,12 @@
 // color and position) and interpolated like the legacy lightAtten.
 #define DX12_LEGACY_VS30 1
 #define DECAL 0
+#if LEAFPROBE
+#define DX12_SHADOWMAPS 1
+#define PBR_LEAF_VERTEX 1
+#define PBR_LEAN 1
+#define SHADOWQUALITY 4
+#endif
 #include "dx12_preamble.h"
 // STATIC: "TANGENT" "0..1"
 // STATIC: "VERTEXCOLOR" "0..1"

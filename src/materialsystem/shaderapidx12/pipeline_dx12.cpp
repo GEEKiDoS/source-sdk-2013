@@ -252,7 +252,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	params[kRootPropDraw].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[kRootPropDraw].Descriptor.ShaderRegister = DX12_LIGHTING_B_PROP_DRAW;
 	params[kRootPropDraw].Descriptor.RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;
-	params[kRootPropDraw].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[kRootPropDraw].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	params[kRootPropTriangles].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 	params[kRootPropTriangles].Descriptor.ShaderRegister = DX12_LIGHTING_T_PROP_TRIANGLES;
 	params[kRootPropTriangles].Descriptor.RegisterSpace = DX12_LIGHTING_REGISTER_SPACE;

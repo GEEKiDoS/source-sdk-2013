@@ -2632,7 +2632,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && ( ( psRecord && psRecord->lightingAbi ) || ( vsRecord && vsRecord->lightingAbi ) ), bindingInput, cheapAuxiliary ) )
 		return;
-	if ( bindingInput.lightingAbi && psRecord && psRecord->propVisibilityAbi &&
+	if ( bindingInput.lightingAbi && ( ( psRecord && psRecord->propVisibilityAbi ) || ( vsRecord && vsRecord->propVisibilityAbi ) ) &&
 		!m_pDevice->Lighting().PrepareStaticPropDraw( meshToken, sunDraw, m_VsFloat[VERTEX_SHADER_MODEL], bindingInput ) )
 		return;
 	bindingInput.highresAbi = !shadowPass && psRecord && psRecord->highresAbi && psRecord->lightmapSamplerMask != 0;

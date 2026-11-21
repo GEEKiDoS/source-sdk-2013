@@ -151,6 +151,10 @@ struct DX12_PS_INPUT
 #if ENHANCED
 float3 PBR_FoldedLocalAmbient( PBRSurface s, float3 N, ShadowMapReceiver receiver )
 {
+#if defined( PBR_MATTE_LEAF )
+	// The vertex gather uses the actual tile lights, not the per-object folded approximation.
+	return 0.0;
+#else
 	if ( g_ModelLocalAmbient[0].w == 0.0 || receiver.bakedPropPrimitive != 0xFFFFFFFF )
 		return 0.0;
 	float3 n2 = N * N;
@@ -158,6 +162,7 @@ float3 PBR_FoldedLocalAmbient( PBRSurface s, float3 N, ShadowMapReceiver receive
 		n2.y * ( N.y >= 0.0 ? g_ModelLocalAmbient[2].rgb : g_ModelLocalAmbient[3].rgb ) +
 		n2.z * ( N.z >= 0.0 ? g_ModelLocalAmbient[4].rgb : g_ModelLocalAmbient[5].rgb );
 	return s.diffuseColor * s.ao * folded;
+#endif
 }
 #endif
 
@@ -193,7 +198,9 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// Derivatives occur here, before any divergent work, on the camera-relative -toEye (world positions far from the
 	// origin are too coarse to differentiate). The primitive identity is a pure value carrier.
 	ShadowMapReceiver receiver = ShadowMap_BeginReceiverRelative( P, -i.toEye, i.worldNormal, i.svPos.xy );
+#if !defined( PBR_MATTE_LEAF )
 	ShadowMap_SetBakedProp( receiver, i.primitiveId );
+#endif
 #endif
 	uint phongBits = uint( g_Misc.z );
 

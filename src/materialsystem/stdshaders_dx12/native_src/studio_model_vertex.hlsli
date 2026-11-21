@@ -10,7 +10,6 @@
 #include "common_vs_fxc.h"
 #include "pbr_material.h"
 #if LEAFPROBE
-#define PBR_LEAN 1
 #include "pbr_probe.hlsli"
 #endif
 #if TREESWAY
@@ -39,6 +38,9 @@ static DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler
 
 struct DX12_VS_INPUT
 {
+#if LEAFPROBE
+	uint leafVertex : SV_VertexID;
+#endif
 #if PBR_HAS_TANGENT
 #if COMPRESSED_VERTS
 	uint4 vTangentS : TANGENT;
@@ -175,6 +177,7 @@ VS_OUTPUT main( const DX12_VS_INPUT v )
 	if ( resident )
 		o.staticLight.rgb = covered ? Probe_Irradiance( probe, o.worldNormal ) : 0.0;
 	// Only missing bricks use the engine cube. Interpolate its weight across a brick boundary.
+	o.staticLight.rgb += ShadowMap_LeafLocals( worldPos, o.worldNormal, projPos, v.leafVertex, g_TreeSwayParams4.z != 0.0 );
 	o.staticLight.a = resident ? 0.0 : 1.0;
 #endif
 #if INFECTED
