@@ -242,6 +242,7 @@ static const Choice_t kUpscaler[] =
 static const Choice_t kRenderScale[] =
 {
 	{ "#GraphicsOptions_ScaleNative", { 1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_ScaleOptimized", { 0.8334f, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_ScaleUltraQuality", { 0.77f, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_ScaleQuality", { 0.667f, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_ScaleBalanced", { 0.58f, 0, 0, 0, 0 } },
@@ -391,6 +392,52 @@ const RowDef_t *GetRows( int &count )
 {
 	count = ARRAYSIZE( g_Rows );
 	return g_Rows;
+}
+
+const char *PerformanceTip( const RowDef_t &row )
+{
+	static const struct
+	{
+		const char *cvar;
+		const char *token;
+	} tips[] =
+	{
+		{ "r_rootlod", "#GraphicsOptions_PerfModel" },
+		{ "mat_picmip", "#GraphicsOptions_PerfTexture" },
+		{ "mat_trilinear", "#GraphicsOptions_PerfFilter" },
+		{ "r_waterforceexpensive", "#GraphicsOptions_PerfWater" },
+		{ "cl_detaildist", "#GraphicsOptions_PerfDetail" },
+		{ "mat_pbr_override", "#GraphicsOptions_PerfPBR" },
+		{ "r_lightmap_bicubic", "#GraphicsOptions_PerfBicubic" },
+		{ "r_upscaler_scale", "#GraphicsOptions_PerfScale" },
+		{ "r_upscaler", "#GraphicsOptions_PerfAA" },
+		{ "r_pbr_lean_lighting", "#GraphicsOptions_PerfCompact" },
+		{ "r_shadowmap_enable", "#GraphicsOptions_PerfShadows" },
+		{ "r_shadowmap_resolution", "#GraphicsOptions_PerfShadowRes" },
+		{ "r_shadowmap_filter", "#GraphicsOptions_PerfShadowFilter" },
+		{ "r_csm_distance", "#GraphicsOptions_PerfShadowDistance" },
+		{ "r_shadowmap_max_realtime_lights", "#GraphicsOptions_PerfLights" },
+		{ "r_editor_lights_max_shadowed", "#GraphicsOptions_PerfEditorLights" },
+		{ "r_gtao", "#GraphicsOptions_PerfGTAO" },
+		{ "r_contactshadows", "#GraphicsOptions_PerfContact" },
+		{ "r_ssr", "#GraphicsOptions_PerfSSR" },
+		{ "r_ssr_resolution", "#GraphicsOptions_PerfSSRResolution" },
+		{ "r_flashlight_bounce", "#GraphicsOptions_PerfBounce" },
+		{ "r_volumetric", "#GraphicsOptions_PerfVolumetric" },
+		{ "mat_postfx_dx12", "#GraphicsOptions_PerfPost" },
+		{ "mat_postfx_bloom_quality", "#GraphicsOptions_PerfBloom" },
+		{ "mat_motion_blur_enabled", "#GraphicsOptions_PerfMotionToggle" },
+		{ "mat_motion_blur_quality", "#GraphicsOptions_PerfMotion" },
+		{ "r_framegen", "#GraphicsOptions_PerfFramegen" },
+		{ "r_framegen_multiplier", "#GraphicsOptions_PerfFramegenRate" },
+		{ "r_dlss_nr_layers", "#GraphicsOptions_PerfNeural" },
+	};
+	for ( int i = 0; i < ARRAYSIZE( tips ); ++i )
+	{
+		if ( !V_strcmp( row.cvars[0], tips[i].cvar ) )
+			return tips[i].token;
+	}
+	return row.note;
 }
 
 bool IsDX12Renderer()

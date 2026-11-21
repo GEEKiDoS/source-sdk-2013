@@ -65,6 +65,7 @@ struct RowDef_t
 };
 
 const RowDef_t *GetRows( int &count );
+const char *PerformanceTip( const RowDef_t &row );
 int RowCvarCount( const RowDef_t &row );
 bool IsRowAvailable( const RowDef_t &row );
 bool IsChoiceAvailable( const RowDef_t &row, int choice );

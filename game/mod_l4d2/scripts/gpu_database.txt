@@ -1,0 +1,100 @@
+// Source: user-supplied ranking table C:/l4d2_work/gpu_db/gpus.csv, in rank order (92 desktop GPUs).
+// Blank benchmark columns are omitted. Presets and estimation are defined by the client.
+"GPUDatabase"
+{
+	"GPUs"
+	{
+		"RTX Pro 6000 Blackwell" { "vendor" "Nvidia" "rating" "98" "gaming" "98" "render" "100" "tflops" "126" "opencl" "419470" "timespy" "42441" }
+		"RTX 5090" { "vendor" "Nvidia" "rating" "98" "gaming" "100" "render" "93" "tflops" "104.8" "opencl" "419309" "timespy" "46873" }
+		"RTX 4090" { "vendor" "Nvidia" "rating" "91" "gaming" "93" "render" "91" "tflops" "82.6" "opencl" "316301" "timespy" "36299" }
+		"RTX 5080" { "vendor" "Nvidia" "rating" "86" "gaming" "88" "render" "85" "tflops" "56.3" "opencl" "297747" "timespy" "33000" }
+		"RTX 6000 Ada" { "vendor" "Nvidia" "rating" "82" "gaming" "81" "render" "94" "tflops" "91.1" "opencl" "389848" "timespy" "26529" }
+		"RX 7900 XTX" { "vendor" "AMD" "rating" "79" "gaming" "81" "render" "75" "tflops" "61.4" "opencl" "224686" "timespy" "30804" }
+		"RTX 4080 SUPER" { "vendor" "Nvidia" "rating" "77" "gaming" "78" "render" "76" "tflops" "52.2" "opencl" "250691" "timespy" "28271" }
+		"RTX 5070 Ti" { "vendor" "Nvidia" "rating" "75" "gaming" "76" "render" "74" "tflops" "43.9" "opencl" "240508" "timespy" "27839" }
+		"RTX 4080" { "vendor" "Nvidia" "rating" "74" "gaming" "76" "render" "71" "tflops" "48.7" "opencl" "217712" "timespy" "28155" }
+		"RTX 5000 Ada" { "vendor" "Nvidia" "rating" "73" "gaming" "72" "render" "83" "tflops" "65.3" "opencl" "260099" "timespy" "18364" }
+		"RX 9070 XT" { "vendor" "AMD" "rating" "71" "gaming" "74" "render" "63" "tflops" "48.7" "opencl" "182816" "timespy" "29556" }
+		"RX 7900 XT" { "vendor" "AMD" "rating" "70" "gaming" "71" "render" "70" "tflops" "51.5" "opencl" "203754" "timespy" "27106" }
+		"RTX 4070 Ti SUPER" { "vendor" "Nvidia" "rating" "69" "gaming" "70" "render" "72" "tflops" "44.1" "opencl" "237068" "timespy" "24220" }
+		"RTX 3090 Ti" { "vendor" "Nvidia" "rating" "66" "gaming" "66" "render" "73" "tflops" "40" "opencl" "232083" "timespy" "21855" }
+		"RTX 4070 Ti" { "vendor" "Nvidia" "rating" "65" "gaming" "66" "render" "66" "tflops" "40.1" "opencl" "219163" "timespy" "22743" }
+		"RX 9070" { "vendor" "AMD" "rating" "64" "gaming" "66" "render" "56" "tflops" "36.1" "opencl" "149949" "timespy" "26693" }
+		"RTX 5070" { "vendor" "Nvidia" "rating" "63" "gaming" "64" "render" "61" "tflops" "30.9" "opencl" "190967" "timespy" "22708" }
+		"RX 7900 GRE" { "vendor" "AMD" "rating" "63" "gaming" "64" "render" "60" "tflops" "46" "opencl" "172224" "timespy" "22544" }
+		"RTX 4070 SUPER" { "vendor" "Nvidia" "rating" "63" "gaming" "64" "render" "62" "tflops" "35.5" "opencl" "206598" "timespy" "20879" }
+		"RTX 3090" { "vendor" "Nvidia" "rating" "62" "gaming" "61" "render" "69" "tflops" "35.6" "opencl" "211669" "timespy" "19896" }
+		"RTX 4500 Ada" { "vendor" "Nvidia" "rating" "61" "gaming" "61" "render" "68" "tflops" "39.6" "opencl" "206673" "timespy" "19814" }
+		"RTX 3080 Ti" { "vendor" "Nvidia" "rating" "60" "gaming" "60" "render" "64" "tflops" "34.1" "opencl" "196756" "timespy" "19633" }
+		"RX 9070 GRE" { "vendor" "AMD" "rating" "59" "gaming" "62" "render" "54" "tflops" "34.3" }
+		"RX 6950 XT" { "vendor" "AMD" "rating" "59" "gaming" "59" "render" "59" "tflops" "23.7" "opencl" "189857" "timespy" "21610" }
+		"RX 7800 XT" { "vendor" "AMD" "rating" "56" "gaming" "57" "render" "55" "tflops" "37.3" "opencl" "148335" "timespy" "20095" }
+		"RX 6900 XT" { "vendor" "AMD" "rating" "55" "gaming" "57" "render" "49" "tflops" "23" "opencl" "124121" "timespy" "20817" }
+		"M5 Ultra GPU (64-core)" { "vendor" "Apple" "rating" "54" "gaming" "49" "render" "75" "tflops" "26.5" }
+		"RTX 4070" { "vendor" "Nvidia" "rating" "54" "gaming" "54" "render" "55" "tflops" "29.1" "opencl" "167522" "timespy" "17799" }
+		"RTX 3080" { "vendor" "Nvidia" "rating" "53" "gaming" "54" "render" "56" "tflops" "29.8" "opencl" "161903" "timespy" "17664" }
+		"M3 Ultra GPU (80-core)" { "vendor" "Apple" "rating" "52" "gaming" "51" "render" "59" "tflops" "28.3" "opencl" "147719" }
+		"RX 6800 XT" { "vendor" "AMD" "rating" "52" "gaming" "53" "render" "50" "tflops" "20.7" "opencl" "138858" "timespy" "19379" }
+		"RTX 5060 Ti (16GB)" { "vendor" "Nvidia" "rating" "50" "gaming" "50" "render" "50" "tflops" "23.7" "opencl" "148626" "timespy" "16044" }
+		"Arc Pro B70" { "vendor" "Intel" "rating" "49" "gaming" "43" "render" "62" "tflops" "22.9" "opencl" "179586" "timespy" "18329" }
+		"RTX 5060 Ti (8GB)" { "vendor" "Nvidia" "rating" "49" "gaming" "50" "render" "47" "tflops" "23.7" "opencl" "141028" "timespy" "15958" }
+		"RX 7700 XT" { "vendor" "AMD" "rating" "49" "gaming" "50" "render" "49" "tflops" "35.2" "opencl" "132843" "timespy" "17109" }
+		"RTX 4000 Ada" { "vendor" "Nvidia" "rating" "48" "gaming" "47" "render" "52" "tflops" "26.7" "opencl" "151680" "timespy" "14438" }
+		"RTX 3070 Ti" { "vendor" "Nvidia" "rating" "47" "gaming" "47" "render" "49" "tflops" "21.7" "opencl" "136096" "timespy" "14881" }
+		"RX 9060 XT" { "vendor" "AMD" "rating" "45" "gaming" "46" "render" "43" "tflops" "25.6" "opencl" "107640" "timespy" "16348" }
+		"RX 6800" { "vendor" "AMD" "rating" "45" "gaming" "45" "render" "47" "tflops" "16.2" "opencl" "135060" "timespy" "16227" }
+		"RTX 4060 Ti 16GB" { "vendor" "Nvidia" "rating" "44" "gaming" "44" "render" "46" "tflops" "22.1" "opencl" "135837" "timespy" "13456" }
+		"RTX 2080 Ti" { "vendor" "Nvidia" "rating" "44" "gaming" "44" "render" "48" "tflops" "13.4" "opencl" "144745" "timespy" "14655" }
+		"RTX 5060" { "vendor" "Nvidia" "rating" "43" "gaming" "43" "render" "44" "tflops" "19.2" "opencl" "127848" "timespy" "13751" }
+		"RTX 4060 Ti 8GB" { "vendor" "Nvidia" "rating" "43" "gaming" "43" "render" "44" "tflops" "22.1" "opencl" "127835" "timespy" "13479" }
+		"RTX 3070" { "vendor" "Nvidia" "rating" "43" "gaming" "43" "render" "44" "tflops" "20.3" "opencl" "126195" "timespy" "13644" }
+		"RTX 2000 Ada" { "vendor" "Nvidia" "rating" "40" "gaming" "40" "render" "40" "tflops" "12" "opencl" "89677" }
+		"RX 6750 XT" { "vendor" "AMD" "rating" "39" "gaming" "39" "render" "42" "tflops" "13.3" "opencl" "111003" "timespy" "13557" }
+		"RX 6700 XT" { "vendor" "AMD" "rating" "38" "gaming" "37" "render" "41" "tflops" "13.2" "opencl" "110742" "timespy" "12818" }
+		"RTX 3060 Ti" { "vendor" "Nvidia" "rating" "38" "gaming" "38" "render" "42" "tflops" "16.2" "opencl" "115518" "timespy" "11707" }
+		"RTX 2080 SUPER" { "vendor" "Nvidia" "rating" "37" "gaming" "37" "render" "42" "tflops" "11.2" "opencl" "122905" "timespy" "11621" }
+		"RX 7600 XT" { "vendor" "AMD" "rating" "36" "gaming" "35" "render" "38" "tflops" "22.6" "opencl" "86899" "timespy" "11136" }
+		"RTX 2080" { "vendor" "Nvidia" "rating" "36" "gaming" "35" "render" "41" "tflops" "10.1" "opencl" "118637" "timespy" "11077" }
+		"RTX 4060" { "vendor" "Nvidia" "rating" "36" "gaming" "35" "render" "38" "tflops" "15.1" "opencl" "106633" "timespy" "10615" }
+		"Arc A770" { "vendor" "Intel" "rating" "36" "gaming" "35" "render" "43" "tflops" "19.7" "opencl" "113935" "timespy" "13554" }
+		"Arc B580" { "vendor" "Intel" "rating" "35" "gaming" "34" "render" "41" "tflops" "13.7" "opencl" "111561" "timespy" "14685" }
+		"RTX 5050" { "vendor" "Nvidia" "rating" "34" "gaming" "34" "render" "36" "tflops" "13.2" "opencl" "92181" "timespy" "10200" }
+		"RX 7600" { "vendor" "AMD" "rating" "34" "gaming" "34" "render" "35" "tflops" "21.7" "opencl" "82731" "timespy" "10931" }
+		"RTX 2070 SUPER" { "vendor" "Nvidia" "rating" "33" "gaming" "32" "render" "39" "tflops" "9.1" "opencl" "105349" "timespy" "10166" }
+		"RTX 3060" { "vendor" "Nvidia" "rating" "32" "gaming" "31" "render" "37" "tflops" "12.7" "opencl" "91603" "timespy" "8754" }
+		"Arc A750" { "vendor" "Intel" "rating" "32" "gaming" "31" "render" "38" "tflops" "17.2" "opencl" "99280" "timespy" "12423" }
+		"Arc B570" { "vendor" "Intel" "rating" "31" "gaming" "29" "render" "35" "tflops" "11.5" "opencl" "85640" "timespy" "12564" }
+		"RX 6650 XT" { "vendor" "AMD" "rating" "31" "gaming" "30" "render" "34" "tflops" "10.8" "opencl" "90831" "timespy" "9891" }
+		"GTX 1080 Ti" { "vendor" "Nvidia" "rating" "31" "gaming" "31" "render" "36" "tflops" "11.3" "opencl" "74966" "timespy" "9981" }
+		"RX 6600" { "vendor" "AMD" "rating" "30" "gaming" "31" "render" "28" "tflops" "8.9" "opencl" "58048" "timespy" "10397" }
+		"RX 6600 XT" { "vendor" "AMD" "rating" "30" "gaming" "29" "render" "33" "tflops" "10.6" "opencl" "84088" "timespy" "9637" }
+		"RTX 2060 SUPER" { "vendor" "Nvidia" "rating" "30" "gaming" "29" "render" "36" "tflops" "7.2" "opencl" "92186" "timespy" "8729" }
+		"RTX 2070" { "vendor" "Nvidia" "rating" "30" "gaming" "29" "render" "37" "tflops" "7.5" "opencl" "97923" "timespy" "9074" }
+		"RX 5700 XT" { "vendor" "AMD" "rating" "29" "gaming" "28" "render" "35" "tflops" "9.8" "opencl" "81739" "timespy" "9421" }
+		"Arc A580" { "vendor" "Intel" "rating" "28" "gaming" "27" "render" "36" "tflops" "12.3" "opencl" "89982" "timespy" "10812" }
+		"RTX 2060" { "vendor" "Nvidia" "rating" "26" "gaming" "25" "render" "31" "tflops" "6.5" "opencl" "78934" "timespy" "7564" }
+		"GTX 1080" { "vendor" "Nvidia" "rating" "25" "gaming" "24" "render" "30" "tflops" "8.9" "opencl" "63994" "timespy" "7592" }
+		"RX 5600 XT" { "vendor" "AMD" "rating" "23" "gaming" "22" "render" "29" "tflops" "7.2" "opencl" "66629" "timespy" "7631" }
+		"RTX 3050" { "vendor" "Nvidia" "rating" "23" "gaming" "22" "render" "29" "tflops" "9.1" "opencl" "67028" "timespy" "6235" }
+		"GTX 1070 Ti" { "vendor" "Nvidia" "rating" "23" "gaming" "22" "render" "28" "tflops" "8.2" "opencl" "57735" "timespy" "6842" }
+		"GTX 1660 Ti" { "vendor" "Nvidia" "rating" "22" "gaming" "20" "render" "29" "tflops" "5.4" "opencl" "72340" "timespy" "6339" }
+		"GTX 1660 SUPER" { "vendor" "Nvidia" "rating" "21" "gaming" "19" "render" "29" "tflops" "5" "opencl" "67074" "timespy" "6042" }
+		"GTX 1070" { "vendor" "Nvidia" "rating" "21" "gaming" "20" "render" "27" "tflops" "6.5" "opencl" "53429" "timespy" "6091" }
+		"GTX 980 Ti" { "vendor" "Nvidia" "rating" "20" "gaming" "19" "render" "27" "tflops" "6.1" "opencl" "49950" "timespy" "5855" }
+		"GTX 1660" { "vendor" "Nvidia" "rating" "19" "gaming" "18" "render" "26" "tflops" "5" "opencl" "60105" "timespy" "5443" }
+		"RX 590" { "vendor" "AMD" "rating" "18" "gaming" "16" "render" "25" "tflops" "7.1" "opencl" "45783" "timespy" "4778" }
+		"GTX 1650 SUPER" { "vendor" "Nvidia" "rating" "18" "gaming" "16" "render" "25" "tflops" "4.4" "opencl" "57455" "timespy" "4691" }
+		"RX 6500 XT" { "vendor" "AMD" "rating" "17" "gaming" "16" "render" "22" "tflops" "5.8" "opencl" "53081" "timespy" "4942" }
+		"RX 5500 XT" { "vendor" "AMD" "rating" "17" "gaming" "15" "render" "23" "tflops" "5.2" "opencl" "43831" "timespy" "4852" }
+		"RX 580" { "vendor" "AMD" "rating" "17" "gaming" "15" "render" "24" "tflops" "6.2" "opencl" "40514" "timespy" "4354" }
+		"GTX 1060" { "vendor" "Nvidia" "rating" "15" "gaming" "14" "render" "22" "tflops" "4.4" "opencl" "39230" "timespy" "4203" }
+		"RX 570" { "vendor" "AMD" "rating" "14" "gaming" "12" "render" "22" "tflops" "5.1" "opencl" "37147" "timespy" "3855" }
+		"Arc A380" { "vendor" "Intel" "rating" "14" "gaming" "12" "render" "21" "tflops" "4.2" "opencl" "39896" "timespy" "4231" }
+		"GTX 970" { "vendor" "Nvidia" "rating" "13" "gaming" "12" "render" "21" "tflops" "3.9" "opencl" "28989" "timespy" "3665" }
+		"GTX 1650" { "vendor" "Nvidia" "rating" "13" "gaming" "11" "render" "20" "tflops" "3" "opencl" "39481" "timespy" "3562" }
+		"GTX 1050 Ti" { "vendor" "Nvidia" "rating" "10" "gaming" "8" "render" "17" "tflops" "2.1" "opencl" "21180" "timespy" "2351" }
+		"GTX 960" { "vendor" "Nvidia" "rating" "9" "gaming" "8" "render" "16" "tflops" "2.4" "opencl" "20370" "timespy" "2302" }
+		"RX 560" { "vendor" "AMD" "rating" "9" "gaming" "7" "render" "16" "tflops" "2.6" "opencl" "19139" "timespy" "1854" }
+		"GTX 1050" { "vendor" "Nvidia" "rating" "9" "gaming" "7" "render" "16" "tflops" "1.9" "opencl" "20580" "timespy" "1739" }
+	}
+}
