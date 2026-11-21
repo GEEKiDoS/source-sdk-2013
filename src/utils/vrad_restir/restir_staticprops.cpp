@@ -1001,6 +1001,77 @@ static bool AppendPropDirect( ReSTIRPropVisibilityData &visibility, hlight::Prop
 	return true;
 }
 
+struct PropVisibilitySupport
+{
+	int vertex;
+	float area;
+};
+
+// A seam or jamb can shadow every corner of a broad panel without shadowing
+// its interior. Each vertex represents a part of the incident triangles, not
+// just its mathematical endpoint. Integrate broad faces at three interior
+// barycentric sites; thin strips keep their high-resolution corner samples.
+static bool AddVisibilitySupport( studiohdr_t *hdr, OptimizedModel::FileHeader_t *vtx,
+	const CUtlVector<Vector> &positions, CUtlVector<ReSTIRGpuVisibilityQuery> &queries,
+	CUtlVector<PropVisibilitySupport> &support, CUtlVector<float> &cornerArea, CUtlVector<float> &totalArea )
+{
+	cornerArea.SetCount( positions.Count() );
+	totalArea.SetCount( positions.Count() );
+	for ( int i = 0; i < positions.Count(); ++i ) cornerArea[i] = totalArea[i] = 0;
+	int base = 0;
+	for ( int body = 0; body < hdr->numbodyparts; ++body )
+	{
+		mstudiobodyparts_t *bp = hdr->pBodypart( body );
+		for ( int mid = 0; mid < bp->nummodels; ++mid )
+		{
+			mstudiomodel_t *sm = bp->pModel( mid );
+			OptimizedModel::ModelLODHeader_t *lod = vtx->pBodyPart( body )->pModel( mid )->pLOD( 0 );
+			for ( int m = 0; m < sm->nummeshes; ++m )
+			{
+				OptimizedModel::MeshHeader_t *mesh = lod->pMesh( m );
+				for ( int g = 0; g < mesh->numStripGroups; ++g )
+				{
+					OptimizedModel::StripGroupHeader_t *sg = mesh->pStripGroup( g );
+					for ( int si = 0; si < sg->numStrips; ++si )
+					{
+						OptimizedModel::StripHeader_t *strip = sg->pStrip( si );
+						if ( !( strip->flags & OptimizedModel::STRIP_IS_TRILIST ) ) continue;
+						for ( int k = 0; k + 2 < strip->numIndices; k += 3 )
+						{
+							int v[3];
+							for ( int c = 0; c < 3; ++c )
+							{
+								int local = sm->pMesh( m )->vertexoffset + sg->pVertex( *sg->pIndex( strip->indexOffset+k+c ) )->origMeshVertID;
+								if ( local < 0 || local >= sm->numvertices ) return false;
+								v[c] = base + local;
+							}
+							const Vector &a = positions[v[0]], &b = positions[v[1]], &c = positions[v[2]];
+							float area = CrossProduct( b-a, c-a ).Length(); // twice area, cancels in the mean
+							if ( !IsFinite( area ) || area <= 0 ) continue;
+							bool broad = area > 4.0f * ( a.DistTo(b) + b.DistTo(c) + c.DistTo(a) ); // incircle diameter > 8 units
+							for ( int j = 0; j < 3; ++j )
+							{
+								const int vertex = v[j];
+								totalArea[vertex] += area;
+								if ( !broad ) { cornerArea[vertex] += area; continue; }
+								PropVisibilitySupport s = { vertex, area };
+								support.AddToTail( s );
+								ReSTIRGpuVisibilityQuery q = queries[vertex];
+								const Vector p = ( a+b+c ) * ( 1.0f/6.0f ) + positions[vertex] * 0.5f;
+								q.position[0] = p.x; q.position[1] = p.y; q.position[2] = p.z;
+								q.position[3] = InSolid( p ) ? 0.0f : 1.0f;
+								queries.AddToTail( q );
+							}
+						}
+					}
+				}
+			}
+			base += sm->numvertices;
+		}
+	}
+	return true;
+}
+
 bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReSTIRScene &scene, CReSTIRVulkanDevice &device, bool rgbLighting, bool enhancedLighting )
 {
 	// Port: vradstaticprops.cpp:1311-1505 and 2285-2450. Point records are
@@ -1235,6 +1306,12 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 		return false;
 	}
 	originalVisibility.SetCount( (int)originalSampleCount );
+	const int originalCount = visibilityQueries.Count();
+	CUtlVector<PropVisibilitySupport> support;
+	CUtlVector<float> cornerArea, totalArea, sums;
+	if ( originalCount && !AddVisibilitySupport( hdr, vtx, vertexPositions, visibilityQueries, support, cornerArea, totalArea ) )
+		return false;
+	if ( support.Count() ) sums.SetCount( originalCount );
 	CUtlVector<float> values;
 	for ( int li = 0; li < localLightIndices.Count(); ++li )
 	{
@@ -1248,10 +1325,20 @@ bool CReSTIRStaticPropMgr::ComputeLighting( Prop &prop, int propIndex, const ReS
 		{
 			if ( !ShadowMap_IsFiniteFloat( values[vi] ) || values[vi] < 0.0f || values[vi] > 1.0f )
 				return false;
-			originalVisibility[li * visibilityQueries.Count() + vi] =
-				visibilityQueries[vi].position[3] == 0.0f ? 0 : (unsigned char)( values[vi] * 255.0f + 0.5f );
+		}
+		if ( support.Count() )
+		{
+			for ( int vi = 0; vi < originalCount; ++vi ) sums[vi] = values[vi] * cornerArea[vi];
+			for ( int k = 0; k < support.Count(); ++k )
+				sums[support[k].vertex] += support[k].area * values[originalCount+k];
+		}
+		for ( int vi = 0; vi < originalCount; ++vi )
+		{
+			const float value = support.Count() && totalArea[vi] > 0 ? clamp( sums[vi]/totalArea[vi], 0.0f, 1.0f ) : values[vi];
+			originalVisibility[li * originalCount + vi] = visibilityQueries[vi].position[3] == 0.0f ? 0 : (unsigned char)( value*255.0f + 0.5f );
 		}
 	}
+	visibilityQueries.SetCount( originalCount );
 	hlight::PropVisibilityDisk directory = {};
 	directory.staticPropOrdinal = propIndex;
 	directory.modelChecksum = hdr->checksum;

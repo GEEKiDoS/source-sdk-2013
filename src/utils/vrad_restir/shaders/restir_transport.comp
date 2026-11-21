@@ -16,8 +16,8 @@ layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
 //   hemisphere   pc.candidates cosine rays: sky ambient where they leave through the sky, bounce
 //                where they land on a lightmapped face (slot 0, pc.maxBounces > 0)
 //   sun          1 sample of the sun cone (exact when SunSpreadAngle is 0)
-//   surface      pc.candidates samples over the style's emit_surface lights, uniform light choice
-// Point and spot lights have no sampled term: restir_direct evaluates them exactly.
+// Local lights, including area emitters, are evaluated by restir_direct;
+// their irradiance does not change between bounce generations.
 // With RESTIR_PC_PUBLISH_IRRADIANCE the dispatch instead publishes the style-0 base sums for
 // the next iteration's bounce lookups (a plain copy, so a paged bake's host copy is identical). That is a separate dispatch because sampling reads
 // previousIrradiance of arbitrary samples while it runs. pc.pass is the dface-to-face table offset
@@ -108,36 +108,6 @@ void main()
 			LightVisibility( uint( pc.skyLight ), origin, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )
 			Deposit( full, receiver, sampleRecord, face.numChannels, candidate.radiance.rgb / candidate.sourcePdf,
 				SafeNormal( candidate.samplePos.xyz - origin ), false, !RuntimeDirect( uint( pc.skyLight ) ) );
-	}
-	uint first;
-	uint surfaceFirst;
-	uint end;
-	StyleLights( style, first, surfaceFirst, end );
-	uint surfaceCount = end - surfaceFirst;
-	if ( surfaceCount != 0u && pc.candidates != 0u )
-	{
-		// Visit each emitter once per cycle; advance its triangle and barycentric sequence
-		// only when it is actually visited. Restarting all four dimensions at each
-		// iteration undersamples nearby emitters in a short bounce generation.
-		uint rotation = SampleStream( faceIndex, sampleInFace, slot, 0x454D4954u ) % surfaceCount;
-		float lightPdfScale = float( surfaceCount ) / float( pc.candidates );
-		for ( uint candidateIndex = 0u; candidateIndex < pc.candidates; ++candidateIndex )
-		{
-			uint indexInSequence = pc.iteration * pc.candidates + candidateIndex;
-			uint cycle = indexInSequence / surfaceCount;
-			uint ordinal = ( indexInSequence % surfaceCount + rotation ) % surfaceCount;
-			uint lightIndex = uint( styleLights[surfaceFirst + ordinal] );
-			uint key = SampleStream( faceIndex, sampleInFace, slot, lightIndex );
-			float cdf = fract( Halton( cycle, 3u ) + float( key >> 8u ) * ( 1.0 / 16777216.0 ) );
-			vec3 uniformValue = vec3( cdf, SobolPoint( cycle, uvec2( Hash( key ), Hash( key ^ 1u ) ) ) );
-			ReSTIRLightSample candidate;
-			if ( !SampleLight( lightIndex, origin, normal, uniformValue, candidate ) || candidate.radiance.w <= 0.0 || candidate.sourcePdf <= 0.0 )
-				continue;
-			if ( !LightVisibility( lightIndex, origin, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )
-				continue;
-			Deposit( full, receiver, sampleRecord, face.numChannels, candidate.radiance.rgb * ( lightPdfScale / candidate.sourcePdf ),
-				SafeNormal( candidate.samplePos.xyz - origin ), false, !RuntimeDirect( lightIndex ) );
-		}
 	}
 
 	bool restart = pc.iteration == FirstAveragedIteration();

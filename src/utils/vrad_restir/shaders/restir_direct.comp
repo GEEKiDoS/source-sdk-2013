@@ -46,6 +46,21 @@ void BakePropPatch( uint index )
 	propExitance[index] = vec4( irradiance * materials[tri.material].reflectivity.rgb, 0.0 );
 }
 
+// A nearby masked emitter may occupy thousands of triangles; selecting it
+// uniformly from a map-wide list gives it only a handful of visits per bounce
+// generation. Allocate samples by receiver-dependent power / distance^2.
+float SurfacePriority( ReSTIRGpuLight light, vec3 origin, vec3 normal )
+{
+	vec3 offset = light.origin.xyz - origin;
+	float radius = light.attenuation.x;
+	if ( light.numTris <= 0 || dot( offset, normal ) < -radius )
+		return 0.0;
+	float distance = max( length( offset ) - radius, 1.0 );
+	// Power is estimated from the material. Use it only for allocation, not
+	// a cutoff: even a dark or partially masked emitter gets a sample.
+	return clamp( light.intensity.w / ( distance * distance ), 0.0001, 255.0 );
+}
+
 void main()
 {
 	uint index = pc.first + gl_GlobalInvocationID.x;
@@ -92,6 +107,38 @@ void main()
 			full[channel] += contribution;
 			if ( !runtimeDirect )
 				receiver[channel] += contribution;
+		}
+	}
+	// Direct is invariant across bounce generations. Seed feedback with the
+	// whole-bake estimate, then replay it for the reconstructed planes.
+	float prioritySum = 0.0;
+	for ( uint entry = surfaceFirst; entry < end; ++entry )
+		prioritySum += SurfacePriority( lights[styleLights[entry]], origin, sampleRecord.normal.xyz );
+	float budget = float( min( pc.candidates * pc.totalIterations, 8192u ) ) / max( prioritySum, 32.0 );
+	for ( uint entry = surfaceFirst; entry < end; ++entry )
+	{
+		uint lightIndex = uint( styleLights[entry] );
+		float priority = SurfacePriority( lights[lightIndex], origin, sampleRecord.normal.xyz );
+		if ( priority == 0.0 )
+			continue;
+		uint count = max( 1u, uint( ceil( budget * priority ) ) );
+		uint key = SampleStream( faceIndex, sampleIndex - uint( face.firstSample ), slot, lightIndex );
+		float shift = float( key >> 8u ) * ( 1.0 / 16777216.0 );
+		for ( uint k = 0u; k < count; ++k )
+		{
+			vec3 u = vec3( fract( Halton( k, 3u ) + shift ), SobolPoint( k, uvec2( Hash( key ), Hash( key ^ 1u ) ) ) );
+			ReSTIRLightSample candidate;
+			if ( !SampleLight( lightIndex, origin, sampleRecord.normal.xyz, u, candidate ) || candidate.radiance.w <= 0.0 ||
+				!LightVisibility( lightIndex, origin, candidate.samplePos.xyz, candidate.emitterTri, RESTIR_NO_HIT ) )
+				continue;
+			vec3 direction = SafeNormal( candidate.samplePos.xyz - origin );
+			vec3 value = candidate.radiance.rgb / ( float( count ) * candidate.sourcePdf );
+			for ( int channel = 0; channel < numChannels; ++channel )
+			{
+				precise vec3 contribution = value * max( dot( ChannelNormal( sampleRecord, channel ), direction ), 0.0 );
+				full[channel] += contribution;
+				receiver[channel] += contribution; // area lights have no runtime direct counterpart
+			}
 		}
 	}
 	if ( pc.pass == 0u )

@@ -430,6 +430,8 @@ static void AppendTexlightTriangles( const ReSTIRSceneBuildContext &context, ReS
 	int face, ReSTIRGpuLight &light )
 {
 	light.firstTri = scene.emitterTriangles.Count();
+	float radiusSquared = 0.0f;
+	const Vector center = ReSTIR_SceneV4( light.origin );
 	double totalArea = 0.0;
 	for ( int i = 0; i < context.faceTriCount[face]; ++i )
 	{
@@ -441,9 +443,14 @@ static void AppendTexlightTriangles( const ReSTIRSceneBuildContext &context, ReS
 			continue;
 		}
 		totalArea += triangle.uv[3];
+		radiusSquared = MAX( radiusSquared, ( ReSTIR_SceneV4( triangle.v0 ) - center ).LengthSqr() );
+		radiusSquared = MAX( radiusSquared, ( ReSTIR_SceneV4( triangle.v1 ) - center ).LengthSqr() );
+		radiusSquared = MAX( radiusSquared, ( ReSTIR_SceneV4( triangle.v2 ) - center ).LengthSqr() );
 		scene.emitterTriangles.AddToTail( triangle );
 	}
 	light.numTris = scene.emitterTriangles.Count() - light.firstTri;
+	light.attenuation[0] = sqrtf( radiusSquared );
+	light.intensity[3] = (float)( totalArea * ( 0.2126 * light.intensity[0] + 0.7152 * light.intensity[1] + 0.0722 * light.intensity[2] ) );
 	double cumulative = 0.0;
 	for ( int i = 0; i < light.numTris; ++i )
 	{
@@ -1141,12 +1148,12 @@ static bool BuildSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 		int face = patch.face;
 		ReSTIRGpuLight light = AllocLight( patch.origin );
 		light.type = emit_surface;
-		AppendTexlightTriangles( context, scene, face, light );
 		ReSTIR_SceneSet4( light.normal, patch.normal );
 		Vector intensity;
 		VectorScale( patch.baseLight, s_flLightScale * patch.scale[0] * patch.scale[1] / patch.baseArea, intensity );
 		VectorScale( intensity, s_flDirectScale, intensity );
 		ReSTIR_SceneSet4( light.intensity, intensity );
+		AppendTexlightTriangles( context, scene, face, light );
 		patch.gpuLight = scene.lights.AddToTail( light );
 		texlightFaces[face] = true;
 	}
