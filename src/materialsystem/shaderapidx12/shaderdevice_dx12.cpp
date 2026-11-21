@@ -170,8 +170,6 @@ static ConCommand dx12_pix_capture( "dx12_pix_capture", DX12PixCaptureCommand,
     "Development only: take a PIX GPU capture of the next frame to <file.wpix> (requires -dx12pix)", FCVAR_CHEAT );
 static ConVar dx12_pix_draw_markers( "dx12_pix_draw_markers", "0", FCVAR_CHEAT,
     "Development only: precede every draw with a PIX marker naming its material, pixel shader, instances and indices" );
-static ConVar dx12_low_latency_fence( "dx12_low_latency_fence", "1", 0,
-    "Wait for the previous engine frame at its sync point. Disable for throughput at the cost of queue latency." );
 static void DX12BreadcrumbsDumpCommand( const CCommand & )
 {
 	if ( g_pShaderDeviceDX12 && g_pShaderDeviceDX12->GpuBreadcrumbsEnabled() )
@@ -686,7 +684,6 @@ uint64_t CShaderDeviceDX12::SubmitFrameSync()
 		return 0;
 	// Reference DX9 waits for the previous sync query, then issues this frame's query.
 	// Current-frame completion remains mandatory in readback/resource lifecycle paths.
-	if ( dx12_low_latency_fence.GetBool() )
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 PreviousFrameWait", DX12_ZONES_ACTIVE );
 		if ( !WaitForFence( m_nFrameSyncFence ) )

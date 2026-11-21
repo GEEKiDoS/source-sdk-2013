@@ -6549,7 +6549,6 @@ void ShadowMapDepthFootprint_t::AddPoint( const Vector &point )
 	if ( c[3]<=0 ) { SetFull(SHADOWMAP_FOOTPRINT_W_NONPOSITIVE); return; }
 	IncludeClipPoint(*this,c[0],c[1],c[3]);
 }
-static ConVar r_shadowmap_test_bounds( "r_shadowmap_test_bounds", "1", FCVAR_CHEAT );
 void ShadowMapDepthFootprint_t::AddBounds( const Vector &mins, const Vector &maxs )
 {
 	if ( full ) return;
@@ -6562,35 +6561,32 @@ void ShadowMapDepthFootprint_t::AddBounds( const Vector &mins, const Vector &max
 	// An unclipped box reaches its projected extrema at its corners. Visit
 	// eight vertices once, not both endpoints of all twelve edges, and round
 	// only the final extrema. Keep the edge clipper for near-plane crossings.
-	if ( r_shadowmap_test_bounds.GetBool() )
+	float minX = FLT_MAX, minY = FLT_MAX, maxX = -FLT_MAX, maxY = -FLT_MAX;
+	int i = 0;
+	for ( ; i < ARRAYSIZE( corner ); ++i )
 	{
-		float minX = FLT_MAX, minY = FLT_MAX, maxX = -FLT_MAX, maxY = -FLT_MAX;
-		int i = 0;
-		for ( ; i < ARRAYSIZE( corner ); ++i )
+		const float *p = corner[i];
+		if ( p[3] <= kFootprintNearW )
+			break;
+		const float px = ( p[0] / p[3] * 0.5f + 0.5f ) * size;
+		const float py = ( 0.5f - p[1] / p[3] * 0.5f ) * size;
+		if ( !ShadowMap_IsFiniteFloat( px ) || !ShadowMap_IsFiniteFloat( py ) )
 		{
-			const float *p = corner[i];
-			if ( p[3] <= kFootprintNearW )
-				break;
-			const float px = ( p[0] / p[3] * 0.5f + 0.5f ) * size;
-			const float py = ( 0.5f - p[1] / p[3] * 0.5f ) * size;
-			if ( !ShadowMap_IsFiniteFloat( px ) || !ShadowMap_IsFiniteFloat( py ) )
-			{
-				SetFull( SHADOWMAP_FOOTPRINT_NONFINITE );
-				return;
-			}
-			minX = MIN( minX, px );
-			minY = MIN( minY, py );
-			maxX = MAX( maxX, px );
-			maxY = MAX( maxY, py );
-		}
-		if ( i == ARRAYSIZE( corner ) )
-		{
-			x0 = MIN( x0, int( floorf( clamp( minX - 2.0f, 0.0f, float( size ) ) ) ) );
-			y0 = MIN( y0, int( floorf( clamp( minY - 2.0f, 0.0f, float( size ) ) ) ) );
-			x1 = MAX( x1, int( ceilf( clamp( maxX + 2.0f, 0.0f, float( size ) ) ) ) );
-			y1 = MAX( y1, int( ceilf( clamp( maxY + 2.0f, 0.0f, float( size ) ) ) ) );
+			SetFull( SHADOWMAP_FOOTPRINT_NONFINITE );
 			return;
 		}
+		minX = MIN( minX, px );
+		minY = MIN( minY, py );
+		maxX = MAX( maxX, px );
+		maxY = MAX( maxY, py );
+	}
+	if ( i == ARRAYSIZE( corner ) )
+	{
+		x0 = MIN( x0, int( floorf( clamp( minX - 2.0f, 0.0f, float( size ) ) ) ) );
+		y0 = MIN( y0, int( floorf( clamp( minY - 2.0f, 0.0f, float( size ) ) ) ) );
+		x1 = MAX( x1, int( ceilf( clamp( maxX + 2.0f, 0.0f, float( size ) ) ) ) );
+		y1 = MAX( y1, int( ceilf( clamp( maxY + 2.0f, 0.0f, float( size ) ) ) ) );
+		return;
 	}
 	static const int edges[12][2]={{0,1},{0,2},{0,4},{1,3},{1,5},{2,3},{2,6},{3,7},{4,5},{4,6},{5,7},{6,7}};
 	for ( int e=0;e<12 && !full;++e )
