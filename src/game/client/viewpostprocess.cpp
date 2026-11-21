@@ -3176,7 +3176,7 @@ static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int
 }
 #endif
 
-void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, bool bPostVGui, PostMotionDX12_t motion )
+void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, bool bPostVGui, PostMotionDX12_t motion, PostGradeDX12_t queuedGrade, bool bQueuedFuseGrade )
 {
 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 #if defined( L4D2 )
@@ -3211,7 +3211,10 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 		ICallQueue *pCallQueue = pRenderContext->GetCallQueue();
 		if ( pCallQueue )
 		{
-			pCallQueue->QueueCall( DoEnginePostProcessing, x, y, w, h, bFlashlightIsOn, bPostVGui, motion );
+			PostGradeDX12_t queuedGrade = {};
+			const bool bQueuedFuseGrade = PostProcessDX12_Active() && mat_postprocess_enable.GetBool() &&
+				PostProcessDX12_CanFuseGrade( x, y, w, h, GetBloomAmount() ) && Terror_GetCompactGrade( queuedGrade, h );
+			pCallQueue->QueueCall( DoEnginePostProcessing, x, y, w, h, bFlashlightIsOn, bPostVGui, motion, queuedGrade, bQueuedFuseGrade );
 			return;
 		}
 	}
@@ -3238,9 +3241,9 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 	// The DX12 post stack owns bloom, lens effects and the final tone curve. The L4D2 engine post then
 	// applies colour correction, vignette, grain, local contrast, vomit and fade to its composite.
 	const bool bPostProcessDX12 = !bPostVGui && PostProcessDX12_Active();
-	PostGradeDX12_t grade = {};
-	const bool bFuseGrade = bPostProcessDX12 && mat_postprocess_enable.GetBool() &&
-		PostProcessDX12_CanFuseGrade( x, y, w, h, flBloomScale ) && Terror_GetCompactGrade( grade, h );
+	PostGradeDX12_t grade = queuedGrade;
+	const bool bFuseGrade = bQueuedFuseGrade || ( bPostVGui == false && bPostProcessDX12 && mat_postprocess_enable.GetBool() &&
+		PostProcessDX12_CanFuseGrade( x, y, w, h, flBloomScale ) && Terror_GetCompactGrade( grade, h ) );
 	if ( bPostProcessDX12 )
 	{
 		// For a full-size view, write the native result straight into the legacy
