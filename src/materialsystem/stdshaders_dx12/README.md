@@ -699,6 +699,8 @@ fallback is used only for opaque non-writers. The 200-unit light uses smoothed h
 albedo attachment (RT7). `r_flashlight_bounce_scale` controls strength and `r_flashlight_bounce_debug` marks
 the measured centre. Albedo is material-tinted linear base colour, before lighting or fog, encoded to sRGB
 by the RTV and decoded by the SRV. `mat_pbr_showgbuffer 4` displays it while bounce is enabled.
+When that attachment is live without the full SSR payload, the unused slots below RT7 bind typed null RTVs;
+their pipeline formats are UNKNOWN because there is no resource in those slots.
 The opaque viewmodel colour draw writes the same attachment with its own projection; it participates only
 as a receiver. Translucents never write or receive the effect.
 A softened hit-plane test and six depth taps towards the measured light reduce through-wall leaks.

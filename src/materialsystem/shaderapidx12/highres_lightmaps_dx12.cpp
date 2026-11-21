@@ -9,6 +9,7 @@
 #include "materialsystem/imaterialsystem.h"
 #include "zip_utils.h"
 #include "hprobe_bsp.h"
+#include "tier0/icommandline.h"
 #include "tier0/platform.h"
 #include "tier1/lzmaDecoder.h"
 #include "tier1/utlbuffer.h"
