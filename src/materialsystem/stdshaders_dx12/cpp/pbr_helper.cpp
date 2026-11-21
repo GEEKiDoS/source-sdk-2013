@@ -650,8 +650,8 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 		treeSway[3][3] = GetFloatParam( v.treeSwayScrumbleStrength, params, 10.0f );
 		treeSway[4][0] = GetFloatParam( v.treeSwaySpeedLerpStart, params, 3.0f );
 		treeSway[4][1] = GetFloatParam( v.treeSwaySpeedLerpEnd, params, 6.0f );
-		treeSway[4][2] = ps[14][1]; // Angular basis for vertex-frequency leaf local lighting.
 	}
+	treeSway[4][2] = ps[14][1]; // Both still and swaying cards need their authored angular basis.
 
 	// PBRMaterialPS c47/c48/c50/c54/c55 (g_PbrInfected*): the infected_dx9.cpp registers c3, c4, c0, c27 and c26 / the
 	// $shinyblood switch. c49, c51 (x) and c52/c53 are per draw (DrawPBR).
@@ -689,8 +689,8 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ctx.m_bAmbientOnly = IsBoolSet( v.ambientOnly, params );
 	ctx.m_bAllowDiffuseModulation = allowDiffuseModulation;
 	ctx.m_nTreeSway = s.model ? clamp( GetIntParam( v.treeSway, params ), 0, 2 ) : 0;
-	// Only simple cutout cards. Authored normal, reflection, transmission or gloss terms keep full PBR.
-	ctx.m_bMatteLeaf = ctx.m_nTreeSway != 0 && s.alphaTested && !s.infected && !v.l4n && !v.standalone &&
+	// Two-sided matte cutouts can share a diffuse pass regardless of their wind animation.
+	ctx.m_bMatteLeaf = s.model && s.alphaTested && IS_FLAG_SET( MATERIAL_VAR_NOCULL ) && !s.infected && !v.l4n && !v.standalone &&
 		!s.hasBump && !s.hasEnvmap && !s.hasDetail && !s.hasMrao && !s.hasSpecular && !s.phong &&
 		!s.explicitRoughness && !s.emissionMode && !s.hasThickness && ps[11][0] == 0.0f && ps[11][1] == 0.0f;
 	memcpy( ctx.m_TreeSwayParams, treeSway, sizeof( ctx.m_TreeSwayParams ) );

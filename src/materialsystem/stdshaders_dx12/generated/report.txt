@@ -3347,7 +3347,7 @@ logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earl
     legacyEntry=656,16,1,0,0,0,56
     legacyEntry=672,16,1,0,0,0,57
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_model_vs51 stage=vs source=pbr_model_vs51.fxc legacy=- legacyName=- profile=native static=14 dynamic=128 present=928
+logical=pbr_model_vs51 stage=vs source=pbr_model_vs51.fxc legacy=- legacyName=- profile=native static=14 dynamic=128 present=1056
   cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
     member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
